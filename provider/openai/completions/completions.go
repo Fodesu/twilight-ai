@@ -31,7 +31,23 @@ type chatCompletionsCompat string
 const (
 	chatCompletionsCompatDeepSeek chatCompletionsCompat = "deepseek"
 	chatCompletionsCompatMiniMax  chatCompletionsCompat = "minimax"
+	chatCompletionsCompatKimi     chatCompletionsCompat = "kimi"
 )
+
+// moonshotBaseURLHosts are substrings of Moonshot/Kimi's API base URLs. Used
+// to auto-detect Kimi compat when the caller configures WithBaseURL directly
+// without also calling WithKimiChatCompletionsCompat.
+var moonshotBaseURLHosts = []string{"api.moonshot.cn", "api.moonshot.ai"}
+
+func isMoonshotBaseURL(baseURL string) bool {
+	lower := strings.ToLower(baseURL)
+	for _, host := range moonshotBaseURLHosts {
+		if strings.Contains(lower, host) {
+			return true
+		}
+	}
+	return false
+}
 
 func WithAPIKey(apiKey string) Option {
 	return func(p *Provider) {
@@ -85,6 +101,17 @@ func WithMiniMaxChatCompletionsCompat() Option {
 	}
 }
 
+// WithKimiChatCompletionsCompat adapts Moonshot/Kimi's OpenAI-compatible Chat
+// Completions transport. Kimi enforces a stricter "Moonshot flavored" JSON
+// Schema than the standard: when a schema uses anyOf, every anyOf branch must
+// declare its own "type" rather than inheriting one from the parent schema.
+// This rewrites outgoing tool parameter schemas to satisfy that constraint.
+func WithKimiChatCompletionsCompat() Option {
+	return func(p *Provider) {
+		p.compat = chatCompletionsCompatKimi
+	}
+}
+
 func New(options ...Option) *Provider {
 	provider := &Provider{
 		baseURL:    defaultBaseURL,
@@ -92,6 +119,11 @@ func New(options ...Option) *Provider {
 	}
 	for _, option := range options {
 		option(provider)
+	}
+	// Fall back to Kimi compat when the base URL is unambiguously Moonshot's,
+	// unless the caller already picked a compat mode explicitly.
+	if provider.compat == "" && isMoonshotBaseURL(provider.baseURL) {
+		provider.compat = chatCompletionsCompatKimi
 	}
 	return provider
 }
@@ -283,6 +315,10 @@ func (p *Provider) applyChatCompletionsCompat(req *chatRequest) {
 		default:
 			req.Thinking = &chatThinking{Type: "adaptive"}
 		}
+	case chatCompletionsCompatKimi:
+		for i := range req.Tools {
+			req.Tools[i].Function.Parameters = sanitizeSchemaForKimi(req.Tools[i].Function.Parameters)
+		}
 	}
 }
 
@@ -299,6 +335,99 @@ func convertTools(tools []sdk.Tool) []chatTool {
 		})
 	}
 	return out
+}
+
+// sanitizeSchemaForKimi rewrites a tool parameters schema so it satisfies
+// Moonshot/Kimi's "Moonshot flavored JSON Schema" constraint: whenever a
+// schema object uses anyOf, "type" must be declared inside each anyOf branch
+// rather than on the parent schema. Standard JSON Schema (and this SDK's
+// schema inference) commonly puts "type" on the parent, so Kimi rejects such
+// tool definitions with a 400 unless we push "type" down into each branch.
+//
+// v is whatever was set on sdk.Tool.Parameters: typically *jsonschema.Schema
+// or map[string]any (see sdk.resolveSchema). We operate on the generic
+// map[string]any form so this works regardless of which concrete type was
+// supplied, and re-marshal *jsonschema.Schema values through JSON to get
+// there.
+func sanitizeSchemaForKimi(v any) any {
+	m, ok := asSchemaMap(v)
+	if !ok {
+		return v
+	}
+	sanitizeSchemaMapForKimi(m)
+	return m
+}
+
+// asSchemaMap converts v into a map[string]any JSON Schema representation,
+// or returns ok=false if v is nil or not schema-shaped.
+func asSchemaMap(v any) (map[string]any, bool) {
+	if v == nil {
+		return nil, false
+	}
+	if m, ok := v.(map[string]any); ok {
+		return m, true
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, false
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, false
+	}
+	return m, true
+}
+
+// sanitizeSchemaMapForKimi walks a JSON Schema (as a decoded map) in place,
+// pushing "type" from a schema object down into each of its "anyOf" branches
+// when needed, and recursing into every nested subschema location.
+func sanitizeSchemaMapForKimi(schema map[string]any) {
+	if schema == nil {
+		return
+	}
+
+	if anyOf, ok := schema["anyOf"].([]any); ok {
+		parentType, hasParentType := schema["type"]
+		for _, branch := range anyOf {
+			branchMap, ok := branch.(map[string]any)
+			if !ok {
+				continue
+			}
+			if _, branchHasType := branchMap["type"]; !branchHasType && hasParentType {
+				branchMap["type"] = parentType
+			}
+			sanitizeSchemaMapForKimi(branchMap)
+		}
+		if hasParentType {
+			delete(schema, "type")
+		}
+	}
+
+	for _, key := range []string{"oneOf", "allOf"} {
+		if list, ok := schema[key].([]any); ok {
+			for _, item := range list {
+				if itemMap, ok := item.(map[string]any); ok {
+					sanitizeSchemaMapForKimi(itemMap)
+				}
+			}
+		}
+	}
+
+	if props, ok := schema["properties"].(map[string]any); ok {
+		for _, prop := range props {
+			if propMap, ok := prop.(map[string]any); ok {
+				sanitizeSchemaMapForKimi(propMap)
+			}
+		}
+	}
+
+	if items, ok := schema["items"].(map[string]any); ok {
+		sanitizeSchemaMapForKimi(items)
+	}
+
+	if not, ok := schema["not"].(map[string]any); ok {
+		sanitizeSchemaMapForKimi(not)
+	}
 }
 
 // ---------- message conversion ----------

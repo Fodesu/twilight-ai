@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"testing"
 
@@ -1781,6 +1782,222 @@ func minimaxReasoningDetailsFromTestMetadata(t *testing.T, meta map[string]any) 
 }
 
 func stringPtr(s string) *string { return &s }
+
+// ---------- Kimi/Moonshot compat ----------
+
+// kimiAnyOfTool is a tool whose Parameters schema puts "type" on the parent
+// of an anyOf, the pattern standard JSON Schema allows but Moonshot/Kimi
+// rejects with "tools.function.parameters is not a valid moonshot flavored
+// json schema".
+func kimiAnyOfTool() sdk.Tool {
+	return sdk.Tool{
+		Name:        "attach_file",
+		Description: "Attach a file",
+		Parameters: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"attachments": {
+					Type: "array",
+					Items: &jsonschema.Schema{
+						Type: "object",
+						AnyOf: []*jsonschema.Schema{
+							{Properties: map[string]*jsonschema.Schema{"url": {Type: "string"}}},
+							{Properties: map[string]*jsonschema.Schema{"data": {Type: "string"}}},
+						},
+					},
+				},
+			},
+			Required: []string{"attachments"},
+		},
+	}
+}
+
+func decodeToolParameters(t *testing.T, r *http.Request) map[string]any {
+	t.Helper()
+	var body struct {
+		Tools []struct {
+			Function struct {
+				Parameters map[string]any `json:"parameters"`
+			} `json:"function"`
+		} `json:"tools"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	if len(body.Tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(body.Tools))
+	}
+	return body.Tools[0].Function.Parameters
+}
+
+// assertKimiSanitizedAnyOf checks that the "attachments.items" schema no
+// longer has "type" alongside "anyOf", and that each anyOf branch has its
+// own "type": "object".
+func assertKimiSanitizedAnyOf(t *testing.T, params map[string]any) {
+	t.Helper()
+	items := schemaPath(t, params, "properties", "attachments", "items")
+	if _, hasType := items["type"]; hasType {
+		t.Fatalf("items schema should not have a parent \"type\" alongside anyOf, got %#v", items)
+	}
+	anyOf, ok := items["anyOf"].([]any)
+	if !ok || len(anyOf) != 2 {
+		t.Fatalf("expected anyOf with 2 branches, got %#v", items["anyOf"])
+	}
+	for i, branch := range anyOf {
+		branchMap, ok := branch.(map[string]any)
+		if !ok {
+			t.Fatalf("anyOf[%d] is not an object: %#v", i, branch)
+		}
+		if branchMap["type"] != "object" {
+			t.Errorf("anyOf[%d].type: got %v, want %q", i, branchMap["type"], "object")
+		}
+	}
+}
+
+func schemaPath(t *testing.T, m map[string]any, path ...string) map[string]any {
+	t.Helper()
+	cur := m
+	for _, key := range path {
+		next, ok := cur[key].(map[string]any)
+		if !ok {
+			t.Fatalf("schema path %v: %q not found or not an object in %#v", path, key, cur)
+		}
+		cur = next
+	}
+	return cur
+}
+
+func newEchoToolsServer(t *testing.T, capture *map[string]any) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*capture = decodeToolParameters(t, r)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":    "chatcmpl-kimi",
+			"model": "kimi-k2",
+			"choices": []map[string]any{{
+				"index":         0,
+				"finish_reason": "stop",
+				"message":       map[string]any{"role": "assistant", "content": "ok"},
+			}},
+			"usage": map[string]any{"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+		})
+	}))
+}
+
+func TestDoGenerate_KimiCompatSanitizesAnyOfSchema(t *testing.T) {
+	var params map[string]any
+	srv := newEchoToolsServer(t, &params)
+	defer srv.Close()
+
+	p := completions.New(
+		completions.WithAPIKey("k"),
+		completions.WithBaseURL(srv.URL),
+		completions.WithKimiChatCompletionsCompat(),
+	)
+	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
+		Model:    &sdk.Model{ID: "kimi-k2"},
+		Messages: []sdk.Message{sdk.UserMessage("hi")},
+		Tools:    []sdk.Tool{kimiAnyOfTool()},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	assertKimiSanitizedAnyOf(t, params)
+}
+
+// redirectingTransport rewrites every outgoing request's scheme/host to
+// point at a local test server while leaving the rest of the request (path,
+// body, etc.) untouched. This lets a test configure WithBaseURL with a real
+// Moonshot-looking host (so Kimi auto-detection can key off it) while still
+// serving the request from an in-process httptest.Server.
+type redirectingTransport struct {
+	targetURL *url.URL
+}
+
+func (rt *redirectingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.URL.Scheme = rt.targetURL.Scheme
+	req.URL.Host = rt.targetURL.Host
+	req.Host = rt.targetURL.Host
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// TestKimiCompatAutoDetectedFromMoonshotBaseURL verifies the fallback: a base
+// URL that looks like Moonshot's (api.moonshot.cn / api.moonshot.ai) enables
+// Kimi compat -- and therefore anyOf schema sanitization -- even without the
+// caller explicitly calling WithKimiChatCompletionsCompat. Other base URLs
+// must leave the schema untouched.
+func TestKimiCompatAutoDetectedFromMoonshotBaseURL(t *testing.T) {
+	cases := []struct {
+		name    string
+		baseURL string
+		want    bool
+	}{
+		{"moonshot cn", "https://api.moonshot.cn/v1", true},
+		{"moonshot ai", "https://api.moonshot.ai/v1", true},
+		{"moonshot cn uppercase host", "https://API.MOONSHOT.CN/v1", true},
+		{"openai", "https://api.openai.com/v1", false},
+		{"deepseek", "https://api.deepseek.com", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var params map[string]any
+			srv := newEchoToolsServer(t, &params)
+			defer srv.Close()
+
+			target, err := url.Parse(srv.URL)
+			if err != nil {
+				t.Fatalf("parse test server URL: %v", err)
+			}
+
+			p := completions.New(
+				completions.WithAPIKey("k"),
+				completions.WithBaseURL(tc.baseURL),
+				completions.WithHTTPClient(&http.Client{Transport: &redirectingTransport{targetURL: target}}),
+			)
+			_, err = p.DoGenerate(context.Background(), sdk.GenerateParams{
+				Model:    &sdk.Model{ID: "kimi-k2"},
+				Messages: []sdk.Message{sdk.UserMessage("hi")},
+				Tools:    []sdk.Tool{kimiAnyOfTool()},
+			})
+			if err != nil {
+				t.Fatalf("DoGenerate: %v", err)
+			}
+
+			_, hasParentType := schemaPath(t, params, "properties", "attachments", "items")["type"]
+			gotSanitized := !hasParentType
+			if gotSanitized != tc.want {
+				t.Fatalf("baseURL %q: sanitized=%v, want %v", tc.baseURL, gotSanitized, tc.want)
+			}
+		})
+	}
+}
+
+// TestKimiCompatExplicitOptionOverridesNonMoonshotBaseURL confirms that
+// calling WithKimiChatCompletionsCompat explicitly still sanitizes tool
+// schemas even when the base URL doesn't look like Moonshot's (e.g. a proxy
+// or self-hosted gateway in front of Kimi).
+func TestKimiCompatExplicitOptionOverridesNonMoonshotBaseURL(t *testing.T) {
+	var params map[string]any
+	srv := newEchoToolsServer(t, &params)
+	defer srv.Close()
+
+	p := completions.New(
+		completions.WithAPIKey("k"),
+		completions.WithBaseURL(srv.URL), // not a Moonshot host
+		completions.WithKimiChatCompletionsCompat(),
+	)
+	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
+		Model:    &sdk.Model{ID: "kimi-k2"},
+		Messages: []sdk.Message{sdk.UserMessage("hi")},
+		Tools:    []sdk.Tool{kimiAnyOfTool()},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	assertKimiSanitizedAnyOf(t, params)
+}
 
 func TestMain(m *testing.M) {
 	testutil.LoadEnv()
