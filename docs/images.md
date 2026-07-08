@@ -93,6 +93,30 @@ provider := images.New(
 )
 ```
 
+### Alibaba Cloud DashScope Images
+
+The `provider/alibabacloud/images` package supports Alibaba Cloud Model Studio (DashScope) image models — Qwen-Image, Wan, Z-Image, and third-party models such as FLUX and Stable Diffusion.
+
+```go
+import "github.com/memohai/twilight-ai/provider/alibabacloud/images"
+
+provider := images.New(
+    images.WithAPIKey("sk-..."), // DashScope / Model Studio API key
+)
+
+model := provider.GenerationModel("qwen-image-max")
+result, err := sdk.GenerateImage(ctx,
+    sdk.WithImageGenerationModel(model),
+    sdk.WithImagePrompt("A sunset over mountains"),
+    sdk.WithImageSize("1024x1024"),
+)
+// result.Data[0].URL contains the generated image URL (valid for 24 hours)
+```
+
+The provider routes each model to the correct DashScope endpoint automatically: `qwen-image` / `qwen-image-plus`, legacy Wan models (`wanx-*`, `wan2.0`–`wan2.5`), and third-party models (`flux-*`, `stable-diffusion-*`) use the async text2image task API with polling; newer Wan models use the async image-generation task API; the remaining Qwen-Image models (`qwen-image-max`, `qwen-image-2.0*`, dated snapshots) and `z-image*` use the synchronous multimodal API. Polling behavior is configurable via `images.WithPollInterval` and `images.WithPollTimeout`.
+
+DashScope models honor the `Prompt`, `N`, and `Size` options; the other generation options are OpenAI-specific and ignored. Image editing (`sdk.EditImage`) is not supported by this provider.
+
 ## Generation Options
 
 All generation options are of type `ImageGenerateOption`:
