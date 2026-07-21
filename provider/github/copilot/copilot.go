@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/memohai/twilight-ai/internal/messagecompat"
 	"github.com/memohai/twilight-ai/internal/utils"
 	"github.com/memohai/twilight-ai/sdk"
 )
@@ -15,9 +16,10 @@ import (
 const defaultBaseURL = "https://api.githubcopilot.com"
 
 type Provider struct {
-	githubToken string
-	baseURL     string
-	httpClient  *http.Client
+	githubToken  string
+	baseURL      string
+	httpClient   *http.Client
+	messageRoles sdk.MessageRoleCapabilities
 }
 
 type Option func(*Provider)
@@ -43,6 +45,15 @@ func WithBaseURL(baseURL string) Option {
 func WithHTTPClient(client *http.Client) Option {
 	return func(p *Provider) {
 		p.httpClient = client
+	}
+}
+
+// WithMessageRoleCapabilities enables instruction roles supported by the
+// configured Copilot endpoint. The default conservatively falls back developer
+// and mid-conversation system messages to user messages.
+func WithMessageRoleCapabilities(capabilities sdk.MessageRoleCapabilities) Option {
+	return func(p *Provider) {
+		p.messageRoles = capabilities
 	}
 }
 
@@ -84,10 +95,13 @@ func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 }
 
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {
-	req := p.buildRequest(&sdk.GenerateParams{
+	req, err := p.buildRequest(&sdk.GenerateParams{
 		Model:    p.ChatModel(modelID),
 		Messages: []sdk.Message{sdk.UserMessage("ping")},
 	})
+	if err != nil {
+		return nil, fmt.Errorf("github-copilot: build probe request: %w", err)
+	}
 
 	status, err := utils.ProbeStatus(ctx, p.httpClient, &utils.RequestOptions{
 		Method:  http.MethodPost,
@@ -118,7 +132,10 @@ func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*
 		return nil, fmt.Errorf("github-copilot: model is required")
 	}
 
-	req := p.buildRequest(&params)
+	req, err := p.buildRequest(&params)
+	if err != nil {
+		return nil, fmt.Errorf("github-copilot: build request: %w", err)
+	}
 
 	resp, err := utils.FetchJSON[chatResponse](ctx, p.httpClient, &utils.RequestOptions{
 		Method:  http.MethodPost,
@@ -138,10 +155,14 @@ func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*
 	return p.parseResponse(resp)
 }
 
-func (p *Provider) buildRequest(params *sdk.GenerateParams) *chatRequest {
+func (p *Provider) buildRequest(params *sdk.GenerateParams) (*chatRequest, error) {
+	messages, err := messagecompat.Normalize(params.Messages, p.messageRoles)
+	if err != nil {
+		return nil, err
+	}
 	req := &chatRequest{
 		Model:            params.Model.ID,
-		Messages:         convertMessages(params),
+		Messages:         convertMessages(params.System, messages),
 		Temperature:      params.Temperature,
 		TopP:             params.TopP,
 		MaxTokens:        params.MaxTokens,
@@ -166,7 +187,7 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) *chatRequest {
 			JSONSchema: params.ResponseFormat.JSONSchema,
 		}
 	}
-	return req
+	return req, nil
 }
 
 func convertTools(tools []sdk.Tool) []chatTool {
@@ -184,17 +205,17 @@ func convertTools(tools []sdk.Tool) []chatTool {
 	return out
 }
 
-func convertMessages(params *sdk.GenerateParams) []chatMessage {
+func convertMessages(system string, messages []sdk.Message) []chatMessage {
 	var out []chatMessage
 
-	if params.System != "" {
+	if system != "" {
 		out = append(out, chatMessage{
 			Role:    "system",
-			Content: params.System,
+			Content: system,
 		})
 	}
 
-	for _, msg := range params.Messages {
+	for _, msg := range messages {
 		out = append(out, convertMessage(msg)...)
 	}
 	return out
@@ -353,7 +374,10 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 		return nil, fmt.Errorf("github-copilot: model is required")
 	}
 
-	req := p.buildRequest(&params)
+	req, err := p.buildRequest(&params)
+	if err != nil {
+		return nil, fmt.Errorf("github-copilot: build request: %w", err)
+	}
 	req.Stream = true
 	req.StreamOptions = &chatStreamOptions{IncludeUsage: true}
 

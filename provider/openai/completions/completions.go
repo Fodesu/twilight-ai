@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/memohai/twilight-ai/internal/messagecompat"
 	"github.com/memohai/twilight-ai/internal/utils"
 	openaiutil "github.com/memohai/twilight-ai/provider/openai"
 	"github.com/memohai/twilight-ai/sdk"
@@ -22,6 +23,7 @@ type Provider struct {
 	httpClient     *http.Client
 	prepareRequest func(*http.Request) error
 	compat         chatCompletionsCompat
+	messageRoles   sdk.MessageRoleCapabilities
 }
 
 type Option func(*Provider)
@@ -83,6 +85,15 @@ func WithHTTPClient(client *http.Client) Option {
 	}
 }
 
+// WithMessageRoleCapabilities overrides the instruction roles supported by an
+// OpenAI-compatible Chat Completions endpoint. The OpenAI default supports
+// developer messages and system messages anywhere in the conversation.
+func WithMessageRoleCapabilities(capabilities sdk.MessageRoleCapabilities) Option {
+	return func(p *Provider) {
+		p.messageRoles = capabilities
+	}
+}
+
 // WithDeepSeekChatCompletionsCompat maps reasoning_effort "none" to DeepSeek's
 // thinking disable toggle while keeping the generic Chat Completions provider.
 func WithDeepSeekChatCompletionsCompat() Option {
@@ -116,6 +127,10 @@ func New(options ...Option) *Provider {
 	provider := &Provider{
 		baseURL:    defaultBaseURL,
 		httpClient: &http.Client{},
+		messageRoles: sdk.MessageRoleCapabilities{
+			Developer:             true,
+			MidConversationSystem: true,
+		},
 	}
 	for _, option := range options {
 		option(provider)
@@ -222,7 +237,10 @@ func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*
 		return nil, fmt.Errorf("openai: model is required")
 	}
 
-	req := p.buildRequest(&params)
+	req, err := p.buildRequest(&params)
+	if err != nil {
+		return nil, fmt.Errorf("openai: build request: %w", err)
+	}
 
 	resp, err := utils.FetchJSON[chatResponse](ctx, p.httpClient, &utils.RequestOptions{
 		Method:  http.MethodPost,
@@ -245,10 +263,14 @@ func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*
 
 // ---------- buildRequest ----------
 
-func (p *Provider) buildRequest(params *sdk.GenerateParams) *chatRequest {
+func (p *Provider) buildRequest(params *sdk.GenerateParams) (*chatRequest, error) {
+	messages, err := messagecompat.Normalize(params.Messages, p.messageRoles)
+	if err != nil {
+		return nil, err
+	}
 	req := &chatRequest{
 		Model:               params.Model.ID,
-		Messages:            convertMessages(params),
+		Messages:            convertMessages(params.System, messages),
 		Temperature:         params.Temperature,
 		TopP:                params.TopP,
 		MaxCompletionTokens: params.MaxTokens,
@@ -271,7 +293,7 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) *chatRequest {
 		}
 	}
 	p.applyChatCompletionsCompat(req)
-	return req
+	return req, nil
 }
 
 func normalizeReasoningEffort(effort *string) *string {
@@ -432,17 +454,17 @@ func sanitizeSchemaMapForKimi(schema map[string]any) {
 
 // ---------- message conversion ----------
 
-func convertMessages(params *sdk.GenerateParams) []chatMessage {
+func convertMessages(system string, messages []sdk.Message) []chatMessage {
 	var out []chatMessage
 
-	if params.System != "" {
+	if system != "" {
 		out = append(out, chatMessage{
 			Role:    "system",
-			Content: params.System,
+			Content: system,
 		})
 	}
 
-	for _, msg := range params.Messages {
+	for _, msg := range messages {
 		out = append(out, convertMessage(msg)...)
 	}
 	return out
@@ -614,7 +636,10 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 		return nil, fmt.Errorf("openai: model is required")
 	}
 
-	req := p.buildRequest(&params)
+	req, err := p.buildRequest(&params)
+	if err != nil {
+		return nil, fmt.Errorf("openai: build request: %w", err)
+	}
 	req.Stream = true
 	req.StreamOptions = &chatStreamOptions{IncludeUsage: true}
 

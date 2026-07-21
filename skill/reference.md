@@ -103,7 +103,13 @@ const (
     MessageRoleAssistant MessageRole = "assistant"
     MessageRoleSystem    MessageRole = "system"
     MessageRoleTool      MessageRole = "tool"
+    MessageRoleDeveloper MessageRole = "developer"
 )
+
+type MessageRoleCapabilities struct {
+    Developer             bool
+    MidConversationSystem bool
+}
 
 type MessagePartType string
 
@@ -160,6 +166,7 @@ type Message struct {
 
 func UserMessage(text string, extra ...MessagePart) Message
 func SystemMessage(text string) Message
+func DeveloperMessage(text string) Message
 func AssistantMessage(text string) Message
 func ToolMessage(results ...ToolResultPart) Message
 ```
@@ -168,6 +175,10 @@ Notes:
 
 - `UserMessage` accepts a text string plus optional extra parts such as `ImagePart`.
 - `Message` supports JSON marshal and unmarshal with type discrimination.
+- `GenerateParams.System` is the stable root instruction; use `SystemMessage`
+  for an instruction at a specific point in the message timeline.
+- Unsupported developer messages fall back to user messages. Unsupported
+  mid-conversation system messages fall back to XML-escaped `<system>` user messages.
 
 ### Generation
 
@@ -731,6 +742,7 @@ type Option func(*Provider)
 func WithAPIKey(apiKey string) Option
 func WithBaseURL(baseURL string) Option
 func WithHTTPClient(client *http.Client) Option
+func WithMessageRoleCapabilities(capabilities sdk.MessageRoleCapabilities) Option
 func WithDeepSeekChatCompletionsCompat() Option
 func New(options ...Option) *Provider
 
@@ -747,6 +759,8 @@ Default option values:
 
 - `WithBaseURL`: `https://api.openai.com/v1`
 - `WithHTTPClient`: `&http.Client{}`
+- `WithMessageRoleCapabilities`: developer and mid-conversation system are
+  enabled for OpenAI by default; override for less-capable compatible endpoints.
 - `WithDeepSeekChatCompletionsCompat`: disabled. When enabled, `WithReasoningEffort("none")` sends `thinking:{type:"disabled"}` and omits `reasoning_effort`.
 
 Discovery endpoints:
@@ -791,6 +805,8 @@ Discovery endpoints:
 
 Responses-specific behavior:
 
+- `GenerateParams.System` maps to top-level `instructions`
+- system and developer message roles are preserved natively
 - assistant reasoning maps to `GenerateResult.Reasoning`
 - URL citation annotations map to `GenerateResult.Sources`
 - function-call outputs map to tool-call and tool-result structures
@@ -873,6 +889,7 @@ func WithBaseURL(baseURL string) Option
 func WithHTTPClient(client *http.Client) Option
 func WithHeaders(headers map[string]string) Option
 func WithThinking(cfg ThinkingConfig) Option
+func WithMidConversationSystemMessages(enabled bool) Option
 func New(options ...Option) *Provider
 
 func (p *Provider) Name() string
@@ -889,6 +906,8 @@ Default option values:
 - `WithBaseURL`: `https://api.anthropic.com/v1`
 - default API version header: `2023-06-01`
 - `WithHTTPClient`: `&http.Client{}`
+- `WithMidConversationSystemMessages`: disabled; enable only for models that
+  document native interleaved system-message support.
 
 Thinking config notes:
 

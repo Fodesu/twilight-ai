@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/memohai/twilight-ai/internal/messagecompat"
 	"github.com/memohai/twilight-ai/internal/utils"
 	"github.com/memohai/twilight-ai/sdk"
 )
@@ -158,7 +159,10 @@ func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*
 		return nil, fmt.Errorf("google: model is required")
 	}
 
-	req := p.buildRequest(&params)
+	req, err := p.buildRequest(&params)
+	if err != nil {
+		return nil, fmt.Errorf("google: build request: %w", err)
+	}
 	modelPath := getModelPath(params.Model.ID)
 
 	resp, err := utils.FetchJSON[generateResponse](ctx, p.httpClient, &utils.RequestOptions{
@@ -181,8 +185,12 @@ func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*
 
 // ---------- buildRequest ----------
 
-func (p *Provider) buildRequest(params *sdk.GenerateParams) *generateRequest {
-	contents, sysInstruction := convertMessages(params)
+func (p *Provider) buildRequest(params *sdk.GenerateParams) (*generateRequest, error) {
+	messages, err := messagecompat.Normalize(params.Messages, sdk.MessageRoleCapabilities{})
+	if err != nil {
+		return nil, err
+	}
+	contents, sysInstruction := convertMessages(params.System, messages)
 
 	req := &generateRequest{
 		Contents:          contents,
@@ -217,22 +225,29 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) *generateRequest {
 		req.ToolConfig = toolCfg
 	}
 
-	return req
+	return req, nil
 }
 
 // ---------- message conversion ----------
 
-func convertMessages(params *sdk.GenerateParams) ([]content, *content) { //nolint:gocritic // unnamed results are clear in context
-	contents := make([]content, 0, len(params.Messages))
+func convertMessages(systemPrompt string, messages []sdk.Message) ([]content, *content) { //nolint:gocritic // unnamed results are clear in context
+	contents := make([]content, 0, len(messages))
 	var sysInstruction *content
 
-	if params.System != "" {
+	if systemPrompt != "" {
 		sysInstruction = &content{
-			Parts: []contentPart{{Text: params.System}},
+			Parts: []contentPart{{Text: systemPrompt}},
 		}
 	}
 
-	for _, msg := range params.Messages {
+	for _, msg := range messages {
+		if msg.Role == sdk.MessageRoleSystem {
+			if sysInstruction == nil {
+				sysInstruction = &content{}
+			}
+			sysInstruction.Parts = append(sysInstruction.Parts, contentPart{Text: messagecompat.InstructionText(msg)})
+			continue
+		}
 		contents = append(contents, convertMessage(msg)...)
 	}
 	return contents, sysInstruction
@@ -454,7 +469,10 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 		return nil, fmt.Errorf("google: model is required")
 	}
 
-	req := p.buildRequest(&params)
+	req, err := p.buildRequest(&params)
+	if err != nil {
+		return nil, fmt.Errorf("google: build request: %w", err)
+	}
 	modelPath := getModelPath(params.Model.ID)
 
 	ch := make(chan sdk.StreamPart, 64)

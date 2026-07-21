@@ -6,6 +6,7 @@ import "encoding/json"
 
 type responsesRequest struct {
 	Model           string              `json:"model"`
+	Instructions    string              `json:"instructions,omitempty"`
 	Input           []json.RawMessage   `json:"input"`
 	Temperature     *float64            `json:"temperature,omitempty"`
 	TopP            *float64            `json:"top_p,omitempty"`

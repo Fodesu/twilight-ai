@@ -142,17 +142,32 @@ type Message struct {
 | `MessageRoleAssistant` | `"assistant"` |
 | `MessageRoleSystem` | `"system"` |
 | `MessageRoleTool` | `"tool"` |
+| `MessageRoleDeveloper` | `"developer"` |
 
 #### Message Constructors
 
 ```go
 func UserMessage(text string, extra ...MessagePart) Message
 func SystemMessage(text string) Message
+func DeveloperMessage(text string) Message
 func AssistantMessage(text string) Message
 func ToolMessage(results ...ToolResultPart) Message
 ```
 
 `UserMessage` accepts optional extra parts (e.g. `ImagePart`) after the text.
+
+`GenerateParams.System` is the stable root instruction placed before the
+conversation. Use `SystemMessage` when an instruction belongs at a specific
+point in the message timeline. Providers preserve native instruction roles
+when supported; otherwise developer messages become user messages and
+mid-conversation system messages become XML-escaped `<system>` user messages.
+
+```go
+type MessageRoleCapabilities struct {
+    Developer             bool
+    MidConversationSystem bool
+}
+```
 
 #### MessagePart Interface
 
@@ -1217,9 +1232,14 @@ type Option func(*Provider)
 func WithAPIKey(apiKey string) Option
 func WithBaseURL(baseURL string) Option
 func WithHTTPClient(client *http.Client) Option
+func WithMessageRoleCapabilities(capabilities sdk.MessageRoleCapabilities) Option
 func WithDeepSeekChatCompletionsCompat() Option
 func WithMiniMaxChatCompletionsCompat() Option
 ```
+
+OpenAI's defaults enable native developer and mid-conversation system roles.
+Use `WithMessageRoleCapabilities` to disable either role for a compatible
+endpoint that does not implement the full OpenAI message-role contract.
 
 `WithDeepSeekChatCompletionsCompat` keeps the generic `/chat/completions`
 transport while adapting DeepSeek's thinking toggle: `WithReasoningEffort("none")`
@@ -1300,7 +1320,9 @@ func (p *Provider) DoStream(ctx, params) (*sdk.StreamResult, error)
 
 | SDK Message | Responses Input Type |
 |-------------|---------------------|
+| `GenerateParams.System` | Top-level `instructions` |
 | System message | `{ "type": "message", "role": "system" }` |
+| Developer message | `{ "type": "message", "role": "developer" }` |
 | User message (text) | `{ "type": "message", "role": "user" }` |
 | User message (image) | Content part with `{ "type": "input_image" }` |
 | Assistant message | `{ "type": "message", "role": "assistant" }` |

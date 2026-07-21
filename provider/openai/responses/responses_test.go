@@ -974,24 +974,16 @@ func TestResponsesDoStream_ErrorEvent(t *testing.T) {
 func TestResponsesInputConversion_SystemMessage(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Input []json.RawMessage `json:"input"`
+			Instructions string            `json:"instructions"`
+			Input        []json.RawMessage `json:"input"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 
-		if len(body.Input) < 2 {
-			t.Fatalf("expected at least 2 input items, got %d", len(body.Input))
+		if body.Instructions != "Be helpful" {
+			t.Fatalf("instructions: got %q", body.Instructions)
 		}
-
-		var sys struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		}
-		json.Unmarshal(body.Input[0], &sys)
-		if sys.Role != "system" {
-			t.Errorf("system role: got %q", sys.Role)
-		}
-		if sys.Content != "Be helpful" {
-			t.Errorf("system content: got %q", sys.Content)
+		if len(body.Input) != 1 {
+			t.Fatalf("expected 1 input item, got %d", len(body.Input))
 		}
 
 		var user struct {
@@ -1001,7 +993,7 @@ func TestResponsesInputConversion_SystemMessage(t *testing.T) {
 				Text string `json:"text"`
 			} `json:"content"`
 		}
-		json.Unmarshal(body.Input[1], &user)
+		json.Unmarshal(body.Input[0], &user)
 		if user.Role != "user" {
 			t.Errorf("user role: got %q", user.Role)
 		}

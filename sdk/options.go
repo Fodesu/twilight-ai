@@ -31,6 +31,9 @@ func WithMessages(messages []Message) GenerateOption {
 	return func(c *generateConfig) { c.Params.Messages = messages }
 }
 
+// WithSystem sets the stable root instruction placed before the conversation.
+// Use SystemMessage inside WithMessages for an instruction at a specific point
+// in the message timeline.
 func WithSystem(text string) GenerateOption {
 	return func(c *generateConfig) { c.Params.System = text }
 }
