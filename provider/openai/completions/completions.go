@@ -278,6 +278,7 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) (*chatRequest, error
 		PresencePenalty:     params.PresencePenalty,
 		Seed:                params.Seed,
 		ReasoningEffort:     normalizeReasoningEffort(params.ReasoningEffort),
+		PromptCacheKey:      params.PromptCacheKey,
 	}
 	if len(params.StopSequences) > 0 {
 		req.Stop = params.StopSequences
