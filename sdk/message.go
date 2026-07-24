@@ -2,6 +2,7 @@ package sdk
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -12,7 +13,32 @@ const (
 	MessageRoleAssistant MessageRole = "assistant"
 	MessageRoleSystem    MessageRole = "system"
 	MessageRoleTool      MessageRole = "tool"
+	MessageRoleDeveloper MessageRole = "developer"
 )
+
+var (
+	ErrInvalidMessageRole            = errors.New("invalid message role")
+	ErrInvalidInstructionContent     = errors.New("system and developer messages only support text content")
+	ErrInstructionInsideToolExchange = errors.New("system and developer messages cannot interrupt a tool exchange")
+)
+
+// Valid reports whether the role is one of the SDK's supported semantic roles.
+func (r MessageRole) Valid() bool {
+	switch r {
+	case MessageRoleUser, MessageRoleAssistant, MessageRoleSystem, MessageRoleTool, MessageRoleDeveloper:
+		return true
+	default:
+		return false
+	}
+}
+
+// MessageRoleCapabilities describes which instruction roles a provider can
+// serialize without fallback. Providers that do not support a capability map
+// the corresponding instruction to a user message at the wire boundary.
+type MessageRoleCapabilities struct {
+	Developer             bool
+	MidConversationSystem bool
+}
 
 type MessagePartType string
 
@@ -123,6 +149,11 @@ func SystemMessage(text string) Message {
 	return Message{Role: MessageRoleSystem, Content: []MessagePart{TextPart{Text: text}}}
 }
 
+// DeveloperMessage creates a developer message with a single text part.
+func DeveloperMessage(text string) Message {
+	return Message{Role: MessageRoleDeveloper, Content: []MessagePart{TextPart{Text: text}}}
+}
+
 // AssistantMessage creates an assistant message with a single text part.
 func AssistantMessage(text string) Message {
 	return Message{Role: MessageRoleAssistant, Content: []MessagePart{TextPart{Text: text}}}
@@ -140,6 +171,10 @@ func ToolMessage(results ...ToolResultPart) Message {
 // --- JSON ---
 
 func (m Message) MarshalJSON() ([]byte, error) {
+	if !m.Role.Valid() {
+		return nil, fmt.Errorf("%w: %q", ErrInvalidMessageRole, m.Role)
+	}
+
 	// Single TextPart with no metadata and no cache control → emit content as a plain string.
 	var content any
 	if len(m.Content) == 1 {
@@ -179,6 +214,9 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
+	}
+	if !raw.Role.Valid() {
+		return fmt.Errorf("%w: %q", ErrInvalidMessageRole, raw.Role)
 	}
 	m.Role = raw.Role
 	m.Usage = raw.Usage

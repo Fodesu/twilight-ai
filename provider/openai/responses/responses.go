@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/memohai/twilight-ai/internal/messagecompat"
 	"github.com/memohai/twilight-ai/internal/utils"
 	openaiutil "github.com/memohai/twilight-ai/provider/openai"
 	"github.com/memohai/twilight-ai/sdk"
@@ -74,11 +75,11 @@ func (p *Provider) Name() string { return "openai-responses" }
 
 func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 	resp, err := utils.FetchJSON[modelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:   http.MethodGet,
-		BaseURL:  p.baseURL,
-		Path:     "/models",
-		Headers:  p.authHeaders(),
-		Prepare:  p.prepareRequest,
+		Method:  http.MethodGet,
+		BaseURL: p.baseURL,
+		Path:    "/models",
+		Headers: p.authHeaders(),
+		Prepare: p.prepareRequest,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("openai-responses: list models request failed: %w", err)
@@ -97,12 +98,12 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error) {
 
 func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 	_, err := utils.FetchJSON[modelsListResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:   http.MethodGet,
-		BaseURL:  p.baseURL,
-		Path:     "/models",
-		Query:    map[string]string{"limit": "1"},
-		Headers:  p.authHeaders(),
-		Prepare:  p.prepareRequest,
+		Method:  http.MethodGet,
+		BaseURL: p.baseURL,
+		Path:    "/models",
+		Query:   map[string]string{"limit": "1"},
+		Headers: p.authHeaders(),
+		Prepare: p.prepareRequest,
 	})
 	if err != nil {
 		return classifyError(err)
@@ -112,11 +113,11 @@ func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {
 	_, err := utils.FetchJSON[modelObject](ctx, p.httpClient, &utils.RequestOptions{
-		Method:   http.MethodGet,
-		BaseURL:  p.baseURL,
-		Path:     "/models/" + modelID,
-		Headers:  p.authHeaders(),
-		Prepare:  p.prepareRequest,
+		Method:  http.MethodGet,
+		BaseURL: p.baseURL,
+		Path:    "/models/" + modelID,
+		Headers: p.authHeaders(),
+		Prepare: p.prepareRequest,
 	})
 	if err == nil {
 		return &sdk.ModelTestResult{Supported: true, Message: "supported"}, nil
@@ -127,11 +128,11 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 	}
 
 	status, probeErr := utils.ProbeStatus(ctx, p.httpClient, &utils.RequestOptions{
-		Method:   http.MethodPost,
-		BaseURL:  p.baseURL,
-		Path:     "/responses",
-		Headers:  p.authHeaders(),
-		Prepare:  p.prepareRequest,
+		Method:  http.MethodPost,
+		BaseURL: p.baseURL,
+		Path:    "/responses",
+		Headers: p.authHeaders(),
+		Prepare: p.prepareRequest,
 		Body: map[string]any{
 			"model":             modelID,
 			"input":             "hi",
@@ -169,15 +170,18 @@ func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*
 		return nil, fmt.Errorf("openai-responses: model is required")
 	}
 
-	req := p.buildRequest(&params)
+	req, err := p.buildRequest(&params)
+	if err != nil {
+		return nil, fmt.Errorf("openai-responses: build request: %w", err)
+	}
 
 	resp, err := utils.FetchJSON[responsesResponse](ctx, p.httpClient, &utils.RequestOptions{
-		Method:   http.MethodPost,
-		BaseURL:  p.baseURL,
-		Path:     "/responses",
-		Headers:  p.authHeaders(),
-		Prepare:  p.prepareRequest,
-		Body:     req,
+		Method:  http.MethodPost,
+		BaseURL: p.baseURL,
+		Path:    "/responses",
+		Headers: p.authHeaders(),
+		Prepare: p.prepareRequest,
+		Body:    req,
 	})
 	if err != nil {
 		var apiErr *utils.APIError
@@ -196,10 +200,18 @@ func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*
 
 // ---------- buildRequest ----------
 
-func (p *Provider) buildRequest(params *sdk.GenerateParams) *responsesRequest {
+func (p *Provider) buildRequest(params *sdk.GenerateParams) (*responsesRequest, error) {
+	messages, err := messagecompat.Normalize(params.Messages, sdk.MessageRoleCapabilities{
+		Developer:             true,
+		MidConversationSystem: true,
+	})
+	if err != nil {
+		return nil, err
+	}
 	req := &responsesRequest{
 		Model:           params.Model.ID,
-		Input:           convertToResponsesInput(params),
+		Instructions:    params.System,
+		Input:           convertToResponsesInput(messages),
 		Temperature:     params.Temperature,
 		TopP:            params.TopP,
 		MaxOutputTokens: params.MaxTokens,
@@ -231,7 +243,7 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) *responsesRequest {
 		req.Reasoning = &responsesReasoning{Effort: openaiutil.NormalizeReasoningEffort(*params.ReasoningEffort)}
 	}
 
-	return req
+	return req, nil
 }
 
 func convertResponsesTools(tools []sdk.Tool) []responsesTool {
@@ -249,17 +261,10 @@ func convertResponsesTools(tools []sdk.Tool) []responsesTool {
 
 // ---------- input conversion ----------
 
-func convertToResponsesInput(params *sdk.GenerateParams) []json.RawMessage {
-	var items []json.RawMessage
+func convertToResponsesInput(messages []sdk.Message) []json.RawMessage {
+	items := make([]json.RawMessage, 0, len(messages))
 
-	if params.System != "" {
-		items = appendRaw(items, responsesSystemMessage{
-			Role:    "system",
-			Content: params.System,
-		})
-	}
-
-	for _, msg := range params.Messages {
+	for _, msg := range messages {
 		items = append(items, convertResponsesMessage(msg)...)
 	}
 	return items
@@ -270,6 +275,12 @@ func convertResponsesMessage(msg sdk.Message) []json.RawMessage {
 	case sdk.MessageRoleSystem:
 		return []json.RawMessage{marshalRaw(responsesSystemMessage{
 			Role:    "system",
+			Content: textFromParts(msg.Content),
+		})}
+
+	case sdk.MessageRoleDeveloper:
+		return []json.RawMessage{marshalRaw(responsesSystemMessage{
+			Role:    "developer",
 			Content: textFromParts(msg.Content),
 		})}
 
@@ -470,7 +481,10 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 		return nil, fmt.Errorf("openai-responses: model is required")
 	}
 
-	req := p.buildRequest(&params)
+	req, err := p.buildRequest(&params)
+	if err != nil {
+		return nil, fmt.Errorf("openai-responses: build request: %w", err)
+	}
 	req.Stream = true
 
 	ch := make(chan sdk.StreamPart, 64)
@@ -521,12 +535,12 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 		}
 
 		err := utils.FetchSSE(ctx, p.httpClient, &utils.RequestOptions{
-			Method:   http.MethodPost,
-			BaseURL:  p.baseURL,
-			Path:     "/responses",
-			Headers:  p.authHeaders(),
-			Prepare:  p.prepareRequest,
-			Body:     req,
+			Method:  http.MethodPost,
+			BaseURL: p.baseURL,
+			Path:    "/responses",
+			Headers: p.authHeaders(),
+			Prepare: p.prepareRequest,
+			Body:    req,
 		}, func(ev *utils.SSEEvent) error {
 			eventType := ev.Event
 			if eventType == "" {

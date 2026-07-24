@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/memohai/twilight-ai/internal/messagecompat"
 	"github.com/memohai/twilight-ai/internal/utils"
 	"github.com/memohai/twilight-ai/sdk"
 )
@@ -91,11 +92,14 @@ func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 }
 
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {
-	req := p.buildRequest(&sdk.GenerateParams{
+	req, err := p.buildRequest(&sdk.GenerateParams{
 		Model:    p.ChatModel(modelID),
 		System:   "You are a helpful AI assistant.",
 		Messages: []sdk.Message{sdk.UserMessage("ping")},
 	})
+	if err != nil {
+		return nil, fmt.Errorf("openai-codex: build probe request: %w", err)
+	}
 	req.Stream = false
 
 	status, err := utils.ProbeStatus(ctx, p.httpClient, &utils.RequestOptions{
@@ -136,7 +140,10 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 		return nil, fmt.Errorf("openai-codex: model is required")
 	}
 
-	req := p.buildRequest(&params)
+	req, err := p.buildRequest(&params)
+	if err != nil {
+		return nil, fmt.Errorf("openai-codex: build request: %w", err)
+	}
 	req.Stream = true
 
 	ch := make(chan sdk.StreamPart, 64)
@@ -359,8 +366,12 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 	return &sdk.StreamResult{Stream: ch}, nil
 }
 
-func (p *Provider) buildRequest(params *sdk.GenerateParams) *codexRequest {
-	instructions, input := convertToCodexInput(params)
+func (p *Provider) buildRequest(params *sdk.GenerateParams) (*codexRequest, error) {
+	messages, err := messagecompat.Normalize(params.Messages, sdk.MessageRoleCapabilities{})
+	if err != nil {
+		return nil, err
+	}
+	instructions, input := convertToCodexInput(params.System, messages)
 	req := &codexRequest{
 		Model:        params.Model.ID,
 		Instructions: instructions,
@@ -391,7 +402,7 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) *codexRequest {
 		// The Codex endpoint accepts max even though generic OpenAI endpoints do not.
 		req.Reasoning = &codexReasoning{Effort: *params.ReasoningEffort}
 	}
-	return req
+	return req, nil
 }
 
 func convertCodexTools(tools []sdk.Tool) []codexTool {
@@ -407,18 +418,18 @@ func convertCodexTools(tools []sdk.Tool) []codexTool {
 	return out
 }
 
-func convertToCodexInput(params *sdk.GenerateParams) (string, []json.RawMessage) {
+func convertToCodexInput(systemPrompt string, messages []sdk.Message) (string, []json.RawMessage) {
 	var (
 		instructions []string
 		items        []json.RawMessage
 	)
 
-	if params.System != "" {
-		instructions = append(instructions, params.System)
+	if systemPrompt != "" {
+		instructions = append(instructions, systemPrompt)
 	}
-	for _, msg := range params.Messages {
+	for _, msg := range messages {
 		if msg.Role == sdk.MessageRoleSystem {
-			instructions = append(instructions, textFromParts(msg.Content))
+			instructions = append(instructions, messagecompat.InstructionText(msg))
 			continue
 		}
 		items = append(items, convertCodexMessage(msg)...)
@@ -591,16 +602,6 @@ func marshalRaw(v any) json.RawMessage {
 
 func appendRaw(dst []json.RawMessage, v any) []json.RawMessage {
 	return append(dst, marshalRaw(v))
-}
-
-func textFromParts(parts []sdk.MessagePart) string {
-	var out string
-	for _, part := range parts {
-		if tp, ok := part.(sdk.TextPart); ok {
-			out += tp.Text
-		}
-	}
-	return out
 }
 
 func joinNonEmpty(values ...string) string {

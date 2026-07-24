@@ -100,6 +100,7 @@ model := provider.ChatModel("gpt-4o-mini")
 | `WithBedrockCredentials(region, accessKeyID, secretAccessKey, sessionToken)` | disabled | Use AWS SigV4 with static AWS credentials for Bedrock |
 | `WithBaseURL(url)` | `https://api.openai.com/v1` | Base URL for API requests |
 | `WithHTTPClient(client)` | `&http.Client{}` | Custom HTTP client (for proxies, timeouts, etc.) |
+| `WithMessageRoleCapabilities(capabilities)` | developer + mid-system enabled | Override instruction roles for a less-capable OpenAI-compatible endpoint |
 | `WithDeepSeekChatCompletionsCompat()` | disabled | Map `WithReasoningEffort("none")` to DeepSeek's thinking disable toggle |
 | `WithMiniMaxChatCompletionsCompat()` | disabled | Send `reasoning_split: true` and map reasoning effort to MiniMax's thinking toggle |
 
@@ -250,6 +251,10 @@ provider := responses.New(
 )
 model := provider.ChatModel("gpt-4o-mini")
 ```
+
+`GenerateParams.System` is sent through the Responses API's top-level
+`instructions` field. System and developer messages inside `Messages` retain
+their native roles and positions.
 
 ### Options
 
@@ -457,6 +462,7 @@ model := provider.ChatModel(copilot.AutoModel)
 | `WithAPIKey(token)` | `""` | Alias for `WithGitHubToken` for migration convenience |
 | `WithBaseURL(url)` | `https://api.githubcopilot.com` | Base URL for API requests |
 | `WithHTTPClient(client)` | `&http.Client{}` | Custom HTTP client |
+| `WithMessageRoleCapabilities(capabilities)` | both disabled | Enable native developer or mid-conversation system roles only when the configured Copilot endpoint supports them |
 
 ### Model Catalog
 
@@ -526,6 +532,11 @@ model := provider.ChatModel("claude-sonnet-4-20250514")
 | `WithBaseURL(url)` | `https://api.anthropic.com` | Base URL for API requests |
 | `WithHTTPClient(client)` | `&http.Client{}` | Custom HTTP client |
 | `WithThinking(config)` | `nil` | Enable extended thinking for reasoning |
+| `WithMidConversationSystemMessages(enabled)` | `false` | Preserve interleaved system messages for models that document native support |
+
+By default, developer messages become user messages and mid-conversation
+system messages become XML-escaped `<system>` user messages. Leading system
+messages continue to use Anthropic's top-level `system` field.
 
 ### Extended Thinking
 

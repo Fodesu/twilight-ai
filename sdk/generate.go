@@ -28,7 +28,10 @@ type ResponseFormat struct {
 }
 
 type GenerateParams struct {
-	Model    *Model    `json:"model,omitempty"`
+	Model *Model `json:"model,omitempty"`
+	// System is the stable root instruction placed before the conversation.
+	// Use SystemMessage when an instruction belongs at a specific point in the
+	// message timeline.
 	System   string    `json:"system,omitempty"`
 	Messages []Message `json:"messages,omitempty"`
 

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/memohai/twilight-ai/internal/messagecompat"
 	"github.com/memohai/twilight-ai/internal/utils"
 	"github.com/memohai/twilight-ai/sdk"
 )
@@ -38,12 +39,13 @@ type ThinkingConfig struct {
 }
 
 type Provider struct {
-	apiKey     string
-	authToken  string
-	baseURL    string
-	httpClient *http.Client
-	headers    map[string]string
-	thinking   *ThinkingConfig
+	apiKey                        string
+	authToken                     string
+	baseURL                       string
+	httpClient                    *http.Client
+	headers                       map[string]string
+	thinking                      *ThinkingConfig
+	supportsMidConversationSystem bool
 }
 
 type Option func(*Provider)
@@ -85,6 +87,15 @@ func WithHeaders(headers map[string]string) Option {
 func WithThinking(cfg ThinkingConfig) Option {
 	return func(p *Provider) {
 		p.thinking = &cfg
+	}
+}
+
+// WithMidConversationSystemMessages enables native system messages inside the
+// Anthropic message timeline. Keep this disabled unless the selected model is
+// documented to support interleaved system messages.
+func WithMidConversationSystemMessages(enabled bool) Option {
+	return func(p *Provider) {
+		p.supportsMidConversationSystem = enabled
 	}
 }
 
@@ -203,7 +214,10 @@ func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*
 		return nil, fmt.Errorf("anthropic: model is required")
 	}
 
-	req := p.buildRequest(&params)
+	req, err := p.buildRequest(&params)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: build request: %w", err)
+	}
 
 	resp, err := utils.FetchJSON[messagesResponse](ctx, p.httpClient, &utils.RequestOptions{
 		Method:  http.MethodPost,
@@ -225,8 +239,14 @@ func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*
 
 // ---------- buildRequest ----------
 
-func (p *Provider) buildRequest(params *sdk.GenerateParams) *messagesRequest {
-	system, messages := convertMessages(params)
+func (p *Provider) buildRequest(params *sdk.GenerateParams) (*messagesRequest, error) {
+	normalized, err := messagecompat.Normalize(params.Messages, sdk.MessageRoleCapabilities{
+		MidConversationSystem: p.supportsMidConversationSystem,
+	})
+	if err != nil {
+		return nil, err
+	}
+	system, messages := convertMessages(params.System, normalized)
 
 	req := &messagesRequest{
 		Model:       params.Model.ID,
@@ -262,7 +282,7 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) *messagesRequest {
 		}
 	}
 
-	return req
+	return req, nil
 }
 
 func resolveMaxTokens(params *sdk.GenerateParams, thinking *ThinkingConfig) *int {
@@ -353,41 +373,58 @@ func convertToolChoice(choice any) *anthropicToolChoice {
 // block without cache_control. To attach cache_control to a system prompt,
 // pass it as a MessageRoleSystem message with a TextPart that has CacheControl
 // set instead of using the System field.
-func convertMessages(params *sdk.GenerateParams) ([]contentBlock, []anthropicMessage) {
+func convertMessages(systemPrompt string, messages []sdk.Message) ([]contentBlock, []anthropicMessage) {
 	var system []contentBlock
 	var out []anthropicMessage
+	conversationStarted := false
 
-	if params.System != "" {
-		system = append(system, contentBlock{Type: blockTypeText, Text: params.System})
+	if systemPrompt != "" {
+		system = append(system, contentBlock{Type: blockTypeText, Text: systemPrompt})
 	}
 
-	for _, msg := range params.Messages {
+	for _, msg := range messages {
 		switch msg.Role {
 		case sdk.MessageRoleSystem:
-			for _, part := range msg.Content {
-				if tp, ok := part.(sdk.TextPart); ok {
-					block := contentBlock{Type: blockTypeText, Text: tp.Text}
-					if tp.CacheControl != nil {
-						block.CacheControl = &cacheControl{Type: tp.CacheControl.Type, TTL: tp.CacheControl.TTL}
-					}
-					system = append(system, block)
-				}
+			blocks := convertSystemContent(msg.Content)
+			if conversationStarted {
+				out = append(out, anthropicMessage{Role: "system", Content: blocks})
+			} else {
+				system = append(system, blocks...)
 			}
 
 		case sdk.MessageRoleUser:
+			conversationStarted = true
 			blocks := convertUserContent(msg.Content)
 			out = appendUserBlocks(out, blocks)
 
 		case sdk.MessageRoleAssistant:
+			conversationStarted = true
 			out = append(out, convertAssistantMessage(msg))
 
 		case sdk.MessageRoleTool:
+			conversationStarted = true
 			blocks := convertToolResults(msg.Content)
 			out = appendUserBlocks(out, blocks)
 		}
 	}
 
 	return system, out
+}
+
+func convertSystemContent(parts []sdk.MessagePart) []contentBlock {
+	blocks := make([]contentBlock, 0, len(parts))
+	for _, part := range parts {
+		tp, ok := part.(sdk.TextPart)
+		if !ok {
+			continue
+		}
+		block := contentBlock{Type: blockTypeText, Text: tp.Text}
+		if tp.CacheControl != nil {
+			block.CacheControl = &cacheControl{Type: tp.CacheControl.Type, TTL: tp.CacheControl.TTL}
+		}
+		blocks = append(blocks, block)
+	}
+	return blocks
 }
 
 // appendUserBlocks appends content blocks to the last user message if it exists,
@@ -597,7 +634,10 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 		return nil, fmt.Errorf("anthropic: model is required")
 	}
 
-	req := p.buildRequest(&params)
+	req, err := p.buildRequest(&params)
+	if err != nil {
+		return nil, fmt.Errorf("anthropic: build request: %w", err)
+	}
 	req.Stream = true
 
 	ch := make(chan sdk.StreamPart, 64)

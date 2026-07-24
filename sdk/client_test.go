@@ -463,6 +463,57 @@ func TestClient_GenerateTextResult_PrepareStep(t *testing.T) {
 	}
 }
 
+func TestClient_GenerateTextResult_PreservesDeveloperRoleAcrossToolSteps(t *testing.T) {
+	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+		if call == 1 {
+			if len(params.Messages) != 2 || params.Messages[0].Role != sdk.MessageRoleDeveloper {
+				t.Fatalf("first step messages: %+v", params.Messages)
+			}
+			return &sdk.GenerateResult{
+				FinishReason: sdk.FinishReasonToolCalls,
+				ToolCalls: []sdk.ToolCall{{
+					ToolCallID: "c1", ToolName: "fetch", Input: nil,
+				}},
+			}, nil
+		}
+
+		wantRoles := []sdk.MessageRole{
+			sdk.MessageRoleDeveloper,
+			sdk.MessageRoleUser,
+			sdk.MessageRoleAssistant,
+			sdk.MessageRoleTool,
+		}
+		if len(params.Messages) != len(wantRoles) {
+			t.Fatalf("second step message count: got %d, want %d", len(params.Messages), len(wantRoles))
+		}
+		for i, want := range wantRoles {
+			if params.Messages[i].Role != want {
+				t.Fatalf("second step message %d role: got %q, want %q", i, params.Messages[i].Role, want)
+			}
+		}
+		return &sdk.GenerateResult{Text: "ok", FinishReason: sdk.FinishReasonStop}, nil
+	}}
+
+	_, err := sdk.GenerateTextResult(context.Background(),
+		sdk.WithModel(mockModel(mp)),
+		sdk.WithMessages([]sdk.Message{
+			sdk.DeveloperMessage("application policy"),
+			sdk.UserMessage("go"),
+		}),
+		sdk.WithTools([]sdk.Tool{{
+			Name:       "fetch",
+			Parameters: &jsonschema.Schema{Type: "object"},
+			Execute: func(ctx *sdk.ToolExecContext, input any) (any, error) {
+				return "data", nil
+			},
+		}}),
+		sdk.WithMaxSteps(5),
+	)
+	if err != nil {
+		t.Fatalf("GenerateTextResult: %v", err)
+	}
+}
+
 // ---------- unit tests: approval flow ----------
 
 func TestClient_GenerateTextResult_ApprovalApproved(t *testing.T) {
