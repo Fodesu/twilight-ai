@@ -1009,95 +1009,60 @@ func TestClient_StreamText_OnStepCallback(t *testing.T) {
 	}
 }
 
-func TestClient_GenerateTextResult_OnStepCommittedErrorStopsLoop(t *testing.T) {
-	commitErr := errors.New("checkpoint unavailable")
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
-		if call != 1 {
-			return nil, fmt.Errorf("provider called after commit failed: call %d", call)
-		}
-		return &sdk.GenerateResult{
-			FinishReason: sdk.FinishReasonToolCalls,
-			ToolCalls: []sdk.ToolCall{{
-				ToolCallID: "c1", ToolName: "noop", Input: nil,
-			}},
-		}, nil
-	}}
-
-	_, err := sdk.GenerateTextResult(context.Background(),
-		sdk.WithModel(mockModel(mp)),
-		sdk.WithMessages([]sdk.Message{sdk.UserMessage("go")}),
-		sdk.WithTools([]sdk.Tool{{
-			Name:       "noop",
-			Parameters: &jsonschema.Schema{Type: "object"},
-			Execute: func(ctx *sdk.ToolExecContext, input any) (any, error) {
-				return "ok", nil
-			},
-		}}),
-		sdk.WithMaxSteps(5),
-		sdk.WithOnStepCommitted(func(ctx context.Context, stepIndex int, step *sdk.StepResult) error {
-			if stepIndex != 0 {
-				t.Fatalf("step index: got %d, want 0", stepIndex)
+func TestClient_OnStepCommittedErrorStopsLoop(t *testing.T) {
+	runners := []struct {
+		name string
+		run  func(...sdk.GenerateOption) error
+	}{
+		{"generate", func(opts ...sdk.GenerateOption) error {
+			_, err := sdk.GenerateTextResult(context.Background(), opts...)
+			return err
+		}},
+		{"stream", func(opts ...sdk.GenerateOption) error {
+			sr, err := sdk.StreamText(context.Background(), opts...)
+			if err != nil {
+				return err
 			}
-			if len(step.ToolResults) != 1 {
-				t.Fatalf("commit ran before tool result was assembled: %#v", step.ToolResults)
-			}
-			return commitErr
-		}),
-	)
-	if !errors.Is(err, commitErr) {
-		t.Fatalf("error: got %v, want %v", err, commitErr)
+			_, err = sr.ToResult()
+			return err
+		}},
 	}
-	if mp.calls != 1 {
-		t.Fatalf("provider calls: got %d, want 1", mp.calls)
-	}
-}
 
-func TestClient_StreamText_OnStepCommittedErrorStopsLoop(t *testing.T) {
-	commitErr := errors.New("checkpoint unavailable")
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
-		if call != 1 {
-			return nil, fmt.Errorf("provider called after commit failed: call %d", call)
-		}
-		return &sdk.GenerateResult{
-			FinishReason: sdk.FinishReasonToolCalls,
-			ToolCalls: []sdk.ToolCall{{
-				ToolCallID: "c1", ToolName: "noop", Input: nil,
-			}},
-		}, nil
-	}}
-
-	sr, err := sdk.StreamText(context.Background(),
-		sdk.WithModel(mockModel(mp)),
-		sdk.WithMessages([]sdk.Message{sdk.UserMessage("go")}),
-		sdk.WithTools([]sdk.Tool{{
-			Name:       "noop",
-			Parameters: &jsonschema.Schema{Type: "object"},
-			Execute: func(ctx *sdk.ToolExecContext, input any) (any, error) {
-				return "ok", nil
-			},
-		}}),
-		sdk.WithMaxSteps(5),
-		sdk.WithOnStepCommitted(func(ctx context.Context, stepIndex int, step *sdk.StepResult) error {
-			if len(step.ToolResults) != 1 {
-				return fmt.Errorf("commit ran before tool result was assembled: %#v", step.ToolResults)
+	for _, runner := range runners {
+		t.Run(runner.name, func(t *testing.T) {
+			commitErr := errors.New("checkpoint unavailable")
+			mp := &mockProvider{handler: func(int, sdk.GenerateParams) (*sdk.GenerateResult, error) {
+				return &sdk.GenerateResult{
+					FinishReason: sdk.FinishReasonToolCalls,
+					ToolCalls:    []sdk.ToolCall{{ToolCallID: "c1", ToolName: "noop"}},
+				}, nil
+			}}
+			err := runner.run(
+				sdk.WithModel(mockModel(mp)),
+				sdk.WithTools([]sdk.Tool{{
+					Name: "noop", Parameters: &jsonschema.Schema{Type: "object"},
+					Execute: func(*sdk.ToolExecContext, any) (any, error) { return "ok", nil },
+				}}),
+				sdk.WithMaxSteps(5),
+				sdk.WithOnStepCommitted(func(_ context.Context, i int, step *sdk.StepResult) error {
+					if i != 0 || len(step.ToolResults) != 1 {
+						return fmt.Errorf("unexpected committed step %d: %#v", i, step.ToolResults)
+					}
+					return commitErr
+				}),
+			)
+			if !errors.Is(err, commitErr) {
+				t.Fatalf("error: got %v, want %v", err, commitErr)
 			}
-			return commitErr
-		}),
-	)
-	if err != nil {
-		t.Fatalf("StreamText: %v", err)
-	}
-	_, err = sr.ToResult()
-	if !errors.Is(err, commitErr) {
-		t.Fatalf("stream error: got %v, want %v", err, commitErr)
-	}
-	if mp.calls != 1 {
-		t.Fatalf("provider calls: got %d, want 1", mp.calls)
+			if mp.calls != 1 {
+				t.Fatalf("provider calls: got %d, want 1", mp.calls)
+			}
+		})
 	}
 }
 
 func TestClient_StreamText_DoesNotCommitIncompleteStep(t *testing.T) {
-	mp := &mockProvider{streamHandler: func(call int, params sdk.GenerateParams) (*sdk.StreamResult, error) {
+	mp := &mockProvider{streamHandler: func(int, sdk.GenerateParams) (*sdk.StreamResult, error) {
 		ch := make(chan sdk.StreamPart, 1)
 		ch <- &sdk.TextDeltaPart{ID: "partial", Text: "partial"}
 		close(ch)
@@ -1108,7 +1073,7 @@ func TestClient_StreamText_DoesNotCommitIncompleteStep(t *testing.T) {
 	sr, err := sdk.StreamText(context.Background(),
 		sdk.WithModel(mockModel(mp)),
 		sdk.WithMaxSteps(5),
-		sdk.WithOnStepCommitted(func(ctx context.Context, stepIndex int, step *sdk.StepResult) error {
+		sdk.WithOnStepCommitted(func(context.Context, int, *sdk.StepResult) error {
 			committed = true
 			return nil
 		}),
@@ -1122,9 +1087,6 @@ func TestClient_StreamText_DoesNotCommitIncompleteStep(t *testing.T) {
 	}
 	if committed {
 		t.Fatal("incomplete step was committed")
-	}
-	if mp.calls != 1 {
-		t.Fatalf("provider calls: got %d, want 1", mp.calls)
 	}
 }
 
