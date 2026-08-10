@@ -11,7 +11,6 @@ import (
 
 	"github.com/memohai/twilight-ai/internal/messagecompat"
 	"github.com/memohai/twilight-ai/internal/utils"
-	openaiutil "github.com/memohai/twilight-ai/provider/openai"
 	"github.com/memohai/twilight-ai/sdk"
 )
 
@@ -257,7 +256,7 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) (*chatRequest, error
 		FrequencyPenalty:    params.FrequencyPenalty,
 		PresencePenalty:     params.PresencePenalty,
 		Seed:                params.Seed,
-		ReasoningEffort:     normalizeReasoningEffort(params.ReasoningEffort),
+		ReasoningEffort:     params.ReasoningEffort,
 		PromptCacheKey:      params.PromptCacheKey,
 	}
 	if len(params.StopSequences) > 0 {
@@ -277,14 +276,6 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) (*chatRequest, error
 		return nil, err
 	}
 	return req, nil
-}
-
-func normalizeReasoningEffort(effort *string) *string {
-	if effort == nil {
-		return nil
-	}
-	normalized := openaiutil.NormalizeReasoningEffort(*effort)
-	return &normalized
 }
 
 func (p *Provider) applyChatCompletionsCompat(req *chatRequest) error {

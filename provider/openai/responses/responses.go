@@ -11,7 +11,6 @@ import (
 
 	"github.com/memohai/twilight-ai/internal/messagecompat"
 	"github.com/memohai/twilight-ai/internal/utils"
-	openaiutil "github.com/memohai/twilight-ai/provider/openai"
 	"github.com/memohai/twilight-ai/sdk"
 )
 
@@ -242,7 +241,7 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) (*responsesRequest, 
 	}
 
 	if params.ReasoningEffort != nil {
-		req.Reasoning = &responsesReasoning{Effort: openaiutil.NormalizeReasoningEffort(*params.ReasoningEffort)}
+		req.Reasoning = &responsesReasoning{Effort: *params.ReasoningEffort}
 	}
 
 	return req, nil

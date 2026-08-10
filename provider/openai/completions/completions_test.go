@@ -931,7 +931,10 @@ func TestDoGenerate_DeepSeekCompatLeavesOtherReasoningEffortAlone(t *testing.T) 
 	}
 }
 
-func TestDoGenerate_MapsMaxReasoningEffortToXHigh(t *testing.T) {
+// TestDoGenerate_ForwardsMaxReasoningEffortVerbatim pins that the SDK no longer
+// rewrites "max" into "xhigh". Effort is an open enum, so an unsupported tier is
+// the endpoint's 400 to return rather than the SDK's to silently downgrade.
+func TestDoGenerate_ForwardsMaxReasoningEffortVerbatim(t *testing.T) {
 	var body struct {
 		ReasoningEffort *string `json:"reasoning_effort"`
 	}
@@ -962,8 +965,8 @@ func TestDoGenerate_MapsMaxReasoningEffortToXHigh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGenerate: %v", err)
 	}
-	if body.ReasoningEffort == nil || *body.ReasoningEffort != "xhigh" {
-		t.Fatalf("reasoning_effort: got %v, want xhigh", body.ReasoningEffort)
+	if body.ReasoningEffort == nil || *body.ReasoningEffort != "max" {
+		t.Fatalf("reasoning_effort: got %v, want max (forwarded verbatim)", body.ReasoningEffort)
 	}
 }
 
