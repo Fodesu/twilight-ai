@@ -1030,6 +1030,239 @@ func TestProviderName(t *testing.T) {
 	}
 }
 
+// ---------- thinking config tests ----------
+
+// capturedThinkingConfig decodes the generationConfig.thinkingConfig field from
+// the request body, returning nil when the field is absent.
+func capturedThinkingConfig(t *testing.T, r *http.Request) map[string]any {
+	t.Helper()
+	var body struct {
+		GenerationConfig map[string]any `json:"generationConfig"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	if body.GenerationConfig == nil {
+		return nil
+	}
+	tc, _ := body.GenerationConfig["thinkingConfig"].(map[string]any)
+	return tc
+}
+
+func okResponse() map[string]any {
+	return map[string]any{
+		"candidates": []map[string]any{{
+			"content":      map[string]any{"role": "model", "parts": []map[string]any{{"text": "ok"}}},
+			"finishReason": "STOP",
+		}},
+		"usageMetadata": map[string]any{
+			"promptTokenCount": 1, "candidatesTokenCount": 1, "totalTokenCount": 2,
+		},
+	}
+}
+
+func TestDoGenerate_ThinkingConfig(t *testing.T) {
+	budget := 1024
+	budgetDynamic := generativeai.ThinkingBudgetDynamic
+	budgetDisabled := generativeai.ThinkingBudgetDisabled
+	includeTrue := true
+	effortHigh := "high"
+	effortMedium := "medium"
+	effortXHigh := "xhigh"
+	effortBlank := "   "
+
+	tests := []struct {
+		name            string
+		providerOpts    []generativeai.Option
+		reasoningEffort *string
+		// wantAbsent is true when thinkingConfig must not appear in the request.
+		wantAbsent bool
+		// wantBudget is non-nil when thinkingBudget must be present and equal.
+		wantBudget *int
+		// wantLevel is non-empty when thinkingLevel must be present and equal.
+		wantLevel string
+		// wantIncludeThoughts is non-nil when includeThoughts must be present and equal.
+		wantIncludeThoughts *bool
+	}{
+		{
+			name: "WithThinking budget only",
+			providerOpts: []generativeai.Option{
+				generativeai.WithThinking(generativeai.ThinkingConfig{ThinkingBudget: &budget}),
+			},
+			wantBudget: &budget,
+		},
+		{
+			name: "WithThinking dynamic budget constant",
+			providerOpts: []generativeai.Option{
+				generativeai.WithThinking(generativeai.ThinkingConfig{ThinkingBudget: &budgetDynamic}),
+			},
+			wantBudget: &budgetDynamic,
+		},
+		{
+			name: "WithThinking disabled budget constant",
+			providerOpts: []generativeai.Option{
+				generativeai.WithThinking(generativeai.ThinkingConfig{ThinkingBudget: &budgetDisabled}),
+			},
+			wantBudget: &budgetDisabled,
+		},
+		{
+			name: "WithThinking level only",
+			providerOpts: []generativeai.Option{
+				generativeai.WithThinking(generativeai.ThinkingConfig{ThinkingLevel: "high"}),
+			},
+			wantLevel: "HIGH",
+		},
+		{
+			name: "WithThinking with IncludeThoughts",
+			providerOpts: []generativeai.Option{
+				generativeai.WithThinking(generativeai.ThinkingConfig{
+					ThinkingLevel:   "medium",
+					IncludeThoughts: &includeTrue,
+				}),
+			},
+			wantLevel:           "MEDIUM",
+			wantIncludeThoughts: &includeTrue,
+		},
+		{
+			name:            "only ReasoningEffort maps to uppercase thinkingLevel",
+			reasoningEffort: &effortHigh,
+			wantLevel:       "HIGH",
+		},
+		{
+			name:            "ReasoningEffort medium maps to thinkingLevel MEDIUM",
+			reasoningEffort: &effortMedium,
+			wantLevel:       "MEDIUM",
+		},
+		{
+			name: "WithThinking overrides ReasoningEffort (provider option wins)",
+			providerOpts: []generativeai.Option{
+				generativeai.WithThinking(generativeai.ThinkingConfig{ThinkingBudget: &budget}),
+			},
+			reasoningEffort: &effortHigh, // should be ignored
+			wantBudget:      &budget,
+			wantLevel:       "",
+		},
+		{
+			name:       "no thinking config when neither set",
+			wantAbsent: true,
+		},
+		{
+			// An empty WithThinking carries no intent, so it must not suppress
+			// the request-level effort or emit a bare thinkingConfig: {}.
+			name: "empty WithThinking falls through to ReasoningEffort",
+			providerOpts: []generativeai.Option{
+				generativeai.WithThinking(generativeai.ThinkingConfig{}),
+			},
+			reasoningEffort: &effortHigh,
+			wantLevel:       "HIGH",
+		},
+		{
+			name: "empty WithThinking with no effort omits thinkingConfig",
+			providerOpts: []generativeai.Option{
+				generativeai.WithThinking(generativeai.ThinkingConfig{}),
+			},
+			wantAbsent: true,
+		},
+		{
+			// Already-uppercase input must survive unchanged.
+			name: "WithThinking uppercase level passes through",
+			providerOpts: []generativeai.Option{
+				generativeai.WithThinking(generativeai.ThinkingConfig{ThinkingLevel: "LOW"}),
+			},
+			wantLevel: "LOW",
+		},
+		{
+			// Tiers outside Google's enum are upper-cased and sent as-is rather
+			// than being remapped to a supported neighbour; the API returns 400.
+			name:            "unsupported tier is passed through uppercased",
+			reasoningEffort: &effortXHigh,
+			wantLevel:       "XHIGH",
+		},
+		{
+			name:            "whitespace-only effort omits thinkingConfig",
+			reasoningEffort: &effortBlank,
+			wantAbsent:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var capturedTC map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				capturedTC = capturedThinkingConfig(t, r)
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(okResponse())
+			}))
+			defer srv.Close()
+
+			opts := append([]generativeai.Option{
+				generativeai.WithAPIKey("k"),
+				generativeai.WithBaseURL(srv.URL),
+			}, tt.providerOpts...)
+			p := generativeai.New(opts...)
+
+			params := sdk.GenerateParams{
+				Model:           p.ChatModel("gemini-test"),
+				Messages:        []sdk.Message{sdk.UserMessage("hi")},
+				ReasoningEffort: tt.reasoningEffort,
+			}
+			if _, err := p.DoGenerate(context.Background(), params); err != nil {
+				t.Fatalf("DoGenerate: %v", err)
+			}
+
+			if tt.wantAbsent {
+				if capturedTC != nil {
+					t.Errorf("expected thinkingConfig to be absent, got %v", capturedTC)
+				}
+				return
+			}
+
+			if capturedTC == nil {
+				t.Fatal("expected thinkingConfig to be present, got nil")
+			}
+
+			if tt.wantBudget != nil {
+				// JSON numbers decode to float64 by default.
+				got, ok := capturedTC["thinkingBudget"].(float64)
+				if !ok {
+					t.Fatalf("thinkingBudget: got %T %v, want float64", capturedTC["thinkingBudget"], capturedTC["thinkingBudget"])
+				}
+				if int(got) != *tt.wantBudget {
+					t.Errorf("thinkingBudget: got %d, want %d", int(got), *tt.wantBudget)
+				}
+			} else {
+				if _, present := capturedTC["thinkingBudget"]; present {
+					t.Errorf("thinkingBudget: expected absent, got %v", capturedTC["thinkingBudget"])
+				}
+			}
+
+			if tt.wantLevel != "" {
+				if got, _ := capturedTC["thinkingLevel"].(string); got != tt.wantLevel {
+					t.Errorf("thinkingLevel: got %q, want %q", got, tt.wantLevel)
+				}
+			} else {
+				if v, present := capturedTC["thinkingLevel"]; present && v != "" {
+					t.Errorf("thinkingLevel: expected absent or empty, got %v", v)
+				}
+			}
+
+			if tt.wantIncludeThoughts != nil {
+				got, ok := capturedTC["includeThoughts"].(bool)
+				if !ok {
+					t.Fatalf("includeThoughts: got %T %v, want bool", capturedTC["includeThoughts"], capturedTC["includeThoughts"])
+				}
+				if got != *tt.wantIncludeThoughts {
+					t.Errorf("includeThoughts: got %v, want %v", got, *tt.wantIncludeThoughts)
+				}
+			} else {
+				if _, present := capturedTC["includeThoughts"]; present {
+					t.Errorf("includeThoughts: expected absent, got %v", capturedTC["includeThoughts"])
+				}
+			}
+		})
+	}
+}
+
 // ---------- integration tests (real API, skipped without env) ----------
 
 func envOrSkip(t *testing.T, key string) string {

@@ -16,10 +16,60 @@ import (
 
 const defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
 
+// ThinkingBudgetDynamic instructs the model to choose its own thinking budget
+// (thinkingBudget: -1, AUTOMATIC). Supported on 2.5-generation models.
+const ThinkingBudgetDynamic = -1
+
+// ThinkingBudgetDisabled disables thinking (thinkingBudget: 0, DISABLED).
+// Legal on Flash/Lite models; the API rejects it for 2.5 Pro.
+const ThinkingBudgetDisabled = 0
+
+// ThinkingConfig holds provider-level thinking parameters for Google Generative
+// AI models. The caller is responsible for choosing the right fields for the
+// target model generation:
+//   - ThinkingBudget is used by 2.5-generation models (e.g. gemini-2.5-flash).
+//   - ThinkingLevel is used by 3.x-generation models (e.g. gemini-3.1-pro-preview).
+//
+// Both fields are passed through as-is; the SDK does not validate mutual
+// exclusivity or budget ranges — misuse results in a 400 from the API.
+type ThinkingConfig struct {
+	// ThinkingBudget sets the token budget for 2.5-generation models.
+	// Use ThinkingBudgetDynamic (-1) for automatic, ThinkingBudgetDisabled (0) to
+	// disable (only valid on Flash/Lite). Nil means this field is not sent.
+	ThinkingBudget *int
+	// ThinkingLevel sets the effort tier for 3.x-generation models. The wire
+	// format is an uppercase proto enum: "MINIMAL", "LOW", "MEDIUM", "HIGH".
+	// Values are upper-cased before being sent, so "high" and "HIGH" are
+	// equivalent here. Empty means not sent.
+	ThinkingLevel string
+	// IncludeThoughts controls whether thought content is returned. Nil means not
+	// sent. Note that the API only emits thought parts when this is true, so
+	// reasoning stream parts stay empty unless it is explicitly enabled.
+	IncludeThoughts *bool
+}
+
+// isEmpty reports whether the config carries no fields at all. An empty config
+// is treated as "not configured" so it falls through to params.ReasoningEffort
+// rather than sending a bare `thinkingConfig: {}` and swallowing the request's
+// effort.
+func (c *ThinkingConfig) isEmpty() bool {
+	return c.ThinkingBudget == nil && c.ThinkingLevel == "" && c.IncludeThoughts == nil
+}
+
+// normalizeThinkingLevel converts an effort tier to the uppercase form the
+// thinkingLevel proto enum requires, trimming surrounding space. It is a
+// dialect translation and deliberately not a validation: a tier Google does not
+// define (e.g. "xhigh") is upper-cased and sent, surfacing as a 400 from the
+// API rather than being silently downgraded to a supported neighbour.
+func normalizeThinkingLevel(level string) string {
+	return strings.ToUpper(strings.TrimSpace(level))
+}
+
 type Provider struct {
 	apiKey     string
 	baseURL    string
 	httpClient *http.Client
+	thinking   *ThinkingConfig
 }
 
 type Option func(*Provider)
@@ -39,6 +89,16 @@ func WithBaseURL(baseURL string) Option {
 func WithHTTPClient(client *http.Client) Option {
 	return func(p *Provider) {
 		p.httpClient = client
+	}
+}
+
+// WithThinking injects provider-level thinking configuration. When set, it
+// takes precedence over the generic params.ReasoningEffort from a Generate
+// call — the more expressive provider option wins. See ThinkingConfig for
+// field semantics and generation-specific guidance.
+func WithThinking(cfg ThinkingConfig) Option {
+	return func(p *Provider) {
+		p.thinking = &cfg
 	}
 }
 
@@ -217,6 +277,40 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) (*generateRequest, e
 			}
 		}
 	}
+
+	// Thinking configuration: provider-level WithThinking takes precedence over
+	// the generic params.ReasoningEffort. When both are present the provider
+	// option wins — it is more expressive and its intent is unambiguous. An
+	// empty WithThinking carries no intent, so it falls through to
+	// ReasoningEffort instead of suppressing it. When only ReasoningEffort is
+	// set it is treated as a thinkingLevel tier, which is structurally
+	// equivalent (both are named effort tiers). When neither is set
+	// thinkingConfig is omitted entirely (omitempty on generationConfig).
+	//
+	// thinkingLevel is a proto enum and only accepts uppercase members
+	// ("MINIMAL", "LOW", "MEDIUM", "HIGH"), while effort tiers elsewhere in this
+	// SDK are lowercase. Upper-casing here is dialect translation, not
+	// validation: tiers outside Google's enum (e.g. "xhigh") are still passed
+	// through and surface as a 400 rather than being silently remapped.
+	//
+	// No mutual-exclusion check and no budget-range validation are performed;
+	// both would require the SDK to encode knowledge about which model
+	// generation accepts which fields — that is the caller's responsibility.
+	// Illegal combinations surface as 400 errors from the API.
+	switch {
+	case p.thinking != nil && !p.thinking.isEmpty():
+		tc := &thinkingConfig{
+			ThinkingBudget:  p.thinking.ThinkingBudget,
+			ThinkingLevel:   normalizeThinkingLevel(p.thinking.ThinkingLevel),
+			IncludeThoughts: p.thinking.IncludeThoughts,
+		}
+		genCfg.ThinkingConfig = tc
+	case params.ReasoningEffort != nil:
+		if level := normalizeThinkingLevel(*params.ReasoningEffort); level != "" {
+			genCfg.ThinkingConfig = &thinkingConfig{ThinkingLevel: level}
+		}
+	}
+
 	req.GenerationConfig = genCfg
 
 	if len(params.Tools) > 0 {
