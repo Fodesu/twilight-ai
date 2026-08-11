@@ -193,7 +193,11 @@ func TestResponsesDoGenerate_PromptCacheKeyOmittedWhenUnset(t *testing.T) {
 	}
 }
 
-func TestResponsesDoGenerate_MapsMaxReasoningEffortToXHigh(t *testing.T) {
+// TestResponsesDoGenerate_ForwardsMaxReasoningEffortVerbatim pins that the SDK
+// no longer rewrites "max" into "xhigh". Effort is an open enum, so an
+// unsupported tier is the endpoint's 400 to return rather than the SDK's to
+// silently downgrade.
+func TestResponsesDoGenerate_ForwardsMaxReasoningEffortVerbatim(t *testing.T) {
 	var body struct {
 		Reasoning *struct {
 			Effort string `json:"effort"`
@@ -232,8 +236,8 @@ func TestResponsesDoGenerate_MapsMaxReasoningEffortToXHigh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DoGenerate: %v", err)
 	}
-	if body.Reasoning == nil || body.Reasoning.Effort != "xhigh" {
-		t.Fatalf("reasoning.effort: got %#v, want xhigh", body.Reasoning)
+	if body.Reasoning == nil || body.Reasoning.Effort != "max" {
+		t.Fatalf("reasoning.effort: got %#v, want max (forwarded verbatim)", body.Reasoning)
 	}
 }
 

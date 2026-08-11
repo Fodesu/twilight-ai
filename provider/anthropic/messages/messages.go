@@ -33,9 +33,94 @@ const (
 )
 
 // ThinkingConfig controls extended thinking for Anthropic models.
+//
+// This flat shape can express combinations the API rejects, such as
+// {Type: "adaptive", BudgetTokens: 8000}. Prefer the constructor options
+// WithThinkingEnabled, WithThinkingAdaptive and WithThinkingDisabled, which
+// model the same wire object as a union so the illegal combination cannot be
+// built. This type remains fully supported for existing callers.
 type ThinkingConfig struct {
 	Type         string // "enabled", "adaptive", or "disabled"
 	BudgetTokens int    // required when Type is "enabled"
+}
+
+// thinkingConfigUnion mirrors Anthropic's ThinkingConfigParamUnion: exactly one
+// variant is set, and the adaptive variant deliberately has no budget field so
+// adaptive-plus-budget is unrepresentable rather than merely discouraged.
+//
+// A fourth "passthrough" variant carries type strings the SDK does not know
+// about. The SDK executes what a caller declared; it does not validate it, so an
+// unrecognised type reaches the wire untouched and the server decides.
+type thinkingConfigUnion struct {
+	enabled     *thinkingEnabled
+	adaptive    *thinkingAdaptive
+	disabled    *thinkingDisabled
+	passthrough *thinkingPassthrough
+}
+
+// thinkingEnabled is the budget-based mode used by Claude 4.5 and earlier.
+type thinkingEnabled struct {
+	budgetTokens int
+}
+
+// thinkingAdaptive is the mode used by Claude 4.6 and later. It has no budget
+// field: budget_tokens is deprecated on 4.6 and rejected outright by 4.7+, and
+// effort is carried per request through output_config.effort instead.
+type thinkingAdaptive struct{}
+
+// thinkingDisabled turns extended thinking off.
+type thinkingDisabled struct{}
+
+// thinkingPassthrough carries an unrecognised ThinkingConfig from the legacy
+// flat API verbatim. It is unreachable from the union constructors.
+type thinkingPassthrough struct {
+	typ          string
+	budgetTokens int
+}
+
+// active reports whether the union asks for thinking at all. Disabled and unset
+// are both inactive.
+func (t *thinkingConfigUnion) active() bool {
+	if t == nil {
+		return false
+	}
+	return t.enabled != nil || t.adaptive != nil || t.passthrough != nil
+}
+
+// explicitBudget returns the thinking token budget the caller asked for, and
+// whether one was set. Adaptive and disabled never carry a budget.
+func (t *thinkingConfigUnion) explicitBudget() (int, bool) {
+	if t == nil {
+		return 0, false
+	}
+	switch {
+	case t.enabled != nil && t.enabled.budgetTokens > 0:
+		return t.enabled.budgetTokens, true
+	case t.passthrough != nil && t.passthrough.budgetTokens > 0:
+		return t.passthrough.budgetTokens, true
+	default:
+		return 0, false
+	}
+}
+
+// wire renders the union into the request object, or nil when no thinking block
+// should be sent.
+func (t *thinkingConfigUnion) wire() *anthropicThinking {
+	if t == nil {
+		return nil
+	}
+	switch {
+	case t.enabled != nil:
+		return &anthropicThinking{Type: "enabled", BudgetTokens: t.enabled.budgetTokens}
+	case t.adaptive != nil:
+		// No budget field exists on this variant, so none can be sent.
+		return &anthropicThinking{Type: "adaptive"}
+	case t.passthrough != nil:
+		return &anthropicThinking{Type: t.passthrough.typ, BudgetTokens: t.passthrough.budgetTokens}
+	default:
+		// Disabled is expressed by omitting the block entirely.
+		return nil
+	}
 }
 
 type Provider struct {
@@ -44,7 +129,7 @@ type Provider struct {
 	baseURL                       string
 	httpClient                    *http.Client
 	headers                       map[string]string
-	thinking                      *ThinkingConfig
+	thinking                      *thinkingConfigUnion
 	supportsMidConversationSystem bool
 }
 
@@ -83,10 +168,80 @@ func WithHeaders(headers map[string]string) Option {
 	}
 }
 
-// WithThinking enables extended thinking for all requests made by this provider.
+// WithThinking enables extended thinking for all requests made by this provider
+// using the flat ThinkingConfig shape.
+//
+// It is retained for existing callers and produces exactly the same wire output
+// as before. New code should prefer WithThinkingEnabled, WithThinkingAdaptive or
+// WithThinkingDisabled, which cannot express a mode/budget combination the API
+// rejects. A ThinkingConfig with an empty Type configures no thinking at all.
 func WithThinking(cfg ThinkingConfig) Option {
 	return func(p *Provider) {
-		p.thinking = &cfg
+		p.thinking = thinkingFromLegacyConfig(cfg)
+	}
+}
+
+// thinkingFromLegacyConfig lowers the flat ThinkingConfig onto the union.
+// Unrecognised types become a passthrough variant so this conversion never
+// changes what an existing caller puts on the wire.
+func thinkingFromLegacyConfig(cfg ThinkingConfig) *thinkingConfigUnion {
+	switch cfg.Type {
+	case "":
+		return nil
+	case "enabled":
+		return &thinkingConfigUnion{enabled: &thinkingEnabled{budgetTokens: cfg.BudgetTokens}}
+	case "adaptive":
+		// The legacy struct allows a budget here, but adaptive takes none and
+		// the pre-union code never sent one, so it is dropped exactly as before.
+		return &thinkingConfigUnion{adaptive: &thinkingAdaptive{}}
+	case thinkingTypeDisabled:
+		return &thinkingConfigUnion{disabled: &thinkingDisabled{}}
+	default:
+		return &thinkingConfigUnion{passthrough: &thinkingPassthrough{
+			typ:          cfg.Type,
+			budgetTokens: cfg.BudgetTokens,
+		}}
+	}
+}
+
+// WithThinkingEnabled turns on budget-based extended thinking, sending
+// thinking{type:"enabled", budget_tokens:N}.
+//
+// This is the shape accepted by Claude 4.5 and earlier. On those models
+// output_config.effort alone does not turn thinking on, so this option is how a
+// caller enables it. budget_tokens is deprecated on Claude 4.6 and rejected with
+// a 400 by 4.7+; use WithThinkingAdaptive for those. The SDK never infers the
+// model generation, so choosing the right option is the caller's decision.
+//
+// When no explicit MaxTokens is supplied, the budget is added on top of the
+// default answer allowance so thinking does not consume the answer's room.
+func WithThinkingEnabled(budgetTokens int) Option {
+	return func(p *Provider) {
+		p.thinking = &thinkingConfigUnion{enabled: &thinkingEnabled{budgetTokens: budgetTokens}}
+	}
+}
+
+// WithThinkingAdaptive turns on adaptive extended thinking, sending
+// thinking{type:"adaptive"} with no budget.
+//
+// This is the shape used by Claude 4.6 and later, where the depth of thinking is
+// steered per request through output_config.effort (see
+// sdk.GenerateParams.ReasoningEffort) rather than a token budget. There is
+// deliberately no budget parameter: adaptive thinking takes none.
+func WithThinkingAdaptive() Option {
+	return func(p *Provider) {
+		p.thinking = &thinkingConfigUnion{adaptive: &thinkingAdaptive{}}
+	}
+}
+
+// WithThinkingDisabled turns extended thinking off by omitting the thinking
+// block from requests.
+//
+// Note that a ReasoningEffort on the request still sends output_config.effort;
+// this option only controls the thinking block.
+func WithThinkingDisabled() Option {
+	return func(p *Provider) {
+		p.thinking = &thinkingConfigUnion{disabled: &thinkingDisabled{}}
 	}
 }
 
@@ -265,12 +420,7 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) (*messagesRequest, e
 		req.ToolChoice = convertToolChoice(params.ToolChoice)
 	}
 
-	if p.thinking != nil && p.thinking.Type != "" && p.thinking.Type != thinkingTypeDisabled {
-		req.Thinking = &anthropicThinking{
-			Type:         p.thinking.Type,
-			BudgetTokens: p.thinking.BudgetTokens,
-		}
-	}
+	req.Thinking = p.thinking.wire()
 
 	// Reasoning effort is carried via output_config.effort. On modern Claude
 	// models (>= 4.6) this is the supported control; budget_tokens is deprecated
@@ -285,17 +435,24 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) (*messagesRequest, e
 	return req, nil
 }
 
-func resolveMaxTokens(params *sdk.GenerateParams, thinking *ThinkingConfig) *int {
+// resolveMaxTokens derives the output cap for a request.
+//
+// The three outcomes below are behaviour-critical: an explicit thinking budget
+// must be added to the answer allowance, and budget-less reasoning must lift the
+// cap off the low default. Collapsing either case back to defaultMaxTokens
+// silently truncates thinking output rather than failing, so the full matrix is
+// pinned by TestResolveMaxTokens_Matrix.
+func resolveMaxTokens(params *sdk.GenerateParams, thinking *thinkingConfigUnion) *int {
 	if params.MaxTokens != nil {
 		return params.MaxTokens
 	}
 
 	maxTokens := defaultMaxTokens
-	switch {
-	case thinking != nil && thinking.Type != "" && thinking.Type != thinkingTypeDisabled && thinking.BudgetTokens > 0:
+	switch budget, hasBudget := thinking.explicitBudget(); {
+	case hasBudget:
 		// Explicit budget thinking: reserve room for the thinking budget on top
 		// of the answer budget.
-		maxTokens += thinking.BudgetTokens
+		maxTokens += budget
 	case reasoningActive(params, thinking):
 		// Effort-based or adaptive thinking carries no explicit budget, but the
 		// model still needs generous headroom (reasoning + answer). The low 4096
@@ -308,8 +465,8 @@ func resolveMaxTokens(params *sdk.GenerateParams, thinking *ThinkingConfig) *int
 
 // reasoningActive reports whether the request enables reasoning without an
 // explicit token budget (adaptive thinking and/or output_config.effort).
-func reasoningActive(params *sdk.GenerateParams, thinking *ThinkingConfig) bool {
-	if thinking != nil && thinking.Type != "" && thinking.Type != thinkingTypeDisabled {
+func reasoningActive(params *sdk.GenerateParams, thinking *thinkingConfigUnion) bool {
+	if thinking.active() {
 		return true
 	}
 	if params.ReasoningEffort != nil && strings.TrimSpace(*params.ReasoningEffort) != "" {
