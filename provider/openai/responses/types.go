@@ -251,6 +251,15 @@ type responsesCompletedChunk struct {
 	} `json:"response"`
 }
 
+// responsesFailedChunk is sent for event: response.failed.
+type responsesFailedChunk struct {
+	Type     string `json:"type"`
+	Response struct {
+		Error *responsesError `json:"error,omitempty"`
+		Usage *responsesUsage `json:"usage,omitempty"`
+	} `json:"response"`
+}
+
 // responsesErrorChunk is sent for event: error
 type responsesErrorChunk struct {
 	Type  string `json:"type"`
