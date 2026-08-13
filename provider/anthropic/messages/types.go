@@ -57,6 +57,9 @@ type contentBlock struct {
 	Thinking  string `json:"thinking,omitempty"`
 	Signature string `json:"signature,omitempty"`
 
+	// redacted_thinking block: an encrypted payload replayed verbatim.
+	Data string `json:"data,omitempty"`
+
 	// tool_use block
 	ID    string `json:"id,omitempty"`
 	Name  string `json:"name,omitempty"`

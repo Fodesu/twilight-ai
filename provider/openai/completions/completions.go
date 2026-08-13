@@ -398,6 +398,9 @@ func convertAssistantMessage(msg sdk.Message) chatMessage {
 				},
 			})
 		case sdk.ReasoningPart:
+			if p.Format != sdk.ReasoningFormatOpenAIChat {
+				continue
+			}
 			reasoning += p.Text
 			if details := extractMiniMaxReasoningDetails(p.ProviderMetadata); len(details) > 0 {
 				reasoningDetails = details
@@ -484,8 +487,12 @@ func (p *Provider) parseResponse(resp *chatResponse) (*sdk.GenerateResult, error
 		choice := resp.Choices[0]
 		result.Text = choice.Message.Content
 		result.Reasoning = reasoningFromMessage(&choice.Message)
-		if len(choice.Message.ReasoningDetails) > 0 {
-			result.ReasoningProviderMetadata = minimaxReasoningMetadata(choice.Message.ReasoningDetails)
+		if result.Reasoning != "" || len(choice.Message.ReasoningDetails) > 0 {
+			result.ReasoningParts = []sdk.ReasoningPart{{
+				Text:             result.Reasoning,
+				Format:           sdk.ReasoningFormatOpenAIChat,
+				ProviderMetadata: minimaxReasoningMetadata(choice.Message.ReasoningDetails),
+			}}
 		}
 		result.FinishReason = mapFinishReason(choice.FinishReason)
 		result.RawFinishReason = choice.FinishReason

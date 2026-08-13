@@ -1170,7 +1170,7 @@ func TestDoGenerate_AssistantReasoningInRequest(t *testing.T) {
 				Role: sdk.MessageRoleAssistant,
 				Content: []sdk.MessagePart{
 					sdk.TextPart{Text: "The answer"},
-					sdk.ReasoningPart{Text: "I thought about it"},
+					sdk.ReasoningPart{Text: "I thought about it", Format: sdk.ReasoningFormatOpenAIChat},
 				},
 			},
 		},

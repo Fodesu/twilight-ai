@@ -410,17 +410,25 @@ func convertAssistantMessage(msg sdk.Message) content {
 				parts = append(parts, cp)
 			}
 		case sdk.ReasoningPart:
-			if p.Text != "" {
-				thought := true
-				cp := contentPart{
-					Text:    p.Text,
-					Thought: &thought,
-				}
-				if sig := extractGoogleThoughtSignature(p.ProviderMetadata); sig != "" {
-					cp.ThoughtSignature = sig
-				}
-				parts = append(parts, cp)
+			// Only this dialect's parts can be replayed: a signature is bound to
+			// the exact part it arrived on, and foreign reasoning re-sent as
+			// text teaches the model to imitate it in user-visible answers.
+			if p.Format != sdk.ReasoningFormatGoogle {
+				continue
 			}
+			sig := extractGoogleThoughtSignature(p.ProviderMetadata)
+			// A signature may arrive on a part with no text; dropping it would
+			// break the positional context the signature is bound to.
+			if p.Text == "" && sig == "" {
+				continue
+			}
+			thought := true
+			cp := contentPart{
+				Text:             p.Text,
+				Thought:          &thought,
+				ThoughtSignature: sig,
+			}
+			parts = append(parts, cp)
 		case sdk.ToolCallPart:
 			cp := contentPart{
 				FunctionCall: &functionCall{
@@ -529,12 +537,15 @@ func (p *Provider) parseResponse(resp *generateResponse) (*sdk.GenerateResult, e
 			case part.Text != "":
 				isThought := part.Thought != nil && *part.Thought
 				if isThought {
-					result.Reasoning += part.Text
-					if part.ThoughtSignature != "" {
-						result.ReasoningProviderMetadata = map[string]any{
-							"google": map[string]any{"thoughtSignature": part.ThoughtSignature},
-						}
-					}
+					// Each thought part is its own block: a signature is bound
+					// to the exact part it arrived on and cannot be merged with
+					// another part's. Parts without a signature are normal —
+					// Google signs only the first of several parallel calls.
+					result.ReasoningParts = append(result.ReasoningParts, sdk.ReasoningPart{
+						Text:             part.Text,
+						Format:           sdk.ReasoningFormatGoogle,
+						ProviderMetadata: googleThoughtSignatureMetadata(part.ThoughtSignature),
+					})
 				} else {
 					result.Text += part.Text
 				}
@@ -549,6 +560,7 @@ func (p *Provider) parseResponse(resp *generateResponse) (*sdk.GenerateResult, e
 
 	result.FinishReason = mapFinishReason(candidate.FinishReason, hasToolCalls)
 	result.RawFinishReason = candidate.FinishReason
+	result.Reasoning = sdk.ReasoningText(result.ReasoningParts)
 
 	return result, nil
 }
@@ -609,7 +621,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 			}
 			flushed = true
 			if reasoningStartSent {
-				send(&sdk.ReasoningEndPart{ID: currentReasoningID, ProviderMetadata: reasoningEndMeta()})
+				send(&sdk.ReasoningEndPart{ID: currentReasoningID, Format: sdk.ReasoningFormatGoogle, ProviderMetadata: reasoningEndMeta()})
 				reasoningStartSent = false
 			}
 			if textStartSent {
@@ -653,7 +665,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 					switch {
 					case part.FunctionCall != nil:
 						if reasoningStartSent {
-							send(&sdk.ReasoningEndPart{ID: currentReasoningID, ProviderMetadata: reasoningEndMeta()})
+							send(&sdk.ReasoningEndPart{ID: currentReasoningID, Format: sdk.ReasoningFormatGoogle, ProviderMetadata: reasoningEndMeta()})
 							reasoningStartSent = false
 						}
 						if textStartSent {
@@ -700,13 +712,13 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 							if !reasoningStartSent {
 								currentReasoningID = fmt.Sprintf("%d", blockCounter)
 								blockCounter++
-								send(&sdk.ReasoningStartPart{ID: currentReasoningID})
+								send(&sdk.ReasoningStartPart{ID: currentReasoningID, Format: sdk.ReasoningFormatGoogle})
 								reasoningStartSent = true
 							}
-							send(&sdk.ReasoningDeltaPart{ID: currentReasoningID, Text: part.Text})
+							send(&sdk.ReasoningDeltaPart{ID: currentReasoningID, Text: part.Text, Format: sdk.ReasoningFormatGoogle})
 						} else {
 							if reasoningStartSent {
-								send(&sdk.ReasoningEndPart{ID: currentReasoningID, ProviderMetadata: reasoningEndMeta()})
+								send(&sdk.ReasoningEndPart{ID: currentReasoningID, Format: sdk.ReasoningFormatGoogle, ProviderMetadata: reasoningEndMeta()})
 								reasoningStartSent = false
 							}
 							if !textStartSent {
@@ -723,7 +735,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 							textStartSent = false
 						}
 						if reasoningStartSent {
-							send(&sdk.ReasoningEndPart{ID: currentReasoningID, ProviderMetadata: reasoningEndMeta()})
+							send(&sdk.ReasoningEndPart{ID: currentReasoningID, Format: sdk.ReasoningFormatGoogle, ProviderMetadata: reasoningEndMeta()})
 							reasoningStartSent = false
 						}
 						send(&sdk.StreamFilePart{

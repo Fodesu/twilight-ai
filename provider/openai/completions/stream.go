@@ -39,7 +39,7 @@ func (sp *streamProcessor) send(part sdk.StreamPart) bool {
 
 func (sp *streamProcessor) endReasoning(id string) {
 	if sp.reasoningStartSent {
-		sp.send(&sdk.ReasoningEndPart{ID: id, ProviderMetadata: minimaxReasoningMetadata(sp.reasoningDetails)})
+		sp.send(&sdk.ReasoningEndPart{ID: id, Format: sdk.ReasoningFormatOpenAIChat, ProviderMetadata: minimaxReasoningMetadata(sp.reasoningDetails)})
 		sp.reasoningStartSent = false
 	}
 }
@@ -121,10 +121,10 @@ func (sp *streamProcessor) processReasoning(delta *chatChunkDelta, chunkID strin
 		return
 	}
 	if !sp.reasoningStartSent {
-		sp.send(&sdk.ReasoningStartPart{ID: chunkID})
+		sp.send(&sdk.ReasoningStartPart{ID: chunkID, Format: sdk.ReasoningFormatOpenAIChat})
 		sp.reasoningStartSent = true
 	}
-	sp.send(&sdk.ReasoningDeltaPart{ID: chunkID, Text: reasoningContent})
+	sp.send(&sdk.ReasoningDeltaPart{ID: chunkID, Text: reasoningContent, Format: sdk.ReasoningFormatOpenAIChat})
 }
 
 func trimReasoningPrefix(text, previous string) string {

@@ -14,14 +14,17 @@ type streamProcessor struct {
 	ch                 chan sdk.StreamPart
 	textStartSent      bool
 	reasoningStartSent bool
-	rawFinishReason    string
-	finishReason       sdk.FinishReason
-	usage              sdk.Usage
-	chunkID            string
-	chunkModel         string
-	chunkCreated       int64
-	flushed            bool
-	pendingToolCalls   map[int]*streamingToolCall
+	// reasoningOpaque is the block's token, delivered on a delta and applied
+	// when the block closes.
+	reasoningOpaque  string
+	rawFinishReason  string
+	finishReason     sdk.FinishReason
+	usage            sdk.Usage
+	chunkID          string
+	chunkModel       string
+	chunkCreated     int64
+	flushed          bool
+	pendingToolCalls map[int]*streamingToolCall
 }
 
 func (sp *streamProcessor) send(part sdk.StreamPart) bool {
@@ -35,7 +38,11 @@ func (sp *streamProcessor) send(part sdk.StreamPart) bool {
 
 func (sp *streamProcessor) endReasoning(id string) {
 	if sp.reasoningStartSent {
-		sp.send(&sdk.ReasoningEndPart{ID: id})
+		sp.send(&sdk.ReasoningEndPart{
+			ID:               id,
+			Format:           sdk.ReasoningFormatCopilot,
+			ProviderMetadata: reasoningOpaqueMetadata(sp.reasoningOpaque),
+		})
 		sp.reasoningStartSent = false
 	}
 }
@@ -102,15 +109,22 @@ func (sp *streamProcessor) processChunk(chunk *chatChunkResponse) error {
 }
 
 func (sp *streamProcessor) processReasoning(delta *chatChunkDelta, chunkID string) {
+	if delta.ReasoningOpaque != "" {
+		sp.reasoningOpaque = delta.ReasoningOpaque
+	}
 	reasoningContent := reasoningFromDelta(delta)
-	if reasoningContent == "" {
+	// The opaque token may arrive on a delta carrying no text; that delta still
+	// opens the block, because without the token the text cannot be replayed.
+	if reasoningContent == "" && delta.ReasoningOpaque == "" {
 		return
 	}
 	if !sp.reasoningStartSent {
-		sp.send(&sdk.ReasoningStartPart{ID: chunkID})
+		sp.send(&sdk.ReasoningStartPart{ID: chunkID, Format: sdk.ReasoningFormatCopilot})
 		sp.reasoningStartSent = true
 	}
-	sp.send(&sdk.ReasoningDeltaPart{ID: chunkID, Text: reasoningContent})
+	if reasoningContent != "" {
+		sp.send(&sdk.ReasoningDeltaPart{ID: chunkID, Text: reasoningContent, Format: sdk.ReasoningFormatCopilot})
+	}
 }
 
 func (sp *streamProcessor) processContent(delta *chatChunkDelta, chunkID string) {

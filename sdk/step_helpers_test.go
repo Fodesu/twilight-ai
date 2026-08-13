@@ -33,7 +33,7 @@ func TestAddUsageAccumulatesCacheWriteTTLDetails(t *testing.T) {
 
 func TestBuildStepMessagesPreservesToolCallProviderMetadata(t *testing.T) {
 	meta := map[string]any{"google": map[string]any{"thoughtSignature": "sig-1"}}
-	msgs := buildStepMessages("", "", nil, []ToolCall{{
+	msgs := buildStepMessages("", nil, []ToolCall{{
 		ToolCallID:       "call-1",
 		ToolName:         "lookup",
 		Input:            map[string]any{"q": "memoh"},

@@ -79,8 +79,7 @@ func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*St
 
 			var (
 				stepText            string
-				stepReasoning       string
-				stepReasoningMeta   map[string]any
+				stepReasoning       reasoningAccumulator
 				stepToolCalls       []ToolCall
 				stepUsage           Usage
 				stepResponse        ResponseMetadata
@@ -93,12 +92,12 @@ func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*St
 				switch p := part.(type) {
 				case *TextDeltaPart:
 					stepText += p.Text
+				case *ReasoningStartPart:
+					stepReasoning.openBlock(p.ID, p.Format, p.ProviderMetadata)
 				case *ReasoningDeltaPart:
-					stepReasoning += p.Text
+					stepReasoning.appendDelta(p.ID, p.Text, p.Format, p.ProviderMetadata)
 				case *ReasoningEndPart:
-					if p.ProviderMetadata != nil {
-						stepReasoningMeta = p.ProviderMetadata
-					}
+					stepReasoning.closeBlock(p.ID, p.Format, p.ProviderMetadata)
 				case *StreamToolCallPart:
 					stepToolCalls = append(stepToolCalls, ToolCall{
 						ToolCallID:       p.ToolCallID,
@@ -135,10 +134,11 @@ func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*St
 
 			// No tool calls or not a tool-calls finish → done
 			if !autoExecuteTools || stepFinishReason != FinishReasonToolCalls || len(stepToolCalls) == 0 || !hasExecutableTools(stepToolCalls, toolMap) {
-				stepMsgs := buildStepMessages(stepText, stepReasoning, stepReasoningMeta, stepToolCalls, nil, &stepUsage)
+				stepMsgs := buildStepMessages(stepText, stepReasoning.result(), stepToolCalls, nil, &stepUsage)
 				stepR := StepResult{
 					Text:            stepText,
-					Reasoning:       stepReasoning,
+					Reasoning:       ReasoningText(stepReasoning.result()),
+					ReasoningParts:  stepReasoning.result(),
 					FinishReason:    stepFinishReason,
 					RawFinishReason: stepRawFinishReason,
 					Usage:           stepUsage,
@@ -162,10 +162,11 @@ func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*St
 			if err != nil {
 				var deferred *ToolApprovalDeferredError
 				if errors.As(err, &deferred) {
-					stepMsgs := buildStepMessages(stepText, stepReasoning, stepReasoningMeta, stepToolCalls, nil, &stepUsage)
+					stepMsgs := buildStepMessages(stepText, stepReasoning.result(), stepToolCalls, nil, &stepUsage)
 					stepR := StepResult{
 						Text:                 stepText,
-						Reasoning:            stepReasoning,
+						Reasoning:            ReasoningText(stepReasoning.result()),
+						ReasoningParts:       stepReasoning.result(),
 						FinishReason:         stepFinishReason,
 						RawFinishReason:      stepRawFinishReason,
 						Usage:                stepUsage,
@@ -187,10 +188,11 @@ func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*St
 				return
 			}
 
-			stepMsgs := buildStepMessages(stepText, stepReasoning, stepReasoningMeta, stepToolCalls, toolResults, &stepUsage)
+			stepMsgs := buildStepMessages(stepText, stepReasoning.result(), stepToolCalls, toolResults, &stepUsage)
 			stepR := StepResult{
 				Text:            stepText,
-				Reasoning:       stepReasoning,
+				Reasoning:       ReasoningText(stepReasoning.result()),
+				ReasoningParts:  stepReasoning.result(),
 				FinishReason:    stepFinishReason,
 				RawFinishReason: stepRawFinishReason,
 				Usage:           stepUsage,

@@ -76,7 +76,10 @@ type codexReasoningSummaryText struct {
 }
 
 type codexReasoningItem struct {
-	Type             string                      `json:"type"`
+	Type string `json:"type"`
+	// ID is schema-required by the API and must be the id the item was issued
+	// under.
+	ID               string                      `json:"id,omitempty"`
 	Summary          []codexReasoningSummaryText `json:"summary"`
 	EncryptedContent string                      `json:"encrypted_content,omitempty"`
 }

@@ -41,11 +41,15 @@ type chatFunction struct {
 }
 
 type chatMessage struct {
-	Role             string         `json:"role"`
-	Content          any            `json:"content"`
-	ReasoningContent string         `json:"reasoning_content,omitempty"`
-	ToolCalls        []chatToolCall `json:"tool_calls,omitempty"`
-	ToolCallID       string         `json:"tool_call_id,omitempty"`
+	Role    string `json:"role"`
+	Content any    `json:"content"`
+	// ReasoningText and ReasoningOpaque are Copilot's own reasoning fields. The
+	// opaque token wraps the upstream model's signature; the text is only
+	// accepted alongside it.
+	ReasoningText   string         `json:"reasoning_text,omitempty"`
+	ReasoningOpaque string         `json:"reasoning_opaque,omitempty"`
+	ToolCalls       []chatToolCall `json:"tool_calls,omitempty"`
+	ToolCallID      string         `json:"tool_call_id,omitempty"`
 }
 
 type chatContentPartText struct {
@@ -81,8 +85,12 @@ type chatChoice struct {
 }
 
 type chatRespMessage struct {
-	Role             string          `json:"role"`
-	Content          string          `json:"content"`
+	Role            string `json:"role"`
+	Content         string `json:"content"`
+	ReasoningText   string `json:"reasoning_text,omitempty"`
+	ReasoningOpaque string `json:"reasoning_opaque,omitempty"`
+	// ReasoningContent and Reasoning are other vendors' field names, accepted
+	// because Copilot proxies models that emit them.
 	ReasoningContent string          `json:"reasoning_content,omitempty"`
 	Reasoning        string          `json:"reasoning,omitempty"`
 	Refusal          string          `json:"refusal,omitempty"`
@@ -136,8 +144,12 @@ type chatChunkChoice struct {
 }
 
 type chatChunkDelta struct {
-	Role             string              `json:"role,omitempty"`
-	Content          string              `json:"content,omitempty"`
+	Role            string `json:"role,omitempty"`
+	Content         string `json:"content,omitempty"`
+	ReasoningText   string `json:"reasoning_text,omitempty"`
+	ReasoningOpaque string `json:"reasoning_opaque,omitempty"`
+	// ReasoningContent and Reasoning are other vendors' field names, accepted
+	// because Copilot proxies models that emit them.
 	ReasoningContent string              `json:"reasoning_content,omitempty"`
 	Reasoning        string              `json:"reasoning,omitempty"`
 	Refusal          string              `json:"refusal,omitempty"`

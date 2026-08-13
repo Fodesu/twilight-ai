@@ -887,14 +887,15 @@ func TestDoGenerate_ReasoningFromOtherProvider(t *testing.T) {
 				t.Error("reasoning from other provider should not become a thinking block")
 			}
 		}
-		if len(assistantMsg.Content) != 2 {
-			t.Fatalf("expected 2 text blocks (reasoning fallback + text), got %+v", assistantMsg.Content)
+		// Foreign reasoning is dropped rather than re-sent as text. Replaying a
+		// model's inner monologue as ordinary content teaches it to imitate the
+		// form in user-visible answers, and Anthropic cannot verify a signature
+		// it did not issue.
+		if len(assistantMsg.Content) != 1 {
+			t.Fatalf("expected only the text block to survive, got %+v", assistantMsg.Content)
 		}
-		if assistantMsg.Content[0]["type"] != "text" || assistantMsg.Content[0]["text"] != "thinking from gemini" {
-			t.Errorf("expected reasoning fallback as text, got %+v", assistantMsg.Content[0])
-		}
-		if assistantMsg.Content[1]["type"] != "text" || assistantMsg.Content[1]["text"] != "The answer" {
-			t.Errorf("expected original text block, got %+v", assistantMsg.Content[1])
+		if assistantMsg.Content[0]["type"] != "text" || assistantMsg.Content[0]["text"] != "The answer" {
+			t.Errorf("expected original text block, got %+v", assistantMsg.Content[0])
 		}
 
 		w.Header().Set("Content-Type", "application/json")

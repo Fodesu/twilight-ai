@@ -53,8 +53,11 @@ type GenerateParams struct {
 
 // StepResult represents the outcome of a single step (one LLM call + tool execution round).
 type StepResult struct {
-	Text                 string              `json:"text"`
+	Text string `json:"text"`
+	// Reasoning is the parts' text joined for display; ReasoningParts is the
+	// round-trip value. See GenerateResult.
 	Reasoning            string              `json:"reasoning,omitempty"`
+	ReasoningParts       []ReasoningPart     `json:"reasoningParts,omitempty"`
 	FinishReason         FinishReason        `json:"finishReason"`
 	RawFinishReason      string              `json:"rawFinishReason,omitempty"`
 	Usage                Usage               `json:"usage"`
@@ -68,18 +71,22 @@ type StepResult struct {
 }
 
 type GenerateResult struct {
-	Text                      string              `json:"text"`
-	Reasoning                 string              `json:"reasoning,omitempty"`
-	ReasoningProviderMetadata map[string]any      `json:"-"`
-	FinishReason              FinishReason        `json:"finishReason"`
-	RawFinishReason           string              `json:"rawFinishReason,omitempty"`
-	Usage                     Usage               `json:"usage"`
-	Sources                   []Source            `json:"sources,omitempty"`
-	Files                     []GeneratedFile     `json:"files,omitempty"`
-	ToolCalls                 []ToolCall          `json:"toolCalls,omitempty"`
-	ToolResults               []ToolResult        `json:"toolResults,omitempty"`
-	Response                  ResponseMetadata    `json:"response,omitempty"`
-	DeferredToolApproval      *ToolApprovalResult `json:"deferredToolApproval,omitempty"`
+	Text string `json:"text"`
+	// Reasoning is the parts' text joined for display. It is a view: rebuild
+	// requests from ReasoningParts, which keeps the per-block opaque tokens.
+	Reasoning string `json:"reasoning,omitempty"`
+	// ReasoningParts holds the reasoning blocks in provider order, each with
+	// its own dialect and opaque token. This is the round-trip value.
+	ReasoningParts       []ReasoningPart     `json:"reasoningParts,omitempty"`
+	FinishReason         FinishReason        `json:"finishReason"`
+	RawFinishReason      string              `json:"rawFinishReason,omitempty"`
+	Usage                Usage               `json:"usage"`
+	Sources              []Source            `json:"sources,omitempty"`
+	Files                []GeneratedFile     `json:"files,omitempty"`
+	ToolCalls            []ToolCall          `json:"toolCalls,omitempty"`
+	ToolResults          []ToolResult        `json:"toolResults,omitempty"`
+	Response             ResponseMetadata    `json:"response,omitempty"`
+	DeferredToolApproval *ToolApprovalResult `json:"deferredToolApproval,omitempty"`
 	// Steps holds the result of each step in a multi-step execution.
 	Steps []StepResult `json:"steps,omitempty"`
 	// Messages holds all output messages across all steps (assistant + tool),

@@ -1244,7 +1244,7 @@ func TestResponsesInputConversion_AssistantReasoning(t *testing.T) {
 			{
 				Role: sdk.MessageRoleAssistant,
 				Content: []sdk.MessagePart{
-					sdk.ReasoningPart{Text: "I thought carefully"},
+					sdk.ReasoningPart{Text: "I thought carefully", Format: sdk.ReasoningFormatOpenAIResponses},
 					sdk.TextPart{Text: "The answer"},
 				},
 			},

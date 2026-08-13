@@ -10,6 +10,7 @@ import (
 
 	"github.com/memohai/twilight-ai/internal/messagecompat"
 	"github.com/memohai/twilight-ai/internal/utils"
+	openaiutil "github.com/memohai/twilight-ai/provider/openai"
 	"github.com/memohai/twilight-ai/sdk"
 )
 
@@ -174,7 +175,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 
 		flush := func() {
 			if reasoningStartSent {
-				send(&sdk.ReasoningEndPart{ID: responseID})
+				send(&sdk.ReasoningEndPart{ID: responseID, Format: sdk.ReasoningFormatOpenAIResponses})
 				reasoningStartSent = false
 			}
 			if textStartSent {
@@ -216,16 +217,11 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 					}
 				case outputTypeReasoning:
 					if !reasoningStartSent {
-						var meta map[string]any
-						if chunk.Item.EncryptedContent != "" {
-							meta = map[string]any{
-								"openai": map[string]any{
-									"reasoningEncryptedContent": chunk.Item.EncryptedContent,
-									"itemId":                    chunk.Item.ID,
-								},
-							}
-						}
-						send(&sdk.ReasoningStartPart{ID: chunk.Item.ID, ProviderMetadata: meta})
+						send(&sdk.ReasoningStartPart{
+							ID:               chunk.Item.ID,
+							Format:           sdk.ReasoningFormatOpenAIResponses,
+							ProviderMetadata: openaiutil.ReasoningItemMetadata(chunk.Item.ID, chunk.Item.EncryptedContent),
+						})
 						reasoningStartSent = true
 					}
 				case outputTypeFunctionCall:
@@ -244,7 +240,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 					return nil
 				}
 				if reasoningStartSent {
-					send(&sdk.ReasoningEndPart{ID: responseID})
+					send(&sdk.ReasoningEndPart{ID: responseID, Format: sdk.ReasoningFormatOpenAIResponses})
 					reasoningStartSent = false
 				}
 				if !textStartSent {
@@ -259,10 +255,10 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 					return nil
 				}
 				if !reasoningStartSent {
-					send(&sdk.ReasoningStartPart{ID: chunk.ItemID})
+					send(&sdk.ReasoningStartPart{ID: chunk.ItemID, Format: sdk.ReasoningFormatOpenAIResponses})
 					reasoningStartSent = true
 				}
-				send(&sdk.ReasoningDeltaPart{ID: chunk.ItemID, Text: chunk.Delta})
+				send(&sdk.ReasoningDeltaPart{ID: chunk.ItemID, Text: chunk.Delta, Format: sdk.ReasoningFormatOpenAIResponses})
 
 			case "response.function_call_arguments.delta":
 				var chunk codexFuncArgsDeltaChunk
@@ -289,7 +285,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 					}
 				case outputTypeReasoning:
 					if reasoningStartSent {
-						send(&sdk.ReasoningEndPart{ID: chunk.Item.ID})
+						send(&sdk.ReasoningEndPart{ID: chunk.Item.ID, Format: sdk.ReasoningFormatOpenAIResponses})
 						reasoningStartSent = false
 					}
 				case outputTypeFunctionCall:
@@ -475,17 +471,38 @@ func convertCodexUserMessage(msg sdk.Message) []json.RawMessage {
 func convertCodexAssistantMessage(msg sdk.Message) []json.RawMessage {
 	var items []json.RawMessage
 	var textParts []codexOutputTextPart
-	var reasoningSummary []codexReasoningSummaryText
-	var encryptedContent string
+	var reasoningItems []codexReasoningItem
+	reasoningIndexByID := map[string]int{}
 
 	for _, part := range msg.Content {
 		switch p := part.(type) {
 		case sdk.TextPart:
 			textParts = append(textParts, codexOutputTextPart{Type: "output_text", Text: p.Text})
 		case sdk.ReasoningPart:
-			reasoningSummary = append(reasoningSummary, codexReasoningSummaryText{Type: "summary_text", Text: p.Text})
-			if ec := extractOpenAIEncryptedContent(p.ProviderMetadata); ec != "" {
-				encryptedContent = ec
+			// Same dialect as the public Responses API; anything else cannot be
+			// verified here and is dropped rather than re-sent as text.
+			if p.Format != sdk.ReasoningFormatOpenAIResponses {
+				continue
+			}
+			id := openaiutil.ReasoningItemID(p.ProviderMetadata)
+			if id == "" {
+				id = p.ID
+			}
+			idx, ok := reasoningIndexByID[id]
+			if !ok || id == "" {
+				reasoningItems = append(reasoningItems, codexReasoningItem{
+					Type:             "reasoning",
+					ID:               id,
+					EncryptedContent: openaiutil.ReasoningEncryptedContent(p.ProviderMetadata),
+				})
+				idx = len(reasoningItems) - 1
+				if id != "" {
+					reasoningIndexByID[id] = idx
+				}
+			}
+			if p.Text != "" {
+				reasoningItems[idx].Summary = append(reasoningItems[idx].Summary,
+					codexReasoningSummaryText{Type: "summary_text", Text: p.Text})
 			}
 		case sdk.ToolCallPart:
 			args, err := json.Marshal(p.Input)
@@ -506,12 +523,13 @@ func convertCodexAssistantMessage(msg sdk.Message) []json.RawMessage {
 	}
 
 	var prefix []json.RawMessage
-	if len(reasoningSummary) > 0 {
-		prefix = append(prefix, marshalRaw(codexReasoningItem{
-			Type:             "reasoning",
-			Summary:          reasoningSummary,
-			EncryptedContent: encryptedContent,
-		}))
+	for i := range reasoningItems {
+		// Summary is schema-required, so an item that carried only encrypted
+		// content still needs the key present.
+		if reasoningItems[i].Summary == nil {
+			reasoningItems[i].Summary = []codexReasoningSummaryText{}
+		}
+		prefix = append(prefix, marshalRaw(reasoningItems[i]))
 	}
 	if len(textParts) > 0 {
 		prefix = append(prefix, marshalRaw(codexAssistantMessage{Role: "assistant", Content: textParts}))
@@ -629,13 +647,4 @@ func joinWithDoubleNewline(values []string) string {
 		result += "\n\n" + value
 	}
 	return result
-}
-
-func extractOpenAIEncryptedContent(meta map[string]any) string {
-	if meta == nil {
-		return ""
-	}
-	openai, _ := meta["openai"].(map[string]any)
-	encrypted, _ := openai["reasoningEncryptedContent"].(string)
-	return encrypted
 }

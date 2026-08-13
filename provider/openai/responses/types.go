@@ -16,6 +16,8 @@ type responsesRequest struct {
 	ToolChoice      any                 `json:"tool_choice,omitempty"`
 	Text            *responsesTextFmt   `json:"text,omitempty"`
 	Reasoning       *responsesReasoning `json:"reasoning,omitempty"`
+	Include         []string            `json:"include,omitempty"`
+	Store           *bool               `json:"store,omitempty"`
 	Stream          bool                `json:"stream,omitempty"`
 }
 
@@ -90,7 +92,10 @@ type responsesReasoningSummaryText struct {
 }
 
 type responsesReasoningItem struct {
-	Type             string                          `json:"type"`
+	Type string `json:"type"`
+	// ID is schema-required by the API and must be the id the item was issued
+	// under.
+	ID               string                          `json:"id,omitempty"`
 	Summary          []responsesReasoningSummaryText `json:"summary"`
 	EncryptedContent string                          `json:"encrypted_content,omitempty"`
 }
