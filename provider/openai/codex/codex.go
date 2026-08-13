@@ -159,9 +159,9 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 			incompleteReason string
 			hasFunctionCall  bool
 
-			textStartSent      bool
-			reasoningStartSent bool
-			pendingToolCalls   = map[int]*streamingToolCall{}
+			textStartSent     bool
+			activeReasoningID string
+			pendingToolCalls  = map[int]*streamingToolCall{}
 		)
 
 		send := func(part sdk.StreamPart) bool {
@@ -173,11 +173,24 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 			}
 		}
 
-		flush := func() {
-			if reasoningStartSent {
-				send(&sdk.ReasoningEndPart{ID: responseID, Format: sdk.ReasoningFormatOpenAIResponses})
-				reasoningStartSent = false
+		// endReasoning closes the active reasoning block. meta carries the
+		// block's final metadata: encrypted_content is populated only on
+		// response.output_item.done, so the closing part is the only chance to
+		// deliver it. Every other close path passes nil.
+		endReasoning := func(meta map[string]any) {
+			if activeReasoningID == "" {
+				return
 			}
+			send(&sdk.ReasoningEndPart{
+				ID:               activeReasoningID,
+				Format:           sdk.ReasoningFormatOpenAIResponses,
+				ProviderMetadata: meta,
+			})
+			activeReasoningID = ""
+		}
+
+		flush := func() {
+			endReasoning(nil)
 			if textStartSent {
 				send(&sdk.TextEndPart{ID: responseID})
 				textStartSent = false
@@ -216,13 +229,14 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 						textStartSent = true
 					}
 				case outputTypeReasoning:
-					if !reasoningStartSent {
+					if activeReasoningID != chunk.Item.ID {
+						endReasoning(nil)
 						send(&sdk.ReasoningStartPart{
 							ID:               chunk.Item.ID,
 							Format:           sdk.ReasoningFormatOpenAIResponses,
 							ProviderMetadata: openaiutil.ReasoningItemMetadata(chunk.Item.ID, chunk.Item.EncryptedContent),
 						})
-						reasoningStartSent = true
+						activeReasoningID = chunk.Item.ID
 					}
 				case outputTypeFunctionCall:
 					flush()
@@ -239,10 +253,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 				if json.Unmarshal([]byte(ev.Data), &chunk) != nil {
 					return nil
 				}
-				if reasoningStartSent {
-					send(&sdk.ReasoningEndPart{ID: responseID, Format: sdk.ReasoningFormatOpenAIResponses})
-					reasoningStartSent = false
-				}
+				endReasoning(nil)
 				if !textStartSent {
 					send(&sdk.TextStartPart{ID: chunk.ItemID})
 					textStartSent = true
@@ -254,9 +265,10 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 				if json.Unmarshal([]byte(ev.Data), &chunk) != nil {
 					return nil
 				}
-				if !reasoningStartSent {
+				if activeReasoningID != chunk.ItemID {
+					endReasoning(nil)
 					send(&sdk.ReasoningStartPart{ID: chunk.ItemID, Format: sdk.ReasoningFormatOpenAIResponses})
-					reasoningStartSent = true
+					activeReasoningID = chunk.ItemID
 				}
 				send(&sdk.ReasoningDeltaPart{ID: chunk.ItemID, Text: chunk.Delta, Format: sdk.ReasoningFormatOpenAIResponses})
 
@@ -284,9 +296,22 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 						textStartSent = false
 					}
 				case outputTypeReasoning:
-					if reasoningStartSent {
-						send(&sdk.ReasoningEndPart{ID: chunk.Item.ID, Format: sdk.ReasoningFormatOpenAIResponses})
-						reasoningStartSent = false
+					// The done event is where encrypted_content arrives; the
+					// added event fires before it is populated.
+					meta := openaiutil.ReasoningItemMetadata(chunk.Item.ID, chunk.Item.EncryptedContent)
+					switch {
+					case activeReasoningID == chunk.Item.ID:
+						endReasoning(meta)
+					case chunk.Item.EncryptedContent != "":
+						// The block was already closed by an interleaved event.
+						// Send another end part for it: the accumulator merges
+						// metadata by block ID, so the payload still lands on
+						// the right block instead of being lost.
+						send(&sdk.ReasoningEndPart{
+							ID:               chunk.Item.ID,
+							Format:           sdk.ReasoningFormatOpenAIResponses,
+							ProviderMetadata: meta,
+						})
 					}
 				case outputTypeFunctionCall:
 					hasFunctionCall = true

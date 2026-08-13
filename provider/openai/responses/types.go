@@ -208,6 +208,9 @@ type responsesOutputItemDoneChunk struct {
 		CallID    string `json:"call_id,omitempty"`
 		Name      string `json:"name,omitempty"`
 		Arguments string `json:"arguments,omitempty"`
+		// reasoning fields. encrypted_content is populated only on this event,
+		// not on output_item.added, where the item has just been created.
+		EncryptedContent string `json:"encrypted_content,omitempty"`
 	} `json:"item"`
 }
 

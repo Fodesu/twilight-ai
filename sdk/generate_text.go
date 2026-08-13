@@ -83,6 +83,7 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 			sr := StepResult{
 				Text:            result.Text,
 				Reasoning:       result.Reasoning,
+				ReasoningParts:  result.ReasoningParts,
 				FinishReason:    result.FinishReason,
 				RawFinishReason: result.RawFinishReason,
 				Usage:           result.Usage,

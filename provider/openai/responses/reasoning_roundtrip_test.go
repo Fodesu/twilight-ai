@@ -180,3 +180,117 @@ func TestRequestAsksForEncryptedReasoning(t *testing.T) {
 		t.Errorf("store: got %v, want false", captured["store"])
 	}
 }
+
+// In streaming, encrypted_content is populated only on
+// response.output_item.done — output_item.added fires before it exists. A
+// converter that reads it at added (as LangChain.js did, langchainjs#10844)
+// silently loses the payload, and with store:false the next turn then replays
+// a bare rs_… id the server can neither decrypt nor look up.
+func TestDoStreamCapturesEncryptedContentFromItemDone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, e := range []struct{ event, data string }{
+			{"response.created",
+				`{"type":"response.created","response":{"id":"resp_ec","created_at":1700000000,"model":"gpt-5.6"}}`},
+			// added: no encrypted_content yet — this mirrors the real API.
+			{"response.output_item.added",
+				`{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_ec"}}`},
+			{"response.reasoning_summary_text.delta",
+				`{"type":"response.reasoning_summary_text.delta","item_id":"rs_ec","summary_index":0,"delta":"thinking"}`},
+			// done: the payload arrives here and only here.
+			{"response.output_item.done",
+				`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_ec","encrypted_content":"ENC_PAYLOAD"}}`},
+			{"response.output_item.added",
+				`{"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_ec"}}`},
+			{"response.output_text.delta",
+				`{"type":"response.output_text.delta","item_id":"msg_ec","delta":"answer"}`},
+			{"response.output_item.done",
+				`{"type":"response.output_item.done","output_index":1,"item":{"type":"message","id":"msg_ec"}}`},
+			{"response.completed",
+				`{"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`},
+		} {
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.event, e.data)
+		}
+	}))
+	defer srv.Close()
+
+	p := responses.New(responses.WithAPIKey("k"), responses.WithBaseURL(srv.URL))
+	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
+		Model:    p.ChatModel("gpt-5.6"),
+		Messages: []sdk.Message{sdk.UserMessage("hi")},
+	})
+	if err != nil {
+		t.Fatalf("DoStream: %v", err)
+	}
+
+	result, err := sr.ToResult()
+	if err != nil {
+		t.Fatalf("ToResult: %v", err)
+	}
+	if len(result.ReasoningParts) != 1 {
+		t.Fatalf("ReasoningParts: got %d, want 1 (%+v)", len(result.ReasoningParts), result.ReasoningParts)
+	}
+	part := result.ReasoningParts[0]
+	if part.Text != "thinking" {
+		t.Errorf("text: got %q, want %q", part.Text, "thinking")
+	}
+	meta, _ := part.ProviderMetadata["openai"].(map[string]any)
+	if meta["reasoningEncryptedContent"] != "ENC_PAYLOAD" {
+		t.Errorf("encrypted content lost in streaming: metadata = %+v", part.ProviderMetadata)
+	}
+	if meta["itemId"] != "rs_ec" {
+		t.Errorf("item id: got %v, want rs_ec", meta["itemId"])
+	}
+}
+
+// A tool call arriving between the reasoning deltas and the item's done event
+// closes the block early; the payload on the late done event must still reach
+// the block rather than being dropped because it is no longer active.
+func TestDoStreamKeepsEncryptedContentWhenToolCallClosesBlockFirst(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, e := range []struct{ event, data string }{
+			{"response.created",
+				`{"type":"response.created","response":{"id":"resp_tc","created_at":1700000000,"model":"gpt-5.6"}}`},
+			{"response.output_item.added",
+				`{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_tc"}}`},
+			{"response.reasoning_summary_text.delta",
+				`{"type":"response.reasoning_summary_text.delta","item_id":"rs_tc","summary_index":0,"delta":"planning"}`},
+			// function_call added ends the reasoning block before rs_tc's done.
+			{"response.output_item.added",
+				`{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_tc","call_id":"call_tc","name":"lookup"}}`},
+			{"response.output_item.done",
+				`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_tc","encrypted_content":"ENC_LATE"}}`},
+			{"response.function_call_arguments.delta",
+				`{"type":"response.function_call_arguments.delta","item_id":"fc_tc","output_index":1,"delta":"{}"}`},
+			{"response.output_item.done",
+				`{"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_tc","call_id":"call_tc","name":"lookup","arguments":"{}"}}`},
+			{"response.completed",
+				`{"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}`},
+		} {
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.event, e.data)
+		}
+	}))
+	defer srv.Close()
+
+	p := responses.New(responses.WithAPIKey("k"), responses.WithBaseURL(srv.URL))
+	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
+		Model:    p.ChatModel("gpt-5.6"),
+		Messages: []sdk.Message{sdk.UserMessage("hi")},
+	})
+	if err != nil {
+		t.Fatalf("DoStream: %v", err)
+	}
+
+	result, err := sr.ToResult()
+	if err != nil {
+		t.Fatalf("ToResult: %v", err)
+	}
+	if len(result.ReasoningParts) != 1 {
+		t.Fatalf("ReasoningParts: got %d, want 1 (%+v)", len(result.ReasoningParts), result.ReasoningParts)
+	}
+	meta, _ := result.ReasoningParts[0].ProviderMetadata["openai"].(map[string]any)
+	if meta["reasoningEncryptedContent"] != "ENC_LATE" {
+		t.Errorf("late encrypted content lost: metadata = %+v", result.ReasoningParts[0].ProviderMetadata)
+	}
+}

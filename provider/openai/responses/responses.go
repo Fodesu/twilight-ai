@@ -567,11 +567,19 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 			}
 		}
 
-		endReasoning := func() {
+		// endReasoning closes the active reasoning block. meta carries the
+		// block's final metadata: encrypted_content is populated only on
+		// response.output_item.done, so the closing part is the only chance to
+		// deliver it. Every other close path passes nil.
+		endReasoning := func(meta map[string]any) {
 			if activeReasoningID == "" {
 				return
 			}
-			send(&sdk.ReasoningEndPart{ID: activeReasoningID, Format: sdk.ReasoningFormatOpenAIResponses})
+			send(&sdk.ReasoningEndPart{
+				ID:               activeReasoningID,
+				Format:           sdk.ReasoningFormatOpenAIResponses,
+				ProviderMetadata: meta,
+			})
 			activeReasoningID = ""
 		}
 
@@ -579,7 +587,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 			if activeReasoningID == id {
 				return
 			}
-			endReasoning()
+			endReasoning(nil)
 			send(&sdk.ReasoningStartPart{
 				ID:               id,
 				Format:           sdk.ReasoningFormatOpenAIResponses,
@@ -589,7 +597,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 		}
 
 		flush := func() {
-			endReasoning()
+			endReasoning(nil)
 			if textStartSent {
 				send(&sdk.TextEndPart{ID: responseID})
 				textStartSent = false
@@ -646,7 +654,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 				case outputTypeReasoning:
 					startReasoning(chunk.Item.ID, openaiutil.ReasoningItemMetadata(chunk.Item.ID, chunk.Item.EncryptedContent))
 				case outputTypeFunctionCall:
-					endReasoning()
+					endReasoning(nil)
 					if textStartSent {
 						send(&sdk.TextEndPart{ID: responseID})
 						textStartSent = false
@@ -670,7 +678,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 				if err := json.Unmarshal([]byte(ev.Data), &chunk); err != nil {
 					return nil
 				}
-				endReasoning()
+				endReasoning(nil)
 				if !textStartSent {
 					send(&sdk.TextStartPart{ID: chunk.ItemID})
 					textStartSent = true
@@ -712,8 +720,22 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 						textStartSent = false
 					}
 				case outputTypeReasoning:
-					if activeReasoningID == chunk.Item.ID {
-						endReasoning()
+					// The done event is where encrypted_content arrives; the
+					// added event fires before it is populated.
+					meta := openaiutil.ReasoningItemMetadata(chunk.Item.ID, chunk.Item.EncryptedContent)
+					switch {
+					case activeReasoningID == chunk.Item.ID:
+						endReasoning(meta)
+					case chunk.Item.EncryptedContent != "":
+						// The block was already closed by an interleaved event.
+						// Send another end part for it: the accumulator merges
+						// metadata by block ID, so the payload still lands on
+						// the right block instead of being lost.
+						send(&sdk.ReasoningEndPart{
+							ID:               chunk.Item.ID,
+							Format:           sdk.ReasoningFormatOpenAIResponses,
+							ProviderMetadata: meta,
+						})
 					}
 				case outputTypeFunctionCall:
 					hasFunctionCall = true
