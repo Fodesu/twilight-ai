@@ -200,7 +200,8 @@ func TestResponsesDoGenerate_PromptCacheKeyOmittedWhenUnset(t *testing.T) {
 func TestResponsesDoGenerate_ForwardsMaxReasoningEffortVerbatim(t *testing.T) {
 	var body struct {
 		Reasoning *struct {
-			Effort string `json:"effort"`
+			Effort  string  `json:"effort"`
+			Summary *string `json:"summary"`
 		} `json:"reasoning"`
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -238,6 +239,57 @@ func TestResponsesDoGenerate_ForwardsMaxReasoningEffortVerbatim(t *testing.T) {
 	}
 	if body.Reasoning == nil || body.Reasoning.Effort != "max" {
 		t.Fatalf("reasoning.effort: got %#v, want max (forwarded verbatim)", body.Reasoning)
+	}
+	if body.Reasoning.Summary != nil {
+		t.Fatalf("reasoning.summary should be omitted unless explicitly requested, got %q", *body.Reasoning.Summary)
+	}
+}
+
+func TestResponsesDoGenerate_ReasoningSummaryIsExplicitAndIndependent(t *testing.T) {
+	var body struct {
+		Reasoning *struct {
+			Effort  *string `json:"effort"`
+			Summary *string `json:"summary"`
+		} `json:"reasoning"`
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"id":         "resp_summary",
+			"created_at": 1700000000,
+			"model":      "gpt-5.2",
+			"output": []map[string]any{{
+				"type": "message",
+				"id":   "msg_001",
+				"role": "assistant",
+				"content": []map[string]any{{
+					"type": "output_text",
+					"text": "ok",
+				}},
+			}},
+			"usage": map[string]any{"input_tokens": 1, "output_tokens": 1},
+		})
+	}))
+	defer srv.Close()
+
+	p := responses.New(responses.WithAPIKey("test-key"), responses.WithBaseURL(srv.URL))
+	summary := "auto"
+	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
+		Model:            p.ChatModel("gpt-5.2"),
+		Messages:         []sdk.Message{sdk.UserMessage("hi")},
+		ReasoningSummary: &summary,
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+	if body.Reasoning == nil || body.Reasoning.Summary == nil || *body.Reasoning.Summary != "auto" {
+		t.Fatalf("reasoning.summary: got %#v, want auto", body.Reasoning)
+	}
+	if body.Reasoning.Effort != nil {
+		t.Fatalf("reasoning.effort should be omitted when unset, got %q", *body.Reasoning.Effort)
 	}
 }
 
@@ -810,11 +862,11 @@ func TestResponsesDoStream_Reasoning(t *testing.T) {
 			},
 			{
 				"response.reasoning_summary_text.delta",
-				`{"type":"response.reasoning_summary_text.delta","item_id":"rs_010","summary_index":0,"delta":"Think"}`,
+				`{"type":"response.reasoning_summary_text.delta","item_id":"rs_010","summary_index":0,"delta":"Summary"}`,
 			},
 			{
-				"response.reasoning_summary_text.delta",
-				`{"type":"response.reasoning_summary_text.delta","item_id":"rs_010","summary_index":0,"delta":"ing..."}`,
+				"response.reasoning_text.delta",
+				`{"type":"response.reasoning_text.delta","item_id":"rs_010","delta":"Raw"}`,
 			},
 			{
 				"response.output_item.done",
@@ -822,7 +874,19 @@ func TestResponsesDoStream_Reasoning(t *testing.T) {
 			},
 			{
 				"response.output_item.added",
-				`{"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_020"}}`,
+				`{"type":"response.output_item.added","output_index":1,"item":{"type":"reasoning","id":"rs_011"}}`,
+			},
+			{
+				"response.reasoning_summary_text.delta",
+				`{"type":"response.reasoning_summary_text.delta","item_id":"rs_011","summary_index":0,"delta":"SecondSummary"}`,
+			},
+			{
+				"response.output_item.done",
+				`{"type":"response.output_item.done","output_index":1,"item":{"type":"reasoning","id":"rs_011"}}`,
+			},
+			{
+				"response.output_item.added",
+				`{"type":"response.output_item.added","output_index":2,"item":{"type":"message","id":"msg_020"}}`,
 			},
 			{
 				"response.output_text.delta",
@@ -830,7 +894,7 @@ func TestResponsesDoStream_Reasoning(t *testing.T) {
 			},
 			{
 				"response.output_item.done",
-				`{"type":"response.output_item.done","output_index":1,"item":{"type":"message","id":"msg_020"}}`,
+				`{"type":"response.output_item.done","output_index":2,"item":{"type":"message","id":"msg_020"}}`,
 			},
 			{
 				"response.completed",
@@ -855,17 +919,17 @@ func TestResponsesDoStream_Reasoning(t *testing.T) {
 	}
 
 	var reasoning, text string
-	var gotReasoningStart, gotReasoningEnd bool
+	var reasoningStartIDs, reasoningEndIDs []string
 	events := make([]sdk.StreamPartType, 0, 8)
 	for part := range sr.Stream {
 		events = append(events, part.Type())
 		switch p := part.(type) {
 		case *sdk.ReasoningStartPart:
-			gotReasoningStart = true
+			reasoningStartIDs = append(reasoningStartIDs, p.ID)
 		case *sdk.ReasoningDeltaPart:
 			reasoning += p.Text
 		case *sdk.ReasoningEndPart:
-			gotReasoningEnd = true
+			reasoningEndIDs = append(reasoningEndIDs, p.ID)
 		case *sdk.TextDeltaPart:
 			text += p.Text
 		case *sdk.FinishPart:
@@ -877,14 +941,14 @@ func TestResponsesDoStream_Reasoning(t *testing.T) {
 		}
 	}
 
-	if !gotReasoningStart {
-		t.Error("missing ReasoningStartPart")
+	if got := strings.Join(reasoningStartIDs, ","); got != "rs_010,rs_011" {
+		t.Errorf("reasoning start IDs: got %q, want %q", got, "rs_010,rs_011")
 	}
-	if !gotReasoningEnd {
-		t.Error("missing ReasoningEndPart")
+	if got := strings.Join(reasoningEndIDs, ","); got != "rs_010,rs_011" {
+		t.Errorf("reasoning end IDs: got %q, want %q", got, "rs_010,rs_011")
 	}
-	if reasoning != "Thinking..." {
-		t.Errorf("reasoning: got %q, want %q", reasoning, "Thinking...")
+	if reasoning != "SummaryRawSecondSummary" {
+		t.Errorf("reasoning: got %q, want %q", reasoning, "SummaryRawSecondSummary")
 	}
 	if text != "The answer is 4." {
 		t.Errorf("text: got %q", text)
@@ -903,6 +967,39 @@ func TestResponsesDoStream_Reasoning(t *testing.T) {
 	}
 	if reasoningEndIdx >= textStartIdx {
 		t.Errorf("reasoning-end (idx %d) should come before text-start (idx %d)", reasoningEndIdx, textStartIdx)
+	}
+}
+
+func TestResponsesDoStream_ReasoningKeepsItemIDOnFinalFlush(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_flush\",\"created_at\":1700000000,\"model\":\"grok-4\"}}\n\n")
+		fmt.Fprint(w, "event: response.output_item.added\ndata: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_flush\"}}\n\n")
+		fmt.Fprint(w, "event: response.reasoning_text.delta\ndata: {\"type\":\"response.reasoning_text.delta\",\"item_id\":\"rs_flush\",\"delta\":\"Thinking\"}\n\n")
+		fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
+	}))
+	defer srv.Close()
+
+	p := responses.New(responses.WithAPIKey("k"), responses.WithBaseURL(srv.URL))
+	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
+		Model:    p.ChatModel("grok-4"),
+		Messages: []sdk.Message{sdk.UserMessage("hi")},
+	})
+	if err != nil {
+		t.Fatalf("DoStream: %v", err)
+	}
+
+	var endID string
+	for part := range sr.Stream {
+		switch part := part.(type) {
+		case *sdk.ReasoningEndPart:
+			endID = part.ID
+		case *sdk.ErrorPart:
+			t.Fatalf("error: %v", part.Error)
+		}
+	}
+	if endID != "rs_flush" {
+		t.Fatalf("reasoning end ID: got %q, want %q", endID, "rs_flush")
 	}
 }
 
@@ -1257,6 +1354,8 @@ func TestResponsesInputConversion_AssistantReasoning(t *testing.T) {
 
 // ---------- integration tests ----------
 
+const openRouterResponsesReasoningModel = "openai/gpt-5.4-mini"
+
 func envOrSkip(t *testing.T, key string) string {
 	t.Helper()
 	v := os.Getenv(key)
@@ -1479,12 +1578,14 @@ func TestIntegration_ResponsesDoStream(t *testing.T) {
 
 func TestIntegration_ResponsesDoGenerate_Reasoning(t *testing.T) {
 	p := newResponsesIntegrationProvider(t)
-	model := p.ChatModel("openai/o4-mini")
+	model := p.ChatModel(openRouterResponsesReasoningModel)
 	effort := "low"
+	summary := "auto"
 	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:           model,
-		Messages:        []sdk.Message{sdk.UserMessage("What is 15 * 37? Think step by step.")},
-		ReasoningEffort: &effort,
+		Model:            model,
+		Messages:         []sdk.Message{sdk.UserMessage("What is 15 * 37? Think step by step.")},
+		ReasoningEffort:  &effort,
+		ReasoningSummary: &summary,
 	})
 	if err != nil {
 		t.Fatalf("DoGenerate: %v", err)
@@ -1502,12 +1603,14 @@ func TestIntegration_ResponsesDoGenerate_Reasoning(t *testing.T) {
 
 func TestIntegration_ResponsesDoStream_Reasoning(t *testing.T) {
 	p := newResponsesIntegrationProvider(t)
-	model := p.ChatModel("openai/o4-mini")
+	model := p.ChatModel(openRouterResponsesReasoningModel)
 	effort := "low"
+	summary := "auto"
 	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model:           model,
-		Messages:        []sdk.Message{sdk.UserMessage("What is 15 * 37? Think step by step.")},
-		ReasoningEffort: &effort,
+		Model:            model,
+		Messages:         []sdk.Message{sdk.UserMessage("What is 15 * 37? Think step by step.")},
+		ReasoningEffort:  &effort,
+		ReasoningSummary: &summary,
 	})
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
