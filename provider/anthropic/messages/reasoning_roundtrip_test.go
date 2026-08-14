@@ -415,3 +415,42 @@ func TestConvertAssistantMessageKeepsLegacyBlocksWithoutModel(t *testing.T) {
 		t.Fatalf("blocks: got %+v, want thinking then text", converted.Content)
 	}
 }
+
+// A summarized thinking block signs empty text, and Anthropic rejects a
+// thinking block whose thinking key is missing outright — "messages.N.content:
+// Invalid input", reproduced live against Sonnet 5. The empty string has to
+// reach the wire, which omitempty on a plain string silently prevents.
+func TestConvertAssistantMessageKeepsEmptyThinkingKeyOnWire(t *testing.T) {
+	msg := sdk.Message{
+		Role: sdk.MessageRoleAssistant,
+		Content: []sdk.MessagePart{
+			sdk.ReasoningPart{
+				Text:             "",
+				Format:           sdk.ReasoningFormatAnthropic,
+				Model:            "claude-sonnet-5",
+				ProviderMetadata: map[string]any{"anthropic": map[string]any{"signature": "SIG"}},
+			},
+			sdk.TextPart{Text: "answer"},
+		},
+	}
+
+	converted := convertAssistantMessage(msg, "claude-sonnet-5")
+	raw, err := json.Marshal(converted.Content[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	thinking, present := wire["thinking"]
+	if !present {
+		t.Fatalf("thinking key missing from the wire: %s", raw)
+	}
+	if thinking != "" {
+		t.Errorf("thinking: got %v, want the empty string", thinking)
+	}
+	if wire["signature"] != "SIG" {
+		t.Errorf("signature: got %v, want SIG", wire["signature"])
+	}
+}

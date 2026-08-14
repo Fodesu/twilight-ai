@@ -53,9 +53,12 @@ type contentBlock struct {
 	Source *imageSource `json:"source,omitempty"`
 	Title  string       `json:"title,omitempty"`
 
-	// thinking block
-	Thinking  string `json:"thinking,omitempty"`
-	Signature string `json:"signature,omitempty"`
+	// thinking block. Thinking is a pointer because the empty string is a
+	// legal value that must reach the wire: a summarized thinking block
+	// carries a signature over empty text, and the API rejects the block as
+	// invalid when the thinking key is missing entirely.
+	Thinking  *string `json:"thinking,omitempty"`
+	Signature string  `json:"signature,omitempty"`
 
 	// redacted_thinking block: an encrypted payload replayed verbatim.
 	Data string `json:"data,omitempty"`

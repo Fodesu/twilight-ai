@@ -749,9 +749,10 @@ func convertAssistantMessage(msg sdk.Message, targetModel string) anthropicMessa
 				continue
 			}
 			if sig := signatureOf(p.ProviderMetadata); sig != "" {
+				thinking := p.Text
 				blocks = append(blocks, contentBlock{
 					Type:      blockTypeThinking,
-					Thinking:  p.Text,
+					Thinking:  &thinking,
 					Signature: sig,
 				})
 			}
