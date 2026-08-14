@@ -138,7 +138,7 @@ func TestBuildStepMessagesEmitsOnePartPerReasoningBlock(t *testing.T) {
 		{Text: "BBB", ProviderMetadata: reasoningMeta("SIG_B")},
 	}
 
-	msgs := buildStepMessages("answer", blocks, nil, nil, nil)
+	msgs := buildStepMessages("answer", nil, blocks, nil, nil, nil)
 	if len(msgs) == 0 {
 		t.Fatal("no messages produced")
 	}

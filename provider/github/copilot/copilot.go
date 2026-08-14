@@ -351,6 +351,7 @@ func (p *Provider) parseResponse(resp *chatResponse) (*sdk.GenerateResult, error
 			result.ReasoningParts = []sdk.ReasoningPart{{
 				Text:             result.Reasoning,
 				Format:           sdk.ReasoningFormatCopilot,
+				Model:            resp.Model,
 				ProviderMetadata: reasoningOpaqueMetadata(choice.Message.ReasoningOpaque),
 			}}
 		}

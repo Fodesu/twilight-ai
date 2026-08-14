@@ -58,13 +58,13 @@ func addUsage(total, step *Usage) Usage {
 // emitted them. Blocks are never filtered on empty text: a redacted thinking
 // block carries its payload entirely in metadata, and dropping it breaks the
 // replay the providers require.
-func buildStepMessages(text string, reasoningParts []ReasoningPart, toolCalls []ToolCall, toolResults []ToolResultPart, usage *Usage) []Message {
+func buildStepMessages(text string, textMeta map[string]any, reasoningParts []ReasoningPart, toolCalls []ToolCall, toolResults []ToolResultPart, usage *Usage) []Message {
 	var assistantParts []MessagePart
 	for i := range reasoningParts {
 		assistantParts = append(assistantParts, reasoningParts[i])
 	}
 	if text != "" {
-		assistantParts = append(assistantParts, TextPart{Text: text})
+		assistantParts = append(assistantParts, TextPart{Text: text, ProviderMetadata: textMeta})
 	}
 	for _, tc := range toolCalls {
 		assistantParts = append(assistantParts, ToolCallPart{

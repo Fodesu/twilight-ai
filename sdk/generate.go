@@ -81,7 +81,12 @@ type GenerateResult struct {
 	Reasoning string `json:"reasoning,omitempty"`
 	// ReasoningParts holds the reasoning blocks in provider order, each with
 	// its own dialect and opaque token. This is the round-trip value.
-	ReasoningParts       []ReasoningPart     `json:"reasoningParts,omitempty"`
+	ReasoningParts []ReasoningPart `json:"reasoningParts,omitempty"`
+	// TextProviderMetadata carries an opaque token bound to the answer text.
+	// Google attaches a thought signature to an ordinary part when a response
+	// makes no function call — at most one per step, which is why this is a
+	// single slot rather than a list.
+	TextProviderMetadata map[string]any      `json:"-"`
 	FinishReason         FinishReason        `json:"finishReason"`
 	RawFinishReason      string              `json:"rawFinishReason,omitempty"`
 	Usage                Usage               `json:"usage"`

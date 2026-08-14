@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -137,6 +138,16 @@ type ReasoningPart struct {
 	// provider that speaks the same dialect.
 	Format ReasoningFormat `json:"format,omitempty"`
 
+	// Model names the model that produced this block, as the provider reported
+	// it in the response. Opaque tokens are verified by the model that issued
+	// them: replaying a block to a different model of the same dialect is a
+	// 400, not a silent no-op. Comparison is by normalized family and version
+	// rather than raw equality, since the same model reaches us under several
+	// spellings (claude-sonnet-5, anthropic/claude-sonnet-5,
+	// us.anthropic.claude-sonnet-5-v1:0) and its signatures are portable
+	// across those endpoints.
+	Model string `json:"model,omitempty"`
+
 	ProviderMetadata map[string]any `json:"providerMetadata,omitempty"`
 }
 
@@ -151,6 +162,46 @@ func ReasoningText(parts []ReasoningPart) string {
 		sb.WriteString(parts[i].Text)
 	}
 	return sb.String()
+}
+
+// SameReasoningModel reports whether two model identifiers name the same
+// model for reasoning-replay purposes. Exact strings match trivially; beyond
+// that both ids are reduced to a normalized Claude family+version, which
+// tolerates gateway and Bedrock spellings of one model while still separating
+// models whose tokens cannot verify each other. Unparseable pairs do not
+// match: replaying a token to the wrong model is a hard 400, while dropping a
+// block loses at most one turn of thinking context, so uncertainty resolves
+// toward dropping.
+func SameReasoningModel(a, b string) bool {
+	a, b = strings.ToLower(strings.TrimSpace(a)), strings.ToLower(strings.TrimSpace(b))
+	if a == "" || b == "" {
+		// A missing producer means provenance was lost (or predates this
+		// field); a missing target means the caller has nothing to compare
+		// against. Neither can establish a mismatch.
+		return true
+	}
+	if a == b {
+		return true
+	}
+	fa, oka := claudeFamilyVersion(a)
+	fb, okb := claudeFamilyVersion(b)
+	return oka && okb && fa == fb
+}
+
+// claudeReasoningIdentity extracts "family-major.minor" from a Claude model id
+// in any of its spellings, reporting false for anything it cannot read.
+var claudeIdentityPattern = regexp.MustCompile(`claude-([a-z]+)-(\d+)(?:[.-](\d{1,2}))?(?:[.:@-]|$)`)
+
+func claudeFamilyVersion(id string) (string, bool) {
+	match := claudeIdentityPattern.FindStringSubmatch(id)
+	if match == nil {
+		return "", false
+	}
+	minor := match[3]
+	if minor == "" {
+		minor = "0"
+	}
+	return match[1] + "-" + match[2] + "." + minor, true
 }
 
 // ReasoningMetadata builds a provider-namespaced metadata bag, skipping empty
@@ -197,12 +248,12 @@ type reasoningAccumulator struct {
 
 // openBlock starts a block, or returns the existing one when a provider
 // re-announces the same ID.
-func (a *reasoningAccumulator) openBlock(id string, format ReasoningFormat, meta map[string]any) int {
+func (a *reasoningAccumulator) openBlock(id string, format ReasoningFormat, model string, meta map[string]any) int {
 	if idx, ok := a.index(id); ok {
-		a.merge(idx, format, meta)
+		a.merge(idx, format, model, meta)
 		return idx
 	}
-	a.parts = append(a.parts, ReasoningPart{ID: id, Format: format, ProviderMetadata: meta})
+	a.parts = append(a.parts, ReasoningPart{ID: id, Format: format, Model: model, ProviderMetadata: meta})
 	idx := len(a.parts) - 1
 	if id != "" {
 		if a.byID == nil {
@@ -226,9 +277,12 @@ func (a *reasoningAccumulator) index(id string) (int, bool) {
 	return len(a.parts) - 1, true
 }
 
-func (a *reasoningAccumulator) merge(idx int, format ReasoningFormat, meta map[string]any) {
+func (a *reasoningAccumulator) merge(idx int, format ReasoningFormat, model string, meta map[string]any) {
 	if format != ReasoningFormatUnknown {
 		a.parts[idx].Format = format
+	}
+	if model != "" {
+		a.parts[idx].Model = model
 	}
 	if len(meta) == 0 {
 		return
@@ -241,23 +295,23 @@ func (a *reasoningAccumulator) merge(idx int, format ReasoningFormat, meta map[s
 	}
 }
 
-func (a *reasoningAccumulator) appendDelta(id, text string, format ReasoningFormat, meta map[string]any) {
+func (a *reasoningAccumulator) appendDelta(id, text string, format ReasoningFormat, model string, meta map[string]any) {
 	idx, ok := a.index(id)
 	if !ok {
-		idx = a.openBlock(id, format, nil)
+		idx = a.openBlock(id, format, model, nil)
 	}
 	a.parts[idx].Text += text
-	a.merge(idx, format, meta)
+	a.merge(idx, format, model, meta)
 }
 
 // closeBlock attaches the block's final metadata, which is where providers
 // deliver the opaque token.
-func (a *reasoningAccumulator) closeBlock(id string, format ReasoningFormat, meta map[string]any) {
+func (a *reasoningAccumulator) closeBlock(id string, format ReasoningFormat, model string, meta map[string]any) {
 	idx, ok := a.index(id)
 	if !ok {
-		idx = a.openBlock(id, format, nil)
+		idx = a.openBlock(id, format, model, nil)
 	}
-	a.merge(idx, format, meta)
+	a.merge(idx, format, model, meta)
 }
 
 func (a *reasoningAccumulator) result() []ReasoningPart {

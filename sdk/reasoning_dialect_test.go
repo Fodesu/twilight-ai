@@ -43,7 +43,7 @@ func TestEveryProviderStampsItsReasoningDialect(t *testing.T) {
 		},
 		{
 			name: "openai-responses",
-			response: `{"id":"resp_1","status":"completed","output":[
+			response: `{"id":"resp_1","status":"completed","model":"gpt-5.6","output":[
 				{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"t"}],"encrypted_content":"EC"}],
 				"usage":{"input_tokens":1,"output_tokens":1}}`,
 			want: sdk.ReasoningFormatOpenAIResponses,
@@ -59,7 +59,7 @@ func TestEveryProviderStampsItsReasoningDialect(t *testing.T) {
 			name: "google",
 			response: `{"candidates":[{"content":{"parts":[
 				{"text":"t","thought":true,"thoughtSignature":"SIG"},{"text":"a"}]},"finishReason":"STOP"}],
-				"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1}}`,
+				"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1},"modelVersion":"gemini-3-pro"}`,
 			want: sdk.ReasoningFormatGoogle,
 			generate: func(t *testing.T, baseURL string) (*sdk.GenerateResult, error) {
 				p := googlegenerative.New(googlegenerative.WithAPIKey("k"), googlegenerative.WithBaseURL(baseURL))
@@ -117,6 +117,12 @@ func TestEveryProviderStampsItsReasoningDialect(t *testing.T) {
 			for i, part := range result.ReasoningParts {
 				if part.Format != tc.want {
 					t.Errorf("part %d format: got %q, want %q", i, part.Format, tc.want)
+				}
+				// The producing model must be stamped too: replay guards
+				// compare it against the target model, and a missing stamp
+				// silently disables that check.
+				if part.Model == "" {
+					t.Errorf("part %d has no producing model", i)
 				}
 			}
 		})

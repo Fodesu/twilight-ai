@@ -234,6 +234,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 						send(&sdk.ReasoningStartPart{
 							ID:               chunk.Item.ID,
 							Format:           sdk.ReasoningFormatOpenAIResponses,
+							Model:            responseModel,
 							ProviderMetadata: openaiutil.ReasoningItemMetadata(chunk.Item.ID, chunk.Item.EncryptedContent),
 						})
 						activeReasoningID = chunk.Item.ID
@@ -267,10 +268,10 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 				}
 				if activeReasoningID != chunk.ItemID {
 					endReasoning(nil)
-					send(&sdk.ReasoningStartPart{ID: chunk.ItemID, Format: sdk.ReasoningFormatOpenAIResponses})
+					send(&sdk.ReasoningStartPart{ID: chunk.ItemID, Format: sdk.ReasoningFormatOpenAIResponses, Model: responseModel})
 					activeReasoningID = chunk.ItemID
 				}
-				send(&sdk.ReasoningDeltaPart{ID: chunk.ItemID, Text: chunk.Delta, Format: sdk.ReasoningFormatOpenAIResponses})
+				send(&sdk.ReasoningDeltaPart{ID: chunk.ItemID, Text: chunk.Delta, Format: sdk.ReasoningFormatOpenAIResponses, Model: responseModel})
 
 			case "response.function_call_arguments.delta":
 				var chunk codexFuncArgsDeltaChunk
@@ -323,8 +324,15 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 							args = stc.args.String()
 						}
 						var input any
-						if err := json.Unmarshal([]byte(args), &input); err != nil {
-							send(&sdk.ErrorPart{Error: fmt.Errorf("openai-codex: unmarshal tool call arguments for %q: %w", stc.name, err)})
+						// A call whose arguments cannot be parsed must not
+						// become a call: nil input would hand the tool empty
+						// arguments and run it anyway.
+						if args != "" {
+							if err := json.Unmarshal([]byte(args), &input); err != nil {
+								send(&sdk.ErrorPart{Error: fmt.Errorf("openai-codex: unmarshal tool call arguments for %q: %w", stc.name, err)})
+								stc.finished = true
+								break
+							}
 						}
 						send(&sdk.StreamToolCallPart{ToolCallID: stc.id, ToolName: stc.name, Input: input})
 						stc.finished = true

@@ -103,7 +103,7 @@ func TestConvertAssistantMessageReplaysThinkingAndRedactedBlocks(t *testing.T) {
 		},
 	}
 
-	converted := convertAssistantMessage(msg)
+	converted := convertAssistantMessage(msg, "claude-opus-5")
 	if len(converted.Content) != 3 {
 		t.Fatalf("blocks: got %d, want 3: %+v", len(converted.Content), converted.Content)
 	}
@@ -158,7 +158,7 @@ func TestConvertAssistantMessageDropsForeignReasoning(t *testing.T) {
 		},
 	}
 
-	converted := convertAssistantMessage(msg)
+	converted := convertAssistantMessage(msg, "claude-opus-5")
 	if len(converted.Content) != 1 {
 		t.Fatalf("blocks: got %d, want 1: %+v", len(converted.Content), converted.Content)
 	}
@@ -250,7 +250,7 @@ func TestConvertAssistantMessageDropsUnmarkedReasoning(t *testing.T) {
 		},
 	}
 
-	converted := convertAssistantMessage(msg)
+	converted := convertAssistantMessage(msg, "claude-opus-5")
 	if len(converted.Content) != 1 || converted.Content[0].Type != blockTypeText {
 		t.Fatalf("blocks: got %+v, want only the text block", converted.Content)
 	}
@@ -344,5 +344,74 @@ func TestInterleavedThinkingSurvivesReplay(t *testing.T) {
 		if replayed[i][w.key] != w.value {
 			t.Errorf("block %d %s: got %v, want %s", i, w.key, replayed[i][w.key], w.value)
 		}
+	}
+}
+
+// The live failure this guards: a conversation starts on one Claude and
+// switches to another. The old model's thinking blocks cannot pass the new
+// model's signature check — Anthropic rejects them with
+// "messages.N.content: Invalid input" — so they are dropped on replay.
+func TestConvertAssistantMessageDropsBlocksFromAnotherModel(t *testing.T) {
+	msg := sdk.Message{
+		Role: sdk.MessageRoleAssistant,
+		Content: []sdk.MessagePart{
+			sdk.ReasoningPart{
+				Text:             "signed by sonnet 5",
+				Format:           sdk.ReasoningFormatAnthropic,
+				Model:            "anthropic/claude-sonnet-5",
+				ProviderMetadata: map[string]any{"anthropic": map[string]any{"signature": "SIG_S5"}},
+			},
+			sdk.TextPart{Text: "answer"},
+		},
+	}
+
+	converted := convertAssistantMessage(msg, "anthropic/claude-sonnet-4.6")
+	if len(converted.Content) != 1 || converted.Content[0].Type != blockTypeText {
+		t.Fatalf("blocks: got %+v, want only the text block", converted.Content)
+	}
+}
+
+// The same model under different spellings is still the same model: its
+// signatures are portable across the direct API, Bedrock and gateways, and
+// dropping them on a spelling change would lose valid reasoning.
+func TestConvertAssistantMessageKeepsBlocksAcrossSpellings(t *testing.T) {
+	msg := sdk.Message{
+		Role: sdk.MessageRoleAssistant,
+		Content: []sdk.MessagePart{
+			sdk.ReasoningPart{
+				Text:             "signed by sonnet 5",
+				Format:           sdk.ReasoningFormatAnthropic,
+				Model:            "anthropic/claude-sonnet-5",
+				ProviderMetadata: map[string]any{"anthropic": map[string]any{"signature": "SIG_S5"}},
+			},
+			sdk.TextPart{Text: "answer"},
+		},
+	}
+
+	converted := convertAssistantMessage(msg, "us.anthropic.claude-sonnet-5-v1:0")
+	if len(converted.Content) != 2 || converted.Content[0].Type != blockTypeThinking {
+		t.Fatalf("blocks: got %+v, want thinking then text", converted.Content)
+	}
+}
+
+// Blocks persisted before Model existed carry no producer. They cannot
+// establish a mismatch, so they replay as before — the field tightens the
+// guard going forward without invalidating existing history.
+func TestConvertAssistantMessageKeepsLegacyBlocksWithoutModel(t *testing.T) {
+	msg := sdk.Message{
+		Role: sdk.MessageRoleAssistant,
+		Content: []sdk.MessagePart{
+			sdk.ReasoningPart{
+				Text:             "pre-field block",
+				Format:           sdk.ReasoningFormatAnthropic,
+				ProviderMetadata: map[string]any{"anthropic": map[string]any{"signature": "SIG"}},
+			},
+			sdk.TextPart{Text: "answer"},
+		},
+	}
+
+	converted := convertAssistantMessage(msg, "anthropic/claude-sonnet-5")
+	if len(converted.Content) != 2 || converted.Content[0].Type != blockTypeThinking {
+		t.Fatalf("blocks: got %+v, want thinking then text", converted.Content)
 	}
 }

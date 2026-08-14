@@ -483,6 +483,7 @@ func (p *Provider) parseResponse(resp *responsesResponse) (*sdk.GenerateResult, 
 				result.ReasoningParts = append(result.ReasoningParts, sdk.ReasoningPart{
 					ID:               item.ID,
 					Format:           sdk.ReasoningFormatOpenAIResponses,
+					Model:            resp.Model,
 					ProviderMetadata: meta,
 				})
 			}
@@ -494,6 +495,7 @@ func (p *Provider) parseResponse(resp *responsesResponse) (*sdk.GenerateResult, 
 					ID:               item.ID,
 					Text:             s.Text,
 					Format:           sdk.ReasoningFormatOpenAIResponses,
+					Model:            resp.Model,
 					ProviderMetadata: meta,
 				})
 			}
@@ -691,7 +693,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 					return nil
 				}
 				startReasoning(chunk.ItemID, nil)
-				send(&sdk.ReasoningDeltaPart{ID: chunk.ItemID, Text: chunk.Delta, Format: sdk.ReasoningFormatOpenAIResponses})
+				send(&sdk.ReasoningDeltaPart{ID: chunk.ItemID, Text: chunk.Delta, Format: sdk.ReasoningFormatOpenAIResponses, Model: responseModel})
 
 			case "response.function_call_arguments.delta":
 				var chunk responsesFuncArgsDeltaChunk
@@ -747,8 +749,15 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 							args = stc.args.String()
 						}
 						var input any
-						if err := json.Unmarshal([]byte(args), &input); err != nil {
-							send(&sdk.ErrorPart{Error: fmt.Errorf("openai-responses: unmarshal tool call arguments for %q: %w", stc.name, err)})
+						// A call whose arguments cannot be parsed must not
+						// become a call: nil input would hand the tool empty
+						// arguments and run it anyway.
+						if args != "" {
+							if err := json.Unmarshal([]byte(args), &input); err != nil {
+								send(&sdk.ErrorPart{Error: fmt.Errorf("openai-responses: unmarshal tool call arguments for %q: %w", stc.name, err)})
+								stc.finished = true
+								break
+							}
 						}
 						send(&sdk.StreamToolCallPart{
 							ToolCallID: stc.id,

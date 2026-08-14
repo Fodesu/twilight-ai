@@ -491,6 +491,7 @@ func (p *Provider) parseResponse(resp *chatResponse) (*sdk.GenerateResult, error
 			result.ReasoningParts = []sdk.ReasoningPart{{
 				Text:             result.Reasoning,
 				Format:           sdk.ReasoningFormatOpenAIChat,
+				Model:            resp.Model,
 				ProviderMetadata: minimaxReasoningMetadata(choice.Message.ReasoningDetails),
 			}}
 		}

@@ -39,7 +39,7 @@ func (sp *streamProcessor) send(part sdk.StreamPart) bool {
 
 func (sp *streamProcessor) endReasoning(id string) {
 	if sp.reasoningStartSent {
-		sp.send(&sdk.ReasoningEndPart{ID: id, Format: sdk.ReasoningFormatOpenAIChat, ProviderMetadata: minimaxReasoningMetadata(sp.reasoningDetails)})
+		sp.send(&sdk.ReasoningEndPart{ID: id, Format: sdk.ReasoningFormatOpenAIChat, Model: sp.chunkModel, ProviderMetadata: minimaxReasoningMetadata(sp.reasoningDetails)})
 		sp.reasoningStartSent = false
 	}
 }
@@ -69,8 +69,16 @@ func (sp *streamProcessor) finishToolCall(stc *streamingToolCall) {
 	}
 	sp.send(&sdk.ToolInputEndPart{ID: stc.id})
 	var input any
-	if err := json.Unmarshal([]byte(stc.args.String()), &input); err != nil {
-		sp.send(&sdk.ErrorPart{Error: fmt.Errorf("openai: unmarshal tool call arguments for %q: %w", stc.name, err)})
+	// Providers stream arguments incrementally and no-arg tools may close with
+	// an empty buffer, which is not malformed JSON — only a non-empty buffer
+	// that fails to parse is. Such a call must not be emitted: nil input would
+	// hand the tool empty arguments and run it anyway.
+	if args := stc.args.String(); args != "" {
+		if err := json.Unmarshal([]byte(args), &input); err != nil {
+			sp.send(&sdk.ErrorPart{Error: fmt.Errorf("openai: unmarshal tool call arguments for %q: %w", stc.name, err)})
+			stc.finished = true
+			return
+		}
 	}
 	sp.send(&sdk.StreamToolCallPart{
 		ToolCallID: stc.id,
@@ -121,10 +129,10 @@ func (sp *streamProcessor) processReasoning(delta *chatChunkDelta, chunkID strin
 		return
 	}
 	if !sp.reasoningStartSent {
-		sp.send(&sdk.ReasoningStartPart{ID: chunkID, Format: sdk.ReasoningFormatOpenAIChat})
+		sp.send(&sdk.ReasoningStartPart{ID: chunkID, Format: sdk.ReasoningFormatOpenAIChat, Model: sp.chunkModel})
 		sp.reasoningStartSent = true
 	}
-	sp.send(&sdk.ReasoningDeltaPart{ID: chunkID, Text: reasoningContent, Format: sdk.ReasoningFormatOpenAIChat})
+	sp.send(&sdk.ReasoningDeltaPart{ID: chunkID, Text: reasoningContent, Format: sdk.ReasoningFormatOpenAIChat, Model: sp.chunkModel})
 }
 
 func trimReasoningPrefix(text, previous string) string {

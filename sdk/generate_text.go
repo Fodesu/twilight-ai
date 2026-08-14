@@ -27,7 +27,7 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 		if err != nil {
 			return nil, err
 		}
-		stepMsgs := buildStepMessages(result.Text, result.ReasoningParts, result.ToolCalls, nil, &result.Usage)
+		stepMsgs := buildStepMessages(result.Text, result.TextProviderMetadata, result.ReasoningParts, result.ToolCalls, nil, &result.Usage)
 		step := StepResult{
 			Text:            result.Text,
 			Reasoning:       result.Reasoning,
@@ -79,7 +79,7 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 
 		// No tool calls or not a tool-calls finish → final step
 		if result.FinishReason != FinishReasonToolCalls || len(result.ToolCalls) == 0 || !hasExecutableTools(result.ToolCalls, toolMap) {
-			stepMsgs := buildStepMessages(result.Text, result.ReasoningParts, result.ToolCalls, nil, &result.Usage)
+			stepMsgs := buildStepMessages(result.Text, result.TextProviderMetadata, result.ReasoningParts, result.ToolCalls, nil, &result.Usage)
 			sr := StepResult{
 				Text:            result.Text,
 				Reasoning:       result.Reasoning,
@@ -105,7 +105,7 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 		if err != nil {
 			var deferred *ToolApprovalDeferredError
 			if errors.As(err, &deferred) {
-				stepMsgs := buildStepMessages(result.Text, result.ReasoningParts, result.ToolCalls, nil, &result.Usage)
+				stepMsgs := buildStepMessages(result.Text, result.TextProviderMetadata, result.ReasoningParts, result.ToolCalls, nil, &result.Usage)
 				sr := StepResult{
 					Text:                 result.Text,
 					Reasoning:            result.Reasoning,
@@ -130,7 +130,7 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 			return nil, err
 		}
 
-		stepMsgs := buildStepMessages(result.Text, result.ReasoningParts, result.ToolCalls, toolResults, &result.Usage)
+		stepMsgs := buildStepMessages(result.Text, result.TextProviderMetadata, result.ReasoningParts, result.ToolCalls, toolResults, &result.Usage)
 		sr := StepResult{
 			Text:            result.Text,
 			Reasoning:       result.Reasoning,

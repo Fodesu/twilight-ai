@@ -411,7 +411,7 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) (*messagesRequest, e
 	if err != nil {
 		return nil, err
 	}
-	system, messages := convertMessages(params.System, normalized)
+	system, messages := convertMessages(params.System, params.Model.ID, normalized)
 
 	req := &messagesRequest{
 		Model:       params.Model.ID,
@@ -540,7 +540,7 @@ func convertToolChoice(choice any) *anthropicToolChoice {
 // block without cache_control. To attach cache_control to a system prompt,
 // pass it as a MessageRoleSystem message with a TextPart that has CacheControl
 // set instead of using the System field.
-func convertMessages(systemPrompt string, messages []sdk.Message) ([]contentBlock, []anthropicMessage) {
+func convertMessages(systemPrompt, targetModel string, messages []sdk.Message) ([]contentBlock, []anthropicMessage) {
 	var system []contentBlock
 	var out []anthropicMessage
 	conversationStarted := false
@@ -566,7 +566,7 @@ func convertMessages(systemPrompt string, messages []sdk.Message) ([]contentBloc
 
 		case sdk.MessageRoleAssistant:
 			conversationStarted = true
-			out = append(out, convertAssistantMessage(msg))
+			out = append(out, convertAssistantMessage(msg, targetModel))
 
 		case sdk.MessageRoleTool:
 			conversationStarted = true
@@ -714,7 +714,7 @@ func isAnthropicSupportedMediaType(mt string) bool {
 	}
 }
 
-func convertAssistantMessage(msg sdk.Message) anthropicMessage {
+func convertAssistantMessage(msg sdk.Message, targetModel string) anthropicMessage {
 	var blocks []contentBlock
 
 	for _, part := range msg.Content {
@@ -732,6 +732,13 @@ func convertAssistantMessage(msg sdk.Message) anthropicMessage {
 			// because feeding a model its own inner monologue back as ordinary
 			// content teaches it to imitate the form in user-visible answers.
 			if p.Format != sdk.ReasoningFormatAnthropic {
+				continue
+			}
+			// A signature is verified by the model that issued it. After a
+			// mid-conversation model switch the old blocks cannot pass the new
+			// model's check — replaying them is a hard 400 — so they are
+			// dropped, exactly as foreign-dialect reasoning is.
+			if !sdk.SameReasoningModel(p.Model, targetModel) {
 				continue
 			}
 			if data := redactedDataOf(p.ProviderMetadata); data != "" {
@@ -818,6 +825,7 @@ func (p *Provider) parseResponse(resp *messagesResponse) (*sdk.GenerateResult, e
 			result.ReasoningParts = append(result.ReasoningParts, sdk.ReasoningPart{
 				Text:             block.Thinking,
 				Format:           sdk.ReasoningFormatAnthropic,
+				Model:            resp.Model,
 				ProviderMetadata: signatureMetadata(block.Signature),
 			})
 		case blockTypeRedactedThinking:
@@ -825,6 +833,7 @@ func (p *Provider) parseResponse(resp *messagesResponse) (*sdk.GenerateResult, e
 			// or the next request is rejected.
 			result.ReasoningParts = append(result.ReasoningParts, sdk.ReasoningPart{
 				Format:           sdk.ReasoningFormatAnthropic,
+				Model:            resp.Model,
 				ProviderMetadata: redactedMetadata(block.Data),
 			})
 		case blockTypeToolUse:
@@ -970,7 +979,7 @@ func (h *streamHandler) onBlockStart(event *streamEvent) {
 	case blockTypeThinking:
 		id := h.reasoningBlockID(idx)
 		h.activeBlocks[idx] = &streamingBlock{blockType: blockTypeThinking, reasoningID: id}
-		h.send(&sdk.ReasoningStartPart{ID: id, Format: sdk.ReasoningFormatAnthropic})
+		h.send(&sdk.ReasoningStartPart{ID: id, Format: sdk.ReasoningFormatAnthropic, Model: h.messageModel})
 	case blockTypeRedactedThinking:
 		// Delivered whole: no deltas follow, and the payload is already here.
 		id := h.reasoningBlockID(idx)
@@ -979,7 +988,7 @@ func (h *streamHandler) onBlockStart(event *streamEvent) {
 			reasoningID:  id,
 			redactedData: cb.Data,
 		}
-		h.send(&sdk.ReasoningStartPart{ID: id, Format: sdk.ReasoningFormatAnthropic})
+		h.send(&sdk.ReasoningStartPart{ID: id, Format: sdk.ReasoningFormatAnthropic, Model: h.messageModel})
 	case blockTypeToolUse:
 		h.activeBlocks[idx] = &streamingBlock{
 			blockType: blockTypeToolUse,
@@ -1009,7 +1018,7 @@ func (h *streamHandler) onBlockDelta(event *streamEvent) {
 		if sb != nil {
 			id = sb.reasoningID
 		}
-		h.send(&sdk.ReasoningDeltaPart{ID: id, Text: delta.Thinking, Format: sdk.ReasoningFormatAnthropic})
+		h.send(&sdk.ReasoningDeltaPart{ID: id, Text: delta.Thinking, Format: sdk.ReasoningFormatAnthropic, Model: h.messageModel})
 	case "input_json_delta":
 		if sb != nil {
 			sb.args.WriteString(delta.PartialJSON)
@@ -1043,12 +1052,14 @@ func (h *streamHandler) onBlockStop(event *streamEvent) {
 		h.send(&sdk.ReasoningEndPart{
 			ID:               sb.reasoningID,
 			Format:           sdk.ReasoningFormatAnthropic,
+			Model:            h.messageModel,
 			ProviderMetadata: signatureMetadata(sb.signature.String()),
 		})
 	case blockTypeRedactedThinking:
 		h.send(&sdk.ReasoningEndPart{
 			ID:               sb.reasoningID,
 			Format:           sdk.ReasoningFormatAnthropic,
+			Model:            h.messageModel,
 			ProviderMetadata: redactedMetadata(sb.redactedData),
 		})
 	case blockTypeToolUse:
@@ -1056,7 +1067,11 @@ func (h *streamHandler) onBlockStop(event *streamEvent) {
 		var input any
 		if sb.args.Len() > 0 {
 			if err := json.Unmarshal([]byte(sb.args.String()), &input); err != nil {
+				// A call whose arguments cannot be parsed must not become a
+				// call: emitting it with nil input would hand the tool empty
+				// arguments and run it anyway.
 				h.send(&sdk.ErrorPart{Error: fmt.Errorf("anthropic: unmarshal tool args for %q: %w", sb.toolName, err)})
+				return
 			}
 		}
 		h.send(&sdk.StreamToolCallPart{

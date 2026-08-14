@@ -63,6 +63,7 @@ func (p *TextEndPart) Type() StreamPartType { return StreamPartTypeTextEnd }
 
 type ReasoningStartPart struct {
 	ID               string
+	Model            string
 	Format           ReasoningFormat
 	ProviderMetadata map[string]any
 }
@@ -71,6 +72,7 @@ func (p *ReasoningStartPart) Type() StreamPartType { return StreamPartTypeReason
 
 type ReasoningDeltaPart struct {
 	ID               string
+	Model            string
 	Text             string
 	Format           ReasoningFormat
 	ProviderMetadata map[string]any
@@ -80,6 +82,7 @@ func (p *ReasoningDeltaPart) Type() StreamPartType { return StreamPartTypeReason
 
 type ReasoningEndPart struct {
 	ID               string
+	Model            string
 	Format           ReasoningFormat
 	ProviderMetadata map[string]any
 }
@@ -264,12 +267,16 @@ func (sr *StreamResult) ToResult() (*GenerateResult, error) {
 		switch p := part.(type) {
 		case *TextDeltaPart:
 			result.Text += p.Text
+		case *TextEndPart:
+			if p.ProviderMetadata != nil {
+				result.TextProviderMetadata = p.ProviderMetadata
+			}
 		case *ReasoningStartPart:
-			reasoning.openBlock(p.ID, p.Format, p.ProviderMetadata)
+			reasoning.openBlock(p.ID, p.Format, p.Model, p.ProviderMetadata)
 		case *ReasoningDeltaPart:
-			reasoning.appendDelta(p.ID, p.Text, p.Format, p.ProviderMetadata)
+			reasoning.appendDelta(p.ID, p.Text, p.Format, p.Model, p.ProviderMetadata)
 		case *ReasoningEndPart:
-			reasoning.closeBlock(p.ID, p.Format, p.ProviderMetadata)
+			reasoning.closeBlock(p.ID, p.Format, p.Model, p.ProviderMetadata)
 		case *StreamToolCallPart:
 			result.ToolCalls = append(result.ToolCalls, ToolCall{
 				ToolCallID:       p.ToolCallID,
