@@ -150,3 +150,56 @@ func TestCodexListModels(t *testing.T) {
 		t.Fatalf("unexpected first model: %s", models[0].ID)
 	}
 }
+
+// encrypted_content is populated only on response.output_item.done, not on
+// output_item.added — reading it at added silently loses the payload, and the
+// next turn then replays a bare rs_… id the server can neither decrypt nor
+// look up (Codex always sends store:false).
+func TestCodexDoStream_CapturesEncryptedContentFromItemDone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("event: response.created\n"))
+		_, _ = w.Write([]byte("data: {\"response\":{\"id\":\"resp_ec\",\"created_at\":1700000000,\"model\":\"gpt-5.2\"}}\n\n"))
+		// added: no encrypted_content yet — this mirrors the real API.
+		_, _ = w.Write([]byte("event: response.output_item.added\n"))
+		_, _ = w.Write([]byte("data: {\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_ec\"}}\n\n"))
+		_, _ = w.Write([]byte("event: response.reasoning_summary_text.delta\n"))
+		_, _ = w.Write([]byte("data: {\"item_id\":\"rs_ec\",\"delta\":\"thinking\"}\n\n"))
+		// done: the payload arrives here and only here.
+		_, _ = w.Write([]byte("event: response.output_item.done\n"))
+		_, _ = w.Write([]byte("data: {\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_ec\",\"encrypted_content\":\"ENC_PAYLOAD\"}}\n\n"))
+		_, _ = w.Write([]byte("event: response.output_item.added\n"))
+		_, _ = w.Write([]byte("data: {\"output_index\":1,\"item\":{\"type\":\"message\",\"id\":\"msg_1\"}}\n\n"))
+		_, _ = w.Write([]byte("event: response.output_text.delta\n"))
+		_, _ = w.Write([]byte("data: {\"item_id\":\"msg_1\",\"delta\":\"answer\"}\n\n"))
+		_, _ = w.Write([]byte("event: response.output_item.done\n"))
+		_, _ = w.Write([]byte("data: {\"output_index\":1,\"item\":{\"type\":\"message\",\"id\":\"msg_1\"}}\n\n"))
+		_, _ = w.Write([]byte("event: response.completed\n"))
+		_, _ = w.Write([]byte("data: {\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n"))
+	}))
+	defer srv.Close()
+
+	p := codex.New(codex.WithAccessToken("token-123"), codex.WithBaseURL(srv.URL))
+	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
+		Model:    p.ChatModel("gpt-5.2"),
+		Messages: []sdk.Message{sdk.UserMessage("hi")},
+	})
+	if err != nil {
+		t.Fatalf("DoGenerate: %v", err)
+	}
+
+	if len(result.ReasoningParts) != 1 {
+		t.Fatalf("ReasoningParts: got %d, want 1 (%+v)", len(result.ReasoningParts), result.ReasoningParts)
+	}
+	part := result.ReasoningParts[0]
+	if part.Text != "thinking" {
+		t.Errorf("text: got %q, want %q", part.Text, "thinking")
+	}
+	meta, _ := part.ProviderMetadata["openai"].(map[string]any)
+	if meta["reasoningEncryptedContent"] != "ENC_PAYLOAD" {
+		t.Errorf("encrypted content lost in streaming: metadata = %+v", part.ProviderMetadata)
+	}
+	if meta["itemId"] != "rs_ec" {
+		t.Errorf("item id: got %v, want rs_ec", meta["itemId"])
+	}
+}

@@ -79,9 +79,10 @@ func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*St
 
 			var (
 				stepText            string
-				stepReasoning       string
-				stepReasoningMeta   map[string]any
+				stepTextMeta        map[string]any
+				stepReasoning       reasoningAccumulator
 				stepToolCalls       []ToolCall
+				stepErrored         bool
 				stepUsage           Usage
 				stepResponse        ResponseMetadata
 				stepFinishReason    FinishReason
@@ -93,12 +94,16 @@ func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*St
 				switch p := part.(type) {
 				case *TextDeltaPart:
 					stepText += p.Text
-				case *ReasoningDeltaPart:
-					stepReasoning += p.Text
-				case *ReasoningEndPart:
+				case *TextEndPart:
 					if p.ProviderMetadata != nil {
-						stepReasoningMeta = p.ProviderMetadata
+						stepTextMeta = p.ProviderMetadata
 					}
+				case *ReasoningStartPart:
+					stepReasoning.openBlock(p.ID, p.Format, p.Model, p.ProviderMetadata)
+				case *ReasoningDeltaPart:
+					stepReasoning.appendDelta(p.ID, p.Text, p.Format, p.Model, p.ProviderMetadata)
+				case *ReasoningEndPart:
+					stepReasoning.closeBlock(p.ID, p.Format, p.Model, p.ProviderMetadata)
 				case *StreamToolCallPart:
 					stepToolCalls = append(stepToolCalls, ToolCall{
 						ToolCallID:       p.ToolCallID,
@@ -116,11 +121,20 @@ func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*St
 					stepFinishReason = p.FinishReason
 					stepRawFinishReason = p.RawFinishReason
 					continue
+				case *ErrorPart:
+					stepErrored = true
 				}
 
 				if !send(part) {
 					return
 				}
+			}
+			// A provider error poisons the step: the consumer already saw the
+			// ErrorPart, and committing what remains would persist a step the
+			// provider itself reported as broken. ToResult treats the same
+			// part as fatal; the streaming loop has to agree with it.
+			if stepErrored {
+				return
 			}
 			if !sawFinishStep {
 				if ctx.Err() == nil {
@@ -135,10 +149,11 @@ func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*St
 
 			// No tool calls or not a tool-calls finish → done
 			if !autoExecuteTools || stepFinishReason != FinishReasonToolCalls || len(stepToolCalls) == 0 || !hasExecutableTools(stepToolCalls, toolMap) {
-				stepMsgs := buildStepMessages(stepText, stepReasoning, stepReasoningMeta, stepToolCalls, nil, &stepUsage)
+				stepMsgs := buildStepMessages(stepText, stepTextMeta, stepReasoning.result(), stepToolCalls, nil, &stepUsage)
 				stepR := StepResult{
 					Text:            stepText,
-					Reasoning:       stepReasoning,
+					Reasoning:       ReasoningText(stepReasoning.result()),
+					ReasoningParts:  stepReasoning.result(),
 					FinishReason:    stepFinishReason,
 					RawFinishReason: stepRawFinishReason,
 					Usage:           stepUsage,
@@ -162,10 +177,11 @@ func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*St
 			if err != nil {
 				var deferred *ToolApprovalDeferredError
 				if errors.As(err, &deferred) {
-					stepMsgs := buildStepMessages(stepText, stepReasoning, stepReasoningMeta, stepToolCalls, nil, &stepUsage)
+					stepMsgs := buildStepMessages(stepText, stepTextMeta, stepReasoning.result(), stepToolCalls, nil, &stepUsage)
 					stepR := StepResult{
 						Text:                 stepText,
-						Reasoning:            stepReasoning,
+						Reasoning:            ReasoningText(stepReasoning.result()),
+						ReasoningParts:       stepReasoning.result(),
 						FinishReason:         stepFinishReason,
 						RawFinishReason:      stepRawFinishReason,
 						Usage:                stepUsage,
@@ -187,10 +203,11 @@ func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*St
 				return
 			}
 
-			stepMsgs := buildStepMessages(stepText, stepReasoning, stepReasoningMeta, stepToolCalls, toolResults, &stepUsage)
+			stepMsgs := buildStepMessages(stepText, stepTextMeta, stepReasoning.result(), stepToolCalls, toolResults, &stepUsage)
 			stepR := StepResult{
 				Text:            stepText,
-				Reasoning:       stepReasoning,
+				Reasoning:       ReasoningText(stepReasoning.result()),
+				ReasoningParts:  stepReasoning.result(),
 				FinishReason:    stepFinishReason,
 				RawFinishReason: stepRawFinishReason,
 				Usage:           stepUsage,

@@ -14,14 +14,17 @@ type streamProcessor struct {
 	ch                 chan sdk.StreamPart
 	textStartSent      bool
 	reasoningStartSent bool
-	rawFinishReason    string
-	finishReason       sdk.FinishReason
-	usage              sdk.Usage
-	chunkID            string
-	chunkModel         string
-	chunkCreated       int64
-	flushed            bool
-	pendingToolCalls   map[int]*streamingToolCall
+	// reasoningOpaque is the block's token, delivered on a delta and applied
+	// when the block closes.
+	reasoningOpaque  string
+	rawFinishReason  string
+	finishReason     sdk.FinishReason
+	usage            sdk.Usage
+	chunkID          string
+	chunkModel       string
+	chunkCreated     int64
+	flushed          bool
+	pendingToolCalls map[int]*streamingToolCall
 }
 
 func (sp *streamProcessor) send(part sdk.StreamPart) bool {
@@ -35,7 +38,12 @@ func (sp *streamProcessor) send(part sdk.StreamPart) bool {
 
 func (sp *streamProcessor) endReasoning(id string) {
 	if sp.reasoningStartSent {
-		sp.send(&sdk.ReasoningEndPart{ID: id})
+		sp.send(&sdk.ReasoningEndPart{
+			ID:               id,
+			Format:           sdk.ReasoningFormatCopilot,
+			Model:            sp.chunkModel,
+			ProviderMetadata: reasoningOpaqueMetadata(sp.reasoningOpaque),
+		})
 		sp.reasoningStartSent = false
 	}
 }
@@ -65,8 +73,16 @@ func (sp *streamProcessor) finishToolCall(stc *streamingToolCall) {
 	}
 	sp.send(&sdk.ToolInputEndPart{ID: stc.id})
 	var input any
-	if err := json.Unmarshal([]byte(stc.args.String()), &input); err != nil {
-		sp.send(&sdk.ErrorPart{Error: fmt.Errorf("github-copilot: unmarshal tool call arguments for %q: %w", stc.name, err)})
+	// Providers stream arguments incrementally and no-arg tools may close with
+	// an empty buffer, which is not malformed JSON — only a non-empty buffer
+	// that fails to parse is. Such a call must not be emitted: nil input would
+	// hand the tool empty arguments and run it anyway.
+	if args := stc.args.String(); args != "" {
+		if err := json.Unmarshal([]byte(args), &input); err != nil {
+			sp.send(&sdk.ErrorPart{Error: fmt.Errorf("github-copilot: unmarshal tool call arguments for %q: %w", stc.name, err)})
+			stc.finished = true
+			return
+		}
 	}
 	sp.send(&sdk.StreamToolCallPart{
 		ToolCallID: stc.id,
@@ -102,15 +118,22 @@ func (sp *streamProcessor) processChunk(chunk *chatChunkResponse) error {
 }
 
 func (sp *streamProcessor) processReasoning(delta *chatChunkDelta, chunkID string) {
+	if delta.ReasoningOpaque != "" {
+		sp.reasoningOpaque = delta.ReasoningOpaque
+	}
 	reasoningContent := reasoningFromDelta(delta)
-	if reasoningContent == "" {
+	// The opaque token may arrive on a delta carrying no text; that delta still
+	// opens the block, because without the token the text cannot be replayed.
+	if reasoningContent == "" && delta.ReasoningOpaque == "" {
 		return
 	}
 	if !sp.reasoningStartSent {
-		sp.send(&sdk.ReasoningStartPart{ID: chunkID})
+		sp.send(&sdk.ReasoningStartPart{ID: chunkID, Format: sdk.ReasoningFormatCopilot, Model: sp.chunkModel})
 		sp.reasoningStartSent = true
 	}
-	sp.send(&sdk.ReasoningDeltaPart{ID: chunkID, Text: reasoningContent})
+	if reasoningContent != "" {
+		sp.send(&sdk.ReasoningDeltaPart{ID: chunkID, Text: reasoningContent, Format: sdk.ReasoningFormatCopilot, Model: sp.chunkModel})
+	}
 }
 
 func (sp *streamProcessor) processContent(delta *chatChunkDelta, chunkID string) {

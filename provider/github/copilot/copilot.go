@@ -241,7 +241,7 @@ func convertAssistantMessage(msg sdk.Message) chatMessage {
 
 	var contentParts []sdk.MessagePart
 	var toolCalls []chatToolCall
-	var reasoning string
+	var reasoning, reasoningOpaque string
 
 	for _, part := range msg.Content {
 		switch p := part.(type) {
@@ -263,7 +263,13 @@ func convertAssistantMessage(msg sdk.Message) chatMessage {
 				},
 			})
 		case sdk.ReasoningPart:
-			reasoning += p.Text
+			if p.Format != sdk.ReasoningFormatCopilot {
+				continue
+			}
+			if opaque := reasoningOpaqueOf(p.ProviderMetadata); opaque != "" {
+				reasoningOpaque = opaque
+				reasoning += p.Text
+			}
 		default:
 			contentParts = append(contentParts, part)
 		}
@@ -272,8 +278,10 @@ func convertAssistantMessage(msg sdk.Message) chatMessage {
 	if len(contentParts) > 0 {
 		cm.Content = convertContent(contentParts)
 	}
-	if reasoning != "" {
-		cm.ReasoningContent = reasoning
+	// The API accepts reasoning_text only together with its opaque token.
+	if reasoningOpaque != "" {
+		cm.ReasoningOpaque = reasoningOpaque
+		cm.ReasoningText = reasoning
 	}
 	if len(toolCalls) > 0 {
 		cm.ToolCalls = toolCalls
@@ -339,6 +347,14 @@ func (p *Provider) parseResponse(resp *chatResponse) (*sdk.GenerateResult, error
 		choice := resp.Choices[0]
 		result.Text = choice.Message.Content
 		result.Reasoning = reasoningFromMessage(&choice.Message)
+		if result.Reasoning != "" || choice.Message.ReasoningOpaque != "" {
+			result.ReasoningParts = []sdk.ReasoningPart{{
+				Text:             result.Reasoning,
+				Format:           sdk.ReasoningFormatCopilot,
+				Model:            resp.Model,
+				ProviderMetadata: reasoningOpaqueMetadata(choice.Message.ReasoningOpaque),
+			}}
+		}
 		result.FinishReason = mapFinishReason(choice.FinishReason)
 		result.RawFinishReason = choice.FinishReason
 
@@ -456,17 +472,40 @@ type streamingToolCall struct {
 }
 
 func reasoningFromMessage(m *chatRespMessage) string {
-	if m.ReasoningContent != "" {
+	switch {
+	case m.ReasoningText != "":
+		return m.ReasoningText
+	case m.ReasoningContent != "":
 		return m.ReasoningContent
+	default:
+		return m.Reasoning
 	}
-	return m.Reasoning
 }
 
 func reasoningFromDelta(d *chatChunkDelta) string {
-	if d.ReasoningContent != "" {
+	switch {
+	case d.ReasoningText != "":
+		return d.ReasoningText
+	case d.ReasoningContent != "":
 		return d.ReasoningContent
+	default:
+		return d.Reasoning
 	}
-	return d.Reasoning
+}
+
+const (
+	metadataNamespace = "copilot"
+	// metadataKeyOpaque holds Copilot's reasoning_opaque: the upstream model's
+	// signature, wrapped uniformly regardless of which model produced it.
+	metadataKeyOpaque = "reasoningOpaque"
+)
+
+func reasoningOpaqueMetadata(opaque string) map[string]any {
+	return sdk.ReasoningMetadata(metadataNamespace, map[string]string{metadataKeyOpaque: opaque})
+}
+
+func reasoningOpaqueOf(meta map[string]any) string {
+	return sdk.ReasoningMetadataString(meta, metadataNamespace, metadataKeyOpaque)
 }
 
 func convertUsage(u *chatUsage) sdk.Usage {

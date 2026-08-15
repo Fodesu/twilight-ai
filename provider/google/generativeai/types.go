@@ -118,6 +118,10 @@ type generateResponse struct {
 	Candidates     []candidate     `json:"candidates"`
 	UsageMetadata  *usageMetadata  `json:"usageMetadata,omitempty"`
 	PromptFeedback *promptFeedback `json:"promptFeedback,omitempty"`
+	// ModelVersion is the concrete model that served the call, as the API
+	// reports it. It stamps reasoning parts so replay can tell whose thought
+	// signature a block carries.
+	ModelVersion string `json:"modelVersion,omitempty"`
 }
 
 type candidate struct {

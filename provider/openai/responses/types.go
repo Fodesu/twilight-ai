@@ -16,6 +16,8 @@ type responsesRequest struct {
 	ToolChoice      any                 `json:"tool_choice,omitempty"`
 	Text            *responsesTextFmt   `json:"text,omitempty"`
 	Reasoning       *responsesReasoning `json:"reasoning,omitempty"`
+	Include         []string            `json:"include,omitempty"`
+	Store           *bool               `json:"store,omitempty"`
 	Stream          bool                `json:"stream,omitempty"`
 }
 
@@ -90,7 +92,10 @@ type responsesReasoningSummaryText struct {
 }
 
 type responsesReasoningItem struct {
-	Type             string                          `json:"type"`
+	Type string `json:"type"`
+	// ID is schema-required by the API and must be the id the item was issued
+	// under.
+	ID               string                          `json:"id,omitempty"`
 	Summary          []responsesReasoningSummaryText `json:"summary"`
 	EncryptedContent string                          `json:"encrypted_content,omitempty"`
 }
@@ -203,6 +208,9 @@ type responsesOutputItemDoneChunk struct {
 		CallID    string `json:"call_id,omitempty"`
 		Name      string `json:"name,omitempty"`
 		Arguments string `json:"arguments,omitempty"`
+		// reasoning fields. encrypted_content is populated only on this event,
+		// not on output_item.added, where the item has just been created.
+		EncryptedContent string `json:"encrypted_content,omitempty"`
 	} `json:"item"`
 }
 
@@ -240,6 +248,15 @@ type responsesCompletedChunk struct {
 	Response struct {
 		IncompleteDetails *incompleteDetails `json:"incomplete_details,omitempty"`
 		Usage             *responsesUsage    `json:"usage,omitempty"`
+	} `json:"response"`
+}
+
+// responsesFailedChunk is sent for event: response.failed.
+type responsesFailedChunk struct {
+	Type     string `json:"type"`
+	Response struct {
+		Error *responsesError `json:"error,omitempty"`
+		Usage *responsesUsage `json:"usage,omitempty"`
 	} `json:"response"`
 }
 

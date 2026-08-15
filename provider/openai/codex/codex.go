@@ -10,6 +10,7 @@ import (
 
 	"github.com/memohai/twilight-ai/internal/messagecompat"
 	"github.com/memohai/twilight-ai/internal/utils"
+	openaiutil "github.com/memohai/twilight-ai/provider/openai"
 	"github.com/memohai/twilight-ai/sdk"
 )
 
@@ -158,9 +159,9 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 			incompleteReason string
 			hasFunctionCall  bool
 
-			textStartSent      bool
-			reasoningStartSent bool
-			pendingToolCalls   = map[int]*streamingToolCall{}
+			textStartSent     bool
+			activeReasoningID string
+			pendingToolCalls  = map[int]*streamingToolCall{}
 		)
 
 		send := func(part sdk.StreamPart) bool {
@@ -172,11 +173,24 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 			}
 		}
 
-		flush := func() {
-			if reasoningStartSent {
-				send(&sdk.ReasoningEndPart{ID: responseID})
-				reasoningStartSent = false
+		// endReasoning closes the active reasoning block. meta carries the
+		// block's final metadata: encrypted_content is populated only on
+		// response.output_item.done, so the closing part is the only chance to
+		// deliver it. Every other close path passes nil.
+		endReasoning := func(meta map[string]any) {
+			if activeReasoningID == "" {
+				return
 			}
+			send(&sdk.ReasoningEndPart{
+				ID:               activeReasoningID,
+				Format:           sdk.ReasoningFormatOpenAIResponses,
+				ProviderMetadata: meta,
+			})
+			activeReasoningID = ""
+		}
+
+		flush := func() {
+			endReasoning(nil)
 			if textStartSent {
 				send(&sdk.TextEndPart{ID: responseID})
 				textStartSent = false
@@ -215,18 +229,15 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 						textStartSent = true
 					}
 				case outputTypeReasoning:
-					if !reasoningStartSent {
-						var meta map[string]any
-						if chunk.Item.EncryptedContent != "" {
-							meta = map[string]any{
-								"openai": map[string]any{
-									"reasoningEncryptedContent": chunk.Item.EncryptedContent,
-									"itemId":                    chunk.Item.ID,
-								},
-							}
-						}
-						send(&sdk.ReasoningStartPart{ID: chunk.Item.ID, ProviderMetadata: meta})
-						reasoningStartSent = true
+					if activeReasoningID != chunk.Item.ID {
+						endReasoning(nil)
+						send(&sdk.ReasoningStartPart{
+							ID:               chunk.Item.ID,
+							Format:           sdk.ReasoningFormatOpenAIResponses,
+							Model:            responseModel,
+							ProviderMetadata: openaiutil.ReasoningItemMetadata(chunk.Item.ID, chunk.Item.EncryptedContent),
+						})
+						activeReasoningID = chunk.Item.ID
 					}
 				case outputTypeFunctionCall:
 					flush()
@@ -243,10 +254,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 				if json.Unmarshal([]byte(ev.Data), &chunk) != nil {
 					return nil
 				}
-				if reasoningStartSent {
-					send(&sdk.ReasoningEndPart{ID: responseID})
-					reasoningStartSent = false
-				}
+				endReasoning(nil)
 				if !textStartSent {
 					send(&sdk.TextStartPart{ID: chunk.ItemID})
 					textStartSent = true
@@ -258,11 +266,12 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 				if json.Unmarshal([]byte(ev.Data), &chunk) != nil {
 					return nil
 				}
-				if !reasoningStartSent {
-					send(&sdk.ReasoningStartPart{ID: chunk.ItemID})
-					reasoningStartSent = true
+				if activeReasoningID != chunk.ItemID {
+					endReasoning(nil)
+					send(&sdk.ReasoningStartPart{ID: chunk.ItemID, Format: sdk.ReasoningFormatOpenAIResponses, Model: responseModel})
+					activeReasoningID = chunk.ItemID
 				}
-				send(&sdk.ReasoningDeltaPart{ID: chunk.ItemID, Text: chunk.Delta})
+				send(&sdk.ReasoningDeltaPart{ID: chunk.ItemID, Text: chunk.Delta, Format: sdk.ReasoningFormatOpenAIResponses, Model: responseModel})
 
 			case "response.function_call_arguments.delta":
 				var chunk codexFuncArgsDeltaChunk
@@ -288,9 +297,22 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 						textStartSent = false
 					}
 				case outputTypeReasoning:
-					if reasoningStartSent {
-						send(&sdk.ReasoningEndPart{ID: chunk.Item.ID})
-						reasoningStartSent = false
+					// The done event is where encrypted_content arrives; the
+					// added event fires before it is populated.
+					meta := openaiutil.ReasoningItemMetadata(chunk.Item.ID, chunk.Item.EncryptedContent)
+					switch {
+					case activeReasoningID == chunk.Item.ID:
+						endReasoning(meta)
+					case chunk.Item.EncryptedContent != "":
+						// The block was already closed by an interleaved event.
+						// Send another end part for it: the accumulator merges
+						// metadata by block ID, so the payload still lands on
+						// the right block instead of being lost.
+						send(&sdk.ReasoningEndPart{
+							ID:               chunk.Item.ID,
+							Format:           sdk.ReasoningFormatOpenAIResponses,
+							ProviderMetadata: meta,
+						})
 					}
 				case outputTypeFunctionCall:
 					hasFunctionCall = true
@@ -302,8 +324,15 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 							args = stc.args.String()
 						}
 						var input any
-						if err := json.Unmarshal([]byte(args), &input); err != nil {
-							send(&sdk.ErrorPart{Error: fmt.Errorf("openai-codex: unmarshal tool call arguments for %q: %w", stc.name, err)})
+						// A call whose arguments cannot be parsed must not
+						// become a call: nil input would hand the tool empty
+						// arguments and run it anyway.
+						if args != "" {
+							if err := json.Unmarshal([]byte(args), &input); err != nil {
+								send(&sdk.ErrorPart{Error: fmt.Errorf("openai-codex: unmarshal tool call arguments for %q: %w", stc.name, err)})
+								stc.finished = true
+								break
+							}
 						}
 						send(&sdk.StreamToolCallPart{ToolCallID: stc.id, ToolName: stc.name, Input: input})
 						stc.finished = true
@@ -475,17 +504,38 @@ func convertCodexUserMessage(msg sdk.Message) []json.RawMessage {
 func convertCodexAssistantMessage(msg sdk.Message) []json.RawMessage {
 	var items []json.RawMessage
 	var textParts []codexOutputTextPart
-	var reasoningSummary []codexReasoningSummaryText
-	var encryptedContent string
+	var reasoningItems []codexReasoningItem
+	reasoningIndexByID := map[string]int{}
 
 	for _, part := range msg.Content {
 		switch p := part.(type) {
 		case sdk.TextPart:
 			textParts = append(textParts, codexOutputTextPart{Type: "output_text", Text: p.Text})
 		case sdk.ReasoningPart:
-			reasoningSummary = append(reasoningSummary, codexReasoningSummaryText{Type: "summary_text", Text: p.Text})
-			if ec := extractOpenAIEncryptedContent(p.ProviderMetadata); ec != "" {
-				encryptedContent = ec
+			// Same dialect as the public Responses API; anything else cannot be
+			// verified here and is dropped rather than re-sent as text.
+			if p.Format != sdk.ReasoningFormatOpenAIResponses {
+				continue
+			}
+			id := openaiutil.ReasoningItemID(p.ProviderMetadata)
+			if id == "" {
+				id = p.ID
+			}
+			idx, ok := reasoningIndexByID[id]
+			if !ok || id == "" {
+				reasoningItems = append(reasoningItems, codexReasoningItem{
+					Type:             "reasoning",
+					ID:               id,
+					EncryptedContent: openaiutil.ReasoningEncryptedContent(p.ProviderMetadata),
+				})
+				idx = len(reasoningItems) - 1
+				if id != "" {
+					reasoningIndexByID[id] = idx
+				}
+			}
+			if p.Text != "" {
+				reasoningItems[idx].Summary = append(reasoningItems[idx].Summary,
+					codexReasoningSummaryText{Type: "summary_text", Text: p.Text})
 			}
 		case sdk.ToolCallPart:
 			args, err := json.Marshal(p.Input)
@@ -506,12 +556,13 @@ func convertCodexAssistantMessage(msg sdk.Message) []json.RawMessage {
 	}
 
 	var prefix []json.RawMessage
-	if len(reasoningSummary) > 0 {
-		prefix = append(prefix, marshalRaw(codexReasoningItem{
-			Type:             "reasoning",
-			Summary:          reasoningSummary,
-			EncryptedContent: encryptedContent,
-		}))
+	for i := range reasoningItems {
+		// Summary is schema-required, so an item that carried only encrypted
+		// content still needs the key present.
+		if reasoningItems[i].Summary == nil {
+			reasoningItems[i].Summary = []codexReasoningSummaryText{}
+		}
+		prefix = append(prefix, marshalRaw(reasoningItems[i]))
 	}
 	if len(textParts) > 0 {
 		prefix = append(prefix, marshalRaw(codexAssistantMessage{Role: "assistant", Content: textParts}))
@@ -629,13 +680,4 @@ func joinWithDoubleNewline(values []string) string {
 		result += "\n\n" + value
 	}
 	return result
-}
-
-func extractOpenAIEncryptedContent(meta map[string]any) string {
-	if meta == nil {
-		return ""
-	}
-	openai, _ := meta["openai"].(map[string]any)
-	encrypted, _ := openai["reasoningEncryptedContent"].(string)
-	return encrypted
 }

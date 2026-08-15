@@ -76,7 +76,10 @@ type codexReasoningSummaryText struct {
 }
 
 type codexReasoningItem struct {
-	Type             string                      `json:"type"`
+	Type string `json:"type"`
+	// ID is schema-required by the API and must be the id the item was issued
+	// under.
+	ID               string                      `json:"id,omitempty"`
 	Summary          []codexReasoningSummaryText `json:"summary"`
 	EncryptedContent string                      `json:"encrypted_content,omitempty"`
 }
@@ -108,6 +111,9 @@ type codexOutputItemDoneChunk struct {
 		CallID    string `json:"call_id,omitempty"`
 		Name      string `json:"name,omitempty"`
 		Arguments string `json:"arguments,omitempty"`
+		// reasoning fields. encrypted_content is populated only on this event,
+		// not on output_item.added, where the item has just been created.
+		EncryptedContent string `json:"encrypted_content,omitempty"`
 	} `json:"item"`
 }
 

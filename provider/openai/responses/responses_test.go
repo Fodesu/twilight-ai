@@ -1166,6 +1166,86 @@ func TestResponsesDoStream_ErrorEvent(t *testing.T) {
 	}
 }
 
+func TestResponsesDoStream_ResponseFailed(t *testing.T) {
+	tests := []struct {
+		name      string
+		response  string
+		wantError string
+		wantUsage sdk.Usage
+	}{
+		{
+			name: "structured error and usage",
+			response: `{"type":"response.failed","response":{"status":"failed","error":{` +
+				`"type":"server_error","code":"server_error","message":"generation failed"},` +
+				`"usage":{"input_tokens":7,"output_tokens":2,"input_tokens_details":{"cached_tokens":3},` +
+				`"output_tokens_details":{"reasoning_tokens":1}}}}`,
+			wantError: "openai-responses: server_error: generation failed",
+			wantUsage: sdk.Usage{
+				InputTokens:       7,
+				OutputTokens:      2,
+				TotalTokens:       9,
+				ReasoningTokens:   1,
+				CachedInputTokens: 3,
+			},
+		},
+		{
+			name:      "missing error payload",
+			response:  `{"type":"response.failed","response":{"status":"failed"}}`,
+			wantError: "openai-responses: response failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprintf(w, "event: response.failed\ndata: %s\n\n", tt.response)
+				w.(http.Flusher).Flush()
+			}))
+			defer srv.Close()
+
+			p := responses.New(responses.WithAPIKey("k"), responses.WithBaseURL(srv.URL))
+			sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
+				Model:    p.ChatModel("gpt-5.6"),
+				Messages: []sdk.Message{sdk.UserMessage("test")},
+			})
+			if err != nil {
+				t.Fatalf("DoStream: %v", err)
+			}
+
+			var (
+				errorsSeen []error
+				finish     *sdk.FinishPart
+			)
+			for part := range sr.Stream {
+				switch part := part.(type) {
+				case *sdk.ErrorPart:
+					errorsSeen = append(errorsSeen, part.Error)
+				case *sdk.FinishPart:
+					finish = part
+				}
+			}
+
+			if len(errorsSeen) != 1 {
+				t.Fatalf("ErrorPart count = %d, want 1 (%v)", len(errorsSeen), errorsSeen)
+			}
+			if got := errorsSeen[0].Error(); got != tt.wantError {
+				t.Errorf("error = %q, want %q", got, tt.wantError)
+			}
+			if finish == nil {
+				t.Fatal("expected FinishPart after response.failed")
+			}
+			if finish.TotalUsage.InputTokens != tt.wantUsage.InputTokens ||
+				finish.TotalUsage.OutputTokens != tt.wantUsage.OutputTokens ||
+				finish.TotalUsage.TotalTokens != tt.wantUsage.TotalTokens ||
+				finish.TotalUsage.ReasoningTokens != tt.wantUsage.ReasoningTokens ||
+				finish.TotalUsage.CachedInputTokens != tt.wantUsage.CachedInputTokens {
+				t.Errorf("usage = %+v, want selected fields from %+v", finish.TotalUsage, tt.wantUsage)
+			}
+		})
+	}
+}
+
 // ---------- input conversion tests ----------
 
 func TestResponsesInputConversion_SystemMessage(t *testing.T) {
@@ -1341,7 +1421,7 @@ func TestResponsesInputConversion_AssistantReasoning(t *testing.T) {
 			{
 				Role: sdk.MessageRoleAssistant,
 				Content: []sdk.MessagePart{
-					sdk.ReasoningPart{Text: "I thought carefully"},
+					sdk.ReasoningPart{Text: "I thought carefully", Format: sdk.ReasoningFormatOpenAIResponses},
 					sdk.TextPart{Text: "The answer"},
 				},
 			},
