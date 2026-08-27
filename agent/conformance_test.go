@@ -309,3 +309,41 @@ func TestConformanceAcceptInputByInputID(t *testing.T) {
 		t.Fatalf("err = %v, want ErrCommandConflict", err)
 	}
 }
+
+func TestConformanceDerivedCommandIDEnforced(t *testing.T) {
+	// Derived-identity families cannot bypass their idempotency index with a
+	// caller-minted CommandID (spec §5.5).
+	rt := newTestRuntime(t, RunConfig{Model: "m-1"})
+	_, err := commitCmd(t, rt, "random-id", 0, "", NextStep(AgentInput{ID: "in-1", Payload: json.RawMessage(`1`)}))
+	if err == nil {
+		t.Fatal("AcceptInput with non-derived CommandID accepted")
+	}
+	// Response commands are checked the same way.
+	_, err = commitCmd(t, rt, "random-id-2", 0, "", ApproveToolCall{StepID: "s", CallID: "c", ResponseID: "r"})
+	if err == nil {
+		t.Fatal("ApproveToolCall with non-derived CommandID accepted")
+	}
+}
+
+func TestConformancePrepareRejectionDoesNotLivelock(t *testing.T) {
+	// A planner that omits pending InputIDs produces a Prepare the authority
+	// rejects at the same revision forever; the Loop must surface an error
+	// instead of spinning (loop.go planAndPrepare guard).
+	rt := newTestRuntime(t, RunConfig{Model: "m-1"})
+	loop, err := NewLoop(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{},
+		badPlanner{}, ExecutionPolicy{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = loop.Run(context.Background(), rt, nil)
+	if err == nil {
+		t.Fatal("prepare livelock not surfaced")
+	}
+}
+
+// badPlanner never consumes pending inputs, so its Prepare is always rejected.
+type badPlanner struct{}
+
+func (badPlanner) Plan(_ context.Context, hint PlanningHint) (RequestPlan, error) {
+	return RequestPlan{Model: hint.Model, Request: sdk.Request{Model: string(hint.Model)}}, nil
+}
