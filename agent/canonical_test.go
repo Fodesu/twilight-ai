@@ -181,9 +181,11 @@ func TestSchemaVersion1Golden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const wantDigest = "sha256:GOLDEN"
+	// Frozen for SchemaVersion 1. A mismatch here is a protocol break that
+	// invalidates every persisted digest — fix the code, not this constant.
+	const wantDigest = "sha256:a7770a5443f180ec1935bfa4498af75375b8d5f182f239f587917b28b78ee80c"
 	if string(d) != wantDigest {
-		t.Logf("golden digest for cancel_run: %s", d)
+		t.Fatalf("golden digest changed:\n got %s\nwant %s", d, wantDigest)
 	}
 
 	fact := InputAccepted{Input: AgentInput{ID: "in-1", Payload: json.RawMessage(`{"text":"hi"}`)}}

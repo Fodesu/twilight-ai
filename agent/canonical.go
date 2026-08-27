@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"sort"
 	"strconv"
@@ -18,21 +19,31 @@ import (
 	"unicode/utf8"
 )
 
-// canonicalJSON transforms arbitrary JSON into its RFC 8785 (JCS) canonical
-// form: object keys sorted by UTF-16 code units, numbers in ES6 shortest
-// form, minimal string escaping, no insignificant whitespace.
+// canonicalJSON transforms JSON into the protocol's canonical form: RFC 8785
+// (JCS) object-key ordering and string escaping, with two deliberate
+// deviations required for digest identity — integer tokens keep arbitrary
+// precision instead of collapsing through float64, and inputs JCS tolerates
+// but that would merge distinct payloads into one digest (duplicate object
+// keys, trailing data, invalid UTF-8) are rejected outright.
 //
 // Canonical bytes are digest input (spec §5.5); the encoding for a published
 // SchemaVersion is frozen forever.
 func canonicalJSON(raw []byte) ([]byte, error) {
+	// Reject invalid UTF-8 up front: encoding/json silently rewrites broken
+	// bytes to U+FFFD during decode, which would merge distinct payloads into
+	// one canonical identity before writeCanonicalString could see them.
+	if !utf8.Valid(raw) {
+		return nil, errors.New("agent: canonical: invalid UTF-8 input")
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
+	v, err := parseCanonicalValue(dec)
+	if err != nil {
 		return nil, fmt.Errorf("agent: canonical: %w", err)
 	}
-	// Reject trailing content after the first JSON value.
-	if dec.More() {
+	// Strict end: any trailing token — including a stray ']' or '}' the
+	// decoder's More() would miss — rejects the input.
+	if _, err := dec.Token(); err != io.EOF {
 		return nil, errors.New("agent: canonical: trailing data after JSON value")
 	}
 	var b bytes.Buffer
@@ -40,6 +51,65 @@ func canonicalJSON(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	return b.Bytes(), nil
+}
+
+// parseCanonicalValue decodes one JSON value from the token stream, rejecting
+// duplicate object keys: last-wins collapsing would let two byte-distinct
+// payloads share one digest.
+func parseCanonicalValue(dec *json.Decoder) (any, error) {
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	return parseFromToken(dec, tok)
+}
+
+func parseFromToken(dec *json.Decoder, tok json.Token) (any, error) {
+	delim, ok := tok.(json.Delim)
+	if !ok {
+		return tok, nil // string, json.Number, bool, or nil
+	}
+	switch delim {
+	case '{':
+		m := make(map[string]any)
+		for dec.More() {
+			keyTok, err := dec.Token()
+			if err != nil {
+				return nil, err
+			}
+			key, ok := keyTok.(string)
+			if !ok {
+				return nil, fmt.Errorf("object key %v is not a string", keyTok)
+			}
+			if _, dup := m[key]; dup {
+				return nil, fmt.Errorf("duplicate object key %q", key)
+			}
+			val, err := parseCanonicalValue(dec)
+			if err != nil {
+				return nil, err
+			}
+			m[key] = val
+		}
+		if _, err := dec.Token(); err != nil { // consume '}'
+			return nil, err
+		}
+		return m, nil
+	case '[':
+		a := []any{}
+		for dec.More() {
+			val, err := parseCanonicalValue(dec)
+			if err != nil {
+				return nil, err
+			}
+			a = append(a, val)
+		}
+		if _, err := dec.Token(); err != nil { // consume ']'
+			return nil, err
+		}
+		return a, nil
+	default:
+		return nil, fmt.Errorf("unexpected delimiter %v", delim)
+	}
 }
 
 func writeCanonical(b *bytes.Buffer, v any) error {
@@ -59,7 +129,9 @@ func writeCanonical(b *bytes.Buffer, v any) error {
 		}
 		b.WriteString(s)
 	case string:
-		writeCanonicalString(b, x)
+		if err := writeCanonicalString(b, x); err != nil {
+			return err
+		}
 	case []any:
 		b.WriteByte('[')
 		for i, e := range x {
@@ -82,7 +154,9 @@ func writeCanonical(b *bytes.Buffer, v any) error {
 			if i > 0 {
 				b.WriteByte(',')
 			}
-			writeCanonicalString(b, k)
+			if err := writeCanonicalString(b, k); err != nil {
+				return err
+			}
 			b.WriteByte(':')
 			if err := writeCanonical(b, x[k]); err != nil {
 				return err
@@ -107,12 +181,12 @@ func utf16Less(a, b string) bool {
 	return len(ua) < len(ub)
 }
 
-// writeCanonicalString emits a JSON string with JCS minimal escaping:
-// only `"`, `\` and control characters are escaped; control characters use
-// their short forms where defined, \u00xx otherwise.
-func writeCanonicalString(b *bytes.Buffer, s string) {
+// writeCanonicalString emits a JSON string with JCS minimal escaping. Invalid
+// UTF-8 is rejected: silently replacing broken bytes with U+FFFD would merge
+// distinct payloads into one canonical identity.
+func writeCanonicalString(b *bytes.Buffer, s string) error {
 	b.WriteByte('"')
-	for _, r := range s {
+	for i, r := range s {
 		switch r {
 		case '"':
 			b.WriteString(`\"`)
@@ -132,22 +206,40 @@ func writeCanonicalString(b *bytes.Buffer, s string) {
 			if r < 0x20 {
 				fmt.Fprintf(b, `\u%04x`, r)
 			} else if r == utf8.RuneError {
-				// Invalid UTF-8 input cannot have a stable canonical form.
-				b.WriteString(string(utf8.RuneError))
+				if _, size := utf8.DecodeRuneInString(s[i:]); size == 1 {
+					return errors.New("agent: canonical: invalid UTF-8 in string")
+				}
+				b.WriteRune(r) // a genuine U+FFFD character
 			} else {
 				b.WriteRune(r)
 			}
 		}
 	}
 	b.WriteByte('"')
+	return nil
 }
 
-// canonicalNumber renders a JSON number per RFC 8785: the value is treated as
-// an IEEE 754 double and serialized with the ES6 Number::toString algorithm.
+// canonicalNumber renders a JSON number. Integer tokens keep their exact
+// digits (arbitrary precision): forcing them through float64 per strict JCS
+// would corrupt 64-bit identifiers above 2^53 and collide near-adjacent
+// values into one digest. Non-integer tokens use the ES6 double form.
 func canonicalNumber(n json.Number) (string, error) {
-	f, err := strconv.ParseFloat(n.String(), 64)
+	s := n.String()
+	if !strings.ContainsAny(s, ".eE") {
+		neg := strings.HasPrefix(s, "-")
+		digits := strings.TrimPrefix(s, "-")
+		digits = strings.TrimLeft(digits, "0")
+		if digits == "" {
+			return "0", nil // 0 and -0 canonicalize to "0"
+		}
+		if neg {
+			return "-" + digits, nil
+		}
+		return digits, nil
+	}
+	f, err := strconv.ParseFloat(s, 64)
 	if err != nil {
-		return "", fmt.Errorf("agent: canonical: bad number %q: %w", n.String(), err)
+		return "", fmt.Errorf("agent: canonical: bad number %q: %w", s, err)
 	}
 	return formatES6Float(f)
 }

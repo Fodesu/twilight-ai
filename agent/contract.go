@@ -104,12 +104,13 @@ const (
 type EventKind string
 
 const (
-	EventAgentCommitted EventKind = "agent_committed"
-	EventModelTextDelta EventKind = "model_text_delta"
-	EventToolProgress   EventKind = "tool_progress"
-	EventToolStarted    EventKind = "tool_started"
-	EventToolCompleted  EventKind = "tool_completed"
-	EventRunFinished    EventKind = "run_finished"
+	EventAgentCommitted      EventKind = "agent_committed"
+	EventModelTextDelta      EventKind = "model_text_delta"
+	EventModelReasoningDelta EventKind = "model_reasoning_delta"
+	EventToolProgress        EventKind = "tool_progress"
+	EventToolStarted         EventKind = "tool_started"
+	EventToolCompleted       EventKind = "tool_completed"
+	EventRunFinished         EventKind = "run_finished"
 )
 
 type Event struct {

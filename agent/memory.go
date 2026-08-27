@@ -38,7 +38,9 @@ func (m *MemoryRuntime) Load(ctx context.Context) (RuntimeSnapshot, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return RuntimeSnapshot{State: m.state, Revision: m.revision}, nil
+	// Deep copy: returned snapshots are read-only views; caller mutation must
+	// never reach authoritative storage (spec appendix A).
+	return RuntimeSnapshot{State: cloneMachineState(m.state), Revision: m.revision}, nil
 }
 
 func grantKey(c AgentCommand) string {
@@ -103,8 +105,8 @@ func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitRe
 		// Replay never re-grants execution (spec §5.4).
 		return CommitResult{
 			Status:   CommitAlreadyApplied,
-			Snapshot: RuntimeSnapshot{State: m.state, Revision: m.revision},
-			Events:   decision.Events,
+			Snapshot: RuntimeSnapshot{State: cloneMachineState(m.state), Revision: m.revision},
+			Events:   cloneEvents(decision.Events),
 		}, nil
 	case DecisionConflict:
 		return CommitResult{}, ErrCommandConflict
@@ -118,11 +120,13 @@ func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitRe
 	}
 
 	// DecisionApply: persist state + events atomically under the lock, manage
-	// occupancy, and mint the grant for an accepted start.
+	// occupancy, and mint the grant for an accepted start. Facts are cloned on
+	// the way in so caller-held command buffers cannot mutate stored events.
 	m.state = decision.NewState
 	m.revision++
-	m.events[req.Command.ID] = decision.Events
-	m.log = append(m.log, decision.Events...)
+	stored := cloneEvents(decision.Events)
+	m.events[req.Command.ID] = stored
+	m.log = append(m.log, stored...)
 
 	var minted ExecutionGrant
 	switch req.Command.Command.(type) {
@@ -140,16 +144,16 @@ func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitRe
 
 	return CommitResult{
 		Status:   CommitAccepted,
-		Snapshot: RuntimeSnapshot{State: m.state, Revision: m.revision},
-		Events:   decision.Events,
+		Snapshot: RuntimeSnapshot{State: cloneMachineState(m.state), Revision: m.revision},
+		Events:   cloneEvents(decision.Events),
 		Grant:    minted,
 	}, nil
 }
 
-// Events returns the full event log in (Revision, Index) order. Test and
-// replay helper; not part of the Runtime contract.
+// Events returns a deep copy of the full event log in (Revision, Index)
+// order. Test and replay helper; not part of the Runtime contract.
 func (m *MemoryRuntime) Events() []AgentEvent {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return append([]AgentEvent(nil), m.log...)
+	return cloneEvents(m.log)
 }

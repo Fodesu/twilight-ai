@@ -112,13 +112,19 @@ func makeBinding(t *testing.T, callID string, spec ToolSpec, args string) ToolCa
 }
 
 func modelResultWithCalls(callIDs ...string) sdk.ModelResult {
+	return modelResultWithNamedCalls("t", `{}`, callIDs...)
+}
+
+// modelResultWithNamedCalls builds a result whose tool calls carry the given
+// tool name and argument text — bindings must cross-check against these.
+func modelResultWithNamedCalls(toolName, args string, callIDs ...string) sdk.ModelResult {
 	r := sdk.ModelResult{
 		Text:         "",
 		FinishReason: sdk.FinishReasonToolCalls,
 		Usage:        sdk.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
 	}
 	for _, id := range callIDs {
-		r.ToolCalls = append(r.ToolCalls, sdk.ToolCall{ToolCallID: id, ToolName: "t"})
+		r.ToolCalls = append(r.ToolCalls, sdk.ToolCall{ToolCallID: id, ToolName: toolName, Input: args})
 	}
 	return r
 }
@@ -220,7 +226,7 @@ func TestModelCompleteWithToolsOpensToolStep(t *testing.T) {
 	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
 
 	b := makeBinding(t, "c1", spec, `{"x":1}`)
-	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
+	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithNamedCalls("t", `{"x":1}`, "c1"), Calls: []ToolCallBinding{b}})
 	if len(facts) != 2 {
 		t.Fatalf("facts = %d, want [completed, opened]", len(facts))
 	}
@@ -349,10 +355,15 @@ func TestParallelWaitingDoesNotBlockPending(t *testing.T) {
 	s, stepID := advanceToExecuting(t, s, testRequest(defA, defB), []ToolSpec{specA, specB})
 
 	bA := makeBinding(t, "cA", specA, `{}`)
-	bA.ToolRef = "a"
 	bB := makeBinding(t, "cB", specB, `{}`)
-	bB.ToolRef = "b"
-	r := modelResultWithCalls("cA", "cB")
+	r := sdk.ModelResult{
+		FinishReason: sdk.FinishReasonToolCalls,
+		Usage:        sdk.Usage{TotalTokens: 15},
+		ToolCalls: []sdk.ToolCall{
+			{ToolCallID: "cA", ToolName: "a", Input: `{}`},
+			{ToolCallID: "cB", ToolName: "b", Input: `{}`},
+		},
+	}
 	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: r, Calls: []ToolCallBinding{bA, bB}})
 	opened := facts[1].(ToolStepOpened)
 	s = fold(t, s, facts)

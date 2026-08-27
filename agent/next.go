@@ -51,9 +51,10 @@ func Next(s MachineState) (Effect, error) {
 	switch cur := s.Current.(type) {
 	case nil:
 		return NeedModelRequest{Hint: PlanningHint{
-			RunID:  s.RunID,
-			Model:  s.Config.Model,
-			Inputs: append([]AgentInput(nil), s.PendingInputs...),
+			RunID:      s.RunID,
+			Model:      s.Config.Model,
+			SourceStep: s.LastClosedStep,
+			Inputs:     append([]AgentInput(nil), s.PendingInputs...),
 		}}, nil
 	case ModelStep:
 		if cur.Status == ModelPrepared {

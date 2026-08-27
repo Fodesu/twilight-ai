@@ -264,12 +264,15 @@ func (s ToolStep) callIndex(id CallID) int {
 // Control metadata (owner, fence, lease, attempts, queue claims) never
 // appears here.
 type MachineState struct {
-	RunID           RunID            `json:"runId"`
-	Status          RunStatus        `json:"status"`
-	Config          RunConfig        `json:"config"`
-	Current         Step             `json:"-"` // serialized by adapters with their snapshot schema
-	PendingInputs   []AgentInput     `json:"pendingInputs,omitempty"`
-	ModelSteps      int              `json:"modelSteps"`
+	RunID         RunID        `json:"runId"`
+	Status        RunStatus    `json:"status"`
+	Config        RunConfig    `json:"config"`
+	Current       Step         `json:"-"` // serialized by adapters with their snapshot schema
+	PendingInputs []AgentInput `json:"pendingInputs,omitempty"`
+	ModelSteps    int          `json:"modelSteps"`
+	// LastClosedStep is the most recently closed ToolStep; PlanningHint's
+	// SourceStep is read from it at the next boundary.
+	LastClosedStep  StepID           `json:"lastClosedStep,omitempty"`
 	Usage           sdk.Usage        `json:"usage"`
 	LastModelResult *sdk.ModelResult `json:"lastModelResult,omitempty"`
 	Result          *RunResult       `json:"result,omitempty"`
