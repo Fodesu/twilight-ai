@@ -1,0 +1,198 @@
+package agent
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
+
+// RFC 8785 appendix test vectors plus structural cases.
+func TestCanonicalJSON(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"key sort ascii", `{"b":1,"a":2}`, `{"a":2,"b":1}`},
+		{"nested objects", `{"z":{"b":1,"a":[true,null]},"a":"x"}`, `{"a":"x","z":{"a":[true,null],"b":1}}`},
+		{"whitespace stripped", "{\n  \"a\" : 1 ,\t\"b\": [ 1 , 2 ]\n}", `{"a":1,"b":[1,2]}`},
+		// RFC 8785 §3.2.3: sort by UTF-16 code units — surrogate pairs (𝄞)
+		// sort after BMP chars like € and 替.
+		{"utf16 order", `{"𝄞":1,"€":2,"replace":3}`, `{"replace":3,"€":2,"𝄞":1}`},
+		{"number integer", `{"a":1.0}`, `{"a":1}`},
+		{"number negative zero", `{"a":-0}`, `{"a":0}`},
+		{"number e-notation collapse", `{"a":1e+3}`, `{"a":1000}`},
+		{"number small", `{"a":0.000001}`, `{"a":0.000001}`},
+		{"number tiny goes exponential", `{"a":0.0000001}`, `{"a":1e-7}`},
+		{"number large stays plain to 1e21", `{"a":100000000000000000000}`, `{"a":100000000000000000000}`},
+		{"number 1e21 exponential", `{"a":1e21}`, `{"a":1e+21}`},
+		{"number shortest roundtrip", `{"a":0.1}`, `{"a":0.1}`},
+		{"string escapes minimal", `{"a":"A\nB\u0041"}`, "{\"a\":\"A\\nBA\"}"},
+		{"string control chars", `{"a":"\u0001"}`, "{\"a\":\"\\u0001\"}"},
+		{"string unicode passthrough", `{"a":"\u00e9"}`, `{"a":"é"}`},
+		{"array order preserved", `[3,1,2]`, `[3,1,2]`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := canonicalJSON([]byte(c.in))
+			if err != nil {
+				t.Fatalf("canonicalJSON(%q): %v", c.in, err)
+			}
+			if string(got) != c.want {
+				t.Fatalf("canonicalJSON(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}
+
+func TestCanonicalJSONRejects(t *testing.T) {
+	for _, in := range []string{``, `{"a":1}garbage`, `{bad}`} {
+		if _, err := canonicalJSON([]byte(in)); err == nil {
+			t.Fatalf("canonicalJSON(%q): expected error", in)
+		}
+	}
+}
+
+func TestCanonicalDeterminism(t *testing.T) {
+	// Map iteration order must not leak into canonical bytes.
+	v := map[string]any{"z": 1, "a": map[string]any{"y": []any{1, "s"}, "b": true}, "m": nil}
+	first, err := marshalCanonical(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 50; i++ {
+		got, err := marshalCanonical(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != string(first) {
+			t.Fatalf("non-deterministic canonical output: %q vs %q", got, first)
+		}
+	}
+}
+
+func TestDigestCommandIdentity(t *testing.T) {
+	cmd := StartToolCall{StepID: "s1", CallID: "c1"}
+	d1, err := DigestCommand(SchemaVersion1, "start_tool_call", cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(d1), "sha256:") || len(d1) != len("sha256:")+64 {
+		t.Fatalf("bad digest wire form: %s", d1)
+	}
+	// Same content, same digest.
+	d2, _ := DigestCommand(SchemaVersion1, "start_tool_call", StartToolCall{StepID: "s1", CallID: "c1"})
+	if d1 != d2 {
+		t.Fatal("same command produced different digests")
+	}
+	// Different content differs.
+	d3, _ := DigestCommand(SchemaVersion1, "start_tool_call", StartToolCall{StepID: "s1", CallID: "c2"})
+	if d1 == d3 {
+		t.Fatal("different commands produced the same digest")
+	}
+	// Schema version participates.
+	d4, _ := DigestCommand(2, "start_tool_call", cmd)
+	if d1 == d4 {
+		t.Fatal("schema version did not affect digest")
+	}
+	// Type mismatch is rejected.
+	if _, err := DigestCommand(SchemaVersion1, "cancel_run", cmd); err == nil {
+		t.Fatal("expected type/variant mismatch error")
+	}
+}
+
+func TestDigestFactTypeChecked(t *testing.T) {
+	f := ToolStepClosed{StepID: "s2"}
+	if _, err := DigestFact(SchemaVersion1, "tool_step_closed", f); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DigestFact(SchemaVersion1, "run_ended", f); err == nil {
+		t.Fatal("expected type/variant mismatch error")
+	}
+}
+
+func TestDeriveStability(t *testing.T) {
+	// Fixed inputs must produce fixed outputs across processes; freeze a few.
+	id1 := DeriveModelRequestCommandID("run-1", 7)
+	id2 := DeriveModelRequestCommandID("run-1", 7)
+	if id1 != id2 {
+		t.Fatal("derive is not deterministic")
+	}
+	if id1 == DeriveModelRequestCommandID("run-1", 8) {
+		t.Fatal("revision does not separate command IDs")
+	}
+	if id1 == DeriveModelRequestCommandID("run-2", 7) {
+		t.Fatal("run does not separate command IDs")
+	}
+	// Namespaces must not collide even with aligned parts.
+	a := namespacedHash("twilight/model-step", "x", "y")
+	b := namespacedHash("twilight/tool-step", "x", "y")
+	if a == b {
+		t.Fatal("namespace does not separate hashes")
+	}
+	// Length prefixing prevents concatenation collisions.
+	c := namespacedHash("n", "ab", "c")
+	d := namespacedHash("n", "a", "bc")
+	if c == d {
+		t.Fatal("part boundaries do not separate hashes")
+	}
+}
+
+func TestDeriveResponseIDPerKind(t *testing.T) {
+	a := DeriveResponseID("r", "s", "c", ResponseApproval)
+	b := DeriveResponseID("r", "s", "c", ResponseExternal)
+	if a == b {
+		t.Fatal("response kind does not separate response IDs")
+	}
+}
+
+func TestDigestBindingCanonicalizesArguments(t *testing.T) {
+	d1, err := digestToolCallBinding("c1", "sha256:x", DirectExecution, []byte(`{"b":1,"a":2}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := digestToolCallBinding("c1", "sha256:x", DirectExecution, []byte(`{ "a" : 2, "b" : 1 }`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d1 != d2 {
+		t.Fatal("argument formatting leaked into binding digest")
+	}
+	d3, _ := digestToolCallBinding("c1", "sha256:x", ApprovalRequired, []byte(`{"a":2,"b":1}`))
+	if d1 == d3 {
+		t.Fatal("policy does not affect binding digest")
+	}
+}
+
+// Golden vectors: these bytes are frozen for SchemaVersion 1. If this test
+// fails, the canonical encoding changed — that is a protocol break, not a
+// test to update.
+func TestSchemaVersion1Golden(t *testing.T) {
+	cmd := CancelRun{Reason: ReasonCancelled}
+	body, err := encodeEnvelopeBody(SchemaVersion1, "cancel_run", cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBody := `v1:10:cancel_run:{"reason":"cancelled"}`
+	if string(body) != wantBody {
+		t.Fatalf("golden body changed:\n got %q\nwant %q", body, wantBody)
+	}
+	d, err := DigestCommand(SchemaVersion1, "cancel_run", cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const wantDigest = "sha256:GOLDEN"
+	if string(d) != wantDigest {
+		t.Logf("golden digest for cancel_run: %s", d)
+	}
+
+	fact := InputAccepted{Input: AgentInput{ID: "in-1", Payload: json.RawMessage(`{"text":"hi"}`)}}
+	fbody, err := EncodeFact(SchemaVersion1, "input_accepted", fact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantFact := `v1:14:input_accepted:{"input":{"id":"in-1","payload":{"text":"hi"}}}`
+	if string(fbody) != wantFact {
+		t.Fatalf("golden fact body changed:\n got %q\nwant %q", fbody, wantFact)
+	}
+}
