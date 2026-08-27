@@ -157,6 +157,12 @@ func EvaluateCommit(
 	if env.Digest != wantDigest {
 		return CommitDecision{Kind: DecisionConflict, Reject: fmt.Errorf("agent: commit: envelope digest mismatch")}, nil
 	}
+	// Derived-identity families must use their derived CommandID (spec §5.5):
+	// the derivation IS the idempotency index for inputs and responses, so a
+	// caller-minted random ID would silently bypass duplicate detection.
+	if err := checkDerivedCommandID(env); err != nil {
+		return CommitDecision{}, err
+	}
 
 	// Steps 2-3: idempotent replay and identity conflict.
 	if len(prior) > 0 {
@@ -245,6 +251,31 @@ func BuildEnvelope(run RunID, id CommandID, cmd AgentCommand) (CommandEnvelope, 
 		Digest:        d,
 		Command:       cmd,
 	}, nil
+}
+
+// checkDerivedCommandID enforces the derived-identity rules of spec §5.5.
+// AcceptInput derives from (RunID, InputID); approval/rejection/answer derive
+// from (RunID, StepID, CallID, ResponseID). Approve and reject of the same
+// response share one identity by design, so a decision change surfaces as
+// ErrCommandConflict instead of a second fact.
+func checkDerivedCommandID(env CommandEnvelope) error {
+	var want CommandID
+	switch cmd := env.Command.(type) {
+	case AcceptInput:
+		want = DeriveInputCommandID(env.RunID, cmd.Input.ID)
+	case ApproveToolCall:
+		want = DeriveResponseCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.ResponseID)
+	case RejectToolCall:
+		want = DeriveResponseCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.ResponseID)
+	case SubmitToolResponse:
+		want = DeriveResponseCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.ResponseID)
+	default:
+		return nil
+	}
+	if env.ID != want {
+		return fmt.Errorf("agent: commit: %s requires its derived CommandID", env.Type)
+	}
+	return nil
 }
 
 // isStartCommand reports whether an accepted commit of this command mints a

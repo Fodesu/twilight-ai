@@ -152,10 +152,23 @@ func (l *Loop) planAndPrepare(ctx, controlCtx context.Context, runtime Runtime, 
 		Tools:         plan.Tools,
 		ToolsDigest:   toolsDigest,
 	})
-	if err != nil && !retriable(err) {
+	if err == nil {
+		return nil
+	}
+	if !retriable(err) {
 		return err
 	}
-	return nil // reload decides the next action
+	// A retriable rejection with no authority progress means the rejection
+	// was about THIS plan's content (InputIDs, digests), not concurrency:
+	// retrying the same planner at the same revision would spin forever.
+	after, loadErr := runtime.Load(controlCtx)
+	if loadErr != nil {
+		return loadErr
+	}
+	if after.Revision == snapshot.Revision {
+		return fmt.Errorf("agent: loop: prepare rejected without authority progress: %w", err)
+	}
+	return nil // another actor advanced the run; reload decides the next action
 }
 
 // --- StartModelCall ---
