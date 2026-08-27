@@ -71,7 +71,7 @@ Request Planner --> sdk.Request --> Agent Loop ------> Model / Tool
                     EventSink / replay / projection / OTel
 ```
 
-Loop 和 Runtime 是协作者，不是上下级：Loop 决定如何执行，Runtime 决定权威状态在哪里以及如何安全提交。Machine 决定什么状态变化合法；Planner 决定模型看到的 application context；Model/Tool 只执行一次外部 effect。
+Loop 与 Runtime 的职责相互独立：Loop 决定如何执行，Runtime 决定权威状态在哪里以及如何安全提交。Machine 决定什么状态变化合法；Planner 决定模型看到的 application context；Model/Tool 只执行一次外部 effect。
 
 目标目录边界：
 
@@ -445,7 +445,7 @@ WaitForResponse(ResponseRequests)
 WaitForExecutionRecovery
 ```
 
-终态由 `MachineState.Status` 表示；Effect 只是待执行动作，既可以是模型调用，也可以是工具调用或等待，不暗示“有负作用”。Effect 不写入权威状态；Loop 在每次 `Load` 后由 MachineState 重新得到它们。
+终态由 `MachineState.Status` 表示；Effect 只是待执行动作，既可以是模型调用，也可以是工具调用或等待，该名称不表示一定产生外部副作用。Effect 不写入权威状态；Loop 在每次 `Load` 后由 MachineState 重新得到它们。
 
 ### 3.7 共享规则
 
@@ -767,7 +767,7 @@ ApproveToolCall、RejectToolCall、SubmitToolResponse、CancelRun、AcceptInput
   RecoverModelExecution 必须带对应非空 Grant。
 ```
 
-Grant 只绑定一个 ModelStep 或一个 ToolCall，不能挪给另一个 Call。外部 response 不需要把入口伪装成 Loop attempt。
+Grant 只绑定一个 ModelStep 或一个 ToolCall，不能转用于另一个 Call。外部 response 入口不需要持有 Loop attempt 的执行凭据。
 
 ### 5.4 Commit 语义
 
@@ -927,7 +927,7 @@ ToolStep 自动关闭
 
 只有在这些 boundary，Memoh 才能把 queue 输入绑定到下一次 Planner 请求或创建后续 Run。ToolStep 中间的新输入不能修改已经冻结的 ModelStep，也不能跳过 Pending/Waiting Call。
 
-steer 必须赶上下一个 ModelStep，而不是落到更晚的边界。Loop 在 boundary 处的 Plan/Prepare 提交与 Memoh 的 queue 仲裁存在竞态；MemohRuntime adapter 用以下 gate 消除它：处理 `PrepareModelRequest` 的同一事务内检查是否存在 eligible 的 steer item，存在时不接受该次 Prepare，先在事务内应用对应的 `AcceptInput`（Revision 递增，Prepare 按 `ErrStaleRuntime` 返回）。Loop 重新 Load 后由 `PlanningHint.Inputs` 携带该输入重新规划。这条 gate 是 adapter 行为，不进入 agent Machine 规则；in-process 宿主没有 queue，输入由宿主在 Loop 空闲边界提交。
+steer 必须进入下一个 ModelStep 的规划上下文，而不是延迟到更晚的边界。Loop 在 boundary 处的 Plan/Prepare 提交与 Memoh 的 queue 仲裁存在竞态；MemohRuntime adapter 用以下 gate 消除它：处理 `PrepareModelRequest` 的同一事务内检查是否存在 eligible 的 steer item，存在时不接受该次 Prepare，先在事务内应用对应的 `AcceptInput`（Revision 递增，Prepare 按 `ErrStaleRuntime` 返回）。Loop 重新 Load 后由 `PlanningHint.Inputs` 携带该输入重新规划。这条 gate 是 adapter 行为，不进入 agent Machine 规则；in-process 宿主没有 queue，输入由宿主在 Loop 空闲边界提交。
 
 ## 6. Loop 算法
 

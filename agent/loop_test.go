@@ -294,6 +294,8 @@ func TestLoopUnknownToolRefClosesAsLookupFailure(t *testing.T) {
 func TestLoopParallelBounded(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
 	var concurrent, peak atomic.Int32
+	gate := make(chan struct{})
+	started := make(chan struct{}, 3)
 	echo := &fakeTool{ref: "echo", def: spec.Definition, policy: DirectExecution,
 		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
 			cur := concurrent.Add(1)
@@ -303,7 +305,9 @@ func TestLoopParallelBounded(t *testing.T) {
 					break
 				}
 			}
-			defer concurrent.Add(-1)
+			started <- struct{}{}
+			<-gate // hold every worker until released so concurrency is real
+			concurrent.Add(-1)
 			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: json.RawMessage(`"ok"`)}}
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1", "c2", "c3"), textResult("done")}}
@@ -311,15 +315,30 @@ func TestLoopParallelBounded(t *testing.T) {
 	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
 		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{MaxParallel: 2}, false)
 
-	res, err := loop.Run(context.Background(), rt, nil)
-	if err != nil {
-		t.Fatal(err)
+	done := make(chan struct{})
+	var res LoopResult
+	var runErr error
+	go func() {
+		res, runErr = loop.Run(context.Background(), rt, nil)
+		close(done)
+	}()
+
+	// Exactly MaxParallel workers must be running before the gate opens.
+	<-started
+	<-started
+	if concurrent.Load() != 2 {
+		t.Fatalf("concurrent = %d before gate, want 2", concurrent.Load())
+	}
+	close(gate)
+	<-done
+	if runErr != nil {
+		t.Fatal(runErr)
 	}
 	if res.Result.Status != RunCompleted {
 		t.Fatalf("res = %+v", res)
 	}
-	if peak.Load() > 2 {
-		t.Fatalf("peak concurrency %d exceeded MaxParallel 2", peak.Load())
+	if peak.Load() != 2 {
+		t.Fatalf("peak concurrency = %d, want exactly 2 (bounded and actually parallel)", peak.Load())
 	}
 }
 

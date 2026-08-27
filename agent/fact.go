@@ -59,10 +59,15 @@ type ModelStepCompleted struct {
 func (ModelStepCompleted) fact() {}
 
 // ToolStepOpened establishes the ToolStep with its full frozen call set.
+// BindingSetDigest is computed by Decide over the ordered pre-Response
+// binding set and carried in the fact: Evolve folds it verbatim, so replay
+// never recomputes a digest with a different schema version, and
+// DeriveToolStepID(Source, BindingSetDigest) == StepID always holds.
 type ToolStepOpened struct {
-	StepID StepID            `json:"stepId"` // the new ToolStep
-	Source StepID            `json:"source"` // the completed ModelStep
-	Calls  []ToolCallBinding `json:"calls"`
+	StepID           StepID            `json:"stepId"` // the new ToolStep
+	Source           StepID            `json:"source"` // the completed ModelStep
+	BindingSetDigest Digest            `json:"bindingSetDigest"`
+	Calls            []ToolCallBinding `json:"calls"`
 }
 
 func (ToolStepOpened) fact() {}

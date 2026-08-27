@@ -160,11 +160,16 @@ func TestConformanceCallLocalRebase(t *testing.T) {
 	rt, stepID, grant := preparedRuntime(t, []sdk.ToolDefinition{defA, defB}, []ToolSpec{specA, specB})
 
 	bA := makeBinding(t, "cA", specA, `{}`)
-	bA.ToolRef = "a"
 	bB := makeBinding(t, "cB", specB, `{}`)
-	bB.ToolRef = "b"
+	r := sdk.ModelResult{
+		FinishReason: sdk.FinishReasonToolCalls,
+		ToolCalls: []sdk.ToolCall{
+			{ToolCallID: "cA", ToolName: "a", Input: `{}`},
+			{ToolCallID: "cB", ToolName: "b", Input: `{}`},
+		},
+	}
 	res := mustCommit(t, rt, "complete-1", 2, grant,
-		SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("cA", "cB"), Calls: []ToolCallBinding{bA, bB}})
+		SubmitModelResult{StepID: stepID, Result: r, Calls: []ToolCallBinding{bA, bB}})
 	toolStep := res.Events[1].Fact.(ToolStepOpened).StepID
 	base := res.Snapshot.Revision
 

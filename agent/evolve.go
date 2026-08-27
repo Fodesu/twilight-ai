@@ -53,7 +53,7 @@ func Evolve(s MachineState, f Fact) (MachineState, error) {
 		ms.Rejects++
 		ms.Status = ModelPrepared
 		s.Current = *ms
-		s.Usage = addUsage(s.Usage, fact.Usage)
+		s.Usage = s.Usage.Add(fact.Usage)
 		return s, nil
 
 	case ModelStepCompleted:
@@ -62,17 +62,13 @@ func Evolve(s MachineState, f Fact) (MachineState, error) {
 		}
 		result := fact.Result
 		s.LastModelResult = &result
-		s.Usage = addUsage(s.Usage, fact.Result.Usage)
+		s.Usage = s.Usage.Add(fact.Result.Usage)
 		s.Current = nil
 		return s, nil
 
 	case ToolStepOpened:
 		if s.Current != nil {
 			return s, fmt.Errorf("agent: evolve: tool step opened while a step is current")
-		}
-		setDigest, err := digestBindingSet(fact.Calls)
-		if err != nil {
-			return s, err
 		}
 		calls := make([]ToolCallState, len(fact.Calls))
 		for i, b := range fact.Calls {
@@ -93,9 +89,12 @@ func Evolve(s MachineState, f Fact) (MachineState, error) {
 				Status:           status,
 				Waiting:          waiting,
 			}
+			if err := ValidateToolCallState(calls[i]); err != nil {
+				return s, err
+			}
 		}
 		s.Current = ToolStep{
-			RefValue: StepRef{RunID: s.RunID, ID: fact.StepID, Digest: setDigest},
+			RefValue: StepRef{RunID: s.RunID, ID: fact.StepID, Digest: fact.BindingSetDigest},
 			Source:   fact.Source,
 			Calls:    calls,
 		}
@@ -140,6 +139,7 @@ func Evolve(s MachineState, f Fact) (MachineState, error) {
 			return s, fmt.Errorf("agent: evolve: tool step %q is not current", fact.StepID)
 		}
 		s.Current = nil
+		s.LastClosedStep = fact.StepID
 		return s, nil
 
 	case InputAccepted:
@@ -187,6 +187,11 @@ func evolveCall(s MachineState, step StepID, call CallID, apply func(*ToolCallSt
 	}
 	calls := append([]ToolCallState(nil), ts.Calls...)
 	apply(&calls[i])
+	// Spec §4.2: Evolve must reject illegal field combinations, e.g. an
+	// unknown-outcome failure whose class is not effect_unknown.
+	if err := ValidateToolCallState(calls[i]); err != nil {
+		return s, err
+	}
 	ts.Calls = calls
 	s.Current = ts
 	return s, nil

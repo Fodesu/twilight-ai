@@ -49,7 +49,13 @@ func (l *Loop) Run(ctx context.Context, runtime Runtime, events EventSink) (Loop
 			return LoopResult{}, err
 		}
 		if snapshot.State.Status.Terminal() {
-			l.emitCommitted(controlCtx, events, snapshot.State.RunID, nil)
+			if events != nil {
+				_ = events.Emit(controlCtx, Event{
+					RunID:      snapshot.State.RunID,
+					Kind:       EventRunFinished,
+					Durability: EventCommitted,
+				})
+			}
 			return LoopResult{Disposition: LoopFinished, Result: snapshot.State.Result}, nil
 		}
 
@@ -234,21 +240,43 @@ func (l *Loop) invokeModel(ctx context.Context, invoker ModelInvoker, req sdk.Re
 			if err != nil {
 				return sdk.ModelResult{}, err
 			}
-			for part := range stream.Parts {
-				if events == nil {
-					continue
-				}
-				if delta, ok := part.(*sdk.TextDeltaPart); ok {
-					_ = events.Emit(ctx, Event{
-						RunID: run, StepID: step,
-						Kind: EventModelTextDelta, Durability: EventProvisional,
-						Payload: mustJSON(delta.Text),
-					})
+			// The range has an explicit ctx escape: a stream that stops
+			// sending without closing Parts must not block cancellation and
+			// the recovery path behind it.
+		consume:
+			for {
+				select {
+				case part, open := <-stream.Parts:
+					if !open {
+						break consume
+					}
+					if events == nil {
+						continue
+					}
+					switch p := part.(type) {
+					case *sdk.TextDeltaPart:
+						_ = events.Emit(ctx, Event{
+							RunID: run, StepID: step,
+							Kind: EventModelTextDelta, Durability: EventProvisional,
+							Payload: mustJSON(p.Text),
+						})
+					case *sdk.ReasoningDeltaPart:
+						_ = events.Emit(ctx, Event{
+							RunID: run, StepID: step,
+							Kind: EventModelReasoningDelta, Durability: EventProvisional,
+							Payload: mustJSON(p.Text),
+						})
+					}
+				case <-ctx.Done():
+					return sdk.ModelResult{}, ctx.Err()
 				}
 			}
 			result, err := stream.Result()
 			if err != nil {
 				return sdk.ModelResult{}, err
+			}
+			if result == nil {
+				return sdk.ModelResult{}, errors.New("agent: loop: stream returned no result")
 			}
 			return *result, nil
 		}
@@ -290,6 +318,10 @@ func (l *Loop) bindToolCalls(result sdk.ModelResult, step ModelStep) ([]ToolCall
 			Policy:    DirectExecution,
 		}
 		if spec, known := specByName[tc.ToolName]; known {
+			// The binding's ToolRef is the frozen spec's Ref — the catalog
+			// key — not the model-facing definition name; the two may differ
+			// (aliased tools).
+			b.ToolRef = spec.Ref
 			b.DefinitionDigest = spec.DefinitionDigest
 			b.Policy = spec.Policy
 		}
@@ -363,13 +395,12 @@ func (l *Loop) runToolCalls(ctx, controlCtx context.Context, runtime Runtime, ev
 			// Known failure of a Pending call: no start barrier, no tool call.
 			res, err := l.commit(controlCtx, runtime, run, freshCommandID(), snapshot.Revision, "",
 				SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: *known, Outcome: ToolOutcomeKnown})
-			if err != nil && !retriable(err) {
-				l.settleWorkers(ctx, controlCtx, runtime, events, run, eff.StepID, started)
-				return err
-			}
 			if err != nil {
-				l.settleWorkers(ctx, controlCtx, runtime, events, run, eff.StepID, started)
-				return nil
+				settleErr := l.settleWorkers(ctx, controlCtx, runtime, events, run, eff.StepID, started)
+				if !retriable(err) {
+					return err
+				}
+				return settleErr
 			}
 			l.emitCommitted(controlCtx, events, run, res.Events)
 			continue
@@ -378,9 +409,9 @@ func (l *Loop) runToolCalls(ctx, controlCtx context.Context, runtime Runtime, ev
 		start, err := l.commit(controlCtx, runtime, run, freshCommandID(), snapshot.Revision, "",
 			StartToolCall{StepID: eff.StepID, CallID: callID})
 		if err != nil {
-			l.settleWorkers(ctx, controlCtx, runtime, events, run, eff.StepID, started)
+			settleErr := l.settleWorkers(ctx, controlCtx, runtime, events, run, eff.StepID, started)
 			if retriable(err) {
-				return nil
+				return settleErr
 			}
 			return err
 		}
@@ -395,27 +426,30 @@ func (l *Loop) runToolCalls(ctx, controlCtx context.Context, runtime Runtime, ev
 		started = append(started, startedWorker{call: call, grant: start.Grant, base: start.Snapshot.Revision, tool: tool})
 	}
 
-	l.settleWorkers(ctx, controlCtx, runtime, events, run, eff.StepID, started)
-	return nil
+	return l.settleWorkers(ctx, controlCtx, runtime, events, run, eff.StepID, started)
 }
 
 // settleWorkers executes every started worker and commits its outcome. An
 // accepted start is never abandoned (spec §6.2). Tool workers do not inherit
-// outer-ctx cancellation (spec §6.1); one Unknown cancels the rest.
-func (l *Loop) settleWorkers(ctx, controlCtx context.Context, runtime Runtime, events EventSink, run RunID, stepID StepID, started []startedWorker) {
+// outer-ctx cancellation (spec §6.1); one Unknown cancels the rest. A commit
+// that fails with a non-sentinel error is replayed once with the same
+// CommandID (spec §6.6 "commit response unknown"); a still-failing commit is
+// reported so the host does not mistake a wedged call for progress.
+func (l *Loop) settleWorkers(ctx, controlCtx context.Context, runtime Runtime, events EventSink, run RunID, stepID StepID, started []startedWorker) error {
 	if len(started) == 0 {
-		return
+		return nil
 	}
 	execCtx, cancelAll := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancelAll()
 
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	var firstErr error
 	for _, w := range started {
 		wg.Add(1)
 		go func(w startedWorker) {
 			defer wg.Done()
-			outcome := w.tool.Execute(execCtx, ToolExecutionRequest{
+			outcome := executeToolSafely(execCtx, w.tool, ToolExecutionRequest{
 				RunID:            run,
 				StepID:           stepID,
 				CallID:           w.call.CallID,
@@ -450,12 +484,25 @@ func (l *Loop) settleWorkers(ctx, controlCtx context.Context, runtime Runtime, e
 			// Commit with the worker's own grant on its start base; stale
 			// bases rebase call-locally. Late results after terminal return
 			// ErrRunTerminal and are dropped (audit is the adapter's job).
-			res, err := l.commit(controlCtx, runtime, run, freshCommandID(), w.base, w.grant, cmd)
-			if err == nil {
+			cmdID := freshCommandID()
+			res, err := l.commit(controlCtx, runtime, run, cmdID, w.base, w.grant, cmd)
+			if err != nil && !retriable(err) {
+				// One replay with the same CommandID and digest.
+				res, err = l.commit(controlCtx, runtime, run, cmdID, w.base, w.grant, cmd)
+			}
+			switch {
+			case err == nil:
 				l.emitCommitted(controlCtx, events, run, res.Events)
 				if events != nil {
 					_ = events.Emit(controlCtx, Event{RunID: run, StepID: stepID, CallID: w.call.CallID,
 						Kind: EventToolCompleted, Durability: EventCommitted})
+				}
+			case retriable(err):
+				// Terminal/stale: the authority already settled this call or
+				// the run; the result is intentionally dropped.
+			default:
+				if firstErr == nil {
+					firstErr = fmt.Errorf("agent: loop: settling call %q: %w", w.call.CallID, err)
 				}
 			}
 			if unknown {
@@ -464,6 +511,22 @@ func (l *Loop) settleWorkers(ctx, controlCtx context.Context, runtime Runtime, e
 		}(w)
 	}
 	wg.Wait()
+	return firstErr
+}
+
+// executeToolSafely runs an application tool and converts a panic into
+// ToolExecutionUnknown: the effect may have happened before the panic, and a
+// crashing tool must not take down every run in the process.
+func executeToolSafely(ctx context.Context, tool ExecutableTool, req ToolExecutionRequest) (outcome ToolExecutionOutcome) {
+	defer func() {
+		if r := recover(); r != nil {
+			outcome = ToolExecutionUnknown{Failure: ToolFailure{
+				Class:   FailureEffectUnknown,
+				Message: fmt.Sprintf("tool panic: %v", r),
+			}}
+		}
+	}()
+	return tool.Execute(ctx, req)
 }
 
 type progressSink struct {

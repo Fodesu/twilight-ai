@@ -34,20 +34,7 @@ func shouldContinueLoop(maxSteps, step int) bool {
 }
 
 func addUsage(total, step *Usage) Usage {
-	result := *total
-	result.InputTokens += step.InputTokens
-	result.OutputTokens += step.OutputTokens
-	result.TotalTokens += step.TotalTokens
-	result.ReasoningTokens += step.ReasoningTokens
-	result.CachedInputTokens += step.CachedInputTokens
-	result.InputTokenDetails.NoCacheTokens += step.InputTokenDetails.NoCacheTokens
-	result.InputTokenDetails.CacheReadTokens += step.InputTokenDetails.CacheReadTokens
-	result.InputTokenDetails.CacheWriteTokens += step.InputTokenDetails.CacheWriteTokens
-	result.InputTokenDetails.CacheWrite5mTokens += step.InputTokenDetails.CacheWrite5mTokens
-	result.InputTokenDetails.CacheWrite1hTokens += step.InputTokenDetails.CacheWrite1hTokens
-	result.OutputTokenDetails.TextTokens += step.OutputTokenDetails.TextTokens
-	result.OutputTokenDetails.ReasoningTokens += step.OutputTokenDetails.ReasoningTokens
-	return result
+	return total.Add(*step)
 }
 
 // buildStepMessages creates the messages produced by a step: an assistant

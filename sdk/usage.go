@@ -26,3 +26,20 @@ type Usage struct {
 	InputTokenDetails  InputTokenDetail  `json:"inputTokenDetails,omitempty"`
 	OutputTokenDetails OutputTokenDetail `json:"outputTokenDetails,omitempty"`
 }
+
+// Add returns the field-by-field sum of u and other.
+func (u Usage) Add(other Usage) Usage {
+	u.InputTokens += other.InputTokens
+	u.OutputTokens += other.OutputTokens
+	u.TotalTokens += other.TotalTokens
+	u.ReasoningTokens += other.ReasoningTokens
+	u.CachedInputTokens += other.CachedInputTokens
+	u.InputTokenDetails.NoCacheTokens += other.InputTokenDetails.NoCacheTokens
+	u.InputTokenDetails.CacheReadTokens += other.InputTokenDetails.CacheReadTokens
+	u.InputTokenDetails.CacheWriteTokens += other.InputTokenDetails.CacheWriteTokens
+	u.InputTokenDetails.CacheWrite5mTokens += other.InputTokenDetails.CacheWrite5mTokens
+	u.InputTokenDetails.CacheWrite1hTokens += other.InputTokenDetails.CacheWrite1hTokens
+	u.OutputTokenDetails.TextTokens += other.OutputTokenDetails.TextTokens
+	u.OutputTokenDetails.ReasoningTokens += other.OutputTokenDetails.ReasoningTokens
+	return u
+}

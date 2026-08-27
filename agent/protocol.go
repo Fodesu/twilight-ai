@@ -157,10 +157,12 @@ func DigestModelStepBinding(model ModelRef, requestDigest, toolsDigest Digest) (
 		string(model), string(requestDigest), string(toolsDigest)))), nil
 }
 
-// digestBindingSet covers the full ordered call set of one ToolStep; it feeds
-// DeriveToolStepID.
+// digestBindingSet covers the full ordered pre-Response call set of one
+// ToolStep; it feeds DeriveToolStepID and is carried inside ToolStepOpened.
+// It is pinned to SchemaVersion1: the value is persisted in v1 facts, so a
+// future schema bump must not change how replayed v1 state folds.
 func digestBindingSet(bindings []ToolCallBinding) (Digest, error) {
-	body, err := encodeEnvelopeBody(currentSchemaVersion, "tool_call_bindings", bindings)
+	body, err := encodeEnvelopeBody(SchemaVersion1, "tool_call_bindings", bindings)
 	if err != nil {
 		return "", err
 	}

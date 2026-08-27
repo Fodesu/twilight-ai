@@ -178,7 +178,13 @@ func decideSubmitModelResult(s MachineState, cmd SubmitModelResult) ([]Fact, err
 	}
 	completed := ModelStepCompleted{StepID: cmd.StepID, Result: cmd.Result}
 
-	if len(cmd.Calls) == 0 {
+	// The result's own tool calls decide whether a ToolStep opens; gating on
+	// the caller-supplied bindings would let zero bindings silently complete
+	// a run whose model asked for tools.
+	if len(cmd.Result.ToolCalls) == 0 {
+		if len(cmd.Calls) != 0 {
+			return nil, rejectionf("model result: %d bindings for a result with no tool calls", len(cmd.Calls))
+		}
 		return []Fact{completed, RunEnded{Status: RunCompleted}}, nil
 	}
 
@@ -207,7 +213,13 @@ func decideSubmitModelResult(s MachineState, cmd SubmitModelResult) ([]Fact, err
 		}
 		seen[b.CallID] = true
 
-		if spec, known := specByName[string(b.ToolRef)]; known {
+		// Cross-check the binding against the model result: the authority
+		// accepts only bindings for the tool the model actually named, with
+		// the arguments the model actually produced (spec §4.1).
+		if spec, known := specByName[rc.ToolName]; known {
+			if b.ToolRef != spec.Ref {
+				return nil, rejectionf("model result: binding %q ToolRef %q does not match frozen spec ref %q for tool %q", b.CallID, b.ToolRef, spec.Ref, rc.ToolName)
+			}
 			if b.DefinitionDigest != spec.DefinitionDigest {
 				return nil, rejectionf("model result: binding %q definition digest does not match frozen ToolSpec", b.CallID)
 			}
@@ -218,8 +230,18 @@ func decideSubmitModelResult(s MachineState, cmd SubmitModelResult) ([]Fact, err
 			// Unknown ToolRef stays an unresolved DirectExecution binding with
 			// an empty definition digest; StartToolCalls records the lookup
 			// failure (spec §4.1).
+			if string(b.ToolRef) != rc.ToolName {
+				return nil, rejectionf("model result: binding %q ToolRef %q does not match result tool %q", b.CallID, b.ToolRef, rc.ToolName)
+			}
 			if b.Policy != DirectExecution || b.DefinitionDigest != "" {
 				return nil, rejectionf("model result: unresolved binding %q must be DirectExecution with empty digest", b.CallID)
+			}
+		}
+		wantArgs, argsCanonical := canonicalArgumentsForCompare(rc.Input)
+		if argsCanonical {
+			gotArgs, err := canonicalJSON(b.Arguments)
+			if err != nil || string(gotArgs) != string(wantArgs) {
+				return nil, rejectionf("model result: binding %q arguments do not match the model result", b.CallID)
 			}
 		}
 		wantBinding, err := digestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
@@ -260,10 +282,23 @@ func decideSubmitModelResult(s MachineState, cmd SubmitModelResult) ([]Fact, err
 		}
 	}
 	return []Fact{completed, ToolStepOpened{
-		StepID: toolStepID,
-		Source: cmd.StepID,
-		Calls:  bindings,
+		StepID:           toolStepID,
+		Source:           cmd.StepID,
+		BindingSetDigest: setDigest,
+		Calls:            bindings,
 	}}, nil
+}
+
+// canonicalArgumentsForCompare canonicalizes a model result's tool input for
+// cross-checking a binding. The second return is false when the input is not
+// valid JSON — those calls bind raw and close as invalid_arguments, so there
+// is no canonical form to compare.
+func canonicalArgumentsForCompare(input any) ([]byte, bool) {
+	got, err := canonicalToolArguments(input)
+	if err != nil {
+		return nil, false
+	}
+	return got, true
 }
 
 // --- rule 4: SubmitModelFailure ---
@@ -446,11 +481,26 @@ func decideApproveToolCall(s MachineState, cmd ApproveToolCall) ([]Fact, error) 
 }
 
 func decideRejectToolCall(s MachineState, cmd RejectToolCall) ([]Fact, error) {
-	if _, err := waitingCall(s, cmd.StepID, cmd.CallID, ResponseApproval, cmd.ResponseID); err != nil {
+	// Reject closes a Waiting call of either kind as a Known failure:
+	// approval rejection and external-response abandonment ("the answer is
+	// never coming") share one exit. Spec §4.2 lists Waiting -> Failed(Known)
+	// as legal; without this, an abandoned ask-user call would strand the run
+	// with CancelRun as the only escape.
+	ts, err := currentToolStep(s, cmd.StepID)
+	if err != nil {
 		return nil, err
 	}
-	ts, _ := currentToolStep(s, cmd.StepID)
 	i := ts.callIndex(cmd.CallID)
+	if i < 0 {
+		return nil, rejectionf("response: unknown call %q", cmd.CallID)
+	}
+	c := ts.Calls[i]
+	if c.Status != ToolWaiting || c.Waiting == nil {
+		return nil, rejectionf("response: call %q is not Waiting", cmd.CallID)
+	}
+	if c.Waiting.ID != cmd.ResponseID {
+		return nil, rejectionf("response: call %q expects ResponseID %q, got %q", cmd.CallID, c.Waiting.ID, cmd.ResponseID)
+	}
 	facts := []Fact{ToolCallFailed{
 		StepID:  cmd.StepID,
 		CallID:  cmd.CallID,
@@ -479,11 +529,13 @@ func decideSubmitToolResponse(s MachineState, cmd SubmitToolResponse) ([]Fact, e
 // --- rules 12-13: cancel and input ---
 
 func decideCancelRun(s MachineState, cmd CancelRun) ([]Fact, error) {
-	reason := cmd.Reason
-	if reason == "" {
-		reason = ReasonCancelled
+	// Spec rule 12 fixes the mapping: CancelRun always records
+	// RunStopped(cancelled). A caller-chosen reason would let ingress forge
+	// step_limit or other system reasons into the log.
+	if cmd.Reason != "" && cmd.Reason != ReasonCancelled {
+		return nil, rejectionf("cancel: reason must be empty or %q", ReasonCancelled)
 	}
-	return []Fact{RunEnded{Status: RunStopped, Reason: reason}}, nil
+	return []Fact{RunEnded{Status: RunStopped, Reason: ReasonCancelled}}, nil
 }
 
 func decideAcceptInput(s MachineState, cmd AcceptInput) ([]Fact, error) {
