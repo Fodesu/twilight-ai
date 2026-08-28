@@ -182,10 +182,10 @@ agent-owned 冻结形态遵守以下规则；`FreezeModelRequest`、`FreezeModel
 3. `ToolChoice` 是封闭类型 `{Mode: auto|none|required|tool, Tool string}`，不使用 `any`。
 4. 消息 part 是 sealed union 的 agent value（text/reasoning/image/file/tool-call/tool-result），不持久化 `sdk.MessagePart` interface。
 5. 消息中的二进制内容有两种形式：inline bytes（canonical 编码为 base64），或稳定的内容寻址引用 `BlobRef{Digest, MediaType, ByteSize}`。`BlobRef` 的字节解析由组装 `ModelInvoker` 的一方负责；带时效的 URL 等不稳定引用不能进入冻结请求。两种形式产生不同的 digest，Planner 对同一内容必须确定性地选择一种形式。
-6. provider metadata、provider options、tool input/result、response format schema 等扩展字段的值必须是 JSON 值。进入 agent 前必须 canonicalize 并 detach 为 agent-owned `json.RawMessage`；不能保存 caller-owned map/slice/RawMessage 或 `any`。canonicalization 必须拒绝会把不同 payload 折叠成同一值的输入，包括重复 object key、trailing data、invalid UTF-8 和 escaped lone surrogate（`\ud800`..`\udfff`）。
+6. provider metadata、provider options、tool input/result、response format schema 等扩展字段的值必须是 JSON 值。进入 agent 前必须 parse/canonicalize 成 opaque `CanonicalJSON`（由 `agent/jsonstable.Value` 承载，内部 bytes 不可被 agent core 或 caller 直接构造/修改）；不能保存 caller-owned map/slice/RawMessage 或 `any`。canonicalization 必须拒绝会把不同 payload 折叠成同一值的输入，包括重复 object key、trailing data、invalid UTF-8 和 escaped lone surrogate（`\ud800`..`\udfff`）。
 7. `DigestRequest` 覆盖 frozen `ModelRequest` 的全部字段，不设排除项。cache 配置等只影响成本的字段同样参与摘要；排除任何字段都会把不同请求判成同一事件，产生错误的 `CommitAlreadyApplied`。
 
-边界的 SDK 类型可以保持以下形态；agent 的持久化 `ModelRequest`/`ToolDefinition` 是相同语义的 concrete mirror，字段中所有接口/any/JSON 原文先在 `Freeze*` 中 canonicalize。
+边界的 SDK 类型可以保持以下形态；agent 的持久化 `ModelRequest`/`ToolDefinition` 是相同语义的 concrete mirror，字段中所有接口/any/JSON 原文先在 `Freeze*` 中 canonicalize 为 `CanonicalJSON`。
 
 ```go
 package sdk
@@ -267,9 +267,9 @@ Runtime 的 authority boundary 不能靠“调用者不要修改快照”这类�
 2. **digest/replay nondeterminism**：digest 在提交时按一组字节计算，但持久化对象仍引用 caller-owned map/slice/RawMessage；之后对象变化会让相同 `CommandID` 的重放、`CommitAlreadyApplied` 判断、StepID 派生和 replay 校验失真。
 3. **unbounded SDK surface**：`sdk.MessagePart` interface、provider metadata 的 `map[string]any`、tool/schema 的原始 JSON 等属于 provider/transport 边界数据，不能成为 Machine 协议的永久 wire contract。
 
-因此 agent 必须定义自己的 JSON-stable persisted value：`ModelRequest`、`ModelResult`、`ToolDefinition`、`Usage`、`Message`、`MessagePart`、`ProviderMetadata` 等。Loop/provider 边界仍使用 `sdk.Request`/`sdk.ModelResult`；进入 Runtime 前必须调用 `FreezeModelRequest`、`FreezeModelResult`、`FreezeToolDefinition`，把动态 JSON canonicalize 并复制为 agent-owned bytes；离开 Runtime 调 provider 时通过 `.SDK()` 构造新的 SDK 值。`DigestRequest`/`DigestToolDefinition` 只接受 frozen agent value。`EvaluateCommit` 和 Runtime 实现保存 facts/state 前还必须 snapshot 自己拥有的 value，`MemoryRuntime.Commit` 以已保存事件重新 fold 出 authority state，而不是信任 caller-provided `decision.NewState`。
+因此 agent 必须定义自己的 JSON-stable persisted value：`ModelRequest`、`ModelResult`、`ToolDefinition`、`Usage`、`Message`、`MessagePart`、`ProviderMetadata` 等。Loop/provider 边界仍使用 `sdk.Request`/`sdk.ModelResult`；进入 Runtime 前必须调用 `FreezeModelRequest`、`FreezeModelResult`、`FreezeToolDefinition`，把动态 JSON parse/canonicalize 成 opaque `CanonicalJSON`；离开 Runtime 调 provider 时通过 `.SDK()` 构造新的 SDK 值。`DigestRequest`/`DigestToolDefinition` 只接受 frozen agent value。`EvaluateCommit` 和 Runtime 实现保存 facts/state 前还必须 snapshot 自己拥有的 value，`MemoryRuntime.Commit` 以已保存事件重新 fold 出 authority state，而不是信任 caller-provided `decision.NewState`。
 
-这不是防御性 deep clone 的局部补丁，而是分层边界：`sdk` 是一次调用的 transport API，`agent` 是可重放、可审计、可长期兼容的事件协议。任何新增进入 AgentEvent/MachineState 的 provider 数据，必须先落到 agent-owned sealed/JSON-stable 类型或 `json.RawMessage` canonical JSON；不得把新的 SDK interface、`any` 或可变引用跨过 Runtime authority boundary。
+这不是防御性 deep clone 的局部补丁，而是分层边界：`sdk` 是一次调用的 transport API，`agent` 是可重放、可审计、可长期兼容的事件协议。任何新增进入 AgentEvent/MachineState 的 provider 数据，必须先落到 agent-owned sealed/JSON-stable 类型或 `CanonicalJSON`；不得把新的 SDK interface、`any`、`json.RawMessage` 或可变引用跨过 Runtime authority boundary。外部 bytes 的检测只能发生在 codec/Freeze 边界；边界之后 agent core 只看已构造的 immutable value。
 
 ### 2.3 Memoh native runtime
 
@@ -455,7 +455,7 @@ Runtime EvaluateCommit: 幂等/类别校验 + Machine.Decide + Machine.Evolve
 
 意图与事实由 Decide 显式转换，日志永远记录结果而非请求：`RejectToolCall` 记录为 `ToolCallFailed{permission_denied}`；`CancelRun` 记录为 `RunEnded{RunStopped, cancelled}`；触发 step limit 的最后一次 Call 完成记录为 `[ToolCallCompleted, ToolStepClosed, RunEnded{RunStopped, step_limit}]`。
 
-`PrepareModelRequest.RequestDigest` 和 `SubmitToolResponse.ResponseDigest` 分别是请求/响应 payload 的内容摘要，不是提交身份。一个 command 被重试时复用同一 CommandID 和 digest；Runtime 不会为重试生成第二组 AgentEvent。
+`PrepareModelRequest.RequestDigest` 和 `ResponseDigest` 分别是请求/响应 payload 的内容摘要，不是提交身份。`ApproveToolCall`/`RejectToolCall` 使用 `DigestToolResponseDecision(kind, decision, reason)`，`SubmitToolResponse` 使用 `DigestToolResponsePayload(payload)`；Decide 必须校验 digest 与实际 decision/payload 匹配。一个 command 被重试时复用同一 CommandID 和 digest；Runtime 不会为重试生成第二组 AgentEvent。
 
 Effect 是 Loop 动作：
 
@@ -907,11 +907,11 @@ AgentEvent 身份
 ```
 ```
 
-canonical 编码和 digest 函数由 agent 提供；Memoh 只保存和比较结果，不重新实现排序或编码。编码必须包含 sealed command/fact discriminator、按声明顺序编码有序 slice、对 map key 排序，并对 `json.RawMessage` 使用 canonical JSON；重复 object key、trailing data、invalid UTF-8、escaped lone surrogate 一律拒绝，不能让 `encoding/json` 的 replacement behavior 把不同输入合并为同一 digest；不把 `Digest`、BaseRevision、Revision、Index 或 ExecutionGrant 编入 digest。
+canonical 编码和 digest 函数由 agent 提供；Memoh 只保存和比较结果，不重新实现排序或编码。编码必须包含 sealed command/fact discriminator、按声明顺序编码有序 slice、对 map key 排序，并对 `CanonicalJSON` 原样写入其 canonical bytes；重复 object key、trailing data、invalid UTF-8、escaped lone surrogate 一律在构造 `CanonicalJSON` 或 decode wire document 时拒绝，不能让 `encoding/json` 的 replacement behavior 把不同输入合并为同一 digest；不把 `Digest`、BaseRevision、Revision、Index 或 ExecutionGrant 编入 digest。
 
 已发布 `SchemaVersion` 的 canonical 编码和 digest 规则永久冻结；字段增删只能进入新的 SchemaVersion，旧事件按其自带版本校验。同一个 Run 不允许由写入不同 SchemaVersion 的进程混跑：升级窗口内先全量部署可读写新版本的代码，再开始写入新版本；否则同一 command 的重放会因编码不同被误判为 `ErrCommandConflict`。
 
-CommandEnvelope 和 AgentEvent 的 `SchemaVersion` 和 `Type` 是持久化协议字段；Type 必须与 sealed AgentCommand/Fact 的具体变体一致，未知版本或类型直接拒绝。agent 必须提供正式 wire codec：decode 时先读 `Type`，再恢复具体 command/fact variant，并校验 command/fact digest；不能依赖 `encoding/json` 自动反序列化 interface 字段。`DigestCommand`/`DigestFact` 对 `SchemaVersion`、`Type` 和内容做 canonical digest，但不把 `Digest` 字段自身纳入摘要，保证 Memoh scanner、MemoryRuntime 和不同进程使用同一身份规则。`Revision` 只用于 authority 的 CAS，不进入任何 digest。
+CommandEnvelope 和 AgentEvent 的 `SchemaVersion` 和 `Type` 是持久化协议字段；Type 必须与 sealed AgentCommand/Fact 的具体变体一致，未知版本或类型直接拒绝。agent 必须提供正式 wire codec：decode 时先 canonicalize 整个 document，再读 `Type`，恢复具体 command/fact variant，校验 command/fact digest，并要求 decoded value 重新 canonical marshal 后与输入 canonical document 等价；不能依赖 `encoding/json` 自动反序列化 interface 字段，也不能接受 duplicate key、大小写模糊字段名或其他会被 Go decoder 合并/宽容的形态。`DigestCommand`/`DigestFact` 对 `SchemaVersion`、`Type` 和内容做 canonical digest，但不把 `Digest` 字段自身纳入摘要，保证 Memoh scanner、MemoryRuntime 和不同进程使用同一身份规则。`Revision` 只用于 authority 的 CAS，不进入任何 digest。
 
 Evolve 的折叠语义与事件编码同属永久兼容契约：已发布 SchemaVersion 的事件必须永远能被折叠出与写入当时相同的状态。conformance kit 为每个已发布 SchemaVersion 冻结 golden event stream 与对应的状态字节，任何 Evolve 实现变更都必须通过全部历史版本的 golden 校验。
 
@@ -960,7 +960,8 @@ agent 不提供第三个 Loop 操作。Memoh/application 的 response ingress：
 3. 用 `ResponseRequest.RunID/StepID/CallID/ID` 路由响应。将 approval 转成
    `ApproveToolCall`/`RejectToolCall`，将外部结果转成 `SubmitToolResponse`；
    `ResponseRequest.RequestDigest` 是原请求的摘要，用户决定或答案的摘要单独放在
-   command 的 `ResponseDigest`，并用 `DeriveResponseCommandID` 生成稳定 CommandID。
+   command 的 `ResponseDigest`，由 `DigestToolResponseDecision` / `DigestToolResponsePayload`
+   计算，并用 `DeriveResponseCommandID` 生成稳定 CommandID。
 4. 通过同一个 `Runtime.Commit` 提交；重复响应按 AlreadyApplied/Conflict 处理。
 
 响应提交后，若有 Pending Call 或 ToolStep 已可自动关闭，Memoh 写入幂等 wake/outbox；其他 Waiting Call 保持原状态。响应入口不执行工具，也不调用模型。
@@ -1259,7 +1260,7 @@ type ExecutableTool interface {
     Ref() ToolRef
     Definition() sdk.ToolDefinition
     ResponsePolicy() ResponsePolicy
-    ValidateArguments(json.RawMessage) error
+    ValidateArguments(CanonicalJSON) error
     Execute(context.Context, ToolExecutionRequest) ToolExecutionOutcome
 }
 ```
@@ -1752,17 +1753,19 @@ type RunFailure struct {
 // Agent-owned JSON-stable persisted data. SDK request/result/tool values are
 // converted at Loop/provider boundaries via Freeze* and SDK(); Runtime never
 // stores sdk.MessagePart interfaces, map[string]any provider metadata, or
-// caller-owned json.RawMessage bytes.
-type ProviderMetadata map[string]json.RawMessage
+// caller-owned JSON bytes. CanonicalJSON is an opaque immutable value constructed
+// only by parsing/canonicalizing JSON at the boundary.
+type CanonicalJSON = jsonstable.Value
+type ProviderMetadata map[string]CanonicalJSON
 type CacheControl struct { Type string; TTL string }
 type Message struct { Role MessageRole; Content []MessagePart; Usage *Usage }
 type MessagePart struct { /* sealed text/reasoning/image/file/tool-call/tool-result fields */ }
-type ResponseFormat struct { Type ResponseFormatType; JSONSchema json.RawMessage }
+type ResponseFormat struct { Type ResponseFormatType; JSONSchema CanonicalJSON }
 type ToolChoice struct { Mode ToolChoiceMode; Tool string }
-type ToolDefinition struct { Name string; Description string; Parameters json.RawMessage; CacheControl *CacheControl }
+type ToolDefinition struct { Name string; Description string; Parameters CanonicalJSON; CacheControl *CacheControl }
 type ModelRequest struct { /* Model/System/Messages/Tools/options/ProviderOptions */ }
 type Usage struct { /* token counters and details; Add is field-wise */ }
-type ModelToolCall struct { ToolCallID string; ToolName string; Input json.RawMessage; ProviderMetadata ProviderMetadata }
+type ModelToolCall struct { ToolCallID string; ToolName string; Input CanonicalJSON; ProviderMetadata ProviderMetadata }
 type ReasoningPart struct { /* text/id/format/model/provider metadata */ }
 type Source struct { /* source identity and provider metadata */ }
 type GeneratedFile struct { Data string; MediaType string }
@@ -1842,7 +1845,7 @@ type ToolCallState struct {
     ToolRef          ToolRef
     DefinitionDigest Digest
     BindingDigest    Digest
-    Arguments        json.RawMessage
+    Arguments        CanonicalJSON
     Policy           ResponsePolicy
     Status           ToolCallStatus
     Result           *ToolExecutionResult
@@ -1898,7 +1901,7 @@ type ResponseRequest struct {
     CallID       CallID
     ID           ResponseID
     Kind         ResponseKind
-    Payload      json.RawMessage
+    Payload      CanonicalJSON
     RequestDigest Digest // digest of the request payload, not a user response
 }
 
@@ -1931,7 +1934,7 @@ type Fact interface { fact() }
 
 type AgentInput struct {
     ID      InputID
-    Payload json.RawMessage
+    Payload CanonicalJSON
 }
 
 // NextStep creates the command consumed by an active Run at a safe boundary.
@@ -2017,7 +2020,7 @@ type SubmitToolResponse struct {
     CallID         CallID
     ResponseID     ResponseID
     ResponseDigest Digest // digest of the answer payload
-    Payload        json.RawMessage
+    Payload        CanonicalJSON
 }
 func (SubmitToolResponse) agentCommand() {}
 
@@ -2085,7 +2088,7 @@ type ToolCallAnswered struct {
     CallID         CallID
     ResponseID     ResponseID
     ResponseDigest Digest
-    Payload        json.RawMessage
+    Payload        CanonicalJSON
 }
 func (ToolCallAnswered) fact() {}
 
@@ -2118,7 +2121,7 @@ type ToolCallBinding struct {
     ToolRef          ToolRef
     DefinitionDigest Digest
     BindingDigest    Digest // definition, policy and canonical arguments
-    Arguments        json.RawMessage
+    Arguments        CanonicalJSON
     Policy           ResponsePolicy // unresolved ToolRef uses DirectExecution
     Response         *ResponseRequest // Decide 在 ToolStepOpened 中派生并填充；调用方提交时留空
 }
@@ -2295,7 +2298,7 @@ type ToolExecutionRequest struct {
     CallID           CallID
     ToolRef          ToolRef
     DefinitionDigest Digest
-    Arguments        json.RawMessage
+    Arguments        CanonicalJSON
     Progress         ToolProgressSink
 }
 
@@ -2303,11 +2306,11 @@ type ExecutableTool interface {
     Ref() ToolRef
     Definition() sdk.ToolDefinition
     ResponsePolicy() ResponsePolicy
-    ValidateArguments(json.RawMessage) error
+    ValidateArguments(CanonicalJSON) error
     Execute(context.Context, ToolExecutionRequest) ToolExecutionOutcome
 }
 
-type ToolExecutionResult struct { Output json.RawMessage }
+type ToolExecutionResult struct { Output CanonicalJSON }
 
 type ToolExecutionOutcome interface { toolExecutionOutcome() }
 
@@ -2386,7 +2389,7 @@ type Loop struct {
 func (l *Loop) Run(context.Context, Runtime, EventSink) (LoopResult, error)
 ```
 
-实现必须保证所有返回的 Step、Call、Request、Result 和等待 payload 具有只读快照语义；调用方不能通过修改 slice、map 或 `json.RawMessage` 改变 Runtime 状态。`AgentCommand`、`Fact`、`Effect` 和 ToolExecutionOutcome 使用 agent 的 sealed interface，外部实现不能添加未定义变体。构造 CommandEnvelope 与派生 CommandID/ResponseID 只能通过 agent 提供的 typed 构造函数；手工拼装信封字段属于实现错误。
+实现必须保证所有返回的 Step、Call、Request、Result 和等待 payload 具有只读快照语义；调用方不能通过修改 slice、map 或 JSON bytes view 改变 Runtime 状态。`AgentCommand`、`Fact`、`Effect` 和 ToolExecutionOutcome 使用 agent 的 sealed interface，外部实现不能添加未定义变体。构造 CommandEnvelope 与派生 CommandID/ResponseID 只能通过 agent 提供的 typed 构造函数；手工拼装信封字段属于实现错误。
 
 ## 附录 B：核心不变量
 

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 
 	"github.com/memohai/twilight-ai/sdk"
@@ -13,7 +12,7 @@ import (
 
 func newTestRuntime(t *testing.T, cfg RunConfig) *MemoryRuntime {
 	t.Helper()
-	s, err := Initialize("run-1", cfg, NextRun(AgentInput{ID: "seed", Payload: json.RawMessage(`{"q":"hi"}`)}))
+	s, err := Initialize("run-1", cfg, NextRun(AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)}))
 	if err != nil {
 		t.Fatal(err)
 	}

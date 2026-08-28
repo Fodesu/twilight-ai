@@ -225,7 +225,7 @@ func EvaluateCommit(
 	for i, f := range facts {
 		// Detach every fact before it is folded or wrapped as an event. Decide
 		// often forwards fields from the caller's command (ModelRequest,
-		// ModelResult, json.RawMessage payloads); the commit decision must not
+		// ModelResult, CanonicalJSON payloads); the commit decision must not
 		// carry caller-owned mutable objects across the Runtime boundary.
 		f, err = snapshotFact(f)
 		if err != nil {

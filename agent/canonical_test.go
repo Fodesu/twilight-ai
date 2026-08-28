@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -151,18 +150,18 @@ func TestDeriveResponseIDPerKind(t *testing.T) {
 }
 
 func TestDigestBindingCanonicalizesArguments(t *testing.T) {
-	d1, err := digestToolCallBinding("c1", "sha256:x", DirectExecution, []byte(`{"b":1,"a":2}`))
+	d1, err := digestToolCallBinding("c1", "sha256:x", DirectExecution, cj(`{"b":1,"a":2}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	d2, err := digestToolCallBinding("c1", "sha256:x", DirectExecution, []byte(`{ "a" : 2, "b" : 1 }`))
+	d2, err := digestToolCallBinding("c1", "sha256:x", DirectExecution, cj(`{ "a" : 2, "b" : 1 }`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if d1 != d2 {
 		t.Fatal("argument formatting leaked into binding digest")
 	}
-	d3, _ := digestToolCallBinding("c1", "sha256:x", ApprovalRequired, []byte(`{"a":2,"b":1}`))
+	d3, _ := digestToolCallBinding("c1", "sha256:x", ApprovalRequired, cj(`{"a":2,"b":1}`))
 	if d1 == d3 {
 		t.Fatal("policy does not affect binding digest")
 	}
@@ -192,7 +191,7 @@ func TestSchemaVersion1Golden(t *testing.T) {
 		t.Fatalf("golden digest changed:\n got %s\nwant %s", d, wantDigest)
 	}
 
-	fact := InputAccepted{Input: AgentInput{ID: "in-1", Payload: json.RawMessage(`{"text":"hi"}`)}}
+	fact := InputAccepted{Input: AgentInput{ID: "in-1", Payload: cj(`{"text":"hi"}`)}}
 	fbody, err := EncodeFact(SchemaVersion1, "input_accepted", fact)
 	if err != nil {
 		t.Fatal(err)

@@ -1,53 +1,55 @@
 package agent
 
-import (
-	"encoding/json"
-	"fmt"
-)
+import "encoding/json"
 
 func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
 
-// canonicalToolArguments renders a model-provided tool input as canonical
-// JSON bytes for binding digests. Failure means the arguments are not valid
-// JSON; the caller binds them raw and lets validation fail as
+// canonicalToolArguments renders a model-provided tool input as canonical JSON
+// for binding digests. Failure means the arguments are not valid JSON; the
+// caller binds them raw-as-JSON-string and lets validation fail as
 // invalid_arguments.
-func canonicalToolArguments(input any) (json.RawMessage, error) {
+func canonicalToolArguments(input any) (CanonicalJSON, error) {
 	switch x := input.(type) {
 	case nil:
-		return json.RawMessage("null"), nil
+		return ParseCanonicalJSON([]byte("null"))
+	case CanonicalJSON:
+		return x, nil
 	case json.RawMessage:
-		return canonicalJSON(x)
+		return ParseCanonicalJSON(x)
 	case string:
 		// Providers deliver unparsed argument text as a string.
 		if len(x) == 0 {
-			return json.RawMessage("null"), nil
+			return ParseCanonicalJSON([]byte("null"))
 		}
-		return canonicalJSON([]byte(x))
+		return ParseCanonicalJSON([]byte(x))
 	default:
-		raw, err := json.Marshal(x)
-		if err != nil {
-			return nil, fmt.Errorf("agent: tool arguments: %w", err)
-		}
-		return canonicalJSON(raw)
+		return CanonicalJSONFromValue(x)
 	}
 }
 
-// rawToolArguments preserves unparsable argument bytes as a JSON string so
-// the known invalid_arguments failure keeps the original text for the model.
-func rawToolArguments(input any) json.RawMessage {
+// rawToolArguments preserves unparsable argument bytes as a JSON string so the
+// known invalid_arguments failure keeps the original text for the model.
+func rawToolArguments(input any) CanonicalJSON {
+	var raw []byte
 	switch x := input.(type) {
 	case nil:
-		return json.RawMessage("null")
+		raw = []byte("null")
+	case CanonicalJSON:
+		return x
 	case json.RawMessage:
-		quoted, _ := json.Marshal(string(x))
-		return quoted
+		raw, _ = json.Marshal(string(x))
 	case string:
-		quoted, _ := json.Marshal(x)
-		return quoted
+		raw, _ = json.Marshal(x)
 	default:
-		if raw, err := json.Marshal(x); err == nil {
-			return raw
+		var err error
+		raw, err = json.Marshal(x)
+		if err != nil {
+			raw = []byte("null")
 		}
-		return json.RawMessage("null")
 	}
+	v, err := ParseCanonicalJSON(raw)
+	if err != nil {
+		return MustParseCanonicalJSON("null")
+	}
+	return v
 }

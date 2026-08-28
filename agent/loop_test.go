@@ -45,10 +45,10 @@ type fakeTool struct {
 	valErr  error
 }
 
-func (f *fakeTool) Ref() ToolRef                            { return f.ref }
-func (f *fakeTool) Definition() sdk.ToolDefinition          { return f.def }
-func (f *fakeTool) ResponsePolicy() ResponsePolicy          { return f.policy }
-func (f *fakeTool) ValidateArguments(json.RawMessage) error { return f.valErr }
+func (f *fakeTool) Ref() ToolRef                          { return f.ref }
+func (f *fakeTool) Definition() sdk.ToolDefinition        { return f.def }
+func (f *fakeTool) ResponsePolicy() ResponsePolicy        { return f.policy }
+func (f *fakeTool) ValidateArguments(CanonicalJSON) error { return f.valErr }
 func (f *fakeTool) Execute(ctx context.Context, req ToolExecutionRequest) ToolExecutionOutcome {
 	return f.execute(ctx, req)
 }
@@ -96,7 +96,7 @@ func toolSpec(t *testing.T, name string, policy ResponsePolicy) ToolSpec {
 
 func loopRuntime(t *testing.T) *MemoryRuntime {
 	t.Helper()
-	s, err := Initialize("run-1", RunConfig{Model: "m-1"}, NextRun(AgentInput{ID: "seed", Payload: json.RawMessage(`{"q":"hi"}`)}))
+	s, err := Initialize("run-1", RunConfig{Model: "m-1"}, NextRun(AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestLoopApprovalWaitsAndResumes(t *testing.T) {
 	echo := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: ApprovalRequired,
 		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
 			executed.Store(true)
-			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: json.RawMessage(`"ok"`)}}
+			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: cj(`"ok"`)}}
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("after")}}
 	rt := loopRuntime(t)
@@ -196,6 +196,7 @@ func TestLoopApprovalWaitsAndResumes(t *testing.T) {
 	cmdID := DeriveResponseCommandID(wait.RunID, wait.StepID, wait.CallID, wait.ID)
 	env, err := BuildEnvelope(wait.RunID, cmdID, ApproveToolCall{
 		StepID: wait.StepID, CallID: wait.CallID, ResponseID: wait.ID,
+		ResponseDigest: responseDecisionDigest(t, ResponseApproval, ResponseDecisionApproved, ""),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -312,7 +313,7 @@ func TestLoopParallelBounded(t *testing.T) {
 			started <- struct{}{}
 			<-gate // hold every worker until released so concurrency is real
 			concurrent.Add(-1)
-			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: json.RawMessage(`"ok"`)}}
+			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: cj(`"ok"`)}}
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1", "c2", "c3"), textResult("done")}}
 	rt := loopRuntime(t)

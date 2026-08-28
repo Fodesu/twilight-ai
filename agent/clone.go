@@ -3,19 +3,14 @@ package agent
 import "encoding/json"
 
 // Deep-copy helpers: Runtime return values must be read-only snapshots (spec
-// appendix A) — a caller mutating a returned slice, map, or json.RawMessage
-// must never reach authoritative storage or committed event bytes.
+// appendix A) — a caller mutating a returned slice or map must never reach
+// authoritative storage or committed event bytes.
 //
 // The agent Runtime is an authority boundary. All persisted request/result
 // shapes are agent-owned JSON-stable values, so cloning is mechanical: copy
-// structs, copy slice/map containers, and copy json.RawMessage byte slices.
+// structs and copy slice/map containers. CanonicalJSON values are immutable.
 
-func cloneRaw(m json.RawMessage) json.RawMessage {
-	if m == nil {
-		return nil
-	}
-	return append(json.RawMessage(nil), m...)
-}
+func cloneRaw(v CanonicalJSON) CanonicalJSON { return v }
 
 func clonePtr[T any](p *T) *T {
 	if p == nil {
@@ -180,7 +175,7 @@ func cloneRequest(r ModelRequest) ModelRequest {
 	r.PromptCacheKey = clonePtr(r.PromptCacheKey)
 	r.StopSequences = append([]string(nil), r.StopSequences...)
 	if r.ProviderOptions != nil {
-		opts := make(map[string]json.RawMessage, len(r.ProviderOptions))
+		opts := make(map[string]CanonicalJSON, len(r.ProviderOptions))
 		for k, v := range r.ProviderOptions {
 			opts[k] = cloneRaw(v)
 		}

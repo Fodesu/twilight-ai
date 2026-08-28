@@ -49,7 +49,7 @@ type ToolExecutionRequest struct {
 	CallID           CallID
 	ToolRef          ToolRef
 	DefinitionDigest Digest
-	Arguments        json.RawMessage
+	Arguments        CanonicalJSON
 	Progress         ToolProgressSink
 }
 
@@ -60,7 +60,7 @@ type ExecutableTool interface {
 	ResponsePolicy() ResponsePolicy
 	// ValidateArguments runs before the start barrier and must not produce
 	// external effects.
-	ValidateArguments(json.RawMessage) error
+	ValidateArguments(CanonicalJSON) error
 	Execute(context.Context, ToolExecutionRequest) ToolExecutionOutcome
 }
 
