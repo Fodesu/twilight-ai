@@ -158,9 +158,9 @@ func EvaluateCommit(
 		return CommitDecision{Kind: DecisionConflict, Reject: fmt.Errorf("agent: commit: envelope digest mismatch")}, nil
 	}
 	// Derived-identity families must use their derived CommandID (spec §5.5):
-	// the derivation IS the idempotency index for inputs and responses, so a
-	// caller-minted random ID would silently bypass duplicate detection.
-	if err := checkDerivedCommandID(env); err != nil {
+	// the derivation IS the idempotency index for inputs/responses/planning, so
+	// a caller-minted random ID would silently bypass duplicate detection.
+	if err := checkDerivedCommandID(env, req.BaseRevision); err != nil {
 		return CommitDecision{}, err
 	}
 
@@ -197,6 +197,8 @@ func EvaluateCommit(
 			return CommitDecision{Kind: DecisionTerminal, Reject: err}, nil
 		case ErrStaleRuntime:
 			return CommitDecision{Kind: DecisionStale, Reject: err}, nil
+		case ErrCommandConflict:
+			return CommitDecision{Kind: DecisionConflict, Reject: err}, nil
 		default:
 			// Precondition failures against the current state are stale from
 			// the caller's perspective: reload and rederive.
@@ -206,7 +208,29 @@ func EvaluateCommit(
 	newRevision := curRevision + 1
 	state := cur
 	events := make([]AgentEvent, len(facts))
+	if cmd, ok := env.Command.(PrepareModelRequest); ok {
+		if len(facts) == 0 {
+			return CommitDecision{}, fmt.Errorf("agent: commit: prepare produced no facts")
+		}
+		prepared, ok := facts[0].(ModelStepPrepared)
+		if !ok {
+			return CommitDecision{}, fmt.Errorf("agent: commit: prepare did not produce ModelStepPrepared")
+		}
+		wantStep := DeriveModelStepID(env.RunID, env.ID, prepared.BindingDigest)
+		if cmd.StepID != wantStep {
+			return CommitDecision{Kind: DecisionStale, Reject: fmt.Errorf("prepare: StepID %q does not match derived StepID %q", cmd.StepID, wantStep)}, nil
+		}
+	}
+
 	for i, f := range facts {
+		// Detach every fact before it is folded or wrapped as an event. Decide
+		// often forwards fields from the caller's command (ModelRequest,
+		// ModelResult, json.RawMessage payloads); the commit decision must not
+		// carry caller-owned mutable objects across the Runtime boundary.
+		f, err = snapshotFact(f)
+		if err != nil {
+			return CommitDecision{}, err
+		}
 		state, err = Evolve(state, f)
 		if err != nil {
 			return CommitDecision{}, err
@@ -258,9 +282,11 @@ func BuildEnvelope(run RunID, id CommandID, cmd AgentCommand) (CommandEnvelope, 
 // from (RunID, StepID, CallID, ResponseID). Approve and reject of the same
 // response share one identity by design, so a decision change surfaces as
 // ErrCommandConflict instead of a second fact.
-func checkDerivedCommandID(env CommandEnvelope) error {
+func checkDerivedCommandID(env CommandEnvelope, baseRevision uint64) error {
 	var want CommandID
 	switch cmd := env.Command.(type) {
+	case PrepareModelRequest:
+		want = DeriveModelRequestCommandID(env.RunID, baseRevision)
 	case AcceptInput:
 		want = DeriveInputCommandID(env.RunID, cmd.Input.ID)
 	case ApproveToolCall:

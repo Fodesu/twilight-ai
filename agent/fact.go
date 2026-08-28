@@ -1,10 +1,6 @@
 package agent
 
-import (
-	"encoding/json"
-
-	"github.com/memohai/twilight-ai/sdk"
-)
+import "encoding/json"
 
 // Fact is one committed outcome produced by Machine.Decide. Facts are wrapped
 // as AgentEvents; Machine.Evolve folds them mechanically (spec §3.6). The
@@ -16,14 +12,14 @@ type Fact interface{ fact() }
 // Decide and carried in the fact: Evolve folds it verbatim, never recomputes
 // (fact self-containment, spec §5.1).
 type ModelStepPrepared struct {
-	StepID        StepID      `json:"stepId"`
-	Model         ModelRef    `json:"model"`
-	Request       sdk.Request `json:"request"`
-	RequestDigest Digest      `json:"requestDigest"`
-	InputIDs      []InputID   `json:"inputIds,omitempty"`
-	Tools         []ToolSpec  `json:"tools,omitempty"`
-	ToolsDigest   Digest      `json:"toolsDigest"`
-	BindingDigest Digest      `json:"bindingDigest"`
+	StepID        StepID       `json:"stepId"`
+	Model         ModelRef     `json:"model"`
+	Request       ModelRequest `json:"request"`
+	RequestDigest Digest       `json:"requestDigest"`
+	InputIDs      []InputID    `json:"inputIds,omitempty"`
+	Tools         []ToolSpec   `json:"tools,omitempty"`
+	ToolsDigest   Digest       `json:"toolsDigest"`
+	BindingDigest Digest       `json:"bindingDigest"`
 }
 
 func (ModelStepPrepared) fact() {}
@@ -46,7 +42,7 @@ func (ModelStepRecovered) fact() {}
 // accumulated, Rejects is incremented, the step returns to Prepared.
 type ModelStepRejected struct {
 	StepID  StepID      `json:"stepId"`
-	Usage   sdk.Usage   `json:"usage"`
+	Usage   Usage       `json:"usage"`
 	Failure StepFailure `json:"failure"`
 }
 
@@ -55,8 +51,8 @@ func (ModelStepRejected) fact() {}
 // ModelStepCompleted accepts one model result: usage is accumulated,
 // LastModelResult is written, the current step is cleared.
 type ModelStepCompleted struct {
-	StepID StepID          `json:"stepId"`
-	Result sdk.ModelResult `json:"result"`
+	StepID StepID      `json:"stepId"`
+	Result ModelResult `json:"result"`
 }
 
 func (ModelStepCompleted) fact() {}
@@ -140,8 +136,8 @@ func (InputAccepted) fact() {}
 
 // RunEnded is the terminal fact. Always the last fact of its transition.
 type RunEnded struct {
-	Status  RunStatus  `json:"status"` // RunCompleted, RunStopped or RunFailed
-	Reason  RunReason  `json:"reason,omitempty"`
+	Status  RunStatus   `json:"status"` // RunCompleted, RunStopped or RunFailed
+	Reason  RunReason   `json:"reason,omitempty"`
 	Failure *RunFailure `json:"failure,omitempty"`
 }
 

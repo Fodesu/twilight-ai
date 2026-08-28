@@ -45,9 +45,9 @@ type fakeTool struct {
 	valErr  error
 }
 
-func (f *fakeTool) Ref() ToolRef                    { return f.ref }
-func (f *fakeTool) Definition() sdk.ToolDefinition  { return f.def }
-func (f *fakeTool) ResponsePolicy() ResponsePolicy  { return f.policy }
+func (f *fakeTool) Ref() ToolRef                            { return f.ref }
+func (f *fakeTool) Definition() sdk.ToolDefinition          { return f.def }
+func (f *fakeTool) ResponsePolicy() ResponsePolicy          { return f.policy }
 func (f *fakeTool) ValidateArguments(json.RawMessage) error { return f.valErr }
 func (f *fakeTool) Execute(ctx context.Context, req ToolExecutionRequest) ToolExecutionOutcome {
 	return f.execute(ctx, req)
@@ -71,7 +71,7 @@ type staticPlanner struct {
 func (p staticPlanner) Plan(_ context.Context, hint PlanningHint) (RequestPlan, error) {
 	req := sdk.Request{Model: string(hint.Model), Messages: []sdk.Message{sdk.UserMessage("go")}}
 	for _, s := range p.specs {
-		req.Tools = append(req.Tools, s.Definition)
+		req.Tools = append(req.Tools, s.Definition.SDK())
 	}
 	ids := make([]InputID, len(hint.Inputs))
 	for i, in := range hint.Inputs {
@@ -83,11 +83,15 @@ func (p staticPlanner) Plan(_ context.Context, hint PlanningHint) (RequestPlan, 
 func toolSpec(t *testing.T, name string, policy ResponsePolicy) ToolSpec {
 	t.Helper()
 	def := sdk.ToolDefinition{Name: name, Parameters: json.RawMessage(`{"type":"object"}`)}
-	d, err := DigestToolDefinition(def)
+	frozen, err := FreezeToolDefinition(def)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ToolSpec{Ref: ToolRef(name), Definition: def, DefinitionDigest: d, Policy: policy}
+	d, err := DigestToolDefinition(frozen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ToolSpec{Ref: ToolRef(name), Definition: frozen, DefinitionDigest: d, Policy: policy}
 }
 
 func loopRuntime(t *testing.T) *MemoryRuntime {
@@ -134,7 +138,7 @@ func TestLoopSingleModelCallCompletes(t *testing.T) {
 
 func TestLoopToolRoundTrip(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
-	echo := &fakeTool{ref: "echo", def: spec.Definition, policy: DirectExecution,
+	echo := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: DirectExecution,
 		execute: func(_ context.Context, req ToolExecutionRequest) ToolExecutionOutcome {
 			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
 		}}
@@ -162,7 +166,7 @@ func TestLoopToolRoundTrip(t *testing.T) {
 func TestLoopApprovalWaitsAndResumes(t *testing.T) {
 	spec := toolSpec(t, "echo", ApprovalRequired)
 	executed := atomic.Bool{}
-	echo := &fakeTool{ref: "echo", def: spec.Definition, policy: ApprovalRequired,
+	echo := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: ApprovalRequired,
 		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
 			executed.Store(true)
 			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: json.RawMessage(`"ok"`)}}
@@ -216,7 +220,7 @@ func TestLoopApprovalWaitsAndResumes(t *testing.T) {
 
 func TestLoopUnknownOutcomeFailsRun(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
-	echo := &fakeTool{ref: "echo", def: spec.Definition, policy: DirectExecution,
+	echo := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: DirectExecution,
 		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
 			return ToolExecutionUnknown{Failure: ToolFailure{Class: FailureEffectUnknown, Message: "lost"}}
 		}}
@@ -239,7 +243,7 @@ func TestLoopUnknownOutcomeFailsRun(t *testing.T) {
 
 func TestLoopKnownToolFailureContinues(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
-	echo := &fakeTool{ref: "echo", def: spec.Definition, policy: DirectExecution,
+	echo := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: DirectExecution,
 		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
 			return ToolExecutionFailed{Failure: ToolFailure{Class: FailureExecution, Message: "boom"}}
 		}}
@@ -296,7 +300,7 @@ func TestLoopParallelBounded(t *testing.T) {
 	var concurrent, peak atomic.Int32
 	gate := make(chan struct{})
 	started := make(chan struct{}, 3)
-	echo := &fakeTool{ref: "echo", def: spec.Definition, policy: DirectExecution,
+	echo := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: DirectExecution,
 		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
 			cur := concurrent.Add(1)
 			for {

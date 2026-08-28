@@ -34,8 +34,12 @@ func fullRunRuntime(t *testing.T) *MemoryRuntime {
 			return prep
 		}())
 	start := mustCommit(t, rt, "start-2", 6, "", StartModelExecution{StepID: currentStepID(t, rt)})
+	final, err := FreezeModelResult(sdk.ModelResult{Text: "final", FinishReason: sdk.FinishReasonStop})
+	if err != nil {
+		t.Fatal(err)
+	}
 	mustCommit(t, rt, "done-2", start.Snapshot.Revision, start.Grant,
-		SubmitModelResult{StepID: currentStepID(t, rt), Result: sdk.ModelResult{Text: "final", FinishReason: sdk.FinishReasonStop}})
+		SubmitModelResult{StepID: currentStepID(t, rt), Result: final})
 	return rt
 }
 
@@ -201,7 +205,7 @@ func TestGoldenEventStreamV1(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(sha256Digest(stateBytes))
-	const frozen = "sha256:8f53eb6380fdcfef8f44befc8aa0f109ae7f4d54f78efbf897edb33ac358fc85"
+	const frozen = "sha256:004694c1e4ffc3d5ba55bbc833b4cc912943959115836cdc29e1620d063afccb"
 	if got != frozen {
 		t.Fatalf("golden v1 state digest changed:\n got %s\nwant %s\nstate: %s", got, frozen, stateBytes)
 	}

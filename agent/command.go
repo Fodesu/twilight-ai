@@ -1,10 +1,6 @@
 package agent
 
-import (
-	"encoding/json"
-
-	"github.com/memohai/twilight-ai/sdk"
-)
+import "encoding/json"
 
 // AgentCommand is the intent submitted through Runtime.Commit for an existing
 // Run. Accepting one command constitutes one transition (spec §3.6). The
@@ -34,14 +30,14 @@ func NextRun(input AgentInput) RunSeed { return RunSeed{Input: input} }
 // PrepareModelRequest freezes the next model request. Its CommandID is
 // derived from the loaded Revision, which is also its concurrency control.
 type PrepareModelRequest struct {
-	StepID        StepID          `json:"stepId"`
-	Model         ModelRef        `json:"model"`
-	Request       sdk.Request     `json:"request"`
-	RequestDigest Digest          `json:"requestDigest"`
-	InputIDs      []InputID       `json:"inputIds,omitempty"`
-	PlanningToken PlanningToken   `json:"planningToken,omitempty"`
-	Tools         []ToolSpec      `json:"tools,omitempty"`
-	ToolsDigest   Digest          `json:"toolsDigest"`
+	StepID        StepID        `json:"stepId"`
+	Model         ModelRef      `json:"model"`
+	Request       ModelRequest  `json:"request"`
+	RequestDigest Digest        `json:"requestDigest"`
+	InputIDs      []InputID     `json:"inputIds,omitempty"`
+	PlanningToken PlanningToken `json:"planningToken,omitempty"`
+	Tools         []ToolSpec    `json:"tools,omitempty"`
+	ToolsDigest   Digest        `json:"toolsDigest"`
 }
 
 func (PrepareModelRequest) agentCommand() {}
@@ -67,7 +63,7 @@ func (RecoverModelExecution) agentCommand() {}
 // bindings. Requires the model start grant.
 type SubmitModelResult struct {
 	StepID StepID            `json:"stepId"`
-	Result sdk.ModelResult   `json:"result"`
+	Result ModelResult       `json:"result"`
 	Calls  []ToolCallBinding `json:"calls,omitempty"`
 }
 
@@ -88,7 +84,7 @@ func (SubmitModelFailure) agentCommand() {}
 // model start grant.
 type RejectModelResult struct {
 	StepID  StepID      `json:"stepId"`
-	Usage   sdk.Usage   `json:"usage"`
+	Usage   Usage       `json:"usage"`
 	Failure StepFailure `json:"failure"`
 }
 

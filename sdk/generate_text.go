@@ -13,15 +13,18 @@ func (c *Client) GenerateText(ctx context.Context, options ...GenerateOption) (s
 	return result.Text, nil
 }
 
-// GenerateTextResult returns the full generation result, supporting multi-step
-// tool execution when MaxSteps != 0.
+// GenerateTextResult is the legacy high-level text wrapper. MaxSteps == 0
+// performs one model call; MaxSteps != 0 runs the compatibility tool loop.
+// New multi-step runtimes should use agent.Loop instead of this SDK loop.
 func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOption) (*GenerateResult, error) {
 	cfg, prov, err := buildConfig(options)
 	if err != nil {
 		return nil, err
 	}
 
-	// MaxSteps == 0: single call, no tool auto-execution.
+	// MaxSteps == 0: single call, no tool auto-execution. Keep the legacy
+	// provider path byte-compatible; new code that wants the Request/ModelResult
+	// boundary should call Generate or Model.Generate directly.
 	if cfg.MaxSteps == 0 {
 		result, err := prov.DoGenerate(ctx, cfg.Params)
 		if err != nil {

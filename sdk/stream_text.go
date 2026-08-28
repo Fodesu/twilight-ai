@@ -6,9 +6,11 @@ import (
 	"fmt"
 )
 
-// StreamText returns a streaming result. When MaxSteps != 0 and tools have
-// Execute handlers, the client orchestrates a multi-step loop, forwarding all
-// stream parts (including ToolProgressPart) through a single channel.
+// StreamText is the legacy high-level streaming text wrapper. When MaxSteps !=
+// 0 and tools have Execute handlers, it runs the compatibility multi-step loop,
+// forwarding all stream parts (including ToolProgressPart) through a single
+// channel. New multi-step runtimes should use agent.Loop instead of this SDK
+// loop.
 //
 // StreamResult.Steps and StreamResult.Messages are populated during stream
 // consumption and safe to read after Stream is fully consumed.

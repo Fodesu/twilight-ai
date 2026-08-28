@@ -1,20 +1,47 @@
 package agent
 
-import (
-	"encoding/json"
-
-	"github.com/memohai/twilight-ai/sdk"
-)
+import "encoding/json"
 
 // Deep-copy helpers: Runtime return values must be read-only snapshots (spec
 // appendix A) — a caller mutating a returned slice, map, or json.RawMessage
 // must never reach authoritative storage or committed event bytes.
+//
+// The agent Runtime is an authority boundary. All persisted request/result
+// shapes are agent-owned JSON-stable values, so cloning is mechanical: copy
+// structs, copy slice/map containers, and copy json.RawMessage byte slices.
 
 func cloneRaw(m json.RawMessage) json.RawMessage {
 	if m == nil {
 		return nil
 	}
 	return append(json.RawMessage(nil), m...)
+}
+
+func clonePtr[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
+func cloneProviderMetadata(meta ProviderMetadata) ProviderMetadata {
+	if meta == nil {
+		return nil
+	}
+	out := make(ProviderMetadata, len(meta))
+	for k, v := range meta {
+		out[k] = cloneRaw(v)
+	}
+	return out
+}
+
+func cloneCacheControl(c *CacheControl) *CacheControl {
+	if c == nil {
+		return nil
+	}
+	cc := *c
+	return &cc
 }
 
 func cloneAgentInput(in AgentInput) AgentInput {
@@ -84,6 +111,12 @@ func cloneToolCallBindings(bs []ToolCallBinding) []ToolCallBinding {
 	return out
 }
 
+func cloneToolDefinition(d ToolDefinition) ToolDefinition {
+	d.Parameters = cloneRaw(d.Parameters)
+	d.CacheControl = cloneCacheControl(d.CacheControl)
+	return d
+}
+
 func cloneToolSpecs(specs []ToolSpec) []ToolSpec {
 	if specs == nil {
 		return nil
@@ -96,24 +129,55 @@ func cloneToolSpecs(specs []ToolSpec) []ToolSpec {
 	return out
 }
 
-func cloneToolDefinition(d sdk.ToolDefinition) sdk.ToolDefinition {
-	d.Parameters = cloneRaw(d.Parameters)
-	if d.CacheControl != nil {
-		cc := *d.CacheControl
-		d.CacheControl = &cc
+func cloneResponseFormat(f *ResponseFormat) *ResponseFormat {
+	if f == nil {
+		return nil
 	}
-	return d
+	c := *f
+	c.JSONSchema = cloneRaw(c.JSONSchema)
+	return &c
 }
 
-func cloneRequest(r sdk.Request) sdk.Request {
-	r.Messages = append([]sdk.Message(nil), r.Messages...)
-	tools := make([]sdk.ToolDefinition, len(r.Tools))
-	for i, t := range r.Tools {
-		tools[i] = cloneToolDefinition(t)
+func cloneMessagePart(p MessagePart) MessagePart {
+	p.Input = cloneRaw(p.Input)
+	p.Result = cloneRaw(p.Result)
+	p.CacheControl = cloneCacheControl(p.CacheControl)
+	p.ProviderMetadata = cloneProviderMetadata(p.ProviderMetadata)
+	return p
+}
+
+func cloneMessages(messages []Message) []Message {
+	if messages == nil {
+		return nil
 	}
-	if r.Tools != nil {
-		r.Tools = tools
+	out := make([]Message, len(messages))
+	for i, m := range messages {
+		if m.Content != nil {
+			parts := make([]MessagePart, len(m.Content))
+			for j, p := range m.Content {
+				parts[j] = cloneMessagePart(p)
+			}
+			m.Content = parts
+		}
+		m.Usage = clonePtr(m.Usage)
+		out[i] = m
 	}
+	return out
+}
+
+func cloneRequest(r ModelRequest) ModelRequest {
+	r.Messages = cloneMessages(r.Messages)
+	r.Tools = cloneToolDefinitions(r.Tools)
+	r.ResponseFormat = cloneResponseFormat(r.ResponseFormat)
+	r.Temperature = clonePtr(r.Temperature)
+	r.TopP = clonePtr(r.TopP)
+	r.MaxTokens = clonePtr(r.MaxTokens)
+	r.FrequencyPenalty = clonePtr(r.FrequencyPenalty)
+	r.PresencePenalty = clonePtr(r.PresencePenalty)
+	r.Seed = clonePtr(r.Seed)
+	r.ReasoningEffort = clonePtr(r.ReasoningEffort)
+	r.ReasoningSummary = clonePtr(r.ReasoningSummary)
+	r.PromptCacheKey = clonePtr(r.PromptCacheKey)
 	r.StopSequences = append([]string(nil), r.StopSequences...)
 	if r.ProviderOptions != nil {
 		opts := make(map[string]json.RawMessage, len(r.ProviderOptions))
@@ -125,15 +189,90 @@ func cloneRequest(r sdk.Request) sdk.Request {
 	return r
 }
 
-func cloneModelResult(r *sdk.ModelResult) *sdk.ModelResult {
+func cloneToolDefinitions(defs []ToolDefinition) []ToolDefinition {
+	if defs == nil {
+		return nil
+	}
+	out := make([]ToolDefinition, len(defs))
+	for i, d := range defs {
+		out[i] = cloneToolDefinition(d)
+	}
+	return out
+}
+
+func cloneReasoningParts(parts []ReasoningPart) []ReasoningPart {
+	if parts == nil {
+		return nil
+	}
+	out := make([]ReasoningPart, len(parts))
+	for i, p := range parts {
+		p.ProviderMetadata = cloneProviderMetadata(p.ProviderMetadata)
+		out[i] = p
+	}
+	return out
+}
+
+func cloneSources(sources []Source) []Source {
+	if sources == nil {
+		return nil
+	}
+	out := make([]Source, len(sources))
+	for i, s := range sources {
+		s.ProviderMetadata = cloneProviderMetadata(s.ProviderMetadata)
+		out[i] = s
+	}
+	return out
+}
+
+func cloneGeneratedFiles(files []GeneratedFile) []GeneratedFile {
+	if files == nil {
+		return nil
+	}
+	return append([]GeneratedFile(nil), files...)
+}
+
+func cloneModelToolCall(c ModelToolCall) ModelToolCall {
+	c.Input = cloneRaw(c.Input)
+	c.ProviderMetadata = cloneProviderMetadata(c.ProviderMetadata)
+	return c
+}
+
+func cloneModelToolCalls(calls []ModelToolCall) []ModelToolCall {
+	if calls == nil {
+		return nil
+	}
+	out := make([]ModelToolCall, len(calls))
+	for i, c := range calls {
+		out[i] = cloneModelToolCall(c)
+	}
+	return out
+}
+
+func cloneResponseMetadata(r *ResponseMetadata) *ResponseMetadata {
 	if r == nil {
 		return nil
 	}
 	c := *r
-	c.ReasoningParts = append([]sdk.ReasoningPart(nil), c.ReasoningParts...)
-	c.Sources = append([]sdk.Source(nil), c.Sources...)
-	c.Files = append([]sdk.GeneratedFile(nil), c.Files...)
-	c.ToolCalls = append([]sdk.ToolCall(nil), c.ToolCalls...)
+	if r.Headers != nil {
+		c.Headers = make(map[string]string, len(r.Headers))
+		for k, v := range r.Headers {
+			c.Headers[k] = v
+		}
+	}
+	return &c
+}
+
+func cloneModelResult(r *ModelResult) *ModelResult {
+	if r == nil {
+		return nil
+	}
+	c := *r
+	c.ReasoningParts = cloneReasoningParts(c.ReasoningParts)
+	c.TextProviderMetadata = cloneProviderMetadata(c.TextProviderMetadata)
+	c.Sources = cloneSources(c.Sources)
+	c.Files = cloneGeneratedFiles(c.Files)
+	c.ToolCalls = cloneModelToolCalls(c.ToolCalls)
+	c.Response = cloneResponseMetadata(c.Response)
 	return &c
 }
 
@@ -176,6 +315,37 @@ func cloneMachineState(s MachineState) MachineState {
 	s.LastModelResult = cloneModelResult(s.LastModelResult)
 	s.Result = cloneRunResult(s.Result)
 	return s
+}
+
+func snapshotJSONStable[T any](v T) (T, error) {
+	var out T
+	raw, err := marshalCanonical(v)
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func snapshotFact(f Fact) (Fact, error) {
+	switch fact := f.(type) {
+	case ModelStepPrepared:
+		return snapshotJSONStable(fact)
+	case ModelStepCompleted:
+		return snapshotJSONStable(fact)
+	case ToolStepOpened:
+		return snapshotJSONStable(fact)
+	case ToolCallCompleted:
+		return snapshotJSONStable(fact)
+	case ToolCallAnswered:
+		return snapshotJSONStable(fact)
+	case InputAccepted:
+		return snapshotJSONStable(fact)
+	default:
+		return cloneFact(f), nil
+	}
 }
 
 func cloneFact(f Fact) Fact {

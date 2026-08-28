@@ -75,6 +75,9 @@ func decidePrepareModelRequest(s MachineState, cmd PrepareModelRequest) ([]Fact,
 	if cmd.Model != s.Config.Model {
 		return nil, rejectionf("prepare: model %q does not match frozen RunConfig model %q", cmd.Model, s.Config.Model)
 	}
+	if ModelRef(cmd.Request.Model) != cmd.Model {
+		return nil, rejectionf("prepare: request model %q does not match command model %q", cmd.Request.Model, cmd.Model)
+	}
 	if s.Config.ModelStepLimit > 0 && s.ModelSteps >= s.Config.ModelStepLimit {
 		// Unreachable when limits convert to terminal at the prior boundary,
 		// but the authority still refuses rather than over-running.
@@ -243,11 +246,12 @@ func decideSubmitModelResult(s MachineState, cmd SubmitModelResult) ([]Fact, err
 			}
 		}
 		wantArgs, argsCanonical := canonicalArgumentsForCompare(rc.Input)
-		if argsCanonical {
-			gotArgs, err := canonicalJSON(b.Arguments)
-			if err != nil || string(gotArgs) != string(wantArgs) {
-				return nil, rejectionf("model result: binding %q arguments do not match the model result", b.CallID)
-			}
+		if !argsCanonical {
+			return nil, rejectionf("model result: call %q input is not frozen canonical JSON", b.CallID)
+		}
+		gotArgs, err := canonicalJSON(b.Arguments)
+		if err != nil || string(gotArgs) != string(wantArgs) {
+			return nil, rejectionf("model result: binding %q arguments do not match the model result", b.CallID)
 		}
 		wantBinding, err := digestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
 		if err != nil {
@@ -295,9 +299,8 @@ func decideSubmitModelResult(s MachineState, cmd SubmitModelResult) ([]Fact, err
 }
 
 // canonicalArgumentsForCompare canonicalizes a model result's tool input for
-// cross-checking a binding. The second return is false when the input is not
-// valid JSON — those calls bind raw and close as invalid_arguments, so there
-// is no canonical form to compare.
+// cross-checking a binding. The second return is false when the command did
+// not carry a frozen JSON-stable tool input; Runtime commits reject that shape.
 func canonicalArgumentsForCompare(input any) ([]byte, bool) {
 	got, err := canonicalToolArguments(input)
 	if err != nil {
@@ -549,6 +552,11 @@ func decideAcceptInput(s MachineState, cmd AcceptInput) ([]Fact, error) {
 	}
 	if cmd.Input.ID == "" {
 		return nil, rejectionf("accept input: empty InputID")
+	}
+	for _, in := range s.PendingInputs {
+		if in.ID == cmd.Input.ID {
+			return nil, ErrCommandConflict
+		}
 	}
 	return []Fact{InputAccepted{Input: cmd.Input}}, nil
 }
