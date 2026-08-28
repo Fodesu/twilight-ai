@@ -107,6 +107,45 @@ func DigestRunSeed(schemaVersion uint16, seed RunSeed) (Digest, error) {
 	return sha256Digest(body), nil
 }
 
+type toolResponseDecisionDigestBody struct {
+	Kind     ResponseKind     `json:"kind"`
+	Decision ResponseDecision `json:"decision"`
+	Reason   string           `json:"reason,omitempty"`
+}
+
+// DigestToolResponseDecision computes the content digest for approval and
+// rejection ingress. The ResponseID remains the routing/idempotency key; this
+// digest binds the actual decision payload recorded in the command/fact.
+func DigestToolResponseDecision(kind ResponseKind, decision ResponseDecision, reason string) (Digest, error) {
+	if kind != ResponseApproval && kind != ResponseExternal {
+		return "", fmt.Errorf("agent: response decision: unsupported kind %q", kind)
+	}
+	if decision != ResponseDecisionApproved && decision != ResponseDecisionRejected {
+		return "", fmt.Errorf("agent: response decision: unsupported decision %q", decision)
+	}
+	body, err := encodeEnvelopeBody(currentSchemaVersion, "tool_response_decision", toolResponseDecisionDigestBody{
+		Kind: kind, Decision: decision, Reason: reason,
+	})
+	if err != nil {
+		return "", err
+	}
+	return sha256Digest(body), nil
+}
+
+type toolResponsePayloadDigestBody struct {
+	Payload CanonicalJSON `json:"payload"`
+}
+
+// DigestToolResponsePayload computes the content digest for an ExternalResponse
+// answer payload.
+func DigestToolResponsePayload(payload CanonicalJSON) (Digest, error) {
+	body, err := encodeEnvelopeBody(currentSchemaVersion, "tool_response_payload", toolResponsePayloadDigestBody{Payload: payload})
+	if err != nil {
+		return "", err
+	}
+	return sha256Digest(body), nil
+}
+
 // DigestRequest covers every field of a frozen ModelRequest with no exclusions
 // (spec §2.1 rule 7).
 func DigestRequest(req ModelRequest) (Digest, error) {
@@ -170,19 +209,11 @@ func digestBindingSet(bindings []ToolCallBinding) (Digest, error) {
 // DigestToolCallBinding covers one binding: definition, policy and canonical
 // arguments plus the CallID (spec §4.2). Runtime conformance suites use this
 // helper to construct the same frozen binding identities as the Loop.
-func DigestToolCallBinding(callID CallID, definitionDigest Digest, policy ResponsePolicy, arguments []byte) (Digest, error) {
-	canonicalArgs := []byte("null")
-	if len(arguments) > 0 {
-		var err error
-		canonicalArgs, err = canonicalJSON(arguments)
-		if err != nil {
-			return "", fmt.Errorf("agent: binding digest: %w", err)
-		}
-	}
+func DigestToolCallBinding(callID CallID, definitionDigest Digest, policy ResponsePolicy, arguments CanonicalJSON) (Digest, error) {
 	return sha256Digest([]byte(namespacedHash("twilight/tool-call-binding",
-		string(callID), string(definitionDigest), fmt.Sprintf("%d", policy), string(canonicalArgs)))), nil
+		string(callID), string(definitionDigest), fmt.Sprintf("%d", policy), arguments.String()))), nil
 }
 
-func digestToolCallBinding(callID CallID, definitionDigest Digest, policy ResponsePolicy, arguments []byte) (Digest, error) {
+func digestToolCallBinding(callID CallID, definitionDigest Digest, policy ResponsePolicy, arguments CanonicalJSON) (Digest, error) {
 	return DigestToolCallBinding(callID, definitionDigest, policy, arguments)
 }

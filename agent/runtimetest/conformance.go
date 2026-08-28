@@ -42,7 +42,7 @@ type runtimeCase struct {
 
 func newCase(t testing.TB, newRuntime Factory, cfg agent.RunConfig) *runtimeCase {
 	t.Helper()
-	initial, err := agent.Initialize("run-1", cfg, agent.NextRun(agent.AgentInput{ID: "seed", Payload: json.RawMessage(`{"q":"hi"}`)}))
+	initial, err := agent.Initialize("run-1", cfg, agent.NextRun(agent.AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,6 +135,8 @@ func testToolDef(name string) sdk.ToolDefinition {
 	return sdk.ToolDefinition{Name: name, Parameters: json.RawMessage(`{"type":"object"}`)}
 }
 
+func cj(raw string) agent.CanonicalJSON { return agent.MustParseCanonicalJSON(raw) }
+
 func makeSpec(t testing.TB, def sdk.ToolDefinition, policy agent.ResponsePolicy) agent.ToolSpec {
 	t.Helper()
 	frozen, err := agent.FreezeToolDefinition(def)
@@ -150,7 +152,8 @@ func makeSpec(t testing.TB, def sdk.ToolDefinition, policy agent.ResponsePolicy)
 
 func makeBinding(t testing.TB, callID string, spec agent.ToolSpec, args string) agent.ToolCallBinding {
 	t.Helper()
-	bd, err := agent.DigestToolCallBinding(agent.CallID(callID), spec.DefinitionDigest, spec.Policy, []byte(args))
+	parsedArgs := cj(args)
+	bd, err := agent.DigestToolCallBinding(agent.CallID(callID), spec.DefinitionDigest, spec.Policy, parsedArgs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +162,7 @@ func makeBinding(t testing.TB, callID string, spec agent.ToolSpec, args string) 
 		ToolRef:          spec.Ref,
 		DefinitionDigest: spec.DefinitionDigest,
 		BindingDigest:    bd,
-		Arguments:        json.RawMessage(args),
+		Arguments:        parsedArgs,
 		Policy:           spec.Policy,
 	}
 }
@@ -276,7 +279,7 @@ func testCallLocalRebase(t *testing.T, newRuntime Factory) {
 		t.Fatal("stale-base start of an untouched Pending call must rebase")
 	}
 	doneA := c.mustCommit("done-A", base, startA.Grant,
-		agent.SubmitToolResult{StepID: toolStep, CallID: "cA", Result: agent.ToolExecutionResult{Output: json.RawMessage(`1`)}})
+		agent.SubmitToolResult{StepID: toolStep, CallID: "cA", Result: agent.ToolExecutionResult{Output: cj(`1`)}})
 	if doneA.Status != agent.CommitAccepted {
 		t.Fatal("owner completion on stale base must rebase")
 	}
@@ -365,7 +368,7 @@ func testReplayFoldMatchesState(t *testing.T, newRuntime Factory) {
 	toolStep := res.Events[1].Fact.(agent.ToolStepOpened).StepID
 	sRes := c.mustCommit("start-c1", res.Snapshot.Revision, "", agent.StartToolCall{StepID: toolStep, CallID: "c1"})
 	c.mustCommit("done-c1", sRes.Snapshot.Revision, sRes.Grant,
-		agent.SubmitToolResult{StepID: toolStep, CallID: "c1", Result: agent.ToolExecutionResult{Output: json.RawMessage(`"ok"`)}})
+		agent.SubmitToolResult{StepID: toolStep, CallID: "c1", Result: agent.ToolExecutionResult{Output: cj(`"ok"`)}})
 
 	folded, lastRev, err := agent.FoldEvents(c.initial, c.events)
 	if err != nil {
@@ -384,7 +387,7 @@ func testReplayFoldMatchesState(t *testing.T, newRuntime Factory) {
 
 func testAcceptInputByInputID(t *testing.T, newRuntime Factory) {
 	c := newCase(t, newRuntime, agent.RunConfig{Model: "m-1"})
-	in := agent.AgentInput{ID: "in-9", Payload: json.RawMessage(`{"t":"x"}`)}
+	in := agent.AgentInput{ID: "in-9", Payload: cj(`{"t":"x"}`)}
 	id := agent.DeriveInputCommandID("run-1", in.ID)
 	res1 := c.mustCommit(id, 0, "", agent.NextStep(in))
 	if res1.Status != agent.CommitAccepted {
@@ -394,7 +397,7 @@ func testAcceptInputByInputID(t *testing.T, newRuntime Factory) {
 	if res2.Status != agent.CommitAlreadyApplied {
 		t.Fatalf("status = %v", res2.Status)
 	}
-	_, err := c.commit(id, 0, "", agent.NextStep(agent.AgentInput{ID: "in-9", Payload: json.RawMessage(`{"t":"y"}`)}))
+	_, err := c.commit(id, 0, "", agent.NextStep(agent.AgentInput{ID: "in-9", Payload: cj(`{"t":"y"}`)}))
 	if err != agent.ErrCommandConflict {
 		t.Fatalf("err = %v, want ErrCommandConflict", err)
 	}
@@ -402,7 +405,7 @@ func testAcceptInputByInputID(t *testing.T, newRuntime Factory) {
 
 func testDerivedCommandIDEnforced(t *testing.T, newRuntime Factory) {
 	c := newCase(t, newRuntime, agent.RunConfig{Model: "m-1"})
-	_, err := c.commit("random-id", 0, "", agent.NextStep(agent.AgentInput{ID: "in-1", Payload: json.RawMessage(`1`)}))
+	_, err := c.commit("random-id", 0, "", agent.NextStep(agent.AgentInput{ID: "in-1", Payload: cj(`1`)}))
 	if err == nil {
 		t.Fatal("AcceptInput with non-derived CommandID accepted")
 	}

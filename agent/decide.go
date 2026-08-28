@@ -249,8 +249,7 @@ func decideSubmitModelResult(s MachineState, cmd SubmitModelResult) ([]Fact, err
 		if !argsCanonical {
 			return nil, rejectionf("model result: call %q input is not frozen canonical JSON", b.CallID)
 		}
-		gotArgs, err := canonicalJSON(b.Arguments)
-		if err != nil || string(gotArgs) != string(wantArgs) {
+		if !b.Arguments.Equal(wantArgs) {
 			return nil, rejectionf("model result: binding %q arguments do not match the model result", b.CallID)
 		}
 		wantBinding, err := digestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
@@ -301,10 +300,10 @@ func decideSubmitModelResult(s MachineState, cmd SubmitModelResult) ([]Fact, err
 // canonicalArgumentsForCompare canonicalizes a model result's tool input for
 // cross-checking a binding. The second return is false when the command did
 // not carry a frozen JSON-stable tool input; Runtime commits reject that shape.
-func canonicalArgumentsForCompare(input any) ([]byte, bool) {
+func canonicalArgumentsForCompare(input any) (CanonicalJSON, bool) {
 	got, err := canonicalToolArguments(input)
 	if err != nil {
-		return nil, false
+		return CanonicalJSON{}, false
 	}
 	return got, true
 }
@@ -485,6 +484,13 @@ func decideApproveToolCall(s MachineState, cmd ApproveToolCall) ([]Fact, error) 
 	if _, err := waitingCall(s, cmd.StepID, cmd.CallID, ResponseApproval, cmd.ResponseID); err != nil {
 		return nil, err
 	}
+	wantDigest, err := DigestToolResponseDecision(ResponseApproval, ResponseDecisionApproved, "")
+	if err != nil {
+		return nil, err
+	}
+	if cmd.ResponseDigest != wantDigest {
+		return nil, rejectionf("response: approval digest mismatch")
+	}
 	return []Fact{ToolCallApproved{StepID: cmd.StepID, CallID: cmd.CallID, ResponseID: cmd.ResponseID, ResponseDigest: cmd.ResponseDigest}}, nil
 }
 
@@ -509,6 +515,13 @@ func decideRejectToolCall(s MachineState, cmd RejectToolCall) ([]Fact, error) {
 	if c.Waiting.ID != cmd.ResponseID {
 		return nil, rejectionf("response: call %q expects ResponseID %q, got %q", cmd.CallID, c.Waiting.ID, cmd.ResponseID)
 	}
+	wantDigest, err := DigestToolResponseDecision(c.Waiting.Kind, ResponseDecisionRejected, cmd.Reason)
+	if err != nil {
+		return nil, err
+	}
+	if cmd.ResponseDigest != wantDigest {
+		return nil, rejectionf("response: rejection digest mismatch")
+	}
 	facts := []Fact{ToolCallFailed{
 		StepID:  cmd.StepID,
 		CallID:  cmd.CallID,
@@ -521,6 +534,13 @@ func decideRejectToolCall(s MachineState, cmd RejectToolCall) ([]Fact, error) {
 func decideSubmitToolResponse(s MachineState, cmd SubmitToolResponse) ([]Fact, error) {
 	if _, err := waitingCall(s, cmd.StepID, cmd.CallID, ResponseExternal, cmd.ResponseID); err != nil {
 		return nil, err
+	}
+	wantDigest, err := DigestToolResponsePayload(cmd.Payload)
+	if err != nil {
+		return nil, err
+	}
+	if cmd.ResponseDigest != wantDigest {
+		return nil, rejectionf("response: answer payload digest mismatch")
 	}
 	ts, _ := currentToolStep(s, cmd.StepID)
 	i := ts.callIndex(cmd.CallID)

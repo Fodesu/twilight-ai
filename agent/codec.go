@@ -114,6 +114,16 @@ func (e *CommandEnvelope) UnmarshalJSON(raw []byte) error {
 	if wire.Digest != want {
 		return fmt.Errorf("agent: codec: command digest mismatch: got %s want %s", wire.Digest, want)
 	}
+	if err := requireCanonicalEquivalent(raw, commandEnvelopeMarshal{
+		SchemaVersion: wire.SchemaVersion,
+		Type:          wire.Type,
+		RunID:         wire.RunID,
+		ID:            wire.ID,
+		Digest:        wire.Digest,
+		Command:       cmd,
+	}); err != nil {
+		return err
+	}
 	*e = CommandEnvelope{
 		SchemaVersion: wire.SchemaVersion,
 		Type:          wire.Type,
@@ -171,6 +181,19 @@ func (e *AgentEvent) UnmarshalJSON(raw []byte) error {
 	if wire.Digest != want {
 		return fmt.Errorf("agent: codec: fact digest mismatch: got %s want %s", wire.Digest, want)
 	}
+	if err := requireCanonicalEquivalent(raw, agentEventMarshal{
+		SchemaVersion: wire.SchemaVersion,
+		Type:          wire.Type,
+		RunID:         wire.RunID,
+		Revision:      wire.Revision,
+		Index:         wire.Index,
+		CommandID:     wire.CommandID,
+		CommandDigest: wire.CommandDigest,
+		Digest:        wire.Digest,
+		Fact:          fact,
+	}); err != nil {
+		return err
+	}
 	*e = AgentEvent{
 		SchemaVersion: wire.SchemaVersion,
 		Type:          wire.Type,
@@ -189,8 +212,27 @@ func isSupportedSchemaVersion(v uint16) bool {
 	return v == SchemaVersion1
 }
 
+func requireCanonicalEquivalent(raw []byte, canonicalShape any) error {
+	rawCanonical, err := canonicalJSON(raw)
+	if err != nil {
+		return err
+	}
+	shapeCanonical, err := marshalCanonical(canonicalShape)
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(rawCanonical, shapeCanonical) {
+		return errors.New("agent: codec: JSON shape does not match canonical protocol fields")
+	}
+	return nil
+}
+
 func decodeStrictJSON(raw []byte, dst any) error {
-	dec := json.NewDecoder(bytes.NewReader(raw))
+	canonical, err := canonicalJSON(raw)
+	if err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(canonical))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		return err

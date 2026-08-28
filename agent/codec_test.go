@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -16,13 +17,13 @@ func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 		SubmitModelFailure{StepID: "s", Failure: StepFailure{Class: FailureProvider, Message: "down"}},
 		RejectModelResult{StepID: "s", Usage: Usage{TotalTokens: 1}, Failure: StepFailure{Class: FailureMalformedModel}},
 		StartToolCall{StepID: "ts", CallID: "c"},
-		SubmitToolResult{StepID: "ts", CallID: "c", Result: ToolExecutionResult{Output: json.RawMessage(`{"ok":true}`)}},
+		SubmitToolResult{StepID: "ts", CallID: "c", Result: ToolExecutionResult{Output: cj(`{"ok":true}`)}},
 		SubmitToolFailure{StepID: "ts", CallID: "c", Failure: ToolFailure{Class: FailureExecution}, Outcome: ToolOutcomeKnown},
 		ApproveToolCall{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp"},
 		RejectToolCall{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp", Reason: "no"},
-		SubmitToolResponse{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp", Payload: json.RawMessage(`{"answer":1}`)},
+		SubmitToolResponse{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp", Payload: cj(`{"answer":1}`)},
 		CancelRun{},
-		AcceptInput{Input: AgentInput{ID: "in", Payload: json.RawMessage(`{"q":"hi"}`)}},
+		AcceptInput{Input: AgentInput{ID: "in", Payload: cj(`{"q":"hi"}`)}},
 	}
 	for _, cmd := range commands {
 		env, err := BuildEnvelope("run-1", CommandID("cmd-"+commandType(cmd)), cmd)
@@ -53,14 +54,14 @@ func TestAgentEventJSONRoundTripRestoresVariants(t *testing.T) {
 		ModelStepRecovered{StepID: "s"},
 		ModelStepRejected{StepID: "s", Usage: Usage{TotalTokens: 1}, Failure: StepFailure{Class: FailureMalformedModel}},
 		ModelStepCompleted{StepID: "s", Result: ModelResult{Text: "ok"}},
-		ToolStepOpened{StepID: "ts", Source: "s", BindingSetDigest: "sha256:set", Calls: []ToolCallBinding{{CallID: "c", ToolRef: "t", BindingDigest: "sha256:binding", Arguments: json.RawMessage(`{}`), Policy: DirectExecution}}},
+		ToolStepOpened{StepID: "ts", Source: "s", BindingSetDigest: "sha256:set", Calls: []ToolCallBinding{{CallID: "c", ToolRef: "t", BindingDigest: "sha256:binding", Arguments: cj(`{}`), Policy: DirectExecution}}},
 		ToolCallStarted{StepID: "ts", CallID: "c"},
 		ToolCallApproved{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp"},
-		ToolCallCompleted{StepID: "ts", CallID: "c", Result: ToolExecutionResult{Output: json.RawMessage(`{"ok":true}`)}},
-		ToolCallAnswered{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp", Payload: json.RawMessage(`{"answer":1}`)},
+		ToolCallCompleted{StepID: "ts", CallID: "c", Result: ToolExecutionResult{Output: cj(`{"ok":true}`)}},
+		ToolCallAnswered{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp", Payload: cj(`{"answer":1}`)},
 		ToolCallFailed{StepID: "ts", CallID: "c", Failure: ToolFailure{Class: FailureExecution}, Outcome: ToolOutcomeKnown},
 		ToolStepClosed{StepID: "ts"},
-		InputAccepted{Input: AgentInput{ID: "in", Payload: json.RawMessage(`{"q":"hi"}`)}},
+		InputAccepted{Input: AgentInput{ID: "in", Payload: cj(`{"q":"hi"}`)}},
 		RunEnded{Status: RunCompleted},
 	}
 	for i, fact := range facts {
@@ -94,6 +95,27 @@ func TestAgentEventJSONRoundTripRestoresVariants(t *testing.T) {
 		if decoded.Type != event.Type || decoded.Digest != event.Digest || decoded.Revision != event.Revision {
 			t.Fatalf("decoded event = %+v, want %+v", decoded, event)
 		}
+	}
+}
+
+func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
+	cmd := AcceptInput{Input: AgentInput{ID: "in", Payload: cj(`1`)}}
+	env, err := BuildEnvelope("run-1", DeriveInputCommandID("run-1", "in"), cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := []byte(fmt.Sprintf(`{"schemaVersion":1,"type":"accept_input","runId":"run-1","id":%q,"digest":%q,"command":{"input":{"id":"in","payload":1},"input":{"id":"in","payload":1}}}`, env.ID, env.Digest))
+	if _, err := DecodeCommandEnvelope(raw); err == nil {
+		t.Fatal("duplicate key command decoded")
+	}
+
+	canonical, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongCase := strings.Replace(string(canonical), `"command":`, `"Command":`, 1)
+	if _, err := DecodeCommandEnvelope([]byte(wrongCase)); err == nil {
+		t.Fatal("case-insensitive command field decoded")
 	}
 }
 

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 
@@ -26,7 +25,7 @@ func fullRunRuntime(t *testing.T) *MemoryRuntime {
 	toolStep := res.Events[1].Fact.(ToolStepOpened).StepID
 	sRes := mustCommit(t, rt, "start-c1", res.Snapshot.Revision, "", StartToolCall{StepID: toolStep, CallID: "c1"})
 	mustCommit(t, rt, "done-c1", sRes.Snapshot.Revision, sRes.Grant,
-		SubmitToolResult{StepID: toolStep, CallID: "c1", Result: ToolExecutionResult{Output: json.RawMessage(`"ok"`)}})
+		SubmitToolResult{StepID: toolStep, CallID: "c1", Result: ToolExecutionResult{Output: cj(`"ok"`)}})
 	mustCommit(t, rt, DeriveModelRequestCommandID("run-1", 5), 5, "",
 		func() PrepareModelRequest {
 			snap, _ := rt.Load(context.Background())
@@ -204,7 +203,7 @@ func TestFoldRejectsTamperedFact(t *testing.T) {
 
 	for i := range log {
 		if f, ok := log[i].Fact.(ToolCallCompleted); ok {
-			f.Result.Output = json.RawMessage(`"tampered"`)
+			f.Result.Output = cj(`"tampered"`)
 			log[i].Fact = f
 			break
 		}

@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -88,15 +87,22 @@ const (
 	ResponseExternal ResponseKind = "external_response"
 )
 
+type ResponseDecision string
+
+const (
+	ResponseDecisionApproved ResponseDecision = "approved"
+	ResponseDecisionRejected ResponseDecision = "rejected"
+)
+
 // ResponseRequest is the stable, routable identity of one waiting call.
 type ResponseRequest struct {
-	RunID         RunID           `json:"runId"`
-	StepID        StepID          `json:"stepId"`
-	CallID        CallID          `json:"callId"`
-	ID            ResponseID      `json:"id"`
-	Kind          ResponseKind    `json:"kind"`
-	Payload       json.RawMessage `json:"payload,omitempty"`
-	RequestDigest Digest          `json:"requestDigest"` // digest of the request payload
+	RunID         RunID         `json:"runId"`
+	StepID        StepID        `json:"stepId"`
+	CallID        CallID        `json:"callId"`
+	ID            ResponseID    `json:"id"`
+	Kind          ResponseKind  `json:"kind"`
+	Payload       CanonicalJSON `json:"payload,omitzero"`
+	RequestDigest Digest        `json:"requestDigest"` // digest of the request payload
 }
 
 // ToolSpec is the agent-side sidecar for a provider-neutral ToolDefinition.
@@ -110,12 +116,12 @@ type ToolSpec struct {
 
 // ToolCallBinding is one frozen call inside ToolStepOpened.
 type ToolCallBinding struct {
-	CallID           CallID          `json:"callId"`
-	ToolRef          ToolRef         `json:"toolRef"`
-	DefinitionDigest Digest          `json:"definitionDigest"`
-	BindingDigest    Digest          `json:"bindingDigest"` // definition, policy and canonical arguments
-	Arguments        json.RawMessage `json:"arguments"`
-	Policy           ResponsePolicy  `json:"policy"` // unresolved ToolRef uses DirectExecution
+	CallID           CallID         `json:"callId"`
+	ToolRef          ToolRef        `json:"toolRef"`
+	DefinitionDigest Digest         `json:"definitionDigest"`
+	BindingDigest    Digest         `json:"bindingDigest"` // definition, policy and canonical arguments
+	Arguments        CanonicalJSON  `json:"arguments"`
+	Policy           ResponsePolicy `json:"policy"` // unresolved ToolRef uses DirectExecution
 	// Response is derived and filled by Decide inside ToolStepOpened; callers
 	// leave it empty when submitting.
 	Response *ResponseRequest `json:"response,omitempty"`
@@ -167,7 +173,7 @@ const (
 )
 
 type ToolExecutionResult struct {
-	Output json.RawMessage `json:"output"`
+	Output CanonicalJSON `json:"output"`
 }
 
 type ToolFailure struct {
@@ -192,7 +198,7 @@ type ToolCallState struct {
 	ToolRef          ToolRef              `json:"toolRef"`
 	DefinitionDigest Digest               `json:"definitionDigest"`
 	BindingDigest    Digest               `json:"bindingDigest"`
-	Arguments        json.RawMessage      `json:"arguments"`
+	Arguments        CanonicalJSON        `json:"arguments"`
 	Policy           ResponsePolicy       `json:"policy"`
 	Status           ToolCallStatus       `json:"status"`
 	Result           *ToolExecutionResult `json:"result,omitempty"`

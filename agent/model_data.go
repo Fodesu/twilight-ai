@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -11,9 +10,9 @@ import (
 )
 
 // ProviderMetadata is the agent's persisted representation of provider-owned
-// opaque metadata. Each namespace value is detached canonical JSON: callers may
-// keep mutating their sdk map, but runtime events/state own these bytes.
-type ProviderMetadata map[string]json.RawMessage
+// opaque metadata. Each namespace value is immutable canonical JSON: callers
+// may keep mutating their sdk map, but runtime events/state own these values.
+type ProviderMetadata map[string]CanonicalJSON
 
 type CacheControl struct {
 	Type string `json:"type"`
@@ -72,11 +71,11 @@ type MessagePart struct {
 	Filename  string `json:"filename,omitempty"`
 
 	// Tool call / result.
-	ToolCallID string          `json:"toolCallId,omitempty"`
-	ToolName   string          `json:"toolName,omitempty"`
-	Input      json.RawMessage `json:"input,omitempty"`
-	Result     json.RawMessage `json:"result,omitempty"`
-	IsError    bool            `json:"isError,omitempty"`
+	ToolCallID string        `json:"toolCallId,omitempty"`
+	ToolName   string        `json:"toolName,omitempty"`
+	Input      CanonicalJSON `json:"input,omitzero"`
+	Result     CanonicalJSON `json:"result,omitzero"`
+	IsError    bool          `json:"isError,omitempty"`
 
 	CacheControl     *CacheControl    `json:"cacheControl,omitempty"`
 	ProviderMetadata ProviderMetadata `json:"providerMetadata,omitempty"`
@@ -98,7 +97,7 @@ const (
 
 type ResponseFormat struct {
 	Type       ResponseFormatType `json:"type"`
-	JSONSchema json.RawMessage    `json:"jsonSchema,omitempty"`
+	JSONSchema CanonicalJSON      `json:"jsonSchema,omitzero"`
 }
 
 type ToolChoiceMode string
@@ -116,10 +115,10 @@ type ToolChoice struct {
 }
 
 type ToolDefinition struct {
-	Name         string          `json:"name"`
-	Description  string          `json:"description,omitempty"`
-	Parameters   json.RawMessage `json:"parameters"`
-	CacheControl *CacheControl   `json:"cacheControl,omitempty"`
+	Name         string        `json:"name"`
+	Description  string        `json:"description,omitempty"`
+	Parameters   CanonicalJSON `json:"parameters"`
+	CacheControl *CacheControl `json:"cacheControl,omitempty"`
 }
 
 // ModelRequest is the complete persisted input of one model call. It is the
@@ -145,7 +144,7 @@ type ModelRequest struct {
 	ReasoningSummary *string  `json:"reasoningSummary,omitempty"`
 	PromptCacheKey   *string  `json:"promptCacheKey,omitempty"`
 
-	ProviderOptions map[string]json.RawMessage `json:"providerOptions,omitempty"`
+	ProviderOptions map[string]CanonicalJSON `json:"providerOptions,omitempty"`
 }
 
 type FinishReason string
@@ -223,7 +222,7 @@ type GeneratedFile struct {
 type ModelToolCall struct {
 	ToolCallID       string           `json:"toolCallId"`
 	ToolName         string           `json:"toolName"`
-	Input            json.RawMessage  `json:"input"`
+	Input            CanonicalJSON    `json:"input"`
 	ProviderMetadata ProviderMetadata `json:"providerMetadata,omitempty"`
 }
 
@@ -253,42 +252,16 @@ type ModelResult struct {
 	Response *ResponseMetadata `json:"response,omitempty"`
 }
 
-func freezeRawJSON(raw json.RawMessage) (json.RawMessage, error) {
-	if raw == nil {
-		return nil, nil
-	}
-	canonical, err := canonicalJSON(raw)
-	if err != nil {
-		return nil, err
-	}
-	return cloneRaw(canonical), nil
+func freezeRawJSON(raw json.RawMessage) (CanonicalJSON, error) {
+	return ParseCanonicalJSON(raw)
 }
 
-func freezeJSONValue(v any) (json.RawMessage, error) {
-	if v == nil {
-		return json.RawMessage("null"), nil
-	}
-	if raw, ok := v.(json.RawMessage); ok {
-		return freezeRawJSON(raw)
-	}
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return nil, err
-	}
-	return freezeRawJSON(raw)
+func freezeJSONValue(v any) (CanonicalJSON, error) {
+	return CanonicalJSONFromValue(v)
 }
 
-func decodeJSONValue(raw json.RawMessage) (any, error) {
-	if raw == nil {
-		return nil, nil
-	}
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	var out any
-	if err := dec.Decode(&out); err != nil {
-		return nil, err
-	}
-	return out, nil
+func decodeJSONValue(raw CanonicalJSON) (any, error) {
+	return raw.Any()
 }
 
 func FreezeProviderMetadata(meta map[string]any) (ProviderMetadata, error) {
@@ -352,7 +325,7 @@ func (d ToolDefinition) SDK() sdk.ToolDefinition {
 	return sdk.ToolDefinition{
 		Name:         d.Name,
 		Description:  d.Description,
-		Parameters:   cloneRaw(d.Parameters),
+		Parameters:   d.Parameters.RawMessage(),
 		CacheControl: d.CacheControl.SDK(),
 	}
 }
@@ -380,9 +353,9 @@ func (f *ResponseFormat) SDK() (*sdk.ResponseFormat, error) {
 		return nil, nil
 	}
 	out := &sdk.ResponseFormat{Type: sdk.ResponseFormatType(f.Type)}
-	if f.JSONSchema != nil {
+	if !f.JSONSchema.IsZero() {
 		var schema jsonschema.Schema
-		if err := json.Unmarshal(f.JSONSchema, &schema); err != nil {
+		if err := json.Unmarshal(f.JSONSchema.Bytes(), &schema); err != nil {
 			return nil, err
 		}
 		out.JSONSchema = &schema
@@ -490,9 +463,9 @@ func (p MessagePart) SDK() (sdk.MessagePart, error) {
 		if err != nil {
 			return nil, err
 		}
-		return sdk.ToolCallPart{ToolCallID: p.ToolCallID, ToolName: p.ToolName, Input: cloneRaw(p.Input), CacheControl: p.CacheControl.SDK(), ProviderMetadata: meta}, nil
+		return sdk.ToolCallPart{ToolCallID: p.ToolCallID, ToolName: p.ToolName, Input: p.Input.RawMessage(), CacheControl: p.CacheControl.SDK(), ProviderMetadata: meta}, nil
 	case MessagePartTypeToolResult:
-		return sdk.ToolResultPart{ToolCallID: p.ToolCallID, ToolName: p.ToolName, Result: cloneRaw(p.Result), IsError: p.IsError, CacheControl: p.CacheControl.SDK()}, nil
+		return sdk.ToolResultPart{ToolCallID: p.ToolCallID, ToolName: p.ToolName, Result: p.Result.RawMessage(), IsError: p.IsError, CacheControl: p.CacheControl.SDK()}, nil
 	default:
 		return nil, fmt.Errorf("unknown message part type %q", p.Type)
 	}
@@ -553,7 +526,7 @@ func FreezeModelRequest(req sdk.Request) (ModelRequest, error) {
 	if err != nil {
 		return ModelRequest{}, fmt.Errorf("response format: %w", err)
 	}
-	options := make(map[string]json.RawMessage, len(req.ProviderOptions))
+	options := make(map[string]CanonicalJSON, len(req.ProviderOptions))
 	if req.ProviderOptions != nil {
 		for k, v := range req.ProviderOptions {
 			frozen, err := freezeRawJSON(v)
@@ -606,7 +579,7 @@ func (r ModelRequest) SDK() (sdk.Request, error) {
 	options := make(map[string]json.RawMessage, len(r.ProviderOptions))
 	if r.ProviderOptions != nil {
 		for k, v := range r.ProviderOptions {
-			options[k] = cloneRaw(v)
+			options[k] = v.RawMessage()
 		}
 	} else {
 		options = nil
@@ -714,16 +687,16 @@ func (f GeneratedFile) SDK() sdk.GeneratedFile {
 	return sdk.GeneratedFile{Data: f.Data, MediaType: f.MediaType}
 }
 
-func freezeToolCallInput(input any) (json.RawMessage, error) {
+func freezeToolCallInput(input any) (CanonicalJSON, error) {
 	args, err := canonicalToolArguments(input)
 	if err == nil {
-		return cloneRaw(args), nil
+		return args, nil
 	}
 	switch input.(type) {
 	case string, json.RawMessage:
-		return cloneRaw(rawToolArguments(input)), nil
+		return rawToolArguments(input), nil
 	default:
-		return nil, err
+		return CanonicalJSON{}, err
 	}
 }
 
@@ -744,7 +717,7 @@ func (c ModelToolCall) SDK() (sdk.ToolCall, error) {
 	if err != nil {
 		return sdk.ToolCall{}, err
 	}
-	return sdk.ToolCall{ToolCallID: c.ToolCallID, ToolName: c.ToolName, Input: cloneRaw(c.Input), ProviderMetadata: meta}, nil
+	return sdk.ToolCall{ToolCallID: c.ToolCallID, ToolName: c.ToolName, Input: c.Input.RawMessage(), ProviderMetadata: meta}, nil
 }
 
 func FreezeResponseMetadata(r *sdk.ResponseMetadata) *ResponseMetadata {

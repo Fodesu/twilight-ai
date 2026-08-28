@@ -1,7 +1,5 @@
 package agent
 
-import "encoding/json"
-
 // Fact is one committed outcome produced by Machine.Decide. Facts are wrapped
 // as AgentEvents; Machine.Evolve folds them mechanically (spec §3.6). The
 // interface is sealed: only the fourteen variants below exist.
@@ -100,11 +98,11 @@ func (ToolCallCompleted) fact() {}
 
 // ToolCallAnswered: Waiting(ExternalResponse) -> Completed with the answer.
 type ToolCallAnswered struct {
-	StepID         StepID          `json:"stepId"`
-	CallID         CallID          `json:"callId"`
-	ResponseID     ResponseID      `json:"responseId"`
-	ResponseDigest Digest          `json:"responseDigest"`
-	Payload        json.RawMessage `json:"payload"`
+	StepID         StepID        `json:"stepId"`
+	CallID         CallID        `json:"callId"`
+	ResponseID     ResponseID    `json:"responseId"`
+	ResponseDigest Digest        `json:"responseDigest"`
+	Payload        CanonicalJSON `json:"payload"`
 }
 
 func (ToolCallAnswered) fact() {}

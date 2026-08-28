@@ -1,7 +1,5 @@
 package agent
 
-import "encoding/json"
-
 // AgentCommand is the intent submitted through Runtime.Commit for an existing
 // Run. Accepting one command constitutes one transition (spec §3.6). The
 // interface is sealed: only the fourteen variants below exist.
@@ -10,8 +8,8 @@ type AgentCommand interface{ agentCommand() }
 // AgentInput is a queue-safe input: a stable ID plus an immutable payload.
 // Queue item references, priority, order, claims and leases stay in the host.
 type AgentInput struct {
-	ID      InputID         `json:"id"`
-	Payload json.RawMessage `json:"payload"`
+	ID      InputID       `json:"id"`
+	Payload CanonicalJSON `json:"payload"`
 }
 
 // NextStep creates the command consumed by an active Run at a safe boundary.
@@ -120,8 +118,8 @@ type SubmitToolFailure struct {
 
 func (SubmitToolFailure) agentCommand() {}
 
-// ApproveToolCall approves a Waiting(Approval) call. ResponseDigest is the
-// canonical digest of the approval decision payload.
+// ApproveToolCall approves a Waiting(Approval) call. ResponseDigest must be
+// DigestToolResponseDecision(ResponseApproval, ResponseDecisionApproved, "").
 type ApproveToolCall struct {
 	StepID         StepID     `json:"stepId"`
 	CallID         CallID     `json:"callId"`
@@ -131,8 +129,9 @@ type ApproveToolCall struct {
 
 func (ApproveToolCall) agentCommand() {}
 
-// RejectToolCall rejects a Waiting(Approval) call. Decide records the outcome
-// as ToolCallFailed{Known, permission_denied}.
+// RejectToolCall rejects a Waiting(Approval or ExternalResponse) call. Decide
+// records the outcome as ToolCallFailed{Known, permission_denied}. ResponseDigest
+// must be DigestToolResponseDecision(waiting kind, ResponseDecisionRejected, Reason).
 type RejectToolCall struct {
 	StepID         StepID     `json:"stepId"`
 	CallID         CallID     `json:"callId"`
@@ -144,13 +143,13 @@ type RejectToolCall struct {
 func (RejectToolCall) agentCommand() {}
 
 // SubmitToolResponse completes a Waiting(ExternalResponse) call with the
-// external answer.
+// external answer. ResponseDigest must be DigestToolResponsePayload(Payload).
 type SubmitToolResponse struct {
-	StepID         StepID          `json:"stepId"`
-	CallID         CallID          `json:"callId"`
-	ResponseID     ResponseID      `json:"responseId"`
-	ResponseDigest Digest          `json:"responseDigest"`
-	Payload        json.RawMessage `json:"payload"`
+	StepID         StepID        `json:"stepId"`
+	CallID         CallID        `json:"callId"`
+	ResponseID     ResponseID    `json:"responseId"`
+	ResponseDigest Digest        `json:"responseDigest"`
+	Payload        CanonicalJSON `json:"payload"`
 }
 
 func (SubmitToolResponse) agentCommand() {}

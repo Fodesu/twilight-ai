@@ -59,11 +59,11 @@ func TestRegressionBigIntegerPrecision(t *testing.T) {
 	if string(got) != `{"channel_id":1234567890123456789}` {
 		t.Fatalf("big integer corrupted: %s", got)
 	}
-	d1, err := digestToolCallBinding("c", "", DirectExecution, []byte(`{"n":9007199254740993}`))
+	d1, err := digestToolCallBinding("c", "", DirectExecution, cj(`{"n":9007199254740993}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	d2, err := digestToolCallBinding("c", "", DirectExecution, []byte(`{"n":9007199254740992}`))
+	d2, err := digestToolCallBinding("c", "", DirectExecution, cj(`{"n":9007199254740992}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,27 +97,12 @@ func TestRegressionToolStepIDReproducible(t *testing.T) {
 	}
 }
 
-// Finding 3: a commit failure while settling a worker must surface, not be
-// silently dropped.
-func TestRegressionSettleCommitErrorSurfaces(t *testing.T) {
-	spec := toolSpec(t, "echo", DirectExecution)
-	echo := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: DirectExecution,
-		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
-			// Invalid JSON output makes BuildEnvelope/DigestCommand fail: a
-			// non-sentinel commit error on the settle path.
-			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: json.RawMessage(`{broken`)}}
-		}}
-	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1")}}
-	rt := loopRuntime(t)
-	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
-		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
-
-	_, err := loop.Run(context.Background(), rt, nil)
-	if err == nil {
-		t.Fatal("settle commit failure was swallowed; run would wedge in WaitForExecutionRecovery")
-	}
-	if !strings.Contains(err.Error(), "settling call") {
-		t.Fatalf("err = %v, want settle context", err)
+// Finding 3: invalid tool output cannot enter the authority contract. Tools
+// return CanonicalJSON, so malformed JSON is rejected at construction rather
+// than later inside BuildEnvelope/DigestCommand.
+func TestRegressionInvalidToolOutputCannotBeConstructed(t *testing.T) {
+	if _, err := ParseCanonicalJSON([]byte(`{broken`)); err == nil {
+		t.Fatal("malformed JSON constructed as CanonicalJSON")
 	}
 }
 
@@ -158,7 +143,8 @@ func TestRegressionExternalResponseCanBeRejected(t *testing.T) {
 	s = fold(t, s, facts)
 	respID := opened.Calls[0].Response.ID
 
-	facts, err := Decide(s, RejectToolCall{StepID: opened.StepID, CallID: "c1", ResponseID: respID, Reason: "user dismissed"})
+	facts, err := Decide(s, RejectToolCall{StepID: opened.StepID, CallID: "c1", ResponseID: respID,
+		ResponseDigest: responseDecisionDigest(t, ResponseExternal, ResponseDecisionRejected, "user dismissed"), Reason: "user dismissed"})
 	if err != nil {
 		t.Fatalf("external-response call cannot be rejected: %v", err)
 	}
@@ -202,29 +188,27 @@ func TestRegressionRuntimeReturnsAreIsolated(t *testing.T) {
 	res := mustCommit(t, rt, "complete-1", 2, grant,
 		SubmitModelResult{StepID: stepID, Result: modelResultWithNamedCalls("t", `{"k":"original"}`, "c1"), Calls: []ToolCallBinding{b}})
 
-	// Mutate the returned event's fact payload bytes.
+	// Mutate byte views returned from immutable CanonicalJSON values.
 	opened := res.Events[1].Fact.(ToolStepOpened)
-	if len(opened.Calls) > 0 && len(opened.Calls[0].Arguments) > 0 {
-		opened.Calls[0].Arguments[2] = 'X'
-	}
-	// Mutate the snapshot's waiting payload.
+	argBytes := opened.Calls[0].Arguments.RawMessage()
+	argBytes[2] = 'X'
+	// Mutate the snapshot's waiting payload view.
 	snap, _ := rt.Load(context.Background())
 	ts := snap.State.Current.(ToolStep)
-	if ts.Calls[0].Waiting != nil && len(ts.Calls[0].Waiting.Payload) > 2 {
-		ts.Calls[0].Waiting.Payload[2] = 'Y'
-	}
+	payloadBytes := ts.Calls[0].Waiting.Payload.RawMessage()
+	payloadBytes[2] = 'Y'
 
 	// Authority must be unchanged: reload and verify the argument bytes.
 	fresh, _ := rt.Load(context.Background())
 	got := fresh.State.Current.(ToolStep).Calls[0].Arguments
-	if string(got) != `{"k":"original"}` {
-		t.Fatalf("authoritative arguments mutated through a returned view: %s", got)
+	if got.String() != `{"k":"original"}` {
+		t.Fatalf("authoritative arguments mutated through a returned view: %s", got.String())
 	}
 	stored := rt.Events()
 	for _, e := range stored {
 		if f, ok := e.Fact.(ToolStepOpened); ok {
-			if string(f.Calls[0].Arguments) != `{"k":"original"}` {
-				t.Fatalf("stored event mutated through a returned view: %s", f.Calls[0].Arguments)
+			if f.Calls[0].Arguments.String() != `{"k":"original"}` {
+				t.Fatalf("stored event mutated through a returned view: %s", f.Calls[0].Arguments.String())
 			}
 		}
 	}
@@ -292,7 +276,7 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 	tool := &fakeTool{ref: "fs.read", def: def, policy: DirectExecution,
 		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
 			executed.Store(true)
-			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: json.RawMessage(`"ok"`)}}
+			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: cj(`"ok"`)}}
 		}}
 	// Model calls the definition name "read"; catalog keys by Ref "fs.read".
 	invoker := &fakeInvoker{results: []sdk.ModelResult{
