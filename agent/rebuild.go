@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+
+	"github.com/memohai/twilight-ai/agent/es"
 )
 
 // ErrLogTruncated reports that a Run's event log ends below its revision
@@ -85,33 +87,35 @@ func FoldEvents(initial MachineState, events []AgentEvent) (MachineState, uint64
 //
 //nolint:gocritic // hugeParam: public replay API folds from an initial value state without mutating caller-owned state.
 func FoldTransitions(initial MachineState, records []TransitionRecord) (MachineState, uint64, error) {
-	state := initial
-	var revision uint64
+	views := make([]es.RecordView[AgentEvent], len(records))
 	for i := range records {
 		record := records[i]
+		// Run-specific metadata (command identity and aggregate digest) is
+		// validated by the Run adapter; es validates the generic complete
+		// record structure and folding order below.
 		if err := ValidateTransitionRecord(&record); err != nil {
 			return initial, 0, err
 		}
-		if record.RunID != initial.RunID {
-			return initial, 0, fmt.Errorf("agent: fold: transition run %q does not match initial run %q", record.RunID, initial.RunID)
-		}
-		if record.Revision != revision+1 {
-			return initial, 0, fmt.Errorf("agent: fold: gap at transition revision %d (expected %d)", record.Revision, revision+1)
-		}
-		for j := range record.Events {
-			e := record.Events[j]
-			fact, err := snapshotFact(e.Fact)
-			if err != nil {
-				return initial, 0, err
-			}
-			state, err = EvolveVersion(e.SchemaVersion, state, fact)
-			if err != nil {
-				return initial, 0, err
-			}
-		}
-		revision = record.Revision
+		views[i] = transitionRecordView(&record)
 	}
-	return state, revision, nil
+	state, revision, err := es.FoldRecords(
+		initial,
+		es.StreamID(initial.RunID),
+		views,
+		supportsRunSchema,
+		inspectTransitionEvent,
+		func(schemaVersion uint16, state MachineState, event AgentEvent) (MachineState, error) {
+			fact, err := snapshotFact(event.Fact)
+			if err != nil {
+				return MachineState{}, err
+			}
+			return EvolveVersion(schemaVersion, state, fact)
+		},
+	)
+	if err != nil {
+		return initial, 0, err
+	}
+	return state, uint64(revision), nil
 }
 
 // Rebuild discards the in-memory snapshot and refolds it from the transition

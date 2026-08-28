@@ -6,6 +6,7 @@
 package agent
 
 import (
+	"github.com/memohai/twilight-ai/agent/es"
 	"github.com/memohai/twilight-ai/agent/jsonstable"
 )
 
@@ -26,10 +27,6 @@ func MustParseCanonicalJSON(raw string) CanonicalJSON {
 	return jsonstable.MustParse(raw)
 }
 
-func canonicalJSON(raw []byte) ([]byte, error) {
-	return jsonstable.Canonicalize(raw)
-}
+func canonicalJSON(raw []byte) ([]byte, error) { return es.Canonicalize(raw) }
 
-func marshalCanonical(v any) ([]byte, error) {
-	return jsonstable.MarshalCanonical(v)
-}
+func marshalCanonical(v any) ([]byte, error) { return es.MarshalCanonical(v) }
