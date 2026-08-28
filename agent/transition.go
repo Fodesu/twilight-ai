@@ -3,6 +3,8 @@ package agent
 import (
 	"errors"
 	"fmt"
+
+	"github.com/memohai/twilight-ai/agent/es"
 )
 
 // TransitionRecord is the atomic authority record for one accepted
@@ -39,6 +41,38 @@ func transitionRecordBody(record *TransitionRecord) transitionRecordDigestBody {
 	}
 }
 
+func transitionRecordView(record *TransitionRecord) es.RecordView[AgentEvent] {
+	return es.RecordView[AgentEvent]{
+		SchemaVersion: record.SchemaVersion,
+		StreamID:      es.StreamID(record.RunID),
+		Revision:      es.Revision(record.Revision),
+		Events:        record.Events,
+	}
+}
+
+//nolint:gocritic // EventInspector is value-based so generic records do not retain mutable event pointers.
+func inspectTransitionEvent(event AgentEvent) (es.EventMetadata, error) {
+	typ := factType(event.Fact)
+	if typ == "" || event.Type != typ {
+		return es.EventMetadata{}, fmt.Errorf("event type %q does not match fact variant %T", event.Type, event.Fact)
+	}
+	wantDigest, err := DigestFact(event.SchemaVersion, event.Type, event.Fact)
+	if err != nil {
+		return es.EventMetadata{}, err
+	}
+	if event.Digest != wantDigest {
+		return es.EventMetadata{}, fmt.Errorf("fact digest mismatch at revision %d index %d", event.Revision, event.Index)
+	}
+	return es.EventMetadata{
+		SchemaVersion: event.SchemaVersion,
+		StreamID:      es.StreamID(event.RunID),
+		Revision:      es.Revision(event.Revision),
+		Index:         es.Index(event.Index),
+	}, nil
+}
+
+func supportsRunSchema(version uint16) bool { return isSupportedSchemaVersion(version) }
+
 // DigestTransitionRecord computes the digest for one transition aggregate. The
 // digest binds the transition identity and the complete ordered event group;
 // TransitionDigest itself is excluded from the digest input.
@@ -50,7 +84,7 @@ func DigestTransitionRecord(record *TransitionRecord) (Digest, error) {
 	if err != nil {
 		return "", err
 	}
-	return sha256Digest(body), nil
+	return es.DigestBytes(body), nil
 }
 
 // BuildTransitionRecord freezes and validates the complete event group of one
@@ -93,42 +127,13 @@ func ValidateTransitionRecord(record *TransitionRecord) error {
 	if record.RunID == "" || record.Revision == 0 || record.CommandID == "" || record.CommandDigest == "" {
 		return errors.New("agent: transition: missing identity")
 	}
-	if !isSupportedSchemaVersion(record.SchemaVersion) {
-		return fmt.Errorf("agent: transition: unsupported schema version %d", record.SchemaVersion)
-	}
-	if len(record.Events) == 0 {
-		return fmt.Errorf("agent: transition: revision %d has no events", record.Revision)
-	}
-	if len(record.Events) > int(^uint16(0))+1 {
-		return fmt.Errorf("agent: transition: revision %d event group too large: %d", record.Revision, len(record.Events))
+	if err := es.ValidateRecordView(transitionRecordView(record), supportsRunSchema, inspectTransitionEvent); err != nil {
+		return fmt.Errorf("agent: transition: %w", err)
 	}
 	for i := range record.Events {
 		e := record.Events[i]
-		if e.SchemaVersion != record.SchemaVersion {
-			return fmt.Errorf("agent: transition: event %d schema version %d does not match transition %d", i, e.SchemaVersion, record.SchemaVersion)
-		}
-		if e.RunID != record.RunID {
-			return fmt.Errorf("agent: transition: event %d run %q does not match transition run %q", i, e.RunID, record.RunID)
-		}
-		if e.Revision != record.Revision {
-			return fmt.Errorf("agent: transition: event %d revision %d does not match transition revision %d", i, e.Revision, record.Revision)
-		}
-		if e.Index != uint16(i) {
-			return fmt.Errorf("agent: transition: revision %d index %d has event index %d", record.Revision, i, e.Index)
-		}
 		if e.CommandID != record.CommandID || e.CommandDigest != record.CommandDigest {
 			return fmt.Errorf("agent: transition: revision %d command identity changed within transition", record.Revision)
-		}
-		typ := factType(e.Fact)
-		if typ == "" || e.Type != typ {
-			return fmt.Errorf("agent: transition: event type %q does not match fact variant %T", e.Type, e.Fact)
-		}
-		wantDigest, err := DigestFact(e.SchemaVersion, e.Type, e.Fact)
-		if err != nil {
-			return err
-		}
-		if e.Digest != wantDigest {
-			return fmt.Errorf("agent: transition: fact digest mismatch at revision %d index %d", e.Revision, e.Index)
 		}
 	}
 	if record.TransitionDigest == "" {

@@ -3,6 +3,8 @@ package agent
 import (
 	"errors"
 	"fmt"
+
+	"github.com/memohai/twilight-ai/agent/es"
 )
 
 // SchemaVersion1 is the first published wire schema. Canonical encoding and
@@ -41,12 +43,7 @@ type AgentEvent struct {
 // discriminator and canonical command bytes. The Digest field itself, base
 // revisions and grants never enter the digest (spec §5.5).
 func encodeEnvelopeBody(schemaVersion uint16, typ string, body any) ([]byte, error) {
-	canonical, err := marshalCanonical(body)
-	if err != nil {
-		return nil, err
-	}
-	prefix := fmt.Sprintf("v%d:%d:%s:", schemaVersion, len(typ), typ)
-	return append([]byte(prefix), canonical...), nil
+	return es.EncodeTypedPayload(schemaVersion, typ, body)
 }
 
 // EncodeCommand renders the canonical bytes of a command envelope, excluding

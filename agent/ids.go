@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+
+	"github.com/memohai/twilight-ai/agent/es"
 )
 
 type RunID string
@@ -15,8 +17,9 @@ type InputID string
 type ToolRef string
 type ModelRef string
 
-// Digest is "sha256:<64 lowercase hex>" over agent canonical bytes (spec §5.5).
-type Digest string
+// Digest is "sha256:<64 lowercase hex>" over canonical protocol bytes.
+// It remains an alias while Run protocol types live in this package.
+type Digest = es.Digest
 
 // PlanningToken is opaque to agent; the application uses it to identify the
 // context revision from which a RequestPlan was built.
@@ -27,10 +30,7 @@ type PlanningToken string
 // implementation-defined.
 type ExecutionGrant string
 
-func sha256Digest(data []byte) Digest {
-	sum := sha256.Sum256(data)
-	return Digest("sha256:" + hex.EncodeToString(sum[:]))
-}
+func sha256Digest(data []byte) Digest { return es.DigestBytes(data) }
 
 // namespacedHash derives a stable identifier from a namespace and ordered
 // parts. Parts are length-prefixed so no two distinct part lists collide.
