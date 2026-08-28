@@ -67,7 +67,8 @@ func buildPrepareFromSnap(t *testing.T, snap RuntimeSnapshot, req sdk.Request, s
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding, err := DigestModelStepBinding(snap.State.Config.Model, reqDigest, toolsDigest)
+	model := ModelRef(frozenReq.Model)
+	binding, err := DigestModelStepBinding(model, reqDigest, toolsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +79,7 @@ func buildPrepareFromSnap(t *testing.T, snap RuntimeSnapshot, req sdk.Request, s
 		ids[i] = in.ID
 	}
 	return PrepareModelRequest{
-		StepID: stepID, Model: snap.State.Config.Model, Request: frozenReq,
+		StepID: stepID, Model: model, Request: frozenReq,
 		RequestDigest: reqDigest, InputIDs: ids, Tools: specs, ToolsDigest: toolsDigest,
 	}, cmdID
 }
@@ -102,6 +103,6 @@ func TestLoopPrepareRejectionDoesNotLivelock(t *testing.T) {
 // badPlanner never consumes pending inputs, so its Prepare is always rejected.
 type badPlanner struct{}
 
-func (badPlanner) Plan(_ context.Context, hint PlanningHint) (RequestPlan, error) {
-	return RequestPlan{Model: hint.Model, Request: sdk.Request{Model: string(hint.Model)}}, nil
+func (badPlanner) Plan(_ context.Context, _ PlanningHint) (RequestPlan, error) {
+	return RequestPlan{Model: testModel, Request: sdk.Request{Model: string(testModel)}}, nil
 }

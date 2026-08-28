@@ -316,40 +316,39 @@ Machine.Evolve 逐个折叠（机械） -> new MachineState
 Machine.Next(state) -> Effect
 ```
 
-`Next(state)` 根据当前事实产生至多一个待执行的 `Effect`。`Decide(state, command)` 校验一个意图并产出这次 transition 的完整事实序列——所有决策（是否接受、派生哪些后果、是否进入终态）都发生在这里，且只在提交时运行一次，输出即冻结。`Evolve(state, event)` 把单个事实机械地折叠进状态：它不读 RunConfig，不含任何 policy 分支，对 Decide 产出的每种事实全定义；replay 只依赖 Evolve。Runtime 接受一个 command 后，把 Decide 的事实序列包装为同一 Revision 的 AgentEvent 组，与折叠后的新状态放在同一提交边界。两种 Runtime 不能各自复制规则；Loop 重新 `Load` 后再次调用 `Next`，不会依赖一次提交响应中的 effect。
+`Next(state)` 根据当前事实产生至多一个待执行的 `Effect`。`Decide(state, command)` 校验一个意图并产出这次 transition 的完整事实序列——所有决策（是否接受、派生哪些后果、是否进入终态）都发生在这里，且只在提交时运行一次，输出即冻结。`Evolve(state, event)` 把单个事实机械地折叠进状态：它不读 RunConfig/Loop policy，不含 IO，对 Decide 产出的每种事实全定义；replay 只依赖 versioned Evolve。Runtime 接受一个 command 后，把 Decide 的事实序列包装为同一 Revision 的 AgentEvent 组，与折叠后的新状态放在同一提交边界。两种 Runtime 不能各自复制规则；Loop 重新 `Load` 后再次调用 `Next`，不会依赖一次提交响应中的 effect。
 
-决策与折叠的分工是协议的兼容边界：Machine 的决策规则（limit 判断、自动关闭、终态转换）可以随版本演进，因为历史事件已把这些决策的结果记录在案；Evolve 与事件编码一起构成永久兼容契约，已发布 SchemaVersion 的折叠语义不再修改。
+决策与折叠的分工是协议的兼容边界：Machine 的决策规则（自动关闭、终态转换、command disposition）可以随版本演进，因为历史事件已把这些决策的结果记录在案；Evolve 与事件编码一起构成永久兼容契约，已发布 SchemaVersion 的折叠语义不再修改。
 
-Run terminal、model-step limit、Step successor、ToolStep 自动关闭和等待条件都由 Machine 的 Decide 决定，并显式产出对应事实（`ToolStepClosed`、`RunEnded`）。Runtime 不再维护另一套 Run 终态和等待判断；Memoh 只把已经接受的 AgentEvent 投影到自己的 history、queue 和 outbox，按事件驱动，不做提交前后的状态差分。
+Run terminal、Step successor、ToolStep 自动关闭和等待条件都由 Machine 的 Decide 决定，并显式产出对应事实（`ToolStepClosed`、`RunEnded`）。固定模型、max-step budget 和 malformed retry limit 是 host/Loop policy，不进入 MachineState；这些策略若要改变状态，必须提交显式 command（例如 `StopRun{step_limit}` 或带 fail-run disposition 的 `RejectModelResult`）。Runtime 不再维护另一套 Run 终态和等待判断；Memoh 只把已经接受的 AgentEvent 投影到自己的 history、queue 和 outbox，按事件驱动，不做提交前后的状态差分。
 
 Machine 不知道 PostgreSQL、mutex、lease、fencing、provider client、queue 或产品 history。Runtime 可以在自己的临界区内调用这套规则，但不改变规则。
 
 ### 3.2 输入语义
 
-Queue 不属于 Machine，但 Machine 需要知道“一个输入何时已经被接受，以及它对后续执行的影响”。因此 core 只定义两种输入边界：
+Queue 不属于 Machine，但 Machine 需要知道“一个输入何时已经被接受，以及它对后续执行的影响”。因此 core 只定义 active Run 的输入提交边界；terminal follow-up 由 Memoh admission 创建新 Run 后再提交首个输入：
 
 ```text
 NextStep(input)
   当前 Run 仍 active 且处于可接收边界；输入进入下一次 ModelStep 的规划上下文
 
-NextRun(input)
-  当前 Run 已到 terminal；输入作为 continuation 的初始上下文，不修改旧 Run
+terminal follow-up
+  Memoh admission -> InitializeRun(new RunID) -> AcceptInput(input)
 ```
 
 `AgentInput` 只有稳定的 `InputID` 和不可变 payload，不包含 queue item、priority、order、claim 或 lease。`NextStep` 构造 `AcceptInput` command；被 Runtime 接受后产出 `InputAccepted` 事实，与新的 MachineState 一起提交，Memoh 可以在同一事务中把 queue claim 标记为 applied。
 
-`NextRun` 产生的是 admission seed（`RunSeed`），不是任何 Run 的 command：它不创建 RunID，也不负责 queue claim 或 session admission。Memoh 先完成 queue claim、session admission 和新 Run 的身份分配，再用该 seed 通过 `Initialize` 建立新 Run 的 MachineState。admission 可以复用 `AgentEvent` 的 identity/digest/canonical 编码规则，但其排序和记录归属由 Memoh admission 决定，不调用旧 Run 的 `Runtime.Commit`。
+`NextRun`/`RunSeed` 只保留为 legacy admission helper；新 core admission 使用 `InitializeRun(RunID)` 建立最小 Revision-0 state，然后把初始用户输入作为该 Run 的第一条 `AcceptInput` transition 提交。Memoh 仍负责 queue claim、session admission 和新 Run 的身份分配；admission 可以复用 digest/canonical 编码规则审计 seed，但普通 Run replay 不依赖重新计算 RunSeed。
 
-Machine 不在 ToolStep 执行中接受 `NextStep`，也不把 `NextRun` 解释成旧 Run 的状态变化。输入的具体文本如何进入 Planner 生成的 `sdk.Request` 仍由 Request Planner 决定；Loop 在提交前冻结为 agent `ModelRequest`，Machine 只保证输入边界和一次性接受语义。
+Machine 不在 ToolStep 执行中接受 `NextStep`，也不把 terminal follow-up 解释成旧 Run 的状态变化。输入的具体文本如何进入 Planner 生成的 `sdk.Request` 仍由 Request Planner 决定；Loop 在提交前冻结为 agent `ModelRequest`，Machine 只保证输入边界和一次性接受语义。
 
 ### 3.3 MachineState
 
 MachineState 至少包括：
 
 ```text
-RunID 和冻结的 RunConfig.Model
+RunID
 Run status
-其他冻结的 RunConfig
 current Step
 ToolStep 中每个 ToolCall 的 progress/result
 等待中的 ResponseRequest
@@ -359,6 +358,8 @@ model-step counter
 最近一次已接受的 agent ModelResult
 terminal RunResult（如果已结束）
 ```
+
+MachineState 不包含固定模型、prompt/history、step limit、malformed retry limit 或产品 RunConfig。模型选择由每个 `ModelStepPrepared` 冻结的 `ModelRequest.Model` 表示；limits 属于 host/Loop policy，并通过显式 command 形成事实。
 
 权威语义状态不包括数据库 row、transaction、owner、fence、lease、Attempt 或 queue claim。Runtime 可以保存这些控制元数据，但它们不进入 MachineState。
 
@@ -403,7 +404,7 @@ Step 只有 `ModelStep` 和 `ToolStep` 两种语义。ToolCall 是 ToolStep 内�
 
 协议使用两个 sealed 词表。`AgentCommand` 是 Loop 或受信任的外部入口针对**已有 Run**提出的意图；`AgentEvent` 承载 Runtime 接受一个 command 后产出的事实。一个被接受的 command 构成一次 transition，产出一个或多个事件；命令描述"请求发生什么"，事件描述"已经发生什么"，两个词表不共用类型。
 
-AgentCommand（14 种）：
+AgentCommand（15 种）：
 
 ```text
 PrepareModelRequest     冻结下一次模型请求
@@ -419,6 +420,7 @@ ApproveToolCall         批准 Waiting(Approval) Call
 RejectToolCall          拒绝 Waiting(Approval) Call
 SubmitToolResponse      提交 ask-user 答案
 CancelRun               业务取消
+StopRun                 host-owned 非取消停止策略，例如 step_limit
 AcceptInput             接受 queue-safe 输入（由 NextStep 构造）
 ```
 
@@ -443,18 +445,18 @@ RunEnded                终态：Status 为 RunCompleted、RunStopped 或 RunFai
 
 `AgentEvent` 与新的 `MachineState` 在同一个原子提交中写入，具有 authority 分配的 (Revision, Index) 身份、canonical digest 和产生它的 CommandID。`AgentEvent` 可供 replay、projection、审计和 OpenTelemetry 使用。
 
-`RunSeed` 属于新 Run 的 admission，不是 command，也不进入任何 Run 的事件流。如果 Memoh 需要审计这次 admission，可以复用相同的 identity/digest 编码规则，但该记录由 admission 事务保存，不经过 `Runtime.Commit`。
+`RunSeed` 属于 legacy 新 Run admission helper，不是 command。新 API 倾向将初始输入也作为 `AcceptInput` transition 记录；如果 Memoh 需要审计 legacy admission seed，可以复用相同的 identity/digest 编码规则，但该记录由 admission 事务保存，不经过旧 Run 的 `Runtime.Commit`。
 
 二者的关系固定为：
 
 ```text
 Loop / response ingress
         -> AgentCommand (intent)
-Runtime EvaluateCommit: 幂等/类别校验 + Machine.Decide + Machine.Evolve
-        -> MachineState + AgentEvent 组 (committed facts, one Revision)
+Runtime EvaluateCommit: 幂等/类别校验 + Machine.Decide + Machine.EvolveVersion
+        -> MachineState + TransitionRecord (committed facts, one Revision)
 ```
 
-意图与事实由 Decide 显式转换，日志永远记录结果而非请求：`RejectToolCall` 记录为 `ToolCallFailed{permission_denied}`；`CancelRun` 记录为 `RunEnded{RunStopped, cancelled}`；触发 step limit 的最后一次 Call 完成记录为 `[ToolCallCompleted, ToolStepClosed, RunEnded{RunStopped, step_limit}]`。
+意图与事实由 Decide 显式转换，日志永远记录结果而非请求：`RejectToolCall` 记录为 `ToolCallFailed{permission_denied}`；`CancelRun` 记录为 `RunEnded{RunStopped, cancelled}`；host step limit 记录为 `StopRun{step_limit} -> RunEnded{RunStopped, step_limit}`。
 
 `PrepareModelRequest.RequestDigest` 和 `ResponseDigest` 分别是请求/响应 payload 的内容摘要，不是提交身份。`ApproveToolCall`/`RejectToolCall` 使用 `DigestToolResponseDecision(kind, decision, reason)`，`SubmitToolResponse` 使用 `DigestToolResponsePayload(payload)`；Decide 必须校验 digest 与实际 decision/payload 匹配。一个 command 被重试时复用同一 CommandID 和 digest；Runtime 不会为重试生成第二组 AgentEvent。
 
@@ -476,26 +478,26 @@ WaitForExecutionRecovery
 
 `Decide(state, command)` 按下表校验前置条件并产出事实序列。任何前置条件不满足即拒绝整个 command，不产出部分事实：
 
-1. `PrepareModelRequest` 只能在 Run active 且没有当前 Step 时接受；其 `InputIDs` 必须按 `PendingInputs` 的当前顺序完整匹配。`Request` 必须已经是 frozen agent `ModelRequest`，且 `Request.Model` 必须等于 command/RunConfig 的 `ModelRef`；`Tools` 必须与其中的 provider tool definitions 按 Ref、顺序和 definition digest 一一对应，`ToolsDigest` 覆盖 Ref、schema、顺序与 policy。产出 `[ModelStepPrepared]`，事实中携带冻结的请求、ToolSpec、被消费的 InputIDs 与 Decide 算好的 step binding digest（事实自包含条件：Evolve 不重算 digest）。
+1. `PrepareModelRequest` 只能在 Run active 且没有当前 Step 时接受；其 `InputIDs` 必须按 `PendingInputs` 的当前顺序完整匹配。`Request` 必须已经是 frozen agent `ModelRequest`，且 `Request.Model` 必须等于 command 的 `ModelRef`；`Tools` 必须与其中的 provider tool definitions 按 Ref、顺序和 definition digest 一一对应，`ToolsDigest` 覆盖 Ref、schema、顺序与 policy。产出 `[ModelStepPrepared]`，事实中携带冻结的请求、ToolSpec、被消费的 InputIDs 与 Decide 算好的 step binding digest（事实自包含条件：Evolve 不重算 digest）。
 2. `StartModelExecution` 只能作用于 Prepared ModelStep，产出 `[ModelStepStarted]`。`RecoverModelExecution` 只能作用于没有已接受结果的 Executing ModelStep，产出 `[ModelStepRecovered]`；它只能由持有该 Model grant 的当前 Loop，或由 Runtime 自己确认 lease 失效后的 recovery 逻辑提交，普通 response ingress 不能提交。
 3. `SubmitModelResult` 只能作用于对应的 Executing ModelStep。结果没有 tool calls 时产出 `[ModelStepCompleted, RunEnded{RunCompleted}]`；有 tool calls 时按冻结 `ToolSpec` 绑定 policy 和 binding digest，产出 `[ModelStepCompleted, ToolStepOpened]`——`ToolStepOpened` 携带完整 Call 集合：DirectExecution 的 Call 为 Pending，ApprovalRequired/ExternalResponse 的 Call 为带稳定 request 的 Waiting，每个 Waiting request 都包含目标 RunID、StepID、CallID、ResponseID、Kind 和 RequestDigest。
 4. `SubmitModelFailure` 只能作用于对应的 Executing ModelStep，产出 `[RunEnded{RunFailed, provider_failure}]`，保留稳定失败原因。
-5. `RejectModelResult` 只能作用于对应的 Executing ModelStep，必须携带该 start 的 Grant。`Rejects+1` 不超过冻结的 `RunConfig.ModelRejectLimit` 时产出 `[ModelStepRejected]`（Step 回到 Prepared，同一冻结 request 可再次 start）；超过时产出 `[ModelStepRejected, RunEnded{RunFailed, malformed_model_result}]`。被拒绝的结果不写入 `LastModelResult`。
+5. `RejectModelResult` 只能作用于对应的 Executing ModelStep，必须携带该 start 的 Grant。`Disposition=ModelRejectRetry` 时产出 `[ModelStepRejected]`（Step 回到 Prepared，同一冻结 request 可再次 start）；`Disposition=ModelRejectFailRun` 时产出 `[ModelStepRejected, RunEnded{RunFailed, malformed_model_result}]`。Loop/host policy 可用当前 `ModelStep.Rejects` 和自己的 malformed limit 选择 disposition；limit 不进入 MachineState。被拒绝的结果不写入 `LastModelResult`。
 6. `StartToolCall` 只能作用于 Pending Call，产出 `[ToolCallStarted]`。
 7. `SubmitToolResult` 只能作用于 Executing Call，产出 `[ToolCallCompleted]`。`SubmitToolResponse` 只能作用于 Waiting(ExternalResponse) Call，产出 `[ToolCallAnswered]`。
 8. `SubmitToolFailure`（known）可以作用于 Pending 或 Executing Call：Pending 的已知失败使用空 Grant，Executing 的必须使用对应 Grant，产出 `[ToolCallFailed{Known}]`。`SubmitToolFailure`（unknown）只能作用于 Executing Call，产出 `[ToolCallFailed{Unknown}, RunEnded{RunFailed, effect_unknown}]`，`RunResult.Failure` 记录 `effect_unknown` 和对应 CallID；scanner 提交它时必须先有实现内部的失效执行记录。
 9. `ApproveToolCall` 必须匹配目标 Waiting(Approval) Call 保存的 ResponseID 和 kind，产出 `[ToolCallApproved]`（Call 变为 Pending，Loop 随后执行）。`RejectToolCall` 同样必须匹配，产出 `[ToolCallFailed{Known, permission_denied}]`。日志记录的是结果事实，不是请求本身。
 10. 一次响应只推进对应 Call，不能修改其他 Call；ResponseID 和 kind 必须匹配该 Call 保存的请求。响应 payload 的 digest 用于内容冲突检测，不需要等于请求 payload 的 digest。
-11. 使 ToolStep 内最后一个 Call 到达可关闭终态的 command，其事实序列追加 `ToolStepClosed`；若此时 `ModelSteps` 已达冻结的 model-step limit，再追加 `RunEnded{RunStopped, step_limit}`。例如最后一个 Call 完成且触发 limit：`[ToolCallCompleted, ToolStepClosed, RunEnded{RunStopped, step_limit}]`。ToolStep 关闭前不能创建下一 ModelStep。
-12. `CancelRun` 只能作用于非 terminal Run，产出 `[RunEnded{RunStopped, cancelled}]`。
-13. `AcceptInput` 只能作用于 active 且没有当前 Step 的 Run，且 `InputID` 不得与当前 `PendingInputs` 中任何输入（包括 `RunSeed` 带入的 seed input）重复；重复 ID 是 identity conflict，不能记录一个 Evolve 会丢弃的 no-op fact。接受后产出 `[InputAccepted]`。Planner 由 `PlanningHint.Inputs` 收到这些输入并在 `RequestPlan.InputIDs` 中明确消费它们；遗漏或伪造 ID 的 `PrepareModelRequest` 被拒绝。
-14. `Initialize(RunID, RunConfig, RunSeed)` 只在 application admission 创建新 Run 时使用；它建立初始 `MachineState` 并把 seed 输入放入 `PendingInputs`。`RunSeed` 不能传给已有 Run 的 `Decide` 或 `Runtime.Commit`。
+11. 使 ToolStep 内最后一个 Call 到达可关闭终态的 command，其事实序列追加 `ToolStepClosed`。ToolStep 关闭前不能创建下一 ModelStep。
+12. `CancelRun` 只能作用于非 terminal Run，产出 `[RunEnded{RunStopped, cancelled}]`；`StopRun` 只能记录 host-owned 非取消停止原因，目前为 `[RunEnded{RunStopped, step_limit}]`。
+13. `AcceptInput` 只能作用于 active 且没有当前 Step 的 Run，且 `InputID` 不得与当前 `PendingInputs` 中任何输入重复；重复 ID 是 identity conflict，不能记录一个 Evolve 会丢弃的 no-op fact。接受后产出 `[InputAccepted]`。Planner 由 `PlanningHint.Inputs` 收到这些输入并在 `RequestPlan.InputIDs` 中明确消费它们；遗漏或伪造 ID 的 `PrepareModelRequest` 被拒绝。
+14. `InitializeRun(RunID)` 只在 application admission 创建新 Run 时使用；它建立最小初始 `MachineState`（Revision=0），不包含 seed input、fixed model 或 limits。兼容 helper `Initialize(RunID, RunConfig, RunSeed)` 仍可构造带 seed input 的 legacy initial state，但 `RunConfig` 不进入 MachineState。
 
 `InputID` 在一个 Run 内唯一。相同 `InputID` 和相同 payload 的重复 `AcceptInput` 是语义 no-op，Runtime 返回原已接受的事件组；相同 ID 携带不同 payload 返回冲突。Memoh 的 queue claim 仍负责防止同一个 queue item 被多个输入入口同时消费。
 
 #### 3.7.2 Evolve 折叠表（事实 -> 状态）
 
-`Evolve(state, event)` 对每种事实执行固定的机械折叠，不读 RunConfig，不含 policy 分支：
+`Evolve(state, event)` 对每种事实执行固定的机械折叠，不读 RunConfig/Loop policy，不含 policy 分支：
 
 | 事实 | 折叠 |
 | --- | --- |
@@ -522,7 +524,7 @@ WaitForExecutionRecovery
 
 `RunStopped` 或 `RunFailed` 的 `RunResult` 保留最近一次已接受的模型结果（如有）；`RunCompleted` 的 `RunResult.Model` 是产生正常终态的那次模型结果。取消或未知 effect 不会伪造新的模型结果。
 
-`Next` 的主要映射是：无当前 Step -> `NeedModelRequest(PlanningHint{Inputs: PendingInputs})`（model-step limit 在前一个 Step 的提交中已经转换为 terminal）；Prepared ModelStep -> `StartModelCall`；ModelStep 正在 Executing -> `WaitForExecutionRecovery`；有 Pending Call 的 ToolStep -> `StartToolCalls`；没有 Pending 且存在 Waiting Call -> `WaitForResponse`（即使另有 Executing Call，也等待 response 或 execution wake）；没有 Pending/Waiting 但存在 Executing Call -> `WaitForExecutionRecovery`。Runtime 接受 `StartModelExecution` 或 `StartToolCall` 后，在 CommitResult 中返回一次性 `ExecutionGrant`，Loop 使用该授权调用对应的 ModelInvoker 或 ExecutableTool。Model execution lease 失效后，Runtime 通过仅限 Runtime/recovery 使用的 `RecoverModelExecution` 把 ModelStep 恢复为 Prepared，Loop 才能再次 start。
+`Next` 的主要映射是：无当前 Step -> `NeedModelRequest(PlanningHint{Inputs: PendingInputs})`；Prepared ModelStep -> `StartModelCall`；ModelStep 正在 Executing -> `WaitForExecutionRecovery`；有 Pending Call 的 ToolStep -> `StartToolCalls`；没有 Pending 且存在 Waiting Call -> `WaitForResponse`（即使另有 Executing Call，也等待 response 或 execution wake）；没有 Pending/Waiting 但存在 Executing Call -> `WaitForExecutionRecovery`。Loop/host 可以在处理 `NeedModelRequest` 前按自己的 step budget 提交 `StopRun{step_limit}`。Runtime 接受 `StartModelExecution` 或 `StartToolCall` 后，在 CommitResult 中返回一次性 `ExecutionGrant`，Loop 使用该授权调用对应的 ModelInvoker 或 ExecutableTool。Model execution lease 失效后，Runtime 通过仅限 Runtime/recovery 使用的 `RecoverModelExecution` 把 ModelStep 恢复为 Prepared，Loop 才能再次 start。
 
 这里的 `WaitForExecutionRecovery` 是一个统一等待结果：它既表示已有 execution 仍可能由原 Loop 持有，也表示该 execution 已失效、等待 Runtime recovery。公共 `LoopResult.Reason` 不暴露 owner、lease 或 Attempt 的细节。
 
@@ -551,7 +553,7 @@ Request Planner 生成完整 `sdk.Request` 后，Loop 先调用 `FreezeModelRequ
 
 Loop 在 `SubmitModelResult` 时只校验 tool-call ID 与顺序，并从匹配的冻结 `ToolSpec` 生成 `ToolCallBinding`。这里不调用 ExecutableTool；未知工具保留为 `DirectExecution`、空 definition digest 的 unresolved binding，应用级参数错误留到 `StartToolCalls`，作为 Pending Call 的已知失败处理。Runtime 只校验 binding 与冻结请求、冻结模型结果和 Step 身份的一致性，不重复解析工具目录。
 
-模型响应的结构性 malformed（重复/错序 CallID、违反 provider 协议）使 Call 集合无法建立：Loop 不提交 `SubmitModelResult`，而以 start grant 提交 `RejectModelResult{Failure.Class: malformed_model_result}`。Decide 产出 `ModelStepRejected`（usage 累计、`Rejects` 加一、Step 回到 Prepared），同一冻结 request 由后续 start 重试；`Rejects` 超过冻结的 `RunConfig.ModelRejectLimit` 时追加 `RunEnded{RunFailed, malformed_model_result}`。被拒绝的结果不写入 `LastModelResult`，不创建 ToolStep。
+模型响应的结构性 malformed（重复/错序 CallID、违反 provider 协议）使 Call 集合无法建立：Loop 不提交 `SubmitModelResult`，而以 start grant 提交 `RejectModelResult{Failure.Class: malformed_model_result, Disposition: ...}`。Decide 产出 `ModelStepRejected`（usage 累计、`Rejects` 加一、Step 回到 Prepared）或再追加 `RunEnded{RunFailed, malformed_model_result}`；由 Loop/host policy 根据自己的 `MalformedModelResultLimit` 选择 retry/fail-run disposition。被拒绝的结果不写入 `LastModelResult`，不创建 ToolStep。
 
 单个 Call 的参数无法解析不属于结构性 malformed：该 Call 以原始参数字节绑定为 Pending，`StartToolCalls` 的参数校验把它关闭为已知 `invalid_arguments`，失败结果进入下一次模型请求，由模型自行修正。未知 ToolRef 同样保留为待处理 Call，start 前记录 `tool_lookup_failed`。
 
@@ -681,7 +683,7 @@ Run 语义状态的 source of truth 是 admission-created immutable initial stat
 这个权威声明成立的三个稳定条件（本规范的规范性条款）：
 
 1. Event ontology 稳定：Fact 词表 sealed，已发布 SchemaVersion 的事实结构永不修改，新增字段进入新版本。
-2. Evolve 语义稳定：折叠是机械的（不读 RunConfig、无 policy 分支），已发布版本的折叠语义与事件编码一起永久冻结；replay 通过 `EvolveVersion(SchemaVersion, state, fact)` 选择历史语义，会演进的决策语义全部在 Decide，其结果记录为事实。
+2. Evolve 语义稳定：折叠是机械的（不读 RunConfig/Loop policy、无 IO），已发布版本的折叠语义与事件编码一起永久冻结；replay 通过 `EvolveVersion(SchemaVersion, state, fact)` 选择历史语义，会演进的决策语义全部在 Decide，其结果记录为事实。
 3. 事实自包含：折叠一条事实所需的全部信息在事实自身与折叠前状态之内，不访问外部系统，不重新计算依赖当前代码版本的派生值（digest 一律在 Decide 时算好并携带在事实中）。
 4. 持久化值归属稳定：AgentEvent 和 MachineState 只保存 agent-owned frozen values；任何来自 SDK/provider/application 的引用在进入 Runtime 前必须被 canonicalize + detach，返回给 caller 的 snapshot/event 也必须是独立副本。
 
@@ -870,7 +872,7 @@ func EvaluateCommit(
 
 `EvaluateCommit` 用 `DecisionKind` 表达结果；`Runtime.Commit` 把非成功结果映射为对外错误：`DecisionConflict -> ErrCommandConflict`、`DecisionStale -> ErrStaleRuntime`、`DecisionTerminal -> ErrRunTerminal`。Loop 与 ingress 只依赖这三个错误值和 `CommitStatus`，不接触 DecisionKind。
 
-`RunSeed` 是新 Run admission 的初始化输入，不属于任何 Run 的 `AgentCommand`，也不通过旧 Run 的 `Runtime.Commit`。`Initialize` 使用与 Machine 相同的不变量以及统一的 identity/digest 编码规则建立初始 `MachineState`（Revision=0）；普通 Runtime 只实现已有 Run 的 `Load/Commit`，admission 路径负责应用 `RunSeed`。
+新 Run admission 使用 `InitializeRun(RunID)` 建立最小 `MachineState`（Revision=0）；初始用户输入应作为该 Run 的第一条 `AcceptInput` transition 进入日志。`RunSeed`/`Initialize(RunID, RunConfig, RunSeed)` 仅保留 legacy helper，`RunConfig` 不进入 MachineState、AgentEvent 或 TransitionRecord。普通 Runtime 只实现已有 Run 的 `Load/Commit`，admission 路径负责创建 RunID 与持久化 initial state。
 
 Commit 的 effectively-once 只针对状态提交。事务已提交但响应丢失时，Loop 使用相同 CommandID 和 digest 重放；`CommitAlreadyApplied` 不能重新授予工具执行权，也不能重复 history、queue action、计数或 outbox。对于 start command，AlreadyApplied 的 `Grant` 必须为空；新 Loop 要等待原执行或 recovery，不能把重放当成新的 start。外部工具 effect 不因此变成 exactly-once。
 
@@ -967,7 +969,7 @@ Planner 所需的 history 必须由宿主提供：Memoh 从 durable history proj
 
 `PrepareModelRequest` 必须使用 Planner 开始前 Load 得到的 BaseRevision，并按当前顺序携带完整的 `PendingInputs` `InputIDs` 集合。相同 RunID 和 Revision 的并发 Planner 使用同一个 `DeriveModelRequestCommandID`：相同请求得到 `CommitAlreadyApplied`，不同请求得到 `ErrCommandConflict`；如果 Planner 在新的 Revision 上重试，则生成新的 CommandID。Memoh adapter 同时检查 `PlanningToken` 的 context revision，后到者不能覆盖已经冻结的请求。
 
-Loop 校验 `RequestPlan.Model` 与 `PlanningHint.Model`、RunConfig.Model 以及 frozen `ModelRequest.Model` 一致；Runtime 通过共享 Decide 规则再次校验 `PrepareModelRequest.Model`、`PrepareModelRequest.Request.Model` 与冻结的 RunConfig 一致。Planner 的 context 一致性由 Memoh 在自己的 queue-safe admission/planning 边界保证，不由 agent 解释。
+Loop 校验 `RequestPlan.Model`（若提供）与 frozen `ModelRequest.Model` 一致；Runtime 通过共享 Decide 规则再次校验 `PrepareModelRequest.Model` 与 `PrepareModelRequest.Request.Model` 一致。固定模型限制若存在，属于 Memoh/host policy，不进入 agent MachineState。Planner 的 context 一致性由 Memoh 在自己的 queue-safe admission/planning 边界保证，不由 agent 解释。
 
 ### 5.7 外部 response
 
@@ -1252,7 +1254,7 @@ Pending + Waiting
 | 情况 | 处理 |
 | --- | --- |
 | provider transport/rate limit | sdk 在一次模型调用内处理；最终失败由 Machine 记录。 |
-| 结构性 malformed 模型结果 | 提交 `RejectModelResult`，Step 回到 Prepared 重试；超过 `ModelRejectLimit` 后 RunFailed。 |
+| 结构性 malformed 模型结果 | 提交 `RejectModelResult`；Loop/host 通过 Disposition 选择回到 Prepared 重试或同 transition RunFailed。 |
 | tool lookup/参数错误 | 提交已知 `SubmitToolFailure`，交给下一次模型请求。 |
 | 工具明确失败 | 提交已知 `SubmitToolFailure`，模型决定是否在新 Step 重试。 |
 | 工具结果未知 | 提交 Unknown，RunFailed；不自动重试，不创建下一 ModelStep。 |
@@ -1265,7 +1267,7 @@ Pending + Waiting
 
 计划内停机（部署、滚动升级）不走崩溃路径：宿主收到停止信号后取消 Loop 的外层 ctx，按上表语义排空——不再 start 新 Call，已 start 的工具 worker 在停机 grace 内提交完成/失败，模型执行以 recovery 释放。grace 内未能结束的工具执行才留给 lease recovery 收束为 Unknown。
 
-Run 创建时冻结 `RunConfig.ModelStepLimit` 和 `RunConfig.ModelRejectLimit`；Loop 不持有第二份计数器。`ModelStepLimit` 的 `0` 表示无限；达到正数上限后不创建新的 ModelStep，已打开 ToolStep 仍完成或等待，随后由 Machine 结束 Run。`ModelRejectLimit` 的 `0` 在 `Initialize` 时归一化为默认值 `2`，负值无效；不提供无限值——结构性 malformed 的无限重试是无上界的成本。
+固定模型、model-step budget 和 malformed retry budget 不进入 MachineState。Loop/host 可以使用非持久化 `ExecutionPolicy`：`ModelStepLimit=0` 表示无限，达到正数上限时在下一次 planning 前提交 `StopRun{ReasonStepLimit}`；`MalformedModelResultLimit=0` 归一化为默认值 `2`，Loop 根据当前 `ModelStep.Rejects` 选择 `RejectModelResult` 的 retry/fail-run disposition。Memoh 也可以在自己的 host policy 中实现同样逻辑。
 
 ## 7. Tool、approval、response 和 MCP
 
@@ -1405,9 +1407,9 @@ Initial MachineState + TransitionRecord log 是 source of truth；MachineState �
 
 Replay 按 RunID/Revision 取出 TransitionRecord，从初始状态（Revision=0）开始依次展开其中的 AgentEvent，并调用对应 `SchemaVersion` 的 `Machine.EvolveVersion` 折叠。折叠只依赖 Evolve，不重新运行 Decide——决策结果已经记录在事实里，Machine 决策规则的演进不影响历史事件的折叠；折叠不产生任何外部 effect。仲裁按 §5.1 的规则：transition log 完整（maxRevision >= watermark 且每条 transition digest 正确）时日志为准，snapshot 分歧或缺失自动重建并记录重建事件；日志尾部低于水位或尾部 transition 不完整时 halt。事件流内部的 RunID 不匹配、SchemaVersion/Type 不支持、同一 transition 的 CommandID/CommandDigest 不一致、Revision/Index 缺洞、fact digest 或 transition digest 不匹配同样按日志损坏处理，halt 该 Run。
 
-Replay 的起点是 admission 已建立的初始 `MachineState`；`RunSeed` 的 admission 记录不作为任何 Run 的 AgentEvent 重放。需要重建 admission 链时，由 Memoh 的 session/queue 记录负责。
+Replay 的起点是 admission 已建立并持久化的最小 `MachineState`；初始用户输入若存在，也应通过 `AcceptInput` transition 重放。`RunSeed` 的 legacy admission 记录不作为普通 Run 的 AgentEvent 重放。需要重建 admission 链时，由 Memoh 的 session/queue 记录负责。
 
-canonical event 只记录影响语义状态、恢复和审计的已接受事实：Step 的建立/启动/恢复/关闭、模型结果的接受与拒绝、工具结果、响应、active Run 的输入接受和 Run terminal（§3.6 的 Fact 词表）。新 Run 的 `RunSeed` 仍属于 admission record。模型文本 delta、工具 stdout、下载百分比和其他瞬时 progress 不进入 AgentEvent；它们仍可在提交前通过 EventSink 发送 provisional observation。
+canonical event 只记录影响语义状态、恢复和审计的已接受事实：Step 的建立/启动/恢复/关闭、模型结果的接受与拒绝、工具结果、响应、active Run 的输入接受和 Run terminal（§3.6 的 Fact 词表）。模型文本 delta、工具 stdout、下载百分比和其他瞬时 progress 不进入 AgentEvent；它们仍可在提交前通过 EventSink 发送 provisional observation。
 
 ### 9.2 EventSink
 
@@ -1453,7 +1455,7 @@ steer      优先进入当前 eligible boundary；若当前 Run 已 terminal，�
 follow-up  当前 Run 自然结束后创建新的 Run
 ```
 
-active Run 的 steer 通过 `NextStep(input)` 生成 `AcceptInput` command；terminal Run 的 steer/follow-up 通过 `NextRun(input)` 生成 `RunSeed`，然后由 Memoh admission 创建新 Run。core 不接收 queue item、priority、order 或 claim。
+active Run 的 steer 通过 `NextStep(input)` 生成 `AcceptInput` command；terminal Run 的 steer/follow-up 由 Memoh admission 创建新 Run，再对新 Run 提交首个 `AcceptInput`。`NextRun`/`RunSeed` 仅作为 legacy helper 保留。core 不接收 queue item、priority、order 或 claim。
 
 重排必须带 order version；过期版本、未知 item、重复 item 和越过已 claim item 的操作都拒绝。
 
@@ -1479,7 +1481,7 @@ R0 terminal 不等于 session settled
 admission-active R1 存在时 session 仍 busy
 ```
 
-follow-up 可以在 R1 的第一个 ModelStep 之前完成 durable admission claim；这是 Memoh session 操作，不是 Loop 中间读取 queue。R0 continuation 通过 Memoh outbox/scanner 唤醒；R1 admission 用 `NextRun(input)` 的 `RunSeed` 初始化新 Run，R1 identity 不进入 agent 的通用结果。
+follow-up 可以在 R1 的第一个 ModelStep 之前完成 durable admission claim；这是 Memoh session 操作，不是 Loop 中间读取 queue。R0 continuation 通过 Memoh outbox/scanner 唤醒；R1 admission 用 `InitializeRun` 创建最小 state，并把 follow-up 输入提交为首个 `AcceptInput` transition；R1 identity 不进入 agent 的通用结果。
 
 ### 10.4 多 response 恢复
 
@@ -1523,7 +1525,7 @@ Memoh    -> agent.Loop + MemohRuntime
 1. provider adapter 的现有请求/响应字段优先复用；旧 `GenerateParams` 无法表达的新 `Request` 字段（例如 `ProviderOptions`）在 fallback 到旧 provider 时必须显式报错，不能 silent drop。
 2. sdk 保留旧单次调用入口，直到调用方迁移完成。
 3. 旧自动 loop 只在显式 legacy wrapper 中存在，不能由新 Loop 隐式调用。
-4. 旧 `WithMaxSteps(0)` 保持一次模型调用、不自动执行 tools；`n>0` 映射为 `RunConfig.ModelStepLimit=n`；旧值 `-1` 由 legacy wrapper 先规范化为 `RunConfig.ModelStepLimit=0`（无限）。agent 的 `RunConfig` 不接受负数。Memoh 当前使用 `-1`，迁移后保持无限模型步骤语义。
+4. 旧 `WithMaxSteps(0)` 保持一次模型调用、不自动执行 tools；`n>0` 在 legacy wrapper/Loop `ExecutionPolicy.ModelStepLimit` 中处理，到上限后提交 `StopRun{step_limit}`；旧值 `-1` 由 legacy wrapper 先规范化为 unlimited。`RunConfig` 仅保留为 deprecated helper 输入，不进入 MachineState。Memoh 当前使用 `-1`，迁移后保持无限模型步骤语义。
 5. 旧 deferred/approval 记录不能在线猜测为新的多 Call ToolStep。切换前必须排空，或以 `runtime_upgrade_required` 终态保留审计后再切换。
 6. 新协议写入生产后不回滚旧 loop；Memoh 的 queue accepted order、重排、claim、admission、R0/R1 和 settled 保证不变。
 
@@ -1597,13 +1599,13 @@ provider retry 不改变一次调用语义
 ```text
 无当前 Step -> NeedModelRequest
 NextStep(input) -> AcceptInput -> InputAccepted -> pending input appears in PlanningHint
-NextRun(input) -> RunSeed，admission initializes new Run, without mutating old Run
+terminal follow-up -> Memoh admission creates new Run with InitializeRun, then AcceptInput(input), without mutating old Run
 PrepareModelRequest -> [ModelStepPrepared] -> ModelStep
 ModelExecuting lease recovery -> same frozen ModelStep can start again
 SubmitModelResult 有 tools -> [ModelStepCompleted, ToolStepOpened]，保存完整 Call set
 SubmitModelResult 无 tools -> [ModelStepCompleted, RunEnded{RunCompleted}]，并返回该 ModelResult
 结构性 malformed -> RejectModelResult -> [ModelStepRejected]，Step 回到 Prepared，usage 已累计
-Rejects 超过 ModelRejectLimit -> [ModelStepRejected, RunEnded{RunFailed, malformed_model_result}]
+RejectModelResult{Disposition: FailRun} -> [ModelStepRejected, RunEnded{RunFailed, malformed_model_result}]
 参数无法解析的单个 Call -> Pending，start 前以 invalid_arguments 已知失败关闭
 unknown ToolRef/invalid arguments -> Pending Call 的已知失败，不提交 start
 approval approved -> [ToolCallApproved] -> Pending -> start -> tool execute
@@ -1613,7 +1615,7 @@ Waiting 与 Executing 并存时，response 和 execution wake 都有效
 response 只推进对应 Waiting Call
 Waiting result carries RunID/StepID/CallID/ResponseID for response routing
 最后一个 Call terminal -> 同一 transition 追加 ToolStepClosed
-最后一个 Call terminal 且触发 step limit -> [..., ToolStepClosed, RunEnded{RunStopped, step_limit}]
+最后一个 Call terminal -> [..., ToolStepClosed]；host step limit 在下一 planning 边界提交 StopRun(step_limit)
 RunEnded 只能是事实序列的最后一个事实
 已知失败进入下一次模型上下文
 Unknown -> [ToolCallFailed{Unknown}, RunEnded{RunFailed, effect_unknown}]，不创建下一 ModelStep
@@ -1622,7 +1624,7 @@ RunStopped 与 worker cancellation 区分
 外层 ctx 取消：模型执行以 ModelStepRecovered 释放，工具 worker 运行到结束后 Loop 返回 ctx.Err()
 MachineState.Usage 逐字段累计 ModelStepCompleted 与 ModelStepRejected；terminal 时复制到 RunResult.Usage
 Decide 拒绝时不产出部分事实；接受时事实组与 MachineState 原子提交
-Evolve 不读 RunConfig、无 policy 分支；对 Decide 产出的全部事实全定义
+Evolve 不读 RunConfig/Loop policy、无 IO；对 Decide 产出的全部事实全定义
 TransitionRecord 按 RunID/Revision 可 replay，内部 AgentEvent 按 (Revision, Index) 保持事件流顺序，重复提交不产生第二组
 replay 只经 EvolveVersion 折叠，不重新运行 Decide；golden transition stream 折叠出冻结的状态字节
 EventSink provisional/committed 发射点
@@ -1653,7 +1655,7 @@ stale grant/Revision 被拒绝
 一次 transition 的事件共享 Revision，Index 连续，提交后 State.Revision == transition Revision
 ToolCall progress 按 CallID 合并
 已关闭 ToolStep 不重复关闭或创建新 Step
-model-step limit 在 authority 内生效
+Loop/host model-step limit 通过 StopRun(step_limit) 形成事实，不进入 MachineState
 RunStopped/RunFailed 保留最近已接受的 ModelResult
 Cancel 与 Unknown 的提交先后决定终态
 CancelRun 在过期 BaseRevision 上对非 terminal Run 重新评估
@@ -1702,7 +1704,7 @@ Memoh queue/session/admission 的语义保持在 Memoh；现有 NativeAgentLoop 
 2. breaking release 版本和 Memoh protocol upgrade window。
 3. EventSink payload schema，以及是否需要在 Memoh outbox 中加入跨进程 execution epoch。
 
-本规范已经固定：Cancel 与 Unknown 按提交先后决定终态；agent `ModelRequest` 冻结完整的 generation options，streaming 只是 `ModelInvoker` 的可选执行路径，不改变 AgentCommand/AgentEvent 语义。Machine 采用 Decide/Evolve 拆分：Decide 承载全部决策并在提交时产出结果事实，Evolve 是机械折叠、与事件编码同属永久兼容契约；initial MachineState + TransitionRecord log 为 source of truth，MachineState 为必需的同事务 projection，分歧仲裁按 §5.1（transition log 完整则自动重建，日志尾部低于水位或 transition 不完整则 halt）。结构性 malformed 的模型结果通过 `RejectModelResult` 在同一冻结 request 上有限重试；usage 在 MachineState 内逐字段累计；steer 由 MemohRuntime 的 Prepare gate 保证进入下一个 ModelStep；工具不做效果分级，计划内停机以排空代替，Unknown 语义只覆盖崩溃和 lease 失效。
+本规范已经固定：Cancel 与 Unknown 按提交先后决定终态；agent `ModelRequest` 冻结完整的 generation options，streaming 只是 `ModelInvoker` 的可选执行路径，不改变 AgentCommand/AgentEvent 语义。Machine 采用 Decide/Evolve 拆分：Decide 承载全部决策并在提交时产出结果事实，Evolve 是机械折叠、与事件编码同属永久兼容契约；initial MachineState + TransitionRecord log 为 source of truth，MachineState 为必需的同事务 projection，分歧仲裁按 §5.1（transition log 完整则自动重建，日志尾部低于水位或 transition 不完整则 halt）。结构性 malformed 的模型结果通过 `RejectModelResult` 的 disposition 在同一冻结 request 上重试或失败；fixed model/limits 不进入 MachineState；usage 在 MachineState 内逐字段累计；steer 由 MemohRuntime 的 Prepare gate 保证进入下一个 ModelStep；工具不做效果分级，计划内停机以排空代替，Unknown 语义只覆盖崩溃和 lease 失效。
 
 本规范采用 initial MachineState + TransitionRecord log 为 source of truth（§5.1）：三个稳定条件（ontology 冻结、versioned Evolve 冻结、事实自包含）由 Decide/Evolve 拆分保障，revision 水位保护 transition log 尾部完整性，TransitionDigest 保护单个 transition 内部的完整事件组。MachineState 保持为必需的同事务 projection——提交验证要求当前状态在临界区内可得，这与日志权威并不冲突。
 
@@ -1732,14 +1734,12 @@ type Digest string
 // context revision from which a RequestPlan was built.
 type PlanningToken string
 
+// Deprecated compatibility input only. RunConfig is not stored in MachineState,
+// AgentEvent, or TransitionRecord. New code uses InitializeRun plus host/Loop
+// policy and per-step ModelRequest.Model.
 type RunConfig struct {
     Model ModelRef
-    // Zero means unlimited. A positive value caps ModelSteps in this Run;
-    // negative values are invalid.
     ModelStepLimit int
-    // Max RejectModelResult per ModelStep before the Run fails. Zero is
-    // normalized to 2 by Initialize; negative values are invalid. There is no
-    // unlimited value.
     ModelRejectLimit int
 }
 
@@ -1908,10 +1908,12 @@ const (
     ExternalResponse
 )
 
-// MaxParallel: 1 means sequential; values greater than 1 enable bounded
-// parallelism. Zero is normalized to 1; negative values are rejected by Loop
-// construction.
-type ExecutionPolicy struct { MaxParallel int }
+// ExecutionPolicy is host-owned Loop policy and is not persisted in MachineState.
+type ExecutionPolicy struct {
+    MaxParallel int
+    ModelStepLimit int              // 0 unlimited; Loop submits StopRun(step_limit)
+    MalformedModelResultLimit int   // 0 default; Loop chooses reject disposition
+}
 
 type ResponseRequest struct {
     RunID        RunID
@@ -1933,7 +1935,6 @@ const (
 type MachineState struct {
     RunID           RunID
     Status          RunStatus
-    Config          RunConfig
     Current         Step
     PendingInputs   []AgentInput
     ModelSteps      int
@@ -1958,9 +1959,8 @@ type AgentInput struct {
 // NextStep creates the command consumed by an active Run at a safe boundary.
 func NextStep(input AgentInput) AcceptInput
 
-// NextRun creates the admission seed used by application admission. It does
-// not allocate a RunID, claim a queue item, or mutate an existing Run, and it
-// is never submitted through Runtime.Commit.
+// Deprecated legacy admission helper. New admission uses InitializeRun and
+// submits the initial input with AcceptInput.
 type RunSeed struct { Input AgentInput }
 func NextRun(input AgentInput) RunSeed
 
@@ -1996,13 +1996,19 @@ func (SubmitModelResult) agentCommand() {}
 type SubmitModelFailure struct { StepID StepID; Failure StepFailure }
 func (SubmitModelFailure) agentCommand() {}
 
-// A structurally malformed model result: usage is accumulated, the step's
-// reject counter is incremented, and the step returns to Prepared until
-// RunConfig.ModelRejectLimit is exceeded. Requires the model start grant.
+type ModelRejectDisposition uint8
+const (
+    ModelRejectRetry ModelRejectDisposition = iota
+    ModelRejectFailRun
+)
+
+// A structurally malformed model result. Disposition records the host/Loop
+// policy decision: retry same frozen request or fail the Run.
 type RejectModelResult struct {
-    StepID  StepID
-    Usage   Usage
-    Failure StepFailure
+    StepID      StepID
+    Usage       Usage
+    Failure     StepFailure
+    Disposition ModelRejectDisposition
 }
 func (RejectModelResult) agentCommand() {}
 
@@ -2044,6 +2050,9 @@ func (SubmitToolResponse) agentCommand() {}
 
 type CancelRun struct { Reason RunReason }
 func (CancelRun) agentCommand() {}
+
+type StopRun struct { Reason RunReason } // currently ReasonStepLimit
+func (StopRun) agentCommand() {}
 
 type AcceptInput struct { Input AgentInput }
 func (AcceptInput) agentCommand() {}
@@ -2156,6 +2165,9 @@ type ToolSpec struct {
 func Next(MachineState) (Effect, error)
 func Decide(MachineState, AgentCommand) ([]Fact, error)
 func Evolve(MachineState, Fact) (MachineState, error)
+func InitializeRun(RunID) (MachineState, error)
+
+// Deprecated: compatibility helper; RunConfig is not stored in MachineState.
 func Initialize(RunID, RunConfig, RunSeed) (MachineState, error)
 
 type Effect interface { effect() }
@@ -2442,4 +2454,4 @@ func (l *Loop) Run(context.Context, Runtime, EventSink) (LoopResult, error)
 14. worker cancellation 不等于 RunStopped；业务停止必须提交控制 command。宿主的业务停止先提交 `CancelRun`，再取消 Loop 的 ctx；ctx 取消本身只结束执行尝试，工具 worker 运行到自身结束。
 15. EventSink 只是实时观察；TransitionRecord、durable snapshot 和 outbox 才是 replay/recovery 依据，AgentEvent 是 transition 内部和观察出口的事实流视图。
 16. MemoryRuntime 用进程内同步；MemohRuntime 用事务、CAS 和内部 Attempt/owner/fence/lease；两者共享 `EvaluateCommit` 与 Machine 规则，但不共享存储实现。
-17. 结构性 malformed 的模型结果以 `RejectModelResult` 回到 Prepared，在同一冻结 request 上重试并累计 usage；超过 `RunConfig.ModelRejectLimit` 才 RunFailed。单个 Call 的参数解析失败不是 malformed，按已知 `invalid_arguments` 进入下一次模型请求。
+17. 结构性 malformed 的模型结果以 `RejectModelResult` 累计 usage；Disposition 决定回到 Prepared 重试或同 transition RunFailed。单个 Call 的参数解析失败不是 malformed，按已知 `invalid_arguments` 进入下一次模型请求。

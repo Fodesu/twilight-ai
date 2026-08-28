@@ -65,11 +65,16 @@ func (c fakeToolCatalog) Resolve(ref ToolRef) (ExecutableTool, error) {
 
 // staticPlanner freezes one request per Plan call; tools mirror the catalog.
 type staticPlanner struct {
+	model ModelRef
 	specs []ToolSpec
 }
 
 func (p staticPlanner) Plan(_ context.Context, hint PlanningHint) (RequestPlan, error) {
-	req := sdk.Request{Model: string(hint.Model), Messages: []sdk.Message{sdk.UserMessage("go")}}
+	model := p.model
+	if model == "" {
+		model = testModel
+	}
+	req := sdk.Request{Model: string(model), Messages: []sdk.Message{sdk.UserMessage("go")}}
 	for _, s := range p.specs {
 		req.Tools = append(req.Tools, s.Definition.SDK())
 	}
@@ -77,7 +82,7 @@ func (p staticPlanner) Plan(_ context.Context, hint PlanningHint) (RequestPlan, 
 	for i, in := range hint.Inputs {
 		ids[i] = in.ID
 	}
-	return RequestPlan{Model: hint.Model, Request: req, InputIDs: ids, Tools: p.specs}, nil
+	return RequestPlan{Model: model, Request: req, InputIDs: ids, Tools: p.specs}, nil
 }
 
 func toolSpec(t *testing.T, name string, policy ResponsePolicy) ToolSpec {
@@ -373,6 +378,59 @@ func TestLoopCtxCancelReturnsWithoutFailingRun(t *testing.T) {
 	if res.Result == nil || res.Result.Model.Text != "resumed" {
 		t.Fatalf("res = %+v", res)
 	}
+}
+
+func TestLoopModelStepLimitStopsBeforePlanning(t *testing.T) {
+	s, err := InitializeRun("run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.ModelSteps = 1
+	rt := NewMemoryRuntime(s)
+	loop, err := NewLoop(fakeCatalog{}, fakeToolCatalog{}, panicPlanner{}, ExecutionPolicy{ModelStepLimit: 1}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := loop.Run(context.Background(), rt, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Disposition != LoopFinished || res.Result == nil || res.Result.Reason != ReasonStepLimit {
+		t.Fatalf("loop result = %+v", res)
+	}
+}
+
+func TestLoopMalformedModelResultLimitFailsRun(t *testing.T) {
+	rt := loopRuntime(t)
+	bad := sdk.ModelResult{
+		FinishReason: sdk.FinishReasonToolCalls,
+		ToolCalls: []sdk.ToolCall{
+			{ToolCallID: "dup", ToolName: "echo", Input: `{"x":1}`},
+			{ToolCallID: "dup", ToolName: "echo", Input: `{"x":2}`},
+		},
+		Usage: sdk.Usage{TotalTokens: 1},
+	}
+	invoker := &fakeInvoker{results: []sdk.ModelResult{bad, bad, bad}}
+	loop, err := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{MalformedModelResultLimit: 2}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := loop.Run(context.Background(), rt, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := invoker.calls.Load(); got != 3 {
+		t.Fatalf("model calls = %d, want 3", got)
+	}
+	if res.Result == nil || res.Result.Status != RunFailed || res.Result.Reason != ReasonMalformedModel {
+		t.Fatalf("loop result = %+v", res)
+	}
+}
+
+type panicPlanner struct{}
+
+func (panicPlanner) Plan(context.Context, PlanningHint) (RequestPlan, error) {
+	panic("planner should not be called")
 }
 
 func TestLoopCancelRunViaCommand(t *testing.T) {

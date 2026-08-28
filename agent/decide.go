@@ -58,6 +58,8 @@ func Decide(s MachineState, c AgentCommand) ([]Fact, error) {
 		return decideSubmitToolResponse(&s, &cmd)
 	case CancelRun:
 		return decideCancelRun(&s, cmd)
+	case StopRun:
+		return decideStopRun(&s, cmd)
 	case AcceptInput:
 		return decideAcceptInput(&s, cmd)
 	default:
@@ -74,16 +76,11 @@ func decidePrepareModelRequest(s *MachineState, cmd *PrepareModelRequest) ([]Fac
 	if cmd.StepID == "" {
 		return nil, rejectionf("prepare: empty StepID")
 	}
-	if cmd.Model != s.Config.Model {
-		return nil, rejectionf("prepare: model %q does not match frozen RunConfig model %q", cmd.Model, s.Config.Model)
+	if cmd.Model == "" {
+		return nil, rejectionf("prepare: empty model")
 	}
 	if ModelRef(cmd.Request.Model) != cmd.Model {
 		return nil, rejectionf("prepare: request model %q does not match command model %q", cmd.Request.Model, cmd.Model)
-	}
-	if s.Config.ModelStepLimit > 0 && s.ModelSteps >= s.Config.ModelStepLimit {
-		// Unreachable when limits convert to terminal at the prior boundary,
-		// but the authority still refuses rather than over-running.
-		return nil, rejectionf("prepare: model-step limit reached")
 	}
 	// InputIDs must match PendingInputs completely and in current order.
 	if len(cmd.InputIDs) != len(s.PendingInputs) {
@@ -341,15 +338,19 @@ func decideRejectModelResult(s *MachineState, cmd *RejectModelResult) ([]Fact, e
 	if ms.Status != ModelExecuting {
 		return nil, rejectionf("reject model result: step is not Executing")
 	}
-	rejected := ModelStepRejected(*cmd)
-	if ms.Rejects+1 > s.Config.ModelRejectLimit {
+	rejected := ModelStepRejected{StepID: cmd.StepID, Usage: cmd.Usage, Failure: cmd.Failure}
+	switch cmd.Disposition {
+	case ModelRejectRetry:
+		return []Fact{rejected}, nil
+	case ModelRejectFailRun:
 		return []Fact{rejected, RunEnded{
 			Status:  RunFailed,
 			Reason:  ReasonMalformedModel,
 			Failure: &RunFailure{Class: FailureMalformedModel, Message: cmd.Failure.Message},
 		}}, nil
+	default:
+		return nil, rejectionf("reject model result: unknown disposition %d", cmd.Disposition)
 	}
-	return []Fact{rejected}, nil
 }
 
 // --- rules 6-8: tool call lifecycle ---
@@ -438,9 +439,8 @@ func decideSubmitToolFailure(s *MachineState, cmd SubmitToolFailure) ([]Fact, er
 }
 
 // appendCloseIfLast appends ToolStepClosed when call i reaching a closable
-// terminal state closes the step, plus RunEnded when the frozen model-step
-// limit was reached (spec §3.7.1 rule 11).
-func appendCloseIfLast(s *MachineState, ts *ToolStep, i int, facts []Fact) ([]Fact, error) {
+// terminal state closes the step.
+func appendCloseIfLast(_ *MachineState, ts *ToolStep, i int, facts []Fact) ([]Fact, error) {
 	for j := range ts.Calls {
 		if j == i {
 			continue
@@ -453,9 +453,6 @@ func appendCloseIfLast(s *MachineState, ts *ToolStep, i int, facts []Fact) ([]Fa
 		}
 	}
 	facts = append(facts, ToolStepClosed{StepID: ts.RefValue.ID})
-	if s.Config.ModelStepLimit > 0 && s.ModelSteps >= s.Config.ModelStepLimit {
-		facts = append(facts, RunEnded{Status: RunStopped, Reason: ReasonStepLimit})
-	}
 	return facts, nil
 }
 
@@ -550,16 +547,22 @@ func decideSubmitToolResponse(s *MachineState, cmd *SubmitToolResponse) ([]Fact,
 	return appendCloseIfLast(s, ts, i, facts)
 }
 
-// --- rules 12-13: cancel and input ---
+// --- rules 12-14: cancel, stop and input ---
 
 func decideCancelRun(_ *MachineState, cmd CancelRun) ([]Fact, error) {
-	// Spec rule 12 fixes the mapping: CancelRun always records
-	// RunStopped(cancelled). A caller-chosen reason would let ingress forge
-	// step_limit or other system reasons into the log.
+	// CancelRun always records RunStopped(cancelled). Host/system stops use
+	// StopRun so cancellation cannot forge system reasons.
 	if cmd.Reason != "" && cmd.Reason != ReasonCancelled {
 		return nil, rejectionf("cancel: reason must be empty or %q", ReasonCancelled)
 	}
 	return []Fact{RunEnded{Status: RunStopped, Reason: ReasonCancelled}}, nil
+}
+
+func decideStopRun(_ *MachineState, cmd StopRun) ([]Fact, error) {
+	if cmd.Reason != ReasonStepLimit {
+		return nil, rejectionf("stop: reason must be %q", ReasonStepLimit)
+	}
+	return []Fact{RunEnded{Status: RunStopped, Reason: cmd.Reason}}, nil
 }
 
 func decideAcceptInput(s *MachineState, cmd AcceptInput) ([]Fact, error) {

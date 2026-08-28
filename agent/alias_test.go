@@ -101,7 +101,8 @@ func TestCommitCanonicalizesAgentOwnedJSONBeforePersisting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding, err := DigestModelStepBinding(snap.State.Config.Model, reqDigest, toolsDigest)
+	model := ModelRef(req.Model)
+	binding, err := DigestModelStepBinding(model, reqDigest, toolsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +113,7 @@ func TestCommitCanonicalizesAgentOwnedJSONBeforePersisting(t *testing.T) {
 	}
 	res := mustCommit(t, rt, cmdID, snap.Revision, "", PrepareModelRequest{
 		StepID:        DeriveModelStepID(snap.State.RunID, cmdID, binding),
-		Model:         snap.State.Config.Model,
+		Model:         model,
 		Request:       req,
 		RequestDigest: reqDigest,
 		InputIDs:      ids,

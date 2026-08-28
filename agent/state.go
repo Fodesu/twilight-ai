@@ -40,21 +40,31 @@ type RunResult struct {
 	Usage   Usage        `json:"usage"`
 }
 
-// RunConfig is frozen at Run creation.
+// RunConfig is retained only for the deprecated Initialize compatibility
+// helper. It is not stored in MachineState, AgentEvent, or TransitionRecord.
+// New code should use InitializeRun and keep fixed-model / limit policy in the
+// host or Loop ExecutionPolicy.
+//
+// Deprecated: use InitializeRun and submit seed input with AcceptInput.
 type RunConfig struct {
 	Model ModelRef `json:"model"`
-	// ModelStepLimit: zero means unlimited; a positive value caps ModelSteps.
-	// Negative values are invalid.
+	// ModelStepLimit is a legacy fixed-run policy. New code should use
+	// ExecutionPolicy.ModelStepLimit or host-owned policy.
 	ModelStepLimit int `json:"modelStepLimit,omitempty"`
-	// ModelRejectLimit: max accepted RejectModelResult per ModelStep before
-	// the Run fails. Zero is normalized to DefaultModelRejectLimit by
-	// Initialize; negative values are invalid. There is no unlimited value.
+	// ModelRejectLimit is a legacy name for malformed result retry policy. New
+	// code should use ExecutionPolicy.MalformedModelResultLimit.
 	ModelRejectLimit int `json:"modelRejectLimit,omitempty"`
 }
 
-// DefaultModelRejectLimit is the Initialize-time normalization of
-// RunConfig.ModelRejectLimit == 0.
-const DefaultModelRejectLimit = 2
+// DefaultMalformedModelResultLimit is the Loop default for structurally
+// malformed model results before the run fails.
+const DefaultMalformedModelResultLimit = 2
+
+// DefaultModelRejectLimit is retained for source compatibility with the old
+// RunConfig field name.
+//
+// Deprecated: use DefaultMalformedModelResultLimit.
+const DefaultModelRejectLimit = DefaultMalformedModelResultLimit
 
 type StepFailure struct {
 	Class   string `json:"class"`
@@ -276,7 +286,6 @@ func (s *ToolStep) callIndex(id CallID) int {
 type MachineState struct {
 	RunID         RunID        `json:"runId"`
 	Status        RunStatus    `json:"status"`
-	Config        RunConfig    `json:"config"`
 	Current       Step         `json:"-"` // serialized by adapters with their snapshot schema
 	PendingInputs []AgentInput `json:"pendingInputs,omitempty"`
 	ModelSteps    int          `json:"modelSteps"`
@@ -288,13 +297,23 @@ type MachineState struct {
 	Result          *RunResult   `json:"result,omitempty"`
 }
 
-// Initialize builds the initial MachineState (Revision 0) for a new Run from
-// an admission seed (spec §3.7.1 rule 14). RunSeed never goes through
-// Runtime.Commit.
-func Initialize(run RunID, cfg RunConfig, seed RunSeed) (MachineState, error) {
+// InitializeRun builds the minimal initial MachineState (Revision 0) for a
+// new Run. It does not encode fixed-model policy, limits, or seed input; those
+// belong to host policy and accepted transitions.
+func InitializeRun(run RunID) (MachineState, error) {
 	if run == "" {
 		return MachineState{}, errors.New("agent: initialize: empty RunID")
 	}
+	return MachineState{RunID: run, Status: RunActive}, nil
+}
+
+// Initialize builds a legacy initial MachineState with the admission seed
+// already present in PendingInputs. RunConfig is validated for legacy callers
+// but is intentionally not stored in MachineState.
+//
+// Deprecated: use InitializeRun and submit seed input with AcceptInput so the
+// seed enters the transition log.
+func Initialize(run RunID, cfg RunConfig, seed RunSeed) (MachineState, error) {
 	if cfg.Model == "" {
 		return MachineState{}, errors.New("agent: initialize: empty RunConfig.Model")
 	}
@@ -304,20 +323,17 @@ func Initialize(run RunID, cfg RunConfig, seed RunSeed) (MachineState, error) {
 	if cfg.ModelRejectLimit < 0 {
 		return MachineState{}, errors.New("agent: initialize: negative ModelRejectLimit")
 	}
-	if cfg.ModelRejectLimit == 0 {
-		cfg.ModelRejectLimit = DefaultModelRejectLimit
-	}
 	if seed.Input.ID == "" {
 		return MachineState{}, errors.New("agent: initialize: seed input requires an InputID")
+	}
+	s, err := InitializeRun(run)
+	if err != nil {
+		return MachineState{}, err
 	}
 	input, err := snapshotJSONStable(seed.Input)
 	if err != nil {
 		return MachineState{}, err
 	}
-	return MachineState{
-		RunID:         run,
-		Status:        RunActive,
-		Config:        cfg,
-		PendingInputs: []AgentInput{input},
-	}, nil
+	s.PendingInputs = []AgentInput{input}
+	return s, nil
 }

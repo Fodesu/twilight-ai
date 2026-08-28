@@ -31,7 +31,7 @@ type MemoryRuntime struct {
 	grants map[string]ExecutionGrant
 }
 
-// NewMemoryRuntime starts from an Initialize-produced state at Revision 0.
+// NewMemoryRuntime starts from an InitializeRun/Initialize-produced state at Revision 0.
 //
 //nolint:gocritic // hugeParam: constructor takes a value snapshot and clones it into runtime authority storage.
 func NewMemoryRuntime(initial MachineState) *MemoryRuntime {

@@ -93,7 +93,7 @@ func categorize(c AgentCommand) commandCategory {
 		return catIngress // known failure on Pending uses empty grant; Executing path checks grant below
 	case ApproveToolCall, RejectToolCall, SubmitToolResponse, AcceptInput:
 		return catIngress
-	case CancelRun:
+	case CancelRun, StopRun:
 		return catRunControl
 	case RecoverModelExecution:
 		return catRecovery

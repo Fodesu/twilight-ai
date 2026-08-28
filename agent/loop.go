@@ -26,8 +26,17 @@ func NewLoop(models ModelCatalog, tools ToolCatalog, planner RequestPlanner, pol
 	if policy.MaxParallel < 0 {
 		return nil, errors.New("agent: loop: negative MaxParallel")
 	}
+	if policy.ModelStepLimit < 0 {
+		return nil, errors.New("agent: loop: negative ModelStepLimit")
+	}
+	if policy.MalformedModelResultLimit < 0 {
+		return nil, errors.New("agent: loop: negative MalformedModelResultLimit")
+	}
 	if policy.MaxParallel == 0 {
 		policy.MaxParallel = 1
+	}
+	if policy.MalformedModelResultLimit == 0 {
+		policy.MalformedModelResultLimit = DefaultMalformedModelResultLimit
 	}
 	return &Loop{Models: models, Tools: tools, Planner: planner, Execution: policy, Streaming: streaming}, nil
 }
@@ -66,6 +75,17 @@ func (l *Loop) Run(ctx context.Context, runtime Runtime, events EventSink) (Loop
 
 		switch eff := effect.(type) {
 		case NeedModelRequest:
+			if l.Execution.ModelStepLimit > 0 && snapshot.State.ModelSteps >= l.Execution.ModelStepLimit {
+				res, err := l.commit(controlCtx, runtime, snapshot.State.RunID, freshCommandID(), snapshot.Revision, "", StopRun{Reason: ReasonStepLimit})
+				if err != nil {
+					if retriable(err) {
+						continue
+					}
+					return LoopResult{}, err
+				}
+				l.emitCommitted(controlCtx, events, snapshot.State.RunID, res.Events)
+				continue
+			}
 			if err := l.planAndPrepare(ctx, controlCtx, runtime, &snapshot, eff.Hint); err != nil {
 				return LoopResult{}, err
 			}
@@ -131,15 +151,19 @@ func (l *Loop) planAndPrepare(ctx, controlCtx context.Context, runtime Runtime, 
 	if err != nil {
 		return err
 	}
-	if plan.Model != hint.Model {
-		return fmt.Errorf("agent: loop: plan model %q does not match hint model %q", plan.Model, hint.Model)
-	}
 	frozenRequest, err := FreezeModelRequest(plan.Request)
 	if err != nil {
 		return err
 	}
-	if ModelRef(frozenRequest.Model) != plan.Model {
-		return fmt.Errorf("agent: loop: request model %q does not match plan model %q", frozenRequest.Model, plan.Model)
+	model := plan.Model
+	if model == "" {
+		model = ModelRef(frozenRequest.Model)
+	}
+	if model == "" {
+		return fmt.Errorf("agent: loop: empty model")
+	}
+	if ModelRef(frozenRequest.Model) != model {
+		return fmt.Errorf("agent: loop: request model %q does not match plan model %q", frozenRequest.Model, model)
 	}
 	requestDigest, err := DigestRequest(frozenRequest)
 	if err != nil {
@@ -149,7 +173,7 @@ func (l *Loop) planAndPrepare(ctx, controlCtx context.Context, runtime Runtime, 
 	if err != nil {
 		return err
 	}
-	binding, err := DigestModelStepBinding(plan.Model, requestDigest, toolsDigest)
+	binding, err := DigestModelStepBinding(model, requestDigest, toolsDigest)
 	if err != nil {
 		return err
 	}
@@ -157,7 +181,7 @@ func (l *Loop) planAndPrepare(ctx, controlCtx context.Context, runtime Runtime, 
 	stepID := DeriveModelStepID(snapshot.State.RunID, cmdID, binding)
 	_, err = l.commit(controlCtx, runtime, snapshot.State.RunID, cmdID, snapshot.Revision, "", PrepareModelRequest{
 		StepID:        stepID,
-		Model:         plan.Model,
+		Model:         model,
 		Request:       frozenRequest,
 		RequestDigest: requestDigest,
 		InputIDs:      plan.InputIDs,
@@ -226,10 +250,12 @@ func (l *Loop) runModelStep(ctx, controlCtx context.Context, runtime Runtime, ev
 				bindings, bindErr := l.bindToolCalls(&result, &modelStep)
 				if bindErr != nil {
 					completion = RejectModelResult{StepID: stepID, Usage: UsageFromSDK(result.Usage),
-						Failure: StepFailure{Class: FailureMalformedModel, Message: bindErr.Error()}}
+						Failure:     StepFailure{Class: FailureMalformedModel, Message: bindErr.Error()},
+						Disposition: l.modelRejectDisposition(modelStep.Rejects)}
 				} else if frozenResult, freezeErr := FreezeModelResult(result); freezeErr != nil {
 					completion = RejectModelResult{StepID: stepID, Usage: UsageFromSDK(result.Usage),
-						Failure: StepFailure{Class: FailureMalformedModel, Message: freezeErr.Error()}}
+						Failure:     StepFailure{Class: FailureMalformedModel, Message: freezeErr.Error()},
+						Disposition: l.modelRejectDisposition(modelStep.Rejects)}
 				} else {
 					completion = SubmitModelResult{StepID: stepID, Result: frozenResult, Calls: bindings}
 				}
@@ -246,6 +272,13 @@ func (l *Loop) runModelStep(ctx, controlCtx context.Context, runtime Runtime, ev
 	}
 	l.emitCommitted(controlCtx, events, run, res.Events)
 	return nil
+}
+
+func (l *Loop) modelRejectDisposition(priorRejects int) ModelRejectDisposition {
+	if priorRejects+1 > l.Execution.MalformedModelResultLimit {
+		return ModelRejectFailRun
+	}
+	return ModelRejectRetry
 }
 
 func (l *Loop) invokeModel(ctx context.Context, invoker ModelInvoker, req *sdk.Request, run RunID, step StepID, events EventSink) (sdk.ModelResult, error) {

@@ -23,6 +23,7 @@ func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 		RejectToolCall{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp", Reason: "no"},
 		SubmitToolResponse{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp", Payload: cj(`{"answer":1}`)},
 		CancelRun{},
+		StopRun{Reason: ReasonStepLimit},
 		AcceptInput{Input: AgentInput{ID: "in", Payload: cj(`{"q":"hi"}`)}},
 	}
 	for _, cmd := range commands {

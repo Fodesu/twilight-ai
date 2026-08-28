@@ -10,19 +10,21 @@ import (
 
 // --- helpers ---
 
+const testModel ModelRef = "m-1"
+
 func testConfig() RunConfig {
-	return RunConfig{Model: "m-1", ModelRejectLimit: DefaultModelRejectLimit}
+	return RunConfig{Model: testModel, ModelRejectLimit: DefaultModelRejectLimit}
 }
 
 func cj(raw string) CanonicalJSON { return MustParseCanonicalJSON(raw) }
 
-func newRun(t *testing.T, cfg RunConfig) MachineState {
+func newRun(t *testing.T, _ RunConfig) MachineState {
 	t.Helper()
-	s, err := Initialize("run-1", cfg, NextRun(AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)}))
+	s, err := InitializeRun("run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return s
+	return fold(t, s, mustDecide(t, s, AcceptInput{Input: AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)}}))
 }
 
 func mustDecide(t *testing.T, s MachineState, c AgentCommand) []Fact {
@@ -72,7 +74,8 @@ func buildPrepare(t *testing.T, s MachineState, req sdk.Request, specs []ToolSpe
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding, err := DigestModelStepBinding(s.Config.Model, reqDigest, toolsDigest)
+	model := ModelRef(frozenReq.Model)
+	binding, err := DigestModelStepBinding(model, reqDigest, toolsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +87,7 @@ func buildPrepare(t *testing.T, s MachineState, req sdk.Request, specs []ToolSpe
 	}
 	return PrepareModelRequest{
 		StepID:        stepID,
-		Model:         s.Config.Model,
+		Model:         model,
 		Request:       frozenReq,
 		RequestDigest: reqDigest,
 		InputIDs:      ids,
@@ -174,13 +177,20 @@ func advanceToExecuting(t *testing.T, s MachineState, req sdk.Request, specs []T
 
 // --- tests ---
 
-func TestInitializeNormalizesRejectLimit(t *testing.T) {
-	s, err := Initialize("r", RunConfig{Model: "m"}, NextRun(AgentInput{ID: "i"}))
+func TestInitializeRunIsMinimalAndLegacyConfigIsNotState(t *testing.T) {
+	s, err := InitializeRun("r")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Config.ModelRejectLimit != DefaultModelRejectLimit {
-		t.Fatalf("reject limit = %d, want %d", s.Config.ModelRejectLimit, DefaultModelRejectLimit)
+	if s.RunID != "r" || s.Status != RunActive || len(s.PendingInputs) != 0 {
+		t.Fatalf("initial state = %+v", s)
+	}
+	legacy, err := Initialize("r", RunConfig{Model: "m", ModelStepLimit: 1, ModelRejectLimit: 2}, NextRun(AgentInput{ID: "i"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.RunID != "r" || len(legacy.PendingInputs) != 1 {
+		t.Fatalf("legacy initial state = %+v", legacy)
 	}
 	if _, err := Initialize("r", RunConfig{Model: "m", ModelStepLimit: -1}, NextRun(AgentInput{ID: "i"})); err == nil {
 		t.Fatal("negative step limit accepted")
@@ -468,9 +478,8 @@ func TestParallelWaitingDoesNotBlockPending(t *testing.T) {
 	}
 }
 
-func TestRejectModelResultRetriesThenFails(t *testing.T) {
-	cfg := testConfig() // reject limit 2
-	s := newRun(t, cfg)
+func TestRejectModelResultDispositionRetriesThenFails(t *testing.T) {
+	s := newRun(t, testConfig())
 	s, stepID := advanceToExecuting(t, s, testRequest(), nil)
 
 	usage := Usage{TotalTokens: 3}
@@ -487,16 +496,16 @@ func TestRejectModelResultRetriesThenFails(t *testing.T) {
 		t.Fatal("usage not accumulated on reject")
 	}
 
-	// Start again, reject 2: still within limit.
+	// Start again, reject 2: host policy still chooses retry.
 	s = fold(t, s, mustDecide(t, s, StartModelExecution{StepID: stepID}))
 	s = fold(t, s, mustDecide(t, s, RejectModelResult{StepID: stepID, Usage: usage, Failure: StepFailure{Class: FailureMalformedModel}}))
 	if ms := s.Current.(ModelStep); ms.Rejects != 2 {
 		t.Fatalf("rejects = %d", ms.Rejects)
 	}
 
-	// Third reject exceeds limit 2: run fails.
+	// Third reject: host policy chooses fail-run disposition.
 	s = fold(t, s, mustDecide(t, s, StartModelExecution{StepID: stepID}))
-	facts = mustDecide(t, s, RejectModelResult{StepID: stepID, Usage: usage, Failure: StepFailure{Class: FailureMalformedModel}})
+	facts = mustDecide(t, s, RejectModelResult{StepID: stepID, Usage: usage, Failure: StepFailure{Class: FailureMalformedModel}, Disposition: ModelRejectFailRun})
 	if len(facts) != 2 {
 		t.Fatalf("facts = %d, want [rejected, ended]", len(facts))
 	}
@@ -525,26 +534,18 @@ func TestModelRecoveryKeepsFrozenRequestAndCounts(t *testing.T) {
 	}
 }
 
-func TestStepLimitEndsRunAtToolStepClose(t *testing.T) {
-	cfg := testConfig()
-	cfg.ModelStepLimit = 1
-	def := testToolDef("t")
-	spec := makeSpec(t, def, DirectExecution)
-	s := newRun(t, cfg)
-	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
-	b := makeBinding(t, "c1", spec, `{}`)
-	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
-	opened := facts[1].(ToolStepOpened)
-	s = fold(t, s, facts)
-	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: "c1"}))
-
-	facts = mustDecide(t, s, SubmitToolResult{StepID: opened.StepID, CallID: "c1", Result: ToolExecutionResult{Output: cj(`"ok"`)}})
-	if len(facts) != 3 {
-		t.Fatalf("facts = %d, want [completed, closed, ended]", len(facts))
+func TestStopRunProducesStepLimit(t *testing.T) {
+	s := newRun(t, testConfig())
+	facts := mustDecide(t, s, StopRun{Reason: ReasonStepLimit})
+	if len(facts) != 1 {
+		t.Fatalf("facts = %d, want [ended]", len(facts))
 	}
-	ended := facts[2].(RunEnded)
+	ended := facts[0].(RunEnded)
 	if ended.Status != RunStopped || ended.Reason != ReasonStepLimit {
 		t.Fatalf("ended = %+v", ended)
+	}
+	if _, err := Decide(s, StopRun{Reason: ReasonCancelled}); err == nil {
+		t.Fatal("StopRun accepted cancellation reason")
 	}
 }
 
@@ -596,8 +597,8 @@ func TestEvolveRejectsModelPrepareOverCurrentStep(t *testing.T) {
 	s, _ = advanceToExecuting(t, s, testRequest(), nil)
 	_, err := Evolve(s, ModelStepPrepared{
 		StepID:        "other",
-		Model:         s.Config.Model,
-		Request:       ModelRequest{Model: string(s.Config.Model)},
+		Model:         testModel,
+		Request:       ModelRequest{Model: string(testModel)},
 		RequestDigest: "sha256:req",
 		ToolsDigest:   "sha256:tools",
 		BindingDigest: "sha256:binding",
