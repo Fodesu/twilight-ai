@@ -366,14 +366,15 @@ func writeCanonicalString(b *bytes.Buffer, s string) error {
 		case '\r':
 			b.WriteString(`\r`)
 		default:
-			if r < 0x20 {
+			switch {
+			case r < 0x20:
 				fmt.Fprintf(b, `\u%04x`, r)
-			} else if r == utf8.RuneError {
+			case r == utf8.RuneError:
 				if _, size := utf8.DecodeRuneInString(s[i:]); size == 1 {
 					return errors.New("agent: canonical: invalid UTF-8 in string")
 				}
 				b.WriteRune(r) // a genuine U+FFFD character
-			} else {
+			default:
 				b.WriteRune(r)
 			}
 		}

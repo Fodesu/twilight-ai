@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 )
@@ -17,6 +18,8 @@ var ErrLogTruncated = errors.New("agent: event log ends below the revision water
 // ordering and per-fact digests as it goes; any gap or mismatch means the log
 // itself is damaged and the fold stops. It also rejects RunID/schema/type
 // mismatches and same-revision command identity changes.
+//
+//nolint:gocritic // hugeParam: public replay API folds from an initial value state without mutating caller-owned state.
 func FoldEvents(initial MachineState, events []AgentEvent) (MachineState, uint64, error) {
 	state := initial
 	var revision uint64
@@ -87,14 +90,14 @@ func (m *MemoryRuntime) Rebuild() (rebuilt bool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	folded, maxRevision, err := FoldEvents(cloneMachineState(m.initial), m.log)
+	folded, maxRevision, err := FoldEvents(cloneMachineState(&m.initial), m.log)
 	if err != nil {
 		return false, err
 	}
 	if maxRevision < m.watermark {
 		return false, fmt.Errorf("%w: log ends at %d, watermark %d", ErrLogTruncated, maxRevision, m.watermark)
 	}
-	diverged := m.revision != maxRevision || !statesEquivalent(m.state, folded)
+	diverged := m.revision != maxRevision || !statesEquivalent(&m.state, &folded)
 	m.state = folded
 	m.revision = maxRevision
 	return diverged, nil
@@ -102,18 +105,18 @@ func (m *MemoryRuntime) Rebuild() (rebuilt bool, err error) {
 
 // statesEquivalent compares two states via their canonical serialization —
 // the same identity rule the protocol uses everywhere else.
-func statesEquivalent(a, b MachineState) bool {
+func statesEquivalent(a, b *MachineState) bool {
 	ab, errA := marshalCanonical(stateComparable(a))
 	bb, errB := marshalCanonical(stateComparable(b))
 	if errA != nil || errB != nil {
 		return false
 	}
-	return string(ab) == string(bb)
+	return bytes.Equal(ab, bb)
 }
 
 // stateComparable flattens MachineState including the interface-typed Current
 // step, which encoding/json cannot round-trip on its own.
-func stateComparable(s MachineState) map[string]any {
+func stateComparable(s *MachineState) map[string]any {
 	m := map[string]any{
 		"runId": s.RunID, "status": s.Status, "config": s.Config,
 		"modelSteps": s.ModelSteps, "lastClosedStep": s.LastClosedStep,

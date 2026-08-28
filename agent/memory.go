@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -30,10 +31,12 @@ type MemoryRuntime struct {
 }
 
 // NewMemoryRuntime starts from an Initialize-produced state at Revision 0.
+//
+//nolint:gocritic // hugeParam: constructor takes a value snapshot and clones it into runtime authority storage.
 func NewMemoryRuntime(initial MachineState) *MemoryRuntime {
-	frozenInitial := cloneMachineState(initial)
+	frozenInitial := cloneMachineState(&initial)
 	return &MemoryRuntime{
-		state:   cloneMachineState(frozenInitial),
+		state:   cloneMachineState(&frozenInitial),
 		initial: frozenInitial,
 		events:  make(map[CommandID][]AgentEvent),
 		grants:  make(map[string]ExecutionGrant),
@@ -48,7 +51,7 @@ func (m *MemoryRuntime) Load(ctx context.Context) (RuntimeSnapshot, error) {
 	defer m.mu.Unlock()
 	// Deep copy: returned snapshots are read-only views; caller mutation must
 	// never reach authoritative storage (spec appendix A).
-	return RuntimeSnapshot{State: cloneMachineState(m.state), Revision: m.revision}, nil
+	return RuntimeSnapshot{State: cloneMachineState(&m.state), Revision: m.revision}, nil
 }
 
 func grantKey(c AgentCommand) string {
@@ -82,27 +85,29 @@ func newGrant() ExecutionGrant {
 	return ExecutionGrant(hex.EncodeToString(b[:]))
 }
 
-func foldCommittedEventGroup(state MachineState, events []AgentEvent) (MachineState, error) {
+func foldCommittedEventGroup(state *MachineState, events []AgentEvent) (MachineState, error) {
+	current := *state
 	for _, e := range events {
 		want, err := DigestFact(e.SchemaVersion, e.Type, e.Fact)
 		if err != nil {
-			return state, err
+			return current, err
 		}
 		if e.Digest != want {
-			return state, fmt.Errorf("agent: memory runtime: stored fact digest mismatch at revision %d index %d", e.Revision, e.Index)
+			return current, fmt.Errorf("agent: memory runtime: stored fact digest mismatch at revision %d index %d", e.Revision, e.Index)
 		}
 		fact, err := snapshotFact(e.Fact)
 		if err != nil {
-			return state, err
+			return current, err
 		}
-		state, err = Evolve(state, fact)
+		current, err = Evolve(current, fact)
 		if err != nil {
-			return state, err
+			return current, err
 		}
 	}
-	return state, nil
+	return current, nil
 }
 
+//nolint:gocritic // hugeParam: CommitRequest is the value DTO of the Runtime authority boundary.
 func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitResult, error) {
 	if err := ctx.Err(); err != nil {
 		return CommitResult{}, err
@@ -134,14 +139,14 @@ func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitRe
 		// Replay never re-grants execution (spec §5.4).
 		return CommitResult{
 			Status:   CommitAlreadyApplied,
-			Snapshot: RuntimeSnapshot{State: cloneMachineState(m.state), Revision: m.revision},
+			Snapshot: RuntimeSnapshot{State: cloneMachineState(&m.state), Revision: m.revision},
 			Events:   cloneEvents(decision.Events),
 		}, nil
 	case DecisionConflict:
 		return CommitResult{}, ErrCommandConflict
 	case DecisionStale:
-		if decision.Reject != nil && decision.Reject != ErrStaleRuntime {
-			return CommitResult{}, fmt.Errorf("%w: %v", ErrStaleRuntime, decision.Reject)
+		if decision.Reject != nil && !errors.Is(decision.Reject, ErrStaleRuntime) {
+			return CommitResult{}, fmt.Errorf("%w: %w", ErrStaleRuntime, decision.Reject)
 		}
 		return CommitResult{}, ErrStaleRuntime
 	case DecisionTerminal:
@@ -152,11 +157,11 @@ func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitRe
 	// from those same stored facts. The event log is the source of truth; the
 	// in-memory state is only its same-transaction projection.
 	stored := cloneEvents(decision.Events)
-	newState, err := foldCommittedEventGroup(m.state, stored)
+	newState, err := foldCommittedEventGroup(&m.state, stored)
 	if err != nil {
 		return CommitResult{}, err
 	}
-	m.state = cloneMachineState(newState)
+	m.state = cloneMachineState(&newState)
 	m.revision++
 	m.watermark = m.revision
 	m.events[req.Command.ID] = stored
@@ -178,7 +183,7 @@ func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitRe
 
 	return CommitResult{
 		Status:   CommitAccepted,
-		Snapshot: RuntimeSnapshot{State: cloneMachineState(m.state), Revision: m.revision},
+		Snapshot: RuntimeSnapshot{State: cloneMachineState(&m.state), Revision: m.revision},
 		Events:   cloneEvents(stored),
 		Grant:    minted,
 	}, nil

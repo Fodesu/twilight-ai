@@ -18,7 +18,7 @@ func canonicalToolArguments(input any) (CanonicalJSON, error) {
 		return ParseCanonicalJSON(x)
 	case string:
 		// Providers deliver unparsed argument text as a string.
-		if len(x) == 0 {
+		if x == "" {
 			return ParseCanonicalJSON([]byte("null"))
 		}
 		return ParseCanonicalJSON([]byte(x))

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -102,7 +103,7 @@ func categorize(c AgentCommand) commandCategory {
 
 // requiresGrant reports whether this command must carry the start grant of
 // its target, given the current state (spec §5.3 grant rules).
-func requiresGrant(s MachineState, c AgentCommand) bool {
+func requiresGrant(s *MachineState, c AgentCommand) bool {
 	switch cmd := c.(type) {
 	case SubmitModelResult, SubmitModelFailure, RejectModelResult:
 		return true
@@ -131,6 +132,8 @@ func requiresGrant(s MachineState, c AgentCommand) bool {
 // are the control-plane verdicts the Runtime supplies: whether req.Grant is
 // the live grant for the command's target, and whether a grantless recovery
 // command matches the Runtime's own lease-expiry record.
+//
+//nolint:gocritic // hugeParam: public pure commit evaluator keeps state/request as value protocol inputs.
 func EvaluateCommit(
 	cur MachineState, curRevision uint64,
 	prior []AgentEvent,
@@ -160,7 +163,7 @@ func EvaluateCommit(
 	// Derived-identity families must use their derived CommandID (spec §5.5):
 	// the derivation IS the idempotency index for inputs/responses/planning, so
 	// a caller-minted random ID would silently bypass duplicate detection.
-	if err := checkDerivedCommandID(env, req.BaseRevision); err != nil {
+	if err := checkDerivedCommandID(&env, req.BaseRevision); err != nil {
 		return CommitDecision{}, err
 	}
 
@@ -182,7 +185,7 @@ func EvaluateCommit(
 	if cat == catPlan && req.BaseRevision != curRevision {
 		return CommitDecision{Kind: DecisionStale, Reject: ErrStaleRuntime}, nil
 	}
-	if requiresGrant(cur, env.Command) && !grantValid {
+	if requiresGrant(&cur, env.Command) && !grantValid {
 		return CommitDecision{Kind: DecisionStale, Reject: ErrStaleRuntime}, nil
 	}
 	if cat == catRecovery && !grantValid && !recoveryValid {
@@ -192,12 +195,12 @@ func EvaluateCommit(
 	// Step 5: Decide once, fold with Evolve.
 	facts, err := Decide(cur, env.Command)
 	if err != nil {
-		switch err {
-		case ErrRunTerminal:
+		switch {
+		case errors.Is(err, ErrRunTerminal):
 			return CommitDecision{Kind: DecisionTerminal, Reject: err}, nil
-		case ErrStaleRuntime:
+		case errors.Is(err, ErrStaleRuntime):
 			return CommitDecision{Kind: DecisionStale, Reject: err}, nil
-		case ErrCommandConflict:
+		case errors.Is(err, ErrCommandConflict):
 			return CommitDecision{Kind: DecisionConflict, Reject: err}, nil
 		default:
 			// Precondition failures against the current state are stale from
@@ -282,7 +285,7 @@ func BuildEnvelope(run RunID, id CommandID, cmd AgentCommand) (CommandEnvelope, 
 // from (RunID, StepID, CallID, ResponseID). Approve and reject of the same
 // response share one identity by design, so a decision change surfaces as
 // ErrCommandConflict instead of a second fact.
-func checkDerivedCommandID(env CommandEnvelope, baseRevision uint64) error {
+func checkDerivedCommandID(env *CommandEnvelope, baseRevision uint64) error {
 	var want CommandID
 	switch cmd := env.Command.(type) {
 	case PrepareModelRequest:
@@ -302,15 +305,4 @@ func checkDerivedCommandID(env CommandEnvelope, baseRevision uint64) error {
 		return fmt.Errorf("agent: commit: %s requires its derived CommandID", env.Type)
 	}
 	return nil
-}
-
-// isStartCommand reports whether an accepted commit of this command mints a
-// new ExecutionGrant.
-func isStartCommand(c AgentCommand) bool {
-	switch c.(type) {
-	case StartModelExecution, StartToolCall:
-		return true
-	default:
-		return false
-	}
 }

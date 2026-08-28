@@ -182,6 +182,7 @@ type Usage struct {
 	OutputTokenDetails OutputTokenDetail `json:"outputTokenDetails,omitempty"`
 }
 
+//nolint:gocritic // hugeParam: Add is a pure value operation and must not mutate caller-owned Usage.
 func (u Usage) Add(other Usage) Usage {
 	u.InputTokens += other.InputTokens
 	u.OutputTokens += other.OutputTokens
@@ -440,6 +441,7 @@ func FreezeMessagePart(p sdk.MessagePart) (MessagePart, error) {
 	}
 }
 
+//nolint:gocritic // hugeParam: MessagePart is an agent-owned value DTO converted back to SDK at the boundary.
 func (p MessagePart) SDK() (sdk.MessagePart, error) {
 	switch p.Type {
 	case MessagePartTypeText:
@@ -490,8 +492,8 @@ func FreezeMessage(m sdk.Message) (Message, error) {
 
 func (m Message) SDK() (sdk.Message, error) {
 	parts := make([]sdk.MessagePart, len(m.Content))
-	for i, p := range m.Content {
-		part, err := p.SDK()
+	for i := range m.Content {
+		part, err := m.Content[i].SDK()
 		if err != nil {
 			return sdk.Message{}, fmt.Errorf("message part %d: %w", i, err)
 		}
@@ -505,6 +507,7 @@ func (m Message) SDK() (sdk.Message, error) {
 	return sdk.Message{Role: sdk.MessageRole(m.Role), Content: parts, Usage: usage}, nil
 }
 
+//nolint:gocritic // hugeParam: freezes a caller-owned SDK Request value into an agent-owned protocol value.
 func FreezeModelRequest(req sdk.Request) (ModelRequest, error) {
 	messages := make([]Message, len(req.Messages))
 	for i, m := range req.Messages {
@@ -559,6 +562,7 @@ func FreezeModelRequest(req sdk.Request) (ModelRequest, error) {
 	}, nil
 }
 
+//nolint:gocritic // hugeParam: ModelRequest is the persisted value DTO; SDK returns a detached SDK Request.
 func (r ModelRequest) SDK() (sdk.Request, error) {
 	messages := make([]sdk.Message, len(r.Messages))
 	for i, m := range r.Messages {
@@ -605,6 +609,7 @@ func (r ModelRequest) SDK() (sdk.Request, error) {
 	}, nil
 }
 
+//nolint:gocritic // hugeParam: SDK Usage is copied into an agent-owned Usage value.
 func UsageFromSDK(u sdk.Usage) Usage {
 	return Usage{
 		InputTokens:       u.InputTokens,
@@ -626,6 +631,7 @@ func UsageFromSDK(u sdk.Usage) Usage {
 	}
 }
 
+//nolint:gocritic // hugeParam: Usage conversion is pure and returns a detached SDK value.
 func (u Usage) SDK() sdk.Usage {
 	return sdk.Usage{
 		InputTokens:       u.InputTokens,
@@ -758,6 +764,7 @@ func (r *ResponseMetadata) SDK() (sdk.ResponseMetadata, error) {
 	return out, nil
 }
 
+//nolint:gocritic // hugeParam: freezes a caller-owned SDK ModelResult value into an agent-owned protocol value.
 func FreezeModelResult(r sdk.ModelResult) (ModelResult, error) {
 	reasoning := make([]ReasoningPart, len(r.ReasoningParts))
 	for i, p := range r.ReasoningParts {
@@ -806,6 +813,7 @@ func FreezeModelResult(r sdk.ModelResult) (ModelResult, error) {
 	}, nil
 }
 
+//nolint:gocritic // hugeParam: ModelResult is the persisted value DTO; SDK returns a detached SDK result.
 func (r ModelResult) SDK() (sdk.ModelResult, error) {
 	reasoning := make([]sdk.ReasoningPart, len(r.ReasoningParts))
 	for i, p := range r.ReasoningParts {

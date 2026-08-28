@@ -8,6 +8,8 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
+const legacyToolChoiceFunction = "function"
+
 // ModelStreamFromStreamResult adapts a legacy StreamResult into the single-call
 // ModelStream boundary. It forwards every stream part while accumulating the
 // final ModelResult; callers must consume Parts before calling Result.
@@ -92,6 +94,8 @@ func ModelStreamFromStreamResult(stream *StreamResult) ModelStream {
 // GenerateParams into the single-call Request boundary type. Client-side
 // orchestration fields such as MaxSteps, callbacks, approvals, and tool
 // Execute handlers intentionally do not appear in Request.
+//
+//nolint:gocritic // hugeParam: compatibility adapter preserves the legacy value-parameter API shape.
 func RequestFromGenerateParams(params GenerateParams) (Request, error) {
 	if params.Model == nil {
 		return Request{}, fmt.Errorf("twilightai: request: model is required")
@@ -130,6 +134,8 @@ func RequestFromGenerateParams(params GenerateParams) (Request, error) {
 // Request intentionally does not persist. Returned tools contain definitions
 // only; Execute and RequireApproval stay empty because provider calls only need
 // schemas.
+//
+//nolint:gocritic // hugeParam: compatibility adapter preserves Request as the SDK value DTO boundary.
 func GenerateParamsFromRequest(model *Model, req Request) (GenerateParams, error) {
 	if model == nil {
 		return GenerateParams{}, fmt.Errorf("twilightai: request: model is required")
@@ -267,10 +273,10 @@ func ToolChoiceFromLegacy(choice any) (ToolChoice, error) {
 
 func toolChoiceFromMap(m map[string]any) (ToolChoice, error) {
 	typ, _ := m["type"].(string)
-	if typ != "function" && typ != "tool" {
+	if typ != legacyToolChoiceFunction && typ != "tool" {
 		return ToolChoice{}, fmt.Errorf("twilightai: unsupported tool choice type %q", typ)
 	}
-	fn, _ := m["function"].(map[string]any)
+	fn, _ := m[legacyToolChoiceFunction].(map[string]any)
 	if fn == nil {
 		fn, _ = m["tool"].(map[string]any)
 	}
@@ -290,7 +296,7 @@ func (c ToolChoice) Legacy() any {
 	case ToolChoiceAuto, ToolChoiceNone, ToolChoiceRequired:
 		return string(c.Mode)
 	case ToolChoiceTool:
-		return map[string]any{"type": "function", "function": map[string]any{"name": c.Tool}}
+		return map[string]any{"type": legacyToolChoiceFunction, legacyToolChoiceFunction: map[string]any{"name": c.Tool}}
 	default:
 		return nil
 	}
@@ -324,6 +330,8 @@ func ModelResultFromGenerateResult(result *GenerateResult) ModelResult {
 
 // GenerateResultFromModelResult adapts a single-call ModelResult back to the
 // legacy result shape. The multi-step fields remain empty.
+//
+//nolint:gocritic // hugeParam: compatibility adapter preserves ModelResult as the SDK value DTO boundary.
 func GenerateResultFromModelResult(result ModelResult) *GenerateResult {
 	out := &GenerateResult{
 		Text:                 result.Text,
@@ -416,36 +424,41 @@ func cloneMessagePart(part MessagePart) MessagePart {
 		return p
 	case *TextPart:
 		if p == nil {
-			return p
+			return nil
 		}
-		clone := cloneMessagePart(*p).(TextPart)
+		clone := *p
+		clone.CacheControl = cloneCacheControl(clone.CacheControl)
+		clone.ProviderMetadata = cloneMetadataMap(clone.ProviderMetadata)
 		return &clone
 	case ReasoningPart:
 		p.ProviderMetadata = cloneMetadataMap(p.ProviderMetadata)
 		return p
 	case *ReasoningPart:
 		if p == nil {
-			return p
+			return nil
 		}
-		clone := cloneMessagePart(*p).(ReasoningPart)
+		clone := *p
+		clone.ProviderMetadata = cloneMetadataMap(clone.ProviderMetadata)
 		return &clone
 	case ImagePart:
 		p.CacheControl = cloneCacheControl(p.CacheControl)
 		return p
 	case *ImagePart:
 		if p == nil {
-			return p
+			return nil
 		}
-		clone := cloneMessagePart(*p).(ImagePart)
+		clone := *p
+		clone.CacheControl = cloneCacheControl(clone.CacheControl)
 		return &clone
 	case FilePart:
 		p.CacheControl = cloneCacheControl(p.CacheControl)
 		return p
 	case *FilePart:
 		if p == nil {
-			return p
+			return nil
 		}
-		clone := cloneMessagePart(*p).(FilePart)
+		clone := *p
+		clone.CacheControl = cloneCacheControl(clone.CacheControl)
 		return &clone
 	case ToolCallPart:
 		p.CacheControl = cloneCacheControl(p.CacheControl)
@@ -454,9 +467,12 @@ func cloneMessagePart(part MessagePart) MessagePart {
 		return p
 	case *ToolCallPart:
 		if p == nil {
-			return p
+			return nil
 		}
-		clone := cloneMessagePart(*p).(ToolCallPart)
+		clone := *p
+		clone.CacheControl = cloneCacheControl(clone.CacheControl)
+		clone.ProviderMetadata = cloneMetadataMap(clone.ProviderMetadata)
+		clone.Input = cloneJSONLike(clone.Input)
 		return &clone
 	case ToolResultPart:
 		p.CacheControl = cloneCacheControl(p.CacheControl)
@@ -464,9 +480,11 @@ func cloneMessagePart(part MessagePart) MessagePart {
 		return p
 	case *ToolResultPart:
 		if p == nil {
-			return p
+			return nil
 		}
-		clone := cloneMessagePart(*p).(ToolResultPart)
+		clone := *p
+		clone.CacheControl = cloneCacheControl(clone.CacheControl)
+		clone.Result = cloneJSONLike(clone.Result)
 		return &clone
 	default:
 		return part

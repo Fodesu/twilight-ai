@@ -7,6 +7,8 @@ import "fmt"
 // Its folding semantics, together with the canonical encoding, form the
 // permanent compatibility contract of a published SchemaVersion; replay
 // depends only on Evolve.
+//
+//nolint:gocritic // hugeParam: public fold boundary must stay value-based: Evolve(state, fact) -> new state.
 func Evolve(s MachineState, f Fact) (MachineState, error) {
 	switch fact := f.(type) {
 	case ModelStepPrepared:
@@ -27,7 +29,7 @@ func Evolve(s MachineState, f Fact) (MachineState, error) {
 		return s, nil
 
 	case ModelStepStarted:
-		ms, err := evolveModelStep(s, fact.StepID)
+		ms, err := evolveModelStep(&s, fact.StepID)
 		if err != nil {
 			return s, err
 		}
@@ -36,7 +38,7 @@ func Evolve(s MachineState, f Fact) (MachineState, error) {
 		return s, nil
 
 	case ModelStepRecovered:
-		ms, err := evolveModelStep(s, fact.StepID)
+		ms, err := evolveModelStep(&s, fact.StepID)
 		if err != nil {
 			return s, err
 		}
@@ -45,7 +47,7 @@ func Evolve(s MachineState, f Fact) (MachineState, error) {
 		return s, nil
 
 	case ModelStepRejected:
-		ms, err := evolveModelStep(s, fact.StepID)
+		ms, err := evolveModelStep(&s, fact.StepID)
 		if err != nil {
 			return s, err
 		}
@@ -56,7 +58,7 @@ func Evolve(s MachineState, f Fact) (MachineState, error) {
 		return s, nil
 
 	case ModelStepCompleted:
-		if _, err := evolveModelStep(s, fact.StepID); err != nil {
+		if _, err := evolveModelStep(&s, fact.StepID); err != nil {
 			return s, err
 		}
 		result := fact.Result
@@ -100,18 +102,18 @@ func Evolve(s MachineState, f Fact) (MachineState, error) {
 		return s, nil
 
 	case ToolCallStarted:
-		return evolveCall(s, fact.StepID, fact.CallID, func(c *ToolCallState) {
+		return evolveCall(&s, fact.StepID, fact.CallID, func(c *ToolCallState) {
 			c.Status = ToolExecuting
 		})
 
 	case ToolCallApproved:
-		return evolveCall(s, fact.StepID, fact.CallID, func(c *ToolCallState) {
+		return evolveCall(&s, fact.StepID, fact.CallID, func(c *ToolCallState) {
 			c.Status = ToolPending
 			c.Waiting = nil
 		})
 
 	case ToolCallCompleted:
-		return evolveCall(s, fact.StepID, fact.CallID, func(c *ToolCallState) {
+		return evolveCall(&s, fact.StepID, fact.CallID, func(c *ToolCallState) {
 			c.Status = ToolCompleted
 			r := fact.Result
 			c.Result = &r
@@ -119,14 +121,14 @@ func Evolve(s MachineState, f Fact) (MachineState, error) {
 		})
 
 	case ToolCallAnswered:
-		return evolveCall(s, fact.StepID, fact.CallID, func(c *ToolCallState) {
+		return evolveCall(&s, fact.StepID, fact.CallID, func(c *ToolCallState) {
 			c.Status = ToolCompleted
 			c.Result = &ToolExecutionResult{Output: fact.Payload}
 			c.Waiting = nil
 		})
 
 	case ToolCallFailed:
-		return evolveCall(s, fact.StepID, fact.CallID, func(c *ToolCallState) {
+		return evolveCall(&s, fact.StepID, fact.CallID, func(c *ToolCallState) {
 			c.Status = ToolFailed
 			c.Failure = &ToolCallFailure{Failure: fact.Failure, Outcome: fact.Outcome}
 			c.Waiting = nil
@@ -167,7 +169,7 @@ func Evolve(s MachineState, f Fact) (MachineState, error) {
 	}
 }
 
-func evolveModelStep(s MachineState, step StepID) (*ModelStep, error) {
+func evolveModelStep(s *MachineState, step StepID) (*ModelStep, error) {
 	ms, ok := s.Current.(ModelStep)
 	if !ok || ms.RefValue.ID != step {
 		return nil, fmt.Errorf("agent: evolve: model step %q is not current", step)
@@ -175,25 +177,25 @@ func evolveModelStep(s MachineState, step StepID) (*ModelStep, error) {
 	return &ms, nil
 }
 
-func evolveCall(s MachineState, step StepID, call CallID, apply func(*ToolCallState)) (MachineState, error) {
+func evolveCall(s *MachineState, step StepID, call CallID, apply func(*ToolCallState)) (MachineState, error) {
 	ts, ok := s.Current.(ToolStep)
 	if !ok || ts.RefValue.ID != step {
-		return s, fmt.Errorf("agent: evolve: tool step %q is not current", step)
+		return *s, fmt.Errorf("agent: evolve: tool step %q is not current", step)
 	}
 	i := ts.callIndex(call)
 	if i < 0 {
-		return s, fmt.Errorf("agent: evolve: unknown call %q", call)
+		return *s, fmt.Errorf("agent: evolve: unknown call %q", call)
 	}
 	calls := append([]ToolCallState(nil), ts.Calls...)
 	apply(&calls[i])
 	// Spec §4.2: Evolve must reject illegal field combinations, e.g. an
 	// unknown-outcome failure whose class is not effect_unknown.
 	if err := ValidateToolCallState(calls[i]); err != nil {
-		return s, err
+		return *s, err
 	}
 	ts.Calls = calls
 	s.Current = ts
-	return s, nil
+	return *s, nil
 }
 
 func removeInputs(inputs []AgentInput, ids []InputID) []AgentInput {

@@ -66,15 +66,15 @@ func (l *Loop) Run(ctx context.Context, runtime Runtime, events EventSink) (Loop
 
 		switch eff := effect.(type) {
 		case NeedModelRequest:
-			if err := l.planAndPrepare(ctx, controlCtx, runtime, snapshot, eff.Hint); err != nil {
+			if err := l.planAndPrepare(ctx, controlCtx, runtime, &snapshot, eff.Hint); err != nil {
 				return LoopResult{}, err
 			}
 		case StartModelCall:
-			if err := l.runModelStep(ctx, controlCtx, runtime, events, snapshot, eff.StepID); err != nil {
+			if err := l.runModelStep(ctx, controlCtx, runtime, events, &snapshot, eff.StepID); err != nil {
 				return LoopResult{}, err
 			}
 		case StartToolCalls:
-			if err := l.runToolCalls(ctx, controlCtx, runtime, events, snapshot, eff); err != nil {
+			if err := l.runToolCalls(ctx, controlCtx, runtime, events, &snapshot, eff); err != nil {
 				return LoopResult{}, err
 			}
 		case WaitForResponse:
@@ -126,7 +126,7 @@ func (l *Loop) emitCommitted(ctx context.Context, events EventSink, run RunID, c
 
 // --- NeedModelRequest ---
 
-func (l *Loop) planAndPrepare(ctx, controlCtx context.Context, runtime Runtime, snapshot RuntimeSnapshot, hint PlanningHint) error {
+func (l *Loop) planAndPrepare(ctx, controlCtx context.Context, runtime Runtime, snapshot *RuntimeSnapshot, hint PlanningHint) error {
 	plan, err := l.Planner.Plan(ctx, hint)
 	if err != nil {
 		return err
@@ -186,7 +186,7 @@ func (l *Loop) planAndPrepare(ctx, controlCtx context.Context, runtime Runtime, 
 
 // --- StartModelCall ---
 
-func (l *Loop) runModelStep(ctx, controlCtx context.Context, runtime Runtime, events EventSink, snapshot RuntimeSnapshot, stepID StepID) error {
+func (l *Loop) runModelStep(ctx, controlCtx context.Context, runtime Runtime, events EventSink, snapshot *RuntimeSnapshot, stepID StepID) error {
 	run := snapshot.State.RunID
 	start, err := l.commit(controlCtx, runtime, run, freshCommandID(), snapshot.Revision, "", StartModelExecution{StepID: stepID})
 	if err != nil {
@@ -216,14 +216,14 @@ func (l *Loop) runModelStep(ctx, controlCtx context.Context, runtime Runtime, ev
 		if err != nil {
 			completion = SubmitModelFailure{StepID: stepID, Failure: StepFailure{Class: FailureProvider, Message: err.Error()}}
 		} else {
-			result, invokeErr := l.invokeModel(ctx, invoker, sdkRequest, run, stepID, events)
+			result, invokeErr := l.invokeModel(ctx, invoker, &sdkRequest, run, stepID, events)
 			switch {
 			case invokeErr != nil && ctx.Err() != nil:
 				completion = RecoverModelExecution{StepID: stepID}
 			case invokeErr != nil:
 				completion = SubmitModelFailure{StepID: stepID, Failure: StepFailure{Class: FailureProvider, Message: invokeErr.Error()}}
 			default:
-				bindings, bindErr := l.bindToolCalls(result, modelStep)
+				bindings, bindErr := l.bindToolCalls(&result, &modelStep)
 				if bindErr != nil {
 					completion = RejectModelResult{StepID: stepID, Usage: UsageFromSDK(result.Usage),
 						Failure: StepFailure{Class: FailureMalformedModel, Message: bindErr.Error()}}
@@ -248,10 +248,10 @@ func (l *Loop) runModelStep(ctx, controlCtx context.Context, runtime Runtime, ev
 	return nil
 }
 
-func (l *Loop) invokeModel(ctx context.Context, invoker ModelInvoker, req sdk.Request, run RunID, step StepID, events EventSink) (sdk.ModelResult, error) {
+func (l *Loop) invokeModel(ctx context.Context, invoker ModelInvoker, req *sdk.Request, run RunID, step StepID, events EventSink) (sdk.ModelResult, error) {
 	if l.Streaming {
 		if streamer, ok := invoker.(StreamingModelInvoker); ok {
-			stream, err := streamer.Stream(ctx, req)
+			stream, err := streamer.Stream(ctx, *req)
 			if err != nil {
 				return sdk.ModelResult{}, err
 			}
@@ -296,12 +296,12 @@ func (l *Loop) invokeModel(ctx context.Context, invoker ModelInvoker, req sdk.Re
 			return *result, nil
 		}
 	}
-	return invoker.Generate(ctx, req)
+	return invoker.Generate(ctx, *req)
 }
 
 // bindToolCalls validates tool-call IDs/order/shape and produces bindings
 // from the frozen ToolSpecs (spec §4.1). It never calls ExecutableTool.
-func (l *Loop) bindToolCalls(result sdk.ModelResult, step ModelStep) ([]ToolCallBinding, error) {
+func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *ModelStep) ([]ToolCallBinding, error) {
 	if len(result.ToolCalls) == 0 {
 		return nil, nil
 	}
@@ -359,7 +359,7 @@ type startedWorker struct {
 	tool  ExecutableTool
 }
 
-func (l *Loop) runToolCalls(ctx, controlCtx context.Context, runtime Runtime, events EventSink, snapshot RuntimeSnapshot, eff StartToolCalls) error {
+func (l *Loop) runToolCalls(ctx, controlCtx context.Context, runtime Runtime, events EventSink, snapshot *RuntimeSnapshot, eff StartToolCalls) error {
 	run := snapshot.State.RunID
 	ts, ok := snapshot.State.Current.(ToolStep)
 	if !ok || ts.RefValue.ID != eff.StepID {
@@ -464,11 +464,12 @@ func (l *Loop) settleWorkers(ctx, controlCtx context.Context, runtime Runtime, e
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	var firstErr error
-	for _, w := range started {
+	for i := range started {
 		wg.Add(1)
+		w := started[i]
 		go func(w startedWorker) {
 			defer wg.Done()
-			outcome := executeToolSafely(execCtx, w.tool, ToolExecutionRequest{
+			req := ToolExecutionRequest{
 				RunID:            run,
 				StepID:           stepID,
 				CallID:           w.call.CallID,
@@ -476,7 +477,8 @@ func (l *Loop) settleWorkers(ctx, controlCtx context.Context, runtime Runtime, e
 				DefinitionDigest: w.call.DefinitionDigest,
 				Arguments:        w.call.Arguments,
 				Progress:         &progressSink{events: events, run: run, step: stepID, call: w.call.CallID},
-			})
+			}
+			outcome := executeToolSafely(execCtx, w.tool, &req)
 
 			var cmd AgentCommand
 			unknown := false
@@ -536,7 +538,7 @@ func (l *Loop) settleWorkers(ctx, controlCtx context.Context, runtime Runtime, e
 // executeToolSafely runs an application tool and converts a panic into
 // ToolExecutionUnknown: the effect may have happened before the panic, and a
 // crashing tool must not take down every run in the process.
-func executeToolSafely(ctx context.Context, tool ExecutableTool, req ToolExecutionRequest) (outcome ToolExecutionOutcome) {
+func executeToolSafely(ctx context.Context, tool ExecutableTool, req *ToolExecutionRequest) (outcome ToolExecutionOutcome) {
 	defer func() {
 		if r := recover(); r != nil {
 			outcome = ToolExecutionUnknown{Failure: ToolFailure{
@@ -545,7 +547,7 @@ func executeToolSafely(ctx context.Context, tool ExecutableTool, req ToolExecuti
 			}}
 		}
 	}()
-	return tool.Execute(ctx, req)
+	return tool.Execute(ctx, *req)
 }
 
 type progressSink struct {
