@@ -10,9 +10,10 @@ import (
 )
 
 // MemoryRuntime is the in-process reference Runtime: mutex + MachineState +
-// AgentEvent map (spec §8.1). The event log is the source of truth; the state
-// is the same-transaction projection. It is the conformance reference; it
-// does not survive the process and does not store product history.
+// TransitionRecord log (spec §8.1). The transition log is the source of truth;
+// the state is the same-transaction projection. It is the conformance
+// reference; it does not survive the process and does not store product
+// history.
 type MemoryRuntime struct {
 	mu       sync.Mutex
 	state    MachineState
@@ -22,10 +23,10 @@ type MemoryRuntime struct {
 	// watermark witnesses log-tail completeness: it advances with every
 	// commit and is never cleared by a rebuild (spec §5.1).
 	watermark uint64
-	// events keyed by CommandID: the full event group of each transition.
-	events map[CommandID][]AgentEvent
-	// log holds every event in (Revision, Index) order for replay.
-	log []AgentEvent
+	// transitions keyed by CommandID: the full transition record for idempotency.
+	transitions map[CommandID]TransitionRecord
+	// log holds every transition in Revision order for replay.
+	log []TransitionRecord
 	// occupancy: live grants per target (one model step or one call).
 	grants map[string]ExecutionGrant
 }
@@ -36,10 +37,10 @@ type MemoryRuntime struct {
 func NewMemoryRuntime(initial MachineState) *MemoryRuntime {
 	frozenInitial := cloneMachineState(&initial)
 	return &MemoryRuntime{
-		state:   cloneMachineState(&frozenInitial),
-		initial: frozenInitial,
-		events:  make(map[CommandID][]AgentEvent),
-		grants:  make(map[string]ExecutionGrant),
+		state:       cloneMachineState(&frozenInitial),
+		initial:     frozenInitial,
+		transitions: make(map[CommandID]TransitionRecord),
+		grants:      make(map[string]ExecutionGrant),
 	}
 }
 
@@ -85,21 +86,18 @@ func newGrant() ExecutionGrant {
 	return ExecutionGrant(hex.EncodeToString(b[:]))
 }
 
-func foldCommittedEventGroup(state *MachineState, events []AgentEvent) (MachineState, error) {
+func foldCommittedTransition(state *MachineState, record *TransitionRecord) (MachineState, error) {
+	if err := ValidateTransitionRecord(record); err != nil {
+		return *state, err
+	}
 	current := *state
-	for _, e := range events {
-		want, err := DigestFact(e.SchemaVersion, e.Type, e.Fact)
-		if err != nil {
-			return current, err
-		}
-		if e.Digest != want {
-			return current, fmt.Errorf("agent: memory runtime: stored fact digest mismatch at revision %d index %d", e.Revision, e.Index)
-		}
+	for i := range record.Events {
+		e := record.Events[i]
 		fact, err := snapshotFact(e.Fact)
 		if err != nil {
 			return current, err
 		}
-		current, err = Evolve(current, fact)
+		current, err = EvolveVersion(e.SchemaVersion, current, fact)
 		if err != nil {
 			return current, err
 		}
@@ -130,7 +128,12 @@ func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitRe
 		recoveryValid = !occupied
 	}
 
-	decision, err := EvaluateCommit(m.state, m.revision, m.events[req.Command.ID], req, grantValid, recoveryValid)
+	var prior *TransitionRecord
+	if record, ok := m.transitions[req.Command.ID]; ok {
+		priorRecord := record
+		prior = &priorRecord
+	}
+	decision, err := EvaluateCommit(m.state, m.revision, prior, req, grantValid, recoveryValid)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -153,19 +156,19 @@ func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitRe
 		return CommitResult{}, ErrRunTerminal
 	}
 
-	// DecisionApply: persist owned events and derive the authoritative snapshot
-	// from those same stored facts. The event log is the source of truth; the
-	// in-memory state is only its same-transaction projection.
-	stored := cloneEvents(decision.Events)
-	newState, err := foldCommittedEventGroup(&m.state, stored)
+	// DecisionApply: persist the owned transition and derive the authoritative
+	// snapshot from that same stored transition. The transition log is the source
+	// of truth; the in-memory state is only its same-transaction projection.
+	stored := cloneTransitionRecord(&decision.Transition)
+	newState, err := foldCommittedTransition(&m.state, &stored)
 	if err != nil {
 		return CommitResult{}, err
 	}
 	m.state = cloneMachineState(&newState)
 	m.revision++
 	m.watermark = m.revision
-	m.events[req.Command.ID] = stored
-	m.log = append(m.log, stored...)
+	m.transitions[req.Command.ID] = stored
+	m.log = append(m.log, stored)
 
 	var minted ExecutionGrant
 	switch req.Command.Command.(type) {
@@ -184,15 +187,24 @@ func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitRe
 	return CommitResult{
 		Status:   CommitAccepted,
 		Snapshot: RuntimeSnapshot{State: cloneMachineState(&m.state), Revision: m.revision},
-		Events:   cloneEvents(stored),
+		Events:   cloneEvents(stored.Events),
 		Grant:    minted,
 	}, nil
 }
 
-// Events returns a deep copy of the full event log in (Revision, Index)
+// Events returns a deep copy of the flattened event stream in (Revision, Index)
 // order. Test and replay helper; not part of the Runtime contract.
 func (m *MemoryRuntime) Events() []AgentEvent {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return cloneEvents(m.log)
+	return flattenTransitionRecords(m.log)
+}
+
+// Transitions returns a deep copy of the authoritative transition log in
+// Revision order. Test and durable-runtime helper; not part of the Runtime
+// contract.
+func (m *MemoryRuntime) Transitions() []TransitionRecord {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return cloneTransitionRecords(m.log)
 }

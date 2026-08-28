@@ -98,6 +98,58 @@ func TestAgentEventJSONRoundTripRestoresVariants(t *testing.T) {
 	}
 }
 
+func TestTransitionRecordJSONRoundTripRestoresVariants(t *testing.T) {
+	facts := []Fact{
+		ModelStepCompleted{StepID: "s", Result: ModelResult{Text: "ok"}},
+		RunEnded{Status: RunCompleted},
+	}
+	events := make([]AgentEvent, len(facts))
+	for i, fact := range facts {
+		typ := factType(fact)
+		digest, err := DigestFact(currentSchemaVersion, typ, fact)
+		if err != nil {
+			t.Fatal(err)
+		}
+		events[i] = AgentEvent{
+			SchemaVersion: currentSchemaVersion,
+			Type:          typ,
+			RunID:         "run-1",
+			Revision:      1,
+			Index:         uint16(i),
+			CommandID:     "cmd-1",
+			CommandDigest: "sha256:cmd",
+			Digest:        digest,
+			Fact:          fact,
+		}
+	}
+	record, err := BuildTransitionRecord(events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeTransitionRecord(raw)
+	if err != nil {
+		t.Fatalf("DecodeTransitionRecord: %v\n%s", err, raw)
+	}
+	if decoded.TransitionDigest != record.TransitionDigest || len(decoded.Events) != len(record.Events) {
+		t.Fatalf("decoded transition = %+v, want %+v", decoded, record)
+	}
+	for i := range decoded.Events {
+		if reflect.TypeOf(decoded.Events[i].Fact) != reflect.TypeOf(record.Events[i].Fact) {
+			t.Fatalf("decoded event %d fact type = %T, want %T", i, decoded.Events[i].Fact, record.Events[i].Fact)
+		}
+	}
+
+	partial := cloneTransitionRecord(&record)
+	partial.Events = partial.Events[:1]
+	if err := ValidateTransitionRecord(&partial); err == nil {
+		t.Fatal("partial transition validated")
+	}
+}
+
 func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
 	cmd := AcceptInput{Input: AgentInput{ID: "in", Payload: cj(`1`)}}
 	env, err := BuildEnvelope("run-1", DeriveInputCommandID("run-1", "in"), cmd)

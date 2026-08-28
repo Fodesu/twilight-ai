@@ -135,8 +135,9 @@ Step 不是最小的外部操作。ToolStep 保存每个 ToolCall 中会影响�
 | ToolStep | 一个模型结果产生的一组 ToolCall 及其 progress。 |
 | ToolCall | ToolStep 内的一个结构化工具调用。 |
 | AgentCommand | Loop 或外部入口希望 Machine 接受的意图；接受后构成一次 transition。 |
-| AgentEvent | Runtime 已接受并持久化的事实；一次 transition 产出一个或多个，带 (Revision, Index) 身份。 |
-| Revision | 每 Run 单调递增的 transition 计数；第 N 次接受的 transition 产出 Revision=N 的事件组和 Revision=N 的状态。 |
+| AgentEvent | Runtime 已接受的单个事实；一次 transition 产出一个或多个，带 (Revision, Index) 身份，可作为外部事件流消费。 |
+| TransitionRecord | Runtime 持久化的原子 authority record；封装一次 transition 的完整 AgentEvent 组和 transition digest。 |
+| Revision | 每 Run 单调递增的 transition 计数；第 N 次接受的 transition 产出 Revision=N 的 TransitionRecord 和 Revision=N 的状态。 |
 | Effect | Machine 根据当前状态返回的至多一个待执行动作；不表示一定有外部副作用。 |
 | Attempt | Runtime 为一次进程执行建立的内部执行租约。 |
 | Runtime | MachineState 的 execution authority、AgentCommand 的原子提交和 AgentEvent 的产生者。 |
@@ -263,7 +264,7 @@ agent 不拥有 Memoh 的 session、queue schema、admission、owner、fencing�
 
 Runtime 的 authority boundary 不能靠“调用者不要修改快照”这类规范约束来成立，必须由类型和提交路径保证。旧设计把 `sdk.Request`、`sdk.ModelResult`、`sdk.ToolDefinition`、`sdk.Usage` 及其内部的 `map`、`slice`、`json.RawMessage`、`any`、interface value 直接或浅拷贝地放进 command/fact/state，会产生三类破坏：
 
-1. **aliasing/mutation**：Planner、provider 或测试代码在 `Commit` 后继续修改 SDK 对象，可能改变已返回 snapshot、已保存事件或后续 `Evolve` 输入，使 `state = fold(events)` 不再成立。
+1. **aliasing/mutation**：Planner、provider 或测试代码在 `Commit` 后继续修改 SDK 对象，可能改变已返回 snapshot、已保存 transition 或后续 `EvolveVersion` 输入，使 `state = fold(initial, flatten(transitions))` 不再成立。
 2. **digest/replay nondeterminism**：digest 在提交时按一组字节计算，但持久化对象仍引用 caller-owned map/slice/RawMessage；之后对象变化会让相同 `CommandID` 的重放、`CommitAlreadyApplied` 判断、StepID 派生和 replay 校验失真。
 3. **unbounded SDK surface**：`sdk.MessagePart` interface、provider metadata 的 `map[string]any`、tool/schema 的原始 JSON 等属于 provider/transport 边界数据，不能成为 Machine 协议的永久 wire contract。
 
@@ -666,38 +667,38 @@ Runtime 只回答两个问题：
 
 ```text
 当前权威 MachineState 是什么？
-一个 AgentCommand 如何安全地提交并生成 AgentEvent？
+一个 AgentCommand 如何安全地提交成一个 TransitionRecord，并对外产生 AgentEvent 流？
 ```
 
 它不组装 prompt，不调用模型或工具，不定义 Machine 规则，不实现 queue policy。Runtime 可以在同一事务中更新 Memoh 的 history、queue projection、response record 和 outbox，但这些是 adapter 的原子投影，不是 Runtime 的语义职责。
 
-`Commit` 必须在 authority 的临界区内调用共享的 `EvaluateCommit`（内部执行幂等/类别校验、`Machine.Decide` 和 `Machine.Evolve`），因为“读取状态、验证 command、计算事实与新状态、保存并写入 AgentEvent”不能在 durable 实现中拆成几个由 Loop 拼接的公开操作。这个必要的原子边界不等于 Runtime 拥有 Machine 规则；规则仍只有 agent 一份，也不等于 Runtime 拥有 Memoh 的产品数据。
+`Commit` 必须在 authority 的临界区内调用共享的 `EvaluateCommit`（内部执行幂等/类别校验、`Machine.Decide` 和 versioned `Machine.Evolve`），因为“读取状态、验证 command、计算事实与新状态、保存完整 transition、更新 projection”不能在 durable 实现中拆成几个由 Loop 拼接的公开操作。这个必要的原子边界不等于 Runtime 拥有 Machine 规则；规则仍只有 agent 一份，也不等于 Runtime 拥有 Memoh 的产品数据。
 
-因此 Runtime 的接口很小，但一次 `Commit` 的事务范围可以很大：它必须让一个 AgentCommand、产出的 AgentEvent 组及其必要的产品投影一起成功或一起失败；这不意味着 Runtime 获得了 history、queue 或 prompt 的所有权。
+因此 Runtime 的接口很小，但一次 `Commit` 的事务范围可以很大：它必须让一个 AgentCommand、产出的 `TransitionRecord` 及其必要的产品投影一起成功或一起失败；这不意味着 Runtime 获得了 history、queue 或 prompt 的所有权。`CommitResult.Events` 只是该 transition 的事件流视图，方便 Loop、UI 和 observability 消费；Runtime 的 authority storage 是完整 transition aggregate。
 
-AgentEvent log 是 Run 语义状态的 source of truth；MachineState 是必需的同事务 projection（execution cache）：提交验证与 Loop 执行从它读取，因此它必须与日志在同一原子提交内更新，但它可以从日志重建。对任意 Revision N，状态必须等于初始状态按事件流 fold `Evolve` 到 N 的结果——这是可自动恢复的不变量，不是 halt 条件。
+Run 语义状态的 source of truth 是 admission-created immutable initial state（Revision=0）加 `TransitionRecord` log；MachineState 是必需的同事务 projection（execution cache）：提交验证与 Loop 执行从它读取，因此它必须与 transition log 在同一原子提交内更新，但它可以从日志重建。对任意 Revision N，状态必须等于初始状态按 `flatten(TransitionRecord[].Events)` 调用 versioned `Evolve` fold 到 N 的结果——这是可自动恢复的不变量，不是 halt 条件。
 
 这个权威声明成立的三个稳定条件（本规范的规范性条款）：
 
 1. Event ontology 稳定：Fact 词表 sealed，已发布 SchemaVersion 的事实结构永不修改，新增字段进入新版本。
-2. Evolve 语义稳定：折叠是机械的（不读 RunConfig、无 policy 分支），已发布版本的折叠语义与事件编码一起永久冻结；会演进的决策语义全部在 Decide，其结果记录为事实。
+2. Evolve 语义稳定：折叠是机械的（不读 RunConfig、无 policy 分支），已发布版本的折叠语义与事件编码一起永久冻结；replay 通过 `EvolveVersion(SchemaVersion, state, fact)` 选择历史语义，会演进的决策语义全部在 Decide，其结果记录为事实。
 3. 事实自包含：折叠一条事实所需的全部信息在事实自身与折叠前状态之内，不访问外部系统，不重新计算依赖当前代码版本的派生值（digest 一律在 Decide 时算好并携带在事实中）。
 4. 持久化值归属稳定：AgentEvent 和 MachineState 只保存 agent-owned frozen values；任何来自 SDK/provider/application 的引用在进入 Runtime 前必须被 canonicalize + detach，返回给 caller 的 snapshot/event 也必须是独立副本。
 
-Runtime 实现还必须在代码层面维护这些条件：`EvaluateCommit` 对 Decide 产出的 facts 做 `snapshotFact` 后再 fold/persist；`Load`、`CommitResult` 和 AlreadyApplied replay 返回的 snapshot/event 不得共享 authority 内部引用；MemoryRuntime 这类参考实现保存 accepted event group 后，从 stored events fold 出新的 authority state，而不是直接保存调用栈里算出的 `decision.NewState`。durable adapter 可以用数据库事务替代 mutex，但不能把未冻结 SDK 对象、浅拷贝 snapshot 或 caller-owned bytes 写入事件表/状态表。
+Runtime 实现还必须在代码层面维护这些条件：`EvaluateCommit` 对 Decide 产出的 facts 做 `snapshotFact` 后再 fold/persist，并构造带 transition digest 的 `TransitionRecord`；`Load`、`CommitResult` 和 AlreadyApplied replay 返回的 snapshot/event 不得共享 authority 内部引用；MemoryRuntime 这类参考实现保存 accepted transition 后，从 stored transition 的 events fold 出新的 authority state，而不是直接保存调用栈里算出的 `decision.NewState`。durable adapter 可以用数据库事务替代 mutex，但不能把未冻结 SDK 对象、浅拷贝 snapshot 或 caller-owned bytes 写入事件表/状态表。
 
-每 Run 维护一个不可丢弃的 revision 水位（watermark）：每次提交与日志同步推进的单调计数，语义为"日志至少完整到此"。它是日志尾部完整性的末端见证——append-only 日志可以用 (Revision, Index) 连续性检测中间缺洞，但缺尾的日志与更短的完整日志无法区分。水位是控制平面数据，不进入 MachineState，重建不清除它。
+每 Run 维护一个不可丢弃的 revision 水位（watermark）：每次提交与 transition log 同步推进的单调计数，语义为"transition log 至少完整到此"。它是日志尾部完整性的末端见证；单个 transition 内部完整性由 `TransitionRecord.Events` 和 `TransitionDigest` 绑定，transition 之间用 Revision 连续性检测缺洞。水位是控制平面数据，不进入 MachineState，重建不清除它。
 
 分歧仲裁规则固定为：
 
 ```text
-snapshot 与 fold(events) 不一致，或 snapshot 缺失，且 log.maxRevision >= watermark
-  -> 日志为准，自动重建（纯 Evolve 折叠，零副作用，不重放命令，不产生外部 effect），
+snapshot 与 fold(transitions) 不一致，或 snapshot 缺失，且 transitionLog.maxRevision >= watermark
+  -> transition log 为准，自动重建（纯 EvolveVersion 折叠，零副作用，不重放命令，不产生外部 effect），
      并记录一次重建事件供运维审计——实现正确时这条路径不触发，每次触发都意味着
      Evolve bug、越权写入或 snapshot 损坏真实发生过
 
-log.maxRevision < watermark
-  -> 日志尾部缺失，halt 该 Run——已接受的事实永久消失无法凭空恢复，
+transitionLog.maxRevision < watermark，或尾部 transition 的 digest/事件组不完整
+  -> 日志尾部缺失/损坏，halt 该 Run——已接受的事实永久消失无法凭空恢复，
      继续推进会把丢失升级为错误的重复执行；恢复属于灾难恢复范畴（备份、复制）
 ```
 
@@ -768,6 +769,18 @@ type AgentEvent struct {
     Fact          Fact
 }
 
+// TransitionRecord is the atomic authority record for one accepted command.
+// It binds the complete ordered event group for one Revision.
+type TransitionRecord struct {
+    SchemaVersion    uint16
+    RunID            RunID
+    Revision         uint64
+    CommandID        CommandID
+    CommandDigest    Digest
+    Events           []AgentEvent // complete ordered event group for this revision
+    TransitionDigest Digest       // digest of transition identity + complete event group
+}
+
 type CommitResult struct {
     Status   CommitStatus
     Snapshot RuntimeSnapshot
@@ -779,6 +792,10 @@ func EncodeCommand(CommandEnvelope) ([]byte, error) // 不包含 Digest 字段
 func DigestCommand(schemaVersion uint16, typ string, command AgentCommand) (Digest, error)
 func EncodeFact(schemaVersion uint16, typ string, fact Fact) ([]byte, error)
 func DigestFact(schemaVersion uint16, typ string, fact Fact) (Digest, error)
+func BuildTransitionRecord([]AgentEvent) (TransitionRecord, error)
+func ValidateTransitionRecord(*TransitionRecord) error
+func DigestTransitionRecord(*TransitionRecord) (Digest, error)
+func FoldTransitions(initial MachineState, records []TransitionRecord) (MachineState, uint64, error)
 func EncodeRunSeed(RunSeed) ([]byte, error)
 func DigestRunSeed(schemaVersion uint16, seed RunSeed) (Digest, error)
 func DigestRequest(ModelRequest) (Digest, error)
@@ -823,16 +840,17 @@ Grant 只绑定一个 ModelStep 或一个 ToolCall，不能转用于另一个 Ca
 
 ```go
 type CommitDecision struct {
-    Kind     DecisionKind // Apply | AlreadyApplied | Conflict | Stale | Terminal
-    NewState MachineState
-    Events   []AgentEvent
+    Kind       DecisionKind // Apply | AlreadyApplied | Conflict | Stale | Terminal
+    NewState   MachineState
+    Events     []AgentEvent     // event-stream view of Transition.Events
+    Transition TransitionRecord // authority aggregate for this commit
 }
 
 // grantValid/recoveryValid 由 Runtime 依据自己的 lease/occupancy 记录判定后传入；
-// prior 是相同 (RunID, CommandID) 的已有事件组（若有）。
+// prior 是相同 (RunID, CommandID) 的已有 transition（若有）。
 func EvaluateCommit(
     cur MachineState, curRevision uint64,
-    prior []AgentEvent,
+    prior *TransitionRecord,
     req CommitRequest,
     grantValid bool,
     recoveryValid bool,
@@ -846,8 +864,8 @@ func EvaluateCommit(
 3. 相同 identity 携带不同 digest，返回 `ErrCommandConflict`。
    对 `AcceptInput`，还按 RunID/InputID 检查已接受索引：相同 payload 返回原事件组和 `CommitAlreadyApplied`，不同 payload 返回冲突，不产生第二条输入事实。
 4. 校验 BaseRevision、当前 Step、CallID 和 Grant。BaseRevision 只对 `PrepareModelRequest` 是硬校验——其 CommandID 由 Revision 派生，StepID 由该 CommandID 与 Decide 得到的 binding digest 派生，Revision 即它的并发控制，过期即返回 `ErrStaleRuntime`。其余 command 在 BaseRevision 过期时按类别前置条件基于当前状态重新评估：start（`StartModelExecution` 目标仍须为同一 Prepared ModelStep；`StartToolCall` 与 Pending 的已知失败目标 Call 仍须为 Pending，均空 Grant）；owner 完成（Executing Call 的完成/失败、`SubmitModelResult`/`SubmitModelFailure`/`RejectModelResult`，以及持有效 Model grant 的 `RecoverModelExecution`，以提交者仍持有对应有效 Grant 为条件）；system recovery（无 grant 的 `RecoverModelExecution` 和 scanner 的 Unknown，以 Runtime 自己的 recovery record 为条件）；ingress（approval/external response 目标 Call 仍须为对应 Waiting 且 ResponseID/kind 匹配；`AcceptInput` 要求 Run 仍 active 且没有当前 Step，连续多条输入互不拒绝；均空 Grant）；run-control（`CancelRun` 只要求 Run 非 terminal）。前置条件不满足时按具体原因返回 stale/terminal/冲突。start command 建立 grant/lease 的动作与状态提交属于同一个原子操作。
-5. 调用 `Machine.Decide` 产出事实序列，逐个 `Machine.Evolve` 折叠出新状态；为这次 transition 分配 `Revision = curRevision + 1`，事实按序获得 `Index = 0..k-1`，全部携带产生它们的 CommandID。
-6. Runtime 在自己的原子边界内保存 MachineState、AgentEvent 组及需要一致的 Memoh projection。
+5. 调用 `Machine.Decide` 产出事实序列，逐个 `Machine.EvolveVersion` 折叠出新状态；为这次 transition 分配 `Revision = curRevision + 1`，事实按序获得 `Index = 0..k-1`，全部携带产生它们的 CommandID，再封装为带 `TransitionDigest` 的 `TransitionRecord`。
+6. Runtime 在自己的原子边界内保存 MachineState、TransitionRecord 及需要一致的 Memoh projection；`CommitResult.Events` 返回该 transition 的 `Events` 视图。
 7. 非重复 command 若目标 Run 已经 terminal，返回 `ErrRunTerminal`；迟到的 worker 结果不会重新打开 Run。其他提交成功后返回新 snapshot。
 
 `EvaluateCommit` 用 `DecisionKind` 表达结果；`Runtime.Commit` 把非成功结果映射为对外错误：`DecisionConflict -> ErrCommandConflict`、`DecisionStale -> ErrStaleRuntime`、`DecisionTerminal -> ErrRunTerminal`。Loop 与 ingress 只依赖这三个错误值和 `CommitStatus`，不接触 DecisionKind。
@@ -913,7 +931,7 @@ canonical 编码和 digest 函数由 agent 提供；Memoh 只保存和比较结�
 
 CommandEnvelope 和 AgentEvent 的 `SchemaVersion` 和 `Type` 是持久化协议字段；Type 必须与 sealed AgentCommand/Fact 的具体变体一致，未知版本或类型直接拒绝。agent 必须提供正式 wire codec：decode 时先 canonicalize 整个 document，再读 `Type`，恢复具体 command/fact variant，校验 command/fact digest，并要求 decoded value 重新 canonical marshal 后与输入 canonical document 等价；不能依赖 `encoding/json` 自动反序列化 interface 字段，也不能接受 duplicate key、大小写模糊字段名或其他会被 Go decoder 合并/宽容的形态。`DigestCommand`/`DigestFact` 对 `SchemaVersion`、`Type` 和内容做 canonical digest，但不把 `Digest` 字段自身纳入摘要，保证 Memoh scanner、MemoryRuntime 和不同进程使用同一身份规则。`Revision` 只用于 authority 的 CAS，不进入任何 digest。
 
-Evolve 的折叠语义与事件编码同属永久兼容契约：已发布 SchemaVersion 的事件必须永远能被折叠出与写入当时相同的状态。conformance kit 为每个已发布 SchemaVersion 冻结 golden event stream 与对应的状态字节，任何 Evolve 实现变更都必须通过全部历史版本的 golden 校验。
+Evolve 的折叠语义与事件编码同属永久兼容契约：已发布 SchemaVersion 的事件必须永远能被折叠出与写入当时相同的状态。conformance kit 为每个已发布 SchemaVersion 冻结 golden transition stream 与对应的状态字节，任何 versioned Evolve 实现变更都必须通过全部历史版本的 golden 校验。
 
 ### 5.6 Runtime 不拥有 Planner
 
@@ -1288,7 +1306,7 @@ agent 提供 MCP schema/call adapter，把 MCP tool 转换为 `sdk.ToolDefinitio
 
 ### 8.1 MemoryRuntime
 
-MemoryRuntime 使用 `mutex + MachineState + AgentEvent map`：
+MemoryRuntime 使用 `mutex + MachineState + TransitionRecord log`：
 
 ```text
 Load
@@ -1301,7 +1319,7 @@ Commit
 
 MemoryRuntime 不需要 owner、fence、lease、outbox 或 Attempt 表。进程退出后状态可以丢失；它是本地会话、测试和 conformance reference。它仍须在同一把锁内记录每个已接受 start 的执行占用，防止两个本地 worker 同时执行同一个 Call。
 
-MemoryRuntime 只保存 agent 的 MachineState、AgentEvent 和提交幂等记录，不自动保存产品 history。需要多轮上下文的 in-process
+MemoryRuntime 只保存 agent 的 MachineState、TransitionRecord log 和提交幂等记录；`Events()` 只返回 flatten 后的事件流视图，不自动保存产品 history。需要多轮上下文的 in-process
 宿主应在 Runtime 外维护一个内存 history projection，并让自己的 RequestPlanner 读取它；这只是一个轻量的应用层配套，不是 MemoryRuntime 为 durable 语义模拟数据库。
 
 worker context 的取消不等同于业务取消。若已提交 `StartToolCall` 后 worker 返回 Unknown，Loop 使用不受 worker cancellation 影响的 commit context 提交 `SubmitToolFailure{Outcome: ToolOutcomeUnknown}`；MemoryRuntime 在同一把锁内记录 Unknown 并结束 Run。若当前进程直接退出，MemoryRuntime 不承诺跨进程恢复；仍处于 Executing 的 Call 随内存状态一起丢失。
@@ -1320,13 +1338,13 @@ Load
 Commit
   判定内部 owner/fence/lease 的有效性
   对 StartModelExecution/StartToolCall 在同一事务内建立 Attempt/lease
-  调用共享 EvaluateCommit（command identity、Revision、Decide/Evolve）
-  原子保存 MachineState、AgentEvent 组、history projection、queue action、response record 和 outbox
+  调用共享 EvaluateCommit（command identity、Revision、Decide/EvolveVersion）
+  原子保存 MachineState、TransitionRecord、history projection、queue action、response record 和 outbox
 ```
 
 并行 Call 的完成 transition 按提交先后获得递增的 Revision；这不改变模型上下文中的 Call 顺序。Memoh 先按 CallID 保存各自结果，ToolStep 关闭时再按 ModelResult 原始 Call 顺序写入 assistant tool-call 与 tool-result history。
 
-Attempt、owner、fence、lease 和数据库 row 不进入 agent public state。它们只保证多个 Loop attempt 不会同时取得同一个 Call 的执行权。持久化的 MachineState snapshot 必须带 adapter 自己的 snapshot schema version；跨版本升级时按该版本解码，或直接 truncate 后从事件流重建（§5.1），不复用事件的 `SchemaVersion` 字段。每 Run 的 revision 水位与 snapshot 分开存放（state 表中不随重建清空的列，或独立小表），每次 Commit 与日志同事务推进。
+Attempt、owner、fence、lease 和数据库 row 不进入 agent public state。它们只保证多个 Loop attempt 不会同时取得同一个 Call 的执行权。持久化的 MachineState snapshot 必须带 adapter 自己的 snapshot schema version；跨版本升级时按该版本解码，或直接 truncate 后从 TransitionRecord log 重建（§5.1），不复用事件的 `SchemaVersion` 字段。每 Run 的 revision 水位与 snapshot 分开存放（state 表中不随重建清空的列，或独立小表），每次 Commit 与 transition log 同事务推进。
 
 MemohRuntime 的 worker 实例在构造时绑定当前 worker 的 owner identity；只有该实例可以提交自己接受的 model/tool start、completion 和主动 recovery。response 和 cancel 使用同一个 `Commit` 语义，但由 Memoh 创建不带 worker grant 的 ingress-scoped adapter；这些 command 不取得执行权，因此不需要伪造 Loop owner。新 Run admission 仍由 Memoh 的 admission 事务处理，不调用旧 Run 的 `Runtime.Commit`。
 
@@ -1368,12 +1386,12 @@ Tool effect
 ```text
 Loop / response ingress
   -> AgentCommand
-  -> Runtime.Commit (EvaluateCommit: 幂等/类别校验 + Machine.Decide + Machine.Evolve)
-  -> MachineState + AgentEvent 组 in one atomic boundary
+  -> Runtime.Commit (EvaluateCommit: 幂等/类别校验 + Machine.Decide + Machine.EvolveVersion)
+  -> MachineState + TransitionRecord in one atomic boundary
   -> EventSink / replay / projection / OTel
 ```
 
-`AgentCommand` 表示“希望发生的状态变化”；`AgentEvent` 表示“authority 已接受并持久化的事实”。一个接受的 command 构成一次 transition，产出一个或多个事实。AgentEvent 必须具备：
+`AgentCommand` 表示“希望发生的状态变化”；`AgentEvent` 表示“authority 已接受的事实”，`TransitionRecord` 是持久化的 authority aggregate。一个接受的 command 构成一次 transition，产出一个或多个事实，并以完整 `TransitionRecord` 原子保存。AgentEvent 必须具备：
 
 ```text
 RunID + (Revision, Index)      全序身份；Revision 是 transition 计数，Index 是组内序
@@ -1383,9 +1401,9 @@ SchemaVersion + Type           wire 兼容和 sealed fact discriminator
 Fact                           已接受的事实内容
 ```
 
-AgentEvent log 是 source of truth；MachineState 是必需的同事务 projection（§5.1）。Runtime 必须把两者、水位和需要一致的 Memoh projection/outbox 放在同一事务或锁边界。Durable adapter 必须保留 AgentEvent，使其可以按 RunID/(Revision, Index) replay；MemoryRuntime 可以只在进程内保留同样的记录。公共 `Runtime` 不增加 replay 方法，读取由实现或 application projection 提供。
+Initial MachineState + TransitionRecord log 是 source of truth；MachineState 是必需的同事务 projection（§5.1）。Runtime 必须把 transition log、snapshot、水位和需要一致的 Memoh projection/outbox 放在同一事务或锁边界。Durable adapter 必须保留完整 TransitionRecord，使其可以按 RunID/Revision replay；MemoryRuntime 可以只在进程内保留同样的记录。公共 `Runtime` 不增加 replay 方法，读取由实现或 application projection 提供。
 
-Replay 按 RunID/(Revision, Index) 取出 AgentEvent，从初始状态（Revision=0）开始依次调用同一份 `Machine.Evolve` 折叠。折叠只依赖 Evolve，不重新运行 Decide——决策结果已经记录在事实里，Machine 决策规则的演进不影响历史事件的折叠；折叠不产生任何外部 effect。仲裁按 §5.1 的规则：日志完整（maxRevision >= watermark）时日志为准，snapshot 分歧或缺失自动重建并记录重建事件；日志尾部低于水位时 halt。事件流内部的 RunID 不匹配、SchemaVersion/Type 不支持、同一 Revision 的 CommandID/CommandDigest 不一致、Revision/Index 缺洞或 digest 不匹配同样按日志损坏处理，halt 该 Run。
+Replay 按 RunID/Revision 取出 TransitionRecord，从初始状态（Revision=0）开始依次展开其中的 AgentEvent，并调用对应 `SchemaVersion` 的 `Machine.EvolveVersion` 折叠。折叠只依赖 Evolve，不重新运行 Decide——决策结果已经记录在事实里，Machine 决策规则的演进不影响历史事件的折叠；折叠不产生任何外部 effect。仲裁按 §5.1 的规则：transition log 完整（maxRevision >= watermark 且每条 transition digest 正确）时日志为准，snapshot 分歧或缺失自动重建并记录重建事件；日志尾部低于水位或尾部 transition 不完整时 halt。事件流内部的 RunID 不匹配、SchemaVersion/Type 不支持、同一 transition 的 CommandID/CommandDigest 不一致、Revision/Index 缺洞、fact digest 或 transition digest 不匹配同样按日志损坏处理，halt 该 Run。
 
 Replay 的起点是 admission 已建立的初始 `MachineState`；`RunSeed` 的 admission 记录不作为任何 Run 的 AgentEvent 重放。需要重建 admission 链时，由 Memoh 的 session/queue 记录负责。
 
@@ -1524,7 +1542,7 @@ Memoh    -> agent.Loop + MemohRuntime
 1. 实现 `MachineState`、ModelStep、ToolStep、ToolCall 状态和 Decide/Evolve/Next 规则。
 2. 实现 `EvaluateCommit`、`Runtime.Load/Commit`、command/fact digest 与幂等和 opaque grant。
 3. 实现 Loop 的 model/tool/approval/response 路径和并行执行策略。
-4. 完成 MemoryRuntime conformance 测试（`agent/runtimetest`），提供 CommandEnvelope/AgentEvent wire codec，严格 replay 校验，并冻结 SchemaVersion 1 的 golden event stream。
+4. 完成 MemoryRuntime conformance 测试（`agent/runtimetest`），提供 CommandEnvelope/AgentEvent/TransitionRecord wire codec，严格 replay 校验，并冻结 SchemaVersion 1 的 golden transition stream。
 
 ### 阶段 C：Memoh storage groundwork
 
@@ -1605,8 +1623,8 @@ RunStopped 与 worker cancellation 区分
 MachineState.Usage 逐字段累计 ModelStepCompleted 与 ModelStepRejected；terminal 时复制到 RunResult.Usage
 Decide 拒绝时不产出部分事实；接受时事实组与 MachineState 原子提交
 Evolve 不读 RunConfig、无 policy 分支；对 Decide 产出的全部事实全定义
-AgentEvent 按 RunID/(Revision, Index) 可 replay，重复提交不产生第二组
-replay 只经 Evolve 折叠，不重新运行 Decide；golden event stream 折叠出冻结的状态字节
+TransitionRecord 按 RunID/Revision 可 replay，内部 AgentEvent 按 (Revision, Index) 保持事件流顺序，重复提交不产生第二组
+replay 只经 EvolveVersion 折叠，不重新运行 Decide；golden transition stream 折叠出冻结的状态字节
 EventSink provisional/committed 发射点
 并行 EventSink 事件包含 CallID，Waiting result 可路由到目标 Call
 Streaming=true 但 invoker 不支持 streaming -> Generate fallback
@@ -1640,11 +1658,11 @@ RunStopped/RunFailed 保留最近已接受的 ModelResult
 Cancel 与 Unknown 的提交先后决定终态
 CancelRun 在过期 BaseRevision 上对非 terminal Run 重新评估
 RejectModelResult 必须带有效 Model grant；AlreadyApplied 重放不重复累计 usage
-持久化状态与按 Evolve 折叠的事件流一致；snapshot 分歧或缺失且日志完整 -> 自动重建并报告，重建不改变健康状态
-日志尾部低于 revision 水位 -> ErrLogTruncated，halt 该 Run
-事件流内部 Revision/Index 缺洞或事实 digest 不匹配 -> fold 拒绝，按日志损坏处理
+持久化状态与按 EvolveVersion 折叠的 TransitionRecord log 一致；snapshot 分歧或缺失且日志完整 -> 自动重建并报告，重建不改变健康状态
+transition log 尾部低于 revision 水位或尾部 transition 不完整 -> ErrLogTruncated/log damage，halt 该 Run
+TransitionRecord 内部 Revision/Index 缺洞、事实 digest 或 transition digest 不匹配 -> fold 拒绝，按日志损坏处理
 ModelStepPrepared/ToolStepOpened 自包含：携带的 digest 折叠后可重现 Step 身份
-golden event stream：固定 v1 命令序列折叠出冻结的状态字节
+golden transition stream：固定 v1 命令序列折叠出冻结的状态字节
 ```
 
 ### 14.4 Memoh integration
@@ -1652,7 +1670,7 @@ golden event stream：固定 v1 命令序列折叠出冻结的状态字节
 ```text
 queue FIFO、accepted-order reorder、typed ID isolation
 assigned follow-up 只由正确的 R1 admission claim
-canonical history、AgentEvent 与 MachineState 同事务
+canonical history、TransitionRecord 与 MachineState 同事务
 assistant tool-call 和 tool result 只写一次
 多 response rows 与逐次 wake/idempotency
 lease expiry/recovery/unknown outcome
@@ -1684,9 +1702,9 @@ Memoh queue/session/admission 的语义保持在 Memoh；现有 NativeAgentLoop 
 2. breaking release 版本和 Memoh protocol upgrade window。
 3. EventSink payload schema，以及是否需要在 Memoh outbox 中加入跨进程 execution epoch。
 
-本规范已经固定：Cancel 与 Unknown 按提交先后决定终态；agent `ModelRequest` 冻结完整的 generation options，streaming 只是 `ModelInvoker` 的可选执行路径，不改变 AgentCommand/AgentEvent 语义。Machine 采用 Decide/Evolve 拆分：Decide 承载全部决策并在提交时产出结果事实，Evolve 是机械折叠、与事件编码同属永久兼容契约；AgentEvent log 为 source of truth，MachineState 为必需的同事务 projection，分歧仲裁按 §5.1（日志完整则自动重建，日志尾部低于水位则 halt）。结构性 malformed 的模型结果通过 `RejectModelResult` 在同一冻结 request 上有限重试；usage 在 MachineState 内逐字段累计；steer 由 MemohRuntime 的 Prepare gate 保证进入下一个 ModelStep；工具不做效果分级，计划内停机以排空代替，Unknown 语义只覆盖崩溃和 lease 失效。
+本规范已经固定：Cancel 与 Unknown 按提交先后决定终态；agent `ModelRequest` 冻结完整的 generation options，streaming 只是 `ModelInvoker` 的可选执行路径，不改变 AgentCommand/AgentEvent 语义。Machine 采用 Decide/Evolve 拆分：Decide 承载全部决策并在提交时产出结果事实，Evolve 是机械折叠、与事件编码同属永久兼容契约；initial MachineState + TransitionRecord log 为 source of truth，MachineState 为必需的同事务 projection，分歧仲裁按 §5.1（transition log 完整则自动重建，日志尾部低于水位或 transition 不完整则 halt）。结构性 malformed 的模型结果通过 `RejectModelResult` 在同一冻结 request 上有限重试；usage 在 MachineState 内逐字段累计；steer 由 MemohRuntime 的 Prepare gate 保证进入下一个 ModelStep；工具不做效果分级，计划内停机以排空代替，Unknown 语义只覆盖崩溃和 lease 失效。
 
-本规范采用 event log 为 source of truth（§5.1）：三个稳定条件（ontology 冻结、Evolve 冻结、事实自包含）由 Decide/Evolve 拆分保障，revision 水位保护日志尾部完整性。MachineState 保持为必需的同事务 projection——提交验证要求当前状态在临界区内可得，这与日志权威并不冲突。
+本规范采用 initial MachineState + TransitionRecord log 为 source of truth（§5.1）：三个稳定条件（ontology 冻结、versioned Evolve 冻结、事实自包含）由 Decide/Evolve 拆分保障，revision 水位保护 transition log 尾部完整性，TransitionDigest 保护单个 transition 内部的完整事件组。MachineState 保持为必需的同事务 projection——提交验证要求当前状态在临界区内可得，这与日志权威并不冲突。
 
 ## 附录 A：最小 public API 草案
 
@@ -2211,6 +2229,16 @@ type AgentEvent struct {
     Fact          Fact
 }
 
+type TransitionRecord struct {
+    SchemaVersion    uint16
+    RunID            RunID
+    Revision         uint64
+    CommandID        CommandID
+    CommandDigest    Digest
+    Events           []AgentEvent
+    TransitionDigest Digest
+}
+
 type CommitRequest struct {
     BaseRevision uint64
     Grant        ExecutionGrant
@@ -2242,16 +2270,17 @@ const (
 )
 
 type CommitDecision struct {
-    Kind     DecisionKind
-    NewState MachineState
-    Events   []AgentEvent
+    Kind       DecisionKind
+    NewState   MachineState
+    Events     []AgentEvent
+    Transition TransitionRecord
 }
 
 // Shared, pure commit evaluation. Both runtimes call this single
 // implementation inside their own critical section / transaction.
 func EvaluateCommit(
     cur MachineState, curRevision uint64,
-    prior []AgentEvent,
+    prior *TransitionRecord,
     req CommitRequest,
     grantValid bool,
     recoveryValid bool,
@@ -2261,6 +2290,10 @@ func EncodeCommand(CommandEnvelope) ([]byte, error) // 不包含 Digest 字段
 func DigestCommand(schemaVersion uint16, typ string, command AgentCommand) (Digest, error)
 func EncodeFact(schemaVersion uint16, typ string, fact Fact) ([]byte, error)
 func DigestFact(schemaVersion uint16, typ string, fact Fact) (Digest, error)
+func BuildTransitionRecord([]AgentEvent) (TransitionRecord, error)
+func ValidateTransitionRecord(*TransitionRecord) error
+func DigestTransitionRecord(*TransitionRecord) (Digest, error)
+func FoldTransitions(initial MachineState, records []TransitionRecord) (MachineState, uint64, error)
 func EncodeRunSeed(RunSeed) ([]byte, error)
 func DigestRunSeed(schemaVersion uint16, seed RunSeed) (Digest, error)
 func DigestRequest(ModelRequest) (Digest, error)
@@ -2403,10 +2436,10 @@ func (l *Loop) Run(context.Context, Runtime, EventSink) (LoopResult, error)
 8. Waiting response 只推进对应 Call；approval approved 先变 Pending，随后由 Loop 执行工具。日志记录结果事实（`ToolCallFailed{permission_denied}`、`RunEnded{cancelled}`），不记录请求本身。
 9. 幂等按 command 判定：相同 CommandID/digest 重放返回 CommitAlreadyApplied 与原事件组（不重新运行 Decide），不重复写入 projection、history、queue action 或 outbox；相同 CommandID 不同 digest 冲突。
 10. 一次接受的 transition 使 Revision 恰好加一；其全部事实共享该 Revision，Index 组内连续，提交后 `Snapshot.Revision` 等于该 Revision。
-11. AgentEvent log 是 source of truth；MachineState 是必需的同事务 projection，可按 `Evolve` 从日志重建。对任意 Revision，状态必须等于初始状态经 `Evolve` 折叠事件流的结果；snapshot 分歧或缺失且日志完整时自动重建并记录，日志尾部低于 revision 水位时 halt 该 Run。
-12. Evolve 的折叠语义与事件编码同属永久兼容契约，按 SchemaVersion 冻结；Decide 的决策规则可随版本演进，因为决策结果已记录为事实。
+11. Admission-created initial MachineState + TransitionRecord log 是 source of truth；MachineState 是必需的同事务 projection，可按 `EvolveVersion` 从 transition log 重建。对任意 Revision，状态必须等于初始状态经 `flatten(TransitionRecord[].Events)` 折叠的结果；snapshot 分歧或缺失且日志完整时自动重建并记录，日志尾部低于 revision 水位或 transition digest/事件组不完整时 halt 该 Run。
+12. Evolve 的折叠语义与事件编码同属永久兼容契约，按 SchemaVersion 冻结；Replay 通过 `EvolveVersion` 选择历史语义；Decide 的决策规则可随版本演进，因为决策结果已记录为事实。
 13. 已知工具失败交给下一次模型请求；Unknown 终止 Run，不自动重试、不查询外部系统。
 14. worker cancellation 不等于 RunStopped；业务停止必须提交控制 command。宿主的业务停止先提交 `CancelRun`，再取消 Loop 的 ctx；ctx 取消本身只结束执行尝试，工具 worker 运行到自身结束。
-15. EventSink 只是实时观察；AgentEvent、durable snapshot 和 outbox 才是 replay/recovery 依据。
+15. EventSink 只是实时观察；TransitionRecord、durable snapshot 和 outbox 才是 replay/recovery 依据，AgentEvent 是 transition 内部和观察出口的事实流视图。
 16. MemoryRuntime 用进程内同步；MemohRuntime 用事务、CAS 和内部 Attempt/owner/fence/lease；两者共享 `EvaluateCommit` 与 Machine 规则，但不共享存储实现。
 17. 结构性 malformed 的模型结果以 `RejectModelResult` 回到 Prepared，在同一冻结 request 上重试并累计 usage；超过 `RunConfig.ModelRejectLimit` 才 RunFailed。单个 Call 的参数解析失败不是 malformed，按已知 `invalid_arguments` 进入下一次模型请求。

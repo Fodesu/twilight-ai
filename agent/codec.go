@@ -50,6 +50,18 @@ type agentEventMarshal struct {
 	Fact          Fact      `json:"fact"`
 }
 
+type transitionRecordWire struct {
+	SchemaVersion    uint16       `json:"schemaVersion"`
+	RunID            RunID        `json:"runId"`
+	Revision         uint64       `json:"revision"`
+	CommandID        CommandID    `json:"commandId"`
+	CommandDigest    Digest       `json:"commandDigest"`
+	Events           []AgentEvent `json:"events"`
+	TransitionDigest Digest       `json:"transitionDigest"`
+}
+
+type transitionRecordMarshal = transitionRecordWire
+
 // DecodeCommandEnvelope decodes the persisted command wire shape and restores
 // the sealed command variant from Type. The digest is verified during decode;
 // malformed or unsupported wire data is rejected before it can enter Runtime.
@@ -69,6 +81,16 @@ func DecodeAgentEvent(raw []byte) (AgentEvent, error) {
 		return AgentEvent{}, err
 	}
 	return event, nil
+}
+
+// DecodeTransitionRecord decodes the persisted transition aggregate and
+// verifies that the complete event group is internally consistent.
+func DecodeTransitionRecord(raw []byte) (TransitionRecord, error) {
+	var record TransitionRecord
+	if err := decodeStrictJSON(raw, &record); err != nil {
+		return TransitionRecord{}, err
+	}
+	return record, nil
 }
 
 //nolint:gocritic // hugeParam: value receiver keeps json.Marshaler active for non-pointer CommandEnvelope values.
@@ -159,6 +181,30 @@ func (e AgentEvent) MarshalJSON() ([]byte, error) {
 		Digest:        e.Digest,
 		Fact:          e.Fact,
 	})
+}
+
+//nolint:gocritic // hugeParam: value receiver keeps json.Marshaler active for non-pointer TransitionRecord values.
+func (r TransitionRecord) MarshalJSON() ([]byte, error) {
+	if err := ValidateTransitionRecord(&r); err != nil {
+		return nil, err
+	}
+	return json.Marshal(transitionRecordMarshal(r))
+}
+
+func (r *TransitionRecord) UnmarshalJSON(raw []byte) error {
+	var wire transitionRecordWire
+	if err := decodeStrictJSON(raw, &wire); err != nil {
+		return err
+	}
+	record := TransitionRecord(wire)
+	if err := ValidateTransitionRecord(&record); err != nil {
+		return err
+	}
+	if err := requireCanonicalEquivalent(raw, transitionRecordMarshal(record)); err != nil {
+		return err
+	}
+	*r = record
+	return nil
 }
 
 func (e *AgentEvent) UnmarshalJSON(raw []byte) error {

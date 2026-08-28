@@ -2,14 +2,32 @@ package agent
 
 import "fmt"
 
-// Evolve folds one fact into the state (spec §3.7.2). It is mechanical: no
-// RunConfig reads, no policy branches, total over every fact Decide produces.
-// Its folding semantics, together with the canonical encoding, form the
-// permanent compatibility contract of a published SchemaVersion; replay
-// depends only on Evolve.
+// Evolve folds one fact with the current schema version. Persisted replay uses
+// EvolveVersion so future schema versions can keep their historical folding
+// semantics while this convenience API remains value-based.
 //
 //nolint:gocritic // hugeParam: public fold boundary must stay value-based: Evolve(state, fact) -> new state.
 func Evolve(s MachineState, f Fact) (MachineState, error) {
+	return EvolveVersion(currentSchemaVersion, s, f)
+}
+
+// EvolveVersion folds one persisted fact using the Evolve semantics for its
+// SchemaVersion. It is mechanical: no IO, no policy decisions, and no Decide.
+//
+//nolint:gocritic // hugeParam: public replay boundary must stay value-based: EvolveVersion(version, state, fact) -> new state.
+func EvolveVersion(schemaVersion uint16, s MachineState, f Fact) (MachineState, error) {
+	switch schemaVersion {
+	case SchemaVersion1:
+		return evolveV1(s, f)
+	default:
+		return s, fmt.Errorf("agent: evolve: unsupported schema version %d", schemaVersion)
+	}
+}
+
+// evolveV1 is the frozen fold semantics for SchemaVersion1.
+//
+//nolint:gocritic // hugeParam: v1 fold body intentionally preserves value-state semantics.
+func evolveV1(s MachineState, f Fact) (MachineState, error) {
 	switch fact := f.(type) {
 	case ModelStepPrepared:
 		if s.Current != nil {

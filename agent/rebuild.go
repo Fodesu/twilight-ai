@@ -12,12 +12,12 @@ import (
 // (spec §5.1). Recovery is a disaster-recovery matter, not a protocol one.
 var ErrLogTruncated = errors.New("agent: event log ends below the revision watermark")
 
-// FoldEvents rebuilds a MachineState by folding the event log from the
-// initial (Revision 0) state with Evolve only: no Decide, no external
-// effects, no command replay (spec §9.1). It verifies (Revision, Index)
-// ordering and per-fact digests as it goes; any gap or mismatch means the log
-// itself is damaged and the fold stops. It also rejects RunID/schema/type
-// mismatches and same-revision command identity changes.
+// FoldEvents rebuilds a MachineState by folding a complete flat event stream
+// from the initial (Revision 0) state with EvolveVersion only: no Decide, no
+// external effects, no command replay (spec §9.1). It verifies (Revision,
+// Index) ordering and per-fact digests as it goes. Authority runtimes should
+// prefer FoldTransitions because only TransitionRecord can prove the last
+// transition's event group is complete.
 //
 //nolint:gocritic // hugeParam: public replay API folds from an initial value state without mutating caller-owned state.
 func FoldEvents(initial MachineState, events []AgentEvent) (MachineState, uint64, error) {
@@ -71,7 +71,7 @@ func FoldEvents(initial MachineState, events []AgentEvent) (MachineState, uint64
 		if err != nil {
 			return initial, 0, err
 		}
-		state, err = Evolve(state, fact)
+		state, err = EvolveVersion(e.SchemaVersion, state, fact)
 		if err != nil {
 			return initial, 0, err
 		}
@@ -79,8 +79,43 @@ func FoldEvents(initial MachineState, events []AgentEvent) (MachineState, uint64
 	return state, revision, nil
 }
 
-// Rebuild discards the in-memory snapshot and refolds it from the event log,
-// arbitrating per spec §5.1: the log wins when it is complete
+// FoldTransitions rebuilds a MachineState by folding authoritative transition
+// records from the immutable initial state. The source of truth is the
+// admission-created initial state plus the complete TransitionRecord log.
+//
+//nolint:gocritic // hugeParam: public replay API folds from an initial value state without mutating caller-owned state.
+func FoldTransitions(initial MachineState, records []TransitionRecord) (MachineState, uint64, error) {
+	state := initial
+	var revision uint64
+	for i := range records {
+		record := records[i]
+		if err := ValidateTransitionRecord(&record); err != nil {
+			return initial, 0, err
+		}
+		if record.RunID != initial.RunID {
+			return initial, 0, fmt.Errorf("agent: fold: transition run %q does not match initial run %q", record.RunID, initial.RunID)
+		}
+		if record.Revision != revision+1 {
+			return initial, 0, fmt.Errorf("agent: fold: gap at transition revision %d (expected %d)", record.Revision, revision+1)
+		}
+		for j := range record.Events {
+			e := record.Events[j]
+			fact, err := snapshotFact(e.Fact)
+			if err != nil {
+				return initial, 0, err
+			}
+			state, err = EvolveVersion(e.SchemaVersion, state, fact)
+			if err != nil {
+				return initial, 0, err
+			}
+		}
+		revision = record.Revision
+	}
+	return state, revision, nil
+}
+
+// Rebuild discards the in-memory snapshot and refolds it from the transition
+// log, arbitrating per spec §5.1: the log wins when it is complete
 // (maxRevision >= watermark); a log tail below the watermark halts with
 // ErrLogTruncated. It returns true when the refolded state differed from the
 // stored snapshot — with a correct implementation this never happens, so a
@@ -90,7 +125,7 @@ func (m *MemoryRuntime) Rebuild() (rebuilt bool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	folded, maxRevision, err := FoldEvents(cloneMachineState(&m.initial), m.log)
+	folded, maxRevision, err := FoldTransitions(cloneMachineState(&m.initial), m.log)
 	if err != nil {
 		return false, err
 	}
