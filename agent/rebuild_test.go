@@ -106,16 +106,9 @@ func TestRebuildRepairsCorruptedSnapshot(t *testing.T) {
 func TestRebuildHaltsOnTruncatedTail(t *testing.T) {
 	rt := fullRunRuntime(t)
 	rt.mu.Lock()
-	// Simulate selective damage: drop the last transition's events while the
-	// watermark (separate storage in a durable adapter) survives.
-	last := rt.log[len(rt.log)-1].Revision
-	var kept []AgentEvent
-	for _, e := range rt.log {
-		if e.Revision < last {
-			kept = append(kept, e)
-		}
-	}
-	rt.log = kept
+	// Simulate selective damage: drop the last transition while the watermark
+	// (separate storage in a durable adapter) survives.
+	rt.log = cloneTransitionRecords(rt.log[:len(rt.log)-1])
 	rt.mu.Unlock()
 
 	_, err := rt.Rebuild()
@@ -124,30 +117,66 @@ func TestRebuildHaltsOnTruncatedTail(t *testing.T) {
 	}
 }
 
-// A gap in the middle of the log is log damage, not a rebuild input.
-func TestFoldRejectsInteriorGap(t *testing.T) {
+func TestRebuildHaltsOnPartialTailTransition(t *testing.T) {
 	rt := fullRunRuntime(t)
 	rt.mu.Lock()
-	var holed []AgentEvent
-	for _, e := range rt.log {
-		if e.Revision == 3 { // drop one interior transition
+	last := &rt.log[len(rt.log)-1]
+	if len(last.Events) < 2 {
+		t.Fatal("test requires a multi-event tail transition")
+	}
+	last.Events = last.Events[:len(last.Events)-1]
+	rt.mu.Unlock()
+
+	_, err := rt.Rebuild()
+	if err == nil {
+		t.Fatal("partial tail transition folded silently")
+	}
+}
+
+// A gap in the middle of the transition log is log damage, not a rebuild input.
+func TestFoldTransitionsRejectsInteriorGap(t *testing.T) {
+	rt := fullRunRuntime(t)
+	rt.mu.Lock()
+	var holed []TransitionRecord
+	for i := range rt.log {
+		if rt.log[i].Revision == 3 { // drop one interior transition
 			continue
 		}
-		holed = append(holed, e)
+		holed = append(holed, cloneTransitionRecord(&rt.log[i]))
 	}
 	log := holed
 	initial := cloneMachineState(&rt.initial)
 	rt.mu.Unlock()
 
-	if _, _, err := FoldEvents(initial, log); err == nil {
-		t.Fatal("interior gap folded silently")
+	if _, _, err := FoldTransitions(initial, log); err == nil {
+		t.Fatal("interior transition gap folded silently")
+	}
+}
+
+// A gap in the middle of a complete flat event stream is still rejected.
+func TestFoldEventsRejectsInteriorGap(t *testing.T) {
+	rt := fullRunRuntime(t)
+	rt.mu.Lock()
+	flat := flattenTransitionRecords(rt.log)
+	initial := cloneMachineState(&rt.initial)
+	rt.mu.Unlock()
+
+	var holed []AgentEvent
+	for i := range flat {
+		if flat[i].Revision == 3 { // drop one interior transition
+			continue
+		}
+		holed = append(holed, flat[i])
+	}
+	if _, _, err := FoldEvents(initial, holed); err == nil {
+		t.Fatal("interior event gap folded silently")
 	}
 }
 
 func TestFoldRejectsRunIDMismatch(t *testing.T) {
 	rt := fullRunRuntime(t)
 	rt.mu.Lock()
-	log := cloneEvents(rt.log)
+	log := flattenTransitionRecords(rt.log)
 	initial := cloneMachineState(&rt.initial)
 	rt.mu.Unlock()
 
@@ -160,7 +189,7 @@ func TestFoldRejectsRunIDMismatch(t *testing.T) {
 func TestFoldRejectsTransitionCommandIdentityChange(t *testing.T) {
 	rt := fullRunRuntime(t)
 	rt.mu.Lock()
-	log := cloneEvents(rt.log)
+	log := flattenTransitionRecords(rt.log)
 	initial := cloneMachineState(&rt.initial)
 	rt.mu.Unlock()
 
@@ -178,7 +207,7 @@ func TestFoldRejectsTransitionCommandIdentityChange(t *testing.T) {
 func TestFoldRejectsUnsupportedSchemaVersion(t *testing.T) {
 	rt := fullRunRuntime(t)
 	rt.mu.Lock()
-	log := cloneEvents(rt.log)
+	log := flattenTransitionRecords(rt.log)
 	initial := cloneMachineState(&rt.initial)
 	rt.mu.Unlock()
 
@@ -197,7 +226,7 @@ func TestFoldRejectsUnsupportedSchemaVersion(t *testing.T) {
 func TestFoldRejectsTamperedFact(t *testing.T) {
 	rt := fullRunRuntime(t)
 	rt.mu.Lock()
-	log := cloneEvents(rt.log)
+	log := flattenTransitionRecords(rt.log)
 	initial := cloneMachineState(&rt.initial)
 	rt.mu.Unlock()
 
@@ -241,7 +270,7 @@ func TestRegressionPreparedFactSelfContained(t *testing.T) {
 // the same commit that changes the protocol).
 func TestGoldenEventStreamV1(t *testing.T) {
 	rt := fullRunRuntime(t)
-	folded, maxRev, err := FoldEvents(cloneMachineState(&rt.initial), rt.Events())
+	folded, maxRev, err := FoldTransitions(cloneMachineState(&rt.initial), rt.Transitions())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -394,3 +394,35 @@ func cloneEvents(events []AgentEvent) []AgentEvent {
 	}
 	return out
 }
+
+func cloneTransitionRecord(record *TransitionRecord) TransitionRecord {
+	out := *record
+	out.Events = cloneEvents(out.Events)
+	return out
+}
+
+func cloneTransitionRecords(records []TransitionRecord) []TransitionRecord {
+	if records == nil {
+		return nil
+	}
+	out := make([]TransitionRecord, len(records))
+	for i := range records {
+		out[i] = cloneTransitionRecord(&records[i])
+	}
+	return out
+}
+
+func flattenTransitionRecords(records []TransitionRecord) []AgentEvent {
+	var total int
+	for i := range records {
+		total += len(records[i].Events)
+	}
+	if total == 0 {
+		return nil
+	}
+	out := make([]AgentEvent, 0, total)
+	for i := range records {
+		out = append(out, cloneEvents(records[i].Events)...)
+	}
+	return out
+}

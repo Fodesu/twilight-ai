@@ -57,9 +57,10 @@ const (
 // onto the sentinel errors: Conflict -> ErrCommandConflict, Stale ->
 // ErrStaleRuntime, Terminal -> ErrRunTerminal (spec §5.4).
 type CommitDecision struct {
-	Kind     DecisionKind
-	NewState MachineState
-	Events   []AgentEvent
+	Kind       DecisionKind
+	NewState   MachineState
+	Events     []AgentEvent
+	Transition TransitionRecord
 	// Reject carries the precondition failure for Conflict/Stale/Terminal.
 	Reject error
 }
@@ -136,7 +137,7 @@ func requiresGrant(s *MachineState, c AgentCommand) bool {
 //nolint:gocritic // hugeParam: public pure commit evaluator keeps state/request as value protocol inputs.
 func EvaluateCommit(
 	cur MachineState, curRevision uint64,
-	prior []AgentEvent,
+	prior *TransitionRecord,
 	req CommitRequest,
 	grantValid bool,
 	recoveryValid bool,
@@ -168,9 +169,9 @@ func EvaluateCommit(
 	}
 
 	// Steps 2-3: idempotent replay and identity conflict.
-	if len(prior) > 0 {
-		if prior[0].CommandDigest == env.Digest {
-			return CommitDecision{Kind: DecisionAlreadyApplied, Events: prior}, nil
+	if prior != nil {
+		if prior.CommandDigest == env.Digest {
+			return CommitDecision{Kind: DecisionAlreadyApplied, Events: prior.Events, Transition: cloneTransitionRecord(prior)}, nil
 		}
 		return CommitDecision{Kind: DecisionConflict, Reject: ErrCommandConflict}, nil
 	}
@@ -234,7 +235,7 @@ func EvaluateCommit(
 		if err != nil {
 			return CommitDecision{}, err
 		}
-		state, err = Evolve(state, f)
+		state, err = EvolveVersion(env.SchemaVersion, state, f)
 		if err != nil {
 			return CommitDecision{}, err
 		}
@@ -255,7 +256,11 @@ func EvaluateCommit(
 			Fact:          f,
 		}
 	}
-	return CommitDecision{Kind: DecisionApply, NewState: state, Events: events}, nil
+	transition, err := BuildTransitionRecord(events)
+	if err != nil {
+		return CommitDecision{}, err
+	}
+	return CommitDecision{Kind: DecisionApply, NewState: state, Events: transition.Events, Transition: transition}, nil
 }
 
 // BuildEnvelope assembles a CommandEnvelope with its type discriminator and
