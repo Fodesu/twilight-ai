@@ -134,7 +134,14 @@ func (l *Loop) planAndPrepare(ctx, controlCtx context.Context, runtime Runtime, 
 	if plan.Model != hint.Model {
 		return fmt.Errorf("agent: loop: plan model %q does not match hint model %q", plan.Model, hint.Model)
 	}
-	requestDigest, err := DigestRequest(plan.Request)
+	frozenRequest, err := FreezeModelRequest(plan.Request)
+	if err != nil {
+		return err
+	}
+	if ModelRef(frozenRequest.Model) != plan.Model {
+		return fmt.Errorf("agent: loop: request model %q does not match plan model %q", frozenRequest.Model, plan.Model)
+	}
+	requestDigest, err := DigestRequest(frozenRequest)
 	if err != nil {
 		return err
 	}
@@ -151,7 +158,7 @@ func (l *Loop) planAndPrepare(ctx, controlCtx context.Context, runtime Runtime, 
 	_, err = l.commit(controlCtx, runtime, snapshot.State.RunID, cmdID, snapshot.Revision, "", PrepareModelRequest{
 		StepID:        stepID,
 		Model:         plan.Model,
-		Request:       plan.Request,
+		Request:       frozenRequest,
 		RequestDigest: requestDigest,
 		InputIDs:      plan.InputIDs,
 		PlanningToken: plan.PlanningToken,
@@ -205,19 +212,27 @@ func (l *Loop) runModelStep(ctx, controlCtx context.Context, runtime Runtime, ev
 	} else {
 		// Model workers derive from the outer ctx: cancelling a model call is
 		// safe, the frozen request retries after recovery (spec §6.1).
-		result, invokeErr := l.invokeModel(ctx, invoker, modelStep.Request, run, stepID, events)
-		switch {
-		case invokeErr != nil && ctx.Err() != nil:
-			completion = RecoverModelExecution{StepID: stepID}
-		case invokeErr != nil:
-			completion = SubmitModelFailure{StepID: stepID, Failure: StepFailure{Class: FailureProvider, Message: invokeErr.Error()}}
-		default:
-			bindings, bindErr := l.bindToolCalls(result, modelStep)
-			if bindErr != nil {
-				completion = RejectModelResult{StepID: stepID, Usage: result.Usage,
-					Failure: StepFailure{Class: FailureMalformedModel, Message: bindErr.Error()}}
-			} else {
-				completion = SubmitModelResult{StepID: stepID, Result: result, Calls: bindings}
+		sdkRequest, err := modelStep.Request.SDK()
+		if err != nil {
+			completion = SubmitModelFailure{StepID: stepID, Failure: StepFailure{Class: FailureProvider, Message: err.Error()}}
+		} else {
+			result, invokeErr := l.invokeModel(ctx, invoker, sdkRequest, run, stepID, events)
+			switch {
+			case invokeErr != nil && ctx.Err() != nil:
+				completion = RecoverModelExecution{StepID: stepID}
+			case invokeErr != nil:
+				completion = SubmitModelFailure{StepID: stepID, Failure: StepFailure{Class: FailureProvider, Message: invokeErr.Error()}}
+			default:
+				bindings, bindErr := l.bindToolCalls(result, modelStep)
+				if bindErr != nil {
+					completion = RejectModelResult{StepID: stepID, Usage: UsageFromSDK(result.Usage),
+						Failure: StepFailure{Class: FailureMalformedModel, Message: bindErr.Error()}}
+				} else if frozenResult, freezeErr := FreezeModelResult(result); freezeErr != nil {
+					completion = RejectModelResult{StepID: stepID, Usage: UsageFromSDK(result.Usage),
+						Failure: StepFailure{Class: FailureMalformedModel, Message: freezeErr.Error()}}
+				} else {
+					completion = SubmitModelResult{StepID: stepID, Result: frozenResult, Calls: bindings}
+				}
 			}
 		}
 	}
@@ -376,7 +391,11 @@ func (l *Loop) runToolCalls(ctx, controlCtx context.Context, runtime Runtime, ev
 		case resolveErr != nil:
 			known = &ToolFailure{Class: FailureToolLookup, Message: resolveErr.Error()}
 		default:
-			defDigest, err := DigestToolDefinition(tool.Definition())
+			toolDef, err := FreezeToolDefinition(tool.Definition())
+			if err != nil {
+				return err
+			}
+			defDigest, err := DigestToolDefinition(toolDef)
 			if err != nil {
 				return err
 			}

@@ -57,7 +57,11 @@ func testToolDef(name string) sdk.ToolDefinition {
 
 func buildPrepare(t *testing.T, s MachineState, req sdk.Request, specs []ToolSpec) (PrepareModelRequest, CommandID) {
 	t.Helper()
-	reqDigest, err := DigestRequest(req)
+	frozenReq, err := FreezeModelRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqDigest, err := DigestRequest(frozenReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +82,7 @@ func buildPrepare(t *testing.T, s MachineState, req sdk.Request, specs []ToolSpe
 	return PrepareModelRequest{
 		StepID:        stepID,
 		Model:         s.Config.Model,
-		Request:       req,
+		Request:       frozenReq,
 		RequestDigest: reqDigest,
 		InputIDs:      ids,
 		Tools:         specs,
@@ -88,11 +92,15 @@ func buildPrepare(t *testing.T, s MachineState, req sdk.Request, specs []ToolSpe
 
 func makeSpec(t *testing.T, def sdk.ToolDefinition, policy ResponsePolicy) ToolSpec {
 	t.Helper()
-	d, err := DigestToolDefinition(def)
+	frozen, err := FreezeToolDefinition(def)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ToolSpec{Ref: ToolRef(def.Name), Definition: def, DefinitionDigest: d, Policy: policy}
+	d, err := DigestToolDefinition(frozen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ToolSpec{Ref: ToolRef(def.Name), Definition: frozen, DefinitionDigest: d, Policy: policy}
 }
 
 func makeBinding(t *testing.T, callID string, spec ToolSpec, args string) ToolCallBinding {
@@ -111,13 +119,13 @@ func makeBinding(t *testing.T, callID string, spec ToolSpec, args string) ToolCa
 	}
 }
 
-func modelResultWithCalls(callIDs ...string) sdk.ModelResult {
+func modelResultWithCalls(callIDs ...string) ModelResult {
 	return modelResultWithNamedCalls("t", `{}`, callIDs...)
 }
 
 // modelResultWithNamedCalls builds a result whose tool calls carry the given
 // tool name and argument text — bindings must cross-check against these.
-func modelResultWithNamedCalls(toolName, args string, callIDs ...string) sdk.ModelResult {
+func modelResultWithNamedCalls(toolName, args string, callIDs ...string) ModelResult {
 	r := sdk.ModelResult{
 		Text:         "",
 		FinishReason: sdk.FinishReasonToolCalls,
@@ -126,7 +134,11 @@ func modelResultWithNamedCalls(toolName, args string, callIDs ...string) sdk.Mod
 	for _, id := range callIDs {
 		r.ToolCalls = append(r.ToolCalls, sdk.ToolCall{ToolCallID: id, ToolName: toolName, Input: args})
 	}
-	return r
+	frozen, err := FreezeModelResult(r)
+	if err != nil {
+		panic(err)
+	}
+	return frozen
 }
 
 // advance runs prepare+start and returns the state in Executing plus stepID.
@@ -199,7 +211,10 @@ func TestPrepareRejectsIncompleteInputIDs(t *testing.T) {
 func TestModelCompleteNoToolsEndsRun(t *testing.T) {
 	s := newRun(t, testConfig())
 	s, stepID := advanceToExecuting(t, s, testRequest(), nil)
-	result := sdk.ModelResult{Text: "done", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 7}}
+	result, err := FreezeModelResult(sdk.ModelResult{Text: "done", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 7}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: result})
 	if len(facts) != 2 {
 		t.Fatalf("facts = %d, want [completed, ended]", len(facts))
@@ -356,13 +371,16 @@ func TestParallelWaitingDoesNotBlockPending(t *testing.T) {
 
 	bA := makeBinding(t, "cA", specA, `{}`)
 	bB := makeBinding(t, "cB", specB, `{}`)
-	r := sdk.ModelResult{
+	r, err := FreezeModelResult(sdk.ModelResult{
 		FinishReason: sdk.FinishReasonToolCalls,
 		Usage:        sdk.Usage{TotalTokens: 15},
 		ToolCalls: []sdk.ToolCall{
 			{ToolCallID: "cA", ToolName: "a", Input: `{}`},
 			{ToolCallID: "cB", ToolName: "b", Input: `{}`},
 		},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: r, Calls: []ToolCallBinding{bA, bB}})
 	opened := facts[1].(ToolStepOpened)
@@ -405,7 +423,7 @@ func TestRejectModelResultRetriesThenFails(t *testing.T) {
 	s := newRun(t, cfg)
 	s, stepID := advanceToExecuting(t, s, testRequest(), nil)
 
-	usage := sdk.Usage{TotalTokens: 3}
+	usage := Usage{TotalTokens: 3}
 	// Reject 1: back to Prepared.
 	facts := mustDecide(t, s, RejectModelResult{StepID: stepID, Usage: usage, Failure: StepFailure{Class: FailureMalformedModel}})
 	if len(facts) != 1 {
@@ -506,6 +524,49 @@ func TestAcceptInputIdempotentPerID(t *testing.T) {
 	s = fold(t, s, mustDecide(t, s, prep))
 	if _, err := Decide(s, NextStep(AgentInput{ID: "in-3"})); err == nil {
 		t.Fatal("AcceptInput accepted with a current step")
+	}
+}
+
+func TestAcceptInputRejectsSeedDuplicateID(t *testing.T) {
+	s := newRun(t, testConfig())
+	_, err := Decide(s, NextStep(AgentInput{ID: "seed", Payload: json.RawMessage(`{"q":"other"}`)}))
+	if err != ErrCommandConflict {
+		t.Fatalf("duplicate seed input err = %v, want ErrCommandConflict", err)
+	}
+}
+
+func TestSubmitModelResultRejectsNonFrozenToolInput(t *testing.T) {
+	def := testToolDef("t")
+	spec := makeSpec(t, def, DirectExecution)
+	s := newRun(t, testConfig())
+	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
+	b := makeBinding(t, "c1", spec, `{"path":"/etc/passwd"}`)
+	result := ModelResult{
+		FinishReason: FinishReasonToolCalls,
+		ToolCalls: []ModelToolCall{{
+			ToolCallID: "c1",
+			ToolName:   "t",
+			Input:      json.RawMessage(`{"path":`),
+		}},
+	}
+	if _, err := Decide(s, SubmitModelResult{StepID: stepID, Result: result, Calls: []ToolCallBinding{b}}); err == nil {
+		t.Fatal("accepted non-frozen model tool input")
+	}
+}
+
+func TestEvolveRejectsModelPrepareOverCurrentStep(t *testing.T) {
+	s := newRun(t, testConfig())
+	s, _ = advanceToExecuting(t, s, testRequest(), nil)
+	_, err := Evolve(s, ModelStepPrepared{
+		StepID:        "other",
+		Model:         s.Config.Model,
+		Request:       ModelRequest{Model: string(s.Config.Model)},
+		RequestDigest: "sha256:req",
+		ToolsDigest:   "sha256:tools",
+		BindingDigest: "sha256:binding",
+	})
+	if err == nil {
+		t.Fatal("Evolve accepted ModelStepPrepared over an existing step")
 	}
 }
 

@@ -43,7 +43,11 @@ func FoldEvents(initial MachineState, events []AgentEvent) (MachineState, uint64
 		if e.Digest != wantDigest {
 			return initial, 0, fmt.Errorf("agent: fold: fact digest mismatch at revision %d index %d", e.Revision, e.Index)
 		}
-		state, err = Evolve(state, e.Fact)
+		fact, err := snapshotFact(e.Fact)
+		if err != nil {
+			return initial, 0, err
+		}
+		state, err = Evolve(state, fact)
 		if err != nil {
 			return initial, 0, err
 		}

@@ -8,7 +8,8 @@ import (
 )
 
 // RequestPlanner is the port the application injects: it projects application
-// context into the next frozen sdk.Request (spec §5.6). Planning
+// context into the next boundary sdk.Request (spec §5.6). Loop freezes it into
+// an agent-owned ModelRequest before crossing the Runtime boundary. Planning
 // implementations never live in agent.
 type RequestPlanner interface {
 	Plan(context.Context, PlanningHint) (RequestPlan, error)

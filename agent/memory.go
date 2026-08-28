@@ -31,9 +31,10 @@ type MemoryRuntime struct {
 
 // NewMemoryRuntime starts from an Initialize-produced state at Revision 0.
 func NewMemoryRuntime(initial MachineState) *MemoryRuntime {
+	frozenInitial := cloneMachineState(initial)
 	return &MemoryRuntime{
-		state:   initial,
-		initial: cloneMachineState(initial),
+		state:   cloneMachineState(frozenInitial),
+		initial: frozenInitial,
 		events:  make(map[CommandID][]AgentEvent),
 		grants:  make(map[string]ExecutionGrant),
 	}
@@ -81,6 +82,27 @@ func newGrant() ExecutionGrant {
 	return ExecutionGrant(hex.EncodeToString(b[:]))
 }
 
+func foldCommittedEventGroup(state MachineState, events []AgentEvent) (MachineState, error) {
+	for _, e := range events {
+		want, err := DigestFact(e.SchemaVersion, e.Type, e.Fact)
+		if err != nil {
+			return state, err
+		}
+		if e.Digest != want {
+			return state, fmt.Errorf("agent: memory runtime: stored fact digest mismatch at revision %d index %d", e.Revision, e.Index)
+		}
+		fact, err := snapshotFact(e.Fact)
+		if err != nil {
+			return state, err
+		}
+		state, err = Evolve(state, fact)
+		if err != nil {
+			return state, err
+		}
+	}
+	return state, nil
+}
+
 func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitResult, error) {
 	if err := ctx.Err(); err != nil {
 		return CommitResult{}, err
@@ -126,13 +148,17 @@ func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitRe
 		return CommitResult{}, ErrRunTerminal
 	}
 
-	// DecisionApply: persist state + events atomically under the lock, manage
-	// occupancy, and mint the grant for an accepted start. Facts are cloned on
-	// the way in so caller-held command buffers cannot mutate stored events.
-	m.state = decision.NewState
+	// DecisionApply: persist owned events and derive the authoritative snapshot
+	// from those same stored facts. The event log is the source of truth; the
+	// in-memory state is only its same-transaction projection.
+	stored := cloneEvents(decision.Events)
+	newState, err := foldCommittedEventGroup(m.state, stored)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	m.state = cloneMachineState(newState)
 	m.revision++
 	m.watermark = m.revision
-	stored := cloneEvents(decision.Events)
 	m.events[req.Command.ID] = stored
 	m.log = append(m.log, stored...)
 
@@ -153,7 +179,7 @@ func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitRe
 	return CommitResult{
 		Status:   CommitAccepted,
 		Snapshot: RuntimeSnapshot{State: cloneMachineState(m.state), Revision: m.revision},
-		Events:   cloneEvents(decision.Events),
+		Events:   cloneEvents(stored),
 		Grant:    minted,
 	}, nil
 }

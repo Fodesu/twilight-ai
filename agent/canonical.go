@@ -35,6 +35,13 @@ func canonicalJSON(raw []byte) ([]byte, error) {
 	if !utf8.Valid(raw) {
 		return nil, errors.New("agent: canonical: invalid UTF-8 input")
 	}
+	// encoding/json also rewrites escaped lone surrogates (\ud800..\udfff) to
+	// U+FFFD before writeCanonicalString sees them. Reject them while the raw
+	// escape structure is still visible; otherwise distinct payloads collapse
+	// into the same digest.
+	if err := rejectEscapedLoneSurrogates(raw); err != nil {
+		return nil, err
+	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
 	v, err := parseCanonicalValue(dec)
@@ -51,6 +58,76 @@ func canonicalJSON(raw []byte) ([]byte, error) {
 		return nil, err
 	}
 	return b.Bytes(), nil
+}
+
+func rejectEscapedLoneSurrogates(raw []byte) error {
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '"' {
+			continue
+		}
+		i++
+		for i < len(raw) {
+			switch raw[i] {
+			case '"':
+				goto nextToken
+			case '\\':
+				if i+1 >= len(raw) {
+					return nil // let the JSON decoder report syntax
+				}
+				if raw[i+1] != 'u' && raw[i+1] != 'U' {
+					i += 2
+					continue
+				}
+				if i+6 > len(raw) {
+					return nil // let the JSON decoder report syntax
+				}
+				code, ok := parseHex4(raw[i+2 : i+6])
+				if !ok {
+					return nil // let the JSON decoder report syntax
+				}
+				switch {
+				case 0xd800 <= code && code <= 0xdbff:
+					if i+12 > len(raw) || raw[i+6] != '\\' || (raw[i+7] != 'u' && raw[i+7] != 'U') {
+						return errors.New("agent: canonical: escaped lone surrogate")
+					}
+					low, ok := parseHex4(raw[i+8 : i+12])
+					if !ok || low < 0xdc00 || low > 0xdfff {
+						return errors.New("agent: canonical: escaped lone surrogate")
+					}
+					i += 12
+				case 0xdc00 <= code && code <= 0xdfff:
+					return errors.New("agent: canonical: escaped lone surrogate")
+				default:
+					i += 6
+				}
+			default:
+				i++
+			}
+		}
+	nextToken:
+	}
+	return nil
+}
+
+func parseHex4(raw []byte) (rune, bool) {
+	if len(raw) != 4 {
+		return 0, false
+	}
+	var n rune
+	for _, b := range raw {
+		n <<= 4
+		switch {
+		case '0' <= b && b <= '9':
+			n += rune(b - '0')
+		case 'a' <= b && b <= 'f':
+			n += rune(b-'a') + 10
+		case 'A' <= b && b <= 'F':
+			n += rune(b-'A') + 10
+		default:
+			return 0, false
+		}
+	}
+	return n, true
 }
 
 // parseCanonicalValue decodes one JSON value from the token stream, rejecting

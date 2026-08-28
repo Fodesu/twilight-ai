@@ -3,8 +3,6 @@ package agent
 import (
 	"errors"
 	"fmt"
-
-	"github.com/memohai/twilight-ai/sdk"
 )
 
 // SchemaVersion1 is the first published wire schema. Canonical encoding and
@@ -109,10 +107,10 @@ func DigestRunSeed(schemaVersion uint16, seed RunSeed) (Digest, error) {
 	return sha256Digest(body), nil
 }
 
-// DigestRequest covers every field of a frozen sdk.Request with no
-// exclusions (spec §2.1 rule 6).
-func DigestRequest(req sdk.Request) (Digest, error) {
-	body, err := encodeEnvelopeBody(currentSchemaVersion, "sdk_request", req)
+// DigestRequest covers every field of a frozen ModelRequest with no exclusions
+// (spec §2.1 rule 7).
+func DigestRequest(req ModelRequest) (Digest, error) {
+	body, err := encodeEnvelopeBody(currentSchemaVersion, "model_request", req)
 	if err != nil {
 		return "", err
 	}
@@ -120,8 +118,8 @@ func DigestRequest(req sdk.Request) (Digest, error) {
 }
 
 // DigestToolDefinition covers one provider-neutral tool definition.
-func DigestToolDefinition(def sdk.ToolDefinition) (Digest, error) {
-	body, err := encodeEnvelopeBody(currentSchemaVersion, "sdk_tool_definition", def)
+func DigestToolDefinition(def ToolDefinition) (Digest, error) {
+	body, err := encodeEnvelopeBody(currentSchemaVersion, "tool_definition", def)
 	if err != nil {
 		return "", err
 	}

@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-
-	"github.com/memohai/twilight-ai/sdk"
 )
 
 type RunStatus uint8
@@ -36,11 +34,11 @@ type RunFailure struct {
 }
 
 type RunResult struct {
-	Status  RunStatus        `json:"status"`
-	Reason  RunReason        `json:"reason,omitempty"`
-	Failure *RunFailure      `json:"failure,omitempty"`
-	Model   *sdk.ModelResult `json:"model,omitempty"`
-	Usage   sdk.Usage        `json:"usage"`
+	Status  RunStatus    `json:"status"`
+	Reason  RunReason    `json:"reason,omitempty"`
+	Failure *RunFailure  `json:"failure,omitempty"`
+	Model   *ModelResult `json:"model,omitempty"`
+	Usage   Usage        `json:"usage"`
 }
 
 // RunConfig is frozen at Run creation.
@@ -101,13 +99,13 @@ type ResponseRequest struct {
 	RequestDigest Digest          `json:"requestDigest"` // digest of the request payload
 }
 
-// ToolSpec is the agent-side sidecar for a provider-neutral sdk.ToolDefinition.
+// ToolSpec is the agent-side sidecar for a provider-neutral ToolDefinition.
 // ResponsePolicy is intentionally kept out of sdk to preserve package layering.
 type ToolSpec struct {
-	Ref              ToolRef            `json:"ref"`
-	Definition       sdk.ToolDefinition `json:"definition"`
-	DefinitionDigest Digest             `json:"definitionDigest"`
-	Policy           ResponsePolicy     `json:"policy"`
+	Ref              ToolRef        `json:"ref"`
+	Definition       ToolDefinition `json:"definition"`
+	DefinitionDigest Digest         `json:"definitionDigest"`
+	Policy           ResponsePolicy `json:"policy"`
 }
 
 // ToolCallBinding is one frozen call inside ToolStepOpened.
@@ -144,7 +142,7 @@ const (
 
 type ModelStep struct {
 	RefValue      StepRef         `json:"ref"`
-	Request       sdk.Request     `json:"request"`
+	Request       ModelRequest    `json:"request"`
 	RequestDigest Digest          `json:"requestDigest"`
 	Model         ModelRef        `json:"model"`
 	Tools         []ToolSpec      `json:"tools,omitempty"`
@@ -155,8 +153,8 @@ type ModelStep struct {
 	Rejects int `json:"rejects,omitempty"`
 }
 
-func (ModelStep) step()            {}
-func (s ModelStep) Ref() StepRef   { return s.RefValue }
+func (ModelStep) step()          {}
+func (s ModelStep) Ref() StepRef { return s.RefValue }
 
 type ToolCallStatus uint8
 
@@ -272,10 +270,10 @@ type MachineState struct {
 	ModelSteps    int          `json:"modelSteps"`
 	// LastClosedStep is the most recently closed ToolStep; PlanningHint's
 	// SourceStep is read from it at the next boundary.
-	LastClosedStep  StepID           `json:"lastClosedStep,omitempty"`
-	Usage           sdk.Usage        `json:"usage"`
-	LastModelResult *sdk.ModelResult `json:"lastModelResult,omitempty"`
-	Result          *RunResult       `json:"result,omitempty"`
+	LastClosedStep  StepID       `json:"lastClosedStep,omitempty"`
+	Usage           Usage        `json:"usage"`
+	LastModelResult *ModelResult `json:"lastModelResult,omitempty"`
+	Result          *RunResult   `json:"result,omitempty"`
 }
 
 // Initialize builds the initial MachineState (Revision 0) for a new Run from
@@ -300,10 +298,14 @@ func Initialize(run RunID, cfg RunConfig, seed RunSeed) (MachineState, error) {
 	if seed.Input.ID == "" {
 		return MachineState{}, errors.New("agent: initialize: seed input requires an InputID")
 	}
+	input, err := snapshotJSONStable(seed.Input)
+	if err != nil {
+		return MachineState{}, err
+	}
 	return MachineState{
 		RunID:         run,
 		Status:        RunActive,
 		Config:        cfg,
-		PendingInputs: []AgentInput{seed.Input},
+		PendingInputs: []AgentInput{input},
 	}, nil
 }

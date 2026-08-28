@@ -58,7 +58,11 @@ func preparedRuntime(t *testing.T, tools []sdk.ToolDefinition, specs []ToolSpec)
 
 func buildPrepareFromSnap(t *testing.T, snap RuntimeSnapshot, req sdk.Request, specs []ToolSpec) (PrepareModelRequest, CommandID) {
 	t.Helper()
-	reqDigest, err := DigestRequest(req)
+	frozenReq, err := FreezeModelRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqDigest, err := DigestRequest(frozenReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +81,7 @@ func buildPrepareFromSnap(t *testing.T, snap RuntimeSnapshot, req sdk.Request, s
 		ids[i] = in.ID
 	}
 	return PrepareModelRequest{
-		StepID: stepID, Model: snap.State.Config.Model, Request: req,
+		StepID: stepID, Model: snap.State.Config.Model, Request: frozenReq,
 		RequestDigest: reqDigest, InputIDs: ids, Tools: specs, ToolsDigest: toolsDigest,
 	}, cmdID
 }
@@ -137,7 +141,7 @@ func TestConformanceStartGrantLifecycle(t *testing.T) {
 	rt, stepID, grant := preparedRuntime(t, nil, nil)
 
 	// Completion without grant is stale.
-	_, err := commitCmd(t, rt, "done-x", 2, "", SubmitModelResult{StepID: stepID, Result: sdk.ModelResult{}})
+	_, err := commitCmd(t, rt, "done-x", 2, "", SubmitModelResult{StepID: stepID, Result: ModelResult{}})
 	if !errors.Is(err, ErrStaleRuntime) {
 		t.Fatalf("grantless completion err = %v, want ErrStaleRuntime", err)
 	}
@@ -147,7 +151,11 @@ func TestConformanceStartGrantLifecycle(t *testing.T) {
 		t.Fatalf("replayed start: %+v", res)
 	}
 	// Owner completes with the minted grant.
-	res = mustCommit(t, rt, "done-1", 2, grant, SubmitModelResult{StepID: stepID, Result: sdk.ModelResult{Text: "ok"}})
+	ok, err := FreezeModelResult(sdk.ModelResult{Text: "ok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res = mustCommit(t, rt, "done-1", 2, grant, SubmitModelResult{StepID: stepID, Result: ok})
 	if res.Status != CommitAccepted || res.Snapshot.State.Status != RunCompleted {
 		t.Fatalf("completion: %+v", res.Snapshot.State.Status)
 	}
@@ -161,12 +169,15 @@ func TestConformanceCallLocalRebase(t *testing.T) {
 
 	bA := makeBinding(t, "cA", specA, `{}`)
 	bB := makeBinding(t, "cB", specB, `{}`)
-	r := sdk.ModelResult{
+	r, err := FreezeModelResult(sdk.ModelResult{
 		FinishReason: sdk.FinishReasonToolCalls,
 		ToolCalls: []sdk.ToolCall{
 			{ToolCallID: "cA", ToolName: "a", Input: `{}`},
 			{ToolCallID: "cB", ToolName: "b", Input: `{}`},
 		},
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	res := mustCommit(t, rt, "complete-1", 2, grant,
 		SubmitModelResult{StepID: stepID, Result: r, Calls: []ToolCallBinding{bA, bB}})
@@ -187,11 +198,28 @@ func TestConformanceCallLocalRebase(t *testing.T) {
 		t.Fatal("owner completion on stale base must rebase")
 	}
 	// Second start of the same call must not rebase (no longer Pending).
-	_, err := commitCmd(t, rt, "start-A2", base, "", StartToolCall{StepID: toolStep, CallID: "cA"})
+	_, err = commitCmd(t, rt, "start-A2", base, "", StartToolCall{StepID: toolStep, CallID: "cA"})
 	if !errors.Is(err, ErrStaleRuntime) {
 		t.Fatalf("restart of settled call err = %v, want ErrStaleRuntime", err)
 	}
 	_ = startB
+}
+
+func TestConformancePrepareDerivedIdentity(t *testing.T) {
+	rt := newTestRuntime(t, RunConfig{Model: "m-1"})
+	snap, _ := rt.Load(context.Background())
+	prep, cmdID := buildPrepareFromSnap(t, snap, testRequest(), nil)
+
+	if _, err := commitCmd(t, rt, "wrong-prepare-id", snap.Revision, "", prep); err == nil {
+		t.Fatal("PrepareModelRequest accepted a non-derived CommandID")
+	}
+
+	bad := prep
+	bad.StepID = "wrong-step"
+	_, err := commitCmd(t, rt, cmdID, snap.Revision, "", bad)
+	if !errors.Is(err, ErrStaleRuntime) {
+		t.Fatalf("bad prepare StepID err = %v, want ErrStaleRuntime", err)
+	}
 }
 
 func TestConformancePrepareIsHardCAS(t *testing.T) {

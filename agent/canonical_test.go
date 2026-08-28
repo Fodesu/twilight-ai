@@ -30,6 +30,7 @@ func TestCanonicalJSON(t *testing.T) {
 		{"string escapes minimal", `{"a":"A\nB\u0041"}`, "{\"a\":\"A\\nBA\"}"},
 		{"string control chars", `{"a":"\u0001"}`, "{\"a\":\"\\u0001\"}"},
 		{"string unicode passthrough", `{"a":"\u00e9"}`, `{"a":"é"}`},
+		{"string surrogate pair", `{"a":"\ud834\udd1e"}`, `{"a":"𝄞"}`},
 		{"array order preserved", `[3,1,2]`, `[3,1,2]`},
 	}
 	for _, c := range cases {
@@ -46,7 +47,10 @@ func TestCanonicalJSON(t *testing.T) {
 }
 
 func TestCanonicalJSONRejects(t *testing.T) {
-	for _, in := range []string{``, `{"a":1}garbage`, `{bad}`} {
+	for _, in := range []string{
+		``, `{"a":1}garbage`, `{bad}`,
+		`"\ud800"`, `"\udbff"`, `"\udc00"`, `"\ud800x"`, `"\ud800\u0041"`,
+	} {
 		if _, err := canonicalJSON([]byte(in)); err == nil {
 			t.Fatalf("canonicalJSON(%q): expected error", in)
 		}

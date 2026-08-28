@@ -101,7 +101,7 @@ func TestRegressionToolStepIDReproducible(t *testing.T) {
 // silently dropped.
 func TestRegressionSettleCommitErrorSurfaces(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
-	echo := &fakeTool{ref: "echo", def: spec.Definition, policy: DirectExecution,
+	echo := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: DirectExecution,
 		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
 			// Invalid JSON output makes BuildEnvelope/DigestCommand fail: a
 			// non-sentinel commit error on the settle path.
@@ -125,7 +125,7 @@ func TestRegressionSettleCommitErrorSurfaces(t *testing.T) {
 // process.
 func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
-	echo := &fakeTool{ref: "echo", def: spec.Definition, policy: DirectExecution,
+	echo := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: DirectExecution,
 		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
 			panic("nil map write")
 		}}
@@ -279,11 +279,15 @@ func TestRegressionRunFinishedEmitted(t *testing.T) {
 // through the catalog by Ref end to end.
 func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 	def := sdk.ToolDefinition{Name: "read", Parameters: json.RawMessage(`{"type":"object"}`)}
-	d, err := DigestToolDefinition(def)
+	frozenDef, err := FreezeToolDefinition(def)
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := ToolSpec{Ref: "fs.read", Definition: def, DefinitionDigest: d, Policy: DirectExecution}
+	d, err := DigestToolDefinition(frozenDef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := ToolSpec{Ref: "fs.read", Definition: frozenDef, DefinitionDigest: d, Policy: DirectExecution}
 	executed := atomic.Bool{}
 	tool := &fakeTool{ref: "fs.read", def: def, policy: DirectExecution,
 		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {

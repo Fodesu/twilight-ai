@@ -10,6 +10,9 @@ import "fmt"
 func Evolve(s MachineState, f Fact) (MachineState, error) {
 	switch fact := f.(type) {
 	case ModelStepPrepared:
+		if s.Current != nil {
+			return s, fmt.Errorf("agent: evolve: model step prepared while a step is current")
+		}
 		s.Current = ModelStep{
 			RefValue:      StepRef{RunID: s.RunID, ID: fact.StepID, Digest: fact.BindingDigest},
 			Request:       fact.Request,

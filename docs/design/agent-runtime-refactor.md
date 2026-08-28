@@ -53,11 +53,13 @@ Durable agent
                        ^              |
                        | state        | Effect
                        |              v
-Request Planner --> sdk.Request --> Agent Loop ------> Model / Tool
- application       (frozen)          |
- context                              | AgentCommand
-                                      v
-                                   Runtime
+Request Planner --> sdk.Request --Freeze*--> Agent Loop --SDK()--> Model / Tool
+ application       (boundary)                  |
+ context                                      | AgentCommand carries
+                                              | agent.ModelRequest / ModelResult
+                                              | (JSON-stable persisted values)
+                                              v
+                                           Runtime
                              Load + atomic Commit
                             /                  \
                    MemoryRuntime          MemohRuntime
@@ -77,8 +79,8 @@ Loop 与 Runtime 的职责相互独立：Loop 决定如何执行，Runtime 决�
 
 ```text
 twilight-ai/
-  sdk/       一次 LLM request/response
-  agent/     Machine、Loop、Step、工具 contract、Runtime contract
+  sdk/       一次 LLM request/response 的边界/transport 类型
+  agent/     Machine、Loop、Step、工具 contract、Runtime contract、JSON-stable persisted model data
 
 Memoh native runtime
   Request Planner、产品 context、durable history、queue、session 和数据库事务
@@ -129,7 +131,7 @@ Step 不是最小的外部操作。ToolStep 保存每个 ToolCall 中会影响�
 | Loop | 当前进程执行 Run 的算法；它不保存权威状态。 |
 | MachineState | Machine 的完整语义状态。 |
 | Step | Run 中的 durable resume boundary。 |
-| ModelStep | 一次冻结的 `sdk.Request`，直到接受模型结果。 |
+| ModelStep | 一次冻结的 agent-owned `ModelRequest`，直到接受模型结果。 |
 | ToolStep | 一个模型结果产生的一组 ToolCall 及其 progress。 |
 | ToolCall | ToolStep 内的一个结构化工具调用。 |
 | AgentCommand | Loop 或外部入口希望 Machine 接受的意图；接受后构成一次 transition。 |
@@ -167,18 +169,23 @@ sdk 只负责 LLM API：
 | 协议类型 | message、provider-neutral tool definition、tool call、finish reason、usage 和 metadata。 |
 | stream 归一化 | 将 parts 组装成一次完整 `ModelResult`。 |
 | provider 错误 | transport、rate limit、malformed stream 和 provider response error。 |
-| request snapshot | provider-neutral、可冻结的请求表示。 |
+| request/result boundary | provider-neutral 的一次调用输入输出；可由 agent 在 Loop 边界冻结。 |
 
 `sdk.Request` 是一次模型调用的完整输入，不是 session、history 或 queue。`sdk.ModelResult` 是一次完整模型响应，保留旧 `GenerateResult` 的单次调用字段（文本、reasoning parts、tool calls、finish reason、usage、sources/files 和 provider metadata），但不包含自动 tool loop、approval 或多次调用累加。多步执行的 steps 和 messages 由 agent/application 另行保存。
 
-`sdk.Request` 的冻结形态遵守以下规则；`DigestRequest`、StepID 派生和提交幂等都建立在这套规则上：
+`sdk` 类型只允许存在于 Planner/ModelInvoker/provider 边界；不得作为 AgentEvent、MachineState、AgentCommand 或 digest input 的持久化形态。Loop 必须在提交前把 `sdk.Request`、`sdk.ModelResult` 和 `sdk.ToolDefinition` 分别转换成 agent-owned 的 `ModelRequest`、`ModelResult` 和 `ToolDefinition`；调用 provider/tool 前再由这些 frozen value 构造新的 `sdk` 值。
 
-1. Request 是纯数据。它不包含 provider client、接口值、回调或 `Execute` 句柄；模型以 provider 作用域内的字符串 ID 表示，provider 绑定发生在 `ModelCatalog`/`ModelInvoker` 解析时。
-2. 工具以 provider-neutral 的 `ToolDefinition{Name, Description, Parameters}` 表示；`Parameters` 是解析完成的 JSON Schema 文档。由 Go struct 推导 schema 的工作在冻结前完成，冻结后的 Request 不依赖推导或反射。
+agent-owned 冻结形态遵守以下规则；`FreezeModelRequest`、`FreezeModelResult`、`FreezeToolDefinition`、`DigestRequest`、StepID 派生和提交幂等都建立在这套规则上：
+
+1. 冻结值是纯数据。它不包含 provider client、接口值、回调或 `Execute` 句柄；模型以 provider 作用域内的字符串 ID 表示，provider 绑定发生在 `ModelCatalog`/`ModelInvoker` 解析时。
+2. 工具以 provider-neutral 的 `ToolDefinition{Name, Description, Parameters}` 表示；`Parameters` 是解析完成并 canonicalized 的 JSON Schema 文档。由 Go struct 推导 schema 的工作在冻结前完成，冻结后的 Request 不依赖推导或反射。
 3. `ToolChoice` 是封闭类型 `{Mode: auto|none|required|tool, Tool string}`，不使用 `any`。
-4. 消息中的二进制内容有两种形式：inline bytes（canonical 编码为 base64），或稳定的内容寻址引用 `BlobRef{Digest, MediaType, ByteSize}`。`BlobRef` 的字节解析由组装 `ModelInvoker` 的一方负责；带时效的 URL 等不稳定引用不能进入冻结请求。两种形式产生不同的 digest，Planner 对同一内容必须确定性地选择一种形式。
-5. provider metadata 等扩展字段的值必须是 JSON 值。canonical 编码采用 RFC 8785（JCS）：对象键按 UTF-16 码元排序，数字使用最短表示，`json.RawMessage` 先按 JCS 重新序列化。
-6. `DigestRequest` 覆盖 Request 的全部字段，不设排除项。cache 配置等只影响成本的字段同样参与摘要；排除任何字段都会把不同请求判成同一事件，产生错误的 `CommitAlreadyApplied`。
+4. 消息 part 是 sealed union 的 agent value（text/reasoning/image/file/tool-call/tool-result），不持久化 `sdk.MessagePart` interface。
+5. 消息中的二进制内容有两种形式：inline bytes（canonical 编码为 base64），或稳定的内容寻址引用 `BlobRef{Digest, MediaType, ByteSize}`。`BlobRef` 的字节解析由组装 `ModelInvoker` 的一方负责；带时效的 URL 等不稳定引用不能进入冻结请求。两种形式产生不同的 digest，Planner 对同一内容必须确定性地选择一种形式。
+6. provider metadata、provider options、tool input/result、response format schema 等扩展字段的值必须是 JSON 值。进入 agent 前必须 canonicalize 并 detach 为 agent-owned `json.RawMessage`；不能保存 caller-owned map/slice/RawMessage 或 `any`。canonicalization 必须拒绝会把不同 payload 折叠成同一值的输入，包括重复 object key、trailing data、invalid UTF-8 和 escaped lone surrogate（`\ud800`..`\udfff`）。
+7. `DigestRequest` 覆盖 frozen `ModelRequest` 的全部字段，不设排除项。cache 配置等只影响成本的字段同样参与摘要；排除任何字段都会把不同请求判成同一事件，产生错误的 `CommitAlreadyApplied`。
+
+边界的 SDK 类型可以保持以下形态；agent 的持久化 `ModelRequest`/`ToolDefinition` 是相同语义的 concrete mirror，字段中所有接口/any/JSON 原文先在 `Freeze*` 中 canonicalize。
 
 ```go
 package sdk
@@ -230,6 +237,8 @@ type BlobRef struct {
 
 provider transport 的短暂失败可以由 sdk/provider client 在一次调用内部重试；agent 只看到最终的 `ModelResult` 或 provider error。重试次数和退避属于 sdk/provider 配置。
 
+新的单次调用入口是 `sdk.Generate(ctx, model, Request)` / `(*Model).Generate(ctx, Request)` 和对应的 `Stream` / `(*Model).Stream`，返回 `ModelResult` / `ModelStream`，不执行工具、不累计多步状态。provider 可以选择实现 additive `ModelInvoker` / `StreamingModelInvoker`；未实现时 SDK 通过兼容 adapter 调用旧 `Provider.DoGenerate` / `DoStream`。
+
 旧的 `GenerateText`、`StreamText` 和自动 tool loop 在迁移期只能作为显式 legacy wrapper；新 Loop 不依赖它们。
 
 ### 2.2 `agent/`
@@ -250,6 +259,18 @@ agent 提供通用 core：
 
 agent 不拥有 Memoh 的 session、queue schema、admission、owner、fencing、R0/R1 或数据库类型。它也不组装产品 prompt，不执行 scheduler，不保存产品 memory。
 
+#### 2.2.1 本轮修改的 rationale：持久化类型必须由 agent 拥有
+
+Runtime 的 authority boundary 不能靠“调用者不要修改快照”这类规范约束来成立，必须由类型和提交路径保证。旧设计把 `sdk.Request`、`sdk.ModelResult`、`sdk.ToolDefinition`、`sdk.Usage` 及其内部的 `map`、`slice`、`json.RawMessage`、`any`、interface value 直接或浅拷贝地放进 command/fact/state，会产生三类破坏：
+
+1. **aliasing/mutation**：Planner、provider 或测试代码在 `Commit` 后继续修改 SDK 对象，可能改变已返回 snapshot、已保存事件或后续 `Evolve` 输入，使 `state = fold(events)` 不再成立。
+2. **digest/replay nondeterminism**：digest 在提交时按一组字节计算，但持久化对象仍引用 caller-owned map/slice/RawMessage；之后对象变化会让相同 `CommandID` 的重放、`CommitAlreadyApplied` 判断、StepID 派生和 replay 校验失真。
+3. **unbounded SDK surface**：`sdk.MessagePart` interface、provider metadata 的 `map[string]any`、tool/schema 的原始 JSON 等属于 provider/transport 边界数据，不能成为 Machine 协议的永久 wire contract。
+
+因此 agent 必须定义自己的 JSON-stable persisted value：`ModelRequest`、`ModelResult`、`ToolDefinition`、`Usage`、`Message`、`MessagePart`、`ProviderMetadata` 等。Loop/provider 边界仍使用 `sdk.Request`/`sdk.ModelResult`；进入 Runtime 前必须调用 `FreezeModelRequest`、`FreezeModelResult`、`FreezeToolDefinition`，把动态 JSON canonicalize 并复制为 agent-owned bytes；离开 Runtime 调 provider 时通过 `.SDK()` 构造新的 SDK 值。`DigestRequest`/`DigestToolDefinition` 只接受 frozen agent value。`EvaluateCommit` 和 Runtime 实现保存 facts/state 前还必须 snapshot 自己拥有的 value，`MemoryRuntime.Commit` 以已保存事件重新 fold 出 authority state，而不是信任 caller-provided `decision.NewState`。
+
+这不是防御性 deep clone 的局部补丁，而是分层边界：`sdk` 是一次调用的 transport API，`agent` 是可重放、可审计、可长期兼容的事件协议。任何新增进入 AgentEvent/MachineState 的 provider 数据，必须先落到 agent-owned sealed/JSON-stable 类型或 `json.RawMessage` canonical JSON；不得把新的 SDK interface、`any` 或可变引用跨过 Runtime authority boundary。
+
 ### 2.3 Memoh native runtime
 
 Memoh 负责产品和 durable 层：
@@ -257,7 +278,7 @@ Memoh 负责产品和 durable 层：
 | 能力 | 内容 |
 | --- | --- |
 | context | system prompt、memory、compaction、attachments、workspace 和产品 metadata。 |
-| Request Planner | 把 context、history 和 queue-safe 输入投影成冻结的 `sdk.Request`。 |
+| Request Planner | 把 context、history 和 queue-safe 输入投影成边界 `sdk.Request`；Loop 冻结成 agent `ModelRequest`。 |
 | durable history | messages、ModelStep record、ToolStep progress 和 tool result record。 |
 | queue | steer/follow-up 的入队、accepted order、重排、claim、apply、取消和 admission。 |
 | session/run | admission、R0/R1、settled 和后续 Run。 |
@@ -269,7 +290,8 @@ Memoh 负责产品和 durable 层：
 
 | 类型或能力 | 所属层 |
 | --- | --- |
-| `sdk.Request`、`sdk.ModelResult`、`sdk.ToolDefinition`（provider-neutral） | sdk |
+| `sdk.Request`、`sdk.ModelResult`、`sdk.ToolDefinition`（provider-neutral 边界类型） | sdk |
+| `ModelRequest`、`ModelResult`、`ToolDefinition`、`Usage`、`Message`、`MessagePart`（persisted frozen values） | agent |
 | `Step`、`ToolCallState`、`AgentCommand`、`RunSeed`、`AgentEvent`、`Effect` | agent |
 | `ExecutableTool`、参数校验、response policy | agent |
 | `RequestPlanner` port、`PlanningHint`、`RequestPlan` | agent；只用于依赖注入 |
@@ -317,7 +339,7 @@ NextRun(input)
 
 `NextRun` 产生的是 admission seed（`RunSeed`），不是任何 Run 的 command：它不创建 RunID，也不负责 queue claim 或 session admission。Memoh 先完成 queue claim、session admission 和新 Run 的身份分配，再用该 seed 通过 `Initialize` 建立新 Run 的 MachineState。admission 可以复用 `AgentEvent` 的 identity/digest/canonical 编码规则，但其排序和记录归属由 Memoh admission 决定，不调用旧 Run 的 `Runtime.Commit`。
 
-Machine 不在 ToolStep 执行中接受 `NextStep`，也不把 `NextRun` 解释成旧 Run 的状态变化。输入的具体文本如何进入 `sdk.Request` 仍由 Request Planner 决定；Machine 只保证输入边界和一次性接受语义。
+Machine 不在 ToolStep 执行中接受 `NextStep`，也不把 `NextRun` 解释成旧 Run 的状态变化。输入的具体文本如何进入 Planner 生成的 `sdk.Request` 仍由 Request Planner 决定；Loop 在提交前冻结为 agent `ModelRequest`，Machine 只保证输入边界和一次性接受语义。
 
 ### 3.3 MachineState
 
@@ -332,8 +354,8 @@ ToolStep 中每个 ToolCall 的 progress/result
 等待中的 ResponseRequest
 已接受但尚未用于冻结下一请求的 AgentInput
 model-step counter
-累计 usage（对已接受 ModelStepCompleted 和 ModelStepRejected 的 sdk.Usage 逐字段求和）
-最近一次已接受的 sdk.ModelResult
+累计 usage（对已接受 ModelStepCompleted 和 ModelStepRejected 的 agent Usage 逐字段求和）
+最近一次已接受的 agent ModelResult
 terminal RunResult（如果已结束）
 ```
 
@@ -453,7 +475,7 @@ WaitForExecutionRecovery
 
 `Decide(state, command)` 按下表校验前置条件并产出事实序列。任何前置条件不满足即拒绝整个 command，不产出部分事实：
 
-1. `PrepareModelRequest` 只能在 Run active 且没有当前 Step 时接受；其 `InputIDs` 必须按 `PendingInputs` 的当前顺序完整匹配。`Tools` 必须与 `sdk.Request` 中的 provider tool definitions 按 Ref、顺序和 definition digest 一一对应，`ToolsDigest` 覆盖 Ref、schema、顺序与 policy。产出 `[ModelStepPrepared]`，事实中携带冻结的请求、ToolSpec、被消费的 InputIDs 与 Decide 算好的 step binding digest（事实自包含条件：Evolve 不重算 digest）。
+1. `PrepareModelRequest` 只能在 Run active 且没有当前 Step 时接受；其 `InputIDs` 必须按 `PendingInputs` 的当前顺序完整匹配。`Request` 必须已经是 frozen agent `ModelRequest`，且 `Request.Model` 必须等于 command/RunConfig 的 `ModelRef`；`Tools` 必须与其中的 provider tool definitions 按 Ref、顺序和 definition digest 一一对应，`ToolsDigest` 覆盖 Ref、schema、顺序与 policy。产出 `[ModelStepPrepared]`，事实中携带冻结的请求、ToolSpec、被消费的 InputIDs 与 Decide 算好的 step binding digest（事实自包含条件：Evolve 不重算 digest）。
 2. `StartModelExecution` 只能作用于 Prepared ModelStep，产出 `[ModelStepStarted]`。`RecoverModelExecution` 只能作用于没有已接受结果的 Executing ModelStep，产出 `[ModelStepRecovered]`；它只能由持有该 Model grant 的当前 Loop，或由 Runtime 自己确认 lease 失效后的 recovery 逻辑提交，普通 response ingress 不能提交。
 3. `SubmitModelResult` 只能作用于对应的 Executing ModelStep。结果没有 tool calls 时产出 `[ModelStepCompleted, RunEnded{RunCompleted}]`；有 tool calls 时按冻结 `ToolSpec` 绑定 policy 和 binding digest，产出 `[ModelStepCompleted, ToolStepOpened]`——`ToolStepOpened` 携带完整 Call 集合：DirectExecution 的 Call 为 Pending，ApprovalRequired/ExternalResponse 的 Call 为带稳定 request 的 Waiting，每个 Waiting request 都包含目标 RunID、StepID、CallID、ResponseID、Kind 和 RequestDigest。
 4. `SubmitModelFailure` 只能作用于对应的 Executing ModelStep，产出 `[RunEnded{RunFailed, provider_failure}]`，保留稳定失败原因。
@@ -465,7 +487,7 @@ WaitForExecutionRecovery
 10. 一次响应只推进对应 Call，不能修改其他 Call；ResponseID 和 kind 必须匹配该 Call 保存的请求。响应 payload 的 digest 用于内容冲突检测，不需要等于请求 payload 的 digest。
 11. 使 ToolStep 内最后一个 Call 到达可关闭终态的 command，其事实序列追加 `ToolStepClosed`；若此时 `ModelSteps` 已达冻结的 model-step limit，再追加 `RunEnded{RunStopped, step_limit}`。例如最后一个 Call 完成且触发 limit：`[ToolCallCompleted, ToolStepClosed, RunEnded{RunStopped, step_limit}]`。ToolStep 关闭前不能创建下一 ModelStep。
 12. `CancelRun` 只能作用于非 terminal Run，产出 `[RunEnded{RunStopped, cancelled}]`。
-13. `AcceptInput` 只能作用于 active 且没有当前 Step 的 Run，产出 `[InputAccepted]`。Planner 由 `PlanningHint.Inputs` 收到这些输入并在 `RequestPlan.InputIDs` 中明确消费它们；遗漏或伪造 ID 的 `PrepareModelRequest` 被拒绝。
+13. `AcceptInput` 只能作用于 active 且没有当前 Step 的 Run，且 `InputID` 不得与当前 `PendingInputs` 中任何输入（包括 `RunSeed` 带入的 seed input）重复；重复 ID 是 identity conflict，不能记录一个 Evolve 会丢弃的 no-op fact。接受后产出 `[InputAccepted]`。Planner 由 `PlanningHint.Inputs` 收到这些输入并在 `RequestPlan.InputIDs` 中明确消费它们；遗漏或伪造 ID 的 `PrepareModelRequest` 被拒绝。
 14. `Initialize(RunID, RunConfig, RunSeed)` 只在 application admission 创建新 Run 时使用；它建立初始 `MachineState` 并把 seed 输入放入 `PendingInputs`。`RunSeed` 不能传给已有 Run 的 `Decide` 或 `Runtime.Commit`。
 
 `InputID` 在一个 Run 内唯一。相同 `InputID` 和相同 payload 的重复 `AcceptInput` 是语义 no-op，Runtime 返回原已接受的事件组；相同 ID 携带不同 payload 返回冲突。Memoh 的 queue claim 仍负责防止同一个 queue item 被多个输入入口同时消费。
@@ -476,7 +498,7 @@ WaitForExecutionRecovery
 
 | 事实 | 折叠 |
 | --- | --- |
-| ModelStepPrepared | 设置 Current 为 Prepared ModelStep（StepRef.Digest 取事实携带的 BindingDigest）；`ModelSteps+1`；按事实中的 InputIDs 从 `PendingInputs` 移除 |
+| ModelStepPrepared | 若 Current 非空则拒绝折叠（损坏日志不能覆盖活跃 Step）；否则设置 Current 为 Prepared ModelStep（StepRef.Digest 取事实携带的 BindingDigest）；`ModelSteps+1`；按事实中的 InputIDs 从 `PendingInputs` 移除 |
 | ModelStepStarted | Current.Status = Executing |
 | ModelStepRecovered | Current.Status = Prepared |
 | ModelStepRejected | `Rejects+1`；Current.Status = Prepared；Usage 逐字段累加事实携带的 usage |
@@ -511,7 +533,7 @@ ModelStep 冻结：
 
 ```text
 StepID
-sdk.Request 及其 digest
+agent.ModelRequest 及其 digest
 ModelRef
 本次请求使用的 provider-neutral tool definitions 及 digest
 与这些 definition 对应的 agent `ToolSpec`（包含 response policy）
@@ -522,11 +544,11 @@ reject counter（progress，不参与冻结 digest）
 
 `SubmitModelResult` 被接受后，当前 ModelStep 立即被 ToolStep 替换（`ToolStepOpened`），或因没有 tool calls 而关闭 Run（`RunEnded`）；因此模型完成状态不作为当前 Step 状态保存。接受的结果保存在 `LastModelResult`、RunResult 和 application history 中。
 
-一个 ModelStep 代表一次模型调用。Loop 默认调用 `ModelInvoker.Generate`；如果实现提供可选的 `StreamingModelInvoker`，Loop 可以用 `Stream` 发送实时 delta，但两条路径必须得到同一种 `sdk.ModelResult`，且 transport retry 不创建新的 Step。
+一个 ModelStep 代表一次模型调用。Loop 默认调用 `ModelInvoker.Generate`；如果实现提供可选的 `StreamingModelInvoker`，Loop 可以用 `Stream` 发送实时 delta，但两条路径必须得到同一种边界 `sdk.ModelResult`，并在提交前冻结为 agent `ModelResult`；transport retry 不创建新的 Step。
 
-Request Planner 生成完整 `sdk.Request` 后，Loop 提交 `PrepareModelRequest`。Runtime 以 revision/CAS 或事务保证只冻结一份请求；新 ModelStep 的 StepID 由 RunID、command identity 和 request digest 稳定派生。已经冻结的请求不受后来 queue 或 history 输入影响。
+Request Planner 生成完整 `sdk.Request` 后，Loop 先调用 `FreezeModelRequest` 得到 agent `ModelRequest`，再提交 `PrepareModelRequest`。Runtime 以 revision/CAS 或事务保证只接受一份冻结请求；新 ModelStep 的 StepID 由 RunID、command identity 和 frozen request digest 稳定派生。已经冻结的请求不受后来 queue、history 输入或 Planner 持有的 SDK 对象 mutation 影响。
 
-Loop 在 `SubmitModelResult` 时只校验 tool-call ID 与顺序，并从匹配的冻结 `ToolSpec` 生成 `ToolCallBinding`。这里不调用 ExecutableTool；未知工具保留为 `DirectExecution`、空 definition digest 的 unresolved binding，应用级参数错误留到 `StartToolCalls`，作为 Pending Call 的已知失败处理。Runtime 只校验 binding 与冻结请求、模型结果和 Step 身份的一致性，不重复解析工具目录。
+Loop 在 `SubmitModelResult` 时只校验 tool-call ID 与顺序，并从匹配的冻结 `ToolSpec` 生成 `ToolCallBinding`。这里不调用 ExecutableTool；未知工具保留为 `DirectExecution`、空 definition digest 的 unresolved binding，应用级参数错误留到 `StartToolCalls`，作为 Pending Call 的已知失败处理。Runtime 只校验 binding 与冻结请求、冻结模型结果和 Step 身份的一致性，不重复解析工具目录。
 
 模型响应的结构性 malformed（重复/错序 CallID、违反 provider 协议）使 Call 集合无法建立：Loop 不提交 `SubmitModelResult`，而以 start grant 提交 `RejectModelResult{Failure.Class: malformed_model_result}`。Decide 产出 `ModelStepRejected`（usage 累计、`Rejects` 加一、Step 回到 Prepared），同一冻结 request 由后续 start 重试；`Rejects` 超过冻结的 `RunConfig.ModelRejectLimit` 时追加 `RunEnded{RunFailed, malformed_model_result}`。被拒绝的结果不写入 `LastModelResult`，不创建 ToolStep。
 
@@ -660,6 +682,9 @@ AgentEvent log 是 Run 语义状态的 source of truth；MachineState 是必需�
 1. Event ontology 稳定：Fact 词表 sealed，已发布 SchemaVersion 的事实结构永不修改，新增字段进入新版本。
 2. Evolve 语义稳定：折叠是机械的（不读 RunConfig、无 policy 分支），已发布版本的折叠语义与事件编码一起永久冻结；会演进的决策语义全部在 Decide，其结果记录为事实。
 3. 事实自包含：折叠一条事实所需的全部信息在事实自身与折叠前状态之内，不访问外部系统，不重新计算依赖当前代码版本的派生值（digest 一律在 Decide 时算好并携带在事实中）。
+4. 持久化值归属稳定：AgentEvent 和 MachineState 只保存 agent-owned frozen values；任何来自 SDK/provider/application 的引用在进入 Runtime 前必须被 canonicalize + detach，返回给 caller 的 snapshot/event 也必须是独立副本。
+
+Runtime 实现还必须在代码层面维护这些条件：`EvaluateCommit` 对 Decide 产出的 facts 做 `snapshotFact` 后再 fold/persist；`Load`、`CommitResult` 和 AlreadyApplied replay 返回的 snapshot/event 不得共享 authority 内部引用；MemoryRuntime 这类参考实现保存 accepted event group 后，从 stored events fold 出新的 authority state，而不是直接保存调用栈里算出的 `decision.NewState`。durable adapter 可以用数据库事务替代 mutex，但不能把未冻结 SDK 对象、浅拷贝 snapshot 或 caller-owned bytes 写入事件表/状态表。
 
 每 Run 维护一个不可丢弃的 revision 水位（watermark）：每次提交与日志同步推进的单调计数，语义为"日志至少完整到此"。它是日志尾部完整性的末端见证——append-only 日志可以用 (Revision, Index) 连续性检测中间缺洞，但缺尾的日志与更短的完整日志无法区分。水位是控制平面数据，不进入 MachineState，重建不清除它。
 
@@ -756,8 +781,8 @@ func EncodeFact(schemaVersion uint16, typ string, fact Fact) ([]byte, error)
 func DigestFact(schemaVersion uint16, typ string, fact Fact) (Digest, error)
 func EncodeRunSeed(RunSeed) ([]byte, error)
 func DigestRunSeed(schemaVersion uint16, seed RunSeed) (Digest, error)
-func DigestRequest(sdk.Request) (Digest, error)
-func DigestToolDefinition(sdk.ToolDefinition) (Digest, error)
+func DigestRequest(ModelRequest) (Digest, error)
+func DigestToolDefinition(ToolDefinition) (Digest, error)
 func DigestToolSpec(ToolSpec) (Digest, error)
 func DigestToolSpecs([]ToolSpec) (Digest, error)
 func DigestModelStepBinding(model ModelRef, requestDigest, toolsDigest Digest) (Digest, error)
@@ -820,7 +845,7 @@ func EvaluateCommit(
 2. 已有相同 `(RunID, CommandID)` 且 digest 相同，返回 `AlreadyApplied` 与原事件组，不重复写入任何 projection 或 outbox，不重新运行 Decide（决策在首次接受时冻结）。
 3. 相同 identity 携带不同 digest，返回 `ErrCommandConflict`。
    对 `AcceptInput`，还按 RunID/InputID 检查已接受索引：相同 payload 返回原事件组和 `CommitAlreadyApplied`，不同 payload 返回冲突，不产生第二条输入事实。
-4. 校验 BaseRevision、当前 Step、CallID 和 Grant。BaseRevision 只对 `PrepareModelRequest` 是硬校验——其 CommandID 由 Revision 派生，Revision 即它的并发控制，过期即返回 `ErrStaleRuntime`。其余 command 在 BaseRevision 过期时按类别前置条件基于当前状态重新评估：start（`StartModelExecution` 目标仍须为同一 Prepared ModelStep；`StartToolCall` 与 Pending 的已知失败目标 Call 仍须为 Pending，均空 Grant）；owner 完成（Executing Call 的完成/失败、`SubmitModelResult`/`SubmitModelFailure`/`RejectModelResult`，以及持有效 Model grant 的 `RecoverModelExecution`，以提交者仍持有对应有效 Grant 为条件）；system recovery（无 grant 的 `RecoverModelExecution` 和 scanner 的 Unknown，以 Runtime 自己的 recovery record 为条件）；ingress（approval/external response 目标 Call 仍须为对应 Waiting 且 ResponseID/kind 匹配；`AcceptInput` 要求 Run 仍 active 且没有当前 Step，连续多条输入互不拒绝；均空 Grant）；run-control（`CancelRun` 只要求 Run 非 terminal）。前置条件不满足时按具体原因返回 stale/terminal/冲突。start command 建立 grant/lease 的动作与状态提交属于同一个原子操作。
+4. 校验 BaseRevision、当前 Step、CallID 和 Grant。BaseRevision 只对 `PrepareModelRequest` 是硬校验——其 CommandID 由 Revision 派生，StepID 由该 CommandID 与 Decide 得到的 binding digest 派生，Revision 即它的并发控制，过期即返回 `ErrStaleRuntime`。其余 command 在 BaseRevision 过期时按类别前置条件基于当前状态重新评估：start（`StartModelExecution` 目标仍须为同一 Prepared ModelStep；`StartToolCall` 与 Pending 的已知失败目标 Call 仍须为 Pending，均空 Grant）；owner 完成（Executing Call 的完成/失败、`SubmitModelResult`/`SubmitModelFailure`/`RejectModelResult`，以及持有效 Model grant 的 `RecoverModelExecution`，以提交者仍持有对应有效 Grant 为条件）；system recovery（无 grant 的 `RecoverModelExecution` 和 scanner 的 Unknown，以 Runtime 自己的 recovery record 为条件）；ingress（approval/external response 目标 Call 仍须为对应 Waiting 且 ResponseID/kind 匹配；`AcceptInput` 要求 Run 仍 active 且没有当前 Step，连续多条输入互不拒绝；均空 Grant）；run-control（`CancelRun` 只要求 Run 非 terminal）。前置条件不满足时按具体原因返回 stale/terminal/冲突。start command 建立 grant/lease 的动作与状态提交属于同一个原子操作。
 5. 调用 `Machine.Decide` 产出事实序列，逐个 `Machine.Evolve` 折叠出新状态；为这次 transition 分配 `Revision = curRevision + 1`，事实按序获得 `Index = 0..k-1`，全部携带产生它们的 CommandID。
 6. Runtime 在自己的原子边界内保存 MachineState、AgentEvent 组及需要一致的 Memoh projection。
 7. 非重复 command 若目标 Run 已经 terminal，返回 `ErrRunTerminal`；迟到的 worker 结果不会重新打开 Run。其他提交成功后返回新 snapshot。
@@ -859,6 +884,9 @@ Digest
 普通 CommandID
   由产生意图的执行者生成，重试时必须复用。
 
+model request CommandID
+  `PrepareModelRequest` 的 CommandID 由 RunID 和 BaseRevision 稳定派生；StepID 由 RunID、该 CommandID 和 frozen request/tool binding digest 派生。相同 revision 的并发 planner 因此竞争同一个 identity：内容相同 replay，内容不同 conflict。
+
 每个 AgentCommand 都有自己的 CommandID；同一个 execution attempt 的 start、completion 和 recovery 是不同 command，因此各自使用不同 ID。某个 command 因响应丢失而重放时必须复用原 ID。Runtime 以当前 Step/Call 状态和 CAS 防止第二个 attempt 获得执行权；ModelStep 经 recovery 回到 Prepared 后，下一次 start 使用新的 ID。
 
 `RecoverModelExecution` 有两条合法来源：当前 Loop 持有效 Model grant 且模型调用未产生可接受结果时，使用该 grant 主动释放 execution；或者 Runtime 在 lease 失效后依据自己的 recovery record 提交。后者的 CommandID 由 Runtime 根据 recovery record 生成；同一个 recovery record 重放使用同一个 ID，不同的失效执行使用不同 ID。新的 Loop 随后重新提交同一冻结 request 的 start command。
@@ -879,7 +907,7 @@ AgentEvent 身份
 ```
 ```
 
-canonical 编码和 digest 函数由 agent 提供；Memoh 只保存和比较结果，不重新实现排序或编码。编码必须包含 sealed command/fact discriminator、按声明顺序编码有序 slice、对 map key 排序，并对 `json.RawMessage` 使用 canonical JSON；不把 `Digest`、BaseRevision、Revision、Index 或 ExecutionGrant 编入 digest。
+canonical 编码和 digest 函数由 agent 提供；Memoh 只保存和比较结果，不重新实现排序或编码。编码必须包含 sealed command/fact discriminator、按声明顺序编码有序 slice、对 map key 排序，并对 `json.RawMessage` 使用 canonical JSON；重复 object key、trailing data、invalid UTF-8、escaped lone surrogate 一律拒绝，不能让 `encoding/json` 的 replacement behavior 把不同输入合并为同一 digest；不把 `Digest`、BaseRevision、Revision、Index 或 ExecutionGrant 编入 digest。
 
 已发布 `SchemaVersion` 的 canonical 编码和 digest 规则永久冻结；字段增删只能进入新的 SchemaVersion，旧事件按其自带版本校验。同一个 Run 不允许由写入不同 SchemaVersion 的进程混跑：升级窗口内先全量部署可读写新版本的代码，再开始写入新版本；否则同一 command 的重放会因编码不同被误判为 `ErrCommandConflict`。
 
@@ -899,9 +927,9 @@ type RequestPlanner interface {
 
 type RequestPlan struct {
     Model          ModelRef
-    Request        sdk.Request
+    Request        sdk.Request // boundary value; Loop freezes to ModelRequest before PrepareModelRequest
     InputIDs       []InputID
-    Tools          []ToolSpec
+    Tools          []ToolSpec   // agent frozen ToolSpec/ToolDefinition sidecars
     PlanningToken  PlanningToken // application-owned freshness token
 }
 
@@ -913,7 +941,7 @@ type PlanningHint struct {
 }
 ```
 
-Planner 可以读取 application 自己的 history、memory、workspace 和 queue-safe 输入，但不直接修改 Runtime。它返回 `RequestPlan`（完整 `sdk.Request`、ModelRef、已消费的 InputID 集合和 application-owned `PlanningToken`）；Loop 随后提交 `PrepareModelRequest`。Memoh 在事务外构造请求，在提交时用自己的 context revision/CAS 和 create-if-absent 确保并发 Planner 只冻结一份结果。`PlanningToken` 只是供 adapter 验证 planner 输入是否新鲜的 opaque token；agent 不解释其内容，也不把它当成 authority revision。
+Planner 可以读取 application 自己的 history、memory、workspace 和 queue-safe 输入，但不直接修改 Runtime。它返回 `RequestPlan`（完整边界 `sdk.Request`、ModelRef、已消费的 InputID 集合和 application-owned `PlanningToken`）；Loop 先 freeze 成 agent `ModelRequest`，随后提交 `PrepareModelRequest`。Memoh 在事务外构造请求，在提交时用自己的 context revision/CAS 和 create-if-absent 确保并发 Planner 只冻结一份结果。`PlanningToken` 只是供 adapter 验证 planner 输入是否新鲜的 opaque token；agent 不解释其内容，也不把它当成 authority revision。
 
 Planner 所需的 history 必须由宿主提供：Memoh 从 durable history projection 读取；in-process
 调用者可以用一个简单的内存 history projection 或 planner 自己持有的会话上下文。Runtime
@@ -921,7 +949,7 @@ Planner 所需的 history 必须由宿主提供：Memoh 从 durable history proj
 
 `PrepareModelRequest` 必须使用 Planner 开始前 Load 得到的 BaseRevision，并按当前顺序携带完整的 `PendingInputs` `InputIDs` 集合。相同 RunID 和 Revision 的并发 Planner 使用同一个 `DeriveModelRequestCommandID`：相同请求得到 `CommitAlreadyApplied`，不同请求得到 `ErrCommandConflict`；如果 Planner 在新的 Revision 上重试，则生成新的 CommandID。Memoh adapter 同时检查 `PlanningToken` 的 context revision，后到者不能覆盖已经冻结的请求。
 
-Loop 校验 `RequestPlan.Model` 与 `PlanningHint.Model`、RunConfig.Model 一致；Runtime 通过共享 Decide 规则再次校验 `PrepareModelRequest.Model` 与冻结的 RunConfig 一致。Planner 的 context 一致性由 Memoh 在自己的 queue-safe admission/planning 边界保证，不由 agent 解释。
+Loop 校验 `RequestPlan.Model` 与 `PlanningHint.Model`、RunConfig.Model 以及 frozen `ModelRequest.Model` 一致；Runtime 通过共享 Decide 规则再次校验 `PrepareModelRequest.Model`、`PrepareModelRequest.Request.Model` 与冻结的 RunConfig 一致。Planner 的 context 一致性由 Memoh 在自己的 queue-safe admission/planning 边界保证，不由 agent 解释。
 
 ### 5.7 外部 response
 
@@ -996,7 +1024,10 @@ Loop.Run(ctx, runtime, events):
         plan, err := l.Planner.Plan(ctx, hint)
         if err != nil:
           return err
-        requestDigest, err := DigestRequest(plan.Request)
+        frozenRequest, err := FreezeModelRequest(plan.Request)
+        if err != nil:
+          return err
+        requestDigest, err := DigestRequest(frozenRequest)
         if err != nil:
           return err
         toolsDigest, err := DigestToolSpecs(plan.Tools)
@@ -1009,7 +1040,7 @@ Loop.Run(ctx, runtime, events):
         stepID := DeriveModelStepID(snapshot.State.RunID, commandID, bindingDigest)
         prepared, err := commit(
           PrepareModelRequest{
-            StepID: stepID, Model: plan.Model, Request: plan.Request,
+            StepID: stepID, Model: plan.Model, Request: frozenRequest,
             RequestDigest: requestDigest, InputIDs: plan.InputIDs,
             PlanningToken: plan.PlanningToken, Tools: plan.Tools,
             ToolsDigest: toolsDigest},
@@ -1038,7 +1069,10 @@ Loop.Run(ctx, runtime, events):
         if err != nil:
           completion = SubmitModelFailure{StepID: stepID, Failure: StepFailureForModel(err)}
         else:
-          modelResult, invokeErr := invokeModel(invoker, workerCtx, modelStep.Request, l.Streaming, events)
+          sdkRequest, err := modelStep.Request.SDK()
+          if err != nil:
+            return err
+          modelResult, invokeErr := invokeModel(invoker, workerCtx, sdkRequest, l.Streaming, events)
           if invokeErr != nil and worker context was cancelled:
             completion = RecoverModelExecution{StepID: stepID}
           else if invokeErr != nil:
@@ -1046,10 +1080,13 @@ Loop.Run(ctx, runtime, events):
           else:
             bindings, bindErr := bindToolCalls(modelResult, modelStep.Request, modelStep.Tools)
             if bindErr != nil:
-              completion = RejectModelResult{StepID: stepID, Usage: modelResult.Usage,
+              completion = RejectModelResult{StepID: stepID, Usage: UsageFromSDK(modelResult.Usage),
                 Failure: StepFailure{Class: FailureMalformedModel, Message: bindErr.Error()}}
             else:
-              completion = SubmitModelResult{StepID: stepID, Result: modelResult, Calls: bindings}
+              frozenResult, err := FreezeModelResult(modelResult)
+              if err != nil:
+                return err
+              completion = SubmitModelResult{StepID: stepID, Result: frozenResult, Calls: bindings}
         applied, err := commit(completion, commandID=completionID,
           baseRevision=start.Snapshot.Revision, grant=start.Grant)
         if err == ErrStaleRuntime or err == ErrRunTerminal:
@@ -1068,7 +1105,8 @@ Loop.Run(ctx, runtime, events):
           policyErr := nil
           definitionErr := nil
           if resolveErr == nil:
-            if tool.Ref() != call.ToolRef or DigestToolDefinition(tool.Definition()) != call.DefinitionDigest:
+            frozenDefinition, freezeErr := FreezeToolDefinition(tool.Definition())
+            if freezeErr != nil or tool.Ref() != call.ToolRef or DigestToolDefinition(frozenDefinition) != call.DefinitionDigest:
               definitionErr = definitionMismatch
             argErr = tool.ValidateArguments(call.Arguments)
             if tool.ResponsePolicy() != call.Policy:
@@ -1135,7 +1173,7 @@ Loop.Run(ctx, runtime, events):
 `ToolFailureFor` 将 resolve error 映射为 `tool_lookup_failed`，参数校验 error 映射为 `invalid_arguments`，tool ref、response policy 或 definition digest 不匹配映射为 `tool_definition_mismatch`。
 
 `invokeModel` 是说明性 Loop helper：开启 streaming 且 invoker 支持 `StreamingModelInvoker` 时消费 stream
-并向 EventSink 发送 delta，否则调用 `Generate`；两条路径都只返回一个完整 `sdk.ModelResult`。
+并向 EventSink 发送 delta，否则调用 `Generate`；两条路径都只返回一个完整边界 `sdk.ModelResult`，Loop 在提交前用 `FreezeModelResult` 转为 agent `ModelResult`。
 
 所有 completion commit 都遵循同一错误处理：`ErrStaleRuntime`/`ErrRunTerminal` 只触发重新 `Load` 并丢弃迟到结果，其他错误返回给调用方；只有 `CommitAccepted` 或相同 command 的 `CommitAlreadyApplied` 才表示该事实已被 authority 接受。接受后 Loop 可以把 `CommitResult.Events` 逐个包装为 `Event{Kind: EventAgentCommitted, Durability: EventCommitted, Canonical: &e}` 发送给 EventSink；发送失败不回滚提交。
 
@@ -1214,7 +1252,7 @@ Run 创建时冻结 `RunConfig.ModelStepLimit` 和 `RunConfig.ModelRejectLimit`�
 
 ### 7.1 Tool contract
 
-`sdk.ToolDefinition` 只描述 provider 可发现的 schema，不依赖 agent，也不携带 `ResponsePolicy`。`agent.ExecutableTool` 描述应用如何执行工具并提供 response policy；模型返回后，agent 用 `ToolRef`、definition digest 和 policy 生成冻结的 `ToolCallBinding`。恢复时 schema、工具版本或 policy 不匹配都不能静默换版本。
+`sdk.ToolDefinition` 只描述 provider 可发现的 schema，不依赖 agent，也不携带 `ResponsePolicy`。`agent.ExecutableTool.Definition()` 可以返回 SDK 边界类型，Loop 必须先 `FreezeToolDefinition` 再计算 `DigestToolDefinition` 或写入 `ToolSpec`；MachineState/AgentEvent 中保存的是 agent `ToolDefinition`。`agent.ExecutableTool` 描述应用如何执行工具并提供 response policy；模型返回后，agent 用 `ToolRef`、definition digest 和 policy 生成冻结的 `ToolCallBinding`。恢复时 schema、工具版本或 policy 不匹配都不能静默换版本。
 
 ```go
 type ExecutableTool interface {
@@ -1300,9 +1338,9 @@ MemohRuntime 的 worker 实例在构造时绑定当前 worker 的 owner identity
 
 scanner 使用由 StepID、CallID 和 system namespace 稳定生成的 CommandID，并遵守与普通 Commit 相同的 digest/idempotency。它只在自己的 recovery record 证明 lease 已失效后通过共享 `EvaluateCommit` 提交 Unknown；普通 Commit 调用者不能伪造这条 system command。Model recovery 也必须通过共享 Decide/Evolve 规则，而不能直接改写 Step 状态。scanner 不查询外部系统，也不重新执行工具。Pending Call 不走 Unknown 路径，可以由新 Loop 继续。
 
-ModelStep 的 recovery 规则不同：模型请求没有工具那样的外部业务 effect。ModelStep 的执行 lease 失效后，Memoh 可以在事务中把它从 Executing 重置为 Prepared；新的 Loop 使用同一冻结 `sdk.Request` 重试，不创建新的 Step。只有已经接受的 `SubmitModelResult` 才能关闭该 ModelStep。
+ModelStep 的 recovery 规则不同：模型请求没有工具那样的外部业务 effect。ModelStep 的执行 lease 失效后，Memoh 可以在事务中把它从 Executing 重置为 Prepared；新的 Loop 使用同一冻结 agent `ModelRequest` 重试，不创建新的 Step。只有已经接受的 `SubmitModelResult` 才能关闭该 ModelStep。
 
-当 ToolStep 自动关闭且 Run 允许继续时，Memoh 先提交 history、queue action 和 context revision；下一次 Loop 通过 Planner 构造并提交下一份 `sdk.Request`。已经冻结的请求不会被后来的输入改变。
+当 ToolStep 自动关闭且 Run 允许继续时，Memoh 先提交 history、queue action 和 context revision；下一次 Loop 通过 Planner 构造边界 `sdk.Request`，再冻结并提交下一份 agent `ModelRequest`。已经冻结的请求不会被后来的输入改变。
 
 ### 8.3 外部 effect 的保证
 
@@ -1449,7 +1487,7 @@ GenerateParams / GenerateResult
 
 Memoh native runtime 已拥有产品 context、queue 和 durable session，但旧 loop 让它看不到 ToolStep 内逐 Call 的 progress。新方案把多步执行统一到 `agent.Loop`，并要求 Memoh 增加 ToolCall progress/response projection。
 
-本规范中的 `sdk.Request`、`sdk.ModelResult` 和 provider-neutral `sdk.ToolDefinition` 是迁移目标的闭合类型合同；当前 SDK 仍主要使用 `Tool`、`GenerateResult` 和 `StreamResult`。阶段 A 负责实现等价的新类型并保留显式 legacy wrapper，不能把目标类型误认为已经存在的兼容 API。
+本规范中的 `sdk.Request`、`sdk.ModelResult` 和 provider-neutral `sdk.ToolDefinition` 是一次调用的边界合同；agent 的 `ModelRequest`、`ModelResult`、`ToolDefinition` 是持久化闭合合同。阶段 A 负责实现边界转换与显式 legacy wrapper，不能把 SDK 边界类型误认为 Machine wire contract。
 
 ### 11.2 迁移目标
 
@@ -1478,6 +1516,7 @@ Memoh    -> agent.Loop + MemohRuntime
 2. 让 Generate、Stream 各自对应一次 provider request；transport retry 留在 sdk。
 3. 将旧自动 loop 隔离为 legacy wrapper。
 4. 保留 blocking/streaming 等价测试。
+5. 提供 additive compatibility adapters：`RequestFromGenerateParams`、`GenerateParamsFromRequest`、`ToolDefinitionFromTool`、`ToolFromDefinition`、`ToolChoiceFromLegacy`、`ModelResultFromGenerateResult`、`GenerateResultFromModelResult`、`ModelStreamFromStreamResult`；并提供可选 `ModelInvoker` / `StreamingModelInvoker`，provider interface 未整体切换前先靠这些 helper 和 optional interface 桥接新旧边界。
 
 ### 阶段 B：Machine 和 MemoryRuntime
 
@@ -1497,7 +1536,7 @@ Memoh    -> agent.Loop + MemohRuntime
 1. 用 transaction/CAS 实现 `Load/Commit`。
 2. 在 adapter 内加入 owner/fence/lease/Attempt 和 recovery scanner。
 3. 实现逐 Call response、wake/outbox、unknown outcome 和 crash/fencing 测试。
-4. 让 Memoh Request Planner 以 revision 冻结下一份 sdk.Request。
+4. 让 Memoh Request Planner 以 revision 规划下一份 sdk.Request，并由 Loop 冻结成 agent ModelRequest。
 
 ### 阶段 E：production cutover
 
@@ -1520,7 +1559,7 @@ Memoh    -> agent.Loop + MemohRuntime
 | MemoryRuntime | twilight-ai/agent | Machine/Loop |
 | ToolCall projection、history/outbox | Memoh | event contract |
 | queue、session、R0/R1、owner/fence | Memoh | existing session spec |
-| Request Planner/context | Memoh/application | sdk.Request |
+| Request Planner/context | Memoh/application | sdk.Request（边界），agent.ModelRequest（持久化） |
 | MemohRuntime | Memoh | Runtime contract + projections |
 
 ## 14. 测试矩阵
@@ -1582,7 +1621,7 @@ same CommandID + different digest -> ErrCommandConflict
 AlreadyApplied 不重新运行 Decide；事件组逐字节等于首次提交
 并发 Commit 的 Revision/CAS 行为
 同一 Run/Revision 的并发 Planner：相同请求 AlreadyApplied，不同请求 CommandConflict
-Planner InputIDs 必须完整匹配 PendingInputs；Tools/ToolsDigest 与 sdk.Request 一一对应
+Planner InputIDs 必须完整匹配 PendingInputs；Tools/ToolsDigest 与 frozen ModelRequest 一一对应
 并行 Call 的 start/response 在旧 Revision 上按目标 Call rebase
 Pending Call 的 lookup/argument failure 在旧 Revision 上按目标 Call rebase
 工具 ref/definition digest 变化 -> tool_definition_mismatch，且不调用工具
@@ -1634,7 +1673,7 @@ Memoh queue/session/admission 的语义保持在 Memoh；现有 NativeAgentLoop 
 1. Memoh 增加 ToolCall progress、response set、event idempotency、history/outbox projection。
 2. Memoh 冻结内部 Attempt、owner、fence、lease 和 recovery grace 规则；这些不进入 agent public API。
 3. 工具失败不由 agent core 调度 retry timer；已知失败交给下一次模型，未知结果终止当前 Run。非幂等外部 effect 只能承诺 at-least-once。
-4. Request Planner 必须能从已提交的 application context 构造完整、可冻结的 `sdk.Request`。
+4. Request Planner 必须能从已提交的 application context 构造完整、可冻结的边界 `sdk.Request`，由 Loop freeze 为 agent `ModelRequest`。
 
 ## 17. 待确认决策
 
@@ -1644,7 +1683,7 @@ Memoh queue/session/admission 的语义保持在 Memoh；现有 NativeAgentLoop 
 2. breaking release 版本和 Memoh protocol upgrade window。
 3. EventSink payload schema，以及是否需要在 Memoh outbox 中加入跨进程 execution epoch。
 
-本规范已经固定：Cancel 与 Unknown 按提交先后决定终态；`sdk.Request` 冻结完整的 generation options，streaming 只是 `ModelInvoker` 的可选执行路径，不改变 AgentCommand/AgentEvent 语义。Machine 采用 Decide/Evolve 拆分：Decide 承载全部决策并在提交时产出结果事实，Evolve 是机械折叠、与事件编码同属永久兼容契约；AgentEvent log 为 source of truth，MachineState 为必需的同事务 projection，分歧仲裁按 §5.1（日志完整则自动重建，日志尾部低于水位则 halt）。结构性 malformed 的模型结果通过 `RejectModelResult` 在同一冻结 request 上有限重试；usage 在 MachineState 内逐字段累计；steer 由 MemohRuntime 的 Prepare gate 保证进入下一个 ModelStep；工具不做效果分级，计划内停机以排空代替，Unknown 语义只覆盖崩溃和 lease 失效。
+本规范已经固定：Cancel 与 Unknown 按提交先后决定终态；agent `ModelRequest` 冻结完整的 generation options，streaming 只是 `ModelInvoker` 的可选执行路径，不改变 AgentCommand/AgentEvent 语义。Machine 采用 Decide/Evolve 拆分：Decide 承载全部决策并在提交时产出结果事实，Evolve 是机械折叠、与事件编码同属永久兼容契约；AgentEvent log 为 source of truth，MachineState 为必需的同事务 projection，分歧仲裁按 §5.1（日志完整则自动重建，日志尾部低于水位则 halt）。结构性 malformed 的模型结果通过 `RejectModelResult` 在同一冻结 request 上有限重试；usage 在 MachineState 内逐字段累计；steer 由 MemohRuntime 的 Prepare gate 保证进入下一个 ModelStep；工具不做效果分级，计划内停机以排空代替，Unknown 语义只覆盖崩溃和 lease 失效。
 
 本规范采用 event log 为 source of truth（§5.1）：三个稳定条件（ontology 冻结、Evolve 冻结、事实自包含）由 Decide/Evolve 拆分保障，revision 水位保护日志尾部完整性。MachineState 保持为必需的同事务 projection——提交验证要求当前状态在临界区内可得，这与日志权威并不冲突。
 
@@ -1710,12 +1749,39 @@ type RunFailure struct {
     CallID  CallID
 }
 
+// Agent-owned JSON-stable persisted data. SDK request/result/tool values are
+// converted at Loop/provider boundaries via Freeze* and SDK(); Runtime never
+// stores sdk.MessagePart interfaces, map[string]any provider metadata, or
+// caller-owned json.RawMessage bytes.
+type ProviderMetadata map[string]json.RawMessage
+type CacheControl struct { Type string; TTL string }
+type Message struct { Role MessageRole; Content []MessagePart; Usage *Usage }
+type MessagePart struct { /* sealed text/reasoning/image/file/tool-call/tool-result fields */ }
+type ResponseFormat struct { Type ResponseFormatType; JSONSchema json.RawMessage }
+type ToolChoice struct { Mode ToolChoiceMode; Tool string }
+type ToolDefinition struct { Name string; Description string; Parameters json.RawMessage; CacheControl *CacheControl }
+type ModelRequest struct { /* Model/System/Messages/Tools/options/ProviderOptions */ }
+type Usage struct { /* token counters and details; Add is field-wise */ }
+type ModelToolCall struct { ToolCallID string; ToolName string; Input json.RawMessage; ProviderMetadata ProviderMetadata }
+type ReasoningPart struct { /* text/id/format/model/provider metadata */ }
+type Source struct { /* source identity and provider metadata */ }
+type GeneratedFile struct { Data string; MediaType string }
+type ResponseMetadata struct { ID string; ModelID string; Timestamp string; Headers map[string]string }
+type ModelResult struct { /* text/reasoning/finish/usage/sources/files/tool calls/response */ }
+
+func FreezeModelRequest(sdk.Request) (ModelRequest, error)
+func (ModelRequest) SDK() (sdk.Request, error)
+func FreezeModelResult(sdk.ModelResult) (ModelResult, error)
+func (ModelResult) SDK() (sdk.ModelResult, error)
+func FreezeToolDefinition(sdk.ToolDefinition) (ToolDefinition, error)
+func (ToolDefinition) SDK() sdk.ToolDefinition
+
 type RunResult struct {
     Status  RunStatus
     Reason  RunReason
     Failure *RunFailure
-    Model   *sdk.ModelResult
-    Usage   sdk.Usage // MachineState.Usage 在 terminal 时的副本
+    Model   *ModelResult
+    Usage   Usage // MachineState.Usage 在 terminal 时的副本
 }
 
 type StepRef struct {
@@ -1733,7 +1799,7 @@ type Step interface {
 
 type ModelStep struct {
     RefValue      StepRef
-    Request       sdk.Request
+    Request       ModelRequest
     RequestDigest Digest
     Model         ModelRef
     Tools         []ToolSpec
@@ -1850,8 +1916,8 @@ type MachineState struct {
     Current         Step
     PendingInputs   []AgentInput
     ModelSteps      int
-    Usage           sdk.Usage // 已接受 ModelStepCompleted/ModelStepRejected 的逐字段累计
-    LastModelResult *sdk.ModelResult
+    Usage           Usage // 已接受 ModelStepCompleted/ModelStepRejected 的逐字段累计
+    LastModelResult *ModelResult
     Result          *RunResult
 }
 
@@ -1882,7 +1948,7 @@ func NextRun(input AgentInput) RunSeed
 type PrepareModelRequest struct {
     StepID         StepID
     Model          ModelRef
-    Request        sdk.Request
+    Request        ModelRequest
     RequestDigest  Digest
     InputIDs       []InputID
     PlanningToken  PlanningToken
@@ -1901,7 +1967,7 @@ func (RecoverModelExecution) agentCommand() {}
 
 type SubmitModelResult struct {
     StepID StepID
-    Result sdk.ModelResult
+    Result ModelResult
     Calls  []ToolCallBinding
 }
 func (SubmitModelResult) agentCommand() {}
@@ -1914,7 +1980,7 @@ func (SubmitModelFailure) agentCommand() {}
 // RunConfig.ModelRejectLimit is exceeded. Requires the model start grant.
 type RejectModelResult struct {
     StepID  StepID
-    Usage   sdk.Usage
+    Usage   Usage
     Failure StepFailure
 }
 func (RejectModelResult) agentCommand() {}
@@ -1966,7 +2032,7 @@ func (AcceptInput) agentCommand() {}
 type ModelStepPrepared struct {
     StepID        StepID
     Model         ModelRef
-    Request       sdk.Request
+    Request       ModelRequest
     RequestDigest Digest
     InputIDs      []InputID
     Tools         []ToolSpec
@@ -1983,14 +2049,14 @@ func (ModelStepRecovered) fact() {}
 
 type ModelStepRejected struct {
     StepID  StepID
-    Usage   sdk.Usage
+    Usage   Usage
     Failure StepFailure
 }
 func (ModelStepRejected) fact() {}
 
 type ModelStepCompleted struct {
     StepID StepID
-    Result sdk.ModelResult
+    Result ModelResult
 }
 func (ModelStepCompleted) fact() {}
 
@@ -2057,11 +2123,11 @@ type ToolCallBinding struct {
     Response         *ResponseRequest // Decide 在 ToolStepOpened 中派生并填充；调用方提交时留空
 }
 
-// ToolSpec is the agent-side sidecar for a provider-neutral sdk.ToolDefinition.
+// ToolSpec is the agent-side sidecar for a provider-neutral frozen ToolDefinition.
 // ResponsePolicy is intentionally kept out of sdk to preserve package layering.
 type ToolSpec struct {
     Ref              ToolRef
-    Definition       sdk.ToolDefinition
+    Definition       ToolDefinition
     DefinitionDigest Digest
     Policy           ResponsePolicy
 }
@@ -2101,7 +2167,7 @@ type RequestPlanner interface {
 
 type RequestPlan struct {
     Model         ModelRef
-    Request       sdk.Request
+    Request       sdk.Request // boundary value; Loop freezes before PrepareModelRequest
     InputIDs      []InputID
     PlanningToken PlanningToken
     Tools         []ToolSpec
@@ -2194,8 +2260,8 @@ func EncodeFact(schemaVersion uint16, typ string, fact Fact) ([]byte, error)
 func DigestFact(schemaVersion uint16, typ string, fact Fact) (Digest, error)
 func EncodeRunSeed(RunSeed) ([]byte, error)
 func DigestRunSeed(schemaVersion uint16, seed RunSeed) (Digest, error)
-func DigestRequest(sdk.Request) (Digest, error)
-func DigestToolDefinition(sdk.ToolDefinition) (Digest, error)
+func DigestRequest(ModelRequest) (Digest, error)
+func DigestToolDefinition(ToolDefinition) (Digest, error)
 func DigestToolSpec(ToolSpec) (Digest, error)
 func DigestToolSpecs([]ToolSpec) (Digest, error)
 func DigestModelStepBinding(model ModelRef, requestDigest, toolsDigest Digest) (Digest, error)
