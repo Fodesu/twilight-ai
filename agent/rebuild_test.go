@@ -145,6 +145,55 @@ func TestFoldRejectsInteriorGap(t *testing.T) {
 	}
 }
 
+func TestFoldRejectsRunIDMismatch(t *testing.T) {
+	rt := fullRunRuntime(t)
+	rt.mu.Lock()
+	log := cloneEvents(rt.log)
+	initial := cloneMachineState(rt.initial)
+	rt.mu.Unlock()
+
+	log[0].RunID = "other-run"
+	if _, _, err := FoldEvents(initial, log); err == nil {
+		t.Fatal("run mismatch folded silently")
+	}
+}
+
+func TestFoldRejectsTransitionCommandIdentityChange(t *testing.T) {
+	rt := fullRunRuntime(t)
+	rt.mu.Lock()
+	log := cloneEvents(rt.log)
+	initial := cloneMachineState(rt.initial)
+	rt.mu.Unlock()
+
+	for i := range log {
+		if log[i].Revision == 3 && log[i].Index == 1 {
+			log[i].CommandID = "other-command"
+			break
+		}
+	}
+	if _, _, err := FoldEvents(initial, log); err == nil {
+		t.Fatal("same-revision command identity change folded silently")
+	}
+}
+
+func TestFoldRejectsUnsupportedSchemaVersion(t *testing.T) {
+	rt := fullRunRuntime(t)
+	rt.mu.Lock()
+	log := cloneEvents(rt.log)
+	initial := cloneMachineState(rt.initial)
+	rt.mu.Unlock()
+
+	log[0].SchemaVersion = 99
+	digest, err := DigestFact(log[0].SchemaVersion, log[0].Type, log[0].Fact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log[0].Digest = digest
+	if _, _, err := FoldEvents(initial, log); err == nil {
+		t.Fatal("unsupported schema version folded silently")
+	}
+}
+
 // A tampered fact fails its digest check during fold.
 func TestFoldRejectsTamperedFact(t *testing.T) {
 	rt := fullRunRuntime(t)
