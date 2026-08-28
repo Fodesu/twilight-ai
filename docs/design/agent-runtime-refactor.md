@@ -453,7 +453,7 @@ WaitForExecutionRecovery
 
 `Decide(state, command)` 按下表校验前置条件并产出事实序列。任何前置条件不满足即拒绝整个 command，不产出部分事实：
 
-1. `PrepareModelRequest` 只能在 Run active 且没有当前 Step 时接受；其 `InputIDs` 必须按 `PendingInputs` 的当前顺序完整匹配。`Tools` 必须与 `sdk.Request` 中的 provider tool definitions 按 Ref、顺序和 definition digest 一一对应，`ToolsDigest` 覆盖 Ref、schema、顺序与 policy。产出 `[ModelStepPrepared]`，事实中携带冻结的请求、ToolSpec 与被消费的 InputIDs。
+1. `PrepareModelRequest` 只能在 Run active 且没有当前 Step 时接受；其 `InputIDs` 必须按 `PendingInputs` 的当前顺序完整匹配。`Tools` 必须与 `sdk.Request` 中的 provider tool definitions 按 Ref、顺序和 definition digest 一一对应，`ToolsDigest` 覆盖 Ref、schema、顺序与 policy。产出 `[ModelStepPrepared]`，事实中携带冻结的请求、ToolSpec、被消费的 InputIDs 与 Decide 算好的 step binding digest（事实自包含条件：Evolve 不重算 digest）。
 2. `StartModelExecution` 只能作用于 Prepared ModelStep，产出 `[ModelStepStarted]`。`RecoverModelExecution` 只能作用于没有已接受结果的 Executing ModelStep，产出 `[ModelStepRecovered]`；它只能由持有该 Model grant 的当前 Loop，或由 Runtime 自己确认 lease 失效后的 recovery 逻辑提交，普通 response ingress 不能提交。
 3. `SubmitModelResult` 只能作用于对应的 Executing ModelStep。结果没有 tool calls 时产出 `[ModelStepCompleted, RunEnded{RunCompleted}]`；有 tool calls 时按冻结 `ToolSpec` 绑定 policy 和 binding digest，产出 `[ModelStepCompleted, ToolStepOpened]`——`ToolStepOpened` 携带完整 Call 集合：DirectExecution 的 Call 为 Pending，ApprovalRequired/ExternalResponse 的 Call 为带稳定 request 的 Waiting，每个 Waiting request 都包含目标 RunID、StepID、CallID、ResponseID、Kind 和 RequestDigest。
 4. `SubmitModelFailure` 只能作用于对应的 Executing ModelStep，产出 `[RunEnded{RunFailed, provider_failure}]`，保留稳定失败原因。
@@ -476,7 +476,7 @@ WaitForExecutionRecovery
 
 | 事实 | 折叠 |
 | --- | --- |
-| ModelStepPrepared | 设置 Current 为 Prepared ModelStep；`ModelSteps+1`；按事实中的 InputIDs 从 `PendingInputs` 移除 |
+| ModelStepPrepared | 设置 Current 为 Prepared ModelStep（StepRef.Digest 取事实携带的 BindingDigest）；`ModelSteps+1`；按事实中的 InputIDs 从 `PendingInputs` 移除 |
 | ModelStepStarted | Current.Status = Executing |
 | ModelStepRecovered | Current.Status = Prepared |
 | ModelStepRejected | `Rejects+1`；Current.Status = Prepared；Usage 逐字段累加事实携带的 usage |
@@ -653,7 +653,30 @@ Runtime 只回答两个问题：
 
 因此 Runtime 的接口很小，但一次 `Commit` 的事务范围可以很大：它必须让一个 AgentCommand、产出的 AgentEvent 组及其必要的产品投影一起成功或一起失败；这不意味着 Runtime 获得了 history、queue 或 prompt 的所有权。
 
-MachineState 与 AgentEvent log 是同一个 transition 序列的两个 materialization：MachineState 是 execution authority（提交验证与 Loop 执行的依据），AgentEvent log 是 historical authority（replay、审计与投影的依据）。两者由同一原子提交产生、共享同一 Revision；对任意 Revision N，状态必须等于初始状态按事件流 fold `Evolve` 到 N 的结果。两者出现分歧是 halt 级一致性违规：停止该 Run 的执行并报告，不定义任何一方自动覆盖另一方。
+AgentEvent log 是 Run 语义状态的 source of truth；MachineState 是必需的同事务 projection（execution cache）：提交验证与 Loop 执行从它读取，因此它必须与日志在同一原子提交内更新，但它可以从日志重建。对任意 Revision N，状态必须等于初始状态按事件流 fold `Evolve` 到 N 的结果——这是可自动恢复的不变量，不是 halt 条件。
+
+这个权威声明成立的三个稳定条件（本规范的规范性条款）：
+
+1. Event ontology 稳定：Fact 词表 sealed，已发布 SchemaVersion 的事实结构永不修改，新增字段进入新版本。
+2. Evolve 语义稳定：折叠是机械的（不读 RunConfig、无 policy 分支），已发布版本的折叠语义与事件编码一起永久冻结；会演进的决策语义全部在 Decide，其结果记录为事实。
+3. 事实自包含：折叠一条事实所需的全部信息在事实自身与折叠前状态之内，不访问外部系统，不重新计算依赖当前代码版本的派生值（digest 一律在 Decide 时算好并携带在事实中）。
+
+每 Run 维护一个不可丢弃的 revision 水位（watermark）：每次提交与日志同步推进的单调计数，语义为"日志至少完整到此"。它是日志尾部完整性的末端见证——append-only 日志可以用 (Revision, Index) 连续性检测中间缺洞，但缺尾的日志与更短的完整日志无法区分。水位是控制平面数据，不进入 MachineState，重建不清除它。
+
+分歧仲裁规则固定为：
+
+```text
+snapshot 与 fold(events) 不一致，或 snapshot 缺失，且 log.maxRevision >= watermark
+  -> 日志为准，自动重建（纯 Evolve 折叠，零副作用，不重放命令，不产生外部 effect），
+     并记录一次重建事件供运维审计——实现正确时这条路径不触发，每次触发都意味着
+     Evolve bug、越权写入或 snapshot 损坏真实发生过
+
+log.maxRevision < watermark
+  -> 日志尾部缺失，halt 该 Run——已接受的事实永久消失无法凭空恢复，
+     继续推进会把丢失升级为错误的重复执行；恢复属于灾难恢复范畴（备份、复制）
+```
+
+主动 truncate snapshot 强制全量重建是合法运维操作（例如 MachineState 存储布局变更时替代迁移）。水位与日志同库整体回退（全量备份恢复）不在检测范围内：内部自洽的一致回退需要外部见证，v1 不做。
 
 一个 Runtime 实例服务一个 Run；多个 Run 由上层创建多个 Runtime 实例。Run 的创建、身份分配和初始
 `MachineState` 由 application/Memoh admission 完成，Runtime 从一个已经有效的初始状态开始。
@@ -1264,7 +1287,7 @@ Commit
 
 并行 Call 的完成 transition 按提交先后获得递增的 Revision；这不改变模型上下文中的 Call 顺序。Memoh 先按 CallID 保存各自结果，ToolStep 关闭时再按 ModelResult 原始 Call 顺序写入 assistant tool-call 与 tool-result history。
 
-Attempt、owner、fence、lease 和数据库 row 不进入 agent public state。它们只保证多个 Loop attempt 不会同时取得同一个 Call 的执行权。持久化的 MachineState snapshot 必须带 adapter 自己的 snapshot schema version；跨版本升级时按该版本解码或迁移，不复用事件的 `SchemaVersion` 字段。
+Attempt、owner、fence、lease 和数据库 row 不进入 agent public state。它们只保证多个 Loop attempt 不会同时取得同一个 Call 的执行权。持久化的 MachineState snapshot 必须带 adapter 自己的 snapshot schema version；跨版本升级时按该版本解码，或直接 truncate 后从事件流重建（§5.1），不复用事件的 `SchemaVersion` 字段。每 Run 的 revision 水位与 snapshot 分开存放（state 表中不随重建清空的列，或独立小表），每次 Commit 与日志同事务推进。
 
 MemohRuntime 的 worker 实例在构造时绑定当前 worker 的 owner identity；只有该实例可以提交自己接受的 model/tool start、completion 和主动 recovery。response 和 cancel 使用同一个 `Commit` 语义，但由 Memoh 创建不带 worker grant 的 ingress-scoped adapter；这些 command 不取得执行权，因此不需要伪造 Loop owner。新 Run admission 仍由 Memoh 的 admission 事务处理，不调用旧 Run 的 `Runtime.Commit`。
 
@@ -1321,9 +1344,9 @@ SchemaVersion + Type           wire 兼容和 sealed fact discriminator
 Fact                           已接受的事实内容
 ```
 
-MachineState 与 AgentEvent log 是同一个 transition 序列的两个 materialization（§5.1）：MachineState 是 execution authority，AgentEvent log 是 historical authority，由同一原子提交产生、共享 Revision。Runtime 必须把两者和需要一致的 Memoh projection/outbox 放在同一事务或锁边界。Durable adapter 必须保留 AgentEvent，使其可以按 RunID/(Revision, Index) replay；MemoryRuntime 可以只在进程内保留同样的记录。公共 `Runtime` 不增加 replay 方法，读取由实现或 application projection 提供。
+AgentEvent log 是 source of truth；MachineState 是必需的同事务 projection（§5.1）。Runtime 必须把两者、水位和需要一致的 Memoh projection/outbox 放在同一事务或锁边界。Durable adapter 必须保留 AgentEvent，使其可以按 RunID/(Revision, Index) replay；MemoryRuntime 可以只在进程内保留同样的记录。公共 `Runtime` 不增加 replay 方法，读取由实现或 application projection 提供。
 
-Replay 按 RunID/(Revision, Index) 取出 AgentEvent，从初始状态（Revision=0）开始依次调用同一份 `Machine.Evolve` 折叠。折叠只依赖 Evolve，不重新运行 Decide——决策结果已经记录在事实里，Machine 决策规则的演进不影响历史事件的折叠。校验规则：折叠到 Revision N 的状态必须与该 Revision 的持久化状态一致；Revision、Index、identity 或 digest 不匹配时停止 replay 并报告 halt 级一致性违规，不静默修复状态，也不定义任何一方自动覆盖另一方。分歧后的恢复是人工按事件流重建并核对的 runbook 操作，不是自动路径。
+Replay 按 RunID/(Revision, Index) 取出 AgentEvent，从初始状态（Revision=0）开始依次调用同一份 `Machine.Evolve` 折叠。折叠只依赖 Evolve，不重新运行 Decide——决策结果已经记录在事实里，Machine 决策规则的演进不影响历史事件的折叠；折叠不产生任何外部 effect。仲裁按 §5.1 的规则：日志完整（maxRevision >= watermark）时日志为准，snapshot 分歧或缺失自动重建并记录重建事件；日志尾部低于水位时 halt。事件流内部的 Revision/Index 缺洞或 digest 不匹配同样按日志损坏处理，halt 该 Run。
 
 Replay 的起点是 admission 已建立的初始 `MachineState`；`RunSeed` 的 admission 记录不作为任何 Run 的 AgentEvent 重放。需要重建 admission 链时，由 Memoh 的 session/queue 记录负责。
 
@@ -1577,7 +1600,11 @@ RunStopped/RunFailed 保留最近已接受的 ModelResult
 Cancel 与 Unknown 的提交先后决定终态
 CancelRun 在过期 BaseRevision 上对非 terminal Run 重新评估
 RejectModelResult 必须带有效 Model grant；AlreadyApplied 重放不重复累计 usage
-持久化状态与按 Evolve 折叠的事件流逐字段一致；不一致 -> halt，不自动修复
+持久化状态与按 Evolve 折叠的事件流一致；snapshot 分歧或缺失且日志完整 -> 自动重建并报告，重建不改变健康状态
+日志尾部低于 revision 水位 -> ErrLogTruncated，halt 该 Run
+事件流内部 Revision/Index 缺洞或事实 digest 不匹配 -> fold 拒绝，按日志损坏处理
+ModelStepPrepared/ToolStepOpened 自包含：携带的 digest 折叠后可重现 Step 身份
+golden event stream：固定 v1 命令序列折叠出冻结的状态字节
 ```
 
 ### 14.4 Memoh integration
@@ -1617,9 +1644,9 @@ Memoh queue/session/admission 的语义保持在 Memoh；现有 NativeAgentLoop 
 2. breaking release 版本和 Memoh protocol upgrade window。
 3. EventSink payload schema，以及是否需要在 Memoh outbox 中加入跨进程 execution epoch。
 
-本规范已经固定：Cancel 与 Unknown 按提交先后决定终态；`sdk.Request` 冻结完整的 generation options，streaming 只是 `ModelInvoker` 的可选执行路径，不改变 AgentCommand/AgentEvent 语义。Machine 采用 Decide/Evolve 拆分：Decide 承载全部决策并在提交时产出结果事实，Evolve 是机械折叠、与事件编码同属永久兼容契约；MachineState 为 execution authority、AgentEvent log 为 historical authority，二者是同一 transition 的两个 materialization，分歧即 halt。结构性 malformed 的模型结果通过 `RejectModelResult` 在同一冻结 request 上有限重试；usage 在 MachineState 内逐字段累计；steer 由 MemohRuntime 的 Prepare gate 保证进入下一个 ModelStep；工具不做效果分级，计划内停机以排空代替，Unknown 语义只覆盖崩溃和 lease 失效。
+本规范已经固定：Cancel 与 Unknown 按提交先后决定终态；`sdk.Request` 冻结完整的 generation options，streaming 只是 `ModelInvoker` 的可选执行路径，不改变 AgentCommand/AgentEvent 语义。Machine 采用 Decide/Evolve 拆分：Decide 承载全部决策并在提交时产出结果事实，Evolve 是机械折叠、与事件编码同属永久兼容契约；AgentEvent log 为 source of truth，MachineState 为必需的同事务 projection，分歧仲裁按 §5.1（日志完整则自动重建，日志尾部低于水位则 halt）。结构性 malformed 的模型结果通过 `RejectModelResult` 在同一冻结 request 上有限重试；usage 在 MachineState 内逐字段累计；steer 由 MemohRuntime 的 Prepare gate 保证进入下一个 ModelStep；工具不做效果分级，计划内停机以排空代替，Unknown 语义只覆盖崩溃和 lease 失效。
 
-重新评估 event log 为唯一权威（纯 ES 翻转）的触发条件：出现跨多个发布周期存活的长生命周期 Run；fork/任意历史时点重建成为产品功能；外部消费方要求自描述的事件日志。上述条件出现前，保持双物化模型。
+本规范采用 event log 为 source of truth（§5.1）：三个稳定条件（ontology 冻结、Evolve 冻结、事实自包含）由 Decide/Evolve 拆分保障，revision 水位保护日志尾部完整性。MachineState 保持为必需的同事务 projection——提交验证要求当前状态在临界区内可得，这与日志权威并不冲突。
 
 ## 附录 A：最小 public API 草案
 
@@ -1944,6 +1971,7 @@ type ModelStepPrepared struct {
     InputIDs      []InputID
     Tools         []ToolSpec
     ToolsDigest   Digest
+    BindingDigest Digest // Decide 算好携带；Evolve 折叠时不重算（事实自包含）
 }
 func (ModelStepPrepared) fact() {}
 
@@ -2306,7 +2334,7 @@ func (l *Loop) Run(context.Context, Runtime, EventSink) (LoopResult, error)
 8. Waiting response 只推进对应 Call；approval approved 先变 Pending，随后由 Loop 执行工具。日志记录结果事实（`ToolCallFailed{permission_denied}`、`RunEnded{cancelled}`），不记录请求本身。
 9. 幂等按 command 判定：相同 CommandID/digest 重放返回 CommitAlreadyApplied 与原事件组（不重新运行 Decide），不重复写入 projection、history、queue action 或 outbox；相同 CommandID 不同 digest 冲突。
 10. 一次接受的 transition 使 Revision 恰好加一；其全部事实共享该 Revision，Index 组内连续，提交后 `Snapshot.Revision` 等于该 Revision。
-11. MachineState 是 execution authority，AgentEvent log 是 historical authority；二者是同一 transition 序列的两个 materialization，由同一原子提交产生。对任意 Revision，状态必须等于初始状态经 `Evolve` 折叠事件流的结果；分歧即 halt，不定义自动覆盖方向。
+11. AgentEvent log 是 source of truth；MachineState 是必需的同事务 projection，可按 `Evolve` 从日志重建。对任意 Revision，状态必须等于初始状态经 `Evolve` 折叠事件流的结果；snapshot 分歧或缺失且日志完整时自动重建并记录，日志尾部低于 revision 水位时 halt 该 Run。
 12. Evolve 的折叠语义与事件编码同属永久兼容契约，按 SchemaVersion 冻结；Decide 的决策规则可随版本演进，因为决策结果已记录为事实。
 13. 已知工具失败交给下一次模型请求；Unknown 终止 Run，不自动重试、不查询外部系统。
 14. worker cancellation 不等于 RunStopped；业务停止必须提交控制 command。宿主的业务停止先提交 `CancelRun`，再取消 Loop 的 ctx；ctx 取消本身只结束执行尝试，工具 worker 运行到自身结束。

@@ -12,15 +12,18 @@ import (
 type Fact interface{ fact() }
 
 // ModelStepPrepared establishes the frozen ModelStep and consumes the listed
-// pending inputs.
+// pending inputs. BindingDigest (model + request + tools) is computed by
+// Decide and carried in the fact: Evolve folds it verbatim, never recomputes
+// (fact self-containment, spec §5.1).
 type ModelStepPrepared struct {
-	StepID        StepID        `json:"stepId"`
-	Model         ModelRef      `json:"model"`
-	Request       sdk.Request   `json:"request"`
-	RequestDigest Digest        `json:"requestDigest"`
-	InputIDs      []InputID     `json:"inputIds,omitempty"`
-	Tools         []ToolSpec    `json:"tools,omitempty"`
-	ToolsDigest   Digest        `json:"toolsDigest"`
+	StepID        StepID      `json:"stepId"`
+	Model         ModelRef    `json:"model"`
+	Request       sdk.Request `json:"request"`
+	RequestDigest Digest      `json:"requestDigest"`
+	InputIDs      []InputID   `json:"inputIds,omitempty"`
+	Tools         []ToolSpec  `json:"tools,omitempty"`
+	ToolsDigest   Digest      `json:"toolsDigest"`
+	BindingDigest Digest      `json:"bindingDigest"`
 }
 
 func (ModelStepPrepared) fact() {}

@@ -120,6 +120,10 @@ func decidePrepareModelRequest(s MachineState, cmd PrepareModelRequest) ([]Fact,
 	if cmd.ToolsDigest != wantTools {
 		return nil, rejectionf("prepare: tools digest mismatch")
 	}
+	binding, err := DigestModelStepBinding(cmd.Model, cmd.RequestDigest, cmd.ToolsDigest)
+	if err != nil {
+		return nil, err
+	}
 	return []Fact{ModelStepPrepared{
 		StepID:        cmd.StepID,
 		Model:         cmd.Model,
@@ -128,6 +132,7 @@ func decidePrepareModelRequest(s MachineState, cmd PrepareModelRequest) ([]Fact,
 		InputIDs:      cmd.InputIDs,
 		Tools:         cmd.Tools,
 		ToolsDigest:   cmd.ToolsDigest,
+		BindingDigest: binding,
 	}}, nil
 }
 
