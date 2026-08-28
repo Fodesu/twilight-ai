@@ -159,7 +159,9 @@ type ModelStep struct {
 	Rejects int `json:"rejects,omitempty"`
 }
 
-func (ModelStep) step()          {}
+func (ModelStep) step() {}
+
+//nolint:gocritic // hugeParam: value receiver keeps ModelStep satisfying sealed Step as a value.
 func (s ModelStep) Ref() StepRef { return s.RefValue }
 
 type ToolCallStatus uint8
@@ -207,6 +209,8 @@ type ToolCallState struct {
 }
 
 // ValidateToolCallState rejects illegal field combinations (spec §4.2).
+//
+//nolint:gocritic // hugeParam: public validator accepts the value stored in facts/state without mutating it.
 func ValidateToolCallState(c ToolCallState) error {
 	switch c.Status {
 	case ToolPending, ToolExecuting:
@@ -252,10 +256,12 @@ type ToolStep struct {
 	Calls    []ToolCallState `json:"calls"`
 }
 
-func (ToolStep) step()          {}
+func (ToolStep) step() {}
+
+//nolint:gocritic // hugeParam: value receiver keeps ToolStep satisfying sealed Step as a value.
 func (s ToolStep) Ref() StepRef { return s.RefValue }
 
-func (s ToolStep) callIndex(id CallID) int {
+func (s *ToolStep) callIndex(id CallID) int {
 	for i := range s.Calls {
 		if s.Calls[i].CallID == id {
 			return i

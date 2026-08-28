@@ -67,7 +67,7 @@ func TestRebuildHealthyIsNoop(t *testing.T) {
 		t.Fatal("healthy runtime reported divergence on rebuild")
 	}
 	after, _ := rt.Load(context.Background())
-	if !statesEquivalent(before.State, after.State) || before.Revision != after.Revision {
+	if !statesEquivalent(&before.State, &after.State) || before.Revision != after.Revision {
 		t.Fatal("rebuild changed a healthy state")
 	}
 }
@@ -93,7 +93,7 @@ func TestRebuildRepairsCorruptedSnapshot(t *testing.T) {
 		t.Fatal("rebuild did not report the repaired divergence")
 	}
 	got, _ := rt.Load(context.Background())
-	if !statesEquivalent(want.State, got.State) {
+	if !statesEquivalent(&want.State, &got.State) {
 		t.Fatal("rebuild did not restore the log-derived state")
 	}
 	if got.State.Status != RunCompleted || got.State.ModelSteps != 2 {
@@ -136,7 +136,7 @@ func TestFoldRejectsInteriorGap(t *testing.T) {
 		holed = append(holed, e)
 	}
 	log := holed
-	initial := cloneMachineState(rt.initial)
+	initial := cloneMachineState(&rt.initial)
 	rt.mu.Unlock()
 
 	if _, _, err := FoldEvents(initial, log); err == nil {
@@ -148,7 +148,7 @@ func TestFoldRejectsRunIDMismatch(t *testing.T) {
 	rt := fullRunRuntime(t)
 	rt.mu.Lock()
 	log := cloneEvents(rt.log)
-	initial := cloneMachineState(rt.initial)
+	initial := cloneMachineState(&rt.initial)
 	rt.mu.Unlock()
 
 	log[0].RunID = "other-run"
@@ -161,7 +161,7 @@ func TestFoldRejectsTransitionCommandIdentityChange(t *testing.T) {
 	rt := fullRunRuntime(t)
 	rt.mu.Lock()
 	log := cloneEvents(rt.log)
-	initial := cloneMachineState(rt.initial)
+	initial := cloneMachineState(&rt.initial)
 	rt.mu.Unlock()
 
 	for i := range log {
@@ -179,7 +179,7 @@ func TestFoldRejectsUnsupportedSchemaVersion(t *testing.T) {
 	rt := fullRunRuntime(t)
 	rt.mu.Lock()
 	log := cloneEvents(rt.log)
-	initial := cloneMachineState(rt.initial)
+	initial := cloneMachineState(&rt.initial)
 	rt.mu.Unlock()
 
 	log[0].SchemaVersion = 99
@@ -198,7 +198,7 @@ func TestFoldRejectsTamperedFact(t *testing.T) {
 	rt := fullRunRuntime(t)
 	rt.mu.Lock()
 	log := cloneEvents(rt.log)
-	initial := cloneMachineState(rt.initial)
+	initial := cloneMachineState(&rt.initial)
 	rt.mu.Unlock()
 
 	for i := range log {
@@ -241,14 +241,14 @@ func TestRegressionPreparedFactSelfContained(t *testing.T) {
 // the same commit that changes the protocol).
 func TestGoldenEventStreamV1(t *testing.T) {
 	rt := fullRunRuntime(t)
-	folded, maxRev, err := FoldEvents(cloneMachineState(rt.initial), rt.Events())
+	folded, maxRev, err := FoldEvents(cloneMachineState(&rt.initial), rt.Events())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if maxRev != 8 {
 		t.Fatalf("golden stream has %d transitions, want 8", maxRev)
 	}
-	stateBytes, err := marshalCanonical(stateComparable(folded))
+	stateBytes, err := marshalCanonical(stateComparable(&folded))
 	if err != nil {
 		t.Fatal(err)
 	}

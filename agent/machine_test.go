@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/memohai/twilight-ai/sdk"
@@ -405,7 +406,7 @@ func TestUnknownFailureEndsRun(t *testing.T) {
 		t.Fatal("run not failed")
 	}
 	// Terminal absorbs: further commands rejected.
-	if _, err := Decide(s, CancelRun{}); err != ErrRunTerminal {
+	if _, err := Decide(s, CancelRun{}); !errors.Is(err, ErrRunTerminal) {
 		t.Fatalf("err = %v, want ErrRunTerminal", err)
 	}
 }
@@ -579,7 +580,7 @@ func TestAcceptInputIdempotentPerID(t *testing.T) {
 func TestAcceptInputRejectsSeedDuplicateID(t *testing.T) {
 	s := newRun(t, testConfig())
 	_, err := Decide(s, NextStep(AgentInput{ID: "seed", Payload: cj(`{"q":"other"}`)}))
-	if err != ErrCommandConflict {
+	if !errors.Is(err, ErrCommandConflict) {
 		t.Fatalf("duplicate seed input err = %v, want ErrCommandConflict", err)
 	}
 }

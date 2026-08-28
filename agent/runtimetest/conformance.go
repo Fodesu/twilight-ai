@@ -4,6 +4,7 @@
 package runtimetest
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -84,7 +85,8 @@ func preparedCase(t testing.TB, newRuntime Factory, tools []sdk.ToolDefinition, 
 	t.Helper()
 	c := newCase(t, newRuntime, agent.RunConfig{Model: "m-1", ModelRejectLimit: 2})
 	snap := c.load()
-	prep, cmdID := buildPrepareFromSnap(t, snap, testRequest(tools...), specs)
+	req := testRequest(tools...)
+	prep, cmdID := buildPrepareFromSnap(t, &snap, &req, specs)
 	c.mustCommit(cmdID, snap.Revision, "", prep)
 	start := c.mustCommit("start-1", 1, "", agent.StartModelExecution{StepID: prep.StepID})
 	if start.Grant == "" {
@@ -93,9 +95,9 @@ func preparedCase(t testing.TB, newRuntime Factory, tools []sdk.ToolDefinition, 
 	return c, prep.StepID, start.Grant
 }
 
-func buildPrepareFromSnap(t testing.TB, snap agent.RuntimeSnapshot, req sdk.Request, specs []agent.ToolSpec) (agent.PrepareModelRequest, agent.CommandID) {
+func buildPrepareFromSnap(t testing.TB, snap *agent.RuntimeSnapshot, req *sdk.Request, specs []agent.ToolSpec) (agent.PrepareModelRequest, agent.CommandID) {
 	t.Helper()
-	frozenReq, err := agent.FreezeModelRequest(req)
+	frozenReq, err := agent.FreezeModelRequest(*req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +139,7 @@ func testToolDef(name string) sdk.ToolDefinition {
 
 func cj(raw string) agent.CanonicalJSON { return agent.MustParseCanonicalJSON(raw) }
 
-func makeSpec(t testing.TB, def sdk.ToolDefinition, policy agent.ResponsePolicy) agent.ToolSpec {
+func makeSpec(t testing.TB, def sdk.ToolDefinition) agent.ToolSpec {
 	t.Helper()
 	frozen, err := agent.FreezeToolDefinition(def)
 	if err != nil {
@@ -147,12 +149,12 @@ func makeSpec(t testing.TB, def sdk.ToolDefinition, policy agent.ResponsePolicy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return agent.ToolSpec{Ref: agent.ToolRef(def.Name), Definition: frozen, DefinitionDigest: d, Policy: policy}
+	return agent.ToolSpec{Ref: agent.ToolRef(def.Name), Definition: frozen, DefinitionDigest: d, Policy: agent.DirectExecution}
 }
 
-func makeBinding(t testing.TB, callID string, spec agent.ToolSpec, args string) agent.ToolCallBinding {
+func makeBinding(t testing.TB, callID string, spec *agent.ToolSpec) agent.ToolCallBinding {
 	t.Helper()
-	parsedArgs := cj(args)
+	parsedArgs := cj(`{}`)
 	bd, err := agent.DigestToolCallBinding(agent.CallID(callID), spec.DefinitionDigest, spec.Policy, parsedArgs)
 	if err != nil {
 		t.Fatal(err)
@@ -165,6 +167,18 @@ func makeBinding(t testing.TB, callID string, spec agent.ToolSpec, args string) 
 		Arguments:        parsedArgs,
 		Policy:           spec.Policy,
 	}
+}
+
+func openedToolStepID(t testing.TB, res *agent.CommitResult) agent.StepID {
+	t.Helper()
+	if len(res.Events) < 2 {
+		t.Fatalf("events = %d, want ToolStepOpened at index 1", len(res.Events))
+	}
+	opened, ok := res.Events[1].Fact.(agent.ToolStepOpened)
+	if !ok {
+		t.Fatalf("event[1] fact = %T, want agent.ToolStepOpened", res.Events[1].Fact)
+	}
+	return opened.StepID
 }
 
 func modelResultWithCalls(callIDs ...string) agent.ModelResult {
@@ -200,17 +214,17 @@ func testIdempotentReplay(t *testing.T, newRuntime Factory) {
 		t.Fatal("replay advanced the revision")
 	}
 	_, err := c.commit("cancel-1", 0, "", agent.CancelRun{Reason: "other"})
-	if err != agent.ErrCommandConflict {
+	if !errors.Is(err, agent.ErrCommandConflict) {
 		t.Fatalf("err = %v, want ErrCommandConflict", err)
 	}
 }
 
 func testRevisionAndIndex(t *testing.T, newRuntime Factory) {
 	def := testToolDef("t")
-	spec := makeSpec(t, def, agent.DirectExecution)
+	spec := makeSpec(t, def)
 	c, stepID, grant := preparedCase(t, newRuntime, []sdk.ToolDefinition{def}, []agent.ToolSpec{spec})
 
-	b := makeBinding(t, "c1", spec, `{}`)
+	b := makeBinding(t, "c1", &spec)
 	res := c.mustCommit("complete-1", 2, grant,
 		agent.SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []agent.ToolCallBinding{b}})
 	if len(res.Events) != 2 {
@@ -252,12 +266,12 @@ func testStartGrantLifecycle(t *testing.T, newRuntime Factory) {
 
 func testCallLocalRebase(t *testing.T, newRuntime Factory) {
 	defA, defB := testToolDef("a"), testToolDef("b")
-	specA := makeSpec(t, defA, agent.DirectExecution)
-	specB := makeSpec(t, defB, agent.DirectExecution)
+	specA := makeSpec(t, defA)
+	specB := makeSpec(t, defB)
 	c, stepID, grant := preparedCase(t, newRuntime, []sdk.ToolDefinition{defA, defB}, []agent.ToolSpec{specA, specB})
 
-	bA := makeBinding(t, "cA", specA, `{}`)
-	bB := makeBinding(t, "cB", specB, `{}`)
+	bA := makeBinding(t, "cA", &specA)
+	bB := makeBinding(t, "cB", &specB)
 	r, err := agent.FreezeModelResult(sdk.ModelResult{
 		FinishReason: sdk.FinishReasonToolCalls,
 		ToolCalls: []sdk.ToolCall{
@@ -270,7 +284,7 @@ func testCallLocalRebase(t *testing.T, newRuntime Factory) {
 	}
 	res := c.mustCommit("complete-1", 2, grant,
 		agent.SubmitModelResult{StepID: stepID, Result: r, Calls: []agent.ToolCallBinding{bA, bB}})
-	toolStep := res.Events[1].Fact.(agent.ToolStepOpened).StepID
+	toolStep := openedToolStepID(t, &res)
 	base := res.Snapshot.Revision
 
 	startA := c.mustCommit("start-A", base, "", agent.StartToolCall{StepID: toolStep, CallID: "cA"})
@@ -293,7 +307,8 @@ func testCallLocalRebase(t *testing.T, newRuntime Factory) {
 func testPrepareDerivedIdentity(t *testing.T, newRuntime Factory) {
 	c := newCase(t, newRuntime, agent.RunConfig{Model: "m-1"})
 	snap := c.load()
-	prep, cmdID := buildPrepareFromSnap(t, snap, testRequest(), nil)
+	req := testRequest()
+	prep, cmdID := buildPrepareFromSnap(t, &snap, &req, nil)
 
 	if _, err := c.commit("wrong-prepare-id", snap.Revision, "", prep); err == nil {
 		t.Fatal("PrepareModelRequest accepted a non-derived CommandID")
@@ -310,17 +325,18 @@ func testPrepareDerivedIdentity(t *testing.T, newRuntime Factory) {
 func testPrepareIsHardCAS(t *testing.T, newRuntime Factory) {
 	c := newCase(t, newRuntime, agent.RunConfig{Model: "m-1"})
 	snap := c.load()
-	prep, cmdID := buildPrepareFromSnap(t, snap, testRequest(), nil)
+	req := testRequest()
+	prep, cmdID := buildPrepareFromSnap(t, &snap, &req, nil)
 	c.mustCommit(cmdID, snap.Revision, "", prep)
 
 	otherReq := testRequest()
 	otherReq.System = "different"
-	prep2, cmdID2 := buildPrepareFromSnap(t, snap, otherReq, nil)
+	prep2, cmdID2 := buildPrepareFromSnap(t, &snap, &otherReq, nil)
 	if cmdID2 != cmdID {
 		t.Fatal("same revision must derive the same command id")
 	}
 	_, err := c.commit(cmdID2, snap.Revision, "", prep2)
-	if err != agent.ErrCommandConflict {
+	if !errors.Is(err, agent.ErrCommandConflict) {
 		t.Fatalf("err = %v, want ErrCommandConflict", err)
 	}
 	res := c.mustCommit(cmdID, snap.Revision, "", prep)
@@ -331,12 +347,12 @@ func testPrepareIsHardCAS(t *testing.T, newRuntime Factory) {
 
 func testCancelRebasesAndUnknownWins(t *testing.T, newRuntime Factory) {
 	def := testToolDef("t")
-	spec := makeSpec(t, def, agent.DirectExecution)
+	spec := makeSpec(t, def)
 	c, stepID, grant := preparedCase(t, newRuntime, []sdk.ToolDefinition{def}, []agent.ToolSpec{spec})
-	b := makeBinding(t, "c1", spec, `{}`)
+	b := makeBinding(t, "c1", &spec)
 	res := c.mustCommit("complete-1", 2, grant,
 		agent.SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []agent.ToolCallBinding{b}})
-	toolStep := res.Events[1].Fact.(agent.ToolStepOpened).StepID
+	toolStep := openedToolStepID(t, &res)
 	startRes := c.mustCommit("start-c1", res.Snapshot.Revision, "", agent.StartToolCall{StepID: toolStep, CallID: "c1"})
 
 	unknown := c.mustCommit("unk-1", startRes.Snapshot.Revision, startRes.Grant,
@@ -345,7 +361,7 @@ func testCancelRebasesAndUnknownWins(t *testing.T, newRuntime Factory) {
 		t.Fatal("unknown did not fail the run")
 	}
 	_, err := c.commit("cancel-late", 0, "", agent.CancelRun{})
-	if err != agent.ErrRunTerminal {
+	if !errors.Is(err, agent.ErrRunTerminal) {
 		t.Fatalf("late cancel err = %v, want ErrRunTerminal", err)
 	}
 }
@@ -360,12 +376,12 @@ func testCancelOnStaleBase(t *testing.T, newRuntime Factory) {
 
 func testReplayFoldMatchesState(t *testing.T, newRuntime Factory) {
 	def := testToolDef("t")
-	spec := makeSpec(t, def, agent.DirectExecution)
+	spec := makeSpec(t, def)
 	c, stepID, grant := preparedCase(t, newRuntime, []sdk.ToolDefinition{def}, []agent.ToolSpec{spec})
-	b := makeBinding(t, "c1", spec, `{}`)
+	b := makeBinding(t, "c1", &spec)
 	res := c.mustCommit("complete-1", 2, grant,
 		agent.SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []agent.ToolCallBinding{b}})
-	toolStep := res.Events[1].Fact.(agent.ToolStepOpened).StepID
+	toolStep := openedToolStepID(t, &res)
 	sRes := c.mustCommit("start-c1", res.Snapshot.Revision, "", agent.StartToolCall{StepID: toolStep, CallID: "c1"})
 	c.mustCommit("done-c1", sRes.Snapshot.Revision, sRes.Grant,
 		agent.SubmitToolResult{StepID: toolStep, CallID: "c1", Result: agent.ToolExecutionResult{Output: cj(`"ok"`)}})
@@ -375,9 +391,9 @@ func testReplayFoldMatchesState(t *testing.T, newRuntime Factory) {
 		t.Fatalf("FoldEvents: %v", err)
 	}
 	live := c.load()
-	a, _ := json.Marshal(stateComparable(live.State))
-	bts, _ := json.Marshal(stateComparable(folded))
-	if string(a) != string(bts) {
+	a, _ := json.Marshal(stateComparable(&live.State))
+	bts, _ := json.Marshal(stateComparable(&folded))
+	if !bytes.Equal(a, bts) {
 		t.Fatalf("replay diverged:\n live   %s\n replay %s", a, bts)
 	}
 	if live.Revision != lastRev {
@@ -398,7 +414,7 @@ func testAcceptInputByInputID(t *testing.T, newRuntime Factory) {
 		t.Fatalf("status = %v", res2.Status)
 	}
 	_, err := c.commit(id, 0, "", agent.NextStep(agent.AgentInput{ID: "in-9", Payload: cj(`{"t":"y"}`)}))
-	if err != agent.ErrCommandConflict {
+	if !errors.Is(err, agent.ErrCommandConflict) {
 		t.Fatalf("err = %v, want ErrCommandConflict", err)
 	}
 }
@@ -415,7 +431,7 @@ func testDerivedCommandIDEnforced(t *testing.T, newRuntime Factory) {
 	}
 }
 
-func stateComparable(s agent.MachineState) map[string]any {
+func stateComparable(s *agent.MachineState) map[string]any {
 	m := map[string]any{
 		"runId": s.RunID, "status": s.Status, "config": s.Config,
 		"modelSteps": s.ModelSteps, "lastClosedStep": s.LastClosedStep,

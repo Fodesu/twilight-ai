@@ -81,18 +81,20 @@ func cloneToolCallFailure(f *ToolCallFailure) *ToolCallFailure {
 	return &c
 }
 
-func cloneToolCallState(c ToolCallState) ToolCallState {
-	c.Arguments = cloneRaw(c.Arguments)
-	c.Result = cloneToolExecutionResult(c.Result)
-	c.Failure = cloneToolCallFailure(c.Failure)
-	c.Waiting = cloneResponseRequest(c.Waiting)
-	return c
+func cloneToolCallState(c *ToolCallState) ToolCallState {
+	out := *c
+	out.Arguments = cloneRaw(out.Arguments)
+	out.Result = cloneToolExecutionResult(out.Result)
+	out.Failure = cloneToolCallFailure(out.Failure)
+	out.Waiting = cloneResponseRequest(out.Waiting)
+	return out
 }
 
-func cloneToolCallBinding(b ToolCallBinding) ToolCallBinding {
-	b.Arguments = cloneRaw(b.Arguments)
-	b.Response = cloneResponseRequest(b.Response)
-	return b
+func cloneToolCallBinding(b *ToolCallBinding) ToolCallBinding {
+	out := *b
+	out.Arguments = cloneRaw(out.Arguments)
+	out.Response = cloneResponseRequest(out.Response)
+	return out
 }
 
 func cloneToolCallBindings(bs []ToolCallBinding) []ToolCallBinding {
@@ -100,8 +102,8 @@ func cloneToolCallBindings(bs []ToolCallBinding) []ToolCallBinding {
 		return nil
 	}
 	out := make([]ToolCallBinding, len(bs))
-	for i, b := range bs {
-		out[i] = cloneToolCallBinding(b)
+	for i := range bs {
+		out[i] = cloneToolCallBinding(&bs[i])
 	}
 	return out
 }
@@ -133,12 +135,13 @@ func cloneResponseFormat(f *ResponseFormat) *ResponseFormat {
 	return &c
 }
 
-func cloneMessagePart(p MessagePart) MessagePart {
-	p.Input = cloneRaw(p.Input)
-	p.Result = cloneRaw(p.Result)
-	p.CacheControl = cloneCacheControl(p.CacheControl)
-	p.ProviderMetadata = cloneProviderMetadata(p.ProviderMetadata)
-	return p
+func cloneMessagePart(p *MessagePart) MessagePart {
+	out := *p
+	out.Input = cloneRaw(out.Input)
+	out.Result = cloneRaw(out.Result)
+	out.CacheControl = cloneCacheControl(out.CacheControl)
+	out.ProviderMetadata = cloneProviderMetadata(out.ProviderMetadata)
+	return out
 }
 
 func cloneMessages(messages []Message) []Message {
@@ -149,8 +152,8 @@ func cloneMessages(messages []Message) []Message {
 	for i, m := range messages {
 		if m.Content != nil {
 			parts := make([]MessagePart, len(m.Content))
-			for j, p := range m.Content {
-				parts[j] = cloneMessagePart(p)
+			for j := range m.Content {
+				parts[j] = cloneMessagePart(&m.Content[j])
 			}
 			m.Content = parts
 		}
@@ -160,28 +163,29 @@ func cloneMessages(messages []Message) []Message {
 	return out
 }
 
-func cloneRequest(r ModelRequest) ModelRequest {
-	r.Messages = cloneMessages(r.Messages)
-	r.Tools = cloneToolDefinitions(r.Tools)
-	r.ResponseFormat = cloneResponseFormat(r.ResponseFormat)
-	r.Temperature = clonePtr(r.Temperature)
-	r.TopP = clonePtr(r.TopP)
-	r.MaxTokens = clonePtr(r.MaxTokens)
-	r.FrequencyPenalty = clonePtr(r.FrequencyPenalty)
-	r.PresencePenalty = clonePtr(r.PresencePenalty)
-	r.Seed = clonePtr(r.Seed)
-	r.ReasoningEffort = clonePtr(r.ReasoningEffort)
-	r.ReasoningSummary = clonePtr(r.ReasoningSummary)
-	r.PromptCacheKey = clonePtr(r.PromptCacheKey)
-	r.StopSequences = append([]string(nil), r.StopSequences...)
-	if r.ProviderOptions != nil {
-		opts := make(map[string]CanonicalJSON, len(r.ProviderOptions))
-		for k, v := range r.ProviderOptions {
+func cloneRequest(r *ModelRequest) ModelRequest {
+	out := *r
+	out.Messages = cloneMessages(out.Messages)
+	out.Tools = cloneToolDefinitions(out.Tools)
+	out.ResponseFormat = cloneResponseFormat(out.ResponseFormat)
+	out.Temperature = clonePtr(out.Temperature)
+	out.TopP = clonePtr(out.TopP)
+	out.MaxTokens = clonePtr(out.MaxTokens)
+	out.FrequencyPenalty = clonePtr(out.FrequencyPenalty)
+	out.PresencePenalty = clonePtr(out.PresencePenalty)
+	out.Seed = clonePtr(out.Seed)
+	out.ReasoningEffort = clonePtr(out.ReasoningEffort)
+	out.ReasoningSummary = clonePtr(out.ReasoningSummary)
+	out.PromptCacheKey = clonePtr(out.PromptCacheKey)
+	out.StopSequences = append([]string(nil), out.StopSequences...)
+	if out.ProviderOptions != nil {
+		opts := make(map[string]CanonicalJSON, len(out.ProviderOptions))
+		for k, v := range out.ProviderOptions {
 			opts[k] = cloneRaw(v)
 		}
-		r.ProviderOptions = opts
+		out.ProviderOptions = opts
 	}
-	return r
+	return out
 }
 
 func cloneToolDefinitions(defs []ToolDefinition) []ToolDefinition {
@@ -287,13 +291,13 @@ func cloneRunResult(r *RunResult) *RunResult {
 func cloneStep(s Step) Step {
 	switch step := s.(type) {
 	case ModelStep:
-		step.Request = cloneRequest(step.Request)
+		step.Request = cloneRequest(&step.Request)
 		step.Tools = cloneToolSpecs(step.Tools)
 		return step
 	case ToolStep:
 		calls := make([]ToolCallState, len(step.Calls))
-		for i, c := range step.Calls {
-			calls[i] = cloneToolCallState(c)
+		for i := range step.Calls {
+			calls[i] = cloneToolCallState(&step.Calls[i])
 		}
 		step.Calls = calls
 		return step
@@ -302,14 +306,15 @@ func cloneStep(s Step) Step {
 	}
 }
 
-func cloneMachineState(s MachineState) MachineState {
-	if s.Current != nil {
-		s.Current = cloneStep(s.Current)
+func cloneMachineState(s *MachineState) MachineState {
+	out := *s
+	if out.Current != nil {
+		out.Current = cloneStep(out.Current)
 	}
-	s.PendingInputs = cloneAgentInputs(s.PendingInputs)
-	s.LastModelResult = cloneModelResult(s.LastModelResult)
-	s.Result = cloneRunResult(s.Result)
-	return s
+	out.PendingInputs = cloneAgentInputs(out.PendingInputs)
+	out.LastModelResult = cloneModelResult(out.LastModelResult)
+	out.Result = cloneRunResult(out.Result)
+	return out
 }
 
 func snapshotJSONStable[T any](v T) (T, error) {
@@ -346,7 +351,7 @@ func snapshotFact(f Fact) (Fact, error) {
 func cloneFact(f Fact) Fact {
 	switch fact := f.(type) {
 	case ModelStepPrepared:
-		fact.Request = cloneRequest(fact.Request)
+		fact.Request = cloneRequest(&fact.Request)
 		fact.InputIDs = append([]InputID(nil), fact.InputIDs...)
 		fact.Tools = cloneToolSpecs(fact.Tools)
 		return fact

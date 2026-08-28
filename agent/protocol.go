@@ -51,6 +51,8 @@ func encodeEnvelopeBody(schemaVersion uint16, typ string, body any) ([]byte, err
 
 // EncodeCommand renders the canonical bytes of a command envelope, excluding
 // the Digest field.
+//
+//nolint:gocritic // hugeParam: command envelope encoding is value-based and does not retain caller aliases.
 func EncodeCommand(env CommandEnvelope) ([]byte, error) {
 	if env.Type == "" || env.Type != commandType(env.Command) {
 		return nil, fmt.Errorf("agent: encode: type %q does not match command variant", env.Type)
@@ -148,6 +150,8 @@ func DigestToolResponsePayload(payload CanonicalJSON) (Digest, error) {
 
 // DigestRequest covers every field of a frozen ModelRequest with no exclusions
 // (spec §2.1 rule 7).
+//
+//nolint:gocritic // hugeParam: digest covers the complete immutable ModelRequest value.
 func DigestRequest(req ModelRequest) (Digest, error) {
 	body, err := encodeEnvelopeBody(currentSchemaVersion, "model_request", req)
 	if err != nil {
@@ -166,6 +170,8 @@ func DigestToolDefinition(def ToolDefinition) (Digest, error) {
 }
 
 // DigestToolSpec covers one agent ToolSpec (ref, definition, digest, policy).
+//
+//nolint:gocritic // hugeParam: digest covers the complete immutable ToolSpec value.
 func DigestToolSpec(spec ToolSpec) (Digest, error) {
 	body, err := encodeEnvelopeBody(currentSchemaVersion, "tool_spec", spec)
 	if err != nil {

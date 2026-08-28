@@ -28,6 +28,8 @@ type Usage struct {
 }
 
 // Add returns the field-by-field sum of u and other.
+//
+//nolint:gocritic // hugeParam: Add is a pure value operation and must not mutate caller-owned Usage.
 func (u Usage) Add(other Usage) Usage {
 	u.InputTokens += other.InputTokens
 	u.OutputTokens += other.OutputTokens

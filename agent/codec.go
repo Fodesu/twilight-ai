@@ -71,6 +71,7 @@ func DecodeAgentEvent(raw []byte) (AgentEvent, error) {
 	return event, nil
 }
 
+//nolint:gocritic // hugeParam: value receiver keeps json.Marshaler active for non-pointer CommandEnvelope values.
 func (e CommandEnvelope) MarshalJSON() ([]byte, error) {
 	if e.Command == nil {
 		return nil, errors.New("agent: codec: command envelope has nil command")
@@ -135,6 +136,7 @@ func (e *CommandEnvelope) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
+//nolint:gocritic // hugeParam: value receiver keeps json.Marshaler active for non-pointer AgentEvent values.
 func (e AgentEvent) MarshalJSON() ([]byte, error) {
 	if e.Fact == nil {
 		return nil, errors.New("agent: codec: event has nil fact")
@@ -246,53 +248,51 @@ func decodeStrictJSON(raw []byte, dst any) error {
 	return nil
 }
 
+func decodeCommandAs[T AgentCommand](raw json.RawMessage) (AgentCommand, error) {
+	var c T
+	err := decodeStrictJSON(raw, &c)
+	return c, err
+}
+
+func decodeFactAs[T Fact](raw json.RawMessage) (Fact, error) {
+	var f T
+	err := decodeStrictJSON(raw, &f)
+	return f, err
+}
+
 func decodeCommandVariant(typ string, raw json.RawMessage) (AgentCommand, error) {
 	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return nil, fmt.Errorf("agent: codec: command %q has empty body", typ)
 	}
 	switch typ {
 	case "prepare_model_request":
-		var c PrepareModelRequest
-		return c, decodeStrictJSON(raw, &c)
+		return decodeCommandAs[PrepareModelRequest](raw)
 	case "start_model_execution":
-		var c StartModelExecution
-		return c, decodeStrictJSON(raw, &c)
+		return decodeCommandAs[StartModelExecution](raw)
 	case "recover_model_execution":
-		var c RecoverModelExecution
-		return c, decodeStrictJSON(raw, &c)
+		return decodeCommandAs[RecoverModelExecution](raw)
 	case "submit_model_result":
-		var c SubmitModelResult
-		return c, decodeStrictJSON(raw, &c)
+		return decodeCommandAs[SubmitModelResult](raw)
 	case "submit_model_failure":
-		var c SubmitModelFailure
-		return c, decodeStrictJSON(raw, &c)
+		return decodeCommandAs[SubmitModelFailure](raw)
 	case "reject_model_result":
-		var c RejectModelResult
-		return c, decodeStrictJSON(raw, &c)
+		return decodeCommandAs[RejectModelResult](raw)
 	case "start_tool_call":
-		var c StartToolCall
-		return c, decodeStrictJSON(raw, &c)
+		return decodeCommandAs[StartToolCall](raw)
 	case "submit_tool_result":
-		var c SubmitToolResult
-		return c, decodeStrictJSON(raw, &c)
+		return decodeCommandAs[SubmitToolResult](raw)
 	case "submit_tool_failure":
-		var c SubmitToolFailure
-		return c, decodeStrictJSON(raw, &c)
+		return decodeCommandAs[SubmitToolFailure](raw)
 	case "approve_tool_call":
-		var c ApproveToolCall
-		return c, decodeStrictJSON(raw, &c)
+		return decodeCommandAs[ApproveToolCall](raw)
 	case "reject_tool_call":
-		var c RejectToolCall
-		return c, decodeStrictJSON(raw, &c)
+		return decodeCommandAs[RejectToolCall](raw)
 	case "submit_tool_response":
-		var c SubmitToolResponse
-		return c, decodeStrictJSON(raw, &c)
+		return decodeCommandAs[SubmitToolResponse](raw)
 	case "cancel_run":
-		var c CancelRun
-		return c, decodeStrictJSON(raw, &c)
+		return decodeCommandAs[CancelRun](raw)
 	case "accept_input":
-		var c AcceptInput
-		return c, decodeStrictJSON(raw, &c)
+		return decodeCommandAs[AcceptInput](raw)
 	default:
 		return nil, fmt.Errorf("agent: codec: unknown command type %q", typ)
 	}
@@ -304,47 +304,33 @@ func decodeFactVariant(typ string, raw json.RawMessage) (Fact, error) {
 	}
 	switch typ {
 	case "model_step_prepared":
-		var f ModelStepPrepared
-		return f, decodeStrictJSON(raw, &f)
+		return decodeFactAs[ModelStepPrepared](raw)
 	case "model_step_started":
-		var f ModelStepStarted
-		return f, decodeStrictJSON(raw, &f)
+		return decodeFactAs[ModelStepStarted](raw)
 	case "model_step_recovered":
-		var f ModelStepRecovered
-		return f, decodeStrictJSON(raw, &f)
+		return decodeFactAs[ModelStepRecovered](raw)
 	case "model_step_rejected":
-		var f ModelStepRejected
-		return f, decodeStrictJSON(raw, &f)
+		return decodeFactAs[ModelStepRejected](raw)
 	case "model_step_completed":
-		var f ModelStepCompleted
-		return f, decodeStrictJSON(raw, &f)
+		return decodeFactAs[ModelStepCompleted](raw)
 	case "tool_step_opened":
-		var f ToolStepOpened
-		return f, decodeStrictJSON(raw, &f)
+		return decodeFactAs[ToolStepOpened](raw)
 	case "tool_call_started":
-		var f ToolCallStarted
-		return f, decodeStrictJSON(raw, &f)
+		return decodeFactAs[ToolCallStarted](raw)
 	case "tool_call_approved":
-		var f ToolCallApproved
-		return f, decodeStrictJSON(raw, &f)
+		return decodeFactAs[ToolCallApproved](raw)
 	case "tool_call_completed":
-		var f ToolCallCompleted
-		return f, decodeStrictJSON(raw, &f)
+		return decodeFactAs[ToolCallCompleted](raw)
 	case "tool_call_answered":
-		var f ToolCallAnswered
-		return f, decodeStrictJSON(raw, &f)
+		return decodeFactAs[ToolCallAnswered](raw)
 	case "tool_call_failed":
-		var f ToolCallFailed
-		return f, decodeStrictJSON(raw, &f)
+		return decodeFactAs[ToolCallFailed](raw)
 	case "tool_step_closed":
-		var f ToolStepClosed
-		return f, decodeStrictJSON(raw, &f)
+		return decodeFactAs[ToolStepClosed](raw)
 	case "input_accepted":
-		var f InputAccepted
-		return f, decodeStrictJSON(raw, &f)
+		return decodeFactAs[InputAccepted](raw)
 	case "run_ended":
-		var f RunEnded
-		return f, decodeStrictJSON(raw, &f)
+		return decodeFactAs[RunEnded](raw)
 	default:
 		return nil, fmt.Errorf("agent: codec: unknown fact type %q", typ)
 	}

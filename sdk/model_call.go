@@ -21,6 +21,8 @@ type StreamingModelInvoker interface {
 // Generate performs exactly one provider model call using the provider-neutral
 // Request boundary type and returns the single-call ModelResult. It does not
 // execute tools or run the legacy multi-step loop.
+//
+//nolint:gocritic // hugeParam: public single-call API keeps Request as a value DTO for compatibility and copy semantics.
 func Generate(ctx context.Context, model *Model, req Request) (ModelResult, error) {
 	return defaultClient.Generate(ctx, model, req)
 }
@@ -28,6 +30,8 @@ func Generate(ctx context.Context, model *Model, req Request) (ModelResult, erro
 // Stream performs exactly one provider streaming model call using the
 // provider-neutral Request boundary type. The returned ModelStream assembles
 // exactly one ModelResult after Parts is consumed.
+//
+//nolint:gocritic // hugeParam: public single-call API keeps Request as a value DTO for compatibility and copy semantics.
 func Stream(ctx context.Context, model *Model, req Request) (ModelStream, error) {
 	return defaultClient.Stream(ctx, model, req)
 }
@@ -36,6 +40,8 @@ func Stream(ctx context.Context, model *Model, req Request) (ModelStream, error)
 // Request boundary type and returns the single-call ModelResult. The supplied
 // model provides the provider binding; req.Model must be empty or match
 // model.ID.
+//
+//nolint:gocritic // hugeParam: public single-call API keeps Request as a value DTO for compatibility and copy semantics.
 func (c *Client) Generate(ctx context.Context, model *Model, req Request) (ModelResult, error) {
 	if model == nil {
 		return ModelResult{}, fmt.Errorf("twilightai: model is required")
@@ -46,6 +52,8 @@ func (c *Client) Generate(ctx context.Context, model *Model, req Request) (Model
 // Stream performs exactly one provider streaming model call using the
 // provider-neutral Request boundary type. The supplied model provides the
 // provider binding; req.Model must be empty or match model.ID.
+//
+//nolint:gocritic // hugeParam: public single-call API keeps Request as a value DTO for compatibility and copy semantics.
 func (c *Client) Stream(ctx context.Context, model *Model, req Request) (ModelStream, error) {
 	if model == nil {
 		return ModelStream{}, fmt.Errorf("twilightai: model is required")
@@ -57,6 +65,8 @@ func (c *Client) Stream(ctx context.Context, model *Model, req Request) (ModelSt
 // Request boundary type and returns the single-call ModelResult. It is the
 // non-legacy text-generation boundary: tool execution and approval orchestration
 // live outside this call.
+//
+//nolint:gocritic // hugeParam: public single-call API keeps Request as a value DTO for compatibility and copy semantics.
 func (m *Model) Generate(ctx context.Context, req Request) (ModelResult, error) {
 	if m == nil {
 		return ModelResult{}, fmt.Errorf("twilightai: model is required")
@@ -64,7 +74,7 @@ func (m *Model) Generate(ctx context.Context, req Request) (ModelResult, error) 
 	if m.Provider == nil {
 		return ModelResult{}, fmt.Errorf("twilightai: model %q has no provider", m.ID)
 	}
-	req, err := bindRequestModel(m, req)
+	req, err := bindRequestModel(m, &req)
 	if err != nil {
 		return ModelResult{}, err
 	}
@@ -84,6 +94,8 @@ func (m *Model) Generate(ctx context.Context, req Request) (ModelResult, error) 
 
 // Stream performs exactly one provider streaming model call. Result must be
 // called only after the Parts channel is fully consumed.
+//
+//nolint:gocritic // hugeParam: public single-call API keeps Request as a value DTO for compatibility and copy semantics.
 func (m *Model) Stream(ctx context.Context, req Request) (ModelStream, error) {
 	if m == nil {
 		return ModelStream{}, fmt.Errorf("twilightai: model is required")
@@ -91,7 +103,7 @@ func (m *Model) Stream(ctx context.Context, req Request) (ModelStream, error) {
 	if m.Provider == nil {
 		return ModelStream{}, fmt.Errorf("twilightai: model %q has no provider", m.ID)
 	}
-	req, err := bindRequestModel(m, req)
+	req, err := bindRequestModel(m, &req)
 	if err != nil {
 		return ModelStream{}, err
 	}
@@ -109,12 +121,13 @@ func (m *Model) Stream(ctx context.Context, req Request) (ModelStream, error) {
 	return ModelStreamFromStreamResult(stream), nil
 }
 
-func bindRequestModel(model *Model, req Request) (Request, error) {
-	if req.Model == "" {
-		req.Model = model.ID
+func bindRequestModel(model *Model, req *Request) (Request, error) {
+	out := *req
+	if out.Model == "" {
+		out.Model = model.ID
 	}
-	if model.ID != "" && req.Model != model.ID {
-		return Request{}, fmt.Errorf("twilightai: request model %q does not match provider model %q", req.Model, model.ID)
+	if model.ID != "" && out.Model != model.ID {
+		return Request{}, fmt.Errorf("twilightai: request model %q does not match provider model %q", out.Model, model.ID)
 	}
-	return req, nil
+	return out, nil
 }
