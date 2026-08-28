@@ -8,7 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	sdk "github.com/memohai/twilight-ai/sdk"
+	sdk "github.com/memohai/twilight/sdk"
 )
 
 // mockDeepgramHandler returns an HTTP handler simulating the Deepgram /v1/speak endpoint.

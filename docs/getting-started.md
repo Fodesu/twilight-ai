@@ -10,7 +10,7 @@ This guide walks you through installing Twilight AI and making your first LLM re
 ## Installation
 
 ```bash
-go get github.com/memohai/twilight-ai
+go get github.com/memohai/twilight
 ```
 
 ## Setup
@@ -22,7 +22,7 @@ A **Provider** is the bridge between the SDK and a specific AI backend. The SDK 
 **Chat Completions** — broad compatibility with OpenAI and all OpenAI-compatible APIs:
 
 ```go
-import "github.com/memohai/twilight-ai/provider/openai/completions"
+import "github.com/memohai/twilight/provider/openai/completions"
 
 provider := completions.New(
     completions.WithAPIKey("sk-..."),
@@ -32,7 +32,7 @@ provider := completions.New(
 **Responses** — OpenAI's newer API with native reasoning and citation support:
 
 ```go
-import "github.com/memohai/twilight-ai/provider/openai/responses"
+import "github.com/memohai/twilight/provider/openai/responses"
 
 provider := responses.New(
     responses.WithAPIKey("sk-..."),
@@ -68,7 +68,7 @@ The model carries a reference to its provider, so the SDK knows which backend to
 The simplest way to get a response:
 
 ```go
-import "github.com/memohai/twilight-ai/sdk"
+import "github.com/memohai/twilight/sdk"
 
 text, err := sdk.GenerateText(ctx,
     sdk.WithModel(model),
@@ -171,7 +171,7 @@ fmt.Println(testResult.Supported) // true or false
 Speech synthesis converts text to audio. Speech providers are separate from chat providers:
 
 ```go
-import "github.com/memohai/twilight-ai/provider/edge/speech"
+import "github.com/memohai/twilight/provider/edge/speech"
 
 speechProvider := speech.New()
 speechModel := speechProvider.SpeechModel("edge-read-aloud")
@@ -203,7 +203,7 @@ Edge TTS is free and requires no API key. See [Speech](speech.md) for all availa
 Embeddings convert text into numeric vectors for search, retrieval, and similarity comparison. Embedding providers are separate from chat providers:
 
 ```go
-import "github.com/memohai/twilight-ai/provider/openai/embedding"
+import "github.com/memohai/twilight/provider/openai/embedding"
 
 embProvider := embedding.New(
     embedding.WithAPIKey("sk-..."),
@@ -226,7 +226,7 @@ result, err := sdk.EmbedMany(ctx, []string{"Paris", "London", "Berlin"},
 For Google embeddings, use the Google embedding provider:
 
 ```go
-import "github.com/memohai/twilight-ai/provider/google/embedding"
+import "github.com/memohai/twilight/provider/google/embedding"
 
 embProvider := embedding.New(
     embedding.WithAPIKey("AIza..."),

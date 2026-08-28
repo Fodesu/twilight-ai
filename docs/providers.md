@@ -83,7 +83,7 @@ The `provider/openai/completions` package provides an implementation for the Ope
 ### Basic Usage
 
 ```go
-import "github.com/memohai/twilight-ai/provider/openai/completions"
+import "github.com/memohai/twilight/provider/openai/completions"
 
 provider := completions.New(
     completions.WithAPIKey("sk-..."),
@@ -244,7 +244,7 @@ Use **Completions** when you need broad compatibility with OpenAI-compatible end
 ### Basic Usage
 
 ```go
-import "github.com/memohai/twilight-ai/provider/openai/responses"
+import "github.com/memohai/twilight/provider/openai/responses"
 
 provider := responses.New(
     responses.WithAPIKey("sk-..."),
@@ -345,7 +345,7 @@ Use **Codex** when you have a ChatGPT access token and want to leverage Codex-sp
 ### Basic Usage
 
 ```go
-import "github.com/memohai/twilight-ai/provider/openai/codex"
+import "github.com/memohai/twilight/provider/openai/codex"
 
 provider := codex.New(
     codex.WithAccessToken("eyJhbGci..."),
@@ -449,7 +449,7 @@ This is not a generic PAT-based GitHub Models integration.
 ### Basic Usage
 
 ```go
-import "github.com/memohai/twilight-ai/provider/github/copilot"
+import "github.com/memohai/twilight/provider/github/copilot"
 
 provider := copilot.New(
     // Pass through the inbound X-GitHub-Token value from GitHub.
@@ -519,7 +519,7 @@ The `provider/anthropic/messages` package implements the [Anthropic Messages API
 ### Basic Usage
 
 ```go
-import "github.com/memohai/twilight-ai/provider/anthropic/messages"
+import "github.com/memohai/twilight/provider/anthropic/messages"
 
 provider := messages.New(
     messages.WithAPIKey("sk-ant-..."),
@@ -619,7 +619,7 @@ The `provider/google/generativeai` package implements the [Google Generative AI 
 ### Basic Usage
 
 ```go
-import "github.com/memohai/twilight-ai/provider/google/generativeai"
+import "github.com/memohai/twilight/provider/google/generativeai"
 
 provider := generativeai.New(
     generativeai.WithAPIKey("AIza..."),
@@ -737,8 +737,8 @@ The `provider/openai/images` package provides image generation and editing via t
 
 ```go
 import (
-    "github.com/memohai/twilight-ai/provider/openai/images"
-    "github.com/memohai/twilight-ai/sdk"
+    "github.com/memohai/twilight/provider/openai/images"
+    "github.com/memohai/twilight/sdk"
 )
 
 provider := images.New(
@@ -838,8 +838,8 @@ The `provider/alibabacloud/images` package provides image generation via Alibaba
 
 ```go
 import (
-    "github.com/memohai/twilight-ai/provider/alibabacloud/images"
-    "github.com/memohai/twilight-ai/sdk"
+    "github.com/memohai/twilight/provider/alibabacloud/images"
+    "github.com/memohai/twilight/sdk"
 )
 
 provider := images.New(
@@ -904,8 +904,8 @@ The `provider/openai/embedding` package provides text embeddings via the OpenAI 
 
 ```go
 import (
-    "github.com/memohai/twilight-ai/provider/openai/embedding"
-    "github.com/memohai/twilight-ai/sdk"
+    "github.com/memohai/twilight/provider/openai/embedding"
+    "github.com/memohai/twilight/sdk"
 )
 
 provider := embedding.New(
@@ -964,8 +964,8 @@ The `provider/google/embedding` package provides text embeddings via the Google 
 
 ```go
 import (
-    "github.com/memohai/twilight-ai/provider/google/embedding"
-    "github.com/memohai/twilight-ai/sdk"
+    "github.com/memohai/twilight/provider/google/embedding"
+    "github.com/memohai/twilight/sdk"
 )
 
 provider := embedding.New(
@@ -1039,8 +1039,8 @@ The `provider/edge/speech` package provides free speech synthesis via Microsoft 
 
 ```go
 import (
-    "github.com/memohai/twilight-ai/provider/edge/speech"
-    "github.com/memohai/twilight-ai/sdk"
+    "github.com/memohai/twilight/provider/edge/speech"
+    "github.com/memohai/twilight/sdk"
 )
 
 provider := speech.New()
@@ -1081,7 +1081,7 @@ The `provider/openai/speech` package targets the `/audio/speech` endpoint. It wo
 #### Basic Usage
 
 ```go
-import "github.com/memohai/twilight-ai/provider/openai/speech"
+import "github.com/memohai/twilight/provider/openai/speech"
 
 provider := speech.New(
     speech.WithAPIKey("sk-..."),
@@ -1138,7 +1138,7 @@ The `provider/elevenlabs/speech` package targets the `/v1/text-to-speech/{voice_
 #### Basic Usage
 
 ```go
-import "github.com/memohai/twilight-ai/provider/elevenlabs/speech"
+import "github.com/memohai/twilight/provider/elevenlabs/speech"
 
 provider := speech.New(
     speech.WithAPIKey("your-elevenlabs-key"),
@@ -1183,7 +1183,7 @@ The `provider/deepgram/speech` package targets the `POST /v1/speak` endpoint usi
 #### Basic Usage
 
 ```go
-import "github.com/memohai/twilight-ai/provider/deepgram/speech"
+import "github.com/memohai/twilight/provider/deepgram/speech"
 
 provider := speech.New(
     speech.WithAPIKey("your-deepgram-key"),
@@ -1225,7 +1225,7 @@ The `provider/minimax/speech` package targets the `POST /v1/t2a_v2` endpoint. Th
 #### Basic Usage
 
 ```go
-import "github.com/memohai/twilight-ai/provider/minimax/speech"
+import "github.com/memohai/twilight/provider/minimax/speech"
 
 provider := speech.New(
     speech.WithAPIKey("your-minimax-key"),
@@ -1273,7 +1273,7 @@ The `provider/alibabacloud/speech` package implements the DashScope CosyVoice We
 #### Basic Usage
 
 ```go
-import "github.com/memohai/twilight-ai/provider/alibabacloud/speech"
+import "github.com/memohai/twilight/provider/alibabacloud/speech"
 
 provider := speech.New(
     speech.WithAPIKey("your-dashscope-api-key"),
@@ -1318,7 +1318,7 @@ The `provider/volcengine/speech` package implements the Volcengine SAMI (Speech 
 #### Basic Usage
 
 ```go
-import "github.com/memohai/twilight-ai/provider/volcengine/speech"
+import "github.com/memohai/twilight/provider/volcengine/speech"
 
 provider := speech.New(
     speech.WithAccessKey("your-access-key"),
@@ -1374,7 +1374,7 @@ package myprovider
 
 import (
     "context"
-    "github.com/memohai/twilight-ai/sdk"
+    "github.com/memohai/twilight/sdk"
 )
 
 type MyProvider struct {

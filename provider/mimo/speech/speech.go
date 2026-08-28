@@ -12,7 +12,7 @@ import (
 	"net/http"
 	"strings"
 
-	sdk "github.com/memohai/twilight-ai/sdk"
+	sdk "github.com/memohai/twilight/sdk"
 )
 
 const (

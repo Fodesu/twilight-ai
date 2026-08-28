@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	sdk "github.com/memohai/twilight-ai/sdk"
+	sdk "github.com/memohai/twilight/sdk"
 )
 
 func TestProvider_ListModels(t *testing.T) {

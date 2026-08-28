@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	anthropicmessages "github.com/memohai/twilight-ai/provider/anthropic/messages"
-	sdk "github.com/memohai/twilight-ai/sdk"
+	anthropicmessages "github.com/memohai/twilight/provider/anthropic/messages"
+	sdk "github.com/memohai/twilight/sdk"
 )
 
 // A tool call whose streamed arguments fail to parse must not run. Emitting it

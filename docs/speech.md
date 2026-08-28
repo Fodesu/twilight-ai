@@ -22,8 +22,8 @@ import (
     "log"
     "os"
 
-    "github.com/memohai/twilight-ai/provider/edge/speech"
-    "github.com/memohai/twilight-ai/sdk"
+    "github.com/memohai/twilight/provider/edge/speech"
+    "github.com/memohai/twilight/sdk"
 )
 
 func main() {
@@ -122,7 +122,7 @@ The `provider/edge/speech` package provides free speech synthesis via Microsoft 
 ### Basic Usage
 
 ```go
-import "github.com/memohai/twilight-ai/provider/edge/speech"
+import "github.com/memohai/twilight/provider/edge/speech"
 
 provider := speech.New()
 model := provider.SpeechModel("edge-read-aloud")
@@ -153,7 +153,7 @@ The Edge provider reads these keys from `WithSpeechConfig`:
 Edge TTS supports 400+ voices across 100+ languages. Use `speech.EdgeTTSVoices` to browse the full catalog:
 
 ```go
-import "github.com/memohai/twilight-ai/provider/edge/speech"
+import "github.com/memohai/twilight/provider/edge/speech"
 
 // Map of language tag → voice IDs
 for lang, voices := range speech.EdgeTTSVoices {
@@ -186,7 +186,7 @@ Popular voices:
 The `provider/openai/speech` package targets the OpenAI `/audio/speech` endpoint and is compatible with any proxy that mirrors this API.
 
 ```go
-import "github.com/memohai/twilight-ai/provider/openai/speech"
+import "github.com/memohai/twilight/provider/openai/speech"
 
 provider := speech.New(
     speech.WithAPIKey("sk-..."),
@@ -213,7 +213,7 @@ result, err := sdk.GenerateSpeech(ctx,
 The `provider/elevenlabs/speech` package calls `/v1/text-to-speech/{voice_id}` for full synthesis and `/v1/text-to-speech/{voice_id}/stream` for streaming.
 
 ```go
-import "github.com/memohai/twilight-ai/provider/elevenlabs/speech"
+import "github.com/memohai/twilight/provider/elevenlabs/speech"
 
 provider := speech.New(
     speech.WithAPIKey("your-elevenlabs-key"),
@@ -237,7 +237,7 @@ sr, err := sdk.StreamSpeech(ctx,
 The `provider/deepgram/speech` package calls `POST /v1/speak` using `Authorization: Token` authentication. The response is a chunked binary audio stream.
 
 ```go
-import "github.com/memohai/twilight-ai/provider/deepgram/speech"
+import "github.com/memohai/twilight/provider/deepgram/speech"
 
 provider := speech.New(
     speech.WithAPIKey("your-deepgram-key"),
@@ -259,7 +259,7 @@ result, err := sdk.GenerateSpeech(ctx,
 The `provider/minimax/speech` package calls `POST /v1/t2a_v2`. The response is a JSON object containing the audio as a hex-encoded string; the provider decodes it automatically.
 
 ```go
-import "github.com/memohai/twilight-ai/provider/minimax/speech"
+import "github.com/memohai/twilight/provider/minimax/speech"
 
 provider := speech.New(
     speech.WithAPIKey("your-minimax-key"),
@@ -281,7 +281,7 @@ result, err := sdk.GenerateSpeech(ctx,
 The `provider/mimo/speech` package targets Xiaomi MiMo's `/chat/completions` audio output. Non-streaming responses return base64 audio directly, while streaming responses emit PCM chunks that the provider repackages as WAV for callers.
 
 ```go
-import "github.com/memohai/twilight-ai/provider/mimo/speech"
+import "github.com/memohai/twilight/provider/mimo/speech"
 
 provider := speech.New(
     speech.WithAPIKey("your-mimo-api-key"),
@@ -312,7 +312,7 @@ Supported config keys:
 The `provider/alibabacloud/speech` package implements the WebSocket-based DashScope CosyVoice API. The provider connects to `wss://dashscope.aliyuncs.com/api-ws/v1/inference/` with Bearer auth and uses the `run-task` → `continue-task` → `finish-task` message sequence.
 
 ```go
-import "github.com/memohai/twilight-ai/provider/alibabacloud/speech"
+import "github.com/memohai/twilight/provider/alibabacloud/speech"
 
 provider := speech.New(
     speech.WithAPIKey("your-dashscope-api-key"),
@@ -343,7 +343,7 @@ The `provider/volcengine/speech` package calls the Volcengine SAMI HTTP API at `
 Tokens are cached for their full validity window (1 hour).
 
 ```go
-import "github.com/memohai/twilight-ai/provider/volcengine/speech"
+import "github.com/memohai/twilight/provider/volcengine/speech"
 
 provider := speech.New(
     speech.WithAccessKey("your-access-key"),
@@ -372,7 +372,7 @@ package myprovider
 
 import (
     "context"
-    "github.com/memohai/twilight-ai/sdk"
+    "github.com/memohai/twilight/sdk"
 )
 
 type MyProvider struct {

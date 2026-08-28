@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/memohai/twilight-ai/provider/google/generativeai"
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/provider/google/generativeai"
+	"github.com/memohai/twilight/sdk"
 )
 
 func TestInstructionRolesMapToSystemInstructionAndUserFallbacks(t *testing.T) {

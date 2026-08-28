@@ -9,9 +9,9 @@ import (
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
-	"github.com/memohai/twilight-ai/internal/testutil"
-	"github.com/memohai/twilight-ai/provider/openai/completions"
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/internal/testutil"
+	"github.com/memohai/twilight/provider/openai/completions"
+	"github.com/memohai/twilight/sdk"
 )
 
 func TestMain(m *testing.M) {

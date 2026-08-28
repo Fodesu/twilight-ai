@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/memohai/twilight-ai/provider/anthropic/messages"
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/provider/anthropic/messages"
+	"github.com/memohai/twilight/sdk"
 )
 
 // capturedThinking mirrors the wire shape of the request fields this file cares

@@ -8,8 +8,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/memohai/twilight-ai/provider/anthropic/messages"
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/provider/anthropic/messages"
+	"github.com/memohai/twilight/sdk"
 )
 
 // TestDoGenerate_FilePartDocumentBlock is the golden test for native PDF

@@ -9,9 +9,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/memohai/twilight-ai/internal/messagecompat"
-	"github.com/memohai/twilight-ai/internal/utils"
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/internal/messagecompat"
+	"github.com/memohai/twilight/internal/utils"
+	"github.com/memohai/twilight/sdk"
 )
 
 const defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"

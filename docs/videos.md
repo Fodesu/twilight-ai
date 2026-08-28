@@ -15,8 +15,8 @@ import (
     "log"
     "time"
 
-    openroutervideos "github.com/memohai/twilight-ai/provider/openrouter/videos"
-    "github.com/memohai/twilight-ai/sdk"
+    openroutervideos "github.com/memohai/twilight/provider/openrouter/videos"
+    "github.com/memohai/twilight/sdk"
 )
 
 func main() {
@@ -105,7 +105,7 @@ sdk.VideoJobCanceled
 Package:
 
 ```go
-import openroutervideos "github.com/memohai/twilight-ai/provider/openrouter/videos"
+import openroutervideos "github.com/memohai/twilight/provider/openrouter/videos"
 ```
 
 Default base URL:
@@ -155,7 +155,7 @@ Field mapping:
 Package:
 
 ```go
-import arkvideos "github.com/memohai/twilight-ai/provider/ark/videos"
+import arkvideos "github.com/memohai/twilight/provider/ark/videos"
 ```
 
 Base URL constants:

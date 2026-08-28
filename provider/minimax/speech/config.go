@@ -3,7 +3,7 @@ package speech
 import (
 	"strings"
 
-	"github.com/memohai/twilight-ai/internal/utils"
+	"github.com/memohai/twilight/internal/utils"
 )
 
 // audioConfig holds MiniMax TTS-specific options extracted from SpeechParams.Config.

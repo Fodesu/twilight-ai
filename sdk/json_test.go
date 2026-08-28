@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/sdk"
 )
 
 func TestMessage_JSON_TextOnly(t *testing.T) {

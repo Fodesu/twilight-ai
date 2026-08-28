@@ -8,12 +8,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	anthropicmessages "github.com/memohai/twilight-ai/provider/anthropic/messages"
-	"github.com/memohai/twilight-ai/provider/github/copilot"
-	googlegenerative "github.com/memohai/twilight-ai/provider/google/generativeai"
-	"github.com/memohai/twilight-ai/provider/openai/completions"
-	"github.com/memohai/twilight-ai/provider/openai/responses"
-	sdk "github.com/memohai/twilight-ai/sdk"
+	anthropicmessages "github.com/memohai/twilight/provider/anthropic/messages"
+	"github.com/memohai/twilight/provider/github/copilot"
+	googlegenerative "github.com/memohai/twilight/provider/google/generativeai"
+	"github.com/memohai/twilight/provider/openai/completions"
+	"github.com/memohai/twilight/provider/openai/responses"
+	sdk "github.com/memohai/twilight/sdk"
 )
 
 // A reasoning part with no dialect is never replayed, so a provider that

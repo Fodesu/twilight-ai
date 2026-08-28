@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	sdk "github.com/memohai/twilight-ai/sdk"
+	sdk "github.com/memohai/twilight/sdk"
 )
 
 // Anthropic rejects a modified sequence of thinking blocks in the latest

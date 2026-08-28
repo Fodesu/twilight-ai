@@ -9,7 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	sdk "github.com/memohai/twilight-ai/sdk"
+	sdk "github.com/memohai/twilight/sdk"
 )
 
 // fakeAudio is the test audio payload; the mock server hex-encodes it in the JSON response.

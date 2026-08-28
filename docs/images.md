@@ -12,8 +12,8 @@ import (
     "fmt"
     "log"
 
-    "github.com/memohai/twilight-ai/provider/openai/images"
-    "github.com/memohai/twilight-ai/sdk"
+    "github.com/memohai/twilight/provider/openai/images"
+    "github.com/memohai/twilight/sdk"
 )
 
 func main() {
@@ -98,7 +98,7 @@ provider := images.New(
 The `provider/alibabacloud/images` package supports Alibaba Cloud Model Studio (DashScope) image models — Qwen-Image, Wan, Z-Image, and third-party models such as FLUX and Stable Diffusion.
 
 ```go
-import "github.com/memohai/twilight-ai/provider/alibabacloud/images"
+import "github.com/memohai/twilight/provider/alibabacloud/images"
 
 provider := images.New(
     images.WithAPIKey("sk-..."), // DashScope / Model Studio API key

@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	sdk "github.com/memohai/twilight-ai/sdk"
+	sdk "github.com/memohai/twilight/sdk"
 )
 
 // Copilot carries the upstream model's signature in reasoning_opaque and

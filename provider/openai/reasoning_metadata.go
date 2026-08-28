@@ -1,6 +1,6 @@
 package openai
 
-import sdk "github.com/memohai/twilight-ai/sdk"
+import sdk "github.com/memohai/twilight/sdk"
 
 // The Responses reasoning dialect, shared by the public Responses API and the
 // Codex backend: the same API behind a different base URL, producing

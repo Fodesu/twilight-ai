@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/memohai/twilight-ai/provider/openai/completions"
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/provider/openai/completions"
+	"github.com/memohai/twilight/sdk"
 )
 
 type completionsWireMessage struct {

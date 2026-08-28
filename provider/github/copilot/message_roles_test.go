@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/memohai/twilight-ai/provider/github/copilot"
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/provider/github/copilot"
+	"github.com/memohai/twilight/sdk"
 )
 
 type copilotWireMessage struct {

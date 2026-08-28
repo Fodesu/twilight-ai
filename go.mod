@@ -1,4 +1,4 @@
-module github.com/memohai/twilight-ai
+module github.com/memohai/twilight
 
 go 1.25.7
 

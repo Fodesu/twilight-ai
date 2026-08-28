@@ -8,8 +8,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/memohai/twilight-ai/provider/google/generativeai"
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/provider/google/generativeai"
+	"github.com/memohai/twilight/sdk"
 )
 
 // TestDoGenerate_FilePartInlineData is the golden test for native PDF input

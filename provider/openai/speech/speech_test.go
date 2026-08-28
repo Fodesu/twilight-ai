@@ -9,7 +9,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	sdk "github.com/memohai/twilight-ai/sdk"
+	sdk "github.com/memohai/twilight/sdk"
 )
 
 // mockOpenAITTSHandler returns an HTTP handler that simulates the /audio/speech endpoint.

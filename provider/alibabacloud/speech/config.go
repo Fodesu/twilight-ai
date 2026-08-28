@@ -1,6 +1,6 @@
 package speech
 
-import "github.com/memohai/twilight-ai/internal/utils"
+import "github.com/memohai/twilight/internal/utils"
 
 // audioConfig holds DashScope CosyVoice TTS-specific options extracted from SpeechParams.Config.
 //

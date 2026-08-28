@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/memohai/twilight-ai/provider/openai/embedding"
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/provider/openai/embedding"
+	"github.com/memohai/twilight/sdk"
 )
 
 func newTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, *embedding.Provider) {

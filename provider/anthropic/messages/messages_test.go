@@ -10,9 +10,9 @@ import (
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
-	"github.com/memohai/twilight-ai/internal/testutil"
-	"github.com/memohai/twilight-ai/provider/anthropic/messages"
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/internal/testutil"
+	"github.com/memohai/twilight/provider/anthropic/messages"
+	"github.com/memohai/twilight/sdk"
 )
 
 // ---------- unit tests (mock server) ----------

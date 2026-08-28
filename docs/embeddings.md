@@ -23,8 +23,8 @@ import (
     "fmt"
     "log"
 
-    "github.com/memohai/twilight-ai/provider/openai/embedding"
-    "github.com/memohai/twilight-ai/sdk"
+    "github.com/memohai/twilight/provider/openai/embedding"
+    "github.com/memohai/twilight/sdk"
 )
 
 func main() {
@@ -101,7 +101,7 @@ result, err := client.EmbedMany(ctx, texts, sdk.WithEmbeddingModel(model))
 ## OpenAI Provider
 
 ```go
-import "github.com/memohai/twilight-ai/provider/openai/embedding"
+import "github.com/memohai/twilight/provider/openai/embedding"
 
 provider := embedding.New(
     embedding.WithAPIKey("sk-..."),
@@ -145,7 +145,7 @@ provider := embedding.New(
 ## Google Provider
 
 ```go
-import "github.com/memohai/twilight-ai/provider/google/embedding"
+import "github.com/memohai/twilight/provider/google/embedding"
 
 provider := embedding.New(
     embedding.WithAPIKey("AIza..."),
@@ -211,7 +211,7 @@ The provider automatically selects the optimal endpoint:
 ### Semantic Search
 
 ```go
-import "github.com/memohai/twilight-ai/provider/openai/embedding"
+import "github.com/memohai/twilight/provider/openai/embedding"
 
 provider := embedding.New(embedding.WithAPIKey("sk-..."))
 model := provider.EmbeddingModel("text-embedding-3-small")
@@ -242,8 +242,8 @@ Combine embeddings with text generation for grounded answers:
 
 ```go
 import (
-    "github.com/memohai/twilight-ai/provider/openai/completions"
-    "github.com/memohai/twilight-ai/provider/openai/embedding"
+    "github.com/memohai/twilight/provider/openai/completions"
+    "github.com/memohai/twilight/provider/openai/embedding"
 )
 
 embProvider := embedding.New(embedding.WithAPIKey("sk-..."))

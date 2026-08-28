@@ -96,7 +96,7 @@ Use `CreateMCPClient` with HTTP, SSE, or a custom transport:
 import (
     "context"
 
-    "github.com/memohai/twilight-ai/sdk"
+    "github.com/memohai/twilight/sdk"
 )
 
 mcpClient, err := sdk.CreateMCPClient(context.Background(), &sdk.MCPClientConfig{
@@ -127,7 +127,7 @@ import (
     "context"
     "os/exec"
 
-    "github.com/memohai/twilight-ai/sdk"
+    "github.com/memohai/twilight/sdk"
     "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 

@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/sdk"
 )
 
 func TestNormalizeFallbacksAndEscapesSystemXML(t *testing.T) {

@@ -8,8 +8,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/memohai/twilight-ai/provider/openai/responses"
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/provider/openai/responses"
+	"github.com/memohai/twilight/sdk"
 )
 
 // TestResponsesDoGenerate_FilePartInputFile is the golden test for native PDF

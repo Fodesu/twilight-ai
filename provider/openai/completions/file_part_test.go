@@ -8,8 +8,8 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/memohai/twilight-ai/provider/openai/completions"
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/provider/openai/completions"
+	"github.com/memohai/twilight/sdk"
 )
 
 // TestDoGenerate_FilePartFileContent is the golden test for native PDF input

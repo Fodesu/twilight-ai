@@ -3,7 +3,7 @@ package generativeai
 import (
 	"testing"
 
-	sdk "github.com/memohai/twilight-ai/sdk"
+	sdk "github.com/memohai/twilight/sdk"
 )
 
 // Gemini binds a thought signature to the exact part that carries it — not

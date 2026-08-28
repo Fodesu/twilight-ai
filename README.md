@@ -2,7 +2,7 @@
 
 A lightweight, idiomatic AI SDK for Go — inspired by [Vercel AI SDK](https://sdk.vercel.ai/).
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/memohai/twilight-ai.svg)](https://pkg.go.dev/github.com/memohai/twilight-ai)
+[![Go Reference](https://pkg.go.dev/badge/github.com/memohai/twilight.svg)](https://pkg.go.dev/github.com/memohai/twilight)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
 ## Features
@@ -24,7 +24,7 @@ A lightweight, idiomatic AI SDK for Go — inspired by [Vercel AI SDK](https://s
 ## Installation
 
 ```bash
-go get github.com/memohai/twilight-ai
+go get github.com/memohai/twilight
 ```
 
 Requires **Go 1.25+**.
@@ -41,8 +41,8 @@ import (
     "fmt"
     "log"
 
-    "github.com/memohai/twilight-ai/provider/openai/completions"
-    "github.com/memohai/twilight-ai/sdk"
+    "github.com/memohai/twilight/provider/openai/completions"
+    "github.com/memohai/twilight/sdk"
 )
 
 func main() {
@@ -67,7 +67,7 @@ func main() {
 ### Generate Text (Responses API)
 
 ```go
-import "github.com/memohai/twilight-ai/provider/openai/responses"
+import "github.com/memohai/twilight/provider/openai/responses"
 
 provider := responses.New(
     responses.WithAPIKey("sk-..."),
@@ -87,7 +87,7 @@ The Responses API is OpenAI's newer API with first-class support for reasoning m
 ### Anthropic
 
 ```go
-import "github.com/memohai/twilight-ai/provider/anthropic/messages"
+import "github.com/memohai/twilight/provider/anthropic/messages"
 
 provider := messages.New(
     messages.WithAPIKey("sk-ant-..."),
@@ -119,7 +119,7 @@ provider := messages.New(
 ### Google Gemini
 
 ```go
-import "github.com/memohai/twilight-ai/provider/google/generativeai"
+import "github.com/memohai/twilight/provider/google/generativeai"
 
 provider := generativeai.New(
     generativeai.WithAPIKey("AIza..."),
@@ -137,7 +137,7 @@ text, err := sdk.GenerateText(context.Background(),
 ### GitHub Copilot Agent
 
 ```go
-import "github.com/memohai/twilight-ai/provider/github/copilot"
+import "github.com/memohai/twilight/provider/github/copilot"
 
 provider := copilot.New(
     // Use the inbound X-GitHub-Token value from your Copilot agent request.
@@ -213,8 +213,8 @@ import (
     "log"
     "os/exec"
 
-    "github.com/memohai/twilight-ai/provider/openai/completions"
-    "github.com/memohai/twilight-ai/sdk"
+    "github.com/memohai/twilight/provider/openai/completions"
+    "github.com/memohai/twilight/sdk"
     "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -277,7 +277,7 @@ Twilight AI converts `mcp.Tool` definitions into `sdk.Tool` automatically:
 Generate images from text prompts using OpenAI's image models:
 
 ```go
-import "github.com/memohai/twilight-ai/provider/openai/images"
+import "github.com/memohai/twilight/provider/openai/images"
 
 provider := images.New(images.WithAPIKey("sk-..."))
 model := provider.GenerationModel("gpt-image-1")
@@ -308,7 +308,7 @@ result, err := sdk.EditImage(ctx,
 Alibaba Cloud Model Studio (DashScope) image models work through the same API:
 
 ```go
-import "github.com/memohai/twilight-ai/provider/alibabacloud/images"
+import "github.com/memohai/twilight/provider/alibabacloud/images"
 
 provider := images.New(images.WithAPIKey("sk-..."))
 model := provider.GenerationModel("qwen-image-max")
@@ -328,7 +328,7 @@ The DashScope provider routes Qwen-Image and Wan models to the right endpoint au
 Generate vector embeddings for text using OpenAI or Google:
 
 ```go
-import "github.com/memohai/twilight-ai/provider/openai/embedding"
+import "github.com/memohai/twilight/provider/openai/embedding"
 
 provider := embedding.New(embedding.WithAPIKey("sk-..."))
 model := provider.EmbeddingModel("text-embedding-3-small")
@@ -349,7 +349,7 @@ result, err := sdk.EmbedMany(ctx, []string{"Hello", "World"},
 Google Gemini embeddings:
 
 ```go
-import "github.com/memohai/twilight-ai/provider/google/embedding"
+import "github.com/memohai/twilight/provider/google/embedding"
 
 provider := embedding.New(
     embedding.WithAPIKey("AIza..."),
@@ -365,7 +365,7 @@ vec, err := sdk.Embed(ctx, "Hello world", sdk.WithEmbeddingModel(model))
 Generate speech audio from text using Edge TTS (free, no API key required):
 
 ```go
-import "github.com/memohai/twilight-ai/provider/edge/speech"
+import "github.com/memohai/twilight/provider/edge/speech"
 
 provider := speech.New()
 model := provider.SpeechModel("edge-read-aloud")

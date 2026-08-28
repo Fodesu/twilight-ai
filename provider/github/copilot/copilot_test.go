@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/memohai/twilight-ai/internal/testutil"
-	"github.com/memohai/twilight-ai/provider/github/copilot"
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/internal/testutil"
+	"github.com/memohai/twilight/provider/github/copilot"
+	"github.com/memohai/twilight/sdk"
 )
 
 func TestMain(m *testing.M) {

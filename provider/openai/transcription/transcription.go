@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/memohai/twilight-ai/internal/utils"
-	sdk "github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/internal/utils"
+	sdk "github.com/memohai/twilight/sdk"
 )
 
 const (

@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/gorilla/websocket"
-	sdk "github.com/memohai/twilight-ai/sdk"
+	sdk "github.com/memohai/twilight/sdk"
 )
 
 var wsUpgrader = websocket.Upgrader{
