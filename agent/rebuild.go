@@ -15,24 +15,45 @@ var ErrLogTruncated = errors.New("agent: event log ends below the revision water
 // initial (Revision 0) state with Evolve only: no Decide, no external
 // effects, no command replay (spec §9.1). It verifies (Revision, Index)
 // ordering and per-fact digests as it goes; any gap or mismatch means the log
-// itself is damaged and the fold stops.
+// itself is damaged and the fold stops. It also rejects RunID/schema/type
+// mismatches and same-revision command identity changes.
 func FoldEvents(initial MachineState, events []AgentEvent) (MachineState, uint64, error) {
 	state := initial
 	var revision uint64
 	var index uint16
+	var commandID CommandID
+	var commandDigest Digest
 	inTransition := false
 	for _, e := range events {
+		if e.RunID != initial.RunID {
+			return initial, 0, fmt.Errorf("agent: fold: event run %q does not match initial run %q", e.RunID, initial.RunID)
+		}
+		if !isSupportedSchemaVersion(e.SchemaVersion) {
+			return initial, 0, fmt.Errorf("agent: fold: unsupported schema version %d", e.SchemaVersion)
+		}
+		typ := factType(e.Fact)
+		if typ == "" || e.Type != typ {
+			return initial, 0, fmt.Errorf("agent: fold: event type %q does not match fact variant %T", e.Type, e.Fact)
+		}
 		switch {
 		case !inTransition || e.Revision != revision:
 			if e.Revision != revision+1 || e.Index != 0 {
 				return initial, 0, fmt.Errorf("agent: fold: gap at revision %d index %d (expected %d/0)", e.Revision, e.Index, revision+1)
 			}
+			if e.CommandID == "" || e.CommandDigest == "" {
+				return initial, 0, fmt.Errorf("agent: fold: revision %d missing command identity", e.Revision)
+			}
 			revision = e.Revision
 			index = 0
+			commandID = e.CommandID
+			commandDigest = e.CommandDigest
 			inTransition = true
 		default:
 			if e.Index != index+1 {
 				return initial, 0, fmt.Errorf("agent: fold: gap at revision %d index %d (expected %d)", e.Revision, e.Index, index+1)
+			}
+			if e.CommandID != commandID || e.CommandDigest != commandDigest {
+				return initial, 0, fmt.Errorf("agent: fold: revision %d command identity changed within transition", e.Revision)
 			}
 			index = e.Index
 		}

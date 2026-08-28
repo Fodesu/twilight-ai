@@ -167,9 +167,10 @@ func digestBindingSet(bindings []ToolCallBinding) (Digest, error) {
 	return sha256Digest(body), nil
 }
 
-// digestToolCallBinding covers one binding: definition, policy and canonical
-// arguments plus the CallID (spec §4.2).
-func digestToolCallBinding(callID CallID, definitionDigest Digest, policy ResponsePolicy, arguments []byte) (Digest, error) {
+// DigestToolCallBinding covers one binding: definition, policy and canonical
+// arguments plus the CallID (spec §4.2). Runtime conformance suites use this
+// helper to construct the same frozen binding identities as the Loop.
+func DigestToolCallBinding(callID CallID, definitionDigest Digest, policy ResponsePolicy, arguments []byte) (Digest, error) {
 	canonicalArgs := []byte("null")
 	if len(arguments) > 0 {
 		var err error
@@ -180,4 +181,8 @@ func digestToolCallBinding(callID CallID, definitionDigest Digest, policy Respon
 	}
 	return sha256Digest([]byte(namespacedHash("twilight/tool-call-binding",
 		string(callID), string(definitionDigest), fmt.Sprintf("%d", policy), string(canonicalArgs)))), nil
+}
+
+func digestToolCallBinding(callID CallID, definitionDigest Digest, policy ResponsePolicy, arguments []byte) (Digest, error) {
+	return DigestToolCallBinding(callID, definitionDigest, policy, arguments)
 }

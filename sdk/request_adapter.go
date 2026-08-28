@@ -137,6 +137,9 @@ func GenerateParamsFromRequest(model *Model, req Request) (GenerateParams, error
 	if req.Model != "" && model.ID != "" && req.Model != model.ID {
 		return GenerateParams{}, fmt.Errorf("twilightai: request model %q does not match provider model %q", req.Model, model.ID)
 	}
+	if len(req.ProviderOptions) > 0 {
+		return GenerateParams{}, fmt.Errorf("twilightai: request providerOptions require a ModelInvoker provider")
+	}
 	tools := make([]Tool, len(req.Tools))
 	for i, def := range req.Tools {
 		tool, err := ToolFromDefinition(def)

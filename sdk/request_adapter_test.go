@@ -90,6 +90,11 @@ func TestGenerateParamsFromRequest(t *testing.T) {
 	if _, err := GenerateParamsFromRequest(&Model{ID: "other"}, req); err == nil {
 		t.Fatal("expected model mismatch error")
 	}
+
+	req.ProviderOptions = map[string]json.RawMessage{"openai": json.RawMessage(`{"reasoning":{"effort":"low"}}`)}
+	if _, err := GenerateParamsFromRequest(model, req); err == nil {
+		t.Fatal("expected providerOptions to reject legacy adapter fallback")
+	}
 }
 
 func TestToolChoiceFromLegacy(t *testing.T) {

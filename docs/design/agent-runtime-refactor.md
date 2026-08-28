@@ -911,7 +911,7 @@ canonical 编码和 digest 函数由 agent 提供；Memoh 只保存和比较结�
 
 已发布 `SchemaVersion` 的 canonical 编码和 digest 规则永久冻结；字段增删只能进入新的 SchemaVersion，旧事件按其自带版本校验。同一个 Run 不允许由写入不同 SchemaVersion 的进程混跑：升级窗口内先全量部署可读写新版本的代码，再开始写入新版本；否则同一 command 的重放会因编码不同被误判为 `ErrCommandConflict`。
 
-CommandEnvelope 和 AgentEvent 的 `SchemaVersion` 和 `Type` 是持久化协议字段；Type 必须与 sealed AgentCommand/Fact 的具体变体一致，未知版本或类型直接拒绝。`DigestCommand`/`DigestFact` 对 `SchemaVersion`、`Type` 和内容做 canonical digest，但不把 `Digest` 字段自身纳入摘要，保证 Memoh scanner、MemoryRuntime 和不同进程使用同一身份规则。`Revision` 只用于 authority 的 CAS，不进入任何 digest。
+CommandEnvelope 和 AgentEvent 的 `SchemaVersion` 和 `Type` 是持久化协议字段；Type 必须与 sealed AgentCommand/Fact 的具体变体一致，未知版本或类型直接拒绝。agent 必须提供正式 wire codec：decode 时先读 `Type`，再恢复具体 command/fact variant，并校验 command/fact digest；不能依赖 `encoding/json` 自动反序列化 interface 字段。`DigestCommand`/`DigestFact` 对 `SchemaVersion`、`Type` 和内容做 canonical digest，但不把 `Digest` 字段自身纳入摘要，保证 Memoh scanner、MemoryRuntime 和不同进程使用同一身份规则。`Revision` 只用于 authority 的 CAS，不进入任何 digest。
 
 Evolve 的折叠语义与事件编码同属永久兼容契约：已发布 SchemaVersion 的事件必须永远能被折叠出与写入当时相同的状态。conformance kit 为每个已发布 SchemaVersion 冻结 golden event stream 与对应的状态字节，任何 Evolve 实现变更都必须通过全部历史版本的 golden 校验。
 
@@ -1384,7 +1384,7 @@ Fact                           已接受的事实内容
 
 AgentEvent log 是 source of truth；MachineState 是必需的同事务 projection（§5.1）。Runtime 必须把两者、水位和需要一致的 Memoh projection/outbox 放在同一事务或锁边界。Durable adapter 必须保留 AgentEvent，使其可以按 RunID/(Revision, Index) replay；MemoryRuntime 可以只在进程内保留同样的记录。公共 `Runtime` 不增加 replay 方法，读取由实现或 application projection 提供。
 
-Replay 按 RunID/(Revision, Index) 取出 AgentEvent，从初始状态（Revision=0）开始依次调用同一份 `Machine.Evolve` 折叠。折叠只依赖 Evolve，不重新运行 Decide——决策结果已经记录在事实里，Machine 决策规则的演进不影响历史事件的折叠；折叠不产生任何外部 effect。仲裁按 §5.1 的规则：日志完整（maxRevision >= watermark）时日志为准，snapshot 分歧或缺失自动重建并记录重建事件；日志尾部低于水位时 halt。事件流内部的 Revision/Index 缺洞或 digest 不匹配同样按日志损坏处理，halt 该 Run。
+Replay 按 RunID/(Revision, Index) 取出 AgentEvent，从初始状态（Revision=0）开始依次调用同一份 `Machine.Evolve` 折叠。折叠只依赖 Evolve，不重新运行 Decide——决策结果已经记录在事实里，Machine 决策规则的演进不影响历史事件的折叠；折叠不产生任何外部 effect。仲裁按 §5.1 的规则：日志完整（maxRevision >= watermark）时日志为准，snapshot 分歧或缺失自动重建并记录重建事件；日志尾部低于水位时 halt。事件流内部的 RunID 不匹配、SchemaVersion/Type 不支持、同一 Revision 的 CommandID/CommandDigest 不一致、Revision/Index 缺洞或 digest 不匹配同样按日志损坏处理，halt 该 Run。
 
 Replay 的起点是 admission 已建立的初始 `MachineState`；`RunSeed` 的 admission 记录不作为任何 Run 的 AgentEvent 重放。需要重建 admission 链时，由 Memoh 的 session/queue 记录负责。
 
@@ -1501,7 +1501,7 @@ Memoh    -> agent.Loop + MemohRuntime
 
 ### 11.3 兼容原则
 
-1. provider adapter 的现有请求/响应字段优先复用。
+1. provider adapter 的现有请求/响应字段优先复用；旧 `GenerateParams` 无法表达的新 `Request` 字段（例如 `ProviderOptions`）在 fallback 到旧 provider 时必须显式报错，不能 silent drop。
 2. sdk 保留旧单次调用入口，直到调用方迁移完成。
 3. 旧自动 loop 只在显式 legacy wrapper 中存在，不能由新 Loop 隐式调用。
 4. 旧 `WithMaxSteps(0)` 保持一次模型调用、不自动执行 tools；`n>0` 映射为 `RunConfig.ModelStepLimit=n`；旧值 `-1` 由 legacy wrapper 先规范化为 `RunConfig.ModelStepLimit=0`（无限）。agent 的 `RunConfig` 不接受负数。Memoh 当前使用 `-1`，迁移后保持无限模型步骤语义。
@@ -1516,14 +1516,14 @@ Memoh    -> agent.Loop + MemohRuntime
 2. 让 Generate、Stream 各自对应一次 provider request；transport retry 留在 sdk。
 3. 将旧自动 loop 隔离为 legacy wrapper。
 4. 保留 blocking/streaming 等价测试。
-5. 提供 additive compatibility adapters：`RequestFromGenerateParams`、`GenerateParamsFromRequest`、`ToolDefinitionFromTool`、`ToolFromDefinition`、`ToolChoiceFromLegacy`、`ModelResultFromGenerateResult`、`GenerateResultFromModelResult`、`ModelStreamFromStreamResult`；并提供可选 `ModelInvoker` / `StreamingModelInvoker`，provider interface 未整体切换前先靠这些 helper 和 optional interface 桥接新旧边界。
+5. 提供 additive compatibility adapters：`RequestFromGenerateParams`、`GenerateParamsFromRequest`、`ToolDefinitionFromTool`、`ToolFromDefinition`、`ToolChoiceFromLegacy`、`ModelResultFromGenerateResult`、`GenerateResultFromModelResult`、`ModelStreamFromStreamResult`；并提供可选 `ModelInvoker` / `StreamingModelInvoker`，provider interface 未整体切换前先靠这些 helper 和 optional interface 桥接新旧边界；旧 provider fallback 无法表达的新字段必须报错而不是丢弃。
 
 ### 阶段 B：Machine 和 MemoryRuntime
 
 1. 实现 `MachineState`、ModelStep、ToolStep、ToolCall 状态和 Decide/Evolve/Next 规则。
 2. 实现 `EvaluateCommit`、`Runtime.Load/Commit`、command/fact digest 与幂等和 opaque grant。
 3. 实现 Loop 的 model/tool/approval/response 路径和并行执行策略。
-4. 完成 MemoryRuntime conformance 测试（`agent/runtimetest`），并冻结 SchemaVersion 1 的 golden event stream。
+4. 完成 MemoryRuntime conformance 测试（`agent/runtimetest`），提供 CommandEnvelope/AgentEvent wire codec，严格 replay 校验，并冻结 SchemaVersion 1 的 golden event stream。
 
 ### 阶段 C：Memoh storage groundwork
 
