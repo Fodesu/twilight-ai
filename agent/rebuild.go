@@ -153,7 +153,7 @@ func statesEquivalent(a, b *MachineState) bool {
 // step, which encoding/json cannot round-trip on its own.
 func stateComparable(s *MachineState) map[string]any {
 	m := map[string]any{
-		"runId": s.RunID, "status": s.Status, "config": s.Config,
+		"runId": s.RunID, "status": s.Status,
 		"modelSteps": s.ModelSteps, "lastClosedStep": s.LastClosedStep,
 		"usage": s.Usage, "pendingInputs": s.PendingInputs,
 		"lastModelResult": s.LastModelResult, "result": s.Result,

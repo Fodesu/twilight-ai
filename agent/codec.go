@@ -337,6 +337,8 @@ func decodeCommandVariant(typ string, raw json.RawMessage) (AgentCommand, error)
 		return decodeCommandAs[SubmitToolResponse](raw)
 	case "cancel_run":
 		return decodeCommandAs[CancelRun](raw)
+	case "stop_run":
+		return decodeCommandAs[StopRun](raw)
 	case "accept_input":
 		return decodeCommandAs[AcceptInput](raw)
 	default:

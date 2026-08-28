@@ -41,12 +41,13 @@ type runtimeCase struct {
 	events  []agent.AgentEvent
 }
 
-func newCase(t testing.TB, newRuntime Factory, cfg agent.RunConfig) *runtimeCase {
+func newCase(t testing.TB, newRuntime Factory) *runtimeCase {
 	t.Helper()
-	initial, err := agent.Initialize("run-1", cfg, agent.NextRun(agent.AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)}))
+	initial, err := agent.InitializeRun("run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
+	initial.PendingInputs = []agent.AgentInput{{ID: "seed", Payload: cj(`{"q":"hi"}`)}}
 	return &runtimeCase{t: t, runID: initial.RunID, initial: initial, rt: newRuntime(t, initial)}
 }
 
@@ -83,7 +84,7 @@ func (c *runtimeCase) mustCommit(id agent.CommandID, base uint64, grant agent.Ex
 
 func preparedCase(t testing.TB, newRuntime Factory, tools []sdk.ToolDefinition, specs []agent.ToolSpec) (*runtimeCase, agent.StepID, agent.ExecutionGrant) {
 	t.Helper()
-	c := newCase(t, newRuntime, agent.RunConfig{Model: "m-1", ModelRejectLimit: 2})
+	c := newCase(t, newRuntime)
 	snap := c.load()
 	req := testRequest(tools...)
 	prep, cmdID := buildPrepareFromSnap(t, &snap, &req, specs)
@@ -109,7 +110,8 @@ func buildPrepareFromSnap(t testing.TB, snap *agent.RuntimeSnapshot, req *sdk.Re
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding, err := agent.DigestModelStepBinding(snap.State.Config.Model, reqDigest, toolsDigest)
+	model := agent.ModelRef(frozenReq.Model)
+	binding, err := agent.DigestModelStepBinding(model, reqDigest, toolsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +122,7 @@ func buildPrepareFromSnap(t testing.TB, snap *agent.RuntimeSnapshot, req *sdk.Re
 		ids[i] = in.ID
 	}
 	return agent.PrepareModelRequest{
-		StepID: stepID, Model: snap.State.Config.Model, Request: frozenReq,
+		StepID: stepID, Model: model, Request: frozenReq,
 		RequestDigest: reqDigest, InputIDs: ids, Tools: specs, ToolsDigest: toolsDigest,
 	}, cmdID
 }
@@ -197,7 +199,7 @@ func modelResultWithCalls(callIDs ...string) agent.ModelResult {
 }
 
 func testIdempotentReplay(t *testing.T, newRuntime Factory) {
-	c := newCase(t, newRuntime, agent.RunConfig{Model: "m-1"})
+	c := newCase(t, newRuntime)
 	res1 := c.mustCommit("cancel-1", 0, "", agent.CancelRun{})
 	if res1.Status != agent.CommitAccepted || len(res1.Events) != 1 {
 		t.Fatalf("res1 = %+v", res1)
@@ -305,7 +307,7 @@ func testCallLocalRebase(t *testing.T, newRuntime Factory) {
 }
 
 func testPrepareDerivedIdentity(t *testing.T, newRuntime Factory) {
-	c := newCase(t, newRuntime, agent.RunConfig{Model: "m-1"})
+	c := newCase(t, newRuntime)
 	snap := c.load()
 	req := testRequest()
 	prep, cmdID := buildPrepareFromSnap(t, &snap, &req, nil)
@@ -323,7 +325,7 @@ func testPrepareDerivedIdentity(t *testing.T, newRuntime Factory) {
 }
 
 func testPrepareIsHardCAS(t *testing.T, newRuntime Factory) {
-	c := newCase(t, newRuntime, agent.RunConfig{Model: "m-1"})
+	c := newCase(t, newRuntime)
 	snap := c.load()
 	req := testRequest()
 	prep, cmdID := buildPrepareFromSnap(t, &snap, &req, nil)
@@ -402,7 +404,7 @@ func testReplayFoldMatchesState(t *testing.T, newRuntime Factory) {
 }
 
 func testAcceptInputByInputID(t *testing.T, newRuntime Factory) {
-	c := newCase(t, newRuntime, agent.RunConfig{Model: "m-1"})
+	c := newCase(t, newRuntime)
 	in := agent.AgentInput{ID: "in-9", Payload: cj(`{"t":"x"}`)}
 	id := agent.DeriveInputCommandID("run-1", in.ID)
 	res1 := c.mustCommit(id, 0, "", agent.NextStep(in))
@@ -420,7 +422,7 @@ func testAcceptInputByInputID(t *testing.T, newRuntime Factory) {
 }
 
 func testDerivedCommandIDEnforced(t *testing.T, newRuntime Factory) {
-	c := newCase(t, newRuntime, agent.RunConfig{Model: "m-1"})
+	c := newCase(t, newRuntime)
 	_, err := c.commit("random-id", 0, "", agent.NextStep(agent.AgentInput{ID: "in-1", Payload: cj(`1`)}))
 	if err == nil {
 		t.Fatal("AcceptInput with non-derived CommandID accepted")
@@ -433,7 +435,7 @@ func testDerivedCommandIDEnforced(t *testing.T, newRuntime Factory) {
 
 func stateComparable(s *agent.MachineState) map[string]any {
 	m := map[string]any{
-		"runId": s.RunID, "status": s.Status, "config": s.Config,
+		"runId": s.RunID, "status": s.Status,
 		"modelSteps": s.ModelSteps, "lastClosedStep": s.LastClosedStep,
 		"usage": s.Usage, "pendingInputs": s.PendingInputs,
 		"lastModelResult": s.LastModelResult, "result": s.Result,

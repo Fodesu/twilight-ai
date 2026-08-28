@@ -2,7 +2,7 @@ package agent
 
 // AgentCommand is the intent submitted through Runtime.Commit for an existing
 // Run. Accepting one command constitutes one transition (spec §3.6). The
-// interface is sealed: only the fourteen variants below exist.
+// interface is sealed: only the fifteen variants below exist.
 type AgentCommand interface{ agentCommand() }
 
 // AgentInput is a queue-safe input: a stable ID plus an immutable payload.
@@ -15,14 +15,19 @@ type AgentInput struct {
 // NextStep creates the command consumed by an active Run at a safe boundary.
 func NextStep(input AgentInput) AcceptInput { return AcceptInput{Input: input} }
 
-// RunSeed is the admission seed for a new Run. It is not a command: it never
-// goes through Runtime.Commit; application admission passes it to Initialize.
+// RunSeed is the legacy admission seed for a new Run. It is not a command: it
+// never goes through Runtime.Commit. New admission should use InitializeRun and
+// submit initial input with AcceptInput.
+//
+// Deprecated: use InitializeRun and AcceptInput.
 type RunSeed struct {
 	Input AgentInput `json:"input"`
 }
 
-// NextRun creates the admission seed used by application admission. It does
-// not allocate a RunID, claim a queue item, or mutate an existing Run.
+// NextRun creates the legacy admission seed used by application admission. It
+// does not allocate a RunID, claim a queue item, or mutate an existing Run.
+//
+// Deprecated: use InitializeRun and AcceptInput.
 func NextRun(input AgentInput) RunSeed { return RunSeed{Input: input} }
 
 // PrepareModelRequest freezes the next model request. Its CommandID is
@@ -76,14 +81,26 @@ type SubmitModelFailure struct {
 
 func (SubmitModelFailure) agentCommand() {}
 
+type ModelRejectDisposition uint8
+
+const (
+	// ModelRejectRetry records the malformed result and returns the same frozen
+	// ModelStep to Prepared for another execution attempt.
+	ModelRejectRetry ModelRejectDisposition = iota
+	// ModelRejectFailRun records the malformed result and fails the Run in the
+	// same transition.
+	ModelRejectFailRun
+)
+
 // RejectModelResult records a structurally malformed model result: usage is
-// accumulated, the step's reject counter is incremented, and the step returns
-// to Prepared until RunConfig.ModelRejectLimit is exceeded. Requires the
-// model start grant.
+// accumulated, the step's reject counter is incremented, and Disposition
+// decides whether the same frozen request retries or the Run fails. Requires
+// the model start grant.
 type RejectModelResult struct {
-	StepID  StepID      `json:"stepId"`
-	Usage   Usage       `json:"usage"`
-	Failure StepFailure `json:"failure"`
+	StepID      StepID                 `json:"stepId"`
+	Usage       Usage                  `json:"usage"`
+	Failure     StepFailure            `json:"failure"`
+	Disposition ModelRejectDisposition `json:"disposition,omitempty"`
 }
 
 func (RejectModelResult) agentCommand() {}
@@ -154,13 +171,22 @@ type SubmitToolResponse struct {
 
 func (SubmitToolResponse) agentCommand() {}
 
-// CancelRun stops a non-terminal Run. Hosts must commit this before
-// cancelling the Loop's context (spec §6.6).
+// CancelRun stops a non-terminal Run as a business cancellation. Hosts must
+// commit this before cancelling the Loop's context (spec §6.6).
 type CancelRun struct {
 	Reason RunReason `json:"reason,omitempty"`
 }
 
 func (CancelRun) agentCommand() {}
+
+// StopRun records a host-owned non-cancellation stop policy. It exists so
+// compatibility wrappers can keep max-step behavior without storing limits in
+// MachineState.
+type StopRun struct {
+	Reason RunReason `json:"reason"`
+}
+
+func (StopRun) agentCommand() {}
 
 // AcceptInput appends one queue-safe input to PendingInputs. Idempotent per
 // (RunID, InputID) with identical payload.
@@ -199,6 +225,8 @@ func commandType(c AgentCommand) string {
 		return "submit_tool_response"
 	case CancelRun:
 		return "cancel_run"
+	case StopRun:
+		return "stop_run"
 	case AcceptInput:
 		return "accept_input"
 	default:

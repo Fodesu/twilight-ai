@@ -37,7 +37,6 @@ func (WaitForExecutionRecovery) effect() {}
 // PlanningHint is what the Loop hands the application RequestPlanner.
 type PlanningHint struct {
 	RunID      RunID
-	Model      ModelRef
 	SourceStep StepID
 	Inputs     []AgentInput
 }
@@ -54,7 +53,6 @@ func Next(s MachineState) (Effect, error) {
 	case nil:
 		return NeedModelRequest{Hint: PlanningHint{
 			RunID:      s.RunID,
-			Model:      s.Config.Model,
 			SourceStep: s.LastClosedStep,
 			Inputs:     append([]AgentInput(nil), s.PendingInputs...),
 		}}, nil

@@ -126,12 +126,20 @@ type Event struct {
 	Canonical *AgentEvent
 }
 
-// ExecutionPolicy bounds this Loop's tool-call parallelism. 1 is sequential;
-// n>1 is bounded parallel; 0 normalizes to 1; negative is rejected at Loop
-// construction. It limits only workers this Loop launches, never a global
-// count (spec §4.3).
+// ExecutionPolicy is host-owned loop policy. It is not persisted in
+// MachineState or events. MaxParallel bounds only workers this Loop launches,
+// never a global count (spec §4.3).
 type ExecutionPolicy struct {
+	// MaxParallel: 1 is sequential; n>1 is bounded parallel; 0 normalizes to 1;
+	// negative is rejected.
 	MaxParallel int
+	// ModelStepLimit: 0 means unlimited; positive values make the Loop submit
+	// StopRun(step_limit) before planning another ModelStep.
+	ModelStepLimit int
+	// MalformedModelResultLimit: 0 normalizes to
+	// DefaultMalformedModelResultLimit; negative is rejected. The Loop chooses
+	// RejectModelResult disposition from the current ModelStep reject count.
+	MalformedModelResultLimit int
 }
 
 type LoopDisposition uint8
