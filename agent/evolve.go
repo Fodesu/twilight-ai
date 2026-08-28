@@ -10,12 +10,8 @@ import "fmt"
 func Evolve(s MachineState, f Fact) (MachineState, error) {
 	switch fact := f.(type) {
 	case ModelStepPrepared:
-		binding, err := DigestModelStepBinding(fact.Model, fact.RequestDigest, fact.ToolsDigest)
-		if err != nil {
-			return s, err
-		}
 		s.Current = ModelStep{
-			RefValue:      StepRef{RunID: s.RunID, ID: fact.StepID, Digest: binding},
+			RefValue:      StepRef{RunID: s.RunID, ID: fact.StepID, Digest: fact.BindingDigest},
 			Request:       fact.Request,
 			RequestDigest: fact.RequestDigest,
 			Model:         fact.Model,

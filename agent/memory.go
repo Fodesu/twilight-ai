@@ -9,12 +9,18 @@ import (
 )
 
 // MemoryRuntime is the in-process reference Runtime: mutex + MachineState +
-// AgentEvent map (spec §8.1). It is the conformance reference; it does not
-// survive the process and does not store product history.
+// AgentEvent map (spec §8.1). The event log is the source of truth; the state
+// is the same-transaction projection. It is the conformance reference; it
+// does not survive the process and does not store product history.
 type MemoryRuntime struct {
 	mu       sync.Mutex
 	state    MachineState
 	revision uint64
+	// initial is the Revision-0 state; Rebuild folds the log from it.
+	initial MachineState
+	// watermark witnesses log-tail completeness: it advances with every
+	// commit and is never cleared by a rebuild (spec §5.1).
+	watermark uint64
 	// events keyed by CommandID: the full event group of each transition.
 	events map[CommandID][]AgentEvent
 	// log holds every event in (Revision, Index) order for replay.
@@ -26,9 +32,10 @@ type MemoryRuntime struct {
 // NewMemoryRuntime starts from an Initialize-produced state at Revision 0.
 func NewMemoryRuntime(initial MachineState) *MemoryRuntime {
 	return &MemoryRuntime{
-		state:  initial,
-		events: make(map[CommandID][]AgentEvent),
-		grants: make(map[string]ExecutionGrant),
+		state:   initial,
+		initial: cloneMachineState(initial),
+		events:  make(map[CommandID][]AgentEvent),
+		grants:  make(map[string]ExecutionGrant),
 	}
 }
 
@@ -124,6 +131,7 @@ func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitRe
 	// the way in so caller-held command buffers cannot mutate stored events.
 	m.state = decision.NewState
 	m.revision++
+	m.watermark = m.revision
 	stored := cloneEvents(decision.Events)
 	m.events[req.Command.ID] = stored
 	m.log = append(m.log, stored...)
