@@ -2,9 +2,9 @@
 
 状态：重构方案
 
-本文定义 Twilight AI 的 `sdk/`、`agent/` 和 Memoh native runtime 边界，并规定从当前 SDK 多步 loop 迁移到唯一 `agent.Loop` 的方式。
+本文定义 Twilight AI 的目标 agent domain 边界：`sdk/` 负责一次模型调用，`agent/es` 提供通用 event-sourcing 机制，`agent/run` 保存单次 Run 的 execution ES，`agent/session` 保存长期会话语义 ES，`agent/queue` 提供通用调度/claim/dedup 机制。Application/Product 负责把这些 domain 编排起来。
 
-本文只定义 Agent Machine 的语义、Loop 的执行协议、Runtime 的 authority/commit 边界，以及已提交事实的 canonical event 语义。Memoh 的 queue、session、R0/R1、owner、fencing、lease 和数据库投影仍由 Memoh 负责；本文规定它们如何接入，而不把它们提升为 agent core 概念。
+本文不再把 Twilight 定义成一个“大 Agent Core”。当前代码中的 root `agent` 包语义上应收敛为目标 `agent/run` 包；它回答“一次 computation 执行到哪里、下一步是否合法、如何 replay/recover”。Session、Queue、Context、Artifact、Memory、Workspace、Scheduler 等是独立 domain 或 application policy；其中本规范先正式拆出 `run`、`session`、`queue` 和共享 `es` substrate。
 
 正文中的 Go 片段用于说明协议；附录 A 是 public API 草案。正文各节为规范文本，附录是汇总视图；两者不一致时以正文为准，并修订附录。
 
@@ -12,87 +12,110 @@
 
 ### 1.1 核心目标
 
-Twilight AI 同时支持两种运行形态：
+Twilight AI 的 agent 侧被拆成几个可组合 domain，而不是一个单体 Agent：
 
 ```text
-Memory agent
-  MachineState 在当前进程内，适合本地会话和测试
-
-Durable agent
-  MachineState 在数据库中，进程可以退出，新的进程可以继续
+Application / Product
+        │
+        ├── conversation/session semantics
+        ├── steer / follow-up policy
+        ├── artifact/context/memory/workspace policy
+        └── orchestration
+             │
+   ┌─────────┼─────────┐
+   │         │         │
+agent/     agent/    agent/
+session    queue     run
+长 ES      调度机制   短 Run ES
 ```
 
-两种形态使用同一套 Machine 规则和同一个 Loop。差别只在 Runtime 如何保存权威状态、控制并发和提交状态变化。
+三个已经明确的 domain authority：
 
-本版本固定五个层级：
+| Domain | 回答的问题 | Authority 形态 | 生命周期 |
+| --- | --- | --- | --- |
+| `agent/session` | 这个会话长期发生过什么？ | append-only Session ES | 跨多个 Run 长期存在 |
+| `agent/run` | 这一次执行如何跑到当前位置？ | RunHeader + TransitionRecord log | 单次 Run，完成后可归档/GC |
+| `agent/queue` | 哪些工作待处理、谁 claim、如何 dedup？ | transactional queue state | 调度生命周期 |
+
+`agent/es` 是机制库，不是第四个语义 domain。它只提供 canonical envelope、digest、record completeness、revision/index 校验和 fold runner 等可复用机制；它不认识 ModelStep、Session message、queue claim 或产品 policy。
+
+本版本固定五个执行层级，但这些层级属于 `agent/run`：
 
 ```text
-1. Agent Machine
+1. Run Machine
    定义 Run、Step、ToolCall 的语义状态和合法状态变化
 
-2. Agent Loop
+2. Run Loop
    解释 Machine 产生的 effect，执行模型/工具，再提交结果事件
 
-3. Runtime
-   加载权威 MachineState，并原子提交 AgentCommand，产生 AgentEvent
+3. Run Runtime
+   加载权威 MachineState，并原子提交 AgentCommand，产生 TransitionRecord
 
 4. Model / Tool
    执行一次模型请求或一次工具调用
 
 5. Request Planner
-   把 application context 投影为下一次模型所需的 sdk.Request
+   把 application/session/context projection 投影为下一次模型所需的 sdk.Request
 ```
 
-这里的 “Agent Machine” 是语义层名称，不引入名为 `Agent` 的核心对象；公共执行入口仍是 `Loop`。
+这里的 “Run Machine” 是语义层名称，不引入名为 `Agent` 的核心对象；公共执行入口仍是 `Loop`。
 
 整体关系：
 
 ```text
-                  Agent Machine (pure rules)
-              MachineState + Next/Decide/Evolve
-                       ^              |
-                       | state        | Effect
-                       |              v
-Request Planner --> sdk.Request --Freeze*--> Agent Loop --SDK()--> Model / Tool
- application       (boundary)                  |
- context                                      | AgentCommand carries
-                                              | agent.ModelRequest / ModelResult
-                                              | (JSON-stable persisted values)
-                                              v
-                                           Runtime
-                             Load + atomic Commit
-                            /                  \
-                   MemoryRuntime          MemohRuntime
-                    memory + mutex    PostgreSQL + private lease/fence
-                            \                  /
-                             \                /
-                         MachineState + AgentEvents
-                              (same commit boundary)
-                                      |
-                                      v
-                    EventSink / replay / projection / OTel
+                Session ES / Context / Queue
+             (Application-owned planning inputs)
+                         │
+                         v
+                 Request Planner
+                         │ sdk.Request
+                         v
+                  run.Loop --SDK()--> Model / Tool
+                         │
+                         │ AgentCommand carries frozen run.ModelRequest / ModelResult
+                         v
+                 run.Runtime
+                 Load + atomic Commit
+                /                  \
+       run.MemoryRuntime      Durable runtime adapter
+        memory + mutex      DB + private lease/fence/outbox
+                \                  /
+                 \                /
+             RunHeader + TransitionRecord log
+             MachineState projection
+                         │
+                         v
+      EventSink / Run replay / Session materializer / OTel
 ```
 
-Loop 与 Runtime 的职责相互独立：Loop 决定如何执行，Runtime 决定权威状态在哪里以及如何安全提交。Machine 决定什么状态变化合法；Planner 决定模型看到的 application context；Model/Tool 只执行一次外部 effect。
+Loop 与 Runtime 的职责相互独立：Loop 决定如何执行，Runtime 决定权威状态在哪里以及如何安全提交。Machine 决定什么状态变化合法；Planner 决定模型看到的 application/session/context projection；Model/Tool 只执行一次外部 effect。
 
 目标目录边界：
 
 ```text
 twilight-ai/
-  sdk/       一次 LLM request/response 的边界/transport 类型
-  agent/     Machine、Loop、Step、工具 contract、Runtime contract、JSON-stable persisted model data
-
-Memoh native runtime
-  Request Planner、产品 context、durable history、queue、session 和数据库事务
+  sdk/             一次 LLM request/response 的边界/transport 类型
+  agent/
+    es/            通用 ES envelope、digest、record、fold 机制
+    run/           单次 Run 的 execution ES：Machine、Loop、Runtime、Step/ToolCall
+    session/       长期语义 Session ES substrate
+    queue/         通用 transactional queue/claim/dedup 机制
+    jsonstable/    canonical JSON value 与解析/编码
+    harness/       可选：in-process 组合器，不是新的 Runtime 语义
 ```
 
 依赖方向固定为：
 
 ```text
-agent  ---> sdk
-Memoh  ---> agent + sdk
-sdk    不依赖 agent 或 Memoh
+agent/es        ---> agent/jsonstable（可选）
+agent/session   ---> agent/es
+agent/run       ---> agent/es + agent/jsonstable + sdk
+agent/queue     ---> 不依赖 agent/run；默认不依赖 ES
+Application     ---> sdk + agent/run + agent/session + agent/queue
+sdk             不依赖 agent 或 Application
 ```
+
+禁止出现 `agent/es -> agent/run` 或 `agent/session -> agent/run` 这类反向依赖；共享机制不能 import domain 语义。
 
 ### 1.2 核心执行模型
 
@@ -112,7 +135,7 @@ MachineState + AgentCommand
         Machine.Evolve 逐个折叠（机械，无决策）
              |
              v
-        new MachineState + AgentEvents（同一 Revision）
+        TransitionRecord + new MachineState（同一 Revision）
              |
         Machine.Next -> Effect -> Loop
 ```
@@ -131,7 +154,7 @@ Step 不是最小的外部操作。ToolStep 保存每个 ToolCall 中会影响�
 | Loop | 当前进程执行 Run 的算法；它不保存权威状态。 |
 | MachineState | Machine 的完整语义状态。 |
 | Step | Run 中的 durable resume boundary。 |
-| ModelStep | 一次冻结的 agent-owned `ModelRequest`，直到接受模型结果。 |
+| ModelStep | 一次冻结的 run-owned `ModelRequest`，直到接受模型结果。 |
 | ToolStep | 一个模型结果产生的一组 ToolCall 及其 progress。 |
 | ToolCall | ToolStep 内的一个结构化工具调用。 |
 | AgentCommand | Loop 或外部入口希望 Machine 接受的意图；接受后构成一次 transition。 |
@@ -140,7 +163,7 @@ Step 不是最小的外部操作。ToolStep 保存每个 ToolCall 中会影响�
 | Revision | 每 Run 单调递增的 transition 计数；第 N 次接受的 transition 产出 Revision=N 的 TransitionRecord 和 Revision=N 的状态。 |
 | Effect | Machine 根据当前状态返回的至多一个待执行动作；不表示一定有外部副作用。 |
 | Attempt | Runtime 为一次进程执行建立的内部执行租约。 |
-| Runtime | MachineState 的 execution authority、AgentCommand 的原子提交和 AgentEvent 的产生者。 |
+| Runtime | MachineState 的 execution authority、AgentCommand 的原子提交和 TransitionRecord 的产生者。 |
 | Request Planner | application context 到 `sdk.Request` 的投影器。 |
 
 ### 1.4 成功标准
@@ -148,8 +171,8 @@ Step 不是最小的外部操作。ToolStep 保存每个 ToolCall 中会影响�
 | 场景 | 期望结果 |
 | --- | --- |
 | 单次模型调用 | 直接使用 `sdk`，不自动执行工具。 |
-| 本地会话 | `agent.Loop` 配合 `MemoryRuntime`。 |
-| Memoh durable 会话 | 同一个 `agent.Loop` 配合 `MemohRuntime`。 |
+| 本地 Run | `run.Loop` 配合 `run.MemoryRuntime`。 |
+| durable Run | 同一个 `run.Loop` 配合 durable runtime adapter。 |
 | 模型返回 tools | ModelStep 完成后创建一个 ToolStep；ToolStep 完成前不创建下一 ModelStep。 |
 | 多个 approval/用户响应 | 每个等待请求有稳定身份；一个响应只推进对应 Call。 |
 | ToolStep 中途崩溃 | Completed Call 不再执行；Pending Call 可恢复；结果未知的 Executing Call 终止 Run。 |
@@ -174,16 +197,16 @@ sdk 只负责 LLM API：
 
 `sdk.Request` 是一次模型调用的完整输入，不是 session、history 或 queue。`sdk.ModelResult` 是一次完整模型响应，保留旧 `GenerateResult` 的单次调用字段（文本、reasoning parts、tool calls、finish reason、usage、sources/files 和 provider metadata），但不包含自动 tool loop、approval 或多次调用累加。多步执行的 steps 和 messages 由 agent/application 另行保存。
 
-`sdk` 类型只允许存在于 Planner/ModelInvoker/provider 边界；不得作为 AgentEvent、MachineState、AgentCommand 或 digest input 的持久化形态。Loop 必须在提交前把 `sdk.Request`、`sdk.ModelResult` 和 `sdk.ToolDefinition` 分别转换成 agent-owned 的 `ModelRequest`、`ModelResult` 和 `ToolDefinition`；调用 provider/tool 前再由这些 frozen value 构造新的 `sdk` 值。
+`sdk` 类型只允许存在于 Planner/ModelInvoker/provider 边界；不得作为 Run event、MachineState、AgentCommand 或 digest input 的持久化形态。Loop 必须在提交前把 `sdk.Request`、`sdk.ModelResult` 和 `sdk.ToolDefinition` 分别转换成 run-owned 的 `ModelRequest`、`ModelResult` 和 `ToolDefinition`；调用 provider/tool 前再由这些 frozen value 构造新的 `sdk` 值。
 
-agent-owned 冻结形态遵守以下规则；`FreezeModelRequest`、`FreezeModelResult`、`FreezeToolDefinition`、`DigestRequest`、StepID 派生和提交幂等都建立在这套规则上：
+run-owned 冻结形态遵守以下规则；`FreezeModelRequest`、`FreezeModelResult`、`FreezeToolDefinition`、`DigestRequest`、StepID 派生和提交幂等都建立在这套规则上：
 
 1. 冻结值是纯数据。它不包含 provider client、接口值、回调或 `Execute` 句柄；模型以 provider 作用域内的字符串 ID 表示，provider 绑定发生在 `ModelCatalog`/`ModelInvoker` 解析时。
 2. 工具以 provider-neutral 的 `ToolDefinition{Name, Description, Parameters}` 表示；`Parameters` 是解析完成并 canonicalized 的 JSON Schema 文档。由 Go struct 推导 schema 的工作在冻结前完成，冻结后的 Request 不依赖推导或反射。
 3. `ToolChoice` 是封闭类型 `{Mode: auto|none|required|tool, Tool string}`，不使用 `any`。
 4. 消息 part 是 sealed union 的 agent value（text/reasoning/image/file/tool-call/tool-result），不持久化 `sdk.MessagePart` interface。
 5. 消息中的二进制内容有两种形式：inline bytes（canonical 编码为 base64），或稳定的内容寻址引用 `BlobRef{Digest, MediaType, ByteSize}`。`BlobRef` 的字节解析由组装 `ModelInvoker` 的一方负责；带时效的 URL 等不稳定引用不能进入冻结请求。两种形式产生不同的 digest，Planner 对同一内容必须确定性地选择一种形式。
-6. provider metadata、provider options、tool input/result、response format schema 等扩展字段的值必须是 JSON 值。进入 agent 前必须 parse/canonicalize 成 opaque `CanonicalJSON`（由 `agent/jsonstable.Value` 承载，内部 bytes 不可被 agent core 或 caller 直接构造/修改）；不能保存 caller-owned map/slice/RawMessage 或 `any`。canonicalization 必须拒绝会把不同 payload 折叠成同一值的输入，包括重复 object key、trailing data、invalid UTF-8 和 escaped lone surrogate（`\ud800`..`\udfff`）。
+6. provider metadata、provider options、tool input/result、response format schema 等扩展字段的值必须是 JSON 值。进入 `agent/run` 前必须 parse/canonicalize 成 opaque `CanonicalJSON`（由 `agent/jsonstable.Value` 承载，内部 bytes 不可被 run core 或 caller 直接构造/修改）；不能保存 caller-owned map/slice/RawMessage 或 `any`。canonicalization 必须拒绝会把不同 payload 折叠成同一值的输入，包括重复 object key、trailing data、invalid UTF-8 和 escaped lone surrogate（`\ud800`..`\udfff`）。
 7. `DigestRequest` 覆盖 frozen `ModelRequest` 的全部字段，不设排除项。cache 配置等只影响成本的字段同样参与摘要；排除任何字段都会把不同请求判成同一事件，产生错误的 `CommitAlreadyApplied`。
 
 边界的 SDK 类型可以保持以下形态；agent 的持久化 `ModelRequest`/`ToolDefinition` 是相同语义的 concrete mirror，字段中所有接口/any/JSON 原文先在 `Freeze*` 中 canonicalize 为 `CanonicalJSON`。
@@ -242,70 +265,317 @@ provider transport 的短暂失败可以由 sdk/provider client 在一次调用�
 
 旧的 `GenerateText`、`StreamText` 和自动 tool loop 在迁移期只能作为显式 legacy wrapper；新 Loop 不依赖它们。
 
-### 2.2 `agent/`
+### 2.2 `agent/es`
 
-agent 提供通用 core：
+`agent/es` 是两个 ES domain 共用的机制层，只抽机制，不抽语义。它不能 import `agent/run`、`agent/session` 或 application 类型。
+
+`agent/es` 负责：
 
 | 能力 | 内容 |
 | --- | --- |
-| Machine | `MachineState`、`Step`、ToolCall 状态、AgentCommand、AgentEvent 和共享的 Decide/Evolve/Next 规则。 |
-| Loop | 唯一的多步执行算法。 |
+| envelope | schema version、stream identity、revision、index、type、causation id、payload digest 的通用封装。 |
+| canonical digest | 对 version/type/payload/record body 做稳定编码和 digest；拒绝 ambiguous JSON。 |
+| record completeness | 校验一次 append 的完整 event group：revision、index、stream id、type、digest、record digest。 |
+| replay runner | 给定 initial state、record log 和 domain-provided `EvolveVersion`，执行 `fold(initial, events)`。 |
+| conformance helpers | 通用的 record truncation、digest mismatch、revision gap、duplicate/ambiguous JSON 测试工具。 |
+
+`agent/es` 不负责：
+
+```text
+ModelStep / ToolStep / ToolCall / RunEnded
+Session MessageAdded / Compact / Artifact
+Queue claim / lease / visibility timeout
+Runtime.Commit / ExecutionGrant
+Planner / provider / tool execution
+产品 policy
+```
+
+建议 API 形态是泛型和 hook，而不是把 domain 类型塞进 `es`：
+
+```go
+package es
+
+type StreamID string
+type EntryID string
+type Revision uint64
+type Index uint16
+type Digest string
+type CausationID string
+
+type Event[T any] struct {
+    SchemaVersion uint16
+    StreamID      StreamID
+    Revision      Revision
+    Index         Index
+    Type          string
+    // CausationID links this event to the operation/event that caused it.
+    // It is opaque to es; the domain/application defines its interpretation.
+    CausationID   CausationID
+    Payload       T
+    PayloadDigest Digest
+}
+
+type Record[T any] struct {
+    SchemaVersion uint16
+    StreamID      StreamID
+    Revision      Revision
+    Events        []Event[T]
+    RecordDigest  Digest
+}
+
+type Codec[T any] interface {
+    Type(T) string
+    DigestPayload(schemaVersion uint16, typ string, payload T) (Digest, error)
+}
+
+type Folder[S any, E any] func(schemaVersion uint16, state S, event E) (S, error)
+
+func BuildRecord[T any](codec Codec[T], events []Event[T]) (Record[T], error)
+func ValidateRecord[T any](codec Codec[T], record *Record[T]) error
+func FoldRecords[S any, E any](initial S, records []Record[E], folder Folder[S, E]) (S, Revision, error)
+```
+
+具体字段名可以在实现时调整，但边界原则固定：`es` 提供 append-only/replay 的机械不变量；domain 提供 type discriminator、payload encoding、Evolve 语义和 store adapter。
+
+### 2.3 `agent/run`
+
+`agent/run` 是当前 root `agent` 包的目标形态。它是单次 Run 的 execution ES，不是 Session ES。
+
+`agent/run` 负责：
+
+| 能力 | 内容 |
+| --- | --- |
+| Run Machine | `MachineState`、`Step`、`ToolCallState`、`AgentCommand`、`Fact`、`AgentEvent` 和共享的 Decide/Evolve/Next 规则。 |
+| Transition | 把一次 accepted command 产生的完整 fact/event group 封装为 `TransitionRecord`。实现上可直接使用 `agent/es.Record` 或在其上包 domain metadata。 |
+| RunHeader | 正式持久协议的一部分：RunID、initial state/schema/digest、admission causation/provenance。完整 authority 是 `RunHeader + TransitionRecord log`。 |
+| Runtime contract | `Load`/`Commit` authority 接口；所有语义状态变化只通过 Commit。 |
+| Loop | 唯一的多步执行算法：解释 Effect，调用 Model/Tool，再提交结果 command。 |
 | Tool contract | ToolRef、ExecutableTool、参数校验、结果分类和 response policy。 |
-| Runtime contract | `Load`/`Commit` authority 接口。 |
-| Planner port | 供 Loop 注入 application Request Planner 的最小接口；规划实现不在 agent。 |
-| Effect contract | 模型、工具、等待和观察动作。 |
-| EventSink | canonical event 的实时观察出口，也承载不进入权威状态的 provisional delta；它不保存 canonical event。 |
-| MCP adapter | MCP schema/call 到 agent tool contract 的适配。 |
-| MemoryRuntime | 进程内参考实现；它不是 Machine 的一部分，生产应用也可以在 application 包中实现同一 Runtime contract。 |
+| Planner port | 供 Loop 注入 application Request Planner 的最小接口；规划实现不在 run。 |
+| EventSink | canonical run event 的实时观察出口，也承载 provisional delta；它不是 authority。 |
+| MemoryRuntime | 进程内 reference runtime；它实现同一 Run ES 语义，但不承诺跨进程 durable recovery。 |
+| runtimetest | durable runtime 必须复用的 conformance suite。 |
 
-agent 不拥有 Memoh 的 session、queue schema、admission、owner、fencing、R0/R1 或数据库类型。它也不组装产品 prompt，不执行 scheduler，不保存产品 memory。
+`agent/run` 不拥有：
 
-#### 2.2.1 本轮修改的 rationale：持久化类型必须由 agent 拥有
+```text
+Session history / compact / memory / artifacts
+Queue admission / accepted order / claim policy
+Product prompt/context/workspace construction
+Provider clients / API keys
+Durable DB schema / owner/fence/lease/outbox implementation
+```
 
-Runtime 的 authority boundary 不能靠“调用者不要修改快照”这类规范约束来成立，必须由类型和提交路径保证。旧设计把 `sdk.Request`、`sdk.ModelResult`、`sdk.ToolDefinition`、`sdk.Usage` 及其内部的 `map`、`slice`、`json.RawMessage`、`any`、interface value 直接或浅拷贝地放进 command/fact/state，会产生三类破坏：
+Run source of truth：
 
-1. **aliasing/mutation**：Planner、provider 或测试代码在 `Commit` 后继续修改 SDK 对象，可能改变已返回 snapshot、已保存 transition 或后续 `EvolveVersion` 输入，使 `state = fold(initial, flatten(transitions))` 不再成立。
-2. **digest/replay nondeterminism**：digest 在提交时按一组字节计算，但持久化对象仍引用 caller-owned map/slice/RawMessage；之后对象变化会让相同 `CommandID` 的重放、`CommitAlreadyApplied` 判断、StepID 派生和 replay 校验失真。
-3. **unbounded SDK surface**：`sdk.MessagePart` interface、provider metadata 的 `map[string]any`、tool/schema 的原始 JSON 等属于 provider/transport 边界数据，不能成为 Machine 协议的永久 wire contract。
+```text
+RunHeader(initial MachineState at Revision 0)
++
+TransitionRecord log (Revision 1..N)
+```
 
-因此 agent 必须定义自己的 JSON-stable persisted value：`ModelRequest`、`ModelResult`、`ToolDefinition`、`Usage`、`Message`、`MessagePart`、`ProviderMetadata` 等。Loop/provider 边界仍使用 `sdk.Request`/`sdk.ModelResult`；进入 Runtime 前必须调用 `FreezeModelRequest`、`FreezeModelResult`、`FreezeToolDefinition`，把动态 JSON parse/canonicalize 成 opaque `CanonicalJSON`；离开 Runtime 调 provider 时通过 `.SDK()` 构造新的 SDK 值。`DigestRequest`/`DigestToolDefinition` 只接受 frozen agent value。`EvaluateCommit` 和 Runtime 实现保存 facts/state 前还必须 snapshot 自己拥有的 value，`MemoryRuntime.Commit` 以已保存事件重新 fold 出 authority state，而不是信任 caller-provided `decision.NewState`。
+状态不变量：
 
-这不是防御性 deep clone 的局部补丁，而是分层边界：`sdk` 是一次调用的 transport API，`agent` 是可重放、可审计、可长期兼容的事件协议。任何新增进入 AgentEvent/MachineState 的 provider 数据，必须先落到 agent-owned sealed/JSON-stable 类型或 `CanonicalJSON`；不得把新的 SDK interface、`any`、`json.RawMessage` 或可变引用跨过 Runtime authority boundary。外部 bytes 的检测只能发生在 codec/Freeze 边界；边界之后 agent core 只看已构造的 immutable value。
+```text
+MachineState_N = Fold(initial, flatten(TransitionRecord[1..N].Events))
+```
 
-### 2.3 Memoh native runtime
+Run ES 是短生命周期 authority。Run 完成后可以 archive/GC，但前提是需要跨 Run 保留的语义已经 materialize 到长期 domain。
 
-Memoh 负责产品和 durable 层：
+### 2.3.1 run-owned persisted model data
 
-| 能力 | 内容 |
-| --- | --- |
-| context | system prompt、memory、compaction、attachments、workspace 和产品 metadata。 |
-| Request Planner | 把 context、history 和 queue-safe 输入投影成边界 `sdk.Request`；Loop 冻结成 agent `ModelRequest`。 |
-| durable history | messages、ModelStep record、ToolStep progress 和 tool result record。 |
-| queue | steer/follow-up 的入队、accepted order、重排、claim、apply、取消和 admission。 |
-| session/run | admission、R0/R1、settled 和后续 Run。 |
-| ownership | owner、fencing、lease、liveness 和 takeover。 |
-| MemohRuntime | agent.Runtime 的 PostgreSQL adapter。 |
-| durable events | AgentEvent、outbox、审计事实和恢复所需的 projection。 |
+Runtime 的 authority boundary 不能靠“调用者不要修改快照”这类规范约束来成立，必须由类型和提交路径保证。`sdk.Request`、`sdk.ModelResult`、`sdk.ToolDefinition` 及其内部的 `map`、`slice`、`json.RawMessage`、`any`、interface value 属于 transport boundary，不能直接进入 `run` 的 command/fact/state/event。
 
-### 2.4 类型归属
+因此 `agent/run` 必须定义自己的 JSON-stable persisted value：`ModelRequest`、`ModelResult`、`ToolDefinition`、`Usage`、`Message`、`MessagePart`、`ProviderMetadata` 等。Loop/provider 边界仍使用 `sdk.Request`/`sdk.ModelResult`；进入 Runtime 前必须调用 `FreezeModelRequest`、`FreezeModelResult`、`FreezeToolDefinition`，把动态 JSON parse/canonicalize 成 opaque `CanonicalJSON`；离开 Runtime 调 provider 时通过 `.SDK()` 构造新的 SDK 值。
+
+这不是防御性 deep clone 的局部补丁，而是分层边界：`sdk` 是一次调用的 transport API，`agent/run` 是可重放、可审计、可长期兼容的 execution event protocol。任何新增进入 Run event/MachineState 的 provider 数据，必须先落到 run-owned sealed/JSON-stable 类型或 `CanonicalJSON`。
+
+### 2.4 `agent/session`
+
+`agent/session` 是长期语义历史的 append-only ES substrate。它不写死 Twilight/Memoh 的 message ontology，而是用泛型承载上层语义事件：
+
+```go
+package session
+
+type SessionID string
+type EntryID string
+type BranchID string
+
+// Session is a typed view of one semantic stream. The package owns stream
+// mechanics, not the meaning of E.
+type Session[E any] struct {
+    ID       SessionID
+    BranchID BranchID
+    Head     EntryID
+    Revision es.Revision
+}
+
+type Entry[E any] struct {
+    SessionID   SessionID
+    EntryID     EntryID
+    BranchID    BranchID
+    Parent      EntryID
+    Revision    es.Revision
+    SchemaVersion uint16
+    Type        string
+    CausationID es.CausationID
+    Payload     E
+    Digest      es.Digest
+}
+
+type Store[E any] interface {
+    Append(context.Context, AppendRequest[E]) (Entry[E], error)
+    Head(context.Context, SessionID, BranchID) (EntryID, es.Revision, error)
+    Replay(context.Context, SessionID, BranchID) ([]Entry[E], error)
+    Fork(context.Context, ForkRequest) (BranchID, error)
+}
+```
+
+上层可以定义自己的 session event，例如：
+
+```text
+UserMessageAdded
+AssistantMessageAdded
+ToolResultAdded
+CompactCreated
+ArtifactLinked
+MemoryUpdated
+Custom product event
+```
+
+`agent/session` 只保证：
+
+```text
+append-only
+revision/head CAS
+parent/fork lineage
+causation id / digest / schema version
+replay order
+```
+
+它不决定：
+
+```text
+什么算 assistant message
+哪些 Run event 应该变成长期消息
+compact 策略
+memory extraction 策略
+artifact retention 策略
+```
+
+这些属于 Application/Product。
+
+### 2.5 `agent/queue`
+
+`agent/queue` 是通用 transactional queue/claim/dedup 机制，不默认使用 ES。Queue 回答“哪些工作待处理、谁拥有处理权、如何去重/过期/重排”，不是长期语义历史。
+
+建议 API 形态：
+
+```go
+package queue
+
+type QueueID string
+type ItemID string
+type ClaimID string
+type DedupKey string
+
+type Item[T any] struct {
+    QueueID     QueueID
+    ItemID      ItemID
+    Payload     T
+    PayloadDigest es.Digest
+    DedupKey    DedupKey
+    CausationID es.CausationID
+}
+
+type Store[T any] interface {
+    Enqueue(context.Context, EnqueueRequest[T]) (Item[T], error)
+    Claim(context.Context, ClaimRequest) (Claim[T], error)
+    Ack(context.Context, ClaimID) error
+    Release(context.Context, ClaimID, ReleaseReason) error
+}
+```
+
+`SteerItem`、`FollowUpItem`、`RunQueueItem` 等不是 queue core 语义，而是 application payload：
+
+```text
+queue[T]       通用机制
+       ↑
+SteerItem / FollowUpItem / RunQueueItem   上层类型 + policy
+```
+
+Queue 可以被 Memoh durable adapter 放进数据库事务，也可以有 in-memory implementation；但它不进入 Run Machine，不成为 `MachineState` 字段。
+
+### 2.6 Cross-domain materialization and finalization
+
+Run ES 可以短命的前提，是其中所有需要跨 Run 保留的语义都已经 materialize 到长期 domain：
+
+```text
+Run ES
+ModelStepCompleted
+ToolCallCompleted
+RunEnded
+      │
+      ├──→ Session ES
+      │     AssistantMessageAdded
+      │     ToolResultAdded
+      │
+      ├──→ Artifact Store
+      │     files / large outputs / reasoning artifact
+      │
+      └──→ Usage / Trace
+            cost / latency / debug
+```
+
+Run → Session/Artifact/Usage 的投影不能是 best-effort listener。Durable 场景必须有 transaction/outbox/inbox 或等价机制，并使用稳定 `causation_id` 做幂等：
+
+```text
+Run source event ID    = run_id + revision + index（或其 canonical digest）
+Session source_event_id = same stable identity; unique/inbox key
+Artifact source_event_id = same stable identity; unique/inbox key
+Usage source_event_id   = same stable identity; unique/inbox key
+
+Run event causation_id  = inherited application/session/queue/Run cause
+Session causation_id    = preserved Run event causation_id
+```
+
+必须存在 finalization barrier：
+
+```text
+RunEnded
+   ↓
+确保长期语义、artifact、usage/outbox 已提交或可幂等恢复
+   ↓
+RunFinalized control-plane marker
+   ↓
+Run ES 才允许 archive / GC
+```
+
+`RunFinalized` 是 run storage/control-plane marker，不是 `agent/run.Fact`，不参与 `MachineState` fold。
+
+### 2.7 类型归属
 
 | 类型或能力 | 所属层 |
 | --- | --- |
-| `sdk.Request`、`sdk.ModelResult`、`sdk.ToolDefinition`（provider-neutral 边界类型） | sdk |
-| `ModelRequest`、`ModelResult`、`ToolDefinition`、`Usage`、`Message`、`MessagePart`（persisted frozen values） | agent |
-| `Step`、`ToolCallState`、`AgentCommand`、`RunSeed`、`AgentEvent`、`Effect` | agent |
-| `ExecutableTool`、参数校验、response policy | agent |
-| `RequestPlanner` port、`PlanningHint`、`RequestPlan` | agent；只用于依赖注入 |
-| Request Planner 实现和 context transformer | Memoh/application |
-| queue、history、session、R0/R1、owner、fencing、outbox | Memoh |
-| MCP server 连接和生命周期 | Memoh/application；schema/call adapter 在 agent |
+| `sdk.Request`、`sdk.ModelResult`、`sdk.ToolDefinition`（provider-neutral 边界类型） | `sdk` |
+| canonical JSON parser/value | `agent/jsonstable`（可被 `es`、`run`、`session` 使用） |
+| generic event envelope/record/fold/digest mechanics | `agent/es` |
+| `ModelRequest`、`ModelResult`、`ToolDefinition`、`Usage`、`Message`、`MessagePart`（run persisted frozen values） | `agent/run` |
+| `Step`、`ToolCallState`、`AgentCommand`、`Fact`、`AgentEvent`、`TransitionRecord`、`Effect` | `agent/run` |
+| `Runtime`、`MemoryRuntime`、`Loop`、`runtimetest` | `agent/run` |
+| `SessionID`、`EntryID`、session entry envelope、fork/replay/store | `agent/session` |
+| queue item/claim/dedup/visibility mechanism | `agent/queue` |
+| Request Planner 实现和 context transformer | Application/Product |
+| fixed model policy、step budget、malformed retry budget | Application/Product 或 run `ExecutionPolicy`；不进入 MachineState |
+| owner、fencing、lease、outbox、DB schema | Durable adapter/Application |
+| MCP server 连接和生命周期 | Application；schema/call adapter 可在 `agent/run` |
 | provider transport retry | sdk/provider client |
 
-## 3. Agent Machine
+## 3. Run Machine
 
 ### 3.1 Machine 的边界
 
-Machine 是 agent package 中的纯语义规则。它只读取完整 `MachineState`、待决策的 `AgentCommand` 和待折叠的 `AgentEvent`，不访问 IO：
+Machine 是 `agent/run` package 中的纯 execution 语义规则。它只读取完整 `MachineState`、待决策的 `AgentCommand` 和待折叠的 `AgentEvent`，不访问 IO：
 
 ```text
 MachineState + AgentCommand
@@ -316,7 +586,7 @@ Machine.Evolve 逐个折叠（机械） -> new MachineState
 Machine.Next(state) -> Effect
 ```
 
-`Next(state)` 根据当前事实产生至多一个待执行的 `Effect`。`Decide(state, command)` 校验一个意图并产出这次 transition 的完整事实序列——所有决策（是否接受、派生哪些后果、是否进入终态）都发生在这里，且只在提交时运行一次，输出即冻结。`Evolve(state, event)` 把单个事实机械地折叠进状态：它不读 RunConfig/Loop policy，不含 IO，对 Decide 产出的每种事实全定义；replay 只依赖 versioned Evolve。Runtime 接受一个 command 后，把 Decide 的事实序列包装为同一 Revision 的 AgentEvent 组，与折叠后的新状态放在同一提交边界。两种 Runtime 不能各自复制规则；Loop 重新 `Load` 后再次调用 `Next`，不会依赖一次提交响应中的 effect。
+`Next(state)` 根据当前事实产生至多一个待执行的 `Effect`。`Decide(state, command)` 校验一个意图并产出这次 transition 的完整事实序列——所有决策（是否接受、派生哪些后果、是否进入终态）都发生在这里，且只在提交时运行一次，输出即冻结。`Evolve(state, event)` 把单个事实机械地折叠进状态：它不读产品配置或 Loop policy，不含 IO，对 Decide 产出的每种事实全定义；replay 只依赖 versioned Evolve。Runtime 接受一个 command 后，把 Decide 的事实序列包装为同一 Revision 的 AgentEvent 组，与折叠后的新状态放在同一提交边界。两种 Runtime 不能各自复制规则；Loop 重新 `Load` 后再次调用 `Next`，不会依赖一次提交响应中的 effect。
 
 决策与折叠的分工是协议的兼容边界：Machine 的决策规则（自动关闭、终态转换、command disposition）可以随版本演进，因为历史事件已把这些决策的结果记录在案；Evolve 与事件编码一起构成永久兼容契约，已发布 SchemaVersion 的折叠语义不再修改。
 
@@ -338,7 +608,7 @@ terminal follow-up
 
 `AgentInput` 只有稳定的 `InputID` 和不可变 payload，不包含 queue item、priority、order、claim 或 lease。`NextStep` 构造 `AcceptInput` command；被 Runtime 接受后产出 `InputAccepted` 事实，与新的 MachineState 一起提交，Memoh 可以在同一事务中把 queue claim 标记为 applied。
 
-`NextRun`/`RunSeed` 只保留为 legacy admission helper；新 core admission 使用 `InitializeRun(RunID)` 建立最小 Revision-0 state，然后把初始用户输入作为该 Run 的第一条 `AcceptInput` transition 提交。Memoh 仍负责 queue claim、session admission 和新 Run 的身份分配；admission 可以复用 digest/canonical 编码规则审计 seed，但普通 Run replay 不依赖重新计算 RunSeed。
+Run admission 使用 `InitializeRun(RunID)` 建立最小 Revision-0 state，然后把初始用户输入作为该 Run 的第一条 `AcceptInput` transition 提交。Application 负责 Session/Queue admission 和新 Run 的身份分配；Run replay 不依赖从当前产品配置重新计算 initial state。
 
 Machine 不在 ToolStep 执行中接受 `NextStep`，也不把 terminal follow-up 解释成旧 Run 的状态变化。输入的具体文本如何进入 Planner 生成的 `sdk.Request` 仍由 Request Planner 决定；Loop 在提交前冻结为 agent `ModelRequest`，Machine 只保证输入边界和一次性接受语义。
 
@@ -359,7 +629,7 @@ model-step counter
 terminal RunResult（如果已结束）
 ```
 
-MachineState 不包含固定模型、prompt/history、step limit、malformed retry limit 或产品 RunConfig。模型选择由每个 `ModelStepPrepared` 冻结的 `ModelRequest.Model` 表示；limits 属于 host/Loop policy，并通过显式 command 形成事实。
+MachineState 不包含固定模型、prompt/history、step limit、malformed retry limit 或产品配置。模型选择由每个 `ModelStepPrepared` 冻结的 `ModelRequest.Model` 表示；limits 属于 host/Loop policy，并通过显式 command 形成事实。
 
 权威语义状态不包括数据库 row、transaction、owner、fence、lease、Attempt 或 queue claim。Runtime 可以保存这些控制元数据，但它们不进入 MachineState。
 
@@ -445,7 +715,7 @@ RunEnded                终态：Status 为 RunCompleted、RunStopped 或 RunFai
 
 `AgentEvent` 与新的 `MachineState` 在同一个原子提交中写入，具有 authority 分配的 (Revision, Index) 身份、canonical digest 和产生它的 CommandID。`AgentEvent` 可供 replay、projection、审计和 OpenTelemetry 使用。
 
-`RunSeed` 属于 legacy 新 Run admission helper，不是 command。新 API 倾向将初始输入也作为 `AcceptInput` transition 记录；如果 Memoh 需要审计 legacy admission seed，可以复用相同的 identity/digest 编码规则，但该记录由 admission 事务保存，不经过旧 Run 的 `Runtime.Commit`。
+新 Run 的初始用户输入也必须作为 `AcceptInput` transition 记录，不存在绕过 Runtime.Commit 的 seed input。Run 创建本身由 `RunHeader` 表达；输入接受属于 Run ES。
 
 二者的关系固定为：
 
@@ -491,13 +761,13 @@ WaitForExecutionRecovery
 11. 使 ToolStep 内最后一个 Call 到达可关闭终态的 command，其事实序列追加 `ToolStepClosed`。ToolStep 关闭前不能创建下一 ModelStep。
 12. `CancelRun` 只能作用于非 terminal Run，产出 `[RunEnded{RunStopped, cancelled}]`；`StopRun` 只能记录 host-owned 非取消停止原因，目前为 `[RunEnded{RunStopped, step_limit}]`。
 13. `AcceptInput` 只能作用于 active 且没有当前 Step 的 Run，且 `InputID` 不得与当前 `PendingInputs` 中任何输入重复；重复 ID 是 identity conflict，不能记录一个 Evolve 会丢弃的 no-op fact。接受后产出 `[InputAccepted]`。Planner 由 `PlanningHint.Inputs` 收到这些输入并在 `RequestPlan.InputIDs` 中明确消费它们；遗漏或伪造 ID 的 `PrepareModelRequest` 被拒绝。
-14. `InitializeRun(RunID)` 只在 application admission 创建新 Run 时使用；它建立最小初始 `MachineState`（Revision=0），不包含 seed input、fixed model 或 limits。兼容 helper `Initialize(RunID, RunConfig, RunSeed)` 仍可构造带 seed input 的 legacy initial state，但 `RunConfig` 不进入 MachineState。
+14. `InitializeRun(RunID)` 只在 application admission 创建新 Run 时使用；它建立最小初始 `MachineState`（Revision=0），不包含 initial input、fixed model、limits 或产品配置。Application 随后通过正常 `Runtime.Commit` 提交首个 `AcceptInput`。
 
 `InputID` 在一个 Run 内唯一。相同 `InputID` 和相同 payload 的重复 `AcceptInput` 是语义 no-op，Runtime 返回原已接受的事件组；相同 ID 携带不同 payload 返回冲突。Memoh 的 queue claim 仍负责防止同一个 queue item 被多个输入入口同时消费。
 
 #### 3.7.2 Evolve 折叠表（事实 -> 状态）
 
-`Evolve(state, event)` 对每种事实执行固定的机械折叠，不读 RunConfig/Loop policy，不含 policy 分支：
+`Evolve(state, event)` 对每种事实执行固定的机械折叠，不读产品配置或 Loop policy，不含 policy 分支：
 
 | 事实 | 折叠 |
 | --- | --- |
@@ -678,14 +948,14 @@ Runtime 只回答两个问题：
 
 因此 Runtime 的接口很小，但一次 `Commit` 的事务范围可以很大：它必须让一个 AgentCommand、产出的 `TransitionRecord` 及其必要的产品投影一起成功或一起失败；这不意味着 Runtime 获得了 history、queue 或 prompt 的所有权。`CommitResult.Events` 只是该 transition 的事件流视图，方便 Loop、UI 和 observability 消费；Runtime 的 authority storage 是完整 transition aggregate。
 
-Run 语义状态的 source of truth 是 admission-created immutable initial state（Revision=0）加 `TransitionRecord` log；MachineState 是必需的同事务 projection（execution cache）：提交验证与 Loop 执行从它读取，因此它必须与 transition log 在同一原子提交内更新，但它可以从日志重建。对任意 Revision N，状态必须等于初始状态按 `flatten(TransitionRecord[].Events)` 调用 versioned `Evolve` fold 到 N 的结果——这是可自动恢复的不变量，不是 halt 条件。
+Run 语义状态的 source of truth 是 immutable `RunHeader` 加 `TransitionRecord` log；`RunHeader` 固化 Revision-0 initial state 及其 schema/digest/admission causation。MachineState 是必需的同事务 projection（execution cache）：提交验证与 Loop 执行从它读取，因此它必须与 transition log 在同一原子提交内更新，但它可以从 RunHeader 和日志重建。对任意 Revision N，状态必须等于 `RunHeader.InitialState` 按 `flatten(TransitionRecord[].Events)` 调用 versioned `Evolve` fold 到 N 的结果——这是可自动恢复的不变量，不是 halt 条件。
 
 这个权威声明成立的三个稳定条件（本规范的规范性条款）：
 
 1. Event ontology 稳定：Fact 词表 sealed，已发布 SchemaVersion 的事实结构永不修改，新增字段进入新版本。
-2. Evolve 语义稳定：折叠是机械的（不读 RunConfig/Loop policy、无 IO），已发布版本的折叠语义与事件编码一起永久冻结；replay 通过 `EvolveVersion(SchemaVersion, state, fact)` 选择历史语义，会演进的决策语义全部在 Decide，其结果记录为事实。
+2. Evolve 语义稳定：折叠是机械的（不读产品配置/Loop policy、无 IO），已发布版本的折叠语义与事件编码一起永久冻结；replay 通过 `EvolveVersion(SchemaVersion, state, fact)` 选择历史语义，会演进的决策语义全部在 Decide，其结果记录为事实。
 3. 事实自包含：折叠一条事实所需的全部信息在事实自身与折叠前状态之内，不访问外部系统，不重新计算依赖当前代码版本的派生值（digest 一律在 Decide 时算好并携带在事实中）。
-4. 持久化值归属稳定：AgentEvent 和 MachineState 只保存 agent-owned frozen values；任何来自 SDK/provider/application 的引用在进入 Runtime 前必须被 canonicalize + detach，返回给 caller 的 snapshot/event 也必须是独立副本。
+4. 持久化值归属稳定：Run event 和 MachineState 只保存 run-owned frozen values；任何来自 SDK/provider/application 的引用在进入 Runtime 前必须被 canonicalize + detach，返回给 caller 的 snapshot/event 也必须是独立副本。
 
 Runtime 实现还必须在代码层面维护这些条件：`EvaluateCommit` 对 Decide 产出的 facts 做 `snapshotFact` 后再 fold/persist，并构造带 transition digest 的 `TransitionRecord`；`Load`、`CommitResult` 和 AlreadyApplied replay 返回的 snapshot/event 不得共享 authority 内部引用；MemoryRuntime 这类参考实现保存 accepted transition 后，从 stored transition 的 events fold 出新的 authority state，而不是直接保存调用栈里算出的 `decision.NewState`。durable adapter 可以用数据库事务替代 mutex，但不能把未冻结 SDK 对象、浅拷贝 snapshot 或 caller-owned bytes 写入事件表/状态表。
 
@@ -706,9 +976,34 @@ transitionLog.maxRevision < watermark，或尾部 transition 的 digest/事件�
 
 主动 truncate snapshot 强制全量重建是合法运维操作（例如 MachineState 存储布局变更时替代迁移）。水位与日志同库整体回退（全量备份恢复）不在检测范围内：内部自洽的一致回退需要外部见证，v1 不做。
 
-一个 Runtime 实例服务一个 Run；多个 Run 由上层创建多个 Runtime 实例。Run 的创建、身份分配和初始
-`MachineState` 由 application/Memoh admission 完成，Runtime 从一个已经有效的初始状态开始。
-Loop 是对这个 Run 的一次进程执行。
+一个 Runtime 实例服务一个 Run；多个 Run 由上层创建多个 Runtime 实例。Run 的创建和身份分配由 Application admission 完成；admission 调用 `InitializeRun`，构造并原子保存 `RunHeader`。Runtime 从这个已存在的 header 开始，Loop 是对该 Run 的一次进程执行。
+
+### 5.1.1 RunHeader
+
+`RunHeader` 是正式持久协议，不是可从当前代码、当前默认值或当前产品配置重新生成的临时参数：
+
+```go
+type RunHeader struct {
+    SchemaVersion       uint16
+    RunID               RunID
+    InitialStateVersion uint16
+    InitialState        MachineState
+    InitialStateDigest  es.Digest
+    CausationID         es.CausationID // creating session/queue/application operation
+    HeaderDigest        es.Digest
+}
+```
+
+规范性要求：
+
+1. `RunHeader` 创建后 immutable；普通 `Runtime.Commit` 不修改它。
+2. `InitialState` 必须是 `InitializeRun(RunID)` 产生的最小 Revision-0 state，不包含 initial input、fixed model、limits、session history 或产品配置。
+3. initial input 通过 Revision 1 的正常 `AcceptInput` transition 提交。
+4. `InitialStateDigest` 绑定 initial state 的 canonical wire bytes；`HeaderDigest` 绑定 header 中除自身外的全部协议字段。
+5. durable adapter 必须让 header 创建、Run identity admission 和必要的 application causation 记录原子或可幂等恢复。
+6. local Run 上传/迁移时传输 `RunHeader + TransitionRecord log + referenced artifacts`；目标 runtime 先验证 header/log，再重建 projection，不能信任上传的 MachineState snapshot。
+
+`RunHeader.CausationID` 只提供跨 domain 关联，不让 `agent/run` import `agent/session` 或 `agent/queue` 的具体 ID 类型。Application 可以维护 SessionID/EntryID/QueueItemID 到 causation ID 的映射。
 
 ### 5.2 最小接口
 
@@ -725,7 +1020,7 @@ type Runtime interface {
 
 请求构造不在 Runtime 接口中。Loop 使用 `NeedModelRequest` 提示调用 Request Planner，再把完整请求作为 `PrepareModelRequest` 提交。
 
-Runtime 的语义范围仍然只有 authority 和 commit。MemohRuntime 为了保持 AgentEvent、MachineState、history projection 和 outbox 的一致性，可以在自己的数据库事务内一起写入这些投影；这不是 Runtime 对外暴露的通用业务 API，也不让 Runtime 获得 prompt、queue 或 history 的所有权。
+Runtime 的语义范围仍然只有 authority 和 commit。Durable application adapter 为了保持 Run transition、MachineState projection、Session materialization outbox 和 artifact/usage projection 的一致性，可以在自己的数据库事务内一起写入这些投影；这不是 Runtime 对外暴露的通用业务 API，也不让 Runtime 获得 prompt、queue 或 session history 的所有权。
 
 ### 5.3 Snapshot、Commit 和执行授权
 
@@ -750,6 +1045,8 @@ type CommandEnvelope struct {
     Type          string
     RunID         RunID
     ID            CommandID
+    // Opaque cross-domain lineage; Run Machine does not interpret it.
+    CausationID   es.CausationID
     Digest        Digest
     Command       AgentCommand
 }
@@ -767,6 +1064,7 @@ type AgentEvent struct {
     Index         uint16
     CommandID     CommandID
     CommandDigest Digest // digest of the accepted command; idempotent replay compares against it
+    CausationID   es.CausationID // inherited from accepted command
     Digest        Digest // canonical digest of this fact
     Fact          Fact
 }
@@ -794,12 +1092,13 @@ func EncodeCommand(CommandEnvelope) ([]byte, error) // 不包含 Digest 字段
 func DigestCommand(schemaVersion uint16, typ string, command AgentCommand) (Digest, error)
 func EncodeFact(schemaVersion uint16, typ string, fact Fact) ([]byte, error)
 func DigestFact(schemaVersion uint16, typ string, fact Fact) (Digest, error)
+func BuildRunHeader(RunID, es.CausationID) (RunHeader, error)
+func ValidateRunHeader(*RunHeader) error
+func DigestRunHeader(*RunHeader) (es.Digest, error)
 func BuildTransitionRecord([]AgentEvent) (TransitionRecord, error)
 func ValidateTransitionRecord(*TransitionRecord) error
 func DigestTransitionRecord(*TransitionRecord) (Digest, error)
-func FoldTransitions(initial MachineState, records []TransitionRecord) (MachineState, uint64, error)
-func EncodeRunSeed(RunSeed) ([]byte, error)
-func DigestRunSeed(schemaVersion uint16, seed RunSeed) (Digest, error)
+func FoldTransitions(header RunHeader, records []TransitionRecord) (MachineState, uint64, error)
 func DigestRequest(ModelRequest) (Digest, error)
 func DigestToolDefinition(ToolDefinition) (Digest, error)
 func DigestToolSpec(ToolSpec) (Digest, error)
@@ -813,9 +1112,9 @@ func DeriveResponseCommandID(RunID, StepID, CallID, ResponseID) CommandID
 func DeriveInputCommandID(RunID, InputID) CommandID
 ```
 
-`ExecutionGrant` 是 Runtime 返回的 opaque capability，只用于证明当前 Loop 获得了执行许可；调用方只保存并原样传回，不依赖其内容。它不是 Step 的业务字段，不暴露 AttemptID、FenceToken、lease 或数据库类型，也不是用户认证凭证。Runtime 必须生成不可预测且绑定到单个 Step/Call 和当前执行所有者的值，并在完成 command 中校验它。MemoryRuntime 可以用 mutex 加随机 generation 实现它；MemohRuntime 可以用 owner/fence/lease 实现它。
+`ExecutionGrant` 是 Runtime 返回的 opaque capability，只用于证明当前 Loop 获得了执行许可；调用方只保存并原样传回，不依赖其内容。它不是 Step 的业务字段，不暴露 AttemptID、FenceToken、lease 或数据库类型，也不是用户认证凭证。Runtime 必须生成不可预测且绑定到单个 Step/Call 和当前执行所有者的值，并在完成 command 中校验它。`run.MemoryRuntime` 可以用 mutex 加随机 generation 实现它；durable adapter 可以用 owner/fence/lease 实现它。
 
-`Attempt` 只表示一次进程对当前 ModelStep 或 ToolCall 的执行占用，不是 MachineState，也不是恢复边界。一个 Step 可以先后有多个 Attempt；旧 Attempt 失效后，新的 Loop 重新读取同一个 Step。MemoryRuntime 的 Attempt 是内存中的占用记录，MemohRuntime 的 Attempt 是私有 lease/fence 记录。
+`Attempt` 只表示一次进程对当前 ModelStep 或 ToolCall 的执行占用，不是 MachineState，也不是恢复边界。一个 Step 可以先后有多个 Attempt；旧 Attempt 失效后，新的 Loop 重新读取同一个 Step。MemoryRuntime 的 Attempt 是内存中的占用记录，durable adapter 的 Attempt 是私有 lease/fence 记录。
 
 grant 规则固定为：
 
@@ -872,7 +1171,7 @@ func EvaluateCommit(
 
 `EvaluateCommit` 用 `DecisionKind` 表达结果；`Runtime.Commit` 把非成功结果映射为对外错误：`DecisionConflict -> ErrCommandConflict`、`DecisionStale -> ErrStaleRuntime`、`DecisionTerminal -> ErrRunTerminal`。Loop 与 ingress 只依赖这三个错误值和 `CommitStatus`，不接触 DecisionKind。
 
-新 Run admission 使用 `InitializeRun(RunID)` 建立最小 `MachineState`（Revision=0）；初始用户输入应作为该 Run 的第一条 `AcceptInput` transition 进入日志。`RunSeed`/`Initialize(RunID, RunConfig, RunSeed)` 仅保留 legacy helper，`RunConfig` 不进入 MachineState、AgentEvent 或 TransitionRecord。普通 Runtime 只实现已有 Run 的 `Load/Commit`，admission 路径负责创建 RunID 与持久化 initial state。
+新 Run admission 使用 `InitializeRun(RunID)` 建立最小 `MachineState`（Revision=0）；初始用户输入作为该 Run 的第一条 `AcceptInput` transition 进入日志。不存在持久化 `RunConfig` 或绕过 Commit 的 `RunSeed`。普通 Runtime 只实现已有 Run 的 `Load/Commit`，admission 路径负责创建 RunID、构造并持久化 `RunHeader`。
 
 Commit 的 effectively-once 只针对状态提交。事务已提交但响应丢失时，Loop 使用相同 CommandID 和 digest 重放；`CommitAlreadyApplied` 不能重新授予工具执行权，也不能重复 history、queue action、计数或 outbox。对于 start command，AlreadyApplied 的 `Grant` 必须为空；新 Loop 要等待原执行或 recovery，不能把重放当成新的 start。外部工具 effect 不因此变成 exactly-once。
 
@@ -931,7 +1230,7 @@ canonical 编码和 digest 函数由 agent 提供；Memoh 只保存和比较结�
 
 已发布 `SchemaVersion` 的 canonical 编码和 digest 规则永久冻结；字段增删只能进入新的 SchemaVersion，旧事件按其自带版本校验。同一个 Run 不允许由写入不同 SchemaVersion 的进程混跑：升级窗口内先全量部署可读写新版本的代码，再开始写入新版本；否则同一 command 的重放会因编码不同被误判为 `ErrCommandConflict`。
 
-CommandEnvelope 和 AgentEvent 的 `SchemaVersion` 和 `Type` 是持久化协议字段；Type 必须与 sealed AgentCommand/Fact 的具体变体一致，未知版本或类型直接拒绝。agent 必须提供正式 wire codec：decode 时先 canonicalize 整个 document，再读 `Type`，恢复具体 command/fact variant，校验 command/fact digest，并要求 decoded value 重新 canonical marshal 后与输入 canonical document 等价；不能依赖 `encoding/json` 自动反序列化 interface 字段，也不能接受 duplicate key、大小写模糊字段名或其他会被 Go decoder 合并/宽容的形态。`DigestCommand`/`DigestFact` 对 `SchemaVersion`、`Type` 和内容做 canonical digest，但不把 `Digest` 字段自身纳入摘要，保证 Memoh scanner、MemoryRuntime 和不同进程使用同一身份规则。`Revision` 只用于 authority 的 CAS，不进入任何 digest。
+CommandEnvelope 和 AgentEvent 的 `SchemaVersion`、`Type`、`CausationID` 是 Run 持久化协议字段；Type 必须与 sealed AgentCommand/Fact 的具体变体一致，未知版本或类型直接拒绝。`CausationID` 是跨 domain 的 opaque lineage：Application 可将 session entry、queue claim、前一 Run event 或 system recovery record 关联到 command；Run Machine 不解释其内容。接受 command 后，其产出的 AgentEvent 继承该 causation ID。`agent/run` 必须提供正式 wire codec：decode 时先 canonicalize 整个 document，再读 `Type`，恢复具体 command/fact variant，校验 command/fact digest，并要求 decoded value 重新 canonical marshal 后与输入 canonical document 等价；不能依赖 `encoding/json` 自动反序列化 interface 字段，也不能接受 duplicate key、大小写模糊字段名或其他会被 Go decoder 合并/宽容的形态。`DigestCommand`/`DigestFact` 对 `SchemaVersion`、`Type`、causation 和内容做 canonical digest，但不把 `Digest` 字段自身纳入摘要，保证 durable scanner、MemoryRuntime 和不同进程使用同一身份规则。`Revision` 只用于 authority 的 CAS，不进入任何 digest。
 
 Evolve 的折叠语义与事件编码同属永久兼容契约：已发布 SchemaVersion 的事件必须永远能被折叠出与写入当时相同的状态。conformance kit 为每个已发布 SchemaVersion 冻结 golden transition stream 与对应的状态字节，任何 versioned Evolve 实现变更都必须通过全部历史版本的 golden 校验。
 
@@ -999,7 +1298,7 @@ ToolStep 自动关闭
 
 只有在这些 boundary，Memoh 才能把 queue 输入绑定到下一次 Planner 请求或创建后续 Run。ToolStep 中间的新输入不能修改已经冻结的 ModelStep，也不能跳过 Pending/Waiting Call。
 
-steer 必须进入下一个 ModelStep 的规划上下文，而不是延迟到更晚的边界。Loop 在 boundary 处的 Plan/Prepare 提交与 Memoh 的 queue 仲裁存在竞态；MemohRuntime adapter 用以下 gate 消除它：处理 `PrepareModelRequest` 的同一事务内检查是否存在 eligible 的 steer item，存在时不接受该次 Prepare，先在事务内应用对应的 `AcceptInput`（Revision 递增，Prepare 按 `ErrStaleRuntime` 返回）。Loop 重新 Load 后由 `PlanningHint.Inputs` 携带该输入重新规划。这条 gate 是 adapter 行为，不进入 agent Machine 规则；in-process 宿主没有 queue，输入由宿主在 Loop 空闲边界提交。
+steer 必须进入下一个 ModelStep 的规划上下文，而不是延迟到更晚的边界。Loop 在 boundary 处的 Plan/Prepare 提交与 Application 的 queue 仲裁存在竞态；durable adapter 用以下 gate 消除它：处理 `PrepareModelRequest` 的同一事务内检查是否存在 eligible 的 steer item，存在时不接受该次 Prepare，先在事务内应用对应的 `AcceptInput`（Revision 递增，Prepare 按 `ErrStaleRuntime` 返回）。Loop 重新 Load 后由 `PlanningHint.Inputs` 携带该输入重新规划。这条 gate 是 Application orchestration 行为，不进入 Run Machine 规则；in-process harness 没有 queue 时由宿主在 Loop 空闲边界提交。
 
 ## 6. Loop 算法
 
@@ -1273,7 +1572,7 @@ Pending + Waiting
 
 ### 7.1 Tool contract
 
-`sdk.ToolDefinition` 只描述 provider 可发现的 schema，不依赖 agent，也不携带 `ResponsePolicy`。`agent.ExecutableTool.Definition()` 可以返回 SDK 边界类型，Loop 必须先 `FreezeToolDefinition` 再计算 `DigestToolDefinition` 或写入 `ToolSpec`；MachineState/AgentEvent 中保存的是 agent `ToolDefinition`。`agent.ExecutableTool` 描述应用如何执行工具并提供 response policy；模型返回后，agent 用 `ToolRef`、definition digest 和 policy 生成冻结的 `ToolCallBinding`。恢复时 schema、工具版本或 policy 不匹配都不能静默换版本。
+`sdk.ToolDefinition` 只描述 provider 可发现的 schema，不依赖 run，也不携带 `ResponsePolicy`。`run.ExecutableTool.Definition()` 可以返回 SDK 边界类型，Loop 必须先 `FreezeToolDefinition` 再计算 `DigestToolDefinition` 或写入 `ToolSpec`；MachineState/AgentEvent 中保存的是 run `ToolDefinition`。`run.ExecutableTool` 描述应用如何执行工具并提供 response policy；模型返回后，run 用 `ToolRef`、definition digest 和 policy 生成冻结的 `ToolCallBinding`。恢复时 schema、工具版本或 policy 不匹配都不能静默换版本。
 
 ```go
 type ExecutableTool interface {
@@ -1304,80 +1603,91 @@ ask_user         -> Waiting(ExternalResponse)
 
 agent 提供 MCP schema/call adapter，把 MCP tool 转换为 `sdk.ToolDefinition` 和 `ExecutableTool`。MCP server 的连接、认证、生命周期和产品权限由 Memoh/application 管理。迁移期可以保留旧 `sdk.MCPClient` wrapper；新 Loop 不依赖 SDK 的 MCP session。
 
-## 8. MemoryRuntime 与 MemohRuntime
+## 8. 同一 Run ES 的 Runtime implementations
 
-### 8.1 MemoryRuntime
+### 8.1 `run.MemoryRuntime`
 
-MemoryRuntime 使用 `mutex + MachineState + TransitionRecord log`：
+`run.MemoryRuntime` 是 in-process reference runtime：
+
+```text
+RunHeader + mutex + MachineState projection + TransitionRecord log
+```
 
 ```text
 Load
   在锁内返回当前 MachineState 和 Revision
 
 Commit
-  在锁内判定 grant 有效性，调用共享 EvaluateCommit 并保存结果；
+  在锁内判定本进程 grant 有效性，调用共享 EvaluateCommit，
+  原子保存完整 TransitionRecord、projection、watermark 和幂等索引；
   接受 start command 时返回本进程的 opaque ExecutionGrant
 ```
 
-MemoryRuntime 不需要 owner、fence、lease、outbox 或 Attempt 表。进程退出后状态可以丢失；它是本地会话、测试和 conformance reference。它仍须在同一把锁内记录每个已接受 start 的执行占用，防止两个本地 worker 同时执行同一个 Call。
+它可以省掉 durable **机制**：
 
-MemoryRuntime 只保存 agent 的 MachineState、TransitionRecord log 和提交幂等记录；`Events()` 只返回 flatten 后的事件流视图，不自动保存产品 history。需要多轮上下文的 in-process
-宿主应在 Runtime 外维护一个内存 history projection，并让自己的 RequestPlanner 读取它；这只是一个轻量的应用层配套，不是 MemoryRuntime 为 durable 语义模拟数据库。
+```text
+lease / fencing / distributed claim / worker heartbeat
+DB transaction / durable outbox / crash 后跨机器 recovery
+persistent execution queue
+```
 
-worker context 的取消不等同于业务取消。若已提交 `StartToolCall` 后 worker 返回 Unknown，Loop 使用不受 worker cancellation 影响的 commit context 提交 `SubmitToolFailure{Outcome: ToolOutcomeUnknown}`；MemoryRuntime 在同一把锁内记录 Unknown 并结束 Run。若当前进程直接退出，MemoryRuntime 不承诺跨进程恢复；仍处于 Executing 的 Call 随内存状态一起丢失。
+但不能省掉 durable **语义**：
 
-ModelStep 的执行授权被取消时，Loop 使用仍有效的 model grant 提交 `RecoverModelExecution`；MemoryRuntime 在同一把锁下把它恢复为 Prepared，下次 Loop 仍使用同一冻结 request。若进程在提交前退出，MemoryRuntime 随内存状态丢失，不承诺跨进程恢复。
+```text
+RunHeader
+TransitionRecord complete append
+AgentCommand -> Decide -> Fact[] -> EvolveVersion
+execution grant/start barrier
+idempotency
+replay/fold invariants
+```
 
-### 8.2 MemohRuntime
+因此 in-process 和 durable 不是两种 Agent，而是同一 `run.Runtime` contract 的不同实现。Local Run 可以导出：
 
-MemohRuntime 用 PostgreSQL transaction/CAS 加上 Memoh 私有的 owner/fence/lease：
+```text
+RunHeader + TransitionRecord log + referenced artifacts
+```
+
+供 durable adapter 验证、replay 后继续执行。
+
+MemoryRuntime 不保存 Session history、context、queue、long-term memory 或 product artifacts。需要多轮上下文的 in-process harness 在 Runtime 外组合 `session` memory store、可选 `queue` memory store、materializer 和 RequestPlanner；这不是把产品 memory 偷塞进 Runtime。
+
+### 8.2 Durable Run runtime adapter
+
+Durable adapter 位于 Application/Product（例如 Memoh），通过 PostgreSQL transaction/CAS 或等价存储实现同一个 `run.Runtime`：
 
 ```text
 Load
-  只读取 canonical history、MachineState、ToolStep progress 和 session facts
-  不创建 Attempt，不取得 lease；这些控制记录不出现在 snapshot
+  读取 RunHeader、MachineState projection、revision 和必要的私有 control-plane metadata
+  不创建 Attempt，不取得 lease；control-plane 不出现在 RuntimeSnapshot
 
 Commit
-  判定内部 owner/fence/lease 的有效性
+  判定私有 owner/fence/lease/recovery record 的有效性
   对 StartModelExecution/StartToolCall 在同一事务内建立 Attempt/lease
-  调用共享 EvaluateCommit（command identity、Revision、Decide/EvolveVersion）
-  原子保存 MachineState、TransitionRecord、history projection、queue action、response record 和 outbox
+  调用共享 EvaluateCommit
+  原子保存 TransitionRecord、MachineState projection、watermark、idempotency index、
+  Session/artifact/usage materialization outbox 和必要的 queue claim outcome
 ```
 
-并行 Call 的完成 transition 按提交先后获得递增的 Revision；这不改变模型上下文中的 Call 顺序。Memoh 先按 CallID 保存各自结果，ToolStep 关闭时再按 ModelResult 原始 Call 顺序写入 assistant tool-call 与 tool-result history。
+Attempt、owner、fence、lease、outbox row 和数据库 schema 不进入 `run.MachineState`。它们只保证多个 Loop attempt 不会同时取得同一个 Step/Call 的执行权。snapshot storage schema 与 Run event schema 独立版本化；snapshot 可被 truncate 后从 `RunHeader + TransitionRecord log` 重建，watermark 不得随 rebuild 清除。
 
-Attempt、owner、fence、lease 和数据库 row 不进入 agent public state。它们只保证多个 Loop attempt 不会同时取得同一个 Call 的执行权。持久化的 MachineState snapshot 必须带 adapter 自己的 snapshot schema version；跨版本升级时按该版本解码，或直接 truncate 后从 TransitionRecord log 重建（§5.1），不复用事件的 `SchemaVersion` 字段。每 Run 的 revision 水位与 snapshot 分开存放（state 表中不随重建清空的列，或独立小表），每次 Commit 与 transition log 同事务推进。
-
-MemohRuntime 的 worker 实例在构造时绑定当前 worker 的 owner identity；只有该实例可以提交自己接受的 model/tool start、completion 和主动 recovery。response 和 cancel 使用同一个 `Commit` 语义，但由 Memoh 创建不带 worker grant 的 ingress-scoped adapter；这些 command 不取得执行权，因此不需要伪造 Loop owner。新 Run admission 仍由 Memoh 的 admission 事务处理，不调用旧 Run 的 `Runtime.Commit`。
-
-续租失败不是立即的工具失败。Memoh 先使用 backend-loss/recovery grace 判断旧 owner 是否已经失效；确认 lease 和 grace 都失效后，scanner 在事务中检查该 Executing Call 是否已有已接受结果：
-
-```text
-已有结果 -> 只释放旧 lease
-没有结果 -> 生成 `ToolCallFailed{Outcome: ToolOutcomeUnknown, Failure: effect_unknown}` 并提交，RunFailed
-```
-
-scanner 使用由 StepID、CallID 和 system namespace 稳定生成的 CommandID，并遵守与普通 Commit 相同的 digest/idempotency。它只在自己的 recovery record 证明 lease 已失效后通过共享 `EvaluateCommit` 提交 Unknown；普通 Commit 调用者不能伪造这条 system command。Model recovery 也必须通过共享 Decide/Evolve 规则，而不能直接改写 Step 状态。scanner 不查询外部系统，也不重新执行工具。Pending Call 不走 Unknown 路径，可以由新 Loop 继续。
-
-ModelStep 的 recovery 规则不同：模型请求没有工具那样的外部业务 effect。ModelStep 的执行 lease 失效后，Memoh 可以在事务中把它从 Executing 重置为 Prepared；新的 Loop 使用同一冻结 agent `ModelRequest` 重试，不创建新的 Step。只有已经接受的 `SubmitModelResult` 才能关闭该 ModelStep。
-
-当 ToolStep 自动关闭且 Run 允许继续时，Memoh 先提交 history、queue action 和 context revision；下一次 Loop 通过 Planner 构造边界 `sdk.Request`，再冻结并提交下一份 agent `ModelRequest`。已经冻结的请求不会被后来的输入改变。
+Durable worker 实例可绑定 owner identity；只有当前 owner 能提交其取得的 start/completion/recovery。response、cancel、host StopRun 使用不带 worker grant 的 ingress/control adapter。lease/recovery scanner 必须通过正常 command + `EvaluateCommit` 提交 Unknown 或 Model recovery，不能直接改写 MachineState。
 
 ### 8.3 外部 effect 的保证
 
 ```text
-AgentCommand commit -> AgentEvent 组
+AgentCommand commit -> TransitionRecord
   effectively-once（identity + digest）
 
 Model call
-  lease 失效后可使用同一冻结 request 重复；不同 attempt 可能返回不同结果，只有先被
-  Runtime 接受的结果推进 Run
+  lease 失效后可使用同一冻结 request 重复；不同 attempt 可能返回不同结果，
+  只有先被 Runtime 接受的结果推进 Run
 
 Tool effect
   start command 提交后才发生，但结果可能在提交前丢失
 ```
 
-通用 core 无法判断 Unknown effect 是否已经发生，也不假设支付系统或其他外部系统提供查询接口。因此 Unknown 保守地终止当前 Run；如果产品需要继续，只能创建新的 Run。非幂等工具不能由 Runtime 获得 exactly-once 保证。
+Run core 无法判断 Unknown effect 是否已经发生，也不假设支付系统或其他外部系统提供查询接口。因此 Unknown 保守地终止当前 Run；如果产品需要继续，只能创建新的 Run。非幂等工具不能由 Runtime 获得 exactly-once 保证。
 
 ## 9. Events 和 context
 
@@ -1403,11 +1713,11 @@ SchemaVersion + Type           wire 兼容和 sealed fact discriminator
 Fact                           已接受的事实内容
 ```
 
-Initial MachineState + TransitionRecord log 是 source of truth；MachineState 是必需的同事务 projection（§5.1）。Runtime 必须把 transition log、snapshot、水位和需要一致的 Memoh projection/outbox 放在同一事务或锁边界。Durable adapter 必须保留完整 TransitionRecord，使其可以按 RunID/Revision replay；MemoryRuntime 可以只在进程内保留同样的记录。公共 `Runtime` 不增加 replay 方法，读取由实现或 application projection 提供。
+RunHeader + TransitionRecord log 是 Run source of truth；MachineState 是必需的同事务 projection（§5.1）。Runtime 必须把 transition log、snapshot、水位和需要一致的 Application materialization outbox 放在同一事务或锁边界。Durable adapter 必须保留完整 TransitionRecord，使其可以按 RunID/Revision replay；MemoryRuntime 可以只在进程内保留同样的记录。公共 `Runtime` 不增加 replay 方法，读取由实现或 application projection 提供。
 
-Replay 按 RunID/Revision 取出 TransitionRecord，从初始状态（Revision=0）开始依次展开其中的 AgentEvent，并调用对应 `SchemaVersion` 的 `Machine.EvolveVersion` 折叠。折叠只依赖 Evolve，不重新运行 Decide——决策结果已经记录在事实里，Machine 决策规则的演进不影响历史事件的折叠；折叠不产生任何外部 effect。仲裁按 §5.1 的规则：transition log 完整（maxRevision >= watermark 且每条 transition digest 正确）时日志为准，snapshot 分歧或缺失自动重建并记录重建事件；日志尾部低于水位或尾部 transition 不完整时 halt。事件流内部的 RunID 不匹配、SchemaVersion/Type 不支持、同一 transition 的 CommandID/CommandDigest 不一致、Revision/Index 缺洞、fact digest 或 transition digest 不匹配同样按日志损坏处理，halt 该 Run。
+Replay 按 RunID/Revision 取出 TransitionRecord，从经 `ValidateRunHeader` 验证的 `RunHeader.InitialState`（Revision=0）开始依次展开其中的 AgentEvent，并调用对应 `SchemaVersion` 的 `Machine.EvolveVersion` 折叠。折叠只依赖 Evolve，不重新运行 Decide——决策结果已经记录在事实里，Machine 决策规则的演进不影响历史事件的折叠；折叠不产生任何外部 effect。仲裁按 §5.1 的规则：transition log 完整（maxRevision >= watermark 且每条 transition digest 正确）时日志为准，snapshot 分歧或缺失自动重建并记录重建事件；日志尾部低于水位或尾部 transition 不完整时 halt。事件流内部的 RunID 不匹配、SchemaVersion/Type 不支持、同一 transition 的 CommandID/CommandDigest 不一致、Revision/Index 缺洞、fact digest 或 transition digest 不匹配同样按日志损坏处理，halt 该 Run。
 
-Replay 的起点是 admission 已建立并持久化的最小 `MachineState`；初始用户输入若存在，也应通过 `AcceptInput` transition 重放。`RunSeed` 的 legacy admission 记录不作为普通 Run 的 AgentEvent 重放。需要重建 admission 链时，由 Memoh 的 session/queue 记录负责。
+Replay 的起点是 `RunHeader` 中已建立并持久化的最小 `MachineState`；初始用户输入通过 `AcceptInput` transition 重放。Session/Queue admission lineage 由各自 domain 记录，并通过 causation/provenance 与 RunHeader 关联。
 
 canonical event 只记录影响语义状态、恢复和审计的已接受事实：Step 的建立/启动/恢复/关闭、模型结果的接受与拒绝、工具结果、响应、active Run 的输入接受和 Run terminal（§3.6 的 Fact 词表）。模型文本 delta、工具 stdout、下载百分比和其他瞬时 progress 不进入 AgentEvent；它们仍可在提交前通过 EventSink 发送 provisional observation。
 
@@ -1423,8 +1733,8 @@ ToolStarted
   只能在 start command Accepted 后发送
 
 ToolCompleted、Run terminal
-  先由 Runtime Commit；Loop 随后发送观察事件，Memoh 的 durable projection/outbox
-  由同一 Commit 事务保存对应事实
+  先由 Runtime Commit；Loop 随后发送观察事件，durable adapter 的
+  Session/artifact/usage materialization outbox 由同一事务保存对应事实
 ```
 
 EventSink 丢失、重复或来自旧 Attempt 都不改变 MachineState 或 AgentEvent。客户端出现 gap 时从 durable AgentEvent、snapshot 或最终 `RunResult` 重建。Loop 默认忽略观察通道错误，不因此重试模型/工具。
@@ -1434,54 +1744,49 @@ EventSink 丢失、重复或来自旧 Attempt 都不改变 MachineState 或 Agen
 
 ### 9.3 context transform
 
-Request Planner 属于 Memoh/application。它可以在事务外读取 context，但 MemohRuntime adapter
+Request Planner 属于 Application。它可以在事务外读取 context，但 durable runtime adapter
 必须以版本检查和 create-if-absent 冻结生成的 request。已冻结 ModelStep 不受后来输入影响。
 
-这里的版本检查由 MemohRuntime 的 adapter 实现：agent.Runtime 只看到带有 `BaseRevision`
+这里的版本检查由 durable runtime adapter 实现：`run.Runtime` 只看到带有 `BaseRevision`
 的 `PrepareModelRequest`，不理解 Memoh 的 context revision，也不读取 queue 或 history。
 
 ### 9.4 provider transport
 
-一次 `sdk.Generate` 或 `sdk.Stream` 对应一次逻辑 provider request。transport retry 在 sdk/provider client 内部发生；agent 不记录它，也不为它创建新的 Step。
+一次 `sdk.Generate` 或 `sdk.Stream` 对应一次逻辑 provider request。transport retry 在 sdk/provider client 内部发生；run 不记录它，也不为它创建新的 Step。
 
-## 10. Memoh queue、session 和恢复
+## 10. Application queue、session 和恢复
 
 ### 10.1 queue 归属
 
-steer/follow-up 的 queue 数据结构、accepted order、重排、claim、apply、取消和 admission 全部属于 Memoh。两种 queue 可以共享稳定 item reference、accepted sequence、order version、取消状态和 claim provenance；消费策略不同。被选中的 item 在交给 core 前转换为只有 `InputID` 和 payload 的 `AgentInput`，Memoh 私下保留 item reference 与 claim provenance 的映射：
+steer/follow-up 的 queue 数据结构、accepted order、重排、claim、apply、取消和 admission 全部属于 Application queue/session policy。两种 queue 可以共享稳定 item reference、accepted sequence、order version、取消状态和 claim provenance；消费策略不同。被选中的 item 在交给 Run core 前转换为只有 `InputID` 和 payload 的 `AgentInput`，Application 私下保留 item reference 与 claim provenance 的映射：
 
 ```text
 steer      优先进入当前 eligible boundary；若当前 Run 已 terminal，则按 session policy 创建 continuation Run
 follow-up  当前 Run 自然结束后创建新的 Run
 ```
 
-active Run 的 steer 通过 `NextStep(input)` 生成 `AcceptInput` command；terminal Run 的 steer/follow-up 由 Memoh admission 创建新 Run，再对新 Run 提交首个 `AcceptInput`。`NextRun`/`RunSeed` 仅作为 legacy helper 保留。core 不接收 queue item、priority、order 或 claim。
+active Run 的 steer 通过 `NextStep(input)` 生成 `AcceptInput` command；terminal Run 的 follow-up 由 Application admission 创建新 Run，再对新 Run 提交首个 `AcceptInput`。Run core 不接收 queue item、priority、order 或 claim。
 
 重排必须带 order version；过期版本、未知 item、重复 item 和越过已 claim item 的操作都拒绝。
 
 ### 10.2 queue-safe boundary
 
-Memoh 只在以下 boundary 仲裁 queue：
+Application 只在以下 boundary 仲裁 queue：
 
 ```text
 ModelStep 完成且没有 tool calls
 ToolStep 自动关闭
 ```
 
-ModelStep 执行中、ToolStep 有 Pending/Executing/Waiting Call 时，不消费新的 queue 输入。queue action、对应 `InputAccepted` 事件以及 claim provenance 在 Memoh transaction 中一起提交，已 claim item 不能回退或越过。
+ModelStep 执行中、ToolStep 有 Pending/Executing/Waiting Call 时，不消费新的 queue 输入。queue action、对应 `InputAccepted` transition 以及 claim provenance 在 Application transaction 或可幂等 outbox 中一起提交，已 claim item 不能回退或越过。
 
-没有 tool calls 的 ModelStep 会使当前 Run 到达 `RunCompleted`。Memoh 可以在这个 queue-safe boundary 消费 steer 并创建 continuation Run；这不改变已经完成的 Run，也不把 queue policy 放进 Machine。
+没有 tool calls 的 ModelStep 会使当前 Run 到达 `RunCompleted`。Application 可以在这个 queue-safe boundary 消费 steer 并创建 follow-up Run；这不改变已经完成的 Run，也不把 queue policy 放进 Machine。
 
-### 10.3 R0/R1 与 session settled
+### 10.3 Session settled 与 follow-up admission
 
-Memoh 的 session 规则保持：
+具体产品可以定义 session settled/busy 规则，例如 terminal Run 不等于 session settled，或 admission-active follow-up Run 存在时 session 仍 busy。这些是 `agent/session` 上层 policy，不是 Run Machine 状态。
 
-```text
-R0 terminal 不等于 session settled
-admission-active R1 存在时 session 仍 busy
-```
-
-follow-up 可以在 R1 的第一个 ModelStep 之前完成 durable admission claim；这是 Memoh session 操作，不是 Loop 中间读取 queue。R0 continuation 通过 Memoh outbox/scanner 唤醒；R1 admission 用 `InitializeRun` 创建最小 state，并把 follow-up 输入提交为首个 `AcceptInput` transition；R1 identity 不进入 agent 的通用结果。
+follow-up 可以在新 Run 的第一个 ModelStep 之前完成 durable admission claim；这是 Session/Queue operation，不是 Loop 中间读取 queue。Application outbox/scanner 可以唤醒新 Run；admission 用 `InitializeRun` 创建最小 state，并把 follow-up 输入提交为首个 `AcceptInput` transition。
 
 ### 10.4 多 response 恢复
 
@@ -1495,93 +1800,107 @@ ToolStep T1
 
 response 101 只完成 B；D 仍可执行，不必等待 C。response 102 再完成 C；D 完成后 Machine 自动关闭 T1，并允许下一 ModelStep。每个 response 有自己的 row、CommandID 和 wake，不再受旧协议“一个 deferred 只能保存一个 approval”的限制。
 
-## 11. 迁移现状与兼容策略
+## 11. Domain 拆分与实施顺序
 
-### 11.1 当前问题
+当前 root `agent` 包是 Run execution ES 的实现雏形；它不应继续吸收 Session、Queue、Artifact、Context 或产品 orchestration。拆包以 target package 为准，不为尚未合并的 API 保留 agent-level compatibility façade。
 
-当前 SDK 同时承载 provider API 和多步 loop：
+### 阶段 A：抽取 `agent/es`
+
+1. 从现有 Run codec/transition/rebuild 中抽出不认识 run 语义的机制：canonical record encoding、payload/record digest hook、revision/index 校验、complete-record validation 和 generic fold runner。
+2. `es` 不 import `run`、`session`、`queue`。
+3. Run 的 `TransitionRecord` 先适配/包装 `es.Record`；保持 Run-specific `CommandID`、`CommandDigest`、sealed Fact codec 在 `run`。
+4. 为 `es` 添加独立 conformance：partial record tail、revision/index gap、digest mismatch、schema/type mismatch、canonical JSON ambiguity。
+
+### 阶段 B：移动现有 core 到 `agent/run`
+
+1. 将现有 root `agent` 中的 Machine、Loop、Runtime、MemoryRuntime、model data、tool contract、codec、runtimetest 移到 `agent/run`。
+2. 删除 `RunConfig`、`RunSeed`、`NextRun`、旧 `Initialize(run, config, seed)` 以及对应 codec/digest；目标 API 只有 `InitializeRun(runID)`，初始输入通过 `AcceptInput` transition。
+3. 把 `RunHeader` 实现为正式 authority record；rebuild/fold API 以 header 为起点。
+4. 让 `MemoryRuntime` 成为同一 Run ES 的最轻 reference runtime，而不是另一种 agent；它可以没有 lease/DB/heartbeat，但不能跳过 execution event semantics。
+5. 更新 import path、examples、conformance 和 golden streams；此时尚未合并，不保留 root `agent` compatibility wrapper。
+
+### 阶段 C：实现 `agent/session`
+
+1. 定义 generic append-only Session store、entry envelope、head CAS、parent/fork lineage、schema/digest/causation。
+2. 先提供 memory store 和 replay/fork conformance；不在 package 内写死 MessageAdded/Compact/Artifact ontology。
+3. Application 定义 session event，并实现 Run event -> Session event 的 materializer。
+
+### 阶段 D：实现 `agent/queue`
+
+1. 定义 generic enqueue/claim/ack/release/dedup/visibility contract 与 memory implementation。
+2. `SteerItem`、`FollowUpItem`、`RunQueueItem` 保持在 Application payload/policy。
+3. 不将 queue state 或 claim identity 加入 `run.MachineState`。
+
+### 阶段 E：simple in-process harness
+
+`agent/harness`（或 application example package）组合：
 
 ```text
-GenerateParams / GenerateResult
-  混合请求、自动 tool loop、approval、steps、callbacks 和 max steps
+session memory store
++ queue memory store（可选）
++ run.MemoryRuntime
++ run.Loop
++ in-memory EventSink
++ application RequestPlanner/materializer
 ```
 
-Memoh native runtime 已拥有产品 context、queue 和 durable session，但旧 loop 让它看不到 ToolStep 内逐 Call 的 progress。新方案把多步执行统一到 `agent.Loop`，并要求 Memoh 增加 ToolCall progress/response projection。
+它不是第二个 Runtime interface，不复制 Run Machine，不把 chat history 塞进 `MemoryRuntime`。它用于 local example、test、prototype，以及证明 local/durable 是同一 Run ES semantics 的不同 runtime implementation。
 
-本规范中的 `sdk.Request`、`sdk.ModelResult` 和 provider-neutral `sdk.ToolDefinition` 是一次调用的边界合同；agent 的 `ModelRequest`、`ModelResult`、`ToolDefinition` 是持久化闭合合同。阶段 A 负责实现边界转换与显式 legacy wrapper，不能把 SDK 边界类型误认为 Machine wire contract。
+### 阶段 F：durable application adapter
 
-### 11.2 迁移目标
+Durable adapter 在 Application/Memoh 实现：
+
+1. 持久化 `RunHeader`、TransitionRecord log、MachineState projection 和 watermark。
+2. 用 transaction/CAS 实现 `run.Runtime.Load/Commit`，私有实现 owner/fence/lease/Attempt/recovery。
+3. 将 Run transition、Session materialization outbox、artifact/usage projection 和 finalization state 放在同一事务，或使用可幂等 inbox/outbox 恢复。
+4. `RunFinalized` 后才 archive/GC Run log；Session/Artifact/Usage 的长期语义不依赖保留旧 Run log。
+
+## 12. Cross-domain orchestration contract
+
+Application 是唯一允许同时依赖 `run`、`session`、`queue`、artifact/context/memory 的层。它负责：
 
 ```text
-旧调用者 -> legacy sdk wrapper（迁移期）
-新调用者 -> agent.Loop + Runtime
-Memoh    -> agent.Loop + MemohRuntime
+Session semantic history + artifacts + memory + compact
+    -> ContextView
+    -> RequestPlanner
+    -> run.PrepareModelRequest
+
+run TransitionRecord
+    -> durable materializer/outbox
+    -> session entries / artifact refs / usage projection
+
+queue claim
+    -> queue-safe admission policy
+    -> run.AcceptInput or new RunHeader + first AcceptInput
 ```
 
-生产环境最终只有一条多步执行路径：`agent.Loop`。
+每个 ModelStep 应记录足以审计输入来源的 `ContextManifest`（位置可为 `ModelStepPrepared` 中的 immutable reference 或 companion artifact）：
 
-### 11.3 兼容原则
+```text
+ContextManifest {
+    session_revision
+    artifact_refs
+    memory_revision
+    compact_revision
+}
+```
 
-1. provider adapter 的现有请求/响应字段优先复用；旧 `GenerateParams` 无法表达的新 `Request` 字段（例如 `ProviderOptions`）在 fallback 到旧 provider 时必须显式报错，不能 silent drop。
-2. sdk 保留旧单次调用入口，直到调用方迁移完成。
-3. 旧自动 loop 只在显式 legacy wrapper 中存在，不能由新 Loop 隐式调用。
-4. 旧 `WithMaxSteps(0)` 保持一次模型调用、不自动执行 tools；`n>0` 在 legacy wrapper/Loop `ExecutionPolicy.ModelStepLimit` 中处理，到上限后提交 `StopRun{step_limit}`；旧值 `-1` 由 legacy wrapper 先规范化为 unlimited。`RunConfig` 仅保留为 deprecated helper 输入，不进入 MachineState。Memoh 当前使用 `-1`，迁移后保持无限模型步骤语义。
-5. 旧 deferred/approval 记录不能在线猜测为新的多 Call ToolStep。切换前必须排空，或以 `runtime_upgrade_required` 终态保留审计后再切换。
-6. 新协议写入生产后不回滚旧 loop；Memoh 的 queue accepted order、重排、claim、admission、R0/R1 和 settled 保证不变。
-
-## 12. 分阶段实施
-
-### 阶段 A：sdk 单次调用边界
-
-1. 固定 provider-neutral `Request`、`ModelResult`、stream parts 和 snapshot。
-2. 让 Generate、Stream 各自对应一次 provider request；transport retry 留在 sdk。
-3. 将旧自动 loop 隔离为 legacy wrapper。
-4. 保留 blocking/streaming 等价测试。
-5. 提供 additive compatibility adapters：`RequestFromGenerateParams`、`GenerateParamsFromRequest`、`ToolDefinitionFromTool`、`ToolFromDefinition`、`ToolChoiceFromLegacy`、`ModelResultFromGenerateResult`、`GenerateResultFromModelResult`、`ModelStreamFromStreamResult`；并提供可选 `ModelInvoker` / `StreamingModelInvoker`，provider interface 未整体切换前先靠这些 helper 和 optional interface 桥接新旧边界；旧 provider fallback 无法表达的新字段必须报错而不是丢弃。
-
-### 阶段 B：Machine 和 MemoryRuntime
-
-1. 实现 `MachineState`、ModelStep、ToolStep、ToolCall 状态和 Decide/Evolve/Next 规则。
-2. 实现 `EvaluateCommit`、`Runtime.Load/Commit`、command/fact digest 与幂等和 opaque grant。
-3. 实现 Loop 的 model/tool/approval/response 路径和并行执行策略。
-4. 完成 MemoryRuntime conformance 测试（`agent/runtimetest`），提供 CommandEnvelope/AgentEvent/TransitionRecord wire codec，严格 replay 校验，并冻结 SchemaVersion 1 的 golden transition stream。
-
-### 阶段 C：Memoh storage groundwork
-
-1. 增加 ToolCall progress、response set、event idempotency、history 和 outbox projection。
-2. 保留 queue 的 accepted order、重排、claim、admission、R0/R1 和 settled 语义。
-3. 为旧 deferred 数据建立排空/审计迁移窗口。
-
-### 阶段 D：MemohRuntime adapter
-
-1. 用 transaction/CAS 实现 `Load/Commit`。
-2. 在 adapter 内加入 owner/fence/lease/Attempt 和 recovery scanner。
-3. 实现逐 Call response、wake/outbox、unknown outcome 和 crash/fencing 测试。
-4. 让 Memoh Request Planner 以 revision 规划下一份 sdk.Request，并由 Loop 冻结成 agent ModelRequest。
-
-### 阶段 E：production cutover
-
-1. 先以 shadow projection 验证 MachineState、history 和 queue action。
-2. 排空或审计终结旧 deferred Run。
-3. 将现有 Memoh NativeAgentLoop 保留为薄宿主 wrapper：由它组装 Request Planner、`agent.Loop` 和 `MemohRuntime`，但不再保留独立的多步执行算法。
-4. 禁止旧 loop 写入新 Runtime projection，观察 recovery、duplicate commit 和多 response。
-
-### 阶段 F：删除兼容残留
-
-删除旧自动 loop、旧 approval/deferred 提交路径和只服务旧 loop 的 SDK 状态字段；保留仍有外部调用者使用的单次 provider API。
+它不是完整 prompt/history 的重复副本，而是 provenance。下一 Run 的 context 必须由 Session ES、Artifacts、Memory/Compact projection 构造，不能依赖读取已完成 Run 的 execution log。
 
 ## 13. 并行工作边界
 
-| 工作 | 负责方 | 依赖 |
+| 工作 | 目标包/层 | 依赖 |
 | --- | --- | --- |
-| sdk Request/ModelResult/stream | twilight-ai/sdk | provider adapter |
-| Machine 规则和 Step 类型 | twilight-ai/agent | sdk types |
-| Loop、工具 contract、EventSink | twilight-ai/agent | Machine |
-| MemoryRuntime | twilight-ai/agent | Machine/Loop |
-| ToolCall projection、history/outbox | Memoh | event contract |
-| queue、session、R0/R1、owner/fence | Memoh | existing session spec |
-| Request Planner/context | Memoh/application | sdk.Request（边界），agent.ModelRequest（持久化） |
-| MemohRuntime | Memoh | Runtime contract + projections |
+| sdk Request/ModelResult/stream | `sdk` | provider adapter |
+| generic record/digest/fold mechanism | `agent/es` | jsonstable |
+| Run Machine、Loop、Runtime、MemoryRuntime | `agent/run` | es + sdk |
+| RunHeader、run codec、runtimetest | `agent/run` | es |
+| generic Session store/memory store/fork conformance | `agent/session` | es |
+| generic Queue store/memory store/claim conformance | `agent/queue` | optional es digest types |
+| Session event ontology/materializer/context planner | Application/Product | session + run + artifacts |
+| Steer/follow-up/run queue policy | Application/Product | queue + session + run |
+| durable runtime, DB schema, owner/fence/lease/outbox | Application/Memoh | run contract |
+| simple in-process harness | `agent/harness` or examples | run + session + queue |
 
 ## 14. 测试矩阵
 
@@ -1599,7 +1918,7 @@ provider retry 不改变一次调用语义
 ```text
 无当前 Step -> NeedModelRequest
 NextStep(input) -> AcceptInput -> InputAccepted -> pending input appears in PlanningHint
-terminal follow-up -> Memoh admission creates new Run with InitializeRun, then AcceptInput(input), without mutating old Run
+terminal follow-up -> Application admission creates new Run with InitializeRun, then AcceptInput(input), without mutating old Run
 PrepareModelRequest -> [ModelStepPrepared] -> ModelStep
 ModelExecuting lease recovery -> same frozen ModelStep can start again
 SubmitModelResult 有 tools -> [ModelStepCompleted, ToolStepOpened]，保存完整 Call set
@@ -1614,7 +1933,6 @@ approval rejected -> [ToolCallFailed{Known, permission_denied}]
 Waiting 与 Executing 并存时，response 和 execution wake 都有效
 response 只推进对应 Waiting Call
 Waiting result carries RunID/StepID/CallID/ResponseID for response routing
-最后一个 Call terminal -> 同一 transition 追加 ToolStepClosed
 最后一个 Call terminal -> [..., ToolStepClosed]；host step limit 在下一 planning 边界提交 StopRun(step_limit)
 RunEnded 只能是事实序列的最后一个事实
 已知失败进入下一次模型上下文
@@ -1624,7 +1942,7 @@ RunStopped 与 worker cancellation 区分
 外层 ctx 取消：模型执行以 ModelStepRecovered 释放，工具 worker 运行到结束后 Loop 返回 ctx.Err()
 MachineState.Usage 逐字段累计 ModelStepCompleted 与 ModelStepRejected；terminal 时复制到 RunResult.Usage
 Decide 拒绝时不产出部分事实；接受时事实组与 MachineState 原子提交
-Evolve 不读 RunConfig/Loop policy、无 IO；对 Decide 产出的全部事实全定义
+Evolve 不读产品配置/Loop policy、无 IO；对 Decide 产出的全部事实全定义
 TransitionRecord 按 RunID/Revision 可 replay，内部 AgentEvent 按 (Revision, Index) 保持事件流顺序，重复提交不产生第二组
 replay 只经 EvolveVersion 折叠，不重新运行 Decide；golden transition stream 折叠出冻结的状态字节
 EventSink provisional/committed 发射点
@@ -1634,7 +1952,7 @@ Streaming=true 但 invoker 不支持 streaming -> Generate fallback
 
 ### 14.3 Runtime conformance
 
-conformance 测试由 agent 以可运行测试包（`agent/runtimetest`）交付；MemoryRuntime 与 MemohRuntime 直接运行同一套件，不各自转写矩阵：
+conformance 测试由 `agent/run` 以可运行测试包（`agent/run/runtimetest`）交付；MemoryRuntime 与任意 durable runtime adapter 直接运行同一套件，不各自转写矩阵：
 
 ```text
 same CommandID + digest -> CommitAlreadyApplied + 原事件组
@@ -1667,19 +1985,42 @@ ModelStepPrepared/ToolStepOpened 自包含：携带的 digest 折叠后可重现
 golden transition stream：固定 v1 命令序列折叠出冻结的状态字节
 ```
 
-### 14.4 Memoh integration
+### 14.4 `agent/es`
+
+```text
+record 内 event 的 stream/revision/index/type/payload digest 一致性
+record digest 覆盖完整 event group，partial tail 必须拒绝
+revision gap、index gap、重复/冲突 identity、schema/type mismatch 拒绝
+canonical JSON duplicate key/trailing data/invalid UTF-8/lone surrogate 拒绝
+generic FoldRecords 不运行 domain Decide 或任何 IO
+```
+
+### 14.5 `agent/session` 与 `agent/queue`
+
+```text
+session append/head CAS/replay order
+branch/fork parent lineage
+相同 causation/source event 不重复 materialize
+queue enqueue/dedup/claim/ack/release/visibility
+过期 claim 不允许 ack；重复 claim/ack 幂等或明确冲突
+SteerItem/FollowUpItem 只作为 application payload，不污染 queue core
+```
+
+### 14.6 Durable application integration
 
 ```text
 queue FIFO、accepted-order reorder、typed ID isolation
-assigned follow-up 只由正确的 R1 admission claim
-canonical history、TransitionRecord 与 MachineState 同事务
-assistant tool-call 和 tool result 只写一次
+assigned follow-up 只由正确的 admission claim
+RunHeader、TransitionRecord、MachineState projection 与 watermark 一致
+Session materialization、artifact/usage outbox 与 Run transition 原子或可幂等恢复
+assistant tool-call 和 tool result 只 materialize 一次
 多 response rows 与逐次 wake/idempotency
 lease expiry/recovery/unknown outcome
 eligible steer 存在时 Prepare 在同一事务内被拒绝，AcceptInput 先应用，重新规划携带该输入
 并行 Call 中一个 Unknown 后撤销其他 grant，迟到结果不改变终态
-terminal 后迟到的工具结果投影到产品可见的审计视图
-R0 terminal 与 session settled 分离
+terminal Run 与 session settled 分离
+RunEnded 后未 finalization 不允许 archive/GC
+RunFinalized 后 Session/Artifact/Usage 仍可完整构造下一 Run context
 EventSink gap 后可由 durable snapshot 对账
 ```
 
@@ -1687,37 +2028,39 @@ EventSink gap 后可由 durable snapshot 对账
 
 本次不编辑 `session-runtime-steer-followup.md`。后续应按以下边界修订：
 
-Memoh queue/session/admission 的语义保持在 Memoh；现有 NativeAgentLoop 只保留为组装 Request Planner、`agent.Loop` 和 `MemohRuntime` 的薄宿主 wrapper，不包含第二套多步执行算法。queue 仲裁只发生在 queue-safe boundary，并与对应 AgentCommand/AgentEvent 在 Memoh transaction 中提交。旧的完整 Step 提交改为 ModelStep、ToolStep 以及逐 Call progress/response 记录；每次 response 只推进对应 Call。R0/R1、ownerless recovery、session settled 和 claim takeover 语义保持。
+Application 的 queue/session/admission 语义属于各自 domain；Application loop host 只组装 Request Planner、`run.Loop` 和 durable runtime adapter，不包含第二套多步执行算法。queue 仲裁只发生在 queue-safe boundary，并与对应 Run command/transition 在 application transaction 或可幂等 outbox 中提交。Step 提交使用 ModelStep、ToolStep 以及逐 Call progress/response 记录；每次 response 只推进对应 Call。具体产品的 branch/claim/recovery 语义保持在 Application，不进入 `agent/run`。
 
 ## 16. 实施前置条件
 
-1. Memoh 增加 ToolCall progress、response set、event idempotency、history/outbox projection。
-2. Memoh 冻结内部 Attempt、owner、fence、lease 和 recovery grace 规则；这些不进入 agent public API。
-3. 工具失败不由 agent core 调度 retry timer；已知失败交给下一次模型，未知结果终止当前 Run。非幂等外部 effect 只能承诺 at-least-once。
-4. Request Planner 必须能从已提交的 application context 构造完整、可冻结的边界 `sdk.Request`，由 Loop freeze 为 agent `ModelRequest`。
+1. Durable Application adapter 增加 ToolCall progress、response set、event idempotency、Run→Session/artifact/usage outbox projection 和 finalization marker。
+2. Durable adapter 冻结内部 Attempt、owner、fence、lease 和 recovery grace 规则；这些不进入 `run` public API。
+3. 工具失败不由 Run core 调度 retry timer；已知失败交给下一次模型，未知结果终止当前 Run。非幂等外部 effect 只能承诺 at-least-once。
+4. Request Planner 必须能从已提交的 Session/context projection 构造完整、可冻结的边界 `sdk.Request`，由 Loop freeze 为 `run.ModelRequest`。
 
 ## 17. 待确认决策
 
 实现前仍需确认：
 
-1. queue capacity、expiry 和产品授权是否进入 Memoh queue contract。
-2. breaking release 版本和 Memoh protocol upgrade window。
-3. EventSink payload schema，以及是否需要在 Memoh outbox 中加入跨进程 execution epoch。
+1. queue capacity、expiry 和产品授权是否进入 Application queue policy。
+2. breaking release 版本和 durable protocol upgrade window。
+3. EventSink payload schema，以及是否需要在 durable outbox 中加入跨进程 execution epoch。
 
-本规范已经固定：Cancel 与 Unknown 按提交先后决定终态；agent `ModelRequest` 冻结完整的 generation options，streaming 只是 `ModelInvoker` 的可选执行路径，不改变 AgentCommand/AgentEvent 语义。Machine 采用 Decide/Evolve 拆分：Decide 承载全部决策并在提交时产出结果事实，Evolve 是机械折叠、与事件编码同属永久兼容契约；initial MachineState + TransitionRecord log 为 source of truth，MachineState 为必需的同事务 projection，分歧仲裁按 §5.1（transition log 完整则自动重建，日志尾部低于水位或 transition 不完整则 halt）。结构性 malformed 的模型结果通过 `RejectModelResult` 的 disposition 在同一冻结 request 上重试或失败；fixed model/limits 不进入 MachineState；usage 在 MachineState 内逐字段累计；steer 由 MemohRuntime 的 Prepare gate 保证进入下一个 ModelStep；工具不做效果分级，计划内停机以排空代替，Unknown 语义只覆盖崩溃和 lease 失效。
+本规范已经固定：Cancel 与 Unknown 按提交先后决定终态；`run.ModelRequest` 冻结完整的 generation options，streaming 只是 `run.ModelInvoker` 的可选执行路径，不改变 Run command/event 语义。Run Machine 采用 Decide/Evolve 拆分：Decide 承载全部决策并在提交时产出结果事实，Evolve 是机械折叠、与事件编码同属永久兼容契约；`RunHeader + TransitionRecord log` 为 Run source of truth，MachineState 为必需的同事务 projection，分歧仲裁按 §5.1（transition log 完整则自动重建，日志尾部低于水位或 transition 不完整则 halt）。结构性 malformed 的模型结果通过 `RejectModelResult` 的 disposition 在同一冻结 request 上重试或失败；fixed model/limits 不进入 MachineState；usage 在 MachineState 内逐字段累计；steer 由 Application 的 queue-safe admission gate 保证进入下一个 ModelStep；工具不做效果分级，计划内停机以排空代替，Unknown 语义只覆盖崩溃和 lease 失效。
 
-本规范采用 initial MachineState + TransitionRecord log 为 source of truth（§5.1）：三个稳定条件（ontology 冻结、versioned Evolve 冻结、事实自包含）由 Decide/Evolve 拆分保障，revision 水位保护 transition log 尾部完整性，TransitionDigest 保护单个 transition 内部的完整事件组。MachineState 保持为必需的同事务 projection——提交验证要求当前状态在临界区内可得，这与日志权威并不冲突。
+本规范采用 `RunHeader + TransitionRecord log` 为 Run source of truth（§5.1）：三个稳定条件（ontology 冻结、versioned Evolve 冻结、事实自包含）由 Decide/Evolve 拆分保障，revision 水位保护 transition log 尾部完整性，TransitionDigest 保护单个 transition 内部的完整事件组。MachineState 保持为必需的同事务 projection——提交验证要求当前状态在临界区内可得，这与日志权威并不冲突。跨 Run 语义不从旧 Run log 读取，而由 Session ES、artifact、memory/context projection 构造。
 
 ## 附录 A：最小 public API 草案
 
 ```go
-package agent
+package run
 
 import (
     "context"
     "encoding/json"
     "errors"
 
+    "github.com/memohai/twilight-ai/agent/es"
+    "github.com/memohai/twilight-ai/agent/jsonstable"
     "github.com/memohai/twilight-ai/sdk"
 )
 
@@ -1733,15 +2076,6 @@ type Digest string
 // PlanningToken is opaque to agent; the application uses it to identify the
 // context revision from which a RequestPlan was built.
 type PlanningToken string
-
-// Deprecated compatibility input only. RunConfig is not stored in MachineState,
-// AgentEvent, or TransitionRecord. New code uses InitializeRun plus host/Loop
-// policy and per-step ModelRequest.Model.
-type RunConfig struct {
-    Model ModelRef
-    ModelStepLimit int
-    ModelRejectLimit int
-}
 
 type RunStatus uint8
 
@@ -1768,7 +2102,7 @@ type RunFailure struct {
     CallID  CallID
 }
 
-// Agent-owned JSON-stable persisted data. SDK request/result/tool values are
+// Run-owned JSON-stable persisted data. SDK request/result/tool values are
 // converted at Loop/provider boundaries via Freeze* and SDK(); Runtime never
 // stores sdk.MessagePart interfaces, map[string]any provider metadata, or
 // caller-owned JSON bytes. CanonicalJSON is an opaque immutable value constructed
@@ -1811,7 +2145,7 @@ type StepRef struct {
     Digest  Digest // immutable step binding digest; progress is not included
 }
 
-// Step is sealed by the agent package. Runtime implementations return values
+// Step is sealed by the run package. Runtime implementations return values
 // created by the Machine rules; callers cannot add another Step variant.
 type Step interface {
     step()
@@ -1958,11 +2292,6 @@ type AgentInput struct {
 
 // NextStep creates the command consumed by an active Run at a safe boundary.
 func NextStep(input AgentInput) AcceptInput
-
-// Deprecated legacy admission helper. New admission uses InitializeRun and
-// submits the initial input with AcceptInput.
-type RunSeed struct { Input AgentInput }
-func NextRun(input AgentInput) RunSeed
 
 // --- Commands (intent) ---
 
@@ -2165,10 +2494,22 @@ type ToolSpec struct {
 func Next(MachineState) (Effect, error)
 func Decide(MachineState, AgentCommand) ([]Fact, error)
 func Evolve(MachineState, Fact) (MachineState, error)
+func EvolveVersion(uint16, MachineState, Fact) (MachineState, error)
 func InitializeRun(RunID) (MachineState, error)
 
-// Deprecated: compatibility helper; RunConfig is not stored in MachineState.
-func Initialize(RunID, RunConfig, RunSeed) (MachineState, error)
+type RunHeader struct {
+    SchemaVersion       uint16
+    RunID               RunID
+    InitialStateVersion uint16
+    InitialState        MachineState
+    InitialStateDigest  es.Digest
+    CausationID         es.CausationID
+    HeaderDigest        es.Digest
+}
+
+func BuildRunHeader(RunID, es.CausationID) (RunHeader, error)
+func ValidateRunHeader(*RunHeader) error
+func DigestRunHeader(*RunHeader) (es.Digest, error)
 
 type Effect interface { effect() }
 
@@ -2188,10 +2529,9 @@ type WaitForExecutionRecovery struct{}
 func (WaitForExecutionRecovery) effect() {}
 
 type PlanningHint struct {
-    RunID         RunID
-    Model         ModelRef
-    SourceStep    StepID
-    Inputs        []AgentInput
+    RunID      RunID
+    SourceStep StepID
+    Inputs     []AgentInput
 }
 
 type RequestPlanner interface {
@@ -2225,6 +2565,8 @@ type CommandEnvelope struct {
     Type          string
     RunID         RunID
     ID            CommandID
+    // Opaque cross-domain lineage; Run Machine does not interpret it.
+    CausationID   es.CausationID
     Digest        Digest
     Command       AgentCommand
 }
@@ -2237,6 +2579,7 @@ type AgentEvent struct {
     Index         uint16
     CommandID     CommandID
     CommandDigest Digest
+    CausationID   es.CausationID
     Digest        Digest
     Fact          Fact
 }
@@ -2302,12 +2645,13 @@ func EncodeCommand(CommandEnvelope) ([]byte, error) // 不包含 Digest 字段
 func DigestCommand(schemaVersion uint16, typ string, command AgentCommand) (Digest, error)
 func EncodeFact(schemaVersion uint16, typ string, fact Fact) ([]byte, error)
 func DigestFact(schemaVersion uint16, typ string, fact Fact) (Digest, error)
+func BuildRunHeader(RunID, es.CausationID) (RunHeader, error)
+func ValidateRunHeader(*RunHeader) error
+func DigestRunHeader(*RunHeader) (es.Digest, error)
 func BuildTransitionRecord([]AgentEvent) (TransitionRecord, error)
 func ValidateTransitionRecord(*TransitionRecord) error
 func DigestTransitionRecord(*TransitionRecord) (Digest, error)
-func FoldTransitions(initial MachineState, records []TransitionRecord) (MachineState, uint64, error)
-func EncodeRunSeed(RunSeed) ([]byte, error)
-func DigestRunSeed(schemaVersion uint16, seed RunSeed) (Digest, error)
+func FoldTransitions(header RunHeader, records []TransitionRecord) (MachineState, uint64, error)
 func DigestRequest(ModelRequest) (Digest, error)
 func DigestToolDefinition(ToolDefinition) (Digest, error)
 func DigestToolSpec(ToolSpec) (Digest, error)
@@ -2439,7 +2783,7 @@ func (l *Loop) Run(context.Context, Runtime, EventSink) (LoopResult, error)
 ## 附录 B：核心不变量
 
 1. sdk 的一次 `Generate` 或 `Stream` 对应一次 provider request；transport retry 不创建新的 Step。
-2. `agent.Loop` 是唯一的多步执行算法；Run 的权威状态由 Runtime 持有，Loop 不保存第二份。
+2. `agent/run.Loop` 是唯一的 Run 多步执行算法；Run 的权威状态由 Runtime 持有，Loop 不保存第二份。
 3. Runtime 对 Loop 只公开 `Load` 和 `Commit`；Planner、queue 和工具入口不是 Runtime 的隐藏第三、第四个方法。
 4. Machine 是完整的 Run/Step/ToolCall 语义规则；决策只在 `Decide` 中、只在提交时运行一次，`Evolve` 是机械折叠。Runtime 通过共享 `EvaluateCommit` 调用它们，不复刻规则。
 5. Step 是 durable resume boundary，只有 ModelStep 和 ToolStep；ToolCall 是 ToolStep 内的 progress。
@@ -2448,10 +2792,10 @@ func (l *Loop) Run(context.Context, Runtime, EventSink) (LoopResult, error)
 8. Waiting response 只推进对应 Call；approval approved 先变 Pending，随后由 Loop 执行工具。日志记录结果事实（`ToolCallFailed{permission_denied}`、`RunEnded{cancelled}`），不记录请求本身。
 9. 幂等按 command 判定：相同 CommandID/digest 重放返回 CommitAlreadyApplied 与原事件组（不重新运行 Decide），不重复写入 projection、history、queue action 或 outbox；相同 CommandID 不同 digest 冲突。
 10. 一次接受的 transition 使 Revision 恰好加一；其全部事实共享该 Revision，Index 组内连续，提交后 `Snapshot.Revision` 等于该 Revision。
-11. Admission-created initial MachineState + TransitionRecord log 是 source of truth；MachineState 是必需的同事务 projection，可按 `EvolveVersion` 从 transition log 重建。对任意 Revision，状态必须等于初始状态经 `flatten(TransitionRecord[].Events)` 折叠的结果；snapshot 分歧或缺失且日志完整时自动重建并记录，日志尾部低于 revision 水位或 transition digest/事件组不完整时 halt 该 Run。
+11. `RunHeader + TransitionRecord log` 是 Run source of truth；MachineState 是必需的同事务 projection，可按 `EvolveVersion` 从经验证的 header 和 transition log 重建。对任意 Revision，状态必须等于 `RunHeader.InitialState` 经 `flatten(TransitionRecord[].Events)` 折叠的结果；snapshot 分歧或缺失且日志完整时自动重建并记录，日志尾部低于 revision 水位或 transition digest/事件组不完整时 halt 该 Run。
 12. Evolve 的折叠语义与事件编码同属永久兼容契约，按 SchemaVersion 冻结；Replay 通过 `EvolveVersion` 选择历史语义；Decide 的决策规则可随版本演进，因为决策结果已记录为事实。
 13. 已知工具失败交给下一次模型请求；Unknown 终止 Run，不自动重试、不查询外部系统。
 14. worker cancellation 不等于 RunStopped；业务停止必须提交控制 command。宿主的业务停止先提交 `CancelRun`，再取消 Loop 的 ctx；ctx 取消本身只结束执行尝试，工具 worker 运行到自身结束。
 15. EventSink 只是实时观察；TransitionRecord、durable snapshot 和 outbox 才是 replay/recovery 依据，AgentEvent 是 transition 内部和观察出口的事实流视图。
-16. MemoryRuntime 用进程内同步；MemohRuntime 用事务、CAS 和内部 Attempt/owner/fence/lease；两者共享 `EvaluateCommit` 与 Machine 规则，但不共享存储实现。
+16. `run.MemoryRuntime` 用进程内同步；durable runtime adapter 用事务、CAS 和内部 Attempt/owner/fence/lease；两者共享 `EvaluateCommit` 与 Run Machine 规则，但不共享存储实现。
 17. 结构性 malformed 的模型结果以 `RejectModelResult` 累计 usage；Disposition 决定回到 Prepared 重试或同 transition RunFailed。单个 Call 的参数解析失败不是 malformed，按已知 `invalid_arguments` 进入下一次模型请求。
