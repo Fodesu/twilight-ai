@@ -10,8 +10,9 @@ import (
 )
 
 // MemoryRuntime is the in-process reference Runtime: mutex + MachineState +
-// TransitionRecord log (spec §8.1). The transition log is the source of truth;
-// the state is the same-transaction projection. It is the conformance
+// TransitionRecord log (spec §8.1). The MachineState is the execution
+// authority; the transition log is the same-transaction canonical record
+// (audit, projections, verified import). It is the conformance
 // reference; it does not survive the process and does not store product
 // history.
 type MemoryRuntime struct {
@@ -87,24 +88,6 @@ func newGrant() ExecutionGrant {
 	return ExecutionGrant(hex.EncodeToString(b[:]))
 }
 
-func foldCommittedTransition(state *MachineState, record *TransitionRecord) (MachineState, error) {
-	if err := ValidateTransitionRecord(record); err != nil {
-		return *state, err
-	}
-	current := *state
-	for i := range record.Events {
-		e := record.Events[i]
-		fact, err := snapshotFact(e.Fact)
-		if err != nil {
-			return current, err
-		}
-		current, err = EvolveVersion(e.SchemaVersion, current, fact)
-		if err != nil {
-			return current, err
-		}
-	}
-	return current, nil
-}
 
 //nolint:gocritic // hugeParam: CommitRequest is the value DTO of the Runtime authority boundary.
 func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitResult, error) {
@@ -157,15 +140,10 @@ func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitRe
 		return CommitResult{}, ErrRunTerminal
 	}
 
-	// DecisionApply: persist the owned transition and derive the authoritative
-	// snapshot from that same stored transition. The transition log is the source
-	// of truth; the in-memory state is only its same-transaction projection.
+	// DecisionApply: persist the new authoritative state and the canonical
+	// transition record in the same critical section (spec §5.1).
 	stored := cloneTransitionRecord(&decision.Transition)
-	newState, err := foldCommittedTransition(&m.state, &stored)
-	if err != nil {
-		return CommitResult{}, err
-	}
-	m.state = cloneMachineState(&newState)
+	m.state = cloneMachineState(&decision.NewState)
 	m.revision++
 	m.watermark = m.revision
 	m.transitions[req.Command.ID] = stored
