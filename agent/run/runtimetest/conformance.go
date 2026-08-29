@@ -10,7 +10,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/memohai/twilight-ai/agent"
+	agent "github.com/memohai/twilight-ai/agent/run"
 	"github.com/memohai/twilight-ai/sdk"
 )
 

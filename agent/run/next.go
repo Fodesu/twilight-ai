@@ -1,4 +1,4 @@
-package agent
+package run
 
 // Effect is the at-most-one pending action Machine.Next derives from the
 // current state (spec §3.6). Effects are never persisted; the Loop re-derives

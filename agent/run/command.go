@@ -1,4 +1,4 @@
-package agent
+package run
 
 // AgentCommand is the intent submitted through Runtime.Commit for an existing
 // Run. Accepting one command constitutes one transition (spec §3.6). The
