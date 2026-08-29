@@ -20,7 +20,8 @@ type MemoryRuntime struct {
 	revision uint64
 	// initial is the Revision-0 state; Rebuild folds the log from it.
 	initial MachineState
-	// watermark witnesses log-tail completeness: it advances with every
+	// watermark records the last committed revision for the optional Rebuild
+	// diagnostic; it is not a protocol guard. It advances with every
 	// commit and is never cleared by a rebuild (spec §5.1).
 	watermark uint64
 	// transitions keyed by CommandID: the full transition record for idempotency.

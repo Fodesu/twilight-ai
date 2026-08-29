@@ -961,33 +961,20 @@ Runtime 只回答两个问题：
 
 因此 Runtime 的接口很小，但一次 `Commit` 的事务范围可以很大：它必须让一个 AgentCommand、产出的 `TransitionRecord` 及其必要的产品投影一起成功或一起失败；这不意味着 Runtime 获得了 history、queue 或 prompt 的所有权。`CommitResult.Events` 只是该 transition 的事件流视图，方便 Loop、UI 和 observability 消费；Runtime 的 authority storage 是完整 transition aggregate。
 
-Run execution 状态的 source of truth 是 immutable `RunHeader` 加 `TransitionRecord` log；它只负责该次执行的恢复与审计，不替代 Session ES 的长期语义 authority；`RunHeader` 固化 Revision-0 initial state 及其 schema/digest/admission causation。MachineState 是必需的同事务 projection（execution cache）：提交验证与 Loop 执行从它读取，因此它必须与 transition log 在同一原子提交内更新，但它可以从 RunHeader 和日志重建。对任意 Revision N，状态必须等于 `RunHeader.InitialState` 按 `flatten(TransitionRecord[].Events)` 调用 versioned `Evolve` fold 到 N 的结果——这是可自动恢复的不变量，不是 halt 条件。
+Run execution 状态的 authority 是持久化的 **MachineState**:提交验证与 Loop 执行从它读取,崩溃恢复通过 `Load` 直接取回它——durable continuation 是"执行状态可恢复",不要求"执行状态由历史事件重建"。`RunHeader + TransitionRecord log` 是与状态同事务原子写入的 **canonical record**:它记录每次接受的 command 产出的完整事实组,服务审计、观察、事件投影,以及经验证的 run 导入/迁移(§5.1.1 规则 6);它不替代 Session ES 的长期语义 authority。对任意 Revision N,状态应当等于 `RunHeader.InitialState` 按 `flatten(TransitionRecord[].Events)` 调用 versioned `Evolve` fold 到 N 的结果——这是同事务双写的正确性性质,由 conformance 的 replay-fold 等价测试守护;两者出现分歧说明实现存在缺陷(Evolve bug、越权写入或存储损坏),处理方式(从备份恢复状态、或人工 fold 核对后修复)是运维决定,本规范不定义自动仲裁,也不定义 halt 协议。
 
-这个权威声明成立的三个稳定条件（本规范的规范性条款）：
+这个双写模型成立的稳定条件(本规范的规范性条款):
 
-1. Event ontology 稳定：Fact 词表 sealed，已发布 SchemaVersion 的事实结构永不修改，新增字段进入新版本。
-2. Evolve 语义稳定：折叠是机械的（不读产品配置/Loop policy、无 IO），已发布版本的折叠语义与事件编码一起永久冻结；replay 通过 `EvolveVersion(SchemaVersion, state, fact)` 选择历史语义，会演进的决策语义全部在 Decide，其结果记录为事实。
-3. 事实自包含：折叠一条事实所需的全部信息在事实自身与折叠前状态之内，不访问外部系统，不重新计算依赖当前代码版本的派生值（digest 一律在 Decide 时算好并携带在事实中）。
-4. 持久化值归属稳定：Run event 和 MachineState 只保存 run-owned frozen values；任何来自 SDK/provider/application 的引用在进入 Runtime 前必须被 canonicalize + detach，返回给 caller 的 snapshot/event 也必须是独立副本。
+1. Event ontology 稳定:Fact 词表 sealed,已发布 SchemaVersion 的事实结构永不修改,新增字段进入新版本。
+2. Evolve 语义版本内稳定:折叠是机械的(不读产品配置/Loop policy、无 IO),replay 通过 `EvolveVersion(SchemaVersion, state, fact)` 选择语义;会演进的决策语义全部在 Decide,其结果记录为事实。同一 SchemaVersion 内的折叠语义不做行为变更;跨部署迁移(本地↔云)要求迁移双方对该版本的折叠语义一致——迁移功能排期时,golden event stream 校验从回归测试升级为版本冻结校验。
+3. 事实自包含:折叠一条事实所需的全部信息在事实自身与折叠前状态之内,不访问外部系统,不重新计算依赖当前代码版本的派生值(digest 一律在 Decide 时算好并携带在事实中)。已实现的自包含保持;它是 run 导入/迁移的前提。
+4. 持久化值归属稳定:Run event 和 MachineState 只保存 run-owned frozen values;任何来自 SDK/provider/application 的引用在进入 Runtime 前必须被 canonicalize + detach,返回给 caller 的 snapshot/event 也必须是独立副本。
 
-Runtime 实现还必须在代码层面维护这些条件：`EvaluateCommit` 对 Decide 产出的 facts 做 `snapshotFact` 后再 fold/persist，并构造带 transition digest 的 `TransitionRecord`；`Load`、`CommitResult` 和 AlreadyApplied replay 返回的 snapshot/event 不得共享 authority 内部引用；MemoryRuntime 这类参考实现保存 accepted transition 后，从 stored transition 的 events fold 出新的 authority state，而不是直接保存调用栈里算出的 `decision.NewState`。durable adapter 可以用数据库事务替代 mutex，但不能把未冻结 SDK 对象、浅拷贝 snapshot 或 caller-owned bytes 写入事件表/状态表。
+Runtime 实现还必须在代码层面维护这些条件:`EvaluateCommit` 对 Decide 产出的 facts 做 `snapshotFact` 后再 fold/persist,并构造带 transition digest 的 `TransitionRecord`;`Load`、`CommitResult` 和 AlreadyApplied replay 返回的 snapshot/event 不得共享 authority 内部引用;durable adapter 可以用数据库事务替代 mutex,但不能把未冻结 SDK 对象、浅拷贝 snapshot 或 caller-owned bytes 写入事件表/状态表。
 
-每 Run 维护一个不可丢弃的 revision 水位（watermark）：每次提交与 transition log 同步推进的单调计数，语义为"transition log 至少完整到此"。它是日志尾部完整性的末端见证；单个 transition 内部完整性由 `TransitionRecord.Events` 和 `TransitionDigest` 绑定，transition 之间用 Revision 连续性检测缺洞。水位是控制平面数据，不进入 MachineState，重建不清除它。
+`FoldRun(header, records)` 是导入/迁移与诊断的入口:验证 header 与逐 transition 的 digest 链后折叠出状态。它用于三处——跨部署迁移时目标侧重建初始权威状态(不信任上传的 snapshot)、conformance 的等价测试、以及运维按需的一致性核对。日常执行路径不调用它。
 
-分歧仲裁规则固定为：
-
-```text
-snapshot 与 fold(transitions) 不一致，或 snapshot 缺失，且 transitionLog.maxRevision >= watermark
-  -> transition log 为准，自动重建（纯 EvolveVersion 折叠，零副作用，不重放命令，不产生外部 effect），
-     并记录一次重建事件供运维审计——实现正确时这条路径不触发，每次触发都意味着
-     Evolve bug、越权写入或 snapshot 损坏真实发生过
-
-transitionLog.maxRevision < watermark，或尾部 transition 的 digest/事件组不完整
-  -> 日志尾部缺失/损坏，halt 该 Run——已接受的事实永久消失无法凭空恢复，
-     继续推进会把丢失升级为错误的重复执行；恢复属于灾难恢复范畴（备份、复制）
-```
-
-主动 truncate snapshot 强制全量重建是合法运维操作（例如 MachineState 存储布局变更时替代迁移）。水位与日志同库整体回退（全量备份恢复）不在检测范围内：内部自洽的一致回退需要外部见证，v1 不做。
+重新收紧为日志权威(状态可丢弃、自动仲裁、水位守护)的触发条件:执行历史 fork 成为产品功能,或出现"状态存储不可信而日志存储可信"的实际部署形态。当前两者均无需求方;本规范此前的日志权威版本可在版本历史中查阅。
 
 一个 Runtime 实例服务一个 Run；多个 Run 由上层创建多个 Runtime 实例。Run 的创建和身份分配由 Application admission 完成；admission 调用 `InitializeRun`，构造并原子保存 `RunHeader`。Runtime 从这个已存在的 header 开始，Loop 是对该 Run 的一次进程执行。
 
@@ -1632,7 +1619,7 @@ Load
 
 Commit
   在锁内判定本进程 grant 有效性，调用共享 EvaluateCommit，
-  原子保存完整 TransitionRecord、projection、watermark 和幂等索引；
+  原子保存 MachineState、完整 TransitionRecord 和幂等索引；
   接受 start command 时返回本进程的 opaque ExecutionGrant
 ```
 
@@ -1678,11 +1665,11 @@ Commit
   判定私有 owner/fence/lease/recovery record 的有效性
   对 StartModelExecution/StartToolCall 在同一事务内建立 Attempt/lease
   调用共享 EvaluateCommit
-  原子保存 TransitionRecord、MachineState projection、watermark、idempotency index、
+  原子保存 MachineState、TransitionRecord、idempotency index、
   Session/artifact/usage materialization outbox 和必要的 queue claim outcome
 ```
 
-Attempt、owner、fence、lease、outbox row 和数据库 schema 不进入 `run.MachineState`。它们只保证多个 Loop attempt 不会同时取得同一个 Step/Call 的执行权。snapshot storage schema 与 Run event schema 独立版本化；snapshot 可被 truncate 后从 `RunHeader + TransitionRecord log` 重建，watermark 不得随 rebuild 清除。
+Attempt、owner、fence、lease、outbox row 和数据库 schema 不进入 `run.MachineState`。它们只保证多个 Loop attempt 不会同时取得同一个 Step/Call 的执行权。MachineState storage schema 与 Run event schema 独立版本化;需要重建状态时(存储布局迁移、一致性核对)用 `FoldRun` 从 header 和 transition log 折叠,这是运维操作而非日常路径。
 
 Durable worker 实例可绑定 owner identity；只有当前 owner 能提交其取得的 start/completion/recovery。response、cancel、host StopRun 使用不带 worker grant 的 ingress/control adapter。lease/recovery scanner 必须通过正常 command + `EvaluateCommit` 提交 Unknown 或 Model recovery，不能直接改写 MachineState。
 
@@ -1726,9 +1713,9 @@ SchemaVersion + Type           wire 兼容和 sealed fact discriminator
 Fact                           已接受的事实内容
 ```
 
-RunHeader + TransitionRecord log 是 Run execution source of truth；MachineState 是必需的同事务 projection（§5.1）。Runtime 必须把 transition log、snapshot、水位和需要一致的 Application materialization outbox 放在同一事务或锁边界。Durable adapter 必须保留完整 TransitionRecord，使其可以按 RunID/Revision replay；MemoryRuntime 可以只在进程内保留同样的记录。公共 `Runtime` 不增加 replay 方法，读取由实现或 application projection 提供。
+MachineState 是 Run execution authority;`RunHeader + TransitionRecord log` 是同事务原子写入的 canonical record(§5.1)。Runtime 必须把状态、transition log 和需要一致的 Application materialization outbox 放在同一事务或锁边界。Durable adapter 必须保留完整 TransitionRecord,使其可以按 RunID/Revision replay(审计、投影、导入/迁移);MemoryRuntime 可以只在进程内保留同样的记录。公共 `Runtime` 不增加 replay 方法,读取由实现或 application projection 提供。
 
-Replay 按 RunID/Revision 取出 TransitionRecord，从经 `ValidateRunHeader` 验证的 `RunHeader.InitialState`（Revision=0）开始依次展开其中的 AgentEvent，并调用对应 `SchemaVersion` 的 `Machine.EvolveVersion` 折叠。折叠只依赖 Evolve，不重新运行 Decide——决策结果已经记录在事实里，Machine 决策规则的演进不影响历史事件的折叠；折叠不产生任何外部 effect。仲裁按 §5.1 的规则：transition log 完整（maxRevision >= watermark 且每条 transition digest 正确）时日志为准，snapshot 分歧或缺失自动重建并记录重建事件；日志尾部低于水位或尾部 transition 不完整时 halt。事件流内部的 RunID 不匹配、SchemaVersion/Type 不支持、同一 transition 的 CommandID/CommandDigest 不一致、Revision/Index 缺洞、fact digest 或 transition digest 不匹配同样按日志损坏处理，halt 该 Run。
+Replay(`FoldRun`)按 RunID/Revision 取出 TransitionRecord,从经 `ValidateRunHeader` 验证的 `RunHeader.InitialState`(Revision=0)开始依次展开其中的 AgentEvent,并调用对应 `SchemaVersion` 的 `Machine.EvolveVersion` 折叠。折叠只依赖 Evolve,不重新运行 Decide——决策结果已经记录在事实里;折叠不产生任何外部 effect。它服务导入/迁移(目标侧以 fold 结果为初始权威状态,不信任上传的 snapshot)、conformance 等价测试与运维核对;日常恢复不经过它。fold 过程中 RunID 不匹配、SchemaVersion/Type 不支持、同一 transition 的 CommandID/CommandDigest 不一致、Revision/Index 缺洞、fact digest 或 transition digest 不匹配都拒绝折叠——对导入而言即拒绝该上传;对核对而言即报告损坏,后续处理是运维决定。
 
 Replay 的起点是 `RunHeader` 中已建立并持久化的最小 `MachineState`；初始用户输入通过 `AcceptInput` transition 重放。Session/Queue admission lineage 由各自 domain 记录，并通过 causation/provenance 与 RunHeader 关联。
 
@@ -1836,7 +1823,7 @@ response 101 只完成 B；D 仍可执行，不必等待 C。response 102 再完
 
 Durable adapter 在 Application/Memoh 实现，是 Runtime contract 的第一个真实外部消费方；它在 session/queue 包之前进行——contract 若与真实数据库事务模型不契合，反馈必须在建更多包之前回来。它不依赖 `agent/session`、`agent/queue` 包：materialization 契约（§2.6 的 source event identity、causation、finalization barrier）落在 Application 现有的 history/session 存储上；steer/follow-up 复用 Application 现有 queue。
 
-1. 持久化 `RunHeader`、TransitionRecord log、MachineState projection 和 watermark。
+1. 持久化 `RunHeader`、MachineState(execution authority)和 TransitionRecord log(canonical record)。
 2. 用 transaction/CAS 实现 `run.Runtime.Load/Commit`，私有实现 owner/fence/lease/Attempt/recovery。
 3. 将 Run transition、Session materialization outbox、artifact/usage projection 和 finalization state 放在同一事务，或使用可幂等 inbox/outbox 恢复；Application 要把每一个 Run 的 lifecycle 记录为语义历史条目（现有存储加 source_event_id 幂等键即可，无需新包）。
 4. 语义历史已记录 `RunFinalized`（或存在与之事务耦合的 marker）后才 archive/GC Run log；长期语义不依赖保留旧 Run log。
@@ -1998,11 +1985,10 @@ RunStopped/RunFailed 保留最近已接受的 ModelResult
 Cancel 与 Unknown 的提交先后决定终态
 CancelRun 在过期 BaseRevision 上对非 terminal Run 重新评估
 RejectModelResult 必须带有效 Model grant；AlreadyApplied 重放不重复累计 usage
-持久化状态与按 EvolveVersion 折叠的 TransitionRecord log 一致；snapshot 分歧或缺失且日志完整 -> 自动重建并报告，重建不改变健康状态
-transition log 尾部低于 revision 水位或尾部 transition 不完整 -> ErrLogTruncated/log damage，halt 该 Run
-TransitionRecord 内部 Revision/Index 缺洞、事实 digest 或 transition digest 不匹配 -> fold 拒绝，按日志损坏处理
+持久化状态与按 EvolveVersion 折叠的 TransitionRecord log 一致（replay-fold 等价，双写正确性的回归测试）
+FoldRun/FoldTransitions 对 Revision/Index 缺洞、事实 digest 或 transition digest 不匹配拒绝折叠（导入/迁移的验证入口）
 ModelStepPrepared/ToolStepOpened 自包含：携带的 digest 折叠后可重现 Step 身份
-golden transition stream：固定 v1 命令序列折叠出冻结的状态字节
+golden transition stream：固定 v1 命令序列折叠出冻结的状态字节（回归测试；迁移功能排期时升级为版本冻结校验）
 ```
 
 ### 14.4 `agent/es`
@@ -2031,7 +2017,7 @@ SteerItem/FollowUpItem 只作为 application payload，不污染 queue core
 ```text
 queue FIFO、accepted-order reorder、typed ID isolation
 assigned follow-up 只由正确的 admission claim
-RunHeader、TransitionRecord、MachineState projection 与 watermark 一致
+RunHeader、TransitionRecord 与 MachineState 同事务一致
 Session materialization、artifact/usage outbox 与 Run transition 原子或可幂等恢复
 assistant tool-call 和 tool result 只 materialize 一次
 多 response rows 与逐次 wake/idempotency
@@ -2065,9 +2051,9 @@ Application 的 queue/session/admission 语义属于各自 domain；Application 
 2. breaking release 版本和 durable protocol upgrade window。
 3. EventSink payload schema，以及是否需要在 durable outbox 中加入跨进程 execution epoch。
 
-本规范已经固定：Cancel 与 Unknown 按提交先后决定终态；`run.ModelRequest` 冻结完整的 generation options，streaming 只是 `run.ModelInvoker` 的可选执行路径，不改变 Run command/event 语义。Run Machine 采用 Decide/Evolve 拆分：Decide 承载全部决策并在提交时产出结果事实，Evolve 是机械折叠、与事件编码同属永久兼容契约；`RunHeader + TransitionRecord log` 为 Run execution source of truth，MachineState 为必需的同事务 projection，分歧仲裁按 §5.1（transition log 完整则自动重建，日志尾部低于水位或 transition 不完整则 halt）。结构性 malformed 的模型结果通过 `RejectModelResult` 的 disposition 在同一冻结 request 上重试或失败；fixed model/limits 不进入 MachineState；usage 在 MachineState 内逐字段累计；steer 由 Application 的 queue-safe admission gate 保证进入下一个 ModelStep；工具不做效果分级，计划内停机以排空代替，Unknown 语义只覆盖崩溃和 lease 失效。
+本规范已经固定：Cancel 与 Unknown 按提交先后决定终态；`run.ModelRequest` 冻结完整的 generation options，streaming 只是 `run.ModelInvoker` 的可选执行路径，不改变 Run command/event 语义。Run Machine 采用 Decide/Evolve 拆分：Decide 承载全部决策并在提交时产出结果事实，Evolve 是机械折叠、版本内稳定；MachineState 为 Run execution authority（durable continuation 经 `Load` 直接恢复），`RunHeader + TransitionRecord log` 为同事务原子写入的 canonical record（审计、投影、经验证的导入/迁移），两者分歧属实现缺陷，处理为运维决定（§5.1）。结构性 malformed 的模型结果通过 `RejectModelResult` 的 disposition 在同一冻结 request 上重试或失败；fixed model/limits 不进入 MachineState；usage 在 MachineState 内逐字段累计；steer 由 Application 的 queue-safe admission gate 保证进入下一个 ModelStep；工具不做效果分级，计划内停机以排空代替，Unknown 语义只覆盖崩溃和 lease 失效。
 
-本规范采用 `RunHeader + TransitionRecord log` 为 Run execution source of truth（§5.1）：三个稳定条件（ontology 冻结、versioned Evolve 冻结、事实自包含）由 Decide/Evolve 拆分保障，revision 水位保护 transition log 尾部完整性，TransitionDigest 保护单个 transition 内部的完整事件组。MachineState 保持为必需的同事务 projection——提交验证要求当前状态在临界区内可得，这与日志权威并不冲突。跨 Run 语义不从旧 Run log 读取，而由 Session ES、artifact、memory/context projection 构造。
+本规范采用 MachineState 为 Run execution authority、`RunHeader + TransitionRecord log` 为 canonical record（§5.1）：稳定条件（ontology 冻结、versioned Evolve 版本内稳定、事实自包含）由 Decide/Evolve 拆分保障，TransitionDigest 保护单个 transition 内部的完整事件组。恢复执行走 `Load(MachineState)`；`FoldRun` 服务导入/迁移与诊断。重新收紧为日志权威的触发条件（执行历史 fork 成为产品功能，或状态存储不可信而日志存储可信的部署形态）记录于 §5.1。跨 Run 语义不从旧 Run log 读取，而由 Session ES、artifact、memory/context projection 构造。
 
 ## 附录 A：最小 public API 草案
 
@@ -2812,7 +2798,7 @@ func (l *Loop) Run(context.Context, Runtime, EventSink) (LoopResult, error)
 8. Waiting response 只推进对应 Call；approval approved 先变 Pending，随后由 Loop 执行工具。日志记录结果事实（`ToolCallFailed{permission_denied}`、`RunEnded{cancelled}`），不记录请求本身。
 9. 幂等按 command 判定：相同 CommandID/digest 重放返回 CommitAlreadyApplied 与原事件组（不重新运行 Decide），不重复写入 projection、history、queue action 或 outbox；相同 CommandID 不同 digest 冲突。
 10. 一次接受的 transition 使 Revision 恰好加一；其全部事实共享该 Revision，Index 组内连续，提交后 `Snapshot.Revision` 等于该 Revision。
-11. `RunHeader + TransitionRecord log` 是 Run execution source of truth；MachineState 是必需的同事务 projection，可按 `EvolveVersion` 从经验证的 header 和 transition log 重建。对任意 Revision，状态必须等于 `RunHeader.InitialState` 经 `flatten(TransitionRecord[].Events)` 折叠的结果；snapshot 分歧或缺失且日志完整时自动重建并记录，日志尾部低于 revision 水位或 transition digest/事件组不完整时 halt 该 Run。
+11. MachineState 是 Run execution authority,durable continuation 经 `Load` 直接恢复;`RunHeader + TransitionRecord log` 是同事务原子写入的 canonical record,服务审计、投影与经验证的导入/迁移。对任意 Revision,状态应当等于 `RunHeader.InitialState` 经 `flatten(TransitionRecord[].Events)` 折叠的结果——由 replay-fold 等价测试守护;分歧属实现缺陷,处理为运维决定,协议不定义自动仲裁。
 12. Evolve 的折叠语义与事件编码同属永久兼容契约，按 SchemaVersion 冻结；Replay 通过 `EvolveVersion` 选择历史语义；Decide 的决策规则可随版本演进，因为决策结果已记录为事实。
 13. 已知工具失败交给下一次模型请求；Unknown 终止 Run，不自动重试、不查询外部系统。
 14. worker cancellation 不等于 RunStopped；业务停止必须提交控制 command。宿主的业务停止先提交 `CancelRun`，再取消 Loop 的 ctx；ctx 取消本身只结束执行尝试，工具 worker 运行到自身结束。
