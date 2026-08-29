@@ -208,7 +208,7 @@ run-owned 冻结形态遵守以下规则；`FreezeModelRequest`、`FreezeModelRe
 3. `ToolChoice` 是封闭类型 `{Mode: auto|none|required|tool, Tool string}`，不使用 `any`。
 4. 消息 part 是 sealed union 的 agent value（text/reasoning/image/file/tool-call/tool-result），不持久化 `sdk.MessagePart` interface。
 5. 消息中的二进制内容有两种形式：inline bytes（canonical 编码为 base64），或稳定的内容寻址引用 `BlobRef{Digest, MediaType, ByteSize}`。`BlobRef` 的字节解析由组装 `ModelInvoker` 的一方负责；带时效的 URL 等不稳定引用不能进入冻结请求。两种形式产生不同的 digest，Planner 对同一内容必须确定性地选择一种形式。
-6. provider metadata、provider options、tool input/result、response format schema 等扩展字段的值必须是 JSON 值。进入 `agent/run` 前必须 parse/canonicalize 成 opaque `CanonicalJSON`（由 `agent/jsonstable.Value` 承载，内部 bytes 不可被 run core 或 caller 直接构造/修改）；不能保存 caller-owned map/slice/RawMessage 或 `any`。canonicalization 必须拒绝会把不同 payload 折叠成同一值的输入，包括重复 object key、trailing data、invalid UTF-8 和 escaped lone surrogate（`\ud800`..`\udfff`）。
+6. provider metadata、provider options、tool input/result、response format schema 等扩展字段的值必须是 JSON 值。进入 `agent/run` 前必须按 RFC 8785/JCS parse/canonicalize 成 opaque `CanonicalJSON`（由 `agent/jsonstable.Value` 承载，内部 bytes 不可被 run core 或 caller 直接构造/修改）；不能保存 caller-owned map/slice/RawMessage 或 `any`。JSON number 采用 IEEE-754 binary64 语义，精确 ID 或任意精度数值必须编码为 JSON string；canonicalization 必须拒绝会把不同 payload 折叠成同一值的输入，包括重复 object key、trailing data、invalid UTF-8 和 escaped lone surrogate（`\ud800`..`\udfff`）。
 7. `DigestRequest` 覆盖 frozen `ModelRequest` 的全部字段，不设排除项。cache 配置等只影响成本的字段同样参与摘要；排除任何字段都会把不同请求判成同一事件，产生错误的 `CommitAlreadyApplied`。
 
 边界的 SDK 类型可以保持以下形态；agent 的持久化 `ModelRequest`/`ToolDefinition` 是相同语义的 concrete mirror，字段中所有接口/any/JSON 原文先在 `Freeze*` 中 canonicalize 为 `CanonicalJSON`。
@@ -1226,7 +1226,7 @@ AgentEvent 身份
 ```
 ```
 
-canonical 编码和 digest 函数由 agent 提供；Memoh 只保存和比较结果，不重新实现排序或编码。编码必须包含 sealed command/fact discriminator、按声明顺序编码有序 slice、对 map key 排序，并对 `CanonicalJSON` 原样写入其 canonical bytes；重复 object key、trailing data、invalid UTF-8、escaped lone surrogate 一律在构造 `CanonicalJSON` 或 decode wire document 时拒绝，不能让 `encoding/json` 的 replacement behavior 把不同输入合并为同一 digest；不把 `Digest`、BaseRevision、Revision、Index 或 ExecutionGrant 编入 digest。
+canonical 编码和 digest 函数由 agent 提供；Memoh 只保存和比较结果，不重新实现排序或编码。`CanonicalJSON` 按 RFC 8785/JCS 编码，并采用 IEEE-754 binary64 number 语义；精确 ID 或任意精度数值必须是 JSON string，因此 PostgreSQL JSONB 的结构化重写在重新 canonicalize 后保持 digest 稳定。编码必须包含 sealed command/fact discriminator、按声明顺序编码有序 slice、对 map key 排序，并对 `CanonicalJSON` 原样写入其 canonical bytes；重复 object key、trailing data、invalid UTF-8、escaped lone surrogate 一律在构造 `CanonicalJSON` 或 decode wire document 时拒绝，不能让 `encoding/json` 的 replacement behavior 把不同输入合并为同一 digest；不把 `Digest`、BaseRevision、Revision、Index 或 ExecutionGrant 编入 digest。
 
 已发布 `SchemaVersion` 的 canonical 编码和 digest 规则永久冻结；字段增删只能进入新的 SchemaVersion，旧事件按其自带版本校验。同一个 Run 不允许由写入不同 SchemaVersion 的进程混跑：升级窗口内先全量部署可读写新版本的代码，再开始写入新版本；否则同一 command 的重放会因编码不同被误判为 `ErrCommandConflict`。
 
