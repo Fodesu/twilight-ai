@@ -60,6 +60,11 @@ linters:
 
 run:
   timeout: 5m
+  # Tests are compiled and executed by the dedicated CI test job. golangci-lint
+  # v2.11.3 fails to resolve the valid external-test graph
+  # agent_test -> agent/runtimetest -> agent on Linux, so lint production
+  # packages here instead of duplicating that typecheck.
+  tests: false
 
 issues:
   max-issues-per-linter: 0
