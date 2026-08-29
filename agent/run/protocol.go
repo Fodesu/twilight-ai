@@ -8,7 +8,7 @@ import (
 )
 
 // SchemaVersion1 is the first published wire schema. Canonical encoding and
-// Evolve folding semantics for a published version are frozen forever.
+// Evolve folding semantics stay stable within a published version.
 const SchemaVersion1 uint16 = 1
 
 // currentSchemaVersion is what new commands and facts are written with.
