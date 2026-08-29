@@ -1,4 +1,4 @@
-package agent
+package run
 
 // Fact is one committed outcome produced by Machine.Decide. Facts are wrapped
 // as AgentEvents; Machine.Evolve folds them mechanically (spec §3.6). The

@@ -1,10 +1,10 @@
-package agent_test
+package run_test
 
 import (
 	"testing"
 
-	"github.com/memohai/twilight-ai/agent"
-	"github.com/memohai/twilight-ai/agent/runtimetest"
+	agent "github.com/memohai/twilight-ai/agent/run"
+	"github.com/memohai/twilight-ai/agent/run/runtimetest"
 )
 
 func TestMemoryRuntimeConformance(t *testing.T) {

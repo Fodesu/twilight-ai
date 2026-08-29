@@ -3,7 +3,7 @@
 // and the canonical encoding that gives commands and facts stable identity.
 //
 // See docs/design/agent-runtime-refactor.md for the governing spec.
-package agent
+package run
 
 import (
 	"github.com/memohai/twilight-ai/agent/es"
