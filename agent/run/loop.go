@@ -86,7 +86,7 @@ func (l *Loop) Run(ctx context.Context, runtime Runtime, events EventSink) (Loop
 				l.emitCommitted(controlCtx, events, snapshot.State.RunID, res.Events)
 				continue
 			}
-			if err := l.planAndPrepare(ctx, controlCtx, runtime, &snapshot, eff.Hint); err != nil {
+			if err := l.planAndPrepare(ctx, controlCtx, runtime, events, &snapshot, eff.Hint); err != nil {
 				return LoopResult{}, err
 			}
 		case StartModelCall:
@@ -108,12 +108,21 @@ func (l *Loop) Run(ctx context.Context, runtime Runtime, events EventSink) (Loop
 }
 
 // commit builds the envelope via the sanctioned constructor and submits it.
+// A non-sentinel commit failure is replayed once with the same CommandID and
+// digest (spec §6.6 "commit response unknown"): if the first attempt actually
+// committed and only the response was lost, the replay returns AlreadyApplied
+// instead of abandoning a live grant or re-executing an expensive step.
 func (l *Loop) commit(ctx context.Context, runtime Runtime, run RunID, id CommandID, base uint64, grant ExecutionGrant, cmd AgentCommand) (CommitResult, error) {
 	env, err := BuildEnvelope(run, id, cmd)
 	if err != nil {
 		return CommitResult{}, err
 	}
-	return runtime.Commit(ctx, CommitRequest{BaseRevision: base, Grant: grant, Command: env})
+	req := CommitRequest{BaseRevision: base, Grant: grant, Command: env}
+	res, err := runtime.Commit(ctx, req)
+	if err != nil && !retriable(err) {
+		res, err = runtime.Commit(ctx, req)
+	}
+	return res, err
 }
 
 // retriable reports the commit errors that mean "reload and rederive".
@@ -146,7 +155,7 @@ func (l *Loop) emitCommitted(ctx context.Context, events EventSink, run RunID, c
 
 // --- NeedModelRequest ---
 
-func (l *Loop) planAndPrepare(ctx, controlCtx context.Context, runtime Runtime, snapshot *RuntimeSnapshot, hint PlanningHint) error {
+func (l *Loop) planAndPrepare(ctx, controlCtx context.Context, runtime Runtime, events EventSink, snapshot *RuntimeSnapshot, hint PlanningHint) error {
 	plan, err := l.Planner.Plan(ctx, hint)
 	if err != nil {
 		return err
@@ -179,7 +188,7 @@ func (l *Loop) planAndPrepare(ctx, controlCtx context.Context, runtime Runtime, 
 	}
 	cmdID := DeriveModelRequestCommandID(snapshot.State.RunID, snapshot.Revision)
 	stepID := DeriveModelStepID(snapshot.State.RunID, cmdID, binding)
-	_, err = l.commit(controlCtx, runtime, snapshot.State.RunID, cmdID, snapshot.Revision, "", PrepareModelRequest{
+	res, err := l.commit(controlCtx, runtime, snapshot.State.RunID, cmdID, snapshot.Revision, "", PrepareModelRequest{
 		StepID:        stepID,
 		Model:         model,
 		Request:       frozenRequest,
@@ -190,6 +199,10 @@ func (l *Loop) planAndPrepare(ctx, controlCtx context.Context, runtime Runtime, 
 		ToolsDigest:   toolsDigest,
 	})
 	if err == nil {
+		// ModelStepPrepared carries the frozen request — the most informative
+		// fact of the run; observers must see it like every other accepted
+		// transition.
+		l.emitCommitted(controlCtx, events, snapshot.State.RunID, res.Events)
 		return nil
 	}
 	if !retriable(err) {
@@ -538,12 +551,8 @@ func (l *Loop) settleWorkers(ctx, controlCtx context.Context, runtime Runtime, e
 			// Commit with the worker's own grant on its start base; stale
 			// bases rebase call-locally. Late results after terminal return
 			// ErrRunTerminal and are dropped (audit is the adapter's job).
-			cmdID := freshCommandID()
-			res, err := l.commit(controlCtx, runtime, run, cmdID, w.base, w.grant, cmd)
-			if err != nil && !retriable(err) {
-				// One replay with the same CommandID and digest.
-				res, err = l.commit(controlCtx, runtime, run, cmdID, w.base, w.grant, cmd)
-			}
+			// The one-shot same-CommandID replay lives inside l.commit.
+			res, err := l.commit(controlCtx, runtime, run, freshCommandID(), w.base, w.grant, cmd)
 			switch {
 			case err == nil:
 				l.emitCommitted(controlCtx, events, run, res.Events)
