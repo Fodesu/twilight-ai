@@ -58,7 +58,16 @@ func ModelStreamFromStreamResult(stream *StreamResult) ModelStream {
 				result.FinishReason = p.FinishReason
 				result.RawFinishReason = p.RawFinishReason
 				result.Usage = p.Usage
-				result.Response = cloneResponseMetadataPtr(&p.Response)
+				// Match the generate path (ModelResultFromGenerateResult):
+				// an absent metadata stays nil so streamed and generated
+				// ModelResults serialize identically — the agent runtime
+				// digests persisted results, and a non-nil pointer to a zero
+				// value would make the digest depend on the execution mode.
+				if responseMetadataZero(p.Response) {
+					result.Response = nil
+				} else {
+					result.Response = cloneResponseMetadataPtr(&p.Response)
+				}
 			case *FinishPart:
 				result.FinishReason = p.FinishReason
 				result.RawFinishReason = p.RawFinishReason

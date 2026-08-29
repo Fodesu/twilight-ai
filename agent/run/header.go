@@ -107,7 +107,8 @@ func ValidateRunHeader(h *RunHeader) error {
 	}
 	if h.InitialState.Status != RunActive || h.InitialState.Current != nil ||
 		len(h.InitialState.PendingInputs) != 0 || h.InitialState.ModelSteps != 0 ||
-		h.InitialState.Result != nil || h.InitialState.LastModelResult != nil {
+		h.InitialState.Result != nil || h.InitialState.LastModelResult != nil ||
+		h.InitialState.LastClosedStep != "" || h.InitialState.Usage != (Usage{}) {
 		return errors.New("agent: run header: initial state is not a minimal Revision-0 state")
 	}
 	stateBytes, err := encodeMachineStateWire(&h.InitialState)
