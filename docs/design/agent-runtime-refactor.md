@@ -394,9 +394,35 @@ Runtime 的 authority boundary 不能靠“调用者不要修改快照”这类�
 
 ### 2.4 `agent/session`
 
-> 实施状态：**契约先行，substrate 按需**。本节的跨 domain 契约（source event identity、causation、finalization barrier，见 §2.6）立即生效，由 durable adapter 在 Application 现有存储上落实；下述泛型 substrate API 是参考草案，由第一个真实消费方（本地持久会话或 local/durable 会话同步）定形后再实现，不预先建包。第一版 durable adapter 不依赖本包。
+> 实施状态：**契约先行,substrate 按 Ring 分批**。§2.6 的跨 domain 契约(source event identity、causation、finalization barrier)立即生效,由 durable adapter 在 Application 现有存储上落实;第一版 durable adapter 不依赖本包。Ring 1/Ring 2 在 durable adapter 的 materializer 跑通后开工,接口从运行中的消费方(materializer 与 Application 的 timeline 投影)反推定形,不从本节草案照抄。
 
-`agent/session` 是长期语义历史的 append-only ES substrate。它不写死 Twilight/Memoh 的 message ontology，而是用泛型承载上层语义事件：
+`agent/session` 是长期语义历史的 append-only ES substrate。它的范围按三环划分;一个能力进入本包必须同时满足三条判别:主流 agent 实现中已收敛出同构形状(行业验证,非发明)、不含 policy(只回答"怎么记、怎么折叠",不回答"何时/是否/对谁")、agent 折叠上下文时必须理解它。
+
+```text
+Ring 1  substrate(机制)——agent/session
+  Entry 身份/digest/causation、Store 接口(Append/Replay/Head CAS/Fork)、
+  parent/fork lineage、snapshot、SchemaVersion、memory 参考实现、conformance 套件
+
+Ring 2  通用会话语义(标准词表)——agent/session/chatlog,可选子包
+  标准事件:MessageAdded 族、TurnSuperseded、CompactCreated、BranchForked、
+  InputAccepted、RunAdmitted/RunEnded
+  SurfaceFold:折叠出 current / shadowed / log-only 三类视图(取代链完整可查)
+  ContextFold:entry 流 → 当前可见消息序列(agent 读路径)
+  未知事件归入 log-only(保留、不进 surface、不进上下文)——substrate 层拒绝
+  未知类型,chatlog 层收容应用扩展,两个姿态都是显式规则
+
+Ring 3  产品(policy 与身份)——Application,永不进入本包
+  compact 触发策略/模型/阈值、可见性与权限、多租户(team_id)、retention/合规、
+  搜索后端与排名、分享、queue 本体(协调状态)、prompt 组装的产品部分
+```
+
+Ring 1 对词表零知识(泛型 `Store[E]`);chatlog 是其上的可选词表包,应用可以不用它、用它、或在它之上扩展自定义事件。RunConfig 的教训适用于此:任何"何时/是否"的判断都属 Ring 3,不因实现方便而进入 Ring 1/2。
+
+Store 接口的 SQL 可实现性约束(设计时生效,先于任何 SQL 实现存在):payload 是不透明的 canonical bytes,store 不理解也不索引其内容;revision 由 store 逻辑经 head CAS 分配,不依赖数据库序列;全部操作是单表点查/范围扫,无 JOIN、无数据库方言特性。满足这些约束的接口映射到 SQLite/PostgreSQL/JSONL 都是平凡的。
+
+实现交付遵循 run 侧先例:本包只交付 memory 参考实现 + conformance 套件;SQL 实现随消费方——Application 形状的实现(租户、RLS、与 run transition 同事务)由 Application 自建并以 conformance 验收,本地会话/同步场景的 SQLite 实现在该功能排期时进入(届时我们自己就是消费方)。跨库能力由"接口约束 + conformance 套件对任意后端成立"保证,不由预制实现保证。
+
+它不写死 Twilight/Memoh 的 message ontology,泛型承载上层语义事件:
 
 ```go
 package session
