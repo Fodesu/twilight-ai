@@ -33,9 +33,11 @@ session    queue     run
 
 | Domain | 回答的问题 | Authority 形态 | 生命周期 |
 | --- | --- | --- | --- |
-| `agent/session` | 这个会话长期发生过什么？ | append-only Session ES | 跨多个 Run 长期存在 |
-| `agent/run` | 这一次执行如何跑到当前位置？ | RunHeader + TransitionRecord log | 单次 Run，完成后可归档/GC |
+| `agent/session` | 这个会话长期发生过什么？ | append-only Session ES；**产品跨 Run 的语义主 authority** | 跨多个 Run 长期存在 |
+| `agent/run` | 这一次执行如何跑到当前位置？ | RunHeader + TransitionRecord log；**该 Run 存活期间的 execution authority** | 单次 Run，materialize/finalize 后可归档/GC |
 | `agent/queue` | 哪些工作待处理、谁 claim、如何 dedup？ | transactional queue state | 调度生命周期 |
+
+Session 不需要保存每一个执行微步骤，但必须记录每一次 Run 的 admission、终态和继续理解会话所需的结果/引用。Run log 只服务执行、恢复和审计；它不是跨 Run 语义的最终来源。
 
 `agent/es` 是机制库，不是第四个语义 domain。它只提供 canonical envelope、digest、record completeness、revision/index 校验和 fold runner 等可复用机制；它不认识 ModelStep、Session message、queue claim 或产品 policy。
 
@@ -347,7 +349,7 @@ func FoldRecords[S any, E any](initial S, records []Record[E], folder Folder[S, 
 | --- | --- |
 | Run Machine | `MachineState`、`Step`、`ToolCallState`、`AgentCommand`、`Fact`、`AgentEvent` 和共享的 Decide/Evolve/Next 规则。 |
 | Transition | 把一次 accepted command 产生的完整 fact/event group 封装为 `TransitionRecord`。实现上可直接使用 `agent/es.Record` 或在其上包 domain metadata。 |
-| RunHeader | 正式持久协议的一部分：RunID、initial state/schema/digest、admission causation/provenance。完整 authority 是 `RunHeader + TransitionRecord log`。 |
+| RunHeader | 正式持久协议的一部分：RunID、initial state/schema/digest、admission causation/provenance。完整 **execution authority** 是 `RunHeader + TransitionRecord log`。 |
 | Runtime contract | `Load`/`Commit` authority 接口；所有语义状态变化只通过 Commit。 |
 | Loop | 唯一的多步执行算法：解释 Effect，调用 Model/Tool，再提交结果 command。 |
 | Tool contract | ToolRef、ExecutableTool、参数校验、结果分类和 response policy。 |
@@ -366,7 +368,7 @@ Provider clients / API keys
 Durable DB schema / owner/fence/lease/outbox implementation
 ```
 
-Run source of truth：
+Run execution source of truth（不替代 Session 的长期语义 authority）：
 
 ```text
 RunHeader(initial MachineState at Revision 0)
@@ -380,7 +382,7 @@ TransitionRecord log (Revision 1..N)
 MachineState_N = Fold(initial, flatten(TransitionRecord[1..N].Events))
 ```
 
-Run ES 是短生命周期 authority。Run 完成后可以 archive/GC，但前提是需要跨 Run 保留的语义已经 materialize 到长期 domain。
+Run ES 是短生命周期的 execution authority。它完成后不能再作为下一 Run 的 context 来源；只有当 Session 已记录该 Run 的 lifecycle 与所需长期语义，并且 artifact/usage 等引用可恢复时，才可以 finalization 后 archive/GC。
 
 ### 2.3.1 run-owned persisted model data
 
@@ -437,11 +439,16 @@ type Store[E any] interface {
 UserMessageAdded
 AssistantMessageAdded
 ToolResultAdded
+RunAdmitted        // RunID + RunHeader digest + admission provenance
+RunCompleted       // RunID + terminal summary + durable output/artifact refs
+RunFinalized       // 此 Run 的长期语义已吸收，可回收 execution log
 CompactCreated
 ArtifactLinked
 MemoryUpdated
 Custom product event
 ```
+
+`RunAdmitted`、`RunCompleted` 和 `RunFinalized` 是 Application 定义的 Session ontology，不是 `agent/session` 预置的类型；但每一个 Run 至少必须以这种 lifecycle entry 被 Session 记录。
 
 `agent/session` 只保证：
 
@@ -508,7 +515,9 @@ Queue 可以被 Memoh durable adapter 放进数据库事务，也可以有 in-me
 
 ### 2.6 Cross-domain materialization and finalization
 
-Run ES 可以短命的前提，是其中所有需要跨 Run 保留的语义都已经 materialize 到长期 domain：
+Session ES 是跨 Run 的语义主 authority。Run ES 可以短命的前提，是 Session 已吸收该 Run 的 lifecycle 和下一 Run/用户可见语义所需的内容；artifact、usage、trace 等长期 store 由 Session entry 引用或以同一 provenance 关联。Run log 不是长期 conversation/history 的后备来源。
+
+需要跨 Run 保留的 Run 语义 materialize 到长期 domain：
 
 ```text
 Run ES
@@ -544,14 +553,14 @@ Session causation_id    = preserved Run event causation_id
 ```text
 RunEnded
    ↓
-确保长期语义、artifact、usage/outbox 已提交或可幂等恢复
+Session 追加 RunCompleted；确保长期消息/结果、artifact、usage/outbox 已提交或可幂等恢复
    ↓
-RunFinalized control-plane marker
+Session 追加 RunFinalized（或事务耦合的 application control-plane marker）
    ↓
-Run ES 才允许 archive / GC
+Run ES execution log 才允许 archive / GC
 ```
 
-`RunFinalized` 是 run storage/control-plane marker，不是 `agent/run.Fact`，不参与 `MachineState` fold。
+`RunFinalized` 的语义归属是 Session/Application control plane，并携带 RunID 与 materialization watermark；它不是 `agent/run.Fact`，不参与 `MachineState` fold。它证明 Session 已能在不读取该 Run execution log 的情况下继续会话和构造后续 Run。
 
 ### 2.7 类型归属
 
@@ -948,7 +957,7 @@ Runtime 只回答两个问题：
 
 因此 Runtime 的接口很小，但一次 `Commit` 的事务范围可以很大：它必须让一个 AgentCommand、产出的 `TransitionRecord` 及其必要的产品投影一起成功或一起失败；这不意味着 Runtime 获得了 history、queue 或 prompt 的所有权。`CommitResult.Events` 只是该 transition 的事件流视图，方便 Loop、UI 和 observability 消费；Runtime 的 authority storage 是完整 transition aggregate。
 
-Run 语义状态的 source of truth 是 immutable `RunHeader` 加 `TransitionRecord` log；`RunHeader` 固化 Revision-0 initial state 及其 schema/digest/admission causation。MachineState 是必需的同事务 projection（execution cache）：提交验证与 Loop 执行从它读取，因此它必须与 transition log 在同一原子提交内更新，但它可以从 RunHeader 和日志重建。对任意 Revision N，状态必须等于 `RunHeader.InitialState` 按 `flatten(TransitionRecord[].Events)` 调用 versioned `Evolve` fold 到 N 的结果——这是可自动恢复的不变量，不是 halt 条件。
+Run execution 状态的 source of truth 是 immutable `RunHeader` 加 `TransitionRecord` log；它只负责该次执行的恢复与审计，不替代 Session ES 的长期语义 authority；`RunHeader` 固化 Revision-0 initial state 及其 schema/digest/admission causation。MachineState 是必需的同事务 projection（execution cache）：提交验证与 Loop 执行从它读取，因此它必须与 transition log 在同一原子提交内更新，但它可以从 RunHeader 和日志重建。对任意 Revision N，状态必须等于 `RunHeader.InitialState` 按 `flatten(TransitionRecord[].Events)` 调用 versioned `Evolve` fold 到 N 的结果——这是可自动恢复的不变量，不是 halt 条件。
 
 这个权威声明成立的三个稳定条件（本规范的规范性条款）：
 
@@ -1713,7 +1722,7 @@ SchemaVersion + Type           wire 兼容和 sealed fact discriminator
 Fact                           已接受的事实内容
 ```
 
-RunHeader + TransitionRecord log 是 Run source of truth；MachineState 是必需的同事务 projection（§5.1）。Runtime 必须把 transition log、snapshot、水位和需要一致的 Application materialization outbox 放在同一事务或锁边界。Durable adapter 必须保留完整 TransitionRecord，使其可以按 RunID/Revision replay；MemoryRuntime 可以只在进程内保留同样的记录。公共 `Runtime` 不增加 replay 方法，读取由实现或 application projection 提供。
+RunHeader + TransitionRecord log 是 Run execution source of truth；MachineState 是必需的同事务 projection（§5.1）。Runtime 必须把 transition log、snapshot、水位和需要一致的 Application materialization outbox 放在同一事务或锁边界。Durable adapter 必须保留完整 TransitionRecord，使其可以按 RunID/Revision replay；MemoryRuntime 可以只在进程内保留同样的记录。公共 `Runtime` 不增加 replay 方法，读取由实现或 application projection 提供。
 
 Replay 按 RunID/Revision 取出 TransitionRecord，从经 `ValidateRunHeader` 验证的 `RunHeader.InitialState`（Revision=0）开始依次展开其中的 AgentEvent，并调用对应 `SchemaVersion` 的 `Machine.EvolveVersion` 折叠。折叠只依赖 Evolve，不重新运行 Decide——决策结果已经记录在事实里，Machine 决策规则的演进不影响历史事件的折叠；折叠不产生任何外部 effect。仲裁按 §5.1 的规则：transition log 完整（maxRevision >= watermark 且每条 transition digest 正确）时日志为准，snapshot 分歧或缺失自动重建并记录重建事件；日志尾部低于水位或尾部 transition 不完整时 halt。事件流内部的 RunID 不匹配、SchemaVersion/Type 不支持、同一 transition 的 CommandID/CommandDigest 不一致、Revision/Index 缺洞、fact digest 或 transition digest 不匹配同样按日志损坏处理，halt 该 Run。
 
@@ -1815,7 +1824,7 @@ response 101 只完成 B；D 仍可执行，不必等待 C。response 102 再完
 
 1. 将现有 root `agent` 中的 Machine、Loop、Runtime、MemoryRuntime、model data、tool contract、codec、runtimetest 移到 `agent/run`。
 2. 删除 `RunConfig`、`RunSeed`、`NextRun`、旧 `Initialize(run, config, seed)` 以及对应 codec/digest；目标 API 只有 `InitializeRun(runID)`，初始输入通过 `AcceptInput` transition。
-3. 把 `RunHeader` 实现为正式 authority record；rebuild/fold API 以 header 为起点。
+3. 把 `RunHeader` 实现为正式 execution authority record；rebuild/fold API 以 header 为起点。
 4. 让 `MemoryRuntime` 成为同一 Run ES 的最轻 reference runtime，而不是另一种 agent；它可以没有 lease/DB/heartbeat，但不能跳过 execution event semantics。
 5. 更新 import path、examples、conformance 和 golden streams；此时尚未合并，不保留 root `agent` compatibility wrapper。
 
@@ -1852,8 +1861,8 @@ Durable adapter 在 Application/Memoh 实现：
 
 1. 持久化 `RunHeader`、TransitionRecord log、MachineState projection 和 watermark。
 2. 用 transaction/CAS 实现 `run.Runtime.Load/Commit`，私有实现 owner/fence/lease/Attempt/recovery。
-3. 将 Run transition、Session materialization outbox、artifact/usage projection 和 finalization state 放在同一事务，或使用可幂等 inbox/outbox 恢复。
-4. `RunFinalized` 后才 archive/GC Run log；Session/Artifact/Usage 的长期语义不依赖保留旧 Run log。
+3. 将 Run transition、Session materialization outbox、artifact/usage projection 和 finalization state 放在同一事务，或使用可幂等 inbox/outbox 恢复；Application 要把每一个 Run 的 lifecycle 记录为 Session event。
+4. Session 已追加 `RunFinalized`（或存在与之事务耦合的 marker）后才 archive/GC Run log；Session/Artifact/Usage 的长期语义不依赖保留旧 Run log。
 
 ## 12. Cross-domain orchestration contract
 
@@ -1865,13 +1874,17 @@ Session semantic history + artifacts + memory + compact
     -> RequestPlanner
     -> run.PrepareModelRequest
 
-run TransitionRecord
+Session RunAdmitted
+    -> new RunHeader + first AcceptInput
+    -> run TransitionRecord (short-lived execution trace)
     -> durable materializer/outbox
-    -> session entries / artifact refs / usage projection
+    -> Session RunCompleted + messages/results/artifact refs/usage projection
+    -> Session RunFinalized
+    -> Run log archive / GC is now permitted
 
 queue claim
     -> queue-safe admission policy
-    -> run.AcceptInput or new RunHeader + first AcceptInput
+    -> Session lifecycle entry + run.AcceptInput or new RunHeader
 ```
 
 每个 ModelStep 应记录足以审计输入来源的 `ContextManifest`（位置可为 `ModelStepPrepared` 中的 immutable reference 或 companion artifact）：
@@ -2019,8 +2032,8 @@ lease expiry/recovery/unknown outcome
 eligible steer 存在时 Prepare 在同一事务内被拒绝，AcceptInput 先应用，重新规划携带该输入
 并行 Call 中一个 Unknown 后撤销其他 grant，迟到结果不改变终态
 terminal Run 与 session settled 分离
-RunEnded 后未 finalization 不允许 archive/GC
-RunFinalized 后 Session/Artifact/Usage 仍可完整构造下一 Run context
+RunEnded 后未写入 Session RunFinalized 不允许 archive/GC
+Session RunFinalized 后 Session/Artifact/Usage 仍可完整构造下一 Run context
 EventSink gap 后可由 durable snapshot 对账
 ```
 
@@ -2045,9 +2058,9 @@ Application 的 queue/session/admission 语义属于各自 domain；Application 
 2. breaking release 版本和 durable protocol upgrade window。
 3. EventSink payload schema，以及是否需要在 durable outbox 中加入跨进程 execution epoch。
 
-本规范已经固定：Cancel 与 Unknown 按提交先后决定终态；`run.ModelRequest` 冻结完整的 generation options，streaming 只是 `run.ModelInvoker` 的可选执行路径，不改变 Run command/event 语义。Run Machine 采用 Decide/Evolve 拆分：Decide 承载全部决策并在提交时产出结果事实，Evolve 是机械折叠、与事件编码同属永久兼容契约；`RunHeader + TransitionRecord log` 为 Run source of truth，MachineState 为必需的同事务 projection，分歧仲裁按 §5.1（transition log 完整则自动重建，日志尾部低于水位或 transition 不完整则 halt）。结构性 malformed 的模型结果通过 `RejectModelResult` 的 disposition 在同一冻结 request 上重试或失败；fixed model/limits 不进入 MachineState；usage 在 MachineState 内逐字段累计；steer 由 Application 的 queue-safe admission gate 保证进入下一个 ModelStep；工具不做效果分级，计划内停机以排空代替，Unknown 语义只覆盖崩溃和 lease 失效。
+本规范已经固定：Cancel 与 Unknown 按提交先后决定终态；`run.ModelRequest` 冻结完整的 generation options，streaming 只是 `run.ModelInvoker` 的可选执行路径，不改变 Run command/event 语义。Run Machine 采用 Decide/Evolve 拆分：Decide 承载全部决策并在提交时产出结果事实，Evolve 是机械折叠、与事件编码同属永久兼容契约；`RunHeader + TransitionRecord log` 为 Run execution source of truth，MachineState 为必需的同事务 projection，分歧仲裁按 §5.1（transition log 完整则自动重建，日志尾部低于水位或 transition 不完整则 halt）。结构性 malformed 的模型结果通过 `RejectModelResult` 的 disposition 在同一冻结 request 上重试或失败；fixed model/limits 不进入 MachineState；usage 在 MachineState 内逐字段累计；steer 由 Application 的 queue-safe admission gate 保证进入下一个 ModelStep；工具不做效果分级，计划内停机以排空代替，Unknown 语义只覆盖崩溃和 lease 失效。
 
-本规范采用 `RunHeader + TransitionRecord log` 为 Run source of truth（§5.1）：三个稳定条件（ontology 冻结、versioned Evolve 冻结、事实自包含）由 Decide/Evolve 拆分保障，revision 水位保护 transition log 尾部完整性，TransitionDigest 保护单个 transition 内部的完整事件组。MachineState 保持为必需的同事务 projection——提交验证要求当前状态在临界区内可得，这与日志权威并不冲突。跨 Run 语义不从旧 Run log 读取，而由 Session ES、artifact、memory/context projection 构造。
+本规范采用 `RunHeader + TransitionRecord log` 为 Run execution source of truth（§5.1）：三个稳定条件（ontology 冻结、versioned Evolve 冻结、事实自包含）由 Decide/Evolve 拆分保障，revision 水位保护 transition log 尾部完整性，TransitionDigest 保护单个 transition 内部的完整事件组。MachineState 保持为必需的同事务 projection——提交验证要求当前状态在临界区内可得，这与日志权威并不冲突。跨 Run 语义不从旧 Run log 读取，而由 Session ES、artifact、memory/context projection 构造。
 
 ## 附录 A：最小 public API 草案
 
@@ -2792,7 +2805,7 @@ func (l *Loop) Run(context.Context, Runtime, EventSink) (LoopResult, error)
 8. Waiting response 只推进对应 Call；approval approved 先变 Pending，随后由 Loop 执行工具。日志记录结果事实（`ToolCallFailed{permission_denied}`、`RunEnded{cancelled}`），不记录请求本身。
 9. 幂等按 command 判定：相同 CommandID/digest 重放返回 CommitAlreadyApplied 与原事件组（不重新运行 Decide），不重复写入 projection、history、queue action 或 outbox；相同 CommandID 不同 digest 冲突。
 10. 一次接受的 transition 使 Revision 恰好加一；其全部事实共享该 Revision，Index 组内连续，提交后 `Snapshot.Revision` 等于该 Revision。
-11. `RunHeader + TransitionRecord log` 是 Run source of truth；MachineState 是必需的同事务 projection，可按 `EvolveVersion` 从经验证的 header 和 transition log 重建。对任意 Revision，状态必须等于 `RunHeader.InitialState` 经 `flatten(TransitionRecord[].Events)` 折叠的结果；snapshot 分歧或缺失且日志完整时自动重建并记录，日志尾部低于 revision 水位或 transition digest/事件组不完整时 halt 该 Run。
+11. `RunHeader + TransitionRecord log` 是 Run execution source of truth；MachineState 是必需的同事务 projection，可按 `EvolveVersion` 从经验证的 header 和 transition log 重建。对任意 Revision，状态必须等于 `RunHeader.InitialState` 经 `flatten(TransitionRecord[].Events)` 折叠的结果；snapshot 分歧或缺失且日志完整时自动重建并记录，日志尾部低于 revision 水位或 transition digest/事件组不完整时 halt 该 Run。
 12. Evolve 的折叠语义与事件编码同属永久兼容契约，按 SchemaVersion 冻结；Replay 通过 `EvolveVersion` 选择历史语义；Decide 的决策规则可随版本演进，因为决策结果已记录为事实。
 13. 已知工具失败交给下一次模型请求；Unknown 终止 Run，不自动重试、不查询外部系统。
 14. worker cancellation 不等于 RunStopped；业务停止必须提交控制 command。宿主的业务停止先提交 `CancelRun`，再取消 Loop 的 ctx；ctx 取消本身只结束执行尝试，工具 worker 运行到自身结束。
