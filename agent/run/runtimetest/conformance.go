@@ -21,8 +21,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/memohai/twilight-ai/agent/run"
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/agent/run"
+	"github.com/memohai/twilight/sdk"
 )
 
 // Factory constructs the Runtime under test from an already-initialized

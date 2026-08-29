@@ -3,8 +3,8 @@ package run_test
 import (
 	"testing"
 
-	"github.com/memohai/twilight-ai/agent/run"
-	"github.com/memohai/twilight-ai/agent/run/runtimetest"
+	"github.com/memohai/twilight/agent/run"
+	"github.com/memohai/twilight/agent/run/runtimetest"
 )
 
 // MemoryRuntime is the reference implementation of the Runtime contract; it

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/memohai/twilight-ai/agent/es"
+	"github.com/memohai/twilight/agent/es"
 )
 
 // ErrLogTruncated reports that a Run's event log ends below its revision

@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/sdk"
 )
 
 func TestMemoryRuntimeClonesInitialState(t *testing.T) {

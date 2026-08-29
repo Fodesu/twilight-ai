@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/sdk"
 )
 
 // Loop is the in-process interpreter of one Run (spec §6). It holds no
