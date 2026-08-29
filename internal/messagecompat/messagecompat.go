@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/sdk"
 )
 
 // Normalize clones messages and applies provider-specific instruction-role

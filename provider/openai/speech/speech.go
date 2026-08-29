@@ -14,9 +14,9 @@ import (
 	"net/http"
 	"strings"
 
-	sdk "github.com/memohai/twilight/sdk"
+	sdk "github.com/felinics/twilight/sdk"
 
-	"github.com/memohai/twilight/internal/utils"
+	"github.com/felinics/twilight/internal/utils"
 )
 
 const (

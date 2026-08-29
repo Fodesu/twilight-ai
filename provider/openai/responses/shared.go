@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/memohai/twilight/internal/utils"
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/internal/utils"
+	"github.com/felinics/twilight/sdk"
 )
 
 // streamingToolCall accumulates one function call's argument deltas. args

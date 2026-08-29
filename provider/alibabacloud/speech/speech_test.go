@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	sdk "github.com/felinics/twilight/sdk"
 	"github.com/gorilla/websocket"
-	sdk "github.com/memohai/twilight/sdk"
 )
 
 var wsUpgrader = websocket.Upgrader{

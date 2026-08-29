@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/sdk"
 )
 
 func TestDoCreateBuildsArkContent(t *testing.T) {

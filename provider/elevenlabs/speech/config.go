@@ -3,7 +3,7 @@ package speech
 import (
 	"strings"
 
-	"github.com/memohai/twilight/internal/utils"
+	"github.com/felinics/twilight/internal/utils"
 )
 
 // audioConfig holds ElevenLabs-specific TTS options extracted from SpeechParams.Config.

@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/sdk"
 )
 
 func TestDoCreateMapsVideoRequest(t *testing.T) {

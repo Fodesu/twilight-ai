@@ -11,7 +11,7 @@ import (
 	"net/url"
 	"strings"
 
-	sdk "github.com/memohai/twilight/sdk"
+	sdk "github.com/felinics/twilight/sdk"
 )
 
 const (

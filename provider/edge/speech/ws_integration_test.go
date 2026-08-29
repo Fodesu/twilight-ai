@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	sdk "github.com/memohai/twilight/sdk"
+	sdk "github.com/felinics/twilight/sdk"
 )
 
 // Real Edge TTS integration tests. Not compiled by default (requires -tags=integration).

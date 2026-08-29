@@ -8,8 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/memohai/twilight/provider/openai/responses"
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/provider/openai/responses"
+	"github.com/felinics/twilight/sdk"
 )
 
 func TestMessageRolesUseNativeResponsesInstructions(t *testing.T) {

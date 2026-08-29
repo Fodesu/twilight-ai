@@ -10,10 +10,10 @@ import (
 	"os"
 	"testing"
 
+	"github.com/felinics/twilight/internal/testutil"
+	"github.com/felinics/twilight/provider/openai/completions"
+	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
-	"github.com/memohai/twilight/internal/testutil"
-	"github.com/memohai/twilight/provider/openai/completions"
-	"github.com/memohai/twilight/sdk"
 )
 
 // ---------- unit tests (mock server) ----------
@@ -298,7 +298,7 @@ func TestDoStream(t *testing.T) {
 // usage chunk arrives later, FinishStepPart.Usage ended up empty. The fix
 // defers FinishStepPart until the stream completes.
 //
-// See: https://github.com/memohai/twilight/issues/7
+// See: https://github.com/felinics/twilight/issues/7
 func TestDoStream_UsageInTrailingChunk(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

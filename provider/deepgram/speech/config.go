@@ -1,6 +1,6 @@
 package speech
 
-import "github.com/memohai/twilight/internal/utils"
+import "github.com/felinics/twilight/internal/utils"
 
 // audioConfig holds Deepgram TTS-specific options extracted from SpeechParams.Config.
 //

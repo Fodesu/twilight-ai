@@ -3,7 +3,7 @@ package openai_test
 import (
 	"testing"
 
-	openai "github.com/memohai/twilight/provider/openai"
+	openai "github.com/felinics/twilight/provider/openai"
 )
 
 // TestNormalizeReasoningEffort_IsIdentity pins the shell behaviour: the function

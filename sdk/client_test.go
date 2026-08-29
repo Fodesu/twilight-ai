@@ -8,10 +8,10 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/felinics/twilight/internal/testutil"
+	"github.com/felinics/twilight/provider/openai/completions"
+	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
-	"github.com/memohai/twilight/internal/testutil"
-	"github.com/memohai/twilight/provider/openai/completions"
-	"github.com/memohai/twilight/sdk"
 )
 
 func TestMain(m *testing.M) {

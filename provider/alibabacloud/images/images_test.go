@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/sdk"
 )
 
 func TestGenerateImageCreatesWanAsyncTaskAndPollsResult(t *testing.T) {

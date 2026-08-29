@@ -8,10 +8,10 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/memohai/twilight/internal/messagecompat"
-	"github.com/memohai/twilight/internal/utils"
-	openaiutil "github.com/memohai/twilight/provider/openai"
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/internal/messagecompat"
+	"github.com/felinics/twilight/internal/utils"
+	openaiutil "github.com/felinics/twilight/provider/openai"
+	"github.com/felinics/twilight/sdk"
 )
 
 const (

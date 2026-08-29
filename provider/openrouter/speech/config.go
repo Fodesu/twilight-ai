@@ -1,7 +1,7 @@
 package speech
 
 import (
-	"github.com/memohai/twilight/internal/utils"
+	"github.com/felinics/twilight/internal/utils"
 )
 
 // audioConfig holds OpenRouter audio-speech options extracted from SpeechParams.Config.

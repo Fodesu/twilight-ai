@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/sdk"
 )
 
 type streamProcessor struct {

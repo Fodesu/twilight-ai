@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/memohai/twilight/provider/openai/codex"
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/provider/openai/codex"
+	"github.com/felinics/twilight/sdk"
 )
 
 // TestDoGenerate_FilePartOmittedNotice: Codex has no confirmed native file

@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/memohai/twilight/provider/anthropic/messages"
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/provider/anthropic/messages"
+	"github.com/felinics/twilight/sdk"
 )
 
 type anthropicRoleBody struct {

@@ -9,10 +9,10 @@ import (
 	"os"
 	"testing"
 
+	"github.com/felinics/twilight/internal/testutil"
+	"github.com/felinics/twilight/provider/anthropic/messages"
+	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
-	"github.com/memohai/twilight/internal/testutil"
-	"github.com/memohai/twilight/provider/anthropic/messages"
-	"github.com/memohai/twilight/sdk"
 )
 
 // ---------- unit tests (mock server) ----------

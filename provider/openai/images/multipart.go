@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/memohai/twilight/internal/utils"
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/internal/utils"
+	"github.com/felinics/twilight/sdk"
 )
 
 // doEditMultipart sends an image edit request as multipart/form-data.

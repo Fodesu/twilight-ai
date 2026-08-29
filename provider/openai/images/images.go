@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/memohai/twilight/internal/utils"
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/internal/utils"
+	"github.com/felinics/twilight/sdk"
 )
 
 const defaultBaseURL = "https://api.openai.com/v1"

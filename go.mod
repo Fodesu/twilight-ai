@@ -1,4 +1,4 @@
-module github.com/memohai/twilight
+module github.com/felinics/twilight
 
 go 1.25.7
 

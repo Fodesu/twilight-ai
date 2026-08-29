@@ -8,8 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/memohai/twilight/provider/openai/responses"
-	sdk "github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/provider/openai/responses"
+	sdk "github.com/felinics/twilight/sdk"
 )
 
 // A reasoning item may carry several summary entries. Each becomes its own

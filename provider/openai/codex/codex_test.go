@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/memohai/twilight/provider/openai/codex"
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/provider/openai/codex"
+	"github.com/felinics/twilight/sdk"
 )
 
 func TestCodexDoGenerate_RequestShapeAndStream(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	sdk "github.com/memohai/twilight/sdk"
+	sdk "github.com/felinics/twilight/sdk"
 )
 
 // mockAzureTTSHandler returns an HTTP handler simulating the Azure TTS endpoint.

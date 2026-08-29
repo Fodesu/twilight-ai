@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/sdk"
 )
 
 func TestDeveloperMessageJSONRoundTrip(t *testing.T) {
