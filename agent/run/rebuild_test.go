@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/memohai/twilight-ai/sdk"
+	"github.com/memohai/twilight/sdk"
 )
 
 // Event-sourcing arbitration tests (spec §5.1): the log is the source of

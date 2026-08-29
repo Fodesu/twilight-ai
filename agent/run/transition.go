@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/memohai/twilight-ai/agent/es"
+	"github.com/memohai/twilight/agent/es"
 )
 
 // TransitionRecord is the atomic authority record for one accepted

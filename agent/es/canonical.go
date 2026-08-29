@@ -11,7 +11,7 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/memohai/twilight-ai/agent/jsonstable"
+	"github.com/memohai/twilight/agent/jsonstable"
 )
 
 // Digest is a SHA-256 digest over canonical protocol bytes.

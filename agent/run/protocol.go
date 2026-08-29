@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/memohai/twilight-ai/agent/es"
+	"github.com/memohai/twilight/agent/es"
 )
 
 // SchemaVersion1 is the first published wire schema. Canonical encoding and
