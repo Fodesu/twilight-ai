@@ -1,7 +1,7 @@
 // Package runtimetest contains the shared Runtime conformance suite. Durable
 // Runtime implementations should run this suite in their own tests instead of
 // copying MemoryRuntime-specific assertions.
-package runtimetest
+package run_test
 
 import (
 	"bytes"
@@ -18,7 +18,7 @@ import (
 type Factory func(testing.TB, agent.MachineState) agent.Runtime
 
 // Run executes the shared Runtime conformance suite.
-func Run(t *testing.T, newRuntime Factory) {
+func runConformance(t *testing.T, newRuntime Factory) {
 	t.Helper()
 	t.Run("IdempotentReplay", func(t *testing.T) { testIdempotentReplay(t, newRuntime) })
 	t.Run("RevisionAndIndex", func(t *testing.T) { testRevisionAndIndex(t, newRuntime) })
@@ -447,4 +447,11 @@ func stateComparable(s *agent.MachineState) map[string]any {
 		m["toolStep"] = cur
 	}
 	return m
+}
+
+func TestMemoryRuntimeConformance(t *testing.T) {
+	runConformance(t, func(t testing.TB, initial agent.MachineState) agent.Runtime {
+		t.Helper()
+		return agent.NewMemoryRuntime(initial)
+	})
 }
