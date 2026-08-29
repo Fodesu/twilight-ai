@@ -49,31 +49,32 @@ func TestRegressionBindingMustMatchModelResult(t *testing.T) {
 	}
 }
 
-// Finding 4: integers above 2^53 keep exact digits; near-adjacent big
-// integers must not collide into one digest.
-func TestRegressionBigIntegerPrecision(t *testing.T) {
-	got, err := canonicalJSON([]byte(`{"channel_id":1234567890123456789}`))
+// Finding 4: protocol JSON follows RFC 8785 / IEEE-754 semantics, so the
+// PostgreSQL JSONB rendering of a number has the same digest as its wire
+// spelling. Exact large identifiers must be JSON strings.
+func TestRegressionJCSNumberSemantics(t *testing.T) {
+	d1, err := digestToolCallBinding("c", "", DirectExecution, cj(`{"n":1e+21}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(got) != `{"channel_id":1234567890123456789}` {
-		t.Fatalf("big integer corrupted: %s", got)
-	}
-	d1, err := digestToolCallBinding("c", "", DirectExecution, cj(`{"n":9007199254740993}`))
+	d2, err := digestToolCallBinding("c", "", DirectExecution, cj(`{"n":1000000000000000000000}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	d2, err := digestToolCallBinding("c", "", DirectExecution, cj(`{"n":9007199254740992}`))
+	if d1 != d2 {
+		t.Fatal("equivalent JCS numbers produced different binding digests")
+	}
+
+	id1, err := digestToolCallBinding("c", "", DirectExecution, cj(`{"channel_id":"9007199254740993"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d1 == d2 {
-		t.Fatal("adjacent big integers collide into one binding digest")
+	id2, err := digestToolCallBinding("c", "", DirectExecution, cj(`{"channel_id":"9007199254740992"}`))
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Non-integer numbers still use the ES6 double form.
-	got, _ = canonicalJSON([]byte(`{"a":1.0e3}`))
-	if string(got) != `{"a":1000}` {
-		t.Fatalf("float form changed: %s", got)
+	if id1 == id2 {
+		t.Fatal("distinct string identifiers collided in a binding digest")
 	}
 }
 

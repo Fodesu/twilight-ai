@@ -25,6 +25,7 @@ func TestCanonicalJSON(t *testing.T) {
 		{"number tiny goes exponential", `{"a":0.0000001}`, `{"a":1e-7}`},
 		{"number large stays plain to 1e21", `{"a":100000000000000000000}`, `{"a":100000000000000000000}`},
 		{"number 1e21 exponential", `{"a":1e21}`, `{"a":1e+21}`},
+		{"number JSONB expanded 1e21", `{"a":1000000000000000000000}`, `{"a":1e+21}`},
 		{"number shortest roundtrip", `{"a":0.1}`, `{"a":0.1}`},
 		{"string escapes minimal", `{"a":"A\nB\u0041"}`, "{\"a\":\"A\\nBA\"}"},
 		{"string control chars", `{"a":"\u0001"}`, "{\"a\":\"\\u0001\"}"},
