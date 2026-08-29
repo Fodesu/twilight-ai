@@ -394,6 +394,8 @@ Runtime 的 authority boundary 不能靠“调用者不要修改快照”这类�
 
 ### 2.4 `agent/session`
 
+> 实施状态：**契约先行，substrate 按需**。本节的跨 domain 契约（source event identity、causation、finalization barrier，见 §2.6）立即生效，由 durable adapter 在 Application 现有存储上落实；下述泛型 substrate API 是参考草案，由第一个真实消费方（本地持久会话或 local/durable 会话同步）定形后再实现，不预先建包。第一版 durable adapter 不依赖本包。
+
 `agent/session` 是长期语义历史的 append-only ES substrate。它不写死 Twilight/Memoh 的 message ontology，而是用泛型承载上层语义事件：
 
 ```go
@@ -473,6 +475,8 @@ artifact retention 策略
 这些属于 Application/Product。
 
 ### 2.5 `agent/queue`
+
+> 实施状态：**无限期推迟**。Application（Memoh）已有生产级 steer/follow-up queue；durable adapter 只需要两处集成（boundary 处 item 转 `AcceptInput`、Prepare gate 事务内检查 eligible steer），均不要求重写为泛型包。抽取本包的触发条件是出现第二个真实消费方；下述 API 为届时的参考草案。
 
 `agent/queue` 是通用 transactional queue/claim/dedup 机制，不默认使用 ES。Queue 回答“哪些工作待处理、谁拥有处理权、如何去重/过期/重排”，不是长期语义历史。
 
@@ -1828,41 +1832,44 @@ response 101 只完成 B；D 仍可执行，不必等待 C。response 102 再完
 4. 让 `MemoryRuntime` 成为同一 Run ES 的最轻 reference runtime，而不是另一种 agent；它可以没有 lease/DB/heartbeat，但不能跳过 execution event semantics。
 5. 更新 import path、examples、conformance 和 golden streams；此时尚未合并，不保留 root `agent` compatibility wrapper。
 
-### 阶段 C：实现 `agent/session`
+### 阶段 C：durable application adapter（前置）
+
+Durable adapter 在 Application/Memoh 实现，是 Runtime contract 的第一个真实外部消费方；它在 session/queue 包之前进行——contract 若与真实数据库事务模型不契合，反馈必须在建更多包之前回来。它不依赖 `agent/session`、`agent/queue` 包：materialization 契约（§2.6 的 source event identity、causation、finalization barrier）落在 Application 现有的 history/session 存储上；steer/follow-up 复用 Application 现有 queue。
+
+1. 持久化 `RunHeader`、TransitionRecord log、MachineState projection 和 watermark。
+2. 用 transaction/CAS 实现 `run.Runtime.Load/Commit`，私有实现 owner/fence/lease/Attempt/recovery。
+3. 将 Run transition、Session materialization outbox、artifact/usage projection 和 finalization state 放在同一事务，或使用可幂等 inbox/outbox 恢复；Application 要把每一个 Run 的 lifecycle 记录为语义历史条目（现有存储加 source_event_id 幂等键即可，无需新包）。
+4. 语义历史已记录 `RunFinalized`（或存在与之事务耦合的 marker）后才 archive/GC Run log；长期语义不依赖保留旧 Run log。
+5. 验收门槛：`run/runtimetest.RunConformance` 全绿，加 §14.4 的集成矩阵。
+
+### 阶段 D：实现 `agent/session`（按需，等待消费方）
+
+触发条件：本地持久会话或 local/durable 会话同步进入排期。届时 API 从阶段 C 已运行的 materializer 反推，不从草案照抄：
 
 1. 定义 generic append-only Session store、entry envelope、head CAS、parent/fork lineage、schema/digest/causation。
 2. 先提供 memory store 和 replay/fork conformance；不在 package 内写死 MessageAdded/Compact/Artifact ontology。
-3. Application 定义 session event，并实现 Run event -> Session event 的 materializer。
+3. Application 的 materializer 从现有存储迁移到本包时，语义（source_event_id、causation）保持不变。
 
-### 阶段 D：实现 `agent/queue`
+### 阶段 E：实现 `agent/queue`（按需，等待第二个消费方）
+
+触发条件：出现 Application 现有 queue 之外的第二个真实消费方。届时：
 
 1. 定义 generic enqueue/claim/ack/release/dedup/visibility contract 与 memory implementation。
 2. `SteerItem`、`FollowUpItem`、`RunQueueItem` 保持在 Application payload/policy。
 3. 不将 queue state 或 claim identity 加入 `run.MachineState`。
 
-### 阶段 E：simple in-process harness
+### 阶段 F：simple in-process harness（example 级）
 
-`agent/harness`（或 application example package）组合：
+`agent/harness`（或 application example package）组合 in-process 各件；它是示例与测试工具，不是交付物，也不是第二个 Runtime interface：
 
 ```text
-session memory store
-+ queue memory store（可选）
-+ run.MemoryRuntime
+run.MemoryRuntime
 + run.Loop
 + in-memory EventSink
-+ application RequestPlanner/materializer
++ application RequestPlanner（自持内存 history）
 ```
 
-它不是第二个 Runtime interface，不复制 Run Machine，不把 chat history 塞进 `MemoryRuntime`。它用于 local example、test、prototype，以及证明 local/durable 是同一 Run ES semantics 的不同 runtime implementation。
-
-### 阶段 F：durable application adapter
-
-Durable adapter 在 Application/Memoh 实现：
-
-1. 持久化 `RunHeader`、TransitionRecord log、MachineState projection 和 watermark。
-2. 用 transaction/CAS 实现 `run.Runtime.Load/Commit`，私有实现 owner/fence/lease/Attempt/recovery。
-3. 将 Run transition、Session materialization outbox、artifact/usage projection 和 finalization state 放在同一事务，或使用可幂等 inbox/outbox 恢复；Application 要把每一个 Run 的 lifecycle 记录为 Session event。
-4. Session 已追加 `RunFinalized`（或存在与之事务耦合的 marker）后才 archive/GC Run log；Session/Artifact/Usage 的长期语义不依赖保留旧 Run log。
+它不复制 Run Machine，不把 chat history 塞进 `MemoryRuntime`。它用于 local example、test、prototype，以及证明 local/durable 是同一 Run ES semantics 的不同 runtime implementation。
 
 ## 12. Cross-domain orchestration contract
 
