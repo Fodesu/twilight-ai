@@ -8,11 +8,12 @@ import (
 	"github.com/memohai/twilight/agent/es"
 )
 
-// ErrLogTruncated reports that a Run's event log ends below its revision
-// watermark: accepted facts are permanently gone. The Run halts — continuing
-// on a truncated log would upgrade the loss into wrong repeated execution
-// (spec §5.1). Recovery is a disaster-recovery matter, not a protocol one.
-var ErrLogTruncated = errors.New("agent: event log ends below the revision watermark")
+// ErrLogTruncated reports that the transition log ends below the revision the
+// caller expected. It is a diagnostic signal, not a protocol halt: the
+// MachineState is the execution authority (spec §5.1), so a shorter-than-
+// expected log means an audit gap, and how to handle it is an operational
+// decision.
+var ErrLogTruncated = errors.New("agent: transition log ends below the expected revision")
 
 // FoldEvents rebuilds a MachineState by folding a complete flat event stream
 // from the initial (Revision 0) state with EvolveVersion only: no Decide, no
@@ -118,13 +119,14 @@ func FoldTransitions(initial MachineState, records []TransitionRecord) (MachineS
 	return state, uint64(revision), nil
 }
 
-// Rebuild discards the in-memory snapshot and refolds it from the transition
-// log, arbitrating per spec §5.1: the log wins when it is complete
-// (maxRevision >= watermark); a log tail below the watermark halts with
-// ErrLogTruncated. It returns true when the refolded state differed from the
-// stored snapshot — with a correct implementation this never happens, so a
-// true return is an audit signal (Evolve bug, out-of-band write, or snapshot
-// corruption occurred).
+// Rebuild is an optional diagnostic (spec §5.1): it refolds the state from
+// the transition log and replaces the in-memory state with the fold result.
+// The MachineState is the execution authority, so the normal path never calls
+// this; use it for consistency checks and storage-migration rebuilds. A log
+// shorter than the last committed revision returns ErrLogTruncated (audit
+// gap). It returns true when the refolded state differed from the stored
+// state — with a correct implementation this never happens, so a true return
+// is an audit signal (Evolve bug, out-of-band write, or storage corruption).
 func (m *MemoryRuntime) Rebuild() (rebuilt bool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
