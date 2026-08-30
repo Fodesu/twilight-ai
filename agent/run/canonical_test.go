@@ -1,9 +1,28 @@
 package run
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestFreezeToolCallInputPreservesMalformedJSONText(t *testing.T) {
+	for _, input := range []any{`{"x":`, json.RawMessage(`{"x":`)} {
+		got, err := FreezeToolCallInput(input)
+		if err != nil {
+			t.Fatalf("FreezeToolCallInput(%T): %v", input, err)
+		}
+		if got.String() != `"{\"x\":"` {
+			t.Fatalf("FreezeToolCallInput(%T) = %s", input, got.String())
+		}
+	}
+
+	for _, input := range []any{string([]byte{0xff}), json.RawMessage{0xff}} {
+		if _, err := FreezeToolCallInput(input); err == nil {
+			t.Fatalf("FreezeToolCallInput(%T) accepted invalid UTF-8", input)
+		}
+	}
+}
 
 // RFC 8785 appendix test vectors plus structural cases.
 func TestCanonicalJSON(t *testing.T) {

@@ -91,6 +91,7 @@ func DigestStartOperation(
 ## 3. API 与 authority boundary
 
 ```go
+// run is github.com/memohai/twilight/agent/run.
 type Coordinator struct {
     Sessions session.Store
     Appender extension.SemanticAppender
@@ -99,7 +100,7 @@ type Coordinator struct {
     Mapper FactMapper
 }
 type DriveRequest struct { Ref TurnRef; RunID run.RunID }
-type RunDriver interface { Drive(context.Context, DriveRequest) (run.LoopResult, error) }
+type RunDriver interface { Drive(context.Context, DriveRequest) error }
 type ExecutionBindingRegistry interface { Resolve(ExecutionBindingRef) (RunDriver, error) }
 ```
 
@@ -201,7 +202,7 @@ driver.Drive(ctx, DriveRequest{Ref: ref, RunID: linkage.RunID})
 
 无论 driver 返回完成、等待、error，Coordinator 均再次 Record、调用 `MaterializeAll(record)` 补齐完整新前缀，并据 record snapshot/terminal fact 返回 Waiting 或 Result。
 
-**TRN-RSM-6** driver 的 provisional stream、LoopResult、网络响应丢失、context cancel 作为观察结果处理。driver 以 shared Runtime 的 Load/Commit 推进 MachineState；并发 Resume 依 Runtime command idempotency、revision、grant、record 一致性收敛。
+**TRN-RSM-6** driver 的 provisional stream、返回错误、网络响应丢失、context cancel 作为观察结果处理。driver 以 shared Runtime 的 Load/Commit 推进 MachineState；并发 Resume 依 Runtime command idempotency、revision、grant、record 一致性收敛。具体执行器可以使用 `agent/run/loop.Loop`，其 `LoopResult` 保持在 Application driver 内；Coordinator 始终以随后读取的 `RunRecord` 判断 waiting、terminal 与 settlement。
 
 **TRN-STP-1** Stop 先解析 linkage、Load。terminal Run 进入 record/materialize/settlement；active Run 以稳定 domain-separated CancelRun CommandID 构造 `CancelRun{Reason:ReasonCancelled}`，并经 shared Runtime Commit。
 

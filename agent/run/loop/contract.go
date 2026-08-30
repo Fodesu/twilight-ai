@@ -1,8 +1,10 @@
-package run
+package loop
 
 import (
 	"context"
 	"encoding/json"
+
+	run "github.com/memohai/twilight/agent/run"
 
 	"github.com/memohai/twilight/sdk"
 )
@@ -12,21 +14,21 @@ import (
 // an agent-owned ModelRequest before crossing the Runtime boundary. Planning
 // implementations never live in agent.
 type RequestPlanner interface {
-	Plan(context.Context, PlanningHint) (RequestPlan, error)
+	Plan(context.Context, run.PlanningHint) (RequestPlan, error)
 }
 
 type RequestPlan struct {
-	Model         ModelRef
+	Model         run.ModelRef
 	Request       sdk.Request
-	InputIDs      []InputID
-	PlanningToken PlanningToken
-	Tools         []ToolSpec
+	InputIDs      []run.InputID
+	PlanningToken run.PlanningToken
+	Tools         []run.ToolSpec
 }
 
-// ModelCatalog resolves a frozen ModelRef into an invoker at execution time;
+// ModelCatalog resolves a frozen run.ModelRef into an invoker at execution time;
 // provider binding never enters the frozen request.
 type ModelCatalog interface {
-	Resolve(ModelRef) (ModelInvoker, error)
+	Resolve(run.ModelRef) (ModelInvoker, error)
 }
 
 type ModelInvoker interface {
@@ -40,44 +42,44 @@ type StreamingModelInvoker interface {
 }
 
 type ToolCatalog interface {
-	Resolve(ToolRef) (ExecutableTool, error)
+	Resolve(run.ToolRef) (ExecutableTool, error)
 }
 
 type ToolExecutionRequest struct {
-	RunID            RunID
-	StepID           StepID
-	CallID           CallID
-	ToolRef          ToolRef
-	DefinitionDigest Digest
-	Arguments        CanonicalJSON
+	RunID            run.RunID
+	StepID           run.StepID
+	CallID           run.CallID
+	ToolRef          run.ToolRef
+	DefinitionDigest run.Digest
+	Arguments        run.CanonicalJSON
 	Progress         ToolProgressSink
 }
 
 // ExecutableTool is the application-side execution contract (spec §7.1).
 type ExecutableTool interface {
-	Ref() ToolRef
+	Ref() run.ToolRef
 	Definition() sdk.ToolDefinition
-	ResponsePolicy() ResponsePolicy
+	ResponsePolicy() run.ResponsePolicy
 	// ValidateArguments runs before the start barrier and must not produce
 	// external effects.
-	ValidateArguments(CanonicalJSON) error
+	ValidateArguments(run.CanonicalJSON) error
 	Execute(context.Context, ToolExecutionRequest) ToolExecutionOutcome
 }
 
 // ToolExecutionOutcome is sealed: succeeded, failed-known, or unknown.
 type ToolExecutionOutcome interface{ toolExecutionOutcome() }
 
-type ToolExecutionSucceeded struct{ Result ToolExecutionResult }
+type ToolExecutionSucceeded struct{ Result run.ToolExecutionResult }
 
 func (ToolExecutionSucceeded) toolExecutionOutcome() {}
 
 // ToolExecutionFailed asserts the external effect did NOT complete.
-type ToolExecutionFailed struct{ Failure ToolFailure }
+type ToolExecutionFailed struct{ Failure run.ToolFailure }
 
 func (ToolExecutionFailed) toolExecutionOutcome() {}
 
 // ToolExecutionUnknown means the effect may or may not have happened.
-type ToolExecutionUnknown struct{ Failure ToolFailure }
+type ToolExecutionUnknown struct{ Failure run.ToolFailure }
 
 func (ToolExecutionUnknown) toolExecutionOutcome() {}
 
@@ -115,15 +117,15 @@ const (
 )
 
 type Event struct {
-	RunID      RunID
-	StepID     StepID
-	CallID     CallID
+	RunID      run.RunID
+	StepID     run.StepID
+	CallID     run.CallID
 	Sequence   uint64
 	Kind       EventKind
 	Durability EventDurability
 	Payload    json.RawMessage
 	// Canonical is set for a committed observation; nil for provisional.
-	Canonical *AgentEvent
+	Canonical *run.AgentEvent
 }
 
 // ExecutionPolicy is host-owned loop policy. It is not persisted in
@@ -159,6 +161,6 @@ const (
 type LoopResult struct {
 	Disposition LoopDisposition
 	Reason      WaitReason
-	Waiting     []ResponseRequest
-	Result      *RunResult
+	Waiting     []run.ResponseRequest
+	Result      *run.RunResult
 }

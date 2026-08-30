@@ -2,10 +2,6 @@ package run
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
-	"strings"
-	"sync/atomic"
 	"testing"
 
 	"github.com/memohai/twilight/sdk"
@@ -104,31 +100,6 @@ func TestRegressionToolStepIDReproducible(t *testing.T) {
 func TestRegressionInvalidToolOutputCannotBeConstructed(t *testing.T) {
 	if _, err := ParseCanonicalJSON([]byte(`{broken`)); err == nil {
 		t.Fatal("malformed JSON constructed as CanonicalJSON")
-	}
-}
-
-// Finding 6: a panicking tool settles as Unknown instead of crashing the
-// process.
-func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
-	spec := toolSpec(t, "echo", DirectExecution)
-	echo := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: DirectExecution,
-		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
-			panic("nil map write")
-		}}
-	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1")}}
-	rt := loopRuntime(t)
-	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
-		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
-
-	res, err := loop.Run(context.Background(), rt, "run-1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Result.Status != RunFailed || res.Result.Reason != ReasonEffectUnknown {
-		t.Fatalf("res = %+v", res.Result)
-	}
-	if !strings.Contains(res.Result.Failure.Message, "panic") {
-		t.Fatalf("failure = %+v", res.Result.Failure)
 	}
 }
 
@@ -243,71 +214,6 @@ func TestRegressionEvolveRejectsIllegalCallState(t *testing.T) {
 	}
 }
 
-// Finding 14: EventRunFinished fires on terminal.
-func TestRegressionRunFinishedEmitted(t *testing.T) {
-	rt := loopRuntime(t)
-	var kinds []EventKind
-	sink := sinkFunc(func(_ context.Context, e Event) error {
-		kinds = append(kinds, e.Kind)
-		return nil
-	})
-	loop, _ := NewLoop(fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("done")}}},
-		fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
-	if _, err := loop.Run(context.Background(), rt, "run-1", sink); err != nil {
-		t.Fatal(err)
-	}
-	for _, k := range kinds {
-		if k == EventRunFinished {
-			return
-		}
-	}
-	t.Fatalf("EventRunFinished never emitted; kinds = %v", kinds)
-}
-
-// Finding 15: a ToolSpec whose Ref differs from the definition name routes
-// through the catalog by Ref end to end.
-func TestRegressionAliasedToolRefExecutes(t *testing.T) {
-	def := sdk.ToolDefinition{Name: "read", Parameters: json.RawMessage(`{"type":"object"}`)}
-	frozenDef, err := FreezeToolDefinition(def)
-	if err != nil {
-		t.Fatal(err)
-	}
-	d, err := DigestToolDefinition(frozenDef)
-	if err != nil {
-		t.Fatal(err)
-	}
-	spec := ToolSpec{Ref: "fs.read", Definition: frozenDef, DefinitionDigest: d, Policy: DirectExecution}
-	executed := atomic.Bool{}
-	tool := &fakeTool{ref: "fs.read", def: def, policy: DirectExecution,
-		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
-			executed.Store(true)
-			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: cj(`"ok"`)}}
-		}}
-	// Model calls the definition name "read"; catalog keys by Ref "fs.read".
-	invoker := &fakeInvoker{results: []sdk.ModelResult{
-		func() sdk.ModelResult {
-			r := sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls}
-			r.ToolCalls = []sdk.ToolCall{{ToolCallID: "c1", ToolName: "read", Input: `{}`}}
-			return r
-		}(),
-		textResult("done"),
-	}}
-	rt := loopRuntime(t)
-	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"fs.read": tool}},
-		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
-
-	res, err := loop.Run(context.Background(), rt, "run-1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !executed.Load() {
-		t.Fatal("aliased tool never executed")
-	}
-	if res.Result.Status != RunCompleted {
-		t.Fatalf("res = %+v", res.Result)
-	}
-}
-
 // Low-severity finding: CancelRun cannot forge a system reason.
 func TestRegressionCancelReasonFixed(t *testing.T) {
 	s := newRun(t, testConfig())
@@ -318,38 +224,4 @@ func TestRegressionCancelReasonFixed(t *testing.T) {
 	if facts[0].(RunEnded).Reason != ReasonCancelled {
 		t.Fatal("cancel reason not fixed to cancelled")
 	}
-}
-
-// Finding 13: a stream that closes Parts but returns (nil, nil) from Result
-// fails the call instead of panicking the Loop.
-func TestRegressionStreamNilResult(t *testing.T) {
-	rt := loopRuntime(t)
-	loop, _ := NewLoop(fakeCatalog{nilResultStreamer{}}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, true)
-	res, err := loop.Run(context.Background(), rt, "run-1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// SubmitModelFailure path: run fails with provider_failure, no panic.
-	if res.Result.Status != RunFailed {
-		t.Fatalf("res = %+v", res.Result)
-	}
-}
-
-type sinkFunc func(context.Context, Event) error
-
-func (f sinkFunc) Emit(ctx context.Context, e Event) error { return f(ctx, e) }
-
-type nilResultStreamer struct{}
-
-func (nilResultStreamer) Generate(context.Context, sdk.Request) (sdk.ModelResult, error) {
-	return sdk.ModelResult{}, errors.New("generate should not be called when streaming")
-}
-
-func (nilResultStreamer) Stream(context.Context, sdk.Request) (sdk.ModelStream, error) {
-	parts := make(chan sdk.StreamPart)
-	close(parts)
-	return sdk.ModelStream{
-		Parts:  parts,
-		Result: func() (*sdk.ModelResult, error) { return nil, nil },
-	}, nil
 }
