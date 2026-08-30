@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/memohai/twilight/sdk"
@@ -411,7 +412,7 @@ func FreezeMessagePart(p sdk.MessagePart) (MessagePart, error) {
 		}
 		return FreezeMessagePart(*part)
 	case sdk.ToolCallPart:
-		input, err := freezeToolCallInput(part.Input)
+		input, err := FreezeToolCallInput(part.Input)
 		if err != nil {
 			return MessagePart{}, err
 		}
@@ -693,21 +694,34 @@ func (f GeneratedFile) SDK() sdk.GeneratedFile {
 	return sdk.GeneratedFile{Data: f.Data, MediaType: f.MediaType}
 }
 
-func freezeToolCallInput(input any) (CanonicalJSON, error) {
+// FreezeToolCallInput converts an SDK/model-provided tool input into the
+// persisted canonical value used by ModelToolCall and ToolCallBinding.
+// Syntactically invalid JSON text with valid UTF-8 is preserved as a JSON
+// string so Loop can settle it as a known invalid_arguments result without
+// losing the text; invalid UTF-8 is rejected.
+func FreezeToolCallInput(input any) (CanonicalJSON, error) {
 	args, err := canonicalToolArguments(input)
 	if err == nil {
 		return args, nil
 	}
-	switch input.(type) {
-	case string, json.RawMessage:
-		return rawToolArguments(input), nil
+	switch x := input.(type) {
+	case string:
+		if !utf8.ValidString(x) {
+			return CanonicalJSON{}, fmt.Errorf("tool call input is not valid UTF-8")
+		}
+		return rawToolArguments(x), nil
+	case json.RawMessage:
+		if !utf8.Valid(x) {
+			return CanonicalJSON{}, fmt.Errorf("tool call input is not valid UTF-8")
+		}
+		return rawToolArguments(x), nil
 	default:
 		return CanonicalJSON{}, err
 	}
 }
 
 func FreezeModelToolCall(c sdk.ToolCall) (ModelToolCall, error) {
-	input, err := freezeToolCallInput(c.Input)
+	input, err := FreezeToolCallInput(c.Input)
 	if err != nil {
 		return ModelToolCall{}, fmt.Errorf("tool call input: %w", err)
 	}

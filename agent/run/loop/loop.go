@@ -1,12 +1,15 @@
-package run
+package loop
 
 import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
+
+	run "github.com/memohai/twilight/agent/run"
 
 	"github.com/memohai/twilight/sdk"
 )
@@ -21,8 +24,8 @@ type Loop struct {
 	Streaming bool
 }
 
-// NewLoop validates and normalizes the execution policy (spec §4.3).
-func NewLoop(models ModelCatalog, tools ToolCatalog, planner RequestPlanner, policy ExecutionPolicy, streaming bool) (*Loop, error) {
+// New validates and normalizes the execution policy (spec §4.3).
+func New(models ModelCatalog, tools ToolCatalog, planner RequestPlanner, policy ExecutionPolicy, streaming bool) (*Loop, error) {
 	if policy.MaxParallel < 0 {
 		return nil, errors.New("agent: loop: negative MaxParallel")
 	}
@@ -36,7 +39,7 @@ func NewLoop(models ModelCatalog, tools ToolCatalog, planner RequestPlanner, pol
 		policy.MaxParallel = 1
 	}
 	if policy.MalformedModelResultLimit == 0 {
-		policy.MalformedModelResultLimit = DefaultMalformedModelResultLimit
+		policy.MalformedModelResultLimit = run.DefaultMalformedModelResultLimit
 	}
 	return &Loop{Models: models, Tools: tools, Planner: planner, Execution: policy, Streaming: streaming}, nil
 }
@@ -44,7 +47,7 @@ func NewLoop(models ModelCatalog, tools ToolCatalog, planner RequestPlanner, pol
 // Run drives the Run until it finishes, must wait, or the context is
 // cancelled (spec §6.2). controlCtx for reads/commits is derived from ctx via
 // WithoutCancel so worker cancellation never blocks result submission.
-func (l *Loop) Run(ctx context.Context, runtime Runtime, runID RunID, events EventSink) (LoopResult, error) {
+func (l *Loop) Run(ctx context.Context, runtime run.Runtime, runID run.RunID, events EventSink) (LoopResult, error) {
 	if ctx == nil {
 		return LoopResult{}, errors.New("agent: loop: nil context")
 	}
@@ -80,15 +83,15 @@ func (l *Loop) Run(ctx context.Context, runtime Runtime, runID RunID, events Eve
 			return LoopResult{Disposition: LoopFinished, Result: snapshot.State.Result}, nil
 		}
 
-		effect, err := Next(snapshot.State)
+		effect, err := run.Next(snapshot.State)
 		if err != nil {
 			return LoopResult{}, err
 		}
 
 		switch eff := effect.(type) {
-		case NeedModelRequest:
+		case run.NeedModelRequest:
 			if l.Execution.ModelStepLimit > 0 && snapshot.State.ModelSteps >= l.Execution.ModelStepLimit {
-				res, err := l.commit(controlCtx, runtime, snapshot.State.RunID, freshCommandID(), snapshot.Revision, "", StopRun{Reason: ReasonStepLimit})
+				res, err := l.commit(controlCtx, runtime, snapshot.State.RunID, freshCommandID(), snapshot.Revision, "", run.StopRun{Reason: run.ReasonStepLimit})
 				if err != nil {
 					if retriable(err) {
 						continue
@@ -101,17 +104,17 @@ func (l *Loop) Run(ctx context.Context, runtime Runtime, runID RunID, events Eve
 			if err := l.planAndPrepare(ctx, controlCtx, runtime, events, &snapshot, eff.Hint); err != nil {
 				return LoopResult{}, err
 			}
-		case StartModelCall:
+		case run.StartModelCall:
 			if err := l.runModelStep(ctx, controlCtx, runtime, events, &snapshot, eff.StepID); err != nil {
 				return LoopResult{}, err
 			}
-		case StartToolCalls:
+		case run.StartToolCalls:
 			if err := l.runToolCalls(ctx, controlCtx, runtime, events, &snapshot, eff); err != nil {
 				return LoopResult{}, err
 			}
-		case WaitForResponse:
+		case run.WaitForResponse:
 			return LoopResult{Disposition: LoopWaiting, Reason: WaitingForResponse, Waiting: eff.Requests}, nil
-		case WaitForExecutionRecovery:
+		case run.WaitForExecutionRecovery:
 			return LoopResult{Disposition: LoopWaiting, Reason: ExecutionRecovery}, nil
 		default:
 			return LoopResult{}, fmt.Errorf("agent: loop: unknown effect %T", effect)
@@ -124,12 +127,12 @@ func (l *Loop) Run(ctx context.Context, runtime Runtime, runID RunID, events Eve
 // digest (spec §6.6 "commit response unknown"): if the first attempt actually
 // committed and only the response was lost, the replay returns AlreadyApplied
 // instead of abandoning a live grant or re-executing an expensive step.
-func (l *Loop) commit(ctx context.Context, runtime Runtime, run RunID, id CommandID, base uint64, grant ExecutionGrant, cmd AgentCommand) (CommitResult, error) {
-	env, err := BuildEnvelope(run, id, cmd)
+func (l *Loop) commit(ctx context.Context, runtime run.Runtime, runID run.RunID, id run.CommandID, base uint64, grant run.ExecutionGrant, cmd run.AgentCommand) (run.CommitResult, error) {
+	env, err := run.BuildEnvelope(runID, id, cmd)
 	if err != nil {
-		return CommitResult{}, err
+		return run.CommitResult{}, err
 	}
-	req := CommitRequest{BaseRevision: base, Grant: grant, Command: env}
+	req := run.CommitRequest{BaseRevision: base, Grant: grant, Command: env}
 	res, err := runtime.Commit(ctx, req)
 	if err != nil && !retriable(err) {
 		res, err = runtime.Commit(ctx, req)
@@ -139,25 +142,25 @@ func (l *Loop) commit(ctx context.Context, runtime Runtime, run RunID, id Comman
 
 // retriable reports the commit errors that mean "reload and rederive".
 func retriable(err error) bool {
-	return errors.Is(err, ErrStaleRuntime) || errors.Is(err, ErrRunTerminal) || errors.Is(err, ErrCommandConflict)
+	return errors.Is(err, run.ErrStaleRuntime) || errors.Is(err, run.ErrRunTerminal) || errors.Is(err, run.ErrCommandConflict)
 }
 
-func freshCommandID() CommandID {
+func freshCommandID() run.CommandID {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		panic(fmt.Sprintf("agent: loop: %v", err))
 	}
-	return CommandID(hex.EncodeToString(b[:]))
+	return run.CommandID(hex.EncodeToString(b[:]))
 }
 
-func (l *Loop) emitCommitted(ctx context.Context, events EventSink, run RunID, committed []AgentEvent) {
+func (l *Loop) emitCommitted(ctx context.Context, events EventSink, runID run.RunID, committed []run.AgentEvent) {
 	if events == nil {
 		return
 	}
 	for i := range committed {
 		e := committed[i]
 		_ = events.Emit(ctx, Event{
-			RunID:      run,
+			RunID:      runID,
 			Kind:       EventAgentCommitted,
 			Durability: EventCommitted,
 			Canonical:  &e,
@@ -167,40 +170,40 @@ func (l *Loop) emitCommitted(ctx context.Context, events EventSink, run RunID, c
 
 // --- NeedModelRequest ---
 
-func (l *Loop) planAndPrepare(ctx, controlCtx context.Context, runtime Runtime, events EventSink, snapshot *RuntimeSnapshot, hint PlanningHint) error {
+func (l *Loop) planAndPrepare(ctx, controlCtx context.Context, runtime run.Runtime, events EventSink, snapshot *run.RuntimeSnapshot, hint run.PlanningHint) error {
 	plan, err := l.Planner.Plan(ctx, hint)
 	if err != nil {
 		return err
 	}
-	frozenRequest, err := FreezeModelRequest(plan.Request)
+	frozenRequest, err := run.FreezeModelRequest(plan.Request)
 	if err != nil {
 		return err
 	}
 	model := plan.Model
 	if model == "" {
-		model = ModelRef(frozenRequest.Model)
+		model = run.ModelRef(frozenRequest.Model)
 	}
 	if model == "" {
 		return fmt.Errorf("agent: loop: empty model")
 	}
-	if ModelRef(frozenRequest.Model) != model {
+	if run.ModelRef(frozenRequest.Model) != model {
 		return fmt.Errorf("agent: loop: request model %q does not match plan model %q", frozenRequest.Model, model)
 	}
-	requestDigest, err := DigestRequest(frozenRequest)
+	requestDigest, err := run.DigestRequest(frozenRequest)
 	if err != nil {
 		return err
 	}
-	toolsDigest, err := DigestToolSpecs(plan.Tools)
+	toolsDigest, err := run.DigestToolSpecs(plan.Tools)
 	if err != nil {
 		return err
 	}
-	binding, err := DigestModelStepBinding(model, requestDigest, toolsDigest)
+	binding, err := run.DigestModelStepBinding(model, requestDigest, toolsDigest)
 	if err != nil {
 		return err
 	}
-	cmdID := DeriveModelRequestCommandID(snapshot.State.RunID, snapshot.Revision)
-	stepID := DeriveModelStepID(snapshot.State.RunID, cmdID, binding)
-	res, err := l.commit(controlCtx, runtime, snapshot.State.RunID, cmdID, snapshot.Revision, "", PrepareModelRequest{
+	cmdID := run.DeriveModelRequestCommandID(snapshot.State.RunID, snapshot.Revision)
+	stepID := run.DeriveModelStepID(snapshot.State.RunID, cmdID, binding)
+	res, err := l.commit(controlCtx, runtime, snapshot.State.RunID, cmdID, snapshot.Revision, "", run.PrepareModelRequest{
 		StepID:        stepID,
 		Model:         model,
 		Request:       frozenRequest,
@@ -235,78 +238,78 @@ func (l *Loop) planAndPrepare(ctx, controlCtx context.Context, runtime Runtime, 
 
 // --- StartModelCall ---
 
-func (l *Loop) runModelStep(ctx, controlCtx context.Context, runtime Runtime, events EventSink, snapshot *RuntimeSnapshot, stepID StepID) error {
-	run := snapshot.State.RunID
-	start, err := l.commit(controlCtx, runtime, run, freshCommandID(), snapshot.Revision, "", StartModelExecution{StepID: stepID})
+func (l *Loop) runModelStep(ctx, controlCtx context.Context, runtime run.Runtime, events EventSink, snapshot *run.RuntimeSnapshot, stepID run.StepID) error {
+	runID := snapshot.State.RunID
+	start, err := l.commit(controlCtx, runtime, runID, freshCommandID(), snapshot.Revision, "", run.StartModelExecution{StepID: stepID})
 	if err != nil {
 		if retriable(err) {
 			return nil
 		}
 		return err
 	}
-	if start.Status == CommitAlreadyApplied {
+	if start.Status == run.CommitAlreadyApplied {
 		return nil // another attempt owns it; reload
 	}
-	l.emitCommitted(controlCtx, events, run, start.Events)
+	l.emitCommitted(controlCtx, events, runID, start.Events)
 
-	modelStep, ok := start.Snapshot.State.Current.(ModelStep)
+	modelStep, ok := start.Snapshot.State.Current.(run.ModelStep)
 	if !ok || modelStep.RefValue.ID != stepID {
 		return fmt.Errorf("agent: loop: started step %q is not current", stepID)
 	}
 
-	var completion AgentCommand
+	var completion run.AgentCommand
 	invoker, resolveErr := l.Models.Resolve(modelStep.Model)
 	if resolveErr != nil {
-		completion = SubmitModelFailure{StepID: stepID, Failure: StepFailure{Class: FailureProvider, Message: resolveErr.Error()}}
+		completion = run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: resolveErr.Error()}}
 	} else {
 		// Model workers derive from the outer ctx: cancelling a model call is
 		// safe, the frozen request retries after recovery (spec §6.1).
 		sdkRequest, err := modelStep.Request.SDK()
 		if err != nil {
-			completion = SubmitModelFailure{StepID: stepID, Failure: StepFailure{Class: FailureProvider, Message: err.Error()}}
+			completion = run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: err.Error()}}
 		} else {
-			result, invokeErr := l.invokeModel(ctx, invoker, &sdkRequest, run, stepID, events)
+			result, invokeErr := l.invokeModel(ctx, invoker, &sdkRequest, runID, stepID, events)
 			switch {
 			case invokeErr != nil && ctx.Err() != nil:
-				completion = RecoverModelExecution{StepID: stepID}
+				completion = run.RecoverModelExecution{StepID: stepID}
 			case invokeErr != nil:
-				completion = SubmitModelFailure{StepID: stepID, Failure: StepFailure{Class: FailureProvider, Message: invokeErr.Error()}}
+				completion = run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: invokeErr.Error()}}
 			default:
 				bindings, bindErr := l.bindToolCalls(&result, &modelStep)
 				if bindErr != nil {
-					completion = RejectModelResult{StepID: stepID, Usage: UsageFromSDK(result.Usage),
-						Failure:     StepFailure{Class: FailureMalformedModel, Message: bindErr.Error()},
+					completion = run.RejectModelResult{StepID: stepID, Usage: run.UsageFromSDK(result.Usage),
+						Failure:     run.StepFailure{Class: run.FailureMalformedModel, Message: bindErr.Error()},
 						Disposition: l.modelRejectDisposition(modelStep.Rejects)}
-				} else if frozenResult, freezeErr := FreezeModelResult(result); freezeErr != nil {
-					completion = RejectModelResult{StepID: stepID, Usage: UsageFromSDK(result.Usage),
-						Failure:     StepFailure{Class: FailureMalformedModel, Message: freezeErr.Error()},
+				} else if frozenResult, freezeErr := run.FreezeModelResult(result); freezeErr != nil {
+					completion = run.RejectModelResult{StepID: stepID, Usage: run.UsageFromSDK(result.Usage),
+						Failure:     run.StepFailure{Class: run.FailureMalformedModel, Message: freezeErr.Error()},
 						Disposition: l.modelRejectDisposition(modelStep.Rejects)}
 				} else {
-					completion = SubmitModelResult{StepID: stepID, Result: frozenResult, Calls: bindings}
+					completion = run.SubmitModelResult{StepID: stepID, Result: frozenResult, Calls: bindings}
 				}
 			}
 		}
 	}
 
-	res, err := l.commit(controlCtx, runtime, run, freshCommandID(), start.Snapshot.Revision, start.Grant, completion)
+	res, err := l.commit(controlCtx, runtime, runID, freshCommandID(), start.Snapshot.Revision, start.Grant, completion)
 	if err != nil {
 		if retriable(err) {
 			return nil
 		}
 		return err
 	}
-	l.emitCommitted(controlCtx, events, run, res.Events)
+	l.emitCommitted(controlCtx, events, runID, res.Events)
 	return nil
 }
 
-func (l *Loop) modelRejectDisposition(priorRejects int) ModelRejectDisposition {
+func (l *Loop) modelRejectDisposition(priorRejects int) run.ModelRejectDisposition {
 	if priorRejects+1 > l.Execution.MalformedModelResultLimit {
-		return ModelRejectFailRun
+		return run.ModelRejectFailRun
 	}
-	return ModelRejectRetry
+	return run.ModelRejectRetry
 }
 
-func (l *Loop) invokeModel(ctx context.Context, invoker ModelInvoker, req *sdk.Request, run RunID, step StepID, events EventSink) (sdk.ModelResult, error) {
+func (l *Loop) invokeModel(ctx context.Context, invoker ModelInvoker, req *sdk.Request, runID run.RunID, step run.StepID, events EventSink) (sdk.ModelResult, error) {
 	if l.Streaming {
 		if streamer, ok := invoker.(StreamingModelInvoker); ok {
 			stream, err := streamer.Stream(ctx, *req)
@@ -329,13 +332,13 @@ func (l *Loop) invokeModel(ctx context.Context, invoker ModelInvoker, req *sdk.R
 					switch p := part.(type) {
 					case *sdk.TextDeltaPart:
 						_ = events.Emit(ctx, Event{
-							RunID: run, StepID: step,
+							RunID: runID, StepID: step,
 							Kind: EventModelTextDelta, Durability: EventProvisional,
 							Payload: mustJSON(p.Text),
 						})
 					case *sdk.ReasoningDeltaPart:
 						_ = events.Emit(ctx, Event{
-							RunID: run, StepID: step,
+							RunID: runID, StepID: step,
 							Kind: EventModelReasoningDelta, Durability: EventProvisional,
 							Payload: mustJSON(p.Text),
 						})
@@ -359,16 +362,16 @@ func (l *Loop) invokeModel(ctx context.Context, invoker ModelInvoker, req *sdk.R
 
 // bindToolCalls validates tool-call IDs/order/shape and produces bindings
 // from the frozen ToolSpecs (spec §4.1). It never calls ExecutableTool.
-func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *ModelStep) ([]ToolCallBinding, error) {
+func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *run.ModelStep) ([]run.ToolCallBinding, error) {
 	if len(result.ToolCalls) == 0 {
 		return nil, nil
 	}
-	specByName := make(map[string]ToolSpec, len(step.Tools))
+	specByName := make(map[string]run.ToolSpec, len(step.Tools))
 	for _, s := range step.Tools {
 		specByName[s.Definition.Name] = s
 	}
 	seen := make(map[string]bool, len(result.ToolCalls))
-	bindings := make([]ToolCallBinding, len(result.ToolCalls))
+	bindings := make([]run.ToolCallBinding, len(result.ToolCalls))
 	for i, tc := range result.ToolCalls {
 		if tc.ToolCallID == "" {
 			return nil, fmt.Errorf("tool call %d has an empty id", i)
@@ -377,18 +380,15 @@ func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *ModelStep) ([]ToolCa
 			return nil, fmt.Errorf("duplicate tool call id %q", tc.ToolCallID)
 		}
 		seen[tc.ToolCallID] = true
-		args, err := canonicalToolArguments(tc.Input)
+		args, err := run.FreezeToolCallInput(tc.Input)
 		if err != nil {
-			// A single call with unparsable arguments is NOT structurally
-			// malformed: bind it raw and let StartToolCalls close it as a
-			// known invalid_arguments failure (spec §4.1).
-			args = rawToolArguments(tc.Input)
+			return nil, fmt.Errorf("tool call %q input: %w", tc.ToolCallID, err)
 		}
-		b := ToolCallBinding{
-			CallID:    CallID(tc.ToolCallID),
-			ToolRef:   ToolRef(tc.ToolName),
+		b := run.ToolCallBinding{
+			CallID:    run.CallID(tc.ToolCallID),
+			ToolRef:   run.ToolRef(tc.ToolName),
 			Arguments: args,
-			Policy:    DirectExecution,
+			Policy:    run.DirectExecution,
 		}
 		if spec, known := specByName[tc.ToolName]; known {
 			// The binding's ToolRef is the frozen spec's Ref — the catalog
@@ -398,7 +398,7 @@ func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *ModelStep) ([]ToolCa
 			b.DefinitionDigest = spec.DefinitionDigest
 			b.Policy = spec.Policy
 		}
-		bd, err := digestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
+		bd, err := run.DigestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
 		if err != nil {
 			return nil, err
 		}
@@ -411,15 +411,24 @@ func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *ModelStep) ([]ToolCa
 // --- StartToolCalls ---
 
 type startedWorker struct {
-	call  ToolCallState
-	grant ExecutionGrant
+	call  run.ToolCallState
+	grant run.ExecutionGrant
 	base  uint64
 	tool  ExecutableTool
 }
 
-func (l *Loop) runToolCalls(ctx, controlCtx context.Context, runtime Runtime, events EventSink, snapshot *RuntimeSnapshot, eff StartToolCalls) error {
-	run := snapshot.State.RunID
-	ts, ok := snapshot.State.Current.(ToolStep)
+func toolCallIndex(step run.ToolStep, callID run.CallID) int {
+	for i := range step.Calls {
+		if step.Calls[i].CallID == callID {
+			return i
+		}
+	}
+	return -1
+}
+
+func (l *Loop) runToolCalls(ctx, controlCtx context.Context, runtime run.Runtime, events EventSink, snapshot *run.RuntimeSnapshot, eff run.StartToolCalls) error {
+	runID := snapshot.State.RunID
+	ts, ok := snapshot.State.Current.(run.ToolStep)
 	if !ok || ts.RefValue.ID != eff.StepID {
 		return fmt.Errorf("agent: loop: tool step %q is not current", eff.StepID)
 	}
@@ -437,73 +446,73 @@ func (l *Loop) runToolCalls(ctx, controlCtx context.Context, runtime Runtime, ev
 		if ctx.Err() != nil {
 			break
 		}
-		i := ts.callIndex(callID)
+		i := toolCallIndex(ts, callID)
 		if i < 0 {
 			continue
 		}
 		call := ts.Calls[i]
 
 		tool, resolveErr := l.Tools.Resolve(call.ToolRef)
-		var known *ToolFailure
+		var known *run.ToolFailure
 		switch {
 		case resolveErr != nil:
-			known = &ToolFailure{Class: FailureToolLookup, Message: resolveErr.Error()}
+			known = &run.ToolFailure{Class: run.FailureToolLookup, Message: resolveErr.Error()}
 		default:
-			toolDef, err := FreezeToolDefinition(tool.Definition())
+			toolDef, err := run.FreezeToolDefinition(tool.Definition())
 			if err != nil {
 				return err
 			}
-			defDigest, err := DigestToolDefinition(toolDef)
+			defDigest, err := run.DigestToolDefinition(toolDef)
 			if err != nil {
 				return err
 			}
 			switch {
 			case tool.Ref() != call.ToolRef || defDigest != call.DefinitionDigest:
-				known = &ToolFailure{Class: FailureDefinitionMismatch, Message: "tool definition digest mismatch"}
+				known = &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "tool definition digest mismatch"}
 			case tool.ResponsePolicy() != call.Policy:
-				known = &ToolFailure{Class: FailureDefinitionMismatch, Message: "response policy mismatch"}
+				known = &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "response policy mismatch"}
 			default:
 				if argErr := tool.ValidateArguments(call.Arguments); argErr != nil {
-					known = &ToolFailure{Class: FailureInvalidArguments, Message: argErr.Error()}
+					known = &run.ToolFailure{Class: run.FailureInvalidArguments, Message: argErr.Error()}
 				}
 			}
 		}
 		if known != nil {
 			// Known failure of a Pending call: no start barrier, no tool call.
-			res, err := l.commit(controlCtx, runtime, run, freshCommandID(), snapshot.Revision, "",
-				SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: *known, Outcome: ToolOutcomeKnown})
+			res, err := l.commit(controlCtx, runtime, runID, freshCommandID(), snapshot.Revision, "",
+				run.SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: *known, Outcome: run.ToolOutcomeKnown})
 			if err != nil {
-				settleErr := l.settleWorkers(ctx, controlCtx, runtime, events, run, eff.StepID, started)
+				settleErr := l.settleWorkers(ctx, controlCtx, runtime, events, runID, eff.StepID, started)
 				if !retriable(err) {
 					return err
 				}
 				return settleErr
 			}
-			l.emitCommitted(controlCtx, events, run, res.Events)
+			l.emitCommitted(controlCtx, events, runID, res.Events)
 			continue
 		}
 
-		start, err := l.commit(controlCtx, runtime, run, freshCommandID(), snapshot.Revision, "",
-			StartToolCall{StepID: eff.StepID, CallID: callID})
+		start, err := l.commit(controlCtx, runtime, runID, freshCommandID(), snapshot.Revision, "",
+			run.StartToolCall{StepID: eff.StepID, CallID: callID})
 		if err != nil {
-			settleErr := l.settleWorkers(ctx, controlCtx, runtime, events, run, eff.StepID, started)
+			settleErr := l.settleWorkers(ctx, controlCtx, runtime, events, runID, eff.StepID, started)
 			if retriable(err) {
 				return settleErr
 			}
 			return err
 		}
-		if start.Status == CommitAlreadyApplied {
+		if start.Status == run.CommitAlreadyApplied {
 			continue // another attempt owns this call
 		}
-		l.emitCommitted(controlCtx, events, run, start.Events)
+		l.emitCommitted(controlCtx, events, runID, start.Events)
 		if events != nil {
-			_ = events.Emit(controlCtx, Event{RunID: run, StepID: eff.StepID, CallID: callID,
+			_ = events.Emit(controlCtx, Event{RunID: runID, StepID: eff.StepID, CallID: callID,
 				Kind: EventToolStarted, Durability: EventCommitted})
 		}
 		started = append(started, startedWorker{call: call, grant: start.Grant, base: start.Snapshot.Revision, tool: tool})
 	}
 
-	return l.settleWorkers(ctx, controlCtx, runtime, events, run, eff.StepID, started)
+	return l.settleWorkers(ctx, controlCtx, runtime, events, runID, eff.StepID, started)
 }
 
 // settleWorkers executes every started worker and commits its outcome. An
@@ -512,7 +521,7 @@ func (l *Loop) runToolCalls(ctx, controlCtx context.Context, runtime Runtime, ev
 // that fails with a non-sentinel error is replayed once with the same
 // CommandID (spec §6.6 "commit response unknown"); a still-failing commit is
 // reported so the host does not mistake a wedged call for progress.
-func (l *Loop) settleWorkers(ctx, controlCtx context.Context, runtime Runtime, events EventSink, run RunID, stepID StepID, started []startedWorker) error {
+func (l *Loop) settleWorkers(ctx, controlCtx context.Context, runtime run.Runtime, events EventSink, runID run.RunID, stepID run.StepID, started []startedWorker) error {
 	if len(started) == 0 {
 		return nil
 	}
@@ -528,33 +537,33 @@ func (l *Loop) settleWorkers(ctx, controlCtx context.Context, runtime Runtime, e
 		go func(w startedWorker) {
 			defer wg.Done()
 			req := ToolExecutionRequest{
-				RunID:            run,
+				RunID:            runID,
 				StepID:           stepID,
 				CallID:           w.call.CallID,
 				ToolRef:          w.call.ToolRef,
 				DefinitionDigest: w.call.DefinitionDigest,
 				Arguments:        w.call.Arguments,
-				Progress:         &progressSink{events: events, run: run, step: stepID, call: w.call.CallID},
+				Progress:         &progressSink{events: events, run: runID, step: stepID, call: w.call.CallID},
 			}
 			outcome := executeToolSafely(execCtx, w.tool, &req)
 
-			var cmd AgentCommand
+			var cmd run.AgentCommand
 			unknown := false
 			switch o := outcome.(type) {
 			case ToolExecutionSucceeded:
-				cmd = SubmitToolResult{StepID: stepID, CallID: w.call.CallID, Result: o.Result}
+				cmd = run.SubmitToolResult{StepID: stepID, CallID: w.call.CallID, Result: o.Result}
 			case ToolExecutionFailed:
-				cmd = SubmitToolFailure{StepID: stepID, CallID: w.call.CallID, Failure: o.Failure, Outcome: ToolOutcomeKnown}
+				cmd = run.SubmitToolFailure{StepID: stepID, CallID: w.call.CallID, Failure: o.Failure, Outcome: run.ToolOutcomeKnown}
 			case ToolExecutionUnknown:
 				failure := o.Failure
 				if failure.Class == "" {
-					failure.Class = FailureEffectUnknown
+					failure.Class = run.FailureEffectUnknown
 				}
-				cmd = SubmitToolFailure{StepID: stepID, CallID: w.call.CallID, Failure: failure, Outcome: ToolOutcomeUnknown}
+				cmd = run.SubmitToolFailure{StepID: stepID, CallID: w.call.CallID, Failure: failure, Outcome: run.ToolOutcomeUnknown}
 				unknown = true
 			default:
-				cmd = SubmitToolFailure{StepID: stepID, CallID: w.call.CallID,
-					Failure: ToolFailure{Class: FailureEffectUnknown, Message: "tool returned no outcome"}, Outcome: ToolOutcomeUnknown}
+				cmd = run.SubmitToolFailure{StepID: stepID, CallID: w.call.CallID,
+					Failure: run.ToolFailure{Class: run.FailureEffectUnknown, Message: "tool returned no outcome"}, Outcome: run.ToolOutcomeUnknown}
 				unknown = true
 			}
 
@@ -564,12 +573,12 @@ func (l *Loop) settleWorkers(ctx, controlCtx context.Context, runtime Runtime, e
 			// bases rebase call-locally. Late results after terminal return
 			// ErrRunTerminal and are dropped (audit is the adapter's job).
 			// The one-shot same-CommandID replay lives inside l.commit.
-			res, err := l.commit(controlCtx, runtime, run, freshCommandID(), w.base, w.grant, cmd)
+			res, err := l.commit(controlCtx, runtime, runID, freshCommandID(), w.base, w.grant, cmd)
 			switch {
 			case err == nil:
-				l.emitCommitted(controlCtx, events, run, res.Events)
+				l.emitCommitted(controlCtx, events, runID, res.Events)
 				if events != nil {
-					_ = events.Emit(controlCtx, Event{RunID: run, StepID: stepID, CallID: w.call.CallID,
+					_ = events.Emit(controlCtx, Event{RunID: runID, StepID: stepID, CallID: w.call.CallID,
 						Kind: EventToolCompleted, Durability: EventCommitted})
 				}
 			case retriable(err):
@@ -595,8 +604,8 @@ func (l *Loop) settleWorkers(ctx, controlCtx context.Context, runtime Runtime, e
 func executeToolSafely(ctx context.Context, tool ExecutableTool, req *ToolExecutionRequest) (outcome ToolExecutionOutcome) {
 	defer func() {
 		if r := recover(); r != nil {
-			outcome = ToolExecutionUnknown{Failure: ToolFailure{
-				Class:   FailureEffectUnknown,
+			outcome = ToolExecutionUnknown{Failure: run.ToolFailure{
+				Class:   run.FailureEffectUnknown,
 				Message: fmt.Sprintf("tool panic: %v", r),
 			}}
 		}
@@ -606,9 +615,9 @@ func executeToolSafely(ctx context.Context, tool ExecutableTool, req *ToolExecut
 
 type progressSink struct {
 	events EventSink
-	run    RunID
-	step   StepID
-	call   CallID
+	run    run.RunID
+	step   run.StepID
+	call   run.CallID
 	seq    uint64
 	mu     sync.Mutex
 }
@@ -629,7 +638,7 @@ func (p *progressSink) Publish(ctx context.Context, progress ToolProgress) {
 }
 
 func mustJSON(v any) []byte {
-	b, err := jsonMarshal(v)
+	b, err := json.Marshal(v)
 	if err != nil {
 		return []byte("null")
 	}

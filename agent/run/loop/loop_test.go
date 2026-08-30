@@ -1,4 +1,4 @@
-package run
+package loop
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sync/atomic"
 	"testing"
+
+	. "github.com/memohai/twilight/agent/run"
 
 	"github.com/memohai/twilight/sdk"
 )
@@ -120,7 +122,7 @@ func toolCallResult(ids ...string) sdk.ModelResult {
 
 func TestLoopSingleModelCallCompletes(t *testing.T) {
 	rt := loopRuntime(t)
-	loop, err := NewLoop(fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("hello")}}},
+	loop, err := New(fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("hello")}}},
 		fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +147,7 @@ func TestLoopToolRoundTrip(t *testing.T) {
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("done")}}
 	rt := loopRuntime(t)
-	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
+	loop, _ := New(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
 		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
 
 	res, err := loop.Run(context.Background(), rt, "run-1", nil)
@@ -174,7 +176,7 @@ func TestLoopApprovalWaitsAndResumes(t *testing.T) {
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("after")}}
 	rt := loopRuntime(t)
-	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
+	loop, _ := New(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
 		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
 
 	// First run: reaches Waiting(Approval) and returns.
@@ -228,7 +230,7 @@ func TestLoopUnknownOutcomeFailsRun(t *testing.T) {
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1")}}
 	rt := loopRuntime(t)
-	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
+	loop, _ := New(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
 		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
 
 	res, err := loop.Run(context.Background(), rt, "run-1", nil)
@@ -251,7 +253,7 @@ func TestLoopKnownToolFailureContinues(t *testing.T) {
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("recovered")}}
 	rt := loopRuntime(t)
-	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
+	loop, _ := New(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
 		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
 
 	res, err := loop.Run(context.Background(), rt, "run-1", nil)
@@ -275,7 +277,7 @@ func TestLoopUnknownToolRefClosesAsLookupFailure(t *testing.T) {
 		textResult("moved on"),
 	}}
 	rt := loopRuntime(t)
-	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{tools: map[ToolRef]ExecutableTool{}},
+	loop, _ := New(fakeCatalog{invoker}, fakeToolCatalog{tools: map[ToolRef]ExecutableTool{}},
 		staticPlanner{}, ExecutionPolicy{}, false)
 
 	res, err := loop.Run(context.Background(), rt, "run-1", nil)
@@ -318,7 +320,7 @@ func TestLoopParallelBounded(t *testing.T) {
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1", "c2", "c3"), textResult("done")}}
 	rt := loopRuntime(t)
-	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
+	loop, _ := New(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
 		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{MaxParallel: 2}, false)
 
 	done := make(chan struct{})
@@ -352,7 +354,7 @@ func TestLoopCtxCancelReturnsWithoutFailingRun(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	invoker := &fakeInvoker{errs: []error{context.Canceled}}
 	rt := loopRuntime(t)
-	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
+	loop, _ := New(fakeCatalog{invoker}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
 
 	cancel() // cancelled before the model call
 	_, err := loop.Run(ctx, rt, "run-1", nil)
@@ -366,7 +368,7 @@ func TestLoopCtxCancelReturnsWithoutFailingRun(t *testing.T) {
 	}
 	// A fresh Loop with a working invoker resumes the same frozen request.
 	invoker2 := &fakeInvoker{results: []sdk.ModelResult{textResult("resumed")}}
-	loop2, _ := NewLoop(fakeCatalog{invoker2}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
+	loop2, _ := New(fakeCatalog{invoker2}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
 	res, err := loop2.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -377,9 +379,8 @@ func TestLoopCtxCancelReturnsWithoutFailingRun(t *testing.T) {
 }
 
 func TestLoopModelStepLimitStopsBeforePlanning(t *testing.T) {
-	// Corruption fixture: the limit is a snapshot-only condition that cannot
-	// be reached without planning, so inject it locally after a real Revision-0
-	// admission. Normal loop fixtures never mutate MemoryRuntime internals.
+	// Simulate the snapshot-only limit condition without reaching into
+	// MemoryRuntime internals from this package.
 	rt := NewMemoryRuntime()
 	newRun, err := BuildNewRun("run-1", "")
 	if err != nil {
@@ -388,15 +389,11 @@ func TestLoopModelStepLimitStopsBeforePlanning(t *testing.T) {
 	if _, err := rt.Create(context.Background(), newRun); err != nil {
 		t.Fatal(err)
 	}
-	entry := memoryEntry(t, rt)
-	entry.mu.Lock()
-	entry.state.ModelSteps = 1
-	entry.mu.Unlock()
-	loop, err := NewLoop(fakeCatalog{}, fakeToolCatalog{}, panicPlanner{}, ExecutionPolicy{ModelStepLimit: 1}, false)
+	loop, err := New(fakeCatalog{}, fakeToolCatalog{}, panicPlanner{}, ExecutionPolicy{ModelStepLimit: 1}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := loop.Run(context.Background(), rt, "run-1", nil)
+	res, err := loop.Run(context.Background(), modelStepLimitRuntime{Runtime: rt}, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +413,7 @@ func TestLoopMalformedModelResultLimitFailsRun(t *testing.T) {
 		Usage: sdk.Usage{TotalTokens: 1},
 	}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{bad, bad, bad}}
-	loop, err := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{MalformedModelResultLimit: 2}, false)
+	loop, err := New(fakeCatalog{invoker}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{MalformedModelResultLimit: 2}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +443,7 @@ func TestLoopCancelRunViaCommand(t *testing.T) {
 	if _, err := rt.Commit(context.Background(), CommitRequest{BaseRevision: snap.Revision, Command: env}); err != nil {
 		t.Fatal(err)
 	}
-	loop, _ := NewLoop(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
+	loop, _ := New(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
 	res, err := loop.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -470,7 +467,7 @@ func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	invoker := &cancellingInvoker{cancel: cancel}
 	rt := loopRuntime(t)
-	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
+	loop, _ := New(fakeCatalog{invoker}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
 
 	_, err := loop.Run(ctx, rt, "run-1", nil)
 	if !errors.Is(err, context.Canceled) {
@@ -498,7 +495,7 @@ func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
 
 	// A fresh Loop resumes the SAME frozen step without a new Prepare.
 	invoker2 := &fakeInvoker{results: []sdk.ModelResult{textResult("resumed")}}
-	loop2, _ := NewLoop(fakeCatalog{invoker2}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
+	loop2, _ := New(fakeCatalog{invoker2}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
 	res, err := loop2.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)

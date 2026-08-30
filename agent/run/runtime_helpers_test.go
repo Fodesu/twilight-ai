@@ -108,26 +108,3 @@ func buildPrepareFromSnap(t *testing.T, snap RuntimeSnapshot, req sdk.Request, s
 		RequestDigest: reqDigest, InputIDs: ids, Tools: specs, ToolsDigest: toolsDigest,
 	}, cmdID
 }
-
-func TestLoopPrepareRejectionDoesNotLivelock(t *testing.T) {
-	// A planner that omits pending InputIDs produces a Prepare the authority
-	// rejects at the same revision forever; the Loop must surface an error
-	// instead of spinning (loop.go planAndPrepare guard).
-	rt := newTestRuntime(t, RunConfig{Model: "m-1"})
-	loop, err := NewLoop(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{},
-		badPlanner{}, ExecutionPolicy{}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = loop.Run(context.Background(), rt, "run-1", nil)
-	if err == nil {
-		t.Fatal("prepare livelock not surfaced")
-	}
-}
-
-// badPlanner never consumes pending inputs, so its Prepare is always rejected.
-type badPlanner struct{}
-
-func (badPlanner) Plan(_ context.Context, _ PlanningHint) (RequestPlan, error) {
-	return RequestPlan{Model: testModel, Request: sdk.Request{Model: string(testModel)}}, nil
-}

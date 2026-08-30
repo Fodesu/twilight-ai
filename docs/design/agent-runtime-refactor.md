@@ -70,7 +70,7 @@ Session 保存跨 Run 的长期语义；Turn 协议将 Run facts materialize 为
                          Request Planner
                                   │ sdk.Request
                                   v
-                           run.Loop ──SDK──> Model / Tool
+                        run/loop.Loop ──SDK──> Model / Tool
                                   │ AgentCommand
                                   v
                            shared run.Runtime
@@ -100,7 +100,8 @@ twilight-ai/
   agent/
     es/                        通用 ES envelope、digest、record、fold 机制
     jsonstable/                canonical JSON value 与解析/编码
-    run/                       Run Machine、Loop、Runtime、Step/ToolCall
+    run/                       Run Machine、Runtime、Step/ToolCall
+      loop/                    in-process Loop interpreter、planner/model/tool/event ports
     artifact/                  Ref、Binding、BindingSet、RetentionClaim
     session/                   长期语义 Session ES kernel
       extension/               静态 Module/Catalog、SemanticAppender、projection
@@ -113,6 +114,7 @@ twilight-ai/
 ```text
 agent/es                  ---> agent/jsonstable（可选）
 agent/run                 ---> agent/es + agent/jsonstable + sdk
+agent/run/loop            ---> agent/run + sdk
 agent/artifact            ---> agent/es + agent/jsonstable
 agent/session             ---> agent/es + agent/jsonstable
 agent/session/extension   ---> agent/session + agent/artifact
@@ -178,8 +180,8 @@ ToolCall 是 Step 内的外部操作单元。ToolStep 保存每个 ToolCall 中�
 | 场景 | 期望结果 |
 | --- | --- |
 | 单次模型调用 | 直接使用 `sdk`，不自动执行工具。 |
-| 本地 Run | `run.Loop` 配合 `run.MemoryRuntime`。 |
-| durable Run | 同一个 `run.Loop` 配合 durable runtime adapter。 |
+| 本地 Run | `loop.Loop` 配合 `run.MemoryRuntime`。 |
+| durable Run | 同一个 `loop.Loop` 配合 durable runtime adapter。 |
 | 模型返回 tools | ModelStep 完成后创建一个 ToolStep；ToolStep 完成前不创建下一 ModelStep。 |
 | 多个 approval/用户响应 | 每个等待请求有稳定身份；一个响应只推进对应 Call。 |
 | ToolStep 中途崩溃 | Completed Call 不再执行；Pending Call 可恢复；结果未知的 Executing Call 终止 Run。 |
@@ -463,7 +465,8 @@ Application 只有在完整 materialization coverage、terminal settlement 及�
 | generic event envelope/record/fold/digest mechanics | `agent/es` |
 | `ModelRequest`、`ModelResult`、`ToolDefinition`、`Usage`、`Message`、`MessagePart`（run persisted frozen values） | `agent/run` |
 | `Step`、`ToolCallState`、`AgentCommand`、`Fact`、`AgentEvent`、`TransitionRecord`、`Effect` | `agent/run` |
-| `Runtime`、`MemoryRuntime`、`Loop`、`runtimetest` | `agent/run` |
+| `Runtime`、`MemoryRuntime`、`runtimetest` | `agent/run` |
+| `Loop`、RequestPlanner/model/tool/event contracts、`ExecutionPolicy`、`LoopResult` | `agent/run/loop` |
 | `SessionHeader`、`SessionCommit`、`SessionEvent`、resolved replay、fork、snapshot、store | `agent/session` |
 | `Ref`、`Binding`、`BindingSet`、`RetentionClaim` | `agent/artifact` |
 | static Module/Catalog、codec/upcast、`SemanticAppender`、pure projection | `agent/session/extension` |
@@ -471,9 +474,9 @@ Application 只有在完整 materialization coverage、terminal settlement 及�
 | Turn→Run coordination、`FactMapper`、`MaterializeAll`、settlement | `agent/turn` |
 | queue item/claim/dedup/visibility 和 steer/follow-up policy | Application/Product |
 | Request Planner 实现和 context transformer | Application/Product |
-| fixed model policy、step budget、malformed retry budget | Application/Product 或 run `ExecutionPolicy`；不进入 MachineState |
+| fixed model policy、step budget、malformed retry budget | Application/Product 或 `loop.ExecutionPolicy`；不进入 MachineState |
 | owner、fencing、lease、outbox、DB schema | Durable adapter/Application |
-| MCP server 连接和生命周期 | Application；schema/call adapter 可在 `agent/run` |
+| MCP server 连接、生命周期和 schema/call adapter | Application/provider adapter |
 | provider transport retry | sdk/provider client |
 
 ## 3. Run Machine
@@ -1137,7 +1140,6 @@ AgentEvent 身份
   CommandDigest，Runtime 不需要独立的 command 索引表。事件身份不由调用方提供，
   也不参与 command 幂等判定。
 ```
-```
 
 canonical 编码和 digest 函数由 agent 提供；Memoh 只保存和比较结果，不重新实现排序或编码。`CanonicalJSON` 按 RFC 8785/JCS 编码，并采用 IEEE-754 binary64 number 语义；精确 ID 或任意精度数值必须是 JSON string，因此 PostgreSQL JSONB 的结构化重写在重新 canonicalize 后保持 digest 稳定。编码必须包含 sealed command/fact discriminator、按声明顺序编码有序 slice、对 map key 排序，并对 `CanonicalJSON` 原样写入其 canonical bytes；重复 object key、trailing data、invalid UTF-8、escaped lone surrogate 一律在构造 `CanonicalJSON` 或 decode wire document 时拒绝，不能让 `encoding/json` 的 replacement behavior 把不同输入合并为同一 digest；不把 `Digest`、BaseRevision、Revision、Index 或 ExecutionGrant 编入 digest。
 
@@ -1153,23 +1155,24 @@ agent 只声明供 Loop 依赖注入的 `RequestPlanner` port；Planner 的实�
 application/Memoh。Runtime 不调用这个 port，也不读取 Planner 的 context：
 
 ```go
+// package loop; run is "github.com/memohai/twilight/agent/run"
 type RequestPlanner interface {
-    Plan(context.Context, PlanningHint) (RequestPlan, error)
+    Plan(context.Context, run.PlanningHint) (RequestPlan, error)
 }
 
 type RequestPlan struct {
-    Model          ModelRef
-    Request        sdk.Request // boundary value; Loop freezes to ModelRequest before PrepareModelRequest
-    InputIDs       []InputID
-    Tools          []ToolSpec   // agent frozen ToolSpec/ToolDefinition sidecars
-    PlanningToken  PlanningToken // application-owned freshness token
+    Model         run.ModelRef
+    Request       sdk.Request // boundary value; Loop freezes to ModelRequest before PrepareModelRequest
+    InputIDs      []run.InputID
+    Tools         []run.ToolSpec // frozen ToolSpec/ToolDefinition sidecars
+    PlanningToken run.PlanningToken // application-owned freshness token
 }
 
+// package run
 type PlanningHint struct {
-    RunID       RunID
-    Model       ModelRef
-    SourceStep  StepID
-    Inputs      []AgentInput
+    RunID      RunID
+    SourceStep StepID
+    Inputs     []AgentInput
 }
 ```
 
@@ -1218,6 +1221,7 @@ steer 必须进入紧接着的 eligible ModelStep 规划上下文。Application 
 ### 6.1 Loop 结构
 
 ```go
+// package loop; run is "github.com/memohai/twilight/agent/run"
 type Loop struct {
     Models    ModelCatalog
     Tools     ToolCatalog
@@ -1226,7 +1230,8 @@ type Loop struct {
     Streaming bool
 }
 
-func (l *Loop) Run(context.Context, Runtime, RunID, EventSink) (LoopResult, error)
+func New(ModelCatalog, ToolCatalog, RequestPlanner, ExecutionPolicy, bool) (*Loop, error)
+func (l *Loop) Run(context.Context, run.Runtime, run.RunID, EventSink) (LoopResult, error)
 ```
 
 Loop 是当前进程的解释器。它不复制权威状态，不直接访问数据库或 Memoh queue。
@@ -1485,14 +1490,15 @@ Pending + Waiting
 
 ### 7.1 Tool contract
 
-`sdk.ToolDefinition` 只描述 provider 可发现的 schema，不依赖 run，也不携带 `ResponsePolicy`。`run.ExecutableTool.Definition()` 可以返回 SDK 边界类型，Loop 必须先 `FreezeToolDefinition` 再计算 `DigestToolDefinition` 或写入 `ToolSpec`；MachineState/AgentEvent 中保存的是 run `ToolDefinition`。`run.ExecutableTool` 描述应用如何执行工具并提供 response policy；模型返回后，run 用 `ToolRef`、definition digest 和 policy 生成冻结的 `ToolCallBinding`。恢复时 schema、工具版本或 policy 不匹配都不能静默换版本。
+`sdk.ToolDefinition` 只描述 provider 可发现的 schema，不依赖 run，也不携带 `ResponsePolicy`。`loop.ExecutableTool.Definition()` 返回 SDK 边界类型，Loop 必须先经 `run.FreezeToolDefinition` 冻结再计算 `run.DigestToolDefinition` 或写入 `run.ToolSpec`；MachineState/AgentEvent 中保存的是 `run.ToolDefinition`。`loop.ExecutableTool` 描述应用如何执行工具并提供 response policy；模型返回后，Loop 用 `run.ToolRef`、definition digest 和 policy 生成冻结的 `run.ToolCallBinding`。恢复时 schema、工具版本或 policy 不匹配都不能静默换版本。
 
 ```go
+// package loop; run is github.com/memohai/twilight/agent/run
 type ExecutableTool interface {
-    Ref() ToolRef
+    Ref() run.ToolRef
     Definition() sdk.ToolDefinition
-    ResponsePolicy() ResponsePolicy
-    ValidateArguments(CanonicalJSON) error
+    ResponsePolicy() run.ResponsePolicy
+    ValidateArguments(run.CanonicalJSON) error
     Execute(context.Context, ToolExecutionRequest) ToolExecutionOutcome
 }
 ```
@@ -1514,7 +1520,7 @@ ask_user         -> Waiting(ExternalResponse)
 
 ### 7.3 MCP
 
-agent 提供 MCP schema/call adapter，把 MCP tool 转换为 `sdk.ToolDefinition` 和 `ExecutableTool`。MCP server 的连接、认证、生命周期和产品权限由 Memoh/application 管理。迁移期可以保留旧 `sdk.MCPClient` wrapper；新 Loop 不依赖 SDK 的 MCP session。
+Application adapter 把 MCP tool 转换为 `sdk.ToolDefinition` 和 `loop.ExecutableTool`。MCP server 的连接、认证、生命周期和产品权限由 Memoh/application 管理；Loop 不依赖 SDK 的 MCP session。
 
 ## 8. 同一 Run execution semantics 的 Runtime implementations
 
@@ -1741,7 +1747,7 @@ response 101 只完成 B；D 仍可执行，不必等待 C。response 102 再完
 
 ### 阶段 B：移动现有 core 到 `agent/run`
 
-1. 将现有 root `agent` 中的 Machine、Loop、Runtime、MemoryRuntime、model data、tool contract、codec、runtimetest 移到 `agent/run`。
+1. 将现有 root `agent` 中的 Machine、Runtime、MemoryRuntime、model data、codec、runtimetest 移到 `agent/run`；将 Loop、planner/model/tool/event contract 移到 `agent/run/loop`。
 2. 新 admission 使用 `BuildNewRun`/`Runtime.Create`，初始输入通过 `AcceptInput` transition。当前导出的 `InitializeRun` 与 `BuildRunHeader` 只服务迁移和低层测试，新 admission 不调用它们；删除或正式弃用另行处理。`BuildRunHeaderFromNewRun` 是 Runtime adapter 按 version 建立同一 Revision-0 header 的共享构造入口。
 3. 实现 `NewRun`、`BuildNewRun`/`ValidateNewRun`、`BuildRunHeaderFromNewRun` 与 `Runtime.Create`：Create 按 version 建立正式 immutable Revision-0 `RunHeader`；`MachineState` 是日常 execution authority，rebuild/fold API 以 header 为 canonical 起点。
 4. 让 `MemoryRuntime` 成为 RunID-addressed multi-Run collection 的最轻 reference runtime：`NewMemoryRuntime()` 返回空 collection，collection map lock 仅用于 create/lookup，每个 Run 使用独立锁；它可以没有 lease/DB/heartbeat，但不能跳过 execution event semantics。
@@ -1779,9 +1785,9 @@ docs/design/agent-turn.md
 run.NewMemoryRuntime()                    // empty multi-Run collection
 + session/artifact/extension/chatlog memory implementations
 + turn.Coordinator + BuildNewRun/Create/AcceptInput
-+ run.Loop.Run(ctx, runtime, runID, sink)
-+ in-memory EventSink
-+ application RequestPlanner（读取 Context projection）
++ loop.New(...).Run(ctx, runtime, runID, sink)
++ in-memory loop.EventSink
++ application loop.RequestPlanner（读取 Context projection）
 ```
 
 它不复制 Run Machine，不把 chat history 塞进 `MemoryRuntime`。它用于 local example、test、prototype，以及证明 local/durable 是同一 Run execution semantics 的不同 runtime implementation。
@@ -1830,7 +1836,8 @@ ContextManifest {
 | --- | --- | --- |
 | sdk Request/ModelResult/stream | `sdk` | provider adapter |
 | generic record/digest/fold mechanism | `agent/es` | jsonstable |
-| Run Machine、Loop、Runtime、MemoryRuntime | `agent/run` | es + sdk |
+| Run Machine、Runtime、MemoryRuntime | `agent/run` | es + sdk |
+| Loop 与 planner/model/tool/event ports | `agent/run/loop` | run + sdk |
 | RunHeader、run codec、runtimetest | `agent/run` | es |
 | Session Store/MemoryStore/replay/fork conformance | `agent/session` | es + jsonstable |
 | Ref/Binding/RetentionClaim 与 memory conformance | `agent/artifact` | es + jsonstable |
@@ -1976,7 +1983,7 @@ EventSink gap 后由 verified RunRecord 与 Session projections 对账
 
 ## 15. Memoh queue integration boundary
 
-Application 的 queue/admission policy 负责 claim、priority、steer/follow-up 和 wake。Application host 组合 Turn Coordinator、Request Planner、`run.Loop` 与 durable Runtime adapter；queue 仲裁只发生在 queue-safe boundary，并将输入 durable admission 与对应 `AcceptInput` 通过事务或可幂等恢复协调。每次 response 只推进目标 Call。branch/claim/recovery policy 保持在 Application，不进入 `agent/run`。
+Application 的 queue/admission policy 负责 claim、priority、steer/follow-up 和 wake。Application host 组合 Turn Coordinator、`loop.RequestPlanner`、`loop.Loop` 与 durable Runtime adapter；queue 仲裁只发生在 queue-safe boundary，并将输入 durable admission 与对应 `AcceptInput` 通过事务或可幂等恢复协调。每次 response 只推进目标 Call。branch/claim/recovery policy 保持在 Application，不进入 `agent/run`。
 
 ## 16. 实施前置条件
 
@@ -1995,7 +2002,7 @@ Application 的 queue/admission policy 负责 claim、priority、steer/follow-up
 2. breaking release 版本和 durable protocol upgrade window。
 3. EventSink payload schema，以及是否需要在 durable outbox 中加入跨进程 execution epoch。
 
-本规范已经固定：Cancel 与 Unknown 按提交先后决定终态；`run.ModelRequest` 冻结完整 generation options，streaming 是 `run.ModelInvoker` 的可选执行路径且保持 Run command/event 语义。Run Machine 采用 Decide/Evolve 拆分：Decide 承载决策并在提交时产出事实，Evolve 是机械、版本内稳定的折叠；MachineState 为 Run execution authority，`RunHeader + TransitionRecord log` 为 canonical record。Create 原子保存 header 与 Revision-0 state；Commit 原子保存新 state 与 transition；分歧属实现缺陷并由运维处理（§5.1）。结构性 malformed 模型结果通过 `RejectModelResult` disposition 在同一冻结 request 上重试或失败；fixed model/limits 留在 Application；usage 在 MachineState 内逐字段累计；steer 由 Application queue-safe admission gate 保证进入下一个 ModelStep；计划内停机使用排空，Unknown 语义覆盖崩溃和 lease 失效。
+本规范已经固定：Cancel 与 Unknown 按提交先后决定终态；`run.ModelRequest` 冻结完整 generation options，streaming 是 `loop.StreamingModelInvoker` 的可选执行路径且保持 Run command/event 语义。Run Machine 采用 Decide/Evolve 拆分：Decide 承载决策并在提交时产出事实，Evolve 是机械、版本内稳定的折叠；MachineState 为 Run execution authority，`RunHeader + TransitionRecord log` 为 canonical record。Create 原子保存 header 与 Revision-0 state；Commit 原子保存新 state 与 transition；分歧属实现缺陷并由运维处理（§5.1）。结构性 malformed 模型结果通过 `RejectModelResult` disposition 在同一冻结 request 上重试或失败；fixed model/limits 留在 Application；usage 在 MachineState 内逐字段累计；steer 由 Application queue-safe admission gate 保证进入下一个 ModelStep；计划内停机使用排空，Unknown 语义覆盖崩溃和 lease 失效。
 
 本规范采用 MachineState 为 Run execution authority、`RunHeader + TransitionRecord log` 为 canonical record（§5.1）：稳定条件（ontology 冻结、versioned Evolve 版本内稳定、事实自包含）由 Decide/Evolve 拆分保障，TransitionDigest 保护单个 transition 内部的完整事件组。恢复执行走 `Load(ctx, runID)`；`FoldRun` 服务导入/迁移与诊断。重新收紧为日志权威的触发条件（执行历史 fork 成为产品功能，或状态存储不可信而日志存储可信的部署形态）记录于 §5.1。跨 Run 语义不从旧 Run log 读取，而由 Session ES、artifact、memory/context projection 构造。
 
@@ -2078,6 +2085,7 @@ func FreezeModelRequest(sdk.Request) (ModelRequest, error)
 func (ModelRequest) SDK() (sdk.Request, error)
 func FreezeModelResult(sdk.ModelResult) (ModelResult, error)
 func (ModelResult) SDK() (sdk.ModelResult, error)
+func FreezeToolCallInput(any) (CanonicalJSON, error)
 func FreezeToolDefinition(sdk.ToolDefinition) (ToolDefinition, error)
 func (ToolDefinition) SDK() sdk.ToolDefinition
 
@@ -2167,6 +2175,8 @@ type ToolFailure struct {
     Message string
 }
 
+type ToolExecutionResult struct { Output CanonicalJSON }
+
 type ToolFailureOutcome uint8
 
 const (
@@ -2191,13 +2201,6 @@ const (
     ApprovalRequired
     ExternalResponse
 )
-
-// ExecutionPolicy is host-owned Loop policy and is not persisted in MachineState.
-type ExecutionPolicy struct {
-    MaxParallel int
-    ModelStepLimit int              // 0 unlimited; Loop submits StopRun(step_limit)
-    MalformedModelResultLimit int   // 0 default; Loop chooses reject disposition
-}
 
 type ResponseRequest struct {
     RunID        RunID
@@ -2504,18 +2507,6 @@ type PlanningHint struct {
     Inputs     []AgentInput
 }
 
-type RequestPlanner interface {
-    Plan(context.Context, PlanningHint) (RequestPlan, error)
-}
-
-type RequestPlan struct {
-    Model         ModelRef
-    Request       sdk.Request // boundary value; Loop freezes before PrepareModelRequest
-    InputIDs      []InputID
-    PlanningToken PlanningToken
-    Tools         []ToolSpec
-}
-
 type Runtime interface {
     Create(context.Context, NewRun) (CreateResult, error)
     Load(context.Context, RunID) (RuntimeSnapshot, error)
@@ -2641,122 +2632,134 @@ var ErrCommandConflict = errors.New("agent: command identity conflict")
 var ErrStaleRuntime = errors.New("agent: stale runtime version or grant")
 var ErrRunTerminal = errors.New("agent: run is terminal")
 
-type ModelCatalog interface { Resolve(ModelRef) (ModelInvoker, error) }
+```
 
-type ModelInvoker interface {
-    Generate(context.Context, sdk.Request) (sdk.ModelResult, error)
+`agent/run/loop` 的 public execution API 为：
+
+```go
+package loop
+
+import (
+    "context"
+    "encoding/json"
+
+    run "github.com/memohai/twilight/agent/run"
+    "github.com/memohai/twilight/sdk"
+)
+
+type ExecutionPolicy struct {
+    MaxParallel int
+    ModelStepLimit int
+    MalformedModelResultLimit int
 }
 
-// Optional optimization. It must produce the same final ModelResult as Generate.
-type StreamingModelInvoker interface {
-    Stream(context.Context, sdk.Request) (sdk.ModelStream, error)
+type RequestPlanner interface {
+    Plan(context.Context, run.PlanningHint) (RequestPlan, error)
 }
 
-type ToolCatalog interface { Resolve(ToolRef) (ExecutableTool, error) }
+type RequestPlan struct {
+    Model         run.ModelRef
+    Request       sdk.Request
+    InputIDs      []run.InputID
+    PlanningToken run.PlanningToken
+    Tools         []run.ToolSpec
+}
+
+type ModelCatalog interface { Resolve(run.ModelRef) (ModelInvoker, error) }
+type ModelInvoker interface { Generate(context.Context, sdk.Request) (sdk.ModelResult, error) }
+type StreamingModelInvoker interface { Stream(context.Context, sdk.Request) (sdk.ModelStream, error) }
+
+type ToolCatalog interface { Resolve(run.ToolRef) (ExecutableTool, error) }
 
 type ToolExecutionRequest struct {
-    RunID            RunID
-    StepID           StepID
-    CallID           CallID
-    ToolRef          ToolRef
-    DefinitionDigest Digest
-    Arguments        CanonicalJSON
+    RunID            run.RunID
+    StepID           run.StepID
+    CallID           run.CallID
+    ToolRef          run.ToolRef
+    DefinitionDigest run.Digest
+    Arguments        run.CanonicalJSON
     Progress         ToolProgressSink
 }
 
 type ExecutableTool interface {
-    Ref() ToolRef
+    Ref() run.ToolRef
     Definition() sdk.ToolDefinition
-    ResponsePolicy() ResponsePolicy
-    ValidateArguments(CanonicalJSON) error
+    ResponsePolicy() run.ResponsePolicy
+    ValidateArguments(run.CanonicalJSON) error
     Execute(context.Context, ToolExecutionRequest) ToolExecutionOutcome
 }
 
-type ToolExecutionResult struct { Output CanonicalJSON }
-
 type ToolExecutionOutcome interface { toolExecutionOutcome() }
-
-type ToolExecutionSucceeded struct { Result ToolExecutionResult }
+type ToolExecutionSucceeded struct { Result run.ToolExecutionResult }
 func (ToolExecutionSucceeded) toolExecutionOutcome() {}
-
-type ToolExecutionFailed struct { Failure ToolFailure }
+type ToolExecutionFailed struct { Failure run.ToolFailure }
 func (ToolExecutionFailed) toolExecutionOutcome() {}
-
-type ToolExecutionUnknown struct { Failure ToolFailure }
+type ToolExecutionUnknown struct { Failure run.ToolFailure }
 func (ToolExecutionUnknown) toolExecutionOutcome() {}
 
 type ToolProgressSink interface { Publish(context.Context, ToolProgress) }
 type ToolProgress struct { Payload json.RawMessage }
 
 type EventSink interface { Emit(context.Context, Event) error }
-
 type Event struct {
-    RunID      RunID
-    StepID     StepID
-    CallID     CallID
+    RunID      run.RunID
+    StepID     run.StepID
+    CallID     run.CallID
     Sequence   uint64
     Kind       EventKind
     Durability EventDurability
     Payload    json.RawMessage
-    Canonical  *AgentEvent // set for a committed observation; nil for provisional
+    Canonical  *run.AgentEvent
 }
 
 type EventDurability uint8
-
-const (
-    EventProvisional EventDurability = iota
-    EventCommitted
-)
+const ( EventProvisional EventDurability = iota; EventCommitted )
 
 type EventKind string
-
 const (
     EventAgentCommitted EventKind = "agent_committed"
     EventModelTextDelta EventKind = "model_text_delta"
-    EventToolProgress   EventKind = "tool_progress"
-    EventToolStarted    EventKind = "tool_started"
-    EventToolCompleted  EventKind = "tool_completed"
-    EventRunFinished    EventKind = "run_finished"
+    EventModelReasoningDelta EventKind = "model_reasoning_delta"
+    EventToolProgress EventKind = "tool_progress"
+    EventToolStarted EventKind = "tool_started"
+    EventToolCompleted EventKind = "tool_completed"
+    EventRunFinished EventKind = "run_finished"
 )
 
 type LoopDisposition uint8
-
-const (
-    LoopWaiting LoopDisposition = iota
-    LoopFinished
-)
+const ( LoopWaiting LoopDisposition = iota; LoopFinished )
 
 type WaitReason string
-
 const (
-    WaitingForResponse    WaitReason = "waiting_for_response"
-    ExecutionRecovery     WaitReason = "execution_recovery" // 当前执行仍在运行或等待失效恢复
+    WaitingForResponse WaitReason = "waiting_for_response"
+    ExecutionRecovery WaitReason = "execution_recovery"
 )
 
 type LoopResult struct {
     Disposition LoopDisposition
     Reason      WaitReason
-    Waiting     []ResponseRequest
-    Result      *RunResult
+    Waiting     []run.ResponseRequest
+    Result      *run.RunResult
 }
 
 type Loop struct {
-    Models    ModelCatalog
-    Tools     ToolCatalog
-    Planner   RequestPlanner
+    Models ModelCatalog
+    Tools ToolCatalog
+    Planner RequestPlanner
     Execution ExecutionPolicy
     Streaming bool
 }
 
-func (l *Loop) Run(context.Context, Runtime, RunID, EventSink) (LoopResult, error)
+func New(ModelCatalog, ToolCatalog, RequestPlanner, ExecutionPolicy, bool) (*Loop, error)
+func (l *Loop) Run(context.Context, run.Runtime, run.RunID, EventSink) (LoopResult, error)
 ```
 
-实现必须保证所有返回的 Step、Call、Request、Result 和等待 payload 具有只读快照语义；调用方不能通过修改 slice、map 或 JSON bytes view 改变 Runtime 状态。`AgentCommand`、`Fact`、`Effect` 和 ToolExecutionOutcome 使用 agent 的 sealed interface，外部实现不能添加未定义变体。构造 CommandEnvelope 与派生 CommandID/ResponseID 只能通过 agent 提供的 typed 构造函数；手工拼装信封字段属于实现错误。
+实现必须保证所有返回的 Step、Call、Request、Result 和等待 payload 具有只读快照语义；调用方不能通过修改 slice、map 或 JSON bytes view 改变 Runtime 状态。`AgentCommand`、`Fact`、`Effect` 使用 `agent/run` 的 sealed interface；ToolExecutionOutcome 使用 `agent/run/loop` 的 sealed interface，外部实现不能添加未定义变体。构造 CommandEnvelope 与派生 CommandID/ResponseID 只能通过 agent 提供的 typed 构造函数；手工拼装信封字段属于实现错误。
 
 ## 附录 B：核心不变量
 
 1. sdk 的一次 `Generate` 或 `Stream` 对应一次 provider request；transport retry 不创建新的 Step。
-2. `agent/run.Loop` 是唯一的 Run 多步执行算法；Run 的权威状态由 Runtime 持有，Loop 不保存第二份。
+2. `agent/run/loop.Loop` 是唯一的 Run 多步执行算法；Run 的权威状态由 Runtime 持有，Loop 不保存第二份。
 3. Runtime 公开 `Create`、`Load`、`Commit` 和 `Record`；Planner、queue 和工具入口不进入 Runtime contract。
 4. Machine 是完整的 Run/Step/ToolCall 语义规则；决策只在 `Decide` 中、只在提交时运行一次，`Evolve` 是机械折叠。Runtime 通过共享 `EvaluateCommit` 调用它们，不复刻规则。
 5. Step 是 durable resume boundary，只有 ModelStep 和 ToolStep；ToolCall 是 ToolStep 内的 progress。
