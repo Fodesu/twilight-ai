@@ -6,12 +6,15 @@ import (
 	"fmt"
 )
 
-// Runtime is the authority boundary: Load returns the current state and
-// Revision; Commit atomically applies one command (spec §5.2). Nothing else —
-// planning, queues and tool entry points are not hidden methods.
+// Runtime is the RunID-addressed access and atomic commit boundary. Create
+// establishes immutable Revision-0 state; Load, Commit, and Record operate on
+// exactly one Run. MachineState remains execution authority; planning, queues,
+// and tool entry points are not hidden methods.
 type Runtime interface {
-	Load(context.Context) (RuntimeSnapshot, error)
+	Create(context.Context, NewRun) (CreateResult, error)
+	Load(context.Context, RunID) (RuntimeSnapshot, error)
 	Commit(context.Context, CommitRequest) (CommitResult, error)
+	Record(context.Context, RunID) (RunRecord, error)
 }
 
 type RuntimeSnapshot struct {

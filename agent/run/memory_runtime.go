@@ -9,52 +9,103 @@ import (
 	"sync"
 )
 
-// MemoryRuntime is the in-process reference Runtime: mutex + MachineState +
-// TransitionRecord log (spec §8.1). The MachineState is the execution
-// authority; the transition log is the same-transaction canonical record
-// (audit, projections, verified import). It is the conformance
-// reference; it does not survive the process and does not store product
-// history.
+// MemoryRuntime is the in-process reference Runtime. Its collection lock is
+// used only to create or find stable per-Run entries; each entry has an
+// independent lock for state, canonical commit records, revision, and grants.
+// Runtime operations are context-aware before and after acquiring a lock so a
+// request cancelled while waiting never reads or writes an entry.
 type MemoryRuntime struct {
-	mu       sync.Mutex
-	state    MachineState
-	revision uint64
-	// initial is the Revision-0 state; Rebuild folds the log from it.
-	initial MachineState
-	// watermark records the last committed revision for the optional Rebuild
-	// diagnostic; it is not a protocol guard. It advances with every
-	// commit and is never cleared by a rebuild (spec §5.1).
-	watermark uint64
-	// transitions keyed by CommandID: the full transition record for idempotency.
-	transitions map[CommandID]TransitionRecord
-	// log holds every transition in Revision order for replay.
-	log []TransitionRecord
-	// occupancy: live grants per target (one model step or one call).
-	grants map[string]ExecutionGrant
+	mu   sync.RWMutex
+	runs map[RunID]*memoryRun
 }
 
-// NewMemoryRuntime starts from an InitializeRun/Initialize-produced state at Revision 0.
-//
-//nolint:gocritic // hugeParam: constructor takes a value snapshot and clones it into runtime authority storage.
-func NewMemoryRuntime(initial MachineState) *MemoryRuntime {
-	frozenInitial := cloneMachineState(&initial)
-	return &MemoryRuntime{
-		state:       cloneMachineState(&frozenInitial),
-		initial:     frozenInitial,
+type memoryRun struct {
+	mu          sync.Mutex
+	header      RunHeader
+	state       MachineState
+	revision    uint64
+	initial     MachineState
+	watermark   uint64
+	transitions map[CommandID]TransitionRecord
+	log         []TransitionRecord
+	grants      map[string]ExecutionGrant
+}
+
+// NewMemoryRuntime creates an empty, RunID-addressed in-process Runtime.
+func NewMemoryRuntime() *MemoryRuntime {
+	return &MemoryRuntime{runs: make(map[RunID]*memoryRun)}
+}
+
+func (m *MemoryRuntime) entry(runID RunID) (*memoryRun, error) {
+	if m == nil {
+		return nil, errors.New("agent: memory runtime: nil runtime")
+	}
+	m.mu.RLock()
+	entry := m.runs[runID]
+	m.mu.RUnlock()
+	if entry == nil {
+		return nil, ErrRunNotFound
+	}
+	return entry, nil
+}
+
+func (m *MemoryRuntime) Create(ctx context.Context, run NewRun) (CreateResult, error) {
+	if err := checkContext(ctx); err != nil {
+		return CreateResult{}, err
+	}
+	header, err := BuildRunHeaderFromNewRun(run)
+	if err != nil {
+		return CreateResult{}, err
+	}
+	if m == nil {
+		return CreateResult{}, errors.New("agent: memory runtime: nil runtime")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := checkContext(ctx); err != nil {
+		return CreateResult{}, err
+	}
+	if existing := m.runs[run.RunID]; existing != nil {
+		// Header is immutable after admission, so the collection lock protects
+		// this lookup without taking the entry's execution lock.
+		existingHeader := cloneRunHeader(existing.header)
+		equal, err := canonicalHeadersEqual(existingHeader, header)
+		if err != nil {
+			return CreateResult{}, err
+		}
+		if !equal {
+			return CreateResult{}, ErrCreateConflict
+		}
+		return CreateResult{Header: existingHeader, Created: false}, nil
+	}
+
+	stored := cloneRunHeader(header)
+	initial := cloneMachineState(&stored.InitialState)
+	m.runs[run.RunID] = &memoryRun{
+		header:      stored,
+		state:       cloneMachineState(&initial),
+		initial:     initial,
 		transitions: make(map[CommandID]TransitionRecord),
 		grants:      make(map[string]ExecutionGrant),
 	}
+	return CreateResult{Header: cloneRunHeader(stored), Created: true}, nil
 }
 
-func (m *MemoryRuntime) Load(ctx context.Context) (RuntimeSnapshot, error) {
-	if err := ctx.Err(); err != nil {
+func (m *MemoryRuntime) Load(ctx context.Context, runID RunID) (RuntimeSnapshot, error) {
+	if err := checkContext(ctx); err != nil {
 		return RuntimeSnapshot{}, err
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	// Deep copy: returned snapshots are read-only views; caller mutation must
-	// never reach authoritative storage (spec appendix A).
-	return RuntimeSnapshot{State: cloneMachineState(&m.state), Revision: m.revision}, nil
+	entry, err := m.entry(runID)
+	if err != nil {
+		return RuntimeSnapshot{}, err
+	}
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if err := checkContext(ctx); err != nil {
+		return RuntimeSnapshot{}, err
+	}
+	return RuntimeSnapshot{State: cloneMachineState(&entry.state), Revision: entry.revision}, nil
 }
 
 func grantKey(c AgentCommand) string {
@@ -88,47 +139,45 @@ func newGrant() ExecutionGrant {
 	return ExecutionGrant(hex.EncodeToString(b[:]))
 }
 
-
+// Commit atomically evaluates and writes the Run addressed by Command.RunID.
+//
 //nolint:gocritic // hugeParam: CommitRequest is the value DTO of the Runtime authority boundary.
 func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitResult, error) {
-	if err := ctx.Err(); err != nil {
+	if err := checkContext(ctx); err != nil {
 		return CommitResult{}, err
 	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	entry, err := m.entry(req.Command.RunID)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	if err := checkContext(ctx); err != nil {
+		return CommitResult{}, err
+	}
 
 	key := grantKey(req.Command.Command)
-	grantValid := false
-	if key != "" && req.Grant != "" {
-		grantValid = m.grants[key] == req.Grant
-	}
-	// MemoryRuntime has no lease expiry: a grantless recovery command is only
-	// valid when no live occupancy exists for the target (the worker died with
-	// the process, which memory state does not survive; recoveryValid mainly
-	// serves conformance tests).
+	grantValid := key != "" && req.Grant != "" && entry.grants[key] == req.Grant
 	recoveryValid := false
 	if key != "" && req.Grant == "" {
-		_, occupied := m.grants[key]
+		_, occupied := entry.grants[key]
 		recoveryValid = !occupied
 	}
 
 	var prior *TransitionRecord
-	if record, ok := m.transitions[req.Command.ID]; ok {
-		priorRecord := record
-		prior = &priorRecord
+	if record, ok := entry.transitions[req.Command.ID]; ok {
+		copy := cloneTransitionRecord(&record)
+		prior = &copy
 	}
-	decision, err := EvaluateCommit(m.state, m.revision, prior, req, grantValid, recoveryValid)
+	decision, err := EvaluateCommit(entry.state, entry.revision, prior, req, grantValid, recoveryValid)
 	if err != nil {
 		return CommitResult{}, err
 	}
 	switch decision.Kind {
 	case DecisionAlreadyApplied:
-		// Replay never re-grants execution (spec §5.4).
-		return CommitResult{
-			Status:   CommitAlreadyApplied,
-			Snapshot: RuntimeSnapshot{State: cloneMachineState(&m.state), Revision: m.revision},
-			Events:   cloneEvents(decision.Events),
-		}, nil
+		return CommitResult{Status: CommitAlreadyApplied,
+			Snapshot: RuntimeSnapshot{State: cloneMachineState(&entry.state), Revision: entry.revision},
+			Events:   cloneEvents(decision.Events)}, nil
 	case DecisionConflict:
 		return CommitResult{}, ErrCommandConflict
 	case DecisionStale:
@@ -140,50 +189,66 @@ func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitRe
 		return CommitResult{}, ErrRunTerminal
 	}
 
-	// DecisionApply: persist the new authoritative state and the canonical
-	// transition record in the same critical section (spec §5.1).
 	stored := cloneTransitionRecord(&decision.Transition)
-	m.state = cloneMachineState(&decision.NewState)
-	m.revision++
-	m.watermark = m.revision
-	m.transitions[req.Command.ID] = stored
-	m.log = append(m.log, stored)
+	entry.state = cloneMachineState(&decision.NewState)
+	entry.revision++
+	entry.watermark = entry.revision
+	entry.transitions[req.Command.ID] = stored
+	entry.log = append(entry.log, stored)
 
 	var minted ExecutionGrant
 	switch req.Command.Command.(type) {
 	case StartModelExecution, StartToolCall:
 		minted = newGrant()
-		m.grants[key] = minted
+		entry.grants[key] = minted
 	case SubmitModelResult, SubmitModelFailure, RejectModelResult, RecoverModelExecution,
 		SubmitToolResult, SubmitToolFailure:
-		delete(m.grants, key)
+		delete(entry.grants, key)
 	}
-	if m.state.Status.Terminal() {
-		// Terminal invalidates every outstanding grant (spec §3.7.3).
-		m.grants = make(map[string]ExecutionGrant)
+	if entry.state.Status.Terminal() {
+		entry.grants = make(map[string]ExecutionGrant)
 	}
-
-	return CommitResult{
-		Status:   CommitAccepted,
-		Snapshot: RuntimeSnapshot{State: cloneMachineState(&m.state), Revision: m.revision},
-		Events:   cloneEvents(stored.Events),
-		Grant:    minted,
-	}, nil
+	return CommitResult{Status: CommitAccepted,
+		Snapshot: RuntimeSnapshot{State: cloneMachineState(&entry.state), Revision: entry.revision},
+		Events:   cloneEvents(stored.Events), Grant: minted}, nil
 }
 
-// Events returns a deep copy of the flattened event stream in (Revision, Index)
-// order. Test and replay helper; not part of the Runtime contract.
-func (m *MemoryRuntime) Events() []AgentEvent {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return flattenTransitionRecords(m.log)
-}
-
-// Transitions returns a deep copy of the authoritative transition log in
-// Revision order. Test and durable-runtime helper; not part of the Runtime
-// contract.
-func (m *MemoryRuntime) Transitions() []TransitionRecord {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return cloneTransitionRecords(m.log)
+// Record returns a detached consistent point-in-time snapshot and verifies it
+// against the immutable header and complete transition records.
+func (m *MemoryRuntime) Record(ctx context.Context, runID RunID) (RunRecord, error) {
+	if err := checkContext(ctx); err != nil {
+		return RunRecord{}, err
+	}
+	entry, err := m.entry(runID)
+	if err != nil {
+		return RunRecord{}, err
+	}
+	entry.mu.Lock()
+	if err := checkContext(ctx); err != nil {
+		entry.mu.Unlock()
+		return RunRecord{}, err
+	}
+	header := cloneRunHeader(entry.header)
+	snapshot := RuntimeSnapshot{State: cloneMachineState(&entry.state), Revision: entry.revision}
+	transitions := cloneTransitionRecords(entry.log)
+	entry.mu.Unlock()
+	if err := checkContext(ctx); err != nil {
+		return RunRecord{}, err
+	}
+	if err := ValidateRunHeader(&header); err != nil {
+		return RunRecord{}, fmt.Errorf("agent: memory runtime: invalid header: %w", err)
+	}
+	for i := range transitions {
+		if err := ValidateTransitionRecord(&transitions[i]); err != nil {
+			return RunRecord{}, fmt.Errorf("agent: memory runtime: invalid transition %d: %w", i, err)
+		}
+	}
+	folded, revision, err := FoldRun(&header, transitions)
+	if err != nil {
+		return RunRecord{}, fmt.Errorf("agent: memory runtime: fold: %w", err)
+	}
+	if revision != snapshot.Revision || !statesEquivalent(&folded, &snapshot.State) {
+		return RunRecord{}, errors.New("agent: memory runtime: snapshot diverges from transition log")
+	}
+	return RunRecord{Header: cloneRunHeader(header), Snapshot: cloneRuntimeSnapshot(snapshot), Transitions: cloneTransitionRecords(transitions)}, nil
 }

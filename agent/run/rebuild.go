@@ -82,9 +82,9 @@ func FoldEvents(initial MachineState, events []AgentEvent) (MachineState, uint64
 	return state, revision, nil
 }
 
-// FoldTransitions rebuilds a MachineState by folding authoritative transition
-// records from the immutable initial state. The source of truth is the
-// admission-created initial state plus the complete TransitionRecord log.
+// FoldTransitions rebuilds a MachineState from the immutable initial state
+// and complete TransitionRecord sequence. Together they are the canonical
+// diagnostic commit record for replay and consistency checks.
 //
 //nolint:gocritic // hugeParam: public replay API folds from an initial value state without mutating caller-owned state.
 func FoldTransitions(initial MachineState, records []TransitionRecord) (MachineState, uint64, error) {
@@ -127,20 +127,24 @@ func FoldTransitions(initial MachineState, records []TransitionRecord) (MachineS
 // gap). It returns true when the refolded state differed from the stored
 // state — with a correct implementation this never happens, so a true return
 // is an audit signal (Evolve bug, out-of-band write, or storage corruption).
-func (m *MemoryRuntime) Rebuild() (rebuilt bool, err error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	folded, maxRevision, err := FoldTransitions(cloneMachineState(&m.initial), m.log)
+func (m *MemoryRuntime) Rebuild(runID RunID) (rebuilt bool, err error) {
+	entry, err := m.entry(runID)
 	if err != nil {
 		return false, err
 	}
-	if maxRevision < m.watermark {
-		return false, fmt.Errorf("%w: log ends at %d, watermark %d", ErrLogTruncated, maxRevision, m.watermark)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+
+	folded, maxRevision, err := FoldTransitions(cloneMachineState(&entry.initial), entry.log)
+	if err != nil {
+		return false, err
 	}
-	diverged := m.revision != maxRevision || !statesEquivalent(&m.state, &folded)
-	m.state = folded
-	m.revision = maxRevision
+	if maxRevision < entry.watermark {
+		return false, fmt.Errorf("%w: log ends at %d, watermark %d", ErrLogTruncated, maxRevision, entry.watermark)
+	}
+	diverged := entry.revision != maxRevision || !statesEquivalent(&entry.state, &folded)
+	entry.state = folded
+	entry.revision = maxRevision
 	return diverged, nil
 }
 

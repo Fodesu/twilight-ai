@@ -8,9 +8,10 @@ import (
 	"github.com/memohai/twilight/sdk"
 )
 
-// Event-sourcing arbitration tests (spec §5.1): the log is the source of
-// truth; the snapshot is a rebuildable same-transaction projection; the
-// revision watermark witnesses log-tail completeness.
+// Event-sourcing arbitration tests (spec §5.1): the complete canonical
+// TransitionRecord is the diagnostic commit record; the snapshot is a
+// rebuildable same-transaction projection; the revision watermark witnesses
+// log-tail completeness.
 
 // fullRunRuntime drives one complete run (prepare -> model -> tool -> done)
 // and returns the runtime.
@@ -20,19 +21,23 @@ func fullRunRuntime(t *testing.T) *MemoryRuntime {
 	spec := makeSpec(t, def, DirectExecution)
 	rt, stepID, grant := preparedRuntime(t, []sdk.ToolDefinition{def}, []ToolSpec{spec})
 	b := makeBinding(t, "c1", spec, `{}`)
-	res := mustCommit(t, rt, "complete-1", 2, grant,
+	snap, err := rt.Load(context.Background(), "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := mustCommit(t, rt, "complete-1", snap.Revision, grant,
 		SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
 	toolStep := res.Events[1].Fact.(ToolStepOpened).StepID
 	sRes := mustCommit(t, rt, "start-c1", res.Snapshot.Revision, "", StartToolCall{StepID: toolStep, CallID: "c1"})
 	mustCommit(t, rt, "done-c1", sRes.Snapshot.Revision, sRes.Grant,
 		SubmitToolResult{StepID: toolStep, CallID: "c1", Result: ToolExecutionResult{Output: cj(`"ok"`)}})
-	mustCommit(t, rt, DeriveModelRequestCommandID("run-1", 5), 5, "",
-		func() PrepareModelRequest {
-			snap, _ := rt.Load(context.Background())
-			prep, _ := buildPrepareFromSnap(t, snap, testRequest(), nil)
-			return prep
-		}())
-	start := mustCommit(t, rt, "start-2", 6, "", StartModelExecution{StepID: currentStepID(t, rt)})
+	snap, err = rt.Load(context.Background(), "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	prep, cmdID := buildPrepareFromSnap(t, snap, testRequest(), nil)
+	prepared := mustCommit(t, rt, cmdID, snap.Revision, "", prep)
+	start := mustCommit(t, rt, "start-2", prepared.Snapshot.Revision, "", StartModelExecution{StepID: currentStepID(t, rt)})
 	final, err := FreezeModelResult(sdk.ModelResult{Text: "final", FinishReason: sdk.FinishReasonStop})
 	if err != nil {
 		t.Fatal(err)
@@ -44,7 +49,7 @@ func fullRunRuntime(t *testing.T) *MemoryRuntime {
 
 func currentStepID(t *testing.T, rt *MemoryRuntime) StepID {
 	t.Helper()
-	snap, err := rt.Load(context.Background())
+	snap, err := rt.Load(context.Background(), "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,15 +63,15 @@ func currentStepID(t *testing.T, rt *MemoryRuntime) StepID {
 // implementation the arbitration branch never fires.
 func TestRebuildHealthyIsNoop(t *testing.T) {
 	rt := fullRunRuntime(t)
-	before, _ := rt.Load(context.Background())
-	diverged, err := rt.Rebuild()
+	before, _ := rt.Load(context.Background(), "run-1")
+	diverged, err := rt.Rebuild("run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if diverged {
 		t.Fatal("healthy runtime reported divergence on rebuild")
 	}
-	after, _ := rt.Load(context.Background())
+	after, _ := rt.Load(context.Background(), "run-1")
 	if !statesEquivalent(&before.State, &after.State) || before.Revision != after.Revision {
 		t.Fatal("rebuild changed a healthy state")
 	}
@@ -76,23 +81,24 @@ func TestRebuildHealthyIsNoop(t *testing.T) {
 // reported for audit.
 func TestRebuildRepairsCorruptedSnapshot(t *testing.T) {
 	rt := fullRunRuntime(t)
-	want, _ := rt.Load(context.Background())
+	want, _ := rt.Load(context.Background(), "run-1")
 
 	// Out-of-band write: corrupt the authoritative snapshot directly.
-	rt.mu.Lock()
-	rt.state.ModelSteps = 99
-	rt.state.Status = RunActive
-	rt.state.Result = nil
-	rt.mu.Unlock()
+	entry := memoryEntry(t, rt)
+	entry.mu.Lock()
+	entry.state.ModelSteps = 99
+	entry.state.Status = RunActive
+	entry.state.Result = nil
+	entry.mu.Unlock()
 
-	diverged, err := rt.Rebuild()
+	diverged, err := rt.Rebuild("run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !diverged {
 		t.Fatal("rebuild did not report the repaired divergence")
 	}
-	got, _ := rt.Load(context.Background())
+	got, _ := rt.Load(context.Background(), "run-1")
 	if !statesEquivalent(&want.State, &got.State) {
 		t.Fatal("rebuild did not restore the log-derived state")
 	}
@@ -105,13 +111,14 @@ func TestRebuildRepairsCorruptedSnapshot(t *testing.T) {
 // are gone and continuing would repeat gated executions.
 func TestRebuildHaltsOnTruncatedTail(t *testing.T) {
 	rt := fullRunRuntime(t)
-	rt.mu.Lock()
+	entry := memoryEntry(t, rt)
+	entry.mu.Lock()
 	// Simulate selective damage: drop the last transition while the watermark
 	// (separate storage in a durable adapter) survives.
-	rt.log = cloneTransitionRecords(rt.log[:len(rt.log)-1])
-	rt.mu.Unlock()
+	entry.log = cloneTransitionRecords(entry.log[:len(entry.log)-1])
+	entry.mu.Unlock()
 
-	_, err := rt.Rebuild()
+	_, err := rt.Rebuild("run-1")
 	if !errors.Is(err, ErrLogTruncated) {
 		t.Fatalf("err = %v, want ErrLogTruncated", err)
 	}
@@ -119,15 +126,16 @@ func TestRebuildHaltsOnTruncatedTail(t *testing.T) {
 
 func TestRebuildHaltsOnPartialTailTransition(t *testing.T) {
 	rt := fullRunRuntime(t)
-	rt.mu.Lock()
-	last := &rt.log[len(rt.log)-1]
+	entry := memoryEntry(t, rt)
+	entry.mu.Lock()
+	last := &entry.log[len(entry.log)-1]
 	if len(last.Events) < 2 {
 		t.Fatal("test requires a multi-event tail transition")
 	}
 	last.Events = last.Events[:len(last.Events)-1]
-	rt.mu.Unlock()
+	entry.mu.Unlock()
 
-	_, err := rt.Rebuild()
+	_, err := rt.Rebuild("run-1")
 	if err == nil {
 		t.Fatal("partial tail transition folded silently")
 	}
@@ -136,17 +144,18 @@ func TestRebuildHaltsOnPartialTailTransition(t *testing.T) {
 // A gap in the middle of the transition log is log damage, not a rebuild input.
 func TestFoldTransitionsRejectsInteriorGap(t *testing.T) {
 	rt := fullRunRuntime(t)
-	rt.mu.Lock()
+	entry := memoryEntry(t, rt)
+	entry.mu.Lock()
 	var holed []TransitionRecord
-	for i := range rt.log {
-		if rt.log[i].Revision == 3 { // drop one interior transition
+	for i := range entry.log {
+		if entry.log[i].Revision == 3 { // drop one interior transition
 			continue
 		}
-		holed = append(holed, cloneTransitionRecord(&rt.log[i]))
+		holed = append(holed, cloneTransitionRecord(&entry.log[i]))
 	}
 	log := holed
-	initial := cloneMachineState(&rt.initial)
-	rt.mu.Unlock()
+	initial := cloneMachineState(&entry.initial)
+	entry.mu.Unlock()
 
 	if _, _, err := FoldTransitions(initial, log); err == nil {
 		t.Fatal("interior transition gap folded silently")
@@ -156,10 +165,11 @@ func TestFoldTransitionsRejectsInteriorGap(t *testing.T) {
 // A gap in the middle of a complete flat event stream is still rejected.
 func TestFoldEventsRejectsInteriorGap(t *testing.T) {
 	rt := fullRunRuntime(t)
-	rt.mu.Lock()
-	flat := flattenTransitionRecords(rt.log)
-	initial := cloneMachineState(&rt.initial)
-	rt.mu.Unlock()
+	entry := memoryEntry(t, rt)
+	entry.mu.Lock()
+	flat := flattenTransitionRecords(entry.log)
+	initial := cloneMachineState(&entry.initial)
+	entry.mu.Unlock()
 
 	var holed []AgentEvent
 	for i := range flat {
@@ -175,10 +185,11 @@ func TestFoldEventsRejectsInteriorGap(t *testing.T) {
 
 func TestFoldRejectsRunIDMismatch(t *testing.T) {
 	rt := fullRunRuntime(t)
-	rt.mu.Lock()
-	log := flattenTransitionRecords(rt.log)
-	initial := cloneMachineState(&rt.initial)
-	rt.mu.Unlock()
+	entry := memoryEntry(t, rt)
+	entry.mu.Lock()
+	log := flattenTransitionRecords(entry.log)
+	initial := cloneMachineState(&entry.initial)
+	entry.mu.Unlock()
 
 	log[0].RunID = "other-run"
 	if _, _, err := FoldEvents(initial, log); err == nil {
@@ -188,13 +199,14 @@ func TestFoldRejectsRunIDMismatch(t *testing.T) {
 
 func TestFoldRejectsTransitionCommandIdentityChange(t *testing.T) {
 	rt := fullRunRuntime(t)
-	rt.mu.Lock()
-	log := flattenTransitionRecords(rt.log)
-	initial := cloneMachineState(&rt.initial)
-	rt.mu.Unlock()
+	entry := memoryEntry(t, rt)
+	entry.mu.Lock()
+	log := flattenTransitionRecords(entry.log)
+	initial := cloneMachineState(&entry.initial)
+	entry.mu.Unlock()
 
 	for i := range log {
-		if log[i].Revision == 3 && log[i].Index == 1 {
+		if log[i].Index == 1 {
 			log[i].CommandID = "other-command"
 			break
 		}
@@ -206,10 +218,11 @@ func TestFoldRejectsTransitionCommandIdentityChange(t *testing.T) {
 
 func TestFoldRejectsUnsupportedSchemaVersion(t *testing.T) {
 	rt := fullRunRuntime(t)
-	rt.mu.Lock()
-	log := flattenTransitionRecords(rt.log)
-	initial := cloneMachineState(&rt.initial)
-	rt.mu.Unlock()
+	entry := memoryEntry(t, rt)
+	entry.mu.Lock()
+	log := flattenTransitionRecords(entry.log)
+	initial := cloneMachineState(&entry.initial)
+	entry.mu.Unlock()
 
 	log[0].SchemaVersion = 99
 	digest, err := DigestFact(log[0].SchemaVersion, log[0].Type, log[0].Fact)
@@ -225,10 +238,11 @@ func TestFoldRejectsUnsupportedSchemaVersion(t *testing.T) {
 // A tampered fact fails its digest check during fold.
 func TestFoldRejectsTamperedFact(t *testing.T) {
 	rt := fullRunRuntime(t)
-	rt.mu.Lock()
-	log := flattenTransitionRecords(rt.log)
-	initial := cloneMachineState(&rt.initial)
-	rt.mu.Unlock()
+	entry := memoryEntry(t, rt)
+	entry.mu.Lock()
+	log := flattenTransitionRecords(entry.log)
+	initial := cloneMachineState(&entry.initial)
+	entry.mu.Unlock()
 
 	for i := range log {
 		if f, ok := log[i].Fact.(ToolCallCompleted); ok {
@@ -270,19 +284,23 @@ func TestRegressionPreparedFactSelfContained(t *testing.T) {
 // the same commit that changes the protocol).
 func TestGoldenEventStreamV1(t *testing.T) {
 	rt := fullRunRuntime(t)
-	folded, maxRev, err := FoldTransitions(cloneMachineState(&rt.initial), rt.Transitions())
+	record, err := rt.Record(context.Background(), "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if maxRev != 8 {
-		t.Fatalf("golden stream has %d transitions, want 8", maxRev)
+	folded, maxRev, err := FoldTransitions(cloneMachineState(&record.Header.InitialState), record.Transitions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if maxRev != 9 {
+		t.Fatalf("golden stream has %d transitions, want 9", maxRev)
 	}
 	stateBytes, err := marshalCanonical(stateComparable(&folded))
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := string(sha256Digest(stateBytes))
-	const frozen = "sha256:7b95310e5132ee6490526c15804e2cb22efe14cd60e9f9320b1c14ecbead687a"
+	const frozen = "sha256:5ab6b883663a76e3293bf5dded726ae4cfdcfc50cc957b5b72fcf7d677e648ed"
 	if got != frozen {
 		t.Fatalf("golden v1 state digest changed:\n got %s\nwant %s\nstate: %s", got, frozen, stateBytes)
 	}
