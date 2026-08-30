@@ -120,7 +120,7 @@ func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
 	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
 		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
 
-	res, err := loop.Run(context.Background(), rt, nil)
+	res, err := loop.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +186,11 @@ func TestRegressionRuntimeReturnsAreIsolated(t *testing.T) {
 	spec := makeSpec(t, def, ApprovalRequired)
 	rt, stepID, grant := preparedRuntime(t, []sdk.ToolDefinition{def}, []ToolSpec{spec})
 	b := makeBinding(t, "c1", spec, `{"k":"original"}`)
-	res := mustCommit(t, rt, "complete-1", 2, grant,
+	snap, err := rt.Load(context.Background(), "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := mustCommit(t, rt, "complete-1", snap.Revision, grant,
 		SubmitModelResult{StepID: stepID, Result: modelResultWithNamedCalls("t", `{"k":"original"}`, "c1"), Calls: []ToolCallBinding{b}})
 
 	// Mutate byte views returned from immutable CanonicalJSON values.
@@ -194,18 +198,18 @@ func TestRegressionRuntimeReturnsAreIsolated(t *testing.T) {
 	argBytes := opened.Calls[0].Arguments.RawMessage()
 	argBytes[2] = 'X'
 	// Mutate the snapshot's waiting payload view.
-	snap, _ := rt.Load(context.Background())
+	snap, _ = rt.Load(context.Background(), "run-1")
 	ts := snap.State.Current.(ToolStep)
 	payloadBytes := ts.Calls[0].Waiting.Payload.RawMessage()
 	payloadBytes[2] = 'Y'
 
 	// Authority must be unchanged: reload and verify the argument bytes.
-	fresh, _ := rt.Load(context.Background())
+	fresh, _ := rt.Load(context.Background(), "run-1")
 	got := fresh.State.Current.(ToolStep).Calls[0].Arguments
 	if got.String() != `{"k":"original"}` {
 		t.Fatalf("authoritative arguments mutated through a returned view: %s", got.String())
 	}
-	stored := rt.Events()
+	stored := recordEvents(t, rt, "run-1")
 	for _, e := range stored {
 		if f, ok := e.Fact.(ToolStepOpened); ok {
 			if f.Calls[0].Arguments.String() != `{"k":"original"}` {
@@ -249,7 +253,7 @@ func TestRegressionRunFinishedEmitted(t *testing.T) {
 	})
 	loop, _ := NewLoop(fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("done")}}},
 		fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
-	if _, err := loop.Run(context.Background(), rt, sink); err != nil {
+	if _, err := loop.Run(context.Background(), rt, "run-1", sink); err != nil {
 		t.Fatal(err)
 	}
 	for _, k := range kinds {
@@ -292,7 +296,7 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"fs.read": tool}},
 		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
 
-	res, err := loop.Run(context.Background(), rt, nil)
+	res, err := loop.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -321,7 +325,7 @@ func TestRegressionCancelReasonFixed(t *testing.T) {
 func TestRegressionStreamNilResult(t *testing.T) {
 	rt := loopRuntime(t)
 	loop, _ := NewLoop(fakeCatalog{nilResultStreamer{}}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, true)
-	res, err := loop.Run(context.Background(), rt, nil)
+	res, err := loop.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

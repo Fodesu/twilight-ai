@@ -10,13 +10,38 @@ import (
 // Shared helpers for package-local agent tests. Runtime conformance lives in
 // agent/runtimetest so durable Runtime implementations can reuse it.
 
-func newTestRuntime(t *testing.T, cfg RunConfig) *MemoryRuntime {
+func newTestRuntime(t *testing.T, _ RunConfig) *MemoryRuntime {
 	t.Helper()
-	s, err := Initialize("run-1", cfg, NextRun(AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)}))
+	rt := NewMemoryRuntime()
+	newRun, err := BuildNewRun("run-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewMemoryRuntime(s)
+	if _, err := rt.Create(context.Background(), newRun); err != nil {
+		t.Fatal(err)
+	}
+	// Seed inputs must enter through the public Runtime boundary so the
+	// fixture has the same Revision-0 header and transition history as a Run.
+	acceptInput(t, rt, "run-1", AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)})
+	return rt
+}
+
+func recordEvents(t testing.TB, rt Runtime, runID RunID) []AgentEvent {
+	t.Helper()
+	record, err := rt.Record(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return flattenTransitionRecords(record.Transitions)
+}
+
+func memoryEntry(t testing.TB, rt *MemoryRuntime) *memoryRun {
+	t.Helper()
+	entry, err := rt.entry("run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entry
 }
 
 func commitCmd(t *testing.T, rt Runtime, id CommandID, base uint64, grant ExecutionGrant, cmd AgentCommand) (CommitResult, error) {
@@ -42,11 +67,11 @@ func mustCommit(t *testing.T, rt Runtime, id CommandID, base uint64, grant Execu
 func preparedRuntime(t *testing.T, tools []sdk.ToolDefinition, specs []ToolSpec) (*MemoryRuntime, StepID, ExecutionGrant) {
 	t.Helper()
 	rt := newTestRuntime(t, RunConfig{Model: "m-1", ModelRejectLimit: 2})
-	snap, _ := rt.Load(context.Background())
+	snap, _ := rt.Load(context.Background(), "run-1")
 	req := testRequest(tools...)
 	prep, cmdID := buildPrepareFromSnap(t, snap, req, specs)
-	mustCommit(t, rt, cmdID, snap.Revision, "", prep)
-	start := mustCommit(t, rt, "start-1", 1, "", StartModelExecution{StepID: prep.StepID})
+	prepared := mustCommit(t, rt, cmdID, snap.Revision, "", prep)
+	start := mustCommit(t, rt, "start-1", prepared.Snapshot.Revision, "", StartModelExecution{StepID: prep.StepID})
 	if start.Grant == "" {
 		t.Fatal("accepted start returned no grant")
 	}
@@ -94,7 +119,7 @@ func TestLoopPrepareRejectionDoesNotLivelock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = loop.Run(context.Background(), rt, nil)
+	_, err = loop.Run(context.Background(), rt, "run-1", nil)
 	if err == nil {
 		t.Fatal("prepare livelock not surfaced")
 	}

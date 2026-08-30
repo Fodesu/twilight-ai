@@ -101,11 +101,7 @@ func toolSpec(t *testing.T, name string, policy ResponsePolicy) ToolSpec {
 
 func loopRuntime(t *testing.T) *MemoryRuntime {
 	t.Helper()
-	s, err := Initialize("run-1", RunConfig{Model: "m-1"}, NextRun(AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return NewMemoryRuntime(s)
+	return newTestRuntime(t, RunConfig{Model: "m-1"})
 }
 
 func textResult(text string) sdk.ModelResult {
@@ -129,7 +125,7 @@ func TestLoopSingleModelCallCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := loop.Run(context.Background(), rt, nil)
+	res, err := loop.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +148,7 @@ func TestLoopToolRoundTrip(t *testing.T) {
 	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
 		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
 
-	res, err := loop.Run(context.Background(), rt, nil)
+	res, err := loop.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -182,7 +178,7 @@ func TestLoopApprovalWaitsAndResumes(t *testing.T) {
 		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
 
 	// First run: reaches Waiting(Approval) and returns.
-	res, err := loop.Run(context.Background(), rt, nil)
+	res, err := loop.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,13 +202,13 @@ func TestLoopApprovalWaitsAndResumes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snap, _ := rt.Load(context.Background())
+	snap, _ := rt.Load(context.Background(), "run-1")
 	if _, err := rt.Commit(context.Background(), CommitRequest{BaseRevision: snap.Revision, Command: env}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Wake: a new Loop run executes the tool and finishes.
-	res, err = loop.Run(context.Background(), rt, nil)
+	res, err = loop.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,7 +231,7 @@ func TestLoopUnknownOutcomeFailsRun(t *testing.T) {
 	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
 		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
 
-	res, err := loop.Run(context.Background(), rt, nil)
+	res, err := loop.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +254,7 @@ func TestLoopKnownToolFailureContinues(t *testing.T) {
 	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
 		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
 
-	res, err := loop.Run(context.Background(), rt, nil)
+	res, err := loop.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +278,7 @@ func TestLoopUnknownToolRefClosesAsLookupFailure(t *testing.T) {
 	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{tools: map[ToolRef]ExecutableTool{}},
 		staticPlanner{}, ExecutionPolicy{}, false)
 
-	res, err := loop.Run(context.Background(), rt, nil)
+	res, err := loop.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +287,7 @@ func TestLoopUnknownToolRefClosesAsLookupFailure(t *testing.T) {
 	}
 	// The failed call must be recorded as tool_lookup_failed in the log.
 	found := false
-	for _, e := range rt.Events() {
+	for _, e := range recordEvents(t, rt, "run-1") {
 		if f, ok := e.Fact.(ToolCallFailed); ok && f.Failure.Class == FailureToolLookup {
 			found = true
 		}
@@ -329,7 +325,7 @@ func TestLoopParallelBounded(t *testing.T) {
 	var res LoopResult
 	var runErr error
 	go func() {
-		res, runErr = loop.Run(context.Background(), rt, nil)
+		res, runErr = loop.Run(context.Background(), rt, "run-1", nil)
 		close(done)
 	}()
 
@@ -359,19 +355,19 @@ func TestLoopCtxCancelReturnsWithoutFailingRun(t *testing.T) {
 	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
 
 	cancel() // cancelled before the model call
-	_, err := loop.Run(ctx, rt, nil)
+	_, err := loop.Run(ctx, rt, "run-1", nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	// Run must still be active (recovery released it), never failed.
-	snap, _ := rt.Load(context.Background())
+	snap, _ := rt.Load(context.Background(), "run-1")
 	if snap.State.Status != RunActive {
 		t.Fatalf("status = %v, want RunActive", snap.State.Status)
 	}
 	// A fresh Loop with a working invoker resumes the same frozen request.
 	invoker2 := &fakeInvoker{results: []sdk.ModelResult{textResult("resumed")}}
 	loop2, _ := NewLoop(fakeCatalog{invoker2}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
-	res, err := loop2.Run(context.Background(), rt, nil)
+	res, err := loop2.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -381,17 +377,26 @@ func TestLoopCtxCancelReturnsWithoutFailingRun(t *testing.T) {
 }
 
 func TestLoopModelStepLimitStopsBeforePlanning(t *testing.T) {
-	s, err := InitializeRun("run-1")
+	// Corruption fixture: the limit is a snapshot-only condition that cannot
+	// be reached without planning, so inject it locally after a real Revision-0
+	// admission. Normal loop fixtures never mutate MemoryRuntime internals.
+	rt := NewMemoryRuntime()
+	newRun, err := BuildNewRun("run-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.ModelSteps = 1
-	rt := NewMemoryRuntime(s)
+	if _, err := rt.Create(context.Background(), newRun); err != nil {
+		t.Fatal(err)
+	}
+	entry := memoryEntry(t, rt)
+	entry.mu.Lock()
+	entry.state.ModelSteps = 1
+	entry.mu.Unlock()
 	loop, err := NewLoop(fakeCatalog{}, fakeToolCatalog{}, panicPlanner{}, ExecutionPolicy{ModelStepLimit: 1}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := loop.Run(context.Background(), rt, nil)
+	res, err := loop.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +420,7 @@ func TestLoopMalformedModelResultLimitFailsRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := loop.Run(context.Background(), rt, nil)
+	res, err := loop.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,13 +441,13 @@ func (panicPlanner) Plan(context.Context, PlanningHint) (RequestPlan, error) {
 func TestLoopCancelRunViaCommand(t *testing.T) {
 	// Host order: commit CancelRun first, then cancel ctx (spec §6.6).
 	rt := loopRuntime(t)
-	snap, _ := rt.Load(context.Background())
+	snap, _ := rt.Load(context.Background(), "run-1")
 	env, _ := BuildEnvelope("run-1", "cancel-1", CancelRun{})
 	if _, err := rt.Commit(context.Background(), CommitRequest{BaseRevision: snap.Revision, Command: env}); err != nil {
 		t.Fatal(err)
 	}
 	loop, _ := NewLoop(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
-	res, err := loop.Run(context.Background(), rt, nil)
+	res, err := loop.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -467,13 +472,13 @@ func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
 	rt := loopRuntime(t)
 	loop, _ := NewLoop(fakeCatalog{invoker}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
 
-	_, err := loop.Run(ctx, rt, nil)
+	_, err := loop.Run(ctx, rt, "run-1", nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	// The model step must be back to Prepared via RecoverModelExecution:
 	// same frozen request, run still active, ModelSteps not recounted.
-	snap, _ := rt.Load(context.Background())
+	snap, _ := rt.Load(context.Background(), "run-1")
 	ms, ok := snap.State.Current.(ModelStep)
 	if !ok || ms.Status != ModelPrepared {
 		t.Fatalf("current = %#v, want Prepared ModelStep", snap.State.Current)
@@ -482,7 +487,7 @@ func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
 		t.Fatalf("ModelSteps = %d", snap.State.ModelSteps)
 	}
 	recovered := false
-	for _, e := range rt.Events() {
+	for _, e := range recordEvents(t, rt, "run-1") {
 		if _, ok := e.Fact.(ModelStepRecovered); ok {
 			recovered = true
 		}
@@ -494,14 +499,14 @@ func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
 	// A fresh Loop resumes the SAME frozen step without a new Prepare.
 	invoker2 := &fakeInvoker{results: []sdk.ModelResult{textResult("resumed")}}
 	loop2, _ := NewLoop(fakeCatalog{invoker2}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
-	res, err := loop2.Run(context.Background(), rt, nil)
+	res, err := loop2.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Result.Model.Text != "resumed" {
 		t.Fatalf("res = %+v", res)
 	}
-	final, _ := rt.Load(context.Background())
+	final, _ := rt.Load(context.Background(), "run-1")
 	if final.State.ModelSteps != 1 {
 		t.Fatalf("ModelSteps = %d after resume, want 1 (same frozen step)", final.State.ModelSteps)
 	}

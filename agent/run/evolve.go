@@ -33,6 +33,18 @@ func evolveV1(s MachineState, f Fact) (MachineState, error) {
 		if s.Current != nil {
 			return s, fmt.Errorf("agent: evolve: model step prepared while a step is current")
 		}
+		// v1 preparation is the atomic consumption boundary for pending inputs.
+		// A persisted fact must name every pending input exactly once, in queue
+		// order; accepting a subset or an invented ID would make replay diverge
+		// from the command that created this frozen request.
+		if len(fact.InputIDs) != len(s.PendingInputs) {
+			return s, fmt.Errorf("agent: evolve: model step prepared input IDs do not completely consume pending inputs: got %d, want %d", len(fact.InputIDs), len(s.PendingInputs))
+		}
+		for i, input := range s.PendingInputs {
+			if fact.InputIDs[i] != input.ID {
+				return s, fmt.Errorf("agent: evolve: model step prepared input ID at position %d = %q, want pending input %q", i, fact.InputIDs[i], input.ID)
+			}
+		}
 		s.Current = ModelStep{
 			RefValue:      StepRef{RunID: s.RunID, ID: fact.StepID, Digest: fact.BindingDigest},
 			Request:       fact.Request,
@@ -43,7 +55,7 @@ func evolveV1(s MachineState, f Fact) (MachineState, error) {
 			Status:        ModelPrepared,
 		}
 		s.ModelSteps++
-		s.PendingInputs = removeInputs(s.PendingInputs, fact.InputIDs)
+		s.PendingInputs = nil
 		return s, nil
 
 	case ModelStepStarted:
@@ -214,21 +226,4 @@ func evolveCall(s *MachineState, step StepID, call CallID, apply func(*ToolCallS
 	ts.Calls = calls
 	s.Current = ts
 	return *s, nil
-}
-
-func removeInputs(inputs []AgentInput, ids []InputID) []AgentInput {
-	if len(ids) == 0 {
-		return inputs
-	}
-	drop := make(map[InputID]bool, len(ids))
-	for _, id := range ids {
-		drop[id] = true
-	}
-	var kept []AgentInput
-	for _, in := range inputs {
-		if !drop[in.ID] {
-			kept = append(kept, in)
-		}
-	}
-	return kept
 }

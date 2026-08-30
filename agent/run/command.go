@@ -16,10 +16,10 @@ type AgentInput struct {
 func NextStep(input AgentInput) AcceptInput { return AcceptInput{Input: input} }
 
 // RunSeed is the legacy admission seed for a new Run. It is not a command: it
-// never goes through Runtime.Commit. New admission should use InitializeRun and
-// submit initial input with AcceptInput.
+// never goes through Runtime.Commit. New admission uses NewRun with
+// Runtime.Create, then submits every initial input with AcceptInput.
 //
-// Deprecated: use InitializeRun and AcceptInput.
+// Deprecated: use NewRun, Runtime.Create, and AcceptInput.
 type RunSeed struct {
 	Input AgentInput `json:"input"`
 }

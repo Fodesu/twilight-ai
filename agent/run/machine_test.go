@@ -592,6 +592,57 @@ func TestSubmitModelResultRequiresCanonicalToolInput(t *testing.T) {
 	}
 }
 
+func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
+	minimal, err := InitializeRun("run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	withInputs := func(ids ...InputID) MachineState {
+		t.Helper()
+		s := minimal
+		for _, id := range ids {
+			var foldErr error
+			s, foldErr = Evolve(s, InputAccepted{Input: AgentInput{ID: id, Payload: cj(`null`)}})
+			if foldErr != nil {
+				t.Fatal(foldErr)
+			}
+		}
+		return s
+	}
+	prepared := func(ids ...InputID) ModelStepPrepared {
+		return ModelStepPrepared{StepID: "step-1", Model: testModel, Request: ModelRequest{Model: string(testModel)}, RequestDigest: "sha256:req", ToolsDigest: "sha256:tools", BindingDigest: "sha256:binding", InputIDs: ids}
+	}
+
+	t.Run("nonexistent input", func(t *testing.T) {
+		s := withInputs("in-1")
+		if _, err := Evolve(s, prepared("missing")); err == nil {
+			t.Fatal("ModelStepPrepared consuming a nonexistent input folded")
+		}
+	})
+	t.Run("length mismatch", func(t *testing.T) {
+		s := withInputs("in-1", "in-2")
+		if _, err := Evolve(s, prepared("in-1")); err == nil {
+			t.Fatal("ModelStepPrepared consuming only a pending-input prefix folded")
+		}
+	})
+	t.Run("order mismatch", func(t *testing.T) {
+		s := withInputs("in-1", "in-2")
+		if _, err := Evolve(s, prepared("in-2", "in-1")); err == nil {
+			t.Fatal("ModelStepPrepared consuming pending inputs out of order folded")
+		}
+	})
+	t.Run("complete ordered IDs", func(t *testing.T) {
+		s := withInputs("in-1", "in-2")
+		next, err := Evolve(s, prepared("in-1", "in-2"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next.Current == nil || len(next.PendingInputs) != 0 {
+			t.Fatalf("prepared state = %+v", next)
+		}
+	})
+}
+
 func TestEvolveRejectsModelPrepareOverCurrentStep(t *testing.T) {
 	s := newRun(t, testConfig())
 	s, _ = advanceToExecuting(t, s, testRequest(), nil)

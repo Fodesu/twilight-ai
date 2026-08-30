@@ -3,9 +3,7 @@
 // of copying MemoryRuntime-specific assertions:
 //
 //	func TestMyRuntimeConformance(t *testing.T) {
-//	    runtimetest.RunConformance(t, func(t testing.TB, initial run.MachineState) run.Runtime {
-//	        return newMyRuntime(t, initial)
-//	    })
+//	    runtimetest.RunConformance(t, func() run.Runtime { return newMyRuntime() })
 //	}
 //
 // The suite exercises only the public run API, so it holds for any Runtime
@@ -19,19 +17,30 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/memohai/twilight/agent/run"
 	"github.com/memohai/twilight/sdk"
 )
 
-// Factory constructs the Runtime under test from an already-initialized
-// Revision-0 state.
-type Factory func(testing.TB, run.MachineState) run.Runtime
+// Factory constructs an empty Runtime under test.
+type Factory func() run.Runtime
 
 // RunConformance executes the shared Runtime conformance suite.
 func RunConformance(t *testing.T, newRuntime Factory) {
 	t.Helper()
+	t.Run("CreateReturnsValidDetachedHeader", func(t *testing.T) { testCreateReturnsValidDetachedHeader(t, newRuntime) })
+	t.Run("CreateRetryAndConflict", func(t *testing.T) { testCreateRetryAndConflict(t, newRuntime) })
+	t.Run("MissingRunOperations", func(t *testing.T) { testMissingRunOperations(t, newRuntime) })
+	t.Run("RecordRevisionZero", func(t *testing.T) { testRecordRevisionZero(t, newRuntime) })
+	t.Run("RecordFoldsAcceptedTransition", func(t *testing.T) { testRecordFoldsAcceptedTransition(t, newRuntime) })
+	t.Run("ReturnedValuesAreDetached", func(t *testing.T) { testReturnedValuesAreDetached(t, newRuntime) })
+	t.Run("ConcurrentCreate", func(t *testing.T) { testConcurrentCreate(t, newRuntime) })
+	t.Run("RunsAreIsolated", func(t *testing.T) { testRunsAreIsolated(t, newRuntime) })
+	t.Run("CrossRunGrantIsRejected", func(t *testing.T) { testCrossRunGrantIsRejected(t, newRuntime) })
+	t.Run("RecordConcurrentWithCommit", func(t *testing.T) { testRecordConcurrentWithCommit(t, newRuntime) })
 	t.Run("IdempotentReplay", func(t *testing.T) { testIdempotentReplay(t, newRuntime) })
 	t.Run("RevisionAndIndex", func(t *testing.T) { testRevisionAndIndex(t, newRuntime) })
 	t.Run("StartGrantLifecycle", func(t *testing.T) { testStartGrantLifecycle(t, newRuntime) })
@@ -45,6 +54,314 @@ func RunConformance(t *testing.T, newRuntime Factory) {
 	t.Run("DerivedCommandIDEnforced", func(t *testing.T) { testDerivedCommandIDEnforced(t, newRuntime) })
 }
 
+func testCreateReturnsValidDetachedHeader(t *testing.T, newRuntime Factory) {
+	rt := newRuntime()
+	newRun, err := run.BuildNewRun("run-create", "cause-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := rt.Create(context.Background(), newRun)
+	if err != nil || !created.Created {
+		t.Fatalf("first Create = %+v, %v", created, err)
+	}
+	if err := run.ValidateRunHeader(&created.Header); err != nil {
+		t.Fatalf("Create returned invalid Header: %v", err)
+	}
+	created.Header.InitialState.RunID = "mutated"
+	record, err := rt.Record(context.Background(), "run-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Header.InitialState.RunID != "run-create" {
+		t.Fatal("Create Header aliases runtime state")
+	}
+}
+
+func testCreateRetryAndConflict(t *testing.T, newRuntime Factory) {
+	rt := newRuntime()
+	first, err := run.BuildNewRun("run-create", "cause-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Create(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	retry, err := rt.Create(context.Background(), first)
+	if err != nil || retry.Created {
+		t.Fatalf("retry Create = %+v, %v", retry, err)
+	}
+	retry.Header.InitialState.RunID = "mutated"
+	record, err := rt.Record(context.Background(), first.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Header.InitialState.RunID != first.RunID {
+		t.Fatal("retry Create Header aliases runtime state")
+	}
+	conflict, err := run.BuildNewRun("run-create", "cause-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Create(context.Background(), conflict); !errors.Is(err, run.ErrCreateConflict) {
+		t.Fatalf("conflicting Create error = %v, want ErrCreateConflict", err)
+	}
+}
+
+func testMissingRunOperations(t *testing.T, newRuntime Factory) {
+	rt := newRuntime()
+	if _, err := rt.Load(context.Background(), "missing"); !errors.Is(err, run.ErrRunNotFound) {
+		t.Fatalf("Load error = %v, want ErrRunNotFound", err)
+	}
+	if _, err := rt.Record(context.Background(), "missing"); !errors.Is(err, run.ErrRunNotFound) {
+		t.Fatalf("Record error = %v, want ErrRunNotFound", err)
+	}
+	env, err := run.BuildEnvelope("missing", "cancel", run.CancelRun{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Commit(context.Background(), run.CommitRequest{Command: env}); !errors.Is(err, run.ErrRunNotFound) {
+		t.Fatalf("Commit error = %v, want ErrRunNotFound", err)
+	}
+}
+
+func testRecordRevisionZero(t *testing.T, newRuntime Factory) {
+	c := newCase(t, newRuntime)
+	record, err := c.rt.Record(context.Background(), c.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Snapshot.Revision != 0 || len(record.Transitions) != 0 {
+		t.Fatalf("revision-zero Record = %+v", record)
+	}
+}
+
+func testRecordFoldsAcceptedTransition(t *testing.T, newRuntime Factory) {
+	c := newCase(t, newRuntime)
+	input := run.AgentInput{ID: "in-1", Payload: mustJSON(`{"q":"hi"}`)}
+	res := c.mustCommit(run.DeriveInputCommandID(c.runID, input.ID), 0, "", run.AcceptInput{Input: input})
+	if res.Status != run.CommitAccepted {
+		t.Fatalf("accept status = %v", res.Status)
+	}
+	record, err := c.rt.Record(context.Background(), c.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(record.Transitions) != 1 {
+		t.Fatalf("transitions = %d, want 1", len(record.Transitions))
+	}
+	folded, revision, err := run.FoldRun(&record.Header, record.Transitions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foldedJSON, _ := json.Marshal(stateComparable(&folded))
+	snapshotJSON, _ := json.Marshal(stateComparable(&record.Snapshot.State))
+	if revision != record.Snapshot.Revision || !bytes.Equal(foldedJSON, snapshotJSON) {
+		t.Fatalf("FoldRun = revision %d state %s, Record = revision %d state %s", revision, foldedJSON, record.Snapshot.Revision, snapshotJSON)
+	}
+}
+
+func testReturnedValuesAreDetached(t *testing.T, newRuntime Factory) {
+	c := newCase(t, newRuntime)
+	newRun, err := run.BuildNewRun(c.runID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := c.rt.Create(context.Background(), newRun)
+	if err != nil || created.Created {
+		t.Fatalf("retry Create = %+v, %v", created, err)
+	}
+	created.Header.InitialState.RunID = "mutated"
+	input := run.AgentInput{ID: "in-1", Payload: mustJSON(`1`)}
+	res := c.mustCommit(run.DeriveInputCommandID(c.runID, input.ID), 0, "", run.AcceptInput{Input: input})
+	res.Snapshot.State.RunID = "mutated"
+	if len(res.Events) > 0 {
+		res.Events[0].RunID = "mutated"
+	}
+	record, err := c.rt.Record(context.Background(), c.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Header.InitialState.RunID = "mutated"
+	record.Snapshot.State.RunID = "mutated"
+	record.Transitions[0].Events[0].RunID = "mutated"
+	fresh, err := c.rt.Record(context.Background(), c.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Header.InitialState.RunID != c.runID || fresh.Snapshot.State.RunID != c.runID || fresh.Transitions[0].Events[0].RunID != c.runID {
+		t.Fatal("returned Header, Snapshot, or Transitions alias runtime state")
+	}
+}
+
+func testConcurrentCreate(t *testing.T, newRuntime Factory) {
+	rt := newRuntime()
+	newRun, err := run.BuildNewRun("run-concurrent-create", "cause-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const callers = 16
+	results := make(chan run.CreateResult, callers)
+	errs := make(chan error, callers)
+	var group sync.WaitGroup
+	for range callers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			result, err := rt.Create(context.Background(), newRun)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- result
+		}()
+	}
+	group.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	created := 0
+	for result := range results {
+		if result.Created {
+			created++
+		}
+	}
+	if created != 1 {
+		t.Fatalf("Created=true results = %d, want 1", created)
+	}
+}
+
+func testRunsAreIsolated(t *testing.T, newRuntime Factory) {
+	rt := newRuntime()
+	for _, id := range []run.RunID{"run-one", "run-two"} {
+		newRun, err := run.BuildNewRun(id, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rt.Create(context.Background(), newRun); err != nil {
+			t.Fatal(err)
+		}
+		input := run.AgentInput{ID: "same-input", Payload: mustJSON(`{"run":"` + string(id) + `"}`)}
+		env, err := run.BuildEnvelope(id, run.DeriveInputCommandID(id, input.ID), run.AcceptInput{Input: input})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rt.Commit(context.Background(), run.CommitRequest{Command: env}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	one, err := rt.Record(context.Background(), "run-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := rt.Record(context.Background(), "run-two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(one.Snapshot.State.PendingInputs) != 1 || len(two.Snapshot.State.PendingInputs) != 1 ||
+		one.Snapshot.State.PendingInputs[0].Payload.String() == two.Snapshot.State.PendingInputs[0].Payload.String() {
+		t.Fatalf("runs leaked state or commands: one=%+v two=%+v", one.Snapshot.State.PendingInputs, two.Snapshot.State.PendingInputs)
+	}
+	for _, record := range []run.RunRecord{one, two} {
+		if len(record.Transitions) != 1 || record.Transitions[0].RunID != record.Header.RunID {
+			t.Fatalf("run %q has foreign transition log: %+v", record.Header.RunID, record.Transitions)
+		}
+		for _, event := range record.Transitions[0].Events {
+			if event.RunID != record.Header.RunID {
+				t.Fatalf("run %q has foreign event %+v", record.Header.RunID, event)
+			}
+		}
+	}
+}
+
+func testCrossRunGrantIsRejected(t *testing.T, newRuntime Factory) {
+	rt := newRuntime()
+	one := newCaseOnRuntime(t, rt, "grant-run-one")
+	two := newCaseOnRuntime(t, rt, "grant-run-two")
+	stepOne, grantOne := prepareAndStart(t, one)
+	stepTwo, grantTwo := prepareAndStart(t, two)
+	result, err := run.FreezeModelResult(sdk.ModelResult{Text: "ok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := two.commit("foreign-grant", 2, grantOne, run.SubmitModelResult{StepID: stepTwo, Result: result}); !errors.Is(err, run.ErrStaleRuntime) {
+		t.Fatalf("cross-run grant error = %v, want ErrStaleRuntime", err)
+	}
+	one.mustCommit("complete-one", 2, grantOne, run.SubmitModelResult{StepID: stepOne, Result: result})
+	two.mustCommit("complete-two", 2, grantTwo, run.SubmitModelResult{StepID: stepTwo, Result: result})
+}
+
+func testRecordConcurrentWithCommit(t *testing.T, newRuntime Factory) {
+	rt := newRuntime()
+	c := newCaseOnRuntime(t, rt, "record-concurrent")
+	const commits = 16
+	for i := range commits {
+		snapshot, err := rt.Load(context.Background(), c.runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		input := run.AgentInput{ID: run.InputID(fmt.Sprintf("in-%d", i)), Payload: mustJSON(`null`)}
+		env, err := run.BuildEnvelope(c.runID, run.DeriveInputCommandID(c.runID, input.ID), run.AcceptInput{Input: input})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		start := make(chan struct{})
+		var ready sync.WaitGroup
+		ready.Add(2)
+		commitCh := make(chan error, 1)
+		recordCh := make(chan struct {
+			record run.RunRecord
+			err    error
+		}, 1)
+		go func() {
+			ready.Done()
+			<-start
+			_, err := rt.Commit(context.Background(), run.CommitRequest{BaseRevision: snapshot.Revision, Command: env})
+			commitCh <- err
+		}()
+		go func() {
+			ready.Done()
+			<-start
+			record, err := rt.Record(context.Background(), c.runID)
+			recordCh <- struct {
+				record run.RunRecord
+				err    error
+			}{record: record, err: err}
+		}()
+		ready.Wait()
+		close(start)
+
+		if err := <-commitCh; err != nil {
+			t.Fatal(err)
+		}
+		observed := <-recordCh
+		if observed.err != nil {
+			t.Fatal(observed.err)
+		}
+		folded, revision, err := run.FoldRun(&observed.record.Header, observed.record.Transitions)
+		if err != nil {
+			t.Fatal(err)
+		}
+		foldedJSON, _ := json.Marshal(stateComparable(&folded))
+		snapshotJSON, _ := json.Marshal(stateComparable(&observed.record.Snapshot.State))
+		if revision != observed.record.Snapshot.Revision || !bytes.Equal(foldedJSON, snapshotJSON) {
+			t.Fatalf("inconsistent Record at revision %d", observed.record.Snapshot.Revision)
+		}
+		if wantBefore, wantAfter := snapshot.Revision, snapshot.Revision+1; revision != wantBefore && revision != wantAfter {
+			t.Fatalf("concurrent Record revision = %d, want %d or %d", revision, wantBefore, wantAfter)
+		}
+	}
+	final, err := rt.Record(context.Background(), c.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Snapshot.Revision != commits || len(final.Transitions) != commits {
+		t.Fatalf("final Record = revision %d transitions %d, want %d", final.Snapshot.Revision, len(final.Transitions), commits)
+	}
+}
+
 type conformanceCase struct {
 	t       testing.TB
 	runID   run.RunID
@@ -55,17 +372,27 @@ type conformanceCase struct {
 
 func newCase(t testing.TB, newRuntime Factory) *conformanceCase {
 	t.Helper()
-	initial, err := run.InitializeRun("run-1")
+	return newCaseOnRuntime(t, newRuntime(), "run-1")
+}
+
+func newCaseOnRuntime(t testing.TB, rt run.Runtime, runID run.RunID) *conformanceCase {
+	t.Helper()
+	newRun, err := run.BuildNewRun(runID, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	initial.PendingInputs = []run.AgentInput{{ID: "seed", Payload: mustJSON(`{"q":"hi"}`)}}
-	return &conformanceCase{t: t, runID: initial.RunID, initial: initial, rt: newRuntime(t, initial)}
+	created, err := rt.Create(context.Background(), newRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &conformanceCase{
+		t: t, runID: runID, initial: created.Header.InitialState, rt: rt,
+	}
 }
 
 func (c *conformanceCase) load() run.RuntimeSnapshot {
 	c.t.Helper()
-	snap, err := c.rt.Load(context.Background())
+	snap, err := c.rt.Load(context.Background(), c.runID)
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -106,6 +433,19 @@ func preparedCase(t testing.TB, newRuntime Factory, tools []sdk.ToolDefinition, 
 		t.Fatal("accepted start returned no grant")
 	}
 	return c, prep.StepID, start.Grant
+}
+
+func prepareAndStart(t testing.TB, c *conformanceCase) (run.StepID, run.ExecutionGrant) {
+	t.Helper()
+	snap := c.load()
+	req := request()
+	prep, cmdID := buildPrepareFromSnap(t, &snap, &req, nil)
+	c.mustCommit(cmdID, snap.Revision, "", prep)
+	start := c.mustCommit(run.CommandID("start-"+string(c.runID)), snap.Revision+1, "", run.StartModelExecution{StepID: prep.StepID})
+	if start.Grant == "" {
+		t.Fatal("accepted start returned no grant")
+	}
+	return prep.StepID, start.Grant
 }
 
 func buildPrepareFromSnap(t testing.TB, snap *run.RuntimeSnapshot, req *sdk.Request, specs []run.ToolSpec) (run.PrepareModelRequest, run.CommandID) {

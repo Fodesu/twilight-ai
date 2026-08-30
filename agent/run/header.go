@@ -21,17 +21,19 @@ func encodeMachineStateWire(s *MachineState) ([]byte, error) {
 }
 
 // RunHeader is the formal persisted Revision-0 protocol record (spec §5.1.1).
-// The complete execution authority is RunHeader + TransitionRecord log; every
-// fold starts from the header's initial state. It is immutable after
-// creation; ordinary Runtime.Commit never touches it.
+// MachineState is the execution authority. RunHeader plus the TransitionRecord
+// log is the canonical record used for audit, projections, and verified
+// import/replay: Create atomically stores the header and Revision-0 state, and
+// each Commit atomically stores the next state and transition. Every fold starts
+// from the header's initial state. The header is immutable after creation.
 type RunHeader struct {
-	SchemaVersion       uint16         `json:"schemaVersion"`
-	RunID               RunID          `json:"runId"`
-	InitialStateVersion uint16         `json:"initialStateVersion"`
-	InitialState        MachineState   `json:"initialState"`
-	InitialStateDigest  Digest         `json:"initialStateDigest"`
-	// CausationID links the Run to the creating session/queue/application
-	// operation. Opaque to run; the application defines its interpretation.
+	SchemaVersion       uint16       `json:"schemaVersion"`
+	RunID               RunID        `json:"runId"`
+	InitialStateVersion uint16       `json:"initialStateVersion"`
+	InitialState        MachineState `json:"initialState"`
+	InitialStateDigest  Digest       `json:"initialStateDigest"`
+	// CausationID links the Run to its creating turn/application operation.
+	// Opaque to run; the application defines its interpretation.
 	CausationID  es.CausationID `json:"causationId,omitempty"`
 	HeaderDigest Digest         `json:"headerDigest"`
 }
@@ -128,10 +130,10 @@ func ValidateRunHeader(h *RunHeader) error {
 	return nil
 }
 
-// FoldRun rebuilds the run state from its complete authority: header +
-// transition log. It validates the header first, then folds the records
-// (spec §9.1). This is the entry point durable adapters and import/migration
-// paths use; trusting an uploaded MachineState snapshot is never legal.
+// FoldRun rebuilds the run state from the canonical header + transition log.
+// It validates the header first, then folds the records (spec §9.1). This is
+// the entry point durable adapters and import/migration paths use; trusting an
+// uploaded MachineState snapshot is never legal.
 func FoldRun(header *RunHeader, records []TransitionRecord) (MachineState, uint64, error) {
 	if err := ValidateRunHeader(header); err != nil {
 		return MachineState{}, 0, err

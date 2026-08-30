@@ -53,7 +53,14 @@ func TestFoldRunFromHeaderMatchesRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt := NewMemoryRuntime(h.InitialState)
+	rt := NewMemoryRuntime()
+	newRun, err := BuildNewRun("run-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Create(t.Context(), newRun); err != nil {
+		t.Fatal(err)
+	}
 
 	// Drive one transition: accept the seed input at Revision 1 (spec §5.1.1
 	// rule 3 — seed enters the log, not the header).
@@ -66,14 +73,18 @@ func TestFoldRunFromHeaderMatchesRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	folded, rev, err := FoldRun(&h, rt.Transitions())
+	record, err := rt.Record(t.Context(), "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	folded, rev, err := FoldRun(&h, record.Transitions)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if rev != 1 {
 		t.Fatalf("rev = %d", rev)
 	}
-	live, err := rt.Load(t.Context())
+	live, err := rt.Load(t.Context(), "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}

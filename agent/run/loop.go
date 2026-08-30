@@ -44,7 +44,16 @@ func NewLoop(models ModelCatalog, tools ToolCatalog, planner RequestPlanner, pol
 // Run drives the Run until it finishes, must wait, or the context is
 // cancelled (spec §6.2). controlCtx for reads/commits is derived from ctx via
 // WithoutCancel so worker cancellation never blocks result submission.
-func (l *Loop) Run(ctx context.Context, runtime Runtime, events EventSink) (LoopResult, error) {
+func (l *Loop) Run(ctx context.Context, runtime Runtime, runID RunID, events EventSink) (LoopResult, error) {
+	if ctx == nil {
+		return LoopResult{}, errors.New("agent: loop: nil context")
+	}
+	if runtime == nil {
+		return LoopResult{}, errors.New("agent: loop: nil runtime")
+	}
+	if runID == "" {
+		return LoopResult{}, errors.New("agent: loop: empty RunID")
+	}
 	controlCtx := context.WithoutCancel(ctx)
 
 	for {
@@ -53,9 +62,12 @@ func (l *Loop) Run(ctx context.Context, runtime Runtime, events EventSink) (Loop
 			// branches below before we reach this check.
 			return LoopResult{}, err
 		}
-		snapshot, err := runtime.Load(controlCtx)
+		snapshot, err := runtime.Load(controlCtx, runID)
 		if err != nil {
 			return LoopResult{}, err
+		}
+		if snapshot.State.RunID != runID {
+			return LoopResult{}, fmt.Errorf("agent: loop: runtime returned RunID %q for %q", snapshot.State.RunID, runID)
 		}
 		if snapshot.State.Status.Terminal() {
 			if events != nil {
@@ -211,7 +223,7 @@ func (l *Loop) planAndPrepare(ctx, controlCtx context.Context, runtime Runtime, 
 	// A retriable rejection with no authority progress means the rejection
 	// was about THIS plan's content (InputIDs, digests), not concurrency:
 	// retrying the same planner at the same revision would spin forever.
-	after, loadErr := runtime.Load(controlCtx)
+	after, loadErr := runtime.Load(controlCtx, snapshot.State.RunID)
 	if loadErr != nil {
 		return loadErr
 	}

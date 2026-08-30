@@ -13,23 +13,29 @@ func TestMemoryRuntimeClonesInitialState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	initial, err := Initialize("run-1", testConfig(), NextRun(AgentInput{ID: "seed", Payload: payload}))
+	rt := NewMemoryRuntime()
+	newRun, err := BuildNewRun("run-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt := NewMemoryRuntime(initial)
+	if _, err := rt.Create(context.Background(), newRun); err != nil {
+		t.Fatal(err)
+	}
+	// Initial payload admission uses the actual AcceptInput transition, never a
+	// synthetic non-Revision-0 initial state.
+	acceptInput(t, rt, "run-1", AgentInput{ID: "seed", Payload: payload})
 
 	copy(raw, []byte(`{"q":"no"}`))
-	initial.PendingInputs[0].Payload = cj(`{"q":"mutated"}`)
+	payload = cj(`{"q":"mutated"}`)
 
-	snap, err := rt.Load(context.Background())
+	snap, err := rt.Load(context.Background(), "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := snap.State.PendingInputs[0].Payload.String(); got != `{"q":"hi"}` {
 		t.Fatalf("runtime initial payload aliased caller state: %s", got)
 	}
-	diverged, err := rt.Rebuild()
+	diverged, err := rt.Rebuild("run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,11 +52,15 @@ func TestCommitSnapshotsCommandPayloadBeforeFoldingState(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmdID := DeriveInputCommandID("run-1", "in-1")
-	mustCommit(t, rt, cmdID, 0, "", AcceptInput{Input: AgentInput{ID: "in-1", Payload: payload}})
+	snapshot, err := rt.Load(context.Background(), "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustCommit(t, rt, cmdID, snapshot.Revision, "", AcceptInput{Input: AgentInput{ID: "in-1", Payload: payload}})
 
 	copy(raw, []byte(`{"v":"two"}`))
 
-	snap, err := rt.Load(context.Background())
+	snap, err := rt.Load(context.Background(), "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +77,7 @@ func TestCommitSnapshotsCommandPayloadBeforeFoldingState(t *testing.T) {
 		t.Fatal("accepted input not found")
 	}
 
-	events := rt.Events()
+	events := recordEvents(t, rt, "run-1")
 	for _, e := range events {
 		if f, ok := e.Fact.(InputAccepted); ok && f.Input.ID == "in-1" {
 			if got := f.Input.Payload.String(); got != `{"v":"one"}` {
@@ -75,7 +85,7 @@ func TestCommitSnapshotsCommandPayloadBeforeFoldingState(t *testing.T) {
 			}
 		}
 	}
-	diverged, err := rt.Rebuild()
+	diverged, err := rt.Rebuild("run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +96,7 @@ func TestCommitSnapshotsCommandPayloadBeforeFoldingState(t *testing.T) {
 
 func TestCommitCanonicalizesAgentOwnedJSONBeforePersisting(t *testing.T) {
 	rt := newTestRuntime(t, RunConfig{Model: "m-1"})
-	snap, _ := rt.Load(context.Background())
+	snap, _ := rt.Load(context.Background(), "run-1")
 	req := ModelRequest{
 		Model: "m-1",
 		ProviderOptions: map[string]CanonicalJSON{
@@ -124,7 +134,7 @@ func TestCommitCanonicalizesAgentOwnedJSONBeforePersisting(t *testing.T) {
 	if got := ms.Request.ProviderOptions["p"].String(); got != `{"a":1,"b":2}` {
 		t.Fatalf("snapshot stored non-canonical provider option: %s", got)
 	}
-	for _, e := range rt.Events() {
+	for _, e := range recordEvents(t, rt, "run-1") {
 		if f, ok := e.Fact.(ModelStepPrepared); ok {
 			if got := f.Request.ProviderOptions["p"].String(); got != `{"a":1,"b":2}` {
 				t.Fatalf("event stored non-canonical provider option: %s", got)
@@ -146,11 +156,11 @@ func TestLoadSnapshotDoesNotAliasFrozenRequest(t *testing.T) {
 			}},
 		}},
 	}
-	snap, _ := rt.Load(context.Background())
+	snap, _ := rt.Load(context.Background(), "run-1")
 	prep, cmdID := buildPrepareFromSnap(t, snap, req, nil)
 	mustCommit(t, rt, cmdID, snap.Revision, "", prep)
 
-	snap, err := rt.Load(context.Background())
+	snap, err := rt.Load(context.Background(), "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +171,7 @@ func TestLoadSnapshotDoesNotAliasFrozenRequest(t *testing.T) {
 	part.ProviderMetadata["new"] = cj(`"bad"`)
 	ms.Request.Messages[0].Content[0] = part
 
-	snap, err = rt.Load(context.Background())
+	snap, err = rt.Load(context.Background(), "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +211,11 @@ func TestCommitResultEventsDoNotAliasStateOrLog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res := mustCommit(t, rt, "done-1", 2, grant, SubmitModelResult{StepID: stepID, Result: frozen})
+	snapshot, err := rt.Load(context.Background(), "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := mustCommit(t, rt, "done-1", snapshot.Revision, grant, SubmitModelResult{StepID: stepID, Result: frozen})
 
 	fact := res.Events[0].Fact.(ModelStepCompleted)
 	fact.Result.ReasoningParts[0].ProviderMetadata["anthropic"] = cj(`{"signature":"bad"}`)
@@ -210,7 +224,7 @@ func TestCommitResultEventsDoNotAliasStateOrLog(t *testing.T) {
 	fact.Result.Response.Headers["h"] = "bad"
 	res.Events[0].Fact = fact
 
-	snap, err := rt.Load(context.Background())
+	snap, err := rt.Load(context.Background(), "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +245,7 @@ func TestCommitResultEventsDoNotAliasStateOrLog(t *testing.T) {
 		t.Fatalf("state response headers aliased returned event: %v", h)
 	}
 
-	for _, e := range rt.Events() {
+	for _, e := range recordEvents(t, rt, "run-1") {
 		if f, ok := e.Fact.(ModelStepCompleted); ok {
 			if sig := f.Result.ReasoningParts[0].ProviderMetadata["anthropic"].String(); sig != `{"signature":"s1"}` {
 				t.Fatalf("log reasoning metadata aliased returned event: %v", sig)
@@ -241,7 +255,7 @@ func TestCommitResultEventsDoNotAliasStateOrLog(t *testing.T) {
 			}
 		}
 	}
-	diverged, err := rt.Rebuild()
+	diverged, err := rt.Rebuild("run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
