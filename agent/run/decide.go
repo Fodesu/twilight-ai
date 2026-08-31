@@ -21,7 +21,7 @@ func rejectionf(format string, args ...any) error {
 }
 
 // Decide validates one command against the current state and produces the
-// complete fact sequence of its transition (spec §3.7.1). All decisions —
+// complete fact sequence of its transition (RUN-MCH-3). All decisions —
 // acceptance, derived consequences, terminal transitions — happen here, run
 // exactly once per accepted command; the output is frozen. Any precondition
 // failure rejects the whole command with no partial facts.
@@ -159,7 +159,7 @@ func decideStartModelExecution(s *MachineState, cmd StartModelExecution) ([]Fact
 	if ms.Status != ModelPrepared {
 		return nil, rejectionf("start model: step is not Prepared")
 	}
-	return []Fact{ModelStepStarted(cmd)}, nil
+	return []Fact{ModelStepStarted{StepID: cmd.StepID}}, nil
 }
 
 func decideRecoverModelExecution(s *MachineState, cmd RecoverModelExecution) ([]Fact, error) {
@@ -170,7 +170,7 @@ func decideRecoverModelExecution(s *MachineState, cmd RecoverModelExecution) ([]
 	if ms.Status != ModelExecuting {
 		return nil, rejectionf("recover model: step is not Executing")
 	}
-	return []Fact{ModelStepRecovered(cmd)}, nil
+	return []Fact{ModelStepRecovered{StepID: cmd.StepID}}, nil
 }
 
 // --- rule 3: SubmitModelResult ---
@@ -192,7 +192,7 @@ func decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, e
 		if len(cmd.Calls) != 0 {
 			return nil, rejectionf("model result: %d bindings for a result with no tool calls", len(cmd.Calls))
 		}
-		return []Fact{completed, RunEnded{Status: RunCompleted}}, nil
+		return []Fact{completed, RunEnded{End: RunCompletedEnd{}}}, nil
 	}
 
 	// Validate bindings against the frozen ToolSpecs and the model result,
@@ -222,7 +222,7 @@ func decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, e
 
 		// Cross-check the binding against the model result: the authority
 		// accepts only bindings for the tool the model actually named, with
-		// the arguments the model actually produced (spec §4.1).
+		// the arguments the model actually produced (RUN-MCH-2).
 		if spec, known := specByName[rc.ToolName]; known {
 			if b.ToolRef != spec.Ref {
 				return nil, rejectionf("model result: binding %q ToolRef %q does not match frozen spec ref %q for tool %q", b.CallID, b.ToolRef, spec.Ref, rc.ToolName)
@@ -236,7 +236,7 @@ func decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, e
 		} else {
 			// Unknown ToolRef stays an unresolved DirectExecution binding with
 			// an empty definition digest; StartToolCalls records the lookup
-			// failure (spec §4.1).
+			// failure (RUN-MCH-2).
 			if string(b.ToolRef) != rc.ToolName {
 				return nil, rejectionf("model result: binding %q ToolRef %q does not match result tool %q", b.CallID, b.ToolRef, rc.ToolName)
 			}
@@ -321,11 +321,10 @@ func decideSubmitModelFailure(s *MachineState, cmd SubmitModelFailure) ([]Fact, 
 	if cmd.Failure.Class == "" {
 		return nil, rejectionf("model failure: empty failure class")
 	}
-	return []Fact{RunEnded{
-		Status:  RunFailed,
+	return []Fact{RunEnded{End: RunFailedEnd{
 		Reason:  ReasonProviderFailure,
-		Failure: &RunFailure{Class: cmd.Failure.Class, Message: cmd.Failure.Message},
-	}}, nil
+		Failure: RunFailure{Class: cmd.Failure.Class, Message: cmd.Failure.Message},
+	}}}, nil
 }
 
 // --- rule 5: RejectModelResult ---
@@ -343,11 +342,10 @@ func decideRejectModelResult(s *MachineState, cmd *RejectModelResult) ([]Fact, e
 	case ModelRejectRetry:
 		return []Fact{rejected}, nil
 	case ModelRejectFailRun:
-		return []Fact{rejected, RunEnded{
-			Status:  RunFailed,
+		return []Fact{rejected, RunEnded{End: RunFailedEnd{
 			Reason:  ReasonMalformedModel,
-			Failure: &RunFailure{Class: FailureMalformedModel, Message: cmd.Failure.Message},
-		}}, nil
+			Failure: RunFailure{Class: FailureMalformedModel, Message: cmd.Failure.Message},
+		}}}, nil
 	default:
 		return nil, rejectionf("reject model result: unknown disposition %d", cmd.Disposition)
 	}
@@ -378,7 +376,7 @@ func decideStartToolCall(s *MachineState, cmd StartToolCall) ([]Fact, error) {
 	if ts.Calls[i].Status != ToolPending {
 		return nil, rejectionf("start tool: call %q is not Pending", cmd.CallID)
 	}
-	return []Fact{ToolCallStarted(cmd)}, nil
+	return []Fact{ToolCallStarted{StepID: cmd.StepID, CallID: cmd.CallID}}, nil
 }
 
 func decideSubmitToolResult(s *MachineState, cmd SubmitToolResult) ([]Fact, error) {
@@ -394,7 +392,7 @@ func decideSubmitToolResult(s *MachineState, cmd SubmitToolResult) ([]Fact, erro
 		return nil, rejectionf("tool result: call %q is not Executing", cmd.CallID)
 	}
 	facts := []Fact{ToolCallCompleted(cmd)}
-	return appendCloseIfLast(s, ts, i, facts)
+	return facts, nil
 }
 
 func decideSubmitToolFailure(s *MachineState, cmd SubmitToolFailure) ([]Fact, error) {
@@ -407,13 +405,20 @@ func decideSubmitToolFailure(s *MachineState, cmd SubmitToolFailure) ([]Fact, er
 		return nil, rejectionf("tool failure: unknown call %q", cmd.CallID)
 	}
 	call := ts.Calls[i]
+	if cmd.Failure.Class == "" {
+		if cmd.Outcome == ToolOutcomeUnknown {
+			cmd.Failure.Class = FailureEffectUnknown
+		} else {
+			return nil, rejectionf("tool failure: empty failure class")
+		}
+	}
 	switch cmd.Outcome {
 	case ToolOutcomeKnown:
 		if call.Status != ToolPending && call.Status != ToolExecuting {
 			return nil, rejectionf("tool failure: call %q is not Pending or Executing", cmd.CallID)
 		}
 		facts := []Fact{ToolCallFailed{StepID: cmd.StepID, CallID: cmd.CallID, Failure: cmd.Failure, Outcome: ToolOutcomeKnown}}
-		return appendCloseIfLast(s, ts, i, facts)
+		return facts, nil
 	case ToolOutcomeUnknown:
 		if call.Status != ToolExecuting {
 			return nil, rejectionf("tool failure: unknown outcome requires Executing call")
@@ -425,35 +430,15 @@ func decideSubmitToolFailure(s *MachineState, cmd SubmitToolFailure) ([]Fact, er
 		if failure.Class != FailureEffectUnknown {
 			return nil, rejectionf("tool failure: unknown outcome must use %s", FailureEffectUnknown)
 		}
-		return []Fact{
-			ToolCallFailed{StepID: cmd.StepID, CallID: cmd.CallID, Failure: failure, Outcome: ToolOutcomeUnknown},
-			RunEnded{
-				Status:  RunFailed,
-				Reason:  ReasonEffectUnknown,
-				Failure: &RunFailure{Class: FailureEffectUnknown, Message: failure.Message, CallID: cmd.CallID},
-			},
-		}, nil
+		facts := unknownExecutingCalls(s, cmd.StepID, cmd.CallID, failure)
+		facts = append(facts, RunEnded{End: RunFailedEnd{
+			Reason:  ReasonEffectUnknown,
+			Failure: RunFailure{Class: FailureEffectUnknown, Message: failure.Message, CallID: cmd.CallID},
+		}})
+		return facts, nil
 	default:
 		return nil, rejectionf("tool failure: unknown outcome value %d", cmd.Outcome)
 	}
-}
-
-// appendCloseIfLast appends ToolStepClosed when call i reaching a closable
-// terminal state closes the step.
-func appendCloseIfLast(_ *MachineState, ts *ToolStep, i int, facts []Fact) ([]Fact, error) {
-	for j := range ts.Calls {
-		if j == i {
-			continue
-		}
-		switch ts.Calls[j].Status {
-		case ToolCompleted, ToolFailed:
-			// closable terminal
-		default:
-			return facts, nil
-		}
-	}
-	facts = append(facts, ToolStepClosed{StepID: ts.RefValue.ID})
-	return facts, nil
 }
 
 // --- rules 9-10: responses ---
@@ -528,11 +513,11 @@ func decideRejectToolCall(s *MachineState, cmd *RejectToolCall) ([]Fact, error) 
 		Failure: ToolFailure{Class: FailurePermissionDenied, Message: cmd.Reason},
 		Outcome: ToolOutcomeKnown,
 	}}
-	return appendCloseIfLast(s, ts, i, facts)
+	return facts, nil
 }
 
 func decideSubmitToolResponse(s *MachineState, cmd *SubmitToolResponse) ([]Fact, error) {
-	ts, i, err := waitingCall(s, cmd.StepID, cmd.CallID, ResponseExternal, cmd.ResponseID)
+	_, _, err := waitingCall(s, cmd.StepID, cmd.CallID, ResponseExternal, cmd.ResponseID)
 	if err != nil {
 		return nil, err
 	}
@@ -544,25 +529,55 @@ func decideSubmitToolResponse(s *MachineState, cmd *SubmitToolResponse) ([]Fact,
 		return nil, rejectionf("response: answer payload digest mismatch")
 	}
 	facts := []Fact{ToolCallAnswered(*cmd)}
-	return appendCloseIfLast(s, ts, i, facts)
+	return facts, nil
 }
 
-// --- rules 12-14: cancel, stop and input ---
+// --- rules 12-14: cancel, compatibility stop and input ---
 
-func decideCancelRun(_ *MachineState, cmd CancelRun) ([]Fact, error) {
+func decideCancelRun(s *MachineState, cmd CancelRun) ([]Fact, error) {
 	// CancelRun always records RunStopped(cancelled). Host/system stops use
 	// StopRun so cancellation cannot forge system reasons.
 	if cmd.Reason != "" && cmd.Reason != ReasonCancelled {
 		return nil, rejectionf("cancel: reason must be empty or %q", ReasonCancelled)
 	}
-	return []Fact{RunEnded{Status: RunStopped, Reason: ReasonCancelled}}, nil
+	facts := unknownExecutingCalls(s, "", "", ToolFailure{Class: FailureEffectUnknown, Message: "execution cancelled before settlement"})
+	facts = append(facts, RunEnded{End: RunStoppedEnd{Reason: ReasonCancelled}})
+	return facts, nil
 }
 
-func decideStopRun(_ *MachineState, cmd StopRun) ([]Fact, error) {
-	if cmd.Reason != ReasonStepLimit {
-		return nil, rejectionf("stop: reason must be %q", ReasonStepLimit)
+// unknownExecutingCalls records every started effect that will be abandoned by
+// a terminal transition. The target is optional for cancellation; all current
+// Executing calls are included exactly once in call order.
+func unknownExecutingCalls(s *MachineState, stepID StepID, target CallID, failure ToolFailure) []Fact {
+	ts, ok := s.Current.(ToolStep)
+	if !ok || (stepID != "" && ts.RefValue.ID != stepID) {
+		return nil
 	}
-	return []Fact{RunEnded{Status: RunStopped, Reason: cmd.Reason}}, nil
+	facts := make([]Fact, 0, len(ts.Calls))
+	for _, call := range ts.Calls {
+		if call.Status != ToolExecuting {
+			continue
+		}
+		f := failure
+		if target != "" && call.CallID != target {
+			f.Message = "sibling execution result unknown after terminal transition"
+		}
+		facts = append(facts, ToolCallFailed{StepID: ts.RefValue.ID, CallID: call.CallID, Failure: f, Outcome: ToolOutcomeUnknown})
+	}
+	return facts
+}
+
+func decideStopRun(s *MachineState, cmd StopRun) ([]Fact, error) {
+	if cmd.Reason != ReasonStepLimit {
+		return nil, rejectionf("stop: compatibility reason must be %q", ReasonStepLimit)
+	}
+	// StopRun is the legacy host-policy command. It is accepted at a safe
+	// boundary after the current Step has settled; an executing effect keeps its
+	// own settlement/recovery path and cannot be silently discarded here.
+	if s.Current != nil {
+		return nil, rejectionf("stop: run has a current step")
+	}
+	return []Fact{RunEnded{End: RunStoppedEnd{Reason: cmd.Reason}}}, nil
 }
 
 func decideAcceptInput(s *MachineState, cmd AcceptInput) ([]Fact, error) {

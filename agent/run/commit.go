@@ -17,7 +17,7 @@ const (
 
 // CommitDecision is EvaluateCommit's verdict. Runtime.Commit maps rejections
 // onto the sentinel errors: Conflict -> ErrCommandConflict, Stale ->
-// ErrStaleRuntime, Terminal -> ErrRunTerminal (spec §5.4).
+// ErrStaleRuntime, Terminal -> ErrRunTerminal (RUN-CMT-6).
 type CommitDecision struct {
 	Kind       DecisionKind
 	NewState   MachineState
@@ -27,8 +27,8 @@ type CommitDecision struct {
 	Reject error
 }
 
-// commandCategory classifies a command for BaseRevision handling (spec §5.4
-// step 4). PrepareModelRequest is the only hard-CAS command.
+// commandCategory classifies a command for BaseRevision handling (RUN-CMT-3).
+// PrepareModelRequest is the only hard-CAS command.
 type commandCategory uint8
 
 const (
@@ -65,7 +65,7 @@ func categorize(c AgentCommand) commandCategory {
 }
 
 // requiresGrant reports whether this command must carry the start grant of
-// its target, given the current state (spec §5.3 grant rules).
+// its target, given the current state (RUN-CMT-5).
 func requiresGrant(s *MachineState, c AgentCommand) bool {
 	switch cmd := c.(type) {
 	case SubmitModelResult, SubmitModelFailure, RejectModelResult:
@@ -91,7 +91,7 @@ func requiresGrant(s *MachineState, c AgentCommand) bool {
 }
 
 // EvaluateCommit is the single, pure commit evaluation both runtimes call
-// inside their own critical section (spec §5.4). grantValid and recoveryValid
+// inside their own critical section (RUN-CMT-3). grantValid and recoveryValid
 // are the control-plane verdicts the Runtime supplies: whether req.Grant is
 // the live grant for the command's target, and whether a grantless recovery
 // command matches the Runtime's own lease-expiry record.
@@ -123,19 +123,37 @@ func EvaluateCommit(
 	if env.Digest != wantDigest {
 		return CommitDecision{Kind: DecisionConflict, Reject: fmt.Errorf("agent: commit: envelope digest mismatch")}, nil
 	}
-	// Derived-identity families must use their derived CommandID (spec §5.5):
-	// the derivation IS the idempotency index for inputs/responses/planning, so
-	// a caller-minted random ID would silently bypass duplicate detection.
-	if err := checkDerivedCommandID(&env, req.BaseRevision); err != nil {
-		return CommitDecision{}, err
+	// A start claim is part of the command identity. Rejecting an empty claim
+	// here prevents an unbound worker from acquiring execution ownership.
+	switch cmd := env.Command.(type) {
+	case StartModelExecution:
+		if cmd.Claim == "" {
+			return CommitDecision{Kind: DecisionConflict, Reject: fmt.Errorf("agent: commit: model start requires an execution claim")}, nil
+		}
+	case StartToolCall:
+		if cmd.Claim == "" {
+			return CommitDecision{Kind: DecisionConflict, Reject: fmt.Errorf("agent: commit: tool start requires an execution claim")}, nil
+		}
+	case RecoverModelExecution:
+		if cmd.Claim == "" {
+			return CommitDecision{Kind: DecisionConflict, Reject: fmt.Errorf("agent: commit: model recovery requires an execution claim")}, nil
+		}
 	}
-
 	// Steps 2-3: idempotent replay and identity conflict.
 	if prior != nil {
 		if prior.CommandDigest == env.Digest {
 			return CommitDecision{Kind: DecisionAlreadyApplied, Events: prior.Events, Transition: cloneTransitionRecord(prior)}, nil
 		}
 		return CommitDecision{Kind: DecisionConflict, Reject: ErrCommandConflict}, nil
+	}
+	// Derived-identity families must use their derived CommandID (RUN-WIR-3):
+	// the derivation is the idempotency index for inputs/responses/planning, so
+	// a caller-minted random ID cannot bypass duplicate detection. This check is
+	// deliberately after exact replay: BaseRevision is not part of the command
+	// digest, and a retry may have reloaded a newer snapshot before replaying an
+	// already accepted prepare command.
+	if err := checkDerivedCommandID(&env, req.BaseRevision); err != nil {
+		return CommitDecision{Kind: DecisionConflict, Reject: err}, nil
 	}
 
 	// Step 7 precheck: terminal absorbs non-duplicate commands.
@@ -227,7 +245,7 @@ func EvaluateCommit(
 
 // BuildEnvelope assembles a CommandEnvelope with its type discriminator and
 // canonical digest. This is the only sanctioned construction path; callers
-// never hand-assemble envelope fields (spec §6.2).
+// never hand-assemble envelope fields (RUN-WIR-3).
 func BuildEnvelope(run RunID, id CommandID, cmd AgentCommand) (CommandEnvelope, error) {
 	typ := commandType(cmd)
 	if typ == "" {
@@ -247,7 +265,7 @@ func BuildEnvelope(run RunID, id CommandID, cmd AgentCommand) (CommandEnvelope, 
 	}, nil
 }
 
-// checkDerivedCommandID enforces the derived-identity rules of spec §5.5.
+// checkDerivedCommandID enforces the derived-identity rules of RUN-WIR-3.
 // AcceptInput derives from (RunID, InputID); approval/rejection/answer derive
 // from (RunID, StepID, CallID, ResponseID). Approve and reject of the same
 // response share one identity by design, so a decision change surfaces as
@@ -265,10 +283,14 @@ func checkDerivedCommandID(env *CommandEnvelope, baseRevision uint64) error {
 		want = DeriveResponseCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.ResponseID)
 	case SubmitToolResponse:
 		want = DeriveResponseCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.ResponseID)
+	case RecoverModelExecution:
+		if cmd.Claim != "" {
+			want = DeriveModelRecoveryCommandID(env.RunID, cmd.StepID, cmd.Claim)
+		}
 	default:
 		return nil
 	}
-	if env.ID != want {
+	if want != "" && env.ID != want {
 		return fmt.Errorf("agent: commit: %s requires its derived CommandID", env.Type)
 	}
 	return nil

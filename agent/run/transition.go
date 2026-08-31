@@ -135,6 +135,9 @@ func ValidateTransitionRecord(record *TransitionRecord) error {
 		if e.CommandID != record.CommandID || e.CommandDigest != record.CommandDigest {
 			return fmt.Errorf("agent: transition: revision %d command identity changed within transition", record.Revision)
 		}
+		if _, terminal := e.Fact.(RunEnded); terminal && i != len(record.Events)-1 {
+			return fmt.Errorf("agent: transition: terminal fact must be the final event")
+		}
 	}
 	if record.TransitionDigest == "" {
 		return errors.New("agent: transition: missing digest")

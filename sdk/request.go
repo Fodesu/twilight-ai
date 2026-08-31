@@ -2,7 +2,7 @@ package sdk
 
 import "encoding/json"
 
-// Request is the complete, frozen input of one model call (spec §2.1).
+// Request is the complete, frozen input of one model call.
 //
 // It is pure data: no provider client, no interface values, no callbacks.
 // The model is a provider-scoped string ID; provider binding happens when a

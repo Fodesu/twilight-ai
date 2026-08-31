@@ -11,19 +11,18 @@ import (
 func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 	commands := []AgentCommand{
 		PrepareModelRequest{StepID: "s", Model: "m", Request: ModelRequest{Model: "m"}, RequestDigest: "sha256:req", ToolsDigest: "sha256:tools"},
-		StartModelExecution{StepID: "s"},
-		RecoverModelExecution{StepID: "s"},
+		StartModelExecution{StepID: "s", Claim: "claim-s"},
+		RecoverModelExecution{StepID: "s", Claim: "claim-s"},
 		SubmitModelResult{StepID: "s", Result: ModelResult{Text: "ok"}},
 		SubmitModelFailure{StepID: "s", Failure: StepFailure{Class: FailureProvider, Message: "down"}},
 		RejectModelResult{StepID: "s", Usage: Usage{TotalTokens: 1}, Failure: StepFailure{Class: FailureMalformedModel}},
-		StartToolCall{StepID: "ts", CallID: "c"},
+		StartToolCall{StepID: "ts", CallID: "c", Claim: "claim-c"},
 		SubmitToolResult{StepID: "ts", CallID: "c", Result: ToolExecutionResult{Output: cj(`{"ok":true}`)}},
 		SubmitToolFailure{StepID: "ts", CallID: "c", Failure: ToolFailure{Class: FailureExecution}, Outcome: ToolOutcomeKnown},
 		ApproveToolCall{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp"},
 		RejectToolCall{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp", Reason: "no"},
 		SubmitToolResponse{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp", Payload: cj(`{"answer":1}`)},
 		CancelRun{},
-		StopRun{Reason: ReasonStepLimit},
 		AcceptInput{Input: AgentInput{ID: "in", Payload: cj(`{"q":"hi"}`)}},
 	}
 	for _, cmd := range commands {
@@ -63,7 +62,7 @@ func TestAgentEventJSONRoundTripRestoresVariants(t *testing.T) {
 		ToolCallFailed{StepID: "ts", CallID: "c", Failure: ToolFailure{Class: FailureExecution}, Outcome: ToolOutcomeKnown},
 		ToolStepClosed{StepID: "ts"},
 		InputAccepted{Input: AgentInput{ID: "in", Payload: cj(`{"q":"hi"}`)}},
-		RunEnded{Status: RunCompleted},
+		RunEnded{End: RunCompletedEnd{}},
 	}
 	for i, fact := range facts {
 		typ := factType(fact)
@@ -102,7 +101,7 @@ func TestAgentEventJSONRoundTripRestoresVariants(t *testing.T) {
 func TestTransitionRecordJSONRoundTripRestoresVariants(t *testing.T) {
 	facts := []Fact{
 		ModelStepCompleted{StepID: "s", Result: ModelResult{Text: "ok"}},
-		RunEnded{Status: RunCompleted},
+		RunEnded{End: RunCompletedEnd{}},
 	}
 	events := make([]AgentEvent, len(facts))
 	for i, fact := range facts {
@@ -190,7 +189,7 @@ func TestWireCodecRejectsUnknownTypeAndDigestMismatch(t *testing.T) {
 		t.Fatal("bad command digest decoded")
 	}
 
-	fact := RunEnded{Status: RunCompleted}
+	fact := RunEnded{End: RunCompletedEnd{}}
 	digest, err := DigestFact(currentSchemaVersion, factType(fact), fact)
 	if err != nil {
 		t.Fatal(err)
@@ -205,3 +204,22 @@ func TestWireCodecRejectsUnknownTypeAndDigestMismatch(t *testing.T) {
 		t.Fatal("bad fact digest decoded")
 	}
 }
+
+func TestRunEndedTaggedUnionRejectsInvalidValues(t *testing.T) {
+	for name, fact := range map[string]RunEnded{
+		"nil end":                {},
+		"stopped without reason": {End: RunStoppedEnd{}},
+		"failed without class":   {End: RunFailedEnd{Reason: ReasonProviderFailure}},
+		"unknown end variant":    {End: fakeRunEnd{}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := DigestFact(currentSchemaVersion, "run_ended", fact); err == nil {
+				t.Fatal("invalid tagged terminal value was accepted")
+			}
+		})
+	}
+}
+
+type fakeRunEnd struct{}
+
+func (fakeRunEnd) runEnd() {}

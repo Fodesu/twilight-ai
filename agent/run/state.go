@@ -48,22 +48,13 @@ type RunResult struct {
 // Deprecated: use InitializeRun and submit seed input with AcceptInput.
 type RunConfig struct {
 	Model ModelRef `json:"model"`
-	// ModelStepLimit is a legacy fixed-run policy. New code should use
-	// ExecutionPolicy.ModelStepLimit or host-owned policy.
-	ModelStepLimit int `json:"modelStepLimit,omitempty"`
-	// ModelRejectLimit is a legacy name for malformed result retry policy. New
-	// code should use ExecutionPolicy.MalformedModelResultLimit.
+	// Deprecated compatibility policy. New code leaves limits at zero and
+	// applies any host policy outside the core state machine.
+	ModelStepLimit   int `json:"modelStepLimit,omitempty"`
 	ModelRejectLimit int `json:"modelRejectLimit,omitempty"`
 }
 
-// DefaultMalformedModelResultLimit is the Loop default for structurally
-// malformed model results before the run fails.
 const DefaultMalformedModelResultLimit = 2
-
-// DefaultModelRejectLimit is retained for source compatibility with the old
-// RunConfig field name.
-//
-// Deprecated: use DefaultMalformedModelResultLimit.
 const DefaultModelRejectLimit = DefaultMalformedModelResultLimit
 
 type StepFailure struct {
@@ -218,7 +209,7 @@ type ToolCallState struct {
 	Waiting          *ResponseRequest     `json:"waiting,omitempty"`
 }
 
-// ValidateToolCallState rejects illegal field combinations (spec §4.2).
+// ValidateToolCallState rejects illegal field combinations (RUN-MCH-2).
 //
 //nolint:gocritic // hugeParam: public validator accepts the value stored in facts/state without mutating it.
 func ValidateToolCallState(c ToolCallState) error {
@@ -251,8 +242,20 @@ func ValidateToolCallState(c ToolCallState) error {
 		if c.Result != nil || c.Waiting != nil {
 			return fmt.Errorf("agent: call %s: failed must have no result/waiting", c.CallID)
 		}
-		if c.Failure.Outcome == ToolOutcomeUnknown && c.Failure.Failure.Class != FailureEffectUnknown {
-			return fmt.Errorf("agent: call %s: unknown outcome must use %s", c.CallID, FailureEffectUnknown)
+		if c.Failure.Failure.Class == "" {
+			return fmt.Errorf("agent: call %s: failed requires a failure class", c.CallID)
+		}
+		switch c.Failure.Outcome {
+		case ToolOutcomeKnown:
+			if c.Failure.Failure.Class == FailureEffectUnknown {
+				return fmt.Errorf("agent: call %s: known outcome cannot use %s", c.CallID, FailureEffectUnknown)
+			}
+		case ToolOutcomeUnknown:
+			if c.Failure.Failure.Class != FailureEffectUnknown {
+				return fmt.Errorf("agent: call %s: unknown outcome must use %s", c.CallID, FailureEffectUnknown)
+			}
+		default:
+			return fmt.Errorf("agent: call %s: unknown failure outcome %d", c.CallID, c.Failure.Outcome)
 		}
 	default:
 		return fmt.Errorf("agent: call %s: unknown status %d", c.CallID, c.Status)
@@ -280,7 +283,7 @@ func (s *ToolStep) callIndex(id CallID) int {
 	return -1
 }
 
-// MachineState is the complete semantic state of one Run (spec §3.3).
+// MachineState is the complete semantic state of one Run (RUN-MCH-1).
 // Control metadata (owner, fence, lease, attempts, queue claims) never
 // appears here.
 type MachineState struct {
@@ -291,10 +294,111 @@ type MachineState struct {
 	ModelSteps    int          `json:"modelSteps"`
 	// LastClosedStep is the most recently closed ToolStep; PlanningHint's
 	// SourceStep is read from it at the next boundary.
-	LastClosedStep  StepID       `json:"lastClosedStep,omitempty"`
+	LastClosedStep StepID `json:"lastClosedStep,omitempty"`
+	// LastToolStep retains the most recently closed ToolStep so the planner can
+	// include committed tool results in the next model request.
+	LastToolStep    *ToolStep    `json:"lastToolStep,omitempty"`
 	Usage           Usage        `json:"usage"`
 	LastModelResult *ModelResult `json:"lastModelResult,omitempty"`
 	Result          *RunResult   `json:"result,omitempty"`
+}
+
+// ValidateMachineState checks the structural invariants required by Runtime
+// snapshots. It does not inspect transition history; Record and Rebuild use
+// FoldRun for that stronger verification.
+func ValidateMachineState(s *MachineState) error {
+	if s == nil {
+		return errors.New("agent: state: nil state")
+	}
+	if s.RunID == "" {
+		return errors.New("agent: state: empty RunID")
+	}
+	switch s.Status {
+	case RunActive, RunCompleted, RunStopped, RunFailed:
+	default:
+		return fmt.Errorf("agent: state: unknown RunStatus %d", s.Status)
+	}
+	if s.ModelSteps < 0 {
+		return errors.New("agent: state: negative model step count")
+	}
+	seenInputs := make(map[InputID]struct{}, len(s.PendingInputs))
+	for _, input := range s.PendingInputs {
+		if input.ID == "" {
+			return errors.New("agent: state: pending input has empty InputID")
+		}
+		if _, exists := seenInputs[input.ID]; exists {
+			return fmt.Errorf("agent: state: duplicate pending InputID %q", input.ID)
+		}
+		seenInputs[input.ID] = struct{}{}
+	}
+	if s.LastToolStep != nil {
+		last := s.LastToolStep
+		if last.RefValue.RunID != s.RunID || last.RefValue.ID == "" || last.RefValue.Digest == "" || last.Source == "" || s.LastClosedStep != last.RefValue.ID {
+			return errors.New("agent: state: invalid LastToolStep projection")
+		}
+		if len(last.Calls) == 0 {
+			return errors.New("agent: state: LastToolStep has no calls")
+		}
+		for _, call := range last.Calls {
+			if err := ValidateToolCallState(call); err != nil {
+				return err
+			}
+			if call.Status != ToolCompleted && call.Status != ToolFailed {
+				return errors.New("agent: state: LastToolStep contains a live call")
+			}
+		}
+	} else if s.LastClosedStep != "" {
+		return errors.New("agent: state: LastClosedStep has no LastToolStep")
+	}
+
+	if s.Status.Terminal() {
+		if s.Current != nil {
+			return errors.New("agent: state: terminal state has a current step")
+		}
+		if s.Result == nil || s.Result.Status != s.Status {
+			return errors.New("agent: state: terminal state has no matching result")
+		}
+	} else if s.Result != nil {
+		return errors.New("agent: state: active state has a result")
+	}
+
+	switch current := s.Current.(type) {
+	case nil:
+	case ModelStep:
+		if current.RefValue.RunID != s.RunID || current.RefValue.ID == "" || current.RefValue.Digest == "" || current.Model == "" {
+			return errors.New("agent: state: invalid current ModelStep identity")
+		}
+		if current.Status != ModelPrepared && current.Status != ModelExecuting {
+			return fmt.Errorf("agent: state: unknown ModelStep status %d", current.Status)
+		}
+	case ToolStep:
+		if current.RefValue.RunID != s.RunID || current.RefValue.ID == "" || current.RefValue.Digest == "" || current.Source == "" || len(current.Calls) == 0 {
+			return errors.New("agent: state: invalid current ToolStep identity")
+		}
+		seenCalls := make(map[CallID]struct{}, len(current.Calls))
+		live := false
+		for _, call := range current.Calls {
+			if call.CallID == "" {
+				return errors.New("agent: state: current ToolStep has empty CallID")
+			}
+			if _, exists := seenCalls[call.CallID]; exists {
+				return fmt.Errorf("agent: state: duplicate CallID %q", call.CallID)
+			}
+			seenCalls[call.CallID] = struct{}{}
+			if err := ValidateToolCallState(call); err != nil {
+				return err
+			}
+			if call.Status == ToolPending || call.Status == ToolExecuting || call.Status == ToolWaiting {
+				live = true
+			}
+		}
+		if !live {
+			return errors.New("agent: state: current ToolStep has no live calls")
+		}
+	default:
+		return fmt.Errorf("agent: state: unknown current step %T", s.Current)
+	}
+	return nil
 }
 
 // InitializeRun builds the minimal initial MachineState (Revision 0) for a
@@ -317,18 +421,18 @@ func Initialize(run RunID, cfg RunConfig, seed RunSeed) (MachineState, error) {
 	if cfg.Model == "" {
 		return MachineState{}, errors.New("agent: initialize: empty RunConfig.Model")
 	}
-	if cfg.ModelStepLimit < 0 {
-		return MachineState{}, errors.New("agent: initialize: negative ModelStepLimit")
-	}
-	if cfg.ModelRejectLimit < 0 {
-		return MachineState{}, errors.New("agent: initialize: negative ModelRejectLimit")
-	}
 	if seed.Input.ID == "" {
 		return MachineState{}, errors.New("agent: initialize: seed input requires an InputID")
 	}
 	s, err := InitializeRun(run)
 	if err != nil {
 		return MachineState{}, err
+	}
+	if cfg.ModelStepLimit < 0 {
+		return MachineState{}, errors.New("agent: initialize: negative ModelStepLimit")
+	}
+	if cfg.ModelRejectLimit < 0 {
+		return MachineState{}, errors.New("agent: initialize: negative ModelRejectLimit")
 	}
 	input, err := snapshotJSONStable(seed.Input)
 	if err != nil {

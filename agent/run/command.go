@@ -1,7 +1,7 @@
 package run
 
 // AgentCommand is the intent submitted through Runtime.Commit for an existing
-// Run. Accepting one command constitutes one transition (spec §3.6). The
+// Run. Accepting one command constitutes one transition (RUN-MCH-3). The
 // interface is sealed: only the fifteen variants below exist.
 type AgentCommand interface{ agentCommand() }
 
@@ -48,6 +48,9 @@ func (PrepareModelRequest) agentCommand() {}
 // StartModelExecution takes execution ownership of a Prepared ModelStep.
 type StartModelExecution struct {
 	StepID StepID `json:"stepId"`
+	// Claim binds this start command to the Loop execution attempt. It is
+	// included in the command digest and must be retained for transport retry.
+	Claim ExecutionClaim `json:"claim"`
 }
 
 func (StartModelExecution) agentCommand() {}
@@ -58,6 +61,9 @@ func (StartModelExecution) agentCommand() {}
 // lease-expiry recovery.
 type RecoverModelExecution struct {
 	StepID StepID `json:"stepId"`
+	// Claim identifies the execution attempt being recovered. Durable recovery
+	// records use the same claim that was accepted by StartModelExecution.
+	Claim ExecutionClaim `json:"claim"`
 }
 
 func (RecoverModelExecution) agentCommand() {}
@@ -109,6 +115,8 @@ func (RejectModelResult) agentCommand() {}
 type StartToolCall struct {
 	StepID StepID `json:"stepId"`
 	CallID CallID `json:"callId"`
+	// Claim binds this start command to the Loop execution attempt.
+	Claim ExecutionClaim `json:"claim"`
 }
 
 func (StartToolCall) agentCommand() {}
@@ -172,16 +180,15 @@ type SubmitToolResponse struct {
 func (SubmitToolResponse) agentCommand() {}
 
 // CancelRun stops a non-terminal Run as a business cancellation. Hosts must
-// commit this before cancelling the Loop's context (spec §6.6).
+// commit this before cancelling the Loop's context (RUN-LOP-5).
 type CancelRun struct {
 	Reason RunReason `json:"reason,omitempty"`
 }
 
 func (CancelRun) agentCommand() {}
 
-// StopRun records a host-owned non-cancellation stop policy. It exists so
-// compatibility wrappers can keep max-step behavior without storing limits in
-// MachineState.
+// StopRun is retained for compatibility with hosts that explicitly configure
+// a non-cancellation stop policy. New code normally uses CancelRun.
 type StopRun struct {
 	Reason RunReason `json:"reason"`
 }

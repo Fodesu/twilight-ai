@@ -306,11 +306,20 @@ func cloneStep(s Step) Step {
 	}
 }
 
+func cloneToolStepPtr(s *ToolStep) *ToolStep {
+	if s == nil {
+		return nil
+	}
+	step := cloneStep(*s).(ToolStep)
+	return &step
+}
+
 func cloneMachineState(s *MachineState) MachineState {
 	out := *s
 	if out.Current != nil {
 		out.Current = cloneStep(out.Current)
 	}
+	out.LastToolStep = cloneToolStepPtr(out.LastToolStep)
 	out.PendingInputs = cloneAgentInputs(out.PendingInputs)
 	out.LastModelResult = cloneModelResult(out.LastModelResult)
 	out.Result = cloneRunResult(out.Result)
@@ -373,10 +382,6 @@ func cloneFact(f Fact) Fact {
 		fact.Input = cloneAgentInput(fact.Input)
 		return fact
 	case RunEnded:
-		if fact.Failure != nil {
-			f := *fact.Failure
-			fact.Failure = &f
-		}
 		return fact
 	default:
 		return f

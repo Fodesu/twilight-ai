@@ -25,6 +25,11 @@ type Digest = es.Digest
 // context revision from which a RequestPlan was built.
 type PlanningToken string
 
+// ExecutionClaim is an opaque identity chosen by the execution loop for one
+// start command. It lets a caller replay the same start request without
+// accidentally acquiring a second execution grant.
+type ExecutionClaim string
+
 // ExecutionGrant is an opaque capability minted by the Runtime for one
 // accepted start command. Callers only pass it back; its representation is
 // implementation-defined.
@@ -44,7 +49,7 @@ func namespacedHash(namespace string, parts ...string) string {
 }
 
 // DeriveModelRequestCommandID derives the CommandID for PrepareModelRequest
-// from the Run and the Revision the planner loaded (spec §5.6): concurrent
+// from the Run and the Revision the planner loaded (RUN-WIR-3): concurrent
 // planners on the same Revision converge on one command identity.
 func DeriveModelRequestCommandID(run RunID, revision uint64) CommandID {
 	return CommandID(namespacedHash("twilight/model-request", string(run), fmt.Sprintf("%d", revision)))
@@ -88,4 +93,12 @@ func DeriveInputCommandID(run RunID, input InputID) CommandID {
 // reference must be stable per record so replays reuse the same identity.
 func DeriveSystemCommandID(run RunID, step StepID, call CallID, recoveryRecord string) CommandID {
 	return CommandID(namespacedHash("twilight/system-command", string(run), string(step), string(call), recoveryRecord))
+}
+
+// DeriveModelRecoveryCommandID derives the stable command identity for
+// recovering one model execution attempt. The claim is part of the identity:
+// a model step may be started, recovered, and started again, and each attempt
+// must have its own recovery record.
+func DeriveModelRecoveryCommandID(run RunID, step StepID, claim ExecutionClaim) CommandID {
+	return CommandID(namespacedHash("twilight/model-recovery", string(run), string(step), string(claim)))
 }

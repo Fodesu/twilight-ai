@@ -7,7 +7,7 @@
 //	}
 //
 // The suite exercises only the public run API, so it holds for any Runtime
-// that honors the contract (spec §14.3): command idempotency, revision/index
+// that honors the contract (RUN-CMP-2): command idempotency, revision/index
 // assignment, grant lifecycle, call-local rebase, prepare hard-CAS, terminal
 // arbitration, and replay-fold equivalence.
 package runtimetest
@@ -44,6 +44,7 @@ func RunConformance(t *testing.T, newRuntime Factory) {
 	t.Run("IdempotentReplay", func(t *testing.T) { testIdempotentReplay(t, newRuntime) })
 	t.Run("RevisionAndIndex", func(t *testing.T) { testRevisionAndIndex(t, newRuntime) })
 	t.Run("StartGrantLifecycle", func(t *testing.T) { testStartGrantLifecycle(t, newRuntime) })
+	t.Run("DerivedReplayIgnoresNewBaseRevision", func(t *testing.T) { testDerivedReplayIgnoresNewBaseRevision(t, newRuntime) })
 	t.Run("CallLocalRebase", func(t *testing.T) { testCallLocalRebase(t, newRuntime) })
 	t.Run("PrepareDerivedIdentity", func(t *testing.T) { testPrepareDerivedIdentity(t, newRuntime) })
 	t.Run("PrepareIsHardCAS", func(t *testing.T) { testPrepareIsHardCAS(t, newRuntime) })
@@ -401,6 +402,7 @@ func (c *conformanceCase) load() run.RuntimeSnapshot {
 
 func (c *conformanceCase) commit(id run.CommandID, base uint64, grant run.ExecutionGrant, cmd run.AgentCommand) (run.CommitResult, error) {
 	c.t.Helper()
+	cmd = withTestExecutionClaim(id, cmd)
 	env, err := run.BuildEnvelope(c.runID, id, cmd)
 	if err != nil {
 		c.t.Fatal(err)
@@ -410,6 +412,24 @@ func (c *conformanceCase) commit(id run.CommandID, base uint64, grant run.Execut
 		c.events = append(c.events, res.Events...)
 	}
 	return res, err
+}
+
+func withTestExecutionClaim(id run.CommandID, cmd run.AgentCommand) run.AgentCommand {
+	claim := run.ExecutionClaim("test-claim/" + string(id))
+	switch c := cmd.(type) {
+	case run.StartModelExecution:
+		if c.Claim == "" {
+			c.Claim = claim
+		}
+		return c
+	case run.StartToolCall:
+		if c.Claim == "" {
+			c.Claim = claim
+		}
+		return c
+	default:
+		return cmd
+	}
 }
 
 func (c *conformanceCase) mustCommit(id run.CommandID, base uint64, grant run.ExecutionGrant, cmd run.AgentCommand) run.CommitResult {
@@ -599,14 +619,25 @@ func testRevisionAndIndex(t *testing.T, newRuntime Factory) {
 
 func testStartGrantLifecycle(t *testing.T, newRuntime Factory) {
 	c, stepID, grant := preparedCase(t, newRuntime, nil, nil)
+	// The authority rejects an unbound start before it can mint ownership.
+	empty, err := run.BuildEnvelope(c.runID, "empty-claim", run.StartModelExecution{StepID: stepID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.rt.Commit(context.Background(), run.CommitRequest{BaseRevision: 1, Command: empty}); !errors.Is(err, run.ErrCommandConflict) {
+		t.Fatalf("empty start claim err = %v, want ErrCommandConflict", err)
+	}
 
-	_, err := c.commit("done-x", 2, "", run.SubmitModelResult{StepID: stepID, Result: run.ModelResult{}})
+	_, err = c.commit("done-x", 2, "", run.SubmitModelResult{StepID: stepID, Result: run.ModelResult{}})
 	if !errors.Is(err, run.ErrStaleRuntime) {
 		t.Fatalf("grantless completion err = %v, want ErrStaleRuntime", err)
 	}
 	res := c.mustCommit("start-1", 1, "", run.StartModelExecution{StepID: stepID})
-	if res.Status != run.CommitAlreadyApplied || res.Grant != "" {
+	if res.Status != run.CommitAlreadyApplied || res.Grant != grant {
 		t.Fatalf("replayed start: %+v", res)
+	}
+	if _, err := c.commit("start-1", 1, "", run.StartModelExecution{StepID: stepID, Claim: "different-claim"}); !errors.Is(err, run.ErrCommandConflict) {
+		t.Fatalf("different start claim err = %v, want ErrCommandConflict", err)
 	}
 	ok, err := run.FreezeModelResult(sdk.ModelResult{Text: "ok"})
 	if err != nil {
@@ -615,6 +646,36 @@ func testStartGrantLifecycle(t *testing.T, newRuntime Factory) {
 	res = c.mustCommit("done-1", 2, grant, run.SubmitModelResult{StepID: stepID, Result: ok})
 	if res.Status != run.CommitAccepted || res.Snapshot.State.Status != run.RunCompleted {
 		t.Fatalf("completion: %+v", res.Snapshot.State.Status)
+	}
+	// The command remains idempotently replayable, but its consumed grant is
+	// not returned after settlement.
+	res = c.mustCommit("start-1", 1, "", run.StartModelExecution{StepID: stepID})
+	if res.Status != run.CommitAlreadyApplied || res.Grant != "" {
+		t.Fatalf("settled start replay: %+v", res)
+	}
+}
+
+func testDerivedReplayIgnoresNewBaseRevision(t *testing.T, newRuntime Factory) {
+	c := newCase(t, newRuntime)
+	snap := c.load()
+	input := run.AgentInput{ID: "input-1", Payload: mustJSON(`{"text":"hi"}`)}
+	accepted := c.mustCommit(run.DeriveInputCommandID(c.runID, input.ID), snap.Revision, "", run.AcceptInput{Input: input})
+	req := request()
+	prep, cmdID := buildPrepareFromSnap(t, &accepted.Snapshot, &req, nil)
+	prepared := c.mustCommit(cmdID, accepted.Snapshot.Revision, "", prep)
+	start := c.mustCommit("start-derived-replay", prepared.Snapshot.Revision, "", run.StartModelExecution{StepID: prep.StepID})
+	ok, err := run.FreezeModelResult(sdk.ModelResult{Text: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mustCommit("finish-derived-replay", start.Snapshot.Revision, start.Grant, run.SubmitModelResult{StepID: prep.StepID, Result: ok})
+	current := c.load()
+	// The original prepare command was derived from accepted.Snapshot.Revision.
+	// A retry after later progress must still replay by command identity rather
+	// than fail because it was sent with the current base revision.
+	replayed, err := c.commit(cmdID, current.Revision, "", prep)
+	if err != nil || replayed.Status != run.CommitAlreadyApplied {
+		t.Fatalf("prepare replay after progress = %+v, %v", replayed, err)
 	}
 }
 
@@ -663,8 +724,8 @@ func testPrepareDerivedIdentity(t *testing.T, newRuntime Factory) {
 	req := request()
 	prep, cmdID := buildPrepareFromSnap(t, &snap, &req, nil)
 
-	if _, err := c.commit("wrong-prepare-id", snap.Revision, "", prep); err == nil {
-		t.Fatal("PrepareModelRequest accepted a non-derived CommandID")
+	if _, err := c.commit("wrong-prepare-id", snap.Revision, "", prep); !errors.Is(err, run.ErrCommandConflict) {
+		t.Fatalf("wrong prepare id err = %v, want ErrCommandConflict", err)
 	}
 
 	bad := prep
@@ -790,6 +851,9 @@ func stateComparable(s *run.MachineState) map[string]any {
 		"modelSteps": s.ModelSteps, "lastClosedStep": s.LastClosedStep,
 		"usage": s.Usage, "pendingInputs": s.PendingInputs,
 		"lastModelResult": s.LastModelResult, "result": s.Result,
+	}
+	if s.LastToolStep != nil {
+		m["lastToolStep"] = s.LastToolStep
 	}
 	switch cur := s.Current.(type) {
 	case run.ModelStep:

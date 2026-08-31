@@ -46,11 +46,30 @@ func memoryEntry(t testing.TB, rt *MemoryRuntime) *memoryRun {
 
 func commitCmd(t *testing.T, rt Runtime, id CommandID, base uint64, grant ExecutionGrant, cmd AgentCommand) (CommitResult, error) {
 	t.Helper()
+	cmd = withTestExecutionClaim(id, cmd)
 	env, err := BuildEnvelope("run-1", id, cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return rt.Commit(context.Background(), CommitRequest{BaseRevision: base, Grant: grant, Command: env})
+}
+
+func withTestExecutionClaim(id CommandID, cmd AgentCommand) AgentCommand {
+	claim := ExecutionClaim("test-claim/" + string(id))
+	switch c := cmd.(type) {
+	case StartModelExecution:
+		if c.Claim == "" {
+			c.Claim = claim
+		}
+		return c
+	case StartToolCall:
+		if c.Claim == "" {
+			c.Claim = claim
+		}
+		return c
+	default:
+		return cmd
+	}
 }
 
 func mustCommit(t *testing.T, rt Runtime, id CommandID, base uint64, grant ExecutionGrant, cmd AgentCommand) CommitResult {

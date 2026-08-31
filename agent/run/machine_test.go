@@ -13,7 +13,7 @@ import (
 const testModel ModelRef = "m-1"
 
 func testConfig() RunConfig {
-	return RunConfig{Model: testModel, ModelRejectLimit: DefaultModelRejectLimit}
+	return RunConfig{Model: testModel}
 }
 
 func cj(raw string) CanonicalJSON { return MustParseCanonicalJSON(raw) }
@@ -185,7 +185,7 @@ func TestInitializeRunIsMinimalAndLegacyConfigIsNotState(t *testing.T) {
 	if s.RunID != "r" || s.Status != RunActive || len(s.PendingInputs) != 0 {
 		t.Fatalf("initial state = %+v", s)
 	}
-	legacy, err := Initialize("r", RunConfig{Model: "m", ModelStepLimit: 1, ModelRejectLimit: 2}, NextRun(AgentInput{ID: "i"}))
+	legacy, err := Initialize("r", RunConfig{Model: "m"}, NextRun(AgentInput{ID: "i"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,16 +354,13 @@ func TestRejectRecordsPermissionDenied(t *testing.T) {
 
 	facts = mustDecide(t, s, RejectToolCall{StepID: opened.StepID, CallID: "c1", ResponseID: respID,
 		ResponseDigest: responseDecisionDigest(t, ResponseApproval, ResponseDecisionRejected, "no"), Reason: "no"})
-	// Single call: reject closes it as Known failed and closes the step.
-	if len(facts) != 2 {
-		t.Fatalf("facts = %d, want [failed, closed]", len(facts))
+	// Single call: the Known failure implicitly closes the ToolStep.
+	if len(facts) != 1 {
+		t.Fatalf("facts = %d, want [failed]", len(facts))
 	}
 	failed := facts[0].(ToolCallFailed)
 	if failed.Failure.Class != FailurePermissionDenied || failed.Outcome != ToolOutcomeKnown {
 		t.Fatalf("failed = %+v", failed)
-	}
-	if _, ok := facts[1].(ToolStepClosed); !ok {
-		t.Fatalf("facts[1] = %T", facts[1])
 	}
 	s = fold(t, s, facts)
 	if s.Current != nil || s.Status != RunActive {
@@ -387,8 +384,8 @@ func TestExternalResponseRequiresPayloadDigest(t *testing.T) {
 	}
 	facts = mustDecide(t, s, SubmitToolResponse{StepID: opened.StepID, CallID: "c1", ResponseID: respID,
 		ResponseDigest: responsePayloadDigest(t, payload), Payload: payload})
-	if len(facts) != 2 {
-		t.Fatalf("facts = %d, want answered + closed", len(facts))
+	if len(facts) != 1 {
+		t.Fatalf("facts = %d, want [answered]", len(facts))
 	}
 }
 
@@ -408,8 +405,9 @@ func TestUnknownFailureEndsRun(t *testing.T) {
 		t.Fatalf("facts = %d, want [failed, ended]", len(facts))
 	}
 	ended := facts[1].(RunEnded)
-	if ended.Status != RunFailed || ended.Reason != ReasonEffectUnknown || ended.Failure.CallID != "c1" {
-		t.Fatalf("ended = %+v", ended)
+	failed, ok := ended.End.(RunFailedEnd)
+	if !ok || failed.Reason != ReasonEffectUnknown || failed.Failure.CallID != "c1" {
+		t.Fatalf("ended = %+v", ended.End)
 	}
 	s = fold(t, s, facts)
 	if s.Status != RunFailed {
@@ -462,15 +460,15 @@ func TestParallelWaitingDoesNotBlockPending(t *testing.T) {
 	}
 	s = fold(t, s, facts)
 
-	// Answer A via approval; approving moves to Pending, then failing known
-	// closes the step.
+	// Answer A via approval; approving moves to Pending, then completing it
+	// implicitly closes the step.
 	respID := opened.Calls[0].Response.ID
 	s = fold(t, s, mustDecide(t, s, ApproveToolCall{StepID: opened.StepID, CallID: "cA", ResponseID: respID,
 		ResponseDigest: responseDecisionDigest(t, ResponseApproval, ResponseDecisionApproved, "")}))
 	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: "cA"}))
 	facts = mustDecide(t, s, SubmitToolResult{StepID: opened.StepID, CallID: "cA", Result: ToolExecutionResult{Output: cj(`"done"`)}})
-	if len(facts) != 2 {
-		t.Fatalf("facts = %d, want [completed, closed]", len(facts))
+	if len(facts) != 1 {
+		t.Fatalf("facts = %d, want [completed]", len(facts))
 	}
 	s = fold(t, s, facts)
 	if s.Current != nil {
@@ -541,11 +539,20 @@ func TestStopRunProducesStepLimit(t *testing.T) {
 		t.Fatalf("facts = %d, want [ended]", len(facts))
 	}
 	ended := facts[0].(RunEnded)
-	if ended.Status != RunStopped || ended.Reason != ReasonStepLimit {
-		t.Fatalf("ended = %+v", ended)
+	stopped, ok := ended.End.(RunStoppedEnd)
+	if !ok || stopped.Reason != ReasonStepLimit {
+		t.Fatalf("ended = %+v", ended.End)
 	}
 	if _, err := Decide(s, StopRun{Reason: ReasonCancelled}); err == nil {
 		t.Fatal("StopRun accepted cancellation reason")
+	}
+}
+
+func TestStopRunRequiresSafeBoundary(t *testing.T) {
+	s := newRun(t, testConfig())
+	s, stepID := advanceToExecuting(t, s, testRequest(), nil)
+	if _, err := Decide(s, StopRun{Reason: ReasonStepLimit}); err == nil {
+		t.Fatalf("StopRun accepted while ModelStep %q was executing", stepID)
 	}
 }
 
@@ -553,8 +560,9 @@ func TestCancelProducesRunStopped(t *testing.T) {
 	s := newRun(t, testConfig())
 	facts := mustDecide(t, s, CancelRun{})
 	ended := facts[0].(RunEnded)
-	if ended.Status != RunStopped || ended.Reason != ReasonCancelled {
-		t.Fatalf("ended = %+v", ended)
+	stopped, ok := ended.End.(RunStoppedEnd)
+	if !ok || stopped.Reason != ReasonCancelled {
+		t.Fatalf("ended = %+v", ended.End)
 	}
 }
 
@@ -610,7 +618,20 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 		return s
 	}
 	prepared := func(ids ...InputID) ModelStepPrepared {
-		return ModelStepPrepared{StepID: "step-1", Model: testModel, Request: ModelRequest{Model: string(testModel)}, RequestDigest: "sha256:req", ToolsDigest: "sha256:tools", BindingDigest: "sha256:binding", InputIDs: ids}
+		request := ModelRequest{Model: string(testModel)}
+		requestDigest, err := DigestRequest(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		toolsDigest, err := DigestToolSpecs(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		binding, err := DigestModelStepBinding(testModel, requestDigest, toolsDigest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ModelStepPrepared{StepID: "step-1", Model: testModel, Request: request, RequestDigest: requestDigest, ToolsDigest: toolsDigest, BindingDigest: binding, InputIDs: ids}
 	}
 
 	t.Run("nonexistent input", func(t *testing.T) {

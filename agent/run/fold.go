@@ -9,15 +9,13 @@ import (
 )
 
 // ErrLogTruncated reports that the transition log ends below the revision the
-// caller expected. It is a diagnostic signal, not a protocol halt: the
-// MachineState is the execution authority (spec §5.1), so a shorter-than-
-// expected log means an audit gap, and how to handle it is an operational
-// decision.
+// caller expected. It identifies an audit gap for the Runtime authority; the
+// adapter decides how to surface or repair that gap.
 var ErrLogTruncated = errors.New("agent: transition log ends below the expected revision")
 
 // FoldEvents rebuilds a MachineState by folding a complete flat event stream
 // from the initial (Revision 0) state with EvolveVersion only: no Decide, no
-// external effects, no command replay (spec §9.1). It verifies (Revision,
+// external effects, no command replay (RUN-NEW-2). It verifies (Revision,
 // Index) ordering and per-fact digests as it goes. Authority runtimes should
 // prefer FoldTransitions because only TransitionRecord can prove the last
 // transition's event group is complete.
@@ -119,14 +117,12 @@ func FoldTransitions(initial MachineState, records []TransitionRecord) (MachineS
 	return state, uint64(revision), nil
 }
 
-// Rebuild is an optional diagnostic (spec §5.1): it refolds the state from
+// Rebuild is an optional diagnostic (RUN-CMT-2): it refolds the state from
 // the transition log and replaces the in-memory state with the fold result.
-// The MachineState is the execution authority, so the normal path never calls
-// this; use it for consistency checks and storage-migration rebuilds. A log
-// shorter than the last committed revision returns ErrLogTruncated (audit
-// gap). It returns true when the refolded state differed from the stored
-// state — with a correct implementation this never happens, so a true return
-// is an audit signal (Evolve bug, out-of-band write, or storage corruption).
+// Runtime.Commit remains the normal state transition path. A log shorter than
+// the last committed revision returns ErrLogTruncated (audit gap). It returns
+// true when the refolded state differs from the stored state, which identifies
+// an Evolve bug, out-of-band write, or storage corruption.
 func (m *MemoryRuntime) Rebuild(runID RunID) (rebuilt bool, err error) {
 	entry, err := m.entry(runID)
 	if err != nil {
@@ -167,6 +163,9 @@ func stateComparable(s *MachineState) map[string]any {
 		"modelSteps": s.ModelSteps, "lastClosedStep": s.LastClosedStep,
 		"usage": s.Usage, "pendingInputs": s.PendingInputs,
 		"lastModelResult": s.LastModelResult, "result": s.Result,
+	}
+	if s.LastToolStep != nil {
+		m["lastToolStep"] = s.LastToolStep
 	}
 	switch cur := s.Current.(type) {
 	case ModelStep:
