@@ -131,7 +131,7 @@ func toolSpec(t *testing.T, name string, policy ResponsePolicy) ToolSpec {
 
 func loopRuntime(t *testing.T) *MemoryRuntime {
 	t.Helper()
-	return newTestRuntime(t, RunConfig{Model: "m-1"})
+	return newTestRuntime(t)
 }
 
 func textResult(text string) sdk.ModelResult {
@@ -234,18 +234,18 @@ func TestLoopApprovalWaitsAndResumes(t *testing.T) {
 	loop, _ := New(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
 		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
 
-	// First run: reaches Waiting(Approval) and returns.
+	// First run: no executable effect remains; approval lives on the snapshot.
 	res, err := loop.Run(context.Background(), rt, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Disposition != LoopWaiting || res.Reason != WaitingForResponse || len(res.Waiting) != 1 {
+	if res.Disposition != LoopWaiting || res.ExecutionRecovery {
 		t.Fatalf("res = %+v", res)
 	}
 	if executed.Load() {
 		t.Fatal("tool executed before approval")
 	}
-	wait := res.Waiting[0]
+	wait := snapshotWaiting(t, rt, "run-1")[0]
 	if wait.Kind != ResponseApproval {
 		t.Fatalf("kind = %v", wait.Kind)
 	}
@@ -273,6 +273,84 @@ func TestLoopApprovalWaitsAndResumes(t *testing.T) {
 		t.Fatalf("res = %+v", res)
 	}
 	if !executed.Load() {
+		t.Fatal("approved tool never executed")
+	}
+}
+
+func TestLoopYieldsWaitingBeforeStartingPending(t *testing.T) {
+	var workRan, askRan atomic.Bool
+	askSpec := toolSpec(t, "ask", ApprovalRequired)
+	workSpec := toolSpec(t, "work", DirectExecution)
+	ask := &fakeTool{ref: "ask", def: askSpec.Definition.SDK(), policy: ApprovalRequired,
+		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
+			askRan.Store(true)
+			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: cj(`"asked"`)}}
+		}}
+	work := &fakeTool{ref: "work", def: workSpec.Definition.SDK(), policy: DirectExecution,
+		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
+			workRan.Store(true)
+			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: cj(`"worked"`)}}
+		}}
+	invoker := &fakeInvoker{results: []sdk.ModelResult{
+		{
+			FinishReason: sdk.FinishReasonToolCalls,
+			Usage:        sdk.Usage{TotalTokens: 2},
+			ToolCalls: []sdk.ToolCall{
+				{ToolCallID: "cA", ToolName: "ask", Input: `{"x":1}`},
+				{ToolCallID: "cB", ToolName: "work", Input: `{"x":1}`},
+			},
+		},
+		textResult("after"),
+	}}
+	rt := loopRuntime(t)
+	loop, err := New(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"ask": ask, "work": work}},
+		staticPlanner{specs: []ToolSpec{askSpec, workSpec}}, ExecutionPolicy{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := loop.Run(context.Background(), rt, "run-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Disposition != LoopWaiting || res.ExecutionRecovery {
+		t.Fatalf("first run = %+v", res)
+	}
+	if !workRan.Load() {
+		t.Fatal("DirectExecution tools must start in the same Run that returns LoopWaiting")
+	}
+	if askRan.Load() {
+		t.Fatal("approval tool executed before ApproveToolCall")
+	}
+
+	wait := snapshotWaiting(t, rt, "run-1")[0]
+	if wait.CallID != "cA" {
+		t.Fatalf("waiting call = %s, want cA", wait.CallID)
+	}
+	cmdID := DeriveResponseCommandID(wait.RunID, wait.StepID, wait.CallID, wait.ID)
+	env, err := BuildEnvelope(wait.RunID, cmdID, ApproveToolCall{
+		StepID: wait.StepID, CallID: wait.CallID, ResponseID: wait.ID,
+		ResponseDigest: responseDecisionDigest(t, ResponseApproval, ResponseDecisionApproved, ""),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := rt.Load(context.Background(), "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Commit(context.Background(), CommitRequest{BaseRevision: snap.Revision, Command: env}); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err = loop.Run(context.Background(), rt, "run-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Disposition != LoopFinished || res.Result.Model.Text != "after" {
+		t.Fatalf("after approval = %+v", res)
+	}
+	if !askRan.Load() {
 		t.Fatal("approved tool never executed")
 	}
 }
@@ -568,35 +646,6 @@ func TestLoopCtxCancelReturnsWithoutFailingRun(t *testing.T) {
 	}
 	if res.Result == nil || res.Result.Model.Text != "resumed" {
 		t.Fatalf("res = %+v", res)
-	}
-}
-
-func TestLoopModelStepLimitCompatibilityFieldDoesNotAffectRun(t *testing.T) {
-	rt := NewMemoryRuntime()
-	newRun, err := BuildNewRun("run-1", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rt.Create(context.Background(), newRun); err != nil {
-		t.Fatal(err)
-	}
-	env, err := BuildEnvelope("run-1", DeriveInputCommandID("run-1", "input-1"), AcceptInput{Input: AgentInput{ID: "input-1", Payload: cj(`{"q":"hi"}`)}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rt.Commit(context.Background(), CommitRequest{BaseRevision: 0, Command: env}); err != nil {
-		t.Fatal(err)
-	}
-	loop, err := New(fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("completed")}}}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{ModelStepLimit: 1}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := loop.Run(context.Background(), rt, "run-1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Disposition != LoopFinished || res.Result == nil || res.Result.Model.Text != "completed" {
-		t.Fatalf("loop result = %+v", res)
 	}
 }
 

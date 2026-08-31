@@ -1,8 +1,8 @@
-# Twilight Agent Session Chatlog Extension
+# Twilight Agent Session Chatlog Module
 
-状态：设计草案，wire schema/version 尚未冻结。
+状态：设计草案，payload 字段、输入 limits 与 golden fixtures 尚未冻结。
 
-本文定义 `agent/session/chatlog` first-party Module，依赖 [Session](agent-session.md) 与 [Extension Framework](agent-session-extension.md)。文中的“必须”“不得”“应该”是草案冻结时应保留的协议约束；canonical JSON 与 digest 遵循 `agent/jsonstable`、`agent/es`。
+本文定义 `agent/session/chatlog` first-party Module，依赖 [Session](agent-session.md) 与 [Session Module Framework](agent-session-extension.md)。文中的“必须”“不得”“应该”是草案冻结时应保留的协议约束；canonical JSON 与 digest 遵循 `agent/jsonstable`、`agent/es`。
 
 ## 1. module 与 ontology
 
@@ -112,22 +112,23 @@ func (MessageBindingExtractor) BindingIDs(value any) ([]artifact.BindingID, erro
 type MessageRegistry interface {
     extension.RuntimeRegistry
     RegistryID() extension.RegistryID
-    Version() uint16
     EncodeMessagePreimage(Message) (jsonstable.Value, error)
     EncodeMessage(Message) (jsonstable.Value, error)
     DecodeMessage(jsonstable.Value) (Message, error)
 }
 ```
 
-**CHT-COD-1** Decode 必须 wire-first：先检查 object、explicit discriminator、schema、unknown fields 和 limits，再构造 typed value。Encode/Decode 均拒绝 nil/typed nil、kind mismatch、未知 discriminator、cycle 和超限输入。有效值必须 `Encode → Decode → Encode` canonical-equivalent。
+**CHT-COD-1** Decode 必须 wire-first：先检查 object、explicit discriminator、Session protocol profile、unknown fields 和 limits，再构造 typed value。Encode/Decode 均拒绝 nil/typed nil、kind mismatch、未知 discriminator、cycle 和超限输入。有效值必须 `Encode → Decode → Encode` canonical-equivalent。
 
-**CHT-COD-2** registry 是 startup static、immutable，kind 有唯一 codec，不依赖 Go type name。Message registry 实现 `extension.RuntimeRegistry.BindingExtractor()`，且必须返回 `(MessageBindingExtractor, true)`，不得以 typed nil 表示缺失。该 extractor 只接受 typed `MessageCommittedPayload`，并按 appearance order 返回其 `Message` 中顶层 ReferencePart 与 ToolResult 单层 child 的全部 ArtifactBindingRef；错误的 typed value 必须拒绝。它是 Extension Binding extraction 的唯一 Chatlog 入口。v1 draft 的 discriminator 为本节定义的 `Part*` 和 `RefArtifactBinding` 值；后续 extension kind 使用其 owner namespace。
+**CHT-COD-2** registry 是 startup static、immutable，kind 有唯一 codec，不依赖 Go type name。Message registry 实现 `extension.RuntimeRegistry.BindingExtractor()`，且必须返回 `(MessageBindingExtractor, true)`，不得以 typed nil 表示缺失。该 extractor 只接受 typed `MessageCommittedPayload`，并按 appearance order 返回其 `Message` 中顶层 ReferencePart 与 ToolResult 单层 child 的全部 ArtifactBindingRef；错误的 typed value 必须拒绝。它是 Chatlog Module binding extraction 的唯一入口。当前 draft 的 discriminator 为本节定义的 `Part*` 和 `RefArtifactBinding` 值；后续 Module kind 使用其 owner namespace。
 
-**CHT-COD-3** `EncodeMessagePreimage` 编码 ID、TurnID、role、有序 InputIDs/ItemIDs、parts、每个 ref identity 和允许 extension fields，排除 Digest。`MessageDigest=Digest("twilight.chatlog/message/v1", registry ID, registry version, preimage)`；`EncodeMessage` 编码同一 preimage 加 Digest，Decode 必须重算。MessageCommitted payload 的 typed shape 是 `MessageCommittedPayload{Message Message}`；它的 wire codec 必须将 `message` 编码为 `EncodeMessage(Message)` 得到的 canonical message value，不得 generic re-marshal 或重复其中任一字段。
+**CHT-COD-3** `EncodeMessagePreimage` 编码 ID、TurnID、role、有序 InputIDs/ItemIDs、parts、每个 ref identity 和声明的附加字段，排除 Digest。`MessageDigest=Digest("twilight.chatlog/message/v1", registry ID, preimage)`；`EncodeMessage` 编码同一 preimage 加 Digest，Decode 必须重算。MessageCommitted payload 的 typed shape 是 `MessageCommittedPayload{Message Message}`；它的 wire codec 必须将 `message` 编码为 `EncodeMessage(Message)` 得到的 canonical message value，不得 generic re-marshal 或重复其中任一字段。
 
-Note：本规范保持 draft；v1 freeze 前准确开放项仅为 wire field names、输入 limits、registry version 与 golden fixtures。
+`twilight.chatlog/message/v1` 是 Message digest 的 domain identity，沿用 Session `ProtocolVersion` 的兼容性规则；它不构成独立的 event schema version。
 
-## 5. event schemas
+Note：本规范保持 draft；v1 freeze 前准确开放项仅为 wire field names、输入 limits 与 golden fixtures。
+
+## 5. event payloads
 
 下列 payload 均为 object，identity 为 string，整数按 Session profile 编码；未列字段在 v1 默认拒绝。
 
@@ -156,7 +157,7 @@ type MessageDigestPair struct { MessageID MessageID; Digest es.Digest }
 type ContextCheckpointInvalidatedPayload struct { CheckpointID CheckpointID; Reason string }
 ```
 
-`ModuleDescriptor` 中 `twilight.chatlog/message_committed` 的每个有效 EventSchema 必须注册 Message registry requirement，并声明唯一 Binding reference：
+`ModuleDescriptor` 中 `twilight.chatlog/message_committed` 的 EventDefinition 必须注册 Message registry requirement，并声明唯一 Binding reference：
 
 ```go
 extension.BindingReferenceDefinition{
@@ -167,7 +168,7 @@ extension.BindingReferenceDefinition{
 }
 ```
 
-`AllowedSchemes:nil`（或 empty）明确表示任意 Catalog-registered 且支持 `EventBound` 的 scheme；非空 slice 才是显式允许列表。它不表示允许 ephemeral。该 declaration 使 Message extractor 覆盖的每一个 Binding 都接受 Extension admission。
+`AllowedSchemes:nil`（或 empty）明确表示任意 Catalog-registered 且支持 `EventBound` 的 scheme；非空 slice 才是显式允许列表。它不表示允许 ephemeral。该 declaration 使 Message extractor 覆盖的每一个 Binding 都接受 Module admission。
 
 **CHT-EVT-1** Event names依次为 `input_submitted`、`input_delivered`、`input_withdrawn`、`input_rejected`、`turn_opened`、`turn_completed`、`turn_failed`、`turn_superseded`、`item_opened`、`item_updated`、`item_completed`、`item_failed`、`item_superseded`、`message_committed`、`message_superseded`、`context_checkpoint_created`、`context_checkpoint_invalidated`，均以 `twilight.chatlog/` 为前缀。
 
@@ -195,7 +196,7 @@ type Surface struct {
 func ContextFold(events []extension.DecodedEvent) ([]Message, error)
 ```
 
-**CHT-CTX-1** 输入必须是已验证、decode、upcast 后、按 resolved ancestry segment/event order 的 events。ContextFold 只输出有效 MessageCommitted 经 supersession/checkpoint 处理后的有序 `[]Message`；它不得接收 raw commits、resolve content、访问 IO 或 provider transport。
+**CHT-CTX-1** 输入必须是已验证、decode 后、按 resolved ancestry segment/event order 的 events。ContextFold 只输出有效 MessageCommitted 经 supersession/checkpoint 处理后的有序 `[]Message`；它不得接收 raw commits、resolve content、访问 IO 或 provider transport。
 
 **CHT-CTX-2** fold 必须再次执行 ancestry-wide MessageID single-creation、role/call pairing、active unresolved-call 检查以及 unknown/indeterminate replacement 规则。checkpoint 只在 CHT-EVT-3 的 coverage gap、base/summary/retained digest 与 retained order 均匹配且仍 compatible 时使用；应用后按 `[SummaryMessage] + Retained` 继续仅 fold checkpoint event 之后的 tail。
 

@@ -125,14 +125,6 @@ type ToolCallFailed struct {
 
 func (ToolCallFailed) fact() {}
 
-// ToolStepClosed is retained only for folding legacy v1 logs. New transitions
-// close a ToolStep implicitly when its final ToolCall reaches a terminal state.
-type ToolStepClosed struct {
-	StepID StepID `json:"stepId"`
-}
-
-func (ToolStepClosed) fact() {}
-
 // InputAccepted appends one input to PendingInputs.
 type InputAccepted struct {
 	Input AgentInput `json:"input"`
@@ -309,8 +301,6 @@ func factType(f Fact) string {
 		return "tool_call_answered"
 	case ToolCallFailed:
 		return "tool_call_failed"
-	case ToolStepClosed:
-		return "tool_step_closed"
 	case InputAccepted:
 		return "input_accepted"
 	case RunEnded:

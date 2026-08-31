@@ -13,7 +13,7 @@ import (
 // Finding 1: a result carrying tool calls with zero bindings must not
 // silently complete the run.
 func TestRegressionZeroBindingsWithToolCallsRejected(t *testing.T) {
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(), nil)
 	result := modelResultWithCalls("c1") // has tool calls
 	if _, err := Decide(s, SubmitModelResult{StepID: stepID, Result: result, Calls: nil}); err == nil {
@@ -28,7 +28,7 @@ func TestRegressionBindingMustMatchModelResult(t *testing.T) {
 	danger := testToolDef("danger")
 	specSafe := makeSpec(t, safe, DirectExecution)
 	specDanger := makeSpec(t, danger, DirectExecution)
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(safe, danger), []ToolSpec{specSafe, specDanger})
 
 	// Model called "safe" with {"a":1}; binding claims "danger" with {"rm":"-rf"}.
@@ -79,7 +79,7 @@ func TestRegressionJCSNumberSemantics(t *testing.T) {
 func TestRegressionToolStepIDReproducible(t *testing.T) {
 	def := testToolDef("t")
 	spec := makeSpec(t, def, ApprovalRequired) // Response-filled path
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
 	b := makeBinding(t, "c1", spec, `{}`)
 	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
@@ -107,7 +107,7 @@ func TestRegressionInvalidToolOutputCannotBeConstructed(t *testing.T) {
 func TestRegressionExternalResponseCanBeRejected(t *testing.T) {
 	def := testToolDef("ask")
 	spec := makeSpec(t, def, ExternalResponse)
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
 	b := makeBinding(t, "c1", spec, `{}`)
 	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithNamedCalls("ask", `{}`, "c1"), Calls: []ToolCallBinding{b}})
@@ -194,7 +194,7 @@ func TestRegressionRuntimeReturnsAreIsolated(t *testing.T) {
 func TestRegressionEvolveRejectsIllegalCallState(t *testing.T) {
 	def := testToolDef("t")
 	spec := makeSpec(t, def, DirectExecution)
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
 	b := makeBinding(t, "c1", spec, `{}`)
 	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
@@ -216,9 +216,9 @@ func TestRegressionEvolveRejectsIllegalCallState(t *testing.T) {
 
 // Low-severity finding: CancelRun cannot forge a system reason.
 func TestRegressionCancelReasonFixed(t *testing.T) {
-	s := newRun(t, testConfig())
-	if _, err := Decide(s, CancelRun{Reason: ReasonStepLimit}); err == nil {
-		t.Fatal("CancelRun forged step_limit into the log")
+	s := newRun(t)
+	if _, err := Decide(s, CancelRun{Reason: RunReason("other")}); err == nil {
+		t.Fatal("CancelRun accepted a non-cancellation reason")
 	}
 	facts := mustDecide(t, s, CancelRun{})
 	end, ok := facts[0].(RunEnded).End.(RunStoppedEnd)

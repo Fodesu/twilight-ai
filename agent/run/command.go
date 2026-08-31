@@ -2,7 +2,7 @@ package run
 
 // AgentCommand is the intent submitted through Runtime.Commit for an existing
 // Run. Accepting one command constitutes one transition (RUN-MCH-3). The
-// interface is sealed: only the fifteen variants below exist.
+// interface is sealed: only the fourteen variants below exist.
 type AgentCommand interface{ agentCommand() }
 
 // AgentInput is a queue-safe input: a stable ID plus an immutable payload.
@@ -14,21 +14,6 @@ type AgentInput struct {
 
 // NextStep creates the command consumed by an active Run at a safe boundary.
 func NextStep(input AgentInput) AcceptInput { return AcceptInput{Input: input} }
-
-// RunSeed is the legacy admission seed for a new Run. It is not a command: it
-// never goes through Runtime.Commit. New admission uses NewRun with
-// Runtime.Create, then submits every initial input with AcceptInput.
-//
-// Deprecated: use NewRun, Runtime.Create, and AcceptInput.
-type RunSeed struct {
-	Input AgentInput `json:"input"`
-}
-
-// NextRun creates the legacy admission seed used by application admission. It
-// does not allocate a RunID, claim a queue item, or mutate an existing Run.
-//
-// Deprecated: use InitializeRun and AcceptInput.
-func NextRun(input AgentInput) RunSeed { return RunSeed{Input: input} }
 
 // PrepareModelRequest freezes the next model request. Its CommandID is
 // derived from the loaded Revision, which is also its concurrency control.
@@ -187,14 +172,6 @@ type CancelRun struct {
 
 func (CancelRun) agentCommand() {}
 
-// StopRun is retained for compatibility with hosts that explicitly configure
-// a non-cancellation stop policy. New code normally uses CancelRun.
-type StopRun struct {
-	Reason RunReason `json:"reason"`
-}
-
-func (StopRun) agentCommand() {}
-
 // AcceptInput appends one queue-safe input to PendingInputs. Idempotent per
 // (RunID, InputID) with identical payload.
 type AcceptInput struct {
@@ -232,8 +209,6 @@ func commandType(c AgentCommand) string {
 		return "submit_tool_response"
 	case CancelRun:
 		return "cancel_run"
-	case StopRun:
-		return "stop_run"
 	case AcceptInput:
 		return "accept_input"
 	default:

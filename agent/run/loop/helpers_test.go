@@ -11,7 +11,7 @@ const testModel ModelRef = "m-1"
 
 func cj(raw string) CanonicalJSON { return MustParseCanonicalJSON(raw) }
 
-func newTestRuntime(t *testing.T, _ RunConfig) *MemoryRuntime {
+func newTestRuntime(t *testing.T) *MemoryRuntime {
 	t.Helper()
 	rt := NewMemoryRuntime()
 	newRun, err := BuildNewRun("run-1", "")
@@ -50,14 +50,17 @@ func recordEvents(t testing.TB, rt Runtime, runID RunID) []AgentEvent {
 	return events
 }
 
-type modelStepLimitRuntime struct{ Runtime }
-
-func (r modelStepLimitRuntime) Load(ctx context.Context, runID RunID) (RuntimeSnapshot, error) {
-	snapshot, err := r.Runtime.Load(ctx, runID)
-	if err == nil {
-		snapshot.State.ModelSteps = 1
+func snapshotWaiting(t *testing.T, rt Runtime, runID RunID) []ResponseRequest {
+	t.Helper()
+	snap, err := rt.Load(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return snapshot, err
+	reqs := WaitingCalls(snap.State)
+	if len(reqs) == 0 {
+		t.Fatal("expected Waiting calls on the snapshot")
+	}
+	return reqs
 }
 
 func responseDecisionDigest(t *testing.T, kind ResponseKind, decision ResponseDecision, reason string) Digest {

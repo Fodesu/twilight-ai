@@ -20,7 +20,7 @@
 
 **TRN-SCP-3** Coordinator 从 Session facts 和 `Runtime.Record` 重建；`MachineState` 提供 execution authority，`TransitionRecord` 提供 canonical record。Coordinator 编排持久化事实，以 injected capability 执行协调动作；Session、Run、driver、mapper cursor、terminal verdict、队列 lease、provider client、per-Run handle 与额外权限均由各自 canonical owner 提供。
 
-**TRN-SCP-4** Coordinator 通过 `extension.SemanticAppender` 完成所有 Session 写入；Extension 负责 Binding admission、claim 及其恢复。`artifact` 由其 canonical owner 管理。
+**TRN-SCP-4** Coordinator 通过 `extension.SemanticAppender` 完成所有 Session 写入；Session Module Framework 负责 Binding admission、claim 及其恢复。`artifact` 由其 canonical owner 管理。
 
 **TRN-SCP-5** Application 管理 model、provider、tool、prompt、token、approval、queue、channel、并发、重试时机及其他业务 policy。Coordinator 按 persisted binding 解析 driver 并协调协议步骤，历史计划仅按其 persisted choices 执行。
 
@@ -143,7 +143,7 @@ type StopRequest struct { Ref TurnRef; Reason string }
 type StopResponse struct { Ref TurnRef; RunID run.RunID; Result *ResultReference }
 ```
 
-**TRN-API-5** DTO 均为值语义。Start 对既有 linkage 的新 RunID 或计划改写返回 conflict；Resume/Stop 按 Ref 解析唯一 unsettled linkage。`Disposition` 取 `ResumeWaitingForResponse`、`ResumeWaitingForRecovery` 或 `ResumeFinished`；前两者表示 Run 仍为 active，后者必须带 `Result`。`Waiting` 只列当前 snapshot 的 response requests，执行恢复等待不伪造 response request；terminal fact 与后续计划授权由 RunRecord 和 persisted linkage 提供。
+**TRN-API-5** DTO 均为值语义。Start 对既有 linkage 的新 RunID 或计划改写返回 conflict；Resume/Stop 按 Ref 解析唯一 unsettled linkage。`Disposition` 取 `ResumeWaitingForResponse`、`ResumeWaitingForRecovery` 或 `ResumeFinished`；前两者表示 Run 仍为 active，后者必须带 `Result`。`Waiting` 只列当前 snapshot 的 `WaitingCalls`；Loop/driver 不返回这些 request。执行恢复等待不伪造 response request；terminal fact 与后续计划授权由 RunRecord 和 persisted linkage 提供。
 
 ## 4. Start admission
 
@@ -157,7 +157,7 @@ type StopResponse struct { Ref TurnRef; RunID run.RunID; Result *ResultReference
 4. InitialInputs 为 Run ingress payload，UserMessage 按其 chatlog wire 规则持久化；
 5. `UserMessage.Role=RoleUser`、`TurnID=Ref.TurnID`，并经 Message registry 重算 digest；
 6. UserMessage.InputIDs 精确等于 ordered InputIDs，ItemIDs 为空；
-7. input 已 submitted、未终结、可 delivered；message 的其余 role、part、binding、canonical 约束由 chatlog/Extension admission 执行。
+7. input 已 submitted、未终结、可 delivered；message 的其余 role、part、binding、canonical 约束由 chatlog/Module admission 执行。
 
 **TRN-STR-3** v1 Start 写入一个原子 semantic Session commit，顺序严格为：
 
@@ -201,9 +201,9 @@ run_requested{RunRequestedPayload}
 driver.Drive(ctx, DriveRequest{Ref: ref, RunID: linkage.RunID})
 ```
 
-无论 driver 返回完成、等待、error，Coordinator 均再次 Record、调用 `MaterializeAll(record)` 补齐完整新前缀，并据 record snapshot/terminal fact 返回 `ResumeWaitingForResponse`、`ResumeWaitingForRecovery` 或 `ResumeFinished`。前两者不返回 terminal Result；等待用户响应时携带 snapshot 中的 response requests，同时存在 execution recovery 时保留这些 requests 并由 `ExecutionRecovery` 标记；只有没有 response request 时才返回空 `Waiting`，表示由 recovery authority 负责后续唤醒。
+无论 driver 返回完成、没有可执行 effect、error，Coordinator 均再次 Record、调用 `MaterializeAll(record)` 补齐完整新前缀，并据 record snapshot/terminal fact 返回 `ResumeWaitingForResponse`、`ResumeWaitingForRecovery` 或 `ResumeFinished`。前两者不返回 terminal Result。snapshot 含 Waiting call 时 `Waiting` 列为 `WaitingCalls`；`ExecutionRecovery` 仅在 snapshot 仍有 Executing call 时为真。Loop 返回 `LoopWaiting` 且 `ExecutionRecovery` 为 true 时 Disposition 为 `ResumeWaitingForRecovery`，即使 snapshot 同时含 Waiting call。仅有 Waiting、无 Executing 时 Disposition 为 `ResumeWaitingForResponse`。空 `Waiting` 且需要 recovery 时由 recovery authority 负责后续唤醒。
 
-**TRN-RSM-6** driver 的 provisional stream、返回错误、网络响应丢失、context cancel 作为观察结果处理。driver 以 shared Runtime 的 Load/Commit 推进 MachineState；并发 Resume 依 Runtime command idempotency、revision、grant、record 一致性收敛。具体执行器可以使用 `agent/run/loop.Loop`；其 `LoopResult` 映射为本节的 `ResumeDisposition`，并由 Coordinator 始终以随后读取的 `RunRecord` 判断 waiting、execution recovery、terminal 与 settlement。
+**TRN-RSM-6** driver 的 provisional stream、返回错误、网络响应丢失、context cancel 作为观察结果处理。driver 以 shared Runtime 的 Load/Commit 推进 MachineState；并发 Resume 依 Runtime command idempotency、revision、grant、record 一致性收敛。具体执行器可以使用 `agent/run/loop.Loop`。Loop 只解释可执行 effect（prepare、start model、start tools）以及 execution recovery；`Idle` 映射为 `LoopWaiting` 且不携带 response request。Coordinator 始终以随后读取的 `RunRecord` 判断 Waiting call、execution recovery、terminal 与 settlement。Application 对 Runtime 提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 后再 Resume。
 
 **TRN-STP-1** Stop 先解析 linkage、Load。terminal Run 进入 record/materialize/settlement；active Run 以稳定 domain-separated CancelRun CommandID 构造 `CancelRun{Reason:ReasonCancelled}`，并经 shared Runtime Commit。
 
@@ -255,7 +255,7 @@ Digest("twilight.turn/source-fact/v1",
 
 同一 event 的 source ID 随 retry、Session head、mapper process 保持稳定。`FactMap.SourceFacts` 按 target transition event 顺序，精确列出实际产生本 batch `Events` 的 AgentEvents；每个输出 event 可追溯到其中 source fact。`Events` 为空时 `SourceFacts` 为空。后续 revision 仅处理其 target transition 的输出与 source fact。
 
-**TRN-MAT-3** materialization CommitID 使用 `twilight.turn/materialize/v1` domain，覆盖 SessionID、TurnID、RunID、MapperVersion、TargetRevision、TargetTransitionDigest、ordered target-source SourceFactIDs。输出 EventID 使用 `twilight.turn/materialized-event/v1` domain，覆盖 CommitID、ordinal、event type、schema version、canonical payload digest；CAS rebase 后保持字节稳定。
+**TRN-MAT-3** materialization CommitID 使用 `twilight.turn/materialize/v1` domain，覆盖 SessionID、TurnID、RunID、MapperVersion、TargetRevision、TargetTransitionDigest、ordered target-source SourceFactIDs。输出 EventID 使用 `twilight.turn/materialized-event/v1` domain，覆盖 CommitID、ordinal、event type、canonical payload digest；CAS rebase 后保持字节稳定。
 
 **TRN-MAT-4** mapper 为 pure deterministic total-prefix function：相同 FactMapRequest 产生同一 ordered FactMap，输入为请求中的持久化 facts。IO、clock、random、Application defaults、前次调用状态不参与 Map。MapperVersion 是协议输入；升级使用显式新 version，既有事实保持原 version。
 

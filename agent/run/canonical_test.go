@@ -124,16 +124,6 @@ func TestDigestCommandIdentity(t *testing.T) {
 	}
 }
 
-func TestDigestFactTypeChecked(t *testing.T) {
-	f := ToolStepClosed{StepID: "s2"}
-	if _, err := DigestFact(SchemaVersion1, "tool_step_closed", f); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := DigestFact(SchemaVersion1, "run_ended", f); err == nil {
-		t.Fatal("expected type/variant mismatch error")
-	}
-}
-
 func TestDeriveStability(t *testing.T) {
 	// Fixed inputs must produce fixed outputs across processes; freeze a few.
 	id1 := DeriveModelRequestCommandID("run-1", 7)

@@ -11,7 +11,7 @@
 | Run Machine、Runtime、Loop | [agent-run.md](agent-run.md) |
 | Session ES kernel | [agent-session.md](agent-session.md) |
 | Artifact Core | [agent-artifact.md](agent-artifact.md) |
-| Extension framework | [agent-session-extension.md](agent-session-extension.md) |
+| Session Module Framework | [agent-session-extension.md](agent-session-extension.md) |
 | Chatlog ontology/projection | [agent-session-chatlog.md](agent-session-chatlog.md) |
 | Turn→Run coordination/materialization | [agent-turn.md](agent-turn.md) |
 
@@ -25,7 +25,7 @@
 - queue、Session history 和 Run progress 容易形成多份长期事实；
 - package 边界无法表达不同变化周期。
 
-本次重构把 Agent Core 收敛为相互独立的 Run、Session、Artifact、Extension、Chatlog 和 Turn 协议，并保留 `sdk` 作为单次 provider transport boundary。
+本次重构把 Agent Core 收敛为相互独立的 Run、Session、Artifact、Session Module、Chatlog 和 Turn 协议，并保留 `sdk` 作为单次 provider transport boundary。
 
 ## 2. 已接受的架构决策
 
@@ -48,7 +48,7 @@ agent/jsonstable          immutable canonical JSON
 agent/run                 Run Machine、persisted protocol、Runtime、MemoryRuntime
 agent/run/loop            in-process model/tool interpreter 与 observation ports
 agent/session             Event-first Session kernel
-agent/session/extension   static modules、codec、semantic append、projection
+agent/session/extension   Session Module Framework：static modules、codec、semantic append、projection
 agent/session/chatlog     first-party Message ontology
 agent/artifact            Ref、Binding、RetentionClaim
 agent/turn                Turn→Run coordination 与 Run→Session materialization
@@ -62,7 +62,7 @@ agent/turn                Turn→Run coordination 与 Run→Session materializat
 Application -> agent/turn + agent/run/loop + adapters
 agent/run/loop -> agent/run + sdk
 agent/run      -> agent/es + agent/jsonstable + sdk
-agent/turn     -> agent/run + agent/session + agent/session/chatlog + extensions
+agent/turn     -> agent/run + agent/session + agent/session/chatlog + session modules
 ```
 
 根 `agent/run` 不提供 Loop alias、wrapper 或 façade。
@@ -88,8 +88,8 @@ agent/turn     -> agent/run + agent/session + agent/session/chatlog + extensions
 | RunID-addressed `Runtime.Create/Load/Commit/Record` | 完成 |
 | multi-Run `MemoryRuntime` 与 Runtime conformance | 完成 |
 | `agent/run/loop` package extraction | 完成 |
-| Session/Artifact/Extension/Turn protocols | 规范草案完成，实施待完成 |
-| Chatlog protocol | 草案，wire/schema 尚未冻结 |
+| Session/Artifact/Session Module/Turn protocols | 规范草案完成，实施待完成 |
+| Chatlog protocol | 草案，payload fields 与 golden fixtures 尚未冻结 |
 | PostgreSQL durable Run adapter（旧接口） | 历史 prototype，迁移未完成 |
 
 当前正式调用形态为 Application 组合 shared `run.Runtime` 与 `loop.Loop`。Loop 不保存 authority state；Runtime 不读取 queue 或 planner context。
@@ -99,7 +99,7 @@ agent/turn     -> agent/run + agent/session + agent/session/chatlog + extensions
 ### 4.1 Core reference implementations
 
 - 冻结 Session、Artifact 与 Chatlog v1 wire profiles、domain separators、wire-size validation 和 golden fixtures；
-- 实现 Session、Artifact、Extension、Chatlog 的 Memory implementations 与 conformance；
+- 实现 Session、Artifact、Session Module、Chatlog 的 Memory implementations 与 conformance；
 - 实现 `turn.Coordinator`、first-party Turn module、`FactMapper`、`MaterializeAll` 和 settlement recovery；
 - 跑通 Input → Turn → Context → Run/Loop → Session Events → replay 的最小 vertical slice。
 
@@ -126,7 +126,7 @@ agent/turn     -> agent/run + agent/session + agent/session/chatlog + extensions
 
 - Memory 与 PostgreSQL adapters 通过相同 Runtime conformance；
 - Turn materialization 对 crash、重复 delivery 和 unknown response 可恢复；
-- Session/Artifact/Extension/Chatlog reference implementations 通过各自 conformance；
+- Session/Artifact/Session Module/Chatlog reference implementations 通过各自 conformance；
 - production request context 和 UI surface 由 Session projections 提供；
 - legacy history 不再承担 canonical write authority；
 - Run、Session 与 Artifact 的 durable integrity/recovery paths 有持续 CI 覆盖。

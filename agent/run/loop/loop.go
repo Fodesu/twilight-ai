@@ -70,8 +70,8 @@ func New(models ModelCatalog, tools ToolCatalog, planner RequestPlanner, policy 
 	if policy.ToolExecution != "" && policy.ToolExecution != ToolExecutionParallel && policy.ToolExecution != ToolExecutionSequential {
 		return nil, fmt.Errorf("agent: loop: unknown ToolExecution mode %q", policy.ToolExecution)
 	}
-	if policy.MaxParallel < 0 || policy.ModelStepLimit < 0 || policy.MalformedModelResultLimit < 0 {
-		return nil, errors.New("agent: loop: negative compatibility policy")
+	if policy.MaxParallel < 0 {
+		return nil, errors.New("agent: loop: negative MaxParallel")
 	}
 	if policy.ToolExecution == "" {
 		policy.ToolExecution = ToolExecutionParallel
@@ -265,10 +265,10 @@ func (l *Loop) resumeCachedStart(ctx context.Context, runtime run.Runtime, event
 	}
 }
 
-// Run drives the Run until it finishes, must wait, or the context is
-// cancelled (RUN-LOP-2). The caller context remains active for reads and
-// normal control commits. Accepted effect settlements use a detached control
-// context so worker cancellation cannot discard their outcome.
+// Run drives the Run until it finishes, has no executable effect, or the
+// context is cancelled (RUN-LOP-2). The caller context remains active for
+// reads and normal control commits. Accepted effect settlements use a
+// detached control context so worker cancellation cannot discard their outcome.
 func (l *Loop) Run(ctx context.Context, runtime run.Runtime, runID run.RunID, events EventSink) (LoopResult, error) {
 	if ctx == nil {
 		return LoopResult{}, errors.New("agent: loop: nil context")
@@ -341,12 +341,8 @@ func (l *Loop) Run(ctx context.Context, runtime run.Runtime, runID run.RunID, ev
 			if err := l.runToolCalls(ctx, runtime, events, &snapshot, eff); err != nil {
 				return LoopResult{}, err
 			}
-		case run.WaitForResponse:
-			reason := WaitingForResponse
-			if eff.ExecutionRecovery {
-				reason = ExecutionRecovery
-			}
-			return LoopResult{Disposition: LoopWaiting, Reason: reason, Waiting: eff.Requests, ExecutionRecovery: eff.ExecutionRecovery}, nil
+		case run.Idle:
+			return LoopResult{Disposition: LoopWaiting}, nil
 		case run.WaitForExecutionRecovery:
 			return LoopResult{Disposition: LoopWaiting, Reason: ExecutionRecovery, ExecutionRecovery: true}, nil
 		default:

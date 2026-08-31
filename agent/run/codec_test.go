@@ -60,7 +60,6 @@ func TestAgentEventJSONRoundTripRestoresVariants(t *testing.T) {
 		ToolCallCompleted{StepID: "ts", CallID: "c", Result: ToolExecutionResult{Output: cj(`{"ok":true}`)}},
 		ToolCallAnswered{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp", Payload: cj(`{"answer":1}`)},
 		ToolCallFailed{StepID: "ts", CallID: "c", Failure: ToolFailure{Class: FailureExecution}, Outcome: ToolOutcomeKnown},
-		ToolStepClosed{StepID: "ts"},
 		InputAccepted{Input: AgentInput{ID: "in", Payload: cj(`{"q":"hi"}`)}},
 		RunEnded{End: RunCompletedEnd{}},
 	}

@@ -92,21 +92,6 @@ func DigestFact(schemaVersion uint16, typ string, fact Fact) (Digest, error) {
 	return sha256Digest(body), nil
 }
 
-// EncodeRunSeed renders the canonical bytes of an admission seed so admission
-// records can reuse the protocol's identity rules.
-func EncodeRunSeed(seed RunSeed) ([]byte, error) {
-	return encodeEnvelopeBody(currentSchemaVersion, "run_seed", seed)
-}
-
-// DigestRunSeed computes the canonical digest of an admission seed.
-func DigestRunSeed(schemaVersion uint16, seed RunSeed) (Digest, error) {
-	body, err := encodeEnvelopeBody(schemaVersion, "run_seed", seed)
-	if err != nil {
-		return "", err
-	}
-	return sha256Digest(body), nil
-}
-
 type toolResponseDecisionDigestBody struct {
 	Kind     ResponseKind     `json:"kind"`
 	Decision ResponseDecision `json:"decision"`

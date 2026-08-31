@@ -258,11 +258,12 @@ Loop 在提交 start 前生成并保留 `Claim`、`CommandID` 与 command digest
 | Model Prepared | `StartModelCall` |
 | Model Executing | `WaitForExecutionRecovery` |
 | ToolStep 有 Pending calls | `StartToolCalls` |
-| ToolStep 无 Pending、含 Waiting 且无 Executing | `WaitForResponse` |
-| ToolStep 含 Waiting 且含 Executing | `WaitForResponse{ExecutionRecovery:true}` |
-| ToolStep 含 Executing 且无 Waiting | `WaitForExecutionRecovery` |
+| ToolStep 无 Pending、含 Executing | `WaitForExecutionRecovery` |
+| ToolStep 无 Pending、无 Executing、含 Waiting | `Idle` |
 
-**RUN-MCH-4** Effect 由调用方每次 Load 后重新派生。`PrepareModelRequest.InputIDs` 必须与当前 PendingInputs 等长、同顺序、逐项相同；prepare 接受后一次消费全部 pending input。ToolStep 的 Waiting call 允许同一 step 中仍可执行的 Pending call 继续运行。Waiting 与 Executing 同时存在时返回 `WaitForResponse{ExecutionRecovery:true}`，让宿主同时响应用户输入和执行恢复；仅存在 Executing 时返回 `WaitForExecutionRecovery`。恢复唤醒由 Runtime/application 的 recovery authority 提供。
+Waiting call 上的 `ResponseRequest` 由 `WaitingCalls(state)` 从 MachineState 读取，不进入 Effect。
+
+**RUN-MCH-4** Effect 由调用方每次 Load 后重新派生。`PrepareModelRequest.InputIDs` 必须与当前 PendingInputs 等长、同顺序、逐项相同；prepare 接受后一次消费全部 pending input。ToolStep 的 Waiting call 禁止 Start，同一 step 中的 Pending call 仍可执行。无 Pending 且仍有 Executing 时返回 `WaitForExecutionRecovery`。无 Pending、无 Executing、仍有 Waiting 时返回 `Idle`：Run 仍为 active，解释器没有可执行 effect。Application 从 snapshot 读取 `WaitingCalls` 并提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse`。执行恢复由 Runtime/application 的 recovery authority 提供。
 
 ## 5. Runtime 与 Commit
 
@@ -370,8 +371,7 @@ type ExecutionPolicy struct {
 }
 type LoopResult struct {
     Disposition LoopDisposition // LoopWaiting | LoopFinished
-    Reason WaitReason           // waiting_for_response | execution_recovery
-    Waiting []run.ResponseRequest
+    Reason WaitReason           // execution_recovery；Idle 时为空
     ExecutionRecovery bool
     Result *run.RunResult
 }
@@ -381,7 +381,7 @@ func (*Loop) Run(context.Context, run.Runtime, run.RunID, EventSink) (LoopResult
 
 **RUN-LOP-1** `ExecutionPolicy` 是 Loop 的本地执行策略，包含 `ToolExecution`、`MaxParallel` 和可选的 malformed-result handler；未指定 `ToolExecution` 时使用 `parallel`，正数 `MaxParallel` 限制当前 ToolStep 的本地 worker 数量，零值允许当前批次的所有可执行 call 并行。nil handler 时结构错误的模型结果选择 `ModelRejectFailRun`；重试由 handler 明确返回 `ModelRejectRetry`。`streaming` 表示是否请求可用的流式模型端口；两种模式都产生同一完整 `sdk.ModelResult`。
 
-`LoopResult` 的语义固定为：`LoopWaiting` 时 `Result` 为 nil；`Waiting` 列出当前 snapshot 中的 response requests，`ExecutionRecovery` 表示还存在需要 recovery authority 处理的 executing call。`Reason` 提供兼容读取；两者同时存在时使用 `ExecutionRecovery` 唤醒优先级并保留 `Waiting`。`LoopFinished` 时 `Result` 非 nil，并等于 terminal RunRecord 派生的 `RunResult`。
+`LoopResult` 的语义固定为：`LoopWaiting` 时 `Result` 为 nil，表示没有可执行 effect、Run 仍为 active。`ExecutionRecovery` 为 true 时至少有一个 call 仍为 Executing，由 recovery authority 唤醒。`Reason` 在该情况下为 `execution_recovery`，Idle 时为空。Waiting call 不进入 `LoopResult`；Application 通过 `Runtime.Load` / `Record` 与 `WaitingCalls` 读取。`LoopFinished` 时 `Result` 非 nil，并等于 terminal RunRecord 派生的 `RunResult`。
 
 `RequestPlanner` 从 `PlanningHint` 接收 Run 边界事实；它使用自己注入的 history、session context、memory、attachments 与 product policy 组装 `sdk.Request`。Runtime 验证并冻结 planner 返回的 request，Planner 管理 application context。
 
@@ -403,11 +403,11 @@ Loop.Run(ctx, runtime, runID, sink):
 
 **RUN-LOP-3** `StartModelCall` 先 Commit start barrier；首次 `CommitAccepted` 或使用同一 command ID、同一 `ExecutionClaim` 精确重放得到原 grant 的 Loop，才拥有该 execution。Loop 必须保留 start command 的 ID、digest 和 claim，直到完成 settlement；缺少 grant 的 replay 进入 reload 流程。调用只使用 frozen ModelRequest 的 detached SDK materialization。streaming 与 non-streaming 必须产生同一种完整 `sdk.ModelResult`；delta 只发 EventSink。provider failure 提交 `SubmitModelFailure`；ctx cancellation 提交 `RecoverModelExecution`；结构、binding 或 freeze 失败提交 `RejectModelResult`，并由调用方显式选择 retry 或 fail-run。成功结果只提交一次 `SubmitModelResult`。
 
-**RUN-LOP-4** Tool execution 先按 frozen binding resolve tool，并验证 Ref、definition digest、response policy 和 arguments。lookup/definition/argument failure 在 Pending 状态提交 `SubmitToolFailure(Known)`，不得跨越 start barrier。通过验证后逐 call 提交 `StartToolCall`；只有 Accepted owner 可执行。`parallel` 模式并发执行同一 ToolStep 中所有可执行的 Pending call，`sequential` 模式按 call 顺序逐个执行；每个结果以自己的 grant 提交。tool panic 或 effect 状态无法确定的错误转为 Unknown；一个 Unknown 取消同批 sibling workers，并由 Machine 在同一 terminal transition 中记录目标及仍 Executing sibling 的 `ToolCallFailed(Unknown)`，最后追加 `RunEnded(failed/effect_unknown)`。`CancelRun` 也在 `RunEnded(stopped/cancelled)` 前记录所有仍 Executing call 的 Unknown。已接受 start 的 worker 必须在收到外层取消后返回并尝试 settlement；settlement 使用独立 control context。
+**RUN-LOP-4** Tool execution 先按 frozen binding resolve tool，并验证 Ref、definition digest、response policy 和 arguments。lookup/definition/argument failure 在 Pending 状态提交 `SubmitToolFailure(Known)`，不得跨越 start barrier。通过验证后逐 call 提交 `StartToolCall`；只有 Accepted owner 可执行。`parallel` 模式并发执行同一 ToolStep 中所有可执行的 Pending call，`sequential` 模式按 call 顺序逐个执行；每个结果以自己的 grant 提交。同一 ToolStep 中 DirectExecution 的 Pending call 在本次 `Run` 内 Start 并结算。`Next` 返回 `Idle` 时 Loop 返回 `LoopWaiting`，不解释 Waiting call，也不携带 `ResponseRequest`。Application 从 snapshot 读取 `WaitingCalls`，提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 之后再次 `Run`。`Next` 返回 `WaitForExecutionRecovery` 时 Loop 返回 `LoopWaiting` 且 `ExecutionRecovery` 为 true。tool panic 或 effect 状态无法确定的错误转为 Unknown；一个 Unknown 取消同批 sibling workers，并由 Machine 在同一 terminal transition 中记录目标及仍 Executing sibling 的 `ToolCallFailed(Unknown)`，最后追加 `RunEnded(failed/effect_unknown)`。`CancelRun` 也在 `RunEnded(stopped/cancelled)` 前记录所有仍 Executing call 的 Unknown。已接受 start 的 worker 必须在收到外层取消后返回并尝试 settlement；settlement 使用独立 control context。
 
 **RUN-LOP-5** model 与 tool worker 都接收外层 ctx；Loop 对已接受 effect 使用独立 control context 完成 known/unknown outcome settlement。Application 的业务停止顺序为先 Commit `CancelRun`，再取消 Loop ctx。非 sentinel Commit error 以同 CommandID/digest 重放一次；仍未知时返回错误，由后续 Load/Record 查询 authority。stale/terminal/conflict 触发 reload/drop，旧 external effect 保持单次执行尝试。工具实现配合 context 返回；永久阻塞由 application/durable recovery 处理。
 
-Waiting response 不由 Loop 自行制造业务输入。Application 以 stable ResponseID、derived CommandID 与 payload/decision digest 提交 `ApproveToolCall`、`RejectToolCall` 或 `SubmitToolResponse`；随后再次运行 Loop。
+Waiting call 的批准与外部结果由 Application 提交。Loop 不生成、不返回、不解释 `ResponseRequest`。Application 以 snapshot 中的 stable ResponseID、derived CommandID 与 payload/decision digest 提交 `ApproveToolCall`、`RejectToolCall` 或 `SubmitToolResponse`；随后再次运行 Loop。
 
 ## 8. EventSink 与边界
 

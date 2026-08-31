@@ -58,8 +58,6 @@ func Decide(s MachineState, c AgentCommand) ([]Fact, error) {
 		return decideSubmitToolResponse(&s, &cmd)
 	case CancelRun:
 		return decideCancelRun(&s, cmd)
-	case StopRun:
-		return decideStopRun(&s, cmd)
 	case AcceptInput:
 		return decideAcceptInput(&s, cmd)
 	default:
@@ -532,11 +530,10 @@ func decideSubmitToolResponse(s *MachineState, cmd *SubmitToolResponse) ([]Fact,
 	return facts, nil
 }
 
-// --- rules 12-14: cancel, compatibility stop and input ---
+// --- rules 12-13: cancel and input ---
 
 func decideCancelRun(s *MachineState, cmd CancelRun) ([]Fact, error) {
-	// CancelRun always records RunStopped(cancelled). Host/system stops use
-	// StopRun so cancellation cannot forge system reasons.
+	// CancelRun always records RunStopped(cancelled).
 	if cmd.Reason != "" && cmd.Reason != ReasonCancelled {
 		return nil, rejectionf("cancel: reason must be empty or %q", ReasonCancelled)
 	}
@@ -565,19 +562,6 @@ func unknownExecutingCalls(s *MachineState, stepID StepID, target CallID, failur
 		facts = append(facts, ToolCallFailed{StepID: ts.RefValue.ID, CallID: call.CallID, Failure: f, Outcome: ToolOutcomeUnknown})
 	}
 	return facts
-}
-
-func decideStopRun(s *MachineState, cmd StopRun) ([]Fact, error) {
-	if cmd.Reason != ReasonStepLimit {
-		return nil, rejectionf("stop: compatibility reason must be %q", ReasonStepLimit)
-	}
-	// StopRun is the legacy host-policy command. It is accepted at a safe
-	// boundary after the current Step has settled; an executing effect keeps its
-	// own settlement/recovery path and cannot be silently discarded here.
-	if s.Current != nil {
-		return nil, rejectionf("stop: run has a current step")
-	}
-	return []Fact{RunEnded{End: RunStoppedEnd{Reason: cmd.Reason}}}, nil
 }
 
 func decideAcceptInput(s *MachineState, cmd AcceptInput) ([]Fact, error) {
