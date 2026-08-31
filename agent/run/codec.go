@@ -337,8 +337,6 @@ func decodeCommandVariant(typ string, raw json.RawMessage) (AgentCommand, error)
 		return decodeCommandAs[SubmitToolResponse](raw)
 	case "cancel_run":
 		return decodeCommandAs[CancelRun](raw)
-	case "stop_run":
-		return decodeCommandAs[StopRun](raw)
 	case "accept_input":
 		return decodeCommandAs[AcceptInput](raw)
 	default:
@@ -373,8 +371,6 @@ func decodeFactVariant(typ string, raw json.RawMessage) (Fact, error) {
 		return decodeFactAs[ToolCallAnswered](raw)
 	case "tool_call_failed":
 		return decodeFactAs[ToolCallFailed](raw)
-	case "tool_step_closed":
-		return decodeFactAs[ToolStepClosed](raw)
 	case "input_accepted":
 		return decodeFactAs[InputAccepted](raw)
 	case "run_ended":

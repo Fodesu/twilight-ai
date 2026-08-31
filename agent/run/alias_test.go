@@ -45,7 +45,7 @@ func TestMemoryRuntimeClonesInitialState(t *testing.T) {
 }
 
 func TestCommitSnapshotsCommandPayloadBeforeFoldingState(t *testing.T) {
-	rt := newTestRuntime(t, RunConfig{Model: "m-1"})
+	rt := newTestRuntime(t)
 	raw := []byte(`{"v":"one"}`)
 	payload, err := ParseCanonicalJSON(raw)
 	if err != nil {
@@ -95,7 +95,7 @@ func TestCommitSnapshotsCommandPayloadBeforeFoldingState(t *testing.T) {
 }
 
 func TestCommitCanonicalizesAgentOwnedJSONBeforePersisting(t *testing.T) {
-	rt := newTestRuntime(t, RunConfig{Model: "m-1"})
+	rt := newTestRuntime(t)
 	snap, _ := rt.Load(context.Background(), "run-1")
 	req := ModelRequest{
 		Model: "m-1",
@@ -144,7 +144,7 @@ func TestCommitCanonicalizesAgentOwnedJSONBeforePersisting(t *testing.T) {
 }
 
 func TestLoadSnapshotDoesNotAliasFrozenRequest(t *testing.T) {
-	rt := newTestRuntime(t, RunConfig{Model: "m-1"})
+	rt := newTestRuntime(t)
 	meta := map[string]any{"provider": map[string]any{"sig": "s1"}}
 	req := sdk.Request{
 		Model: "m-1",

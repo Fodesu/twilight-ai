@@ -27,10 +27,12 @@ Header 与 Commit 是 Events 的 canonical persistent representation，提供原
 
 ```text
 Session kernel  envelope、顺序、CAS、fork、snapshot、canonical import、integrity
-Extension       event ontology、typed codec、payload validation、projection
+Session modules  event ontology、typed codec、payload validation、projection
 ```
 
 Payload 对 Session kernel 是 opaque canonical JSON。缓存和 snapshot 是可重建派生数据。
+
+`ProtocolVersion` 是 Session Event Sourcing 的唯一持久化版本，统一约束 header、event payload、commit、fork、digest profile 与 codec。ProjectionVersion 只描述派生快照的 state codec。
 
 **SES-SCP-1** kernel 不依赖领域 payload，也不对其执行 schema validation 或解释。resolved replay 的唯一顺序是 root-to-target ancestry segment order，再在每个 segment 内按 `(revision, index)`；`EventPosition` 只标识 event/cursor，不定义跨 segment 的排序；时钟只作 metadata。
 
@@ -62,7 +64,6 @@ type SessionEvent struct {
     EventID EventID
     Index uint16
     Type EventType
-    SchemaVersion uint16
     RecordedAtUnixMilli int64
     SourceEvents []EventID
     Payload jsonstable.Value
@@ -71,7 +72,6 @@ type SessionEvent struct {
 type UncommittedEvent struct {
     EventID EventID
     Type EventType
-    SchemaVersion uint16
     RecordedAtUnixMilli int64
     SourceEvents []EventID
     Payload jsonstable.Value
@@ -92,7 +92,7 @@ type Head struct { Revision es.Revision; Digest es.Digest }
 
 **SES-WIR-1** identity 非空且稳定；EventID 在 resolved ancestry 内唯一。header 不可变，revision 从 1 连续递增，commit 至少有一个 event，event Index 从 0 连续递增。revision 1 的 `PreviousDigest=HeaderDigest`，其后为前一 CommitDigest。
 
-**SES-WIR-2** `ProtocolProfile` 冻结 envelope field、null/omission、精确 integer encoding、unknown-field policy、array order 与下列 digest preimage；所有 digest 依 `agent/es` 的 versioned domain separator。
+**SES-WIR-2** `ProtocolProfile` 冻结整个 Event Sourcing wire：envelope、event payload、commit、fork、null/omission、精确 integer encoding、unknown-field policy、array order 与下列 digest preimage；所有 digest 依 `agent/es` 的 versioned domain separator。
 
 ```go
 type ProtocolProfile interface {
@@ -115,6 +115,28 @@ type ProtocolProfile interface {
     FingerprintAppend(AppendRequest) (es.Digest, error)
 }
 ```
+
+第一版运行实例绑定一个 `ProtocolProfile`。该 profile 的 `Version()` 是实例接受的
+`ProtocolVersion`；`Create`、`Commit`、`Replay`、`Fork`、snapshot 与 canonical import
+都使用同一 profile。读取 Session Header、Commit、snapshot 或 ancestry archive 时，
+实例先校验其中的 `ProtocolVersion` 与绑定 profile 相等，再执行对应的 decode、digest
+和 replay。版本不匹配返回 `ErrUnsupportedProfile`。
+
+第一版支持当前协议版本。历史 Session 由外部 migration tool 使用旧 profile 读取并
+写出完整的当前版本 stream；原始 stream 可以作为 archive 保留。迁移产物再通过
+`ImportCanonical` 导入当前实例。Session kernel 的版本选择来自运行实例配置与已验证
+Header 的匹配关系。
+
+**SES-WIR-3** 同一个 Session 的 `SessionHeader.ProtocolVersion`、所有
+`SessionCommit.ProtocolVersion`、`Snapshot.ProtocolVersion`、
+`ImmutableAncestryArchive.ProtocolVersion` 与所选 `ProtocolProfile.Version()` 必须相等。
+Store 从已验证 Header 派生后续操作使用的版本，调用方提交的版本字段只能通过一致性校验。
+
+**SES-WIR-4** `ProtocolVersion` 在旧版本 reader 读取新 writer 产生的 log 后无法保持正确
+语义时递增。正确语义包括 canonical validation、commit/fork/replay 顺序、历史与 context
+重建、recovery 判断以及 digest chain 验证。旧 reader 可以安全保留并忽略的新 EventType
+或真正 optional 的 payload 字段保持当前版本；影响上述语义的 event、字段、envelope 或
+commit 规则变化进入新版本，并由外部 migration tool 生成当前版本 stream。
 
 Header、event、commit 分别覆盖自身以外的全部持久字段。event digest 额外覆盖 origin SessionID、revision 和 index。每个 `ValidateCanonical*` 必须执行 decode → encode 并要求 canonical-equivalent wire，同时验证对应 digest；它是 adapter/import 的唯一 canonical round-trip validation 入口。`SourceEvents` 是 bytewise sorted-unique set，且只可引用同一 resolved Session stream 内已存在的 EventID；跨 stream provenance 必须编码在 payload 的 owner-defined `SourceRef` 中。opaque Payload 必须已经 canonical，完整 value 进入 event digest 和 append fingerprint。空 stream head 是 `{0, HeaderDigest}`。
 
@@ -154,7 +176,7 @@ type ForkResult struct { Header SessionHeader; Created bool }
 
 type CanonicalImportRequest struct { Header SessionHeader; Commits []SessionCommit; AncestryArchive *ImmutableAncestryArchive }
 type CanonicalImportResult struct { Header SessionHeader; Imported uint64; Head Head; AlreadyPresent bool }
-type ImmutableAncestryArchive struct { ProfileVersion uint16; Headers []SessionHeader; Commits []SessionCommit; ArchiveDigest es.Digest }
+type ImmutableAncestryArchive struct { ProtocolVersion uint16; Headers []SessionHeader; Commits []SessionCommit; ArchiveDigest es.Digest }
 
 type SnapshotRequest struct { SessionID SessionID; ProjectionKey ProjectionKey; ProjectionVersion uint16; AtOrBefore ResolvedHead }
 type SnapshotResult struct { Snapshot *Snapshot; Found bool; Covers bool }
@@ -186,7 +208,7 @@ type Error struct { Code ErrorCode; Operation string; SessionID SessionID; Commi
 func (Error) Error() string
 ```
 
-**SES-API-1** Store.Commit 是唯一 append Store protocol port。它必须原子持久化完整 commit 与 head；普通 producer 的 capability exposure 是 Extension 的责任。`ImportCanonical` 只给 trusted adapter、recovery/import coordinator 或 test。
+**SES-API-1** Store.Commit 是唯一 append Store protocol port。它必须原子持久化完整 commit 与 head；普通 producer 的 capability exposure 由 Session Module Framework 提供。`ImportCanonical` 只给 trusted adapter、recovery/import coordinator 或 test。
 
 ## 4. append 与 idempotency
 
@@ -249,7 +271,13 @@ type Snapshot struct {
 
 ## 8. canonical import
 
-**SES-IMP-1** canonical import 仅处理 Session records，不解释 payload。它必须经 ProtocolProfile 的 `ValidateCanonical*` 入口验证 profile、header、完整 chain、event uniqueness 和 supplied positions/digests；只接受完整 stream 或已有可验证 predecessor 的 contiguous tail。`ImmutableAncestryArchive` 的 canonical preimage 是 profile version、按 root-to-target segment order 的 Headers、每个 segment 按 local `(revision,index)` 的完整 Commits，排除 `ArchiveDigest`；ArchiveDigest 覆盖该 preimage。archive codec 同样必须 decode→encode canonical-equivalent 并验证 digest。
+**SES-IMP-1** canonical import 仅处理 Session records，不解释 payload。它必须经当前
+`ProtocolProfile` 的 `ValidateCanonical*` 入口验证 profile、header、完整 chain、event
+uniqueness 和 supplied positions/digests；只接受完整 stream 或已有可验证 predecessor
+的 contiguous tail。`ImmutableAncestryArchive` 的 canonical preimage 是
+`ProtocolVersion`、按 root-to-target segment order 的 Headers、每个 segment 按 local
+`(revision,index)` 的完整 Commits，排除 `ArchiveDigest`；ArchiveDigest 覆盖该 preimage。
+archive codec 同样必须 decode→encode canonical-equivalent 并验证 digest。
 
 **SES-IMP-2** 同 `(SessionID,CommitID)` 仅在 canonical commit 逐字段相同才幂等；不同 header、revision、group 或 digest 为 conflict。fork child import 必须有本地 existing verified parent boundary，或随 request 提供经过验证 immutable ancestry archive；不得只信任 ParentFork 声明。
 
@@ -257,11 +285,14 @@ Application/import coordinator 负责跨 Session package、业务事务与恢复
 
 ## 9. boundaries 与 conformance
 
-Extension 可对 opaque payload 作 typed encode/decode；它不得改变 Store 的 CAS、CommitID、digest 或 replay 语义。unknown event 必须 raw-preserve 和 raw-replay。`agent/turn` 消费/追加 Events 并协调 Run；Session kernel 仍只处理纯 envelope 与 stream 机制。Run、queue、provider 与 Application policy 均在 kernel 外。
+Session modules 可对 opaque payload 作 typed encode/decode；Store 继续负责 CAS、CommitID、digest
+与 replay 语义。unknown event 保留原始 payload 并支持原样 replay。`agent/turn` 消费/追加
+Events 并协调 Run；Session kernel 处理 envelope 与 stream 机制。Run、queue、provider 与
+Application policy 使用各自的边界。
 
 Conformance 必须验证：
 
-- **SES-WIR-1、SES-WIR-2**：wire/profile freeze、所有 Encode/Decode 与 `ValidateCanonical*` round-trip、digest preimage、同-stream SourceEvents、EventID uniqueness、complete commit；
+- **SES-WIR-1、SES-WIR-2、SES-WIR-3、SES-WIR-4**：wire/profile freeze、版本一致性、兼容性判定、所有 Encode/Decode 与 `ValidateCanonical*` round-trip、digest preimage、同-stream SourceEvents、EventID uniqueness、complete commit；
 - **SES-API-1、SES-APP-1、SES-APP-2**：atomic CAS、concurrent writer、CommitID exact idempotency 和 failure classification；
 - **SES-REP-1、SES-REP-2、SES-REP-3**：local/resolved replay 的 segment-first 顺序、完整 EventPosition After 语义、cursor/token binding、tamper/gap failure；
 - **SES-FRK-1、SES-FRK-2**：ForkID idempotency、parent boundary 和 RetainClosure；

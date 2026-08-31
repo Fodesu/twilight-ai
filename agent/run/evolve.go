@@ -170,23 +170,6 @@ func evolveV1(s MachineState, f Fact) (MachineState, error) {
 			c.Waiting = nil
 		})
 
-	case ToolStepClosed:
-		ts, ok := s.Current.(ToolStep)
-		if !ok || ts.RefValue.ID != fact.StepID {
-			// v1 logs written before implicit closure may contain this
-			// redundant fact after the final call update. It is a no-op when
-			// the step was already closed by the mechanical fold.
-			if s.Current == nil && s.LastClosedStep == fact.StepID {
-				return s, nil
-			}
-			return s, fmt.Errorf("agent: evolve: tool step %q is not current", fact.StepID)
-		}
-		closed := cloneStep(ts).(ToolStep)
-		s.LastToolStep = &closed
-		s.Current = nil
-		s.LastClosedStep = fact.StepID
-		return s, nil
-
 	case InputAccepted:
 		for _, in := range s.PendingInputs {
 			if in.ID == fact.Input.ID {
@@ -372,19 +355,6 @@ func validateFactTransition(s MachineState, f Fact) error {
 			}
 		default:
 			return fmt.Errorf("agent: evolve: unknown failure outcome %d", fact.Outcome)
-		}
-	case ToolStepClosed:
-		ts, ok := s.Current.(ToolStep)
-		if !ok || ts.RefValue.ID != fact.StepID || len(ts.Calls) == 0 {
-			if s.Status == RunActive && s.Current == nil && s.LastClosedStep == fact.StepID {
-				return nil
-			}
-			return fmt.Errorf("agent: evolve: tool step %q is not closable", fact.StepID)
-		}
-		for _, call := range ts.Calls {
-			if call.Status != ToolCompleted && call.Status != ToolFailed {
-				return fmt.Errorf("agent: evolve: tool step %q still has non-terminal calls", fact.StepID)
-			}
 		}
 	case InputAccepted:
 		if s.Status.Terminal() || s.Current != nil {

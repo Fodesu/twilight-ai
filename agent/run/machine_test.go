@@ -12,13 +12,9 @@ import (
 
 const testModel ModelRef = "m-1"
 
-func testConfig() RunConfig {
-	return RunConfig{Model: testModel}
-}
-
 func cj(raw string) CanonicalJSON { return MustParseCanonicalJSON(raw) }
 
-func newRun(t *testing.T, _ RunConfig) MachineState {
+func newRun(t *testing.T) MachineState {
 	t.Helper()
 	s, err := InitializeRun("run-1")
 	if err != nil {
@@ -177,7 +173,7 @@ func advanceToExecuting(t *testing.T, s MachineState, req sdk.Request, specs []T
 
 // --- tests ---
 
-func TestInitializeRunIsMinimalAndLegacyConfigIsNotState(t *testing.T) {
+func TestInitializeRunIsMinimal(t *testing.T) {
 	s, err := InitializeRun("r")
 	if err != nil {
 		t.Fatal(err)
@@ -185,20 +181,10 @@ func TestInitializeRunIsMinimalAndLegacyConfigIsNotState(t *testing.T) {
 	if s.RunID != "r" || s.Status != RunActive || len(s.PendingInputs) != 0 {
 		t.Fatalf("initial state = %+v", s)
 	}
-	legacy, err := Initialize("r", RunConfig{Model: "m"}, NextRun(AgentInput{ID: "i"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if legacy.RunID != "r" || len(legacy.PendingInputs) != 1 {
-		t.Fatalf("legacy initial state = %+v", legacy)
-	}
-	if _, err := Initialize("r", RunConfig{Model: "m", ModelStepLimit: -1}, NextRun(AgentInput{ID: "i"})); err == nil {
-		t.Fatal("negative step limit accepted")
-	}
 }
 
 func TestNextOnFreshRunNeedsModelRequest(t *testing.T) {
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	eff, err := Next(s)
 	if err != nil {
 		t.Fatal(err)
@@ -213,7 +199,7 @@ func TestNextOnFreshRunNeedsModelRequest(t *testing.T) {
 }
 
 func TestPrepareConsumesInputsAndCounts(t *testing.T) {
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	prep, _ := buildPrepare(t, s, testRequest(), nil)
 	facts := mustDecide(t, s, prep)
 	if len(facts) != 1 {
@@ -232,7 +218,7 @@ func TestPrepareConsumesInputsAndCounts(t *testing.T) {
 }
 
 func TestPrepareRejectsIncompleteInputIDs(t *testing.T) {
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	prep, _ := buildPrepare(t, s, testRequest(), nil)
 	prep.InputIDs = nil
 	if _, err := Decide(s, prep); err == nil {
@@ -241,7 +227,7 @@ func TestPrepareRejectsIncompleteInputIDs(t *testing.T) {
 }
 
 func TestModelCompleteNoToolsEndsRun(t *testing.T) {
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(), nil)
 	result, err := FreezeModelResult(sdk.ModelResult{Text: "done", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 7}})
 	if err != nil {
@@ -269,7 +255,7 @@ func TestModelCompleteNoToolsEndsRun(t *testing.T) {
 func TestModelCompleteWithToolsOpensToolStep(t *testing.T) {
 	def := testToolDef("t")
 	spec := makeSpec(t, def, DirectExecution)
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
 
 	b := makeBinding(t, "c1", spec, `{"x":1}`)
@@ -300,7 +286,7 @@ func TestModelCompleteWithToolsOpensToolStep(t *testing.T) {
 func TestApprovalCallOpensWaitingWithDerivedResponse(t *testing.T) {
 	def := testToolDef("t")
 	spec := makeSpec(t, def, ApprovalRequired)
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
 
 	b := makeBinding(t, "c1", spec, `{}`)
@@ -319,14 +305,17 @@ func TestApprovalCallOpensWaitingWithDerivedResponse(t *testing.T) {
 		t.Fatalf("status = %v, want Waiting", ts.Calls[0].Status)
 	}
 
-	// Next must surface WaitForResponse with the routable request.
+	// Next has no executable effect; Application reads the request from state.
 	eff, err := Next(s)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wait, ok := eff.(WaitForResponse)
-	if !ok || len(wait.Requests) != 1 || wait.Requests[0].ID != want {
-		t.Fatalf("effect = %#v", eff)
+	if _, ok := eff.(Idle); !ok {
+		t.Fatalf("effect = %#v, want Idle", eff)
+	}
+	reqs := WaitingCalls(s)
+	if len(reqs) != 1 || reqs[0].ID != want {
+		t.Fatalf("WaitingCalls = %#v", reqs)
 	}
 
 	if _, err := Decide(s, ApproveToolCall{StepID: opened.StepID, CallID: "c1", ResponseID: want, ResponseDigest: "sha256:bad"}); err == nil {
@@ -344,7 +333,7 @@ func TestApprovalCallOpensWaitingWithDerivedResponse(t *testing.T) {
 func TestRejectRecordsPermissionDenied(t *testing.T) {
 	def := testToolDef("t")
 	spec := makeSpec(t, def, ApprovalRequired)
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
 	b := makeBinding(t, "c1", spec, `{}`)
 	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
@@ -371,7 +360,7 @@ func TestRejectRecordsPermissionDenied(t *testing.T) {
 func TestExternalResponseRequiresPayloadDigest(t *testing.T) {
 	def := testToolDef("ask")
 	spec := makeSpec(t, def, ExternalResponse)
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
 	b := makeBinding(t, "c1", spec, `{}`)
 	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithNamedCalls("ask", `{}`, "c1"), Calls: []ToolCallBinding{b}})
@@ -392,7 +381,7 @@ func TestExternalResponseRequiresPayloadDigest(t *testing.T) {
 func TestUnknownFailureEndsRun(t *testing.T) {
 	def := testToolDef("t")
 	spec := makeSpec(t, def, DirectExecution)
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
 	b := makeBinding(t, "c1", spec, `{}`)
 	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
@@ -423,7 +412,7 @@ func TestParallelWaitingDoesNotBlockPending(t *testing.T) {
 	defA, defB := testToolDef("a"), testToolDef("b")
 	specA := makeSpec(t, defA, ApprovalRequired)
 	specB := makeSpec(t, defB, DirectExecution)
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(defA, defB), []ToolSpec{specA, specB})
 
 	bA := makeBinding(t, "cA", specA, `{}`)
@@ -460,6 +449,17 @@ func TestParallelWaitingDoesNotBlockPending(t *testing.T) {
 	}
 	s = fold(t, s, facts)
 
+	eff, err = Next(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := eff.(Idle); !ok {
+		t.Fatalf("effect after B completed = %#v, want Idle", eff)
+	}
+	if reqs := WaitingCalls(s); len(reqs) != 1 || reqs[0].CallID != "cA" {
+		t.Fatalf("WaitingCalls = %#v", WaitingCalls(s))
+	}
+
 	// Answer A via approval; approving moves to Pending, then completing it
 	// implicitly closes the step.
 	respID := opened.Calls[0].Response.ID
@@ -477,7 +477,7 @@ func TestParallelWaitingDoesNotBlockPending(t *testing.T) {
 }
 
 func TestRejectModelResultDispositionRetriesThenFails(t *testing.T) {
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(), nil)
 
 	usage := Usage{TotalTokens: 3}
@@ -517,7 +517,7 @@ func TestRejectModelResultDispositionRetriesThenFails(t *testing.T) {
 }
 
 func TestModelRecoveryKeepsFrozenRequestAndCounts(t *testing.T) {
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(), nil)
 	s = fold(t, s, mustDecide(t, s, RecoverModelExecution{StepID: stepID}))
 	ms := s.Current.(ModelStep)
@@ -532,32 +532,8 @@ func TestModelRecoveryKeepsFrozenRequestAndCounts(t *testing.T) {
 	}
 }
 
-func TestStopRunProducesStepLimit(t *testing.T) {
-	s := newRun(t, testConfig())
-	facts := mustDecide(t, s, StopRun{Reason: ReasonStepLimit})
-	if len(facts) != 1 {
-		t.Fatalf("facts = %d, want [ended]", len(facts))
-	}
-	ended := facts[0].(RunEnded)
-	stopped, ok := ended.End.(RunStoppedEnd)
-	if !ok || stopped.Reason != ReasonStepLimit {
-		t.Fatalf("ended = %+v", ended.End)
-	}
-	if _, err := Decide(s, StopRun{Reason: ReasonCancelled}); err == nil {
-		t.Fatal("StopRun accepted cancellation reason")
-	}
-}
-
-func TestStopRunRequiresSafeBoundary(t *testing.T) {
-	s := newRun(t, testConfig())
-	s, stepID := advanceToExecuting(t, s, testRequest(), nil)
-	if _, err := Decide(s, StopRun{Reason: ReasonStepLimit}); err == nil {
-		t.Fatalf("StopRun accepted while ModelStep %q was executing", stepID)
-	}
-}
-
 func TestCancelProducesRunStopped(t *testing.T) {
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	facts := mustDecide(t, s, CancelRun{})
 	ended := facts[0].(RunEnded)
 	stopped, ok := ended.End.(RunStoppedEnd)
@@ -567,7 +543,7 @@ func TestCancelProducesRunStopped(t *testing.T) {
 }
 
 func TestAcceptInputIdempotentPerID(t *testing.T) {
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	facts := mustDecide(t, s, NextStep(AgentInput{ID: "in-2", Payload: cj(`1`)}))
 	s = fold(t, s, facts)
 	if len(s.PendingInputs) != 2 {
@@ -587,7 +563,7 @@ func TestAcceptInputIdempotentPerID(t *testing.T) {
 }
 
 func TestAcceptInputRejectsSeedDuplicateID(t *testing.T) {
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	_, err := Decide(s, NextStep(AgentInput{ID: "seed", Payload: cj(`{"q":"other"}`)}))
 	if !errors.Is(err, ErrCommandConflict) {
 		t.Fatalf("duplicate seed input err = %v, want ErrCommandConflict", err)
@@ -665,7 +641,7 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 }
 
 func TestEvolveRejectsModelPrepareOverCurrentStep(t *testing.T) {
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	s, _ = advanceToExecuting(t, s, testRequest(), nil)
 	_, err := Evolve(s, ModelStepPrepared{
 		StepID:        "other",
@@ -685,7 +661,7 @@ func TestReplayEquivalence(t *testing.T) {
 	// all facts, refold from initial, and compare canonical serializations.
 	def := testToolDef("t")
 	spec := makeSpec(t, def, DirectExecution)
-	initial := newRun(t, testConfig())
+	initial := newRun(t)
 	var log []Fact
 
 	s := initial

@@ -259,7 +259,7 @@ func TestFoldRejectsTamperedFact(t *testing.T) {
 // ModelStepPrepared is self-contained: the binding digest folds verbatim and
 // reproduces the step identity without recomputation.
 func TestRegressionPreparedFactSelfContained(t *testing.T) {
-	s := newRun(t, testConfig())
+	s := newRun(t)
 	prep, cmdID := buildPrepare(t, s, testRequest(), nil)
 	facts := mustDecide(t, s, prep)
 	fact := facts[0].(ModelStepPrepared)

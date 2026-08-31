@@ -10,7 +10,7 @@ import (
 // Shared helpers for package-local agent tests. Runtime conformance lives in
 // agent/runtimetest so durable Runtime implementations can reuse it.
 
-func newTestRuntime(t *testing.T, _ RunConfig) *MemoryRuntime {
+func newTestRuntime(t *testing.T) *MemoryRuntime {
 	t.Helper()
 	rt := NewMemoryRuntime()
 	newRun, err := BuildNewRun("run-1", "")
@@ -85,7 +85,7 @@ func mustCommit(t *testing.T, rt Runtime, id CommandID, base uint64, grant Execu
 // stepID and the model grant.
 func preparedRuntime(t *testing.T, tools []sdk.ToolDefinition, specs []ToolSpec) (*MemoryRuntime, StepID, ExecutionGrant) {
 	t.Helper()
-	rt := newTestRuntime(t, RunConfig{Model: "m-1", ModelRejectLimit: 2})
+	rt := newTestRuntime(t)
 	snap, _ := rt.Load(context.Background(), "run-1")
 	req := testRequest(tools...)
 	prep, cmdID := buildPrepareFromSnap(t, snap, req, specs)

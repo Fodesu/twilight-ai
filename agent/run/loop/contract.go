@@ -147,9 +147,8 @@ type Event struct {
 
 // ExecutionPolicy is host-owned loop policy. It is not persisted in
 // MachineState or events. ToolExecution controls dispatch mode and
-// MaxParallel bounds workers launched by this Loop. The model-step and
-// malformed-result limit fields remain source-compatible fields; malformed
-// result disposition is selected by OnMalformedModelResult.
+// MaxParallel bounds workers launched by this Loop. Malformed model result
+// disposition is selected by OnMalformedModelResult.
 type ExecutionPolicy struct {
 	ToolExecution ToolExecutionMode
 	// OnMalformedModelResult chooses the disposition recorded for a malformed
@@ -158,11 +157,6 @@ type ExecutionPolicy struct {
 	// MaxParallel bounds local tool workers. Zero means all eligible calls in
 	// the current batch may run concurrently.
 	MaxParallel int
-	// Deprecated compatibility fields retained for older callers. They do not
-	// change Machine transitions; hosts select any step/retry policy outside
-	// the core protocol.
-	ModelStepLimit            int
-	MalformedModelResultLimit int
 }
 
 type LoopDisposition uint8
@@ -174,13 +168,11 @@ const (
 
 type LoopResult struct {
 	Disposition LoopDisposition
-	// Reason is retained for source compatibility. Waiting and
-	// ExecutionRecovery are the authoritative waiting signals.
-	Reason  WaitReason
-	Waiting []run.ResponseRequest
-	// ExecutionRecovery is true when at least one ToolCall remains Executing.
-	// When Waiting is also non-empty, the host must wake on either response or
-	// execution recovery.
+	// Reason is retained for source compatibility. ExecutionRecovery is
+	// the authoritative signal that a live execution needs recovery.
+	Reason WaitReason
+	// ExecutionRecovery is true when at least one call remains Executing
+	// after this Loop has no further executable effect.
 	ExecutionRecovery bool
 	Result            *run.RunResult
 }
@@ -188,6 +180,5 @@ type LoopResult struct {
 type WaitReason string
 
 const (
-	WaitingForResponse WaitReason = "waiting_for_response"
-	ExecutionRecovery  WaitReason = "execution_recovery"
+	ExecutionRecovery WaitReason = "execution_recovery"
 )
