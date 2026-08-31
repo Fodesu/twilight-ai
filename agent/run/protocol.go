@@ -7,8 +7,9 @@ import (
 	"github.com/memohai/twilight/agent/es"
 )
 
-// SchemaVersion1 is the first published wire schema. Canonical encoding and
-// Evolve folding semantics stay stable within a published version.
+// SchemaVersion1 is the current pre-release wire schema. Its canonical
+// encoding and Evolve folding semantics may still change before publication.
+// Once a schema is published, its encoding and folding semantics are frozen.
 const SchemaVersion1 uint16 = 1
 
 // currentSchemaVersion is what new commands and facts are written with.
@@ -41,7 +42,7 @@ type AgentEvent struct {
 
 // encodeEnvelopeBody is the digest input for a command: schema version, type
 // discriminator and canonical command bytes. The Digest field itself, base
-// revisions and grants never enter the digest (spec §5.5).
+// revisions and grants never enter the digest (RUN-WIR-2).
 func encodeEnvelopeBody(schemaVersion uint16, typ string, body any) ([]byte, error) {
 	return es.EncodeTypedPayload(schemaVersion, typ, body)
 }
@@ -146,7 +147,7 @@ func DigestToolResponsePayload(payload CanonicalJSON) (Digest, error) {
 }
 
 // DigestRequest covers every field of a frozen ModelRequest with no exclusions
-// (spec §2.1 rule 7).
+// (RUN-WIR-2).
 //
 //nolint:gocritic // hugeParam: digest covers the complete immutable ModelRequest value.
 func DigestRequest(req ModelRequest) (Digest, error) {
@@ -178,7 +179,7 @@ func DigestToolSpec(spec ToolSpec) (Digest, error) {
 }
 
 // DigestToolSpecs covers an ordered ToolSpec list: ref, schema, order and
-// policy all participate (spec §3.7.1 rule 1).
+// policy all participate (RUN-MCH-2).
 func DigestToolSpecs(specs []ToolSpec) (Digest, error) {
 	body, err := encodeEnvelopeBody(currentSchemaVersion, "tool_specs", specs)
 	if err != nil {
@@ -210,7 +211,7 @@ func digestBindingSet(bindings []ToolCallBinding) (Digest, error) {
 }
 
 // DigestToolCallBinding covers one binding: definition, policy and canonical
-// arguments plus the CallID (spec §4.2). Runtime conformance suites use this
+// arguments plus the CallID (RUN-MCH-2). Runtime conformance suites use this
 // helper to construct the same frozen binding identities as the Loop.
 func DigestToolCallBinding(callID CallID, definitionDigest Digest, policy ResponsePolicy, arguments CanonicalJSON) (Digest, error) {
 	return sha256Digest([]byte(namespacedHash("twilight/tool-call-binding",

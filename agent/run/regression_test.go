@@ -202,7 +202,7 @@ func TestRegressionEvolveRejectsIllegalCallState(t *testing.T) {
 	s = fold(t, s, facts)
 	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: "c1"}))
 
-	// Unknown outcome with a non-effect_unknown class is illegal (spec §4.2).
+	// Unknown outcome with a non-effect_unknown class is illegal (RUN-MCH-2).
 	_, err := Evolve(s, ToolCallFailed{
 		StepID:  opened.StepID,
 		CallID:  "c1",
@@ -221,7 +221,8 @@ func TestRegressionCancelReasonFixed(t *testing.T) {
 		t.Fatal("CancelRun forged step_limit into the log")
 	}
 	facts := mustDecide(t, s, CancelRun{})
-	if facts[0].(RunEnded).Reason != ReasonCancelled {
+	end, ok := facts[0].(RunEnded).End.(RunStoppedEnd)
+	if !ok || end.Reason != ReasonCancelled {
 		t.Fatal("cancel reason not fixed to cancelled")
 	}
 }

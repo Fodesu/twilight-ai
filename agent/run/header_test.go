@@ -62,8 +62,8 @@ func TestFoldRunFromHeaderMatchesRuntime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Drive one transition: accept the seed input at Revision 1 (spec §5.1.1
-	// rule 3 — seed enters the log, not the header).
+	// Drive one transition: accept the seed input at Revision 1 (RUN-NEW-1 —
+	// seed enters the log, not the header).
 	in := AgentInput{ID: "seed", Payload: MustParseCanonicalJSON(`{"q":"hi"}`)}
 	env, err := BuildEnvelope("run-1", DeriveInputCommandID("run-1", in.ID), NextStep(in))
 	if err != nil {

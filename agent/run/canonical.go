@@ -1,8 +1,8 @@
-// Package agent implements the Twilight AI agent runtime core: the Machine
-// (Decide/Evolve/Next), the Loop, the Runtime contract with EvaluateCommit,
-// and the canonical encoding that gives commands and facts stable identity.
+// Package run implements the Twilight Run Machine, persisted protocol,
+// Runtime authority boundary, verified fold, and canonical identities.
 //
-// See docs/design/agent-runtime-refactor.md for the governing spec.
+// See docs/design/agent-run.md for the governing specification. The in-process
+// execution interpreter and its model/tool ports are in agent/run/loop.
 package run
 
 import (

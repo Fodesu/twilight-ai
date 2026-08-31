@@ -2,7 +2,7 @@
 
 状态：设计规范。
 
-本文定义 `agent/turn` 对一个 Chatlog Turn 的协调协议；“必须”“应该”均为协议约束。
+本文定义 `agent/turn` 对一个 Chatlog Turn 的协调协议；“必须”“应该”均为协议约束。Run Machine、Runtime 与 Loop 的 authority 是 [agent-run.md](agent-run.md)；本文只规定 Turn 如何消费该协议。
 
 ## 1. 模型与范围
 
@@ -39,6 +39,13 @@ const (
     SettlementCompleted Settlement = "completed"
     SettlementFailed Settlement = "failed"
     SettlementStopped Settlement = "stopped"
+)
+
+type ResumeDisposition string
+const (
+    ResumeWaitingForResponse ResumeDisposition = "waiting_for_response"
+    ResumeWaitingForRecovery ResumeDisposition = "waiting_for_recovery"
+    ResumeFinished            ResumeDisposition = "finished"
 )
 
 type RunHeadRef struct { RunID run.RunID; Revision uint64; TransitionDigest es.Digest }
@@ -108,18 +115,9 @@ type ExecutionBindingRegistry interface { Resolve(ExecutionBindingRef) (RunDrive
 
 **TRN-API-2** binding registry 以同一个 shared `run.Runtime` 组合 driver。driver 接收 `DriveRequest{Ref,RunID}`，并经 shared Runtime 读写；其 Run access 以该 Runtime contract 完成，persisted binding 含义保持稳定。
 
-**TRN-API-3** 正式 Run contract 为：
+**TRN-API-3** Coordinator、driver、mapper 与 settlement 只通过 [agent-run.md](agent-run.md) 的 `run.Runtime` contract 协调 Run。input/transition 全部经 Commit 持久化；绕过 Runtime authority 的写入不构成 Turn progress。
 
-```go
-Runtime.Create(context.Context, run.NewRun) (run.CreateResult, error)
-Runtime.Load(context.Context, run.RunID) (run.RuntimeSnapshot, error)
-Runtime.Commit(context.Context, run.CommitRequest) (run.CommitResult, error)
-Runtime.Record(context.Context, run.RunID) (run.RunRecord, error)
-```
-
-`CommitRequest.Command` 为含 RunID 的 envelope。Coordinator、driver、mapper、settlement 通过该 contract 协调 Run，input/transition 经 Commit 持久化；实现对绕过 Commit 的 input/transition 写入返回拒绝。
-
-**TRN-API-4** 相同 canonical header 的 Create 返回 `Created=false`；同 RunID 的 header 差异返回 `run.ErrCreateConflict`；缺少 Run 的 Load、Commit、Record 返回 `run.ErrRunNotFound`。Coordinator 分别处理 conflict、corrupt、unavailable，且仅从 persisted linkage 取得计划。
+**TRN-API-4** Coordinator 按 Run contract 处理 idempotent Create、create conflict、missing Run、corrupt record 与 unavailable，并且只从 persisted linkage 取得创建计划；Turn 不重新定义 Runtime 的 collision、commit、grant 或 record 语义。
 
 ```go
 type Service interface {
@@ -134,15 +132,18 @@ type StartRequest struct {
 }
 type StartResponse struct {
     Ref TurnRef; RunID run.RunID; PlanDigest es.Digest; Operation StartOperationDigest
-    Created bool; Result *ResultReference; Waiting []run.ResponseRequest
+    Created bool; Disposition ResumeDisposition; Result *ResultReference; Waiting []run.ResponseRequest
 }
 type ResumeRequest struct { Ref TurnRef }
-type ResumeResponse struct { Ref TurnRef; RunID run.RunID; Result *ResultReference; Waiting []run.ResponseRequest }
+type ResumeResponse struct {
+    Ref TurnRef; RunID run.RunID; Disposition ResumeDisposition
+    Result *ResultReference; Waiting []run.ResponseRequest
+}
 type StopRequest struct { Ref TurnRef; Reason string }
 type StopResponse struct { Ref TurnRef; RunID run.RunID; Result *ResultReference }
 ```
 
-**TRN-API-5** DTO 均为值语义。Start 对既有 linkage 的新 RunID 或计划改写返回 conflict；Resume/Stop 按 Ref 解析唯一 unsettled linkage。Waiting 表示当前 snapshot 的 response request；terminal fact 与后续计划授权由 RunRecord 和 persisted linkage 提供。
+**TRN-API-5** DTO 均为值语义。Start 对既有 linkage 的新 RunID 或计划改写返回 conflict；Resume/Stop 按 Ref 解析唯一 unsettled linkage。`Disposition` 取 `ResumeWaitingForResponse`、`ResumeWaitingForRecovery` 或 `ResumeFinished`；前两者表示 Run 仍为 active，后者必须带 `Result`。`Waiting` 只列当前 snapshot 的 response requests，执行恢复等待不伪造 response request；terminal fact 与后续计划授权由 RunRecord 和 persisted linkage 提供。
 
 ## 4. Start admission
 
@@ -200,9 +201,9 @@ run_requested{RunRequestedPayload}
 driver.Drive(ctx, DriveRequest{Ref: ref, RunID: linkage.RunID})
 ```
 
-无论 driver 返回完成、等待、error，Coordinator 均再次 Record、调用 `MaterializeAll(record)` 补齐完整新前缀，并据 record snapshot/terminal fact 返回 Waiting 或 Result。
+无论 driver 返回完成、等待、error，Coordinator 均再次 Record、调用 `MaterializeAll(record)` 补齐完整新前缀，并据 record snapshot/terminal fact 返回 `ResumeWaitingForResponse`、`ResumeWaitingForRecovery` 或 `ResumeFinished`。前两者不返回 terminal Result；等待用户响应时携带 snapshot 中的 response requests，同时存在 execution recovery 时保留这些 requests 并由 `ExecutionRecovery` 标记；只有没有 response request 时才返回空 `Waiting`，表示由 recovery authority 负责后续唤醒。
 
-**TRN-RSM-6** driver 的 provisional stream、返回错误、网络响应丢失、context cancel 作为观察结果处理。driver 以 shared Runtime 的 Load/Commit 推进 MachineState；并发 Resume 依 Runtime command idempotency、revision、grant、record 一致性收敛。具体执行器可以使用 `agent/run/loop.Loop`，其 `LoopResult` 保持在 Application driver 内；Coordinator 始终以随后读取的 `RunRecord` 判断 waiting、terminal 与 settlement。
+**TRN-RSM-6** driver 的 provisional stream、返回错误、网络响应丢失、context cancel 作为观察结果处理。driver 以 shared Runtime 的 Load/Commit 推进 MachineState；并发 Resume 依 Runtime command idempotency、revision、grant、record 一致性收敛。具体执行器可以使用 `agent/run/loop.Loop`；其 `LoopResult` 映射为本节的 `ResumeDisposition`，并由 Coordinator 始终以随后读取的 `RunRecord` 判断 waiting、execution recovery、terminal 与 settlement。
 
 **TRN-STP-1** Stop 先解析 linkage、Load。terminal Run 进入 record/materialize/settlement；active Run 以稳定 domain-separated CancelRun CommandID 构造 `CancelRun{Reason:ReasonCancelled}`，并经 shared Runtime Commit。
 
@@ -214,21 +215,21 @@ driver.Drive(ctx, DriveRequest{Ref: ref, RunID: linkage.RunID})
 
 **TRN-SET-1** `RunRecord` 为 materialization、unknown resolution、recovery、settlement 的唯一一致 verified read。它含 detached 且相互一致的 Header、Snapshot、完整 TransitionRecord sequence；消费者验证 header、records、fold、snapshot，并拒绝拼接独立 reads。
 
-**TRN-SET-2** terminal 判断读取匹配 terminal status 的最后 `RunEnded` AgentEvent。Coordinator 仅从该 exact event 构建 ResultReference，RunResult、snapshot revision、driver return 与其他 event 不参与该构建。terminal fact 缺失、多个或未处于末尾时触发 corruption。
+**TRN-SET-2** terminal 判断读取最后一个 `RunEnded` AgentEvent，并验证其 `End` 是唯一合法 terminal variant；Coordinator 从该 variant 派生 `RunStatus` 后构建 ResultReference。RunResult、snapshot revision、driver return 与其他 event 不参与该构建。terminal fact 缺失、多个、variant 非法或未处于末尾时触发 corruption。
 
 **TRN-SET-3** settlement mapping 固定如下：
 
-| RunEnded status | run_settled settlement | 同一 Session commit 的 chatlog event |
+| RunEnded variant（派生 status） | run_settled settlement | 同一 Session commit 的 chatlog event |
 |---|---|---|
-| `RunCompleted` | `completed` | `TurnCompleted{TurnID}` |
-| `RunFailed` | `failed` | `TurnFailed{TurnID, FailureClass}` |
-| `RunStopped` | `stopped` | `TurnFailed{TurnID, FailureClass:"stopped"}` |
+| `RunCompletedEnd` | `completed` | `TurnCompleted{TurnID}` |
+| `RunFailedEnd` | `failed` | `TurnFailed{TurnID, FailureClass}` |
+| `RunStoppedEnd` | `stopped` | `TurnFailed{TurnID, FailureClass:"stopped"}` |
 
 RunFailed 的 FailureClass 取 terminal failure class；没有 failure 时采用稳定非空 class。`RunStopped` 映射 `TurnFailed{..., FailureClass:"stopped"}`。
 
 **TRN-SET-4** run_settled 与对应 TurnCompleted/TurnFailed 位于同一 semantic Session commit，CommitID/EventID 由 stable terminal ResultReference 派生。相同 reference retry 幂等；settlement/result reference 差异触发 conflict。
 
-**TRN-SET-5** unknown external effect 的 persisted MachineState/terminal record 已包含 `ToolCallFailed{Outcome:Unknown, FailureEffectUnknown}` 加 terminal `RunEnded{RunFailed,...}`。Coordinator materialize unknown tool result 并 failed settle。
+**TRN-SET-5** unknown external effect 的 persisted MachineState/terminal record 已包含 `ToolCallFailed{Outcome:Unknown, FailureEffectUnknown}` 加 terminal `RunEnded{End: RunFailedEnd{...}}`。Coordinator materialize unknown tool result 并 failed settle。
 
 ## 7. materialization
 

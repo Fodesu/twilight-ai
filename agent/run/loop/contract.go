@@ -3,14 +3,20 @@ package loop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
 	run "github.com/memohai/twilight/agent/run"
 
 	"github.com/memohai/twilight/sdk"
 )
 
+// ErrRunAlreadyRunning identifies a second local driver for the same Run.
+// A Loop permits concurrent execution of different Runs and serializes each
+// Run locally so one execution grant has one in-process consumer.
+var ErrRunAlreadyRunning = errors.New("agent: loop: run already running")
+
 // RequestPlanner is the port the application injects: it projects application
-// context into the next boundary sdk.Request (spec §5.6). Loop freezes it into
+// context into the next boundary sdk.Request (RUN-LOP-2). Loop freezes it into
 // an agent-owned ModelRequest before crossing the Runtime boundary. Planning
 // implementations never live in agent.
 type RequestPlanner interface {
@@ -55,7 +61,7 @@ type ToolExecutionRequest struct {
 	Progress         ToolProgressSink
 }
 
-// ExecutableTool is the application-side execution contract (spec §7.1).
+// ExecutableTool is the application-side execution contract (RUN-LOP-1).
 type ExecutableTool interface {
 	Ref() run.ToolRef
 	Definition() sdk.ToolDefinition
@@ -91,7 +97,16 @@ type ToolProgress struct {
 	Payload json.RawMessage
 }
 
-// --- EventSink: realtime observation, never authority (spec §9.2) ---
+// ToolExecutionMode controls how independent Pending calls are dispatched by
+// a Loop. The mode is an execution concern; it is not part of MachineState.
+type ToolExecutionMode string
+
+const (
+	ToolExecutionParallel   ToolExecutionMode = "parallel"
+	ToolExecutionSequential ToolExecutionMode = "sequential"
+)
+
+// --- EventSink: realtime observation, never authority (RUN-LOP-6) ---
 
 type EventSink interface {
 	Emit(context.Context, Event) error
@@ -117,9 +132,11 @@ const (
 )
 
 type Event struct {
-	RunID      run.RunID
-	StepID     run.StepID
-	CallID     run.CallID
+	RunID  run.RunID
+	StepID run.StepID
+	CallID run.CallID
+	// Sequence orders provisional observations within one stream. Canonical
+	// observations use AgentEvent.Revision/Index for authority ordering.
 	Sequence   uint64
 	Kind       EventKind
 	Durability EventDurability
@@ -129,18 +146,22 @@ type Event struct {
 }
 
 // ExecutionPolicy is host-owned loop policy. It is not persisted in
-// MachineState or events. MaxParallel bounds only workers this Loop launches,
-// never a global count (spec §4.3).
+// MachineState or events. ToolExecution controls dispatch mode and
+// MaxParallel bounds workers launched by this Loop. The model-step and
+// malformed-result limit fields remain source-compatible fields; malformed
+// result disposition is selected by OnMalformedModelResult.
 type ExecutionPolicy struct {
-	// MaxParallel: 1 is sequential; n>1 is bounded parallel; 0 normalizes to 1;
-	// negative is rejected.
+	ToolExecution ToolExecutionMode
+	// OnMalformedModelResult chooses the disposition recorded for a malformed
+	// provider result. A nil handler fails the Run; retries must be explicit.
+	OnMalformedModelResult func(run.ModelStep, run.StepFailure) run.ModelRejectDisposition
+	// MaxParallel bounds local tool workers. Zero means all eligible calls in
+	// the current batch may run concurrently.
 	MaxParallel int
-	// ModelStepLimit: 0 means unlimited; positive values make the Loop submit
-	// StopRun(step_limit) before planning another ModelStep.
-	ModelStepLimit int
-	// MalformedModelResultLimit: 0 normalizes to
-	// DefaultMalformedModelResultLimit; negative is rejected. The Loop chooses
-	// RejectModelResult disposition from the current ModelStep reject count.
+	// Deprecated compatibility fields retained for older callers. They do not
+	// change Machine transitions; hosts select any step/retry policy outside
+	// the core protocol.
+	ModelStepLimit            int
 	MalformedModelResultLimit int
 }
 
@@ -151,16 +172,22 @@ const (
 	LoopFinished
 )
 
+type LoopResult struct {
+	Disposition LoopDisposition
+	// Reason is retained for source compatibility. Waiting and
+	// ExecutionRecovery are the authoritative waiting signals.
+	Reason  WaitReason
+	Waiting []run.ResponseRequest
+	// ExecutionRecovery is true when at least one ToolCall remains Executing.
+	// When Waiting is also non-empty, the host must wake on either response or
+	// execution recovery.
+	ExecutionRecovery bool
+	Result            *run.RunResult
+}
+
 type WaitReason string
 
 const (
 	WaitingForResponse WaitReason = "waiting_for_response"
 	ExecutionRecovery  WaitReason = "execution_recovery"
 )
-
-type LoopResult struct {
-	Disposition LoopDisposition
-	Reason      WaitReason
-	Waiting     []run.ResponseRequest
-	Result      *run.RunResult
-}

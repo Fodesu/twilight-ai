@@ -1,14 +1,22 @@
 package run
 
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+)
+
 // Fact is one committed outcome produced by Machine.Decide. Facts are wrapped
-// as AgentEvents; Machine.Evolve folds them mechanically (spec §3.6). The
+// as AgentEvents; Machine.Evolve folds them mechanically (RUN-MCH-3). The
 // interface is sealed: only the fourteen variants below exist.
 type Fact interface{ fact() }
 
 // ModelStepPrepared establishes the frozen ModelStep and consumes the listed
 // pending inputs. BindingDigest (model + request + tools) is computed by
 // Decide and carried in the fact: Evolve folds it verbatim, never recomputes
-// (fact self-containment, spec §5.1).
+// (fact self-containment, RUN-MCH-3).
 type ModelStepPrepared struct {
 	StepID        StepID       `json:"stepId"`
 	Model         ModelRef     `json:"model"`
@@ -117,8 +125,8 @@ type ToolCallFailed struct {
 
 func (ToolCallFailed) fact() {}
 
-// ToolStepClosed: every call reached a closable terminal state; the current
-// step is cleared.
+// ToolStepClosed is retained only for folding legacy v1 logs. New transitions
+// close a ToolStep implicitly when its final ToolCall reaches a terminal state.
 type ToolStepClosed struct {
 	StepID StepID `json:"stepId"`
 }
@@ -132,14 +140,149 @@ type InputAccepted struct {
 
 func (InputAccepted) fact() {}
 
+// RunEnd is the closed set of terminal outcomes.
+type RunEnd interface{ runEnd() }
+
+type RunCompletedEnd struct{}
+type RunStoppedEnd struct{ Reason RunReason }
+type RunFailedEnd struct {
+	Reason  RunReason
+	Failure RunFailure
+}
+
+func (RunCompletedEnd) runEnd() {}
+func (RunStoppedEnd) runEnd()   {}
+func (RunFailedEnd) runEnd()    {}
+
 // RunEnded is the terminal fact. Always the last fact of its transition.
 type RunEnded struct {
-	Status  RunStatus   `json:"status"` // RunCompleted, RunStopped or RunFailed
-	Reason  RunReason   `json:"reason,omitempty"`
-	Failure *RunFailure `json:"failure,omitempty"`
+	End RunEnd `json:"-"`
 }
 
 func (RunEnded) fact() {}
+
+func (r RunEnded) effectiveEnd() (RunEnd, error) {
+	if err := validateRunEnd(r.End); err != nil {
+		return nil, err
+	}
+	return r.End, nil
+}
+
+func legacyEnd(status RunStatus, reason RunReason, failure *RunFailure) (RunEnd, error) {
+	switch status {
+	case RunCompleted:
+		if reason != "" || failure != nil {
+			return nil, errors.New("agent: run ended: completed outcome cannot carry reason or failure")
+		}
+		return RunCompletedEnd{}, nil
+	case RunStopped:
+		if reason == "" {
+			return nil, errors.New("agent: run ended: stopped outcome requires a reason")
+		}
+		if failure != nil {
+			return nil, errors.New("agent: run ended: stopped outcome cannot carry failure")
+		}
+		return RunStoppedEnd{Reason: reason}, nil
+	case RunFailed:
+		if failure == nil {
+			return nil, errors.New("agent: run ended: failed outcome requires failure")
+		}
+		if reason == "" {
+			return nil, errors.New("agent: run ended: failed outcome requires a reason")
+		}
+		if failure.Class == "" {
+			return nil, errors.New("agent: run ended: failed outcome requires a failure class")
+		}
+		return RunFailedEnd{Reason: reason, Failure: *failure}, nil
+	default:
+		return nil, fmt.Errorf("agent: run ended: invalid status %d", status)
+	}
+}
+
+func validateRunEnd(end RunEnd) error {
+	switch e := end.(type) {
+	case RunCompletedEnd:
+		return nil
+	case RunStoppedEnd:
+		if e.Reason == "" {
+			return errors.New("agent: run ended: stopped outcome requires a reason")
+		}
+		return nil
+	case RunFailedEnd:
+		if e.Reason == "" {
+			return errors.New("agent: run ended: failed outcome requires a reason")
+		}
+		if e.Failure.Class == "" {
+			return errors.New("agent: run ended: failed outcome requires a failure class")
+		}
+		return nil
+	default:
+		return fmt.Errorf("agent: run ended: unknown end variant %T", end)
+	}
+}
+
+func (r RunEnded) normalized() (RunEnded, error) {
+	end, err := r.effectiveEnd()
+	if err != nil {
+		return RunEnded{}, err
+	}
+	return RunEnded{End: end}, nil
+}
+
+func endProjection(end RunEnd) (RunStatus, RunReason, *RunFailure) {
+	switch e := end.(type) {
+	case RunCompletedEnd:
+		return RunCompleted, "", nil
+	case RunStoppedEnd:
+		return RunStopped, e.Reason, nil
+	case RunFailedEnd:
+		failure := e.Failure
+		return RunFailed, e.Reason, &failure
+	default:
+		return RunActive, "", nil
+	}
+}
+
+// MarshalJSON preserves the current v1 wire shape while deriving it from the
+// sealed terminal union.
+func (r RunEnded) MarshalJSON() ([]byte, error) {
+	n, err := r.normalized()
+	if err != nil {
+		return nil, err
+	}
+	type wire struct {
+		Status  RunStatus   `json:"status"`
+		Reason  RunReason   `json:"reason,omitempty"`
+		Failure *RunFailure `json:"failure,omitempty"`
+	}
+	status, reason, failure := endProjection(n.End)
+	return json.Marshal(wire{Status: status, Reason: reason, Failure: failure})
+}
+
+func (r *RunEnded) UnmarshalJSON(raw []byte) error {
+	var wire struct {
+		Status  RunStatus   `json:"status"`
+		Reason  RunReason   `json:"reason,omitempty"`
+		Failure *RunFailure `json:"failure,omitempty"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&wire); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("agent: run ended: trailing JSON")
+		}
+		return err
+	}
+	end, err := legacyEnd(wire.Status, wire.Reason, wire.Failure)
+	if err != nil {
+		return err
+	}
+	*r = RunEnded{End: end}
+	return nil
+}
 
 // factType returns the wire discriminator for a sealed fact variant.
 func factType(f Fact) string {

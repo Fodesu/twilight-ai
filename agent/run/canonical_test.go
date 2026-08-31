@@ -95,7 +95,7 @@ func TestCanonicalDeterminism(t *testing.T) {
 }
 
 func TestDigestCommandIdentity(t *testing.T) {
-	cmd := StartToolCall{StepID: "s1", CallID: "c1"}
+	cmd := StartToolCall{StepID: "s1", CallID: "c1", Claim: "claim-1"}
 	d1, err := DigestCommand(SchemaVersion1, "start_tool_call", cmd)
 	if err != nil {
 		t.Fatal(err)
@@ -104,12 +104,12 @@ func TestDigestCommandIdentity(t *testing.T) {
 		t.Fatalf("bad digest wire form: %s", d1)
 	}
 	// Same content, same digest.
-	d2, _ := DigestCommand(SchemaVersion1, "start_tool_call", StartToolCall{StepID: "s1", CallID: "c1"})
+	d2, _ := DigestCommand(SchemaVersion1, "start_tool_call", StartToolCall{StepID: "s1", CallID: "c1", Claim: "claim-1"})
 	if d1 != d2 {
 		t.Fatal("same command produced different digests")
 	}
 	// Different content differs.
-	d3, _ := DigestCommand(SchemaVersion1, "start_tool_call", StartToolCall{StepID: "s1", CallID: "c2"})
+	d3, _ := DigestCommand(SchemaVersion1, "start_tool_call", StartToolCall{StepID: "s1", CallID: "c2", Claim: "claim-1"})
 	if d1 == d3 {
 		t.Fatal("different commands produced the same digest")
 	}
@@ -187,9 +187,9 @@ func TestDigestBindingCanonicalizesArguments(t *testing.T) {
 	}
 }
 
-// Golden vectors: these bytes are frozen for SchemaVersion 1. If this test
-// fails, the canonical encoding changed — that is a protocol break, not a
-// test to update.
+// Golden vectors for the current pre-release SchemaVersion 1. They guard the
+// current canonical encoding; update them deliberately when the pre-release
+// protocol changes. Once v1 is published, these become permanent fixtures.
 func TestSchemaVersion1Golden(t *testing.T) {
 	cmd := CancelRun{Reason: ReasonCancelled}
 	body, err := encodeEnvelopeBody(SchemaVersion1, "cancel_run", cmd)
@@ -204,8 +204,8 @@ func TestSchemaVersion1Golden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Frozen for SchemaVersion 1. A mismatch here is a protocol break that
-	// invalidates every persisted digest — fix the code, not this constant.
+	// Current pre-release fixture. After publication, a mismatch is a protocol
+	// break that invalidates persisted digests and must not update this value.
 	const wantDigest = "sha256:a7770a5443f180ec1935bfa4498af75375b8d5f182f239f587917b28b78ee80c"
 	if string(d) != wantDigest {
 		t.Fatalf("golden digest changed:\n got %s\nwant %s", d, wantDigest)

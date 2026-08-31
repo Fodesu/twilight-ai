@@ -8,9 +8,9 @@ import (
 )
 
 // snapshotSchemaVersion versions the MachineState wire shape used inside
-// RunHeader.InitialState. It is independent of the event SchemaVersion: event
-// encoding is frozen forever, while the snapshot shape may evolve with a
-// version bump (spec §8.2).
+// RunHeader.InitialState. It is independent of the event SchemaVersion. Both
+// shapes remain pre-release until the protocol is published; after publication
+// each can evolve only through its documented versioning rules (RUN-CMP-1).
 const snapshotSchemaVersion uint16 = 1
 
 // encodeMachineStateWire renders the canonical bytes of a MachineState for
@@ -20,12 +20,12 @@ func encodeMachineStateWire(s *MachineState) ([]byte, error) {
 	return marshalCanonical(stateComparable(s))
 }
 
-// RunHeader is the formal persisted Revision-0 protocol record (spec §5.1.1).
-// MachineState is the execution authority. RunHeader plus the TransitionRecord
-// log is the canonical record used for audit, projections, and verified
-// import/replay: Create atomically stores the header and Revision-0 state, and
-// each Commit atomically stores the next state and transition. Every fold starts
-// from the header's initial state. The header is immutable after creation.
+// RunHeader is the formal persisted Revision-0 protocol record (RUN-NEW-1).
+// RunHeader plus the TransitionRecord log is the canonical record used for
+// audit, projections, and verified import/replay. Runtime atomically stores the
+// header with Revision-0 state during Create and stores each next state with
+// its transition during Commit. Every fold starts from the header's initial
+// state. The header is immutable after creation.
 type RunHeader struct {
 	SchemaVersion       uint16       `json:"schemaVersion"`
 	RunID               RunID        `json:"runId"`
@@ -49,7 +49,7 @@ type runHeaderDigestBody struct {
 // BuildRunHeader creates the immutable header for a new Run. The initial
 // state is the minimal InitializeRun state: no seed input, no model policy,
 // no limits — the first input arrives as the Revision-1 AcceptInput
-// transition (spec §5.1.1 rules 2-3).
+// transition (RUN-NEW-1).
 func BuildRunHeader(runID RunID, causationID es.CausationID) (RunHeader, error) {
 	initial, err := InitializeRun(runID)
 	if err != nil {
@@ -93,7 +93,7 @@ func digestRunHeader(h *RunHeader) (Digest, error) {
 // ValidateRunHeader verifies header integrity: state digest, header digest,
 // and that the initial state is a legal Revision-0 state for this RunID.
 // Imported/uploaded runs must pass this before their log is folded
-// (spec §5.1.1 rule 6).
+// (RUN-NEW-2).
 func ValidateRunHeader(h *RunHeader) error {
 	if h.RunID == "" {
 		return errors.New("agent: run header: empty RunID")
@@ -110,7 +110,8 @@ func ValidateRunHeader(h *RunHeader) error {
 	if h.InitialState.Status != RunActive || h.InitialState.Current != nil ||
 		len(h.InitialState.PendingInputs) != 0 || h.InitialState.ModelSteps != 0 ||
 		h.InitialState.Result != nil || h.InitialState.LastModelResult != nil ||
-		h.InitialState.LastClosedStep != "" || h.InitialState.Usage != (Usage{}) {
+		h.InitialState.LastClosedStep != "" || h.InitialState.LastToolStep != nil ||
+		h.InitialState.Usage != (Usage{}) {
 		return errors.New("agent: run header: initial state is not a minimal Revision-0 state")
 	}
 	stateBytes, err := encodeMachineStateWire(&h.InitialState)
@@ -131,7 +132,7 @@ func ValidateRunHeader(h *RunHeader) error {
 }
 
 // FoldRun rebuilds the run state from the canonical header + transition log.
-// It validates the header first, then folds the records (spec §9.1). This is
+// It validates the header first, then folds the records (RUN-NEW-2). This is
 // the entry point durable adapters and import/migration paths use; trusting an
 // uploaded MachineState snapshot is never legal.
 func FoldRun(header *RunHeader, records []TransitionRecord) (MachineState, uint64, error) {

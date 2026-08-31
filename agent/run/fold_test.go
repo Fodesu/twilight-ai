@@ -8,7 +8,7 @@ import (
 	"github.com/memohai/twilight/sdk"
 )
 
-// Event-sourcing arbitration tests (spec §5.1): the complete canonical
+// Event-sourcing arbitration tests (RUN-SCP-1, RUN-CMT-2): the complete canonical
 // TransitionRecord is the diagnostic commit record; the snapshot is a
 // rebuildable same-transaction projection; the revision watermark witnesses
 // log-tail completeness.
@@ -276,12 +276,10 @@ func TestRegressionPreparedFactSelfContained(t *testing.T) {
 	}
 }
 
-// Golden event stream: a fixed v1 command sequence folds to frozen state
-// bytes. If this test fails, either the canonical encoding or Evolve's
-// folding semantics changed — both are permanent contracts of SchemaVersion 1
-// (fix the code, not the constant), unless the protocol itself is still
-// pre-release and the change is deliberate (then re-freeze the constant in
-// the same commit that changes the protocol).
+// Golden event stream for the current pre-release v1 command sequence. It
+// protects the current fold result; deliberately changing the pre-release
+// protocol requires re-freezing the fixture in the same change. After v1 is
+// published, this becomes a permanent compatibility fixture.
 func TestGoldenEventStreamV1(t *testing.T) {
 	rt := fullRunRuntime(t)
 	record, err := rt.Record(context.Background(), "run-1")
@@ -300,7 +298,7 @@ func TestGoldenEventStreamV1(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(sha256Digest(stateBytes))
-	const frozen = "sha256:5ab6b883663a76e3293bf5dded726ae4cfdcfc50cc957b5b72fcf7d677e648ed"
+	const frozen = "sha256:f306b9499352398094ccbba585c4c60b6f474363cd0e9cac7b4df2fcf01d7d18"
 	if got != frozen {
 		t.Fatalf("golden v1 state digest changed:\n got %s\nwant %s\nstate: %s", got, frozen, stateBytes)
 	}

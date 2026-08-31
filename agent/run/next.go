@@ -1,7 +1,7 @@
 package run
 
 // Effect is the at-most-one pending action Machine.Next derives from the
-// current state (spec §3.6). Effects are never persisted; the Loop re-derives
+// current state (RUN-MCH-4). Effects are never persisted; the Loop re-derives
 // them after every Load.
 type Effect interface{ effect() }
 
@@ -26,6 +26,10 @@ func (StartToolCalls) effect() {}
 
 type WaitForResponse struct {
 	Requests []ResponseRequest
+	// ExecutionRecovery is true when another call in the same ToolStep is
+	// still Executing. The caller must wake on either a response or recovery;
+	// waiting for a response does not hide the in-flight execution.
+	ExecutionRecovery bool
 }
 
 func (WaitForResponse) effect() {}
@@ -39,9 +43,13 @@ type PlanningHint struct {
 	RunID      RunID
 	SourceStep StepID
 	Inputs     []AgentInput
+	// LastToolStep contains the committed results of the preceding tool
+	// boundary, allowing the planner to construct the next model request.
+	LastToolStep    *ToolStep
+	LastModelResult *ModelResult
 }
 
-// Next derives the pending effect from the current state (spec §3.7.3).
+// Next derives the pending effect from the current state (RUN-MCH-4).
 // Terminal states yield no effect; callers check Status first.
 //
 //nolint:gocritic // hugeParam: Next is a pure value-state interpreter and must not mutate MachineState.
@@ -52,9 +60,11 @@ func Next(s MachineState) (Effect, error) {
 	switch cur := s.Current.(type) {
 	case nil:
 		return NeedModelRequest{Hint: PlanningHint{
-			RunID:      s.RunID,
-			SourceStep: s.LastClosedStep,
-			Inputs:     append([]AgentInput(nil), s.PendingInputs...),
+			RunID:           s.RunID,
+			SourceStep:      s.LastClosedStep,
+			Inputs:          append([]AgentInput(nil), s.PendingInputs...),
+			LastToolStep:    cloneToolStepPtr(s.LastToolStep),
+			LastModelResult: cloneModelResult(s.LastModelResult),
 		}}, nil
 	case ModelStep:
 		if cur.Status == ModelPrepared {
@@ -81,9 +91,7 @@ func Next(s MachineState) (Effect, error) {
 			return StartToolCalls{StepID: cur.RefValue.ID, CallIDs: pending}, nil
 		}
 		if len(waiting) > 0 {
-			// Even with an Executing call alongside, the Loop waits for a
-			// response or an execution wake (spec §3.7.3).
-			return WaitForResponse{Requests: waiting}, nil
+			return WaitForResponse{Requests: waiting, ExecutionRecovery: executing}, nil
 		}
 		if executing {
 			return WaitForExecutionRecovery{}, nil

@@ -1,8 +1,8 @@
 package sdk
 
 // ModelStream is the streaming counterpart of one model call. It yields
-// realtime parts and assembles exactly one ModelResult; both execution paths
-// of a ModelInvoker must produce the same final result (spec §4.1).
+// realtime parts and assembles exactly one ModelResult; streaming and
+// non-streaming model invocations must produce the same final result.
 type ModelStream struct {
 	// Parts yields realtime stream parts. Closed when the stream ends.
 	Parts <-chan StreamPart
