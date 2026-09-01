@@ -534,10 +534,16 @@ func (l *Loop) runModelStep(ctx context.Context, runtime run.Runtime, events Eve
 	}
 
 	var completion run.AgentCommand
+	var catalogErr error
 	invoker, resolveErr := l.Models.Resolve(modelStep.Model)
-	if resolveErr != nil {
-		completion = run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: resolveErr.Error()}}
-	} else {
+	switch {
+	case resolveErr != nil:
+		catalogErr = resolveErr
+		completion = run.RecoverModelExecution{StepID: stepID, Claim: attempt.claim}
+	case invoker == nil:
+		catalogErr = errors.New("model catalog returned a nil invoker")
+		completion = run.RecoverModelExecution{StepID: stepID, Claim: attempt.claim}
+	default:
 		// Model workers derive from the outer ctx: cancelling a model call is
 		// safe, the frozen request retries after recovery (RUN-LOP-3).
 		sdkRequest, err := modelStep.Request.SDK()
@@ -585,6 +591,9 @@ func (l *Loop) runModelStep(ctx context.Context, runtime run.Runtime, events Eve
 	l.forgetSettlement(key)
 	l.forgetStart(key)
 	l.emitCommitted(ctx, events, runID, res.Events)
+	if catalogErr != nil {
+		return fmt.Errorf("agent: loop: model catalog: %w", catalogErr)
+	}
 	return nil
 }
 
