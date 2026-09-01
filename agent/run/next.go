@@ -25,15 +25,11 @@ type StartToolCalls struct {
 func (StartToolCalls) effect() {}
 
 // Idle means the Run is still active and Next has no executable effect.
-// The usual case is a ToolStep whose remaining live calls are Waiting.
-// Application reads those calls from MachineState; Loop does not interpret them.
+// Application inspects MachineState with WaitingCalls, ExecutingCalls, and
+// NeedsRecovery. Loop does not interpret those queries.
 type Idle struct{}
 
 func (Idle) effect() {}
-
-type WaitForExecutionRecovery struct{}
-
-func (WaitForExecutionRecovery) effect() {}
 
 // WaitingCalls returns the outstanding ResponseRequests on the current ToolStep.
 // Application uses this after Loop returns LoopWaiting. The result is detached.
@@ -53,6 +49,45 @@ func WaitingCalls(s MachineState) []ResponseRequest {
 		}
 	}
 	return out
+}
+
+// ExecutingCalls returns CallIDs still Executing on the current ToolStep.
+func ExecutingCalls(s MachineState) []CallID {
+	ts, ok := s.Current.(ToolStep)
+	if !ok {
+		return nil
+	}
+	var out []CallID
+	for _, c := range ts.Calls {
+		if c.Status == ToolExecuting {
+			out = append(out, c.CallID)
+		}
+	}
+	return out
+}
+
+// NeedsRecovery reports that an execution is in flight and this process has
+// no Start effect for it: a ModelStep is Executing, or a ToolStep has
+// Executing calls and no Pending calls.
+func NeedsRecovery(s MachineState) bool {
+	switch cur := s.Current.(type) {
+	case ModelStep:
+		return cur.Status == ModelExecuting
+	case ToolStep:
+		pending := false
+		executing := false
+		for _, c := range cur.Calls {
+			switch c.Status {
+			case ToolPending:
+				pending = true
+			case ToolExecuting:
+				executing = true
+			}
+		}
+		return executing && !pending
+	default:
+		return false
+	}
 }
 
 // PlanningHint is what the Loop hands the application RequestPlanner.
@@ -87,28 +122,23 @@ func Next(s MachineState) (Effect, error) {
 		if cur.Status == ModelPrepared {
 			return StartModelCall{StepID: cur.RefValue.ID}, nil
 		}
-		return WaitForExecutionRecovery{}, nil
+		return Idle{}, nil
 	case ToolStep:
 		var pending []CallID
-		waiting := false
-		executing := false
+		live := false
 		for _, c := range cur.Calls {
 			switch c.Status {
 			case ToolPending:
 				pending = append(pending, c.CallID)
-			case ToolWaiting:
-				waiting = true
-			case ToolExecuting:
-				executing = true
+				live = true
+			case ToolWaiting, ToolExecuting:
+				live = true
 			}
 		}
 		if len(pending) > 0 {
 			return StartToolCalls{StepID: cur.RefValue.ID, CallIDs: pending}, nil
 		}
-		if executing {
-			return WaitForExecutionRecovery{}, nil
-		}
-		if waiting {
+		if live {
 			return Idle{}, nil
 		}
 		return nil, rejectionf("next: tool step %q has no live calls but was not closed", cur.RefValue.ID)
