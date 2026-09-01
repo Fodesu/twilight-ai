@@ -546,7 +546,21 @@ func decideCancelRun(s *MachineState, cmd CancelRun) ([]Fact, error) {
 		return nil, rejectionf("cancel: reason must be empty or %q", ReasonCancelled)
 	}
 	facts := unknownExecutingCalls(s, "", "", ToolFailure{Class: FailureEffectUnknown, Message: "execution cancelled before settlement"})
-	facts = append(facts, RunEnded{End: RunStoppedEnd{Reason: ReasonCancelled}})
+	uncertain := make([]CallID, 0, len(facts))
+	for _, f := range facts {
+		if failed, ok := f.(ToolCallFailed); ok {
+			uncertain = append(uncertain, failed.CallID)
+		}
+	}
+	var uncertainModel StepID
+	if ms, ok := s.Current.(ModelStep); ok && ms.Status == ModelExecuting {
+		uncertainModel = ms.RefValue.ID
+	}
+	facts = append(facts, RunEnded{End: RunStoppedEnd{
+		Reason:         ReasonCancelled,
+		UncertainCalls: uncertain,
+		UncertainModel: uncertainModel,
+	}})
 	return facts, nil
 }
 

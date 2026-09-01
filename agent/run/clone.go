@@ -284,6 +284,7 @@ func cloneRunResult(r *RunResult) *RunResult {
 		f := *c.Failure
 		c.Failure = &f
 	}
+	c.UncertainCalls = append([]CallID(nil), c.UncertainCalls...)
 	c.Model = cloneModelResult(c.Model)
 	return &c
 }
@@ -382,6 +383,10 @@ func cloneFact(f Fact) Fact {
 		fact.Input = cloneAgentInput(fact.Input)
 		return fact
 	case RunEnded:
+		if stopped, ok := fact.End.(RunStoppedEnd); ok {
+			stopped.UncertainCalls = append([]CallID(nil), stopped.UncertainCalls...)
+			fact.End = stopped
+		}
 		return fact
 	default:
 		return f

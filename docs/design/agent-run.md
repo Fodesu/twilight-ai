@@ -171,7 +171,11 @@ Run status 为 `RunActive | RunCompleted | RunStopped | RunFailed`。`RunComplet
 type RunEnd interface{ runEnd() }
 
 type RunCompletedEnd struct{}
-type RunStoppedEnd struct { Reason RunReason }
+type RunStoppedEnd struct {
+    Reason RunReason
+    UncertainCalls []CallID
+    UncertainModel StepID
+}
 type RunFailedEnd struct {
     Reason  RunReason
     Failure RunFailure
@@ -184,7 +188,7 @@ func (RunFailedEnd) runEnd() {}
 type RunEnded struct { End RunEnd }
 ```
 
-`RunEnded.End` 必须恰好是上述三个 variant 之一；`RunStoppedEnd.Reason` 必须非空，`RunFailedEnd.Reason` 必须是失败原因，`RunFailedEnd.Failure.Class` 必须非空。`RunEnded` 是 terminal transition 的最后一个 fact。RunStatus、RunResult 等读取模型从该 union 派生。当前 v1 wire body 使用 `status/reason/failure` 字段；codec 负责在 wire 与 union 之间做严格映射，并拒绝 `RunActive`、缺失字段或多余字段。
+`RunEnded.End` 必须恰好是上述三个 variant 之一；`RunStoppedEnd.Reason` 必须非空，`RunFailedEnd.Reason` 必须是失败原因，`RunFailedEnd.Failure.Class` 必须非空。`RunEnded` 是 terminal transition 的最后一个 fact。RunStatus、RunResult 等读取模型从该 union 派生。当前 v1 wire body 使用 `status/reason/failure` 以及可选的 `uncertainCalls` / `uncertainModel`；codec 负责在 wire 与 union 之间做严格映射，并拒绝 `RunActive`、缺失字段或多余字段。Cancel 时仍 Executing 的 tool call 与 model step 必须写入 `RunStoppedEnd` 并投影到 `RunResult`，不得只留下 `stopped/cancelled`。
 
 ```text
 ModelStep: Prepared -> Executing -> Completed
@@ -223,7 +227,7 @@ ToolCall:
 | `ApproveToolCall` | Waiting(Approval)；`ToolCallApproved` |
 | `RejectToolCall` | Waiting(Approval/ExternalResponse)；`ToolCallFailed(Known/permission_denied)`，最后一个 call 进入 terminal 时隐式关闭 ToolStep |
 | `SubmitToolResponse` | Waiting(ExternalResponse)；`ToolCallAnswered`，最后一个 call 进入 terminal 时隐式关闭 ToolStep |
-| `CancelRun` | active；`RunEnded(stopped/cancelled)` |
+| `CancelRun` | active；仍 Executing 的 tool call 记 `ToolCallFailed(Unknown)`，随后 `RunEnded(stopped/cancelled)`，并在 `RunStoppedEnd` / `RunResult` 上列出 `UncertainCalls` 与 `UncertainModel` |
 
 `ToolStepClosed` 作为旧 v1 transition 的兼容 fact 保留；新 command 在最终 ToolCall fact 中完成 ToolStep 的关闭。
 

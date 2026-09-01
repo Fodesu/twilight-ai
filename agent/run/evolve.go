@@ -179,13 +179,18 @@ func evolveV1(s MachineState, f Fact) (MachineState, error) {
 		status, reason, failure := endProjection(normalized.End)
 		s.Status = status
 		s.Current = nil
-		s.Result = &RunResult{
+		result := &RunResult{
 			Status:  status,
 			Reason:  reason,
 			Failure: failure,
 			Model:   s.LastModelResult,
 			Usage:   s.Usage,
 		}
+		if stopped, ok := normalized.End.(RunStoppedEnd); ok {
+			result.UncertainCalls = append([]CallID(nil), stopped.UncertainCalls...)
+			result.UncertainModel = stopped.UncertainModel
+		}
+		s.Result = result
 		return s, nil
 
 	default:
