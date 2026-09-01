@@ -319,7 +319,7 @@ type CommitResult struct {
 
 **RUN-CMT-6** Commit 必须原子保存新 MachineState 与完整 TransitionRecord，保证 event group 完整写入。`CommitResult`、Load 与 Record 返回 detached values。预期拒绝映射为 `ErrCommandConflict`、`ErrStaleRuntime`、`ErrRunTerminal`；transport/storage failure 保持可判别且不得伪装为 rejection。
 
-**RUN-CMT-7** 每个 Run 的协议版本是 `RunHeader.SchemaVersion`，在 Create 时冻结。`RuntimeSnapshot.SchemaVersion` 必须等于该 header。`ProtocolFor(header.SchemaVersion)` 在 Run 边界选出该版本的 `Protocol`；digest、decode、Decide、Evolve、BuildEnvelope 是该对象上的方法，不再接受 version 参数。`EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Protocol 的 Version。不得使用进程全局 `currentSchemaVersion` 作为写入许可。v1 Run 的 replay 必须继续使用 `ProtocolV1`，即使进程已经把 `currentSchemaVersion` 升到 2。Loop 通过 `RuntimeSnapshot.Protocol()` 构造写入该 Run 的 envelope。
+**RUN-CMT-7** 每个 Run 的协议版本是 `RunHeader.SchemaVersion`，在 Create 时冻结。`RuntimeSnapshot.SchemaVersion` 必须等于该 header。`ProtocolFor(header.SchemaVersion)` 在 Run 边界返回绑定了该版本 digest/decode/Decide/Evolve 函数的 `Protocol` 值；随后的方法调用不再接受 version 参数。`EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Protocol 的 Version。不得使用进程全局 `currentSchemaVersion` 作为写入许可。v1 Run 的 replay 必须继续使用 `ProtocolV1`，即使进程已经把 `currentSchemaVersion` 升到 2。Loop 通过 `RuntimeSnapshot.Protocol()` 构造写入该 Run 的 envelope。
 
 `MemoryRuntime` 提供 multi-Run in-process reference implementation：collection lock 保护 Run map，每个 Run 使用独立锁。跨进程 durable recovery 由其他 Runtime adapter 提供。
 

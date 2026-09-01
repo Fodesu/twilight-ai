@@ -10,8 +10,8 @@ func TestProtocolForSelectsV1(t *testing.T) {
 	if p.Version() != SchemaVersion1 {
 		t.Fatalf("version = %d", p.Version())
 	}
-	if p != ProtocolV1 {
-		t.Fatal("ProtocolFor(1) did not return ProtocolV1")
+	if p.Version() != ProtocolV1.Version() {
+		t.Fatal("ProtocolFor(1) did not bind ProtocolV1")
 	}
 	if _, err := ProtocolFor(0); err == nil {
 		t.Fatal("schema 0 accepted")
@@ -32,5 +32,15 @@ func TestRuntimeSnapshotProtocol(t *testing.T) {
 	}
 	if _, err := (RuntimeSnapshot{}).Protocol(); err == nil {
 		t.Fatal("zero snapshot protocol accepted")
+	}
+}
+
+func TestZeroProtocolRejectsCalls(t *testing.T) {
+	var p Protocol
+	if _, err := p.DigestRequest(ModelRequest{}); err == nil {
+		t.Fatal("zero protocol DigestRequest accepted")
+	}
+	if _, err := p.Decide(MachineState{}, CancelRun{}); err == nil {
+		t.Fatal("zero protocol Decide accepted")
 	}
 }
