@@ -56,9 +56,10 @@ func (RecoverModelExecution) agentCommand() {}
 // SubmitModelResult submits one complete model result with its tool-call
 // bindings. Requires the model start grant.
 type SubmitModelResult struct {
-	StepID StepID            `json:"stepId"`
-	Result ModelResult       `json:"result"`
-	Calls  []ToolCallBinding `json:"calls,omitempty"`
+	StepID     StepID            `json:"stepId"`
+	Result     ModelResult       `json:"result"`
+	Calls      []ToolCallBinding `json:"calls,omitempty"`
+	Scheduling ToolScheduling    `json:"scheduling,omitzero"`
 }
 
 func (SubmitModelResult) agentCommand() {}

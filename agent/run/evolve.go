@@ -117,10 +117,15 @@ func evolveV1(s MachineState, f Fact) (MachineState, error) {
 				return s, err
 			}
 		}
+		scheduling, err := normalizeToolScheduling(fact.Scheduling)
+		if err != nil {
+			return s, fmt.Errorf("agent: evolve: tool step scheduling: %w", err)
+		}
 		s.Current = ToolStep{
-			RefValue: StepRef{RunID: s.RunID, ID: fact.StepID, Digest: fact.BindingSetDigest},
-			Source:   fact.Source,
-			Calls:    calls,
+			RefValue:   StepRef{RunID: s.RunID, ID: fact.StepID, Digest: fact.BindingSetDigest},
+			Source:     fact.Source,
+			Calls:      calls,
+			Scheduling: scheduling,
 		}
 		return s, nil
 

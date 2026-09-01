@@ -73,6 +73,7 @@ type ToolStepOpened struct {
 	Source           StepID            `json:"source"` // the completed ModelStep
 	BindingSetDigest Digest            `json:"bindingSetDigest"`
 	Calls            []ToolCallBinding `json:"calls"`
+	Scheduling       ToolScheduling    `json:"scheduling,omitzero"`
 }
 
 func (ToolStepOpened) fact() {}

@@ -213,7 +213,7 @@ ToolCall:
 | `PrepareModelRequest` | 无 Current，完整有序消费 PendingInputs，request/tools digests 有效；`ModelStepPrepared` |
 | `StartModelExecution` | Model Prepared；`ModelStepStarted`。command 必须携带本次 start 的 `ExecutionClaim` |
 | `RecoverModelExecution` | Model Executing；`ModelStepRecovered`。恢复 durable attempt 时携带该 attempt 的 `Claim` |
-| `SubmitModelResult` | Model Executing；`ModelStepCompleted`，随后无 calls 时 `RunEnded(completed)`，有 calls 时 `ToolStepOpened` |
+| `SubmitModelResult` | Model Executing；`ModelStepCompleted`，随后无 calls 时 `RunEnded(completed)`，有 calls 时 `ToolStepOpened`（携带冻结的 `Scheduling`） |
 | `SubmitModelFailure` | Model Executing；`RunEnded(failed/provider_failure)` |
 | `RejectModelResult` | Model Executing；`ModelStepRejected`，由调用方显式选择回到 Prepared 或在同一 transition 追加 `RunEnded(failed/malformed_model_result)` |
 | `StartToolCall` | Tool Pending；`ToolCallStarted`。command 必须携带本次 start 的 `ExecutionClaim` |
@@ -382,7 +382,9 @@ func New(models ModelCatalog, tools ToolCatalog, planner RequestPlanner, policy 
 func (*Loop) Run(context.Context, run.Runtime, run.RunID, EventSink) (LoopResult, error)
 ```
 
-**RUN-LOP-1** `ExecutionPolicy` 是 Loop 的本地执行策略，包含 `ToolExecution`、`MaxParallel` 和可选的 malformed-result handler；未指定 `ToolExecution` 时使用 `parallel`，正数 `MaxParallel` 限制当前 ToolStep 的本地 worker 数量，零值允许当前批次的所有可执行 call 并行。nil handler 时结构错误的模型结果选择 `ModelRejectFailRun`；重试由 handler 明确返回 `ModelRejectRetry`。`streaming` 表示是否请求可用的流式模型端口；两种模式都产生同一完整 `sdk.ModelResult`。
+**RUN-LOP-1** `ExecutionPolicy` 是 Loop 的本地执行策略。`ToolExecution` 与 `MaxParallel` 在 `SubmitModelResult` 时写入 `ToolStepOpened.Scheduling` 并冻结在该 ToolStep 上；后续 Loop 必须按冻结值调度，不得改用当时进程的 ExecutionPolicy。未指定 `ToolExecution` 时冻结为 `parallel`，`MaxParallel` 零值表示当前 Start 批次全部 Pending call 可并行。空 Mode 按 parallel 解释，不得在 normalize 时填入默认字符串。nil handler 时结构错误的模型结果选择 `ModelRejectFailRun`；重试由 handler 明确返回 `ModelRejectRetry`。`streaming` 表示是否请求可用的流式模型端口；两种模式都产生同一完整 `sdk.ModelResult`。
+
+**RUN-LOP-7** `ModelRef` 是冻结请求中的执行身份。`ModelCatalog.Resolve` 在同一 Run 生命周期内必须把同一 `ModelRef` 解析为等价的执行语义。provider 绑定不进入 frozen request，因此 Catalog 不得把同一 ref 改绑到不同实现。
 
 `LoopResult` 的语义固定为：`LoopWaiting` 时 `Result` 为 nil，表示没有可执行 effect、Run 仍为 active。`ExecutionRecovery` 为 true 时至少有一个 call 仍为 Executing，由 recovery authority 唤醒。`Reason` 在该情况下为 `execution_recovery`，Idle 时为空。Waiting call 不进入 `LoopResult`；Application 通过 `Runtime.Load` / `Record` 与 `WaitingCalls` 读取。`LoopFinished` 时 `Result` 非 nil，并等于 terminal RunRecord 派生的 `RunResult`。
 
@@ -406,7 +408,7 @@ Loop.Run(ctx, runtime, runID, sink):
 
 **RUN-LOP-3** `StartModelCall` 先 Commit start barrier；首次 `CommitAccepted` 或使用同一 command ID、同一 `ExecutionClaim` 精确重放得到原 grant 的 Loop，才拥有该 execution。Loop 必须保留 start command 的 ID、digest 和 claim，直到完成 settlement；缺少 grant 的 replay 进入 reload 流程。调用只使用 frozen ModelRequest 的 detached SDK materialization。streaming 与 non-streaming 必须产生同一种完整 `sdk.ModelResult`；delta 只发 EventSink。provider failure 提交 `SubmitModelFailure`；ctx cancellation 提交 `RecoverModelExecution`；结构、binding 或 freeze 失败提交 `RejectModelResult`，并由调用方显式选择 retry 或 fail-run。成功结果只提交一次 `SubmitModelResult`。
 
-**RUN-LOP-4** Tool execution 先按 frozen binding resolve tool，并验证 Ref、definition digest、response policy 和 arguments。lookup/definition/argument failure 在 Pending 状态提交 `SubmitToolFailure(Known)`，不得跨越 start barrier。通过验证后逐 call 提交 `StartToolCall`；只有 Accepted owner 可执行。`parallel` 模式并发执行同一 ToolStep 中所有可执行的 Pending call，`sequential` 模式按 call 顺序逐个执行；每个结果以自己的 grant 提交。同一 ToolStep 中 DirectExecution 的 Pending call 在本次 `Run` 内 Start 并结算。`Next` 返回 `Idle` 时 Loop 返回 `LoopWaiting`，并用 `NeedsRecovery(state)` 设置 `ExecutionRecovery`。Loop 不解释 Waiting call，也不携带 `ResponseRequest`。Application 从 snapshot 读取 `WaitingCalls`，提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 之后再次 `Run`。tool panic 或 effect 状态无法确定的错误转为 Unknown；一个 Unknown 取消同批 sibling workers，并由 Machine 在同一 terminal transition 中记录目标及仍 Executing sibling 的 `ToolCallFailed(Unknown)`，最后追加 `RunEnded(failed/effect_unknown)`。`CancelRun` 也在 `RunEnded(stopped/cancelled)` 前记录所有仍 Executing call 的 Unknown。已接受 start 的 worker 必须在收到外层取消后返回并尝试 settlement；settlement 使用独立 control context。
+**RUN-LOP-4** Tool execution 先按 frozen binding resolve tool，并验证 Ref、definition digest、response policy 和 arguments。lookup/definition/argument failure 在 Pending 状态提交 `SubmitToolFailure(Known)`，不得跨越 start barrier。通过验证后逐 call 提交 `StartToolCall`；只有 Accepted owner 可执行。冻结的 `ToolStep.Scheduling` 决定 `parallel` 或 `sequential` 以及 `MaxParallel`；不得改用 Loop 进程当前的 ExecutionPolicy。每个结果以自己的 grant 提交。同一 ToolStep 中 DirectExecution 的 Pending call 在本次 `Run` 内 Start 并结算。`Next` 返回 `Idle` 时 Loop 返回 `LoopWaiting`，并用 `NeedsRecovery(state)` 设置 `ExecutionRecovery`。Loop 不解释 Waiting call，也不携带 `ResponseRequest`。Application 从 snapshot 读取 `WaitingCalls`，提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 之后再次 `Run`。tool panic 或 effect 状态无法确定的错误转为 Unknown；一个 Unknown 取消同批 sibling workers，并由 Machine 在同一 terminal transition 中记录目标及仍 Executing sibling 的 `ToolCallFailed(Unknown)`，最后追加 `RunEnded(failed/effect_unknown)`。`CancelRun` 也在 `RunEnded(stopped/cancelled)` 前记录所有仍 Executing call 的 Unknown。已接受 start 的 worker 必须在收到外层取消后返回并尝试 settlement；settlement 使用独立 control context。
 
 **RUN-LOP-5** model 与 tool worker 都接收外层 ctx；Loop 对已接受 effect 使用独立 control context 完成 known/unknown outcome settlement。Application 的业务停止顺序为先 Commit `CancelRun`，再取消 Loop ctx。非 sentinel Commit error 以同 CommandID/digest 重放一次；仍未知时返回错误，由后续 Load/Record 查询 authority。stale/terminal/conflict 触发 reload/drop，旧 external effect 保持单次执行尝试。工具实现配合 context 返回；永久阻塞由 application/durable recovery 处理。
 

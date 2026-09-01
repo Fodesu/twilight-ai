@@ -378,6 +378,38 @@ func TestExternalResponseRequiresPayloadDigest(t *testing.T) {
 	}
 }
 
+func TestToolSchedulingFrozenOnToolStepOpened(t *testing.T) {
+	def := testToolDef("t")
+	spec := makeSpec(t, def, DirectExecution)
+	s := newRun(t)
+	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
+	b := makeBinding(t, "c1", spec, `{}`)
+	facts := mustDecide(t, s, SubmitModelResult{
+		StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b},
+		Scheduling: ToolScheduling{Mode: ToolScheduleSequential, MaxParallel: 1},
+	})
+	s = fold(t, s, facts)
+	ts := s.Current.(ToolStep)
+	if ts.Scheduling.Mode != ToolScheduleSequential || ts.Scheduling.MaxParallel != 1 {
+		t.Fatalf("scheduling = %+v", ts.Scheduling)
+	}
+}
+
+func TestToolSchedulingRejectsUnknownMode(t *testing.T) {
+	def := testToolDef("t")
+	spec := makeSpec(t, def, DirectExecution)
+	s := newRun(t)
+	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
+	b := makeBinding(t, "c1", spec, `{}`)
+	_, err := Decide(s, SubmitModelResult{
+		StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b},
+		Scheduling: ToolScheduling{Mode: "round-robin"},
+	})
+	if err == nil {
+		t.Fatal("unknown scheduling mode accepted")
+	}
+}
+
 func TestUnknownFailureEndsRun(t *testing.T) {
 	def := testToolDef("t")
 	spec := makeSpec(t, def, DirectExecution)
