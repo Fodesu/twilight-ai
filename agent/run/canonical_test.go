@@ -96,7 +96,7 @@ func TestCanonicalDeterminism(t *testing.T) {
 
 func TestDigestCommandIdentity(t *testing.T) {
 	cmd := StartToolCall{StepID: "s1", CallID: "c1", Claim: "claim-1"}
-	d1, err := DigestCommand(SchemaVersion1, "start_tool_call", cmd)
+	d1, err := DigestCommand("start_tool_call", cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,22 +104,29 @@ func TestDigestCommandIdentity(t *testing.T) {
 		t.Fatalf("bad digest wire form: %s", d1)
 	}
 	// Same content, same digest.
-	d2, _ := DigestCommand(SchemaVersion1, "start_tool_call", StartToolCall{StepID: "s1", CallID: "c1", Claim: "claim-1"})
+	d2, _ := DigestCommand("start_tool_call", StartToolCall{StepID: "s1", CallID: "c1", Claim: "claim-1"})
 	if d1 != d2 {
 		t.Fatal("same command produced different digests")
 	}
 	// Different content differs.
-	d3, _ := DigestCommand(SchemaVersion1, "start_tool_call", StartToolCall{StepID: "s1", CallID: "c2", Claim: "claim-1"})
+	d3, _ := DigestCommand("start_tool_call", StartToolCall{StepID: "s1", CallID: "c2", Claim: "claim-1"})
 	if d1 == d3 {
 		t.Fatal("different commands produced the same digest")
 	}
-	// Schema version participates.
-	d4, _ := DigestCommand(2, "start_tool_call", cmd)
-	if d1 == d4 {
-		t.Fatal("schema version did not affect digest")
+	// Schema version participates in the digest preimage.
+	body1, err := encodeEnvelopeBody(SchemaVersion1, "start_tool_call", cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body2, err := encodeEnvelopeBody(2, "start_tool_call", cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body1) == string(body2) {
+		t.Fatal("schema version did not affect digest preimage")
 	}
 	// Type mismatch is rejected.
-	if _, err := DigestCommand(SchemaVersion1, "cancel_run", cmd); err == nil {
+	if _, err := DigestCommand("cancel_run", cmd); err == nil {
 		t.Fatal("expected type/variant mismatch error")
 	}
 }
@@ -190,7 +197,7 @@ func TestSchemaVersion1Golden(t *testing.T) {
 	if string(body) != wantBody {
 		t.Fatalf("golden body changed:\n got %q\nwant %q", body, wantBody)
 	}
-	d, err := DigestCommand(SchemaVersion1, "cancel_run", cmd)
+	d, err := DigestCommand("cancel_run", cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +209,7 @@ func TestSchemaVersion1Golden(t *testing.T) {
 	}
 
 	fact := InputAccepted{Input: AgentInput{ID: "in-1", Payload: cj(`{"text":"hi"}`)}}
-	fbody, err := EncodeFact(SchemaVersion1, "input_accepted", fact)
+	fbody, err := EncodeFact("input_accepted", fact)
 	if err != nil {
 		t.Fatal(err)
 	}

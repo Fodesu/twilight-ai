@@ -122,7 +122,7 @@ func toolSpec(t *testing.T, name string, policy ResponsePolicy) ToolSpec {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := DigestToolDefinition(SchemaVersion1, frozen)
+	d, err := DigestToolDefinition(frozen)
 	if err != nil {
 		t.Fatal(err)
 	}

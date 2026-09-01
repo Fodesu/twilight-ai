@@ -188,6 +188,10 @@ func (l *Loop) resumeSettlement(ctx context.Context, runtime run.Runtime, events
 		}
 	}
 	l.settlementsMu.Unlock()
+	proto, err := snapshot.Protocol()
+	if err != nil {
+		return false, err
+	}
 	for _, key := range keys {
 		attempt, ok := l.lookupSettlement(key)
 		if !ok {
@@ -198,7 +202,7 @@ func (l *Loop) resumeSettlement(ctx context.Context, runtime run.Runtime, events
 			l.forgetStart(key)
 			continue
 		}
-		res, err := l.commit(context.WithoutCancel(ctx), runtime, runID, attempt.commandID, attempt.base, attempt.grant, attempt.command, snapshot.SchemaVersion)
+		res, err := l.commit(context.WithoutCancel(ctx), runtime, runID, attempt.commandID, attempt.base, attempt.grant, attempt.command, proto)
 		if err != nil {
 			if retriable(err) {
 				l.forgetSettlement(key)
@@ -359,8 +363,11 @@ func (l *Loop) Run(ctx context.Context, runtime run.Runtime, runID run.RunID, ev
 // digest (RUN-LOP-5): if the first attempt actually
 // committed and only the response was lost, the replay returns AlreadyApplied
 // instead of abandoning a live grant or re-executing an expensive step.
-func (l *Loop) commit(ctx context.Context, runtime run.Runtime, runID run.RunID, id run.CommandID, base uint64, grant run.ExecutionGrant, cmd run.AgentCommand, schemaVersion uint16) (run.CommitResult, error) {
-	env, err := run.BuildEnvelopeVersion(schemaVersion, runID, id, cmd)
+func (l *Loop) commit(ctx context.Context, runtime run.Runtime, runID run.RunID, id run.CommandID, base uint64, grant run.ExecutionGrant, cmd run.AgentCommand, proto run.Protocol) (run.CommitResult, error) {
+	if proto == nil {
+		return run.CommitResult{}, errors.New("agent: loop: nil protocol")
+	}
+	env, err := proto.BuildEnvelope(runID, id, cmd)
 	if err != nil {
 		return run.CommitResult{}, err
 	}
@@ -429,15 +436,19 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime run.Runtime, events E
 	if run.ModelRef(frozenRequest.Model) != model {
 		return fmt.Errorf("agent: loop: request model %q does not match plan model %q", frozenRequest.Model, model)
 	}
-	requestDigest, err := run.DigestRequest(snapshot.SchemaVersion, frozenRequest)
+	proto, err := snapshot.Protocol()
 	if err != nil {
 		return err
 	}
-	toolsDigest, err := run.DigestToolSpecs(snapshot.SchemaVersion, plan.Tools)
+	requestDigest, err := proto.DigestRequest(frozenRequest)
 	if err != nil {
 		return err
 	}
-	binding, err := run.DigestModelStepBinding(snapshot.SchemaVersion, model, requestDigest, toolsDigest)
+	toolsDigest, err := proto.DigestToolSpecs(plan.Tools)
+	if err != nil {
+		return err
+	}
+	binding, err := proto.DigestModelStepBinding(model, requestDigest, toolsDigest)
 	if err != nil {
 		return err
 	}
@@ -452,7 +463,7 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime run.Runtime, events E
 		PlanningToken: plan.PlanningToken,
 		Tools:         plan.Tools,
 		ToolsDigest:   toolsDigest,
-	}, snapshot.SchemaVersion)
+	}, proto)
 	if err == nil {
 		// ModelStepPrepared carries the frozen request — the most informative
 		// fact of the run; observers must see it like every other accepted
@@ -480,9 +491,13 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime run.Runtime, events E
 
 func (l *Loop) runModelStep(ctx context.Context, runtime run.Runtime, events EventSink, snapshot *run.RuntimeSnapshot, stepID run.StepID) error {
 	runID := snapshot.State.RunID
+	proto, err := snapshot.Protocol()
+	if err != nil {
+		return err
+	}
 	key := startKey{runID: runID, stepID: stepID}
 	attempt := l.startFor(key)
-	start, err := l.commit(ctx, runtime, runID, attempt.commandID, snapshot.Revision, "", run.StartModelExecution{StepID: stepID, Claim: attempt.claim}, snapshot.SchemaVersion)
+	start, err := l.commit(ctx, runtime, runID, attempt.commandID, snapshot.Revision, "", run.StartModelExecution{StepID: stepID, Claim: attempt.claim}, proto)
 	if err != nil {
 		if retriable(err) {
 			l.forgetStart(key)
@@ -554,7 +569,7 @@ func (l *Loop) runModelStep(ctx context.Context, runtime run.Runtime, events Eve
 	}
 	settlement := l.settlementFor(key, completionID, start.Snapshot.Revision, start.Grant, completion)
 	settlementCtx := context.WithoutCancel(ctx)
-	res, err := l.commit(settlementCtx, runtime, runID, settlement.commandID, settlement.base, settlement.grant, settlement.command, snapshot.SchemaVersion)
+	res, err := l.commit(settlementCtx, runtime, runID, settlement.commandID, settlement.base, settlement.grant, settlement.command, proto)
 	if err != nil {
 		if retriable(err) {
 			l.forgetSettlement(key)
@@ -706,6 +721,10 @@ func toolCallIndex(step run.ToolStep, callID run.CallID) int {
 
 func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events EventSink, snapshot *run.RuntimeSnapshot, eff run.StartToolCalls) error {
 	runID := snapshot.State.RunID
+	proto, err := snapshot.Protocol()
+	if err != nil {
+		return err
+	}
 	ts, ok := snapshot.State.Current.(run.ToolStep)
 	if !ok || ts.RefValue.ID != eff.StepID {
 		return fmt.Errorf("agent: loop: tool step %q is not current", eff.StepID)
@@ -758,7 +777,7 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events Eve
 				known = &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: freezeErr.Error()}
 				break
 			}
-			defDigest, digestErr := run.DigestToolDefinition(snapshot.SchemaVersion, toolDef)
+			defDigest, digestErr := proto.DigestToolDefinition(toolDef)
 			if digestErr != nil {
 				known = &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: digestErr.Error()}
 				break
@@ -777,9 +796,9 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events Eve
 		if known != nil {
 			// Known failure of a Pending call: no start barrier, no tool call.
 			res, err := l.commit(ctx, runtime, runID, freshCommandID(), snapshot.Revision, "",
-				run.SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: *known, Outcome: run.ToolOutcomeKnown}, snapshot.SchemaVersion)
+				run.SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: *known, Outcome: run.ToolOutcomeKnown}, proto)
 			if err != nil {
-				settleErr := l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, snapshot.SchemaVersion)
+				settleErr := l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, proto)
 				if !retriable(err) {
 					return err
 				}
@@ -791,9 +810,9 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events Eve
 
 		attempt := l.startFor(key)
 		start, err := l.commit(ctx, runtime, runID, attempt.commandID, snapshot.Revision, "",
-			run.StartToolCall{StepID: eff.StepID, CallID: callID, Claim: attempt.claim}, snapshot.SchemaVersion)
+			run.StartToolCall{StepID: eff.StepID, CallID: callID, Claim: attempt.claim}, proto)
 		if err != nil {
-			settleErr := l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, snapshot.SchemaVersion)
+			settleErr := l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, proto)
 			if retriable(err) {
 				// A sentinel rejection proves this start did not acquire the
 				// call. Drop the local claim so a later snapshot can create a
@@ -826,7 +845,7 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events Eve
 		started = append(started, startedWorker{call: call, grant: start.Grant, base: start.Snapshot.Revision, tool: tool, key: key})
 	}
 
-	return l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, snapshot.SchemaVersion)
+	return l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, proto)
 }
 
 func toolCallFromSnapshot(state run.MachineState, stepID run.StepID, callID run.CallID) (run.ToolCallState, bool) {
@@ -848,7 +867,7 @@ func toolCallFromSnapshot(state run.MachineState, stepID run.StepID, callID run.
 // resulting outcome can still reach Runtime (RUN-LOP-5). One Unknown cancels
 // sibling workers. A non-sentinel commit error leaves the same command in the
 // local settlement cache for the next Run invocation.
-func (l *Loop) settleWorkers(ctx context.Context, runtime run.Runtime, events EventSink, runID run.RunID, stepID run.StepID, started []startedWorker, schemaVersion uint16) error {
+func (l *Loop) settleWorkers(ctx context.Context, runtime run.Runtime, events EventSink, runID run.RunID, stepID run.StepID, started []startedWorker, proto run.Protocol) error {
 	if len(started) == 0 {
 		return nil
 	}
@@ -910,7 +929,7 @@ func (l *Loop) settleWorkers(ctx context.Context, runtime run.Runtime, events Ev
 			// ErrRunTerminal and are dropped (audit is the adapter's job).
 			// The one-shot same-CommandID replay lives inside l.commit.
 			settlement := l.settlementFor(w.key, freshCommandID(), w.base, w.grant, cmd)
-			res, err := l.commit(controlCtx, runtime, runID, settlement.commandID, settlement.base, settlement.grant, settlement.command, schemaVersion)
+			res, err := l.commit(controlCtx, runtime, runID, settlement.commandID, settlement.base, settlement.grant, settlement.command, proto)
 			switch {
 			case err == nil:
 				l.forgetSettlement(w.key)

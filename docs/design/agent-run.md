@@ -13,7 +13,7 @@ Runtime                         Run authority 与 atomic Commit boundary
 loop.Loop                       当前进程的 execution interpreter
 ```
 
-`MachineState` 决定 Run 当前可执行动作。每次接受的 command 产生一个完整 `TransitionRecord`，其 facts 经 `EvolveVersion` 从 `RunHeader.InitialState` 重放后必须得到同 revision 的 `MachineState`。
+`MachineState` 决定 Run 当前可执行动作。每次接受的 command 产生一个完整 `TransitionRecord`，其 facts 经该 Run 的 `Protocol.Evolve` 从 `RunHeader.InitialState` 重放后必须得到同 revision 的 `MachineState`。
 
 Run 的职责分成五个相互独立的层面：
 
@@ -56,7 +56,7 @@ type Digest = es.Digest
 
 Run 持久化协议保存 run-owned frozen values。模型请求、模型结果、消息、工具定义、usage、provider metadata 与所有动态 JSON 在进入 command/fact 前，分别经 `FreezeModelRequest`、`FreezeModelResult`、`FreezeToolDefinition`、`FreezeToolCallInput` 等入口转为纯数据和 immutable `CanonicalJSON`。Runtime 接收 agent-owned value；调用方负责在边界前完成冻结。
 
-**RUN-WIR-2** 当前 pre-release schema v1 使用 RFC 8785/JCS canonical bytes。字段、omission、array order、type discriminator、digest preimage 与 `EvolveVersion` 语义在发布前继续演进，发布后永久冻结。command、fact 和 transition decoder 必须拒绝 unknown version/type、duplicate key、unknown field、trailing data、非法 UTF-8、非 canonical-equivalent wire 与 digest mismatch。精确 identity 和 digest 使用 JSON string；当前 v1 revision/index/schema fields 使用整数 wire shape。
+**RUN-WIR-2** 当前 pre-release schema v1 使用 RFC 8785/JCS canonical bytes。字段、omission、array order、type discriminator、digest preimage 与 `Protocol.Evolve` 语义在发布前继续演进，发布后永久冻结。command、fact 和 transition decoder 必须拒绝 unknown version/type、duplicate key、unknown field、trailing data、非法 UTF-8、非 canonical-equivalent wire 与 digest mismatch。精确 identity 和 digest 使用 JSON string；当前 v1 revision/index/schema fields 使用整数 wire shape。
 
 ```go
 type CommandEnvelope struct {
@@ -136,7 +136,7 @@ type RunRecord struct {
 
 Header 创建后 immutable。`InitialStateDigest` 覆盖 frozen initial state；`HeaderDigest` 覆盖 schema、RunID、initial-state version/digest 与 causation。`ValidateRunHeader` 验证这些约束。
 
-**RUN-NEW-2** `FoldRun(header, transitions)` 先验证 header，再按 revision/index 使用 `EvolveVersion` 折叠完整 transition sequence。Fold 过程执行纯状态重建。import、diagnostic 与 `Runtime.Record` integrity verification 从 header 开始；外部 snapshot 通过 FoldRun 结果校验。
+**RUN-NEW-2** `FoldRun(header, transitions)` 先验证 header，再按 revision/index 使用 `ProtocolFor(header.SchemaVersion).Evolve` 折叠完整 transition sequence。Fold 过程执行纯状态重建。import、diagnostic 与 `Runtime.Record` integrity verification 从 header 开始；外部 snapshot 通过 FoldRun 结果校验。
 
 ## 4. Machine
 
@@ -227,7 +227,7 @@ ToolCall:
 
 `ToolStepClosed` 作为旧 v1 transition 的兼容 fact 保留；新 command 在最终 ToolCall fact 中完成 ToolStep 的关闭。
 
-**RUN-MCH-3** `Decide(state, command)` 执行全部验证与 derived consequence，一次返回该 transition 的完整 ordered fact group；验证成功后返回完整 facts。`EvolveVersion(version,state,fact)` 机械折叠 fact，依赖 fact 携带的完整数据。accepted facts 必须 self-contained；若 transition terminalize，`RunEnded` 必须是 Decide 输出的最后一个 fact。
+**RUN-MCH-3** `Decide(state, command)` 执行全部验证与 derived consequence，一次返回该 transition 的完整 ordered fact group；验证成功后返回完整 facts。`Protocol.Evolve(state, fact)` 机械折叠 fact，依赖 fact 携带的完整数据。accepted facts 必须 self-contained；若 transition terminalize，`RunEnded` 必须是 Decide 输出的最后一个 fact。
 
 启动 command 的最小公共形状为：
 
@@ -278,6 +278,7 @@ type RuntimeSnapshot struct {
     Revision uint64
     SchemaVersion uint16 // RunHeader.SchemaVersion
 }
+func (RuntimeSnapshot) Protocol() (Protocol, error) // ProtocolFor(SchemaVersion)
 type CommitRequest struct {
     BaseRevision uint64
     Grant ExecutionGrant
@@ -305,7 +306,7 @@ type CommitResult struct {
 5 terminal check
 6 validate hard CAS / target state / execution grant / recovery authority
 7 facts = Decide(current, command) exactly once
-8 snapshot each fact; EvolveVersion in order; assign next Revision and Index
+8 snapshot each fact; Protocol.Evolve in order; assign next Revision and Index
 9 build and validate one complete TransitionRecord
 10 atomically persist transition and new MachineState
 ```
@@ -318,7 +319,7 @@ type CommitResult struct {
 
 **RUN-CMT-6** Commit 必须原子保存新 MachineState 与完整 TransitionRecord，保证 event group 完整写入。`CommitResult`、Load 与 Record 返回 detached values。预期拒绝映射为 `ErrCommandConflict`、`ErrStaleRuntime`、`ErrRunTerminal`；transport/storage failure 保持可判别且不得伪装为 rejection。
 
-**RUN-CMT-7** 每个 Run 的协议版本是 `RunHeader.SchemaVersion`，在 Create 时冻结。`RuntimeSnapshot.SchemaVersion` 必须等于该 header。`EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Run 的 header 版本；不得使用进程全局 `currentSchemaVersion` 作为写入许可。digest、decode、`DecideVersion` 与 `EvolveVersion` 均按该 version 分发到 `ProtocolV1`（`digestRequestV1`、`decodeCommandVariantV1`、`evolveV1` 等）。v1 Run 的 replay 必须继续使用 v1 digest preimage，即使进程已经把 `currentSchemaVersion` 升到 2。`BuildEnvelopeVersion` 是 Loop 写入该 Run 时的构造入口。
+**RUN-CMT-7** 每个 Run 的协议版本是 `RunHeader.SchemaVersion`，在 Create 时冻结。`RuntimeSnapshot.SchemaVersion` 必须等于该 header。`ProtocolFor(header.SchemaVersion)` 在 Run 边界选出该版本的 `Protocol`；digest、decode、Decide、Evolve、BuildEnvelope 是该对象上的方法，不再接受 version 参数。`EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Protocol 的 Version。不得使用进程全局 `currentSchemaVersion` 作为写入许可。v1 Run 的 replay 必须继续使用 `ProtocolV1`，即使进程已经把 `currentSchemaVersion` 升到 2。Loop 通过 `RuntimeSnapshot.Protocol()` 构造写入该 Run 的 envelope。
 
 `MemoryRuntime` 提供 multi-Run in-process reference implementation：collection lock 保护 Run map，每个 Run 使用独立锁。跨进程 durable recovery 由其他 Runtime adapter 提供。
 
@@ -435,7 +436,7 @@ Queue 只能在 `Current=nil` 的 safe boundary 提交 `AcceptInput`；Applicati
 
 ## 9. compatibility 与 conformance
 
-**RUN-CMP-1** 当前 pre-release schema v1 的 command/fact discriminator、wire fields、canonical digest、derived ID 和 `EvolveVersion(1)` 由 golden fixtures 保护；发布前有意修改协议时必须同步更新 fixture。v1 发布后，新增 variant、字段或折叠语义必须进入新 schema version，并继续 decode/fold 全部已发布版本。同一 Run 的 writer 不得混写不兼容 schema。
+**RUN-CMP-1** 当前 pre-release schema v1 的 command/fact discriminator、wire fields、canonical digest、derived ID 和 `ProtocolV1.Evolve` 由 golden fixtures 保护；发布前有意修改协议时必须同步更新 fixture。v1 发布后，新增 variant、字段或折叠语义必须进入新 schema version，并继续 decode/fold 全部已发布版本。同一 Run 的 writer 不得混写不兼容 schema。
 
 **RUN-CMP-2** Runtime conformance 必须覆盖：
 

@@ -120,14 +120,15 @@ func (e *CommandEnvelope) UnmarshalJSON(raw []byte) error {
 	if err := decodeStrictJSON(raw, &wire); err != nil {
 		return err
 	}
-	if !isSupportedSchemaVersion(wire.SchemaVersion) {
-		return fmt.Errorf("agent: codec: unsupported schema version %d", wire.SchemaVersion)
-	}
-	cmd, err := decodeCommandVariant(wire.SchemaVersion, wire.Type, wire.Command)
+	proto, err := ProtocolFor(wire.SchemaVersion)
 	if err != nil {
 		return err
 	}
-	want, err := DigestCommand(wire.SchemaVersion, wire.Type, cmd)
+	cmd, err := proto.DecodeCommand(wire.Type, wire.Command)
+	if err != nil {
+		return err
+	}
+	want, err := proto.DigestCommand(wire.Type, cmd)
 	if err != nil {
 		return err
 	}
@@ -212,14 +213,15 @@ func (e *AgentEvent) UnmarshalJSON(raw []byte) error {
 	if err := decodeStrictJSON(raw, &wire); err != nil {
 		return err
 	}
-	if !isSupportedSchemaVersion(wire.SchemaVersion) {
-		return fmt.Errorf("agent: codec: unsupported schema version %d", wire.SchemaVersion)
-	}
-	fact, err := decodeFactVariant(wire.SchemaVersion, wire.Type, wire.Fact)
+	proto, err := ProtocolFor(wire.SchemaVersion)
 	if err != nil {
 		return err
 	}
-	want, err := DigestFact(wire.SchemaVersion, wire.Type, fact)
+	fact, err := proto.DecodeFact(wire.Type, wire.Fact)
+	if err != nil {
+		return err
+	}
+	want, err := proto.DigestFact(wire.Type, fact)
 	if err != nil {
 		return err
 	}
@@ -294,28 +296,19 @@ func decodeStrictJSON(raw []byte, dst any) error {
 	return nil
 }
 
-func decodeCommandAs[T AgentCommand](raw json.RawMessage) (AgentCommand, error) {
+func decodeCommandAs[T AgentCommand](raw []byte) (AgentCommand, error) {
 	var c T
 	err := decodeStrictJSON(raw, &c)
 	return c, err
 }
 
-func decodeFactAs[T Fact](raw json.RawMessage) (Fact, error) {
+func decodeFactAs[T Fact](raw []byte) (Fact, error) {
 	var f T
 	err := decodeStrictJSON(raw, &f)
 	return f, err
 }
 
-func decodeCommandVariant(schemaVersion uint16, typ string, raw json.RawMessage) (AgentCommand, error) {
-	switch schemaVersion {
-	case SchemaVersion1:
-		return decodeCommandVariantV1(typ, raw)
-	default:
-		return nil, unsupportedSchemaVersion(schemaVersion)
-	}
-}
-
-func decodeCommandVariantV1(typ string, raw json.RawMessage) (AgentCommand, error) {
+func decodeCommandVariantV1(typ string, raw []byte) (AgentCommand, error) {
 	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return nil, fmt.Errorf("agent: codec: command %q has empty body", typ)
 	}
@@ -353,16 +346,7 @@ func decodeCommandVariantV1(typ string, raw json.RawMessage) (AgentCommand, erro
 	}
 }
 
-func decodeFactVariant(schemaVersion uint16, typ string, raw json.RawMessage) (Fact, error) {
-	switch schemaVersion {
-	case SchemaVersion1:
-		return decodeFactVariantV1(typ, raw)
-	default:
-		return nil, unsupportedSchemaVersion(schemaVersion)
-	}
-}
-
-func decodeFactVariantV1(typ string, raw json.RawMessage) (Fact, error) {
+func decodeFactVariantV1(typ string, raw []byte) (Fact, error) {
 	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return nil, fmt.Errorf("agent: codec: fact %q has empty body", typ)
 	}

@@ -65,7 +65,7 @@ func TestAgentEventJSONRoundTripRestoresVariants(t *testing.T) {
 	}
 	for i, fact := range facts {
 		typ := factType(fact)
-		digest, err := DigestFact(currentSchemaVersion, typ, fact)
+		digest, err := DigestFact(typ, fact)
 		if err != nil {
 			t.Fatalf("DigestFact(%T): %v", fact, err)
 		}
@@ -105,7 +105,7 @@ func TestTransitionRecordJSONRoundTripRestoresVariants(t *testing.T) {
 	events := make([]AgentEvent, len(facts))
 	for i, fact := range facts {
 		typ := factType(fact)
-		digest, err := DigestFact(currentSchemaVersion, typ, fact)
+		digest, err := DigestFact(typ, fact)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -189,7 +189,7 @@ func TestWireCodecRejectsUnknownTypeAndDigestMismatch(t *testing.T) {
 	}
 
 	fact := RunEnded{End: RunCompletedEnd{}}
-	digest, err := DigestFact(currentSchemaVersion, factType(fact), fact)
+	digest, err := DigestFact(factType(fact), fact)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestRunEndedTaggedUnionRejectsInvalidValues(t *testing.T) {
 		"unknown end variant":    {End: fakeRunEnd{}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := DigestFact(currentSchemaVersion, "run_ended", fact); err == nil {
+			if _, err := DigestFact("run_ended", fact); err == nil {
 				t.Fatal("invalid tagged terminal value was accepted")
 			}
 		})

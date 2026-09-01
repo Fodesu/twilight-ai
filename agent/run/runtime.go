@@ -21,8 +21,14 @@ type RuntimeSnapshot struct {
 	// Revision counts accepted transitions; the initial state is 0.
 	Revision uint64
 	// SchemaVersion is the Run header protocol version. Loop and Application
-	// must stamp this version on every new command (RUN-CMT-7).
+	// select ProtocolFor(SchemaVersion) once; they must not stamp a process-global
+	// currentSchemaVersion (RUN-CMT-7).
 	SchemaVersion uint16
+}
+
+// Protocol returns the protocol implementation frozen on this Run's header.
+func (s RuntimeSnapshot) Protocol() (Protocol, error) {
+	return ProtocolFor(s.SchemaVersion)
 }
 
 type CommitRequest struct {
