@@ -375,7 +375,7 @@ type CommitResult struct {
 
 **RUN-CMT-7** 每个 Run 的协议版本是 `RunHeader.SchemaVersion`，在 Create 时冻结。`RuntimeSnapshot.SchemaVersion` 必须等于该 header。`ProtocolFor(header.SchemaVersion)` 在 Run 边界返回绑定了该版本 digest/decode/Decide/Evolve 函数的 `Protocol` 值；随后的方法调用不再接受 version 参数。`EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Protocol 的 Version。不得使用进程全局 `currentSchemaVersion` 作为写入许可。v1 Run 的 replay 必须继续使用 `ProtocolV1`，即使进程已经把 `currentSchemaVersion` 升到 2。Loop 通过 `RuntimeSnapshot.Protocol().BuildEnvelope` 构造写入该 Run 的 envelope。
 
-`MemoryRuntime` 提供 multi-Run in-process reference implementation：collection lock 保护 Run map，每个 Run 使用独立锁。跨进程 durable recovery 由其他 Runtime adapter 提供。
+`Runtime` 的唯一实现叠在 `Store` 上：`Store` 持久化 header、state、transition log 与 `ExecutionLease`，不调用 Decide/Evolve。`MemoryStore`、SQLite、Postgres 实现同一合同。lease 的 `Deadline` 为零表示不超时（进程内占用）；过期且无 settlement 时 Runtime 将 `recoveryValid` 置真，允许 grantless Recover。`RecoverExpired` 扫描过期 lease 并提交恢复 command。`NewMemoryRuntime` 使用 `MemoryStore` 且 lease 不超时。
 
 ## 6. Loop ports 与 policy
 
