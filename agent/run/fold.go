@@ -122,33 +122,6 @@ func FoldTransitions(initial MachineState, records []TransitionRecord) (MachineS
 	return state, uint64(revision), nil
 }
 
-// Rebuild is an optional diagnostic (RUN-CMT-2): it refolds the state from
-// the transition log and replaces the in-memory state with the fold result.
-// Runtime.Commit remains the normal state transition path. A log shorter than
-// the last committed revision returns ErrLogTruncated (audit gap). It returns
-// true when the refolded state differs from the stored state, which identifies
-// an Evolve bug, out-of-band write, or storage corruption.
-func (m *MemoryRuntime) Rebuild(runID RunID) (rebuilt bool, err error) {
-	entry, err := m.entry(runID)
-	if err != nil {
-		return false, err
-	}
-	entry.mu.Lock()
-	defer entry.mu.Unlock()
-
-	folded, maxRevision, err := FoldTransitions(cloneMachineState(&entry.initial), entry.log)
-	if err != nil {
-		return false, err
-	}
-	if maxRevision < entry.watermark {
-		return false, fmt.Errorf("%w: log ends at %d, watermark %d", ErrLogTruncated, maxRevision, entry.watermark)
-	}
-	diverged := entry.revision != maxRevision || !statesEquivalent(&entry.state, &folded)
-	entry.state = folded
-	entry.revision = maxRevision
-	return diverged, nil
-}
-
 // statesEquivalent compares two states via their canonical serialization —
 // the same identity rule the protocol uses everywhere else.
 func statesEquivalent(a, b *MachineState) bool {
