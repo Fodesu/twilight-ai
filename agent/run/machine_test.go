@@ -62,16 +62,16 @@ func buildPrepare(t *testing.T, s MachineState, req sdk.Request, specs []ToolSpe
 	if err != nil {
 		t.Fatal(err)
 	}
-	reqDigest, err := DigestRequest(frozenReq)
+	reqDigest, err := DigestRequest(SchemaVersion1, frozenReq)
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolsDigest, err := DigestToolSpecs(specs)
+	toolsDigest, err := DigestToolSpecs(SchemaVersion1, specs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	model := ModelRef(frozenReq.Model)
-	binding, err := DigestModelStepBinding(model, reqDigest, toolsDigest)
+	binding, err := DigestModelStepBinding(SchemaVersion1, model, reqDigest, toolsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func makeSpec(t *testing.T, def sdk.ToolDefinition, policy ResponsePolicy) ToolS
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := DigestToolDefinition(frozen)
+	d, err := DigestToolDefinition(SchemaVersion1, frozen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func makeSpec(t *testing.T, def sdk.ToolDefinition, policy ResponsePolicy) ToolS
 
 func responseDecisionDigest(t *testing.T, kind ResponseKind, decision ResponseDecision, reason string) Digest {
 	t.Helper()
-	d, err := DigestToolResponseDecision(kind, decision, reason)
+	d, err := DigestToolResponseDecision(SchemaVersion1, kind, decision, reason)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func responseDecisionDigest(t *testing.T, kind ResponseKind, decision ResponseDe
 
 func responsePayloadDigest(t *testing.T, payload CanonicalJSON) Digest {
 	t.Helper()
-	d, err := DigestToolResponsePayload(payload)
+	d, err := DigestToolResponsePayload(SchemaVersion1, payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -595,15 +595,15 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 	}
 	prepared := func(ids ...InputID) ModelStepPrepared {
 		request := ModelRequest{Model: string(testModel)}
-		requestDigest, err := DigestRequest(request)
+		requestDigest, err := DigestRequest(SchemaVersion1, request)
 		if err != nil {
 			t.Fatal(err)
 		}
-		toolsDigest, err := DigestToolSpecs(nil)
+		toolsDigest, err := DigestToolSpecs(SchemaVersion1, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		binding, err := DigestModelStepBinding(testModel, requestDigest, toolsDigest)
+		binding, err := DigestModelStepBinding(SchemaVersion1, testModel, requestDigest, toolsDigest)
 		if err != nil {
 			t.Fatal(err)
 		}

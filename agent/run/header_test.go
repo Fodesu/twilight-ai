@@ -48,6 +48,26 @@ func TestValidateRunHeaderRejectsTampering(t *testing.T) {
 	}
 }
 
+func TestCommitRejectsCommandSchemaMismatch(t *testing.T) {
+	rt := NewMemoryRuntime()
+	newRun, err := BuildNewRun("run-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Create(t.Context(), newRun); err != nil {
+		t.Fatal(err)
+	}
+	in := AgentInput{ID: "seed", Payload: MustParseCanonicalJSON(`{"q":"hi"}`)}
+	env, err := BuildEnvelope("run-1", DeriveInputCommandID("run-1", in.ID), NextStep(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env.SchemaVersion = 2
+	if _, err := rt.Commit(t.Context(), CommitRequest{BaseRevision: 0, Command: env}); err == nil {
+		t.Fatal("v2 envelope accepted on v1 run")
+	}
+}
+
 func TestFoldRunFromHeaderMatchesRuntime(t *testing.T) {
 	h, err := BuildRunHeader("run-1", "")
 	if err != nil {

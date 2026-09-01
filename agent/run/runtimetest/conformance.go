@@ -474,16 +474,16 @@ func buildPrepareFromSnap(t testing.TB, snap *run.RuntimeSnapshot, req *sdk.Requ
 	if err != nil {
 		t.Fatal(err)
 	}
-	reqDigest, err := run.DigestRequest(frozenReq)
+	reqDigest, err := run.DigestRequest(run.SchemaVersion1, frozenReq)
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolsDigest, err := run.DigestToolSpecs(specs)
+	toolsDigest, err := run.DigestToolSpecs(run.SchemaVersion1, specs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	model := run.ModelRef(frozenReq.Model)
-	binding, err := run.DigestModelStepBinding(model, reqDigest, toolsDigest)
+	binding, err := run.DigestModelStepBinding(run.SchemaVersion1, model, reqDigest, toolsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -519,7 +519,7 @@ func makeSpec(t testing.TB, def sdk.ToolDefinition) run.ToolSpec {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := run.DigestToolDefinition(frozen)
+	d, err := run.DigestToolDefinition(run.SchemaVersion1, frozen)
 	if err != nil {
 		t.Fatal(err)
 	}

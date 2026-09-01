@@ -1,7 +1,6 @@
 package run
 
 import (
-	"errors"
 	"fmt"
 
 	"github.com/memohai/twilight/agent/es"
@@ -99,22 +98,15 @@ type toolResponseDecisionDigestBody struct {
 }
 
 // DigestToolResponseDecision computes the content digest for approval and
-// rejection ingress. The ResponseID remains the routing/idempotency key; this
-// digest binds the actual decision payload recorded in the command/fact.
-func DigestToolResponseDecision(kind ResponseKind, decision ResponseDecision, reason string) (Digest, error) {
-	if kind != ResponseApproval && kind != ResponseExternal {
-		return "", fmt.Errorf("agent: response decision: unsupported kind %q", kind)
+// rejection ingress under schemaVersion. The ResponseID remains the
+// routing/idempotency key; this digest binds the decision payload.
+func DigestToolResponseDecision(schemaVersion uint16, kind ResponseKind, decision ResponseDecision, reason string) (Digest, error) {
+	switch schemaVersion {
+	case SchemaVersion1:
+		return digestToolResponseDecisionV1(kind, decision, reason)
+	default:
+		return "", unsupportedSchemaVersion(schemaVersion)
 	}
-	if decision != ResponseDecisionApproved && decision != ResponseDecisionRejected {
-		return "", fmt.Errorf("agent: response decision: unsupported decision %q", decision)
-	}
-	body, err := encodeEnvelopeBody(currentSchemaVersion, "tool_response_decision", toolResponseDecisionDigestBody{
-		Kind: kind, Decision: decision, Reason: reason,
-	})
-	if err != nil {
-		return "", err
-	}
-	return sha256Digest(body), nil
 }
 
 type toolResponsePayloadDigestBody struct {
@@ -122,65 +114,71 @@ type toolResponsePayloadDigestBody struct {
 }
 
 // DigestToolResponsePayload computes the content digest for an ExternalResponse
-// answer payload.
-func DigestToolResponsePayload(payload CanonicalJSON) (Digest, error) {
-	body, err := encodeEnvelopeBody(currentSchemaVersion, "tool_response_payload", toolResponsePayloadDigestBody{Payload: payload})
-	if err != nil {
-		return "", err
+// answer payload under schemaVersion.
+func DigestToolResponsePayload(schemaVersion uint16, payload CanonicalJSON) (Digest, error) {
+	switch schemaVersion {
+	case SchemaVersion1:
+		return digestToolResponsePayloadV1(payload)
+	default:
+		return "", unsupportedSchemaVersion(schemaVersion)
 	}
-	return sha256Digest(body), nil
 }
 
 // DigestRequest covers every field of a frozen ModelRequest with no exclusions
-// (RUN-WIR-2).
+// (RUN-WIR-2). schemaVersion selects the digest preimage.
 //
 //nolint:gocritic // hugeParam: digest covers the complete immutable ModelRequest value.
-func DigestRequest(req ModelRequest) (Digest, error) {
-	body, err := encodeEnvelopeBody(currentSchemaVersion, "model_request", req)
-	if err != nil {
-		return "", err
+func DigestRequest(schemaVersion uint16, req ModelRequest) (Digest, error) {
+	switch schemaVersion {
+	case SchemaVersion1:
+		return digestRequestV1(req)
+	default:
+		return "", unsupportedSchemaVersion(schemaVersion)
 	}
-	return sha256Digest(body), nil
 }
 
 // DigestToolDefinition covers one provider-neutral tool definition.
-func DigestToolDefinition(def ToolDefinition) (Digest, error) {
-	body, err := encodeEnvelopeBody(currentSchemaVersion, "tool_definition", def)
-	if err != nil {
-		return "", err
+func DigestToolDefinition(schemaVersion uint16, def ToolDefinition) (Digest, error) {
+	switch schemaVersion {
+	case SchemaVersion1:
+		return digestToolDefinitionV1(def)
+	default:
+		return "", unsupportedSchemaVersion(schemaVersion)
 	}
-	return sha256Digest(body), nil
 }
 
 // DigestToolSpec covers one agent ToolSpec (ref, definition, digest, policy).
 //
 //nolint:gocritic // hugeParam: digest covers the complete immutable ToolSpec value.
-func DigestToolSpec(spec ToolSpec) (Digest, error) {
-	body, err := encodeEnvelopeBody(currentSchemaVersion, "tool_spec", spec)
-	if err != nil {
-		return "", err
+func DigestToolSpec(schemaVersion uint16, spec ToolSpec) (Digest, error) {
+	switch schemaVersion {
+	case SchemaVersion1:
+		return digestToolSpecV1(spec)
+	default:
+		return "", unsupportedSchemaVersion(schemaVersion)
 	}
-	return sha256Digest(body), nil
 }
 
 // DigestToolSpecs covers an ordered ToolSpec list: ref, schema, order and
 // policy all participate (RUN-MCH-2).
-func DigestToolSpecs(specs []ToolSpec) (Digest, error) {
-	body, err := encodeEnvelopeBody(currentSchemaVersion, "tool_specs", specs)
-	if err != nil {
-		return "", err
+func DigestToolSpecs(schemaVersion uint16, specs []ToolSpec) (Digest, error) {
+	switch schemaVersion {
+	case SchemaVersion1:
+		return digestToolSpecsV1(specs)
+	default:
+		return "", unsupportedSchemaVersion(schemaVersion)
 	}
-	return sha256Digest(body), nil
 }
 
 // DigestModelStepBinding combines model, request digest and tools digest into
 // the immutable ModelStep binding digest.
-func DigestModelStepBinding(model ModelRef, requestDigest, toolsDigest Digest) (Digest, error) {
-	if model == "" || requestDigest == "" || toolsDigest == "" {
-		return "", errors.New("agent: model step binding requires model, request digest and tools digest")
+func DigestModelStepBinding(schemaVersion uint16, model ModelRef, requestDigest, toolsDigest Digest) (Digest, error) {
+	switch schemaVersion {
+	case SchemaVersion1:
+		return digestModelStepBindingV1(model, requestDigest, toolsDigest)
+	default:
+		return "", unsupportedSchemaVersion(schemaVersion)
 	}
-	return sha256Digest([]byte(namespacedHash("twilight/model-step-binding",
-		string(model), string(requestDigest), string(toolsDigest)))), nil
 }
 
 // digestBindingSet covers the full ordered pre-Response call set of one

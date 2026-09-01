@@ -13,11 +13,24 @@ import (
 // each can evolve only through its documented versioning rules (RUN-CMP-1).
 const snapshotSchemaVersion uint16 = 1
 
-// encodeMachineStateWire renders the canonical bytes of a MachineState for
-// header digests. The interface-typed Current step is flattened the same way
-// state equivalence comparison does.
-func encodeMachineStateWire(s *MachineState) ([]byte, error) {
-	return marshalCanonical(stateComparable(s))
+// encodeMachineStateVersion renders the canonical bytes of a MachineState for
+// header digests under schemaVersion.
+func encodeMachineStateVersion(schemaVersion uint16, s *MachineState) ([]byte, error) {
+	switch schemaVersion {
+	case SchemaVersion1:
+		return encodeMachineStateV1(s)
+	default:
+		return nil, unsupportedSchemaVersion(schemaVersion)
+	}
+}
+
+func validateHeaderInitialStateVersion(h *RunHeader) error {
+	switch h.SchemaVersion {
+	case SchemaVersion1:
+		return validateHeaderV1(h)
+	default:
+		return unsupportedSchemaVersion(h.SchemaVersion)
+	}
 }
 
 // RunHeader is the formal persisted Revision-0 protocol record (RUN-NEW-1).
@@ -55,7 +68,7 @@ func BuildRunHeader(runID RunID, causationID es.CausationID) (RunHeader, error) 
 	if err != nil {
 		return RunHeader{}, err
 	}
-	stateBytes, err := encodeMachineStateWire(&initial)
+	stateBytes, err := encodeMachineStateVersion(currentSchemaVersion, &initial)
 	if err != nil {
 		return RunHeader{}, err
 	}
@@ -101,8 +114,8 @@ func ValidateRunHeader(h *RunHeader) error {
 	if !isSupportedSchemaVersion(h.SchemaVersion) {
 		return fmt.Errorf("agent: run header: unsupported schema version %d", h.SchemaVersion)
 	}
-	if h.InitialStateVersion != snapshotSchemaVersion {
-		return fmt.Errorf("agent: run header: unsupported initial state version %d", h.InitialStateVersion)
+	if err := validateHeaderInitialStateVersion(h); err != nil {
+		return err
 	}
 	if h.InitialState.RunID != h.RunID {
 		return errors.New("agent: run header: initial state RunID mismatch")
@@ -114,7 +127,7 @@ func ValidateRunHeader(h *RunHeader) error {
 		h.InitialState.Usage != (Usage{}) {
 		return errors.New("agent: run header: initial state is not a minimal Revision-0 state")
 	}
-	stateBytes, err := encodeMachineStateWire(&h.InitialState)
+	stateBytes, err := encodeMachineStateVersion(h.SchemaVersion, &h.InitialState)
 	if err != nil {
 		return err
 	}

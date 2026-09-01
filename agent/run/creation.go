@@ -63,7 +63,7 @@ const newRunV1InitialStateVersion uint16 = 1
 
 func buildRunHeaderV1(run NewRun) (RunHeader, error) {
 	initial := MachineState{RunID: run.RunID, Status: RunActive}
-	stateBytes, err := encodeMachineStateWire(&initial)
+	stateBytes, err := encodeMachineStateV1(&initial)
 	if err != nil {
 		return RunHeader{}, err
 	}
