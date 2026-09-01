@@ -342,9 +342,12 @@ func (l *Loop) Run(ctx context.Context, runtime run.Runtime, runID run.RunID, ev
 				return LoopResult{}, err
 			}
 		case run.Idle:
-			return LoopResult{Disposition: LoopWaiting}, nil
-		case run.WaitForExecutionRecovery:
-			return LoopResult{Disposition: LoopWaiting, Reason: ExecutionRecovery, ExecutionRecovery: true}, nil
+			recovery := run.NeedsRecovery(snapshot.State)
+			reason := WaitReason("")
+			if recovery {
+				reason = ExecutionRecovery
+			}
+			return LoopResult{Disposition: LoopWaiting, Reason: reason, ExecutionRecovery: recovery}, nil
 		default:
 			return LoopResult{}, fmt.Errorf("agent: loop: unknown effect %T", effect)
 		}
