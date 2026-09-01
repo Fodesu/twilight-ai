@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -164,6 +165,33 @@ func TestLoopSingleModelCallCompletes(t *testing.T) {
 	}
 	if res.Result.Model.Text != "hello" {
 		t.Fatalf("text = %q", res.Result.Model.Text)
+	}
+}
+
+type errCatalog struct{ err error }
+
+func (c errCatalog) Resolve(ModelRef) (ModelInvoker, error) { return nil, c.err }
+
+func TestLoopModelCatalogErrorDoesNotFailRun(t *testing.T) {
+	rt := loopRuntime(t)
+	loop, err := New(errCatalog{errors.New("missing provider")}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = loop.Run(context.Background(), rt, "run-1", nil)
+	if err == nil || !strings.Contains(err.Error(), "missing provider") {
+		t.Fatalf("err = %v", err)
+	}
+	snap, loadErr := rt.Load(context.Background(), "run-1")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if snap.State.Status != RunActive {
+		t.Fatalf("status = %v", snap.State.Status)
+	}
+	ms, ok := snap.State.Current.(ModelStep)
+	if !ok || ms.Status != ModelPrepared {
+		t.Fatalf("current = %+v", snap.State.Current)
 	}
 }
 
