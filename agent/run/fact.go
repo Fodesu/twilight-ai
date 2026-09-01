@@ -10,7 +10,7 @@ import (
 
 // Fact is one committed outcome produced by Machine.Decide. Facts are wrapped
 // as AgentEvents; Machine.Evolve folds them mechanically (RUN-MCH-3). The
-// interface is sealed: only the fourteen variants below exist.
+// interface is sealed: only the thirteen variants below exist.
 type Fact interface{ fact() }
 
 // ModelStepPrepared establishes the frozen ModelStep and consumes the listed

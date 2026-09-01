@@ -171,8 +171,9 @@ type LoopResult struct {
 	// Reason is retained for source compatibility. ExecutionRecovery is
 	// the authoritative signal that a live execution needs recovery.
 	Reason WaitReason
-	// ExecutionRecovery is true when at least one call remains Executing
-	// after this Loop has no further executable effect.
+	// ExecutionRecovery is true when NeedsRecovery(state) is true after this
+	// Loop has no further executable effect: a ModelStep is Executing, or a
+	// ToolStep has Executing calls and no Pending calls.
 	ExecutionRecovery bool
 	Result            *run.RunResult
 }

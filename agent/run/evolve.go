@@ -6,8 +6,8 @@ import (
 )
 
 // Evolve folds one fact with the current write schema. Persisted replay must
-// use ProtocolFor(header.SchemaVersion).Evolve so historical folding semantics
-// stay bound to the Run that produced the fact.
+// use ProtocolFor on the fact or transition SchemaVersion so historical
+// folding semantics stay bound to the Run that produced the fact.
 //
 //nolint:gocritic // hugeParam: public fold boundary must stay value-based: Evolve(state, fact) -> new state.
 func Evolve(s MachineState, f Fact) (MachineState, error) {

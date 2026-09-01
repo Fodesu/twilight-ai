@@ -102,7 +102,7 @@ type PlanningHint struct {
 }
 
 // Next derives the pending effect from the current state (RUN-MCH-4).
-// Terminal states yield no effect; callers check Status first.
+// Terminal states return ErrRunTerminal; callers check Status first.
 //
 //nolint:gocritic // hugeParam: Next is a pure value-state interpreter and must not mutate MachineState.
 func Next(s MachineState) (Effect, error) {

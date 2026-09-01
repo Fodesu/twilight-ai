@@ -91,7 +91,7 @@ type TransitionRecord struct {
 
 `CommandEnvelope.Digest` 覆盖 schema、type 与完整 command；RunID、CommandID、BaseRevision 和 grant 属于 envelope/commit metadata。`AgentEvent.Digest` 覆盖 schema、type 与完整 fact。`TransitionDigest` 覆盖自身以外的完整 transition，包括有序 event group。
 
-**RUN-WIR-3** 一个 transition 的 event 数至少为 1；其 RunID、Revision、CommandID、CommandDigest 相同，Index 从 0 连续递增。revision 从 1 连续递增。构造 command 必须使用 `BuildEnvelope`；构造与验证 transition 必须使用 `BuildTransitionRecord`、`ValidateTransitionRecord`。所有公开返回值具有 detached snapshot 语义。
+**RUN-WIR-3** 一个 transition 的 event 数至少为 1；其 RunID、Revision、CommandID、CommandDigest 相同，Index 从 0 连续递增。revision 从 1 连续递增。写入已存在的 Run 时，构造 command 必须使用该 Run 的 `Protocol.BuildEnvelope`（Loop 通过 `RuntimeSnapshot.Protocol()` 取得）。包级 `BuildEnvelope` 只服务当前写入 schema，供新 Run 与测试。构造与验证 transition 必须使用 `BuildTransitionRecord`、`ValidateTransitionRecord`。所有公开返回值具有 detached snapshot 语义。
 
 下列 identity 稳定派生并由 Commit 验证：
 
@@ -103,7 +103,8 @@ type TransitionRecord struct {
 | ResponseID | RunID、ToolStepID、CallID、ResponseKind |
 | response CommandID | RunID、StepID、CallID、ResponseID |
 | input CommandID | RunID、InputID |
-| recovery CommandID | RunID、StepID、Claim、CallID（如适用）、recovery kind |
+| model recovery CommandID | RunID、StepID、Claim |
+| system recovery CommandID | RunID、StepID、CallID、recovery record |
 
 同一派生 identity 的内容变化通过 command digest 触发 conflict。`PlanningToken` 是 Application-owned opaque freshness token，属于 prepare command identity 内容；Planner 负责解释它的 freshness，`ModelStepPrepared` 保存冻结请求及其 digest。
 
@@ -136,7 +137,7 @@ type RunRecord struct {
 
 Header 创建后 immutable。`InitialStateDigest` 覆盖 frozen initial state；`HeaderDigest` 覆盖 schema、RunID、initial-state version/digest 与 causation。`ValidateRunHeader` 验证这些约束。
 
-**RUN-NEW-2** `FoldRun(header, transitions)` 先验证 header，再按 revision/index 使用 `ProtocolFor(header.SchemaVersion).Evolve` 折叠完整 transition sequence。Fold 过程执行纯状态重建。import、diagnostic 与 `Runtime.Record` integrity verification 从 header 开始；外部 snapshot 通过 FoldRun 结果校验。
+**RUN-NEW-2** `FoldRun(header, transitions)` 先验证 header，再按 revision/index 折叠完整 transition sequence。每条 `TransitionRecord` 按其自身 `SchemaVersion` 绑定 `Protocol` 再 `Evolve`。合法 Run 的每条 record 的 SchemaVersion 必须等于 `header.SchemaVersion`（RUN-CMP-1）。Fold 过程执行纯状态重建。import、diagnostic 与 `Runtime.Record` integrity verification 从 header 开始；外部 snapshot 通过 FoldRun 结果校验。
 
 ## 4. Machine
 
@@ -158,8 +159,22 @@ type RunResult struct {
     Status  RunStatus
     Reason  RunReason
     Failure *RunFailure
+    UncertainCalls []CallID
+    UncertainModel StepID
     Model   *ModelResult
     Usage   Usage
+}
+
+type ToolScheduleMode string // "parallel" | "sequential"；空值按 parallel 解释
+type ToolScheduling struct {
+    Mode ToolScheduleMode
+    MaxParallel int // 0 表示当前 Start 批次全部 Pending call 可并行
+}
+type ToolStep struct {
+    RefValue StepRef
+    Source StepID
+    Calls []ToolCallState
+    Scheduling ToolScheduling
 }
 ```
 
@@ -221,17 +236,17 @@ ToolCall:
 | `SubmitModelFailure` | Model Executing；`RunEnded(failed/provider_failure)` |
 | `RejectModelResult` | Model Executing；`ModelStepRejected`，由调用方显式选择回到 Prepared 或在同一 transition 追加 `RunEnded(failed/malformed_model_result)` |
 | `StartToolCall` | Tool Pending；`ToolCallStarted`。command 必须携带本次 start 的 `ExecutionClaim` |
-| `SubmitToolResult` | Tool Executing；`ToolCallCompleted`，最后一个 call 进入 terminal 时隐式关闭 ToolStep |
-| `SubmitToolFailure(Known)` | Tool Pending/Executing；`ToolCallFailed(Known)`，最后一个 call 进入 terminal 时隐式关闭 ToolStep |
+| `SubmitToolResult` | Tool Executing；`ToolCallCompleted`。该 fact 经 Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
+| `SubmitToolFailure(Known)` | Tool Pending/Executing；`ToolCallFailed(Known)`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
 | `SubmitToolFailure(Unknown)` | Tool Executing；`ToolCallFailed(Unknown)`、`RunEnded(failed/effect_unknown)` |
 | `ApproveToolCall` | Waiting(Approval)；`ToolCallApproved` |
-| `RejectToolCall` | Waiting(Approval) 记 `ToolCallFailed(Known/permission_denied)`；Waiting(ExternalResponse) 记 `ToolCallFailed(Known/response_rejected)`。最后一个 call 进入 terminal 时隐式关闭 ToolStep |
-| `SubmitToolResponse` | Waiting(ExternalResponse)；`ToolCallAnswered`，最后一个 call 进入 terminal 时隐式关闭 ToolStep |
-| `CancelRun` | active；仍 Executing 的 tool call 记 `ToolCallFailed(Unknown)`，随后 `RunEnded(stopped/cancelled)`，并在 `RunStoppedEnd` / `RunResult` 上列出 `UncertainCalls` 与 `UncertainModel` |
+| `RejectToolCall` | Waiting(Approval) 记 `ToolCallFailed(Known/permission_denied)`；Waiting(ExternalResponse) 记 `ToolCallFailed(Known/response_rejected)`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
+| `SubmitToolResponse` | Waiting(ExternalResponse)；`ToolCallAnswered`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
+| `CancelRun` | active；仍 Executing 的 tool call 记 `ToolCallFailed(Unknown)`，随后 `RunEnded(stopped/cancelled)`，并在 `RunStoppedEnd` / `RunResult` 上列出 `UncertainCalls` 与 `UncertainModel`。仅 Waiting、没有 Executing 时不给 Waiting call 记 Failed；`RunEnded` 清除 Current |
 
-最后一个 ToolCall 进入 Completed 或 Failed 时，Decide 隐式关闭 ToolStep；没有独立的 `ToolStepClosed` fact。
+没有独立的 `ToolStepClosed` fact。最后一个 ToolCall 进入 Completed 或 Failed 时，`Evolve` 在折叠该 fact 后若全部 call 已 terminal，则把 Current 清掉并写入 `LastToolStep` / `LastClosedStep`。
 
-**RUN-MCH-3** `Decide(state, command)` 执行全部验证与 derived consequence，一次返回该 transition 的完整 ordered fact group；验证成功后返回完整 facts。`Protocol.Evolve(state, fact)` 机械折叠 fact，依赖 fact 携带的完整数据。accepted facts 必须 self-contained；若 transition terminalize，`RunEnded` 必须是 Decide 输出的最后一个 fact。
+**RUN-MCH-3** `Protocol.Decide(state, command)` 执行全部验证与 derived consequence，一次返回该 transition 的完整 ordered fact group；验证成功后返回完整 facts。包级 `Decide` 委托当前写入 schema。`Protocol.Evolve(state, fact)` 机械折叠 fact，依赖 fact 携带的完整数据。accepted facts 必须 self-contained；若 transition terminalize，`RunEnded` 必须是 Decide 输出的最后一个 fact。
 
 启动 command 的最小公共形状为：
 
@@ -257,7 +272,7 @@ Loop 在提交 start 前生成并保留 `Claim`、`CommandID` 与 command digest
 
 | state | effect |
 |---|---|
-| terminal | 无 |
+| terminal | 返回 `ErrRunTerminal`，没有 effect |
 | Current=nil | `NeedModelRequest{PlanningHint}` |
 | Model Prepared | `StartModelCall` |
 | Model Executing | `Idle` |
@@ -282,7 +297,17 @@ type RuntimeSnapshot struct {
     Revision uint64
     SchemaVersion uint16 // RunHeader.SchemaVersion
 }
+type Protocol struct {
+    // ProtocolFor 一次绑定该 SchemaVersion 的 digest、decode、Decide、Evolve。
+    // 方法不再接受 version 参数。零值 Version()==0，不得调用。
+}
+func ProtocolFor(schemaVersion uint16) (Protocol, error)
 func (RuntimeSnapshot) Protocol() (Protocol, error) // ProtocolFor(SchemaVersion)
+func (Protocol) Version() uint16
+func (Protocol) BuildEnvelope(run RunID, id CommandID, cmd AgentCommand) (CommandEnvelope, error)
+func (Protocol) Decide(MachineState, AgentCommand) ([]Fact, error)
+func (Protocol) Evolve(MachineState, Fact) (MachineState, error)
+var ProtocolV1 Protocol // SchemaVersion1 绑定；包级 DigestRequest/BuildEnvelope 委托它
 type CommitRequest struct {
     BaseRevision uint64
     Grant ExecutionGrant
@@ -309,7 +334,7 @@ type CommitResult struct {
 4 same CommandID/different digest -> conflict
 5 terminal check
 6 validate hard CAS / target state / execution grant / recovery authority
-7 facts = Decide(current, command) exactly once
+7 facts = Protocol.Decide(current, command) exactly once
 8 snapshot each fact; Protocol.Evolve in order; assign next Revision and Index
 9 build and validate one complete TransitionRecord
 10 atomically persist transition and new MachineState
@@ -323,7 +348,7 @@ type CommitResult struct {
 
 **RUN-CMT-6** Commit 必须原子保存新 MachineState 与完整 TransitionRecord，保证 event group 完整写入。`CommitResult`、Load 与 Record 返回 detached values。预期拒绝映射为 `ErrCommandConflict`、`ErrStaleRuntime`、`ErrRunTerminal`；transport/storage failure 保持可判别且不得伪装为 rejection。
 
-**RUN-CMT-7** 每个 Run 的协议版本是 `RunHeader.SchemaVersion`，在 Create 时冻结。`RuntimeSnapshot.SchemaVersion` 必须等于该 header。`ProtocolFor(header.SchemaVersion)` 在 Run 边界返回绑定了该版本 digest/decode/Decide/Evolve 函数的 `Protocol` 值；随后的方法调用不再接受 version 参数。`EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Protocol 的 Version。不得使用进程全局 `currentSchemaVersion` 作为写入许可。v1 Run 的 replay 必须继续使用 `ProtocolV1`，即使进程已经把 `currentSchemaVersion` 升到 2。Loop 通过 `RuntimeSnapshot.Protocol()` 构造写入该 Run 的 envelope。
+**RUN-CMT-7** 每个 Run 的协议版本是 `RunHeader.SchemaVersion`，在 Create 时冻结。`RuntimeSnapshot.SchemaVersion` 必须等于该 header。`ProtocolFor(header.SchemaVersion)` 在 Run 边界返回绑定了该版本 digest/decode/Decide/Evolve 函数的 `Protocol` 值；随后的方法调用不再接受 version 参数。`EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Protocol 的 Version。不得使用进程全局 `currentSchemaVersion` 作为写入许可。v1 Run 的 replay 必须继续使用 `ProtocolV1`，即使进程已经把 `currentSchemaVersion` 升到 2。Loop 通过 `RuntimeSnapshot.Protocol().BuildEnvelope` 构造写入该 Run 的 envelope。
 
 `MemoryRuntime` 提供 multi-Run in-process reference implementation：collection lock 保护 Run map，每个 Run 使用独立锁。跨进程 durable recovery 由其他 Runtime adapter 提供。
 
@@ -390,7 +415,7 @@ func (*Loop) Run(context.Context, run.Runtime, run.RunID, EventSink) (LoopResult
 
 **RUN-LOP-7** `ModelRef` 是冻结请求中的执行身份。`ModelCatalog.Resolve` 在同一 Run 生命周期内必须把同一 `ModelRef` 解析为等价的执行语义。provider 绑定不进入 frozen request，因此 Catalog 不得把同一 ref 改绑到不同实现。
 
-`LoopResult` 的语义固定为：`LoopWaiting` 时 `Result` 为 nil，表示没有可执行 effect、Run 仍为 active。`ExecutionRecovery` 为 true 时至少有一个 call 仍为 Executing，由 recovery authority 唤醒。`Reason` 在该情况下为 `execution_recovery`，Idle 时为空。Waiting call 不进入 `LoopResult`；Application 通过 `Runtime.Load` / `Record` 与 `WaitingCalls` 读取。`LoopFinished` 时 `Result` 非 nil，并等于 terminal RunRecord 派生的 `RunResult`。
+`LoopResult` 的语义固定为：`LoopWaiting` 时 `Result` 为 nil，表示没有可执行 effect、Run 仍为 active。`ExecutionRecovery` 等于 `NeedsRecovery(state)`：Model Executing，或 ToolStep 无 Pending 且仍有 Executing。该值为 true 时由 recovery authority 唤醒，`Reason` 为 `execution_recovery`；否则 `Reason` 为空。Waiting call 不进入 `LoopResult`；Application 通过 `Runtime.Load` / `Record` 与 `WaitingCalls` 读取。`LoopFinished` 时 `Result` 非 nil，并等于 terminal RunRecord 派生的 `RunResult`。
 
 `RequestPlanner` 从 `PlanningHint` 接收 Run 边界事实；它使用自己注入的 history、session context、memory、attachments 与 product policy 组装 `sdk.Request`。Runtime 验证并冻结 planner 返回的 request，Planner 管理 application context。
 
@@ -402,6 +427,8 @@ Loop.Run(ctx, runtime, runID, sink):
     snapshot = Runtime.Load(runID)
     validate snapshot.State.RunID == runID
     if terminal: emit observational run_finished; return Finished(snapshot.Result)
+    if resumeSettlement: continue   // 重放可能已提交、响应丢失的 settlement
+    if resumeCachedStart: continue  // 重放本进程已接受、尚未结算的 start
     effect = run.Next(snapshot.State)
     dispatch effect
 ```
@@ -412,7 +439,7 @@ Loop.Run(ctx, runtime, runID, sink):
 
 **RUN-LOP-3** `StartModelCall` 先 Commit start barrier；首次 `CommitAccepted` 或使用同一 command ID、同一 `ExecutionClaim` 精确重放得到原 grant 的 Loop，才拥有该 execution。Loop 必须保留 start command 的 ID、digest 和 claim，直到完成 settlement；缺少 grant 的 replay 进入 reload 流程。调用只使用 frozen ModelRequest 的 detached SDK materialization。streaming 与 non-streaming 必须产生同一种完整 `sdk.ModelResult`；delta 只发 EventSink。`ModelCatalog.Resolve` 失败或返回 nil 时提交 `RecoverModelExecution` 并返回错误，不得把 Run 记为 `provider_failure`：尚未发生模型调用。provider 调用失败提交 `SubmitModelFailure`；ctx cancellation 提交 `RecoverModelExecution`；结构、binding 或 freeze 失败提交 `RejectModelResult`，并由调用方显式选择 retry 或 fail-run。成功结果只提交一次 `SubmitModelResult`。
 
-**RUN-LOP-4** Tool execution 先按 frozen binding resolve tool，并验证 Ref、definition digest、response policy 和 arguments。lookup/definition/argument failure 在 Pending 状态提交 `SubmitToolFailure(Known)`，不得跨越 start barrier。通过验证后逐 call 提交 `StartToolCall`；只有 Accepted owner 可执行。冻结的 `ToolStep.Scheduling` 决定 `parallel` 或 `sequential` 以及 `MaxParallel`；不得改用 Loop 进程当前的 ExecutionPolicy。每个结果以自己的 grant 提交。同一 ToolStep 中 DirectExecution 的 Pending call 在本次 `Run` 内 Start 并结算。`Next` 返回 `Idle` 时 Loop 返回 `LoopWaiting`，并用 `NeedsRecovery(state)` 设置 `ExecutionRecovery`。Loop 不解释 Waiting call，也不携带 `ResponseRequest`。Application 从 snapshot 读取 `WaitingCalls`，提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 之后再次 `Run`。tool panic 或 effect 状态无法确定的错误转为 Unknown；一个 Unknown 取消同批 sibling workers，并由 Machine 在同一 terminal transition 中记录目标及仍 Executing sibling 的 `ToolCallFailed(Unknown)`，最后追加 `RunEnded(failed/effect_unknown)`。`CancelRun` 也在 `RunEnded(stopped/cancelled)` 前记录所有仍 Executing call 的 Unknown。已接受 start 的 worker 必须在收到外层取消后返回并尝试 settlement；settlement 使用独立 control context。
+**RUN-LOP-4** Tool execution 先按 frozen binding resolve tool，并验证 Ref、definition digest、response policy 和 arguments。lookup/definition/argument failure 在 Pending 状态提交 `SubmitToolFailure(Known)`，不得跨越 start barrier。通过验证后逐 call 提交 `StartToolCall`；只有 Accepted owner 可执行。冻结的 `ToolStep.Scheduling` 决定 `parallel` 或 `sequential` 以及 `MaxParallel`；不得改用 Loop 进程当前的 ExecutionPolicy。每个结果以自己的 grant 提交。同一 ToolStep 中 DirectExecution 的 Pending call 在本次 `Run` 内 Start 并结算。`Next` 返回 `Idle` 时 Loop 返回 `LoopWaiting`，并用 `NeedsRecovery(state)` 设置 `ExecutionRecovery`。Loop 不解释 Waiting call，也不携带 `ResponseRequest`。Application 从 snapshot 读取 `WaitingCalls`，提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 之后再次 `Run`。tool panic 或 effect 状态无法确定的错误转为 Unknown；一个 Unknown 取消同批 sibling workers，并由 Machine 在同一 terminal transition 中记录目标及仍 Executing sibling 的 `ToolCallFailed(Unknown)`，最后追加 `RunEnded(failed/effect_unknown)`。`CancelRun` 在 `RunEnded(stopped/cancelled)` 前记录所有仍 Executing call 的 Unknown，并把这些 CallID 与仍 Executing 的 ModelStep 写入 `RunStoppedEnd` / `RunResult` 的 `UncertainCalls`、`UncertainModel`。仅 Waiting、没有 Executing 时不给 Waiting call 记 Failed。已接受 start 的 worker 必须在收到外层取消后返回并尝试 settlement；settlement 使用独立 control context。
 
 **RUN-LOP-5** model 与 tool worker 都接收外层 ctx；Loop 对已接受 effect 使用独立 control context 完成 known/unknown outcome settlement。Application 的业务停止顺序为先 Commit `CancelRun`，再取消 Loop ctx。非 sentinel Commit error 以同 CommandID/digest 重放一次；仍未知时返回错误，由后续 Load/Record 查询 authority。stale/terminal/conflict 触发 reload/drop，旧 external effect 保持单次执行尝试。工具实现配合 context 返回；永久阻塞由 application/durable recovery 处理。
 

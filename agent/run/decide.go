@@ -22,7 +22,7 @@ func rejectionf(format string, args ...any) error {
 
 // Decide validates one command against the current write schema and produces
 // the complete fact sequence of its transition (RUN-MCH-3). Replay of a
-// persisted Run must use ProtocolFor(header.SchemaVersion).Decide.
+// persisted Run must use ProtocolFor(run schema).Decide.
 //
 //nolint:gocritic // hugeParam: public protocol boundary is intentionally value-based: Decide(state, command) -> facts.
 func Decide(s MachineState, c AgentCommand) ([]Fact, error) {
