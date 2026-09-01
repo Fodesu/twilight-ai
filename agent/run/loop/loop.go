@@ -80,6 +80,10 @@ func New(models ModelCatalog, tools ToolCatalog, planner RequestPlanner, policy 
 		starts: make(map[startKey]startAttempt), settlements: make(map[startKey]settlementAttempt), runs: make(map[run.RunID]struct{})}, nil
 }
 
+func (l *Loop) toolScheduling() run.ToolScheduling {
+	return run.ToolScheduling{Mode: run.ToolScheduleMode(l.Execution.ToolExecution), MaxParallel: l.Execution.MaxParallel}
+}
+
 func (l *Loop) startFor(key startKey) startAttempt {
 	l.startsMu.Lock()
 	defer l.startsMu.Unlock()
@@ -557,7 +561,7 @@ func (l *Loop) runModelStep(ctx context.Context, runtime run.Runtime, events Eve
 						Failure:     run.StepFailure{Class: run.FailureMalformedModel, Message: freezeErr.Error()},
 						Disposition: l.modelRejectDisposition(modelStep, run.StepFailure{Class: run.FailureMalformedModel, Message: freezeErr.Error()})}
 				} else {
-					completion = run.SubmitModelResult{StepID: stepID, Result: frozenResult, Calls: bindings}
+					completion = run.SubmitModelResult{StepID: stepID, Result: frozenResult, Calls: bindings, Scheduling: l.toolScheduling()}
 				}
 			}
 		}
@@ -731,11 +735,11 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events Eve
 	}
 
 	limit := len(eff.CallIDs)
-	if l.Execution.ToolExecution == ToolExecutionSequential {
+	if ts.Scheduling.Mode == run.ToolScheduleSequential {
 		limit = 1
 	}
-	if l.Execution.MaxParallel > 0 && l.Execution.MaxParallel < limit {
-		limit = l.Execution.MaxParallel
+	if ts.Scheduling.MaxParallel > 0 && ts.Scheduling.MaxParallel < limit {
+		limit = ts.Scheduling.MaxParallel
 	}
 	var started []startedWorker
 	for _, callID := range eff.CallIDs {

@@ -245,10 +245,37 @@ func ValidateToolCallState(c ToolCallState) error {
 	return nil
 }
 
+// ToolScheduleMode is frozen onto a ToolStep at open. Resume must honor it.
+type ToolScheduleMode string
+
+const (
+	ToolScheduleParallel   ToolScheduleMode = "parallel"
+	ToolScheduleSequential ToolScheduleMode = "sequential"
+)
+
+// ToolScheduling is the durable dispatch constraint for one ToolStep.
+// Empty Mode means parallel. MaxParallel 0 means every Pending call in the
+// current Start batch may run; a positive value caps that batch.
+type ToolScheduling struct {
+	Mode        ToolScheduleMode `json:"mode,omitempty"`
+	MaxParallel int              `json:"maxParallel,omitempty"`
+}
+
+func normalizeToolScheduling(s ToolScheduling) (ToolScheduling, error) {
+	if s.Mode != "" && s.Mode != ToolScheduleParallel && s.Mode != ToolScheduleSequential {
+		return ToolScheduling{}, fmt.Errorf("unknown mode %q", s.Mode)
+	}
+	if s.MaxParallel < 0 {
+		return ToolScheduling{}, errors.New("negative MaxParallel")
+	}
+	return s, nil
+}
+
 type ToolStep struct {
-	RefValue StepRef         `json:"ref"`
-	Source   StepID          `json:"source"`
-	Calls    []ToolCallState `json:"calls"`
+	RefValue   StepRef         `json:"ref"`
+	Source     StepID          `json:"source"`
+	Calls      []ToolCallState `json:"calls"`
+	Scheduling ToolScheduling  `json:"scheduling,omitzero"`
 }
 
 func (ToolStep) step() {}

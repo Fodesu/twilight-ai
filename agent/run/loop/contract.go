@@ -32,7 +32,8 @@ type RequestPlan struct {
 }
 
 // ModelCatalog resolves a frozen run.ModelRef into an invoker at execution time;
-// provider binding never enters the frozen request.
+// provider binding never enters the frozen request. The same ModelRef must
+// resolve to equivalent execution semantics for the life of a Run (RUN-LOP-7).
 type ModelCatalog interface {
 	Resolve(run.ModelRef) (ModelInvoker, error)
 }
@@ -97,8 +98,8 @@ type ToolProgress struct {
 	Payload json.RawMessage
 }
 
-// ToolExecutionMode controls how independent Pending calls are dispatched by
-// a Loop. The mode is an execution concern; it is not part of MachineState.
+// ToolExecutionMode is Loop-local until SubmitModelResult snapshots it onto
+// ToolStep.Scheduling.
 type ToolExecutionMode string
 
 const (
@@ -145,10 +146,9 @@ type Event struct {
 	Canonical *run.AgentEvent
 }
 
-// ExecutionPolicy is host-owned loop policy. It is not persisted in
-// MachineState or events. ToolExecution controls dispatch mode and
-// MaxParallel bounds workers launched by this Loop. Malformed model result
-// disposition is selected by OnMalformedModelResult.
+// ExecutionPolicy is host-owned loop policy. ToolExecution and MaxParallel
+// are snapshotted onto ToolStep at SubmitModelResult and then frozen.
+// OnMalformedModelResult is not persisted.
 type ExecutionPolicy struct {
 	ToolExecution ToolExecutionMode
 	// OnMalformedModelResult chooses the disposition recorded for a malformed

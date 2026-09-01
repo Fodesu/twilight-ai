@@ -290,11 +290,16 @@ func decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, e
 			RequestDigest: reqDigest,
 		}
 	}
+	scheduling, err := normalizeToolScheduling(cmd.Scheduling)
+	if err != nil {
+		return nil, rejectionf("model result: %v", err)
+	}
 	return []Fact{completed, ToolStepOpened{
 		StepID:           toolStepID,
 		Source:           cmd.StepID,
 		BindingSetDigest: setDigest,
 		Calls:            bindings,
+		Scheduling:       scheduling,
 	}}, nil
 }
 
