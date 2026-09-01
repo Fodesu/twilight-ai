@@ -103,16 +103,16 @@ func TestCommitCanonicalizesAgentOwnedJSONBeforePersisting(t *testing.T) {
 			"p": cj(`{"b":2,"a":1}`),
 		},
 	}
-	reqDigest, err := DigestRequest(SchemaVersion1, req)
+	reqDigest, err := DigestRequest(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolsDigest, err := DigestToolSpecs(SchemaVersion1, nil)
+	toolsDigest, err := DigestToolSpecs(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	model := ModelRef(req.Model)
-	binding, err := DigestModelStepBinding(SchemaVersion1, model, reqDigest, toolsDigest)
+	binding, err := DigestModelStepBinding(model, reqDigest, toolsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}

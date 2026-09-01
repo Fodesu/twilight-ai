@@ -20,29 +20,23 @@ func rejectionf(format string, args ...any) error {
 	return fmt.Errorf("agent: reject: "+format, args...)
 }
 
-// Decide validates one command against the current state and produces the
-// complete fact sequence of its transition (RUN-MCH-3). All decisions —
-// acceptance, derived consequences, terminal transitions — happen here, run
-// exactly once per accepted command; the output is frozen. Any precondition
-// failure rejects the whole command with no partial facts.
+// Decide validates one command against the current write schema and produces
+// the complete fact sequence of its transition (RUN-MCH-3). Replay of a
+// persisted Run must use ProtocolFor(header.SchemaVersion).Decide.
 //
 //nolint:gocritic // hugeParam: public protocol boundary is intentionally value-based: Decide(state, command) -> facts.
 func Decide(s MachineState, c AgentCommand) ([]Fact, error) {
-	return DecideVersion(currentSchemaVersion, s, c)
+	return ProtocolV1.Decide(s, c)
 }
 
-// DecideVersion validates a command using schemaVersion's digest and shape
-// rules. Runtime.Commit must pass the Run header's SchemaVersion.
-func DecideVersion(schemaVersion uint16, s MachineState, c AgentCommand) ([]Fact, error) {
-	if err := requireSchemaVersion(schemaVersion); err != nil {
-		return nil, err
-	}
+//nolint:gocritic // hugeParam: v1 Decide is value-based.
+func decideV1(s MachineState, c AgentCommand) ([]Fact, error) {
 	if s.Status.Terminal() {
 		return nil, ErrRunTerminal
 	}
 	switch cmd := c.(type) {
 	case PrepareModelRequest:
-		return decidePrepareModelRequest(schemaVersion, &s, &cmd)
+		return decidePrepareModelRequest(&s, &cmd)
 	case StartModelExecution:
 		return decideStartModelExecution(&s, cmd)
 	case RecoverModelExecution:
@@ -60,11 +54,11 @@ func DecideVersion(schemaVersion uint16, s MachineState, c AgentCommand) ([]Fact
 	case SubmitToolFailure:
 		return decideSubmitToolFailure(&s, cmd)
 	case ApproveToolCall:
-		return decideApproveToolCall(schemaVersion, &s, cmd)
+		return decideApproveToolCall(&s, cmd)
 	case RejectToolCall:
-		return decideRejectToolCall(schemaVersion, &s, &cmd)
+		return decideRejectToolCall(&s, &cmd)
 	case SubmitToolResponse:
-		return decideSubmitToolResponse(schemaVersion, &s, &cmd)
+		return decideSubmitToolResponse(&s, &cmd)
 	case CancelRun:
 		return decideCancelRun(&s, cmd)
 	case AcceptInput:
@@ -76,7 +70,7 @@ func DecideVersion(schemaVersion uint16, s MachineState, c AgentCommand) ([]Fact
 
 // --- rule 1: PrepareModelRequest ---
 
-func decidePrepareModelRequest(schemaVersion uint16, s *MachineState, cmd *PrepareModelRequest) ([]Fact, error) {
+func decidePrepareModelRequest(s *MachineState, cmd *PrepareModelRequest) ([]Fact, error) {
 	if s.Current != nil {
 		return nil, rejectionf("prepare: run already has a current step")
 	}
@@ -107,7 +101,7 @@ func decidePrepareModelRequest(schemaVersion uint16, s *MachineState, cmd *Prepa
 		if spec.Definition.Name != cmd.Request.Tools[i].Name {
 			return nil, rejectionf("prepare: ToolSpec[%d] %q does not match request tool %q", i, spec.Definition.Name, cmd.Request.Tools[i].Name)
 		}
-		wantDigest, err := DigestToolDefinition(schemaVersion, cmd.Request.Tools[i])
+		wantDigest, err := digestToolDefinitionV1(cmd.Request.Tools[i])
 		if err != nil {
 			return nil, err
 		}
@@ -115,21 +109,21 @@ func decidePrepareModelRequest(schemaVersion uint16, s *MachineState, cmd *Prepa
 			return nil, rejectionf("prepare: ToolSpec[%d] definition digest mismatch", i)
 		}
 	}
-	wantReq, err := DigestRequest(schemaVersion, cmd.Request)
+	wantReq, err := digestRequestV1(cmd.Request)
 	if err != nil {
 		return nil, err
 	}
 	if cmd.RequestDigest != wantReq {
 		return nil, rejectionf("prepare: request digest mismatch")
 	}
-	wantTools, err := DigestToolSpecs(schemaVersion, cmd.Tools)
+	wantTools, err := digestToolSpecsV1(cmd.Tools)
 	if err != nil {
 		return nil, err
 	}
 	if cmd.ToolsDigest != wantTools {
 		return nil, rejectionf("prepare: tools digest mismatch")
 	}
-	binding, err := DigestModelStepBinding(schemaVersion, cmd.Model, cmd.RequestDigest, cmd.ToolsDigest)
+	binding, err := digestModelStepBindingV1(cmd.Model, cmd.RequestDigest, cmd.ToolsDigest)
 	if err != nil {
 		return nil, err
 	}
@@ -472,11 +466,11 @@ func waitingCall(s *MachineState, step StepID, call CallID, kind ResponseKind, r
 	return ts, i, nil
 }
 
-func decideApproveToolCall(schemaVersion uint16, s *MachineState, cmd ApproveToolCall) ([]Fact, error) {
+func decideApproveToolCall(s *MachineState, cmd ApproveToolCall) ([]Fact, error) {
 	if _, _, err := waitingCall(s, cmd.StepID, cmd.CallID, ResponseApproval, cmd.ResponseID); err != nil {
 		return nil, err
 	}
-	wantDigest, err := DigestToolResponseDecision(schemaVersion, ResponseApproval, ResponseDecisionApproved, "")
+	wantDigest, err := digestToolResponseDecisionV1(ResponseApproval, ResponseDecisionApproved, "")
 	if err != nil {
 		return nil, err
 	}
@@ -486,7 +480,7 @@ func decideApproveToolCall(schemaVersion uint16, s *MachineState, cmd ApproveToo
 	return []Fact{ToolCallApproved(cmd)}, nil
 }
 
-func decideRejectToolCall(schemaVersion uint16, s *MachineState, cmd *RejectToolCall) ([]Fact, error) {
+func decideRejectToolCall(s *MachineState, cmd *RejectToolCall) ([]Fact, error) {
 	// Reject closes a Waiting call of either kind as a Known failure:
 	// approval rejection and external-response abandonment ("the answer is
 	// never coming") share one exit. Spec §4.2 lists Waiting -> Failed(Known)
@@ -507,7 +501,7 @@ func decideRejectToolCall(schemaVersion uint16, s *MachineState, cmd *RejectTool
 	if c.Waiting.ID != cmd.ResponseID {
 		return nil, rejectionf("response: call %q expects ResponseID %q, got %q", cmd.CallID, c.Waiting.ID, cmd.ResponseID)
 	}
-	wantDigest, err := DigestToolResponseDecision(schemaVersion, c.Waiting.Kind, ResponseDecisionRejected, cmd.Reason)
+	wantDigest, err := digestToolResponseDecisionV1(c.Waiting.Kind, ResponseDecisionRejected, cmd.Reason)
 	if err != nil {
 		return nil, err
 	}
@@ -523,12 +517,12 @@ func decideRejectToolCall(schemaVersion uint16, s *MachineState, cmd *RejectTool
 	return facts, nil
 }
 
-func decideSubmitToolResponse(schemaVersion uint16, s *MachineState, cmd *SubmitToolResponse) ([]Fact, error) {
+func decideSubmitToolResponse(s *MachineState, cmd *SubmitToolResponse) ([]Fact, error) {
 	_, _, err := waitingCall(s, cmd.StepID, cmd.CallID, ResponseExternal, cmd.ResponseID)
 	if err != nil {
 		return nil, err
 	}
-	wantDigest, err := DigestToolResponsePayload(schemaVersion, cmd.Payload)
+	wantDigest, err := digestToolResponsePayloadV1(cmd.Payload)
 	if err != nil {
 		return nil, err
 	}

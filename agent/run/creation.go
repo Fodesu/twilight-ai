@@ -107,7 +107,7 @@ var (
 )
 
 func cloneRuntimeSnapshot(snapshot RuntimeSnapshot) RuntimeSnapshot {
-	return RuntimeSnapshot{State: cloneMachineState(&snapshot.State), Revision: snapshot.Revision}
+	return RuntimeSnapshot{State: cloneMachineState(&snapshot.State), Revision: snapshot.Revision, SchemaVersion: snapshot.SchemaVersion}
 }
 
 func cloneRunHeader(header RunHeader) RunHeader {

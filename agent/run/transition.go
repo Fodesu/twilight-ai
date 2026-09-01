@@ -56,7 +56,11 @@ func inspectTransitionEvent(event AgentEvent) (es.EventMetadata, error) {
 	if typ == "" || event.Type != typ {
 		return es.EventMetadata{}, fmt.Errorf("event type %q does not match fact variant %T", event.Type, event.Fact)
 	}
-	wantDigest, err := DigestFact(event.SchemaVersion, event.Type, event.Fact)
+	proto, err := ProtocolFor(event.SchemaVersion)
+	if err != nil {
+		return es.EventMetadata{}, err
+	}
+	wantDigest, err := proto.DigestFact(event.Type, event.Fact)
 	if err != nil {
 		return es.EventMetadata{}, err
 	}

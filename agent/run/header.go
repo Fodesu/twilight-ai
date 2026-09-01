@@ -2,7 +2,6 @@ package run
 
 import (
 	"errors"
-	"fmt"
 
 	"github.com/memohai/twilight/agent/es"
 )
@@ -13,24 +12,20 @@ import (
 // each can evolve only through its documented versioning rules (RUN-CMP-1).
 const snapshotSchemaVersion uint16 = 1
 
-// encodeMachineStateVersion renders the canonical bytes of a MachineState for
-// header digests under schemaVersion.
 func encodeMachineStateVersion(schemaVersion uint16, s *MachineState) ([]byte, error) {
-	switch schemaVersion {
-	case SchemaVersion1:
-		return encodeMachineStateV1(s)
-	default:
-		return nil, unsupportedSchemaVersion(schemaVersion)
+	proto, err := ProtocolFor(schemaVersion)
+	if err != nil {
+		return nil, err
 	}
+	return proto.EncodeMachineState(s)
 }
 
 func validateHeaderInitialStateVersion(h *RunHeader) error {
-	switch h.SchemaVersion {
-	case SchemaVersion1:
-		return validateHeaderV1(h)
-	default:
-		return unsupportedSchemaVersion(h.SchemaVersion)
+	proto, err := ProtocolFor(h.SchemaVersion)
+	if err != nil {
+		return err
 	}
+	return proto.ValidateHeader(h)
 }
 
 // RunHeader is the formal persisted Revision-0 protocol record (RUN-NEW-1).
@@ -68,13 +63,13 @@ func BuildRunHeader(runID RunID, causationID es.CausationID) (RunHeader, error) 
 	if err != nil {
 		return RunHeader{}, err
 	}
-	stateBytes, err := encodeMachineStateVersion(currentSchemaVersion, &initial)
+	stateBytes, err := ProtocolV1.EncodeMachineState(&initial)
 	if err != nil {
 		return RunHeader{}, err
 	}
 	stateDigest := sha256Digest(stateBytes)
 	header := RunHeader{
-		SchemaVersion:       currentSchemaVersion,
+		SchemaVersion:       ProtocolV1.Version(),
 		RunID:               runID,
 		InitialStateVersion: snapshotSchemaVersion,
 		InitialState:        initial,
@@ -110,9 +105,6 @@ func digestRunHeader(h *RunHeader) (Digest, error) {
 func ValidateRunHeader(h *RunHeader) error {
 	if h.RunID == "" {
 		return errors.New("agent: run header: empty RunID")
-	}
-	if !isSupportedSchemaVersion(h.SchemaVersion) {
-		return fmt.Errorf("agent: run header: unsupported schema version %d", h.SchemaVersion)
 	}
 	if err := validateHeaderInitialStateVersion(h); err != nil {
 		return err

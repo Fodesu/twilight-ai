@@ -14,7 +14,7 @@ import (
 var ErrLogTruncated = errors.New("agent: transition log ends below the expected revision")
 
 // FoldEvents rebuilds a MachineState by folding a complete flat event stream
-// from the initial (Revision 0) state with EvolveVersion only: no Decide, no
+// from the initial (Revision 0) state with Protocol.Evolve only: no Decide, no
 // external effects, no command replay (RUN-NEW-2). It verifies (Revision,
 // Index) ordering and per-fact digests as it goes. Authority runtimes should
 // prefer FoldTransitions because only TransitionRecord can prove the last
@@ -32,8 +32,9 @@ func FoldEvents(initial MachineState, events []AgentEvent) (MachineState, uint64
 		if e.RunID != initial.RunID {
 			return initial, 0, fmt.Errorf("agent: fold: event run %q does not match initial run %q", e.RunID, initial.RunID)
 		}
-		if !isSupportedSchemaVersion(e.SchemaVersion) {
-			return initial, 0, fmt.Errorf("agent: fold: unsupported schema version %d", e.SchemaVersion)
+		proto, err := ProtocolFor(e.SchemaVersion)
+		if err != nil {
+			return initial, 0, err
 		}
 		typ := factType(e.Fact)
 		if typ == "" || e.Type != typ {
@@ -61,7 +62,7 @@ func FoldEvents(initial MachineState, events []AgentEvent) (MachineState, uint64
 			}
 			index = e.Index
 		}
-		wantDigest, err := DigestFact(e.SchemaVersion, e.Type, e.Fact)
+		wantDigest, err := proto.DigestFact(e.Type, e.Fact)
 		if err != nil {
 			return initial, 0, err
 		}
@@ -72,7 +73,7 @@ func FoldEvents(initial MachineState, events []AgentEvent) (MachineState, uint64
 		if err != nil {
 			return initial, 0, err
 		}
-		state, err = EvolveVersion(e.SchemaVersion, state, fact)
+		state, err = proto.Evolve(state, fact)
 		if err != nil {
 			return initial, 0, err
 		}
@@ -104,11 +105,15 @@ func FoldTransitions(initial MachineState, records []TransitionRecord) (MachineS
 		supportsRunSchema,
 		inspectTransitionEvent,
 		func(schemaVersion uint16, state MachineState, event AgentEvent) (MachineState, error) {
+			proto, err := ProtocolFor(schemaVersion)
+			if err != nil {
+				return MachineState{}, err
+			}
 			fact, err := snapshotFact(event.Fact)
 			if err != nil {
 				return MachineState{}, err
 			}
-			return EvolveVersion(schemaVersion, state, fact)
+			return proto.Evolve(state, fact)
 		},
 	)
 	if err != nil {

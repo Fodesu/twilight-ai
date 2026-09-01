@@ -225,11 +225,6 @@ func TestFoldRejectsUnsupportedSchemaVersion(t *testing.T) {
 	entry.mu.Unlock()
 
 	log[0].SchemaVersion = 99
-	digest, err := DigestFact(log[0].SchemaVersion, log[0].Type, log[0].Fact)
-	if err != nil {
-		t.Fatal(err)
-	}
-	log[0].Digest = digest
 	if _, _, err := FoldEvents(initial, log); err == nil {
 		t.Fatal("unsupported schema version folded silently")
 	}

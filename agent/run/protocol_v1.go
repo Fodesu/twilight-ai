@@ -5,8 +5,108 @@ import (
 	"fmt"
 )
 
-// SchemaVersion1 digest, encode, and decode helpers. Replay of a v1 Run must
-// call these even after currentSchemaVersion moves forward.
+// protocolV1 is the SchemaVersion1 implementation. Replay of a v1 Run must
+// call these methods even after currentSchemaVersion moves forward.
+type protocolV1 struct{}
+
+func (protocolV1) Version() uint16 { return SchemaVersion1 }
+
+func (protocolV1) DigestRequest(req ModelRequest) (Digest, error) {
+	return digestRequestV1(req)
+}
+
+func (protocolV1) DigestToolDefinition(def ToolDefinition) (Digest, error) {
+	return digestToolDefinitionV1(def)
+}
+
+func (protocolV1) DigestToolSpec(spec ToolSpec) (Digest, error) {
+	return digestToolSpecV1(spec)
+}
+
+func (protocolV1) DigestToolSpecs(specs []ToolSpec) (Digest, error) {
+	return digestToolSpecsV1(specs)
+}
+
+func (protocolV1) DigestModelStepBinding(model ModelRef, requestDigest, toolsDigest Digest) (Digest, error) {
+	return digestModelStepBindingV1(model, requestDigest, toolsDigest)
+}
+
+func (protocolV1) DigestToolResponseDecision(kind ResponseKind, decision ResponseDecision, reason string) (Digest, error) {
+	return digestToolResponseDecisionV1(kind, decision, reason)
+}
+
+func (protocolV1) DigestToolResponsePayload(payload CanonicalJSON) (Digest, error) {
+	return digestToolResponsePayloadV1(payload)
+}
+
+func (protocolV1) DigestCommand(typ string, command AgentCommand) (Digest, error) {
+	if typ == "" || typ != commandType(command) {
+		return "", fmt.Errorf("agent: digest: type %q does not match command variant", typ)
+	}
+	body, err := encodeEnvelopeBody(SchemaVersion1, typ, command)
+	if err != nil {
+		return "", err
+	}
+	return sha256Digest(body), nil
+}
+
+func (protocolV1) EncodeFact(typ string, fact Fact) ([]byte, error) {
+	if typ == "" || typ != factType(fact) {
+		return nil, fmt.Errorf("agent: encode: type %q does not match fact variant", typ)
+	}
+	return encodeEnvelopeBody(SchemaVersion1, typ, fact)
+}
+
+func (p protocolV1) DigestFact(typ string, fact Fact) (Digest, error) {
+	body, err := p.EncodeFact(typ, fact)
+	if err != nil {
+		return "", err
+	}
+	return sha256Digest(body), nil
+}
+
+func (protocolV1) DecodeCommand(typ string, raw []byte) (AgentCommand, error) {
+	return decodeCommandVariantV1(typ, raw)
+}
+
+func (protocolV1) DecodeFact(typ string, raw []byte) (Fact, error) {
+	return decodeFactVariantV1(typ, raw)
+}
+
+func (protocolV1) Decide(s MachineState, c AgentCommand) ([]Fact, error) {
+	return decideV1(s, c)
+}
+
+func (protocolV1) Evolve(s MachineState, f Fact) (MachineState, error) {
+	return evolveV1(s, f)
+}
+
+func (p protocolV1) BuildEnvelope(run RunID, id CommandID, cmd AgentCommand) (CommandEnvelope, error) {
+	typ := commandType(cmd)
+	if typ == "" {
+		return CommandEnvelope{}, fmt.Errorf("agent: envelope: unknown command variant %T", cmd)
+	}
+	d, err := p.DigestCommand(typ, cmd)
+	if err != nil {
+		return CommandEnvelope{}, err
+	}
+	return CommandEnvelope{
+		SchemaVersion: SchemaVersion1,
+		Type:          typ,
+		RunID:         run,
+		ID:            id,
+		Digest:        d,
+		Command:       cmd,
+	}, nil
+}
+
+func (protocolV1) EncodeMachineState(s *MachineState) ([]byte, error) {
+	return encodeMachineStateV1(s)
+}
+
+func (protocolV1) ValidateHeader(h *RunHeader) error {
+	return validateHeaderV1(h)
+}
 
 func digestRequestV1(req ModelRequest) (Digest, error) {
 	body, err := encodeEnvelopeBody(SchemaVersion1, "model_request", req)
@@ -80,15 +180,6 @@ func validateHeaderV1(h *RunHeader) error {
 func unsupportedSchemaVersion(schemaVersion uint16) error {
 	return fmt.Errorf("agent: unsupported schema version %d", schemaVersion)
 }
-
-func requireSchemaVersion(schemaVersion uint16) error {
-	if !isSupportedSchemaVersion(schemaVersion) {
-		return unsupportedSchemaVersion(schemaVersion)
-	}
-	return nil
-}
-
-
 
 func digestModelStepBindingV1(model ModelRef, requestDigest, toolsDigest Digest) (Digest, error) {
 	if model == "" || requestDigest == "" || toolsDigest == "" {

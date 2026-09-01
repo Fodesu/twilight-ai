@@ -46,6 +46,51 @@ func encodeEnvelopeBody(schemaVersion uint16, typ string, body any) ([]byte, err
 	return es.EncodeTypedPayload(schemaVersion, typ, body)
 }
 
+// Protocol is the closed set of digest, decode, Decide, Evolve, and envelope
+// operations for one SchemaVersion. ProtocolFor selects it once from the Run
+// header; subsequent calls do not take a version argument (RUN-CMT-7).
+type Protocol interface {
+	Version() uint16
+
+	DigestRequest(req ModelRequest) (Digest, error)
+	DigestToolDefinition(def ToolDefinition) (Digest, error)
+	DigestToolSpec(spec ToolSpec) (Digest, error)
+	DigestToolSpecs(specs []ToolSpec) (Digest, error)
+	DigestModelStepBinding(model ModelRef, requestDigest, toolsDigest Digest) (Digest, error)
+	DigestToolResponseDecision(kind ResponseKind, decision ResponseDecision, reason string) (Digest, error)
+	DigestToolResponsePayload(payload CanonicalJSON) (Digest, error)
+	DigestCommand(typ string, command AgentCommand) (Digest, error)
+	DigestFact(typ string, fact Fact) (Digest, error)
+	EncodeFact(typ string, fact Fact) ([]byte, error)
+
+	DecodeCommand(typ string, raw []byte) (AgentCommand, error)
+	DecodeFact(typ string, raw []byte) (Fact, error)
+
+	Decide(s MachineState, c AgentCommand) ([]Fact, error)
+	Evolve(s MachineState, f Fact) (MachineState, error)
+	BuildEnvelope(run RunID, id CommandID, cmd AgentCommand) (CommandEnvelope, error)
+
+	EncodeMachineState(s *MachineState) ([]byte, error)
+	ValidateHeader(h *RunHeader) error
+}
+
+// ProtocolV1 is the SchemaVersion1 implementation. New Runs write with this
+// protocol; replay of a persisted v1 Run must keep using it after later
+// versions exist.
+var ProtocolV1 Protocol = protocolV1{}
+
+// ProtocolFor selects the protocol implementation for a persisted schema
+// version. Call it at the Run header, envelope, or event boundary; do not
+// thread the version number through digest, Decide, or Evolve.
+func ProtocolFor(schemaVersion uint16) (Protocol, error) {
+	switch schemaVersion {
+	case SchemaVersion1:
+		return ProtocolV1, nil
+	default:
+		return nil, unsupportedSchemaVersion(schemaVersion)
+	}
+}
+
 // EncodeCommand renders the canonical bytes of a command envelope, excluding
 // the Digest field.
 //
@@ -62,33 +107,18 @@ func EncodeCommand(env CommandEnvelope) ([]byte, error) {
 	return append([]byte(header), body...), nil
 }
 
-// DigestCommand computes the canonical digest of one command.
-func DigestCommand(schemaVersion uint16, typ string, command AgentCommand) (Digest, error) {
-	if typ == "" || typ != commandType(command) {
-		return "", fmt.Errorf("agent: digest: type %q does not match command variant", typ)
-	}
-	body, err := encodeEnvelopeBody(schemaVersion, typ, command)
-	if err != nil {
-		return "", err
-	}
-	return sha256Digest(body), nil
+// DigestCommand computes the canonical digest of one command under the current
+// write schema. Replay of a persisted Run must use ProtocolFor on the header.
+func DigestCommand(typ string, command AgentCommand) (Digest, error) {
+	return ProtocolV1.DigestCommand(typ, command)
 }
 
-// EncodeFact renders the canonical bytes of one fact.
-func EncodeFact(schemaVersion uint16, typ string, fact Fact) ([]byte, error) {
-	if typ == "" || typ != factType(fact) {
-		return nil, fmt.Errorf("agent: encode: type %q does not match fact variant", typ)
-	}
-	return encodeEnvelopeBody(schemaVersion, typ, fact)
+func EncodeFact(typ string, fact Fact) ([]byte, error) {
+	return ProtocolV1.EncodeFact(typ, fact)
 }
 
-// DigestFact computes the canonical digest of one fact.
-func DigestFact(schemaVersion uint16, typ string, fact Fact) (Digest, error) {
-	body, err := EncodeFact(schemaVersion, typ, fact)
-	if err != nil {
-		return "", err
-	}
-	return sha256Digest(body), nil
+func DigestFact(typ string, fact Fact) (Digest, error) {
+	return ProtocolV1.DigestFact(typ, fact)
 }
 
 type toolResponseDecisionDigestBody struct {
@@ -98,15 +128,10 @@ type toolResponseDecisionDigestBody struct {
 }
 
 // DigestToolResponseDecision computes the content digest for approval and
-// rejection ingress under schemaVersion. The ResponseID remains the
+// rejection ingress under the current write schema. The ResponseID remains the
 // routing/idempotency key; this digest binds the decision payload.
-func DigestToolResponseDecision(schemaVersion uint16, kind ResponseKind, decision ResponseDecision, reason string) (Digest, error) {
-	switch schemaVersion {
-	case SchemaVersion1:
-		return digestToolResponseDecisionV1(kind, decision, reason)
-	default:
-		return "", unsupportedSchemaVersion(schemaVersion)
-	}
+func DigestToolResponseDecision(kind ResponseKind, decision ResponseDecision, reason string) (Digest, error) {
+	return ProtocolV1.DigestToolResponseDecision(kind, decision, reason)
 }
 
 type toolResponsePayloadDigestBody struct {
@@ -114,71 +139,42 @@ type toolResponsePayloadDigestBody struct {
 }
 
 // DigestToolResponsePayload computes the content digest for an ExternalResponse
-// answer payload under schemaVersion.
-func DigestToolResponsePayload(schemaVersion uint16, payload CanonicalJSON) (Digest, error) {
-	switch schemaVersion {
-	case SchemaVersion1:
-		return digestToolResponsePayloadV1(payload)
-	default:
-		return "", unsupportedSchemaVersion(schemaVersion)
-	}
+// answer payload under the current write schema.
+func DigestToolResponsePayload(payload CanonicalJSON) (Digest, error) {
+	return ProtocolV1.DigestToolResponsePayload(payload)
 }
 
 // DigestRequest covers every field of a frozen ModelRequest with no exclusions
-// (RUN-WIR-2). schemaVersion selects the digest preimage.
+// (RUN-WIR-2), using the current write schema.
 //
 //nolint:gocritic // hugeParam: digest covers the complete immutable ModelRequest value.
-func DigestRequest(schemaVersion uint16, req ModelRequest) (Digest, error) {
-	switch schemaVersion {
-	case SchemaVersion1:
-		return digestRequestV1(req)
-	default:
-		return "", unsupportedSchemaVersion(schemaVersion)
-	}
+func DigestRequest(req ModelRequest) (Digest, error) {
+	return ProtocolV1.DigestRequest(req)
 }
 
-// DigestToolDefinition covers one provider-neutral tool definition.
-func DigestToolDefinition(schemaVersion uint16, def ToolDefinition) (Digest, error) {
-	switch schemaVersion {
-	case SchemaVersion1:
-		return digestToolDefinitionV1(def)
-	default:
-		return "", unsupportedSchemaVersion(schemaVersion)
-	}
+// DigestToolDefinition covers one provider-neutral tool definition under the
+// current write schema.
+func DigestToolDefinition(def ToolDefinition) (Digest, error) {
+	return ProtocolV1.DigestToolDefinition(def)
 }
 
-// DigestToolSpec covers one agent ToolSpec (ref, definition, digest, policy).
+// DigestToolSpec covers one agent ToolSpec under the current write schema.
 //
 //nolint:gocritic // hugeParam: digest covers the complete immutable ToolSpec value.
-func DigestToolSpec(schemaVersion uint16, spec ToolSpec) (Digest, error) {
-	switch schemaVersion {
-	case SchemaVersion1:
-		return digestToolSpecV1(spec)
-	default:
-		return "", unsupportedSchemaVersion(schemaVersion)
-	}
+func DigestToolSpec(spec ToolSpec) (Digest, error) {
+	return ProtocolV1.DigestToolSpec(spec)
 }
 
-// DigestToolSpecs covers an ordered ToolSpec list: ref, schema, order and
-// policy all participate (RUN-MCH-2).
-func DigestToolSpecs(schemaVersion uint16, specs []ToolSpec) (Digest, error) {
-	switch schemaVersion {
-	case SchemaVersion1:
-		return digestToolSpecsV1(specs)
-	default:
-		return "", unsupportedSchemaVersion(schemaVersion)
-	}
+// DigestToolSpecs covers an ordered ToolSpec list under the current write
+// schema: ref, schema, order and policy all participate (RUN-MCH-2).
+func DigestToolSpecs(specs []ToolSpec) (Digest, error) {
+	return ProtocolV1.DigestToolSpecs(specs)
 }
 
 // DigestModelStepBinding combines model, request digest and tools digest into
-// the immutable ModelStep binding digest.
-func DigestModelStepBinding(schemaVersion uint16, model ModelRef, requestDigest, toolsDigest Digest) (Digest, error) {
-	switch schemaVersion {
-	case SchemaVersion1:
-		return digestModelStepBindingV1(model, requestDigest, toolsDigest)
-	default:
-		return "", unsupportedSchemaVersion(schemaVersion)
-	}
+// the immutable ModelStep binding digest under the current write schema.
+func DigestModelStepBinding(model ModelRef, requestDigest, toolsDigest Digest) (Digest, error) {
+	return ProtocolV1.DigestModelStepBinding(model, requestDigest, toolsDigest)
 }
 
 // digestBindingSet covers the full ordered pre-Response call set of one

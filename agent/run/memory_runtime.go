@@ -230,7 +230,11 @@ func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitRe
 		copy := cloneTransitionRecord(&record)
 		prior = &copy
 	}
-	decision, err := EvaluateCommit(entry.state, entry.revision, prior, req, grantValid, recoveryValid, entry.header.SchemaVersion)
+	proto, err := ProtocolFor(entry.header.SchemaVersion)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	decision, err := EvaluateCommit(entry.state, entry.revision, prior, req, grantValid, recoveryValid, proto)
 	if err != nil {
 		return CommitResult{}, err
 	}
