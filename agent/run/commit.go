@@ -114,8 +114,8 @@ func EvaluateCommit(
 	if env.RunID != cur.RunID {
 		return CommitDecision{}, fmt.Errorf("agent: commit: command run %q does not match authority run %q", env.RunID, cur.RunID)
 	}
-	if proto == nil {
-		return CommitDecision{}, fmt.Errorf("agent: commit: nil protocol")
+	if err := proto.ready(); err != nil {
+		return CommitDecision{}, err
 	}
 	if env.SchemaVersion != proto.Version() {
 		return CommitDecision{}, fmt.Errorf("agent: commit: command schema %d does not match run schema %d", env.SchemaVersion, proto.Version())

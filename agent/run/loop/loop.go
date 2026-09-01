@@ -364,8 +364,8 @@ func (l *Loop) Run(ctx context.Context, runtime run.Runtime, runID run.RunID, ev
 // committed and only the response was lost, the replay returns AlreadyApplied
 // instead of abandoning a live grant or re-executing an expensive step.
 func (l *Loop) commit(ctx context.Context, runtime run.Runtime, runID run.RunID, id run.CommandID, base uint64, grant run.ExecutionGrant, cmd run.AgentCommand, proto run.Protocol) (run.CommitResult, error) {
-	if proto == nil {
-		return run.CommitResult{}, errors.New("agent: loop: nil protocol")
+	if proto.Version() == 0 {
+		return run.CommitResult{}, errors.New("agent: loop: uninitialized protocol")
 	}
 	env, err := proto.BuildEnvelope(runID, id, cmd)
 	if err != nil {
