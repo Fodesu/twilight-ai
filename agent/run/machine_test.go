@@ -572,6 +572,47 @@ func TestCancelProducesRunStopped(t *testing.T) {
 	if !ok || stopped.Reason != ReasonCancelled {
 		t.Fatalf("ended = %+v", ended.End)
 	}
+	if len(stopped.UncertainCalls) != 0 || stopped.UncertainModel != "" {
+		t.Fatalf("idle cancel recorded uncertain effects: %+v", stopped)
+	}
+}
+
+func TestCancelSurfacesUncertainToolCalls(t *testing.T) {
+	def := testToolDef("t")
+	spec := makeSpec(t, def, DirectExecution)
+	s := newRun(t)
+	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
+	b := makeBinding(t, "c1", spec, `{}`)
+	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
+	opened := facts[1].(ToolStepOpened)
+	s = fold(t, s, facts)
+	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: "c1"}))
+
+	facts = mustDecide(t, s, CancelRun{})
+	ended := facts[len(facts)-1].(RunEnded)
+	stopped := ended.End.(RunStoppedEnd)
+	if stopped.Reason != ReasonCancelled || len(stopped.UncertainCalls) != 1 || stopped.UncertainCalls[0] != "c1" {
+		t.Fatalf("stopped = %+v", stopped)
+	}
+	s = fold(t, s, facts)
+	if s.Result == nil || len(s.Result.UncertainCalls) != 1 || s.Result.UncertainCalls[0] != "c1" {
+		t.Fatalf("result = %+v", s.Result)
+	}
+}
+
+func TestCancelSurfacesUncertainModelStep(t *testing.T) {
+	s := newRun(t)
+	s, stepID := advanceToExecuting(t, s, testRequest(), nil)
+	facts := mustDecide(t, s, CancelRun{})
+	ended := facts[0].(RunEnded)
+	stopped := ended.End.(RunStoppedEnd)
+	if stopped.UncertainModel != stepID {
+		t.Fatalf("uncertain model = %q, want %q", stopped.UncertainModel, stepID)
+	}
+	s = fold(t, s, facts)
+	if s.Result == nil || s.Result.UncertainModel != stepID {
+		t.Fatalf("result = %+v", s.Result)
+	}
 }
 
 func TestAcceptInputIdempotentPerID(t *testing.T) {

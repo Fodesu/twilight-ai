@@ -137,7 +137,11 @@ func (InputAccepted) fact() {}
 type RunEnd interface{ runEnd() }
 
 type RunCompletedEnd struct{}
-type RunStoppedEnd struct{ Reason RunReason }
+type RunStoppedEnd struct {
+	Reason         RunReason
+	UncertainCalls []CallID `json:"uncertainCalls,omitempty"`
+	UncertainModel StepID   `json:"uncertainModel,omitempty"`
+}
 type RunFailedEnd struct {
 	Reason  RunReason
 	Failure RunFailure
@@ -161,11 +165,11 @@ func (r RunEnded) effectiveEnd() (RunEnd, error) {
 	return r.End, nil
 }
 
-func legacyEnd(status RunStatus, reason RunReason, failure *RunFailure) (RunEnd, error) {
+func legacyEnd(status RunStatus, reason RunReason, failure *RunFailure, uncertainCalls []CallID, uncertainModel StepID) (RunEnd, error) {
 	switch status {
 	case RunCompleted:
-		if reason != "" || failure != nil {
-			return nil, errors.New("agent: run ended: completed outcome cannot carry reason or failure")
+		if reason != "" || failure != nil || len(uncertainCalls) > 0 || uncertainModel != "" {
+			return nil, errors.New("agent: run ended: completed outcome cannot carry reason, failure, or uncertain effects")
 		}
 		return RunCompletedEnd{}, nil
 	case RunStopped:
@@ -175,7 +179,7 @@ func legacyEnd(status RunStatus, reason RunReason, failure *RunFailure) (RunEnd,
 		if failure != nil {
 			return nil, errors.New("agent: run ended: stopped outcome cannot carry failure")
 		}
-		return RunStoppedEnd{Reason: reason}, nil
+		return RunStoppedEnd{Reason: reason, UncertainCalls: uncertainCalls, UncertainModel: uncertainModel}, nil
 	case RunFailed:
 		if failure == nil {
 			return nil, errors.New("agent: run ended: failed outcome requires failure")
@@ -185,6 +189,9 @@ func legacyEnd(status RunStatus, reason RunReason, failure *RunFailure) (RunEnd,
 		}
 		if failure.Class == "" {
 			return nil, errors.New("agent: run ended: failed outcome requires a failure class")
+		}
+		if len(uncertainCalls) > 0 || uncertainModel != "" {
+			return nil, errors.New("agent: run ended: failed outcome cannot carry uncertain-effect fields")
 		}
 		return RunFailedEnd{Reason: reason, Failure: *failure}, nil
 	default:
@@ -244,19 +251,28 @@ func (r RunEnded) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 	type wire struct {
-		Status  RunStatus   `json:"status"`
-		Reason  RunReason   `json:"reason,omitempty"`
-		Failure *RunFailure `json:"failure,omitempty"`
+		Status         RunStatus   `json:"status"`
+		Reason         RunReason   `json:"reason,omitempty"`
+		Failure        *RunFailure `json:"failure,omitempty"`
+		UncertainCalls []CallID    `json:"uncertainCalls,omitempty"`
+		UncertainModel StepID      `json:"uncertainModel,omitempty"`
 	}
 	status, reason, failure := endProjection(n.End)
-	return json.Marshal(wire{Status: status, Reason: reason, Failure: failure})
+	out := wire{Status: status, Reason: reason, Failure: failure}
+	if stopped, ok := n.End.(RunStoppedEnd); ok {
+		out.UncertainCalls = stopped.UncertainCalls
+		out.UncertainModel = stopped.UncertainModel
+	}
+	return json.Marshal(out)
 }
 
 func (r *RunEnded) UnmarshalJSON(raw []byte) error {
 	var wire struct {
-		Status  RunStatus   `json:"status"`
-		Reason  RunReason   `json:"reason,omitempty"`
-		Failure *RunFailure `json:"failure,omitempty"`
+		Status         RunStatus   `json:"status"`
+		Reason         RunReason   `json:"reason,omitempty"`
+		Failure        *RunFailure `json:"failure,omitempty"`
+		UncertainCalls []CallID    `json:"uncertainCalls,omitempty"`
+		UncertainModel StepID      `json:"uncertainModel,omitempty"`
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -269,7 +285,7 @@ func (r *RunEnded) UnmarshalJSON(raw []byte) error {
 		}
 		return err
 	}
-	end, err := legacyEnd(wire.Status, wire.Reason, wire.Failure)
+	end, err := legacyEnd(wire.Status, wire.Reason, wire.Failure, wire.UncertainCalls, wire.UncertainModel)
 	if err != nil {
 		return err
 	}

@@ -32,11 +32,15 @@ type RunFailure struct {
 }
 
 type RunResult struct {
-	Status  RunStatus    `json:"status"`
-	Reason  RunReason    `json:"reason,omitempty"`
-	Failure *RunFailure  `json:"failure,omitempty"`
-	Model   *ModelResult `json:"model,omitempty"`
-	Usage   Usage        `json:"usage"`
+	Status  RunStatus   `json:"status"`
+	Reason  RunReason   `json:"reason,omitempty"`
+	Failure *RunFailure `json:"failure,omitempty"`
+	// UncertainCalls are tool calls left Executing when the Run stopped.
+	UncertainCalls []CallID `json:"uncertainCalls,omitempty"`
+	// UncertainModel is the ModelStep left Executing when the Run stopped.
+	UncertainModel StepID       `json:"uncertainModel,omitempty"`
+	Model          *ModelResult `json:"model,omitempty"`
+	Usage          Usage        `json:"usage"`
 }
 
 type StepFailure struct {
