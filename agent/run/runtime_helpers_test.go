@@ -103,16 +103,16 @@ func buildPrepareFromSnap(t *testing.T, snap RuntimeSnapshot, req sdk.Request, s
 	if err != nil {
 		t.Fatal(err)
 	}
-	reqDigest, err := DigestRequest(frozenReq)
+	reqDigest, err := DigestRequest(SchemaVersion1, frozenReq)
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolsDigest, err := DigestToolSpecs(specs)
+	toolsDigest, err := DigestToolSpecs(SchemaVersion1, specs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	model := ModelRef(frozenReq.Model)
-	binding, err := DigestModelStepBinding(model, reqDigest, toolsDigest)
+	binding, err := DigestModelStepBinding(SchemaVersion1, model, reqDigest, toolsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}

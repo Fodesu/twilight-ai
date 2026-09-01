@@ -103,6 +103,7 @@ func EvaluateCommit(
 	req CommitRequest,
 	grantValid bool,
 	recoveryValid bool,
+	runSchemaVersion uint16,
 ) (CommitDecision, error) {
 	env := req.Command
 
@@ -113,8 +114,11 @@ func EvaluateCommit(
 	if env.RunID != cur.RunID {
 		return CommitDecision{}, fmt.Errorf("agent: commit: command run %q does not match authority run %q", env.RunID, cur.RunID)
 	}
-	if env.SchemaVersion != currentSchemaVersion {
-		return CommitDecision{}, fmt.Errorf("agent: commit: unsupported schema version %d", env.SchemaVersion)
+	if err := requireSchemaVersion(runSchemaVersion); err != nil {
+		return CommitDecision{}, err
+	}
+	if env.SchemaVersion != runSchemaVersion {
+		return CommitDecision{}, fmt.Errorf("agent: commit: command schema %d does not match run schema %d", env.SchemaVersion, runSchemaVersion)
 	}
 	wantDigest, err := DigestCommand(env.SchemaVersion, env.Type, env.Command)
 	if err != nil {
@@ -174,7 +178,7 @@ func EvaluateCommit(
 	}
 
 	// Step 5: Decide once, fold with Evolve.
-	facts, err := Decide(cur, env.Command)
+	facts, err := DecideVersion(env.SchemaVersion, cur, env.Command)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrRunTerminal):
@@ -247,16 +251,25 @@ func EvaluateCommit(
 // canonical digest. This is the only sanctioned construction path; callers
 // never hand-assemble envelope fields (RUN-WIR-3).
 func BuildEnvelope(run RunID, id CommandID, cmd AgentCommand) (CommandEnvelope, error) {
+	return BuildEnvelopeVersion(currentSchemaVersion, run, id, cmd)
+}
+
+// BuildEnvelopeVersion stamps schemaVersion onto the envelope. Runtime.Commit
+// accepts it only when it matches the Run header's SchemaVersion.
+func BuildEnvelopeVersion(schemaVersion uint16, run RunID, id CommandID, cmd AgentCommand) (CommandEnvelope, error) {
+	if err := requireSchemaVersion(schemaVersion); err != nil {
+		return CommandEnvelope{}, err
+	}
 	typ := commandType(cmd)
 	if typ == "" {
 		return CommandEnvelope{}, fmt.Errorf("agent: envelope: unknown command variant %T", cmd)
 	}
-	d, err := DigestCommand(currentSchemaVersion, typ, cmd)
+	d, err := DigestCommand(schemaVersion, typ, cmd)
 	if err != nil {
 		return CommandEnvelope{}, err
 	}
 	return CommandEnvelope{
-		SchemaVersion: currentSchemaVersion,
+		SchemaVersion: schemaVersion,
 		Type:          typ,
 		RunID:         run,
 		ID:            id,

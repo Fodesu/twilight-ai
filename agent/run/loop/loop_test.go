@@ -122,7 +122,7 @@ func toolSpec(t *testing.T, name string, policy ResponsePolicy) ToolSpec {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := DigestToolDefinition(frozen)
+	d, err := DigestToolDefinition(SchemaVersion1, frozen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -516,7 +516,7 @@ func TestToolStartStaleDropsLocalClaim(t *testing.T) {
 				BindingDigest: bindingDigest, Arguments: args, Policy: DirectExecution, Status: ToolPending,
 			}},
 		},
-	}, Revision: 1}
+	}, Revision: 1, SchemaVersion: SchemaVersion1}
 
 	if err := loop.runToolCalls(context.Background(), staleCommitRuntime{}, nil, snapshot,
 		StartToolCalls{StepID: stepID, CallIDs: []CallID{"c1"}}); err != nil {

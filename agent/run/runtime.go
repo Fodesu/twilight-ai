@@ -20,6 +20,9 @@ type RuntimeSnapshot struct {
 	State MachineState
 	// Revision counts accepted transitions; the initial state is 0.
 	Revision uint64
+	// SchemaVersion is the Run header protocol version. Loop and Application
+	// must stamp this version on every new command (RUN-CMT-7).
+	SchemaVersion uint16
 }
 
 type CommitRequest struct {

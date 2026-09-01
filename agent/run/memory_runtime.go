@@ -131,7 +131,7 @@ func (m *MemoryRuntime) Load(ctx context.Context, runID RunID) (RuntimeSnapshot,
 		entry.mu.Unlock()
 		return RuntimeSnapshot{}, err
 	}
-	snapshot := RuntimeSnapshot{State: cloneMachineState(&entry.state), Revision: entry.revision}
+	snapshot := RuntimeSnapshot{State: cloneMachineState(&entry.state), Revision: entry.revision, SchemaVersion: entry.header.SchemaVersion}
 	header := cloneRunHeader(entry.header)
 	entry.mu.Unlock()
 	if err := ValidateRunHeader(&header); err != nil {
@@ -230,7 +230,7 @@ func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitRe
 		copy := cloneTransitionRecord(&record)
 		prior = &copy
 	}
-	decision, err := EvaluateCommit(entry.state, entry.revision, prior, req, grantValid, recoveryValid)
+	decision, err := EvaluateCommit(entry.state, entry.revision, prior, req, grantValid, recoveryValid, entry.header.SchemaVersion)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -249,7 +249,7 @@ func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitRe
 			}
 		}
 		return CommitResult{Status: CommitAlreadyApplied,
-			Snapshot: RuntimeSnapshot{State: cloneMachineState(&entry.state), Revision: entry.revision},
+			Snapshot: RuntimeSnapshot{State: cloneMachineState(&entry.state), Revision: entry.revision, SchemaVersion: entry.header.SchemaVersion},
 			Events:   cloneEvents(decision.Events), Grant: grant}, nil
 	case DecisionConflict:
 		return CommitResult{}, ErrCommandConflict
@@ -294,7 +294,7 @@ func (m *MemoryRuntime) Commit(ctx context.Context, req CommitRequest) (CommitRe
 		entry.startGrants = make(map[CommandID]ExecutionGrant)
 	}
 	return CommitResult{Status: CommitAccepted,
-		Snapshot: RuntimeSnapshot{State: cloneMachineState(&entry.state), Revision: entry.revision},
+		Snapshot: RuntimeSnapshot{State: cloneMachineState(&entry.state), Revision: entry.revision, SchemaVersion: entry.header.SchemaVersion},
 		Events:   cloneEvents(stored.Events), Grant: minted}, nil
 }
 
@@ -316,7 +316,7 @@ func (m *MemoryRuntime) Record(ctx context.Context, runID RunID) (RunRecord, err
 		return RunRecord{}, err
 	}
 	header := cloneRunHeader(entry.header)
-	snapshot := RuntimeSnapshot{State: cloneMachineState(&entry.state), Revision: entry.revision}
+	snapshot := RuntimeSnapshot{State: cloneMachineState(&entry.state), Revision: entry.revision, SchemaVersion: header.SchemaVersion}
 	transitions := cloneTransitionRecords(entry.log)
 	entry.mu.Unlock()
 	if err := checkContext(ctx); err != nil {

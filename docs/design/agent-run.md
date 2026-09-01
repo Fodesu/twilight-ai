@@ -277,6 +277,7 @@ type Runtime interface {
 type RuntimeSnapshot struct {
     State MachineState // detached in-process view
     Revision uint64
+    SchemaVersion uint16 // RunHeader.SchemaVersion
 }
 type CommitRequest struct {
     BaseRevision uint64
@@ -317,6 +318,8 @@ type CommitResult struct {
 **RUN-CMT-5** accepted `StartModelExecution`/`StartToolCall` 为目标签发新 grant；该 start 的 `CommitAccepted` 和在 grant 仍 live 时满足精确 replay 条件的 `CommitAlreadyApplied` 返回同一个 grant。若该 start 已 settlement 或 Run 已 terminal，精确 replay 仍返回 `CommitAlreadyApplied`，并返回空 grant。model result/failure/reject 与 executing tool result/known failure 必须携带 live target grant。settlement 接受后 grant 失效；terminal transition 撤销全部 grant。公共 Runtime 的 `RecoverModelExecution` 由 live grant holder 提交；durable 实现内部可以在自己验证 execution recovery record 后无 grant 提交。Executing tool 的 recovery 使用同一条 `SubmitToolFailure{Outcome:Unknown}` command：工具 owner 必须携带 live grant；recovery scanner 仅在 Runtime 验证其 lease/claim 已失效且没有已接受 settlement 时无 grant 提交。scanner 使用上表的 deterministic recovery CommandID，因而 recovery update 也遵守同一 `(RunID, CommandID)` 幂等规则。durable adapter 保存 `(command ID, claim) -> grant` 精确 replay 所需的私有 start record；attempt、owner、fence、lease 与 recovery record 由 adapter 内部管理。
 
 **RUN-CMT-6** Commit 必须原子保存新 MachineState 与完整 TransitionRecord，保证 event group 完整写入。`CommitResult`、Load 与 Record 返回 detached values。预期拒绝映射为 `ErrCommandConflict`、`ErrStaleRuntime`、`ErrRunTerminal`；transport/storage failure 保持可判别且不得伪装为 rejection。
+
+**RUN-CMT-7** 每个 Run 的协议版本是 `RunHeader.SchemaVersion`，在 Create 时冻结。`RuntimeSnapshot.SchemaVersion` 必须等于该 header。`EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Run 的 header 版本；不得使用进程全局 `currentSchemaVersion` 作为写入许可。digest、decode、`DecideVersion` 与 `EvolveVersion` 均按该 version 分发到 `ProtocolV1`（`digestRequestV1`、`decodeCommandVariantV1`、`evolveV1` 等）。v1 Run 的 replay 必须继续使用 v1 digest preimage，即使进程已经把 `currentSchemaVersion` 升到 2。`BuildEnvelopeVersion` 是 Loop 写入该 Run 时的构造入口。
 
 `MemoryRuntime` 提供 multi-Run in-process reference implementation：collection lock 保护 Run map，每个 Run 使用独立锁。跨进程 durable recovery 由其他 Runtime adapter 提供。
 

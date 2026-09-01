@@ -65,7 +65,7 @@ func snapshotWaiting(t *testing.T, rt Runtime, runID RunID) []ResponseRequest {
 
 func responseDecisionDigest(t *testing.T, kind ResponseKind, decision ResponseDecision, reason string) Digest {
 	t.Helper()
-	digest, err := DigestToolResponseDecision(kind, decision, reason)
+	digest, err := DigestToolResponseDecision(SchemaVersion1, kind, decision, reason)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -216,15 +216,15 @@ func validateFactTransition(s MachineState, f Fact) error {
 		if ModelRef(fact.Request.Model) != fact.Model {
 			return errors.New("agent: evolve: model step prepared model mismatch")
 		}
-		requestDigest, err := DigestRequest(fact.Request)
+		requestDigest, err := DigestRequest(SchemaVersion1, fact.Request)
 		if err != nil || requestDigest != fact.RequestDigest {
 			return errors.New("agent: evolve: model step prepared request digest mismatch")
 		}
-		toolsDigest, err := DigestToolSpecs(fact.Tools)
+		toolsDigest, err := DigestToolSpecs(SchemaVersion1, fact.Tools)
 		if err != nil || toolsDigest != fact.ToolsDigest {
 			return errors.New("agent: evolve: model step prepared tools digest mismatch")
 		}
-		binding, err := DigestModelStepBinding(fact.Model, fact.RequestDigest, fact.ToolsDigest)
+		binding, err := DigestModelStepBinding(SchemaVersion1, fact.Model, fact.RequestDigest, fact.ToolsDigest)
 		if err != nil || binding != fact.BindingDigest {
 			return errors.New("agent: evolve: model step prepared binding digest mismatch")
 		}
@@ -312,7 +312,7 @@ func validateFactTransition(s MachineState, f Fact) error {
 		if call.Waiting.ID != fact.ResponseID {
 			return fmt.Errorf("agent: evolve: tool call %q response ID mismatch", fact.CallID)
 		}
-		want, err := DigestToolResponseDecision(ResponseApproval, ResponseDecisionApproved, "")
+		want, err := DigestToolResponseDecision(SchemaVersion1, ResponseApproval, ResponseDecisionApproved, "")
 		if err != nil || want != fact.ResponseDigest {
 			return fmt.Errorf("agent: evolve: tool call %q approval digest mismatch", fact.CallID)
 		}
@@ -329,7 +329,7 @@ func validateFactTransition(s MachineState, f Fact) error {
 		if call.Waiting.ID != fact.ResponseID {
 			return fmt.Errorf("agent: evolve: tool call %q response ID mismatch", fact.CallID)
 		}
-		want, err := DigestToolResponsePayload(fact.Payload)
+		want, err := DigestToolResponsePayload(SchemaVersion1, fact.Payload)
 		if err != nil || want != fact.ResponseDigest {
 			return fmt.Errorf("agent: evolve: tool call %q response digest mismatch", fact.CallID)
 		}

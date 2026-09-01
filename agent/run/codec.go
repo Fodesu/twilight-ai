@@ -123,7 +123,7 @@ func (e *CommandEnvelope) UnmarshalJSON(raw []byte) error {
 	if !isSupportedSchemaVersion(wire.SchemaVersion) {
 		return fmt.Errorf("agent: codec: unsupported schema version %d", wire.SchemaVersion)
 	}
-	cmd, err := decodeCommandVariant(wire.Type, wire.Command)
+	cmd, err := decodeCommandVariant(wire.SchemaVersion, wire.Type, wire.Command)
 	if err != nil {
 		return err
 	}
@@ -215,7 +215,7 @@ func (e *AgentEvent) UnmarshalJSON(raw []byte) error {
 	if !isSupportedSchemaVersion(wire.SchemaVersion) {
 		return fmt.Errorf("agent: codec: unsupported schema version %d", wire.SchemaVersion)
 	}
-	fact, err := decodeFactVariant(wire.Type, wire.Fact)
+	fact, err := decodeFactVariant(wire.SchemaVersion, wire.Type, wire.Fact)
 	if err != nil {
 		return err
 	}
@@ -306,7 +306,16 @@ func decodeFactAs[T Fact](raw json.RawMessage) (Fact, error) {
 	return f, err
 }
 
-func decodeCommandVariant(typ string, raw json.RawMessage) (AgentCommand, error) {
+func decodeCommandVariant(schemaVersion uint16, typ string, raw json.RawMessage) (AgentCommand, error) {
+	switch schemaVersion {
+	case SchemaVersion1:
+		return decodeCommandVariantV1(typ, raw)
+	default:
+		return nil, unsupportedSchemaVersion(schemaVersion)
+	}
+}
+
+func decodeCommandVariantV1(typ string, raw json.RawMessage) (AgentCommand, error) {
 	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return nil, fmt.Errorf("agent: codec: command %q has empty body", typ)
 	}
@@ -344,7 +353,16 @@ func decodeCommandVariant(typ string, raw json.RawMessage) (AgentCommand, error)
 	}
 }
 
-func decodeFactVariant(typ string, raw json.RawMessage) (Fact, error) {
+func decodeFactVariant(schemaVersion uint16, typ string, raw json.RawMessage) (Fact, error) {
+	switch schemaVersion {
+	case SchemaVersion1:
+		return decodeFactVariantV1(typ, raw)
+	default:
+		return nil, unsupportedSchemaVersion(schemaVersion)
+	}
+}
+
+func decodeFactVariantV1(typ string, raw json.RawMessage) (Fact, error) {
 	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return nil, fmt.Errorf("agent: codec: fact %q has empty body", typ)
 	}
