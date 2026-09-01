@@ -513,10 +513,14 @@ func decideRejectToolCall(s *MachineState, cmd *RejectToolCall) ([]Fact, error) 
 	if cmd.ResponseDigest != wantDigest {
 		return nil, rejectionf("response: rejection digest mismatch")
 	}
+	class := FailurePermissionDenied
+	if c.Waiting.Kind == ResponseExternal {
+		class = FailureResponseRejected
+	}
 	facts := []Fact{ToolCallFailed{
 		StepID:  cmd.StepID,
 		CallID:  cmd.CallID,
-		Failure: ToolFailure{Class: FailurePermissionDenied, Message: cmd.Reason},
+		Failure: ToolFailure{Class: class, Message: cmd.Reason},
 		Outcome: ToolOutcomeKnown,
 	}}
 	return facts, nil

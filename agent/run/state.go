@@ -50,6 +50,7 @@ type StepFailure struct {
 
 const (
 	FailurePermissionDenied   = "permission_denied"
+	FailureResponseRejected   = "response_rejected"
 	FailureToolLookup         = "tool_lookup_failed"
 	FailureInvalidArguments   = "invalid_arguments"
 	FailureMalformedModel     = "malformed_model_result"

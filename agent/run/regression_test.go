@@ -121,7 +121,7 @@ func TestRegressionExternalResponseCanBeRejected(t *testing.T) {
 		t.Fatalf("external-response call cannot be rejected: %v", err)
 	}
 	failed := facts[0].(ToolCallFailed)
-	if failed.Failure.Class != FailurePermissionDenied || failed.Outcome != ToolOutcomeKnown {
+	if failed.Failure.Class != FailureResponseRejected || failed.Outcome != ToolOutcomeKnown {
 		t.Fatalf("failed = %+v", failed)
 	}
 	s = fold(t, s, facts)

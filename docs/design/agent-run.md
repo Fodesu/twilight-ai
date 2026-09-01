@@ -225,11 +225,11 @@ ToolCall:
 | `SubmitToolFailure(Known)` | Tool Pending/Executing；`ToolCallFailed(Known)`，最后一个 call 进入 terminal 时隐式关闭 ToolStep |
 | `SubmitToolFailure(Unknown)` | Tool Executing；`ToolCallFailed(Unknown)`、`RunEnded(failed/effect_unknown)` |
 | `ApproveToolCall` | Waiting(Approval)；`ToolCallApproved` |
-| `RejectToolCall` | Waiting(Approval/ExternalResponse)；`ToolCallFailed(Known/permission_denied)`，最后一个 call 进入 terminal 时隐式关闭 ToolStep |
+| `RejectToolCall` | Waiting(Approval) 记 `ToolCallFailed(Known/permission_denied)`；Waiting(ExternalResponse) 记 `ToolCallFailed(Known/response_rejected)`。最后一个 call 进入 terminal 时隐式关闭 ToolStep |
 | `SubmitToolResponse` | Waiting(ExternalResponse)；`ToolCallAnswered`，最后一个 call 进入 terminal 时隐式关闭 ToolStep |
 | `CancelRun` | active；仍 Executing 的 tool call 记 `ToolCallFailed(Unknown)`，随后 `RunEnded(stopped/cancelled)`，并在 `RunStoppedEnd` / `RunResult` 上列出 `UncertainCalls` 与 `UncertainModel` |
 
-`ToolStepClosed` 作为旧 v1 transition 的兼容 fact 保留；新 command 在最终 ToolCall fact 中完成 ToolStep 的关闭。
+最后一个 ToolCall 进入 Completed 或 Failed 时，Decide 隐式关闭 ToolStep；没有独立的 `ToolStepClosed` fact。
 
 **RUN-MCH-3** `Decide(state, command)` 执行全部验证与 derived consequence，一次返回该 transition 的完整 ordered fact group；验证成功后返回完整 facts。`Protocol.Evolve(state, fact)` 机械折叠 fact，依赖 fact 携带的完整数据。accepted facts 必须 self-contained；若 transition terminalize，`RunEnded` 必须是 Decide 输出的最后一个 fact。
 

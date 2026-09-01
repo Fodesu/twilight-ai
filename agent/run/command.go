@@ -140,9 +140,11 @@ type ApproveToolCall struct {
 
 func (ApproveToolCall) agentCommand() {}
 
-// RejectToolCall rejects a Waiting(Approval or ExternalResponse) call. Decide
-// records the outcome as ToolCallFailed{Known, permission_denied}. ResponseDigest
-// must be DigestToolResponseDecision(waiting kind, ResponseDecisionRejected, Reason).
+// RejectToolCall rejects a Waiting(Approval or ExternalResponse) call.
+// Approval rejection is ToolCallFailed{Known, permission_denied}.
+// ExternalResponse rejection is ToolCallFailed{Known, response_rejected}.
+// ResponseDigest must be DigestToolResponseDecision(waiting kind,
+// ResponseDecisionRejected, Reason).
 type RejectToolCall struct {
 	StepID         StepID     `json:"stepId"`
 	CallID         CallID     `json:"callId"`
