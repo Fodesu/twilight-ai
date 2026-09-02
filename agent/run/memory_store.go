@@ -20,7 +20,6 @@ type memoryRun struct {
 	header      RunHeader
 	state       MachineState
 	revision    uint64
-	initial     MachineState
 	watermark   uint64
 	transitions map[CommandID]TransitionRecord
 	log         []TransitionRecord
@@ -102,11 +101,9 @@ func (s *MemoryStore) Create(ctx context.Context, header RunHeader) (bool, RunHe
 		return false, cloneRunHeader(existing.header), nil
 	}
 	stored := cloneRunHeader(header)
-	initial := cloneMachineState(&stored.InitialState)
 	s.runs[header.RunID] = &memoryRun{
 		header:      stored,
-		state:       cloneMachineState(&initial),
-		initial:     initial,
+		state:       cloneMachineState(&stored.InitialState),
 		transitions: make(map[CommandID]TransitionRecord),
 		leases:      make(map[string]ExecutionLease),
 		startGrants: make(map[CommandID]ExecutionGrant),

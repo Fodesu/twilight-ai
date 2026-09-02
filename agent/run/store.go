@@ -2,6 +2,8 @@ package run
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 )
 
@@ -83,4 +85,31 @@ func (s *StoredRun) forgetStartGrant(grant ExecutionGrant) {
 func (s *StoredRun) clearLeases() {
 	s.Leases = make(map[string]ExecutionLease)
 	s.StartGrants = make(map[CommandID]ExecutionGrant)
+}
+
+// Rebuild is an optional diagnostic (RUN-CMT-2): it refolds the state from
+// the transition log and replaces the stored state with the fold result.
+// Runtime.Commit remains the normal state transition path. A log shorter than
+// the last committed revision returns ErrLogTruncated (audit gap). It returns
+// true when the refolded state differs from the stored state, which identifies
+// an Evolve bug, out-of-band write, or storage corruption.
+func Rebuild(ctx context.Context, store Store, runID RunID) (rebuilt bool, err error) {
+	if store == nil {
+		return false, errors.New("agent: rebuild: nil store")
+	}
+	var diverged bool
+	err = store.Update(ctx, runID, func(stored *StoredRun) error {
+		folded, maxRevision, foldErr := FoldTransitions(cloneMachineState(&stored.Header.InitialState), stored.Log)
+		if foldErr != nil {
+			return foldErr
+		}
+		if maxRevision < stored.Watermark {
+			return fmt.Errorf("%w: log ends at %d, watermark %d", ErrLogTruncated, maxRevision, stored.Watermark)
+		}
+		diverged = stored.Revision != maxRevision || !statesEquivalent(&stored.State, &folded)
+		stored.State = folded
+		stored.Revision = maxRevision
+		return nil
+	})
+	return diverged, err
 }

@@ -69,6 +69,9 @@ func TestCanonicalJSONRejects(t *testing.T) {
 	for _, in := range []string{
 		``, `{"a":1}garbage`, `{bad}`,
 		`"\ud800"`, `"\udbff"`, `"\udc00"`, `"\ud800x"`, `"\ud800\u0041"`,
+		`{"a":1,"a":2}`, `{"dry_run":true,"dry_run":false}`,
+		`{"x":1}]`, `{"a":1}}}`, `[1,2]]`,
+		"{\"a\":\"\xff\"}",
 	} {
 		if _, err := canonicalJSON([]byte(in)); err == nil {
 			t.Fatalf("canonicalJSON(%q): expected error", in)
@@ -181,6 +184,17 @@ func TestDigestBindingCanonicalizesArguments(t *testing.T) {
 	d3, _ := digestToolCallBinding("c1", "sha256:x", ApprovalRequired, cj(`{"a":2,"b":1}`))
 	if d1 == d3 {
 		t.Fatal("policy does not affect binding digest")
+	}
+	id1, err := digestToolCallBinding("c", "", DirectExecution, cj(`{"channel_id":"9007199254740993"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id2, err := digestToolCallBinding("c", "", DirectExecution, cj(`{"channel_id":"9007199254740992"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if id1 == id2 {
+		t.Fatal("distinct string identifiers collided in a binding digest")
 	}
 }
 

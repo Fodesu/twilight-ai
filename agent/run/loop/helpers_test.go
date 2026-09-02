@@ -11,9 +11,9 @@ const testModel ModelRef = "m-1"
 
 func cj(raw string) CanonicalJSON { return MustParseCanonicalJSON(raw) }
 
-func newTestRuntime(t *testing.T) *MemoryRuntime {
+func newTestRuntime(t *testing.T) Runtime {
 	t.Helper()
-	rt := NewMemoryRuntime()
+	rt := NewRuntime(NewMemoryStore())
 	newRun, err := BuildNewRun("run-1", "")
 	if err != nil {
 		t.Fatal(err)

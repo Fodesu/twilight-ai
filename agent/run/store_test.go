@@ -70,7 +70,7 @@ func TestExpiredLeaseAllowsGrantlessModelRecovery(t *testing.T) {
 }
 
 func TestZeroDeadlineRejectsGrantlessRecovery(t *testing.T) {
-	rt := NewMemoryRuntime()
+	rt := NewRuntime(NewMemoryStore())
 	ctx := context.Background()
 	newRun, err := BuildNewRun("run-1", "")
 	if err != nil {

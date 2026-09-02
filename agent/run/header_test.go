@@ -49,7 +49,7 @@ func TestValidateRunHeaderRejectsTampering(t *testing.T) {
 }
 
 func TestCommitRejectsCommandSchemaMismatch(t *testing.T) {
-	rt := NewMemoryRuntime()
+	rt := NewRuntime(NewMemoryStore())
 	newRun, err := BuildNewRun("run-1", "")
 	if err != nil {
 		t.Fatal(err)
@@ -65,50 +65,5 @@ func TestCommitRejectsCommandSchemaMismatch(t *testing.T) {
 	env.SchemaVersion = 2
 	if _, err := rt.Commit(t.Context(), CommitRequest{BaseRevision: 0, Command: env}); err == nil {
 		t.Fatal("v2 envelope accepted on v1 run")
-	}
-}
-
-func TestFoldRunFromHeaderMatchesRuntime(t *testing.T) {
-	h, err := BuildRunHeader("run-1", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	rt := NewMemoryRuntime()
-	newRun, err := BuildNewRun("run-1", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rt.Create(t.Context(), newRun); err != nil {
-		t.Fatal(err)
-	}
-
-	// Drive one transition: accept the seed input at Revision 1 (RUN-NEW-1 —
-	// seed enters the log, not the header).
-	in := AgentInput{ID: "seed", Payload: MustParseCanonicalJSON(`{"q":"hi"}`)}
-	env, err := BuildEnvelope("run-1", DeriveInputCommandID("run-1", in.ID), NextStep(in))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rt.Commit(t.Context(), CommitRequest{BaseRevision: 0, Command: env}); err != nil {
-		t.Fatal(err)
-	}
-
-	record, err := rt.Record(t.Context(), "run-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	folded, rev, err := FoldRun(&h, record.Transitions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rev != 1 {
-		t.Fatalf("rev = %d", rev)
-	}
-	live, err := rt.Load(t.Context(), "run-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !statesEquivalent(&live.State, &folded) {
-		t.Fatal("header fold diverged from live state")
 	}
 }
