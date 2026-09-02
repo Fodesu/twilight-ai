@@ -414,8 +414,8 @@ func evolveCall(s *MachineState, step StepID, call CallID, apply func(*ToolCallS
 	}
 	calls := append([]ToolCallState(nil), ts.Calls...)
 	apply(&calls[i])
-	// Spec §4.2: Evolve must reject illegal field combinations, e.g. an
-	// unknown-outcome failure whose class is not effect_unknown.
+	// Reject illegal field combinations, e.g. an unknown-outcome failure
+	// whose class is not effect_unknown.
 	if err := ValidateToolCallState(calls[i]); err != nil {
 		return *s, err
 	}

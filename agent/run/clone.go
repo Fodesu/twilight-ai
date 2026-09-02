@@ -2,8 +2,8 @@ package run
 
 import "encoding/json"
 
-// Deep-copy helpers: Runtime return values must be read-only snapshots (spec
-// appendix A) — a caller mutating a returned slice or map must never reach
+// Deep-copy helpers: Runtime return values must be read-only snapshots
+// (RUN-CMT-6) — a caller mutating a returned slice or map must never reach
 // authoritative storage or committed event bytes.
 //
 // The agent Runtime is an authority boundary. All persisted request/result

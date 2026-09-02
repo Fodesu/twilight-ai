@@ -197,8 +197,8 @@ func decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, e
 	}
 
 	// Validate bindings against the frozen ToolSpecs and the model result,
-	// then freeze the full call set (Waiting requests included) here so both
-	// runtimes derive identical ToolStepOpened facts.
+	// then freeze the full call set (Waiting requests included) here so
+	// Decide produces identical ToolStepOpened facts.
 	if len(cmd.Calls) != len(cmd.Result.ToolCalls) {
 		return nil, rejectionf("model result: %d bindings for %d tool calls", len(cmd.Calls), len(cmd.Result.ToolCalls))
 	}
@@ -483,9 +483,9 @@ func decideApproveToolCall(s *MachineState, cmd ApproveToolCall) ([]Fact, error)
 func decideRejectToolCall(s *MachineState, cmd *RejectToolCall) ([]Fact, error) {
 	// Reject closes a Waiting call of either kind as a Known failure:
 	// approval rejection and external-response abandonment ("the answer is
-	// never coming") share one exit. Spec §4.2 lists Waiting -> Failed(Known)
-	// as legal; without this, an abandoned ask-user call would strand the run
-	// with CancelRun as the only escape.
+	// never coming") share one exit. Waiting -> Failed(Known) is legal;
+	// without this, an abandoned ask-user call would strand the run with
+	// CancelRun as the only escape.
 	ts, err := currentToolStep(s, cmd.StepID)
 	if err != nil {
 		return nil, err

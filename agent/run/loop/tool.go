@@ -26,6 +26,34 @@ func toolCallIndex(step run.ToolStep, callID run.CallID) int {
 	return -1
 }
 
+func (l *Loop) resolveExecutableTool(proto run.Protocol, call run.ToolCallState) (ExecutableTool, *run.ToolFailure) {
+	tool, resolveErr := l.Tools.Resolve(call.ToolRef)
+	if resolveErr != nil {
+		return nil, &run.ToolFailure{Class: run.FailureToolLookup, Message: resolveErr.Error()}
+	}
+	if tool == nil {
+		return nil, &run.ToolFailure{Class: run.FailureToolLookup, Message: "tool catalog returned a nil tool"}
+	}
+	toolDef, freezeErr := run.FreezeToolDefinition(tool.Definition())
+	if freezeErr != nil {
+		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: freezeErr.Error()}
+	}
+	defDigest, digestErr := proto.DigestToolDefinition(toolDef)
+	if digestErr != nil {
+		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: digestErr.Error()}
+	}
+	switch {
+	case tool.Ref() != call.ToolRef || defDigest != call.DefinitionDigest:
+		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "tool definition digest mismatch"}
+	case tool.ResponsePolicy() != call.Policy:
+		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "response policy mismatch"}
+	}
+	if argErr := tool.ValidateArguments(call.Arguments); argErr != nil {
+		return nil, &run.ToolFailure{Class: run.FailureInvalidArguments, Message: argErr.Error()}
+	}
+	return tool, nil
+}
+
 func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events EventSink, snapshot *run.RuntimeSnapshot, eff run.StartToolCalls) error {
 	runID := snapshot.State.RunID
 	proto, err := snapshot.Protocol()
@@ -59,48 +87,20 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events Eve
 		}
 		call := ts.Calls[i]
 		key := startKey{runID: runID, stepID: eff.StepID, callID: callID}
-		if call.Status != run.ToolPending {
-			if call.Status == run.ToolExecuting {
-				if _, ok := l.lookupStart(key); !ok {
-					continue
-				}
-			} else {
+		resuming := false
+		switch call.Status {
+		case run.ToolPending:
+		case run.ToolExecuting:
+			if _, ok := l.lookupStart(key); !ok {
 				continue
 			}
+			resuming = true
+		default:
+			continue
 		}
 
-		tool, resolveErr := l.Tools.Resolve(call.ToolRef)
-		var known *run.ToolFailure
-		switch {
-		case resolveErr != nil:
-			known = &run.ToolFailure{Class: run.FailureToolLookup, Message: resolveErr.Error()}
-		default:
-			if tool == nil {
-				known = &run.ToolFailure{Class: run.FailureToolLookup, Message: "tool catalog returned a nil tool"}
-				break
-			}
-			toolDef, freezeErr := run.FreezeToolDefinition(tool.Definition())
-			if freezeErr != nil {
-				known = &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: freezeErr.Error()}
-				break
-			}
-			defDigest, digestErr := proto.DigestToolDefinition(toolDef)
-			if digestErr != nil {
-				known = &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: digestErr.Error()}
-				break
-			}
-			switch {
-			case tool.Ref() != call.ToolRef || defDigest != call.DefinitionDigest:
-				known = &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "tool definition digest mismatch"}
-			case tool.ResponsePolicy() != call.Policy:
-				known = &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "response policy mismatch"}
-			default:
-				if argErr := tool.ValidateArguments(call.Arguments); argErr != nil {
-					known = &run.ToolFailure{Class: run.FailureInvalidArguments, Message: argErr.Error()}
-				}
-			}
-		}
-		if known != nil {
+		tool, known := l.resolveExecutableTool(proto, call)
+		if known != nil && !resuming {
 			// Known failure of a Pending call: no start barrier, no tool call.
 			res, err := l.commit(ctx, runtime, runID, freshCommandID(), snapshot.Revision, "",
 				run.SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: *known, Outcome: run.ToolOutcomeKnown}, proto)
@@ -148,6 +148,31 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events Eve
 		if events != nil {
 			_ = events.Emit(ctx, Event{RunID: runID, StepID: eff.StepID, CallID: callID,
 				Kind: EventToolStarted, Durability: EventCommitted})
+		}
+		if resuming && known != nil {
+			failure := *known
+			if failure.Class != run.FailureEffectUnknown {
+				if failure.Message == "" {
+					failure.Message = "tool reported " + failure.Class
+				}
+				failure.Class = run.FailureEffectUnknown
+			}
+			settlement := l.settlementFor(key, freshCommandID(), start.Snapshot.Revision, start.Grant,
+				run.SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: failure, Outcome: run.ToolOutcomeUnknown})
+			res, err := l.commit(context.WithoutCancel(ctx), runtime, runID, settlement.commandID, settlement.base, settlement.grant, settlement.command, proto)
+			if err != nil {
+				settleErr := l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, proto)
+				if retriable(err) {
+					l.forgetSettlement(key)
+					l.forgetStart(key)
+					return settleErr
+				}
+				return err
+			}
+			l.forgetSettlement(key)
+			l.forgetStart(key)
+			l.emitCommitted(ctx, events, runID, res.Events)
+			continue
 		}
 		started = append(started, startedWorker{call: call, grant: start.Grant, base: start.Snapshot.Revision, tool: tool, key: key})
 	}

@@ -22,7 +22,10 @@ const (
 	ReasonCancelled       RunReason = "cancelled"
 	ReasonProviderFailure RunReason = "provider_failure"
 	ReasonMalformedModel  RunReason = "malformed_model_result"
-	ReasonEffectUnknown   RunReason = "effect_unknown"
+	// ReasonEffectUnknown is unused as a RunEnded reason. Unknown tool
+	// outcomes use FailureEffectUnknown on ToolCallFailed and leave the Run
+	// active.
+	ReasonEffectUnknown RunReason = "effect_unknown"
 )
 
 type RunFailure struct {

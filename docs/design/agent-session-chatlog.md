@@ -13,7 +13,7 @@ EventType    = twilight/chatlog/<name>
 Projections  = twilight/chatlog/surface, twilight/chatlog/context
 ```
 
-Chatlog 保存对话内容：Input、assistant、tool_result、summary、checkpoint。Surface 与 Context 是对这些 events 的纯投影。每条内容携带 `TurnID`；回合的创建、结束与 Run linkage 由 `twilight/turn/` 事件表达。外部内容经 `ReferencePart` 关联 Artifact BindingID。
+Chatlog 保存对话内容：Input、assistant、tool_result、summary、checkpoint。Surface 与 Context 是对这些 events 的纯投影。`assistant` 与 `tool_result` 携带 `TurnID`；Input 在 `input_delivered` 之后挂上 TurnID；summary 与 checkpoint 不携带 TurnID。回合的创建、结束与 Run linkage 由 `twilight/turn/` 事件表达。外部内容经 `ReferencePart` 关联 Artifact BindingID。
 
 流式 `text_delta` / `reasoning_delta` 由 Loop EventSink 发送，属于临时观察。Chatlog 权威是已提交的条目。
 
@@ -29,7 +29,6 @@ type ToolResultID string
 type SummaryID string
 type CallID string
 type CheckpointID string
-type EntityStatus string
 ```
 
 `TurnID` 与 turn 模块同一 identity。InputID、AssistantID、ToolResultID、SummaryID 在 resolved ancestry 内唯一；CallID 在同一 Turn 内唯一。replacement graph 无环，一个实体至多一个直接 replacement。
@@ -123,7 +122,7 @@ type Entry struct {
 
 **CHT-ENT-1** Parts 有序。`ArtifactBindingRef` 的 identity 为 discriminator 与 BindingID。interface value 非 nil；part kind 与 concrete value 匹配。ReferencePart 的 MediaType 来自 Artifact Ref。
 
-**CHT-ENT-2** 每个 `(TurnID,CallID)` 在 assistant 中至多一个 ToolCall。`tool_result` 对应同 Turn 已有的 call。`unknown` 与 `indeterminate` 为历史终态；active Context 视该 call 为未解决，直到 `tool_result_superseded` 换成 `success` 或 `error`。每个 unresolved result 至多一个 replacement。`tool_result_superseded` 只在对应 Turn 尚未写入 `twilight/turn/completed` 或 `twilight/turn/failed` 时接受。
+**CHT-ENT-2** 每个 `(TurnID,CallID)` 在 assistant 中至多一个 ToolCall。`tool_result` 对应同 Turn 已有的 call。CallID 在同一 Turn 内唯一：同一 Turn 的后续 ModelStep 不得复用已出现的 CallID。`unknown` 为 v1 mapper 写入的未决终态；`indeterminate` 保留给历史条目，v1 mapper 不产出。active Context 视 unresolved call 为未解决，直到 Application 在 Turn 尚未 `twilight/turn/completed` 或 `twilight/turn/failed` 时写入 `tool_result_superseded`，换成 `success` 或 `error`。每个 unresolved result 至多一个 replacement。v1 FactMapper 不写 `tool_result_superseded`。
 
 **CHT-ENT-3** ToolResult 的 nested Parts 为单层 TextPart 或 ReferencePart。外部内容使用 `ReferencePart`。
 

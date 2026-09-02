@@ -55,7 +55,8 @@ type ModelStepRejected struct {
 func (ModelStepRejected) fact() {}
 
 // ModelStepCompleted accepts one model result: usage is accumulated,
-// LastModelResult is written, the current step is cleared.
+// LastModelResult is written, Current becomes Open. The same transition may
+// then open a ToolStep or end the Run.
 type ModelStepCompleted struct {
 	StepID StepID      `json:"stepId"`
 	Result ModelResult `json:"result"`

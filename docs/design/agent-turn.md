@@ -128,7 +128,7 @@ twilight/turn/superseded
 ```go
 type TurnView struct {
     TurnID TurnID
-    Status string // started | completed | failed | superseded
+    Status string // started | completed | failed | stopped | superseded
     InputIDs []chatlog.InputID
     RunID run.RunID
     Settlement Settlement
@@ -140,7 +140,7 @@ type TurnSurface struct {
 }
 ```
 
-UI 按 `TurnID` 连接 `twilight/chatlog/surface` 的条目。
+`Settlement=stopped` 时 `Status` 为 `stopped`。UI 按 `TurnID` 连接 `twilight/chatlog/surface` 的条目。
 
 ## 3. API
 
@@ -190,7 +190,9 @@ type StopResponse struct { Ref TurnRef; RunID run.RunID; Result *ResultReference
 
 **TRN-API-4** Create、conflict、missing、corrupt 按 Run contract 处理。创建计划来自 persisted `started`。
 
-**TRN-API-5** DTO 为值语义。`Waiting` 为 snapshot 的 `WaitingCalls`。`Disposition` 为 `ResumeWaitingForResponse`、`ResumeWaitingForRecovery` 或 `ResumeFinished`。
+**TRN-API-5** DTO 为值语义。`Waiting` 为 snapshot 的 `WaitingCalls`。`Disposition` 为 `ResumeWaitingForResponse`、`ResumeWaitingForRecovery` 或 `ResumeFinished`。`NeedsRecovery` 为 true 时 Coordinator 返回 `ResumeWaitingForRecovery`；Application 调用 `Runtime.RecoverExpired` 后再 Resume。
+
+**TRN-API-6** `twilight/turn/superseded` 由 Application 追加，指向 replacement Turn 与新 RunID。Coordinator 的 Start / Resume / Stop 不写该事件。同一 Turn 上第二个 primary Run 仍为 conflict。
 
 ## 4. Start
 
@@ -252,7 +254,7 @@ InputIDs 为空时 group 仅含 `twilight/turn/started`。
 |---|---|---|
 | `RunCompletedEnd` | `twilight/turn/completed` | `completed` |
 | `RunFailedEnd` | `twilight/turn/failed` | `failed` |
-| `RunStoppedEnd` | `twilight/turn/failed` | `stopped`（`FailureClass:"stopped"`） |
+| `RunStoppedEnd` | `twilight/turn/failed` | `stopped`（`FailureClass:"cancelled"`） |
 
 **TRN-SET-4** settlement 的 CommitID / EventID 由 ResultReference 派生。相同 reference 幂等。
 
@@ -300,7 +302,7 @@ SourceFactID = Digest("twilight/turn/source-fact",
 
 `ModelStepPrepared` 期间 EventSink 可发送 `text_delta` / `reasoning_delta`。回合结束由 `twilight/turn/completed` 或 `twilight/turn/failed` 表达。
 
-**TRN-MAP-2** `AssistantID = Digest("twilight/chatlog/assistant-id", TurnID, ModelStepID, MapperVersion)`。`ToolResultID = Digest("twilight/chatlog/tool-result-id", TurnID, CallID, MapperVersion)`。assistant 的 ToolCall 顺序与模型结果一致。tool_result 与同 Turn 的 call 配对。
+**TRN-MAP-2** `AssistantID = Digest("twilight/chatlog/assistant-id", TurnID, ModelStepID, MapperVersion)`。`ToolResultID = Digest("twilight/chatlog/tool-result-id", TurnID, CallID, MapperVersion)`。assistant 的 ToolCall 顺序与模型结果一致。tool_result 与同 Turn 的 call 配对。同一 Turn 内 CallID 不得跨 ModelStep 复用，否则 `ToolResultID` 冲突。
 
 **TRN-MAP-3** Known 对应 `error`；Unknown 对应 `unknown`。
 
@@ -321,6 +323,7 @@ SourceFactID = Digest("twilight/turn/source-fact",
 | Map 为空 | 该 revision coverage 完成 |
 | materialize 响应丢失 | LookupCommit |
 | Run 已终态、settlement 缺失 | 按 RunEnded 写 `twilight/turn/completed` 或 `twilight/turn/failed` |
+| 模型 Executing、lease 过期 | `RecoverExpired` 提交 `RecoverModelExecution`；Run 保持 Active，同一 Turn、同一 RunID 继续 |
 | 模型结果未知 | 以 Record 为准 |
 | 工具效果未知 | 对该 Executing call materialize status=`unknown`；Run 保持 Active，同一 Turn、同一 RunID 继续。lease 过期后 `RecoverExpired` 提交该 call 的 Unknown |
 | Record 与并发 Commit | 重读 Record |

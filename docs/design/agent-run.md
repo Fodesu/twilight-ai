@@ -261,9 +261,9 @@ ToolCall:
 | `ApproveToolCall` | Waiting(Approval)；`ToolCallApproved` |
 | `RejectToolCall` | Waiting(Approval) 记 `ToolCallFailed(Known/permission_denied)`；Waiting(ExternalResponse) 记 `ToolCallFailed(Known/response_rejected)`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
 | `SubmitToolResponse` | Waiting(ExternalResponse)；`ToolCallAnswered`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
-| `CancelRun` | active；先把仍 Executing 的 tool call 记 `ToolCallFailed(Unknown)`，随后 `RunEnded(stopped/cancelled)`，并在 `RunStoppedEnd` / `RunResult` 上列出 `UncertainCalls` 与 `UncertainModel`。仅 Waiting、没有 Executing 时不给 Waiting call 记 Failed；`RunEnded` 把 `Current` 置空，且不更新 `LastToolStep` |
+| `CancelRun` | active；先把仍 Executing 的 tool call 记 `ToolCallFailed(Unknown)`，随后 `RunEnded(stopped/cancelled)`，并在 `RunStoppedEnd` / `RunResult` 上列出 `UncertainCalls` 与 `UncertainModel`。Waiting call 无论有无 Executing sibling 都不记 Failed；`RunEnded` 把 `Current` 置空。若这批 Unknown 使全部 call 进入终态，折叠会走 ToolStep 关闭路径并写入 `LastToolStep`；仍有 Waiting 或 Pending 时不走关闭路径，`LastToolStep` 保持原值。 |
 
-没有独立的 `ToolStepClosed` fact。最后一个 ToolCall 进入 Completed 或 Failed 时，`Evolve` 在折叠该 fact 后若全部 call 已 terminal，则把 Current 设为 `Open` 并写入 `LastToolStep` / `LastClosedStep`。Cancel 经 `RunEnded` 置空 Current、不经这条关闭路径时，`LastToolStep` 保持原值。
+没有独立的 `ToolStepClosed` fact。最后一个 ToolCall 进入 Completed 或 Failed 时，`Evolve` 在折叠该 fact 后若全部 call 已 terminal，则把 Current 设为 `Open` 并写入 `LastToolStep` / `LastClosedStep`。Cancel 的 Unknown fact 同样走这条关闭规则；`RunEnded` 再把 Current 置空。
 
 **RUN-MCH-3** `Protocol.Decide(state, command)` 执行全部验证与 derived consequence，一次返回该 transition 的完整 ordered fact group；验证成功后返回完整 facts。包级 `Decide` 委托当前写入 schema。`Protocol.Evolve(state, fact)` 机械折叠 fact，依赖 fact 携带的完整数据。accepted facts 必须 self-contained；若 transition terminalize，`RunEnded` 必须是 Decide 输出的最后一个 fact。
 
@@ -310,6 +310,7 @@ type Runtime interface {
     Load(context.Context, RunID) (RuntimeSnapshot, error)
     Commit(context.Context, CommitRequest) (CommitResult, error)
     Record(context.Context, RunID) (RunRecord, error)
+    RecoverExpired(context.Context) (int, error)
 }
 type RuntimeSnapshot struct {
     State MachineState // detached in-process view
@@ -361,23 +362,24 @@ type CommitResult struct {
 所有 Runtime implementation 在自己的 critical section/transaction 内调用同一个 pure `EvaluateCommit`。顺序固定为：
 
 ```text
-1 validate envelope RunID/schema/type/digest and derived CommandID
+1 validate envelope RunID/schema/type/digest
 2 lookup prior transition by CommandID
 3 exact digest replay -> AlreadyApplied + original complete event group
 4 same CommandID/different digest -> conflict
-5 terminal check
-6 validate hard CAS / target state / execution grant / recovery authority
-7 facts = Protocol.Decide(current, command) exactly once
-8 snapshot each fact; Protocol.Evolve in order; assign next Revision and Index
-9 build and validate one complete TransitionRecord
-10 atomically persist transition and new MachineState
+5 derived CommandID check (after replay)
+6 terminal check
+7 validate hard CAS / target state / execution grant / recovery authority
+8 facts = Protocol.Decide(current, command) exactly once
+9 snapshot each fact; Protocol.Evolve in order; assign next Revision and Index
+10 build and validate one complete TransitionRecord
+11 atomically persist transition and new MachineState
 ```
 
 **RUN-CMT-3** `PrepareModelRequest` 是 hard-CAS command：BaseRevision 必须等于 current revision。其他 command 通过当前 target state 和 grant 做 call-local rebase；stale BaseRevision 本身不阻止无冲突的 ingress/control/settlement。相同 command 的 replay 判定先于 terminal check，因此 terminal Run 仍能返回原 transition。
 
 **RUN-CMT-4** 幂等键为 `(RunID,CommandID)`。相同 digest 返回 `CommitAlreadyApplied`、当前 snapshot 与原完整 event group，且不得再次 Decide、分配 revision 或产生外部 effect。对于 `StartModelExecution` 和 `StartToolCall`，Runtime 还必须验证 command 中的 `ExecutionClaim`：相同 command ID、相同 digest、相同 claim 的精确重放在 grant 仍 live 时返回原 start grant；不同 claim 触发 `ErrCommandConflict`，并保持现有执行授权。非 start command 的 replay 不返回 grant。revision 每个 accepted command 恰加 1。
 
-**RUN-CMT-5** accepted `StartModelExecution`/`StartToolCall` 为目标签发新 grant；该 start 的 `CommitAccepted` 和在 grant 仍 live 时满足精确 replay 条件的 `CommitAlreadyApplied` 返回同一个 grant。若该 start 已 settlement 或 Run 已 terminal，精确 replay 仍返回 `CommitAlreadyApplied`，并返回空 grant。model result/failure/reject 与 executing tool result/known failure 必须携带 live target grant。settlement 接受后 grant 失效；terminal transition 撤销全部 grant。公共 Runtime 的 `RecoverModelExecution` 由 live grant holder 提交；durable 实现内部可以在自己验证 execution recovery record 后无 grant 提交。Executing tool 的 recovery 使用同一条 `SubmitToolFailure{Outcome:Unknown}` command：工具 owner 必须携带 live grant；recovery scanner 仅在 Runtime 验证其 lease/claim 已失效且没有已接受 settlement 时无 grant 提交。该 Unknown 只结算这一 call，Run 保持 Active。scanner 使用上表的 deterministic recovery CommandID，因而 recovery update 也遵守同一 `(RunID, CommandID)` 幂等规则。durable adapter 保存 `(command ID, claim) -> grant` 精确 replay 所需的私有 start record；attempt、owner、fence、lease 与 recovery record 由 adapter 内部管理。
+**RUN-CMT-5** accepted `StartModelExecution`/`StartToolCall` 为目标签发新 grant；该 start 的 `CommitAccepted` 和在 grant 仍 live 时满足精确 replay 条件的 `CommitAlreadyApplied` 返回同一个 grant。若该 start 已 settlement 或 Run 已 terminal，精确 replay 仍返回 `CommitAlreadyApplied`，并返回空 grant。model result/failure/reject 与 executing tool result/known failure 必须携带 live target grant。settlement 接受后 grant 失效；terminal transition 撤销全部 grant。`RecoverModelExecution` 由 live grant holder 提交，或在 Runtime 验证 lease 已过期且 command Claim 等于该 lease 的 Claim 后无 grant 提交。Executing tool 的 recovery 使用同一条 `SubmitToolFailure{Outcome:Unknown}` command：工具 owner 必须携带 live grant；`RecoverExpired` 仅在 lease 已过期且没有已接受 settlement 时无 grant 提交。该 Unknown 只结算这一 call，Run 保持 Active。scanner 使用确定性 recovery CommandID，因而 recovery update 也遵守同一 `(RunID, CommandID)` 幂等规则。attempt、owner、fence、lease 与 recovery record 由 Store adapter 内部管理。
 
 **RUN-CMT-6** Commit 必须原子保存新 MachineState 与完整 TransitionRecord，保证 event group 完整写入。`CommitResult`、Load 与 Record 返回 detached values。预期拒绝映射为 `ErrCommandConflict`、`ErrStaleRuntime`、`ErrRunTerminal`；transport/storage failure 保持可判别且不得伪装为 rejection。
 
@@ -388,16 +390,17 @@ type CommitResult struct {
 ## 6. Loop ports 与 policy
 
 ```go
-// package agent/run/loop
-type RequestPlanner interface {
-    Plan(context.Context, run.PlanningHint) (RequestPlan, error)
-}
+// package agent/run
 type PlanningHint struct {
     RunID RunID
     SourceStep StepID
     Inputs []AgentInput
     LastToolStep *ToolStep
     LastModelResult *ModelResult
+}
+// package agent/run/loop
+type RequestPlanner interface {
+    Plan(context.Context, run.PlanningHint) (RequestPlan, error)
 }
 type RequestPlan struct {
     Model run.ModelRef
@@ -472,7 +475,7 @@ Loop.Run(ctx, runtime, runID, sink):
 
 **RUN-LOP-3** `StartModelCall` 先 Commit start barrier；首次 `CommitAccepted` 或使用同一 command ID、同一 `ExecutionClaim` 精确重放得到原 grant 的 Loop，才拥有该 execution。Loop 必须保留 start command 的 ID、digest 和 claim，直到完成 settlement；缺少 grant 的 replay 进入 reload 流程。调用只使用 frozen ModelRequest 的 detached SDK materialization。streaming 与 non-streaming 必须产生同一种完整 `sdk.ModelResult`；delta 只发 EventSink。`ModelCatalog.Resolve` 失败或返回 nil 时提交 `RecoverModelExecution` 并返回错误，不得把 Run 记为 `provider_failure`：尚未发生模型调用。provider 调用失败提交 `SubmitModelFailure`；ctx cancellation 提交 `RecoverModelExecution`；结构、binding 或 freeze 失败提交 `RejectModelResult`，并由调用方显式选择 retry 或 fail-run。成功结果只提交一次 `SubmitModelResult`。
 
-**RUN-LOP-4** Tool execution 先按 frozen binding resolve tool，并验证 Ref、definition digest、response policy 和 arguments。lookup/definition/argument failure 在 Pending 状态提交 `SubmitToolFailure(Known)`，不得跨越 start barrier。通过验证后逐 call 提交 `StartToolCall`；只有 Accepted owner 可执行。冻结的 `ToolStep.Scheduling` 决定 `parallel` 或 `sequential` 以及 `MaxParallel`；不得改用 Loop 进程当前的 ExecutionPolicy。每个结果以自己的 grant 提交。同一 ToolStep 中 DirectExecution 的 Pending call，在外层 ctx 未取消时于本次 `Run` 内按冻结 Scheduling 分批 Start 并结算；ctx 已取消时停止再 Start，只结算已持有 grant 的 call。`Next` 返回 `Idle` 时 Loop 返回 `LoopWaiting`，并用 `NeedsRecovery(state)` 设置 `ExecutionRecovery`。Loop 不解释 Waiting call，也不携带 `ResponseRequest`。Application 从 snapshot 读取 `WaitingCalls`，提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 之后再次 `Run`。tool panic 或 effect 状态无法确定的错误转为对该 call 的 Unknown，并提交 `SubmitToolFailure(Unknown)`。该 settlement 不取消同批 sibling workers，也不结束 Run。`CancelRun` 先把仍 Executing 的 call 记为 `ToolCallFailed(Unknown)`，再 `RunEnded(stopped/cancelled)`，并把这些 CallID 与仍 Executing 的 ModelStep 写入 `RunStoppedEnd` / `RunResult` 的 `UncertainCalls`、`UncertainModel`。仅 Waiting、没有 Executing 时不给 Waiting call 记 Failed。已接受 start 的 worker 必须在收到外层取消后返回并尝试 settlement；settlement 使用独立 control context。
+**RUN-LOP-4** Tool execution 先按 frozen binding resolve tool，并验证 Ref、definition digest、response policy 和 arguments。lookup/definition/argument failure 在 Pending 状态提交 `SubmitToolFailure(Known)`，不得跨越 start barrier。通过验证后逐 call 提交 `StartToolCall`；只有 Accepted owner 可执行。冻结的 `ToolStep.Scheduling` 决定 `parallel` 或 `sequential` 以及 `MaxParallel`；不得改用 Loop 进程当前的 ExecutionPolicy。每个结果以自己的 grant 提交。同一 ToolStep 中 DirectExecution 的 Pending call，在外层 ctx 未取消时于本次 `Run` 内按冻结 Scheduling 分批 Start 并结算；ctx 已取消时停止再 Start，只结算已持有 grant 的 call。`Next` 返回 `Idle` 时 Loop 返回 `LoopWaiting`，并用 `NeedsRecovery(state)` 设置 `ExecutionRecovery`。Loop 不解释 Waiting call，也不携带 `ResponseRequest`。Application 从 snapshot 读取 `WaitingCalls`，提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 之后再次 `Run`。tool panic 或 effect 状态无法确定的错误转为对该 call 的 Unknown，并提交 `SubmitToolFailure(Unknown)`。该 settlement 不取消同批 sibling workers，也不结束 Run。`CancelRun` 先把仍 Executing 的 call 记为 `ToolCallFailed(Unknown)`，再 `RunEnded(stopped/cancelled)`，并把这些 CallID 与仍 Executing 的 ModelStep 写入 `RunStoppedEnd` / `RunResult` 的 `UncertainCalls`、`UncertainModel`。Waiting call 无论有无 Executing sibling 都不记 Failed。已接受 start 的 worker 必须在收到外层取消后返回并尝试 settlement；settlement 使用独立 control context。lookup/definition/argument failure 只允许发生在 Pending；Executing 且本进程持有 start cache 时只重放 start 并结算，不得再提交 grantless Known。
 
 **RUN-LOP-5** model 与 tool worker 都接收外层 ctx；Loop 对已接受 effect 使用独立 control context 完成 known/unknown outcome settlement。Application 的业务停止顺序为先 Commit `CancelRun`，再取消 Loop ctx。非 sentinel Commit error 以同 CommandID/digest 重放一次；仍未知时返回错误，由后续 Load/Record 查询 authority。stale/terminal/conflict 触发 reload/drop，旧 external effect 保持单次执行尝试。工具实现配合 context 返回；永久阻塞由 application/durable recovery 处理。
 
