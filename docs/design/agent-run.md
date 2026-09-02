@@ -25,13 +25,13 @@ Model / Tool    = 一次模型请求或一次工具调用的 effect 执行器
 Request Planner = application context 到 sdk.Request 的投影器
 ```
 
-Machine 处理已冻结的值和已提交的事实；Loop 解释 `Next` 产生的 transient effect；Runtime 保存并验证 Machine 的推进；Model/Tool 执行一次外部 effect；Request Planner 组装下一次模型请求。MemoryRuntime 和 durable adapter 实现同一个 Runtime contract，分别使用内存锁和数据库事务保存 authority。
+Machine 处理已冻结的值和已提交的事实；Loop 解释 `Next` 产生的 transient effect；Runtime 保存并验证 Machine 的推进；Model/Tool 执行一次外部 effect；Request Planner 组装下一次模型请求。`Runtime` 叠在 `Store` 上：`MemoryStore` 使用进程内锁，SQLite 与 Postgres 使用数据库事务，它们保存同一份 authority。
 
 `Step` 是 Run 的持久化恢复边界；`execution attempt` 表示某个 Loop 进程对该 Step 或 ToolCall 的一次易失执行。一个 Step 可以有多个 attempt，Machine 只接受带有效 grant 的 settlement。Attempt 的执行控制信息由 start command 的 `ExecutionClaim` 和 Runtime 返回的 opaque `ExecutionGrant` 表达。
 
 每次 accepted command 产生的 `TransitionRecord.Events` 构成 canonical event plane：它与新的 MachineState 在同一 Runtime commit 中写入，按 revision/index 有序，可用于 replay、materialization 和审计。`EventSink` 转发这些已提交事件及临时 delta；canonical authority 由 Runtime.Record 提供。
 
-**RUN-SCP-1** `agent/run` 拥有 Run identity、persisted frozen values、Machine、command/fact protocol、wire codec、fold、Runtime contract 与 MemoryRuntime。`agent/run/loop` 拥有 planner/model/tool ports、streaming、并发执行、EventSink 与 Loop policy；它单向依赖 `agent/run`，根 package 不依赖 loop。
+**RUN-SCP-1** `agent/run` 拥有 Run identity、persisted frozen values、Machine、command/fact protocol、wire codec、fold、Runtime contract、Store 与 MemoryStore。`agent/run/loop` 拥有 planner/model/tool ports、streaming、并发执行、EventSink 与 Loop policy；它单向依赖 `agent/run`，根 package 不依赖 loop。
 
 **RUN-SCP-2** Session 长期语义、Turn→Run 协调、Run→Session materialization、Artifact、queue/claim、provider registry、权限、durable lease/fence/outbox 与产品 policy 分别由其 package 或 Application 拥有。对应 authority 为 [agent-session.md](agent-session.md)、[agent-turn.md](agent-turn.md) 与 [agent-artifact.md](agent-artifact.md)。
 
@@ -133,7 +133,7 @@ type RunRecord struct {
 }
 ```
 
-**RUN-NEW-1** `BuildNewRun` 建立当前 version 的 creation value；`BuildRunHeaderFromNewRun` 按 `NewRun.SchemaVersion` 的冻结规则建立 header。v1 Revision-0 state 恰为：相同 RunID、`RunActive`、无 Current、无 pending input、零 model step、零 usage、无 result。初始输入必须随后通过 `AcceptInput` transition 进入 log。
+**RUN-NEW-1** `BuildNewRun` 建立当前 version 的 creation value；`BuildRunHeaderFromNewRun` 按 `NewRun.SchemaVersion` 的冻结规则建立 header。v1 Revision-0 state 恰为：相同 RunID、`RunActive`、`Current=Open`、无 pending input、零 model step、零 usage、无 result。初始输入必须随后通过 `AcceptInput` transition 进入 log。
 
 Header 创建后 immutable。`InitialStateDigest` 覆盖 frozen initial state；`HeaderDigest` 覆盖 schema、RunID、initial-state version/digest 与 causation。`ValidateRunHeader` 验证这些约束。
 
@@ -142,10 +142,16 @@ Header 创建后 immutable。`InitialStateDigest` 覆盖 frozen initial state；
 ## 4. Machine
 
 ```go
+type Current interface{ current() }
+type Open struct{}
+func (Open) current() {}
+func (ModelStep) current() {}
+func (ToolStep) current() {}
+
 type MachineState struct {
     RunID RunID
     Status RunStatus
-    Current Step
+    Current Current
     PendingInputs []AgentInput
     ModelSteps int
     LastClosedStep StepID
@@ -189,7 +195,9 @@ type ToolStep struct {
 }
 ```
 
-Run status 为 `RunActive | RunCompleted | RunStopped | RunFailed`。`RunCompleted`、`RunStopped` 与 `RunFailed` 是 terminal status。`RunStatus` 表示当前 MachineState 的投影；终态 fact 使用 RunEnd union 表达具体结果。`Step` 是 sealed interface，只有 `ModelStep` 与 `ToolStep`。
+`Status` 是 Run 的生命周期：`RunActive | RunCompleted | RunStopped | RunFailed`。后三者是终态。`RunStatus` 表示当前 MachineState 的投影；终态 fact 使用 RunEnd union 表达具体结果。
+
+`Current` 是 Active 期间的内容。`Open` 是可进入区间：可提交 `AcceptInput` 与 `PrepareModelRequest`，`Next` 返回 `NeedModelRequest`。`ModelStep` 与 `ToolStep` 表示正在进行的步骤。终态的 `Current` 为空；终态由 `Status` 表达，不另设 Current variant。Active 的 `Current` 不得为空。`Step` 仍只有 `ModelStep` 与 `ToolStep`，提供 `Ref()`。
 
 终态 fact 使用 Go 的 sealed-union 形式，终态结构由合法的 RunEnd variant 构成：
 
@@ -231,16 +239,16 @@ ToolCall:
   Waiting(ExternalResponse) -> Completed | Failed(Known)
 ```
 
-**RUN-MCH-1** MachineState 保存 Run 的 execution semantics。`LastToolStep` 保存最近一个经 Evolve 关闭路径写下的 ToolStep 只读投影，必须与 transition log 折叠出的最后关闭 step 一致，供下一次 planner 构造模型请求。Cancel 只清 Current、不走关闭路径时不改写 `LastToolStep`。terminal state 吸收所有未幂等命令；`RunEnded` 建立唯一 terminal result。RunResult 在该 terminal transition 中建立，并由后续 snapshot/record 读取。
+**RUN-MCH-1** MachineState 保存 Run 的 execution semantics。`LastToolStep` 保存最近一个经 Evolve 关闭路径写下的 ToolStep 只读投影，必须与 transition log 折叠出的最后关闭 step 一致，供下一次 planner 构造模型请求。Cancel 经 `RunEnded` 把 `Current` 置空、不走关闭路径时不改写 `LastToolStep`。terminal state 吸收所有未幂等命令；`RunEnded` 建立唯一 terminal result。RunResult 在该 terminal transition 中建立，并由后续 snapshot/record 读取。
 
-**RUN-MCH-2** `ToolCallBinding` 冻结 CallID、ToolRef、definition digest、canonical arguments、response policy 与 binding digest。已知工具使用匹配 frozen ToolSpec 的 ref/digest/policy；未知工具保留为同名 unresolved DirectExecution binding，并在执行前收束为已知 lookup failure。approval/external response 的 `ResponseRequest` 由 Decide 稳定派生。Unknown outcome 使用 `effect_unknown`，并使 Run 进入 `RunFailed(effect_unknown)`；后续处理由新的 Run 决定。
+**RUN-MCH-2** `ToolCallBinding` 冻结 CallID、ToolRef、definition digest、canonical arguments、response policy 与 binding digest。已知工具使用匹配 frozen ToolSpec 的 ref/digest/policy；未知工具保留为同名 unresolved DirectExecution binding，并在执行前收束为已知 lookup failure。approval/external response 的 `ResponseRequest` 由 Decide 稳定派生。Unknown outcome 使用 class `effect_unknown`，只把该 Executing call 记为 `ToolCallFailed(Unknown)`。Run 保持 Active；同 step 其他 call 继续。全部 call 进入 Completed 或 Failed 后 Evolve 关闭 ToolStep。
 
 `AgentCommand` 与 `Fact` 都是 sealed interface。v1 的 command→fact 规则为：
 
 | command | precondition / facts |
 |---|---|
-| `AcceptInput` | 无 Current；`InputAccepted` |
-| `PrepareModelRequest` | 无 Current，完整有序消费 PendingInputs，request/tools digests 有效；`ModelStepPrepared` |
+| `AcceptInput` | `Open`；`InputAccepted` |
+| `PrepareModelRequest` | `Open`，完整有序消费 PendingInputs，request/tools digests 有效；`ModelStepPrepared` |
 | `StartModelExecution` | Model Prepared；`ModelStepStarted`。command 必须携带本次 start 的 `ExecutionClaim` |
 | `RecoverModelExecution` | Model Executing；`ModelStepRecovered`。恢复 durable attempt 时携带该 attempt 的 `Claim` |
 | `SubmitModelResult` | Model Executing；`ModelStepCompleted`，随后无 calls 时 `RunEnded(completed)`，有 calls 时 `ToolStepOpened`（携带冻结的 `Scheduling`） |
@@ -249,13 +257,13 @@ ToolCall:
 | `StartToolCall` | Tool Pending；`ToolCallStarted`。command 必须携带本次 start 的 `ExecutionClaim` |
 | `SubmitToolResult` | Tool Executing；`ToolCallCompleted`。该 fact 经 Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
 | `SubmitToolFailure(Known)` | Tool Pending/Executing；`ToolCallFailed(Known)`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
-| `SubmitToolFailure(Unknown)` | Tool Executing；`ToolCallFailed(Unknown)`、`RunEnded(failed/effect_unknown)` |
+| `SubmitToolFailure(Unknown)` | Tool Executing；`ToolCallFailed(Unknown)`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
 | `ApproveToolCall` | Waiting(Approval)；`ToolCallApproved` |
 | `RejectToolCall` | Waiting(Approval) 记 `ToolCallFailed(Known/permission_denied)`；Waiting(ExternalResponse) 记 `ToolCallFailed(Known/response_rejected)`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
 | `SubmitToolResponse` | Waiting(ExternalResponse)；`ToolCallAnswered`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
-| `CancelRun` | active；仍 Executing 的 tool call 记 `ToolCallFailed(Unknown)`，随后 `RunEnded(stopped/cancelled)`，并在 `RunStoppedEnd` / `RunResult` 上列出 `UncertainCalls` 与 `UncertainModel`。仅 Waiting、没有 Executing 时不给 Waiting call 记 Failed；`RunEnded` 清除 Current，且不更新 `LastToolStep` |
+| `CancelRun` | active；先把仍 Executing 的 tool call 记 `ToolCallFailed(Unknown)`，随后 `RunEnded(stopped/cancelled)`，并在 `RunStoppedEnd` / `RunResult` 上列出 `UncertainCalls` 与 `UncertainModel`。仅 Waiting、没有 Executing 时不给 Waiting call 记 Failed；`RunEnded` 把 `Current` 置空，且不更新 `LastToolStep` |
 
-没有独立的 `ToolStepClosed` fact。最后一个 ToolCall 进入 Completed 或 Failed 时，`Evolve` 在折叠该 fact 后若全部 call 已 terminal，则把 Current 清掉并写入 `LastToolStep` / `LastClosedStep`。Cancel 只清 Current、不经这条关闭路径时，`LastToolStep` 保持原值。
+没有独立的 `ToolStepClosed` fact。最后一个 ToolCall 进入 Completed 或 Failed 时，`Evolve` 在折叠该 fact 后若全部 call 已 terminal，则把 Current 设为 `Open` 并写入 `LastToolStep` / `LastClosedStep`。Cancel 经 `RunEnded` 置空 Current、不经这条关闭路径时，`LastToolStep` 保持原值。
 
 **RUN-MCH-3** `Protocol.Decide(state, command)` 执行全部验证与 derived consequence，一次返回该 transition 的完整 ordered fact group；验证成功后返回完整 facts。包级 `Decide` 委托当前写入 schema。`Protocol.Evolve(state, fact)` 机械折叠 fact，依赖 fact 携带的完整数据。accepted facts 必须 self-contained；若 transition terminalize，`RunEnded` 必须是 Decide 输出的最后一个 fact。
 
@@ -284,7 +292,7 @@ Loop 在提交 start 前生成并保留 `Claim`、`CommandID` 与 command digest
 | state | effect |
 |---|---|
 | terminal | 返回 `ErrRunTerminal`，没有 effect |
-| Current=nil | `NeedModelRequest{PlanningHint}` |
+| `Open` | `NeedModelRequest{PlanningHint}` |
 | Model Prepared | `StartModelCall` |
 | Model Executing | `Idle` |
 | ToolStep 有 Pending calls | `StartToolCalls` |
@@ -369,13 +377,13 @@ type CommitResult struct {
 
 **RUN-CMT-4** 幂等键为 `(RunID,CommandID)`。相同 digest 返回 `CommitAlreadyApplied`、当前 snapshot 与原完整 event group，且不得再次 Decide、分配 revision 或产生外部 effect。对于 `StartModelExecution` 和 `StartToolCall`，Runtime 还必须验证 command 中的 `ExecutionClaim`：相同 command ID、相同 digest、相同 claim 的精确重放在 grant 仍 live 时返回原 start grant；不同 claim 触发 `ErrCommandConflict`，并保持现有执行授权。非 start command 的 replay 不返回 grant。revision 每个 accepted command 恰加 1。
 
-**RUN-CMT-5** accepted `StartModelExecution`/`StartToolCall` 为目标签发新 grant；该 start 的 `CommitAccepted` 和在 grant 仍 live 时满足精确 replay 条件的 `CommitAlreadyApplied` 返回同一个 grant。若该 start 已 settlement 或 Run 已 terminal，精确 replay 仍返回 `CommitAlreadyApplied`，并返回空 grant。model result/failure/reject 与 executing tool result/known failure 必须携带 live target grant。settlement 接受后 grant 失效；terminal transition 撤销全部 grant。公共 Runtime 的 `RecoverModelExecution` 由 live grant holder 提交；durable 实现内部可以在自己验证 execution recovery record 后无 grant 提交。Executing tool 的 recovery 使用同一条 `SubmitToolFailure{Outcome:Unknown}` command：工具 owner 必须携带 live grant；recovery scanner 仅在 Runtime 验证其 lease/claim 已失效且没有已接受 settlement 时无 grant 提交。scanner 使用上表的 deterministic recovery CommandID，因而 recovery update 也遵守同一 `(RunID, CommandID)` 幂等规则。durable adapter 保存 `(command ID, claim) -> grant` 精确 replay 所需的私有 start record；attempt、owner、fence、lease 与 recovery record 由 adapter 内部管理。
+**RUN-CMT-5** accepted `StartModelExecution`/`StartToolCall` 为目标签发新 grant；该 start 的 `CommitAccepted` 和在 grant 仍 live 时满足精确 replay 条件的 `CommitAlreadyApplied` 返回同一个 grant。若该 start 已 settlement 或 Run 已 terminal，精确 replay 仍返回 `CommitAlreadyApplied`，并返回空 grant。model result/failure/reject 与 executing tool result/known failure 必须携带 live target grant。settlement 接受后 grant 失效；terminal transition 撤销全部 grant。公共 Runtime 的 `RecoverModelExecution` 由 live grant holder 提交；durable 实现内部可以在自己验证 execution recovery record 后无 grant 提交。Executing tool 的 recovery 使用同一条 `SubmitToolFailure{Outcome:Unknown}` command：工具 owner 必须携带 live grant；recovery scanner 仅在 Runtime 验证其 lease/claim 已失效且没有已接受 settlement 时无 grant 提交。该 Unknown 只结算这一 call，Run 保持 Active。scanner 使用上表的 deterministic recovery CommandID，因而 recovery update 也遵守同一 `(RunID, CommandID)` 幂等规则。durable adapter 保存 `(command ID, claim) -> grant` 精确 replay 所需的私有 start record；attempt、owner、fence、lease 与 recovery record 由 adapter 内部管理。
 
 **RUN-CMT-6** Commit 必须原子保存新 MachineState 与完整 TransitionRecord，保证 event group 完整写入。`CommitResult`、Load 与 Record 返回 detached values。预期拒绝映射为 `ErrCommandConflict`、`ErrStaleRuntime`、`ErrRunTerminal`；transport/storage failure 保持可判别且不得伪装为 rejection。
 
 **RUN-CMT-7** 每个 Run 的协议版本是 `RunHeader.SchemaVersion`，在 Create 时冻结。`RuntimeSnapshot.SchemaVersion` 必须等于该 header。`ProtocolFor(header.SchemaVersion)` 在 Run 边界返回绑定了该版本 digest/decode/Decide/Evolve 函数的 `Protocol` 值；随后的方法调用不再接受 version 参数。`EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Protocol 的 Version。不得使用进程全局 `currentSchemaVersion` 作为写入许可。v1 Run 的 replay 必须继续使用 `ProtocolV1`，即使进程已经把 `currentSchemaVersion` 升到 2。Loop 通过 `RuntimeSnapshot.Protocol().BuildEnvelope` 构造写入该 Run 的 envelope。
 
-`Runtime` 的唯一实现叠在 `Store` 上：`Store` 持久化 header、state、transition log 与 `ExecutionLease`，不调用 Decide/Evolve。`MemoryStore`、SQLite、Postgres 实现同一合同。lease 的 `Deadline` 为零表示不超时（进程内占用）；过期且无 settlement 时 Runtime 将 `recoveryValid` 置真，允许 grantless Recover。`RecoverExpired` 扫描过期 lease 并提交恢复 command。`NewMemoryRuntime` 使用 `MemoryStore` 且 lease 不超时。
+`Runtime` 的唯一实现叠在 `Store` 上：`Store` 持久化 header、state、transition log 与 `ExecutionLease`，不调用 Decide/Evolve。`MemoryStore`、SQLite、Postgres 实现同一合同。lease 的 `Deadline` 为零表示不超时（进程内占用）；过期且无 settlement 时 Runtime 将 `recoveryValid` 置真，允许 grantless Recover。进程崩溃时不写 settlement。`RecoverExpired` 扫描过期 lease：对每个过期 Executing tool call 无 grant 提交 `SubmitToolFailure{Unknown}`，对过期 Executing model 提交 `RecoverModelExecution`。该 Run 保持 Active，同一 RunID 继续。`Rebuild` 从 header 与 transition log 重折 snapshot，供诊断使用。进程内宿主使用 `NewRuntime(NewMemoryStore())`，lease 不超时，grantless recover 被拒绝。生产崩溃恢复使用带 TTL 的 Store。
 
 ## 6. Loop ports 与 policy
 
@@ -464,7 +472,7 @@ Loop.Run(ctx, runtime, runID, sink):
 
 **RUN-LOP-3** `StartModelCall` 先 Commit start barrier；首次 `CommitAccepted` 或使用同一 command ID、同一 `ExecutionClaim` 精确重放得到原 grant 的 Loop，才拥有该 execution。Loop 必须保留 start command 的 ID、digest 和 claim，直到完成 settlement；缺少 grant 的 replay 进入 reload 流程。调用只使用 frozen ModelRequest 的 detached SDK materialization。streaming 与 non-streaming 必须产生同一种完整 `sdk.ModelResult`；delta 只发 EventSink。`ModelCatalog.Resolve` 失败或返回 nil 时提交 `RecoverModelExecution` 并返回错误，不得把 Run 记为 `provider_failure`：尚未发生模型调用。provider 调用失败提交 `SubmitModelFailure`；ctx cancellation 提交 `RecoverModelExecution`；结构、binding 或 freeze 失败提交 `RejectModelResult`，并由调用方显式选择 retry 或 fail-run。成功结果只提交一次 `SubmitModelResult`。
 
-**RUN-LOP-4** Tool execution 先按 frozen binding resolve tool，并验证 Ref、definition digest、response policy 和 arguments。lookup/definition/argument failure 在 Pending 状态提交 `SubmitToolFailure(Known)`，不得跨越 start barrier。通过验证后逐 call 提交 `StartToolCall`；只有 Accepted owner 可执行。冻结的 `ToolStep.Scheduling` 决定 `parallel` 或 `sequential` 以及 `MaxParallel`；不得改用 Loop 进程当前的 ExecutionPolicy。每个结果以自己的 grant 提交。同一 ToolStep 中 DirectExecution 的 Pending call，在外层 ctx 未取消时于本次 `Run` 内按冻结 Scheduling 分批 Start 并结算；ctx 已取消时停止再 Start，只结算已持有 grant 的 call。`Next` 返回 `Idle` 时 Loop 返回 `LoopWaiting`，并用 `NeedsRecovery(state)` 设置 `ExecutionRecovery`。Loop 不解释 Waiting call，也不携带 `ResponseRequest`。Application 从 snapshot 读取 `WaitingCalls`，提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 之后再次 `Run`。tool panic 或 effect 状态无法确定的错误转为 Unknown；一个 Unknown 取消同批 sibling workers，并由 Machine 在同一 terminal transition 中记录目标及仍 Executing sibling 的 `ToolCallFailed(Unknown)`，最后追加 `RunEnded(failed/effect_unknown)`。`CancelRun` 在 `RunEnded(stopped/cancelled)` 前记录所有仍 Executing call 的 Unknown，并把这些 CallID 与仍 Executing 的 ModelStep 写入 `RunStoppedEnd` / `RunResult` 的 `UncertainCalls`、`UncertainModel`。仅 Waiting、没有 Executing 时不给 Waiting call 记 Failed。已接受 start 的 worker 必须在收到外层取消后返回并尝试 settlement；settlement 使用独立 control context。
+**RUN-LOP-4** Tool execution 先按 frozen binding resolve tool，并验证 Ref、definition digest、response policy 和 arguments。lookup/definition/argument failure 在 Pending 状态提交 `SubmitToolFailure(Known)`，不得跨越 start barrier。通过验证后逐 call 提交 `StartToolCall`；只有 Accepted owner 可执行。冻结的 `ToolStep.Scheduling` 决定 `parallel` 或 `sequential` 以及 `MaxParallel`；不得改用 Loop 进程当前的 ExecutionPolicy。每个结果以自己的 grant 提交。同一 ToolStep 中 DirectExecution 的 Pending call，在外层 ctx 未取消时于本次 `Run` 内按冻结 Scheduling 分批 Start 并结算；ctx 已取消时停止再 Start，只结算已持有 grant 的 call。`Next` 返回 `Idle` 时 Loop 返回 `LoopWaiting`，并用 `NeedsRecovery(state)` 设置 `ExecutionRecovery`。Loop 不解释 Waiting call，也不携带 `ResponseRequest`。Application 从 snapshot 读取 `WaitingCalls`，提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 之后再次 `Run`。tool panic 或 effect 状态无法确定的错误转为对该 call 的 Unknown，并提交 `SubmitToolFailure(Unknown)`。该 settlement 不取消同批 sibling workers，也不结束 Run。`CancelRun` 先把仍 Executing 的 call 记为 `ToolCallFailed(Unknown)`，再 `RunEnded(stopped/cancelled)`，并把这些 CallID 与仍 Executing 的 ModelStep 写入 `RunStoppedEnd` / `RunResult` 的 `UncertainCalls`、`UncertainModel`。仅 Waiting、没有 Executing 时不给 Waiting call 记 Failed。已接受 start 的 worker 必须在收到外层取消后返回并尝试 settlement；settlement 使用独立 control context。
 
 **RUN-LOP-5** model 与 tool worker 都接收外层 ctx；Loop 对已接受 effect 使用独立 control context 完成 known/unknown outcome settlement。Application 的业务停止顺序为先 Commit `CancelRun`，再取消 Loop ctx。非 sentinel Commit error 以同 CommandID/digest 重放一次；仍未知时返回错误，由后续 Load/Record 查询 authority。stale/terminal/conflict 触发 reload/drop，旧 external effect 保持单次执行尝试。工具实现配合 context 返回；永久阻塞由 application/durable recovery 处理。
 
@@ -490,7 +498,7 @@ type Event struct {
 
 **RUN-LOP-6** EventSink 提供 realtime observation，Loop 通过序列化调用向 sink 发送事件。`EventAgentCommitted` 携带 accepted transition 中的 canonical AgentEvent；text/reasoning delta、tool progress、tool lifecycle 与 run-finished observation 可丢失、重复或断流。sink failure 保持 Commit 结果；恢复、materialization 与审计读取 `Runtime.Record`，EventSink gap 通过 canonical record 对账。
 
-Queue 只能在 `Current=nil` 的 safe boundary 提交 `AcceptInput`；Application 负责 admission 与 planning 之间的线性化。Run→Session materialization、terminal settlement、stable cross-domain IDs 与 crash recovery 由 [agent-turn.md](agent-turn.md) 定义。
+可进入区间是 `Current=Open`。Application 在此提交 `AcceptInput`，并负责 admission 与 planning 之间的线性化。Loop 不解释 queue 或 steer：`Open` 时立刻 `NeedModelRequest`。Run→Session materialization、terminal settlement、stable cross-domain IDs 与 crash recovery 由 [agent-turn.md](agent-turn.md) 定义。
 
 ## 9. compatibility 与 conformance
 
@@ -508,7 +516,7 @@ Queue 只能在 `Current=nil` 的 safe boundary 提交 `AcceptInput`；Applicati
 Loop conformance 必须覆盖：
 
 - 单模型完成、tool round trip、approval/external response wait/resume；
-- known failure 继续、Unknown terminal、tool panic、aliased ToolRef 与 validation；
+- known failure 继续、Unknown 继续、tool panic、aliased ToolRef 与 validation；
 - parallel/sequential 按冻结 `ToolStep.Scheduling` 调度，不得改用当时 ExecutionPolicy；
 - `ModelCatalog.Resolve` 失败或 nil 时恢复 ModelStep、Run 保持 active；
 - ctx cancellation、model recovery、explicit malformed-result disposition；

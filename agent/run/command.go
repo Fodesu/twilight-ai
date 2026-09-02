@@ -12,7 +12,7 @@ type AgentInput struct {
 	Payload CanonicalJSON `json:"payload"`
 }
 
-// NextStep creates the command consumed by an active Run at a safe boundary.
+// NextStep creates the AcceptInput command consumed at Open.
 func NextStep(input AgentInput) AcceptInput { return AcceptInput{Input: input} }
 
 // PrepareModelRequest freezes the next model request. Its CommandID is
@@ -119,7 +119,8 @@ func (SubmitToolResult) agentCommand() {}
 
 // SubmitToolFailure submits a known or unknown tool failure. A known failure
 // on a Pending call uses an empty grant; a failure on an Executing call
-// requires that call's grant. Unknown outcome terminates the Run.
+// requires that call's grant. Unknown outcome records ToolCallFailed for
+// that Executing call and leaves the Run active.
 type SubmitToolFailure struct {
 	StepID  StepID             `json:"stepId"`
 	CallID  CallID             `json:"callId"`
@@ -175,8 +176,8 @@ type CancelRun struct {
 
 func (CancelRun) agentCommand() {}
 
-// AcceptInput appends one queue-safe input to PendingInputs. Idempotent per
-// (RunID, InputID) with identical payload.
+// AcceptInput appends one input to PendingInputs while Current is Open.
+// Idempotent per (RunID, InputID) with identical payload.
 type AcceptInput struct {
 	Input AgentInput `json:"input"`
 }

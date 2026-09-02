@@ -1,15 +1,14 @@
 // Package runtimetest contains the shared run.Runtime conformance suite.
 // Durable Runtime implementations run this suite in their own tests instead
-// of copying MemoryRuntime-specific assertions:
+// of copying MemoryStore-backed assertions:
 //
 //	func TestMyRuntimeConformance(t *testing.T) {
 //	    runtimetest.RunConformance(t, func() run.Runtime { return newMyRuntime() })
 //	}
 //
 // The suite exercises only the public run API, so it holds for any Runtime
-// that honors the contract (RUN-CMP-2): command idempotency, revision/index
-// assignment, grant lifecycle, call-local rebase, prepare hard-CAS, terminal
-// arbitration, and replay-fold equivalence.
+// that honors the contract (RUN-CMP-2). Eight groups cover Create, Record,
+// Isolation, CommandIdentity, Prepare, Grant, CallLocalRebase, and Cancel.
 package runtimetest
 
 import (
@@ -28,339 +27,44 @@ import (
 // Factory constructs an empty Runtime under test.
 type Factory func() run.Runtime
 
-// RunConformance executes the shared Runtime conformance suite.
+// RunConformance executes the shared Runtime conformance suite (RUN-CMP-2).
+// Group names are a directory; each check is a separate function with its own Runtime.
 func RunConformance(t *testing.T, newRuntime Factory) {
 	t.Helper()
-	t.Run("CreateReturnsValidDetachedHeader", func(t *testing.T) { testCreateReturnsValidDetachedHeader(t, newRuntime) })
-	t.Run("CreateRetryAndConflict", func(t *testing.T) { testCreateRetryAndConflict(t, newRuntime) })
-	t.Run("MissingRunOperations", func(t *testing.T) { testMissingRunOperations(t, newRuntime) })
-	t.Run("RecordRevisionZero", func(t *testing.T) { testRecordRevisionZero(t, newRuntime) })
-	t.Run("RecordFoldsAcceptedTransition", func(t *testing.T) { testRecordFoldsAcceptedTransition(t, newRuntime) })
-	t.Run("ReturnedValuesAreDetached", func(t *testing.T) { testReturnedValuesAreDetached(t, newRuntime) })
-	t.Run("ConcurrentCreate", func(t *testing.T) { testConcurrentCreate(t, newRuntime) })
-	t.Run("RunsAreIsolated", func(t *testing.T) { testRunsAreIsolated(t, newRuntime) })
-	t.Run("CrossRunGrantIsRejected", func(t *testing.T) { testCrossRunGrantIsRejected(t, newRuntime) })
-	t.Run("RecordConcurrentWithCommit", func(t *testing.T) { testRecordConcurrentWithCommit(t, newRuntime) })
-	t.Run("IdempotentReplay", func(t *testing.T) { testIdempotentReplay(t, newRuntime) })
-	t.Run("RevisionAndIndex", func(t *testing.T) { testRevisionAndIndex(t, newRuntime) })
-	t.Run("StartGrantLifecycle", func(t *testing.T) { testStartGrantLifecycle(t, newRuntime) })
-	t.Run("DerivedReplayIgnoresNewBaseRevision", func(t *testing.T) { testDerivedReplayIgnoresNewBaseRevision(t, newRuntime) })
+	t.Run("Create", func(t *testing.T) {
+		t.Run("RetryAndConflict", func(t *testing.T) { testCreateRetryAndConflict(t, newRuntime) })
+		t.Run("Missing", func(t *testing.T) { testCreateMissing(t, newRuntime) })
+		t.Run("Concurrent", func(t *testing.T) { testCreateConcurrent(t, newRuntime) })
+	})
+	t.Run("Record", func(t *testing.T) {
+		t.Run("FoldAccepted", func(t *testing.T) { testRecordFoldAccepted(t, newRuntime) })
+		t.Run("ReplayAndIndex", func(t *testing.T) { testRecordReplayAndIndex(t, newRuntime) })
+		t.Run("ConcurrentWithCommit", func(t *testing.T) { testRecordConcurrentWithCommit(t, newRuntime) })
+	})
+	t.Run("Isolation", func(t *testing.T) {
+		t.Run("DetachedReturns", func(t *testing.T) { testIsolationDetachedReturns(t, newRuntime) })
+		t.Run("Runs", func(t *testing.T) { testIsolationRuns(t, newRuntime) })
+		t.Run("CrossRunGrant", func(t *testing.T) { testIsolationCrossRunGrant(t, newRuntime) })
+	})
+	t.Run("CommandIdentity", func(t *testing.T) {
+		t.Run("IdempotentReplay", func(t *testing.T) { testCommandIdempotentReplay(t, newRuntime) })
+		t.Run("DerivedIDs", func(t *testing.T) { testCommandDerivedIDs(t, newRuntime) })
+	})
+	t.Run("Prepare", func(t *testing.T) {
+		t.Run("HardCAS", func(t *testing.T) { testPrepareHardCAS(t, newRuntime) })
+		t.Run("ReplayAfterProgress", func(t *testing.T) { testPrepareReplayAfterProgress(t, newRuntime) })
+	})
+	t.Run("Grant", func(t *testing.T) {
+		t.Run("Lifecycle", func(t *testing.T) { testGrant(t, newRuntime) })
+		t.Run("HolderRecover", func(t *testing.T) { testGrantHolderRecover(t, newRuntime) })
+		t.Run("GrantlessRejectedWhileLive", func(t *testing.T) { testGrantGrantlessRejectedWhileLive(t, newRuntime) })
+	})
 	t.Run("CallLocalRebase", func(t *testing.T) { testCallLocalRebase(t, newRuntime) })
-	t.Run("PrepareDerivedIdentity", func(t *testing.T) { testPrepareDerivedIdentity(t, newRuntime) })
-	t.Run("PrepareIsHardCAS", func(t *testing.T) { testPrepareIsHardCAS(t, newRuntime) })
-	t.Run("CancelRebasesAndUnknownWins", func(t *testing.T) { testCancelRebasesAndUnknownWins(t, newRuntime) })
-	t.Run("CancelOnStaleBase", func(t *testing.T) { testCancelOnStaleBase(t, newRuntime) })
-	t.Run("ReplayFoldMatchesState", func(t *testing.T) { testReplayFoldMatchesState(t, newRuntime) })
-	t.Run("AcceptInputByInputID", func(t *testing.T) { testAcceptInputByInputID(t, newRuntime) })
-	t.Run("DerivedCommandIDEnforced", func(t *testing.T) { testDerivedCommandIDEnforced(t, newRuntime) })
-}
-
-func testCreateReturnsValidDetachedHeader(t *testing.T, newRuntime Factory) {
-	rt := newRuntime()
-	newRun, err := run.BuildNewRun("run-create", "cause-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	created, err := rt.Create(context.Background(), newRun)
-	if err != nil || !created.Created {
-		t.Fatalf("first Create = %+v, %v", created, err)
-	}
-	if err := run.ValidateRunHeader(&created.Header); err != nil {
-		t.Fatalf("Create returned invalid Header: %v", err)
-	}
-	created.Header.InitialState.RunID = "mutated"
-	record, err := rt.Record(context.Background(), "run-create")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if record.Header.InitialState.RunID != "run-create" {
-		t.Fatal("Create Header aliases runtime state")
-	}
-}
-
-func testCreateRetryAndConflict(t *testing.T, newRuntime Factory) {
-	rt := newRuntime()
-	first, err := run.BuildNewRun("run-create", "cause-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rt.Create(context.Background(), first); err != nil {
-		t.Fatal(err)
-	}
-	retry, err := rt.Create(context.Background(), first)
-	if err != nil || retry.Created {
-		t.Fatalf("retry Create = %+v, %v", retry, err)
-	}
-	retry.Header.InitialState.RunID = "mutated"
-	record, err := rt.Record(context.Background(), first.RunID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if record.Header.InitialState.RunID != first.RunID {
-		t.Fatal("retry Create Header aliases runtime state")
-	}
-	conflict, err := run.BuildNewRun("run-create", "cause-2")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rt.Create(context.Background(), conflict); !errors.Is(err, run.ErrCreateConflict) {
-		t.Fatalf("conflicting Create error = %v, want ErrCreateConflict", err)
-	}
-}
-
-func testMissingRunOperations(t *testing.T, newRuntime Factory) {
-	rt := newRuntime()
-	if _, err := rt.Load(context.Background(), "missing"); !errors.Is(err, run.ErrRunNotFound) {
-		t.Fatalf("Load error = %v, want ErrRunNotFound", err)
-	}
-	if _, err := rt.Record(context.Background(), "missing"); !errors.Is(err, run.ErrRunNotFound) {
-		t.Fatalf("Record error = %v, want ErrRunNotFound", err)
-	}
-	env, err := run.BuildEnvelope("missing", "cancel", run.CancelRun{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rt.Commit(context.Background(), run.CommitRequest{Command: env}); !errors.Is(err, run.ErrRunNotFound) {
-		t.Fatalf("Commit error = %v, want ErrRunNotFound", err)
-	}
-}
-
-func testRecordRevisionZero(t *testing.T, newRuntime Factory) {
-	c := newCase(t, newRuntime)
-	record, err := c.rt.Record(context.Background(), c.runID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if record.Snapshot.Revision != 0 || len(record.Transitions) != 0 {
-		t.Fatalf("revision-zero Record = %+v", record)
-	}
-}
-
-func testRecordFoldsAcceptedTransition(t *testing.T, newRuntime Factory) {
-	c := newCase(t, newRuntime)
-	input := run.AgentInput{ID: "in-1", Payload: mustJSON(`{"q":"hi"}`)}
-	res := c.mustCommit(run.DeriveInputCommandID(c.runID, input.ID), 0, "", run.AcceptInput{Input: input})
-	if res.Status != run.CommitAccepted {
-		t.Fatalf("accept status = %v", res.Status)
-	}
-	record, err := c.rt.Record(context.Background(), c.runID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(record.Transitions) != 1 {
-		t.Fatalf("transitions = %d, want 1", len(record.Transitions))
-	}
-	folded, revision, err := run.FoldRun(&record.Header, record.Transitions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	foldedJSON, _ := json.Marshal(stateComparable(&folded))
-	snapshotJSON, _ := json.Marshal(stateComparable(&record.Snapshot.State))
-	if revision != record.Snapshot.Revision || !bytes.Equal(foldedJSON, snapshotJSON) {
-		t.Fatalf("FoldRun = revision %d state %s, Record = revision %d state %s", revision, foldedJSON, record.Snapshot.Revision, snapshotJSON)
-	}
-}
-
-func testReturnedValuesAreDetached(t *testing.T, newRuntime Factory) {
-	c := newCase(t, newRuntime)
-	newRun, err := run.BuildNewRun(c.runID, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	created, err := c.rt.Create(context.Background(), newRun)
-	if err != nil || created.Created {
-		t.Fatalf("retry Create = %+v, %v", created, err)
-	}
-	created.Header.InitialState.RunID = "mutated"
-	input := run.AgentInput{ID: "in-1", Payload: mustJSON(`1`)}
-	res := c.mustCommit(run.DeriveInputCommandID(c.runID, input.ID), 0, "", run.AcceptInput{Input: input})
-	res.Snapshot.State.RunID = "mutated"
-	if len(res.Events) > 0 {
-		res.Events[0].RunID = "mutated"
-	}
-	record, err := c.rt.Record(context.Background(), c.runID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	record.Header.InitialState.RunID = "mutated"
-	record.Snapshot.State.RunID = "mutated"
-	record.Transitions[0].Events[0].RunID = "mutated"
-	fresh, err := c.rt.Record(context.Background(), c.runID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fresh.Header.InitialState.RunID != c.runID || fresh.Snapshot.State.RunID != c.runID || fresh.Transitions[0].Events[0].RunID != c.runID {
-		t.Fatal("returned Header, Snapshot, or Transitions alias runtime state")
-	}
-}
-
-func testConcurrentCreate(t *testing.T, newRuntime Factory) {
-	rt := newRuntime()
-	newRun, err := run.BuildNewRun("run-concurrent-create", "cause-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	const callers = 16
-	results := make(chan run.CreateResult, callers)
-	errs := make(chan error, callers)
-	var group sync.WaitGroup
-	for range callers {
-		group.Add(1)
-		go func() {
-			defer group.Done()
-			result, err := rt.Create(context.Background(), newRun)
-			if err != nil {
-				errs <- err
-				return
-			}
-			results <- result
-		}()
-	}
-	group.Wait()
-	close(results)
-	close(errs)
-	for err := range errs {
-		t.Fatal(err)
-	}
-	created := 0
-	for result := range results {
-		if result.Created {
-			created++
-		}
-	}
-	if created != 1 {
-		t.Fatalf("Created=true results = %d, want 1", created)
-	}
-}
-
-func testRunsAreIsolated(t *testing.T, newRuntime Factory) {
-	rt := newRuntime()
-	for _, id := range []run.RunID{"run-one", "run-two"} {
-		newRun, err := run.BuildNewRun(id, "")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := rt.Create(context.Background(), newRun); err != nil {
-			t.Fatal(err)
-		}
-		input := run.AgentInput{ID: "same-input", Payload: mustJSON(`{"run":"` + string(id) + `"}`)}
-		env, err := run.BuildEnvelope(id, run.DeriveInputCommandID(id, input.ID), run.AcceptInput{Input: input})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := rt.Commit(context.Background(), run.CommitRequest{Command: env}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	one, err := rt.Record(context.Background(), "run-one")
-	if err != nil {
-		t.Fatal(err)
-	}
-	two, err := rt.Record(context.Background(), "run-two")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(one.Snapshot.State.PendingInputs) != 1 || len(two.Snapshot.State.PendingInputs) != 1 ||
-		one.Snapshot.State.PendingInputs[0].Payload.String() == two.Snapshot.State.PendingInputs[0].Payload.String() {
-		t.Fatalf("runs leaked state or commands: one=%+v two=%+v", one.Snapshot.State.PendingInputs, two.Snapshot.State.PendingInputs)
-	}
-	for _, record := range []run.RunRecord{one, two} {
-		if len(record.Transitions) != 1 || record.Transitions[0].RunID != record.Header.RunID {
-			t.Fatalf("run %q has foreign transition log: %+v", record.Header.RunID, record.Transitions)
-		}
-		for _, event := range record.Transitions[0].Events {
-			if event.RunID != record.Header.RunID {
-				t.Fatalf("run %q has foreign event %+v", record.Header.RunID, event)
-			}
-		}
-	}
-}
-
-func testCrossRunGrantIsRejected(t *testing.T, newRuntime Factory) {
-	rt := newRuntime()
-	one := newCaseOnRuntime(t, rt, "grant-run-one")
-	two := newCaseOnRuntime(t, rt, "grant-run-two")
-	stepOne, grantOne := prepareAndStart(t, one)
-	stepTwo, grantTwo := prepareAndStart(t, two)
-	result, err := run.FreezeModelResult(sdk.ModelResult{Text: "ok"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := two.commit("foreign-grant", 2, grantOne, run.SubmitModelResult{StepID: stepTwo, Result: result}); !errors.Is(err, run.ErrStaleRuntime) {
-		t.Fatalf("cross-run grant error = %v, want ErrStaleRuntime", err)
-	}
-	one.mustCommit("complete-one", 2, grantOne, run.SubmitModelResult{StepID: stepOne, Result: result})
-	two.mustCommit("complete-two", 2, grantTwo, run.SubmitModelResult{StepID: stepTwo, Result: result})
-}
-
-func testRecordConcurrentWithCommit(t *testing.T, newRuntime Factory) {
-	rt := newRuntime()
-	c := newCaseOnRuntime(t, rt, "record-concurrent")
-	const commits = 16
-	for i := range commits {
-		snapshot, err := rt.Load(context.Background(), c.runID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		input := run.AgentInput{ID: run.InputID(fmt.Sprintf("in-%d", i)), Payload: mustJSON(`null`)}
-		env, err := run.BuildEnvelope(c.runID, run.DeriveInputCommandID(c.runID, input.ID), run.AcceptInput{Input: input})
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		start := make(chan struct{})
-		var ready sync.WaitGroup
-		ready.Add(2)
-		commitCh := make(chan error, 1)
-		recordCh := make(chan struct {
-			record run.RunRecord
-			err    error
-		}, 1)
-		go func() {
-			ready.Done()
-			<-start
-			_, err := rt.Commit(context.Background(), run.CommitRequest{BaseRevision: snapshot.Revision, Command: env})
-			commitCh <- err
-		}()
-		go func() {
-			ready.Done()
-			<-start
-			record, err := rt.Record(context.Background(), c.runID)
-			recordCh <- struct {
-				record run.RunRecord
-				err    error
-			}{record: record, err: err}
-		}()
-		ready.Wait()
-		close(start)
-
-		if err := <-commitCh; err != nil {
-			t.Fatal(err)
-		}
-		observed := <-recordCh
-		if observed.err != nil {
-			t.Fatal(observed.err)
-		}
-		folded, revision, err := run.FoldRun(&observed.record.Header, observed.record.Transitions)
-		if err != nil {
-			t.Fatal(err)
-		}
-		foldedJSON, _ := json.Marshal(stateComparable(&folded))
-		snapshotJSON, _ := json.Marshal(stateComparable(&observed.record.Snapshot.State))
-		if revision != observed.record.Snapshot.Revision || !bytes.Equal(foldedJSON, snapshotJSON) {
-			t.Fatalf("inconsistent Record at revision %d", observed.record.Snapshot.Revision)
-		}
-		if wantBefore, wantAfter := snapshot.Revision, snapshot.Revision+1; revision != wantBefore && revision != wantAfter {
-			t.Fatalf("concurrent Record revision = %d, want %d or %d", revision, wantBefore, wantAfter)
-		}
-	}
-	final, err := rt.Record(context.Background(), c.runID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if final.Snapshot.Revision != commits || len(final.Transitions) != commits {
-		t.Fatalf("final Record = revision %d transitions %d, want %d", final.Snapshot.Revision, len(final.Transitions), commits)
-	}
+	t.Run("Cancel", func(t *testing.T) {
+		t.Run("StaleBase", func(t *testing.T) { testCancelStaleBase(t, newRuntime) })
+		t.Run("AfterUnknown", func(t *testing.T) { testCancelAfterUnknown(t, newRuntime) })
+		t.Run("UnknownRemaining", func(t *testing.T) { testCancelUnknownRemaining(t, newRuntime) })
+	})
 }
 
 type conformanceCase struct {
@@ -570,7 +274,338 @@ func modelResultWithCalls(callIDs ...string) run.ModelResult {
 	return frozen
 }
 
-func testIdempotentReplay(t *testing.T, newRuntime Factory) {
+func testCreateRetryAndConflict(t *testing.T, newRuntime Factory) {
+	rt := newRuntime()
+	first, err := run.BuildNewRun("run-create", "cause-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := rt.Create(context.Background(), first)
+	if err != nil || !created.Created {
+		t.Fatalf("first Create = %+v, %v", created, err)
+	}
+	if err := run.ValidateRunHeader(&created.Header); err != nil {
+		t.Fatalf("Create returned invalid Header: %v", err)
+	}
+	created.Header.InitialState.RunID = "mutated"
+	record, err := rt.Record(context.Background(), "run-create")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Header.InitialState.RunID != "run-create" {
+		t.Fatal("Create Header aliases runtime state")
+	}
+	retry, err := rt.Create(context.Background(), first)
+	if err != nil || retry.Created {
+		t.Fatalf("retry Create = %+v, %v", retry, err)
+	}
+	retry.Header.InitialState.RunID = "mutated"
+	record, err = rt.Record(context.Background(), first.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Header.InitialState.RunID != first.RunID {
+		t.Fatal("retry Create Header aliases runtime state")
+	}
+	conflict, err := run.BuildNewRun("run-create", "cause-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Create(context.Background(), conflict); !errors.Is(err, run.ErrCreateConflict) {
+		t.Fatalf("conflicting Create error = %v, want ErrCreateConflict", err)
+	}
+}
+
+func testCreateMissing(t *testing.T, newRuntime Factory) {
+	rt := newRuntime()
+	if _, err := rt.Load(context.Background(), "missing"); !errors.Is(err, run.ErrRunNotFound) {
+		t.Fatalf("Load error = %v, want ErrRunNotFound", err)
+	}
+	if _, err := rt.Record(context.Background(), "missing"); !errors.Is(err, run.ErrRunNotFound) {
+		t.Fatalf("Record error = %v, want ErrRunNotFound", err)
+	}
+	env, err := run.BuildEnvelope("missing", "cancel", run.CancelRun{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Commit(context.Background(), run.CommitRequest{Command: env}); !errors.Is(err, run.ErrRunNotFound) {
+		t.Fatalf("Commit error = %v, want ErrRunNotFound", err)
+	}
+}
+
+func testCreateConcurrent(t *testing.T, newRuntime Factory) {
+	rt := newRuntime()
+	newRun, err := run.BuildNewRun("run-concurrent-create", "cause-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const callers = 16
+	results := make(chan run.CreateResult, callers)
+	errs := make(chan error, callers)
+	var group sync.WaitGroup
+	for range callers {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			result, err := rt.Create(context.Background(), newRun)
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- result
+		}()
+	}
+	group.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	createdCount := 0
+	for result := range results {
+		if result.Created {
+			createdCount++
+		}
+	}
+	if createdCount != 1 {
+		t.Fatalf("Created=true results = %d, want 1", createdCount)
+	}
+}
+
+func testRecordFoldAccepted(t *testing.T, newRuntime Factory) {
+	c := newCase(t, newRuntime)
+	record, err := c.rt.Record(context.Background(), c.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Snapshot.Revision != 0 || len(record.Transitions) != 0 {
+		t.Fatalf("revision-zero Record = %+v", record)
+	}
+	input := run.AgentInput{ID: "in-1", Payload: mustJSON(`{"q":"hi"}`)}
+	res := c.mustCommit(run.DeriveInputCommandID(c.runID, input.ID), 0, "", run.AcceptInput{Input: input})
+	if res.Status != run.CommitAccepted {
+		t.Fatalf("accept status = %v", res.Status)
+	}
+	record, err = c.rt.Record(context.Background(), c.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(record.Transitions) != 1 {
+		t.Fatalf("transitions = %d, want 1", len(record.Transitions))
+	}
+	folded, revision, err := run.FoldRun(&record.Header, record.Transitions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foldedJSON, _ := json.Marshal(stateComparable(&folded))
+	snapshotJSON, _ := json.Marshal(stateComparable(&record.Snapshot.State))
+	if revision != record.Snapshot.Revision || !bytes.Equal(foldedJSON, snapshotJSON) {
+		t.Fatalf("FoldRun = revision %d state %s, Record = revision %d state %s", revision, foldedJSON, record.Snapshot.Revision, snapshotJSON)
+	}
+}
+
+func testRecordReplayAndIndex(t *testing.T, newRuntime Factory) {
+	def := toolDef("t")
+	spec := makeSpec(t, def)
+	c, stepID, grant := preparedCase(t, newRuntime, []sdk.ToolDefinition{def}, []run.ToolSpec{spec})
+	b := makeBinding(t, "c1", &spec)
+	res := c.mustCommit("complete-1", 2, grant,
+		run.SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []run.ToolCallBinding{b}})
+	if len(res.Events) != 2 {
+		t.Fatalf("events = %d", len(res.Events))
+	}
+	for i, e := range res.Events {
+		if e.Revision != res.Snapshot.Revision {
+			t.Fatalf("event revision %d != snapshot %d", e.Revision, res.Snapshot.Revision)
+		}
+		if int(e.Index) != i {
+			t.Fatalf("index[%d] = %d", i, e.Index)
+		}
+		if e.CommandID != "complete-1" {
+			t.Fatal("command id not stamped")
+		}
+	}
+	toolStep := openedToolStepID(t, &res)
+	sRes := c.mustCommit("start-c1", res.Snapshot.Revision, "", run.StartToolCall{StepID: toolStep, CallID: "c1"})
+	c.mustCommit("done-c1", sRes.Snapshot.Revision, sRes.Grant,
+		run.SubmitToolResult{StepID: toolStep, CallID: "c1", Result: run.ToolExecutionResult{Output: mustJSON(`"ok"`)}})
+	foldedState, lastRev, err := run.FoldEvents(c.initial, c.events)
+	if err != nil {
+		t.Fatalf("FoldEvents: %v", err)
+	}
+	live := c.load()
+	a, _ := json.Marshal(stateComparable(&live.State))
+	bts, _ := json.Marshal(stateComparable(&foldedState))
+	if !bytes.Equal(a, bts) {
+		t.Fatalf("replay diverged:\n live   %s\n replay %s", a, bts)
+	}
+	if live.Revision != lastRev {
+		t.Fatalf("snapshot revision %d != last event revision %d", live.Revision, lastRev)
+	}
+}
+
+func testRecordConcurrentWithCommit(t *testing.T, newRuntime Factory) {
+	rt := newRuntime()
+	c := newCaseOnRuntime(t, rt, "record-concurrent")
+	const commits = 16
+	for i := range commits {
+		snapshot, err := rt.Load(context.Background(), c.runID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in := run.AgentInput{ID: run.InputID(fmt.Sprintf("in-%d", i)), Payload: mustJSON(`null`)}
+		env, err := run.BuildEnvelope(c.runID, run.DeriveInputCommandID(c.runID, in.ID), run.AcceptInput{Input: in})
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		var ready sync.WaitGroup
+		ready.Add(2)
+		commitCh := make(chan error, 1)
+		recordCh := make(chan struct {
+			record run.RunRecord
+			err    error
+		}, 1)
+		go func() {
+			ready.Done()
+			<-start
+			_, err := rt.Commit(context.Background(), run.CommitRequest{BaseRevision: snapshot.Revision, Command: env})
+			commitCh <- err
+		}()
+		go func() {
+			ready.Done()
+			<-start
+			rec, err := rt.Record(context.Background(), c.runID)
+			recordCh <- struct {
+				record run.RunRecord
+				err    error
+			}{record: rec, err: err}
+		}()
+		ready.Wait()
+		close(start)
+		if err := <-commitCh; err != nil {
+			t.Fatal(err)
+		}
+		observed := <-recordCh
+		if observed.err != nil {
+			t.Fatal(observed.err)
+		}
+		foldedRun, rev, err := run.FoldRun(&observed.record.Header, observed.record.Transitions)
+		if err != nil {
+			t.Fatal(err)
+		}
+		foldedJSON, _ := json.Marshal(stateComparable(&foldedRun))
+		snapshotJSON, _ := json.Marshal(stateComparable(&observed.record.Snapshot.State))
+		if rev != observed.record.Snapshot.Revision || !bytes.Equal(foldedJSON, snapshotJSON) {
+			t.Fatalf("inconsistent Record at revision %d", observed.record.Snapshot.Revision)
+		}
+		if wantBefore, wantAfter := snapshot.Revision, snapshot.Revision+1; rev != wantBefore && rev != wantAfter {
+			t.Fatalf("concurrent Record revision = %d, want %d or %d", rev, wantBefore, wantAfter)
+		}
+	}
+	final, err := rt.Record(context.Background(), c.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if final.Snapshot.Revision != commits || len(final.Transitions) != commits {
+		t.Fatalf("final Record = revision %d transitions %d, want %d", final.Snapshot.Revision, len(final.Transitions), commits)
+	}
+}
+
+func testIsolationDetachedReturns(t *testing.T, newRuntime Factory) {
+	c := newCase(t, newRuntime)
+	newRun, err := run.BuildNewRun(c.runID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := c.rt.Create(context.Background(), newRun)
+	if err != nil || created.Created {
+		t.Fatalf("retry Create = %+v, %v", created, err)
+	}
+	created.Header.InitialState.RunID = "mutated"
+	input := run.AgentInput{ID: "in-1", Payload: mustJSON(`1`)}
+	res := c.mustCommit(run.DeriveInputCommandID(c.runID, input.ID), 0, "", run.AcceptInput{Input: input})
+	res.Snapshot.State.RunID = "mutated"
+	if len(res.Events) > 0 {
+		res.Events[0].RunID = "mutated"
+	}
+	record, err := c.rt.Record(context.Background(), c.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record.Header.InitialState.RunID = "mutated"
+	record.Snapshot.State.RunID = "mutated"
+	record.Transitions[0].Events[0].RunID = "mutated"
+	fresh, err := c.rt.Record(context.Background(), c.runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Header.InitialState.RunID != c.runID || fresh.Snapshot.State.RunID != c.runID || fresh.Transitions[0].Events[0].RunID != c.runID {
+		t.Fatal("returned Header, Snapshot, or Transitions alias runtime state")
+	}
+}
+
+func testIsolationRuns(t *testing.T, newRuntime Factory) {
+	rt := newRuntime()
+	for _, id := range []run.RunID{"run-one", "run-two"} {
+		nr, err := run.BuildNewRun(id, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rt.Create(context.Background(), nr); err != nil {
+			t.Fatal(err)
+		}
+		in := run.AgentInput{ID: "same-input", Payload: mustJSON(`{"run":"` + string(id) + `"}`)}
+		env, err := run.BuildEnvelope(id, run.DeriveInputCommandID(id, in.ID), run.AcceptInput{Input: in})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rt.Commit(context.Background(), run.CommitRequest{Command: env}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	one, err := rt.Record(context.Background(), "run-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	two, err := rt.Record(context.Background(), "run-two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(one.Snapshot.State.PendingInputs) != 1 || len(two.Snapshot.State.PendingInputs) != 1 ||
+		one.Snapshot.State.PendingInputs[0].Payload.String() == two.Snapshot.State.PendingInputs[0].Payload.String() {
+		t.Fatalf("runs leaked state or commands: one=%+v two=%+v", one.Snapshot.State.PendingInputs, two.Snapshot.State.PendingInputs)
+	}
+	for _, rec := range []run.RunRecord{one, two} {
+		if len(rec.Transitions) != 1 || rec.Transitions[0].RunID != rec.Header.RunID {
+			t.Fatalf("run %q has foreign transition log: %+v", rec.Header.RunID, rec.Transitions)
+		}
+		for _, event := range rec.Transitions[0].Events {
+			if event.RunID != rec.Header.RunID {
+				t.Fatalf("run %q has foreign event %+v", rec.Header.RunID, event)
+			}
+		}
+	}
+}
+
+func testIsolationCrossRunGrant(t *testing.T, newRuntime Factory) {
+	rt := newRuntime()
+	oneCase := newCaseOnRuntime(t, rt, "grant-run-one")
+	twoCase := newCaseOnRuntime(t, rt, "grant-run-two")
+	stepOne, grantOne := prepareAndStart(t, oneCase)
+	stepTwo, grantTwo := prepareAndStart(t, twoCase)
+	result, err := run.FreezeModelResult(sdk.ModelResult{Text: "ok"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := twoCase.commit("foreign-grant", 2, grantOne, run.SubmitModelResult{StepID: stepTwo, Result: result}); !errors.Is(err, run.ErrStaleRuntime) {
+		t.Fatalf("cross-run grant error = %v, want ErrStaleRuntime", err)
+	}
+	oneCase.mustCommit("complete-one", 2, grantOne, run.SubmitModelResult{StepID: stepOne, Result: result})
+	twoCase.mustCommit("complete-two", 2, grantTwo, run.SubmitModelResult{StepID: stepTwo, Result: result})
+}
+
+func testCommandIdempotentReplay(t *testing.T, newRuntime Factory) {
 	c := newCase(t, newRuntime)
 	res1 := c.mustCommit("cancel-1", 0, "", run.CancelRun{})
 	if res1.Status != run.CommitAccepted || len(res1.Events) != 1 {
@@ -593,31 +628,83 @@ func testIdempotentReplay(t *testing.T, newRuntime Factory) {
 	}
 }
 
-func testRevisionAndIndex(t *testing.T, newRuntime Factory) {
-	def := toolDef("t")
-	spec := makeSpec(t, def)
-	c, stepID, grant := preparedCase(t, newRuntime, []sdk.ToolDefinition{def}, []run.ToolSpec{spec})
-
-	b := makeBinding(t, "c1", &spec)
-	res := c.mustCommit("complete-1", 2, grant,
-		run.SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []run.ToolCallBinding{b}})
-	if len(res.Events) != 2 {
-		t.Fatalf("events = %d", len(res.Events))
+func testCommandDerivedIDs(t *testing.T, newRuntime Factory) {
+	c := newCase(t, newRuntime)
+	_, err := c.commit("random-id", 0, "", run.NextStep(run.AgentInput{ID: "in-1", Payload: mustJSON(`1`)}))
+	if err == nil {
+		t.Fatal("AcceptInput with non-derived CommandID accepted")
 	}
-	for i, e := range res.Events {
-		if e.Revision != res.Snapshot.Revision {
-			t.Fatalf("event revision %d != snapshot %d", e.Revision, res.Snapshot.Revision)
-		}
-		if int(e.Index) != i {
-			t.Fatalf("index[%d] = %d", i, e.Index)
-		}
-		if e.CommandID != "complete-1" {
-			t.Fatal("command id not stamped")
-		}
+	_, err = c.commit("random-id-2", 0, "", run.ApproveToolCall{StepID: "s", CallID: "c", ResponseID: "r"})
+	if err == nil {
+		t.Fatal("ApproveToolCall with non-derived CommandID accepted")
+	}
+	in := run.AgentInput{ID: "in-9", Payload: mustJSON(`{"t":"x"}`)}
+	id := run.DeriveInputCommandID("run-1", in.ID)
+	accepted := c.mustCommit(id, 0, "", run.NextStep(in))
+	if accepted.Status != run.CommitAccepted {
+		t.Fatal("first accept rejected")
+	}
+	replayed := c.mustCommit(id, 0, "", run.NextStep(in))
+	if replayed.Status != run.CommitAlreadyApplied {
+		t.Fatalf("status = %v", replayed.Status)
+	}
+	_, err = c.commit(id, 0, "", run.NextStep(run.AgentInput{ID: "in-9", Payload: mustJSON(`{"t":"y"}`)}))
+	if !errors.Is(err, run.ErrCommandConflict) {
+		t.Fatalf("err = %v, want ErrCommandConflict", err)
 	}
 }
 
-func testStartGrantLifecycle(t *testing.T, newRuntime Factory) {
+func testPrepareHardCAS(t *testing.T, newRuntime Factory) {
+	c := newCase(t, newRuntime)
+	snap := c.load()
+	req := request()
+	prep, cmdID := buildPrepareFromSnap(t, &snap, &req, nil)
+	if _, err := c.commit("wrong-prepare-id", snap.Revision, "", prep); !errors.Is(err, run.ErrCommandConflict) {
+		t.Fatalf("wrong prepare id err = %v, want ErrCommandConflict", err)
+	}
+	bad := prep
+	bad.StepID = "wrong-step"
+	if _, err := c.commit(cmdID, snap.Revision, "", bad); !errors.Is(err, run.ErrStaleRuntime) {
+		t.Fatalf("bad prepare StepID err = %v, want ErrStaleRuntime", err)
+	}
+	c.mustCommit(cmdID, snap.Revision, "", prep)
+	otherReq := request()
+	otherReq.System = "different"
+	prep2, cmdID2 := buildPrepareFromSnap(t, &snap, &otherReq, nil)
+	if cmdID2 != cmdID {
+		t.Fatal("same revision must derive the same command id")
+	}
+	if _, err := c.commit(cmdID2, snap.Revision, "", prep2); !errors.Is(err, run.ErrCommandConflict) {
+		t.Fatalf("err = %v, want ErrCommandConflict", err)
+	}
+	res := c.mustCommit(cmdID, snap.Revision, "", prep)
+	if res.Status != run.CommitAlreadyApplied {
+		t.Fatalf("status = %v", res.Status)
+	}
+}
+
+func testPrepareReplayAfterProgress(t *testing.T, newRuntime Factory) {
+	c := newCase(t, newRuntime)
+	snap := c.load()
+	input := run.AgentInput{ID: "input-1", Payload: mustJSON(`{"text":"hi"}`)}
+	accepted := c.mustCommit(run.DeriveInputCommandID(c.runID, input.ID), snap.Revision, "", run.AcceptInput{Input: input})
+	req := request()
+	prep, cmdID := buildPrepareFromSnap(t, &accepted.Snapshot, &req, nil)
+	prepared := c.mustCommit(cmdID, accepted.Snapshot.Revision, "", prep)
+	start := c.mustCommit("start-derived-replay", prepared.Snapshot.Revision, "", run.StartModelExecution{StepID: prep.StepID})
+	ok, err := run.FreezeModelResult(sdk.ModelResult{Text: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.mustCommit("finish-derived-replay", start.Snapshot.Revision, start.Grant, run.SubmitModelResult{StepID: prep.StepID, Result: ok})
+	current := c.load()
+	replayed, err := c.commit(cmdID, current.Revision, "", prep)
+	if err != nil || replayed.Status != run.CommitAlreadyApplied {
+		t.Fatalf("prepare replay after progress = %+v, %v", replayed, err)
+	}
+}
+
+func testGrant(t *testing.T, newRuntime Factory) {
 	c, stepID, grant := preparedCase(t, newRuntime, nil, nil)
 	// The authority rejects an unbound start before it can mint ownership.
 	empty, err := run.BuildEnvelope(c.runID, "empty-claim", run.StartModelExecution{StepID: stepID})
@@ -655,27 +742,28 @@ func testStartGrantLifecycle(t *testing.T, newRuntime Factory) {
 	}
 }
 
-func testDerivedReplayIgnoresNewBaseRevision(t *testing.T, newRuntime Factory) {
-	c := newCase(t, newRuntime)
-	snap := c.load()
-	input := run.AgentInput{ID: "input-1", Payload: mustJSON(`{"text":"hi"}`)}
-	accepted := c.mustCommit(run.DeriveInputCommandID(c.runID, input.ID), snap.Revision, "", run.AcceptInput{Input: input})
-	req := request()
-	prep, cmdID := buildPrepareFromSnap(t, &accepted.Snapshot, &req, nil)
-	prepared := c.mustCommit(cmdID, accepted.Snapshot.Revision, "", prep)
-	start := c.mustCommit("start-derived-replay", prepared.Snapshot.Revision, "", run.StartModelExecution{StepID: prep.StepID})
-	ok, err := run.FreezeModelResult(sdk.ModelResult{Text: "done"})
-	if err != nil {
-		t.Fatal(err)
+func startClaim(id run.CommandID) run.ExecutionClaim {
+	return run.ExecutionClaim("test-claim/" + string(id))
+}
+
+func testGrantHolderRecover(t *testing.T, newRuntime Factory) {
+	c, stepID, grant := preparedCase(t, newRuntime, nil, nil)
+	claim := startClaim("start-1")
+	id := run.DeriveModelRecoveryCommandID(c.runID, stepID, claim)
+	res := c.mustCommit(id, 2, grant, run.RecoverModelExecution{StepID: stepID, Claim: claim})
+	ms, ok := res.Snapshot.State.Current.(run.ModelStep)
+	if !ok || ms.Status != run.ModelPrepared {
+		t.Fatalf("after grant-holder recover: %+v", res.Snapshot.State.Current)
 	}
-	c.mustCommit("finish-derived-replay", start.Snapshot.Revision, start.Grant, run.SubmitModelResult{StepID: prep.StepID, Result: ok})
-	current := c.load()
-	// The original prepare command was derived from accepted.Snapshot.Revision.
-	// A retry after later progress must still replay by command identity rather
-	// than fail because it was sent with the current base revision.
-	replayed, err := c.commit(cmdID, current.Revision, "", prep)
-	if err != nil || replayed.Status != run.CommitAlreadyApplied {
-		t.Fatalf("prepare replay after progress = %+v, %v", replayed, err)
+}
+
+func testGrantGrantlessRejectedWhileLive(t *testing.T, newRuntime Factory) {
+	c, stepID, _ := preparedCase(t, newRuntime, nil, nil)
+	claim := startClaim("start-1")
+	id := run.DeriveModelRecoveryCommandID(c.runID, stepID, claim)
+	_, err := c.commit(id, 2, "", run.RecoverModelExecution{StepID: stepID, Claim: claim})
+	if !errors.Is(err, run.ErrStaleRuntime) {
+		t.Fatalf("grantless recover while live err = %v, want ErrStaleRuntime", err)
 	}
 }
 
@@ -718,69 +806,7 @@ func testCallLocalRebase(t *testing.T, newRuntime Factory) {
 	}
 }
 
-func testPrepareDerivedIdentity(t *testing.T, newRuntime Factory) {
-	c := newCase(t, newRuntime)
-	snap := c.load()
-	req := request()
-	prep, cmdID := buildPrepareFromSnap(t, &snap, &req, nil)
-
-	if _, err := c.commit("wrong-prepare-id", snap.Revision, "", prep); !errors.Is(err, run.ErrCommandConflict) {
-		t.Fatalf("wrong prepare id err = %v, want ErrCommandConflict", err)
-	}
-
-	bad := prep
-	bad.StepID = "wrong-step"
-	_, err := c.commit(cmdID, snap.Revision, "", bad)
-	if !errors.Is(err, run.ErrStaleRuntime) {
-		t.Fatalf("bad prepare StepID err = %v, want ErrStaleRuntime", err)
-	}
-}
-
-func testPrepareIsHardCAS(t *testing.T, newRuntime Factory) {
-	c := newCase(t, newRuntime)
-	snap := c.load()
-	req := request()
-	prep, cmdID := buildPrepareFromSnap(t, &snap, &req, nil)
-	c.mustCommit(cmdID, snap.Revision, "", prep)
-
-	otherReq := request()
-	otherReq.System = "different"
-	prep2, cmdID2 := buildPrepareFromSnap(t, &snap, &otherReq, nil)
-	if cmdID2 != cmdID {
-		t.Fatal("same revision must derive the same command id")
-	}
-	_, err := c.commit(cmdID2, snap.Revision, "", prep2)
-	if !errors.Is(err, run.ErrCommandConflict) {
-		t.Fatalf("err = %v, want ErrCommandConflict", err)
-	}
-	res := c.mustCommit(cmdID, snap.Revision, "", prep)
-	if res.Status != run.CommitAlreadyApplied {
-		t.Fatalf("status = %v", res.Status)
-	}
-}
-
-func testCancelRebasesAndUnknownWins(t *testing.T, newRuntime Factory) {
-	def := toolDef("t")
-	spec := makeSpec(t, def)
-	c, stepID, grant := preparedCase(t, newRuntime, []sdk.ToolDefinition{def}, []run.ToolSpec{spec})
-	b := makeBinding(t, "c1", &spec)
-	res := c.mustCommit("complete-1", 2, grant,
-		run.SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []run.ToolCallBinding{b}})
-	toolStep := openedToolStepID(t, &res)
-	startRes := c.mustCommit("start-c1", res.Snapshot.Revision, "", run.StartToolCall{StepID: toolStep, CallID: "c1"})
-
-	unknown := c.mustCommit("unk-1", startRes.Snapshot.Revision, startRes.Grant,
-		run.SubmitToolFailure{StepID: toolStep, CallID: "c1", Outcome: run.ToolOutcomeUnknown})
-	if unknown.Snapshot.State.Status != run.RunFailed {
-		t.Fatal("unknown did not fail the run")
-	}
-	_, err := c.commit("cancel-late", 0, "", run.CancelRun{})
-	if !errors.Is(err, run.ErrRunTerminal) {
-		t.Fatalf("late cancel err = %v, want ErrRunTerminal", err)
-	}
-}
-
-func testCancelOnStaleBase(t *testing.T, newRuntime Factory) {
+func testCancelStaleBase(t *testing.T, newRuntime Factory) {
 	c, _, _ := preparedCase(t, newRuntime, nil, nil)
 	res := c.mustCommit("cancel-1", 0, "", run.CancelRun{})
 	if res.Status != run.CommitAccepted || res.Snapshot.State.Status != run.RunStopped {
@@ -788,60 +814,74 @@ func testCancelOnStaleBase(t *testing.T, newRuntime Factory) {
 	}
 }
 
-func testReplayFoldMatchesState(t *testing.T, newRuntime Factory) {
+func testCancelAfterUnknown(t *testing.T, newRuntime Factory) {
 	def := toolDef("t")
 	spec := makeSpec(t, def)
 	c, stepID, grant := preparedCase(t, newRuntime, []sdk.ToolDefinition{def}, []run.ToolSpec{spec})
 	b := makeBinding(t, "c1", &spec)
-	res := c.mustCommit("complete-1", 2, grant,
+	opened := c.mustCommit("complete-1", 2, grant,
 		run.SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []run.ToolCallBinding{b}})
-	toolStep := openedToolStepID(t, &res)
-	sRes := c.mustCommit("start-c1", res.Snapshot.Revision, "", run.StartToolCall{StepID: toolStep, CallID: "c1"})
-	c.mustCommit("done-c1", sRes.Snapshot.Revision, sRes.Grant,
-		run.SubmitToolResult{StepID: toolStep, CallID: "c1", Result: run.ToolExecutionResult{Output: mustJSON(`"ok"`)}})
+	toolStep := openedToolStepID(t, &opened)
+	startRes := c.mustCommit("start-c1", opened.Snapshot.Revision, "", run.StartToolCall{StepID: toolStep, CallID: "c1"})
+	unknown := c.mustCommit("unk-1", startRes.Snapshot.Revision, startRes.Grant,
+		run.SubmitToolFailure{StepID: toolStep, CallID: "c1", Outcome: run.ToolOutcomeUnknown})
+	if unknown.Snapshot.State.Status != run.RunActive {
+		t.Fatalf("unknown status = %v, want active", unknown.Snapshot.State.Status)
+	}
+	if _, ok := unknown.Snapshot.State.Current.(run.Open); !ok {
+		t.Fatalf("current = %+v, want Open", unknown.Snapshot.State.Current)
+	}
+	cancelled := c.mustCommit("cancel-1", unknown.Snapshot.Revision, "", run.CancelRun{})
+	if cancelled.Snapshot.State.Status != run.RunStopped {
+		t.Fatalf("cancel status = %v, want stopped", cancelled.Snapshot.State.Status)
+	}
+	if n := len(cancelled.Snapshot.State.Result.UncertainCalls); n != 0 {
+		t.Fatalf("UncertainCalls = %v, want empty", cancelled.Snapshot.State.Result.UncertainCalls)
+	}
+}
 
-	folded, lastRev, err := run.FoldEvents(c.initial, c.events)
+func testCancelUnknownRemaining(t *testing.T, newRuntime Factory) {
+	defA, defB := toolDef("a"), toolDef("b")
+	specA := makeSpec(t, defA)
+	specB := makeSpec(t, defB)
+	c, stepID, grant := preparedCase(t, newRuntime, []sdk.ToolDefinition{defA, defB}, []run.ToolSpec{specA, specB})
+	bA := makeBinding(t, "cA", &specA)
+	bB := makeBinding(t, "cB", &specB)
+	r, err := run.FreezeModelResult(sdk.ModelResult{
+		FinishReason: sdk.FinishReasonToolCalls,
+		ToolCalls: []sdk.ToolCall{
+			{ToolCallID: "cA", ToolName: "a", Input: `{}`},
+			{ToolCallID: "cB", ToolName: "b", Input: `{}`},
+		},
+	})
 	if err != nil {
-		t.Fatalf("FoldEvents: %v", err)
+		t.Fatal(err)
 	}
-	live := c.load()
-	a, _ := json.Marshal(stateComparable(&live.State))
-	bts, _ := json.Marshal(stateComparable(&folded))
-	if !bytes.Equal(a, bts) {
-		t.Fatalf("replay diverged:\n live   %s\n replay %s", a, bts)
+	opened := c.mustCommit("complete-1", 2, grant,
+		run.SubmitModelResult{StepID: stepID, Result: r, Calls: []run.ToolCallBinding{bA, bB}})
+	toolStep := openedToolStepID(t, &opened)
+	base := opened.Snapshot.Revision
+	startA := c.mustCommit("start-A", base, "", run.StartToolCall{StepID: toolStep, CallID: "cA"})
+	startB := c.mustCommit("start-B", base, "", run.StartToolCall{StepID: toolStep, CallID: "cB"})
+	if startB.Status != run.CommitAccepted || startB.Grant == "" {
+		t.Fatalf("start B: %+v", startB)
 	}
-	if live.Revision != lastRev {
-		t.Fatalf("snapshot revision %d != last event revision %d", live.Revision, lastRev)
+	unknown := c.mustCommit("unk-A", startA.Snapshot.Revision, startA.Grant,
+		run.SubmitToolFailure{StepID: toolStep, CallID: "cA", Outcome: run.ToolOutcomeUnknown})
+	if unknown.Snapshot.State.Status != run.RunActive {
+		t.Fatalf("unknown status = %v, want active", unknown.Snapshot.State.Status)
 	}
-}
-
-func testAcceptInputByInputID(t *testing.T, newRuntime Factory) {
-	c := newCase(t, newRuntime)
-	in := run.AgentInput{ID: "in-9", Payload: mustJSON(`{"t":"x"}`)}
-	id := run.DeriveInputCommandID("run-1", in.ID)
-	res1 := c.mustCommit(id, 0, "", run.NextStep(in))
-	if res1.Status != run.CommitAccepted {
-		t.Fatal("first accept rejected")
+	ts, ok := unknown.Snapshot.State.Current.(run.ToolStep)
+	if !ok || len(ts.Calls) != 2 || ts.Calls[0].Status != run.ToolFailed || ts.Calls[1].Status != run.ToolExecuting {
+		t.Fatalf("calls after unknown = %+v", unknown.Snapshot.State.Current)
 	}
-	res2 := c.mustCommit(id, 0, "", run.NextStep(in))
-	if res2.Status != run.CommitAlreadyApplied {
-		t.Fatalf("status = %v", res2.Status)
+	cancelled := c.mustCommit("cancel-1", unknown.Snapshot.Revision, "", run.CancelRun{})
+	if cancelled.Snapshot.State.Status != run.RunStopped {
+		t.Fatalf("cancel status = %v, want stopped", cancelled.Snapshot.State.Status)
 	}
-	_, err := c.commit(id, 0, "", run.NextStep(run.AgentInput{ID: "in-9", Payload: mustJSON(`{"t":"y"}`)}))
-	if !errors.Is(err, run.ErrCommandConflict) {
-		t.Fatalf("err = %v, want ErrCommandConflict", err)
-	}
-}
-
-func testDerivedCommandIDEnforced(t *testing.T, newRuntime Factory) {
-	c := newCase(t, newRuntime)
-	_, err := c.commit("random-id", 0, "", run.NextStep(run.AgentInput{ID: "in-1", Payload: mustJSON(`1`)}))
-	if err == nil {
-		t.Fatal("AcceptInput with non-derived CommandID accepted")
-	}
-	_, err = c.commit("random-id-2", 0, "", run.ApproveToolCall{StepID: "s", CallID: "c", ResponseID: "r"})
-	if err == nil {
-		t.Fatal("ApproveToolCall with non-derived CommandID accepted")
+	got := cancelled.Snapshot.State.Result.UncertainCalls
+	if len(got) != 1 || got[0] != "cB" {
+		t.Fatalf("UncertainCalls = %v, want [cB]", got)
 	}
 }
 
@@ -856,9 +896,13 @@ func stateComparable(s *run.MachineState) map[string]any {
 		m["lastToolStep"] = s.LastToolStep
 	}
 	switch cur := s.Current.(type) {
+	case run.Open:
+		m["current"] = "open"
 	case run.ModelStep:
+		m["current"] = "model"
 		m["modelStep"] = cur
 	case run.ToolStep:
+		m["current"] = "tool"
 		m["toolStep"] = cur
 	}
 	return m

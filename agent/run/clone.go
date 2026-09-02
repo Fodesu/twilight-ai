@@ -307,6 +307,19 @@ func cloneStep(s Step) Step {
 	}
 }
 
+func cloneCurrent(c Current) Current {
+	switch cur := c.(type) {
+	case Open:
+		return Open{}
+	case ModelStep:
+		return cloneStep(cur).(ModelStep)
+	case ToolStep:
+		return cloneStep(cur).(ToolStep)
+	default:
+		return c
+	}
+}
+
 func cloneToolStepPtr(s *ToolStep) *ToolStep {
 	if s == nil {
 		return nil
@@ -318,7 +331,7 @@ func cloneToolStepPtr(s *ToolStep) *ToolStep {
 func cloneMachineState(s *MachineState) MachineState {
 	out := *s
 	if out.Current != nil {
-		out.Current = cloneStep(out.Current)
+		out.Current = cloneCurrent(out.Current)
 	}
 	out.LastToolStep = cloneToolStepPtr(out.LastToolStep)
 	out.PendingInputs = cloneAgentInputs(out.PendingInputs)

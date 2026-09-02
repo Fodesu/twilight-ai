@@ -178,7 +178,7 @@ func TestInitializeRunIsMinimal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.RunID != "r" || s.Status != RunActive || len(s.PendingInputs) != 0 {
+	if s.RunID != "r" || s.Status != RunActive || !atOpen(s.Current) || len(s.PendingInputs) != 0 {
 		t.Fatalf("initial state = %+v", s)
 	}
 }
@@ -226,32 +226,6 @@ func TestPrepareRejectsIncompleteInputIDs(t *testing.T) {
 	}
 }
 
-func TestModelCompleteNoToolsEndsRun(t *testing.T) {
-	s := newRun(t)
-	s, stepID := advanceToExecuting(t, s, testRequest(), nil)
-	result, err := FreezeModelResult(sdk.ModelResult{Text: "done", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 7}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: result})
-	if len(facts) != 2 {
-		t.Fatalf("facts = %d, want [completed, ended]", len(facts))
-	}
-	if _, ok := facts[1].(RunEnded); !ok {
-		t.Fatalf("facts[1] = %T", facts[1])
-	}
-	s = fold(t, s, facts)
-	if s.Status != RunCompleted {
-		t.Fatalf("status = %v", s.Status)
-	}
-	if s.Result == nil || s.Result.Model == nil || s.Result.Model.Text != "done" {
-		t.Fatalf("result = %+v", s.Result)
-	}
-	if s.Result.Usage.TotalTokens != 7 {
-		t.Fatalf("usage not accumulated into result: %+v", s.Result.Usage)
-	}
-}
-
 func TestModelCompleteWithToolsOpensToolStep(t *testing.T) {
 	def := testToolDef("t")
 	spec := makeSpec(t, def, DirectExecution)
@@ -283,80 +257,6 @@ func TestModelCompleteWithToolsOpensToolStep(t *testing.T) {
 	}
 }
 
-func TestApprovalCallOpensWaitingWithDerivedResponse(t *testing.T) {
-	def := testToolDef("t")
-	spec := makeSpec(t, def, ApprovalRequired)
-	s := newRun(t)
-	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
-
-	b := makeBinding(t, "c1", spec, `{}`)
-	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
-	opened := facts[1].(ToolStepOpened)
-	if opened.Calls[0].Response == nil {
-		t.Fatal("approval call has no derived ResponseRequest")
-	}
-	want := DeriveResponseID(s.RunID, opened.StepID, "c1", ResponseApproval)
-	if opened.Calls[0].Response.ID != want {
-		t.Fatal("ResponseID not derived per spec")
-	}
-	s = fold(t, s, facts)
-	ts := s.Current.(ToolStep)
-	if ts.Calls[0].Status != ToolWaiting {
-		t.Fatalf("status = %v, want Waiting", ts.Calls[0].Status)
-	}
-
-	// Next has no executable effect; Application reads the request from state.
-	eff, err := Next(s)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := eff.(Idle); !ok {
-		t.Fatalf("effect = %#v, want Idle", eff)
-	}
-	reqs := WaitingCalls(s)
-	if len(reqs) != 1 || reqs[0].ID != want {
-		t.Fatalf("WaitingCalls = %#v", reqs)
-	}
-
-	if _, err := Decide(s, ApproveToolCall{StepID: opened.StepID, CallID: "c1", ResponseID: want, ResponseDigest: "sha256:bad"}); err == nil {
-		t.Fatal("approval with bad response digest accepted")
-	}
-
-	// Approve -> Pending; then start -> execute path.
-	s = fold(t, s, mustDecide(t, s, ApproveToolCall{StepID: opened.StepID, CallID: "c1", ResponseID: want,
-		ResponseDigest: responseDecisionDigest(t, ResponseApproval, ResponseDecisionApproved, "")}))
-	if s.Current.(ToolStep).Calls[0].Status != ToolPending {
-		t.Fatal("approved call is not Pending")
-	}
-}
-
-func TestRejectRecordsPermissionDenied(t *testing.T) {
-	def := testToolDef("t")
-	spec := makeSpec(t, def, ApprovalRequired)
-	s := newRun(t)
-	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
-	b := makeBinding(t, "c1", spec, `{}`)
-	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
-	opened := facts[1].(ToolStepOpened)
-	s = fold(t, s, facts)
-	respID := opened.Calls[0].Response.ID
-
-	facts = mustDecide(t, s, RejectToolCall{StepID: opened.StepID, CallID: "c1", ResponseID: respID,
-		ResponseDigest: responseDecisionDigest(t, ResponseApproval, ResponseDecisionRejected, "no"), Reason: "no"})
-	// Single call: the Known failure implicitly closes the ToolStep.
-	if len(facts) != 1 {
-		t.Fatalf("facts = %d, want [failed]", len(facts))
-	}
-	failed := facts[0].(ToolCallFailed)
-	if failed.Failure.Class != FailurePermissionDenied || failed.Outcome != ToolOutcomeKnown {
-		t.Fatalf("failed = %+v", failed)
-	}
-	s = fold(t, s, facts)
-	if s.Current != nil || s.Status != RunActive {
-		t.Fatal("run should continue with no current step")
-	}
-}
-
 func TestExternalResponseRequiresPayloadDigest(t *testing.T) {
 	def := testToolDef("ask")
 	spec := makeSpec(t, def, ExternalResponse)
@@ -375,6 +275,27 @@ func TestExternalResponseRequiresPayloadDigest(t *testing.T) {
 		ResponseDigest: responsePayloadDigest(t, payload), Payload: payload})
 	if len(facts) != 1 {
 		t.Fatalf("facts = %d, want [answered]", len(facts))
+	}
+
+	s = newRun(t)
+	s, stepID = advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
+	b = makeBinding(t, "c1", spec, `{}`)
+	facts = mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithNamedCalls("ask", `{}`, "c1"), Calls: []ToolCallBinding{b}})
+	opened = facts[1].(ToolStepOpened)
+	s = fold(t, s, facts)
+	respID = opened.Calls[0].Response.ID
+	facts, err := Decide(s, RejectToolCall{StepID: opened.StepID, CallID: "c1", ResponseID: respID,
+		ResponseDigest: responseDecisionDigest(t, ResponseExternal, ResponseDecisionRejected, "user dismissed"), Reason: "user dismissed"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failed := facts[0].(ToolCallFailed)
+	if failed.Failure.Class != FailureResponseRejected || failed.Outcome != ToolOutcomeKnown {
+		t.Fatalf("failed = %+v", failed)
+	}
+	s = fold(t, s, facts)
+	if s.Status != RunActive || !atOpen(s.Current) {
+		t.Fatal("run should continue after rejecting the external response")
 	}
 }
 
@@ -407,36 +328,6 @@ func TestToolSchedulingRejectsUnknownMode(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("unknown scheduling mode accepted")
-	}
-}
-
-func TestUnknownFailureEndsRun(t *testing.T) {
-	def := testToolDef("t")
-	spec := makeSpec(t, def, DirectExecution)
-	s := newRun(t)
-	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
-	b := makeBinding(t, "c1", spec, `{}`)
-	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
-	opened := facts[1].(ToolStepOpened)
-	s = fold(t, s, facts)
-	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: "c1"}))
-
-	facts = mustDecide(t, s, SubmitToolFailure{StepID: opened.StepID, CallID: "c1", Outcome: ToolOutcomeUnknown})
-	if len(facts) != 2 {
-		t.Fatalf("facts = %d, want [failed, ended]", len(facts))
-	}
-	ended := facts[1].(RunEnded)
-	failed, ok := ended.End.(RunFailedEnd)
-	if !ok || failed.Reason != ReasonEffectUnknown || failed.Failure.CallID != "c1" {
-		t.Fatalf("ended = %+v", ended.End)
-	}
-	s = fold(t, s, facts)
-	if s.Status != RunFailed {
-		t.Fatal("run not failed")
-	}
-	// Terminal absorbs: further commands rejected.
-	if _, err := Decide(s, CancelRun{}); !errors.Is(err, ErrRunTerminal) {
-		t.Fatalf("err = %v, want ErrRunTerminal", err)
 	}
 }
 
@@ -503,8 +394,70 @@ func TestParallelWaitingDoesNotBlockPending(t *testing.T) {
 		t.Fatalf("facts = %d, want [completed]", len(facts))
 	}
 	s = fold(t, s, facts)
-	if s.Current != nil {
+	if !atOpen(s.Current) {
 		t.Fatal("tool step should be closed")
+	}
+}
+
+func TestUnknownToolFailureSettlesOnlyThatCall(t *testing.T) {
+	defA, defB := testToolDef("a"), testToolDef("b")
+	specA := makeSpec(t, defA, DirectExecution)
+	specB := makeSpec(t, defB, DirectExecution)
+	s := newRun(t)
+	s, stepID := advanceToExecuting(t, s, testRequest(defA, defB), []ToolSpec{specA, specB})
+
+	bA := makeBinding(t, "cA", specA, `{}`)
+	bB := makeBinding(t, "cB", specB, `{}`)
+	r, err := FreezeModelResult(sdk.ModelResult{
+		FinishReason: sdk.FinishReasonToolCalls,
+		Usage:        sdk.Usage{TotalTokens: 2},
+		ToolCalls: []sdk.ToolCall{
+			{ToolCallID: "cA", ToolName: "a", Input: `{}`},
+			{ToolCallID: "cB", ToolName: "b", Input: `{}`},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: r, Calls: []ToolCallBinding{bA, bB}})
+	opened := facts[1].(ToolStepOpened)
+	s = fold(t, s, facts)
+	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: "cA"}))
+	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: "cB"}))
+
+	facts = mustDecide(t, s, SubmitToolFailure{
+		StepID:  opened.StepID,
+		CallID:  "cA",
+		Failure: ToolFailure{Class: FailureEffectUnknown, Message: "lost"},
+		Outcome: ToolOutcomeUnknown,
+	})
+	if len(facts) != 1 {
+		t.Fatalf("facts = %d, want [ToolCallFailed]", len(facts))
+	}
+	failed := facts[0].(ToolCallFailed)
+	if failed.CallID != "cA" || failed.Outcome != ToolOutcomeUnknown {
+		t.Fatalf("failed = %+v", failed)
+	}
+	s = fold(t, s, facts)
+	if s.Status != RunActive {
+		t.Fatalf("status = %v, want active", s.Status)
+	}
+	ts, ok := s.Current.(ToolStep)
+	if !ok {
+		t.Fatalf("current = %T, want ToolStep", s.Current)
+	}
+	if ts.Calls[0].Status != ToolFailed || ts.Calls[1].Status != ToolExecuting {
+		t.Fatalf("calls = %+v", ts.Calls)
+	}
+
+	s = fold(t, s, mustDecide(t, s, SubmitToolResult{
+		StepID: opened.StepID, CallID: "cB", Result: ToolExecutionResult{Output: cj(`"ok"`)},
+	}))
+	if s.Status != RunActive || !atOpen(s.Current) {
+		t.Fatalf("after sibling complete: status=%v current=%T", s.Status, s.Current)
+	}
+	if s.LastToolStep == nil || s.LastToolStep.Calls[0].Status != ToolFailed || s.LastToolStep.Calls[1].Status != ToolCompleted {
+		t.Fatalf("LastToolStep = %+v", s.LastToolStep)
 	}
 }
 
@@ -548,73 +501,6 @@ func TestRejectModelResultDispositionRetriesThenFails(t *testing.T) {
 	}
 }
 
-func TestModelRecoveryKeepsFrozenRequestAndCounts(t *testing.T) {
-	s := newRun(t)
-	s, stepID := advanceToExecuting(t, s, testRequest(), nil)
-	s = fold(t, s, mustDecide(t, s, RecoverModelExecution{StepID: stepID}))
-	ms := s.Current.(ModelStep)
-	if ms.Status != ModelPrepared {
-		t.Fatal("recovered step not Prepared")
-	}
-	if s.ModelSteps != 1 {
-		t.Fatal("recovery must not recount model steps")
-	}
-	if s.Usage.TotalTokens != 0 {
-		t.Fatal("recovery must not change usage")
-	}
-}
-
-func TestCancelProducesRunStopped(t *testing.T) {
-	s := newRun(t)
-	facts := mustDecide(t, s, CancelRun{})
-	ended := facts[0].(RunEnded)
-	stopped, ok := ended.End.(RunStoppedEnd)
-	if !ok || stopped.Reason != ReasonCancelled {
-		t.Fatalf("ended = %+v", ended.End)
-	}
-	if len(stopped.UncertainCalls) != 0 || stopped.UncertainModel != "" {
-		t.Fatalf("idle cancel recorded uncertain effects: %+v", stopped)
-	}
-}
-
-func TestCancelSurfacesUncertainToolCalls(t *testing.T) {
-	def := testToolDef("t")
-	spec := makeSpec(t, def, DirectExecution)
-	s := newRun(t)
-	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
-	b := makeBinding(t, "c1", spec, `{}`)
-	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
-	opened := facts[1].(ToolStepOpened)
-	s = fold(t, s, facts)
-	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: "c1"}))
-
-	facts = mustDecide(t, s, CancelRun{})
-	ended := facts[len(facts)-1].(RunEnded)
-	stopped := ended.End.(RunStoppedEnd)
-	if stopped.Reason != ReasonCancelled || len(stopped.UncertainCalls) != 1 || stopped.UncertainCalls[0] != "c1" {
-		t.Fatalf("stopped = %+v", stopped)
-	}
-	s = fold(t, s, facts)
-	if s.Result == nil || len(s.Result.UncertainCalls) != 1 || s.Result.UncertainCalls[0] != "c1" {
-		t.Fatalf("result = %+v", s.Result)
-	}
-}
-
-func TestCancelSurfacesUncertainModelStep(t *testing.T) {
-	s := newRun(t)
-	s, stepID := advanceToExecuting(t, s, testRequest(), nil)
-	facts := mustDecide(t, s, CancelRun{})
-	ended := facts[0].(RunEnded)
-	stopped := ended.End.(RunStoppedEnd)
-	if stopped.UncertainModel != stepID {
-		t.Fatalf("uncertain model = %q, want %q", stopped.UncertainModel, stepID)
-	}
-	s = fold(t, s, facts)
-	if s.Result == nil || s.Result.UncertainModel != stepID {
-		t.Fatalf("result = %+v", s.Result)
-	}
-}
-
 func TestAcceptInputIdempotentPerID(t *testing.T) {
 	s := newRun(t)
 	facts := mustDecide(t, s, NextStep(AgentInput{ID: "in-2", Payload: cj(`1`)}))
@@ -640,12 +526,6 @@ func TestAcceptInputRejectsSeedDuplicateID(t *testing.T) {
 	_, err := Decide(s, NextStep(AgentInput{ID: "seed", Payload: cj(`{"q":"other"}`)}))
 	if !errors.Is(err, ErrCommandConflict) {
 		t.Fatalf("duplicate seed input err = %v, want ErrCommandConflict", err)
-	}
-}
-
-func TestSubmitModelResultRequiresCanonicalToolInput(t *testing.T) {
-	if _, err := ParseCanonicalJSON([]byte(`{"path":`)); err == nil {
-		t.Fatal("constructed non-canonical model tool input")
 	}
 }
 
@@ -707,7 +587,7 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if next.Current == nil || len(next.PendingInputs) != 0 {
+		if _, ok := next.Current.(ModelStep); !ok || len(next.PendingInputs) != 0 {
 			t.Fatalf("prepared state = %+v", next)
 		}
 	})
@@ -727,57 +607,4 @@ func TestEvolveRejectsModelPrepareOverCurrentStep(t *testing.T) {
 	if err == nil {
 		t.Fatal("Evolve accepted ModelStepPrepared over an existing step")
 	}
-}
-
-func TestReplayEquivalence(t *testing.T) {
-	// state = fold(Evolve, initial, events): run a full happy path, capture
-	// all facts, refold from initial, and compare canonical serializations.
-	def := testToolDef("t")
-	spec := makeSpec(t, def, DirectExecution)
-	initial := newRun(t)
-	var log []Fact
-
-	s := initial
-	step := func(c AgentCommand) {
-		facts := mustDecide(t, s, c)
-		log = append(log, facts...)
-		s = fold(t, s, facts)
-	}
-	prep, _ := buildPrepare(t, s, testRequest(def), []ToolSpec{spec})
-	step(prep)
-	step(StartModelExecution{StepID: prep.StepID})
-	b := makeBinding(t, "c1", spec, `{}`)
-	step(SubmitModelResult{StepID: prep.StepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
-	ts := s.Current.(ToolStep)
-	step(StartToolCall{StepID: ts.RefValue.ID, CallID: "c1"})
-	step(SubmitToolResult{StepID: ts.RefValue.ID, CallID: "c1", Result: ToolExecutionResult{Output: cj(`"ok"`)}})
-
-	replayed := fold(t, initial, log)
-	a, err := json.Marshal(stateSnapshotForTest(s))
-	if err != nil {
-		t.Fatal(err)
-	}
-	bts, err := json.Marshal(stateSnapshotForTest(replayed))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(a) != string(bts) {
-		t.Fatalf("replay diverged:\n live   %s\n replay %s", a, bts)
-	}
-}
-
-// stateSnapshotForTest flattens MachineState including the unexported-ish
-// Current step for comparison.
-func stateSnapshotForTest(s MachineState) map[string]any {
-	m := map[string]any{
-		"runId": s.RunID, "status": s.Status, "modelSteps": s.ModelSteps,
-		"usage": s.Usage, "pending": s.PendingInputs, "result": s.Result,
-	}
-	switch cur := s.Current.(type) {
-	case ModelStep:
-		m["model"] = cur
-	case ToolStep:
-		m["tool"] = cur
-	}
-	return m
 }

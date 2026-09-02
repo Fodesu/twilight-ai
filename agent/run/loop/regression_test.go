@@ -18,7 +18,7 @@ func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
 		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
 			panic("nil map write")
 		}}
-	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1")}}
+	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("done")}}
 	rt := loopRuntime(t)
 	interpreter, _ := New(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
 		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
@@ -27,11 +27,22 @@ func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Result.Status != RunFailed || res.Result.Reason != ReasonEffectUnknown {
+	if res.Result.Status != RunCompleted {
 		t.Fatalf("res = %+v", res.Result)
 	}
-	if !strings.Contains(res.Result.Failure.Message, "panic") {
-		t.Fatalf("failure = %+v", res.Result.Failure)
+	found := false
+	for _, e := range recordEvents(t, rt, "run-1") {
+		failed, ok := e.Fact.(ToolCallFailed)
+		if !ok || failed.Outcome != ToolOutcomeUnknown {
+			continue
+		}
+		if strings.Contains(failed.Failure.Message, "panic") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("missing ToolCallFailed Unknown with panic")
 	}
 }
 

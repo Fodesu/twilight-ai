@@ -23,8 +23,8 @@ func evolveV1(s MachineState, f Fact) (MachineState, error) {
 	}
 	switch fact := f.(type) {
 	case ModelStepPrepared:
-		if s.Current != nil {
-			return s, fmt.Errorf("agent: evolve: model step prepared while a step is current")
+		if !atOpen(s.Current) {
+			return s, fmt.Errorf("agent: evolve: model step prepared while run is not at Open")
 		}
 		// v1 preparation is the atomic consumption boundary for pending inputs.
 		// A persisted fact must name every pending input exactly once, in queue
@@ -87,12 +87,12 @@ func evolveV1(s MachineState, f Fact) (MachineState, error) {
 		result := fact.Result
 		s.LastModelResult = &result
 		s.Usage = s.Usage.Add(fact.Result.Usage)
-		s.Current = nil
+		s.Current = Open{}
 		return s, nil
 
 	case ToolStepOpened:
-		if s.Current != nil {
-			return s, fmt.Errorf("agent: evolve: tool step opened while a step is current")
+		if !atOpen(s.Current) {
+			return s, fmt.Errorf("agent: evolve: tool step opened while run is not at Open")
 		}
 		calls := make([]ToolCallState, len(fact.Calls))
 		for i, b := range fact.Calls {
@@ -204,8 +204,8 @@ func evolveV1(s MachineState, f Fact) (MachineState, error) {
 func validateFactTransition(s MachineState, f Fact) error {
 	switch fact := f.(type) {
 	case ModelStepPrepared:
-		if s.Status.Terminal() || s.Current != nil {
-			return fmt.Errorf("agent: evolve: model step prepared while run is not at a model boundary")
+		if s.Status.Terminal() || !atOpen(s.Current) {
+			return fmt.Errorf("agent: evolve: model step prepared while run is not at Open")
 		}
 		if fact.StepID == "" || fact.Model == "" || fact.RequestDigest == "" || fact.ToolsDigest == "" || fact.BindingDigest == "" {
 			return errors.New("agent: evolve: model step prepared is missing identity or digest")
@@ -246,8 +246,8 @@ func validateFactTransition(s MachineState, f Fact) error {
 			return fmt.Errorf("agent: evolve: model step %q is not Executing", fact.StepID)
 		}
 	case ToolStepOpened:
-		if s.Status.Terminal() || s.Current != nil || len(fact.Calls) == 0 {
-			return fmt.Errorf("agent: evolve: tool step opened outside an empty active boundary")
+		if s.Status.Terminal() || !atOpen(s.Current) || len(fact.Calls) == 0 {
+			return fmt.Errorf("agent: evolve: tool step opened outside Open")
 		}
 		if fact.StepID == "" || fact.Source == "" || fact.BindingSetDigest == "" {
 			return errors.New("agent: evolve: tool step is missing identity or digest")
@@ -354,8 +354,8 @@ func validateFactTransition(s MachineState, f Fact) error {
 			return fmt.Errorf("agent: evolve: unknown failure outcome %d", fact.Outcome)
 		}
 	case InputAccepted:
-		if s.Status.Terminal() || s.Current != nil {
-			return errors.New("agent: evolve: input accepted outside an empty active boundary")
+		if s.Status.Terminal() || !atOpen(s.Current) {
+			return errors.New("agent: evolve: input accepted outside Open")
 		}
 	case RunEnded:
 		if s.Status.Terminal() {
@@ -424,7 +424,7 @@ func evolveCall(s *MachineState, step StepID, call CallID, apply func(*ToolCallS
 		closed := ts
 		closed.Calls = calls
 		s.LastToolStep = &closed
-		s.Current = nil
+		s.Current = Open{}
 		s.LastClosedStep = step
 	} else {
 		s.Current = ts

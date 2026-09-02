@@ -877,18 +877,13 @@ func toolCallFromSnapshot(state run.MachineState, stepID run.StepID, callID run.
 // settleWorkers executes every started worker and commits its outcome. An
 // accepted start is never abandoned (RUN-LOP-4). Tool workers receive outer
 // context cancellation; settlement uses a detached control context so the
-// resulting outcome can still reach Runtime (RUN-LOP-5). One Unknown cancels
-// sibling workers. A non-sentinel commit error leaves the same command in the
+// resulting outcome can still reach Runtime (RUN-LOP-5). Unknown settles
+// only that call. A non-sentinel commit error leaves the same command in the
 // local settlement cache for the next Run invocation.
 func (l *Loop) settleWorkers(ctx context.Context, runtime run.Runtime, events EventSink, runID run.RunID, stepID run.StepID, started []startedWorker, proto run.Protocol) error {
 	if len(started) == 0 {
 		return nil
 	}
-	// The tool sees cancellation so cooperative implementations can stop. The
-	// settlement path uses controlCtx, which is independent of worker
-	// cancellation and can record the resulting known/unknown outcome.
-	execCtx, cancelAll := context.WithCancel(ctx)
-	defer cancelAll()
 	controlCtx := context.WithoutCancel(ctx)
 
 	var mu sync.Mutex
@@ -908,10 +903,9 @@ func (l *Loop) settleWorkers(ctx context.Context, runtime run.Runtime, events Ev
 				Arguments:        w.call.Arguments,
 				Progress:         &progressSink{events: events, run: runID, step: stepID, call: w.call.CallID},
 			}
-			outcome := executeToolSafely(execCtx, w.tool, &req)
+			outcome := executeToolSafely(ctx, w.tool, &req)
 
 			var cmd run.AgentCommand
-			unknown := false
 			switch o := outcome.(type) {
 			case ToolExecutionSucceeded:
 				cmd = run.SubmitToolResult{StepID: stepID, CallID: w.call.CallID, Result: o.Result}
@@ -928,11 +922,9 @@ func (l *Loop) settleWorkers(ctx context.Context, runtime run.Runtime, events Ev
 				}
 				failure.Class = run.FailureEffectUnknown
 				cmd = run.SubmitToolFailure{StepID: stepID, CallID: w.call.CallID, Failure: failure, Outcome: run.ToolOutcomeUnknown}
-				unknown = true
 			default:
 				cmd = run.SubmitToolFailure{StepID: stepID, CallID: w.call.CallID,
 					Failure: run.ToolFailure{Class: run.FailureEffectUnknown, Message: "tool returned no outcome"}, Outcome: run.ToolOutcomeUnknown}
-				unknown = true
 			}
 
 			mu.Lock()
@@ -961,9 +953,6 @@ func (l *Loop) settleWorkers(ctx context.Context, runtime run.Runtime, events Ev
 				if firstErr == nil {
 					firstErr = fmt.Errorf("agent: loop: settling call %q: %w", w.call.CallID, err)
 				}
-			}
-			if unknown {
-				cancelAll() // one Unknown cancels sibling workers (RUN-LOP-4)
 			}
 		}(w)
 	}

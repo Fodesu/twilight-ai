@@ -146,9 +146,13 @@ func stateComparable(s *MachineState) map[string]any {
 		m["lastToolStep"] = s.LastToolStep
 	}
 	switch cur := s.Current.(type) {
+	case Open:
+		m["current"] = "open"
 	case ModelStep:
+		m["current"] = "model"
 		m["modelStep"] = cur
 	case ToolStep:
+		m["current"] = "tool"
 		m["toolStep"] = cur
 	}
 	return m
