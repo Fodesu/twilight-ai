@@ -124,6 +124,15 @@ agent/turn     -> agent/run + agent/session + agent/session/chatlog + session mo
 - 逐步把 `bot_history_messages` 降为兼容 read model；
 - 在完整 materialization、terminal settlement 与 retention closure 后执行归档/GC。
 
+## 4.3 Run 内部整理（已完成）
+
+- envelope digest 不匹配从 `ErrCommandConflict` 改为不可重试错误，调用方不再对构造错误 reload 重试；
+- Evolve 对重复 `InputAccepted` 报错而非静默去重；
+- `decideSubmitModelResult` 拆为 binding 校验与 ToolStep 派生两步；
+- `RunEnded` wire 改为 tagged union，与 Go sealed union 对称；
+- `ModelCatalog.ResolveModel` / `ToolCatalog.ResolveTool`，一个类型可同时实现两者；
+- `ProtocolV1` 改为函数，不可被重新赋值。
+
 ## 4.4 sdk.Request 作为冻结类型的评估
 
 结论：请求层保留 `run.ModelRequest` 镜像，但把镜像的理由收窄到具体字段；消息层与结果层必须保留镜像。

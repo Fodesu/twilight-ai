@@ -189,7 +189,7 @@ func (f *Feature) TryCommit(cmd run.AgentCommand) error {
 func (f *Feature) Approve() *Feature {
 	f.t.Helper()
 	w := f.waiting()
-	digest, err := run.ProtocolV1.DigestToolResponseDecision(w.Kind, run.ResponseDecisionApproved, "")
+	digest, err := run.ProtocolV1().DigestToolResponseDecision(w.Kind, run.ResponseDecisionApproved, "")
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -203,7 +203,7 @@ func (f *Feature) Approve() *Feature {
 func (f *Feature) Reject(reason string) *Feature {
 	f.t.Helper()
 	w := f.waiting()
-	digest, err := run.ProtocolV1.DigestToolResponseDecision(w.Kind, run.ResponseDecisionRejected, reason)
+	digest, err := run.ProtocolV1().DigestToolResponseDecision(w.Kind, run.ResponseDecisionRejected, reason)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -419,7 +419,7 @@ func (f *Feature) mustSpec(name string, policy run.ResponsePolicy) run.ToolSpec 
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	d, err := run.ProtocolV1.DigestToolDefinition(frozen)
+	d, err := run.ProtocolV1().DigestToolDefinition(frozen)
 	if err != nil {
 		f.t.Fatal(err)
 	}

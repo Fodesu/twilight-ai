@@ -159,47 +159,6 @@ type RunEnded struct {
 
 func (RunEnded) fact() {}
 
-func (r RunEnded) effectiveEnd() (RunEnd, error) {
-	if err := validateRunEnd(r.End); err != nil {
-		return nil, err
-	}
-	return r.End, nil
-}
-
-func legacyEnd(status RunStatus, reason RunReason, failure *RunFailure, uncertainCalls []CallID, uncertainModel StepID) (RunEnd, error) {
-	switch status {
-	case RunCompleted:
-		if reason != "" || failure != nil || len(uncertainCalls) > 0 || uncertainModel != "" {
-			return nil, errors.New("agent: run ended: completed outcome cannot carry reason, failure, or uncertain effects")
-		}
-		return RunCompletedEnd{}, nil
-	case RunStopped:
-		if reason == "" {
-			return nil, errors.New("agent: run ended: stopped outcome requires a reason")
-		}
-		if failure != nil {
-			return nil, errors.New("agent: run ended: stopped outcome cannot carry failure")
-		}
-		return RunStoppedEnd{Reason: reason, UncertainCalls: uncertainCalls, UncertainModel: uncertainModel}, nil
-	case RunFailed:
-		if failure == nil {
-			return nil, errors.New("agent: run ended: failed outcome requires failure")
-		}
-		if reason == "" {
-			return nil, errors.New("agent: run ended: failed outcome requires a reason")
-		}
-		if failure.Class == "" {
-			return nil, errors.New("agent: run ended: failed outcome requires a failure class")
-		}
-		if len(uncertainCalls) > 0 || uncertainModel != "" {
-			return nil, errors.New("agent: run ended: failed outcome cannot carry uncertain-effect fields")
-		}
-		return RunFailedEnd{Reason: reason, Failure: *failure}, nil
-	default:
-		return nil, fmt.Errorf("agent: run ended: invalid status %d", status)
-	}
-}
-
 func validateRunEnd(end RunEnd) error {
 	switch e := end.(type) {
 	case RunCompletedEnd:
@@ -222,14 +181,6 @@ func validateRunEnd(end RunEnd) error {
 	}
 }
 
-func (r RunEnded) normalized() (RunEnded, error) {
-	end, err := r.effectiveEnd()
-	if err != nil {
-		return RunEnded{}, err
-	}
-	return RunEnded{End: end}, nil
-}
-
 func endProjection(end RunEnd) (RunStatus, RunReason, *RunFailure) {
 	switch e := end.(type) {
 	case RunCompletedEnd:
@@ -244,40 +195,47 @@ func endProjection(end RunEnd) (RunStatus, RunReason, *RunFailure) {
 	}
 }
 
-// MarshalJSON preserves the current v1 wire shape while deriving it from the
-// sealed terminal union.
+// runEndWire is the tagged-union wire of RunEnded: exactly one variant key is
+// present. It mirrors the Go union so the wire cannot express an outcome the
+// type system rejects.
+type runEndWire struct {
+	Completed *struct{}          `json:"completed,omitempty"`
+	Stopped   *runStoppedEndWire `json:"stopped,omitempty"`
+	Failed    *runFailedEndWire  `json:"failed,omitempty"`
+}
+
+type runStoppedEndWire struct {
+	Reason         RunReason `json:"reason"`
+	UncertainCalls []CallID  `json:"uncertainCalls,omitempty"`
+	UncertainModel StepID    `json:"uncertainModel,omitempty"`
+}
+
+type runFailedEndWire struct {
+	Reason  RunReason  `json:"reason"`
+	Failure RunFailure `json:"failure"`
+}
+
 func (r RunEnded) MarshalJSON() ([]byte, error) {
-	n, err := r.normalized()
-	if err != nil {
+	if err := validateRunEnd(r.End); err != nil {
 		return nil, err
 	}
-	type wire struct {
-		Status         RunStatus   `json:"status"`
-		Reason         RunReason   `json:"reason,omitempty"`
-		Failure        *RunFailure `json:"failure,omitempty"`
-		UncertainCalls []CallID    `json:"uncertainCalls,omitempty"`
-		UncertainModel StepID      `json:"uncertainModel,omitempty"`
+	var w runEndWire
+	switch e := r.End.(type) {
+	case RunCompletedEnd:
+		w.Completed = &struct{}{}
+	case RunStoppedEnd:
+		w.Stopped = &runStoppedEndWire{Reason: e.Reason, UncertainCalls: e.UncertainCalls, UncertainModel: e.UncertainModel}
+	case RunFailedEnd:
+		w.Failed = &runFailedEndWire{Reason: e.Reason, Failure: e.Failure}
 	}
-	status, reason, failure := endProjection(n.End)
-	out := wire{Status: status, Reason: reason, Failure: failure}
-	if stopped, ok := n.End.(RunStoppedEnd); ok {
-		out.UncertainCalls = stopped.UncertainCalls
-		out.UncertainModel = stopped.UncertainModel
-	}
-	return json.Marshal(out)
+	return json.Marshal(w)
 }
 
 func (r *RunEnded) UnmarshalJSON(raw []byte) error {
-	var wire struct {
-		Status         RunStatus   `json:"status"`
-		Reason         RunReason   `json:"reason,omitempty"`
-		Failure        *RunFailure `json:"failure,omitempty"`
-		UncertainCalls []CallID    `json:"uncertainCalls,omitempty"`
-		UncertainModel StepID      `json:"uncertainModel,omitempty"`
-	}
+	var w runEndWire
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&wire); err != nil {
+	if err := dec.Decode(&w); err != nil {
 		return err
 	}
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
@@ -286,8 +244,24 @@ func (r *RunEnded) UnmarshalJSON(raw []byte) error {
 		}
 		return err
 	}
-	end, err := legacyEnd(wire.Status, wire.Reason, wire.Failure, wire.UncertainCalls, wire.UncertainModel)
-	if err != nil {
+	variants := 0
+	var end RunEnd
+	if w.Completed != nil {
+		variants++
+		end = RunCompletedEnd{}
+	}
+	if w.Stopped != nil {
+		variants++
+		end = RunStoppedEnd{Reason: w.Stopped.Reason, UncertainCalls: w.Stopped.UncertainCalls, UncertainModel: w.Stopped.UncertainModel}
+	}
+	if w.Failed != nil {
+		variants++
+		end = RunFailedEnd{Reason: w.Failed.Reason, Failure: w.Failed.Failure}
+	}
+	if variants != 1 {
+		return fmt.Errorf("agent: run ended: exactly one outcome required, got %d", variants)
+	}
+	if err := validateRunEnd(end); err != nil {
 		return err
 	}
 	*r = RunEnded{End: end}

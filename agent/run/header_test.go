@@ -69,7 +69,7 @@ func TestCommitRejectsCommandSchemaMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := AgentInput{ID: "seed", Payload: MustParseCanonicalJSON(`{"q":"hi"}`)}
-	env, err := ProtocolV1.BuildEnvelope("run-1", DeriveInputCommandID("run-1", in.ID), NextStep(in))
+	env, err := ProtocolV1().BuildEnvelope("run-1", DeriveInputCommandID("run-1", in.ID), NextStep(in))
 	if err != nil {
 		t.Fatal(err)
 	}

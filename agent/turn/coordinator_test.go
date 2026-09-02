@@ -21,7 +21,7 @@ type scriptModel struct {
 	calls   atomic.Int32
 }
 
-func (m *scriptModel) Resolve(run.ModelRef) (loop.ModelInvoker, error) { return m, nil }
+func (m *scriptModel) ResolveModel(run.ModelRef) (loop.ModelInvoker, error) { return m, nil }
 func (m *scriptModel) Generate(ctx context.Context, _ sdk.Request) (sdk.ModelResult, error) {
 	if err := ctx.Err(); err != nil {
 		return sdk.ModelResult{}, err
@@ -47,14 +47,14 @@ func newEchoTool(t testing.TB, policy run.ResponsePolicy) *echoTool {
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest, err := run.ProtocolV1.DigestToolDefinition(frozen)
+	digest, err := run.ProtocolV1().DigestToolDefinition(frozen)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return &echoTool{def: def, spec: run.ToolSpec{Ref: "echo", Definition: frozen, DefinitionDigest: digest, Policy: policy}}
 }
 
-func (e *echoTool) Resolve(ref run.ToolRef) (loop.ExecutableTool, error) {
+func (e *echoTool) ResolveTool(ref run.ToolRef) (loop.ExecutableTool, error) {
 	if ref != "echo" {
 		return nil, fmt.Errorf("unknown tool %q", ref)
 	}
@@ -197,7 +197,7 @@ func TestApprovalWaitsThenResumes(t *testing.T) {
 	requireTypes(t, h.types(), []string{turn.EventTurnStarted, turn.EventInputDelivered, turn.EventAssistant})
 
 	w := res.Waiting[0]
-	digest, err := run.ProtocolV1.DigestToolResponseDecision(w.Kind, run.ResponseDecisionApproved, "")
+	digest, err := run.ProtocolV1().DigestToolResponseDecision(w.Kind, run.ResponseDecisionApproved, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +205,7 @@ func TestApprovalWaitsThenResumes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	env, err := run.ProtocolV1.BuildEnvelope("run-1", run.DeriveResponseCommandID("run-1", w.StepID, w.CallID, w.ID),
+	env, err := run.ProtocolV1().BuildEnvelope("run-1", run.DeriveResponseCommandID("run-1", w.StepID, w.CallID, w.ID),
 		run.ApproveToolCall{StepID: w.StepID, CallID: w.CallID, ResponseID: w.ID, ResponseDigest: digest})
 	if err != nil {
 		t.Fatal(err)

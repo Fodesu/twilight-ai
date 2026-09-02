@@ -107,7 +107,7 @@ func (c *conformanceCase) load() run.RuntimeSnapshot {
 func (c *conformanceCase) commit(id run.CommandID, base uint64, grant run.ExecutionGrant, cmd run.AgentCommand) (run.CommitResult, error) {
 	c.t.Helper()
 	cmd, id = withTestExecutionClaim(c.runID, id, cmd)
-	env, err := run.ProtocolV1.BuildEnvelope(c.runID, id, cmd)
+	env, err := run.ProtocolV1().BuildEnvelope(c.runID, id, cmd)
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -181,16 +181,16 @@ func buildPrepareFromSnap(t testing.TB, snap *run.RuntimeSnapshot, req *sdk.Requ
 	if err != nil {
 		t.Fatal(err)
 	}
-	reqDigest, err := run.ProtocolV1.DigestRequest(frozenReq)
+	reqDigest, err := run.ProtocolV1().DigestRequest(frozenReq)
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolsDigest, err := run.ProtocolV1.DigestToolSpecs(specs)
+	toolsDigest, err := run.ProtocolV1().DigestToolSpecs(specs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	model := run.ModelRef(frozenReq.Model)
-	binding, err := run.ProtocolV1.DigestModelStepBinding(model, reqDigest, toolsDigest)
+	binding, err := run.ProtocolV1().DigestModelStepBinding(model, reqDigest, toolsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func makeSpec(t testing.TB, def sdk.ToolDefinition) run.ToolSpec {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := run.ProtocolV1.DigestToolDefinition(frozen)
+	d, err := run.ProtocolV1().DigestToolDefinition(frozen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func testCreateMissing(t *testing.T, newRuntime Factory) {
 	if _, err := rt.Record(context.Background(), "missing"); !errors.Is(err, run.ErrRunNotFound) {
 		t.Fatalf("Record error = %v, want ErrRunNotFound", err)
 	}
-	env, err := run.ProtocolV1.BuildEnvelope("missing", "cancel", run.CancelRun{})
+	env, err := run.ProtocolV1().BuildEnvelope("missing", "cancel", run.CancelRun{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -457,7 +457,7 @@ func testRecordConcurrentWithCommit(t *testing.T, newRuntime Factory) {
 			t.Fatal(err)
 		}
 		in := run.AgentInput{ID: run.InputID(fmt.Sprintf("in-%d", i)), Payload: mustJSON(`null`)}
-		env, err := run.ProtocolV1.BuildEnvelope(c.runID, run.DeriveInputCommandID(c.runID, in.ID), run.AcceptInput{Input: in})
+		env, err := run.ProtocolV1().BuildEnvelope(c.runID, run.DeriveInputCommandID(c.runID, in.ID), run.AcceptInput{Input: in})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -559,7 +559,7 @@ func testIsolationRuns(t *testing.T, newRuntime Factory) {
 			t.Fatal(err)
 		}
 		in := run.AgentInput{ID: "same-input", Payload: mustJSON(`{"run":"` + string(id) + `"}`)}
-		env, err := run.ProtocolV1.BuildEnvelope(id, run.DeriveInputCommandID(id, in.ID), run.AcceptInput{Input: in})
+		env, err := run.ProtocolV1().BuildEnvelope(id, run.DeriveInputCommandID(id, in.ID), run.AcceptInput{Input: in})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -710,7 +710,7 @@ func testPrepareReplayAfterProgress(t *testing.T, newRuntime Factory) {
 func testGrant(t *testing.T, newRuntime Factory) {
 	c, stepID, grant := preparedCase(t, newRuntime, nil, nil)
 	// The authority rejects an unbound start before it can mint ownership.
-	empty, err := run.ProtocolV1.BuildEnvelope(c.runID, "empty-claim", run.StartModelExecution{StepID: stepID})
+	empty, err := run.ProtocolV1().BuildEnvelope(c.runID, "empty-claim", run.StartModelExecution{StepID: stepID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -734,7 +734,7 @@ func testGrant(t *testing.T, newRuntime Factory) {
 	}
 	// A start whose CommandID does not derive from its claim is rejected
 	// before it can mint ownership.
-	forged, err := run.ProtocolV1.BuildEnvelope(c.runID, "hand-minted", run.StartModelExecution{StepID: stepID, Claim: "different-claim"})
+	forged, err := run.ProtocolV1().BuildEnvelope(c.runID, "hand-minted", run.StartModelExecution{StepID: stepID, Claim: "different-claim"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -905,7 +905,7 @@ func testCancelUnknownRemaining(t *testing.T, newRuntime Factory) {
 // Runtime.Record.
 func encodeState(t testing.TB, s *run.MachineState) []byte {
 	t.Helper()
-	raw, err := run.ProtocolV1.EncodeMachineState(s)
+	raw, err := run.ProtocolV1().EncodeMachineState(s)
 	if err != nil {
 		t.Fatal(err)
 	}

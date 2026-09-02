@@ -65,7 +65,7 @@ func memoryEntry(t testing.TB, rt Runtime) *memoryRun {
 func commitCmd(t *testing.T, rt Runtime, id CommandID, base uint64, grant ExecutionGrant, cmd AgentCommand) (CommitResult, error) {
 	t.Helper()
 	cmd, id = withTestExecutionClaim("run-1", id, cmd)
-	env, err := ProtocolV1.BuildEnvelope("run-1", id, cmd)
+	env, err := ProtocolV1().BuildEnvelope("run-1", id, cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func withTestExecutionClaim(runID RunID, id CommandID, cmd AgentCommand) (AgentC
 func startEnvelope(t testing.TB, runID RunID, cmd AgentCommand) CommandEnvelope {
 	t.Helper()
 	cmd, id := withTestExecutionClaim(runID, "start", cmd)
-	env, err := ProtocolV1.BuildEnvelope(runID, id, cmd)
+	env, err := ProtocolV1().BuildEnvelope(runID, id, cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,16 +134,16 @@ func buildPrepareFromSnap(t *testing.T, snap RuntimeSnapshot, req sdk.Request, s
 	if err != nil {
 		t.Fatal(err)
 	}
-	reqDigest, err := ProtocolV1.DigestRequest(frozenReq)
+	reqDigest, err := ProtocolV1().DigestRequest(frozenReq)
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolsDigest, err := ProtocolV1.DigestToolSpecs(specs)
+	toolsDigest, err := ProtocolV1().DigestToolSpecs(specs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	model := ModelRef(frozenReq.Model)
-	binding, err := ProtocolV1.DigestModelStepBinding(model, reqDigest, toolsDigest)
+	binding, err := ProtocolV1().DigestModelStepBinding(model, reqDigest, toolsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}

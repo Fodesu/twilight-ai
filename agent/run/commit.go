@@ -125,7 +125,10 @@ func EvaluateCommit(
 		return CommitDecision{}, err
 	}
 	if env.Digest != wantDigest {
-		return CommitDecision{Kind: DecisionConflict, Reject: fmt.Errorf("agent: commit: envelope digest mismatch")}, nil
+		// A digest that does not cover the command is a construction or
+		// transport fault, not a competing writer: surface it as a hard error
+		// so callers do not reload and retry it forever.
+		return CommitDecision{}, fmt.Errorf("agent: commit: envelope digest mismatch")
 	}
 	// A start claim is part of the command identity. Rejecting an empty claim
 	// here prevents an unbound worker from acquiring execution ownership.

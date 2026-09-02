@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// SchemaVersion1 digest, decode, Decide, and Evolve helpers. ProtocolV1 binds
+// SchemaVersion1 digest, decode, Decide, and Evolve helpers. ProtocolV1() binds
 // these once; replay of a v1 Run must keep using them after later versions exist.
 
 func digestRequestV1(req ModelRequest) (Digest, error) {

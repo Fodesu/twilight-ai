@@ -69,7 +69,9 @@ type Protocol struct {
 // protocol; every later operation on a Run binds through
 // ProtocolFor(header.SchemaVersion) or RuntimeSnapshot.Protocol() (RUN-CMT-7).
 // There are no package-level functions that implicitly select a version.
-var ProtocolV1 = Protocol{
+func ProtocolV1() Protocol { return protocolV1 }
+
+var protocolV1 = Protocol{
 	version:                    SchemaVersion1,
 	digestRequest:              digestRequestV1,
 	digestToolDefinition:       digestToolDefinitionV1,
@@ -93,7 +95,7 @@ var ProtocolV1 = Protocol{
 func ProtocolFor(schemaVersion uint16) (Protocol, error) {
 	switch schemaVersion {
 	case SchemaVersion1:
-		return ProtocolV1, nil
+		return protocolV1, nil
 	default:
 		return Protocol{}, unsupportedSchemaVersion(schemaVersion)
 	}
