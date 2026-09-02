@@ -435,30 +435,32 @@ func decideSubmitToolFailure(s *MachineState, cmd SubmitToolFailure) ([]Fact, er
 
 // --- rules 9-10: responses ---
 
-func waitingCall(s *MachineState, step StepID, call CallID, kind ResponseKind, resp ResponseID) (*ToolStep, int, error) {
+// waitingCall checks that call is Waiting on the current ToolStep for the
+// given response kind and ID.
+func waitingCall(s *MachineState, step StepID, call CallID, kind ResponseKind, resp ResponseID) error {
 	ts, err := currentToolStep(s, step)
 	if err != nil {
-		return nil, 0, err
+		return err
 	}
 	i := ts.callIndex(call)
 	if i < 0 {
-		return nil, 0, rejectionf("response: unknown call %q", call)
+		return rejectionf("response: unknown call %q", call)
 	}
 	c := ts.Calls[i]
 	if c.Status != ToolWaiting || c.Waiting == nil {
-		return nil, 0, rejectionf("response: call %q is not Waiting", call)
+		return rejectionf("response: call %q is not Waiting", call)
 	}
 	if c.Waiting.Kind != kind {
-		return nil, 0, rejectionf("response: call %q expects kind %q, got %q", call, c.Waiting.Kind, kind)
+		return rejectionf("response: call %q expects kind %q, got %q", call, c.Waiting.Kind, kind)
 	}
 	if c.Waiting.ID != resp {
-		return nil, 0, rejectionf("response: call %q expects ResponseID %q, got %q", call, c.Waiting.ID, resp)
+		return rejectionf("response: call %q expects ResponseID %q, got %q", call, c.Waiting.ID, resp)
 	}
-	return ts, i, nil
+	return nil
 }
 
 func decideApproveToolCall(s *MachineState, cmd ApproveToolCall) ([]Fact, error) {
-	if _, _, err := waitingCall(s, cmd.StepID, cmd.CallID, ResponseApproval, cmd.ResponseID); err != nil {
+	if err := waitingCall(s, cmd.StepID, cmd.CallID, ResponseApproval, cmd.ResponseID); err != nil {
 		return nil, err
 	}
 	wantDigest, err := digestToolResponseDecisionV1(ResponseApproval, ResponseDecisionApproved, "")
@@ -513,8 +515,7 @@ func decideRejectToolCall(s *MachineState, cmd *RejectToolCall) ([]Fact, error) 
 }
 
 func decideSubmitToolResponse(s *MachineState, cmd *SubmitToolResponse) ([]Fact, error) {
-	_, _, err := waitingCall(s, cmd.StepID, cmd.CallID, ResponseExternal, cmd.ResponseID)
-	if err != nil {
+	if err := waitingCall(s, cmd.StepID, cmd.CallID, ResponseExternal, cmd.ResponseID); err != nil {
 		return nil, err
 	}
 	wantDigest, err := digestToolResponsePayloadV1(cmd.Payload)

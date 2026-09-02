@@ -111,9 +111,13 @@ func Next(s MachineState) (Effect, error) {
 	}
 	switch cur := s.Current.(type) {
 	case Open:
+		var source StepID
+		if s.LastToolStep != nil {
+			source = s.LastToolStep.RefValue.ID
+		}
 		return NeedModelRequest{Hint: PlanningHint{
 			RunID:           s.RunID,
-			SourceStep:      s.LastClosedStep,
+			SourceStep:      source,
 			Inputs:          append([]AgentInput(nil), s.PendingInputs...),
 			LastToolStep:    cloneToolStepPtr(s.LastToolStep),
 			LastModelResult: cloneModelResult(s.LastModelResult),

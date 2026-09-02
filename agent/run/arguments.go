@@ -2,8 +2,6 @@ package run
 
 import "encoding/json"
 
-func jsonMarshal(v any) ([]byte, error) { return json.Marshal(v) }
-
 // canonicalToolArguments renders a model-provided tool input as canonical JSON
 // for binding digests. Failure means the arguments are not valid JSON; the
 // caller binds them raw-as-JSON-string and lets validation fail as

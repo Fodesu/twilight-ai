@@ -14,7 +14,6 @@ type machineStateWireV1 struct {
 	RunID           RunID        `json:"runId"`
 	Status          RunStatus    `json:"status"`
 	ModelSteps      int          `json:"modelSteps"`
-	LastClosedStep  StepID       `json:"lastClosedStep"`
 	Usage           Usage        `json:"usage"`
 	PendingInputs   []AgentInput `json:"pendingInputs"`
 	LastModelResult *ModelResult `json:"lastModelResult"`
@@ -36,7 +35,7 @@ const (
 func machineStateToWireV1(s *MachineState) (machineStateWireV1, error) {
 	w := machineStateWireV1{
 		RunID: s.RunID, Status: s.Status, ModelSteps: s.ModelSteps,
-		LastClosedStep: s.LastClosedStep, Usage: s.Usage, PendingInputs: s.PendingInputs,
+		Usage: s.Usage, PendingInputs: s.PendingInputs,
 		LastModelResult: s.LastModelResult, Result: s.Result, LastToolStep: s.LastToolStep,
 	}
 	switch cur := s.Current.(type) {
@@ -58,7 +57,7 @@ func machineStateToWireV1(s *MachineState) (machineStateWireV1, error) {
 func machineStateFromWireV1(w *machineStateWireV1) (MachineState, error) {
 	s := MachineState{
 		RunID: w.RunID, Status: w.Status, ModelSteps: w.ModelSteps,
-		LastClosedStep: w.LastClosedStep, Usage: w.Usage, PendingInputs: w.PendingInputs,
+		Usage: w.Usage, PendingInputs: w.PendingInputs,
 		LastModelResult: w.LastModelResult, Result: w.Result, LastToolStep: w.LastToolStep,
 	}
 	switch w.Current {

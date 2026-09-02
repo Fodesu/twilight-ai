@@ -262,7 +262,7 @@ func TestGoldenEventStreamV1(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(sha256Digest(stateBytes))
-	const frozen = "sha256:f306b9499352398094ccbba585c4c60b6f474363cd0e9cac7b4df2fcf01d7d18"
+	const frozen = "sha256:b76adb269cc9821c6415ab93b355725fbd0054cb5a0ca26af7ab937648708d25"
 	if got != frozen {
 		t.Fatalf("golden v1 state digest changed:\n got %s\nwant %s\nstate: %s", got, frozen, stateBytes)
 	}
