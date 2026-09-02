@@ -96,6 +96,7 @@ func applyToolStepOpened(s MachineState, fact *ToolStepOpened) MachineState {
 	for i, b := range fact.Calls {
 		calls[i] = ToolCallState{
 			CallID:           b.CallID,
+			ProviderCallID:   b.ProviderCallID,
 			ToolRef:          b.ToolRef,
 			DefinitionDigest: b.DefinitionDigest,
 			BindingDigest:    b.BindingDigest,
@@ -416,8 +417,8 @@ func allToolCallsTerminal(calls []ToolCallState) bool {
 	if len(calls) == 0 {
 		return false
 	}
-	for _, call := range calls {
-		if call.Status != ToolCompleted && call.Status != ToolFailed {
+	for i := range calls {
+		if !calls[i].Status.Terminal() {
 			return false
 		}
 	}

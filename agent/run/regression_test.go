@@ -19,13 +19,13 @@ func TestRegressionBindingMustMatchModelResult(t *testing.T) {
 	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(safe, danger), []ToolSpec{specSafe, specDanger})
 
-	evil := makeBinding(t, "c1", specDanger, `{"rm":"-rf"}`)
+	evil := makeBinding(t, stepID, 0, "c1", specDanger, `{"rm":"-rf"}`)
 	result := modelResultWithNamedCalls("safe", `{"a":1}`, "c1")
 	if _, err := ProtocolV1().Decide(s, SubmitModelResult{StepID: stepID, Result: result, Calls: []ToolCallBinding{evil}}); err == nil {
 		t.Fatal("binding for a tool the model never called was accepted")
 	}
 
-	tampered := makeBinding(t, "c1", specSafe, `{"a":999}`)
+	tampered := makeBinding(t, stepID, 0, "c1", specSafe, `{"a":999}`)
 	if _, err := ProtocolV1().Decide(s, SubmitModelResult{StepID: stepID, Result: result, Calls: []ToolCallBinding{tampered}}); err == nil {
 		t.Fatal("binding with tampered arguments was accepted")
 	}
@@ -36,7 +36,7 @@ func TestRegressionToolStepIDReproducible(t *testing.T) {
 	spec := makeSpec(t, def, ApprovalRequired)
 	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
-	b := makeBinding(t, "c1", spec, `{}`)
+	b := makeBinding(t, stepID, 0, "c1", spec, `{}`)
 	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
 	opened := facts[1].(ToolStepOpened)
 	if DeriveToolStepID(opened.Source, opened.BindingSetDigest) != opened.StepID {
@@ -54,15 +54,15 @@ func TestRegressionEvolveRejectsIllegalCallState(t *testing.T) {
 	spec := makeSpec(t, def, DirectExecution)
 	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
-	b := makeBinding(t, "c1", spec, `{}`)
+	b := makeBinding(t, stepID, 0, "c1", spec, `{}`)
 	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
 	opened := facts[1].(ToolStepOpened)
 	s = fold(t, s, facts)
-	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: "c1"}))
+	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: cid(stepID, 0)}))
 
 	_, err := ProtocolV1().Evolve(s, ToolCallFailed{
 		StepID:  opened.StepID,
-		CallID:  "c1",
+		CallID:  cid(stepID, 0),
 		Failure: ToolFailure{Class: FailureExecution},
 		Outcome: ToolOutcomeUnknown,
 	})

@@ -23,6 +23,15 @@ func (f *Feature) RequireWaiting(kind run.ResponseKind) {
 	}
 }
 
+// RequireWaitingProvider checks the waiting call is the one the model issued
+// under providerID.
+func (f *Feature) RequireWaitingProvider(providerID string) {
+	f.t.Helper()
+	if got, want := f.waiting().CallID, f.callByProvider(providerID); got != want {
+		f.t.Fatalf("waiting call = %s, want %s (provider %s)", got, want, providerID)
+	}
+}
+
 // RequireCompleted checks the Run finished with the model text.
 func (f *Feature) RequireCompleted(text string) {
 	f.t.Helper()
@@ -81,6 +90,7 @@ func (f *Feature) RequireOpen() {
 // RequireCallPending checks the named call on the current ToolStep is Pending.
 func (f *Feature) RequireCallPending(id run.CallID) {
 	f.t.Helper()
+	id = f.callByProvider(string(id))
 	ts, ok := f.state().Current.(run.ToolStep)
 	if !ok {
 		f.t.Fatalf("current = %T, want ToolStep", f.state().Current)
@@ -143,6 +153,7 @@ func (f *Feature) RequireUsage(total int) {
 // RequirePlannerSawTool checks the next Plan received the completed call output.
 func (f *Feature) RequirePlannerSawTool(callID run.CallID, output string) {
 	f.t.Helper()
+	callID = f.callByProvider(string(callID))
 	if f.planner == nil || f.planner.lastHint.LastToolStep == nil {
 		f.t.Fatal("planner has no LastToolStep")
 	}
@@ -157,6 +168,7 @@ func (f *Feature) RequirePlannerSawTool(callID run.CallID, output string) {
 // RequireCallFailed checks a ToolCallFailed fact for this call and outcome.
 func (f *Feature) RequireCallFailed(id run.CallID, outcome run.ToolFailureOutcome) {
 	f.t.Helper()
+	id = f.callByProvider(string(id))
 	for _, fact := range f.facts() {
 		failed, ok := fact.(run.ToolCallFailed)
 		if ok && failed.CallID == id && failed.Outcome == outcome {
@@ -181,6 +193,7 @@ func (f *Feature) RequireFailureClass(class string) {
 // RequireFailureCall checks the failed RunResult names this call.
 func (f *Feature) RequireFailureCall(id run.CallID) {
 	f.t.Helper()
+	id = f.callByProvider(string(id))
 	s := f.state()
 	if s.Result == nil || s.Result.Failure == nil || s.Result.Failure.CallID != id {
 		f.t.Fatalf("failure = %+v, want call %s", s.Result, id)
@@ -213,6 +226,7 @@ func (f *Feature) RequireNoUncertain() {
 // RequireUncertainCall checks Cancel projected this executing tool call.
 func (f *Feature) RequireUncertainCall(id run.CallID) {
 	f.t.Helper()
+	id = f.callByProvider(string(id))
 	s := f.state()
 	if s.Result == nil {
 		f.t.Fatal("no result")

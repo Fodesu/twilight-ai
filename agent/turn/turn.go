@@ -125,9 +125,10 @@ type SettledPayload struct {
 }
 
 type ToolCallPayload struct {
-	CallID run.CallID        `json:"callId"`
-	Name   string            `json:"name"`
-	Input  run.CanonicalJSON `json:"input"`
+	CallID         run.CallID        `json:"callId"`
+	ProviderCallID string            `json:"providerCallId,omitempty"`
+	Name           string            `json:"name"`
+	Input          run.CanonicalJSON `json:"input"`
 }
 
 type AssistantPayload struct {
@@ -146,10 +147,11 @@ const (
 )
 
 type ToolResultPayload struct {
-	TurnID  TurnID            `json:"turnId"`
-	CallID  run.CallID        `json:"callId"`
-	Status  ToolResultStatus  `json:"status"`
-	Output  run.CanonicalJSON `json:"output,omitzero"`
-	Failure string            `json:"failure,omitempty"`
-	Message string            `json:"message,omitempty"`
+	TurnID         TurnID            `json:"turnId"`
+	CallID         run.CallID        `json:"callId"`
+	ProviderCallID string            `json:"providerCallId,omitempty"`
+	Status         ToolResultStatus  `json:"status"`
+	Output         run.CanonicalJSON `json:"output,omitzero"`
+	Failure        string            `json:"failure,omitempty"`
+	Message        string            `json:"message,omitempty"`
 }

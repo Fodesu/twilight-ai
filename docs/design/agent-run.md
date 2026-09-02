@@ -100,6 +100,7 @@ type TransitionRecord struct {
 | PrepareModelRequest CommandID | RunID、loaded BaseRevision |
 | ModelStep StepID | RunID、prepare CommandID、model/request/tools binding digest |
 | ToolStep StepID | source ModelStepID、ordered binding-set digest |
+| CallID | source ModelStepID、该 call 在模型结果 `ToolCalls` 中的位置 |
 | ResponseID | RunID、ToolStepID、CallID、ResponseKind |
 | response CommandID | RunID、StepID、CallID、ResponseID |
 | input CommandID | RunID、InputID |
@@ -243,7 +244,7 @@ ToolCall:
 
 **RUN-MCH-1** MachineState 保存 Run 的 execution semantics。`LastToolStep` 保存最近一个经 Evolve 关闭路径写下的 ToolStep 只读投影，必须与 transition log 折叠出的最后关闭 step 一致，供下一次 planner 构造模型请求。Cancel 经 `RunEnded` 把 `Current` 置空、不走关闭路径时不改写 `LastToolStep`。terminal state 吸收所有未幂等命令；`RunEnded` 建立唯一 terminal result。RunResult 在该 terminal transition 中建立，并由后续 snapshot/record 读取。
 
-**RUN-MCH-2** `ToolCallBinding` 冻结 CallID、ToolRef、definition digest、canonical arguments、response policy 与 binding digest。已知工具使用匹配 frozen ToolSpec 的 ref/digest/policy；未知工具保留为同名 unresolved DirectExecution binding，并在执行前收束为已知 lookup failure。approval/external response 的 `ResponseRequest` 由 Decide 稳定派生。Unknown outcome 使用 class `effect_unknown`，只把该 Executing call 记为 `ToolCallFailed(Unknown)`。Run 保持 Active；同 step 其他 call 继续。全部 call 进入 Completed 或 Failed 后 Evolve 关闭 ToolStep。
+**RUN-MCH-2** `ToolCallBinding` 冻结 CallID、ProviderCallID、ToolRef、definition digest、canonical arguments、response policy 与 binding digest。`CallID` 由 Run 派生（`DeriveCallID(source, index)`），是 Run 内的持久化 identity，进入 fact、lease key、派生 CommandID 与 chatlog；`ProviderCallID` 是模型发出的 `tool_call_id`，只用于 Planner 回传工具结果时与模型配对，Run 不以它为键，也不要求它唯一或非空。Decide 校验每个 binding 的 CallID 等于派生值、ProviderCallID 等于模型结果中对应位置的 id。已知工具使用匹配 frozen ToolSpec 的 ref/digest/policy；未知工具保留为同名 unresolved DirectExecution binding，并在执行前收束为已知 lookup failure。approval/external response 的 `ResponseRequest` 由 Decide 稳定派生。Unknown outcome 使用 class `effect_unknown`，只把该 Executing call 记为 `ToolCallFailed(Unknown)`。Run 保持 Active；同 step 其他 call 继续。全部 call 进入 Completed 或 Failed 后 Evolve 关闭 ToolStep。
 
 `AgentCommand` 与 `Fact` 都是 sealed interface。v1 的 command→fact 规则为：
 

@@ -116,7 +116,7 @@ func Example_recoverableRun() {
 	}
 	call := snap.State.LastToolStep.Calls[0]
 	fmt.Printf("recovered %d lease: call %s is %s (%s), run %s\n",
-		recovered, call.CallID, call.Status, call.Failure.Failure.Class, statusName(snap.State.Status))
+		recovered, call.ProviderCallID, call.Status, call.Failure.Failure.Class, statusName(snap.State.Status))
 
 	loop2, err := loop.New(app.models(), app.tools(), app, loop.ExecutionPolicy{LeaseRenewInterval: 5 * time.Second}, false)
 	if err != nil {
@@ -147,19 +147,21 @@ func Example_recoverableRun() {
 	// record: 9 transitions fold to the stored snapshot
 }
 
-// waitForExecutingCall polls Load until callID on the current ToolStep is
-// Executing, which is the point at which a start has been accepted and its
-// lease is live.
-func waitForExecutingCall(ctx context.Context, rt run.Runtime, runID run.RunID, callID run.CallID) {
+// waitForExecutingCall polls Load until the call the model issued under
+// providerID is Executing, which is the point at which a start has been
+// accepted and its lease is live.
+func waitForExecutingCall(ctx context.Context, rt run.Runtime, runID run.RunID, providerID string) {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		snap, err := rt.Load(ctx, runID)
 		if err != nil {
 			panic(err)
 		}
-		for _, id := range run.ExecutingCalls(snap.State) {
-			if id == callID {
-				return
+		if ts, ok := snap.State.Current.(run.ToolStep); ok {
+			for _, call := range ts.Calls {
+				if call.ProviderCallID == providerID && call.Status == run.ToolExecuting {
+					return
+				}
 			}
 		}
 		time.Sleep(2 * time.Millisecond)
@@ -241,7 +243,7 @@ func (a *exampleApp) Plan(_ context.Context, hint run.PlanningHint) (loop.Reques
 				outcome = call.Failure.Failure.Class
 			}
 			messages = append(messages, sdk.ToolMessage(sdk.ToolResultPart{
-				ToolCallID: string(call.CallID), ToolName: string(call.ToolRef), Result: outcome,
+				ToolCallID: call.ProviderCallID, ToolName: string(call.ToolRef), Result: outcome,
 			}))
 		}
 	}

@@ -267,11 +267,10 @@ func (c *Coordinator) materialize(ctx context.Context, ref Ref, runID run.RunID,
 	}
 	var group []Event
 	for i := range record.Transitions {
-		tr := &record.Transitions[i]
-		if tr.Revision <= l.covered {
+		if record.Transitions[i].Revision <= l.covered {
 			continue
 		}
-		mapped, err := MapTransition(ref.Turn, tr)
+		mapped, err := MapTransition(ref.Turn, record.Transitions[:i+1])
 		if err != nil {
 			return run.RunRecord{}, err
 		}

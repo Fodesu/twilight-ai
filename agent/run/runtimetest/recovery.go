@@ -109,11 +109,11 @@ func testRecoveryExpiredToolUnknown(t *testing.T, newRuntime RecoveryFactory) {
 	def := toolDef("t")
 	spec := makeSpec(t, def)
 	c, stepID, grant := recoveryPrepared(t, newRuntime, time.Second, &clock, []sdk.ToolDefinition{def}, []run.ToolSpec{spec})
-	b := makeBinding(t, "c1", &spec)
+	b := makeBinding(t, stepID, 0, "c1", &spec)
 	opened := c.mustCommit("complete-1", 2, grant,
 		run.SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []run.ToolCallBinding{b}})
 	toolStep := openedToolStepID(t, &opened)
-	c.mustCommit("start-c1", opened.Snapshot.Revision, "", run.StartToolCall{StepID: toolStep, CallID: "c1"})
+	c.mustCommit("start-c1", opened.Snapshot.Revision, "", run.StartToolCall{StepID: toolStep, CallID: run.DeriveCallID(stepID, 0)})
 	clock = time.Unix(1002, 0)
 	n, err := c.rt.RecoverExpired(context.Background())
 	if err != nil {
@@ -145,8 +145,8 @@ func testRecoveryExpiredToolLeavesSiblingExecuting(t *testing.T, newRuntime Reco
 	specB := makeSpec(t, defB)
 	c, stepID, grant := recoveryPrepared(t, newRuntime, time.Second, &clock,
 		[]sdk.ToolDefinition{defA, defB}, []run.ToolSpec{specA, specB})
-	bA := makeBinding(t, "cA", &specA)
-	bB := makeBinding(t, "cB", &specB)
+	bA := makeBinding(t, stepID, 0, "cA", &specA)
+	bB := makeBinding(t, stepID, 1, "cB", &specB)
 	r, err := run.FreezeModelResult(sdk.ModelResult{
 		FinishReason: sdk.FinishReasonToolCalls,
 		ToolCalls: []sdk.ToolCall{
@@ -161,9 +161,9 @@ func testRecoveryExpiredToolLeavesSiblingExecuting(t *testing.T, newRuntime Reco
 		run.SubmitModelResult{StepID: stepID, Result: r, Calls: []run.ToolCallBinding{bA, bB}})
 	toolStep := openedToolStepID(t, &opened)
 	base := opened.Snapshot.Revision
-	c.mustCommit("start-A", base, "", run.StartToolCall{StepID: toolStep, CallID: "cA"})
+	c.mustCommit("start-A", base, "", run.StartToolCall{StepID: toolStep, CallID: run.DeriveCallID(stepID, 0)})
 	clock = time.Unix(1000, 500_000_000)
-	c.mustCommit("start-B", base, "", run.StartToolCall{StepID: toolStep, CallID: "cB"})
+	c.mustCommit("start-B", base, "", run.StartToolCall{StepID: toolStep, CallID: run.DeriveCallID(stepID, 1)})
 	clock = time.Unix(1001, 0)
 	n, err := c.rt.RecoverExpired(context.Background())
 	if err != nil {

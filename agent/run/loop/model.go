@@ -257,25 +257,21 @@ func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *run.ModelStep) ([]ru
 	for _, s := range step.Tools {
 		specByName[s.Definition.Name] = s
 	}
-	seen := make(map[string]bool, len(result.ToolCalls))
 	bindings := make([]run.ToolCallBinding, len(result.ToolCalls))
 	for i, tc := range result.ToolCalls {
-		if tc.ToolCallID == "" {
-			return nil, fmt.Errorf("tool call %d has an empty id", i)
-		}
-		if seen[tc.ToolCallID] {
-			return nil, fmt.Errorf("duplicate tool call id %q", tc.ToolCallID)
-		}
-		seen[tc.ToolCallID] = true
 		args, err := run.FreezeToolCallInput(tc.Input)
 		if err != nil {
-			return nil, fmt.Errorf("tool call %q input: %w", tc.ToolCallID, err)
+			return nil, fmt.Errorf("tool call %d (%q) input: %w", i, tc.ToolCallID, err)
 		}
+		// The Run's CallID derives from the step and position; the provider's
+		// id is carried for the round trip only, so a provider that repeats or
+		// omits ids cannot break identity here.
 		b := run.ToolCallBinding{
-			CallID:    run.CallID(tc.ToolCallID),
-			ToolRef:   run.ToolRef(tc.ToolName),
-			Arguments: args,
-			Policy:    run.DirectExecution,
+			CallID:         run.DeriveCallID(step.RefValue.ID, i),
+			ProviderCallID: tc.ToolCallID,
+			ToolRef:        run.ToolRef(tc.ToolName),
+			Arguments:      args,
+			Policy:         run.DirectExecution,
 		}
 		if spec, known := specByName[tc.ToolName]; known {
 			// The binding's ToolRef is the frozen spec's Ref — the catalog

@@ -85,7 +85,7 @@ func (p planner) Plan(_ context.Context, hint run.PlanningHint) (loop.RequestPla
 	}
 	if hint.LastToolStep != nil {
 		for _, c := range hint.LastToolStep.Calls {
-			msgs = append(msgs, sdk.ToolMessage(sdk.ToolResultPart{ToolCallID: string(c.CallID), ToolName: "echo", Result: c.Status.String()}))
+			msgs = append(msgs, sdk.ToolMessage(sdk.ToolResultPart{ToolCallID: c.ProviderCallID, ToolName: "echo", Result: c.Status.String()}))
 		}
 	}
 	return loop.RequestPlan{Model: "m-1", Request: sdk.Request{Model: "m-1", Messages: msgs, Tools: []sdk.ToolDefinition{p.spec.Definition.SDK()}},

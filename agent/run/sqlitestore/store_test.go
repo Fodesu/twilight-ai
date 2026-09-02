@@ -289,12 +289,13 @@ func startExecutingTool(t *testing.T, rt run.Runtime, runID run.RunID) {
 		t.Fatal(err)
 	}
 	args := run.MustParseCanonicalJSON(`{}`)
-	bd, err := run.DigestToolCallBinding("c1", spec.DefinitionDigest, spec.Policy, args)
+	callID := run.DeriveCallID(prep.StepID, 0)
+	bd, err := run.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
 	if err != nil {
 		t.Fatal(err)
 	}
 	binding := run.ToolCallBinding{
-		CallID: "c1", ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
+		CallID: callID, ProviderCallID: "c1", ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
 		BindingDigest: bd, Arguments: args, Policy: spec.Policy,
 	}
 	result := sdk.ModelResult{
@@ -320,7 +321,7 @@ func startExecutingTool(t *testing.T, rt run.Runtime, runID run.RunID) {
 		t.Fatalf("event[1] = %T, want ToolStepOpened", opened.Events[1].Fact)
 	}
 	if _, err := commit(t, rt, runID, "start-c1", opened.Snapshot.Revision, "", run.StartToolCall{
-		StepID: openedFact.StepID, CallID: "c1", Claim: "claim-tool",
+		StepID: openedFact.StepID, CallID: callID, Claim: "claim-tool",
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -47,9 +47,7 @@ func TestApprovalYieldsAfterDirectExecution(t *testing.T) {
 	f.Model(runtest.Calls(runtest.Call("ask", "cA"), runtest.Call("work", "cB")), runtest.Text("after"))
 	f.Run()
 	f.RequireWaiting(run.ResponseApproval)
-	if got := f.Waiting().CallID; got != "cA" {
-		t.Fatalf("waiting = %s, want cA", got)
-	}
+	f.RequireWaitingProvider("cA")
 	f.RequireRan("work")
 	f.RequireNotRan("ask")
 	f.Approve()

@@ -272,7 +272,8 @@ func (staleCommitRuntime) Commit(context.Context, CommitRequest) (CommitResult, 
 func TestToolStartStaleDropsLocalClaim(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
 	args := cj(`{}`)
-	bindingDigest, err := DigestToolCallBinding("c1", spec.DefinitionDigest, spec.Policy, args)
+	callID := DeriveCallID("model-1", 0)
+	bindingDigest, err := DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -292,17 +293,17 @@ func TestToolStartStaleDropsLocalClaim(t *testing.T) {
 			RefValue: StepRef{RunID: "run-1", ID: stepID, Digest: Digest("sha256:step")},
 			Source:   "model-1",
 			Calls: []ToolCallState{{
-				CallID: "c1", ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
+				CallID: callID, ProviderCallID: "c1", ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
 				BindingDigest: bindingDigest, Arguments: args, Policy: DirectExecution, Status: ToolPending,
 			}},
 		},
 	}, Revision: 1, SchemaVersion: SchemaVersion1}
 
 	if err := loop.runToolCalls(context.Background(), staleCommitRuntime{}, nil, snapshot,
-		StartToolCalls{StepID: stepID, CallIDs: []CallID{"c1"}}); err != nil {
+		StartToolCalls{StepID: stepID, CallIDs: []CallID{callID}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, _ := loop.Claims.Get(context.Background(), "run-1", stepID, "c1"); ok {
+	if _, ok, _ := loop.Claims.Get(context.Background(), "run-1", stepID, callID); ok {
 		t.Fatal("stale tool start retained a local execution claim")
 	}
 }
@@ -402,13 +403,13 @@ func TestLoopReplaysSettlementWithoutRepeatingTool(t *testing.T) {
 
 func TestLoopMalformedModelResultDispositionFailsRun(t *testing.T) {
 	rt := loopRuntime(t)
+	// Non-JSON argument text is tolerated (bound raw, fails later as
+	// invalid_arguments), but invalid UTF-8 cannot be frozen at all: the
+	// result is structurally malformed and goes through RejectModelResult.
 	bad := sdk.ModelResult{
 		FinishReason: sdk.FinishReasonToolCalls,
-		ToolCalls: []sdk.ToolCall{
-			{ToolCallID: "dup", ToolName: "echo", Input: `{"x":1}`},
-			{ToolCallID: "dup", ToolName: "echo", Input: `{"x":2}`},
-		},
-		Usage: sdk.Usage{TotalTokens: 1},
+		ToolCalls:    []sdk.ToolCall{{ToolCallID: "c1", ToolName: "echo", Input: "\xff\xfe"}},
+		Usage:        sdk.Usage{TotalTokens: 1},
 	}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{bad, bad, bad}}
 	loop, err := New(fakeCatalog{invoker}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{

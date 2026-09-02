@@ -39,16 +39,16 @@ func TestSnapshotCodecRoundTrip(t *testing.T) {
 	}
 
 	check("model executing")
-	b := makeBinding(t, "c1", spec, `{}`)
+	b := makeBinding(t, stepID, 0, "c1", spec, `{}`)
 	snap, _ := rt.Load(ctx, "run-1")
 	res := mustCommit(t, rt, "complete-1", snap.Revision, grant,
 		SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
 	check("tool step pending")
 	toolStep := res.Events[1].Fact.(ToolStepOpened).StepID
-	sRes := mustCommit(t, rt, "start-c1", res.Snapshot.Revision, "", StartToolCall{StepID: toolStep, CallID: "c1"})
+	sRes := mustCommit(t, rt, "start-c1", res.Snapshot.Revision, "", StartToolCall{StepID: toolStep, CallID: cid(stepID, 0)})
 	check("tool step executing")
 	mustCommit(t, rt, "done-c1", sRes.Snapshot.Revision, sRes.Grant,
-		SubmitToolResult{StepID: toolStep, CallID: "c1", Result: ToolExecutionResult{Output: cj(`"ok"`)}})
+		SubmitToolResult{StepID: toolStep, CallID: cid(stepID, 0), Result: ToolExecutionResult{Output: cj(`"ok"`)}})
 	check("open with last tool step")
 	snap, _ = rt.Load(ctx, "run-1")
 	mustCommit(t, rt, "cancel", snap.Revision, "", CancelRun{})
