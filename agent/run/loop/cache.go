@@ -2,166 +2,173 @@ package loop
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"sync"
 
 	run "github.com/memohai/twilight/agent/run"
 )
 
-type startKey struct {
+// ClaimStore is the host-injected record of this Loop's live execution
+// claims. A claim is the only local state a Loop needs to reclaim an accepted
+// start after its own process died: with the claim, the start CommandID, the
+// settlement CommandID and the recovery CommandID all derive (RUN-WIR-3).
+//
+// The in-process default (memoryClaims) gives response-loss recovery within
+// one process. A durable ClaimStore lets a replacement process replay the
+// settlement of a tool call the dead process had finished but not reported,
+// instead of waiting for lease expiry.
+//
+// Implementations must be safe for concurrent use. Put replaces any existing
+// claim for the key; Delete of a missing key is a no-op.
+type ClaimStore interface {
+	Put(ctx context.Context, runID run.RunID, stepID run.StepID, callID run.CallID, claim run.ExecutionClaim) error
+	Get(ctx context.Context, runID run.RunID, stepID run.StepID, callID run.CallID) (run.ExecutionClaim, bool, error)
+	Delete(ctx context.Context, runID run.RunID, stepID run.StepID, callID run.CallID) error
+	// DeleteRun forgets every claim of a finished Run.
+	DeleteRun(ctx context.Context, runID run.RunID) error
+}
+
+type claimKey struct {
 	runID  run.RunID
 	stepID run.StepID
 	callID run.CallID
 }
 
-type startAttempt struct {
-	commandID run.CommandID
-	claim     run.ExecutionClaim
+// memoryClaims is the default in-process ClaimStore.
+type memoryClaims struct {
+	mu     sync.Mutex
+	claims map[claimKey]run.ExecutionClaim
 }
 
-type settlementAttempt struct {
-	commandID run.CommandID
-	base      uint64
-	grant     run.ExecutionGrant
-	command   run.AgentCommand
+func newMemoryClaims() *memoryClaims {
+	return &memoryClaims{claims: make(map[claimKey]run.ExecutionClaim)}
 }
 
-func (l *Loop) startFor(key startKey) startAttempt {
-	l.startsMu.Lock()
-	defer l.startsMu.Unlock()
-	if attempt, ok := l.starts[key]; ok {
-		return attempt
-	}
-	attempt := startAttempt{commandID: freshCommandID(), claim: freshExecutionClaim()}
-	l.starts[key] = attempt
-	return attempt
+func (m *memoryClaims) Put(_ context.Context, runID run.RunID, stepID run.StepID, callID run.CallID, claim run.ExecutionClaim) error {
+	m.mu.Lock()
+	m.claims[claimKey{runID, stepID, callID}] = claim
+	m.mu.Unlock()
+	return nil
 }
 
-func (l *Loop) forgetStart(key startKey) {
-	l.startsMu.Lock()
-	delete(l.starts, key)
-	l.startsMu.Unlock()
+func (m *memoryClaims) Get(_ context.Context, runID run.RunID, stepID run.StepID, callID run.CallID) (run.ExecutionClaim, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	c, ok := m.claims[claimKey{runID, stepID, callID}]
+	return c, ok, nil
 }
 
-func (l *Loop) lookupStart(key startKey) (startAttempt, bool) {
-	l.startsMu.Lock()
-	defer l.startsMu.Unlock()
-	attempt, ok := l.starts[key]
-	return attempt, ok
+func (m *memoryClaims) Delete(_ context.Context, runID run.RunID, stepID run.StepID, callID run.CallID) error {
+	m.mu.Lock()
+	delete(m.claims, claimKey{runID, stepID, callID})
+	m.mu.Unlock()
+	return nil
 }
 
-func (l *Loop) settlementFor(key startKey, commandID run.CommandID, base uint64, grant run.ExecutionGrant, command run.AgentCommand) settlementAttempt {
-	l.settlementsMu.Lock()
-	defer l.settlementsMu.Unlock()
-	if attempt, ok := l.settlements[key]; ok {
-		return attempt
-	}
-	attempt := settlementAttempt{commandID: commandID, base: base, grant: grant, command: command}
-	l.settlements[key] = attempt
-	return attempt
-}
-
-func (l *Loop) lookupSettlement(key startKey) (settlementAttempt, bool) {
-	l.settlementsMu.Lock()
-	defer l.settlementsMu.Unlock()
-	attempt, ok := l.settlements[key]
-	return attempt, ok
-}
-
-func (l *Loop) forgetSettlement(key startKey) {
-	l.settlementsMu.Lock()
-	delete(l.settlements, key)
-	l.settlementsMu.Unlock()
-}
-
-func (l *Loop) forgetRunCaches(runID run.RunID) {
-	l.startsMu.Lock()
-	for key := range l.starts {
-		if key.runID == runID {
-			delete(l.starts, key)
+func (m *memoryClaims) DeleteRun(_ context.Context, runID run.RunID) error {
+	m.mu.Lock()
+	for k := range m.claims {
+		if k.runID == runID {
+			delete(m.claims, k)
 		}
 	}
-	l.startsMu.Unlock()
-	l.settlementsMu.Lock()
-	for key := range l.settlements {
-		if key.runID == runID {
-			delete(l.settlements, key)
-		}
-	}
-	l.settlementsMu.Unlock()
+	m.mu.Unlock()
+	return nil
 }
 
-// resumeSettlement replays a result whose first commit may have succeeded
-// while its response was lost. The same command identity makes the retry
-// idempotent and avoids re-running the external effect.
-func (l *Loop) resumeSettlement(ctx context.Context, runtime run.Runtime, events EventSink, snapshot *run.RuntimeSnapshot) (bool, error) {
-	runID := snapshot.State.RunID
-	l.settlementsMu.Lock()
-	keys := make([]startKey, 0)
-	for key := range l.settlements {
-		if key.runID == runID {
-			keys = append(keys, key)
-		}
-	}
-	l.settlementsMu.Unlock()
-	proto, err := snapshot.Protocol()
+// attempt is one execution attempt this Loop owns or is trying to own. Every
+// command identity of the attempt derives from the claim.
+type attempt struct {
+	runID  run.RunID
+	stepID run.StepID
+	callID run.CallID
+	claim  run.ExecutionClaim
+}
+
+func (a attempt) startID() run.CommandID {
+	return run.DeriveStartCommandID(a.runID, a.stepID, a.callID, a.claim)
+}
+
+func (a attempt) settlementID() run.CommandID {
+	return run.DeriveSettlementCommandID(a.runID, a.stepID, a.callID, a.claim)
+}
+
+func (a attempt) recoveryID() run.CommandID {
+	return run.DeriveModelRecoveryCommandID(a.runID, a.stepID, a.claim)
+}
+
+// claimFor returns the attempt for key, reusing a stored claim when the Loop
+// (or a predecessor process sharing the ClaimStore) already started it, and
+// minting and storing a fresh claim otherwise.
+func (l *Loop) claimFor(ctx context.Context, runID run.RunID, stepID run.StepID, callID run.CallID) (attempt, error) {
+	claim, ok, err := l.Claims.Get(ctx, runID, stepID, callID)
 	if err != nil {
-		return false, err
+		return attempt{}, fmt.Errorf("agent: loop: claim store: %w", err)
 	}
-	for _, key := range keys {
-		attempt, ok := l.lookupSettlement(key)
-		if !ok {
-			continue
+	if !ok {
+		claim = freshExecutionClaim()
+		if err := l.Claims.Put(ctx, runID, stepID, callID, claim); err != nil {
+			return attempt{}, fmt.Errorf("agent: loop: claim store: %w", err)
 		}
-		if !settlementTargetActive(snapshot.State, key) {
-			l.forgetSettlement(key)
-			l.forgetStart(key)
-			continue
-		}
-		res, err := l.commit(context.WithoutCancel(ctx), runtime, runID, attempt.commandID, attempt.base, attempt.grant, attempt.command, proto)
-		if err != nil {
-			if retriable(err) {
-				l.forgetSettlement(key)
-				l.forgetStart(key)
-				return true, nil
-			}
-			return false, err
-		}
-		l.forgetSettlement(key)
-		l.forgetStart(key)
-		l.emitCommitted(ctx, events, runID, res.Events)
-		return true, nil
 	}
-	return false, nil
+	return attempt{runID: runID, stepID: stepID, callID: callID, claim: claim}, nil
 }
 
-func settlementTargetActive(state run.MachineState, key startKey) bool {
-	switch current := state.Current.(type) {
-	case run.ModelStep:
-		return key.callID == "" && current.RefValue.ID == key.stepID && current.Status == run.ModelExecuting
-	case run.ToolStep:
-		if current.RefValue.ID != key.stepID {
-			return false
-		}
-		for _, call := range current.Calls {
-			if call.CallID == key.callID {
-				return call.Status == run.ToolExecuting
-			}
-		}
+// hasClaim reports whether a claim for the target is already stored.
+func (l *Loop) hasClaim(ctx context.Context, runID run.RunID, stepID run.StepID, callID run.CallID) (bool, error) {
+	_, ok, err := l.Claims.Get(ctx, runID, stepID, callID)
+	if err != nil {
+		return false, fmt.Errorf("agent: loop: claim store: %w", err)
 	}
-	return false
+	return ok, nil
 }
 
-// resumeCachedStart re-enters an accepted start after a Loop.Run returned
-// before receiving its grant. The authority state is Executing, so Next alone
-// would otherwise wait for recovery instead of replaying the known start.
-func (l *Loop) resumeCachedStart(ctx context.Context, runtime run.Runtime, events EventSink, snapshot *run.RuntimeSnapshot) (bool, error) {
+func (l *Loop) forgetClaim(ctx context.Context, a attempt) {
+	_ = l.Claims.Delete(context.WithoutCancel(ctx), a.runID, a.stepID, a.callID)
+}
+
+func (l *Loop) forgetRunClaims(ctx context.Context, runID run.RunID) {
+	_ = l.Claims.DeleteRun(context.WithoutCancel(ctx), runID)
+}
+
+// settle commits the owner settlement of an attempt under its derived
+// CommandID. On success or on a sentinel rejection the claim is released:
+// the attempt is over either way. A transport failure keeps the claim so the
+// next Run (in this or a replacement process) replays the same settlement.
+func (l *Loop) settle(ctx context.Context, runtime run.Runtime, events EventSink, a attempt, base uint64, grant run.ExecutionGrant, cmd run.AgentCommand, proto run.Protocol) error {
+	id := a.settlementID()
+	if _, recovering := cmd.(run.RecoverModelExecution); recovering {
+		id = a.recoveryID()
+	}
+	res, err := l.commit(context.WithoutCancel(ctx), runtime, a.runID, id, base, grant, cmd, proto)
+	if err != nil {
+		if retriable(err) {
+			l.forgetClaim(ctx, a)
+			return nil
+		}
+		return err
+	}
+	l.forgetClaim(ctx, a)
+	l.emitCommitted(ctx, events, a.runID, res.Events)
+	return nil
+}
+
+// resumeOwnedStarts re-enters every Executing target this Loop holds a claim
+// for. With a durable ClaimStore this is how a replacement process finishes
+// what its predecessor started: the derived start ID replays and returns the
+// live grant, then the effect runs (or re-runs) and settles.
+func (l *Loop) resumeOwnedStarts(ctx context.Context, runtime run.Runtime, events EventSink, snapshot *run.RuntimeSnapshot) (bool, error) {
 	runID := snapshot.State.RunID
 	switch current := snapshot.State.Current.(type) {
 	case run.ModelStep:
 		if current.Status != run.ModelExecuting {
 			return false, nil
 		}
-		if _, ok := l.lookupStart(startKey{runID: runID, stepID: current.RefValue.ID}); !ok {
-			return false, nil
+		if ok, err := l.hasClaim(ctx, runID, current.RefValue.ID, ""); err != nil || !ok {
+			return false, err
 		}
 		return true, l.runModelStep(ctx, runtime, events, snapshot, current.RefValue.ID)
 	case run.ToolStep:
@@ -170,7 +177,9 @@ func (l *Loop) resumeCachedStart(ctx context.Context, runtime run.Runtime, event
 			if call.Status != run.ToolExecuting {
 				continue
 			}
-			if _, ok := l.lookupStart(startKey{runID: runID, stepID: current.RefValue.ID, callID: call.CallID}); ok {
+			if ok, err := l.hasClaim(ctx, runID, current.RefValue.ID, call.CallID); err != nil {
+				return false, err
+			} else if ok {
 				ids = append(ids, call.CallID)
 			}
 		}
@@ -181,4 +190,14 @@ func (l *Loop) resumeCachedStart(ctx context.Context, runtime run.Runtime, event
 	default:
 		return false, nil
 	}
+}
+
+var errNoClaimStore = errors.New("agent: loop: nil claim store")
+
+func freshExecutionClaim() run.ExecutionClaim {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(fmt.Sprintf("agent: loop: %v", err))
+	}
+	return run.ExecutionClaim(hex.EncodeToString(b[:]))
 }

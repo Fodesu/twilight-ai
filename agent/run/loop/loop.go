@@ -2,8 +2,6 @@ package loop
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
@@ -19,16 +17,13 @@ type Loop struct {
 	Planner   RequestPlanner
 	Execution ExecutionPolicy
 	Streaming bool
-
-	// starts retains the identity of an in-flight start command across a
-	// transient Run return. A commit may have succeeded while its response was
-	// lost; reusing the same command and claim lets the next Run recover the
-	// original grant without issuing a second start.
-	startsMu sync.Mutex
-	starts   map[startKey]startAttempt
-
-	settlementsMu sync.Mutex
-	settlements   map[startKey]settlementAttempt
+	// Claims records the ExecutionClaim of every start this Loop has issued
+	// and not yet settled. Every command identity of an attempt derives from
+	// its claim, so this is the only local state a Loop needs to replay a
+	// start or settlement whose response was lost. New installs an in-process
+	// store; hosts that want a replacement process to finish a dead process's
+	// attempts inject a durable one through ExecutionPolicy.Claims.
+	Claims ClaimStore
 
 	runsMu   sync.Mutex
 	runs     map[run.RunID]struct{}
@@ -55,8 +50,12 @@ func New(models ModelCatalog, tools ToolCatalog, planner RequestPlanner, policy 
 	if policy.LeaseRenewInterval < 0 {
 		return nil, errors.New("agent: loop: negative LeaseRenewInterval")
 	}
+	claims := policy.Claims
+	if claims == nil {
+		claims = newMemoryClaims()
+	}
 	return &Loop{Models: models, Tools: tools, Planner: planner, Execution: policy, Streaming: streaming,
-		starts: make(map[startKey]startAttempt), settlements: make(map[startKey]settlementAttempt), runs: make(map[run.RunID]struct{})}, nil
+		Claims: claims, runs: make(map[run.RunID]struct{})}, nil
 }
 
 func (l *Loop) toolScheduling() run.ToolScheduling {
@@ -119,7 +118,7 @@ func (l *Loop) Run(ctx context.Context, runtime run.Runtime, runID run.RunID, ev
 			return LoopResult{}, fmt.Errorf("agent: loop: runtime returned RunID %q for %q", snapshot.State.RunID, runID)
 		}
 		if snapshot.State.Status.Terminal() {
-			l.forgetRunCaches(runID)
+			l.forgetRunClaims(ctx, runID)
 			if events != nil {
 				_ = events.Emit(ctx, Event{
 					RunID:      snapshot.State.RunID,
@@ -130,12 +129,10 @@ func (l *Loop) Run(ctx context.Context, runtime run.Runtime, runID run.RunID, ev
 			return LoopResult{Disposition: LoopFinished, Result: snapshot.State.Result}, nil
 		}
 
-		if handled, err := l.resumeSettlement(ctx, runtime, events, &snapshot); err != nil {
-			return LoopResult{}, err
-		} else if handled {
-			continue
+		if l.Claims == nil {
+			return LoopResult{}, errNoClaimStore
 		}
-		if handled, err := l.resumeCachedStart(ctx, runtime, events, &snapshot); err != nil {
+		if handled, err := l.resumeOwnedStarts(ctx, runtime, events, &snapshot); err != nil {
 			return LoopResult{}, err
 		} else if handled {
 			continue
@@ -196,20 +193,4 @@ func (l *Loop) commit(ctx context.Context, runtime run.Runtime, runID run.RunID,
 // retriable reports the commit errors that mean "reload and rederive".
 func retriable(err error) bool {
 	return errors.Is(err, run.ErrStaleRuntime) || errors.Is(err, run.ErrRunTerminal) || errors.Is(err, run.ErrCommandConflict)
-}
-
-func freshCommandID() run.CommandID {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		panic(fmt.Sprintf("agent: loop: %v", err))
-	}
-	return run.CommandID(hex.EncodeToString(b[:]))
-}
-
-func freshExecutionClaim() run.ExecutionClaim {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		panic(fmt.Sprintf("agent: loop: %v", err))
-	}
-	return run.ExecutionClaim(hex.EncodeToString(b[:]))
 }

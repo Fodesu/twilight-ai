@@ -40,10 +40,7 @@ func TestExpiredLeaseAllowsGrantlessModelRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	claim := ExecutionClaim("claim-recover")
-	startEnv, err := ProtocolV1.BuildEnvelope("run-1", "start-1", StartModelExecution{StepID: prep.StepID, Claim: claim})
-	if err != nil {
-		t.Fatal(err)
-	}
+	startEnv := startEnvelope(t, "run-1", StartModelExecution{StepID: prep.StepID, Claim: claim})
 	start, err := rt.Commit(ctx, CommitRequest{Command: startEnv})
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +91,7 @@ func TestZeroDeadlineRejectsGrantlessRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	claim := ExecutionClaim("claim-1")
-	startEnv, _ := ProtocolV1.BuildEnvelope("run-1", "start-1", StartModelExecution{StepID: prep.StepID, Claim: claim})
+	startEnv := startEnvelope(t, "run-1", StartModelExecution{StepID: prep.StepID, Claim: claim})
 	if _, err := rt.Commit(ctx, CommitRequest{Command: startEnv}); err != nil {
 		t.Fatal(err)
 	}
@@ -132,10 +129,7 @@ func TestGrantlessModelRecoveryRejectsWrongClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	claim := ExecutionClaim("claim-recover")
-	startEnv, err := ProtocolV1.BuildEnvelope("run-1", "start-1", StartModelExecution{StepID: prep.StepID, Claim: claim})
-	if err != nil {
-		t.Fatal(err)
-	}
+	startEnv := startEnvelope(t, "run-1", StartModelExecution{StepID: prep.StepID, Claim: claim})
 	if _, err := rt.Commit(ctx, CommitRequest{Command: startEnv}); err != nil {
 		t.Fatal(err)
 	}
@@ -178,10 +172,7 @@ func TestRecoverExpiredRecoversExecutingModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	claim := ExecutionClaim("claim-scan")
-	startEnv, err := ProtocolV1.BuildEnvelope("run-1", "start-1", StartModelExecution{StepID: prep.StepID, Claim: claim})
-	if err != nil {
-		t.Fatal(err)
-	}
+	startEnv := startEnvelope(t, "run-1", StartModelExecution{StepID: prep.StepID, Claim: claim})
 	if _, err := rt.Commit(ctx, CommitRequest{Command: startEnv}); err != nil {
 		t.Fatal(err)
 	}

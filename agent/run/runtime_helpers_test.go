@@ -64,7 +64,7 @@ func memoryEntry(t testing.TB, rt Runtime) *memoryRun {
 
 func commitCmd(t *testing.T, rt Runtime, id CommandID, base uint64, grant ExecutionGrant, cmd AgentCommand) (CommitResult, error) {
 	t.Helper()
-	cmd = withTestExecutionClaim(id, cmd)
+	cmd, id = withTestExecutionClaim("run-1", id, cmd)
 	env, err := ProtocolV1.BuildEnvelope("run-1", id, cmd)
 	if err != nil {
 		t.Fatal(err)
@@ -72,22 +72,35 @@ func commitCmd(t *testing.T, rt Runtime, id CommandID, base uint64, grant Execut
 	return rt.Commit(context.Background(), CommitRequest{BaseRevision: base, Grant: grant, Command: env})
 }
 
-func withTestExecutionClaim(id CommandID, cmd AgentCommand) AgentCommand {
+// withTestExecutionClaim treats id as the attempt label of a start command
+// and derives claim and CommandID from it; see runtimetest.
+func withTestExecutionClaim(runID RunID, id CommandID, cmd AgentCommand) (AgentCommand, CommandID) {
 	claim := ExecutionClaim("test-claim/" + string(id))
 	switch c := cmd.(type) {
 	case StartModelExecution:
 		if c.Claim == "" {
 			c.Claim = claim
 		}
-		return c
+		return c, DeriveStartCommandID(runID, c.StepID, "", c.Claim)
 	case StartToolCall:
 		if c.Claim == "" {
 			c.Claim = claim
 		}
-		return c
+		return c, DeriveStartCommandID(runID, c.StepID, c.CallID, c.Claim)
 	default:
-		return cmd
+		return cmd, id
 	}
+}
+
+// startEnvelope builds a start command's envelope under its derived id.
+func startEnvelope(t testing.TB, runID RunID, cmd AgentCommand) CommandEnvelope {
+	t.Helper()
+	cmd, id := withTestExecutionClaim(runID, "start", cmd)
+	env, err := ProtocolV1.BuildEnvelope(runID, id, cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return env
 }
 
 func mustCommit(t *testing.T, rt Runtime, id CommandID, base uint64, grant ExecutionGrant, cmd AgentCommand) CommitResult {

@@ -265,6 +265,10 @@ func checkDerivedCommandID(env *CommandEnvelope, baseRevision uint64) error {
 		want = DeriveResponseCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.ResponseID)
 	case SubmitToolResponse:
 		want = DeriveResponseCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.ResponseID)
+	case StartModelExecution:
+		want = DeriveStartCommandID(env.RunID, cmd.StepID, "", cmd.Claim)
+	case StartToolCall:
+		want = DeriveStartCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.Claim)
 	case RecoverModelExecution:
 		if cmd.Claim != "" {
 			want = DeriveModelRecoveryCommandID(env.RunID, cmd.StepID, cmd.Claim)

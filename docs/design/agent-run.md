@@ -103,8 +103,11 @@ type TransitionRecord struct {
 | ResponseID | RunID、ToolStepID、CallID、ResponseKind |
 | response CommandID | RunID、StepID、CallID、ResponseID |
 | input CommandID | RunID、InputID |
+| start CommandID（StartModelExecution / StartToolCall） | RunID、StepID、CallID（model 为空）、Claim |
+| owner settlement CommandID（model result/failure/reject、tool result/failure） | RunID、StepID、CallID、Claim |
+| Pending Known failure CommandID | RunID、StepID、CallID、空 Claim |
 | model recovery CommandID | RunID、StepID、Claim |
-| system recovery CommandID | RunID、StepID、CallID、recovery record |
+| tool recovery CommandID（RecoverExpired 的 Unknown） | RunID、StepID、CallID、Claim |
 
 同一派生 identity 的内容变化通过 command digest 触发 conflict。`PlanningToken` 是 Application-owned opaque freshness token，属于 prepare command identity 内容；Planner 负责解释它的 freshness，`ModelStepPrepared` 保存冻结请求及其 digest。
 
@@ -284,7 +287,7 @@ type RecoverModelExecution struct {
 }
 ```
 
-Loop 在提交 start 前生成并保留 `Claim`、`CommandID` 与 command digest。提交响应丢失时，Loop 以完全相同的三者重放；Runtime 对精确重放返回原 `ExecutionGrant`。恢复同一模型 attempt 时，`RecoverModelExecution` 携带原 `Claim`，其 CommandID 由 `(RunID, StepID, Claim)` 派生。若 Run 已记录 Executing 而 Loop 已丢失这些值，Runtime 的 recovery authority 处理该 execution，Loop 根据 recovery 结果继续。
+一次执行 attempt 的全部 command identity 都从其 `Claim` 派生：start、owner settlement、model recovery、tool recovery 的 CommandID 分别按上表计算，Commit 对 start 强制校验该派生。因此 Loop 只需保留 `Claim` 一个值（`loop.ClaimStore`）：提交响应丢失时，以同一 Claim 重放得到同一 CommandID 与 digest，Runtime 对精确重放返回原 `ExecutionGrant`；settlement 重放同理。Claim 存在进程内时，恢复只覆盖响应丢失；宿主注入 durable ClaimStore 时，替代进程可以直接重放前一进程已开始 attempt 的 start 并完成 settlement，不必等 lease 过期。Loop 已丢失 Claim 时，由 Runtime 的 recovery authority（lease 过期）处理该 execution。
 
 `Next(state)` 最多返回一个 transient `Effect`：
 
@@ -462,7 +465,14 @@ type ExecutionPolicy struct {
     ToolExecution ToolExecutionMode
     MaxParallel int
     LeaseRenewInterval time.Duration
+    Claims ClaimStore // nil 为进程内存储
     OnMalformedModelResult func(run.ModelStep, run.StepFailure) run.ModelRejectDisposition
+}
+type ClaimStore interface {
+    Put(ctx, run.RunID, run.StepID, run.CallID, run.ExecutionClaim) error
+    Get(ctx, run.RunID, run.StepID, run.CallID) (run.ExecutionClaim, bool, error)
+    Delete(ctx, run.RunID, run.StepID, run.CallID) error
+    DeleteRun(ctx, run.RunID) error
 }
 type LoopResult struct {
     Disposition LoopDisposition // LoopWaiting | LoopFinished
@@ -500,7 +510,7 @@ Loop.Run(ctx, runtime, runID, sink):
 
 **RUN-LOP-2** `NeedModelRequest` 调用 Planner，冻结 sdk.Request，验证 model、ordered InputIDs 与 ToolSpecs，计算 request/tools/binding digests 和 derived CommandID/StepID，再提交 Prepare。prepare stale 后重新 Load；同 revision 的内容拒绝不得 livelock 重试。业务停止统一使用 `CancelRun`。
 
-**RUN-LOP-3** `StartModelCall` 先 Commit start barrier；首次 `CommitAccepted` 或使用同一 command ID、同一 `ExecutionClaim` 精确重放得到原 grant 的 Loop，才拥有该 execution。Loop 必须保留 start command 的 ID、digest 和 claim，直到完成 settlement；缺少 grant 的 replay 进入 reload 流程。调用只使用 frozen ModelRequest 的 detached SDK materialization。streaming 与 non-streaming 必须产生同一种完整 `sdk.ModelResult`；delta 只发 EventSink。`ModelCatalog.Resolve` 失败或返回 nil 时提交 `RecoverModelExecution` 并返回错误，不得把 Run 记为 `provider_failure`：尚未发生模型调用。provider 调用失败提交 `SubmitModelFailure`；ctx cancellation 提交 `RecoverModelExecution`；结构、binding 或 freeze 失败提交 `RejectModelResult`，并由调用方显式选择 retry 或 fail-run。成功结果只提交一次 `SubmitModelResult`。
+**RUN-LOP-3** `StartModelCall` 先 Commit start barrier；首次 `CommitAccepted` 或使用同一 command ID、同一 `ExecutionClaim` 精确重放得到原 grant 的 Loop，才拥有该 execution。Loop 必须在 `ClaimStore` 中保留该 attempt 的 claim 直到完成 settlement，其余 identity 按需派生；缺少 grant 的 replay 进入 reload 流程。调用只使用 frozen ModelRequest 的 detached SDK materialization。streaming 与 non-streaming 必须产生同一种完整 `sdk.ModelResult`；delta 只发 EventSink。`ModelCatalog.Resolve` 失败或返回 nil 时提交 `RecoverModelExecution` 并返回错误，不得把 Run 记为 `provider_failure`：尚未发生模型调用。provider 调用失败提交 `SubmitModelFailure`；ctx cancellation 提交 `RecoverModelExecution`；结构、binding 或 freeze 失败提交 `RejectModelResult`，并由调用方显式选择 retry 或 fail-run。成功结果只提交一次 `SubmitModelResult`。
 
 **RUN-LOP-4** Tool execution 先按 frozen binding resolve tool，并验证 Ref、definition digest、response policy 和 arguments。lookup/definition/argument failure 在 Pending 状态提交 `SubmitToolFailure(Known)`，不得跨越 start barrier。通过验证后逐 call 提交 `StartToolCall`；只有 Accepted owner 可执行。冻结的 `ToolStep.Scheduling` 决定 `parallel` 或 `sequential` 以及 `MaxParallel`；不得改用 Loop 进程当前的 ExecutionPolicy。每个结果以自己的 grant 提交。同一 ToolStep 中 DirectExecution 的 Pending call，在外层 ctx 未取消时于本次 `Run` 内按冻结 Scheduling 分批 Start 并结算；ctx 已取消时停止再 Start，只结算已持有 grant 的 call。`Next` 返回 `Idle` 时 Loop 返回 `LoopWaiting`，并用 `NeedsRecovery(state)` 设置 `ExecutionRecovery`。Loop 不解释 Waiting call，也不携带 `ResponseRequest`。Application 从 snapshot 读取 `WaitingCalls`，提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 之后再次 `Run`。tool panic 或 effect 状态无法确定的错误转为对该 call 的 Unknown，并提交 `SubmitToolFailure(Unknown)`。该 settlement 不取消同批 sibling workers，也不结束 Run。`CancelRun` 先把仍 Executing 的 call 记为 `ToolCallFailed(Unknown)`，再 `RunEnded(stopped/cancelled)`，并把这些 CallID 与仍 Executing 的 ModelStep 写入 `RunStoppedEnd` / `RunResult` 的 `UncertainCalls`、`UncertainModel`。Waiting call 无论有无 Executing sibling 都不记 Failed。已接受 start 的 worker 必须在收到外层取消后返回并尝试 settlement；settlement 使用独立 control context。lookup/definition/argument failure 只允许发生在 Pending；Executing 且本进程持有 start cache 时只重放 start 并结算，不得再提交 grantless Known。
 
@@ -556,6 +566,7 @@ Loop conformance 必须覆盖：
 - Cancel 将 Executing tool/model 投影到 `UncertainCalls` / `UncertainModel`；ExternalResponse reject 为 `response_rejected`；
 - streaming delta 与 nil result、EventSink committed observation；
 - stale/unknown commit response、prepare no-progress rejection 与无 livelock；
-- 超过 LeaseTTL 的工具调用在续期下不被记为 Unknown，其结果被接受。
+- 超过 LeaseTTL 的工具调用在续期下不被记为 Unknown，其结果被接受；
+- 共享 ClaimStore 的第二个 Loop 实例重放前一实例的 start 并完成 settlement，不等待 lease 过期。
 
 历史 package 迁移、实施阶段与未完成 adapter 工作记录在 [agent-runtime-refactor.md](agent-runtime-refactor.md)，本协议 authority 以本文为准。

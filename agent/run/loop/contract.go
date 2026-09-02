@@ -163,6 +163,9 @@ type ExecutionPolicy struct {
 	// the Runtime's LeaseTTL (RUN-CMT-8); zero disables renewal and is only
 	// correct for a Runtime whose leases do not expire.
 	LeaseRenewInterval time.Duration
+	// Claims is the ClaimStore this Loop records live execution claims in.
+	// nil selects an in-process store.
+	Claims ClaimStore
 }
 
 type LoopDisposition uint8

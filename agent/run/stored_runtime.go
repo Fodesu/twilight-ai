@@ -335,7 +335,7 @@ func recoveryCommand(state *MachineState, key string, lease ExecutionLease) (Age
 			CallID:  callID,
 			Failure: ToolFailure{Class: FailureEffectUnknown, Message: "lease expired"},
 			Outcome: ToolOutcomeUnknown,
-		}, DeriveSystemCommandID(state.RunID, cur.RefValue.ID, callID, string(lease.Grant)), true
+		}, DeriveToolRecoveryCommandID(state.RunID, cur.RefValue.ID, callID, lease.Claim), true
 	default:
 		return nil, "", false
 	}
