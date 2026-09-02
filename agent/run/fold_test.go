@@ -15,7 +15,7 @@ import (
 
 // fullRunRuntime drives one complete run (prepare -> model -> tool -> done)
 // and returns the runtime.
-func fullRunRuntime(t *testing.T) *MemoryRuntime {
+func fullRunRuntime(t *testing.T) Runtime {
 	t.Helper()
 	def := testToolDef("t")
 	spec := makeSpec(t, def, DirectExecution)
@@ -47,16 +47,21 @@ func fullRunRuntime(t *testing.T) *MemoryRuntime {
 	return rt
 }
 
-func currentStepID(t *testing.T, rt *MemoryRuntime) StepID {
+func currentStepID(t *testing.T, rt Runtime) StepID {
 	t.Helper()
 	snap, err := rt.Load(context.Background(), "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snap.State.Current == nil {
-		t.Fatal("no current step")
+	switch cur := snap.State.Current.(type) {
+	case ModelStep:
+		return cur.Ref().ID
+	case ToolStep:
+		return cur.Ref().ID
+	default:
+		t.Fatalf("current = %T, want ModelStep or ToolStep", snap.State.Current)
+		return ""
 	}
-	return snap.State.Current.Ref().ID
 }
 
 // A healthy runtime rebuilds without divergence: with a correct
@@ -64,7 +69,7 @@ func currentStepID(t *testing.T, rt *MemoryRuntime) StepID {
 func TestRebuildHealthyIsNoop(t *testing.T) {
 	rt := fullRunRuntime(t)
 	before, _ := rt.Load(context.Background(), "run-1")
-	diverged, err := rt.Rebuild("run-1")
+	diverged, err := rebuildRun(t, rt, "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +96,7 @@ func TestRebuildRepairsCorruptedSnapshot(t *testing.T) {
 	entry.state.Result = nil
 	entry.mu.Unlock()
 
-	diverged, err := rt.Rebuild("run-1")
+	diverged, err := rebuildRun(t, rt, "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +123,7 @@ func TestRebuildHaltsOnTruncatedTail(t *testing.T) {
 	entry.log = cloneTransitionRecords(entry.log[:len(entry.log)-1])
 	entry.mu.Unlock()
 
-	_, err := rt.Rebuild("run-1")
+	_, err := rebuildRun(t, rt, "run-1")
 	if !errors.Is(err, ErrLogTruncated) {
 		t.Fatalf("err = %v, want ErrLogTruncated", err)
 	}
@@ -135,120 +140,84 @@ func TestRebuildHaltsOnPartialTailTransition(t *testing.T) {
 	last.Events = last.Events[:len(last.Events)-1]
 	entry.mu.Unlock()
 
-	_, err := rt.Rebuild("run-1")
+	_, err := rebuildRun(t, rt, "run-1")
 	if err == nil {
 		t.Fatal("partial tail transition folded silently")
 	}
 }
 
-// A gap in the middle of the transition log is log damage, not a rebuild input.
-func TestFoldTransitionsRejectsInteriorGap(t *testing.T) {
+func TestFoldRejectsDamagedLog(t *testing.T) {
 	rt := fullRunRuntime(t)
 	entry := memoryEntry(t, rt)
 	entry.mu.Lock()
-	var holed []TransitionRecord
-	for i := range entry.log {
-		if entry.log[i].Revision == 3 { // drop one interior transition
-			continue
+	initial := cloneMachineState(&entry.header.InitialState)
+	transitions := cloneTransitionRecords(entry.log)
+	events := flattenTransitionRecords(entry.log)
+	entry.mu.Unlock()
+
+	t.Run("interior transition gap", func(t *testing.T) {
+		var holed []TransitionRecord
+		for i := range transitions {
+			if transitions[i].Revision == 3 {
+				continue
+			}
+			holed = append(holed, cloneTransitionRecord(&transitions[i]))
 		}
-		holed = append(holed, cloneTransitionRecord(&entry.log[i]))
-	}
-	log := holed
-	initial := cloneMachineState(&entry.initial)
-	entry.mu.Unlock()
-
-	if _, _, err := FoldTransitions(initial, log); err == nil {
-		t.Fatal("interior transition gap folded silently")
-	}
-}
-
-// A gap in the middle of a complete flat event stream is still rejected.
-func TestFoldEventsRejectsInteriorGap(t *testing.T) {
-	rt := fullRunRuntime(t)
-	entry := memoryEntry(t, rt)
-	entry.mu.Lock()
-	flat := flattenTransitionRecords(entry.log)
-	initial := cloneMachineState(&entry.initial)
-	entry.mu.Unlock()
-
-	var holed []AgentEvent
-	for i := range flat {
-		if flat[i].Revision == 3 { // drop one interior transition
-			continue
+		if _, _, err := FoldTransitions(cloneMachineState(&initial), holed); err == nil {
+			t.Fatal("interior transition gap folded silently")
 		}
-		holed = append(holed, flat[i])
-	}
-	if _, _, err := FoldEvents(initial, holed); err == nil {
-		t.Fatal("interior event gap folded silently")
-	}
-}
-
-func TestFoldRejectsRunIDMismatch(t *testing.T) {
-	rt := fullRunRuntime(t)
-	entry := memoryEntry(t, rt)
-	entry.mu.Lock()
-	log := flattenTransitionRecords(entry.log)
-	initial := cloneMachineState(&entry.initial)
-	entry.mu.Unlock()
-
-	log[0].RunID = "other-run"
-	if _, _, err := FoldEvents(initial, log); err == nil {
-		t.Fatal("run mismatch folded silently")
-	}
-}
-
-func TestFoldRejectsTransitionCommandIdentityChange(t *testing.T) {
-	rt := fullRunRuntime(t)
-	entry := memoryEntry(t, rt)
-	entry.mu.Lock()
-	log := flattenTransitionRecords(entry.log)
-	initial := cloneMachineState(&entry.initial)
-	entry.mu.Unlock()
-
-	for i := range log {
-		if log[i].Index == 1 {
-			log[i].CommandID = "other-command"
-			break
+	})
+	t.Run("interior event gap", func(t *testing.T) {
+		var holed []AgentEvent
+		for i := range events {
+			if events[i].Revision == 3 {
+				continue
+			}
+			holed = append(holed, events[i])
 		}
-	}
-	if _, _, err := FoldEvents(initial, log); err == nil {
-		t.Fatal("same-revision command identity change folded silently")
-	}
-}
-
-func TestFoldRejectsUnsupportedSchemaVersion(t *testing.T) {
-	rt := fullRunRuntime(t)
-	entry := memoryEntry(t, rt)
-	entry.mu.Lock()
-	log := flattenTransitionRecords(entry.log)
-	initial := cloneMachineState(&entry.initial)
-	entry.mu.Unlock()
-
-	log[0].SchemaVersion = 99
-	if _, _, err := FoldEvents(initial, log); err == nil {
-		t.Fatal("unsupported schema version folded silently")
-	}
-}
-
-// A tampered fact fails its digest check during fold.
-func TestFoldRejectsTamperedFact(t *testing.T) {
-	rt := fullRunRuntime(t)
-	entry := memoryEntry(t, rt)
-	entry.mu.Lock()
-	log := flattenTransitionRecords(entry.log)
-	initial := cloneMachineState(&entry.initial)
-	entry.mu.Unlock()
-
-	for i := range log {
-		if f, ok := log[i].Fact.(ToolCallCompleted); ok {
-			f.Result.Output = cj(`"tampered"`)
-			log[i].Fact = f
-			break
+		if _, _, err := FoldEvents(cloneMachineState(&initial), holed); err == nil {
+			t.Fatal("interior event gap folded silently")
 		}
-	}
-	if _, _, err := FoldEvents(initial, log); err == nil {
-		t.Fatal("tampered fact folded silently")
-	}
+	})
+	t.Run("run id mismatch", func(t *testing.T) {
+		log := flattenTransitionRecords(transitions)
+		log[0].RunID = "other-run"
+		if _, _, err := FoldEvents(cloneMachineState(&initial), log); err == nil {
+			t.Fatal("run mismatch folded silently")
+		}
+	})
+	t.Run("command identity change", func(t *testing.T) {
+		log := flattenTransitionRecords(transitions)
+		for i := range log {
+			if log[i].Index == 1 {
+				log[i].CommandID = "other-command"
+				break
+			}
+		}
+		if _, _, err := FoldEvents(cloneMachineState(&initial), log); err == nil {
+			t.Fatal("same-revision command identity change folded silently")
+		}
+	})
+	t.Run("unsupported schema version", func(t *testing.T) {
+		log := flattenTransitionRecords(transitions)
+		log[0].SchemaVersion = 99
+		if _, _, err := FoldEvents(cloneMachineState(&initial), log); err == nil {
+			t.Fatal("unsupported schema version folded silently")
+		}
+	})
+	t.Run("tampered fact", func(t *testing.T) {
+		log := flattenTransitionRecords(transitions)
+		for i := range log {
+			if f, ok := log[i].Fact.(ToolCallCompleted); ok {
+				f.Result.Output = cj(`"tampered"`)
+				log[i].Fact = f
+				break
+			}
+		}
+		if _, _, err := FoldEvents(cloneMachineState(&initial), log); err == nil {
+			t.Fatal("tampered fact folded silently")
+		}
+	})
 }
 
 // ModelStepPrepared is self-contained: the binding digest folds verbatim and

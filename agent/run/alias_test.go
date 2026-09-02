@@ -7,43 +7,6 @@ import (
 	"github.com/memohai/twilight/sdk"
 )
 
-func TestMemoryRuntimeClonesInitialState(t *testing.T) {
-	raw := []byte(`{"q":"hi"}`)
-	payload, err := ParseCanonicalJSON(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rt := NewMemoryRuntime()
-	newRun, err := BuildNewRun("run-1", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rt.Create(context.Background(), newRun); err != nil {
-		t.Fatal(err)
-	}
-	// Initial payload admission uses the actual AcceptInput transition, never a
-	// synthetic non-Revision-0 initial state.
-	acceptInput(t, rt, "run-1", AgentInput{ID: "seed", Payload: payload})
-
-	copy(raw, []byte(`{"q":"no"}`))
-	payload = cj(`{"q":"mutated"}`)
-
-	snap, err := rt.Load(context.Background(), "run-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := snap.State.PendingInputs[0].Payload.String(); got != `{"q":"hi"}` {
-		t.Fatalf("runtime initial payload aliased caller state: %s", got)
-	}
-	diverged, err := rt.Rebuild("run-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if diverged {
-		t.Fatal("rebuild diverged after caller mutated initial state")
-	}
-}
-
 func TestCommitSnapshotsCommandPayloadBeforeFoldingState(t *testing.T) {
 	rt := newTestRuntime(t)
 	raw := []byte(`{"v":"one"}`)
@@ -85,7 +48,7 @@ func TestCommitSnapshotsCommandPayloadBeforeFoldingState(t *testing.T) {
 			}
 		}
 	}
-	diverged, err := rt.Rebuild("run-1")
+	diverged, err := rebuildRun(t, rt, "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +218,7 @@ func TestCommitResultEventsDoNotAliasStateOrLog(t *testing.T) {
 			}
 		}
 	}
-	diverged, err := rt.Rebuild("run-1")
+	diverged, err := rebuildRun(t, rt, "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}

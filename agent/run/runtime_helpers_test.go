@@ -10,9 +10,9 @@ import (
 // Shared helpers for package-local agent tests. Runtime conformance lives in
 // agent/runtimetest so durable Runtime implementations can reuse it.
 
-func newTestRuntime(t *testing.T) *MemoryRuntime {
+func newTestRuntime(t *testing.T) Runtime {
 	t.Helper()
-	rt := NewMemoryRuntime()
+	rt := NewRuntime(NewMemoryStore())
 	newRun, err := BuildNewRun("run-1", "")
 	if err != nil {
 		t.Fatal(err)
@@ -26,6 +26,20 @@ func newTestRuntime(t *testing.T) *MemoryRuntime {
 	return rt
 }
 
+func runtimeStore(t testing.TB, rt Runtime) Store {
+	t.Helper()
+	r, ok := rt.(*runtime)
+	if !ok {
+		t.Fatalf("runtime %T is not *runtime", rt)
+	}
+	return r.store
+}
+
+func rebuildRun(t testing.TB, rt Runtime, runID RunID) (bool, error) {
+	t.Helper()
+	return Rebuild(context.Background(), runtimeStore(t, rt), runID)
+}
+
 func recordEvents(t testing.TB, rt Runtime, runID RunID) []AgentEvent {
 	t.Helper()
 	record, err := rt.Record(context.Background(), runID)
@@ -35,9 +49,13 @@ func recordEvents(t testing.TB, rt Runtime, runID RunID) []AgentEvent {
 	return flattenTransitionRecords(record.Transitions)
 }
 
-func memoryEntry(t testing.TB, rt *MemoryRuntime) *memoryRun {
+func memoryEntry(t testing.TB, rt Runtime) *memoryRun {
 	t.Helper()
-	entry, err := rt.entry("run-1")
+	store, ok := runtimeStore(t, rt).(*MemoryStore)
+	if !ok {
+		t.Fatal("runtime is not backed by MemoryStore")
+	}
+	entry, err := store.entry("run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +101,7 @@ func mustCommit(t *testing.T, rt Runtime, id CommandID, base uint64, grant Execu
 
 // preparedRuntime returns a runtime advanced to an Executing ModelStep, plus
 // stepID and the model grant.
-func preparedRuntime(t *testing.T, tools []sdk.ToolDefinition, specs []ToolSpec) (*MemoryRuntime, StepID, ExecutionGrant) {
+func preparedRuntime(t *testing.T, tools []sdk.ToolDefinition, specs []ToolSpec) (Runtime, StepID, ExecutionGrant) {
 	t.Helper()
 	rt := newTestRuntime(t)
 	snap, _ := rt.Load(context.Background(), "run-1")
