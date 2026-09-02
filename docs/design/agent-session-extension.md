@@ -13,9 +13,9 @@ agent/artifact  ←  Session Module Framework  →  agent/session
 ```
 
 Framework 负责 Module ownership、static startup composition、immutable Catalog、typed event
-codec、Binding declaration、SemanticAppender 和 pure projection。first-party modules 可包括
-`twilight.chatlog` 与 `twilight.turn`。每次进程启动构建一套与 Session protocol version
-绑定的 immutable Catalog。
+codec、Binding declaration、SemanticAppender 和 pure projection。first-party Source 为
+`twilight`，其 Module 为 `chatlog` 与 `turn`。每次进程启动构建一套与 Session protocol
+version 绑定的 immutable Catalog。Application 注册自己的 Source（例如 `acme`）与 Module。
 
 **EXT-SCP-1** Session Store protocol 由 Session kernel 负责；多 Session transaction、package import、saga、operation log 与 provider policy 由 Application/adapter 负责。未知 event 的 archive Binding manifest 由 Application archive coordinator 处理。
 
@@ -27,12 +27,16 @@ replay 规则。
 ## 2. Module、Catalog 与版本
 
 ```go
+type SourceID string
 type ModuleID string
 type ProjectionID string
 type ProjectionVersion uint16
 type RegistryID string
 
+const SourceTwilight SourceID = "twilight"
+
 type ModuleDescriptor struct {
+    Source SourceID
     ID ModuleID
     Events []EventDefinition
     Projections []ProjectionDefinition
@@ -55,8 +59,8 @@ type RuntimeRegistry interface {
     BindingExtractor() (BindingExtractor, bool)
 }
 func BuildCatalog(CatalogBuildRequest) (*Catalog, error)
-func (c *Catalog) LookupEvent(session.EventType) (ModuleID, EventDefinition, bool)
-func (c *Catalog) ModuleForEvent(session.EventType) (ModuleID, bool)
+func (c *Catalog) LookupEvent(session.EventType) (SourceID, ModuleID, EventDefinition, bool)
+func (c *Catalog) ModuleForEvent(session.EventType) (SourceID, ModuleID, bool)
 func (c *Catalog) LookupProjection(ProjectionID, ProjectionVersion) (ProjectionDefinition, bool)
 ```
 
@@ -66,9 +70,12 @@ typed append、decode、binding admission 与 projection lookup 使用；Session
 状态和事件日志继续保存在各自的 authority 中。`Catalog.Profile` 是同一版本的
 `session.ProtocolProfile`，两者在 `BuildCatalog` 时绑定。
 
-**EXT-CAT-1** ModuleID 使用小写 ASCII namespace；`twilight.*` 保留 first-party。EventType
-采用 `<ModuleID>/<local-name>` 形式，owner namespace 来自前缀。一个 Catalog 中 ModuleID、
-EventType、ProjectionID、Scheme、RegistryID 均唯一。Build defensive-copy 所有 descriptor
+**EXT-CAT-1** `SourceID` 与 `ModuleID` 为小写 ASCII。first-party Source 为 `twilight`，
+其 Module 为 `chatlog` 与 `turn`。Application 注册自己的 Source（例如 `acme`）。
+EventType 为 `<SourceID>/<ModuleID>/<local-name>`，例如 `twilight/chatlog/assistant`、
+`twilight/turn/started`。Digest domain 与 EventType 相同；wire 与 digest 形状由 Catalog
+绑定的 Session `ProtocolVersion` 决定。一个 Catalog 中 `(Source, ModuleID)`、EventType、
+ProjectionID、Scheme、RegistryID 均唯一。Build defensive-copy 所有 descriptor
 和 runtime registry，成功后只读且与注册顺序无关。
 
 事件类型在一个 Catalog 中只有一个当前定义。`ProtocolVersion` 覆盖已经持久化的
@@ -212,15 +219,15 @@ type AtomicSemanticCommitter interface {
 **EXT-APP-2** 对 nonempty BindingSet，先经 `Store.Header(ctx, SessionID)` 读取并验证该 Session 的 Header，唯一派生为：
 
 ```text
-ClaimID = Digest("twilight.session-extension/claim/v1",
+ClaimID = Digest("twilight/session-extension/claim",
                  claim-profile-version "1",
                  extension-canonical-string(Header.ProtocolVersion),
                  SessionID, CommitID, BindingSet.RefSetDigest)
-ClaimOwner = {Kind:"twilight.session/commit",
+ClaimOwner = {Kind:"twilight/session/commit",
               Authority:string(SessionID), Identity:string(CommitID)}
 ```
 
-claim profile version 固定为 `1`；整数使用 Session Module canonical string profile（无前导零的十进制），其中 Session `ProtocolVersion` 只能取自已验证 Header。Artifact `WireVersion` 已由 `BindingSet.RefSetDigest` 覆盖，绝不另入 preimage。ClaimID 不含 ExpectedHead。先 Build set，再派生 claim；调用者不得提供或覆盖它们。相同 CommitID retry 的 typed event identity/time/source/payload 或 BindingSet 不同均为 conflict；完全相同 immutable request 的 append fingerprint 稳定。`ExpectedHead` 不入该 fingerprint，且是同一 pending intent 唯一可更新的 CanonicalRequest 字段。retry、recovery 及导入 `twilight.session/commit` active claim 时都必须以该 Header 和同一 preimage 重算并验证 ClaimID。
+claim profile version 固定为 `1`；整数使用 Session Module canonical string profile（无前导零的十进制），其中 Session `ProtocolVersion` 只能取自已验证 Header。Artifact `WireVersion` 已由 `BindingSet.RefSetDigest` 覆盖，绝不另入 preimage。ClaimID 不含 ExpectedHead。先 Build set，再派生 claim；调用者不得提供或覆盖它们。相同 CommitID retry 的 typed event identity/time/source/payload 或 BindingSet 不同均为 conflict；完全相同 immutable request 的 append fingerprint 稳定。`ExpectedHead` 不入该 fingerprint，且是同一 pending intent 唯一可更新的 CanonicalRequest 字段。retry、recovery 及导入 `twilight/session/commit` active claim 时都必须以该 Header 和同一 preimage 重算并验证 ClaimID。
 
 **EXT-APP-3** 没有 Binding 时不创建 BindingSet、intent 或 claim。否则先构造含 ClaimID、ClaimOwner、BindingSet、Fingerprint、完整 CanonicalRequest 和 Pending State 的 intent，且非原子流程严格为 `journal.Prepare → ledger.Prepare → Store.Commit`。journal `Prepare` 对既有同一 ClaimID 的记录，必须逐字段验证 Fingerprint、ClaimOwner、BindingSet 及 CanonicalRequest 的所有 immutable 字段；只有全部相同才幂等，并且仅可更新 Pending intent 的 `CanonicalRequest.ExpectedHead`，其他差异均为 conflict。`ledger.Prepare` 必须使用 intent 内的 ClaimID、ClaimOwner、BindingSet。支持 `AtomicSemanticCommitter` 的 adapter 可跳过单独 choreography，但必须原子持久化同一完整 intent 与匹配 Prepared claim，或直接原子 commit 并建立匹配 Active claim；两种路径均不得在 Event 可见前缺少可恢复 claim plan，并使用等价 terminal handling。
 
@@ -274,8 +281,8 @@ type ProjectionRunner interface { Run(ProjectionRunRequest) (ProjectionRunResult
 `Catalog` 非 nil、`Catalog.ProtocolVersion == ProtocolVersion`，并只接受已验证的 complete
 commit sequence；一个 commit 内任一 event 失败，不得发布该 commit 的 partial state。
 
-**EXT-PRJ-2** `Catalog` 为每个 EventType 提供唯一 ModuleID 与 EventDefinition；
-`ModuleForEvent` 依据 EventType 前缀识别 owner，因此 required module 的未知事件可以被
+**EXT-PRJ-2** `Catalog` 为每个 EventType 提供唯一 `(Source, ModuleID)` 与 EventDefinition；
+`ModuleForEvent` 按 EventType 的 `<SourceID>/<ModuleID>/` 前缀识别 owner，因此 required module 的未知事件可以被
 发现。`Consumes` 表示必须 decode/handle 的 EventType，`Ignores` 是显式已知跳过，二者不得重叠。
 出现属于 `RequireComplete` module 的 unknown 或未分类 event 必须失败；其他 module event
 可忽略。

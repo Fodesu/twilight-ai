@@ -14,6 +14,7 @@
 | Session Module Framework | [agent-session-extension.md](agent-session-extension.md) |
 | Chatlog ontology/projection | [agent-session-chatlog.md](agent-session-chatlog.md) |
 | Turn→Run coordination/materialization | [agent-turn.md](agent-turn.md) |
+| 参考组装（Binding / Planner / Input） | [agent-reference-assembly.md](agent-reference-assembly.md) |
 
 ## 1. 背景
 
@@ -45,7 +46,7 @@ Run snapshot 支持直接恢复执行；immutable header 与 transition log 支�
 ```text
 agent/es                  shared ES primitives
 agent/jsonstable          immutable canonical JSON
-agent/run                 Run Machine、persisted protocol、Runtime、MemoryRuntime
+agent/run                 Run Machine、persisted protocol、Runtime、Store、MemoryStore
 agent/run/loop            in-process model/tool interpreter 与 observation ports
 agent/session             Event-first Session kernel
 agent/session/extension   Session Module Framework：static modules、codec、semantic append、projection
@@ -54,7 +55,7 @@ agent/artifact            Ref、Binding、RetentionClaim
 agent/turn                Turn→Run coordination 与 Run→Session materialization
 ```
 
-文件用于提高同一 package 内的导航性；subpackage 只用于依赖限制和独立变化轴。Loop 因依赖 SDK execution、streaming、并发和工具 ports 而独立成 `agent/run/loop`。Machine、Runtime、protocol 与 MemoryRuntime 保持在根 `agent/run`，避免 sealed variants、codec、Decide/Evolve 和 adapter internals 之间形成 cycle 或镜像 DTO。
+文件用于提高同一 package 内的导航性；subpackage 只用于依赖限制和独立变化轴。Loop 因依赖 SDK execution、streaming、并发和工具 ports 而独立成 `agent/run/loop`。Machine、Runtime、protocol 与 Store 保持在根 `agent/run`，避免 sealed variants、codec、Decide/Evolve 和 adapter internals 之间形成 cycle 或镜像 DTO。
 
 依赖方向为：
 
@@ -86,10 +87,11 @@ agent/turn     -> agent/run + agent/session + agent/session/chatlog + session mo
 | Decide/Evolve/Next Run Machine | 完成 |
 | RunHeader、TransitionRecord、wire codec、fold/golden tests | 完成 |
 | RunID-addressed `Runtime.Create/Load/Commit/Record` | 完成 |
-| multi-Run `MemoryRuntime` 与 Runtime conformance | 完成 |
+| multi-Run Store-backed Runtime 与 Runtime conformance | 完成 |
 | `agent/run/loop` package extraction | 完成 |
 | Session/Artifact/Session Module/Turn protocols | 规范草案完成，实施待完成 |
-| Chatlog protocol | 草案，payload fields 与 golden fixtures 尚未冻结 |
+| Chatlog protocol | 草案，payload 与 golden 尚未冻结 |
+| 参考组装 | 草案 |
 | PostgreSQL durable Run adapter（旧接口） | 历史 prototype，迁移未完成 |
 
 当前正式调用形态为 Application 组合 shared `run.Runtime` 与 `loop.Loop`。Loop 不保存 authority state；Runtime 不读取 queue 或 planner context。
