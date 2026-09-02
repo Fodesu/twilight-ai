@@ -134,11 +134,6 @@ func applyCall(s MachineState, callID CallID, mutate func(*ToolCallState)) Machi
 }
 
 func applyInputAccepted(s MachineState, fact *InputAccepted) MachineState {
-	for _, in := range s.PendingInputs {
-		if in.ID == fact.Input.ID {
-			return s // idempotent append per InputID
-		}
-	}
 	s.PendingInputs = append(append([]AgentInput(nil), s.PendingInputs...), fact.Input)
 	return s
 }
@@ -189,7 +184,7 @@ func guardFactV1(s *MachineState, f Fact) error {
 	case ToolCallFailed:
 		return guardToolCallFailed(s, &fact)
 	case InputAccepted:
-		return requireOpen(s, "input accepted")
+		return guardInputAccepted(s, &fact)
 	case RunEnded:
 		return validateRunEnd(fact.End)
 	default:
@@ -231,6 +226,23 @@ func requireCall(s *MachineState, stepID StepID, callID CallID, statuses ...Tool
 		}
 	}
 	return ToolCallState{}, fmt.Errorf("agent: evolve: tool call %q is %s", callID, call.Status)
+}
+
+func guardInputAccepted(s *MachineState, fact *InputAccepted) error {
+	if err := requireOpen(s, "input accepted"); err != nil {
+		return err
+	}
+	if fact.Input.ID == "" {
+		return errors.New("agent: evolve: input accepted with empty InputID")
+	}
+	for _, in := range s.PendingInputs {
+		if in.ID == fact.Input.ID {
+			// Decide rejects this and an exact replay never reaches Evolve, so
+			// a persisted duplicate is a corrupt log, not an idempotent append.
+			return fmt.Errorf("agent: evolve: input %q already pending", fact.Input.ID)
+		}
+	}
+	return nil
 }
 
 func guardModelStepPrepared(s *MachineState, fact *ModelStepPrepared) error {

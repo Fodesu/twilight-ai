@@ -62,7 +62,7 @@ func Example_recoverableRun() {
 		panic(err)
 	}
 	input := run.AgentInput{ID: "in-1", Payload: run.MustParseCanonicalJSON(`{"text":"what is the weather?"}`)}
-	env, err := run.ProtocolV1.BuildEnvelope("run-1", run.DeriveInputCommandID("run-1", input.ID), run.AcceptInput{Input: input})
+	env, err := run.ProtocolV1().BuildEnvelope("run-1", run.DeriveInputCommandID("run-1", input.ID), run.AcceptInput{Input: input})
 	if err != nil {
 		panic(err)
 	}
@@ -210,7 +210,7 @@ func newExampleApp(tool *lookupTool) *exampleApp {
 	if err != nil {
 		panic(err)
 	}
-	digest, err := run.ProtocolV1.DigestToolDefinition(frozen)
+	digest, err := run.ProtocolV1().DigestToolDefinition(frozen)
 	if err != nil {
 		panic(err)
 	}
@@ -259,9 +259,9 @@ type toolCatalog struct{ app *exampleApp }
 func (a *exampleApp) models() loop.ModelCatalog { return modelCatalog{a} }
 func (a *exampleApp) tools() loop.ToolCatalog   { return toolCatalog{a} }
 
-func (c modelCatalog) Resolve(run.ModelRef) (loop.ModelInvoker, error) { return c.app, nil }
+func (c modelCatalog) ResolveModel(run.ModelRef) (loop.ModelInvoker, error) { return c.app, nil }
 
-func (c toolCatalog) Resolve(ref run.ToolRef) (loop.ExecutableTool, error) {
+func (c toolCatalog) ResolveTool(ref run.ToolRef) (loop.ExecutableTool, error) {
 	if ref != c.app.tool.Ref() {
 		return nil, fmt.Errorf("unknown tool %q", ref)
 	}

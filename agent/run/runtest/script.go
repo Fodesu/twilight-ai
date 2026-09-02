@@ -56,7 +56,7 @@ type scriptCatalog struct {
 	err     error
 }
 
-func (c scriptCatalog) Resolve(run.ModelRef) (loop.ModelInvoker, error) {
+func (c scriptCatalog) ResolveModel(run.ModelRef) (loop.ModelInvoker, error) {
 	if c.err != nil {
 		return nil, c.err
 	}
@@ -94,7 +94,7 @@ type scriptToolCatalog struct {
 	tools map[run.ToolRef]loop.ExecutableTool
 }
 
-func (c scriptToolCatalog) Resolve(ref run.ToolRef) (loop.ExecutableTool, error) {
+func (c scriptToolCatalog) ResolveTool(ref run.ToolRef) (loop.ExecutableTool, error) {
 	tool, ok := c.tools[ref]
 	if !ok {
 		return nil, fmt.Errorf("unknown tool %q", ref)

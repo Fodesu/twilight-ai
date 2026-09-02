@@ -66,16 +66,16 @@ func TestCommitCanonicalizesAgentOwnedJSONBeforePersisting(t *testing.T) {
 			"p": cj(`{"b":2,"a":1}`),
 		},
 	}
-	reqDigest, err := ProtocolV1.DigestRequest(req)
+	reqDigest, err := ProtocolV1().DigestRequest(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolsDigest, err := ProtocolV1.DigestToolSpecs(nil)
+	toolsDigest, err := ProtocolV1().DigestToolSpecs(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	model := ModelRef(req.Model)
-	binding, err := ProtocolV1.DigestModelStepBinding(model, reqDigest, toolsDigest)
+	binding, err := ProtocolV1().DigestModelStepBinding(model, reqDigest, toolsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}

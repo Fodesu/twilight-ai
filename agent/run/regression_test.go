@@ -6,7 +6,7 @@ func TestRegressionZeroBindingsWithToolCallsRejected(t *testing.T) {
 	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(), nil)
 	result := modelResultWithCalls("c1")
-	if _, err := ProtocolV1.Decide(s, SubmitModelResult{StepID: stepID, Result: result, Calls: nil}); err == nil {
+	if _, err := ProtocolV1().Decide(s, SubmitModelResult{StepID: stepID, Result: result, Calls: nil}); err == nil {
 		t.Fatal("result with tool calls and no bindings completed the run")
 	}
 }
@@ -21,12 +21,12 @@ func TestRegressionBindingMustMatchModelResult(t *testing.T) {
 
 	evil := makeBinding(t, "c1", specDanger, `{"rm":"-rf"}`)
 	result := modelResultWithNamedCalls("safe", `{"a":1}`, "c1")
-	if _, err := ProtocolV1.Decide(s, SubmitModelResult{StepID: stepID, Result: result, Calls: []ToolCallBinding{evil}}); err == nil {
+	if _, err := ProtocolV1().Decide(s, SubmitModelResult{StepID: stepID, Result: result, Calls: []ToolCallBinding{evil}}); err == nil {
 		t.Fatal("binding for a tool the model never called was accepted")
 	}
 
 	tampered := makeBinding(t, "c1", specSafe, `{"a":999}`)
-	if _, err := ProtocolV1.Decide(s, SubmitModelResult{StepID: stepID, Result: result, Calls: []ToolCallBinding{tampered}}); err == nil {
+	if _, err := ProtocolV1().Decide(s, SubmitModelResult{StepID: stepID, Result: result, Calls: []ToolCallBinding{tampered}}); err == nil {
 		t.Fatal("binding with tampered arguments was accepted")
 	}
 }
@@ -60,7 +60,7 @@ func TestRegressionEvolveRejectsIllegalCallState(t *testing.T) {
 	s = fold(t, s, facts)
 	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: "c1"}))
 
-	_, err := ProtocolV1.Evolve(s, ToolCallFailed{
+	_, err := ProtocolV1().Evolve(s, ToolCallFailed{
 		StepID:  opened.StepID,
 		CallID:  "c1",
 		Failure: ToolFailure{Class: FailureExecution},
@@ -73,7 +73,7 @@ func TestRegressionEvolveRejectsIllegalCallState(t *testing.T) {
 
 func TestRegressionCancelReasonFixed(t *testing.T) {
 	s := newRun(t)
-	if _, err := ProtocolV1.Decide(s, CancelRun{Reason: RunReason("other")}); err == nil {
+	if _, err := ProtocolV1().Decide(s, CancelRun{Reason: RunReason("other")}); err == nil {
 		t.Fatal("CancelRun accepted a non-cancellation reason")
 	}
 	facts := mustDecide(t, s, CancelRun{})

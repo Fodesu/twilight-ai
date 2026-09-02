@@ -23,7 +23,7 @@ func TestExpiredLeaseAllowsGrantlessModelRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)}
-	env, err := ProtocolV1.BuildEnvelope("run-1", DeriveInputCommandID("run-1", in.ID), AcceptInput{Input: in})
+	env, err := ProtocolV1().BuildEnvelope("run-1", DeriveInputCommandID("run-1", in.ID), AcceptInput{Input: in})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestExpiredLeaseAllowsGrantlessModelRecovery(t *testing.T) {
 	}
 
 	clock = time.Unix(1002, 0)
-	recoverEnv, err := ProtocolV1.BuildEnvelope("run-1", DeriveModelRecoveryCommandID("run-1", prep.StepID, claim), RecoverModelExecution{StepID: prep.StepID, Claim: claim})
+	recoverEnv, err := ProtocolV1().BuildEnvelope("run-1", DeriveModelRecoveryCommandID("run-1", prep.StepID, claim), RecoverModelExecution{StepID: prep.StepID, Claim: claim})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestZeroDeadlineRejectsGrantlessRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)}
-	env, err := ProtocolV1.BuildEnvelope("run-1", DeriveInputCommandID("run-1", in.ID), AcceptInput{Input: in})
+	env, err := ProtocolV1().BuildEnvelope("run-1", DeriveInputCommandID("run-1", in.ID), AcceptInput{Input: in})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestZeroDeadlineRejectsGrantlessRecovery(t *testing.T) {
 	if _, err := rt.Commit(ctx, CommitRequest{Command: startEnv}); err != nil {
 		t.Fatal(err)
 	}
-	recoverEnv, _ := ProtocolV1.BuildEnvelope("run-1", DeriveModelRecoveryCommandID("run-1", prep.StepID, claim), RecoverModelExecution{StepID: prep.StepID, Claim: claim})
+	recoverEnv, _ := ProtocolV1().BuildEnvelope("run-1", DeriveModelRecoveryCommandID("run-1", prep.StepID, claim), RecoverModelExecution{StepID: prep.StepID, Claim: claim})
 	if _, err := rt.Commit(ctx, CommitRequest{Command: recoverEnv}); err == nil {
 		t.Fatal("grantless recover accepted on non-expiring lease")
 	}
@@ -116,7 +116,7 @@ func TestGrantlessModelRecoveryRejectsWrongClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)}
-	env, err := ProtocolV1.BuildEnvelope("run-1", DeriveInputCommandID("run-1", in.ID), AcceptInput{Input: in})
+	env, err := ProtocolV1().BuildEnvelope("run-1", DeriveInputCommandID("run-1", in.ID), AcceptInput{Input: in})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestGrantlessModelRecoveryRejectsWrongClaim(t *testing.T) {
 	}
 	clock = time.Unix(1002, 0)
 	wrong := ExecutionClaim("other-claim")
-	recoverEnv, err := ProtocolV1.BuildEnvelope("run-1", DeriveModelRecoveryCommandID("run-1", prep.StepID, wrong), RecoverModelExecution{StepID: prep.StepID, Claim: wrong})
+	recoverEnv, err := ProtocolV1().BuildEnvelope("run-1", DeriveModelRecoveryCommandID("run-1", prep.StepID, wrong), RecoverModelExecution{StepID: prep.StepID, Claim: wrong})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestRecoverExpiredRecoversExecutingModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)}
-	env, err := ProtocolV1.BuildEnvelope("run-1", DeriveInputCommandID("run-1", in.ID), AcceptInput{Input: in})
+	env, err := ProtocolV1().BuildEnvelope("run-1", DeriveInputCommandID("run-1", in.ID), AcceptInput{Input: in})
 	if err != nil {
 		t.Fatal(err)
 	}

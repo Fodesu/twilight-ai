@@ -129,7 +129,7 @@ func (l *Loop) runModelStep(ctx context.Context, runtime run.Runtime, events Eve
 
 	var completion run.AgentCommand
 	var catalogErr error
-	invoker, resolveErr := l.Models.Resolve(modelStep.Model)
+	invoker, resolveErr := l.Models.ResolveModel(modelStep.Model)
 	switch {
 	case resolveErr != nil:
 		catalogErr = resolveErr

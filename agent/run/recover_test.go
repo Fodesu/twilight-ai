@@ -46,7 +46,7 @@ func TestRunExpiredRecoveryRecoversExpiredModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)}
-	env, err := ProtocolV1.BuildEnvelope("run-1", DeriveInputCommandID("run-1", in.ID), AcceptInput{Input: in})
+	env, err := ProtocolV1().BuildEnvelope("run-1", DeriveInputCommandID("run-1", in.ID), AcceptInput{Input: in})
 	if err != nil {
 		t.Fatal(err)
 	}

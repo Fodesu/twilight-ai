@@ -36,7 +36,7 @@ type RequestPlan struct {
 // provider binding never enters the frozen request. The same ModelRef must
 // resolve to equivalent execution semantics for the life of a Run (RUN-LOP-7).
 type ModelCatalog interface {
-	Resolve(run.ModelRef) (ModelInvoker, error)
+	ResolveModel(run.ModelRef) (ModelInvoker, error)
 }
 
 type ModelInvoker interface {
@@ -50,7 +50,7 @@ type StreamingModelInvoker interface {
 }
 
 type ToolCatalog interface {
-	Resolve(run.ToolRef) (ExecutableTool, error)
+	ResolveTool(run.ToolRef) (ExecutableTool, error)
 }
 
 type ToolExecutionRequest struct {

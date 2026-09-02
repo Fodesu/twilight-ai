@@ -10,8 +10,8 @@ func TestProtocolForSelectsV1(t *testing.T) {
 	if p.Version() != SchemaVersion1 {
 		t.Fatalf("version = %d", p.Version())
 	}
-	if p.Version() != ProtocolV1.Version() {
-		t.Fatal("ProtocolFor(1) did not bind ProtocolV1")
+	if p.Version() != ProtocolV1().Version() {
+		t.Fatal("ProtocolFor(1) did not bind ProtocolV1()")
 	}
 	if _, err := ProtocolFor(0); err == nil {
 		t.Fatal("schema 0 accepted")

@@ -26,9 +26,9 @@ func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 		AcceptInput{Input: AgentInput{ID: "in", Payload: cj(`{"q":"hi"}`)}},
 	}
 	for _, cmd := range commands {
-		env, err := ProtocolV1.BuildEnvelope("run-1", CommandID("cmd-"+commandType(cmd)), cmd)
+		env, err := ProtocolV1().BuildEnvelope("run-1", CommandID("cmd-"+commandType(cmd)), cmd)
 		if err != nil {
-			t.Fatalf("ProtocolV1.BuildEnvelope(%T): %v", cmd, err)
+			t.Fatalf("ProtocolV1().BuildEnvelope(%T): %v", cmd, err)
 		}
 		raw, err := json.Marshal(env)
 		if err != nil {
@@ -65,9 +65,9 @@ func TestAgentEventJSONRoundTripRestoresVariants(t *testing.T) {
 	}
 	for i, fact := range facts {
 		typ := factType(fact)
-		digest, err := ProtocolV1.DigestFact(typ, fact)
+		digest, err := ProtocolV1().DigestFact(typ, fact)
 		if err != nil {
-			t.Fatalf("ProtocolV1.DigestFact(%T): %v", fact, err)
+			t.Fatalf("ProtocolV1().DigestFact(%T): %v", fact, err)
 		}
 		event := AgentEvent{
 			SchemaVersion: SchemaVersion1,
@@ -105,7 +105,7 @@ func TestTransitionRecordJSONRoundTripRestoresVariants(t *testing.T) {
 	events := make([]AgentEvent, len(facts))
 	for i, fact := range facts {
 		typ := factType(fact)
-		digest, err := ProtocolV1.DigestFact(typ, fact)
+		digest, err := ProtocolV1().DigestFact(typ, fact)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -151,7 +151,7 @@ func TestTransitionRecordJSONRoundTripRestoresVariants(t *testing.T) {
 
 func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
 	cmd := AcceptInput{Input: AgentInput{ID: "in", Payload: cj(`1`)}}
-	env, err := ProtocolV1.BuildEnvelope("run-1", DeriveInputCommandID("run-1", "in"), cmd)
+	env, err := ProtocolV1().BuildEnvelope("run-1", DeriveInputCommandID("run-1", "in"), cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
 }
 
 func TestWireCodecRejectsUnknownTypeAndDigestMismatch(t *testing.T) {
-	env, err := ProtocolV1.BuildEnvelope("run-1", "cmd-1", CancelRun{})
+	env, err := ProtocolV1().BuildEnvelope("run-1", "cmd-1", CancelRun{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestWireCodecRejectsUnknownTypeAndDigestMismatch(t *testing.T) {
 	}
 
 	fact := RunEnded{End: RunCompletedEnd{}}
-	digest, err := ProtocolV1.DigestFact(factType(fact), fact)
+	digest, err := ProtocolV1().DigestFact(factType(fact), fact)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestRunEndedTaggedUnionRejectsInvalidValues(t *testing.T) {
 		"unknown end variant":    {End: fakeRunEnd{}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := ProtocolV1.DigestFact("run_ended", fact); err == nil {
+			if _, err := ProtocolV1().DigestFact("run_ended", fact); err == nil {
 				t.Fatal("invalid tagged terminal value was accepted")
 			}
 		})
@@ -222,3 +222,43 @@ func TestRunEndedTaggedUnionRejectsInvalidValues(t *testing.T) {
 type fakeRunEnd struct{}
 
 func (fakeRunEnd) runEnd() {}
+
+// RunEnded wire is a tagged union: exactly one variant key.
+func TestRunEndedWireIsTaggedUnion(t *testing.T) {
+	cases := map[string]RunEnded{
+		"completed": {End: RunCompletedEnd{}},
+		"stopped":   {End: RunStoppedEnd{Reason: ReasonCancelled, UncertainCalls: []CallID{"c1"}}},
+		"failed":    {End: RunFailedEnd{Reason: ReasonProviderFailure, Failure: RunFailure{Class: FailureProvider}}},
+	}
+	for key, fact := range cases {
+		raw, err := json.Marshal(fact)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatal(err)
+		}
+		if len(m) != 1 || m[key] == nil {
+			t.Fatalf("%s wire = %s, want single %q key", key, raw, key)
+		}
+		var back RunEnded
+		if err := json.Unmarshal(raw, &back); err != nil {
+			t.Fatalf("%s: %v", key, err)
+		}
+		if fmt.Sprint(back.End) != fmt.Sprint(fact.End) {
+			t.Fatalf("%s round trip = %+v, want %+v", key, back.End, fact.End)
+		}
+	}
+	for name, raw := range map[string]string{
+		"no variant":        `{}`,
+		"two variants":      `{"completed":{},"stopped":{"reason":"cancelled"}}`,
+		"legacy flat":       `{"status":1}`,
+		"stopped no reason": `{"stopped":{}}`,
+	} {
+		var back RunEnded
+		if err := json.Unmarshal([]byte(raw), &back); err == nil {
+			t.Fatalf("%s accepted: %s", name, raw)
+		}
+	}
+}

@@ -39,7 +39,7 @@ func TestLoopRenewsLeaseDuringLongTool(t *testing.T) {
 	if _, err := rt.Create(context.Background(), newRun); err != nil {
 		t.Fatal(err)
 	}
-	env, err := ProtocolV1.BuildEnvelope("run-1", DeriveInputCommandID("run-1", "seed"), AcceptInput{Input: AgentInput{ID: "seed", Payload: cj(`{}`)}})
+	env, err := ProtocolV1().BuildEnvelope("run-1", DeriveInputCommandID("run-1", "seed"), AcceptInput{Input: AgentInput{ID: "seed", Payload: cj(`{}`)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestLoopReplacementFinishesInheritedClaim(t *testing.T) {
 	if _, err := rt.Create(context.Background(), newRun); err != nil {
 		t.Fatal(err)
 	}
-	env, err := ProtocolV1.BuildEnvelope("run-1", DeriveInputCommandID("run-1", "seed"), AcceptInput{Input: AgentInput{ID: "seed", Payload: cj(`{}`)}})
+	env, err := ProtocolV1().BuildEnvelope("run-1", DeriveInputCommandID("run-1", "seed"), AcceptInput{Input: AgentInput{ID: "seed", Payload: cj(`{}`)}})
 	if err != nil {
 		t.Fatal(err)
 	}

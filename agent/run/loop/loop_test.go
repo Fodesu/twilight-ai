@@ -45,7 +45,7 @@ func (b *blockingInvoker) Generate(context.Context, sdk.Request) (sdk.ModelResul
 
 type fakeCatalog struct{ invoker ModelInvoker }
 
-func (c fakeCatalog) Resolve(ModelRef) (ModelInvoker, error) { return c.invoker, nil }
+func (c fakeCatalog) ResolveModel(ModelRef) (ModelInvoker, error) { return c.invoker, nil }
 
 type fakeTool struct {
 	ref     ToolRef
@@ -65,7 +65,7 @@ func (f *fakeTool) Execute(ctx context.Context, req ToolExecutionRequest) ToolEx
 
 type fakeToolCatalog struct{ tools map[ToolRef]ExecutableTool }
 
-func (c fakeToolCatalog) Resolve(ref ToolRef) (ExecutableTool, error) {
+func (c fakeToolCatalog) ResolveTool(ref ToolRef) (ExecutableTool, error) {
 	t, ok := c.tools[ref]
 	if !ok {
 		return nil, fmt.Errorf("unknown tool %q", ref)
@@ -102,7 +102,7 @@ func toolSpec(t *testing.T, name string, policy ResponsePolicy) ToolSpec {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := ProtocolV1.DigestToolDefinition(frozen)
+	d, err := ProtocolV1().DigestToolDefinition(frozen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestLoopRejectsConcurrentRunForSameID(t *testing.T) {
 
 type errCatalog struct{ err error }
 
-func (c errCatalog) Resolve(ModelRef) (ModelInvoker, error) { return nil, c.err }
+func (c errCatalog) ResolveModel(ModelRef) (ModelInvoker, error) { return nil, c.err }
 
 func TestLoopModelCatalogErrorRecoversWithFreshLoop(t *testing.T) {
 	rt := loopRuntime(t)

@@ -186,10 +186,21 @@ func decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, e
 		}
 		return []Fact{completed, RunEnded{End: RunCompletedEnd{}}}, nil
 	}
+	bindings, err := checkToolCallBindings(ms, cmd)
+	if err != nil {
+		return nil, err
+	}
+	opened, err := openToolStep(s.RunID, cmd.StepID, bindings, cmd.Scheduling)
+	if err != nil {
+		return nil, err
+	}
+	return []Fact{completed, opened}, nil
+}
 
-	// Validate bindings against the frozen ToolSpecs and the model result,
-	// then freeze the full call set (Waiting requests included) here so
-	// Decide produces identical ToolStepOpened facts.
+// checkToolCallBindings validates the caller's bindings one-to-one against
+// the model result and the frozen ToolSpecs (RUN-MCH-2) and returns them with
+// Response cleared, ready for openToolStep to derive.
+func checkToolCallBindings(ms *ModelStep, cmd *SubmitModelResult) ([]ToolCallBinding, error) {
 	if len(cmd.Calls) != len(cmd.Result.ToolCalls) {
 		return nil, rejectionf("model result: %d bindings for %d tool calls", len(cmd.Calls), len(cmd.Result.ToolCalls))
 	}
@@ -199,8 +210,9 @@ func decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, e
 	}
 	seen := make(map[CallID]bool, len(cmd.Calls))
 	bindings := make([]ToolCallBinding, len(cmd.Calls))
-	for i, b := range cmd.Calls {
-		rc := cmd.Result.ToolCalls[i]
+	for i := range cmd.Calls {
+		b := cmd.Calls[i]
+		rc := &cmd.Result.ToolCalls[i]
 		if b.CallID == "" {
 			return nil, rejectionf("model result: binding %d has empty CallID", i)
 		}
@@ -211,87 +223,94 @@ func decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, e
 			return nil, rejectionf("model result: duplicate CallID %q", b.CallID)
 		}
 		seen[b.CallID] = true
-
-		// Cross-check the binding against the model result: the authority
-		// accepts only bindings for the tool the model actually named, with
-		// the arguments the model actually produced (RUN-MCH-2).
-		if spec, known := specByName[rc.ToolName]; known {
-			if b.ToolRef != spec.Ref {
-				return nil, rejectionf("model result: binding %q ToolRef %q does not match frozen spec ref %q for tool %q", b.CallID, b.ToolRef, spec.Ref, rc.ToolName)
-			}
-			if b.DefinitionDigest != spec.DefinitionDigest {
-				return nil, rejectionf("model result: binding %q definition digest does not match frozen ToolSpec", b.CallID)
-			}
-			if b.Policy != spec.Policy {
-				return nil, rejectionf("model result: binding %q policy does not match frozen ToolSpec", b.CallID)
-			}
-		} else {
-			// Unknown ToolRef stays an unresolved DirectExecution binding with
-			// an empty definition digest; StartToolCalls records the lookup
-			// failure (RUN-MCH-2).
-			if string(b.ToolRef) != rc.ToolName {
-				return nil, rejectionf("model result: binding %q ToolRef %q does not match result tool %q", b.CallID, b.ToolRef, rc.ToolName)
-			}
-			if b.Policy != DirectExecution || b.DefinitionDigest != "" {
-				return nil, rejectionf("model result: unresolved binding %q must be DirectExecution with empty digest", b.CallID)
-			}
-		}
-		wantArgs, argsCanonical := canonicalArgumentsForCompare(rc.Input)
-		if !argsCanonical {
-			return nil, rejectionf("model result: call %q input is not frozen canonical JSON", b.CallID)
-		}
-		if !b.Arguments.Equal(wantArgs) {
-			return nil, rejectionf("model result: binding %q arguments do not match the model result", b.CallID)
-		}
-		wantBinding, err := digestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
-		if err != nil {
+		if err := checkBindingAgainstResult(&b, rc, specByName); err != nil {
 			return nil, err
 		}
-		if b.BindingDigest != wantBinding {
-			return nil, rejectionf("model result: binding %q binding digest mismatch", b.CallID)
-		}
+		b.Response = nil // derived by openToolStep; callers leave it empty
 		bindings[i] = b
-		bindings[i].Response = nil // derived below; callers leave it empty
 	}
+	return bindings, nil
+}
 
+// checkBindingAgainstResult accepts only a binding for the tool the model
+// actually named, with the arguments the model actually produced. A known
+// tool must match its frozen ToolSpec; an unknown one stays an unresolved
+// DirectExecution binding that StartToolCalls records as a lookup failure.
+func checkBindingAgainstResult(b *ToolCallBinding, rc *ModelToolCall, specByName map[string]ToolSpec) error {
+	if spec, known := specByName[rc.ToolName]; known {
+		if b.ToolRef != spec.Ref {
+			return rejectionf("model result: binding %q ToolRef %q does not match frozen spec ref %q for tool %q", b.CallID, b.ToolRef, spec.Ref, rc.ToolName)
+		}
+		if b.DefinitionDigest != spec.DefinitionDigest {
+			return rejectionf("model result: binding %q definition digest does not match frozen ToolSpec", b.CallID)
+		}
+		if b.Policy != spec.Policy {
+			return rejectionf("model result: binding %q policy does not match frozen ToolSpec", b.CallID)
+		}
+	} else {
+		if string(b.ToolRef) != rc.ToolName {
+			return rejectionf("model result: binding %q ToolRef %q does not match result tool %q", b.CallID, b.ToolRef, rc.ToolName)
+		}
+		if b.Policy != DirectExecution || b.DefinitionDigest != "" {
+			return rejectionf("model result: unresolved binding %q must be DirectExecution with empty digest", b.CallID)
+		}
+	}
+	wantArgs, argsCanonical := canonicalArgumentsForCompare(rc.Input)
+	if !argsCanonical {
+		return rejectionf("model result: call %q input is not frozen canonical JSON", b.CallID)
+	}
+	if !b.Arguments.Equal(wantArgs) {
+		return rejectionf("model result: binding %q arguments do not match the model result", b.CallID)
+	}
+	wantBinding, err := digestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
+	if err != nil {
+		return err
+	}
+	if b.BindingDigest != wantBinding {
+		return rejectionf("model result: binding %q binding digest mismatch", b.CallID)
+	}
+	return nil
+}
+
+// openToolStep derives the ToolStep identity from the ordered binding set,
+// attaches a ResponseRequest to every call whose policy waits, and freezes
+// the scheduling (RUN-LOP-1).
+func openToolStep(runID RunID, source StepID, bindings []ToolCallBinding, scheduling ToolScheduling) (ToolStepOpened, error) {
 	setDigest, err := digestBindingSet(bindings)
 	if err != nil {
-		return nil, err
+		return ToolStepOpened{}, err
 	}
-	toolStepID := DeriveToolStepID(cmd.StepID, setDigest)
+	toolStepID := DeriveToolStepID(source, setDigest)
 	for i := range bindings {
-		if bindings[i].Policy != ApprovalRequired && bindings[i].Policy != ExternalResponse {
+		kind, waits := responseKindForPolicy(bindings[i].Policy)
+		if !waits {
 			continue
-		}
-		kind := ResponseApproval
-		if bindings[i].Policy == ExternalResponse {
-			kind = ResponseExternal
 		}
 		reqDigest, err := digestToolCallBinding(bindings[i].CallID, bindings[i].DefinitionDigest, bindings[i].Policy, bindings[i].Arguments)
 		if err != nil {
-			return nil, err
+			return ToolStepOpened{}, err
 		}
 		bindings[i].Response = &ResponseRequest{
-			RunID:         s.RunID,
+			RunID:         runID,
 			StepID:        toolStepID,
 			CallID:        bindings[i].CallID,
-			ID:            DeriveResponseID(s.RunID, toolStepID, bindings[i].CallID, kind),
+			ID:            DeriveResponseID(runID, toolStepID, bindings[i].CallID, kind),
 			Kind:          kind,
 			Payload:       bindings[i].Arguments,
 			RequestDigest: reqDigest,
 		}
 	}
-	scheduling, err := normalizeToolScheduling(cmd.Scheduling)
+	normalized, err := normalizeToolScheduling(scheduling)
 	if err != nil {
-		return nil, rejectionf("model result: %v", err)
+		return ToolStepOpened{}, rejectionf("model result: %v", err)
 	}
-	return []Fact{completed, ToolStepOpened{
+	return ToolStepOpened{
 		StepID:           toolStepID,
-		Source:           cmd.StepID,
+		Source:           source,
 		BindingSetDigest: setDigest,
 		Calls:            bindings,
-		Scheduling:       scheduling,
-	}}, nil
+		Scheduling:       normalized,
+	}, nil
 }
 
 // canonicalArgumentsForCompare canonicalizes a model result's tool input for

@@ -98,8 +98,8 @@ func TestSQLiteReopenLoadsSnapshotAndRecordVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, _ := run.ProtocolV1.EncodeMachineState(&before.State)
-	b, _ := run.ProtocolV1.EncodeMachineState(&after.State)
+	a, _ := run.ProtocolV1().EncodeMachineState(&before.State)
+	b, _ := run.ProtocolV1().EncodeMachineState(&after.State)
 	if string(a) != string(b) || before.Revision != after.Revision {
 		t.Fatalf("reopened snapshot differs:\n before %s\n after  %s", a, b)
 	}
@@ -332,7 +332,7 @@ func freezeSpec(t *testing.T, def sdk.ToolDefinition) run.ToolSpec {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := run.ProtocolV1.DigestToolDefinition(frozen)
+	d, err := run.ProtocolV1().DigestToolDefinition(frozen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -345,16 +345,16 @@ func prepareFromSnap(t *testing.T, snap run.RuntimeSnapshot, req sdk.Request, sp
 	if err != nil {
 		t.Fatal(err)
 	}
-	reqDigest, err := run.ProtocolV1.DigestRequest(frozenReq)
+	reqDigest, err := run.ProtocolV1().DigestRequest(frozenReq)
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolsDigest, err := run.ProtocolV1.DigestToolSpecs(specs)
+	toolsDigest, err := run.ProtocolV1().DigestToolSpecs(specs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	model := run.ModelRef(frozenReq.Model)
-	binding, err := run.ProtocolV1.DigestModelStepBinding(model, reqDigest, toolsDigest)
+	binding, err := run.ProtocolV1().DigestModelStepBinding(model, reqDigest, toolsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +378,7 @@ func commit(t *testing.T, rt run.Runtime, runID run.RunID, id run.CommandID, bas
 	case run.StartToolCall:
 		id = run.DeriveStartCommandID(runID, c.StepID, c.CallID, c.Claim)
 	}
-	env, err := run.ProtocolV1.BuildEnvelope(runID, id, cmd)
+	env, err := run.ProtocolV1().BuildEnvelope(runID, id, cmd)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -91,7 +91,7 @@ type TransitionRecord struct {
 
 `CommandEnvelope.Digest` 覆盖 schema、type 与完整 command；RunID、CommandID、BaseRevision 和 grant 属于 envelope/commit metadata。`AgentEvent.Digest` 覆盖 schema、type 与完整 fact。`TransitionDigest` 覆盖自身以外的完整 transition，包括有序 event group。
 
-**RUN-WIR-3** 一个 transition 的 event 数至少为 1；其 RunID、Revision、CommandID、CommandDigest 相同，Index 从 0 连续递增。revision 从 1 连续递增。构造 command 必须使用该 Run 的 `Protocol.BuildEnvelope`（Loop 通过 `RuntimeSnapshot.Protocol()` 取得）。`agent/run` 不提供隐式选择版本的包级 `BuildEnvelope`、`Decide`、`Evolve` 或 `Digest*` 函数；新 Run 与测试显式使用 `ProtocolV1`。构造与验证 transition 必须使用 `BuildTransitionRecord`、`ValidateTransitionRecord`。所有公开返回值具有 detached snapshot 语义。
+**RUN-WIR-3** 一个 transition 的 event 数至少为 1；其 RunID、Revision、CommandID、CommandDigest 相同，Index 从 0 连续递增。revision 从 1 连续递增。构造 command 必须使用该 Run 的 `Protocol.BuildEnvelope`（Loop 通过 `RuntimeSnapshot.Protocol()` 取得）。`agent/run` 不提供隐式选择版本的包级 `BuildEnvelope`、`Decide`、`Evolve` 或 `Digest*` 函数；新 Run 与测试显式使用 `ProtocolV1()`。构造与验证 transition 必须使用 `BuildTransitionRecord`、`ValidateTransitionRecord`。所有公开返回值具有 detached snapshot 语义。
 
 下列 identity 稳定派生并由 Commit 验证：
 
@@ -224,7 +224,7 @@ func (RunFailedEnd) runEnd() {}
 type RunEnded struct { End RunEnd }
 ```
 
-`RunEnded.End` 必须恰好是上述三个 variant 之一；`RunStoppedEnd.Reason` 必须非空，`RunFailedEnd.Reason` 必须是失败原因，`RunFailedEnd.Failure.Class` 必须非空。`RunEnded` 是 terminal transition 的最后一个 fact。RunStatus、RunResult 等读取模型从该 union 派生。当前 v1 wire body 使用 `status/reason/failure` 以及可选的 `uncertainCalls` / `uncertainModel`；codec 负责在 wire 与 union 之间做严格映射，并拒绝 `RunActive`、缺失字段或多余字段。Cancel 时仍 Executing 的 tool call 与 model step 必须写入 `RunStoppedEnd` 并投影到 `RunResult`，不得只留下 `stopped/cancelled`。
+`RunEnded.End` 必须恰好是上述三个 variant 之一；`RunStoppedEnd.Reason` 必须非空，`RunFailedEnd.Reason` 必须是失败原因，`RunFailedEnd.Failure.Class` 必须非空。`RunEnded` 是 terminal transition 的最后一个 fact。RunStatus、RunResult 等读取模型从该 union 派生。v1 wire 是 tagged union：`{"completed":{}}`、`{"stopped":{reason, uncertainCalls?, uncertainModel?}}` 或 `{"failed":{reason, failure}}`，恰有一个 variant key；codec 拒绝零个或多个 variant、缺失字段与多余字段。Cancel 时仍 Executing 的 tool call 与 model step 必须写入 `RunStoppedEnd` 并投影到 `RunResult`，不得只留下 `stopped/cancelled`。
 
 ```text
 ModelStep: Prepared -> Executing -> Completed
@@ -345,7 +345,7 @@ func (Protocol) BuildEnvelope(run RunID, id CommandID, cmd AgentCommand) (Comman
 func (Protocol) EncodeMachineState(*MachineState) ([]byte, error) // 持久化 snapshot bytes，含 Current
 func (Protocol) DecodeMachineState([]byte) (MachineState, error)
 func (Protocol) ValidateHeader(*RunHeader) error
-var ProtocolV1 Protocol // SchemaVersion1 绑定；新 Run 的创建版本。没有委托它的包级函数
+func ProtocolV1() Protocol // SchemaVersion1 绑定；新 Run 的创建版本。没有委托它的包级函数
 type CommitRequest struct {
     BaseRevision uint64
     Grant ExecutionGrant
@@ -366,7 +366,7 @@ type CommitResult struct {
 所有 Runtime implementation 在自己的 critical section/transaction 内调用同一个 pure `EvaluateCommit`。顺序固定为：
 
 ```text
-1 validate envelope RunID/schema/type/digest
+1 validate envelope RunID/schema/type/digest（digest 不匹配为不可重试错误，不映射为 conflict）
 2 lookup prior transition by CommandID
 3 exact digest replay -> AlreadyApplied + original complete event group
 4 same CommandID/different digest -> conflict
@@ -387,7 +387,7 @@ type CommitResult struct {
 
 **RUN-CMT-6** Commit 必须原子保存新 MachineState 与完整 TransitionRecord，保证 event group 完整写入。`CommitResult`、Load 与 Record 返回 detached values。预期拒绝映射为 `ErrCommandConflict`、`ErrStaleRuntime`、`ErrRunTerminal`；transport/storage failure 保持可判别且不得伪装为 rejection。
 
-**RUN-CMT-7** 每个 Run 的协议版本是 `RunHeader.SchemaVersion`，在 Create 时冻结。`RuntimeSnapshot.SchemaVersion` 必须等于该 header。`ProtocolFor(header.SchemaVersion)` 在 Run 边界返回绑定了该版本 digest/decode/Decide/Evolve 函数的 `Protocol` 值；随后的方法调用不再接受 version 参数。`EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Protocol 的 Version。`agent/run` 不保存进程全局的当前写入版本，也不提供隐式选择版本的包级函数；新 Run 由 `NewRun.SchemaVersion` 决定版本。v1 Run 的 replay 必须继续使用 `ProtocolV1`，即使进程已支持更高版本。Loop 通过 `RuntimeSnapshot.Protocol().BuildEnvelope` 构造写入该 Run 的 envelope。
+**RUN-CMT-7** 每个 Run 的协议版本是 `RunHeader.SchemaVersion`，在 Create 时冻结。`RuntimeSnapshot.SchemaVersion` 必须等于该 header。`ProtocolFor(header.SchemaVersion)` 在 Run 边界返回绑定了该版本 digest/decode/Decide/Evolve 函数的 `Protocol` 值；随后的方法调用不再接受 version 参数。`EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Protocol 的 Version。`agent/run` 不保存进程全局的当前写入版本，也不提供隐式选择版本的包级函数；新 Run 由 `NewRun.SchemaVersion` 决定版本。v1 Run 的 replay 必须继续使用 `ProtocolV1()`，即使进程已支持更高版本。Loop 通过 `RuntimeSnapshot.Protocol().BuildEnvelope` 构造写入该 Run 的 envelope。
 
 `Runtime` 的唯一实现叠在 `Store` 上。`Store` 是追加式合同：
 
@@ -438,10 +438,10 @@ type RequestPlan struct {
     PlanningToken run.PlanningToken
     Tools []run.ToolSpec
 }
-type ModelCatalog interface { Resolve(run.ModelRef) (ModelInvoker, error) }
+type ModelCatalog interface { ResolveModel(run.ModelRef) (ModelInvoker, error) }
 type ModelInvoker interface { Generate(context.Context, sdk.Request) (sdk.ModelResult, error) }
 type StreamingModelInvoker interface { Stream(context.Context, sdk.Request) (sdk.ModelStream, error) }
-type ToolCatalog interface { Resolve(run.ToolRef) (ExecutableTool, error) }
+type ToolCatalog interface { ResolveTool(run.ToolRef) (ExecutableTool, error) }
 type ExecutableTool interface {
     Ref() run.ToolRef
     Definition() sdk.ToolDefinition
@@ -486,7 +486,7 @@ func (*Loop) Run(context.Context, run.Runtime, run.RunID, EventSink) (LoopResult
 
 **RUN-LOP-1** `ExecutionPolicy` 是 Loop 的本地执行策略。`ToolExecution` 与 `MaxParallel` 在 `SubmitModelResult` 时写入 `ToolStepOpened.Scheduling` 并冻结在该 ToolStep 上；后续 Loop 必须按冻结值调度，不得改用当时进程的 ExecutionPolicy。未指定 `ToolExecution` 时冻结为 `parallel`，`MaxParallel` 零值表示当前 Start 批次全部 Pending call 可并行。空 Mode 按 parallel 解释，不得在 normalize 时填入默认字符串。nil handler 时结构错误的模型结果选择 `ModelRejectFailRun`；重试由 handler 明确返回 `ModelRejectRetry`。`streaming` 表示是否请求可用的流式模型端口；两种模式都产生同一完整 `sdk.ModelResult`。`LeaseRenewInterval` 是 worker 续期间隔（RUN-CMT-8）：模型与工具 worker 在效果执行期间按该间隔调用 `Runtime.RenewLease`，续期被拒时取消该 worker 的 ctx；零值关闭续期，只对 lease 不超时的 Runtime 正确。
 
-**RUN-LOP-7** `ModelRef` 是冻结请求中的执行身份。`ModelCatalog.Resolve` 在同一 Run 生命周期内必须把同一 `ModelRef` 解析为等价的执行语义。provider 绑定不进入 frozen request，因此 Catalog 不得把同一 ref 改绑到不同实现。
+**RUN-LOP-7** `ModelRef` 是冻结请求中的执行身份。`ModelCatalog.ResolveModel` 在同一 Run 生命周期内必须把同一 `ModelRef` 解析为等价的执行语义。provider 绑定不进入 frozen request，因此 Catalog 不得把同一 ref 改绑到不同实现。
 
 `LoopResult` 的语义固定为：`LoopWaiting` 时 `Result` 为 nil，表示没有可执行 effect、Run 仍为 active。`ExecutionRecovery` 等于 `NeedsRecovery(state)`：Model Executing，或 ToolStep 无 Pending 且仍有 Executing。该值为 true 时由 recovery authority 唤醒，`Reason` 为 `execution_recovery`；否则 `Reason` 为空。Waiting call 不进入 `LoopResult`；Application 通过 `Runtime.Load` / `Record` 与 `WaitingCalls` 读取。`LoopFinished` 时 `Result` 非 nil，并等于 terminal RunRecord 派生的 `RunResult`。
 
@@ -510,7 +510,7 @@ Loop.Run(ctx, runtime, runID, sink):
 
 **RUN-LOP-2** `NeedModelRequest` 调用 Planner，冻结 sdk.Request，验证 model、ordered InputIDs 与 ToolSpecs，计算 request/tools/binding digests 和 derived CommandID/StepID，再提交 Prepare。prepare stale 后重新 Load；同 revision 的内容拒绝不得 livelock 重试。业务停止统一使用 `CancelRun`。
 
-**RUN-LOP-3** `StartModelCall` 先 Commit start barrier；首次 `CommitAccepted` 或使用同一 command ID、同一 `ExecutionClaim` 精确重放得到原 grant 的 Loop，才拥有该 execution。Loop 必须在 `ClaimStore` 中保留该 attempt 的 claim 直到完成 settlement，其余 identity 按需派生；缺少 grant 的 replay 进入 reload 流程。调用只使用 frozen ModelRequest 的 detached SDK materialization。streaming 与 non-streaming 必须产生同一种完整 `sdk.ModelResult`；delta 只发 EventSink。`ModelCatalog.Resolve` 失败或返回 nil 时提交 `RecoverModelExecution` 并返回错误，不得把 Run 记为 `provider_failure`：尚未发生模型调用。provider 调用失败提交 `SubmitModelFailure`；ctx cancellation 提交 `RecoverModelExecution`；结构、binding 或 freeze 失败提交 `RejectModelResult`，并由调用方显式选择 retry 或 fail-run。成功结果只提交一次 `SubmitModelResult`。
+**RUN-LOP-3** `StartModelCall` 先 Commit start barrier；首次 `CommitAccepted` 或使用同一 command ID、同一 `ExecutionClaim` 精确重放得到原 grant 的 Loop，才拥有该 execution。Loop 必须在 `ClaimStore` 中保留该 attempt 的 claim 直到完成 settlement，其余 identity 按需派生；缺少 grant 的 replay 进入 reload 流程。调用只使用 frozen ModelRequest 的 detached SDK materialization。streaming 与 non-streaming 必须产生同一种完整 `sdk.ModelResult`；delta 只发 EventSink。`ModelCatalog.ResolveModel` 失败或返回 nil 时提交 `RecoverModelExecution` 并返回错误，不得把 Run 记为 `provider_failure`：尚未发生模型调用。provider 调用失败提交 `SubmitModelFailure`；ctx cancellation 提交 `RecoverModelExecution`；结构、binding 或 freeze 失败提交 `RejectModelResult`，并由调用方显式选择 retry 或 fail-run。成功结果只提交一次 `SubmitModelResult`。
 
 **RUN-LOP-4** Tool execution 先按 frozen binding resolve tool，并验证 Ref、definition digest、response policy 和 arguments。lookup/definition/argument failure 在 Pending 状态提交 `SubmitToolFailure(Known)`，不得跨越 start barrier。通过验证后逐 call 提交 `StartToolCall`；只有 Accepted owner 可执行。冻结的 `ToolStep.Scheduling` 决定 `parallel` 或 `sequential` 以及 `MaxParallel`；不得改用 Loop 进程当前的 ExecutionPolicy。每个结果以自己的 grant 提交。同一 ToolStep 中 DirectExecution 的 Pending call，在外层 ctx 未取消时于本次 `Run` 内按冻结 Scheduling 分批 Start 并结算；ctx 已取消时停止再 Start，只结算已持有 grant 的 call。`Next` 返回 `Idle` 时 Loop 返回 `LoopWaiting`，并用 `NeedsRecovery(state)` 设置 `ExecutionRecovery`。Loop 不解释 Waiting call，也不携带 `ResponseRequest`。Application 从 snapshot 读取 `WaitingCalls`，提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 之后再次 `Run`。tool panic 或 effect 状态无法确定的错误转为对该 call 的 Unknown，并提交 `SubmitToolFailure(Unknown)`。该 settlement 不取消同批 sibling workers，也不结束 Run。`CancelRun` 先把仍 Executing 的 call 记为 `ToolCallFailed(Unknown)`，再 `RunEnded(stopped/cancelled)`，并把这些 CallID 与仍 Executing 的 ModelStep 写入 `RunStoppedEnd` / `RunResult` 的 `UncertainCalls`、`UncertainModel`。Waiting call 无论有无 Executing sibling 都不记 Failed。已接受 start 的 worker 必须在收到外层取消后返回并尝试 settlement；settlement 使用独立 control context。lookup/definition/argument failure 只允许发生在 Pending；Executing 且本进程持有 start cache 时只重放 start 并结算，不得再提交 grantless Known。
 
@@ -542,7 +542,7 @@ type Event struct {
 
 ## 9. compatibility 与 conformance
 
-**RUN-CMP-1** 当前 pre-release schema v1 的 command/fact discriminator、wire fields、canonical digest、derived ID 和 `ProtocolV1.Evolve` 由 golden fixtures 保护；发布前有意修改协议时必须同步更新 fixture。v1 发布后，新增 variant、字段或折叠语义必须进入新 schema version，并继续 decode/fold 全部已发布版本。同一 Run 的 writer 不得混写不兼容 schema。
+**RUN-CMP-1** 当前 pre-release schema v1 的 command/fact discriminator、wire fields、canonical digest、derived ID 和 `ProtocolV1().Evolve` 由 golden fixtures 保护；发布前有意修改协议时必须同步更新 fixture。v1 发布后，新增 variant、字段或折叠语义必须进入新 schema version，并继续 decode/fold 全部已发布版本。同一 Run 的 writer 不得混写不兼容 schema。
 
 **RUN-CMP-2** Runtime conformance 必须覆盖：
 
@@ -561,7 +561,7 @@ Loop conformance 必须覆盖：
 - 单模型完成、tool round trip、approval/external response wait/resume；
 - known failure 继续、Unknown 继续、tool panic、aliased ToolRef 与 validation；
 - parallel/sequential 按冻结 `ToolStep.Scheduling` 调度，不得改用当时 ExecutionPolicy；
-- `ModelCatalog.Resolve` 失败或 nil 时恢复 ModelStep、Run 保持 active；
+- `ModelCatalog.ResolveModel` 失败或 nil 时恢复 ModelStep、Run 保持 active；
 - ctx cancellation、model recovery、explicit malformed-result disposition；
 - Cancel 将 Executing tool/model 投影到 `UncertainCalls` / `UncertainModel`；ExternalResponse reject 为 `response_rejected`；
 - streaming delta 与 nil result、EventSink committed observation；

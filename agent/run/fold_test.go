@@ -257,7 +257,7 @@ func TestGoldenEventStreamV1(t *testing.T) {
 	if maxRev != 9 {
 		t.Fatalf("golden stream has %d transitions, want 9", maxRev)
 	}
-	stateBytes, err := ProtocolV1.EncodeMachineState(&folded)
+	stateBytes, err := ProtocolV1().EncodeMachineState(&folded)
 	if err != nil {
 		t.Fatal(err)
 	}

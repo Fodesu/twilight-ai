@@ -27,7 +27,7 @@ func toolCallIndex(step run.ToolStep, callID run.CallID) int {
 }
 
 func (l *Loop) resolveExecutableTool(proto run.Protocol, call run.ToolCallState) (ExecutableTool, *run.ToolFailure) {
-	tool, resolveErr := l.Tools.Resolve(call.ToolRef)
+	tool, resolveErr := l.Tools.ResolveTool(call.ToolRef)
 	if resolveErr != nil {
 		return nil, &run.ToolFailure{Class: run.FailureToolLookup, Message: resolveErr.Error()}
 	}
