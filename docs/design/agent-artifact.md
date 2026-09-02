@@ -1,6 +1,6 @@
 # Twilight Agent Artifact Core
 
-状态：设计规范
+状态：设计草案。无实现；wire 与 claim 状态表在 Memory reference implementation 通过 conformance 前不冻结。
 
 本文定义 `agent/artifact`。文中的“必须”“不得”“应该”是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
 

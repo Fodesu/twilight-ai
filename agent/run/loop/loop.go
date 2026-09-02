@@ -52,6 +52,9 @@ func New(models ModelCatalog, tools ToolCatalog, planner RequestPlanner, policy 
 	if policy.MaxParallel < 0 {
 		return nil, errors.New("agent: loop: negative MaxParallel")
 	}
+	if policy.LeaseRenewInterval < 0 {
+		return nil, errors.New("agent: loop: negative LeaseRenewInterval")
+	}
 	return &Loop{Models: models, Tools: tools, Planner: planner, Execution: policy, Streaming: streaming,
 		starts: make(map[startKey]startAttempt), settlements: make(map[startKey]settlementAttempt), runs: make(map[run.RunID]struct{})}, nil
 }

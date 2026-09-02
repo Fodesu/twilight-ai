@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	run "github.com/memohai/twilight/agent/run"
 
@@ -157,6 +158,11 @@ type ExecutionPolicy struct {
 	// MaxParallel bounds local tool workers. Zero means all eligible calls in
 	// the current batch may run concurrently.
 	MaxParallel int
+	// LeaseRenewInterval is how often a running model or tool worker renews
+	// its execution lease through Runtime.RenewLease. It must be well below
+	// the Runtime's LeaseTTL (RUN-CMT-8); zero disables renewal and is only
+	// correct for a Runtime whose leases do not expire.
+	LeaseRenewInterval time.Duration
 }
 
 type LoopDisposition uint8

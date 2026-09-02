@@ -11,6 +11,10 @@ type Runtime interface {
 	Load(context.Context, RunID) (RuntimeSnapshot, error)
 	Commit(context.Context, CommitRequest) (CommitResult, error)
 	Record(context.Context, RunID) (RunRecord, error)
+	// RenewLease extends the lease behind grant on the Executing target
+	// (stepID alone for a ModelStep, stepID+callID for a tool call). Workers
+	// call it while an effect runs longer than the lease TTL (RUN-CMT-8).
+	RenewLease(ctx context.Context, runID RunID, stepID StepID, callID CallID, grant ExecutionGrant) error
 	// RecoverExpired grantless-commits recovery for expired execution leases.
 	// Hosts call it on a timer; Loop does not.
 	RecoverExpired(context.Context) (int, error)

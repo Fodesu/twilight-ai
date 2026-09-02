@@ -19,7 +19,9 @@ type runtime struct {
 }
 
 // RuntimeOptions configures lease occupancy for a Store-backed Runtime.
-// LeaseTTL 0 means leases do not expire (grant-holder recovery only).
+// LeaseTTL 0 means leases do not expire (grant-holder recovery only). A
+// positive LeaseTTL must exceed the longest gap between a worker's start and
+// its next RenewLease or settlement; see RUN-CMT-8.
 type RuntimeOptions struct {
 	LeaseTTL time.Duration
 	Now      func() time.Time
@@ -71,43 +73,76 @@ func (r *runtime) Create(ctx context.Context, run NewRun) (CreateResult, error) 
 	return CreateResult{Header: cloneRunHeader(header), Created: true}, nil
 }
 
+func (r *runtime) loadHead(ctx context.Context, runID RunID) (RunHead, error) {
+	head, err := r.store.LoadHead(ctx, runID)
+	if err != nil {
+		return RunHead{}, err
+	}
+	if err := r.validateHead(runID, &head); err != nil {
+		return RunHead{}, err
+	}
+	return head, nil
+}
+
+func (r *runtime) validateHead(runID RunID, head *RunHead) error {
+	if head.Header.RunID != runID || head.State.RunID != runID {
+		return fmt.Errorf("agent: runtime: stored RunID %q/%q does not match %q", head.Header.RunID, head.State.RunID, runID)
+	}
+	if err := ValidateRunHeader(&head.Header); err != nil {
+		return fmt.Errorf("agent: runtime: invalid header: %w", err)
+	}
+	if err := ValidateMachineState(&head.State); err != nil {
+		return fmt.Errorf("agent: runtime: invalid snapshot: %w", err)
+	}
+	return nil
+}
+
+func snapshotOf(head *RunHead) RuntimeSnapshot {
+	return RuntimeSnapshot{State: cloneMachineState(&head.State), Revision: head.Revision, SchemaVersion: head.Header.SchemaVersion}
+}
+
 func (r *runtime) Load(ctx context.Context, runID RunID) (RuntimeSnapshot, error) {
 	if err := checkContext(ctx); err != nil {
 		return RuntimeSnapshot{}, err
 	}
-	stored, err := r.store.View(ctx, runID)
+	head, err := r.loadHead(ctx, runID)
 	if err != nil {
 		return RuntimeSnapshot{}, err
 	}
-	snapshot := RuntimeSnapshot{State: stored.State, Revision: stored.Revision, SchemaVersion: stored.Header.SchemaVersion}
-	if stored.Header.RunID != runID || stored.State.RunID != runID {
-		return RuntimeSnapshot{}, fmt.Errorf("agent: runtime: stored RunID %q/%q does not match %q", stored.Header.RunID, stored.State.RunID, runID)
-	}
-	if err := ValidateRunHeader(&stored.Header); err != nil {
-		return RuntimeSnapshot{}, fmt.Errorf("agent: runtime: invalid header: %w", err)
-	}
-	if err := ValidateMachineState(&snapshot.State); err != nil {
-		return RuntimeSnapshot{}, fmt.Errorf("agent: runtime: invalid snapshot: %w", err)
-	}
-	return snapshot, nil
+	return snapshotOf(&head), nil
 }
 
+//nolint:gocritic // hugeParam: Runtime.Commit is the public value-based contract.
 func (r *runtime) Commit(ctx context.Context, req CommitRequest) (CommitResult, error) {
 	if err := checkContext(ctx); err != nil {
 		return CommitResult{}, err
 	}
+	runID := req.Command.RunID
 	var result CommitResult
-	err := r.store.Update(ctx, req.Command.RunID, func(stored *StoredRun) error {
+	// The whole evaluation runs inside the Store's per-Run critical section
+	// (RUN-CMT-2): the head cannot move between read and write, so there is
+	// no compare-and-swap retry and concurrent writers of one Run serialize.
+	err := r.store.Commit(ctx, runID, func(tx RunTx) (*Append, error) {
+		head := tx.Head()
+		if err := r.validateHead(runID, &head); err != nil {
+			return nil, err
+		}
 		var err error
-		result, err = r.evaluateAndApply(stored, req)
-		return err
+		var appendReq *Append
+		result, appendReq, err = r.evaluate(tx, &head, &req)
+		return appendReq, err
 	})
-	return result, err
+	if err != nil {
+		return CommitResult{}, err
+	}
+	return result, nil
 }
 
-func (r *runtime) evaluateAndApply(stored *StoredRun, req CommitRequest) (CommitResult, error) {
+// evaluate runs EvaluateCommit against head and returns either a final
+// result (append == nil) or the Append the caller must persist.
+func (r *runtime) evaluate(tx RunTx, head *RunHead, req *CommitRequest) (CommitResult, *Append, error) {
 	key := grantKey(req.Command.Command)
-	lease, hasLease := stored.Leases[key]
+	lease, hasLease := head.Leases[key]
 	grantValid := hasLease && req.Grant != "" && lease.Grant == req.Grant
 	if cmd, ok := req.Command.Command.(RecoverModelExecution); ok && req.Grant != "" {
 		grantValid = grantValid && lease.Claim == cmd.Claim
@@ -118,116 +153,117 @@ func (r *runtime) evaluateAndApply(stored *StoredRun, req CommitRequest) (Commit
 	}
 
 	var prior *TransitionRecord
-	if record, ok := stored.Transitions[req.Command.ID]; ok {
-		copy := cloneTransitionRecord(&record)
-		prior = &copy
+	if record, found, err := tx.LookupTransition(req.Command.ID); err != nil {
+		return CommitResult{}, nil, err
+	} else if found {
+		prior = &record
 	}
-	proto, err := ProtocolFor(stored.Header.SchemaVersion)
+	proto, err := ProtocolFor(head.Header.SchemaVersion)
 	if err != nil {
-		return CommitResult{}, err
+		return CommitResult{}, nil, err
 	}
-	decision, err := EvaluateCommit(stored.State, stored.Revision, prior, req, grantValid, recoveryValid, proto)
+	decision, err := EvaluateCommit(head.State, head.Revision, prior, *req, grantValid, recoveryValid, proto)
 	if err != nil {
-		return CommitResult{}, err
+		return CommitResult{}, nil, err
 	}
 	switch decision.Kind {
 	case DecisionAlreadyApplied:
 		var grant ExecutionGrant
-		if _, ok := req.Command.Command.(StartModelExecution); ok {
-			candidate := stored.StartGrants[req.Command.ID]
-			if candidate != "" && stored.Leases[key].Grant == candidate {
-				grant = candidate
-			}
-		} else if _, ok := req.Command.Command.(StartToolCall); ok {
-			candidate := stored.StartGrants[req.Command.ID]
-			if candidate != "" && stored.Leases[key].Grant == candidate {
-				grant = candidate
+		switch req.Command.Command.(type) {
+		case StartModelExecution, StartToolCall:
+			// The start's grant is live only while the lease it minted is
+			// still the lease on record for this target.
+			if hasLease && lease.StartCommandID == req.Command.ID {
+				grant = lease.Grant
 			}
 		}
-		return CommitResult{Status: CommitAlreadyApplied,
-			Snapshot: RuntimeSnapshot{State: cloneMachineState(&stored.State), Revision: stored.Revision, SchemaVersion: stored.Header.SchemaVersion},
-			Events:   cloneEvents(decision.Events), Grant: grant}, nil
+		return CommitResult{Status: CommitAlreadyApplied, Snapshot: snapshotOf(head),
+			Events: cloneEvents(decision.Events), Grant: grant}, nil, nil
 	case DecisionConflict:
-		return CommitResult{}, ErrCommandConflict
+		return CommitResult{}, nil, ErrCommandConflict
 	case DecisionStale:
 		if decision.Reject != nil && !errors.Is(decision.Reject, ErrStaleRuntime) {
-			return CommitResult{}, fmt.Errorf("%w: %w", ErrStaleRuntime, decision.Reject)
+			return CommitResult{}, nil, fmt.Errorf("%w: %w", ErrStaleRuntime, decision.Reject)
 		}
-		return CommitResult{}, ErrStaleRuntime
+		return CommitResult{}, nil, ErrStaleRuntime
 	case DecisionTerminal:
-		return CommitResult{}, ErrRunTerminal
+		return CommitResult{}, nil, ErrRunTerminal
 	}
 
-	storedRecord := cloneTransitionRecord(&decision.Transition)
-	stored.State = cloneMachineState(&decision.NewState)
-	stored.Revision++
-	stored.Watermark = stored.Revision
-	if stored.Transitions == nil {
-		stored.Transitions = make(map[CommandID]TransitionRecord)
+	appendReq := Append{
+		ExpectedRevision: head.Revision,
+		Transition:       cloneTransitionRecord(&decision.Transition),
+		State:            cloneMachineState(&decision.NewState),
 	}
-	stored.Transitions[req.Command.ID] = storedRecord
-	stored.Log = append(stored.Log, storedRecord)
-
 	var minted ExecutionGrant
 	switch cmd := req.Command.Command.(type) {
 	case StartModelExecution, StartToolCall:
 		minted = newGrant()
-		if stored.Leases == nil {
-			stored.Leases = make(map[string]ExecutionLease)
-		}
-		if stored.StartGrants == nil {
-			stored.StartGrants = make(map[CommandID]ExecutionGrant)
-		}
-		lease := ExecutionLease{Grant: minted, StartCommandID: req.Command.ID, Deadline: r.leaseDeadline()}
+		newLease := ExecutionLease{Grant: minted, StartCommandID: req.Command.ID, Deadline: r.leaseDeadline()}
 		switch c := any(cmd).(type) {
 		case StartModelExecution:
-			lease.Claim = c.Claim
+			newLease.Claim = c.Claim
 		case StartToolCall:
-			lease.Claim = c.Claim
+			newLease.Claim = c.Claim
 		}
-		stored.Leases[key] = lease
-		stored.StartGrants[req.Command.ID] = minted
+		appendReq.Leases.Put = map[string]ExecutionLease{key: newLease}
 	case SubmitModelResult, SubmitModelFailure, RejectModelResult, RecoverModelExecution,
 		SubmitToolResult, SubmitToolFailure:
-		active := stored.Leases[key]
-		delete(stored.Leases, key)
-		stored.forgetStartGrant(active.Grant)
+		appendReq.Leases.Delete = []string{key}
 	}
-	if stored.State.Status.Terminal() {
-		stored.clearLeases()
+	if decision.NewState.Status.Terminal() {
+		appendReq.Leases = LeaseOps{Clear: true}
 	}
-	return CommitResult{Status: CommitAccepted,
-		Snapshot: RuntimeSnapshot{State: cloneMachineState(&stored.State), Revision: stored.Revision, SchemaVersion: stored.Header.SchemaVersion},
-		Events:   cloneEvents(storedRecord.Events), Grant: minted}, nil
+	after := RunHead{Header: head.Header, State: decision.NewState, Revision: head.Revision + 1}
+	return CommitResult{Status: CommitAccepted, Snapshot: snapshotOf(&after),
+		Events: cloneEvents(appendReq.Transition.Events), Grant: minted}, &appendReq, nil
 }
 
 func (r *runtime) Record(ctx context.Context, runID RunID) (RunRecord, error) {
 	if err := checkContext(ctx); err != nil {
 		return RunRecord{}, err
 	}
-	stored, err := r.store.View(ctx, runID)
+	head, transitions, err := r.store.LoadRecord(ctx, runID)
 	if err != nil {
 		return RunRecord{}, err
 	}
-	header := stored.Header
-	snapshot := RuntimeSnapshot{State: stored.State, Revision: stored.Revision, SchemaVersion: header.SchemaVersion}
-	transitions := stored.Log
-	if err := ValidateRunHeader(&header); err != nil {
-		return RunRecord{}, fmt.Errorf("agent: runtime: invalid header: %w", err)
+	if err := r.validateHead(runID, &head); err != nil {
+		return RunRecord{}, err
+	}
+	if uint64(len(transitions)) != head.Revision {
+		return RunRecord{}, fmt.Errorf("%w: log has %d transitions, head revision %d", ErrLogTruncated, len(transitions), head.Revision)
 	}
 	for i := range transitions {
 		if err := ValidateTransitionRecord(&transitions[i]); err != nil {
 			return RunRecord{}, fmt.Errorf("agent: runtime: invalid transition %d: %w", i, err)
 		}
 	}
-	folded, revision, err := FoldRun(&header, transitions)
+	folded, revision, err := FoldRun(&head.Header, transitions)
 	if err != nil {
 		return RunRecord{}, fmt.Errorf("agent: runtime: fold: %w", err)
 	}
-	if revision != snapshot.Revision || !statesEquivalent(&folded, &snapshot.State) {
+	if revision != head.Revision || !statesEquivalent(&folded, &head.State) {
 		return RunRecord{}, errors.New("agent: runtime: snapshot diverges from transition log")
 	}
-	return RunRecord{Header: cloneRunHeader(header), Snapshot: cloneRuntimeSnapshot(snapshot), Transitions: cloneTransitionRecords(transitions)}, nil
+	return RunRecord{Header: cloneRunHeader(head.Header), Snapshot: snapshotOf(&head), Transitions: transitions}, nil
+}
+
+// RenewLease extends the live lease behind grant on the Executing target of
+// stepID/callID by one LeaseTTL from now. Workers call it periodically while
+// an effect runs so a long tool call is not recovered as Unknown under it.
+// With LeaseTTL zero it is a no-op after validating the grant.
+func (r *runtime) RenewLease(ctx context.Context, runID RunID, stepID StepID, callID CallID, grant ExecutionGrant) error {
+	if err := checkContext(ctx); err != nil {
+		return err
+	}
+	if grant == "" {
+		return ErrStaleRuntime
+	}
+	key := leaseKey(stepID, callID)
+	if key == "" {
+		return errors.New("agent: runtime: renew requires a step")
+	}
+	return r.store.RenewLease(ctx, runID, key, grant, r.leaseDeadline())
 }
 
 // RecoverExpired commits grantless recovery for every expired lease that
@@ -235,49 +271,55 @@ func (r *runtime) Record(ctx context.Context, runID RunID) (RunRecord, error) {
 // Unknown; an expired model step is recovered to Prepared. Hosts call this
 // on a timer; Loop does not. The dying process writes nothing.
 func (r *runtime) RecoverExpired(ctx context.Context) (int, error) {
-	ids, err := r.store.ListIDs(ctx)
+	if r.leaseTTL <= 0 {
+		return 0, nil
+	}
+	expired, err := r.store.ExpiredLeases(ctx, r.now())
 	if err != nil {
 		return 0, err
 	}
 	n := 0
-	for _, id := range ids {
-		stored, err := r.store.View(ctx, id)
+	for _, e := range expired {
+		head, err := r.loadHead(ctx, e.RunID)
+		if err != nil {
+			if errors.Is(err, ErrRunNotFound) {
+				continue
+			}
+			return n, err
+		}
+		if !r.leaseExpired(e.Lease) {
+			continue
+		}
+		proto, err := ProtocolFor(head.Header.SchemaVersion)
 		if err != nil {
 			return n, err
 		}
-		proto, err := ProtocolFor(stored.Header.SchemaVersion)
+		cmd, cmdID, ok := recoveryCommand(&head.State, e.Key, e.Lease)
+		if !ok {
+			continue
+		}
+		env, err := proto.BuildEnvelope(e.RunID, cmdID, cmd)
 		if err != nil {
 			return n, err
 		}
-		for key, lease := range stored.Leases {
-			if !r.leaseExpired(lease) {
+		res, err := r.Commit(ctx, CommitRequest{Command: env})
+		if err != nil {
+			if errors.Is(err, ErrStaleRuntime) || errors.Is(err, ErrRunTerminal) || errors.Is(err, ErrCommandConflict) {
 				continue
 			}
-			cmd, cmdID, ok := recoveryCommand(stored.State, key, lease)
-			if !ok {
-				continue
-			}
-			env, err := proto.BuildEnvelope(id, cmdID, cmd)
-			if err != nil {
-				return n, err
-			}
-			_, err = r.Commit(ctx, CommitRequest{Command: env})
-			if err != nil {
-				if errors.Is(err, ErrStaleRuntime) || errors.Is(err, ErrRunTerminal) {
-					continue
-				}
-				return n, err
-			}
+			return n, err
+		}
+		if res.Status == CommitAccepted {
 			n++
 		}
 	}
 	return n, nil
 }
 
-func recoveryCommand(state MachineState, key string, lease ExecutionLease) (AgentCommand, CommandID, bool) {
+func recoveryCommand(state *MachineState, key string, lease ExecutionLease) (AgentCommand, CommandID, bool) {
 	switch cur := state.Current.(type) {
 	case ModelStep:
-		if cur.Status != ModelExecuting || key != "model/"+string(cur.RefValue.ID) {
+		if cur.Status != ModelExecuting || key != leaseKey(cur.RefValue.ID, "") {
 			return nil, "", false
 		}
 		return RecoverModelExecution{StepID: cur.RefValue.ID, Claim: lease.Claim},
@@ -313,24 +355,37 @@ func (r *runtime) leaseExpired(lease ExecutionLease) bool {
 	return !r.now().Before(lease.Deadline)
 }
 
+// leaseKey addresses the execution target of a start: a ModelStep by step,
+// a tool call by step and call.
+func leaseKey(stepID StepID, callID CallID) string {
+	switch {
+	case stepID == "":
+		return ""
+	case callID == "":
+		return "model/" + string(stepID)
+	default:
+		return "call/" + string(stepID) + "/" + string(callID)
+	}
+}
+
 func grantKey(c AgentCommand) string {
 	switch cmd := c.(type) {
 	case StartModelExecution:
-		return "model/" + string(cmd.StepID)
+		return leaseKey(cmd.StepID, "")
 	case SubmitModelResult:
-		return "model/" + string(cmd.StepID)
+		return leaseKey(cmd.StepID, "")
 	case SubmitModelFailure:
-		return "model/" + string(cmd.StepID)
+		return leaseKey(cmd.StepID, "")
 	case RejectModelResult:
-		return "model/" + string(cmd.StepID)
+		return leaseKey(cmd.StepID, "")
 	case RecoverModelExecution:
-		return "model/" + string(cmd.StepID)
+		return leaseKey(cmd.StepID, "")
 	case StartToolCall:
-		return "call/" + string(cmd.StepID) + "/" + string(cmd.CallID)
+		return leaseKey(cmd.StepID, cmd.CallID)
 	case SubmitToolResult:
-		return "call/" + string(cmd.StepID) + "/" + string(cmd.CallID)
+		return leaseKey(cmd.StepID, cmd.CallID)
 	case SubmitToolFailure:
-		return "call/" + string(cmd.StepID) + "/" + string(cmd.CallID)
+		return leaseKey(cmd.StepID, cmd.CallID)
 	default:
 		return ""
 	}

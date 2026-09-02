@@ -64,10 +64,6 @@ func digestToolResponsePayloadV1(payload CanonicalJSON) (Digest, error) {
 	return sha256Digest(body), nil
 }
 
-func encodeMachineStateV1(s *MachineState) ([]byte, error) {
-	return marshalCanonical(stateComparable(s))
-}
-
 func initialStateVersionV1() uint16 { return 1 }
 
 func validateHeaderV1(h *RunHeader) error {

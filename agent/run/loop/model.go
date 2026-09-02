@@ -140,9 +140,11 @@ func (l *Loop) runModelStep(ctx context.Context, runtime run.Runtime, events Eve
 			failure := run.StepFailure{Class: run.FailureMalformedModel, Message: err.Error()}
 			completion = run.RejectModelResult{StepID: stepID, Failure: failure, Disposition: l.modelRejectDisposition(modelStep, failure)}
 		} else {
-			result, invokeErr := l.invokeModel(ctx, invoker, &sdkRequest, runID, stepID, events)
+			workerCtx, stopLease := l.keepLease(ctx, runtime, runID, stepID, "", start.Grant)
+			result, invokeErr := l.invokeModel(workerCtx, invoker, &sdkRequest, runID, stepID, events)
+			stopLease()
 			switch {
-			case invokeErr != nil && ctx.Err() != nil:
+			case invokeErr != nil && workerCtx.Err() != nil:
 				completion = run.RecoverModelExecution{StepID: stepID, Claim: attempt.claim}
 			case invokeErr != nil:
 				completion = run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: invokeErr.Error()}}

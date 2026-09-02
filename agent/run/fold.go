@@ -122,38 +122,13 @@ func FoldTransitions(initial MachineState, records []TransitionRecord) (MachineS
 	return state, uint64(revision), nil
 }
 
-// statesEquivalent compares two states via their canonical serialization —
-// the same identity rule the protocol uses everywhere else.
+// statesEquivalent compares two states via their canonical snapshot encoding,
+// the same identity rule the protocol uses for the initial-state digest.
 func statesEquivalent(a, b *MachineState) bool {
-	ab, errA := marshalCanonical(stateComparable(a))
-	bb, errB := marshalCanonical(stateComparable(b))
+	ab, errA := encodeMachineStateV1(a)
+	bb, errB := encodeMachineStateV1(b)
 	if errA != nil || errB != nil {
 		return false
 	}
 	return bytes.Equal(ab, bb)
-}
-
-// stateComparable flattens MachineState including the interface-typed Current
-// step, which encoding/json cannot round-trip on its own.
-func stateComparable(s *MachineState) map[string]any {
-	m := map[string]any{
-		"runId": s.RunID, "status": s.Status,
-		"modelSteps": s.ModelSteps, "lastClosedStep": s.LastClosedStep,
-		"usage": s.Usage, "pendingInputs": s.PendingInputs,
-		"lastModelResult": s.LastModelResult, "result": s.Result,
-	}
-	if s.LastToolStep != nil {
-		m["lastToolStep"] = s.LastToolStep
-	}
-	switch cur := s.Current.(type) {
-	case Open:
-		m["current"] = "open"
-	case ModelStep:
-		m["current"] = "model"
-		m["modelStep"] = cur
-	case ToolStep:
-		m["current"] = "tool"
-		m["toolStep"] = cur
-	}
-	return m
 }

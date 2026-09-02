@@ -5,15 +5,6 @@ import (
 	"fmt"
 )
 
-// Evolve folds one fact with the current write schema. Persisted replay must
-// use ProtocolFor on the fact or transition SchemaVersion so historical
-// folding semantics stay bound to the Run that produced the fact.
-//
-//nolint:gocritic // hugeParam: public fold boundary must stay value-based: Evolve(state, fact) -> new state.
-func Evolve(s MachineState, f Fact) (MachineState, error) {
-	return ProtocolV1.Evolve(s, f)
-}
-
 // evolveV1 is the current fold semantics for the pre-release SchemaVersion1.
 //
 //nolint:gocritic // hugeParam: v1 fold body intentionally preserves value-state semantics.

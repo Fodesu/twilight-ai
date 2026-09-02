@@ -91,7 +91,7 @@ type TransitionRecord struct {
 
 `CommandEnvelope.Digest` 覆盖 schema、type 与完整 command；RunID、CommandID、BaseRevision 和 grant 属于 envelope/commit metadata。`AgentEvent.Digest` 覆盖 schema、type 与完整 fact。`TransitionDigest` 覆盖自身以外的完整 transition，包括有序 event group。
 
-**RUN-WIR-3** 一个 transition 的 event 数至少为 1；其 RunID、Revision、CommandID、CommandDigest 相同，Index 从 0 连续递增。revision 从 1 连续递增。写入已存在的 Run 时，构造 command 必须使用该 Run 的 `Protocol.BuildEnvelope`（Loop 通过 `RuntimeSnapshot.Protocol()` 取得）。包级 `BuildEnvelope` 只服务当前写入 schema，供新 Run 与测试。构造与验证 transition 必须使用 `BuildTransitionRecord`、`ValidateTransitionRecord`。所有公开返回值具有 detached snapshot 语义。
+**RUN-WIR-3** 一个 transition 的 event 数至少为 1；其 RunID、Revision、CommandID、CommandDigest 相同，Index 从 0 连续递增。revision 从 1 连续递增。构造 command 必须使用该 Run 的 `Protocol.BuildEnvelope`（Loop 通过 `RuntimeSnapshot.Protocol()` 取得）。`agent/run` 不提供隐式选择版本的包级 `BuildEnvelope`、`Decide`、`Evolve` 或 `Digest*` 函数；新 Run 与测试显式使用 `ProtocolV1`。构造与验证 transition 必须使用 `BuildTransitionRecord`、`ValidateTransitionRecord`。所有公开返回值具有 detached snapshot 语义。
 
 下列 identity 稳定派生并由 Commit 验证：
 
@@ -265,7 +265,7 @@ ToolCall:
 
 没有独立的 `ToolStepClosed` fact。最后一个 ToolCall 进入 Completed 或 Failed 时，`Evolve` 在折叠该 fact 后若全部 call 已 terminal，则把 Current 设为 `Open` 并写入 `LastToolStep` / `LastClosedStep`。Cancel 的 Unknown fact 同样走这条关闭规则；`RunEnded` 再把 Current 置空。
 
-**RUN-MCH-3** `Protocol.Decide(state, command)` 执行全部验证与 derived consequence，一次返回该 transition 的完整 ordered fact group；验证成功后返回完整 facts。包级 `Decide` 委托当前写入 schema。`Protocol.Evolve(state, fact)` 机械折叠 fact，依赖 fact 携带的完整数据。accepted facts 必须 self-contained；若 transition terminalize，`RunEnded` 必须是 Decide 输出的最后一个 fact。
+**RUN-MCH-3** `Protocol.Decide(state, command)` 执行全部验证与 derived consequence，一次返回该 transition 的完整 ordered fact group；验证成功后返回完整 facts。`Protocol.Evolve(state, fact)` 机械折叠 fact，依赖 fact 携带的完整数据。accepted facts 必须 self-contained；若 transition terminalize，`RunEnded` 必须是 Decide 输出的最后一个 fact。
 
 启动 command 的最小公共形状为：
 
@@ -310,6 +310,7 @@ type Runtime interface {
     Load(context.Context, RunID) (RuntimeSnapshot, error)
     Commit(context.Context, CommitRequest) (CommitResult, error)
     Record(context.Context, RunID) (RunRecord, error)
+    RenewLease(ctx context.Context, runID RunID, stepID StepID, callID CallID, grant ExecutionGrant) error
     RecoverExpired(context.Context) (int, error)
 }
 type RuntimeSnapshot struct {
@@ -339,9 +340,10 @@ func (Protocol) DecodeFact(typ string, raw []byte) (Fact, error)
 func (Protocol) Decide(MachineState, AgentCommand) ([]Fact, error)
 func (Protocol) Evolve(MachineState, Fact) (MachineState, error)
 func (Protocol) BuildEnvelope(run RunID, id CommandID, cmd AgentCommand) (CommandEnvelope, error)
-func (Protocol) EncodeMachineState(*MachineState) ([]byte, error)
+func (Protocol) EncodeMachineState(*MachineState) ([]byte, error) // 持久化 snapshot bytes，含 Current
+func (Protocol) DecodeMachineState([]byte) (MachineState, error)
 func (Protocol) ValidateHeader(*RunHeader) error
-var ProtocolV1 Protocol // SchemaVersion1 绑定；包级 DigestRequest/BuildEnvelope/Decide/Evolve 委托它
+var ProtocolV1 Protocol // SchemaVersion1 绑定；新 Run 的创建版本。没有委托它的包级函数
 type CommitRequest struct {
     BaseRevision uint64
     Grant ExecutionGrant
@@ -357,7 +359,7 @@ type CommitResult struct {
 
 **RUN-CMT-1** Runtime 是 RunID-addressed collection。`Create` 原子保存 immutable header 与 Revision-0 state；相同 canonical header 幂等返回 `Created=false`，同 RunID 的不同 header 返回 `ErrCreateConflict`。缺失 Run 的 Load、Commit、Record 返回 `ErrRunNotFound`。
 
-**RUN-CMT-2** `Load` 返回当前 detached execution snapshot，并验证 `RunID`、revision 与 MachineState 的基本语义不变量；snapshot 与 revision 必须来自同一 authority 版本。`RuntimeSnapshot` 提供 Go 读取视图；跨实现持久化使用 Header 与 TransitionRecord，优化 snapshot 由实现管理。`Record` 在一个一致点读取 detached Header、Snapshot 和完整 TransitionRecord sequence，验证 header、每个 transition、连续 fold 与 snapshot 等价后返回；corrupt、gap 或 divergence 必须失败。普通消费者使用 Record 获取一致的完整记录。`FoldRun` 从 Header 和完整 transition sequence 重建状态；任何导入、诊断或 Record 校验先完成 FoldRun，再使用重建状态。
+**RUN-CMT-2** `Load` 返回当前 detached execution snapshot，并验证 `RunID`、revision 与 MachineState 的基本语义不变量；snapshot 与 revision 必须来自同一 authority 版本。`RuntimeSnapshot` 提供 Go 读取视图。`Protocol.EncodeMachineState` / `DecodeMachineState` 定义 MachineState 的持久化 snapshot wire（含 `Current` 判别式与 step body）；Store 以该 wire 保存每个 revision 的 snapshot，`Load` 直接读取 snapshot 而不折叠日志。canonical record 仍是 Header 与 TransitionRecord；snapshot 是派生数据，`Record` 与 `Rebuild` 通过 FoldRun 校验它。`Record` 在一个一致点读取 detached Header、Snapshot 和完整 TransitionRecord sequence，验证 header、每个 transition、连续 fold 与 snapshot 等价后返回；corrupt、gap 或 divergence 必须失败。普通消费者使用 Record 获取一致的完整记录。`FoldRun` 从 Header 和完整 transition sequence 重建状态；任何导入、诊断或 Record 校验先完成 FoldRun，再使用重建状态。
 
 所有 Runtime implementation 在自己的 critical section/transaction 内调用同一个 pure `EvaluateCommit`。顺序固定为：
 
@@ -383,9 +385,34 @@ type CommitResult struct {
 
 **RUN-CMT-6** Commit 必须原子保存新 MachineState 与完整 TransitionRecord，保证 event group 完整写入。`CommitResult`、Load 与 Record 返回 detached values。预期拒绝映射为 `ErrCommandConflict`、`ErrStaleRuntime`、`ErrRunTerminal`；transport/storage failure 保持可判别且不得伪装为 rejection。
 
-**RUN-CMT-7** 每个 Run 的协议版本是 `RunHeader.SchemaVersion`，在 Create 时冻结。`RuntimeSnapshot.SchemaVersion` 必须等于该 header。`ProtocolFor(header.SchemaVersion)` 在 Run 边界返回绑定了该版本 digest/decode/Decide/Evolve 函数的 `Protocol` 值；随后的方法调用不再接受 version 参数。`EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Protocol 的 Version。不得使用进程全局 `currentSchemaVersion` 作为写入许可。v1 Run 的 replay 必须继续使用 `ProtocolV1`，即使进程已经把 `currentSchemaVersion` 升到 2。Loop 通过 `RuntimeSnapshot.Protocol().BuildEnvelope` 构造写入该 Run 的 envelope。
+**RUN-CMT-7** 每个 Run 的协议版本是 `RunHeader.SchemaVersion`，在 Create 时冻结。`RuntimeSnapshot.SchemaVersion` 必须等于该 header。`ProtocolFor(header.SchemaVersion)` 在 Run 边界返回绑定了该版本 digest/decode/Decide/Evolve 函数的 `Protocol` 值；随后的方法调用不再接受 version 参数。`EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Protocol 的 Version。`agent/run` 不保存进程全局的当前写入版本，也不提供隐式选择版本的包级函数；新 Run 由 `NewRun.SchemaVersion` 决定版本。v1 Run 的 replay 必须继续使用 `ProtocolV1`，即使进程已支持更高版本。Loop 通过 `RuntimeSnapshot.Protocol().BuildEnvelope` 构造写入该 Run 的 envelope。
 
-`Runtime` 的唯一实现叠在 `Store` 上：`Store` 持久化 header、state、transition log 与 `ExecutionLease`，不调用 Decide/Evolve。`MemoryStore`、SQLite、Postgres 实现同一合同。lease 的 `Deadline` 为零表示不超时（进程内占用）；过期且无 settlement 时 Runtime 将 `recoveryValid` 置真，允许 grantless Recover。进程崩溃时不写 settlement。`RecoverExpired` 扫描过期 lease：对每个过期 Executing tool call 无 grant 提交 `SubmitToolFailure{Unknown}`，对过期 Executing model 提交 `RecoverModelExecution`。该 Run 保持 Active，同一 RunID 继续。`Rebuild` 从 header 与 transition log 重折 snapshot，供诊断使用。进程内宿主使用 `NewRuntime(NewMemoryStore())`，lease 不超时，grantless recover 被拒绝。生产崩溃恢复使用带 TTL 的 Store。
+`Runtime` 的唯一实现叠在 `Store` 上。`Store` 是追加式合同：
+
+```go
+type RunHead struct { Header RunHeader; State MachineState; Revision uint64; Leases map[string]ExecutionLease }
+type LeaseOps struct { Put map[string]ExecutionLease; Delete []string; Clear bool }
+type Append struct { ExpectedRevision uint64; Transition TransitionRecord; State MachineState; Leases LeaseOps }
+type ExpiredLease struct { RunID RunID; Key string; Lease ExecutionLease }
+type Store interface {
+    Create(ctx, header RunHeader) (created bool, existing RunHeader, err error)
+    LoadHead(ctx, RunID) (RunHead, error)
+    LoadLog(ctx, RunID, from uint64) ([]TransitionRecord, error)
+    LoadRecord(ctx, RunID) (RunHead, []TransitionRecord, error)
+    LookupTransition(ctx, RunID, CommandID) (TransitionRecord, bool, error)
+    Commit(ctx, RunID, fn func(RunTx) (*Append, error)) error
+    // RunTx: Head() RunHead; LookupTransition(CommandID) (TransitionRecord, bool, error)
+    RenewLease(ctx, RunID, key string, grant ExecutionGrant, deadline time.Time) error
+    ExpiredLeases(ctx, before time.Time) ([]ExpiredLease, error)
+    ReplaceSnapshot(ctx, RunID, revision uint64, *MachineState) error
+}
+```
+
+`Store` 不调用 Decide/Evolve。`Store.Commit` 是唯一推进 Run 的写路径，也是该 Run 的 critical section：Store 在其中向 Runtime 提供 `RunTx`（当前 head 与按 CommandID 查 transition），Runtime 在同一 section 内调用 `EvaluateCommit`，返回的 `Append` 由 Store 在同一事务内追加 transition、替换 snapshot 并应用 lease 变更。同一 Run 的所有写入者在此串行，head 在读与写之间不会移动，因此没有 compare-and-swap 重试；`ExpectedRevision` 与 head 不一致只可能是实现错误，返回 `ErrAppendConflict`。`MemoryStore` 用 per-Run 锁，SQLite 用 immediate 写事务，Postgres 用行锁事务实现该 section。日志不可改写：没有删除或替换 transition 的 Store 方法；`ReplaceSnapshot` 只覆盖派生 snapshot，且只由 `Rebuild` 调用。`LoadRecord` 在一个一致读取内返回 head 与完整日志，`Runtime.Record` 与 `Rebuild` 只用它。`Load` 只读 head，`Commit` 只在 section 内读 head 与一条 transition，二者的代价都与日志长度无关。`MemoryStore`、SQLite、Postgres 实现同一合同，并通过同一 conformance。
+
+lease 以 `(RunID, key)` 存放，key 为 `model/<StepID>` 或 `call/<StepID>/<CallID>`，一个 target 至多一条 live lease；grant 只存在于该 lease 上，没有独立的 grant 表。lease 的 `Deadline` 为零表示不超时（进程内占用）；过期且无 settlement 时 Runtime 将 `recoveryValid` 置真，允许 grantless Recover。进程崩溃时不写 settlement。`RecoverExpired` 通过 `Store.ExpiredLeases(now)` 只加载有过期 lease 的 Run：对每个过期 Executing tool call 无 grant 提交 `SubmitToolFailure{Unknown}`，对过期 Executing model 提交 `RecoverModelExecution`。该 Run 保持 Active，同一 RunID 继续。`Rebuild` 从 header 与完整 transition log 重折 snapshot，与存储的 snapshot 比较后经 `ReplaceSnapshot` 修复，供诊断使用；日志短于 head revision 返回 `ErrLogTruncated`。进程内宿主使用 `NewRuntime(NewMemoryStore())`，lease 不超时，grantless recover 被拒绝。生产崩溃恢复使用带 TTL 的 Runtime。
+
+**RUN-CMT-8** lease 续期。`Runtime.RenewLease(runID, stepID, callID, grant)` 在 grant 等于该 target 当前 lease 的 grant 时，把 deadline 推后一个 `LeaseTTL`；lease 不存在、grant 不匹配或 target 已 settlement 时返回 `ErrStaleRuntime`。持有 grant 的 worker 在效果执行期间必须以远小于 `LeaseTTL` 的间隔续期（Loop 的 `ExecutionPolicy.LeaseRenewInterval`）；续期返回 `ErrStaleRuntime` 表示该 target 已被 recovery 接管，worker 必须停止执行并放弃 settlement。`LeaseTTL` 是恢复延迟上界，不再是单次工具调用的时长上界。`LeaseTTL` 为零时 `RenewLease` 只验证 grant，不改变 deadline。
 
 ## 6. Loop ports 与 policy
 
@@ -435,6 +462,7 @@ const (
 type ExecutionPolicy struct {
     ToolExecution ToolExecutionMode
     MaxParallel int
+    LeaseRenewInterval time.Duration
     OnMalformedModelResult func(run.ModelStep, run.StepFailure) run.ModelRejectDisposition
 }
 type LoopResult struct {
@@ -447,7 +475,7 @@ func New(models ModelCatalog, tools ToolCatalog, planner RequestPlanner, policy 
 func (*Loop) Run(context.Context, run.Runtime, run.RunID, EventSink) (LoopResult, error)
 ```
 
-**RUN-LOP-1** `ExecutionPolicy` 是 Loop 的本地执行策略。`ToolExecution` 与 `MaxParallel` 在 `SubmitModelResult` 时写入 `ToolStepOpened.Scheduling` 并冻结在该 ToolStep 上；后续 Loop 必须按冻结值调度，不得改用当时进程的 ExecutionPolicy。未指定 `ToolExecution` 时冻结为 `parallel`，`MaxParallel` 零值表示当前 Start 批次全部 Pending call 可并行。空 Mode 按 parallel 解释，不得在 normalize 时填入默认字符串。nil handler 时结构错误的模型结果选择 `ModelRejectFailRun`；重试由 handler 明确返回 `ModelRejectRetry`。`streaming` 表示是否请求可用的流式模型端口；两种模式都产生同一完整 `sdk.ModelResult`。
+**RUN-LOP-1** `ExecutionPolicy` 是 Loop 的本地执行策略。`ToolExecution` 与 `MaxParallel` 在 `SubmitModelResult` 时写入 `ToolStepOpened.Scheduling` 并冻结在该 ToolStep 上；后续 Loop 必须按冻结值调度，不得改用当时进程的 ExecutionPolicy。未指定 `ToolExecution` 时冻结为 `parallel`，`MaxParallel` 零值表示当前 Start 批次全部 Pending call 可并行。空 Mode 按 parallel 解释，不得在 normalize 时填入默认字符串。nil handler 时结构错误的模型结果选择 `ModelRejectFailRun`；重试由 handler 明确返回 `ModelRejectRetry`。`streaming` 表示是否请求可用的流式模型端口；两种模式都产生同一完整 `sdk.ModelResult`。`LeaseRenewInterval` 是 worker 续期间隔（RUN-CMT-8）：模型与工具 worker 在效果执行期间按该间隔调用 `Runtime.RenewLease`，续期被拒时取消该 worker 的 ctx；零值关闭续期，只对 lease 不超时的 Runtime 正确。
 
 **RUN-LOP-7** `ModelRef` 是冻结请求中的执行身份。`ModelCatalog.Resolve` 在同一 Run 生命周期内必须把同一 `ModelRef` 解析为等价的执行语义。provider 绑定不进入 frozen request，因此 Catalog 不得把同一 ref 改绑到不同实现。
 
@@ -514,7 +542,10 @@ type Event struct {
 - grant 签发、隔离、精确 start replay、消费、跨 Run 拒绝与 recovery authorization；
 - revision/index、atomic complete TransitionRecord、fact/transition digest；
 - Load/Commit/Record alias isolation、多 Run 隔离；
-- Record 单一一致点、FoldRun 等价、gap/tamper/corrupt failure。
+- Record 单一一致点、FoldRun 等价、gap/tamper/corrupt failure；
+- lease 过期 recovery：live lease 拒绝 grantless、过期 model 回到 Prepared、过期 tool 记 Unknown 且 sibling 不受影响、RecoverExpired 幂等；
+- lease 续期：续期后原 deadline 不触发 recovery、错误/空 grant 与 settlement 后续期被拒；
+- snapshot codec：每个 Current variant 与终态 round-trip、拒绝 unknown field / 非法判别式 / trailing data；重开 Store 后 Load 不折叠日志且 Record 校验通过。
 
 Loop conformance 必须覆盖：
 
@@ -525,6 +556,7 @@ Loop conformance 必须覆盖：
 - ctx cancellation、model recovery、explicit malformed-result disposition；
 - Cancel 将 Executing tool/model 投影到 `UncertainCalls` / `UncertainModel`；ExternalResponse reject 为 `response_rejected`；
 - streaming delta 与 nil result、EventSink committed observation；
-- stale/unknown commit response、prepare no-progress rejection 与无 livelock。
+- stale/unknown commit response、prepare no-progress rejection 与无 livelock；
+- 超过 LeaseTTL 的工具调用在续期下不被记为 Unknown，其结果被接受。
 
 历史 package 迁移、实施阶段与未完成 adapter 工作记录在 [agent-runtime-refactor.md](agent-runtime-refactor.md)，本协议 authority 以本文为准。

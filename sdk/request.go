@@ -4,11 +4,12 @@ import "encoding/json"
 
 // Request is the complete, frozen input of one model call.
 //
-// It is pure data: no provider client, no interface values, no callbacks.
-// The model is a provider-scoped string ID; provider binding happens when a
-// ModelCatalog resolves a ModelInvoker. Everything here participates in
-// DigestRequest with no exclusions, so any field change produces a different
-// request identity.
+// It is pure data at the top level: no provider client, no callbacks. The
+// model is a provider-scoped string ID; provider binding happens when a
+// ModelCatalog resolves a ModelInvoker. Messages, ProviderOptions and
+// ResponseFormat.JSONSchema still carry open JSON shapes, so the agent
+// runtime freezes a Request into its own canonical run.ModelRequest before
+// digesting or persisting it; the request digest is defined there.
 type Request struct {
 	// Model is the provider-scoped model ID (e.g. "claude-sonnet-5").
 	Model string `json:"model"`

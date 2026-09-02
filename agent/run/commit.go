@@ -247,13 +247,6 @@ func EvaluateCommit(
 	return CommitDecision{Kind: DecisionApply, NewState: state, Events: transition.Events, Transition: transition}, nil
 }
 
-// BuildEnvelope assembles a CommandEnvelope with its type discriminator and
-// canonical digest. This is the only sanctioned construction path; callers
-// never hand-assemble envelope fields (RUN-WIR-3).
-func BuildEnvelope(run RunID, id CommandID, cmd AgentCommand) (CommandEnvelope, error) {
-	return ProtocolV1.BuildEnvelope(run, id, cmd)
-}
-
 // checkDerivedCommandID enforces the derived-identity rules of RUN-WIR-3.
 // AcceptInput derives from (RunID, InputID); approval/rejection/answer derive
 // from (RunID, StepID, CallID, ResponseID). Approve and reject of the same

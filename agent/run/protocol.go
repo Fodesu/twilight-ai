@@ -11,9 +11,6 @@ import (
 // Once a schema is published, its encoding and folding semantics are frozen.
 const SchemaVersion1 uint16 = 1
 
-// currentSchemaVersion is what new commands and facts are written with.
-const currentSchemaVersion = SchemaVersion1
-
 // CommandEnvelope carries one command with its persisted protocol identity.
 type CommandEnvelope struct {
 	SchemaVersion uint16       `json:"schemaVersion"`
@@ -64,11 +61,14 @@ type Protocol struct {
 	decide                     func(MachineState, AgentCommand) ([]Fact, error)
 	evolve                     func(MachineState, Fact) (MachineState, error)
 	encodeMachineState         func(*MachineState) ([]byte, error)
+	decodeMachineState         func([]byte) (MachineState, error)
 	validateHeader             func(*RunHeader) error
 }
 
-// ProtocolV1 is the SchemaVersion1 binding. New Runs write with this protocol;
-// replay of a persisted v1 Run must keep using it after later versions exist.
+// ProtocolV1 is the SchemaVersion1 binding. New Runs are created with this
+// protocol; every later operation on a Run binds through
+// ProtocolFor(header.SchemaVersion) or RuntimeSnapshot.Protocol() (RUN-CMT-7).
+// There are no package-level functions that implicitly select a version.
 var ProtocolV1 = Protocol{
 	version:                    SchemaVersion1,
 	digestRequest:              digestRequestV1,
@@ -83,6 +83,7 @@ var ProtocolV1 = Protocol{
 	decide:                     decideV1,
 	evolve:                     evolveV1,
 	encodeMachineState:         encodeMachineStateV1,
+	decodeMachineState:         decodeMachineStateV1,
 	validateHeader:             validateHeaderV1,
 }
 
@@ -235,11 +236,23 @@ func (p Protocol) BuildEnvelope(run RunID, id CommandID, cmd AgentCommand) (Comm
 	}, nil
 }
 
+// EncodeMachineState renders the persisted snapshot bytes of a MachineState
+// under this schema. The bytes are canonical: statesEquivalent, the
+// InitialStateDigest preimage, and durable snapshot storage all use them.
 func (p Protocol) EncodeMachineState(s *MachineState) ([]byte, error) {
 	if err := p.ready(); err != nil {
 		return nil, err
 	}
 	return p.encodeMachineState(s)
+}
+
+// DecodeMachineState restores a MachineState from bytes produced by
+// EncodeMachineState of the same schema, including the Current step.
+func (p Protocol) DecodeMachineState(raw []byte) (MachineState, error) {
+	if err := p.ready(); err != nil {
+		return MachineState{}, err
+	}
+	return p.decodeMachineState(raw)
 }
 
 func (p Protocol) ValidateHeader(h *RunHeader) error {
@@ -249,90 +262,14 @@ func (p Protocol) ValidateHeader(h *RunHeader) error {
 	return p.validateHeader(h)
 }
 
-// EncodeCommand renders the canonical bytes of a command envelope, excluding
-// the Digest field.
-//
-//nolint:gocritic // hugeParam: command envelope encoding is value-based and does not retain caller aliases.
-func EncodeCommand(env CommandEnvelope) ([]byte, error) {
-	if env.Type == "" || env.Type != commandType(env.Command) {
-		return nil, fmt.Errorf("agent: encode: type %q does not match command variant", env.Type)
-	}
-	body, err := encodeEnvelopeBody(env.SchemaVersion, env.Type, env.Command)
-	if err != nil {
-		return nil, err
-	}
-	header := fmt.Sprintf("run:%d:%s:cmd:%d:%s:", len(env.RunID), env.RunID, len(env.ID), env.ID)
-	return append([]byte(header), body...), nil
-}
-
-// DigestCommand computes the canonical digest of one command under the current
-// write schema. Replay of a persisted Run must use ProtocolFor on the header.
-func DigestCommand(typ string, command AgentCommand) (Digest, error) {
-	return ProtocolV1.DigestCommand(typ, command)
-}
-
-func EncodeFact(typ string, fact Fact) ([]byte, error) {
-	return ProtocolV1.EncodeFact(typ, fact)
-}
-
-func DigestFact(typ string, fact Fact) (Digest, error) {
-	return ProtocolV1.DigestFact(typ, fact)
-}
-
 type toolResponseDecisionDigestBody struct {
 	Kind     ResponseKind     `json:"kind"`
 	Decision ResponseDecision `json:"decision"`
 	Reason   string           `json:"reason,omitempty"`
 }
 
-// DigestToolResponseDecision computes the content digest for approval and
-// rejection ingress under the current write schema. The ResponseID remains the
-// routing/idempotency key; this digest binds the decision payload.
-func DigestToolResponseDecision(kind ResponseKind, decision ResponseDecision, reason string) (Digest, error) {
-	return ProtocolV1.DigestToolResponseDecision(kind, decision, reason)
-}
-
 type toolResponsePayloadDigestBody struct {
 	Payload CanonicalJSON `json:"payload"`
-}
-
-// DigestToolResponsePayload computes the content digest for an ExternalResponse
-// answer payload under the current write schema.
-func DigestToolResponsePayload(payload CanonicalJSON) (Digest, error) {
-	return ProtocolV1.DigestToolResponsePayload(payload)
-}
-
-// DigestRequest covers every field of a frozen ModelRequest with no exclusions
-// (RUN-WIR-2), using the current write schema.
-//
-//nolint:gocritic // hugeParam: digest covers the complete immutable ModelRequest value.
-func DigestRequest(req ModelRequest) (Digest, error) {
-	return ProtocolV1.DigestRequest(req)
-}
-
-// DigestToolDefinition covers one provider-neutral tool definition under the
-// current write schema.
-func DigestToolDefinition(def ToolDefinition) (Digest, error) {
-	return ProtocolV1.DigestToolDefinition(def)
-}
-
-// DigestToolSpec covers one agent ToolSpec under the current write schema.
-//
-//nolint:gocritic // hugeParam: digest covers the complete immutable ToolSpec value.
-func DigestToolSpec(spec ToolSpec) (Digest, error) {
-	return ProtocolV1.DigestToolSpec(spec)
-}
-
-// DigestToolSpecs covers an ordered ToolSpec list under the current write
-// schema: ref, schema, order and policy all participate (RUN-MCH-2).
-func DigestToolSpecs(specs []ToolSpec) (Digest, error) {
-	return ProtocolV1.DigestToolSpecs(specs)
-}
-
-// DigestModelStepBinding combines model, request digest and tools digest into
-// the immutable ModelStep binding digest under the current write schema.
-func DigestModelStepBinding(model ModelRef, requestDigest, toolsDigest Digest) (Digest, error) {
-	return ProtocolV1.DigestModelStepBinding(model, requestDigest, toolsDigest)
 }
 
 // digestBindingSet covers the full ordered pre-Response call set of one

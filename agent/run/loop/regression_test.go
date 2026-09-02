@@ -72,7 +72,7 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := DigestToolDefinition(frozenDef)
+	d, err := ProtocolV1.DigestToolDefinition(frozenDef)
 	if err != nil {
 		t.Fatal(err)
 	}

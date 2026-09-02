@@ -9,12 +9,12 @@
 | 领域 | authority |
 |---|---|
 | Run Machine、Runtime、Loop | [agent-run.md](agent-run.md) |
-| Session ES kernel | [agent-session.md](agent-session.md) |
-| Artifact Core | [agent-artifact.md](agent-artifact.md) |
-| Session Module Framework | [agent-session-extension.md](agent-session-extension.md) |
-| Chatlog ontology/projection | [agent-session-chatlog.md](agent-session-chatlog.md) |
-| Turn→Run coordination/materialization | [agent-turn.md](agent-turn.md) |
-| 参考组装（Binding / Planner / Input） | [agent-reference-assembly.md](agent-reference-assembly.md) |
+| Session ES kernel | [agent-session.md](agent-session.md)（草案） |
+| Artifact Core | [agent-artifact.md](agent-artifact.md)（草案） |
+| Session Module Framework | [agent-session-extension.md](agent-session-extension.md)（草案） |
+| Chatlog ontology/projection | [agent-session-chatlog.md](agent-session-chatlog.md)（草案） |
+| Turn→Run coordination/materialization | [agent-turn.md](agent-turn.md)（草案） |
+| 参考组装（Binding / Planner / Input） | [agent-reference-assembly.md](agent-reference-assembly.md)（草案） |
 
 ## 1. 背景
 
@@ -76,7 +76,7 @@ agent/turn     -> agent/run + agent/session + agent/session/chatlog + session mo
 - Chatlog Message 原生支持 first-party Artifact references；`sdk.Message` 只是 materialized provider transport。
 - Turn Coordinator 从 Session facts 与 `Runtime.Record` 重建，不保存隐藏的长期状态。
 - Run→Session materialization 按完整 revision coverage 和 stable identity exactly-once 收敛。
-- Durable owner/fence/lease/recovery/outbox 是 adapter control plane，不进入 `run.Runtime` public contract。
+- lease 与其 recovery（`RenewLease`、`RecoverExpired`）是 `run.Runtime` public contract 的一部分，由 [agent-run.md](agent-run.md) 第 5 节定义；`Store` 只持久化 lease 记录，不解释它。durable owner/fence/outbox 仍是 adapter control plane，不进入 `run.Runtime`。
 
 ## 3. 已完成迁移
 
@@ -88,8 +88,10 @@ agent/turn     -> agent/run + agent/session + agent/session/chatlog + session mo
 | RunHeader、TransitionRecord、wire codec、fold/golden tests | 完成 |
 | RunID-addressed `Runtime.Create/Load/Commit/Record` | 完成 |
 | multi-Run Store-backed Runtime 与 Runtime conformance | 完成 |
+| 追加式 `Store` 合同（LoadHead / LoadLog / LoadRecord 单一致读 / Commit critical section / ExpiredLeases）、snapshot codec、lease 续期 | 完成 |
+| SQLite Store adapter（snapshot 加日志、lease 表）通过 Runtime / recovery / renewal conformance | 完成 |
 | `agent/run/loop` package extraction | 完成 |
-| Session/Artifact/Session Module/Turn protocols | 规范草案完成，实施待完成 |
+| Session/Artifact/Session Module/Turn protocols | 草案，无实现；wire 在 Memory 纵向切片跑通前不冻结 |
 | Chatlog protocol | 草案，payload 与 golden 尚未冻结 |
 | 参考组装 | 草案 |
 | PostgreSQL durable Run adapter（旧接口） | 历史 prototype，迁移未完成 |
@@ -108,7 +110,6 @@ agent/turn     -> agent/run + agent/session + agent/session/chatlog + session mo
 ### 4.2 durable adapters
 
 - 将 PostgreSQL durable Run adapter 迁移到统一 `run.Runtime`；
-- 让 `Record` 在单一数据库 read snapshot 内读取并验证 header/state/log；
 - 收紧 Run authority tables 的 immutable RLS policy；
 - 将 recovery record 绑定具体 lease/fence 并原子消费；
 - 实现过期 execution recovery scanner；
@@ -121,6 +122,20 @@ agent/turn     -> agent/run + agent/session + agent/session/chatlog + session mo
 - 构建 Session Surface/Context projections 与 API；
 - 逐步把 `bot_history_messages` 降为兼容 read model；
 - 在完整 materialization、terminal settlement 与 retention closure 后执行归档/GC。
+
+## 4.4 sdk.Request 作为冻结类型的评估
+
+结论：请求层保留 `run.ModelRequest` 镜像，但把镜像的理由收窄到具体字段；消息层与结果层必须保留镜像。
+
+| 层 | sdk 类型中的开放字段 | 能否直接冻结 |
+|---|---|---|
+| `sdk.Request` 顶层标量与 `Tools`、`ToolChoice`、`StopSequences` | 无 | 能 |
+| `sdk.Request.ProviderOptions` | `map[string]json.RawMessage` | 不能：值未 canonical 化，digest 依赖调用方字节 |
+| `sdk.Request.ResponseFormat.JSONSchema` | `*jsonschema.Schema`（第三方结构体） | 不能：其 JSON 形状由外部库版本决定，不受本协议冻结 |
+| `sdk.Request.Messages[].Content` | `[]MessagePart` 接口，`ToolCallPart.Input any`、`ToolResultPart.Result any`、各 part 的 `ProviderMetadata map[string]any` | 不能 |
+| `sdk.ModelResult` | `ToolCalls[].Input any`、`TextProviderMetadata map[string]any`、`Response *ResponseMetadata` 含 `map[string]any` | 不能 |
+
+因此“让 `sdk.Request` 直接作为冻结请求类型”在当前 sdk 形状下不成立：顶层有两个字段（`ProviderOptions`、`ResponseFormat.JSONSchema`）阻止直接冻结，消息层整体阻止。若要消除请求层镜像，需要先在 sdk 侧完成三项修改：`ProviderOptions` 改为 `map[string]jsonstable.Value`；`ResponseFormat.JSONSchema` 改为 canonical JSON 而非第三方结构体；`MessagePart` 从接口改为闭合的 tagged struct，`Input` / `Result` / `ProviderMetadata` 改为 canonical JSON。这三项都是 sdk 公共 API 变更，影响全部 provider 实现，不在本轮范围内。本轮的处置为：保留镜像，`sdk.Request` 注释中“参与 DigestRequest、无排除字段”的表述已不准确，digest 定义在 `run.ModelRequest` 上；后续若 sdk 完成上述闭合，再删除 `model_data.go` 中请求层的镜像与对应 clone。
 
 ## 5. 完成标准
 
