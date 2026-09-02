@@ -107,7 +107,10 @@ type ToolSpec struct {
 
 // ToolCallBinding is one frozen call inside ToolStepOpened.
 type ToolCallBinding struct {
-	CallID           CallID         `json:"callId"`
+	CallID CallID `json:"callId"`
+	// ProviderCallID is the tool_call_id the model emitted. Planners echo it
+	// back when they replay the call and its result; the Run never keys on it.
+	ProviderCallID   string         `json:"providerCallId,omitempty"`
 	ToolRef          ToolRef        `json:"toolRef"`
 	DefinitionDigest Digest         `json:"definitionDigest"`
 	BindingDigest    Digest         `json:"bindingDigest"` // definition, policy and canonical arguments
@@ -234,6 +237,7 @@ type ToolCallFailure struct {
 
 type ToolCallState struct {
 	CallID           CallID               `json:"callId"`
+	ProviderCallID   string               `json:"providerCallId,omitempty"`
 	ToolRef          ToolRef              `json:"toolRef"`
 	DefinitionDigest Digest               `json:"definitionDigest"`
 	BindingDigest    Digest               `json:"bindingDigest"`

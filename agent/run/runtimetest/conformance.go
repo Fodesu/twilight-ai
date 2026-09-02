@@ -233,15 +233,19 @@ func makeSpec(t testing.TB, def sdk.ToolDefinition) run.ToolSpec {
 	return run.ToolSpec{Ref: run.ToolRef(def.Name), Definition: frozen, DefinitionDigest: d, Policy: run.DirectExecution}
 }
 
-func makeBinding(t testing.TB, callID string, spec *run.ToolSpec) run.ToolCallBinding {
+// makeBinding builds the binding for the index-th call of source whose
+// provider id is providerID; tests address the call by run.DeriveCallID.
+func makeBinding(t testing.TB, source run.StepID, index int, providerID string, spec *run.ToolSpec) run.ToolCallBinding {
 	t.Helper()
 	parsedArgs := mustJSON(`{}`)
-	bd, err := run.DigestToolCallBinding(run.CallID(callID), spec.DefinitionDigest, spec.Policy, parsedArgs)
+	callID := run.DeriveCallID(source, index)
+	bd, err := run.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, parsedArgs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return run.ToolCallBinding{
-		CallID:           run.CallID(callID),
+		CallID:           callID,
+		ProviderCallID:   providerID,
 		ToolRef:          spec.Ref,
 		DefinitionDigest: spec.DefinitionDigest,
 		BindingDigest:    bd,
@@ -411,7 +415,7 @@ func testRecordReplayAndIndex(t *testing.T, newRuntime Factory) {
 	def := toolDef("t")
 	spec := makeSpec(t, def)
 	c, stepID, grant := preparedCase(t, newRuntime, []sdk.ToolDefinition{def}, []run.ToolSpec{spec})
-	b := makeBinding(t, "c1", &spec)
+	b := makeBinding(t, stepID, 0, "c1", &spec)
 	res := c.mustCommit("complete-1", 2, grant,
 		run.SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []run.ToolCallBinding{b}})
 	if len(res.Events) != 2 {
@@ -429,9 +433,9 @@ func testRecordReplayAndIndex(t *testing.T, newRuntime Factory) {
 		}
 	}
 	toolStep := openedToolStepID(t, &res)
-	sRes := c.mustCommit("start-c1", res.Snapshot.Revision, "", run.StartToolCall{StepID: toolStep, CallID: "c1"})
+	sRes := c.mustCommit("start-c1", res.Snapshot.Revision, "", run.StartToolCall{StepID: toolStep, CallID: run.DeriveCallID(stepID, 0)})
 	c.mustCommit("done-c1", sRes.Snapshot.Revision, sRes.Grant,
-		run.SubmitToolResult{StepID: toolStep, CallID: "c1", Result: run.ToolExecutionResult{Output: mustJSON(`"ok"`)}})
+		run.SubmitToolResult{StepID: toolStep, CallID: run.DeriveCallID(stepID, 0), Result: run.ToolExecutionResult{Output: mustJSON(`"ok"`)}})
 	foldedState, lastRev, err := run.FoldEvents(c.initial, c.events)
 	if err != nil {
 		t.Fatalf("FoldEvents: %v", err)
@@ -788,8 +792,8 @@ func testCallLocalRebase(t *testing.T, newRuntime Factory) {
 	specB := makeSpec(t, defB)
 	c, stepID, grant := preparedCase(t, newRuntime, []sdk.ToolDefinition{defA, defB}, []run.ToolSpec{specA, specB})
 
-	bA := makeBinding(t, "cA", &specA)
-	bB := makeBinding(t, "cB", &specB)
+	bA := makeBinding(t, stepID, 0, "cA", &specA)
+	bB := makeBinding(t, stepID, 1, "cB", &specB)
 	r, err := run.FreezeModelResult(sdk.ModelResult{
 		FinishReason: sdk.FinishReasonToolCalls,
 		ToolCalls: []sdk.ToolCall{
@@ -805,17 +809,17 @@ func testCallLocalRebase(t *testing.T, newRuntime Factory) {
 	toolStep := openedToolStepID(t, &res)
 	base := res.Snapshot.Revision
 
-	startA := c.mustCommit("start-A", base, "", run.StartToolCall{StepID: toolStep, CallID: "cA"})
-	startB := c.mustCommit("start-B", base, "", run.StartToolCall{StepID: toolStep, CallID: "cB"})
+	startA := c.mustCommit("start-A", base, "", run.StartToolCall{StepID: toolStep, CallID: run.DeriveCallID(stepID, 0)})
+	startB := c.mustCommit("start-B", base, "", run.StartToolCall{StepID: toolStep, CallID: run.DeriveCallID(stepID, 1)})
 	if startB.Status != run.CommitAccepted || startB.Grant == "" {
 		t.Fatal("stale-base start of an untouched Pending call must rebase")
 	}
 	doneA := c.mustCommit("done-A", base, startA.Grant,
-		run.SubmitToolResult{StepID: toolStep, CallID: "cA", Result: run.ToolExecutionResult{Output: mustJSON(`1`)}})
+		run.SubmitToolResult{StepID: toolStep, CallID: run.DeriveCallID(stepID, 0), Result: run.ToolExecutionResult{Output: mustJSON(`1`)}})
 	if doneA.Status != run.CommitAccepted {
 		t.Fatal("owner completion on stale base must rebase")
 	}
-	_, err = c.commit("start-A2", base, "", run.StartToolCall{StepID: toolStep, CallID: "cA"})
+	_, err = c.commit("start-A2", base, "", run.StartToolCall{StepID: toolStep, CallID: run.DeriveCallID(stepID, 0)})
 	if !errors.Is(err, run.ErrStaleRuntime) {
 		t.Fatalf("restart of settled call err = %v, want ErrStaleRuntime", err)
 	}
@@ -833,13 +837,13 @@ func testCancelAfterUnknown(t *testing.T, newRuntime Factory) {
 	def := toolDef("t")
 	spec := makeSpec(t, def)
 	c, stepID, grant := preparedCase(t, newRuntime, []sdk.ToolDefinition{def}, []run.ToolSpec{spec})
-	b := makeBinding(t, "c1", &spec)
+	b := makeBinding(t, stepID, 0, "c1", &spec)
 	opened := c.mustCommit("complete-1", 2, grant,
 		run.SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []run.ToolCallBinding{b}})
 	toolStep := openedToolStepID(t, &opened)
-	startRes := c.mustCommit("start-c1", opened.Snapshot.Revision, "", run.StartToolCall{StepID: toolStep, CallID: "c1"})
+	startRes := c.mustCommit("start-c1", opened.Snapshot.Revision, "", run.StartToolCall{StepID: toolStep, CallID: run.DeriveCallID(stepID, 0)})
 	unknown := c.mustCommit("unk-1", startRes.Snapshot.Revision, startRes.Grant,
-		run.SubmitToolFailure{StepID: toolStep, CallID: "c1", Outcome: run.ToolOutcomeUnknown})
+		run.SubmitToolFailure{StepID: toolStep, CallID: run.DeriveCallID(stepID, 0), Outcome: run.ToolOutcomeUnknown})
 	if unknown.Snapshot.State.Status != run.RunActive {
 		t.Fatalf("unknown status = %v, want active", unknown.Snapshot.State.Status)
 	}
@@ -860,8 +864,8 @@ func testCancelUnknownRemaining(t *testing.T, newRuntime Factory) {
 	specA := makeSpec(t, defA)
 	specB := makeSpec(t, defB)
 	c, stepID, grant := preparedCase(t, newRuntime, []sdk.ToolDefinition{defA, defB}, []run.ToolSpec{specA, specB})
-	bA := makeBinding(t, "cA", &specA)
-	bB := makeBinding(t, "cB", &specB)
+	bA := makeBinding(t, stepID, 0, "cA", &specA)
+	bB := makeBinding(t, stepID, 1, "cB", &specB)
 	r, err := run.FreezeModelResult(sdk.ModelResult{
 		FinishReason: sdk.FinishReasonToolCalls,
 		ToolCalls: []sdk.ToolCall{
@@ -876,13 +880,13 @@ func testCancelUnknownRemaining(t *testing.T, newRuntime Factory) {
 		run.SubmitModelResult{StepID: stepID, Result: r, Calls: []run.ToolCallBinding{bA, bB}})
 	toolStep := openedToolStepID(t, &opened)
 	base := opened.Snapshot.Revision
-	startA := c.mustCommit("start-A", base, "", run.StartToolCall{StepID: toolStep, CallID: "cA"})
-	startB := c.mustCommit("start-B", base, "", run.StartToolCall{StepID: toolStep, CallID: "cB"})
+	startA := c.mustCommit("start-A", base, "", run.StartToolCall{StepID: toolStep, CallID: run.DeriveCallID(stepID, 0)})
+	startB := c.mustCommit("start-B", base, "", run.StartToolCall{StepID: toolStep, CallID: run.DeriveCallID(stepID, 1)})
 	if startB.Status != run.CommitAccepted || startB.Grant == "" {
 		t.Fatalf("start B: %+v", startB)
 	}
 	unknown := c.mustCommit("unk-A", startA.Snapshot.Revision, startA.Grant,
-		run.SubmitToolFailure{StepID: toolStep, CallID: "cA", Outcome: run.ToolOutcomeUnknown})
+		run.SubmitToolFailure{StepID: toolStep, CallID: run.DeriveCallID(stepID, 0), Outcome: run.ToolOutcomeUnknown})
 	if unknown.Snapshot.State.Status != run.RunActive {
 		t.Fatalf("unknown status = %v, want active", unknown.Snapshot.State.Status)
 	}
@@ -895,7 +899,7 @@ func testCancelUnknownRemaining(t *testing.T, newRuntime Factory) {
 		t.Fatalf("cancel status = %v, want stopped", cancelled.Snapshot.State.Status)
 	}
 	got := cancelled.Snapshot.State.Result.UncertainCalls
-	if len(got) != 1 || got[0] != "cB" {
+	if len(got) != 1 || got[0] != run.DeriveCallID(stepID, 1) {
 		t.Fatalf("UncertainCalls = %v, want [cB]", got)
 	}
 }

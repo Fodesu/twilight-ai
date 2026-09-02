@@ -213,11 +213,11 @@ func checkToolCallBindings(ms *ModelStep, cmd *SubmitModelResult) ([]ToolCallBin
 	for i := range cmd.Calls {
 		b := cmd.Calls[i]
 		rc := &cmd.Result.ToolCalls[i]
-		if b.CallID == "" {
-			return nil, rejectionf("model result: binding %d has empty CallID", i)
+		if want := DeriveCallID(cmd.StepID, i); b.CallID != want {
+			return nil, rejectionf("model result: binding %d CallID %q is not the derived id %q", i, b.CallID, want)
 		}
-		if string(b.CallID) != rc.ToolCallID {
-			return nil, rejectionf("model result: binding %d CallID %q does not match result call %q", i, b.CallID, rc.ToolCallID)
+		if b.ProviderCallID != rc.ToolCallID {
+			return nil, rejectionf("model result: binding %d ProviderCallID %q does not match result call %q", i, b.ProviderCallID, rc.ToolCallID)
 		}
 		if seen[b.CallID] {
 			return nil, rejectionf("model result: duplicate CallID %q", b.CallID)
@@ -582,11 +582,11 @@ func unknownExecutingCalls(s *MachineState, failure ToolFailure) []Fact {
 		return nil
 	}
 	facts := make([]Fact, 0, len(ts.Calls))
-	for _, call := range ts.Calls {
-		if call.Status != ToolExecuting {
+	for i := range ts.Calls {
+		if ts.Calls[i].Status != ToolExecuting {
 			continue
 		}
-		facts = append(facts, ToolCallFailed{StepID: ts.RefValue.ID, CallID: call.CallID, Failure: failure, Outcome: ToolOutcomeUnknown})
+		facts = append(facts, ToolCallFailed{StepID: ts.RefValue.ID, CallID: ts.Calls[i].CallID, Failure: failure, Outcome: ToolOutcomeUnknown})
 	}
 	return facts
 }

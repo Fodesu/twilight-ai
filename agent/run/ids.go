@@ -62,6 +62,14 @@ func DeriveModelStepID(run RunID, cmd CommandID, binding Digest) StepID {
 	return StepID(namespacedHash("twilight/model-step", string(run), string(cmd), string(binding)))
 }
 
+// DeriveCallID derives the Run-owned identity of one tool call from the
+// ModelStep that produced it and the call's position in that step's result.
+// The provider's own tool_call_id is kept beside it as ProviderCallID for the
+// request round trip; it is not trusted to be unique or non-empty.
+func DeriveCallID(source StepID, index int) CallID {
+	return CallID(namespacedHash("twilight/tool-call", string(source), fmt.Sprintf("%d", index)))
+}
+
 // DeriveToolStepID derives the ToolStep identity from its source ModelStep
 // and the binding-set digest over the full ordered call set.
 func DeriveToolStepID(source StepID, bindingSet Digest) StepID {

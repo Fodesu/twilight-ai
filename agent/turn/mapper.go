@@ -7,10 +7,26 @@ import (
 )
 
 // MapTransition is the v1 FactMapper (TRN-MAP-1): it projects the AgentEvents
-// of one committed transition into chatlog events for the Turn. Facts that
-// carry no conversation content map to nothing. RunEnded is settlement, not
-// content, and is handled by the coordinator.
-func MapTransition(turnID TurnID, tr *run.TransitionRecord) ([]Event, error) {
+// of the last transition in prefix into chatlog events for the Turn. prefix is
+// the complete record up to and including that transition (TRN-MAT-1), which
+// is how a tool_result learns the ProviderCallID its ToolStepOpened carried.
+// Facts with no conversation content map to nothing; RunEnded is settlement
+// and is handled by the coordinator.
+func MapTransition(turnID TurnID, prefix []run.TransitionRecord) ([]Event, error) {
+	if len(prefix) == 0 {
+		return nil, nil
+	}
+	provider := make(map[run.CallID]string)
+	for i := range prefix {
+		for j := range prefix[i].Events {
+			if opened, ok := prefix[i].Events[j].Fact.(run.ToolStepOpened); ok {
+				for _, b := range opened.Calls {
+					provider[b.CallID] = b.ProviderCallID
+				}
+			}
+		}
+	}
+	tr := &prefix[len(prefix)-1]
 	var out []Event
 	for i := range tr.Events {
 		ev := &tr.Events[i]
@@ -19,24 +35,24 @@ func MapTransition(turnID TurnID, tr *run.TransitionRecord) ([]Event, error) {
 		switch f := ev.Fact.(type) {
 		case run.ModelStepCompleted:
 			calls := make([]ToolCallPayload, 0, len(f.Result.ToolCalls))
-			for _, tc := range f.Result.ToolCalls {
-				calls = append(calls, ToolCallPayload{CallID: run.CallID(tc.ToolCallID), Name: tc.ToolName, Input: tc.Input})
+			for j, tc := range f.Result.ToolCalls {
+				calls = append(calls, ToolCallPayload{CallID: run.DeriveCallID(f.StepID, j), ProviderCallID: tc.ToolCallID, Name: tc.ToolName, Input: tc.Input})
 			}
 			typ = EventAssistant
 			payload = AssistantPayload{TurnID: turnID, StepID: f.StepID, Text: f.Result.Text, ToolCalls: calls}
 		case run.ToolCallCompleted:
 			typ = EventToolResult
-			payload = ToolResultPayload{TurnID: turnID, CallID: f.CallID, Status: ToolSuccess, Output: f.Result.Output}
+			payload = ToolResultPayload{TurnID: turnID, CallID: f.CallID, ProviderCallID: provider[f.CallID], Status: ToolSuccess, Output: f.Result.Output}
 		case run.ToolCallAnswered:
 			typ = EventToolResult
-			payload = ToolResultPayload{TurnID: turnID, CallID: f.CallID, Status: ToolSuccess, Output: f.Payload}
+			payload = ToolResultPayload{TurnID: turnID, CallID: f.CallID, ProviderCallID: provider[f.CallID], Status: ToolSuccess, Output: f.Payload}
 		case run.ToolCallFailed:
 			status := ToolError
 			if f.Outcome == run.ToolOutcomeUnknown || f.Failure.Class == run.FailureEffectUnknown {
 				status = ToolUnknown
 			}
 			typ = EventToolResult
-			payload = ToolResultPayload{TurnID: turnID, CallID: f.CallID, Status: status, Failure: f.Failure.Class, Message: f.Failure.Message}
+			payload = ToolResultPayload{TurnID: turnID, CallID: f.CallID, ProviderCallID: provider[f.CallID], Status: status, Failure: f.Failure.Class, Message: f.Failure.Message}
 		default:
 			continue
 		}

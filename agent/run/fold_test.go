@@ -20,7 +20,7 @@ func fullRunRuntime(t *testing.T) Runtime {
 	def := testToolDef("t")
 	spec := makeSpec(t, def, DirectExecution)
 	rt, stepID, grant := preparedRuntime(t, []sdk.ToolDefinition{def}, []ToolSpec{spec})
-	b := makeBinding(t, "c1", spec, `{}`)
+	b := makeBinding(t, stepID, 0, "c1", spec, `{}`)
 	snap, err := rt.Load(context.Background(), "run-1")
 	if err != nil {
 		t.Fatal(err)
@@ -28,9 +28,9 @@ func fullRunRuntime(t *testing.T) Runtime {
 	res := mustCommit(t, rt, "complete-1", snap.Revision, grant,
 		SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
 	toolStep := res.Events[1].Fact.(ToolStepOpened).StepID
-	sRes := mustCommit(t, rt, "start-c1", res.Snapshot.Revision, "", StartToolCall{StepID: toolStep, CallID: "c1"})
+	sRes := mustCommit(t, rt, "start-c1", res.Snapshot.Revision, "", StartToolCall{StepID: toolStep, CallID: cid(stepID, 0)})
 	mustCommit(t, rt, "done-c1", sRes.Snapshot.Revision, sRes.Grant,
-		SubmitToolResult{StepID: toolStep, CallID: "c1", Result: ToolExecutionResult{Output: cj(`"ok"`)}})
+		SubmitToolResult{StepID: toolStep, CallID: cid(stepID, 0), Result: ToolExecutionResult{Output: cj(`"ok"`)}})
 	snap, err = rt.Load(context.Background(), "run-1")
 	if err != nil {
 		t.Fatal(err)
@@ -262,7 +262,9 @@ func TestGoldenEventStreamV1(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(sha256Digest(stateBytes))
-	const frozen = "sha256:b76adb269cc9821c6415ab93b355725fbd0054cb5a0ca26af7ab937648708d25"
+	// Pre-release fixture; re-frozen when CallID became derived and
+	// providerCallId joined the binding.
+	const frozen = "sha256:d3d3586e173be5be4bc7889993fa9c3456d33a58e354ad160cd89609aae9fe90"
 	if got != frozen {
 		t.Fatalf("golden v1 state digest changed:\n got %s\nwant %s\nstate: %s", got, frozen, stateBytes)
 	}

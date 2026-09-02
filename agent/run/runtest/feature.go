@@ -230,7 +230,27 @@ func (f *Feature) ExecutingModel() *Feature {
 	return f
 }
 
-// ExecutingTool leaves the named tool call Executing (no Loop).
+// callByProvider resolves a provider tool_call_id to the Run's derived CallID
+// by scanning every ToolStepOpened committed so far.
+func (f *Feature) callByProvider(providerID string) run.CallID {
+	f.t.Helper()
+	for _, fact := range f.facts() {
+		opened, ok := fact.(run.ToolStepOpened)
+		if !ok {
+			continue
+		}
+		for _, b := range opened.Calls {
+			if b.ProviderCallID == providerID {
+				return b.CallID
+			}
+		}
+	}
+	f.t.Fatalf("no tool call with provider id %q", providerID)
+	return ""
+}
+
+// ExecutingTool leaves the named tool call Executing (no Loop). callID is the
+// provider-side id the scripted model emits.
 func (f *Feature) ExecutingTool(name string, callID run.CallID) *Feature {
 	f.t.Helper()
 	var spec run.ToolSpec
@@ -246,6 +266,8 @@ func (f *Feature) ExecutingTool(name string, callID run.CallID) *Feature {
 		f.t.Fatalf("ExecutingTool: tool %q not registered", name)
 	}
 	f.ExecutingModel()
+	providerID := string(callID)
+	callID = run.DeriveCallID(f.modelStepID, 0)
 	args := run.MustParseCanonicalJSON(`{"x":1}`)
 	binding, err := run.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
 	if err != nil {
@@ -255,7 +277,7 @@ func (f *Feature) ExecutingTool(name string, callID run.CallID) *Feature {
 		FinishReason: sdk.FinishReasonToolCalls,
 		Usage:        sdk.Usage{TotalTokens: 2},
 		ToolCalls: []sdk.ToolCall{{
-			ToolCallID: string(callID), ToolName: string(spec.Ref), Input: `{"x":1}`,
+			ToolCallID: providerID, ToolName: string(spec.Ref), Input: `{"x":1}`,
 		}},
 	})
 	if err != nil {
@@ -265,7 +287,7 @@ func (f *Feature) ExecutingTool(name string, callID run.CallID) *Feature {
 		StepID: f.modelStepID,
 		Result: frozen,
 		Calls: []run.ToolCallBinding{{
-			CallID: callID, ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
+			CallID: callID, ProviderCallID: providerID, ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
 			BindingDigest: binding, Arguments: args, Policy: spec.Policy,
 		}},
 	}, f.modelGrant)

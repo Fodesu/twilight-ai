@@ -302,7 +302,7 @@ SourceFactID = Digest("twilight/turn/source-fact",
 
 `ModelStepPrepared` 期间 EventSink 可发送 `text_delta` / `reasoning_delta`。回合结束由 `twilight/turn/completed` 或 `twilight/turn/failed` 表达。
 
-**TRN-MAP-2** `AssistantID = Digest("twilight/chatlog/assistant-id", TurnID, ModelStepID, MapperVersion)`。`ToolResultID = Digest("twilight/chatlog/tool-result-id", TurnID, CallID, MapperVersion)`。assistant 的 ToolCall 顺序与模型结果一致。tool_result 与同 Turn 的 call 配对。同一 Turn 内 CallID 不得跨 ModelStep 复用，否则 `ToolResultID` 冲突。
+**TRN-MAP-2** `AssistantID = Digest("twilight/chatlog/assistant-id", TurnID, ModelStepID, MapperVersion)`。`ToolResultID = Digest("twilight/chatlog/tool-result-id", TurnID, CallID, MapperVersion)`。assistant 的 ToolCall 顺序与模型结果一致。tool_result 与同 Turn 的 call 配对。CallID 由 Run 从 `(ModelStepID, index)` 派生，同一 Turn 内天然不跨 ModelStep 复用；模型发出的 `tool_call_id` 以 `ProviderCallID` 随 assistant / tool_result 一并记录，供 Planner 回传。
 
 **TRN-MAP-3** Known 对应 `error`；Unknown 对应 `unknown`。
 
