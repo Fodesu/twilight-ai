@@ -6,12 +6,6 @@ import (
 	"github.com/memohai/twilight/agent/es"
 )
 
-// snapshotSchemaVersion versions the MachineState wire shape used inside
-// RunHeader.InitialState. It is independent of the event SchemaVersion. Both
-// shapes remain pre-release until the protocol is published; after publication
-// each can evolve only through its documented versioning rules (RUN-CMP-1).
-const snapshotSchemaVersion uint16 = 1
-
 func encodeMachineStateVersion(schemaVersion uint16, s *MachineState) ([]byte, error) {
 	proto, err := ProtocolFor(schemaVersion)
 	if err != nil {
@@ -52,36 +46,6 @@ type runHeaderDigestBody struct {
 	InitialStateVersion uint16         `json:"initialStateVersion"`
 	InitialStateDigest  Digest         `json:"initialStateDigest"`
 	CausationID         es.CausationID `json:"causationId,omitempty"`
-}
-
-// BuildRunHeader creates the immutable header for a new Run. The initial
-// state is the minimal InitializeRun state: no seed input, no model policy,
-// no limits — the first input arrives as the Revision-1 AcceptInput
-// transition (RUN-NEW-1).
-func BuildRunHeader(runID RunID, causationID es.CausationID) (RunHeader, error) {
-	initial, err := InitializeRun(runID)
-	if err != nil {
-		return RunHeader{}, err
-	}
-	stateBytes, err := ProtocolV1.EncodeMachineState(&initial)
-	if err != nil {
-		return RunHeader{}, err
-	}
-	stateDigest := sha256Digest(stateBytes)
-	header := RunHeader{
-		SchemaVersion:       ProtocolV1.Version(),
-		RunID:               runID,
-		InitialStateVersion: snapshotSchemaVersion,
-		InitialState:        initial,
-		InitialStateDigest:  stateDigest,
-		CausationID:         causationID,
-	}
-	headerDigest, err := digestRunHeader(&header)
-	if err != nil {
-		return RunHeader{}, err
-	}
-	header.HeaderDigest = headerDigest
-	return header, nil
 }
 
 func digestRunHeader(h *RunHeader) (Digest, error) {

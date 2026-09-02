@@ -106,10 +106,6 @@ var (
 	ErrRunNotFound = errors.New("agent: run not found")
 )
 
-func cloneRuntimeSnapshot(snapshot RuntimeSnapshot) RuntimeSnapshot {
-	return RuntimeSnapshot{State: cloneMachineState(&snapshot.State), Revision: snapshot.Revision, SchemaVersion: snapshot.SchemaVersion}
-}
-
 func cloneRunHeader(header RunHeader) RunHeader {
 	header.InitialState = cloneMachineState(&header.InitialState)
 	return header

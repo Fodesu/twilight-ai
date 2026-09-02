@@ -65,7 +65,7 @@ func memoryEntry(t testing.TB, rt Runtime) *memoryRun {
 func commitCmd(t *testing.T, rt Runtime, id CommandID, base uint64, grant ExecutionGrant, cmd AgentCommand) (CommitResult, error) {
 	t.Helper()
 	cmd = withTestExecutionClaim(id, cmd)
-	env, err := BuildEnvelope("run-1", id, cmd)
+	env, err := ProtocolV1.BuildEnvelope("run-1", id, cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,16 +121,16 @@ func buildPrepareFromSnap(t *testing.T, snap RuntimeSnapshot, req sdk.Request, s
 	if err != nil {
 		t.Fatal(err)
 	}
-	reqDigest, err := DigestRequest(frozenReq)
+	reqDigest, err := ProtocolV1.DigestRequest(frozenReq)
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolsDigest, err := DigestToolSpecs(specs)
+	toolsDigest, err := ProtocolV1.DigestToolSpecs(specs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	model := ModelRef(frozenReq.Model)
-	binding, err := DigestModelStepBinding(model, reqDigest, toolsDigest)
+	binding, err := ProtocolV1.DigestModelStepBinding(model, reqDigest, toolsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}

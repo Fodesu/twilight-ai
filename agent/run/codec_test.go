@@ -26,9 +26,9 @@ func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 		AcceptInput{Input: AgentInput{ID: "in", Payload: cj(`{"q":"hi"}`)}},
 	}
 	for _, cmd := range commands {
-		env, err := BuildEnvelope("run-1", CommandID("cmd-"+commandType(cmd)), cmd)
+		env, err := ProtocolV1.BuildEnvelope("run-1", CommandID("cmd-"+commandType(cmd)), cmd)
 		if err != nil {
-			t.Fatalf("BuildEnvelope(%T): %v", cmd, err)
+			t.Fatalf("ProtocolV1.BuildEnvelope(%T): %v", cmd, err)
 		}
 		raw, err := json.Marshal(env)
 		if err != nil {
@@ -65,12 +65,12 @@ func TestAgentEventJSONRoundTripRestoresVariants(t *testing.T) {
 	}
 	for i, fact := range facts {
 		typ := factType(fact)
-		digest, err := DigestFact(typ, fact)
+		digest, err := ProtocolV1.DigestFact(typ, fact)
 		if err != nil {
-			t.Fatalf("DigestFact(%T): %v", fact, err)
+			t.Fatalf("ProtocolV1.DigestFact(%T): %v", fact, err)
 		}
 		event := AgentEvent{
-			SchemaVersion: currentSchemaVersion,
+			SchemaVersion: SchemaVersion1,
 			Type:          typ,
 			RunID:         "run-1",
 			Revision:      uint64(i + 1),
@@ -105,12 +105,12 @@ func TestTransitionRecordJSONRoundTripRestoresVariants(t *testing.T) {
 	events := make([]AgentEvent, len(facts))
 	for i, fact := range facts {
 		typ := factType(fact)
-		digest, err := DigestFact(typ, fact)
+		digest, err := ProtocolV1.DigestFact(typ, fact)
 		if err != nil {
 			t.Fatal(err)
 		}
 		events[i] = AgentEvent{
-			SchemaVersion: currentSchemaVersion,
+			SchemaVersion: SchemaVersion1,
 			Type:          typ,
 			RunID:         "run-1",
 			Revision:      1,
@@ -151,7 +151,7 @@ func TestTransitionRecordJSONRoundTripRestoresVariants(t *testing.T) {
 
 func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
 	cmd := AcceptInput{Input: AgentInput{ID: "in", Payload: cj(`1`)}}
-	env, err := BuildEnvelope("run-1", DeriveInputCommandID("run-1", "in"), cmd)
+	env, err := ProtocolV1.BuildEnvelope("run-1", DeriveInputCommandID("run-1", "in"), cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
 }
 
 func TestWireCodecRejectsUnknownTypeAndDigestMismatch(t *testing.T) {
-	env, err := BuildEnvelope("run-1", "cmd-1", CancelRun{})
+	env, err := ProtocolV1.BuildEnvelope("run-1", "cmd-1", CancelRun{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,11 +189,11 @@ func TestWireCodecRejectsUnknownTypeAndDigestMismatch(t *testing.T) {
 	}
 
 	fact := RunEnded{End: RunCompletedEnd{}}
-	digest, err := DigestFact(factType(fact), fact)
+	digest, err := ProtocolV1.DigestFact(factType(fact), fact)
 	if err != nil {
 		t.Fatal(err)
 	}
-	event := AgentEvent{SchemaVersion: currentSchemaVersion, Type: factType(fact), RunID: "run-1", Revision: 1, CommandID: "cmd", CommandDigest: env.Digest, Digest: digest, Fact: fact}
+	event := AgentEvent{SchemaVersion: SchemaVersion1, Type: factType(fact), RunID: "run-1", Revision: 1, CommandID: "cmd", CommandDigest: env.Digest, Digest: digest, Fact: fact}
 	raw, err = json.Marshal(event)
 	if err != nil {
 		t.Fatal(err)
@@ -212,7 +212,7 @@ func TestRunEndedTaggedUnionRejectsInvalidValues(t *testing.T) {
 		"unknown end variant":    {End: fakeRunEnd{}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := DigestFact("run_ended", fact); err == nil {
+			if _, err := ProtocolV1.DigestFact("run_ended", fact); err == nil {
 				t.Fatal("invalid tagged terminal value was accepted")
 			}
 		})

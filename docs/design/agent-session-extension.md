@@ -1,6 +1,6 @@
 # Twilight Agent Session Module Framework
 
-状态：设计规范
+状态：设计草案。无实现；Catalog、SemanticAppender 与 journal 流程在 Memory reference implementation 通过 conformance 前不冻结。
 
 本文定义建立在 `agent/session` 与 `agent/artifact` 之上的静态 Session Module Framework。实现包路径暂为 `agent/session/extension`；文中的“必须”“不得”“应该”是协议约束；JSON canonicalization 与 digest 遵循 `agent/jsonstable`、`agent/es`。
 

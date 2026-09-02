@@ -22,7 +22,7 @@ func acceptInput(t testing.TB, rt Runtime, id RunID, input AgentInput) CommitRes
 	if err != nil {
 		t.Fatal(err)
 	}
-	envelope, err := BuildEnvelope(id, DeriveInputCommandID(id, input.ID), AcceptInput{Input: input})
+	envelope, err := ProtocolV1.BuildEnvelope(id, DeriveInputCommandID(id, input.ID), AcceptInput{Input: input})
 	if err != nil {
 		t.Fatal(err)
 	}

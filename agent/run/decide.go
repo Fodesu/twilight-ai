@@ -20,15 +20,6 @@ func rejectionf(format string, args ...any) error {
 	return fmt.Errorf("agent: reject: "+format, args...)
 }
 
-// Decide validates one command against the current write schema and produces
-// the complete fact sequence of its transition (RUN-MCH-3). Replay of a
-// persisted Run must use ProtocolFor(run schema).Decide.
-//
-//nolint:gocritic // hugeParam: public protocol boundary is intentionally value-based: Decide(state, command) -> facts.
-func Decide(s MachineState, c AgentCommand) ([]Fact, error) {
-	return ProtocolV1.Decide(s, c)
-}
-
 //nolint:gocritic // hugeParam: v1 Decide is value-based.
 func decideV1(s MachineState, c AgentCommand) ([]Fact, error) {
 	if s.Status.Terminal() {

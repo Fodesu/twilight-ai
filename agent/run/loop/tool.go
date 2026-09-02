@@ -222,7 +222,9 @@ func (l *Loop) settleWorkers(ctx context.Context, runtime run.Runtime, events Ev
 				Arguments:        w.call.Arguments,
 				Progress:         &progressSink{events: events, run: runID, step: stepID, call: w.call.CallID},
 			}
-			outcome := executeToolSafely(ctx, w.tool, &req)
+			workerCtx, stopLease := l.keepLease(ctx, runtime, runID, stepID, w.call.CallID, w.grant)
+			outcome := executeToolSafely(workerCtx, w.tool, &req)
+			stopLease()
 
 			var cmd run.AgentCommand
 			switch o := outcome.(type) {

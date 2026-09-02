@@ -99,7 +99,7 @@ func TestCanonicalDeterminism(t *testing.T) {
 
 func TestDigestCommandIdentity(t *testing.T) {
 	cmd := StartToolCall{StepID: "s1", CallID: "c1", Claim: "claim-1"}
-	d1, err := DigestCommand("start_tool_call", cmd)
+	d1, err := ProtocolV1.DigestCommand("start_tool_call", cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,12 +107,12 @@ func TestDigestCommandIdentity(t *testing.T) {
 		t.Fatalf("bad digest wire form: %s", d1)
 	}
 	// Same content, same digest.
-	d2, _ := DigestCommand("start_tool_call", StartToolCall{StepID: "s1", CallID: "c1", Claim: "claim-1"})
+	d2, _ := ProtocolV1.DigestCommand("start_tool_call", StartToolCall{StepID: "s1", CallID: "c1", Claim: "claim-1"})
 	if d1 != d2 {
 		t.Fatal("same command produced different digests")
 	}
 	// Different content differs.
-	d3, _ := DigestCommand("start_tool_call", StartToolCall{StepID: "s1", CallID: "c2", Claim: "claim-1"})
+	d3, _ := ProtocolV1.DigestCommand("start_tool_call", StartToolCall{StepID: "s1", CallID: "c2", Claim: "claim-1"})
 	if d1 == d3 {
 		t.Fatal("different commands produced the same digest")
 	}
@@ -129,7 +129,7 @@ func TestDigestCommandIdentity(t *testing.T) {
 		t.Fatal("schema version did not affect digest preimage")
 	}
 	// Type mismatch is rejected.
-	if _, err := DigestCommand("cancel_run", cmd); err == nil {
+	if _, err := ProtocolV1.DigestCommand("cancel_run", cmd); err == nil {
 		t.Fatal("expected type/variant mismatch error")
 	}
 }
@@ -211,7 +211,7 @@ func TestSchemaVersion1Golden(t *testing.T) {
 	if string(body) != wantBody {
 		t.Fatalf("golden body changed:\n got %q\nwant %q", body, wantBody)
 	}
-	d, err := DigestCommand("cancel_run", cmd)
+	d, err := ProtocolV1.DigestCommand("cancel_run", cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestSchemaVersion1Golden(t *testing.T) {
 	}
 
 	fact := InputAccepted{Input: AgentInput{ID: "in-1", Payload: cj(`{"text":"hi"}`)}}
-	fbody, err := EncodeFact("input_accepted", fact)
+	fbody, err := ProtocolV1.EncodeFact("input_accepted", fact)
 	if err != nil {
 		t.Fatal(err)
 	}

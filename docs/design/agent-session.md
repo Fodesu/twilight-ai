@@ -1,10 +1,10 @@
 # Twilight Agent Session Protocol
 
-状态：设计规范
+状态：设计草案。无实现；wire、digest preimage 与 conformance 在 Memory reference implementation 与 Input → Turn → Run → Session 纵向切片跑通前不冻结。
 
 本文定义 Twilight Session 的 Event Sourcing kernel。文中的“必须”“不得”“应该”是协议约束。
 
-本文冻结 Twilight 的 Session stream、并发、Fork ancestry 与 integrity 语义。
+本文规定 Twilight 的 Session stream、并发、Fork ancestry 与 integrity 语义；冻结发生在草案转为规范时。
 
 ## 1. Events 与范围
 

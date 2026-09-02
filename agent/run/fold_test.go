@@ -10,7 +10,7 @@ import (
 
 // Event-sourcing arbitration tests (RUN-SCP-1, RUN-CMT-2): the complete canonical
 // TransitionRecord is the diagnostic commit record; the snapshot is a
-// rebuildable same-transaction projection; the revision watermark witnesses
+// rebuildable same-transaction projection; the head revision witnesses
 // log-tail completeness.
 
 // fullRunRuntime drives one complete run (prepare -> model -> tool -> done)
@@ -112,14 +112,14 @@ func TestRebuildRepairsCorruptedSnapshot(t *testing.T) {
 	}
 }
 
-// A log tail below the watermark halts with ErrLogTruncated: accepted facts
-// are gone and continuing would repeat gated executions.
+// A log tail below the head revision halts with ErrLogTruncated: accepted
+// facts are gone and continuing would repeat gated executions.
 func TestRebuildHaltsOnTruncatedTail(t *testing.T) {
 	rt := fullRunRuntime(t)
 	entry := memoryEntry(t, rt)
 	entry.mu.Lock()
-	// Simulate selective damage: drop the last transition while the watermark
-	// (separate storage in a durable adapter) survives.
+	// Simulate selective damage: drop the last transition while the head
+	// revision (separate storage in a durable adapter) survives.
 	entry.log = cloneTransitionRecords(entry.log[:len(entry.log)-1])
 	entry.mu.Unlock()
 
@@ -257,7 +257,7 @@ func TestGoldenEventStreamV1(t *testing.T) {
 	if maxRev != 9 {
 		t.Fatalf("golden stream has %d transitions, want 9", maxRev)
 	}
-	stateBytes, err := marshalCanonical(stateComparable(&folded))
+	stateBytes, err := ProtocolV1.EncodeMachineState(&folded)
 	if err != nil {
 		t.Fatal(err)
 	}

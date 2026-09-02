@@ -7,8 +7,22 @@ import (
 	"github.com/memohai/twilight/agent/es"
 )
 
+func buildTestHeader(t *testing.T, causation es.CausationID) RunHeader {
+	t.Helper()
+	newRun, err := BuildNewRun("run-1", causation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := BuildRunHeaderFromNewRun(newRun)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return h
+}
+
 func TestBuildRunHeaderRoundTrip(t *testing.T) {
-	h, err := BuildRunHeader("run-1", es.CausationID("session:entry-9"))
+	h := buildTestHeader(t, es.CausationID("session:entry-9"))
+	var err error
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -24,10 +38,7 @@ func TestBuildRunHeaderRoundTrip(t *testing.T) {
 }
 
 func TestValidateRunHeaderRejectsTampering(t *testing.T) {
-	h, err := BuildRunHeader("run-1", "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := buildTestHeader(t, "")
 	// Tampered causation changes the header digest preimage.
 	tampered := h
 	tampered.CausationID = "forged"
@@ -58,7 +69,7 @@ func TestCommitRejectsCommandSchemaMismatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	in := AgentInput{ID: "seed", Payload: MustParseCanonicalJSON(`{"q":"hi"}`)}
-	env, err := BuildEnvelope("run-1", DeriveInputCommandID("run-1", in.ID), NextStep(in))
+	env, err := ProtocolV1.BuildEnvelope("run-1", DeriveInputCommandID("run-1", in.ID), NextStep(in))
 	if err != nil {
 		t.Fatal(err)
 	}

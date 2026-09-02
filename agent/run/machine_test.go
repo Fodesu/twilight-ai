@@ -25,9 +25,9 @@ func newRun(t *testing.T) MachineState {
 
 func mustDecide(t *testing.T, s MachineState, c AgentCommand) []Fact {
 	t.Helper()
-	facts, err := Decide(s, c)
+	facts, err := ProtocolV1.Decide(s, c)
 	if err != nil {
-		t.Fatalf("Decide(%T): %v", c, err)
+		t.Fatalf("ProtocolV1.Decide(%T): %v", c, err)
 	}
 	return facts
 }
@@ -36,9 +36,9 @@ func fold(t *testing.T, s MachineState, facts []Fact) MachineState {
 	t.Helper()
 	for _, f := range facts {
 		var err error
-		s, err = Evolve(s, f)
+		s, err = ProtocolV1.Evolve(s, f)
 		if err != nil {
-			t.Fatalf("Evolve(%T): %v", f, err)
+			t.Fatalf("ProtocolV1.Evolve(%T): %v", f, err)
 		}
 	}
 	return s
@@ -62,16 +62,16 @@ func buildPrepare(t *testing.T, s MachineState, req sdk.Request, specs []ToolSpe
 	if err != nil {
 		t.Fatal(err)
 	}
-	reqDigest, err := DigestRequest(frozenReq)
+	reqDigest, err := ProtocolV1.DigestRequest(frozenReq)
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolsDigest, err := DigestToolSpecs(specs)
+	toolsDigest, err := ProtocolV1.DigestToolSpecs(specs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	model := ModelRef(frozenReq.Model)
-	binding, err := DigestModelStepBinding(model, reqDigest, toolsDigest)
+	binding, err := ProtocolV1.DigestModelStepBinding(model, reqDigest, toolsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func makeSpec(t *testing.T, def sdk.ToolDefinition, policy ResponsePolicy) ToolS
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := DigestToolDefinition(frozen)
+	d, err := ProtocolV1.DigestToolDefinition(frozen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func makeSpec(t *testing.T, def sdk.ToolDefinition, policy ResponsePolicy) ToolS
 
 func responseDecisionDigest(t *testing.T, kind ResponseKind, decision ResponseDecision, reason string) Digest {
 	t.Helper()
-	d, err := DigestToolResponseDecision(kind, decision, reason)
+	d, err := ProtocolV1.DigestToolResponseDecision(kind, decision, reason)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func responseDecisionDigest(t *testing.T, kind ResponseKind, decision ResponseDe
 
 func responsePayloadDigest(t *testing.T, payload CanonicalJSON) Digest {
 	t.Helper()
-	d, err := DigestToolResponsePayload(payload)
+	d, err := ProtocolV1.DigestToolResponsePayload(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestPrepareRejectsIncompleteInputIDs(t *testing.T) {
 	s := newRun(t)
 	prep, _ := buildPrepare(t, s, testRequest(), nil)
 	prep.InputIDs = nil
-	if _, err := Decide(s, prep); err == nil {
+	if _, err := ProtocolV1.Decide(s, prep); err == nil {
 		t.Fatal("prepare with missing InputIDs accepted")
 	}
 }
@@ -268,7 +268,7 @@ func TestExternalResponseRequiresPayloadDigest(t *testing.T) {
 	s = fold(t, s, facts)
 	respID := opened.Calls[0].Response.ID
 	payload := cj(`{"answer":"ok"}`)
-	if _, err := Decide(s, SubmitToolResponse{StepID: opened.StepID, CallID: "c1", ResponseID: respID, ResponseDigest: "sha256:bad", Payload: payload}); err == nil {
+	if _, err := ProtocolV1.Decide(s, SubmitToolResponse{StepID: opened.StepID, CallID: "c1", ResponseID: respID, ResponseDigest: "sha256:bad", Payload: payload}); err == nil {
 		t.Fatal("external response with bad payload digest accepted")
 	}
 	facts = mustDecide(t, s, SubmitToolResponse{StepID: opened.StepID, CallID: "c1", ResponseID: respID,
@@ -284,7 +284,7 @@ func TestExternalResponseRequiresPayloadDigest(t *testing.T) {
 	opened = facts[1].(ToolStepOpened)
 	s = fold(t, s, facts)
 	respID = opened.Calls[0].Response.ID
-	facts, err := Decide(s, RejectToolCall{StepID: opened.StepID, CallID: "c1", ResponseID: respID,
+	facts, err := ProtocolV1.Decide(s, RejectToolCall{StepID: opened.StepID, CallID: "c1", ResponseID: respID,
 		ResponseDigest: responseDecisionDigest(t, ResponseExternal, ResponseDecisionRejected, "user dismissed"), Reason: "user dismissed"})
 	if err != nil {
 		t.Fatal(err)
@@ -322,7 +322,7 @@ func TestToolSchedulingRejectsUnknownMode(t *testing.T) {
 	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
 	b := makeBinding(t, "c1", spec, `{}`)
-	_, err := Decide(s, SubmitModelResult{
+	_, err := ProtocolV1.Decide(s, SubmitModelResult{
 		StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b},
 		Scheduling: ToolScheduling{Mode: "round-robin"},
 	})
@@ -516,14 +516,14 @@ func TestAcceptInputIdempotentPerID(t *testing.T) {
 	// AcceptInput rejected while a step is current.
 	prep, _ := buildPrepare(t, s, testRequest(), nil)
 	s = fold(t, s, mustDecide(t, s, prep))
-	if _, err := Decide(s, NextStep(AgentInput{ID: "in-3"})); err == nil {
+	if _, err := ProtocolV1.Decide(s, NextStep(AgentInput{ID: "in-3"})); err == nil {
 		t.Fatal("AcceptInput accepted with a current step")
 	}
 }
 
 func TestAcceptInputRejectsSeedDuplicateID(t *testing.T) {
 	s := newRun(t)
-	_, err := Decide(s, NextStep(AgentInput{ID: "seed", Payload: cj(`{"q":"other"}`)}))
+	_, err := ProtocolV1.Decide(s, NextStep(AgentInput{ID: "seed", Payload: cj(`{"q":"other"}`)}))
 	if !errors.Is(err, ErrCommandConflict) {
 		t.Fatalf("duplicate seed input err = %v, want ErrCommandConflict", err)
 	}
@@ -539,7 +539,7 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 		s := minimal
 		for _, id := range ids {
 			var foldErr error
-			s, foldErr = Evolve(s, InputAccepted{Input: AgentInput{ID: id, Payload: cj(`null`)}})
+			s, foldErr = ProtocolV1.Evolve(s, InputAccepted{Input: AgentInput{ID: id, Payload: cj(`null`)}})
 			if foldErr != nil {
 				t.Fatal(foldErr)
 			}
@@ -548,15 +548,15 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 	}
 	prepared := func(ids ...InputID) ModelStepPrepared {
 		request := ModelRequest{Model: string(testModel)}
-		requestDigest, err := DigestRequest(request)
+		requestDigest, err := ProtocolV1.DigestRequest(request)
 		if err != nil {
 			t.Fatal(err)
 		}
-		toolsDigest, err := DigestToolSpecs(nil)
+		toolsDigest, err := ProtocolV1.DigestToolSpecs(nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		binding, err := DigestModelStepBinding(testModel, requestDigest, toolsDigest)
+		binding, err := ProtocolV1.DigestModelStepBinding(testModel, requestDigest, toolsDigest)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -565,25 +565,25 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 
 	t.Run("nonexistent input", func(t *testing.T) {
 		s := withInputs("in-1")
-		if _, err := Evolve(s, prepared("missing")); err == nil {
+		if _, err := ProtocolV1.Evolve(s, prepared("missing")); err == nil {
 			t.Fatal("ModelStepPrepared consuming a nonexistent input folded")
 		}
 	})
 	t.Run("length mismatch", func(t *testing.T) {
 		s := withInputs("in-1", "in-2")
-		if _, err := Evolve(s, prepared("in-1")); err == nil {
+		if _, err := ProtocolV1.Evolve(s, prepared("in-1")); err == nil {
 			t.Fatal("ModelStepPrepared consuming only a pending-input prefix folded")
 		}
 	})
 	t.Run("order mismatch", func(t *testing.T) {
 		s := withInputs("in-1", "in-2")
-		if _, err := Evolve(s, prepared("in-2", "in-1")); err == nil {
+		if _, err := ProtocolV1.Evolve(s, prepared("in-2", "in-1")); err == nil {
 			t.Fatal("ModelStepPrepared consuming pending inputs out of order folded")
 		}
 	})
 	t.Run("complete ordered IDs", func(t *testing.T) {
 		s := withInputs("in-1", "in-2")
-		next, err := Evolve(s, prepared("in-1", "in-2"))
+		next, err := ProtocolV1.Evolve(s, prepared("in-1", "in-2"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -596,7 +596,7 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 func TestEvolveRejectsModelPrepareOverCurrentStep(t *testing.T) {
 	s := newRun(t)
 	s, _ = advanceToExecuting(t, s, testRequest(), nil)
-	_, err := Evolve(s, ModelStepPrepared{
+	_, err := ProtocolV1.Evolve(s, ModelStepPrepared{
 		StepID:        "other",
 		Model:         testModel,
 		Request:       ModelRequest{Model: string(testModel)},

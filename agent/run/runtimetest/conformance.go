@@ -107,7 +107,7 @@ func (c *conformanceCase) load() run.RuntimeSnapshot {
 func (c *conformanceCase) commit(id run.CommandID, base uint64, grant run.ExecutionGrant, cmd run.AgentCommand) (run.CommitResult, error) {
 	c.t.Helper()
 	cmd = withTestExecutionClaim(id, cmd)
-	env, err := run.BuildEnvelope(c.runID, id, cmd)
+	env, err := run.ProtocolV1.BuildEnvelope(c.runID, id, cmd)
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -178,16 +178,16 @@ func buildPrepareFromSnap(t testing.TB, snap *run.RuntimeSnapshot, req *sdk.Requ
 	if err != nil {
 		t.Fatal(err)
 	}
-	reqDigest, err := run.DigestRequest(frozenReq)
+	reqDigest, err := run.ProtocolV1.DigestRequest(frozenReq)
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolsDigest, err := run.DigestToolSpecs(specs)
+	toolsDigest, err := run.ProtocolV1.DigestToolSpecs(specs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	model := run.ModelRef(frozenReq.Model)
-	binding, err := run.DigestModelStepBinding(model, reqDigest, toolsDigest)
+	binding, err := run.ProtocolV1.DigestModelStepBinding(model, reqDigest, toolsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func makeSpec(t testing.TB, def sdk.ToolDefinition) run.ToolSpec {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := run.DigestToolDefinition(frozen)
+	d, err := run.ProtocolV1.DigestToolDefinition(frozen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +324,7 @@ func testCreateMissing(t *testing.T, newRuntime Factory) {
 	if _, err := rt.Record(context.Background(), "missing"); !errors.Is(err, run.ErrRunNotFound) {
 		t.Fatalf("Record error = %v, want ErrRunNotFound", err)
 	}
-	env, err := run.BuildEnvelope("missing", "cancel", run.CancelRun{})
+	env, err := run.ProtocolV1.BuildEnvelope("missing", "cancel", run.CancelRun{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,8 +397,8 @@ func testRecordFoldAccepted(t *testing.T, newRuntime Factory) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	foldedJSON, _ := json.Marshal(stateComparable(&folded))
-	snapshotJSON, _ := json.Marshal(stateComparable(&record.Snapshot.State))
+	foldedJSON := encodeState(t, &folded)
+	snapshotJSON := encodeState(t, &record.Snapshot.State)
 	if revision != record.Snapshot.Revision || !bytes.Equal(foldedJSON, snapshotJSON) {
 		t.Fatalf("FoldRun = revision %d state %s, Record = revision %d state %s", revision, foldedJSON, record.Snapshot.Revision, snapshotJSON)
 	}
@@ -434,8 +434,8 @@ func testRecordReplayAndIndex(t *testing.T, newRuntime Factory) {
 		t.Fatalf("FoldEvents: %v", err)
 	}
 	live := c.load()
-	a, _ := json.Marshal(stateComparable(&live.State))
-	bts, _ := json.Marshal(stateComparable(&foldedState))
+	a := encodeState(t, &live.State)
+	bts := encodeState(t, &foldedState)
 	if !bytes.Equal(a, bts) {
 		t.Fatalf("replay diverged:\n live   %s\n replay %s", a, bts)
 	}
@@ -454,7 +454,7 @@ func testRecordConcurrentWithCommit(t *testing.T, newRuntime Factory) {
 			t.Fatal(err)
 		}
 		in := run.AgentInput{ID: run.InputID(fmt.Sprintf("in-%d", i)), Payload: mustJSON(`null`)}
-		env, err := run.BuildEnvelope(c.runID, run.DeriveInputCommandID(c.runID, in.ID), run.AcceptInput{Input: in})
+		env, err := run.ProtocolV1.BuildEnvelope(c.runID, run.DeriveInputCommandID(c.runID, in.ID), run.AcceptInput{Input: in})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -494,8 +494,8 @@ func testRecordConcurrentWithCommit(t *testing.T, newRuntime Factory) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		foldedJSON, _ := json.Marshal(stateComparable(&foldedRun))
-		snapshotJSON, _ := json.Marshal(stateComparable(&observed.record.Snapshot.State))
+		foldedJSON := encodeState(t, &foldedRun)
+		snapshotJSON := encodeState(t, &observed.record.Snapshot.State)
 		if rev != observed.record.Snapshot.Revision || !bytes.Equal(foldedJSON, snapshotJSON) {
 			t.Fatalf("inconsistent Record at revision %d", observed.record.Snapshot.Revision)
 		}
@@ -556,7 +556,7 @@ func testIsolationRuns(t *testing.T, newRuntime Factory) {
 			t.Fatal(err)
 		}
 		in := run.AgentInput{ID: "same-input", Payload: mustJSON(`{"run":"` + string(id) + `"}`)}
-		env, err := run.BuildEnvelope(id, run.DeriveInputCommandID(id, in.ID), run.AcceptInput{Input: in})
+		env, err := run.ProtocolV1.BuildEnvelope(id, run.DeriveInputCommandID(id, in.ID), run.AcceptInput{Input: in})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -707,7 +707,7 @@ func testPrepareReplayAfterProgress(t *testing.T, newRuntime Factory) {
 func testGrant(t *testing.T, newRuntime Factory) {
 	c, stepID, grant := preparedCase(t, newRuntime, nil, nil)
 	// The authority rejects an unbound start before it can mint ownership.
-	empty, err := run.BuildEnvelope(c.runID, "empty-claim", run.StartModelExecution{StepID: stepID})
+	empty, err := run.ProtocolV1.BuildEnvelope(c.runID, "empty-claim", run.StartModelExecution{StepID: stepID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -885,25 +885,14 @@ func testCancelUnknownRemaining(t *testing.T, newRuntime Factory) {
 	}
 }
 
-func stateComparable(s *run.MachineState) map[string]any {
-	m := map[string]any{
-		"runId": s.RunID, "status": s.Status,
-		"modelSteps": s.ModelSteps, "lastClosedStep": s.LastClosedStep,
-		"usage": s.Usage, "pendingInputs": s.PendingInputs,
-		"lastModelResult": s.LastModelResult, "result": s.Result,
+// encodeState renders the canonical snapshot bytes the protocol itself uses
+// for state identity, so conformance compares states by the same rule as
+// Runtime.Record.
+func encodeState(t testing.TB, s *run.MachineState) []byte {
+	t.Helper()
+	raw, err := run.ProtocolV1.EncodeMachineState(s)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if s.LastToolStep != nil {
-		m["lastToolStep"] = s.LastToolStep
-	}
-	switch cur := s.Current.(type) {
-	case run.Open:
-		m["current"] = "open"
-	case run.ModelStep:
-		m["current"] = "model"
-		m["modelStep"] = cur
-	case run.ToolStep:
-		m["current"] = "tool"
-		m["toolStep"] = cur
-	}
-	return m
+	return raw
 }
