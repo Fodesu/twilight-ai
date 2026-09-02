@@ -61,10 +61,7 @@ func TestRunExpiredRecoveryRecoversExpiredModel(t *testing.T) {
 	if _, err := commitCmd(t, rt, cmdID, snap.Revision, "", prep); err != nil {
 		t.Fatal(err)
 	}
-	startEnv, err := ProtocolV1.BuildEnvelope("run-1", "start-1", StartModelExecution{StepID: prep.StepID, Claim: "claim-scan"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	startEnv := startEnvelope(t, "run-1", StartModelExecution{StepID: prep.StepID, Claim: "claim-scan"})
 	if _, err := rt.Commit(ctx, CommitRequest{Command: startEnv}); err != nil {
 		t.Fatal(err)
 	}

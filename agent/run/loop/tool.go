@@ -10,11 +10,11 @@ import (
 )
 
 type startedWorker struct {
-	call  run.ToolCallState
-	grant run.ExecutionGrant
-	base  uint64
-	tool  ExecutableTool
-	key   startKey
+	call    run.ToolCallState
+	grant   run.ExecutionGrant
+	base    uint64
+	tool    ExecutableTool
+	attempt attempt
 }
 
 func toolCallIndex(step run.ToolStep, callID run.CallID) int {
@@ -86,12 +86,13 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events Eve
 			continue
 		}
 		call := ts.Calls[i]
-		key := startKey{runID: runID, stepID: eff.StepID, callID: callID}
 		resuming := false
 		switch call.Status {
 		case run.ToolPending:
 		case run.ToolExecuting:
-			if _, ok := l.lookupStart(key); !ok {
+			if ok, err := l.hasClaim(ctx, runID, eff.StepID, callID); err != nil {
+				return err
+			} else if !ok {
 				continue
 			}
 			resuming = true
@@ -101,8 +102,10 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events Eve
 
 		tool, known := l.resolveExecutableTool(proto, call)
 		if known != nil && !resuming {
-			// Known failure of a Pending call: no start barrier, no tool call.
-			res, err := l.commit(ctx, runtime, runID, freshCommandID(), snapshot.Revision, "",
+			// Known failure of a Pending call: no start barrier, no tool call,
+			// no claim. Its identity derives from the call alone; a retry of
+			// the same rejection is idempotent.
+			res, err := l.commit(ctx, runtime, runID, run.DeriveSettlementCommandID(runID, eff.StepID, callID, ""), snapshot.Revision, "",
 				run.SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: *known, Outcome: run.ToolOutcomeKnown}, proto)
 			if err != nil {
 				settleErr := l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, proto)
@@ -115,33 +118,35 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events Eve
 			continue
 		}
 
-		attempt := l.startFor(key)
-		start, err := l.commit(ctx, runtime, runID, attempt.commandID, snapshot.Revision, "",
-			run.StartToolCall{StepID: eff.StepID, CallID: callID, Claim: attempt.claim}, proto)
+		a, err := l.claimFor(ctx, runID, eff.StepID, callID)
+		if err != nil {
+			return err
+		}
+		start, err := l.commit(ctx, runtime, runID, a.startID(), snapshot.Revision, "",
+			run.StartToolCall{StepID: eff.StepID, CallID: callID, Claim: a.claim}, proto)
 		if err != nil {
 			settleErr := l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, proto)
 			if retriable(err) {
 				// A sentinel rejection proves this start did not acquire the
-				// call. Drop the local claim so a later snapshot can create a
-				// fresh start attempt or observe the other owner.
-				l.forgetStart(key)
+				// call. Drop the claim so a later snapshot can mint a fresh
+				// attempt or observe the other owner.
+				l.forgetClaim(ctx, a)
 				return settleErr
 			}
 			return err
 		}
 		if start.Status == run.CommitAlreadyApplied && start.Grant == "" {
-			l.forgetStart(key)
-			continue // another attempt owns this call
+			l.forgetClaim(ctx, a)
+			continue // settled already; nothing left to own
 		}
 		if start.Grant == "" {
-			l.forgetStart(key)
+			l.forgetClaim(ctx, a)
 			return errors.New("agent: loop: start tool returned no execution grant")
 		}
 		if startedCall, ok := toolCallFromSnapshot(start.Snapshot.State, eff.StepID, callID); !ok || startedCall.Status != run.ToolExecuting {
 			// A replay may arrive after another worker has settled this call.
-			// Keep the original grant in the Runtime's replay record, but never
-			// invoke an effect for a call that is no longer Executing.
-			l.forgetStart(key)
+			// Never invoke an effect for a call that is no longer Executing.
+			l.forgetClaim(ctx, a)
 			continue
 		}
 		l.emitCommitted(ctx, events, runID, start.Events)
@@ -157,24 +162,17 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events Eve
 				}
 				failure.Class = run.FailureEffectUnknown
 			}
-			settlement := l.settlementFor(key, freshCommandID(), start.Snapshot.Revision, start.Grant,
-				run.SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: failure, Outcome: run.ToolOutcomeUnknown})
-			res, err := l.commit(context.WithoutCancel(ctx), runtime, runID, settlement.commandID, settlement.base, settlement.grant, settlement.command, proto)
-			if err != nil {
+			if err := l.settle(ctx, runtime, events, a, start.Snapshot.Revision, start.Grant,
+				run.SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: failure, Outcome: run.ToolOutcomeUnknown}, proto); err != nil {
 				settleErr := l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, proto)
-				if retriable(err) {
-					l.forgetSettlement(key)
-					l.forgetStart(key)
+				if settleErr != nil {
 					return settleErr
 				}
 				return err
 			}
-			l.forgetSettlement(key)
-			l.forgetStart(key)
-			l.emitCommitted(ctx, events, runID, res.Events)
 			continue
 		}
-		started = append(started, startedWorker{call: call, grant: start.Grant, base: start.Snapshot.Revision, tool: tool, key: key})
+		started = append(started, startedWorker{call: call, grant: start.Grant, base: start.Snapshot.Revision, tool: tool, attempt: a})
 	}
 
 	return l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, proto)
@@ -204,7 +202,6 @@ func (l *Loop) settleWorkers(ctx context.Context, runtime run.Runtime, events Ev
 		return nil
 	}
 	controlCtx := context.WithoutCancel(ctx)
-
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	var firstErr error
@@ -254,26 +251,15 @@ func (l *Loop) settleWorkers(ctx context.Context, runtime run.Runtime, events Ev
 			// bases rebase call-locally. Late results after terminal return
 			// ErrRunTerminal and are dropped (audit is the adapter's job).
 			// The one-shot same-CommandID replay lives inside l.commit.
-			settlement := l.settlementFor(w.key, freshCommandID(), w.base, w.grant, cmd)
-			res, err := l.commit(controlCtx, runtime, runID, settlement.commandID, settlement.base, settlement.grant, settlement.command, proto)
-			switch {
-			case err == nil:
-				l.forgetSettlement(w.key)
-				l.forgetStart(w.key)
-				l.emitCommitted(ctx, events, runID, res.Events)
-				if events != nil {
-					_ = events.Emit(ctx, Event{RunID: runID, StepID: stepID, CallID: w.call.CallID,
-						Kind: EventToolCompleted, Durability: EventCommitted})
-				}
-			case retriable(err):
-				l.forgetSettlement(w.key)
-				l.forgetStart(w.key)
-				// Terminal/stale: the authority already settled this call or
-				// the run; the result is intentionally dropped.
-			default:
+			if err := l.settle(controlCtx, runtime, events, w.attempt, w.base, w.grant, cmd, proto); err != nil {
 				if firstErr == nil {
 					firstErr = fmt.Errorf("agent: loop: settling call %q: %w", w.call.CallID, err)
 				}
+				return
+			}
+			if events != nil {
+				_ = events.Emit(ctx, Event{RunID: runID, StepID: stepID, CallID: w.call.CallID,
+					Kind: EventToolCompleted, Durability: EventCommitted})
 			}
 		}(w)
 	}

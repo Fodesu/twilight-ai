@@ -302,7 +302,7 @@ func TestToolStartStaleDropsLocalClaim(t *testing.T) {
 		StartToolCalls{StepID: stepID, CallIDs: []CallID{"c1"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := loop.lookupStart(startKey{runID: "run-1", stepID: stepID, callID: "c1"}); ok {
+	if _, ok, _ := loop.Claims.Get(context.Background(), "run-1", stepID, "c1"); ok {
 		t.Fatal("stale tool start retained a local execution claim")
 	}
 }

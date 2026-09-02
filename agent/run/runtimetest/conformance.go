@@ -106,7 +106,7 @@ func (c *conformanceCase) load() run.RuntimeSnapshot {
 
 func (c *conformanceCase) commit(id run.CommandID, base uint64, grant run.ExecutionGrant, cmd run.AgentCommand) (run.CommitResult, error) {
 	c.t.Helper()
-	cmd = withTestExecutionClaim(id, cmd)
+	cmd, id = withTestExecutionClaim(c.runID, id, cmd)
 	env, err := run.ProtocolV1.BuildEnvelope(c.runID, id, cmd)
 	if err != nil {
 		c.t.Fatal(err)
@@ -118,21 +118,24 @@ func (c *conformanceCase) commit(id run.CommandID, base uint64, grant run.Execut
 	return res, err
 }
 
-func withTestExecutionClaim(id run.CommandID, cmd run.AgentCommand) run.AgentCommand {
-	claim := run.ExecutionClaim("test-claim/" + string(id))
+// withTestExecutionClaim treats id as the attempt label of a start command:
+// the claim derives from the label and the CommandID derives from the claim
+// (RUN-WIR-3), so a test that replays "start-1" hits the same identity.
+// Non-start commands keep id verbatim.
+func withTestExecutionClaim(runID run.RunID, id run.CommandID, cmd run.AgentCommand) (run.AgentCommand, run.CommandID) {
 	switch c := cmd.(type) {
 	case run.StartModelExecution:
 		if c.Claim == "" {
-			c.Claim = claim
+			c.Claim = startClaim(id)
 		}
-		return c
+		return c, run.DeriveStartCommandID(runID, c.StepID, "", c.Claim)
 	case run.StartToolCall:
 		if c.Claim == "" {
-			c.Claim = claim
+			c.Claim = startClaim(id)
 		}
-		return c
+		return c, run.DeriveStartCommandID(runID, c.StepID, c.CallID, c.Claim)
 	default:
-		return cmd
+		return cmd, id
 	}
 }
 
@@ -723,8 +726,20 @@ func testGrant(t *testing.T, newRuntime Factory) {
 	if res.Status != run.CommitAlreadyApplied || res.Grant != grant {
 		t.Fatalf("replayed start: %+v", res)
 	}
-	if _, err := c.commit("start-1", 1, "", run.StartModelExecution{StepID: stepID, Claim: "different-claim"}); !errors.Is(err, run.ErrCommandConflict) {
-		t.Fatalf("different start claim err = %v, want ErrCommandConflict", err)
+	// A start under another claim is another attempt: its derived CommandID
+	// differs, so it is not a replay; the target is Executing, so Decide
+	// rejects it as stale. The live grant is untouched either way.
+	if _, err := c.commit("start-other", 1, "", run.StartModelExecution{StepID: stepID}); !errors.Is(err, run.ErrStaleRuntime) {
+		t.Fatalf("second start attempt err = %v, want ErrStaleRuntime", err)
+	}
+	// A start whose CommandID does not derive from its claim is rejected
+	// before it can mint ownership.
+	forged, err := run.ProtocolV1.BuildEnvelope(c.runID, "hand-minted", run.StartModelExecution{StepID: stepID, Claim: "different-claim"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.rt.Commit(context.Background(), run.CommitRequest{BaseRevision: 1, Command: forged}); !errors.Is(err, run.ErrCommandConflict) {
+		t.Fatalf("non-derived start id err = %v, want ErrCommandConflict", err)
 	}
 	ok, err := run.FreezeModelResult(sdk.ModelResult{Text: "ok"})
 	if err != nil {

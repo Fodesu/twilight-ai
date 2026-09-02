@@ -372,6 +372,12 @@ func prepareFromSnap(t *testing.T, snap run.RuntimeSnapshot, req sdk.Request, sp
 
 func commit(t *testing.T, rt run.Runtime, runID run.RunID, id run.CommandID, base uint64, grant run.ExecutionGrant, cmd run.AgentCommand) (run.CommitResult, error) {
 	t.Helper()
+	switch c := cmd.(type) {
+	case run.StartModelExecution:
+		id = run.DeriveStartCommandID(runID, c.StepID, "", c.Claim)
+	case run.StartToolCall:
+		id = run.DeriveStartCommandID(runID, c.StepID, c.CallID, c.Claim)
+	}
 	env, err := run.ProtocolV1.BuildEnvelope(runID, id, cmd)
 	if err != nil {
 		t.Fatal(err)

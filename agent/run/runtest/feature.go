@@ -174,8 +174,9 @@ func (f *Feature) TryCommit(cmd run.AgentCommand) error {
 	if err != nil {
 		f.t.Fatal(err)
 	}
+	f.seq++
+	cmd = withClaim(run.CommandID(fmt.Sprintf("attempt-%d", f.seq)), cmd)
 	id := f.commandID(cmd, snap)
-	cmd = withClaim(id, cmd)
 	env, err := proto.BuildEnvelope(f.runID, id, cmd)
 	if err != nil {
 		return err
@@ -331,8 +332,9 @@ func (f *Feature) commit(cmd run.AgentCommand, grant run.ExecutionGrant) run.Com
 	if err != nil {
 		f.t.Fatal(err)
 	}
+	f.seq++
+	cmd = withClaim(run.CommandID(fmt.Sprintf("attempt-%d", f.seq)), cmd)
 	id := f.commandID(cmd, snap)
-	cmd = withClaim(id, cmd)
 	env, err := proto.BuildEnvelope(f.runID, id, cmd)
 	if err != nil {
 		f.t.Fatal(err)
@@ -360,6 +362,10 @@ func (f *Feature) commandID(cmd run.AgentCommand, snap run.RuntimeSnapshot) run.
 		return run.DeriveModelRequestCommandID(f.runID, snap.Revision)
 	case run.RecoverModelExecution:
 		return run.DeriveModelRecoveryCommandID(f.runID, c.StepID, c.Claim)
+	case run.StartModelExecution:
+		return run.DeriveStartCommandID(f.runID, c.StepID, "", c.Claim)
+	case run.StartToolCall:
+		return run.DeriveStartCommandID(f.runID, c.StepID, c.CallID, c.Claim)
 	default:
 		f.seq++
 		return run.CommandID(fmt.Sprintf("cmd-%d", f.seq))

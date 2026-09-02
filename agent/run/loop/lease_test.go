@@ -98,3 +98,99 @@ func TestNewRejectsNegativeLeaseRenewInterval(t *testing.T) {
 		t.Fatal("negative LeaseRenewInterval accepted")
 	}
 }
+
+// A replacement Loop that shares the dead Loop's ClaimStore replays the
+// derived start under the same claim, gets the live grant back, executes the
+// tool and settles, without waiting for the lease to expire.
+func TestLoopReplacementFinishesInheritedClaim(t *testing.T) {
+	rt := NewRuntimeWithOptions(NewMemoryStore(), RuntimeOptions{LeaseTTL: time.Hour})
+	newRun, err := BuildNewRun("run-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Create(context.Background(), newRun); err != nil {
+		t.Fatal(err)
+	}
+	env, err := ProtocolV1.BuildEnvelope("run-1", DeriveInputCommandID("run-1", "seed"), AcceptInput{Input: AgentInput{ID: "seed", Payload: cj(`{}`)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rt.Commit(context.Background(), CommitRequest{Command: env}); err != nil {
+		t.Fatal(err)
+	}
+
+	shared := newMemoryClaims()
+	spec := toolSpec(t, "echo", DirectExecution)
+	block := make(chan struct{})
+	var executions atomic.Int32
+	tool := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: DirectExecution,
+		execute: func(ctx context.Context, req ToolExecutionRequest) ToolExecutionOutcome {
+			if executions.Add(1) == 1 {
+				<-block // first process "dies" here
+				return ToolExecutionUnknown{Failure: ToolFailure{Class: FailureEffectUnknown}}
+			}
+			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
+		}}
+	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("done")}}
+	catalog := fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": tool}}
+
+	first, err := New(fakeCatalog{invoker}, catalog, staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{Claims: shared}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDone := make(chan struct{})
+	go func() { defer close(firstDone); _, _ = first.Run(context.Background(), rt, "run-1", nil) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		snap, err := rt.Load(context.Background(), "run-1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(ExecutingCalls(snap.State)) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("tool never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Lease is nowhere near expiry (1h). A second Loop with the same claims
+	// takes over immediately.
+	second, err := New(fakeCatalog{invoker}, catalog, staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{Claims: shared}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := second.Run(context.Background(), rt, "run-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Disposition != LoopFinished || res.Result == nil || res.Result.Status != RunCompleted {
+		t.Fatalf("second loop result = %+v", res)
+	}
+	record, err := rt.Record(context.Background(), "run-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	starts := 0
+	for _, tr := range record.Transitions {
+		for _, ev := range tr.Events {
+			switch f := ev.Fact.(type) {
+			case ToolCallStarted:
+				starts++
+			case ToolCallFailed:
+				if f.Outcome == ToolOutcomeUnknown {
+					t.Fatalf("call settled Unknown; replacement did not inherit the claim: %+v", f)
+				}
+			}
+		}
+	}
+	if starts != 1 {
+		t.Fatalf("ToolCallStarted facts = %d, want 1 (one attempt, replayed)", starts)
+	}
+	// The first worker eventually returns; its settlement replays the same
+	// derived id with a different outcome and is rejected as a conflict, which
+	// the Loop treats as "already settled by someone else".
+	close(block)
+	<-firstDone
+}

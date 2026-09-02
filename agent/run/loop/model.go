@@ -88,21 +88,26 @@ func (l *Loop) runModelStep(ctx context.Context, runtime run.Runtime, events Eve
 	if err != nil {
 		return err
 	}
-	key := startKey{runID: runID, stepID: stepID}
-	attempt := l.startFor(key)
-	start, err := l.commit(ctx, runtime, runID, attempt.commandID, snapshot.Revision, "", run.StartModelExecution{StepID: stepID, Claim: attempt.claim}, proto)
+	a, err := l.claimFor(ctx, runID, stepID, "")
+	if err != nil {
+		return err
+	}
+	start, err := l.commit(ctx, runtime, runID, a.startID(), snapshot.Revision, "", run.StartModelExecution{StepID: stepID, Claim: a.claim}, proto)
 	if err != nil {
 		if retriable(err) {
-			l.forgetStart(key)
+			l.forgetClaim(ctx, a)
 			return nil
 		}
-		// The start may have committed while its response was lost. Keep the
-		// command identity so a later Run can replay it and recover the grant.
+		// The start may have committed while its response was lost. The
+		// claim stays stored so a later Run replays the derived start ID and
+		// recovers the grant.
 		return err
 	}
 	if start.Status == run.CommitAlreadyApplied && start.Grant == "" {
-		l.forgetStart(key)
-		return nil // another attempt owns it; reload
+		// Settled already: by this Loop before a lost response, or by
+		// recovery. Nothing left to own.
+		l.forgetClaim(ctx, a)
+		return nil
 	}
 	if start.Grant == "" {
 		return errors.New("agent: loop: start model returned no execution grant")
@@ -116,7 +121,7 @@ func (l *Loop) runModelStep(ctx context.Context, runtime run.Runtime, events Eve
 		// but executing again would duplicate the provider effect; reload and
 		// let the next machine state decide what to do.
 		if start.Status == run.CommitAlreadyApplied {
-			l.forgetStart(key)
+			l.forgetClaim(ctx, a)
 			return nil
 		}
 		return fmt.Errorf("agent: loop: started step %q is not current", stepID)
@@ -128,10 +133,10 @@ func (l *Loop) runModelStep(ctx context.Context, runtime run.Runtime, events Eve
 	switch {
 	case resolveErr != nil:
 		catalogErr = resolveErr
-		completion = run.RecoverModelExecution{StepID: stepID, Claim: attempt.claim}
+		completion = run.RecoverModelExecution{StepID: stepID, Claim: a.claim}
 	case invoker == nil:
 		catalogErr = errors.New("model catalog returned a nil invoker")
-		completion = run.RecoverModelExecution{StepID: stepID, Claim: attempt.claim}
+		completion = run.RecoverModelExecution{StepID: stepID, Claim: a.claim}
 	default:
 		// Model workers derive from the outer ctx: cancelling a model call is
 		// safe, the frozen request retries after recovery (RUN-LOP-3).
@@ -145,7 +150,7 @@ func (l *Loop) runModelStep(ctx context.Context, runtime run.Runtime, events Eve
 			stopLease()
 			switch {
 			case invokeErr != nil && workerCtx.Err() != nil:
-				completion = run.RecoverModelExecution{StepID: stepID, Claim: attempt.claim}
+				completion = run.RecoverModelExecution{StepID: stepID, Claim: a.claim}
 			case invokeErr != nil:
 				completion = run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: invokeErr.Error()}}
 			default:
@@ -165,24 +170,9 @@ func (l *Loop) runModelStep(ctx context.Context, runtime run.Runtime, events Eve
 		}
 	}
 
-	completionID := freshCommandID()
-	if _, recovering := completion.(run.RecoverModelExecution); recovering {
-		completionID = run.DeriveModelRecoveryCommandID(runID, stepID, attempt.claim)
-	}
-	settlement := l.settlementFor(key, completionID, start.Snapshot.Revision, start.Grant, completion)
-	settlementCtx := context.WithoutCancel(ctx)
-	res, err := l.commit(settlementCtx, runtime, runID, settlement.commandID, settlement.base, settlement.grant, settlement.command, proto)
-	if err != nil {
-		if retriable(err) {
-			l.forgetSettlement(key)
-			l.forgetStart(key)
-			return nil
-		}
+	if err := l.settle(ctx, runtime, events, a, start.Snapshot.Revision, start.Grant, completion, proto); err != nil {
 		return err
 	}
-	l.forgetSettlement(key)
-	l.forgetStart(key)
-	l.emitCommitted(ctx, events, runID, res.Events)
 	if catalogErr != nil {
 		return fmt.Errorf("agent: loop: model catalog: %w", catalogErr)
 	}
