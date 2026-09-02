@@ -52,15 +52,16 @@ func New(models ModelCatalog, tools ToolCatalog, planner RequestPlanner, policy 
 	if policy.MaxParallel < 0 {
 		return nil, errors.New("agent: loop: negative MaxParallel")
 	}
-	if policy.ToolExecution == "" {
-		policy.ToolExecution = ToolExecutionParallel
-	}
 	return &Loop{Models: models, Tools: tools, Planner: planner, Execution: policy, Streaming: streaming,
 		starts: make(map[startKey]startAttempt), settlements: make(map[startKey]settlementAttempt), runs: make(map[run.RunID]struct{})}, nil
 }
 
 func (l *Loop) toolScheduling() run.ToolScheduling {
-	return run.ToolScheduling{Mode: run.ToolScheduleMode(l.Execution.ToolExecution), MaxParallel: l.Execution.MaxParallel}
+	mode := run.ToolScheduleMode(l.Execution.ToolExecution)
+	if mode == "" {
+		mode = run.ToolScheduleParallel
+	}
+	return run.ToolScheduling{Mode: mode, MaxParallel: l.Execution.MaxParallel}
 }
 
 func (l *Loop) acquireRun(runID run.RunID) error {

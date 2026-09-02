@@ -148,7 +148,7 @@ type BindingOccurrence struct { BindingID artifact.BindingID; Location string }
 type BindingExtractor interface { BindingIDs(value any) ([]artifact.BindingID, error) }
 ```
 
-**EXT-REF-1** declaration 恰选一种：非空 JSONPointer，或非空 RegistryID。JSONPointer 路径仅在普通 canonical JSON payload 上执行；RegistryID 路径把该 event 的 decoded typed value 交给对应 RuntimeRegistry 的 BindingExtractor。custom registry（包括 Message registry）必须以 `BindingIDs(value)` 返回内部全部引用，不能回退为 JSONPointer 猜测。提取保留 occurrence appearance order，随后 append group 才 sorted-unique。
+**EXT-REF-1** declaration 恰选一种：非空 JSONPointer，或非空 RegistryID。JSONPointer 路径仅在普通 canonical JSON payload 上执行；RegistryID 路径把该 event 的 decoded typed value 交给对应 RuntimeRegistry 的 BindingExtractor。custom registry（包括 `twilight/chatlog/parts`）必须以 `BindingIDs(value)` 返回内部全部引用，不能回退为 JSONPointer 猜测。提取保留 occurrence appearance order，随后 append group 才 sorted-unique。
 
 **EXT-REF-2** Catalog 验证 cardinality、pointer grammar、RegistryID extractor availability 与 scheme/durability declaration。admission 解析每个 Binding，验证 Scheme、最低 durability、resolvability 与 host access policy；任何遗漏或违反均拒绝整个 group。所有 Session event declaration 的最低 durability 至少为 `EventBound`。
 
@@ -246,7 +246,7 @@ AppendSemantic(request):
   unknown result: retain Prepared claim and pending intent; return Indeterminate
 ```
 
-只有 claim 已 Activate，`SemanticApplied` 或 `SemanticAlreadyApplied` 才能返回；Activate 或 terminal marking 的未知/失败必须保留 Prepared/pending state 并返回 `SemanticIndeterminate`。`HeadConflict`、`CommitConflict`、`Invalid` 分别映射为同名 Semantic outcome，后两者仅在 journal 已标记 Aborted 且 AbortPrepared 成功后返回。A `HeadConflict` retry 保持相同 CommitID、fingerprint、ClaimID 和所有 event identity/time/source/payload/BindingSet，仅更新 ExpectedHead。`LookupCommit` 找到 canonical commit 时 Activate；返回 NotFound 时保留 Prepared/pending state，留待 retry 或 recovery。明确的 terminal `Invalid` 或 `CommitConflict` 才可先 journal 标记 `Aborted`，再 AbortPrepared。
+只有 claim 已 Activate，`SemanticApplied` 或 `SemanticAlreadyApplied` 才能返回；Activate 或 terminal marking 的未知/失败必须保留 Prepared/pending state 并返回 `SemanticIndeterminate`。`HeadConflict`、`CommitConflict`、`Invalid` 分别映射为同名 Semantic outcome，后两者仅在 journal 已标记 Aborted 且 AbortPrepared 成功后返回。`HeadConflict` 重试保持相同 CommitID、fingerprint、ClaimID 和所有 event identity/time/source/payload/BindingSet，仅更新 ExpectedHead。`LookupCommit` 找到 canonical commit 时 Activate；返回 NotFound 时保留 Prepared/pending state，留待 retry 或 recovery。明确的 terminal `Invalid` 或 `CommitConflict` 才可先 journal 标记 `Aborted`，再 AbortPrepared。
 
 **EXT-APP-4** recovery 扫描 journal Pending 与 ledger PreparedClaims 的并集。
 

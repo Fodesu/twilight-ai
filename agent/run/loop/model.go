@@ -137,7 +137,8 @@ func (l *Loop) runModelStep(ctx context.Context, runtime run.Runtime, events Eve
 		// safe, the frozen request retries after recovery (RUN-LOP-3).
 		sdkRequest, err := modelStep.Request.SDK()
 		if err != nil {
-			completion = run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: err.Error()}}
+			failure := run.StepFailure{Class: run.FailureMalformedModel, Message: err.Error()}
+			completion = run.RejectModelResult{StepID: stepID, Failure: failure, Disposition: l.modelRejectDisposition(modelStep, failure)}
 		} else {
 			result, invokeErr := l.invokeModel(ctx, invoker, &sdkRequest, runID, stepID, events)
 			switch {

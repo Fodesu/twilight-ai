@@ -99,7 +99,7 @@ func Rebuild(ctx context.Context, store Store, runID RunID) (rebuilt bool, err e
 	}
 	var diverged bool
 	err = store.Update(ctx, runID, func(stored *StoredRun) error {
-		folded, maxRevision, foldErr := FoldTransitions(cloneMachineState(&stored.Header.InitialState), stored.Log)
+		folded, maxRevision, foldErr := FoldRun(&stored.Header, stored.Log)
 		if foldErr != nil {
 			return foldErr
 		}

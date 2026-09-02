@@ -90,11 +90,11 @@ func requiresGrant(s *MachineState, c AgentCommand) bool {
 	}
 }
 
-// EvaluateCommit is the single, pure commit evaluation both runtimes call
-// inside their own critical section (RUN-CMT-3). grantValid and recoveryValid
-// are the control-plane verdicts the Runtime supplies: whether req.Grant is
-// the live grant for the command's target, and whether a grantless recovery
-// command matches the Runtime's own lease-expiry record.
+// EvaluateCommit is the single, pure commit evaluation the Store-backed
+// Runtime calls inside its critical section (RUN-CMT-3). grantValid and
+// recoveryValid are the control-plane verdicts the Runtime supplies: whether
+// req.Grant is the live grant for the command's target, and whether a
+// grantless recovery command matches an expired lease.
 //
 //nolint:gocritic // hugeParam: public pure commit evaluator keeps state/request as value protocol inputs.
 func EvaluateCommit(
@@ -160,12 +160,12 @@ func EvaluateCommit(
 		return CommitDecision{Kind: DecisionConflict, Reject: err}, nil
 	}
 
-	// Step 7 precheck: terminal absorbs non-duplicate commands.
+	// Terminal absorbs non-duplicate commands (after replay).
 	if cur.Status.Terminal() {
 		return CommitDecision{Kind: DecisionTerminal, Reject: ErrRunTerminal}, nil
 	}
 
-	// Step 4: BaseRevision and authorization.
+	// BaseRevision and authorization.
 	cat := categorize(env.Command)
 	if cat == catPlan && req.BaseRevision != curRevision {
 		return CommitDecision{Kind: DecisionStale, Reject: ErrStaleRuntime}, nil

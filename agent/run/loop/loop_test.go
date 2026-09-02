@@ -128,6 +128,16 @@ func toolCallResult(ids ...string) sdk.ModelResult {
 
 // --- tests ---
 
+func TestNewLeavesEmptyToolExecution(t *testing.T) {
+	loop, err := New(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loop.Execution.ToolExecution != "" {
+		t.Fatalf("ToolExecution = %q, want empty", loop.Execution.ToolExecution)
+	}
+}
+
 func TestLoopRejectsConcurrentRunForSameID(t *testing.T) {
 	rt := loopRuntime(t)
 	invoker := &blockingInvoker{started: make(chan struct{}), release: make(chan struct{})}

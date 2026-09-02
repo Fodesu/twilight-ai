@@ -168,8 +168,7 @@ const (
 
 type LoopResult struct {
 	Disposition LoopDisposition
-	// Reason is retained for source compatibility. ExecutionRecovery is
-	// the authoritative signal that a live execution needs recovery.
+	// Reason is execution_recovery when ExecutionRecovery is true; otherwise empty.
 	Reason WaitReason
 	// ExecutionRecovery is true when NeedsRecovery(state) is true after this
 	// Loop has no further executable effect: a ModelStep is Executing, or a

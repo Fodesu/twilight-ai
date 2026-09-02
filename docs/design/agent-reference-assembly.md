@@ -68,7 +68,7 @@ run.AgentInput.Payload
 ```text
 sessionStore = session.NewMemoryStore()
 runRuntime   = run.NewRuntime(run.NewMemoryStore())
-catalog      = extension.BuildCatalog(protocol, []Module{chatlog.Module, turn.Module})
+catalog      = extension.BuildCatalog(CatalogBuildRequest{ProtocolVersion, Profile, Modules: []ModuleDescriptor{chatlog.Module, turn.Module}})
 appender     = extension.NewSemanticAppender(sessionStore, catalog, artifacts)
 bindings     = Resolve(ExecutionBindingRef) -> loop.New(models, tools, contextPlanner, policy, pub.Streaming)
 coordinator  = turn.Coordinator{Sessions, Appender, Runtime: runRuntime, Bindings, Mapper: turn.MapperV1}

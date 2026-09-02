@@ -80,6 +80,9 @@ func (r *runtime) Load(ctx context.Context, runID RunID) (RuntimeSnapshot, error
 		return RuntimeSnapshot{}, err
 	}
 	snapshot := RuntimeSnapshot{State: stored.State, Revision: stored.Revision, SchemaVersion: stored.Header.SchemaVersion}
+	if stored.Header.RunID != runID || stored.State.RunID != runID {
+		return RuntimeSnapshot{}, fmt.Errorf("agent: runtime: stored RunID %q/%q does not match %q", stored.Header.RunID, stored.State.RunID, runID)
+	}
 	if err := ValidateRunHeader(&stored.Header); err != nil {
 		return RuntimeSnapshot{}, fmt.Errorf("agent: runtime: invalid header: %w", err)
 	}
@@ -110,6 +113,9 @@ func (r *runtime) evaluateAndApply(stored *StoredRun, req CommitRequest) (Commit
 		grantValid = grantValid && lease.Claim == cmd.Claim
 	}
 	recoveryValid := hasLease && req.Grant == "" && r.leaseExpired(lease)
+	if cmd, ok := req.Command.Command.(RecoverModelExecution); ok && req.Grant == "" {
+		recoveryValid = recoveryValid && lease.Claim == cmd.Claim
+	}
 
 	var prior *TransitionRecord
 	if record, ok := stored.Transitions[req.Command.ID]; ok {

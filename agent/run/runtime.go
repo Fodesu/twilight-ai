@@ -11,6 +11,9 @@ type Runtime interface {
 	Load(context.Context, RunID) (RuntimeSnapshot, error)
 	Commit(context.Context, CommitRequest) (CommitResult, error)
 	Record(context.Context, RunID) (RunRecord, error)
+	// RecoverExpired grantless-commits recovery for expired execution leases.
+	// Hosts call it on a timer; Loop does not.
+	RecoverExpired(context.Context) (int, error)
 }
 
 type RuntimeSnapshot struct {
