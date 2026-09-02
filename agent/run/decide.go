@@ -71,8 +71,8 @@ func decideV1(s MachineState, c AgentCommand) ([]Fact, error) {
 // --- rule 1: PrepareModelRequest ---
 
 func decidePrepareModelRequest(s *MachineState, cmd *PrepareModelRequest) ([]Fact, error) {
-	if s.Current != nil {
-		return nil, rejectionf("prepare: run already has a current step")
+	if !atOpen(s.Current) {
+		return nil, rejectionf("prepare: run is not at Open")
 	}
 	if cmd.StepID == "" {
 		return nil, rejectionf("prepare: empty StepID")
@@ -436,12 +436,7 @@ func decideSubmitToolFailure(s *MachineState, cmd SubmitToolFailure) ([]Fact, er
 		if failure.Class != FailureEffectUnknown {
 			return nil, rejectionf("tool failure: unknown outcome must use %s", FailureEffectUnknown)
 		}
-		facts := unknownExecutingCalls(s, cmd.StepID, cmd.CallID, failure)
-		facts = append(facts, RunEnded{End: RunFailedEnd{
-			Reason:  ReasonEffectUnknown,
-			Failure: RunFailure{Class: FailureEffectUnknown, Message: failure.Message, CallID: cmd.CallID},
-		}})
-		return facts, nil
+		return []Fact{ToolCallFailed{StepID: cmd.StepID, CallID: cmd.CallID, Failure: failure, Outcome: ToolOutcomeUnknown}}, nil
 	default:
 		return nil, rejectionf("tool failure: unknown outcome value %d", cmd.Outcome)
 	}
@@ -549,7 +544,7 @@ func decideCancelRun(s *MachineState, cmd CancelRun) ([]Fact, error) {
 	if cmd.Reason != "" && cmd.Reason != ReasonCancelled {
 		return nil, rejectionf("cancel: reason must be empty or %q", ReasonCancelled)
 	}
-	facts := unknownExecutingCalls(s, "", "", ToolFailure{Class: FailureEffectUnknown, Message: "execution cancelled before settlement"})
+	facts := unknownExecutingCalls(s, ToolFailure{Class: FailureEffectUnknown, Message: "execution cancelled before settlement"})
 	uncertain := make([]CallID, 0, len(facts))
 	for _, f := range facts {
 		if failed, ok := f.(ToolCallFailed); ok {
@@ -568,12 +563,11 @@ func decideCancelRun(s *MachineState, cmd CancelRun) ([]Fact, error) {
 	return facts, nil
 }
 
-// unknownExecutingCalls records every started effect that will be abandoned by
-// a terminal transition. The target is optional for cancellation; all current
-// Executing calls are included exactly once in call order.
-func unknownExecutingCalls(s *MachineState, stepID StepID, target CallID, failure ToolFailure) []Fact {
+// unknownExecutingCalls records every Executing call that CancelRun is about
+// to abandon. Waiting and already-settled calls are left unchanged.
+func unknownExecutingCalls(s *MachineState, failure ToolFailure) []Fact {
 	ts, ok := s.Current.(ToolStep)
-	if !ok || (stepID != "" && ts.RefValue.ID != stepID) {
+	if !ok {
 		return nil
 	}
 	facts := make([]Fact, 0, len(ts.Calls))
@@ -581,18 +575,14 @@ func unknownExecutingCalls(s *MachineState, stepID StepID, target CallID, failur
 		if call.Status != ToolExecuting {
 			continue
 		}
-		f := failure
-		if target != "" && call.CallID != target {
-			f.Message = "sibling execution result unknown after terminal transition"
-		}
-		facts = append(facts, ToolCallFailed{StepID: ts.RefValue.ID, CallID: call.CallID, Failure: f, Outcome: ToolOutcomeUnknown})
+		facts = append(facts, ToolCallFailed{StepID: ts.RefValue.ID, CallID: call.CallID, Failure: failure, Outcome: ToolOutcomeUnknown})
 	}
 	return facts
 }
 
 func decideAcceptInput(s *MachineState, cmd AcceptInput) ([]Fact, error) {
-	if s.Current != nil {
-		return nil, rejectionf("accept input: run has a current step")
+	if !atOpen(s.Current) {
+		return nil, rejectionf("accept input: run is not at Open")
 	}
 	if cmd.Input.ID == "" {
 		return nil, rejectionf("accept input: empty InputID")

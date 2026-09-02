@@ -110,7 +110,7 @@ func Next(s MachineState) (Effect, error) {
 		return nil, ErrRunTerminal
 	}
 	switch cur := s.Current.(type) {
-	case nil:
+	case Open:
 		return NeedModelRequest{Hint: PlanningHint{
 			RunID:           s.RunID,
 			SourceStep:      s.LastClosedStep,
@@ -143,6 +143,6 @@ func Next(s MachineState) (Effect, error) {
 		}
 		return nil, rejectionf("next: tool step %q has no live calls but was not closed", cur.RefValue.ID)
 	default:
-		return nil, rejectionf("next: unknown step variant %T", s.Current)
+		return nil, rejectionf("next: unknown current variant %T", s.Current)
 	}
 }

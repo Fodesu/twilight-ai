@@ -49,25 +49,3 @@ func recordEvents(t testing.TB, rt Runtime, runID RunID) []AgentEvent {
 	}
 	return events
 }
-
-func snapshotWaiting(t *testing.T, rt Runtime, runID RunID) []ResponseRequest {
-	t.Helper()
-	snap, err := rt.Load(context.Background(), runID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	reqs := WaitingCalls(snap.State)
-	if len(reqs) == 0 {
-		t.Fatal("expected Waiting calls on the snapshot")
-	}
-	return reqs
-}
-
-func responseDecisionDigest(t *testing.T, kind ResponseKind, decision ResponseDecision, reason string) Digest {
-	t.Helper()
-	digest, err := DigestToolResponseDecision(kind, decision, reason)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return digest
-}

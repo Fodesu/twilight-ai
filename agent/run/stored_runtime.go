@@ -225,7 +225,9 @@ func (r *runtime) Record(ctx context.Context, runID RunID) (RunRecord, error) {
 }
 
 // RecoverExpired commits grantless recovery for every expired lease that
-// still occupies an Executing target. Hosts call this on a timer; Loop does not.
+// still occupies an Executing target. An expired tool call is settled as
+// Unknown; an expired model step is recovered to Prepared. Hosts call this
+// on a timer; Loop does not. The dying process writes nothing.
 func (r *runtime) RecoverExpired(ctx context.Context) (int, error) {
 	ids, err := r.store.ListIDs(ctx)
 	if err != nil {

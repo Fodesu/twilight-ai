@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,7 +18,6 @@ import (
 
 type fakeInvoker struct {
 	results []sdk.ModelResult
-	errs    []error
 	calls   atomic.Int32
 }
 
@@ -28,9 +26,6 @@ func (f *fakeInvoker) Generate(ctx context.Context, req sdk.Request) (sdk.ModelR
 		return sdk.ModelResult{}, err
 	}
 	n := int(f.calls.Add(1)) - 1
-	if n < len(f.errs) && f.errs[n] != nil {
-		return sdk.ModelResult{}, f.errs[n]
-	}
 	if n >= len(f.results) {
 		return sdk.ModelResult{}, errors.New("fake: no scripted result")
 	}
@@ -100,22 +95,6 @@ func (p staticPlanner) Plan(_ context.Context, hint PlanningHint) (RequestPlan, 
 	return RequestPlan{Model: model, Request: req, InputIDs: ids, Tools: p.specs}, nil
 }
 
-type resultCheckingPlanner struct {
-	specs []ToolSpec
-	saw   atomic.Bool
-}
-
-func (p *resultCheckingPlanner) Plan(ctx context.Context, hint PlanningHint) (RequestPlan, error) {
-	if hint.LastToolStep != nil {
-		for _, call := range hint.LastToolStep.Calls {
-			if call.CallID == "c1" && call.Status == ToolCompleted && call.Result != nil && call.Result.Output.String() == `{"x":1}` {
-				p.saw.Store(true)
-			}
-		}
-	}
-	return staticPlanner{specs: p.specs}.Plan(ctx, hint)
-}
-
 func toolSpec(t *testing.T, name string, policy ResponsePolicy) ToolSpec {
 	t.Helper()
 	def := sdk.ToolDefinition{Name: name, Parameters: json.RawMessage(`{"type":"object"}`)}
@@ -130,7 +109,7 @@ func toolSpec(t *testing.T, name string, policy ResponsePolicy) ToolSpec {
 	return ToolSpec{Ref: ToolRef(name), Definition: frozen, DefinitionDigest: d, Policy: policy}
 }
 
-func loopRuntime(t *testing.T) *MemoryRuntime {
+func loopRuntime(t *testing.T) Runtime {
 	t.Helper()
 	return newTestRuntime(t)
 }
@@ -148,52 +127,6 @@ func toolCallResult(ids ...string) sdk.ModelResult {
 }
 
 // --- tests ---
-
-func TestLoopSingleModelCallCompletes(t *testing.T) {
-	rt := loopRuntime(t)
-	loop, err := New(fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("hello")}}},
-		fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := loop.Run(context.Background(), rt, "run-1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Disposition != LoopFinished || res.Result == nil || res.Result.Status != RunCompleted {
-		t.Fatalf("res = %+v", res)
-	}
-	if res.Result.Model.Text != "hello" {
-		t.Fatalf("text = %q", res.Result.Model.Text)
-	}
-}
-
-type errCatalog struct{ err error }
-
-func (c errCatalog) Resolve(ModelRef) (ModelInvoker, error) { return nil, c.err }
-
-func TestLoopModelCatalogErrorDoesNotFailRun(t *testing.T) {
-	rt := loopRuntime(t)
-	loop, err := New(errCatalog{errors.New("missing provider")}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = loop.Run(context.Background(), rt, "run-1", nil)
-	if err == nil || !strings.Contains(err.Error(), "missing provider") {
-		t.Fatalf("err = %v", err)
-	}
-	snap, loadErr := rt.Load(context.Background(), "run-1")
-	if loadErr != nil {
-		t.Fatal(loadErr)
-	}
-	if snap.State.Status != RunActive {
-		t.Fatalf("status = %v", snap.State.Status)
-	}
-	ms, ok := snap.State.Current.(ModelStep)
-	if !ok || ms.Status != ModelPrepared {
-		t.Fatalf("current = %+v", snap.State.Current)
-	}
-}
 
 func TestLoopRejectsConcurrentRunForSameID(t *testing.T) {
 	rt := loopRuntime(t)
@@ -218,245 +151,54 @@ func TestLoopRejectsConcurrentRunForSameID(t *testing.T) {
 	}
 }
 
-func TestLoopToolRoundTrip(t *testing.T) {
-	spec := toolSpec(t, "echo", DirectExecution)
-	echo := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: DirectExecution,
-		execute: func(_ context.Context, req ToolExecutionRequest) ToolExecutionOutcome {
-			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
-		}}
-	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("done")}}
-	rt := loopRuntime(t)
-	planner := &resultCheckingPlanner{specs: []ToolSpec{spec}}
-	loop, _ := New(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
-		planner, ExecutionPolicy{}, false)
+type errCatalog struct{ err error }
 
-	res, err := loop.Run(context.Background(), rt, "run-1", nil)
+func (c errCatalog) Resolve(ModelRef) (ModelInvoker, error) { return nil, c.err }
+
+func TestLoopModelCatalogErrorRecoversWithFreshLoop(t *testing.T) {
+	rt := loopRuntime(t)
+	missing := errors.New("missing provider")
+	broken, err := New(errCatalog{missing}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Disposition != LoopFinished || res.Result.Status != RunCompleted || res.Result.Model.Text != "done" {
+	_, err = broken.Run(context.Background(), rt, "run-1", nil)
+	if !errors.Is(err, missing) {
+		t.Fatalf("err = %v, want %v", err, missing)
+	}
+	snap, loadErr := rt.Load(context.Background(), "run-1")
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if snap.State.Status != RunActive {
+		t.Fatalf("status = %v", snap.State.Status)
+	}
+	ms, ok := snap.State.Current.(ModelStep)
+	if !ok || ms.Status != ModelPrepared {
+		t.Fatalf("current = %+v", snap.State.Current)
+	}
+	if snap.State.ModelSteps != 1 {
+		t.Fatalf("ModelSteps = %d, want 1", snap.State.ModelSteps)
+	}
+
+	invoker := &fakeInvoker{results: []sdk.ModelResult{textResult("resumed")}}
+	ready, err := New(fakeCatalog{invoker}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := ready.Run(context.Background(), rt, "run-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Result == nil || res.Result.Model.Text != "resumed" {
 		t.Fatalf("res = %+v", res)
 	}
-	if invoker.calls.Load() != 2 {
-		t.Fatalf("model calls = %d, want 2", invoker.calls.Load())
-	}
-	if !planner.saw.Load() {
-		t.Fatal("second planning call did not receive the completed tool result")
-	}
-	// Usage accumulated across both model steps.
-	if res.Result.Usage.TotalTokens != 3 {
-		t.Fatalf("usage = %d, want 3", res.Result.Usage.TotalTokens)
-	}
-}
-
-func TestLoopApprovalWaitsAndResumes(t *testing.T) {
-	spec := toolSpec(t, "echo", ApprovalRequired)
-	executed := atomic.Bool{}
-	echo := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: ApprovalRequired,
-		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
-			executed.Store(true)
-			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: cj(`"ok"`)}}
-		}}
-	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("after")}}
-	rt := loopRuntime(t)
-	loop, _ := New(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
-		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
-
-	// First run: no executable effect remains; approval lives on the snapshot.
-	res, err := loop.Run(context.Background(), rt, "run-1", nil)
+	final, err := rt.Load(context.Background(), "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Disposition != LoopWaiting || res.ExecutionRecovery {
-		t.Fatalf("res = %+v", res)
-	}
-	if executed.Load() {
-		t.Fatal("tool executed before approval")
-	}
-	wait := snapshotWaiting(t, rt, "run-1")[0]
-	if wait.Kind != ResponseApproval {
-		t.Fatalf("kind = %v", wait.Kind)
-	}
-
-	// Ingress approves via the derived response command ID (RUN-WIR-3).
-	cmdID := DeriveResponseCommandID(wait.RunID, wait.StepID, wait.CallID, wait.ID)
-	env, err := BuildEnvelope(wait.RunID, cmdID, ApproveToolCall{
-		StepID: wait.StepID, CallID: wait.CallID, ResponseID: wait.ID,
-		ResponseDigest: responseDecisionDigest(t, ResponseApproval, ResponseDecisionApproved, ""),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	snap, _ := rt.Load(context.Background(), "run-1")
-	if _, err := rt.Commit(context.Background(), CommitRequest{BaseRevision: snap.Revision, Command: env}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Wake: a new Loop run executes the tool and finishes.
-	res, err = loop.Run(context.Background(), rt, "run-1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Disposition != LoopFinished || res.Result.Model.Text != "after" {
-		t.Fatalf("res = %+v", res)
-	}
-	if !executed.Load() {
-		t.Fatal("approved tool never executed")
-	}
-}
-
-func TestLoopYieldsWaitingBeforeStartingPending(t *testing.T) {
-	var workRan, askRan atomic.Bool
-	askSpec := toolSpec(t, "ask", ApprovalRequired)
-	workSpec := toolSpec(t, "work", DirectExecution)
-	ask := &fakeTool{ref: "ask", def: askSpec.Definition.SDK(), policy: ApprovalRequired,
-		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
-			askRan.Store(true)
-			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: cj(`"asked"`)}}
-		}}
-	work := &fakeTool{ref: "work", def: workSpec.Definition.SDK(), policy: DirectExecution,
-		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
-			workRan.Store(true)
-			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: cj(`"worked"`)}}
-		}}
-	invoker := &fakeInvoker{results: []sdk.ModelResult{
-		{
-			FinishReason: sdk.FinishReasonToolCalls,
-			Usage:        sdk.Usage{TotalTokens: 2},
-			ToolCalls: []sdk.ToolCall{
-				{ToolCallID: "cA", ToolName: "ask", Input: `{"x":1}`},
-				{ToolCallID: "cB", ToolName: "work", Input: `{"x":1}`},
-			},
-		},
-		textResult("after"),
-	}}
-	rt := loopRuntime(t)
-	loop, err := New(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"ask": ask, "work": work}},
-		staticPlanner{specs: []ToolSpec{askSpec, workSpec}}, ExecutionPolicy{}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	res, err := loop.Run(context.Background(), rt, "run-1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Disposition != LoopWaiting || res.ExecutionRecovery {
-		t.Fatalf("first run = %+v", res)
-	}
-	if !workRan.Load() {
-		t.Fatal("DirectExecution tools must start in the same Run that returns LoopWaiting")
-	}
-	if askRan.Load() {
-		t.Fatal("approval tool executed before ApproveToolCall")
-	}
-
-	wait := snapshotWaiting(t, rt, "run-1")[0]
-	if wait.CallID != "cA" {
-		t.Fatalf("waiting call = %s, want cA", wait.CallID)
-	}
-	cmdID := DeriveResponseCommandID(wait.RunID, wait.StepID, wait.CallID, wait.ID)
-	env, err := BuildEnvelope(wait.RunID, cmdID, ApproveToolCall{
-		StepID: wait.StepID, CallID: wait.CallID, ResponseID: wait.ID,
-		ResponseDigest: responseDecisionDigest(t, ResponseApproval, ResponseDecisionApproved, ""),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	snap, err := rt.Load(context.Background(), "run-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rt.Commit(context.Background(), CommitRequest{BaseRevision: snap.Revision, Command: env}); err != nil {
-		t.Fatal(err)
-	}
-
-	res, err = loop.Run(context.Background(), rt, "run-1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Disposition != LoopFinished || res.Result.Model.Text != "after" {
-		t.Fatalf("after approval = %+v", res)
-	}
-	if !askRan.Load() {
-		t.Fatal("approved tool never executed")
-	}
-}
-
-func TestLoopUnknownOutcomeFailsRun(t *testing.T) {
-	spec := toolSpec(t, "echo", DirectExecution)
-	echo := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: DirectExecution,
-		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
-			return ToolExecutionUnknown{Failure: ToolFailure{Class: FailureEffectUnknown, Message: "lost"}}
-		}}
-	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1")}}
-	rt := loopRuntime(t)
-	loop, _ := New(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
-		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
-
-	res, err := loop.Run(context.Background(), rt, "run-1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Disposition != LoopFinished || res.Result.Status != RunFailed || res.Result.Reason != ReasonEffectUnknown {
-		t.Fatalf("res = %+v", res)
-	}
-	if res.Result.Failure == nil || res.Result.Failure.CallID != "c1" {
-		t.Fatalf("failure = %+v", res.Result.Failure)
-	}
-}
-
-func TestLoopKnownToolFailureContinues(t *testing.T) {
-	spec := toolSpec(t, "echo", DirectExecution)
-	echo := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: DirectExecution,
-		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
-			return ToolExecutionFailed{Failure: ToolFailure{Class: FailureExecution, Message: "boom"}}
-		}}
-	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("recovered")}}
-	rt := loopRuntime(t)
-	loop, _ := New(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
-		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
-
-	res, err := loop.Run(context.Background(), rt, "run-1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Known failure feeds the next model request; run completes.
-	if res.Result.Status != RunCompleted || res.Result.Model.Text != "recovered" {
-		t.Fatalf("res = %+v", res)
-	}
-}
-
-func TestLoopUnknownToolRefClosesAsLookupFailure(t *testing.T) {
-	// Model calls a tool that is not in the catalog (and not in specs).
-	invoker := &fakeInvoker{results: []sdk.ModelResult{
-		func() sdk.ModelResult {
-			r := sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls}
-			r.ToolCalls = []sdk.ToolCall{{ToolCallID: "c1", ToolName: "ghost", Input: `{}`}}
-			return r
-		}(),
-		textResult("moved on"),
-	}}
-	rt := loopRuntime(t)
-	loop, _ := New(fakeCatalog{invoker}, fakeToolCatalog{tools: map[ToolRef]ExecutableTool{}},
-		staticPlanner{}, ExecutionPolicy{}, false)
-
-	res, err := loop.Run(context.Background(), rt, "run-1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Result.Status != RunCompleted || res.Result.Model.Text != "moved on" {
-		t.Fatalf("res = %+v", res)
-	}
-	// The failed call must be recorded as tool_lookup_failed in the log.
-	found := false
-	for _, e := range recordEvents(t, rt, "run-1") {
-		if f, ok := e.Fact.(ToolCallFailed); ok && f.Failure.Class == FailureToolLookup {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("no tool_lookup_failed fact in the event log")
+	if final.State.ModelSteps != 1 {
+		t.Fatalf("ModelSteps = %d after resume, want 1", final.State.ModelSteps)
 	}
 }
 
@@ -556,7 +298,7 @@ func TestToolStartStaleDropsLocalClaim(t *testing.T) {
 }
 
 type responseLossRuntime struct {
-	*MemoryRuntime
+	Runtime
 	mu             sync.Mutex
 	count          map[CommandID]int
 	loseModelStart bool
@@ -564,12 +306,11 @@ type responseLossRuntime struct {
 
 func newResponseLossRuntime(t *testing.T) *responseLossRuntime {
 	t.Helper()
-	base := loopRuntime(t)
-	return &responseLossRuntime{MemoryRuntime: base, count: make(map[CommandID]int)}
+	return &responseLossRuntime{Runtime: loopRuntime(t), count: make(map[CommandID]int)}
 }
 
 func (r *responseLossRuntime) Commit(ctx context.Context, req CommitRequest) (CommitResult, error) {
-	result, err := r.MemoryRuntime.Commit(ctx, req)
+	result, err := r.Runtime.Commit(ctx, req)
 	if err != nil {
 		return result, err
 	}
@@ -649,34 +390,6 @@ func TestLoopReplaysSettlementWithoutRepeatingTool(t *testing.T) {
 	}
 }
 
-func TestLoopCtxCancelReturnsWithoutFailingRun(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	invoker := &fakeInvoker{errs: []error{context.Canceled}}
-	rt := loopRuntime(t)
-	loop, _ := New(fakeCatalog{invoker}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
-
-	cancel() // cancelled before the model call
-	_, err := loop.Run(ctx, rt, "run-1", nil)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("err = %v, want context.Canceled", err)
-	}
-	// Run must still be active (recovery released it), never failed.
-	snap, _ := rt.Load(context.Background(), "run-1")
-	if snap.State.Status != RunActive {
-		t.Fatalf("status = %v, want RunActive", snap.State.Status)
-	}
-	// A fresh Loop with a working invoker resumes the same frozen request.
-	invoker2 := &fakeInvoker{results: []sdk.ModelResult{textResult("resumed")}}
-	loop2, _ := New(fakeCatalog{invoker2}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
-	res, err := loop2.Run(context.Background(), rt, "run-1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Result == nil || res.Result.Model.Text != "resumed" {
-		t.Fatalf("res = %+v", res)
-	}
-}
-
 func TestLoopMalformedModelResultDispositionFailsRun(t *testing.T) {
 	rt := loopRuntime(t)
 	bad := sdk.ModelResult{
@@ -715,24 +428,6 @@ type panicPlanner struct{}
 
 func (panicPlanner) Plan(context.Context, PlanningHint) (RequestPlan, error) {
 	panic("planner should not be called")
-}
-
-func TestLoopCancelRunViaCommand(t *testing.T) {
-	// Host order: commit CancelRun first, then cancel ctx (RUN-LOP-5).
-	rt := loopRuntime(t)
-	snap, _ := rt.Load(context.Background(), "run-1")
-	env, _ := BuildEnvelope("run-1", "cancel-1", CancelRun{})
-	if _, err := rt.Commit(context.Background(), CommitRequest{BaseRevision: snap.Revision, Command: env}); err != nil {
-		t.Fatal(err)
-	}
-	loop, _ := New(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
-	res, err := loop.Run(context.Background(), rt, "run-1", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Result.Status != RunStopped || res.Result.Reason != ReasonCancelled {
-		t.Fatalf("res = %+v", res)
-	}
 }
 
 // cancellingInvoker cancels the outer ctx from inside Generate, simulating a

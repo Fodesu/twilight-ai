@@ -127,6 +127,23 @@ type Step interface {
 	Ref() StepRef
 }
 
+// Current is the contents of an Active run. Open is the enterable interval:
+// AcceptInput and Prepare are legal, and Next returns NeedModelRequest.
+type Current interface{ current() }
+
+// Open is Active with no ModelStep or ToolStep.
+type Open struct{}
+
+func (Open) current() {}
+
+func (ModelStep) current() {}
+func (ToolStep) current()  {}
+
+func atOpen(c Current) bool {
+	_, ok := c.(Open)
+	return ok
+}
+
 type ModelStepStatus uint8
 
 const (
@@ -303,7 +320,7 @@ func (s *ToolStep) callIndex(id CallID) int {
 type MachineState struct {
 	RunID         RunID        `json:"runId"`
 	Status        RunStatus    `json:"status"`
-	Current       Step         `json:"-"` // serialized by adapters with their snapshot schema
+	Current       Current      `json:"-"`
 	PendingInputs []AgentInput `json:"pendingInputs,omitempty"`
 	ModelSteps    int          `json:"modelSteps"`
 	// LastClosedStep is the most recently closed ToolStep; PlanningHint's
@@ -372,12 +389,16 @@ func ValidateMachineState(s *MachineState) error {
 		if s.Result == nil || s.Result.Status != s.Status {
 			return errors.New("agent: state: terminal state has no matching result")
 		}
-	} else if s.Result != nil {
+		return nil
+	}
+	if s.Result != nil {
 		return errors.New("agent: state: active state has a result")
 	}
 
 	switch current := s.Current.(type) {
+	case Open:
 	case nil:
+		return errors.New("agent: state: active state has no current")
 	case ModelStep:
 		if current.RefValue.RunID != s.RunID || current.RefValue.ID == "" || current.RefValue.Digest == "" || current.Model == "" {
 			return errors.New("agent: state: invalid current ModelStep identity")
@@ -422,5 +443,5 @@ func InitializeRun(run RunID) (MachineState, error) {
 	if run == "" {
 		return MachineState{}, errors.New("agent: initialize: empty RunID")
 	}
-	return MachineState{RunID: run, Status: RunActive}, nil
+	return MachineState{RunID: run, Status: RunActive, Current: Open{}}, nil
 }
