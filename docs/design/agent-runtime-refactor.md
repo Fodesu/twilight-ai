@@ -91,7 +91,8 @@ agent/turn     -> agent/run + agent/session + agent/session/chatlog + session mo
 | 追加式 `Store` 合同（LoadHead / LoadLog / LoadRecord 单一致读 / Commit critical section / ExpiredLeases）、snapshot codec、lease 续期 | 完成 |
 | SQLite Store adapter（snapshot 加日志、lease 表）通过 Runtime / recovery / renewal conformance | 完成 |
 | `agent/run/loop` package extraction | 完成 |
-| Session/Artifact/Session Module/Turn protocols | 草案，无实现；wire 在 Memory 纵向切片跑通前不冻结 |
+| Turn 最小实现（`agent/turn`：Start / Resume / Stop、v1 FactMapper、append-only MemoryLog、崩溃后 Resume） | 完成；Session kernel、Extension、Artifact 未接入，Log 为纵向切片的替身 |
+| Session/Artifact/Session Module protocols | 草案，无实现；wire 在 Memory 纵向切片跑通前不冻结 |
 | Chatlog protocol | 草案，payload 与 golden 尚未冻结 |
 | 参考组装 | 草案 |
 | PostgreSQL durable Run adapter（旧接口） | 历史 prototype，迁移未完成 |
@@ -104,8 +105,8 @@ agent/turn     -> agent/run + agent/session + agent/session/chatlog + session mo
 
 - 冻结 Session、Artifact 与 Chatlog v1 wire profiles、domain separators、wire-size validation 和 golden fixtures；
 - 实现 Session、Artifact、Session Module、Chatlog 的 Memory implementations 与 conformance；
-- 实现 `turn.Coordinator`、first-party Turn module、`FactMapper`、`MaterializeAll` 和 settlement recovery；
-- 跑通 Input → Turn → Context → Run/Loop → Session Events → replay 的最小 vertical slice。
+- 把 `agent/turn` 的 `Log` 替换为 Session kernel 的 `Store` 与 `extension.SemanticAppender`，事件 identity 从 Seq 改为 spec 的派生 EventID / CommitID；
+- 加 Chatlog Context projection 与参考 Planner，让 Run 的 `PlanningHint` 只提供边界事实。
 
 ### 4.2 durable adapters
 
