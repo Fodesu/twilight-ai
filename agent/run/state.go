@@ -139,9 +139,6 @@ type Open struct{}
 
 func (Open) current() {}
 
-func (ModelStep) current() {}
-func (ToolStep) current()  {}
-
 func atOpen(c Current) bool {
 	_, ok := c.(Open)
 	return ok
@@ -153,6 +150,17 @@ const (
 	ModelPrepared ModelStepStatus = iota
 	ModelExecuting
 )
+
+func (s ModelStepStatus) String() string {
+	switch s {
+	case ModelPrepared:
+		return "Prepared"
+	case ModelExecuting:
+		return "Executing"
+	default:
+		return fmt.Sprintf("ModelStepStatus(%d)", uint8(s))
+	}
+}
 
 type ModelStep struct {
 	RefValue      StepRef         `json:"ref"`
@@ -167,7 +175,8 @@ type ModelStep struct {
 	Rejects int `json:"rejects,omitempty"`
 }
 
-func (ModelStep) step() {}
+func (ModelStep) step()    {}
+func (ModelStep) current() {}
 
 //nolint:gocritic // hugeParam: value receiver keeps ModelStep satisfying sealed Step as a value.
 func (s ModelStep) Ref() StepRef { return s.RefValue }
@@ -181,6 +190,26 @@ const (
 	ToolCompleted
 	ToolFailed
 )
+
+func (s ToolCallStatus) String() string {
+	switch s {
+	case ToolPending:
+		return "Pending"
+	case ToolExecuting:
+		return "Executing"
+	case ToolWaiting:
+		return "Waiting"
+	case ToolCompleted:
+		return "Completed"
+	case ToolFailed:
+		return "Failed"
+	default:
+		return fmt.Sprintf("ToolCallStatus(%d)", uint8(s))
+	}
+}
+
+// Terminal reports Completed or Failed.
+func (s ToolCallStatus) Terminal() bool { return s == ToolCompleted || s == ToolFailed }
 
 type ToolExecutionResult struct {
 	Output CanonicalJSON `json:"output"`
@@ -303,7 +332,8 @@ type ToolStep struct {
 	Scheduling ToolScheduling  `json:"scheduling,omitzero"`
 }
 
-func (ToolStep) step() {}
+func (ToolStep) step()    {}
+func (ToolStep) current() {}
 
 //nolint:gocritic // hugeParam: value receiver keeps ToolStep satisfying sealed Step as a value.
 func (s ToolStep) Ref() StepRef { return s.RefValue }
@@ -326,11 +356,9 @@ type MachineState struct {
 	Current       Current      `json:"-"`
 	PendingInputs []AgentInput `json:"pendingInputs,omitempty"`
 	ModelSteps    int          `json:"modelSteps"`
-	// LastClosedStep is the most recently closed ToolStep; PlanningHint's
-	// SourceStep is read from it at the next boundary.
-	LastClosedStep StepID `json:"lastClosedStep,omitempty"`
 	// LastToolStep retains the most recently closed ToolStep so the planner can
-	// include committed tool results in the next model request.
+	// include committed tool results in the next model request. Its RefValue.ID
+	// is the SourceStep of the next PlanningHint.
 	LastToolStep    *ToolStep    `json:"lastToolStep,omitempty"`
 	Usage           Usage        `json:"usage"`
 	LastModelResult *ModelResult `json:"lastModelResult,omitempty"`
@@ -355,36 +383,12 @@ func ValidateMachineState(s *MachineState) error {
 	if s.ModelSteps < 0 {
 		return errors.New("agent: state: negative model step count")
 	}
-	seenInputs := make(map[InputID]struct{}, len(s.PendingInputs))
-	for _, input := range s.PendingInputs {
-		if input.ID == "" {
-			return errors.New("agent: state: pending input has empty InputID")
-		}
-		if _, exists := seenInputs[input.ID]; exists {
-			return fmt.Errorf("agent: state: duplicate pending InputID %q", input.ID)
-		}
-		seenInputs[input.ID] = struct{}{}
+	if err := validatePendingInputs(s.PendingInputs); err != nil {
+		return err
 	}
-	if s.LastToolStep != nil {
-		last := s.LastToolStep
-		if last.RefValue.RunID != s.RunID || last.RefValue.ID == "" || last.RefValue.Digest == "" || last.Source == "" || s.LastClosedStep != last.RefValue.ID {
-			return errors.New("agent: state: invalid LastToolStep projection")
-		}
-		if len(last.Calls) == 0 {
-			return errors.New("agent: state: LastToolStep has no calls")
-		}
-		for _, call := range last.Calls {
-			if err := ValidateToolCallState(call); err != nil {
-				return err
-			}
-			if call.Status != ToolCompleted && call.Status != ToolFailed {
-				return errors.New("agent: state: LastToolStep contains a live call")
-			}
-		}
-	} else if s.LastClosedStep != "" {
-		return errors.New("agent: state: LastClosedStep has no LastToolStep")
+	if err := validateLastToolStep(s); err != nil {
+		return err
 	}
-
 	if s.Status.Terminal() {
 		if s.Current != nil {
 			return errors.New("agent: state: terminal state has a current step")
@@ -397,9 +401,49 @@ func ValidateMachineState(s *MachineState) error {
 	if s.Result != nil {
 		return errors.New("agent: state: active state has a result")
 	}
+	return validateCurrent(s)
+}
 
+func validatePendingInputs(inputs []AgentInput) error {
+	seen := make(map[InputID]struct{}, len(inputs))
+	for _, input := range inputs {
+		if input.ID == "" {
+			return errors.New("agent: state: pending input has empty InputID")
+		}
+		if _, dup := seen[input.ID]; dup {
+			return fmt.Errorf("agent: state: duplicate pending InputID %q", input.ID)
+		}
+		seen[input.ID] = struct{}{}
+	}
+	return nil
+}
+
+func validateLastToolStep(s *MachineState) error {
+	last := s.LastToolStep
+	if last == nil {
+		return nil
+	}
+	if last.RefValue.RunID != s.RunID || last.RefValue.ID == "" || last.RefValue.Digest == "" || last.Source == "" {
+		return errors.New("agent: state: invalid LastToolStep projection")
+	}
+	if len(last.Calls) == 0 {
+		return errors.New("agent: state: LastToolStep has no calls")
+	}
+	for i := range last.Calls {
+		if err := ValidateToolCallState(last.Calls[i]); err != nil {
+			return err
+		}
+		if !last.Calls[i].Status.Terminal() {
+			return errors.New("agent: state: LastToolStep contains a live call")
+		}
+	}
+	return nil
+}
+
+func validateCurrent(s *MachineState) error {
 	switch current := s.Current.(type) {
 	case Open:
+		return nil
 	case nil:
 		return errors.New("agent: state: active state has no current")
 	case ModelStep:
@@ -409,32 +453,38 @@ func ValidateMachineState(s *MachineState) error {
 		if current.Status != ModelPrepared && current.Status != ModelExecuting {
 			return fmt.Errorf("agent: state: unknown ModelStep status %d", current.Status)
 		}
+		return nil
 	case ToolStep:
-		if current.RefValue.RunID != s.RunID || current.RefValue.ID == "" || current.RefValue.Digest == "" || current.Source == "" || len(current.Calls) == 0 {
-			return errors.New("agent: state: invalid current ToolStep identity")
-		}
-		seenCalls := make(map[CallID]struct{}, len(current.Calls))
-		live := false
-		for _, call := range current.Calls {
-			if call.CallID == "" {
-				return errors.New("agent: state: current ToolStep has empty CallID")
-			}
-			if _, exists := seenCalls[call.CallID]; exists {
-				return fmt.Errorf("agent: state: duplicate CallID %q", call.CallID)
-			}
-			seenCalls[call.CallID] = struct{}{}
-			if err := ValidateToolCallState(call); err != nil {
-				return err
-			}
-			if call.Status == ToolPending || call.Status == ToolExecuting || call.Status == ToolWaiting {
-				live = true
-			}
-		}
-		if !live {
-			return errors.New("agent: state: current ToolStep has no live calls")
-		}
+		return validateCurrentToolStep(s.RunID, &current)
 	default:
 		return fmt.Errorf("agent: state: unknown current step %T", s.Current)
+	}
+}
+
+func validateCurrentToolStep(runID RunID, ts *ToolStep) error {
+	if ts.RefValue.RunID != runID || ts.RefValue.ID == "" || ts.RefValue.Digest == "" || ts.Source == "" || len(ts.Calls) == 0 {
+		return errors.New("agent: state: invalid current ToolStep identity")
+	}
+	seen := make(map[CallID]struct{}, len(ts.Calls))
+	live := false
+	for i := range ts.Calls {
+		call := &ts.Calls[i]
+		if call.CallID == "" {
+			return errors.New("agent: state: current ToolStep has empty CallID")
+		}
+		if _, dup := seen[call.CallID]; dup {
+			return fmt.Errorf("agent: state: duplicate CallID %q", call.CallID)
+		}
+		seen[call.CallID] = struct{}{}
+		if err := ValidateToolCallState(*call); err != nil {
+			return err
+		}
+		if !call.Status.Terminal() {
+			live = true
+		}
+	}
+	if !live {
+		return errors.New("agent: state: current ToolStep has no live calls")
 	}
 	return nil
 }
