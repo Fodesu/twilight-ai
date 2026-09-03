@@ -92,63 +92,6 @@ func (c *calculator) Execute(_ context.Context, req loop.ToolExecutionRequest) l
 	return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: out}}
 }
 
-// livePlanner assembles the whole conversation from the Run boundary: the
-// system prompt, the delivered inputs, and for a follow-up step the
-// assistant's tool calls plus their committed results.
-type livePlanner struct {
-	model run.ModelRef
-	spec  run.ToolSpec
-}
-
-func (p livePlanner) Plan(_ context.Context, hint run.PlanningHint) (loop.RequestPlan, error) {
-	msgs := []sdk.Message{sdk.SystemMessage("You are a precise assistant. Use the calculator tool for any arithmetic. Reply with just the final number once you have it.")}
-	ids := make([]run.InputID, 0, len(hint.Inputs))
-	for _, in := range hint.Inputs {
-		ids = append(ids, in.ID)
-		var body struct {
-			Text string `json:"text"`
-		}
-		if err := in.Payload.Decode(&body); err != nil {
-			return loop.RequestPlan{}, err
-		}
-		msgs = append(msgs, sdk.UserMessage(body.Text))
-	}
-	if hint.LastModelResult != nil && hint.LastToolStep != nil {
-		// Replay the assistant turn that issued the calls, then each result.
-		var parts []sdk.MessagePart
-		if hint.LastModelResult.Text != "" {
-			parts = append(parts, sdk.TextPart{Text: hint.LastModelResult.Text})
-		}
-		for _, tc := range hint.LastModelResult.ToolCalls {
-			input, err := tc.Input.Any()
-			if err != nil {
-				return loop.RequestPlan{}, err
-			}
-			parts = append(parts, sdk.ToolCallPart{ToolCallID: tc.ToolCallID, ToolName: tc.ToolName, Input: input})
-		}
-		msgs = append(msgs, sdk.Message{Role: sdk.MessageRoleAssistant, Content: parts})
-		var results []sdk.ToolResultPart
-		for _, call := range hint.LastToolStep.Calls {
-			var result any
-			isErr := false
-			switch {
-			case call.Result != nil:
-				result, _ = call.Result.Output.Any()
-			case call.Failure != nil:
-				result, isErr = call.Failure.Failure.Class+": "+call.Failure.Failure.Message, true
-			}
-			results = append(results, sdk.ToolResultPart{ToolCallID: call.ProviderCallID, ToolName: string(call.ToolRef), Result: result, IsError: isErr})
-		}
-		msgs = append(msgs, sdk.ToolMessage(results...))
-	}
-	return loop.RequestPlan{
-		Model:    p.model,
-		Request:  sdk.Request{Model: string(p.model), Messages: msgs, Tools: []sdk.ToolDefinition{p.spec.Definition.SDK()}},
-		InputIDs: ids,
-		Tools:    []run.ToolSpec{p.spec},
-	}, nil
-}
-
 type liveCatalog struct{ model *sdk.Model }
 
 func (c liveCatalog) ResolveModel(run.ModelRef) (loop.ModelInvoker, error) { return c.model, nil }
@@ -166,12 +109,16 @@ func TestLiveTurnWithRealModelAndTool(t *testing.T) {
 	model := provider.ChatModel(modelID)
 
 	calc := newCalculator(t)
-	l, err := loop.New(liveCatalog{model}, calc, livePlanner{model: run.ModelRef(modelID), spec: calc.spec}, loop.ExecutionPolicy{}, false)
+	rt := run.NewRuntime(run.NewMemoryStore())
+	log := turn.NewMemoryLog()
+	planner := &turn.ContextPlanner{
+		Log: log, Session: "live-s1", Model: run.ModelRef(modelID), Tools: []run.ToolSpec{calc.spec},
+		System: "You are a precise assistant. Use the calculator tool for any arithmetic. Reply with just the final number once you have it.",
+	}
+	l, err := loop.New(liveCatalog{model}, calc, planner, loop.ExecutionPolicy{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rt := run.NewRuntime(run.NewMemoryStore())
-	log := turn.NewMemoryLog()
 	coord := &turn.Coordinator{Log: log, Runtime: rt, Driver: turn.LoopDriver{Loop: l, Runtime: rt}}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)

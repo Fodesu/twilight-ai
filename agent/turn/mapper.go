@@ -16,12 +16,13 @@ func MapTransition(turnID TurnID, prefix []run.TransitionRecord) ([]Event, error
 	if len(prefix) == 0 {
 		return nil, nil
 	}
-	provider := make(map[run.CallID]string)
+	type callInfo struct{ provider, name string }
+	calls := make(map[run.CallID]callInfo)
 	for i := range prefix {
 		for j := range prefix[i].Events {
-			if opened, ok := prefix[i].Events[j].Fact.(run.ToolStepOpened); ok {
-				for _, b := range opened.Calls {
-					provider[b.CallID] = b.ProviderCallID
+			if completed, ok := prefix[i].Events[j].Fact.(run.ModelStepCompleted); ok {
+				for k, tc := range completed.Result.ToolCalls {
+					calls[run.DeriveCallID(completed.StepID, k)] = callInfo{provider: tc.ToolCallID, name: tc.ToolName}
 				}
 			}
 		}
@@ -42,17 +43,17 @@ func MapTransition(turnID TurnID, prefix []run.TransitionRecord) ([]Event, error
 			payload = AssistantPayload{TurnID: turnID, StepID: f.StepID, Text: f.Result.Text, ToolCalls: calls}
 		case run.ToolCallCompleted:
 			typ = EventToolResult
-			payload = ToolResultPayload{TurnID: turnID, CallID: f.CallID, ProviderCallID: provider[f.CallID], Status: ToolSuccess, Output: f.Result.Output}
+			payload = ToolResultPayload{TurnID: turnID, CallID: f.CallID, ProviderCallID: calls[f.CallID].provider, Name: calls[f.CallID].name, Status: ToolSuccess, Output: f.Result.Output}
 		case run.ToolCallAnswered:
 			typ = EventToolResult
-			payload = ToolResultPayload{TurnID: turnID, CallID: f.CallID, ProviderCallID: provider[f.CallID], Status: ToolSuccess, Output: f.Payload}
+			payload = ToolResultPayload{TurnID: turnID, CallID: f.CallID, ProviderCallID: calls[f.CallID].provider, Name: calls[f.CallID].name, Status: ToolSuccess, Output: f.Payload}
 		case run.ToolCallFailed:
 			status := ToolError
 			if f.Outcome == run.ToolOutcomeUnknown || f.Failure.Class == run.FailureEffectUnknown {
 				status = ToolUnknown
 			}
 			typ = EventToolResult
-			payload = ToolResultPayload{TurnID: turnID, CallID: f.CallID, ProviderCallID: provider[f.CallID], Status: status, Failure: f.Failure.Class, Message: f.Failure.Message}
+			payload = ToolResultPayload{TurnID: turnID, CallID: f.CallID, ProviderCallID: calls[f.CallID].provider, Name: calls[f.CallID].name, Status: status, Failure: f.Failure.Class, Message: f.Failure.Message}
 		default:
 			continue
 		}

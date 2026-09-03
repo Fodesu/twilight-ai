@@ -147,11 +147,14 @@ const (
 )
 
 type ToolResultPayload struct {
-	TurnID         TurnID            `json:"turnId"`
-	CallID         run.CallID        `json:"callId"`
-	ProviderCallID string            `json:"providerCallId,omitempty"`
-	Status         ToolResultStatus  `json:"status"`
-	Output         run.CanonicalJSON `json:"output,omitzero"`
-	Failure        string            `json:"failure,omitempty"`
-	Message        string            `json:"message,omitempty"`
+	TurnID         TurnID     `json:"turnId"`
+	CallID         run.CallID `json:"callId"`
+	ProviderCallID string     `json:"providerCallId,omitempty"`
+	// Name is the tool name the model used for this call, echoed back with
+	// the result for providers that pair on it.
+	Name    string            `json:"name,omitempty"`
+	Status  ToolResultStatus  `json:"status"`
+	Output  run.CanonicalJSON `json:"output,omitzero"`
+	Failure string            `json:"failure,omitempty"`
+	Message string            `json:"message,omitempty"`
 }
