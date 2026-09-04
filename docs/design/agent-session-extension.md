@@ -1,170 +1,127 @@
 # Twilight Agent Session Module Framework
 
-状态：设计草案。无实现；Catalog、SemanticAppender 与 journal 流程在 Memory reference implementation 通过 conformance 前不冻结。
+状态：设计草案。无实现；Registry、SemanticAppender 与 projection 在 Memory reference implementation 通过 conformance 前不冻结。2026-09-04 第二次修订：v1 收缩为 first-party 固定注册表与单事务 append；Application module、通用 Catalog 与两阶段 journal 移入附录，不进入 v1 conformance。
 
-本文定义建立在 `agent/session` 与 `agent/artifact` 之上的静态 Session Module Framework。实现包路径暂为 `agent/session/extension`；文中的“必须”“不得”“应该”是协议约束；JSON canonicalization 与 digest 遵循 `agent/jsonstable`、`agent/es`。
+本文定义建立在 `agent/session` 与 `agent/artifact` 之上的 Session Module Framework。实现包路径为 `agent/session/extension`；文中的"必须""不得""应该"是协议约束；JSON canonicalization 与 digest 遵循 `agent/jsonstable`、`agent/es`。
 
 ## 1. 范围与依赖
 
 ```text
 agent/artifact  ←  Session Module Framework  →  agent/session
                                       ↑
-                            first-party 与 Application modules
+                          first-party modules: chatlog、turn、run
 ```
 
-Framework 负责 Module ownership、static startup composition、immutable Catalog、typed event
-codec、Binding declaration、SemanticAppender 和 pure projection。first-party Source 为
-`twilight`，其 Module 为 `chatlog`、`turn` 与 `run`。每次进程启动构建一套与 Session protocol
-version 绑定的 immutable Catalog。Application 注册自己的 Source（例如 `acme`）与 Module。
+Framework 负责 typed event codec 与 payload 版本、Binding declaration 与 admission、claim 与 commit 的同事务写入、pure projection。first-party Source 为 `twilight`，其 Module 为 `chatlog`、`turn` 与 `run`。
 
-**EXT-SCP-1** Session Store protocol 由 Session kernel 负责；多 Session transaction、package import、saga、operation log 与 provider policy 由 Application/adapter 负责。未知 event 的 archive Binding manifest 由 Application archive coordinator 处理。`run` 模块的写入经 `run.Runtime` 使用 `Store.CommitIn`（SES-API-2），不经 SemanticAppender；其 typed codec 与 projection 仍由 Catalog 提供。
+**EXT-SCP-1** v1 只有一个写入路径：`SemanticAppender`。它有两个入口，`AppendSemantic`（CAS）与 `AppendSemanticIn`（临界区），两者执行同一套 codec、admission 与 claim 规则，都在 Session Store 的一个事务内完成。Run 的 `Runtime` 经 `AppendSemanticIn` 写入；Turn 的 Start、Retry、Settle 经任一入口写入。raw `session.Store` 只由 Appender、Application 的 trusted adapter 与测试持有。
 
-`SemanticAppender` 是 Session Module Framework 面向 typed producer 的写入协调器：它执行 codec、binding
-admission、claim/journal 编排，并调用 Session Store 的 canonical append。claim、journal 与
-artifact binding 的一致性由 Session Module Framework 维护；Session kernel 继续维护 commit、CAS、digest 与
-replay 规则。
+**EXT-SCP-2** v1 的模块集合在编译期固定为三个 first-party module。Application 自定义 Source 与 Module、通用 `Catalog` 构建校验、`RuntimeRegistry` 与自定义 `BindingExtractor` 见附录 B；远程或跨存储 adapter 的两阶段提交见附录 C。
 
-## 2. Module、Catalog 与版本
+## 2. Registry 与版本
 
 ```go
 type SourceID string
 type ModuleID string
 type ProjectionID string
 type ProjectionVersion uint16
-type RegistryID string
+type PayloadVersion uint16
 
 const SourceTwilight SourceID = "twilight"
 
+type EventDefinition struct {
+    Type session.EventType
+    Current PayloadVersion                  // Encode 使用的版本
+    Codecs map[PayloadVersion]PayloadCodec  // Decode 支持的全部版本
+    Bindings []BindingReferenceDefinition
+}
 type ModuleDescriptor struct {
-    Source SourceID
     ID ModuleID
     Events []EventDefinition
     Projections []ProjectionDefinition
-    Registries []CodecRegistryDescriptor
-    Schemes []artifact.SchemeDefinition
 }
-type Catalog struct {
+type Registry struct {
     ProtocolVersion uint16
     Profile session.ProtocolProfile
-    // immutable indexes for modules, events, projections, registries and schemes
+    // immutable indexes for modules, events and projections
 }
-type CatalogBuildRequest struct {
-    ProtocolVersion uint16
-    Profile session.ProtocolProfile
-    Modules []ModuleDescriptor
-    Registries []RuntimeRegistry
-}
-type RuntimeRegistry interface {
-    Descriptor() CodecRegistryDescriptor
-    BindingExtractor() (BindingExtractor, bool)
-}
-func BuildCatalog(CatalogBuildRequest) (*Catalog, error)
-func (c *Catalog) LookupEvent(session.EventType) (SourceID, ModuleID, EventDefinition, bool)
-func (c *Catalog) ModuleForEvent(session.EventType) (SourceID, ModuleID, bool)
-func (c *Catalog) LookupProjection(ProjectionID, ProjectionVersion) (ProjectionDefinition, bool)
+func FirstPartyRegistry(profile session.ProtocolProfile, parts PartsRegistry) (*Registry, error)
+func (r *Registry) LookupEvent(session.EventType) (ModuleID, EventDefinition, bool)
+func (r *Registry) ModuleForEvent(session.EventType) (ModuleID, bool)
+func (r *Registry) LookupProjection(ProjectionID, ProjectionVersion) (ProjectionDefinition, bool)
+func (r *Registry) Decode(session.SessionEvent) (DecodedEvent, error)
 ```
 
-`Catalog` 是进程启动时的 Module 目录：它把一个协议版本下可用的 Module、EventType、
-payload codec、projection、runtime registry 与 artifact scheme 组合成只读索引。它供
-typed append、decode、binding admission 与 projection lookup 使用；事件数据保存在 Session
-stream 中，Catalog 只保存组合配置。`Catalog.Profile` 是同一版本的
-`session.ProtocolProfile`，两者在 `BuildCatalog` 时绑定。
+**EXT-REG-1** EventType 为 `twilight/<ModuleID>/<local-name>`，例如 `twilight/chatlog/assistant`、`twilight/turn/started`、`twilight/run/model_step_prepared`。Digest domain 与 EventType 相同。一个 Registry 中 EventType、ProjectionID 均唯一；`FirstPartyRegistry` 构建后只读，`Profile.Version()` 必须等于 `ProtocolVersion`。
 
-**EXT-CAT-1** `SourceID` 与 `ModuleID` 为小写 ASCII。first-party Source 为 `twilight`，
-其 Module 为 `chatlog`、`turn` 与 `run`。Application 注册自己的 Source（例如 `acme`）。
-EventType 为 `<SourceID>/<ModuleID>/<local-name>`，例如 `twilight/chatlog/assistant`、
-`twilight/turn/started`、`twilight/run/model_step_prepared`。Digest domain 与 EventType 相同；wire 与 digest 形状由 Catalog
-绑定的 Session `ProtocolVersion` 决定。一个 Catalog 中 `(Source, ModuleID)`、EventType、
-ProjectionID、Scheme、RegistryID 均唯一。Build defensive-copy 所有 descriptor
-和 runtime registry，成功后只读且与注册顺序无关。
+**EXT-REG-2** payload 版本与 kernel 版本分离（SES-VER-1）。每个 payload object 的第一层携带整数字段 `v`；`Encode` 写入 `Current`，`Decode` 读取 `v` 并选择 `Codecs[v]`。同一 EventType 的旧版本 codec 永久保留在 Registry 中，旧事件不迁移。一个模块的 payload 非兼容变化只增加该 EventType 的 `Current` 与一个新 codec，不影响其他模块，不触发 kernel 版本变化。
 
-事件类型在一个 Catalog 中只有一个当前定义。`ProtocolVersion` 覆盖已经持久化的
-payload 格式与 Session wire；ProjectionVersion 只标识 projection 的派生状态格式。Catalog
-本身属于进程启动时的组合配置，不进入 Session wire、event digest 或 commit identity。
-现有 EventType 的 wire identity 由其 ProtocolVersion 固定。版本判断遵循旧 reader 的
-语义兼容性：旧 reader 读取新 writer 的 log 后仍能保持 canonical validation、commit/fork/
-replay 顺序、history/context/recovery 与 digest chain 语义时，继续使用当前 ProtocolVersion。
-安全可忽略的新 persisted EventType 与真正 optional 的 payload 字段属于这一类；非持久化
-projection、registry 或 scheme 的增加沿用当前版本。
-
-旧 reader 无法保持上述语义的 event、payload、envelope 或 commit 变化提升
-`ProtocolVersion`。影响 Session 核心重建的新增 EventType 也属于这一类。ProjectionVersion
-管理单个派生快照的 state codec；projection 实现变化只有在改变 Session 核心重建语义时
-才推动 ProtocolVersion。
-
-**EXT-CAT-2** Build 必须拒绝 duplicate owner、namespace mismatch、无效 ProtocolVersion、registry requirement mismatch、非法 Binding declaration、以及任何 Session event declaration 的 `RequiredDurability < EventBound`。Binding declaration 引用 RegistryID 时，Catalog 必须找到匹配 runtime registry，并要求其 `BindingExtractor()` 返回 `(extractor, true)` 且 extractor 非 nil/非 typed nil；`false` 明确表示该 registry 不支持 Binding extraction，不能被该 declaration 引用。
-
-**EXT-CAT-3** `BuildCatalog` 要求 `Profile` 非 nil（含 typed nil）且
-`Profile.Version() == ProtocolVersion`。一个 Catalog 只服务一个 ProtocolVersion；typed
-append、event decode、projection run 与 binding admission 先校验 Session Header 的版本
-与 Catalog 版本一致。当前版本之外的 Session 先经外部 migration 转换，再进入该 Catalog。
+**EXT-REG-3** `Decode` 对未注册的 EventType，或已注册 EventType 的未注册 `v`，返回 `DecodedEvent{Unknown:true}` 并保留原始 payload；是否接受由 projection 的 `RequireComplete` 决定（EXT-PRJ-2）。Encode 对 `Current` 之外的版本拒绝。
 
 ## 3. event codec
 
 ```go
-type EventDefinition struct {
-    Type session.EventType
-    Codec PayloadCodec
-    Bindings []BindingReferenceDefinition
-    RegistryRequirements []CodecRegistryRequirement
-}
 type PayloadCodec interface {
-    Encode(value any) (jsonstable.Value, error)
+    Encode(value any) (jsonstable.Value, error) // 不含 v；Registry 负责加入
     Decode(wire jsonstable.Value) (any, error)
     Validate(value any) error
 }
-type CodecRegistryDescriptor struct {
-    ID RegistryID; WireManifest jsonstable.Value; WireProfile string
-}
-type CodecRegistryRequirement struct { ID RegistryID; WireManifest jsonstable.Value }
 type DecodedEvent struct {
-    Event session.SessionEvent; ModuleID ModuleID
+    Event session.SessionEvent
+    ModuleID ModuleID
+    Version PayloadVersion
     Value any
+    Unknown bool
 }
 ```
 
-**EXT-COD-1** descriptor 是 wire manifest/profile；runtime registry 是显式提供的 immutable implementation。descriptor 不声称 hash 或证明代码。Catalog 必须逐字段匹配 requirement 和 runtime descriptor。
+**EXT-COD-1** codec、Validate、Binding extraction 必须纯、确定、无 IO，不读 clock/random/environment/mutable global。Decode wire-first：先验证 object、discriminator（如适用）、kind 与 limits，再构造 value。Encode/Decode 必须拒绝 nil、typed nil、kind mismatch、未知 kind 和非 canonical value；有效值须满足 `Encode → Decode → Encode` 的 canonical round-trip。
 
-**EXT-COD-2** codec、Validate、Binding extraction 必须纯、确定、无 IO，不读 clock/random/environment/mutable global。Decode wire-first：先验证 object、discriminator（如适用）、kind、ProtocolVersion/profile 和 limits，再构造 value。Encode/Decode 必须拒绝 nil、typed nil、kind mismatch、未知 kind 和非 canonical value；有效值须满足 `Encode → Decode → Encode` 的 canonical round-trip。
+**EXT-COD-2** 已提交事件的 payload 保持原始 canonical bytes。`v` 字段由 Registry 在 Encode 后加入、Decode 前取出，codec 自身不读写它；payload 的其他第一层字段不得命名为 `v`。
 
-**EXT-COD-3** EventDefinition 的 Codec 遵循 Catalog 的 ProtocolVersion。已提交事件的
-payload 保持原始 canonical bytes。旧 reader 可以安全保留并忽略的新 EventType 或真正
-optional 的 payload 字段沿用当前 ProtocolVersion；旧 reader 无法保持 Session 核心语义的
-变化提升 ProtocolVersion，并由外部 migration tool 生成当前版本 stream。Catalog 对未知
-EventType 保留 raw payload，projection 按 `RequireComplete` 规则决定是否接受该事件。
-
-## 4. Binding reference declaration
+## 4. Binding reference declaration 与 admission
 
 ```go
 type Cardinality struct { Min uint32; Max *uint32 }
 type BindingReferenceDefinition struct {
-    JSONPointer string // 仅普通 JSON payload 路径
-    RegistryID RegistryID // 仅 custom runtime-registry 路径
+    JSONPointer string   // 普通 JSON payload 路径；与 Parts 二选一
+    Parts bool           // 使用 PartsRegistry 提取（chatlog 的 assistant、tool_result、summary）
     Cardinality Cardinality
     AllowedSchemes []artifact.Scheme
     RequiredDurability artifact.Durability
 }
-type BindingOccurrence struct { BindingID artifact.BindingID; Location string }
-type BindingExtractor interface { BindingIDs(value any) ([]artifact.BindingID, error) }
+type PartsRegistry interface {
+    BindingIDs(value any) ([]artifact.BindingID, error) // appearance order
+}
 ```
 
-**EXT-REF-1** declaration 恰选一种：非空 JSONPointer，或非空 RegistryID。JSONPointer 路径仅在普通 canonical JSON payload 上执行；RegistryID 路径把该 event 的 decoded typed value 交给对应 RuntimeRegistry 的 BindingExtractor。custom registry（包括 `twilight/chatlog/parts`）必须以 `BindingIDs(value)` 返回内部全部引用，不能回退为 JSONPointer 猜测。提取保留 occurrence appearance order，随后 append group 才 sorted-unique。
+**EXT-REF-1** declaration 恰选一种：非空 JSONPointer，或 `Parts=true`。JSONPointer 路径在 canonical JSON payload 上执行；Parts 路径把 decoded typed value 交给 `PartsRegistry`，它必须返回内部全部引用，不能回退为 JSONPointer 猜测。提取保留 appearance order，随后 group 才 sorted-unique。
 
-**EXT-REF-2** Catalog 验证 cardinality、pointer grammar、RegistryID extractor availability 与 scheme/durability declaration。admission 解析每个 Binding，验证 Scheme、最低 durability、resolvability 与 host access policy；任何遗漏或违反均拒绝整个 group。所有 Session event declaration 的最低 durability 至少为 `EventBound`。
+**EXT-REF-2** Registry 构建时验证 cardinality、pointer grammar 与 scheme/durability declaration；所有 declaration 的最低 durability 至少为 `EventBound`。admission 解析每个 Binding，验证 Scheme、最低 durability、resolvability 与 host access policy；任何遗漏或违反均拒绝整个 group，不作任何写入。
 
 ## 5. SemanticAppender
-
-普通 producer 只持有 SemanticAppender；raw `session.Store` 只能注入它或由 trusted adapter/recovery 使用。
 
 ```go
 type TypedEvent struct {
     EventID session.EventID; Type session.EventType
     RecordedAtUnixMilli int64; SourceEvents []session.EventID; Value any
 }
-type SemanticAppendRequest struct {
-    SessionID session.SessionID; ExpectedHead session.Head; CommitID session.CommitID
-    CausationID es.CausationID; CorrelationID string; Events []TypedEvent
+type SemanticGroup struct {
+    CommitID session.CommitID
+    CausationID es.CausationID; CorrelationID string
+    Events []TypedEvent
 }
+type SemanticAppendRequest struct {
+    SessionID session.SessionID; ExpectedHead session.Head
+    Group SemanticGroup
+}
+// SemanticTx 是 session.SessionTx 加 typed decode；所有方法在同一事务内生效。
+type SemanticTx interface {
+    session.SessionTx
+    Decode(session.SessionEvent) (DecodedEvent, error)
+}
+type SemanticCommitFn func(SemanticTx) (*SemanticGroup, error)
+
 type SemanticAppendOutcome string
 const (
     SemanticApplied SemanticAppendOutcome = "applied"
@@ -172,89 +129,54 @@ const (
     SemanticHeadConflict SemanticAppendOutcome = "head_conflict"
     SemanticCommitConflict SemanticAppendOutcome = "commit_conflict"
     SemanticInvalid SemanticAppendOutcome = "invalid"
-    SemanticIndeterminate SemanticAppendOutcome = "indeterminate"
+    SemanticNoop SemanticAppendOutcome = "noop" // fn 返回 nil
 )
 type SemanticAppendResult struct {
-    Outcome SemanticAppendOutcome; Commit *session.SessionCommit
-    BindingSet *artifact.BindingSet; Reconciled bool
+    Outcome SemanticAppendOutcome
+    Commit *session.SessionCommit
+    Claim *artifact.RetentionClaim // group 含 Binding 时非空
 }
 type SemanticAppender interface {
     AppendSemantic(context.Context, SemanticAppendRequest) (SemanticAppendResult, error)
+    AppendSemanticIn(context.Context, session.SessionID, SemanticCommitFn) (SemanticAppendResult, error)
 }
 ```
 
-为闭合进程崩溃后只有 claim、却没有完整 append request 的状态，单次 semantic append 使用下列最小 durable journal；multi-Session package saga 由 Application coordination 负责。
+**EXT-APP-1** group 的 Events 是完整 group，不能为空。Appender 对每个 TypedEvent lookup EventDefinition、Validate、canonical Encode（加入 `v`）、decode round-trip 和 Binding extraction；任一失败不作写入。它将全部 occurrence 组成 sorted-unique union，并通过 `artifact.BindingSetBuilder.Build(ctx, union)` 构造完整 BindingSet，再按 declaration 执行 Scheme、最低 durability 与 host access policy。Appender 必须将 TypedEvent 的 `EventID`、`RecordedAtUnixMilli`、`SourceEvents` 与 canonical Payload、Type 逐字段映射为 `session.UncommittedEvent`，不得生成或替换其中任一值。
 
-```go
-type SemanticAppendIntentState string
-const (
-    IntentPending SemanticAppendIntentState = "pending"
-    IntentCompleted SemanticAppendIntentState = "completed"
-    IntentAborted SemanticAppendIntentState = "aborted"
-)
-type SemanticAppendIntent struct {
-    ClaimID artifact.ClaimID
-    ClaimOwner artifact.ClaimOwner
-    BindingSet artifact.BindingSet
-    Fingerprint es.Digest
-    CanonicalRequest session.AppendRequest
-    State SemanticAppendIntentState
-}
-type SemanticAppendJournal interface {
-    Prepare(context.Context, SemanticAppendIntent) (SemanticAppendIntent, error)
-    Lookup(context.Context, artifact.ClaimID) (SemanticAppendIntent, bool, error)
-    Pending(context.Context, artifact.ClaimCursor) ([]SemanticAppendIntent, *artifact.ClaimCursor, error)
-    MarkTerminal(context.Context, artifact.ClaimID, SemanticAppendIntentState) error
-}
-// Before an Event is visible, this capability atomically persists either the
-// exact full intent and its matching Prepared claim, or the commit and matching
-// Active claim; each outcome leaves a recoverable claim plan.
-type AtomicSemanticCommitter interface {
-    CommitSemanticAtomic(context.Context, SemanticAppendIntent) (session.AppendResult, error)
-}
-```
-
-**EXT-APP-1** request 的 Events 是完整 group，不能为空。Appender 对每个 TypedEvent lookup event definition、validate、canonical encode、decode-round-trip 和 extract；任一失败不作 IO。它将全部 occurrence 组成 sorted-unique union，并通过 `artifact.BindingSetBuilder.Build(ctx, union)` 构造完整 BindingSet；Session Module Framework 只对 Build 已 resolve 的 Binding 按 declaration 执行 Scheme、最低 durability 与 host access policy。Appender 必须将 TypedEvent 的 `EventID`、`RecordedAtUnixMilli`、`SourceEvents` 与 canonical Payload、Type 逐字段映射为 `session.UncommittedEvent`，不得生成或替换其中任一值。`SourceEvents` 仍由 Session 的 bytewise sorted-unique、same-resolved-stream 规则验证。
-
-**EXT-APP-2** 对 nonempty BindingSet，先经 `Store.Header(ctx, SessionID)` 读取并验证该 Session 的 Header，唯一派生为：
+**EXT-APP-2** 对 nonempty BindingSet，以已验证 Header 唯一派生：
 
 ```text
 ClaimID = Digest("twilight/session-extension/claim",
                  claim-profile-version "1",
-                 extension-canonical-string(Header.ProtocolVersion),
+                 canonical-string(Header.ProtocolVersion),
                  SessionID, CommitID, BindingSet.RefSetDigest)
 ClaimOwner = {Kind:"twilight/session/commit",
               Authority:string(SessionID), Identity:string(CommitID)}
 ```
 
-claim profile version 固定为 `1`；整数使用 Session Module canonical string profile（无前导零的十进制），其中 Session `ProtocolVersion` 只能取自已验证 Header。Artifact `WireVersion` 已由 `BindingSet.RefSetDigest` 覆盖，绝不另入 preimage。ClaimID 不含 ExpectedHead。先 Build set，再派生 claim；调用者不得提供或覆盖它们。相同 CommitID retry 的 typed event identity/time/source/payload 或 BindingSet 不同均为 conflict；完全相同 immutable request 的 append fingerprint 稳定。`ExpectedHead` 不入该 fingerprint，且是同一 pending intent 唯一可更新的 CanonicalRequest 字段。retry、recovery 及导入 `twilight/session/commit` active claim 时都必须以该 Header 和同一 preimage 重算并验证 ClaimID。
+ClaimID 不含 ExpectedHead 与时间戳。相同 CommitID 的重试若 typed event identity、source、payload 或 BindingSet 不同为 conflict。
 
-**EXT-APP-3** 没有 Binding 时不创建 BindingSet、intent 或 claim。否则先构造含 ClaimID、ClaimOwner、BindingSet、Fingerprint、完整 CanonicalRequest 和 Pending State 的 intent，且非原子流程严格为 `journal.Prepare → ledger.Prepare → Store.Commit`。journal `Prepare` 对既有同一 ClaimID 的记录，必须逐字段验证 Fingerprint、ClaimOwner、BindingSet 及 CanonicalRequest 的所有 immutable 字段；只有全部相同才幂等，并且仅可更新 Pending intent 的 `CanonicalRequest.ExpectedHead`，其他差异均为 conflict。`ledger.Prepare` 必须使用 intent 内的 ClaimID、ClaimOwner、BindingSet。支持 `AtomicSemanticCommitter` 的 adapter 可跳过单独 choreography，但必须原子持久化同一完整 intent 与匹配 Prepared claim，或直接原子 commit 并建立匹配 Active claim；两种路径均不得在 Event 可见前缺少可恢复 claim plan，并使用等价 terminal handling。
+**EXT-APP-3** 两个入口都在 `Store.CommitIn` 的一个事务内完成，顺序为：
 
 ```text
+AppendSemanticIn(sessionID, fn):
+  Store.CommitIn(sessionID, func(tx):
+    group = fn(SemanticTx{tx})            // nil → Noop，不追加
+    if existing := tx.LookupCommit(group.CommitID): 
+        fingerprint 相同 → AlreadyApplied；ledger.ActivateIn(tx.control, claim) 幂等重放；返回
+        否则 → CommitConflict
+    validate/encode/extract → build BindingSet → admission
+    if BindingSet 非空: ledger.ActivateIn(tx.control["twilight/artifact/claim"], ClaimID, Owner, Set)
+    return AppendRequest{ExpectedHead: tx.Head(), ...})
+
 AppendSemantic(request):
-  validate/encode group → extract → build BindingSet → map canonical AppendRequest
-  derive ClaimID/ClaimOwner and append fingerprint
-  if AtomicSemanticCommitter exists:
-      result = capability.CommitSemanticAtomic(intent)
-  else:
-      journal.Prepare(intent); ledger.Prepare(intent.ClaimID, intent.ClaimOwner, intent.BindingSet)
-      result = Store.Commit(intent.CanonicalRequest)
-  Applied/AlreadyApplied: ledger.Activate(ClaimID); journal.MarkTerminal(Completed)
-  HeadConflict: retain Prepared claim and pending intent; return actual head
-  Invalid/CommitConflict: journal.MarkTerminal(Aborted); ledger.AbortPrepared(ClaimID)
-  unknown result: retain Prepared claim and pending intent; return Indeterminate
+  同上，fn 固定为：tx.Head() == request.ExpectedHead ? request.Group : HeadConflict
 ```
 
-只有 claim 已 Activate，`SemanticApplied` 或 `SemanticAlreadyApplied` 才能返回；Activate 或 terminal marking 的未知/失败必须保留 Prepared/pending state 并返回 `SemanticIndeterminate`。`HeadConflict`、`CommitConflict`、`Invalid` 分别映射为同名 Semantic outcome，后两者仅在 journal 已标记 Aborted 且 AbortPrepared 成功后返回。`HeadConflict` 重试保持相同 CommitID、fingerprint、ClaimID 和所有 event identity/time/source/payload/BindingSet，仅更新 ExpectedHead。`LookupCommit` 找到 canonical commit 时 Activate；返回 NotFound 时保留 Prepared/pending state，留待 retry 或 recovery。明确的 terminal `Invalid` 或 `CommitConflict` 才可先 journal 标记 `Aborted`，再 AbortPrepared。
+claim 在 `Active` 状态写入控制面 KV，与 commit 同一事务；没有 `Prepared` 状态，也没有 journal。事务失败时 commit 与 claim 都不可见；事务成功时两者同时可见。`HeadConflict`、`CommitConflict`、`Invalid` 分别映射为同名 Semantic outcome，且不留下任何写入。claim 的 Release 由 Application 在事件 retention 结束时经 `RetentionLedger.ReleaseActive` 执行，不属于 Appender。
 
-**EXT-APP-4** recovery 扫描 journal Pending 与 ledger PreparedClaims 的并集。
-
-对每个 journal Pending intent，第一步总是以 `intent.ClaimOwner` 和 `intent.BindingSet` 幂等调用 `ledger.Prepare(intent.ClaimID, ...)`，并逐字段验证返回 claim 的 ID、owner、set；只有其 state 为 Prepared 或 Active 且完全匹配，才可 `LookupCommit` 或 retry `Store.Commit(intent.CanonicalRequest)`。
-
-journal 已存在而 claim 尚不存在是正常 crash point：NotFound 只表示该 Prepare 之前尚无 claim，且上述 Prepare 必须重建 Prepared claim。找到且与 intent fingerprint 匹配的 canonical commit 时 Activate 并 MarkTerminal(Completed)；只有 journal 已 durable 标记 Aborted 才可 AbortPrepared。
-
-对 ledger 的每个 Prepared claim，journal 缺失或无法提供同 ID、owner、set 的 intent 时，必须保持 Prepared 并返回 `SemanticIndeterminate`/运维错误，绝不得 Commit 或 Abort。claim/journal 不匹配、非 Prepared/Active state、LookupCommit NotFound、unknown 或查询失败时，同样保留可恢复 state 并返回 indeterminate。journal 的 durable `Aborted` 标记授权 `AbortPrepared`。因此每个 crash point 都保有可恢复状态，直到完整 request 的 terminal 状态得到 durable confirmation。
+**EXT-APP-4** 崩溃恢复不需要扫描：没有 in-flight 状态。Appender 调用返回未知结果时，调用方以同一 CommitID 重试，得到 `AlreadyApplied` 或首次 `Applied`。
 
 ## 6. pure projection 与 snapshot
 
@@ -267,8 +189,7 @@ type ProjectionDefinition struct {
     StateCodec PayloadCodec
 }
 type ProjectionRunRequest struct {
-    Catalog *Catalog
-    ProtocolVersion uint16
+    Registry *Registry
     Definition ProjectionDefinition
     Events []session.SessionEvent
     InitialState any
@@ -277,17 +198,11 @@ type ProjectionRunResult struct { State any; Applied uint64; Ignored uint64 }
 type ProjectionRunner interface { Run(ProjectionRunRequest) (ProjectionRunResult, error) }
 ```
 
-**EXT-PRJ-1** Initial、Apply、StateCodec 和 runner decode 都必须 pure。runner 要求
-`Catalog` 非 nil、`Catalog.ProtocolVersion == ProtocolVersion`，并只接受已验证的 complete
-commit sequence；一个 commit 内任一 event 失败，不得发布该 commit 的 partial state。
+**EXT-PRJ-1** Initial、Apply、StateCodec 和 runner decode 都必须 pure。runner 只接受已验证的 complete commit sequence；一个 commit 内任一 event 失败，不得发布该 commit 的 partial state。
 
-**EXT-PRJ-2** `Catalog` 为每个 EventType 提供唯一 `(Source, ModuleID)` 与 EventDefinition；
-`ModuleForEvent` 按 EventType 的 `<SourceID>/<ModuleID>/` 前缀识别 owner，因此 required module 的未知事件可以被
-发现。`Consumes` 表示必须 decode/handle 的 EventType，`Ignores` 是显式已知跳过，二者不得重叠。
-出现属于 `RequireComplete` module 的 unknown 或未分类 event 必须失败；其他 module event
-可忽略。
+**EXT-PRJ-2** `Consumes` 表示必须 decode/handle 的 EventType，`Ignores` 是显式已知跳过，二者不得重叠。出现属于 `RequireComplete` module 的 Unknown event 必须失败；其他 module 的 event 可忽略。读取时以 `Consumes` 与 `RequireComplete` module 的前缀作为 `Types` 过滤（SES-REP-2、SessionTx.Tail），使读取代价与 projection 消费的事件数成正比。
 
-**EXT-PRJ-3** snapshot 使用 Session snapshot envelope。只有 ProjectionID、ProjectionVersion、StateCodec canonical validation 和 Session coverage 都匹配时可复用；否则从 log 重建。
+**EXT-PRJ-3** snapshot 使用 Session snapshot envelope。只有 ProjectionID、ProjectionVersion、StateCodec canonical validation 和 `Through` 前缀校验都通过时可复用；否则从 log 重建。写入策略由 projection 自定，可以在 `SemanticTx.SaveSnapshot` 中与 commit 同事务写入，也可以异步写入。
 
 ## 7. errors 与 conformance
 
@@ -298,16 +213,34 @@ const (
     ErrCodec ErrorCode = "codec"; ErrBinding ErrorCode = "binding"
     ErrConflict ErrorCode = "conflict"
     ErrUnsupportedProfile ErrorCode = "unsupported_profile"
-    ErrIndeterminate ErrorCode = "indeterminate"
 )
 type Error struct { Code ErrorCode; Type session.EventType; Detail string }
 func (Error) Error() string
 ```
 
-Conformance 必须验证：
+v1 conformance 必须验证：
 
-- **EXT-CAT-1、EXT-CAT-2、EXT-CAT-3**：static immutable Catalog、Profile/ProtocolVersion binding、所有 ownership/protocol conflict、拒绝低于 EventBound 的 Session declaration、optional BindingExtractor availability/typed-nil rejection；
-- **EXT-COD-1、EXT-COD-2、EXT-COD-3**：wire-first、安全 codec、ProtocolVersion 匹配、兼容性分类与 canonical round-trip；
-- **EXT-REF-1、EXT-REF-2**：pointer/custom registry 全量提取、cardinality、extractor requirement、scheme/durability admission；
-- **EXT-APP-1、EXT-APP-2、EXT-APP-3、EXT-APP-4**：TypedEvent→UncommittedEvent 全字段映射、由 Header ProtocolVersion/claim profile v1/RefSetDigest 派生的 stable ClaimID、完整 intent 的逐字段 journal idempotency（仅 ExpectedHead 可更新）、durable intent-before-claim、claim-before-commit、journal-only claim rebuild、claim-only journal-missing indeterminate、terminal abort evidence、active-claim import revalidation、atomic capability 等价性与 crash recovery；
-- **EXT-PRJ-1、EXT-PRJ-2、EXT-PRJ-3**：pure fold、commit boundary、Consumes/Ignores/RequireComplete 和 snapshot equivalence。
+- **EXT-REG-1、EXT-REG-2、EXT-REG-3**：immutable Registry、Profile/ProtocolVersion binding、`v` 字段的写入与选择、多版本 codec 共存、Unknown 事件保留 raw payload；
+- **EXT-COD-1、EXT-COD-2**：wire-first、安全 codec、canonical round-trip、`v` 保留字段；
+- **EXT-REF-1、EXT-REF-2**：pointer 与 Parts 全量提取、cardinality、scheme/durability admission、拒绝时无写入；
+- **EXT-APP-1 至 EXT-APP-4**：TypedEvent→UncommittedEvent 全字段映射、由 Header ProtocolVersion 与 RefSetDigest 派生的 stable ClaimID、claim 与 commit 同事务（崩溃点注入后两者同时存在或同时缺失）、AlreadyApplied 的 claim 幂等、两个入口产生等价 commit、Noop 不追加；
+- **EXT-PRJ-1、EXT-PRJ-2、EXT-PRJ-3**：pure fold、commit boundary、Consumes/Ignores/RequireComplete、Types 过滤读取与全量读取等价、snapshot equivalence。
+
+## 附录 B：Application module 与通用 Catalog（不进入 v1）
+
+Application 注册自己的 `SourceID`（例如 `acme`）与 Module 时，EventType 为 `<SourceID>/<ModuleID>/<local-name>`；`BuildCatalog(CatalogBuildRequest)` 在启动时把多个 Source 的 ModuleDescriptor、RuntimeRegistry 与 artifact SchemeDefinition 组合为只读索引，拒绝 duplicate owner、namespace mismatch、registry requirement mismatch、非法 Binding declaration 与低于 `EventBound` 的 declaration。`RuntimeRegistry` 以 `CodecRegistryDescriptor{ID, WireManifest, WireProfile}` 描述自定义 codec 与 `BindingExtractor`，Catalog 逐字段匹配 requirement 与 descriptor。v1 的 `PartsRegistry` 是这一机制的唯一实例，直接作为 `FirstPartyRegistry` 的参数注入。
+
+## 附录 C：两阶段 semantic append（不进入 v1）
+
+当 Session Store、RetentionLedger 或 BindingStore 不在同一事务域（远程 Store、跨数据库）时，claim 与 commit 无法同事务写入，需要 `Prepared` claim 状态与 durable `SemanticAppendJournal`：
+
+```text
+journal.Prepare(intent{ClaimID, Owner, BindingSet, Fingerprint, CanonicalRequest, Pending})
+→ ledger.Prepare(ClaimID, Owner, Set)      // Prepared claim 为 in-flight 写入提供 GC 保护
+→ Store.Commit(CanonicalRequest)
+Applied/AlreadyApplied → ledger.Activate；journal.MarkTerminal(Completed)
+Invalid/CommitConflict → journal.MarkTerminal(Aborted)；ledger.AbortPrepared
+未知结果 → 保留 Prepared 与 Pending，返回 Indeterminate
+```
+
+恢复扫描 journal Pending 与 ledger Prepared 的并集：先以 intent 幂等重建 Prepared claim，再 `LookupCommit` 决定 Activate 或重试；只有 journal 的 durable `Aborted` 标记授权 `AbortPrepared`；claim 存在而 intent 缺失时保持 Prepared 并报告 indeterminate。支持 `AtomicSemanticCommitter` 的 adapter 可以跳过 choreography，但必须原子持久化同一完整 intent 与匹配 claim。这些规则对应 artifact 附录中的 `Prepared` 状态与 reconciler。

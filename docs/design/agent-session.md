@@ -1,64 +1,62 @@
 # Twilight Agent Session Protocol
 
-状态：设计草案。无实现；wire、digest preimage 与 conformance 在 Memory reference implementation 与 Input → Turn → Run → Session 纵向切片跑通前不冻结。
+状态：设计草案。无实现；wire、digest preimage 与 conformance 在 Memory reference implementation 与 Input → Turn → Run → Session 纵向切片跑通前不冻结。2026-09-04 第二次修订：v1 范围收缩为单 stream kernel；Fork、ancestry、canonical import 移入附录 A，不进入 v1 conformance。
 
-本文定义 Twilight Session 的 Event Sourcing kernel。文中的“必须”“不得”“应该”是协议约束。
-
-本文规定 Twilight 的 Session stream、并发、Fork ancestry 与 integrity 语义；冻结发生在草案转为规范时。
+本文定义 Twilight Session 的 Event Sourcing kernel。文中的"必须""不得""应该"是协议约束。
 
 ## 1. Events 与范围
 
 ```text
-Events = resolved committed SessionEvent stream
+Events = committed SessionEvent stream
 State  = Fold(Events)
 
 Persistent representation
   = immutable SessionHeader
   + ordered atomic SessionCommit records containing ordered SessionEvents
+  + control-plane KV（同事务写入，不进入 stream，不参与 digest chain）
 ```
 
-Committed Events 构成 Session 的长期语义事实。进入 Fold 前，Session kernel 必须验证：
-
-- Event 位于完整的 SessionCommit 中；
-- Header、commit boundary、CAS 与 digest chain 有效；
-- Fork events 已按 root 到 target 解析为确定序列。
-
-Header 与 Commit 是 Events 的 canonical persistent representation，提供原子提交、完整性验证与 fork/replay framing。职责边界为：
+Committed Events 构成 Session 的长期语义事实。进入 Fold 前，Session kernel 必须验证 Event 位于完整的 SessionCommit 中，且 Header、commit boundary、head 与 digest chain 有效。
 
 ```text
-Session kernel  envelope、顺序、CAS、fork、snapshot、canonical import、integrity
-Session modules  event ontology、typed codec、payload validation、projection
+Session kernel   envelope、顺序、commit、临界区、snapshot、控制面 KV、integrity
+Session modules  event ontology、typed codec、payload 版本、payload validation、projection
 ```
 
-Payload 对 Session kernel 是 opaque canonical JSON。缓存和 snapshot 是可重建派生数据。
+Payload 对 Session kernel 是 opaque canonical JSON。snapshot 与控制面 KV 都不是语义事实：snapshot 是可重建的派生数据；控制面 KV 保存 lease、claim 等运行控制信息，由模块解释，kernel 只保证它与同一 commit 原子写入。
 
-`ProtocolVersion` 是 Session Event Sourcing 的唯一持久化版本，统一约束 header、event payload、commit、fork、digest profile 与 codec。ProjectionVersion 只描述派生快照的 state codec。
+**SES-SCP-1** kernel 不依赖领域 payload，也不对其执行 schema validation 或解释。replay 的唯一顺序是 `(revision, index)`；时钟只作 metadata。
 
-**SES-SCP-1** kernel 不依赖领域 payload，也不对其执行 schema validation 或解释。resolved replay 的唯一顺序是 root-to-target ancestry segment order，再在每个 segment 内按 `(revision, index)`；`EventPosition` 只标识 event/cursor，不定义跨 segment 的排序；时钟只作 metadata。
+**SES-SCP-2** v1 的范围是一条 stream 的 kernel：header、commit、两种 append 入口、local replay、snapshot、控制面 KV。Fork、ancestry archive、canonical import 与 resolved replay 见附录 A，v1 实现返回 `ErrUnsupported`，conformance 不覆盖。header 与 digest preimage 为它们保留字段位置，日后加入不升 ProtocolVersion。
 
-## 2. wire types 与 profile
+## 2. 版本
+
+`ProtocolVersion` 只覆盖 kernel wire：header、event envelope、commit、snapshot envelope、digest profile 与 codec 的 canonicalization 规则。它不覆盖 payload。
+
+**SES-VER-1** payload 的版本由模块负责：每个 payload object 的第一层携带整数字段 `v`，模块按 `(EventType, v)` 选择 codec（EXT-REG-2）。同一 stream 内不同 event 可以携带不同的 `v`；kernel 不读取该字段。
+
+**SES-VER-2** `ProtocolVersion` 在旧 kernel reader 读取新 writer 产生的 stream 后无法保持 envelope、commit 顺序或 digest chain 语义时递增。payload 字段、EventType 与模块 codec 的变化不触发 kernel 版本变化。kernel 版本变化由外部 migration tool 生成新版本 stream。
+
+第一版运行实例绑定一个 `ProtocolProfile`，其 `Version()` 是实例接受的 `ProtocolVersion`。读取 Header、Commit 或 snapshot 时先校验 `ProtocolVersion` 与绑定 profile 相等，不匹配返回 `ErrUnsupportedProfile`。
+
+## 3. wire types 与 profile
 
 ```go
 type SessionID string
 type CommitID string
 type EventID string
 type EventType string
-type ForkID string
 type ProjectionKey string
 type CursorToken string
+type ControlNamespace string
 
 type SessionHeader struct {
     ProtocolVersion uint16
     SessionID SessionID
-    ParentFork *ForkPoint
+    ParentFork *ForkPoint // v1 必须为 nil；见附录 A
     CausationID es.CausationID
     Metadata jsonstable.Value
     HeaderDigest es.Digest
-}
-type ForkPoint struct {
-    ParentSessionID SessionID
-    Revision es.Revision
-    HeadDigest es.Digest
 }
 type SessionEvent struct {
     EventID EventID
@@ -88,11 +86,12 @@ type SessionCommit struct {
     CommitDigest es.Digest
 }
 type Head struct { Revision es.Revision; Digest es.Digest }
+type EventPosition struct { Revision es.Revision; Index uint16; EventDigest es.Digest }
 ```
 
-**SES-WIR-1** identity 非空且稳定；EventID 在 resolved ancestry 内唯一。header 不可变，revision 从 1 连续递增，commit 至少有一个 event，event Index 从 0 连续递增。revision 1 的 `PreviousDigest=HeaderDigest`，其后为前一 CommitDigest。
+**SES-WIR-1** identity 非空且稳定；EventID 在同一 stream 内唯一。header 不可变，revision 从 1 连续递增，commit 至少有一个 event，event Index 从 0 连续递增。revision 1 的 `PreviousDigest=HeaderDigest`，其后为前一 CommitDigest。空 stream head 是 `{0, HeaderDigest}`。
 
-**SES-WIR-2** `ProtocolProfile` 冻结整个 Event Sourcing wire：envelope、event payload、commit、fork、null/omission、精确 integer encoding、unknown-field policy、array order 与下列 digest preimage；所有 digest 依 `agent/es` 的 versioned domain separator。
+**SES-WIR-2** `ProtocolProfile` 冻结 kernel wire：envelope、commit、snapshot envelope、null/omission、精确 integer encoding、unknown-field policy、array order 与下列 digest preimage；所有 digest 依 `agent/es` 的 versioned domain separator。
 
 ```go
 type ProtocolProfile interface {
@@ -105,42 +104,19 @@ type ProtocolProfile interface {
     DecodeCommit(jsonstable.Value) (SessionCommit, error)
     EncodeSnapshot(Snapshot) (jsonstable.Value, error)
     DecodeSnapshot(jsonstable.Value) (Snapshot, error)
-    EncodeAncestryArchive(ImmutableAncestryArchive) (jsonstable.Value, error)
-    DecodeAncestryArchive(jsonstable.Value) (ImmutableAncestryArchive, error)
     ValidateCanonicalHeader(jsonstable.Value) (SessionHeader, error)
     ValidateCanonicalEvent(SessionID, es.Revision, jsonstable.Value) (SessionEvent, error)
     ValidateCanonicalCommit(jsonstable.Value) (SessionCommit, error)
     ValidateCanonicalSnapshot(jsonstable.Value) (Snapshot, error)
-    ValidateCanonicalAncestryArchive(jsonstable.Value) (ImmutableAncestryArchive, error)
     FingerprintAppend(AppendRequest) (es.Digest, error)
 }
 ```
 
-第一版运行实例绑定一个 `ProtocolProfile`。该 profile 的 `Version()` 是实例接受的
-`ProtocolVersion`；`Create`、`Commit`、`Replay`、`Fork`、snapshot 与 canonical import
-都使用同一 profile。读取 Session Header、Commit、snapshot 或 ancestry archive 时，
-实例先校验其中的 `ProtocolVersion` 与绑定 profile 相等，再执行对应的 decode、digest
-和 replay。版本不匹配返回 `ErrUnsupportedProfile`。
+**SES-WIR-3** 同一个 Session 的 `SessionHeader.ProtocolVersion`、所有 `SessionCommit.ProtocolVersion`、`Snapshot.ProtocolVersion` 与所选 `ProtocolProfile.Version()` 必须相等。Store 从已验证 Header 派生后续操作使用的版本，调用方提交的版本字段只能通过一致性校验。
 
-第一版支持当前协议版本。历史 Session 由外部 migration tool 使用旧 profile 读取并
-写出完整的当前版本 stream；原始 stream 可以作为 archive 保留。迁移产物再通过
-`ImportCanonical` 导入当前实例。Session kernel 的版本选择来自运行实例配置与已验证
-Header 的匹配关系。
+Header、event、commit 分别覆盖自身以外的全部持久字段。event digest 额外覆盖 SessionID、revision 和 index。每个 `ValidateCanonical*` 必须执行 decode → encode 并要求 canonical-equivalent wire，同时验证对应 digest。`SourceEvents` 是 bytewise sorted-unique set，且只可引用同一 stream 内已存在的 EventID。opaque Payload 必须已经 canonical，完整 value 进入 event digest 和 append fingerprint。
 
-**SES-WIR-3** 同一个 Session 的 `SessionHeader.ProtocolVersion`、所有
-`SessionCommit.ProtocolVersion`、`Snapshot.ProtocolVersion`、
-`ImmutableAncestryArchive.ProtocolVersion` 与所选 `ProtocolProfile.Version()` 必须相等。
-Store 从已验证 Header 派生后续操作使用的版本，调用方提交的版本字段只能通过一致性校验。
-
-**SES-WIR-4** `ProtocolVersion` 在旧版本 reader 读取新 writer 产生的 log 后无法保持正确
-语义时递增。正确语义包括 canonical validation、commit/fork/replay 顺序、历史与 context
-重建、recovery 判断以及 digest chain 验证。旧 reader 可以安全保留并忽略的新 EventType
-或真正 optional 的 payload 字段保持当前版本；影响上述语义的 event、字段、envelope 或
-commit 规则变化进入新版本，并由外部 migration tool 生成当前版本 stream。
-
-Header、event、commit 分别覆盖自身以外的全部持久字段。event digest 额外覆盖 origin SessionID、revision 和 index。每个 `ValidateCanonical*` 必须执行 decode → encode 并要求 canonical-equivalent wire，同时验证对应 digest；它是 adapter/import 的唯一 canonical round-trip validation 入口。`SourceEvents` 是 bytewise sorted-unique set，且只可引用同一 resolved Session stream 内已存在的 EventID；跨 stream provenance 必须编码在 payload 的 owner-defined `SourceRef` 中。opaque Payload 必须已经 canonical，完整 value 进入 event digest 和 append fingerprint。空 stream head 是 `{0, HeaderDigest}`。
-
-## 3. Store API 与 errors
+## 4. Store API 与 errors
 
 ```go
 type CreateRequest struct {
@@ -160,28 +136,35 @@ const (
 )
 type AppendResult struct { Disposition AppendDisposition; Commit *SessionCommit; ActualHead Head }
 
-type ReplayMode string
-const ( ReplayLocal ReplayMode = "local"; ReplayResolved ReplayMode = "resolved" )
-// EventPosition is a verified event identity and is safe to expose in APIs.
-type EventPosition struct { OriginSessionID SessionID; Revision es.Revision; Index uint16; EventDigest es.Digest }
-type ReplayCursor struct { Mode ReplayMode; AncestryDigest es.Digest; After *EventPosition; Token CursorToken }
-type ReplayRequest struct { SessionID SessionID; Mode ReplayMode; Cursor *ReplayCursor; Limit uint32 }
-type ReplayPage struct { Header SessionHeader; Commits []SessionCommit; Next *ReplayCursor; Head ResolvedHead }
-
-type ForkRequest struct {
-    ForkID ForkID; ChildSessionID SessionID; ParentSessionID SessionID
-    ExpectedParentBoundary ForkPoint; CausationID es.CausationID; Metadata jsonstable.Value
+// 临界区内的读写视图。所有方法在同一事务内生效。
+type SessionTx interface {
+    Head() Head
+    LookupCommit(CommitID) (SessionCommit, bool, error)
+    // Tail 返回 after 之后的 local commits；types 非空时只返回含至少一个匹配 EventType 前缀的完整 commit。
+    Tail(after Head, types []EventType) ([]SessionCommit, error)
+    LoadSnapshot(ProjectionKey, ProjectionVersion uint16) (SnapshotResult, error)
+    SaveSnapshot(Snapshot) error
+    ControlGet(ControlNamespace, key string) ([]byte, bool, error)
+    ControlPut(ControlNamespace, key string, value []byte) error
+    ControlDelete(ControlNamespace, key string) error
 }
-type ForkResult struct { Header SessionHeader; Created bool }
+type CommitInFn func(SessionTx) (*AppendRequest, error)
 
-type CanonicalImportRequest struct { Header SessionHeader; Commits []SessionCommit; AncestryArchive *ImmutableAncestryArchive }
-type CanonicalImportResult struct { Header SessionHeader; Imported uint64; Head Head; AlreadyPresent bool }
-type ImmutableAncestryArchive struct { ProtocolVersion uint16; Headers []SessionHeader; Commits []SessionCommit; ArchiveDigest es.Digest }
+type ReplayCursor struct { After *EventPosition; Token CursorToken }
+type ReplayRequest struct {
+    SessionID SessionID
+    Types []EventType // 空为全部；非空为 EventType 前缀过滤
+    Cursor *ReplayCursor
+    Limit uint32
+}
+type ReplayPage struct { Header SessionHeader; Commits []SessionCommit; Next *ReplayCursor; Head Head }
 
-type SnapshotRequest struct { SessionID SessionID; ProjectionKey ProjectionKey; ProjectionVersion uint16; AtOrBefore ResolvedHead }
-type SnapshotResult struct { Snapshot *Snapshot; Found bool; Covers bool }
+type SnapshotRequest struct { SessionID SessionID; ProjectionKey ProjectionKey; ProjectionVersion uint16 }
+type SnapshotResult struct { Snapshot *Snapshot; Found bool }
 type SaveSnapshotRequest struct { Snapshot Snapshot }
 type SaveSnapshotResult struct { Snapshot Snapshot; Replaced bool }
+
+type ControlEntry struct { SessionID SessionID; Namespace ControlNamespace; Key string; Value []byte }
 
 type Store interface {
     Create(context.Context, CreateRequest) (SessionHeader, error)
@@ -191,10 +174,13 @@ type Store interface {
     Commit(context.Context, AppendRequest) (AppendResult, error)
     CommitIn(context.Context, SessionID, CommitInFn) (AppendResult, error)
     Replay(context.Context, ReplayRequest) (ReplayPage, error)
-    Fork(context.Context, ForkRequest) (ForkResult, error)
-    ImportCanonical(context.Context, CanonicalImportRequest) (CanonicalImportResult, error)
     LoadSnapshot(context.Context, SnapshotRequest) (SnapshotResult, error)
     SaveSnapshot(context.Context, SaveSnapshotRequest) (SaveSnapshotResult, error)
+    // 控制面 KV，临界区之外的读写；与 SessionTx 内的同名方法作用于同一存储。
+    ControlGet(context.Context, SessionID, ControlNamespace, key string) ([]byte, bool, error)
+    ControlPut(context.Context, SessionID, ControlNamespace, key string, value []byte) error
+    ControlDelete(context.Context, SessionID, ControlNamespace, key string) error
+    ControlScan(context.Context, ControlNamespace, keyPrefix string, fn func(ControlEntry) (bool, error)) error // 跨全部 Session
 }
 ```
 
@@ -203,30 +189,24 @@ type ErrorCode string
 const (
     ErrInvalid ErrorCode = "invalid"; ErrNotFound ErrorCode = "not_found"
     ErrConflict ErrorCode = "conflict"; ErrCorrupt ErrorCode = "corrupt"
-    ErrUnsupportedProfile ErrorCode = "unsupported_profile"; ErrUnavailable ErrorCode = "unavailable"
+    ErrUnsupportedProfile ErrorCode = "unsupported_profile"; ErrUnsupported ErrorCode = "unsupported"
+    ErrUnavailable ErrorCode = "unavailable"
 )
 type Error struct { Code ErrorCode; Operation string; SessionID SessionID; CommitID CommitID; Detail string }
 func (Error) Error() string
 ```
 
-**SES-API-1** Store.Commit 与 Store.CommitIn 是仅有的两个 append Store protocol port。它们必须原子持久化完整 commit 与 head；普通 producer 的 capability exposure 由 Session Module Framework 提供。`ImportCanonical` 只给 trusted adapter、recovery/import coordinator 或 test。
+**SES-API-1** `Commit` 与 `CommitIn` 是仅有的两个 append port。它们必须原子持久化完整 commit、新 head，以及同一调用内的 snapshot 与控制面 KV 写入。普通 producer 的 capability exposure 由 Session Module Framework 提供（EXT-APP）。
 
-```go
-type SessionTx interface {
-    Head() Head
-    LookupCommit(CommitID) (SessionCommit, bool, error)
-    LoadSnapshot(ProjectionKey, ProjectionVersion) (SnapshotResult, error)
-    Tail(after Head) ([]SessionCommit, error) // 该 Session 自 after 之后的 local commits
-    SaveSnapshot(Snapshot) error               // 与本次 append 同一事务写入
-}
-type CommitInFn func(SessionTx) (*AppendRequest, error)
-```
+**SES-API-2** `CommitIn` 是同一 Session 的 append 临界区：Store 在 per-Session 锁或数据库事务内向 fn 提供 `SessionTx`，fn 在其中读 head、按 CommitID 查 commit、读 snapshot 与 tail、读写控制面 KV、决定要追加的事件；返回的 `AppendRequest` 由 Store 在同一事务内按第 5 节规则追加。fn 返回 nil 表示不追加，此时 fn 已执行的 snapshot 与 KV 写入仍提交。section 内 head 不移动，`ExpectedHead` 与 head 不一致只可能是 fn 的实现错误，返回 `Invalid`。fn 必须纯且除 SessionTx 外无副作用；Store 不保证 fn 只被调用一次。
 
-**SES-API-2** `Store.CommitIn(ctx, SessionID, fn CommitInFn)` 是同一 Session 的 append 临界区：Store 在 per-Session 锁或数据库事务内向 fn 提供 `SessionTx`，fn 在其中读 head、按 CommitID 查 commit、读 projection snapshot 与 tail、决定要追加的 event group；返回的 `AppendRequest` 由 Store 在同一事务内按 SES-APP 规则追加。fn 返回 nil 表示不追加。section 内 head 不移动，因此 `ExpectedHead` 与 head 不一致只可能是 fn 的实现错误，返回 `Invalid`。`CommitIn` 与 `Commit` 产生的 commit 逐字段等价，同一 CommitID 的幂等与 conflict 判定相同。两者都是 adapter 必须实现的 protocol port：`Commit`（CAS）一次请求完成比对与写入，适用于 Store 实现为远程客户端、不能在持锁期间回调调用方的部署；`CommitIn` 适用于需要在写入前基于当前状态做决定的模块（例如 Run 的 Decide）。进程内 adapter 可以用 `CommitIn` 加 head 比对函数实现 `Commit`，但 `Commit` 不因此从合同中移除。fn 必须纯且无 IO 之外的副作用；Store 不保证 fn 只被调用一次。
+`CommitIn` 与 `Commit` 产生的 commit 逐字段等价，同一 CommitID 的幂等与 conflict 判定相同。两者都是 adapter 必须实现的 port：`Commit`（CAS）一次请求完成比对与写入，适用于 Store 实现为远程客户端、不能在持锁期间回调调用方的部署；`CommitIn` 适用于需要在写入前基于当前状态做决定的模块（例如 Run 的 Decide），以及需要把 claim、lease 与 commit 放在同一事务的 producer。进程内 adapter 可以用 `CommitIn` 加 head 比对函数实现 `Commit`，但 `Commit` 不因此从合同中移除。
 
-## 4. append 与 idempotency
+**SES-API-3** 控制面 KV 以 `(SessionID, Namespace, Key)` 寻址，值为 opaque bytes，kernel 不解释。它用于 lease、grant、claim 等需要与 commit 原子写入、但不属于语义事实的信息。`ControlScan` 按 namespace 与 key 前缀跨 Session 枚举，供恢复扫描使用；fn 返回 false 停止。Namespace 由模块以 `<SourceID>/<ModuleID>/<name>` 命名。KV 不进入 digest chain，可以独立于 stream 重建或清理；模块必须保证 KV 缺失只导致恢复延迟，不导致语义错误。
 
-**SES-APP-1** CommitID 的幂等键为 `(SessionID, CommitID)`。append fingerprint 覆盖 SessionID、CommitID、causation、correlation 和完整有序 UncommittedEvent group，**不**覆盖 ExpectedHead。
+## 5. append 与 idempotency
+
+**SES-APP-1** CommitID 的幂等键为 `(SessionID, CommitID)`。append fingerprint 覆盖 SessionID、CommitID、causation、correlation 和有序 UncommittedEvent group 的 `EventID`、`Type`、`SourceEvents`、`Payload`；**不**覆盖 ExpectedHead，也**不**覆盖 `RecordedAtUnixMilli`。时间是 metadata，重试可以携带新的时间戳而得到 `AlreadyApplied`，已提交 commit 中的时间保持首次写入值。
 
 ```text
 append(request):
@@ -235,38 +215,19 @@ append(request):
       return CommitConflict
   validate profile, identities, payloads and ExpectedHead
   assign next revision and contiguous indexes; calculate event/commit digests
-  atomically write complete commit and new head
+  atomically write complete commit, new head, and pending snapshot / KV writes
   return Applied(commit)
 ```
 
-**SES-APP-2** CAS 不匹配返回 `HeadConflict` 和 actual head，不得 last-write-wins。任何 invalid envelope、重复 EventID、非 canonical payload 或 digest-chain violation 返回 `Invalid` 或 `Corrupt`；不得部分写入。Store 至少拒绝 resolved ancestry 内的 EventID duplicate。
+**SES-APP-2** CAS 不匹配返回 `HeadConflict` 和 actual head，不得 last-write-wins。任何 invalid envelope、重复 EventID、非 canonical payload 或 digest-chain violation 返回 `Invalid` 或 `Corrupt`；不得部分写入。Store 必须拒绝同一 stream 内的 EventID duplicate。
 
-## 5. replay
+## 6. replay
 
-```go
-type ResolvedHead struct { SessionID SessionID; LocalHead Head; AncestryDigest es.Digest }
-type RetainClosure struct { Headers []es.Digest; Boundaries []ForkPoint; Commits []es.Digest }
-```
+**SES-REP-1** Replay 只返回请求 `SessionID` 自己的 commits，按 `(Revision, Index)` 递增，page 只返回完整 commit。`After=nil` 表示起点，非 nil `After` 表示该精确 digest 的最后已返回 event，续页严格从它之后开始。
 
-**SES-REP-1** Local replay 只返回请求 `SessionID` 自己的 commits；其每个 `EventPosition.OriginSessionID` 必须等于该 SessionID，并按 `(Revision, Index)` 递增。Resolved replay 从 root 的可见 prefix 到 target 的 local commits，严格按 root-to-target ancestry segment order，再按每个 segment local `(Revision, Index)` 返回；每个 event 保留其实际 origin position。`EventPosition` 是 verified identity/cursor，不能替代该 segment order。两种模式的 page 都只返回完整 commit；`After=nil` 表示起点，非 nil `After` 表示该精确 digest 的最后已返回 event，续页严格从它之后开始。
+**SES-REP-2** `Types` 非空时返回至少含一个匹配 EventType 前缀的完整 commit，跳过其他 commit。过滤 replay 可以验证每个返回 commit 自身的 event digest 与 commit digest，不能验证 revision 连续性与 `PreviousDigest` 链；链完整性只由无过滤 replay 验证。adapter 应维护 `(SessionID, EventType 前缀)` 到 revision 的索引，使过滤 replay 的代价与匹配 commit 数成正比。
 
-**SES-REP-2** `AncestryDigest` 的 preimage 是 profile、target SessionID、root 到 target 的有序 HeaderDigest、每条完整 ForkPoint、每级可见 CommitDigest 和 target local Head；不含 cursor、snapshot、load time 或 projection state。Local 与 Resolved cursor 都绑定同一 target 的该 digest：Local 虽不返回 ancestor event，仍以它验证 fork closure；Resolved 则以它确定可见 ancestry。cursor 必须携带并在续页验证它，变更则 conflict。
-
-**SES-REP-3** replay 必须验证 header、revision gap、previous/commit/event digest、index 和 profile。损坏、缺口或不支持版本必须 fail loudly。cursor 的 `After` 必须是当前 mode/ancestry 中存在且 digest 匹配的完整 `EventPosition`；Local mode 还必须满足其 origin 为请求 Session。Token 是 adapter 的 opaque continuation，必须绑定 `SessionID`、Mode、AncestryDigest、完整 After 和 Limit，且不得替代这些可验证字段。
-
-## 6. fork
-
-**SES-FRK-1** Fork 创建 immutable child header，ParentFork 精确绑定 parent 已验证 boundary；revision 0 的 boundary digest 为 parent HeaderDigest。child local revision 从 1 开始。
-
-| 请求情况 | 结果 |
-|---|---|
-| 新 ForkID、未使用 ChildSessionID、boundary 已验证 | 创建 child |
-| 同 ForkID、逐字段相同 request | 返回原 child，`Created=false` |
-| 同 ForkID、请求不同 | conflict |
-| ChildSessionID 已被另一 ForkID 使用 | conflict |
-| parent/boundary 不存在、不匹配或损坏 | conflict/corrupt |
-
-**SES-FRK-2** 保留 child 时必须保留 `RetainClosure`：所有 ancestor header 与每个 fork boundary 内 commit。实现可留存 ancestor prefix，或保存经验证 immutable ancestry archive；删除、归档或 compact parent 前必须证明 child 仍可 resolved replay。
+**SES-REP-3** 无过滤 replay 必须验证 header、revision gap、previous/commit/event digest、index 和 profile。损坏、缺口或不支持版本必须 fail loudly。cursor 的 `After` 必须是当前请求中存在且 digest 匹配的完整 `EventPosition`。Token 是 adapter 的 opaque continuation，必须绑定 `SessionID`、Types、完整 After 和 Limit，且不得替代这些可验证字段。
 
 ## 7. snapshot
 
@@ -274,48 +235,40 @@ type RetainClosure struct { Headers []es.Digest; Boundaries []ForkPoint; Commits
 type Snapshot struct {
     ProtocolVersion uint16; SessionID SessionID
     ProjectionKey ProjectionKey; ProjectionVersion uint16
-    ThroughHead ResolvedHead; CoverageDigest es.Digest
+    Through Head
     State jsonstable.Value; SnapshotDigest es.Digest
 }
 ```
 
-**SES-SNP-1** snapshot 是派生 cache。CoverageDigest 覆盖 `ThroughHead` 所解析的 root-to-target HeaderDigest/CommitDigest sequence；SnapshotDigest 覆盖全部 snapshot field（自身除外）。同 local head 而 ancestry 不同绝不等价。
+**SES-SNP-1** snapshot 是派生 cache，任何时刻可以删除并从 stream 重建。`Through` 是该 snapshot 覆盖到的 head；因为 commit 经 `PreviousDigest` 链式覆盖全部前缀，`Through.Digest` 就是 coverage 的证明，不另设 coverage digest。SnapshotDigest 覆盖全部 snapshot field（自身除外）。
 
-**SES-SNP-2** Save 和 Load 必须重算 ThroughHead、AncestryDigest、coverage 和 snapshot digest。coverage 是当前 sequence 的完整前缀时才可从 snapshot tail replay；缺失、过旧、损坏或 projection 不兼容时全量 replay。
+**SES-SNP-2** Load 时 `Through` 必须是当前 stream 的前缀（该 revision 的 CommitDigest 等于 `Through.Digest`），否则视为缺失并全量重折。写入频率由 projection 自己的策略决定；kernel 不要求每次 commit 都写 snapshot。同一 `(SessionID, ProjectionKey, ProjectionVersion)` 只保留最新一份。
 
-## 8. canonical import
+## 8. boundaries 与 conformance
 
-**SES-IMP-1** canonical import 仅处理 Session records，不解释 payload。它必须经当前
-`ProtocolProfile` 的 `ValidateCanonical*` 入口验证 profile、header、完整 chain、event
-uniqueness 和 supplied positions/digests；只接受完整 stream 或已有可验证 predecessor
-的 contiguous tail。`ImmutableAncestryArchive` 的 canonical preimage 是
-`ProtocolVersion`、按 root-to-target segment order 的 Headers、每个 segment 按 local
-`(revision,index)` 的完整 Commits，排除 `ArchiveDigest`；ArchiveDigest 覆盖该 preimage。
-archive codec 同样必须 decode→encode canonical-equivalent 并验证 digest。
+Session modules 对 opaque payload 作 typed encode/decode 并负责 payload 版本；Store 负责 commit、CommitID、digest、replay、snapshot 与控制面 KV 的机制。unknown event 保留原始 payload 并支持原样 replay。first-party module 为 `chatlog`、`turn` 与 `run`：Run 的执行事实以 `twilight/run/` 事件进入同一 stream，其状态机与投影由 [agent-run.md](agent-run.md) 定义。
 
-**SES-IMP-2** 同 `(SessionID,CommitID)` 仅在 canonical commit 逐字段相同才幂等；不同 header、revision、group 或 digest 为 conflict。fork child import 必须有本地 existing verified parent boundary，或随 request 提供经过验证 immutable ancestry archive；不得只信任 ParentFork 声明。
+一条 Session stream 承载多个模块的事件；每个 projection 只消费自己声明的 EventType（EXT-PRJ-2），并以 snapshot 加过滤 tail 的方式读取。读取代价由 projection 消费的事件数与 snapshot 之后的 tail 长度决定，与 stream 总长度无关。
 
-Application/import coordinator 负责跨 Session package、业务事务与恢复编排。
+v1 conformance 必须验证：
 
-## 9. boundaries 与 conformance
-
-Session modules 可对 opaque payload 作 typed encode/decode；Store 继续负责 CAS、CommitID、digest
-与 replay 语义。unknown event 保留原始 payload 并支持原样 replay。first-party module 为
-`chatlog`、`turn` 与 `run`：Run 的执行事实以 `twilight/run/` 事件进入同一 stream，其状态机与
-投影由 [agent-run.md](agent-run.md) 定义；Session kernel 处理 envelope 与 stream 机制。
-queue、provider 与 Application policy 使用各自的边界。
-
-一条 Session stream 承载多个模块的事件；每个 projection 只消费自己声明的 EventType
-（EXT-PRJ-2），并以 snapshot 加 tail 的方式读取。读取代价由 projection 消费的事件数与
-snapshot 之后的 tail 长度决定，与 stream 总长度无关。
-
-Conformance 必须验证：
-
-- **SES-WIR-1、SES-WIR-2、SES-WIR-3、SES-WIR-4**：wire/profile freeze、版本一致性、兼容性判定、所有 Encode/Decode 与 `ValidateCanonical*` round-trip、digest preimage、同-stream SourceEvents、EventID uniqueness、complete commit；
-- **SES-API-1、SES-API-2、SES-APP-1、SES-APP-2**：atomic CAS、临界区 `CommitIn` 与 `Commit` 的 commit 等价、concurrent writer、CommitID exact idempotency 和 failure classification；
-- **SES-REP-1、SES-REP-2、SES-REP-3**：local/resolved replay 的 segment-first 顺序、完整 EventPosition After 语义、cursor/token binding、tamper/gap failure；
-- **SES-FRK-1、SES-FRK-2**：ForkID idempotency、parent boundary 和 RetainClosure；
-- **SES-SNP-1、SES-SNP-2**：coverage、ancestry validation 与 snapshot+tail 等价；
-- **SES-IMP-1、SES-IMP-2**：complete/tail import、exact conflict 和 verified ancestry archive。
+- **SES-SCP-2**：附录 A 的能力返回 `ErrUnsupported`，`ParentFork` 非 nil 的 header 被拒绝；
+- **SES-VER-1、SES-VER-2**：kernel 不读取 payload `v`；不同 `v` 的 event 在同一 stream 共存；
+- **SES-WIR-1、SES-WIR-2、SES-WIR-3**：wire/profile freeze、版本一致性、所有 Encode/Decode 与 `ValidateCanonical*` round-trip、digest preimage、same-stream SourceEvents、EventID uniqueness、complete commit；
+- **SES-API-1、SES-API-2、SES-API-3、SES-APP-1、SES-APP-2**：atomic CAS、`CommitIn` 与 `Commit` 的 commit 等价、fn 返回 nil 时 KV 与 snapshot 仍提交、concurrent writer、CommitID exact idempotency（含不同时间戳的重试得到 AlreadyApplied）、failure classification、KV 与 commit 同事务、ControlScan 前缀与提前停止；
+- **SES-REP-1、SES-REP-2、SES-REP-3**：顺序、完整 EventPosition After 语义、Types 过滤只返回匹配 commit、cursor/token binding、tamper/gap failure；
+- **SES-SNP-1、SES-SNP-2**：Through 前缀校验、snapshot 加 tail 与全量 fold 等价、过期 snapshot 被忽略。
 
 第一版包含 MemoryStore 与上述 Store conformance；不承诺特定 durable adapter。
+
+## 附录 A：预留能力（不进入 v1）
+
+以下能力保留设计，供后续版本在不升 kernel `ProtocolVersion` 的前提下加入。v1 实现对这些入口返回 `ErrUnsupported`。
+
+**Fork。** `ForkPoint{ParentSessionID, Revision, HeadDigest}`；`Fork(ForkRequest)` 创建 immutable child header，`ParentFork` 精确绑定 parent 已验证 boundary，child local revision 从 1 开始。同 ForkID 逐字段相同的请求幂等，其他为 conflict。保留 child 时必须保留 ancestor header 与 boundary 内 commit（RetainClosure）。目前没有规范内的消费者：subagent 使用独立 Session。
+
+**Resolved replay 与 AncestryDigest。** 有 Fork 后 replay 分 Local 与 Resolved 两种模式；Resolved 按 root-to-target segment order 返回。`AncestryDigest` 的 preimage 为 profile、target SessionID、root 到 target 的有序 HeaderDigest、每条 ForkPoint、每级可见 CommitDigest 与 target local Head。cursor 与 snapshot 绑定该 digest。v1 只有一个 segment，`EventPosition` 不携带 origin SessionID；加入 Fork 时以 optional 字段扩展，旧 reader 可忽略。
+
+**Canonical import 与 ancestry archive。** `ImportCanonical` 只处理 Session records，不解释 payload，经 `ValidateCanonical*` 验证完整 chain 后导入完整 stream 或已有可验证 predecessor 的 contiguous tail。`ImmutableAncestryArchive` 的 preimage 为 ProtocolVersion、按 segment order 的 Headers 与 Commits。同 `(SessionID, CommitID)` 仅在 canonical commit 逐字段相同才幂等。
+
+**Snapshot coverage 与 ancestry。** 有 Fork 后 snapshot 的 `Through` 扩展为 `ResolvedHead{SessionID, LocalHead, AncestryDigest}`，同 local head 而 ancestry 不同不等价。

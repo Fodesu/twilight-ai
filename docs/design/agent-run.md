@@ -1,6 +1,6 @@
 # Twilight Agent Run Protocol
 
-状态：设计规范。Machine、command/fact 规则与 Loop 为规范；第 5 节的 Runtime 与存储层于 2026-09-04 按单一 Session ES 修订，实现尚未跟进（见 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 6 节）。
+状态：设计规范。Machine、command/fact 规则与 Loop 为规范；第 5 节的 Runtime 与存储层于 2026-09-04 按单一 Session ES 修订（同日第二次修订：控制面进入 Session 控制面 KV、写入经 Module Framework、恢复 Run 级 SchemaVersion、snapshot 改为缓存），实现尚未跟进（见 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 6、7 节）。
 
 本文定义 `agent/run`、`agent/run/loop` 与 Run 作为 Session Module 的存储形态。文中的"必须""不得""应该"是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
 
@@ -8,13 +8,14 @@
 
 ```text
 Session stream               唯一 authority：twilight/run/ 事实与 turn、chatlog 事件同在一条 stream
-MachineState                 Run 的语义状态投影（twilight/run/machine），snapshot 为派生缓存
-Runtime                      Run 的 command 入口：在 Session commit 临界区内 Decide、Evolve、追加
+MachineState                 Run 的语义状态投影（twilight/run/machine）；snapshot 为可丢弃的派生缓存
+Runtime                      Run 的 command 入口：在 Session 临界区内 Decide、Evolve，经 Module Framework 追加
 loop.Loop                    当前进程的 execution interpreter
-FrozenValueStore             内容寻址旁存：模型请求本体与工具定义本体，按 digest 存取
+FrozenValueStore             内容寻址旁存：模型请求本体（含工具定义），按 digest 存取
+控制面 KV                     Session Store 的 control-plane KV：lease、grant、durable claim；与 commit 同事务
 ```
 
-`MachineState` 决定 Run 当前可执行动作。每次接受的 command 产生一个 SessionCommit，其中的 `twilight/run/` 事件经 `Protocol.Evolve` 从 `twilight/run/created` 重放后必须得到同一 `MachineState`。
+`MachineState` 决定 Run 当前可执行动作。每次接受的 command 产生一个 SessionCommit，其中的 `twilight/run/` 事件经该 Run 版本的 `Protocol.Evolve` 从 `twilight/run/created` 重放后必须得到同一 `MachineState`。
 
 Run 的职责分成五个相互独立的层面：
 
@@ -30,15 +31,15 @@ Machine 处理已冻结的值和已提交的事实；Loop 解释 `Next` 产生�
 
 `Step` 是 Run 的持久化恢复边界；`execution attempt` 表示某个 Loop 进程对该 Step 或 ToolCall 的一次易失执行。一个 Step 可以有多个 attempt，Machine 只接受带有效 grant 的 settlement。Attempt 的执行控制信息由 start command 的 `ExecutionClaim` 和 Runtime 返回的 opaque `ExecutionGrant` 表达；它们不进入 stream。
 
-**RUN-SCP-1** `agent/run` 拥有 Run identity、persisted frozen values、Machine、command/fact protocol、fact codec、fold 与 `Runtime` contract；它依赖 `agent/session` 的 identity 与 Store 类型，不依赖 loop。`agent/run/loop` 拥有 planner/model/tool ports、streaming、并发执行、EventSink 与 Loop policy。`agent/session/run` 是 Run 的 Session Module 实现：EventDefinition、`twilight/run/machine` projection、`Runtime` 实现、FrozenValueStore 与 lease 表的 adapter。
+**RUN-SCP-1** `agent/run` 拥有 Run identity、persisted frozen values、Machine、command/fact protocol、fact codec、fold 与 `Runtime`、`Companion` contract；它依赖 `agent/session` 的 identity 与 Store 类型，不依赖 loop、turn 或 extension。`agent/run/loop` 拥有 planner/model/tool ports、streaming、并发执行、EventSink 与 Loop policy。`agent/session/run` 是 Run 的 Session Module 实现：EventDefinition（按 SchemaVersion 的 codec）、`twilight/run/machine` projection、`Runtime` 实现（经 `extension.SemanticAppender.AppendSemanticIn` 写入）、FrozenValueStore adapter 与控制面 KV 的 lease 编码。
 
-**RUN-SCP-2** Run 是 first-party Session Module（Source `twilight`，ModuleID `run`）。Turn 的创建、attempt 归属与结算、Run 事实到对话内容的 companion 映射由 [agent-turn.md](agent-turn.md) 定义；对话内容 ontology 由 [agent-session-chatlog.md](agent-session-chatlog.md) 定义；stream、commit、projection 与 snapshot 机制由 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md) 定义。Artifact、queue、provider registry、权限与产品 policy 分别由其 package 或 Application 拥有。
+**RUN-SCP-2** Run 是 first-party Session Module（Source `twilight`，ModuleID `run`）。Run 不解释它的上层实体：`OwnerID` 是 opaque 字符串，由 turn 模块以 TurnID 填充。Turn 的创建、attempt 归属与结算、Run 事实到对话内容的 companion 映射由 [agent-turn.md](agent-turn.md) 定义；对话内容 ontology 由 [agent-session-chatlog.md](agent-session-chatlog.md) 定义；stream、commit、projection、snapshot 与控制面 KV 机制由 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md) 定义。Artifact、queue、provider registry、权限与产品 policy 分别由其 package 或 Application 拥有。
 
 ## 2. identity、persisted values 与 wire
 
 ```go
 type RunID string
-type TurnID string // 与 agent/turn 同一 identity；定义在 agent/run 以避免依赖环
+type OwnerID string // 上层实体标识，Run 不解释
 type StepID string
 type CallID string
 type CommandID string
@@ -56,22 +57,23 @@ type Digest = es.Digest
 
 Run 持久化协议保存 run-owned frozen values。模型请求、模型结果、消息、工具定义、usage、provider metadata 与所有动态 JSON 在进入 command 前，分别经 `FreezeModelRequest`、`FreezeModelResult`、`FreezeToolDefinition`、`FreezeToolCallInput` 等入口转为纯数据和 immutable `CanonicalJSON`。Runtime 接收 agent-owned value；调用方负责在边界前完成冻结。
 
-**RUN-WIR-2** Run 事实是 Session event：EventType 为 `twilight/run/<name>`，payload 为 canonical JSON object，第一层携带 `runId`；envelope、revision、index、digest chain 与 idempotency 由 Session kernel 提供，Run 不另设 envelope。fact codec 属于 Session `ProtocolVersion`（EXT-COD-3），必须拒绝 unknown type、duplicate key、unknown field、trailing data、非法 UTF-8、非 canonical-equivalent wire。精确 identity 和 digest 使用 JSON string，整数字段使用 Session profile 的整数 wire shape。
+**RUN-WIR-2** Run 事实是 Session event：EventType 为 `twilight/run/<name>`，payload 为 canonical JSON object，第一层携带 `runId` 与 payload 版本字段 `v`（SES-VER-1、EXT-REG-2）。`v` 等于该 Run 的 `SchemaVersion`：由 `twilight/run/created` 记录，同一 Run 的全部事实使用同一值，Registry 永久保留每个已发布版本的 codec、Decide 与 Evolve。envelope、revision、index、digest chain 与 idempotency 由 Session kernel 提供，Run 不另设 envelope。fact codec 必须拒绝 unknown type、duplicate key、unknown field、trailing data、非法 UTF-8、非 canonical-equivalent wire。精确 identity 和 digest 使用 JSON string，整数字段使用 Session profile 的整数 wire shape。
 
 ```go
 type CommandEnvelope struct {
+    SchemaVersion uint16 // 必须等于该 Run 的 created.SchemaVersion
     Type string
     SessionID session.SessionID
     RunID RunID
     ID CommandID
-    Digest Digest      // 覆盖 type 与完整 command，含 transient 内容
+    Digest Digest      // 覆盖 schema、type 与完整 command，含 transient 内容
     Command AgentCommand
 }
 ```
 
 command 不持久化。`CommandEnvelope.ID` 就是该 command 产生的 SessionCommit 的 `CommitID`；`Digest` 只用于 Runtime 在临界区内比对精确重放。
 
-**RUN-WIR-3** 一个 command 恰产生一个 SessionCommit；其 `twilight/run/` 事件 Index 从 0 连续递增，companion 事件（TRN-CMP）与调用方附加事件（`CommitRequest.Attach`）依次紧随其后。Run 事件的 `EventID = Digest("twilight/run/event", CommandID, index)`；`RecordedAtUnixMilli` 由 Runtime 的时钟填入，是 metadata，不参与 Run 的任何派生。构造 command 必须使用该 Session 版本的 `Protocol.BuildEnvelope`（Loop 通过 `RuntimeSnapshot.Protocol()` 取得）。`agent/run` 不提供隐式选择版本的包级 `BuildEnvelope`、`Decide`、`Evolve` 或 `Digest*` 函数；新 Session 与测试显式使用 `ProtocolV1()`。
+**RUN-WIR-3** 一个 command 恰产生一个 SessionCommit；其 `twilight/run/` 事件 Index 从 0 连续递增，companion 事件（TRN-CMP）与调用方附加事件（`CommitRequest.Attach`）依次紧随其后。Run 事件的 `EventID = Digest("twilight/run/event", CommandID, index)`；`RecordedAtUnixMilli` 由 Runtime 的时钟填入，是 metadata，不参与 Run 的任何派生，也不进入 append fingerprint（SES-APP-1）。构造 command 必须使用该 Run 版本的 `Protocol.BuildEnvelope`（Loop 通过 `RuntimeSnapshot.Protocol()` 取得）。`agent/run` 不提供隐式选择版本的包级 `BuildEnvelope`、`Decide`、`Evolve` 或 `Digest*` 函数；新 Run 与测试显式使用 `ProtocolV1()`。
 
 **RUN-WIR-4** 内容与执行状态分离。fact 只保存执行状态与内容 digest，内容本体落在两处：
 
@@ -83,7 +85,7 @@ command 不持久化。`CommandEnvelope.ID` 就是该 command 产生的 SessionC
 | 工具输出 | `ToolCallCompleted.OutputDigest` / `ToolCallAnswered.ResponseDigest` | 同 commit 的 `twilight/chatlog/tool_result`，其 `SourceDigest` 等于该 digest |
 | tool call 参数 | `ToolCallBinding.Arguments` | fact 本身（执行不得依赖 chatlog 解码） |
 
-`FrozenValueStore` 是内容寻址存储：`Put(digest, bytes)` 幂等，`Get(digest)`。请求本体的有效期是该 ModelStep 从 Prepared 到终结；step 终结后 adapter 可按保留策略删除或归档，Record 校验不依赖本体。
+companion 与 Attach 事件与 Run 事实一起经 Module Framework 的 admission（EXT-APP-1）：它们可以携带 `ReferencePart`，其 Binding 在同一事务建立 claim。`FrozenValueStore` 是内容寻址存储：`Put(digest, bytes)` 幂等，`Get(digest)`。请求本体的有效期是该 ModelStep 从 Prepared 到终结；step 终结后 adapter 可按保留策略删除或归档，Record 校验不依赖本体。
 
 下列 identity 稳定派生并由 Commit 验证：
 
@@ -102,34 +104,35 @@ command 不持久化。`CommandEnvelope.ID` 就是该 command 产生的 SessionC
 | model recovery CommandID | RunID、StepID、Claim |
 | tool recovery CommandID（RecoverExpired 的 Unknown） | RunID、StepID、CallID、Claim |
 
-同一派生 identity 的内容变化在 Session kernel 表现为 `CommitConflict`（同 CommitID、不同 event group）。`PlanningToken` 是 Application-owned opaque freshness token，属于 prepare command identity 内容。
+同一派生 identity 的内容变化在 Session kernel 表现为 `CommitConflict`（同 CommitID、不同 event group）。`PlanningToken` 是 Application-owned opaque freshness token，属于 prepare command identity 内容；Run 不校验它的语义（RUN-CMT-4）。
 
 ## 3. 创建与 canonical record
 
 ```go
 type NewRun struct {
+    SchemaVersion uint16
     RunID RunID
-    Turn TurnID
+    Owner OwnerID
     Attempt uint32
     CausationID es.CausationID
 }
 type RunCreated struct {
+    SchemaVersion uint16
     RunID RunID
-    Turn TurnID
+    Owner OwnerID
     Attempt uint32
-    InitialStateVersion uint16
     CausationID es.CausationID
 }
 type RunRecord struct {
     Created session.EventPosition
     Snapshot RuntimeSnapshot
-    Events []session.SessionEvent // 该 RunID 的全部 twilight/run/ 事件，按 resolved 顺序
+    Events []session.SessionEvent // 该 RunID 的全部 twilight/run/ 事件，按 stream 顺序
 }
 ```
 
-**RUN-NEW-1** `twilight/run/created` 是 Run 的第一个事实。v1 初始状态恰为：相同 RunID、Turn、Attempt、`RunActive`、`Current=Open`、无 pending input、零 model step、零 usage、无 result。初始输入随后以 `twilight/run/input_accepted` 进入同一 commit（TRN-STR-2）。`Protocol.BuildCreateGroup(NewRun, []AgentInput)` 返回 `created` 与 `input_accepted` 的 typed events，Coordinator 不自行编码。同一 RunID 第二条 `created` 为 Evolve 错误。
+**RUN-NEW-1** `twilight/run/created` 是 Run 的第一个事实。v1 初始状态恰为：相同 RunID、Owner、Attempt、`RunActive`、`Current=Open`、无 pending input、零 model step、零 usage、无 result。初始输入随后以 `twilight/run/input_accepted` 进入同一 commit（TRN-STR-2）。`Protocol.BuildCreateGroup(NewRun, []AgentInput)` 返回 `created` 与 `input_accepted` 的 facts，编码为 Session event 由 `agent/session/run` 完成，Coordinator 不自行编码。同一 RunID 第二条 `created` 为 Evolve 错误。
 
-**RUN-NEW-2** `FoldRun(events)` 按 resolved 顺序折叠该 RunID 的完整事件序列，第一条必须是 `created`。Fold 过程执行纯状态重建。import、诊断与 `Runtime.Record` integrity verification 都经 FoldRun；snapshot 通过 FoldRun 结果校验。
+**RUN-NEW-2** `FoldRun(events)` 按 stream 顺序折叠该 RunID 的完整事件序列，第一条必须是 `created`，并按其 `SchemaVersion` 绑定 `Protocol`。Fold 过程执行纯状态重建。import、诊断与 `Runtime.Record` integrity verification 都经 FoldRun；snapshot 通过 FoldRun 结果校验。
 
 ## 4. Machine
 
@@ -142,7 +145,7 @@ func (ToolStep) current() {}
 
 type MachineState struct {
     RunID RunID
-    Turn TurnID
+    Owner OwnerID
     Attempt uint32
     Status RunStatus
     Current Current
@@ -174,7 +177,7 @@ type ModelStep struct {
 }
 type ToolSpec struct {
     Ref ToolRef
-    DefinitionDigest Digest // 本体在 FrozenValueStore
+    DefinitionDigest Digest // 本体在请求内
     Policy ResponsePolicy
 }
 type ToolScheduleMode string // "parallel" | "sequential"；空值按 parallel 解释
@@ -247,7 +250,7 @@ Recovered 回到 Prepared 后，下一次 Start 重发同一 `RequestDigest` 的
 | command | precondition / facts |
 |---|---|
 | `AcceptInput` | `Open`；`InputAccepted` |
-| `PrepareModelRequest` | `Open`，完整有序消费 PendingInputs，request/tools digests 有效；`ModelStepPrepared`。command 携带请求与工具定义本体，fact 只留 digest，本体由 Runtime 写入 FrozenValueStore |
+| `PrepareModelRequest` | `Open`，完整有序消费 PendingInputs，request/tools digests 有效；`ModelStepPrepared`。command 携带请求本体，fact 只留 digest，本体由 Runtime 写入 FrozenValueStore |
 | `StartModelExecution` | Model Prepared；`ModelStepStarted`。command 必须携带本次 start 的 `ExecutionClaim` |
 | `RecoverModelExecution` | Model Executing；`ModelStepRecovered`。恢复 durable attempt 时携带该 attempt 的 `Claim` |
 | `SubmitModelResult` | Model Executing；`ModelStepCompleted{Usage, FinishReason, ResultDigest}`，随后无 calls 时 `RunEnded(completed)`，有 calls 时 `ToolStepOpened`（携带冻结的 `Scheduling` 与 bindings）。command 携带冻结 `ModelResult` 本体，companion 写 `twilight/chatlog/assistant` |
@@ -318,15 +321,21 @@ type RunPosition struct { Revision es.Revision; Index uint16 }
 type RuntimeSnapshot struct {
     State MachineState // detached in-process view
     Position RunPosition
-    Head session.Head  // 投影覆盖到的 Session head
-    ProtocolVersion uint16
+    Head session.Head  // 读取时的 Session head
+    SchemaVersion uint16 // created.SchemaVersion
 }
 
+// ModuleEvent 是其他模块的 typed event，由 agent/session/run 经 Registry 编码。
+type ModuleEvent struct {
+    Type session.EventType
+    EventID session.EventID
+    Value any
+}
 // Companion 把一个 commit 的 Run facts 与 command 携带的 transient 内容映射为
 // 其他模块的事件（对话内容、Turn completed）。实现由 agent/turn 提供（TRN-CMP）。
 type CompanionRequest struct {
     Session session.SessionID
-    Turn TurnID
+    Owner OwnerID
     RunID RunID
     Command AgentCommand
     Facts []Fact
@@ -335,12 +344,12 @@ type CompanionRequest struct {
 }
 type Companion interface {
     Version() string
-    Map(CompanionRequest) ([]session.UncommittedEvent, error)
+    Map(CompanionRequest) ([]ModuleEvent, error)
 }
 type Protocol struct {
-    // ProtocolFor 一次绑定该 ProtocolVersion 的函数。方法不再接受 version 参数。
+    // ProtocolFor 一次绑定该 SchemaVersion 的函数。方法不再接受 version 参数。
 }
-func ProtocolFor(protocolVersion uint16) (Protocol, error)
+func ProtocolFor(schemaVersion uint16) (Protocol, error)
 func (RuntimeSnapshot) Protocol() (Protocol, error)
 func (Protocol) Version() uint16
 func (Protocol) DigestRequest(ModelRequest) (Digest, error)
@@ -351,12 +360,12 @@ func (Protocol) DigestModelResult(ModelResult) (Digest, error)
 func (Protocol) DigestToolOutput(CanonicalJSON) (Digest, error)
 func (Protocol) DigestToolResponseDecision(ResponseKind, ResponseDecision, string) (Digest, error)
 func (Protocol) DigestCommand(typ string, command AgentCommand) (Digest, error)
-func (Protocol) EncodeFact(typ string, fact Fact) (jsonstable.Value, error)
+func (Protocol) EncodeFact(typ string, fact Fact) (jsonstable.Value, error) // 不含 v；Registry 加入
 func (Protocol) DecodeFact(typ string, wire jsonstable.Value) (Fact, error)
 func (Protocol) Decide(MachineState, AgentCommand) ([]Fact, error)
 func (Protocol) Evolve(MachineState, Fact) (MachineState, error)
 func (Protocol) BuildEnvelope(session.SessionID, RunID, CommandID, AgentCommand) (CommandEnvelope, error)
-func (Protocol) BuildCreateGroup(NewRun, []AgentInput) ([]Fact, error) // created 与 input_accepted；编码为 Session event 由 agent/session/run 完成
+func (Protocol) BuildCreateGroup(NewRun, []AgentInput) ([]Fact, error)
 func (Protocol) EncodeMachineState(*MachineState) (jsonstable.Value, error)
 func (Protocol) DecodeMachineState(jsonstable.Value) (MachineState, error)
 func ProtocolV1() Protocol
@@ -365,65 +374,73 @@ type CommitRequest struct {
     Base RunPosition // Load 时的 Position；PrepareModelRequest 为 hard CAS
     Grant ExecutionGrant
     Command CommandEnvelope
-    Attach []session.UncommittedEvent // 调用方附加事件，追加在 companion 之后；例如 Coordinator.Stop 的 twilight/turn/failed
+    Attach []ModuleEvent // 调用方附加事件，追加在 companion 之后；例如 Coordinator.Stop 的 twilight/turn/failed
 }
 type CommitResult struct {
     Status CommitStatus // CommitAccepted | CommitAlreadyApplied
     Snapshot RuntimeSnapshot
-    Commit session.SessionCommit // 完整 commit：run facts 与 companion events
+    Commit session.SessionCommit // 完整 commit：run facts、companion、Attach
     Grant ExecutionGrant
 }
 ```
 
 **RUN-CMT-1** Runtime 按 `(SessionID, RunID)` 寻址。Run 由 Coordinator 的 Start commit 创建（TRN-STR-2），Runtime 没有 `Create`。缺失 Run 的 Load、Commit、Record 返回 `ErrRunNotFound`。
 
-**RUN-CMT-2** 投影 `twilight/run/machine` 消费全部 `twilight/run/` 事件，忽略其他模块事件（EXT-PRJ-2 的 `Ignores`），状态为：
+**RUN-CMT-2** 投影 `twilight/run/machine` 消费全部 `twilight/run/` 事件，忽略其他模块事件（EXT-PRJ-2），状态为：
 
 ```go
 type MachineProjection struct {
-    Active map[RunID]MachineState    // 非终态 Run
-    Positions map[RunID]RunPosition  // 每个 Run 最后一条事件的位置
-    Results map[RunID]RunResult      // 已终结 Run 的结果
+    Active map[RunID]MachineState   // 非终态 Run
+    Positions map[RunID]RunPosition // 非终态 Run 的最后事件位置
 }
 ```
 
-ProjectionKey 为 `twilight/run/machine`，snapshot 使用 Session snapshot envelope（SES-SNP）。`Load` 读取 snapshot 后只 fold snapshot 之后、类型前缀为 `twilight/run/` 的 tail，代价与 Session 全量日志长度无关。终态 Run 的 MachineState 不保留在投影内，读取终态 Run 的完整状态使用 `Record`。`Record` 在一个一致点 resolved replay 该 RunID 的全部 `twilight/run/` 事件，FoldRun 重建并与投影比对，corrupt、gap 或 divergence 必须失败。
+终态 Run 在 `RunEnded` 折叠后从投影中移除；终态结果由 `Record` 与 turn surface 提供，投影大小与活动 Run 数成正比。snapshot 是可丢弃缓存（SES-SNP-1）：`Load` 读取 snapshot（若存在且 `Through` 是当前前缀），再 fold 其后类型前缀为 `twilight/run/` 的 tail；没有 snapshot 时从 stream 的过滤 replay 全量 fold。写入策略由 `agent/session/run` 的 `SnapshotPolicy` 决定，默认在 Run 的 `Current` 回到 `Open` 或 Run 终结时写入，并可按 commit 计数补充；kernel 不要求每次 commit 都写。`Record` 以 `Types=[twilight/run/]` 过滤 replay 读取该 RunID 的全部事件（SES-REP-2），FoldRun 重建并与当前投影比对；corrupt、gap 或 divergence 必须失败。
 
-**RUN-CMT-3** Commit 在 Session Store 的临界区内完成（SES-API-2）。所有 Runtime implementation 在该 section 内调用同一个 pure `EvaluateCommit`，顺序固定为：
+**RUN-CMT-3** Commit 经 `extension.SemanticAppender.AppendSemanticIn` 在 Session Store 的一个事务内完成（SES-API-2、EXT-APP-3）。所有 Runtime implementation 在 fn 内调用同一个 pure `EvaluateCommit`，顺序固定为：
 
 ```text
-1  validate envelope SessionID/RunID/type/digest（digest 不匹配为不可重试错误）
-2  tx.LookupCommit(CommitID = CommandID)
-3  found -> AlreadyApplied + 原完整 commit；start 精确重放且 grant live 时返回原 grant
-4  derived CommandID check
-5  state = tx.Projection(twilight/run/machine).Active[RunID]；缺失为 ErrRunNotFound；terminal check
-6  validate hard CAS（prepare 的 Base == 投影中该 Run 的 Position）/ target state / execution grant / recovery authority
-7  facts = Protocol.Decide(state, command) exactly once
-8  Protocol.Evolve in order；encode run events
-9  companion events = Companion.Map(...)（TRN-CMP）；再追加 request.Attach
-10 frozen bodies -> FrozenValueStore.Put（幂等）
-11 tx.Append(events)；apply lease ops；replace projection snapshot —— 同一事务
+AppendSemanticIn(sessionID, func(tx):
+  1  validate envelope SessionID/RunID/schema/type/digest（digest 不匹配为不可重试错误）
+  2  tx.LookupCommit(CommitID = CommandID)
+  3  found -> AlreadyApplied + 原完整 commit；start 精确重放时读控制面 lease，grant live 则返回原 grant
+  4  derived CommandID check
+  5  state = fold(tx.LoadSnapshot(twilight/run/machine) + tx.Tail(after, [twilight/run/]))
+     缺少 created -> ErrRunNotFound；schema 不等于 created.SchemaVersion -> 不可重试错误；terminal check
+  6  validate hard CAS（prepare 的 Base == Positions[RunID]）/ target state / execution grant / recovery authority
+     grant 与 lease 从控制面 KV twilight/run/lease 读取
+  7  facts = Protocol.Decide(state, command) exactly once
+  8  Protocol.Evolve in order；facts -> ModuleEvent（Type twilight/run/<name>，v = SchemaVersion）
+  9  companion = Companion.Map(...)；校验 SourceDigest（TRN-MAP-3）；追加 request.Attach（不得为 twilight/run/ 事件）
+  10 tx.ControlPut / ControlDelete lease ops；按 SnapshotPolicy tx.SaveSnapshot
+  11 return SemanticGroup{CommitID: CommandID, Events: run ++ companion ++ attach}
+)
+// Appender 在同一事务内完成 codec、Binding admission、claim 写入与 append。
 ```
 
-`Attach` 中的事件必须属于 Catalog 已知的 EventType，且不得是 `twilight/run/` 事件；Runtime 不解释其内容，只保证它们与本 commit 同时可见。
+FrozenValueStore 的 `Put` 幂等且内容寻址，在进入事务之前完成；事务失败时留下的本体无害，可由保留策略回收。
 
-**RUN-CMT-4** `PrepareModelRequest` 是 hard-CAS command：`Base` 必须等于 section 内投影记录的该 Run 的 `Position`。其他模块写入 Session 不移动 Position，因此不会使 Prepare 失效。其他 command 通过当前 target state 和 grant 做 call-local rebase；stale Base 本身不阻止无冲突的 ingress/control/settlement。相同 command 的 replay 判定先于 terminal check，因此 terminal Run 仍能返回原 commit。
+**RUN-CMT-4** `PrepareModelRequest` 是 hard-CAS command：`Base` 必须等于 section 内投影记录的该 Run 的 `Position`。这是有意选择：同一 Session 内其他模块的写入（用户提交新输入、summary、checkpoint、其他 Turn 的事件）不移动 Position，因此不使 Prepare 失效；Plan 与 Prepare 之间发生的 chatlog 写入不会被本次请求包含，新鲜度由 Application 经 `PlanningToken` 与 Planner 自行负责，Run 不校验 `PlanningToken` 的语义。其他 command 通过当前 target state 和 grant 做 call-local rebase；stale Base 本身不阻止无冲突的 ingress/control/settlement。相同 command 的 replay 判定先于 terminal check，因此 terminal Run 仍能返回原 commit。
 
 **RUN-CMT-5** 幂等键为 Session kernel 的 `(SessionID, CommitID)`，CommitID 等于 CommandID。同 CommandID 的精确重放返回 `CommitAlreadyApplied`、当前 snapshot 与原完整 commit，且不得再次 Decide 或产生外部 effect。对于 `StartModelExecution` 和 `StartToolCall`，Runtime 还必须验证 command 中的 `ExecutionClaim`：相同 CommandID、相同 digest、相同 claim 的精确重放在 grant 仍 live 时返回原 start grant；不同 claim 触发 `ErrCommandConflict`，并保持现有执行授权。非 start command 的 replay 不返回 grant。
 
 **RUN-CMT-6** accepted `StartModelExecution`/`StartToolCall` 为目标签发新 grant；该 start 的 `CommitAccepted` 和在 grant 仍 live 时满足精确 replay 条件的 `CommitAlreadyApplied` 返回同一个 grant。若该 start 已 settlement 或 Run 已 terminal，精确 replay 仍返回 `CommitAlreadyApplied`，并返回空 grant。model result/failure/reject 与 executing tool result/known failure 必须携带 live target grant。settlement 接受后 grant 失效；terminal commit 撤销该 Run 全部 grant。`RecoverModelExecution` 由 live grant holder 提交，或在 Runtime 验证 lease 已过期且 command Claim 等于该 lease 的 Claim 后无 grant 提交。Executing tool 的 recovery 使用同一条 `SubmitToolFailure{Outcome:Unknown}` command：工具 owner 必须携带 live grant；`RecoverExpired` 仅在 lease 已过期且没有已接受 settlement 时无 grant 提交。该 Unknown 只结算这一 call，Run 保持 Active。
 
-**RUN-CMT-7** Commit 必须原子保存完整 SessionCommit、lease 变更与投影 snapshot；`FrozenValueStore.Put` 幂等，可在 section 内或之前完成。`CommitResult`、Load 与 Record 返回 detached values。预期拒绝映射为 `ErrCommandConflict`、`ErrStaleRuntime`、`ErrRunTerminal`；transport/storage failure 保持可判别且不得伪装为 rejection。
+**RUN-CMT-7** commit、lease 变更、claim 与（若写入）snapshot 在同一 Session Store 事务内生效：lease 与 grant 经 `SessionTx.ControlPut/ControlDelete` 写入，claim 由 Appender 写入，三者与 commit 同时可见或同时不可见。`CommitResult`、Load 与 Record 返回 detached values。预期拒绝映射为 `ErrCommandConflict`、`ErrStaleRuntime`、`ErrRunTerminal`；transport/storage failure 保持可判别且不得伪装为 rejection。
 
-**RUN-CMT-8** Run 事实的协议版本是 Session 的 `ProtocolVersion`。`RuntimeSnapshot.ProtocolVersion` 等于 Session Header 的版本；`ProtocolFor(version)` 返回绑定该版本 digest/codec/Decide/Evolve 的 `Protocol`。`agent/run` 不保存进程全局的当前写入版本。历史 Session 由外部 migration tool 迁移（SES-WIR-4）。
+**RUN-CMT-8** 每个 Run 的协议版本是 `created.SchemaVersion`，创建时冻结。`RuntimeSnapshot.SchemaVersion` 等于该值；`ProtocolFor(schemaVersion)` 返回绑定该版本 digest/codec/Decide/Evolve 的 `Protocol`。`EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Run 的版本。新 Run 由 `NewRun.SchemaVersion` 决定版本；同一 Session 内不同 Run 可以使用不同版本；v1 Run 的 replay 必须继续使用 `ProtocolV1()`。Run 的版本与 Session kernel 的 `ProtocolVersion` 无关（SES-VER-1）。
 
 ### 5.1 控制面
 
-grant、lease、ExecutionClaim、ClaimStore、幂等索引与投影 snapshot 都不进入 stream。
+grant、lease、ExecutionClaim、ClaimStore 与投影 snapshot 都不进入 stream。lease 与 durable claim 存放在 Session Store 的控制面 KV（SES-API-3），与 commit 同事务写入；snapshot 使用 Session snapshot（SES-SNP）。
 
-lease 以 `(SessionID, RunID, key)` 存放，key 为 `model/<StepID>` 或 `call/<StepID>/<CallID>`，一个 target 至多一条 live lease；grant 只存在于该 lease 上。lease 的 `Deadline` 为零表示不超时（进程内占用）；过期且无 settlement 时 Runtime 允许 grantless Recover。进程崩溃时不写 settlement。`RecoverExpired` 通过 lease 表的过期扫描只加载有过期 lease 的 `(SessionID, RunID)`：对每个过期 Executing tool call 无 grant 提交 `SubmitToolFailure{Unknown}`，对过期 Executing model 提交 `RecoverModelExecution`。该 Run 保持 Active，同一 RunID 继续。进程内宿主使用 Memory 实现，lease 不超时，grantless recover 被拒绝。生产崩溃恢复使用带 TTL 的 Runtime。
+lease 的 namespace 为 `twilight/run/lease`，key 为 `<RunID>/model/<StepID>` 或 `<RunID>/call/<StepID>/<CallID>`，value 为 `{grant, claim, deadline}`；一个 target 至多一条 live lease；grant 只存在于该 lease 上。`Deadline` 为零表示不超时（进程内占用）；过期且无 settlement 时 Runtime 允许 grantless Recover。durable `loop.ClaimStore` 可以使用 namespace `twilight/run/claim`。
 
-**RUN-CMT-9** lease 续期。`Runtime.RenewLease` 在 grant 等于该 target 当前 lease 的 grant 时，把 deadline 推后一个 `LeaseTTL`；lease 不存在、grant 不匹配或 target 已 settlement 时返回 `ErrStaleRuntime`。持有 grant 的 worker 在效果执行期间必须以远小于 `LeaseTTL` 的间隔续期（Loop 的 `ExecutionPolicy.LeaseRenewInterval`）；续期返回 `ErrStaleRuntime` 表示该 target 已被 recovery 接管，worker 必须停止执行并放弃 settlement。`LeaseTTL` 是恢复延迟上界。`LeaseTTL` 为零时 `RenewLease` 只验证 grant，不改变 deadline。
+`RecoverExpired` 以 `Store.ControlScan(twilight/run/lease)` 枚举 lease，对 deadline 已过的 target：Executing tool call 无 grant 提交 `SubmitToolFailure{Unknown}`，Executing model 提交 `RecoverModelExecution`；该 Run 保持 Active，同一 RunID 继续。作为 KV 缺失的兜底（SES-API-3），它还扫描 `twilight/run/machine` 投影中处于 Executing 且没有 lease 记录的 target，以对应 start 事件的 `RecordedAtUnixMilli` 加 `LeaseTTL` 判定过期。因此 lease 记录丢失只使恢复延迟到 TTL 之后，不使 Run 停滞。进程内宿主使用 Memory 实现，lease 不超时，grantless recover 被拒绝。生产崩溃恢复使用带 TTL 的 Runtime。
+
+**RUN-CMT-9** lease 续期。`Runtime.RenewLease` 在临界区之外以 `Store.ControlGet/ControlPut` 执行：grant 等于该 target 当前 lease 的 grant 时，把 deadline 推后一个 `LeaseTTL`；lease 不存在、grant 不匹配或 target 已 settlement 时返回 `ErrStaleRuntime`。持有 grant 的 worker 在效果执行期间必须以远小于 `LeaseTTL` 的间隔续期（Loop 的 `ExecutionPolicy.LeaseRenewInterval`）；续期返回 `ErrStaleRuntime` 表示该 target 已被 recovery 接管，worker 必须停止执行并放弃 settlement。`LeaseTTL` 是恢复延迟上界。`LeaseTTL` 为零时 `RenewLease` 只验证 grant，不改变 deadline。
+
+持久结构与一致性等级的总表见 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 7 节。
 
 ## 6. Loop ports 与 policy
 
@@ -431,7 +448,7 @@ lease 以 `(SessionID, RunID, key)` 存放，key 为 `model/<StepID>` 或 `call/
 // package agent/run
 type PlanningHint struct {
     Session session.SessionID
-    Turn TurnID
+    Owner OwnerID
     RunID RunID
     SourceStep StepID
     Inputs []AgentInput
@@ -551,18 +568,19 @@ type Event struct {
 
 ## 9. compatibility 与 conformance
 
-**RUN-CMP-1** 当前 pre-release 的 command/fact discriminator、wire fields、canonical digest、derived ID 和 `ProtocolV1().Evolve` 由 golden fixtures 保护；发布前有意修改协议时必须同步更新 fixture。发布后，新增 variant、字段或折叠语义遵循 Session `ProtocolVersion` 的兼容性判定（SES-WIR-4）。
+**RUN-CMP-1** 当前 pre-release schema v1 的 command/fact discriminator、wire fields、canonical digest、derived ID 和 `ProtocolV1().Evolve` 由 golden fixtures 保护；发布前有意修改协议时必须同步更新 fixture。v1 发布后，新增 variant、字段或折叠语义必须进入新 `SchemaVersion`，Registry 继续 decode/fold 全部已发布版本；同一 Run 的 writer 不得混写不同版本。Run 版本演进不触发 Session kernel 版本变化。
 
 **RUN-CMP-2** Runtime conformance 必须覆盖：
 
-- Start group 建立 Run、重复 `created` 拒绝、missing Run；
+- Start group 建立 Run、重复 `created` 拒绝、missing Run、schema 与 created 不一致的 command 拒绝；
 - command exact replay/conflict、prepare hard CAS、call-local rebase、terminal replay；
 - grant 签发、隔离、精确 start replay、消费、跨 Run 拒绝与 recovery authorization；
-- 一 command 一 commit、run facts 在 companion 与 Attach 之前、companion 的 `SourceDigest` 等于 fact 记录的 ResultDigest / OutputDigest、Attach 拒绝 `twilight/run/` 事件；
+- 一 command 一 commit、run facts 在 companion 与 Attach 之前、companion 的 `SourceDigest` 等于 fact 记录的 ResultDigest / OutputDigest、Attach 拒绝 `twilight/run/` 事件、companion 与 Attach 经 admission 并建立 claim；
 - Prepare hard CAS 只对该 Run 自己的事件敏感：同一 Session 内其他模块的写入不使 Prepare 失效；
-- 投影 snapshot 加 tail 与全量 fold 等价；Record 单一一致点、FoldRun 等价、gap/tamper/corrupt failure；
-- 同一 Session 内多 Run 隔离；同一 Session 的 chatlog/turn 事件不影响 Run fold；
-- lease 过期 recovery：live lease 拒绝 grantless、过期 model 回到 Prepared、过期 tool 记 Unknown 且 sibling 不受影响、RecoverExpired 幂等；
+- commit、lease、claim、snapshot 同事务：在任一写入点注入崩溃后四者同时存在或同时缺失；
+- 投影 snapshot 加 tail 与全量 fold 等价；删除 snapshot 后 Load 结果不变；终态 Run 不再出现在投影中；Record 单一一致点、FoldRun 等价、gap/tamper/corrupt failure；
+- 同一 Session 内多 Run 隔离、不同 SchemaVersion 的 Run 共存；同一 Session 的 chatlog/turn 事件不影响 Run fold；
+- lease 过期 recovery：live lease 拒绝 grantless、过期 model 回到 Prepared、过期 tool 记 Unknown 且 sibling 不受影响、RecoverExpired 幂等；删除 lease 记录后 Executing target 在 start 时间加 TTL 后仍被恢复；
 - lease 续期：续期后原 deadline 不触发 recovery、错误/空 grant 与 settlement 后续期被拒；
 - FrozenValueStore：Put 幂等、Recovered 后按 RequestDigest 取回同一请求、本体缺失的错误分类、step 终结后删除本体不影响 Record；
 - MachineState codec：每个 Current variant 与终态 round-trip、拒绝 unknown field / 非法判别式 / trailing data。

@@ -15,7 +15,7 @@ Projections  = twilight/chatlog/surface, twilight/chatlog/context
 
 Chatlog 保存对话内容：Input、assistant、tool_result、summary、checkpoint。Surface 与 Context 是对这些 events 的纯投影。`assistant` 与 `tool_result` 携带 `TurnID`；Input 在 `input_delivered` 之后挂上 TurnID；summary 与 checkpoint 不携带 TurnID。回合的创建、attempt 与结束由 `twilight/turn/` 事件表达。外部内容经 `ReferencePart` 关联 Artifact BindingID。
 
-`assistant` 与 `tool_result` 由 `run.Runtime` 作为 companion 事件，与产生它们的 `twilight/run/` 事实写在同一 SessionCommit（TRN-CMP）。Run 事实只记录内容 digest，内容本体只在 chatlog 事件中出现一次。
+`assistant` 与 `tool_result` 由 `run.Runtime` 作为 companion 事件，与产生它们的 `twilight/run/` 事实写在同一 SessionCommit（TRN-CMP）。Run 事实只记录内容 digest，内容本体只在 chatlog 事件中出现一次。companion 事件与其他 producer 的事件走同一条写入路径：`SemanticAppender` 在同一事务内执行 codec、Binding admission 并建立 claim（EXT-APP-3），因此 companion 中的 `ReferencePart` 受到与用户输入相同的保护。
 
 流式 `text_delta` / `reasoning_delta` 由 Loop EventSink 发送，属于临时观察。Chatlog 权威是已提交的条目。
 
@@ -43,7 +43,7 @@ type CheckpointID string
 | Summary | `summary` | 无 | 随 checkpoint 失效 | checkpoint 的摘要正文 |
 | Checkpoint | `checkpoint_created` | 无 | invalidated | 指向已有 EventPosition |
 
-**CHT-LIF-1** reducer 拒绝 identity mutation、非法状态迁移、replacement conflict 与重复 ID。模型步骤进行中走 EventSink；定稿随 `ModelStepCompleted` / `ToolCallCompleted` 等 Run 事实同 commit 写入 `assistant` 或 `tool_result`。同一 Turn 的多个 Run attempt 各自产生 assistant 与 tool_result；Context 按 TurnID 与 commit 顺序全部保留，attempt 之间的取舍由 Application 通过 summary 或 checkpoint 处理。
+**CHT-LIF-1** reducer 拒绝 identity mutation、非法状态迁移、replacement conflict 与重复 ID。模型步骤进行中走 EventSink；定稿随 `ModelStepCompleted` / `ToolCallCompleted` 等 Run 事实同 commit 写入 `assistant` 或 `tool_result`。同一 Turn 的多个 Run attempt 各自产生 assistant 与 tool_result，全部保留在 stream 中并出现在 ContextFold 的输出里；哪些条目进入模型请求由 Planner 决定（TRN-RTY-3、REF-PLN-6），本模块不作取舍。
 
 ## 3. parts 与条目
 
@@ -158,7 +158,7 @@ type ContentRefCodec interface {
 
 **CHT-COD-2** registry 在启动时固定，kind 有唯一 codec。BindingExtractor 按 appearance order 返回 assistant、tool_result、summary 中 ReferencePart 的 BindingID。
 
-**CHT-COD-3** EventType 为 `twilight/chatlog/<name>`。条目 Digest 的 domain 与 EventType 相同，覆盖 ID、TurnID（若有）、有序 parts 或 Content、ref identity、SourceDigest（若有）。wire 与 digest 形状由 Session `ProtocolVersion` 决定：
+**CHT-COD-3** EventType 为 `twilight/chatlog/<name>`。payload 第一层携带版本字段 `v`（EXT-REG-2），由 Registry 写入与读取，本模块的 codec 不读写它；chatlog payload 的非兼容变化只增加本模块的 `Current` 版本与一个新 codec。条目 Digest 的 domain 与 EventType 相同，覆盖 ID、TurnID（若有）、有序 parts 或 Content、ref identity、SourceDigest（若有），不覆盖 `v`。wire 与 digest 形状由 Session `ProtocolVersion` 决定：
 
 ```text
 Digest("twilight/chatlog/input_submitted", ...)
