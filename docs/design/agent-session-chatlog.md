@@ -13,7 +13,9 @@ EventType    = twilight/chatlog/<name>
 Projections  = twilight/chatlog/surface, twilight/chatlog/context
 ```
 
-Chatlog 保存对话内容：Input、assistant、tool_result、summary、checkpoint。Surface 与 Context 是对这些 events 的纯投影。`assistant` 与 `tool_result` 携带 `TurnID`；Input 在 `input_delivered` 之后挂上 TurnID；summary 与 checkpoint 不携带 TurnID。回合的创建、结束与 Run linkage 由 `twilight/turn/` 事件表达。外部内容经 `ReferencePart` 关联 Artifact BindingID。
+Chatlog 保存对话内容：Input、assistant、tool_result、summary、checkpoint。Surface 与 Context 是对这些 events 的纯投影。`assistant` 与 `tool_result` 携带 `TurnID`；Input 在 `input_delivered` 之后挂上 TurnID；summary 与 checkpoint 不携带 TurnID。回合的创建、attempt 与结束由 `twilight/turn/` 事件表达。外部内容经 `ReferencePart` 关联 Artifact BindingID。
+
+`assistant` 与 `tool_result` 由 `run.Runtime` 作为 companion 事件，与产生它们的 `twilight/run/` 事实写在同一 SessionCommit（TRN-CMP）。Run 事实只记录内容 digest，内容本体只在 chatlog 事件中出现一次。
 
 流式 `text_delta` / `reasoning_delta` 由 Loop EventSink 发送，属于临时观察。Chatlog 权威是已提交的条目。
 
@@ -41,7 +43,7 @@ type CheckpointID string
 | Summary | `summary` | 无 | 随 checkpoint 失效 | checkpoint 的摘要正文 |
 | Checkpoint | `checkpoint_created` | 无 | invalidated | 指向已有 EventPosition |
 
-**CHT-LIF-1** reducer 拒绝 identity mutation、非法状态迁移、replacement conflict 与重复 ID。模型步骤进行中走 EventSink；定稿写入 `assistant` 或 `tool_result`。
+**CHT-LIF-1** reducer 拒绝 identity mutation、非法状态迁移、replacement conflict 与重复 ID。模型步骤进行中走 EventSink；定稿随 `ModelStepCompleted` / `ToolCallCompleted` 等 Run 事实同 commit 写入 `assistant` 或 `tool_result`。同一 Turn 的多个 Run attempt 各自产生 assistant 与 tool_result；Context 按 TurnID 与 commit 顺序全部保留，attempt 之间的取舍由 Application 通过 summary 或 checkpoint 处理。
 
 ## 3. parts 与条目
 
@@ -65,7 +67,12 @@ type TextPart struct { Text string }
 func (TextPart) PartKind() PartKind
 type ReasoningPart struct { Text string }
 func (ReasoningPart) PartKind() PartKind
-type ToolCallPart struct { CallID CallID; Name string; Input jsonstable.Value }
+type ToolCallPart struct {
+    CallID CallID          // Run 派生的 CallID，同一 Turn 内唯一
+    ProviderCallID string  // 模型发出的 tool_call_id，供 Planner 回传配对
+    Name string
+    Input jsonstable.Value
+}
 func (ToolCallPart) PartKind() PartKind
 
 type ToolResultStatus string
@@ -86,6 +93,7 @@ type Assistant struct {
     ID AssistantID
     TurnID TurnID
     Parts []Part
+    SourceDigest es.Digest // 产生它的 Run fact 记录的冻结值 digest（TRN-MAP-3）；非 Run 产生时为空
     Digest es.Digest
 }
 type ToolResult struct {
@@ -94,6 +102,7 @@ type ToolResult struct {
     CallID CallID
     Status ToolResultStatus
     Parts []Part
+    SourceDigest es.Digest // 同上
     Digest es.Digest
 }
 type Summary struct {
@@ -122,7 +131,7 @@ type Entry struct {
 
 **CHT-ENT-1** Parts 有序。`ArtifactBindingRef` 的 identity 为 discriminator 与 BindingID。interface value 非 nil；part kind 与 concrete value 匹配。ReferencePart 的 MediaType 来自 Artifact Ref。
 
-**CHT-ENT-2** 每个 `(TurnID,CallID)` 在 assistant 中至多一个 ToolCall。`tool_result` 对应同 Turn 已有的 call。CallID 在同一 Turn 内唯一：同一 Turn 的后续 ModelStep 不得复用已出现的 CallID。`unknown` 为 v1 mapper 写入的未决终态；`indeterminate` 保留给历史条目，v1 mapper 不产出。active Context 视 unresolved call 为未解决，直到 Application 在 Turn 尚未 `twilight/turn/completed` 或 `twilight/turn/failed` 时写入 `tool_result_superseded`，换成 `success` 或 `error`。每个 unresolved result 至多一个 replacement。v1 FactMapper 不写 `tool_result_superseded`。
+**CHT-ENT-2** 每个 `(TurnID,CallID)` 在 assistant 中至多一个 ToolCall。`tool_result` 对应同 Turn 已有的 call。CallID 在同一 Turn 内唯一：同一 Turn 的后续 ModelStep 与后续 Run attempt 不得复用已出现的 CallID（CallID 由 `(ModelStepID, index)` 派生，ModelStepID 含 RunID，天然满足）。`unknown` 为 v1 companion 写入的未决终态；`indeterminate` 保留给历史条目，v1 companion 不产出。active Context 视 unresolved call 为未解决，直到 Application 在 Turn 尚未 `twilight/turn/completed` 或 `twilight/turn/failed` 时写入 `tool_result_superseded`，换成 `success` 或 `error`。每个 unresolved result 至多一个 replacement。v1 companion 不写 `tool_result_superseded`。
 
 **CHT-ENT-3** ToolResult 的 nested Parts 为单层 TextPart 或 ReferencePart。外部内容使用 `ReferencePart`。
 
@@ -149,7 +158,7 @@ type ContentRefCodec interface {
 
 **CHT-COD-2** registry 在启动时固定，kind 有唯一 codec。BindingExtractor 按 appearance order 返回 assistant、tool_result、summary 中 ReferencePart 的 BindingID。
 
-**CHT-COD-3** EventType 为 `twilight/chatlog/<name>`。条目 Digest 的 domain 与 EventType 相同，覆盖 ID、TurnID（若有）、有序 parts 或 Content、ref identity。wire 与 digest 形状由 Session `ProtocolVersion` 决定：
+**CHT-COD-3** EventType 为 `twilight/chatlog/<name>`。条目 Digest 的 domain 与 EventType 相同，覆盖 ID、TurnID（若有）、有序 parts 或 Content、ref identity、SourceDigest（若有）。wire 与 digest 形状由 Session `ProtocolVersion` 决定：
 
 ```text
 Digest("twilight/chatlog/input_submitted", ...)

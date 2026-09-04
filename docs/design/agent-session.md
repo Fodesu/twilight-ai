@@ -189,6 +189,7 @@ type Store interface {
     Head(context.Context, SessionID) (Head, error)
     LookupCommit(context.Context, SessionID, CommitID) (SessionCommit, bool, error)
     Commit(context.Context, AppendRequest) (AppendResult, error)
+    CommitIn(context.Context, SessionID, CommitInFn) (AppendResult, error)
     Replay(context.Context, ReplayRequest) (ReplayPage, error)
     Fork(context.Context, ForkRequest) (ForkResult, error)
     ImportCanonical(context.Context, CanonicalImportRequest) (CanonicalImportResult, error)
@@ -208,7 +209,20 @@ type Error struct { Code ErrorCode; Operation string; SessionID SessionID; Commi
 func (Error) Error() string
 ```
 
-**SES-API-1** Store.Commit 是唯一 append Store protocol port。它必须原子持久化完整 commit 与 head；普通 producer 的 capability exposure 由 Session Module Framework 提供。`ImportCanonical` 只给 trusted adapter、recovery/import coordinator 或 test。
+**SES-API-1** Store.Commit 与 Store.CommitIn 是仅有的两个 append Store protocol port。它们必须原子持久化完整 commit 与 head；普通 producer 的 capability exposure 由 Session Module Framework 提供。`ImportCanonical` 只给 trusted adapter、recovery/import coordinator 或 test。
+
+```go
+type SessionTx interface {
+    Head() Head
+    LookupCommit(CommitID) (SessionCommit, bool, error)
+    LoadSnapshot(ProjectionKey, ProjectionVersion) (SnapshotResult, error)
+    Tail(after Head) ([]SessionCommit, error) // 该 Session 自 after 之后的 local commits
+    SaveSnapshot(Snapshot) error               // 与本次 append 同一事务写入
+}
+type CommitInFn func(SessionTx) (*AppendRequest, error)
+```
+
+**SES-API-2** `Store.CommitIn(ctx, SessionID, fn CommitInFn)` 是同一 Session 的 append 临界区：Store 在 per-Session 锁或数据库事务内向 fn 提供 `SessionTx`，fn 在其中读 head、按 CommitID 查 commit、读 projection snapshot 与 tail、决定要追加的 event group；返回的 `AppendRequest` 由 Store 在同一事务内按 SES-APP 规则追加。fn 返回 nil 表示不追加。section 内 head 不移动，因此 `ExpectedHead` 与 head 不一致只可能是 fn 的实现错误，返回 `Invalid`。`CommitIn` 与 `Commit` 产生的 commit 逐字段等价，同一 CommitID 的幂等与 conflict 判定相同。两者都是 adapter 必须实现的 protocol port：`Commit`（CAS）一次请求完成比对与写入，适用于 Store 实现为远程客户端、不能在持锁期间回调调用方的部署；`CommitIn` 适用于需要在写入前基于当前状态做决定的模块（例如 Run 的 Decide）。进程内 adapter 可以用 `CommitIn` 加 head 比对函数实现 `Commit`，但 `Commit` 不因此从合同中移除。fn 必须纯且无 IO 之外的副作用；Store 不保证 fn 只被调用一次。
 
 ## 4. append 与 idempotency
 
@@ -286,14 +300,19 @@ Application/import coordinator 负责跨 Session package、业务事务与恢复
 ## 9. boundaries 与 conformance
 
 Session modules 可对 opaque payload 作 typed encode/decode；Store 继续负责 CAS、CommitID、digest
-与 replay 语义。unknown event 保留原始 payload 并支持原样 replay。`agent/turn` 消费/追加
-Events 并协调 Run；Session kernel 处理 envelope 与 stream 机制。Run、queue、provider 与
-Application policy 使用各自的边界。
+与 replay 语义。unknown event 保留原始 payload 并支持原样 replay。first-party module 为
+`chatlog`、`turn` 与 `run`：Run 的执行事实以 `twilight/run/` 事件进入同一 stream，其状态机与
+投影由 [agent-run.md](agent-run.md) 定义；Session kernel 处理 envelope 与 stream 机制。
+queue、provider 与 Application policy 使用各自的边界。
+
+一条 Session stream 承载多个模块的事件；每个 projection 只消费自己声明的 EventType
+（EXT-PRJ-2），并以 snapshot 加 tail 的方式读取。读取代价由 projection 消费的事件数与
+snapshot 之后的 tail 长度决定，与 stream 总长度无关。
 
 Conformance 必须验证：
 
 - **SES-WIR-1、SES-WIR-2、SES-WIR-3、SES-WIR-4**：wire/profile freeze、版本一致性、兼容性判定、所有 Encode/Decode 与 `ValidateCanonical*` round-trip、digest preimage、同-stream SourceEvents、EventID uniqueness、complete commit；
-- **SES-API-1、SES-APP-1、SES-APP-2**：atomic CAS、concurrent writer、CommitID exact idempotency 和 failure classification；
+- **SES-API-1、SES-API-2、SES-APP-1、SES-APP-2**：atomic CAS、临界区 `CommitIn` 与 `Commit` 的 commit 等价、concurrent writer、CommitID exact idempotency 和 failure classification；
 - **SES-REP-1、SES-REP-2、SES-REP-3**：local/resolved replay 的 segment-first 顺序、完整 EventPosition After 语义、cursor/token binding、tamper/gap failure；
 - **SES-FRK-1、SES-FRK-2**：ForkID idempotency、parent boundary 和 RetainClosure；
 - **SES-SNP-1、SES-SNP-2**：coverage、ancestry validation 与 snapshot+tail 等价；
