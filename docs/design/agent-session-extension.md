@@ -14,10 +14,10 @@ agent/artifact  ←  Session Module Framework  →  agent/session
 
 Framework 负责 Module ownership、static startup composition、immutable Catalog、typed event
 codec、Binding declaration、SemanticAppender 和 pure projection。first-party Source 为
-`twilight`，其 Module 为 `chatlog` 与 `turn`。每次进程启动构建一套与 Session protocol
+`twilight`，其 Module 为 `chatlog`、`turn` 与 `run`。每次进程启动构建一套与 Session protocol
 version 绑定的 immutable Catalog。Application 注册自己的 Source（例如 `acme`）与 Module。
 
-**EXT-SCP-1** Session Store protocol 由 Session kernel 负责；多 Session transaction、package import、saga、operation log 与 provider policy 由 Application/adapter 负责。未知 event 的 archive Binding manifest 由 Application archive coordinator 处理。
+**EXT-SCP-1** Session Store protocol 由 Session kernel 负责；多 Session transaction、package import、saga、operation log 与 provider policy 由 Application/adapter 负责。未知 event 的 archive Binding manifest 由 Application archive coordinator 处理。`run` 模块的写入经 `run.Runtime` 使用 `Store.CommitIn`（SES-API-2），不经 SemanticAppender；其 typed codec 与 projection 仍由 Catalog 提供。
 
 `SemanticAppender` 是 Session Module Framework 面向 typed producer 的写入协调器：它执行 codec、binding
 admission、claim/journal 编排，并调用 Session Store 的 canonical append。claim、journal 与
@@ -66,14 +66,14 @@ func (c *Catalog) LookupProjection(ProjectionID, ProjectionVersion) (ProjectionD
 
 `Catalog` 是进程启动时的 Module 目录：它把一个协议版本下可用的 Module、EventType、
 payload codec、projection、runtime registry 与 artifact scheme 组合成只读索引。它供
-typed append、decode、binding admission 与 projection lookup 使用；Session 数据、Run
-状态和事件日志继续保存在各自的 authority 中。`Catalog.Profile` 是同一版本的
+typed append、decode、binding admission 与 projection lookup 使用；事件数据保存在 Session
+stream 中，Catalog 只保存组合配置。`Catalog.Profile` 是同一版本的
 `session.ProtocolProfile`，两者在 `BuildCatalog` 时绑定。
 
 **EXT-CAT-1** `SourceID` 与 `ModuleID` 为小写 ASCII。first-party Source 为 `twilight`，
-其 Module 为 `chatlog` 与 `turn`。Application 注册自己的 Source（例如 `acme`）。
+其 Module 为 `chatlog`、`turn` 与 `run`。Application 注册自己的 Source（例如 `acme`）。
 EventType 为 `<SourceID>/<ModuleID>/<local-name>`，例如 `twilight/chatlog/assistant`、
-`twilight/turn/started`。Digest domain 与 EventType 相同；wire 与 digest 形状由 Catalog
+`twilight/turn/started`、`twilight/run/model_step_prepared`。Digest domain 与 EventType 相同；wire 与 digest 形状由 Catalog
 绑定的 Session `ProtocolVersion` 决定。一个 Catalog 中 `(Source, ModuleID)`、EventType、
 ProjectionID、Scheme、RegistryID 均唯一。Build defensive-copy 所有 descriptor
 和 runtime registry，成功后只读且与注册顺序无关。
