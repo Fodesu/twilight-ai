@@ -1,6 +1,6 @@
 # Twilight Agent Session Protocol
 
-状态：设计草案。无实现；wire、digest preimage 与 conformance 在 Memory reference implementation 与 Input → Turn → Run → Session 纵向切片跑通前不冻结。2026-09-04 第二次修订：v1 范围收缩为单 stream kernel；Fork、ancestry、canonical import 移入附录 A，不进入 v1 conformance。
+状态：设计草案。无实现；wire、digest preimage 与 conformance 在 Memory reference implementation 与 Input → Turn → Run → Session 纵向切片跑通前不冻结。v1 为单 stream kernel；Fork、ancestry、canonical import 在附录 A 中，不进入 v1 conformance。
 
 本文定义 Twilight Session 的 Event Sourcing kernel。文中的"必须""不得""应该"是协议约束。
 
@@ -23,7 +23,7 @@ Session kernel   envelope、顺序、commit、临界区、snapshot、控制面 K
 Session modules  event ontology、typed codec、payload 版本、payload validation、projection
 ```
 
-Payload 对 Session kernel 是 opaque canonical JSON。snapshot 与控制面 KV 都不是语义事实：snapshot 是可重建的派生数据；控制面 KV 保存 lease、claim 等运行控制信息，由模块解释，kernel 只保证它与同一 commit 原子写入。
+Payload 对 Session kernel 是 opaque canonical JSON。snapshot 与控制面 KV 都不是语义事实：snapshot 是可重建的派生数据；控制面 KV 保存执行占用、保留声明等运行控制信息，由模块解释，kernel 只保证它与同一 commit 原子写入、支持条件写与按 deadline 枚举。
 
 **SES-SCP-1** kernel 不依赖领域 payload，也不对其执行 schema validation 或解释。replay 的唯一顺序是 `(revision, index)`；时钟只作 metadata。
 
@@ -89,7 +89,7 @@ type Head struct { Revision es.Revision; Digest es.Digest }
 type EventPosition struct { Revision es.Revision; Index uint16; EventDigest es.Digest }
 ```
 
-**SES-WIR-1** identity 非空且稳定；EventID 在同一 stream 内唯一。header 不可变，revision 从 1 连续递增，commit 至少有一个 event，event Index 从 0 连续递增。revision 1 的 `PreviousDigest=HeaderDigest`，其后为前一 CommitDigest。空 stream head 是 `{0, HeaderDigest}`。
+**SES-WIR-1** identity 非空且稳定；EventID 在同一 stream 内唯一。header 不可变，revision 从 1 连续递增，commit 至少有一个 event，event Index 从 0 连续递增。revision 1 的 `PreviousDigest=HeaderDigest`，其后为前一 CommitDigest。空 stream head 是 `{0, HeaderDigest}`。`Create` 对逐字段相同的 `CreateRequest` 幂等返回既有 header，同 SessionID 的不同请求为 `Conflict`。commit 与 header 的 `CausationID`、`CorrelationID` 是 producer 自行填写的 opaque metadata，kernel 不解释；它们进入 digest 与 append fingerprint。
 
 **SES-WIR-2** `ProtocolProfile` 冻结 kernel wire：envelope、commit、snapshot envelope、null/omission、精确 integer encoding、unknown-field policy、array order 与下列 digest preimage；所有 digest 依 `agent/es` 的 versioned domain separator。
 
@@ -144,8 +144,8 @@ type SessionTx interface {
     Tail(after Head, types []EventType) ([]SessionCommit, error)
     LoadSnapshot(ProjectionKey, ProjectionVersion uint16) (SnapshotResult, error)
     SaveSnapshot(Snapshot) error
-    ControlGet(ControlNamespace, key string) ([]byte, bool, error)
-    ControlPut(ControlNamespace, key string, value []byte) error
+    ControlGet(ControlNamespace, key string) (ControlEntry, bool, error)
+    ControlPut(ControlNamespace, key string, value []byte, deadlineUnixMilli int64) error
     ControlDelete(ControlNamespace, key string) error
 }
 type CommitInFn func(SessionTx) (*AppendRequest, error)
@@ -164,7 +164,11 @@ type SnapshotResult struct { Snapshot *Snapshot; Found bool }
 type SaveSnapshotRequest struct { Snapshot Snapshot }
 type SaveSnapshotResult struct { Snapshot Snapshot; Replaced bool }
 
-type ControlEntry struct { SessionID SessionID; Namespace ControlNamespace; Key string; Value []byte }
+type ControlEntry struct {
+    SessionID SessionID; Namespace ControlNamespace; Key string
+    Value []byte
+    DeadlineUnixMilli int64 // 0 表示无 deadline；kernel 只用于枚举，不据此删除
+}
 
 type Store interface {
     Create(context.Context, CreateRequest) (SessionHeader, error)
@@ -177,10 +181,13 @@ type Store interface {
     LoadSnapshot(context.Context, SnapshotRequest) (SnapshotResult, error)
     SaveSnapshot(context.Context, SaveSnapshotRequest) (SaveSnapshotResult, error)
     // 控制面 KV，临界区之外的读写；与 SessionTx 内的同名方法作用于同一存储。
-    ControlGet(context.Context, SessionID, ControlNamespace, key string) ([]byte, bool, error)
-    ControlPut(context.Context, SessionID, ControlNamespace, key string, value []byte) error
+    ControlGet(context.Context, SessionID, ControlNamespace, key string) (ControlEntry, bool, error)
+    ControlPut(context.Context, SessionID, ControlNamespace, key string, value []byte, deadlineUnixMilli int64) error
+    // 条件写：仅当条目存在且当前 Value 逐字节等于 expected 时写入；返回是否写入。
+    ControlCompareAndPut(context.Context, SessionID, ControlNamespace, key string, expected, value []byte, deadlineUnixMilli int64) (bool, error)
     ControlDelete(context.Context, SessionID, ControlNamespace, key string) error
-    ControlScan(context.Context, ControlNamespace, keyPrefix string, fn func(ControlEntry) (bool, error)) error // 跨全部 Session
+    ControlScan(context.Context, ControlNamespace, keyPrefix string, fn func(ControlEntry) (bool, error)) error    // 跨全部 Session，按前缀
+    ControlExpired(context.Context, ControlNamespace, beforeUnixMilli int64, fn func(ControlEntry) (bool, error)) error // 跨全部 Session，deadline 非 0 且早于 before
 }
 ```
 
@@ -200,9 +207,9 @@ func (Error) Error() string
 
 **SES-API-2** `CommitIn` 是同一 Session 的 append 临界区：Store 在 per-Session 锁或数据库事务内向 fn 提供 `SessionTx`，fn 在其中读 head、按 CommitID 查 commit、读 snapshot 与 tail、读写控制面 KV、决定要追加的事件；返回的 `AppendRequest` 由 Store 在同一事务内按第 5 节规则追加。fn 返回 nil 表示不追加，此时 fn 已执行的 snapshot 与 KV 写入仍提交。section 内 head 不移动，`ExpectedHead` 与 head 不一致只可能是 fn 的实现错误，返回 `Invalid`。fn 必须纯且除 SessionTx 外无副作用；Store 不保证 fn 只被调用一次。
 
-`CommitIn` 与 `Commit` 产生的 commit 逐字段等价，同一 CommitID 的幂等与 conflict 判定相同。两者都是 adapter 必须实现的 port：`Commit`（CAS）一次请求完成比对与写入，适用于 Store 实现为远程客户端、不能在持锁期间回调调用方的部署；`CommitIn` 适用于需要在写入前基于当前状态做决定的模块（例如 Run 的 Decide），以及需要把 claim、lease 与 commit 放在同一事务的 producer。进程内 adapter 可以用 `CommitIn` 加 head 比对函数实现 `Commit`，但 `Commit` 不因此从合同中移除。
+`CommitIn` 与 `Commit` 产生的 commit 逐字段等价，同一 CommitID 的幂等与 conflict 判定相同。两者都是 adapter 必须实现的 port：`Commit`（CAS）一次请求完成比对与写入，适用于 Store 实现为远程客户端、不能在持锁期间回调调用方的部署；`CommitIn` 适用于需要在写入前基于当前状态做决定的模块（例如 Run 的 Decide），以及需要把控制面 KV 写入与 commit 放在同一事务的 producer。进程内 adapter 可以用 `CommitIn` 加 head 比对函数实现 `Commit`，但 `Commit` 不因此从合同中移除。
 
-**SES-API-3** 控制面 KV 以 `(SessionID, Namespace, Key)` 寻址，值为 opaque bytes，kernel 不解释。它用于 lease、grant、claim 等需要与 commit 原子写入、但不属于语义事实的信息。`ControlScan` 按 namespace 与 key 前缀跨 Session 枚举，供恢复扫描使用；fn 返回 false 停止。Namespace 由模块以 `<SourceID>/<ModuleID>/<name>` 命名。KV 不进入 digest chain，可以独立于 stream 重建或清理；模块必须保证 KV 缺失只导致恢复延迟，不导致语义错误。
+**SES-API-3** 控制面 KV 以 `(SessionID, Namespace, Key)` 寻址，值为 opaque bytes 加一个可选 deadline，kernel 不解释值，也不因 deadline 到期而删除或修改条目。它用于需要与 commit 原子写入、但不属于语义事实的运行控制信息：执行占用、保留声明等。kernel 提供且只提供三种模块自己无法提供的保证：`SessionTx` 内的写入与该 commit 同事务；`ControlCompareAndPut` 是临界区之外的原子条件写，条目缺失或当前值不等于 `expected` 时不写入并返回 false；`ControlScan` 与 `ControlExpired` 跨 Session 枚举，前者按 key 前缀，后者按 deadline 早于给定时刻，fn 返回 false 停止。占用、凭证、续期、过期后的处置等语义由使用它的模块或 Module Framework 定义（EXT-SCP-3），不进入 kernel。Namespace 由模块以 `<SourceID>/<ModuleID>/<name>` 命名。KV 与 stream 在同一存储与事务域，不会单独丢失；它不进入 digest chain，因此不能通过 chain 校验，模块不得把语义事实放入 KV。
 
 ## 5. append 与 idempotency
 
@@ -255,7 +262,7 @@ v1 conformance 必须验证：
 - **SES-SCP-2**：附录 A 的能力返回 `ErrUnsupported`，`ParentFork` 非 nil 的 header 被拒绝；
 - **SES-VER-1、SES-VER-2**：kernel 不读取 payload `v`；不同 `v` 的 event 在同一 stream 共存；
 - **SES-WIR-1、SES-WIR-2、SES-WIR-3**：wire/profile freeze、版本一致性、所有 Encode/Decode 与 `ValidateCanonical*` round-trip、digest preimage、same-stream SourceEvents、EventID uniqueness、complete commit；
-- **SES-API-1、SES-API-2、SES-API-3、SES-APP-1、SES-APP-2**：atomic CAS、`CommitIn` 与 `Commit` 的 commit 等价、fn 返回 nil 时 KV 与 snapshot 仍提交、concurrent writer、CommitID exact idempotency（含不同时间戳的重试得到 AlreadyApplied）、failure classification、KV 与 commit 同事务、ControlScan 前缀与提前停止；
+- **SES-API-1、SES-API-2、SES-API-3、SES-APP-1、SES-APP-2**：atomic CAS、`CommitIn` 与 `Commit` 的 commit 等价、fn 返回 nil 时 KV 与 snapshot 仍提交、concurrent writer、CommitID exact idempotency（含不同时间戳的重试得到 AlreadyApplied）、failure classification、KV 与 commit 同事务、`ControlCompareAndPut` 在条目被并发删除或改写后返回 false、`ControlScan` 前缀与提前停止、`ControlExpired` 只返回 deadline 非 0 且已过的条目；
 - **SES-REP-1、SES-REP-2、SES-REP-3**：顺序、完整 EventPosition After 语义、Types 过滤只返回匹配 commit、cursor/token binding、tamper/gap failure；
 - **SES-SNP-1、SES-SNP-2**：Through 前缀校验、snapshot 加 tail 与全量 fold 等价、过期 snapshot 被忽略。
 

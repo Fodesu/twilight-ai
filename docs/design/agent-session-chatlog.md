@@ -19,7 +19,7 @@ Chatlog 保存对话内容：Input、assistant、tool_result、summary、checkpo
 
 流式 `text_delta` / `reasoning_delta` 由 Loop EventSink 发送，属于临时观察。Chatlog 权威是已提交的条目。
 
-**CHT-SCP-1** 本模块拥有对话内容。Application 拥有模型调用、provider transport、发送策略与审计。`turn` 拥有回合与 Run linkage。
+**CHT-SCP-1** 本模块拥有对话内容。Application 拥有模型调用、provider transport、发送策略与审计。`turn` 拥有回合与 Run linkage。本模块的 `Requires`（EXT-REG-4）为空：事件中的 `TurnID` 是 opaque 字符串，不需要 turn 的 codec。
 
 ## 2. stable entity 与生命周期
 
@@ -33,7 +33,7 @@ type CallID string
 type CheckpointID string
 ```
 
-`TurnID` 与 turn 模块同一 identity。InputID、AssistantID、ToolResultID、SummaryID 在 resolved ancestry 内唯一；CallID 在同一 Turn 内唯一。replacement graph 无环，一个实体至多一个直接 replacement。
+`TurnID` 与 turn 模块同一 identity。InputID、AssistantID、ToolResultID、SummaryID 在 stream 内唯一；CallID 在同一 Turn 内唯一。replacement graph 无环，一个实体至多一个直接 replacement。
 
 | 实体 | 创建 | 可变过程 | 终态/替换 | 不变量 |
 |---|---|---|---|---|
@@ -80,7 +80,6 @@ const (
     ToolSuccess ToolResultStatus = "success"
     ToolError ToolResultStatus = "error"
     ToolUnknown ToolResultStatus = "unknown"
-    ToolIndeterminate ToolResultStatus = "indeterminate"
 )
 
 type Input struct {
@@ -131,7 +130,7 @@ type Entry struct {
 
 **CHT-ENT-1** Parts 有序。`ArtifactBindingRef` 的 identity 为 discriminator 与 BindingID。interface value 非 nil；part kind 与 concrete value 匹配。ReferencePart 的 MediaType 来自 Artifact Ref。
 
-**CHT-ENT-2** 每个 `(TurnID,CallID)` 在 assistant 中至多一个 ToolCall。`tool_result` 对应同 Turn 已有的 call。CallID 在同一 Turn 内唯一：同一 Turn 的后续 ModelStep 与后续 Run attempt 不得复用已出现的 CallID（CallID 由 `(ModelStepID, index)` 派生，ModelStepID 含 RunID，天然满足）。`unknown` 为 v1 companion 写入的未决终态；`indeterminate` 保留给历史条目，v1 companion 不产出。active Context 视 unresolved call 为未解决，直到 Application 在 Turn 尚未 `twilight/turn/completed` 或 `twilight/turn/failed` 时写入 `tool_result_superseded`，换成 `success` 或 `error`。每个 unresolved result 至多一个 replacement。v1 companion 不写 `tool_result_superseded`。
+**CHT-ENT-2** 每个 `(TurnID,CallID)` 在 assistant 中至多一个 ToolCall。`tool_result` 对应同 Turn 已有的 call。CallID 在同一 Turn 内唯一：同一 Turn 的后续 ModelStep 与后续 Run attempt 不得复用已出现的 CallID（CallID 由 `(ModelStepID, index)` 派生，ModelStepID 含 RunID，天然满足）。`unknown` 为 companion 写入的未决终态。active Context 视 unresolved call 为未解决，直到 Application 在 Turn 尚未 `twilight/turn/completed` 或 `twilight/turn/failed` 时写入 `tool_result_superseded`，换成 `success` 或 `error`。每个 unresolved result 至多一个 replacement。v1 companion 不写 `tool_result_superseded`。
 
 **CHT-ENT-3** ToolResult 的 nested Parts 为单层 TextPart 或 ReferencePart。外部内容使用 `ReferencePart`。
 
@@ -154,11 +153,11 @@ type ContentRefCodec interface {
 }
 ```
 
-**CHT-COD-1** Decode 先检查 object、discriminator、Session protocol profile、unknown fields 和 limits，再构造 typed value。Encode/Decode 拒绝 nil、kind mismatch、未知 discriminator、cycle 和超限输入。有效值满足 `Encode → Decode → Encode` canonical-equivalent。
+**CHT-COD-1** Decode 先检查 object、discriminator、unknown fields 和 limits，再构造 typed value；payload 版本字段 `v` 由 Registry 处理（EXT-REG-2），本模块 codec 不读写它。Encode/Decode 拒绝 nil、kind mismatch、未知 discriminator、cycle 和超限输入。有效值满足 `Encode → Decode → Encode` canonical-equivalent。
 
-**CHT-COD-2** registry 在启动时固定，kind 有唯一 codec。BindingExtractor 按 appearance order 返回 assistant、tool_result、summary 中 ReferencePart 的 BindingID。
+**CHT-COD-2** parts codec 在启动时固定，kind 有唯一 codec。本模块提供 `PartsExtractor`，实现 `extension.BindingExtractor`，按 appearance order 返回 assistant、tool_result、summary 中 ReferencePart 的 BindingID，随这三种 EventDefinition 一起声明。
 
-**CHT-COD-3** EventType 为 `twilight/chatlog/<name>`。payload 第一层携带版本字段 `v`（EXT-REG-2），由 Registry 写入与读取，本模块的 codec 不读写它；chatlog payload 的非兼容变化只增加本模块的 `Current` 版本与一个新 codec。条目 Digest 的 domain 与 EventType 相同，覆盖 ID、TurnID（若有）、有序 parts 或 Content、ref identity、SourceDigest（若有），不覆盖 `v`。wire 与 digest 形状由 Session `ProtocolVersion` 决定：
+**CHT-COD-3** EventType 为 `twilight/chatlog/<name>`。条目 Digest 的 domain 与 EventType 相同，覆盖 ID、TurnID（若有）、有序 parts 或 Content、ref identity、SourceDigest（若有），不覆盖 `v`：
 
 ```text
 Digest("twilight/chatlog/input_submitted", ...)
@@ -203,11 +202,11 @@ type EntryDigestPair struct { Kind EntryKind; ID string; Digest es.Digest }
 type CheckpointInvalidatedPayload struct { CheckpointID CheckpointID; Reason string }
 ```
 
-`assistant`、`tool_result`、`summary` 的 EventDefinition 注册 parts registry：
+`assistant`、`tool_result`、`summary` 的 EventDefinition 声明 parts 提取：
 
 ```go
 extension.BindingReferenceDefinition{
-    RegistryID: "twilight/chatlog/parts",
+    Extractor: chatlog.PartsExtractor,
     Cardinality: extension.Cardinality{Min: 0},
     AllowedSchemes: nil,
     RequiredDurability: artifact.EventBound,
@@ -231,7 +230,7 @@ twilight/chatlog/checkpoint_created
 twilight/chatlog/checkpoint_invalidated
 ```
 
-**CHT-EVT-2** `input_submitted` 创建 Input。Delivered、Withdrawn、Rejected 各终结一次。`input_delivered` 要求 Input 仍为 submitted，并写入非空 TurnID。同一 Start commit 中 `twilight/turn/started` 列出这些 InputIDs。AssistantID、ToolResultID、SummaryID 在 ancestry 内单次创建。
+**CHT-EVT-2** `input_submitted` 创建 Input。Delivered、Withdrawn、Rejected 各终结一次。`input_delivered` 要求 Input 仍为 submitted，并写入非空 TurnID；它与把该输入交给 Run 的事实同 commit：Start group 中与 `twilight/turn/started` 一起，回合中途与 `twilight/run/input_accepted` 一起（TRN-STR-2、TRN-DLV-2）。AssistantID、ToolResultID、SummaryID 在 stream 内单次创建。
 
 **CHT-EVT-3** checkpoint Digest 的 domain 为 `twilight/chatlog/checkpoint_created`。`BaseContextDigest` 覆盖截至 `CoveredThrough` 的有序 active Context 序列 `(Kind, ID, Digest)`。`CoveredThrough` 早于该 checkpoint。`SummaryID` 落在 `CoveredThrough` 与 checkpoint 之间，且已由 `summary` 创建。该间隙内仅有这一条 summary。`Retained` 为 base 序列的有序子集。合法 checkpoint 下 Context 为 `[Summary] + Retained`，再 fold checkpoint 之后的 tail。checkpoint 在显式 invalidate，或 summary / Retained / base source 被 supersede 之后失效；projection 回退到更早合法 checkpoint，或从全量 events 重折。
 
@@ -252,7 +251,7 @@ type Surface struct {
 }
 ```
 
-**CHT-SUR-1** SurfaceFold 消费 chatlog decoded events。`EntryOrder` 为 resolved replay 顺序下的 delivered input、assistant、tool_result、summary，并带 Position。回合列表由 turn 投影提供，按 `TurnID` 连接。
+**CHT-SUR-1** SurfaceFold 消费 chatlog decoded events，`RequireComplete` 为 `chatlog`。`EntryOrder` 为 stream 顺序下的 delivered input、assistant、tool_result、summary，并带 Position。回合列表由 turn 投影提供，按 `TurnID` 连接。
 
 ## 7. Context projection
 
@@ -260,7 +259,7 @@ type Surface struct {
 func ContextFold(events []extension.DecodedEvent) ([]Entry, error)
 ```
 
-**CHT-CTX-1** 输入为已验证、按 ancestry 排序的 chatlog events。输出为 delivered input、assistant、tool_result、summary 经 supersession 与 checkpoint 处理后的有序 `[]Entry`。ContextFold 为纯函数。
+**CHT-CTX-1** 输入为已验证、按 stream 顺序的 chatlog events，`RequireComplete` 为 `chatlog`。输出为 delivered input、assistant、tool_result、summary 经 supersession 与 checkpoint 处理后的有序 `[]Entry`。ContextFold 为纯函数。
 
 **CHT-CTX-2** fold 执行 ID 单次创建、CallID pairing、unresolved-call 与 replacement 规则。合法 checkpoint 按 CHT-EVT-3 应用。Context 只含已 delivered 的 Input。
 

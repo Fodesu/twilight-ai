@@ -1,6 +1,6 @@
 # Twilight Agent Artifact Core
 
-状态：设计草案。无实现；wire 与 claim 状态表在 Memory reference implementation 通过 conformance 前不冻结。2026-09-04 第二次修订：v1 的 claim 只有 `Active` 与 `Released` 两态，与 Session commit 同事务写入；`Prepared` 状态、reconciler、provider 迁移 fence 与 archive import/export 移入附录，不进入 v1 conformance。
+状态：设计草案。无实现；wire 与 claim 状态表在 Memory reference implementation 通过 conformance 前不冻结。v1 的 claim 只有 `Active` 与 `Released` 两态，与 Session commit 同事务写入；`Prepared` 状态、reconciler、provider 迁移 fence 与 archive import/export 在附录中，不进入 v1 conformance。
 
 本文定义 `agent/artifact`。文中的"必须""不得""应该"是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
 
@@ -69,8 +69,8 @@ type WireCodec interface {
     DecodeRef(jsonstable.Value) (Ref, error)
     EncodeBinding(Binding) (jsonstable.Value, error)
     DecodeBinding(jsonstable.Value) (Binding, error)
-    EncodeManifest(BindingManifest) (jsonstable.Value, error)
-    DecodeManifest(jsonstable.Value) (BindingManifest, error)
+    EncodeManifest(BindingManifest) (jsonstable.Value, error) // 附录第 7 节；v1 返回 ErrUnsupported
+    DecodeManifest(jsonstable.Value) (BindingManifest, error) // 同上
 }
 ```
 
