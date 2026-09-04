@@ -49,6 +49,8 @@ func Plan(ctx context.Context, hint run.PlanningHint, fold []chatlog.Entry, pub 
 
 **REF-PLN-5** 无附件时 TextPart 直接写入 sdk.Message。ReferencePart 经 ContextMaterializer 转换。
 
+**REF-PLN-6** 同一 Turn 有多个 Run attempt 时，参考 Planner 把全部 attempt 的 assistant 与 tool_result 按 commit 顺序纳入请求，包括失败 attempt 的部分输出与 status=`unknown` 的工具结果。这与用户中断后继续的语义一致。Application 可以替换为其他策略（例如排除 `AttemptView.End` 为 failed 的 attempt 的条目），策略只影响请求组装，不影响 stream 与 ContextFold。
+
 ## 3. 用户正文
 
 同一份 canonical JSON：
@@ -67,20 +69,20 @@ run.AgentInput.Payload
 ## 4. Memory 组成
 
 ```text
-sessionStore = session.NewMemoryStore()
-catalog      = extension.BuildCatalog(CatalogBuildRequest{ProtocolVersion, Profile,
-                 Modules: []ModuleDescriptor{chatlog.Module, turn.Module, runmod.Module}})
-appender     = extension.NewSemanticAppender(sessionStore, catalog, artifacts)
-runtime      = runmod.NewRuntime(sessionStore, catalog, runmod.NewMemoryFrozenValues(), runmod.NewMemoryLeases(), turn.CompanionV1(catalog))
-bindings     = Resolve(ExecutionBindingRef) -> loop.New(models, tools, contextPlanner, policy, pub.Streaming)
-coordinator  = turn.Coordinator{Sessions: sessionStore, Appender: appender, Runtime: runtime, Bindings: bindings}
+sessionStore = session.NewMemoryStore()                       // commit、CommitIn、snapshot、控制面 KV
+registry     = extension.FirstPartyRegistry(profile, chatlog.Parts)
+ledger       = artifact.NewLedger(...)                        // claim 存于控制面 KV twilight/artifact/claim
+appender     = extension.NewSemanticAppender(sessionStore, registry, bindings, ledger)
+runtime      = runmod.NewRuntime(appender, sessionStore, runmod.NewMemoryFrozenValues(), turn.CompanionV1(registry), runmod.DefaultSnapshotPolicy)
+drivers      = Resolve(ExecutionBindingRef) -> loop.New(models, tools, contextPlanner, policy, pub.Streaming)
+coordinator  = turn.Coordinator{Sessions: sessionStore, Appender: appender, Runtime: runtime, Bindings: drivers}
 
 input_submitted
 coordinator.Start
   commit 1: twilight/turn/started + twilight/chatlog/input_delivered* + twilight/run/created + twilight/run/input_accepted*
   Loop.Run
     commit: twilight/run/model_step_prepared            （请求本体 → FrozenValueStore）
-    commit: twilight/run/model_step_started
+    commit: twilight/run/model_step_started             （lease → 控制面 KV，同事务）
     commit: twilight/run/model_step_completed + twilight/run/tool_step_opened + twilight/chatlog/assistant
     commit: twilight/run/tool_call_started
     commit: twilight/run/tool_call_completed + twilight/chatlog/tool_result

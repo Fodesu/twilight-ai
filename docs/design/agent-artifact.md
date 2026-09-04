@@ -1,8 +1,8 @@
 # Twilight Agent Artifact Core
 
-状态：设计草案。无实现；wire 与 claim 状态表在 Memory reference implementation 通过 conformance 前不冻结。
+状态：设计草案。无实现；wire 与 claim 状态表在 Memory reference implementation 通过 conformance 前不冻结。2026-09-04 第二次修订：v1 的 claim 只有 `Active` 与 `Released` 两态，与 Session commit 同事务写入；`Prepared` 状态、reconciler、provider 迁移 fence 与 archive import/export 移入附录，不进入 v1 conformance。
 
-本文定义 `agent/artifact`。文中的“必须”“不得”“应该”是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
+本文定义 `agent/artifact`。文中的"必须""不得""应该"是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
 
 ## 1. 模型与范围
 
@@ -14,9 +14,11 @@ Binding：稳定 BindingID 到 immutable Ref 的映射
 RetentionClaim：owner 对一个 BindingSet 的 durable 保留事实
 ```
 
-`BindingSet` 是 claim 的内容集合。`Prepared` claim 为 in-flight owner operation 提供 GC 保护；`Active` claim 是已确认 owner fact 的 retention root；`Released` claim 不再保留任何内容。Core 不依赖 Session、Event、Chatlog 或 Application，且不解释 owner 的领域语义。Attachment 等 owner module 可以关联 `AttachmentID`、subject 与 `BindingID`，但该边界只使用 BindingID，不引入 Event 依赖。
+`BindingSet` 是 claim 的内容集合。`Active` claim 是已确认 owner fact 的 retention root；`Released` claim 不再保留任何内容。v1 中 claim 由 Session Module Framework 在写入 owner fact 的同一事务内以 `Active` 状态建立（EXT-APP-3），因此不需要 in-flight 保护状态；`Prepared` 保留给无法同事务写入的部署（附录）。Core 不依赖 Session、Event、Chatlog 或 Application，且不解释 owner 的领域语义。Attachment 等 owner module 可以关联 `AttachmentID`、subject 与 `BindingID`，但该边界只使用 BindingID，不引入 Event 依赖。
 
 **ART-SCP-1** Core 不得解释 `ClaimOwner`，不得要求某种数据库、文件系统或 provider 实现。第一版只要求 Memory reference implementation 和 conformance suite。
+
+**ART-SCP-2** v1 范围：Ref、Binding、Resolver/Store/Promoter capability、两态 RetentionLedger、SchemeDefinition 与 provider binding registry。附录中的能力在 v1 返回 `ErrUnsupported`。
 
 ## 2. identity 与 wire
 
@@ -109,9 +111,9 @@ type BindingStore interface {
 type ClaimOwner struct { Kind, Authority, Identity string }
 type ClaimState string
 const (
-    ClaimPrepared ClaimState = "prepared"
     ClaimActive ClaimState = "active"
     ClaimReleased ClaimState = "released"
+    ClaimPrepared ClaimState = "prepared" // 仅附录的两阶段部署使用
 )
 
 // BindingSet is a canonical, resolved retention set.
@@ -126,39 +128,38 @@ type ClaimCursor struct { Watermark ClaimID; After ClaimID }
 type ClaimPage struct { Items []RetentionClaim; Next *ClaimCursor }
 type ClaimOwnerQuery struct { Kind, Authority string; Identities []string }
 
+// ClaimKV 是宿主提供的、与 owner fact 同事务的 KV 视图；Session 部署中由
+// session.SessionTx 的控制面 KV（namespace twilight/artifact/claim）适配。
+type ClaimKV interface {
+    Get(key string) ([]byte, bool, error)
+    Put(key string, value []byte) error
+    Delete(key string) error
+}
+
 type RetentionLedger interface {
-    Prepare(context.Context, ClaimID, ClaimOwner, BindingSet) (RetentionClaim, error)
+    // ActivateIn 在 kv 所属事务内建立或幂等确认一个 Active claim。
+    ActivateIn(kv ClaimKV, ClaimID, ClaimOwner, BindingSet) (RetentionClaim, error)
     LookupClaim(context.Context, ClaimID) (RetentionClaim, bool, error)
-    Activate(context.Context, ClaimID) (RetentionClaim, error)
-    AbortPrepared(context.Context, ClaimID) error
     ReleaseActive(context.Context, ClaimID) error
-    PreparedClaims(context.Context, ClaimCursor) (ClaimPage, error)
     ClaimsByOwner(context.Context, ClaimOwnerQuery, ClaimCursor) (ClaimPage, error)
-    ImportActiveClaims(context.Context, []RetentionClaim) error
 }
 ```
 
 **ART-RET-1** `BindingSetBuilder.Build(ctx, ids)` 是构造 BindingSet 的唯一算法：它将 ids canonicalize 为 sorted-unique `BindingID`，逐个通过 BindingResolver resolve，并计算覆盖 profile、WireVersion 和按 BindingID 排序的 `(BindingID, BindingDigest)` 的 `RefSetDigest`。`BindingSet` 必须同时携带这两个值，不能由调用者单独拼接 digest。ledger 必须以自己的 BindingResolver 重建并精确验证传入 set。
 
-**ART-RET-2** claim 只接受 `EventBound` 或 `Pinned` Binding；`Ephemeral` 必须先 promote。ClaimID 必须由 owner fact identity 与 BindingSet 稳定、确定地派生，并永久绑定该 owner 与 set：`Prepare` 对同 ID、同 owner、同 set 幂等，对任何其他组合 conflict。`Prepared` 与 `Active` 都是 GC roots；GC 只忽略 `Released` claim。未知 scheme 必须保守保留。
+**ART-RET-2** claim 只接受 `EventBound` 或 `Pinned` Binding；`Ephemeral` 必须先 promote。ClaimID 必须由 owner fact identity 与 BindingSet 稳定、确定地派生，并永久绑定该 owner 与 set：`ActivateIn` 对同 ID、同 owner、同 set 幂等，对任何其他组合 conflict。`Active` claim 是 GC root；GC 只忽略 `Released` claim。未知 scheme 必须保守保留。
 
 | 操作 | 前置状态 | 结果 |
 |---|---|---|
-| Prepare(new ID, owner, set) | 不存在 | Prepared |
-| Prepare(existing ID, exact owner/set) | Prepared/Active | 返回既有 claim |
-| Prepare(existing ID, exact owner/set) | Released | conflict |
-| Prepare(existing ID, other owner/set) | 任意 | conflict |
-| Activate | Prepared | Active |
-| Activate | Active | 幂等成功 |
-| Activate | Released/不存在 | conflict/not found |
-| AbortPrepared | Prepared，且有 owner operation terminally aborted 证据 | Released |
-| AbortPrepared | Released | 幂等成功 |
-| AbortPrepared | Active | conflict |
+| ActivateIn(new ID, owner, set) | 不存在 | Active |
+| ActivateIn(existing ID, exact owner/set) | Active | 幂等成功 |
+| ActivateIn(existing ID, exact owner/set) | Released | conflict |
+| ActivateIn(existing ID, other owner/set) | 任意 | conflict |
 | ReleaseActive | Active，且 owner retention 已结束 | Released |
 | ReleaseActive | Released | 幂等成功 |
-| ReleaseActive | Prepared | conflict |
+| ReleaseActive | 不存在 | not found |
 
-**ART-RET-3** `AbortPrepared` 的调用方必须以证明 owner operation 已 terminally aborted 的 durable evidence 授权。owner operation 查询为 NotFound、unknown 或 transient failure 时，reconciler 必须保留原 `Prepared` claim 并留待后续 reconciliation。对同一 owner fact 的 retry 必须保留原 `Prepared` claim，绝不得先 abort 再复用 ID。`PreparedClaims` 与 `ClaimsByOwner` 使用 watermark cursor，按 ClaimID 稳定排序；空 owner identities 不匹配。reconciler 将已证实 owner fact 映射为 Activate、已证实 terminal abort 映射为 AbortPrepared、已证实 owner retention 结束映射为 ReleaseActive。
+**ART-RET-3** `ClaimsByOwner` 使用 watermark cursor，按 ClaimID 稳定排序；空 owner identities 不匹配。v1 没有 in-flight claim，因此没有 reconciler；`ReleaseActive` 的授权（owner retention 已结束）由 Application 的 GC policy 提供。
 
 ## 6. provider 与 scheme boundary
 
@@ -177,9 +178,9 @@ type ProviderBinding struct {
 
 **ART-PRO-1** registry 在 startup 组合后 immutable；每个 Scheme 有唯一 definition，verified use 需要已注册 Scheme 和唯一 `(Scheme,Authority)` provider binding。provider config、secret、物理位置与迁移属于 adapter/Application。
 
-**ART-PRO-2** adapter 改变物理实现时必须保持 locator resolution 不变，并以 generation/fence 防止旧位置在新位置验证可恢复前回收。具体 filesystem、DB 与迁移步骤由 adapter/Application 负责。
+## 7. archive 与 import/export（附录，不进入 v1）
 
-## 7. archive 与 import/export
+以下为预留设计，v1 实现返回 `ErrUnsupported`。
 
 ```go
 type BindingManifest struct {
@@ -199,6 +200,10 @@ type VerifiedImportResult struct { Bindings []BindingID; Claims []ClaimID }
 
 **ART-ARC-2** `ImportActiveClaims` 是 all-or-nothing validation boundary：先验证所有 referenced Binding、durability、digest、owner、ClaimID 和 state，再全部写入或失败。它不接受 Prepared 或 Released records；逐字段相同 active record 幂等，同 identity 的不同 record 为 conflict。导出按 `ClaimsByOwner` 的完整 cursor 枚举 closure。
 
+**ART-PRO-2**（附录）adapter 改变物理实现时必须保持 locator resolution 不变，并以 generation/fence 防止旧位置在新位置验证可恢复前回收。具体 filesystem、DB 与迁移步骤由 adapter/Application 负责。
+
+**两阶段 claim**（附录）当 ledger 与 owner fact 不在同一事务域时，`Prepare(ClaimID, Owner, Set)` 建立 `Prepared` claim 作为 in-flight GC root，`Activate` 在 owner fact 确认后转为 Active，`AbortPrepared` 只在 owner operation 已 terminally aborted 的 durable evidence 下转为 Released；reconciler 扫描 `PreparedClaims`，对 NotFound、unknown 或 transient failure 保留 Prepared。对应 Session Module Framework 附录 C。
+
 多 package coordination、quarantine 操作流程不属于本规范。
 
 ## 8. errors 与 conformance
@@ -217,10 +222,10 @@ func (Error) Error() string
 
 实现必须以可判别 `ErrorCode` 返回预期失败；`Detail` 不得承载 provider secret。
 
-Conformance 必须验证：
+v1 conformance 必须验证：
 
 - **ART-ID-1、ART-REF-1、ART-REF-2、ART-WIR-1**：canonical round-trip、拒绝歧义 wire、identity-bound/untrusted MediaType、locator/integrity 和 durability；
 - **ART-BND-1、ART-BND-2、ART-CAP-1**：Binding conflict、promotion、resolver integrity 和 capability errors；
-- **ART-RET-1、ART-RET-2、ART-RET-3**：BindingSetBuilder/ledger 独立重算与精确验证、RefSetDigest、不可复用 released claim、全状态表、cursor pagination、Prepared/Active GC protection 与保守 reconcile；
-- **ART-PRO-1、ART-PRO-2**：immutable registry、provider-instance isolation 与迁移 fence；
-- **ART-ARC-1、ART-ARC-2**：manifest wire、inspection、verified all-or-nothing active-claim import 和 exact idempotency。
+- **ART-RET-1、ART-RET-2、ART-RET-3**：BindingSetBuilder/ledger 独立重算与精确验证、RefSetDigest、不可复用 released claim、两态状态表、`ActivateIn` 在宿主事务内生效与回滚、cursor pagination、Active GC protection；
+- **ART-PRO-1**：immutable registry 与 provider-instance isolation；
+- **ART-SCP-2**：附录能力返回 `ErrUnsupported`。
