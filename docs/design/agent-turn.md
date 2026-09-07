@@ -265,7 +265,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 
 **TRN-MAP-2** `AssistantID = Digest("twilight/chatlog/assistant-id", TurnID, ModelStepID, CompanionVersion)`。`ToolResultID = Digest("twilight/chatlog/tool-result-id", TurnID, CallID, CompanionVersion)`。assistant 的 ToolCall 顺序与模型结果一致；`ToolCallPart` 携带 `CallID` 与 `ProviderCallID`。tool_result 以 CallID 与同 Turn 的 call 配对。CallID 由 Run 从 `(ModelStepID, index)` 派生，同一 Turn 内不跨 ModelStep 复用。
 
-**TRN-MAP-3** assistant 正文与工具输出来自 command 携带的冻结值。`Assistant.SourceDigest` 等于 `ModelStepCompleted.ResultDigest`，`ToolResult.SourceDigest` 等于 `ToolCallCompleted.OutputDigest` 或 `ToolCallAnswered.ResponseDigest`；chatlog 条目自身的 `Digest` 仍按 CHT-COD-3 覆盖 parts。Runtime 在写入前校验这一等式（RUN-CMT-3 第 9 步）。
+**TRN-MAP-3** assistant 正文与工具输出来自 command 携带的冻结值。`Assistant.SourceDigest` 等于 `ModelStepCompleted.ResultDigest`，`ToolResult.SourceDigest` 等于 `ToolCallCompleted.OutputDigest` 或 `ToolCallAnswered.ResponseDigest`；`ToolCallFailed` 产生的 `tool_result` 没有 fact 记录的 digest，其 `SourceDigest` 为空。chatlog 条目自身的 `Digest` 仍按 CHT-COD-3 覆盖 parts。Runtime 在写入前校验非空 `SourceDigest` 的这一等式（RUN-CMT-3 第 9 步）。
 
 **TRN-MAP-4** Known 对应 `error`；Unknown 对应 `unknown`。v1 companion 不写 `tool_result_superseded`。
 

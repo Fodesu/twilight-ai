@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 
 	"github.com/memohai/twilight/agent/jsonstable"
 	"github.com/memohai/twilight/agent/run"
@@ -16,15 +17,17 @@ const MachineProjectionID extension.ProjectionID = "twilight/run/machine"
 // Machine is the twilight/run/machine projection state (RUN-CMT-2): every
 // non-terminal Run of the Session with its last event position and schema.
 // Terminal Runs leave the projection; Record and the turn surface keep their
-// results.
+// results. Ended keeps only the RunIDs of terminated Runs so a second
+// run_created for a used RunID is refused (RUN-NEW-1) without keeping state.
 type Machine struct {
 	Active    map[run.RunID]run.MachineState
 	Positions map[run.RunID]run.RunPosition
 	Schemas   map[run.RunID]uint16
+	Ended     map[run.RunID]struct{}
 }
 
 func newMachine() Machine {
-	return Machine{Active: map[run.RunID]run.MachineState{}, Positions: map[run.RunID]run.RunPosition{}, Schemas: map[run.RunID]uint16{}}
+	return Machine{Active: map[run.RunID]run.MachineState{}, Positions: map[run.RunID]run.RunPosition{}, Schemas: map[run.RunID]uint16{}, Ended: map[run.RunID]struct{}{}}
 }
 
 func (m Machine) clone() Machine {
@@ -37,6 +40,9 @@ func (m Machine) clone() Machine {
 	}
 	for k, v := range m.Schemas {
 		out.Schemas[k] = v
+	}
+	for k := range m.Ended {
+		out.Ended[k] = struct{}{}
 	}
 	return out
 }
@@ -53,6 +59,9 @@ func (m Machine) Apply(e extension.DecodedEvent) (Machine, error) {
 	if created, isCreated := ev.Fact.(run.RunCreated); isCreated {
 		if _, dup := out.Active[ev.RunID]; dup {
 			return m, fmt.Errorf("run machine: %s created twice", ev.RunID)
+		}
+		if _, ended := out.Ended[ev.RunID]; ended {
+			return m, fmt.Errorf("run machine: %s created again after it ended", ev.RunID)
 		}
 		p, err := run.ProtocolFor(created.SchemaVersion)
 		if err != nil {
@@ -79,6 +88,7 @@ func (m Machine) Apply(e extension.DecodedEvent) (Machine, error) {
 		delete(out.Active, ev.RunID)
 		delete(out.Positions, ev.RunID)
 		delete(out.Schemas, ev.RunID)
+		out.Ended[ev.RunID] = struct{}{}
 		return out, nil
 	}
 	out.Active[ev.RunID] = next
@@ -87,7 +97,8 @@ func (m Machine) Apply(e extension.DecodedEvent) (Machine, error) {
 }
 
 type machineWire struct {
-	Runs map[run.RunID]machineRunWire `json:"runs"`
+	Runs  map[run.RunID]machineRunWire `json:"runs"`
+	Ended []run.RunID                  `json:"ended,omitempty"`
 }
 
 type machineRunWire struct {
@@ -126,6 +137,10 @@ func (c machineCodec) Encode(value any) (jsonstable.Value, error) {
 		}
 		wire.Runs[id] = machineRunWire{Schema: m.Schemas[id], Position: m.Positions[id], State: encoded}
 	}
+	for id := range m.Ended {
+		wire.Ended = append(wire.Ended, id)
+	}
+	sort.Slice(wire.Ended, func(i, j int) bool { return wire.Ended[i] < wire.Ended[j] })
 	return jsonstable.FromValue(wire)
 }
 
@@ -150,6 +165,9 @@ func (machineCodec) Decode(wire jsonstable.Value) (any, error) {
 		m.Active[id] = state
 		m.Positions[id] = r.Position
 		m.Schemas[id] = r.Schema
+	}
+	for _, id := range w.Ended {
+		m.Ended[id] = struct{}{}
 	}
 	return m, nil
 }

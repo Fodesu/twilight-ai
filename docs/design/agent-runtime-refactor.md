@@ -104,7 +104,7 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 | `agent/run/loop` 绑定 Session（`Run(ctx, runtime, sessionID, runID, sink)`、RunPosition、SessionCommit 观察） | 完成，2026-09-07 |
 | `agent/turn` 重写（Coordinator、CompanionV1、surface 投影） | 完成，2026-09-07；旧实现已删除 |
 | 参考组装 `agent/ref`（ExecutionBinding、ContextPlanner、Memory 组装、SessionDriver、崩溃恢复 example） | 完成，2026-09-07 |
-| Runtime conformance（RUN-CMP-2）与各模块 conformance | 未按新合同重建；旧 `runtimetest` 已随 per-Run Store 删除 |
+| Runtime conformance（RUN-CMP-2，`agent/session/run/runtimetest`，以 `session.Store` 为参数） | 完成，2026-09-07；对 Memory Store 通过。kernel 与 extension 的 conformance 部分实现 |
 | SQLite / PostgreSQL Session Store adapter、live 模型接入 | 未开始 |
 
 当前正式调用形态为 `agent/ref` 的 Memory 组装：`ref.New` 返回 Store、Registry、Appender、Projections、Runtime、Coordinator 与 Bindings；Application 经 `SessionDriver.Send` 投递输入。Loop 不保存 authority state；Runtime 不读取 queue 或 planner context。

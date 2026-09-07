@@ -398,7 +398,7 @@ type MachineProjection struct {
 }
 ```
 
-终态 Run 在 `RunEnded` 折叠后从投影中移除；终态结果由 `Record` 与 turn surface 提供，投影大小与活动 Run 数成正比。snapshot 是可丢弃缓存（SES-SNP-1）：`Load` 经 `extension.ProjectionReader`（EXT-PRJ-4）读取，即 snapshot（若存在且 `Through` 是当前前缀）加其后类型前缀为 `twilight/run/` 的 tail；没有 snapshot 时从 stream 的过滤 replay 全量 fold。写入策略由 `agent/session/run` 的 `SnapshotPolicy` 决定，默认在 Run 的 `Current` 回到 `Open` 或 Run 终结时写入，并可按 commit 计数补充；kernel 不要求每次 commit 都写。`Record` 以 `Types=[twilight/run/]` 过滤 replay 读取该 RunID 的全部事件（SES-REP-2），FoldRun 重建；该 Run 仍在投影中时与投影状态比对，corrupt、gap 或 divergence 必须失败。
+终态 Run 在 `RunEnded` 折叠后从投影中移除，投影只保留其 RunID 用于拒绝同一 RunID 的第二条 `created`（RUN-NEW-1）；终态结果由 `Record` 与 turn surface 提供，投影大小与活动 Run 数成正比，加上已终结 RunID 的集合。snapshot 是可丢弃缓存（SES-SNP-1）：`Load` 经 `extension.ProjectionReader`（EXT-PRJ-4）读取，即 snapshot（若存在且 `Through` 是当前前缀）加其后类型前缀为 `twilight/run/` 的 tail；没有 snapshot 时从 stream 的过滤 replay 全量 fold。写入策略由 `agent/session/run` 的 `SnapshotPolicy` 决定，默认在 Run 的 `Current` 回到 `Open` 或 Run 终结时写入，并可按 commit 计数补充；kernel 不要求每次 commit 都写。`Record` 以 `Types=[twilight/run/]` 过滤 replay 读取该 RunID 的全部事件（SES-REP-2），FoldRun 重建；该 Run 仍在投影中时与投影状态比对，corrupt、gap 或 divergence 必须失败。
 
 **RUN-CMT-3** Commit 经 `extension.SemanticAppender.AppendSemanticIn` 在 Session Store 的一个事务内完成（SES-API-2、EXT-APP-3）。所有 Runtime implementation 在 fn 内调用同一个 pure `EvaluateCommit`，顺序固定为：
 
@@ -412,7 +412,7 @@ AppendSemanticIn(sessionID, func(tx):
   5  state = fold(tx.LoadSnapshot(twilight/run/machine) + tx.Tail(after, [twilight/run/]))
      缺少 created -> ErrRunNotFound；schema 不等于 created.SchemaVersion -> 不可重试错误；terminal check
   6  validate hard CAS（prepare 的 Base == Positions[RunID]）/ target state / execution grant / recovery authority
-     grant 经 LookupLease 校验 Token；recovery authority 要求条目 deadline 已过且 command Claim 等于 Holder
+     grant 经 LookupLease 校验 Token；recovery authority 要求条目 deadline 已过且 command 与 Holder 绑定（5.1 节）
   7  facts = Protocol.Decide(state, command) exactly once
   8  Protocol.Evolve in order；facts -> ModuleEvent（Type twilight/run/<name>，v = SchemaVersion）
   9  companion = Companion.Map(...)；校验 SourceDigest（TRN-MAP-3）；追加 request.Attach（不得为 twilight/run/ 事件）
@@ -428,7 +428,7 @@ FrozenValueStore 的 `Put` 幂等且内容寻址，在进入事务之前完成�
 
 **RUN-CMT-5** 幂等键为 Session kernel 的 `(SessionID, CommitID)`，CommitID 等于 CommandID，Runtime 不另设幂等索引。同 CommandID 的重放返回 `CommitAlreadyApplied`、当前 snapshot 与原完整 commit，且不得再次 Decide 或产生外部 effect；command 不持久化，Runtime 不比对重放 command 的内容，同 CommandID 视为同一 command。对于 `StartModelExecution` 和 `StartToolCall`，claim 是 CommandID 的 preimage，不同 claim 即不同 command：其 start 按当前 target state 与 lease 评估，target 已被占用时返回 `ErrStaleRuntime`，并保持现有执行授权。start 的重放在 grant 仍 live 时返回原 start grant。非 start command 的 replay 不返回 grant。
 
-**RUN-CMT-6** accepted `StartModelExecution`/`StartToolCall` 为目标签发新 grant；该 start 的 `CommitAccepted` 和在 grant 仍 live 时满足精确 replay 条件的 `CommitAlreadyApplied` 返回同一个 grant。若该 start 已 settlement 或 Run 已 terminal，精确 replay 仍返回 `CommitAlreadyApplied`，并返回空 grant。model result/failure/reject 与 executing tool result/known failure 必须携带 live target grant。settlement 接受后 grant 失效；terminal commit 撤销该 Run 全部 grant。`RecoverModelExecution` 由 live grant holder 提交，或在 Runtime 验证 lease 已过期且 command Claim 等于该 lease 的 Claim 后无 grant 提交。Executing tool 的 recovery 使用同一条 `SubmitToolFailure{Outcome:Unknown}` command：工具 owner 必须携带 live grant；`RecoverExpired` 仅在 lease 已过期且没有已接受 settlement 时无 grant 提交。该 Unknown 只结算这一 call，Run 保持 Active。
+**RUN-CMT-6** accepted `StartModelExecution`/`StartToolCall` 为目标签发新 grant；该 start 的 `CommitAccepted` 和在 grant 仍 live 时满足精确 replay 条件的 `CommitAlreadyApplied` 返回同一个 grant。若该 start 已 settlement 或 Run 已 terminal，精确 replay 仍返回 `CommitAlreadyApplied`，并返回空 grant。model result/failure/reject 与 executing tool result/known failure 必须携带 live target grant。settlement 接受后 grant 失效；terminal commit 撤销该 Run 全部 grant。`RecoverModelExecution` 由 live grant holder 提交，或在 Runtime 验证 lease 已过期且 command Claim 等于该 lease 的 Holder 后无 grant 提交。Executing tool 的 recovery 使用同一条 `SubmitToolFailure{Outcome:Unknown}` command：工具 owner 必须携带 live grant；`RecoverExpired` 仅在 lease 已过期且没有已接受 settlement 时无 grant 提交。该 Unknown 只结算这一 call，Run 保持 Active。
 
 **RUN-CMT-7** commit、lease 变更、claim 与（若写入）snapshot 在同一 Session Store 事务内生效：lease 经 `extension.AcquireLease` / `ReleaseLease` 在 `SemanticTx` 内写入，claim 由 Appender 写入，三者与 commit 同时可见或同时不可见。`CommitResult`、Load 与 Record 返回 detached values。预期拒绝映射为 `ErrCommandConflict`、`ErrStaleRuntime`、`ErrRunTerminal`；transport/storage failure 保持可判别且不得伪装为 rejection。
 
@@ -445,7 +445,7 @@ grant、lease、ExecutionClaim、ClaimStore 与投影 snapshot 都不进入 stre
 | target | `Namespace = twilight/run/lease`，`Key = <RunID>/model/<StepID>` 或 `<RunID>/call/<StepID>/<CallID>`；三段都是定长 hex digest，恢复时由 Key 解析 target，`Attrs` 为空 |
 | `LeaseTTL` | `TTL`；零表示不超时（进程内占用） |
 
-一个 target 至多一条 live lease。start 在提交 `ModelStepStarted` / `ToolCallStarted` 的事务内 `AcquireLease`；settlement 与 recovery 在提交对应 fact 的事务内 `ReleaseLease`。因此"日志中该 target 为 Executing"与"存在其 lease"同时成立或同时不成立。过期且无 settlement 时 Runtime 允许 grantless Recover：recovery authority 的判定为条目 deadline 已过、且 command 的 Claim 等于条目的 Holder。durable `loop.ClaimStore` 使用控制面 KV namespace `twilight/run/claim`。
+一个 target 至多一条 live lease。start 在提交 `ModelStepStarted` / `ToolCallStarted` 的事务内 `AcquireLease`；settlement 与 recovery 在提交对应 fact 的事务内 `ReleaseLease`。因此"日志中该 target 为 Executing"与"存在其 lease"同时成立或同时不成立。过期且无 settlement 时 Runtime 允许 grantless Recover：recovery authority 的判定为条目 deadline 已过、且 command 与条目的 Holder 绑定。`RecoverModelExecution` 携带 Claim，要求 Claim 等于 Holder；`SubmitToolFailure{Outcome:Unknown}` 不携带 Claim，要求其 CommandID 等于以 Holder 为 Claim 派生的 tool recovery CommandID（第 2 节 identity 表）。两者都使同一 Holder 的重复恢复幂等，并拒绝其他 Holder 的恢复。durable `loop.ClaimStore` 使用控制面 KV namespace `twilight/run/claim`。
 
 `RecoverExpired` 以 `Leases.Expired(twilight/run/lease, now)` 枚举过期条目，由 Key 解析 target：Executing tool call 无 grant 提交 `SubmitToolFailure{Unknown}`，Executing model 提交 `RecoverModelExecution`；command 的 Claim 取自 `Holder`，因此 recovery CommandID 确定，重复扫描幂等。该 Run 保持 Active，同一 RunID 继续。进程内宿主使用 Memory 实现，lease 不超时，grantless recover 被拒绝。生产崩溃恢复使用带 TTL 的 Runtime。
 
@@ -586,21 +586,22 @@ type Event struct {
 
 **RUN-CMP-1** 当前 pre-release schema v1 的 command/fact discriminator、wire fields、canonical digest、derived ID 和 `ProtocolV1().Evolve` 由 golden fixtures 保护；发布前有意修改协议时必须同步更新 fixture。v1 发布后，新增 variant、字段或折叠语义必须进入新 `SchemaVersion`，Registry 继续 decode/fold 全部已发布版本；同一 Run 的 writer 不得混写不同版本。Run 版本演进不触发 Session kernel 版本变化。
 
-**RUN-CMP-2** Runtime conformance 必须覆盖：
+**RUN-CMP-2** Runtime conformance 只断言 Run 模块自己的语义；事务原子性、digest chain、snapshot 加 tail 的等价性由 Session kernel 与 Module Framework 的 conformance 覆盖（SES 第 8 节、EXT 第 8 节），本清单以引用代替重复。conformance 以 `session.Store` 为参数（`agent/session/run/runtimetest`），Memory 与 durable adapter 跑同一套。必须覆盖：
 
-- Start group 建立 Run、重复 `created` 拒绝、missing Run、schema 与 created 不一致的 command 拒绝；
-- command 重放（同 CommandID 返回 AlreadyApplied 且不再 Decide）、不同 claim 的 start 被拒绝、prepare hard CAS、call-local rebase、terminal replay；
-- 输入入队：`AcceptInput` 在 Open、Model Prepared、Model Executing、ToolStep（含 Waiting）都被接受；Prepared 期间入队后 `Next` 返回 `WithdrawPrepared`，Withdraw 后重规划的 Prepare 包含该输入；Executing 期间入队的输入在该步结算后的 Prepare 中被消费；无 tool call 且有 pending 输入的 `SubmitModelResult` 不结束 Run；
-- grant 签发、隔离、精确 start replay、消费、跨 Run 拒绝与 recovery authorization；
-- 一 command 一 commit、run facts 在 companion 与 Attach 之前、companion 的 `SourceDigest` 等于 fact 记录的 ResultDigest / OutputDigest、Attach 拒绝 `twilight/run/` 事件、companion 与 Attach 经 admission 并建立 claim；
-- Prepare hard CAS 只对该 Run 自己的事件敏感：同一 Session 内其他模块的写入不使 Prepare 失效；
-- commit、lease、claim，以及该 commit 若写入的 snapshot 同事务：在任一写入点注入崩溃后它们同时存在或同时缺失；
-- 投影 snapshot 加 tail 与全量 fold 等价；删除 snapshot 后 Load 结果不变；终态 Run 不再出现在投影中；Record 单一一致点、FoldRun 等价、gap/tamper/corrupt failure；
-- 同一 Session 内多 Run 隔离、不同 SchemaVersion 的 Run 共存；同一 Session 的 chatlog/turn 事件不影响 Run fold；
-- lease 过期 recovery：live lease 拒绝 grantless、过期 model 回到 Prepared、过期 tool 记 Unknown 且 sibling 不受影响、RecoverExpired 幂等、恢复事务删除 lease 条目；
-- lease 续期：续期后原 deadline 不触发 recovery、错误/空 grant 与 settlement 后续期被拒、续期与结算并发时条件写失败且不写回已删除条目；
-- FrozenValueStore：Put 幂等、Recovered 后按 RequestDigest 取回同一请求、本体缺失的错误分类、step 终结后删除本体不影响 Record；
-- MachineState codec：每个 Current variant 与终态 round-trip、拒绝 unknown field / 非法判别式 / trailing data。
+- 建立与寻址：Start group 建立 Run；同一 RunID 第二条 `created` 使投影 fold 失败；未知 RunID 的 Load、Commit、Record 返回 `ErrRunNotFound`；已终结 Run 的 Load 返回终态 snapshot 且与 Record 一致，Commit 返回 `ErrRunTerminal`（RUN-CMT-1）；`CommandEnvelope.SchemaVersion` 与 `created.SchemaVersion` 不一致的 command 被拒绝且不可重试；
+- 重放与 Base：同 CommandID 返回 `CommitAlreadyApplied` 与原 commit 且不再 Decide；Run 已终结后对已接受 command 的重放仍返回 AlreadyApplied，新 command 返回 `ErrRunTerminal`；prepare 的 Base 不等于该 Run 的 Position 时返回 `ErrStaleRuntime`；非 Prepare command 接受零值或过期的 Base（call-local rebase）；
+- 输入入队：`AcceptInput` 在 Open、Model Prepared、Model Executing、ToolStep 都被接受；Prepared 期间入队后 `Next` 返回 `WithdrawPrepared`，Withdraw 后重规划的 Prepare 包含该输入；Executing 期间入队的输入在无 tool call 的 `SubmitModelResult` 后使 Run 回到 Open 而不结束；
+- grant：start 签发 grant 且返回的 lease Token 与之相同；同 claim 的 start 重放返回同一 grant，settlement 后重放返回空 grant；不同 claim 的 start 在 target 已被占用时返回 `ErrStaleRuntime`；空 grant、错误 grant、另一 Run 的 grant 的 settlement 返回 `ErrStaleRuntime`；
+- commit 组成：一 command 一 commit；commit 内 run 事实在 companion 与 Attach 之前；companion 中非空 `SourceDigest` 等于同 commit fact 记录的 ResultDigest / OutputDigest / ResponseDigest；Attach 携带 `twilight/run/` 事件被拒绝；companion 与 Attach 中的 ReferencePart 经 admission，未注册 Binding 使 commit 失败且无写入，合法 Binding 在同 commit 建立 `twilight/artifact/claim` 条目；
+- 结算返回值：`CommitResult.Snapshot` 是 Evolve 后状态；终结 Run 的结算其 `Snapshot.Status` 为终态且 `Result` 非空，与 Record 一致；
+- Prepare hard CAS 只对该 Run 自己的事件敏感：同一 Session 内 chatlog、turn 或其他 Run 的写入不改变该 Run 的 Position，也不使 Prepare 失效；
+- 租约与 commit：start 接受后 `twilight/run/lease` 存在该 target 的条目，Holder 为 claim；settlement、recovery 与 terminal commit 之后条目不存在（同事务性由 SES-API-1 保证，本层观察结果）；
+- 投影：`SnapshotPolicy` 在 Run 回到 Open 或终结时写入 snapshot；终态 Run 不出现在 `twilight/run/machine`；Record 对活动 Run 的 fold 与投影一致；非法 fact 序列使 FoldRun 报错（篡改与缺口的检测属于 SES-REP-3）；
+- 隔离：同一 Session 内多 Run 互不影响 Position 与 Record；chatlog 与 turn 事件不影响 Run fold。不同 SchemaVersion 的 Run 共存在第二个 SchemaVersion 发布后启用；
+- lease 过期 recovery：live lease 拒绝 grantless recovery；过期 model 回到 Prepared 且 `FrozenRequest` 返回同一 RequestDigest 的请求；过期 tool 记 Unknown 且同 step 的 sibling 不受影响；grantless Unknown 的 CommandID 必须等于以 lease Holder 为 Claim 派生的 tool recovery CommandID，否则返回 `ErrStaleRuntime`；`RecoverExpired` 幂等；恢复 commit 删除 lease 条目；`LeaseTTL` 为零时 `RecoverExpired` 不做任何事；
+- lease 续期：续期后原 deadline 不触发 recovery；空 grant、错误 grant 与 settlement 后的续期返回 `ErrStaleRuntime`；`LeaseTTL` 为零时续期只校验 grant（续期与 Release 并发的条件写由 EXT-LSE-3 覆盖）；
+- FrozenValueStore：`Put` 幂等；未知 digest 的 `FrozenRequest` 返回 `ErrFrozenValueMissing`；step 终结后删除本体不影响 Record；
+- MachineState codec：每个 Current variant 与终态 round-trip、拒绝 unknown field / 非法判别式 / trailing data（`agent/run` 单元测试）。
 
 Loop conformance 必须覆盖：
 
@@ -612,6 +613,7 @@ Loop conformance 必须覆盖：
 - Cancel 将 Executing tool/model 投影到 `UncertainCalls` / `UncertainModel`；ExternalResponse reject 为 `response_rejected`；
 - streaming delta 与 nil result、EventSink committed observation；
 - stale/unknown commit response、prepare no-progress rejection 与无 livelock；
+- 模型结算终结 Run 时 Loop 不再 Load，返回 `LoopFinished` 且 `Result` 等于 Record 的终态；
 - 超过 LeaseTTL 的工具调用在续期下不被记为 Unknown，其结果被接受；
 - 共享 ClaimStore 的第二个 Loop 实例重放前一实例的 start 并完成 settlement，不等待 lease 过期。
 
