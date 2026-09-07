@@ -8,6 +8,7 @@ import (
 	"time"
 
 	. "github.com/memohai/twilight/agent/run"
+	"github.com/memohai/twilight/agent/session"
 	"github.com/memohai/twilight/sdk"
 )
 
@@ -16,9 +17,9 @@ type renewCountingRuntime struct {
 	renewals atomic.Int32
 }
 
-func (r *renewCountingRuntime) RenewLease(ctx context.Context, runID RunID, stepID StepID, callID CallID, grant ExecutionGrant) error {
+func (r *renewCountingRuntime) RenewLease(ctx context.Context, sid session.SessionID, runID RunID, stepID StepID, callID CallID, grant ExecutionGrant) error {
 	r.renewals.Add(1)
-	return r.Runtime.RenewLease(ctx, runID, stepID, callID, grant)
+	return r.Runtime.RenewLease(ctx, sid, runID, stepID, callID, grant)
 }
 
 // A tool that runs longer than the lease TTL keeps its lease alive through
@@ -30,22 +31,9 @@ func TestLoopRenewsLeaseDuringLongTool(t *testing.T) {
 	now := func() time.Time { mu.Lock(); defer mu.Unlock(); return clock }
 	advance := func(d time.Duration) { mu.Lock(); defer mu.Unlock(); clock = clock.Add(d) }
 
-	base := NewRuntimeWithOptions(NewMemoryStore(), RuntimeOptions{LeaseTTL: 200 * time.Millisecond, Now: now})
-	rt := &renewCountingRuntime{Runtime: base}
-	newRun, err := BuildNewRun("run-1", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rt.Create(context.Background(), newRun); err != nil {
-		t.Fatal(err)
-	}
-	env, err := ProtocolV1().BuildEnvelope("run-1", DeriveInputCommandID("run-1", "seed"), AcceptInput{Input: AgentInput{ID: "seed", Payload: cj(`{}`)}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rt.Commit(context.Background(), CommitRequest{Command: env}); err != nil {
-		t.Fatal(err)
-	}
+	stack := newTestStack(t, 200*time.Millisecond, now)
+	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{}`)})
+	rt := &renewCountingRuntime{Runtime: stack.runtime}
 
 	spec := toolSpec(t, "slow", DirectExecution)
 	slow := &fakeTool{ref: "slow", def: toolDef(spec.Name), policy: DirectExecution,
@@ -69,7 +57,7 @@ func TestLoopRenewsLeaseDuringLongTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := interpreter.Run(context.Background(), rt, "run-1", nil)
+	res, err := interpreter.Run(context.Background(), rt, testSession, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,15 +67,9 @@ func TestLoopRenewsLeaseDuringLongTool(t *testing.T) {
 	if rt.renewals.Load() == 0 {
 		t.Fatal("lease was never renewed")
 	}
-	record, err := rt.Record(context.Background(), "run-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tr := range record.Transitions {
-		for _, ev := range tr.Events {
-			if f, ok := ev.Fact.(ToolCallFailed); ok && f.Outcome == ToolOutcomeUnknown {
-				t.Fatalf("tool call settled Unknown despite heartbeat: %+v", f)
-			}
+	for _, fact := range recordFacts(t, rt, "run-1") {
+		if f, ok := fact.(ToolCallFailed); ok && f.Outcome == ToolOutcomeUnknown {
+			t.Fatalf("tool call settled Unknown despite heartbeat: %+v", f)
 		}
 	}
 }
@@ -103,21 +85,9 @@ func TestNewRejectsNegativeLeaseRenewInterval(t *testing.T) {
 // derived start under the same claim, gets the live grant back, executes the
 // tool and settles, without waiting for the lease to expire.
 func TestLoopReplacementFinishesInheritedClaim(t *testing.T) {
-	rt := NewRuntimeWithOptions(NewMemoryStore(), RuntimeOptions{LeaseTTL: time.Hour})
-	newRun, err := BuildNewRun("run-1", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rt.Create(context.Background(), newRun); err != nil {
-		t.Fatal(err)
-	}
-	env, err := ProtocolV1().BuildEnvelope("run-1", DeriveInputCommandID("run-1", "seed"), AcceptInput{Input: AgentInput{ID: "seed", Payload: cj(`{}`)}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rt.Commit(context.Background(), CommitRequest{Command: env}); err != nil {
-		t.Fatal(err)
-	}
+	stack := newTestStack(t, time.Hour, nil)
+	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{}`)})
+	rt := stack.runtime
 
 	shared := newMemoryClaims()
 	spec := toolSpec(t, "echo", DirectExecution)
@@ -139,10 +109,10 @@ func TestLoopReplacementFinishesInheritedClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	firstDone := make(chan struct{})
-	go func() { defer close(firstDone); _, _ = first.Run(context.Background(), rt, "run-1", nil) }()
+	go func() { defer close(firstDone); _, _ = first.Run(context.Background(), rt, testSession, "run-1", nil) }()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		snap, err := rt.Load(context.Background(), "run-1")
+		snap, err := rt.Load(context.Background(), testSession, "run-1")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -161,27 +131,21 @@ func TestLoopReplacementFinishesInheritedClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := second.Run(context.Background(), rt, "run-1", nil)
+	res, err := second.Run(context.Background(), rt, testSession, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Disposition != LoopFinished || res.Result == nil || res.Result.Status != RunCompleted {
 		t.Fatalf("second loop result = %+v", res)
 	}
-	record, err := rt.Record(context.Background(), "run-1")
-	if err != nil {
-		t.Fatal(err)
-	}
 	starts := 0
-	for _, tr := range record.Transitions {
-		for _, ev := range tr.Events {
-			switch f := ev.Fact.(type) {
-			case ToolCallStarted:
-				starts++
-			case ToolCallFailed:
-				if f.Outcome == ToolOutcomeUnknown {
-					t.Fatalf("call settled Unknown; replacement did not inherit the claim: %+v", f)
-				}
+	for _, fact := range recordFacts(t, rt, "run-1") {
+		switch f := fact.(type) {
+		case ToolCallStarted:
+			starts++
+		case ToolCallFailed:
+			if f.Outcome == ToolOutcomeUnknown {
+				t.Fatalf("call settled Unknown; replacement did not inherit the claim: %+v", f)
 			}
 		}
 	}

@@ -1,6 +1,6 @@
 # Twilight Agent Session Module Framework
 
-状态：设计草案。无实现；Registry、SemanticAppender、Lease 与 projection 在 Memory reference implementation 通过 conformance 前不冻结。v1 为 first-party 固定注册表与单事务 append；Application module、通用 Catalog 与两阶段 journal 在附录中，不进入 v1 conformance。
+状态：设计草案。`agent/session/extension` 已实现 Registry（含 `Requires` 校验）、SemanticAppender 两个入口、Lease 与 ProjectionReader；第 8 节 conformance 部分实现。wire 在 conformance 完整通过前不冻结。v1 为 first-party 固定注册表与单事务 append；Application module、通用 Catalog 与两阶段 journal 在附录中，不进入 v1 conformance。
 
 本文定义建立在 `agent/session` 与 `agent/artifact` 之上的 Session Module Framework。实现包路径为 `agent/session/extension`；文中的"必须""不得""应该"是协议约束；JSON canonicalization 与 digest 遵循 `agent/jsonstable`、`agent/es`。
 

@@ -1,6 +1,6 @@
 # Twilight Agent Run Protocol
 
-状态：设计规范。Machine、command/fact 规则与 Loop 已有实现；第 5 节的 Runtime 与存储层无实现，实施记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。
+状态：设计规范。Machine、command/fact 规则、Loop 与第 5 节的 Runtime（`agent/session/run`）已有 Memory 实现；RUN-CMP-2 的 Runtime conformance 尚未按本文重建，当前由 `agent/run/loop`、`agent/run/runtest` 与 `agent/ref` 的测试覆盖。实施记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。
 
 本文定义 `agent/run`、`agent/run/loop` 与 Run 作为 Session Module 的存储形态。文中的"必须""不得""应该"是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
 

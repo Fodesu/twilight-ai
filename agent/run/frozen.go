@@ -69,9 +69,9 @@ func (m *MemoryFrozenValues) Delete(digest Digest) {
 	m.mu.Unlock()
 }
 
-// encodeFrozenRequest renders the canonical bytes stored for a request and
+// EncodeFrozenRequest renders the canonical bytes stored for a request and
 // verifies they digest to the name the fact will carry.
-func encodeFrozenRequest(req *ModelRequest, want Digest) ([]byte, error) {
+func EncodeFrozenRequest(req *ModelRequest, want Digest) ([]byte, error) {
 	got, err := digestRequestV1(*req)
 	if err != nil {
 		return nil, err
@@ -82,9 +82,9 @@ func encodeFrozenRequest(req *ModelRequest, want Digest) ([]byte, error) {
 	return marshalCanonical(req)
 }
 
-// decodeFrozenRequest restores a request body and checks it still digests to
+// DecodeFrozenRequest restores a request body and checks it still digests to
 // the name it was stored under.
-func decodeFrozenRequest(raw []byte, want Digest) (ModelRequest, error) {
+func DecodeFrozenRequest(raw []byte, want Digest) (ModelRequest, error) {
 	var req ModelRequest
 	if err := decodeStrictJSON(raw, &req); err != nil {
 		return ModelRequest{}, fmt.Errorf("agent: frozen request: %w", err)

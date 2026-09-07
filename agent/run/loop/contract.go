@@ -7,6 +7,7 @@ import (
 	"time"
 
 	run "github.com/memohai/twilight/agent/run"
+	"github.com/memohai/twilight/agent/session"
 
 	"github.com/memohai/twilight/sdk"
 )
@@ -134,17 +135,19 @@ const (
 )
 
 type Event struct {
-	RunID  run.RunID
-	StepID run.StepID
-	CallID run.CallID
-	// Sequence orders provisional observations within one stream. Canonical
-	// observations use AgentEvent.Revision/Index for authority ordering.
+	Session session.SessionID
+	RunID   run.RunID
+	StepID  run.StepID
+	CallID  run.CallID
+	// Sequence orders provisional observations within one stream. Committed
+	// observations use the Session (Revision, Index) for authority ordering.
 	Sequence   uint64
 	Kind       EventKind
 	Durability EventDurability
 	Payload    json.RawMessage
-	// Canonical is set for a committed observation; nil for provisional.
-	Canonical *run.AgentEvent
+	// Committed is set for an EventAgentCommitted observation: the accepted
+	// SessionCommit (run facts, companion, attach); nil for provisional.
+	Committed *session.SessionCommit
 }
 
 // ExecutionPolicy is host-owned loop policy. ToolExecution and MaxParallel

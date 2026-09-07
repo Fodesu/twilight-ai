@@ -1,112 +1,36 @@
-//go:build legacy_turn
-
-// Package turn is the minimal Turn coordinator: one Turn owns one primary
-// Run, delivers inputs into it, drives it, and materializes the committed
-// Run record into chatlog events on an append-only session log.
-//
-// This is the vertical slice described in docs/design/agent-turn.md, not the
-// full Session kernel: the Log has no fork, snapshot or import, event
-// identity is a sequence number, and materialization coverage is the
-// highest Run revision already mapped for the Turn. Those simplifications are
-// what the slice exists to test the Run API against; the Session spec stays
-// a draft until this shape has been driven from a real host.
+// Package turn is the first-party Turn module (docs/design/agent-turn.md):
+// the logical turn, its Run attempts, mid-turn input delivery, settlement,
+// and the companion that turns Run facts into conversation content.
 package turn
 
 import (
-	"context"
 	"errors"
-	"sync"
+	"fmt"
 
+	"github.com/memohai/twilight/agent/es"
 	"github.com/memohai/twilight/agent/run"
+	"github.com/memohai/twilight/agent/session"
+	"github.com/memohai/twilight/agent/session/chatlog"
+	"github.com/memohai/twilight/agent/session/extension"
+	runmod "github.com/memohai/twilight/agent/session/run"
 )
 
-type SessionID string
-type TurnID string
+const ModuleID extension.ModuleID = "turn"
 
-// Ref addresses one Turn.
-type Ref struct {
-	Session SessionID
-	Turn    TurnID
-}
-
-// Event types this package appends. Chatlog types follow
-// agent-session-chatlog.md; turn types follow agent-turn.md.
-const (
-	EventTurnStarted    = "twilight/turn/started"
-	EventTurnCompleted  = "twilight/turn/completed"
-	EventTurnFailed     = "twilight/turn/failed"
-	EventInputDelivered = "twilight/chatlog/input_delivered"
-	EventAssistant      = "twilight/chatlog/assistant"
-	EventToolResult     = "twilight/chatlog/tool_result"
+type (
+	TurnID             string
+	ExecutionBindingID string
+	CompanionVersion   string
 )
 
-// Event is one committed fact on a session log. Seq is assigned by the Log.
-// Revision/Index are set on events materialized from a Run transition and
-// carry the source AgentEvent position; they are the coverage watermark.
-type Event struct {
-	Seq      uint64
-	Type     string
-	Turn     TurnID
-	Revision uint64
-	Index    uint16
-	Payload  run.CanonicalJSON
+type TurnRef struct {
+	SessionID session.SessionID
+	TurnID    TurnID
 }
 
-// Log is an append-only per-session event log. Append assigns contiguous
-// Seq values and persists the whole group or nothing.
-type Log interface {
-	Append(ctx context.Context, session SessionID, events []Event) error
-	Replay(ctx context.Context, session SessionID) ([]Event, error)
-}
-
-// MemoryLog is the in-process Log.
-type MemoryLog struct {
-	mu   sync.Mutex
-	logs map[SessionID][]Event
-}
-
-func NewMemoryLog() *MemoryLog { return &MemoryLog{logs: make(map[SessionID][]Event)} }
-
-func (m *MemoryLog) Append(ctx context.Context, session SessionID, events []Event) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if len(events) == 0 {
-		return errors.New("agent: turn: empty append")
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	log := m.logs[session]
-	next := uint64(len(log)) + 1
-	for i := range events {
-		events[i].Seq = next
-		next++
-	}
-	m.logs[session] = append(log, events...)
-	return nil
-}
-
-func (m *MemoryLog) Replay(ctx context.Context, session SessionID) ([]Event, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return append([]Event(nil), m.logs[session]...), nil
-}
-
-// --- payloads -------------------------------------------------------------
-
-type StartedPayload struct {
-	TurnID   TurnID        `json:"turnId"`
-	RunID    run.RunID     `json:"runId"`
-	InputIDs []run.InputID `json:"inputIds"`
-}
-
-type InputDeliveredPayload struct {
-	InputID run.InputID       `json:"inputId"`
-	TurnID  TurnID            `json:"turnId"`
-	Content run.CanonicalJSON `json:"content"`
+type ExecutionBindingRef struct {
+	ID     ExecutionBindingID `json:"id"`
+	Digest es.Digest          `json:"digest"`
 }
 
 type Settlement string
@@ -117,46 +41,120 @@ const (
 	SettlementStopped   Settlement = "stopped"
 )
 
-type SettledPayload struct {
+const (
+	TypeStarted    session.EventType = "twilight/turn/started"
+	TypeCompleted  session.EventType = "twilight/turn/completed"
+	TypeFailed     session.EventType = "twilight/turn/failed"
+	TypeSuperseded session.EventType = "twilight/turn/superseded"
+)
+
+type StartedPayload struct {
+	TurnID           TurnID              `json:"turnId"`
+	InputIDs         []chatlog.InputID   `json:"inputIds,omitempty"`
+	ExecutionBinding ExecutionBindingRef `json:"executionBinding"`
+	Companion        CompanionVersion    `json:"companion"`
+	PlanDigest       es.Digest           `json:"planDigest"`
+}
+
+type CompletedPayload struct {
+	TurnID TurnID    `json:"turnId"`
+	RunID  run.RunID `json:"runId"`
+}
+
+type FailedPayload struct {
 	TurnID       TurnID     `json:"turnId"`
 	RunID        run.RunID  `json:"runId"`
 	Settlement   Settlement `json:"settlement"`
-	Revision     uint64     `json:"revision"`
 	FailureClass string     `json:"failureClass,omitempty"`
-	Reason       string     `json:"reason,omitempty"`
 }
 
-type ToolCallPayload struct {
-	CallID         run.CallID        `json:"callId"`
-	ProviderCallID string            `json:"providerCallId,omitempty"`
-	Name           string            `json:"name"`
-	Input          run.CanonicalJSON `json:"input"`
+type SupersededPayload struct {
+	TurnID            TurnID `json:"turnId"`
+	ReplacementTurnID TurnID `json:"replacementTurnId"`
 }
 
-type AssistantPayload struct {
-	TurnID    TurnID            `json:"turnId"`
-	StepID    run.StepID        `json:"stepId"`
-	Text      string            `json:"text,omitempty"`
-	ToolCalls []ToolCallPayload `json:"toolCalls,omitempty"`
+// --- identity derivations (TRN-ID) ----------------------------------------------
+
+func digestOf(domain string, parts ...string) es.Digest {
+	raw, _ := es.EncodeTypedPayload(1, domain, parts)
+	return es.DigestBytes(raw)
 }
 
-type ToolResultStatus string
+// PlanDigest is TRN-ID-2.
+func PlanDigest(turnID TurnID, binding es.Digest, companion CompanionVersion, inputs []chatlog.InputID) es.Digest {
+	parts := []string{string(turnID), string(binding), string(companion)}
+	for _, id := range inputs {
+		parts = append(parts, string(id))
+	}
+	return digestOf("twilight/turn/plan", parts...)
+}
 
-const (
-	ToolSuccess ToolResultStatus = "success"
-	ToolError   ToolResultStatus = "error"
-	ToolUnknown ToolResultStatus = "unknown"
-)
+// StartOperationDigest is TRN-ID-3; it is the Start commit's CommitID.
+func StartOperationDigest(sid session.SessionID, turnID TurnID, plan es.Digest) es.Digest {
+	return digestOf("twilight/turn/start-operation", string(sid), string(turnID), string(plan))
+}
 
-type ToolResultPayload struct {
-	TurnID         TurnID     `json:"turnId"`
-	CallID         run.CallID `json:"callId"`
-	ProviderCallID string     `json:"providerCallId,omitempty"`
-	// Name is the tool name the model used for this call, echoed back with
-	// the result for providers that pair on it.
-	Name    string            `json:"name,omitempty"`
-	Status  ToolResultStatus  `json:"status"`
-	Output  run.CanonicalJSON `json:"output,omitzero"`
-	Failure string            `json:"failure,omitempty"`
-	Message string            `json:"message,omitempty"`
+// DeriveRunID is TRN-ID-4.
+func DeriveRunID(sid session.SessionID, turnID TurnID, attempt uint32) run.RunID {
+	return run.RunID(digestOf("twilight/turn/run", string(sid), string(turnID), fmt.Sprintf("%d", attempt)))
+}
+
+func RetryCommitID(sid session.SessionID, turnID TurnID, attempt uint32) session.CommitID {
+	return session.CommitID(digestOf("twilight/turn/retry", string(sid), string(turnID), fmt.Sprintf("%d", attempt)))
+}
+
+func CancelCommandID(sid session.SessionID, turnID TurnID, runID run.RunID) run.CommandID {
+	return run.CommandID(digestOf("twilight/turn/cancel-run", string(sid), string(turnID), string(runID), string(run.ReasonCancelled)))
+}
+
+func SettleCommitID(sid session.SessionID, turnID TurnID, runID run.RunID) session.CommitID {
+	return session.CommitID(digestOf("twilight/turn/settle", string(sid), string(turnID), string(runID)))
+}
+
+// --- module -----------------------------------------------------------------------
+
+func def[T any](typ session.EventType, check func(*T) error) extension.EventDefinition {
+	return extension.EventDefinition{Type: typ, Current: 1,
+		Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[T]{Check: check}}}
+}
+
+// Module declares the turn events, the surface projection and the Requires of
+// TRN-SCP-1: run (created, input_accepted, ended v1) and chatlog (present).
+var Module = extension.ModuleDescriptor{
+	ID: ModuleID,
+	Requires: []extension.ModuleRequirement{
+		{Module: runmod.ModuleID, Events: map[session.EventType][]extension.PayloadVersion{
+			runmod.Prefix + "run_created":    {1},
+			runmod.Prefix + "input_accepted": {1},
+			runmod.Prefix + "run_ended":      {1},
+		}},
+		{Module: chatlog.ModuleID},
+	},
+	Events: []extension.EventDefinition{
+		def[StartedPayload](TypeStarted, func(p *StartedPayload) error {
+			if p.TurnID == "" || p.ExecutionBinding.ID == "" || p.ExecutionBinding.Digest == "" || p.Companion == "" || p.PlanDigest == "" {
+				return errors.New("started requires turnId, binding, companion and planDigest")
+			}
+			return nil
+		}),
+		def[CompletedPayload](TypeCompleted, func(p *CompletedPayload) error {
+			if p.TurnID == "" || p.RunID == "" {
+				return errors.New("completed requires turnId and runId")
+			}
+			return nil
+		}),
+		def[FailedPayload](TypeFailed, func(p *FailedPayload) error {
+			if p.TurnID == "" || p.RunID == "" || (p.Settlement != SettlementFailed && p.Settlement != SettlementStopped) {
+				return errors.New("failed requires turnId, runId and settlement failed|stopped")
+			}
+			return nil
+		}),
+		def[SupersededPayload](TypeSuperseded, func(p *SupersededPayload) error {
+			if p.TurnID == "" || p.ReplacementTurnID == "" {
+				return errors.New("superseded requires turnId and replacementTurnId")
+			}
+			return nil
+		}),
+	},
+	Projections: []extension.ProjectionDefinition{SurfaceProjection},
 }

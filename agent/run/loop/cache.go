@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	run "github.com/memohai/twilight/agent/run"
+	"github.com/memohai/twilight/agent/session"
 )
 
 // ClaimStore is the host-injected record of this Loop's live execution
@@ -24,14 +25,15 @@ import (
 // Implementations must be safe for concurrent use. Put replaces any existing
 // claim for the key; Delete of a missing key is a no-op.
 type ClaimStore interface {
-	Put(ctx context.Context, runID run.RunID, stepID run.StepID, callID run.CallID, claim run.ExecutionClaim) error
-	Get(ctx context.Context, runID run.RunID, stepID run.StepID, callID run.CallID) (run.ExecutionClaim, bool, error)
-	Delete(ctx context.Context, runID run.RunID, stepID run.StepID, callID run.CallID) error
+	Put(ctx context.Context, sid session.SessionID, runID run.RunID, stepID run.StepID, callID run.CallID, claim run.ExecutionClaim) error
+	Get(ctx context.Context, sid session.SessionID, runID run.RunID, stepID run.StepID, callID run.CallID) (run.ExecutionClaim, bool, error)
+	Delete(ctx context.Context, sid session.SessionID, runID run.RunID, stepID run.StepID, callID run.CallID) error
 	// DeleteRun forgets every claim of a finished Run.
-	DeleteRun(ctx context.Context, runID run.RunID) error
+	DeleteRun(ctx context.Context, sid session.SessionID, runID run.RunID) error
 }
 
 type claimKey struct {
+	sid    session.SessionID
 	runID  run.RunID
 	stepID run.StepID
 	callID run.CallID
@@ -47,31 +49,31 @@ func newMemoryClaims() *memoryClaims {
 	return &memoryClaims{claims: make(map[claimKey]run.ExecutionClaim)}
 }
 
-func (m *memoryClaims) Put(_ context.Context, runID run.RunID, stepID run.StepID, callID run.CallID, claim run.ExecutionClaim) error {
+func (m *memoryClaims) Put(_ context.Context, sid session.SessionID, runID run.RunID, stepID run.StepID, callID run.CallID, claim run.ExecutionClaim) error {
 	m.mu.Lock()
-	m.claims[claimKey{runID, stepID, callID}] = claim
+	m.claims[claimKey{sid, runID, stepID, callID}] = claim
 	m.mu.Unlock()
 	return nil
 }
 
-func (m *memoryClaims) Get(_ context.Context, runID run.RunID, stepID run.StepID, callID run.CallID) (run.ExecutionClaim, bool, error) {
+func (m *memoryClaims) Get(_ context.Context, sid session.SessionID, runID run.RunID, stepID run.StepID, callID run.CallID) (run.ExecutionClaim, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	c, ok := m.claims[claimKey{runID, stepID, callID}]
+	c, ok := m.claims[claimKey{sid, runID, stepID, callID}]
 	return c, ok, nil
 }
 
-func (m *memoryClaims) Delete(_ context.Context, runID run.RunID, stepID run.StepID, callID run.CallID) error {
+func (m *memoryClaims) Delete(_ context.Context, sid session.SessionID, runID run.RunID, stepID run.StepID, callID run.CallID) error {
 	m.mu.Lock()
-	delete(m.claims, claimKey{runID, stepID, callID})
+	delete(m.claims, claimKey{sid, runID, stepID, callID})
 	m.mu.Unlock()
 	return nil
 }
 
-func (m *memoryClaims) DeleteRun(_ context.Context, runID run.RunID) error {
+func (m *memoryClaims) DeleteRun(_ context.Context, sid session.SessionID, runID run.RunID) error {
 	m.mu.Lock()
 	for k := range m.claims {
-		if k.runID == runID {
+		if k.sid == sid && k.runID == runID {
 			delete(m.claims, k)
 		}
 	}
@@ -82,6 +84,7 @@ func (m *memoryClaims) DeleteRun(_ context.Context, runID run.RunID) error {
 // attempt is one execution attempt this Loop owns or is trying to own. Every
 // command identity of the attempt derives from the claim.
 type attempt struct {
+	sid    session.SessionID
 	runID  run.RunID
 	stepID run.StepID
 	callID run.CallID
@@ -103,23 +106,23 @@ func (a attempt) recoveryID() run.CommandID {
 // claimFor returns the attempt for key, reusing a stored claim when the Loop
 // (or a predecessor process sharing the ClaimStore) already started it, and
 // minting and storing a fresh claim otherwise.
-func (l *Loop) claimFor(ctx context.Context, runID run.RunID, stepID run.StepID, callID run.CallID) (attempt, error) {
-	claim, ok, err := l.Claims.Get(ctx, runID, stepID, callID)
+func (l *Loop) claimFor(ctx context.Context, sid session.SessionID, runID run.RunID, stepID run.StepID, callID run.CallID) (attempt, error) {
+	claim, ok, err := l.Claims.Get(ctx, sid, runID, stepID, callID)
 	if err != nil {
 		return attempt{}, fmt.Errorf("agent: loop: claim store: %w", err)
 	}
 	if !ok {
 		claim = freshExecutionClaim()
-		if err := l.Claims.Put(ctx, runID, stepID, callID, claim); err != nil {
+		if err := l.Claims.Put(ctx, sid, runID, stepID, callID, claim); err != nil {
 			return attempt{}, fmt.Errorf("agent: loop: claim store: %w", err)
 		}
 	}
-	return attempt{runID: runID, stepID: stepID, callID: callID, claim: claim}, nil
+	return attempt{sid: sid, runID: runID, stepID: stepID, callID: callID, claim: claim}, nil
 }
 
 // hasClaim reports whether a claim for the target is already stored.
-func (l *Loop) hasClaim(ctx context.Context, runID run.RunID, stepID run.StepID, callID run.CallID) (bool, error) {
-	_, ok, err := l.Claims.Get(ctx, runID, stepID, callID)
+func (l *Loop) hasClaim(ctx context.Context, sid session.SessionID, runID run.RunID, stepID run.StepID, callID run.CallID) (bool, error) {
+	_, ok, err := l.Claims.Get(ctx, sid, runID, stepID, callID)
 	if err != nil {
 		return false, fmt.Errorf("agent: loop: claim store: %w", err)
 	}
@@ -127,18 +130,18 @@ func (l *Loop) hasClaim(ctx context.Context, runID run.RunID, stepID run.StepID,
 }
 
 func (l *Loop) forgetClaim(ctx context.Context, a attempt) {
-	_ = l.Claims.Delete(context.WithoutCancel(ctx), a.runID, a.stepID, a.callID)
+	_ = l.Claims.Delete(context.WithoutCancel(ctx), a.sid, a.runID, a.stepID, a.callID)
 }
 
-func (l *Loop) forgetRunClaims(ctx context.Context, runID run.RunID) {
-	_ = l.Claims.DeleteRun(context.WithoutCancel(ctx), runID)
+func (l *Loop) forgetRunClaims(ctx context.Context, sid session.SessionID, runID run.RunID) {
+	_ = l.Claims.DeleteRun(context.WithoutCancel(ctx), sid, runID)
 }
 
 // settle commits the owner settlement of an attempt under its derived
 // CommandID. On success or on a sentinel rejection the claim is released:
 // the attempt is over either way. A transport failure keeps the claim so the
 // next Run (in this or a replacement process) replays the same settlement.
-func (l *Loop) settle(ctx context.Context, runtime run.Runtime, events EventSink, a attempt, base uint64, grant run.ExecutionGrant, cmd run.AgentCommand, proto run.Protocol) error {
+func (l *Loop) settle(ctx context.Context, runtime boundRuntime, events EventSink, a attempt, base run.RunPosition, grant run.ExecutionGrant, cmd run.AgentCommand, proto run.Protocol) error {
 	id := a.settlementID()
 	if _, recovering := cmd.(run.RecoverModelExecution); recovering {
 		id = a.recoveryID()
@@ -152,7 +155,7 @@ func (l *Loop) settle(ctx context.Context, runtime run.Runtime, events EventSink
 		return err
 	}
 	l.forgetClaim(ctx, a)
-	l.emitCommitted(ctx, events, a.runID, res.Events)
+	l.emitCommitted(ctx, events, runtime.sid, a.runID, &res.Commit)
 	return nil
 }
 
@@ -160,14 +163,14 @@ func (l *Loop) settle(ctx context.Context, runtime run.Runtime, events EventSink
 // for. With a durable ClaimStore this is how a replacement process finishes
 // what its predecessor started: the derived start ID replays and returns the
 // live grant, then the effect runs (or re-runs) and settles.
-func (l *Loop) resumeOwnedStarts(ctx context.Context, runtime run.Runtime, events EventSink, snapshot *run.RuntimeSnapshot) (bool, error) {
+func (l *Loop) resumeOwnedStarts(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot) (bool, error) {
 	runID := snapshot.State.RunID
 	switch current := snapshot.State.Current.(type) {
 	case run.ModelStep:
 		if current.Status != run.ModelExecuting {
 			return false, nil
 		}
-		if ok, err := l.hasClaim(ctx, runID, current.RefValue.ID, ""); err != nil || !ok {
+		if ok, err := l.hasClaim(ctx, runtime.sid, runID, current.RefValue.ID, ""); err != nil || !ok {
 			return false, err
 		}
 		return true, l.runModelStep(ctx, runtime, events, snapshot, current.RefValue.ID)
@@ -177,7 +180,7 @@ func (l *Loop) resumeOwnedStarts(ctx context.Context, runtime run.Runtime, event
 			if call.Status != run.ToolExecuting {
 				continue
 			}
-			if ok, err := l.hasClaim(ctx, runID, current.RefValue.ID, call.CallID); err != nil {
+			if ok, err := l.hasClaim(ctx, runtime.sid, runID, current.RefValue.ID, call.CallID); err != nil {
 				return false, err
 			} else if ok {
 				ids = append(ids, call.CallID)

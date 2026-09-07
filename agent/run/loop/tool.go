@@ -12,7 +12,7 @@ import (
 type startedWorker struct {
 	call    run.ToolCallState
 	grant   run.ExecutionGrant
-	base    uint64
+	base    run.RunPosition
 	tool    ExecutableTool
 	attempt attempt
 }
@@ -54,7 +54,7 @@ func (l *Loop) resolveExecutableTool(proto run.Protocol, call run.ToolCallState)
 	return tool, nil
 }
 
-func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events EventSink, snapshot *run.RuntimeSnapshot, eff run.StartToolCalls) error {
+func (l *Loop) runToolCalls(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot, eff run.StartToolCalls) error {
 	runID := snapshot.State.RunID
 	proto, err := snapshot.Protocol()
 	if err != nil {
@@ -90,7 +90,7 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events Eve
 		switch call.Status {
 		case run.ToolPending:
 		case run.ToolExecuting:
-			if ok, err := l.hasClaim(ctx, runID, eff.StepID, callID); err != nil {
+			if ok, err := l.hasClaim(ctx, runtime.sid, runID, eff.StepID, callID); err != nil {
 				return err
 			} else if !ok {
 				continue
@@ -105,7 +105,7 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events Eve
 			// Known failure of a Pending call: no start barrier, no tool call,
 			// no claim. Its identity derives from the call alone; a retry of
 			// the same rejection is idempotent.
-			res, err := l.commit(ctx, runtime, runID, run.DeriveSettlementCommandID(runID, eff.StepID, callID, ""), snapshot.Revision, "",
+			res, err := l.commit(ctx, runtime, runID, run.DeriveSettlementCommandID(runID, eff.StepID, callID, ""), snapshot.Position, "",
 				run.SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: *known, Outcome: run.ToolOutcomeKnown}, proto)
 			if err != nil {
 				settleErr := l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, proto)
@@ -114,15 +114,15 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events Eve
 				}
 				return settleErr
 			}
-			l.emitCommitted(ctx, events, runID, res.Events)
+			l.emitCommitted(ctx, events, runtime.sid, runID, &res.Commit)
 			continue
 		}
 
-		a, err := l.claimFor(ctx, runID, eff.StepID, callID)
+		a, err := l.claimFor(ctx, runtime.sid, runID, eff.StepID, callID)
 		if err != nil {
 			return err
 		}
-		start, err := l.commit(ctx, runtime, runID, a.startID(), snapshot.Revision, "",
+		start, err := l.commit(ctx, runtime, runID, a.startID(), snapshot.Position, "",
 			run.StartToolCall{StepID: eff.StepID, CallID: callID, Claim: a.claim}, proto)
 		if err != nil {
 			settleErr := l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, proto)
@@ -149,9 +149,9 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events Eve
 			l.forgetClaim(ctx, a)
 			continue
 		}
-		l.emitCommitted(ctx, events, runID, start.Events)
+		l.emitCommitted(ctx, events, runtime.sid, runID, &start.Commit)
 		if events != nil {
-			_ = events.Emit(ctx, Event{RunID: runID, StepID: eff.StepID, CallID: callID,
+			_ = events.Emit(ctx, Event{Session: runtime.sid, RunID: runID, StepID: eff.StepID, CallID: callID,
 				Kind: EventToolStarted, Durability: EventCommitted})
 		}
 		if resuming && known != nil {
@@ -162,7 +162,7 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events Eve
 				}
 				failure.Class = run.FailureEffectUnknown
 			}
-			if err := l.settle(ctx, runtime, events, a, start.Snapshot.Revision, start.Grant,
+			if err := l.settle(ctx, runtime, events, a, start.Snapshot.Position, start.Grant,
 				run.SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: failure, Outcome: run.ToolOutcomeUnknown}, proto); err != nil {
 				settleErr := l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, proto)
 				if settleErr != nil {
@@ -172,7 +172,7 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime run.Runtime, events Eve
 			}
 			continue
 		}
-		started = append(started, startedWorker{call: call, grant: start.Grant, base: start.Snapshot.Revision, tool: tool, attempt: a})
+		started = append(started, startedWorker{call: call, grant: start.Grant, base: start.Snapshot.Position, tool: tool, attempt: a})
 	}
 
 	return l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, proto)
@@ -197,7 +197,7 @@ func toolCallFromSnapshot(state run.MachineState, stepID run.StepID, callID run.
 // resulting outcome can still reach Runtime (RUN-LOP-5). Unknown settles
 // only that call. A non-sentinel commit error leaves the same command in the
 // local settlement cache for the next Run invocation.
-func (l *Loop) settleWorkers(ctx context.Context, runtime run.Runtime, events EventSink, runID run.RunID, stepID run.StepID, started []startedWorker, proto run.Protocol) error {
+func (l *Loop) settleWorkers(ctx context.Context, runtime boundRuntime, events EventSink, runID run.RunID, stepID run.StepID, started []startedWorker, proto run.Protocol) error {
 	if len(started) == 0 {
 		return nil
 	}
@@ -258,7 +258,7 @@ func (l *Loop) settleWorkers(ctx context.Context, runtime run.Runtime, events Ev
 				return
 			}
 			if events != nil {
-				_ = events.Emit(ctx, Event{RunID: runID, StepID: stepID, CallID: w.call.CallID,
+				_ = events.Emit(ctx, Event{Session: runtime.sid, RunID: runID, StepID: stepID, CallID: w.call.CallID,
 					Kind: EventToolCompleted, Durability: EventCommitted})
 			}
 		}(w)

@@ -27,7 +27,7 @@ func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 		AcceptInput{Input: AgentInput{ID: "in", Payload: cj(`{"q":"hi"}`)}},
 	}
 	for _, cmd := range commands {
-		env, err := ProtocolV1().BuildEnvelope("run-1", CommandID("cmd-"+commandType(cmd)), cmd)
+		env, err := ProtocolV1().BuildEnvelope("s-1", "run-1", CommandID("cmd-"+commandType(cmd)), cmd)
 		if err != nil {
 			t.Fatalf("ProtocolV1().BuildEnvelope(%T): %v", cmd, err)
 		}
@@ -48,7 +48,9 @@ func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 	}
 }
 
-func TestAgentEventJSONRoundTripRestoresVariants(t *testing.T) {
+// Every fact variant round-trips through the v1 fact codec: canonical bytes
+// decode back to the same variant and re-encode to the same bytes.
+func TestFactCodecRoundTripRestoresVariants(t *testing.T) {
 	facts := []Fact{
 		RunCreated{SchemaVersion: SchemaVersion1, RunID: "run-1", Owner: "turn-1", Attempt: 1, CausationID: "cause"},
 		ModelStepPrepared{StepID: "s", Model: "m", RequestDigest: "sha256:req", ToolsDigest: "sha256:tools", BindingDigest: "sha256:binding"},
@@ -66,95 +68,32 @@ func TestAgentEventJSONRoundTripRestoresVariants(t *testing.T) {
 		InputAccepted{Input: AgentInput{ID: "in", Payload: cj(`{"q":"hi"}`)}},
 		RunEnded{End: RunCompletedEnd{}},
 	}
-	for i, fact := range facts {
+	for _, fact := range facts {
 		typ := factType(fact)
-		digest, err := ProtocolV1().DigestFact(typ, fact)
+		raw, err := marshalCanonical(fact)
 		if err != nil {
-			t.Fatalf("ProtocolV1().DigestFact(%T): %v", fact, err)
+			t.Fatalf("marshal(%T): %v", fact, err)
 		}
-		event := AgentEvent{
-			SchemaVersion: SchemaVersion1,
-			Type:          typ,
-			RunID:         "run-1",
-			Revision:      uint64(i + 1),
-			Index:         0,
-			CommandID:     CommandID("cmd"),
-			CommandDigest: Digest("sha256:cmd"),
-			Digest:        digest,
-			Fact:          fact,
-		}
-		raw, err := json.Marshal(event)
+		decoded, err := ProtocolV1().DecodeFact(typ, raw)
 		if err != nil {
-			t.Fatalf("Marshal(%T): %v", fact, err)
+			t.Fatalf("DecodeFact(%T): %v\n%s", fact, err, raw)
 		}
-		decoded, err := DecodeAgentEvent(raw)
-		if err != nil {
-			t.Fatalf("DecodeAgentEvent(%T): %v\n%s", fact, err, raw)
+		if reflect.TypeOf(decoded) != reflect.TypeOf(fact) {
+			t.Fatalf("decoded fact type = %T, want %T", decoded, fact)
 		}
-		if reflect.TypeOf(decoded.Fact) != reflect.TypeOf(fact) {
-			t.Fatalf("decoded fact type = %T, want %T", decoded.Fact, fact)
+		again, err := marshalCanonical(decoded)
+		if err != nil || string(again) != string(raw) {
+			t.Fatalf("re-encode of %T differs:\n%s\n%s", fact, raw, again)
 		}
-		if decoded.Type != event.Type || decoded.Digest != event.Digest || decoded.Revision != event.Revision {
-			t.Fatalf("decoded event = %+v, want %+v", decoded, event)
+		if _, err := ProtocolV1().DecodeFact("unknown", raw); err == nil {
+			t.Fatalf("unknown fact type decoded for %T", fact)
 		}
-	}
-}
-
-func TestTransitionRecordJSONRoundTripRestoresVariants(t *testing.T) {
-	facts := []Fact{
-		ModelStepCompleted{StepID: "s", FinishReason: FinishReasonStop, ResultDigest: "sha256:result"},
-		RunEnded{End: RunCompletedEnd{}},
-	}
-	events := make([]AgentEvent, len(facts))
-	for i, fact := range facts {
-		typ := factType(fact)
-		digest, err := ProtocolV1().DigestFact(typ, fact)
-		if err != nil {
-			t.Fatal(err)
-		}
-		events[i] = AgentEvent{
-			SchemaVersion: SchemaVersion1,
-			Type:          typ,
-			RunID:         "run-1",
-			Revision:      1,
-			Index:         uint16(i),
-			CommandID:     "cmd-1",
-			CommandDigest: "sha256:cmd",
-			Digest:        digest,
-			Fact:          fact,
-		}
-	}
-	record, err := BuildTransitionRecord(events)
-	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err := json.Marshal(record)
-	if err != nil {
-		t.Fatal(err)
-	}
-	decoded, err := DecodeTransitionRecord(raw)
-	if err != nil {
-		t.Fatalf("DecodeTransitionRecord: %v\n%s", err, raw)
-	}
-	if decoded.TransitionDigest != record.TransitionDigest || len(decoded.Events) != len(record.Events) {
-		t.Fatalf("decoded transition = %+v, want %+v", decoded, record)
-	}
-	for i := range decoded.Events {
-		if reflect.TypeOf(decoded.Events[i].Fact) != reflect.TypeOf(record.Events[i].Fact) {
-			t.Fatalf("decoded event %d fact type = %T, want %T", i, decoded.Events[i].Fact, record.Events[i].Fact)
-		}
-	}
-
-	partial := cloneTransitionRecord(&record)
-	partial.Events = partial.Events[:1]
-	if err := ValidateTransitionRecord(&partial); err == nil {
-		t.Fatal("partial transition validated")
 	}
 }
 
 func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
 	cmd := AcceptInput{Input: AgentInput{ID: "in", Payload: cj(`1`)}}
-	env, err := ProtocolV1().BuildEnvelope("run-1", DeriveInputCommandID("run-1", "in"), cmd)
+	env, err := ProtocolV1().BuildEnvelope("s-1", "run-1", DeriveInputCommandID("run-1", "in"), cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,7 +113,7 @@ func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
 }
 
 func TestWireCodecRejectsUnknownTypeAndDigestMismatch(t *testing.T) {
-	env, err := ProtocolV1().BuildEnvelope("run-1", "cmd-1", CancelRun{})
+	env, err := ProtocolV1().BuildEnvelope("s-1", "run-1", "cmd-1", CancelRun{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,20 +130,6 @@ func TestWireCodecRejectsUnknownTypeAndDigestMismatch(t *testing.T) {
 		t.Fatal("bad command digest decoded")
 	}
 
-	fact := RunEnded{End: RunCompletedEnd{}}
-	digest, err := ProtocolV1().DigestFact(factType(fact), fact)
-	if err != nil {
-		t.Fatal(err)
-	}
-	event := AgentEvent{SchemaVersion: SchemaVersion1, Type: factType(fact), RunID: "run-1", Revision: 1, CommandID: "cmd", CommandDigest: env.Digest, Digest: digest, Fact: fact}
-	raw, err = json.Marshal(event)
-	if err != nil {
-		t.Fatal(err)
-	}
-	badEventDigest := strings.Replace(string(raw), string(digest), "sha256:bad", 1)
-	if _, err := DecodeAgentEvent([]byte(badEventDigest)); err == nil {
-		t.Fatal("bad fact digest decoded")
-	}
 }
 
 func TestRunEndedTaggedUnionRejectsInvalidValues(t *testing.T) {

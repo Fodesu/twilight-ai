@@ -1,344 +1,475 @@
-//go:build legacy_turn
-
 package turn
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/memohai/twilight/agent/es"
 	"github.com/memohai/twilight/agent/run"
+	"github.com/memohai/twilight/agent/session"
+	"github.com/memohai/twilight/agent/session/chatlog"
+	"github.com/memohai/twilight/agent/session/extension"
+	runmod "github.com/memohai/twilight/agent/session/run"
 )
 
-// RunDriver executes one Run until it finishes or has nothing executable.
-// The reference driver wraps loop.Loop.Run; the coordinator reads the
-// resulting disposition from the Runtime rather than from the driver.
+// ErrConflict reports a Turn in a state that does not admit the operation.
+var ErrConflict = errors.New("turn: conflict")
+
+// ErrBindingUnavailable reports that the persisted binding cannot be resolved.
+var ErrBindingUnavailable = errors.New("turn: binding_unavailable")
+
+type DriveRequest struct {
+	Ref   TurnRef
+	RunID run.RunID
+}
+
+// RunDriver drives one Run to its next quiescent point; the reference driver
+// wraps loop.Run (TRN-DRV-1).
 type RunDriver interface {
-	Drive(ctx context.Context, runID run.RunID) error
+	Drive(context.Context, DriveRequest) error
 }
 
-// Coordinator ties one Turn to one primary Run (TRN-SCP-1). It keeps no
-// state of its own: every operation replays the session log and reads the
-// Runtime (TRN-SCP-3).
-type Coordinator struct {
-	Log     Log
-	Runtime run.Runtime
-	Driver  RunDriver
+type ExecutionBindingRegistry interface {
+	Resolve(ExecutionBindingRef) (RunDriver, error)
 }
-
-var (
-	ErrTurnNotFound = errors.New("agent: turn: no started turn")
-	ErrTurnConflict = errors.New("agent: turn: turn already started with a different run")
-)
-
-type Disposition string
-
-const (
-	// DispositionFinished: the Run is terminal and the Turn is settled.
-	DispositionFinished Disposition = "finished"
-	// DispositionWaitingForResponse: a tool call waits for approval or an
-	// external answer; Application submits it and calls Resume again.
-	DispositionWaitingForResponse Disposition = "waiting_for_response"
-	// DispositionWaitingForRecovery: an execution is in flight with no local
-	// owner; Application runs Runtime.RecoverExpired and calls Resume again.
-	DispositionWaitingForRecovery Disposition = "waiting_for_recovery"
-	// DispositionActive: the driver returned before an idle point (for
-	// example its context was cancelled); Resume continues.
-	DispositionActive Disposition = "active"
-)
 
 type StartRequest struct {
-	Ref    Ref
-	RunID  run.RunID
+	Ref              TurnRef
+	Inputs           []run.AgentInput
+	ExecutionBinding ExecutionBindingRef
+	Companion        CompanionVersion
+}
+type DeliverRequest struct {
+	Ref    TurnRef
 	Inputs []run.AgentInput
 }
+type TurnRequest struct{ Ref TurnRef }
+type RetryRequest struct {
+	Ref    TurnRef
+	Reason string
+}
+type StopRequest struct {
+	Ref    TurnRef
+	Reason string
+}
+type SettleRequest struct {
+	Ref          TurnRef
+	FailureClass string
+}
 
-type Result struct {
-	Ref         Ref
+type ResumeDisposition string
+
+const (
+	ResumeWaitingForResponse ResumeDisposition = "waiting_for_response"
+	ResumeWaitingForRecovery ResumeDisposition = "waiting_for_recovery"
+	ResumeFinished           ResumeDisposition = "finished"
+)
+
+type TurnResponse struct {
+	Ref         TurnRef
 	RunID       run.RunID
-	Disposition Disposition
-	Settlement  Settlement
+	Attempt     uint32
+	Status      TurnStatus
+	Disposition ResumeDisposition
+	End         *run.RunEnd
 	Waiting     []run.ResponseRequest
-	Result      *run.RunResult
 }
 
-// linkage is the replayed view of one Turn.
-type linkage struct {
-	started *StartedPayload
-	settled bool
-	covered uint64 // highest Run revision already materialized
-	inputs  map[run.InputID]run.CanonicalJSON
+// Service is the Turn API (TRN 3).
+type Service interface {
+	Start(context.Context, StartRequest) (TurnResponse, error)
+	Deliver(context.Context, DeliverRequest) (TurnResponse, error)
+	Resume(context.Context, TurnRequest) (TurnResponse, error)
+	Retry(context.Context, RetryRequest) (TurnResponse, error)
+	Stop(context.Context, StopRequest) (TurnResponse, error)
+	Settle(context.Context, SettleRequest) (TurnResponse, error)
 }
 
-func (c *Coordinator) replay(ctx context.Context, ref Ref) (linkage, error) {
-	events, err := c.Log.Replay(ctx, ref.Session)
+// Coordinator has no hidden state (TRN-SCP-3): every method reads the turn
+// surface and the machine projection first.
+type Coordinator struct {
+	Projections extension.ProjectionReader
+	Appender    extension.SemanticAppender
+	Runtime     run.Runtime
+	Bindings    ExecutionBindingRegistry
+	// Now stamps event times; nil selects time.Now.
+	Now func() time.Time
+}
+
+func (c *Coordinator) now() int64 {
+	if c.Now != nil {
+		return c.Now().UnixMilli()
+	}
+	return time.Now().UnixMilli()
+}
+
+func (c *Coordinator) surface(ctx context.Context, sid session.SessionID) (TurnSurface, error) {
+	state, _, err := c.Projections.Load(ctx, sid, SurfaceProjectionID, SurfaceProjection.Version)
 	if err != nil {
-		return linkage{}, err
+		return TurnSurface{}, err
 	}
-	l := linkage{inputs: make(map[run.InputID]run.CanonicalJSON)}
-	for i := range events {
-		ev := &events[i]
-		if ev.Turn != ref.Turn {
-			continue
-		}
-		switch ev.Type {
-		case EventTurnStarted:
-			var p StartedPayload
-			if err := ev.Payload.Decode(&p); err != nil {
-				return linkage{}, err
-			}
-			l.started = &p
-		case EventTurnCompleted, EventTurnFailed:
-			l.settled = true
-		case EventInputDelivered:
-			var p InputDeliveredPayload
-			if err := ev.Payload.Decode(&p); err != nil {
-				return linkage{}, err
-			}
-			l.inputs[p.InputID] = p.Content
-		default:
-			if ev.Revision > l.covered {
-				l.covered = ev.Revision
-			}
-		}
-	}
-	return l, nil
+	return state.(TurnSurface), nil
 }
 
-// Start appends the Turn's started group, creates the Run and resumes
-// (TRN-STR-3..6). A repeated Start with the same RunID is idempotent; a
-// different RunID for a started Turn is a conflict.
-func (c *Coordinator) Start(ctx context.Context, req StartRequest) (Result, error) {
-	if req.Ref.Session == "" || req.Ref.Turn == "" || req.RunID == "" {
-		return Result{}, errors.New("agent: turn: start requires session, turn and run ids")
+// --- Start ------------------------------------------------------------------------
+
+func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse, error) {
+	if req.Ref.SessionID == "" || req.Ref.TurnID == "" || req.ExecutionBinding.ID == "" || req.ExecutionBinding.Digest == "" || req.Companion == "" {
+		return TurnResponse{}, errors.New("turn: start requires ref, binding and companion")
 	}
-	l, err := c.replay(ctx, req.Ref)
-	if err != nil {
-		return Result{}, err
-	}
-	if l.started != nil {
-		if l.started.RunID != req.RunID {
-			return Result{}, ErrTurnConflict
-		}
-		return c.Resume(ctx, req.Ref)
-	}
-	ids := make([]run.InputID, len(req.Inputs))
-	group := make([]Event, 0, len(req.Inputs)+1)
+	inputIDs := make([]chatlog.InputID, len(req.Inputs))
+	seen := map[run.InputID]struct{}{}
 	for i, in := range req.Inputs {
-		if in.ID == "" {
-			return Result{}, fmt.Errorf("agent: turn: input %d has empty id", i)
+		if _, dup := seen[in.ID]; dup || in.ID == "" {
+			return TurnResponse{}, errors.New("turn: start inputs must have unique non-empty IDs")
 		}
-		ids[i] = in.ID
+		seen[in.ID] = struct{}{}
+		inputIDs[i] = chatlog.InputID(in.ID)
 	}
-	started, err := run.CanonicalJSONFromValue(StartedPayload{TurnID: req.Ref.Turn, RunID: req.RunID, InputIDs: ids})
+	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
+	plan := PlanDigest(turnID, req.ExecutionBinding.Digest, req.Companion, inputIDs)
+	commitID := session.CommitID(StartOperationDigest(sid, turnID, plan))
+	runID := DeriveRunID(sid, turnID, 1)
+	newRun, err := run.BuildNewRunFor(runID, run.OwnerID(turnID), 1, es.CausationID(commitID))
 	if err != nil {
-		return Result{}, err
+		return TurnResponse{}, err
 	}
-	group = append(group, Event{Type: EventTurnStarted, Turn: req.Ref.Turn, Payload: started})
-	for _, in := range req.Inputs {
-		p, err := run.CanonicalJSONFromValue(InputDeliveredPayload{InputID: in.ID, TurnID: req.Ref.Turn, Content: in.Payload})
-		if err != nil {
-			return Result{}, err
+	facts, err := run.ProtocolV1().BuildCreateGroup(newRun, req.Inputs)
+	if err != nil {
+		return TurnResponse{}, err
+	}
+	now := c.now()
+	res, err := c.Appender.AppendSemanticIn(ctx, sid, func(tx extension.SemanticTx) (*extension.SemanticGroup, error) {
+		if _, found, err := tx.LookupCommit(commitID); err != nil {
+			return nil, err
+		} else if found {
+			group := c.startGroup(commitID, turnID, inputIDs, req, plan, facts, now)
+			return &group, nil // exact replay: the Appender compares fingerprints
 		}
-		group = append(group, Event{Type: EventInputDelivered, Turn: req.Ref.Turn, Payload: p})
+		surface, err := loadSurface(tx)
+		if err != nil {
+			return nil, err
+		}
+		if _, exists := surface.Turns[turnID]; exists {
+			return nil, fmt.Errorf("%w: turn %s already started", ErrConflict, turnID)
+		}
+		if _, active := surface.Active(); active {
+			return nil, fmt.Errorf("%w: session already has an active turn", ErrConflict)
+		}
+		if err := checkSubmitted(tx, req.Inputs); err != nil {
+			return nil, err
+		}
+		group := c.startGroup(commitID, turnID, inputIDs, req, plan, facts, now)
+		return &group, nil
+	})
+	if err != nil {
+		return TurnResponse{}, err
 	}
-	if err := c.Log.Append(ctx, req.Ref.Session, group); err != nil {
-		return Result{}, err
+	if res.Outcome != extension.SemanticApplied && res.Outcome != extension.SemanticAlreadyApplied {
+		return TurnResponse{}, fmt.Errorf("turn: start: %s: %s", res.Outcome, res.Detail)
 	}
-	return c.Resume(ctx, req.Ref)
+	return c.drive(ctx, req.Ref, runID)
 }
 
-// Resume re-derives the Turn from the log, ensures the Run exists and holds
-// every delivered input, materializes what is committed, drives, then
-// materializes and settles (TRN-RSM-1..5).
-func (c *Coordinator) Resume(ctx context.Context, ref Ref) (Result, error) {
-	l, err := c.replay(ctx, ref)
-	if err != nil {
-		return Result{}, err
+func (c *Coordinator) startGroup(commitID session.CommitID, turnID TurnID, inputIDs []chatlog.InputID, req StartRequest, plan es.Digest, facts []run.Fact, now int64) extension.SemanticGroup {
+	group := extension.SemanticGroup{CommitID: commitID}
+	group.Events = append(group.Events, extension.TypedEvent{Type: TypeStarted, RecordedAtUnixMilli: now,
+		Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, ExecutionBinding: req.ExecutionBinding, Companion: req.Companion, PlanDigest: plan}})
+	for _, id := range inputIDs {
+		group.Events = append(group.Events, extension.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: now,
+			Value: chatlog.InputDeliveredPayload{InputID: id, TurnID: chatlog.TurnID(turnID)}})
 	}
-	if l.started == nil {
-		return Result{}, ErrTurnNotFound
+	runID := DeriveRunID(req.Ref.SessionID, turnID, 1)
+	for _, f := range facts {
+		group.Events = append(group.Events, extension.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: now, Value: runmod.Event{RunID: runID, Fact: f}})
 	}
-	runID := l.started.RunID
-	if !l.settled {
-		if err := c.ensureRun(ctx, ref, runID, &l); err != nil {
-			return Result{}, err
-		}
-		if _, err := c.materialize(ctx, ref, runID, &l); err != nil {
-			return Result{}, err
-		}
-		snap, err := c.Runtime.Load(ctx, runID)
-		if err != nil {
-			return Result{}, err
-		}
-		if !snap.State.Status.Terminal() {
-			if err := c.Driver.Drive(ctx, runID); err != nil {
-				return Result{}, err
-			}
-		}
-	}
-	return c.settle(ctx, ref, runID, &l)
+	return group
 }
 
-// Stop cancels an active Run under a Turn-derived CommandID and settles
-// (TRN-STP-1..3).
-func (c *Coordinator) Stop(ctx context.Context, ref Ref) (Result, error) {
-	l, err := c.replay(ctx, ref)
+func loadSurface(tx extension.SemanticTx) (TurnSurface, error) {
+	state, _, err := extension.LoadIn(tx, &SurfaceProjection)
 	if err != nil {
-		return Result{}, err
+		return TurnSurface{}, err
 	}
-	if l.started == nil {
-		return Result{}, ErrTurnNotFound
-	}
-	runID := l.started.RunID
-	if !l.settled {
-		snap, err := c.Runtime.Load(ctx, runID)
-		if err != nil {
-			return Result{}, err
-		}
-		if !snap.State.Status.Terminal() {
-			proto, err := snap.Protocol()
-			if err != nil {
-				return Result{}, err
-			}
-			id := run.CommandID(es.DigestBytes([]byte("twilight/turn/cancel-run:" + string(ref.Session) + ":" + string(ref.Turn) + ":" + string(runID))))
-			env, err := proto.BuildEnvelope(runID, id, run.CancelRun{Reason: run.ReasonCancelled})
-			if err != nil {
-				return Result{}, err
-			}
-			if _, err := c.Runtime.Commit(ctx, run.CommitRequest{BaseRevision: snap.Revision, Command: env}); err != nil && !errors.Is(err, run.ErrRunTerminal) {
-				return Result{}, err
-			}
-		}
-	}
-	return c.settle(ctx, ref, runID, &l)
+	return state.(TurnSurface), nil
 }
 
-// ensureRun creates the Run (idempotent) and accepts every delivered input
-// through its derived CommandID; Accepted and AlreadyApplied both advance,
-// a terminal Run absorbs the rest (TRN-RSM-2..3).
-func (c *Coordinator) ensureRun(ctx context.Context, ref Ref, runID run.RunID, l *linkage) error {
-	newRun, err := run.BuildNewRun(runID, es.CausationID(string(ref.Session)+"/"+string(ref.Turn)))
+// checkSubmitted enforces TRN-STR-1 (2): each input is a submitted chatlog
+// Input whose Content equals the payload.
+func checkSubmitted(tx extension.SemanticTx, inputs []run.AgentInput) error {
+	if len(inputs) == 0 {
+		return nil
+	}
+	state, _, err := extension.LoadIn(tx, &chatlog.SurfaceProjection)
 	if err != nil {
 		return err
 	}
-	if _, err := c.Runtime.Create(ctx, newRun); err != nil {
-		return err
-	}
-	for _, id := range l.started.InputIDs {
-		content, ok := l.inputs[id]
-		if !ok {
-			return fmt.Errorf("agent: turn: input %q named by started has no input_delivered", id)
+	surface := state.(chatlog.Surface)
+	for _, in := range inputs {
+		view, ok := surface.Inputs[chatlog.InputID(in.ID)]
+		if !ok || view.Status != chatlog.InputSubmitted {
+			return fmt.Errorf("%w: input %s is not a submitted input", ErrConflict, in.ID)
 		}
-		snap, err := c.Runtime.Load(ctx, runID)
-		if err != nil {
-			return err
-		}
-		if snap.State.Status.Terminal() {
-			return nil
-		}
-		proto, err := snap.Protocol()
-		if err != nil {
-			return err
-		}
-		env, err := proto.BuildEnvelope(runID, run.DeriveInputCommandID(runID, id), run.AcceptInput{Input: run.AgentInput{ID: id, Payload: content}})
-		if err != nil {
-			return err
-		}
-		if _, err := c.Runtime.Commit(ctx, run.CommitRequest{BaseRevision: snap.Revision, Command: env}); err != nil {
-			// Not at Open (a step is in progress) means the input was already
-			// consumed by an earlier prepare; the derived id would have
-			// replayed otherwise.
-			if errors.Is(err, run.ErrStaleRuntime) {
-				continue
-			}
-			return err
+		if !view.Input.Content.Equal(in.Payload) {
+			return fmt.Errorf("%w: input %s payload differs from its submitted content", ErrConflict, in.ID)
 		}
 	}
 	return nil
 }
 
-// materialize maps every transition above the coverage watermark into
-// chatlog events and appends them as one group (TRN-MAT-1). It returns the
-// verified record so callers settle from the same consistent read.
-func (c *Coordinator) materialize(ctx context.Context, ref Ref, runID run.RunID, l *linkage) (run.RunRecord, error) {
-	record, err := c.Runtime.Record(ctx, runID)
+// --- Deliver ----------------------------------------------------------------------
+
+func (c *Coordinator) Deliver(ctx context.Context, req DeliverRequest) (TurnResponse, error) {
+	sid := req.Ref.SessionID
+	surface, err := c.surface(ctx, sid)
 	if err != nil {
-		return run.RunRecord{}, err
+		return TurnResponse{}, err
 	}
-	var group []Event
-	for i := range record.Transitions {
-		if record.Transitions[i].Revision <= l.covered {
-			continue
-		}
-		mapped, err := MapTransition(ref.Turn, record.Transitions[:i+1])
+	view, ok := surface.Turns[req.Ref.TurnID]
+	if !ok || view.Status != TurnActive {
+		return TurnResponse{}, fmt.Errorf("%w: turn %s is not active", ErrConflict, req.Ref.TurnID)
+	}
+	runID := view.ActiveRun
+	for _, in := range req.Inputs {
+		snapshot, err := c.Runtime.Load(ctx, sid, runID)
 		if err != nil {
-			return run.RunRecord{}, err
+			return TurnResponse{}, err
 		}
-		group = append(group, mapped...)
-	}
-	if len(group) > 0 {
-		if err := c.Log.Append(ctx, ref.Session, group); err != nil {
-			return run.RunRecord{}, err
+		proto, err := snapshot.Protocol()
+		if err != nil {
+			return TurnResponse{}, err
 		}
-		l.covered = group[len(group)-1].Revision
+		env, err := proto.BuildEnvelope(sid, runID, run.DeriveInputCommandID(runID, in.ID), run.AcceptInput{Input: in})
+		if err != nil {
+			return TurnResponse{}, err
+		}
+		_, err = c.Runtime.Commit(ctx, sid, run.CommitRequest{Base: snapshot.Position, Command: env,
+			Attach: []run.ModuleEvent{{Type: chatlog.TypeInputDelivered, Value: chatlog.InputDeliveredPayload{InputID: chatlog.InputID(in.ID), TurnID: chatlog.TurnID(req.Ref.TurnID)}}}})
+		if err != nil {
+			if errors.Is(err, run.ErrRunTerminal) {
+				// The last step settled first (TRN-DLV-3): the input stays submitted.
+				return c.respond(ctx, req.Ref, runID)
+			}
+			return TurnResponse{}, err
+		}
 	}
-	return record, nil
+	return c.drive(ctx, req.Ref, runID)
 }
 
-// settle materializes the tail and, when the Run is terminal and the Turn
-// not yet settled, appends completed/failed from RunEnded (TRN-SET-3). The
-// result reports the disposition read from the Runtime.
-func (c *Coordinator) settle(ctx context.Context, ref Ref, runID run.RunID, l *linkage) (Result, error) {
-	record, err := c.materialize(ctx, ref, runID, l)
+// --- Resume / Retry / Stop / Settle ------------------------------------------------------
+
+func (c *Coordinator) Resume(ctx context.Context, req TurnRequest) (TurnResponse, error) {
+	surface, err := c.surface(ctx, req.Ref.SessionID)
 	if err != nil {
-		return Result{}, err
+		return TurnResponse{}, err
 	}
-	state := &record.Snapshot.State
-	res := Result{Ref: ref, RunID: runID}
-	if !state.Status.Terminal() {
-		switch {
-		case run.NeedsRecovery(*state):
-			res.Disposition = DispositionWaitingForRecovery
-		case len(run.WaitingCalls(*state)) > 0:
-			res.Disposition = DispositionWaitingForResponse
-			res.Waiting = run.WaitingCalls(*state)
-		default:
-			res.Disposition = DispositionActive
-		}
-		return res, nil
+	view, ok := surface.Turns[req.Ref.TurnID]
+	if !ok {
+		return TurnResponse{}, fmt.Errorf("%w: unknown turn %s", ErrConflict, req.Ref.TurnID)
 	}
-	res.Disposition = DispositionFinished
-	res.Result = state.Result
-	settlement, typ := settlementOf(state.Result)
-	res.Settlement = settlement
-	if !l.settled {
-		p := SettledPayload{TurnID: ref.Turn, RunID: runID, Settlement: settlement, Revision: record.Snapshot.Revision, Reason: string(state.Result.Reason)}
-		if state.Result.Failure != nil {
-			p.FailureClass = state.Result.Failure.Class
-		} else if settlement == SettlementStopped {
-			p.FailureClass = string(run.ReasonCancelled)
-		}
-		raw, err := run.CanonicalJSONFromValue(p)
-		if err != nil {
-			return Result{}, err
-		}
-		if err := c.Log.Append(ctx, ref.Session, []Event{{Type: typ, Turn: ref.Turn, Revision: record.Snapshot.Revision, Payload: raw}}); err != nil {
-			return Result{}, err
-		}
-		l.settled = true
+	if view.Status != TurnActive {
+		return c.responseFor(ctx, req.Ref, &view)
 	}
-	return res, nil
+	return c.drive(ctx, req.Ref, view.ActiveRun)
 }
 
-func settlementOf(r *run.RunResult) (settlement Settlement, eventType string) {
-	switch r.Status {
-	case run.RunCompleted:
-		return SettlementCompleted, EventTurnCompleted
-	case run.RunStopped:
-		return SettlementStopped, EventTurnFailed
+func (c *Coordinator) Retry(ctx context.Context, req RetryRequest) (TurnResponse, error) {
+	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
+	var runID run.RunID
+	now := c.now()
+	res, err := c.Appender.AppendSemanticIn(ctx, sid, func(tx extension.SemanticTx) (*extension.SemanticGroup, error) {
+		surface, err := loadSurface(tx)
+		if err != nil {
+			return nil, err
+		}
+		view, ok := surface.Turns[turnID]
+		if !ok || view.Status != TurnAttemptFailed {
+			return nil, fmt.Errorf("%w: turn %s is not attempt_failed", ErrConflict, turnID)
+		}
+		attempt := uint32(len(view.Attempts)) + 1
+		runID = DeriveRunID(sid, turnID, attempt)
+		commitID := RetryCommitID(sid, turnID, attempt)
+		newRun, err := run.BuildNewRunFor(runID, run.OwnerID(turnID), attempt, es.CausationID(commitID))
+		if err != nil {
+			return nil, err
+		}
+		inputs, err := deliveredInputs(tx, view.InputIDs)
+		if err != nil {
+			return nil, err
+		}
+		facts, err := run.ProtocolV1().BuildCreateGroup(newRun, inputs)
+		if err != nil {
+			return nil, err
+		}
+		group := &extension.SemanticGroup{CommitID: commitID}
+		for _, f := range facts {
+			group.Events = append(group.Events, extension.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: now, Value: runmod.Event{RunID: runID, Fact: f}})
+		}
+		return group, nil
+	})
+	if err != nil {
+		return TurnResponse{}, err
+	}
+	if res.Outcome != extension.SemanticApplied && res.Outcome != extension.SemanticAlreadyApplied {
+		return TurnResponse{}, fmt.Errorf("turn: retry: %s: %s", res.Outcome, res.Detail)
+	}
+	return c.drive(ctx, req.Ref, runID)
+}
+
+// deliveredInputs rebuilds the AgentInputs of a Turn from the chatlog surface,
+// in TurnView.InputIDs order (TRN-RTY-1).
+func deliveredInputs(tx extension.SemanticTx, ids []chatlog.InputID) ([]run.AgentInput, error) {
+	state, _, err := extension.LoadIn(tx, &chatlog.SurfaceProjection)
+	if err != nil {
+		return nil, err
+	}
+	surface := state.(chatlog.Surface)
+	out := make([]run.AgentInput, 0, len(ids))
+	for _, id := range ids {
+		view, ok := surface.Inputs[id]
+		if !ok {
+			return nil, fmt.Errorf("turn: retry: delivered input %s missing from chatlog", id)
+		}
+		out = append(out, run.AgentInput{ID: run.InputID(id), Payload: view.Input.Content})
+	}
+	return out, nil
+}
+
+func (c *Coordinator) Stop(ctx context.Context, req StopRequest) (TurnResponse, error) {
+	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
+	surface, err := c.surface(ctx, sid)
+	if err != nil {
+		return TurnResponse{}, err
+	}
+	view, ok := surface.Turns[turnID]
+	if !ok || view.Status != TurnActive {
+		return TurnResponse{}, fmt.Errorf("%w: turn %s is not active", ErrConflict, turnID)
+	}
+	runID := view.ActiveRun
+	snapshot, err := c.Runtime.Load(ctx, sid, runID)
+	if err != nil {
+		return TurnResponse{}, err
+	}
+	proto, err := snapshot.Protocol()
+	if err != nil {
+		return TurnResponse{}, err
+	}
+	env, err := proto.BuildEnvelope(sid, runID, CancelCommandID(sid, turnID, runID), run.CancelRun{})
+	if err != nil {
+		return TurnResponse{}, err
+	}
+	_, err = c.Runtime.Commit(ctx, sid, run.CommitRequest{Base: snapshot.Position, Command: env,
+		Attach: []run.ModuleEvent{{Type: TypeFailed, Value: FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementStopped, FailureClass: "cancelled"}}}})
+	if err != nil && !errors.Is(err, run.ErrRunTerminal) {
+		return TurnResponse{}, err
+	}
+	return c.respond(ctx, req.Ref, runID)
+}
+
+func (c *Coordinator) Settle(ctx context.Context, req SettleRequest) (TurnResponse, error) {
+	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
+	var runID run.RunID
+	now := c.now()
+	res, err := c.Appender.AppendSemanticIn(ctx, sid, func(tx extension.SemanticTx) (*extension.SemanticGroup, error) {
+		surface, err := loadSurface(tx)
+		if err != nil {
+			return nil, err
+		}
+		view, ok := surface.Turns[turnID]
+		if !ok || view.Status != TurnAttemptFailed {
+			return nil, fmt.Errorf("%w: turn %s is not attempt_failed", ErrConflict, turnID)
+		}
+		runID = view.LastAttempt().RunID
+		return &extension.SemanticGroup{CommitID: SettleCommitID(sid, turnID, runID), Events: []extension.TypedEvent{{
+			Type: TypeFailed, RecordedAtUnixMilli: now,
+			Value: FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementFailed, FailureClass: req.FailureClass}}}}, nil
+	})
+	if err != nil {
+		return TurnResponse{}, err
+	}
+	if res.Outcome != extension.SemanticApplied && res.Outcome != extension.SemanticAlreadyApplied {
+		return TurnResponse{}, fmt.Errorf("turn: settle: %s: %s", res.Outcome, res.Detail)
+	}
+	return c.respond(ctx, req.Ref, runID)
+}
+
+// --- Drive ----------------------------------------------------------------------------
+
+func (c *Coordinator) drive(ctx context.Context, ref TurnRef, runID run.RunID) (TurnResponse, error) {
+	surface, err := c.surface(ctx, ref.SessionID)
+	if err != nil {
+		return TurnResponse{}, err
+	}
+	view := surface.Turns[ref.TurnID]
+	if view.Status == TurnActive {
+		driver, err := c.Bindings.Resolve(view.ExecutionBinding)
+		if err != nil {
+			return TurnResponse{}, fmt.Errorf("%w: %v", ErrBindingUnavailable, err)
+		}
+		if err := driver.Drive(ctx, DriveRequest{Ref: ref, RunID: runID}); err != nil {
+			return TurnResponse{}, err
+		}
+	}
+	return c.respond(ctx, ref, runID)
+}
+
+// respond reads the projections and fills the disposition (TRN-DRV-1).
+func (c *Coordinator) respond(ctx context.Context, ref TurnRef, runID run.RunID) (TurnResponse, error) {
+	surface, err := c.surface(ctx, ref.SessionID)
+	if err != nil {
+		return TurnResponse{}, err
+	}
+	view, ok := surface.Turns[ref.TurnID]
+	if !ok {
+		return TurnResponse{}, fmt.Errorf("%w: unknown turn %s", ErrConflict, ref.TurnID)
+	}
+	if runID == "" {
+		if last := view.LastAttempt(); last != nil {
+			runID = last.RunID
+		}
+	}
+	return c.responseFor(ctx, ref, &view, runID)
+}
+
+func (c *Coordinator) responseFor(ctx context.Context, ref TurnRef, view *TurnView, runIDs ...run.RunID) (TurnResponse, error) {
+	resp := TurnResponse{Ref: ref, Status: view.Status}
+	var att *AttemptView
+	if len(runIDs) > 0 && runIDs[0] != "" {
+		for i := range view.Attempts {
+			if view.Attempts[i].RunID == runIDs[0] {
+				att = &view.Attempts[i]
+			}
+		}
+	}
+	if att == nil {
+		att = view.LastAttempt()
+	}
+	if att == nil {
+		return resp, nil
+	}
+	resp.RunID, resp.Attempt, resp.End = att.RunID, att.Attempt, att.Ended()
+	if att.End != nil {
+		resp.Disposition = ResumeFinished
+		return resp, nil
+	}
+	snapshot, err := c.Runtime.Load(ctx, ref.SessionID, att.RunID)
+	if err != nil {
+		return TurnResponse{}, err
+	}
+	switch {
+	case snapshot.State.Status.Terminal():
+		resp.Disposition = ResumeFinished
+	case run.NeedsRecovery(snapshot.State):
+		resp.Disposition = ResumeWaitingForRecovery
 	default:
-		return SettlementFailed, EventTurnFailed
+		resp.Waiting = run.WaitingCalls(snapshot.State)
+		if len(resp.Waiting) > 0 {
+			resp.Disposition = ResumeWaitingForResponse
+		}
 	}
+	return resp, nil
 }
+
+var _ Service = (*Coordinator)(nil)

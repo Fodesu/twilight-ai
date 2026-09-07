@@ -53,10 +53,10 @@ func namespacedHash(namespace string, parts ...string) string {
 }
 
 // DeriveModelRequestCommandID derives the CommandID for PrepareModelRequest
-// from the Run and the Revision the planner loaded (RUN-WIR-3): concurrent
-// planners on the same Revision converge on one command identity.
-func DeriveModelRequestCommandID(run RunID, revision uint64) CommandID {
-	return CommandID(namespacedHash("twilight/model-request", string(run), fmt.Sprintf("%d", revision)))
+// from the Run and the RunPosition the planner loaded (RUN-WIR-3): concurrent
+// planners on the same position converge on one command identity.
+func DeriveModelRequestCommandID(run RunID, position RunPosition) CommandID {
+	return CommandID(namespacedHash("twilight/model-request", string(run), fmt.Sprintf("%d", position.Revision), fmt.Sprintf("%d", position.Index)))
 }
 
 // DeriveModelStepID derives the frozen ModelStep identity from the Run, the

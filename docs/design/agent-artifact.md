@@ -1,6 +1,6 @@
 # Twilight Agent Artifact Core
 
-状态：设计草案。无实现；wire 与 claim 状态表在 Memory reference implementation 通过 conformance 前不冻结。v1 的 claim 只有 `Active` 与 `Released` 两态，与 Session commit 同事务写入；`Prepared` 状态、reconciler、provider 迁移 fence 与 archive import/export 在附录中，不进入 v1 conformance。
+状态：设计草案。`agent/artifact` 已实现 Ref、Binding、Memory BindingStore、BindingSetBuilder 与两态 KV ledger；Resolver、Store、Promoter 与 scheme registry 未实现。wire 与 claim 状态表在 conformance 通过前不冻结。v1 的 claim 只有 `Active` 与 `Released` 两态，与 Session commit 同事务写入；`Prepared` 状态、reconciler、provider 迁移 fence 与 archive import/export 在附录中，不进入 v1 conformance。
 
 本文定义 `agent/artifact`。文中的"必须""不得""应该"是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
 

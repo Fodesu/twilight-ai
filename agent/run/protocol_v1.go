@@ -109,15 +109,6 @@ func buildCreateGroupV1(run NewRun, inputs []AgentInput) ([]Fact, error) {
 	return facts, nil
 }
 
-func initialStateVersionV1() uint16 { return 1 }
-
-func validateHeaderV1(h *RunHeader) error {
-	if h.InitialStateVersion != initialStateVersionV1() {
-		return fmt.Errorf("agent: run header: unsupported initial state version %d for schema %d", h.InitialStateVersion, SchemaVersion1)
-	}
-	return nil
-}
-
 func unsupportedSchemaVersion(schemaVersion uint16) error {
 	return fmt.Errorf("agent: unsupported schema version %d", schemaVersion)
 }

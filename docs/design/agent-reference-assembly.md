@@ -1,6 +1,8 @@
 # Twilight Agent 参考组装
 
-状态：设计草案。与 [Run](agent-run.md)、[Turn](agent-turn.md)、[Chatlog](agent-session-chatlog.md) 冲突时以各正式规范为准。
+状态：设计草案。`agent/ref` 已实现 ExecutionBinding、ContextPlanner、Memory 组装与 SessionDriver。与 [Run](agent-run.md)、[Turn](agent-turn.md)、[Chatlog](agent-session-chatlog.md) 冲突时以各正式规范为准。
+
+补充说明：ContextPlanner 把回合中途投递的输入排在其之前尚未结算的工具结果之后。原因是这类输入的 `input_delivered` 先于 `tool_result` 进入 stream，而 provider 要求工具结果紧随发出调用的 assistant 消息。fold 顺序不变，只影响请求组装。
 
 本文规定 Memory 参考 agent 的四处组装：ExecutionBinding 公开字段、Planner、用户正文在 Chatlog Input 与 Run AgentInput 上的同一份 payload、session 作用域的输入路由（SessionDriver）。
 

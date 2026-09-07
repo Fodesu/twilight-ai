@@ -94,19 +94,25 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 | shared `agent/es` 与 RFC 8785 canonical JSON | 完成 |
 | Decide/Evolve/Next Run Machine | 完成 |
 | RunHeader、TransitionRecord、wire codec、fold/golden tests | 完成 |
-| RunID-addressed `Runtime.Create/Load/Commit/Record` | 完成；待按第 6 节改为 Session module 形态 |
-| multi-Run Store-backed Runtime 与 Runtime conformance | 完成；conformance 待迁移到 Session Store 之上 |
-| 追加式 per-Run `Store` 合同、snapshot codec、lease 续期 | 完成；per-Run Store 将由 Session Store 的 `CommitIn` 取代，lease 表与 snapshot codec 保留 |
-| SQLite per-Run Store adapter | 完成；随 per-Run Store 退役，SQLite 实现改为 Session Store adapter |
-| `agent/run/loop` package extraction | 完成 |
-| Turn 最小实现（`agent/turn`：Start / Resume / Stop、v1 FactMapper、append-only MemoryLog、崩溃后 Resume） | 完成；FactMapper 与 MaterializeAll 将改为 companion，Log 由 Session Store 取代 |
-| 单一 Session ES 的设计文档（agent-run 第 5 节、agent-turn、session CommitIn、extension/chatlog 修订） | 完成，2026-09-04 |
-| Session/Artifact/Session Module protocols | 草案，无实现；wire 在 Memory 纵向切片跑通前不冻结 |
-| Chatlog protocol | 草案，payload 与 golden 尚未冻结 |
-| 参考组装 | 草案 |
-| PostgreSQL durable Run adapter（旧接口） | 历史 prototype，迁移未完成 |
+| 第 6.4 节的 `agent/run` 修改（digest-only fact、Owner/Attempt、RunCreated、Withdraw、任意状态入队） | 完成，2026-09-07；golden 重新冻结 |
+| per-Run `Store`、`stored_runtime`、`sqlitestore`、`RunHeader`、`TransitionRecord` | 已删除，2026-09-07 |
+| Session kernel Memory Store（`agent/session`） | 完成，2026-09-07；conformance 部分实现 |
+| `agent/session/extension`（Registry、SemanticAppender、Lease、ProjectionReader） | 完成，2026-09-07；conformance 部分实现 |
+| `agent/session/chatlog`（事件、parts codec、Surface、Context） | 完成，2026-09-07；checkpoint 未实现 |
+| `agent/artifact`（Ref、Binding、Memory BindingStore、两态 KV ledger） | 完成，2026-09-07；Resolver/Store/Promoter 未实现 |
+| `agent/session/run`（module descriptor、machine 投影、Runtime、RecoverExpired） | 完成，2026-09-07 |
+| `agent/run/loop` 绑定 Session（`Run(ctx, runtime, sessionID, runID, sink)`、RunPosition、SessionCommit 观察） | 完成，2026-09-07 |
+| `agent/turn` 重写（Coordinator、CompanionV1、surface 投影） | 完成，2026-09-07；旧实现已删除 |
+| 参考组装 `agent/ref`（ExecutionBinding、ContextPlanner、Memory 组装、SessionDriver、崩溃恢复 example） | 完成，2026-09-07 |
+| Runtime conformance（RUN-CMP-2）与各模块 conformance | 未按新合同重建；旧 `runtimetest` 已随 per-Run Store 删除 |
+| SQLite / PostgreSQL Session Store adapter、live 模型接入 | 未开始 |
 
-当前正式调用形态为 Application 组合 shared `run.Runtime` 与 `loop.Loop`。Loop 不保存 authority state；Runtime 不读取 queue 或 planner context。
+当前正式调用形态为 `agent/ref` 的 Memory 组装：`ref.New` 返回 Store、Registry、Appender、Projections、Runtime、Coordinator 与 Bindings；Application 经 `SessionDriver.Send` 投递输入。Loop 不保存 authority state；Runtime 不读取 queue 或 planner context。
+
+实现与规范的两处差异，待确认：
+
+1. Runtime 在控制面 KV 的 `twilight/run/command` 命名空间记录每个 CommitID 的 command digest，与 commit 同事务写入，用于区分精确重放与同 CommandID 的冲突。规范第 5.1 节未列出该条目；command 本身仍不持久化。
+2. 终态 Run 从 `twilight/run/machine` 投影移除后，`Runtime.Load` 对该 Run 改为按 RunID 过滤 replay 后折叠返回终态，而不是返回 `ErrRunNotFound`；Loop 依赖这一行为在结算后读到终态。
 
 ## 4. 后续实施工作
 

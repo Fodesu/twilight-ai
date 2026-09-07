@@ -14,13 +14,72 @@ import (
 
 	"github.com/memohai/twilight/agent/run"
 	"github.com/memohai/twilight/agent/run/loop"
+	"github.com/memohai/twilight/agent/session"
+	"github.com/memohai/twilight/agent/session/extension"
+	runmod "github.com/memohai/twilight/agent/session/run"
 	"github.com/memohai/twilight/sdk"
 )
 
 const (
-	defaultRunID = "run-1"
-	defaultModel = "m-1"
+	defaultRunID                     = "run-1"
+	defaultModel                     = "m-1"
+	defaultSession session.SessionID = "s-1"
 )
+
+// nopCompanion writes no conversation content: Feature tests exercise Run
+// facts, not the chatlog.
+type nopCompanion struct{}
+
+func (nopCompanion) Version() string                                     { return "runtest/nop" }
+func (nopCompanion) Map(run.CompanionRequest) ([]run.ModuleEvent, error) { return nil, nil }
+
+// newRuntime assembles the Memory Session stack with only the run module and
+// creates the Run with its seed input through a Start-like group.
+func newRuntime(t testing.TB, inputs ...run.AgentInput) run.Runtime {
+	t.Helper()
+	store := session.NewMemoryStore()
+	registry, err := extension.BuildRegistry(session.ProfileV1(), runmod.Module)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appender, err := extension.NewSemanticAppender(store, registry, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := runmod.NewRuntime(runmod.Config{Store: store, Registry: registry, Appender: appender,
+		Projections: extension.NewProjectionReader(store, registry), Companion: nopCompanion{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: defaultSession}); err != nil {
+		t.Fatal(err)
+	}
+	newRun, err := run.BuildNewRun(defaultRunID, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts, err := run.ProtocolV1().BuildCreateGroup(newRun, inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	group := extension.SemanticGroup{CommitID: "create/" + defaultRunID}
+	for _, f := range facts {
+		group.Events = append(group.Events, extension.TypedEvent{Type: runmod.EventType(f), Value: runmod.Event{RunID: defaultRunID, Fact: f}})
+	}
+	head, err := store.Head(ctx, defaultSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := appender.AppendSemantic(ctx, extension.SemanticAppendRequest{SessionID: defaultSession, ExpectedHead: head, Group: group})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != extension.SemanticApplied {
+		t.Fatalf("create run: %s %s", res.Outcome, res.Detail)
+	}
+	return rt
+}
 
 // Feature is one seeded Run plus the Loop/Runtime used to drive it.
 type Feature struct {
@@ -50,14 +109,7 @@ type Feature struct {
 // model results before Run or Executing*.
 func New(t testing.TB) *Feature {
 	t.Helper()
-	rt := run.NewRuntime(run.NewMemoryStore())
-	newRun, err := run.BuildNewRun(defaultRunID, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := rt.Create(context.Background(), newRun); err != nil {
-		t.Fatal(err)
-	}
+	rt := newRuntime(t, run.AgentInput{ID: "seed", Payload: run.MustParseCanonicalJSON(`{"q":"hi"}`)})
 	f := &Feature{
 		t:      t,
 		ctx:    context.Background(),
@@ -68,10 +120,6 @@ func New(t testing.TB) *Feature {
 		defs:   make(map[run.ToolRef]sdk.ToolDefinition),
 		tools:  make(map[run.ToolRef]*scriptTool),
 	}
-	f.commit(run.AcceptInput{Input: run.AgentInput{
-		ID:      "seed",
-		Payload: run.MustParseCanonicalJSON(`{"q":"hi"}`),
-	}}, "")
 	return f
 }
 
@@ -156,7 +204,7 @@ func (f *Feature) RunError(want error) *Feature {
 func (f *Feature) drive() error {
 	f.t.Helper()
 	f.ensureLoop()
-	res, err := f.loop.Run(f.runCtx, f.rt, f.runID, nil)
+	res, err := f.loop.Run(f.runCtx, f.rt, defaultSession, f.runID, nil)
 	f.last = res
 	return err
 }
@@ -180,11 +228,11 @@ func (f *Feature) TryCommit(cmd run.AgentCommand) error {
 	f.seq++
 	cmd = withClaim(run.CommandID(fmt.Sprintf("attempt-%d", f.seq)), cmd)
 	id := f.commandID(cmd, snap)
-	env, err := proto.BuildEnvelope(f.runID, id, cmd)
+	env, err := proto.BuildEnvelope(defaultSession, f.runID, id, cmd)
 	if err != nil {
 		return err
 	}
-	_, err = f.rt.Commit(f.ctx, run.CommitRequest{BaseRevision: snap.Revision, Command: env})
+	_, err = f.rt.Commit(f.ctx, defaultSession, run.CommitRequest{Base: snap.Position, Command: env})
 	return err
 }
 
@@ -329,7 +377,7 @@ func (f *Feature) ensureLoop() {
 
 func (f *Feature) load() run.RuntimeSnapshot {
 	f.t.Helper()
-	snap, err := f.rt.Load(f.ctx, f.runID)
+	snap, err := f.rt.Load(f.ctx, defaultSession, f.runID)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -360,12 +408,12 @@ func (f *Feature) commit(cmd run.AgentCommand, grant run.ExecutionGrant) run.Com
 	f.seq++
 	cmd = withClaim(run.CommandID(fmt.Sprintf("attempt-%d", f.seq)), cmd)
 	id := f.commandID(cmd, snap)
-	env, err := proto.BuildEnvelope(f.runID, id, cmd)
+	env, err := proto.BuildEnvelope(defaultSession, f.runID, id, cmd)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	res, err := f.rt.Commit(f.ctx, run.CommitRequest{
-		BaseRevision: snap.Revision, Grant: grant, Command: env,
+	res, err := f.rt.Commit(f.ctx, defaultSession, run.CommitRequest{
+		Base: snap.Position, Grant: grant, Command: env,
 	})
 	if err != nil {
 		f.t.Fatalf("commit %T: %v", cmd, err)
@@ -384,7 +432,7 @@ func (f *Feature) commandID(cmd run.AgentCommand, snap run.RuntimeSnapshot) run.
 	case run.SubmitToolResponse:
 		return run.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
 	case run.PrepareModelRequest:
-		return run.DeriveModelRequestCommandID(f.runID, snap.Revision)
+		return run.DeriveModelRequestCommandID(f.runID, snap.Position)
 	case run.RecoverModelExecution:
 		return run.DeriveModelRecoveryCommandID(f.runID, c.StepID, c.Claim)
 	case run.StartModelExecution:
@@ -424,7 +472,7 @@ func (f *Feature) commitPrepare() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	cmdID := run.DeriveModelRequestCommandID(f.runID, snap.Revision)
+	cmdID := run.DeriveModelRequestCommandID(f.runID, snap.Position)
 	stepID := run.DeriveModelStepID(f.runID, cmdID, binding)
 	ids := make([]run.InputID, len(snap.State.PendingInputs))
 	for i, in := range snap.State.PendingInputs {
@@ -454,17 +502,11 @@ func (f *Feature) mustSpec(name string, policy run.ResponsePolicy) (run.ToolSpec
 
 func (f *Feature) facts() []run.Fact {
 	f.t.Helper()
-	record, err := f.rt.Record(f.ctx, f.runID)
+	record, err := f.rt.Record(f.ctx, defaultSession, f.runID)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	var out []run.Fact
-	for _, tr := range record.Transitions {
-		for _, e := range tr.Events {
-			out = append(out, e.Fact)
-		}
-	}
-	return out
+	return record.Facts
 }
 
 func withClaim(id run.CommandID, cmd run.AgentCommand) run.AgentCommand {

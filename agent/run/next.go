@@ -1,5 +1,7 @@
 package run
 
+import "github.com/memohai/twilight/agent/session"
+
 // Effect is the at-most-one pending action Machine.Next derives from the
 // current state (RUN-MCH-4). Effects are never persisted; the Loop re-derives
 // them after every Load.
@@ -103,6 +105,7 @@ func NeedsRecovery(s MachineState) bool {
 // boundary facts only. Conversation content (previous assistant output, tool
 // results) is read from the Session by the planner itself.
 type PlanningHint struct {
+	Session    session.SessionID // filled by the Loop; Next does not know it
 	Owner      OwnerID
 	RunID      RunID
 	SourceStep StepID

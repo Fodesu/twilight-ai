@@ -292,11 +292,11 @@ func (f *Feature) RequireAbsorbsCommands() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	env, err := proto.BuildEnvelope(f.runID, "after-terminal", run.CancelRun{})
+	env, err := proto.BuildEnvelope(defaultSession, f.runID, "after-terminal", run.CancelRun{})
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	_, err = f.rt.Commit(f.ctx, run.CommitRequest{BaseRevision: snap.Revision, Command: env})
+	_, err = f.rt.Commit(f.ctx, defaultSession, run.CommitRequest{Base: snap.Position, Command: env})
 	if !errors.Is(err, run.ErrRunTerminal) {
 		f.t.Fatalf("err = %v, want ErrRunTerminal", err)
 	}

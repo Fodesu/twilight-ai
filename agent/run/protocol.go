@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/memohai/twilight/agent/es"
+	"github.com/memohai/twilight/agent/session"
 )
 
 // SchemaVersion1 is the current pre-release wire schema. Its canonical
@@ -11,29 +12,18 @@ import (
 // Once a schema is published, its encoding and folding semantics are frozen.
 const SchemaVersion1 uint16 = 1
 
-// CommandEnvelope carries one command with its persisted protocol identity.
+// CommandEnvelope carries one command with its protocol identity. Commands
+// are not persisted: ID is the CommitID of the SessionCommit the command
+// produces, and Digest lets the Runtime tell an exact replay from a conflict
+// (RUN-WIR-2).
 type CommandEnvelope struct {
-	SchemaVersion uint16       `json:"schemaVersion"`
-	Type          string       `json:"type"`
-	RunID         RunID        `json:"runId"`
-	ID            CommandID    `json:"id"`
-	Digest        Digest       `json:"digest"`
-	Command       AgentCommand `json:"command"`
-}
-
-// AgentEvent carries one fact produced by an accepted command. All events of
-// one transition share Revision, CommandID and CommandDigest; Index orders
-// them within the transition. Identity is assigned by the authority.
-type AgentEvent struct {
-	SchemaVersion uint16    `json:"schemaVersion"`
-	Type          string    `json:"type"`
-	RunID         RunID     `json:"runId"`
-	Revision      uint64    `json:"revision"`
-	Index         uint16    `json:"index"`
-	CommandID     CommandID `json:"commandId"`
-	CommandDigest Digest    `json:"commandDigest"`
-	Digest        Digest    `json:"digest"` // canonical digest of the fact
-	Fact          Fact      `json:"fact"`
+	SchemaVersion uint16            `json:"schemaVersion"`
+	Type          string            `json:"type"`
+	SessionID     session.SessionID `json:"sessionId"`
+	RunID         RunID             `json:"runId"`
+	ID            CommandID         `json:"id"`
+	Digest        Digest            `json:"digest"`
+	Command       AgentCommand      `json:"command"`
 }
 
 // encodeEnvelopeBody is the digest input for a command: schema version, type
@@ -65,7 +55,6 @@ type Protocol struct {
 	evolve                     func(MachineState, Fact) (MachineState, error)
 	encodeMachineState         func(*MachineState) ([]byte, error)
 	decodeMachineState         func([]byte) (MachineState, error)
-	validateHeader             func(*RunHeader) error
 }
 
 // ProtocolV1 is the SchemaVersion1 binding. New Runs are created with this
@@ -92,7 +81,6 @@ var protocolV1 = Protocol{
 	evolve:                     evolveV1,
 	encodeMachineState:         encodeMachineStateV1,
 	decodeMachineState:         decodeMachineStateV1,
-	validateHeader:             validateHeaderV1,
 }
 
 // ProtocolFor binds the protocol functions for a persisted schema version.
@@ -254,7 +242,8 @@ func (p Protocol) Evolve(s MachineState, f Fact) (MachineState, error) { //nolin
 	return p.evolve(s, f)
 }
 
-func (p Protocol) BuildEnvelope(run RunID, id CommandID, cmd AgentCommand) (CommandEnvelope, error) {
+// BuildEnvelope is the sanctioned envelope constructor (RUN-WIR-3).
+func (p Protocol) BuildEnvelope(sid session.SessionID, run RunID, id CommandID, cmd AgentCommand) (CommandEnvelope, error) {
 	typ := commandType(cmd)
 	if typ == "" {
 		return CommandEnvelope{}, fmt.Errorf("agent: envelope: unknown command variant %T", cmd)
@@ -266,12 +255,17 @@ func (p Protocol) BuildEnvelope(run RunID, id CommandID, cmd AgentCommand) (Comm
 	return CommandEnvelope{
 		SchemaVersion: p.version,
 		Type:          typ,
+		SessionID:     sid,
 		RunID:         run,
 		ID:            id,
 		Digest:        d,
 		Command:       cmd,
 	}, nil
 }
+
+// FactType returns the local event name of a fact (the part of the EventType
+// after twilight/run/).
+func FactType(f Fact) string { return factType(f) }
 
 // EncodeMachineState renders the persisted snapshot bytes of a MachineState
 // under this schema. The bytes are canonical: statesEquivalent, the
@@ -290,13 +284,6 @@ func (p Protocol) DecodeMachineState(raw []byte) (MachineState, error) {
 		return MachineState{}, err
 	}
 	return p.decodeMachineState(raw)
-}
-
-func (p Protocol) ValidateHeader(h *RunHeader) error {
-	if err := p.ready(); err != nil {
-		return err
-	}
-	return p.validateHeader(h)
 }
 
 type toolResponseDecisionDigestBody struct {

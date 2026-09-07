@@ -6,61 +6,29 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/memohai/twilight/agent/session"
 )
 
 type commandEnvelopeWire struct {
-	SchemaVersion uint16          `json:"schemaVersion"`
-	Type          string          `json:"type"`
-	RunID         RunID           `json:"runId"`
-	ID            CommandID       `json:"id"`
-	Digest        Digest          `json:"digest"`
-	Command       json.RawMessage `json:"command"`
+	SchemaVersion uint16            `json:"schemaVersion"`
+	Type          string            `json:"type"`
+	SessionID     session.SessionID `json:"sessionId,omitempty"`
+	RunID         RunID             `json:"runId"`
+	ID            CommandID         `json:"id"`
+	Digest        Digest            `json:"digest"`
+	Command       json.RawMessage   `json:"command"`
 }
 
 type commandEnvelopeMarshal struct {
-	SchemaVersion uint16       `json:"schemaVersion"`
-	Type          string       `json:"type"`
-	RunID         RunID        `json:"runId"`
-	ID            CommandID    `json:"id"`
-	Digest        Digest       `json:"digest"`
-	Command       AgentCommand `json:"command"`
+	SchemaVersion uint16            `json:"schemaVersion"`
+	Type          string            `json:"type"`
+	SessionID     session.SessionID `json:"sessionId,omitempty"`
+	RunID         RunID             `json:"runId"`
+	ID            CommandID         `json:"id"`
+	Digest        Digest            `json:"digest"`
+	Command       AgentCommand      `json:"command"`
 }
-
-type agentEventWire struct {
-	SchemaVersion uint16          `json:"schemaVersion"`
-	Type          string          `json:"type"`
-	RunID         RunID           `json:"runId"`
-	Revision      uint64          `json:"revision"`
-	Index         uint16          `json:"index"`
-	CommandID     CommandID       `json:"commandId"`
-	CommandDigest Digest          `json:"commandDigest"`
-	Digest        Digest          `json:"digest"`
-	Fact          json.RawMessage `json:"fact"`
-}
-
-type agentEventMarshal struct {
-	SchemaVersion uint16    `json:"schemaVersion"`
-	Type          string    `json:"type"`
-	RunID         RunID     `json:"runId"`
-	Revision      uint64    `json:"revision"`
-	Index         uint16    `json:"index"`
-	CommandID     CommandID `json:"commandId"`
-	CommandDigest Digest    `json:"commandDigest"`
-	Digest        Digest    `json:"digest"`
-	Fact          Fact      `json:"fact"`
-}
-
-type transitionRecordWire struct {
-	SchemaVersion    uint16       `json:"schemaVersion"`
-	RunID            RunID        `json:"runId"`
-	Revision         uint64       `json:"revision"`
-	CommandID        CommandID    `json:"commandId"`
-	CommandDigest    Digest       `json:"commandDigest"`
-	Events           []AgentEvent `json:"events"`
-	TransitionDigest Digest       `json:"transitionDigest"`
-}
-
-type transitionRecordMarshal = transitionRecordWire
 
 // DecodeCommandEnvelope decodes the persisted command wire shape and restores
 // the sealed command variant from Type. The digest is verified during decode;
@@ -71,26 +39,6 @@ func DecodeCommandEnvelope(raw []byte) (CommandEnvelope, error) {
 		return CommandEnvelope{}, err
 	}
 	return env, nil
-}
-
-// DecodeAgentEvent decodes the persisted event wire shape and restores the
-// sealed fact variant from Type. The fact digest is verified during decode.
-func DecodeAgentEvent(raw []byte) (AgentEvent, error) {
-	var event AgentEvent
-	if err := decodeStrictJSON(raw, &event); err != nil {
-		return AgentEvent{}, err
-	}
-	return event, nil
-}
-
-// DecodeTransitionRecord decodes the persisted transition aggregate and
-// verifies that the complete event group is internally consistent.
-func DecodeTransitionRecord(raw []byte) (TransitionRecord, error) {
-	var record TransitionRecord
-	if err := decodeStrictJSON(raw, &record); err != nil {
-		return TransitionRecord{}, err
-	}
-	return record, nil
 }
 
 //nolint:gocritic // hugeParam: value receiver keeps json.Marshaler active for non-pointer CommandEnvelope values.
@@ -108,6 +56,7 @@ func (e CommandEnvelope) MarshalJSON() ([]byte, error) {
 	return json.Marshal(commandEnvelopeMarshal{
 		SchemaVersion: e.SchemaVersion,
 		Type:          typ,
+		SessionID:     e.SessionID,
 		RunID:         e.RunID,
 		ID:            e.ID,
 		Digest:        e.Digest,
@@ -141,6 +90,7 @@ func (e *CommandEnvelope) UnmarshalJSON(raw []byte) error {
 	if err := requireCanonicalEquivalent(raw, commandEnvelopeMarshal{
 		SchemaVersion: wire.SchemaVersion,
 		Type:          wire.Type,
+		SessionID:     wire.SessionID,
 		RunID:         wire.RunID,
 		ID:            wire.ID,
 		Digest:        wire.Digest,
@@ -151,109 +101,11 @@ func (e *CommandEnvelope) UnmarshalJSON(raw []byte) error {
 	*e = CommandEnvelope{
 		SchemaVersion: wire.SchemaVersion,
 		Type:          wire.Type,
+		SessionID:     wire.SessionID,
 		RunID:         wire.RunID,
 		ID:            wire.ID,
 		Digest:        wire.Digest,
 		Command:       cmd,
-	}
-	return nil
-}
-
-//nolint:gocritic // hugeParam: value receiver keeps json.Marshaler active for non-pointer AgentEvent values.
-func (e AgentEvent) MarshalJSON() ([]byte, error) {
-	if e.Fact == nil {
-		return nil, errors.New("agent: codec: event has nil fact")
-	}
-	typ := factType(e.Fact)
-	if typ == "" {
-		return nil, fmt.Errorf("agent: codec: unknown fact variant %T", e.Fact)
-	}
-	if e.Type != "" && e.Type != typ {
-		return nil, fmt.Errorf("agent: codec: event type %q does not match variant %q", e.Type, typ)
-	}
-	return json.Marshal(agentEventMarshal{
-		SchemaVersion: e.SchemaVersion,
-		Type:          typ,
-		RunID:         e.RunID,
-		Revision:      e.Revision,
-		Index:         e.Index,
-		CommandID:     e.CommandID,
-		CommandDigest: e.CommandDigest,
-		Digest:        e.Digest,
-		Fact:          e.Fact,
-	})
-}
-
-//nolint:gocritic // hugeParam: value receiver keeps json.Marshaler active for non-pointer TransitionRecord values.
-func (r TransitionRecord) MarshalJSON() ([]byte, error) {
-	if err := ValidateTransitionRecord(&r); err != nil {
-		return nil, err
-	}
-	return json.Marshal(transitionRecordMarshal(r))
-}
-
-func (r *TransitionRecord) UnmarshalJSON(raw []byte) error {
-	var wire transitionRecordWire
-	if err := decodeStrictJSON(raw, &wire); err != nil {
-		return err
-	}
-	record := TransitionRecord(wire)
-	if err := ValidateTransitionRecord(&record); err != nil {
-		return err
-	}
-	if err := requireCanonicalEquivalent(raw, transitionRecordMarshal(record)); err != nil {
-		return err
-	}
-	*r = record
-	return nil
-}
-
-func (e *AgentEvent) UnmarshalJSON(raw []byte) error {
-	var wire agentEventWire
-	if err := decodeStrictJSON(raw, &wire); err != nil {
-		return err
-	}
-	proto, err := ProtocolFor(wire.SchemaVersion)
-	if err != nil {
-		return err
-	}
-	fact, err := proto.DecodeFact(wire.Type, wire.Fact)
-	if err != nil {
-		return err
-	}
-	want, err := proto.DigestFact(wire.Type, fact)
-	if err != nil {
-		return err
-	}
-	if wire.Digest == "" {
-		return errors.New("agent: codec: event missing fact digest")
-	}
-	if wire.Digest != want {
-		return fmt.Errorf("agent: codec: fact digest mismatch: got %s want %s", wire.Digest, want)
-	}
-	if err := requireCanonicalEquivalent(raw, agentEventMarshal{
-		SchemaVersion: wire.SchemaVersion,
-		Type:          wire.Type,
-		RunID:         wire.RunID,
-		Revision:      wire.Revision,
-		Index:         wire.Index,
-		CommandID:     wire.CommandID,
-		CommandDigest: wire.CommandDigest,
-		Digest:        wire.Digest,
-		Fact:          fact,
-	}); err != nil {
-		return err
-	}
-	*e = AgentEvent{
-		SchemaVersion: wire.SchemaVersion,
-		Type:          wire.Type,
-		RunID:         wire.RunID,
-		Revision:      wire.Revision,
-		Index:         wire.Index,
-		CommandID:     wire.CommandID,
-		CommandDigest: wire.CommandDigest,
-		Digest:        wire.Digest,
-		Fact:          fact,
 	}
 	return nil
 }

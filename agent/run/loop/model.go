@@ -10,7 +10,8 @@ import (
 	"github.com/memohai/twilight/sdk"
 )
 
-func (l *Loop) planAndPrepare(ctx context.Context, runtime run.Runtime, events EventSink, snapshot *run.RuntimeSnapshot, hint run.PlanningHint) error {
+func (l *Loop) planAndPrepare(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot, hint run.PlanningHint) error {
+	hint.Session = runtime.sid
 	plan, err := l.Planner.Plan(ctx, hint)
 	if err != nil {
 		return err
@@ -45,9 +46,9 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime run.Runtime, events E
 	if err != nil {
 		return err
 	}
-	cmdID := run.DeriveModelRequestCommandID(snapshot.State.RunID, snapshot.Revision)
+	cmdID := run.DeriveModelRequestCommandID(snapshot.State.RunID, snapshot.Position)
 	stepID := run.DeriveModelStepID(snapshot.State.RunID, cmdID, binding)
-	res, err := l.commit(ctx, runtime, snapshot.State.RunID, cmdID, snapshot.Revision, "", run.PrepareModelRequest{
+	res, err := l.commit(ctx, runtime, snapshot.State.RunID, cmdID, snapshot.Position, "", run.PrepareModelRequest{
 		StepID:        stepID,
 		Model:         model,
 		Request:       frozenRequest,
@@ -61,7 +62,7 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime run.Runtime, events E
 		// ModelStepPrepared carries the frozen request — the most informative
 		// fact of the run; observers must see it like every other accepted
 		// transition.
-		l.emitCommitted(ctx, events, snapshot.State.RunID, res.Events)
+		l.emitCommitted(ctx, events, runtime.sid, snapshot.State.RunID, &res.Commit)
 		return nil
 	}
 	if !retriable(err) {
@@ -74,7 +75,7 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime run.Runtime, events E
 	if loadErr != nil {
 		return loadErr
 	}
-	if after.Revision == snapshot.Revision {
+	if after.Position == snapshot.Position {
 		return fmt.Errorf("agent: loop: prepare rejected without authority progress: %w", err)
 	}
 	return nil // another actor advanced the run; reload decides the next action
@@ -82,17 +83,17 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime run.Runtime, events E
 
 // --- StartModelCall ---
 
-func (l *Loop) runModelStep(ctx context.Context, runtime run.Runtime, events EventSink, snapshot *run.RuntimeSnapshot, stepID run.StepID) error {
+func (l *Loop) runModelStep(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot, stepID run.StepID) error {
 	runID := snapshot.State.RunID
 	proto, err := snapshot.Protocol()
 	if err != nil {
 		return err
 	}
-	a, err := l.claimFor(ctx, runID, stepID, "")
+	a, err := l.claimFor(ctx, runtime.sid, runID, stepID, "")
 	if err != nil {
 		return err
 	}
-	start, err := l.commit(ctx, runtime, runID, a.startID(), snapshot.Revision, "", run.StartModelExecution{StepID: stepID, Claim: a.claim}, proto)
+	start, err := l.commit(ctx, runtime, runID, a.startID(), snapshot.Position, "", run.StartModelExecution{StepID: stepID, Claim: a.claim}, proto)
 	if err != nil {
 		if retriable(err) {
 			l.forgetClaim(ctx, a)
@@ -112,7 +113,7 @@ func (l *Loop) runModelStep(ctx context.Context, runtime run.Runtime, events Eve
 	if start.Grant == "" {
 		return errors.New("agent: loop: start model returned no execution grant")
 	}
-	l.emitCommitted(ctx, events, runID, start.Events)
+	l.emitCommitted(ctx, events, runtime.sid, runID, &start.Commit)
 
 	modelStep, ok := start.Snapshot.State.Current.(run.ModelStep)
 	if !ok || modelStep.RefValue.ID != stepID || modelStep.Status != run.ModelExecuting {
@@ -150,7 +151,7 @@ func (l *Loop) runModelStep(ctx context.Context, runtime run.Runtime, events Eve
 			if errors.Is(fetchErr, run.ErrFrozenValueMissing) {
 				// Release ownership so recovery or a fresh plan can proceed;
 				// surface the condition to the host.
-				if err := l.settle(ctx, runtime, events, a, start.Snapshot.Revision, start.Grant, run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, proto); err != nil {
+				if err := l.settle(ctx, runtime, events, a, start.Snapshot.Position, start.Grant, run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, proto); err != nil {
 					return err
 				}
 				return fetchErr
@@ -183,7 +184,7 @@ func (l *Loop) runModelStep(ctx context.Context, runtime run.Runtime, events Eve
 		}
 	}
 
-	if err := l.settle(ctx, runtime, events, a, start.Snapshot.Revision, start.Grant, completion, proto); err != nil {
+	if err := l.settle(ctx, runtime, events, a, start.Snapshot.Position, start.Grant, completion, proto); err != nil {
 		return err
 	}
 	if catalogErr != nil {

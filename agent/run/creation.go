@@ -1,7 +1,6 @@
 package run
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -57,99 +56,18 @@ func ValidateNewRun(run NewRun) error {
 	return nil
 }
 
-// BuildRunHeaderFromNewRun constructs Revision 0 using the explicit v1 rule.
-// This dispatch must not use currentSchemaVersion: later command schemas must
-// never change the bytes admitted by a v1 NewRun.
-func BuildRunHeaderFromNewRun(run NewRun) (RunHeader, error) {
-	if err := ValidateNewRun(run); err != nil {
-		return RunHeader{}, err
-	}
-	switch run.SchemaVersion {
-	case SchemaVersion1:
-		return buildRunHeaderV1(run)
-	default:
-		return RunHeader{}, fmt.Errorf("agent: new run: unsupported schema version %d", run.SchemaVersion)
-	}
-}
-
-const newRunV1InitialStateVersion uint16 = 1
-
-func buildRunHeaderV1(run NewRun) (RunHeader, error) {
-	initial, err := InitializeRun(run.RunID, run.Owner, run.Attempt)
-	if err != nil {
-		return RunHeader{}, err
-	}
-	stateBytes, err := encodeMachineStateV1(&initial)
-	if err != nil {
-		return RunHeader{}, err
-	}
-	header := RunHeader{
-		SchemaVersion:       SchemaVersion1,
-		RunID:               run.RunID,
-		InitialStateVersion: newRunV1InitialStateVersion,
-		InitialState:        initial,
-		InitialStateDigest:  sha256Digest(stateBytes),
-		CausationID:         run.CausationID,
-	}
-	header.HeaderDigest, err = digestRunHeader(&header)
-	if err != nil {
-		return RunHeader{}, err
-	}
-	if err := ValidateRunHeader(&header); err != nil {
-		return RunHeader{}, err
-	}
-	return header, nil
-}
-
-// CreateResult is the outcome of conditionally creating one Run.
-type CreateResult struct {
-	Header  RunHeader `json:"header"`
-	Created bool      `json:"created"`
-}
-
-// RunRecord is one consistent, verified read of a Run.
-type RunRecord struct {
-	Header      RunHeader          `json:"header"`
-	Snapshot    RuntimeSnapshot    `json:"snapshot"`
-	Transitions []TransitionRecord `json:"transitions"`
-}
-
 var (
-	// ErrCreateConflict reports that a RunID is already associated with a
-	// different canonical Revision-0 header.
-	ErrCreateConflict = errors.New("agent: run create conflict")
-	// ErrRunNotFound reports an operation addressed a RunID not in this Runtime.
+	// ErrRunNotFound reports an operation addressed a RunID not in the Session.
 	ErrRunNotFound = errors.New("agent: run not found")
 )
 
-func cloneRunHeader(header RunHeader) RunHeader {
-	header.InitialState = cloneMachineState(&header.InitialState)
-	return header
-}
-
-func canonicalHeadersEqual(left, right RunHeader) (bool, error) {
-	if err := ValidateRunHeader(&left); err != nil {
-		return false, err
-	}
-	if err := ValidateRunHeader(&right); err != nil {
-		return false, err
-	}
-	leftBytes, err := marshalCanonical(left)
-	if err != nil {
-		return false, err
-	}
-	rightBytes, err := marshalCanonical(right)
-	if err != nil {
-		return false, err
-	}
-	return bytes.Equal(leftBytes, rightBytes), nil
-}
-
-// checkContext avoids locking when cancellation already makes an operation
+// CheckContext avoids locking when cancellation already makes an operation
 // inapplicable. Context is intentionally not retained by the Runtime.
-func checkContext(ctx context.Context) error {
+func CheckContext(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("agent: runtime: nil context")
 	}
 	return ctx.Err()
 }
+
+func checkContext(ctx context.Context) error { return CheckContext(ctx) }

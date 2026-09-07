@@ -15,7 +15,7 @@ import (
 // continuing the effect can only produce a result nobody will accept.
 //
 // With interval <= 0 renewal is disabled and the worker context is ctx itself.
-func (l *Loop) keepLease(ctx context.Context, runtime run.Runtime, runID run.RunID, stepID run.StepID, callID run.CallID, grant run.ExecutionGrant) (workerCtx context.Context, stop func()) {
+func (l *Loop) keepLease(ctx context.Context, runtime boundRuntime, runID run.RunID, stepID run.StepID, callID run.CallID, grant run.ExecutionGrant) (workerCtx context.Context, stop func()) {
 	interval := l.Execution.LeaseRenewInterval
 	if interval <= 0 {
 		return ctx, func() {}

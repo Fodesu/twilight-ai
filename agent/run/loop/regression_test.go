@@ -23,7 +23,7 @@ func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
 	interpreter, _ := New(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
 		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
 
-	res, err := interpreter.Run(context.Background(), rt, "run-1", nil)
+	res, err := interpreter.Run(context.Background(), rt, testSession, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,8 +31,8 @@ func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
 		t.Fatalf("res = %+v", res.Result)
 	}
 	found := false
-	for _, e := range recordEvents(t, rt, "run-1") {
-		failed, ok := e.Fact.(ToolCallFailed)
+	for _, e := range recordFacts(t, rt, "run-1") {
+		failed, ok := e.(ToolCallFailed)
 		if !ok || failed.Outcome != ToolOutcomeUnknown {
 			continue
 		}
@@ -55,7 +55,7 @@ func TestRegressionRunFinishedEmitted(t *testing.T) {
 	})
 	interpreter, _ := New(fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("done")}}},
 		fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
-	if _, err := interpreter.Run(context.Background(), rt, "run-1", sink); err != nil {
+	if _, err := interpreter.Run(context.Background(), rt, testSession, "run-1", sink); err != nil {
 		t.Fatal(err)
 	}
 	for _, k := range kinds {
@@ -95,7 +95,7 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 	interpreter, _ := New(fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"fs.read": tool}},
 		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
 
-	res, err := interpreter.Run(context.Background(), rt, "run-1", nil)
+	res, err := interpreter.Run(context.Background(), rt, testSession, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 func TestRegressionStreamNilResult(t *testing.T) {
 	rt := loopRuntime(t)
 	interpreter, _ := New(fakeCatalog{nilResultStreamer{}}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, true)
-	res, err := interpreter.Run(context.Background(), rt, "run-1", nil)
+	res, err := interpreter.Run(context.Background(), rt, testSession, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

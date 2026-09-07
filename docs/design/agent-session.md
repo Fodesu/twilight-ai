@@ -1,6 +1,6 @@
 # Twilight Agent Session Protocol
 
-状态：设计草案。无实现；wire、digest preimage 与 conformance 在 Memory reference implementation 与 Input → Turn → Run → Session 纵向切片跑通前不冻结。v1 为单 stream kernel；Fork、ancestry、canonical import 在附录 A 中，不进入 v1 conformance。
+状态：设计草案。`agent/session` 已有 Memory reference implementation（Create、Commit、CommitIn、Types 过滤 replay、snapshot、控制面 KV），纵向切片已在 `agent/ref` 跑通；wire、digest preimage 与 conformance 在第 8 节列出的检查全部实现前不冻结。v1 为单 stream kernel；Fork、ancestry、canonical import 在附录 A 中，不进入 v1 conformance。
 
 本文定义 Twilight Session 的 Event Sourcing kernel。文中的"必须""不得""应该"是协议约束。
 

@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	run "github.com/memohai/twilight/agent/run"
+	"github.com/memohai/twilight/agent/session"
 )
 
 type serializedEventSink struct {
@@ -22,19 +23,18 @@ func (s *serializedEventSink) Emit(ctx context.Context, event Event) error {
 	return s.sink.Emit(ctx, event)
 }
 
-func (l *Loop) emitCommitted(ctx context.Context, events EventSink, runID run.RunID, committed []run.AgentEvent) {
-	if events == nil {
+func (l *Loop) emitCommitted(ctx context.Context, events EventSink, sid session.SessionID, runID run.RunID, committed *session.SessionCommit) {
+	if events == nil || committed == nil {
 		return
 	}
-	for i := range committed {
-		e := committed[i]
-		_ = events.Emit(ctx, Event{
-			RunID:      runID,
-			Kind:       EventAgentCommitted,
-			Durability: EventCommitted,
-			Canonical:  &e,
-		})
-	}
+	c := *committed
+	_ = events.Emit(ctx, Event{
+		Session:    sid,
+		RunID:      runID,
+		Kind:       EventAgentCommitted,
+		Durability: EventCommitted,
+		Committed:  &c,
+	})
 }
 
 type progressSink struct {

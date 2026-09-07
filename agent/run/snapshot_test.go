@@ -1,11 +1,8 @@
 package run
 
 import (
-	"context"
 	"strings"
 	"testing"
-
-	"github.com/memohai/twilight/sdk"
 )
 
 // The snapshot codec round-trips every Current variant and the terminal
@@ -13,16 +10,9 @@ import (
 func TestSnapshotCodecRoundTrip(t *testing.T) {
 	def := testToolDef("t")
 	spec := makeSpec(t, def, DirectExecution)
-	rt, stepID, grant := preparedRuntime(t, []sdk.ToolDefinition{def}, []ToolSpec{spec})
-	ctx := context.Background()
-
-	check := func(name string) {
+	check := func(name string, s MachineState) {
 		t.Helper()
-		snap, err := rt.Load(ctx, "run-1")
-		if err != nil {
-			t.Fatal(err)
-		}
-		raw, err := ProtocolV1().EncodeMachineState(&snap.State)
+		raw, err := ProtocolV1().EncodeMachineState(&s)
 		if err != nil {
 			t.Fatalf("%s: encode: %v", name, err)
 		}
@@ -30,29 +20,29 @@ func TestSnapshotCodecRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: decode: %v\n%s", name, err, raw)
 		}
-		if !statesEquivalent(&snap.State, &decoded) {
+		if !statesEquivalent(&s, &decoded) {
 			t.Fatalf("%s: round trip changed state\n%s", name, raw)
 		}
-		if (snap.State.Current == nil) != (decoded.Current == nil) {
-			t.Fatalf("%s: Current presence changed: %T -> %T", name, snap.State.Current, decoded.Current)
+		if (s.Current == nil) != (decoded.Current == nil) {
+			t.Fatalf("%s: Current presence changed: %T -> %T", name, s.Current, decoded.Current)
 		}
 	}
 
-	check("model executing")
+	s := newRun(t)
+	check("open", s)
+	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
+	check("model executing", s)
 	b := makeBinding(t, stepID, 0, "c1", spec, `{}`)
-	snap, _ := rt.Load(ctx, "run-1")
-	res := mustCommit(t, rt, "complete-1", snap.Revision, grant,
-		SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
-	check("tool step pending")
-	toolStep := res.Events[1].Fact.(ToolStepOpened).StepID
-	sRes := mustCommit(t, rt, "start-c1", res.Snapshot.Revision, "", StartToolCall{StepID: toolStep, CallID: cid(stepID, 0)})
-	check("tool step executing")
-	mustCommit(t, rt, "done-c1", sRes.Snapshot.Revision, sRes.Grant,
-		SubmitToolResult{StepID: toolStep, CallID: cid(stepID, 0), Result: ToolExecutionResult{Output: cj(`"ok"`)}})
-	check("open with last tool step")
-	snap, _ = rt.Load(ctx, "run-1")
-	mustCommit(t, rt, "cancel", snap.Revision, "", CancelRun{})
-	check("terminal")
+	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
+	s = fold(t, s, facts)
+	check("tool step pending", s)
+	toolStep := facts[1].(ToolStepOpened).StepID
+	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: toolStep, CallID: cid(stepID, 0), Claim: "claim"}))
+	check("tool step executing", s)
+	s = fold(t, s, mustDecide(t, s, SubmitToolResult{StepID: toolStep, CallID: cid(stepID, 0), Result: ToolExecutionResult{Output: cj(`"ok"`)}}))
+	check("open with last tool step", s)
+	s = fold(t, s, mustDecide(t, s, CancelRun{}))
+	check("terminal", s)
 }
 
 func TestSnapshotCodecRejectsMalformedWire(t *testing.T) {

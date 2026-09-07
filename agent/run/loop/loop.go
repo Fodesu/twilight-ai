@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	run "github.com/memohai/twilight/agent/run"
+	"github.com/memohai/twilight/agent/session"
 )
 
 // Loop is the in-process interpreter of one Run (RUN-LOP-2). It holds no
@@ -86,15 +87,15 @@ func (l *Loop) releaseRun(runID run.RunID) {
 // context is cancelled (RUN-LOP-2). The caller context remains active for
 // reads and normal control commits. Accepted effect settlements use a
 // detached control context so worker cancellation cannot discard their outcome.
-func (l *Loop) Run(ctx context.Context, runtime run.Runtime, runID run.RunID, events EventSink) (LoopResult, error) {
+func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, runID run.RunID, events EventSink) (LoopResult, error) {
 	if ctx == nil {
 		return LoopResult{}, errors.New("agent: loop: nil context")
 	}
-	if runtime == nil {
+	if rt == nil {
 		return LoopResult{}, errors.New("agent: loop: nil runtime")
 	}
-	if runID == "" {
-		return LoopResult{}, errors.New("agent: loop: empty RunID")
+	if sid == "" || runID == "" {
+		return LoopResult{}, errors.New("agent: loop: empty SessionID or RunID")
 	}
 	if err := l.acquireRun(runID); err != nil {
 		return LoopResult{}, err
@@ -103,6 +104,7 @@ func (l *Loop) Run(ctx context.Context, runtime run.Runtime, runID run.RunID, ev
 	if events != nil {
 		events = &serializedEventSink{sink: events, mu: &l.eventsMu}
 	}
+	runtime := boundRuntime{rt: rt, sid: sid}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -118,9 +120,10 @@ func (l *Loop) Run(ctx context.Context, runtime run.Runtime, runID run.RunID, ev
 			return LoopResult{}, fmt.Errorf("agent: loop: runtime returned RunID %q for %q", snapshot.State.RunID, runID)
 		}
 		if snapshot.State.Status.Terminal() {
-			l.forgetRunClaims(ctx, runID)
+			l.forgetRunClaims(ctx, sid, runID)
 			if events != nil {
 				_ = events.Emit(ctx, Event{
+					Session:    sid,
 					RunID:      snapshot.State.RunID,
 					Kind:       EventRunFinished,
 					Durability: EventCommitted,
@@ -156,13 +159,13 @@ func (l *Loop) Run(ctx context.Context, runtime run.Runtime, runID run.RunID, ev
 			if err != nil {
 				return LoopResult{}, err
 			}
-			res, err := l.commit(ctx, runtime, runID, run.DeriveWithdrawCommandID(runID, eff.StepID), snapshot.Revision, "",
+			res, err := l.commit(ctx, runtime, runID, run.DeriveWithdrawCommandID(runID, eff.StepID), snapshot.Position, "",
 				run.WithdrawPreparedStep{StepID: eff.StepID}, proto)
 			if err != nil && !retriable(err) {
 				return LoopResult{}, err
 			}
 			if err == nil {
-				l.emitCommitted(ctx, events, runID, res.Events)
+				l.emitCommitted(ctx, events, sid, runID, &res.Commit)
 			}
 		case run.StartModelCall:
 			if err := l.runModelStep(ctx, runtime, events, &snapshot, eff.StepID); err != nil {
@@ -190,15 +193,15 @@ func (l *Loop) Run(ctx context.Context, runtime run.Runtime, runID run.RunID, ev
 // digest (RUN-LOP-5): if the first attempt actually
 // committed and only the response was lost, the replay returns AlreadyApplied
 // instead of abandoning a live grant or re-executing an expensive step.
-func (l *Loop) commit(ctx context.Context, runtime run.Runtime, runID run.RunID, id run.CommandID, base uint64, grant run.ExecutionGrant, cmd run.AgentCommand, proto run.Protocol) (run.CommitResult, error) {
+func (l *Loop) commit(ctx context.Context, runtime boundRuntime, runID run.RunID, id run.CommandID, base run.RunPosition, grant run.ExecutionGrant, cmd run.AgentCommand, proto run.Protocol) (run.CommitResult, error) {
 	if proto.Version() == 0 {
 		return run.CommitResult{}, errors.New("agent: loop: uninitialized protocol")
 	}
-	env, err := proto.BuildEnvelope(runID, id, cmd)
+	env, err := proto.BuildEnvelope(runtime.sid, runID, id, cmd)
 	if err != nil {
 		return run.CommitResult{}, err
 	}
-	req := run.CommitRequest{BaseRevision: base, Grant: grant, Command: env}
+	req := run.CommitRequest{Base: base, Grant: grant, Command: env}
 	res, err := runtime.Commit(ctx, req)
 	if err != nil && !retriable(err) {
 		res, err = runtime.Commit(ctx, req)
