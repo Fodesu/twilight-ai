@@ -209,7 +209,7 @@ func TestFoldRejectsDamagedLog(t *testing.T) {
 		log := flattenTransitionRecords(transitions)
 		for i := range log {
 			if f, ok := log[i].Fact.(ToolCallCompleted); ok {
-				f.Result.Output = cj(`"tampered"`)
+				f.OutputDigest = "sha256:tampered"
 				log[i].Fact = f
 				break
 			}
@@ -262,9 +262,10 @@ func TestGoldenEventStreamV1(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := string(sha256Digest(stateBytes))
-	// Pre-release fixture; re-frozen when CallID became derived and
-	// providerCallId joined the binding.
-	const frozen = "sha256:d3d3586e173be5be4bc7889993fa9c3456d33a58e354ad160cd89609aae9fe90"
+	// Pre-release fixture; re-frozen when facts became digest-only (RUN-WIR-4):
+	// ModelStepCompleted/ToolCallCompleted carry ResultDigest/OutputDigest and
+	// MachineState no longer holds LastModelResult.
+	const frozen = "sha256:5691b677142774c67ba3383309be93cc3cb212ac70469f9aeb82c47ef66e4224"
 	if got != frozen {
 		t.Fatalf("golden v1 state digest changed:\n got %s\nwant %s\nstate: %s", got, frozen, stateBytes)
 	}

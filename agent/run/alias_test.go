@@ -57,7 +57,9 @@ func TestCommitSnapshotsCommandPayloadBeforeFoldingState(t *testing.T) {
 	}
 }
 
-func TestCommitCanonicalizesAgentOwnedJSONBeforePersisting(t *testing.T) {
+// The frozen request body is stored canonically in the FrozenValueStore and
+// named by digest in the fact (RUN-WIR-4).
+func TestCommitCanonicalizesFrozenRequestBeforePersisting(t *testing.T) {
 	rt := newTestRuntime(t)
 	snap, _ := rt.Load(context.Background(), "run-1")
 	req := ModelRequest{
@@ -94,19 +96,27 @@ func TestCommitCanonicalizesAgentOwnedJSONBeforePersisting(t *testing.T) {
 	})
 
 	ms := res.Snapshot.State.Current.(ModelStep)
-	if got := ms.Request.ProviderOptions["p"].String(); got != `{"a":1,"b":2}` {
-		t.Fatalf("snapshot stored non-canonical provider option: %s", got)
+	if ms.RequestDigest != reqDigest {
+		t.Fatalf("snapshot RequestDigest = %s, want %s", ms.RequestDigest, reqDigest)
+	}
+	stored, err := rt.FrozenRequest(context.Background(), ms.RequestDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stored.ProviderOptions["p"].String(); got != `{"a":1,"b":2}` {
+		t.Fatalf("frozen store returned non-canonical provider option: %s", got)
 	}
 	for _, e := range recordEvents(t, rt, "run-1") {
-		if f, ok := e.Fact.(ModelStepPrepared); ok {
-			if got := f.Request.ProviderOptions["p"].String(); got != `{"a":1,"b":2}` {
-				t.Fatalf("event stored non-canonical provider option: %s", got)
-			}
+		if f, ok := e.Fact.(ModelStepPrepared); ok && f.RequestDigest != reqDigest {
+			t.Fatalf("event RequestDigest = %s, want %s", f.RequestDigest, reqDigest)
 		}
+	}
+	if _, err := rt.FrozenRequest(context.Background(), "sha256:missing"); err == nil {
+		t.Fatal("unknown digest returned a request")
 	}
 }
 
-func TestLoadSnapshotDoesNotAliasFrozenRequest(t *testing.T) {
+func TestFrozenRequestDoesNotAliasStoredBody(t *testing.T) {
 	rt := newTestRuntime(t)
 	meta := map[string]any{"provider": map[string]any{"sig": "s1"}}
 	req := sdk.Request{
@@ -123,54 +133,53 @@ func TestLoadSnapshotDoesNotAliasFrozenRequest(t *testing.T) {
 	prep, cmdID := buildPrepareFromSnap(t, snap, req, nil)
 	mustCommit(t, rt, cmdID, snap.Revision, "", prep)
 
-	snap, err := rt.Load(context.Background(), "run-1")
+	first, err := rt.FrozenRequest(context.Background(), prep.RequestDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ms := snap.State.Current.(ModelStep)
-	part := ms.Request.Messages[0].Content[0]
+	part := first.Messages[0].Content[0]
 	part.Text = "edited"
 	part.ProviderMetadata["provider"] = cj(`{"sig":"bad"}`)
 	part.ProviderMetadata["new"] = cj(`"bad"`)
-	ms.Request.Messages[0].Content[0] = part
+	first.Messages[0].Content[0] = part
 
-	snap, err = rt.Load(context.Background(), "run-1")
+	second, err := rt.FrozenRequest(context.Background(), prep.RequestDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := snap.State.Current.(ModelStep).Request.Messages[0].Content[0]
+	got := second.Messages[0].Content[0]
 	if got.Text != "hi" {
-		t.Fatalf("request content aliased Load snapshot: %q", got.Text)
+		t.Fatalf("request content aliased a previous read: %q", got.Text)
 	}
 	if sig := got.ProviderMetadata["provider"].String(); sig != `{"sig":"s1"}` {
-		t.Fatalf("request metadata aliased Load snapshot: %v", sig)
+		t.Fatalf("request metadata aliased a previous read: %v", sig)
 	}
 	if _, ok := got.ProviderMetadata["new"]; ok {
-		t.Fatal("request metadata accepted mutation from Load snapshot")
+		t.Fatal("request metadata accepted mutation from a previous read")
 	}
 }
 
-func TestCommitResultEventsDoNotAliasStateOrLog(t *testing.T) {
+// ModelStepCompleted carries the digest of the frozen result and its usage;
+// the result body itself never enters state or log (RUN-WIR-4).
+func TestModelStepCompletedCarriesResultDigestOnly(t *testing.T) {
 	rt, stepID, grant := preparedRuntime(t, nil, nil)
 	result := sdk.ModelResult{
 		Text:         "ok",
 		FinishReason: sdk.FinishReasonStop,
+		Usage:        sdk.Usage{InputTokens: 2, OutputTokens: 3, TotalTokens: 5},
 		ReasoningParts: []sdk.ReasoningPart{{
 			ID:               "r1",
 			Text:             "why",
 			Format:           sdk.ReasoningFormatAnthropic,
 			ProviderMetadata: map[string]any{"anthropic": map[string]any{"signature": "s1"}},
 		}},
-		TextProviderMetadata: map[string]any{"google": map[string]any{"thoughtSignature": "g1"}},
-		Sources: []sdk.Source{{
-			SourceType:       "url",
-			ID:               "src-1",
-			URL:              "https://example.test",
-			ProviderMetadata: map[string]any{"p": "v"},
-		}},
 		Response: &sdk.ResponseMetadata{ID: "resp-1", Headers: map[string]string{"h": "v"}},
 	}
 	frozen, err := FreezeModelResult(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantDigest, err := ProtocolV1().DigestModelResult(frozen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,48 +190,23 @@ func TestCommitResultEventsDoNotAliasStateOrLog(t *testing.T) {
 	res := mustCommit(t, rt, "done-1", snapshot.Revision, grant, SubmitModelResult{StepID: stepID, Result: frozen})
 
 	fact := res.Events[0].Fact.(ModelStepCompleted)
-	fact.Result.ReasoningParts[0].ProviderMetadata["anthropic"] = cj(`{"signature":"bad"}`)
-	fact.Result.TextProviderMetadata["google"] = cj(`{"thoughtSignature":"bad"}`)
-	fact.Result.Sources[0].ProviderMetadata["p"] = cj(`"bad"`)
-	fact.Result.Response.Headers["h"] = "bad"
-	res.Events[0].Fact = fact
-
-	snap, err := rt.Load(context.Background(), "run-1")
-	if err != nil {
-		t.Fatal(err)
+	if fact.ResultDigest != wantDigest || fact.Usage.TotalTokens != 5 || fact.FinishReason != FinishReasonStop {
+		t.Fatalf("completed = %+v", fact)
 	}
-	last := snap.State.LastModelResult
-	if last == nil {
-		t.Fatal("missing LastModelResult")
+	if res.Snapshot.State.Usage.TotalTokens != 5 {
+		t.Fatalf("usage = %+v", res.Snapshot.State.Usage)
 	}
-	if sig := last.ReasoningParts[0].ProviderMetadata["anthropic"].String(); sig != `{"signature":"s1"}` {
-		t.Fatalf("state reasoning metadata aliased returned event: %v", sig)
+	if res.Snapshot.State.Status != RunCompleted {
+		t.Fatalf("status = %v, want completed", res.Snapshot.State.Status)
 	}
-	if sig := last.TextProviderMetadata["google"].String(); sig != `{"thoughtSignature":"g1"}` {
-		t.Fatalf("state text metadata aliased returned event: %v", sig)
-	}
-	if p := last.Sources[0].ProviderMetadata["p"].String(); p != `"v"` {
-		t.Fatalf("state source metadata aliased returned event: %v", p)
-	}
-	if h := last.Response.Headers["h"]; h != "v" {
-		t.Fatalf("state response headers aliased returned event: %v", h)
-	}
-
-	for _, e := range recordEvents(t, rt, "run-1") {
-		if f, ok := e.Fact.(ModelStepCompleted); ok {
-			if sig := f.Result.ReasoningParts[0].ProviderMetadata["anthropic"].String(); sig != `{"signature":"s1"}` {
-				t.Fatalf("log reasoning metadata aliased returned event: %v", sig)
-			}
-			if h := f.Result.Response.Headers["h"]; h != "v" {
-				t.Fatalf("log response headers aliased returned event: %v", h)
-			}
-		}
-	}
+	// Mutating the caller's frozen result after commit changes nothing the
+	// authority holds: the digest was taken before the transition.
+	frozen.Text = "changed"
 	diverged, err := rebuildRun(t, rt, "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if diverged {
-		t.Fatal("state diverged from log after returned event mutation")
+		t.Fatal("state diverged from log")
 	}
 }

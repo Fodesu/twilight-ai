@@ -2,7 +2,9 @@ package run
 
 // AgentCommand is the intent submitted through Runtime.Commit for an existing
 // Run. Accepting one command constitutes one transition (RUN-MCH-3). The
-// interface is sealed: only the fourteen variants below exist.
+// interface is sealed: only the variants below exist. Commands may carry
+// transient content bodies (frozen request, model result, tool output); the
+// facts they produce keep only digests (RUN-WIR-4).
 type AgentCommand interface{ agentCommand() }
 
 // AgentInput is a queue-safe input: a stable ID plus an immutable payload.
@@ -12,11 +14,13 @@ type AgentInput struct {
 	Payload CanonicalJSON `json:"payload"`
 }
 
-// NextStep creates the AcceptInput command consumed at Open.
+// NextStep creates the AcceptInput command.
 func NextStep(input AgentInput) AcceptInput { return AcceptInput{Input: input} }
 
 // PrepareModelRequest freezes the next model request. Its CommandID is
 // derived from the loaded Revision, which is also its concurrency control.
+// Request is the transient body; the fact keeps RequestDigest and the Runtime
+// stores the body in the FrozenValueStore.
 type PrepareModelRequest struct {
 	StepID        StepID        `json:"stepId"`
 	Model         ModelRef      `json:"model"`
@@ -29,6 +33,15 @@ type PrepareModelRequest struct {
 }
 
 func (PrepareModelRequest) agentCommand() {}
+
+// WithdrawPreparedStep discards a Prepared ModelStep whose frozen request
+// predates inputs that have since been accepted; the Run returns to Open so
+// the next Prepare includes them. Legal only while PendingInputs is non-empty.
+type WithdrawPreparedStep struct {
+	StepID StepID `json:"stepId"`
+}
+
+func (WithdrawPreparedStep) agentCommand() {}
 
 // StartModelExecution takes execution ownership of a Prepared ModelStep.
 type StartModelExecution struct {
@@ -176,8 +189,9 @@ type CancelRun struct {
 
 func (CancelRun) agentCommand() {}
 
-// AcceptInput appends one input to PendingInputs while Current is Open.
-// Idempotent per (RunID, InputID) with identical payload.
+// AcceptInput appends one input to PendingInputs. Legal in every non-terminal
+// state (Open, ModelStep, ToolStep, Waiting); the input is consumed by the next
+// Prepare. Idempotent per (RunID, InputID) with identical payload.
 type AcceptInput struct {
 	Input AgentInput `json:"input"`
 }
@@ -189,6 +203,8 @@ func commandType(c AgentCommand) string {
 	switch c.(type) {
 	case PrepareModelRequest:
 		return "prepare_model_request"
+	case WithdrawPreparedStep:
+		return "withdraw_prepared_step"
 	case StartModelExecution:
 		return "start_model_execution"
 	case RecoverModelExecution:

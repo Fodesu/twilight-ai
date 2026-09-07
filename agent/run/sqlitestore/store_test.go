@@ -337,7 +337,7 @@ func freezeSpec(t *testing.T, def sdk.ToolDefinition) run.ToolSpec {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return run.ToolSpec{Ref: run.ToolRef(def.Name), Definition: frozen, DefinitionDigest: d, Policy: run.DirectExecution}
+	return run.ToolSpec{Ref: run.ToolRef(def.Name), Name: def.Name, DefinitionDigest: d, Policy: run.DirectExecution}
 }
 
 func prepareFromSnap(t *testing.T, snap run.RuntimeSnapshot, req sdk.Request, specs []run.ToolSpec) (run.PrepareModelRequest, run.CommandID) {

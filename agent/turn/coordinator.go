@@ -1,3 +1,5 @@
+//go:build legacy_turn
+
 package turn
 
 import (

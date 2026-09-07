@@ -28,6 +28,8 @@ func decideV1(s MachineState, c AgentCommand) ([]Fact, error) {
 	switch cmd := c.(type) {
 	case PrepareModelRequest:
 		return decidePrepareModelRequest(&s, &cmd)
+	case WithdrawPreparedStep:
+		return decideWithdrawPreparedStep(&s, cmd)
 	case StartModelExecution:
 		return decideStartModelExecution(&s, cmd)
 	case RecoverModelExecution:
@@ -84,13 +86,14 @@ func decidePrepareModelRequest(s *MachineState, cmd *PrepareModelRequest) ([]Fac
 		}
 	}
 	// Tools must correspond one-to-one, in order, with the provider tool
-	// definitions inside the frozen request.
+	// definitions inside the frozen request. The spec keeps only the digest;
+	// the body stays in the request.
 	if len(cmd.Tools) != len(cmd.Request.Tools) {
 		return nil, rejectionf("prepare: %d ToolSpecs for %d request tools", len(cmd.Tools), len(cmd.Request.Tools))
 	}
 	for i, spec := range cmd.Tools {
-		if spec.Definition.Name != cmd.Request.Tools[i].Name {
-			return nil, rejectionf("prepare: ToolSpec[%d] %q does not match request tool %q", i, spec.Definition.Name, cmd.Request.Tools[i].Name)
+		if spec.Name == "" || spec.Name != cmd.Request.Tools[i].Name {
+			return nil, rejectionf("prepare: ToolSpec[%d] %q does not match request tool %q", i, spec.Name, cmd.Request.Tools[i].Name)
 		}
 		wantDigest, err := digestToolDefinitionV1(cmd.Request.Tools[i])
 		if err != nil {
@@ -121,13 +124,28 @@ func decidePrepareModelRequest(s *MachineState, cmd *PrepareModelRequest) ([]Fac
 	return []Fact{ModelStepPrepared{
 		StepID:        cmd.StepID,
 		Model:         cmd.Model,
-		Request:       cmd.Request,
 		RequestDigest: cmd.RequestDigest,
 		InputIDs:      cmd.InputIDs,
 		Tools:         cmd.Tools,
 		ToolsDigest:   cmd.ToolsDigest,
 		BindingDigest: binding,
 	}}, nil
+}
+
+// --- rule 1b: WithdrawPreparedStep ---
+
+func decideWithdrawPreparedStep(s *MachineState, cmd WithdrawPreparedStep) ([]Fact, error) {
+	ms, err := currentModelStep(s, cmd.StepID)
+	if err != nil {
+		return nil, err
+	}
+	if ms.Status != ModelPrepared {
+		return nil, rejectionf("withdraw: step is not Prepared")
+	}
+	if len(s.PendingInputs) == 0 {
+		return nil, rejectionf("withdraw: no pending inputs; the prepared request is still complete")
+	}
+	return []Fact{ModelStepWithdrawn{StepID: cmd.StepID}}, nil
 }
 
 // --- rule 2: StartModelExecution / RecoverModelExecution ---
@@ -175,7 +193,11 @@ func decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, e
 	if ms.Status != ModelExecuting {
 		return nil, rejectionf("model result: step is not Executing")
 	}
-	completed := ModelStepCompleted{StepID: cmd.StepID, Result: cmd.Result}
+	resultDigest, err := digestModelResultV1(cmd.Result)
+	if err != nil {
+		return nil, err
+	}
+	completed := ModelStepCompleted{StepID: cmd.StepID, Usage: cmd.Result.Usage, FinishReason: cmd.Result.FinishReason, ResultDigest: resultDigest}
 
 	// The result's own tool calls decide whether a ToolStep opens; gating on
 	// the caller-supplied bindings would let zero bindings silently complete
@@ -183,6 +205,11 @@ func decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, e
 	if len(cmd.Result.ToolCalls) == 0 {
 		if len(cmd.Calls) != 0 {
 			return nil, rejectionf("model result: %d bindings for a result with no tool calls", len(cmd.Calls))
+		}
+		// Inputs that arrived during this step keep the Run alive: the next
+		// Prepare consumes them. Only an empty queue ends the Run.
+		if len(s.PendingInputs) > 0 {
+			return []Fact{completed}, nil
 		}
 		return []Fact{completed, RunEnded{End: RunCompletedEnd{}}}, nil
 	}
@@ -206,7 +233,7 @@ func checkToolCallBindings(ms *ModelStep, cmd *SubmitModelResult) ([]ToolCallBin
 	}
 	specByName := make(map[string]ToolSpec, len(ms.Tools))
 	for _, spec := range ms.Tools {
-		specByName[spec.Definition.Name] = spec
+		specByName[spec.Name] = spec
 	}
 	seen := make(map[CallID]bool, len(cmd.Calls))
 	bindings := make([]ToolCallBinding, len(cmd.Calls))
@@ -407,8 +434,11 @@ func decideSubmitToolResult(s *MachineState, cmd SubmitToolResult) ([]Fact, erro
 	if ts.Calls[i].Status != ToolExecuting {
 		return nil, rejectionf("tool result: call %q is not Executing", cmd.CallID)
 	}
-	facts := []Fact{ToolCallCompleted(cmd)}
-	return facts, nil
+	outputDigest, err := digestToolOutputV1(cmd.Result.Output)
+	if err != nil {
+		return nil, err
+	}
+	return []Fact{ToolCallCompleted{StepID: cmd.StepID, CallID: cmd.CallID, OutputDigest: outputDigest}}, nil
 }
 
 func decideSubmitToolFailure(s *MachineState, cmd SubmitToolFailure) ([]Fact, error) {
@@ -544,8 +574,7 @@ func decideSubmitToolResponse(s *MachineState, cmd *SubmitToolResponse) ([]Fact,
 	if cmd.ResponseDigest != wantDigest {
 		return nil, rejectionf("response: answer payload digest mismatch")
 	}
-	facts := []Fact{ToolCallAnswered(*cmd)}
-	return facts, nil
+	return []Fact{ToolCallAnswered{StepID: cmd.StepID, CallID: cmd.CallID, ResponseID: cmd.ResponseID, ResponseDigest: cmd.ResponseDigest}}, nil
 }
 
 // --- rules 12-13: cancel and input ---
@@ -591,10 +620,10 @@ func unknownExecutingCalls(s *MachineState, failure ToolFailure) []Fact {
 	return facts
 }
 
+// decideAcceptInput queues an input in any non-terminal state (RUN-MCH-4):
+// PendingInputs is the durable mid-run input queue, consumed by the next
+// Prepare. A Prepared step with a non-empty queue is withdrawn by Next.
 func decideAcceptInput(s *MachineState, cmd AcceptInput) ([]Fact, error) {
-	if !atOpen(s.Current) {
-		return nil, rejectionf("accept input: run is not at Open")
-	}
 	if cmd.Input.ID == "" {
 		return nil, rejectionf("accept input: empty InputID")
 	}

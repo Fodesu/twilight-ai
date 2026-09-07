@@ -9,6 +9,10 @@ import (
 )
 
 type RunID string
+
+// OwnerID identifies the upper-level entity a Run serves (the Turn, in the
+// reference agent). Run stores it and never interprets it.
+type OwnerID string
 type StepID string
 type CallID string
 type CommandID string
@@ -94,6 +98,12 @@ func DeriveResponseCommandID(run RunID, step StepID, call CallID, resp ResponseI
 // the InputID. Queue-claim references stay private to the host.
 func DeriveInputCommandID(run RunID, input InputID) CommandID {
 	return CommandID(namespacedHash("twilight/input-command", string(run), string(input)))
+}
+
+// DeriveWithdrawCommandID derives the CommandID of WithdrawPreparedStep: one
+// Prepared step is withdrawn at most once, so the identity needs no content.
+func DeriveWithdrawCommandID(run RunID, step StepID) CommandID {
+	return CommandID(namespacedHash("twilight/withdraw-command", string(run), string(step)))
 }
 
 // DeriveStartCommandID derives the CommandID of StartModelExecution (empty

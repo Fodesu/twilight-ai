@@ -32,15 +32,41 @@ func (f *Feature) RequireWaitingProvider(providerID string) {
 	}
 }
 
-// RequireCompleted checks the Run finished with the model text.
+// RequireCompleted checks the Run finished and that the last ModelStepCompleted
+// names the model result carrying text: the fact keeps only the digest, so the
+// check digests the result the scripted invoker actually returned.
 func (f *Feature) RequireCompleted(text string) {
 	f.t.Helper()
 	s := f.state()
-	if s.Status != run.RunCompleted || s.Result == nil || s.Result.Model == nil || s.Result.Model.Text != text {
+	if s.Status != run.RunCompleted || s.Result == nil {
 		f.t.Fatalf("state = %+v", s)
 	}
 	if f.loop != nil && f.last.Disposition != loop.LoopFinished {
 		f.t.Fatalf("loop = %+v, want Finished", f.last)
+	}
+	if f.invoker == nil {
+		return
+	}
+	last, ok := f.invoker.lastResult()
+	if !ok || last.Text != text {
+		f.t.Fatalf("last model result = %+v, want text %q", last, text)
+	}
+	frozen, err := run.FreezeModelResult(last)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	want, err := run.ProtocolV1().DigestModelResult(frozen)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	var got run.Digest
+	for _, fact := range f.facts() {
+		if c, ok := fact.(run.ModelStepCompleted); ok {
+			got = c.ResultDigest
+		}
+	}
+	if got != want {
+		f.t.Fatalf("last ModelStepCompleted.ResultDigest = %s, want digest of %q (%s)", got, text, want)
 	}
 }
 
@@ -150,19 +176,29 @@ func (f *Feature) RequireUsage(total int) {
 	}
 }
 
-// RequirePlannerSawTool checks the next Plan received the completed call output.
+// RequirePlannerSawTool checks the next Plan was positioned after the ToolStep
+// on which callID completed with output. The hint carries only the boundary
+// (SourceStep); the completed call's OutputDigest is read from the Run state.
 func (f *Feature) RequirePlannerSawTool(callID run.CallID, output string) {
 	f.t.Helper()
 	callID = f.callByProvider(string(callID))
-	if f.planner == nil || f.planner.lastHint.LastToolStep == nil {
-		f.t.Fatal("planner has no LastToolStep")
+	if f.planner == nil || f.planner.lastHint.SourceStep == "" {
+		f.t.Fatal("planner hint has no SourceStep")
 	}
-	for _, call := range f.planner.lastHint.LastToolStep.Calls {
-		if call.CallID == callID && call.Status == run.ToolCompleted && call.Result != nil && call.Result.Output.String() == output {
+	s := f.state()
+	if s.LastToolStep == nil || s.LastToolStep.RefValue.ID != f.planner.lastHint.SourceStep {
+		f.t.Fatalf("hint SourceStep = %s, LastToolStep = %+v", f.planner.lastHint.SourceStep, s.LastToolStep)
+	}
+	want, err := run.ProtocolV1().DigestToolOutput(run.MustParseCanonicalJSON(output))
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	for _, call := range s.LastToolStep.Calls {
+		if call.CallID == callID && call.Status == run.ToolCompleted && call.Result != nil && call.Result.OutputDigest == want {
 			return
 		}
 	}
-	f.t.Fatalf("LastToolStep = %+v, want completed %s %s", f.planner.lastHint.LastToolStep.Calls, callID, output)
+	f.t.Fatalf("LastToolStep = %+v, want completed %s with output %s", s.LastToolStep.Calls, callID, output)
 }
 
 // RequireCallFailed checks a ToolCallFailed fact for this call and outcome.

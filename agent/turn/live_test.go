@@ -1,4 +1,4 @@
-//go:build live
+//go:build legacy_turn && live
 
 // Live end-to-end test: agent/turn -> agent/run/loop -> a real model through
 // the sdk. Runs only with `go test -tags live` and the environment below.

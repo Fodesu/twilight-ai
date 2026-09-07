@@ -11,16 +11,26 @@ import (
 )
 
 // NewRun is the immutable, versioned creation data for a Run. RunID is
-// caller-supplied so retries retain a stable identity.
+// caller-supplied so retries retain a stable identity. Owner and Attempt name
+// the upper-level entity this Run serves and its ordinal under it; Run stores
+// them and never interprets them.
 type NewRun struct {
 	SchemaVersion uint16         `json:"schemaVersion"`
 	RunID         RunID          `json:"runId"`
+	Owner         OwnerID        `json:"owner,omitempty"`
+	Attempt       uint32         `json:"attempt,omitempty"`
 	CausationID   es.CausationID `json:"causationId,omitempty"`
 }
 
-// BuildNewRun constructs a current-version Run creation value.
+// BuildNewRun constructs a current-version Run creation value with no owner.
 func BuildNewRun(runID RunID, causationID es.CausationID) (NewRun, error) {
-	run := NewRun{SchemaVersion: SchemaVersion1, RunID: runID, CausationID: causationID}
+	return BuildNewRunFor(runID, "", 0, causationID)
+}
+
+// BuildNewRunFor constructs a current-version Run creation value for one
+// attempt under owner.
+func BuildNewRunFor(runID RunID, owner OwnerID, attempt uint32, causationID es.CausationID) (NewRun, error) {
+	run := NewRun{SchemaVersion: SchemaVersion1, RunID: runID, Owner: owner, Attempt: attempt, CausationID: causationID}
 	if err := ValidateNewRun(run); err != nil {
 		return NewRun{}, err
 	}
@@ -34,6 +44,9 @@ func ValidateNewRun(run NewRun) error {
 	}
 	if !utf8.ValidString(string(run.RunID)) {
 		return errors.New("agent: new run: RunID is not valid UTF-8")
+	}
+	if !utf8.ValidString(string(run.Owner)) {
+		return errors.New("agent: new run: Owner is not valid UTF-8")
 	}
 	if !utf8.ValidString(string(run.CausationID)) {
 		return errors.New("agent: new run: CausationID is not valid UTF-8")
@@ -62,7 +75,10 @@ func BuildRunHeaderFromNewRun(run NewRun) (RunHeader, error) {
 const newRunV1InitialStateVersion uint16 = 1
 
 func buildRunHeaderV1(run NewRun) (RunHeader, error) {
-	initial := MachineState{RunID: run.RunID, Status: RunActive, Current: Open{}}
+	initial, err := InitializeRun(run.RunID, run.Owner, run.Attempt)
+	if err != nil {
+		return RunHeader{}, err
+	}
 	stateBytes, err := encodeMachineStateV1(&initial)
 	if err != nil {
 		return RunHeader{}, err

@@ -41,9 +41,8 @@ type RunResult struct {
 	// UncertainCalls are tool calls left Executing when the Run stopped.
 	UncertainCalls []CallID `json:"uncertainCalls,omitempty"`
 	// UncertainModel is the ModelStep left Executing when the Run stopped.
-	UncertainModel StepID       `json:"uncertainModel,omitempty"`
-	Model          *ModelResult `json:"model,omitempty"`
-	Usage          Usage        `json:"usage"`
+	UncertainModel StepID `json:"uncertainModel,omitempty"`
+	Usage          Usage  `json:"usage"`
 }
 
 type StepFailure struct {
@@ -97,10 +96,13 @@ type ResponseRequest struct {
 }
 
 // ToolSpec is the agent-side sidecar for a provider-neutral ToolDefinition.
-// ResponsePolicy is intentionally kept out of sdk to preserve package layering.
+// The definition body lives inside the frozen request (RUN-WIR-4); the spec
+// keeps its model-facing Name for binding tool calls, the digest for
+// execution-time verification, and the ResponsePolicy, which is intentionally
+// kept out of sdk to preserve package layering.
 type ToolSpec struct {
 	Ref              ToolRef        `json:"ref"`
-	Definition       ToolDefinition `json:"definition"`
+	Name             string         `json:"name"`
 	DefinitionDigest Digest         `json:"definitionDigest"`
 	Policy           ResponsePolicy `json:"policy"`
 }
@@ -133,8 +135,9 @@ type Step interface {
 	Ref() StepRef
 }
 
-// Current is the contents of an Active run. Open is the enterable interval:
-// AcceptInput and Prepare are legal, and Next returns NeedModelRequest.
+// Current is the contents of an Active run. Open is the planning interval:
+// Prepare is legal and Next returns NeedModelRequest. AcceptInput is legal in
+// every non-terminal state; PendingInputs is the durable queue it feeds.
 type Current interface{ current() }
 
 // Open is Active with no ModelStep or ToolStep.
@@ -166,8 +169,9 @@ func (s ModelStepStatus) String() string {
 }
 
 type ModelStep struct {
-	RefValue      StepRef         `json:"ref"`
-	Request       ModelRequest    `json:"request"`
+	RefValue StepRef `json:"ref"`
+	// RequestDigest identifies the frozen request; its body is kept in the
+	// FrozenValueStore for the life of the step (RUN-WIR-4).
 	RequestDigest Digest          `json:"requestDigest"`
 	Model         ModelRef        `json:"model"`
 	Tools         []ToolSpec      `json:"tools,omitempty"`
@@ -214,8 +218,16 @@ func (s ToolCallStatus) String() string {
 // Terminal reports Completed or Failed.
 func (s ToolCallStatus) Terminal() bool { return s == ToolCompleted || s == ToolFailed }
 
+// ToolExecutionResult is the transient output a tool worker submits. The
+// state and the fact keep only its digest; the content is carried to the
+// conversation by the companion (RUN-WIR-4).
 type ToolExecutionResult struct {
 	Output CanonicalJSON `json:"output"`
+}
+
+// ToolCallResult is the persisted record of a completed call.
+type ToolCallResult struct {
+	OutputDigest Digest `json:"outputDigest"`
 }
 
 type ToolFailure struct {
@@ -236,17 +248,17 @@ type ToolCallFailure struct {
 }
 
 type ToolCallState struct {
-	CallID           CallID               `json:"callId"`
-	ProviderCallID   string               `json:"providerCallId,omitempty"`
-	ToolRef          ToolRef              `json:"toolRef"`
-	DefinitionDigest Digest               `json:"definitionDigest"`
-	BindingDigest    Digest               `json:"bindingDigest"`
-	Arguments        CanonicalJSON        `json:"arguments"`
-	Policy           ResponsePolicy       `json:"policy"`
-	Status           ToolCallStatus       `json:"status"`
-	Result           *ToolExecutionResult `json:"result,omitempty"`
-	Failure          *ToolCallFailure     `json:"failure,omitempty"`
-	Waiting          *ResponseRequest     `json:"waiting,omitempty"`
+	CallID           CallID           `json:"callId"`
+	ProviderCallID   string           `json:"providerCallId,omitempty"`
+	ToolRef          ToolRef          `json:"toolRef"`
+	DefinitionDigest Digest           `json:"definitionDigest"`
+	BindingDigest    Digest           `json:"bindingDigest"`
+	Arguments        CanonicalJSON    `json:"arguments"`
+	Policy           ResponsePolicy   `json:"policy"`
+	Status           ToolCallStatus   `json:"status"`
+	Result           *ToolCallResult  `json:"result,omitempty"`
+	Failure          *ToolCallFailure `json:"failure,omitempty"`
+	Waiting          *ResponseRequest `json:"waiting,omitempty"`
 }
 
 // ValidateToolCallState rejects illegal field combinations (RUN-MCH-2).
@@ -269,8 +281,8 @@ func ValidateToolCallState(c ToolCallState) error {
 			return fmt.Errorf("agent: call %s: waiting must have no result/failure", c.CallID)
 		}
 	case ToolCompleted:
-		if c.Result == nil {
-			return fmt.Errorf("agent: call %s: completed requires a result", c.CallID)
+		if c.Result == nil || c.Result.OutputDigest == "" {
+			return fmt.Errorf("agent: call %s: completed requires a result digest", c.CallID)
 		}
 		if c.Failure != nil || c.Waiting != nil {
 			return fmt.Errorf("agent: call %s: completed must have no failure/waiting", c.CallID)
@@ -353,20 +365,24 @@ func (s *ToolStep) callIndex(id CallID) int {
 
 // MachineState is the complete semantic state of one Run (RUN-MCH-1).
 // Control metadata (owner, fence, lease, attempts, queue claims) never
-// appears here.
+// appears here. Content bodies (model output, tool output) never appear
+// either: facts record digests and the companion carries the content.
 type MachineState struct {
-	RunID         RunID        `json:"runId"`
+	RunID RunID `json:"runId"`
+	// Owner is the opaque upper-level identity this Run serves; Attempt is its
+	// ordinal under that owner. Both are fixed by RunCreated.
+	Owner         OwnerID      `json:"owner,omitempty"`
+	Attempt       uint32       `json:"attempt,omitempty"`
 	Status        RunStatus    `json:"status"`
 	Current       Current      `json:"-"`
 	PendingInputs []AgentInput `json:"pendingInputs,omitempty"`
 	ModelSteps    int          `json:"modelSteps"`
 	// LastToolStep retains the most recently closed ToolStep so the planner can
-	// include committed tool results in the next model request. Its RefValue.ID
-	// is the SourceStep of the next PlanningHint.
-	LastToolStep    *ToolStep    `json:"lastToolStep,omitempty"`
-	Usage           Usage        `json:"usage"`
-	LastModelResult *ModelResult `json:"lastModelResult,omitempty"`
-	Result          *RunResult   `json:"result,omitempty"`
+	// locate the step boundary it continues from. Its RefValue.ID is the
+	// SourceStep of the next PlanningHint.
+	LastToolStep *ToolStep  `json:"lastToolStep,omitempty"`
+	Usage        Usage      `json:"usage"`
+	Result       *RunResult `json:"result,omitempty"`
 }
 
 // ValidateMachineState checks the structural invariants required by Runtime
@@ -496,9 +512,9 @@ func validateCurrentToolStep(runID RunID, ts *ToolStep) error {
 // InitializeRun builds the minimal initial MachineState (Revision 0) for a
 // new Run. It does not encode fixed-model policy, limits, or seed input; those
 // belong to host policy and accepted transitions.
-func InitializeRun(run RunID) (MachineState, error) {
+func InitializeRun(run RunID, owner OwnerID, attempt uint32) (MachineState, error) {
 	if run == "" {
 		return MachineState{}, errors.New("agent: initialize: empty RunID")
 	}
-	return MachineState{RunID: run, Status: RunActive, Current: Open{}}, nil
+	return MachineState{RunID: run, Owner: owner, Attempt: attempt, Status: RunActive, Current: Open{}}, nil
 }

@@ -86,7 +86,7 @@ func (p staticPlanner) Plan(_ context.Context, hint PlanningHint) (RequestPlan, 
 	}
 	req := sdk.Request{Model: string(model), Messages: []sdk.Message{sdk.UserMessage("go")}}
 	for _, s := range p.specs {
-		req.Tools = append(req.Tools, s.Definition.SDK())
+		req.Tools = append(req.Tools, toolDef(s.Name))
 	}
 	ids := make([]InputID, len(hint.Inputs))
 	for i, in := range hint.Inputs {
@@ -95,10 +95,15 @@ func (p staticPlanner) Plan(_ context.Context, hint PlanningHint) (RequestPlan, 
 	return RequestPlan{Model: model, Request: req, InputIDs: ids, Tools: p.specs}, nil
 }
 
+// toolDef is the provider definition every test tool shares; ToolSpec keeps
+// only its digest, so tests rebuild the body from the name.
+func toolDef(name string) sdk.ToolDefinition {
+	return sdk.ToolDefinition{Name: name, Parameters: json.RawMessage(`{"type":"object"}`)}
+}
+
 func toolSpec(t *testing.T, name string, policy ResponsePolicy) ToolSpec {
 	t.Helper()
-	def := sdk.ToolDefinition{Name: name, Parameters: json.RawMessage(`{"type":"object"}`)}
-	frozen, err := FreezeToolDefinition(def)
+	frozen, err := FreezeToolDefinition(toolDef(name))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +111,7 @@ func toolSpec(t *testing.T, name string, policy ResponsePolicy) ToolSpec {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ToolSpec{Ref: ToolRef(name), Definition: frozen, DefinitionDigest: d, Policy: policy}
+	return ToolSpec{Ref: ToolRef(name), Name: name, DefinitionDigest: d, Policy: policy}
 }
 
 func loopRuntime(t *testing.T) Runtime {
@@ -200,8 +205,8 @@ func TestLoopModelCatalogErrorRecoversWithFreshLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Result == nil || res.Result.Model.Text != "resumed" {
-		t.Fatalf("res = %+v", res)
+	if res.Result == nil || res.Result.Status != RunCompleted || invoker.calls.Load() != 1 {
+		t.Fatalf("res = %+v, model calls = %d", res, invoker.calls.Load())
 	}
 	final, err := rt.Load(context.Background(), "run-1")
 	if err != nil {
@@ -217,7 +222,7 @@ func TestLoopParallelBounded(t *testing.T) {
 	var concurrent, peak atomic.Int32
 	gate := make(chan struct{})
 	started := make(chan struct{}, 3)
-	echo := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: DirectExecution,
+	echo := &fakeTool{ref: "echo", def: toolDef(spec.Name), policy: DirectExecution,
 		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
 			cur := concurrent.Add(1)
 			for {
@@ -277,7 +282,7 @@ func TestToolStartStaleDropsLocalClaim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	echo := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: DirectExecution,
+	echo := &fakeTool{ref: "echo", def: toolDef(spec.Name), policy: DirectExecution,
 		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
 			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: args}}
 		}}
@@ -372,7 +377,7 @@ func TestLoopReplaysSettlementWithoutRepeatingTool(t *testing.T) {
 	rt := newResponseLossRuntime(t)
 	spec := toolSpec(t, "echo", DirectExecution)
 	var executions atomic.Int32
-	echo := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: DirectExecution,
+	echo := &fakeTool{ref: "echo", def: toolDef(spec.Name), policy: DirectExecution,
 		execute: func(_ context.Context, req ToolExecutionRequest) ToolExecutionOutcome {
 			executions.Add(1)
 			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
@@ -393,7 +398,7 @@ func TestLoopReplaysSettlementWithoutRepeatingTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Disposition != LoopFinished || res.Result == nil || res.Result.Model.Text != "done" {
+	if res.Disposition != LoopFinished || res.Result == nil || res.Result.Status != RunCompleted {
 		t.Fatalf("result = %+v", res)
 	}
 	if executions.Load() != 1 {
@@ -488,8 +493,8 @@ func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Result.Model.Text != "resumed" {
-		t.Fatalf("res = %+v", res)
+	if res.Result == nil || res.Result.Status != RunCompleted || invoker2.calls.Load() != 1 {
+		t.Fatalf("res = %+v, model calls = %d", res, invoker2.calls.Load())
 	}
 	final, _ := rt.Load(context.Background(), "run-1")
 	if final.State.ModelSteps != 1 {

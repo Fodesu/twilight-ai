@@ -33,6 +33,7 @@ type Feature struct {
 	model   run.ModelRef
 	results []sdk.ModelResult
 	specs   []run.ToolSpec
+	defs    map[run.ToolRef]sdk.ToolDefinition // provider bodies behind specs; ToolSpec keeps only the digest
 	tools   map[run.ToolRef]*scriptTool
 	invoker *scriptInvoker
 	planner *scriptPlanner
@@ -64,6 +65,7 @@ func New(t testing.TB) *Feature {
 		runID:  defaultRunID,
 		rt:     rt,
 		model:  defaultModel,
+		defs:   make(map[run.ToolRef]sdk.ToolDefinition),
 		tools:  make(map[run.ToolRef]*scriptTool),
 	}
 	f.commit(run.AcceptInput{Input: run.AgentInput{
@@ -77,11 +79,12 @@ func New(t testing.TB) *Feature {
 func (f *Feature) Tool(name string, policy run.ResponsePolicy) *Feature {
 	f.t.Helper()
 	f.guardConfig()
-	spec := f.mustSpec(name, policy)
+	spec, def := f.mustSpec(name, policy)
 	f.specs = append(f.specs, spec)
+	f.defs[spec.Ref] = def
 	f.tools[spec.Ref] = &scriptTool{
 		ref:    spec.Ref,
-		def:    spec.Definition.SDK(),
+		def:    def,
 		policy: policy,
 	}
 	return f
@@ -312,7 +315,7 @@ func (f *Feature) ensureLoop() {
 		return
 	}
 	f.invoker = &scriptInvoker{results: f.results}
-	f.planner = &scriptPlanner{model: f.model, specs: f.specs}
+	f.planner = &scriptPlanner{model: f.model, specs: f.specs, defs: f.defs}
 	tools := make(map[run.ToolRef]loop.ExecutableTool, len(f.tools))
 	for ref, tool := range f.tools {
 		tools[ref] = tool
@@ -399,7 +402,7 @@ func (f *Feature) commitPrepare() {
 	snap := f.load()
 	req := sdk.Request{Model: string(f.model), Messages: []sdk.Message{sdk.UserMessage("go")}}
 	for _, spec := range f.specs {
-		req.Tools = append(req.Tools, spec.Definition.SDK())
+		req.Tools = append(req.Tools, f.defs[spec.Ref])
 	}
 	frozen, err := run.FreezeModelRequest(req)
 	if err != nil {
@@ -434,7 +437,8 @@ func (f *Feature) commitPrepare() {
 	}, "")
 }
 
-func (f *Feature) mustSpec(name string, policy run.ResponsePolicy) run.ToolSpec {
+// mustSpec returns the agent-side spec and the provider definition it digests.
+func (f *Feature) mustSpec(name string, policy run.ResponsePolicy) (run.ToolSpec, sdk.ToolDefinition) {
 	f.t.Helper()
 	def := sdk.ToolDefinition{Name: name, Parameters: json.RawMessage(`{"type":"object"}`)}
 	frozen, err := run.FreezeToolDefinition(def)
@@ -445,7 +449,7 @@ func (f *Feature) mustSpec(name string, policy run.ResponsePolicy) run.ToolSpec 
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	return run.ToolSpec{Ref: run.ToolRef(name), Definition: frozen, DefinitionDigest: d, Policy: policy}
+	return run.ToolSpec{Ref: run.ToolRef(name), Name: name, DefinitionDigest: d, Policy: policy}, def
 }
 
 func (f *Feature) facts() []run.Fact {

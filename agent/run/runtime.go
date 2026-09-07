@@ -11,6 +11,10 @@ type Runtime interface {
 	Load(context.Context, RunID) (RuntimeSnapshot, error)
 	Commit(context.Context, CommitRequest) (CommitResult, error)
 	Record(context.Context, RunID) (RunRecord, error)
+	// FrozenRequest returns the request body a Prepared or Executing ModelStep
+	// names by RequestDigest (RUN-WIR-4). The body lives in the
+	// FrozenValueStore, not in the fact; a missing body is ErrFrozenValueMissing.
+	FrozenRequest(context.Context, Digest) (ModelRequest, error)
 	// RenewLease extends the lease behind grant on the Executing target
 	// (stepID alone for a ModelStep, stepID+callID for a tool call). Workers
 	// call it while an effect runs longer than the lease TTL (RUN-CMT-8).

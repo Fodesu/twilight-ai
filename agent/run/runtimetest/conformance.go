@@ -230,7 +230,7 @@ func makeSpec(t testing.TB, def sdk.ToolDefinition) run.ToolSpec {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return run.ToolSpec{Ref: run.ToolRef(def.Name), Definition: frozen, DefinitionDigest: d, Policy: run.DirectExecution}
+	return run.ToolSpec{Ref: run.ToolRef(def.Name), Name: def.Name, DefinitionDigest: d, Policy: run.DirectExecution}
 }
 
 // makeBinding builds the binding for the index-th call of source whose

@@ -52,9 +52,10 @@ func TestNewRunValidationAndV1HeaderGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Pre-release fixture; re-frozen when lastClosedStep left the snapshot wire.
-	if header.InitialStateDigest != "sha256:ca282c1b24d7281f8fde3b52e03a32f3c8dbd3231a802078437a7b2469e4f86a" ||
-		header.HeaderDigest != "sha256:7a719c28596a23bdd2e71b17beae930377f6702b11168343bd781096b77d392c" {
+	// Pre-release fixture; re-frozen when Owner/Attempt joined the state and
+	// facts became digest-only (RUN-WIR-4).
+	if header.InitialStateDigest != "sha256:42c13ce3c1d6f3e9ffe6300bfcfaf41098e8b77e330b7740642f36594c889eb6" ||
+		header.HeaderDigest != "sha256:dc9be6579793c0014755bc5e49ef7e427f7803a731c162878143dd9cc6716e21" {
 		t.Fatalf("v1 header changed: %+v", header)
 	}
 }

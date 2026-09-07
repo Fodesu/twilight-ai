@@ -70,6 +70,7 @@ func Example_recoverableRun() {
 		panic(err)
 	}
 
+	app.runtime = rt1
 	loop1, err := loop.New(app.models(), app.tools(), app, loop.ExecutionPolicy{LeaseRenewInterval: 5 * time.Second}, false)
 	if err != nil {
 		panic(err)
@@ -118,6 +119,7 @@ func Example_recoverableRun() {
 	fmt.Printf("recovered %d lease: call %s is %s (%s), run %s\n",
 		recovered, call.ProviderCallID, call.Status, call.Failure.Failure.Class, statusName(snap.State.Status))
 
+	app.runtime = rt2
 	loop2, err := loop.New(app.models(), app.tools(), app, loop.ExecutionPolicy{LeaseRenewInterval: 5 * time.Second}, false)
 	if err != nil {
 		panic(err)
@@ -126,7 +128,11 @@ func Example_recoverableRun() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("process 2: run %s: %q\n", statusName(result.Result.Status), result.Result.Model.Text)
+	snap, err = rt2.Load(ctx, "run-1")
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("process 2: run %s after %d model steps\n", statusName(result.Result.Status), snap.State.ModelSteps)
 
 	record, err := rt2.Record(ctx, "run-1")
 	if err != nil {
@@ -143,7 +149,7 @@ func Example_recoverableRun() {
 	// process 1: tool call c1 is Executing; process crashes
 	// process 2: reopened at revision 5, run active, needs recovery = true
 	// recovered 1 lease: call c1 is Failed (effect_unknown), run active
-	// process 2: run completed: "done"
+	// process 2: run completed after 2 model steps
 	// record: 9 transitions fold to the stored snapshot
 }
 
@@ -205,6 +211,9 @@ func (c *fakeClock) Advance(d time.Duration) {
 type exampleApp struct {
 	tool *lookupTool
 	spec run.ToolSpec
+	// runtime is the process-local Runtime the planner reads committed tool
+	// outcomes from; each "process" installs its own before running the Loop.
+	runtime run.Runtime
 }
 
 func newExampleApp(tool *lookupTool) *exampleApp {
@@ -217,13 +226,15 @@ func newExampleApp(tool *lookupTool) *exampleApp {
 		panic(err)
 	}
 	return &exampleApp{tool: tool, spec: run.ToolSpec{
-		Ref: tool.Ref(), Definition: frozen, DefinitionDigest: digest, Policy: run.DirectExecution,
+		Ref: tool.Ref(), Name: tool.Definition().Name, DefinitionDigest: digest, Policy: run.DirectExecution,
 	}}
 }
 
 // Plan projects the Run boundary facts into the next sdk.Request: the pending
-// user inputs, plus the committed outcome of the previous tool step.
-func (a *exampleApp) Plan(_ context.Context, hint run.PlanningHint) (loop.RequestPlan, error) {
+// user inputs, plus the committed outcome of the tool step the hint names as
+// SourceStep. The hint carries only that boundary; the outcome is read back
+// from the Runtime, as a real planner reads it from the session projection.
+func (a *exampleApp) Plan(ctx context.Context, hint run.PlanningHint) (loop.RequestPlan, error) {
 	var messages []sdk.Message
 	ids := make([]run.InputID, 0, len(hint.Inputs))
 	for _, in := range hint.Inputs {
@@ -236,8 +247,15 @@ func (a *exampleApp) Plan(_ context.Context, hint run.PlanningHint) (loop.Reques
 		}
 		messages = append(messages, sdk.UserMessage(body.Text))
 	}
-	if hint.LastToolStep != nil {
-		for _, call := range hint.LastToolStep.Calls {
+	if hint.SourceStep != "" {
+		snap, err := a.runtime.Load(ctx, hint.RunID)
+		if err != nil {
+			return loop.RequestPlan{}, err
+		}
+		if snap.State.LastToolStep == nil || snap.State.LastToolStep.RefValue.ID != hint.SourceStep {
+			return loop.RequestPlan{}, fmt.Errorf("planner: source step %s is not the last closed tool step", hint.SourceStep)
+		}
+		for _, call := range snap.State.LastToolStep.Calls {
 			outcome := "ok"
 			if call.Status == run.ToolFailed {
 				outcome = call.Failure.Failure.Class

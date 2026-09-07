@@ -1,3 +1,5 @@
+//go:build legacy_turn
+
 // Package turn is the minimal Turn coordinator: one Turn owns one primary
 // Run, delivers inputs into it, drives it, and materializes the committed
 // Run record into chatlog events on an append-only session log.

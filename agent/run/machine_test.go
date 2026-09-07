@@ -16,7 +16,7 @@ func cj(raw string) CanonicalJSON { return MustParseCanonicalJSON(raw) }
 
 func newRun(t *testing.T) MachineState {
 	t.Helper()
-	s, err := InitializeRun("run-1")
+	s, err := InitializeRun("run-1", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func makeSpec(t *testing.T, def sdk.ToolDefinition, policy ResponsePolicy) ToolS
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ToolSpec{Ref: ToolRef(def.Name), Definition: frozen, DefinitionDigest: d, Policy: policy}
+	return ToolSpec{Ref: ToolRef(def.Name), Name: def.Name, DefinitionDigest: d, Policy: policy}
 }
 
 func responseDecisionDigest(t *testing.T, kind ResponseKind, decision ResponseDecision, reason string) Digest {
@@ -181,12 +181,36 @@ func advanceToExecuting(t *testing.T, s MachineState, req sdk.Request, specs []T
 // --- tests ---
 
 func TestInitializeRunIsMinimal(t *testing.T) {
-	s, err := InitializeRun("r")
+	s, err := InitializeRun("r", "turn-1", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.RunID != "r" || s.Status != RunActive || !atOpen(s.Current) || len(s.PendingInputs) != 0 {
+	if s.RunID != "r" || s.Owner != "turn-1" || s.Attempt != 1 || s.Status != RunActive || !atOpen(s.Current) || len(s.PendingInputs) != 0 {
 		t.Fatalf("initial state = %+v", s)
+	}
+}
+
+func TestRunCreatedFoldsOntoZeroState(t *testing.T) {
+	newRun, err := BuildNewRunFor("r", "turn-1", 2, "cause")
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts, err := ProtocolV1().BuildCreateGroup(newRun, []AgentInput{{ID: "in-1", Payload: cj(`1`)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facts) != 2 {
+		t.Fatalf("facts = %d, want [created, input_accepted]", len(facts))
+	}
+	s := fold(t, MachineState{}, facts)
+	if s.RunID != "r" || s.Owner != "turn-1" || s.Attempt != 2 || !atOpen(s.Current) || len(s.PendingInputs) != 1 {
+		t.Fatalf("state after create group = %+v", s)
+	}
+	if _, err := ProtocolV1().Evolve(s, facts[0]); err == nil {
+		t.Fatal("second RunCreated folded")
+	}
+	if _, err := ProtocolV1().Evolve(MachineState{}, facts[1]); err == nil {
+		t.Fatal("InputAccepted folded before RunCreated")
 	}
 }
 
@@ -521,11 +545,75 @@ func TestAcceptInputDuplicateIsGuarded(t *testing.T) {
 	if _, err := ProtocolV1().Evolve(s, facts[0]); err == nil {
 		t.Fatal("duplicate InputAccepted folded silently")
 	}
-	// AcceptInput rejected while a step is current.
+}
+
+// Inputs queue in every non-terminal state (RUN-MCH-4). A Prepared step whose
+// request predates the input is withdrawn and replanned; an Executing step
+// keeps the input for the Open that follows it.
+func TestAcceptInputQueuesInAnyActiveState(t *testing.T) {
+	s := newRun(t)
 	prep, _ := buildPrepare(t, s, testRequest(), nil)
 	s = fold(t, s, mustDecide(t, s, prep))
-	if _, err := ProtocolV1().Decide(s, NextStep(AgentInput{ID: "in-3"})); err == nil {
-		t.Fatal("AcceptInput accepted with a current step")
+
+	// Prepared: input queues, Next withdraws, withdraw reopens with the input.
+	s = fold(t, s, mustDecide(t, s, NextStep(AgentInput{ID: "in-3", Payload: cj(`3`)})))
+	if len(s.PendingInputs) != 1 || s.PendingInputs[0].ID != "in-3" {
+		t.Fatalf("pending after accept while Prepared = %+v", s.PendingInputs)
+	}
+	eff, err := Next(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withdraw, ok := eff.(WithdrawPrepared)
+	if !ok || withdraw.StepID != prep.StepID {
+		t.Fatalf("effect = %#v, want WithdrawPrepared", eff)
+	}
+	facts := mustDecide(t, s, WithdrawPreparedStep{StepID: prep.StepID})
+	if len(facts) != 1 {
+		t.Fatalf("facts = %d, want [withdrawn]", len(facts))
+	}
+	s = fold(t, s, facts)
+	if !atOpen(s.Current) || s.ModelSteps != 0 || len(s.PendingInputs) != 1 {
+		t.Fatalf("state after withdraw = %+v", s)
+	}
+	// Withdraw without pending inputs is rejected: the request is complete.
+	prep2, _ := buildPrepare(t, s, testRequest(), nil)
+	s = fold(t, s, mustDecide(t, s, prep2))
+	if _, err := ProtocolV1().Decide(s, WithdrawPreparedStep{StepID: prep2.StepID}); err == nil {
+		t.Fatal("withdraw accepted with no pending inputs")
+	}
+
+	// Executing: input queues, Next stays Idle, no tool calls + pending input
+	// returns to Open instead of ending the Run.
+	s = fold(t, s, mustDecide(t, s, StartModelExecution{StepID: prep2.StepID}))
+	s = fold(t, s, mustDecide(t, s, NextStep(AgentInput{ID: "in-4", Payload: cj(`4`)})))
+	if eff, _ := Next(s); eff != (Idle{}) {
+		t.Fatalf("effect while Executing with pending input = %#v, want Idle", eff)
+	}
+	result, err := FreezeModelResult(sdk.ModelResult{Text: "answer", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	facts = mustDecide(t, s, SubmitModelResult{StepID: prep2.StepID, Result: result})
+	if len(facts) != 1 {
+		t.Fatalf("facts = %d, want [completed] without RunEnded while inputs are pending", len(facts))
+	}
+	completed := facts[0].(ModelStepCompleted)
+	wantDigest, err := ProtocolV1().DigestModelResult(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.ResultDigest != wantDigest || completed.Usage.TotalTokens != 1 || completed.FinishReason != FinishReasonStop {
+		t.Fatalf("completed = %+v", completed)
+	}
+	s = fold(t, s, facts)
+	if s.Status != RunActive || !atOpen(s.Current) || len(s.PendingInputs) != 1 || s.PendingInputs[0].ID != "in-4" {
+		t.Fatalf("state after completed with pending input = %+v", s)
+	}
+	if eff, _ := Next(s); eff == nil {
+		t.Fatal("no effect at Open")
+	} else if _, ok := eff.(NeedModelRequest); !ok {
+		t.Fatalf("effect = %#v, want NeedModelRequest", eff)
 	}
 }
 
@@ -538,7 +626,7 @@ func TestAcceptInputRejectsSeedDuplicateID(t *testing.T) {
 }
 
 func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
-	minimal, err := InitializeRun("run-1")
+	minimal, err := InitializeRun("run-1", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -568,7 +656,7 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return ModelStepPrepared{StepID: "step-1", Model: testModel, Request: request, RequestDigest: requestDigest, ToolsDigest: toolsDigest, BindingDigest: binding, InputIDs: ids}
+		return ModelStepPrepared{StepID: "step-1", Model: testModel, RequestDigest: requestDigest, ToolsDigest: toolsDigest, BindingDigest: binding, InputIDs: ids}
 	}
 
 	t.Run("nonexistent input", func(t *testing.T) {
@@ -607,7 +695,6 @@ func TestEvolveRejectsModelPrepareOverCurrentStep(t *testing.T) {
 	_, err := ProtocolV1().Evolve(s, ModelStepPrepared{
 		StepID:        "other",
 		Model:         testModel,
-		Request:       ModelRequest{Model: string(testModel)},
 		RequestDigest: "sha256:req",
 		ToolsDigest:   "sha256:tools",
 		BindingDigest: "sha256:binding",

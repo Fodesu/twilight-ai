@@ -56,6 +56,9 @@ type Protocol struct {
 	digestModelStepBinding     func(ModelRef, Digest, Digest) (Digest, error)
 	digestToolResponseDecision func(ResponseKind, ResponseDecision, string) (Digest, error)
 	digestToolResponsePayload  func(CanonicalJSON) (Digest, error)
+	digestModelResult          func(ModelResult) (Digest, error)
+	digestToolOutput           func(CanonicalJSON) (Digest, error)
+	buildCreateGroup           func(NewRun, []AgentInput) ([]Fact, error)
 	decodeCommand              func(string, []byte) (AgentCommand, error)
 	decodeFact                 func(string, []byte) (Fact, error)
 	decide                     func(MachineState, AgentCommand) ([]Fact, error)
@@ -80,6 +83,9 @@ var protocolV1 = Protocol{
 	digestModelStepBinding:     digestModelStepBindingV1,
 	digestToolResponseDecision: digestToolResponseDecisionV1,
 	digestToolResponsePayload:  digestToolResponsePayloadV1,
+	digestModelResult:          digestModelResultV1,
+	digestToolOutput:           digestToolOutputV1,
+	buildCreateGroup:           buildCreateGroupV1,
 	decodeCommand:              decodeCommandVariantV1,
 	decodeFact:                 decodeFactVariantV1,
 	decide:                     decideV1,
@@ -157,6 +163,35 @@ func (p Protocol) DigestToolResponsePayload(payload CanonicalJSON) (Digest, erro
 		return "", err
 	}
 	return p.digestToolResponsePayload(payload)
+}
+
+// DigestModelResult names a frozen model result (ModelStepCompleted.ResultDigest).
+func (p Protocol) DigestModelResult(result ModelResult) (Digest, error) { //nolint:gocritic // hugeParam: digest covers the complete immutable ModelResult value.
+	if err := p.ready(); err != nil {
+		return "", err
+	}
+	return p.digestModelResult(result)
+}
+
+// DigestToolOutput names one tool output (ToolCallCompleted.OutputDigest).
+func (p Protocol) DigestToolOutput(output CanonicalJSON) (Digest, error) {
+	if err := p.ready(); err != nil {
+		return "", err
+	}
+	return p.digestToolOutput(output)
+}
+
+// BuildCreateGroup returns the RunCreated and InputAccepted facts that
+// establish a Run (RUN-NEW-1). Encoding them as Session events is the module
+// implementation's job.
+func (p Protocol) BuildCreateGroup(run NewRun, inputs []AgentInput) ([]Fact, error) {
+	if err := p.ready(); err != nil {
+		return nil, err
+	}
+	if run.SchemaVersion != p.version {
+		return nil, fmt.Errorf("agent: create group: run schema %d does not match protocol %d", run.SchemaVersion, p.version)
+	}
+	return p.buildCreateGroup(run, inputs)
 }
 
 func (p Protocol) DigestCommand(typ string, command AgentCommand) (Digest, error) {
@@ -272,6 +307,10 @@ type toolResponseDecisionDigestBody struct {
 
 type toolResponsePayloadDigestBody struct {
 	Payload CanonicalJSON `json:"payload"`
+}
+
+type toolOutputDigestBody struct {
+	Output CanonicalJSON `json:"output"`
 }
 
 // digestBindingSet covers the full ordered pre-Response call set of one

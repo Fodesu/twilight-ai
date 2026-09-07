@@ -315,6 +315,8 @@ func decodeCommandVariantV1(typ string, raw []byte) (AgentCommand, error) {
 	switch typ {
 	case "prepare_model_request":
 		return decodeCommandAs[PrepareModelRequest](raw)
+	case "withdraw_prepared_step":
+		return decodeCommandAs[WithdrawPreparedStep](raw)
 	case "start_model_execution":
 		return decodeCommandAs[StartModelExecution](raw)
 	case "recover_model_execution":
@@ -351,8 +353,12 @@ func decodeFactVariantV1(typ string, raw []byte) (Fact, error) {
 		return nil, fmt.Errorf("agent: codec: fact %q has empty body", typ)
 	}
 	switch typ {
+	case "run_created":
+		return decodeFactAs[RunCreated](raw)
 	case "model_step_prepared":
 		return decodeFactAs[ModelStepPrepared](raw)
+	case "model_step_withdrawn":
+		return decodeFactAs[ModelStepWithdrawn](raw)
 	case "model_step_started":
 		return decodeFactAs[ModelStepStarted](raw)
 	case "model_step_recovered":

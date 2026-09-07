@@ -53,7 +53,7 @@ func categorize(c AgentCommand) commandCategory {
 			return catRecovery // scanner path when grantless; owner path with grant
 		}
 		return catIngress // known failure on Pending uses empty grant; Executing path checks grant below
-	case ApproveToolCall, RejectToolCall, SubmitToolResponse, AcceptInput:
+	case ApproveToolCall, RejectToolCall, SubmitToolResponse, AcceptInput, WithdrawPreparedStep:
 		return catIngress
 	case CancelRun:
 		return catRunControl
@@ -262,6 +262,8 @@ func checkDerivedCommandID(env *CommandEnvelope, baseRevision uint64) error {
 		want = DeriveModelRequestCommandID(env.RunID, baseRevision)
 	case AcceptInput:
 		want = DeriveInputCommandID(env.RunID, cmd.Input.ID)
+	case WithdrawPreparedStep:
+		want = DeriveWithdrawCommandID(env.RunID, cmd.StepID)
 	case ApproveToolCall:
 		want = DeriveResponseCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.ResponseID)
 	case RejectToolCall:

@@ -17,6 +17,15 @@ type StartModelCall struct {
 
 func (StartModelCall) effect() {}
 
+// WithdrawPrepared asks the Loop to commit WithdrawPreparedStep: inputs were
+// accepted after this step was Prepared, so its frozen request is incomplete
+// and the Run should replan.
+type WithdrawPrepared struct {
+	StepID StepID
+}
+
+func (WithdrawPrepared) effect() {}
+
 type StartToolCalls struct {
 	StepID  StepID
 	CallIDs []CallID
@@ -90,15 +99,14 @@ func NeedsRecovery(s MachineState) bool {
 	}
 }
 
-// PlanningHint is what the Loop hands the application RequestPlanner.
+// PlanningHint is what the Loop hands the application RequestPlanner: the Run
+// boundary facts only. Conversation content (previous assistant output, tool
+// results) is read from the Session by the planner itself.
 type PlanningHint struct {
+	Owner      OwnerID
 	RunID      RunID
 	SourceStep StepID
 	Inputs     []AgentInput
-	// LastToolStep contains the committed results of the preceding tool
-	// boundary, allowing the planner to construct the next model request.
-	LastToolStep    *ToolStep
-	LastModelResult *ModelResult
 }
 
 // Next derives the pending effect from the current state (RUN-MCH-4).
@@ -116,14 +124,16 @@ func Next(s MachineState) (Effect, error) {
 			source = s.LastToolStep.RefValue.ID
 		}
 		return NeedModelRequest{Hint: PlanningHint{
-			RunID:           s.RunID,
-			SourceStep:      source,
-			Inputs:          append([]AgentInput(nil), s.PendingInputs...),
-			LastToolStep:    cloneToolStepPtr(s.LastToolStep),
-			LastModelResult: cloneModelResult(s.LastModelResult),
+			Owner:      s.Owner,
+			RunID:      s.RunID,
+			SourceStep: source,
+			Inputs:     append([]AgentInput(nil), s.PendingInputs...),
 		}}, nil
 	case ModelStep:
 		if cur.Status == ModelPrepared {
+			if len(s.PendingInputs) > 0 {
+				return WithdrawPrepared{StepID: cur.RefValue.ID}, nil
+			}
 			return StartModelCall{StepID: cur.RefValue.ID}, nil
 		}
 		return Idle{}, nil

@@ -6,29 +6,53 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/memohai/twilight/agent/es"
 )
 
 // Fact is one committed outcome produced by Machine.Decide. Facts are wrapped
 // as AgentEvents; Machine.Evolve folds them mechanically (RUN-MCH-3). The
-// interface is sealed: only the thirteen variants below exist.
+// interface is sealed: only the variants below exist. Facts carry execution
+// state and content digests only; content bodies travel with the companion
+// (RUN-WIR-4).
 type Fact interface{ fact() }
 
+// RunCreated is the first fact of a Run (RUN-NEW-1). Folding it onto the zero
+// MachineState yields the Revision-0 state; a second RunCreated is an error.
+type RunCreated struct {
+	SchemaVersion uint16         `json:"schemaVersion"`
+	RunID         RunID          `json:"runId"`
+	Owner         OwnerID        `json:"owner,omitempty"`
+	Attempt       uint32         `json:"attempt,omitempty"`
+	CausationID   es.CausationID `json:"causationId,omitempty"`
+}
+
+func (RunCreated) fact() {}
+
 // ModelStepPrepared establishes the frozen ModelStep and consumes the listed
-// pending inputs. BindingDigest (model + request + tools) is computed by
-// Decide and carried in the fact: Evolve folds it verbatim, never recomputes
-// (fact self-containment, RUN-MCH-3).
+// pending inputs. The request body is not in the fact: RequestDigest names it
+// in the FrozenValueStore. BindingDigest (model + request + tools) is computed
+// by Decide and carried in the fact: Evolve folds it verbatim, never
+// recomputes (fact self-containment, RUN-MCH-3).
 type ModelStepPrepared struct {
-	StepID        StepID       `json:"stepId"`
-	Model         ModelRef     `json:"model"`
-	Request       ModelRequest `json:"request"`
-	RequestDigest Digest       `json:"requestDigest"`
-	InputIDs      []InputID    `json:"inputIds,omitempty"`
-	Tools         []ToolSpec   `json:"tools,omitempty"`
-	ToolsDigest   Digest       `json:"toolsDigest"`
-	BindingDigest Digest       `json:"bindingDigest"`
+	StepID        StepID     `json:"stepId"`
+	Model         ModelRef   `json:"model"`
+	RequestDigest Digest     `json:"requestDigest"`
+	InputIDs      []InputID  `json:"inputIds,omitempty"`
+	Tools         []ToolSpec `json:"tools,omitempty"`
+	ToolsDigest   Digest     `json:"toolsDigest"`
+	BindingDigest Digest     `json:"bindingDigest"`
 }
 
 func (ModelStepPrepared) fact() {}
+
+// ModelStepWithdrawn: Prepared -> Open. The frozen request was never sent;
+// inputs arrived while it was Prepared and the next Prepare must include them.
+type ModelStepWithdrawn struct {
+	StepID StepID `json:"stepId"`
+}
+
+func (ModelStepWithdrawn) fact() {}
 
 // ModelStepStarted: Prepared -> Executing.
 type ModelStepStarted struct {
@@ -54,12 +78,15 @@ type ModelStepRejected struct {
 
 func (ModelStepRejected) fact() {}
 
-// ModelStepCompleted accepts one model result: usage is accumulated,
-// LastModelResult is written, Current becomes Open. The same transition may
-// then open a ToolStep or end the Run.
+// ModelStepCompleted accepts one model result: usage is accumulated and
+// Current becomes Open. The result body is not in the fact; ResultDigest names
+// it and the companion writes the content. The same transition may then open
+// a ToolStep or end the Run.
 type ModelStepCompleted struct {
-	StepID StepID      `json:"stepId"`
-	Result ModelResult `json:"result"`
+	StepID       StepID       `json:"stepId"`
+	Usage        Usage        `json:"usage"`
+	FinishReason FinishReason `json:"finishReason"`
+	ResultDigest Digest       `json:"resultDigest"`
 }
 
 func (ModelStepCompleted) fact() {}
@@ -97,22 +124,23 @@ type ToolCallApproved struct {
 
 func (ToolCallApproved) fact() {}
 
-// ToolCallCompleted: Executing -> Completed.
+// ToolCallCompleted: Executing -> Completed. OutputDigest names the tool
+// output the companion carries.
 type ToolCallCompleted struct {
-	StepID StepID              `json:"stepId"`
-	CallID CallID              `json:"callId"`
-	Result ToolExecutionResult `json:"result"`
+	StepID       StepID `json:"stepId"`
+	CallID       CallID `json:"callId"`
+	OutputDigest Digest `json:"outputDigest"`
 }
 
 func (ToolCallCompleted) fact() {}
 
-// ToolCallAnswered: Waiting(ExternalResponse) -> Completed with the answer.
+// ToolCallAnswered: Waiting(ExternalResponse) -> Completed. ResponseDigest is
+// the digest of the external answer payload the companion carries.
 type ToolCallAnswered struct {
-	StepID         StepID        `json:"stepId"`
-	CallID         CallID        `json:"callId"`
-	ResponseID     ResponseID    `json:"responseId"`
-	ResponseDigest Digest        `json:"responseDigest"`
-	Payload        CanonicalJSON `json:"payload"`
+	StepID         StepID     `json:"stepId"`
+	CallID         CallID     `json:"callId"`
+	ResponseID     ResponseID `json:"responseId"`
+	ResponseDigest Digest     `json:"responseDigest"`
 }
 
 func (ToolCallAnswered) fact() {}
@@ -127,7 +155,8 @@ type ToolCallFailed struct {
 
 func (ToolCallFailed) fact() {}
 
-// InputAccepted appends one input to PendingInputs.
+// InputAccepted appends one input to PendingInputs. Legal in every
+// non-terminal state; PendingInputs is the durable mid-run input queue.
 type InputAccepted struct {
 	Input AgentInput `json:"input"`
 }
@@ -271,8 +300,12 @@ func (r *RunEnded) UnmarshalJSON(raw []byte) error {
 // factType returns the wire discriminator for a sealed fact variant.
 func factType(f Fact) string {
 	switch f.(type) {
+	case RunCreated:
+		return "run_created"
 	case ModelStepPrepared:
 		return "model_step_prepared"
+	case ModelStepWithdrawn:
+		return "model_step_withdrawn"
 	case ModelStepStarted:
 		return "model_step_started"
 	case ModelStepRecovered:

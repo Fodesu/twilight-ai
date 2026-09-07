@@ -48,7 +48,7 @@ func TestLoopRenewsLeaseDuringLongTool(t *testing.T) {
 	}
 
 	spec := toolSpec(t, "slow", DirectExecution)
-	slow := &fakeTool{ref: "slow", def: spec.Definition.SDK(), policy: DirectExecution,
+	slow := &fakeTool{ref: "slow", def: toolDef(spec.Name), policy: DirectExecution,
 		execute: func(ctx context.Context, req ToolExecutionRequest) ToolExecutionOutcome {
 			// Simulate a tool that outlives the TTL: advance the clock past
 			// several deadlines while the heartbeat keeps renewing.
@@ -123,7 +123,7 @@ func TestLoopReplacementFinishesInheritedClaim(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
 	block := make(chan struct{})
 	var executions atomic.Int32
-	tool := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: DirectExecution,
+	tool := &fakeTool{ref: "echo", def: toolDef(spec.Name), policy: DirectExecution,
 		execute: func(ctx context.Context, req ToolExecutionRequest) ToolExecutionOutcome {
 			if executions.Add(1) == 1 {
 				<-block // first process "dies" here

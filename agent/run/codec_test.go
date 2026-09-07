@@ -11,6 +11,7 @@ import (
 func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 	commands := []AgentCommand{
 		PrepareModelRequest{StepID: "s", Model: "m", Request: ModelRequest{Model: "m"}, RequestDigest: "sha256:req", ToolsDigest: "sha256:tools"},
+		WithdrawPreparedStep{StepID: "s"},
 		StartModelExecution{StepID: "s", Claim: "claim-s"},
 		RecoverModelExecution{StepID: "s", Claim: "claim-s"},
 		SubmitModelResult{StepID: "s", Result: ModelResult{Text: "ok"}},
@@ -49,16 +50,18 @@ func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 
 func TestAgentEventJSONRoundTripRestoresVariants(t *testing.T) {
 	facts := []Fact{
-		ModelStepPrepared{StepID: "s", Model: "m", Request: ModelRequest{Model: "m"}, RequestDigest: "sha256:req", ToolsDigest: "sha256:tools", BindingDigest: "sha256:binding"},
+		RunCreated{SchemaVersion: SchemaVersion1, RunID: "run-1", Owner: "turn-1", Attempt: 1, CausationID: "cause"},
+		ModelStepPrepared{StepID: "s", Model: "m", RequestDigest: "sha256:req", ToolsDigest: "sha256:tools", BindingDigest: "sha256:binding"},
+		ModelStepWithdrawn{StepID: "s"},
 		ModelStepStarted{StepID: "s"},
 		ModelStepRecovered{StepID: "s"},
 		ModelStepRejected{StepID: "s", Usage: Usage{TotalTokens: 1}, Failure: StepFailure{Class: FailureMalformedModel}},
-		ModelStepCompleted{StepID: "s", Result: ModelResult{Text: "ok"}},
+		ModelStepCompleted{StepID: "s", Usage: Usage{TotalTokens: 1}, FinishReason: FinishReasonStop, ResultDigest: "sha256:result"},
 		ToolStepOpened{StepID: "ts", Source: "s", BindingSetDigest: "sha256:set", Calls: []ToolCallBinding{{CallID: "c", ToolRef: "t", BindingDigest: "sha256:binding", Arguments: cj(`{}`), Policy: DirectExecution}}},
 		ToolCallStarted{StepID: "ts", CallID: "c"},
 		ToolCallApproved{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp"},
-		ToolCallCompleted{StepID: "ts", CallID: "c", Result: ToolExecutionResult{Output: cj(`{"ok":true}`)}},
-		ToolCallAnswered{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp", Payload: cj(`{"answer":1}`)},
+		ToolCallCompleted{StepID: "ts", CallID: "c", OutputDigest: "sha256:output"},
+		ToolCallAnswered{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp"},
 		ToolCallFailed{StepID: "ts", CallID: "c", Failure: ToolFailure{Class: FailureExecution}, Outcome: ToolOutcomeKnown},
 		InputAccepted{Input: AgentInput{ID: "in", Payload: cj(`{"q":"hi"}`)}},
 		RunEnded{End: RunCompletedEnd{}},
@@ -99,7 +102,7 @@ func TestAgentEventJSONRoundTripRestoresVariants(t *testing.T) {
 
 func TestTransitionRecordJSONRoundTripRestoresVariants(t *testing.T) {
 	facts := []Fact{
-		ModelStepCompleted{StepID: "s", Result: ModelResult{Text: "ok"}},
+		ModelStepCompleted{StepID: "s", FinishReason: FinishReasonStop, ResultDigest: "sha256:result"},
 		RunEnded{End: RunCompletedEnd{}},
 	}
 	events := make([]AgentEvent, len(facts))

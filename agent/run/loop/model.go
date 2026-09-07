@@ -139,10 +139,23 @@ func (l *Loop) runModelStep(ctx context.Context, runtime run.Runtime, events Eve
 		completion = run.RecoverModelExecution{StepID: stepID, Claim: a.claim}
 	default:
 		// Model workers derive from the outer ctx: cancelling a model call is
-		// safe, the frozen request retries after recovery (RUN-LOP-3).
-		sdkRequest, err := modelStep.Request.SDK()
-		if err != nil {
-			failure := run.StepFailure{Class: run.FailureMalformedModel, Message: err.Error()}
+		// safe, the frozen request retries after recovery (RUN-LOP-3). The body
+		// is fetched by digest; a missing body cannot be retried by this Loop.
+		frozenRequest, fetchErr := runtime.FrozenRequest(ctx, modelStep.RequestDigest)
+		var sdkRequest sdk.Request
+		if fetchErr == nil {
+			sdkRequest, fetchErr = frozenRequest.SDK()
+		}
+		if fetchErr != nil {
+			if errors.Is(fetchErr, run.ErrFrozenValueMissing) {
+				// Release ownership so recovery or a fresh plan can proceed;
+				// surface the condition to the host.
+				if err := l.settle(ctx, runtime, events, a, start.Snapshot.Revision, start.Grant, run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, proto); err != nil {
+					return err
+				}
+				return fetchErr
+			}
+			failure := run.StepFailure{Class: run.FailureMalformedModel, Message: fetchErr.Error()}
 			completion = run.RejectModelResult{StepID: stepID, Failure: failure, Disposition: l.modelRejectDisposition(modelStep, failure)}
 		} else {
 			workerCtx, stopLease := l.keepLease(ctx, runtime, runID, stepID, "", start.Grant)
@@ -255,7 +268,7 @@ func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *run.ModelStep) ([]ru
 	}
 	specByName := make(map[string]run.ToolSpec, len(step.Tools))
 	for _, s := range step.Tools {
-		specByName[s.Definition.Name] = s
+		specByName[s.Name] = s
 	}
 	bindings := make([]run.ToolCallBinding, len(result.ToolCalls))
 	for i, tc := range result.ToolCalls {

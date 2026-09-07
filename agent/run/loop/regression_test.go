@@ -14,7 +14,7 @@ import (
 
 func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
-	echo := &fakeTool{ref: "echo", def: spec.Definition.SDK(), policy: DirectExecution,
+	echo := &fakeTool{ref: "echo", def: toolDef(spec.Name), policy: DirectExecution,
 		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
 			panic("nil map write")
 		}}
@@ -76,7 +76,7 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spec := ToolSpec{Ref: "fs.read", Definition: frozenDef, DefinitionDigest: d, Policy: DirectExecution}
+	spec := ToolSpec{Ref: "fs.read", Name: "read", DefinitionDigest: d, Policy: DirectExecution}
 	executed := atomic.Bool{}
 	tool := &fakeTool{ref: "fs.read", def: def, policy: DirectExecution,
 		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {

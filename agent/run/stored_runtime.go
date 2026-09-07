@@ -14,6 +14,7 @@ import (
 // depend only on the Runtime interface.
 type runtime struct {
 	store    Store
+	frozen   FrozenValueStore
 	leaseTTL time.Duration
 	now      func() time.Time
 }
@@ -21,10 +22,13 @@ type runtime struct {
 // RuntimeOptions configures lease occupancy for a Store-backed Runtime.
 // LeaseTTL 0 means leases do not expire (grant-holder recovery only). A
 // positive LeaseTTL must exceed the longest gap between a worker's start and
-// its next RenewLease or settlement; see RUN-CMT-8.
+// its next RenewLease or settlement; see RUN-CMT-8. FrozenValues holds the
+// request bodies Prepared steps name by digest; nil selects an in-process
+// store that does not survive the Runtime.
 type RuntimeOptions struct {
-	LeaseTTL time.Duration
-	Now      func() time.Time
+	LeaseTTL     time.Duration
+	Now          func() time.Time
+	FrozenValues FrozenValueStore
 }
 
 // NewRuntime constructs a Runtime over store. SQLite and Postgres adapters
@@ -42,7 +46,11 @@ func newRuntime(store Store, opts RuntimeOptions) *runtime {
 	if now == nil {
 		now = time.Now
 	}
-	return &runtime{store: store, leaseTTL: opts.LeaseTTL, now: now}
+	frozen := opts.FrozenValues
+	if frozen == nil {
+		frozen = NewMemoryFrozenValues()
+	}
+	return &runtime{store: store, frozen: frozen, leaseTTL: opts.LeaseTTL, now: now}
 }
 
 func (r *runtime) Create(ctx context.Context, run NewRun) (CreateResult, error) {
@@ -118,6 +126,18 @@ func (r *runtime) Commit(ctx context.Context, req CommitRequest) (CommitResult, 
 		return CommitResult{}, err
 	}
 	runID := req.Command.RunID
+	// A Prepare carries the request body; the fact will name it by digest, so
+	// the body must be readable before the fact is visible. Put is idempotent
+	// and content-addressed: a rejected Prepare leaves a harmless orphan.
+	if prep, ok := req.Command.Command.(PrepareModelRequest); ok {
+		body, err := encodeFrozenRequest(&prep.Request, prep.RequestDigest)
+		if err != nil {
+			return CommitResult{}, fmt.Errorf("%w: %w", ErrStaleRuntime, err)
+		}
+		if err := r.frozen.Put(ctx, prep.RequestDigest, body); err != nil {
+			return CommitResult{}, err
+		}
+	}
 	var result CommitResult
 	// The whole evaluation runs inside the Store's per-Run critical section
 	// (RUN-CMT-2): the head cannot move between read and write, so there is
@@ -214,6 +234,16 @@ func (r *runtime) evaluate(tx RunTx, head *RunHead, req *CommitRequest) (CommitR
 	if decision.NewState.Status.Terminal() {
 		appendReq.Leases = LeaseOps{Clear: true}
 	}
+	// Recovery keeps the frozen request: a Recovered step resends the same
+	// body. Any other exit from a ModelStep (completion, rejection that fails
+	// the Run, withdrawal) ends the body's useful life.
+	if step, ok := req.Command.Command.(WithdrawPreparedStep); ok {
+		if ms, isModel := head.State.Current.(ModelStep); isModel && ms.RefValue.ID == step.StepID {
+			if dropper, can := r.frozen.(interface{ Delete(Digest) }); can {
+				dropper.Delete(ms.RequestDigest)
+			}
+		}
+	}
 	after := RunHead{Header: head.Header, State: decision.NewState, Revision: head.Revision + 1}
 	return CommitResult{Status: CommitAccepted, Snapshot: snapshotOf(&after),
 		Events: cloneEvents(appendReq.Transition.Events), Grant: minted}, &appendReq, nil
@@ -246,6 +276,25 @@ func (r *runtime) Record(ctx context.Context, runID RunID) (RunRecord, error) {
 		return RunRecord{}, errors.New("agent: runtime: snapshot diverges from transition log")
 	}
 	return RunRecord{Header: cloneRunHeader(head.Header), Snapshot: snapshotOf(&head), Transitions: transitions}, nil
+}
+
+// FrozenRequest returns the request body named by digest, verifying it still
+// digests to that name.
+func (r *runtime) FrozenRequest(ctx context.Context, digest Digest) (ModelRequest, error) {
+	if err := checkContext(ctx); err != nil {
+		return ModelRequest{}, err
+	}
+	if digest == "" {
+		return ModelRequest{}, errors.New("agent: runtime: empty request digest")
+	}
+	raw, ok, err := r.frozen.Get(ctx, digest)
+	if err != nil {
+		return ModelRequest{}, err
+	}
+	if !ok {
+		return ModelRequest{}, fmt.Errorf("%w: request %s", ErrFrozenValueMissing, digest)
+	}
+	return decodeFrozenRequest(raw, digest)
 }
 
 // RenewLease extends the live lease behind grant on the Executing target of

@@ -148,6 +148,22 @@ func (l *Loop) Run(ctx context.Context, runtime run.Runtime, runID run.RunID, ev
 			if err := l.planAndPrepare(ctx, runtime, events, &snapshot, eff.Hint); err != nil {
 				return LoopResult{}, err
 			}
+		case run.WithdrawPrepared:
+			// Inputs arrived after this step was frozen: discard the unsent
+			// request and replan with them (RUN-LOP-8). A retriable rejection
+			// means another actor moved the Run; the reload decides.
+			proto, err := snapshot.Protocol()
+			if err != nil {
+				return LoopResult{}, err
+			}
+			res, err := l.commit(ctx, runtime, runID, run.DeriveWithdrawCommandID(runID, eff.StepID), snapshot.Revision, "",
+				run.WithdrawPreparedStep{StepID: eff.StepID}, proto)
+			if err != nil && !retriable(err) {
+				return LoopResult{}, err
+			}
+			if err == nil {
+				l.emitCommitted(ctx, events, runID, res.Events)
+			}
 		case run.StartModelCall:
 			if err := l.runModelStep(ctx, runtime, events, &snapshot, eff.StepID); err != nil {
 				return LoopResult{}, err

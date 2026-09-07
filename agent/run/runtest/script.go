@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 
 	"github.com/memohai/twilight/agent/run"
@@ -38,6 +39,8 @@ func ToolCalls(name string, ids ...string) sdk.ModelResult {
 type scriptInvoker struct {
 	results []sdk.ModelResult
 	calls   atomic.Int32
+	mu      sync.Mutex
+	last    *sdk.ModelResult // most recent result handed to the Loop
 }
 
 func (s *scriptInvoker) Generate(ctx context.Context, _ sdk.Request) (sdk.ModelResult, error) {
@@ -48,7 +51,20 @@ func (s *scriptInvoker) Generate(ctx context.Context, _ sdk.Request) (sdk.ModelR
 	if n >= len(s.results) {
 		return sdk.ModelResult{}, errors.New("runtest: no scripted model result")
 	}
-	return s.results[n], nil
+	res := s.results[n]
+	s.mu.Lock()
+	s.last = &res
+	s.mu.Unlock()
+	return res, nil
+}
+
+func (s *scriptInvoker) lastResult() (sdk.ModelResult, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.last == nil {
+		return sdk.ModelResult{}, false
+	}
+	return *s.last, true
 }
 
 type scriptCatalog struct {
@@ -105,6 +121,7 @@ func (c scriptToolCatalog) ResolveTool(ref run.ToolRef) (loop.ExecutableTool, er
 type scriptPlanner struct {
 	model    run.ModelRef
 	specs    []run.ToolSpec
+	defs     map[run.ToolRef]sdk.ToolDefinition
 	lastHint run.PlanningHint
 }
 
@@ -116,7 +133,7 @@ func (p *scriptPlanner) Plan(_ context.Context, hint run.PlanningHint) (loop.Req
 	}
 	req := sdk.Request{Model: string(model), Messages: []sdk.Message{sdk.UserMessage("go")}}
 	for _, spec := range p.specs {
-		req.Tools = append(req.Tools, spec.Definition.SDK())
+		req.Tools = append(req.Tools, p.defs[spec.Ref])
 	}
 	ids := make([]run.InputID, len(hint.Inputs))
 	for i, in := range hint.Inputs {

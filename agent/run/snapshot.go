@@ -11,14 +11,15 @@ import (
 // canonical bytes are the InitialStateDigest preimage (RUN-NEW-1), so field
 // names and omission rules are frozen with the schema.
 type machineStateWireV1 struct {
-	RunID           RunID        `json:"runId"`
-	Status          RunStatus    `json:"status"`
-	ModelSteps      int          `json:"modelSteps"`
-	Usage           Usage        `json:"usage"`
-	PendingInputs   []AgentInput `json:"pendingInputs"`
-	LastModelResult *ModelResult `json:"lastModelResult"`
-	Result          *RunResult   `json:"result"`
-	LastToolStep    *ToolStep    `json:"lastToolStep,omitempty"`
+	RunID         RunID        `json:"runId"`
+	Owner         OwnerID      `json:"owner,omitempty"`
+	Attempt       uint32       `json:"attempt,omitempty"`
+	Status        RunStatus    `json:"status"`
+	ModelSteps    int          `json:"modelSteps"`
+	Usage         Usage        `json:"usage"`
+	PendingInputs []AgentInput `json:"pendingInputs"`
+	Result        *RunResult   `json:"result"`
+	LastToolStep  *ToolStep    `json:"lastToolStep,omitempty"`
 	// Current is "open", "model" or "tool" for an active Run and absent for a
 	// terminal one.
 	Current   string     `json:"current,omitempty"`
@@ -34,9 +35,9 @@ const (
 
 func machineStateToWireV1(s *MachineState) (machineStateWireV1, error) {
 	w := machineStateWireV1{
-		RunID: s.RunID, Status: s.Status, ModelSteps: s.ModelSteps,
+		RunID: s.RunID, Owner: s.Owner, Attempt: s.Attempt, Status: s.Status, ModelSteps: s.ModelSteps,
 		Usage: s.Usage, PendingInputs: s.PendingInputs,
-		LastModelResult: s.LastModelResult, Result: s.Result, LastToolStep: s.LastToolStep,
+		Result: s.Result, LastToolStep: s.LastToolStep,
 	}
 	switch cur := s.Current.(type) {
 	case nil:
@@ -56,9 +57,9 @@ func machineStateToWireV1(s *MachineState) (machineStateWireV1, error) {
 
 func machineStateFromWireV1(w *machineStateWireV1) (MachineState, error) {
 	s := MachineState{
-		RunID: w.RunID, Status: w.Status, ModelSteps: w.ModelSteps,
+		RunID: w.RunID, Owner: w.Owner, Attempt: w.Attempt, Status: w.Status, ModelSteps: w.ModelSteps,
 		Usage: w.Usage, PendingInputs: w.PendingInputs,
-		LastModelResult: w.LastModelResult, Result: w.Result, LastToolStep: w.LastToolStep,
+		Result: w.Result, LastToolStep: w.LastToolStep,
 	}
 	switch w.Current {
 	case "":

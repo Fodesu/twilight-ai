@@ -15,8 +15,12 @@ func evolveV1(s MachineState, f Fact) (MachineState, error) {
 		return s, err
 	}
 	switch fact := f.(type) {
+	case RunCreated:
+		return applyRunCreated(&fact), nil
 	case ModelStepPrepared:
 		return applyModelStepPrepared(s, &fact), nil
+	case ModelStepWithdrawn:
+		return applyModelStepWithdrawn(s), nil
 	case ModelStepStarted:
 		return applyModelStatus(s, ModelExecuting, Usage{}, false), nil
 	case ModelStepRecovered:
@@ -33,12 +37,11 @@ func evolveV1(s MachineState, f Fact) (MachineState, error) {
 		return applyCall(s, fact.CallID, func(c *ToolCallState) { c.Status, c.Waiting = ToolPending, nil }), nil
 	case ToolCallCompleted:
 		return applyCall(s, fact.CallID, func(c *ToolCallState) {
-			r := fact.Result
-			c.Status, c.Result, c.Waiting = ToolCompleted, &r, nil
+			c.Status, c.Result, c.Waiting = ToolCompleted, &ToolCallResult{OutputDigest: fact.OutputDigest}, nil
 		}), nil
 	case ToolCallAnswered:
 		return applyCall(s, fact.CallID, func(c *ToolCallState) {
-			c.Status, c.Result, c.Waiting = ToolCompleted, &ToolExecutionResult{Output: fact.Payload}, nil
+			c.Status, c.Result, c.Waiting = ToolCompleted, &ToolCallResult{OutputDigest: fact.ResponseDigest}, nil
 		}), nil
 	case ToolCallFailed:
 		return applyCall(s, fact.CallID, func(c *ToolCallState) {
@@ -55,10 +58,13 @@ func evolveV1(s MachineState, f Fact) (MachineState, error) {
 
 // --- apply: mechanical folds; guardFactV1 has established every precondition ---
 
+func applyRunCreated(fact *RunCreated) MachineState {
+	return MachineState{RunID: fact.RunID, Owner: fact.Owner, Attempt: fact.Attempt, Status: RunActive, Current: Open{}}
+}
+
 func applyModelStepPrepared(s MachineState, fact *ModelStepPrepared) MachineState {
 	s.Current = ModelStep{
 		RefValue:      StepRef{RunID: s.RunID, ID: fact.StepID, Digest: fact.BindingDigest},
-		Request:       fact.Request,
 		RequestDigest: fact.RequestDigest,
 		Model:         fact.Model,
 		Tools:         fact.Tools,
@@ -67,6 +73,14 @@ func applyModelStepPrepared(s MachineState, fact *ModelStepPrepared) MachineStat
 	}
 	s.ModelSteps++
 	s.PendingInputs = nil
+	return s
+}
+
+// applyModelStepWithdrawn discards the Prepared step: it never executed, so it
+// does not count as a model step. PendingInputs are untouched.
+func applyModelStepWithdrawn(s MachineState) MachineState {
+	s.Current = Open{}
+	s.ModelSteps--
 	return s
 }
 
@@ -84,9 +98,7 @@ func applyModelStatus(s MachineState, status ModelStepStatus, usage Usage, rejec
 }
 
 func applyModelStepCompleted(s MachineState, fact *ModelStepCompleted) MachineState {
-	result := fact.Result
-	s.LastModelResult = &result
-	s.Usage = s.Usage.Add(fact.Result.Usage)
+	s.Usage = s.Usage.Add(fact.Usage)
 	s.Current = Open{}
 	return s
 }
@@ -143,7 +155,7 @@ func applyRunEnded(s MachineState, fact *RunEnded) MachineState {
 	status, reason, failure := endProjection(fact.End)
 	s.Status = status
 	s.Current = nil
-	result := &RunResult{Status: status, Reason: reason, Failure: failure, Model: s.LastModelResult, Usage: s.Usage}
+	result := &RunResult{Status: status, Reason: reason, Failure: failure, Usage: s.Usage}
 	if stopped, ok := fact.End.(RunStoppedEnd); ok {
 		result.UncertainCalls = append([]CallID(nil), stopped.UncertainCalls...)
 		result.UncertainModel = stopped.UncertainModel
@@ -156,12 +168,26 @@ func applyRunEnded(s MachineState, fact *RunEnded) MachineState {
 // self-consistency the fact must carry. ---
 
 func guardFactV1(s *MachineState, f Fact) error {
+	if created, ok := f.(RunCreated); ok {
+		return guardRunCreated(s, &created)
+	}
+	if s.RunID == "" {
+		return errors.New("agent: evolve: fact before RunCreated")
+	}
 	if s.Status.Terminal() {
 		return errors.New("agent: evolve: fact after terminal state")
 	}
 	switch fact := f.(type) {
 	case ModelStepPrepared:
 		return guardModelStepPrepared(s, &fact)
+	case ModelStepWithdrawn:
+		if err := requireModelStep(s, fact.StepID, ModelPrepared); err != nil {
+			return err
+		}
+		if len(s.PendingInputs) == 0 {
+			return errors.New("agent: evolve: model step withdrawn without pending inputs")
+		}
+		return nil
 	case ModelStepStarted:
 		return requireModelStep(s, fact.StepID, ModelPrepared)
 	case ModelStepRecovered:
@@ -169,6 +195,9 @@ func guardFactV1(s *MachineState, f Fact) error {
 	case ModelStepRejected:
 		return requireModelStep(s, fact.StepID, ModelExecuting)
 	case ModelStepCompleted:
+		if fact.ResultDigest == "" {
+			return errors.New("agent: evolve: model step completed without result digest")
+		}
 		return requireModelStep(s, fact.StepID, ModelExecuting)
 	case ToolStepOpened:
 		return guardToolStepOpened(s, &fact)
@@ -178,6 +207,9 @@ func guardFactV1(s *MachineState, f Fact) error {
 	case ToolCallApproved:
 		return guardToolCallApproved(s, &fact)
 	case ToolCallCompleted:
+		if fact.OutputDigest == "" {
+			return errors.New("agent: evolve: tool call completed without output digest")
+		}
 		_, err := requireCall(s, fact.StepID, fact.CallID, ToolExecuting)
 		return err
 	case ToolCallAnswered:
@@ -229,10 +261,22 @@ func requireCall(s *MachineState, stepID StepID, callID CallID, statuses ...Tool
 	return ToolCallState{}, fmt.Errorf("agent: evolve: tool call %q is %s", callID, call.Status)
 }
 
-func guardInputAccepted(s *MachineState, fact *InputAccepted) error {
-	if err := requireOpen(s, "input accepted"); err != nil {
-		return err
+func guardRunCreated(s *MachineState, fact *RunCreated) error {
+	if s.RunID != "" || s.Current != nil || s.Status != RunActive {
+		return errors.New("agent: evolve: run created on a non-zero state")
 	}
+	if fact.RunID == "" {
+		return errors.New("agent: evolve: run created with empty RunID")
+	}
+	if fact.SchemaVersion != SchemaVersion1 {
+		return fmt.Errorf("agent: evolve: run created with unsupported schema version %d", fact.SchemaVersion)
+	}
+	return nil
+}
+
+// guardInputAccepted admits an input in any non-terminal state; only a
+// duplicate pending InputID is illegal.
+func guardInputAccepted(s *MachineState, fact *InputAccepted) error {
 	if fact.Input.ID == "" {
 		return errors.New("agent: evolve: input accepted with empty InputID")
 	}
@@ -253,9 +297,6 @@ func guardModelStepPrepared(s *MachineState, fact *ModelStepPrepared) error {
 	if fact.StepID == "" || fact.Model == "" || fact.RequestDigest == "" || fact.ToolsDigest == "" || fact.BindingDigest == "" {
 		return errors.New("agent: evolve: model step prepared is missing identity or digest")
 	}
-	if ModelRef(fact.Request.Model) != fact.Model {
-		return errors.New("agent: evolve: model step prepared model mismatch")
-	}
 	// v1 preparation is the atomic consumption boundary for pending inputs.
 	// A persisted fact must name every pending input exactly once, in queue
 	// order; accepting a subset or an invented ID would make replay diverge
@@ -268,9 +309,9 @@ func guardModelStepPrepared(s *MachineState, fact *ModelStepPrepared) error {
 			return fmt.Errorf("agent: evolve: model step prepared input ID at position %d = %q, want pending input %q", i, fact.InputIDs[i], input.ID)
 		}
 	}
-	if d, err := digestRequestV1(fact.Request); err != nil || d != fact.RequestDigest {
-		return errors.New("agent: evolve: model step prepared request digest mismatch")
-	}
+	// The request body is not in the fact; its digest is checked against the
+	// body by Decide and by the FrozenValueStore on read. Tools and binding
+	// digests are recomputable from the fact and must agree.
 	if d, err := digestToolSpecsV1(fact.Tools); err != nil || d != fact.ToolsDigest {
 		return errors.New("agent: evolve: model step prepared tools digest mismatch")
 	}
@@ -359,8 +400,8 @@ func guardToolCallAnswered(s *MachineState, fact *ToolCallAnswered) error {
 	if err := requireWaitingFor(&call, ResponseExternal, fact.ResponseID); err != nil {
 		return err
 	}
-	if d, err := digestToolResponsePayloadV1(fact.Payload); err != nil || d != fact.ResponseDigest {
-		return fmt.Errorf("agent: evolve: tool call %q response digest mismatch", fact.CallID)
+	if fact.ResponseDigest == "" {
+		return fmt.Errorf("agent: evolve: tool call %q answered without response digest", fact.CallID)
 	}
 	return nil
 }
