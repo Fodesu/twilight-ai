@@ -231,21 +231,24 @@ func (c *Coordinator) Deliver(ctx context.Context, req DeliverRequest) (TurnResp
 	if !ok || view.Status != TurnActive {
 		return TurnResponse{}, fmt.Errorf("%w: turn %s is not active", ErrConflict, req.Ref.TurnID)
 	}
-	runID := view.ActiveRun
+	// AcceptInput is not a hard-CAS command (RUN-CMT-4): no Base is needed, and
+	// the attempt's SchemaVersion comes from the surface, so Deliver does not
+	// read the machine projection.
+	att := view.ActiveAttempt()
+	if att == nil {
+		return TurnResponse{}, fmt.Errorf("%w: turn %s has no active attempt", ErrConflict, req.Ref.TurnID)
+	}
+	runID := att.RunID
+	proto, err := run.ProtocolFor(att.SchemaVersion)
+	if err != nil {
+		return TurnResponse{}, err
+	}
 	for _, in := range req.Inputs {
-		snapshot, err := c.Runtime.Load(ctx, sid, runID)
-		if err != nil {
-			return TurnResponse{}, err
-		}
-		proto, err := snapshot.Protocol()
-		if err != nil {
-			return TurnResponse{}, err
-		}
 		env, err := proto.BuildEnvelope(sid, runID, run.DeriveInputCommandID(runID, in.ID), run.AcceptInput{Input: in})
 		if err != nil {
 			return TurnResponse{}, err
 		}
-		_, err = c.Runtime.Commit(ctx, sid, run.CommitRequest{Base: snapshot.Position, Command: env,
+		_, err = c.Runtime.Commit(ctx, sid, run.CommitRequest{Command: env,
 			Attach: []run.ModuleEvent{{Type: chatlog.TypeInputDelivered, Value: chatlog.InputDeliveredPayload{InputID: chatlog.InputID(in.ID), TurnID: chatlog.TurnID(req.Ref.TurnID)}}}})
 		if err != nil {
 			if errors.Is(err, run.ErrRunTerminal) {
@@ -347,12 +350,12 @@ func (c *Coordinator) Stop(ctx context.Context, req StopRequest) (TurnResponse, 
 	if !ok || view.Status != TurnActive {
 		return TurnResponse{}, fmt.Errorf("%w: turn %s is not active", ErrConflict, turnID)
 	}
-	runID := view.ActiveRun
-	snapshot, err := c.Runtime.Load(ctx, sid, runID)
-	if err != nil {
-		return TurnResponse{}, err
+	att := view.ActiveAttempt()
+	if att == nil {
+		return TurnResponse{}, fmt.Errorf("%w: turn %s has no active attempt", ErrConflict, turnID)
 	}
-	proto, err := snapshot.Protocol()
+	runID := att.RunID
+	proto, err := run.ProtocolFor(att.SchemaVersion)
 	if err != nil {
 		return TurnResponse{}, err
 	}
@@ -360,7 +363,8 @@ func (c *Coordinator) Stop(ctx context.Context, req StopRequest) (TurnResponse, 
 	if err != nil {
 		return TurnResponse{}, err
 	}
-	_, err = c.Runtime.Commit(ctx, sid, run.CommitRequest{Base: snapshot.Position, Command: env,
+	// CancelRun rebases on the current state; no Base and no machine read.
+	_, err = c.Runtime.Commit(ctx, sid, run.CommitRequest{Command: env,
 		Attach: []run.ModuleEvent{{Type: TypeFailed, Value: FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementStopped, FailureClass: "cancelled"}}}})
 	if err != nil && !errors.Is(err, run.ErrRunTerminal) {
 		return TurnResponse{}, err

@@ -105,6 +105,15 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 		events = &serializedEventSink{sink: events, mu: &l.eventsMu}
 	}
 	runtime := boundRuntime{rt: rt, sid: sid}
+	// finish is the single exit for a terminal Run, whether the terminal state
+	// was read by Load or returned by the settlement that produced it.
+	finish := func(result *run.RunResult) LoopResult {
+		l.forgetRunClaims(ctx, sid, runID)
+		if events != nil {
+			_ = events.Emit(ctx, Event{Session: sid, RunID: runID, Kind: EventRunFinished, Durability: EventCommitted})
+		}
+		return LoopResult{Disposition: LoopFinished, Result: result}
+	}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -120,23 +129,16 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 			return LoopResult{}, fmt.Errorf("agent: loop: runtime returned RunID %q for %q", snapshot.State.RunID, runID)
 		}
 		if snapshot.State.Status.Terminal() {
-			l.forgetRunClaims(ctx, sid, runID)
-			if events != nil {
-				_ = events.Emit(ctx, Event{
-					Session:    sid,
-					RunID:      snapshot.State.RunID,
-					Kind:       EventRunFinished,
-					Durability: EventCommitted,
-				})
-			}
-			return LoopResult{Disposition: LoopFinished, Result: snapshot.State.Result}, nil
+			return finish(snapshot.State.Result), nil
 		}
 
 		if l.Claims == nil {
 			return LoopResult{}, errNoClaimStore
 		}
-		if handled, err := l.resumeOwnedStarts(ctx, runtime, events, &snapshot); err != nil {
+		if handled, finished, err := l.resumeOwnedStarts(ctx, runtime, events, &snapshot); err != nil {
 			return LoopResult{}, err
+		} else if finished != nil {
+			return finish(finished), nil
 		} else if handled {
 			continue
 		}
@@ -168,8 +170,12 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 				l.emitCommitted(ctx, events, sid, runID, &res.Commit)
 			}
 		case run.StartModelCall:
-			if err := l.runModelStep(ctx, runtime, events, &snapshot, eff.StepID); err != nil {
+			finished, err := l.runModelStep(ctx, runtime, events, &snapshot, eff.StepID)
+			if err != nil {
 				return LoopResult{}, err
+			}
+			if finished != nil {
+				return finish(finished), nil
 			}
 		case run.StartToolCalls:
 			if err := l.runToolCalls(ctx, runtime, events, &snapshot, eff); err != nil {

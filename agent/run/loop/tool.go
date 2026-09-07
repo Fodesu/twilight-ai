@@ -162,7 +162,7 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime boundRuntime, events Ev
 				}
 				failure.Class = run.FailureEffectUnknown
 			}
-			if err := l.settle(ctx, runtime, events, a, start.Snapshot.Position, start.Grant,
+			if _, err := l.settle(ctx, runtime, events, a, start.Snapshot.Position, start.Grant,
 				run.SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: failure, Outcome: run.ToolOutcomeUnknown}, proto); err != nil {
 				settleErr := l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, proto)
 				if settleErr != nil {
@@ -251,7 +251,8 @@ func (l *Loop) settleWorkers(ctx context.Context, runtime boundRuntime, events E
 			// bases rebase call-locally. Late results after terminal return
 			// ErrRunTerminal and are dropped (audit is the adapter's job).
 			// The one-shot same-CommandID replay lives inside l.commit.
-			if err := l.settle(controlCtx, runtime, events, w.attempt, w.base, w.grant, cmd, proto); err != nil {
+			// Tool settlements never terminate a Run; the result is ignored.
+			if _, err := l.settle(controlCtx, runtime, events, w.attempt, w.base, w.grant, cmd, proto); err != nil {
 				if firstErr == nil {
 					firstErr = fmt.Errorf("agent: loop: settling call %q: %w", w.call.CallID, err)
 				}

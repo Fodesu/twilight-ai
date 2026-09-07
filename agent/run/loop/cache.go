@@ -141,7 +141,11 @@ func (l *Loop) forgetRunClaims(ctx context.Context, sid session.SessionID, runID
 // CommandID. On success or on a sentinel rejection the claim is released:
 // the attempt is over either way. A transport failure keeps the claim so the
 // next Run (in this or a replacement process) replays the same settlement.
-func (l *Loop) settle(ctx context.Context, runtime boundRuntime, events EventSink, a attempt, base run.RunPosition, grant run.ExecutionGrant, cmd run.AgentCommand, proto run.Protocol) error {
+//
+// When the accepted settlement terminates the Run, the terminal RunResult is
+// returned: the Runtime already handed back the folded state, so the Loop
+// finishes from it instead of reloading a Run the projection no longer holds.
+func (l *Loop) settle(ctx context.Context, runtime boundRuntime, events EventSink, a attempt, base run.RunPosition, grant run.ExecutionGrant, cmd run.AgentCommand, proto run.Protocol) (*run.RunResult, error) {
 	id := a.settlementID()
 	if _, recovering := cmd.(run.RecoverModelExecution); recovering {
 		id = a.recoveryID()
@@ -150,30 +154,34 @@ func (l *Loop) settle(ctx context.Context, runtime boundRuntime, events EventSin
 	if err != nil {
 		if retriable(err) {
 			l.forgetClaim(ctx, a)
-			return nil
+			return nil, nil
 		}
-		return err
+		return nil, err
 	}
 	l.forgetClaim(ctx, a)
 	l.emitCommitted(ctx, events, runtime.sid, a.runID, &res.Commit)
-	return nil
+	if res.Snapshot.State.Status.Terminal() {
+		return res.Snapshot.State.Result, nil
+	}
+	return nil, nil
 }
 
 // resumeOwnedStarts re-enters every Executing target this Loop holds a claim
 // for. With a durable ClaimStore this is how a replacement process finishes
 // what its predecessor started: the derived start ID replays and returns the
 // live grant, then the effect runs (or re-runs) and settles.
-func (l *Loop) resumeOwnedStarts(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot) (bool, error) {
+func (l *Loop) resumeOwnedStarts(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot) (handled bool, finished *run.RunResult, err error) {
 	runID := snapshot.State.RunID
 	switch current := snapshot.State.Current.(type) {
 	case run.ModelStep:
 		if current.Status != run.ModelExecuting {
-			return false, nil
+			return false, nil, nil
 		}
 		if ok, err := l.hasClaim(ctx, runtime.sid, runID, current.RefValue.ID, ""); err != nil || !ok {
-			return false, err
+			return false, nil, err
 		}
-		return true, l.runModelStep(ctx, runtime, events, snapshot, current.RefValue.ID)
+		finished, err := l.runModelStep(ctx, runtime, events, snapshot, current.RefValue.ID)
+		return true, finished, err
 	case run.ToolStep:
 		var ids []run.CallID
 		for _, call := range current.Calls {
@@ -181,17 +189,17 @@ func (l *Loop) resumeOwnedStarts(ctx context.Context, runtime boundRuntime, even
 				continue
 			}
 			if ok, err := l.hasClaim(ctx, runtime.sid, runID, current.RefValue.ID, call.CallID); err != nil {
-				return false, err
+				return false, nil, err
 			} else if ok {
 				ids = append(ids, call.CallID)
 			}
 		}
 		if len(ids) == 0 {
-			return false, nil
+			return false, nil, nil
 		}
-		return true, l.runToolCalls(ctx, runtime, events, snapshot, run.StartToolCalls{StepID: current.RefValue.ID, CallIDs: ids})
+		return true, nil, l.runToolCalls(ctx, runtime, events, snapshot, run.StartToolCalls{StepID: current.RefValue.ID, CallIDs: ids})
 	default:
-		return false, nil
+		return false, nil, nil
 	}
 }
 

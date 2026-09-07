@@ -26,6 +26,9 @@ const (
 type AttemptView struct {
 	RunID   run.RunID `json:"runId"`
 	Attempt uint32    `json:"attempt"`
+	// SchemaVersion is created.SchemaVersion: the Coordinator builds command
+	// envelopes for this attempt from it without reading the machine projection.
+	SchemaVersion uint16 `json:"schemaVersion"`
 	// End is the terminal result from twilight/run/ended; nil while active.
 	End *run.RunEnded `json:"end,omitempty"`
 }
@@ -56,6 +59,16 @@ func (v *TurnView) LastAttempt() *AttemptView {
 		return nil
 	}
 	return &v.Attempts[len(v.Attempts)-1]
+}
+
+// ActiveAttempt returns the attempt behind ActiveRun.
+func (v *TurnView) ActiveAttempt() *AttemptView {
+	for i := range v.Attempts {
+		if v.Attempts[i].RunID == v.ActiveRun && v.ActiveRun != "" {
+			return &v.Attempts[i]
+		}
+	}
+	return nil
 }
 
 type TurnSurface struct {
@@ -167,7 +180,7 @@ func (s TurnSurface) applyRun(ev runmod.Event) (any, error) {
 		if v.ActiveRun != "" {
 			return nil, fmt.Errorf("turn %s already has active run %s", turnID, v.ActiveRun)
 		}
-		v.Attempts = append(v.Attempts, AttemptView{RunID: ev.RunID, Attempt: f.Attempt})
+		v.Attempts = append(v.Attempts, AttemptView{RunID: ev.RunID, Attempt: f.Attempt, SchemaVersion: f.SchemaVersion})
 		v.ActiveRun = ev.RunID
 		v.Status = TurnActive
 		s.Turns[turnID] = v

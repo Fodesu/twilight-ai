@@ -83,35 +83,38 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime boundRuntime, events 
 
 // --- StartModelCall ---
 
-func (l *Loop) runModelStep(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot, stepID run.StepID) error {
+// runModelStep owns one model execution attempt. It returns the terminal
+// RunResult when its settlement ended the Run (RUN 7: no reload after a
+// terminal settlement).
+func (l *Loop) runModelStep(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot, stepID run.StepID) (*run.RunResult, error) {
 	runID := snapshot.State.RunID
 	proto, err := snapshot.Protocol()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	a, err := l.claimFor(ctx, runtime.sid, runID, stepID, "")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	start, err := l.commit(ctx, runtime, runID, a.startID(), snapshot.Position, "", run.StartModelExecution{StepID: stepID, Claim: a.claim}, proto)
 	if err != nil {
 		if retriable(err) {
 			l.forgetClaim(ctx, a)
-			return nil
+			return nil, nil
 		}
 		// The start may have committed while its response was lost. The
 		// claim stays stored so a later Run replays the derived start ID and
 		// recovers the grant.
-		return err
+		return nil, err
 	}
 	if start.Status == run.CommitAlreadyApplied && start.Grant == "" {
 		// Settled already: by this Loop before a lost response, or by
 		// recovery. Nothing left to own.
 		l.forgetClaim(ctx, a)
-		return nil
+		return nil, nil
 	}
 	if start.Grant == "" {
-		return errors.New("agent: loop: start model returned no execution grant")
+		return nil, errors.New("agent: loop: start model returned no execution grant")
 	}
 	l.emitCommitted(ctx, events, runtime.sid, runID, &start.Commit)
 
@@ -123,9 +126,9 @@ func (l *Loop) runModelStep(ctx context.Context, runtime boundRuntime, events Ev
 		// let the next machine state decide what to do.
 		if start.Status == run.CommitAlreadyApplied {
 			l.forgetClaim(ctx, a)
-			return nil
+			return nil, nil
 		}
-		return fmt.Errorf("agent: loop: started step %q is not current", stepID)
+		return nil, fmt.Errorf("agent: loop: started step %q is not current", stepID)
 	}
 
 	var completion run.AgentCommand
@@ -151,10 +154,10 @@ func (l *Loop) runModelStep(ctx context.Context, runtime boundRuntime, events Ev
 			if errors.Is(fetchErr, run.ErrFrozenValueMissing) {
 				// Release ownership so recovery or a fresh plan can proceed;
 				// surface the condition to the host.
-				if err := l.settle(ctx, runtime, events, a, start.Snapshot.Position, start.Grant, run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, proto); err != nil {
-					return err
+				if _, err := l.settle(ctx, runtime, events, a, start.Snapshot.Position, start.Grant, run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, proto); err != nil {
+					return nil, err
 				}
-				return fetchErr
+				return nil, fetchErr
 			}
 			failure := run.StepFailure{Class: run.FailureMalformedModel, Message: fetchErr.Error()}
 			completion = run.RejectModelResult{StepID: stepID, Failure: failure, Disposition: l.modelRejectDisposition(modelStep, failure)}
@@ -184,13 +187,14 @@ func (l *Loop) runModelStep(ctx context.Context, runtime boundRuntime, events Ev
 		}
 	}
 
-	if err := l.settle(ctx, runtime, events, a, start.Snapshot.Position, start.Grant, completion, proto); err != nil {
-		return err
+	finished, err := l.settle(ctx, runtime, events, a, start.Snapshot.Position, start.Grant, completion, proto)
+	if err != nil {
+		return nil, err
 	}
 	if catalogErr != nil {
-		return fmt.Errorf("agent: loop: model catalog: %w", catalogErr)
+		return nil, fmt.Errorf("agent: loop: model catalog: %w", catalogErr)
 	}
-	return nil
+	return finished, nil
 }
 
 func (l *Loop) modelRejectDisposition(step run.ModelStep, failure run.StepFailure) run.ModelRejectDisposition {

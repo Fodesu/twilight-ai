@@ -387,7 +387,7 @@ type CommitResult struct {
 }
 ```
 
-**RUN-CMT-1** Runtime 按 `(SessionID, RunID)` 寻址。Run 由 Coordinator 的 Start commit 创建（TRN-STR-2），Runtime 没有 `Create`。缺失 Run 的 Load、Commit、Record 返回 `ErrRunNotFound`。
+**RUN-CMT-1** Runtime 按 `(SessionID, RunID)` 寻址。Run 由 Coordinator 的 Start commit 创建（TRN-STR-2），Runtime 没有 `Create`。`ErrRunNotFound` 只用于该 Session 中不存在的 RunID。已终结的 Run 不在 `twilight/run/machine` 投影中（RUN-CMT-2），`Load` 对它以 `Types=[twilight/run/]` 过滤 replay、按 RunID 筛出全部事实后 FoldRun，返回终态 snapshot；`Commit` 对它返回 `ErrRunTerminal`。这条路径是兜底：正常流程中 Loop 从结算返回的 snapshot 读到终态（第 7 节），Coordinator 从 turn surface 的 `AttemptView` 取终态与 SchemaVersion（TRN-PRJ-1），都不依赖它。
 
 **RUN-CMT-2** 投影 `twilight/run/machine` 消费全部 `twilight/run/` 事件，忽略其他模块事件（EXT-PRJ-2），`RequireComplete` 为 `run`，状态为：
 
@@ -540,6 +540,9 @@ Loop.Run(ctx, runtime, sessionID, runID, sink):
     if resumeCachedStart: continue  // 重放本进程已接受、尚未结算的 start
     effect = run.Next(snapshot.State)
     dispatch effect
+    // 模型结算（无 tool call 的 SubmitModelResult、SubmitModelFailure、FailRun 的 RejectModelResult）
+    // 可能终结 Run；此时 CommitResult.Snapshot 已是终态，Loop 直接 emit run_finished 并
+    // return Finished(snapshot.Result)，不再 Load。工具结算不会终结 Run。
 ```
 
 每个 `Loop` 实例为每个 `(SessionID, RunID)` 分配一个本地 driver slot。同一实例对同一 Run 的并发 `Run` 调用返回 `ErrRunAlreadyRunning`；不同 Run 可以并行驱动。
