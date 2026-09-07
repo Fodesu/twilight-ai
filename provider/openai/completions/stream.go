@@ -15,6 +15,7 @@ type streamProcessor struct {
 	ch                 chan sdk.StreamPart
 	textStartSent      bool
 	reasoningStartSent bool
+	reasoningBlockSeen bool
 	rawFinishReason    string
 	finishReason       sdk.FinishReason
 	usage              sdk.Usage
@@ -115,10 +116,7 @@ func (sp *streamProcessor) processChunk(chunk *chatChunkResponse) error {
 
 func (sp *streamProcessor) processReasoning(delta *chatChunkDelta, chunkID string) {
 	reasoningContent := reasoningFromDelta(delta)
-	if reasoningContent == "" {
-		return
-	}
-	if len(delta.ReasoningDetails) > 0 {
+	if reasoningContent != "" && len(delta.ReasoningDetails) > 0 {
 		// Builder.String() is a zero-copy view, so the per-delta reads below
 		// stay O(1) while appends stay amortized O(1).
 		reasoningContent = trimReasoningPrefix(reasoningContent, sp.reasoningText.String())
@@ -126,13 +124,28 @@ func (sp *streamProcessor) processReasoning(delta *chatChunkDelta, chunkID strin
 		sp.reasoningDetails = reasoningDetailsWithText(delta.ReasoningDetails, sp.reasoningText.String())
 	}
 	if reasoningContent == "" {
+		// A delta that carries reasoning_content as "" (not null) announces a
+		// thinking-mode step with no reasoning text; DeepSeek sends it on the
+		// first delta. Open the block so the step is recorded as a reasoning
+		// step and replays with the key the endpoint validates. Only the first
+		// such delta opens a block: a closed block is never reopened by an
+		// empty marker.
+		if delta.ReasoningContent != nil && !sp.reasoningBlockSeen {
+			sp.startReasoning(chunkID)
+		}
 		return
 	}
-	if !sp.reasoningStartSent {
-		sp.send(&sdk.ReasoningStartPart{ID: chunkID, Format: sdk.ReasoningFormatOpenAIChat, Model: sp.chunkModel})
-		sp.reasoningStartSent = true
-	}
+	sp.startReasoning(chunkID)
 	sp.send(&sdk.ReasoningDeltaPart{ID: chunkID, Text: reasoningContent, Format: sdk.ReasoningFormatOpenAIChat, Model: sp.chunkModel})
+}
+
+func (sp *streamProcessor) startReasoning(chunkID string) {
+	if sp.reasoningStartSent {
+		return
+	}
+	sp.send(&sdk.ReasoningStartPart{ID: chunkID, Format: sdk.ReasoningFormatOpenAIChat, Model: sp.chunkModel})
+	sp.reasoningStartSent = true
+	sp.reasoningBlockSeen = true
 }
 
 func trimReasoningPrefix(text, previous string) string {

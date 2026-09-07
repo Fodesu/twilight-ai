@@ -101,8 +101,9 @@ model := provider.ChatModel("gpt-4o-mini")
 | `WithBaseURL(url)` | `https://api.openai.com/v1` | Base URL for API requests |
 | `WithHTTPClient(client)` | `&http.Client{}` | Custom HTTP client (for proxies, timeouts, etc.) |
 | `WithMessageRoleCapabilities(capabilities)` | developer + mid-system enabled | Override instruction roles for a less-capable OpenAI-compatible endpoint |
-| `WithDeepSeekChatCompletionsCompat()` | disabled | Map `WithReasoningEffort("none")` to DeepSeek's thinking disable toggle |
+| `WithDeepSeekChatCompletionsCompat()` | disabled | Map `WithReasoningEffort("none")` to DeepSeek's thinking disable toggle; always send `reasoning_content` on replayed tool-call messages |
 | `WithMiniMaxChatCompletionsCompat()` | disabled | Send `reasoning_split: true` and map reasoning effort to MiniMax's thinking toggle |
+| `WithKimiChatCompletionsCompat()` | disabled | Rewrite tool schemas to Moonshot-flavored JSON Schema; always send `reasoning_content` on replayed tool-call messages |
 
 ### API Endpoints for Discovery
 
@@ -139,6 +140,41 @@ adapts DeepSeek's thinking toggle:
 Note: `"none"` is the effort floor, which for DeepSeek means off. Sending
 `reasoning_effort: "none"` alone does not stop it thinking, so the provider sends
 `thinking: {type: "disabled"}` instead.
+
+#### Replaying thinking-mode tool calls
+
+In thinking mode, DeepSeek validates replayed history when the request carries
+tools: every assistant message with `tool_calls` after the last user message
+must carry a `reasoning_content` key, or the API answers
+`400 The reasoning_content in the thinking mode must be passed back to the API`.
+An empty string passes. DeepSeek fills the gap itself while the `tool_call` id
+is fresh, so the error surfaces on continuations of persisted history, such as
+resuming after a tool approval, when a step produced no reasoning or the stored
+message lost it. Moonshot/Kimi enforces the same rule for every assistant
+tool-call message when thinking is enabled.
+
+The provider handles this on both sides of the wire.
+
+On the response side, a `reasoning_content` key that is present but empty is
+recorded as a `ReasoningPart` with empty text in the `openai-chat-v1` dialect.
+DeepSeek returns `"reasoning_content": ""` for a thinking-mode step that
+produced no reasoning (the first streamed delta carries it too) and omits the
+key entirely when thinking is disabled, so key presence is the signal. The
+step's assistant message therefore keeps a record that it was a thinking-mode
+step, and `GenerateResult.ReasoningParts` may contain a part whose `Text` is
+empty.
+
+On the request side, an `openai-chat-v1` `ReasoningPart` is always sent as
+`reasoning_content`, `""` included. Assistant tool-call messages that carry no
+`ReasoningPart` at all, such as history persisted before this behaviour or
+history whose reasoning was dropped upstream, are padded with an empty key in
+two cases:
+
+| Situation | `reasoning_content` on assistant tool-call messages without a `ReasoningPart` |
+|-----------|------------------------------------------------------|
+| DeepSeek or Kimi compatibility option enabled | `""` |
+| Any message in the request already carries `reasoning_content` | `""` |
+| Otherwise | omitted, since plain OpenAI rejects unknown message fields |
 
 MiniMax also uses the OpenAI-compatible endpoint, but ignores `reasoning_effort`
 and, by default, inlines reasoning into `content` as `<think>` tags. Enable the

@@ -275,6 +275,7 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) (*chatRequest, error
 	if err := p.applyChatCompletionsCompat(req); err != nil {
 		return nil, err
 	}
+	padThinkingReplay(req.Messages, p.compat)
 	return req, nil
 }
 
@@ -376,6 +377,7 @@ func convertAssistantMessage(msg sdk.Message) chatMessage {
 	var contentParts []sdk.MessagePart
 	var toolCalls []chatToolCall
 	var reasoning string
+	var hasReasoning bool
 	var reasoningDetails []chatReasoningDetail
 
 	for _, part := range msg.Content {
@@ -402,6 +404,7 @@ func convertAssistantMessage(msg sdk.Message) chatMessage {
 				continue
 			}
 			reasoning += p.Text
+			hasReasoning = true
 			if details := extractMiniMaxReasoningDetails(p.ProviderMetadata); len(details) > 0 {
 				reasoningDetails = details
 			}
@@ -415,8 +418,10 @@ func convertAssistantMessage(msg sdk.Message) chatMessage {
 	}
 	if len(reasoningDetails) > 0 {
 		cm.ReasoningDetails = reasoningDetails
-	} else if reasoning != "" {
-		cm.ReasoningContent = reasoning
+	} else if hasReasoning {
+		// An empty block is still a block the model emitted: keep the key so
+		// thinking-mode endpoints see the step's reasoning was passed back.
+		cm.ReasoningContent = &reasoning
 	}
 	if len(toolCalls) > 0 {
 		cm.ToolCalls = toolCalls
@@ -487,7 +492,10 @@ func (p *Provider) parseResponse(resp *chatResponse) (*sdk.GenerateResult, error
 		choice := resp.Choices[0]
 		result.Text = choice.Message.Content
 		result.Reasoning = reasoningFromMessage(&choice.Message)
-		if result.Reasoning != "" || len(choice.Message.ReasoningDetails) > 0 {
+		// A present but empty reasoning_content is still a reasoning block: the
+		// model was in thinking mode and produced nothing for this step. Record
+		// it so the step replays with the key DeepSeek and Kimi validate.
+		if result.Reasoning != "" || len(choice.Message.ReasoningDetails) > 0 || choice.Message.ReasoningContent != nil {
 			result.ReasoningParts = []sdk.ReasoningPart{{
 				Text:             result.Reasoning,
 				Format:           sdk.ReasoningFormatOpenAIChat,
@@ -633,8 +641,8 @@ func reasoningFromMessage(m *chatRespMessage) string {
 			return text
 		}
 	}
-	if m.ReasoningContent != "" {
-		return m.ReasoningContent
+	if m.ReasoningContent != nil && *m.ReasoningContent != "" {
+		return *m.ReasoningContent
 	}
 	return m.Reasoning
 }
@@ -645,8 +653,8 @@ func reasoningFromDelta(d *chatChunkDelta) string {
 			return text
 		}
 	}
-	if d.ReasoningContent != "" {
-		return d.ReasoningContent
+	if d.ReasoningContent != nil && *d.ReasoningContent != "" {
+		return *d.ReasoningContent
 	}
 	return d.Reasoning
 }

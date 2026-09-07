@@ -103,8 +103,11 @@ const (
 	// upstream model's own token in a single reasoning_opaque per response.
 	ReasoningFormatCopilot ReasoningFormat = "copilot-v1"
 	// ReasoningFormatOpenAIChat is the Chat Completions reasoning dialect used
-	// by DeepSeek and MiniMax. It carries no opaque token: replaying it affects
-	// answer quality, never request validity.
+	// by DeepSeek, Kimi and MiniMax. It carries no opaque token, but DeepSeek
+	// and Kimi thinking modes still validate the replay: an assistant tool-call
+	// message without a reasoning_content key is rejected with 400, while an
+	// empty value passes. A part with empty Text therefore matters and is
+	// replayed as reasoning_content: "".
 	ReasoningFormatOpenAIChat ReasoningFormat = "openai-chat-v1"
 )
 
