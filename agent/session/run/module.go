@@ -21,10 +21,6 @@ const (
 	Prefix session.EventType = "twilight/run/"
 	// LeaseNamespace holds execution occupancy (RUN 5.1).
 	LeaseNamespace session.ControlNamespace = "twilight/run/lease"
-	// CommandNamespace is the control-plane idempotency index: CommitID ->
-	// command digest, written in the commit's transaction so an exact replay
-	// can be told from a same-ID conflict without persisting the command.
-	CommandNamespace session.ControlNamespace = "twilight/run/command"
 )
 
 // factNames is the closed list of v1 fact discriminators.

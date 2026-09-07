@@ -251,18 +251,13 @@ func (r *Runtime) evaluate(tx extension.SemanticTx, sid session.SessionID, req *
 	commitID := session.CommitID(env.ID)
 	runID := env.RunID
 
-	// Steps 2-3: exact replay vs same-ID conflict, via the control-plane
-	// command index and the stored commit.
+	// Steps 2-3: replay. Idempotency is the kernel's (SessionID, CommitID)
+	// alone (RUN-CMT-5): every Run CommandID is content-derived, so a hit is
+	// the same command; the caller reads the projection for the effective
+	// outcome. No Decide runs on replay.
 	if existing, found, err := tx.LookupCommit(commitID); err != nil {
 		return nil, run.CommitResult{}, nil, err
 	} else if found {
-		entry, ok, err := tx.ControlGet(CommandNamespace, string(commitID))
-		if err != nil {
-			return nil, run.CommitResult{}, nil, err
-		}
-		if !ok || string(entry.Value) != string(env.Digest) {
-			return nil, run.CommitResult{}, run.ErrCommandConflict, nil
-		}
 		snapshot, err := r.snapshotIn(tx, sid, runID)
 		if err != nil {
 			return nil, run.CommitResult{}, nil, err
@@ -421,9 +416,6 @@ func (r *Runtime) evaluate(tx extension.SemanticTx, sid session.SessionID, req *
 				}
 			}
 		}
-	}
-	if err := tx.ControlPut(CommandNamespace, string(commitID), []byte(env.Digest), 0); err != nil {
-		return nil, run.CommitResult{}, nil, err
 	}
 	// A withdrawn request body ends its useful life; a Recovered step keeps it.
 	if step, ok := env.Command.(run.WithdrawPreparedStep); ok {

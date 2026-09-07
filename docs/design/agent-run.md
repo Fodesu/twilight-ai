@@ -105,7 +105,7 @@ companion 与 Attach 事件与 Run 事实一起经 Module Framework 的 admissio
 | model recovery CommandID | RunID、StepID、Claim |
 | tool recovery CommandID（RecoverExpired 的 Unknown） | RunID、StepID、CallID、Claim |
 
-同一派生 identity 的内容变化在 Session kernel 表现为 `CommitConflict`（同 CommitID、不同 event group）。`PlanningToken` 是 Application-owned opaque freshness token，属于 prepare command identity 内容；Run 不校验它的语义（RUN-CMT-4）。
+派生 identity 使同 CommandID 即同一 command：内容差异只可能出现在 identity 有意不覆盖内容的两族（同一 ResponseID 的 approve 与 reject、同一 attempt 的两次结算），Runtime 对它们按精确重放处理，调用方从投影读取实际生效的结果。`PlanningToken` 是 Application-owned opaque freshness token，属于 prepare command identity 内容；Run 不校验它的语义（RUN-CMT-4）。
 
 ## 3. 创建与 canonical record
 
@@ -426,7 +426,7 @@ FrozenValueStore 的 `Put` 幂等且内容寻址，在进入事务之前完成�
 
 **RUN-CMT-4** `PrepareModelRequest` 是 hard-CAS command：`Base` 必须等于 section 内投影记录的该 Run 的 `Position`。这是有意选择：同一 Session 内其他模块的写入（用户提交新输入、summary、checkpoint、其他 Turn 的事件）不移动 Position，因此不使 Prepare 失效；Plan 与 Prepare 之间发生的 chatlog 写入不会被本次请求包含，新鲜度由 Application 经 `PlanningToken` 与 Planner 自行负责，Run 不校验 `PlanningToken` 的语义。其他 command 通过当前 target state 和 grant 做 call-local rebase；stale Base 本身不阻止无冲突的 ingress/control/settlement。相同 command 的 replay 判定先于 terminal check，因此 terminal Run 仍能返回原 commit。
 
-**RUN-CMT-5** 幂等键为 Session kernel 的 `(SessionID, CommitID)`，CommitID 等于 CommandID。同 CommandID 的精确重放返回 `CommitAlreadyApplied`、当前 snapshot 与原完整 commit，且不得再次 Decide 或产生外部 effect。对于 `StartModelExecution` 和 `StartToolCall`，Runtime 还必须验证 command 中的 `ExecutionClaim`：相同 CommandID、相同 digest、相同 claim 的精确重放在 grant 仍 live 时返回原 start grant；不同 claim 触发 `ErrCommandConflict`，并保持现有执行授权。非 start command 的 replay 不返回 grant。
+**RUN-CMT-5** 幂等键为 Session kernel 的 `(SessionID, CommitID)`，CommitID 等于 CommandID，Runtime 不另设幂等索引。同 CommandID 的重放返回 `CommitAlreadyApplied`、当前 snapshot 与原完整 commit，且不得再次 Decide 或产生外部 effect；command 不持久化，Runtime 不比对重放 command 的内容，同 CommandID 视为同一 command。对于 `StartModelExecution` 和 `StartToolCall`，claim 是 CommandID 的 preimage，不同 claim 即不同 command：其 start 按当前 target state 与 lease 评估，target 已被占用时返回 `ErrStaleRuntime`，并保持现有执行授权。start 的重放在 grant 仍 live 时返回原 start grant。非 start command 的 replay 不返回 grant。
 
 **RUN-CMT-6** accepted `StartModelExecution`/`StartToolCall` 为目标签发新 grant；该 start 的 `CommitAccepted` 和在 grant 仍 live 时满足精确 replay 条件的 `CommitAlreadyApplied` 返回同一个 grant。若该 start 已 settlement 或 Run 已 terminal，精确 replay 仍返回 `CommitAlreadyApplied`，并返回空 grant。model result/failure/reject 与 executing tool result/known failure 必须携带 live target grant。settlement 接受后 grant 失效；terminal commit 撤销该 Run 全部 grant。`RecoverModelExecution` 由 live grant holder 提交，或在 Runtime 验证 lease 已过期且 command Claim 等于该 lease 的 Claim 后无 grant 提交。Executing tool 的 recovery 使用同一条 `SubmitToolFailure{Outcome:Unknown}` command：工具 owner 必须携带 live grant；`RecoverExpired` 仅在 lease 已过期且没有已接受 settlement 时无 grant 提交。该 Unknown 只结算这一 call，Run 保持 Active。
 
@@ -586,7 +586,7 @@ type Event struct {
 **RUN-CMP-2** Runtime conformance 必须覆盖：
 
 - Start group 建立 Run、重复 `created` 拒绝、missing Run、schema 与 created 不一致的 command 拒绝；
-- command exact replay/conflict、prepare hard CAS、call-local rebase、terminal replay；
+- command 重放（同 CommandID 返回 AlreadyApplied 且不再 Decide）、不同 claim 的 start 被拒绝、prepare hard CAS、call-local rebase、terminal replay；
 - 输入入队：`AcceptInput` 在 Open、Model Prepared、Model Executing、ToolStep（含 Waiting）都被接受；Prepared 期间入队后 `Next` 返回 `WithdrawPrepared`，Withdraw 后重规划的 Prepare 包含该输入；Executing 期间入队的输入在该步结算后的 Prepare 中被消费；无 tool call 且有 pending 输入的 `SubmitModelResult` 不结束 Run；
 - grant 签发、隔离、精确 start replay、消费、跨 Run 拒绝与 recovery authorization；
 - 一 command 一 commit、run facts 在 companion 与 Attach 之前、companion 的 `SourceDigest` 等于 fact 记录的 ResultDigest / OutputDigest、Attach 拒绝 `twilight/run/` 事件、companion 与 Attach 经 admission 并建立 claim；

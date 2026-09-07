@@ -109,10 +109,11 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 
 当前正式调用形态为 `agent/ref` 的 Memory 组装：`ref.New` 返回 Store、Registry、Appender、Projections、Runtime、Coordinator 与 Bindings；Application 经 `SessionDriver.Send` 投递输入。Loop 不保存 authority state；Runtime 不读取 queue 或 planner context。
 
-实现与规范的两处差异，待确认：
+实现与规范的差异，待确认：
 
-1. Runtime 在控制面 KV 的 `twilight/run/command` 命名空间记录每个 CommitID 的 command digest，与 commit 同事务写入，用于区分精确重放与同 CommandID 的冲突。规范第 5.1 节未列出该条目；command 本身仍不持久化。
-2. 终态 Run 从 `twilight/run/machine` 投影移除后，`Runtime.Load` 对该 Run 改为按 RunID 过滤 replay 后折叠返回终态，而不是返回 `ErrRunNotFound`；Loop 依赖这一行为在结算后读到终态。
+1. 终态 Run 从 `twilight/run/machine` 投影移除后，`Runtime.Load` 对该 Run 改为按 RunID 过滤 replay 后折叠返回终态，而不是返回 `ErrRunNotFound`；Loop 依赖这一行为在结算后读到终态。
+
+已决定（2026-09-07）：Runtime 不为 command digest 另设控制面索引；同 CommandID 一律按重放处理，幂等只由 kernel 的 `(SessionID, CommitID)` 承担（RUN-CMT-5）。曾实现过 `twilight/run/command` 索引，用于把同 ID 不同内容判为冲突；该判定只覆盖 approve/reject 撞 ID 与同一 attempt 两次结算两种情形，前者由调用方读投影覆盖，后者属于实现错误，故删除。
 
 ## 4. 后续实施工作
 
