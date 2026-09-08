@@ -1,6 +1,6 @@
 # Twilight Agent Run Protocol
 
-状态：设计规范，第二版（2026-09-08）。Machine、command/fact 规则与 Loop 的执行逻辑已有实现并在第一版栈上通过测试；第 5 节的 Runtime（`agent/session/run`）与 Loop 已于 2026-09-08 按本版实现：Runtime 经 `extension.Writer` 写入，无 lease/grant，`RecoverInterrupted` 为接管处置；RUN-CMP-2 conformance 在 `agent/session/run/runtimetest` 以 Store 为参数，对 Memory Store 通过。本版依据 [agent-session.md](agent-session.md) 第二版（Session 级单写者、一行一个 event）与 [agent-session-extension.md](agent-session-extension.md) 第二版（`extension.Writer`）；实施记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 8 节。
+状态：设计规范。Machine、command/fact 规则、Loop 与第 5 节的 Runtime（`agent/session/run`）均已实现：Runtime 经 `extension.Writer` 写入，无 lease/grant，`RecoverInterrupted` 为接管处置；RUN-CMP-2 conformance 在 `agent/session/run/runtimetest` 以 Store 为参数，对 Memory Store 通过。本文依据 [agent-session.md](agent-session.md)（Session 级单写者、一行一个 event）与 [agent-session-extension.md](agent-session-extension.md)（`extension.Writer`）；实施记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。
 
 本文定义 `agent/run`、`agent/run/loop` 与 Run 作为 Session Module 的存储形态。文中的"必须""不得""应该"是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
 
@@ -434,7 +434,7 @@ FrozenValueStore 的 `Put` 幂等且内容寻址，在进入 Writer 之前完成
 
 ### 5.1 不进入 stream 的数据
 
-`ExecutionClaim` 只存在于持有它的 worker 内存中；投影缓存是可丢弃的派生数据（EXT-PRJ-3）；`FrozenValueStore` 是内容寻址旁存。三者都不是 authority，丢失后的后果分别为：该 attempt 无法在本进程内重放（由 RUN-LOP-5 的一次重试之外的路径处理，或随进程崩溃由接管处置覆盖）、投影从 stream 重折、Executing/Prepared step 的重发失败为不可重试错误（Application 决定 Retry）。第一版的控制面 KV、lease、grant 与 durable ClaimStore 已全部删除，见 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 8 节。
+`ExecutionClaim` 只存在于持有它的 worker 内存中；投影缓存是可丢弃的派生数据（EXT-PRJ-3）；`FrozenValueStore` 是内容寻址旁存。三者都不是 authority，丢失后的后果分别为：该 attempt 无法在本进程内重放（由 RUN-LOP-5 的一次重试之外的路径处理，或随进程崩溃由接管处置覆盖）、投影从 stream 重折、Executing/Prepared step 的重发失败为不可重试错误（Application 决定 Retry）。本协议没有控制面 KV、lease、grant 或 durable ClaimStore；曾有过这些机制及删除它们的决定见 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 8 节。
 
 ## 6. Loop ports 与 policy
 

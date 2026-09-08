@@ -1,6 +1,6 @@
 # Twilight Agent Session Module Framework
 
-状态：设计草案，第二版（2026-09-08）。第一版（双入口 Appender、Lease、事务内投影读写）已由 `agent/session/extension` 实现并验证，随后按 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 8 节收缩为本版：写入串行与幂等重放由进程内的 `Writer` 承担，kernel 只提供追加日志（[agent-session.md](agent-session.md)）。本版已由 `agent/session/extension` 实现（Writer、Writers、ProjectionReader 与 MemoryProjectionCache）并通过第 7 节的测试；wire 在文件 adapter 通过前不冻结。
+状态：设计草案。已由 `agent/session/extension` 实现（Writer、Writers、ProjectionReader 与 MemoryProjectionCache）并通过第 7 节的测试；wire 在文件 adapter 通过前不冻结。写入串行与幂等重放由进程内的 `Writer` 承担，kernel 只提供追加日志（[agent-session.md](agent-session.md)）；此前的 Appender 与 Lease 设计及其收缩决定见 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 8 节。
 
 本文定义建立在 `agent/session` 与 `agent/artifact` 之上的 Session Module Framework。实现包路径为 `agent/session/extension`；文中的"必须""不得""应该"是协议约束；JSON canonicalization 与 digest 遵循 `agent/jsonstable`、`agent/es`。
 
@@ -107,7 +107,7 @@ type BindingReferenceDefinition struct {
 }
 ```
 
-**EXT-REF-1** 声明以 `Extractor` 提取 typed value 内的全部 Artifact 引用，保留 appearance order，随后 group 才 sorted-unique。Extractor 随 EventDefinition 声明，本层不维护提取器注册表。（第一版的 JSONPointer 路径提取无消费者，已删除。）
+**EXT-REF-1** 声明以 `Extractor` 提取 typed value 内的全部 Artifact 引用，保留 appearance order，随后 group 才 sorted-unique。Extractor 随 EventDefinition 声明，本层不维护提取器注册表，也不提供路径式（JSONPointer）提取。
 
 **EXT-REF-2** `BuildRegistry` 验证 cardinality、Extractor 非 nil 与 scheme/durability 声明；最低 durability 至少为 `EventBound`。admission 解析每个 Binding，验证 Scheme、最低 durability、resolvability；任何违反拒绝整个 group，不作任何写入。
 
@@ -166,7 +166,7 @@ func OpenWriter(ctx, store session.Store, registry *Registry, ledger artifact.Re
 
 **EXT-WRT-4** `Append` 返回 `ErrOwnershipLost` 时 Writer 进入失效状态：本次与之后的 `Commit` 返回该错误，调用方必须放弃该 Session 的执行。这是 Session 级 fencing 在进程内的表现；Runtime 与 Loop 对它的处理见 RUN-CMT-6。
 
-**EXT-WRT-5** ClaimID 派生保持第一版规则：`Digest("twilight/session-extension/claim", "1", ProtocolVersion, SessionID, CommitID, RefSetDigest)`；`ClaimOwner = {Kind:"twilight/session/commit", Authority:SessionID, Identity:CommitID}`。
+**EXT-WRT-5** ClaimID 派生规则：`Digest("twilight/session-extension/claim", "1", ProtocolVersion, SessionID, CommitID, RefSetDigest)`；`ClaimOwner = {Kind:"twilight/session/commit", Authority:SessionID, Identity:CommitID}`。
 
 ```go
 // Writers 是宿主维护的 SessionID → Writer 映射；模块（run 的 Runtime、turn 的 Coordinator）经它取得 Writer。

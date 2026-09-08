@@ -1,6 +1,6 @@
 # Twilight Agent Session Protocol
 
-状态：设计草案，第二版（2026-09-08）。第一版（多写者临界区、commit 容器、控制面 KV、kernel 内 snapshot）已由 `agent/session` 的 Memory 实现验证过语义，随后按 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 8 节的决定收缩为本版。本版已由 `agent/session` 的 MemoryStore 实现并通过第 7 节 conformance（`agent/session/sessiontest`，以 Store 为参数）；wire 在文件 adapter 也通过前不冻结。
+状态：设计草案。已由 `agent/session` 的 MemoryStore 实现并通过第 7 节 conformance（`agent/session/sessiontest`，以 Store 为参数）；wire 在文件 adapter 也通过前不冻结。此前的多写者设计（临界区、commit 容器、控制面 KV、kernel 内 snapshot）及其收缩决定见 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 8 节。
 
 本文定义 Twilight Session 的 Event Sourcing kernel。文中的"必须""不得""应该"是协议约束。
 
@@ -164,7 +164,7 @@ v1 conformance 以 `Store` 为参数，Memory 与文件 adapter 跑同一套，�
 - **SES-REP-1/2**：顺序、From、Limit 在组边界截断、过滤与全量对匹配类型一致、篡改任一行后无过滤读取报 `ErrCorrupt`；
 - **SES-SCP-3**：附录 A 入口返回 `ErrUnsupported`，`ParentFork` 非 nil 的 header 被拒绝。
 
-第一版实现为 MemoryStore 与文件 adapter（一个 Session 一个目录，`stream.jsonl` 一行一个 event，`session.lock` 为 `flock` 目标）。
+参考实现为 MemoryStore 与文件 adapter（一个 Session 一个目录，`stream.jsonl` 一行一个 event，`session.lock` 为 `flock` 目标）。
 
 ## 附录 A：预留能力（不进入 v1）
 

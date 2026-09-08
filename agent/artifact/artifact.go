@@ -1,5 +1,5 @@
-// Package artifact is the Artifact Core (docs/design/agent-artifact.md,
-// edition 2): Ref, Binding and the two-state RetentionLedger. The ledger
+// Package artifact is the Artifact Core (docs/design/agent-artifact.md):
+// Ref, Binding and the two-state RetentionLedger. The ledger
 // persists itself; claims are activated before the owner fact is appended and
 // orphans are released by the pre-collection reconciliation (ART-RET-3).
 package artifact

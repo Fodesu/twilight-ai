@@ -41,7 +41,7 @@ Runtime           Run command 的提交入口：Writer 内 Decide、Evolve、com
 FrozenValueStore  内容寻址旁存：模型请求本体（含工具定义）
 ```
 
-2026-09-04 之前的设计为两条 ES（Run 独立的 `RunHeader + TransitionRecord[]`，Turn 把 Run 事实 materialize 到 Session）。该设计已被第 6 节记录的决定取代，第 7 节记录审查后的第二次修订（多写者临界区、控制面 KV、lease），第 8 节记录 2026-09-08 的第三次修订（Session 级单写者、扁平事件）。上表为第 8 节之后的形态。
+2026-09-04 之前的设计为两条 ES（Run 独立的 `RunHeader + TransitionRecord[]`，Turn 把 Run 事实 materialize 到 Session）。该设计已被第 6 节记录的决定取代；第 7 节记录 2026-09-04 架构审查后的修订（多写者临界区、控制面 KV、lease），第 8 节记录 2026-09-08 的修订（Session 级单写者、扁平事件）。上表为第 8 节之后的形态。
 
 ### 2.2 package layout
 
@@ -107,11 +107,11 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 | `agent/turn` 重写（Coordinator、CompanionV1、surface 投影） | 完成，2026-09-07；旧实现已删除 |
 | 参考组装 `agent/ref`（ExecutionBinding、ContextPlanner、Memory 组装、SessionDriver、崩溃恢复 example） | 完成，2026-09-07 |
 | Runtime conformance（RUN-CMP-2，`agent/session/run/runtimetest`，以 `session.Store` 为参数） | 完成，2026-09-07；对 Memory Store 通过。kernel 与 extension 的 conformance 部分实现 |
-| 第 8 节规范修订（session、extension、run、turn、chatlog、artifact、参考组装的第二版） | 完成，2026-09-08；代码未动 |
+| 第 8 节规范修订（session、extension、run、turn、chatlog、artifact、参考组装按单写者与扁平事件改写） | 完成，2026-09-08 |
 | 第 8 节代码重构（kernel 收缩、Writer、Runtime 去 lease/grant、接管处置、conformance 重建） | 完成，2026-09-08；`agent/` 下 9 个测试包全部通过，kernel 与 RUN-CMP-2 的 conformance 均以 Store 为参数 |
 | 文件 adapter（`agent/session/filestore`）、live 模型接入 | 未开始 |
 
-2026-09-07 的代码行是第一版形态，已于 2026-09-08 按第 8 节重写为第二版。当前正式调用形态为 `agent/ref` 的 Memory 组装：`ref.New` 返回 Store、Registry、Writers、Runtime、Coordinator 与 Bindings；宿主对每个 Session 先 `Memory.Open`（取所有权并接管处置）再经 `SessionDriver.Send` 投递输入。Loop 不保存 authority state；Runtime 不读取 queue 或 planner context。
+2026-09-07 的代码行是第 8 节修订前的形态，已于 2026-09-08 按第 8 节重写。当前正式调用形态为 `agent/ref` 的 Memory 组装：`ref.New` 返回 Store、Registry、Writers、Runtime、Coordinator 与 Bindings；宿主对每个 Session 先 `Memory.Open`（取所有权并接管处置）再经 `SessionDriver.Send` 投递输入。Loop 不保存 authority state；Runtime 不读取 queue 或 planner context。
 
 已决定（2026-09-07）：终态 Run 从 `twilight/run/machine` 投影移除后，`Runtime.Load` 对该 Run 按 RunID 过滤 replay 后折叠返回终态，`ErrRunNotFound` 只用于不存在的 RunID（RUN-CMT-1）。该路径为兜底：Loop 在模型结算返回终态 snapshot 时直接结束，不再 Load（RUN 第 7 节）；Coordinator 的 Deliver 与 Stop 从 turn surface 的 `AttemptView.SchemaVersion` 构造 envelope，不读 machine 投影（TRN-DLV-2、TRN-STP-1）。曾考虑在投影保留终态 Run 的最小记录，因投影会随历史增长而未采用。
 
@@ -121,7 +121,7 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 
 ### 4.1 Core reference implementations
 
-第一版（第 6、7 节）的全部条目已于 2026-09-07 完成；第 8 节修订后的实施顺序见 8.5。完成后再冻结 kernel `ProtocolVersion` 1 与各模块 payload 版本 1 的 golden fixtures。
+第 6、7 节的全部条目已于 2026-09-07 完成；第 8 节修订后的实施顺序见 8.5。完成后再冻结 kernel `ProtocolVersion` 1 与各模块 payload 版本 1 的 golden fixtures。
 
 ### 4.2 durable adapters
 
@@ -220,7 +220,7 @@ Run 从独立的 Event Sourcing 存储改为 first-party Session Module。Run �
 
 新增：`agent/session` Memory Store（Commit、`CommitIn`、Types 过滤 replay、snapshot、控制面 KV 含条件写与 deadline 枚举）、`agent/session/extension`（FirstPartyRegistry、payload 版本、admission、SemanticAppender、Lease）、`agent/artifact` 两态 ledger 的 KV 实现、`agent/session/run`（module descriptor、machine projection、Runtime 实现、Memory FrozenValueStore、SnapshotPolicy）、golden fixtures 重新冻结。
 
-## 7. 第二次修订（2026-09-04，架构审查后）
+## 7. 2026-09-04 修订（架构审查后）
 
 ### 7.1 采纳的修正
 
@@ -243,7 +243,7 @@ Run 从独立的 Event Sourcing 存储改为 first-party Session Module。Run �
 
 审查意见"三个 first-party module 实际是一个领域，应合为一个实现"。耦合证据成立，但它们指向的是固定的分层顺序（turn → run、turn → chatlog），可以用包依赖表达。合成一个包会失去读侧收益：投影按 EventType 命名空间筛选，Context 只读 chatlog、machine 只读 run。因此保留三个包与三个命名空间，推迟的是可插拔框架（附录 B），不是模块划分。
 
-### 7.3 持久结构与一致性等级（第一版；第 8 节之后见 8.4）
+### 7.3 持久结构与一致性等级（第 8 节修订前；修订后见 8.4）
 
 | 结构 | 等级 | 写入点 | 丢失或不一致时 |
 |---|---|---|---|
@@ -270,9 +270,9 @@ lease 的第二条出路：grant 由 `(Claim, start CommitID)` 派生，start fa
 5. `agent/turn` attempt 模型、CompanionV1、surface 投影；
 6. 参考组装跑通 Input → Turn → Run → Session 纵向切片，再接 live 模型。
 
-### 7.6 租约的层次（2026-09-04 第三次修订）
+### 7.6 租约的层次（2026-09-04，随后调整）
 
-审查后的第一版把 lease 写成 run 模块对 opaque KV 的约定，续期与结算存在竞争，并补了一个投影兜底扫描。随后考虑过把类型化的 lease 原语放进 kernel，被否决：kernel 不应持有"持有者"这类模块语义。最终切法：
+审查后最初把 lease 写成 run 模块对 opaque KV 的约定，续期与结算存在竞争，并补了一个投影兜底扫描。随后考虑过把类型化的 lease 原语放进 kernel，被否决：kernel 不应持有"持有者"这类模块语义。最终切法：
 
 | 层 | 提供 |
 |---|---|
@@ -294,17 +294,17 @@ lease 的第二条出路：grant 由 `(Claim, start CommitID)` 派生，start fa
 
 对照 pi 与 DeepSeek harness 的 inbox 模型后补齐了 session 级的路由：pi 的 steering 在当前 step 的工具结果之后注入、不中断生成也不跳过剩余 tool call，follow-up 只在 agent 本来要停下时取用；DeepSeek harness 的 inbox 是 `next-step` 与 `next-turn` 两条持久化列表，steer 在最近的 step 边界消费，turn 关闭前做最后一次 drain。twilight 的对应：`PendingInputs` 即 next-step；chatlog 中已 submitted 未 delivered 的输入即 next-turn；缺的"空闲时被唤醒、turn 结束后自动取下一条"由参考组装的 `SessionDriver` 提供（REF-DRV），协议不变。Stop 后 Retry 等价于 `cancel(keepInbox)`，Settle 等价于默认 cancel（TRN-STP-1）。
 
-## 8. 第三次修订（2026-09-08）：Session 级单写者与扁平事件
+## 8. 2026-09-08 修订：Session 级单写者与扁平事件
 
 ### 8.1 起因
 
-第一版 Memory 栈跑通后（第 3 节），对照 dsh 与 Codex 的 session 日志实现发现：twilight 比它们多出的全部机制（`CommitIn` 临界区、`Commit` 的 CAS、控制面 KV、按目标的 lease 与 grant、`RenewLease` 心跳、`RecoverExpired` 按 deadline 枚举、commit 与 KV 同事务）都源于同一个假设：同一个 Session 可以有多个并发写者，包括不同进程。该假设没有部署需求支撑：Memoh 作为服务把一个 Session 固定到一个 worker，failover 走锁接管，不会两个 worker 同时写同一 Session；本地宿主是单进程。dsh 的做法（每 session 一个 write handle，进程内独占加跨进程 `flock`，第二个写者直接被拒）说明单写者足以支撑同类需求。
+第 7 节形态的 Memory 栈跑通后（第 3 节），对照 dsh 与 Codex 的 session 日志实现发现：twilight 比它们多出的全部机制（`CommitIn` 临界区、`Commit` 的 CAS、控制面 KV、按目标的 lease 与 grant、`RenewLease` 心跳、`RecoverExpired` 按 deadline 枚举、commit 与 KV 同事务）都源于同一个假设：同一个 Session 可以有多个并发写者，包括不同进程。该假设没有部署需求支撑：Memoh 作为服务把一个 Session 固定到一个 worker，failover 走锁接管，不会两个 worker 同时写同一 Session；本地宿主是单进程。dsh 的做法（每 session 一个 write handle，进程内独占加跨进程 `flock`，第二个写者直接被拒）说明单写者足以支撑同类需求。
 
 同时发现 `SessionCommit` 容器在读侧只是一层没有语义的嵌套（`ReplayPage.Commits[].Events[]`），它承担的三个作用中，幂等与 CAS 单位随单写者上移到进程内，commit 级元数据可以摊到每行，只剩"整组原子可见"一条，而这条只需要 append 以组为单位并在读侧不暴露不完整组，不需要嵌套类型。
 
 ### 8.2 决定
 
-| 项 | 第一版 | 第二版 |
+| 项 | 修订前 | 修订后 |
 |---|---|---|
 | 写者 | 多写者，`CommitIn` 回调式临界区，`Commit` CAS | 一个 Session 同一时刻一个 `Writer`（SES-OWN-1）；`Open` 取所有权，Epoch 加一并持久化；落后 Epoch 的 `Append` 被拒（SES-OWN-2） |
 | 写入单位 | `SessionCommit{Events[]}`，`(Revision, Index)` 定位 | 一行一个 `SessionEvent`，全局 `Seq`；同一次 `Append` 的行共用 `CommitID`，`Index`/`Last` 标记组；整组原子，不读不完整组（SES-APP-1/2） |
@@ -325,11 +325,11 @@ lease 的第二条出路：grant 由 `(Claim, start CommitID)` 派生，start fa
 
 ### 8.3 失去与得到
 
-失去：同一 Session 的不同工具调用由不同进程并发执行（没有消费者）；claim 与 commit 的同事务一致性（降为先 claim 后 append，孤儿由核对清理）；第一版 conformance 中 grant 隔离、跨 Run grant、lease 续期的十几项断言。
+失去：同一 Session 的不同工具调用由不同进程并发执行（没有消费者）；claim 与 commit 的同事务一致性（降为先 claim 后 append，孤儿由核对清理）；修订前 conformance 中 grant 隔离、跨 Run grant、lease 续期的十几项断言。
 
 得到：kernel 接口从 15 个方法降到 4 个，adapter 只需实现独占、追加与读，JSONL 成为一等实现；Runtime 去掉 lease/grant 两套校验；Loop 去掉心跳与 ClaimStore；与 dsh、Codex 的心智模型一致（一个 session 同一时刻一个写者）。
 
-### 8.4 持久结构与一致性等级（第二版）
+### 8.4 持久结构与一致性等级（修订后）
 
 | 结构 | 等级 | 写入点 | 丢失或不一致时 |
 |---|---|---|---|
@@ -345,7 +345,7 @@ v1 只有两类恢复动作：`RecoverInterrupted`（新 owner 一次性处置 E
 
 ### 8.5 实施顺序
 
-1. `agent/session`：按第二版重写 Memory Store（Create、Header、Open/Epoch/Heartbeat、Append 整组、Read 过滤）与 conformance；删除 CommitIn、CAS、控制面 KV、snapshot、四套 digest、EventID、ReplayCursor；
+1. `agent/session`：重写 Memory Store（Create、Header、Open/Epoch/Heartbeat、Append 整组、Read 过滤）与 conformance；删除 CommitIn、CAS、控制面 KV、snapshot、四套 digest、EventID、ReplayCursor；
 2. `agent/session/extension`：`Writer`（OpenWriter 重建、Commit 串行、幂等索引、claim 先于 Append、ErrOwnershipLost 失效）、`Writers`、`ProjectionReader` 与 `ProjectionCache`、`Ignorable`；删除 SemanticAppender、Lease、LoadIn/SaveSnapshotIn、JSONPointer、ModuleForEvent 推断；
 3. `agent/artifact`：ledger 改为自持久化 `Activate`，加 `OwnerVerifier` 与回收前核对；
 4. `agent/run` 与 `agent/session/run`：`RunPosition = Seq`、`CommitResult.Events`、删除 grant/lease/RenewLease/RecoverExpired，新增 `RecoverInterrupted` 与 `TakeoverClaim`，machine 投影加 `Ended`；
@@ -353,6 +353,6 @@ v1 只有两类恢复动作：`RecoverInterrupted`（新 owner 一次性处置 E
 6. `agent/turn`：Coordinator 改为 `Writers`，Seq 定位，恢复表按 TRN-REC-2；
 7. `agent/session/chatlog`：位置类型改 Seq；
 8. `agent/ref`：按参考组装第 5 节重组，崩溃恢复 example 改为"关闭 Writer、以新 Epoch 打开、RecoverInterrupted、Resume"；
-9. RUN-CMP-2 conformance 按第二版清单重建；随后写文件 adapter，用 session 与 runtimetest 两套 conformance 验收。
+9. RUN-CMP-2 conformance 按修订后的清单重建；随后写文件 adapter，用 session 与 runtimetest 两套 conformance 验收。
 
 后续协议修改直接更新对应正式规范；本文只更新迁移状态和历史决策，不再承载 wire、Machine、Runtime 或 Loop 算法。

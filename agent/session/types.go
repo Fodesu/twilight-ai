@@ -1,5 +1,5 @@
 // Package session is the append-only log kernel of a Twilight Session
-// (docs/design/agent-session.md, edition 2). It owns the header, one row per
+// (docs/design/agent-session.md). It owns the header, one row per
 // event, group-atomic append, Session-level writer ownership with epoch
 // fencing, the per-row digest chain and ordered reads. Payloads are opaque
 // canonical JSON that Session modules encode and interpret.

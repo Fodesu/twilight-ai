@@ -1,6 +1,6 @@
 # Twilight Agent Artifact Core
 
-状态：设计草案，第二版（2026-09-08）。`agent/artifact` 已实现 Ref、Binding、Memory BindingStore、BindingSetBuilder 与第一版的两态 KV ledger（在 Session 控制面 KV 内、与 commit 同事务）；Resolver、Store、Promoter 与 scheme registry 未实现。本版随 kernel 第二版把 ledger 改为自持久化（`MemoryLedger.Activate`）、在 owner fact Append 之前建立 claim，回收前核对由 `OwnerVerifier` 与 `Reconcile` 提供，已于 2026-09-08 实现。wire 与 claim 状态表在 conformance 通过前不冻结。v1 的 claim 只有 `Active` 与 `Released` 两态；`Prepared` 状态、provider 迁移 fence 与 archive import/export 在附录中，不进入 v1 conformance。
+状态：设计草案。`agent/artifact` 已实现 Ref、Binding、Memory BindingStore、BindingSetBuilder 与自持久化的两态 ledger（`MemoryLedger.Activate` 在 owner fact Append 之前建立 claim，回收前核对由 `OwnerVerifier` 与 `Reconcile` 提供）；Resolver、Store、Promoter 与 scheme registry 未实现。wire 与 claim 状态表在 conformance 通过前不冻结。v1 的 claim 只有 `Active` 与 `Released` 两态；`Prepared` 状态、provider 迁移 fence 与 archive import/export 在附录中，不进入 v1 conformance。
 
 本文定义 `agent/artifact`。文中的"必须""不得""应该"是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
 
@@ -16,7 +16,7 @@ RetentionClaim：owner 对一个 BindingSet 的 durable 保留事实
 
 `BindingSet` 是 claim 的内容集合。`Active` claim 是 retention root；`Released` claim 不再保留任何内容。v1 中 claim 由 Session Module Framework 的 `Writer` 在 Append owner fact 之前以 `Active` 状态建立（EXT-WRT-3）。顺序固定为先 claim 后 append，因此不可能出现"stream 引用了内容而没有 claim"；可能出现的只有孤儿 claim（有 claim、owner fact 未写入），它只多占空间，由回收前核对释放（ART-RET-3）。`Prepared` 保留给需要显式 in-flight 状态的部署（附录）。Core 不依赖 Session、Event、Chatlog 或 Application，且不解释 owner 的领域语义。Attachment 等 owner module 可以关联 `AttachmentID`、subject 与 `BindingID`，但该边界只使用 BindingID，不引入 Event 依赖。
 
-**ART-SCP-1** Core 不得解释 `ClaimOwner`，不得要求某种数据库、文件系统或 provider 实现。第一版只要求 Memory reference implementation 和 conformance suite。
+**ART-SCP-1** Core 不得解释 `ClaimOwner`，不得要求某种数据库、文件系统或 provider 实现。v1 只要求 Memory reference implementation 和 conformance suite。
 
 **ART-SCP-2** v1 范围：Ref、Binding、Resolver/Store/Promoter capability、两态 RetentionLedger、SchemeDefinition 与 provider binding registry。附录中的能力在 v1 返回 `ErrUnsupported`。
 

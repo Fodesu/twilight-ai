@@ -1,5 +1,5 @@
 // Package extension is the Session Module Framework
-// (docs/design/agent-session-extension.md, edition 2): typed event codecs with
+// (docs/design/agent-session-extension.md): typed event codecs with
 // payload versions, Binding admission, the in-process Writer that serializes
 // every write and holds the idempotency index, and pure projections with an
 // optional cache.

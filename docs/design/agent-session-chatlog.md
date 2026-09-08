@@ -1,6 +1,6 @@
 # Twilight Agent Session Chatlog Module
 
-状态：设计草案。`agent/session/chatlog` 已实现事件定义、parts codec、PartsExtractor、Surface 与 Context 投影；checkpoint 事件未实现。2026-09-08 随 kernel 第二版把位置类型改为 `session.Seq`、`RequireComplete` 改为 EXT-PRJ-2 的 Ignorable 规则，已实现。payload 字段、输入 limits 与 golden fixtures 尚未冻结。
+状态：设计草案。`agent/session/chatlog` 已实现事件定义、parts codec、PartsExtractor、Surface 与 Context 投影；checkpoint 事件未实现。payload 字段、输入 limits 与 golden fixtures 尚未冻结。
 
 本文定义 `agent/session/chatlog` first-party Module，依赖 [Session](agent-session.md) 与 [Session Module Framework](agent-session-extension.md)。回合生命周期由 [Turn](agent-turn.md) 拥有。文中的“必须”“不得”“应该”是草案冻结时应保留的协议约束；canonical JSON 与 digest 遵循 `agent/jsonstable`、`agent/es`。
 
