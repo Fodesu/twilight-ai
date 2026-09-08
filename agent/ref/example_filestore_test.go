@@ -27,14 +27,13 @@ import (
 // Turn 2 from the queued input.
 //
 // Turn 2 shows resume: the process "crashes" while its tool call executes.
-// After the ownership TTL a second Store instance over the same directory —
-// a new process — takes the Session over, disposes the abandoned call and
-// Resume completes the Turn. The dead process's late settlement is fenced by
-// owner.json. The log stays one JSONL file, readable with standard tools.
+// A second Store instance over the same directory — a new process — opens
+// with Takeover, disposes the abandoned call and Resume completes the Turn.
+// The dead process's late settlement is fenced by owner.json. The log stays
+// one JSONL file, readable with standard tools.
 func Example_jsonlPrototype() {
 	ctx := context.Background()
 	const sid session.SessionID = "session-jsonl"
-	const ownership = 30 * time.Second
 	clock := &fakeClock{now: time.Unix(1_000_000, 0)}
 	root, err := os.MkdirTemp("", "twilight-jsonl-*")
 	if err != nil {
@@ -46,11 +45,11 @@ func Example_jsonlPrototype() {
 	frozen := run.NewMemoryFrozenValues()
 
 	// ---- process 1 ----------------------------------------------------------
-	store1, err := filestore.New(root, filestore.Options{Now: clock.Now})
+	store1, err := filestore.New(root)
 	if err != nil {
 		panic(err)
 	}
-	p1, err := ref.New(ref.Options{Store: store1, Frozen: frozen, Ownership: session.OpenOptions{TTL: ownership}, Now: clock.Now})
+	p1, err := ref.New(ref.Options{Store: store1, Frozen: frozen, Now: clock.Now})
 	if err != nil {
 		panic(err)
 	}
@@ -131,12 +130,11 @@ func Example_jsonlPrototype() {
 	fmt.Println("turn-2: started from the queued input; tool call is Executing; process 1 crashes")
 
 	// ---- process 2: a new Store instance over the same directory -------------
-	clock.Advance(2 * ownership)
-	store2, err := filestore.New(root, filestore.Options{Now: clock.Now})
+	store2, err := filestore.New(root)
 	if err != nil {
 		panic(err)
 	}
-	p2, err := ref.New(ref.Options{Store: store2, Frozen: frozen, Ownership: session.OpenOptions{TTL: ownership}, Now: clock.Now})
+	p2, err := ref.New(ref.Options{Store: store2, Frozen: frozen, Ownership: session.OpenOptions{Takeover: true}, Now: clock.Now})
 	if err != nil {
 		panic(err)
 	}

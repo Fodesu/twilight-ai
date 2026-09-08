@@ -1,14 +1,13 @@
 // Package filestore is the JSONL-backed session.Store: one directory per
 // Session holding header.json, log.jsonl (one committed row per line) and
-// owner.json (writer ownership: epoch, owned flag, deadline). The log is plain
-// JSONL so a stream can be inspected and diffed with standard tools.
+// owner.json (writer ownership: epoch and owned flag). The log is plain JSONL
+// so a stream can be inspected and diffed with standard tools.
 //
 // Ownership is arbitrated through owner.json, so two Store instances over the
 // same root behave as two processes: a takeover through one instance fences
-// the other instance's writer on its next Append or Heartbeat. Instances
-// inside one process serialize through the store lock only — the adapter
-// takes no cross-process file locks, so run at most one process per root at a
-// time.
+// the other instance's writer on its next Append. Instances inside one
+// process serialize through the store lock only — the adapter takes no
+// cross-process file locks, so run at most one process per root at a time.
 package filestore
 
 import (
@@ -20,7 +19,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 	"unicode/utf8"
 
 	"github.com/memohai/twilight/agent/session"
@@ -32,30 +30,19 @@ const (
 	ownerFile  = "owner.json"
 )
 
-// Options tunes the store.
-type Options struct {
-	// Now drives ownership deadlines; nil selects time.Now.
-	Now func() time.Time
-}
-
 // Store is the JSONL session.Store.
 type Store struct {
 	root    string
 	profile session.ProtocolProfile
-	now     func() time.Time
 	mu      sync.Mutex // serializes every operation of this instance
 }
 
 // New opens the store root, creating it if needed.
-func New(root string, opts Options) (*Store, error) {
+func New(root string) (*Store, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, err
 	}
-	now := opts.Now
-	if now == nil {
-		now = time.Now
-	}
-	return &Store{root: root, profile: session.ProfileV1(), now: now}, nil
+	return &Store{root: root, profile: session.ProfileV1()}, nil
 }
 
 // LogPath returns the Session's JSONL log file for direct inspection.
@@ -174,11 +161,10 @@ func (s *Store) Header(ctx context.Context, sid session.SessionID) (session.Sess
 // --- ownership ------------------------------------------------------------------
 
 // ownerRecord is the persisted ownership state; owner.json is the authority
-// that every Append, Heartbeat and Close checks against.
+// that every Append and Close checks against.
 type ownerRecord struct {
-	Epoch             session.Epoch `json:"epoch"`
-	Owned             bool          `json:"owned"`
-	DeadlineUnixMilli int64         `json:"deadlineUnixMilli,omitempty"`
+	Epoch session.Epoch `json:"epoch"`
+	Owned bool          `json:"owned"`
 }
 
 func loadOwner(dir string) (ownerRecord, error) {
@@ -208,9 +194,6 @@ func (s *Store) Open(ctx context.Context, sid session.SessionID, opts session.Op
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if opts.TTL < 0 {
-		return nil, kerr(session.ErrInvalid, "open", sid, "negative TTL")
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	header, dir, err := s.loadHeader(sid, "open")
@@ -221,8 +204,7 @@ func (s *Store) Open(ctx context.Context, sid session.SessionID, opts session.Op
 	if err != nil {
 		return nil, err
 	}
-	now := s.now()
-	if rec.Owned && (rec.DeadlineUnixMilli == 0 || now.UnixMilli() < rec.DeadlineUnixMilli) {
+	if rec.Owned && !opts.Takeover {
 		return nil, kerr(session.ErrOwned, "open", sid, fmt.Sprintf("owned by epoch %d", rec.Epoch))
 	}
 	logPath := filepath.Join(dir, logFile)
@@ -243,15 +225,10 @@ func (s *Store) Open(ctx context.Context, sid session.SessionID, opts session.Op
 	}
 	rec.Epoch++
 	rec.Owned = true
-	if opts.TTL > 0 {
-		rec.DeadlineUnixMilli = now.Add(opts.TTL).UnixMilli()
-	} else {
-		rec.DeadlineUnixMilli = 0
-	}
 	if err := saveOwner(dir, rec); err != nil {
 		return nil, err
 	}
-	w := &fileWriter{store: s, header: header, dir: dir, logPath: logPath, epoch: rec.Epoch, ttl: opts.TTL,
+	w := &fileWriter{store: s, header: header, dir: dir, logPath: logPath, epoch: rec.Epoch,
 		head: headOf(header, rows), commits: make(map[session.CommitID]struct{}, len(rows))}
 	for i := range rows {
 		w.commits[rows[i].CommitID] = struct{}{}
@@ -273,7 +250,6 @@ type fileWriter struct {
 	dir     string
 	logPath string
 	epoch   session.Epoch
-	ttl     time.Duration
 	head    session.Head
 	commits map[session.CommitID]struct{}
 }
@@ -297,21 +273,6 @@ func (w *fileWriter) current(op string) error {
 	}
 	if !rec.Owned || rec.Epoch != w.epoch {
 		return kerr(session.ErrOwnershipLost, op, w.header.SessionID, fmt.Sprintf("epoch %d superseded by %d", w.epoch, rec.Epoch))
-	}
-	return nil
-}
-
-func (w *fileWriter) Heartbeat(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	w.store.mu.Lock()
-	defer w.store.mu.Unlock()
-	if err := w.current("heartbeat"); err != nil {
-		return err
-	}
-	if w.ttl > 0 {
-		return saveOwner(w.dir, ownerRecord{Epoch: w.epoch, Owned: true, DeadlineUnixMilli: w.store.now().Add(w.ttl).UnixMilli()})
 	}
 	return nil
 }
@@ -463,12 +424,6 @@ func (s *Store) Read(ctx context.Context, req session.ReadRequest) (session.Read
 	if err != nil {
 		return session.ReadPage{}, err
 	}
-	// A durable adapter verifies the chain on unfiltered reads (SES-REP-1).
-	if len(req.Types) == 0 {
-		if err := session.ValidateChain(s.profile, header, rows); err != nil {
-			return session.ReadPage{}, err
-		}
-	}
 	page := session.ReadPage{Header: header, Head: headOf(header, rows)}
 	if req.From > session.Seq(len(rows)) {
 		return page, nil
@@ -506,8 +461,8 @@ func (s *Store) Read(ctx context.Context, req session.ReadRequest) (session.Read
 	return page, nil
 }
 
-// Tamper rewrites one row on disk so conformance can prove the read-side
-// chain check detects corruption; production code never calls it.
+// Tamper rewrites one row on disk so conformance can prove the chain check at
+// Open detects corruption; production code never calls it.
 func (s *Store) Tamper(sid session.SessionID, seq session.Seq, mutate func(*session.SessionEvent)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

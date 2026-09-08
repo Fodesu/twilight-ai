@@ -18,8 +18,8 @@ import (
 
 // Options tunes the Memory assembly.
 type Options struct {
-	// Ownership configures the Session Writer: TTL zero is process-lifetime
-	// ownership, non-zero lets another assembly take over after the TTL.
+	// Ownership configures the Session Writer: Takeover lets this assembly
+	// supersede a previous owner, whose writer is then fenced by its Epoch.
 	Ownership session.OpenOptions
 	Now       func() time.Time
 	// Frozen shares request bodies between "processes" in tests; nil creates one.

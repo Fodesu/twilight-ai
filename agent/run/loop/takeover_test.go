@@ -3,25 +3,18 @@ package loop
 import (
 	"context"
 	"errors"
-	"sync"
 	"testing"
-	"time"
 
 	. "github.com/memohai/twilight/agent/run"
 	"github.com/memohai/twilight/sdk"
 )
 
 // The owner process dies while a tool call is Executing. A new owner takes
-// the Session over after the TTL, RecoverInterrupted settles the call as
-// Unknown, a fresh Loop finishes the Run, and the dead owner's late settlement
-// is fenced with ErrOwnershipLost (RUN-CMT-6/7, RUN-LOP-5).
+// the Session over, RecoverInterrupted settles the call as Unknown, a fresh
+// Loop finishes the Run, and the dead owner's late settlement is fenced with
+// ErrOwnershipLost (RUN-CMT-6/7, RUN-LOP-5).
 func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
-	var mu sync.Mutex
-	clock := time.Unix(1000, 0)
-	now := func() time.Time { mu.Lock(); defer mu.Unlock(); return clock }
-	advance := func(d time.Duration) { mu.Lock(); defer mu.Unlock(); clock = clock.Add(d) }
-
-	stack := newTestStack(t, time.Minute, now)
+	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{}`)})
 	oldRuntime := stack.runtime
 
@@ -45,8 +38,7 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 	go func() { _, err := first.Run(context.Background(), oldRuntime, testSession, "run-1", nil); firstDone <- err }()
 	<-started
 
-	// The old owner stops heartbeating; the TTL passes; a new owner opens.
-	advance(2 * time.Minute)
+	// The old owner is presumed dead; a new owner opens with Takeover.
 	stack.open(t)
 	n, err := stack.runtime.RecoverInterrupted(context.Background(), testSession)
 	if err != nil || n != 1 {

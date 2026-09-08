@@ -6,17 +6,14 @@ package sessiontest
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/memohai/twilight/agent/jsonstable"
 	"github.com/memohai/twilight/agent/session"
 )
 
-// Fixture is one adapter under test. Advance moves the adapter's clock for
-// TTL takeover checks; nil skips those checks (file adapters have no TTL).
+// Fixture is one adapter under test.
 type Fixture struct {
-	Store   session.Store
-	Advance func(time.Duration)
+	Store session.Store
 }
 
 // Factory builds a fresh, empty Store for one subtest.
@@ -41,9 +38,9 @@ func create(t *testing.T, store session.Store, sid session.SessionID) session.Se
 	return h
 }
 
-func open(t *testing.T, store session.Store, sid session.SessionID, ttl time.Duration) session.Writer {
+func open(t *testing.T, store session.Store, sid session.SessionID, takeover bool) session.Writer {
 	t.Helper()
-	w, err := store.Open(context.Background(), sid, session.OpenOptions{TTL: ttl})
+	w, err := store.Open(context.Background(), sid, session.OpenOptions{Takeover: takeover})
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -80,7 +77,7 @@ func testWire(t *testing.T, f Fixture) {
 	if _, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: 9, SessionID: "v9"}); !session.IsCode(err, session.ErrUnsupportedProfile) {
 		t.Fatalf("unsupported version = %v", err)
 	}
-	w := open(t, f.Store, "s", 0)
+	w := open(t, f.Store, "s", false)
 	if head := w.Head(); head.Next != 0 || head.Digest != h.HeaderDigest {
 		t.Fatalf("empty head = %+v", head)
 	}
@@ -114,13 +111,13 @@ func testWire(t *testing.T, f Fixture) {
 	}
 }
 
-// SES-OWN-1/2: second Open is ErrOwned; Close then Open bumps Epoch; a
-// superseded Writer's Append and Heartbeat fail without writing; TTL expiry
-// allows takeover.
+// SES-OWN-1/2: second Open is ErrOwned; Close then Open bumps Epoch; an Open
+// with Takeover supersedes a live owner; a superseded Writer's Append fails
+// without writing.
 func testOwnership(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	create(t, f.Store, "s")
-	w1 := open(t, f.Store, "s", 0)
+	w1 := open(t, f.Store, "s", false)
 	if w1.Epoch() != 1 {
 		t.Fatalf("first epoch = %d", w1.Epoch())
 	}
@@ -131,15 +128,12 @@ func testOwnership(t *testing.T, f Fixture) {
 	if err := w1.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	w2 := open(t, f.Store, "s", 0)
+	w2 := open(t, f.Store, "s", false)
 	if w2.Epoch() != 2 {
 		t.Fatalf("epoch after reopen = %d, want 2", w2.Epoch())
 	}
 	if _, err := w1.Append(ctx, session.Group{CommitID: "c2", Events: []session.UncommittedEvent{ev("twilight/x/a", `{}`)}}); !session.IsCode(err, session.ErrOwnershipLost) {
 		t.Fatalf("old writer append = %v, want ownership_lost", err)
-	}
-	if err := w1.Heartbeat(ctx); !session.IsCode(err, session.ErrOwnershipLost) {
-		t.Fatalf("old writer heartbeat = %v, want ownership_lost", err)
 	}
 	page, _ := f.Store.Read(ctx, session.ReadRequest{SessionID: "s"})
 	if len(page.Events) != 1 {
@@ -152,38 +146,27 @@ func testOwnership(t *testing.T, f Fixture) {
 	if _, err := f.Store.Open(ctx, "s", session.OpenOptions{}); !session.IsCode(err, session.ErrOwned) {
 		t.Fatal("closing a superseded writer released the current owner")
 	}
-	if err := w2.Close(ctx); err != nil {
-		t.Fatal(err)
+	// Takeover supersedes the live owner: the crashed-process recovery path.
+	w3 := open(t, f.Store, "s", true)
+	if w3.Epoch() != w2.Epoch()+1 {
+		t.Fatalf("takeover epoch = %d, want %d", w3.Epoch(), w2.Epoch()+1)
+	}
+	if _, err := w2.Append(ctx, session.Group{CommitID: "late", Events: []session.UncommittedEvent{ev("twilight/x/a", `{}`)}}); !session.IsCode(err, session.ErrOwnershipLost) {
+		t.Fatalf("superseded writer append = %v, want ownership_lost", err)
+	}
+	appendGroup(t, w3, "c3", ev("twilight/x/a", `{}`))
+	page, _ = f.Store.Read(ctx, session.ReadRequest{SessionID: "s"})
+	if len(page.Events) != 3 {
+		t.Fatalf("stream after takeover = %d rows, want 3", len(page.Events))
 	}
 	// Read never needs ownership (SES-OWN-4): already exercised above while owned.
-	if f.Advance == nil {
-		return
-	}
-	w3 := open(t, f.Store, "s", time.Minute)
-	f.Advance(30 * time.Second)
-	if err := w3.Heartbeat(ctx); err != nil {
-		t.Fatalf("heartbeat inside TTL: %v", err)
-	}
-	f.Advance(45 * time.Second)
-	if _, err := f.Store.Open(ctx, "s", session.OpenOptions{TTL: time.Minute}); !session.IsCode(err, session.ErrOwned) {
-		t.Fatal("open succeeded while the heartbeat kept ownership alive")
-	}
-	f.Advance(time.Minute)
-	w4 := open(t, f.Store, "s", time.Minute)
-	if w4.Epoch() != w3.Epoch()+1 {
-		t.Fatalf("takeover epoch = %d, want %d", w4.Epoch(), w3.Epoch()+1)
-	}
-	if _, err := w3.Append(ctx, session.Group{CommitID: "late", Events: []session.UncommittedEvent{ev("twilight/x/a", `{}`)}}); !session.IsCode(err, session.ErrOwnershipLost) {
-		t.Fatalf("expired writer append = %v, want ownership_lost", err)
-	}
-	appendGroup(t, w4, "c3", ev("twilight/x/a", `{}`))
 }
 
 // SES-APP-1/3: whole-group visibility and the rejection list, none writing.
 func testAppend(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	create(t, f.Store, "s")
-	w := open(t, f.Store, "s", 0)
+	w := open(t, f.Store, "s", false)
 	rejects := []struct {
 		name string
 		g    session.Group
@@ -217,11 +200,11 @@ func testAppend(t *testing.T, f Fixture) {
 }
 
 // SES-REP-1/2: order, From, Limit at group boundaries, filter equivalence,
-// tamper detection.
+// tamper detection at Open.
 func testRead(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	create(t, f.Store, "s")
-	w := open(t, f.Store, "s", 0)
+	w := open(t, f.Store, "s", false)
 	appendGroup(t, w, "c1", ev("twilight/run/a", `{}`), ev("twilight/chat/a", `{}`))       // 0,1
 	appendGroup(t, w, "c2", ev("twilight/chat/b", `{}`))                                    // 2
 	appendGroup(t, w, "c3", ev("twilight/run/c", `{}`), ev("twilight/run/d", `{}`), ev("twilight/chat/e", `{}`)) // 3,4,5
@@ -271,9 +254,12 @@ func testRead(t *testing.T, f Fixture) {
 	if tamper, ok := f.Store.(interface {
 		Tamper(session.SessionID, session.Seq, func(*session.SessionEvent))
 	}); ok {
+		if err := w.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
 		tamper.Tamper("s", 2, func(e *session.SessionEvent) { e.Payload = jsonstable.MustParse(`{"x":1}`) })
-		if _, err := f.Store.Read(ctx, session.ReadRequest{SessionID: "s"}); !session.IsCode(err, session.ErrCorrupt) {
-			t.Fatalf("tampered read = %v, want corrupt", err)
+		if _, err := f.Store.Open(ctx, "s", session.OpenOptions{}); !session.IsCode(err, session.ErrCorrupt) {
+			t.Fatalf("open over a tampered stream = %v, want corrupt", err)
 		}
 	}
 }

@@ -34,15 +34,14 @@ type testStack struct {
 	writers  extension.Writers
 	runtime  *runmod.Runtime
 	now      func() time.Time
-	ttl      time.Duration
 }
 
-func newTestStack(t testing.TB, ttl time.Duration, now func() time.Time) *testStack {
+func newTestStack(t testing.TB, now func() time.Time) *testStack {
 	t.Helper()
 	if now == nil {
 		now = time.Now
 	}
-	store := session.NewMemoryStoreWithClock(now)
+	store := session.NewMemoryStore()
 	registry, err := extension.BuildRegistry(session.ProtocolVersion1, runmod.Module)
 	if err != nil {
 		t.Fatal(err)
@@ -50,16 +49,16 @@ func newTestStack(t testing.TB, ttl time.Duration, now func() time.Time) *testSt
 	if _, err := store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: testSession}); err != nil {
 		t.Fatal(err)
 	}
-	s := &testStack{store: store, registry: registry, now: now, ttl: ttl}
+	s := &testStack{store: store, registry: registry, now: now}
 	s.open(t)
 	return s
 }
 
-// open starts a new owner process over the same store (a takeover when a
-// previous one is still open and its TTL has passed).
+// open starts a new owner process over the same store, superseding a previous
+// one that is still open.
 func (s *testStack) open(t testing.TB) {
 	t.Helper()
-	s.writers = extension.NewWriters(s.store, s.registry, extension.Admission{}, session.OpenOptions{TTL: s.ttl})
+	s.writers = extension.NewWriters(s.store, s.registry, extension.Admission{}, session.OpenOptions{Takeover: true})
 	rt, err := runmod.NewRuntime(runmod.Config{Writers: s.writers, Registry: s.registry, Store: s.store, Companion: nopCompanion{}, Now: s.now})
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +97,7 @@ func (s *testStack) createRun(t testing.TB, runID RunID, inputs ...AgentInput) {
 // newTestRuntime is a Runtime holding "run-1" seeded with one input.
 func newTestRuntime(t testing.TB) Runtime {
 	t.Helper()
-	stack := newTestStack(t, 0, nil)
+	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)})
 	return stack.runtime
 }

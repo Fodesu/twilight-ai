@@ -23,11 +23,9 @@ import (
 	"github.com/memohai/twilight/sdk"
 )
 
-// Fixture is one adapter under test. Advance moves the adapter's clock so a
-// TTL takeover can be exercised; nil skips the takeover checks.
+// Fixture is one adapter under test.
 type Fixture struct {
-	Store   session.Store
-	Advance func(time.Duration)
+	Store session.Store
 }
 
 // Factory returns a fresh, empty Fixture for one test.
@@ -59,13 +57,12 @@ type harness struct {
 	frozen   *run.MemoryFrozenValues
 	cache    *extension.MemoryProjectionCache
 	clock    *clock
-	ttl      time.Duration
 	writers  extension.Writers
 	rt       *runmod.Runtime
 	seq      int
 }
 
-func newHarness(t testing.TB, f Fixture, ttl time.Duration) *harness {
+func newHarness(t testing.TB, f Fixture) *harness {
 	t.Helper()
 	registry, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module, runmod.Module, turn.Module)
 	if err != nil {
@@ -74,7 +71,7 @@ func newHarness(t testing.TB, f Fixture, ttl time.Duration) *harness {
 	bindings := artifact.NewMemoryBindingStore()
 	h := &harness{t: t, ctx: context.Background(), fixture: f, store: f.Store, registry: registry, bindings: bindings,
 		ledger: artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings}), frozen: run.NewMemoryFrozenValues(),
-		cache: extension.NewMemoryProjectionCache(), clock: &clock{now: time.Unix(1_000_000, 0)}, ttl: ttl}
+		cache: extension.NewMemoryProjectionCache(), clock: &clock{now: time.Unix(1_000_000, 0)}}
 	if _, err := f.Store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid}); err != nil {
 		t.Fatal(err)
 	}
@@ -83,9 +80,10 @@ func newHarness(t testing.TB, f Fixture, ttl time.Duration) *harness {
 }
 
 // open starts an owner process: Writers over the shared store and a Runtime.
+// Takeover lets it supersede the previous owner process, if any.
 func (h *harness) open() {
 	h.t.Helper()
-	h.writers = extension.NewWriters(h.store, h.registry, extension.Admission{Bindings: h.bindings, Ledger: h.ledger}, session.OpenOptions{TTL: h.ttl})
+	h.writers = extension.NewWriters(h.store, h.registry, extension.Admission{Bindings: h.bindings, Ledger: h.ledger}, session.OpenOptions{Takeover: true})
 	rt, err := runmod.NewRuntime(runmod.Config{Writers: h.writers, Registry: h.registry, Store: h.store,
 		Frozen: h.frozen, Companion: turn.CompanionV1{}, Cache: h.cache, Now: h.clock.Now})
 	if err != nil {
@@ -94,12 +92,11 @@ func (h *harness) open() {
 	h.rt = rt
 }
 
-// takeover lets the ownership TTL pass and opens a new owner process; the
-// previous Runtime stays usable so tests can observe its fencing.
+// takeover opens a new owner process over the same store; the previous
+// Runtime stays usable so tests can observe its fencing.
 func (h *harness) takeover() *runmod.Runtime {
 	h.t.Helper()
 	old := h.rt
-	h.fixture.Advance(2 * h.ttl)
 	h.open()
 	return old
 }

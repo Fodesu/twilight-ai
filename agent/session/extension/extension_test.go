@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/memohai/twilight/agent/artifact"
 	"github.com/memohai/twilight/agent/jsonstable"
@@ -103,13 +102,12 @@ type fixture struct {
 	registry *Registry
 	bindings *artifact.MemoryBindingStore
 	ledger   *artifact.MemoryLedger
-	now      time.Time
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	f := &fixture{now: time.Unix(1_700_000_000, 0)}
-	f.store = session.NewMemoryStoreWithClock(func() time.Time { return f.now })
+	f := &fixture{}
+	f.store = session.NewMemoryStore()
 	r, err := BuildRegistry(session.ProtocolVersion1, noteModule("a"))
 	if err != nil {
 		t.Fatal(err)
@@ -125,9 +123,9 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) admission() Admission { return Admission{Bindings: f.bindings, Ledger: f.ledger} }
 
-func (f *fixture) open(t *testing.T, ttl time.Duration) Writer {
+func (f *fixture) open(t *testing.T, takeover bool) Writer {
 	t.Helper()
-	w, err := OpenWriter(context.Background(), f.store, f.registry, f.admission(), "s", session.OpenOptions{TTL: ttl})
+	w, err := OpenWriter(context.Background(), f.store, f.registry, f.admission(), "s", session.OpenOptions{Takeover: takeover})
 	if err != nil {
 		t.Fatalf("open writer: %v", err)
 	}
@@ -158,7 +156,7 @@ func notes(t *testing.T, w Writer) []string {
 func TestWriterCommitReplayAndRebuild(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	w := f.open(t, 0)
+	w := f.open(t, false)
 	res, err := w.Commit(ctx, noteGroup("c1", "one", "two"))
 	if err != nil || res.Outcome != CommitApplied || len(res.Events) != 2 || res.Events[0].Seq != 0 {
 		t.Fatalf("commit = %+v %v", res, err)
@@ -216,7 +214,7 @@ func TestWriterCommitReplayAndRebuild(t *testing.T) {
 	if _, err := w.Commit(ctx, noteGroup("c4", "x")); err == nil {
 		t.Fatal("closed writer accepted a commit")
 	}
-	w2 := f.open(t, 0)
+	w2 := f.open(t, false)
 	if w2.Epoch() != 2 {
 		t.Fatalf("epoch = %d", w2.Epoch())
 	}
@@ -237,12 +235,11 @@ func TestWriterCommitReplayAndRebuild(t *testing.T) {
 func TestWriterOwnershipLost(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	w1 := f.open(t, time.Minute)
+	w1 := f.open(t, false)
 	if _, err := w1.Commit(ctx, noteGroup("c1", "one")); err != nil {
 		t.Fatal(err)
 	}
-	f.now = f.now.Add(2 * time.Minute)
-	w2 := f.open(t, time.Minute)
+	w2 := f.open(t, true)
 	if _, err := w1.Commit(ctx, noteGroup("c2", "late")); !errors.Is(err, &Error{Code: ErrOwnershipLost}) {
 		t.Fatalf("stale writer commit = %v, want ownership_lost", err)
 	}
@@ -271,7 +268,7 @@ func TestWriterOwnershipLost(t *testing.T) {
 func TestProjectionUnknownEvents(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	w := f.open(t, 0)
+	w := f.open(t, false)
 	if _, err := w.Commit(ctx, noteGroup("c1", "one")); err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +288,7 @@ func TestProjectionUnknownEvents(t *testing.T) {
 	raw("other", "twilight/zzz/thing", false)  // out of scope: skipped
 	raw("future", "twilight/a/future", true)   // in scope, ignorable: skipped
 	_ = kw.Close(ctx)
-	w = f.open(t, 0)
+	w = f.open(t, false)
 	if got := notes(t, w); len(got) != 1 {
 		t.Fatalf("notes = %v", got)
 	}
@@ -313,7 +310,7 @@ func TestWriterClaimsAndReconcile(t *testing.T) {
 	if _, err := f.bindings.CreateBinding(ctx, b); err != nil {
 		t.Fatal(err)
 	}
-	w := f.open(t, 0)
+	w := f.open(t, false)
 	res, err := w.Commit(ctx, func(View) (*SemanticGroup, error) {
 		return &SemanticGroup{CommitID: "c1", Events: []TypedEvent{{Type: ModulePrefix("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}}}}, nil
 	})
@@ -334,7 +331,7 @@ func TestWriterClaimsAndReconcile(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = w.Close(ctx)
-	w = f.open(t, 0)
+	w = f.open(t, false)
 	defer w.Close(ctx)
 	if c, ok, _ := f.ledger.LookupClaim(ctx, orphanID); !ok || c.State != artifact.ClaimReleased {
 		t.Fatalf("orphan claim = %+v", c)
@@ -349,7 +346,7 @@ func TestWriterClaimsAndReconcile(t *testing.T) {
 func TestProjectionCache(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
-	w := f.open(t, 0)
+	w := f.open(t, false)
 	defer w.Close(ctx)
 	id := ProjectionID(string(ModulePrefix("a")) + "notes")
 	_, _ = w.Commit(ctx, noteGroup("c1", "one"))

@@ -23,8 +23,9 @@ import (
 // Turn. The model asks for a tool; the tool never returns and the process dies
 // while the call is Executing. Nothing is written on the way down.
 //
-// Process 2 reopens the same Session store after the ownership TTL passed and
-// takes the Session over (Epoch 2). Its takeover disposition settles the
+// Process 2 reopens the same Session store with Takeover — the crashed owner
+// never closed — and takes the Session over (Epoch 2). Its takeover
+// disposition settles the
 // abandoned call as Unknown in the same group as its chatlog tool_result, the
 // Run stays Active, and Resume drives the Loop: the planner reads the
 // conversation back from the chatlog projection and the Turn completes. The
@@ -33,16 +34,15 @@ import (
 func Example_recoverableTurn() {
 	ctx := context.Background()
 	const sid session.SessionID = "session-1"
-	const ownership = 30 * time.Second
 	clock := &fakeClock{now: time.Unix(1_000_000, 0)}
 
 	// Shared "durable" state: the Session store and the frozen request bodies.
-	store := session.NewMemoryStoreWithClock(clock.Now)
+	store := session.NewMemoryStore()
 	frozen := run.NewMemoryFrozenValues()
 	tool := &lookupTool{block: make(chan struct{})}
 
 	// ---- process 1 ----------------------------------------------------------
-	p1, err := ref.New(ref.Options{Store: store, Frozen: frozen, Ownership: session.OpenOptions{TTL: ownership}, Now: clock.Now})
+	p1, err := ref.New(ref.Options{Store: store, Frozen: frozen, Now: clock.Now})
 	if err != nil {
 		panic(err)
 	}
@@ -71,8 +71,7 @@ func Example_recoverableTurn() {
 	fmt.Println("process 1: tool call is Executing; process crashes")
 
 	// ---- process 2 ----------------------------------------------------------
-	clock.Advance(2 * ownership)
-	p2, err := ref.New(ref.Options{Store: store, Frozen: frozen, Ownership: session.OpenOptions{TTL: ownership}, Now: clock.Now})
+	p2, err := ref.New(ref.Options{Store: store, Frozen: frozen, Ownership: session.OpenOptions{Takeover: true}, Now: clock.Now})
 	if err != nil {
 		panic(err)
 	}
@@ -185,12 +184,6 @@ func (c *fakeClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.now
-}
-
-func (c *fakeClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	c.now = c.now.Add(d)
-	c.mu.Unlock()
 }
 
 type modelCatalog struct{ m loop.ModelInvoker }

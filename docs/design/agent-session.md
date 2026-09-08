@@ -92,16 +92,15 @@ digest 依 `agent/es` 的 versioned domain separator。链条按行连接；任�
 
 ```go
 type OpenOptions struct {
-    // TTL 为零表示所有权只随进程或连接存活（文件锁语义）；非零表示写者必须在 TTL 内 Heartbeat，
-    // 否则其他 Open 可以接管。
-    TTL time.Duration
+    // Takeover 为假时，已有有效 Writer 的 Open 返回 ErrOwned；为真时接管：Epoch 加一，
+    // 旧写者被 fencing。何时允许接管是 kernel 之上的策略。
+    Takeover bool
 }
 type Writer interface {   // kernel 的写者句柄，由 Store.Open 返回
     SessionID() SessionID
     Epoch() Epoch
     Head() Head
     Append(context.Context, Group) ([]SessionEvent, error)
-    Heartbeat(context.Context) error
     Close(context.Context) error
 }
 type Store interface {
@@ -112,9 +111,9 @@ type Store interface {
 }
 ```
 
-**SES-OWN-1** 同一 Session 同一时刻至多一个有效 Writer。`Open` 在已有有效 Writer 时返回 `ErrOwned`；有效性由 adapter 的锁机制决定：文件 adapter 用进程内独占加 `flock`，进程死亡即释放；数据库 adapter 用带 deadline 的所有权行，deadline 由 `Heartbeat` 推后，过期后可被接管。
+**SES-OWN-1** 同一 Session 同一时刻至多一个有效 Writer。`Open` 在已有有效 Writer 且未声明 `Takeover` 时返回 `ErrOwned`；声明 `Takeover` 的 Open 接管所有权。接管的安全性由 Epoch fencing（SES-OWN-2）承担；何时允许接管（进程死亡判定、租约、人工指令）是 kernel 之上的策略，kernel 不承载 TTL 或心跳。
 
-**SES-OWN-2** 每次成功的 Open 使该 Session 的 `Epoch` 加一并持久化。`Append` 与 `Heartbeat` 携带 Writer 的 Epoch；Store 对落后于当前持久化 Epoch 的调用返回 `ErrOwnershipLost`，不写入任何内容。这是 fencing：被接管的旧写者的迟到写入不可能进入日志。
+**SES-OWN-2** 每次成功的 Open 使该 Session 的 `Epoch` 加一并持久化。`Append` 携带 Writer 的 Epoch；Store 对落后于当前持久化 Epoch 的调用返回 `ErrOwnershipLost`，不写入任何内容。这是 fencing：被接管的旧写者的迟到写入不可能进入日志。
 
 **SES-OWN-3** 所有权是 Session 级的，不是执行目标级的。一个进程取得 Session 的所有权即拥有其中全部执行；接管者读日志后对所有仍在执行中的目标做一次性处置（RUN-CMT-7）。kernel 不知道"执行中"是什么，这一步由 run 模块在 Writer 上完成。
 
@@ -140,7 +139,7 @@ type ReadRequest struct {
 type ReadPage struct { Header SessionHeader; Events []SessionEvent; Head Head; HasMore bool }
 ```
 
-**SES-REP-1** `Read` 按 `Seq` 递增返回 `From` 起的行，只返回完整组内的行；`Limit` 截断只发生在组边界。无过滤时 Store 校验每行的 `Digest` 链；有过滤时只校验返回行自身的 digest，链完整性由无过滤读取验证。损坏必须 fail loudly（`ErrCorrupt`）。
+**SES-REP-1** `Read` 按 `Seq` 递增返回 `From` 起的行，只返回完整组内的行；`Limit` 截断只发生在组边界。损坏检测的义务点在 `Open`：Open 在建立所有权前校验整条 `Digest` 链，损坏必须 fail loudly（`ErrCorrupt`）；`ValidateChain` 同时作为显式校验入口导出。`Read` 信任存储，不逐次重算链。
 
 **SES-REP-2** `Types` 过滤是读取代价的优化：文件 adapter 全量扫描后过滤，数据库 adapter 用 `(SessionID, Type 前缀)` 索引。过滤与不过滤读到的事件集合对匹配类型完全一致。
 
@@ -159,12 +158,12 @@ const (
 v1 conformance 以 `Store` 为参数，Memory 与文件 adapter 跑同一套，必须验证：
 
 - **SES-WIR-1/2/3**：Seq 连续、组内 Index/Last、CommitID 唯一、payload canonical、digest 链与 header 根、版本一致；
-- **SES-OWN-1/2**：第二个 Open 返回 `ErrOwned`；Close 后可再 Open 且 Epoch 加一；旧 Writer 的 Append 与 Heartbeat 返回 `ErrOwnershipLost` 且不写入；TTL 过期后接管；
+- **SES-OWN-1/2**：第二个 Open 返回 `ErrOwned`；Close 后可再 Open 且 Epoch 加一；声明 `Takeover` 的 Open 在所有权存续期间接管且 Epoch 加一；旧 Writer 的 Append 返回 `ErrOwnershipLost` 且不写入；
 - **SES-APP-1/2/3**：整组可见性；在组中途注入崩溃后打开，尾组不出现；拒绝项无写入；
-- **SES-REP-1/2**：顺序、From、Limit 在组边界截断、过滤与全量对匹配类型一致、篡改任一行后无过滤读取报 `ErrCorrupt`；
+- **SES-REP-1/2**：顺序、From、Limit 在组边界截断、过滤与全量对匹配类型一致、篡改任一行后下一次 Open 报 `ErrCorrupt`；
 - **SES-SCP-3**：附录 A 入口返回 `ErrUnsupported`，`ParentFork` 非 nil 的 header 被拒绝。
 
-参考实现为 MemoryStore 与文件 adapter（一个 Session 一个目录，`stream.jsonl` 一行一个 event，`session.lock` 为 `flock` 目标）。
+参考实现为 MemoryStore 与文件 adapter `agent/session/filestore`（一个 Session 一个目录：`header.json`、`log.jsonl` 一行一个 event、`owner.json` 记录 epoch 与 owned）。
 
 ## 附录 A：预留能力（不进入 v1）
 

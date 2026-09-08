@@ -84,7 +84,7 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 - Run 事实与其对话内容（companion）在同一组（一次 Append）写入；没有 Run→Session materialization、coverage 水位或 outbox。
 - 只有一条写入路径：`extension.Writer`。Run 的 Runtime、Turn 的 Coordinator 都经它写入，companion 与 Attach 事件与其他 producer 一样经 admission；artifact claim 在 Append 之前建立，孤儿由回收前核对释放。
 - 一个 Session 同一时刻一个 Writer 进程（Session 级所有权，Epoch fencing）；没有按目标的 lease、grant 或 durable ClaimStore。ExecutionClaim 只在 worker 内存中；投影缓存与 FrozenValueStore 是派生或旁存数据，不进入 stream。
-- 接管者对全部 Executing 目标一次性处置（模型回 Prepared、工具记 Unknown），不等待 TTL 按目标恢复。
+- 接管者对全部 Executing 目标一次性处置（模型回 Prepared、工具记 Unknown），不逐目标等待或恢复。
 - Run fact 只保存执行状态与内容 digest；请求本体（含工具定义）在 FrozenValueStore，模型输出与工具输出在 chatlog 事件。
 - kernel `ProtocolVersion` 只覆盖行结构与 digest；payload 版本由模块携带（`v` 字段），Run 保留自己的 `SchemaVersion`。
 
@@ -126,7 +126,7 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 ### 4.2 durable adapters
 
 - 文件 adapter `agent/session/filestore`：一个 Session 一个目录，`stream.jsonl` 一行一个 event，`session.lock` 为 `flock` 目标，每次 Append 一次 fsync，打开时截掉不完整尾组；
-- 数据库 adapter（SQLite / PostgreSQL）：sessions（header、epoch、owner deadline）、events 两张表，Append 一个事务，`Heartbeat` 推后 deadline；只在多会话服务需要时做；
+- 数据库 adapter（SQLite / PostgreSQL）：sessions（header、epoch）、events 两张表，Append 一个事务；只在多会话服务需要时做；
 - 收紧 Session authority tables 的 immutable RLS policy；
 - 需要远程 Store 或跨存储 claim 时，实现 extension 附录 C 与 artifact 附录的两阶段路径。
 
@@ -334,7 +334,7 @@ lease 的第二条出路：grant 由 `(Claim, start CommitID)` 派生，start fa
 | 结构 | 等级 | 写入点 | 丢失或不一致时 |
 |---|---|---|---|
 | Session header 与 event 行 | authority | `Writer.Append` | 不可恢复；按行 digest 链使损坏可检测；不完整尾组在打开时截掉 |
-| 所有权记录（Epoch，数据库 adapter 另有 deadline） | 控制 | `Open`、`Heartbeat` | 文件 adapter 随进程释放；数据库 adapter 过期后可接管 |
+| 所有权记录（Epoch） | 控制 | `Open` | 接管由 Open 的 `Takeover` 声明，旧写者被 Epoch fencing |
 | 投影缓存 | 派生缓存 | `SnapshotPolicy` | 从 stream 重折 |
 | Writer 内存：幂等索引、投影状态、head | 派生 | `OpenWriter` 重建 | 随进程消失，重开时从日志重建 |
 | FrozenValueStore | 旁存，生命周期为 ModelStep | Commit 之前 `Put` | Executing/Prepared step 的重发失败为不可重试错误 |
@@ -345,7 +345,7 @@ v1 只有两类恢复动作：`RecoverInterrupted`（新 owner 一次性处置 E
 
 ### 8.5 实施顺序
 
-1. `agent/session`：重写 Memory Store（Create、Header、Open/Epoch/Heartbeat、Append 整组、Read 过滤）与 conformance；删除 CommitIn、CAS、控制面 KV、snapshot、四套 digest、EventID、ReplayCursor；
+1. `agent/session`：重写 Memory Store（Create、Header、Open/Epoch/Takeover、Append 整组、Read 过滤）与 conformance；删除 CommitIn、CAS、控制面 KV、snapshot、四套 digest、EventID、ReplayCursor；
 2. `agent/session/extension`：`Writer`（OpenWriter 重建、Commit 串行、幂等索引、claim 先于 Append、ErrOwnershipLost 失效）、`Writers`、`ProjectionReader` 与 `ProjectionCache`、`Ignorable`；删除 SemanticAppender、Lease、LoadIn/SaveSnapshotIn、JSONPointer、ModuleForEvent 推断；
 3. `agent/artifact`：ledger 改为自持久化 `Activate`，加 `OwnerVerifier` 与回收前核对；
 4. `agent/run` 与 `agent/session/run`：`RunPosition = Seq`、`CommitResult.Events`、删除 grant/lease/RenewLease/RecoverExpired，新增 `RecoverInterrupted` 与 `TakeoverClaim`，machine 投影加 `Ended`；

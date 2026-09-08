@@ -4,15 +4,13 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 )
 
-// MemoryStore is the in-process reference Store. Ownership follows the
-// database-adapter shape: an Open with TTL records a deadline that Heartbeat
-// pushes and that a later Open may pass; TTL zero ownership lasts until Close.
+// MemoryStore is the in-process reference Store. Ownership lasts until Close;
+// an Open with Takeover supersedes a live owner, which is then fenced by its
+// stale Epoch.
 type MemoryStore struct {
 	profile  ProtocolProfile
-	now      func() time.Time
 	mu       sync.RWMutex // guards sessions map
 	sessions map[SessionID]*memorySession
 }
@@ -24,15 +22,11 @@ type memorySession struct {
 	byCommit map[CommitID][2]int // [first, last] row index of the group
 	epoch    Epoch
 	owner    *memoryWriter // nil when no live owner
-	deadline time.Time     // zero when the owner has no TTL
 }
 
-// NewMemoryStore returns a MemoryStore using the wall clock.
-func NewMemoryStore() *MemoryStore { return NewMemoryStoreWithClock(time.Now) }
-
-// NewMemoryStoreWithClock lets tests drive ownership deadlines.
-func NewMemoryStoreWithClock(now func() time.Time) *MemoryStore {
-	return &MemoryStore{profile: ProfileV1(), now: now, sessions: make(map[SessionID]*memorySession)}
+// NewMemoryStore returns an empty MemoryStore.
+func NewMemoryStore() *MemoryStore {
+	return &MemoryStore{profile: ProfileV1(), sessions: make(map[SessionID]*memorySession)}
 }
 
 func (m *MemoryStore) Profile() ProtocolProfile { return m.profile }
@@ -102,15 +96,11 @@ type memoryWriter struct {
 	store *MemoryStore
 	s     *memorySession
 	epoch Epoch
-	ttl   time.Duration
 }
 
 func (m *MemoryStore) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Writer, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
-	}
-	if opts.TTL < 0 {
-		return nil, newError(ErrInvalid, "open", sid, "negative TTL")
 	}
 	s, err := m.session(sid, "open")
 	if err != nil {
@@ -118,19 +108,17 @@ func (m *MemoryStore) Open(ctx context.Context, sid SessionID, opts OpenOptions)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.owner != nil {
-		if s.deadline.IsZero() || m.now().Before(s.deadline) {
-			return nil, newError(ErrOwned, "open", sid, fmt.Sprintf("owned by epoch %d", s.epoch))
-		}
+	if s.owner != nil && !opts.Takeover {
+		return nil, newError(ErrOwned, "open", sid, fmt.Sprintf("owned by epoch %d", s.epoch))
+	}
+	// Corruption detection happens here, before ownership is established
+	// (SES-REP-1); Read trusts the store.
+	if err := ValidateChain(m.profile, s.header, s.rows); err != nil {
+		return nil, err
 	}
 	s.epoch++
-	w := &memoryWriter{store: m, s: s, epoch: s.epoch, ttl: opts.TTL}
+	w := &memoryWriter{store: m, s: s, epoch: s.epoch}
 	s.owner = w
-	if opts.TTL > 0 {
-		s.deadline = m.now().Add(opts.TTL)
-	} else {
-		s.deadline = time.Time{}
-	}
 	return w, nil
 }
 
@@ -151,27 +139,11 @@ func (w *memoryWriter) current(op string) error {
 	return nil
 }
 
-func (w *memoryWriter) Heartbeat(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	w.s.mu.Lock()
-	defer w.s.mu.Unlock()
-	if err := w.current("heartbeat"); err != nil {
-		return err
-	}
-	if w.ttl > 0 {
-		w.s.deadline = w.store.now().Add(w.ttl)
-	}
-	return nil
-}
-
 func (w *memoryWriter) Close(ctx context.Context) error {
 	w.s.mu.Lock()
 	defer w.s.mu.Unlock()
 	if w.s.owner == w {
 		w.s.owner = nil
-		w.s.deadline = time.Time{}
 	}
 	return nil
 }
@@ -241,11 +213,6 @@ func (m *MemoryStore) Read(ctx context.Context, req ReadRequest) (ReadPage, erro
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// The Memory adapter verifies the whole chain on every read; a durable
-	// adapter verifies the chain only on unfiltered reads (SES-REP-1).
-	if err := ValidateChain(m.profile, s.header, s.rows); err != nil {
-		return ReadPage{}, err
-	}
 	page := ReadPage{Header: s.header, Head: s.head()}
 	if int(req.From) > len(s.rows) {
 		return page, nil
@@ -284,7 +251,8 @@ func (m *MemoryStore) Read(ctx context.Context, req ReadRequest) (ReadPage, erro
 }
 
 // Tamper mutates one stored row in place. It exists so conformance can prove
-// that the chain check detects corruption; production code never calls it.
+// that the chain check at Open detects corruption; production code never
+// calls it.
 func (m *MemoryStore) Tamper(sid SessionID, seq Seq, mutate func(*SessionEvent)) {
 	s, err := m.session(sid, "tamper")
 	if err != nil {

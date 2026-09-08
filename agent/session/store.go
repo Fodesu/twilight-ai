@@ -2,7 +2,6 @@ package session
 
 import (
 	"context"
-	"time"
 
 	"github.com/memohai/twilight/agent/es"
 	"github.com/memohai/twilight/agent/jsonstable"
@@ -18,16 +17,16 @@ type CreateRequest struct {
 	Metadata           jsonstable.Value
 }
 
-// OpenOptions configures writer ownership (SES-OWN-1). TTL zero means the
-// ownership lives only as long as the process or connection (file-lock
-// semantics); non-zero means the writer must Heartbeat within TTL or another
-// Open may take over.
+// OpenOptions configures writer ownership (SES-OWN-1). While a Writer is
+// live, an Open without Takeover fails with ErrOwned; an Open with Takeover
+// supersedes it — safety rests on Epoch fencing (SES-OWN-2), and when to take
+// over is the caller's policy, above the kernel.
 type OpenOptions struct {
-	TTL time.Duration
+	Takeover bool
 }
 
-// Writer is the kernel's ownership handle returned by Store.Open. Append and
-// Heartbeat carry its Epoch; a Writer whose Epoch has been superseded gets
+// Writer is the kernel's ownership handle returned by Store.Open. Append
+// carries its Epoch; a Writer whose Epoch has been superseded gets
 // ErrOwnershipLost and writes nothing (SES-OWN-2).
 type Writer interface {
 	SessionID() SessionID
@@ -37,7 +36,6 @@ type Writer interface {
 	// (SES-APP-1). It rejects empty groups, duplicate CommitIDs, non-canonical
 	// or non-object payloads, invalid identities and a stale Epoch (SES-APP-3).
 	Append(context.Context, Group) ([]SessionEvent, error)
-	Heartbeat(context.Context) error
 	Close(context.Context) error
 }
 

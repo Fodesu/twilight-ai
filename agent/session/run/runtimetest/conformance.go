@@ -4,7 +4,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/memohai/twilight/agent/artifact"
 	"github.com/memohai/twilight/agent/es"
@@ -42,7 +41,7 @@ func Run(t *testing.T, factory Factory) {
 // --- 建立与寻址 -----------------------------------------------------------------------
 
 func testCreation(t *testing.T, factory Factory) {
-	h := newHarness(t, factory(t), 0)
+	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	snap := h.load("r1")
 	if snap.State.Owner != "t1" || snap.State.Attempt != 1 || len(snap.State.PendingInputs) != 1 || snap.SchemaVersion != run.SchemaVersion1 {
@@ -96,7 +95,7 @@ func testCreation(t *testing.T, factory Factory) {
 // --- 重放与 Base ----------------------------------------------------------------------
 
 func testReplayAndBase(t *testing.T, factory Factory) {
-	h := newHarness(t, factory(t), 0)
+	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	first := h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-2"), 0, run.AcceptInput{Input: input("in-2")})
 	if first.Status != run.CommitAccepted {
@@ -138,7 +137,7 @@ func testReplayAndBase(t *testing.T, factory Factory) {
 // --- 输入入队 --------------------------------------------------------------------------
 
 func testInputQueue(t *testing.T, factory Factory) {
-	h := newHarness(t, factory(t), 0)
+	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	// Prepared: the input queues and Next asks to withdraw.
 	step := h.prepare("r1", false)
@@ -172,7 +171,7 @@ func testInputQueue(t *testing.T, factory Factory) {
 		t.Fatalf("after result with pending input = %+v", res.Snapshot.State)
 	}
 	// ToolStep: the input queues as well.
-	h2 := newHarness(t, factory(t), 0)
+	h2 := newHarness(t, factory(t))
 	h2.startRun("t1", "r2", input("in-1"))
 	h2.openToolStep("r2", 1)
 	res = h2.mustCommit("r2", run.DeriveInputCommandID("r2", "in-9"), 0, run.AcceptInput{Input: input("in-9")})
@@ -184,7 +183,7 @@ func testInputQueue(t *testing.T, factory Factory) {
 // --- start 与 claim ------------------------------------------------------------------------
 
 func testStartAndClaim(t *testing.T, factory Factory) {
-	h := newHarness(t, factory(t), 0)
+	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	step, claim := h.executingModel("r1", false)
 	// Same-claim replay is AlreadyApplied; another claim finds the target taken.
@@ -220,7 +219,7 @@ func testStartAndClaim(t *testing.T, factory Factory) {
 // --- 组的组成 ----------------------------------------------------------------------------
 
 func testGroupComposition(t *testing.T, factory Factory) {
-	h := newHarness(t, factory(t), 0)
+	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	step, claim := h.executingModel("r1", true)
 	result, bindings := h.toolCallResult(step, 1)
@@ -293,7 +292,7 @@ func asStrings(types []session.EventType) []string {
 // --- admission -------------------------------------------------------------------------------
 
 func testAdmission(t *testing.T, factory Factory) {
-	h := newHarness(t, factory(t), 0)
+	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	ref := artifact.Ref{Scheme: "cas", Authority: "local", Key: "k1", Durability: artifact.EventBound, Integrity: &artifact.Integrity{Algorithm: "sha256", Value: "x"}}
 	binding, err := artifact.NewBinding("b1", ref)
@@ -340,7 +339,7 @@ func mustSet(t *testing.T, h *harness, ids ...artifact.BindingID) artifact.Bindi
 // --- 结算返回值 --------------------------------------------------------------------------------
 
 func testSettlementSnapshot(t *testing.T, factory Factory) {
-	h := newHarness(t, factory(t), 0)
+	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	step, claim := h.executingModel("r1", false)
 	res := h.mustCommit("r1", run.DeriveSettlementCommandID("r1", step, "", claim), 0, run.SubmitModelResult{StepID: step, Result: textResult("done")})
@@ -361,7 +360,7 @@ func testSettlementSnapshot(t *testing.T, factory Factory) {
 // --- Prepare hard CAS 对其他模块不敏感 ---------------------------------------------------------------
 
 func testPrepareCASIgnoresOtherModules(t *testing.T, factory Factory) {
-	h := newHarness(t, factory(t), 0)
+	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	h.startRun("t2", "r2", input("in-b"))
 	snap := h.load("r1")
@@ -384,7 +383,7 @@ func testPrepareCASIgnoresOtherModules(t *testing.T, factory Factory) {
 // --- 投影 -------------------------------------------------------------------------------------------
 
 func testProjection(t *testing.T, factory Factory) {
-	h := newHarness(t, factory(t), 0)
+	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	cached := func() (session.Head, bool) {
 		_, through, ok, err := h.cache.Load(h.ctx, sid, runmod.MachineProjectionID, runmod.MachineProjection.Version)
@@ -448,7 +447,7 @@ func testProjection(t *testing.T, factory Factory) {
 // --- 隔离 --------------------------------------------------------------------------------------------
 
 func testIsolation(t *testing.T, factory Factory) {
-	h := newHarness(t, factory(t), 0)
+	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	h.startRun("t2", "r2", input("in-b"))
 	p1 := h.load("r1").Position
@@ -472,11 +471,7 @@ func testIsolation(t *testing.T, factory Factory) {
 // --- 接管处置 -----------------------------------------------------------------------------------------
 
 func testTakeover(t *testing.T, factory Factory) {
-	f := factory(t)
-	if f.Advance == nil {
-		t.Skip("fixture has no clock; TTL takeover not testable")
-	}
-	h := newHarness(t, f, time.Minute)
+	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	h.startRun("t2", "r2", input("in-b"))
 	// r1: executing model; r2: one executing and one pending tool call.
@@ -537,11 +532,7 @@ func testTakeover(t *testing.T, factory Factory) {
 // --- 所有权失效 ----------------------------------------------------------------------------------------
 
 func testOwnershipLost(t *testing.T, factory Factory) {
-	f := factory(t)
-	if f.Advance == nil {
-		t.Skip("fixture has no clock; TTL takeover not testable")
-	}
-	h := newHarness(t, f, time.Minute)
+	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	step, claim := h.executingModel("r1", false)
 	old := h.takeover()
@@ -565,7 +556,7 @@ func testOwnershipLost(t *testing.T, factory Factory) {
 // --- FrozenValueStore --------------------------------------------------------------------------------
 
 func testFrozenValues(t *testing.T, factory Factory) {
-	h := newHarness(t, factory(t), 0)
+	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	step, claim := h.executingModel("r1", false)
 	digest := h.load("r1").State.Current.(run.ModelStep).RequestDigest
