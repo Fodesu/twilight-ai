@@ -58,7 +58,6 @@ type StartedPayload struct {
     InputIDs []chatlog.InputID
     ExecutionBinding ExecutionBindingRef
     Companion CompanionVersion
-    PlanDigest es.Digest
 }
 type CompletedPayload struct {
     TurnID TurnID
@@ -78,7 +77,7 @@ type SupersededPayload struct {
 
 **TRN-ID-1** `TurnRef`、RunID、binding ID、CompanionVersion、InputID 与 digest 非空且稳定。
 
-**TRN-ID-2** `PlanDigest = Digest("twilight/turn/plan", TurnID, ExecutionBinding.Digest, Companion, ordered InputIDs)`。
+**TRN-ID-2** `PlanDigest = Digest("twilight/turn/plan", TurnID, ExecutionBinding.Digest, Companion, ordered InputIDs)`。PlanDigest 只参与 TRN-ID-3 的派生，不落盘：`started` payload 的每个字段都是它的 preimage 成员，落盘该 digest 不提供额外判定。
 
 **TRN-ID-3** `StartOperationDigest = Digest("twilight/turn/start-operation", SessionID, TurnID, PlanDigest)`。用户正文 identity 在对应 `twilight/chatlog/input_submitted` 中。
 
@@ -202,7 +201,7 @@ const (
 **TRN-STR-2** Start 是一次原子 commit，顺序为：
 
 ```text
-twilight/turn/started{TurnID, InputIDs, ExecutionBinding, Companion, PlanDigest}
+twilight/turn/started{TurnID, InputIDs, ExecutionBinding, Companion}
 twilight/chatlog/input_delivered{InputIDs[0], TurnID}
 ...
 twilight/chatlog/input_delivered{InputIDs[n-1], TurnID}

@@ -74,7 +74,7 @@ func New(opts Options) (*Memory, error) {
 	}
 	runtime, err := runmod.NewRuntime(runmod.Config{
 		Writers: writers, Registry: registry, Store: store,
-		Frozen: opts.Frozen, Companion: turn.CompanionV1{}, Cache: extension.NewMemoryProjectionCache(), Now: now,
+		Frozen: opts.Frozen, Companion: turn.CompanionV1{}, Now: now,
 	})
 	if err != nil {
 		return nil, err

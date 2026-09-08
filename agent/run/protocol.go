@@ -14,21 +14,19 @@ const SchemaVersion1 uint16 = 1
 
 // CommandEnvelope carries one command with its protocol identity. Commands
 // are not persisted: ID is the CommitID of the SessionCommit the command
-// produces, and Digest lets the Runtime tell an exact replay from a conflict
-// (RUN-WIR-2).
+// produces, and replay is told from conflict by the Writer's row fingerprint
+// (RUN-WIR-2, EXT-WRT-2).
 type CommandEnvelope struct {
 	SchemaVersion uint16            `json:"schemaVersion"`
 	Type          string            `json:"type"`
 	SessionID     session.SessionID `json:"sessionId"`
 	RunID         RunID             `json:"runId"`
 	ID            CommandID         `json:"id"`
-	Digest        Digest            `json:"digest"`
 	Command       AgentCommand      `json:"command"`
 }
 
 // encodeEnvelopeBody is the digest input for a command: schema version, type
-// discriminator and canonical command bytes. The Digest field itself, base
-// revisions and grants never enter the digest (RUN-WIR-2).
+// discriminator and canonical command bytes.
 func encodeEnvelopeBody(schemaVersion uint16, typ string, body any) ([]byte, error) {
 	return es.EncodeTypedPayload(schemaVersion, typ, body)
 }
@@ -182,20 +180,6 @@ func (p Protocol) BuildCreateGroup(run NewRun, inputs []AgentInput) ([]Fact, err
 	return p.buildCreateGroup(run, inputs)
 }
 
-func (p Protocol) DigestCommand(typ string, command AgentCommand) (Digest, error) {
-	if err := p.ready(); err != nil {
-		return "", err
-	}
-	if typ == "" || typ != commandType(command) {
-		return "", fmt.Errorf("agent: digest: type %q does not match command variant", typ)
-	}
-	body, err := encodeEnvelopeBody(p.version, typ, command)
-	if err != nil {
-		return "", err
-	}
-	return sha256Digest(body), nil
-}
-
 func (p Protocol) EncodeFact(typ string, fact Fact) ([]byte, error) {
 	if err := p.ready(); err != nil {
 		return nil, err
@@ -248,17 +232,12 @@ func (p Protocol) BuildEnvelope(sid session.SessionID, run RunID, id CommandID, 
 	if typ == "" {
 		return CommandEnvelope{}, fmt.Errorf("agent: envelope: unknown command variant %T", cmd)
 	}
-	d, err := p.DigestCommand(typ, cmd)
-	if err != nil {
-		return CommandEnvelope{}, err
-	}
 	return CommandEnvelope{
 		SchemaVersion: p.version,
 		Type:          typ,
 		SessionID:     sid,
 		RunID:         run,
 		ID:            id,
-		Digest:        d,
 		Command:       cmd,
 	}, nil
 }

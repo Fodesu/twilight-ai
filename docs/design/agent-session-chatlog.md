@@ -232,7 +232,7 @@ twilight/chatlog/checkpoint_invalidated
 
 **CHT-EVT-2** `input_submitted` 创建 Input。Delivered、Withdrawn、Rejected 各终结一次。`input_delivered` 要求 Input 仍为 submitted，并写入非空 TurnID；它与把该输入交给 Run 的事实同组：Start group 中与 `twilight/turn/started` 一起，回合中途与 `twilight/run/input_accepted` 一起（TRN-STR-2、TRN-DLV-2）。AssistantID、ToolResultID、SummaryID 在 stream 内单次创建。
 
-**CHT-EVT-3** checkpoint Digest 的 domain 为 `twilight/chatlog/checkpoint_created`。`BaseContextDigest` 覆盖截至 `CoveredThrough` 的有序 active Context 序列 `(Kind, ID, Digest)`。`CoveredThrough` 早于该 checkpoint。`SummaryID` 落在 `CoveredThrough` 与 checkpoint 之间，且已由 `summary` 创建。该间隙内仅有这一条 summary。`Retained` 为 base 序列的有序子集。合法 checkpoint 下 Context 为 `[Summary] + Retained`，再 fold checkpoint 之后的 tail。checkpoint 在显式 invalidate，或 summary / Retained / base source 被 supersede 之后失效；projection 回退到更早合法 checkpoint，或从全量 events 重折。
+**CHT-EVT-3**（checkpoint 协议）移至附录 A：未实现，随实现需求冻结。
 
 ## 6. Surface projection
 
@@ -288,3 +288,9 @@ type ContextMaterializer interface {
 - **CHT-COD-1 至 CHT-COD-3**：codec；Digest domain 与 EventType 相同；
 - **CHT-SUR-1、CHT-CTX-1、CHT-CTX-2**：EntryOrder 与 checkpoint；
 - **CHT-MAT-1**：materializer 为 IO 边界。
+
+## 附录 A：checkpoint 协议（未实现，随实现需求冻结）
+
+**CHT-EVT-3** checkpoint Digest 的 domain 为 `twilight/chatlog/checkpoint_created`。`BaseContextDigest` 覆盖截至 `CoveredThrough` 的有序 active Context 序列 `(Kind, ID, Digest)`。`CoveredThrough` 早于该 checkpoint。`SummaryID` 落在 `CoveredThrough` 与 checkpoint 之间，且已由 `summary` 创建。该间隙内仅有这一条 summary。`Retained` 为 base 序列的有序子集。合法 checkpoint 下 Context 为 `[Summary] + Retained`，再 fold checkpoint 之后的 tail。checkpoint 在显式 invalidate，或 summary / Retained / base source 被 supersede 之后失效；projection 回退到更早合法 checkpoint，或从全量 events 重折。
+
+本条与 fork/import（agent-session.md 附录 A）同等待遇：wire 与不变量在第一个实现与消费者出现之前不冻结，实现时允许修订。CHT-EVT-1 保留 `checkpoint_created` / `checkpoint_invalidated` 两个 EventType 名与第 2 节的生命周期行；CHT-CTX-2 中"合法 checkpoint 按 CHT-EVT-3 应用"在本附录实现前为空操作。

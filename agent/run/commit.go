@@ -25,9 +25,9 @@ type CommitDecision struct {
 	Reject error
 }
 
-// ValidateEnvelope is step 1 of RUN-CMT-3: identity, schema and digest. A
-// digest that does not cover the command is a construction fault and is
-// returned as a hard error, never as a retriable rejection.
+// ValidateEnvelope is step 1 of RUN-CMT-3: identity and schema. Envelopes are
+// only built by Protocol.BuildEnvelope (RUN-WIR-3), so there is no per-commit
+// self-verification of the command bytes.
 func ValidateEnvelope(env *CommandEnvelope, proto Protocol) error {
 	if env.SessionID == "" || env.RunID == "" || env.ID == "" {
 		return errors.New("agent: commit: empty SessionID, RunID or CommandID")
@@ -37,13 +37,6 @@ func ValidateEnvelope(env *CommandEnvelope, proto Protocol) error {
 	}
 	if env.SchemaVersion != proto.Version() {
 		return fmt.Errorf("agent: commit: command schema %d does not match run schema %d", env.SchemaVersion, proto.Version())
-	}
-	wantDigest, err := proto.DigestCommand(env.Type, env.Command)
-	if err != nil {
-		return err
-	}
-	if env.Digest != wantDigest {
-		return errors.New("agent: commit: envelope digest mismatch")
 	}
 	return nil
 }

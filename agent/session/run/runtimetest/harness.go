@@ -169,7 +169,7 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	if attempt == 1 {
 		group.Events = append(group.Events, extension.TypedEvent{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
 			Value: turn.StartedPayload{TurnID: turnID, InputIDs: ids, ExecutionBinding: turn.ExecutionBindingRef{ID: "b", Digest: "sha256:b"},
-				Companion: turn.CompanionV1Version, PlanDigest: "sha256:plan"}})
+				Companion: turn.CompanionV1Version}})
 		for _, id := range ids {
 			group.Events = append(group.Events, extension.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: 1,
 				Value: chatlog.InputDeliveredPayload{InputID: id, TurnID: chatlog.TurnID(turnID)}})

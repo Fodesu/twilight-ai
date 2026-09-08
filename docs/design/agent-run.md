@@ -64,12 +64,11 @@ type CommandEnvelope struct {
     SessionID session.SessionID
     RunID RunID
     ID CommandID
-    Digest Digest      // 覆盖 schema、type 与完整 command，含 transient 内容
     Command AgentCommand
 }
 ```
 
-command 不持久化。`CommandEnvelope.ID` 就是该 command 产生的 event 组的 `CommitID`；`Digest` 只用于 Runtime 校验 envelope 构造完整（不匹配为不可重试错误），不参与重放判定。
+command 不持久化。`CommandEnvelope.ID` 就是该 command 产生的 event 组的 `CommitID`；重放与冲突由 Writer 的行 fingerprint 判定（EXT-WRT-2）。envelope 只经 `Protocol.BuildEnvelope` 构造（RUN-WIR-3），不携带自校验 digest。
 
 **RUN-WIR-3** 一个 command 恰产生一组事件（一次 `Append`，同一 CommitID）；其 `twilight/run/` 事件在组内 Index 从 0 连续递增，companion 事件（TRN-CMP）与调用方附加事件（`CommitRequest.Attach`）依次紧随其后。事件没有独立 EventID，`Seq` 即身份（SES-WIR-1）。Runtime 提交的组其 CommitID 等于 CommandID，Coordinator 写入的 Start 与 Retry 组使用该组自己的 CommitID。`RecordedAtUnixMilli` 由写入方的时钟填入，是 metadata，不参与 Run 的任何派生，也不进入 Writer 的幂等 fingerprint（EXT-WRT-2）。构造 command 必须使用该 Run 版本的 `Protocol.BuildEnvelope`（Loop 通过 `RuntimeSnapshot.Protocol()` 取得）。`agent/run` 不提供隐式选择版本的包级 `BuildEnvelope`、`Decide`、`Evolve` 或 `Digest*` 函数；新 Run 与测试显式使用 `ProtocolV1()`。
 
@@ -360,7 +359,6 @@ func (Protocol) DigestModelStepBinding(ModelRef, Digest, Digest) (Digest, error)
 func (Protocol) DigestModelResult(ModelResult) (Digest, error)
 func (Protocol) DigestToolOutput(CanonicalJSON) (Digest, error)
 func (Protocol) DigestToolResponseDecision(ResponseKind, ResponseDecision, string) (Digest, error)
-func (Protocol) DigestCommand(typ string, command AgentCommand) (Digest, error)
 func (Protocol) EncodeFact(typ string, fact Fact) (jsonstable.Value, error) // 不含 v；Registry 加入
 func (Protocol) DecodeFact(typ string, wire jsonstable.Value) (Fact, error)
 func (Protocol) Decide(MachineState, AgentCommand) ([]Fact, error)
@@ -403,7 +401,7 @@ type MachineProjection struct {
 
 ```text
 writer.Commit(func(view):
-  1  validate envelope SessionID/RunID/schema/type/digest（digest 不匹配为不可重试错误）
+  1  validate envelope SessionID/RunID/schema/type
   2  view.LookupCommit(CommitID = CommandID)
   3  found -> fn 返回 nil（Writer 记 Noop）；Runtime 以查到的行与当前投影构造 CommitAlreadyApplied
   4  derived CommandID check

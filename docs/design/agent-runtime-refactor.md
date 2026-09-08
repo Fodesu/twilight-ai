@@ -125,10 +125,11 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 
 ### 4.2 durable adapters
 
-- 文件 adapter `agent/session/filestore`：一个 Session 一个目录，`stream.jsonl` 一行一个 event，`session.lock` 为 `flock` 目标，每次 Append 一次 fsync，打开时截掉不完整尾组；
+- 文件 adapter `agent/session/filestore`：已完成——一个 Session 一个目录（header.json、log.jsonl 一行一个 event、owner.json 承载 epoch 与 owned），每次 Append 一次 fsync，打开时校验摘要链并截掉不完整尾组，接管走 `Takeover`；
 - 数据库 adapter（SQLite / PostgreSQL）：sessions（header、epoch）、events 两张表，Append 一个事务；只在多会话服务需要时做；
 - 收紧 Session authority tables 的 immutable RLS policy；
-- 需要远程 Store 或跨存储 claim 时，实现 extension 附录 C 与 artifact 附录的两阶段路径。
+- 需要远程 Store 或跨存储 claim 时，实现 extension 附录 C 与 artifact 附录的两阶段路径；
+- 内容寻址旁存合并：FrozenValueStore 与 artifact 的 `cas` scheme 是同一抽象的两份定义，长期把模型请求本体旁存实现为 authority 固定的 artifact `cas` 存储实例，随第一个真实内容存储（artifact Store/Resolver）一起做。
 
 ### 4.3 Application migration
 
@@ -139,7 +140,7 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 
 ## 4.3 Run 内部整理（已完成）
 
-- envelope digest 不匹配从 `ErrCommandConflict` 改为不可重试错误，调用方不再对构造错误 reload 重试；
+- envelope digest 不匹配从 `ErrCommandConflict` 改为不可重试错误，调用方不再对构造错误 reload 重试（该自校验其后整体删除：envelope 只经 `BuildEnvelope` 构造，不再携带 digest）；
 - Evolve 对重复 `InputAccepted` 报错而非静默去重；
 - `decideSubmitModelResult` 拆为 binding 校验与 ToolStep 派生两步；
 - `RunEnded` wire 改为 tagged union，与 Go sealed union 对称；

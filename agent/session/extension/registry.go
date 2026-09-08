@@ -268,15 +268,8 @@ func (r *Registry) Encode(typ session.EventType, value any) (jsonstable.Value, P
 	if err != nil {
 		return jsonstable.Value{}, 0, &Error{Code: ErrCodec, Type: typ, Detail: err.Error()}
 	}
-	// Round trip: the persisted bytes must decode to the same canonical form.
-	back, err := codec.Decode(body)
-	if err != nil {
-		return jsonstable.Value{}, 0, &Error{Code: ErrCodec, Type: typ, Detail: "decode round trip: " + err.Error()}
-	}
-	again, err := codec.Encode(back)
-	if err != nil || !again.Equal(body) {
-		return jsonstable.Value{}, 0, &Error{Code: ErrCodec, Type: typ, Detail: "encode/decode/encode is not canonical-stable"}
-	}
+	// The canonical Encode/Decode/Encode round trip is a module test
+	// obligation (EXT-COD-1), not re-verified per Encode.
 	return wire, def.Current, nil
 }
 

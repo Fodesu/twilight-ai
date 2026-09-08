@@ -53,7 +53,6 @@ type StartedPayload struct {
 	InputIDs         []chatlog.InputID   `json:"inputIds,omitempty"`
 	ExecutionBinding ExecutionBindingRef `json:"executionBinding"`
 	Companion        CompanionVersion    `json:"companion"`
-	PlanDigest       es.Digest           `json:"planDigest"`
 }
 
 type CompletedPayload struct {
@@ -132,8 +131,8 @@ var Module = extension.ModuleDescriptor{
 	},
 	Events: []extension.EventDefinition{
 		def[StartedPayload](TypeStarted, func(p *StartedPayload) error {
-			if p.TurnID == "" || p.ExecutionBinding.ID == "" || p.ExecutionBinding.Digest == "" || p.Companion == "" || p.PlanDigest == "" {
-				return errors.New("started requires turnId, binding, companion and planDigest")
+			if p.TurnID == "" || p.ExecutionBinding.ID == "" || p.ExecutionBinding.Digest == "" || p.Companion == "" {
+				return errors.New("started requires turnId, binding and companion")
 			}
 			return nil
 		}),

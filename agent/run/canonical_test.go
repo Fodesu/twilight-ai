@@ -2,7 +2,6 @@ package run
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 )
 
@@ -97,26 +96,8 @@ func TestCanonicalDeterminism(t *testing.T) {
 	}
 }
 
-func TestDigestCommandIdentity(t *testing.T) {
+func TestDigestPreimageCoversSchemaVersion(t *testing.T) {
 	cmd := StartToolCall{StepID: "s1", CallID: "c1", Claim: "claim-1"}
-	d1, err := ProtocolV1().DigestCommand("start_tool_call", cmd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(string(d1), "sha256:") || len(d1) != len("sha256:")+64 {
-		t.Fatalf("bad digest wire form: %s", d1)
-	}
-	// Same content, same digest.
-	d2, _ := ProtocolV1().DigestCommand("start_tool_call", StartToolCall{StepID: "s1", CallID: "c1", Claim: "claim-1"})
-	if d1 != d2 {
-		t.Fatal("same command produced different digests")
-	}
-	// Different content differs.
-	d3, _ := ProtocolV1().DigestCommand("start_tool_call", StartToolCall{StepID: "s1", CallID: "c2", Claim: "claim-1"})
-	if d1 == d3 {
-		t.Fatal("different commands produced the same digest")
-	}
-	// Schema version participates in the digest preimage.
 	body1, err := encodeEnvelopeBody(SchemaVersion1, "start_tool_call", cmd)
 	if err != nil {
 		t.Fatal(err)
@@ -127,10 +108,6 @@ func TestDigestCommandIdentity(t *testing.T) {
 	}
 	if string(body1) == string(body2) {
 		t.Fatal("schema version did not affect digest preimage")
-	}
-	// Type mismatch is rejected.
-	if _, err := ProtocolV1().DigestCommand("cancel_run", cmd); err == nil {
-		t.Fatal("expected type/variant mismatch error")
 	}
 }
 
@@ -213,16 +190,6 @@ func TestSchemaVersion1Golden(t *testing.T) {
 	wantBody := `v1:10:cancel_run:{"reason":"cancelled"}`
 	if string(body) != wantBody {
 		t.Fatalf("golden body changed:\n got %q\nwant %q", body, wantBody)
-	}
-	d, err := ProtocolV1().DigestCommand("cancel_run", cmd)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Current pre-release fixture. After publication, a mismatch is a protocol
-	// break that invalidates persisted digests and must not update this value.
-	const wantDigest = "sha256:a7770a5443f180ec1935bfa4498af75375b8d5f182f239f587917b28b78ee80c"
-	if string(d) != wantDigest {
-		t.Fatalf("golden digest changed:\n got %s\nwant %s", d, wantDigest)
 	}
 
 	fact := InputAccepted{Input: AgentInput{ID: "in-1", Payload: cj(`{"text":"hi"}`)}}

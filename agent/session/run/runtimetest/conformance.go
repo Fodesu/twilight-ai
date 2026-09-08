@@ -454,7 +454,7 @@ func testIsolation(t *testing.T, factory Factory) {
 	h.prepare("r2", false)
 	h.submitInputs(input("noise"))
 	h.mustApply(extension.SemanticGroup{CommitID: "turn-noise", Events: []extension.TypedEvent{{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
-		Value: turn.StartedPayload{TurnID: "t9", ExecutionBinding: turn.ExecutionBindingRef{ID: "b", Digest: "sha256:b"}, Companion: turn.CompanionV1Version, PlanDigest: "sha256:p"}}}})
+		Value: turn.StartedPayload{TurnID: "t9", ExecutionBinding: turn.ExecutionBindingRef{ID: "b", Digest: "sha256:b"}, Companion: turn.CompanionV1Version}}}})
 	if h.load("r1").Position != p1 {
 		t.Fatal("r2, chatlog or turn writes moved r1")
 	}

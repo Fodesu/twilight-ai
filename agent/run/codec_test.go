@@ -42,7 +42,7 @@ func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 		if reflect.TypeOf(decoded.Command) != reflect.TypeOf(cmd) {
 			t.Fatalf("decoded command type = %T, want %T", decoded.Command, cmd)
 		}
-		if decoded.Type != env.Type || decoded.Digest != env.Digest || decoded.ID != env.ID {
+		if decoded.Type != env.Type || decoded.ID != env.ID {
 			t.Fatalf("decoded envelope = %+v, want %+v", decoded, env)
 		}
 	}
@@ -97,7 +97,7 @@ func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw := []byte(fmt.Sprintf(`{"schemaVersion":1,"type":"accept_input","runId":"run-1","id":%q,"digest":%q,"command":{"input":{"id":"in","payload":1},"input":{"id":"in","payload":1}}}`, env.ID, env.Digest))
+	raw := []byte(fmt.Sprintf(`{"schemaVersion":1,"type":"accept_input","runId":"run-1","id":%q,"command":{"input":{"id":"in","payload":1},"input":{"id":"in","payload":1}}}`, env.ID))
 	if _, err := DecodeCommandEnvelope(raw); err == nil {
 		t.Fatal("duplicate key command decoded")
 	}
@@ -112,7 +112,7 @@ func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
 	}
 }
 
-func TestWireCodecRejectsUnknownTypeAndDigestMismatch(t *testing.T) {
+func TestWireCodecRejectsUnknownType(t *testing.T) {
 	env, err := ProtocolV1().BuildEnvelope("s-1", "run-1", "cmd-1", CancelRun{})
 	if err != nil {
 		t.Fatal(err)
@@ -125,11 +125,6 @@ func TestWireCodecRejectsUnknownTypeAndDigestMismatch(t *testing.T) {
 	if _, err := DecodeCommandEnvelope([]byte(badType)); err == nil {
 		t.Fatal("unknown command type decoded")
 	}
-	badDigest := strings.Replace(string(raw), string(env.Digest), "sha256:bad", 1)
-	if _, err := DecodeCommandEnvelope([]byte(badDigest)); err == nil {
-		t.Fatal("bad command digest decoded")
-	}
-
 }
 
 func TestRunEndedTaggedUnionRejectsInvalidValues(t *testing.T) {

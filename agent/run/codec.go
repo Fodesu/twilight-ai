@@ -16,7 +16,6 @@ type commandEnvelopeWire struct {
 	SessionID     session.SessionID `json:"sessionId,omitempty"`
 	RunID         RunID             `json:"runId"`
 	ID            CommandID         `json:"id"`
-	Digest        Digest            `json:"digest"`
 	Command       json.RawMessage   `json:"command"`
 }
 
@@ -26,13 +25,12 @@ type commandEnvelopeMarshal struct {
 	SessionID     session.SessionID `json:"sessionId,omitempty"`
 	RunID         RunID             `json:"runId"`
 	ID            CommandID         `json:"id"`
-	Digest        Digest            `json:"digest"`
 	Command       AgentCommand      `json:"command"`
 }
 
-// DecodeCommandEnvelope decodes the persisted command wire shape and restores
-// the sealed command variant from Type. The digest is verified during decode;
-// malformed or unsupported wire data is rejected before it can enter Runtime.
+// DecodeCommandEnvelope decodes the command wire shape and restores the
+// sealed command variant from Type; malformed or unsupported wire data is
+// rejected before it can enter Runtime.
 func DecodeCommandEnvelope(raw []byte) (CommandEnvelope, error) {
 	var env CommandEnvelope
 	if err := decodeStrictJSON(raw, &env); err != nil {
@@ -59,7 +57,6 @@ func (e CommandEnvelope) MarshalJSON() ([]byte, error) {
 		SessionID:     e.SessionID,
 		RunID:         e.RunID,
 		ID:            e.ID,
-		Digest:        e.Digest,
 		Command:       e.Command,
 	})
 }
@@ -77,23 +74,12 @@ func (e *CommandEnvelope) UnmarshalJSON(raw []byte) error {
 	if err != nil {
 		return err
 	}
-	want, err := proto.DigestCommand(wire.Type, cmd)
-	if err != nil {
-		return err
-	}
-	if wire.Digest == "" {
-		return errors.New("agent: codec: command envelope missing digest")
-	}
-	if wire.Digest != want {
-		return fmt.Errorf("agent: codec: command digest mismatch: got %s want %s", wire.Digest, want)
-	}
 	if err := requireCanonicalEquivalent(raw, commandEnvelopeMarshal{
 		SchemaVersion: wire.SchemaVersion,
 		Type:          wire.Type,
 		SessionID:     wire.SessionID,
 		RunID:         wire.RunID,
 		ID:            wire.ID,
-		Digest:        wire.Digest,
 		Command:       cmd,
 	}); err != nil {
 		return err
@@ -104,7 +90,6 @@ func (e *CommandEnvelope) UnmarshalJSON(raw []byte) error {
 		SessionID:     wire.SessionID,
 		RunID:         wire.RunID,
 		ID:            wire.ID,
-		Digest:        wire.Digest,
 		Command:       cmd,
 	}
 	return nil

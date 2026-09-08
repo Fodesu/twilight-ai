@@ -146,3 +146,50 @@ func TestSurfaceAndContextFold(t *testing.T) {
 		t.Fatal("second delivery accepted")
 	}
 }
+
+// EXT-COD-1: every registered event type's current codec is canonical
+// round-trip stable — Encode, Decode, Encode reproduces the bytes.
+func TestEventCodecCanonicalRoundTrip(t *testing.T) {
+	assistant := Assistant{ID: "a1", TurnID: "t1", Parts: Parts{TextPart{Text: "hi"}, ReferencePart{BindingID: "b1"}}, SourceDigest: "sha256:src"}
+	var err error
+	if assistant.Digest, err = DigestAssistant(&assistant); err != nil {
+		t.Fatal(err)
+	}
+	toolResult := ToolResult{ID: "tr1", TurnID: "t1", CallID: "c1", Status: ToolSuccess, Parts: Parts{TextPart{Text: "ok"}}, SourceDigest: "sha256:out"}
+	if toolResult.Digest, err = DigestToolResult(&toolResult); err != nil {
+		t.Fatal(err)
+	}
+	summary := Summary{ID: "sum1", Parts: Parts{TextPart{Text: "so far"}}}
+	if summary.Digest, err = DigestSummary(&summary); err != nil {
+		t.Fatal(err)
+	}
+	samples := map[session.EventType]any{
+		TypeInputSubmitted:       InputSubmittedPayload{InputID: "in-1", Content: jsonstable.MustParse(`{"text":"hi"}`), SubmittedAtUnixMilli: 1},
+		TypeInputDelivered:       InputDeliveredPayload{InputID: "in-1", TurnID: "t1"},
+		TypeInputWithdrawn:       InputWithdrawnPayload{InputID: "in-1", Reason: "user"},
+		TypeInputRejected:        InputRejectedPayload{InputID: "in-1"},
+		TypeAssistant:            AssistantPayload{Assistant: assistant},
+		TypeToolResult:           ToolResultPayload{ToolResult: toolResult},
+		TypeToolResultSuperseded: ToolResultSupersededPayload{ToolResultID: "tr1", ReplacementToolResultID: "tr2"},
+		TypeSummary:              SummaryPayload{Summary: summary},
+	}
+	for _, def := range Module.Events {
+		value, ok := samples[def.Type]
+		if !ok {
+			t.Fatalf("no sample for %s", def.Type)
+		}
+		codec := def.Codecs[def.Current]
+		first, err := codec.Encode(value)
+		if err != nil {
+			t.Fatalf("%s: encode: %v", def.Type, err)
+		}
+		back, err := codec.Decode(first)
+		if err != nil {
+			t.Fatalf("%s: decode: %v", def.Type, err)
+		}
+		again, err := codec.Encode(back)
+		if err != nil || !again.Equal(first) {
+			t.Fatalf("%s: round trip changed bytes: %s vs %s (%v)", def.Type, first, again, err)
+		}
+	}
+}

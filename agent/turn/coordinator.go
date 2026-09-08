@@ -181,7 +181,7 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 	now := c.now()
 	err = c.commit(ctx, sid, "start", func(view extension.View) (*extension.SemanticGroup, error) {
 		if _, found := view.LookupCommit(commitID); found {
-			group := c.startGroup(commitID, turnID, inputIDs, req, plan, facts, now)
+			group := c.startGroup(commitID, turnID, inputIDs, req, facts, now)
 			return &group, nil // exact replay: the Writer compares fingerprints
 		}
 		surface, err := loadSurface(view)
@@ -197,7 +197,7 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 		if err := checkSubmitted(view, req.Inputs); err != nil {
 			return nil, err
 		}
-		group := c.startGroup(commitID, turnID, inputIDs, req, plan, facts, now)
+		group := c.startGroup(commitID, turnID, inputIDs, req, facts, now)
 		return &group, nil
 	})
 	if err != nil {
@@ -206,10 +206,10 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 	return c.drive(ctx, req.Ref, runID)
 }
 
-func (c *Coordinator) startGroup(commitID session.CommitID, turnID TurnID, inputIDs []chatlog.InputID, req StartRequest, plan es.Digest, facts []run.Fact, now int64) extension.SemanticGroup {
+func (c *Coordinator) startGroup(commitID session.CommitID, turnID TurnID, inputIDs []chatlog.InputID, req StartRequest, facts []run.Fact, now int64) extension.SemanticGroup {
 	group := extension.SemanticGroup{CommitID: commitID}
 	group.Events = append(group.Events, extension.TypedEvent{Type: TypeStarted, RecordedAtUnixMilli: now,
-		Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, ExecutionBinding: req.ExecutionBinding, Companion: req.Companion, PlanDigest: plan}})
+		Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, ExecutionBinding: req.ExecutionBinding, Companion: req.Companion}})
 	for _, id := range inputIDs {
 		group.Events = append(group.Events, extension.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: now,
 			Value: chatlog.InputDeliveredPayload{InputID: id, TurnID: chatlog.TurnID(turnID)}})
