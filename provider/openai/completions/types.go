@@ -48,9 +48,12 @@ type chatFunction struct {
 }
 
 type chatMessage struct {
-	Role             string                `json:"role"`
-	Content          any                   `json:"content"`
-	ReasoningContent string                `json:"reasoning_content,omitempty"`
+	Role    string `json:"role"`
+	Content any    `json:"content"`
+	// ReasoningContent is a pointer so an empty reasoning block can be sent as
+	// "" instead of being dropped: DeepSeek and Kimi thinking modes validate
+	// the key's presence on replayed tool-call messages, not its length.
+	ReasoningContent *string               `json:"reasoning_content,omitempty"`
 	ReasoningDetails []chatReasoningDetail `json:"reasoning_details,omitempty"`
 	ToolCalls        []chatToolCall        `json:"tool_calls,omitempty"`
 	ToolCallID       string                `json:"tool_call_id,omitempty"`
@@ -101,9 +104,12 @@ type chatChoice struct {
 }
 
 type chatRespMessage struct {
-	Role             string                `json:"role"`
-	Content          string                `json:"content"`
-	ReasoningContent string                `json:"reasoning_content,omitempty"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	// ReasoningContent is a pointer because the key's presence is itself a
+	// signal: DeepSeek returns "" for a thinking-mode step that produced no
+	// reasoning and omits the key when thinking is disabled.
+	ReasoningContent *string               `json:"reasoning_content,omitempty"`
 	ReasoningDetails []chatReasoningDetail `json:"reasoning_details,omitempty"`
 	Reasoning        string                `json:"reasoning,omitempty"`
 	Refusal          string                `json:"refusal,omitempty"`
@@ -157,9 +163,11 @@ type chatChunkChoice struct {
 }
 
 type chatChunkDelta struct {
-	Role             string                `json:"role,omitempty"`
-	Content          string                `json:"content,omitempty"`
-	ReasoningContent string                `json:"reasoning_content,omitempty"`
+	Role    string `json:"role,omitempty"`
+	Content string `json:"content,omitempty"`
+	// ReasoningContent is a pointer for the same reason as in chatRespMessage:
+	// DeepSeek's first thinking-mode delta carries "" and later deltas null.
+	ReasoningContent *string               `json:"reasoning_content,omitempty"`
 	ReasoningDetails []chatReasoningDetail `json:"reasoning_details,omitempty"`
 	Reasoning        string                `json:"reasoning,omitempty"`
 	Refusal          string                `json:"refusal,omitempty"`
