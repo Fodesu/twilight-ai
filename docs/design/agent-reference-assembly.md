@@ -40,7 +40,7 @@ Planner ID：`twilight/turn/planner/context-v1`。
 func Plan(ctx context.Context, hint run.PlanningHint, fold []chatlog.Entry, pub BindingPublic) (loop.RequestPlan, error)
 ```
 
-**REF-PLN-1** `fold` 为 `ContextFold` 对该 Session chatlog 事件的输出（含已应用的 checkpoint）。Planner 在每次 Plan 时经 `extension.ProjectionReader` 读取 `twilight/chatlog/context` 投影（snapshot 加 tail）。
+**REF-PLN-1** `fold` 为 `ContextFold` 对该 Session chatlog 事件的输出（含已应用的 checkpoint）。Planner 在每次 Plan 时经该 Session Writer 的 `Projections()` 读取 `twilight/chatlog/context` 投影（EXT-PRJ-4）。
 
 **REF-PLN-2** `sdk.Messages` 顺序：
 
@@ -79,7 +79,7 @@ Coordinator 是 Turn 作用域的：Turn 结束即返回。参考组装提供一
 ```go
 type SessionDriver struct {
     Coordinator turn.Service
-    Projections extension.ProjectionReader
+    Writers extension.Writers        // 读投影经 Writer.Projections()
     Binding turn.ExecutionBindingRef  // 新 Turn 使用的执行绑定
     Companion turn.CompanionVersion
     NewTurnID func() turn.TurnID
@@ -94,37 +94,40 @@ func (d *SessionDriver) OnTurnSettled(ctx, sid session.SessionID) (turn.TurnResp
 
 **REF-DRV-3** Turn 为 `attempt_failed` 时 `Send` 返回 conflict，不自动 Retry 或 Settle；这两者是 Application 的决定。`Deliver` 与最后一步结果并发失败（TRN-DLV-3）时，`Send` 得到 `completed`，输入仍为 `submitted`，随后的 `OnTurnSettled` 会把它带入下一个 Turn。
 
-**REF-DRV-4** 崩溃恢复：`SessionDriver` 从两个投影重建。对每个 session，先按 TRN-REC-1 处理 `active` 与 `attempt_failed` 的 Turn；没有未结算 Turn 时调用 `OnTurnSettled` 消费积压的输入。
+**REF-DRV-4** 崩溃恢复：`SessionDriver` 从两个投影重建。对每个 session，先经 `Writers` 取得 Writer（新 Epoch），调用 `Runtime.RecoverInterrupted` 处置全部 Executing 目标（RUN-CMT-7），再按 TRN-REC-1 处理 `active` 与 `attempt_failed` 的 Turn；没有未结算 Turn 时调用 `OnTurnSettled` 消费积压的输入。
 
 ## 5. Memory 组成
 
 ```text
-sessionStore = session.NewMemoryStore()                       // commit、CommitIn、snapshot、控制面 KV
-registry     = extension.BuildRegistry(profile, chatlog.Module, turn.Module, runmod.Module)
-projections  = extension.NewProjectionReader(sessionStore, registry)
+sessionStore = session.NewMemoryStore()                       // Create、Header、Open、Read（SES 第 4 至 6 节）
+registry     = extension.BuildRegistry(protocolVersion, chatlog.Module, turn.Module, runmod.Module)
 bindingStore = artifact.NewMemoryBindingStore()
-ledger       = extension.NewKVLedger(sessionStore, bindingStore)  // claim 存于控制面 KV twilight/artifact/claim
-appender     = extension.NewSemanticAppender(sessionStore, registry, bindingStore, ledger)
-runtime      = runmod.NewRuntime(appender, projections, extension.Leases{Store: sessionStore}, runmod.NewMemoryFrozenValues(), turn.CompanionV1(registry), runmod.DefaultSnapshotPolicy)
+ledger       = artifact.NewMemoryLedger(bindingStore)          // 自持久化；claim 先于 Append 建立
+writers      = extension.NewWriters(sessionStore, registry, ledger, openOptions)   // 每 Session 一个 Writer（EXT-WRT-6）
+runtime      = runmod.NewRuntime(writers, runmod.NewMemoryFrozenValues(), turn.CompanionV1(registry), runmod.DefaultSnapshotPolicy, projectionCache)
 drivers      = Resolve(ExecutionBindingRef) -> loop.New(models, tools, contextPlanner, policy, pub.Streaming)
-coordinator  = turn.Coordinator{Projections: projections, Appender: appender, Runtime: runtime, Bindings: drivers}
-session      = SessionDriver{Coordinator: coordinator, Projections: projections, Binding: bindingRef, Companion: turn.CompanionV1Version, NewTurnID: ...}
+coordinator  = turn.Coordinator{Writers: writers, Runtime: runtime, Bindings: drivers}
+session      = SessionDriver{Coordinator: coordinator, Writers: writers, Binding: bindingRef, Companion: turn.CompanionV1Version, NewTurnID: ...}
 
 input_submitted
 session.Send                                   // 无 active Turn → coordinator.Start
-  commit 1: twilight/turn/started + twilight/chatlog/input_delivered* + twilight/run/created + twilight/run/input_accepted*
+  组 1: twilight/turn/started + twilight/chatlog/input_delivered* + twilight/run/created + twilight/run/input_accepted*
   Loop.Run
-    commit: twilight/run/model_step_prepared            （请求本体 → FrozenValueStore）
-    commit: twilight/run/model_step_started             （lease → 控制面 KV，同事务）
-    commit: twilight/run/model_step_completed + twilight/run/tool_step_opened + twilight/chatlog/assistant
-    commit: twilight/run/tool_call_started
+    组: twilight/run/model_step_prepared            （请求本体 → FrozenValueStore）
+    组: twilight/run/model_step_started
+    组: twilight/run/model_step_completed + twilight/run/tool_step_opened + twilight/chatlog/assistant
+    组: twilight/run/tool_call_started
       input_submitted; session.Send               // 有 active Turn → coordinator.Deliver
-      commit: twilight/run/input_accepted + twilight/chatlog/input_delivered
-    commit: twilight/run/tool_call_completed + twilight/chatlog/tool_result
-    commit: twilight/run/model_step_prepared            （PlanningHint.Inputs 含中途输入）
+      组: twilight/run/input_accepted + twilight/chatlog/input_delivered
+    组: twilight/run/tool_call_completed + twilight/chatlog/tool_result
+    组: twilight/run/model_step_prepared            （PlanningHint.Inputs 含中途输入）
     ...
-    commit: twilight/run/model_step_completed + twilight/run/ended + twilight/chatlog/assistant + twilight/turn/completed
+    组: twilight/run/model_step_completed + twilight/run/ended + twilight/chatlog/assistant + twilight/turn/completed
 session.OnTurnSettled                          // 有积压的 submitted 输入 → 开下一个 Turn
+
+进程重启：writers.Writer(sid) 以新 Epoch 打开 → runtime.RecoverInterrupted(sid) → 各 Turn Resume（REF-DRV-4）
 ```
+
+每一行"组"是一次 `Writer.Commit`，落为 stream 中 CommitID 相同、Index 连续的若干行（SES-APP-1）。
 
 参考 agent 的工具 ResponsePolicy 为 `DirectExecution`。ContextFold 在无 checkpoint 时输出全部有效条目。

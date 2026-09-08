@@ -33,14 +33,15 @@
 ### 2.1 authority
 
 ```text
-Session stream    唯一 authority：twilight/turn、twilight/chatlog、twilight/run 事件同在一条 stream
-控制面 KV          Session Store 的 control-plane KV：lease、grant、artifact claim；与 commit 同事务，不进入 stream
-MachineState      Run 的语义状态投影（twilight/run/machine），snapshot 为可丢弃缓存
-Runtime           Run command 的提交入口：Session 临界区内 Decide、Evolve，经 SemanticAppender 追加
+Session stream    唯一 authority：twilight/turn、twilight/chatlog、twilight/run 事件同在一条 stream，一行一个 event
+Session 所有权     一个 Session 同一时刻一个 Writer 进程；Epoch fencing 拒绝旧写者
+extension.Writer  进程内唯一写入口：串行、幂等索引、admission、claim、投影
+MachineState      Run 的语义状态投影（twilight/run/machine），投影缓存为可丢弃缓存
+Runtime           Run command 的提交入口：Writer 内 Decide、Evolve、companion，一次 Append
 FrozenValueStore  内容寻址旁存：模型请求本体（含工具定义）
 ```
 
-2026-09-04 之前的设计为两条 ES（Run 独立的 `RunHeader + TransitionRecord[]`，Turn 把 Run 事实 materialize 到 Session）。该设计已被第 6 节记录的决定取代，第 7 节记录审查后的第二次修订。
+2026-09-04 之前的设计为两条 ES（Run 独立的 `RunHeader + TransitionRecord[]`，Turn 把 Run 事实 materialize 到 Session）。该设计已被第 6 节记录的决定取代，第 7 节记录审查后的第二次修订（多写者临界区、控制面 KV、lease），第 8 节记录 2026-09-08 的第三次修订（Session 级单写者、扁平事件）。上表为第 8 节之后的形态。
 
 ### 2.2 package layout
 
@@ -49,11 +50,11 @@ agent/es                  shared ES primitives
 agent/jsonstable          immutable canonical JSON
 agent/run                 Run Machine、frozen values、fact codec、fold、Runtime 与 Companion contract
 agent/run/loop            in-process model/tool interpreter 与 observation ports
-agent/session             Event-first Session kernel（Commit CAS、CommitIn 临界区、snapshot、控制面 KV）
-agent/session/extension   Session Module Framework：first-party Registry、payload 版本、admission、SemanticAppender、Lease、projection
+agent/session             追加日志 kernel（Create、Header、Open 所有权与 Epoch、Append 整组、Read）；Memory 与文件 adapter
+agent/session/extension   Session Module Framework：first-party Registry、payload 版本、admission、Writer、ProjectionReader 与缓存
 agent/session/chatlog     first-party Message ontology
-agent/session/run         first-party Run module：EventDefinition、machine projection、Runtime 实现（消费 SemanticAppender 与 Lease）、FrozenValueStore
-agent/artifact            Ref、Binding、两态 RetentionLedger
+agent/session/run         first-party Run module：EventDefinition、machine projection、Runtime 实现（经 Writer 写入）、接管处置、FrozenValueStore
+agent/artifact            Ref、Binding、自持久化的两态 RetentionLedger、回收前核对
 agent/turn                Turn 生命周期、attempt、CompanionV1
 ```
 
@@ -80,11 +81,12 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 - Session kernel 保持 payload-opaque、Artifact-free。
 - Chatlog Message 原生支持 first-party Artifact references；`sdk.Message` 只是 materialized provider transport。
 - Turn Coordinator 从 `twilight/turn/surface` 与 `twilight/run/machine` 投影重建，不保存隐藏的长期状态。
-- Run 事实与其对话内容（companion）在同一 SessionCommit 写入；没有 Run→Session materialization、coverage 水位或 outbox。
-- 只有一条写入路径：`SemanticAppender`。Run 的 Runtime 经 `AppendSemanticIn` 写入，companion 与 Attach 事件与其他 producer 一样经 admission；artifact claim 与 commit 同事务。
-- lease、grant、durable claim 存放在 Session Store 的控制面 KV，与 commit 同事务；ExecutionClaim、投影 snapshot 与 FrozenValueStore 是控制面或派生数据，不进入 stream。
+- Run 事实与其对话内容（companion）在同一组（一次 Append）写入；没有 Run→Session materialization、coverage 水位或 outbox。
+- 只有一条写入路径：`extension.Writer`。Run 的 Runtime、Turn 的 Coordinator 都经它写入，companion 与 Attach 事件与其他 producer 一样经 admission；artifact claim 在 Append 之前建立，孤儿由回收前核对释放。
+- 一个 Session 同一时刻一个 Writer 进程（Session 级所有权，Epoch fencing）；没有按目标的 lease、grant 或 durable ClaimStore。ExecutionClaim 只在 worker 内存中；投影缓存与 FrozenValueStore 是派生或旁存数据，不进入 stream。
+- 接管者对全部 Executing 目标一次性处置（模型回 Prepared、工具记 Unknown），不等待 TTL 按目标恢复。
 - Run fact 只保存执行状态与内容 digest；请求本体（含工具定义）在 FrozenValueStore，模型输出与工具输出在 chatlog 事件。
-- kernel `ProtocolVersion` 只覆盖 envelope 与 commit；payload 版本由模块携带（`v` 字段），Run 保留自己的 `SchemaVersion`。
+- kernel `ProtocolVersion` 只覆盖行结构与 digest；payload 版本由模块携带（`v` 字段），Run 保留自己的 `SchemaVersion`。
 
 ## 3. 已完成迁移
 
@@ -105,9 +107,11 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 | `agent/turn` 重写（Coordinator、CompanionV1、surface 投影） | 完成，2026-09-07；旧实现已删除 |
 | 参考组装 `agent/ref`（ExecutionBinding、ContextPlanner、Memory 组装、SessionDriver、崩溃恢复 example） | 完成，2026-09-07 |
 | Runtime conformance（RUN-CMP-2，`agent/session/run/runtimetest`，以 `session.Store` 为参数） | 完成，2026-09-07；对 Memory Store 通过。kernel 与 extension 的 conformance 部分实现 |
-| SQLite / PostgreSQL Session Store adapter、live 模型接入 | 未开始 |
+| 第 8 节规范修订（session、extension、run、turn、chatlog、artifact、参考组装的第二版） | 完成，2026-09-08；代码未动 |
+| 第 8 节代码重构（kernel 收缩、Writer、Runtime 去 lease/grant、接管处置、conformance 重建） | 未开始 |
+| 文件 adapter（`agent/session/filestore`）、live 模型接入 | 未开始 |
 
-当前正式调用形态为 `agent/ref` 的 Memory 组装：`ref.New` 返回 Store、Registry、Appender、Projections、Runtime、Coordinator 与 Bindings；Application 经 `SessionDriver.Send` 投递输入。Loop 不保存 authority state；Runtime 不读取 queue 或 planner context。
+以上"完成"的代码行都是第一版形态（多写者临界区、控制面 KV、lease），第 8 节修订后需要按新规范重写；当前正式调用形态仍为 `agent/ref` 的第一版 Memory 组装。Loop 不保存 authority state；Runtime 不读取 queue 或 planner context。
 
 已决定（2026-09-07）：终态 Run 从 `twilight/run/machine` 投影移除后，`Runtime.Load` 对该 Run 按 RunID 过滤 replay 后折叠返回终态，`ErrRunNotFound` 只用于不存在的 RunID（RUN-CMT-1）。该路径为兜底：Loop 在模型结算返回终态 snapshot 时直接结束，不再 Load（RUN 第 7 节）；Coordinator 的 Deliver 与 Stop 从 turn surface 的 `AttemptView.SchemaVersion` 构造 envelope，不读 machine 投影（TRN-DLV-2、TRN-STP-1）。曾考虑在投影保留终态 Run 的最小记录，因投影会随历史增长而未采用。
 
@@ -117,18 +121,13 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 
 ### 4.1 Core reference implementations
 
-- 实现 Session kernel Memory Store：Commit、`CommitIn`、Types 过滤 replay、snapshot、控制面 KV；v1 conformance 不含 Fork 与 import；
-- 实现 `extension.FirstPartyRegistry`、payload 版本、admission 与 `SemanticAppender`（两个入口，claim 同事务）；artifact 两态 ledger 的 Memory 实现；
-- 按第 6、7 节把 `agent/run` 的存储层改为 Session module（`agent/session/run`）；
-- 把 `agent/turn` 改为 attempt 模型与 `CompanionV1`，`Log` 替换为 Session Store 与 `SemanticAppender`；
-- 加 Chatlog Context projection 与参考 Planner；`PlanningHint` 只提供边界事实；
-- 纵向切片跑通后再冻结 kernel `ProtocolVersion` 1 与各模块 payload 版本 1 的 golden fixtures。
+第一版（第 6、7 节）的全部条目已于 2026-09-07 完成；第 8 节修订后的实施顺序见 8.5。完成后再冻结 kernel `ProtocolVersion` 1 与各模块 payload 版本 1 的 golden fixtures。
 
 ### 4.2 durable adapters
 
-- Session Store 的 SQLite 与 PostgreSQL adapter（commit、CommitIn 事务、snapshot、控制面 KV、Types 索引）；
+- 文件 adapter `agent/session/filestore`：一个 Session 一个目录，`stream.jsonl` 一行一个 event，`session.lock` 为 `flock` 目标，每次 Append 一次 fsync，打开时截掉不完整尾组；
+- 数据库 adapter（SQLite / PostgreSQL）：sessions（header、epoch、owner deadline）、events 两张表，Append 一个事务，`Heartbeat` 推后 deadline；只在多会话服务需要时做；
 - 收紧 Session authority tables 的 immutable RLS policy；
-- 实现 `RecoverExpired` 的定期调度；
 - 需要远程 Store 或跨存储 claim 时，实现 extension 附录 C 与 artifact 附录的两阶段路径。
 
 ### 4.3 Application migration
@@ -244,7 +243,7 @@ Run 从独立的 Event Sourcing 存储改为 first-party Session Module。Run �
 
 审查意见"三个 first-party module 实际是一个领域，应合为一个实现"。耦合证据成立，但它们指向的是固定的分层顺序（turn → run、turn → chatlog），可以用包依赖表达。合成一个包会失去读侧收益：投影按 EventType 命名空间筛选，Context 只读 chatlog、machine 只读 run。因此保留三个包与三个命名空间，推迟的是可插拔框架（附录 B），不是模块划分。
 
-### 7.3 持久结构与一致性等级
+### 7.3 持久结构与一致性等级（第一版；第 8 节之后见 8.4）
 
 | 结构 | 等级 | 写入点 | 丢失或不一致时 |
 |---|---|---|---|
@@ -294,5 +293,66 @@ lease 的第二条出路：grant 由 `(Claim, start CommitID)` 派生，start fa
 `PendingInputs` 已是持久化队列，缺的是入队入口与消费时机。改动：Turn 增加 `Deliver`，每条输入一个 Run commit（`AcceptInput` 加 Attach 的 `input_delivered`）；`AcceptInput` 前置从 `Open` 放宽为任意非终态；模型无 tool call 但有 pending 输入时 Run 回到 `Open` 而不结束；新增 `WithdrawPreparedStep`，Prepared 期间入队的输入使 `Next` 返回 `WithdrawPrepared`，Loop 放弃已冻结但未发出的请求并重规划。Executing 与 ToolStep 期间的输入等待该步结算，在随后的 `Open` 被 Prepare 一次消费，与 Codex、Claude Code 的注入点一致。Deliver 不打断进行中的调用；打断用 Stop。turn surface 消费 `run/input_accepted` 以跟踪全部输入，Retry 重放它们。
 
 对照 pi 与 DeepSeek harness 的 inbox 模型后补齐了 session 级的路由：pi 的 steering 在当前 step 的工具结果之后注入、不中断生成也不跳过剩余 tool call，follow-up 只在 agent 本来要停下时取用；DeepSeek harness 的 inbox 是 `next-step` 与 `next-turn` 两条持久化列表，steer 在最近的 step 边界消费，turn 关闭前做最后一次 drain。twilight 的对应：`PendingInputs` 即 next-step；chatlog 中已 submitted 未 delivered 的输入即 next-turn；缺的"空闲时被唤醒、turn 结束后自动取下一条"由参考组装的 `SessionDriver` 提供（REF-DRV），协议不变。Stop 后 Retry 等价于 `cancel(keepInbox)`，Settle 等价于默认 cancel（TRN-STP-1）。
+
+## 8. 第三次修订（2026-09-08）：Session 级单写者与扁平事件
+
+### 8.1 起因
+
+第一版 Memory 栈跑通后（第 3 节），对照 dsh 与 Codex 的 session 日志实现发现：twilight 比它们多出的全部机制（`CommitIn` 临界区、`Commit` 的 CAS、控制面 KV、按目标的 lease 与 grant、`RenewLease` 心跳、`RecoverExpired` 按 deadline 枚举、commit 与 KV 同事务）都源于同一个假设：同一个 Session 可以有多个并发写者，包括不同进程。该假设没有部署需求支撑：Memoh 作为服务把一个 Session 固定到一个 worker，failover 走锁接管，不会两个 worker 同时写同一 Session；本地宿主是单进程。dsh 的做法（每 session 一个 write handle，进程内独占加跨进程 `flock`，第二个写者直接被拒）说明单写者足以支撑同类需求。
+
+同时发现 `SessionCommit` 容器在读侧只是一层没有语义的嵌套（`ReplayPage.Commits[].Events[]`），它承担的三个作用中，幂等与 CAS 单位随单写者上移到进程内，commit 级元数据可以摊到每行，只剩"整组原子可见"一条，而这条只需要 append 以组为单位并在读侧不暴露不完整组，不需要嵌套类型。
+
+### 8.2 决定
+
+| 项 | 第一版 | 第二版 |
+|---|---|---|
+| 写者 | 多写者，`CommitIn` 回调式临界区，`Commit` CAS | 一个 Session 同一时刻一个 `Writer`（SES-OWN-1）；`Open` 取所有权，Epoch 加一并持久化；落后 Epoch 的 `Append` 被拒（SES-OWN-2） |
+| 写入单位 | `SessionCommit{Events[]}`，`(Revision, Index)` 定位 | 一行一个 `SessionEvent`，全局 `Seq`；同一次 `Append` 的行共用 `CommitID`，`Index`/`Last` 标记组；整组原子，不读不完整组（SES-APP-1/2） |
+| 幂等 | kernel 按 `(SessionID, CommitID)` 加 fingerprint | kernel 只拒绝重复 CommitID；`extension.Writer` 以内存索引判定 AlreadyApplied / Conflict（EXT-WRT-2） |
+| digest | header、event、commit、snapshot 四套，`ProtocolProfile` 12 个方法 | 每行一个 digest，覆盖本行与前一行（SES-WIR-2） |
+| EventID | `Digest(Type, CommitID, index)` | 删除；`Seq` 即身份，`SourceSeqs` 引用 Seq |
+| replay | `ReplayCursor{After: EventPosition, Token}` 分页 | `Read(sid, From, Types, Limit)`，Limit 在组边界截断 |
+| `SourceEvents` 校验、`CausationID`/`CorrelationID` | kernel 校验引用存在；commit 级字段进 digest | 引用语义归声明它的模块；commit 级字段删除 |
+| snapshot | kernel 的 `LoadSnapshot`/`SaveSnapshot`，与 commit 同事务 | 移到 extension 的可选 `ProjectionCache`，不与 Append 同事务（EXT-PRJ-3） |
+| 控制面 KV、`extension.Lease`、grant | lease 按目标、TTL、条件写续期、deadline 枚举 | 全部删除。Session 所有权即执行所有权（RUN-CMT-6） |
+| 恢复 | `RecoverExpired` 按过期 lease 逐目标恢复 | 接管者 `RecoverInterrupted` 对全部 Executing 目标一次性处置，Claim 为 `TakeoverClaim(SessionID, Epoch)`（RUN-CMT-7） |
+| Loop | `RenewLease` 心跳、durable `ClaimStore`、grant 校验 | 都删除；Claim 只在 worker 内存中用于派生 CommandID；`ErrOwnershipLost` 为终止性错误（RUN-LOP-5） |
+| artifact claim | `ActivateIn(kv)` 与 commit 同事务 | ledger 自持久化，`Activate` 在 Append 之前；孤儿 claim 由回收前核对释放（EXT-WRT-3、ART-RET-3） |
+| `RequireComplete`、`ModuleForEvent` 按前缀猜模块 | 投影对未注册事件按模块归属拒绝 | 写者声明 `Ignorable`；范围内不可忽略的 Unknown 使 fold 失败，范围外跳过（EXT-PRJ-2） |
+| extension 其他 | `JSONPointer` 提取、双入口 Appender、`LoadIn`/`SaveSnapshotIn` | 删除 |
+
+保留：Registry 的 `Requires` 校验（启动期）、`Types` 前缀过滤（读取优化）、canonical JSON 要求（digest 与跨 adapter 一致性的前提）、Run 的 `SchemaVersion`、companion 同组、Prepare 的 hard CAS、终态 Run 的 Load 兜底。
+
+### 8.3 失去与得到
+
+失去：同一 Session 的不同工具调用由不同进程并发执行（没有消费者）；claim 与 commit 的同事务一致性（降为先 claim 后 append，孤儿由核对清理）；第一版 conformance 中 grant 隔离、跨 Run grant、lease 续期的十几项断言。
+
+得到：kernel 接口从 15 个方法降到 4 个，adapter 只需实现独占、追加与读，JSONL 成为一等实现；Runtime 去掉 lease/grant 两套校验；Loop 去掉心跳与 ClaimStore；与 dsh、Codex 的心智模型一致（一个 session 同一时刻一个写者）。
+
+### 8.4 持久结构与一致性等级（第二版）
+
+| 结构 | 等级 | 写入点 | 丢失或不一致时 |
+|---|---|---|---|
+| Session header 与 event 行 | authority | `Writer.Append` | 不可恢复；按行 digest 链使损坏可检测；不完整尾组在打开时截掉 |
+| 所有权记录（Epoch，数据库 adapter 另有 deadline） | 控制 | `Open`、`Heartbeat` | 文件 adapter 随进程释放；数据库 adapter 过期后可接管 |
+| 投影缓存 | 派生缓存 | `SnapshotPolicy` | 从 stream 重折 |
+| Writer 内存：幂等索引、投影状态、head | 派生 | `OpenWriter` 重建 | 随进程消失，重开时从日志重建 |
+| FrozenValueStore | 旁存，生命周期为 ModelStep | Commit 之前 `Put` | Executing/Prepared step 的重发失败为不可重试错误 |
+| artifact claim | 独立持久 | `Activate`，Append 之前 | 孤儿 claim 由回收前核对释放；不可能出现无 claim 的引用 |
+| Artifact content store 与 BindingStore | 外部内容 | artifact owner | resolve 失败按 ART-CAP-1 分类 |
+
+v1 只有两类恢复动作：`RecoverInterrupted`（新 owner 一次性处置 Executing 目标）与 Application 的 artifact GC（回收前核对加按 Active claim 计算 root）。
+
+### 8.5 实施顺序
+
+1. `agent/session`：按第二版重写 Memory Store（Create、Header、Open/Epoch/Heartbeat、Append 整组、Read 过滤）与 conformance；删除 CommitIn、CAS、控制面 KV、snapshot、四套 digest、EventID、ReplayCursor；
+2. `agent/session/extension`：`Writer`（OpenWriter 重建、Commit 串行、幂等索引、claim 先于 Append、ErrOwnershipLost 失效）、`Writers`、`ProjectionReader` 与 `ProjectionCache`、`Ignorable`；删除 SemanticAppender、Lease、LoadIn/SaveSnapshotIn、JSONPointer、ModuleForEvent 推断；
+3. `agent/artifact`：ledger 改为自持久化 `Activate`，加 `OwnerVerifier` 与回收前核对；
+4. `agent/run` 与 `agent/session/run`：`RunPosition = Seq`、`CommitResult.Events`、删除 grant/lease/RenewLease/RecoverExpired，新增 `RecoverInterrupted` 与 `TakeoverClaim`，machine 投影加 `Ended`；
+5. `agent/run/loop`：删除 LeaseRenewInterval、ClaimStore、grant 路径；`ErrOwnershipLost` 处理；EventSink 携带 `[]SessionEvent`；
+6. `agent/turn`：Coordinator 改为 `Writers`，Seq 定位，恢复表按 TRN-REC-2；
+7. `agent/session/chatlog`：位置类型改 Seq；
+8. `agent/ref`：按参考组装第 5 节重组，崩溃恢复 example 改为"关闭 Writer、以新 Epoch 打开、RecoverInterrupted、Resume"；
+9. RUN-CMP-2 conformance 按第二版清单重建；随后写文件 adapter，用 session 与 runtimetest 两套 conformance 验收。
 
 后续协议修改直接更新对应正式规范；本文只更新迁移状态和历史决策，不再承载 wire、Machine、Runtime 或 Loop 算法。

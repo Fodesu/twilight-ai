@@ -1,6 +1,6 @@
 # Twilight Agent Artifact Core
 
-状态：设计草案。`agent/artifact` 已实现 Ref、Binding、Memory BindingStore、BindingSetBuilder 与两态 KV ledger；Resolver、Store、Promoter 与 scheme registry 未实现。wire 与 claim 状态表在 conformance 通过前不冻结。v1 的 claim 只有 `Active` 与 `Released` 两态，与 Session commit 同事务写入；`Prepared` 状态、reconciler、provider 迁移 fence 与 archive import/export 在附录中，不进入 v1 conformance。
+状态：设计草案，第二版（2026-09-08）。`agent/artifact` 已实现 Ref、Binding、Memory BindingStore、BindingSetBuilder 与第一版的两态 KV ledger（在 Session 控制面 KV 内、与 commit 同事务）；Resolver、Store、Promoter 与 scheme registry 未实现。本版随 kernel 第二版把 ledger 改为自持久化、在 owner fact Append 之前建立 claim，尚未实现。wire 与 claim 状态表在 conformance 通过前不冻结。v1 的 claim 只有 `Active` 与 `Released` 两态；`Prepared` 状态、provider 迁移 fence 与 archive import/export 在附录中，不进入 v1 conformance。
 
 本文定义 `agent/artifact`。文中的"必须""不得""应该"是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
 
@@ -14,7 +14,7 @@ Binding：稳定 BindingID 到 immutable Ref 的映射
 RetentionClaim：owner 对一个 BindingSet 的 durable 保留事实
 ```
 
-`BindingSet` 是 claim 的内容集合。`Active` claim 是已确认 owner fact 的 retention root；`Released` claim 不再保留任何内容。v1 中 claim 由 Session Module Framework 在写入 owner fact 的同一事务内以 `Active` 状态建立（EXT-APP-3），因此不需要 in-flight 保护状态；`Prepared` 保留给无法同事务写入的部署（附录）。Core 不依赖 Session、Event、Chatlog 或 Application，且不解释 owner 的领域语义。Attachment 等 owner module 可以关联 `AttachmentID`、subject 与 `BindingID`，但该边界只使用 BindingID，不引入 Event 依赖。
+`BindingSet` 是 claim 的内容集合。`Active` claim 是 retention root；`Released` claim 不再保留任何内容。v1 中 claim 由 Session Module Framework 的 `Writer` 在 Append owner fact 之前以 `Active` 状态建立（EXT-WRT-3）。顺序固定为先 claim 后 append，因此不可能出现"stream 引用了内容而没有 claim"；可能出现的只有孤儿 claim（有 claim、owner fact 未写入），它只多占空间，由回收前核对释放（ART-RET-3）。`Prepared` 保留给需要显式 in-flight 状态的部署（附录）。Core 不依赖 Session、Event、Chatlog 或 Application，且不解释 owner 的领域语义。Attachment 等 owner module 可以关联 `AttachmentID`、subject 与 `BindingID`，但该边界只使用 BindingID，不引入 Event 依赖。
 
 **ART-SCP-1** Core 不得解释 `ClaimOwner`，不得要求某种数据库、文件系统或 provider 实现。第一版只要求 Memory reference implementation 和 conformance suite。
 
@@ -128,38 +128,37 @@ type ClaimCursor struct { Watermark ClaimID; After ClaimID }
 type ClaimPage struct { Items []RetentionClaim; Next *ClaimCursor }
 type ClaimOwnerQuery struct { Kind, Authority string; Identities []string }
 
-// ClaimKV 是宿主提供的、与 owner fact 同事务的 KV 视图；Session 部署中由
-// session.SessionTx 的控制面 KV（namespace twilight/artifact/claim）适配。
-type ClaimKV interface {
-    Get(key string) ([]byte, bool, error)
-    Put(key string, value []byte) error
-    Delete(key string) error
-}
-
+// RetentionLedger 自行持久化（Memory、文件或数据库），不依赖宿主事务。
 type RetentionLedger interface {
-    // ActivateIn 在 kv 所属事务内建立或幂等确认一个 Active claim。
-    ActivateIn(kv ClaimKV, ClaimID, ClaimOwner, BindingSet) (RetentionClaim, error)
+    // Activate 建立或幂等确认一个 Active claim；返回即持久。
+    Activate(context.Context, ClaimID, ClaimOwner, BindingSet) (RetentionClaim, error)
     LookupClaim(context.Context, ClaimID) (RetentionClaim, bool, error)
     ReleaseActive(context.Context, ClaimID) error
     ClaimsByOwner(context.Context, ClaimOwnerQuery, ClaimCursor) (ClaimPage, error)
+}
+// OwnerVerifier 由 owner 的宿主提供：owner fact 是否已持久存在。
+// Session 部署中 owner 为 {Kind:"twilight/session/commit", Authority:SessionID, Identity:CommitID}，
+// 实现为对该 Session 查找该 CommitID 的行。
+type OwnerVerifier interface {
+    OwnerExists(context.Context, ClaimOwner) (bool, error)
 }
 ```
 
 **ART-RET-1** `BindingSetBuilder.Build(ctx, ids)` 是构造 BindingSet 的唯一算法：它将 ids canonicalize 为 sorted-unique `BindingID`，逐个通过 BindingResolver resolve，并计算覆盖 profile、WireVersion 和按 BindingID 排序的 `(BindingID, BindingDigest)` 的 `RefSetDigest`。`BindingSet` 必须同时携带这两个值，不能由调用者单独拼接 digest。ledger 必须以自己的 BindingResolver 重建并精确验证传入 set。
 
-**ART-RET-2** claim 只接受 `EventBound` 或 `Pinned` Binding；`Ephemeral` 必须先 promote。ClaimID 必须由 owner fact identity 与 BindingSet 稳定、确定地派生，并永久绑定该 owner 与 set：`ActivateIn` 对同 ID、同 owner、同 set 幂等，对任何其他组合 conflict。`Active` claim 是 GC root；GC 只忽略 `Released` claim。未知 scheme 必须保守保留。
+**ART-RET-2** claim 只接受 `EventBound` 或 `Pinned` Binding；`Ephemeral` 必须先 promote。ClaimID 必须由 owner fact identity 与 BindingSet 稳定、确定地派生，并永久绑定该 owner 与 set：`Activate` 对同 ID、同 owner、同 set 幂等，对任何其他组合 conflict。`Active` claim 是 GC root；GC 只忽略 `Released` claim。未知 scheme 必须保守保留。
 
 | 操作 | 前置状态 | 结果 |
 |---|---|---|
-| ActivateIn(new ID, owner, set) | 不存在 | Active |
-| ActivateIn(existing ID, exact owner/set) | Active | 幂等成功 |
-| ActivateIn(existing ID, exact owner/set) | Released | conflict |
-| ActivateIn(existing ID, other owner/set) | 任意 | conflict |
-| ReleaseActive | Active，且 owner retention 已结束 | Released |
+| Activate(new ID, owner, set) | 不存在 | Active |
+| Activate(existing ID, exact owner/set) | Active | 幂等成功 |
+| Activate(existing ID, exact owner/set) | Released | conflict |
+| Activate(existing ID, other owner/set) | 任意 | conflict |
+| ReleaseActive | Active，且 owner retention 已结束或 owner 不存在 | Released |
 | ReleaseActive | Released | 幂等成功 |
 | ReleaseActive | 不存在 | not found |
 
-**ART-RET-3** `ClaimsByOwner` 使用 watermark cursor，按 ClaimID 稳定排序；空 owner identities 不匹配。v1 没有 in-flight claim，因此没有 reconciler；`ReleaseActive` 的授权（owner retention 已结束）由 Application 的 GC policy 提供。
+**ART-RET-3** `ClaimsByOwner` 使用 watermark cursor，按 ClaimID 稳定排序；空 owner identities 不匹配。回收前核对：GC 在按 Active claim 计算 root 之前，对每个 Active claim 调用 `OwnerVerifier.OwnerExists`，不存在则 `ReleaseActive`；这一步清理 EXT-WRT-3 顺序下可能留下的孤儿 claim。核对只能在该 owner 的写入路径不可能仍在进行时执行：Session 部署中即该 Session 没有进行中的 `Writer.Commit`，参考实现在 `OpenWriter` 完成日志重建之后、接受第一个 Commit 之前对该 Session 的 claim 核对一次，运行期的核对必须与 Writer 互斥。`ReleaseActive` 的另一种授权（owner retention 已结束）由 Application 的 GC policy 提供。
 
 ## 6. provider 与 scheme boundary
 
@@ -226,6 +225,6 @@ v1 conformance 必须验证：
 
 - **ART-ID-1、ART-REF-1、ART-REF-2、ART-WIR-1**：canonical round-trip、拒绝歧义 wire、identity-bound/untrusted MediaType、locator/integrity 和 durability；
 - **ART-BND-1、ART-BND-2、ART-CAP-1**：Binding conflict、promotion、resolver integrity 和 capability errors；
-- **ART-RET-1、ART-RET-2、ART-RET-3**：BindingSetBuilder/ledger 独立重算与精确验证、RefSetDigest、不可复用 released claim、两态状态表、`ActivateIn` 在宿主事务内生效与回滚、cursor pagination、Active GC protection；
+- **ART-RET-1、ART-RET-2、ART-RET-3**：BindingSetBuilder/ledger 独立重算与精确验证、RefSetDigest、不可复用 released claim、两态状态表、`Activate` 返回即持久且幂等、owner 不存在的 Active claim 被回收前核对释放而 owner 存在的不受影响、cursor pagination、Active GC protection；
 - **ART-PRO-1**：immutable registry 与 provider-instance isolation；
 - **ART-SCP-2**：附录能力返回 `ErrUnsupported`。

@@ -1,6 +1,6 @@
 # Twilight Agent Session Chatlog Module
 
-状态：设计草案。`agent/session/chatlog` 已实现事件定义、parts codec、PartsExtractor、Surface 与 Context 投影；checkpoint 事件未实现。payload 字段、输入 limits 与 golden fixtures 尚未冻结。
+状态：设计草案。`agent/session/chatlog` 已实现事件定义、parts codec、PartsExtractor、Surface 与 Context 投影；checkpoint 事件未实现。2026-09-08 随 kernel 第二版把位置类型改为 `session.Seq`、`RequireComplete` 改为 EXT-PRJ-2 的 Ignorable 规则，尚未实现。payload 字段、输入 limits 与 golden fixtures 尚未冻结。
 
 本文定义 `agent/session/chatlog` first-party Module，依赖 [Session](agent-session.md) 与 [Session Module Framework](agent-session-extension.md)。回合生命周期由 [Turn](agent-turn.md) 拥有。文中的“必须”“不得”“应该”是草案冻结时应保留的协议约束；canonical JSON 与 digest 遵循 `agent/jsonstable`、`agent/es`。
 
@@ -15,7 +15,7 @@ Projections  = twilight/chatlog/surface, twilight/chatlog/context
 
 Chatlog 保存对话内容：Input、assistant、tool_result、summary、checkpoint。Surface 与 Context 是对这些 events 的纯投影。`assistant` 与 `tool_result` 携带 `TurnID`；Input 在 `input_delivered` 之后挂上 TurnID；summary 与 checkpoint 不携带 TurnID。回合的创建、attempt 与结束由 `twilight/turn/` 事件表达。外部内容经 `ReferencePart` 关联 Artifact BindingID。
 
-`assistant` 与 `tool_result` 由 `run.Runtime` 作为 companion 事件，与产生它们的 `twilight/run/` 事实写在同一 SessionCommit（TRN-CMP）。Run 事实只记录内容 digest，内容本体只在 chatlog 事件中出现一次。companion 事件与其他 producer 的事件走同一条写入路径：`SemanticAppender` 在同一事务内执行 codec、Binding admission 并建立 claim（EXT-APP-3），因此 companion 中的 `ReferencePart` 受到与用户输入相同的保护。
+`assistant` 与 `tool_result` 由 `run.Runtime` 作为 companion 事件，与产生它们的 `twilight/run/` 事实写在同一组（一次 `Append`，同一 CommitID；TRN-CMP）。Run 事实只记录内容 digest，内容本体只在 chatlog 事件中出现一次。companion 事件与其他 producer 的事件走同一条写入路径：`extension.Writer` 在 Append 之前执行 codec、Binding admission 并建立 claim（EXT-WRT-1、EXT-WRT-3），因此 companion 中的 `ReferencePart` 受到与用户输入相同的保护。
 
 流式 `text_delta` / `reasoning_delta` 由 Loop EventSink 发送，属于临时观察。Chatlog 权威是已提交的条目。
 
@@ -41,9 +41,9 @@ type CheckpointID string
 | Assistant | `assistant` | 无 | — | immutable；ID 单次创建 |
 | Tool result | `tool_result` | 无 | 可被 `tool_result_superseded` | 同一 Turn、同一 CallID 至多一条 active |
 | Summary | `summary` | 无 | 随 checkpoint 失效 | checkpoint 的摘要正文 |
-| Checkpoint | `checkpoint_created` | 无 | invalidated | 指向已有 EventPosition |
+| Checkpoint | `checkpoint_created` | 无 | invalidated | 指向已有 Seq |
 
-**CHT-LIF-1** reducer 拒绝 identity mutation、非法状态迁移、replacement conflict 与重复 ID。模型步骤进行中走 EventSink；定稿随 `ModelStepCompleted` / `ToolCallCompleted` 等 Run 事实同 commit 写入 `assistant` 或 `tool_result`。同一 Turn 的多个 Run attempt 各自产生 assistant 与 tool_result，全部保留在 stream 中并出现在 ContextFold 的输出里；哪些条目进入模型请求由 Planner 决定（TRN-RTY-3、REF-PLN-6），本模块不作取舍。
+**CHT-LIF-1** reducer 拒绝 identity mutation、非法状态迁移、replacement conflict 与重复 ID。模型步骤进行中走 EventSink；定稿随 `ModelStepCompleted` / `ToolCallCompleted` 等 Run 事实同组写入 `assistant` 或 `tool_result`。同一 Turn 的多个 Run attempt 各自产生 assistant 与 tool_result，全部保留在 stream 中并出现在 ContextFold 的输出里；哪些条目进入模型请求由 Planner 决定（TRN-RTY-3、REF-PLN-6），本模块不作取舍。
 
 ## 3. parts 与条目
 
@@ -191,7 +191,7 @@ type SummaryPayload struct { Summary Summary }
 
 type CheckpointCreatedPayload struct {
     CheckpointID CheckpointID
-    CoveredThrough session.EventPosition
+    CoveredThrough session.Seq
     BaseContextDigest es.Digest
     SummaryID SummaryID
     SummaryDigest es.Digest
@@ -230,7 +230,7 @@ twilight/chatlog/checkpoint_created
 twilight/chatlog/checkpoint_invalidated
 ```
 
-**CHT-EVT-2** `input_submitted` 创建 Input。Delivered、Withdrawn、Rejected 各终结一次。`input_delivered` 要求 Input 仍为 submitted，并写入非空 TurnID；它与把该输入交给 Run 的事实同 commit：Start group 中与 `twilight/turn/started` 一起，回合中途与 `twilight/run/input_accepted` 一起（TRN-STR-2、TRN-DLV-2）。AssistantID、ToolResultID、SummaryID 在 stream 内单次创建。
+**CHT-EVT-2** `input_submitted` 创建 Input。Delivered、Withdrawn、Rejected 各终结一次。`input_delivered` 要求 Input 仍为 submitted，并写入非空 TurnID；它与把该输入交给 Run 的事实同组：Start group 中与 `twilight/turn/started` 一起，回合中途与 `twilight/run/input_accepted` 一起（TRN-STR-2、TRN-DLV-2）。AssistantID、ToolResultID、SummaryID 在 stream 内单次创建。
 
 **CHT-EVT-3** checkpoint Digest 的 domain 为 `twilight/chatlog/checkpoint_created`。`BaseContextDigest` 覆盖截至 `CoveredThrough` 的有序 active Context 序列 `(Kind, ID, Digest)`。`CoveredThrough` 早于该 checkpoint。`SummaryID` 落在 `CoveredThrough` 与 checkpoint 之间，且已由 `summary` 创建。该间隙内仅有这一条 summary。`Retained` 为 base 序列的有序子集。合法 checkpoint 下 Context 为 `[Summary] + Retained`，再 fold checkpoint 之后的 tail。checkpoint 在显式 invalidate，或 summary / Retained / base source 被 supersede 之后失效；projection 回退到更早合法 checkpoint，或从全量 events 重折。
 
@@ -240,7 +240,7 @@ twilight/chatlog/checkpoint_invalidated
 type SurfaceEntry struct {
     Kind EntryKind
     ID string
-    Position session.EventPosition
+    Seq session.Seq
 }
 type Surface struct {
     Inputs map[InputID]Input
@@ -251,7 +251,7 @@ type Surface struct {
 }
 ```
 
-**CHT-SUR-1** SurfaceFold 消费 chatlog decoded events，`RequireComplete` 为 `chatlog`。`EntryOrder` 为 stream 顺序下的 delivered input、assistant、tool_result、summary，并带 Position。回合列表由 turn 投影提供，按 `TurnID` 连接。
+**CHT-SUR-1** SurfaceFold 消费 chatlog decoded events，其他事件按 EXT-PRJ-2 处理。`EntryOrder` 为 stream 顺序下的 delivered input、assistant、tool_result、summary，并带 Seq。回合列表由 turn 投影提供，按 `TurnID` 连接。
 
 ## 7. Context projection
 
@@ -259,7 +259,7 @@ type Surface struct {
 func ContextFold(events []extension.DecodedEvent) ([]Entry, error)
 ```
 
-**CHT-CTX-1** 输入为已验证、按 stream 顺序的 chatlog events，`RequireComplete` 为 `chatlog`。输出为 delivered input、assistant、tool_result、summary 经 supersession 与 checkpoint 处理后的有序 `[]Entry`。ContextFold 为纯函数。
+**CHT-CTX-1** 输入为已验证、按 stream 顺序的 chatlog events，其他事件按 EXT-PRJ-2 处理。输出为 delivered input、assistant、tool_result、summary 经 supersession 与 checkpoint 处理后的有序 `[]Entry`。ContextFold 为纯函数。
 
 **CHT-CTX-2** fold 执行 ID 单次创建、CallID pairing、unresolved-call 与 replacement 规则。合法 checkpoint 按 CHT-EVT-3 应用。Context 只含已 delivered 的 Input。
 

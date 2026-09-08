@@ -1,6 +1,6 @@
 # Twilight Agent Turn 协议
 
-状态：设计草案。`agent/turn` 已按本文重写（Coordinator 的 Start / Deliver / Resume / Retry / Stop / Settle、CompanionV1、surface 投影）；第 8 节 conformance 尚未完整实现，当前由 `agent/ref` 的测试覆盖 Start、Deliver、Stop 与新 Turn 的开启。Run 事实与 Turn、Chatlog 事件同在一条 Session stream。
+状态：设计草案，第二版（2026-09-08）。`agent/turn` 已按第一版实现（Coordinator 的 Start / Deliver / Resume / Retry / Stop / Settle、CompanionV1、surface 投影），写入经 `SemanticAppender`；本版随 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md) 第二版改为经 `extension.Writer` 写入、以 `Seq` 定位、恢复走接管处置，尚未实现。第 8 节 conformance 尚未完整实现，当前由 `agent/ref` 的测试覆盖 Start、Deliver、Stop 与新 Turn 的开启。Run 事实与 Turn、Chatlog 事件同在一条 Session stream。
 
 本文定义 `agent/turn`：回合生命周期、Run attempt 的创建与结算、Run 事实到对话内容的伴随映射。"必须""应该"为协议约束。Run Machine 与 Runtime 的 authority 是 [agent-run.md](agent-run.md)；对话内容的 authority 是 [agent-session-chatlog.md](agent-session-chatlog.md)；stream、commit 与 projection 机制的 authority 是 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md)。
 
@@ -32,7 +32,7 @@ subagent 使用独立 Session 与独立 Turn。
 
 **TRN-SCP-3** Coordinator 没有隐藏状态。它从 `twilight/turn/surface` 投影与 `twilight/run/machine` 投影重建。
 
-**TRN-SCP-4** Turn 自己的写入经 `extension.SemanticAppender`；Run 事实的写入经 `run.Runtime`，后者同样经 `SemanticAppender.AppendSemanticIn` 落在同一 `session.Store`（EXT-SCP-1）。Artifact 由其 owner 管理。
+**TRN-SCP-4** Turn 自己的写入经该 Session 的 `extension.Writer.Commit`；Run 事实的写入经 `run.Runtime`，后者经同一个 Writer 落在同一 `session.Store`（EXT-SCP-1）。Coordinator 与 Runtime 经 `extension.Writers` 取得 Writer（EXT-WRT-6）。Artifact 由其 owner 管理。
 
 **TRN-SCP-5** Application 管理 model、provider、tool、prompt、token、approval、queue、retry 决策与并发。Coordinator 按 persisted binding 解析 driver。参考 Planner 每次 Plan 使用 Binding 的 `ModelRef`。
 
@@ -95,11 +95,11 @@ twilight/turn/superseded
 
 unsettled Turn 是尚未 completed、failed 或 superseded 的 `started`。
 
-**TRN-EVT-2** 本模块产生的事件（含 companion 与 Attach 产生的）的 EventID 由 Appender 按 `Digest(EventType, CommitID, index)` 统一赋值（EXT-APP-5）。Start 的 CommitID 由 StartOperationDigest 派生；Retry、Settle、Stop 的 CommitID 见各自条目。相同 canonical payload 幂等；差异为 conflict。事件时间戳不参与幂等判定（SES-APP-1）。
+**TRN-EVT-2** 本模块产生的事件（含 companion 与 Attach 产生的）没有独立 EventID，`Seq` 即身份（SES-WIR-1）；同一次写入的事件共用 CommitID。Start 的 CommitID 由 StartOperationDigest 派生；Retry、Settle、Stop 的 CommitID 见各自条目。同 CommitID 相同 canonical payload 为 already-applied；差异为 conflict（EXT-WRT-2）。事件时间戳不参与幂等判定。
 
 **TRN-EVT-3** stream 内每个 TurnID 至多一条 `started`，至多一条 `completed` / `failed` / `superseded`。
 
-**TRN-PRJ-1** ProjectionID 为 `twilight/turn/surface`。消费 `twilight/turn/started|completed|failed|superseded` 与 `twilight/run/created|input_accepted|ended`，`RequireComplete` 为 `turn` 与 `run`（EXT-PRJ-2）：
+**TRN-PRJ-1** ProjectionID 为 `twilight/turn/surface`。消费 `twilight/turn/started|completed|failed|superseded` 与 `twilight/run/created|input_accepted|ended`，其他事件按 EXT-PRJ-2 处理：
 
 ```go
 type TurnStatus string
@@ -138,8 +138,7 @@ UI 按 `TurnID` 连接 `twilight/chatlog/surface` 的条目，按 `RunID` 连接
 
 ```go
 type Coordinator struct {
-    Projections extension.ProjectionReader
-    Appender extension.SemanticAppender
+    Writers extension.Writers // 每个方法按 Ref.SessionID 取 Writer：写入经 Commit，读取经 Projections()
     Runtime run.Runtime
     Bindings ExecutionBindingRegistry
 }
@@ -183,11 +182,11 @@ const (
 )
 ```
 
-**TRN-API-1** Coordinator 经 `ProjectionReader` 读取 `twilight/turn/surface` 与 `twilight/run/machine` 两个投影接续；每个方法先读投影再决定动作。Coordinator 不持有 `session.Store`。
+**TRN-API-1** Coordinator 经 Writer 的 `Projections()` 读取 `twilight/turn/surface` 与 `twilight/run/machine` 两个投影（EXT-PRJ-4）；每个方法先读投影再决定动作。Coordinator 不持有 `session.Store`。
 
 **TRN-API-2** Registry 用同一 `run.Runtime` 组装 driver。Run 的写入只经 `run.Runtime`。
 
-**TRN-API-3** DTO 为值语义。`Waiting` 为 `twilight/run/machine` 的 `WaitingCalls`。`NeedsRecovery` 为 true 时返回 `ResumeWaitingForRecovery`；Application 调用 `Runtime.RecoverExpired` 后再 Resume。
+**TRN-API-3** DTO 为值语义。`Waiting` 为 `twilight/run/machine` 的 `WaitingCalls`。`NeedsRecovery` 为 true 时返回 `ResumeWaitingForRecovery`；这只出现在接管处置之前，宿主调用 `Runtime.RecoverInterrupted`（RUN-CMT-7）后再 Resume。
 
 **TRN-API-4** `twilight/turn/superseded` 由 Application 追加。Coordinator 的方法不写该事件。superseded 的 Turn 若仍有非终态 Run，Application 必须先 Stop。
 
@@ -215,7 +214,7 @@ twilight/run/input_accepted{RunID, InputIDs[n-1], Payload}
 
 InputIDs 为空时 group 为 `started` 加 `created`。`created` 与 `input_accepted` 的 facts 由 `run.Protocol.BuildCreateGroup` 构造（RUN-NEW-1），Coordinator 只负责把它们放入 group。
 
-**TRN-STR-3** 派生 PlanDigest、StartOperationDigest、RunID 与 group identity，再 `AppendSemantic`。相同 identity 为 applied / already-applied。head conflict 时 CAS rebase，identity 与 payload 保持不变。
+**TRN-STR-3** 派生 PlanDigest、StartOperationDigest、RunID 与 group identity，再经 `Writer.Commit` 写入一组。相同 identity 为 applied / already-applied；Writer 串行执行全部写入，不存在 head conflict。
 
 **TRN-STR-4** append 成功后进入 Drive。
 
@@ -231,7 +230,7 @@ InputIDs 为空时 group 为 `started` 加 `created`。`created` 与 `input_acce
 
 **TRN-DLV-2** 对 `Inputs` 中每个输入按顺序提交一个 Run commit：`Runtime.Commit(AcceptInput{Input})`，`Attach` 携带 `twilight/chatlog/input_delivered{InputID, TurnID}`。envelope 的 SchemaVersion 取自 turn surface 中该 attempt 的 `SchemaVersion`，`Base` 为零值（`AcceptInput` 不做 hard CAS，RUN-CMT-4）；Deliver 不读取 `twilight/run/machine` 投影。Run 接受输入与 chatlog 把输入挂到 Turn 在同一 commit 可见。`AcceptInput` 在 Run 的任意非终态都被接受（RUN-MCH-4），Deliver 不关心 Run 当前处于哪一步。CommandID 为 Run 的 input CommandID，重放幂等；多条输入中途失败时，以剩余条目重试。
 
-**TRN-DLV-3** Deliver 不取消正在进行的模型调用或工具调用；要打断用 Stop。提交后，若本进程没有在驱动该 Run，Deliver 进入 Drive；已在驱动时不动，运行中的 Loop 在下一次 Load 看到 `PendingInputs`。Deliver 与该 Run 的最后一步 `SubmitModelResult` 并发时由 Session 临界区定序：输入先提交，Run 回到 `Open` 继续；结果先提交，Run 已终结，Deliver 得到 `ErrRunTerminal` 并返回 `completed`，该输入未被 delivered。
+**TRN-DLV-3** Deliver 不取消正在进行的模型调用或工具调用；要打断用 Stop。提交后，若本进程没有在驱动该 Run，Deliver 进入 Drive；已在驱动时不动，运行中的 Loop 在下一次 Load 看到 `PendingInputs`。Deliver 与该 Run 的最后一步 `SubmitModelResult` 并发时由 Writer 串行定序：输入先提交，Run 回到 `Open` 继续；结果先提交，Run 已终结，Deliver 得到 `ErrRunTerminal` 并返回 `completed`，该输入未被 delivered。
 
 **TRN-DRV-1** Drive 解析 binding 得到 driver，调用 `driver.Drive(ctx, {Ref, RunID})`。driver 内部为 `loop.Run(ctx, runtime, SessionID, RunID, sink)`。Drive 返回后读投影设置 `Disposition` 与 `End`：Run 终态为 `ResumeFinished`，`End` 取 surface 中该 attempt 的 `AttemptView.End`；`NeedsRecovery` 为 true 为 `ResumeWaitingForRecovery`；仅有 WaitingCalls 为 `ResumeWaitingForResponse`。
 
@@ -247,9 +246,9 @@ InputIDs 为空时 group 为 `started` 加 `created`。`created` 与 `input_acce
 
 ## 6. companion：Run 事实到对话内容
 
-Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、工具调用与工具输出以 chatlog 事件形式与产生它们的 Run 事实写在同一 SessionCommit。`run.Runtime.Commit` 在 Decide 之后、写入之前调用注入的 `run.Companion`，把本 commit 的 facts 与 command 携带的 transient 内容映射为 `run.ModuleEvent`，追加在 Run facts 之后；随后整个 group 经 `SemanticAppender` 的 codec、Binding admission 与 claim 写入（EXT-APP-3）。接口定义在 `agent/run`（第 5 节）；本模块提供实现 `CompanionV1`，它把 `CompanionRequest.Owner` 解释为 TurnID。
+Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、工具调用与工具输出以 chatlog 事件形式与产生它们的 Run 事实写在同一组（一次 `Append`，同一 CommitID）。`run.Runtime.Commit` 在 Decide 之后、写入之前调用注入的 `run.Companion`，把本组的 facts 与 command 携带的 transient 内容映射为 `run.ModuleEvent`，追加在 Run facts 之后；随后整个 group 经 `Writer` 的 codec、Binding admission 与 claim 写入（EXT-WRT-1、EXT-WRT-3）。接口定义在 `agent/run`（第 5 节）；本模块提供实现 `CompanionV1`，它把 `CompanionRequest.Owner` 解释为 TurnID。
 
-**TRN-CMP-1** `Map` 为确定性纯函数，不做 IO；时间取 `CompanionRequest.RecordedAtUnixMilli`。输出事件不携带 EventID，由 Appender 按所在 commit 的 CommitID 与位置赋值（EXT-APP-5）；条目自身的 identity（AssistantID、ToolResultID）按 TRN-MAP-2 派生。同一 commit 重放得到同一 group。companion 事件可以携带 `ReferencePart`；其 Binding 由 Appender 在同一事务 admission 并建立 claim，Runtime 不另行处理。
+**TRN-CMP-1** `Map` 为确定性纯函数，不做 IO；时间取 `CompanionRequest.RecordedAtUnixMilli`。条目自身的 identity（AssistantID、ToolResultID）按 TRN-MAP-2 派生。同一 command 重放得到同一 group。companion 事件可以携带 `ReferencePart`；其 Binding 由 Writer 在 Append 之前 admission 并建立 claim（EXT-WRT-3），Runtime 不另行处理。
 
 **TRN-CMP-2** v1 映射：
 
@@ -277,17 +276,18 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 
 | 情形 | 动作 |
 |---|---|
-| `started` 已提交、进程在 Drive 前退出 | Resume |
-| Loop 提交响应丢失 | Loop 以 ClaimStore 中的 Claim 重放（RUN-LOP-3）；Runtime 按 `(SessionID, CommitID)` 幂等 |
-| 模型 Executing、lease 过期 | `RecoverExpired` 提交 `RecoverModelExecution`；Run 保持 Active，同一 RunID 以同一冻结请求继续 |
-| 工具效果未知 | lease 过期后 `RecoverExpired` 提交该 call 的 Unknown，companion 写 status=`unknown`；Run 保持 Active |
+| `started` 已提交、进程在 Drive 前退出 | 新 owner 的 `RecoverInterrupted` 无事可做（Run 在 Open）；Resume |
+| Loop 的 Commit 返回非 sentinel 错误 | Loop 以同一 Claim 重放一次（RUN-LOP-5）；Writer 按 CommitID 幂等 |
+| 模型 Executing、owner 进程崩溃 | 新 owner 的 `RecoverInterrupted` 提交 `RecoverModelExecution`（RUN-CMT-7）；Run 保持 Active，同一 RunID 以同一冻结请求继续 |
+| 工具 Executing、owner 进程崩溃 | 新 owner 的 `RecoverInterrupted` 提交该 call 的 Unknown，companion 写 status=`unknown`；Run 保持 Active |
+| Writer 返回 `ErrOwnershipLost` | 本进程放弃该 Session 的全部 Turn 与 Loop（RUN-CMT-6）；由持有新 Epoch 的进程按上两行接管 |
 | Run 已 `failed`、Turn 未结算 | Turn 为 `attempt_failed`；Application 选择 Retry 或 Settle |
-| Stop commit 响应丢失 | 以同一 Cancel CommandID 重放 |
-| Deliver 中某条输入的 commit 响应丢失 | 以同一 input CommandID 重放，得到 already-applied 后继续剩余条目 |
-| Start 或 Retry 响应丢失 | 以同一 CommitID 重放，得到 already-applied |
+| Stop 的 Commit 返回非 sentinel 错误 | 以同一 Cancel CommandID 重放 |
+| Deliver 中某条输入的 Commit 返回非 sentinel 错误 | 以同一 input CommandID 重放，得到 already-applied 后继续剩余条目 |
+| Start 或 Retry 的 Commit 返回非 sentinel 错误 | 以同一 CommitID 重放，得到 already-applied |
 | binding 缺失 | 返回 `binding_unavailable`；Turn 状态不变 |
 
-**TRN-REC-3** 没有跨存储的对账：Run 事实、companion 内容、claim 与 Turn 结算在同一事务，要么全部可见要么全部不可见。
+**TRN-REC-3** 没有跨存储的对账：Run 事实、companion 内容与 Turn 结算在同一组，`Append` 原子，要么全部可见要么全部不可见。claim 在 Append 之前建立，崩溃只可能留下孤儿 claim，由 artifact 的回收前核对释放（EXT-WRT-3、ART-RET-3）。
 
 ## 8. conformance
 
@@ -297,5 +297,5 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 - **TRN-STR-1 至 TRN-RTY-3**：Start group 顺序与原子性、Input 状态与 Content 核对、Retry 前置条件与全部已 delivered 输入的重放、Attempt 递增、幂等 CommitID、失败 attempt 内容保留在 stream；
 - **TRN-DLV-1 至 TRN-DLV-3**：Deliver 前置条件、`input_accepted` 与 `input_delivered` 同 commit、Run 在 Executing 与 Waiting 时的输入入队、与最后一步结果并发时的两种定序结果、不打断进行中的调用；
 - **TRN-DRV-1 至 TRN-STL-1**：Drive disposition、Stop 以 Attach 单 commit 结算、Application 的 Cancel 进入 `attempt_failed`、Settle 前置条件；
-- **TRN-CMP-1 至 TRN-MAP-4**：companion 纯函数、v1 映射表、`SourceDigest` 等于 Run fact 记录值、companion 中的 ReferencePart 经 admission 并建立 claim、同 commit 可见性；
-- **TRN-REC-1 至 TRN-REC-3**：上表恢复情形、崩溃后 Resume、无跨存储对账。
+- **TRN-CMP-1 至 TRN-MAP-4**：companion 纯函数、v1 映射表、`SourceDigest` 等于 Run fact 记录值、companion 中的 ReferencePart 经 admission 并建立 claim、同组可见性；
+- **TRN-REC-1 至 TRN-REC-3**：上表恢复情形、新 Writer 接管后 `RecoverInterrupted` 再 Resume、`ErrOwnershipLost` 后本进程放弃、无跨存储对账。
