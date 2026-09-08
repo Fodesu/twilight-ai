@@ -19,8 +19,6 @@ const (
 	ModuleID extension.ModuleID = "run"
 	// Prefix is the EventType namespace of every Run fact.
 	Prefix session.EventType = "twilight/run/"
-	// LeaseNamespace holds execution occupancy (RUN 5.1).
-	LeaseNamespace session.ControlNamespace = "twilight/run/lease"
 )
 
 // factNames is the closed list of v1 fact discriminators.

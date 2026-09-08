@@ -1,7 +1,8 @@
-// Package session is the Event Sourcing kernel of a Twilight Session
-// (docs/design/agent-session.md). It owns the envelope, ordering, commit,
-// critical section, snapshot and control-plane KV mechanics; payloads are
-// opaque canonical JSON that Session modules encode and interpret.
+// Package session is the append-only log kernel of a Twilight Session
+// (docs/design/agent-session.md, edition 2). It owns the header, one row per
+// event, group-atomic append, Session-level writer ownership with epoch
+// fencing, the per-row digest chain and ordered reads. Payloads are opaque
+// canonical JSON that Session modules encode and interpret.
 package session
 
 import (
@@ -12,110 +13,77 @@ import (
 )
 
 type (
-	SessionID        string
-	CommitID         string
-	EventID          string
-	EventType        string
-	ProjectionKey    string
-	CursorToken      string
-	ControlNamespace string
+	SessionID string
+	CommitID  string
+	EventType string
+	// Seq is the row number inside one stream, contiguous from 0.
+	Seq uint64
+	// Epoch is the writer ownership generation of a stream, from 1.
+	Epoch uint64
 )
 
 // ProtocolVersion1 is the current pre-release kernel wire version. It covers
-// header, envelope, commit, snapshot envelope and digest profile only;
-// payload versions are carried by modules (SES-VER-1).
+// header fields, row fields, digest preimages and the group completeness rule
+// only; payload versions are carried by modules (SES-VER-1).
 const ProtocolVersion1 uint16 = 1
 
-// SessionHeader is the immutable creation record of a stream (SES-WIR-1).
+// SessionHeader is the immutable creation record of a stream.
 type SessionHeader struct {
-	ProtocolVersion uint16           `json:"protocolVersion"`
-	SessionID       SessionID        `json:"sessionId"`
-	ParentFork      *ForkPoint       `json:"parentFork,omitempty"` // v1: always nil (appendix A)
-	CausationID     es.CausationID   `json:"causationId,omitempty"`
-	Metadata        jsonstable.Value `json:"metadata,omitempty"`
-	HeaderDigest    es.Digest        `json:"headerDigest"`
+	ProtocolVersion    uint16           `json:"protocolVersion"`
+	SessionID          SessionID        `json:"sessionId"`
+	CreatedAtUnixMilli int64            `json:"createdAtUnixMilli"`
+	ParentFork         *ForkPoint       `json:"parentFork,omitempty"` // v1: always nil (appendix A)
+	CausationID        es.CausationID   `json:"causationId,omitempty"`
+	Metadata           jsonstable.Value `json:"metadata,omitempty"`
+	HeaderDigest       es.Digest        `json:"headerDigest"`
 }
 
 // ForkPoint is reserved for appendix A; v1 rejects non-nil values.
 type ForkPoint struct {
-	ParentSessionID SessionID   `json:"parentSessionId"`
-	Revision        es.Revision `json:"revision"`
-	HeadDigest      es.Digest   `json:"headDigest"`
+	ParentSessionID SessionID `json:"parentSessionId"`
+	Seq             Seq       `json:"seq"`
+	Digest          es.Digest `json:"digest"`
 }
 
-// SessionEvent is one committed event. Index orders events inside a commit;
-// EventDigest additionally covers SessionID, Revision and Index.
+// SessionEvent is one committed row (SES-WIR-1). Rows written by one Append
+// share CommitID; Index orders them and Last marks the group's end. Digest
+// covers every other field plus the previous row's Digest (SES-WIR-2).
 type SessionEvent struct {
-	EventID             EventID          `json:"eventId"`
+	Seq                 Seq              `json:"seq"`
+	CommitID            CommitID         `json:"commitId"`
 	Index               uint16           `json:"index"`
+	Last                bool             `json:"last"`
 	Type                EventType        `json:"type"`
 	RecordedAtUnixMilli int64            `json:"recordedAtUnixMilli"`
-	SourceEvents        []EventID        `json:"sourceEvents,omitempty"`
+	SourceSeqs          []Seq            `json:"sourceSeqs,omitempty"`
+	Ignorable           bool             `json:"ignorable,omitempty"`
 	Payload             jsonstable.Value `json:"payload"`
-	EventDigest         es.Digest        `json:"eventDigest"`
+	Digest              es.Digest        `json:"digest"`
 }
 
-// UncommittedEvent is what a producer hands to an append port.
+// UncommittedEvent is what a producer hands to Append.
 type UncommittedEvent struct {
-	EventID             EventID
 	Type                EventType
 	RecordedAtUnixMilli int64
-	SourceEvents        []EventID
+	SourceSeqs          []Seq
+	Ignorable           bool
 	Payload             jsonstable.Value
 }
 
-// SessionCommit is one atomic append: the unit of ordering and of the digest
-// chain. Revision 1 chains to HeaderDigest, later commits to the previous
-// CommitDigest.
-type SessionCommit struct {
-	ProtocolVersion uint16         `json:"protocolVersion"`
-	SessionID       SessionID      `json:"sessionId"`
-	Revision        es.Revision    `json:"revision"`
-	PreviousDigest  es.Digest      `json:"previousDigest"`
-	CommitID        CommitID       `json:"commitId"`
-	CausationID     es.CausationID `json:"causationId,omitempty"`
-	CorrelationID   string         `json:"correlationId,omitempty"`
-	Events          []SessionEvent `json:"events"`
-	CommitDigest    es.Digest      `json:"commitDigest"`
+// Group is one atomic append: a non-empty event list under one CommitID.
+type Group struct {
+	CommitID CommitID
+	Events   []UncommittedEvent
 }
 
-// Head is the stream position after the last commit. The empty stream head
-// is {0, HeaderDigest}.
+// Head is the stream position after the last row: the next Seq to assign and
+// the last row's Digest. The empty stream head is {0, HeaderDigest}.
 type Head struct {
-	Revision es.Revision `json:"revision"`
-	Digest   es.Digest   `json:"digest"`
+	Next   Seq       `json:"next"`
+	Digest es.Digest `json:"digest"`
 }
 
-// EventPosition addresses one committed event exactly.
-type EventPosition struct {
-	Revision    es.Revision `json:"revision"`
-	Index       uint16      `json:"index"`
-	EventDigest es.Digest   `json:"eventDigest"`
-}
-
-// Snapshot is a discardable projection cache (SES-SNP-1). Through.Digest is
-// the coverage proof: it must equal the CommitDigest at Through.Revision.
-type Snapshot struct {
-	ProtocolVersion   uint16           `json:"protocolVersion"`
-	SessionID         SessionID        `json:"sessionId"`
-	ProjectionKey     ProjectionKey    `json:"projectionKey"`
-	ProjectionVersion uint16           `json:"projectionVersion"`
-	Through           Head             `json:"through"`
-	State             jsonstable.Value `json:"state"`
-	SnapshotDigest    es.Digest        `json:"snapshotDigest"`
-}
-
-// ControlEntry is one control-plane KV row (SES-API-3). The kernel never
-// interprets Value and never deletes an entry because its deadline passed.
-type ControlEntry struct {
-	SessionID         SessionID
-	Namespace         ControlNamespace
-	Key               string
-	Value             []byte
-	DeadlineUnixMilli int64
-}
-
-// ErrorCode classifies kernel failures (SES 4).
+// ErrorCode classifies kernel failures (SES 7).
 type ErrorCode string
 
 const (
@@ -123,9 +91,10 @@ const (
 	ErrNotFound           ErrorCode = "not_found"
 	ErrConflict           ErrorCode = "conflict"
 	ErrCorrupt            ErrorCode = "corrupt"
+	ErrOwned              ErrorCode = "owned"
+	ErrOwnershipLost      ErrorCode = "ownership_lost"
 	ErrUnsupportedProfile ErrorCode = "unsupported_profile"
 	ErrUnsupported        ErrorCode = "unsupported"
-	ErrUnavailable        ErrorCode = "unavailable"
 )
 
 // Error is the kernel's discriminable error value.

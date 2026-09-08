@@ -18,13 +18,6 @@ type Loop struct {
 	Planner   RequestPlanner
 	Execution ExecutionPolicy
 	Streaming bool
-	// Claims records the ExecutionClaim of every start this Loop has issued
-	// and not yet settled. Every command identity of an attempt derives from
-	// its claim, so this is the only local state a Loop needs to replay a
-	// start or settlement whose response was lost. New installs an in-process
-	// store; hosts that want a replacement process to finish a dead process's
-	// attempts inject a durable one through ExecutionPolicy.Claims.
-	Claims ClaimStore
 
 	runsMu   sync.Mutex
 	runs     map[run.RunID]struct{}
@@ -48,15 +41,8 @@ func New(models ModelCatalog, tools ToolCatalog, planner RequestPlanner, policy 
 	if policy.MaxParallel < 0 {
 		return nil, errors.New("agent: loop: negative MaxParallel")
 	}
-	if policy.LeaseRenewInterval < 0 {
-		return nil, errors.New("agent: loop: negative LeaseRenewInterval")
-	}
-	claims := policy.Claims
-	if claims == nil {
-		claims = newMemoryClaims()
-	}
 	return &Loop{Models: models, Tools: tools, Planner: planner, Execution: policy, Streaming: streaming,
-		Claims: claims, runs: make(map[run.RunID]struct{})}, nil
+		runs: make(map[run.RunID]struct{})}, nil
 }
 
 func (l *Loop) toolScheduling() run.ToolScheduling {
@@ -108,7 +94,6 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 	// finish is the single exit for a terminal Run, whether the terminal state
 	// was read by Load or returned by the settlement that produced it.
 	finish := func(result *run.RunResult) LoopResult {
-		l.forgetRunClaims(ctx, sid, runID)
 		if events != nil {
 			_ = events.Emit(ctx, Event{Session: sid, RunID: runID, Kind: EventRunFinished, Durability: EventCommitted})
 		}
@@ -132,17 +117,6 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 			return finish(snapshot.State.Result), nil
 		}
 
-		if l.Claims == nil {
-			return LoopResult{}, errNoClaimStore
-		}
-		if handled, finished, err := l.resumeOwnedStarts(ctx, runtime, events, &snapshot); err != nil {
-			return LoopResult{}, err
-		} else if finished != nil {
-			return finish(finished), nil
-		} else if handled {
-			continue
-		}
-
 		effect, err := run.Next(snapshot.State)
 		if err != nil {
 			return LoopResult{}, err
@@ -161,13 +135,13 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 			if err != nil {
 				return LoopResult{}, err
 			}
-			res, err := l.commit(ctx, runtime, runID, run.DeriveWithdrawCommandID(runID, eff.StepID), snapshot.Position, "",
+			res, err := l.commit(ctx, runtime, runID, run.DeriveWithdrawCommandID(runID, eff.StepID), snapshot.Position,
 				run.WithdrawPreparedStep{StepID: eff.StepID}, proto)
 			if err != nil && !retriable(err) {
 				return LoopResult{}, err
 			}
 			if err == nil {
-				l.emitCommitted(ctx, events, sid, runID, &res.Commit)
+				l.emitCommitted(ctx, events, sid, runID, res.Events)
 			}
 		case run.StartModelCall:
 			finished, err := l.runModelStep(ctx, runtime, events, &snapshot, eff.StepID)
@@ -196,10 +170,10 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 
 // commit builds the envelope via the sanctioned constructor and submits it.
 // A non-sentinel commit failure is replayed once with the same CommandID and
-// digest (RUN-LOP-5): if the first attempt actually
-// committed and only the response was lost, the replay returns AlreadyApplied
-// instead of abandoning a live grant or re-executing an expensive step.
-func (l *Loop) commit(ctx context.Context, runtime boundRuntime, runID run.RunID, id run.CommandID, base run.RunPosition, grant run.ExecutionGrant, cmd run.AgentCommand, proto run.Protocol) (run.CommitResult, error) {
+// digest (RUN-LOP-5): if the first attempt actually committed and only the
+// response was lost, the replay returns AlreadyApplied instead of
+// re-executing an expensive step. Ownership loss is never retried.
+func (l *Loop) commit(ctx context.Context, runtime boundRuntime, runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, proto run.Protocol) (run.CommitResult, error) {
 	if proto.Version() == 0 {
 		return run.CommitResult{}, errors.New("agent: loop: uninitialized protocol")
 	}
@@ -207,9 +181,9 @@ func (l *Loop) commit(ctx context.Context, runtime boundRuntime, runID run.RunID
 	if err != nil {
 		return run.CommitResult{}, err
 	}
-	req := run.CommitRequest{Base: base, Grant: grant, Command: env}
+	req := run.CommitRequest{Base: base, Command: env}
 	res, err := runtime.Commit(ctx, req)
-	if err != nil && !retriable(err) {
+	if err != nil && !retriable(err) && !ownershipLost(err) {
 		res, err = runtime.Commit(ctx, req)
 	}
 	return res, err

@@ -105,7 +105,6 @@ var SurfaceProjection = extension.ProjectionDefinition{
 	ID: SurfaceProjectionID, Version: 1,
 	Consumes: []session.EventType{TypeStarted, TypeCompleted, TypeFailed, TypeSuperseded,
 		runmod.Prefix + "run_created", runmod.Prefix + "input_accepted", runmod.Prefix + "run_ended"},
-	RequireComplete: []extension.ModuleID{ModuleID, runmod.ModuleID},
 	Initial: func() (any, error) {
 		return TurnSurface{Turns: map[TurnID]TurnView{}, RunOwner: map[run.RunID]TurnID{}}, nil
 	},

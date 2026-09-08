@@ -1,7 +1,7 @@
 // Package runtimetest is the RUN-CMP-2 Runtime conformance suite. It takes a
 // session.Store factory so the Memory store and every durable adapter run the
-// same assertions; it asserts Run semantics only and leaves transaction
-// atomicity, digest chains and snapshot equivalence to the kernel and
+// same assertions; it asserts Run semantics only and leaves group atomicity,
+// digest chains, ownership fencing and cache equivalence to the kernel and
 // Module Framework suites.
 package runtimetest
 
@@ -23,8 +23,15 @@ import (
 	"github.com/memohai/twilight/sdk"
 )
 
-// Factory returns a fresh, empty Store for one test.
-type Factory func(t testing.TB) session.Store
+// Fixture is one adapter under test. Advance moves the adapter's clock so a
+// TTL takeover can be exercised; nil skips the takeover checks.
+type Fixture struct {
+	Store   session.Store
+	Advance func(time.Duration)
+}
+
+// Factory returns a fresh, empty Fixture for one test.
+type Factory func(t testing.TB) Fixture
 
 const sid session.SessionID = "conformance"
 
@@ -40,74 +47,94 @@ func (c *clock) Advance(d time.Duration) {
 	c.mu.Unlock()
 }
 
-// harness is one assembled stack over a Store.
+// harness is one owner process over a Store: registry, Writers, Runtime.
 type harness struct {
 	t        testing.TB
 	ctx      context.Context
+	fixture  Fixture
 	store    session.Store
 	registry *extension.Registry
-	appender extension.SemanticAppender
-	reader   extension.ProjectionReader
 	bindings *artifact.MemoryBindingStore
+	ledger   *artifact.MemoryLedger
 	frozen   *run.MemoryFrozenValues
+	cache    *extension.MemoryProjectionCache
 	clock    *clock
+	ttl      time.Duration
+	writers  extension.Writers
 	rt       *runmod.Runtime
 	seq      int
 }
 
-func newHarness(t testing.TB, store session.Store, ttl time.Duration) *harness {
+func newHarness(t testing.TB, f Fixture, ttl time.Duration) *harness {
 	t.Helper()
-	registry, err := extension.BuildRegistry(session.ProfileV1(), chatlog.Module, runmod.Module, turn.Module)
+	registry, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module, runmod.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
 	bindings := artifact.NewMemoryBindingStore()
-	appender, err := extension.NewSemanticAppender(store, registry, artifact.SetBuilder{Resolver: bindings}, artifact.KVLedger{})
-	if err != nil {
+	h := &harness{t: t, ctx: context.Background(), fixture: f, store: f.Store, registry: registry, bindings: bindings,
+		ledger: artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings}), frozen: run.NewMemoryFrozenValues(),
+		cache: extension.NewMemoryProjectionCache(), clock: &clock{now: time.Unix(1_000_000, 0)}, ttl: ttl}
+	if _, err := f.Store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid}); err != nil {
 		t.Fatal(err)
 	}
-	reader := extension.NewProjectionReader(store, registry)
-	h := &harness{t: t, ctx: context.Background(), store: store, registry: registry, appender: appender, reader: reader,
-		bindings: bindings, frozen: run.NewMemoryFrozenValues(), clock: &clock{now: time.Unix(1_000_000, 0)}}
-	h.rt, err = runmod.NewRuntime(runmod.Config{Store: store, Registry: registry, Appender: appender, Projections: reader,
-		Frozen: h.frozen, Companion: turn.CompanionV1{}, LeaseTTL: ttl, Now: h.clock.Now})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid}); err != nil {
-		t.Fatal(err)
-	}
+	h.open()
 	return h
+}
+
+// open starts an owner process: Writers over the shared store and a Runtime.
+func (h *harness) open() {
+	h.t.Helper()
+	h.writers = extension.NewWriters(h.store, h.registry, extension.Admission{Bindings: h.bindings, Ledger: h.ledger}, session.OpenOptions{TTL: h.ttl})
+	rt, err := runmod.NewRuntime(runmod.Config{Writers: h.writers, Registry: h.registry, Store: h.store,
+		Frozen: h.frozen, Companion: turn.CompanionV1{}, Cache: h.cache, Now: h.clock.Now})
+	if err != nil {
+		h.fatal(err)
+	}
+	h.rt = rt
+}
+
+// takeover lets the ownership TTL pass and opens a new owner process; the
+// previous Runtime stays usable so tests can observe its fencing.
+func (h *harness) takeover() *runmod.Runtime {
+	h.t.Helper()
+	old := h.rt
+	h.fixture.Advance(2 * h.ttl)
+	h.open()
+	return old
 }
 
 func (h *harness) fatal(args ...any) { h.t.Helper(); h.t.Fatal(args...) }
 
+func (h *harness) writer() extension.Writer {
+	h.t.Helper()
+	w, err := h.writers.Writer(h.ctx, sid)
+	if err != nil {
+		h.fatal(err)
+	}
+	return w
+}
+
 func (h *harness) head() session.Head {
 	h.t.Helper()
-	head, err := h.store.Head(h.ctx, sid)
+	page, err := h.store.Read(h.ctx, session.ReadRequest{SessionID: sid, From: ^session.Seq(0) >> 1})
 	if err != nil {
 		h.fatal(err)
 	}
-	return head
+	return page.Head
 }
 
-// appendGroup appends a typed group by CAS at the current head.
-func (h *harness) appendGroup(group extension.SemanticGroup) extension.SemanticAppendResult {
+// mustApply commits a typed group through the Writer and returns its rows.
+func (h *harness) mustApply(group extension.SemanticGroup) []session.SessionEvent {
 	h.t.Helper()
-	res, err := h.appender.AppendSemantic(h.ctx, extension.SemanticAppendRequest{SessionID: sid, ExpectedHead: h.head(), Group: group})
+	res, err := h.writer().Commit(h.ctx, func(extension.View) (*extension.SemanticGroup, error) { return &group, nil })
 	if err != nil {
 		h.fatal(err)
 	}
-	return res
-}
-
-func (h *harness) mustApply(group extension.SemanticGroup) session.SessionCommit {
-	h.t.Helper()
-	res := h.appendGroup(group)
-	if res.Outcome != extension.SemanticApplied {
+	if res.Outcome != extension.CommitApplied {
 		h.fatal(fmt.Sprintf("append %s: %s %s", group.CommitID, res.Outcome, res.Detail))
 	}
-	return *res.Commit
+	return res.Events
 }
 
 func input(id string) run.AgentInput {
@@ -157,7 +184,7 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	return group
 }
 
-// startRun creates a Run under turnID with the given inputs and returns it.
+// startRun creates a Run under turnID with the given inputs.
 func (h *harness) startRun(turnID turn.TurnID, runID run.RunID, inputs ...run.AgentInput) {
 	h.t.Helper()
 	h.submitInputs(inputs...)
@@ -192,18 +219,23 @@ func (h *harness) proto(runID run.RunID) run.Protocol {
 }
 
 // commit builds the envelope and submits it; attach events follow the companion.
-func (h *harness) commit(runID run.RunID, id run.CommandID, base run.RunPosition, grant run.ExecutionGrant, cmd run.AgentCommand, attach ...run.ModuleEvent) (run.CommitResult, error) {
+func (h *harness) commit(runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, attach ...run.ModuleEvent) (run.CommitResult, error) {
+	h.t.Helper()
+	return h.commitWith(h.rt, runID, id, base, cmd, attach...)
+}
+
+func (h *harness) commitWith(rt *runmod.Runtime, runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, attach ...run.ModuleEvent) (run.CommitResult, error) {
 	h.t.Helper()
 	env, err := h.proto(runID).BuildEnvelope(sid, runID, id, cmd)
 	if err != nil {
 		h.fatal(err)
 	}
-	return h.rt.Commit(h.ctx, sid, run.CommitRequest{Base: base, Grant: grant, Command: env, Attach: attach})
+	return rt.Commit(h.ctx, sid, run.CommitRequest{Base: base, Command: env, Attach: attach})
 }
 
-func (h *harness) mustCommit(runID run.RunID, id run.CommandID, base run.RunPosition, grant run.ExecutionGrant, cmd run.AgentCommand, attach ...run.ModuleEvent) run.CommitResult {
+func (h *harness) mustCommit(runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, attach ...run.ModuleEvent) run.CommitResult {
 	h.t.Helper()
-	res, err := h.commit(runID, id, base, grant, cmd, attach...)
+	res, err := h.commit(runID, id, base, cmd, attach...)
 	if err != nil {
 		h.fatal(fmt.Sprintf("commit %T: %v", cmd, err))
 	}
@@ -272,27 +304,26 @@ func (h *harness) prepare(runID run.RunID, withTool bool) run.StepID {
 	h.t.Helper()
 	snap := h.load(runID)
 	cmd, id := h.preparedCommand(snap, withTool)
-	h.mustCommit(runID, id, snap.Position, "", cmd)
+	h.mustCommit(runID, id, snap.Position, cmd)
 	return cmd.StepID
 }
 
 // startModel commits StartModelExecution with a fresh claim.
-func (h *harness) startModel(runID run.RunID, step run.StepID) (run.ExecutionGrant, run.ExecutionClaim) {
+func (h *harness) startModel(runID run.RunID, step run.StepID) run.ExecutionClaim {
 	h.t.Helper()
 	claim := h.claim()
-	res := h.mustCommit(runID, run.DeriveStartCommandID(runID, step, "", claim), h.load(runID).Position, "", run.StartModelExecution{StepID: step, Claim: claim})
-	if res.Grant == "" {
-		h.fatal("start returned no grant")
+	res := h.mustCommit(runID, run.DeriveStartCommandID(runID, step, "", claim), 0, run.StartModelExecution{StepID: step, Claim: claim})
+	if res.Status != run.CommitAccepted {
+		h.fatal("start was not accepted")
 	}
-	return res.Grant, claim
+	return claim
 }
 
 // executingModel drives a fresh Run to Model Executing.
-func (h *harness) executingModel(runID run.RunID, withTool bool) (run.StepID, run.ExecutionGrant, run.ExecutionClaim) {
+func (h *harness) executingModel(runID run.RunID, withTool bool) (run.StepID, run.ExecutionClaim) {
 	h.t.Helper()
 	step := h.prepare(runID, withTool)
-	grant, claim := h.startModel(runID, step)
-	return step, grant, claim
+	return step, h.startModel(runID, step)
 }
 
 func textResult(text string) run.ModelResult {
@@ -330,9 +361,9 @@ func (h *harness) toolCallResult(step run.StepID, n int) (run.ModelResult, []run
 // openToolStep drives a fresh Run to a ToolStep with n Pending calls.
 func (h *harness) openToolStep(runID run.RunID, n int) (run.StepID, []run.CallID) {
 	h.t.Helper()
-	step, grant, claim := h.executingModel(runID, true)
+	step, claim := h.executingModel(runID, true)
 	result, bindings := h.toolCallResult(step, n)
-	res := h.mustCommit(runID, run.DeriveSettlementCommandID(runID, step, "", claim), h.load(runID).Position, grant,
+	res := h.mustCommit(runID, run.DeriveSettlementCommandID(runID, step, "", claim), 0,
 		run.SubmitModelResult{StepID: step, Result: result, Calls: bindings})
 	ts, ok := res.Snapshot.State.Current.(run.ToolStep)
 	if !ok {
@@ -345,38 +376,29 @@ func (h *harness) openToolStep(runID run.RunID, n int) (run.StepID, []run.CallID
 	return ts.RefValue.ID, ids
 }
 
-func (h *harness) startTool(runID run.RunID, step run.StepID, call run.CallID) (run.ExecutionGrant, run.ExecutionClaim) {
+func (h *harness) startTool(runID run.RunID, step run.StepID, call run.CallID) run.ExecutionClaim {
 	h.t.Helper()
 	claim := h.claim()
-	res := h.mustCommit(runID, run.DeriveStartCommandID(runID, step, call, claim), h.load(runID).Position, "", run.StartToolCall{StepID: step, CallID: call, Claim: claim})
-	if res.Grant == "" {
-		h.fatal("tool start returned no grant")
+	res := h.mustCommit(runID, run.DeriveStartCommandID(runID, step, call, claim), 0, run.StartToolCall{StepID: step, CallID: call, Claim: claim})
+	if res.Status != run.CommitAccepted {
+		h.fatal("tool start was not accepted")
 	}
-	return res.Grant, claim
-}
-
-func (h *harness) lease(runID run.RunID, step run.StepID, call run.CallID) (extension.Lease, bool) {
-	h.t.Helper()
-	l, ok, err := extension.Leases{Store: h.store}.Lookup(h.ctx, sid, runmod.LeaseNamespace, run.LeaseKey(runID, step, call))
-	if err != nil {
-		h.fatal(err)
-	}
-	return l, ok
+	return claim
 }
 
 func (h *harness) machine() runmod.Machine {
 	h.t.Helper()
-	state, _, err := h.reader.Load(h.ctx, sid, runmod.MachineProjectionID, runmod.MachineProjection.Version)
+	state, _, err := h.writer().Projections().Load(h.ctx, sid, runmod.MachineProjectionID, runmod.MachineProjection.Version)
 	if err != nil {
 		h.fatal(err)
 	}
 	return state.(runmod.Machine)
 }
 
-func eventTypes(c *session.SessionCommit) []session.EventType {
-	out := make([]session.EventType, len(c.Events))
-	for i := range c.Events {
-		out[i] = c.Events[i].Type
+func eventTypes(rows []session.SessionEvent) []session.EventType {
+	out := make([]session.EventType, len(rows))
+	for i := range rows {
+		out[i] = rows[i].Type
 	}
 	return out
 }

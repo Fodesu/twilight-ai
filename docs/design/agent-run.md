@@ -1,6 +1,6 @@
 # Twilight Agent Run Protocol
 
-状态：设计规范，第二版（2026-09-08）。Machine、command/fact 规则与 Loop 的执行逻辑已有实现并在第一版栈上通过测试；第 5 节的 Runtime 与 Loop 的执行授权部分按第一版（lease、grant、控制面 KV）实现于 `agent/session/run` 与 `agent/run/loop`，尚未按本版收缩。本版依据 [agent-session.md](agent-session.md) 第二版（Session 级单写者、一行一个 event）与 [agent-session-extension.md](agent-session-extension.md) 第二版（`extension.Writer`）；实施记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 8 节。
+状态：设计规范，第二版（2026-09-08）。Machine、command/fact 规则与 Loop 的执行逻辑已有实现并在第一版栈上通过测试；第 5 节的 Runtime（`agent/session/run`）与 Loop 已于 2026-09-08 按本版实现：Runtime 经 `extension.Writer` 写入，无 lease/grant，`RecoverInterrupted` 为接管处置；RUN-CMP-2 conformance 在 `agent/session/run/runtimetest` 以 Store 为参数，对 Memory Store 通过。本版依据 [agent-session.md](agent-session.md) 第二版（Session 级单写者、一行一个 event）与 [agent-session-extension.md](agent-session-extension.md) 第二版（`extension.Writer`）；实施记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 8 节。
 
 本文定义 `agent/run`、`agent/run/loop` 与 Run 作为 Session Module 的存储形态。文中的"必须""不得""应该"是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
 

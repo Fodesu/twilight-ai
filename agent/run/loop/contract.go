@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"time"
 
 	run "github.com/memohai/twilight/agent/run"
 	"github.com/memohai/twilight/agent/session"
@@ -14,7 +13,7 @@ import (
 
 // ErrRunAlreadyRunning identifies a second local driver for the same Run.
 // A Loop permits concurrent execution of different Runs and serializes each
-// Run locally so one execution grant has one in-process consumer.
+// Run locally so every Executing target has one in-process owner (RUN-CMT-6).
 var ErrRunAlreadyRunning = errors.New("agent: loop: run already running")
 
 // RequestPlanner is the port the application injects: it projects application
@@ -140,14 +139,14 @@ type Event struct {
 	StepID  run.StepID
 	CallID  run.CallID
 	// Sequence orders provisional observations within one stream. Committed
-	// observations use the Session (Revision, Index) for authority ordering.
+	// observations use the Session Seq for authority ordering.
 	Sequence   uint64
 	Kind       EventKind
 	Durability EventDurability
 	Payload    json.RawMessage
 	// Committed is set for an EventAgentCommitted observation: the accepted
-	// SessionCommit (run facts, companion, attach); nil for provisional.
-	Committed *session.SessionCommit
+	// group (run facts, companion, attach); nil for provisional.
+	Committed []session.SessionEvent
 }
 
 // ExecutionPolicy is host-owned loop policy. ToolExecution and MaxParallel
@@ -161,14 +160,6 @@ type ExecutionPolicy struct {
 	// MaxParallel bounds local tool workers. Zero means all eligible calls in
 	// the current batch may run concurrently.
 	MaxParallel int
-	// LeaseRenewInterval is how often a running model or tool worker renews
-	// its execution lease through Runtime.RenewLease. It must be well below
-	// the Runtime's LeaseTTL (RUN-CMT-8); zero disables renewal and is only
-	// correct for a Runtime whose leases do not expire.
-	LeaseRenewInterval time.Duration
-	// Claims is the ClaimStore this Loop records live execution claims in.
-	// nil selects an in-process store.
-	Claims ClaimStore
 }
 
 type LoopDisposition uint8
@@ -184,7 +175,8 @@ type LoopResult struct {
 	Reason WaitReason
 	// ExecutionRecovery is true when NeedsRecovery(state) is true after this
 	// Loop has no further executable effect: a ModelStep is Executing, or a
-	// ToolStep has Executing calls and no Pending calls.
+	// ToolStep has Executing calls and no Pending calls. Under Session-level
+	// ownership this only happens before the owner's takeover disposition.
 	ExecutionRecovery bool
 	Result            *run.RunResult
 }

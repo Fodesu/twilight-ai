@@ -6,28 +6,46 @@ import (
 	"testing"
 	"time"
 
+	"github.com/memohai/twilight/agent/artifact"
 	"github.com/memohai/twilight/agent/jsonstable"
 	"github.com/memohai/twilight/agent/session"
 )
 
 type notePayload struct {
-	Text string `json:"text"`
+	Text string   `json:"text"`
+	Refs []string `json:"refs,omitempty"`
 }
 
 type noteState struct {
 	Notes []string `json:"notes"`
 }
 
+var refsExtractor = BindingExtractorFunc(func(value any) ([]artifact.BindingID, error) {
+	var out []artifact.BindingID
+	for _, r := range value.(notePayload).Refs {
+		out = append(out, artifact.BindingID(r))
+	}
+	return out, nil
+})
+
 func noteModule(id ModuleID, requires ...ModuleRequirement) ModuleDescriptor {
 	typ := ModulePrefix(id) + "note"
 	return ModuleDescriptor{ID: id, Requires: requires,
-		Events: []EventDefinition{{Type: typ, Current: 1, Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}}}},
+		Events: []EventDefinition{
+			{Type: typ, Current: 1, Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
+				Bindings: []BindingReferenceDefinition{{Extractor: refsExtractor, RequiredDurability: artifact.EventBound}}},
+			{Type: ModulePrefix(id) + "hint", Current: 1, Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}}, Ignorable: true},
+		},
 		Projections: []ProjectionDefinition{{
-			ID: ProjectionID(string(typ) + "s"), Version: 1, Consumes: []session.EventType{typ}, RequireComplete: []ModuleID{id},
+			ID: ProjectionID(string(typ) + "s"), Version: 1, Consumes: []session.EventType{typ},
 			Initial: func() (any, error) { return noteState{}, nil },
 			Apply: func(state any, e DecodedEvent) (any, error) {
 				s := state.(noteState)
-				s.Notes = append(append([]string(nil), s.Notes...), e.Value.(notePayload).Text)
+				text := e.Value.(notePayload).Text
+				if text == "reject" {
+					return nil, errors.New("rejected by projection")
+				}
+				s.Notes = append(append([]string(nil), s.Notes...), text)
 				return s, nil
 			},
 			StateCodec: JSONStateCodec[noteState]{},
@@ -42,13 +60,15 @@ func TestBuildRegistryValidatesRequires(t *testing.T) {
 		"unhandled version": {noteModule("a"), noteModule("b", ModuleRequirement{Module: "a",
 			Events: map[session.EventType][]PayloadVersion{ModulePrefix("a") + "note": {2}}})},
 		"event outside module": {{ID: "a", Events: []EventDefinition{{Type: "twilight/b/x", Current: 1, Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}}}}}},
+		"projection outside scope": {noteModule("a"), {ID: "b", Projections: []ProjectionDefinition{{ID: "p", Version: 1, Consumes: []session.EventType{ModulePrefix("a") + "note"},
+			Initial: func() (any, error) { return nil, nil }, Apply: func(s any, _ DecodedEvent) (any, error) { return s, nil }, StateCodec: JSONStateCodec[noteState]{}}}}},
 	}
 	for name, modules := range cases {
-		if _, err := BuildRegistry(session.ProfileV1(), modules...); err == nil {
+		if _, err := BuildRegistry(session.ProtocolVersion1, modules...); err == nil {
 			t.Errorf("%s: registry built", name)
 		}
 	}
-	if _, err := BuildRegistry(session.ProfileV1(), noteModule("a"), noteModule("b", ModuleRequirement{Module: "a",
+	if _, err := BuildRegistry(session.ProtocolVersion1, noteModule("a"), noteModule("b", ModuleRequirement{Module: "a",
 		Events: map[session.EventType][]PayloadVersion{ModulePrefix("a") + "note": {1}}})); err != nil {
 		t.Fatalf("valid registry: %v", err)
 	}
@@ -56,7 +76,7 @@ func TestBuildRegistryValidatesRequires(t *testing.T) {
 
 // Encode adds v; Decode selects the codec by v and keeps unknown versions raw.
 func TestRegistryPayloadVersion(t *testing.T) {
-	r, err := BuildRegistry(session.ProfileV1(), noteModule("a"))
+	r, err := BuildRegistry(session.ProtocolVersion1, noteModule("a"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,153 +93,287 @@ func TestRegistryPayloadVersion(t *testing.T) {
 	if err != nil || !future.Unknown || future.Version != 2 {
 		t.Fatalf("future version = %+v %v", future, err)
 	}
-	if _, _, err := r.Encode(typ, notePayload{}); err != nil {
-		t.Fatalf("encode zero value: %v", err)
-	}
 	if _, _, err := r.Encode("twilight/a/other", notePayload{}); err == nil {
 		t.Fatal("unknown type encoded")
 	}
 }
 
-func newAppender(t *testing.T) (session.Store, *Registry, SemanticAppender, session.SessionID) {
-	t.Helper()
-	store := session.NewMemoryStore()
-	r, err := BuildRegistry(session.ProfileV1(), noteModule("a"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	a, err := NewSemanticAppender(store, r, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
-		t.Fatal(err)
-	}
-	return store, r, a, "s"
+type fixture struct {
+	store    *session.MemoryStore
+	registry *Registry
+	bindings *artifact.MemoryBindingStore
+	ledger   *artifact.MemoryLedger
+	now      time.Time
 }
 
-// Both append entries derive EventIDs from (type, CommitID, index), reject a
-// same-ID different group, and the reader sees the projection with snapshot
-// and tail equivalent.
-func TestSemanticAppenderAndProjectionReader(t *testing.T) {
-	store, r, a, sid := newAppender(t)
+func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	f := &fixture{now: time.Unix(1_700_000_000, 0)}
+	f.store = session.NewMemoryStoreWithClock(func() time.Time { return f.now })
+	r, err := BuildRegistry(session.ProtocolVersion1, noteModule("a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.registry = r
+	f.bindings = artifact.NewMemoryBindingStore()
+	f.ledger = artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: f.bindings})
+	if _, err := f.store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func (f *fixture) admission() Admission { return Admission{Bindings: f.bindings, Ledger: f.ledger} }
+
+func (f *fixture) open(t *testing.T, ttl time.Duration) Writer {
+	t.Helper()
+	w, err := OpenWriter(context.Background(), f.store, f.registry, f.admission(), "s", session.OpenOptions{TTL: ttl})
+	if err != nil {
+		t.Fatalf("open writer: %v", err)
+	}
+	return w
+}
+
+func noteGroup(id string, texts ...string) CommitFn {
+	return func(View) (*SemanticGroup, error) {
+		g := &SemanticGroup{CommitID: session.CommitID(id)}
+		for _, tx := range texts {
+			g.Events = append(g.Events, TypedEvent{Type: ModulePrefix("a") + "note", Value: notePayload{Text: tx}})
+		}
+		return g, nil
+	}
+}
+
+func notes(t *testing.T, w Writer) []string {
+	t.Helper()
+	state, _, err := w.Projections().Load(context.Background(), "s", ProjectionID(string(ModulePrefix("a"))+"notes"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state.(noteState).Notes
+}
+
+// EXT-WRT-1/2: serial commits, in-memory idempotency, rebuild on reopen,
+// projections visible through View and Projections().
+func TestWriterCommitReplayAndRebuild(t *testing.T) {
+	f := newFixture(t)
 	ctx := context.Background()
-	typ := ModulePrefix("a") + "note"
-	group := SemanticGroup{CommitID: "c1", Events: []TypedEvent{{Type: typ, Value: notePayload{Text: "one"}}}}
-	res, err := a.AppendSemanticIn(ctx, sid, func(tx SemanticTx) (*SemanticGroup, error) { return &group, nil })
-	if err != nil || res.Outcome != SemanticApplied {
-		t.Fatalf("append in = %+v %v", res, err)
+	w := f.open(t, 0)
+	res, err := w.Commit(ctx, noteGroup("c1", "one", "two"))
+	if err != nil || res.Outcome != CommitApplied || len(res.Events) != 2 || res.Events[0].Seq != 0 {
+		t.Fatalf("commit = %+v %v", res, err)
 	}
-	if res.Commit.Events[0].EventID != DeriveEventID(typ, "c1", 0) {
-		t.Fatal("EventID not derived from (type, CommitID, index)")
+	if got := notes(t, w); len(got) != 2 || got[1] != "two" {
+		t.Fatalf("projection after commit = %v", got)
 	}
-	head, _ := store.Head(ctx, sid)
-	res2, err := a.AppendSemantic(ctx, SemanticAppendRequest{SessionID: sid, ExpectedHead: head,
-		Group: SemanticGroup{CommitID: "c2", Events: []TypedEvent{{Type: typ, Value: notePayload{Text: "two"}}}}})
-	if err != nil || res2.Outcome != SemanticApplied {
-		t.Fatalf("append = %+v %v", res2, err)
-	}
-	replay, _ := a.AppendSemantic(ctx, SemanticAppendRequest{SessionID: sid, ExpectedHead: head, Group: group})
-	if replay.Outcome != SemanticAlreadyApplied {
+	replay, _ := w.Commit(ctx, noteGroup("c1", "one", "two"))
+	if replay.Outcome != CommitAlreadyApplied || len(replay.Events) != 2 || replay.Events[1].Digest != res.Events[1].Digest {
 		t.Fatalf("replay = %+v", replay)
 	}
-	conflict, _ := a.AppendSemantic(ctx, SemanticAppendRequest{SessionID: sid, ExpectedHead: head,
-		Group: SemanticGroup{CommitID: "c1", Events: []TypedEvent{{Type: typ, Value: notePayload{Text: "changed"}}}}})
-	if conflict.Outcome != SemanticCommitConflict {
+	conflict, _ := w.Commit(ctx, noteGroup("c1", "changed"))
+	if conflict.Outcome != CommitConflict {
 		t.Fatalf("conflict = %+v", conflict)
 	}
-	stale, _ := a.AppendSemantic(ctx, SemanticAppendRequest{SessionID: sid, ExpectedHead: head,
-		Group: SemanticGroup{CommitID: "c3", Events: []TypedEvent{{Type: typ, Value: notePayload{Text: "three"}}}}})
-	if stale.Outcome != SemanticHeadConflict {
-		t.Fatalf("stale = %+v", stale)
+	noop, _ := w.Commit(ctx, func(View) (*SemanticGroup, error) { return nil, nil })
+	if noop.Outcome != CommitNoop {
+		t.Fatalf("noop = %+v", noop)
 	}
-	invalid, _ := a.AppendSemantic(ctx, SemanticAppendRequest{SessionID: sid, ExpectedHead: session.Head{Revision: res2.Commit.Revision, Digest: res2.Commit.CommitDigest},
-		Group: SemanticGroup{CommitID: "c4", Events: []TypedEvent{{Type: "twilight/a/unknown", Value: notePayload{}}}}})
-	if invalid.Outcome != SemanticInvalid {
+	invalid, _ := w.Commit(ctx, func(View) (*SemanticGroup, error) {
+		return &SemanticGroup{CommitID: "c2", Events: []TypedEvent{{Type: "twilight/a/unknown", Value: notePayload{}}}}, nil
+	})
+	if invalid.Outcome != CommitInvalid {
 		t.Fatalf("invalid = %+v", invalid)
 	}
-
-	reader := NewProjectionReader(store, r)
-	def, _ := r.LookupProjection(ProjectionID(string(typ)+"s"), 1)
-	state, through, err := reader.Load(ctx, sid, def.ID, def.Version)
-	if err != nil || through.Revision != 2 {
-		t.Fatalf("load = %+v %+v %v", state, through, err)
+	rejected, _ := w.Commit(ctx, noteGroup("c3", "fine", "reject"))
+	if rejected.Outcome != CommitInvalid {
+		t.Fatalf("projection rejection must block the append: %+v", rejected)
 	}
-	full := state.(noteState).Notes
-	// Snapshot after the first commit, then the tail must give the same state.
-	_, err = a.AppendSemanticIn(ctx, sid, func(tx SemanticTx) (*SemanticGroup, error) {
-		s, _, err := LoadIn(tx, &def)
-		if err != nil {
-			return nil, err
+	if page, _ := f.store.Read(ctx, session.ReadRequest{SessionID: "s"}); len(page.Events) != 2 {
+		t.Fatalf("rejected groups wrote rows: %d", len(page.Events))
+	}
+	// The View sees head, index and projection; fn may use them.
+	_, err = w.Commit(ctx, func(v View) (*SemanticGroup, error) {
+		if v.Head().Next != 2 || v.Epoch() != 1 {
+			t.Fatalf("view head/epoch = %+v %d", v.Head(), v.Epoch())
 		}
-		if len(s.(noteState).Notes) != 2 {
-			t.Fatalf("LoadIn = %+v", s)
+		if rows, ok := v.LookupCommit("c1"); !ok || len(rows) != 2 {
+			t.Fatal("view lookup failed")
 		}
-		return nil, SaveSnapshotIn(tx, &def, noteState{Notes: []string{"one"}}, session.Head{Revision: 1, Digest: res.Commit.CommitDigest})
+		if s, err := v.Projection(ProjectionID(string(ModulePrefix("a"))+"notes"), 1); err != nil || len(s.(noteState).Notes) != 2 {
+			t.Fatalf("view projection = %+v %v", s, err)
+		}
+		return nil, nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	state, _, err = reader.Load(ctx, sid, def.ID, def.Version)
-	if err != nil || len(state.(noteState).Notes) != len(full) || state.(noteState).Notes[1] != "two" {
-		t.Fatalf("snapshot+tail = %+v, full = %v, %v", state, full, err)
+	if _, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !session.IsCode(err, session.ErrOwned) {
+		t.Fatalf("second writer = %v, want owned", err)
+	}
+	if err := w.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Commit(ctx, noteGroup("c4", "x")); err == nil {
+		t.Fatal("closed writer accepted a commit")
+	}
+	w2 := f.open(t, 0)
+	if w2.Epoch() != 2 {
+		t.Fatalf("epoch = %d", w2.Epoch())
+	}
+	if got := notes(t, w2); len(got) != 2 {
+		t.Fatalf("rebuilt projection = %v", got)
+	}
+	if again, _ := w2.Commit(ctx, noteGroup("c1", "one", "two")); again.Outcome != CommitAlreadyApplied {
+		t.Fatalf("index not rebuilt: %+v", again)
+	}
+	reader := NewProjectionReader(f.store, f.registry, nil)
+	state, through, err := reader.Load(ctx, "s", ProjectionID(string(ModulePrefix("a"))+"notes"), 1)
+	if err != nil || len(state.(noteState).Notes) != 2 || through.Next != 2 {
+		t.Fatalf("store reader = %+v %+v %v", state, through, err)
 	}
 }
 
-func TestLeaseLifecycle(t *testing.T) {
-	store, _, a, sid := newAppender(t)
+// EXT-WRT-4: a superseded writer fails closed.
+func TestWriterOwnershipLost(t *testing.T) {
+	f := newFixture(t)
 	ctx := context.Background()
-	typ := ModulePrefix("a") + "note"
-	var lease Lease
-	_, err := a.AppendSemanticIn(ctx, sid, func(tx SemanticTx) (*SemanticGroup, error) {
-		l, err := AcquireLease(tx, sid, "c1", 1000, AcquireLeaseRequest{Namespace: "twilight/a/lease", Key: "k", Holder: "h1", TTL: time.Second})
-		if err != nil {
-			return nil, err
-		}
-		lease = l
-		if again, err := AcquireLease(tx, sid, "c1", 1000, AcquireLeaseRequest{Namespace: "twilight/a/lease", Key: "k", Holder: "h1", TTL: time.Second}); err != nil || again.Token != l.Token {
-			t.Fatalf("same holder re-acquire = %+v %v", again, err)
-		}
-		if _, err := AcquireLease(tx, sid, "c1", 1000, AcquireLeaseRequest{Namespace: "twilight/a/lease", Key: "k", Holder: "h2"}); !errors.Is(err, &Error{Code: ErrConflict}) {
-			t.Fatalf("other holder = %v, want conflict", err)
-		}
-		return &SemanticGroup{CommitID: "c1", Events: []TypedEvent{{Type: typ, Value: notePayload{Text: "start"}}}}, nil
-	})
+	w1 := f.open(t, time.Minute)
+	if _, err := w1.Commit(ctx, noteGroup("c1", "one")); err != nil {
+		t.Fatal(err)
+	}
+	f.now = f.now.Add(2 * time.Minute)
+	w2 := f.open(t, time.Minute)
+	if _, err := w1.Commit(ctx, noteGroup("c2", "late")); !errors.Is(err, &Error{Code: ErrOwnershipLost}) {
+		t.Fatalf("stale writer commit = %v, want ownership_lost", err)
+	}
+	if _, err := w1.Commit(ctx, noteGroup("c3", "again")); !errors.Is(err, &Error{Code: ErrOwnershipLost}) {
+		t.Fatal("writer did not stay failed")
+	}
+	if got := notes(t, w2); len(got) != 1 {
+		t.Fatalf("fenced write leaked: %v", got)
+	}
+	ws := NewWriters(f.store, f.registry, f.admission(), session.OpenOptions{})
+	if _, err := ws.Writer(ctx, "s"); !session.IsCode(err, session.ErrOwned) {
+		t.Fatalf("writers while owned = %v", err)
+	}
+	_ = w2.Close(ctx)
+	a, err := ws.Writer(ctx, "s")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lease.Token != DeriveLeaseToken(sid, "twilight/a/lease", "k", "h1", "c1") || lease.DeadlineUnixMilli != 2000 {
-		t.Fatalf("lease = %+v", lease)
+	if b, _ := ws.Writer(ctx, "s"); a != b {
+		t.Fatal("Writers handed out two writers for one session")
 	}
-	leases := Leases{Store: store}
-	if err := leases.Renew(ctx, sid, "twilight/a/lease", "k", lease.Token, time.Second, 1500); err != nil {
-		t.Fatalf("renew: %v", err)
-	}
-	if err := leases.Renew(ctx, sid, "twilight/a/lease", "k", "bad", time.Second, 1500); !errors.Is(err, &Error{Code: ErrStale}) {
-		t.Fatalf("renew with bad token = %v", err)
-	}
-	var expired []string
-	_ = leases.Expired(ctx, "twilight/a/lease", 2400, func(_ session.SessionID, l Lease) (bool, error) { expired = append(expired, l.Key); return true, nil })
-	if len(expired) != 0 {
-		t.Fatalf("renewed lease expired early: %v", expired)
-	}
-	_ = leases.Expired(ctx, "twilight/a/lease", 2600, func(_ session.SessionID, l Lease) (bool, error) { expired = append(expired, l.Key); return true, nil })
-	if len(expired) != 1 {
-		t.Fatalf("expired = %v", expired)
-	}
-	_, err = a.AppendSemanticIn(ctx, sid, func(tx SemanticTx) (*SemanticGroup, error) {
-		if err := ReleaseLease(tx, "twilight/a/lease", "k", "bad"); !errors.Is(err, &Error{Code: ErrStale}) {
-			t.Fatalf("release with bad token = %v", err)
-		}
-		if err := ReleaseLease(tx, "twilight/a/lease", "k", lease.Token); err != nil {
-			return nil, err
-		}
-		return &SemanticGroup{CommitID: "c2", Events: []TypedEvent{{Type: typ, Value: notePayload{Text: "settle"}}}}, nil
-	})
-	if err != nil {
+}
+
+// EXT-PRJ-2: unknown events in scope fail the fold unless Ignorable; unknown
+// events of other modules are skipped.
+func TestProjectionUnknownEvents(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	w := f.open(t, 0)
+	if _, err := w.Commit(ctx, noteGroup("c1", "one")); err != nil {
 		t.Fatal(err)
 	}
-	if err := leases.Renew(ctx, sid, "twilight/a/lease", "k", lease.Token, time.Second, 1500); !errors.Is(err, &Error{Code: ErrStale}) {
-		t.Fatalf("renew after release = %v", err)
+	hint, _ := w.Commit(ctx, func(View) (*SemanticGroup, error) {
+		return &SemanticGroup{CommitID: "c2", Events: []TypedEvent{{Type: ModulePrefix("a") + "hint", Value: notePayload{Text: "h"}}}}, nil
+	})
+	if hint.Outcome != CommitApplied || !hint.Events[0].Ignorable {
+		t.Fatalf("ignorable definition not applied to the row: %+v", hint)
+	}
+	_ = w.Close(ctx)
+	kw, _ := f.store.Open(ctx, "s", session.OpenOptions{})
+	raw := func(id, typ string, ignorable bool) {
+		if _, err := kw.Append(ctx, session.Group{CommitID: session.CommitID(id), Events: []session.UncommittedEvent{{Type: session.EventType(typ), Payload: jsonstable.MustParse(`{"v":1}`), Ignorable: ignorable}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	raw("other", "twilight/zzz/thing", false)  // out of scope: skipped
+	raw("future", "twilight/a/future", true)   // in scope, ignorable: skipped
+	_ = kw.Close(ctx)
+	w = f.open(t, 0)
+	if got := notes(t, w); len(got) != 1 {
+		t.Fatalf("notes = %v", got)
+	}
+	_ = w.Close(ctx)
+	kw, _ = f.store.Open(ctx, "s", session.OpenOptions{})
+	raw("strict", "twilight/a/strict", false) // in scope, not ignorable: fold fails
+	_ = kw.Close(ctx)
+	if _, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !errors.Is(err, &Error{Code: ErrUnknownEvent}) {
+		t.Fatalf("open with unknown strict event = %v", err)
+	}
+}
+
+// EXT-WRT-3 and ART-RET-3: claims are Active before the rows exist; an
+// orphan claim is released on the next OpenWriter; a live claim survives.
+func TestWriterClaimsAndReconcile(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	b, _ := artifact.NewBinding("b1", artifact.Ref{Scheme: "spill", Authority: "local", Key: "k", Durability: artifact.EventBound})
+	if _, err := f.bindings.CreateBinding(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	w := f.open(t, 0)
+	res, err := w.Commit(ctx, func(View) (*SemanticGroup, error) {
+		return &SemanticGroup{CommitID: "c1", Events: []TypedEvent{{Type: ModulePrefix("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}}}}, nil
+	})
+	if err != nil || res.Outcome != CommitApplied || res.Claim == nil || res.Claim.State != artifact.ClaimActive {
+		t.Fatalf("commit with binding = %+v %v", res, err)
+	}
+	missing, _ := w.Commit(ctx, func(View) (*SemanticGroup, error) {
+		return &SemanticGroup{CommitID: "c2", Events: []TypedEvent{{Type: ModulePrefix("a") + "note", Value: notePayload{Text: "x", Refs: []string{"nope"}}}}}, nil
+	})
+	if missing.Outcome != CommitInvalid {
+		t.Fatalf("unknown binding = %+v", missing)
+	}
+	// Simulate a crash between claim and append: an Active claim whose owner
+	// commit never made it into the stream.
+	set, _ := artifact.SetBuilder{Resolver: f.bindings}.Build(ctx, []artifact.BindingID{"b1"})
+	orphanID := DeriveClaimID(session.ProtocolVersion1, "s", "never", set.RefSetDigest)
+	if _, err := f.ledger.Activate(ctx, orphanID, CommitOwner("s", "never"), set); err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close(ctx)
+	w = f.open(t, 0)
+	defer w.Close(ctx)
+	if c, ok, _ := f.ledger.LookupClaim(ctx, orphanID); !ok || c.State != artifact.ClaimReleased {
+		t.Fatalf("orphan claim = %+v", c)
+	}
+	if c, ok, _ := f.ledger.LookupClaim(ctx, res.Claim.ID); !ok || c.State != artifact.ClaimActive {
+		t.Fatalf("live claim = %+v", c)
+	}
+}
+
+// EXT-PRJ-3/4: cache entry plus tail equals the full fold; a stale or missing
+// entry falls back to a full fold; Writer and Store readers agree.
+func TestProjectionCache(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	w := f.open(t, 0)
+	defer w.Close(ctx)
+	id := ProjectionID(string(ModulePrefix("a")) + "notes")
+	_, _ = w.Commit(ctx, noteGroup("c1", "one"))
+	cache := NewMemoryProjectionCache()
+	state, through, _ := w.Projections().Load(ctx, "s", id, 1)
+	if err := SaveProjection(ctx, cache, f.registry, "s", id, 1, state, through); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = w.Commit(ctx, noteGroup("c2", "two"))
+	reader := NewProjectionReader(f.store, f.registry, cache)
+	got, head, err := reader.Load(ctx, "s", id, 1)
+	if err != nil || len(got.(noteState).Notes) != 2 || head.Next != 2 {
+		t.Fatalf("cache+tail = %+v %+v %v", got, head, err)
+	}
+	// A cache entry claiming a head the stream does not have is ignored.
+	_ = cache.Save(ctx, "s", id, 1, jsonstable.MustParse(`{"notes":["bogus"]}`), session.Head{Next: 1, Digest: "sha256:wrong"})
+	got, _, err = reader.Load(ctx, "s", id, 1)
+	if err != nil || got.(noteState).Notes[0] != "one" {
+		t.Fatalf("stale cache used: %+v %v", got, err)
+	}
+	cache.Delete("s", id, 1)
+	got, _, _ = reader.Load(ctx, "s", id, 1)
+	mem, _, _ := w.Projections().Load(ctx, "s", id, 1)
+	if len(got.(noteState).Notes) != len(mem.(noteState).Notes) {
+		t.Fatal("store reader and writer reader disagree")
 	}
 }

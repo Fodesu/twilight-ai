@@ -1,19 +1,17 @@
-// Package artifact is the Artifact Core (docs/design/agent-artifact.md): Ref,
-// Binding and the two-state RetentionLedger. v1 keeps the Memory reference
-// implementation only; claims are activated inside the host's transaction
-// through ClaimKV.
+// Package artifact is the Artifact Core (docs/design/agent-artifact.md,
+// edition 2): Ref, Binding and the two-state RetentionLedger. The ledger
+// persists itself; claims are activated before the owner fact is appended and
+// orphans are released by the pre-collection reconciliation (ART-RET-3).
 package artifact
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"sync"
 
 	"github.com/memohai/twilight/agent/es"
-	"github.com/memohai/twilight/agent/jsonstable"
 )
 
 type (
@@ -204,6 +202,12 @@ type ClaimOwner struct {
 	Identity  string `json:"identity"`
 }
 
+// ClaimOwnerScope selects every owner of one Kind under one Authority.
+type ClaimOwnerScope struct {
+	Kind      string
+	Authority string
+}
+
 type ClaimState string
 
 const (
@@ -275,94 +279,128 @@ func SortedUniqueBindingIDs(ids []BindingID) []BindingID {
 	return out[:n]
 }
 
-// ClaimKV is the host's same-transaction KV view. In Session deployments it
-// adapts session.SessionTx's control-plane KV (namespace twilight/artifact/claim).
-type ClaimKV interface {
-	Get(key string) ([]byte, bool, error)
-	Put(key string, value []byte) error
-	Delete(key string) error
-}
-
-// RetentionLedger keeps Active/Released claims (ART-RET-2).
+// RetentionLedger keeps Active/Released claims (ART-RET-2). It persists
+// itself; Activate returns only once the claim is durable.
 type RetentionLedger interface {
-	ActivateIn(kv ClaimKV, id ClaimID, owner ClaimOwner, set BindingSet) (RetentionClaim, error)
+	Activate(context.Context, ClaimID, ClaimOwner, BindingSet) (RetentionClaim, error)
 	LookupClaim(context.Context, ClaimID) (RetentionClaim, bool, error)
 	ReleaseActive(context.Context, ClaimID) error
+	// ActiveClaims lists Active claims of every owner in scope, ordered by ClaimID.
+	ActiveClaims(context.Context, ClaimOwnerScope) ([]RetentionClaim, error)
 }
 
-// KVLedger stores claims as canonical JSON under the ClaimID key. Reads and
-// releases outside a transaction go through the ClaimKVProvider the host
-// supplies (for Session: a store-backed adapter).
-type KVLedger struct {
+// OwnerVerifier is supplied by the owner's host: does the owner fact exist?
+type OwnerVerifier interface {
+	OwnerExists(context.Context, ClaimOwner) (bool, error)
+}
+
+// Reconcile releases Active claims in scope whose owner no longer exists
+// (ART-RET-3). The caller guarantees no owner write in scope is in flight.
+func Reconcile(ctx context.Context, ledger RetentionLedger, scope ClaimOwnerScope, verifier OwnerVerifier) (int, error) {
+	claims, err := ledger.ActiveClaims(ctx, scope)
+	if err != nil {
+		return 0, err
+	}
+	released := 0
+	for _, c := range claims {
+		exists, err := verifier.OwnerExists(ctx, c.Owner)
+		if err != nil {
+			return released, err
+		}
+		if exists {
+			continue
+		}
+		if err := ledger.ReleaseActive(ctx, c.ID); err != nil {
+			return released, err
+		}
+		released++
+	}
+	return released, nil
+}
+
+// MemoryLedger is the in-process RetentionLedger. Builder, when set, rebuilds
+// and verifies every incoming set (ART-RET-1).
+type MemoryLedger struct {
 	Builder BindingSetBuilder
-	// Outside is the non-transactional KV view for LookupClaim/ReleaseActive.
-	Outside func(context.Context) ClaimKV
+	mu      sync.Mutex
+	claims  map[ClaimID]RetentionClaim
 }
 
-func (l KVLedger) ActivateIn(kv ClaimKV, id ClaimID, owner ClaimOwner, set BindingSet) (RetentionClaim, error) {
+func NewMemoryLedger(builder BindingSetBuilder) *MemoryLedger {
+	return &MemoryLedger{Builder: builder, claims: make(map[ClaimID]RetentionClaim)}
+}
+
+func (l *MemoryLedger) Activate(ctx context.Context, id ClaimID, owner ClaimOwner, set BindingSet) (RetentionClaim, error) {
+	if err := ctx.Err(); err != nil {
+		return RetentionClaim{}, err
+	}
 	if id == "" || owner.Kind == "" || owner.Identity == "" {
 		return RetentionClaim{}, &Error{Code: ErrInvalid, Operation: "activate", Identity: string(id), Detail: "empty claim identity or owner"}
 	}
 	if len(set.BindingIDs) == 0 || set.RefSetDigest == "" {
 		return RetentionClaim{}, &Error{Code: ErrInvalid, Operation: "activate", Identity: string(id), Detail: "empty binding set"}
 	}
-	claim := RetentionClaim{ID: id, Owner: owner, BindingSet: set, State: ClaimActive}
-	raw, ok, err := kv.Get(string(id))
-	if err != nil {
-		return RetentionClaim{}, err
-	}
-	if ok {
-		var existing RetentionClaim
-		if err := json.Unmarshal(raw, &existing); err != nil {
-			return RetentionClaim{}, &Error{Code: ErrCorrupt, Operation: "activate", Identity: string(id), Detail: err.Error()}
+	if l.Builder != nil {
+		rebuilt, err := l.Builder.Build(ctx, set.BindingIDs)
+		if err != nil {
+			return RetentionClaim{}, err
 		}
+		if !sameSet(rebuilt, set) {
+			return RetentionClaim{}, &Error{Code: ErrInvalid, Operation: "activate", Identity: string(id), Detail: "binding set does not verify"}
+		}
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if existing, ok := l.claims[id]; ok {
 		if existing.State != ClaimActive || existing.Owner != owner || !sameSet(existing.BindingSet, set) {
 			return RetentionClaim{}, &Error{Code: ErrConflict, Operation: "activate", Identity: string(id)}
 		}
 		return existing, nil
 	}
-	encoded, err := jsonstable.MarshalCanonical(claim)
-	if err != nil {
-		return RetentionClaim{}, err
-	}
-	if err := kv.Put(string(id), encoded); err != nil {
-		return RetentionClaim{}, err
-	}
+	claim := RetentionClaim{ID: id, Owner: owner, BindingSet: set, State: ClaimActive}
+	l.claims[id] = claim
 	return claim, nil
 }
 
-func (l KVLedger) LookupClaim(ctx context.Context, id ClaimID) (RetentionClaim, bool, error) {
-	if l.Outside == nil {
-		return RetentionClaim{}, false, errors.New("artifact: ledger: no outside KV")
-	}
-	raw, ok, err := l.Outside(ctx).Get(string(id))
-	if err != nil || !ok {
+func (l *MemoryLedger) LookupClaim(ctx context.Context, id ClaimID) (RetentionClaim, bool, error) {
+	if err := ctx.Err(); err != nil {
 		return RetentionClaim{}, false, err
 	}
-	var claim RetentionClaim
-	if err := json.Unmarshal(raw, &claim); err != nil {
-		return RetentionClaim{}, false, &Error{Code: ErrCorrupt, Operation: "lookup_claim", Identity: string(id), Detail: err.Error()}
-	}
-	return claim, true, nil
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	c, ok := l.claims[id]
+	return c, ok, nil
 }
 
-func (l KVLedger) ReleaseActive(ctx context.Context, id ClaimID) error {
-	claim, ok, err := l.LookupClaim(ctx, id)
-	if err != nil {
+func (l *MemoryLedger) ReleaseActive(ctx context.Context, id ClaimID) error {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	c, ok := l.claims[id]
 	if !ok {
 		return &Error{Code: ErrNotFound, Operation: "release", Identity: string(id)}
 	}
-	if claim.State == ClaimReleased {
-		return nil
+	c.State = ClaimReleased
+	l.claims[id] = c
+	return nil
+}
+
+func (l *MemoryLedger) ActiveClaims(ctx context.Context, scope ClaimOwnerScope) ([]RetentionClaim, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	claim.State = ClaimReleased
-	encoded, err := jsonstable.MarshalCanonical(claim)
-	if err != nil {
-		return err
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []RetentionClaim
+	for _, c := range l.claims {
+		if c.State == ClaimActive && c.Owner.Kind == scope.Kind && c.Owner.Authority == scope.Authority {
+			out = append(out, c)
+		}
 	}
-	return l.Outside(ctx).Put(string(id), encoded)
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
 }
 
 func sameSet(a, b BindingSet) bool {

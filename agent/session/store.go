@@ -2,127 +2,69 @@ package session
 
 import (
 	"context"
+	"time"
 
 	"github.com/memohai/twilight/agent/es"
 	"github.com/memohai/twilight/agent/jsonstable"
 )
 
 // CreateRequest establishes a stream. Field-identical repeats are idempotent;
-// a different request for the same SessionID is a Conflict (SES-WIR-1).
+// a different request for the same SessionID is a Conflict.
 type CreateRequest struct {
-	ProtocolVersion uint16
-	SessionID       SessionID
-	CausationID     es.CausationID
-	Metadata        jsonstable.Value
+	ProtocolVersion    uint16
+	SessionID          SessionID
+	CreatedAtUnixMilli int64
+	CausationID        es.CausationID
+	Metadata           jsonstable.Value
 }
 
-// AppendRequest is one atomic commit to append (SES 5).
-type AppendRequest struct {
-	SessionID     SessionID
-	ExpectedHead  Head
-	CommitID      CommitID
-	CausationID   es.CausationID
-	CorrelationID string
-	Events        []UncommittedEvent
+// OpenOptions configures writer ownership (SES-OWN-1). TTL zero means the
+// ownership lives only as long as the process or connection (file-lock
+// semantics); non-zero means the writer must Heartbeat within TTL or another
+// Open may take over.
+type OpenOptions struct {
+	TTL time.Duration
 }
 
-type AppendDisposition string
-
-const (
-	AppendApplied        AppendDisposition = "applied"
-	AppendAlreadyApplied AppendDisposition = "already_applied"
-	AppendHeadConflict   AppendDisposition = "head_conflict"
-	AppendCommitConflict AppendDisposition = "commit_conflict"
-	AppendInvalid        AppendDisposition = "invalid"
-)
-
-type AppendResult struct {
-	Disposition AppendDisposition
-	Commit      *SessionCommit
-	ActualHead  Head
-	// Detail explains an Invalid disposition.
-	Detail string
-}
-
-// SessionTx is the read/write view inside CommitIn's critical section
-// (SES-API-2). Every method takes effect in the same transaction as the
-// commit the fn decides to append.
-type SessionTx interface {
+// Writer is the kernel's ownership handle returned by Store.Open. Append and
+// Heartbeat carry its Epoch; a Writer whose Epoch has been superseded gets
+// ErrOwnershipLost and writes nothing (SES-OWN-2).
+type Writer interface {
+	SessionID() SessionID
+	Epoch() Epoch
 	Head() Head
-	LookupCommit(CommitID) (SessionCommit, bool, error)
-	// Tail returns the commits after `after`; with a non-empty types filter
-	// only commits carrying at least one event whose Type has one of the
-	// prefixes are returned.
-	Tail(after Head, types []EventType) ([]SessionCommit, error)
-	LoadSnapshot(ProjectionKey, uint16) (SnapshotResult, error)
-	SaveSnapshot(Snapshot) error
-	ControlGet(ControlNamespace, string) (ControlEntry, bool, error)
-	ControlPut(ControlNamespace, string, []byte, int64) error
-	ControlDelete(ControlNamespace, string) error
+	// Append persists one group atomically and returns the sealed rows
+	// (SES-APP-1). It rejects empty groups, duplicate CommitIDs, non-canonical
+	// or non-object payloads, invalid identities and a stale Epoch (SES-APP-3).
+	Append(context.Context, Group) ([]SessionEvent, error)
+	Heartbeat(context.Context) error
+	Close(context.Context) error
 }
 
-// CommitInFn decides, inside the critical section, what to append. nil means
-// append nothing; snapshot and KV writes already made through tx still commit.
-type CommitInFn func(SessionTx) (*AppendRequest, error)
-
-type ReplayCursor struct {
-	After *EventPosition
-	Token CursorToken
-}
-
-type ReplayRequest struct {
+// ReadRequest reads rows from From (inclusive), optionally filtered by
+// EventType prefix and limited to whole groups (SES-REP-1).
+type ReadRequest struct {
 	SessionID SessionID
+	From      Seq
 	Types     []EventType // empty = all; otherwise EventType prefix filter
-	Cursor    *ReplayCursor
-	Limit     uint32
+	Limit     uint32      // 0 = unlimited; truncation only at a group boundary
 }
 
-type ReplayPage struct {
+// ReadPage is the result of one Read. Head is the stream head at read time;
+// HasMore reports whether rows beyond the returned ones matched.
+type ReadPage struct {
 	Header  SessionHeader
-	Commits []SessionCommit
-	Next    *ReplayCursor
+	Events  []SessionEvent
 	Head    Head
+	HasMore bool
 }
 
-type SnapshotRequest struct {
-	SessionID         SessionID
-	ProjectionKey     ProjectionKey
-	ProjectionVersion uint16
-}
-type SnapshotResult struct {
-	Snapshot *Snapshot
-	Found    bool
-}
-type SaveSnapshotRequest struct{ Snapshot Snapshot }
-type SaveSnapshotResult struct {
-	Snapshot Snapshot
-	Replaced bool
-}
-
-// Store is the kernel port (SES 4). Commit and CommitIn are the only append
-// entries; both persist the commit, the new head and any same-call snapshot
-// and control-plane writes atomically.
+// Store is the kernel port (SES 4 to 6).
 type Store interface {
 	Create(context.Context, CreateRequest) (SessionHeader, error)
 	Header(context.Context, SessionID) (SessionHeader, error)
-	Head(context.Context, SessionID) (Head, error)
-	LookupCommit(context.Context, SessionID, CommitID) (SessionCommit, bool, error)
-	Commit(context.Context, AppendRequest) (AppendResult, error)
-	CommitIn(context.Context, SessionID, CommitInFn) (AppendResult, error)
-	Replay(context.Context, ReplayRequest) (ReplayPage, error)
-	LoadSnapshot(context.Context, SnapshotRequest) (SnapshotResult, error)
-	SaveSnapshot(context.Context, SaveSnapshotRequest) (SaveSnapshotResult, error)
-	ControlGet(context.Context, SessionID, ControlNamespace, string) (ControlEntry, bool, error)
-	ControlPut(context.Context, SessionID, ControlNamespace, string, []byte, int64) error
-	// ControlCompareAndPut writes only when the entry exists and its current
-	// Value equals expected bytewise; it reports whether it wrote.
-	ControlCompareAndPut(context.Context, SessionID, ControlNamespace, string, []byte, []byte, int64) (bool, error)
-	ControlDelete(context.Context, SessionID, ControlNamespace, string) error
-	// ControlScan enumerates across all Sessions by key prefix; fn false stops.
-	ControlScan(context.Context, ControlNamespace, string, func(ControlEntry) (bool, error)) error
-	// ControlExpired enumerates entries whose deadline is non-zero and before
-	// beforeUnixMilli, across all Sessions; fn false stops.
-	ControlExpired(context.Context, ControlNamespace, int64, func(ControlEntry) (bool, error)) error
+	Open(context.Context, SessionID, OpenOptions) (Writer, error)
+	Read(context.Context, ReadRequest) (ReadPage, error)
 }
 
 // HasTypePrefix reports whether typ matches one of the prefixes (empty list
@@ -133,20 +75,6 @@ func HasTypePrefix(typ EventType, prefixes []EventType) bool {
 	}
 	for _, p := range prefixes {
 		if len(typ) >= len(p) && typ[:len(p)] == p {
-			return true
-		}
-	}
-	return false
-}
-
-// CommitMatchesTypes reports whether a commit carries at least one event
-// whose Type has one of the prefixes.
-func CommitMatchesTypes(c *SessionCommit, prefixes []EventType) bool {
-	if len(prefixes) == 0 {
-		return true
-	}
-	for i := range c.Events {
-		if HasTypePrefix(c.Events[i].Type, prefixes) {
 			return true
 		}
 	}

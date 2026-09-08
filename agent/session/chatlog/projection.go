@@ -40,9 +40,9 @@ const (
 )
 
 type SurfaceEntry struct {
-	Kind     EntryKind             `json:"kind"`
-	ID       string                `json:"id"`
-	Position session.EventPosition `json:"position"`
+	Kind EntryKind   `json:"kind"`
+	ID   string      `json:"id"`
+	Seq  session.Seq `json:"seq"`
 }
 
 // Surface is the UI-facing read model (CHT-SUR-1).
@@ -85,8 +85,7 @@ var chatlogConsumes = []session.EventType{TypeInputSubmitted, TypeInputDelivered
 
 var SurfaceProjection = extension.ProjectionDefinition{
 	ID: SurfaceProjectionID, Version: 1,
-	Consumes:        chatlogConsumes,
-	RequireComplete: []extension.ModuleID{ModuleID},
+	Consumes: chatlogConsumes,
 	Initial: func() (any, error) {
 		return Surface{Inputs: map[InputID]InputView{}, Assistants: map[AssistantID]Assistant{}, ToolResults: map[ToolResultID]ToolResult{}, Summaries: map[SummaryID]Summary{}, Superseded: map[ToolResultID]ToolResultID{}}, nil
 	},
@@ -97,7 +96,7 @@ var SurfaceProjection = extension.ProjectionDefinition{
 func applySurface(state any, e extension.DecodedEvent) (any, error) {
 	s := state.(Surface)
 	s = cloneSurface(s)
-	pos := session.EventPosition{Revision: e.Revision, Index: e.Event.Index, EventDigest: e.Event.EventDigest}
+	pos := e.Event.Seq
 	switch p := e.Value.(type) {
 	case InputSubmittedPayload:
 		if _, dup := s.Inputs[p.InputID]; dup {
@@ -117,7 +116,7 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		v.Status = InputDelivered
 		v.Input.TurnID = p.TurnID
 		s.Inputs[p.InputID] = v
-		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryInput, ID: string(p.InputID), Position: pos})
+		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryInput, ID: string(p.InputID), Seq: pos})
 	case InputWithdrawnPayload:
 		if err := terminateInput(&s, p.InputID, InputWithdrawn); err != nil {
 			return nil, err
@@ -131,13 +130,13 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 			return nil, fmt.Errorf("assistant %s created twice", p.Assistant.ID)
 		}
 		s.Assistants[p.Assistant.ID] = p.Assistant
-		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryAssistant, ID: string(p.Assistant.ID), Position: pos})
+		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryAssistant, ID: string(p.Assistant.ID), Seq: pos})
 	case ToolResultPayload:
 		if _, dup := s.ToolResults[p.ToolResult.ID]; dup {
 			return nil, fmt.Errorf("tool_result %s created twice", p.ToolResult.ID)
 		}
 		s.ToolResults[p.ToolResult.ID] = p.ToolResult
-		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryToolResult, ID: string(p.ToolResult.ID), Position: pos})
+		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryToolResult, ID: string(p.ToolResult.ID), Seq: pos})
 	case ToolResultSupersededPayload:
 		if _, ok := s.ToolResults[p.ToolResultID]; !ok {
 			return nil, fmt.Errorf("superseded tool_result %s unknown", p.ToolResultID)
@@ -151,7 +150,7 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 			return nil, fmt.Errorf("summary %s created twice", p.Summary.ID)
 		}
 		s.Summaries[p.Summary.ID] = p.Summary
-		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntrySummary, ID: string(p.Summary.ID), Position: pos})
+		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntrySummary, ID: string(p.Summary.ID), Seq: pos})
 	default:
 		return nil, fmt.Errorf("chatlog surface: unexpected %T", e.Value)
 	}
@@ -222,8 +221,7 @@ type Context struct {
 
 var ContextProjection = extension.ProjectionDefinition{
 	ID: ContextProjectionID, Version: 1,
-	Consumes:        chatlogConsumes,
-	RequireComplete: []extension.ModuleID{ModuleID},
+	Consumes: chatlogConsumes,
 	Initial: func() (any, error) {
 		return Context{Pending: map[InputID]Input{}, Superseded: map[ToolResultID]ToolResultID{}}, nil
 	},

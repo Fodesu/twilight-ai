@@ -18,95 +18,122 @@ import (
 
 // Options tunes the Memory assembly.
 type Options struct {
-	// LeaseTTL zero means execution leases never expire.
-	LeaseTTL time.Duration
-	Now      func() time.Time
+	// Ownership configures the Session Writer: TTL zero is process-lifetime
+	// ownership, non-zero lets another assembly take over after the TTL.
+	Ownership session.OpenOptions
+	Now       func() time.Time
 	// Frozen shares request bodies between "processes" in tests; nil creates one.
 	Frozen run.FrozenValueStore
 	// Store shares the Session store between assemblies; nil creates one.
 	Store session.Store
+	// Ledger shares the retention ledger between assemblies; nil creates one.
+	Ledger artifact.RetentionLedger
+	// BindingStore shares bindings between assemblies; nil creates one.
+	BindingStore *artifact.MemoryBindingStore
 	// Sink receives Loop observations; nil discards them.
 	Sink loop.EventSink
 }
 
-// Memory is the fully wired in-process agent (REF 5).
+// Memory is the fully wired in-process agent (REF 5). One Memory is one
+// owner process: its Writers hold the Session ownership.
 type Memory struct {
 	Store        session.Store
 	Registry     *extension.Registry
-	Projections  extension.ProjectionReader
+	Writers      extension.Writers
 	Bindings     *Bindings
-	Appender     extension.SemanticAppender
 	Runtime      *runmod.Runtime
 	Coordinator  *turn.Coordinator
 	BindingStore *artifact.MemoryBindingStore
+	Ledger       artifact.RetentionLedger
 	now          func() time.Time
 }
 
-// New assembles store, registry, appender, projections, runtime and
-// coordinator over the three first-party modules.
+// New assembles store, registry, writers, runtime and coordinator over the
+// three first-party modules.
 func New(opts Options) (*Memory, error) {
 	store := opts.Store
 	if store == nil {
 		store = session.NewMemoryStore()
 	}
-	registry, err := extension.BuildRegistry(session.ProfileV1(), chatlog.Module, runmod.Module, turn.Module)
+	registry, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module, runmod.Module, turn.Module)
 	if err != nil {
 		return nil, err
 	}
-	bindings := artifact.NewMemoryBindingStore()
-	ledger := artifact.KVLedger{Builder: artifact.SetBuilder{Resolver: bindings}}
-	appender, err := extension.NewSemanticAppender(store, registry, artifact.SetBuilder{Resolver: bindings}, ledger)
-	if err != nil {
-		return nil, err
+	bindings := opts.BindingStore
+	if bindings == nil {
+		bindings = artifact.NewMemoryBindingStore()
 	}
-	projections := extension.NewProjectionReader(store, registry)
+	ledger := opts.Ledger
+	if ledger == nil {
+		ledger = artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings})
+	}
+	writers := extension.NewWriters(store, registry, extension.Admission{Bindings: bindings, Ledger: ledger}, opts.Ownership)
 	now := opts.Now
 	if now == nil {
 		now = time.Now
 	}
 	runtime, err := runmod.NewRuntime(runmod.Config{
-		Store: store, Registry: registry, Appender: appender, Projections: projections,
-		Frozen: opts.Frozen, Companion: turn.CompanionV1{}, LeaseTTL: opts.LeaseTTL, Now: now,
+		Writers: writers, Registry: registry, Store: store,
+		Frozen: opts.Frozen, Companion: turn.CompanionV1{}, Cache: extension.NewMemoryProjectionCache(), Now: now,
 	})
 	if err != nil {
 		return nil, err
 	}
-	m := &Memory{Store: store, Registry: registry, Projections: projections, Appender: appender, Runtime: runtime, BindingStore: bindings, now: now}
-	m.Bindings = NewBindings(runtime, projections, opts.Sink)
-	m.Coordinator = &turn.Coordinator{Projections: projections, Appender: appender, Runtime: runtime, Bindings: m.Bindings, Now: now}
+	m := &Memory{Store: store, Registry: registry, Writers: writers, Runtime: runtime, BindingStore: bindings, Ledger: ledger, now: now}
+	m.Bindings = NewBindings(runtime, writersProjections{writers}, opts.Sink)
+	m.Coordinator = &turn.Coordinator{Writers: writers, Runtime: runtime, Bindings: m.Bindings, Now: now}
 	return m, nil
+}
+
+// writersProjections reads projections through the Session's Writer.
+type writersProjections struct{ writers extension.Writers }
+
+func (p writersProjections) Load(ctx context.Context, sid session.SessionID, id extensionProjectionID, v extensionProjectionVersion) (any, session.Head, error) {
+	w, err := p.writers.Writer(ctx, sid)
+	if err != nil {
+		return nil, session.Head{}, err
+	}
+	return w.Projections().Load(ctx, sid, id, v)
 }
 
 // CreateSession creates the Session stream.
 func (m *Memory) CreateSession(ctx context.Context, sid session.SessionID) error {
-	_, err := m.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid})
+	_, err := m.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: m.now().UnixMilli()})
 	return err
 }
+
+// Open takes ownership of the Session and runs the takeover disposition
+// (REF-DRV-4, RUN-CMT-7). It returns the number of recovery commands issued.
+func (m *Memory) Open(ctx context.Context, sid session.SessionID) (int, error) {
+	if _, err := m.Writers.Writer(ctx, sid); err != nil {
+		return 0, err
+	}
+	return m.Runtime.RecoverInterrupted(ctx, sid)
+}
+
+// Close releases every Session this assembly owns.
+func (m *Memory) Close(ctx context.Context) error { return extension.CloseWriters(ctx, m.Writers) }
 
 // SubmitInput writes twilight/chatlog/input_submitted for one user text and
 // returns the AgentInput a Start or Deliver hands to the Turn (REF-INP-2).
 func (m *Memory) SubmitInput(ctx context.Context, sid session.SessionID, id run.InputID, text string) (run.AgentInput, error) {
 	content := InputContent(text)
-	head, err := m.Store.Head(ctx, sid)
+	w, err := m.Writers.Writer(ctx, sid)
 	if err != nil {
 		return run.AgentInput{}, err
 	}
-	res, err := m.Appender.AppendSemantic(ctx, extension.SemanticAppendRequest{
-		SessionID: sid, ExpectedHead: head,
-		Group: extension.SemanticGroup{CommitID: session.CommitID("input-submitted/" + string(id)), Events: []extension.TypedEvent{{
+	res, err := w.Commit(ctx, func(extension.View) (*extension.SemanticGroup, error) {
+		return &extension.SemanticGroup{CommitID: session.CommitID("input-submitted/" + string(id)), Events: []extension.TypedEvent{{
 			Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: m.now().UnixMilli(),
 			Value: chatlog.InputSubmittedPayload{InputID: chatlog.InputID(id), Content: content, SubmittedAtUnixMilli: m.now().UnixMilli()},
-		}}},
+		}}}, nil
 	})
 	if err != nil {
 		return run.AgentInput{}, err
 	}
 	switch res.Outcome {
-	case extension.SemanticApplied, extension.SemanticAlreadyApplied:
+	case extension.CommitApplied, extension.CommitAlreadyApplied:
 		return run.AgentInput{ID: id, Payload: content}, nil
-	case extension.SemanticHeadConflict:
-		// Another writer moved the head; the caller retries with a fresh head.
-		return m.SubmitInput(ctx, sid, id, text)
 	default:
 		return run.AgentInput{}, fmt.Errorf("ref: submit input: %s: %s", res.Outcome, res.Detail)
 	}
@@ -114,7 +141,7 @@ func (m *Memory) SubmitInput(ctx context.Context, sid session.SessionID, id run.
 
 // ChatlogSurface reads the chatlog surface projection.
 func (m *Memory) ChatlogSurface(ctx context.Context, sid session.SessionID) (chatlog.Surface, error) {
-	state, _, err := m.Projections.Load(ctx, sid, chatlog.SurfaceProjectionID, chatlog.SurfaceProjection.Version)
+	state, _, err := writersProjections{m.Writers}.Load(ctx, sid, chatlog.SurfaceProjectionID, chatlog.SurfaceProjection.Version)
 	if err != nil {
 		return chatlog.Surface{}, err
 	}
@@ -123,7 +150,7 @@ func (m *Memory) ChatlogSurface(ctx context.Context, sid session.SessionID) (cha
 
 // TurnSurface reads the turn surface projection.
 func (m *Memory) TurnSurface(ctx context.Context, sid session.SessionID) (turn.TurnSurface, error) {
-	state, _, err := m.Projections.Load(ctx, sid, turn.SurfaceProjectionID, turn.SurfaceProjection.Version)
+	state, _, err := writersProjections{m.Writers}.Load(ctx, sid, turn.SurfaceProjectionID, turn.SurfaceProjection.Version)
 	if err != nil {
 		return turn.TurnSurface{}, err
 	}

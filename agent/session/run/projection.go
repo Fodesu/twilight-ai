@@ -92,7 +92,7 @@ func (m Machine) Apply(e extension.DecodedEvent) (Machine, error) {
 		return out, nil
 	}
 	out.Active[ev.RunID] = next
-	out.Positions[ev.RunID] = run.RunPosition{Revision: e.Revision, Index: e.Event.Index}
+	out.Positions[ev.RunID] = e.Event.Seq
 	return out, nil
 }
 
@@ -172,12 +172,11 @@ func (machineCodec) Decode(wire jsonstable.Value) (any, error) {
 	return m, nil
 }
 
-// MachineProjection consumes every twilight/run/ event (RequireComplete run).
+// MachineProjection consumes every twilight/run/ event.
 var MachineProjection = extension.ProjectionDefinition{
 	ID: MachineProjectionID, Version: 1,
-	Consumes:        AllTypes(),
-	RequireComplete: []extension.ModuleID{ModuleID},
-	Initial:         func() (any, error) { return newMachine(), nil },
+	Consumes: AllTypes(),
+	Initial:  func() (any, error) { return newMachine(), nil },
 	Apply: func(state any, e extension.DecodedEvent) (any, error) {
 		return state.(Machine).Apply(e)
 	},

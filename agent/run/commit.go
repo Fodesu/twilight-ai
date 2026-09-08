@@ -16,76 +16,13 @@ const (
 
 // CommitDecision is EvaluateCommit's verdict. The Runtime maps rejections
 // onto the sentinel errors: Conflict -> ErrCommandConflict, Stale ->
-// ErrStaleRuntime, Terminal -> ErrRunTerminal (RUN-CMT-7).
+// ErrStaleRuntime, Terminal -> ErrRunTerminal.
 type CommitDecision struct {
 	Kind     DecisionKind
 	NewState MachineState
 	Facts    []Fact
 	// Reject carries the precondition failure for Conflict/Stale/Terminal.
 	Reject error
-}
-
-// commandCategory classifies a command for Base handling (RUN-CMT-4).
-// PrepareModelRequest is the only hard-CAS command.
-type commandCategory uint8
-
-const (
-	catPlan commandCategory = iota
-	catStart
-	catOwnerSettle
-	catIngress
-	catRunControl
-	catRecovery
-)
-
-func categorize(c AgentCommand) commandCategory {
-	switch cmd := c.(type) {
-	case PrepareModelRequest:
-		return catPlan
-	case StartModelExecution, StartToolCall:
-		return catStart
-	case SubmitModelResult, SubmitModelFailure, RejectModelResult, SubmitToolResult:
-		return catOwnerSettle
-	case SubmitToolFailure:
-		if cmd.Outcome == ToolOutcomeUnknown {
-			return catRecovery // scanner path when grantless; owner path with grant
-		}
-		return catIngress // known failure on Pending uses empty grant; Executing path checks grant below
-	case ApproveToolCall, RejectToolCall, SubmitToolResponse, AcceptInput, WithdrawPreparedStep:
-		return catIngress
-	case CancelRun:
-		return catRunControl
-	case RecoverModelExecution:
-		return catRecovery
-	default:
-		return catPlan
-	}
-}
-
-// requiresGrant reports whether this command must carry the start grant of
-// its target, given the current state (RUN-CMT-6).
-func requiresGrant(s *MachineState, c AgentCommand) bool {
-	switch cmd := c.(type) {
-	case SubmitModelResult, SubmitModelFailure, RejectModelResult:
-		return true
-	case SubmitToolResult:
-		return true
-	case SubmitToolFailure:
-		// Known failure on a Pending call uses an empty grant; anything
-		// touching an Executing call needs the owner grant. Unknown from the
-		// scanner is validated via recoveryValid instead.
-		if ts, ok := s.Current.(ToolStep); ok {
-			if i := ts.callIndex(cmd.CallID); i >= 0 {
-				return ts.Calls[i].Status == ToolExecuting && cmd.Outcome == ToolOutcomeKnown
-			}
-		}
-		return false
-	case RecoverModelExecution:
-		// Grant-holder release path; the grantless path is recovery-validated.
-		return false
-	default:
-		return false
-	}
 }
 
 // ValidateEnvelope is step 1 of RUN-CMT-3: identity, schema and digest. A
@@ -111,20 +48,13 @@ func ValidateEnvelope(env *CommandEnvelope, proto Protocol) error {
 	return nil
 }
 
-// EvaluateCommit is the pure evaluation every Runtime runs inside the
-// Session critical section after exact-replay lookup (RUN-CMT-3 steps 4-8).
-// grantValid and recoveryValid are the control-plane verdicts the Runtime
-// supplies: whether req.Grant is the live grant for the command's target, and
-// whether a grantless recovery command matches an expired lease.
+// EvaluateCommit is the pure evaluation every Runtime runs inside the Session
+// Writer after the replay lookup (RUN-CMT-3 steps 4-8). Execution ownership is
+// Session-level (RUN-CMT-6), so there is no per-target authorization: a
+// command against a target whose state does not admit it is Stale.
 //
 //nolint:gocritic // hugeParam: public pure commit evaluator keeps state/request as value protocol inputs.
-func EvaluateCommit(
-	cur MachineState, position RunPosition,
-	req CommitRequest,
-	grantValid bool,
-	recoveryValid bool,
-	proto Protocol,
-) (CommitDecision, error) {
+func EvaluateCommit(cur MachineState, position RunPosition, req CommitRequest, proto Protocol) (CommitDecision, error) {
 	env := req.Command
 	if env.RunID != cur.RunID {
 		return CommitDecision{}, fmt.Errorf("agent: commit: command run %q does not match authority run %q", env.RunID, cur.RunID)
@@ -132,8 +62,7 @@ func EvaluateCommit(
 	if err := ValidateEnvelope(&env, proto); err != nil {
 		return CommitDecision{}, err
 	}
-	// A start claim is part of the command identity. Rejecting an empty claim
-	// here prevents an unbound worker from acquiring execution ownership.
+	// A start claim is part of the command identity (RUN-WIR-1).
 	switch cmd := env.Command.(type) {
 	case StartModelExecution:
 		if cmd.Claim == "" {
@@ -149,8 +78,8 @@ func EvaluateCommit(
 		}
 	}
 	// Derived-identity families must use their derived CommandID (RUN-WIR-3):
-	// the derivation is the idempotency index for inputs/responses/planning, so
-	// a caller-minted random ID cannot bypass duplicate detection.
+	// the derivation is the idempotency index, so a caller-minted random ID
+	// cannot bypass duplicate detection.
 	if err := checkDerivedCommandID(&env, req.Base); err != nil {
 		return CommitDecision{Kind: DecisionConflict, Reject: err}, nil
 	}
@@ -160,15 +89,8 @@ func EvaluateCommit(
 		return CommitDecision{Kind: DecisionTerminal, Reject: ErrRunTerminal}, nil
 	}
 
-	// Base and authorization.
-	cat := categorize(env.Command)
-	if cat == catPlan && !samePosition(req.Base, position) {
-		return CommitDecision{Kind: DecisionStale, Reject: ErrStaleRuntime}, nil
-	}
-	if requiresGrant(&cur, env.Command) && !grantValid {
-		return CommitDecision{Kind: DecisionStale, Reject: ErrStaleRuntime}, nil
-	}
-	if cat == catRecovery && !grantValid && !recoveryValid {
+	// Base: PrepareModelRequest is the only hard-CAS command (RUN-CMT-4).
+	if _, plan := env.Command.(PrepareModelRequest); plan && req.Base != position {
 		return CommitDecision{Kind: DecisionStale, Reject: ErrStaleRuntime}, nil
 	}
 
@@ -221,8 +143,6 @@ func EvaluateCommit(
 	return CommitDecision{Kind: DecisionApply, NewState: state, Facts: detached}, nil
 }
 
-func samePosition(a, b RunPosition) bool { return a.Revision == b.Revision && a.Index == b.Index }
-
 // checkDerivedCommandID enforces the derived-identity rules of RUN-WIR-3.
 func checkDerivedCommandID(env *CommandEnvelope, base RunPosition) error {
 	var want CommandID
@@ -244,9 +164,7 @@ func checkDerivedCommandID(env *CommandEnvelope, base RunPosition) error {
 	case StartToolCall:
 		want = DeriveStartCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.Claim)
 	case RecoverModelExecution:
-		if cmd.Claim != "" {
-			want = DeriveModelRecoveryCommandID(env.RunID, cmd.StepID, cmd.Claim)
-		}
+		want = DeriveModelRecoveryCommandID(env.RunID, cmd.StepID, cmd.Claim)
 	default:
 		return nil
 	}
@@ -256,56 +174,10 @@ func checkDerivedCommandID(env *CommandEnvelope, base RunPosition) error {
 	return nil
 }
 
-// LeaseKey addresses the execution target of a start inside the Run's lease
-// namespace: <RunID>/model/<StepID> or <RunID>/call/<StepID>/<CallID> (RUN 5.1).
-func LeaseKey(runID RunID, stepID StepID, callID CallID) string {
-	switch {
-	case stepID == "":
-		return ""
-	case callID == "":
-		return string(runID) + "/model/" + string(stepID)
-	default:
-		return string(runID) + "/call/" + string(stepID) + "/" + string(callID)
-	}
-}
-
-// GrantTarget returns the lease key a command's grant or recovery refers to.
-func GrantTarget(runID RunID, c AgentCommand) string {
-	switch cmd := c.(type) {
-	case StartModelExecution:
-		return LeaseKey(runID, cmd.StepID, "")
-	case SubmitModelResult:
-		return LeaseKey(runID, cmd.StepID, "")
-	case SubmitModelFailure:
-		return LeaseKey(runID, cmd.StepID, "")
-	case RejectModelResult:
-		return LeaseKey(runID, cmd.StepID, "")
-	case RecoverModelExecution:
-		return LeaseKey(runID, cmd.StepID, "")
-	case StartToolCall:
-		return LeaseKey(runID, cmd.StepID, cmd.CallID)
-	case SubmitToolResult:
-		return LeaseKey(runID, cmd.StepID, cmd.CallID)
-	case SubmitToolFailure:
-		return LeaseKey(runID, cmd.StepID, cmd.CallID)
-	default:
-		return ""
-	}
-}
-
-// IsStart reports whether c acquires an execution lease.
+// IsStart reports whether c begins an execution attempt.
 func IsStart(c AgentCommand) bool {
 	switch c.(type) {
 	case StartModelExecution, StartToolCall:
-		return true
-	}
-	return false
-}
-
-// IsSettlement reports whether c releases the lease of its target.
-func IsSettlement(c AgentCommand) bool {
-	switch c.(type) {
-	case SubmitModelResult, SubmitModelFailure, RejectModelResult, RecoverModelExecution, SubmitToolResult, SubmitToolFailure:
 		return true
 	}
 	return false
@@ -324,35 +196,47 @@ func CommandClaim(c AgentCommand) ExecutionClaim {
 	return ""
 }
 
-// RecoveryCommand builds the grantless recovery command for an expired lease
-// on target (RUN 5.1): an Executing model step recovers to Prepared; an
-// Executing tool call settles as Unknown. ok is false when the target is no
-// longer Executing.
-func RecoveryCommand(state *MachineState, target string, claim ExecutionClaim) (AgentCommand, CommandID, bool) {
+// Recovery is one takeover disposition command with its derived identity.
+type Recovery struct {
+	Command AgentCommand
+	ID      CommandID
+}
+
+// RecoveryCommands lists the takeover dispositions of every Executing target
+// in state (RUN-CMT-7): an Executing model step recovers to Prepared; each
+// Executing tool call settles as Unknown. Pending and Waiting calls are left
+// alone. claim is the takeover claim of the new owner.
+func RecoveryCommands(state *MachineState, claim ExecutionClaim) []Recovery {
+	if state.Status.Terminal() {
+		return nil
+	}
 	switch cur := state.Current.(type) {
 	case ModelStep:
-		if cur.Status != ModelExecuting || target != LeaseKey(state.RunID, cur.RefValue.ID, "") {
-			return nil, "", false
+		if cur.Status != ModelExecuting {
+			return nil
 		}
-		return RecoverModelExecution{StepID: cur.RefValue.ID, Claim: claim},
-			DeriveModelRecoveryCommandID(state.RunID, cur.RefValue.ID, claim), true
+		return []Recovery{{
+			Command: RecoverModelExecution{StepID: cur.RefValue.ID, Claim: claim},
+			ID:      DeriveModelRecoveryCommandID(state.RunID, cur.RefValue.ID, claim),
+		}}
 	case ToolStep:
-		prefix := LeaseKey(state.RunID, cur.RefValue.ID, "x")
-		prefix = prefix[:len(prefix)-1]
-		if len(target) <= len(prefix) || target[:len(prefix)] != prefix {
-			return nil, "", false
+		var out []Recovery
+		for _, call := range cur.Calls {
+			if call.Status != ToolExecuting {
+				continue
+			}
+			out = append(out, Recovery{
+				Command: SubmitToolFailure{
+					StepID:  cur.RefValue.ID,
+					CallID:  call.CallID,
+					Failure: ToolFailure{Class: FailureEffectUnknown, Message: "owner process lost before settlement"},
+					Outcome: ToolOutcomeUnknown,
+				},
+				ID: DeriveToolRecoveryCommandID(state.RunID, cur.RefValue.ID, call.CallID, claim),
+			})
 		}
-		callID := CallID(target[len(prefix):])
-		if i := cur.callIndex(callID); i < 0 || cur.Calls[i].Status != ToolExecuting {
-			return nil, "", false
-		}
-		return SubmitToolFailure{
-			StepID:  cur.RefValue.ID,
-			CallID:  callID,
-			Failure: ToolFailure{Class: FailureEffectUnknown, Message: "lease expired"},
-			Outcome: ToolOutcomeUnknown,
-		}, DeriveToolRecoveryCommandID(state.RunID, cur.RefValue.ID, callID, claim), true
+		return out
 	default:
-		return nil, "", false
+		return nil
 	}
 }

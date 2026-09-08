@@ -23,17 +23,16 @@ func (s *serializedEventSink) Emit(ctx context.Context, event Event) error {
 	return s.sink.Emit(ctx, event)
 }
 
-func (l *Loop) emitCommitted(ctx context.Context, events EventSink, sid session.SessionID, runID run.RunID, committed *session.SessionCommit) {
-	if events == nil || committed == nil {
+func (l *Loop) emitCommitted(ctx context.Context, events EventSink, sid session.SessionID, runID run.RunID, committed []session.SessionEvent) {
+	if events == nil || len(committed) == 0 {
 		return
 	}
-	c := *committed
 	_ = events.Emit(ctx, Event{
 		Session:    sid,
 		RunID:      runID,
 		Kind:       EventAgentCommitted,
 		Durability: EventCommitted,
-		Committed:  &c,
+		Committed:  append([]session.SessionEvent(nil), committed...),
 	})
 }
 

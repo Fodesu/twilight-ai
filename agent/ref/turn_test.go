@@ -61,7 +61,7 @@ func toolCallAnswer() sdk.ModelResult {
 
 func setup(t *testing.T, model loop.ModelInvoker, tool *gateTool) (*ref.Memory, turn.ExecutionBindingRef, session.SessionID) {
 	t.Helper()
-	m, err := ref.New(ref.Options{LeaseTTL: time.Hour})
+	m, err := ref.New(ref.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}

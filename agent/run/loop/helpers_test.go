@@ -26,33 +26,45 @@ func (nopCompanion) Version() string                             { return "test/
 func (nopCompanion) Map(CompanionRequest) ([]ModuleEvent, error) { return nil, nil }
 
 // testStack is the minimal Session stack a Loop test drives: kernel Memory
-// Store, the run module, and a Runtime with a no-op companion.
+// Store, the run module, one owner process (Writers) and a Runtime with a
+// no-op companion.
 type testStack struct {
 	store    *session.MemoryStore
-	appender extension.SemanticAppender
+	registry *extension.Registry
+	writers  extension.Writers
 	runtime  *runmod.Runtime
+	now      func() time.Time
+	ttl      time.Duration
 }
 
 func newTestStack(t testing.TB, ttl time.Duration, now func() time.Time) *testStack {
 	t.Helper()
-	store := session.NewMemoryStore()
-	registry, err := extension.BuildRegistry(session.ProfileV1(), runmod.Module)
-	if err != nil {
-		t.Fatal(err)
+	if now == nil {
+		now = time.Now
 	}
-	appender, err := extension.NewSemanticAppender(store, registry, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rt, err := runmod.NewRuntime(runmod.Config{Store: store, Registry: registry, Appender: appender,
-		Projections: extension.NewProjectionReader(store, registry), Companion: nopCompanion{}, LeaseTTL: ttl, Now: now})
+	store := session.NewMemoryStoreWithClock(now)
+	registry, err := extension.BuildRegistry(session.ProtocolVersion1, runmod.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: testSession}); err != nil {
 		t.Fatal(err)
 	}
-	return &testStack{store: store, appender: appender, runtime: rt}
+	s := &testStack{store: store, registry: registry, now: now, ttl: ttl}
+	s.open(t)
+	return s
+}
+
+// open starts a new owner process over the same store (a takeover when a
+// previous one is still open and its TTL has passed).
+func (s *testStack) open(t testing.TB) {
+	t.Helper()
+	s.writers = extension.NewWriters(s.store, s.registry, extension.Admission{}, session.OpenOptions{TTL: s.ttl})
+	rt, err := runmod.NewRuntime(runmod.Config{Writers: s.writers, Registry: s.registry, Store: s.store, Companion: nopCompanion{}, Now: s.now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.runtime = rt
 }
 
 // createRun appends the Start group of one Run with a seed input (RUN-NEW-1).
@@ -66,25 +78,24 @@ func (s *testStack) createRun(t testing.TB, runID RunID, inputs ...AgentInput) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	group := extension.SemanticGroup{CommitID: session.CommitID("create/" + string(runID))}
+	group := &extension.SemanticGroup{CommitID: session.CommitID("create/" + string(runID))}
 	for _, f := range facts {
 		group.Events = append(group.Events, extension.TypedEvent{Type: runmod.EventType(f), Value: runmod.Event{RunID: runID, Fact: f}})
 	}
-	head, err := s.store.Head(context.Background(), testSession)
+	w, err := s.writers.Writer(context.Background(), testSession)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := s.appender.AppendSemantic(context.Background(), extension.SemanticAppendRequest{SessionID: testSession, ExpectedHead: head, Group: group})
+	res, err := w.Commit(context.Background(), func(extension.View) (*extension.SemanticGroup, error) { return group, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != extension.SemanticApplied {
+	if res.Outcome != extension.CommitApplied {
 		t.Fatalf("create run: %s %s", res.Outcome, res.Detail)
 	}
 }
 
-// newTestRuntime is a Runtime holding "run-1" seeded with one input, leases
-// never expiring.
+// newTestRuntime is a Runtime holding "run-1" seeded with one input.
 func newTestRuntime(t testing.TB) Runtime {
 	t.Helper()
 	stack := newTestStack(t, 0, nil)

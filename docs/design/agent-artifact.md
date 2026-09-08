@@ -1,6 +1,6 @@
 # Twilight Agent Artifact Core
 
-状态：设计草案，第二版（2026-09-08）。`agent/artifact` 已实现 Ref、Binding、Memory BindingStore、BindingSetBuilder 与第一版的两态 KV ledger（在 Session 控制面 KV 内、与 commit 同事务）；Resolver、Store、Promoter 与 scheme registry 未实现。本版随 kernel 第二版把 ledger 改为自持久化、在 owner fact Append 之前建立 claim，尚未实现。wire 与 claim 状态表在 conformance 通过前不冻结。v1 的 claim 只有 `Active` 与 `Released` 两态；`Prepared` 状态、provider 迁移 fence 与 archive import/export 在附录中，不进入 v1 conformance。
+状态：设计草案，第二版（2026-09-08）。`agent/artifact` 已实现 Ref、Binding、Memory BindingStore、BindingSetBuilder 与第一版的两态 KV ledger（在 Session 控制面 KV 内、与 commit 同事务）；Resolver、Store、Promoter 与 scheme registry 未实现。本版随 kernel 第二版把 ledger 改为自持久化（`MemoryLedger.Activate`）、在 owner fact Append 之前建立 claim，回收前核对由 `OwnerVerifier` 与 `Reconcile` 提供，已于 2026-09-08 实现。wire 与 claim 状态表在 conformance 通过前不冻结。v1 的 claim 只有 `Active` 与 `Released` 两态；`Prepared` 状态、provider 迁移 fence 与 archive import/export 在附录中，不进入 v1 conformance。
 
 本文定义 `agent/artifact`。文中的"必须""不得""应该"是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
 

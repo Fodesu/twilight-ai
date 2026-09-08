@@ -270,7 +270,9 @@ func (staleCommitRuntime) Commit(context.Context, session.SessionID, CommitReque
 	return CommitResult{}, ErrStaleRuntime
 }
 
-func TestToolStartStaleDropsLocalClaim(t *testing.T) {
+// A stale start rejection is not an error: the Loop returns and the next
+// Load decides what the other actor left behind.
+func TestToolStartStaleIsNotAnError(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
 	args := cj(`{}`)
 	callID := DeriveCallID("model-1", 0)
@@ -298,14 +300,11 @@ func TestToolStartStaleDropsLocalClaim(t *testing.T) {
 				BindingDigest: bindingDigest, Arguments: args, Policy: DirectExecution, Status: ToolPending,
 			}},
 		},
-	}, Position: RunPosition{Revision: 1}, SchemaVersion: SchemaVersion1}
+	}, Position: 1, SchemaVersion: SchemaVersion1}
 
 	if err := loop.runToolCalls(context.Background(), boundRuntime{rt: staleCommitRuntime{}, sid: testSession}, nil, snapshot,
 		StartToolCalls{StepID: stepID, CallIDs: []CallID{callID}}); err != nil {
 		t.Fatal(err)
-	}
-	if _, ok, _ := loop.Claims.Get(context.Background(), testSession, "run-1", stepID, callID); ok {
-		t.Fatal("stale tool start retained a local execution claim")
 	}
 }
 
@@ -357,10 +356,21 @@ func TestLoopReplaysStartAfterTwoLostResponses(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The first Loop reaches the start barrier; both start responses are lost,
-	// so the authority remains Executing while the local claim is retained.
+	// so the authority remains Executing while the worker's claim is gone with
+	// the aborted attempt. A second Run has nothing to execute (RUN-LOP-4).
 	if current, ok := snapshot.State.Current.(ModelStep); !ok || current.Status != ModelExecuting {
 		t.Fatalf("current = %#v, want Executing ModelStep", snapshot.State.Current)
 	}
+	res, err := loop.Run(context.Background(), rt, testSession, "run-1", nil)
+	if err != nil || res.Disposition != LoopWaiting || !res.ExecutionRecovery {
+		t.Fatalf("run with an orphaned Executing step = %+v %v, want waiting for recovery", res, err)
+	}
+	// The owner's takeover disposition returns the step to Prepared; the next
+	// Run reissues the same frozen request exactly once (RUN-CMT-7).
+	if n, err := rt.RecoverInterrupted(context.Background(), testSession); err != nil || n != 1 {
+		t.Fatalf("RecoverInterrupted = %d %v", n, err)
+	}
+	rt.loseModelStart = false // the transport is healthy again
 	if _, err := loop.Run(context.Background(), rt, testSession, "run-1", nil); err != nil {
 		t.Fatal(err)
 	}

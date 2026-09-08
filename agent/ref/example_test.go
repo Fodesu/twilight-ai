@@ -19,33 +19,37 @@ import (
 // Example_recoverableTurn drives one Turn through a process crash on the
 // single Session stream.
 //
-// Process 1 creates the Session, submits the user input and starts the Turn.
-// The model asks for a tool; the tool never returns and the process dies while
-// the call is Executing with a live lease. Nothing is written on the way down.
+// Process 1 owns the Session (Epoch 1), submits the user input and starts the
+// Turn. The model asks for a tool; the tool never returns and the process dies
+// while the call is Executing. Nothing is written on the way down.
 //
-// Process 2 reopens the same Session store. The lease has expired, so
-// RecoverExpired settles the abandoned call as Unknown in the same commit as
-// its chatlog tool_result, the Run stays Active, and Resume drives the Loop:
-// the planner reads the conversation back from the chatlog projection and
-// the Turn completes. The turn surface and the chatlog then agree on what
-// happened without any cross-store reconciliation.
+// Process 2 reopens the same Session store after the ownership TTL passed and
+// takes the Session over (Epoch 2). Its takeover disposition settles the
+// abandoned call as Unknown in the same group as its chatlog tool_result, the
+// Run stays Active, and Resume drives the Loop: the planner reads the
+// conversation back from the chatlog projection and the Turn completes. The
+// dead process's worker finally returns and its settlement is fenced by the
+// kernel: nothing of Epoch 1 reaches the stream after the takeover.
 func Example_recoverableTurn() {
 	ctx := context.Background()
 	const sid session.SessionID = "session-1"
-	const leaseTTL = 30 * time.Second
+	const ownership = 30 * time.Second
 	clock := &fakeClock{now: time.Unix(1_000_000, 0)}
 
 	// Shared "durable" state: the Session store and the frozen request bodies.
-	store := session.NewMemoryStore()
+	store := session.NewMemoryStoreWithClock(clock.Now)
 	frozen := run.NewMemoryFrozenValues()
 	tool := &lookupTool{block: make(chan struct{})}
 
 	// ---- process 1 ----------------------------------------------------------
-	p1, err := ref.New(ref.Options{Store: store, Frozen: frozen, LeaseTTL: leaseTTL, Now: clock.Now})
+	p1, err := ref.New(ref.Options{Store: store, Frozen: frozen, Ownership: session.OpenOptions{TTL: ownership}, Now: clock.Now})
 	if err != nil {
 		panic(err)
 	}
 	if err := p1.CreateSession(ctx, sid); err != nil {
+		panic(err)
+	}
+	if _, err := p1.Open(ctx, sid); err != nil {
 		panic(err)
 	}
 	binding1, err := p1.Bindings.Register("weather-agent", newBinding(tool))
@@ -67,8 +71,8 @@ func Example_recoverableTurn() {
 	fmt.Println("process 1: tool call is Executing; process crashes")
 
 	// ---- process 2 ----------------------------------------------------------
-	clock.Advance(2 * leaseTTL)
-	p2, err := ref.New(ref.Options{Store: store, Frozen: frozen, LeaseTTL: leaseTTL, Now: clock.Now})
+	clock.Advance(2 * ownership)
+	p2, err := ref.New(ref.Options{Store: store, Frozen: frozen, Ownership: session.OpenOptions{TTL: ownership}, Now: clock.Now})
 	if err != nil {
 		panic(err)
 	}
@@ -77,13 +81,7 @@ func Example_recoverableTurn() {
 	if _, err := p2.Bindings.Register("weather-agent", newBinding(tool)); err != nil {
 		panic(err)
 	}
-	snap, err := p2.Runtime.Load(ctx, sid, runID)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("process 2: run active = %v, needs recovery = %v\n", snap.State.Status == run.RunActive, run.NeedsRecovery(snap.State))
-
-	recovered, err := p2.Runtime.RecoverExpired(ctx)
+	recovered, err := p2.Open(ctx, sid)
 	if err != nil {
 		panic(err)
 	}
@@ -91,7 +89,7 @@ func Example_recoverableTurn() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("recovered %d lease; chatlog has %d tool_result(s) with status %s\n", recovered, len(chat.ToolResults), toolResultStatus(&chat))
+	fmt.Printf("process 2: took over; %d executing target disposed; chatlog has %d tool_result(s) with status %s\n", recovered, len(chat.ToolResults), toolResultStatus(&chat))
 
 	resp, err := p2.Coordinator.Resume(ctx, turn.TurnRequest{Ref: ref1})
 	if err != nil {
@@ -106,17 +104,38 @@ func Example_recoverableTurn() {
 	chat, _ = p2.ChatlogSurface(ctx, sid)
 	fmt.Printf("record: %d run facts fold to the projection; chatlog entries: %d\n", len(record.Facts), len(chat.EntryOrder))
 
-	// Let the abandoned worker exit; its settlement is rejected because the
-	// lease it held was released by recovery.
+	// Let the abandoned worker exit; its settlement is fenced because process
+	// 1's Epoch was superseded.
 	close(tool.block)
-	<-startDone
+	err = <-startDone
+	fmt.Printf("process 1: %v\n", errorsIsOwnershipLost(err))
+	after, _ := p2.Runtime.Record(ctx, sid, runID)
+	fmt.Printf("stream unchanged by the fenced worker: %v\n", len(after.Facts) == len(record.Facts))
 
 	// Output:
 	// process 1: tool call is Executing; process crashes
-	// process 2: run active = true, needs recovery = true
-	// recovered 1 lease; chatlog has 1 tool_result(s) with status unknown
+	// process 2: took over; 1 executing target disposed; chatlog has 1 tool_result(s) with status unknown
 	// process 2: turn completed, disposition finished, attempt 1
 	// record: 12 run facts fold to the projection; chatlog entries: 4
+	// process 1: ownership lost
+	// stream unchanged by the fenced worker: true
+}
+
+func errorsIsOwnershipLost(err error) string {
+	if err == nil {
+		return "no error"
+	}
+	for e := err; e != nil; {
+		if e == run.ErrOwnershipLost {
+			return "ownership lost"
+		}
+		u, ok := e.(interface{ Unwrap() error })
+		if !ok {
+			break
+		}
+		e = u.Unwrap()
+	}
+	return err.Error()
 }
 
 func toolResultStatus(s *chatlog.Surface) string {
@@ -154,7 +173,6 @@ func newBinding(tool *lookupTool) ref.Binding {
 		Public: ref.BindingPublic{Model: "m-1", Tools: []ref.PublicTool{{Ref: tool.Ref(), Definition: def, Policy: run.DirectExecution}}},
 		Models: modelCatalog{&scriptedModel{}},
 		Tools:  toolCatalog{tool},
-		Policy: loop.ExecutionPolicy{LeaseRenewInterval: 5 * time.Second},
 	}
 }
 
@@ -218,7 +236,7 @@ func (t *lookupTool) ValidateArguments(run.CanonicalJSON) error { return nil }
 func (t *lookupTool) Execute(_ context.Context, req loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	if t.ran.CompareAndSwap(false, true) {
 		<-t.block
-		return loop.ToolExecutionUnknown{Failure: run.ToolFailure{Class: run.FailureEffectUnknown, Message: "process died"}}
+		return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
 	}
 	return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
 }

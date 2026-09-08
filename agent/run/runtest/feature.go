@@ -38,21 +38,17 @@ func (nopCompanion) Map(run.CompanionRequest) ([]run.ModuleEvent, error) { retur
 func newRuntime(t testing.TB, inputs ...run.AgentInput) run.Runtime {
 	t.Helper()
 	store := session.NewMemoryStore()
-	registry, err := extension.BuildRegistry(session.ProfileV1(), runmod.Module)
-	if err != nil {
-		t.Fatal(err)
-	}
-	appender, err := extension.NewSemanticAppender(store, registry, nil, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rt, err := runmod.NewRuntime(runmod.Config{Store: store, Registry: registry, Appender: appender,
-		Projections: extension.NewProjectionReader(store, registry), Companion: nopCompanion{}})
+	registry, err := extension.BuildRegistry(session.ProtocolVersion1, runmod.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
 	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: defaultSession}); err != nil {
+		t.Fatal(err)
+	}
+	writers := extension.NewWriters(store, registry, extension.Admission{}, session.OpenOptions{})
+	rt, err := runmod.NewRuntime(runmod.Config{Writers: writers, Registry: registry, Store: store, Companion: nopCompanion{}})
+	if err != nil {
 		t.Fatal(err)
 	}
 	newRun, err := run.BuildNewRun(defaultRunID, "")
@@ -63,19 +59,19 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) run.Runtime {
 	if err != nil {
 		t.Fatal(err)
 	}
-	group := extension.SemanticGroup{CommitID: "create/" + defaultRunID}
+	group := &extension.SemanticGroup{CommitID: "create/" + defaultRunID}
 	for _, f := range facts {
 		group.Events = append(group.Events, extension.TypedEvent{Type: runmod.EventType(f), Value: runmod.Event{RunID: defaultRunID, Fact: f}})
 	}
-	head, err := store.Head(ctx, defaultSession)
+	w, err := writers.Writer(ctx, defaultSession)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := appender.AppendSemantic(ctx, extension.SemanticAppendRequest{SessionID: defaultSession, ExpectedHead: head, Group: group})
+	res, err := w.Commit(ctx, func(extension.View) (*extension.SemanticGroup, error) { return group, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != extension.SemanticApplied {
+	if res.Outcome != extension.CommitApplied {
 		t.Fatalf("create run: %s %s", res.Outcome, res.Detail)
 	}
 	return rt
@@ -100,7 +96,6 @@ type Feature struct {
 	seq     int
 
 	modelStepID run.StepID
-	modelGrant  run.ExecutionGrant
 	last        loop.LoopResult
 	resolveErr  error
 }
@@ -246,7 +241,7 @@ func (f *Feature) Approve() *Feature {
 	}
 	f.commit(run.ApproveToolCall{
 		StepID: w.StepID, CallID: w.CallID, ResponseID: w.ID, ResponseDigest: digest,
-	}, "")
+	})
 	return f
 }
 
@@ -261,14 +256,14 @@ func (f *Feature) Reject(reason string) *Feature {
 	f.commit(run.RejectToolCall{
 		StepID: w.StepID, CallID: w.CallID, ResponseID: w.ID,
 		ResponseDigest: digest, Reason: reason,
-	}, "")
+	})
 	return f
 }
 
 // Cancel commits CancelRun.
 func (f *Feature) Cancel() *Feature {
 	f.t.Helper()
-	f.commit(run.CancelRun{}, "")
+	f.commit(run.CancelRun{})
 	return f
 }
 
@@ -276,8 +271,7 @@ func (f *Feature) Cancel() *Feature {
 func (f *Feature) ExecutingModel() *Feature {
 	f.t.Helper()
 	f.commitPrepare()
-	res := f.commit(run.StartModelExecution{StepID: f.modelStepID}, "")
-	f.modelGrant = res.Grant
+	f.commit(run.StartModelExecution{StepID: f.modelStepID})
 	return f
 }
 
@@ -341,12 +335,12 @@ func (f *Feature) ExecutingTool(name string, callID run.CallID) *Feature {
 			CallID: callID, ProviderCallID: providerID, ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
 			BindingDigest: binding, Arguments: args, Policy: spec.Policy,
 		}},
-	}, f.modelGrant)
+	})
 	ts, ok := res.Snapshot.State.Current.(run.ToolStep)
 	if !ok {
 		f.t.Fatalf("after model result: %T", res.Snapshot.State.Current)
 	}
-	f.commit(run.StartToolCall{StepID: ts.Ref().ID, CallID: callID}, "")
+	f.commit(run.StartToolCall{StepID: ts.Ref().ID, CallID: callID})
 	return f
 }
 
@@ -398,7 +392,7 @@ func (f *Feature) waiting() run.ResponseRequest {
 	return reqs[0]
 }
 
-func (f *Feature) commit(cmd run.AgentCommand, grant run.ExecutionGrant) run.CommitResult {
+func (f *Feature) commit(cmd run.AgentCommand) run.CommitResult {
 	f.t.Helper()
 	snap := f.load()
 	proto, err := snap.Protocol()
@@ -413,7 +407,7 @@ func (f *Feature) commit(cmd run.AgentCommand, grant run.ExecutionGrant) run.Com
 		f.t.Fatal(err)
 	}
 	res, err := f.rt.Commit(f.ctx, defaultSession, run.CommitRequest{
-		Base: snap.Position, Grant: grant, Command: env,
+		Base: snap.Position, Command: env,
 	})
 	if err != nil {
 		f.t.Fatalf("commit %T: %v", cmd, err)
@@ -482,7 +476,7 @@ func (f *Feature) commitPrepare() {
 	f.commit(run.PrepareModelRequest{
 		StepID: stepID, Model: f.model, Request: frozen,
 		RequestDigest: reqDigest, InputIDs: ids, Tools: f.specs, ToolsDigest: toolsDigest,
-	}, "")
+	})
 }
 
 // mustSpec returns the agent-side spec and the provider definition it digests.

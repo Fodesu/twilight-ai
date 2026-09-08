@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/memohai/twilight/agent/es"
+	"github.com/memohai/twilight/agent/session"
 )
 
 type RunID string
@@ -34,11 +35,6 @@ type PlanningToken string
 // accidentally acquiring a second execution grant.
 type ExecutionClaim string
 
-// ExecutionGrant is an opaque capability minted by the Runtime for one
-// accepted start command. Callers only pass it back; its representation is
-// implementation-defined.
-type ExecutionGrant string
-
 func sha256Digest(data []byte) Digest { return es.DigestBytes(data) }
 
 // namespacedHash derives a stable identifier from a namespace and ordered
@@ -56,7 +52,14 @@ func namespacedHash(namespace string, parts ...string) string {
 // from the Run and the RunPosition the planner loaded (RUN-WIR-3): concurrent
 // planners on the same position converge on one command identity.
 func DeriveModelRequestCommandID(run RunID, position RunPosition) CommandID {
-	return CommandID(namespacedHash("twilight/model-request", string(run), fmt.Sprintf("%d", position.Revision), fmt.Sprintf("%d", position.Index)))
+	return CommandID(namespacedHash("twilight/model-request", string(run), fmt.Sprintf("%d", position)))
+}
+
+// DeriveTakeoverClaim is the ExecutionClaim a new Session owner uses for its
+// takeover dispositions (RUN-CMT-7): the same owner repeats idempotently,
+// distinct owners issue distinct commands.
+func DeriveTakeoverClaim(sid session.SessionID, epoch session.Epoch) ExecutionClaim {
+	return ExecutionClaim(namespacedHash("twilight/run/takeover", string(sid), fmt.Sprintf("%d", epoch)))
 }
 
 // DeriveModelStepID derives the frozen ModelStep identity from the Run, the
@@ -107,8 +110,7 @@ func DeriveWithdrawCommandID(run RunID, step StepID) CommandID {
 }
 
 // DeriveStartCommandID derives the CommandID of StartModelExecution (empty
-// call) or StartToolCall from the target and the attempt's ExecutionClaim. A
-// Loop that kept only the claim can replay its start and recover the grant;
+// call) or StartToolCall from the target and the attempt's ExecutionClaim.
 // Commit enforces this derivation so a caller-minted ID cannot bypass the
 // idempotency index (RUN-WIR-3).
 func DeriveStartCommandID(run RunID, step StepID, call CallID, claim ExecutionClaim) CommandID {
@@ -131,8 +133,8 @@ func DeriveModelRecoveryCommandID(run RunID, step StepID, claim ExecutionClaim) 
 	return CommandID(namespacedHash("twilight/model-recovery", string(run), string(step), string(claim)))
 }
 
-// DeriveToolRecoveryCommandID derives the identity of the grantless Unknown
-// settlement RecoverExpired commits for one abandoned tool attempt.
+// DeriveToolRecoveryCommandID derives the identity of the Unknown settlement
+// a takeover commits for one abandoned tool attempt (RUN-CMT-7).
 func DeriveToolRecoveryCommandID(run RunID, step StepID, call CallID, claim ExecutionClaim) CommandID {
 	return CommandID(namespacedHash("twilight/tool-recovery", string(run), string(step), string(call), string(claim)))
 }

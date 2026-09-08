@@ -48,7 +48,7 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime boundRuntime, events 
 	}
 	cmdID := run.DeriveModelRequestCommandID(snapshot.State.RunID, snapshot.Position)
 	stepID := run.DeriveModelStepID(snapshot.State.RunID, cmdID, binding)
-	res, err := l.commit(ctx, runtime, snapshot.State.RunID, cmdID, snapshot.Position, "", run.PrepareModelRequest{
+	res, err := l.commit(ctx, runtime, snapshot.State.RunID, cmdID, snapshot.Position, run.PrepareModelRequest{
 		StepID:        stepID,
 		Model:         model,
 		Request:       frozenRequest,
@@ -62,7 +62,7 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime boundRuntime, events 
 		// ModelStepPrepared carries the frozen request — the most informative
 		// fact of the run; observers must see it like every other accepted
 		// transition.
-		l.emitCommitted(ctx, events, runtime.sid, snapshot.State.RunID, &res.Commit)
+		l.emitCommitted(ctx, events, runtime.sid, snapshot.State.RunID, res.Events)
 		return nil
 	}
 	if !retriable(err) {
@@ -92,40 +92,21 @@ func (l *Loop) runModelStep(ctx context.Context, runtime boundRuntime, events Ev
 	if err != nil {
 		return nil, err
 	}
-	a, err := l.claimFor(ctx, runtime.sid, runID, stepID, "")
-	if err != nil {
-		return nil, err
-	}
-	start, err := l.commit(ctx, runtime, runID, a.startID(), snapshot.Position, "", run.StartModelExecution{StepID: stepID, Claim: a.claim}, proto)
+	a := newAttempt(runID, stepID, "")
+	start, err := l.commit(ctx, runtime, runID, a.startID(), snapshot.Position, run.StartModelExecution{StepID: stepID, Claim: a.claim}, proto)
 	if err != nil {
 		if retriable(err) {
-			l.forgetClaim(ctx, a)
-			return nil, nil
+			return nil, nil // another actor moved the step; reload decides
 		}
-		// The start may have committed while its response was lost. The
-		// claim stays stored so a later Run replays the derived start ID and
-		// recovers the grant.
 		return nil, err
 	}
-	if start.Status == run.CommitAlreadyApplied && start.Grant == "" {
-		// Settled already: by this Loop before a lost response, or by
-		// recovery. Nothing left to own.
-		l.forgetClaim(ctx, a)
-		return nil, nil
-	}
-	if start.Grant == "" {
-		return nil, errors.New("agent: loop: start model returned no execution grant")
-	}
-	l.emitCommitted(ctx, events, runtime.sid, runID, &start.Commit)
+	l.emitCommitted(ctx, events, runtime.sid, runID, start.Events)
 
 	modelStep, ok := start.Snapshot.State.Current.(run.ModelStep)
 	if !ok || modelStep.RefValue.ID != stepID || modelStep.Status != run.ModelExecuting {
-		// An exact start replay can race with another owner that already
-		// settled the step. The Runtime returns the original grant for replay,
-		// but executing again would duplicate the provider effect; reload and
-		// let the next machine state decide what to do.
+		// The start (or its one-shot replay) landed but the step is no longer
+		// Executing: something settled it meanwhile. Reload decides.
 		if start.Status == run.CommitAlreadyApplied {
-			l.forgetClaim(ctx, a)
 			return nil, nil
 		}
 		return nil, fmt.Errorf("agent: loop: started step %q is not current", stepID)
@@ -154,7 +135,7 @@ func (l *Loop) runModelStep(ctx context.Context, runtime boundRuntime, events Ev
 			if errors.Is(fetchErr, run.ErrFrozenValueMissing) {
 				// Release ownership so recovery or a fresh plan can proceed;
 				// surface the condition to the host.
-				if _, err := l.settle(ctx, runtime, events, a, start.Snapshot.Position, start.Grant, run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, proto); err != nil {
+				if _, err := l.settle(ctx, runtime, events, a, start.Snapshot.Position, run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, proto); err != nil {
 					return nil, err
 				}
 				return nil, fetchErr
@@ -162,11 +143,9 @@ func (l *Loop) runModelStep(ctx context.Context, runtime boundRuntime, events Ev
 			failure := run.StepFailure{Class: run.FailureMalformedModel, Message: fetchErr.Error()}
 			completion = run.RejectModelResult{StepID: stepID, Failure: failure, Disposition: l.modelRejectDisposition(modelStep, failure)}
 		} else {
-			workerCtx, stopLease := l.keepLease(ctx, runtime, runID, stepID, "", start.Grant)
-			result, invokeErr := l.invokeModel(workerCtx, invoker, &sdkRequest, runID, stepID, events)
-			stopLease()
+			result, invokeErr := l.invokeModel(ctx, invoker, &sdkRequest, runID, stepID, events)
 			switch {
-			case invokeErr != nil && workerCtx.Err() != nil:
+			case invokeErr != nil && ctx.Err() != nil:
 				completion = run.RecoverModelExecution{StepID: stepID, Claim: a.claim}
 			case invokeErr != nil:
 				completion = run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: invokeErr.Error()}}
@@ -187,7 +166,7 @@ func (l *Loop) runModelStep(ctx context.Context, runtime boundRuntime, events Ev
 		}
 	}
 
-	finished, err := l.settle(ctx, runtime, events, a, start.Snapshot.Position, start.Grant, completion, proto)
+	finished, err := l.settle(ctx, runtime, events, a, start.Snapshot.Position, completion, proto)
 	if err != nil {
 		return nil, err
 	}

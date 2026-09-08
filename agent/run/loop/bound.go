@@ -25,7 +25,3 @@ func (b boundRuntime) Commit(ctx context.Context, req run.CommitRequest) (run.Co
 func (b boundRuntime) FrozenRequest(ctx context.Context, digest run.Digest) (run.ModelRequest, error) {
 	return b.rt.FrozenRequest(ctx, digest)
 }
-
-func (b boundRuntime) RenewLease(ctx context.Context, runID run.RunID, stepID run.StepID, callID run.CallID, grant run.ExecutionGrant) error {
-	return b.rt.RenewLease(ctx, b.sid, runID, stepID, callID, grant)
-}

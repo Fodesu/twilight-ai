@@ -1,7 +1,8 @@
 // Package extension is the Session Module Framework
-// (docs/design/agent-session-extension.md): typed event codecs with payload
-// versions, Binding admission, the single write path (SemanticAppender),
-// pure projections and the Lease facility built on the control-plane KV.
+// (docs/design/agent-session-extension.md, edition 2): typed event codecs with
+// payload versions, Binding admission, the in-process Writer that serializes
+// every write and holds the idempotency index, and pure projections with an
+// optional cache.
 package extension
 
 import (
@@ -10,7 +11,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/memohai/twilight/agent/es"
 	"github.com/memohai/twilight/agent/jsonstable"
 	"github.com/memohai/twilight/agent/session"
 )
@@ -38,6 +38,10 @@ type EventDefinition struct {
 	Current  PayloadVersion
 	Codecs   map[PayloadVersion]PayloadCodec
 	Bindings []BindingReferenceDefinition
+	// Ignorable marks purely informational events: rows are written with
+	// session.SessionEvent.Ignorable so readers that do not know the type may
+	// skip them (EXT-PRJ-2).
+	Ignorable bool
 }
 
 // ModuleRequirement declares that a module consumes another module's events
@@ -56,7 +60,6 @@ type ModuleDescriptor struct {
 
 type DecodedEvent struct {
 	Event    session.SessionEvent
-	Revision es.Revision // set by Fold; zero when decoded outside a commit
 	ModuleID ModuleID
 	Version  PayloadVersion
 	Value    any
@@ -66,7 +69,6 @@ type DecodedEvent struct {
 // Registry is the immutable index built once at startup (EXT-REG-1).
 type Registry struct {
 	ProtocolVersion uint16
-	Profile         session.ProtocolProfile
 
 	modules     map[ModuleID]ModuleDescriptor
 	events      map[session.EventType]eventEntry
@@ -89,11 +91,11 @@ type projectionEntry struct {
 }
 
 // BuildRegistry validates the module set and freezes the indexes.
-func BuildRegistry(profile session.ProtocolProfile, modules ...ModuleDescriptor) (*Registry, error) {
-	if profile == nil {
-		return nil, errors.New("extension: registry: nil profile")
+func BuildRegistry(protocolVersion uint16, modules ...ModuleDescriptor) (*Registry, error) {
+	if protocolVersion == 0 {
+		return nil, errors.New("extension: registry: zero protocol version")
 	}
-	r := &Registry{ProtocolVersion: profile.Version(), Profile: profile,
+	r := &Registry{ProtocolVersion: protocolVersion,
 		modules: make(map[ModuleID]ModuleDescriptor), events: make(map[session.EventType]eventEntry), projections: make(map[projectionKey]projectionEntry)}
 	for _, m := range modules {
 		if m.ID == "" || strings.Contains(string(m.ID), "/") {
@@ -103,7 +105,7 @@ func BuildRegistry(profile session.ProtocolProfile, modules ...ModuleDescriptor)
 			return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("duplicate module %q", m.ID)}
 		}
 		r.modules[m.ID] = m
-		prefix := session.EventType(fmt.Sprintf("%s/%s/", SourceTwilight, m.ID))
+		prefix := ModulePrefix(m.ID)
 		for _, def := range m.Events {
 			if !strings.HasPrefix(string(def.Type), string(prefix)) || len(def.Type) == len(prefix) {
 				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: fmt.Sprintf("event type is not under module %q", m.ID)}
@@ -141,10 +143,9 @@ func BuildRegistry(profile session.ProtocolProfile, modules ...ModuleDescriptor)
 // checkRequirements enforces EXT-REG-4: registered dependencies, no cycles,
 // projection consumption within scope, and handled payload versions.
 func (r *Registry) checkRequirements() error {
-	// 1. registered and acyclic.
 	state := make(map[ModuleID]int) // 0 unvisited, 1 visiting, 2 done
-	var visit func(ModuleID, []ModuleID) error
-	visit = func(id ModuleID, path []ModuleID) error {
+	var visit func(ModuleID) error
+	visit = func(id ModuleID) error {
 		switch state[id] {
 		case 1:
 			return &Error{Code: ErrInvalid, Detail: fmt.Sprintf("module requirement cycle through %q", id)}
@@ -166,7 +167,7 @@ func (r *Registry) checkRequirements() error {
 					return &Error{Code: ErrInvalid, Type: typ, Detail: fmt.Sprintf("module %q handles versions %v but %q currently writes v%d", id, versions, req.Module, entry.def.Current)}
 				}
 			}
-			if err := visit(req.Module, append(path, id)); err != nil {
+			if err := visit(req.Module); err != nil {
 				return err
 			}
 		}
@@ -174,39 +175,33 @@ func (r *Registry) checkRequirements() error {
 		return nil
 	}
 	for id := range r.modules {
-		if err := visit(id, nil); err != nil {
+		if err := visit(id); err != nil {
 			return err
 		}
 	}
-	// 2. projections stay inside module + Requires.
 	for k, p := range r.projections {
-		scope := map[ModuleID]struct{}{p.module: {}}
-		for _, req := range r.modules[p.module].Requires {
-			scope[req.Module] = struct{}{}
-		}
-		for _, typ := range append(append([]session.EventType(nil), p.def.Consumes...), p.def.Ignores...) {
-			owner, ok := r.ModuleForEvent(typ)
+		scope := r.scopeOf(p.module)
+		for _, typ := range p.def.Consumes {
+			entry, ok := r.events[typ]
 			if !ok {
 				return &Error{Code: ErrInvalid, Type: typ, Detail: fmt.Sprintf("projection %q consumes unregistered event", k.id)}
 			}
-			if _, inScope := scope[owner]; !inScope {
-				return &Error{Code: ErrInvalid, Type: typ, Detail: fmt.Sprintf("projection %q consumes event of module %q outside its Requires", k.id, owner)}
-			}
-		}
-		for _, m := range p.def.RequireComplete {
-			if _, inScope := scope[m]; !inScope {
-				return &Error{Code: ErrInvalid, Detail: fmt.Sprintf("projection %q requires completeness of module %q outside its scope", k.id, m)}
-			}
-		}
-		for _, c := range p.def.Consumes {
-			for _, i := range p.def.Ignores {
-				if c == i {
-					return &Error{Code: ErrInvalid, Type: c, Detail: fmt.Sprintf("projection %q both consumes and ignores", k.id)}
-				}
+			if _, inScope := scope[entry.module]; !inScope {
+				return &Error{Code: ErrInvalid, Type: typ, Detail: fmt.Sprintf("projection %q consumes event of module %q outside its Requires", k.id, entry.module)}
 			}
 		}
 	}
 	return nil
+}
+
+// scopeOf is the module plus its Requires: the modules whose unknown events a
+// projection must not silently skip (EXT-PRJ-2).
+func (r *Registry) scopeOf(id ModuleID) map[ModuleID]struct{} {
+	scope := map[ModuleID]struct{}{id: {}}
+	for _, req := range r.modules[id].Requires {
+		scope[req.Module] = struct{}{}
+	}
+	return scope
 }
 
 func containsVersion(vs []PayloadVersion, v PayloadVersion) bool {
@@ -223,24 +218,31 @@ func (r *Registry) LookupEvent(typ session.EventType) (ModuleID, EventDefinition
 	return e.module, e.def, ok
 }
 
-func (r *Registry) ModuleForEvent(typ session.EventType) (ModuleID, bool) {
-	e, ok := r.events[typ]
-	if ok {
-		return e.module, true
-	}
-	// An unregistered type still belongs to a module namespace by prefix.
+// ModuleOf names the module an EventType belongs to by its
+// twilight/<module>/ prefix, registered or not; false when the prefix names no
+// registered module.
+func (r *Registry) ModuleOf(typ session.EventType) (ModuleID, bool) {
 	parts := strings.SplitN(string(typ), "/", 3)
 	if len(parts) == 3 && parts[0] == string(SourceTwilight) {
 		if _, registered := r.modules[ModuleID(parts[1])]; registered {
-			return ModuleID(parts[1]), false
+			return ModuleID(parts[1]), true
 		}
 	}
 	return "", false
 }
 
-func (r *Registry) LookupProjection(id ProjectionID, v ProjectionVersion) (ProjectionDefinition, bool) {
+func (r *Registry) LookupProjection(id ProjectionID, v ProjectionVersion) (ProjectionDefinition, ModuleID, bool) {
 	e, ok := r.projections[projectionKey{id, v}]
-	return e.def, ok
+	return e.def, e.module, ok
+}
+
+// Projections lists every registered projection with its owning module.
+func (r *Registry) Projections() []ProjectionDefinition {
+	out := make([]ProjectionDefinition, 0, len(r.projections))
+	for _, e := range r.projections {
+		out = append(out, e.def)
+	}
+	return out
 }
 
 // ModulePrefix is the EventType prefix of one module.
@@ -284,7 +286,7 @@ func (r *Registry) Decode(e session.SessionEvent) (DecodedEvent, error) {
 	out := DecodedEvent{Event: e}
 	module, def, ok := r.LookupEvent(e.Type)
 	if !ok {
-		out.ModuleID, _ = r.ModuleForEvent(e.Type)
+		out.ModuleID, _ = r.ModuleOf(e.Type)
 		out.Unknown = true
 		return out, nil
 	}
@@ -409,13 +411,12 @@ func StrictDecode(wire jsonstable.Value, dst any) error {
 type ErrorCode string
 
 const (
-	ErrInvalid            ErrorCode = "invalid"
-	ErrUnknownEvent       ErrorCode = "unknown_event"
-	ErrCodec              ErrorCode = "codec"
-	ErrBinding            ErrorCode = "binding"
-	ErrConflict           ErrorCode = "conflict"
-	ErrStale              ErrorCode = "stale"
-	ErrUnsupportedProfile ErrorCode = "unsupported_profile"
+	ErrInvalid       ErrorCode = "invalid"
+	ErrUnknownEvent  ErrorCode = "unknown_event"
+	ErrCodec         ErrorCode = "codec"
+	ErrBinding       ErrorCode = "binding"
+	ErrConflict      ErrorCode = "conflict"
+	ErrOwnershipLost ErrorCode = "ownership_lost"
 )
 
 type Error struct {

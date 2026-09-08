@@ -88,12 +88,12 @@ type Service interface {
 }
 
 // Coordinator has no hidden state (TRN-SCP-3): every method reads the turn
-// surface and the machine projection first.
+// surface and the machine projection first. Writes and projection reads go
+// through the Session's Writer (TRN-SCP-4, TRN-API-1).
 type Coordinator struct {
-	Projections extension.ProjectionReader
-	Appender    extension.SemanticAppender
-	Runtime     run.Runtime
-	Bindings    ExecutionBindingRegistry
+	Writers  extension.Writers
+	Runtime  run.Runtime
+	Bindings ExecutionBindingRegistry
 	// Now stamps event times; nil selects time.Now.
 	Now func() time.Time
 }
@@ -105,12 +105,50 @@ func (c *Coordinator) now() int64 {
 	return time.Now().UnixMilli()
 }
 
+func (c *Coordinator) writer(ctx context.Context, sid session.SessionID) (extension.Writer, error) {
+	w, err := c.Writers.Writer(ctx, sid)
+	if err != nil {
+		if errors.Is(err, &extension.Error{Code: extension.ErrOwnershipLost}) {
+			return nil, fmt.Errorf("%w: %v", run.ErrOwnershipLost, err)
+		}
+		return nil, err
+	}
+	return w, nil
+}
+
 func (c *Coordinator) surface(ctx context.Context, sid session.SessionID) (TurnSurface, error) {
-	state, _, err := c.Projections.Load(ctx, sid, SurfaceProjectionID, SurfaceProjection.Version)
+	w, err := c.writer(ctx, sid)
+	if err != nil {
+		return TurnSurface{}, err
+	}
+	state, _, err := w.Projections().Load(ctx, sid, SurfaceProjectionID, SurfaceProjection.Version)
 	if err != nil {
 		return TurnSurface{}, err
 	}
 	return state.(TurnSurface), nil
+}
+
+// commit runs fn in the Session Writer and maps the outcome (TRN-STR-3).
+func (c *Coordinator) commit(ctx context.Context, sid session.SessionID, op string, fn extension.CommitFn) error {
+	w, err := c.writer(ctx, sid)
+	if err != nil {
+		return err
+	}
+	res, err := w.Commit(ctx, fn)
+	if err != nil {
+		if errors.Is(err, &extension.Error{Code: extension.ErrOwnershipLost}) {
+			return fmt.Errorf("%w: %v", run.ErrOwnershipLost, err)
+		}
+		return err
+	}
+	switch res.Outcome {
+	case extension.CommitApplied, extension.CommitAlreadyApplied:
+		return nil
+	case extension.CommitConflict:
+		return fmt.Errorf("%w: %s replayed with different content", ErrConflict, op)
+	default:
+		return fmt.Errorf("turn: %s: %s: %s", op, res.Outcome, res.Detail)
+	}
 }
 
 // --- Start ------------------------------------------------------------------------
@@ -141,14 +179,12 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 		return TurnResponse{}, err
 	}
 	now := c.now()
-	res, err := c.Appender.AppendSemanticIn(ctx, sid, func(tx extension.SemanticTx) (*extension.SemanticGroup, error) {
-		if _, found, err := tx.LookupCommit(commitID); err != nil {
-			return nil, err
-		} else if found {
+	err = c.commit(ctx, sid, "start", func(view extension.View) (*extension.SemanticGroup, error) {
+		if _, found := view.LookupCommit(commitID); found {
 			group := c.startGroup(commitID, turnID, inputIDs, req, plan, facts, now)
-			return &group, nil // exact replay: the Appender compares fingerprints
+			return &group, nil // exact replay: the Writer compares fingerprints
 		}
-		surface, err := loadSurface(tx)
+		surface, err := loadSurface(view)
 		if err != nil {
 			return nil, err
 		}
@@ -158,7 +194,7 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 		if _, active := surface.Active(); active {
 			return nil, fmt.Errorf("%w: session already has an active turn", ErrConflict)
 		}
-		if err := checkSubmitted(tx, req.Inputs); err != nil {
+		if err := checkSubmitted(view, req.Inputs); err != nil {
 			return nil, err
 		}
 		group := c.startGroup(commitID, turnID, inputIDs, req, plan, facts, now)
@@ -166,9 +202,6 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 	})
 	if err != nil {
 		return TurnResponse{}, err
-	}
-	if res.Outcome != extension.SemanticApplied && res.Outcome != extension.SemanticAlreadyApplied {
-		return TurnResponse{}, fmt.Errorf("turn: start: %s: %s", res.Outcome, res.Detail)
 	}
 	return c.drive(ctx, req.Ref, runID)
 }
@@ -188,8 +221,8 @@ func (c *Coordinator) startGroup(commitID session.CommitID, turnID TurnID, input
 	return group
 }
 
-func loadSurface(tx extension.SemanticTx) (TurnSurface, error) {
-	state, _, err := extension.LoadIn(tx, &SurfaceProjection)
+func loadSurface(view extension.View) (TurnSurface, error) {
+	state, err := view.Projection(SurfaceProjectionID, SurfaceProjection.Version)
 	if err != nil {
 		return TurnSurface{}, err
 	}
@@ -198,11 +231,11 @@ func loadSurface(tx extension.SemanticTx) (TurnSurface, error) {
 
 // checkSubmitted enforces TRN-STR-1 (2): each input is a submitted chatlog
 // Input whose Content equals the payload.
-func checkSubmitted(tx extension.SemanticTx, inputs []run.AgentInput) error {
+func checkSubmitted(view extension.View, inputs []run.AgentInput) error {
 	if len(inputs) == 0 {
 		return nil
 	}
-	state, _, err := extension.LoadIn(tx, &chatlog.SurfaceProjection)
+	state, err := view.Projection(chatlog.SurfaceProjectionID, chatlog.SurfaceProjection.Version)
 	if err != nil {
 		return err
 	}
@@ -282,8 +315,8 @@ func (c *Coordinator) Retry(ctx context.Context, req RetryRequest) (TurnResponse
 	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
 	var runID run.RunID
 	now := c.now()
-	res, err := c.Appender.AppendSemanticIn(ctx, sid, func(tx extension.SemanticTx) (*extension.SemanticGroup, error) {
-		surface, err := loadSurface(tx)
+	err := c.commit(ctx, sid, "retry", func(v extension.View) (*extension.SemanticGroup, error) {
+		surface, err := loadSurface(v)
 		if err != nil {
 			return nil, err
 		}
@@ -298,7 +331,7 @@ func (c *Coordinator) Retry(ctx context.Context, req RetryRequest) (TurnResponse
 		if err != nil {
 			return nil, err
 		}
-		inputs, err := deliveredInputs(tx, view.InputIDs)
+		inputs, err := deliveredInputs(v, view.InputIDs)
 		if err != nil {
 			return nil, err
 		}
@@ -315,16 +348,13 @@ func (c *Coordinator) Retry(ctx context.Context, req RetryRequest) (TurnResponse
 	if err != nil {
 		return TurnResponse{}, err
 	}
-	if res.Outcome != extension.SemanticApplied && res.Outcome != extension.SemanticAlreadyApplied {
-		return TurnResponse{}, fmt.Errorf("turn: retry: %s: %s", res.Outcome, res.Detail)
-	}
 	return c.drive(ctx, req.Ref, runID)
 }
 
 // deliveredInputs rebuilds the AgentInputs of a Turn from the chatlog surface,
 // in TurnView.InputIDs order (TRN-RTY-1).
-func deliveredInputs(tx extension.SemanticTx, ids []chatlog.InputID) ([]run.AgentInput, error) {
-	state, _, err := extension.LoadIn(tx, &chatlog.SurfaceProjection)
+func deliveredInputs(view extension.View, ids []chatlog.InputID) ([]run.AgentInput, error) {
+	state, err := view.Projection(chatlog.SurfaceProjectionID, chatlog.SurfaceProjection.Version)
 	if err != nil {
 		return nil, err
 	}
@@ -376,8 +406,8 @@ func (c *Coordinator) Settle(ctx context.Context, req SettleRequest) (TurnRespon
 	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
 	var runID run.RunID
 	now := c.now()
-	res, err := c.Appender.AppendSemanticIn(ctx, sid, func(tx extension.SemanticTx) (*extension.SemanticGroup, error) {
-		surface, err := loadSurface(tx)
+	err := c.commit(ctx, sid, "settle", func(v extension.View) (*extension.SemanticGroup, error) {
+		surface, err := loadSurface(v)
 		if err != nil {
 			return nil, err
 		}
@@ -392,9 +422,6 @@ func (c *Coordinator) Settle(ctx context.Context, req SettleRequest) (TurnRespon
 	})
 	if err != nil {
 		return TurnResponse{}, err
-	}
-	if res.Outcome != extension.SemanticApplied && res.Outcome != extension.SemanticAlreadyApplied {
-		return TurnResponse{}, fmt.Errorf("turn: settle: %s: %s", res.Outcome, res.Detail)
 	}
 	return c.respond(ctx, req.Ref, runID)
 }

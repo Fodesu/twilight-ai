@@ -1,6 +1,6 @@
 # Twilight Agent Turn 协议
 
-状态：设计草案，第二版（2026-09-08）。`agent/turn` 已按第一版实现（Coordinator 的 Start / Deliver / Resume / Retry / Stop / Settle、CompanionV1、surface 投影），写入经 `SemanticAppender`；本版随 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md) 第二版改为经 `extension.Writer` 写入、以 `Seq` 定位、恢复走接管处置，尚未实现。第 8 节 conformance 尚未完整实现，当前由 `agent/ref` 的测试覆盖 Start、Deliver、Stop 与新 Turn 的开启。Run 事实与 Turn、Chatlog 事件同在一条 Session stream。
+状态：设计草案，第二版（2026-09-08）。`agent/turn` 已按第一版实现（Coordinator 的 Start / Deliver / Resume / Retry / Stop / Settle、CompanionV1、surface 投影），写入经 `SemanticAppender`；本版随 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md) 第二版改为经 `extension.Writer` 写入、以 `Seq` 定位、恢复走接管处置，已于 2026-09-08 实现。第 8 节 conformance 尚未完整实现，当前由 `agent/ref` 的测试覆盖 Start、Deliver、Stop 与新 Turn 的开启。Run 事实与 Turn、Chatlog 事件同在一条 Session stream。
 
 本文定义 `agent/turn`：回合生命周期、Run attempt 的创建与结算、Run 事实到对话内容的伴随映射。"必须""应该"为协议约束。Run Machine 与 Runtime 的 authority 是 [agent-run.md](agent-run.md)；对话内容的 authority 是 [agent-session-chatlog.md](agent-session-chatlog.md)；stream、commit 与 projection 机制的 authority 是 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md)。
 

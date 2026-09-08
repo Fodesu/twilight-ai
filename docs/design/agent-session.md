@@ -1,6 +1,6 @@
 # Twilight Agent Session Protocol
 
-状态：设计草案，第二版（2026-09-08）。第一版（多写者临界区、commit 容器、控制面 KV、kernel 内 snapshot）已由 `agent/session` 的 Memory 实现验证过语义，随后按 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 8 节的决定收缩为本版。本版尚无实现；wire 在 Memory 与文件 adapter 通过第 7 节 conformance 前不冻结。
+状态：设计草案，第二版（2026-09-08）。第一版（多写者临界区、commit 容器、控制面 KV、kernel 内 snapshot）已由 `agent/session` 的 Memory 实现验证过语义，随后按 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 8 节的决定收缩为本版。本版已由 `agent/session` 的 MemoryStore 实现并通过第 7 节 conformance（`agent/session/sessiontest`，以 Store 为参数）；wire 在文件 adapter 也通过前不冻结。
 
 本文定义 Twilight Session 的 Event Sourcing kernel。文中的"必须""不得""应该"是协议约束。
 

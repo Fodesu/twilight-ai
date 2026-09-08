@@ -1,6 +1,6 @@
 # Twilight Agent Session Module Framework
 
-状态：设计草案，第二版（2026-09-08）。第一版（双入口 Appender、Lease、事务内投影读写）已由 `agent/session/extension` 实现并验证，随后按 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 8 节收缩为本版：写入串行与幂等重放由进程内的 `Writer` 承担，kernel 只提供追加日志（[agent-session.md](agent-session.md)）。本版尚无实现；wire 在 conformance 通过前不冻结。
+状态：设计草案，第二版（2026-09-08）。第一版（双入口 Appender、Lease、事务内投影读写）已由 `agent/session/extension` 实现并验证，随后按 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 8 节收缩为本版：写入串行与幂等重放由进程内的 `Writer` 承担，kernel 只提供追加日志（[agent-session.md](agent-session.md)）。本版已由 `agent/session/extension` 实现（Writer、Writers、ProjectionReader 与 MemoryProjectionCache）并通过第 7 节的测试；wire 在文件 adapter 通过前不冻结。
 
 本文定义建立在 `agent/session` 与 `agent/artifact` 之上的 Session Module Framework。实现包路径为 `agent/session/extension`；文中的"必须""不得""应该"是协议约束；JSON canonicalization 与 digest 遵循 `agent/jsonstable`、`agent/es`。
 
@@ -188,12 +188,13 @@ type ProjectionDefinition struct {
     StateCodec PayloadCodec
 }
 type ProjectionReader interface {
-    Load(ctx, sid session.SessionID, id ProjectionID, v ProjectionVersion) (state any, through session.Seq, err error)
+    // through 是该状态覆盖的 stream head：Next 为下一未折叠行的 Seq，Digest 为最后一行的 digest。
+    Load(ctx, sid session.SessionID, id ProjectionID, v ProjectionVersion) (state any, through session.Head, err error)
 }
-// ProjectionCache 是可选的派生缓存，随时可删；Memory 与文件实现由本层提供。
+// ProjectionCache 是可选的派生缓存，随时可删；Memory 实现由本层提供。
 type ProjectionCache interface {
-    Load(ctx, sid, id, v) (state jsonstable.Value, through session.Seq, digest es.Digest, ok bool, err error)
-    Save(ctx, sid, id, v, state jsonstable.Value, through session.Seq, digest es.Digest) error
+    Load(ctx, sid, id, v) (state jsonstable.Value, through session.Head, ok bool, err error)
+    Save(ctx, sid, id, v, state jsonstable.Value, through session.Head) error
 }
 func NewProjectionReader(store session.Store, registry *Registry, cache ProjectionCache) ProjectionReader
 ```
@@ -202,7 +203,7 @@ func NewProjectionReader(store session.Store, registry *Registry, cache Projecti
 
 **EXT-PRJ-2** 投影只处理 `Consumes` 中的 EventType。其他 EventType 按归属处理：属于本模块或 `Requires` 模块（EXT-REG-4 的范围）且 `Decode` 为 Unknown 的事件，`Ignorable` 为真则跳过，否则 Fold 失败；范围之外的模块的事件一律跳过。写入者对纯信息性事件声明 `Ignorable`（EXT-REG），默认不可忽略：忘记声明只会导致多拒绝，不会导致静默丢失。读取时以范围内模块的前缀作为 `Types` 过滤。
 
-**EXT-PRJ-3** 缓存条目记录 `through`（已折叠到的最后一行 Seq）与该行的 `Digest`。复用条件：`Read(From: through)` 返回的首行 Seq 与 Digest 与缓存一致，且 `StateCodec.Decode` 成功；否则从头重折。写入策略由投影或其宿主决定（例如 run 的 `SnapshotPolicy`）；缓存不在 kernel，也不与 append 同事务，丢失或过期只影响读取代价。
+**EXT-PRJ-3** 缓存条目记录 `through`：已折叠到的 stream head（`Next` 为下一未折叠行的 Seq，`Digest` 为最后一行的 digest）。复用条件：`Read(From: through.Next-1)` 返回的首行 Digest 等于 `through.Digest`，且 `StateCodec.Decode` 成功；否则从头重折。写入策略由投影或其宿主决定（例如 run 的 `SnapshotPolicy`）；缓存不在 kernel，也不与 append 同事务，丢失或过期只影响读取代价。
 
 **EXT-PRJ-4** `Writer.Projections()` 返回的 reader 直接读 Writer 内存中的状态，不经 Store；独立进程的观察者用 `NewProjectionReader` 从 Store 读，两者对同一 head 给出相同状态。
 

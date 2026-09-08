@@ -75,7 +75,7 @@ func buildPrepare(t *testing.T, s MachineState, req sdk.Request, specs []ToolSpe
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmdID := DeriveModelRequestCommandID(s.RunID, RunPosition{})
+	cmdID := DeriveModelRequestCommandID(s.RunID, 0)
 	stepID := DeriveModelStepID(s.RunID, cmdID, binding)
 	ids := make([]InputID, len(s.PendingInputs))
 	for i, in := range s.PendingInputs {

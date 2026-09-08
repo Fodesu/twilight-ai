@@ -58,7 +58,7 @@ func (p *ContextPlanner) Plan(ctx context.Context, hint run.PlanningHint) (loop.
 		Model:         p.Public.Model,
 		Request:       sdk.Request{Model: string(p.Public.Model), Messages: msgs, Tools: defs},
 		InputIDs:      ids,
-		PlanningToken: run.PlanningToken(fmt.Sprintf("%d:%s", head.Revision, head.Digest)),
+		PlanningToken: run.PlanningToken(fmt.Sprintf("%d:%s", head.Next, head.Digest)),
 		Tools:         specs,
 	}, nil
 }

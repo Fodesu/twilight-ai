@@ -136,18 +136,18 @@ func TestDigestCommandIdentity(t *testing.T) {
 
 func TestDeriveStability(t *testing.T) {
 	// Fixed inputs must produce fixed outputs across processes; freeze a few.
-	id1 := DeriveModelRequestCommandID("run-1", RunPosition{Revision: 7})
-	id2 := DeriveModelRequestCommandID("run-1", RunPosition{Revision: 7})
+	id1 := DeriveModelRequestCommandID("run-1", 7)
+	id2 := DeriveModelRequestCommandID("run-1", 7)
 	if id1 != id2 {
 		t.Fatal("derive is not deterministic")
 	}
-	if id1 == DeriveModelRequestCommandID("run-1", RunPosition{Revision: 8}) {
+	if id1 == DeriveModelRequestCommandID("run-1", 8) {
 		t.Fatal("revision does not separate command IDs")
 	}
-	if id1 == DeriveModelRequestCommandID("run-1", RunPosition{Revision: 7, Index: 1}) {
+	if id1 == DeriveModelRequestCommandID("run-1", 70) {
 		t.Fatal("index does not separate command IDs")
 	}
-	if id1 == DeriveModelRequestCommandID("run-2", RunPosition{Revision: 7}) {
+	if id1 == DeriveModelRequestCommandID("run-2", 7) {
 		t.Fatal("run does not separate command IDs")
 	}
 	// Namespaces must not collide even with aligned parts.
