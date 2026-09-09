@@ -57,7 +57,13 @@ func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID
 	if err != nil {
 		return err
 	}
-	m, err := ref.New(ref.Options{Store: store, Ownership: session.OpenOptions{Takeover: true}, Sink: printSink{}})
+	// Frozen request bodies persist next to the session log, so a restart can
+	// replay the request of a ModelStep that was executing at the crash.
+	frozen, err := filestore.NewFrozenValues(root)
+	if err != nil {
+		return err
+	}
+	m, err := ref.New(ref.Options{Store: store, Frozen: frozen, Ownership: session.OpenOptions{Takeover: true}, Sink: printSink{}})
 	if err != nil {
 		return err
 	}

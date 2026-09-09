@@ -33,6 +33,13 @@ func digestToolSpecV1(spec ToolSpec) (Digest, error) {
 }
 
 func digestToolSpecsV1(specs []ToolSpec) (Digest, error) {
+	// The fact wire drops an empty tool list (omitempty), so a decoded fact
+	// carries nil where the command carried []. The preimage must not
+	// distinguish them: a zero-tool step would otherwise fail its own
+	// digest guard after one codec round trip.
+	if len(specs) == 0 {
+		specs = nil
+	}
 	body, err := encodeEnvelopeBody(SchemaVersion1, "tool_specs", specs)
 	if err != nil {
 		return "", err

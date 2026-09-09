@@ -129,7 +129,7 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 - 数据库 adapter（SQLite / PostgreSQL）：sessions（header、epoch）、events 两张表，Append 一个事务；只在多会话服务需要时做；
 - 收紧 Session authority tables 的 immutable RLS policy；
 - 需要远程 Store 或跨存储 claim 时，实现 extension 附录 C 与 artifact 附录的两阶段路径；
-- 内容寻址旁存合并：FrozenValueStore 与 artifact 的 `cas` scheme 是同一抽象的两份定义，长期把模型请求本体旁存实现为 authority 固定的 artifact `cas` 存储实例，随第一个真实内容存储（artifact Store/Resolver）一起做。
+- 内容寻址旁存合并：FrozenValueStore 与 artifact 的 `cas` scheme 是同一抽象的两份定义，长期把模型请求本体旁存实现为 authority 固定的 artifact `cas` 存储实例，随第一个真实内容存储（artifact Store/Resolver）一起做。文件后端（`filestore.NewFrozenValues`）已落地，补齐了进程重启后模型中断恢复的重放路径；合并方向不变。
 
 ### 4.3 Application migration
 
