@@ -4,10 +4,10 @@ import (
 	"context"
 	"testing"
 
-	"github.com/memohai/twilight/agent/ref"
-	"github.com/memohai/twilight/agent/session"
-	"github.com/memohai/twilight/agent/session/filestore"
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/agent/ref"
+	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/filestore"
+	"github.com/felinics/twilight/sdk"
 )
 
 // gateModel blocks its first Generate until release, capturing the request:

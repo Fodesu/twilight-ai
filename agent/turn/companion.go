@@ -3,9 +3,9 @@ package turn
 import (
 	"fmt"
 
-	"github.com/memohai/twilight/agent/es"
-	"github.com/memohai/twilight/agent/run"
-	"github.com/memohai/twilight/agent/session/chatlog"
+	"github.com/felinics/twilight/agent/es"
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/session/chatlog"
 )
 
 // CompanionV1Version identifies the v1 mapping (TRN-CMP-2).

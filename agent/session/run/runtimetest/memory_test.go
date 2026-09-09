@@ -3,7 +3,7 @@ package runtimetest
 import (
 	"testing"
 
-	"github.com/memohai/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session"
 )
 
 func TestMemoryStoreConformance(t *testing.T) {

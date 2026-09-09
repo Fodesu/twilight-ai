@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"unicode/utf8"
 
-	"github.com/memohai/twilight/agent/es"
+	"github.com/felinics/twilight/agent/es"
 )
 
 // NewRun is the immutable, versioned creation data for a Run. RunID is

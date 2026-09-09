@@ -7,9 +7,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/memohai/twilight/agent/run"
-	"github.com/memohai/twilight/agent/run/loop"
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/sdk"
 )
 
 // Text is a model result that completes without tool calls.

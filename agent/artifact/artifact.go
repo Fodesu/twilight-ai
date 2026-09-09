@@ -11,7 +11,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/memohai/twilight/agent/es"
+	"github.com/felinics/twilight/agent/es"
 )
 
 type (

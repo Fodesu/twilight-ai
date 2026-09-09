@@ -3,8 +3,8 @@ package runtest
 import (
 	"errors"
 
-	"github.com/memohai/twilight/agent/run"
-	"github.com/memohai/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/loop"
 )
 
 // RequireWaiting checks Loop yielded and a call is waiting for kind.

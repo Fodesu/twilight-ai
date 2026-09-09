@@ -3,7 +3,7 @@ package run
 import (
 	"testing"
 
-	"github.com/memohai/twilight/agent/es"
+	"github.com/felinics/twilight/agent/es"
 )
 
 func mustNewRun(t testing.TB, id RunID, cause es.CausationID) NewRun {

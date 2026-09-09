@@ -21,7 +21,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/memohai/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session"
 )
 
 const (

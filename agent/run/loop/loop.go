@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"sync"
 
-	run "github.com/memohai/twilight/agent/run"
-	"github.com/memohai/twilight/agent/session"
+	run "github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/session"
 )
 
 // Loop is the in-process interpreter of one Run (RUN-LOP-2). It holds no

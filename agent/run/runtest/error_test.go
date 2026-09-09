@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/memohai/twilight/agent/run/runtest"
+	"github.com/felinics/twilight/agent/run/runtest"
 )
 
 func TestCatalogResolveErrorLeavesRunActive(t *testing.T) {

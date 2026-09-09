@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/memohai/twilight/agent/es"
+	"github.com/felinics/twilight/agent/es"
 )
 
 // frozenDir is the store directory under the root. The leading "%" keeps it

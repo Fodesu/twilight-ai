@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	run "github.com/memohai/twilight/agent/run"
+	run "github.com/felinics/twilight/agent/run"
 
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/sdk"
 )
 
 func (l *Loop) planAndPrepare(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot, hint run.PlanningHint) error {

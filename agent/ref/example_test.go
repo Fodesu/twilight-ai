@@ -7,13 +7,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/memohai/twilight/agent/ref"
-	"github.com/memohai/twilight/agent/run"
-	"github.com/memohai/twilight/agent/run/loop"
-	"github.com/memohai/twilight/agent/session"
-	"github.com/memohai/twilight/agent/session/chatlog"
-	"github.com/memohai/twilight/agent/turn"
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/agent/ref"
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/chatlog"
+	"github.com/felinics/twilight/agent/turn"
+	"github.com/felinics/twilight/sdk"
 )
 
 // Example_recoverableTurn drives one Turn through a process crash on the

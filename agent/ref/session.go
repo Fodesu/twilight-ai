@@ -7,10 +7,10 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/memohai/twilight/agent/run"
-	"github.com/memohai/twilight/agent/session"
-	"github.com/memohai/twilight/agent/session/chatlog"
-	"github.com/memohai/twilight/agent/turn"
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/chatlog"
+	"github.com/felinics/twilight/agent/turn"
 )
 
 // NewTurnID mints a collision-free TurnID.

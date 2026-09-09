@@ -3,8 +3,8 @@ package run
 import (
 	"fmt"
 
-	"github.com/memohai/twilight/agent/es"
-	"github.com/memohai/twilight/agent/session"
+	"github.com/felinics/twilight/agent/es"
+	"github.com/felinics/twilight/agent/session"
 )
 
 // SchemaVersion1 is the current pre-release wire schema. Its canonical

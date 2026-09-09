@@ -3,8 +3,8 @@ package session
 import (
 	"context"
 
-	"github.com/memohai/twilight/agent/es"
-	"github.com/memohai/twilight/agent/jsonstable"
+	"github.com/felinics/twilight/agent/es"
+	"github.com/felinics/twilight/agent/jsonstable"
 )
 
 // CreateRequest establishes a stream. Field-identical repeats are idempotent;

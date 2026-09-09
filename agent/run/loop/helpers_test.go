@@ -5,10 +5,10 @@ import (
 	"testing"
 	"time"
 
-	. "github.com/memohai/twilight/agent/run"
-	"github.com/memohai/twilight/agent/session"
-	"github.com/memohai/twilight/agent/session/extension"
-	runmod "github.com/memohai/twilight/agent/session/run"
+	. "github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/extension"
+	runmod "github.com/felinics/twilight/agent/session/run"
 )
 
 const (

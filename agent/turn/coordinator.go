@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/memohai/twilight/agent/es"
-	"github.com/memohai/twilight/agent/run"
-	"github.com/memohai/twilight/agent/session"
-	"github.com/memohai/twilight/agent/session/chatlog"
-	"github.com/memohai/twilight/agent/session/extension"
-	runmod "github.com/memohai/twilight/agent/session/run"
+	"github.com/felinics/twilight/agent/es"
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/chatlog"
+	"github.com/felinics/twilight/agent/session/extension"
+	runmod "github.com/felinics/twilight/agent/session/run"
 )
 
 // ErrConflict reports a Turn in a state that does not admit the operation.

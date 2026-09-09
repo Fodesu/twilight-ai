@@ -9,10 +9,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	. "github.com/memohai/twilight/agent/run"
-	"github.com/memohai/twilight/agent/session"
+	. "github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/session"
 
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/sdk"
 )
 
 // --- fakes ---

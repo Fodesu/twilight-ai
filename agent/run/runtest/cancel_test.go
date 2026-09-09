@@ -3,8 +3,8 @@ package runtest_test
 import (
 	"testing"
 
-	"github.com/memohai/twilight/agent/run"
-	"github.com/memohai/twilight/agent/run/runtest"
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/runtest"
 )
 
 func TestCancelStopsIdleRun(t *testing.T) {

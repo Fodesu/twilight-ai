@@ -11,8 +11,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/memohai/twilight/agent/jsonstable"
-	"github.com/memohai/twilight/agent/session"
+	"github.com/felinics/twilight/agent/jsonstable"
+	"github.com/felinics/twilight/agent/session"
 )
 
 type (

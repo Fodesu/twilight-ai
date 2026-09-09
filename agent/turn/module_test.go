@@ -3,7 +3,7 @@ package turn
 import (
 	"testing"
 
-	"github.com/memohai/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session"
 )
 
 // EXT-COD-1: every registered event type's current codec is canonical

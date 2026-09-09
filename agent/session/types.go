@@ -8,8 +8,8 @@ package session
 import (
 	"fmt"
 
-	"github.com/memohai/twilight/agent/es"
-	"github.com/memohai/twilight/agent/jsonstable"
+	"github.com/felinics/twilight/agent/es"
+	"github.com/felinics/twilight/agent/jsonstable"
 )
 
 type (

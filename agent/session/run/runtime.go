@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/memohai/twilight/agent/es"
-	"github.com/memohai/twilight/agent/run"
-	"github.com/memohai/twilight/agent/session"
-	"github.com/memohai/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/es"
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/extension"
 )
 
 // SourceDigestCarrier is implemented by companion event values whose content

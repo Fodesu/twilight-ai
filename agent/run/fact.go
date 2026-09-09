@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/memohai/twilight/agent/es"
+	"github.com/felinics/twilight/agent/es"
 )
 
 // Fact is one committed outcome produced by Machine.Decide. Facts are wrapped

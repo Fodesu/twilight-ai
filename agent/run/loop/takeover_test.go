@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	. "github.com/memohai/twilight/agent/run"
-	"github.com/memohai/twilight/sdk"
+	. "github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/sdk"
 )
 
 // The owner process dies while a tool call is Executing. A new owner takes

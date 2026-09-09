@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"unicode/utf8"
 
-	"github.com/memohai/twilight/agent/es"
-	"github.com/memohai/twilight/agent/jsonstable"
+	"github.com/felinics/twilight/agent/es"
+	"github.com/felinics/twilight/agent/jsonstable"
 )
 
 // ProtocolProfile freezes the kernel wire for one ProtocolVersion

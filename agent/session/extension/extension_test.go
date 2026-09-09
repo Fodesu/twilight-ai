@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/memohai/twilight/agent/artifact"
-	"github.com/memohai/twilight/agent/jsonstable"
-	"github.com/memohai/twilight/agent/session"
+	"github.com/felinics/twilight/agent/artifact"
+	"github.com/felinics/twilight/agent/jsonstable"
+	"github.com/felinics/twilight/agent/session"
 )
 
 type notePayload struct {

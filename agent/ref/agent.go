@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/memohai/twilight/agent/es"
-	"github.com/memohai/twilight/agent/run"
-	"github.com/memohai/twilight/agent/run/loop"
-	"github.com/memohai/twilight/agent/session"
-	"github.com/memohai/twilight/agent/turn"
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/agent/es"
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/turn"
+	"github.com/felinics/twilight/sdk"
 )
 
 type PublicTool struct {

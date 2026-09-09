@@ -3,7 +3,7 @@ package extension
 import (
 	"errors"
 
-	"github.com/memohai/twilight/agent/artifact"
+	"github.com/felinics/twilight/agent/artifact"
 )
 
 type Cardinality struct {

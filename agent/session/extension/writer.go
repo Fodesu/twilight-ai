@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/memohai/twilight/agent/artifact"
-	"github.com/memohai/twilight/agent/es"
-	"github.com/memohai/twilight/agent/session"
+	"github.com/felinics/twilight/agent/artifact"
+	"github.com/felinics/twilight/agent/es"
+	"github.com/felinics/twilight/agent/session"
 )
 
 // TypedEvent is a module value plus row metadata. Ignorable comes from the

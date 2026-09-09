@@ -5,12 +5,12 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/memohai/twilight/agent/es"
-	"github.com/memohai/twilight/agent/run"
-	"github.com/memohai/twilight/agent/run/loop"
-	"github.com/memohai/twilight/agent/session/chatlog"
-	"github.com/memohai/twilight/agent/session/extension"
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/agent/es"
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/session/chatlog"
+	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/sdk"
 )
 
 type (

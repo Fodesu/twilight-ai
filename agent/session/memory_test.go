@@ -3,8 +3,8 @@ package session_test
 import (
 	"testing"
 
-	"github.com/memohai/twilight/agent/session"
-	"github.com/memohai/twilight/agent/session/sessiontest"
+	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/sessiontest"
 )
 
 func TestMemoryStoreConformance(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/memohai/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session"
 )
 
 // RunPosition is the Seq of a Run's last twilight/run/ event. Only the Run's

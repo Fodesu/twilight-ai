@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/memohai/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session"
 )
 
 type commandEnvelopeWire struct {

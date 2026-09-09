@@ -6,8 +6,8 @@
 package run
 
 import (
-	"github.com/memohai/twilight/agent/es"
-	"github.com/memohai/twilight/agent/jsonstable"
+	"github.com/felinics/twilight/agent/es"
+	"github.com/felinics/twilight/agent/jsonstable"
 )
 
 // CanonicalJSON is an immutable, agent-owned canonical JSON value. It can only

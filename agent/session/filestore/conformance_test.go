@@ -3,9 +3,9 @@ package filestore_test
 import (
 	"testing"
 
-	"github.com/memohai/twilight/agent/session/filestore"
-	"github.com/memohai/twilight/agent/session/run/runtimetest"
-	"github.com/memohai/twilight/agent/session/sessiontest"
+	"github.com/felinics/twilight/agent/session/filestore"
+	"github.com/felinics/twilight/agent/session/run/runtimetest"
+	"github.com/felinics/twilight/agent/session/sessiontest"
 )
 
 func newStore(t testing.TB) *filestore.Store {

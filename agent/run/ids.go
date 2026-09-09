@@ -5,8 +5,8 @@ import (
 	"encoding/hex"
 	"fmt"
 
-	"github.com/memohai/twilight/agent/es"
-	"github.com/memohai/twilight/agent/session"
+	"github.com/felinics/twilight/agent/es"
+	"github.com/felinics/twilight/agent/session"
 )
 
 type RunID string

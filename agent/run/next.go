@@ -1,6 +1,6 @@
 package run
 
-import "github.com/memohai/twilight/agent/session"
+import "github.com/felinics/twilight/agent/session"
 
 // Effect is the at-most-one pending action Machine.Next derives from the
 // current state (RUN-MCH-4). Effects are never persisted; the Loop re-derives

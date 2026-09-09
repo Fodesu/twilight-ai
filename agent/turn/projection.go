@@ -3,11 +3,11 @@ package turn
 import (
 	"fmt"
 
-	"github.com/memohai/twilight/agent/run"
-	"github.com/memohai/twilight/agent/session"
-	"github.com/memohai/twilight/agent/session/chatlog"
-	"github.com/memohai/twilight/agent/session/extension"
-	runmod "github.com/memohai/twilight/agent/session/run"
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/chatlog"
+	"github.com/felinics/twilight/agent/session/extension"
+	runmod "github.com/felinics/twilight/agent/session/run"
 )
 
 const SurfaceProjectionID extension.ProjectionID = "twilight/turn/surface"

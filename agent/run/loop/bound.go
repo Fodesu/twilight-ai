@@ -3,8 +3,8 @@ package loop
 import (
 	"context"
 
-	run "github.com/memohai/twilight/agent/run"
-	"github.com/memohai/twilight/agent/session"
+	run "github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/session"
 )
 
 // boundRuntime binds a run.Runtime to the Session one Loop.Run drives, so the

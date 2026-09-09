@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/memohai/twilight/agent/es"
-	"github.com/memohai/twilight/agent/session"
-	"github.com/memohai/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/es"
+	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/extension"
 )
 
 const (

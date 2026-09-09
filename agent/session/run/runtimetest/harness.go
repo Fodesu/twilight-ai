@@ -13,14 +13,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/memohai/twilight/agent/artifact"
-	"github.com/memohai/twilight/agent/run"
-	"github.com/memohai/twilight/agent/session"
-	"github.com/memohai/twilight/agent/session/chatlog"
-	"github.com/memohai/twilight/agent/session/extension"
-	runmod "github.com/memohai/twilight/agent/session/run"
-	"github.com/memohai/twilight/agent/turn"
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/agent/artifact"
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/chatlog"
+	"github.com/felinics/twilight/agent/session/extension"
+	runmod "github.com/felinics/twilight/agent/session/run"
+	"github.com/felinics/twilight/agent/turn"
+	"github.com/felinics/twilight/sdk"
 )
 
 // Fixture is one adapter under test.

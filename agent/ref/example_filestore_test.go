@@ -8,13 +8,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/memohai/twilight/agent/ref"
-	"github.com/memohai/twilight/agent/run"
-	"github.com/memohai/twilight/agent/run/loop"
-	"github.com/memohai/twilight/agent/session"
-	"github.com/memohai/twilight/agent/session/filestore"
-	"github.com/memohai/twilight/agent/turn"
-	"github.com/memohai/twilight/sdk"
+	"github.com/felinics/twilight/agent/ref"
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/filestore"
+	"github.com/felinics/twilight/agent/turn"
+	"github.com/felinics/twilight/sdk"
 )
 
 // Example_jsonlPrototype is the full prototype on the JSONL file store: one

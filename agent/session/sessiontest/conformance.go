@@ -7,8 +7,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/memohai/twilight/agent/jsonstable"
-	"github.com/memohai/twilight/agent/session"
+	"github.com/felinics/twilight/agent/jsonstable"
+	"github.com/felinics/twilight/agent/session"
 )
 
 // Fixture is one adapter under test.

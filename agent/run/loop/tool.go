@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"sync"
 
-	run "github.com/memohai/twilight/agent/run"
+	run "github.com/felinics/twilight/agent/run"
 )
 
 type startedWorker struct {
