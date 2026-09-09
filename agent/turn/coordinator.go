@@ -17,8 +17,14 @@ import (
 // ErrConflict reports a Turn in a state that does not admit the operation.
 var ErrConflict = errors.New("turn: conflict")
 
-// ErrBindingUnavailable reports that the persisted binding cannot be resolved.
-var ErrBindingUnavailable = errors.New("turn: binding_unavailable")
+// ErrProfileUnavailable reports that the persisted profile cannot be resolved.
+var ErrProfileUnavailable = errors.New("turn: profile_unavailable")
+
+// ErrAlreadyDriving is how a RunDriver reports that another local driver
+// already drives the Run: the commit (if any) landed and the running driver
+// carries it forward. The Coordinator turns it into a successful response
+// with ResumeAlreadyDriving, not an error.
+var ErrAlreadyDriving = errors.New("turn: already_driving")
 
 type DriveRequest struct {
 	Ref   TurnRef
@@ -26,20 +32,21 @@ type DriveRequest struct {
 }
 
 // RunDriver drives one Run to its next quiescent point; the reference driver
-// wraps loop.Run (TRN-DRV-1).
+// wraps loop.Run (TRN-DRV-1). A second local driver of the same Run reports
+// ErrAlreadyDriving instead of driving.
 type RunDriver interface {
 	Drive(context.Context, DriveRequest) error
 }
 
-type ExecutionBindingRegistry interface {
-	Resolve(ExecutionBindingRef) (RunDriver, error)
+type ProfileRegistry interface {
+	Resolve(ProfileRef) (RunDriver, error)
 }
 
 type StartRequest struct {
-	Ref              TurnRef
-	Inputs           []run.AgentInput
-	ExecutionBinding ExecutionBindingRef
-	Companion        CompanionVersion
+	Ref       TurnRef
+	Inputs    []run.AgentInput
+	Profile   ProfileRef
+	Companion CompanionVersion
 }
 type DeliverRequest struct {
 	Ref    TurnRef
@@ -65,6 +72,9 @@ const (
 	ResumeWaitingForResponse ResumeDisposition = "waiting_for_response"
 	ResumeWaitingForRecovery ResumeDisposition = "waiting_for_recovery"
 	ResumeFinished           ResumeDisposition = "finished"
+	// ResumeAlreadyDriving: the inputs (if any) are committed and another
+	// local driver of the same Run carries them forward.
+	ResumeAlreadyDriving ResumeDisposition = "already_driving"
 )
 
 type TurnResponse struct {
@@ -93,7 +103,7 @@ type Service interface {
 type Coordinator struct {
 	Writers  extension.Writers
 	Runtime  run.Runtime
-	Bindings ExecutionBindingRegistry
+	Profiles ProfileRegistry
 	// Now stamps event times; nil selects time.Now.
 	Now func() time.Time
 }
@@ -154,8 +164,8 @@ func (c *Coordinator) commit(ctx context.Context, sid session.SessionID, op stri
 // --- Start ------------------------------------------------------------------------
 
 func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse, error) {
-	if req.Ref.SessionID == "" || req.Ref.TurnID == "" || req.ExecutionBinding.ID == "" || req.ExecutionBinding.Digest == "" || req.Companion == "" {
-		return TurnResponse{}, errors.New("turn: start requires ref, binding and companion")
+	if req.Ref.SessionID == "" || req.Ref.TurnID == "" || req.Profile.ID == "" || req.Profile.Digest == "" || req.Companion == "" {
+		return TurnResponse{}, errors.New("turn: start requires ref, profile and companion")
 	}
 	inputIDs := make([]chatlog.InputID, len(req.Inputs))
 	seen := map[run.InputID]struct{}{}
@@ -167,7 +177,7 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 		inputIDs[i] = chatlog.InputID(in.ID)
 	}
 	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
-	plan := PlanDigest(turnID, req.ExecutionBinding.Digest, req.Companion, inputIDs)
+	plan := PlanDigest(turnID, req.Profile.Digest, req.Companion, inputIDs)
 	commitID := session.CommitID(StartOperationDigest(sid, turnID, plan))
 	runID := DeriveRunID(sid, turnID, 1)
 	newRun, err := run.BuildNewRunFor(runID, run.OwnerID(turnID), 1, es.CausationID(commitID))
@@ -209,7 +219,7 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 func (c *Coordinator) startGroup(commitID session.CommitID, turnID TurnID, inputIDs []chatlog.InputID, req StartRequest, facts []run.Fact, now int64) extension.SemanticGroup {
 	group := extension.SemanticGroup{CommitID: commitID}
 	group.Events = append(group.Events, extension.TypedEvent{Type: TypeStarted, RecordedAtUnixMilli: now,
-		Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, ExecutionBinding: req.ExecutionBinding, Companion: req.Companion}})
+		Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, Profile: req.Profile, Companion: req.Companion}})
 	for _, id := range inputIDs {
 		group.Events = append(group.Events, extension.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: now,
 			Value: chatlog.InputDeliveredPayload{InputID: id, TurnID: chatlog.TurnID(turnID)}})
@@ -435,11 +445,19 @@ func (c *Coordinator) drive(ctx context.Context, ref TurnRef, runID run.RunID) (
 	}
 	view := surface.Turns[ref.TurnID]
 	if view.Status == TurnActive {
-		driver, err := c.Bindings.Resolve(view.ExecutionBinding)
+		driver, err := c.Profiles.Resolve(view.Profile)
 		if err != nil {
-			return TurnResponse{}, fmt.Errorf("%w: %v", ErrBindingUnavailable, err)
+			return TurnResponse{}, fmt.Errorf("%w: %v", ErrProfileUnavailable, err)
 		}
 		if err := driver.Drive(ctx, DriveRequest{Ref: ref, RunID: runID}); err != nil {
+			if errors.Is(err, ErrAlreadyDriving) {
+				resp, rerr := c.respond(ctx, ref, runID)
+				if rerr != nil {
+					return TurnResponse{}, rerr
+				}
+				resp.Disposition = ResumeAlreadyDriving
+				return resp, nil
+			}
 			return TurnResponse{}, err
 		}
 	}

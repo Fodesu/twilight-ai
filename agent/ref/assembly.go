@@ -2,7 +2,6 @@ package ref
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"time"
 
@@ -40,7 +39,7 @@ type Memory struct {
 	Store        session.Store
 	Registry     *extension.Registry
 	Writers      extension.Writers
-	Bindings     *Bindings
+	Agents       *Agents
 	Runtime      *runmod.Runtime
 	Coordinator  *turn.Coordinator
 	BindingStore *artifact.MemoryBindingStore
@@ -80,8 +79,8 @@ func New(opts Options) (*Memory, error) {
 		return nil, err
 	}
 	m := &Memory{Store: store, Registry: registry, Writers: writers, Runtime: runtime, BindingStore: bindings, Ledger: ledger, now: now}
-	m.Bindings = NewBindings(runtime, writersProjections{writers}, opts.Sink)
-	m.Coordinator = &turn.Coordinator{Writers: writers, Runtime: runtime, Bindings: m.Bindings, Now: now}
+	m.Agents = NewAgents(runtime, writersProjections{writers}, opts.Sink)
+	m.Coordinator = &turn.Coordinator{Writers: writers, Runtime: runtime, Profiles: m.Agents, Now: now}
 	return m, nil
 }
 
@@ -100,6 +99,24 @@ func (p writersProjections) Load(ctx context.Context, sid session.SessionID, id 
 func (m *Memory) CreateSession(ctx context.Context, sid session.SessionID) error {
 	_, err := m.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: m.now().UnixMilli()})
 	return err
+}
+
+// EnsureSession creates the stream when it does not exist yet. Create's
+// idempotency needs field-identical requests, so existence is probed first.
+func (m *Memory) EnsureSession(ctx context.Context, sid session.SessionID) error {
+	if _, err := m.Store.Header(ctx, sid); err == nil {
+		return nil
+	} else if !session.IsCode(err, session.ErrNotFound) {
+		return err
+	}
+	if err := m.CreateSession(ctx, sid); err != nil {
+		// A concurrent creator winning the race is still "exists".
+		if _, herr := m.Store.Header(ctx, sid); herr == nil {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // Open takes ownership of the Session and runs the takeover disposition
@@ -139,6 +156,11 @@ func (m *Memory) SubmitInput(ctx context.Context, sid session.SessionID, id run.
 	}
 }
 
+// SubmitText submits one user text under a fresh InputID (REF-INP-2).
+func (m *Memory) SubmitText(ctx context.Context, sid session.SessionID, text string) (run.AgentInput, error) {
+	return m.SubmitInput(ctx, sid, NewInputID(), text)
+}
+
 // ChatlogSurface reads the chatlog surface projection.
 func (m *Memory) ChatlogSurface(ctx context.Context, sid session.SessionID) (chatlog.Surface, error) {
 	state, _, err := writersProjections{m.Writers}.Load(ctx, sid, chatlog.SurfaceProjectionID, chatlog.SurfaceProjection.Version)
@@ -162,15 +184,17 @@ func (m *Memory) TurnSurface(ctx context.Context, sid session.SessionID) (turn.T
 type SessionDriver struct {
 	Coordinator turn.Service
 	Memory      *Memory
-	Binding     turn.ExecutionBindingRef
+	Profile     turn.ProfileRef
 	Companion   turn.CompanionVersion
-	NewTurnID   func() turn.TurnID
+	// NewTurnID mints the next TurnID; nil selects the random default.
+	NewTurnID func() turn.TurnID
 }
 
 // Send is REF-DRV-1: Deliver into the active Turn, or Start a new one.
 func (d *SessionDriver) Send(ctx context.Context, sid session.SessionID, inputs []run.AgentInput) (turn.TurnResponse, error) {
-	if d.NewTurnID == nil {
-		return turn.TurnResponse{}, errors.New("ref: session driver requires NewTurnID")
+	newTurnID := d.NewTurnID
+	if newTurnID == nil {
+		newTurnID = NewTurnID
 	}
 	surface, err := d.Memory.TurnSurface(ctx, sid)
 	if err != nil {
@@ -184,8 +208,8 @@ func (d *SessionDriver) Send(ctx context.Context, sid session.SessionID, inputs 
 			return turn.TurnResponse{}, fmt.Errorf("%w: turn %s awaits Retry or Settle", turn.ErrConflict, v.TurnID)
 		}
 	}
-	return d.Coordinator.Start(ctx, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: d.NewTurnID()}, Inputs: inputs,
-		ExecutionBinding: d.Binding, Companion: d.Companion})
+	return d.Coordinator.Start(ctx, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: newTurnID()}, Inputs: inputs,
+		Profile: d.Profile, Companion: d.Companion})
 }
 
 // OnTurnSettled is REF-DRV-2: start the next Turn from the backlog of

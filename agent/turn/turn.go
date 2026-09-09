@@ -18,9 +18,9 @@ import (
 const ModuleID extension.ModuleID = "turn"
 
 type (
-	TurnID             string
-	ExecutionBindingID string
-	CompanionVersion   string
+	TurnID           string
+	ProfileID        string
+	CompanionVersion string
 )
 
 type TurnRef struct {
@@ -28,9 +28,9 @@ type TurnRef struct {
 	TurnID    TurnID
 }
 
-type ExecutionBindingRef struct {
-	ID     ExecutionBindingID `json:"id"`
-	Digest es.Digest          `json:"digest"`
+type ProfileRef struct {
+	ID     ProfileID `json:"id"`
+	Digest es.Digest `json:"digest"`
 }
 
 type Settlement string
@@ -49,10 +49,10 @@ const (
 )
 
 type StartedPayload struct {
-	TurnID           TurnID              `json:"turnId"`
-	InputIDs         []chatlog.InputID   `json:"inputIds,omitempty"`
-	ExecutionBinding ExecutionBindingRef `json:"executionBinding"`
-	Companion        CompanionVersion    `json:"companion"`
+	TurnID    TurnID            `json:"turnId"`
+	InputIDs  []chatlog.InputID `json:"inputIds,omitempty"`
+	Profile   ProfileRef        `json:"profile"`
+	Companion CompanionVersion  `json:"companion"`
 }
 
 type CompletedPayload struct {
@@ -80,8 +80,8 @@ func digestOf(domain string, parts ...string) es.Digest {
 }
 
 // PlanDigest is TRN-ID-2.
-func PlanDigest(turnID TurnID, binding es.Digest, companion CompanionVersion, inputs []chatlog.InputID) es.Digest {
-	parts := []string{string(turnID), string(binding), string(companion)}
+func PlanDigest(turnID TurnID, profile es.Digest, companion CompanionVersion, inputs []chatlog.InputID) es.Digest {
+	parts := []string{string(turnID), string(profile), string(companion)}
 	for _, id := range inputs {
 		parts = append(parts, string(id))
 	}
@@ -131,8 +131,8 @@ var Module = extension.ModuleDescriptor{
 	},
 	Events: []extension.EventDefinition{
 		def[StartedPayload](TypeStarted, func(p *StartedPayload) error {
-			if p.TurnID == "" || p.ExecutionBinding.ID == "" || p.ExecutionBinding.Digest == "" || p.Companion == "" {
-				return errors.New("started requires turnId, binding and companion")
+			if p.TurnID == "" || p.Profile.ID == "" || p.Profile.Digest == "" || p.Companion == "" {
+				return errors.New("started requires turnId, profile and companion")
 			}
 			return nil
 		}),

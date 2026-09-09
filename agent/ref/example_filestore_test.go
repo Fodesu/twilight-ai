@@ -2,7 +2,6 @@ package ref_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -60,12 +59,12 @@ func Example_jsonlPrototype() {
 		panic(err)
 	}
 	model1 := &scriptedRequests{answers: []sdk.ModelResult{protoToolCall("call-1"), protoText("done"), protoToolCall("call-2")}}
-	binding1, err := p1.Bindings.Register("jsonl-agent", protoBinding(model1, tool))
+	profile1, err := p1.Agents.Register("jsonl-agent", protoAgent(model1, tool))
 	if err != nil {
 		panic(err)
 	}
 	turnSeq := 0
-	driver := &ref.SessionDriver{Coordinator: p1.Coordinator, Memory: p1, Binding: binding1, Companion: turn.CompanionV1Version,
+	driver := &ref.SessionDriver{Coordinator: p1.Coordinator, Memory: p1, Profile: profile1, Companion: turn.CompanionV1Version,
 		NewTurnID: func() turn.TurnID { turnSeq++; return turn.TurnID(fmt.Sprintf("turn-%d", turnSeq)) }}
 
 	// Turn 1: Send starts the Turn; the model asks for the tool, which blocks.
@@ -92,7 +91,8 @@ func Example_jsonlPrototype() {
 	steerDone := make(chan struct{})
 	go func() {
 		defer close(steerDone)
-		if _, err := driver.Send(ctx, sid, []run.AgentInput{in2}); err != nil && !errors.Is(err, loop.ErrRunAlreadyRunning) {
+		// Deliver into the running Turn returns already_driving, not an error.
+		if _, err := driver.Send(ctx, sid, []run.AgentInput{in2}); err != nil {
 			panic(err)
 		}
 	}()
@@ -138,7 +138,7 @@ func Example_jsonlPrototype() {
 	if err != nil {
 		panic(err)
 	}
-	if _, err := p2.Bindings.Register("jsonl-agent", protoBinding(&scriptedRequests{}, tool)); err != nil {
+	if _, err := p2.Agents.Register("jsonl-agent", protoAgent(&scriptedRequests{}, tool)); err != nil {
 		panic(err)
 	}
 	recovered, err := p2.Open(ctx, sid)
@@ -200,16 +200,12 @@ func protoText(text string) sdk.ModelResult {
 	return sdk.ModelResult{Text: text, FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}
 }
 
-func protoBinding(model loop.ModelInvoker, tool *stagedTool) ref.Binding {
-	def, err := run.FreezeToolDefinition(tool.Definition())
+func protoAgent(model loop.ModelInvoker, tool *stagedTool) ref.Agent {
+	agent, err := ref.NewAgent("m-1", model, ref.WithTool(tool))
 	if err != nil {
 		panic(err)
 	}
-	return ref.Binding{
-		Public: ref.BindingPublic{Model: "m-1", Tools: []ref.PublicTool{{Ref: tool.Ref(), Definition: def, Policy: run.DirectExecution}}},
-		Models: modelCatalog{model},
-		Tools:  stagedCatalog{tool},
-	}
+	return agent
 }
 
 // stagedTool blocks each staged execution until its stage is released;
@@ -252,7 +248,3 @@ func (t *stagedTool) Execute(_ context.Context, req loop.ToolExecutionRequest) l
 	}
 	return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
 }
-
-type stagedCatalog struct{ tool *stagedTool }
-
-func (c stagedCatalog) ResolveTool(run.ToolRef) (loop.ExecutableTool, error) { return c.tool, nil }

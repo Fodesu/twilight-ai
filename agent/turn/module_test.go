@@ -10,7 +10,7 @@ import (
 // round-trip stable — Encode, Decode, Encode reproduces the bytes.
 func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 	samples := map[session.EventType]any{
-		TypeStarted:    StartedPayload{TurnID: "t1", InputIDs: nil, ExecutionBinding: ExecutionBindingRef{ID: "b", Digest: "sha256:b"}, Companion: CompanionV1Version},
+		TypeStarted:    StartedPayload{TurnID: "t1", InputIDs: nil, Profile: ProfileRef{ID: "b", Digest: "sha256:b"}, Companion: CompanionV1Version},
 		TypeCompleted:  CompletedPayload{TurnID: "t1", RunID: "run-1"},
 		TypeFailed:     FailedPayload{TurnID: "t1", RunID: "run-1", Settlement: SettlementFailed, FailureClass: "provider"},
 		TypeSuperseded: SupersededPayload{TurnID: "t1", ReplacementTurnID: "t2"},

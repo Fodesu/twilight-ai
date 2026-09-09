@@ -16,7 +16,7 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 | 回合存在、attempt 归属与结束 | `twilight/turn/` events | Coordinator |
 | Run 执行状态 | `twilight/run/` events（[agent-run.md](agent-run.md)） | `run.Runtime`，由 Loop 与 Coordinator 驱动 |
 | 对话内容 | `twilight/chatlog/` events | Start 与 Deliver 时 delivered input；Run commit 内的 companion events |
-| Application policy | Application | binding、driver、retry、context 策略、产品策略 |
+| Application policy | Application | profile、driver、retry、context 策略、产品策略 |
 
 **TRN-SCP-1** Source 为 `twilight`，ModuleID 为 `turn`。一个 Turn 与它的全部 Run attempt 在同一 Session stream 内。`Coordinator` 创建 Turn、创建 attempt、在回合中途投递输入、驱动 Run、结算 Turn。turn 依赖 run；run 不依赖 turn，Run 事实中的 `OwnerID` 由本模块以 `TurnID` 填充。本模块的 `Requires`（EXT-REG-4）为：`run`，消费 `twilight/run/created` v1、`twilight/run/input_accepted` v1 与 `twilight/run/ended` v1；`chatlog`，只要求存在。
 
@@ -34,16 +34,16 @@ subagent 使用独立 Session 与独立 Turn。
 
 **TRN-SCP-4** Turn 自己的写入经该 Session 的 `extension.Writer.Commit`；Run 事实的写入经 `run.Runtime`，后者经同一个 Writer 落在同一 `session.Store`（EXT-SCP-1）。Coordinator 与 Runtime 经 `extension.Writers` 取得 Writer（EXT-WRT-6）。Artifact 由其 owner 管理。
 
-**TRN-SCP-5** Application 管理 model、provider、tool、prompt、token、approval、queue、retry 决策与并发。Coordinator 按 persisted binding 解析 driver。参考 Planner 每次 Plan 使用 Binding 的 `ModelRef`。
+**TRN-SCP-5** Application 管理 model、provider、tool、prompt、token、approval、queue、retry 决策与并发。Coordinator 按 persisted profile 解析 driver。参考 Planner 每次 Plan 使用 Profile 的 `ModelRef`。
 
-**TRN-SCP-6** Start 之前建立 immutable execution binding。Session 保存 `ID` 与 `Digest`。密钥与 client 留在进程内。Resolve 失败返回 `binding_unavailable`。公开字段见 [参考组装](agent-reference-assembly.md)。
+**TRN-SCP-6** Start 之前建立 immutable execution profile。Session 保存 `ProfileRef{ID, Digest}`。密钥与 client 留在进程内。Resolve 失败返回 `profile_unavailable`。公开字段与 digest 边界见 [参考组装](agent-reference-assembly.md)。
 
 ## 2. identity 与事件
 
 ```go
 type TurnID string
 type TurnRef struct { SessionID session.SessionID; TurnID TurnID }
-type ExecutionBindingRef struct { ID ExecutionBindingID; Digest es.Digest }
+type ProfileRef struct { ID ProfileID; Digest es.Digest }
 type CompanionVersion string
 
 type Settlement string
@@ -56,7 +56,7 @@ const (
 type StartedPayload struct {
     TurnID TurnID
     InputIDs []chatlog.InputID
-    ExecutionBinding ExecutionBindingRef
+    Profile ProfileRef
     Companion CompanionVersion
 }
 type CompletedPayload struct {
@@ -75,9 +75,9 @@ type SupersededPayload struct {
 }
 ```
 
-**TRN-ID-1** `TurnRef`、RunID、binding ID、CompanionVersion、InputID 与 digest 非空且稳定。
+**TRN-ID-1** `TurnRef`、RunID、profile ID、CompanionVersion、InputID 与 digest 非空且稳定。
 
-**TRN-ID-2** `PlanDigest = Digest("twilight/turn/plan", TurnID, ExecutionBinding.Digest, Companion, ordered InputIDs)`。PlanDigest 只参与 TRN-ID-3 的派生，不落盘：`started` payload 的每个字段都是它的 preimage 成员，落盘该 digest 不提供额外判定。
+**TRN-ID-2** `PlanDigest = Digest("twilight/turn/plan", TurnID, Profile.Digest, Companion, ordered InputIDs)`。PlanDigest 只参与 TRN-ID-3 的派生，不落盘：`started` payload 的每个字段都是它的 preimage 成员，落盘该 digest 不提供额外判定。
 
 **TRN-ID-3** `StartOperationDigest = Digest("twilight/turn/start-operation", SessionID, TurnID, PlanDigest)`。用户正文 identity 在对应 `twilight/chatlog/input_submitted` 中。
 
@@ -120,7 +120,7 @@ type TurnView struct {
     TurnID TurnID
     Status TurnStatus
     InputIDs []chatlog.InputID // started 的初始输入，加此后经 Deliver 进入任一 attempt 的输入，按 accepted 顺序去重
-    ExecutionBinding ExecutionBindingRef
+    Profile ProfileRef
     Attempts []AttemptView // 按 Attempt 递增
     ActiveRun run.RunID    // Status=active 时非空
     ReplacementTurnID TurnID
@@ -139,11 +139,11 @@ UI 按 `TurnID` 连接 `twilight/chatlog/surface` 的条目，按 `RunID` 连接
 type Coordinator struct {
     Writers extension.Writers // 每个方法按 Ref.SessionID 取 Writer：写入经 Commit，读取经 Projections()
     Runtime run.Runtime
-    Bindings ExecutionBindingRegistry
+    Profiles ProfileRegistry
 }
 type DriveRequest struct { Ref TurnRef; RunID run.RunID }
-type RunDriver interface { Drive(context.Context, DriveRequest) error }
-type ExecutionBindingRegistry interface { Resolve(ExecutionBindingRef) (RunDriver, error) }
+type RunDriver interface { Drive(context.Context, DriveRequest) error } // 同一 Run 的第二个本地驱动返回 ErrAlreadyDriving
+type ProfileRegistry interface { Resolve(ProfileRef) (RunDriver, error) }
 
 type Service interface {
     Start(context.Context, StartRequest) (TurnResponse, error)
@@ -156,7 +156,7 @@ type Service interface {
 type StartRequest struct {
     Ref TurnRef
     Inputs []run.AgentInput // ID 为已 submitted 的 InputID，Payload 等于其 Content
-    ExecutionBinding ExecutionBindingRef
+    Profile ProfileRef
     Companion CompanionVersion
 }
 type DeliverRequest struct { Ref TurnRef; Inputs []run.AgentInput } // 回合中途追加输入
@@ -178,6 +178,7 @@ const (
     ResumeWaitingForResponse ResumeDisposition = "waiting_for_response"
     ResumeWaitingForRecovery ResumeDisposition = "waiting_for_recovery"
     ResumeFinished           ResumeDisposition = "finished"
+    ResumeAlreadyDriving     ResumeDisposition = "already_driving" // 输入已提交，运行中的驱动者继续推进
 )
 ```
 
@@ -193,7 +194,7 @@ const (
 
 **TRN-STR-1** StartRequest：
 
-1. Ref、binding ref、companion version 非空；
+1. Ref、profile ref、companion version 非空；
 2. `Inputs` 无重复 ID；每个 ID 对应 chatlog 中状态为 submitted 的 Input，Payload 等于其 Content（Coordinator 经 chatlog surface 投影核对）。
 
 `started.InputIDs` 与 `input_delivered`、`input_accepted` 的顺序都取 `Inputs` 的顺序。
@@ -201,7 +202,7 @@ const (
 **TRN-STR-2** Start 是一次原子 commit，顺序为：
 
 ```text
-twilight/turn/started{TurnID, InputIDs, ExecutionBinding, Companion}
+twilight/turn/started{TurnID, InputIDs, Profile, Companion}
 twilight/chatlog/input_delivered{InputIDs[0], TurnID}
 ...
 twilight/chatlog/input_delivered{InputIDs[n-1], TurnID}
@@ -231,7 +232,7 @@ InputIDs 为空时 group 为 `started` 加 `created`。`created` 与 `input_acce
 
 **TRN-DLV-3** Deliver 不取消正在进行的模型调用或工具调用；要打断用 Stop。提交后，若本进程没有在驱动该 Run，Deliver 进入 Drive；已在驱动时不动，运行中的 Loop 在下一次 Load 看到 `PendingInputs`。Deliver 与该 Run 的最后一步 `SubmitModelResult` 并发时由 Writer 串行定序：输入先提交，Run 回到 `Open` 继续；结果先提交，Run 已终结，Deliver 得到 `ErrRunTerminal` 并返回 `completed`，该输入未被 delivered。
 
-**TRN-DRV-1** Drive 解析 binding 得到 driver，调用 `driver.Drive(ctx, {Ref, RunID})`。driver 内部为 `loop.Run(ctx, runtime, SessionID, RunID, sink)`。Drive 返回后读投影设置 `Disposition` 与 `End`：Run 终态为 `ResumeFinished`，`End` 取 surface 中该 attempt 的 `AttemptView.End`；`NeedsRecovery` 为 true 为 `ResumeWaitingForRecovery`；仅有 WaitingCalls 为 `ResumeWaitingForResponse`。
+**TRN-DRV-1** Drive 解析 profile 得到 driver，调用 `driver.Drive(ctx, {Ref, RunID})`。driver 内部为 `loop.Run(ctx, runtime, SessionID, RunID, sink)`。同一 Run 已有本地驱动者时 driver 返回 `ErrAlreadyDriving`，Coordinator 转为成功响应并置 `ResumeAlreadyDriving`：提交的输入由运行中的驱动者继续推进，调用方不经错误通道分辨这一情形。其余情形 Drive 返回后读投影设置 `Disposition` 与 `End`：Run 终态为 `ResumeFinished`，`End` 取 surface 中该 attempt 的 `AttemptView.End`；`NeedsRecovery` 为 true 为 `ResumeWaitingForRecovery`；仅有 WaitingCalls 为 `ResumeWaitingForResponse`。
 
 **TRN-DRV-2** EventSink 的 `text_delta` / `reasoning_delta` 为临时观察。Waiting 由 Application 提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 后再次 Resume。
 
@@ -284,7 +285,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 | Stop 的 Commit 返回非 sentinel 错误 | 以同一 Cancel CommandID 重放 |
 | Deliver 中某条输入的 Commit 返回非 sentinel 错误 | 以同一 input CommandID 重放，得到 already-applied 后继续剩余条目 |
 | Start 或 Retry 的 Commit 返回非 sentinel 错误 | 以同一 CommitID 重放，得到 already-applied |
-| binding 缺失 | 返回 `binding_unavailable`；Turn 状态不变 |
+| profile 缺失 | 返回 `profile_unavailable`；Turn 状态不变 |
 
 **TRN-REC-3** 没有跨存储的对账：Run 事实、companion 内容与 Turn 结算在同一组，`Append` 原子，要么全部可见要么全部不可见。claim 在 Append 之前建立，崩溃只可能留下孤儿 claim，由 artifact 的回收前核对释放（EXT-WRT-3、ART-RET-3）。
 

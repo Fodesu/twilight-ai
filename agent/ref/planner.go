@@ -24,14 +24,14 @@ type (
 // those of earlier attempts of the same Turn (REF-PLN-6).
 type ContextPlanner struct {
 	Projections ProjectionSource
-	Public      BindingPublic
+	Profile     Profile
 	// InputText extracts the user text of one input payload; nil selects the
 	// v1 shape {"text": ...} (REF-INP-1).
 	InputText func(run.CanonicalJSON) (string, error)
 }
 
 func (p *ContextPlanner) Plan(ctx context.Context, hint run.PlanningHint) (loop.RequestPlan, error) {
-	if p.Projections == nil || p.Public.Model == "" {
+	if p.Projections == nil || p.Profile.Model == "" {
 		return loop.RequestPlan{}, errors.New("ref: planner requires projections and a model")
 	}
 	if hint.Session == "" {
@@ -46,7 +46,7 @@ func (p *ContextPlanner) Plan(ctx context.Context, hint run.PlanningHint) (loop.
 	if err != nil {
 		return loop.RequestPlan{}, err
 	}
-	specs, defs, err := p.Public.ToolSpecs()
+	specs, defs, err := p.Profile.ToolSpecs()
 	if err != nil {
 		return loop.RequestPlan{}, err
 	}
@@ -55,8 +55,8 @@ func (p *ContextPlanner) Plan(ctx context.Context, hint run.PlanningHint) (loop.
 		ids = append(ids, in.ID)
 	}
 	return loop.RequestPlan{
-		Model:         p.Public.Model,
-		Request:       sdk.Request{Model: string(p.Public.Model), Messages: msgs, Tools: defs},
+		Model:         p.Profile.Model,
+		Request:       sdk.Request{Model: string(p.Profile.Model), Messages: msgs, Tools: defs},
 		InputIDs:      ids,
 		PlanningToken: run.PlanningToken(fmt.Sprintf("%d:%s", head.Next, head.Digest)),
 		Tools:         specs,
@@ -66,8 +66,8 @@ func (p *ContextPlanner) Plan(ctx context.Context, hint run.PlanningHint) (loop.
 // messages is REF-PLN-2.
 func (p *ContextPlanner) messages(entries []chatlog.Entry) ([]sdk.Message, error) {
 	var msgs []sdk.Message
-	if p.Public.SystemPrompt != "" {
-		msgs = append(msgs, sdk.SystemMessage(p.Public.SystemPrompt))
+	if p.Profile.SystemPrompt != "" {
+		msgs = append(msgs, sdk.SystemMessage(p.Profile.SystemPrompt))
 	}
 	inputText := p.InputText
 	if inputText == nil {

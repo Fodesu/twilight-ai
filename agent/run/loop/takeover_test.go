@@ -35,7 +35,10 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	firstDone := make(chan error, 1)
-	go func() { _, err := first.Run(context.Background(), oldRuntime, testSession, "run-1", nil); firstDone <- err }()
+	go func() {
+		_, err := first.Run(context.Background(), oldRuntime, testSession, "run-1", nil)
+		firstDone <- err
+	}()
 	<-started
 
 	// The old owner is presumed dead; a new owner opens with Takeover.

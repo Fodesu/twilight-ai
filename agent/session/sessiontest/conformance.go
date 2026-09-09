@@ -205,8 +205,8 @@ func testRead(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	create(t, f.Store, "s")
 	w := open(t, f.Store, "s", false)
-	appendGroup(t, w, "c1", ev("twilight/run/a", `{}`), ev("twilight/chat/a", `{}`))       // 0,1
-	appendGroup(t, w, "c2", ev("twilight/chat/b", `{}`))                                    // 2
+	appendGroup(t, w, "c1", ev("twilight/run/a", `{}`), ev("twilight/chat/a", `{}`))                             // 0,1
+	appendGroup(t, w, "c2", ev("twilight/chat/b", `{}`))                                                         // 2
 	appendGroup(t, w, "c3", ev("twilight/run/c", `{}`), ev("twilight/run/d", `{}`), ev("twilight/chat/e", `{}`)) // 3,4,5
 	all, err := f.Store.Read(ctx, session.ReadRequest{SessionID: "s"})
 	if err != nil || len(all.Events) != 6 || all.HasMore {

@@ -14,7 +14,7 @@
 | Session Module Framework | [agent-session-extension.md](agent-session-extension.md)（草案） |
 | Chatlog ontology/projection | [agent-session-chatlog.md](agent-session-chatlog.md)（草案） |
 | Turn→Run coordination/materialization | [agent-turn.md](agent-turn.md)（草案） |
-| 参考组装（Binding / Planner / Input） | [agent-reference-assembly.md](agent-reference-assembly.md)（草案） |
+| 参考组装（Agent/Profile / Planner / Input / Session 宿主） | [agent-reference-assembly.md](agent-reference-assembly.md)（草案） |
 
 ## 1. 背景
 
@@ -105,7 +105,7 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 | `agent/session/run`（module descriptor、machine 投影、Runtime、RecoverExpired） | 完成，2026-09-07 |
 | `agent/run/loop` 绑定 Session（`Run(ctx, runtime, sessionID, runID, sink)`、RunPosition、SessionCommit 观察） | 完成，2026-09-07 |
 | `agent/turn` 重写（Coordinator、CompanionV1、surface 投影） | 完成，2026-09-07；旧实现已删除 |
-| 参考组装 `agent/ref`（ExecutionBinding、ContextPlanner、Memory 组装、SessionDriver、崩溃恢复 example） | 完成，2026-09-07 |
+| 参考组装 `agent/ref`（Agent 配置面（原 ExecutionBinding，2026-09-09 改名 Profile）、ContextPlanner、Memory 组装、SessionDriver、Session 宿主、崩溃恢复 example） | 完成，2026-09-07 |
 | Runtime conformance（RUN-CMP-2，`agent/session/run/runtimetest`，以 `session.Store` 为参数） | 完成，2026-09-07；对 Memory Store 通过。kernel 与 extension 的 conformance 部分实现 |
 | 第 8 节规范修订（session、extension、run、turn、chatlog、artifact、参考组装按单写者与扁平事件改写） | 完成，2026-09-08 |
 | 第 8 节代码重构（kernel 收缩、Writer、Runtime 去 lease/grant、接管处置、conformance 重建） | 完成，2026-09-08；`agent/` 下 9 个测试包全部通过，kernel 与 RUN-CMP-2 的 conformance 均以 Store 为参数 |

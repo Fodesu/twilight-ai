@@ -52,7 +52,7 @@ func Example_recoverableTurn() {
 	if _, err := p1.Open(ctx, sid); err != nil {
 		panic(err)
 	}
-	binding1, err := p1.Bindings.Register("weather-agent", newBinding(tool))
+	profile1, err := p1.Agents.Register("weather-agent", newAgent(tool))
 	if err != nil {
 		panic(err)
 	}
@@ -64,7 +64,7 @@ func Example_recoverableTurn() {
 	startDone := make(chan error, 1)
 	go func() {
 		_, err := p1.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
-			ExecutionBinding: binding1, Companion: turn.CompanionV1Version})
+			Profile: profile1, Companion: turn.CompanionV1Version})
 		startDone <- err
 	}()
 	runID := waitForExecutingCall(ctx, p1, sid, ref1.TurnID)
@@ -75,9 +75,9 @@ func Example_recoverableTurn() {
 	if err != nil {
 		panic(err)
 	}
-	// The binding is re-registered from the same public configuration, so the
-	// ref the Session recorded still resolves.
-	if _, err := p2.Bindings.Register("weather-agent", newBinding(tool)); err != nil {
+	// The agent is re-registered from the same public configuration, so the
+	// profile ref the Session recorded still resolves.
+	if _, err := p2.Agents.Register("weather-agent", newAgent(tool)); err != nil {
 		panic(err)
 	}
 	recovered, err := p2.Open(ctx, sid)
@@ -163,16 +163,12 @@ func waitForExecutingCall(ctx context.Context, m *ref.Memory, sid session.Sessio
 	}
 }
 
-func newBinding(tool *lookupTool) ref.Binding {
-	def, err := run.FreezeToolDefinition(tool.Definition())
+func newAgent(tool *lookupTool) ref.Agent {
+	agent, err := ref.NewAgent("m-1", &scriptedModel{}, ref.WithTool(tool))
 	if err != nil {
 		panic(err)
 	}
-	return ref.Binding{
-		Public: ref.BindingPublic{Model: "m-1", Tools: []ref.PublicTool{{Ref: tool.Ref(), Definition: def, Policy: run.DirectExecution}}},
-		Models: modelCatalog{&scriptedModel{}},
-		Tools:  toolCatalog{tool},
-	}
+	return agent
 }
 
 type fakeClock struct {
@@ -184,19 +180,6 @@ func (c *fakeClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.now
-}
-
-type modelCatalog struct{ m loop.ModelInvoker }
-
-func (c modelCatalog) ResolveModel(run.ModelRef) (loop.ModelInvoker, error) { return c.m, nil }
-
-type toolCatalog struct{ tool *lookupTool }
-
-func (c toolCatalog) ResolveTool(ref run.ToolRef) (loop.ExecutableTool, error) {
-	if ref != c.tool.Ref() {
-		return nil, fmt.Errorf("unknown tool %q", ref)
-	}
-	return c.tool, nil
 }
 
 // scriptedModel asks for the tool until a tool result is in the conversation,

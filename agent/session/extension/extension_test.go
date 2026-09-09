@@ -285,8 +285,8 @@ func TestProjectionUnknownEvents(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	raw("other", "twilight/zzz/thing", false)  // out of scope: skipped
-	raw("future", "twilight/a/future", true)   // in scope, ignorable: skipped
+	raw("other", "twilight/zzz/thing", false) // out of scope: skipped
+	raw("future", "twilight/a/future", true)  // in scope, ignorable: skipped
 	_ = kw.Close(ctx)
 	w = f.open(t, false)
 	if got := notes(t, w); len(got) != 1 {

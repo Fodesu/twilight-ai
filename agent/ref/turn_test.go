@@ -2,7 +2,6 @@ package ref_test
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -50,16 +49,12 @@ func (m *scriptedRequests) Generate(_ context.Context, req sdk.Request) (sdk.Mod
 	return next, nil
 }
 
-type gateCatalog struct{ tool *gateTool }
-
-func (c gateCatalog) ResolveTool(ref run.ToolRef) (loop.ExecutableTool, error) { return c.tool, nil }
-
 func toolCallAnswer() sdk.ModelResult {
 	return sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 1},
 		ToolCalls: []sdk.ToolCall{{ToolCallID: "c1", ToolName: "lookup", Input: `{"q":"weather"}`}}}
 }
 
-func setup(t *testing.T, model loop.ModelInvoker, tool *gateTool) (*ref.Memory, turn.ExecutionBindingRef, session.SessionID) {
+func setup(t *testing.T, model loop.ModelInvoker, tool *gateTool) (*ref.Memory, turn.ProfileRef, session.SessionID) {
 	t.Helper()
 	m, err := ref.New(ref.Options{})
 	if err != nil {
@@ -69,18 +64,15 @@ func setup(t *testing.T, model loop.ModelInvoker, tool *gateTool) (*ref.Memory, 
 	if err := m.CreateSession(context.Background(), sid); err != nil {
 		t.Fatal(err)
 	}
-	def, err := run.FreezeToolDefinition(tool.Definition())
+	agent, err := ref.NewAgent("m-1", model, ref.WithTool(tool), ref.WithSystemPrompt("be brief"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	binding, err := m.Bindings.Register("b1", ref.Binding{
-		Public: ref.BindingPublic{Model: "m-1", SystemPrompt: "be brief", Tools: []ref.PublicTool{{Ref: tool.Ref(), Definition: def, Policy: run.DirectExecution}}},
-		Models: modelCatalog{model}, Tools: gateCatalog{tool},
-	})
+	profile, err := m.Agents.Register("b1", agent)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return m, binding, sid
+	return m, profile, sid
 }
 
 // An input delivered while a tool call is Executing queues on the Run, is
@@ -99,7 +91,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "t1"}
 	done := make(chan turn.TurnResponse, 1)
 	go func() {
-		resp, err := m.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, ExecutionBinding: binding, Companion: turn.CompanionV1Version})
+		resp, err := m.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Profile: binding, Companion: turn.CompanionV1Version})
 		if err != nil {
 			t.Error(err)
 		}
@@ -111,14 +103,17 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	driver := &ref.SessionDriver{Coordinator: m.Coordinator, Memory: m, Binding: binding, Companion: turn.CompanionV1Version, NewTurnID: func() turn.TurnID { return "t2" }}
+	driver := &ref.SessionDriver{Coordinator: m.Coordinator, Memory: m, Profile: binding, Companion: turn.CompanionV1Version, NewTurnID: func() turn.TurnID { return "t2" }}
 	// Deliver commits AcceptInput + input_delivered without waiting for the
-	// tool; Drive is skipped because the Run is already being driven here, so
-	// route through the Coordinator directly in a goroutine.
-	deliverDone := make(chan error, 1)
+	// tool; the Run is already driven here, so the response reports
+	// already_driving (or finished when the running driver settles first).
+	deliverDone := make(chan turn.TurnResponse, 1)
 	go func() {
-		_, err := driver.Send(ctx, sid, []run.AgentInput{second})
-		deliverDone <- err
+		resp, err := driver.Send(ctx, sid, []run.AgentInput{second})
+		if err != nil {
+			t.Error(err)
+		}
+		deliverDone <- resp
 	}()
 	// The Deliver commit lands while the tool runs; the Loop sees PendingInputs
 	// at its next Load. Release the tool and let both drivers finish.
@@ -127,8 +122,8 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 		return err == nil && len(surface.Turns["t1"].InputIDs) == 2
 	})
 	close(tool.release)
-	if err := <-deliverDone; err != nil && !errors.Is(err, loop.ErrRunAlreadyRunning) {
-		t.Fatalf("deliver: %v", err)
+	if resp := <-deliverDone; resp.Disposition != turn.ResumeAlreadyDriving && resp.Disposition != turn.ResumeFinished {
+		t.Fatalf("deliver disposition = %s", resp.Disposition)
 	}
 	resp := <-done
 	if resp.Status != turn.TurnCompleted {
@@ -171,7 +166,7 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = m.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, ExecutionBinding: binding, Companion: turn.CompanionV1Version})
+		_, _ = m.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Profile: binding, Companion: turn.CompanionV1Version})
 	}()
 	<-tool.started
 
@@ -198,7 +193,7 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	}
 
 	second, _ := m.SubmitInput(ctx, sid, "in-2", "again")
-	driver := &ref.SessionDriver{Coordinator: m.Coordinator, Memory: m, Binding: binding, Companion: turn.CompanionV1Version, NewTurnID: func() turn.TurnID { return "t2" }}
+	driver := &ref.SessionDriver{Coordinator: m.Coordinator, Memory: m, Profile: binding, Companion: turn.CompanionV1Version, NewTurnID: func() turn.TurnID { return "t2" }}
 	resp2, err := driver.Send(ctx, sid, []run.AgentInput{second})
 	if err != nil {
 		t.Fatal(err)

@@ -43,14 +43,14 @@ func (a *AttemptView) Ended() *run.RunEnd {
 }
 
 type TurnView struct {
-	TurnID            TurnID              `json:"turnId"`
-	Status            TurnStatus          `json:"status"`
-	InputIDs          []chatlog.InputID   `json:"inputIds,omitempty"`
-	ExecutionBinding  ExecutionBindingRef `json:"executionBinding"`
-	Companion         CompanionVersion    `json:"companion"`
-	Attempts          []AttemptView       `json:"attempts,omitempty"`
-	ActiveRun         run.RunID           `json:"activeRun,omitempty"`
-	ReplacementTurnID TurnID              `json:"replacementTurnId,omitempty"`
+	TurnID            TurnID            `json:"turnId"`
+	Status            TurnStatus        `json:"status"`
+	InputIDs          []chatlog.InputID `json:"inputIds,omitempty"`
+	Profile           ProfileRef        `json:"profile"`
+	Companion         CompanionVersion  `json:"companion"`
+	Attempts          []AttemptView     `json:"attempts,omitempty"`
+	ActiveRun         run.RunID         `json:"activeRun,omitempty"`
+	ReplacementTurnID TurnID            `json:"replacementTurnId,omitempty"`
 }
 
 // LastAttempt returns the most recent attempt, if any.
@@ -121,7 +121,7 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		}
 		s.Order = append(s.Order, p.TurnID)
 		s.Turns[p.TurnID] = TurnView{TurnID: p.TurnID, Status: TurnActive, InputIDs: append([]chatlog.InputID(nil), p.InputIDs...),
-			ExecutionBinding: p.ExecutionBinding, Companion: p.Companion}
+			Profile: p.Profile, Companion: p.Companion}
 	case CompletedPayload:
 		v, err := s.settling(p.TurnID)
 		if err != nil {

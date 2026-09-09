@@ -1,57 +1,66 @@
 # Twilight Agent 参考组装
 
-状态：设计草案。`agent/ref` 已实现 ExecutionBinding、ContextPlanner、Memory 组装与 SessionDriver。与 [Run](agent-run.md)、[Turn](agent-turn.md)、[Chatlog](agent-session-chatlog.md) 冲突时以各正式规范为准。
+状态：设计草案。`agent/ref` 已实现 Agent 配置面（Profile）、ContextPlanner、Memory 组装、SessionDriver 与 Session 宿主。与 [Run](agent-run.md)、[Turn](agent-turn.md)、[Chatlog](agent-session-chatlog.md) 冲突时以各正式规范为准。
 
 补充说明：ContextPlanner 把回合中途投递的输入排在其之前尚未结算的工具结果之后。原因是这类输入的 `input_delivered` 先于 `tool_result` 进入 stream，而 provider 要求工具结果紧随发出调用的 assistant 消息。fold 顺序不变，只影响请求组装。
 
-本文规定 Memory 参考 agent 的四处组装：ExecutionBinding 公开字段、Planner、用户正文在 Chatlog Input 与 Run AgentInput 上的同一份 payload、session 作用域的输入路由（SessionDriver）。
+本文规定 Memory 参考 agent 的五处组装：Agent 配置面（Profile 公开字段与 digest 边界）、Planner、用户正文在 Chatlog Input 与 Run AgentInput 上的同一份 payload、session 作用域的输入路由（SessionDriver）、宿主对象（Session）。
 
-## 1. ExecutionBinding
+## 1. Agent 与 Profile
 
-Session 保存 `ExecutionBindingRef{ID, Digest}`。Digest 覆盖公开配置：
+Agent 是一个可注册的执行配置：持久的公开配置（Profile）加上解析它的进程内能力。Session 只保存 `turn.ProfileRef{ID, Digest}`；密钥、client 与工具实现留在进程内，重启后以同一公开配置重新注册即可继续解析。
 
 ```go
+type Agent interface {
+    Profile() Profile
+    ResolveModel(run.ModelRef) (loop.ModelInvoker, error)
+    ResolveTool(run.ToolRef) (loop.ExecutableTool, error)
+}
+// 常见形态（一个模型 + 一组工具）由构造器组装：
+// NewAgent(model run.ModelRef, invoker loop.ModelInvoker, opts ...AgentOption) (Agent, error)
+// 选项：WithTool、WithSystemPrompt、WithStreaming、WithPolicy。
+// 自定义 catalog 直接实现 Agent 接口。可选接口 PolicyProvider 提供 loop.ExecutionPolicy。
+
 type PublicTool struct {
     Ref run.ToolRef
     Definition run.ToolDefinition
     Policy run.ResponsePolicy
 }
-type BindingPublic struct {
+type Profile struct {
     SchemaVersion uint16 // 1
     Model run.ModelRef
     Tools []PublicTool   // ToolSpec 与 Request.Tools 都由此派生
     Streaming bool
-    PlannerID string // "twilight/turn/planner/context-v1"
-    SystemPrompt string
+    SystemPrompt string  // 在 digest 之外
 }
 ```
 
-**REF-BND-1** `Digest = Digest("twilight/turn/binding", canonical(BindingPublic))`。
+**REF-BND-1** `Digest = Digest("twilight/ref/profile", canonical(Profile 去除 SystemPrompt))`。digest 只覆盖影响重放正确性的字段（SchemaVersion、Model、Tools、Streaming）；SystemPrompt 是调优文本，修改它不得使可恢复的 Turn 无法 Resolve。
 
-**REF-BND-2** `Resolve(ref)` 在 Digest 匹配时返回 RunDriver：公开配置、ModelCatalog、ToolCatalog、Planner。同一 Run 内同一 ModelRef 的解析语义保持等价（RUN-LOP-7）。
+**REF-BND-2** `Agents.Register(id, agent)` 在注册时构建 driver 并返回 `ProfileRef`；`Resolve(ref)` 在 Digest 与注册 agent 的当前 Profile 匹配时返回该注册的 driver。同一注册的所有 drive 共享一个 Loop 实例，因此同一 Run 的第二个本地驱动者确定地得到 `turn.ErrAlreadyDriving`（TRN-DRV-1），而非与首个驱动者并发驱动。同一 Run 内同一 ModelRef 的解析语义保持等价（RUN-LOP-7）。
 
-**REF-BND-3** 参考 Planner 的 `RequestPlan.Model` 等于 `BindingPublic.Model`。
+**REF-BND-3** 参考 Planner 的 `RequestPlan.Model` 等于 `Profile.Model`。
 
 ## 2. Planner
 
-Planner ID：`twilight/turn/planner/context-v1`。
+参考 Planner 为 context-v1；装配只有这一个 Planner，Profile 不记录 Planner 标识（第二个 Planner 出现时随 Planner 注册表重新引入）。
 
 ```go
-func Plan(ctx context.Context, hint run.PlanningHint, fold []chatlog.Entry, pub BindingPublic) (loop.RequestPlan, error)
+func Plan(ctx context.Context, hint run.PlanningHint, fold []chatlog.Entry, profile Profile) (loop.RequestPlan, error)
 ```
 
 **REF-PLN-1** `fold` 为 `ContextFold` 对该 Session chatlog 事件的输出（含已应用的 checkpoint）。Planner 在每次 Plan 时经该 Session Writer 的 `Projections()` 读取 `twilight/chatlog/context` 投影（EXT-PRJ-4）。
 
 **REF-PLN-2** `sdk.Messages` 顺序：
 
-1. `pub.SystemPrompt` 非空时一条 system message；
+1. `profile.SystemPrompt` 非空时一条 system message；
 2. 按 `fold`：`input` → user；`assistant` → assistant（ToolCallPart 的 `ProviderCallID` 写入 `sdk.ToolCallPart.ToolCallID`）；`tool_result` → tool（以同 Turn assistant 中同 CallID 的 `ProviderCallID` 配对）；`summary` → assistant text。
 
 上一步的 assistant 与 tool_result 已随对应 Run 事实同 commit 提交，Planner 消费时的 fold 总是包含它们；`PlanningHint` 不携带模型结果或工具结果。
 
 **REF-PLN-3** `hint.Inputs` 与本 Turn 已 delivered、且属于本次 Prepare 的 Input 按 ID 对齐，包括回合中途经 Deliver 进入的输入。这些 Input 的 `input_delivered` 与 `input_accepted` 同 commit，Plan 时一定已在 fold 中，只使用 fold。
 
-**REF-PLN-4** `RequestPlan.Model = pub.Model`；`Request.Tools` 与 `Tools`（ToolSpec：Ref、DefinitionDigest、Policy）都由 `pub.Tools` 派生，顺序一致；`InputIDs` 为本次消费的 PendingInput IDs。`PlanningToken` 随 fold 的 Entry digest 序列或 Binding Digest 变化。
+**REF-PLN-4** `RequestPlan.Model = profile.Model`；`Request.Tools` 与 `Tools`（ToolSpec：Ref、DefinitionDigest、Policy）都由 `profile.Tools` 派生，顺序一致；`InputIDs` 为本次消费的 PendingInput IDs。`PlanningToken` 随 fold 的 Entry digest 序列或 Profile Digest 变化。
 
 **REF-PLN-5** 无附件时 TextPart 直接写入 sdk.Message。ReferencePart 经 ContextMaterializer 转换。
 
@@ -68,27 +77,27 @@ run.AgentInput.Payload
 
 **REF-INP-1** v1 形状为 `{"text":"<用户字符串>"}`。
 
-**REF-INP-2** `StartRequest.Inputs[i].ID` 等于已 submitted 的 InputID，`Payload` 等于该 Input 的 Content。`input_delivered` 把 InputID 挂到 TurnID；`twilight/run/input_accepted` 在同一 commit 把同一 payload 交给 Run。
+**REF-INP-2** `StartRequest.Inputs[i].ID` 等于已 submitted 的 InputID，`Payload` 等于该 Input 的 Content。`input_delivered` 把 InputID 挂到 TurnID；`twilight/run/input_accepted` 在同一 commit 把同一 payload 交给 Run。`Memory.SubmitText` 以 `NewInputID()`（随机、跨重启无碰撞）提交；需要外部幂等键的调用方使用 `SubmitInput`。
 
 **REF-INP-3** Planner 把 `{"text":...}` 投影为 sdk user text。
 
 ## 4. SessionDriver
 
-Coordinator 是 Turn 作用域的：Turn 结束即返回。参考组装提供一个 session 作用域的 `SessionDriver`，把用户输入按当前状态路由到 Deliver 或 Start，并在 Turn 结算后自动开启下一个 Turn。它只组合 Coordinator 与两个投影，没有自己的持久状态，不进入 turn 或 run 协议。
+Coordinator 是 Turn 作用域的：Turn 结束即返回。参考组装提供一个 session 作用域的 `SessionDriver`，把用户输入按当前状态路由到 Deliver 或 Start，并在 Turn 结算后开启下一个 Turn。它只组合 Coordinator 与两个投影，没有自己的持久状态，不进入 turn 或 run 协议。
 
 ```go
 type SessionDriver struct {
     Coordinator turn.Service
-    Writers extension.Writers        // 读投影经 Writer.Projections()
-    Binding turn.ExecutionBindingRef  // 新 Turn 使用的执行绑定
+    Writers extension.Writers   // 读投影经 Writer.Projections()
+    Profile turn.ProfileRef      // 新 Turn 使用的 Agent Profile
     Companion turn.CompanionVersion
-    NewTurnID func() turn.TurnID
+    NewTurnID func() turn.TurnID // nil 时使用随机默认
 }
 func (d *SessionDriver) Send(ctx, sid session.SessionID, inputs []run.AgentInput) (turn.TurnResponse, error)
 func (d *SessionDriver) OnTurnSettled(ctx, sid session.SessionID) (turn.TurnResponse, bool, error)
 ```
 
-**REF-DRV-1** `Send` 先读 `twilight/turn/surface`：存在 `active` 的 Turn 时调用 `Deliver`，输入进入该 Run 的下一步；否则以 `NewTurnID()`、`Binding`、`Companion` 调用 `Start`。这对应 inbox 模型中"steer 在运行中注入下一步、在空闲时开启新 turn"的行为。输入在两种情形下都已由 Application 先写入 `input_submitted`。
+**REF-DRV-1** `Send` 先读 `twilight/turn/surface`：存在 `active` 的 Turn 时调用 `Deliver`，输入进入该 Run 的下一步；否则以 `NewTurnID()`、`Profile`、`Companion` 调用 `Start`。这对应 inbox 模型中"steer 在运行中注入下一步、在空闲时开启新 turn"的行为。输入在两种情形下都已由 Application 先写入 `input_submitted`。
 
 **REF-DRV-2** `OnTurnSettled` 在 Turn 进入 `completed`、`failed`、`stopped` 或 `superseded` 后调用：读 `twilight/chatlog/surface`，若存在 `submitted` 且未 delivered 的输入，按 `input_submitted` 的 stream 顺序取全部，`Start` 新 Turn 并返回；否则返回 `false`。这对应 inbox 模型的 `next-turn` 列表：已提交而未投递的输入就是该列表，不需要另一份持久结构。
 
@@ -96,7 +105,27 @@ func (d *SessionDriver) OnTurnSettled(ctx, sid session.SessionID) (turn.TurnResp
 
 **REF-DRV-4** 崩溃恢复：`SessionDriver` 从两个投影重建。对每个 session，先经 `Writers` 取得 Writer（新 Epoch），调用 `Runtime.RecoverInterrupted` 处置全部 Executing 目标（RUN-CMT-7），再按 TRN-REC-1 处理 `active` 与 `attempt_failed` 的 Turn；没有未结算 Turn 时调用 `OnTurnSettled` 消费积压的输入。
 
-## 5. Memory 组成
+## 5. Session 宿主
+
+宿主面对的单一对象：`ref.Session` 把 EnsureSession、所有权打开、接管处置、输入提交、路由、结算后排空积压与回复读取收拢为一个 API。turn 层只报协议结果（Status/Disposition/Attempt）；回复文本是对话层概念，由宿主从 chatlog 读出。
+
+```go
+func (m *Memory) OpenSession(ctx, sid, SessionOptions{Profile, Companion, ResumeActive}) (*Session, error)
+type Result struct { TurnID; Status; Disposition; Reply string }
+func (s *Session) Send(ctx, text string) ([]Result, error)
+func (s *Session) Resume(ctx) ([]Result, bool, error)
+func (s *Session) Retry(ctx) ([]Result, bool, error)
+func (s *Session) Status(ctx) (SessionStatus, error) // Active 与待 Retry/Settle 的 Turn
+func (s *Session) Close(ctx) error                   // 只释放本 Session 的 Writer
+```
+
+**REF-SES-1** `OpenSession` 依次：确保 stream 存在（先 `Header` 探测再 `Create`——Create 的幂等要求字段全同，重启后 `CreatedAtUnixMilli` 必然不同）、按装配的 Ownership 打开 Writer、`RecoverInterrupted`；接管处置数暴露为 `Session.Recovered`。`ResumeActive` 为真时同步 Resume 仍在 `active` 的 Turn；交互式宿主保持 false、自行在后台调用 `Resume`。
+
+**REF-SES-2** `Send` 提交文本（`SubmitText`）、路由（REF-DRV-1）并阻塞到结算：首个 `Result` 是输入落入的 Turn，其后是本次调用在结算后从积压开启并结算的 Turn（REF-DRV-2 的循环，内化在宿主里）。`Disposition` 为 `already_driving` 时该输入由运行中的驱动者推进，本次调用不再排空。`Reply` 为该 Turn 最后一条 assistant 的 TextPart 拼接，仅在 `finished` 时读取。
+
+**REF-SES-3** 并发 `Send` 安全：写入由该 Session 的 Writer 串行化。路由竞态（两个 Send 同时判定 Start，或投递瞬间结算）表现为 `turn.ErrConflict`，宿主重试路由；重试前发现输入已被其他驱动者投递时，返回 `already_driving` 的 `Result`（该 Turn 在取走它的调用里结算与报告）。
+
+## 6. Memory 组成
 
 ```text
 sessionStore = session.NewMemoryStore()                       // Create、Header、Open、Read（SES 第 4 至 6 节）
@@ -105,28 +134,29 @@ bindingStore = artifact.NewMemoryBindingStore()
 ledger       = artifact.NewMemoryLedger(bindingStore)          // 自持久化；claim 先于 Append 建立
 writers      = extension.NewWriters(sessionStore, registry, ledger, openOptions)   // 每 Session 一个 Writer（EXT-WRT-6）
 runtime      = runmod.NewRuntime(writers, runmod.NewMemoryFrozenValues(), turn.CompanionV1(registry))   // ProjectionCache 可选，参考装配不注入
-drivers      = Resolve(ExecutionBindingRef) -> loop.New(models, tools, contextPlanner, policy, pub.Streaming)
-coordinator  = turn.Coordinator{Writers: writers, Runtime: runtime, Bindings: drivers}
-session      = SessionDriver{Coordinator: coordinator, Writers: writers, Binding: bindingRef, Companion: turn.CompanionV1Version, NewTurnID: ...}
+agents       = Agents.Register(id, agent) -> driver = loop.New(agent, agent, contextPlanner, policy, profile.Streaming)   // 每注册一个 Loop
+coordinator  = turn.Coordinator{Writers: writers, Runtime: runtime, Profiles: agents}
+driver       = SessionDriver{Coordinator: coordinator, Writers: writers, Profile: profileRef, Companion: turn.CompanionV1Version}
+host         = Memory.OpenSession(sid, {Profile: profileRef})   // ref.Session
 
 input_submitted
-session.Send                                   // 无 active Turn → coordinator.Start
+driver.Send                                    // 无 active Turn → coordinator.Start
   组 1: twilight/turn/started + twilight/chatlog/input_delivered* + twilight/run/created + twilight/run/input_accepted*
   Loop.Run
     组: twilight/run/model_step_prepared            （请求本体 → FrozenValueStore）
     组: twilight/run/model_step_started
     组: twilight/run/model_step_completed + twilight/run/tool_step_opened + twilight/chatlog/assistant
     组: twilight/run/tool_call_started
-      input_submitted; session.Send               // 有 active Turn → coordinator.Deliver
+      input_submitted; driver.Send               // 有 active Turn → coordinator.Deliver
       组: twilight/run/input_accepted + twilight/chatlog/input_delivered
     组: twilight/run/tool_call_completed + twilight/chatlog/tool_result
     组: twilight/run/model_step_prepared            （PlanningHint.Inputs 含中途输入）
     ...
     组: twilight/run/model_step_completed + twilight/run/ended + twilight/chatlog/assistant + twilight/turn/completed
-session.OnTurnSettled                          // 有积压的 submitted 输入 → 开下一个 Turn
+driver.OnTurnSettled                           // 有积压的 submitted 输入 → 开下一个 Turn（Session.Send 内化了这一步）
+```
 
 进程重启：writers.Writer(sid) 以新 Epoch 打开 → runtime.RecoverInterrupted(sid) → 各 Turn Resume（REF-DRV-4）
-```
 
 每一行"组"是一次 `Writer.Commit`，落为 stream 中 CommitID 相同、Index 连续的若干行（SES-APP-1）。
 
