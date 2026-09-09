@@ -163,15 +163,23 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 	if summary.Digest, err = DigestSummary(&summary); err != nil {
 		t.Fatal(err)
 	}
+	checkpoint := CheckpointCreatedPayload{CheckpointID: "ck1", CoveredThrough: 3, BaseContextDigest: "sha256:base",
+		SummaryID: summary.ID, SummaryDigest: summary.Digest,
+		Retained: []EntryDigestPair{{Kind: EntryAssistant, ID: "a1", Digest: assistant.Digest}}}
+	if checkpoint.Digest, err = DigestCheckpoint(&checkpoint); err != nil {
+		t.Fatal(err)
+	}
 	samples := map[session.EventType]any{
-		TypeInputSubmitted:       InputSubmittedPayload{InputID: "in-1", Content: jsonstable.MustParse(`{"text":"hi"}`), SubmittedAtUnixMilli: 1},
-		TypeInputDelivered:       InputDeliveredPayload{InputID: "in-1", TurnID: "t1"},
-		TypeInputWithdrawn:       InputWithdrawnPayload{InputID: "in-1", Reason: "user"},
-		TypeInputRejected:        InputRejectedPayload{InputID: "in-1"},
-		TypeAssistant:            AssistantPayload{Assistant: assistant},
-		TypeToolResult:           ToolResultPayload{ToolResult: toolResult},
-		TypeToolResultSuperseded: ToolResultSupersededPayload{ToolResultID: "tr1", ReplacementToolResultID: "tr2"},
-		TypeSummary:              SummaryPayload{Summary: summary},
+		TypeInputSubmitted:        InputSubmittedPayload{InputID: "in-1", Content: jsonstable.MustParse(`{"text":"hi"}`), SubmittedAtUnixMilli: 1},
+		TypeInputDelivered:        InputDeliveredPayload{InputID: "in-1", TurnID: "t1"},
+		TypeInputWithdrawn:        InputWithdrawnPayload{InputID: "in-1", Reason: "user"},
+		TypeInputRejected:         InputRejectedPayload{InputID: "in-1"},
+		TypeAssistant:             AssistantPayload{Assistant: assistant},
+		TypeToolResult:            ToolResultPayload{ToolResult: toolResult},
+		TypeToolResultSuperseded:  ToolResultSupersededPayload{ToolResultID: "tr1", ReplacementToolResultID: "tr2"},
+		TypeSummary:               SummaryPayload{Summary: summary},
+		TypeCheckpointCreated:     checkpoint,
+		TypeCheckpointInvalidated: CheckpointInvalidatedPayload{CheckpointID: "ck1", Reason: "host"},
 	}
 	for _, def := range Module.Events {
 		value, ok := samples[def.Type]
@@ -192,4 +200,187 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 			t.Fatalf("%s: round trip changed bytes: %s vs %s (%v)", def.Type, first, again, err)
 		}
 	}
+}
+
+// --- checkpoint fold (CHT-EVT-3, CHT-CTX-2, CHT-SUR-1) --------------------------
+
+type step struct {
+	typ   session.EventType
+	value any
+}
+
+// foldSteps encodes, decodes and folds steps through both projections,
+// returning the states and the first fold error.
+func foldSteps(t *testing.T, steps []step) (Context, Surface, error) {
+	t.Helper()
+	r := registry(t)
+	surfaceState, _ := SurfaceProjection.Initial()
+	contextState, _ := ContextProjection.Initial()
+	for i, st := range steps {
+		wire, _, err := r.Encode(st.typ, st.value)
+		if err != nil {
+			t.Fatalf("step %d encode: %v", i, err)
+		}
+		d, err := r.Decode(session.SessionEvent{Type: st.typ, Payload: wire, Seq: session.Seq(i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		nextSurface, err := SurfaceProjection.Apply(surfaceState, d)
+		if err != nil {
+			return contextState.(Context), surfaceState.(Surface), err
+		}
+		nextContext, err := ContextProjection.Apply(contextState, d)
+		if err != nil {
+			return contextState.(Context), nextSurface.(Surface), err
+		}
+		surfaceState, contextState = nextSurface, nextContext
+	}
+	return contextState.(Context), surfaceState.(Surface), nil
+}
+
+func mustSummary(t *testing.T, id SummaryID, text string) Summary {
+	t.Helper()
+	s := Summary{ID: id, Parts: Parts{TextPart{Text: text}}}
+	var err error
+	if s.Digest, err = DigestSummary(&s); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func mustAssistant(t *testing.T, id AssistantID, parts Parts) Assistant {
+	t.Helper()
+	a := Assistant{ID: id, TurnID: "t1", Parts: parts}
+	var err error
+	if a.Digest, err = DigestAssistant(&a); err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+func mustCheckpoint(t *testing.T, id CheckpointID, covered session.Seq, base []EntryDigestPair, sum Summary, retained []EntryDigestPair) CheckpointCreatedPayload {
+	t.Helper()
+	baseDigest, err := DigestBaseContext(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := CheckpointCreatedPayload{CheckpointID: id, CoveredThrough: covered, BaseContextDigest: baseDigest,
+		SummaryID: sum.ID, SummaryDigest: sum.Digest, Retained: retained}
+	if p.Digest, err = DigestCheckpoint(&p); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestCheckpointFold(t *testing.T) {
+	content := jsonstable.MustParse(`{"text":"hi"}`)
+	inDigest, err := DigestInput("in-1", content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a1 := mustAssistant(t, "a1", Parts{TextPart{Text: "one"}})
+	sum := mustSummary(t, "sum1", "so far")
+	base := []EntryDigestPair{{Kind: EntryInput, ID: "in-1", Digest: inDigest}, {Kind: EntryAssistant, ID: "a1", Digest: a1.Digest}}
+	// Steps 0..4: delivered input (entry seq 1), assistant (seq 2), a queued
+	// input that must survive compaction, the summary (seq 4).
+	prefix := []step{
+		{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-1", Content: content, SubmittedAtUnixMilli: 1}},
+		{TypeInputDelivered, InputDeliveredPayload{InputID: "in-1", TurnID: "t1"}},
+		{TypeAssistant, AssistantPayload{Assistant: a1}},
+		{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-q", Content: content, SubmittedAtUnixMilli: 2}},
+		{TypeSummary, SummaryPayload{Summary: sum}},
+	}
+	valid := mustCheckpoint(t, "ck1", 3, base, sum, base[1:])
+
+	t.Run("valid checkpoint replaces the base and keeps the queue", func(t *testing.T) {
+		a2 := mustAssistant(t, "a2", Parts{TextPart{Text: "after"}})
+		ctxState, surf, err := foldSteps(t, append(prefix, step{TypeCheckpointCreated, valid}, step{TypeAssistant, AssistantPayload{Assistant: a2}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries := ctxState.Entries
+		if len(entries) != 3 || entries[0].Kind != EntrySummary || entries[1].ID != "a1" || entries[2].ID != "a2" {
+			t.Fatalf("entries = %+v", entries)
+		}
+		if _, pending := ctxState.Pending["in-q"]; !pending {
+			t.Fatal("queued input compacted away")
+		}
+		if got := surf.SubmittedInputs(); len(got) != 1 || got[0].ID != "in-q" {
+			t.Fatalf("surface queue = %+v", got)
+		}
+		if v := surf.Checkpoints["ck1"]; v.Status != CheckpointActive {
+			t.Fatalf("surface checkpoint = %+v", v)
+		}
+		if len(surf.EntryOrder) != 4 { // full history stays visible
+			t.Fatalf("entry order = %+v", surf.EntryOrder)
+		}
+	})
+
+	t.Run("invalidating the latest checkpoint restores base plus tail", func(t *testing.T) {
+		a2 := mustAssistant(t, "a2", Parts{TextPart{Text: "after"}})
+		ctxState, surf, err := foldSteps(t, append(prefix,
+			step{TypeCheckpointCreated, valid},
+			step{TypeAssistant, AssistantPayload{Assistant: a2}},
+			step{TypeCheckpointInvalidated, CheckpointInvalidatedPayload{CheckpointID: "ck1", Reason: "host"}}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries := ctxState.Entries
+		if len(entries) != 3 || entries[0].ID != "in-1" || entries[1].ID != "a1" || entries[2].ID != "a2" {
+			t.Fatalf("restored entries = %+v", entries)
+		}
+		if len(ctxState.Checkpoints) != 0 {
+			t.Fatalf("checkpoint stack = %+v", ctxState.Checkpoints)
+		}
+		if v := surf.Checkpoints["ck1"]; v.Status != CheckpointInvalidated || v.Reason != "host" {
+			t.Fatalf("surface checkpoint = %+v", v)
+		}
+	})
+
+	rejects := []struct {
+		name  string
+		steps []step
+	}{
+		{"covered through at or past the checkpoint row",
+			append(prefix, step{TypeCheckpointCreated, mustCheckpoint(t, "ck2", 5, base, sum, nil)})},
+		{"base context digest mismatch",
+			append(prefix, step{TypeCheckpointCreated, mustCheckpoint(t, "ck3", 3, base[:1], sum, nil)})},
+		{"retained outside the base",
+			append(prefix, step{TypeCheckpointCreated, mustCheckpoint(t, "ck4", 3, base,
+				sum, []EntryDigestPair{{Kind: EntryAssistant, ID: "a1", Digest: "sha256:wrong"}})})},
+		{"gap holds more than the summary",
+			append(append([]step{}, prefix...), step{TypeAssistant, AssistantPayload{Assistant: mustAssistant(t, "a9", Parts{TextPart{Text: "x"}})}},
+				step{TypeCheckpointCreated, mustCheckpoint(t, "ck5", 3,
+					append(base, EntryDigestPair{Kind: EntryAssistant, ID: "a9"}), sum, nil)})},
+		{"invalidating an unknown checkpoint",
+			append(prefix, step{TypeCheckpointInvalidated, CheckpointInvalidatedPayload{CheckpointID: "nope"}})},
+	}
+	for _, tc := range rejects {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := foldSteps(t, tc.steps); err == nil {
+				t.Fatal("fold accepted")
+			}
+		})
+	}
+
+	t.Run("superseding a compacted result is rejected", func(t *testing.T) {
+		call := Parts{ToolCallPart{CallID: "c1", Name: "lookup", Input: jsonstable.MustParse(`{}`)}}
+		aCall := mustAssistant(t, "ac", call)
+		r1 := ToolResult{ID: "r1", TurnID: "t1", CallID: "c1", Status: ToolSuccess, Parts: Parts{TextPart{Text: "ok"}}}
+		if r1.Digest, err = DigestToolResult(&r1); err != nil {
+			t.Fatal(err)
+		}
+		toolBase := []EntryDigestPair{{Kind: EntryAssistant, ID: "ac", Digest: aCall.Digest}, {Kind: EntryToolResult, ID: "r1", Digest: r1.Digest}}
+		sum2 := mustSummary(t, "sum2", "tools done")
+		steps := []step{
+			{TypeAssistant, AssistantPayload{Assistant: aCall}},
+			{TypeToolResult, ToolResultPayload{ToolResult: r1}},
+			{TypeSummary, SummaryPayload{Summary: sum2}},
+			{TypeCheckpointCreated, mustCheckpoint(t, "ck6", 1, toolBase, sum2, nil)},
+			{TypeToolResultSuperseded, ToolResultSupersededPayload{ToolResultID: "r1", ReplacementToolResultID: "r2"}},
+		}
+		if _, _, err := foldSteps(t, steps); err == nil {
+			t.Fatal("supersede of a compacted result accepted")
+		}
+	})
 }

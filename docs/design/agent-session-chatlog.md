@@ -1,6 +1,6 @@
 # Twilight Agent Session Chatlog Module
 
-状态：设计草案。`agent/session/chatlog` 已实现事件定义、parts codec、PartsExtractor、Surface 与 Context 投影；checkpoint 事件未实现。payload 字段、输入 limits 与 golden fixtures 尚未冻结。
+状态：设计草案。`agent/session/chatlog` 已实现全部事件定义（含 checkpoint）、parts codec、PartsExtractor、Surface 与 Context 投影。payload 字段、输入 limits 与 golden fixtures 尚未冻结。
 
 本文定义 `agent/session/chatlog` first-party Module，依赖 [Session](agent-session.md) 与 [Session Module Framework](agent-session-extension.md)。回合生命周期由 [Turn](agent-turn.md) 拥有。文中的“必须”“不得”“应该”是草案冻结时应保留的协议约束；canonical JSON 与 digest 遵循 `agent/jsonstable`、`agent/es`。
 
@@ -232,7 +232,11 @@ twilight/chatlog/checkpoint_invalidated
 
 **CHT-EVT-2** `input_submitted` 创建 Input。Delivered、Withdrawn、Rejected 各终结一次。`input_delivered` 要求 Input 仍为 submitted，并写入非空 TurnID；它与把该输入交给 Run 的事实同组：Start group 中与 `twilight/turn/started` 一起，回合中途与 `twilight/run/input_accepted` 一起（TRN-STR-2、TRN-DLV-2）。AssistantID、ToolResultID、SummaryID 在 stream 内单次创建。
 
-**CHT-EVT-3**（checkpoint 协议）移至附录 A：未实现，随实现需求冻结。
+**CHT-EVT-3**（checkpoint）checkpoint 压缩 active Context：合法 checkpoint 使其变为 `[Summary] + Retained`，其后的事件照常折叠。digest 规则：`Digest` 的 domain 为 `twilight/chatlog/checkpoint_created`，覆盖除 `Digest` 外的全部字段；`BaseContextDigest` 以同一 domain 对 `{base: [(Kind, ID, Digest)]}` 计算，覆盖截至 `CoveredThrough` 的有序 active Context 序列；`Retained` 为空与省略是同一 wire 值，两个 digest 预映像都把空列表折叠为 nil。summary 应与 checkpoint 同组提交，gap 不变量因此原子成立。
+
+fold 在提交前逐条校验（EXT-WRT-1 的投影预折叠），违反者整组拒绝：`CoveredThrough` 早于 checkpoint 行的 Seq；`CoveredThrough` 与 checkpoint 之间的 Context 条目恰为该 `SummaryID` 的 summary 且 digest 相符；`BaseContextDigest` 与 base 序列重算值相符；`Retained` 是 base 序列的有序子集（逐项 (Kind, ID, Digest) 全等）。retained 集的 provider 合法性（tool_call 与 result 的配对封闭）是 Application 的职责（REF-CKP-2），fold 不校验。
+
+`checkpoint_invalidated` 只能指向最近一个仍 active 的 checkpoint：active Context 回到 base 加 checkpoint 之后折叠的尾部，summary 条目随之离开 active Context（Surface 与历史保留）；连续 invalidate 逐层回退。指向被压缩条目的 `tool_result_superseded` 是协议违规而非 checkpoint 失效条件：被压缩条目的 Turn 已结束，CHT-ENT-2 已排除对它的 supersede。相对早期草案的修订（首个实现按预留的修订权收窄）：失效途径只有显式 invalidate 最近的 active checkpoint，不存在"summary/Retained/base source 被 supersede 引发的隐式失效"。
 
 ## 6. Surface projection
 
@@ -251,7 +255,7 @@ type Surface struct {
 }
 ```
 
-**CHT-SUR-1** SurfaceFold 消费 chatlog decoded events，其他事件按 EXT-PRJ-2 处理。`EntryOrder` 为 stream 顺序下的 delivered input、assistant、tool_result、summary，并带 Seq。回合列表由 turn 投影提供，按 `TurnID` 连接。
+**CHT-SUR-1** SurfaceFold 消费 chatlog decoded events，其他事件按 EXT-PRJ-2 处理。`EntryOrder` 为 stream 顺序下的 delivered input、assistant、tool_result、summary，并带 Seq。回合列表由 turn 投影提供，按 `TurnID` 连接。checkpoint 记录于 `Surface.Checkpoints`（active / invalidated）；compaction 不改动 `EntryOrder`（全量历史保持可见），也不触及输入队列——排队中的输入不在 Context 条目里，不可能被压缩。
 
 ## 7. Context projection
 
@@ -286,11 +290,5 @@ type ContextMaterializer interface {
 - **CHT-LIF-1、CHT-EVT-1、CHT-EVT-2**：所列 EventType、Input 终结一次、delivered 带 TurnID、ID 单次创建；
 - **CHT-ENT-1 至 CHT-ENT-4**：parts、CallID pairing、replacement、用户侧为 Input；
 - **CHT-COD-1 至 CHT-COD-3**：codec；Digest domain 与 EventType 相同；
-- **CHT-SUR-1、CHT-CTX-1、CHT-CTX-2**：EntryOrder 与 checkpoint；
+- **CHT-SUR-1、CHT-CTX-1、CHT-CTX-2**：EntryOrder；checkpoint 的折叠、显式失效回退与非法 checkpoint 的整组拒绝（含排队输入不受压缩影响）；
 - **CHT-MAT-1**：materializer 为 IO 边界。
-
-## 附录 A：checkpoint 协议（未实现，随实现需求冻结）
-
-**CHT-EVT-3** checkpoint Digest 的 domain 为 `twilight/chatlog/checkpoint_created`。`BaseContextDigest` 覆盖截至 `CoveredThrough` 的有序 active Context 序列 `(Kind, ID, Digest)`。`CoveredThrough` 早于该 checkpoint。`SummaryID` 落在 `CoveredThrough` 与 checkpoint 之间，且已由 `summary` 创建。该间隙内仅有这一条 summary。`Retained` 为 base 序列的有序子集。合法 checkpoint 下 Context 为 `[Summary] + Retained`，再 fold checkpoint 之后的 tail。checkpoint 在显式 invalidate，或 summary / Retained / base source 被 supersede 之后失效；projection 回退到更早合法 checkpoint，或从全量 events 重折。
-
-本条与 fork/import（agent-session.md 附录 A）同等待遇：wire 与不变量在第一个实现与消费者出现之前不冻结，实现时允许修订。CHT-EVT-1 保留 `checkpoint_created` / `checkpoint_invalidated` 两个 EventType 名与第 2 节的生命周期行；CHT-CTX-2 中"合法 checkpoint 按 CHT-EVT-3 应用"在本附录实现前为空操作。

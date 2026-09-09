@@ -37,15 +37,16 @@ func main() {
 		compat   = flag.String("compat", "", "provider compatibility profile: deepseek")
 		system   = flag.String("system", "", "system prompt")
 		mock     = flag.Bool("mock", false, "offline mode: scripted model plus a built-in `now` tool, no API key")
+		compactN = flag.Int("compact-after", 0, "auto-compact the context after this many entries (0 disables; /compact always works)")
 	)
 	flag.Parse()
-	if err := run_(*root, session.SessionID(*sid), *provider, *baseURL, *apiKey, *modelID, *compat, *system, *mock); err != nil {
+	if err := run_(*root, session.SessionID(*sid), *provider, *baseURL, *apiKey, *modelID, *compat, *system, *mock, *compactN); err != nil {
 		fmt.Fprintln(os.Stderr, "twilight-agent:", err)
 		os.Exit(1)
 	}
 }
 
-func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID, compat, system string, mock bool) error {
+func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID, compat, system string, mock bool, compactAfter int) error {
 	ctx := context.Background()
 	agent, err := buildAgent(mock, provider, baseURL, apiKey, modelID, compat, system)
 	if err != nil {
@@ -70,7 +71,8 @@ func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID
 	if err != nil {
 		return err
 	}
-	s, err := m.OpenSession(ctx, sid, ref.SessionOptions{Profile: profile})
+	s, err := m.OpenSession(ctx, sid, ref.SessionOptions{Profile: profile, CompactAfterEntries: compactAfter,
+		CompactWarn: func(err error) { fmt.Fprintln(os.Stderr, "compact:", err) }})
 	if err != nil {
 		return err
 	}
@@ -121,8 +123,22 @@ func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID
 				}
 				report(results, err)
 			}()
+		case line == "/compact":
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				id, ok, err := s.Compact(driveCtx)
+				switch {
+				case err != nil:
+					fmt.Fprintln(os.Stderr, "compact:", err)
+				case !ok:
+					fmt.Println("nothing to compact")
+				default:
+					fmt.Printf("compacted: checkpoint %s\n", id)
+				}
+			}()
 		case strings.HasPrefix(line, "/"):
-			fmt.Println("commands: /quit /log /retry")
+			fmt.Println("commands: /quit /log /retry /compact")
 		default:
 			wg.Add(1)
 			go func(text string) {
@@ -227,10 +243,15 @@ func (p providerModel) Generate(ctx context.Context, req sdk.Request) (sdk.Model
 
 // mockModel answers once a tool result is in the conversation and reports how
 // many messages it saw, so a restart over the same session shows the context
-// growing; otherwise it asks for the built-in tool first.
+// growing; otherwise it asks for the built-in tool first. A compactor request
+// (ref.CompactorSystemPrompt) gets a fixed summary for deterministic smoke.
 type mockModel struct{}
 
 func (mockModel) Generate(_ context.Context, req sdk.Request) (sdk.ModelResult, error) {
+	if len(req.Messages) > 0 && req.Messages[0].Role == sdk.MessageRoleSystem && messageText(req.Messages[0]) == ref.CompactorSystemPrompt {
+		return sdk.ModelResult{Text: "mock summary of the compacted conversation",
+			FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}, nil
+	}
 	for _, msg := range req.Messages {
 		if msg.Role == sdk.MessageRoleTool {
 			return sdk.ModelResult{Text: fmt.Sprintf("mock: %d messages in context", len(req.Messages)),
@@ -239,6 +260,16 @@ func (mockModel) Generate(_ context.Context, req sdk.Request) (sdk.ModelResult, 
 	}
 	return sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 1},
 		ToolCalls: []sdk.ToolCall{{ToolCallID: fmt.Sprintf("call-%d", len(req.Messages)), ToolName: "now", Input: `{}`}}}, nil
+}
+
+func messageText(m sdk.Message) string {
+	var b strings.Builder
+	for _, part := range m.Content {
+		if t, ok := part.(sdk.TextPart); ok {
+			b.WriteString(t.Text)
+		}
+	}
+	return b.String()
 }
 
 type nowTool struct{}

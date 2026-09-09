@@ -127,6 +127,10 @@ func (s *Session) Close(ctx) error                   // 只释放本 Session 的
 
 **REF-SES-3** 并发 `Send` 安全：写入由该 Session 的 Writer 串行化。路由竞态（两个 Send 同时判定 Start，或投递瞬间结算）表现为 `turn.ErrConflict`，宿主重试路由；重试前发现输入已被其他驱动者投递时，返回 `already_driving` 的 `Result`（该 Turn 在取走它的调用里结算与报告）。
 
+**REF-CKP-1**（compaction：机制在 chatlog，策略在宿主）`Memory.Checkpoint(ctx, sid, summaryText, retain)` 在该 Session Writer 的 Commit 临界区内读 `twilight/turn/surface`（存在 active Turn 则拒绝——compaction 是回合之间的操作）与 `twilight/chatlog/context`，以 `View.Head().Next - 1` 为 `CoveredThrough`，把 summary 与 `checkpoint_created` 同组提交（CHT-EVT-3）。`Session.Compact` 用 profile 的模型生成摘要：这是宿主级模型调用，不属于任何 Run，生成中崩溃不写任何事件；随后以 `RetainLast` 的配对封闭后缀提交 checkpoint。自动策略由 `SessionOptions.CompactAfterEntries` 启用：结算且积压排空后、Context 条目数超阈值时触发；失败经 `CompactWarn` 上报，不改变已结算的 `Result`。
+
+**REF-CKP-2**（retained 配对封闭）retained 集必须封闭：保留的 tool_result 连同签发该 call 的 assistant，保留的带 tool_call 的 assistant 连同其在 Context 中的 result——否则压缩后的 Context 组装不出合法的 provider 消息序列。`RetainLast(entries, n)` 返回满足封闭的最短后缀（孤儿 result 向前扩窗到其 assistant）；`Memory.Checkpoint` 校验封闭并拒绝违反者。子集与顺序由 fold 校验（CHT-EVT-3），封闭由宿主校验，两者各管一层。
+
 ## 6. Memory 组成
 
 ```text

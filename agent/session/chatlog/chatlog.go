@@ -26,19 +26,22 @@ type (
 	ToolResultID string
 	SummaryID    string
 	CallID       string
+	CheckpointID string
 )
 
 // EventTypes (CHT-EVT-1). v1 companion and coordinator write the first six;
-// the rest are registered so their payloads are decodable.
+// checkpoints are written by the host's compaction (CHT-EVT-3).
 const (
-	TypeInputSubmitted       session.EventType = "twilight/chatlog/input_submitted"
-	TypeInputDelivered       session.EventType = "twilight/chatlog/input_delivered"
-	TypeInputWithdrawn       session.EventType = "twilight/chatlog/input_withdrawn"
-	TypeInputRejected        session.EventType = "twilight/chatlog/input_rejected"
-	TypeAssistant            session.EventType = "twilight/chatlog/assistant"
-	TypeToolResult           session.EventType = "twilight/chatlog/tool_result"
-	TypeToolResultSuperseded session.EventType = "twilight/chatlog/tool_result_superseded"
-	TypeSummary              session.EventType = "twilight/chatlog/summary"
+	TypeInputSubmitted        session.EventType = "twilight/chatlog/input_submitted"
+	TypeInputDelivered        session.EventType = "twilight/chatlog/input_delivered"
+	TypeInputWithdrawn        session.EventType = "twilight/chatlog/input_withdrawn"
+	TypeInputRejected         session.EventType = "twilight/chatlog/input_rejected"
+	TypeAssistant             session.EventType = "twilight/chatlog/assistant"
+	TypeToolResult            session.EventType = "twilight/chatlog/tool_result"
+	TypeToolResultSuperseded  session.EventType = "twilight/chatlog/tool_result_superseded"
+	TypeSummary               session.EventType = "twilight/chatlog/summary"
+	TypeCheckpointCreated     session.EventType = "twilight/chatlog/checkpoint_created"
+	TypeCheckpointInvalidated session.EventType = "twilight/chatlog/checkpoint_invalidated"
 )
 
 // --- parts --------------------------------------------------------------------
@@ -244,6 +247,40 @@ func DigestSummary(s *Summary) (es.Digest, error) {
 	}{s.ID, s.Parts})
 }
 
+// EntryDigestPair names one active Context entry (CHT-EVT-3).
+type EntryDigestPair struct {
+	Kind   EntryKind `json:"kind"`
+	ID     string    `json:"id"`
+	Digest es.Digest `json:"digest"`
+}
+
+// DigestBaseContext covers the ordered active Context sequence a checkpoint
+// replaces. An empty base digests as nil (empty and nil are one wire value).
+func DigestBaseContext(pairs []EntryDigestPair) (es.Digest, error) {
+	if len(pairs) == 0 {
+		pairs = nil
+	}
+	return digestDomain(TypeCheckpointCreated, struct {
+		Base []EntryDigestPair `json:"base"`
+	}{pairs})
+}
+
+// DigestCheckpoint covers every checkpoint field except Digest itself.
+func DigestCheckpoint(p *CheckpointCreatedPayload) (es.Digest, error) {
+	retained := p.Retained
+	if len(retained) == 0 {
+		retained = nil
+	}
+	return digestDomain(TypeCheckpointCreated, struct {
+		CheckpointID      CheckpointID      `json:"checkpointId"`
+		CoveredThrough    session.Seq       `json:"coveredThrough"`
+		BaseContextDigest es.Digest         `json:"baseContextDigest"`
+		SummaryID         SummaryID         `json:"summaryId"`
+		SummaryDigest     es.Digest         `json:"summaryDigest"`
+		Retained          []EntryDigestPair `json:"retained,omitempty"`
+	}{p.CheckpointID, p.CoveredThrough, p.BaseContextDigest, p.SummaryID, p.SummaryDigest, retained})
+}
+
 func digestDomain(typ session.EventType, body any) (es.Digest, error) {
 	raw, err := es.EncodeTypedPayload(1, string(typ), body)
 	if err != nil {
@@ -294,6 +331,23 @@ type SummaryPayload struct {
 	Summary Summary `json:"summary"`
 }
 
+// CheckpointCreatedPayload compacts the context (CHT-EVT-3): entries up to
+// CoveredThrough are replaced by the summary plus the Retained subset.
+type CheckpointCreatedPayload struct {
+	CheckpointID      CheckpointID      `json:"checkpointId"`
+	CoveredThrough    session.Seq       `json:"coveredThrough"`
+	BaseContextDigest es.Digest         `json:"baseContextDigest"`
+	SummaryID         SummaryID         `json:"summaryId"`
+	SummaryDigest     es.Digest         `json:"summaryDigest"`
+	Retained          []EntryDigestPair `json:"retained,omitempty"`
+	Digest            es.Digest         `json:"digest"`
+}
+
+type CheckpointInvalidatedPayload struct {
+	CheckpointID CheckpointID `json:"checkpointId"`
+	Reason       string       `json:"reason,omitempty"`
+}
+
 func checkAssistant(p *AssistantPayload) error {
 	a := &p.Assistant
 	if a.ID == "" || a.TurnID == "" {
@@ -332,6 +386,37 @@ func checkToolResult(p *ToolResultPayload) error {
 	}
 	if r.Digest != want {
 		return errors.New("tool_result digest mismatch")
+	}
+	return nil
+}
+
+func checkCheckpointCreated(p *CheckpointCreatedPayload) error {
+	if p.CheckpointID == "" || p.SummaryID == "" || p.BaseContextDigest == "" || p.SummaryDigest == "" {
+		return errors.New("checkpoint requires checkpointId, summaryId and both digests")
+	}
+	for _, pair := range p.Retained {
+		switch pair.Kind {
+		case EntryInput, EntryAssistant, EntryToolResult, EntrySummary:
+		default:
+			return fmt.Errorf("retained entry has unknown kind %q", pair.Kind)
+		}
+		if pair.ID == "" || pair.Digest == "" {
+			return errors.New("retained entry requires id and digest")
+		}
+	}
+	want, err := DigestCheckpoint(p)
+	if err != nil {
+		return err
+	}
+	if p.Digest != want {
+		return errors.New("checkpoint digest mismatch")
+	}
+	return nil
+}
+
+func checkCheckpointInvalidated(p *CheckpointInvalidatedPayload) error {
+	if p.CheckpointID == "" {
+		return errors.New("checkpoint_invalidated requires checkpointId")
 	}
 	return nil
 }
@@ -408,6 +493,8 @@ var Module = extension.ModuleDescriptor{
 		def[ToolResultPayload](TypeToolResult, checkToolResult, partsBinding),
 		def[ToolResultSupersededPayload](TypeToolResultSuperseded, nil),
 		def[SummaryPayload](TypeSummary, checkSummary, partsBinding),
+		def[CheckpointCreatedPayload](TypeCheckpointCreated, checkCheckpointCreated),
+		def[CheckpointInvalidatedPayload](TypeCheckpointInvalidated, checkCheckpointInvalidated),
 	},
 	Projections: []extension.ProjectionDefinition{SurfaceProjection, ContextProjection},
 }

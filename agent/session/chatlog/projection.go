@@ -45,14 +45,31 @@ type SurfaceEntry struct {
 	Seq  session.Seq `json:"seq"`
 }
 
+type CheckpointStatus string
+
+const (
+	CheckpointActive      CheckpointStatus = "active"
+	CheckpointInvalidated CheckpointStatus = "invalidated"
+)
+
+// CheckpointView records one checkpoint for readers; compaction never touches
+// EntryOrder or the input queue (CHT-SUR-1).
+type CheckpointView struct {
+	Checkpoint CheckpointCreatedPayload `json:"checkpoint"`
+	Status     CheckpointStatus         `json:"status"`
+	Reason     string                   `json:"reason,omitempty"`
+	Seq        session.Seq              `json:"seq"`
+}
+
 // Surface is the UI-facing read model (CHT-SUR-1).
 type Surface struct {
-	Inputs      map[InputID]InputView         `json:"inputs"`
-	Assistants  map[AssistantID]Assistant     `json:"assistants"`
-	ToolResults map[ToolResultID]ToolResult   `json:"toolResults"`
-	Summaries   map[SummaryID]Summary         `json:"summaries"`
-	EntryOrder  []SurfaceEntry                `json:"entryOrder"`
-	Superseded  map[ToolResultID]ToolResultID `json:"superseded,omitempty"`
+	Inputs      map[InputID]InputView           `json:"inputs"`
+	Assistants  map[AssistantID]Assistant       `json:"assistants"`
+	ToolResults map[ToolResultID]ToolResult     `json:"toolResults"`
+	Summaries   map[SummaryID]Summary           `json:"summaries"`
+	EntryOrder  []SurfaceEntry                  `json:"entryOrder"`
+	Superseded  map[ToolResultID]ToolResultID   `json:"superseded,omitempty"`
+	Checkpoints map[CheckpointID]CheckpointView `json:"checkpoints,omitempty"`
 	nextSeq     uint64
 }
 
@@ -81,13 +98,13 @@ func sortViews(views []InputView) {
 }
 
 var chatlogConsumes = []session.EventType{TypeInputSubmitted, TypeInputDelivered, TypeInputWithdrawn, TypeInputRejected,
-	TypeAssistant, TypeToolResult, TypeToolResultSuperseded, TypeSummary}
+	TypeAssistant, TypeToolResult, TypeToolResultSuperseded, TypeSummary, TypeCheckpointCreated, TypeCheckpointInvalidated}
 
 var SurfaceProjection = extension.ProjectionDefinition{
 	ID: SurfaceProjectionID, Version: 1,
 	Consumes: chatlogConsumes,
 	Initial: func() (any, error) {
-		return Surface{Inputs: map[InputID]InputView{}, Assistants: map[AssistantID]Assistant{}, ToolResults: map[ToolResultID]ToolResult{}, Summaries: map[SummaryID]Summary{}, Superseded: map[ToolResultID]ToolResultID{}}, nil
+		return Surface{Inputs: map[InputID]InputView{}, Assistants: map[AssistantID]Assistant{}, ToolResults: map[ToolResultID]ToolResult{}, Summaries: map[SummaryID]Summary{}, Superseded: map[ToolResultID]ToolResultID{}, Checkpoints: map[CheckpointID]CheckpointView{}}, nil
 	},
 	Apply:      applySurface,
 	StateCodec: extension.JSONStateCodec[Surface]{},
@@ -151,6 +168,23 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		}
 		s.Summaries[p.Summary.ID] = p.Summary
 		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntrySummary, ID: string(p.Summary.ID), Seq: pos})
+	case CheckpointCreatedPayload:
+		if _, dup := s.Checkpoints[p.CheckpointID]; dup {
+			return nil, fmt.Errorf("checkpoint %s created twice", p.CheckpointID)
+		}
+		sum, ok := s.Summaries[p.SummaryID]
+		if !ok || sum.Digest != p.SummaryDigest {
+			return nil, fmt.Errorf("checkpoint %s names summary %s which does not match", p.CheckpointID, p.SummaryID)
+		}
+		s.Checkpoints[p.CheckpointID] = CheckpointView{Checkpoint: p, Status: CheckpointActive, Seq: pos}
+	case CheckpointInvalidatedPayload:
+		v, ok := s.Checkpoints[p.CheckpointID]
+		if !ok || v.Status != CheckpointActive {
+			return nil, fmt.Errorf("checkpoint %s invalidated while not active", p.CheckpointID)
+		}
+		v.Status = CheckpointInvalidated
+		v.Reason = p.Reason
+		s.Checkpoints[p.CheckpointID] = v
 	default:
 		return nil, fmt.Errorf("chatlog surface: unexpected %T", e.Value)
 	}
@@ -170,7 +204,11 @@ func terminateInput(s *Surface, id InputID, status InputStatus) error {
 func cloneSurface(s Surface) Surface {
 	out := Surface{Inputs: make(map[InputID]InputView, len(s.Inputs)), Assistants: make(map[AssistantID]Assistant, len(s.Assistants)),
 		ToolResults: make(map[ToolResultID]ToolResult, len(s.ToolResults)), Summaries: make(map[SummaryID]Summary, len(s.Summaries)),
-		Superseded: make(map[ToolResultID]ToolResultID, len(s.Superseded)), EntryOrder: append([]SurfaceEntry(nil), s.EntryOrder...), nextSeq: s.nextSeq}
+		Superseded: make(map[ToolResultID]ToolResultID, len(s.Superseded)), Checkpoints: make(map[CheckpointID]CheckpointView, len(s.Checkpoints)),
+		EntryOrder: append([]SurfaceEntry(nil), s.EntryOrder...), nextSeq: s.nextSeq}
+	for k, v := range s.Checkpoints {
+		out.Checkpoints[k] = v
+	}
 	for k, v := range s.Inputs {
 		out.Inputs[k] = v
 	}
@@ -200,23 +238,45 @@ func cloneSurface(s Surface) Surface {
 
 // --- context ------------------------------------------------------------------
 
-// Entry is one element of the model-facing conversation (CHT-CTX-1).
+// Entry is one element of the model-facing conversation (CHT-CTX-1). Seq is
+// the stream row that folded the entry in; checkpoints split base from gap by
+// it (CHT-EVT-3).
 type Entry struct {
 	Kind       EntryKind   `json:"kind"`
 	ID         string      `json:"id"`
 	Digest     es.Digest   `json:"digest"`
+	Seq        session.Seq `json:"seq"`
 	Input      *Input      `json:"input,omitempty"`
 	Assistant  *Assistant  `json:"assistant,omitempty"`
 	ToolResult *ToolResult `json:"toolResult,omitempty"`
 	Summary    *Summary    `json:"summary,omitempty"`
 }
 
+// Pair names the entry for checkpoint base and retained sets.
+func (e *Entry) Pair() EntryDigestPair {
+	return EntryDigestPair{Kind: e.Kind, ID: e.ID, Digest: e.Digest}
+}
+
+// AppliedCheckpoint archives what a checkpoint replaced so an explicit
+// invalidation restores it (CHT-EVT-3). Base excludes the checkpoint's own
+// summary entry: invalidation drops the summary from the active context.
+type AppliedCheckpoint struct {
+	ID CheckpointID `json:"id"`
+	// Base is the active context the checkpoint covered, in order.
+	Base []Entry `json:"base"`
+	// PrefixLen is what the checkpoint contributed to Entries: the summary
+	// plus the retained entries.
+	PrefixLen int `json:"prefixLen"`
+}
+
 // Context is the projection state: the ordered entries plus the bookkeeping
-// ContextFold needs (submitted inputs awaiting delivery, superseded results).
+// ContextFold needs (submitted inputs awaiting delivery, superseded results,
+// applied checkpoints).
 type Context struct {
-	Entries    []Entry                       `json:"entries"`
-	Pending    map[InputID]Input             `json:"pending,omitempty"`
-	Superseded map[ToolResultID]ToolResultID `json:"superseded,omitempty"`
+	Entries     []Entry                       `json:"entries"`
+	Pending     map[InputID]Input             `json:"pending,omitempty"`
+	Superseded  map[ToolResultID]ToolResultID `json:"superseded,omitempty"`
+	Checkpoints []AppliedCheckpoint           `json:"checkpoints,omitempty"`
 }
 
 var ContextProjection = extension.ProjectionDefinition{
@@ -231,7 +291,9 @@ var ContextProjection = extension.ProjectionDefinition{
 
 func applyContext(state any, e extension.DecodedEvent) (any, error) {
 	c := state.(Context)
-	c = Context{Entries: append([]Entry(nil), c.Entries...), Pending: copyInputs(c.Pending), Superseded: copyIDs(c.Superseded)}
+	c = Context{Entries: append([]Entry(nil), c.Entries...), Pending: copyInputs(c.Pending), Superseded: copyIDs(c.Superseded),
+		Checkpoints: append([]AppliedCheckpoint(nil), c.Checkpoints...)}
+	pos := e.Event.Seq
 	switch p := e.Value.(type) {
 	case InputSubmittedPayload:
 		d, err := DigestInput(p.InputID, p.Content)
@@ -246,34 +308,110 @@ func applyContext(state any, e extension.DecodedEvent) (any, error) {
 		}
 		delete(c.Pending, p.InputID)
 		in.TurnID = p.TurnID
-		c.Entries = append(c.Entries, Entry{Kind: EntryInput, ID: string(in.ID), Digest: in.Digest, Input: &in})
+		c.Entries = append(c.Entries, Entry{Kind: EntryInput, ID: string(in.ID), Digest: in.Digest, Seq: pos, Input: &in})
 	case InputWithdrawnPayload:
 		delete(c.Pending, p.InputID)
 	case InputRejectedPayload:
 		delete(c.Pending, p.InputID)
 	case AssistantPayload:
 		a := p.Assistant
-		c.Entries = append(c.Entries, Entry{Kind: EntryAssistant, ID: string(a.ID), Digest: a.Digest, Assistant: &a})
+		c.Entries = append(c.Entries, Entry{Kind: EntryAssistant, ID: string(a.ID), Digest: a.Digest, Seq: pos, Assistant: &a})
 	case ToolResultPayload:
 		r := p.ToolResult
-		c.Entries = append(c.Entries, Entry{Kind: EntryToolResult, ID: string(r.ID), Digest: r.Digest, ToolResult: &r})
+		c.Entries = append(c.Entries, Entry{Kind: EntryToolResult, ID: string(r.ID), Digest: r.Digest, Seq: pos, ToolResult: &r})
 	case ToolResultSupersededPayload:
 		c.Superseded[p.ToolResultID] = p.ReplacementToolResultID
 		kept := c.Entries[:0:0]
+		found := false
 		for _, en := range c.Entries {
 			if en.Kind == EntryToolResult && en.ID == string(p.ToolResultID) {
+				found = true
 				continue
 			}
 			kept = append(kept, en)
 		}
+		if !found {
+			// A result outside the active context was either never created or
+			// compacted; its Turn completed, so superseding it violates
+			// CHT-ENT-2 rather than invalidating the checkpoint.
+			return nil, fmt.Errorf("tool_result %s superseded outside the active context", p.ToolResultID)
+		}
 		c.Entries = kept
 	case SummaryPayload:
 		s := p.Summary
-		c.Entries = append(c.Entries, Entry{Kind: EntrySummary, ID: string(s.ID), Digest: s.Digest, Summary: &s})
+		c.Entries = append(c.Entries, Entry{Kind: EntrySummary, ID: string(s.ID), Digest: s.Digest, Seq: pos, Summary: &s})
+	case CheckpointCreatedPayload:
+		return applyCheckpoint(c, &p, pos)
+	case CheckpointInvalidatedPayload:
+		n := len(c.Checkpoints)
+		if n == 0 || c.Checkpoints[n-1].ID != p.CheckpointID {
+			return nil, fmt.Errorf("checkpoint %s is not the latest active checkpoint", p.CheckpointID)
+		}
+		top := c.Checkpoints[n-1]
+		if len(c.Entries) < top.PrefixLen {
+			return nil, fmt.Errorf("checkpoint %s prefix exceeds the context", p.CheckpointID)
+		}
+		c.Entries = append(append([]Entry(nil), top.Base...), c.Entries[top.PrefixLen:]...)
+		c.Checkpoints = c.Checkpoints[:n-1]
 	default:
 		return nil, fmt.Errorf("chatlog context: unexpected %T", e.Value)
 	}
 	return c, nil
+}
+
+// applyCheckpoint validates and applies one checkpoint_created (CHT-EVT-3).
+func applyCheckpoint(c Context, p *CheckpointCreatedPayload, pos session.Seq) (any, error) {
+	if p.CoveredThrough >= pos {
+		return nil, fmt.Errorf("checkpoint %s covers through %d at row %d", p.CheckpointID, p.CoveredThrough, pos)
+	}
+	for _, ap := range c.Checkpoints {
+		if ap.ID == p.CheckpointID {
+			return nil, fmt.Errorf("checkpoint %s created twice", p.CheckpointID)
+		}
+	}
+	cut := len(c.Entries)
+	for cut > 0 && c.Entries[cut-1].Seq > p.CoveredThrough {
+		cut--
+	}
+	base, gap := c.Entries[:cut], c.Entries[cut:]
+	if len(gap) != 1 || gap[0].Kind != EntrySummary || gap[0].ID != string(p.SummaryID) || gap[0].Digest != p.SummaryDigest {
+		return nil, fmt.Errorf("checkpoint %s: the entries after coveredThrough must be exactly its summary", p.CheckpointID)
+	}
+	pairs := make([]EntryDigestPair, len(base))
+	for i := range base {
+		pairs[i] = base[i].Pair()
+	}
+	wantBase, err := DigestBaseContext(pairs)
+	if err != nil {
+		return nil, err
+	}
+	if wantBase != p.BaseContextDigest {
+		return nil, fmt.Errorf("checkpoint %s: base context digest mismatch", p.CheckpointID)
+	}
+	retained, err := selectRetained(base, p.Retained)
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint %s: %w", p.CheckpointID, err)
+	}
+	c.Checkpoints = append(c.Checkpoints, AppliedCheckpoint{ID: p.CheckpointID, Base: base, PrefixLen: 1 + len(retained)})
+	c.Entries = append([]Entry{gap[0]}, retained...)
+	return c, nil
+}
+
+// selectRetained resolves the retained pairs as an ordered subset of base.
+func selectRetained(base []Entry, pairs []EntryDigestPair) ([]Entry, error) {
+	out := make([]Entry, 0, len(pairs))
+	i := 0
+	for _, p := range pairs {
+		for i < len(base) && base[i].Pair() != p {
+			i++
+		}
+		if i == len(base) {
+			return nil, fmt.Errorf("retained %s %s is not in the base context in order", p.Kind, p.ID)
+		}
+		out = append(out, base[i])
+		i++
+	}
+	return out, nil
 }
 
 func copyInputs(m map[InputID]Input) map[InputID]Input {

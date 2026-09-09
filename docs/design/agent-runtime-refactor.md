@@ -100,7 +100,7 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 | per-Run `Store`、`stored_runtime`、`sqlitestore`、`RunHeader`、`TransitionRecord` | 已删除，2026-09-07 |
 | Session kernel Memory Store（`agent/session`） | 完成，2026-09-07；conformance 部分实现 |
 | `agent/session/extension`（Registry、SemanticAppender、Lease、ProjectionReader） | 完成，2026-09-07；conformance 部分实现 |
-| `agent/session/chatlog`（事件、parts codec、Surface、Context） | 完成，2026-09-07；checkpoint 未实现 |
+| `agent/session/chatlog`（事件、parts codec、Surface、Context） | 完成，2026-09-07；checkpoint 完成，2026-09-09（CHT-EVT-3 转正，宿主策略见 REF-CKP-1/2） |
 | `agent/artifact`（Ref、Binding、Memory BindingStore、两态 KV ledger） | 完成，2026-09-07；Resolver/Store/Promoter 未实现 |
 | `agent/session/run`（module descriptor、machine 投影、Runtime、RecoverExpired） | 完成，2026-09-07 |
 | `agent/run/loop` 绑定 Session（`Run(ctx, runtime, sessionID, runID, sink)`、RunPosition、SessionCommit 观察） | 完成，2026-09-07 |

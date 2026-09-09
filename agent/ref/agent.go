@@ -247,21 +247,39 @@ func (r *Agents) Register(id turn.ProfileID, agent Agent) (turn.ProfileRef, erro
 // Resolve returns the registration's driver when the ref's digest matches the
 // agent's current Profile (REF-BND-2).
 func (r *Agents) Resolve(ref turn.ProfileRef) (RunDriver, error) {
+	reg, err := r.lookup(ref)
+	if err != nil {
+		return nil, err
+	}
+	return reg.driver, nil
+}
+
+// Agent returns the registered agent behind a ref, digest-checked like
+// Resolve; hosts use it for profile-model calls outside any Run (REF-CKP-1).
+func (r *Agents) Agent(ref turn.ProfileRef) (Agent, error) {
+	reg, err := r.lookup(ref)
+	if err != nil {
+		return nil, err
+	}
+	return reg.agent, nil
+}
+
+func (r *Agents) lookup(ref turn.ProfileRef) (registeredAgent, error) {
 	r.mu.RLock()
 	reg, ok := r.byID[ref.ID]
 	r.mu.RUnlock()
 	if !ok {
-		return nil, fmt.Errorf("ref: unknown profile %s", ref.ID)
+		return registeredAgent{}, fmt.Errorf("ref: unknown profile %s", ref.ID)
 	}
 	p := reg.agent.Profile()
 	digest, err := DigestProfile(&p)
 	if err != nil {
-		return nil, err
+		return registeredAgent{}, err
 	}
 	if digest != ref.Digest {
-		return nil, fmt.Errorf("ref: profile %s digest mismatch", ref.ID)
+		return registeredAgent{}, fmt.Errorf("ref: profile %s digest mismatch", ref.ID)
 	}
-	return reg.driver, nil
+	return reg, nil
 }
 
 // loopDriver is REF-DRV-1: Drive is loop.Run. A concurrent local driver of

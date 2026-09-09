@@ -37,6 +37,15 @@ type SessionOptions struct {
 	// ResumeActive resumes a still-active Turn synchronously inside
 	// OpenSession. Interactive hosts leave it false and call Resume themselves.
 	ResumeActive bool
+	// CompactAfterEntries triggers automatic compaction when the context
+	// grows past this many entries after a settlement; zero disables it.
+	CompactAfterEntries int
+	// CompactRetainEntries is the pair-closed suffix a compaction keeps
+	// verbatim; zero selects the default.
+	CompactRetainEntries int
+	// CompactWarn receives automatic-compaction failures; they never change
+	// the settled results. Nil discards them.
+	CompactWarn func(error)
 }
 
 // Result is the conversation-level outcome of one settled (or steered) Turn.
@@ -67,6 +76,7 @@ type Session struct {
 	m      *Memory
 	sid    session.SessionID
 	driver *SessionDriver
+	opts   SessionOptions
 }
 
 // OpenSession ensures the stream exists, takes ownership per the assembly's
@@ -87,7 +97,7 @@ func (m *Memory) OpenSession(ctx context.Context, sid session.SessionID, opts Se
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{Recovered: recovered, m: m, sid: sid,
+	s := &Session{Recovered: recovered, m: m, sid: sid, opts: opts,
 		driver: &SessionDriver{Coordinator: m.Coordinator, Memory: m, Profile: opts.Profile, Companion: companion}}
 	if opts.ResumeActive {
 		if _, _, err := s.Resume(ctx); err != nil {
@@ -228,6 +238,9 @@ func (s *Session) settled(ctx context.Context, resp turn.TurnResponse) ([]Result
 			return out, err
 		}
 		if !ok {
+			// The backlog is drained and no Turn is active: the automatic
+			// compaction policy runs here (REF-CKP-1).
+			s.maybeCompact(ctx)
 			return out, nil
 		}
 		out = append(out, s.result(ctx, next))
