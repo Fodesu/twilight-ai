@@ -156,10 +156,42 @@ func (a *builtAgent) ResolveTool(r run.ToolRef) (loop.ExecutableTool, error) {
 
 func (a *builtAgent) Policy() loop.ExecutionPolicy { return a.policy }
 
-// Agents is the in-process turn.ProfileRegistry (REF-BND-2). Register builds
+// ErrProfileUnavailable reports that the persisted profile cannot be resolved
+// by this process (REF-BND-2).
+var ErrProfileUnavailable = errors.New("ref: profile_unavailable")
+
+// ErrAlreadyDriving is how a RunDriver reports that another local driver
+// already drives the Run: the commit (if any) landed and the running driver
+// carries it forward. The host turns it into a successful Result with
+// ResumeAlreadyDriving, not an error.
+var ErrAlreadyDriving = errors.New("ref: already_driving")
+
+// ResumeAlreadyDriving extends the turn disposition vocabulary for hosts: the
+// inputs (if any) are committed and another local driver of the same Run
+// carries them forward. The Coordinator itself never produces it.
+const ResumeAlreadyDriving turn.ResumeDisposition = "already_driving"
+
+type DriveRequest struct {
+	Ref   turn.TurnRef
+	RunID run.RunID
+}
+
+// RunDriver drives one Run to its next quiescent point; the reference driver
+// wraps loop.Run (REF-DRV-1). A second local driver of the same Run reports
+// ErrAlreadyDriving instead of driving.
+type RunDriver interface {
+	Drive(context.Context, DriveRequest) error
+}
+
+// ProfileRegistry resolves a persisted ProfileRef to a live driver.
+type ProfileRegistry interface {
+	Resolve(turn.ProfileRef) (RunDriver, error)
+}
+
+// Agents is the in-process ProfileRegistry (REF-BND-2). Register builds
 // one long-lived Loop per registration, so every drive of a profile shares
 // the already-driving guard: a second local driver of a running Run reports
-// turn.ErrAlreadyDriving instead of racing the first.
+// ErrAlreadyDriving instead of racing the first.
 type Agents struct {
 	runtime     run.Runtime
 	projections ProjectionSource
@@ -171,7 +203,7 @@ type Agents struct {
 
 type registeredAgent struct {
 	agent  Agent
-	driver turn.RunDriver
+	driver RunDriver
 }
 
 // ProjectionSource is what the planner reads context from.
@@ -214,7 +246,7 @@ func (r *Agents) Register(id turn.ProfileID, agent Agent) (turn.ProfileRef, erro
 
 // Resolve returns the registration's driver when the ref's digest matches the
 // agent's current Profile (REF-BND-2).
-func (r *Agents) Resolve(ref turn.ProfileRef) (turn.RunDriver, error) {
+func (r *Agents) Resolve(ref turn.ProfileRef) (RunDriver, error) {
 	r.mu.RLock()
 	reg, ok := r.byID[ref.ID]
 	r.mu.RUnlock()
@@ -232,18 +264,18 @@ func (r *Agents) Resolve(ref turn.ProfileRef) (turn.RunDriver, error) {
 	return reg.driver, nil
 }
 
-// loopDriver is TRN-DRV-1: Drive is loop.Run. A concurrent local driver of
-// the same Run is reported as turn.ErrAlreadyDriving, not as a failure.
+// loopDriver is REF-DRV-1: Drive is loop.Run. A concurrent local driver of
+// the same Run is reported as ErrAlreadyDriving, not as a failure.
 type loopDriver struct {
 	loop    *loop.Loop
 	runtime run.Runtime
 	sink    loop.EventSink
 }
 
-func (d loopDriver) Drive(ctx context.Context, req turn.DriveRequest) error {
+func (d loopDriver) Drive(ctx context.Context, req DriveRequest) error {
 	_, err := d.loop.Run(ctx, d.runtime, req.Ref.SessionID, req.RunID, d.sink)
 	if errors.Is(err, loop.ErrRunAlreadyRunning) {
-		return fmt.Errorf("%w: %v", turn.ErrAlreadyDriving, err)
+		return fmt.Errorf("%w: %v", ErrAlreadyDriving, err)
 	}
 	return err
 }

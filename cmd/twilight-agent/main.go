@@ -22,7 +22,6 @@ import (
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/filestore"
-	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/provider/openai/completions"
 	"github.com/felinics/twilight/sdk"
 )
@@ -138,7 +137,7 @@ func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID
 
 func report(results []ref.Result, err error) {
 	for _, r := range results {
-		if r.Disposition == turn.ResumeAlreadyDriving {
+		if r.Disposition == ref.ResumeAlreadyDriving {
 			fmt.Println("steer: input delivered into the running turn")
 			continue
 		}

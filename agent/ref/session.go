@@ -153,7 +153,7 @@ func (s *Session) absorbed(ctx context.Context, in run.AgentInput) (Result, bool
 	if !ok || v.Status == chatlog.InputSubmitted {
 		return Result{}, false
 	}
-	r := Result{TurnID: turn.TurnID(v.Input.TurnID), Disposition: turn.ResumeAlreadyDriving}
+	r := Result{TurnID: turn.TurnID(v.Input.TurnID), Disposition: ResumeAlreadyDriving}
 	if surface, serr := s.m.TurnSurface(ctx, s.sid); serr == nil {
 		r.Status = surface.Turns[r.TurnID].Status
 	}
@@ -170,7 +170,7 @@ func (s *Session) Resume(ctx context.Context) ([]Result, bool, error) {
 	if status.Active == "" {
 		return nil, false, nil
 	}
-	resp, err := s.m.Coordinator.Resume(ctx, turn.TurnRequest{Ref: turn.TurnRef{SessionID: s.sid, TurnID: status.Active}})
+	resp, err := s.m.Drive(ctx, turn.TurnRef{SessionID: s.sid, TurnID: status.Active})
 	if err != nil {
 		return nil, false, err
 	}
@@ -187,7 +187,11 @@ func (s *Session) Retry(ctx context.Context) ([]Result, bool, error) {
 	if len(status.Failed) == 0 {
 		return nil, false, nil
 	}
-	resp, err := s.m.Coordinator.Retry(ctx, turn.RetryRequest{Ref: turn.TurnRef{SessionID: s.sid, TurnID: status.Failed[0]}, Reason: "host retry"})
+	ref := turn.TurnRef{SessionID: s.sid, TurnID: status.Failed[0]}
+	if _, err := s.m.Coordinator.Retry(ctx, turn.RetryRequest{Ref: ref, Reason: "host retry"}); err != nil {
+		return nil, false, err
+	}
+	resp, err := s.m.Drive(ctx, ref)
 	if err != nil {
 		return nil, false, err
 	}
@@ -207,10 +211,10 @@ func (s *Session) Close(ctx context.Context) error {
 
 // settled turns a TurnResponse into Results and drains the backlog: while a
 // settlement leaves submitted, undelivered inputs, the next Turn starts from
-// them (REF-DRV-2).
+// them (REF-DRV-3).
 func (s *Session) settled(ctx context.Context, resp turn.TurnResponse) ([]Result, error) {
 	out := []Result{s.result(ctx, resp)}
-	if resp.Disposition == turn.ResumeAlreadyDriving {
+	if resp.Disposition == ResumeAlreadyDriving {
 		// The running driver settles the Turn and drains in its own call.
 		return out, nil
 	}
@@ -227,7 +231,7 @@ func (s *Session) settled(ctx context.Context, resp turn.TurnResponse) ([]Result
 			return out, nil
 		}
 		out = append(out, s.result(ctx, next))
-		if next.Disposition == turn.ResumeAlreadyDriving {
+		if next.Disposition == ResumeAlreadyDriving {
 			return out, nil
 		}
 	}

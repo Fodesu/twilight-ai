@@ -17,31 +17,6 @@ import (
 // ErrConflict reports a Turn in a state that does not admit the operation.
 var ErrConflict = errors.New("turn: conflict")
 
-// ErrProfileUnavailable reports that the persisted profile cannot be resolved.
-var ErrProfileUnavailable = errors.New("turn: profile_unavailable")
-
-// ErrAlreadyDriving is how a RunDriver reports that another local driver
-// already drives the Run: the commit (if any) landed and the running driver
-// carries it forward. The Coordinator turns it into a successful response
-// with ResumeAlreadyDriving, not an error.
-var ErrAlreadyDriving = errors.New("turn: already_driving")
-
-type DriveRequest struct {
-	Ref   TurnRef
-	RunID run.RunID
-}
-
-// RunDriver drives one Run to its next quiescent point; the reference driver
-// wraps loop.Run (TRN-DRV-1). A second local driver of the same Run reports
-// ErrAlreadyDriving instead of driving.
-type RunDriver interface {
-	Drive(context.Context, DriveRequest) error
-}
-
-type ProfileRegistry interface {
-	Resolve(ProfileRef) (RunDriver, error)
-}
-
 type StartRequest struct {
 	Ref       TurnRef
 	Inputs    []run.AgentInput
@@ -52,7 +27,6 @@ type DeliverRequest struct {
 	Ref    TurnRef
 	Inputs []run.AgentInput
 }
-type TurnRequest struct{ Ref TurnRef }
 type RetryRequest struct {
 	Ref    TurnRef
 	Reason string
@@ -72,9 +46,6 @@ const (
 	ResumeWaitingForResponse ResumeDisposition = "waiting_for_response"
 	ResumeWaitingForRecovery ResumeDisposition = "waiting_for_recovery"
 	ResumeFinished           ResumeDisposition = "finished"
-	// ResumeAlreadyDriving: the inputs (if any) are committed and another
-	// local driver of the same Run carries them forward.
-	ResumeAlreadyDriving ResumeDisposition = "already_driving"
 )
 
 type TurnResponse struct {
@@ -87,23 +58,25 @@ type TurnResponse struct {
 	Waiting     []run.ResponseRequest
 }
 
-// Service is the Turn API (TRN 3).
+// Service is the Turn API (TRN 3): protocol commits plus the Status read.
+// Driving a Run belongs to the host (REF-DRV): every method returns as soon
+// as its commit landed, with the response reflecting the committed state.
 type Service interface {
 	Start(context.Context, StartRequest) (TurnResponse, error)
 	Deliver(context.Context, DeliverRequest) (TurnResponse, error)
-	Resume(context.Context, TurnRequest) (TurnResponse, error)
 	Retry(context.Context, RetryRequest) (TurnResponse, error)
 	Stop(context.Context, StopRequest) (TurnResponse, error)
 	Settle(context.Context, SettleRequest) (TurnResponse, error)
+	Status(context.Context, TurnRef) (TurnResponse, error)
 }
 
 // Coordinator has no hidden state (TRN-SCP-3): every method reads the turn
 // surface and the machine projection first. Writes and projection reads go
-// through the Session's Writer (TRN-SCP-4, TRN-API-1).
+// through the Session's Writer (TRN-SCP-4, TRN-API-1). It never drives a
+// Run: it commits protocol transitions and computes dispositions.
 type Coordinator struct {
-	Writers  extension.Writers
-	Runtime  run.Runtime
-	Profiles ProfileRegistry
+	Writers extension.Writers
+	Runtime run.Runtime
 	// Now stamps event times; nil selects time.Now.
 	Now func() time.Time
 }
@@ -213,7 +186,7 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 	if err != nil {
 		return TurnResponse{}, err
 	}
-	return c.drive(ctx, req.Ref, runID)
+	return c.respond(ctx, req.Ref, runID)
 }
 
 func (c *Coordinator) startGroup(commitID session.CommitID, turnID TurnID, inputIDs []chatlog.InputID, req StartRequest, facts []run.Fact, now int64) extension.SemanticGroup {
@@ -301,25 +274,10 @@ func (c *Coordinator) Deliver(ctx context.Context, req DeliverRequest) (TurnResp
 			return TurnResponse{}, err
 		}
 	}
-	return c.drive(ctx, req.Ref, runID)
+	return c.respond(ctx, req.Ref, runID)
 }
 
-// --- Resume / Retry / Stop / Settle ------------------------------------------------------
-
-func (c *Coordinator) Resume(ctx context.Context, req TurnRequest) (TurnResponse, error) {
-	surface, err := c.surface(ctx, req.Ref.SessionID)
-	if err != nil {
-		return TurnResponse{}, err
-	}
-	view, ok := surface.Turns[req.Ref.TurnID]
-	if !ok {
-		return TurnResponse{}, fmt.Errorf("%w: unknown turn %s", ErrConflict, req.Ref.TurnID)
-	}
-	if view.Status != TurnActive {
-		return c.responseFor(ctx, req.Ref, &view)
-	}
-	return c.drive(ctx, req.Ref, view.ActiveRun)
-}
+// --- Retry / Stop / Settle ------------------------------------------------------
 
 func (c *Coordinator) Retry(ctx context.Context, req RetryRequest) (TurnResponse, error) {
 	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
@@ -358,7 +316,7 @@ func (c *Coordinator) Retry(ctx context.Context, req RetryRequest) (TurnResponse
 	if err != nil {
 		return TurnResponse{}, err
 	}
-	return c.drive(ctx, req.Ref, runID)
+	return c.respond(ctx, req.Ref, runID)
 }
 
 // deliveredInputs rebuilds the AgentInputs of a Turn from the chatlog surface,
@@ -436,35 +394,16 @@ func (c *Coordinator) Settle(ctx context.Context, req SettleRequest) (TurnRespon
 	return c.respond(ctx, req.Ref, runID)
 }
 
-// --- Drive ----------------------------------------------------------------------------
+// --- Status ----------------------------------------------------------------------------
 
-func (c *Coordinator) drive(ctx context.Context, ref TurnRef, runID run.RunID) (TurnResponse, error) {
-	surface, err := c.surface(ctx, ref.SessionID)
-	if err != nil {
-		return TurnResponse{}, err
-	}
-	view := surface.Turns[ref.TurnID]
-	if view.Status == TurnActive {
-		driver, err := c.Profiles.Resolve(view.Profile)
-		if err != nil {
-			return TurnResponse{}, fmt.Errorf("%w: %v", ErrProfileUnavailable, err)
-		}
-		if err := driver.Drive(ctx, DriveRequest{Ref: ref, RunID: runID}); err != nil {
-			if errors.Is(err, ErrAlreadyDriving) {
-				resp, rerr := c.respond(ctx, ref, runID)
-				if rerr != nil {
-					return TurnResponse{}, rerr
-				}
-				resp.Disposition = ResumeAlreadyDriving
-				return resp, nil
-			}
-			return TurnResponse{}, err
-		}
-	}
-	return c.respond(ctx, ref, runID)
+// Status is the pure read: the Turn's committed state and the disposition of
+// its last attempt (TRN-STA-1). Hosts call it after driving to assemble the
+// conversational result; the disposition logic has this single source.
+func (c *Coordinator) Status(ctx context.Context, ref TurnRef) (TurnResponse, error) {
+	return c.respond(ctx, ref, "")
 }
 
-// respond reads the projections and fills the disposition (TRN-DRV-1).
+// respond reads the projections and fills the disposition (TRN-STA-1).
 func (c *Coordinator) respond(ctx context.Context, ref TurnRef, runID run.RunID) (TurnResponse, error) {
 	surface, err := c.surface(ctx, ref.SessionID)
 	if err != nil {

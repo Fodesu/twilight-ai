@@ -111,7 +111,7 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 | 第 8 节代码重构（kernel 收缩、Writer、Runtime 去 lease/grant、接管处置、conformance 重建） | 完成，2026-09-08；`agent/` 下 9 个测试包全部通过，kernel 与 RUN-CMP-2 的 conformance 均以 Store 为参数 |
 | 文件 adapter（`agent/session/filestore`）、live 模型接入 | 未开始 |
 
-2026-09-07 的代码行是第 8 节修订前的形态，已于 2026-09-08 按第 8 节重写。当前正式调用形态为 `agent/ref` 的 Memory 组装：`ref.New` 返回 Store、Registry、Writers、Runtime、Coordinator 与 Bindings；宿主对每个 Session 先 `Memory.Open`（取所有权并接管处置）再经 `SessionDriver.Send` 投递输入。Loop 不保存 authority state；Runtime 不读取 queue 或 planner context。
+2026-09-07 的代码行是第 8 节修订前的形态，已于 2026-09-08 按第 8 节重写。当前正式调用形态为 `agent/ref` 的 Memory 组装：`ref.New` 返回 Store、Registry、Writers、Runtime、Coordinator 与 Agents；宿主对每个 Session 先 `Memory.Open`（取所有权并接管处置）再经 `SessionDriver.Send` 投递输入。Coordinator 只做协议提交与状态读取（Status），驱动编排（解析 profile、调用 driver、组装结果、取消）在宿主层的 `Memory.Drive`（REF-DRV-1）。Loop 不保存 authority state；Runtime 不读取 queue 或 planner context。
 
 已决定（2026-09-07）：终态 Run 从 `twilight/run/machine` 投影移除后，`Runtime.Load` 对该 Run 按 RunID 过滤 replay 后折叠返回终态，`ErrRunNotFound` 只用于不存在的 RunID（RUN-CMT-1）。该路径为兜底：Loop 在模型结算返回终态 snapshot 时直接结束，不再 Load（RUN 第 7 节）；Coordinator 的 Deliver 与 Stop 从 turn surface 的 `AttemptView.SchemaVersion` 构造 envelope，不读 machine 投影（TRN-DLV-2、TRN-STP-1）。曾考虑在投影保留终态 Run 的最小记录，因投影会随历史增长而未采用。
 

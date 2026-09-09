@@ -92,6 +92,10 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	done := make(chan turn.TurnResponse, 1)
 	go func() {
 		resp, err := m.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Profile: binding, Companion: turn.CompanionV1Version})
+		if err == nil {
+			// The Coordinator only commits; the host drives (REF-DRV-1).
+			resp, err = m.Drive(ctx, ref1)
+		}
 		if err != nil {
 			t.Error(err)
 		}
@@ -122,7 +126,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 		return err == nil && len(surface.Turns["t1"].InputIDs) == 2
 	})
 	close(tool.release)
-	if resp := <-deliverDone; resp.Disposition != turn.ResumeAlreadyDriving && resp.Disposition != turn.ResumeFinished {
+	if resp := <-deliverDone; resp.Disposition != ref.ResumeAlreadyDriving && resp.Disposition != turn.ResumeFinished {
 		t.Fatalf("deliver disposition = %s", resp.Disposition)
 	}
 	resp := <-done
@@ -166,7 +170,9 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = m.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Profile: binding, Companion: turn.CompanionV1Version})
+		if _, err := m.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Profile: binding, Companion: turn.CompanionV1Version}); err == nil {
+			_, _ = m.Drive(ctx, ref1)
+		}
 	}()
 	<-tool.started
 

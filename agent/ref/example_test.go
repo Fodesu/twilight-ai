@@ -65,6 +65,10 @@ func Example_recoverableTurn() {
 	go func() {
 		_, err := p1.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
 			Profile: profile1, Companion: turn.CompanionV1Version})
+		if err == nil {
+			// The Coordinator only commits; the host drives (REF-DRV-1).
+			_, err = p1.Drive(ctx, ref1)
+		}
 		startDone <- err
 	}()
 	runID := waitForExecutingCall(ctx, p1, sid, ref1.TurnID)
@@ -90,7 +94,7 @@ func Example_recoverableTurn() {
 	}
 	fmt.Printf("process 2: took over; %d executing target disposed; chatlog has %d tool_result(s) with status %s\n", recovered, len(chat.ToolResults), toolResultStatus(&chat))
 
-	resp, err := p2.Coordinator.Resume(ctx, turn.TurnRequest{Ref: ref1})
+	resp, err := p2.Drive(ctx, ref1)
 	if err != nil {
 		panic(err)
 	}

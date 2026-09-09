@@ -106,6 +106,9 @@ func TestAppModuleSharesTheSessionStream(t *testing.T) {
 		Inputs: []run.AgentInput{in}, Profile: profile, Companion: turn.CompanionV1Version}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := m.Drive(ctx, turn.TurnRef{SessionID: sid, TurnID: "t1"}); err != nil {
+		t.Fatal(err)
+	}
 
 	// The app projection folded both its own event and the chatlog input.
 	state, _, err := m.Projection(ctx, sid, auditTrail, 1)

@@ -2,6 +2,7 @@ package ref
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -84,8 +85,42 @@ func New(opts Options) (*Memory, error) {
 	}
 	m := &Memory{Store: store, Registry: registry, Writers: writers, Runtime: runtime, BindingStore: bindings, Ledger: ledger, now: now}
 	m.Agents = NewAgents(runtime, writersProjections{writers}, opts.Sink)
-	m.Coordinator = &turn.Coordinator{Writers: writers, Runtime: runtime, Profiles: m.Agents, Now: now}
+	m.Coordinator = &turn.Coordinator{Writers: writers, Runtime: runtime, Now: now}
 	return m, nil
+}
+
+// Drive is REF-DRV-1, the host side the Coordinator no longer carries: while
+// the Turn is active, resolve its recorded profile and drive the active
+// attempt to the next quiescent point, then read the committed Status. The
+// caller's ctx bounds the drive, so cancellation is a host decision. A
+// concurrent local driver of the same Run yields ResumeAlreadyDriving.
+func (m *Memory) Drive(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse, error) {
+	surface, err := m.TurnSurface(ctx, ref.SessionID)
+	if err != nil {
+		return turn.TurnResponse{}, err
+	}
+	view, ok := surface.Turns[ref.TurnID]
+	if !ok {
+		return turn.TurnResponse{}, fmt.Errorf("%w: unknown turn %s", turn.ErrConflict, ref.TurnID)
+	}
+	if view.Status == turn.TurnActive {
+		driver, err := m.Agents.Resolve(view.Profile)
+		if err != nil {
+			return turn.TurnResponse{}, fmt.Errorf("%w: %v", ErrProfileUnavailable, err)
+		}
+		if err := driver.Drive(ctx, DriveRequest{Ref: ref, RunID: view.ActiveRun}); err != nil {
+			if errors.Is(err, ErrAlreadyDriving) {
+				resp, rerr := m.Coordinator.Status(ctx, ref)
+				if rerr != nil {
+					return turn.TurnResponse{}, rerr
+				}
+				resp.Disposition = ResumeAlreadyDriving
+				return resp, nil
+			}
+			return turn.TurnResponse{}, err
+		}
+	}
+	return m.Coordinator.Status(ctx, ref)
 }
 
 // writersProjections reads projections through the Session's Writer.
@@ -124,7 +159,7 @@ func (m *Memory) EnsureSession(ctx context.Context, sid session.SessionID) error
 }
 
 // Open takes ownership of the Session and runs the takeover disposition
-// (REF-DRV-4, RUN-CMT-7). It returns the number of recovery commands issued.
+// (REF-DRV-5, RUN-CMT-7). It returns the number of recovery commands issued.
 func (m *Memory) Open(ctx context.Context, sid session.SessionID) (int, error) {
 	if _, err := m.Writers.Writer(ctx, sid); err != nil {
 		return 0, err
@@ -200,7 +235,8 @@ type SessionDriver struct {
 	NewTurnID func() turn.TurnID
 }
 
-// Send is REF-DRV-1: Deliver into the active Turn, or Start a new one.
+// Send is REF-DRV-2: commit the input's route (Deliver into the active Turn,
+// or Start a new one), then drive the Turn to its next quiescent point.
 func (d *SessionDriver) Send(ctx context.Context, sid session.SessionID, inputs []run.AgentInput) (turn.TurnResponse, error) {
 	newTurnID := d.NewTurnID
 	if newTurnID == nil {
@@ -210,19 +246,28 @@ func (d *SessionDriver) Send(ctx context.Context, sid session.SessionID, inputs 
 	if err != nil {
 		return turn.TurnResponse{}, err
 	}
+	var ref turn.TurnRef
 	if active, ok := surface.Active(); ok {
-		return d.Coordinator.Deliver(ctx, turn.DeliverRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: active.TurnID}, Inputs: inputs})
-	}
-	for _, v := range surface.Turns {
-		if v.Status == turn.TurnAttemptFailed {
-			return turn.TurnResponse{}, fmt.Errorf("%w: turn %s awaits Retry or Settle", turn.ErrConflict, v.TurnID)
+		ref = turn.TurnRef{SessionID: sid, TurnID: active.TurnID}
+		if _, err := d.Coordinator.Deliver(ctx, turn.DeliverRequest{Ref: ref, Inputs: inputs}); err != nil {
+			return turn.TurnResponse{}, err
+		}
+	} else {
+		for _, v := range surface.Turns {
+			if v.Status == turn.TurnAttemptFailed {
+				return turn.TurnResponse{}, fmt.Errorf("%w: turn %s awaits Retry or Settle", turn.ErrConflict, v.TurnID)
+			}
+		}
+		ref = turn.TurnRef{SessionID: sid, TurnID: newTurnID()}
+		if _, err := d.Coordinator.Start(ctx, turn.StartRequest{Ref: ref, Inputs: inputs,
+			Profile: d.Profile, Companion: d.Companion}); err != nil {
+			return turn.TurnResponse{}, err
 		}
 	}
-	return d.Coordinator.Start(ctx, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: newTurnID()}, Inputs: inputs,
-		Profile: d.Profile, Companion: d.Companion})
+	return d.Memory.Drive(ctx, ref)
 }
 
-// OnTurnSettled is REF-DRV-2: start the next Turn from the backlog of
+// OnTurnSettled is REF-DRV-3: start the next Turn from the backlog of
 // submitted, undelivered inputs.
 func (d *SessionDriver) OnTurnSettled(ctx context.Context, sid session.SessionID) (turn.TurnResponse, bool, error) {
 	surface, err := d.Memory.ChatlogSurface(ctx, sid)

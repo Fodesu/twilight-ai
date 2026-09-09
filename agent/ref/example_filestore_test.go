@@ -83,7 +83,7 @@ func Example_jsonlPrototype() {
 	}()
 	<-stage1.started
 
-	// Steer: a second Send while turn-1 runs routes to Deliver (REF-DRV-1).
+	// Steer: a second Send while turn-1 runs routes to Deliver (REF-DRV-2).
 	in2, err := p1.SubmitInput(ctx, sid, "in-2", "and tomorrow?")
 	if err != nil {
 		panic(err)
@@ -118,7 +118,7 @@ func Example_jsonlPrototype() {
 	resp1 := <-turn1Done
 	fmt.Printf("turn-1: %s\n", resp1.Status)
 
-	// Turn 2 opens from the backlog (REF-DRV-2); its tool call blocks and the
+	// Turn 2 opens from the backlog (REF-DRV-3); its tool call blocks and the
 	// process dies while the call is Executing.
 	stage2 := tool.stage()
 	turn2Err := make(chan error, 1)
@@ -147,7 +147,7 @@ func Example_jsonlPrototype() {
 	}
 	fmt.Printf("process 2: took over; %d executing target disposed\n", recovered)
 
-	resp2, err := p2.Coordinator.Resume(ctx, turn.TurnRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "turn-2"}})
+	resp2, err := p2.Drive(ctx, turn.TurnRef{SessionID: sid, TurnID: "turn-2"})
 	if err != nil {
 		panic(err)
 	}
