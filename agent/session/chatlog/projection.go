@@ -296,7 +296,7 @@ func copyIDs(m map[ToolResultID]ToolResultID) map[ToolResultID]ToolResultID {
 func ContextFold(events []extension.DecodedEvent) ([]Entry, error) {
 	state, _ := ContextProjection.Initial()
 	for _, e := range events {
-		if e.ModuleID != ModuleID || e.Unknown {
+		if e.Module != extension.TwilightModule(ModuleID) || e.Unknown {
 			return nil, errors.New("chatlog: context fold requires decoded chatlog events")
 		}
 		next, err := applyContext(state, e)

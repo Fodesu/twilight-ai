@@ -120,14 +120,15 @@ func def[T any](typ session.EventType, check func(*T) error) extension.EventDefi
 // Module declares the turn events, the surface projection and the Requires of
 // TRN-SCP-1: run (created, input_accepted, ended v1) and chatlog (present).
 var Module = extension.ModuleDescriptor{
-	ID: ModuleID,
+	Source: extension.SourceTwilight,
+	ID:     ModuleID,
 	Requires: []extension.ModuleRequirement{
-		{Module: runmod.ModuleID, Events: map[session.EventType][]extension.PayloadVersion{
+		{Source: extension.SourceTwilight, Module: runmod.ModuleID, Events: map[session.EventType][]extension.PayloadVersion{
 			runmod.Prefix + "run_created":    {1},
 			runmod.Prefix + "input_accepted": {1},
 			runmod.Prefix + "run_ended":      {1},
 		}},
-		{Module: chatlog.ModuleID},
+		{Source: extension.SourceTwilight, Module: chatlog.ModuleID},
 	},
 	Events: []extension.EventDefinition{
 		def[StartedPayload](TypeStarted, func(p *StartedPayload) error {

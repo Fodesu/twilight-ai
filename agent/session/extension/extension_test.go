@@ -27,13 +27,16 @@ var refsExtractor = BindingExtractorFunc(func(value any) ([]artifact.BindingID, 
 	return out, nil
 })
 
+// tpfx is the first-party prefix of a test module.
+func tpfx(id ModuleID) session.EventType { return ModulePrefix(SourceTwilight, id) }
+
 func noteModule(id ModuleID, requires ...ModuleRequirement) ModuleDescriptor {
-	typ := ModulePrefix(id) + "note"
-	return ModuleDescriptor{ID: id, Requires: requires,
+	typ := tpfx(id) + "note"
+	return ModuleDescriptor{Source: SourceTwilight, ID: id, Requires: requires,
 		Events: []EventDefinition{
 			{Type: typ, Current: 1, Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
 				Bindings: []BindingReferenceDefinition{{Extractor: refsExtractor, RequiredDurability: artifact.EventBound}}},
-			{Type: ModulePrefix(id) + "hint", Current: 1, Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}}, Ignorable: true},
+			{Type: tpfx(id) + "hint", Current: 1, Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}}, Ignorable: true},
 		},
 		Projections: []ProjectionDefinition{{
 			ID: ProjectionID(string(typ) + "s"), Version: 1, Consumes: []session.EventType{typ},
@@ -54,12 +57,12 @@ func noteModule(id ModuleID, requires ...ModuleRequirement) ModuleDescriptor {
 
 func TestBuildRegistryValidatesRequires(t *testing.T) {
 	cases := map[string][]ModuleDescriptor{
-		"unregistered dependency": {noteModule("a", ModuleRequirement{Module: "zzz"})},
-		"cycle":                   {noteModule("a", ModuleRequirement{Module: "b"}), noteModule("b", ModuleRequirement{Module: "a"})},
-		"unhandled version": {noteModule("a"), noteModule("b", ModuleRequirement{Module: "a",
-			Events: map[session.EventType][]PayloadVersion{ModulePrefix("a") + "note": {2}}})},
-		"event outside module": {{ID: "a", Events: []EventDefinition{{Type: "twilight/b/x", Current: 1, Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}}}}}},
-		"projection outside scope": {noteModule("a"), {ID: "b", Projections: []ProjectionDefinition{{ID: "p", Version: 1, Consumes: []session.EventType{ModulePrefix("a") + "note"},
+		"unregistered dependency": {noteModule("a", ModuleRequirement{Source: SourceTwilight, Module: "zzz"})},
+		"cycle":                   {noteModule("a", ModuleRequirement{Source: SourceTwilight, Module: "b"}), noteModule("b", ModuleRequirement{Source: SourceTwilight, Module: "a"})},
+		"unhandled version": {noteModule("a"), noteModule("b", ModuleRequirement{Source: SourceTwilight, Module: "a",
+			Events: map[session.EventType][]PayloadVersion{tpfx("a") + "note": {2}}})},
+		"event outside module": {{Source: SourceTwilight, ID: "a", Events: []EventDefinition{{Type: "twilight/b/x", Current: 1, Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}}}}}},
+		"projection outside scope": {noteModule("a"), {Source: SourceTwilight, ID: "b", Projections: []ProjectionDefinition{{ID: "p", Version: 1, Consumes: []session.EventType{tpfx("a") + "note"},
 			Initial: func() (any, error) { return nil, nil }, Apply: func(s any, _ DecodedEvent) (any, error) { return s, nil }, StateCodec: JSONStateCodec[noteState]{}}}}},
 	}
 	for name, modules := range cases {
@@ -67,9 +70,48 @@ func TestBuildRegistryValidatesRequires(t *testing.T) {
 			t.Errorf("%s: registry built", name)
 		}
 	}
-	if _, err := BuildRegistry(session.ProtocolVersion1, noteModule("a"), noteModule("b", ModuleRequirement{Module: "a",
-		Events: map[session.EventType][]PayloadVersion{ModulePrefix("a") + "note": {1}}})); err != nil {
+	if _, err := BuildRegistry(session.ProtocolVersion1, noteModule("a"), noteModule("b", ModuleRequirement{Source: SourceTwilight, Module: "a",
+		Events: map[session.EventType][]PayloadVersion{tpfx("a") + "note": {1}}})); err != nil {
 		t.Fatalf("valid registry: %v", err)
+	}
+}
+
+// srcModule is a minimal module under an arbitrary source.
+func srcModule(source SourceID, id ModuleID) ModuleDescriptor {
+	return ModuleDescriptor{Source: source, ID: id, Events: []EventDefinition{{
+		Type: ModulePrefix(source, id) + "note", Current: 1,
+		Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
+	}}}
+}
+
+// EXT-REG-1: module identity is (Source, ID); sources are validated segments.
+func TestBuildRegistryValidatesSource(t *testing.T) {
+	rejects := map[string][]ModuleDescriptor{
+		"empty source":           {srcModule("", "a")},
+		"source with slash":      {srcModule("x/y", "a")},
+		"source not utf8":        {srcModule(SourceID([]byte{0xff, 0xfe}), "a")},
+		"duplicate (source, id)": {srcModule("app", "a"), srcModule("app", "a")},
+		"app id colliding first-party under twilight": {noteModule("a"), srcModule(SourceTwilight, "a")},
+		"requirement without source":                  {noteModule("a"), {Source: "app", ID: "b", Requires: []ModuleRequirement{{Module: "a"}}}},
+	}
+	for name, modules := range rejects {
+		if _, err := BuildRegistry(session.ProtocolVersion1, modules...); err == nil {
+			t.Errorf("%s: registry built", name)
+		}
+	}
+	// The same ID under two sources coexists and both prefixes resolve.
+	r, err := BuildRegistry(session.ProtocolVersion1, noteModule("a"), srcModule("app", "a"))
+	if err != nil {
+		t.Fatalf("two sources, one id: %v", err)
+	}
+	if key, ok := r.ModuleOf("app/a/note"); !ok || key != (ModuleKey{Source: "app", ID: "a"}) {
+		t.Fatalf("ModuleOf app/a/note = %+v %v", key, ok)
+	}
+	if key, ok := r.ModuleOf(tpfx("a") + "note"); !ok || key != TwilightModule("a") {
+		t.Fatalf("ModuleOf twilight/a/note = %+v %v", key, ok)
+	}
+	if _, ok := r.ModuleOf("ghost/a/note"); ok {
+		t.Fatal("unregistered source resolved")
 	}
 }
 
@@ -79,7 +121,7 @@ func TestRegistryPayloadVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	typ := ModulePrefix("a") + "note"
+	typ := tpfx("a") + "note"
 	wire, v, err := r.Encode(typ, notePayload{Text: "hi"})
 	if err != nil || v != 1 || wire.String() != `{"text":"hi","v":1}` {
 		t.Fatalf("encode = %s v%d %v", wire, v, err)
@@ -136,7 +178,7 @@ func noteGroup(id string, texts ...string) CommitFn {
 	return func(View) (*SemanticGroup, error) {
 		g := &SemanticGroup{CommitID: session.CommitID(id)}
 		for _, tx := range texts {
-			g.Events = append(g.Events, TypedEvent{Type: ModulePrefix("a") + "note", Value: notePayload{Text: tx}})
+			g.Events = append(g.Events, TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: tx}})
 		}
 		return g, nil
 	}
@@ -144,7 +186,7 @@ func noteGroup(id string, texts ...string) CommitFn {
 
 func notes(t *testing.T, w Writer) []string {
 	t.Helper()
-	state, _, err := w.Projections().Load(context.Background(), "s", ProjectionID(string(ModulePrefix("a"))+"notes"), 1)
+	state, _, err := w.Projections().Load(context.Background(), "s", ProjectionID(string(tpfx("a"))+"notes"), 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +239,7 @@ func TestWriterCommitReplayAndRebuild(t *testing.T) {
 		if rows, ok := v.LookupCommit("c1"); !ok || len(rows) != 2 {
 			t.Fatal("view lookup failed")
 		}
-		if s, err := v.Projection(ProjectionID(string(ModulePrefix("a"))+"notes"), 1); err != nil || len(s.(noteState).Notes) != 2 {
+		if s, err := v.Projection(ProjectionID(string(tpfx("a"))+"notes"), 1); err != nil || len(s.(noteState).Notes) != 2 {
 			t.Fatalf("view projection = %+v %v", s, err)
 		}
 		return nil, nil
@@ -225,7 +267,7 @@ func TestWriterCommitReplayAndRebuild(t *testing.T) {
 		t.Fatalf("index not rebuilt: %+v", again)
 	}
 	reader := NewProjectionReader(f.store, f.registry, nil)
-	state, through, err := reader.Load(ctx, "s", ProjectionID(string(ModulePrefix("a"))+"notes"), 1)
+	state, through, err := reader.Load(ctx, "s", ProjectionID(string(tpfx("a"))+"notes"), 1)
 	if err != nil || len(state.(noteState).Notes) != 2 || through.Next != 2 {
 		t.Fatalf("store reader = %+v %+v %v", state, through, err)
 	}
@@ -273,7 +315,7 @@ func TestProjectionUnknownEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	hint, _ := w.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c2", Events: []TypedEvent{{Type: ModulePrefix("a") + "hint", Value: notePayload{Text: "h"}}}}, nil
+		return &SemanticGroup{CommitID: "c2", Events: []TypedEvent{{Type: tpfx("a") + "hint", Value: notePayload{Text: "h"}}}}, nil
 	})
 	if hint.Outcome != CommitApplied || !hint.Events[0].Ignorable {
 		t.Fatalf("ignorable definition not applied to the row: %+v", hint)
@@ -312,13 +354,13 @@ func TestWriterClaimsAndReconcile(t *testing.T) {
 	}
 	w := f.open(t, false)
 	res, err := w.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c1", Events: []TypedEvent{{Type: ModulePrefix("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}}}}, nil
+		return &SemanticGroup{CommitID: "c1", Events: []TypedEvent{{Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}}}}, nil
 	})
 	if err != nil || res.Outcome != CommitApplied || res.Claim == nil || res.Claim.State != artifact.ClaimActive {
 		t.Fatalf("commit with binding = %+v %v", res, err)
 	}
 	missing, _ := w.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c2", Events: []TypedEvent{{Type: ModulePrefix("a") + "note", Value: notePayload{Text: "x", Refs: []string{"nope"}}}}}, nil
+		return &SemanticGroup{CommitID: "c2", Events: []TypedEvent{{Type: tpfx("a") + "note", Value: notePayload{Text: "x", Refs: []string{"nope"}}}}}, nil
 	})
 	if missing.Outcome != CommitInvalid {
 		t.Fatalf("unknown binding = %+v", missing)
@@ -348,7 +390,7 @@ func TestProjectionCache(t *testing.T) {
 	ctx := context.Background()
 	w := f.open(t, false)
 	defer w.Close(ctx)
-	id := ProjectionID(string(ModulePrefix("a")) + "notes")
+	id := ProjectionID(string(tpfx("a")) + "notes")
 	_, _ = w.Commit(ctx, noteGroup("c1", "one"))
 	cache := NewMemoryProjectionCache()
 	state, through, _ := w.Projections().Load(ctx, "s", id, 1)

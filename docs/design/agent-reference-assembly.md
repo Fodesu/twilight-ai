@@ -129,7 +129,7 @@ func (s *Session) Close(ctx) error                   // 只释放本 Session 的
 
 ```text
 sessionStore = session.NewMemoryStore()                       // Create、Header、Open、Read（SES 第 4 至 6 节）
-registry     = extension.BuildRegistry(protocolVersion, chatlog.Module, turn.Module, runmod.Module)
+registry     = extension.BuildRegistry(protocolVersion, chatlog.Module, turn.Module, runmod.Module, opts.Modules...)   // app module 经 Options.Modules 注册（EXT 第 8 节）
 bindingStore = artifact.NewMemoryBindingStore()
 ledger       = artifact.NewMemoryLedger(bindingStore)          // 自持久化；claim 先于 Append 建立
 writers      = extension.NewWriters(sessionStore, registry, ledger, openOptions)   // 每 Session 一个 Writer（EXT-WRT-6）
@@ -161,3 +161,5 @@ driver.OnTurnSettled                           // 有积压的 submitted 输入 
 每一行"组"是一次 `Writer.Commit`，落为 stream 中 CommitID 相同、Index 连续的若干行（SES-APP-1）。
 
 参考 agent 的工具 ResponsePolicy 为 `DirectExecution`。ContextFold 在无 checkpoint 时输出全部有效条目。
+
+**REF-MEM-1（app module 开口）** `Options.Modules` 把 application module（EXT 第 8 节）追加进 Registry，须使用自有 Source。app module 的读写走既有入口，装配不另设通道：写事件经 `Memory.Writers` 取该 Session 的 Writer 后 `Commit`（与 `SubmitInput` 同路径）；读自己的投影经 `Memory.Projection(ctx, sid, id, version)`（`ChatlogSurface`/`TurnSurface` 是它对 first-party 投影的封装）。

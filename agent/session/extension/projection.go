@@ -26,7 +26,7 @@ type ProjectionDefinition struct {
 type projectionScope struct {
 	def      ProjectionDefinition
 	consumes map[session.EventType]struct{}
-	modules  map[ModuleID]struct{}
+	modules  map[ModuleKey]struct{}
 	types    []session.EventType
 }
 
@@ -40,7 +40,7 @@ func (r *Registry) scopeFor(id ProjectionID, v ProjectionVersion) (*projectionSc
 		s.consumes[t] = struct{}{}
 	}
 	for m := range s.modules {
-		s.types = append(s.types, ModulePrefix(m))
+		s.types = append(s.types, ModulePrefix(m.Source, m.ID))
 	}
 	return s, nil
 }
@@ -77,7 +77,7 @@ func (r *Registry) applyRow(s *projectionScope, state any, row *session.SessionE
 		}
 		module, known := r.ModuleOf(row.Type)
 		if _, inScope := s.modules[module]; known && inScope && !row.Ignorable {
-			return nil, &Error{Code: ErrUnknownEvent, Type: row.Type, Detail: fmt.Sprintf("projection %q: unregistered non-ignorable event of module %q at seq %d", s.def.ID, module, row.Seq)}
+			return nil, &Error{Code: ErrUnknownEvent, Type: row.Type, Detail: fmt.Sprintf("projection %q: unregistered non-ignorable event of module %s/%s at seq %d", s.def.ID, module.Source, module.ID, row.Seq)}
 		}
 		return state, nil
 	}

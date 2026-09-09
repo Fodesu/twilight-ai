@@ -1,0 +1,155 @@
+package ref_test
+
+import (
+	"context"
+	"strings"
+	"testing"
+
+	"github.com/felinics/twilight/agent/ref"
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/chatlog"
+	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/turn"
+)
+
+// The example application module: source "example", module "audit". It records
+// audit notes as its own durable events and folds a trail projection over its
+// notes plus the chatlog inputs it Requires.
+const (
+	auditSource extension.SourceID     = "example"
+	auditID     extension.ModuleID     = "audit"
+	auditTrail  extension.ProjectionID = "example/audit/trail"
+)
+
+var auditNoteType = extension.ModulePrefix(auditSource, auditID) + "note"
+
+type auditNote struct {
+	InputID string `json:"inputId"`
+	Text    string `json:"text"`
+}
+
+type auditState struct {
+	Inputs []string `json:"inputs"`
+	Notes  []string `json:"notes"`
+}
+
+var auditModule = extension.ModuleDescriptor{
+	Source: auditSource,
+	ID:     auditID,
+	Requires: []extension.ModuleRequirement{{
+		Source: extension.SourceTwilight, Module: chatlog.ModuleID,
+		Events: map[session.EventType][]extension.PayloadVersion{chatlog.TypeInputSubmitted: {1}},
+	}},
+	Events: []extension.EventDefinition{{
+		Type: auditNoteType, Current: 1,
+		Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[auditNote]{}},
+	}},
+	Projections: []extension.ProjectionDefinition{{
+		ID: auditTrail, Version: 1,
+		Consumes: []session.EventType{auditNoteType, chatlog.TypeInputSubmitted},
+		Initial:  func() (any, error) { return auditState{}, nil },
+		Apply: func(state any, e extension.DecodedEvent) (any, error) {
+			s := state.(auditState)
+			switch v := e.Value.(type) {
+			case auditNote:
+				s.Notes = append(append([]string(nil), s.Notes...), v.Text)
+			case chatlog.InputSubmittedPayload:
+				s.Inputs = append(append([]string(nil), s.Inputs...), string(v.InputID))
+			}
+			return s, nil
+		},
+		StateCodec: extension.JSONStateCodec[auditState]{},
+	}},
+}
+
+// An application module registered through Options.Modules writes its own
+// events into the Session stream and folds its own projection, while the
+// first-party projections skip its rows as out-of-scope (EXT-REG-1, EXT-PRJ-2).
+func TestAppModuleSharesTheSessionStream(t *testing.T) {
+	ctx := context.Background()
+	m, err := ref.New(ref.Options{Modules: []extension.ModuleDescriptor{auditModule}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const sid session.SessionID = "s-app"
+	if err := m.EnsureSession(ctx, sid); err != nil {
+		t.Fatal(err)
+	}
+	agent, err := ref.NewAgent("m-1", &scriptedRequests{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := m.Agents.Register("b1", agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	in, err := m.SubmitInput(ctx, sid, "in-1", "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The app module commits its own event through the shared Writer.
+	w, err := m.Writers.Writer(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := w.Commit(ctx, func(extension.View) (*extension.SemanticGroup, error) {
+		return &extension.SemanticGroup{CommitID: "audit/n1", Events: []extension.TypedEvent{{
+			Type: auditNoteType, RecordedAtUnixMilli: 1, Value: auditNote{InputID: "in-1", Text: "flagged"},
+		}}}, nil
+	})
+	if err != nil || res.Outcome != extension.CommitApplied {
+		t.Fatalf("audit commit = %+v %v", res, err)
+	}
+	if _, err := m.Coordinator.Start(ctx, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},
+		Inputs: []run.AgentInput{in}, Profile: profile, Companion: turn.CompanionV1Version}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The app projection folded both its own event and the chatlog input.
+	state, _, err := m.Projection(ctx, sid, auditTrail, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trail := state.(auditState)
+	if len(trail.Inputs) != 1 || trail.Inputs[0] != "in-1" || len(trail.Notes) != 1 || trail.Notes[0] != "flagged" {
+		t.Fatalf("audit trail = %+v", trail)
+	}
+
+	// First-party projections fold across the app rows untouched.
+	chat, err := m.ChatlogSurface(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := chat.Inputs["in-1"].Status; got != chatlog.InputDelivered {
+		t.Fatalf("input status = %s", got)
+	}
+	tsurf, err := m.TurnSurface(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tsurf.Turns["t1"].Status != turn.TurnCompleted {
+		t.Fatalf("turn status = %s", tsurf.Turns["t1"].Status)
+	}
+
+	// Both sources coexist in one stream.
+	page, err := m.Store.Read(ctx, session.ReadRequest{SessionID: sid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var app, core int
+	for _, e := range page.Events {
+		switch {
+		case strings.HasPrefix(string(e.Type), string(extension.ModulePrefix(auditSource, auditID))):
+			app++
+		case strings.HasPrefix(string(e.Type), "twilight/"):
+			core++
+		default:
+			t.Fatalf("unexpected type %s", e.Type)
+		}
+	}
+	if app != 1 || core < 3 {
+		t.Fatalf("stream mix: app=%d core=%d", app, core)
+	}
+}

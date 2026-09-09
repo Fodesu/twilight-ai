@@ -121,7 +121,7 @@ func (c factCodec) Decode(wire jsonstable.Value) (any, error) {
 var Module = buildModule()
 
 func buildModule() extension.ModuleDescriptor {
-	m := extension.ModuleDescriptor{ID: ModuleID, Projections: []extension.ProjectionDefinition{MachineProjection}}
+	m := extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: ModuleID, Projections: []extension.ProjectionDefinition{MachineProjection}}
 	for _, name := range factNames {
 		m.Events = append(m.Events, extension.EventDefinition{
 			Type:    Prefix + session.EventType(name),

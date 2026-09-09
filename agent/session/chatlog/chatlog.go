@@ -387,7 +387,8 @@ func def[T any](typ session.EventType, check func(*T) error, bindings ...extensi
 
 // Module is the chatlog ModuleDescriptor (CHT-SCP-1: no Requires).
 var Module = extension.ModuleDescriptor{
-	ID: ModuleID,
+	Source: extension.SourceTwilight,
+	ID:     ModuleID,
 	Events: []extension.EventDefinition{
 		def[InputSubmittedPayload](TypeInputSubmitted, func(p *InputSubmittedPayload) error {
 			if p.InputID == "" || p.Content.IsZero() {

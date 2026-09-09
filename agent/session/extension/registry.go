@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/session"
@@ -23,7 +24,18 @@ type (
 	PayloadVersion    uint16
 )
 
+// SourceTwilight is the source reserved for this repository's first-party
+// modules; application modules register under their own SourceID (EXT-REG-1).
 const SourceTwilight SourceID = "twilight"
+
+// ModuleKey is the registry identity of one module: (Source, ID).
+type ModuleKey struct {
+	Source SourceID
+	ID     ModuleID
+}
+
+// TwilightModule is the ModuleKey of a first-party module.
+func TwilightModule(id ModuleID) ModuleKey { return ModuleKey{Source: SourceTwilight, ID: id} }
 
 // PayloadCodec encodes and decodes one payload version. Encode never writes
 // the `v` field: the Registry adds it (EXT-COD-2).
@@ -45,38 +57,47 @@ type EventDefinition struct {
 }
 
 // ModuleRequirement declares that a module consumes another module's events
-// and which payload versions it can handle (EXT-REG-4).
+// and which payload versions it can handle (EXT-REG-4). Source is required:
+// module identity is the (Source, ID) pair.
 type ModuleRequirement struct {
+	Source SourceID
 	Module ModuleID
 	Events map[session.EventType][]PayloadVersion
 }
 
+// Key is the identity the requirement points at.
+func (r ModuleRequirement) Key() ModuleKey { return ModuleKey{Source: r.Source, ID: r.Module} }
+
 type ModuleDescriptor struct {
+	Source      SourceID
 	ID          ModuleID
 	Requires    []ModuleRequirement
 	Events      []EventDefinition
 	Projections []ProjectionDefinition
 }
 
+// Key is the module's registry identity.
+func (m ModuleDescriptor) Key() ModuleKey { return ModuleKey{Source: m.Source, ID: m.ID} }
+
 type DecodedEvent struct {
-	Event    session.SessionEvent
-	ModuleID ModuleID
-	Version  PayloadVersion
-	Value    any
-	Unknown  bool
+	Event   session.SessionEvent
+	Module  ModuleKey
+	Version PayloadVersion
+	Value   any
+	Unknown bool
 }
 
 // Registry is the immutable index built once at startup (EXT-REG-1).
 type Registry struct {
 	ProtocolVersion uint16
 
-	modules     map[ModuleID]ModuleDescriptor
+	modules     map[ModuleKey]ModuleDescriptor
 	events      map[session.EventType]eventEntry
 	projections map[projectionKey]projectionEntry
 }
 
 type eventEntry struct {
-	module ModuleID
+	module ModuleKey
 	def    EventDefinition
 }
 
@@ -86,8 +107,22 @@ type projectionKey struct {
 }
 
 type projectionEntry struct {
-	module ModuleID
+	module ModuleKey
 	def    ProjectionDefinition
+}
+
+// validSegment checks one identity segment of an EventType prefix.
+func validSegment(kind, v string) error {
+	if v == "" {
+		return fmt.Errorf("empty %s", kind)
+	}
+	if strings.Contains(v, "/") {
+		return fmt.Errorf("%s %q contains %q", kind, v, "/")
+	}
+	if !utf8.ValidString(v) {
+		return fmt.Errorf("%s is not valid UTF-8", kind)
+	}
+	return nil
 }
 
 // BuildRegistry validates the module set and freezes the indexes.
@@ -96,19 +131,23 @@ func BuildRegistry(protocolVersion uint16, modules ...ModuleDescriptor) (*Regist
 		return nil, errors.New("extension: registry: zero protocol version")
 	}
 	r := &Registry{ProtocolVersion: protocolVersion,
-		modules: make(map[ModuleID]ModuleDescriptor), events: make(map[session.EventType]eventEntry), projections: make(map[projectionKey]projectionEntry)}
+		modules: make(map[ModuleKey]ModuleDescriptor), events: make(map[session.EventType]eventEntry), projections: make(map[projectionKey]projectionEntry)}
 	for _, m := range modules {
-		if m.ID == "" || strings.Contains(string(m.ID), "/") {
-			return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("invalid module id %q", m.ID)}
+		if err := validSegment("source", string(m.Source)); err != nil {
+			return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("module %q: %v", m.ID, err)}
 		}
-		if _, dup := r.modules[m.ID]; dup {
-			return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("duplicate module %q", m.ID)}
+		if err := validSegment("module id", string(m.ID)); err != nil {
+			return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("source %q: %v", m.Source, err)}
 		}
-		r.modules[m.ID] = m
-		prefix := ModulePrefix(m.ID)
+		key := m.Key()
+		if _, dup := r.modules[key]; dup {
+			return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("duplicate module %s/%s", key.Source, key.ID)}
+		}
+		r.modules[key] = m
+		prefix := ModulePrefix(m.Source, m.ID)
 		for _, def := range m.Events {
 			if !strings.HasPrefix(string(def.Type), string(prefix)) || len(def.Type) == len(prefix) {
-				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: fmt.Sprintf("event type is not under module %q", m.ID)}
+				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: fmt.Sprintf("event type is not under module %s/%s", key.Source, key.ID)}
 			}
 			if _, dup := r.events[def.Type]; dup {
 				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "duplicate event type"}
@@ -121,7 +160,7 @@ func BuildRegistry(protocolVersion uint16, modules ...ModuleDescriptor) (*Regist
 					return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: err.Error()}
 				}
 			}
-			r.events[def.Type] = eventEntry{module: m.ID, def: def}
+			r.events[def.Type] = eventEntry{module: key, def: def}
 		}
 		for _, p := range m.Projections {
 			if p.ID == "" || p.Version == 0 || p.Initial == nil || p.Apply == nil || p.StateCodec == nil {
@@ -131,7 +170,7 @@ func BuildRegistry(protocolVersion uint16, modules ...ModuleDescriptor) (*Regist
 			if _, dup := r.projections[k]; dup {
 				return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("duplicate projection %q v%d", p.ID, p.Version)}
 			}
-			r.projections[k] = projectionEntry{module: m.ID, def: p}
+			r.projections[k] = projectionEntry{module: key, def: p}
 		}
 	}
 	if err := r.checkRequirements(); err != nil {
@@ -143,39 +182,43 @@ func BuildRegistry(protocolVersion uint16, modules ...ModuleDescriptor) (*Regist
 // checkRequirements enforces EXT-REG-4: registered dependencies, no cycles,
 // projection consumption within scope, and handled payload versions.
 func (r *Registry) checkRequirements() error {
-	state := make(map[ModuleID]int) // 0 unvisited, 1 visiting, 2 done
-	var visit func(ModuleID) error
-	visit = func(id ModuleID) error {
-		switch state[id] {
+	state := make(map[ModuleKey]int) // 0 unvisited, 1 visiting, 2 done
+	var visit func(ModuleKey) error
+	visit = func(key ModuleKey) error {
+		switch state[key] {
 		case 1:
-			return &Error{Code: ErrInvalid, Detail: fmt.Sprintf("module requirement cycle through %q", id)}
+			return &Error{Code: ErrInvalid, Detail: fmt.Sprintf("module requirement cycle through %s/%s", key.Source, key.ID)}
 		case 2:
 			return nil
 		}
-		state[id] = 1
-		for _, req := range r.modules[id].Requires {
-			dep, ok := r.modules[req.Module]
+		state[key] = 1
+		for _, req := range r.modules[key].Requires {
+			if req.Source == "" {
+				return &Error{Code: ErrInvalid, Detail: fmt.Sprintf("module %s/%s: requirement on %q has no source", key.Source, key.ID, req.Module)}
+			}
+			depKey := req.Key()
+			dep, ok := r.modules[depKey]
 			if !ok {
-				return &Error{Code: ErrInvalid, Detail: fmt.Sprintf("module %q requires unregistered module %q", id, req.Module)}
+				return &Error{Code: ErrInvalid, Detail: fmt.Sprintf("module %s/%s requires unregistered module %s/%s", key.Source, key.ID, depKey.Source, depKey.ID)}
 			}
 			for typ, versions := range req.Events {
 				entry, ok := r.events[typ]
-				if !ok || entry.module != dep.ID {
-					return &Error{Code: ErrInvalid, Type: typ, Detail: fmt.Sprintf("module %q requires event not owned by %q", id, req.Module)}
+				if !ok || entry.module != dep.Key() {
+					return &Error{Code: ErrInvalid, Type: typ, Detail: fmt.Sprintf("module %s/%s requires event not owned by %s/%s", key.Source, key.ID, depKey.Source, depKey.ID)}
 				}
 				if !containsVersion(versions, entry.def.Current) {
-					return &Error{Code: ErrInvalid, Type: typ, Detail: fmt.Sprintf("module %q handles versions %v but %q currently writes v%d", id, versions, req.Module, entry.def.Current)}
+					return &Error{Code: ErrInvalid, Type: typ, Detail: fmt.Sprintf("module %s/%s handles versions %v but %s/%s currently writes v%d", key.Source, key.ID, versions, depKey.Source, depKey.ID, entry.def.Current)}
 				}
 			}
-			if err := visit(req.Module); err != nil {
+			if err := visit(depKey); err != nil {
 				return err
 			}
 		}
-		state[id] = 2
+		state[key] = 2
 		return nil
 	}
-	for id := range r.modules {
-		if err := visit(id); err != nil {
+	for key := range r.modules {
+		if err := visit(key); err != nil {
 			return err
 		}
 	}
@@ -187,7 +230,7 @@ func (r *Registry) checkRequirements() error {
 				return &Error{Code: ErrInvalid, Type: typ, Detail: fmt.Sprintf("projection %q consumes unregistered event", k.id)}
 			}
 			if _, inScope := scope[entry.module]; !inScope {
-				return &Error{Code: ErrInvalid, Type: typ, Detail: fmt.Sprintf("projection %q consumes event of module %q outside its Requires", k.id, entry.module)}
+				return &Error{Code: ErrInvalid, Type: typ, Detail: fmt.Sprintf("projection %q consumes event of module %s/%s outside its Requires", k.id, entry.module.Source, entry.module.ID)}
 			}
 		}
 	}
@@ -196,10 +239,10 @@ func (r *Registry) checkRequirements() error {
 
 // scopeOf is the module plus its Requires: the modules whose unknown events a
 // projection must not silently skip (EXT-PRJ-2).
-func (r *Registry) scopeOf(id ModuleID) map[ModuleID]struct{} {
-	scope := map[ModuleID]struct{}{id: {}}
-	for _, req := range r.modules[id].Requires {
-		scope[req.Module] = struct{}{}
+func (r *Registry) scopeOf(key ModuleKey) map[ModuleKey]struct{} {
+	scope := map[ModuleKey]struct{}{key: {}}
+	for _, req := range r.modules[key].Requires {
+		scope[req.Key()] = struct{}{}
 	}
 	return scope
 }
@@ -213,25 +256,25 @@ func containsVersion(vs []PayloadVersion, v PayloadVersion) bool {
 	return false
 }
 
-func (r *Registry) LookupEvent(typ session.EventType) (ModuleID, EventDefinition, bool) {
+func (r *Registry) LookupEvent(typ session.EventType) (ModuleKey, EventDefinition, bool) {
 	e, ok := r.events[typ]
 	return e.module, e.def, ok
 }
 
 // ModuleOf names the module an EventType belongs to by its
-// twilight/<module>/ prefix, registered or not; false when the prefix names no
-// registered module.
-func (r *Registry) ModuleOf(typ session.EventType) (ModuleID, bool) {
+// <source>/<module>/ prefix; false when the prefix names no registered module.
+func (r *Registry) ModuleOf(typ session.EventType) (ModuleKey, bool) {
 	parts := strings.SplitN(string(typ), "/", 3)
-	if len(parts) == 3 && parts[0] == string(SourceTwilight) {
-		if _, registered := r.modules[ModuleID(parts[1])]; registered {
-			return ModuleID(parts[1]), true
+	if len(parts) == 3 {
+		key := ModuleKey{Source: SourceID(parts[0]), ID: ModuleID(parts[1])}
+		if _, registered := r.modules[key]; registered {
+			return key, true
 		}
 	}
-	return "", false
+	return ModuleKey{}, false
 }
 
-func (r *Registry) LookupProjection(id ProjectionID, v ProjectionVersion) (ProjectionDefinition, ModuleID, bool) {
+func (r *Registry) LookupProjection(id ProjectionID, v ProjectionVersion) (ProjectionDefinition, ModuleKey, bool) {
 	e, ok := r.projections[projectionKey{id, v}]
 	return e.def, e.module, ok
 }
@@ -245,9 +288,9 @@ func (r *Registry) Projections() []ProjectionDefinition {
 	return out
 }
 
-// ModulePrefix is the EventType prefix of one module.
-func ModulePrefix(id ModuleID) session.EventType {
-	return session.EventType(fmt.Sprintf("%s/%s/", SourceTwilight, id))
+// ModulePrefix is the EventType prefix of one module: <source>/<module>/.
+func ModulePrefix(source SourceID, id ModuleID) session.EventType {
+	return session.EventType(fmt.Sprintf("%s/%s/", source, id))
 }
 
 // Encode validates value, encodes it with the current codec and adds `v`.
@@ -279,11 +322,11 @@ func (r *Registry) Decode(e session.SessionEvent) (DecodedEvent, error) {
 	out := DecodedEvent{Event: e}
 	module, def, ok := r.LookupEvent(e.Type)
 	if !ok {
-		out.ModuleID, _ = r.ModuleOf(e.Type)
+		out.Module, _ = r.ModuleOf(e.Type)
 		out.Unknown = true
 		return out, nil
 	}
-	out.ModuleID = module
+	out.Module = module
 	body, v, err := splitVersion(e.Payload)
 	if err != nil {
 		return out, &Error{Code: ErrCodec, Type: e.Type, Detail: err.Error()}

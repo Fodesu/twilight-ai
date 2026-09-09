@@ -31,6 +31,9 @@ type Options struct {
 	BindingStore *artifact.MemoryBindingStore
 	// Sink receives Loop observations; nil discards them.
 	Sink loop.EventSink
+	// Modules are application modules registered after the first-party three;
+	// each must carry its own non-twilight Source (EXT-REG-1).
+	Modules []extension.ModuleDescriptor
 }
 
 // Memory is the fully wired in-process agent (REF 5). One Memory is one
@@ -54,7 +57,8 @@ func New(opts Options) (*Memory, error) {
 	if store == nil {
 		store = session.NewMemoryStore()
 	}
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module, runmod.Module, turn.Module)
+	modules := append([]extension.ModuleDescriptor{chatlog.Module, runmod.Module, turn.Module}, opts.Modules...)
+	registry, err := extension.BuildRegistry(session.ProtocolVersion1, modules...)
 	if err != nil {
 		return nil, err
 	}
@@ -161,9 +165,15 @@ func (m *Memory) SubmitText(ctx context.Context, sid session.SessionID, text str
 	return m.SubmitInput(ctx, sid, NewInputID(), text)
 }
 
+// Projection reads any registered projection through the Session's Writer —
+// application modules read theirs here.
+func (m *Memory) Projection(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (any, session.Head, error) {
+	return writersProjections{m.Writers}.Load(ctx, sid, id, v)
+}
+
 // ChatlogSurface reads the chatlog surface projection.
 func (m *Memory) ChatlogSurface(ctx context.Context, sid session.SessionID) (chatlog.Surface, error) {
-	state, _, err := writersProjections{m.Writers}.Load(ctx, sid, chatlog.SurfaceProjectionID, chatlog.SurfaceProjection.Version)
+	state, _, err := m.Projection(ctx, sid, chatlog.SurfaceProjectionID, chatlog.SurfaceProjection.Version)
 	if err != nil {
 		return chatlog.Surface{}, err
 	}
@@ -172,7 +182,7 @@ func (m *Memory) ChatlogSurface(ctx context.Context, sid session.SessionID) (cha
 
 // TurnSurface reads the turn surface projection.
 func (m *Memory) TurnSurface(ctx context.Context, sid session.SessionID) (turn.TurnSurface, error) {
-	state, _, err := writersProjections{m.Writers}.Load(ctx, sid, turn.SurfaceProjectionID, turn.SurfaceProjection.Version)
+	state, _, err := m.Projection(ctx, sid, turn.SurfaceProjectionID, turn.SurfaceProjection.Version)
 	if err != nil {
 		return turn.TurnSurface{}, err
 	}

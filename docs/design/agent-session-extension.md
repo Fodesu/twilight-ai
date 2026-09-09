@@ -16,7 +16,7 @@ Framework 负责：typed event codec 与 payload 版本；Binding admission；�
 
 **EXT-SCP-1** 一个 Session 在一个进程内恰有一个 `Writer`，它持有 kernel 的 `session.Writer`（所有权句柄）。全部写入经 `Writer.Commit`：Run 的 Runtime、Turn 的 Coordinator、接管恢复都是它的调用方。模块读取投影经 `ProjectionReader`。
 
-**EXT-SCP-2** 模块集合由组装代码在启动时传入 `BuildRegistry`，运行期不变；v1 恰为三个 first-party module，本层不 import 任何模块包。Application 自定义 Source、通用 `Catalog` 见附录 B。
+**EXT-SCP-2** 模块集合由组装代码在启动时传入 `BuildRegistry`，运行期不变；本层不 import 任何模块包。first-party 恰为三个 module；application module 与它们同构、经装配开口注册，见第 8 节。
 
 **EXT-SCP-3** 模块间依赖单向、固定，以 `Requires` 声明并由 Registry 校验（EXT-REG-4）。v1 三个模块的声明：
 
@@ -37,6 +37,9 @@ type PayloadVersion uint16
 
 const SourceTwilight SourceID = "twilight"
 
+// ModuleKey 是模块在 Registry 中的身份：(Source, ID) 二元组。
+type ModuleKey struct { Source SourceID; ID ModuleID }
+
 type EventDefinition struct {
     Type session.EventType
     Current PayloadVersion
@@ -46,24 +49,27 @@ type EventDefinition struct {
     Ignorable bool
 }
 type ModuleDescriptor struct {
+    Source SourceID
     ID ModuleID
     Requires []ModuleRequirement
     Events []EventDefinition
     Projections []ProjectionDefinition
 }
 type ModuleRequirement struct {
+    Source SourceID // 必填：依赖以 (Source, Module) 指认
     Module ModuleID
     Events map[session.EventType][]PayloadVersion
 }
 type Registry struct { ProtocolVersion uint16 /* immutable indexes */ }
 func BuildRegistry(protocolVersion uint16, modules ...ModuleDescriptor) (*Registry, error)
-func (r *Registry) LookupEvent(session.EventType) (ModuleID, EventDefinition, bool)
-func (r *Registry) ModuleOf(session.EventType) (ModuleID, bool) // 按 twilight/<module>/ 前缀
+func ModulePrefix(source SourceID, id ModuleID) session.EventType // <source>/<module>/
+func (r *Registry) LookupEvent(session.EventType) (ModuleKey, EventDefinition, bool)
+func (r *Registry) ModuleOf(session.EventType) (ModuleKey, bool) // 按 <source>/<module>/ 前缀
 func (r *Registry) Encode(session.EventType, any) (jsonstable.Value, PayloadVersion, error)
 func (r *Registry) Decode(session.SessionEvent) (DecodedEvent, error)
 ```
 
-**EXT-REG-1** EventType 为 `twilight/<ModuleID>/<local-name>`。一个 Registry 中 ModuleID、EventType、ProjectionID 均唯一；`BuildRegistry` 校验每个 EventDefinition 的 Type 前缀等于其模块，构建后只读。
+**EXT-REG-1** EventType 为 `<Source>/<ModuleID>/<local-name>`。Source 与 ModuleID 是非空、不含 `/` 的合法 UTF-8 段；模块身份是 `(Source, ID)` 二元组，同一 Registry 中该二元组、EventType、ProjectionID 均唯一（同名 ModuleID 可在不同 Source 下共存）。`twilight` Source 保留给本仓库的 first-party 模块，application module 必须使用自己的 Source。`BuildRegistry` 校验每个 EventDefinition 的 Type 前缀等于其模块的 `<Source>/<ID>/`，构建后只读。
 
 **EXT-REG-2** payload 版本与 kernel 版本分离（SES-VER-1）。payload object 第一层携带整数字段 `v`；`Encode` 写入 `Current`，`Decode` 读 `v` 并选择 `Codecs[v]`。旧版本 codec 永久保留，旧事件不迁移。
 
@@ -81,7 +87,7 @@ type PayloadCodec interface {
 }
 type DecodedEvent struct {
     Event session.SessionEvent
-    ModuleID ModuleID
+    Module ModuleKey
     Version PayloadVersion
     Value any
     Unknown bool
@@ -220,12 +226,20 @@ const (
 
 v1 conformance 必须验证：
 
-- **EXT-REG-1 至 4**：immutable Registry、`v` 的写入与选择、多版本 codec 共存、Unknown 保留 raw payload、`Requires` 缺失或成环被拒绝、投影消费范围外事件被拒绝、被依赖事件版本不在声明范围被拒绝；
+- **EXT-REG-1 至 4**：immutable Registry、`v` 的写入与选择、多版本 codec 共存、Unknown 保留 raw payload、`Requires` 缺失或成环被拒绝、投影消费范围外事件被拒绝、被依赖事件版本不在声明范围被拒绝；Source 段非法（空、含 `/`、非 UTF-8）被拒绝、`(Source, ID)` 重复被拒绝、同名 ModuleID 在不同 Source 下共存且各自前缀可解析；
 - **EXT-COD-1/2**：wire-first、`v` 保留字段；canonical round-trip 由各模块的测试覆盖；
 - **EXT-REF-1/2**：Extractor 全量提取、cardinality、scheme/durability admission、拒绝时无写入；
 - **EXT-WRT-1 至 5**：OpenWriter 后索引与投影等于全量 fold；同 CommitID 重放 AlreadyApplied、不同内容 Conflict、两者无写入；并发调用方串行且各自看到前一次的结果；claim 先于 append，append 失败后 claim 被释放或可被核对回收（claim 相关断言随第一个真实内容存储冻结，见 artifact spec 状态段）；`ErrOwnershipLost` 后 Writer 失效；
 - **EXT-PRJ-1 至 4**：pure fold、组边界、Consumes 与范围外跳过、Ignorable 与非 Ignorable 的 Unknown、缓存复用条件、Writer 内投影与 Store 读取一致。
 
-## 附录 B：Application module 与通用 Catalog（不进入 v1）
+## 8. Application module
 
-Application 注册自己的 `SourceID` 与 Module 时，EventType 为 `<SourceID>/<ModuleID>/<local-name>`；`BuildCatalog` 在启动时把多个 Source 的 ModuleDescriptor 与 artifact SchemeDefinition 组合为只读索引。v1 的模块以 Go 值直接传入 `BuildRegistry`，不需要这一层。
+Application 在自己的代码里定义 `ModuleDescriptor`（自有 Source 下的事件类型、codec、投影），经装配开口（参考装配为 `ref.Options.Modules`）与 first-party 模块一起传入 `BuildRegistry`。app module 与 first-party 模块同构、同权：同一 Registry、同一 `Writer.Commit` 提交路径、同一投影框架。
+
+**EXT-APP-1（承诺面）** app module 的 `Requires` 可依赖 first-party 模块的事件；三个 first-party 模块各事件的当前 payload 版本即稳定消费面。first-party 推进 `Current` 时，未声明新版本的 app module 在 `BuildRegistry` 即失败（EXT-REG-4 的握手校验），不会在运行期静默错读。
+
+**EXT-APP-2（隔离）** EXT-PRJ-2 的范围规则双向保护：first-party 投影对 app 模块（范围外）的事件一律跳过；app 投影对未列入其 `Requires` 的模块同样跳过。app module 未注册时，其历史事件对所有投影是范围外事件，按 EXT-REG-3 保留原始 payload、不参与折叠。
+
+**EXT-APP-3（适用判据）** 需要"持久、可重放、参与投影"的事实才建 module；工具、模型、系统提示、planner、观测 sink 走既有接口扩展点（参考装配的 Agent/Profile、EventSink、Store adapter），不进 Session 流。
+
+通用 `Catalog`（把多个 Source 的 ModuleDescriptor 与 artifact SchemeDefinition 组合为只读索引的独立一层）仍不进入 v1：模块以 Go 值直接传入 `BuildRegistry`。
