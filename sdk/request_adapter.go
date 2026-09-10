@@ -8,15 +8,15 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
-const legacyToolChoiceFunction = "function"
+const toolChoiceFunctionType = "function"
 
-// RequestFromGenerateParams projects the provider-level fields of legacy
+// requestFromGenerateParams projects the provider-level fields of
 // GenerateParams into the single-call Request boundary type. Client-side
 // orchestration fields such as MaxSteps, callbacks, approvals, and tool
 // Execute handlers intentionally do not appear in Request.
 //
-//nolint:gocritic // hugeParam: compatibility adapter preserves the legacy value-parameter API shape.
-func RequestFromGenerateParams(params GenerateParams) (Request, error) {
+//nolint:gocritic // hugeParam: the adapter keeps the value-parameter shape its callers use.
+func requestFromGenerateParams(params GenerateParams) (Request, error) {
 	if params.Model == nil {
 		return Request{}, fmt.Errorf("twilightai: request: model is required")
 	}
@@ -24,7 +24,7 @@ func RequestFromGenerateParams(params GenerateParams) (Request, error) {
 	if err != nil {
 		return Request{}, err
 	}
-	choice, err := ToolChoiceFromLegacy(params.ToolChoice)
+	choice, err := toolChoiceFromValue(params.ToolChoice)
 	if err != nil {
 		return Request{}, err
 	}
@@ -87,11 +87,11 @@ func ToolDefinitionsFromTools(tools []Tool) ([]ToolDefinition, error) {
 	return out, nil
 }
 
-// ToolChoiceFromLegacy converts the legacy ToolChoice any shape into the
-// closed provider-neutral ToolChoice. Supported legacy inputs are "auto",
-// "none", "required", a ToolChoice value, or the OpenAI-style function map
+// toolChoiceFromValue converts a GenerateParams tool-choice value into the
+// closed provider-neutral ToolChoice. Supported inputs are "auto", "none",
+// "required", a ToolChoice value, or the OpenAI-style function map
 // {"type":"function","function":{"name":"..."}}.
-func ToolChoiceFromLegacy(choice any) (ToolChoice, error) {
+func toolChoiceFromValue(choice any) (ToolChoice, error) {
 	switch v := choice.(type) {
 	case nil:
 		return ToolChoice{}, nil
@@ -128,10 +128,10 @@ func ToolChoiceFromLegacy(choice any) (ToolChoice, error) {
 
 func toolChoiceFromMap(m map[string]any) (ToolChoice, error) {
 	typ, _ := m["type"].(string)
-	if typ != legacyToolChoiceFunction && typ != "tool" {
+	if typ != toolChoiceFunctionType && typ != "tool" {
 		return ToolChoice{}, fmt.Errorf("twilightai: unsupported tool choice type %q", typ)
 	}
-	fn, _ := m[legacyToolChoiceFunction].(map[string]any)
+	fn, _ := m[toolChoiceFunctionType].(map[string]any)
 	if fn == nil {
 		fn, _ = m["tool"].(map[string]any)
 	}

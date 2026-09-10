@@ -92,7 +92,7 @@ const (
 	ToolChoiceTool     ToolChoiceMode = "tool"
 )
 
-// ToolChoice is the closed replacement for the legacy `any` field.
+// ToolChoice is the closed form of the request's tool-choice field.
 type ToolChoice struct {
 	Mode ToolChoiceMode `json:"mode,omitempty"`
 	// Tool names the target tool when Mode == ToolChoiceTool.

@@ -25,7 +25,7 @@ func TestRequestFromGenerateParams(t *testing.T) {
 		ToolChoice: map[string]any{"type": "function", "function": map[string]any{"name": "search"}},
 	}
 
-	req, err := RequestFromGenerateParams(params)
+	req, err := requestFromGenerateParams(params)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,13 +47,13 @@ func TestRequestFromGenerateParams(t *testing.T) {
 	params.Messages[0].Content[0].(TextPart).ProviderMetadata["p"] = "mutated"
 	gotMeta := req.Messages[0].Content[0].(TextPart).ProviderMetadata["p"].(map[string]any)
 	if gotMeta["sig"] != "s1" {
-		t.Fatalf("request metadata aliased legacy params: %#v", gotMeta)
+		t.Fatalf("request metadata aliased the caller's params: %#v", gotMeta)
 	}
 }
 
-func TestToolChoiceFromLegacy(t *testing.T) {
+func TestToolChoiceFromValue(t *testing.T) {
 	for _, mode := range []string{"auto", "none", "required"} {
-		choice, err := ToolChoiceFromLegacy(mode)
+		choice, err := toolChoiceFromValue(mode)
 		if err != nil {
 			t.Fatalf("%s: %v", mode, err)
 		}
@@ -61,14 +61,14 @@ func TestToolChoiceFromLegacy(t *testing.T) {
 			t.Fatalf("choice %s = %+v", mode, choice)
 		}
 	}
-	choice, err := ToolChoiceFromLegacy(map[string]any{"type": "function", "function": map[string]any{"name": "search"}})
+	choice, err := toolChoiceFromValue(map[string]any{"type": "function", "function": map[string]any{"name": "search"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if choice.Mode != ToolChoiceTool || choice.Tool != "search" {
 		t.Fatalf("tool choice = %+v", choice)
 	}
-	if _, err := ToolChoiceFromLegacy("bad"); err == nil {
+	if _, err := toolChoiceFromValue("bad"); err == nil {
 		t.Fatal("expected unsupported string tool choice to fail")
 	}
 }

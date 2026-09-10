@@ -262,10 +262,10 @@ func (sr *StreamResult) Text() (string, error) {
 
 // ToResult consumes the entire stream and assembles a GenerateResult.
 //
-// It routes the legacy channel through the same assembler the boundary uses, so
-// a legacy caller and a boundary caller cannot disagree about the same parts.
-// Tool results are the one thing the assembler does not carry: they are
-// orchestration, so the legacy wrapper collects them on the way through.
+// It routes the channel through the same assembler the boundary uses, so a
+// caller here and a caller at the boundary cannot disagree about the same
+// parts. Tool results are the one thing the assembler does not carry: they are
+// orchestration, so this wrapper collects them on the way through.
 func (sr *StreamResult) ToResult() (*GenerateResult, error) {
 	stream := assembleStream(context.Background(), sr.Stream)
 	var toolResults []ToolResult

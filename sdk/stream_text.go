@@ -6,7 +6,7 @@ import (
 	"fmt"
 )
 
-// StreamText is the legacy high-level streaming text wrapper. When MaxSteps !=
+// StreamText is the caller-facing high-level streaming text wrapper. When MaxSteps !=
 // 0 and tools have Execute handlers, it runs the compatibility multi-step loop,
 // forwarding all stream parts (including ToolProgressPart) through a single
 // channel. New multi-step runtimes should use agent/run/loop.Loop instead of
@@ -75,7 +75,7 @@ func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*St
 			params := cfg.Params
 			params.Messages = messages
 
-			req, err := RequestFromGenerateParams(params)
+			req, err := requestFromGenerateParams(params)
 			if err != nil {
 				send(&ErrorPart{Error: fmt.Errorf("twilightai: stream step %d: %w", step, err)})
 				return

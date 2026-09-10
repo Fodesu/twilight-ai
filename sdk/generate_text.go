@@ -18,8 +18,8 @@ func (c *Client) GenerateText(ctx context.Context, options ...GenerateOption) (s
 // New multi-step runtimes should use agent/run/loop.Loop instead of this SDK
 // loop.
 //
-// The legacy options are a client-side convenience: each step is projected into
-// the provider-neutral Request boundary by RequestFromGenerateParams, so the
+// The options are a client-side convenience: each step is projected into the
+// provider-neutral Request boundary by requestFromGenerateParams, so the
 // provider only ever sees the single-call shape.
 func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOption) (*GenerateResult, error) {
 	cfg, _, err := buildConfig(options)
@@ -143,7 +143,7 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 // boundary, makes exactly one model call, and adapts the single-call result
 // back to the legacy result shape.
 func generateOnce(ctx context.Context, cfg *generateConfig, model *Model, params GenerateParams) (*GenerateResult, ModelResult, error) {
-	req, err := RequestFromGenerateParams(params)
+	req, err := requestFromGenerateParams(params)
 	if err != nil {
 		return nil, ModelResult{}, err
 	}
