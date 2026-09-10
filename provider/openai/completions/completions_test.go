@@ -1425,7 +1425,11 @@ func TestIntegration_MultiModel_Stream(t *testing.T) {
 
 func TestIntegration_Reasoning_ToolCall(t *testing.T) {
 	p := newIntegrationProvider(t)
-	model := &sdk.Model{ID: "deepseek/deepseek-r1"}
+	// The reasoning assertions need a model that emits reasoning, so this case
+	// reads OPENAI_MODEL like every other integration case: point it at a
+	// reasoning model (deepseek-reasoner, o4-mini, ...) to exercise them, and
+	// the tool-call assertions run against whatever the endpoint serves.
+	model := integrationModel(t)
 
 	result, err := p.DoGenerate(context.Background(), sdk.Request{
 		Model:    model.ID,
