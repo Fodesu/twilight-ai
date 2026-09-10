@@ -15,6 +15,17 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
+// mustJSON is the test-side half of the seam change: the SDK resolves a tool's
+// Parameters into JSON Schema before a provider sees it, so a test that used to
+// hand the provider a Go schema value now hands it the resolved JSON.
+func mustJSON(v any) json.RawMessage {
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return encoded
+}
+
 // ---------- unit tests (mock server) ----------
 
 func TestDoGenerate(t *testing.T) {
@@ -59,8 +70,8 @@ func TestDoGenerate(t *testing.T) {
 	)
 
 	model := &sdk.Model{ID: "claude-sonnet-4-20250514"}
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: model,
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: model.ID,
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "Hi"}},
@@ -114,8 +125,8 @@ func TestDoGenerate_DefaultMaxTokens(t *testing.T) {
 
 	p := messages.New(messages.WithAPIKey("test-key"), messages.WithBaseURL(srv.URL))
 
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{sdk.UserMessage("Hi")},
 	})
 	if err != nil {
@@ -167,8 +178,8 @@ func TestDoGenerate_DefaultMaxTokens_ThinkingBudgetReserveAnswerBudget(t *testin
 		}),
 	)
 
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{sdk.UserMessage("Hi")},
 	})
 	if err != nil {
@@ -214,8 +225,8 @@ func TestDoGenerate_ReasoningEffort_OutputConfig(t *testing.T) {
 
 	p := messages.New(messages.WithAPIKey("test-key"), messages.WithBaseURL(srv.URL))
 	effort := "high"
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:           &sdk.Model{ID: "claude-opus-4-8"},
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:           "claude-opus-4-8",
 		Messages:        []sdk.Message{sdk.UserMessage("Hi")},
 		ReasoningEffort: &effort,
 	})
@@ -270,8 +281,8 @@ func TestDoGenerate_AdaptiveThinking_EffortNoBudget(t *testing.T) {
 		messages.WithThinking(messages.ThinkingConfig{Type: "adaptive"}),
 	)
 	effort := "xhigh"
-	if _, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:           &sdk.Model{ID: "claude-opus-4-8"},
+	if _, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:           "claude-opus-4-8",
 		Messages:        []sdk.Message{sdk.UserMessage("Hi")},
 		ReasoningEffort: &effort,
 	}); err != nil {
@@ -308,8 +319,8 @@ func TestDoGenerate_SystemMessage(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("test-key"), messages.WithBaseURL(srv.URL))
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:  &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:  "claude-sonnet-4-20250514",
 		System: "You are helpful.",
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
@@ -365,24 +376,24 @@ func TestDoGenerate_ToolCall(t *testing.T) {
 
 	p := messages.New(messages.WithAPIKey("test-key"), messages.WithBaseURL(srv.URL))
 
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "What's the weather in Beijing?"}},
 		}},
-		Tools: []sdk.Tool{{
+		Tools: []sdk.ToolDefinition{{
 			Name:        "get_weather",
 			Description: "Get the weather for a location",
-			Parameters: &jsonschema.Schema{
+			Parameters: mustJSON(&jsonschema.Schema{
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
 					"location": {Type: "string"},
 				},
 				Required: []string{"location"},
-			},
+			}),
 		}},
-		ToolChoice: "auto",
+		ToolChoice: sdk.ToolChoice{Mode: sdk.ToolChoiceAuto},
 	})
 	if err != nil {
 		t.Fatalf("DoGenerate: %v", err)
@@ -474,8 +485,8 @@ func TestDoGenerate_ToolCallMultiTurn(t *testing.T) {
 
 	p := messages.New(messages.WithAPIKey("test-key"), messages.WithBaseURL(srv.URL))
 
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{
 			{
 				Role:    sdk.MessageRoleUser,
@@ -542,8 +553,8 @@ func TestDoGenerate_ToolCallEmptyInput(t *testing.T) {
 
 	p := messages.New(messages.WithAPIKey("test-key"), messages.WithBaseURL(srv.URL))
 
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{
 			{
 				Role:    sdk.MessageRoleUser,
@@ -588,8 +599,8 @@ func TestDoGenerate_Thinking(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("k"), messages.WithBaseURL(srv.URL))
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{sdk.UserMessage("2+2?")},
 	})
 	if err != nil {
@@ -605,7 +616,7 @@ func TestDoGenerate_Thinking(t *testing.T) {
 
 func TestDoGenerate_NoModel(t *testing.T) {
 	p := messages.New(messages.WithAPIKey("k"))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{})
+	_, err := p.DoGenerate(context.Background(), sdk.Request{})
 	if err == nil {
 		t.Fatal("expected error for nil model")
 	}
@@ -613,7 +624,7 @@ func TestDoGenerate_NoModel(t *testing.T) {
 
 func TestDoStream_NoModel(t *testing.T) {
 	p := messages.New(messages.WithAPIKey("k"))
-	_, err := p.DoStream(context.Background(), sdk.GenerateParams{})
+	_, err := p.DoStream(context.Background(), sdk.Request{})
 	if err == nil {
 		t.Fatal("expected error for nil model")
 	}
@@ -649,8 +660,8 @@ func TestDoStream(t *testing.T) {
 		messages.WithBaseURL(srv.URL),
 	)
 
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "Hi"}},
@@ -662,7 +673,7 @@ func TestDoStream(t *testing.T) {
 
 	var collected string
 	var gotStart, gotFinish, gotTextStart, gotTextEnd bool
-	for part := range sr.Stream {
+	for part := range sr {
 		switch p := part.(type) {
 		case *sdk.StartPart:
 			gotStart = true
@@ -723,13 +734,13 @@ func TestDoStream_ToolCall(t *testing.T) {
 
 	p := messages.New(messages.WithAPIKey("test-key"), messages.WithBaseURL(srv.URL))
 
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "Weather in Tokyo?"}},
 		}},
-		Tools: []sdk.Tool{{Name: "get_weather", Parameters: &jsonschema.Schema{Type: "object"}}},
+		Tools: []sdk.ToolDefinition{{Name: "get_weather", Parameters: mustJSON(&jsonschema.Schema{Type: "object"})}},
 	})
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
@@ -744,7 +755,7 @@ func TestDoStream_ToolCall(t *testing.T) {
 		gotFinish     bool
 	)
 
-	for part := range sr.Stream {
+	for part := range sr {
 		switch p := part.(type) {
 		case *sdk.ToolInputStartPart:
 			gotInputStart = true
@@ -824,8 +835,8 @@ func TestDoStream_Thinking(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("k"), messages.WithBaseURL(srv.URL))
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model:    "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{sdk.UserMessage("2+2?")},
 	})
 	if err != nil {
@@ -834,7 +845,7 @@ func TestDoStream_Thinking(t *testing.T) {
 
 	var reasoning, text string
 	var gotReasoningStart, gotReasoningEnd bool
-	for part := range sr.Stream {
+	for part := range sr {
 		switch p := part.(type) {
 		case *sdk.ReasoningStartPart:
 			gotReasoningStart = true
@@ -909,8 +920,8 @@ func TestDoGenerate_ReasoningFromOtherProvider(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("test-key"), messages.WithBaseURL(srv.URL))
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{
 			{
 				Role: sdk.MessageRoleAssistant,
@@ -977,8 +988,8 @@ func TestDoGenerate_CacheControl_SystemBlock(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("k"), messages.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{
 			{
 				Role: sdk.MessageRoleSystem,
@@ -1033,8 +1044,8 @@ func TestDoGenerate_CacheControl_SystemBlock_1h(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("k"), messages.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{
 			{
 				Role: sdk.MessageRoleSystem,
@@ -1106,8 +1117,8 @@ func TestDoGenerate_CacheControl_MessageBlock(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("k"), messages.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{
 			{
 				Role: sdk.MessageRoleUser,
@@ -1168,15 +1179,15 @@ func TestDoGenerate_CacheControl_Tools(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("k"), messages.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{sdk.UserMessage("Hi")},
-		Tools: []sdk.Tool{
-			{Name: "search", Description: "Search the web", Parameters: map[string]any{"type": "object"}},
+		Tools: []sdk.ToolDefinition{
+			{Name: "search", Description: "Search the web", Parameters: mustJSON(map[string]any{"type": "object"})},
 			{
 				Name:         "calculator",
 				Description:  "Do math",
-				Parameters:   map[string]any{"type": "object"},
+				Parameters:   mustJSON(map[string]any{"type": "object"}),
 				CacheControl: &sdk.CacheControl{Type: "ephemeral"},
 			},
 		},
@@ -1246,8 +1257,8 @@ func TestDoGenerate_CacheControl_ToolResultBlock(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("k"), messages.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{
 			sdk.UserMessage("search for cats"),
 			{
@@ -1337,8 +1348,8 @@ func TestDoGenerate_CacheControl_AssistantToolUse(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("k"), messages.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{
 			sdk.UserMessage("look it up"),
 			{
@@ -1416,8 +1427,8 @@ func TestDoGenerate_CacheControl_AssistantText(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("k"), messages.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{
 			sdk.UserMessage("hi"),
 			{
@@ -1458,8 +1469,8 @@ func TestDoGenerate_CacheControl_DetailedUsage(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("k"), messages.WithBaseURL(srv.URL))
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
 	})
 	if err != nil {
@@ -1501,8 +1512,8 @@ func TestDoGenerate_CacheControl_BasicUsage(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("k"), messages.WithBaseURL(srv.URL))
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
 	})
 	if err != nil {
@@ -1535,8 +1546,8 @@ func TestDoGenerate_ErrorResponse(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("k"), messages.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
 	})
 	if err == nil {
@@ -1606,8 +1617,8 @@ func reasoningModel(t *testing.T) *sdk.Model {
 func TestIntegration_DoGenerate(t *testing.T) {
 	p := newIntegrationProvider(t)
 	maxTokens := 100
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:     integrationModel(t),
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:     integrationModel(t).ID,
 		MaxTokens: &maxTokens,
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
@@ -1628,8 +1639,8 @@ func TestIntegration_DoGenerate(t *testing.T) {
 func TestIntegration_DoStream(t *testing.T) {
 	p := newIntegrationProvider(t)
 	maxTokens := 100
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model:     integrationModel(t),
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model:     integrationModel(t).ID,
 		MaxTokens: &maxTokens,
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
@@ -1641,7 +1652,7 @@ func TestIntegration_DoStream(t *testing.T) {
 	}
 
 	var text string
-	for part := range sr.Stream {
+	for part := range sr {
 		switch p := part.(type) {
 		case *sdk.TextDeltaPart:
 			text += p.Text
@@ -1662,8 +1673,8 @@ func TestIntegration_DoGenerate_Reasoning(t *testing.T) {
 	p := newReasoningProvider(t)
 	model := reasoningModel(t)
 	maxTokens := 8000
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:     model,
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:     model.ID,
 		MaxTokens: &maxTokens,
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
@@ -1691,8 +1702,8 @@ func TestIntegration_DoStream_Reasoning(t *testing.T) {
 	p := newReasoningProvider(t)
 	model := reasoningModel(t)
 	maxTokens := 8000
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model:     model,
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model:     model.ID,
 		MaxTokens: &maxTokens,
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
@@ -1705,7 +1716,7 @@ func TestIntegration_DoStream_Reasoning(t *testing.T) {
 
 	var text, reasoning string
 	var gotReasoningStart, gotReasoningEnd bool
-	for part := range sr.Stream {
+	for part := range sr {
 		switch p := part.(type) {
 		case *sdk.ReasoningStartPart:
 			gotReasoningStart = true
@@ -1933,8 +1944,8 @@ func TestDoGenerate_ImagePartDataURL(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("test-key"), messages.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{{
 			Role: sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{
@@ -1990,8 +2001,8 @@ func TestDoGenerate_ImagePartUnsupportedMediaType(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("test-key"), messages.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{{
 			Role: sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{
@@ -2044,8 +2055,8 @@ func TestDoGenerate_ImagePartEmptyMediaType(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("test-key"), messages.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{{
 			Role: sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{
@@ -2097,8 +2108,8 @@ func TestDoGenerate_ImagePartPublicURL(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("test-key"), messages.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{{
 			Role: sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{

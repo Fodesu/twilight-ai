@@ -70,8 +70,8 @@ func TestDoGenerate_AutoModelOmitsModelField(t *testing.T) {
 		copilot.WithBaseURL(srv.URL),
 	)
 
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel(copilot.AutoModel),
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    copilot.AutoModel,
 		Messages: []sdk.Message{sdk.UserMessage("Hi")},
 	})
 	if err != nil {
@@ -115,8 +115,8 @@ func TestDoStream(t *testing.T) {
 		copilot.WithBaseURL(srv.URL),
 	)
 
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel(copilot.AutoModel),
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model:    copilot.AutoModel,
 		Messages: []sdk.Message{sdk.UserMessage("Hi")},
 	})
 	if err != nil {
@@ -125,7 +125,7 @@ func TestDoStream(t *testing.T) {
 
 	var collected string
 	var gotStart, gotFinish bool
-	for part := range sr.Stream {
+	for part := range sr {
 		switch p := part.(type) {
 		case *sdk.StartPart:
 			gotStart = true
@@ -250,8 +250,8 @@ func TestIntegration_DoGenerate_ExplicitModel(t *testing.T) {
 	p := newIntegrationProvider(t)
 	modelID := integrationModelID()
 
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel(modelID),
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    modelID,
 		Messages: []sdk.Message{sdk.UserMessage("Reply with exactly: ok")},
 	})
 	if err != nil {
@@ -276,8 +276,8 @@ func TestIntegration_DoGenerate_ExplicitModel(t *testing.T) {
 func TestIntegration_DoGenerate_AutoModel(t *testing.T) {
 	p := newIntegrationProvider(t)
 
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel(copilot.AutoModel),
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    copilot.AutoModel,
 		Messages: []sdk.Message{sdk.UserMessage("Reply with exactly: ok")},
 	})
 	if err != nil {

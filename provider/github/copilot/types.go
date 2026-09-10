@@ -34,6 +34,17 @@ type chatTool struct {
 	Function chatFunction `json:"function"`
 }
 
+// chatToolChoiceFunction is the OpenAI wire form of a named tool choice,
+// {"type":"function","function":{"name":...}}.
+type chatToolChoiceFunction struct {
+	Type     string             `json:"type"`
+	Function chatToolChoiceName `json:"function"`
+}
+
+type chatToolChoiceName struct {
+	Name string `json:"name"`
+}
+
 type chatFunction struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`

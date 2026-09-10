@@ -200,7 +200,10 @@ func (l *Loop) invokeModel(ctx context.Context, invoker ModelInvoker, req *sdk.R
 			}
 			// The range has an explicit ctx escape: a stream that stops
 			// sending without closing Parts must not block cancellation and
-			// the recovery path behind it.
+			// the recovery path behind it. Returning early also abandons
+			// Parts, which the assembler behind them tolerates: it stops
+			// forwarding once ctx is done and drains the provider, so neither
+			// side is left blocked on the other.
 			var sequence uint64
 			emitDelta := func(kind EventKind, payload any) {
 				if events == nil {

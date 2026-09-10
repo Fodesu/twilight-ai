@@ -35,15 +35,15 @@ func streamEventTypes(t *testing.T, chunks []string) []sdk.StreamPartType {
 	t.Cleanup(srv.Close)
 
 	p := completions.New(completions.WithAPIKey("k"), completions.WithBaseURL(srv.URL))
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "deepseek-v4-flash"},
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model:    "deepseek-v4-flash",
 		Messages: []sdk.Message{sdk.UserMessage("weather")},
 	})
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
 	}
 	var events []sdk.StreamPartType
-	for part := range sr.Stream {
+	for part := range sr {
 		events = append(events, part.Type())
 	}
 	return events
@@ -149,8 +149,17 @@ func TestGenerateTextResult_EmptyReasoningStepReplaysKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	tool := weatherTool()
-	tool.Execute = func(ctx *sdk.ToolExecContext, input any) (any, error) { return "18C", nil }
+	// This test drives the legacy options API, which is the one place tool
+	// execution belongs: the closure never crosses the provider seam.
+	tool := sdk.Tool{
+		Name:        "get_weather",
+		Description: "Get weather",
+		Parameters: map[string]any{
+			"type":       "object",
+			"properties": map[string]any{"city": map[string]any{"type": "string"}},
+		},
+		Execute: func(ctx *sdk.ToolExecContext, input any) (any, error) { return "18C", nil },
+	}
 
 	p := completions.New(completions.WithAPIKey("k"), completions.WithBaseURL(srv.URL))
 	result, err := sdk.GenerateTextResult(

@@ -27,7 +27,7 @@ type capturedThinking struct {
 
 // captureRequest runs one DoGenerate against a stub server and returns the
 // decoded request body.
-func captureRequest(t *testing.T, opts []messages.Option, params sdk.GenerateParams) capturedThinking {
+func captureRequest(t *testing.T, opts []messages.Option, params sdk.Request) capturedThinking {
 	t.Helper()
 
 	var captured capturedThinking
@@ -50,7 +50,9 @@ func captureRequest(t *testing.T, opts []messages.Option, params sdk.GeneratePar
 		messages.WithBaseURL(srv.URL),
 	}, opts...)
 
-	params.Model = &sdk.Model{ID: "claude-test"}
+	if params.Model == "" {
+		params.Model = "claude-test"
+	}
 	if params.Messages == nil {
 		params.Messages = []sdk.Message{sdk.UserMessage("Hi")}
 	}
@@ -186,7 +188,7 @@ func TestResolveMaxTokens_Matrix(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := captureRequest(t, tc.opts, sdk.GenerateParams{
+			got := captureRequest(t, tc.opts, sdk.Request{
 				ReasoningEffort: tc.effort,
 				MaxTokens:       tc.explicitMax,
 			})
@@ -245,7 +247,7 @@ func TestThinkingWireShape(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := captureRequest(t, tc.opts, sdk.GenerateParams{})
+			got := captureRequest(t, tc.opts, sdk.Request{})
 
 			if tc.wantAbsent {
 				if got.Thinking != nil {
@@ -308,8 +310,8 @@ func TestWithThinking_BackwardCompatibility(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			legacy := captureRequest(t, []messages.Option{messages.WithThinking(tc.legacy)}, sdk.GenerateParams{})
-			modern := captureRequest(t, tc.modern, sdk.GenerateParams{})
+			legacy := captureRequest(t, []messages.Option{messages.WithThinking(tc.legacy)}, sdk.Request{})
+			modern := captureRequest(t, tc.modern, sdk.Request{})
 
 			legacyJSON, err := json.Marshal(legacy)
 			if err != nil {
@@ -332,7 +334,7 @@ func TestWithThinking_BackwardCompatibility(t *testing.T) {
 func TestWithThinking_LegacyExactWire(t *testing.T) {
 	got := captureRequest(t,
 		[]messages.Option{messages.WithThinking(messages.ThinkingConfig{Type: "enabled", BudgetTokens: 5000})},
-		sdk.GenerateParams{},
+		sdk.Request{},
 	)
 
 	if got.Thinking == nil {
@@ -358,7 +360,7 @@ func TestWithThinking_LegacyExactWire(t *testing.T) {
 func TestWithThinking_LegacyUnknownType(t *testing.T) {
 	got := captureRequest(t,
 		[]messages.Option{messages.WithThinking(messages.ThinkingConfig{Type: "future_mode", BudgetTokens: 1234})},
-		sdk.GenerateParams{},
+		sdk.Request{},
 	)
 
 	if got.Thinking == nil {
@@ -380,7 +382,7 @@ func TestWithThinking_LegacyUnknownType(t *testing.T) {
 func TestWithThinking_LegacyEmptyType(t *testing.T) {
 	got := captureRequest(t,
 		[]messages.Option{messages.WithThinking(messages.ThinkingConfig{})},
-		sdk.GenerateParams{},
+		sdk.Request{},
 	)
 
 	if got.Thinking != nil {

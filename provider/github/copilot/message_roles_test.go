@@ -31,8 +31,8 @@ func TestInstructionRolesFallbackConservatively(t *testing.T) {
 	defer srv.Close()
 
 	p := copilot.New(copilot.WithGitHubToken("token"), copilot.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:  p.ChatModel("copilot-model"),
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:  "copilot-model",
 		System: "root policy",
 		Messages: []sdk.Message{
 			sdk.SystemMessage("leading system"),
@@ -60,8 +60,8 @@ func TestInstructionRolesCanUseConfiguredNativeSupport(t *testing.T) {
 			MidConversationSystem: true,
 		}),
 	)
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: p.ChatModel("copilot-model"),
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "copilot-model",
 		Messages: []sdk.Message{
 			sdk.UserMessage("question"),
 			sdk.SystemMessage("runtime changed"),

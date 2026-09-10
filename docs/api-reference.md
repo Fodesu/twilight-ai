@@ -54,8 +54,8 @@ type Provider interface {
     ListModels(ctx context.Context) ([]Model, error)
     Test(ctx context.Context) *ProviderTestResult
     TestModel(ctx context.Context, modelID string) (*ModelTestResult, error)
-    DoGenerate(ctx context.Context, params GenerateParams) (*GenerateResult, error)
-    DoStream(ctx context.Context, params GenerateParams) (*StreamResult, error)
+    DoGenerate(ctx context.Context, req Request) (ModelResult, error)
+    DoStream(ctx context.Context, req Request) (<-chan StreamPart, error)
 }
 ```
 
@@ -65,7 +65,7 @@ type Provider interface {
 | `ListModels(ctx)` | Fetches available models from the backend API |
 | `Test(ctx)` | Health check: returns OK, Unhealthy, or Unreachable |
 | `TestModel(ctx, id)` | Checks if a specific model ID is supported |
-| `DoGenerate(ctx, params)` | Performs a single non-streaming LLM call |
+| `DoGenerate(ctx, req)` | Performs one non-streaming model call |
 | `DoStream(ctx, params)` | Performs a streaming LLM call |
 
 #### ProviderStatus
@@ -237,6 +237,44 @@ type CacheControl struct {
 ---
 
 ### Generation
+
+#### Request
+
+The complete, frozen input of one model call — the seam a provider sees.
+
+```go
+type Request struct {
+    Model            string
+    System           string
+    Messages         []Message
+    Tools            []ToolDefinition
+    ToolChoice       ToolChoice
+    ResponseFormat   *ResponseFormat
+    Temperature      *float64
+    TopP             *float64
+    MaxTokens        *int
+    StopSequences    []string
+    FrequencyPenalty *float64
+    PresencePenalty  *float64
+    Seed             *int
+    ReasoningEffort  *string
+    ReasoningSummary *string
+    PromptCacheKey   *string
+    ProviderOptions  map[string]json.RawMessage
+}
+```
+
+`GenerateParams` is the legacy convenience form of the same call. It projects
+onto a `Request` one way, through `RequestFromGenerateParams`; nothing projects
+back.
+
+#### ModelResult
+
+What one model call produced: text, reasoning, tool calls, sources, files, usage,
+finish reason, and response metadata. It carries no orchestration state — no
+steps, no output messages, no tool execution — because none of that crosses the
+provider seam. `GenerateResult` is the client-layer result type that adds those
+fields; `GenerateResultFromModelResult` builds one from a `ModelResult`.
 
 #### GenerateParams
 

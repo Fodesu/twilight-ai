@@ -462,3 +462,41 @@ EXT-WRT-1 要求 `OpenWriter` 读取整条日志，重建三样内存状态，�
 **文件 adapter 的 `Read` 每次调用都全量解析日志**（`readLog` 无起读点），因此下列读取的代价都随日志长度增长，与只需读到多少行无关：(a) 全量 fold 的那次读取；(b) 校验缓存条目落在组边界上的那次读取（每个投影一次）；(c) `storeReader.Load` 的每次读取——它先 `isPrefix` 再 `Read`，即热缓存下每次 `Load` 都是**两次全量解析**。要让"热缓存下重开 Writer 不读整条日志"成立，需要让 `Read` 支持按字节区间起读（文件 adapter 已有每组的字节区间，缺的是行到字节的定位表），这同时会解决 (c)。本次改动只消除**常驻**内存，不改变这些读取的代价，故 11.1 的"读整条日志"在文件 adapter 上仍然发生，只是读完即释放。
 
 另有两处相邻的健壮性问题，均未改动：`storeReader.isPrefix` 只比对行不存在与 digest，不要求该行是组尾（`writer.coversGroupBoundary` 要求），对系统自身写出的条目无影响，对不正确的外部条目偏弱；`Agent` 层与 reader 的缓存写入策略分离（`runmod.WriterCachePolicy` 排除机器投影、Runtime 的 `SnapshotPolicy` 负责它）是刻意的，不在本次修订内。
+
+## 12. 2026-09-11 修订：provider 接缝改用 `sdk.Request` → `ModelResult`/`ModelStream`
+
+### 12.1 起因
+
+provider 接缝说的是旧类型：入参 `GenerateParams`，出参 `*GenerateResult` / `*StreamResult`。这带来三个问题。
+
+1. **编排状态与单次调用边界挤在同一个类型里**。`GenerateResult` 同时承载单次调用的产出（text、tool calls、usage）和多步编排的产出（`Steps`、`Messages`、`ToolResults`、`DeferredToolApproval`），`StreamResult` 也一样。provider 从不填编排字段，但类型上无法阻止它去填，于是"什么可以过接缝"只能靠约定。
+2. **装配存在多份实现，同一批 parts 可以得出不同结果**。core 有一份（`StreamText` 的步骤累积）、`StreamResult.ToResult` 有第二份、`StreamText` 的 `MaxSteps == 0` 快速路径直接绕过装配返回 provider 的流。三者的语义并不一致：`ToResult` 只从 `FinishStepPart` 取 `Response`，不取 finish reason 与 usage。实测到的外部症状是 responses 的 generate 与 stream 对同一时间戳给出不同表示（一个带本地时区，一个 UTC）——两条路径对同一份元数据不一致。
+3. **旧 adapter 不看 ctx**。消费者中途离开（取消）后，转发 goroutine 会永久阻塞在无人接收的 send 上。provider 侧本身是正确的（`streamProcessor.send` 都 select `ctx.Done()`），泄漏完全在 core 适配层。
+
+### 12.2 决定
+
+1. **接缝类型是 `Request` → `ModelResult` / `<-chan StreamPart`**，只承载一次模型调用的边界。provider 只产 `StreamPart`，part→结果的折叠只在 core 有一处（`assembleStream`）。`Steps`/`Messages`/`ToolResults`/`DeferredToolApproval` 在接缝类型上不存在，因此"编排状态不过界"从约定变成类型事实。
+2. **转换单向**。legacy→新只保留 `RequestFromGenerateParams`（legacy 便利 API 构造 `Request` 的唯一入口）；新→legacy 只保留客户端上转换 `GenerateResultFromModelResult`，它只服务客户端结果格式化，绝不向内跨接缝。向下的 `ModelStreamFromStreamResult`、`GenerateParamsFromRequest`、`ModelResultFromGenerateResult`、`ToolChoice.Legacy()` 全部删除。
+3. **`GenerateResult` 与 `ModelResult` 是两个类型，不是内嵌关系**。`Response` 在接缝侧是指针、在客户端侧是值，内嵌会产生同名字段提升冲突；拆开之后编排字段在类型上就不可能过界。
+4. **取消语义**：ctx 结束后装配器**停止记录**、继续排空上游，并让 `Result()` 立刻返回 `ctx.Err()`。等上游 channel 关闭才返回，会把一次取消变成一次挂死（实测：一个不关闭 channel 的 provider 让 `Result()` 挂了 10 分钟）。排空是为了让正 mid-send 的 provider 不被阻塞；两者合起来才是两个方向都不阻塞。
+5. **两条路径的出口统一过 `hardenResult`**：调用方拿到自己的副本，且流式与非流式对同一份元数据给出相同表示（响应时间戳归一化到 UTC 就在这一处）。此前只有流式路径做了归一化。
+6. **只有流式传输的后端用 `sdk.CollectStream` 回答非流式调用**（codex：`DoGenerate` = `DoStream` + `CollectStream`）。折叠仍是 SDK 的唯一实现，provider 不再写第二份。
+7. **legacy `StreamResult.ToResult` 也路由到同一个装配器**；tool results 是编排，由 legacy 包装层在穿流时自己收集。于是全仓只剩一处 part→结果 的折叠。
+8. **验收靠 conformance 而不是靠方法名**。`provider/providertest` 只经 `sdk.Generate`/`sdk.Stream` 到达 provider，因此断言的是行为：请求确实上wire（system/user/tool 三类 marker 在 URL 或 body 中出现）、单次调用产出、流式产出与之一致、错误不被吞成空成功。套件在被打假四次后才被信任（抽掉 system 消息 → request/generate 失败；只在流式路径抽掉 → 仅 stream 失败；让流式文本发散 → 仅 stream 失败），6 个 chat provider 各有 text 与 tool-call 两个 fixture，复用各自既有的 wire 数据。
+
+### 12.3 落点
+
+- [providers.md](../providers.md)：`Provider` 接口签名与"接缝只跨单次调用边界"的表述；`DoStream` 的契约（关闭 channel、尊重 ctx、流中失败以 `ErrorPart` 报告）；自定义 provider 示例改为新接缝。
+- [api-reference.md](../api-reference.md)：新增 `Request` 与 `ModelResult` 两个接缝类型的条目，并写明 `GenerateParams`/`GenerateResult` 与它们的关系是单向投影。
+- `sdk/provider.go`、`sdk/model_call.go`、`sdk/model_stream.go`：接缝签名、`assembleStream`（唯一折叠点）、`CollectStream`（只支持流式的后端）、`hardenResult`（两条路径的共同出口）。
+- `sdk/stream.go`：`StreamResult.ToResult` 改为经 `assembleStream`；`sdk/generate_text.go`、`sdk/stream_text.go`：legacy 循环走 `Request`/`ModelResult`，删除"快速路径"（它绕过了装配）。
+- `sdk/request_adapter.go`：只留 `RequestFromGenerateParams`（入）与 `GenerateResultFromModelResult`（客户端出），其余向下转换器删除。
+- `provider/providertest/providertest.go` 与 6 个 `provider/*/conformance_test.go`：接缝一致性套件与 fixture。
+- 6 个 chat provider 的 `DoGenerate`/`DoStream`/`buildRequest`/`convertTools`/tool-choice 转换；`agent/run/loop/contract.go` 的 `ModelInvoker`/`StreamingModelInvoker` 成为唯一声明（`sdk` 侧重复声明与 `cmd/twilight-agent` 的 `providerModel` shim 删除）。
+
+### 12.4 后续（未做，代价已知）
+
+1. **`ProviderOptions` 目前被所有 provider 静默忽略**：它参与 `Request` 的 digest、也在 `run.ModelRequest` 里被克隆与持久化，却没有任何 provider 读它。于是"设了它"与"什么都没设"在 wire 上完全一样——非空值等于静默失效，比字段不存在更糟。下一步要么在 provider 上实现（先要定 namespace 与合并语义：按 provider 命名空间取自己的那份 JSON，合并进 wire body，还是只允许少数具名开关），要么把它从 `Request` 与 `run.ModelRequest` 一并删除。conformance 套件应同时补一条断言：声明支持 provider options 的 provider，其选项必须出现在 wire 上。
+2. **provider 单测仍以 legacy 参数构造请求再投影一次**（`mustJSON` 辅助函数只是把 Go schema 值变成"接缝上已经解析好的 JSON"的等价写法）。接缝原生形状由 conformance 覆盖，把剩余约 150 处字面量改写成原生 `Request` 是待办，不是行为缺口。
+3. **google provider 丢弃 wire 上携带的 tool-call id**，总是自己 mint 一个（`provider/google/generativeai/types.go` 的 `functionCall` 没有 id 字段）。对照 `provider/openai/completions` 是保留 wire id、缺失才 `generateID`。
+4. **OpenAI 形状的 tool-choice 编码在 4 个 provider 里各有一份**（completions、copilot、codex、responses）。这是刻意的：wire 形状属于 provider；若后续确认四处永远一致，可抽成 internal helper。

@@ -166,14 +166,14 @@ func (p *Provider) authHeaders() map[string]string {
 
 // ---------- DoGenerate ----------
 
-func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*sdk.GenerateResult, error) { //nolint:gocritic // interface method
-	if params.Model == nil {
-		return nil, fmt.Errorf("openai-responses: model is required")
+func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error) { //nolint:gocritic // interface method
+	if req.Model == "" {
+		return sdk.ModelResult{}, fmt.Errorf("openai-responses: model is required")
 	}
 
-	req, err := p.buildRequest(&params)
+	wireReq, err := p.buildRequest(&req)
 	if err != nil {
-		return nil, fmt.Errorf("openai-responses: build request: %w", err)
+		return sdk.ModelResult{}, fmt.Errorf("openai-responses: build request: %w", err)
 	}
 
 	resp, err := utils.FetchJSON[responsesResponse](ctx, p.httpClient, &utils.RequestOptions{
@@ -182,18 +182,18 @@ func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*
 		Path:    "/responses",
 		Headers: p.authHeaders(),
 		Prepare: p.prepareRequest,
-		Body:    req,
+		Body:    wireReq,
 	})
 	if err != nil {
 		var apiErr *utils.APIError
 		if errors.As(err, &apiErr) {
-			return nil, fmt.Errorf("openai-responses: request failed: %s", apiErr.Detail())
+			return sdk.ModelResult{}, fmt.Errorf("openai-responses: request failed: %s", apiErr.Detail())
 		}
-		return nil, fmt.Errorf("openai-responses: request failed: %w", err)
+		return sdk.ModelResult{}, fmt.Errorf("openai-responses: request failed: %w", err)
 	}
 
 	if resp.Error != nil {
-		return nil, fmt.Errorf("openai-responses: api error [%s]: %s", resp.Error.Code, resp.Error.Message)
+		return sdk.ModelResult{}, fmt.Errorf("openai-responses: api error [%s]: %s", resp.Error.Code, resp.Error.Message)
 	}
 
 	return p.parseResponse(resp)
@@ -201,7 +201,7 @@ func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*
 
 // ---------- buildRequest ----------
 
-func (p *Provider) buildRequest(params *sdk.GenerateParams) (*responsesRequest, error) {
+func (p *Provider) buildRequest(params *sdk.Request) (*responsesRequest, error) {
 	messages, err := messagecompat.Normalize(params.Messages, sdk.MessageRoleCapabilities{
 		Developer:             true,
 		MidConversationSystem: true,
@@ -214,7 +214,7 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) (*responsesRequest, 
 	// reasoning state across turns, and it is returned only when requested.
 	store := false
 	req := &responsesRequest{
-		Model:           params.Model.ID,
+		Model:           params.Model,
 		Instructions:    params.System,
 		Input:           convertToResponsesInput(messages),
 		Temperature:     params.Temperature,
@@ -227,7 +227,7 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) (*responsesRequest, 
 
 	if len(params.Tools) > 0 {
 		req.Tools = convertResponsesTools(params.Tools)
-		req.ToolChoice = params.ToolChoice
+		req.ToolChoice = convertToolChoice(params.ToolChoice)
 	}
 
 	if params.ResponseFormat != nil {
@@ -261,7 +261,7 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) (*responsesRequest, 
 	return req, nil
 }
 
-func convertResponsesTools(tools []sdk.Tool) []responsesTool {
+func convertResponsesTools(tools []sdk.ToolDefinition) []responsesTool {
 	out := make([]responsesTool, 0, len(tools))
 	for _, t := range tools {
 		out = append(out, responsesTool{
@@ -272,6 +272,24 @@ func convertResponsesTools(tools []sdk.Tool) []responsesTool {
 		})
 	}
 	return out
+}
+
+// convertToolChoice maps the frozen tool choice onto this wire format. An empty
+// Mode means no choice was requested, so the field stays unset; every other
+// mode keeps the shape the endpoint already accepted before the frozen
+// ToolChoice type replaced the open `any`.
+func convertToolChoice(choice sdk.ToolChoice) any {
+	switch choice.Mode {
+	case sdk.ToolChoiceAuto, sdk.ToolChoiceNone, sdk.ToolChoiceRequired:
+		return string(choice.Mode)
+	case sdk.ToolChoiceTool:
+		return map[string]any{
+			"type":     "function",
+			"function": map[string]any{"name": choice.Tool},
+		}
+	default:
+		return nil
+	}
 }
 
 // ---------- input conversion ----------
@@ -433,9 +451,9 @@ func convertResponsesToolResults(msg sdk.Message) []json.RawMessage {
 
 // ---------- parseResponse ----------
 
-func (p *Provider) parseResponse(resp *responsesResponse) (*sdk.GenerateResult, error) {
-	result := &sdk.GenerateResult{
-		Response: sdk.ResponseMetadata{
+func (p *Provider) parseResponse(resp *responsesResponse) (sdk.ModelResult, error) {
+	result := sdk.ModelResult{
+		Response: &sdk.ResponseMetadata{
 			ID:        resp.ID,
 			ModelID:   resp.Model,
 			Timestamp: time.Unix(resp.CreatedAt, 0),
@@ -529,16 +547,16 @@ func (p *Provider) parseResponse(resp *responsesResponse) (*sdk.GenerateResult, 
 
 // ---------- DoStream ----------
 
-func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sdk.StreamResult, error) { //nolint:gocritic,gocyclo // interface method
-	if params.Model == nil {
+func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error) { //nolint:gocritic,gocyclo // interface method
+	if req.Model == "" {
 		return nil, fmt.Errorf("openai-responses: model is required")
 	}
 
-	req, err := p.buildRequest(&params)
+	wireReq, err := p.buildRequest(&req)
 	if err != nil {
 		return nil, fmt.Errorf("openai-responses: build request: %w", err)
 	}
-	req.Stream = true
+	wireReq.Stream = true
 
 	ch := make(chan sdk.StreamPart, 64)
 
@@ -619,7 +637,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 			Path:    "/responses",
 			Headers: p.authHeaders(),
 			Prepare: p.prepareRequest,
-			Body:    req,
+			Body:    wireReq,
 		}, func(ev *utils.SSEEvent) error {
 			eventType := ev.Event
 			if eventType == "" {
@@ -862,7 +880,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 		})
 	}()
 
-	return &sdk.StreamResult{Stream: ch}, nil
+	return ch, nil
 }
 
 // ---------- helpers ----------

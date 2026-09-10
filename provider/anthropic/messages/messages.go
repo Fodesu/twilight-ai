@@ -236,7 +236,7 @@ func WithThinkingEnabled(budgetTokens int) Option {
 //
 // This is the shape used by Claude 4.6 and later, where the depth of thinking is
 // steered per request through output_config.effort (see
-// sdk.GenerateParams.ReasoningEffort) rather than a token budget. There is
+// sdk.Request.ReasoningEffort) rather than a token budget. There is
 // deliberately no budget parameter: adaptive thinking takes none.
 func WithThinkingAdaptive() Option {
 	return func(p *Provider) {
@@ -374,14 +374,14 @@ func (p *Provider) requestHeaders() map[string]string {
 
 // ---------- DoGenerate ----------
 
-func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*sdk.GenerateResult, error) { //nolint:gocritic // interface method
-	if params.Model == nil {
-		return nil, fmt.Errorf("anthropic: model is required")
+func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error) { //nolint:gocritic // interface method
+	if req.Model == "" {
+		return sdk.ModelResult{}, fmt.Errorf("anthropic: model is required")
 	}
 
-	req, err := p.buildRequest(&params)
+	body, err := p.buildRequest(&req)
 	if err != nil {
-		return nil, fmt.Errorf("anthropic: build request: %w", err)
+		return sdk.ModelResult{}, fmt.Errorf("anthropic: build request: %w", err)
 	}
 
 	resp, err := utils.FetchJSON[messagesResponse](ctx, p.httpClient, &utils.RequestOptions{
@@ -389,14 +389,14 @@ func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*
 		BaseURL: p.baseURL,
 		Path:    "/messages",
 		Headers: p.requestHeaders(),
-		Body:    req,
+		Body:    body,
 	})
 	if err != nil {
 		var apiErr *utils.APIError
 		if errors.As(err, &apiErr) {
-			return nil, fmt.Errorf("anthropic: messages request failed: %s", apiErr.Detail())
+			return sdk.ModelResult{}, fmt.Errorf("anthropic: messages request failed: %s", apiErr.Detail())
 		}
-		return nil, fmt.Errorf("anthropic: messages request failed: %w", err)
+		return sdk.ModelResult{}, fmt.Errorf("anthropic: messages request failed: %w", err)
 	}
 
 	return p.parseResponse(resp)
@@ -404,17 +404,17 @@ func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*
 
 // ---------- buildRequest ----------
 
-func (p *Provider) buildRequest(params *sdk.GenerateParams) (*messagesRequest, error) {
+func (p *Provider) buildRequest(params *sdk.Request) (*messagesRequest, error) {
 	normalized, err := messagecompat.Normalize(params.Messages, sdk.MessageRoleCapabilities{
 		MidConversationSystem: p.supportsMidConversationSystem,
 	})
 	if err != nil {
 		return nil, err
 	}
-	system, messages := convertMessages(params.System, params.Model.ID, normalized)
+	system, messages := convertMessages(params.System, params.Model, normalized)
 
 	req := &messagesRequest{
-		Model:       params.Model.ID,
+		Model:       params.Model,
 		System:      system,
 		Messages:    messages,
 		MaxTokens:   resolveMaxTokens(params, p.thinking),
@@ -452,7 +452,7 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) (*messagesRequest, e
 // cap off the low default. Collapsing either case back to defaultMaxTokens
 // silently truncates thinking output rather than failing, so the full matrix is
 // pinned by TestResolveMaxTokens_Matrix.
-func resolveMaxTokens(params *sdk.GenerateParams, thinking *thinkingConfigUnion) *int {
+func resolveMaxTokens(params *sdk.Request, thinking *thinkingConfigUnion) *int {
 	if params.MaxTokens != nil {
 		return params.MaxTokens
 	}
@@ -475,7 +475,7 @@ func resolveMaxTokens(params *sdk.GenerateParams, thinking *thinkingConfigUnion)
 
 // reasoningActive reports whether the request enables reasoning without an
 // explicit token budget (adaptive thinking and/or output_config.effort).
-func reasoningActive(params *sdk.GenerateParams, thinking *thinkingConfigUnion) bool {
+func reasoningActive(params *sdk.Request, thinking *thinkingConfigUnion) bool {
 	if thinking.active() {
 		return true
 	}
@@ -485,7 +485,7 @@ func reasoningActive(params *sdk.GenerateParams, thinking *thinkingConfigUnion) 
 	return false
 }
 
-func convertTools(tools []sdk.Tool) []anthropicTool {
+func convertTools(tools []sdk.ToolDefinition) []anthropicTool {
 	out := make([]anthropicTool, 0, len(tools))
 	for _, t := range tools {
 		at := anthropicTool{
@@ -501,30 +501,18 @@ func convertTools(tools []sdk.Tool) []anthropicTool {
 	return out
 }
 
-func convertToolChoice(choice any) *anthropicToolChoice {
-	if choice == nil {
-		return nil
-	}
-	switch v := choice.(type) {
-	case string:
-		switch v {
-		case "auto":
-			return &anthropicToolChoice{Type: "auto"}
-		case "required":
-			return &anthropicToolChoice{Type: "any"}
-		case "none":
-			return nil
-		default:
-			return &anthropicToolChoice{Type: "auto"}
-		}
-	case map[string]any:
-		tc := &anthropicToolChoice{Type: "tool"}
-		if fn, ok := v["function"].(map[string]any); ok {
-			if name, ok := fn["name"].(string); ok {
-				tc.Name = name
-			}
-		}
-		return tc
+// convertToolChoice lowers the provider-neutral ToolChoice onto Anthropic's
+// tool_choice object. An unset Mode leaves the field off the wire entirely.
+func convertToolChoice(choice sdk.ToolChoice) *anthropicToolChoice {
+	switch choice.Mode {
+	case sdk.ToolChoiceAuto:
+		return &anthropicToolChoice{Type: "auto"}
+	case sdk.ToolChoiceNone:
+		return &anthropicToolChoice{Type: "none"}
+	case sdk.ToolChoiceRequired:
+		return &anthropicToolChoice{Type: "any"}
+	case sdk.ToolChoiceTool:
+		return &anthropicToolChoice{Type: "tool", Name: choice.Tool}
 	default:
 		return nil
 	}
@@ -536,7 +524,7 @@ func convertToolChoice(choice any) *anthropicToolChoice {
 // alternating user/assistant messages. Tool result messages are merged into
 // user messages, as required by the Anthropic API.
 //
-// Note: GenerateParams.System (plain string) is converted to a single system
+// Note: Request.System (plain string) is converted to a single system
 // block without cache_control. To attach cache_control to a system prompt,
 // pass it as a MessageRoleSystem message with a TextPart that has CacheControl
 // set instead of using the System field.
@@ -806,15 +794,20 @@ func convertToolResults(parts []sdk.MessagePart) []contentBlock {
 
 // ---------- parseResponse ----------
 
-func (p *Provider) parseResponse(resp *messagesResponse) (*sdk.GenerateResult, error) {
-	result := &sdk.GenerateResult{
+func (p *Provider) parseResponse(resp *messagesResponse) (sdk.ModelResult, error) {
+	result := sdk.ModelResult{
 		Usage:           convertUsage(&resp.Usage),
 		FinishReason:    mapFinishReason(resp.StopReason),
 		RawFinishReason: resp.StopReason,
-		Response: sdk.ResponseMetadata{
+	}
+	// Response is pointer-typed at the boundary so an absent value actually
+	// omits. Leave it nil when the wire carried no metadata, matching what the
+	// streaming assembler does with a zero FinishStepPart.Response.
+	if resp.ID != "" || resp.Model != "" {
+		result.Response = &sdk.ResponseMetadata{
 			ID:      resp.ID,
 			ModelID: resp.Model,
-		},
+		}
 	}
 
 	for i := range resp.Content {
@@ -853,16 +846,16 @@ func (p *Provider) parseResponse(resp *messagesResponse) (*sdk.GenerateResult, e
 
 // ---------- DoStream ----------
 
-func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sdk.StreamResult, error) { //nolint:gocritic // interface method
-	if params.Model == nil {
+func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error) { //nolint:gocritic // interface method
+	if req.Model == "" {
 		return nil, fmt.Errorf("anthropic: model is required")
 	}
 
-	req, err := p.buildRequest(&params)
+	body, err := p.buildRequest(&req)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic: build request: %w", err)
 	}
-	req.Stream = true
+	body.Stream = true
 
 	ch := make(chan sdk.StreamPart, 64)
 
@@ -887,7 +880,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 			BaseURL: p.baseURL,
 			Path:    "/messages",
 			Headers: p.requestHeaders(),
-			Body:    req,
+			Body:    body,
 		}, h.handleEvent)
 
 		if err != nil {
@@ -906,7 +899,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 		})
 	}()
 
-	return &sdk.StreamResult{Stream: ch}, nil
+	return ch, nil
 }
 
 type streamHandler struct {

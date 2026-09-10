@@ -231,14 +231,11 @@ func buildAgent(mock bool, provider, baseURL, apiKey, modelID, compat, system st
 	default:
 		return nil, fmt.Errorf("unsupported compat %q (only deepseek)", compat)
 	}
-	invoker := providerModel{model: &sdk.Model{ID: modelID, Provider: completions.New(opts...), Type: sdk.ModelTypeChat}}
+	// *sdk.Model is itself the ModelInvoker: it exposes
+	// Generate(context.Context, sdk.Request) (sdk.ModelResult, error), so a
+	// hand-written wrapper would only be ceremony between two identical shapes.
+	invoker := &sdk.Model{ID: modelID, Provider: completions.New(opts...), Type: sdk.ModelTypeChat}
 	return ref.NewAgent(run.ModelRef(modelID), invoker, ref.WithSystemPrompt(system))
-}
-
-type providerModel struct{ model *sdk.Model }
-
-func (p providerModel) Generate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error) {
-	return sdk.Generate(ctx, p.model, req)
 }
 
 // mockModel answers once a tool result is in the conversation and reports how

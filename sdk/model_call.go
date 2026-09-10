@@ -5,19 +5,6 @@ import (
 	"fmt"
 )
 
-// ModelInvoker is the Request/ModelResult boundary for one model invocation.
-// Existing Provider implementations do not need to implement it; Model.Generate
-// falls back to Provider.DoGenerate via adapters.
-type ModelInvoker interface {
-	Generate(context.Context, Request) (ModelResult, error)
-}
-
-// StreamingModelInvoker is the streaming counterpart of ModelInvoker. Existing
-// providers can continue implementing DoStream.
-type StreamingModelInvoker interface {
-	Stream(context.Context, Request) (ModelStream, error)
-}
-
 // Generate performs exactly one provider model call using the provider-neutral
 // Request boundary type and returns the single-call ModelResult. It does not
 // execute tools or run the legacy multi-step loop.
@@ -78,18 +65,13 @@ func (m *Model) Generate(ctx context.Context, req Request) (ModelResult, error) 
 	if err != nil {
 		return ModelResult{}, err
 	}
-	if provider, ok := m.Provider.(ModelInvoker); ok {
-		return provider.Generate(ctx, req)
-	}
-	params, err := GenerateParamsFromRequest(m, req)
+	result, err := m.Provider.DoGenerate(ctx, req)
 	if err != nil {
 		return ModelResult{}, err
 	}
-	result, err := m.Provider.DoGenerate(ctx, params)
-	if err != nil {
-		return ModelResult{}, err
-	}
-	return ModelResultFromGenerateResult(result), nil
+	// A streamed call returns through the same hardening, so both paths answer
+	// with the same representation.
+	return hardenResult(result), nil
 }
 
 // Stream performs exactly one provider streaming model call. Result must be
@@ -107,18 +89,11 @@ func (m *Model) Stream(ctx context.Context, req Request) (ModelStream, error) {
 	if err != nil {
 		return ModelStream{}, err
 	}
-	if provider, ok := m.Provider.(StreamingModelInvoker); ok {
-		return provider.Stream(ctx, req)
-	}
-	params, err := GenerateParamsFromRequest(m, req)
+	parts, err := m.Provider.DoStream(ctx, req)
 	if err != nil {
 		return ModelStream{}, err
 	}
-	stream, err := m.Provider.DoStream(ctx, params)
-	if err != nil {
-		return ModelStream{}, err
-	}
-	return ModelStreamFromStreamResult(stream), nil
+	return assembleStream(ctx, parts), nil
 }
 
 func bindRequestModel(model *Model, req *Request) (Request, error) {

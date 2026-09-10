@@ -25,7 +25,7 @@ func TestEveryProviderStampsItsReasoningDialect(t *testing.T) {
 		name     string
 		response string
 		want     sdk.ReasoningFormat
-		generate func(t *testing.T, baseURL string) (*sdk.GenerateResult, error)
+		generate func(t *testing.T, baseURL string) (sdk.ModelResult, error)
 	}{
 		{
 			name: "anthropic",
@@ -33,10 +33,10 @@ func TestEveryProviderStampsItsReasoningDialect(t *testing.T) {
 				"content":[{"type":"thinking","thinking":"t","signature":"SIG"},{"type":"text","text":"a"}],
 				"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
 			want: sdk.ReasoningFormatAnthropic,
-			generate: func(t *testing.T, baseURL string) (*sdk.GenerateResult, error) {
+			generate: func(t *testing.T, baseURL string) (sdk.ModelResult, error) {
 				p := anthropicmessages.New(anthropicmessages.WithAPIKey("k"), anthropicmessages.WithBaseURL(baseURL))
-				return p.DoGenerate(context.Background(), sdk.GenerateParams{
-					Model:    &sdk.Model{ID: "claude-opus-5"},
+				return p.DoGenerate(context.Background(), sdk.Request{
+					Model:    "claude-opus-5",
 					Messages: []sdk.Message{sdk.UserMessage("hi")},
 				})
 			},
@@ -47,10 +47,10 @@ func TestEveryProviderStampsItsReasoningDialect(t *testing.T) {
 				{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"t"}],"encrypted_content":"EC"}],
 				"usage":{"input_tokens":1,"output_tokens":1}}`,
 			want: sdk.ReasoningFormatOpenAIResponses,
-			generate: func(t *testing.T, baseURL string) (*sdk.GenerateResult, error) {
+			generate: func(t *testing.T, baseURL string) (sdk.ModelResult, error) {
 				p := responses.New(responses.WithAPIKey("k"), responses.WithBaseURL(baseURL))
-				return p.DoGenerate(context.Background(), sdk.GenerateParams{
-					Model:    p.ChatModel("gpt-5.6"),
+				return p.DoGenerate(context.Background(), sdk.Request{
+					Model:    "gpt-5.6",
 					Messages: []sdk.Message{sdk.UserMessage("hi")},
 				})
 			},
@@ -61,10 +61,10 @@ func TestEveryProviderStampsItsReasoningDialect(t *testing.T) {
 				{"text":"t","thought":true,"thoughtSignature":"SIG"},{"text":"a"}]},"finishReason":"STOP"}],
 				"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1},"modelVersion":"gemini-3-pro"}`,
 			want: sdk.ReasoningFormatGoogle,
-			generate: func(t *testing.T, baseURL string) (*sdk.GenerateResult, error) {
+			generate: func(t *testing.T, baseURL string) (sdk.ModelResult, error) {
 				p := googlegenerative.New(googlegenerative.WithAPIKey("k"), googlegenerative.WithBaseURL(baseURL))
-				return p.DoGenerate(context.Background(), sdk.GenerateParams{
-					Model:    &sdk.Model{ID: "gemini-3-pro"},
+				return p.DoGenerate(context.Background(), sdk.Request{
+					Model:    "gemini-3-pro",
 					Messages: []sdk.Message{sdk.UserMessage("hi")},
 				})
 			},
@@ -75,10 +75,10 @@ func TestEveryProviderStampsItsReasoningDialect(t *testing.T) {
 				"message":{"role":"assistant","content":"a","reasoning_text":"t","reasoning_opaque":"OP"},
 				"finish_reason":"stop"}]}`,
 			want: sdk.ReasoningFormatCopilot,
-			generate: func(t *testing.T, baseURL string) (*sdk.GenerateResult, error) {
+			generate: func(t *testing.T, baseURL string) (sdk.ModelResult, error) {
 				p := copilot.New(copilot.WithAPIKey("k"), copilot.WithBaseURL(baseURL))
-				return p.DoGenerate(context.Background(), sdk.GenerateParams{
-					Model:    &sdk.Model{ID: "m"},
+				return p.DoGenerate(context.Background(), sdk.Request{
+					Model:    "m",
 					Messages: []sdk.Message{sdk.UserMessage("hi")},
 				})
 			},
@@ -89,10 +89,10 @@ func TestEveryProviderStampsItsReasoningDialect(t *testing.T) {
 				"message":{"role":"assistant","content":"a","reasoning_content":"t"},
 				"finish_reason":"stop"}]}`,
 			want: sdk.ReasoningFormatOpenAIChat,
-			generate: func(t *testing.T, baseURL string) (*sdk.GenerateResult, error) {
+			generate: func(t *testing.T, baseURL string) (sdk.ModelResult, error) {
 				p := completions.New(completions.WithAPIKey("k"), completions.WithBaseURL(baseURL))
-				return p.DoGenerate(context.Background(), sdk.GenerateParams{
-					Model:    &sdk.Model{ID: "deepseek-reasoner"},
+				return p.DoGenerate(context.Background(), sdk.Request{
+					Model:    "deepseek-reasoner",
 					Messages: []sdk.Message{sdk.UserMessage("hi")},
 				})
 			},

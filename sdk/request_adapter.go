@@ -10,95 +10,6 @@ import (
 
 const legacyToolChoiceFunction = "function"
 
-// ModelStreamFromStreamResult adapts a legacy StreamResult into the single-call
-// ModelStream boundary. It forwards every stream part while accumulating the
-// final ModelResult; callers must consume Parts before calling Result.
-func ModelStreamFromStreamResult(stream *StreamResult) ModelStream {
-	out := make(chan StreamPart, 64)
-	done := make(chan struct{})
-	var result ModelResult
-	var streamErr error
-
-	go func() {
-		defer close(done)
-		defer close(out)
-		if stream == nil {
-			streamErr = fmt.Errorf("twilightai: nil stream result")
-			return
-		}
-		var reasoning reasoningAccumulator
-		for part := range stream.Stream {
-			switch p := part.(type) {
-			case *TextDeltaPart:
-				result.Text += p.Text
-			case *TextEndPart:
-				if p.ProviderMetadata != nil {
-					result.TextProviderMetadata = cloneMetadataMap(p.ProviderMetadata)
-				}
-			case *ReasoningStartPart:
-				reasoning.openBlock(p.ID, p.Format, p.Model, cloneMetadataMap(p.ProviderMetadata))
-			case *ReasoningDeltaPart:
-				reasoning.appendDelta(p.ID, p.Text, p.Format, p.Model, cloneMetadataMap(p.ProviderMetadata))
-			case *ReasoningEndPart:
-				reasoning.closeBlock(p.ID, p.Format, p.Model, cloneMetadataMap(p.ProviderMetadata))
-			case *StreamToolCallPart:
-				result.ToolCalls = append(result.ToolCalls, ToolCall{
-					ToolCallID:       p.ToolCallID,
-					ToolName:         p.ToolName,
-					Input:            cloneJSONLike(p.Input),
-					ProviderMetadata: cloneMetadataMap(p.ProviderMetadata),
-				})
-			case *StreamSourcePart:
-				source := p.Source
-				source.ProviderMetadata = cloneMetadataMap(source.ProviderMetadata)
-				result.Sources = append(result.Sources, source)
-			case *StreamFilePart:
-				result.Files = append(result.Files, p.File)
-			case *FinishStepPart:
-				result.FinishReason = p.FinishReason
-				result.RawFinishReason = p.RawFinishReason
-				result.Usage = p.Usage
-				// Match the generate path (ModelResultFromGenerateResult):
-				// an absent metadata stays nil so streamed and generated
-				// ModelResults serialize identically — the agent runtime
-				// digests persisted results, and a non-nil pointer to a zero
-				// value would make the digest depend on the execution mode.
-				if responseMetadataZero(p.Response) {
-					result.Response = nil
-				} else {
-					result.Response = cloneResponseMetadataPtr(&p.Response)
-				}
-			case *FinishPart:
-				result.FinishReason = p.FinishReason
-				result.RawFinishReason = p.RawFinishReason
-				result.Usage = p.TotalUsage
-			case *ErrorPart:
-				if streamErr == nil {
-					streamErr = p.Error
-				}
-			}
-			out <- part
-		}
-		result.ReasoningParts = cloneReasoningParts(reasoning.result())
-		result.Reasoning = ReasoningText(result.ReasoningParts)
-	}()
-
-	return ModelStream{
-		Parts: out,
-		Result: func() (*ModelResult, error) {
-			<-done
-			res := result
-			res.ReasoningParts = cloneReasoningParts(res.ReasoningParts)
-			res.TextProviderMetadata = cloneMetadataMap(res.TextProviderMetadata)
-			res.Sources = cloneSources(res.Sources)
-			res.Files = append([]GeneratedFile(nil), res.Files...)
-			res.ToolCalls = cloneToolCalls(res.ToolCalls)
-			res.Response = cloneResponseMetadataPtr(res.Response)
-			return &res, streamErr
-		},
-	}
-}
-
 // RequestFromGenerateParams projects the provider-level fields of legacy
 // GenerateParams into the single-call Request boundary type. Client-side
 // orchestration fields such as MaxSteps, callbacks, approvals, and tool
@@ -134,52 +45,6 @@ func RequestFromGenerateParams(params GenerateParams) (Request, error) {
 		ReasoningEffort:  clonePtr(params.ReasoningEffort),
 		ReasoningSummary: clonePtr(params.ReasoningSummary),
 		PromptCacheKey:   clonePtr(params.PromptCacheKey),
-	}, nil
-}
-
-// GenerateParamsFromRequest adapts a single-call Request back to legacy
-// GenerateParams for providers that still implement Provider.DoGenerate and
-// Provider.DoStream. The supplied model provides the provider binding that a
-// Request intentionally does not persist. Returned tools contain definitions
-// only; Execute and RequireApproval stay empty because provider calls only need
-// schemas.
-//
-//nolint:gocritic // hugeParam: compatibility adapter preserves Request as the SDK value DTO boundary.
-func GenerateParamsFromRequest(model *Model, req Request) (GenerateParams, error) {
-	if model == nil {
-		return GenerateParams{}, fmt.Errorf("twilightai: request: model is required")
-	}
-	if req.Model != "" && model.ID != "" && req.Model != model.ID {
-		return GenerateParams{}, fmt.Errorf("twilightai: request model %q does not match provider model %q", req.Model, model.ID)
-	}
-	if len(req.ProviderOptions) > 0 {
-		return GenerateParams{}, fmt.Errorf("twilightai: request providerOptions require a ModelInvoker provider")
-	}
-	tools := make([]Tool, len(req.Tools))
-	for i, def := range req.Tools {
-		tool, err := ToolFromDefinition(def)
-		if err != nil {
-			return GenerateParams{}, fmt.Errorf("twilightai: request tool %q: %w", def.Name, err)
-		}
-		tools[i] = tool
-	}
-	return GenerateParams{
-		Model:            model,
-		System:           req.System,
-		Messages:         cloneMessages(req.Messages),
-		Tools:            tools,
-		ToolChoice:       req.ToolChoice.Legacy(),
-		ResponseFormat:   cloneResponseFormat(req.ResponseFormat),
-		Temperature:      clonePtr(req.Temperature),
-		TopP:             clonePtr(req.TopP),
-		MaxTokens:        clonePtr(req.MaxTokens),
-		StopSequences:    append([]string(nil), req.StopSequences...),
-		FrequencyPenalty: clonePtr(req.FrequencyPenalty),
-		PresencePenalty:  clonePtr(req.PresencePenalty),
-		Seed:             clonePtr(req.Seed),
-		ReasoningEffort:  clonePtr(req.ReasoningEffort),
-		ReasoningSummary: clonePtr(req.ReasoningSummary),
-		PromptCacheKey:   clonePtr(req.PromptCacheKey),
 	}, nil
 }
 
@@ -220,25 +85,6 @@ func ToolDefinitionsFromTools(tools []Tool) ([]ToolDefinition, error) {
 		out[i] = def
 	}
 	return out, nil
-}
-
-// ToolFromDefinition adapts a provider-neutral definition back to a legacy
-// Tool value for provider calls. The returned Tool has no Execute handler.
-func ToolFromDefinition(def ToolDefinition) (Tool, error) {
-	var params any
-	if len(def.Parameters) > 0 && string(def.Parameters) != "null" {
-		var schema jsonschema.Schema
-		if err := json.Unmarshal(def.Parameters, &schema); err != nil {
-			return Tool{}, fmt.Errorf("unmarshal tool schema: %w", err)
-		}
-		params = &schema
-	}
-	return Tool{
-		Name:         def.Name,
-		Description:  def.Description,
-		Parameters:   params,
-		CacheControl: cloneCacheControl(def.CacheControl),
-	}, nil
 }
 
 // ToolChoiceFromLegacy converts the legacy ToolChoice any shape into the
@@ -294,47 +140,6 @@ func toolChoiceFromMap(m map[string]any) (ToolChoice, error) {
 		return ToolChoice{}, fmt.Errorf("twilightai: tool choice requires function.name")
 	}
 	return ToolChoice{Mode: ToolChoiceTool, Tool: name}, nil
-}
-
-// Legacy converts a closed ToolChoice back to the legacy any shape consumed by
-// existing providers.
-func (c ToolChoice) Legacy() any {
-	switch c.Mode {
-	case "":
-		return nil
-	case ToolChoiceAuto, ToolChoiceNone, ToolChoiceRequired:
-		return string(c.Mode)
-	case ToolChoiceTool:
-		return map[string]any{"type": legacyToolChoiceFunction, legacyToolChoiceFunction: map[string]any{"name": c.Tool}}
-	default:
-		return nil
-	}
-}
-
-// ModelResultFromGenerateResult extracts the single-call fields of a legacy
-// GenerateResult. Multi-step Steps/Messages, tool execution results, deferred
-// approval state, and callbacks are intentionally not part of ModelResult.
-func ModelResultFromGenerateResult(result *GenerateResult) ModelResult {
-	if result == nil {
-		return ModelResult{}
-	}
-	var response *ResponseMetadata
-	if !responseMetadataZero(result.Response) {
-		response = cloneResponseMetadataPtr(&result.Response)
-	}
-	return ModelResult{
-		Text:                 result.Text,
-		Reasoning:            result.Reasoning,
-		ReasoningParts:       cloneReasoningParts(result.ReasoningParts),
-		TextProviderMetadata: cloneMetadataMap(result.TextProviderMetadata),
-		FinishReason:         result.FinishReason,
-		RawFinishReason:      result.RawFinishReason,
-		Usage:                result.Usage,
-		Sources:              cloneSources(result.Sources),
-		Files:                append([]GeneratedFile(nil), result.Files...),
-		ToolCalls:            cloneToolCalls(result.ToolCalls),
-		Response:             response,
-	}
 }
 
 // GenerateResultFromModelResult adapts a single-call ModelResult back to the

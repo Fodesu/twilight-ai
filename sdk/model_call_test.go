@@ -8,8 +8,8 @@ import (
 )
 
 type boundaryProvider struct {
-	generate func(GenerateParams) (*GenerateResult, error)
-	stream   func(GenerateParams) (*StreamResult, error)
+	generate func(Request) (ModelResult, error)
+	stream   func(Request) (<-chan StreamPart, error)
 }
 
 func (p boundaryProvider) Name() string                                { return "boundary" }
@@ -20,18 +20,18 @@ func (p boundaryProvider) Test(context.Context) *ProviderTestResult {
 func (p boundaryProvider) TestModel(context.Context, string) (*ModelTestResult, error) {
 	return &ModelTestResult{Supported: true}, nil
 }
-func (p boundaryProvider) DoGenerate(_ context.Context, params GenerateParams) (*GenerateResult, error) {
-	return p.generate(params)
+func (p boundaryProvider) DoGenerate(_ context.Context, req Request) (ModelResult, error) {
+	return p.generate(req)
 }
-func (p boundaryProvider) DoStream(_ context.Context, params GenerateParams) (*StreamResult, error) {
-	return p.stream(params)
+func (p boundaryProvider) DoStream(_ context.Context, req Request) (<-chan StreamPart, error) {
+	return p.stream(req)
 }
 
 func TestModelGenerateUsesRequestBoundary(t *testing.T) {
-	var captured GenerateParams
-	provider := boundaryProvider{generate: func(params GenerateParams) (*GenerateResult, error) {
-		captured = params
-		return &GenerateResult{
+	var captured Request
+	provider := boundaryProvider{generate: func(req Request) (ModelResult, error) {
+		captured = req
+		return ModelResult{
 			Text:         "ok",
 			FinishReason: FinishReasonStop,
 			Usage:        Usage{TotalTokens: 7},
@@ -55,15 +55,17 @@ func TestModelGenerateUsesRequestBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if captured.Model != model || len(captured.Messages) != 1 {
-		t.Fatalf("captured params = %+v", captured)
+	// The provider sees the boundary type itself: there is no orchestration
+	// state for it to see, and no way to attach a tool Execute closure to what
+	// it receives.
+	if captured.Model != "m-1" || len(captured.Messages) != 1 {
+		t.Fatalf("captured request = %+v", captured)
 	}
-	if len(captured.Tools) != 1 || captured.Tools[0].Execute != nil || captured.Tools[0].Name != "lookup" {
+	if len(captured.Tools) != 1 || captured.Tools[0].Name != "lookup" || len(captured.Tools[0].Parameters) == 0 {
 		t.Fatalf("captured tools = %+v", captured.Tools)
 	}
-	choice, ok := captured.ToolChoice.(map[string]any)
-	if !ok || choice["type"] != "function" {
-		t.Fatalf("captured tool choice = %#v", captured.ToolChoice)
+	if captured.ToolChoice.Mode != ToolChoiceTool || captured.ToolChoice.Tool != "lookup" {
+		t.Fatalf("captured tool choice = %+v", captured.ToolChoice)
 	}
 	if result.Text != "ok" || result.Usage.TotalTokens != 7 || len(result.ToolCalls) != 1 {
 		t.Fatalf("model result = %+v", result)
@@ -74,71 +76,8 @@ func TestModelGenerateUsesRequestBoundary(t *testing.T) {
 	}
 }
 
-type nativeBoundaryProvider struct {
-	legacyGenerateCalled bool
-	legacyStreamCalled   bool
-	nativeGenerateReq    Request
-	nativeStreamReq      Request
-}
-
-func (p *nativeBoundaryProvider) Name() string                                { return "native-boundary" }
-func (p *nativeBoundaryProvider) ListModels(context.Context) ([]Model, error) { return nil, nil }
-func (p *nativeBoundaryProvider) Test(context.Context) *ProviderTestResult {
-	return &ProviderTestResult{Status: ProviderStatusOK}
-}
-func (p *nativeBoundaryProvider) TestModel(context.Context, string) (*ModelTestResult, error) {
-	return &ModelTestResult{Supported: true}, nil
-}
-func (p *nativeBoundaryProvider) DoGenerate(context.Context, GenerateParams) (*GenerateResult, error) {
-	p.legacyGenerateCalled = true
-	return &GenerateResult{}, nil
-}
-func (p *nativeBoundaryProvider) DoStream(context.Context, GenerateParams) (*StreamResult, error) {
-	p.legacyStreamCalled = true
-	ch := make(chan StreamPart)
-	close(ch)
-	return &StreamResult{Stream: ch}, nil
-}
-func (p *nativeBoundaryProvider) Generate(_ context.Context, req Request) (ModelResult, error) {
-	p.nativeGenerateReq = req
-	return ModelResult{Text: "native", FinishReason: FinishReasonStop}, nil
-}
-func (p *nativeBoundaryProvider) Stream(_ context.Context, req Request) (ModelStream, error) {
-	p.nativeStreamReq = req
-	ch := make(chan StreamPart)
-	close(ch)
-	return ModelStream{Parts: ch, Result: func() (*ModelResult, error) {
-		return &ModelResult{Text: "native-stream", FinishReason: FinishReasonStop}, nil
-	}}, nil
-}
-
-func TestModelUsesNativeModelInvokerWhenAvailable(t *testing.T) {
-	provider := &nativeBoundaryProvider{}
-	model := &Model{ID: "m-1", Provider: provider}
-	generated, err := model.Generate(context.Background(), Request{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if generated.Text != "native" || provider.nativeGenerateReq.Model != "m-1" || provider.legacyGenerateCalled {
-		t.Fatalf("native generate not used: result=%+v provider=%+v", generated, provider)
-	}
-	stream, err := model.Stream(context.Background(), Request{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for range stream.Parts {
-	}
-	streamed, err := stream.Result()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if streamed.Text != "native-stream" || provider.nativeStreamReq.Model != "m-1" || provider.legacyStreamCalled {
-		t.Fatalf("native stream not used: result=%+v provider=%+v", streamed, provider)
-	}
-}
-
 func TestModelGenerateAndStreamEquivalent(t *testing.T) {
-	generateResult := &GenerateResult{
+	generated := ModelResult{
 		Text:                 "hello",
 		Reasoning:            "why",
 		ReasoningParts:       []ReasoningPart{{ID: "r1", Text: "why", Format: ReasoningFormatOpenAIResponses, Model: "m-1", ProviderMetadata: map[string]any{"openai": map[string]any{"itemId": "rs_1"}}}},
@@ -149,11 +88,11 @@ func TestModelGenerateAndStreamEquivalent(t *testing.T) {
 		Sources:              []Source{{SourceType: "url", ID: "src-1", URL: "https://example.test", ProviderMetadata: map[string]any{"p": "v"}}},
 		Files:                []GeneratedFile{{Data: "abc", MediaType: "text/plain"}},
 		ToolCalls:            []ToolCall{{ToolCallID: "c1", ToolName: "lookup", Input: map[string]any{"q": "go"}, ProviderMetadata: map[string]any{"tool": "meta"}}},
-		Response:             ResponseMetadata{ID: "resp-1"},
+		Response:             &ResponseMetadata{ID: "resp-1"},
 	}
 	provider := boundaryProvider{
-		generate: func(GenerateParams) (*GenerateResult, error) { return generateResult, nil },
-		stream: func(GenerateParams) (*StreamResult, error) {
+		generate: func(Request) (ModelResult, error) { return generated, nil },
+		stream: func(Request) (<-chan StreamPart, error) {
 			ch := make(chan StreamPart, 16)
 			go func() {
 				defer close(ch)
@@ -168,11 +107,11 @@ func TestModelGenerateAndStreamEquivalent(t *testing.T) {
 				ch <- &FinishStepPart{FinishReason: FinishReasonToolCalls, RawFinishReason: "tool_calls", Usage: Usage{TotalTokens: 5}, Response: ResponseMetadata{ID: "resp-1"}}
 				ch <- &FinishPart{FinishReason: FinishReasonToolCalls, RawFinishReason: "tool_calls", TotalUsage: Usage{TotalTokens: 5}}
 			}()
-			return &StreamResult{Stream: ch}, nil
+			return ch, nil
 		},
 	}
 	model := &Model{ID: "m-1", Provider: provider}
-	generated, err := model.Generate(context.Background(), Request{Model: "m-1"})
+	generatedResult, err := model.Generate(context.Background(), Request{Model: "m-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,15 +125,15 @@ func TestModelGenerateAndStreamEquivalent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(generated, *streamed) {
-		t.Fatalf("Generate and Stream diverged:\n generate=%#v\n stream=%#v", generated, *streamed)
+	if !reflect.DeepEqual(generatedResult, *streamed) {
+		t.Fatalf("Generate and Stream diverged:\n generate=%#v\n stream=%#v", generatedResult, *streamed)
 	}
 }
 
 func TestModelStreamAssemblesSingleModelResult(t *testing.T) {
-	provider := boundaryProvider{stream: func(params GenerateParams) (*StreamResult, error) {
-		if params.Model == nil || params.Model.ID != "m-1" {
-			t.Fatalf("params model = %+v", params.Model)
+	provider := boundaryProvider{stream: func(req Request) (<-chan StreamPart, error) {
+		if req.Model != "m-1" {
+			t.Fatalf("request model = %q", req.Model)
 		}
 		ch := make(chan StreamPart, 8)
 		go func() {
@@ -209,7 +148,7 @@ func TestModelStreamAssemblesSingleModelResult(t *testing.T) {
 			ch <- &FinishStepPart{FinishReason: FinishReasonToolCalls, Usage: Usage{TotalTokens: 5}, Response: ResponseMetadata{ID: "resp-1"}}
 			ch <- &FinishPart{FinishReason: FinishReasonToolCalls, TotalUsage: Usage{TotalTokens: 5}}
 		}()
-		return &StreamResult{Stream: ch}, nil
+		return ch, nil
 	}}
 	model := &Model{ID: "m-1", Provider: provider}
 	stream, err := model.Stream(context.Background(), Request{Model: "m-1"})
@@ -238,5 +177,64 @@ func TestModelStreamAssemblesSingleModelResult(t *testing.T) {
 	}
 	if result.Response == nil || result.Response.ID != "resp-1" {
 		t.Fatalf("response = %+v", result.Response)
+	}
+}
+
+// TestModelStreamStopsForwardingWhenCancelled covers the failure the old
+// adapter had: it sent every part on an unbuffered path with no ctx escape, so
+// a consumer that walked away mid-stream left the assembling goroutine blocked
+// on a send that nobody would ever receive, forever.
+func TestModelStreamStopsForwardingWhenCancelled(t *testing.T) {
+	release := make(chan struct{})
+	provider := boundaryProvider{stream: func(Request) (<-chan StreamPart, error) {
+		ch := make(chan StreamPart)
+		go func() {
+			defer close(ch)
+			// Keep producing until the test releases us, the way a provider
+			// blocked on a slow upstream would.
+			for {
+				select {
+				case ch <- &TextDeltaPart{ID: "txt", Text: "tick"}:
+				case <-release:
+					return
+				}
+			}
+		}()
+		return ch, nil
+	}}
+	model := &Model{ID: "m-1", Provider: provider}
+	ctx, cancel := context.WithCancel(context.Background())
+	stream, err := model.Stream(ctx, Request{Model: "m-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Take one part and abandon the stream.
+	<-stream.Parts
+	cancel()
+	if _, err := stream.Result(); err == nil {
+		t.Fatal("Result returned a partial result as success after cancellation")
+	}
+	close(release)
+}
+
+// TestModelStreamErrorsOnProviderErrorPart keeps a mid-stream provider failure
+// from being reported as a successful, partial result.
+func TestModelStreamErrorsOnProviderErrorPart(t *testing.T) {
+	provider := boundaryProvider{stream: func(Request) (<-chan StreamPart, error) {
+		ch := make(chan StreamPart, 4)
+		ch <- &TextDeltaPart{ID: "txt", Text: "partial"}
+		ch <- &ErrorPart{Error: context.DeadlineExceeded}
+		close(ch)
+		return ch, nil
+	}}
+	model := &Model{ID: "m-1", Provider: provider}
+	stream, err := model.Stream(context.Background(), Request{Model: "m-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range stream.Parts {
+	}
+	if _, err := stream.Result(); err == nil {
+		t.Fatal("a provider ErrorPart did not surface as a Result error")
 	}
 }

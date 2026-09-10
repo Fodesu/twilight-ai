@@ -10,8 +10,8 @@ type Provider interface {
     ListModels(ctx context.Context) ([]Model, error)
     Test(ctx context.Context) *ProviderTestResult
     TestModel(ctx context.Context, modelID string) (*ModelTestResult, error)
-    DoGenerate(ctx context.Context, params GenerateParams) (*GenerateResult, error)
-    DoStream(ctx context.Context, params GenerateParams) (*StreamResult, error)
+    DoGenerate(ctx context.Context, req Request) (ModelResult, error)
+    DoStream(ctx context.Context, req Request) (<-chan StreamPart, error)
 }
 ```
 
@@ -21,8 +21,19 @@ type Provider interface {
 | `ListModels(ctx)` | Fetches available models from the backend API |
 | `Test(ctx)` | Health check returning one of three states (see below) |
 | `TestModel(ctx, id)` | Checks whether a specific model ID is supported |
-| `DoGenerate()` | Performs a single non-streaming LLM call |
-| `DoStream()` | Performs a streaming LLM call, returning a channel of `StreamPart` |
+| `DoGenerate()` | Performs one non-streaming model call and returns the single result |
+| `DoStream()` | Performs one streaming model call, returning a channel of `StreamPart` it must close |
+
+The seam carries one model call and nothing else: `Request` in, `ModelResult` or
+`StreamPart` out. Orchestration state — steps, output messages, tool execution —
+never crosses it, and a provider never assembles `StreamPart`s into a
+`ModelResult`: that folding happens once, in the SDK. A provider that only
+streams answers `DoGenerate` with `sdk.CollectStream(ctx, parts)`, so its two
+methods cannot disagree.
+
+`DoStream` must close the channel it returns, respect `ctx` while sending, and
+report a mid-stream failure as an `ErrorPart` rather than a truncated
+success.
 
 The SDK never calls a provider directly — it goes through the `Client` which adds orchestration (tool loop, callbacks, multi-step). The `Model` struct carries a reference to its provider:
 
@@ -288,7 +299,7 @@ provider := responses.New(
 model := provider.ChatModel("gpt-4o-mini")
 ```
 
-`GenerateParams.System` is sent through the Responses API's top-level
+`Request.System` is sent through the Responses API's top-level
 `instructions` field. System and developer messages inside `Messages` retain
 their native roles and positions.
 
@@ -1463,29 +1474,40 @@ func (p *MyProvider) ChatModel(id string) *sdk.Model {
     return &sdk.Model{ID: id, Provider: p, Type: sdk.ModelTypeChat}
 }
 
-func (p *MyProvider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
-    // Make HTTP request to your backend...
-    return &sdk.GenerateResult{
+func (p *MyProvider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error) {
+    // Make HTTP request to your backend, reading req.Model, req.Messages,
+    // req.Tools and the generation settings...
+    return sdk.ModelResult{
         Text:         "response text",
         FinishReason: sdk.FinishReasonStop,
     }, nil
 }
 
-func (p *MyProvider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sdk.StreamResult, error) {
+func (p *MyProvider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error) {
     ch := make(chan sdk.StreamPart, 64)
 
     go func() {
         defer close(ch)
-        ch <- &sdk.StartPart{}
-        ch <- &sdk.StartStepPart{}
-        ch <- &sdk.TextStartPart{}
-        ch <- &sdk.TextDeltaPart{Text: "Hello"}
-        ch <- &sdk.TextEndPart{}
-        ch <- &sdk.FinishStepPart{FinishReason: sdk.FinishReasonStop}
-        ch <- &sdk.FinishPart{FinishReason: sdk.FinishReasonStop}
+        send := func(part sdk.StreamPart) bool {
+            select {
+            case ch <- part:
+                return true
+            case <-ctx.Done():
+                return false
+            }
+        }
+        if !send(&sdk.StartPart{}) {
+            return
+        }
+        send(&sdk.StartStepPart{})
+        send(&sdk.TextStartPart{})
+        send(&sdk.TextDeltaPart{Text: "Hello"})
+        send(&sdk.TextEndPart{})
+        send(&sdk.FinishStepPart{FinishReason: sdk.FinishReasonStop})
+        send(&sdk.FinishPart{FinishReason: sdk.FinishReasonStop})
     }()
 
-    return &sdk.StreamResult{Stream: ch}, nil
+    return ch, nil
 }
 ```
 

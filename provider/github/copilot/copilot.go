@@ -96,8 +96,8 @@ func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 }
 
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {
-	req, err := p.buildRequest(&sdk.GenerateParams{
-		Model:    p.ChatModel(modelID),
+	req, err := p.buildRequest(&sdk.Request{
+		Model:    p.ChatModel(modelID).ID,
 		Messages: []sdk.Message{sdk.UserMessage("ping")},
 	})
 	if err != nil {
@@ -128,14 +128,14 @@ func (p *Provider) ChatModel(id string) *sdk.Model {
 	}
 }
 
-func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*sdk.GenerateResult, error) { //nolint:gocritic // interface method
-	if params.Model == nil {
-		return nil, fmt.Errorf("github-copilot: model is required")
+func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error) { //nolint:gocritic // interface method
+	if req.Model == "" {
+		return sdk.ModelResult{}, fmt.Errorf("github-copilot: model is required")
 	}
 
-	req, err := p.buildRequest(&params)
+	wire, err := p.buildRequest(&req)
 	if err != nil {
-		return nil, fmt.Errorf("github-copilot: build request: %w", err)
+		return sdk.ModelResult{}, fmt.Errorf("github-copilot: build request: %w", err)
 	}
 
 	resp, err := utils.FetchJSON[chatResponse](ctx, p.httpClient, &utils.RequestOptions{
@@ -143,55 +143,72 @@ func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*
 		BaseURL: p.baseURL,
 		Path:    "/chat/completions",
 		Headers: p.authHeaders(),
-		Body:    req,
+		Body:    wire,
 	})
 	if err != nil {
 		var apiErr *utils.APIError
 		if errors.As(err, &apiErr) {
-			return nil, fmt.Errorf("github-copilot: chat completions request failed: %s", apiErr.Detail())
+			return sdk.ModelResult{}, fmt.Errorf("github-copilot: chat completions request failed: %s", apiErr.Detail())
 		}
-		return nil, fmt.Errorf("github-copilot: chat completions request failed: %w", err)
+		return sdk.ModelResult{}, fmt.Errorf("github-copilot: chat completions request failed: %w", err)
 	}
 
 	return p.parseResponse(resp)
 }
 
-func (p *Provider) buildRequest(params *sdk.GenerateParams) (*chatRequest, error) {
-	messages, err := messagecompat.Normalize(params.Messages, p.messageRoles)
+func (p *Provider) buildRequest(request *sdk.Request) (*chatRequest, error) {
+	messages, err := messagecompat.Normalize(request.Messages, p.messageRoles)
 	if err != nil {
 		return nil, err
 	}
 	req := &chatRequest{
-		Model:            params.Model.ID,
-		Messages:         convertMessages(params.System, messages),
-		Temperature:      params.Temperature,
-		TopP:             params.TopP,
-		MaxTokens:        params.MaxTokens,
-		FrequencyPenalty: params.FrequencyPenalty,
-		PresencePenalty:  params.PresencePenalty,
-		Seed:             params.Seed,
-		ReasoningEffort:  params.ReasoningEffort,
+		Model:            request.Model,
+		Messages:         convertMessages(request.System, messages),
+		Temperature:      request.Temperature,
+		TopP:             request.TopP,
+		MaxTokens:        request.MaxTokens,
+		FrequencyPenalty: request.FrequencyPenalty,
+		PresencePenalty:  request.PresencePenalty,
+		Seed:             request.Seed,
+		ReasoningEffort:  request.ReasoningEffort,
 	}
 	if req.Model == AutoModel {
 		req.Model = ""
 	}
-	if len(params.StopSequences) > 0 {
-		req.Stop = params.StopSequences
+	if len(request.StopSequences) > 0 {
+		req.Stop = request.StopSequences
 	}
-	if len(params.Tools) > 0 {
-		req.Tools = convertTools(params.Tools)
-		req.ToolChoice = params.ToolChoice
+	if len(request.Tools) > 0 {
+		req.Tools = convertTools(request.Tools)
+		req.ToolChoice = convertToolChoice(request.ToolChoice)
 	}
-	if params.ResponseFormat != nil {
+	if request.ResponseFormat != nil {
 		req.ResponseFormat = &chatRespFormat{
-			Type:       string(params.ResponseFormat.Type),
-			JSONSchema: params.ResponseFormat.JSONSchema,
+			Type:       string(request.ResponseFormat.Type),
+			JSONSchema: request.ResponseFormat.JSONSchema,
 		}
 	}
 	return req, nil
 }
 
-func convertTools(tools []sdk.Tool) []chatTool {
+// convertToolChoice maps the SDK's closed ToolChoice onto the OpenAI wire form:
+// an unset mode leaves tool_choice unset, the three scalar modes are the string
+// itself, and a named tool is the function object.
+func convertToolChoice(choice sdk.ToolChoice) any {
+	switch choice.Mode {
+	case "":
+		return nil
+	case sdk.ToolChoiceTool:
+		return chatToolChoiceFunction{
+			Type:     "function",
+			Function: chatToolChoiceName{Name: choice.Tool},
+		}
+	default:
+		return string(choice.Mode)
+	}
+}
+
+func convertTools(tools []sdk.ToolDefinition) []chatTool {
 	out := make([]chatTool, 0, len(tools))
 	for _, t := range tools {
 		out = append(out, chatTool{
@@ -333,14 +350,19 @@ func convertContent(parts []sdk.MessagePart) any {
 	return out
 }
 
-func (p *Provider) parseResponse(resp *chatResponse) (*sdk.GenerateResult, error) {
-	result := &sdk.GenerateResult{
+func (p *Provider) parseResponse(resp *chatResponse) (sdk.ModelResult, error) {
+	result := sdk.ModelResult{
 		Usage: convertUsage(&resp.Usage),
-		Response: sdk.ResponseMetadata{
+	}
+	// Response is pointer-typed on the boundary so that a reply whose wire
+	// carried no metadata omits it instead of freezing a zero timestamp. The
+	// streamed path applies the same presence test before its FinishStepPart.
+	if resp.ID != "" || resp.Model != "" || resp.Created != 0 {
+		result.Response = &sdk.ResponseMetadata{
 			ID:        resp.ID,
 			ModelID:   resp.Model,
 			Timestamp: time.Unix(resp.Created, 0),
-		},
+		}
 	}
 
 	if len(resp.Choices) > 0 {
@@ -390,17 +412,17 @@ func (p *Provider) parseResponse(resp *chatResponse) (*sdk.GenerateResult, error
 	return result, nil
 }
 
-func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sdk.StreamResult, error) { //nolint:gocritic // interface method
-	if params.Model == nil {
+func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error) { //nolint:gocritic // interface method
+	if req.Model == "" {
 		return nil, fmt.Errorf("github-copilot: model is required")
 	}
 
-	req, err := p.buildRequest(&params)
+	wire, err := p.buildRequest(&req)
 	if err != nil {
 		return nil, fmt.Errorf("github-copilot: build request: %w", err)
 	}
-	req.Stream = true
-	req.StreamOptions = &chatStreamOptions{IncludeUsage: true}
+	wire.Stream = true
+	wire.StreamOptions = &chatStreamOptions{IncludeUsage: true}
 
 	ch := make(chan sdk.StreamPart, 64)
 
@@ -425,7 +447,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 			BaseURL: p.baseURL,
 			Path:    "/chat/completions",
 			Headers: p.authHeaders(),
-			Body:    req,
+			Body:    wire,
 		}, func(ev *utils.SSEEvent) error {
 			if ev.Data == "[DONE]" {
 				return utils.ErrStreamDone
@@ -458,7 +480,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 		})
 	}()
 
-	return &sdk.StreamResult{Stream: ch}, nil
+	return ch, nil
 }
 
 // streamingToolCall accumulates one function call's argument deltas. args

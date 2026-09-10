@@ -10,12 +10,12 @@ import (
 //
 // Supported keys:
 //   - "region"        (string):  Azure region, e.g. "eastus", "eastasia" (required
-//                                unless WithBaseURL is used)
+//     unless WithBaseURL is used)
 //   - "voice"         (string):  voice name, e.g. "en-US-JennyNeural" (default)
 //   - "language"      (string):  BCP-47 tag for the <speak> element; inferred from
-//                                voice name when not set
+//     voice name when not set
 //   - "output_format" (string):  X-Microsoft-OutputFormat value; default
-//                                "audio-16khz-128kbitrate-mono-mp3"
+//     "audio-16khz-128kbitrate-mono-mp3"
 //   - "style"         (string):  speaking style, e.g. "cheerful", "sad" (optional)
 //   - "rate"          (string):  speaking rate, e.g. "+10%", "0.5" (optional)
 //   - "pitch"         (string):  pitch, e.g. "+5Hz", "+10%" (optional)

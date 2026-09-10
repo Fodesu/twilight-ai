@@ -51,14 +51,14 @@ func toolCallMessage(id string, reasoning ...sdk.ReasoningPart) sdk.Message {
 	return sdk.Message{Role: sdk.MessageRoleAssistant, Content: parts}
 }
 
-func weatherTool() sdk.Tool {
-	return sdk.Tool{
+func weatherTool() sdk.ToolDefinition {
+	return sdk.ToolDefinition{
 		Name:        "get_weather",
 		Description: "Get weather",
-		Parameters: map[string]any{
+		Parameters: mustJSON(map[string]any{
 			"type":       "object",
 			"properties": map[string]any{"city": map[string]any{"type": "string"}},
-		},
+		}),
 	}
 }
 
@@ -135,10 +135,10 @@ func TestDoGenerate_ThinkingReplayPadding(t *testing.T) {
 				sdk.AssistantMessage("Paris 18C, Tokyo 25C."),
 				sdk.UserMessage("Thanks."),
 			}
-			_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-				Model:    &sdk.Model{ID: "m"},
+			_, err := p.DoGenerate(context.Background(), sdk.Request{
+				Model:    "m",
 				Messages: history,
-				Tools:    []sdk.Tool{weatherTool()},
+				Tools:    []sdk.ToolDefinition{weatherTool()},
 			})
 			if err != nil {
 				t.Fatalf("DoGenerate: %v", err)
