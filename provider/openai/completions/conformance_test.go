@@ -1,6 +1,7 @@
 package completions_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -40,6 +41,7 @@ func textFixture(t *testing.T) providertest.Fixture {
 	return providertest.Fixture{
 		NewProvider: conformanceProvider,
 		ModelID:     "gpt-4o-mini",
+		Options:     json.RawMessage(`{"temperature":0.42}`),
 		Reply: func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"chatcmpl-1","object":"chat.completion","created":1700000000,"model":"gpt-4o-mini",

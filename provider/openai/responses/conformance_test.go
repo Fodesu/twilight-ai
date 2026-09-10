@@ -1,6 +1,7 @@
 package responses_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -63,6 +64,7 @@ func textFixture(t *testing.T) providertest.Fixture {
 	return providertest.Fixture{
 		NewProvider: conformanceProvider,
 		ModelID:     conformanceModel,
+		Options:     json.RawMessage(`{"temperature":0.42}`),
 		Reply: func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"id":"resp_conf_text","created_at":1700000000,"model":"` + conformanceModel + `",

@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -42,6 +43,11 @@ type Fixture struct {
 	// ReplyError answers a request with a provider-shaped error. Nil skips the
 	// error case.
 	ReplyError http.HandlerFunc
+	// Options, when set, is sent as this provider's own entry in
+	// Request.ProviderOptions (keyed by Provider.Name()) and must reach the
+	// request body: an option the provider silently drops is indistinguishable
+	// from one the caller never set.
+	Options json.RawMessage
 	// Want is what Reply must map to.
 	Want Want
 	// Caps records what this provider does not support.
@@ -135,6 +141,41 @@ func (r *recorder) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 // wire reports what reached the server. The handler runs on the server
 // goroutine, so its writes are guarded.
+// withOptions attaches the fixture's provider options under the provider's own
+// namespace.
+func (f Fixture) withOptions(p sdk.Provider, req sdk.Request) sdk.Request {
+	if len(f.Options) == 0 {
+		return req
+	}
+	req.ProviderOptions = map[string]json.RawMessage{p.Name(): f.Options}
+	return req
+}
+
+// wantOptionsOnWire requires the fixture's provider options to reach the request
+// body, in the provider's own namespace.
+func wantOptionsOnWire(t *testing.T, rec *recorder, f Fixture, op string) {
+	t.Helper()
+	if len(f.Options) == 0 {
+		return
+	}
+	var want map[string]json.RawMessage
+	if err := json.Unmarshal(f.Options, &want); err != nil {
+		t.Fatalf("fixture options are not a JSON object: %v", err)
+	}
+	_, seen := rec.wire()
+	flat := strings.Join(strings.Fields(seen), "")
+	for key, value := range want {
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, value); err != nil {
+			t.Fatalf("fixture option %q is not JSON: %v", key, err)
+		}
+		pair := `"` + key + `":` + compact.String()
+		if !strings.Contains(flat, pair) {
+			t.Errorf("%s: provider option %s never reached the request body", op, pair)
+		}
+	}
+}
+
 func (r *recorder) wire() (int, string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -200,12 +241,13 @@ func contains(haystack, needle string) bool {
 func testRequest(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	p, rec := serve(t, f, f.Reply)
-	req := request()
+	req := f.withOptions(p, request())
 	req.Model = f.ModelID
 	if _, err := sdk.Generate(ctx, f.model(p), req); err != nil {
 		t.Fatalf("generate: %v", err)
 	}
 	wantSentOnWire(t, rec, f.ModelID, "request")
+	wantOptionsOnWire(t, rec, f, "request")
 }
 
 // testGenerate covers the map-the-response failure: the wire reply must arrive
@@ -213,13 +255,14 @@ func testRequest(t *testing.T, f Fixture) {
 func testGenerate(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	p, rec := serve(t, f, f.Reply)
-	req := request()
+	req := f.withOptions(p, request())
 	req.Model = f.ModelID
 	got, err := sdk.Generate(ctx, f.model(p), req)
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
 	wantSentOnWire(t, rec, f.ModelID, "generate")
+	wantOptionsOnWire(t, rec, f, "generate")
 	wantResult(t, "generate", f, got)
 }
 
@@ -232,7 +275,7 @@ func testStream(t *testing.T, f Fixture) {
 		t.Skip("provider does not stream")
 	}
 	p, rec := serve(t, f, f.ReplyStream)
-	req := request()
+	req := f.withOptions(p, request())
 	req.Model = f.ModelID
 	stream, err := sdk.Stream(ctx, f.model(p), req)
 	if err != nil {
@@ -258,6 +301,7 @@ func testStream(t *testing.T, f Fixture) {
 	// This must happen after the parts are drained: a provider sends the request
 	// from the goroutine that produces them.
 	wantSentOnWire(t, rec, f.ModelID, "stream")
+	wantOptionsOnWire(t, rec, f, "stream")
 	wantResult(t, "stream", f, *got)
 }
 
@@ -269,7 +313,7 @@ func testError(t *testing.T, f Fixture) {
 		t.Skip("provider has no error fixture")
 	}
 	p, _ := serve(t, f, f.ReplyError)
-	req := request()
+	req := f.withOptions(p, request())
 	req.Model = f.ModelID
 	if result, err := sdk.Generate(ctx, f.model(p), req); err == nil {
 		t.Fatalf("an error reply mapped to a success: %+v", result)

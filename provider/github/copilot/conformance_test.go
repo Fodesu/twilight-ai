@@ -1,6 +1,7 @@
 package copilot_test
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 
@@ -67,6 +68,7 @@ func conformanceTextFixture(t *testing.T) providertest.Fixture {
 	return providertest.Fixture{
 		NewProvider: conformanceProvider,
 		ModelID:     "gpt-4.1",
+		Options:     json.RawMessage(`{"temperature":0.42}`),
 		Reply: func(w http.ResponseWriter, r *http.Request) {
 			assertCopilotRequest(t, r)
 			w.Header().Set("Content-Type", "application/json")

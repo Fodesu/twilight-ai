@@ -482,7 +482,8 @@ provider 接缝说的是旧类型：入参 `GenerateParams`，出参 `*GenerateR
 5. **两条路径的出口统一过 `hardenResult`**：调用方拿到自己的副本，且流式与非流式对同一份元数据给出相同表示（响应时间戳归一化到 UTC 就在这一处）。此前只有流式路径做了归一化。
 6. **只有流式传输的后端用 `sdk.CollectStream` 回答非流式调用**（codex：`DoGenerate` = `DoStream` + `CollectStream`）。折叠仍是 SDK 的唯一实现，provider 不再写第二份。
 7. **legacy `StreamResult.ToResult` 也路由到同一个装配器**；tool results 是编排，由 legacy 包装层在穿流时自己收集。于是全仓只剩一处 part→结果 的折叠。
-8. **验收靠 conformance 而不是靠方法名**。`provider/providertest` 只经 `sdk.Generate`/`sdk.Stream` 到达 provider，因此断言的是行为：请求确实上wire（system/user/tool 三类 marker 在 URL 或 body 中出现）、单次调用产出、流式产出与之一致、错误不被吞成空成功。套件在被打假四次后才被信任（抽掉 system 消息 → request/generate 失败；只在流式路径抽掉 → 仅 stream 失败；让流式文本发散 → 仅 stream 失败），6 个 chat provider 各有 text 与 tool-call 两个 fixture，复用各自既有的 wire 数据。
+8. **`ProviderOptions` 的契约落在 SDK，语义留在 provider**。它是 `map[namespace]JSON object`，namespace 就是 `Provider.Name()`；对象成员按名合并进该 provider 的 wire request（因此可以覆盖 SDK 设的字段），合并由 `sdk.ApplyProviderOptions` 完成——SDK 定"选项放在哪、怎么施加"，"选项是什么意思"仍是 provider 的属性，因为被解码的目标是 provider 自己的类型。未知成员报错而不是静默忽略：被悄悄丢掉的选项与从未设置无法区分，而这正是接缝要消灭的失效模式。provider 在 `buildRequest` 末尾调用它，所以选项能覆盖 SDK 已设的字段。
+9. **验收靠 conformance 而不是靠方法名**。`provider/providertest` 只经 `sdk.Generate`/`sdk.Stream` 到达 provider，因此断言的是行为：请求确实上wire（system/user/tool 三类 marker 在 URL 或 body 中出现）、单次调用产出、流式产出与之一致、错误不被吞成空成功。套件在被打假四次后才被信任（抽掉 system 消息 → request/generate 失败；只在流式路径抽掉 → 仅 stream 失败；让流式文本发散 → 仅 stream 失败），6 个 chat provider 各有 text 与 tool-call 两个 fixture，复用各自既有的 wire 数据。
 
 ### 12.3 落点
 
@@ -490,13 +491,14 @@ provider 接缝说的是旧类型：入参 `GenerateParams`，出参 `*GenerateR
 - [api-reference.md](../api-reference.md)：新增 `Request` 与 `ModelResult` 两个接缝类型的条目，并写明 `GenerateParams`/`GenerateResult` 与它们的关系是单向投影。
 - `sdk/provider.go`、`sdk/model_call.go`、`sdk/model_stream.go`：接缝签名、`assembleStream`（唯一折叠点）、`CollectStream`（只支持流式的后端）、`hardenResult`（两条路径的共同出口）。
 - `sdk/stream.go`：`StreamResult.ToResult` 改为经 `assembleStream`；`sdk/generate_text.go`、`sdk/stream_text.go`：legacy 循环走 `Request`/`ModelResult`，删除"快速路径"（它绕过了装配）。
+- `sdk/request.go`：`ProviderOptions` 的命名空间与合并契约，`ApplyProviderOptions`；6 个 chat provider 在 `buildRequest` 末尾各调用一次。
+- `provider/providertest`：`Fixture.Options` 与 `wantOptionsOnWire` 断言——声明了选项的 provider，其选项必须出现在请求体里（去掉任一 provider 的接线即失败，已打假）。
 - `sdk/request_adapter.go`：只留 `RequestFromGenerateParams`（入）与 `GenerateResultFromModelResult`（客户端出），其余向下转换器删除。
 - `provider/providertest/providertest.go` 与 6 个 `provider/*/conformance_test.go`：接缝一致性套件与 fixture。
 - 6 个 chat provider 的 `DoGenerate`/`DoStream`/`buildRequest`/`convertTools`/tool-choice 转换；`agent/run/loop/contract.go` 的 `ModelInvoker`/`StreamingModelInvoker` 成为唯一声明（`sdk` 侧重复声明与 `cmd/twilight-agent` 的 `providerModel` shim 删除）。
 
 ### 12.4 后续（未做，代价已知）
 
-1. **`ProviderOptions` 目前被所有 provider 静默忽略**：它参与 `Request` 的 digest、也在 `run.ModelRequest` 里被克隆与持久化，却没有任何 provider 读它。于是"设了它"与"什么都没设"在 wire 上完全一样——非空值等于静默失效，比字段不存在更糟。下一步要么在 provider 上实现（先要定 namespace 与合并语义：按 provider 命名空间取自己的那份 JSON，合并进 wire body，还是只允许少数具名开关），要么把它从 `Request` 与 `run.ModelRequest` 一并删除。conformance 套件应同时补一条断言：声明支持 provider options 的 provider，其选项必须出现在 wire 上。
-2. **provider 单测仍以 legacy 参数构造请求再投影一次**（`mustJSON` 辅助函数只是把 Go schema 值变成"接缝上已经解析好的 JSON"的等价写法）。接缝原生形状由 conformance 覆盖，把剩余约 150 处字面量改写成原生 `Request` 是待办，不是行为缺口。
-3. **google provider 丢弃 wire 上携带的 tool-call id**，总是自己 mint 一个（`provider/google/generativeai/types.go` 的 `functionCall` 没有 id 字段）。对照 `provider/openai/completions` 是保留 wire id、缺失才 `generateID`。
-4. **OpenAI 形状的 tool-choice 编码在 4 个 provider 里各有一份**（completions、copilot、codex、responses）。这是刻意的：wire 形状属于 provider；若后续确认四处永远一致，可抽成 internal helper。
+1. **provider 单测仍以 legacy 参数构造请求再投影一次**（`mustJSON` 辅助函数只是把 Go schema 值变成"接缝上已经解析好的 JSON"的等价写法）。接缝原生形状由 conformance 覆盖，把剩余约 150 处字面量改写成原生 `Request` 是待办，不是行为缺口。
+2. **google provider 丢弃 wire 上携带的 tool-call id**，总是自己 mint 一个（`provider/google/generativeai/types.go` 的 `functionCall` 没有 id 字段）。对照 `provider/openai/completions` 是保留 wire id、缺失才 `generateID`。
+3. **OpenAI 形状的 tool-choice 编码在 4 个 provider 里各有一份**（completions、copilot、codex、responses）。这是刻意的：wire 形状属于 provider；若后续确认四处永远一致，可抽成 internal helper。

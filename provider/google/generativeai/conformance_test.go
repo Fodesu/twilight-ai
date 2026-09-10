@@ -1,6 +1,7 @@
 package generativeai_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -93,6 +94,7 @@ func textFixture(t *testing.T) providertest.Fixture {
 	return providertest.Fixture{
 		NewProvider: conformanceProvider,
 		ModelID:     conformanceModel,
+		Options:     json.RawMessage(`{"generationConfig":{"temperature":0.42}}`),
 		Reply: func(w http.ResponseWriter, r *http.Request) {
 			assertGoogleRequest(t, r, "generateContent")
 			googleJSON(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"conformance text"}]},"finishReason":"STOP"}],`+

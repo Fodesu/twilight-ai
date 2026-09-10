@@ -188,6 +188,9 @@ func (p *Provider) buildRequest(request *sdk.Request) (*chatRequest, error) {
 			JSONSchema: request.ResponseFormat.JSONSchema,
 		}
 	}
+	if err := sdk.ApplyProviderOptions(p.Name(), request.ProviderOptions, req); err != nil {
+		return nil, fmt.Errorf("copilot: %w", err)
+	}
 	return req, nil
 }
 

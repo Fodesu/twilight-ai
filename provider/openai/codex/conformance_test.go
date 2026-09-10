@@ -120,6 +120,7 @@ func textFixture(t *testing.T) providertest.Fixture {
 	return providertest.Fixture{
 		NewProvider: conformanceProvider,
 		ModelID:     conformanceModelID,
+		Options:     json.RawMessage(`{"store":true}`),
 		Reply:       reply,
 		ReplyStream: reply,
 		ReplyError:  conformanceError,

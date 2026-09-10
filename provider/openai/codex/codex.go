@@ -430,6 +430,9 @@ func (p *Provider) buildRequest(req *sdk.Request) (*codexRequest, error) {
 		// The Codex endpoint accepts max even though generic OpenAI endpoints do not.
 		out.Reasoning = &codexReasoning{Effort: *req.ReasoningEffort}
 	}
+	if err := sdk.ApplyProviderOptions(p.Name(), req.ProviderOptions, out); err != nil {
+		return nil, fmt.Errorf("openai-codex: %w", err)
+	}
 	return out, nil
 }
 

@@ -319,6 +319,9 @@ func (p *Provider) buildRequest(req *sdk.Request) (*generateRequest, error) {
 		body.ToolConfig = toolCfg
 	}
 
+	if err := sdk.ApplyProviderOptions(p.Name(), req.ProviderOptions, body); err != nil {
+		return nil, fmt.Errorf("google: %w", err)
+	}
 	return body, nil
 }
 
