@@ -165,6 +165,8 @@ v1 conformance 以 `Store` 为参数，Memory 与文件 adapter 跑同一套，�
 
 参考实现为 MemoryStore 与文件 adapter `agent/session/filestore`（一个 Session 一个目录：`header.json`、`log.jsonl` 一行一个 event、`owner.json` 记录 epoch 与 owned）。
 
+kernel wire 自 2026-09-09 起由 golden fixtures 冻结（header digest、行 digest 链、行 canonical JSON 形状于 `agent/session/golden_test.go`；落盘字节于 `agent/session/filestore/testdata/`，`-update` 重生成）：任何改变字节或摘要的修改必须显式更新 fixture 并在本 spec 记录；v1 发布后此类变化必须进入新 `ProtocolVersion`。
+
 ## 附录 A：预留能力（不进入 v1）
 
 **Fork。** `ForkPoint{ParentSessionID, Seq, Digest}`；子 Session 复制父的前缀作为 seed，header 记 `ParentFork`，seed 之后第一行的 prev digest 为 `ForkPoint.Digest`。目前没有规范内的消费者：subagent 使用独立 Session。

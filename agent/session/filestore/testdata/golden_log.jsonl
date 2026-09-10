@@ -1,0 +1,3 @@
+{"seq":0,"commitId":"c1","index":0,"last":false,"type":"twilight/x/a","recordedAtUnixMilli":1,"payload":{"a":1},"digest":"sha256:cfffc7b921a9eb2459e3ce2360fe04ea2084de012e790e5ee1097c50ec8e36c3"}
+{"seq":1,"commitId":"c1","index":1,"last":true,"type":"twilight/x/b","recordedAtUnixMilli":2,"payload":{"b":[1,2]},"digest":"sha256:59aba06ca6edd389fdc24ee32fee66f68bce473fd1ec19930e8433175a78486c"}
+{"seq":2,"commitId":"c2","index":0,"last":true,"type":"twilight/x/c","recordedAtUnixMilli":3,"sourceSeqs":[0],"ignorable":true,"payload":{},"digest":"sha256:0ba0c6828ba241dae694c743dd9f5a5e2761456b7841a4ce92579df8b16391ab"}

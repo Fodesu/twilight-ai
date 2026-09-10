@@ -121,7 +121,7 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 
 ### 4.1 Core reference implementations
 
-第 6、7 节的全部条目已于 2026-09-07 完成；第 8 节修订后的实施顺序见 8.5。完成后再冻结 kernel `ProtocolVersion` 1 与各模块 payload 版本 1 的 golden fixtures。
+第 6、7 节的全部条目已于 2026-09-07 完成；第 8 节修订后的实施顺序见 8.5。kernel `ProtocolVersion` 1 与各模块 payload 版本 1 的 golden fixtures 已于 2026-09-09 冻结：kernel（header/行 digest 链/行与落盘字节形状）、extension（`v` 注入后的 payload 字节）、chatlog（checkpoint 摘要域与 payload wire）、run（派生身份表 13 项，envelope/fact 既有 golden）、turn（PlanDigest/StartOperationDigest/DeriveRunID）、ref（Profile digest 及 SystemPrompt 边界）、artifact（Ref identity/Binding digest/RefSet digest）。
 
 ### 4.2 durable adapters
 
