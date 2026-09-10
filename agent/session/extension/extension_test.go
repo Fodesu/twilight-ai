@@ -3,6 +3,9 @@ package extension
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/felinics/twilight/agent/artifact"
@@ -345,6 +348,312 @@ func TestProjectionUnknownEvents(t *testing.T) {
 
 // EXT-WRT-3 and ART-RET-3: claims are Active before the rows exist; an
 // orphan claim is released on the next OpenWriter; a live claim survives.
+// EXT-REF-1/2, EXT-WRT-3: a missing resolver or ledger is a configuration
+// error, so it must surface as an error rather than as a CommitInvalid outcome
+// that reads like a verdict on the group. It must not be rejected earlier
+// either: an event type declaring Bindings only means its payloads may carry
+// references, so a deployment that never attaches an artifact needs neither.
+func TestCommitWithoutAdmission(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	// The resolver case below must reach the ledger check, so the referenced
+	// binding has to exist.
+	b, err := artifact.NewBinding("b1", artifact.Ref{Scheme: "spill", Authority: "local", Key: "k", Durability: artifact.EventBound})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.bindings.CreateBinding(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := OpenWriter(ctx, f.store, f.registry, Admission{}, "s", session.OpenOptions{})
+	if err != nil {
+		t.Fatalf("open without admission: %v", err)
+	}
+	defer empty.Close(ctx)
+
+	// A payload with no references never consults admission, so a text-only
+	// deployment must keep working.
+	res, err := empty.Commit(ctx, noteGroup("c1", "no refs here"))
+	if err != nil || res.Outcome != CommitApplied {
+		t.Fatalf("commit without references = %+v %v", res, err)
+	}
+
+	// A payload that does carry a reference against a nil resolver is a
+	// configuration error, not an invalid group.
+	withRef, err := OpenWriter(ctx, f.store, f.registry, Admission{}, "s", session.OpenOptions{Takeover: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer withRef.Close(ctx)
+	res, err = withRef.Commit(ctx, func(View) (*SemanticGroup, error) {
+		return &SemanticGroup{CommitID: "c2", Events: []TypedEvent{
+			{Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}},
+		}}, nil
+	})
+	if err == nil {
+		t.Fatalf("commit with a reference and no resolver = %+v, want an error (got no error)", res)
+	}
+	if !strings.Contains(err.Error(), "no binding resolver") {
+		t.Fatalf("missing resolver error = %v", err)
+	}
+
+	// A resolver without a ledger fails the same way, at claim time.
+	noLedger, err := OpenWriter(ctx, f.store, f.registry, Admission{Bindings: f.bindings}, "s", session.OpenOptions{Takeover: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer noLedger.Close(ctx)
+	res, err = noLedger.Commit(ctx, func(View) (*SemanticGroup, error) {
+		return &SemanticGroup{CommitID: "c3", Events: []TypedEvent{
+			{Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}},
+		}}, nil
+	})
+	if err == nil {
+		t.Fatalf("commit with a reference and no ledger = %+v, want an error (got no error)", res)
+	}
+	if !strings.Contains(err.Error(), "no retention ledger") {
+		t.Fatalf("missing ledger error = %v", err)
+	}
+
+	// None of the rejected commits may have written anything.
+	page, err := f.store.Read(ctx, session.ReadRequest{SessionID: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 1 || page.Events[0].CommitID != "c1" {
+		t.Fatalf("rejected commits wrote rows: %+v", page.Events)
+	}
+}
+
+// legacyCodec decodes the v1 wire of the note event, which predates the
+// optional refs field. It deliberately produces a distinguishable value so a
+// test can prove the version, not the current codec, selected it.
+type legacyCodec struct{}
+
+func (legacyCodec) Encode(v any) (jsonstable.Value, error) {
+	return jsonstable.FromValue(struct {
+		Text string `json:"text"`
+	}{v.(notePayload).Text})
+}
+func (legacyCodec) Decode(w jsonstable.Value) (any, error) {
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := w.Decode(&body); err != nil {
+		return nil, err
+	}
+	return notePayload{Text: "v1:" + body.Text}, nil
+}
+func (legacyCodec) Validate(v any) error {
+	if v.(notePayload).Text == "" {
+		return errors.New("text is required")
+	}
+	return nil
+}
+
+// EXT-REG-1..4, EXT-COD-1/2: payload versions coexist. Advancing Current must
+// not orphan stored rows: an old version still selects its own codec, decodes
+// to a value and folds, while a version no codec claims stays Unknown with its
+// raw payload.
+func TestRegistryMultiVersionCodecsCoexist(t *testing.T) {
+	typ := tpfx("v") + "note"
+	upgraded := ModuleDescriptor{Source: SourceTwilight, ID: "v", Events: []EventDefinition{{
+		Type: typ, Current: 2,
+		Codecs: map[PayloadVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}},
+	}}}
+	r, err := BuildRegistry(session.ProtocolVersion1, upgraded)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Writing uses Current.
+	wire, v, err := r.Encode(typ, notePayload{Text: "hi"})
+	if err != nil || v != 2 {
+		t.Fatalf("encode = %s v%d %v, want v2", wire, v, err)
+	}
+	if wire.String() != `{"text":"hi","v":2}` {
+		t.Fatalf("current wire = %s", wire)
+	}
+
+	// A row written before the upgrade still decodes, through its own codec.
+	old, err := r.Decode(session.SessionEvent{Type: typ, Payload: jsonstable.MustParse(`{"text":"old","v":1}`)})
+	if err != nil {
+		t.Fatalf("decode v1: %v", err)
+	}
+	if old.Unknown {
+		t.Fatal("a retained older version decoded as Unknown")
+	}
+	if old.Version != 1 || old.Value.(notePayload).Text != "v1:old" {
+		t.Fatalf("v1 row = version %d value %+v: the v1 codec did not run", old.Version, old.Value)
+	}
+	current, err := r.Decode(session.SessionEvent{Type: typ, Payload: wire})
+	if err != nil || current.Unknown || current.Value.(notePayload).Text != "hi" {
+		t.Fatalf("v2 row = %+v %v", current, err)
+	}
+
+	// A version no codec claims is preserved raw rather than reinterpreted.
+	future, err := r.Decode(session.SessionEvent{Type: typ, Payload: jsonstable.MustParse(`{"text":"x","v":3}`)})
+	if err != nil || !future.Unknown || future.Version != 3 {
+		t.Fatalf("v3 row = %+v %v, want Unknown v3", future, err)
+	}
+	if future.Event.Payload.String() != `{"text":"x","v":3}` {
+		t.Fatalf("unknown-version payload was not preserved: %s", future.Event.Payload)
+	}
+}
+
+// EXT-WRT-1: the Writer is the single serialization point. Concurrent callers
+// must each see the state left by the previous one, so every commit applies
+// exactly once and the stream stays contiguous.
+func TestWriterSerializesConcurrentCommits(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	w := f.open(t, false)
+	defer w.Close(ctx)
+
+	const n = 8
+	texts := make([]string, n)
+	results := make([]CommitResult, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		texts[i] = fmt.Sprintf("n%d", i)
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = w.Commit(ctx, noteGroup(fmt.Sprintf("c%d", i), texts[i]))
+		}(i)
+	}
+	wg.Wait()
+
+	for i := 0; i < n; i++ {
+		if errs[i] != nil || results[i].Outcome != CommitApplied {
+			t.Fatalf("commit %d = %+v %v", i, results[i], errs[i])
+		}
+	}
+	// Every commit was serialized onto its own contiguous Seq range.
+	seen := map[session.Seq]bool{}
+	for _, res := range results {
+		for _, e := range res.Events {
+			if seen[e.Seq] {
+				t.Fatalf("seq %d assigned twice: commits raced", e.Seq)
+			}
+			seen[e.Seq] = true
+		}
+	}
+	if len(seen) != n {
+		t.Fatalf("distinct seqs = %d, want %d", len(seen), n)
+	}
+	for i := 0; i < n; i++ {
+		if !seen[session.Seq(i)] {
+			t.Fatalf("seq %d missing; head is not contiguous", i)
+		}
+	}
+	if got := notes(t, w); len(got) != n {
+		t.Fatalf("folded notes = %v, want all %d: a commit did not observe its predecessor", got, n)
+	}
+}
+
+// EXT-REF-1/2: the extractor returns every reference in appearance order,
+// cardinality and scheme/durability admission bound what may commit, and a
+// rejected group writes nothing.
+func TestBindingAdmission(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t)
+	for _, b := range []struct {
+		id  artifact.BindingID
+		ref artifact.Ref
+	}{
+		{"ok1", artifact.Ref{Scheme: "spill", Authority: "local", Key: "k1", Durability: artifact.EventBound}},
+		{"ok2", artifact.Ref{Scheme: "spill", Authority: "local", Key: "k2", Durability: artifact.Pinned}},
+		{"other", artifact.Ref{Scheme: "other", Authority: "local", Key: "k3", Durability: artifact.EventBound}},
+		{"weak", artifact.Ref{Scheme: "spill", Authority: "local", Key: "k4", Durability: artifact.Ephemeral}},
+	} {
+		binding, err := artifact.NewBinding(b.id, b.ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.bindings.CreateBinding(ctx, binding); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	maxTwo := uint32(2)
+	typ := tpfx("r") + "ref"
+	reg, err := BuildRegistry(session.ProtocolVersion1, ModuleDescriptor{Source: SourceTwilight, ID: "r",
+		Events: []EventDefinition{{
+			Type: typ, Current: 1, Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
+			Bindings: []BindingReferenceDefinition{{
+				Extractor: refsExtractor, Cardinality: Cardinality{Min: 1, Max: &maxTwo},
+				AllowedSchemes:     []artifact.Scheme{"spill"},
+				RequiredDurability: artifact.EventBound,
+			}},
+		}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := OpenWriter(ctx, f.store, reg, Admission{Bindings: f.bindings, Ledger: f.ledger}, "s", session.OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer w.Close(ctx)
+
+	commit := func(id string, refs ...string) CommitResult {
+		t.Helper()
+		res, err := w.Commit(ctx, func(View) (*SemanticGroup, error) {
+			return &SemanticGroup{CommitID: session.CommitID(id), Events: []TypedEvent{
+				{Type: typ, Value: notePayload{Text: "r", Refs: refs}},
+			}}, nil
+		})
+		if err != nil {
+			t.Fatalf("commit %s: %v", id, err)
+		}
+		return res
+	}
+
+	// Admissible: the claim covers every extracted reference, in order.
+	res := commit("c1", "ok1", "ok2")
+	if res.Outcome != CommitApplied || res.Claim == nil {
+		t.Fatalf("admissible group = %+v", res)
+	}
+	claim, ok, err := f.ledger.LookupClaim(ctx, res.Claim.ID)
+	if err != nil || !ok {
+		t.Fatalf("claim lookup = %v %v", ok, err)
+	}
+	if got := claim.BindingSet.BindingIDs; len(got) != 2 || got[0] != "ok1" || got[1] != "ok2" {
+		t.Fatalf("claim set = %v, want every extracted reference in appearance order", got)
+	}
+
+	for i, tc := range []struct {
+		name string
+		refs []string
+		want string
+	}{
+		{"below cardinality", nil, "cardinality"},
+		{"above cardinality", []string{"ok1", "ok2", "ok1"}, "cardinality"},
+		{"scheme not allowed", []string{"other"}, "scheme other not allowed"},
+		{"durability below required", []string{"weak"}, "below required"},
+	} {
+		got := commit(fmt.Sprintf("r%d", i), tc.refs...)
+		if got.Outcome != CommitInvalid {
+			t.Fatalf("%s = %+v, want invalid", tc.name, got)
+		}
+		// Assert the reason so a group rejected for some other cause cannot
+		// make this pass.
+		if !strings.Contains(got.Detail, tc.want) {
+			t.Fatalf("%s detail = %q, want mention of %q", tc.name, got.Detail, tc.want)
+		}
+	}
+
+	// Only the admissible group may have landed.
+	page, err := f.store.Read(ctx, session.ReadRequest{SessionID: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Events) != 1 || page.Events[0].CommitID != "c1" {
+		t.Fatalf("rejected groups wrote rows: %+v", page.Events)
+	}
+}
+
 func TestWriterClaimsAndReconcile(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()

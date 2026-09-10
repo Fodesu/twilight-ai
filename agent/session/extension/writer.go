@@ -47,6 +47,11 @@ const (
 	CommitNoop           CommitOutcome = "noop"
 )
 
+// CommitResult is the outcome of a Commit. Outcome carries the semantic
+// result and error is reserved for an infrastructure failure, so a caller must
+// branch on Outcome: CommitInvalid and CommitConflict are reported with a nil
+// error because they are answers, not failures. A configuration that cannot
+// serve the registry is not an answer -- OpenWriter rejects it up front.
 type CommitResult struct {
 	Outcome CommitOutcome
 	Events  []session.SessionEvent
@@ -72,7 +77,9 @@ type Writers interface {
 }
 
 // Admission supplies Binding admission and the claim ledger. Both may be nil
-// when no registered event declares Bindings.
+// while no committed group actually references an artifact: an event type
+// declaring Bindings only means its payloads *may* carry references, so a
+// deployment that never does needs neither.
 type Admission struct {
 	Bindings artifact.BindingResolver
 	Ledger   artifact.RetentionLedger
@@ -375,7 +382,9 @@ func (w *writer) encode(ctx context.Context, group *SemanticGroup) ([]session.Se
 
 func (w *writer) admit(ctx context.Context, id artifact.BindingID, decl *BindingReferenceDefinition) (string, error) {
 	if w.admission.Bindings == nil {
-		return "event references artifacts but no binding resolver is configured", nil
+		// A configuration error, not a verdict on the group: returning it as an
+		// error keeps it from reading like a data rejection.
+		return "", errors.New("extension: writer: the event references artifacts but no binding resolver is configured")
 	}
 	binding, err := w.admission.Bindings.ResolveBinding(ctx, id)
 	if err != nil {
@@ -405,7 +414,8 @@ func (w *writer) admit(ctx context.Context, id artifact.BindingID, decl *Binding
 // claim activates the retention claim before Append (EXT-WRT-3).
 func (w *writer) claim(ctx context.Context, commitID session.CommitID, refs []artifact.BindingID) (*artifact.RetentionClaim, string, error) {
 	if w.admission.Ledger == nil {
-		return nil, "group references artifacts but no ledger is configured", nil
+		// See admit: a missing ledger is a configuration error.
+		return nil, "", errors.New("extension: writer: the group references artifacts but no retention ledger is configured")
 	}
 	set, err := artifact.SetBuilder{Resolver: w.admission.Bindings}.Build(ctx, refs)
 	if err != nil {
