@@ -35,22 +35,22 @@ func TestWriterCachePolicyExcludesTheMachineProjection(t *testing.T) {
 func TestWriterCachePolicyHonoursTheInterval(t *testing.T) {
 	other := extension.ProjectionID("twilight/chatlog/surface")
 	cases := []struct {
-		every   session.Seq
-		head    session.Seq
-		covered session.Seq
-		want    bool
+		every  session.Seq
+		head   session.Seq
+		cached session.Seq
+		want   bool
 	}{
-		{every: 8, head: 7, covered: 0, want: false},
-		{every: 8, head: 8, covered: 0, want: true},
-		{every: 8, head: 12, covered: 5, want: false},
-		{every: 8, head: 13, covered: 5, want: true},
-		{every: 0, head: extension.DefaultCacheEvery - 1, covered: 0, want: false},
-		{every: 0, head: extension.DefaultCacheEvery, covered: 0, want: true},
+		{every: 8, head: 7, cached: 0, want: false},
+		{every: 8, head: 8, cached: 0, want: true},
+		{every: 8, head: 12, cached: 5, want: false},
+		{every: 8, head: 13, cached: 5, want: true},
+		{every: 0, head: extension.DefaultCacheEvery - 1, cached: 0, want: false},
+		{every: 0, head: extension.DefaultCacheEvery, cached: 0, want: true},
 	}
 	for _, tc := range cases {
-		got := WriterCachePolicy(tc.every)(other, 1, session.Head{Next: tc.head}, session.Head{Next: tc.covered}, false)
+		got := WriterCachePolicy(tc.every)(other, 1, session.Head{Next: tc.head}, session.Head{Next: tc.cached}, false)
 		if got != tc.want {
-			t.Errorf("every=%d head=%d covered=%d: got %v, want %v", tc.every, tc.head, tc.covered, got, tc.want)
+			t.Errorf("every=%d head=%d cached=%d: got %v, want %v", tc.every, tc.head, tc.cached, got, tc.want)
 		}
 	}
 }

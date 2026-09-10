@@ -130,24 +130,26 @@ const DefaultCacheEvery session.Seq = 64
 // more with closing set when it is closed, so a policy can treat the last
 // question differently from a routine one.
 //
-// covered is the head the projection's entry already reflects, or the zero Head
-// when the cache holds no entry for it. A policy only governs *writing*: a
-// Writer always uses whatever entry it finds, whoever wrote it, because
-// a stale or hostile entry is rejected when it is validated against the stream.
-type CachePolicy func(id ProjectionID, v ProjectionVersion, head, covered session.Head, closing bool) bool
+// cached is the head the projection's cache entry already reflects, or the zero
+// Head when the cache holds no entry for it; head is where the fold itself now
+// stands, so the pair is "how far the stream has come" against "how far the
+// cached copy reaches". A policy only governs *writing*: a Writer always uses
+// whatever entry it finds, whoever wrote it, because a stale or hostile entry is
+// rejected when it is validated against the stream.
+type CachePolicy func(id ProjectionID, v ProjectionVersion, head, cached session.Head, closing bool) bool
 
 // CacheEvery refreshes a projection once the head has moved n rows past the
 // entry the cache already covers, and always at Close. n <= 0 means
 // DefaultCacheEvery.
 func CacheEvery(n session.Seq) CachePolicy {
-	return func(_ ProjectionID, _ ProjectionVersion, head, covered session.Head, closing bool) bool {
+	return func(_ ProjectionID, _ ProjectionVersion, head, cached session.Head, closing bool) bool {
 		if closing {
 			return true
 		}
 		if n <= 0 {
 			n = DefaultCacheEvery
 		}
-		return head.Next >= covered.Next+n
+		return head.Next >= cached.Next+n
 	}
 }
 
@@ -155,13 +157,13 @@ func CacheEvery(n session.Seq) CachePolicy {
 // assembly uses it for a projection whose owning component refreshes the cache
 // itself at checkpoint points the Writer must not preempt.
 func (p CachePolicy) Exclude(ids ...ProjectionID) CachePolicy {
-	return func(id ProjectionID, v ProjectionVersion, head, covered session.Head, closing bool) bool {
+	return func(id ProjectionID, v ProjectionVersion, head, cached session.Head, closing bool) bool {
 		for _, excluded := range ids {
 			if id == excluded {
 				return false
 			}
 		}
-		return p(id, v, head, covered, closing)
+		return p(id, v, head, cached, closing)
 	}
 }
 

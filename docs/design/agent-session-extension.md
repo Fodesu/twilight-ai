@@ -220,11 +220,11 @@ type ProjectionCache interface {
 }
 // ProjectionCacheProvider 由能把缓存落盘的 Store adapter 实现，组装层据此选中它。
 type ProjectionCacheProvider interface{ ProjectionCache() ProjectionCache }
-// CachePolicy 决定 Writer 刷新哪个投影的缓存条目；covered 是该条目的 through，
+// CachePolicy 决定 Writer 刷新哪个投影的缓存条目；cached 是该条目的 through，
 // 或缓存中无条目时的零值 Head。它只约束写入，从不约束读取。
 // closing 为真表示这是 Close 前的最后一次询问。
-type CachePolicy func(id ProjectionID, v ProjectionVersion, head, covered session.Head, closing bool) bool
-// CacheEvery 在 head 落后 covered 满 n 行时刷新，并在 Close 时无条件刷新；n <= 0 取 DefaultCacheEvery。
+type CachePolicy func(id ProjectionID, v ProjectionVersion, head, cached session.Head, closing bool) bool
+// CacheEvery 在 head 落后 cached 满 n 行时刷新，并在 Close 时无条件刷新；n <= 0 取 DefaultCacheEvery。
 func CacheEvery(n session.Seq) CachePolicy
 // Exclude 拒绝被点名的投影，其余交给 p；组装层用它让宿主自己刷新的投影不被 Writer 抢占。
 func (p CachePolicy) Exclude(ids ...ProjectionID) CachePolicy

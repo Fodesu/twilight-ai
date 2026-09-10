@@ -127,12 +127,12 @@ type writer struct {
 	index     map[session.CommitID]indexed
 	states    map[projectionKey]any
 	scopes    map[projectionKey]*projectionScope
-	// cache, cachePolicy and covered carry EXT-PRJ-3: covered records the head
-	// each projection's cache entry already reflects, which is what a policy
-	// measures the next refresh against.
+	// cache, cachePolicy and cached carry EXT-PRJ-3: cached records the head each
+	// projection's cache entry already reflects, which is what a policy measures
+	// the next refresh against.
 	cache       ProjectionCache
 	cachePolicy CachePolicy
-	covered     map[projectionKey]session.Head
+	cached      map[projectionKey]session.Head
 	lost        error
 }
 
@@ -158,7 +158,7 @@ func openWriter(ctx context.Context, store session.Store, registry *Registry, ad
 	}
 	w := &writer{kernel: kernel, registry: registry, admission: admission, sid: sid,
 		index: make(map[session.CommitID]indexed), states: make(map[projectionKey]any), scopes: make(map[projectionKey]*projectionScope),
-		cache: cfg.Cache, cachePolicy: policy, covered: make(map[projectionKey]session.Head)}
+		cache: cfg.Cache, cachePolicy: policy, cached: make(map[projectionKey]session.Head)}
 	if err := w.rebuild(ctx, store); err != nil {
 		_ = kernel.Close(ctx)
 		return nil, err
@@ -190,7 +190,7 @@ func (w *writer) rebuild(ctx context.Context, store session.Store) error {
 		w.scopes[k] = scope
 		if state, through, ok := w.startState(ctx, scope, page.Events); ok {
 			w.states[k] = state
-			w.covered[k] = through
+			w.cached[k] = through
 			continue
 		}
 		state, err := scope.def.Initial()
@@ -261,7 +261,7 @@ func coversGroupBoundary(rows []session.SessionEvent, through session.Head) bool
 func (w *writer) foldGroup(group []session.SessionEvent) error {
 	next := make(map[projectionKey]any, len(w.states))
 	for k, scope := range w.scopes {
-		if through, fromCache := w.covered[k]; fromCache && group[0].Seq < through.Next {
+		if through, fromCache := w.cached[k]; fromCache && group[0].Seq < through.Next {
 			continue // already covered by the entry the fold started from
 		}
 		state, err := w.registry.fold(scope, w.states[k], group)
@@ -284,11 +284,11 @@ func (w *writer) refreshCache(ctx context.Context, closing bool) {
 		return
 	}
 	for k := range w.scopes {
-		if !w.cachePolicy(k.id, k.version, w.head, w.covered[k], closing) {
+		if !w.cachePolicy(k.id, k.version, w.head, w.cached[k], closing) {
 			continue
 		}
 		if err := SaveProjection(ctx, w.cache, w.registry, w.sid, k.id, k.version, w.states[k], w.head); err == nil {
-			w.covered[k] = w.head
+			w.cached[k] = w.head
 		}
 	}
 }
