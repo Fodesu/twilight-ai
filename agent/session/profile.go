@@ -51,7 +51,7 @@ type headerDigestBody struct {
 
 func (p profileV1) HeaderDigest(h SessionHeader) (es.Digest, error) {
 	if h.ParentFork != nil {
-		return "", &Error{Code: ErrUnsupported, Operation: "header", SessionID: h.SessionID, Detail: "fork is not in v1"}
+		return "", &Error{Code: ErrUnsupported, Operation: "header", SessionID: h.SessionID, Detail: "fork is not implemented"}
 	}
 	return digestDomain(p.version, "twilight/session/header", headerDigestBody{h.ProtocolVersion, h.SessionID, h.CreatedAtUnixMilli, h.CausationID, h.Metadata})
 }
@@ -82,7 +82,7 @@ func (p profileV1) ValidateHeader(h SessionHeader) error {
 		return newError(ErrInvalid, "header", h.SessionID, err.Error())
 	}
 	if h.ParentFork != nil {
-		return &Error{Code: ErrUnsupported, Operation: "header", SessionID: h.SessionID, Detail: "fork is not in v1"}
+		return &Error{Code: ErrUnsupported, Operation: "header", SessionID: h.SessionID, Detail: "fork is not implemented"}
 	}
 	want, err := p.HeaderDigest(h)
 	if err != nil {

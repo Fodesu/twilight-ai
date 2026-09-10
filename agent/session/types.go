@@ -32,13 +32,15 @@ type SessionHeader struct {
 	ProtocolVersion    uint16           `json:"protocolVersion"`
 	SessionID          SessionID        `json:"sessionId"`
 	CreatedAtUnixMilli int64            `json:"createdAtUnixMilli"`
-	ParentFork         *ForkPoint       `json:"parentFork,omitempty"` // v1: always nil (appendix A)
+	ParentFork         *ForkPoint       `json:"parentFork,omitempty"` // nil for a root stream; see section 8
 	CausationID        es.CausationID   `json:"causationId,omitempty"`
 	Metadata           jsonstable.Value `json:"metadata,omitempty"`
 	HeaderDigest       es.Digest        `json:"headerDigest"`
 }
 
-// ForkPoint is reserved for appendix A; v1 rejects non-nil values.
+// ForkPoint is a child stream's provenance anchor: the parent Session and the
+// point in it the child was seeded from (agent-session.md section 8). The v1
+// profile does not implement fork and rejects a non-nil ParentFork.
 type ForkPoint struct {
 	ParentSessionID SessionID `json:"parentSessionId"`
 	Seq             Seq       `json:"seq"`

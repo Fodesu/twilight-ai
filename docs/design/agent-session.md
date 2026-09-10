@@ -1,6 +1,6 @@
 # Twilight Agent Session Protocol
 
-状态：设计草案。已由 `agent/session` 的 MemoryStore 与文件 adapter `agent/session/filestore` 实现，两者跑同一套第 7 节 conformance（`agent/session/sessiontest`，以 Store 为参数）。此前的多写者设计（临界区、commit 容器、控制面 KV、kernel 内 snapshot）及其收缩决定见 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 8 节。
+状态：设计草案。本文是 Session ES kernel 的目标设计；实现状态与迁移记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。
 
 本文定义 Twilight Session 的 Event Sourcing kernel。文中的"必须""不得""应该"是协议约束。
 
@@ -18,7 +18,7 @@ modules 负责：event ontology、typed codec、payload 版本、投影、投影
 
 **SES-SCP-2** 并发不在 kernel 解决。一个 Session 的全部写入者（Run 的 worker、Turn 的 Coordinator、恢复流程）在进程内经同一个 `extension.Writer` 串行（EXT-WRT），Writer 持有 kernel 的写者句柄。kernel 只拒绝不持有有效所有权的 `Append`。
 
-**SES-SCP-3** v1 的范围是单条 stream：header、Open/Append/Read、所有权与 epoch、按行 digest。Fork、ancestry、canonical import 见附录 A，v1 返回 `ErrUnsupported`。
+**SES-SCP-3** kernel 的范围是单条 stream：header、Open/Append/Read、所有权与 epoch、按行 digest。Fork、ancestry 与 canonical import 建立在这条 stream 之上，见第 8 节。
 
 ## 2. 版本
 
@@ -41,7 +41,7 @@ type SessionHeader struct {
     ProtocolVersion uint16
     SessionID SessionID
     CreatedAtUnixMilli int64
-    ParentFork *ForkPoint // v1 必须为 nil；附录 A
+    ParentFork *ForkPoint // nil 为 root stream；非 nil 见第 8 节
     CausationID es.CausationID
     Metadata jsonstable.Value
     HeaderDigest es.Digest
@@ -123,7 +123,7 @@ type Store interface {
 
 **SES-APP-1** `Append(group)` 原子：整组 event 同时可见或同时不存在。Store 为组内每行赋 `Seq`（从当前 `Head.Next` 起连续）、`Index`、`Last`，计算 `Digest`，持久化，然后返回带完整字段的行。返回即持久（文件 adapter 每次 Append 一次 `fsync`；数据库 adapter 一个事务）。
 
-**SES-APP-2** 崩溃只可能留下一个不完整的尾组：文件 adapter 打开时把末尾 `Last=false` 且没有后续行的整组截掉；数据库 adapter 由事务保证不会出现。内存参考实现在 `Open` 做同样的截断，因此"不完整组对 reader 不可见"对全部 adapter 是同一语义，而不是文件 adapter 的特例。截断必须发生在 `Head` 确立之前，否则 `Head.Next` 落在残组内部，下一次 `Append` 会把残组与后续组焊成一组。reader 在任何时刻都不会看到不完整的组。conformance 以可选能力 `CrashTail` 注入崩溃（内存与文件 adapter 都实现）。
+**SES-APP-2** 崩溃只可能留下一个不完整的尾组：文件 adapter 打开时把末尾 `Last=false` 且没有后续行的整组截掉；数据库 adapter 由事务保证不会出现。截断必须发生在 `Head` 确立之前：否则 `Head.Next` 落在残组内部，下一次 `Append` 会把残组与后续组焊成一组。reader 在任何时刻都不会看到不完整的组。
 
 **SES-APP-3** kernel 拒绝：空组、重复 `CommitID`、非 canonical 或非 object 的 payload、无效 identity、落后的 Epoch。拒绝不写入任何内容，返回 `ErrInvalid`（重复 CommitID 为 `ErrConflict`）。kernel 不比对重复 CommitID 的内容，不返回"已应用"：幂等重放由 `extension.Writer` 以内存索引完成（EXT-WRT-2）。
 
@@ -155,22 +155,19 @@ const (
 )
 ```
 
-v1 conformance 以 `Store` 为参数，Memory 与文件 adapter 跑同一套，必须验证：
+v1 conformance 以 `Store` 为参数，每个 adapter 跑同一套，必须验证：
 
 - **SES-WIR-1/2/3**：Seq 连续、组内 Index/Last、CommitID 唯一、payload canonical、digest 链与 header 根、版本一致；
 - **SES-OWN-1/2**：第二个 Open 返回 `ErrOwned`；Close 后可再 Open 且 Epoch 加一；声明 `Takeover` 的 Open 在所有权存续期间接管且 Epoch 加一；旧 Writer 的 Append 返回 `ErrOwnershipLost` 且不写入；
 - **SES-APP-1/2/3**：整组可见性；在组中途注入崩溃后打开，尾组不出现；拒绝项无写入；
-- **SES-REP-1/2**：顺序、From、Limit 在组边界截断、过滤与全量对匹配类型一致、篡改任一行后下一次 Open 报 `ErrCorrupt`；
-- **SES-SCP-3**：附录 A 入口返回 `ErrUnsupported`，`ParentFork` 非 nil 的 header 被拒绝。
+- **SES-REP-1/2**：顺序、From、Limit 在组边界截断、过滤与全量对匹配类型一致、篡改任一行后下一次 Open 报 `ErrCorrupt`。
 
-参考实现为 MemoryStore 与文件 adapter `agent/session/filestore`（一个 Session 一个目录：`header.json`、`log.jsonl` 一行一个 event、`owner.json` 记录 epoch 与 owned）。
+kernel 的 `ProtocolVersion` 覆盖 header 字段、event 行字段、digest preimage 与组完整性规则（SES-VER-2）。
 
-kernel wire 自 2026-09-09 起由 golden fixtures 冻结（header digest、行 digest 链、行 canonical JSON 形状于 `agent/session/golden_test.go`；落盘字节于 `agent/session/filestore/testdata/`，`-update` 重生成）：任何改变字节或摘要的修改必须显式更新 fixture 并在本 spec 记录；v1 发布后此类变化必须进入新 `ProtocolVersion`。
+## 8. fork、ancestry 与 canonical import
 
-## 附录 A：预留能力（不进入 v1）
+**Fork。** `ForkPoint{ParentSessionID, Seq, Digest}`；子 Session 以父在 `Digest` 处的状态为 seed，header 记 `ParentFork`，seed 之后第一行的 prev digest 为 `ForkPoint.Digest`。
 
-**Fork。** `ForkPoint{ParentSessionID, Seq, Digest}`；子 Session 复制父的前缀作为 seed，header 记 `ParentFork`，seed 之后第一行的 prev digest 为 `ForkPoint.Digest`。目前没有规范内的消费者：subagent 使用独立 Session。
+**Canonical import。** 按行校验 digest 链后导入完整日志，或导入已有可验证前缀的连续尾部；同 `(SessionID, Seq)` 仅在行逐字节相同时幂等。
 
-**Canonical import。** 按行校验 digest 链后导入完整日志或已有可验证前缀的连续尾部；同 `(SessionID, Seq)` 仅在行逐字节相同时幂等。
-
-**投影缓存与 ancestry。** 有 Fork 后投影缓存的 `Through` 需要绑定 ancestry；v1 只有一个 segment，`Through` 为 `Seq`（EXT-PRJ-3）。
+**投影缓存与 ancestry。** Fork 之后，投影缓存的 `Through` 绑定 ancestry 而非单个 `Seq`（EXT-PRJ-3）。

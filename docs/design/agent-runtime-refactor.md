@@ -110,6 +110,16 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 | 第 8 节规范修订（session、extension、run、turn、chatlog、artifact、参考组装按单写者与扁平事件改写） | 完成，2026-09-08 |
 | 第 8 节代码重构（kernel 收缩、Writer、Runtime 去 lease/grant、接管处置、conformance 重建） | 完成，2026-09-08；`agent/` 下 9 个测试包全部通过，kernel 与 RUN-CMP-2 的 conformance 均以 Store 为参数 |
 | 文件 adapter（`agent/session/filestore`）、live 模型接入 | 未开始 |
+| kernel wire golden fixtures（header digest、行 digest 链、行 canonical JSON 形状、落盘字节） | 冻结，2026-09-09；`-update` 重生成 |
+| `agent/session` kernel conformance（第 7 节，含崩溃残尾恢复） | 完成，2026-09-10；Memory 与 filestore 跑同一套 |
+| `agent/session` 版本隔离（digest domain 携带 profile 版本） | 完成，2026-09-10 |
+| `agent/es` 收敛到 canonical identity 与 digest 职责 | 完成，2026-09-10；删除 superseded 的 record/fold |
+| Fork、ancestry、canonical import（agent-session.md 第 8 节） | 未实现；kernel 当前拒绝非 nil `ParentFork` |
+| `agent/session/extension`（Writer、Writers、ProjectionReader、MemoryProjectionCache） | 完成，2026-09-07；第 7 节 conformance 部分实现 |
+| `agent/session/chatlog` 开放项 | wire field names、输入 limits、golden fixtures 未冻结 |
+| `agent/artifact` | Ref、Binding、Memory BindingStore、BindingSetBuilder、两态 ledger 完成；Resolver、Store、Promoter、scheme registry 未实现 |
+| `agent/artifact` 保留子系统（claim、ledger、Reconcile） | 尚无真实内容存储与 GC 消费者；conformance 随第一个真实内容存储冻结，在此之前允许修订；`Prepared` 状态、provider 迁移 fence、archive import/export 未实现 |
+| `agent/turn` 第 8 节 conformance | 部分实现，当前由 `agent/ref` 的测试覆盖 Start、Deliver、Stop 与新 Turn 的开启 |
 
 2026-09-07 的代码行是第 8 节修订前的形态，已于 2026-09-08 按第 8 节重写。当前正式调用形态为 `agent/ref` 的 Memory 组装：`ref.New` 返回 Store、Registry、Writers、Runtime、Coordinator 与 Agents；宿主对每个 Session 先 `Memory.Open`（取所有权并接管处置）再经 `SessionDriver.Send` 投递输入。Coordinator 只做协议提交与状态读取（Status），驱动编排（解析 profile、调用 driver、组装结果、取消）在宿主层的 `Memory.Drive`（REF-DRV-1）。Loop 不保存 authority state；Runtime 不读取 queue 或 planner context。
 
@@ -357,3 +367,34 @@ v1 只有两类恢复动作：`RecoverInterrupted`（新 owner 一次性处置 E
 9. RUN-CMP-2 conformance 按修订后的清单重建；随后写文件 adapter，用 session 与 runtimetest 两套 conformance 验收。
 
 后续协议修改直接更新对应正式规范；本文只更新迁移状态和历史决策，不再承载 wire、Machine、Runtime 或 Loop 算法。
+
+## 9. 2026-09-10 修订：正式规范只承载目标设计
+
+### 9.1 起因
+
+正式规范里混入了四类不属于目标设计的内容，使规范同时充当状态文档，读者无法分辨哪一句是目标、哪一句是现状：
+
+1. **实现状态**："已由 `agent/session/extension` 实现并通过第 7 节的测试"、"`agent/ref` 已实现…"、"第 8 节 conformance 尚未完整实现"；
+2. **进度与开放项**："wire 在文件 adapter 通过前不冻结"、"v1 freeze 前开放项：wire field names、输入 limits"、"payload 字段尚未冻结"；
+3. **范围裁剪**："不进入 v1"、附录 A/B/C、"v1 实现返回 `ErrUnsupported`"、"目前没有规范内的消费者"；
+4. **实现分析与测试方法**："参考实现为 MemoryStore 与文件 adapter"、"参考实现在 `OpenWriter` 完成日志重建之后…核对一次"、"conformance 以可选能力 `CrashTail` 注入崩溃"。
+
+### 9.2 决定
+
+1. 七份正式规范（run、session、session-extension、session-chatlog、artifact、turn、参考组装）只写**目标设计**：不写实现状态、进度、开放项、迁移记录、范围裁剪与实现分析。
+2. 规范首行的"状态"只声明**文档自身**的成熟度（草案／设计规范）并指向本文；是否实现不写在那里。
+3. **设计内容不因尚未实现而从规范中删除。** 范围裁剪只改变"什么已经实现"的记录位置，不改变目标设计本身。因此 kernel 的 fork／ancestry／canonical import 设计保留为 [agent-session.md](agent-session.md) 第 8 节，只去掉"预留能力（不进入 v1）"与"v1 返回 `ErrUnsupported`"的表述。
+4. 规范描述的目标与实现之间的差距，记在 §3 的表里，不在规范内声明。
+
+### 9.3 落点
+
+- 七份规范的状态行：改为文档成熟度加指向本文的指针，其中属于设计的句子（Writer 串行、Coordinator 只做协议、Runtime 无 lease/grant 等）保留；
+- [agent-session.md](agent-session.md)：删附录 A 标题与"不进入 v1"，Fork／ancestry／canonical import 转为第 8 节；SES-APP-2 去掉参考实现与 conformance 注入手段；删"参考实现为…"与 golden fixture 冻结段（该约束为工程约束，见 §3）；SES-SCP-3 的 conformance 断言随之删除；
+- [agent-artifact.md](agent-artifact.md)：第 7 节去掉"附录，不进入 v1"与"实现返回 `ErrUnsupported`"；ART-RET-3 去掉"参考实现"表述；
+- [agent-session-extension.md](agent-session-extension.md)：清单去掉 claim 断言的冻结说明；"通用 `Catalog` 仍不进入 v1"改为职责边界表述；
+- [agent-session-chatlog.md](agent-session-chatlog.md)：删"v1 freeze 前开放项"；checkpoint 失效段去掉"相对早期草案的修订"的历史框架；
+- [agent-run.md](agent-run.md)：RUN-CMP-1 去掉 fixture 状态，只保留版本演进规则。
+
+### 9.4 后续
+
+§7.1 的"v1 范围过大，Fork 等能力先于纵向切片"是当时范围裁剪的决定；本文不追溯改写该行。范围裁剪仍然有效（Fork 仍未实现，见 §3），改变的是它**不被写进目标规范**。

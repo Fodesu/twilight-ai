@@ -1,6 +1,6 @@
 # Twilight Agent Run Protocol
 
-状态：设计规范。Machine、command/fact 规则、Loop 与第 5 节的 Runtime（`agent/session/run`）均已实现：Runtime 经 `extension.Writer` 写入，无 lease/grant，`RecoverInterrupted` 为接管处置；RUN-CMP-2 conformance 在 `agent/session/run/runtimetest` 以 Store 为参数，对 Memory Store 通过。本文依据 [agent-session.md](agent-session.md)（Session 级单写者、一行一个 event）与 [agent-session-extension.md](agent-session-extension.md)（`extension.Writer`）；实施记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。
+状态：设计规范。本文是 Run Machine、Runtime 与 Loop 的目标设计；实现状态与迁移记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。Runtime 经 `extension.Writer` 写入，无 lease/grant，`RecoverInterrupted` 为接管处置。本文依据 [agent-session.md](agent-session.md)（Session 级单写者、一行一个 event）与 [agent-session-extension.md](agent-session-extension.md)（`extension.Writer`）。
 
 本文定义 `agent/run`、`agent/run/loop` 与 Run 作为 Session Module 的存储形态。文中的"必须""不得""应该"是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
 
@@ -555,7 +555,7 @@ type Event struct {
 
 ## 9. compatibility 与 conformance
 
-**RUN-CMP-1** 当前 pre-release schema v1 的 command/fact discriminator、wire fields、canonical digest、derived ID 和 `ProtocolV1().Evolve` 由 golden fixtures 保护；发布前有意修改协议时必须同步更新 fixture。v1 发布后，新增 variant、字段或折叠语义必须进入新 `SchemaVersion`，Registry 继续 decode/fold 全部已发布版本；同一 Run 的 writer 不得混写不同版本。Run 版本演进不触发 Session kernel 版本变化。
+**RUN-CMP-1** command/fact discriminator、wire fields、canonical digest、derived ID 与 `ProtocolV1().Evolve` 的任何修改必须进入新 `SchemaVersion`；Registry 继续 decode/fold 全部已发布版本，同一 Run 的 writer 不得混写不同版本。Run 版本演进不触发 Session kernel 版本变化。
 
 **RUN-CMP-2** Runtime conformance 只断言 Run 模块自己的语义；组原子性、digest chain、所有权与 Epoch fencing、幂等索引、投影缓存复用由 Session kernel 与 Module Framework 的 conformance 覆盖（SES 第 7 节、EXT 第 7 节），本清单以引用代替重复。conformance 以 `session.Store` 为参数（`agent/session/run/runtimetest`），Memory 与文件 adapter 跑同一套。必须覆盖：
 

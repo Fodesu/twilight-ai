@@ -1,6 +1,6 @@
 # Twilight Agent Session Module Framework
 
-状态：设计草案。已由 `agent/session/extension` 实现（Writer、Writers、ProjectionReader 与 MemoryProjectionCache）并通过第 7 节的测试；wire 在文件 adapter 通过前不冻结。写入串行与幂等重放由进程内的 `Writer` 承担，kernel 只提供追加日志（[agent-session.md](agent-session.md)）；此前的 Appender 与 Lease 设计及其收缩决定见 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 8 节。
+状态：设计草案。本文是 Session Module Framework 的目标设计；实现状态与迁移记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。写入串行与幂等重放由进程内的 `Writer` 承担，kernel 只提供追加日志（[agent-session.md](agent-session.md)）。
 
 本文定义建立在 `agent/session` 与 `agent/artifact` 之上的 Session Module Framework。实现包路径为 `agent/session/extension`；文中的"必须""不得""应该"是协议约束；JSON canonicalization 与 digest 遵循 `agent/jsonstable`、`agent/es`。
 
@@ -229,7 +229,7 @@ v1 conformance 必须验证：
 - **EXT-REG-1 至 4**：immutable Registry、`v` 的写入与选择、多版本 codec 共存、Unknown 保留 raw payload、`Requires` 缺失或成环被拒绝、投影消费范围外事件被拒绝、被依赖事件版本不在声明范围被拒绝；Source 段非法（空、含 `/`、非 UTF-8）被拒绝、`(Source, ID)` 重复被拒绝、同名 ModuleID 在不同 Source 下共存且各自前缀可解析；
 - **EXT-COD-1/2**：wire-first、`v` 保留字段；canonical round-trip 由各模块的测试覆盖；
 - **EXT-REF-1/2**：Extractor 全量提取、cardinality、scheme/durability admission、拒绝时无写入；
-- **EXT-WRT-1 至 5**：OpenWriter 后索引与投影等于全量 fold；同 CommitID 重放 AlreadyApplied、不同内容 Conflict、两者无写入；并发调用方串行且各自看到前一次的结果；claim 先于 append，append 失败后 claim 被释放或可被核对回收（claim 相关断言随第一个真实内容存储冻结，见 artifact spec 状态段）；`ErrOwnershipLost` 后 Writer 失效；
+- **EXT-WRT-1 至 5**：OpenWriter 后索引与投影等于全量 fold；同 CommitID 重放 AlreadyApplied、不同内容 Conflict、两者无写入；并发调用方串行且各自看到前一次的结果；claim 先于 append，append 失败后 claim 被释放或可被核对回收；`ErrOwnershipLost` 后 Writer 失效；
 - **EXT-PRJ-1 至 4**：pure fold、组边界、Consumes 与范围外跳过、Ignorable 与非 Ignorable 的 Unknown、缓存复用条件、Writer 内投影与 Store 读取一致。
 
 ## 8. Application module
@@ -242,4 +242,4 @@ Application 在自己的代码里定义 `ModuleDescriptor`（自有 Source 下�
 
 **EXT-APP-3（适用判据）** 需要"持久、可重放、参与投影"的事实才建 module；工具、模型、系统提示、planner、观测 sink 走既有接口扩展点（参考装配的 Agent/Profile、EventSink、Store adapter），不进 Session 流。
 
-通用 `Catalog`（把多个 Source 的 ModuleDescriptor 与 artifact SchemeDefinition 组合为只读索引的独立一层）仍不进入 v1：模块以 Go 值直接传入 `BuildRegistry`。
+模块以 Go 值直接传入 `BuildRegistry`；把多个 Source 的 ModuleDescriptor 与 artifact SchemeDefinition 组合为只读索引的通用 `Catalog` 不在本层的职责内。

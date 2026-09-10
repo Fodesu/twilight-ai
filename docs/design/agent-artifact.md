@@ -1,6 +1,6 @@
 # Twilight Agent Artifact Core
 
-状态：设计草案。`agent/artifact` 已实现 Ref、Binding、Memory BindingStore、BindingSetBuilder 与自持久化的两态 ledger（`MemoryLedger.Activate` 在 owner fact Append 之前建立 claim，回收前核对由 `OwnerVerifier` 与 `Reconcile` 提供）；Resolver、Store、Promoter 与 scheme registry 未实现。wire 与 claim 状态表在 conformance 通过前不冻结；保留子系统（claim、ledger、Reconcile）当前没有真实内容存储与 GC 消费者，其 conformance 随第一个真实内容存储一起冻结，在此之前允许修订。v1 的 claim 只有 `Active` 与 `Released` 两态；`Prepared` 状态、provider 迁移 fence 与 archive import/export 在附录中，不进入 v1 conformance。
+状态：设计草案。本文是 Artifact Core 的目标设计；实现状态与迁移记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。claim 在 `Active` 与 `Released` 两态之间迁移。
 
 本文定义 `agent/artifact`。文中的"必须""不得""应该"是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
 
@@ -14,11 +14,11 @@ Binding：稳定 BindingID 到 immutable Ref 的映射
 RetentionClaim：owner 对一个 BindingSet 的 durable 保留事实
 ```
 
-`BindingSet` 是 claim 的内容集合。`Active` claim 是 retention root；`Released` claim 不再保留任何内容。v1 中 claim 由 Session Module Framework 的 `Writer` 在 Append owner fact 之前以 `Active` 状态建立（EXT-WRT-3）。顺序固定为先 claim 后 append，因此不可能出现"stream 引用了内容而没有 claim"；可能出现的只有孤儿 claim（有 claim、owner fact 未写入），它只多占空间，由回收前核对释放（ART-RET-3）。`Prepared` 保留给需要显式 in-flight 状态的部署（附录）。Core 不依赖 Session、Event、Chatlog 或 Application，且不解释 owner 的领域语义。Attachment 等 owner module 可以关联 `AttachmentID`、subject 与 `BindingID`，但该边界只使用 BindingID，不引入 Event 依赖。
+`BindingSet` 是 claim 的内容集合。`Active` claim 是 retention root；`Released` claim 不再保留任何内容。claim 由 Session Module Framework 的 `Writer` 在 Append owner fact 之前以 `Active` 状态建立（EXT-WRT-3）。顺序固定为先 claim 后 append，因此不可能出现"stream 引用了内容而没有 claim"；可能出现的只有孤儿 claim（有 claim、owner fact 未写入），它只多占空间，由回收前核对释放（ART-RET-3）。`Prepared` 保留给需要显式 in-flight 状态的部署（第 7 节）。Core 不依赖 Session、Event、Chatlog 或 Application，且不解释 owner 的领域语义。Attachment 等 owner module 可以关联 `AttachmentID`、subject 与 `BindingID`，但该边界只使用 BindingID，不引入 Event 依赖。
 
-**ART-SCP-1** Core 不得解释 `ClaimOwner`，不得要求某种数据库、文件系统或 provider 实现。v1 只要求 Memory reference implementation 和 conformance suite。
+**ART-SCP-1** Core 不得解释 `ClaimOwner`，不得要求某种数据库、文件系统或 provider 实现。参考实现与 conformance suite 见第 8 节。
 
-**ART-SCP-2** v1 范围：Ref、Binding、Resolver/Store/Promoter capability、两态 RetentionLedger、SchemeDefinition 与 provider binding registry。附录中的能力在 v1 返回 `ErrUnsupported`。
+**ART-SCP-2** Core 的范围：Ref、Binding、Resolver/Store/Promoter capability、两态 RetentionLedger、SchemeDefinition 与 provider binding registry。
 
 ## 2. identity 与 wire
 
@@ -69,8 +69,8 @@ type WireCodec interface {
     DecodeRef(jsonstable.Value) (Ref, error)
     EncodeBinding(Binding) (jsonstable.Value, error)
     DecodeBinding(jsonstable.Value) (Binding, error)
-    EncodeManifest(BindingManifest) (jsonstable.Value, error) // 附录第 7 节；v1 返回 ErrUnsupported
-    DecodeManifest(jsonstable.Value) (BindingManifest, error) // 同上
+    EncodeManifest(BindingManifest) (jsonstable.Value, error) // 第 7 节
+    DecodeManifest(jsonstable.Value) (BindingManifest, error) // 第 7 节
 }
 ```
 
@@ -113,7 +113,7 @@ type ClaimState string
 const (
     ClaimActive ClaimState = "active"
     ClaimReleased ClaimState = "released"
-    ClaimPrepared ClaimState = "prepared" // 仅附录的两阶段部署使用
+    ClaimPrepared ClaimState = "prepared" // 两阶段部署使用（第 7 节）
 )
 
 // BindingSet is a canonical, resolved retention set.
@@ -158,7 +158,7 @@ type OwnerVerifier interface {
 | ReleaseActive | Released | 幂等成功 |
 | ReleaseActive | 不存在 | not found |
 
-**ART-RET-3** `ClaimsByOwner` 使用 watermark cursor，按 ClaimID 稳定排序；空 owner identities 不匹配。回收前核对：GC 在按 Active claim 计算 root 之前，对每个 Active claim 调用 `OwnerVerifier.OwnerExists`，不存在则 `ReleaseActive`；这一步清理 EXT-WRT-3 顺序下可能留下的孤儿 claim。核对只能在该 owner 的写入路径不可能仍在进行时执行：Session 部署中即该 Session 没有进行中的 `Writer.Commit`，参考实现在 `OpenWriter` 完成日志重建之后、接受第一个 Commit 之前对该 Session 的 claim 核对一次，运行期的核对必须与 Writer 互斥。`ReleaseActive` 的另一种授权（owner retention 已结束）由 Application 的 GC policy 提供。
+**ART-RET-3** `ClaimsByOwner` 使用 watermark cursor，按 ClaimID 稳定排序；空 owner identities 不匹配。回收前核对：GC 在按 Active claim 计算 root 之前，对每个 Active claim 调用 `OwnerVerifier.OwnerExists`，不存在则 `ReleaseActive`；这一步清理 EXT-WRT-3 顺序下可能留下的孤儿 claim。核对只能在该 owner 的写入路径不可能仍在进行时执行：Session 部署中即该 Session 没有进行中的 `Writer.Commit`，在 `OpenWriter` 完成日志重建之后、接受第一个 Commit 之前对该 Session 的 claim 核对一次，运行期的核对必须与 Writer 互斥。`ReleaseActive` 的另一种授权（owner retention 已结束）由 Application 的 GC policy 提供。
 
 ## 6. provider 与 scheme boundary
 
@@ -177,9 +177,9 @@ type ProviderBinding struct {
 
 **ART-PRO-1** registry 在 startup 组合后 immutable；每个 Scheme 有唯一 definition，verified use 需要已注册 Scheme 和唯一 `(Scheme,Authority)` provider binding。provider config、secret、物理位置与迁移属于 adapter/Application。
 
-## 7. archive 与 import/export（附录，不进入 v1）
+## 7. archive 与 import/export
 
-以下为预留设计，v1 实现返回 `ErrUnsupported`。
+claim、ledger 与 binding 的归档、导入与导出格式。
 
 ```go
 type BindingManifest struct {
@@ -199,9 +199,9 @@ type VerifiedImportResult struct { Bindings []BindingID; Claims []ClaimID }
 
 **ART-ARC-2** `ImportActiveClaims` 是 all-or-nothing validation boundary：先验证所有 referenced Binding、durability、digest、owner、ClaimID 和 state，再全部写入或失败。它不接受 Prepared 或 Released records；逐字段相同 active record 幂等，同 identity 的不同 record 为 conflict。导出按 `ClaimsByOwner` 的完整 cursor 枚举 closure。
 
-**ART-PRO-2**（附录）adapter 改变物理实现时必须保持 locator resolution 不变，并以 generation/fence 防止旧位置在新位置验证可恢复前回收。具体 filesystem、DB 与迁移步骤由 adapter/Application 负责。
+**ART-PRO-2** adapter 改变物理实现时必须保持 locator resolution 不变，并以 generation/fence 防止旧位置在新位置验证可恢复前回收。具体 filesystem、DB 与迁移步骤由 adapter/Application 负责。
 
-**两阶段 claim**（附录）当 ledger 与 owner fact 不在同一事务域时，`Prepare(ClaimID, Owner, Set)` 建立 `Prepared` claim 作为 in-flight GC root，`Activate` 在 owner fact 确认后转为 Active，`AbortPrepared` 只在 owner operation 已 terminally aborted 的 durable evidence 下转为 Released；reconciler 扫描 `PreparedClaims`，对 NotFound、unknown 或 transient failure 保留 Prepared。对应 Session Module Framework 附录 C。
+**两阶段 claim** 当 ledger 与 owner fact 不在同一事务域时，`Prepare(ClaimID, Owner, Set)` 建立 `Prepared` claim 作为 in-flight GC root，`Activate` 在 owner fact 确认后转为 Active，`AbortPrepared` 只在 owner operation 已 terminally aborted 的 durable evidence 下转为 Released；reconciler 扫描 `PreparedClaims`，对 NotFound、unknown 或 transient failure 保留 Prepared。
 
 多 package coordination、quarantine 操作流程不属于本规范。
 
@@ -226,5 +226,4 @@ v1 conformance 必须验证：
 - **ART-ID-1、ART-REF-1、ART-REF-2、ART-WIR-1**：canonical round-trip、拒绝歧义 wire、identity-bound/untrusted MediaType、locator/integrity 和 durability；
 - **ART-BND-1、ART-BND-2、ART-CAP-1**：Binding conflict、promotion、resolver integrity 和 capability errors；
 - **ART-RET-1、ART-RET-2、ART-RET-3**：BindingSetBuilder/ledger 独立重算与精确验证、RefSetDigest、不可复用 released claim、两态状态表、`Activate` 返回即持久且幂等、owner 不存在的 Active claim 被回收前核对释放而 owner 存在的不受影响、cursor pagination、Active GC protection；
-- **ART-PRO-1**：immutable registry 与 provider-instance isolation；
-- **ART-SCP-2**：附录能力返回 `ErrUnsupported`。
+- **ART-PRO-1**：immutable registry 与 provider-instance isolation。

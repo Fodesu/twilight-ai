@@ -352,7 +352,8 @@ func testCrashTail(t *testing.T, f Fixture) {
 	}
 }
 
-// SES-SCP-3: appendix A is out of v1.
+// SES-SCP-3: an unknown Session is ErrNotFound, not an implicitly created
+// stream.
 func testScope(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	if _, err := f.Store.Open(ctx, "missing", session.OpenOptions{}); !session.IsCode(err, session.ErrNotFound) {
@@ -360,9 +361,5 @@ func testScope(t *testing.T, f Fixture) {
 	}
 	if _, err := f.Store.Header(ctx, "missing"); !session.IsCode(err, session.ErrNotFound) {
 		t.Fatalf("header unknown session = %v", err)
-	}
-	h := session.SessionHeader{ProtocolVersion: session.ProtocolVersion1, SessionID: "f", ParentFork: &session.ForkPoint{ParentSessionID: "p"}}
-	if err := session.ProfileV1().ValidateHeader(h); !session.IsCode(err, session.ErrUnsupported) {
-		t.Fatalf("fork header = %v, want unsupported", err)
 	}
 }

@@ -1,8 +1,8 @@
 # Twilight Agent Session Chatlog Module
 
-状态：设计草案。`agent/session/chatlog` 已实现全部事件定义（含 checkpoint）、parts codec、PartsExtractor、Surface 与 Context 投影。payload 字段、输入 limits 与 golden fixtures 尚未冻结。
+状态：设计草案。本文是 chatlog first-party Module 的目标设计；实现状态与迁移记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。
 
-本文定义 `agent/session/chatlog` first-party Module，依赖 [Session](agent-session.md) 与 [Session Module Framework](agent-session-extension.md)。回合生命周期由 [Turn](agent-turn.md) 拥有。文中的“必须”“不得”“应该”是草案冻结时应保留的协议约束；canonical JSON 与 digest 遵循 `agent/jsonstable`、`agent/es`。
+本文定义 `agent/session/chatlog` first-party Module，依赖 [Session](agent-session.md) 与 [Session Module Framework](agent-session-extension.md)。回合生命周期由 [Turn](agent-turn.md) 拥有。文中的“必须”“不得”“应该”是协议约束；canonical JSON 与 digest 遵循 `agent/jsonstable`、`agent/es`。
 
 ## 1. module 与 ontology
 
@@ -166,8 +166,6 @@ Digest("twilight/chatlog/tool_result", ...)
 Digest("twilight/chatlog/summary", ...)
 ```
 
-v1 freeze 前开放项：wire field names、输入 limits、golden fixtures。
-
 ## 5. event payloads
 
 payload 为 object，identity 为 string，整数按 Session profile 编码。未列字段在 v1 拒绝。
@@ -236,7 +234,7 @@ twilight/chatlog/checkpoint_invalidated
 
 fold 在提交前逐条校验（EXT-WRT-1 的投影预折叠），违反者整组拒绝：`CoveredThrough` 早于 checkpoint 行的 Seq；`CoveredThrough` 与 checkpoint 之间的 Context 条目恰为该 `SummaryID` 的 summary 且 digest 相符；`BaseContextDigest` 与 base 序列重算值相符；`Retained` 是 base 序列的有序子集（逐项 (Kind, ID, Digest) 全等）。retained 集的 provider 合法性（tool_call 与 result 的配对封闭）是 Application 的职责（REF-CKP-2），fold 不校验。
 
-`checkpoint_invalidated` 只能指向最近一个仍 active 的 checkpoint：active Context 回到 base 加 checkpoint 之后折叠的尾部，summary 条目随之离开 active Context（Surface 与历史保留）；连续 invalidate 逐层回退。指向被压缩条目的 `tool_result_superseded` 是协议违规而非 checkpoint 失效条件：被压缩条目的 Turn 已结束，CHT-ENT-2 已排除对它的 supersede。相对早期草案的修订（首个实现按预留的修订权收窄）：失效途径只有显式 invalidate 最近的 active checkpoint，不存在"summary/Retained/base source 被 supersede 引发的隐式失效"。
+`checkpoint_invalidated` 只能指向最近一个仍 active 的 checkpoint：active Context 回到 base 加 checkpoint 之后折叠的尾部，summary 条目随之离开 active Context（Surface 与历史保留）；连续 invalidate 逐层回退。指向被压缩条目的 `tool_result_superseded` 是协议违规而非 checkpoint 失效条件：被压缩条目的 Turn 已结束，CHT-ENT-2 已排除对它的 supersede。失效途径只有显式 invalidate 最近的 active checkpoint；不存在"summary/Retained/base source 被 supersede 引发的隐式失效"。
 
 ## 6. Surface projection
 
