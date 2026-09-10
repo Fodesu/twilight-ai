@@ -401,3 +401,28 @@ v1 只有两类恢复动作：`RecoverInterrupted`（新 owner 一次性处置 E
 ### 9.4 后续
 
 §7.1 的"v1 范围过大，Fork 等能力先于纵向切片"是当时范围裁剪的决定；本文不追溯改写该行。范围裁剪仍然有效（Fork 仍未实现，见 §3），改变的是它**不被写进目标规范**。
+
+## 10. 2026-09-10 修订：包边界（写入路径独立，折语义留在 `extension`）
+
+### 10.1 起因
+
+`agent/session/extension` 同时承载三件事：模块声明与其索引（`Registry`）、投影折引擎与投影缓存、进程内的写入路径。投影引擎还被实现为 `Registry` 的方法（`scopeFor`／`fold`），使规范早就划出的缝——第 5 节 Writer 对第 6 节 pure projection 与缓存——在代码里完全不可见。
+
+### 10.2 决定
+
+1. **判据**：一个包够格独立，当且仅当 (a) 它有独立于原包的变化理由，(b) 它与原包之间是单向且窄的依赖。两条都满足才拆；只有一条满足时，拆出去换来的独立性由导出内部件或新增层次来偿付。
+2. **写入路径满足两条**：其变化理由是 Session 写入协议（进程内串行、幂等重放、claim 顺序、admission），与"模块声明了什么"无关；它只单向消费 framework 的公开面。故独立为 `agent/session/writer`，且与 `extension` **平级**。
+3. **依赖由 import 表达，不由目录嵌套表达。** 一个 import `extension` 的包是它的兄弟而不是子包；`extension` 的消费者——`agent/session/writer`、`agent/session/chatlog`、`agent/session/run`、`agent/session/filestore`——一律平级在 `agent/session/` 下。把消费者嵌进被消费者内部会使目录结构反向陈述依赖。
+4. **折引擎不满足 (a)，留在 `extension`。** EXT-PRJ-2 的范围规则不是一套独立规则，它是 `Registry` 已声明的 Requires 图与事件索引在日志上的解释：`applyRow` 逐行读 `Registry` 的事件索引与模块归属，`ScopeFor` 从 Requires 闭包算出该投影的范围。把它搬出去，只能把规则的数据与规则的计算分到两个包，或改成逐行经访问器重查索引。**这与投影引擎"与 extension 耦合"是两回事：它在 `extension` 内部，且与 Registry 共享唯一的变化理由，那是内聚。**
+5. **缓存与 reader 满足两条，但记为未做的候选**（见 10.4）。它与折引擎的取舍点在于**纯度**：折是 `Scope` 加 rows 到 state 的纯计算，缓存与 reader 碰 `session.Store`。
+
+### 10.3 落点
+
+- 新增 `agent/session/writer`：`Writer`／`Writers`／`View`／`SemanticGroup`／`TypedEvent`／`CommitFn`／`CommitResult`／`Admission`／`WritersConfig`、claim 身份派生与幂等指纹；写入路径的测试与缓存基准随其迁移；
+- `extension` 导出 `ProjectionScope`／`ScopeFor`／`Fold` 作为折引擎的公开面，原先只服务于包内 Writer 的 `projectionScope`／`scopeFor`／`fold` 收束到该面之下；
+- [agent-session-extension.md](agent-session-extension.md) 新增 **EXT-SCP-4**：两包平级与依赖方向，并记录声明为何必须同包——`ModuleDescriptor` 声明 `ProjectionDefinition`，而 `ProjectionDefinition.Apply` 消费带模块身份的 `DecodedEvent`，二者互相引用，只有同包才不成环；
+- 七份规范中以 `extension.` 限定的 Writer 类型（18 处）改为 `writer.`。
+
+### 10.4 后续
+
+投影缓存与 `ProjectionReader` 可按纯度独立为 `extension` 的兄弟包（仅依赖 Registry 公开面）。收益是"派生状态怎么存、怎么读"这一变化理由独立出来（memory → 文件 → SQLite 不动折语义）；代价是给 `Scope` 补一个类型前缀访问器，并迁移引用点。**未做**：当前 `extension` 的三个部分共享"模块协议"这一变化理由，切分收益小于偿付。
