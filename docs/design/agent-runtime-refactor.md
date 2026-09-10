@@ -103,6 +103,7 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 | 投影缓存接入 Writer：`rebuild` 从缓存条目续折（组对齐校验 + 失效回退）、`CachePolicy`/`CacheEvery`/`Exclude` 只管写入、`Close` 刷新 | 完成，2026-09-10；EXT-PRJ-3/5/6/7 与 REF-MEM-2 新增 |
 | 拆分 `agent/session/extension`：写入路径迁到 `agent/session/writer`（与 `extension` 平级）（`Writer`/`Writers`/`Admission`/`WritersConfig`/`View`），声明与投影引擎留在 `extension` | 完成，2026-09-10；EXT-SCP-4 新增，写入路径的包内实现类型改名以避免与包名同名 |
 | 文件 adapter（`agent/session/filestore`）的持久化投影缓存（`Store.ProjectionCache()`，`<sid>/projections/<id>/<v>.json`）与跨进程重启 conformance | 完成，2026-09-10；`agent/ref` 经 `ProjectionCacheProvider` 选中它 |
+| 提交历史索引归 kernel（SES-REP-3/4）：Writer 不再持有 CommitID → 行的索引，文件 adapter 记录每组的字节区间并按区间读取 | 完成，2026-09-10；重开后 Writer 的常驻内存与日志长度无关（守卫见 `agent/session/writer/retained_test.go`），query conformance 由内存与文件两个 adapter 同跑 |
 | `agent/session/chatlog`（事件、parts codec、Surface、Context） | 完成，2026-09-07；checkpoint 完成，2026-09-09（CHT-EVT-3 转正，宿主策略见 REF-CKP-1/2） |
 | `agent/artifact`（Ref、Binding、Memory BindingStore、两态 KV ledger） | 完成，2026-09-07；Resolver/Store/Promoter 未实现 |
 | `agent/session/run`（module descriptor、machine 投影、Runtime、RecoverExpired） | 完成，2026-09-07 |
@@ -426,3 +427,36 @@ v1 只有两类恢复动作：`RecoverInterrupted`（新 owner 一次性处置 E
 ### 10.4 后续
 
 投影缓存与 `ProjectionReader` 可按纯度独立为 `extension` 的兄弟包（仅依赖 Registry 公开面）。收益是"派生状态怎么存、怎么读"这一变化理由独立出来（memory → 文件 → SQLite 不动折语义）；代价是给 `Scope` 补一个类型前缀访问器，并迁移引用点。**未做**：当前 `extension` 的三个部分共享"模块协议"这一变化理由，切分收益小于偿付。
+
+## 11. 2026-09-10 修订：提交历史索引归 kernel
+
+### 11.1 起因
+
+EXT-WRT-1 要求 `OpenWriter` 读取整条日志，重建三样内存状态，其中第一样是**幂等索引**（CommitID → 该组的行与 fingerprint）。实测（`agent/session/writer/retained_test.go`）表明这条要求本身就是 O(N) 常驻内存的来源：
+
+- 用一个状态为 O(1) 的投影测量，重开 Writer 的常驻堆在 1600 行与 12800 行上分别是 0.007 MB 与 0.002 MB——即与日志长度无关；把整条日志重新钉住（模拟旧索引）后，12800 行变成 1.588 MB，守卫失败。
+- 用状态随日志增长的投影测量，6400 行时改前为 **2.22 MB（全量 fold）／2.24 MB（命中缓存）**，改后为 0.32／0.27 MB。**缓存条目对内存没有任何帮助**：它省的是 fold 时间。这一条此前没有被意识到。
+
+机制有两层。索引每项持有该组的行，而每组的行是 `rebuild` 那一次"整条日志读取"结果的**子切片**；子切片与底层数组共享存储，于是只要索引里还留着一组，整条日志就不能被回收。更深一层，这份索引是 kernel 索引的**第二份拷贝**：两个 adapter 为了拒绝重复 CommitID（SES-APP-3）本来就持有它（内存 adapter 存行区间，文件 adapter 存成员集合），文件 adapter 还在 `Open` 把整条日志解析了一遍之后只留下成员集合、丢掉行，而 Writer 紧接着又解析了一遍并永久钉住。
+
+### 11.2 决定
+
+1. **CommitID 索引归 kernel**，也就是归日志的所有者。`Append` 必须拒绝重复 CommitID，kernel 因此本来就持有该索引；新增 SES-REP-3/4 把它的读侧显式化。规范里"Writer 重建幂等索引"是错的定位，改的是规范而不只是代码。
+2. **成员与行分开问**：`Committed(CommitID) bool` 只查索引，不碰存储；`LookupCommit(CommitID)` 命中才取行。文件 adapter 在 `Open` 记录每组的**字节区间**，`LookupCommit` 只读该区间，代价与日志长度无关。两层问法都出现在 `View` 上，调用点自己陈述代价：协调器只问"是否已提交"，Run 的重放还要行。
+3. **Writer 不再持有提交历史**：命中才向 kernel 取行（重放是罕见路径），未命中是一次索引查找。常驻内存只随已注册投影数增长。
+4. **fingerprint 在命中时重算**：kernel 存的是行不是 fingerprint。值与重建时存的相同——fingerprint 只取 Type、SourceSeqs、Payload，不含 Seq/Digest/Index/Last——所以重放与冲突的判定不变，代价只落在命中。
+5. 这条决定不改 SES-APP-3 的职责划分：kernel 仍然**不比对**重复 CommitID 的内容，也不返回"已应用"；它只是把"我有哪些 CommitID"这件它已经知道的事说出来。
+
+### 11.3 落点
+
+- [agent-session.md](agent-session.md)：`Writer` 接口与新增 **SES-REP-3/4**；SES-APP-3 末句由"重放由 `writer.Writer` 以内存索引完成"改为经 `LookupCommit` 取行完成。
+- [agent-session-extension.md](agent-session-extension.md)：EXT-WRT-1 改为"重建投影状态与 head，不保留日志与提交历史索引"；EXT-WRT-2 与 `View` 块随之；conformance 清单补"重开后常驻内存不随日志长度增长"。
+- `agent/session/sessiontest`：新增 **query** conformance，内存与文件两个 adapter 同跑，覆盖"当前句柄刚追加的组"与"重开后从日志重建的组"，并要求返回的行不暴露内部存储。
+- `agent/session/writer/retained_test.go`：守卫常驻内存与日志长度无关。
+- 两个 adapter：内存 adapter 直接从行区间复制；文件 adapter 记录并读取字节区间。
+
+### 11.4 后续（未做，代价已知）
+
+**文件 adapter 的 `Read` 每次调用都全量解析日志**（`readLog` 无起读点），因此下列读取的代价都随日志长度增长，与只需读到多少行无关：(a) 全量 fold 的那次读取；(b) 校验缓存条目落在组边界上的那次读取（每个投影一次）；(c) `storeReader.Load` 的每次读取——它先 `isPrefix` 再 `Read`，即热缓存下每次 `Load` 都是**两次全量解析**。要让"热缓存下重开 Writer 不读整条日志"成立，需要让 `Read` 支持按字节区间起读（文件 adapter 已有每组的字节区间，缺的是行到字节的定位表），这同时会解决 (c)。本次改动只消除**常驻**内存，不改变这些读取的代价，故 11.1 的"读整条日志"在文件 adapter 上仍然发生，只是读完即释放。
+
+另有两处相邻的健壮性问题，均未改动：`storeReader.isPrefix` 只比对行不存在与 digest，不要求该行是组尾（`writer.coversGroupBoundary` 要求），对系统自身写出的条目无影响，对不正确的外部条目偏弱；`Agent` 层与 reader 的缓存写入策略分离（`runmod.WriterCachePolicy` 排除机器投影、Runtime 的 `SnapshotPolicy` 负责它）是刻意的，不在本次修订内。

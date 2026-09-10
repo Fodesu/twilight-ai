@@ -36,6 +36,14 @@ type Writer interface {
 	// (SES-APP-1). It rejects empty groups, duplicate CommitIDs, non-canonical
 	// or non-object payloads, invalid identities and a stale Epoch (SES-APP-3).
 	Append(context.Context, Group) ([]SessionEvent, error)
+	// Committed reports whether CommitID is already in the stream. Append must
+	// reject a duplicate CommitID (SES-APP-3), so the kernel answers this from
+	// the index it already keeps, without touching storage (SES-REP-3).
+	Committed(CommitID) bool
+	// LookupCommit returns the rows of a committed group. It reads them from
+	// storage when the handle does not already hold them, so a caller that needs
+	// the rows pays for them only on a hit (SES-REP-4).
+	LookupCommit(CommitID) ([]SessionEvent, bool, error)
 	Close(context.Context) error
 }
 

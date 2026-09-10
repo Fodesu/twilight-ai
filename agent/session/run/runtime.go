@@ -282,10 +282,12 @@ func (r *Runtime) evaluate(ctx context.Context, view writer.View, sid session.Se
 	commitID := session.CommitID(env.ID)
 	runID := env.RunID
 
-	// Steps 2-3: replay. Idempotency is the Writer's (SessionID, CommitID)
+	// Steps 2-3: replay. Idempotency is the Session's (SessionID, CommitID)
 	// index alone (RUN-CMT-5): every Run CommandID is content-derived, so a hit
 	// is the same command. No Decide runs on replay.
-	if existing, found := view.LookupCommit(commitID); found {
+	if existing, found, err := view.LookupCommit(commitID); err != nil {
+		return nil, evaluated{}, nil, err
+	} else if found {
 		snapshot, err := r.snapshotIn(ctx, view, sid, runID)
 		if err != nil {
 			return nil, evaluated{}, nil, err

@@ -132,12 +132,13 @@ type SemanticGroup struct {
     CommitID session.CommitID
     Events []TypedEvent
 }
-// View 是 Commit 回调内可读的一致视图：head、幂等索引、投影状态。
+// View 是 Commit 回调内可读的一致视图：head、提交历史、投影状态。
 type View interface {
     Head() session.Head
     Epoch() session.Epoch
-    LookupCommit(session.CommitID) ([]session.SessionEvent, bool)
-    Projection(ProjectionID, ProjectionVersion) (any, error) // 折叠到当前 head 的状态
+    Committed(session.CommitID) bool                                     // 只问是否已提交，不读行
+    LookupCommit(session.CommitID) ([]session.SessionEvent, bool, error) // 还要该组的行
+    Projection(ProjectionID, ProjectionVersion) (any, error)             // 折叠到当前 head 的状态
 }
 type CommitFn func(View) (*SemanticGroup, error) // nil 表示不写
 
@@ -176,9 +177,9 @@ type Writer interface {
 func OpenWriter(ctx, store session.Store, registry *Registry, admission Admission, sid session.SessionID, opts session.OpenOptions) (Writer, error)
 ```
 
-**EXT-WRT-1** `OpenWriter` 调 `store.Open` 取得所有权，读取整条日志重建三样内存状态：幂等索引（CommitID → 该组的行与 fingerprint）、每个已注册投影的当前状态、head。投影的起始状态按 EXT-PRJ-3/5 取自缓存条目或 `Initial`。之后 `Commit` 在 Writer 的互斥区内执行：调 fn 得到 group，做 codec、admission、claim，`session.Writer.Append`，再把新行折进投影、更新索引，并按缓存策略刷新条目（EXT-PRJ-6/7）。fn 只能通过 `View` 读；fn 返回 nil 记 `Noop`。Writer 是并发的唯一入口：Run 的 worker、Coordinator、恢复流程都经它串行，kernel 不再需要临界区回调。
+**EXT-WRT-1** `OpenWriter` 调 `store.Open` 取得所有权，然后重建每个已注册投影的当前状态与 head。投影的起始状态按 EXT-PRJ-3/5 取自缓存条目或 `Initial`；缓存条目未覆盖的部分（没有可用条目时即整条日志）被读出来 fold，读完即释放。Writer 不保留日志，也不保留提交历史索引——CommitID 的索引是 kernel 的（SES-REP-3/4），命中时才取该组的行；因此 Writer 的常驻内存只随已注册投影数增长，与日志长度无关。之后 `Commit` 在 Writer 的互斥区内执行：调 fn 得到 group，做 codec、admission、claim，`session.Writer.Append`，再把新行折进投影、更新索引，并按缓存策略刷新条目（EXT-PRJ-6/7）。fn 只能通过 `View` 读；fn 返回 nil 记 `Noop`。Writer 是并发的唯一入口：Run 的 worker、Coordinator、恢复流程都经它串行，kernel 不再需要临界区回调。
 
-**EXT-WRT-2** 幂等：fn 返回的 group 若 CommitID 已在索引中，比对 fingerprint（Type、SourceSeqs、Payload 的有序序列，不含时间），相同返回 `AlreadyApplied` 与原行，不同返回 `Conflict`；两者都不写入，也不做 admission 与 claim。fn 内可先经 `View.LookupCommit` 判断，避免为重放重新构造 group。
+**EXT-WRT-2** 幂等：fn 返回的 group 若 CommitID 已提交（`View.Committed`，命中才取行），比对 fingerprint（Type、SourceSeqs、Payload 的有序序列，不含时间），相同返回 `AlreadyApplied` 与原行，不同返回 `Conflict`；两者都不写入，也不做 admission 与 claim。fn 内可先经 `View.Committed` 判断，避免为重放重新构造 group。
 
 **EXT-WRT-3** claim 顺序：group 含 Binding 时，Writer 在 `Append` 之前调用 `ledger.Activate(claimID, owner, set)`。顺序固定为先 claim 再 append，因此崩溃只可能留下孤儿 claim（有 claim 无 commit），不可能留下无 claim 的引用；孤儿由 artifact 的回收前核对释放（ART-RET-3）。`Append` 失败时 Writer 调用 `ledger.ReleaseActive(claimID)` 尽力回收，失败也只留孤儿。
 
@@ -241,7 +242,7 @@ func NewProjectionReader(store session.Store, registry *Registry, cache Projecti
 
 **EXT-PRJ-4** `Writer.Projections()` 返回的 reader 直接读 Writer 内存中的状态，不经 Store；独立进程的观察者用 `NewProjectionReader` 从 Store 读，两者对同一 head 给出相同状态。
 
-**EXT-PRJ-5** `rebuild` 始终读完整条日志：幂等索引需要每个 CommitID 的 fingerprint。日志是 O(N)，投影折叠是 O(N²)（每次 Apply 复制状态），所以可省的只有折叠：条目通过 EXT-PRJ-3 校验的投影从该处续折，跳过它已覆盖的组；其余投影从 `Initial` 全折。篡改或过期的条目只让该投影多折一次，绝不影响正确性，也绝不让 `OpenWriter` 失败。
+**EXT-PRJ-5** `rebuild` 读一次日志：缓存条目未覆盖的投影需要它的行来折叠，而每个条目都要靠它校验组对齐（EXT-PRJ-3）。日志是 O(N)，投影折叠是 O(N²)（每次 Apply 复制状态），所以可省的只有折叠：条目通过 EXT-PRJ-3 校验的投影从该处续折，跳过它已覆盖的组；其余投影从 `Initial` 全折。篡改或过期的条目只让该投影多折一次，绝不影响正确性，也绝不让 `OpenWriter` 失败。这次读取只服务于投影，不服务于提交历史——Writer 不保留日志，也不建 CommitID 索引（EXT-WRT-1）；它对"必须读多少行"的代价上限取决于 adapter 的读取粒度（见 agent-runtime-refactor.md 11.4）。
 
 **EXT-PRJ-6** 写入与读取的权限不对称：`WritersConfig.CachePolicy` 只决定 Writer 写哪个投影的条目；读取一律尝试缓存中的条目，不论谁写的。某个投影的条目由它的宿主在语义检查点上写入时（run 的 machine projection 经 `SnapshotPolicy`，见 RUN-CMT-2），组装层用 `CachePolicy.Exclude` 把它排除，Writer 便只读不写，绝不会把条目落在检查点之间。
 
@@ -263,7 +264,7 @@ v1 conformance 必须验证：
 - **EXT-REG-1 至 4**：immutable Registry、`v` 的写入与选择、多版本 codec 共存、Unknown 保留 raw payload、`Requires` 缺失或成环被拒绝、投影消费范围外事件被拒绝、被依赖事件版本不在声明范围被拒绝；Source 段非法（空、含 `/`、非 UTF-8）被拒绝、`(Source, ID)` 重复被拒绝、同名 ModuleID 在不同 Source 下共存且各自前缀可解析；
 - **EXT-COD-1/2**：wire-first、`v` 保留字段；canonical round-trip 由各模块的测试覆盖；
 - **EXT-REF-1/2**：Extractor 全量提取、cardinality、scheme/durability admission、拒绝时无写入；
-- **EXT-WRT-1 至 5**：OpenWriter 后索引与投影等于全量 fold；同 CommitID 重放 AlreadyApplied、不同内容 Conflict、两者无写入；并发调用方串行且各自看到前一次的结果；claim 先于 append，append 失败后 claim 被释放或可被核对回收；`ErrOwnershipLost` 后 Writer 失效；
+- **EXT-WRT-1 至 5**：OpenWriter 后投影等于全量 fold 且 Writer 不保留日志（重开后常驻内存不随日志长度增长）；同 CommitID 重放 AlreadyApplied、不同内容 Conflict、两者无写入；并发调用方串行且各自看到前一次的结果；claim 先于 append，append 失败后 claim 被释放或可被核对回收；`ErrOwnershipLost` 后 Writer 失效；
 - **EXT-PRJ-1 至 4**：pure fold、组边界、Consumes 与范围外跳过、Ignorable 与非 Ignorable 的 Unknown、缓存复用条件、Writer 内投影与 Store 读取一致。
 - **EXT-PRJ-5 至 7**：干净 Close 后重开不折任何 event；条目只覆盖前缀时只折尾部；日志越界、digest 不符、落在组内、状态不可解码的条目一律回退为全折且不使 Open 失败；被策略排除的投影不被写入，但它已有的条目仍被复用；`CacheEvery(n)` 下条目落后不超过 n 行；未配置缓存时不写任何条目且行为不变。
 

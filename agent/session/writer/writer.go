@@ -31,7 +31,13 @@ type SemanticGroup struct {
 type View interface {
 	Head() session.Head
 	Epoch() session.Epoch
-	LookupCommit(session.CommitID) ([]session.SessionEvent, bool)
+	// Committed reports whether a commit is already in the stream. It is
+	// answered from an index the kernel already keeps, without touching storage.
+	Committed(session.CommitID) bool
+	// LookupCommit returns the rows of a committed group. The rows come from
+	// storage when the kernel handle does not hold them, so a caller that only
+	// needs the answer uses Committed.
+	LookupCommit(session.CommitID) ([]session.SessionEvent, bool, error)
 	Projection(extension.ProjectionID, extension.ProjectionVersion) (any, error)
 }
 
@@ -113,11 +119,6 @@ func CommitOwner(sid session.SessionID, id session.CommitID) artifact.ClaimOwner
 	return artifact.ClaimOwner{Kind: ClaimOwnerKind, Authority: string(sid), Identity: string(id)}
 }
 
-type indexed struct {
-	rows        []session.SessionEvent
-	fingerprint es.Digest
-}
-
 // projectionKey names one projection version in the Writer's own maps.
 type projectionKey struct {
 	id      extension.ProjectionID
@@ -131,7 +132,6 @@ type sessionWriter struct {
 	admission Admission
 	sid       session.SessionID
 	head      session.Head
-	index     map[session.CommitID]indexed
 	states    map[projectionKey]any
 	scopes    map[projectionKey]*extension.ProjectionScope
 	// cache, cachePolicy and cached carry EXT-PRJ-3: cached records the head each
@@ -164,7 +164,7 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 		policy = extension.CacheEvery(extension.DefaultCacheEvery)
 	}
 	w := &sessionWriter{kernel: kernel, registry: registry, admission: admission, sid: sid,
-		index: make(map[session.CommitID]indexed), states: make(map[projectionKey]any), scopes: make(map[projectionKey]*extension.ProjectionScope),
+		states: make(map[projectionKey]any), scopes: make(map[projectionKey]*extension.ProjectionScope),
 		cache: cfg.Cache, cachePolicy: policy, cached: make(map[projectionKey]session.Head)}
 	if err := w.rebuild(ctx, store); err != nil {
 		_ = kernel.Close(ctx)
@@ -217,11 +217,6 @@ func (w *sessionWriter) rebuild(ctx context.Context, store session.Store) error 
 			return &extension.Error{Code: extension.ErrInvalid, Detail: "log ends in an incomplete group"}
 		}
 		group := rows[i : end+1]
-		fp, err := fingerprintRows(w.sid, group)
-		if err != nil {
-			return err
-		}
-		w.index[group[0].CommitID] = indexed{rows: group, fingerprint: fp}
 		if err := w.foldGroup(group); err != nil {
 			return err
 		}
@@ -310,8 +305,7 @@ func (w *sessionWriter) OwnerExists(_ context.Context, owner artifact.ClaimOwner
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	_, ok := w.index[session.CommitID(owner.Identity)]
-	return ok, nil
+	return w.kernel.Committed(session.CommitID(owner.Identity)), nil
 }
 
 func (w *sessionWriter) Close(ctx context.Context) error {
@@ -330,12 +324,14 @@ type view struct{ w *sessionWriter }
 
 func (v view) Head() session.Head   { return v.w.head }
 func (v view) Epoch() session.Epoch { return v.w.kernel.Epoch() }
-func (v view) LookupCommit(id session.CommitID) ([]session.SessionEvent, bool) {
-	e, ok := v.w.index[id]
-	if !ok {
-		return nil, false
-	}
-	return append([]session.SessionEvent(nil), e.rows...), true
+
+// Committed and LookupCommit are answered by the kernel, which already holds
+// the CommitID index Append needs (SES-REP-3/4): the Writer keeps no copy of
+// the log.
+func (v view) Committed(id session.CommitID) bool { return v.w.kernel.Committed(id) }
+
+func (v view) LookupCommit(id session.CommitID) ([]session.SessionEvent, bool, error) {
+	return v.w.kernel.LookupCommit(id)
 }
 func (v view) Projection(id extension.ProjectionID, ver extension.ProjectionVersion) (any, error) {
 	state, ok := v.w.states[projectionKey{id, ver}]
@@ -391,9 +387,18 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	if err != nil {
 		return CommitResult{}, err
 	}
-	if existing, ok := w.index[group.CommitID]; ok {
-		if existing.fingerprint == fp {
-			return CommitResult{Outcome: CommitAlreadyApplied, Events: append([]session.SessionEvent(nil), existing.rows...)}, nil
+	if existing, committed, err := w.kernel.LookupCommit(group.CommitID); err != nil {
+		return CommitResult{}, err
+	} else if committed {
+		// The kernel holds the rows, not a fingerprint, so a replay recomputes
+		// the old group's fingerprint to tell a replay from a conflict
+		// (EXT-WRT-2). Only a hit pays for this.
+		old, err := fingerprintRows(w.sid, existing)
+		if err != nil {
+			return CommitResult{}, err
+		}
+		if old == fp {
+			return CommitResult{Outcome: CommitAlreadyApplied, Events: append([]session.SessionEvent(nil), existing...)}, nil
 		}
 		return CommitResult{Outcome: CommitConflict}, nil
 	}
@@ -434,7 +439,6 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	for k, s := range next {
 		w.states[k] = s
 	}
-	w.index[group.CommitID] = indexed{rows: sealed, fingerprint: fp}
 	w.head = w.kernel.Head()
 	w.refreshCache(ctx, false)
 	return CommitResult{Outcome: CommitApplied, Events: append([]session.SessionEvent(nil), sealed...), Claim: claim}, nil

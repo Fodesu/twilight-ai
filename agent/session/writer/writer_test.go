@@ -152,13 +152,16 @@ func TestWriterCommitReplayAndRebuild(t *testing.T) {
 	if page, _ := f.store.Read(ctx, session.ReadRequest{SessionID: "s"}); len(page.Events) != 2 {
 		t.Fatalf("rejected groups wrote rows: %d", len(page.Events))
 	}
-	// The View sees head, index and projection; fn may use them.
+	// The View sees head, commit history and projection; fn may use them.
 	_, err = w.Commit(ctx, func(v View) (*SemanticGroup, error) {
 		if v.Head().Next != 2 || v.Epoch() != 1 {
 			t.Fatalf("view head/epoch = %+v %d", v.Head(), v.Epoch())
 		}
-		if rows, ok := v.LookupCommit("c1"); !ok || len(rows) != 2 {
-			t.Fatal("view lookup failed")
+		if !v.Committed("c1") {
+			t.Fatal("view does not see the committed group")
+		}
+		if rows, ok, err := v.LookupCommit("c1"); err != nil || !ok || len(rows) != 2 {
+			t.Fatalf("view lookup = %d %v %v", len(rows), ok, err)
 		}
 		if s, err := v.Projection(extension.ProjectionID(string(tpfx("a"))+"notes"), 1); err != nil || len(s.(noteState).Notes) != 2 {
 			t.Fatalf("view projection = %+v %v", s, err)

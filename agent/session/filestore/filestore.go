@@ -14,7 +14,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -208,7 +210,7 @@ func (s *Store) Open(ctx context.Context, sid session.SessionID, opts session.Op
 		return nil, kerr(session.ErrOwned, "open", sid, fmt.Sprintf("owned by epoch %d", rec.Epoch))
 	}
 	logPath := filepath.Join(dir, logFile)
-	rows, retained, torn, err := readLog(logPath, sid, "open")
+	rows, offsets, retained, torn, err := readLog(logPath, sid, "open")
 	if err != nil {
 		return nil, err
 	}
@@ -229,10 +231,7 @@ func (s *Store) Open(ctx context.Context, sid session.SessionID, opts session.Op
 		return nil, err
 	}
 	w := &fileWriter{store: s, header: header, dir: dir, logPath: logPath, epoch: rec.Epoch,
-		head: headOf(header, rows), commits: make(map[session.CommitID]struct{}, len(rows))}
-	for i := range rows {
-		w.commits[rows[i].CommitID] = struct{}{}
-	}
+		head: headOf(header, rows), commits: spansOf(rows, offsets)}
 	return w, nil
 }
 
@@ -251,7 +250,7 @@ type fileWriter struct {
 	logPath string
 	epoch   session.Epoch
 	head    session.Head
-	commits map[session.CommitID]struct{}
+	commits map[session.CommitID]commitSpan
 }
 
 func (w *fileWriter) SessionID() session.SessionID { return w.header.SessionID }
@@ -275,6 +274,44 @@ func (w *fileWriter) current(op string) error {
 		return kerr(session.ErrOwnershipLost, op, w.header.SessionID, fmt.Sprintf("epoch %d superseded by %d", w.epoch, rec.Epoch))
 	}
 	return nil
+}
+
+// Committed is SES-REP-3: the span map the kernel keeps to reject a duplicate
+// CommitID (SES-APP-3) answers membership without reading the file.
+func (w *fileWriter) Committed(id session.CommitID) bool {
+	w.store.mu.Lock()
+	defer w.store.mu.Unlock()
+	_, ok := w.commits[id]
+	return ok
+}
+
+// LookupCommit is SES-REP-4: it reads exactly the group's byte range, so the
+// cost of the answer does not grow with the length of the log.
+func (w *fileWriter) LookupCommit(id session.CommitID) ([]session.SessionEvent, bool, error) {
+	w.store.mu.Lock()
+	defer w.store.mu.Unlock()
+	sp, ok := w.commits[id]
+	if !ok {
+		return nil, false, nil
+	}
+	sid := w.header.SessionID
+	f, err := os.Open(w.logPath)
+	if err != nil {
+		return nil, false, kerr(session.ErrCorrupt, "lookup", sid, err.Error())
+	}
+	defer f.Close()
+	data := make([]byte, sp.end-sp.start)
+	if _, err := f.ReadAt(data, sp.start); err != nil && !errors.Is(err, io.EOF) {
+		return nil, false, kerr(session.ErrCorrupt, "lookup", sid, err.Error())
+	}
+	rows, _, _, torn, err := parseLog(data, sid, "lookup")
+	if err != nil {
+		return nil, false, err
+	}
+	if torn || len(rows) == 0 {
+		return nil, false, kerr(session.ErrCorrupt, "lookup", sid, "commit does not occupy a whole group")
+	}
+	return rows, true, nil
 }
 
 func (w *fileWriter) Close(ctx context.Context) error {
@@ -349,6 +386,11 @@ func (w *fileWriter) Append(ctx context.Context, g session.Group) ([]session.Ses
 	if err != nil {
 		return nil, err
 	}
+	start, err := f.Seek(0, io.SeekEnd)
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
 	if _, err := f.Write(buf.Bytes()); err != nil {
 		f.Close()
 		return nil, err
@@ -361,7 +403,7 @@ func (w *fileWriter) Append(ctx context.Context, g session.Group) ([]session.Ses
 		return nil, err
 	}
 	w.head = session.Head{Next: rows[len(rows)-1].Seq + 1, Digest: prev}
-	w.commits[g.CommitID] = struct{}{}
+	w.commits[g.CommitID] = commitSpan{start: start, end: start + int64(buf.Len())}
 	return rows, nil
 }
 
@@ -372,15 +414,21 @@ func (w *fileWriter) Append(ctx context.Context, g session.Group) ([]session.Ses
 // never landed — is excluded; retained is the byte length of the retained
 // prefix and torn reports whether anything was excluded. Malformed content
 // before the final line is ErrCorrupt.
-func readLog(path string, sid session.SessionID, op string) (rows []session.SessionEvent, retained int64, torn bool, err error) {
+func readLog(path string, sid session.SessionID, op string) (rows []session.SessionEvent, offsets []int64, retained int64, torn bool, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, 0, false, nil
+			return nil, nil, 0, false, nil
 		}
-		return nil, 0, false, err
+		return nil, nil, 0, false, err
 	}
-	var offsets []int64
+	return parseLog(data, sid, op)
+}
+
+// parseLog parses whole lines. offsets has one entry per parsed row plus a final
+// entry holding the end of the last one, so offsets[len(rows)] is the retained
+// byte length whether or not a tail was dropped.
+func parseLog(data []byte, sid session.SessionID, op string) (rows []session.SessionEvent, offsets []int64, retained int64, torn bool, err error) {
 	off := 0
 	for off < len(data) {
 		nl := bytes.IndexByte(data[off:], '\n')
@@ -395,19 +443,41 @@ func readLog(path string, sid session.SessionID, op string) (rows []session.Sess
 				torn = true // torn write of the final line
 				break
 			}
-			return nil, 0, false, kerr(session.ErrCorrupt, op, sid, fmt.Sprintf("row at byte %d: %v", off, uerr))
+			return nil, nil, 0, false, kerr(session.ErrCorrupt, op, sid, fmt.Sprintf("row at byte %d: %v", off, uerr))
 		}
 		rows = append(rows, row)
 		offsets = append(offsets, int64(off))
 		off += nl + 1
 	}
+	offsets = append(offsets, int64(off))
 	retained = int64(off)
 	for len(rows) > 0 && !rows[len(rows)-1].Last {
 		rows = rows[:len(rows)-1]
 		retained = offsets[len(rows)]
 		torn = true
 	}
-	return rows, retained, torn, nil
+	return rows, offsets, retained, torn, nil
+}
+
+// commitSpan is the byte range [start, end) of one committed group in
+// log.jsonl. The kernel must know which CommitIDs it holds (SES-APP-3); the
+// span is what lets it return that group's rows without re-reading the log.
+type commitSpan struct{ start, end int64 }
+
+// spansOf groups the row offsets by CommitID. rows are complete groups in Seq
+// order, so the first row of a group starts its span and the offset after the
+// last row ends it.
+func spansOf(rows []session.SessionEvent, offsets []int64) map[session.CommitID]commitSpan {
+	spans := make(map[session.CommitID]commitSpan, len(rows))
+	for i := range rows {
+		sp := spans[rows[i].CommitID]
+		if rows[i].Index == 0 {
+			sp.start = offsets[i]
+		}
+		sp.end = offsets[i+1]
+		spans[rows[i].CommitID] = sp
+	}
+	return spans
 }
 
 func (s *Store) Read(ctx context.Context, req session.ReadRequest) (session.ReadPage, error) {
@@ -420,7 +490,7 @@ func (s *Store) Read(ctx context.Context, req session.ReadRequest) (session.Read
 	if err != nil {
 		return session.ReadPage{}, err
 	}
-	rows, _, _, err := readLog(filepath.Join(dir, logFile), req.SessionID, "read")
+	rows, _, _, _, err := readLog(filepath.Join(dir, logFile), req.SessionID, "read")
 	if err != nil {
 		return session.ReadPage{}, err
 	}
@@ -471,7 +541,7 @@ func (s *Store) Tamper(sid session.SessionID, seq session.Seq, mutate func(*sess
 		return
 	}
 	path := filepath.Join(dir, logFile)
-	rows, _, _, err := readLog(path, sid, "tamper")
+	rows, _, _, _, err := readLog(path, sid, "tamper")
 	if err != nil || int(seq) >= len(rows) {
 		return
 	}
@@ -500,7 +570,7 @@ func (s *Store) CrashTail(sid session.SessionID, keep int) error {
 		return err
 	}
 	path := filepath.Join(dir, logFile)
-	rows, _, _, err := readLog(path, sid, "crash_tail")
+	rows, _, _, _, err := readLog(path, sid, "crash_tail")
 	if err != nil {
 		return err
 	}

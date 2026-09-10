@@ -27,6 +27,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("append", func(t *testing.T) { testAppend(t, factory(t)) })
 	t.Run("crash", func(t *testing.T) { testCrashTail(t, factory(t)) })
 	t.Run("read", func(t *testing.T) { testRead(t, factory(t)) })
+	t.Run("query", func(t *testing.T) { testQuery(t, factory(t)) })
 	t.Run("scope", func(t *testing.T) { testScope(t, factory(t)) })
 }
 
@@ -361,5 +362,63 @@ func testScope(t *testing.T, f Fixture) {
 	}
 	if _, err := f.Store.Header(ctx, "missing"); !session.IsCode(err, session.ErrNotFound) {
 		t.Fatalf("header unknown session = %v", err)
+	}
+}
+
+// SES-REP-3/4: the kernel answers which CommitIDs it holds and what rows they
+// carry, from the index Append already needs (SES-APP-3). Both answers must hold
+// for a group appended by the current handle and again after a reopen, which is
+// where a durable adapter rebuilds that index from the log; and a caller that
+// mutates the returned rows must not reach the stored ones.
+func testQuery(t *testing.T, f Fixture) {
+	ctx := context.Background()
+	create(t, f.Store, "s")
+	w := open(t, f.Store, "s", false)
+	first := appendGroup(t, w, "c1", ev("twilight/run/a", `{"n":1}`), ev("twilight/run/b", `{"n":2}`))
+	appendGroup(t, w, "c2", ev("twilight/run/c", `{"n":3}`))
+
+	if w.Committed("absent") {
+		t.Fatal("an unknown CommitID was reported committed")
+	}
+	if !w.Committed("c1") || !w.Committed("c2") {
+		t.Fatal("an appended CommitID was not reported committed")
+	}
+	rows, ok, err := w.LookupCommit("c1")
+	if err != nil || !ok || len(rows) != len(first) {
+		t.Fatalf("lookup c1 = %d rows, ok=%v, err=%v", len(rows), ok, err)
+	}
+	for i := range rows {
+		want := first[i]
+		if rows[i].Seq != want.Seq || rows[i].Digest != want.Digest || rows[i].CommitID != "c1" || rows[i].Index != uint16(i) {
+			t.Fatalf("row %d = %+v, want %+v", i, rows[i], want)
+		}
+		if rows[i].Last != (i == len(rows)-1) {
+			t.Fatalf("row %d Last = %v", i, rows[i].Last)
+		}
+	}
+	if rows, ok, err := w.LookupCommit("absent"); ok || err != nil || rows != nil {
+		t.Fatalf("unknown lookup = %+v, ok=%v, err=%v", rows, ok, err)
+	}
+	rows[0].Type = "twilight/tampered/x"
+	if again, _, _ := w.LookupCommit("c1"); again[0].Type != first[0].Type {
+		t.Fatal("mutating the returned rows reached the stored ones")
+	}
+
+	if err := w.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	w = open(t, f.Store, "s", false)
+	if !w.Committed("c2") {
+		t.Fatal("a reopened handle lost a committed CommitID")
+	}
+	if rows, ok, err := w.LookupCommit("c2"); err != nil || !ok || len(rows) != 1 {
+		t.Fatalf("reopened lookup c2 = %d rows, ok=%v, err=%v", len(rows), ok, err)
+	}
+	last := appendGroup(t, w, "c3", ev("twilight/run/d", `{"n":4}`))
+	if rows, ok, err := w.LookupCommit("c3"); err != nil || !ok || len(rows) != 1 || rows[0].Digest != last[0].Digest {
+		t.Fatalf("lookup after append = %+v, ok=%v, err=%v", rows, ok, err)
+	}
+	if err := w.Close(ctx); err != nil {
+		t.Fatal(err)
 	}
 }

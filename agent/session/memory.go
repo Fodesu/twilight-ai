@@ -173,6 +173,27 @@ func (w *memoryWriter) current(op string) error {
 	return nil
 }
 
+// Committed is SES-REP-3: the row index the kernel keeps to reject a duplicate
+// CommitID answers membership directly.
+func (w *memoryWriter) Committed(id CommitID) bool {
+	w.s.mu.Lock()
+	defer w.s.mu.Unlock()
+	_, ok := w.s.byCommit[id]
+	return ok
+}
+
+// LookupCommit is SES-REP-4: the session holds every row, so a hit copies the
+// group's span instead of reading storage.
+func (w *memoryWriter) LookupCommit(id CommitID) ([]SessionEvent, bool, error) {
+	w.s.mu.Lock()
+	defer w.s.mu.Unlock()
+	span, ok := w.s.byCommit[id]
+	if !ok {
+		return nil, false, nil
+	}
+	return cloneRows(w.s.rows[span[0] : span[1]+1]), true, nil
+}
+
 func (w *memoryWriter) Close(ctx context.Context) error {
 	w.s.mu.Lock()
 	defer w.s.mu.Unlock()

@@ -101,6 +101,8 @@ type Writer interface {   // kernel 的写者句柄，由 Store.Open 返回
     Epoch() Epoch
     Head() Head
     Append(context.Context, Group) ([]SessionEvent, error)
+    Committed(CommitID) bool
+    LookupCommit(CommitID) ([]SessionEvent, bool, error)
     Close(context.Context) error
 }
 type Store interface {
@@ -125,7 +127,7 @@ type Store interface {
 
 **SES-APP-2** 崩溃只可能留下一个不完整的尾组：文件 adapter 打开时把末尾 `Last=false` 且没有后续行的整组截掉；数据库 adapter 由事务保证不会出现。截断必须发生在 `Head` 确立之前：否则 `Head.Next` 落在残组内部，下一次 `Append` 会把残组与后续组焊成一组。reader 在任何时刻都不会看到不完整的组。
 
-**SES-APP-3** kernel 拒绝：空组、重复 `CommitID`、非 canonical 或非 object 的 payload、无效 identity、落后的 Epoch。拒绝不写入任何内容，返回 `ErrInvalid`（重复 CommitID 为 `ErrConflict`）。kernel 不比对重复 CommitID 的内容，不返回"已应用"：幂等重放由 `writer.Writer` 以内存索引完成（EXT-WRT-2）。
+**SES-APP-3** kernel 拒绝：空组、重复 `CommitID`、非 canonical 或非 object 的 payload、无效 identity、落后的 Epoch。拒绝不写入任何内容，返回 `ErrInvalid`（重复 CommitID 为 `ErrConflict`）。kernel 不比对重复 CommitID 的内容，不返回"已应用"：幂等重放由 `writer.Writer` 比对 fingerprint 完成（EXT-WRT-2），它为此需要的行经 `LookupCommit` 从 kernel 取（SES-REP-4）。
 
 ## 6. read
 
@@ -142,6 +144,10 @@ type ReadPage struct { Header SessionHeader; Events []SessionEvent; Head Head; H
 **SES-REP-1** `Read` 按 `Seq` 递增返回 `From` 起的行，只返回完整组内的行；`Limit` 截断只发生在组边界。损坏检测的义务点在 `Open`：Open 在建立所有权前校验整条 `Digest` 链，损坏必须 fail loudly（`ErrCorrupt`）；`ValidateChain` 同时作为显式校验入口导出。`Read` 信任存储，不逐次重算链。
 
 **SES-REP-2** `Types` 过滤是读取代价的优化：文件 adapter 全量扫描后过滤，数据库 adapter 用 `(SessionID, Type 前缀)` 索引。过滤与不过滤读到的事件集合对匹配类型完全一致。
+
+**SES-REP-3** `Committed` 报告某个 `CommitID` 是否已在 stream 中。`Append` 必须拒绝重复 `CommitID`（SES-APP-3），kernel 因此本来就持有这个索引；`Committed` 是该索引的读侧，只做索引查找，不触碰存储。调用者（`writer.Writer`、Run 的重放判定）不必自己再维护一份同样的索引。
+
+**SES-REP-4** `LookupCommit` 返回某个已提交组的行，未提交时 `ok=false`。句柄不持有这些行时从存储读取：文件 adapter 按 `Open` 时记录的字节区间读该组，代价与日志长度无关；内存 adapter 复制该组的行区间。代价只落在命中，未命中是一次索引查找。这是幂等重放唯一需要的读取能力：重放不必读整条日志（EXT-WRT-2）。
 
 ## 7. errors 与 conformance
 

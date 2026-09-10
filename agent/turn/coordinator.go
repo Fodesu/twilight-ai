@@ -163,7 +163,7 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 	}
 	now := c.now()
 	err = c.commit(ctx, sid, "start", func(view writer.View) (*writer.SemanticGroup, error) {
-		if _, found := view.LookupCommit(commitID); found {
+		if view.Committed(commitID) {
 			group := c.startGroup(commitID, turnID, inputIDs, req, facts, now)
 			return &group, nil // exact replay: the Writer compares fingerprints
 		}
