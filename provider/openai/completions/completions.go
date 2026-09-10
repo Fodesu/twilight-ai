@@ -276,6 +276,9 @@ func (p *Provider) buildRequest(req *sdk.Request) (*chatRequest, error) {
 		return nil, err
 	}
 	padThinkingReplay(chatReq.Messages, p.compat)
+	if err := sdk.ApplyProviderOptions(p.Name(), req.ProviderOptions, chatReq); err != nil {
+		return nil, fmt.Errorf("openai: %w", err)
+	}
 	return chatReq, nil
 }
 

@@ -442,6 +442,9 @@ func (p *Provider) buildRequest(params *sdk.Request) (*messagesRequest, error) {
 		}
 	}
 
+	if err := sdk.ApplyProviderOptions(p.Name(), params.ProviderOptions, req); err != nil {
+		return nil, fmt.Errorf("anthropic: %w", err)
+	}
 	return req, nil
 }
 

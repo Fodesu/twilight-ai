@@ -1,6 +1,10 @@
 package sdk
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+)
 
 // Request is the complete, frozen input of one model call.
 //
@@ -34,8 +38,38 @@ type Request struct {
 	PromptCacheKey   *string  `json:"promptCacheKey,omitempty"`
 
 	// ProviderOptions carries provider-specific extensions keyed by provider
-	// namespace. Values must be JSON values; they participate in the digest.
+	// namespace, which is Provider.Name(). Each value is an object whose
+	// members are request-body members of that provider's wire request:
+	// ApplyProviderOptions merges them in, so a caller can reach a wire feature
+	// the SDK does not model, or override one it does. Values are JSON and
+	// participate in the digest.
 	ProviderOptions map[string]json.RawMessage `json:"providerOptions,omitempty"`
+}
+
+// ApplyProviderOptions merges the caller's options for the provider namespace
+// into a provider's own wire request. wire must be the request the provider just
+// built, and a provider calls this last, so an option can override a member the
+// SDK set.
+//
+// The SDK fixes where the options for a namespace live and how they are applied;
+// what they mean stays the provider's property, because wire is the provider's
+// own type. Unknown members are an error rather than a silent no-op: an option
+// that is quietly dropped is indistinguishable from one that was never set,
+// which is the failure this seam exists to make impossible.
+func ApplyProviderOptions(namespace string, options map[string]json.RawMessage, wire any) error {
+	if len(options) == 0 {
+		return nil
+	}
+	raw, ok := options[namespace]
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(wire); err != nil {
+		return fmt.Errorf("provider options for %q: %w", namespace, err)
+	}
+	return nil
 }
 
 // ToolDefinition is the provider-neutral, frozen description of one tool.

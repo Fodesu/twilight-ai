@@ -258,6 +258,9 @@ func (p *Provider) buildRequest(params *sdk.Request) (*responsesRequest, error) 
 		}
 	}
 
+	if err := sdk.ApplyProviderOptions(p.Name(), params.ProviderOptions, req); err != nil {
+		return nil, fmt.Errorf("openai: %w", err)
+	}
 	return req, nil
 }
 
