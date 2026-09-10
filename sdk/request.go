@@ -41,8 +41,10 @@ type Request struct {
 	// namespace, which is Provider.Name(). Each value is an object whose
 	// members are request-body members of that provider's wire request:
 	// ApplyProviderOptions merges them in, so a caller can reach a wire feature
-	// the SDK does not model, or override one it does. Values are JSON and
-	// participate in the digest.
+	// the SDK does not model, or override one it does. The values stay open
+	// JSON here, so the agent runtime freezes the whole request into its own
+	// canonical run.ModelRequest before digesting it; the digest covers these
+	// values there, not here.
 	ProviderOptions map[string]json.RawMessage `json:"providerOptions,omitempty"`
 }
 
@@ -79,7 +81,8 @@ type ToolDefinition struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters"`
-	// CacheControl participates in the digest like every other field.
+	// CacheControl is carried into the frozen request, whose digest covers it
+	// like every other field.
 	CacheControl *CacheControl `json:"cacheControl,omitempty"`
 }
 
