@@ -1,128 +1,98 @@
 package es
 
 import (
-	"errors"
+	"strings"
 	"testing"
 )
 
-type testEvent struct {
-	Schema uint16
-	Stream StreamID
-	Rev    Revision
-	Pos    Index
-	Value  int
-}
-
-func testInspector(event testEvent) (EventMetadata, error) {
-	if event.Value < 0 {
-		return EventMetadata{}, errors.New("negative payload")
-	}
-	return EventMetadata{
-		SchemaVersion: event.Schema,
-		StreamID:      event.Stream,
-		Revision:      event.Rev,
-		Index:         event.Pos,
-	}, nil
-}
-
-func v1(version uint16) bool { return version == 1 }
-
-func validRecord() Record[testEvent] {
-	record := Record[testEvent]{
-		SchemaVersion: 1,
-		StreamID:      "stream-1",
-		Revision:      1,
-		Events: []testEvent{
-			{Schema: 1, Stream: "stream-1", Rev: 1, Pos: 0, Value: 2},
-			{Schema: 1, Stream: "stream-1", Rev: 1, Pos: 1, Value: 3},
-		},
-	}
-	digest, err := DigestRecord(&record)
-	if err != nil {
-		panic(err)
-	}
-	record.RecordDigest = digest
-	return record
-}
-
-func TestStandardEventAndRecord(t *testing.T) {
-	event, err := BuildEvent(1, "stream-1", 1, 0, "added", "cause-1", map[string]string{"x": "y"})
+// TestEncodeTypedPayload pins the domain separator every Twilight digest is
+// built on (SES-WIR-2, RUN-WIR-4): the exact byte shape, and the fact that the
+// schema version, the type name and the canonical payload each change the
+// preimage. A change here moves every digest in every protocol version, so it
+// is a wire change and not a refactor.
+func TestEncodeTypedPayload(t *testing.T) {
+	raw, err := EncodeTypedPayload(1, "twilight/x/a", map[string]any{"a": 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	record := Record[Event[map[string]string]]{
-		SchemaVersion: 1,
-		StreamID:      "stream-1",
-		Revision:      1,
-		Events:        []Event[map[string]string]{event},
+	// v<schemaVersion>:<len(type)>:<type>:<canonical payload>
+	if want := `v1:12:twilight/x/a:{"a":1}`; string(raw) != want {
+		t.Fatalf("domain separator shape:\n got: %s\nwant: %s", raw, want)
 	}
-	record.RecordDigest, err = DigestRecord(&record)
+
+	again, err := EncodeTypedPayload(1, "twilight/x/a", map[string]any{"a": 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	inspector := StandardEventInspector[map[string]string](v1)
-	if err := ValidateRecord(&record, v1, inspector); err != nil {
-		t.Fatal(err)
-	}
-	state, revision, err := FoldStandardRecords(0, "stream-1", []Record[Event[map[string]string]]{record}, v1, inspector,
-		func(_ uint16, state int, _ Event[map[string]string]) (int, error) { return state + 1, nil })
-	if err != nil || state != 1 || revision != 1 {
-		t.Fatalf("standard fold = state %d revision %d err %v", state, revision, err)
-	}
-	record.Events[0].Payload["x"] = "tampered"
-	if err := ValidateRecord(&record, v1, StandardEventInspector[map[string]string](v1)); err == nil {
-		t.Fatal("tampered payload accepted")
-	}
-}
-
-func TestValidateRecord(t *testing.T) {
-	record := validRecord()
-	if err := ValidateRecord(&record, v1, testInspector); err != nil {
-		t.Fatal(err)
+	if string(again) != string(raw) {
+		t.Fatal("the same input must produce the same preimage")
 	}
 
-	record.Events[1].Pos = 2
-	if err := ValidateRecord(&record, v1, testInspector); err == nil {
-		t.Fatal("index gap accepted")
-	}
-
-	record = validRecord()
-	record.RecordDigest = "sha256:tampered"
-	if err := ValidateRecord(&record, v1, testInspector); err == nil {
-		t.Fatal("tampered aggregate digest accepted")
-	}
-}
-
-func TestFoldRecords(t *testing.T) {
-	first := validRecord()
-	second := Record[testEvent]{
-		SchemaVersion: 1,
-		StreamID:      "stream-1",
-		Revision:      2,
-		Events: []testEvent{
-			{Schema: 1, Stream: "stream-1", Rev: 2, Pos: 0, Value: 5},
-		},
-	}
-	views := []RecordView[testEvent]{
-		{SchemaVersion: first.SchemaVersion, StreamID: first.StreamID, Revision: first.Revision, Events: first.Events},
-		{SchemaVersion: second.SchemaVersion, StreamID: second.StreamID, Revision: second.Revision, Events: second.Events},
-	}
-	state, revision, err := FoldRecords(0, "stream-1", views, v1, testInspector,
-		func(_ uint16, state int, event testEvent) (int, error) { return state + event.Value, nil })
+	// Schema version, type name and payload are three independent inputs.
+	other, err := EncodeTypedPayload(2, "twilight/x/a", map[string]any{"a": 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state != 10 || revision != 2 {
-		t.Fatalf("fold = state %d revision %d, want 10/2", state, revision)
+	if string(other) == string(raw) {
+		t.Error("schema version must separate the preimage: a new ProtocolVersion cannot reuse v1 digests")
+	}
+	other, err = EncodeTypedPayload(1, "twilight/x/b", map[string]any{"a": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(other) == string(raw) {
+		t.Error("type must separate the preimage: two event types cannot share a digest domain")
+	}
+	other, err = EncodeTypedPayload(1, "twilight/x/a", map[string]any{"a": 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(other) == string(raw) {
+		t.Error("payload must separate the preimage")
 	}
 
-	views[1].Revision = 3
-	if _, _, err := FoldRecords(0, "stream-1", views, v1, testInspector,
-		func(_ uint16, state int, event testEvent) (int, error) { return state + event.Value, nil }); err == nil {
-		t.Fatal("revision gap accepted")
+	// A type name is length-prefixed, so a type that merely extends another
+	// cannot alias its domain.
+	short, err := EncodeTypedPayload(1, "a", map[string]any{"a": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	long, err := EncodeTypedPayload(1, "ab", map[string]any{"a": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(short) == string(long) {
+		t.Error("length prefix does not separate a type from its extension")
+	}
+	if !strings.HasPrefix(string(short), "v1:1:a:") || !strings.HasPrefix(string(long), "v1:2:ab:") {
+		t.Errorf("length prefix encoding: got %s and %s", short, long)
 	}
 }
 
+// TestDigestBytes pins the digest value shape: SHA-256 over exactly the bytes
+// handed in, hex encoded behind a "sha256:" tag. Canonicalization is the
+// caller's obligation (DigestBytes does not re-encode).
+func TestDigestBytes(t *testing.T) {
+	d := DigestBytes([]byte(`{"a":1}`))
+	if !strings.HasPrefix(string(d), "sha256:") {
+		t.Fatalf("digest tag: %s", d)
+	}
+	if got := len(string(d)); got != len("sha256:")+64 {
+		t.Fatalf("digest length %d, want %d", got, len("sha256:")+64)
+	}
+	if again := DigestBytes([]byte(`{"a":1}`)); again != d {
+		t.Fatal("DigestBytes is not deterministic")
+	}
+	if other := DigestBytes([]byte(`{"a":2}`)); other == d {
+		t.Fatal("different bytes must not share a digest")
+	}
+	// Byte-exact: a non-canonical form is a different preimage.
+	if padded := DigestBytes([]byte(`{"a": 1}`)); padded == d {
+		t.Fatal("DigestBytes must not canonicalize on the caller's behalf")
+	}
+}
+
+// TestCanonicalDigest covers canonical identity and duplicate-key rejection.
 func TestCanonicalDigest(t *testing.T) {
 	left, err := DigestCanonical(map[string]any{"b": 2, "a": 1})
 	if err != nil {
@@ -137,5 +107,8 @@ func TestCanonicalDigest(t *testing.T) {
 	}
 	if _, err := Canonicalize([]byte(`{"a":1,"a":2}`)); err == nil {
 		t.Fatal("duplicate JSON object key accepted")
+	}
+	if _, err := Canonicalize([]byte(`{"a":1} trailing`)); err == nil {
+		t.Fatal("trailing data accepted")
 	}
 }

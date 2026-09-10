@@ -25,6 +25,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("wire", func(t *testing.T) { testWire(t, factory(t)) })
 	t.Run("ownership", func(t *testing.T) { testOwnership(t, factory(t)) })
 	t.Run("append", func(t *testing.T) { testAppend(t, factory(t)) })
+	t.Run("crash", func(t *testing.T) { testCrashTail(t, factory(t)) })
 	t.Run("read", func(t *testing.T) { testRead(t, factory(t)) })
 	t.Run("scope", func(t *testing.T) { testScope(t, factory(t)) })
 }
@@ -261,6 +262,93 @@ func testRead(t *testing.T, f Fixture) {
 		if _, err := f.Store.Open(ctx, "s", session.OpenOptions{}); !session.IsCode(err, session.ErrCorrupt) {
 			t.Fatalf("open over a tampered stream = %v, want corrupt", err)
 		}
+	}
+}
+
+// TailCrasher is the optional adapter capability that simulates a crash inside
+// Append by dropping every durable row after the first keep rows. An adapter
+// whose writes cannot tear (a database transaction) need not implement it, and
+// the crash case is then skipped rather than silently passing.
+type TailCrasher interface {
+	CrashTail(session.SessionID, int) error
+}
+
+// SES-APP-2: a crash leaves at most one incomplete tail group. Open must
+// recover to the last complete group, so no reader ever sees a partial group
+// and the next Append cannot extend a group that never got its Last row.
+func testCrashTail(t *testing.T, f Fixture) {
+	crash, ok := f.Store.(TailCrasher)
+	if !ok {
+		t.Skip("adapter has no tail to tear: writes are atomic by construction")
+	}
+	ctx := context.Background()
+	header := create(t, f.Store, "s")
+	w := open(t, f.Store, "s", false)
+	g1 := appendGroup(t, w, "c1", ev("twilight/x/a", `{"a":1}`), ev("twilight/x/b", `{"b":2}`))
+	appendGroup(t, w, "c2", ev("twilight/x/c", `{"c":3}`), ev("twilight/x/d", `{"d":4}`))
+	if err := w.Close(ctx); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// Only c1 and the first row of c2 reached durable storage.
+	if err := crash.CrashTail("s", 3); err != nil {
+		t.Fatalf("crash injection: %v", err)
+	}
+
+	w2 := open(t, f.Store, "s", false)
+	if got, want := w2.Head(), (session.Head{Next: 2, Digest: g1[1].Digest}); got != want {
+		t.Fatalf("head after a torn tail = %+v, want %+v (the torn group must be dropped, not continued)", got, want)
+	}
+
+	// A reader never sees the partial group.
+	page, err := f.Store.Read(ctx, session.ReadRequest{SessionID: "s"})
+	if err != nil {
+		t.Fatalf("read after crash: %v", err)
+	}
+	if len(page.Events) != 2 {
+		t.Fatalf("rows after a torn tail = %d, want the 2 complete rows of c1", len(page.Events))
+	}
+	if err := session.ValidateChain(session.ProfileV1(), header, page.Events); err != nil {
+		t.Fatalf("chain after recovery: %v", err)
+	}
+
+	// The group that never committed must be admissible again, and it must
+	// start at the recovered head rather than inside the torn group.
+	re := appendGroup(t, w2, "c2", ev("twilight/x/c", `{"c":3}`))
+	if re[0].Seq != 2 {
+		t.Fatalf("re-appended group starts at seq %d, want 2", re[0].Seq)
+	}
+
+	page, err = f.Store.Read(ctx, session.ReadRequest{SessionID: "s"})
+	if err != nil {
+		t.Fatalf("read after re-append: %v", err)
+	}
+	if len(page.Events) != 3 {
+		t.Fatalf("rows after re-append = %d, want 3", len(page.Events))
+	}
+	if err := session.ValidateChain(session.ProfileV1(), header, page.Events); err != nil {
+		t.Fatalf("chain after re-append: %v", err)
+	}
+	// No group may weld the torn row to the group that replaced it: every row
+	// must arrive in a complete group whose CommitID is uniform.
+	for i := 0; i < len(page.Events); {
+		end := i
+		for end < len(page.Events) && !page.Events[end].Last {
+			end++
+		}
+		if end >= len(page.Events) {
+			t.Fatalf("row %d: an incomplete group reached a reader", i)
+		}
+		for j := i; j <= end; j++ {
+			if page.Events[j].Seq != session.Seq(j) {
+				t.Fatalf("seq %d at row %d", page.Events[j].Seq, j)
+			}
+			if page.Events[j].CommitID != page.Events[i].CommitID {
+				t.Fatalf("rows %d..%d mix CommitIDs %s and %s: a torn group was welded to the next one",
+					i, end, page.Events[i].CommitID, page.Events[j].CommitID)
+			}
+		}
+		i = end + 1
 	}
 }
 

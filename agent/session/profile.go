@@ -22,19 +22,24 @@ type ProtocolProfile interface {
 }
 
 // ProfileV1 returns the ProtocolVersion1 profile.
-func ProfileV1() ProtocolProfile { return profileV1{} }
+func ProfileV1() ProtocolProfile { return profileV1{version: ProtocolVersion1} }
 
 // ProfileFor returns the profile bound to version.
 func ProfileFor(version uint16) (ProtocolProfile, error) {
 	if version == ProtocolVersion1 {
-		return profileV1{}, nil
+		return profileV1{version: version}, nil
 	}
 	return nil, &Error{Code: ErrUnsupportedProfile, Operation: "profile", Detail: fmt.Sprintf("protocol version %d", version)}
 }
 
-type profileV1 struct{}
+// profileV1 freezes the wire of one ProtocolVersion. Only version 1 is
+// registered today; the version is a field rather than a constant so that it
+// reaches the digest domain separator. A row digest does not carry the version
+// as a field, so the separator is the only thing that keeps a later version
+// from reproducing v1 row digests byte for byte (SES-VER-2).
+type profileV1 struct{ version uint16 }
 
-func (profileV1) Version() uint16 { return ProtocolVersion1 }
+func (p profileV1) Version() uint16 { return p.version }
 
 type headerDigestBody struct {
 	ProtocolVersion    uint16           `json:"protocolVersion"`
@@ -44,11 +49,11 @@ type headerDigestBody struct {
 	Metadata           jsonstable.Value `json:"metadata,omitempty"`
 }
 
-func (profileV1) HeaderDigest(h SessionHeader) (es.Digest, error) {
+func (p profileV1) HeaderDigest(h SessionHeader) (es.Digest, error) {
 	if h.ParentFork != nil {
 		return "", &Error{Code: ErrUnsupported, Operation: "header", SessionID: h.SessionID, Detail: "fork is not in v1"}
 	}
-	return digestDomain("twilight/session/header", headerDigestBody{h.ProtocolVersion, h.SessionID, h.CreatedAtUnixMilli, h.CausationID, h.Metadata})
+	return digestDomain(p.version, "twilight/session/header", headerDigestBody{h.ProtocolVersion, h.SessionID, h.CreatedAtUnixMilli, h.CausationID, h.Metadata})
 }
 
 type eventDigestBody struct {
@@ -65,12 +70,12 @@ type eventDigestBody struct {
 	Payload             jsonstable.Value `json:"payload"`
 }
 
-func (profileV1) EventDigest(prev es.Digest, sid SessionID, e SessionEvent) (es.Digest, error) {
-	return digestDomain("twilight/session/event", eventDigestBody{prev, sid, e.Seq, e.CommitID, e.Index, e.Last, e.Type, e.RecordedAtUnixMilli, e.SourceSeqs, e.Ignorable, e.Payload})
+func (p profileV1) EventDigest(prev es.Digest, sid SessionID, e SessionEvent) (es.Digest, error) {
+	return digestDomain(p.version, "twilight/session/event", eventDigestBody{prev, sid, e.Seq, e.CommitID, e.Index, e.Last, e.Type, e.RecordedAtUnixMilli, e.SourceSeqs, e.Ignorable, e.Payload})
 }
 
 func (p profileV1) ValidateHeader(h SessionHeader) error {
-	if h.ProtocolVersion != ProtocolVersion1 {
+	if h.ProtocolVersion != p.version {
 		return &Error{Code: ErrUnsupportedProfile, Operation: "header", SessionID: h.SessionID}
 	}
 	if err := validIdentity("SessionID", string(h.SessionID)); err != nil {
@@ -142,8 +147,11 @@ func validIdentity(name, v string) error {
 	return nil
 }
 
-func digestDomain(domain string, body any) (es.Digest, error) {
-	raw, err := es.EncodeTypedPayload(ProtocolVersion1, domain, body)
+// digestDomain renders the versioned domain separator. The version is the
+// profile's, never a constant: it is the only version signal a row digest
+// carries.
+func digestDomain(version uint16, domain string, body any) (es.Digest, error) {
+	raw, err := es.EncodeTypedPayload(version, domain, body)
 	if err != nil {
 		return "", err
 	}

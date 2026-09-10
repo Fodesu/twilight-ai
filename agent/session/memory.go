@@ -116,10 +116,44 @@ func (m *MemoryStore) Open(ctx context.Context, sid SessionID, opts OpenOptions)
 	if err := ValidateChain(m.profile, s.header, s.rows); err != nil {
 		return nil, err
 	}
+	// A crash can leave one incomplete tail group. Drop it before the head is
+	// established, exactly as the file adapter truncates the file: otherwise
+	// Head.Next would sit inside the torn group and the next Append would
+	// extend a group that can never get its Last row, welding two CommitIDs
+	// into one group that Read would hand back as a single group (SES-APP-2).
+	s.dropIncompleteTail()
 	s.epoch++
 	w := &memoryWriter{store: m, s: s, epoch: s.epoch}
 	s.owner = w
 	return w, nil
+}
+
+// dropIncompleteTail removes a trailing group whose Last row never landed and
+// rebuilds the CommitID index from the surviving rows, so a retry of the
+// dropped CommitID is admissible again.
+func (s *memorySession) dropIncompleteTail() {
+	keep := len(s.rows)
+	for keep > 0 && !s.rows[keep-1].Last {
+		keep--
+	}
+	if keep == len(s.rows) {
+		return
+	}
+	s.rows = s.rows[:keep]
+	s.rebuildIndex()
+}
+
+// rebuildIndex recomputes the CommitID to row-range index from rows.
+func (s *memorySession) rebuildIndex() {
+	s.byCommit = make(map[CommitID][2]int)
+	for i := 0; i < len(s.rows); {
+		end := i
+		for end < len(s.rows) && !s.rows[end].Last {
+			end++
+		}
+		s.byCommit[s.rows[i].CommitID] = [2]int{i, end}
+		i = end + 1
+	}
 }
 
 func (w *memoryWriter) SessionID() SessionID { return w.s.header.SessionID }
@@ -263,6 +297,27 @@ func (m *MemoryStore) Tamper(sid SessionID, seq Seq, mutate func(*SessionEvent))
 	if int(seq) < len(s.rows) {
 		mutate(&s.rows[seq])
 	}
+}
+
+// CrashTail drops every stored row after the first keep, simulating a crash
+// whose last group never finished landing. It exists so conformance can prove
+// that Open recovers to the last complete group (SES-APP-2); production code
+// never calls it.
+func (m *MemoryStore) CrashTail(sid SessionID, keep int) error {
+	s, err := m.session(sid, "crash_tail")
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if keep < 0 {
+		keep = 0
+	}
+	if keep > len(s.rows) {
+		keep = len(s.rows)
+	}
+	s.rows = s.rows[:keep]
+	return nil
 }
 
 func cloneRows(rows []SessionEvent) []SessionEvent {

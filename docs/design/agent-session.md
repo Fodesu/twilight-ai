@@ -1,6 +1,6 @@
 # Twilight Agent Session Protocol
 
-状态：设计草案。已由 `agent/session` 的 MemoryStore 实现并通过第 7 节 conformance（`agent/session/sessiontest`，以 Store 为参数）；wire 在文件 adapter 也通过前不冻结。此前的多写者设计（临界区、commit 容器、控制面 KV、kernel 内 snapshot）及其收缩决定见 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 8 节。
+状态：设计草案。已由 `agent/session` 的 MemoryStore 与文件 adapter `agent/session/filestore` 实现，两者跑同一套第 7 节 conformance（`agent/session/sessiontest`，以 Store 为参数）。此前的多写者设计（临界区、commit 容器、控制面 KV、kernel 内 snapshot）及其收缩决定见 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 8 节。
 
 本文定义 Twilight Session 的 Event Sourcing kernel。文中的"必须""不得""应该"是协议约束。
 
@@ -123,7 +123,7 @@ type Store interface {
 
 **SES-APP-1** `Append(group)` 原子：整组 event 同时可见或同时不存在。Store 为组内每行赋 `Seq`（从当前 `Head.Next` 起连续）、`Index`、`Last`，计算 `Digest`，持久化，然后返回带完整字段的行。返回即持久（文件 adapter 每次 Append 一次 `fsync`；数据库 adapter 一个事务）。
 
-**SES-APP-2** 崩溃只可能留下一个不完整的尾组：文件 adapter 打开时把末尾 `Last=false` 且没有后续行的整组截掉；数据库 adapter 由事务保证不会出现。reader 在任何时刻都不会看到不完整的组。
+**SES-APP-2** 崩溃只可能留下一个不完整的尾组：文件 adapter 打开时把末尾 `Last=false` 且没有后续行的整组截掉；数据库 adapter 由事务保证不会出现。内存参考实现在 `Open` 做同样的截断，因此"不完整组对 reader 不可见"对全部 adapter 是同一语义，而不是文件 adapter 的特例。截断必须发生在 `Head` 确立之前，否则 `Head.Next` 落在残组内部，下一次 `Append` 会把残组与后续组焊成一组。reader 在任何时刻都不会看到不完整的组。conformance 以可选能力 `CrashTail` 注入崩溃（内存与文件 adapter 都实现）。
 
 **SES-APP-3** kernel 拒绝：空组、重复 `CommitID`、非 canonical 或非 object 的 payload、无效 identity、落后的 Epoch。拒绝不写入任何内容，返回 `ErrInvalid`（重复 CommitID 为 `ErrConflict`）。kernel 不比对重复 CommitID 的内容，不返回"已应用"：幂等重放由 `extension.Writer` 以内存索引完成（EXT-WRT-2）。
 

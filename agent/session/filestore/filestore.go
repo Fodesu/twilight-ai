@@ -488,6 +488,40 @@ func (s *Store) Tamper(sid session.SessionID, seq session.Seq, mutate func(*sess
 	_ = writeAtomic(path, buf.Bytes())
 }
 
+// CrashTail rewrites log.jsonl keeping only the first keep rows, so the last
+// group on disk is left without its Last row — the residue a crash inside
+// Append leaves. It exists so conformance can prove that Open recovers to the
+// last complete group (SES-APP-2); production code never calls it.
+func (s *Store) CrashTail(sid session.SessionID, keep int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, dir, err := s.loadHeader(sid, "crash_tail")
+	if err != nil {
+		return err
+	}
+	path := filepath.Join(dir, logFile)
+	rows, _, _, err := readLog(path, sid, "crash_tail")
+	if err != nil {
+		return err
+	}
+	if keep < 0 {
+		keep = 0
+	}
+	if keep > len(rows) {
+		keep = len(rows)
+	}
+	var buf bytes.Buffer
+	for i := 0; i < keep; i++ {
+		line, err := json.Marshal(rows[i])
+		if err != nil {
+			return err
+		}
+		buf.Write(line)
+		buf.WriteByte('\n')
+	}
+	return writeAtomic(path, buf.Bytes())
+}
+
 // --- io helpers -----------------------------------------------------------------
 
 func writeAtomic(path string, data []byte) error {

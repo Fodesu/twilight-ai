@@ -1,9 +1,13 @@
-// Package es provides domain-neutral event-sourcing protocol mechanisms.
+// Package es provides the domain-neutral identity primitives every Twilight
+// protocol layer shares: canonical JSON bytes, a versioned type-discriminated
+// digest preimage, and the Digest value itself.
 //
 // It deliberately does not know Run, Session, Queue, command, fact, or
-// Runtime semantics. Domains supply their own event payload codecs and use
-// this package for canonical identity, complete-record validation, and fold
-// ordering.
+// Runtime semantics, and it owns no storage, record envelope, folding or
+// validation: each domain defines its own event ontology, codec and fold on
+// top of these primitives. The per-Run record envelope this package once
+// carried was superseded by the flat Session log (see
+// docs/design/agent-runtime-refactor.md section 8).
 package es
 
 import (
