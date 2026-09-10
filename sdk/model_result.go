@@ -10,9 +10,9 @@ type ModelResult struct {
 	Reasoning      string          `json:"reasoning,omitempty"`
 	ReasoningParts []ReasoningPart `json:"reasoningParts,omitempty"`
 	// TextProviderMetadata carries an opaque token bound to the answer text
-	// (e.g. a Google thought signature on a no-tool-call response). Unlike the
-	// legacy GenerateResult it serializes: ModelResult is persisted inside
-	// AgentEvents and must round-trip.
+	// (e.g. a Google thought signature on a no-tool-call response). The
+	// caller-side result type drops this field when it serializes; ModelResult
+	// keeps it, because it is persisted inside AgentEvents and must round-trip.
 	TextProviderMetadata map[string]any `json:"textProviderMetadata,omitempty"`
 
 	FinishReason    FinishReason `json:"finishReason"`
