@@ -373,6 +373,32 @@ type ToolResult struct {
     Output     any
     IsError    bool
 }
+
+type ToolDefinition struct {
+    Name         string
+    Description  string
+    Parameters   json.RawMessage
+    CacheControl *CacheControl
+}
+
+type ToolChoiceMode string
+
+const (
+    ToolChoiceAuto     ToolChoiceMode = "auto"
+    ToolChoiceNone     ToolChoiceMode = "none"
+    ToolChoiceRequired ToolChoiceMode = "required"
+    ToolChoiceTool     ToolChoiceMode = "tool"
+)
+
+type ToolChoice struct {
+    Mode ToolChoiceMode
+    Tool string
+}
+
+type CacheControl struct {
+    Type string  // "ephemeral"
+    TTL  string  // "" (5 min, default) | "1h"
+}
 ```
 
 ### MCP
