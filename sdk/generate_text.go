@@ -5,6 +5,11 @@ import (
 	"errors"
 )
 
+// GenerateText runs the SDK text-generation loop and returns the final text.
+//
+// Deprecated: this wrapper runs the SDK's own multi-step tool loop, which duplicates
+// the orchestration a runtime has to own. Build an sdk.Request and call
+// Client.Generate instead.
 func (c *Client) GenerateText(ctx context.Context, options ...GenerateOption) (string, error) {
 	result, err := c.GenerateTextResult(ctx, options...)
 	if err != nil {
@@ -21,6 +26,10 @@ func (c *Client) GenerateText(ctx context.Context, options ...GenerateOption) (s
 // The options are a client-side convenience: each step is projected into the
 // provider-neutral Request boundary by requestFromGenerateParams, so the
 // provider only ever sees the single-call shape.
+//
+// Deprecated: this wrapper runs the SDK's own multi-step tool loop, which duplicates
+// the orchestration a runtime has to own. Build an sdk.Request and call
+// Client.Generate instead.
 func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOption) (*GenerateResult, error) {
 	cfg, _, err := buildConfig(options)
 	if err != nil {

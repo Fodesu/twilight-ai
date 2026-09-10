@@ -27,6 +27,10 @@ type ResponseFormat struct {
 	JSONSchema *jsonschema.Schema `json:"jsonSchema,omitempty"`
 }
 
+// GenerateParams is the option-built request of the SDK's text-generation loop.
+//
+// Deprecated: build an sdk.Request and pass it to Client.Generate or Client.Stream;
+// the provider seam takes that value directly.
 type GenerateParams struct {
 	Model *Model `json:"model,omitempty"`
 	// System is the stable root instruction placed before the conversation.
@@ -56,6 +60,9 @@ type GenerateParams struct {
 }
 
 // StepResult represents the outcome of a single step (one LLM call + tool execution round).
+//
+// Deprecated: Client.Generate returns an sdk.ModelResult for one step, and a runtime
+// owns the step record it keeps.
 type StepResult struct {
 	Text string `json:"text"`
 	// Reasoning is the parts' text joined for display; ReasoningParts is the
@@ -74,6 +81,10 @@ type StepResult struct {
 	Messages []Message `json:"messages,omitempty"`
 }
 
+// GenerateResult is the accumulated result of the SDK's text-generation loop.
+//
+// Deprecated: Client.Generate returns an sdk.ModelResult for one call, and a runtime
+// assembles its own step record from that.
 type GenerateResult struct {
 	Text string `json:"text"`
 	// Reasoning is the parts' text joined for display. It is a view: rebuild

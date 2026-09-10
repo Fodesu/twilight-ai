@@ -236,6 +236,9 @@ func (p *RawPart) Type() StreamPartType { return StreamPartTypeRaw }
 //
 // Steps and Messages are populated during stream consumption and are safe to
 // read after Stream is fully consumed (i.e., after a for-range loop exits).
+//
+// Deprecated: Client.Stream returns an sdk.ModelStream, and the caller assembles and
+// accumulates its own steps.
 type StreamResult struct {
 	Stream <-chan StreamPart
 	// Steps holds the result of each step. Populated as the stream is consumed.
@@ -247,6 +250,8 @@ type StreamResult struct {
 }
 
 // Text consumes the entire stream and returns the concatenated text content.
+//
+// Deprecated: consume sdk.ModelStream and read the assembled sdk.ModelResult.
 func (sr *StreamResult) Text() (string, error) {
 	var text string
 	for part := range sr.Stream {
@@ -266,6 +271,9 @@ func (sr *StreamResult) Text() (string, error) {
 // caller here and a caller at the boundary cannot disagree about the same
 // parts. Tool results are the one thing the assembler does not carry: they are
 // orchestration, so this wrapper collects them on the way through.
+//
+// Deprecated: Client.Stream returns an sdk.ModelStream whose Result function yields
+// the assembled sdk.ModelResult.
 func (sr *StreamResult) ToResult() (*GenerateResult, error) {
 	stream := assembleStream(context.Background(), sr.Stream)
 	var toolResults []ToolResult
