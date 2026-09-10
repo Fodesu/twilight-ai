@@ -1,5 +1,12 @@
 # API Reference
 
+> **Deprecated:** the `Client` text-generation helpers, their option-built request
+> and result types (`GenerateParams`, `GenerateResult`, `StepResult`,
+> `StreamResult`) and the `With*` generate options are deprecated.
+> `sdk.Client.Generate` and `sdk.Client.Stream` take a `sdk.Request` and return a
+> `sdk.ModelResult` or `sdk.ModelStream`. The embedding, image, speech,
+> transcribe and video APIs are unaffected.
+
 Complete reference for all exported types and functions in the Twilight AI SDK.
 
 ## Package `sdk`

@@ -1,5 +1,10 @@
 # Providers
 
+> **Deprecated:** the `sdk.GenerateText` and `sdk.GenerateTextResult` examples
+> below run the SDK's own step loop. The provider contract is unaffected: drive
+> `DoGenerate` and `DoStream` through `sdk.Client.Generate` or
+> `sdk.Client.Stream`, which take a `sdk.Request`.
+
 A **Provider** is the abstraction that connects the SDK to an AI backend. It handles HTTP communication, request/response mapping, and streaming protocol details.
 
 ## The Provider Interface

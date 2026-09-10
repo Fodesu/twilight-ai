@@ -1,5 +1,11 @@
 # Tool Calling
 
+> **Deprecated:** the automatic multi-step execution documented here
+> (`WithMaxSteps` and the client approval flow) belongs to the deprecated client
+> loop. Define tools with `sdk.Tool` and `sdk.NewTool`, carry them on a
+> `sdk.Request` as `sdk.ToolDefinition` values, and run them with
+> `sdk.ExecuteTools` from a loop you own.
+
 Twilight AI supports LLM tool calling (also known as function calling) with automatic multi-step execution. You define tools with execution handlers, and the SDK manages the call-execute-respond loop.
 
 ## Defining a Tool
