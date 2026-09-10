@@ -1,5 +1,10 @@
 # Getting Started
 
+> **Deprecated:** the text-generation walkthrough below uses `sdk.GenerateText`,
+> `sdk.GenerateTextResult` and `sdk.StreamText`, which run an SDK-owned tool loop.
+> Build a `sdk.Request` and call `sdk.Client.Generate` or `sdk.Client.Stream`
+> instead. The embedding and image sections are unaffected.
+
 This guide walks you through installing Twilight AI and making your first LLM request.
 
 ## Prerequisites
