@@ -2,17 +2,17 @@ package runtimetest
 
 import (
 	"errors"
-	"strings"
-	"testing"
-
 	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/extension/writer"
 	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/turn"
+	"strings"
+	"testing"
 )
 
 // Run executes the RUN-CMP-2 Runtime conformance suite against fixtures made
@@ -86,8 +86,8 @@ func testCreation(t *testing.T, factory Factory) {
 	// A second created for the same RunID is refused by the projection, so the
 	// Writer rejects the group before it reaches the stream.
 	group := h.startGroup("t2", "r1", 1)
-	res, err := h.writer().Commit(h.ctx, func(extension.View) (*extension.SemanticGroup, error) { return &group, nil })
-	if err != nil || res.Outcome != extension.CommitInvalid {
+	res, err := h.writer().Commit(h.ctx, func(writer.View) (*writer.SemanticGroup, error) { return &group, nil })
+	if err != nil || res.Outcome != writer.CommitInvalid {
 		t.Fatalf("duplicate created = %+v %v, want invalid", res, err)
 	}
 }
@@ -320,9 +320,9 @@ func testAdmission(t *testing.T, factory Factory) {
 	}
 	// Registered binding: the claim is Active once the group is committed.
 	res := h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-2"), 0, run.AcceptInput{Input: input("in-2")}, attach("b1"))
-	claimID := extension.DeriveClaimID(session.ProtocolVersion1, sid, res.Events[0].CommitID, mustSet(t, h, "b1").RefSetDigest)
+	claimID := writer.DeriveClaimID(session.ProtocolVersion1, sid, res.Events[0].CommitID, mustSet(t, h, "b1").RefSetDigest)
 	claim, ok, err := h.ledger.LookupClaim(h.ctx, claimID)
-	if err != nil || !ok || claim.State != artifact.ClaimActive || claim.Owner != extension.CommitOwner(sid, res.Events[0].CommitID) {
+	if err != nil || !ok || claim.State != artifact.ClaimActive || claim.Owner != writer.CommitOwner(sid, res.Events[0].CommitID) {
 		t.Fatalf("claim = %+v ok=%v err=%v", claim, ok, err)
 	}
 }
@@ -453,7 +453,7 @@ func testIsolation(t *testing.T, factory Factory) {
 	p1 := h.load("r1").Position
 	h.prepare("r2", false)
 	h.submitInputs(input("noise"))
-	h.mustApply(extension.SemanticGroup{CommitID: "turn-noise", Events: []extension.TypedEvent{{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
+	h.mustApply(writer.SemanticGroup{CommitID: "turn-noise", Events: []writer.TypedEvent{{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
 		Value: turn.StartedPayload{TurnID: "t9", Profile: turn.ProfileRef{ID: "b", Digest: "sha256:b"}, Companion: turn.CompanionV1Version}}}})
 	if h.load("r1").Position != p1 {
 		t.Fatal("r2, chatlog or turn writes moved r1")

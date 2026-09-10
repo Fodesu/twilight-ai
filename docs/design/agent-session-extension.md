@@ -2,7 +2,7 @@
 
 状态：设计草案。本文是 Session Module Framework 的目标设计；实现状态与迁移记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。写入串行与幂等重放由进程内的 `Writer` 承担，kernel 只提供追加日志（[agent-session.md](agent-session.md)）。
 
-本文定义建立在 `agent/session` 与 `agent/artifact` 之上的 Session Module Framework。实现包路径为 `agent/session/extension`；文中的"必须""不得""应该"是协议约束；JSON canonicalization 与 digest 遵循 `agent/jsonstable`、`agent/es`。
+本文定义建立在 `agent/session` 与 `agent/artifact` 之上的 Session Module Framework。实现分两个包：`agent/session/extension` 承载声明的词汇、`Registry` 与投影引擎，`agent/session/extension/writer` 承载写入路径；文中的"必须""不得""应该"是协议约束；JSON canonicalization 与 digest 遵循 `agent/jsonstable`、`agent/es`。
 
 ## 1. 范围与依赖
 
@@ -17,6 +17,8 @@ Framework 负责：typed event codec 与 payload 版本；Binding admission；�
 **EXT-SCP-1** 一个 Session 在一个进程内恰有一个 `Writer`，它持有 kernel 的 `session.Writer`（所有权句柄）。全部写入经 `Writer.Commit`：Run 的 Runtime、Turn 的 Coordinator、接管恢复都是它的调用方。模块读取投影经 `ProjectionReader`。
 
 **EXT-SCP-2** 模块集合由组装代码在启动时传入 `BuildRegistry`，运行期不变；本层不 import 任何模块包。first-party 恰为三个 module；application module 与它们同构、经装配开口注册，见第 8 节。
+
+**EXT-SCP-4** 本层的两个包依赖单向：`agent/session/extension/writer` 依赖 `agent/session/extension`，反向不得。声明（event、module、projection）与 `Registry` 同居前者所依赖的那一层，是因为 `ModuleDescriptor` 声明 `ProjectionDefinition`、而 `ProjectionDefinition.Apply` 消费带模块身份的 `DecodedEvent`——两者互相引用，只有同包才不成环。
 
 **EXT-SCP-3** 模块间依赖单向、固定，以 `Requires` 声明并由 Registry 校验（EXT-REG-4）。v1 三个模块的声明：
 

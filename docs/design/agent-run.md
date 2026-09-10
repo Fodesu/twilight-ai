@@ -1,6 +1,6 @@
 # Twilight Agent Run Protocol
 
-状态：设计规范。本文是 Run Machine、Runtime 与 Loop 的目标设计；实现状态与迁移记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。Runtime 经 `extension.Writer` 写入，无 lease/grant，`RecoverInterrupted` 为接管处置。本文依据 [agent-session.md](agent-session.md)（Session 级单写者、一行一个 event）与 [agent-session-extension.md](agent-session-extension.md)（`extension.Writer`）。
+状态：设计规范。本文是 Run Machine、Runtime 与 Loop 的目标设计；实现状态与迁移记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。Runtime 经 `writer.Writer` 写入，无 lease/grant，`RecoverInterrupted` 为接管处置。本文依据 [agent-session.md](agent-session.md)（Session 级单写者、一行一个 event）与 [agent-session-extension.md](agent-session-extension.md)（`writer.Writer`）。
 
 本文定义 `agent/run`、`agent/run/loop` 与 Run 作为 Session Module 的存储形态。文中的"必须""不得""应该"是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
 
@@ -9,7 +9,7 @@
 ```text
 Session stream               唯一 authority：twilight/run/ 事实与 turn、chatlog 事件同在一条 stream，一行一个 event
 MachineState                 Run 的语义状态投影（twilight/run/machine）；投影缓存为可丢弃的派生缓存
-Runtime                      Run 的 command 入口：在 Session 的 extension.Writer 内 Decide、Evolve、companion，一次 Append
+Runtime                      Run 的 command 入口：在 Session 的 writer.Writer 内 Decide、Evolve、companion，一次 Append
 loop.Loop                    当前进程的 execution interpreter
 FrozenValueStore             内容寻址旁存：模型请求本体（含工具定义），按 digest 存取
 ```
@@ -30,7 +30,7 @@ Machine 处理已冻结的值和已提交的事实；Loop 解释 `Next` 产生�
 
 `Step` 是 Run 的持久化恢复边界；`execution attempt` 表示某个 Loop 进程对该 Step 或 ToolCall 的一次易失执行。一个 Step 可以有多个 attempt。执行所有权是 Session 级的（SES-OWN-3）：持有该 Session `Writer` 的进程拥有其中全部执行，Run 不设按目标的 grant 或 lease。attempt 的 identity 由 start command 的 `ExecutionClaim` 表达；它不进入 stream。
 
-**RUN-SCP-1** `agent/run` 拥有 Run identity、persisted frozen values、Machine、command/fact protocol、fact codec、fold 与 `Runtime`、`Companion` contract；它依赖 `agent/session` 的 identity 与 wire 类型，不依赖 loop、turn 或 extension。`agent/run/loop` 拥有 planner/model/tool ports、streaming、并发执行、EventSink 与 Loop policy。`agent/session/run` 是 Run 的 Session Module 实现：EventDefinition（按 SchemaVersion 的 codec）、`twilight/run/machine` projection、`Runtime` 实现（经 `extension.Writer.Commit` 写入）、接管处置、FrozenValueStore adapter。
+**RUN-SCP-1** `agent/run` 拥有 Run identity、persisted frozen values、Machine、command/fact protocol、fact codec、fold 与 `Runtime`、`Companion` contract；它依赖 `agent/session` 的 identity 与 wire 类型，不依赖 loop、turn 或 extension。`agent/run/loop` 拥有 planner/model/tool ports、streaming、并发执行、EventSink 与 Loop policy。`agent/session/run` 是 Run 的 Session Module 实现：EventDefinition（按 SchemaVersion 的 codec）、`twilight/run/machine` projection、`Runtime` 实现（经 `writer.Writer.Commit` 写入）、接管处置、FrozenValueStore adapter。
 
 **RUN-SCP-2** Run 是 first-party Session Module（Source `twilight`，ModuleID `run`）。Run 不解释它的上层实体：`OwnerID` 是 opaque 字符串，由 turn 模块以 TurnID 填充。本模块的 `Requires`（EXT-REG-4）为空；`Companion` 是 Runtime 的构造参数，由组装代码注入，为 nil 时构造失败，不作为模块依赖声明。Turn 的创建、attempt 归属与结算、Run 事实到对话内容的 companion 映射由 [agent-turn.md](agent-turn.md) 定义；对话内容 ontology 由 [agent-session-chatlog.md](agent-session-chatlog.md) 定义；stream、所有权、组追加与投影机制由 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md) 定义。Artifact、queue、provider registry、权限与产品 policy 分别由其 package 或 Application 拥有。
 
@@ -381,7 +381,7 @@ type CommitResult struct {
 }
 ```
 
-Runtime 由组装代码以 `extension.Writers`（EXT-WRT-6）、`FrozenValueStore`、`Companion` 与 `SnapshotPolicy` 构造；它按 SessionID 取得该 Session 的 `Writer`，全部读写经该 Writer。
+Runtime 由组装代码以 `writer.Writers`（EXT-WRT-6）、`FrozenValueStore`、`Companion` 与 `SnapshotPolicy` 构造；它按 SessionID 取得该 Session 的 `Writer`，全部读写经该 Writer。
 
 **RUN-CMT-1** Runtime 按 `(SessionID, RunID)` 寻址。Run 由 Coordinator 的 Start 组创建（TRN-STR-2），Runtime 没有 `Create`。`ErrRunNotFound` 只用于该 Session 中不存在的 RunID。已终结的 Run 不在 `twilight/run/machine` 投影中（RUN-CMT-2），`Load` 对它以 `Types=[twilight/run/]` 过滤 `Read`、按 RunID 筛出全部事实后 FoldRun，返回终态 snapshot；`Commit` 对它返回 `ErrRunTerminal`。这条路径是兜底：正常流程中 Loop 从结算返回的 snapshot 读到终态（第 7 节），Coordinator 从 turn surface 的 `AttemptView` 取终态与 SchemaVersion（TRN-PRJ-1），都不依赖它。
 
@@ -397,7 +397,7 @@ type MachineProjection struct {
 
 终态 Run 在 `RunEnded` 折叠后从 `Active` 与 `Positions` 移除，只在 `Ended` 保留 RunID 用于拒绝同一 RunID 的第二条 `created`（RUN-NEW-1）；终态结果由 `Record` 与 turn surface 提供，投影大小与活动 Run 数成正比，加上已终结 RunID 的集合。`Load` 经 `Writer.Projections()` 读取 Writer 内存中的投影（EXT-PRJ-4）；独立进程的观察者经 `extension.NewProjectionReader` 从 Store 读取，投影缓存（EXT-PRJ-3）是可丢弃的派生数据，写入策略由 `agent/session/run` 的 `SnapshotPolicy` 决定，默认在 Run 的 `Current` 回到 `Open` 或 Run 终结时写入，并可按组计数补充。`Record` 以 `Types=[twilight/run/]` 过滤 `Read` 读取该 RunID 的全部事件（SES-REP-2），FoldRun 重建；该 Run 仍在投影中时与投影状态比对，divergence 必须失败。
 
-**RUN-CMT-3** Commit 经 `extension.Writer.Commit` 在该 Session 的 Writer 互斥区内完成（EXT-WRT-1）。所有 Runtime implementation 在 fn 内调用同一个 pure `EvaluateCommit`，顺序固定为：
+**RUN-CMT-3** Commit 经 `writer.Writer.Commit` 在该 Session 的 Writer 互斥区内完成（EXT-WRT-1）。所有 Runtime implementation 在 fn 内调用同一个 pure `EvaluateCommit`，顺序固定为：
 
 ```text
 writer.Commit(func(view):

@@ -1,10 +1,9 @@
 package extension_test
 
 import (
-	"testing"
-
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
+	"testing"
 )
 
 type goldenPayload struct {

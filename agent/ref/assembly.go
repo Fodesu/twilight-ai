@@ -4,16 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
-
 	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/extension/writer"
 	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/turn"
+	"time"
 )
 
 // Options tunes the Memory assembly.
@@ -52,7 +52,7 @@ type Options struct {
 type Memory struct {
 	Store        session.Store
 	Registry     *extension.Registry
-	Writers      extension.Writers
+	Writers      writer.Writers
 	Agents       *Agents
 	Runtime      *runmod.Runtime
 	Coordinator  *turn.Coordinator
@@ -93,8 +93,8 @@ func New(opts Options) (*Memory, error) {
 			cache = extension.NewMemoryProjectionCache()
 		}
 	}
-	writers := extension.NewWriters(store, registry, extension.Admission{Bindings: bindings, Ledger: ledger}, opts.Ownership,
-		extension.WritersConfig{Cache: cache, CachePolicy: runmod.WriterCachePolicy(opts.CacheEvery)})
+	writers := writer.NewWriters(store, registry, writer.Admission{Bindings: bindings, Ledger: ledger}, opts.Ownership,
+		writer.WritersConfig{Cache: cache, CachePolicy: runmod.WriterCachePolicy(opts.CacheEvery)})
 	now := opts.Now
 	if now == nil {
 		now = time.Now
@@ -147,7 +147,7 @@ func (m *Memory) Drive(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse
 }
 
 // writersProjections reads projections through the Session's Writer.
-type writersProjections struct{ writers extension.Writers }
+type writersProjections struct{ writers writer.Writers }
 
 func (p writersProjections) Load(ctx context.Context, sid session.SessionID, id extensionProjectionID, v extensionProjectionVersion) (any, session.Head, error) {
 	w, err := p.writers.Writer(ctx, sid)
@@ -191,7 +191,7 @@ func (m *Memory) Open(ctx context.Context, sid session.SessionID) (int, error) {
 }
 
 // Close releases every Session this assembly owns.
-func (m *Memory) Close(ctx context.Context) error { return extension.CloseWriters(ctx, m.Writers) }
+func (m *Memory) Close(ctx context.Context) error { return writer.CloseWriters(ctx, m.Writers) }
 
 // SubmitInput writes twilight/chatlog/input_submitted for one user text and
 // returns the AgentInput a Start or Deliver hands to the Turn (REF-INP-2).
@@ -201,8 +201,8 @@ func (m *Memory) SubmitInput(ctx context.Context, sid session.SessionID, id run.
 	if err != nil {
 		return run.AgentInput{}, err
 	}
-	res, err := w.Commit(ctx, func(extension.View) (*extension.SemanticGroup, error) {
-		return &extension.SemanticGroup{CommitID: session.CommitID("input-submitted/" + string(id)), Events: []extension.TypedEvent{{
+	res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
+		return &writer.SemanticGroup{CommitID: session.CommitID("input-submitted/" + string(id)), Events: []writer.TypedEvent{{
 			Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: m.now().UnixMilli(),
 			Value: chatlog.InputSubmittedPayload{InputID: chatlog.InputID(id), Content: content, SubmittedAtUnixMilli: m.now().UnixMilli()},
 		}}}, nil
@@ -211,7 +211,7 @@ func (m *Memory) SubmitInput(ctx context.Context, sid session.SessionID, id run.
 		return run.AgentInput{}, err
 	}
 	switch res.Outcome {
-	case extension.CommitApplied, extension.CommitAlreadyApplied:
+	case writer.CommitApplied, writer.CommitAlreadyApplied:
 		return run.AgentInput{ID: id, Payload: content}, nil
 	default:
 		return run.AgentInput{}, fmt.Errorf("ref: submit input: %s: %s", res.Outcome, res.Detail)

@@ -35,7 +35,7 @@
 ```text
 Session stream    唯一 authority：twilight/turn、twilight/chatlog、twilight/run 事件同在一条 stream，一行一个 event
 Session 所有权     一个 Session 同一时刻一个 Writer 进程；Epoch fencing 拒绝旧写者
-extension.Writer  进程内唯一写入口：串行、幂等索引、admission、claim、投影
+writer.Writer  进程内唯一写入口：串行、幂等索引、admission、claim、投影
 MachineState      Run 的语义状态投影（twilight/run/machine），投影缓存为可丢弃缓存
 Runtime           Run command 的提交入口：Writer 内 Decide、Evolve、companion，一次 Append
 FrozenValueStore  内容寻址旁存：模型请求本体（含工具定义）
@@ -82,7 +82,7 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 - Chatlog Message 原生支持 first-party Artifact references；`sdk.Message` 只是 materialized provider transport。
 - Turn Coordinator 从 `twilight/turn/surface` 与 `twilight/run/machine` 投影重建，不保存隐藏的长期状态。
 - Run 事实与其对话内容（companion）在同一组（一次 Append）写入；没有 Run→Session materialization、coverage 水位或 outbox。
-- 只有一条写入路径：`extension.Writer`。Run 的 Runtime、Turn 的 Coordinator 都经它写入，companion 与 Attach 事件与其他 producer 一样经 admission；artifact claim 在 Append 之前建立，孤儿由回收前核对释放。
+- 只有一条写入路径：`writer.Writer`。Run 的 Runtime、Turn 的 Coordinator 都经它写入，companion 与 Attach 事件与其他 producer 一样经 admission；artifact claim 在 Append 之前建立，孤儿由回收前核对释放。
 - 一个 Session 同一时刻一个 Writer 进程（Session 级所有权，Epoch fencing）；没有按目标的 lease、grant 或 durable ClaimStore。ExecutionClaim 只在 worker 内存中；投影缓存与 FrozenValueStore 是派生或旁存数据，不进入 stream。
 - 接管者对全部 Executing 目标一次性处置（模型回 Prepared、工具记 Unknown），不逐目标等待或恢复。
 - Run fact 只保存执行状态与内容 digest；请求本体（含工具定义）在 FrozenValueStore，模型输出与工具输出在 chatlog 事件。
@@ -101,6 +101,7 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 | Session kernel Memory Store（`agent/session`） | 完成，2026-09-07；第 7 节 conformance 完成，2026-09-10 |
 | `agent/session/extension`（Registry、Writer/Writers、ProjectionReader、MemoryProjectionCache） | 完成，2026-09-07；第 7 节 conformance 完成，2026-09-10（多版本 codec 共存、并发串行、binding admission、current 版本必须有 codec 的校验）；`Admission` 缺失由 error 报告而非 `CommitInvalid` |
 | 投影缓存接入 Writer：`rebuild` 从缓存条目续折（组对齐校验 + 失效回退）、`CachePolicy`/`CacheEvery`/`Exclude` 只管写入、`Close` 刷新 | 完成，2026-09-10；EXT-PRJ-3/5/6/7 与 REF-MEM-2 新增 |
+| 拆分 `agent/session/extension`：写入路径迁到 `agent/session/extension/writer`（`Writer`/`Writers`/`Admission`/`WritersConfig`/`View`），声明与投影引擎留在 `extension` | 完成，2026-09-10；EXT-SCP-4 新增，写入路径的包内实现类型改名以避免与包名同名 |
 | 文件 adapter（`agent/session/filestore`）的持久化投影缓存（`Store.ProjectionCache()`，`<sid>/projections/<id>/<v>.json`）与跨进程重启 conformance | 完成，2026-09-10；`agent/ref` 经 `ProjectionCacheProvider` 选中它 |
 | `agent/session/chatlog`（事件、parts codec、Surface、Context） | 完成，2026-09-07；checkpoint 完成，2026-09-09（CHT-EVT-3 转正，宿主策略见 REF-CKP-1/2） |
 | `agent/artifact`（Ref、Binding、Memory BindingStore、两态 KV ledger） | 完成，2026-09-07；Resolver/Store/Promoter 未实现 |
@@ -321,7 +322,7 @@ lease 的第二条出路：grant 由 `(Claim, start CommitID)` 派生，start fa
 |---|---|---|
 | 写者 | 多写者，`CommitIn` 回调式临界区，`Commit` CAS | 一个 Session 同一时刻一个 `Writer`（SES-OWN-1）；`Open` 取所有权，Epoch 加一并持久化；落后 Epoch 的 `Append` 被拒（SES-OWN-2） |
 | 写入单位 | `SessionCommit{Events[]}`，`(Revision, Index)` 定位 | 一行一个 `SessionEvent`，全局 `Seq`；同一次 `Append` 的行共用 `CommitID`，`Index`/`Last` 标记组；整组原子，不读不完整组（SES-APP-1/2） |
-| 幂等 | kernel 按 `(SessionID, CommitID)` 加 fingerprint | kernel 只拒绝重复 CommitID；`extension.Writer` 以内存索引判定 AlreadyApplied / Conflict（EXT-WRT-2） |
+| 幂等 | kernel 按 `(SessionID, CommitID)` 加 fingerprint | kernel 只拒绝重复 CommitID；`writer.Writer` 以内存索引判定 AlreadyApplied / Conflict（EXT-WRT-2） |
 | digest | header、event、commit、snapshot 四套，`ProtocolProfile` 12 个方法 | 每行一个 digest，覆盖本行与前一行（SES-WIR-2） |
 | EventID | `Digest(Type, CommitID, index)` | 删除；`Seq` 即身份，`SourceSeqs` 引用 Seq |
 | replay | `ReplayCursor{After: EventPosition, Token}` 分页 | `Read(sid, From, Types, Limit)`，Limit 在组边界截断 |

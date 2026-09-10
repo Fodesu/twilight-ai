@@ -4,13 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
-
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
-	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/extension/writer"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
+	"strings"
 )
 
 // CompactorSystemPrompt asks the profile's model for the checkpoint summary.
@@ -74,7 +73,7 @@ func (m *Memory) Checkpoint(ctx context.Context, sid session.SessionID, summaryT
 	}
 	checkpointID := chatlog.CheckpointID("ckpt-" + randomHex(8))
 	summaryID := chatlog.SummaryID("sum-" + randomHex(8))
-	res, err := w.Commit(ctx, func(v extension.View) (*extension.SemanticGroup, error) {
+	res, err := w.Commit(ctx, func(v writer.View) (*writer.SemanticGroup, error) {
 		state, err := v.Projection(turn.SurfaceProjectionID, turn.SurfaceProjection.Version)
 		if err != nil {
 			return nil, err
@@ -115,7 +114,7 @@ func (m *Memory) Checkpoint(ctx context.Context, sid session.SessionID, summaryT
 			return nil, err
 		}
 		now := m.now().UnixMilli()
-		return &extension.SemanticGroup{CommitID: session.CommitID("checkpoint/" + string(checkpointID)), Events: []extension.TypedEvent{
+		return &writer.SemanticGroup{CommitID: session.CommitID("checkpoint/" + string(checkpointID)), Events: []writer.TypedEvent{
 			{Type: chatlog.TypeSummary, RecordedAtUnixMilli: now, Value: chatlog.SummaryPayload{Summary: summary}},
 			{Type: chatlog.TypeCheckpointCreated, RecordedAtUnixMilli: now, Value: payload},
 		}}, nil
@@ -124,7 +123,7 @@ func (m *Memory) Checkpoint(ctx context.Context, sid session.SessionID, summaryT
 		return "", err
 	}
 	switch res.Outcome {
-	case extension.CommitApplied, extension.CommitAlreadyApplied:
+	case writer.CommitApplied, writer.CommitAlreadyApplied:
 		return checkpointID, nil
 	default:
 		return "", fmt.Errorf("ref: checkpoint: %s: %s", res.Outcome, res.Detail)

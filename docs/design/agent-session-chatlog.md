@@ -15,7 +15,7 @@ Projections  = twilight/chatlog/surface, twilight/chatlog/context
 
 Chatlog 保存对话内容：Input、assistant、tool_result、summary、checkpoint。Surface 与 Context 是对这些 events 的纯投影。`assistant` 与 `tool_result` 携带 `TurnID`；Input 在 `input_delivered` 之后挂上 TurnID；summary 与 checkpoint 不携带 TurnID。回合的创建、attempt 与结束由 `twilight/turn/` 事件表达。外部内容经 `ReferencePart` 关联 Artifact BindingID。
 
-`assistant` 与 `tool_result` 由 `run.Runtime` 作为 companion 事件，与产生它们的 `twilight/run/` 事实写在同一组（一次 `Append`，同一 CommitID；TRN-CMP）。Run 事实只记录内容 digest，内容本体只在 chatlog 事件中出现一次。companion 事件与其他 producer 的事件走同一条写入路径：`extension.Writer` 在 Append 之前执行 codec、Binding admission 并建立 claim（EXT-WRT-1、EXT-WRT-3），因此 companion 中的 `ReferencePart` 受到与用户输入相同的保护。
+`assistant` 与 `tool_result` 由 `run.Runtime` 作为 companion 事件，与产生它们的 `twilight/run/` 事实写在同一组（一次 `Append`，同一 CommitID；TRN-CMP）。Run 事实只记录内容 digest，内容本体只在 chatlog 事件中出现一次。companion 事件与其他 producer 的事件走同一条写入路径：`writer.Writer` 在 Append 之前执行 codec、Binding admission 并建立 claim（EXT-WRT-1、EXT-WRT-3），因此 companion 中的 `ReferencePart` 受到与用户输入相同的保护。
 
 流式 `text_delta` / `reasoning_delta` 由 Loop EventSink 发送，属于临时观察。Chatlog 权威是已提交的条目。
 

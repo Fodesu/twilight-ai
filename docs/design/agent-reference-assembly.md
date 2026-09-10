@@ -90,7 +90,7 @@ Coordinator 只做协议提交与状态读取（TRN 3）；**驱动的生命周�
 ```go
 type SessionDriver struct {
     Coordinator turn.Service
-    Writers extension.Writers   // 读投影经 Writer.Projections()
+    Writers writer.Writers   // 读投影经 Writer.Projections()
     Profile turn.ProfileRef      // 新 Turn 使用的 Agent Profile
     Companion turn.CompanionVersion
     NewTurnID func() turn.TurnID // nil 时使用随机默认
@@ -139,7 +139,7 @@ registry     = extension.BuildRegistry(protocolVersion, chatlog.Module, turn.Mod
 bindingStore = artifact.NewMemoryBindingStore()
 ledger       = artifact.NewMemoryLedger(bindingStore)          // 自持久化；claim 先于 Append 建立
 cache        = sessionStore 若实现 extension.ProjectionCacheProvider 则取 store.ProjectionCache()，否则 NewMemoryProjectionCache()   // 参考装配用 filestore 时快照落盘
-writers      = extension.NewWriters(sessionStore, registry, ledger, openOptions, {Cache: cache, CachePolicy: runmod.WriterCachePolicy()})   // 每 Session 一个 Writer（EXT-WRT-6、EXT-PRJ-6）
+writers      = writer.NewWriters(sessionStore, registry, ledger, openOptions, {Cache: cache, CachePolicy: runmod.WriterCachePolicy()})   // 每 Session 一个 Writer（EXT-WRT-6、EXT-PRJ-6）
 runtime      = runmod.NewRuntime(writers, runmod.NewMemoryFrozenValues(), turn.CompanionV1(registry), {Cache: cache})   // machine projection 由 Runtime 自己刷（RUN-CMT-2）
 agents       = Agents.Register(id, agent) -> driver = loop.New(agent, agent, contextPlanner, policy, profile.Streaming)   // 每注册一个 Loop
 coordinator  = turn.Coordinator{Writers: writers, Runtime: runtime}   // 纯协议：提交 + Status；不驱动

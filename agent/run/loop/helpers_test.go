@@ -2,13 +2,13 @@ package loop
 
 import (
 	"context"
-	"testing"
-	"time"
-
 	. "github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/extension/writer"
 	runmod "github.com/felinics/twilight/agent/session/run"
+	"testing"
+	"time"
 )
 
 const (
@@ -31,7 +31,7 @@ func (nopCompanion) Map(CompanionRequest) ([]ModuleEvent, error) { return nil, n
 type testStack struct {
 	store    *session.MemoryStore
 	registry *extension.Registry
-	writers  extension.Writers
+	writers  writer.Writers
 	runtime  *runmod.Runtime
 	now      func() time.Time
 }
@@ -58,7 +58,7 @@ func newTestStack(t testing.TB, now func() time.Time) *testStack {
 // one that is still open.
 func (s *testStack) open(t testing.TB) {
 	t.Helper()
-	s.writers = extension.NewWriters(s.store, s.registry, extension.Admission{}, session.OpenOptions{Takeover: true}, extension.WritersConfig{})
+	s.writers = writer.NewWriters(s.store, s.registry, writer.Admission{}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
 	rt, err := runmod.NewRuntime(runmod.Config{Writers: s.writers, Registry: s.registry, Store: s.store, Companion: nopCompanion{}, Now: s.now})
 	if err != nil {
 		t.Fatal(err)
@@ -77,19 +77,19 @@ func (s *testStack) createRun(t testing.TB, runID RunID, inputs ...AgentInput) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	group := &extension.SemanticGroup{CommitID: session.CommitID("create/" + string(runID))}
+	group := &writer.SemanticGroup{CommitID: session.CommitID("create/" + string(runID))}
 	for _, f := range facts {
-		group.Events = append(group.Events, extension.TypedEvent{Type: runmod.EventType(f), Value: runmod.Event{RunID: runID, Fact: f}})
+		group.Events = append(group.Events, writer.TypedEvent{Type: runmod.EventType(f), Value: runmod.Event{RunID: runID, Fact: f}})
 	}
 	w, err := s.writers.Writer(context.Background(), testSession)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := w.Commit(context.Background(), func(extension.View) (*extension.SemanticGroup, error) { return group, nil })
+	res, err := w.Commit(context.Background(), func(writer.View) (*writer.SemanticGroup, error) { return group, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != extension.CommitApplied {
+	if res.Outcome != writer.CommitApplied {
 		t.Fatalf("create run: %s %s", res.Outcome, res.Detail)
 	}
 }

@@ -1,39 +1,39 @@
-package extension
+package writer
 
 import (
 	"context"
-	"sync"
-	"testing"
-
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/extension"
+	"sync"
+	"testing"
 )
 
 // This file covers EXT-PRJ-3: a projection's folded state living in the
-// ProjectionCache, and a reopening Writer resuming from it instead of folding
+// extension.ProjectionCache, and a reopening Writer resuming from it instead of folding
 // the log again.
 
 const (
-	alphaID = ProjectionID("twilight/k/alpha")
-	betaID  = ProjectionID("twilight/k/beta")
+	alphaID = extension.ProjectionID("twilight/k/alpha")
+	betaID  = extension.ProjectionID("twilight/k/beta")
 )
 
 // applyCounter records how many events each projection folded, which is how a
 // test tells a fold that started from a cache entry from a full one.
 type applyCounter struct {
 	mu    sync.Mutex
-	calls map[ProjectionID]int
+	calls map[extension.ProjectionID]int
 }
 
-func newApplyCounter() *applyCounter { return &applyCounter{calls: map[ProjectionID]int{}} }
+func newApplyCounter() *applyCounter { return &applyCounter{calls: map[extension.ProjectionID]int{}} }
 
-func (c *applyCounter) inc(id ProjectionID) {
+func (c *applyCounter) inc(id extension.ProjectionID) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.calls[id]++
 }
 
-func (c *applyCounter) get(id ProjectionID) int {
+func (c *applyCounter) get(id extension.ProjectionID) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.calls[id]
@@ -42,42 +42,42 @@ func (c *applyCounter) get(id ProjectionID) int {
 func (c *applyCounter) reset() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.calls = map[ProjectionID]int{}
+	c.calls = map[extension.ProjectionID]int{}
 }
 
 // cacheModule declares two projections over one event type. alpha stands for a
 // projection the Writer refreshes; beta for one whose owning component does.
-func cacheModule(c *applyCounter) ModuleDescriptor {
+func cacheModule(c *applyCounter) extension.ModuleDescriptor {
 	typ := tpfx("k") + "row"
-	mk := func(id ProjectionID) ProjectionDefinition {
-		return ProjectionDefinition{
+	mk := func(id extension.ProjectionID) extension.ProjectionDefinition {
+		return extension.ProjectionDefinition{
 			ID: id, Version: 1, Consumes: []session.EventType{typ},
 			Initial: func() (any, error) { return noteState{}, nil },
-			Apply: func(state any, e DecodedEvent) (any, error) {
+			Apply: func(state any, e extension.DecodedEvent) (any, error) {
 				c.inc(id)
 				s := state.(noteState)
 				s.Notes = append(append([]string(nil), s.Notes...), e.Value.(notePayload).Text)
 				return s, nil
 			},
-			StateCodec: JSONStateCodec[noteState]{},
+			StateCodec: extension.JSONStateCodec[noteState]{},
 		}
 	}
-	return ModuleDescriptor{Source: SourceTwilight, ID: "k",
-		Events:      []EventDefinition{{Type: typ, Current: 1, Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}}}},
-		Projections: []ProjectionDefinition{mk(alphaID), mk(betaID)}}
+	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "k",
+		Events:      []extension.EventDefinition{{Type: typ, Current: 1, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
+		Projections: []extension.ProjectionDefinition{mk(alphaID), mk(betaID)}}
 }
 
 type cacheFixture struct {
 	store    *session.MemoryStore
-	registry *Registry
-	cache    *MemoryProjectionCache
+	registry *extension.Registry
+	cache    *extension.MemoryProjectionCache
 	counter  *applyCounter
 }
 
 func newCacheFixture(t testing.TB) *cacheFixture {
 	t.Helper()
-	f := &cacheFixture{store: session.NewMemoryStore(), cache: NewMemoryProjectionCache(), counter: newApplyCounter()}
-	registry, err := BuildRegistry(session.ProtocolVersion1, cacheModule(f.counter))
+	f := &cacheFixture{store: session.NewMemoryStore(), cache: extension.NewMemoryProjectionCache(), counter: newApplyCounter()}
+	registry, err := extension.BuildRegistry(session.ProtocolVersion1, cacheModule(f.counter))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func (f *cacheFixture) commit(t testing.TB, w Writer, id string, texts ...string
 	}
 }
 
-func (f *cacheFixture) notes(t testing.TB, w Writer, id ProjectionID) []string {
+func (f *cacheFixture) notes(t testing.TB, w Writer, id extension.ProjectionID) []string {
 	t.Helper()
 	state, _, err := w.Projections().Load(context.Background(), "s", id, 1)
 	if err != nil {
@@ -138,7 +138,7 @@ func (f *cacheFixture) rows(t *testing.T) []session.SessionEvent {
 // encodeState builds the cached form of a projection state.
 func (f *cacheFixture) encodeState(t *testing.T, notes ...string) jsonstable.Value {
 	t.Helper()
-	v, err := JSONStateCodec[noteState]{}.Encode(noteState{Notes: notes})
+	v, err := extension.JSONStateCodec[noteState]{}.Encode(noteState{Notes: notes})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestWriterCachesAtCloseAndResumesEverything(t *testing.T) {
 	if err := w.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	for _, id := range []ProjectionID{alphaID, betaID} {
+	for _, id := range []extension.ProjectionID{alphaID, betaID} {
 		_, through, ok, err := f.cache.Load(ctx, "s", id, 1)
 		if err != nil || !ok {
 			t.Fatalf("%s: entry after Close: ok=%v err=%v", id, ok, err)
@@ -181,7 +181,7 @@ func TestWriterCachesAtCloseAndResumesEverything(t *testing.T) {
 
 	f.counter.reset()
 	reopened := f.open(t, WritersConfig{Cache: f.cache})
-	for _, id := range []ProjectionID{alphaID, betaID} {
+	for _, id := range []extension.ProjectionID{alphaID, betaID} {
 		if n := f.counter.get(id); n != 0 {
 			t.Errorf("%s folded %d events, want 0 when the entry covers the whole log", id, n)
 		}
@@ -291,7 +291,7 @@ func TestWriterCachePolicyGovernsWritingButNotReading(t *testing.T) {
 	ctx := context.Background()
 	f := newCacheFixture(t)
 	// A policy that declines alpha and defers for beta.
-	policy := CacheEvery(1).Exclude(alphaID)
+	policy := extension.CacheEvery(1).Exclude(alphaID)
 
 	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: policy})
 	f.commit(t, w, "c1", "n1")
@@ -330,7 +330,7 @@ func TestWriterCachePolicyGovernsWritingButNotReading(t *testing.T) {
 func TestCacheEveryBoundsHowFarBehindAnEntryFalls(t *testing.T) {
 	ctx := context.Background()
 	f := newCacheFixture(t)
-	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: CacheEvery(3)})
+	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: extension.CacheEvery(3)})
 	// The first two rows are inside the interval: nothing is written yet.
 	f.commit(t, w, "c1", "n1")
 	f.commit(t, w, "c2", "n2")

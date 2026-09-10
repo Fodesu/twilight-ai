@@ -9,18 +9,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"sync"
-	"testing"
-	"time"
-
 	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/extension/writer"
 	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
+	"sync"
+	"testing"
+	"time"
 )
 
 // Fixture is one adapter under test.
@@ -57,7 +57,7 @@ type harness struct {
 	frozen   *run.MemoryFrozenValues
 	cache    *extension.MemoryProjectionCache
 	clock    *clock
-	writers  extension.Writers
+	writers  writer.Writers
 	rt       *runmod.Runtime
 	seq      int
 }
@@ -83,8 +83,8 @@ func newHarness(t testing.TB, f Fixture) *harness {
 // Takeover lets it supersede the previous owner process, if any.
 func (h *harness) open() {
 	h.t.Helper()
-	h.writers = extension.NewWriters(h.store, h.registry, extension.Admission{Bindings: h.bindings, Ledger: h.ledger}, session.OpenOptions{Takeover: true},
-		extension.WritersConfig{Cache: h.cache, CachePolicy: runmod.WriterCachePolicy(0)})
+	h.writers = writer.NewWriters(h.store, h.registry, writer.Admission{Bindings: h.bindings, Ledger: h.ledger}, session.OpenOptions{Takeover: true},
+		writer.WritersConfig{Cache: h.cache, CachePolicy: runmod.WriterCachePolicy(0)})
 	rt, err := runmod.NewRuntime(runmod.Config{Writers: h.writers, Registry: h.registry, Store: h.store,
 		Frozen: h.frozen, Companion: turn.CompanionV1{}, Cache: h.cache, Now: h.clock.Now})
 	if err != nil {
@@ -104,7 +104,7 @@ func (h *harness) takeover() *runmod.Runtime {
 
 func (h *harness) fatal(args ...any) { h.t.Helper(); h.t.Fatal(args...) }
 
-func (h *harness) writer() extension.Writer {
+func (h *harness) writer() writer.Writer {
 	h.t.Helper()
 	w, err := h.writers.Writer(h.ctx, sid)
 	if err != nil {
@@ -123,13 +123,13 @@ func (h *harness) head() session.Head {
 }
 
 // mustApply commits a typed group through the Writer and returns its rows.
-func (h *harness) mustApply(group extension.SemanticGroup) []session.SessionEvent {
+func (h *harness) mustApply(group writer.SemanticGroup) []session.SessionEvent {
 	h.t.Helper()
-	res, err := h.writer().Commit(h.ctx, func(extension.View) (*extension.SemanticGroup, error) { return &group, nil })
+	res, err := h.writer().Commit(h.ctx, func(writer.View) (*writer.SemanticGroup, error) { return &group, nil })
 	if err != nil {
 		h.fatal(err)
 	}
-	if res.Outcome != extension.CommitApplied {
+	if res.Outcome != writer.CommitApplied {
 		h.fatal(fmt.Sprintf("append %s: %s %s", group.CommitID, res.Outcome, res.Detail))
 	}
 	return res.Events
@@ -144,7 +144,7 @@ func (h *harness) submitInputs(inputs ...run.AgentInput) {
 	h.t.Helper()
 	for _, in := range inputs {
 		h.seq++
-		h.mustApply(extension.SemanticGroup{CommitID: session.CommitID(fmt.Sprintf("submitted/%s/%d", in.ID, h.seq)), Events: []extension.TypedEvent{{
+		h.mustApply(writer.SemanticGroup{CommitID: session.CommitID(fmt.Sprintf("submitted/%s/%d", in.ID, h.seq)), Events: []writer.TypedEvent{{
 			Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: 1,
 			Value: chatlog.InputSubmittedPayload{InputID: chatlog.InputID(in.ID), Content: in.Payload, SubmittedAtUnixMilli: 1}}}})
 	}
@@ -152,7 +152,7 @@ func (h *harness) submitInputs(inputs ...run.AgentInput) {
 
 // startGroup is TRN-STR-2 without a Coordinator: turn/started, input_delivered*,
 // run/created, input_accepted*. Owner is the TurnID.
-func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32, inputs ...run.AgentInput) extension.SemanticGroup {
+func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32, inputs ...run.AgentInput) writer.SemanticGroup {
 	h.t.Helper()
 	newRun, err := run.BuildNewRunFor(runID, run.OwnerID(turnID), attempt, "")
 	if err != nil {
@@ -162,22 +162,22 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	if err != nil {
 		h.fatal(err)
 	}
-	group := extension.SemanticGroup{CommitID: session.CommitID(fmt.Sprintf("start/%s/%d", turnID, attempt))}
+	group := writer.SemanticGroup{CommitID: session.CommitID(fmt.Sprintf("start/%s/%d", turnID, attempt))}
 	ids := make([]chatlog.InputID, len(inputs))
 	for i, in := range inputs {
 		ids[i] = chatlog.InputID(in.ID)
 	}
 	if attempt == 1 {
-		group.Events = append(group.Events, extension.TypedEvent{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
+		group.Events = append(group.Events, writer.TypedEvent{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
 			Value: turn.StartedPayload{TurnID: turnID, InputIDs: ids, Profile: turn.ProfileRef{ID: "b", Digest: "sha256:b"},
 				Companion: turn.CompanionV1Version}})
 		for _, id := range ids {
-			group.Events = append(group.Events, extension.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: 1,
+			group.Events = append(group.Events, writer.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: 1,
 				Value: chatlog.InputDeliveredPayload{InputID: id, TurnID: chatlog.TurnID(turnID)}})
 		}
 	}
 	for _, f := range facts {
-		group.Events = append(group.Events, extension.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: 1, Value: runmod.Event{RunID: runID, Fact: f}})
+		group.Events = append(group.Events, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: 1, Value: runmod.Event{RunID: runID, Fact: f}})
 	}
 	return group
 }

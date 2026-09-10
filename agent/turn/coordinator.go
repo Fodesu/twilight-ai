@@ -4,14 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
-
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/extension/writer"
 	runmod "github.com/felinics/twilight/agent/session/run"
+	"time"
 )
 
 // ErrConflict reports a Turn in a state that does not admit the operation.
@@ -75,7 +75,7 @@ type Service interface {
 // through the Session's Writer (TRN-SCP-4, TRN-API-1). It never drives a
 // Run: it commits protocol transitions and computes dispositions.
 type Coordinator struct {
-	Writers extension.Writers
+	Writers writer.Writers
 	Runtime run.Runtime
 	// Now stamps event times; nil selects time.Now.
 	Now func() time.Time
@@ -88,7 +88,7 @@ func (c *Coordinator) now() int64 {
 	return time.Now().UnixMilli()
 }
 
-func (c *Coordinator) writer(ctx context.Context, sid session.SessionID) (extension.Writer, error) {
+func (c *Coordinator) writer(ctx context.Context, sid session.SessionID) (writer.Writer, error) {
 	w, err := c.Writers.Writer(ctx, sid)
 	if err != nil {
 		if errors.Is(err, &extension.Error{Code: extension.ErrOwnershipLost}) {
@@ -112,7 +112,7 @@ func (c *Coordinator) surface(ctx context.Context, sid session.SessionID) (TurnS
 }
 
 // commit runs fn in the Session Writer and maps the outcome (TRN-STR-3).
-func (c *Coordinator) commit(ctx context.Context, sid session.SessionID, op string, fn extension.CommitFn) error {
+func (c *Coordinator) commit(ctx context.Context, sid session.SessionID, op string, fn writer.CommitFn) error {
 	w, err := c.writer(ctx, sid)
 	if err != nil {
 		return err
@@ -125,9 +125,9 @@ func (c *Coordinator) commit(ctx context.Context, sid session.SessionID, op stri
 		return err
 	}
 	switch res.Outcome {
-	case extension.CommitApplied, extension.CommitAlreadyApplied:
+	case writer.CommitApplied, writer.CommitAlreadyApplied:
 		return nil
-	case extension.CommitConflict:
+	case writer.CommitConflict:
 		return fmt.Errorf("%w: %s replayed with different content", ErrConflict, op)
 	default:
 		return fmt.Errorf("turn: %s: %s: %s", op, res.Outcome, res.Detail)
@@ -162,7 +162,7 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 		return TurnResponse{}, err
 	}
 	now := c.now()
-	err = c.commit(ctx, sid, "start", func(view extension.View) (*extension.SemanticGroup, error) {
+	err = c.commit(ctx, sid, "start", func(view writer.View) (*writer.SemanticGroup, error) {
 		if _, found := view.LookupCommit(commitID); found {
 			group := c.startGroup(commitID, turnID, inputIDs, req, facts, now)
 			return &group, nil // exact replay: the Writer compares fingerprints
@@ -189,22 +189,22 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 	return c.respond(ctx, req.Ref, runID)
 }
 
-func (c *Coordinator) startGroup(commitID session.CommitID, turnID TurnID, inputIDs []chatlog.InputID, req StartRequest, facts []run.Fact, now int64) extension.SemanticGroup {
-	group := extension.SemanticGroup{CommitID: commitID}
-	group.Events = append(group.Events, extension.TypedEvent{Type: TypeStarted, RecordedAtUnixMilli: now,
+func (c *Coordinator) startGroup(commitID session.CommitID, turnID TurnID, inputIDs []chatlog.InputID, req StartRequest, facts []run.Fact, now int64) writer.SemanticGroup {
+	group := writer.SemanticGroup{CommitID: commitID}
+	group.Events = append(group.Events, writer.TypedEvent{Type: TypeStarted, RecordedAtUnixMilli: now,
 		Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, Profile: req.Profile, Companion: req.Companion}})
 	for _, id := range inputIDs {
-		group.Events = append(group.Events, extension.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: now,
+		group.Events = append(group.Events, writer.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: now,
 			Value: chatlog.InputDeliveredPayload{InputID: id, TurnID: chatlog.TurnID(turnID)}})
 	}
 	runID := DeriveRunID(req.Ref.SessionID, turnID, 1)
 	for _, f := range facts {
-		group.Events = append(group.Events, extension.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: now, Value: runmod.Event{RunID: runID, Fact: f}})
+		group.Events = append(group.Events, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: now, Value: runmod.Event{RunID: runID, Fact: f}})
 	}
 	return group
 }
 
-func loadSurface(view extension.View) (TurnSurface, error) {
+func loadSurface(view writer.View) (TurnSurface, error) {
 	state, err := view.Projection(SurfaceProjectionID, SurfaceProjection.Version)
 	if err != nil {
 		return TurnSurface{}, err
@@ -214,7 +214,7 @@ func loadSurface(view extension.View) (TurnSurface, error) {
 
 // checkSubmitted enforces TRN-STR-1 (2): each input is a submitted chatlog
 // Input whose Content equals the payload.
-func checkSubmitted(view extension.View, inputs []run.AgentInput) error {
+func checkSubmitted(view writer.View, inputs []run.AgentInput) error {
 	if len(inputs) == 0 {
 		return nil
 	}
@@ -283,7 +283,7 @@ func (c *Coordinator) Retry(ctx context.Context, req RetryRequest) (TurnResponse
 	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
 	var runID run.RunID
 	now := c.now()
-	err := c.commit(ctx, sid, "retry", func(v extension.View) (*extension.SemanticGroup, error) {
+	err := c.commit(ctx, sid, "retry", func(v writer.View) (*writer.SemanticGroup, error) {
 		surface, err := loadSurface(v)
 		if err != nil {
 			return nil, err
@@ -307,9 +307,9 @@ func (c *Coordinator) Retry(ctx context.Context, req RetryRequest) (TurnResponse
 		if err != nil {
 			return nil, err
 		}
-		group := &extension.SemanticGroup{CommitID: commitID}
+		group := &writer.SemanticGroup{CommitID: commitID}
 		for _, f := range facts {
-			group.Events = append(group.Events, extension.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: now, Value: runmod.Event{RunID: runID, Fact: f}})
+			group.Events = append(group.Events, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: now, Value: runmod.Event{RunID: runID, Fact: f}})
 		}
 		return group, nil
 	})
@@ -321,7 +321,7 @@ func (c *Coordinator) Retry(ctx context.Context, req RetryRequest) (TurnResponse
 
 // deliveredInputs rebuilds the AgentInputs of a Turn from the chatlog surface,
 // in TurnView.InputIDs order (TRN-RTY-1).
-func deliveredInputs(view extension.View, ids []chatlog.InputID) ([]run.AgentInput, error) {
+func deliveredInputs(view writer.View, ids []chatlog.InputID) ([]run.AgentInput, error) {
 	state, err := view.Projection(chatlog.SurfaceProjectionID, chatlog.SurfaceProjection.Version)
 	if err != nil {
 		return nil, err
@@ -374,7 +374,7 @@ func (c *Coordinator) Settle(ctx context.Context, req SettleRequest) (TurnRespon
 	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
 	var runID run.RunID
 	now := c.now()
-	err := c.commit(ctx, sid, "settle", func(v extension.View) (*extension.SemanticGroup, error) {
+	err := c.commit(ctx, sid, "settle", func(v writer.View) (*writer.SemanticGroup, error) {
 		surface, err := loadSurface(v)
 		if err != nil {
 			return nil, err
@@ -384,7 +384,7 @@ func (c *Coordinator) Settle(ctx context.Context, req SettleRequest) (TurnRespon
 			return nil, fmt.Errorf("%w: turn %s is not attempt_failed", ErrConflict, turnID)
 		}
 		runID = view.LastAttempt().RunID
-		return &extension.SemanticGroup{CommitID: SettleCommitID(sid, turnID, runID), Events: []extension.TypedEvent{{
+		return &writer.SemanticGroup{CommitID: SettleCommitID(sid, turnID, runID), Events: []writer.TypedEvent{{
 			Type: TypeFailed, RecordedAtUnixMilli: now,
 			Value: FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementFailed, FailureClass: req.FailureClass}}}}, nil
 	})

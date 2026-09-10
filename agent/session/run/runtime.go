@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"time"
-
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/extension/writer"
+	"time"
 )
 
 // SourceDigestCarrier is implemented by companion event values whose content
@@ -34,7 +34,7 @@ func DefaultSnapshotPolicy(_, after *run.MachineState) bool {
 
 // Config assembles a Runtime (agent-reference-assembly.md 5).
 type Config struct {
-	Writers   extension.Writers
+	Writers   writer.Writers
 	Registry  *extension.Registry
 	Store     session.Store // read side for Record and the terminal-Run fallback
 	Frozen    run.FrozenValueStore
@@ -74,7 +74,7 @@ func NewMemoryFrozenValues() *run.MemoryFrozenValues { return run.NewMemoryFroze
 
 func (r *Runtime) nowMilli() int64 { return r.cfg.Now().UnixMilli() }
 
-func (r *Runtime) writer(ctx context.Context, sid session.SessionID) (extension.Writer, error) {
+func (r *Runtime) writer(ctx context.Context, sid session.SessionID) (writer.Writer, error) {
 	w, err := r.cfg.Writers.Writer(ctx, sid)
 	if err != nil {
 		return nil, ownershipError(err)
@@ -215,7 +215,7 @@ func (r *Runtime) Commit(ctx context.Context, sid session.SessionID, req run.Com
 	var out evaluated
 	var rejection error
 	var before, after run.MachineState
-	res, err := w.Commit(ctx, func(view extension.View) (*extension.SemanticGroup, error) {
+	res, err := w.Commit(ctx, func(view writer.View) (*writer.SemanticGroup, error) {
 		group, result, reject, err := r.evaluate(ctx, view, sid, &req)
 		if err != nil {
 			return nil, err
@@ -237,7 +237,7 @@ func (r *Runtime) Commit(ctx context.Context, sid session.SessionID, req run.Com
 		return run.CommitResult{}, rejection
 	}
 	switch res.Outcome {
-	case extension.CommitApplied:
+	case writer.CommitApplied:
 		out.Status = run.CommitAccepted
 		out.Events = res.Events
 		last := res.Events[len(res.Events)-1]
@@ -245,10 +245,10 @@ func (r *Runtime) Commit(ctx context.Context, sid session.SessionID, req run.Com
 		out.Snapshot.Position = res.Events[out.lastFact].Seq
 		r.afterCommit(ctx, w, sid, &before, &after)
 		return out.CommitResult, nil
-	case extension.CommitNoop:
+	case writer.CommitNoop:
 		// evaluate found an exact replay and filled out.
 		return out.CommitResult, nil
-	case extension.CommitConflict:
+	case writer.CommitConflict:
 		return run.CommitResult{}, run.ErrCommandConflict
 	default:
 		return run.CommitResult{}, fmt.Errorf("runmod: commit: %s: %s", res.Outcome, res.Detail)
@@ -257,7 +257,7 @@ func (r *Runtime) Commit(ctx context.Context, sid session.SessionID, req run.Com
 
 // afterCommit writes the machine projection to the cache when the policy asks
 // for it (RUN-CMT-2). Cache failures never affect the commit.
-func (r *Runtime) afterCommit(ctx context.Context, w extension.Writer, sid session.SessionID, before, after *run.MachineState) {
+func (r *Runtime) afterCommit(ctx context.Context, w writer.Writer, sid session.SessionID, before, after *run.MachineState) {
 	if r.cfg.Cache == nil || !r.cfg.Snapshot(before, after) {
 		return
 	}
@@ -277,7 +277,7 @@ type evaluated struct {
 // evaluate is RUN-CMT-3 inside the Writer. It returns either a group to
 // append with the prospective result, a filled result for an exact replay
 // (group nil), or a rejection error.
-func (r *Runtime) evaluate(ctx context.Context, view extension.View, sid session.SessionID, req *run.CommitRequest) (*extension.SemanticGroup, evaluated, error, error) {
+func (r *Runtime) evaluate(ctx context.Context, view writer.View, sid session.SessionID, req *run.CommitRequest) (*writer.SemanticGroup, evaluated, error, error) {
 	env := &req.Command
 	commitID := session.CommitID(env.ID)
 	runID := env.RunID
@@ -336,10 +336,10 @@ func (r *Runtime) evaluate(ctx context.Context, view extension.View, sid session
 
 	// Step 8: facts -> events.
 	now := r.nowMilli()
-	group := &extension.SemanticGroup{CommitID: commitID}
+	group := &writer.SemanticGroup{CommitID: commitID}
 	recorded := map[es.Digest]struct{}{}
 	for _, f := range decision.Facts {
-		group.Events = append(group.Events, extension.TypedEvent{Type: EventType(f), RecordedAtUnixMilli: now, Value: Event{RunID: runID, Fact: f}})
+		group.Events = append(group.Events, writer.TypedEvent{Type: EventType(f), RecordedAtUnixMilli: now, Value: Event{RunID: runID, Fact: f}})
 		switch fact := f.(type) {
 		case run.ModelStepCompleted:
 			recorded[fact.ResultDigest] = struct{}{}
@@ -368,10 +368,10 @@ func (r *Runtime) evaluate(ctx context.Context, view extension.View, sid session
 				}
 			}
 		}
-		group.Events = append(group.Events, extension.TypedEvent{Type: me.Type, RecordedAtUnixMilli: now, Value: me.Value})
+		group.Events = append(group.Events, writer.TypedEvent{Type: me.Type, RecordedAtUnixMilli: now, Value: me.Value})
 	}
 	for _, me := range req.Attach {
-		group.Events = append(group.Events, extension.TypedEvent{Type: me.Type, RecordedAtUnixMilli: now, Value: me.Value})
+		group.Events = append(group.Events, writer.TypedEvent{Type: me.Type, RecordedAtUnixMilli: now, Value: me.Value})
 	}
 	// A withdrawn request body ends its useful life; a Recovered step keeps it.
 	if step, ok := env.Command.(run.WithdrawPreparedStep); ok {
@@ -389,7 +389,7 @@ func (r *Runtime) evaluate(ctx context.Context, view extension.View, sid session
 	return group, result, nil, nil
 }
 
-func loadMachine(view extension.View) (Machine, error) {
+func loadMachine(view writer.View) (Machine, error) {
 	state, err := view.Projection(MachineProjectionID, MachineProjection.Version)
 	if err != nil {
 		return Machine{}, err
@@ -398,7 +398,7 @@ func loadMachine(view extension.View) (Machine, error) {
 }
 
 // snapshotIn is Load inside the Writer.
-func (r *Runtime) snapshotIn(ctx context.Context, view extension.View, sid session.SessionID, runID run.RunID) (run.RuntimeSnapshot, error) {
+func (r *Runtime) snapshotIn(ctx context.Context, view writer.View, sid session.SessionID, runID run.RunID) (run.RuntimeSnapshot, error) {
 	proj, err := loadMachine(view)
 	if err != nil {
 		return run.RuntimeSnapshot{}, err

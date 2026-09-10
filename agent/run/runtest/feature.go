@@ -10,14 +10,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"testing"
-
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/extension/writer"
 	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/sdk"
+	"testing"
 )
 
 const (
@@ -46,7 +46,7 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) run.Runtime {
 	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: defaultSession}); err != nil {
 		t.Fatal(err)
 	}
-	writers := extension.NewWriters(store, registry, extension.Admission{}, session.OpenOptions{}, extension.WritersConfig{})
+	writers := writer.NewWriters(store, registry, writer.Admission{}, session.OpenOptions{}, writer.WritersConfig{})
 	rt, err := runmod.NewRuntime(runmod.Config{Writers: writers, Registry: registry, Store: store, Companion: nopCompanion{}})
 	if err != nil {
 		t.Fatal(err)
@@ -59,19 +59,19 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) run.Runtime {
 	if err != nil {
 		t.Fatal(err)
 	}
-	group := &extension.SemanticGroup{CommitID: "create/" + defaultRunID}
+	group := &writer.SemanticGroup{CommitID: "create/" + defaultRunID}
 	for _, f := range facts {
-		group.Events = append(group.Events, extension.TypedEvent{Type: runmod.EventType(f), Value: runmod.Event{RunID: defaultRunID, Fact: f}})
+		group.Events = append(group.Events, writer.TypedEvent{Type: runmod.EventType(f), Value: runmod.Event{RunID: defaultRunID, Fact: f}})
 	}
 	w, err := writers.Writer(ctx, defaultSession)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := w.Commit(ctx, func(extension.View) (*extension.SemanticGroup, error) { return group, nil })
+	res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) { return group, nil })
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != extension.CommitApplied {
+	if res.Outcome != writer.CommitApplied {
 		t.Fatalf("create run: %s %s", res.Outcome, res.Detail)
 	}
 	return rt

@@ -1,11 +1,10 @@
-package extension
+package writer
 
 import (
 	"context"
 	"fmt"
-	"testing"
-
 	"github.com/felinics/twilight/agent/session"
+	"testing"
 )
 
 // BenchmarkWriterOpen measures EXT-WRT-1/PRJ-5 against the same log twice: with

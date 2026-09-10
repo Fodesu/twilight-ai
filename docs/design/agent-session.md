@@ -16,7 +16,7 @@ modules 负责：event ontology、typed codec、payload 版本、投影、投影
 
 **SES-SCP-1** kernel 不解释 payload，不校验 payload 的 schema，不知道模块、commit 的语义、投影或 lease。它保证四件事：日志只能追加；同一时刻一个 Session 至多一个有效写者；一次 `Append` 的整组 event 同时可见或同时不存在；每行携带覆盖前一行的 digest。
 
-**SES-SCP-2** 并发不在 kernel 解决。一个 Session 的全部写入者（Run 的 worker、Turn 的 Coordinator、恢复流程）在进程内经同一个 `extension.Writer` 串行（EXT-WRT），Writer 持有 kernel 的写者句柄。kernel 只拒绝不持有有效所有权的 `Append`。
+**SES-SCP-2** 并发不在 kernel 解决。一个 Session 的全部写入者（Run 的 worker、Turn 的 Coordinator、恢复流程）在进程内经同一个 `writer.Writer` 串行（EXT-WRT），Writer 持有 kernel 的写者句柄。kernel 只拒绝不持有有效所有权的 `Append`。
 
 **SES-SCP-3** kernel 的范围是单条 stream：header、Open/Append/Read、所有权与 epoch、按行 digest。Fork、ancestry 与 canonical import 建立在这条 stream 之上，见第 8 节。
 
@@ -125,7 +125,7 @@ type Store interface {
 
 **SES-APP-2** 崩溃只可能留下一个不完整的尾组：文件 adapter 打开时把末尾 `Last=false` 且没有后续行的整组截掉；数据库 adapter 由事务保证不会出现。截断必须发生在 `Head` 确立之前：否则 `Head.Next` 落在残组内部，下一次 `Append` 会把残组与后续组焊成一组。reader 在任何时刻都不会看到不完整的组。
 
-**SES-APP-3** kernel 拒绝：空组、重复 `CommitID`、非 canonical 或非 object 的 payload、无效 identity、落后的 Epoch。拒绝不写入任何内容，返回 `ErrInvalid`（重复 CommitID 为 `ErrConflict`）。kernel 不比对重复 CommitID 的内容，不返回"已应用"：幂等重放由 `extension.Writer` 以内存索引完成（EXT-WRT-2）。
+**SES-APP-3** kernel 拒绝：空组、重复 `CommitID`、非 canonical 或非 object 的 payload、无效 identity、落后的 Epoch。拒绝不写入任何内容，返回 `ErrInvalid`（重复 CommitID 为 `ErrConflict`）。kernel 不比对重复 CommitID 的内容，不返回"已应用"：幂等重放由 `writer.Writer` 以内存索引完成（EXT-WRT-2）。
 
 ## 6. read
 

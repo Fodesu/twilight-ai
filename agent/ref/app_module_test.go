@@ -2,15 +2,15 @@ package ref_test
 
 import (
 	"context"
-	"strings"
-	"testing"
-
 	"github.com/felinics/twilight/agent/ref"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/extension/writer"
 	"github.com/felinics/twilight/agent/turn"
+	"strings"
+	"testing"
 )
 
 // The example application module: source "example", module "audit". It records
@@ -94,12 +94,12 @@ func TestAppModuleSharesTheSessionStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := w.Commit(ctx, func(extension.View) (*extension.SemanticGroup, error) {
-		return &extension.SemanticGroup{CommitID: "audit/n1", Events: []extension.TypedEvent{{
+	res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
+		return &writer.SemanticGroup{CommitID: "audit/n1", Events: []writer.TypedEvent{{
 			Type: auditNoteType, RecordedAtUnixMilli: 1, Value: auditNote{InputID: "in-1", Text: "flagged"},
 		}}}, nil
 	})
-	if err != nil || res.Outcome != extension.CommitApplied {
+	if err != nil || res.Outcome != writer.CommitApplied {
 		t.Fatalf("audit commit = %+v %v", res, err)
 	}
 	if _, err := m.Coordinator.Start(ctx, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},

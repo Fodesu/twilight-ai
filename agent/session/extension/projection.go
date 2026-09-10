@@ -21,21 +21,24 @@ type ProjectionDefinition struct {
 	StateCodec PayloadCodec
 }
 
-// projectionScope is a definition bound to its module scope: the type prefixes
+// ProjectionScope is a definition bound to its module scope: the type prefixes
 // a reader filters on and the modules whose unknown events must not be skipped.
-type projectionScope struct {
-	def      ProjectionDefinition
+type ProjectionScope struct {
+	Def      ProjectionDefinition
 	consumes map[session.EventType]struct{}
 	modules  map[ModuleKey]struct{}
 	types    []session.EventType
 }
 
-func (r *Registry) scopeFor(id ProjectionID, v ProjectionVersion) (*projectionScope, error) {
+// ScopeFor resolves a projection definition together with the module scope its
+// fold must honour (EXT-PRJ-2). It is the entry point of the fold engine: both
+// the Writer and a ProjectionReader start from a Scope.
+func (r *Registry) ScopeFor(id ProjectionID, v ProjectionVersion) (*ProjectionScope, error) {
 	def, module, ok := r.LookupProjection(id, v)
 	if !ok {
 		return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("unknown projection %q v%d", id, v)}
 	}
-	s := &projectionScope{def: def, consumes: make(map[session.EventType]struct{}, len(def.Consumes)), modules: r.scopeOf(module)}
+	s := &ProjectionScope{Def: def, consumes: make(map[session.EventType]struct{}, len(def.Consumes)), modules: r.scopeOf(module)}
 	for _, t := range def.Consumes {
 		s.consumes[t] = struct{}{}
 	}
@@ -45,9 +48,10 @@ func (r *Registry) scopeFor(id ProjectionID, v ProjectionVersion) (*projectionSc
 	return s, nil
 }
 
-// fold applies rows to state group by group (EXT-PRJ-1/2). rows must be
-// whole groups in Seq order.
-func (r *Registry) fold(s *projectionScope, state any, rows []session.SessionEvent) (any, error) {
+// Fold applies rows to state group by group (EXT-PRJ-1/2). rows must be whole
+// groups in Seq order, and it stops at the first incomplete group. It is pure
+// with respect to the Registry: the same Scope and rows always fold the same.
+func (r *Registry) Fold(s *ProjectionScope, state any, rows []session.SessionEvent) (any, error) {
 	for i := 0; i < len(rows); {
 		end := i
 		for end < len(rows) && !rows[end].Last {
@@ -70,14 +74,14 @@ func (r *Registry) fold(s *projectionScope, state any, rows []session.SessionEve
 	return state, nil
 }
 
-func (r *Registry) applyRow(s *projectionScope, state any, row *session.SessionEvent) (any, error) {
+func (r *Registry) applyRow(s *ProjectionScope, state any, row *session.SessionEvent) (any, error) {
 	if _, want := s.consumes[row.Type]; !want {
 		if _, registered := r.events[row.Type]; registered {
 			return state, nil // known type of some module, not consumed here
 		}
 		module, known := r.ModuleOf(row.Type)
 		if _, inScope := s.modules[module]; known && inScope && !row.Ignorable {
-			return nil, &Error{Code: ErrUnknownEvent, Type: row.Type, Detail: fmt.Sprintf("projection %q: unregistered non-ignorable event of module %s/%s at seq %d", s.def.ID, module.Source, module.ID, row.Seq)}
+			return nil, &Error{Code: ErrUnknownEvent, Type: row.Type, Detail: fmt.Sprintf("projection %q: unregistered non-ignorable event of module %s/%s at seq %d", s.Def.ID, module.Source, module.ID, row.Seq)}
 		}
 		return state, nil
 	}
@@ -89,11 +93,11 @@ func (r *Registry) applyRow(s *projectionScope, state any, row *session.SessionE
 		if row.Ignorable {
 			return state, nil
 		}
-		return nil, &Error{Code: ErrUnknownEvent, Type: row.Type, Detail: fmt.Sprintf("projection %q cannot decode v%d at seq %d", s.def.ID, decoded.Version, row.Seq)}
+		return nil, &Error{Code: ErrUnknownEvent, Type: row.Type, Detail: fmt.Sprintf("projection %q cannot decode v%d at seq %d", s.Def.ID, decoded.Version, row.Seq)}
 	}
-	next, err := s.def.Apply(state, decoded)
+	next, err := s.Def.Apply(state, decoded)
 	if err != nil {
-		return nil, fmt.Errorf("projection %s: seq %d: %w", s.def.ID, row.Seq, err)
+		return nil, fmt.Errorf("projection %s: seq %d: %w", s.Def.ID, row.Seq, err)
 	}
 	return next, nil
 }
@@ -239,7 +243,7 @@ func NewProjectionReader(store session.Store, registry *Registry, cache Projecti
 }
 
 func (r *storeReader) Load(ctx context.Context, sid session.SessionID, id ProjectionID, v ProjectionVersion) (any, session.Head, error) {
-	scope, err := r.registry.scopeFor(id, v)
+	scope, err := r.registry.ScopeFor(id, v)
 	if err != nil {
 		return nil, session.Head{}, err
 	}
@@ -251,7 +255,7 @@ func (r *storeReader) Load(ctx context.Context, sid session.SessionID, id Projec
 	if err != nil {
 		return nil, session.Head{}, err
 	}
-	state, err = r.registry.fold(scope, state, page.Events)
+	state, err = r.registry.Fold(scope, state, page.Events)
 	if err != nil {
 		return nil, session.Head{}, err
 	}
@@ -260,19 +264,19 @@ func (r *storeReader) Load(ctx context.Context, sid session.SessionID, id Projec
 
 // startState returns the cached state when its Through is a prefix of the
 // stream; otherwise the projection's initial state and the empty head.
-func (r *storeReader) startState(ctx context.Context, sid session.SessionID, scope *projectionScope) (any, session.Head, error) {
+func (r *storeReader) startState(ctx context.Context, sid session.SessionID, scope *ProjectionScope) (any, session.Head, error) {
 	if r.cache != nil {
-		encoded, through, ok, err := r.cache.Load(ctx, sid, scope.def.ID, scope.def.Version)
+		encoded, through, ok, err := r.cache.Load(ctx, sid, scope.Def.ID, scope.Def.Version)
 		if err != nil {
 			return nil, session.Head{}, err
 		}
 		if ok && through.Next > 0 && r.isPrefix(ctx, sid, through) {
-			if state, err := scope.def.StateCodec.Decode(encoded); err == nil {
+			if state, err := scope.Def.StateCodec.Decode(encoded); err == nil {
 				return state, through, nil
 			}
 		}
 	}
-	state, err := scope.def.Initial()
+	state, err := scope.Def.Initial()
 	return state, session.Head{}, err
 }
 

@@ -1,6 +1,6 @@
 # Twilight Agent Turn 协议
 
-状态：设计草案。本文是 Turn 协议的目标设计；实现状态与迁移记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。Coordinator 只做协议提交与状态读取（Start / Deliver / Retry / Stop / Settle / Status），驱动属宿主；写入经 `extension.Writer`、以 `Seq` 定位、恢复走接管处置。Run 事实与 Turn、Chatlog 事件同在一条 Session stream。
+状态：设计草案。本文是 Turn 协议的目标设计；实现状态与迁移记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。Coordinator 只做协议提交与状态读取（Start / Deliver / Retry / Stop / Settle / Status），驱动属宿主；写入经 `writer.Writer`、以 `Seq` 定位、恢复走接管处置。Run 事实与 Turn、Chatlog 事件同在一条 Session stream。
 
 本文定义 `agent/turn`：回合生命周期、Run attempt 的创建与结算、Run 事实到对话内容的伴随映射。"必须""应该"为协议约束。Run Machine 与 Runtime 的 authority 是 [agent-run.md](agent-run.md)；对话内容的 authority 是 [agent-session-chatlog.md](agent-session-chatlog.md)；stream、commit 与 projection 机制的 authority 是 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md)。
 
@@ -32,7 +32,7 @@ subagent 使用独立 Session 与独立 Turn。
 
 **TRN-SCP-3** Coordinator 没有隐藏状态。它从 `twilight/turn/surface` 投影与 `twilight/run/machine` 投影重建。
 
-**TRN-SCP-4** Turn 自己的写入经该 Session 的 `extension.Writer.Commit`；Run 事实的写入经 `run.Runtime`，后者经同一个 Writer 落在同一 `session.Store`（EXT-SCP-1）。Coordinator 与 Runtime 经 `extension.Writers` 取得 Writer（EXT-WRT-6）。Artifact 由其 owner 管理。
+**TRN-SCP-4** Turn 自己的写入经该 Session 的 `writer.Writer.Commit`；Run 事实的写入经 `run.Runtime`，后者经同一个 Writer 落在同一 `session.Store`（EXT-SCP-1）。Coordinator 与 Runtime 经 `writer.Writers` 取得 Writer（EXT-WRT-6）。Artifact 由其 owner 管理。
 
 **TRN-SCP-5** Application 管理 model、provider、tool、prompt、token、approval、queue、retry 决策与并发。宿主按 persisted profile 解析 driver 并驱动（REF-DRV-1）。参考 Planner 每次 Plan 使用 Profile 的 `ModelRef`。
 
@@ -137,7 +137,7 @@ UI 按 `TurnID` 连接 `twilight/chatlog/surface` 的条目，按 `RunID` 连接
 
 ```go
 type Coordinator struct {
-    Writers extension.Writers // 每个方法按 Ref.SessionID 取 Writer：写入经 Commit，读取经 Projections()
+    Writers writer.Writers // 每个方法按 Ref.SessionID 取 Writer：写入经 Commit，读取经 Projections()
     Runtime run.Runtime
 }
 

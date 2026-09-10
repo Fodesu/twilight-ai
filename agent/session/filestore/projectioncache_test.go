@@ -2,14 +2,14 @@ package filestore_test
 
 import (
 	"context"
+	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/extension/writer"
+	"github.com/felinics/twilight/agent/session/filestore"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
-
-	"github.com/felinics/twilight/agent/session"
-	"github.com/felinics/twilight/agent/session/extension"
-	"github.com/felinics/twilight/agent/session/filestore"
 )
 
 // This file covers the durable side of EXT-PRJ-3: the cache entries a Writer
@@ -161,18 +161,18 @@ func TestProjectionCacheSurvivesRestart(t *testing.T) {
 	if _, err := first.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid}); err != nil {
 		t.Fatal(err)
 	}
-	writers := extension.NewWriters(first, mustRegistry(t, counter), extension.Admission{}, session.OpenOptions{},
-		extension.WritersConfig{Cache: first.ProjectionCache()})
+	writers := writer.NewWriters(first, mustRegistry(t, counter), writer.Admission{}, session.OpenOptions{},
+		writer.WritersConfig{Cache: first.ProjectionCache()})
 	w, err := writers.Writer(ctx, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i, text := range []string{"a", "b", "c"} {
-		res, err := w.Commit(ctx, func(extension.View) (*extension.SemanticGroup, error) {
-			return &extension.SemanticGroup{CommitID: session.CommitID(string(rune('1' + i))),
-				Events: []extension.TypedEvent{{Type: "twilight/z/row", Value: rowPayload{Text: text}}}}, nil
+		res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
+			return &writer.SemanticGroup{CommitID: session.CommitID(string(rune('1' + i))),
+				Events: []writer.TypedEvent{{Type: "twilight/z/row", Value: rowPayload{Text: text}}}}, nil
 		})
-		if err != nil || res.Outcome != extension.CommitApplied {
+		if err != nil || res.Outcome != writer.CommitApplied {
 			t.Fatalf("commit %d: outcome=%s err=%v", i, res.Outcome, err)
 		}
 	}
@@ -189,8 +189,8 @@ func TestProjectionCacheSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	counter.reset()
-	writers2 := extension.NewWriters(second, mustRegistry(t, counter), extension.Admission{}, session.OpenOptions{},
-		extension.WritersConfig{Cache: second.ProjectionCache()})
+	writers2 := writer.NewWriters(second, mustRegistry(t, counter), writer.Admission{}, session.OpenOptions{},
+		writer.WritersConfig{Cache: second.ProjectionCache()})
 	w2, err := writers2.Writer(ctx, sid)
 	if err != nil {
 		t.Fatal(err)

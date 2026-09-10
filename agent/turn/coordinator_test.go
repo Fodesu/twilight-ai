@@ -2,13 +2,13 @@ package turn
 
 import (
 	"context"
-	"testing"
-
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/extension/writer"
 	runmod "github.com/felinics/twilight/agent/session/run"
+	"testing"
 )
 
 // The Coordinator is pure protocol: Start, Deliver and Status commit and read
@@ -25,7 +25,7 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
 	}
-	writers := extension.NewWriters(store, registry, extension.Admission{}, session.OpenOptions{}, extension.WritersConfig{})
+	writers := writer.NewWriters(store, registry, writer.Admission{}, session.OpenOptions{}, writer.WritersConfig{})
 	runtime, err := runmod.NewRuntime(runmod.Config{Writers: writers, Registry: registry, Store: store,
 		Frozen: run.NewMemoryFrozenValues(), Companion: CompanionV1{}})
 	if err != nil {
@@ -40,8 +40,8 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := w.Commit(ctx, func(extension.View) (*extension.SemanticGroup, error) {
-			return &extension.SemanticGroup{CommitID: session.CommitID("submit/" + string(id)), Events: []extension.TypedEvent{{
+		if _, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
+			return &writer.SemanticGroup{CommitID: session.CommitID("submit/" + string(id)), Events: []writer.TypedEvent{{
 				Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: 1,
 				Value: chatlog.InputSubmittedPayload{InputID: id, Content: content, SubmittedAtUnixMilli: 1},
 			}}}, nil
