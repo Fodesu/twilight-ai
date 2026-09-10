@@ -19,10 +19,10 @@ Use this skill when the task involves `twilight-ai`, especially:
 
 Twilight AI is a lightweight Go AI SDK with a provider-agnostic core API.
 
-- Text generation: `sdk.GenerateText`, `sdk.GenerateTextResult`, `sdk.StreamText`
+- Text generation (deprecated): `sdk.GenerateText`, `sdk.GenerateTextResult`, `sdk.StreamText`; build an `sdk.Request` and call `sdk.Client.Generate` or `sdk.Client.Stream`
 - Image generation: `sdk.GenerateImage`, `sdk.EditImage`
 - Embeddings: `sdk.Embed`, `sdk.EmbedMany`
-- Tool calling: `sdk.Tool`, `sdk.NewTool[T]`, `WithMaxSteps`, approval flow
+- Tool calling: `sdk.Tool`, `sdk.NewTool[T]`, `sdk.ToolDefinition`, `sdk.ExecuteTools`; the `WithMaxSteps` loop and the client approval flow are deprecated
 - MCP tool integration: `sdk.CreateMCPClient`, `sdk.MCPClient`, `sdk.MCPClientConfig`
 - Streaming: typed `StreamPart` events over Go channels
 - Current providers:
@@ -43,7 +43,7 @@ Prefer the high-level SDK API first, then drop to provider details only when nee
 - `sdk.EmbeddingModel` binds an embedding model to an `sdk.EmbeddingProvider`
 - `sdk.ImageGenerationModel` binds an image generation model to an `sdk.ImageGenerationProvider`
 - `sdk.ImageEditModel` binds an image edit model to an `sdk.ImageEditProvider`
-- The client orchestrates tool loops, callbacks, approvals, and streaming lifecycle
+- Deprecated: the client's own tool loops, callbacks, approvals, and streaming lifecycle; a runtime owns that orchestration and drives `sdk.Client.Generate` or `sdk.Client.Stream` with an `sdk.Request`
 - MCP clients can load remote MCP tools and turn them into ordinary `sdk.Tool` values
 - Providers handle backend-specific HTTP, request mapping, response parsing, and SSE translation
 
@@ -51,9 +51,8 @@ Prefer the high-level SDK API first, then drop to provider details only when nee
 
 Choose the narrowest API that matches the task:
 
-- Need only final text: use `sdk.GenerateText`
-- Need usage, finish reason, steps, sources, files, or tool details: use `sdk.GenerateTextResult`
-- Need live output: use `sdk.StreamText`
+- Need one model call and its result: use `sdk.Client.Generate` or `sdk.Client.Stream` with an `sdk.Request`
+- Deprecated for text generation: `sdk.GenerateText`, `sdk.GenerateTextResult` and `sdk.StreamText` run the SDK's own multi-step tool loop
 - Need one vector: use `sdk.Embed`
 - Need multiple vectors or embedding token usage: use `sdk.EmbedMany`
 - Need image generation from a text prompt: use `sdk.GenerateImage`
@@ -125,8 +124,8 @@ Prefer `sdk.NewTool[T]` for new tool examples and integrations. It gives typed i
 Use these defaults unless the task requires something else:
 
 - `WithToolChoice("auto")` for normal use
-- `WithMaxSteps(0)` for inspection-only tool calls
-- `WithMaxSteps(N)` for automatic execution loops
+- `WithMaxSteps(0)` for inspection-only tool calls (deprecated)
+- `WithMaxSteps(N)` for automatic execution loops (deprecated)
 - `RequireApproval: true` only for sensitive side effects
 
 When streaming with tools, ensure the implementation can emit:
@@ -162,7 +161,7 @@ Twilight AI streaming is channel-first and type-safe. Prefer type switches over 
 
 Important expectations:
 
-- `StreamText` returns `*sdk.StreamResult`
+- `StreamText` returns `*sdk.StreamResult` (deprecated); `sdk.Client.Stream` returns an `sdk.ModelStream` of `sdk.StreamPart` values
 - `sr.Stream` must be consumed before relying on `sr.Steps` or `sr.Messages`
 - `Text()` and `ToResult()` are the convenience paths when callers do not want manual event handling
 
@@ -232,8 +231,8 @@ Use these terms consistently:
 - Image generation model: provider-bound image generation model
 - Image edit model: provider-bound image edit model
 - Tool calling: model requests a tool invocation
-- Multi-step execution: automatic tool loop controlled by `WithMaxSteps`
-- Stream part: a typed event from `StreamText`
+- Multi-step execution (deprecated): the client's automatic tool loop, controlled by `WithMaxSteps`
+- Stream part: a typed event from the model seam (`sdk.StreamPart`), delivered by `sdk.Client.Stream`
 
 ## Quick Checklist
 
