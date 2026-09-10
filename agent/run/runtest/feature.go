@@ -14,8 +14,8 @@ import (
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
-	"github.com/felinics/twilight/agent/session/extension/writer"
 	runmod "github.com/felinics/twilight/agent/session/run"
+	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/sdk"
 	"testing"
 )

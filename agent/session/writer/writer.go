@@ -153,7 +153,7 @@ func OpenWriter(ctx context.Context, store session.Store, registry *extension.Re
 
 func openWriter(ctx context.Context, store session.Store, registry *extension.Registry, admission Admission, sid session.SessionID, opts session.OpenOptions, cfg WritersConfig) (Writer, error) {
 	if store == nil || registry == nil {
-		return nil, errors.New("extension: writer: nil store or registry")
+		return nil, errors.New("writer: nil store or registry")
 	}
 	kernel, err := store.Open(ctx, sid, opts)
 	if err != nil {
@@ -363,7 +363,7 @@ func (r memoryReader) Load(_ context.Context, sid session.SessionID, id extensio
 
 func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, error) {
 	if fn == nil {
-		return CommitResult{}, errors.New("extension: writer: nil fn")
+		return CommitResult{}, errors.New("writer: nil fn")
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -487,7 +487,7 @@ func (w *sessionWriter) admit(ctx context.Context, id artifact.BindingID, decl *
 	if w.admission.Bindings == nil {
 		// A configuration error, not a verdict on the group: returning it as an
 		// error keeps it from reading like a data rejection.
-		return "", errors.New("extension: writer: the event references artifacts but no binding resolver is configured")
+		return "", errors.New("writer: the event references artifacts but no binding resolver is configured")
 	}
 	binding, err := w.admission.Bindings.ResolveBinding(ctx, id)
 	if err != nil {
@@ -518,7 +518,7 @@ func (w *sessionWriter) admit(ctx context.Context, id artifact.BindingID, decl *
 func (w *sessionWriter) claim(ctx context.Context, commitID session.CommitID, refs []artifact.BindingID) (*artifact.RetentionClaim, string, error) {
 	if w.admission.Ledger == nil {
 		// See admit: a missing ledger is a configuration error.
-		return nil, "", errors.New("extension: writer: the group references artifacts but no retention ledger is configured")
+		return nil, "", errors.New("writer: the group references artifacts but no retention ledger is configured")
 	}
 	set, err := artifact.SetBuilder{Resolver: w.admission.Bindings}.Build(ctx, refs)
 	if err != nil {

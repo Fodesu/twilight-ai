@@ -8,7 +8,7 @@ import (
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
-	"github.com/felinics/twilight/agent/session/extension/writer"
+	"github.com/felinics/twilight/agent/session/writer"
 	"time"
 )
 

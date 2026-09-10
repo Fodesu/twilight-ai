@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
-	"github.com/felinics/twilight/agent/session/extension/writer"
+	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
 	"strings"
