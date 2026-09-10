@@ -50,8 +50,8 @@ type Provider interface {
     ListModels(ctx context.Context) ([]Model, error)
     Test(ctx context.Context) *ProviderTestResult
     TestModel(ctx context.Context, modelID string) (*ModelTestResult, error)
-    DoGenerate(ctx context.Context, params GenerateParams) (*GenerateResult, error)
-    DoStream(ctx context.Context, params GenerateParams) (*StreamResult, error)
+    DoGenerate(ctx context.Context, req Request) (ModelResult, error)
+    DoStream(ctx context.Context, req Request) (<-chan StreamPart, error)
 }
 
 type ProviderStatus string
@@ -186,7 +186,7 @@ Notes:
 
 - `UserMessage` accepts a text string plus optional extra parts such as `ImagePart`.
 - `Message` supports JSON marshal and unmarshal with type discrimination.
-- `GenerateParams.System` is the stable root instruction; use `SystemMessage`
+- `WithSystem` sets the stable root instruction; use `SystemMessage`
   for an instruction at a specific point in the message timeline.
 - Unsupported developer messages fall back to user messages. Unsupported
   mid-conversation system messages fall back to XML-escaped `<system>` user messages.
@@ -217,6 +217,40 @@ const (
 type ResponseFormat struct {
     Type       ResponseFormatType
     JSONSchema any
+}
+
+type Request struct {
+    Model            string
+    System           string
+    Messages         []Message
+    Tools            []ToolDefinition
+    ToolChoice       ToolChoice
+    ResponseFormat   *ResponseFormat
+    Temperature      *float64
+    TopP             *float64
+    MaxTokens        *int
+    StopSequences    []string
+    FrequencyPenalty *float64
+    PresencePenalty  *float64
+    Seed             *int
+    ReasoningEffort  *string
+    ReasoningSummary *string
+    PromptCacheKey   *string
+    ProviderOptions  map[string]json.RawMessage
+}
+
+type ModelResult struct {
+    Text                 string
+    Reasoning            string
+    ReasoningParts       []ReasoningPart
+    TextProviderMetadata map[string]any
+    FinishReason         FinishReason
+    RawFinishReason      string
+    Usage                Usage
+    Sources              []Source
+    Files                []GeneratedFile
+    ToolCalls            []ToolCall
+    Response             *ResponseMetadata
 }
 
 type GenerateParams struct {
@@ -537,6 +571,11 @@ type RawPart struct {
     RawValue any
 }
 
+type ModelStream struct {
+    Parts  <-chan StreamPart
+    Result func() (*ModelResult, error)
+}
+
 type StreamResult struct {
     Stream   <-chan StreamPart
     Steps    []StepResult
@@ -768,8 +807,8 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
 func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
-func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*sdk.GenerateResult, error)
-func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sdk.StreamResult, error)
+func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
+func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)
 ```
 
 Default option values:
@@ -805,8 +844,8 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
 func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
-func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*sdk.GenerateResult, error)
-func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sdk.StreamResult, error)
+func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
+func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)
 ```
 
 Default option values:
@@ -822,10 +861,10 @@ Discovery endpoints:
 
 Responses-specific behavior:
 
-- `GenerateParams.System` maps to top-level `instructions`
+- `Request.System` maps to top-level `instructions`
 - system and developer message roles are preserved natively
-- assistant reasoning maps to `GenerateResult.Reasoning`
-- URL citation annotations map to `GenerateResult.Sources`
+- assistant reasoning maps to `ModelResult.Reasoning`
+- URL citation annotations map to `ModelResult.Sources`
 - function-call outputs map to tool-call and tool-result structures
 
 ## Package `provider/openai/codex`
@@ -860,8 +899,8 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
 func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
-func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*sdk.GenerateResult, error)
-func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sdk.StreamResult, error)
+func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
+func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)
 ```
 
 Default option values:
@@ -914,8 +953,8 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
 func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
-func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*sdk.GenerateResult, error)
-func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sdk.StreamResult, error)
+func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
+func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)
 ```
 
 Default option values:
@@ -956,8 +995,8 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
 func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
-func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*sdk.GenerateResult, error)
-func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sdk.StreamResult, error)
+func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
+func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)
 ```
 
 Default option values:

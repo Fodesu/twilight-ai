@@ -86,14 +86,14 @@ If adding or changing a chat provider, preserve the `sdk.Provider` contract:
 - `ListModels(ctx)`
 - `Test(ctx)`
 - `TestModel(ctx, modelID)`
-- `DoGenerate(ctx, params)`
-- `DoStream(ctx, params)`
+- `DoGenerate(ctx, req sdk.Request) (sdk.ModelResult, error)`
+- `DoStream(ctx, req sdk.Request) (<-chan sdk.StreamPart, error)`
 
 Keep provider responsibilities focused:
 
 - translate SDK messages/options into backend request format
-- parse backend responses into `sdk.GenerateResult`
-- map backend streaming events into typed `sdk.StreamPart` values
+- parse backend responses into `sdk.ModelResult`
+- map backend streaming events into typed `sdk.StreamPart` values; the SDK core assembles them into a `ModelResult`
 - report usage, finish reasons, reasoning, tool calls, sources, and files when supported
 
 ### Embedding Providers
