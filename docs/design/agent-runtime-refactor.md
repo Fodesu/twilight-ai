@@ -502,3 +502,28 @@ provider 接缝说的是旧类型：入参 `GenerateParams`，出参 `*GenerateR
 1. **provider 单测仍以 legacy 参数构造请求再投影一次**（`mustJSON` 辅助函数只是把 Go schema 值变成"接缝上已经解析好的 JSON"的等价写法）。接缝原生形状由 conformance 覆盖，把剩余约 150 处字面量改写成原生 `Request` 是待办，不是行为缺口。
 2. **google provider 丢弃 wire 上携带的 tool-call id**，总是自己 mint 一个（`provider/google/generativeai/types.go` 的 `functionCall` 没有 id 字段）。对照 `provider/openai/completions` 是保留 wire id、缺失才 `generateID`。
 3. **OpenAI 形状的 tool-choice 编码在 4 个 provider 里各有一份**（completions、copilot、codex、responses）。这是刻意的：wire 形状属于 provider；若后续确认四处永远一致，可抽成 internal helper。
+
+## 13. 2026-09-11 修订：SDK 文本生成客户端层标记过时
+
+### 13.1 决定
+
+`sdk/` 的文本生成客户端层标记为 deprecated，指向单调用接缝；本轮不删除。涉及 36 个导出符号：`GenerateText`、`GenerateTextResult`、`StreamText`（顶层与 `Client` 方法各一份）、`GenerateParams`、`GenerateResult`、`StepResult`、`StreamResult`（含 `Text`、`ToResult`）、`GenerateOption`，以及 `options.go` 中全部 23 个 `With*`。替代路径是 `Client.Generate` / `Client.Stream`（`sdk/model_call.go`，收 `sdk.Request`，返回 `ModelResult` / `ModelStream`）。`Client.Generate`/`Client.Stream`、`ExecuteTools`、`Tool`/`NewTool` 与 embedding、image、speech、transcribe、video 入口不在标注范围内。
+
+### 13.2 依据
+
+1. **它是第二个编排者。** 该层自己拥有多步 loop、工具执行、审批与 step 累积（`GenerateResult.Steps`/`Messages`），而 runtime 必须自己拥有这些：它要持久化每一步、在 `OnStepCommitted` 之后继续、投递 steer、按信封定价。
+2. **装配重复且语义不一致。** 第 12 节实测到三份装配（core、`StreamResult.ToResult`、`MaxSteps == 0` 快路径）对同一批 parts 给出不同结果——responses 的 generate 与 stream 对同一时间戳一个带本地时区、一个 UTC。迁移后 step 记录来自接缝的唯一装配器。
+3. **消费方证据。** Memoh `codex/native-loop-primitives`（`1bc64d5a4` 提升 pin，`0c6fafff1` 完成迁移：`bb6784933`/`bfd679d8c` 自拥 generate/stream step loop，`3de89b898` 删除 SDK loop 残留）在迁移后对这 36 个符号的使用量为 **0**；它使用的是 `sdk.Request`（223 处，含 28 处手写复合字面量）、`sdk.ModelResult`（240）、`sdk.StreamPart`（83）、`sdk.ToolDefinition`（15）、`ExecuteTools`（7），并经 `provider.ChatModel(id)` 取 `*sdk.Model`。其迁移说明给出的具体理由包括 `the priced payload is the sent payload` 与 `the executable tool set stays loop-local`。
+4. **兼容性代价为 0。** Memoh 的 27 个 worktree 中只有迁移分支引用本 SDK，且 `replace` 指向不可变提交 `0ce33f7`；其余（含 `main`）使用旧 pin `18a9879`，根本不引用本分支。以 `/tmp` modfile 把迁移分支指向 `fd64905` 后，`go build ./...` 与 `go vet ./...` 均通过（Memoh 未被改动）。
+
+### 13.3 本轮落地
+
+- 36 个符号加 `Deprecated:` 段落（`sdk/client.go`、`generate.go`、`generate_text.go`、`stream.go`、`stream_text.go`、`options.go`）。
+- `skill/SKILL.md`、`skill/reference.md`、`docs/{getting-started,streaming,tools,api-reference,providers}.md` 标注替代路径；`reference.md` 同时修正 `WithApprovalHandler` 的签名漂移（实际返回 `ToolApprovalResult`，`WithApprovalHandlerBool` 才是 `bool`）。
+- `.golangci.yml` 按路径与 SA1019 文本排除这一层自身文件与其测试的 deprecation 告警；本机 golangci-lint 因二进制以 go1.26 构建、依赖图要求 go1.27 而 panic，该规则待 pre-commit/CI 确认。
+
+### 13.4 删除的前置条件
+
+- **切分 `Client`**：embedding、image、speech、transcribe、video 入口仍挂在同一个类型上（Memoh 仍用 `GenerateImage` 与 embedding 路径），删除文本生成编排需要先把它们独立出来。
+- **确定 `sdk/` 的定位**：若 `sdk/` 仍需作为独立 SDK 使用，必须为独立用户保留唯一的 loop 实现（本分支的 `agent/run/loop`）；否则删除后独立用户没有多步能力。
+- **提升 pin 后重新验证**：删除是破坏性变更，届时应以迁移分支为准重跑编译与 conformance。
