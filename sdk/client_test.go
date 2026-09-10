@@ -2,6 +2,7 @@ package sdk_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,17 @@ import (
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
 )
+
+// mustJSON is the test-side half of the seam change: the SDK resolves a tool's
+// Parameters into JSON Schema before a provider sees it, so a test that used to
+// hand the provider a Go schema value now hands it the resolved JSON.
+func mustJSON(v any) json.RawMessage {
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return encoded
+}
 
 func TestMain(m *testing.M) {
 	testutil.LoadEnv()
@@ -168,8 +180,8 @@ func TestClient_NoModel(t *testing.T) {
 
 type mockProvider struct {
 	calls         int
-	handler       func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error)
-	streamHandler func(call int, params sdk.GenerateParams) (*sdk.StreamResult, error)
+	handler       func(call int, req sdk.Request) (sdk.ModelResult, error)
+	streamHandler func(call int, req sdk.Request) (<-chan sdk.StreamPart, error)
 }
 
 func (m *mockProvider) Name() string { return "mock" }
@@ -183,17 +195,17 @@ func (m *mockProvider) TestModel(_ context.Context, _ string) (*sdk.ModelTestRes
 	return &sdk.ModelTestResult{Supported: true, Message: "supported"}, nil
 }
 
-func (m *mockProvider) DoGenerate(_ context.Context, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+func (m *mockProvider) DoGenerate(_ context.Context, req sdk.Request) (sdk.ModelResult, error) {
 	m.calls++
-	return m.handler(m.calls, params)
+	return m.handler(m.calls, req)
 }
 
-func (m *mockProvider) DoStream(_ context.Context, params sdk.GenerateParams) (*sdk.StreamResult, error) {
+func (m *mockProvider) DoStream(_ context.Context, req sdk.Request) (<-chan sdk.StreamPart, error) {
 	if m.streamHandler != nil {
 		m.calls++
-		return m.streamHandler(m.calls, params)
+		return m.streamHandler(m.calls, req)
 	}
-	result, err := m.DoGenerate(context.Background(), params)
+	result, err := m.DoGenerate(context.Background(), req)
 	if err != nil {
 		return nil, err
 	}
@@ -215,17 +227,21 @@ func (m *mockProvider) DoStream(_ context.Context, params sdk.GenerateParams) (*
 				Input:      tc.Input,
 			}
 		}
+		var response sdk.ResponseMetadata
+		if result.Response != nil {
+			response = *result.Response
+		}
 		ch <- &sdk.FinishStepPart{
 			FinishReason: result.FinishReason,
 			Usage:        result.Usage,
-			Response:     result.Response,
+			Response:     response,
 		}
 		ch <- &sdk.FinishPart{
 			FinishReason: result.FinishReason,
 			TotalUsage:   result.Usage,
 		}
 	}()
-	return &sdk.StreamResult{Stream: ch}, nil
+	return ch, nil
 }
 
 func mockModel(p *mockProvider) *sdk.Model {
@@ -235,9 +251,9 @@ func mockModel(p *mockProvider) *sdk.Model {
 // ---------- unit tests: tool auto-execution ----------
 
 func TestClient_GenerateTextResult_ToolAutoExec(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
 		if call == 1 {
-			return &sdk.GenerateResult{
+			return sdk.ModelResult{
 				FinishReason: sdk.FinishReasonToolCalls,
 				ToolCalls: []sdk.ToolCall{{
 					ToolCallID: "c1",
@@ -248,7 +264,7 @@ func TestClient_GenerateTextResult_ToolAutoExec(t *testing.T) {
 			}, nil
 		}
 		// Second call: model sees tool result and responds with text.
-		return &sdk.GenerateResult{
+		return sdk.ModelResult{
 			Text:         "The sum is 5.",
 			FinishReason: sdk.FinishReasonStop,
 			Usage:        sdk.Usage{InputTokens: 20, OutputTokens: 8, TotalTokens: 28},
@@ -284,8 +300,8 @@ func TestClient_GenerateTextResult_ToolAutoExec(t *testing.T) {
 }
 
 func TestClient_GenerateTextResult_NoAutoExec_WhenMaxStepsZero(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
-		return &sdk.GenerateResult{
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
+		return sdk.ModelResult{
 			FinishReason: sdk.FinishReasonToolCalls,
 			ToolCalls: []sdk.ToolCall{{
 				ToolCallID: "c1",
@@ -320,9 +336,9 @@ func TestClient_GenerateTextResult_NoAutoExec_WhenMaxStepsZero(t *testing.T) {
 }
 
 func TestClient_GenerateTextResult_UnlimitedSteps(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
 		if call <= 3 {
-			return &sdk.GenerateResult{
+			return sdk.ModelResult{
 				FinishReason: sdk.FinishReasonToolCalls,
 				ToolCalls: []sdk.ToolCall{{
 					ToolCallID: fmt.Sprintf("c%d", call),
@@ -332,7 +348,7 @@ func TestClient_GenerateTextResult_UnlimitedSteps(t *testing.T) {
 				Usage: sdk.Usage{TotalTokens: 10},
 			}, nil
 		}
-		return &sdk.GenerateResult{
+		return sdk.ModelResult{
 			Text:         "done",
 			FinishReason: sdk.FinishReasonStop,
 			Usage:        sdk.Usage{TotalTokens: 10},
@@ -369,9 +385,9 @@ func TestClient_GenerateTextResult_UnlimitedSteps(t *testing.T) {
 // ---------- unit tests: callbacks ----------
 
 func TestClient_GenerateTextResult_Callbacks(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
 		if call == 1 {
-			return &sdk.GenerateResult{
+			return sdk.ModelResult{
 				FinishReason: sdk.FinishReasonToolCalls,
 				ToolCalls: []sdk.ToolCall{{
 					ToolCallID: "c1", ToolName: "ping", Input: nil,
@@ -379,7 +395,7 @@ func TestClient_GenerateTextResult_Callbacks(t *testing.T) {
 				Usage: sdk.Usage{TotalTokens: 5},
 			}, nil
 		}
-		return &sdk.GenerateResult{
+		return sdk.ModelResult{
 			Text:         "pong",
 			FinishReason: sdk.FinishReasonStop,
 			Usage:        sdk.Usage{TotalTokens: 5},
@@ -430,19 +446,19 @@ func TestClient_GenerateTextResult_Callbacks(t *testing.T) {
 }
 
 func TestClient_GenerateTextResult_PrepareStep(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
 		if call == 1 {
-			return &sdk.GenerateResult{
+			return sdk.ModelResult{
 				FinishReason: sdk.FinishReasonToolCalls,
 				ToolCalls: []sdk.ToolCall{{
 					ToolCallID: "c1", ToolName: "fetch", Input: nil,
 				}},
 			}, nil
 		}
-		if params.System != "injected-system" {
-			t.Errorf("prepareStep did not inject system: got %q", params.System)
+		if req.System != "injected-system" {
+			t.Errorf("prepareStep did not inject system: got %q", req.System)
 		}
-		return &sdk.GenerateResult{
+		return sdk.ModelResult{
 			Text:         "ok",
 			FinishReason: sdk.FinishReasonStop,
 		}, nil
@@ -470,12 +486,12 @@ func TestClient_GenerateTextResult_PrepareStep(t *testing.T) {
 }
 
 func TestClient_GenerateTextResult_PreservesDeveloperRoleAcrossToolSteps(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
 		if call == 1 {
-			if len(params.Messages) != 2 || params.Messages[0].Role != sdk.MessageRoleDeveloper {
-				t.Fatalf("first step messages: %+v", params.Messages)
+			if len(req.Messages) != 2 || req.Messages[0].Role != sdk.MessageRoleDeveloper {
+				t.Fatalf("first step messages: %+v", req.Messages)
 			}
-			return &sdk.GenerateResult{
+			return sdk.ModelResult{
 				FinishReason: sdk.FinishReasonToolCalls,
 				ToolCalls: []sdk.ToolCall{{
 					ToolCallID: "c1", ToolName: "fetch", Input: nil,
@@ -489,15 +505,15 @@ func TestClient_GenerateTextResult_PreservesDeveloperRoleAcrossToolSteps(t *test
 			sdk.MessageRoleAssistant,
 			sdk.MessageRoleTool,
 		}
-		if len(params.Messages) != len(wantRoles) {
-			t.Fatalf("second step message count: got %d, want %d", len(params.Messages), len(wantRoles))
+		if len(req.Messages) != len(wantRoles) {
+			t.Fatalf("second step message count: got %d, want %d", len(req.Messages), len(wantRoles))
 		}
 		for i, want := range wantRoles {
-			if params.Messages[i].Role != want {
-				t.Fatalf("second step message %d role: got %q, want %q", i, params.Messages[i].Role, want)
+			if req.Messages[i].Role != want {
+				t.Fatalf("second step message %d role: got %q, want %q", i, req.Messages[i].Role, want)
 			}
 		}
-		return &sdk.GenerateResult{Text: "ok", FinishReason: sdk.FinishReasonStop}, nil
+		return sdk.ModelResult{Text: "ok", FinishReason: sdk.FinishReasonStop}, nil
 	}}
 
 	_, err := sdk.GenerateTextResult(context.Background(),
@@ -523,16 +539,16 @@ func TestClient_GenerateTextResult_PreservesDeveloperRoleAcrossToolSteps(t *test
 // ---------- unit tests: approval flow ----------
 
 func TestClient_GenerateTextResult_ApprovalApproved(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
 		if call == 1 {
-			return &sdk.GenerateResult{
+			return sdk.ModelResult{
 				FinishReason: sdk.FinishReasonToolCalls,
 				ToolCalls: []sdk.ToolCall{{
 					ToolCallID: "c1", ToolName: "dangerous", Input: nil,
 				}},
 			}, nil
 		}
-		return &sdk.GenerateResult{
+		return sdk.ModelResult{
 			Text:         "executed",
 			FinishReason: sdk.FinishReasonStop,
 		}, nil
@@ -568,16 +584,16 @@ func TestClient_GenerateTextResult_ApprovalApproved(t *testing.T) {
 }
 
 func TestClient_GenerateTextResult_ApprovalDenied(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
 		if call == 1 {
-			return &sdk.GenerateResult{
+			return sdk.ModelResult{
 				FinishReason: sdk.FinishReasonToolCalls,
 				ToolCalls: []sdk.ToolCall{{
 					ToolCallID: "c1", ToolName: "dangerous", Input: nil,
 				}},
 			}, nil
 		}
-		return &sdk.GenerateResult{
+		return sdk.ModelResult{
 			Text:         "denied-response",
 			FinishReason: sdk.FinishReasonStop,
 		}, nil
@@ -613,11 +629,11 @@ func TestClient_GenerateTextResult_ApprovalDenied(t *testing.T) {
 }
 
 func TestClient_GenerateTextResult_ApprovalDeferred(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
 		if call != 1 {
 			t.Fatalf("unexpected provider call %d", call)
 		}
-		return &sdk.GenerateResult{
+		return sdk.ModelResult{
 			FinishReason: sdk.FinishReasonToolCalls,
 			ToolCalls: []sdk.ToolCall{{
 				ToolCallID: "c1", ToolName: "dangerous", Input: nil,
@@ -664,16 +680,16 @@ func TestClient_GenerateTextResult_ApprovalDeferred(t *testing.T) {
 }
 
 func TestClient_GenerateTextResult_ApprovalNoHandler(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
 		if call == 1 {
-			return &sdk.GenerateResult{
+			return sdk.ModelResult{
 				FinishReason: sdk.FinishReasonToolCalls,
 				ToolCalls: []sdk.ToolCall{{
 					ToolCallID: "c1", ToolName: "dangerous", Input: nil,
 				}},
 			}, nil
 		}
-		return &sdk.GenerateResult{
+		return sdk.ModelResult{
 			Text:         "handled-denial",
 			FinishReason: sdk.FinishReasonStop,
 		}, nil
@@ -706,9 +722,9 @@ func TestClient_GenerateTextResult_ApprovalNoHandler(t *testing.T) {
 // ---------- unit tests: streaming with tool execution ----------
 
 func TestClient_StreamText_ToolAutoExec(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
 		if call == 1 {
-			return &sdk.GenerateResult{
+			return sdk.ModelResult{
 				FinishReason: sdk.FinishReasonToolCalls,
 				ToolCalls: []sdk.ToolCall{{
 					ToolCallID: "c1",
@@ -718,7 +734,7 @@ func TestClient_StreamText_ToolAutoExec(t *testing.T) {
 				Usage: sdk.Usage{TotalTokens: 10},
 			}, nil
 		}
-		return &sdk.GenerateResult{
+		return sdk.ModelResult{
 			Text:         "Hello, Alice!",
 			FinishReason: sdk.FinishReasonStop,
 			Usage:        sdk.Usage{TotalTokens: 10},
@@ -776,16 +792,16 @@ func TestClient_StreamText_ToolAutoExec(t *testing.T) {
 }
 
 func TestClient_StreamText_ToolProgress(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
 		if call == 1 {
-			return &sdk.GenerateResult{
+			return sdk.ModelResult{
 				FinishReason: sdk.FinishReasonToolCalls,
 				ToolCalls: []sdk.ToolCall{{
 					ToolCallID: "c1", ToolName: "run_cmd", Input: nil,
 				}},
 			}, nil
 		}
-		return &sdk.GenerateResult{
+		return sdk.ModelResult{
 			Text:         "command finished",
 			FinishReason: sdk.FinishReasonStop,
 		}, nil
@@ -828,16 +844,16 @@ func TestClient_StreamText_ToolProgress(t *testing.T) {
 }
 
 func TestClient_StreamText_ApprovalFlow(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
 		if call == 1 {
-			return &sdk.GenerateResult{
+			return sdk.ModelResult{
 				FinishReason: sdk.FinishReasonToolCalls,
 				ToolCalls: []sdk.ToolCall{{
 					ToolCallID: "c1", ToolName: "rm_rf", Input: nil,
 				}},
 			}, nil
 		}
-		return &sdk.GenerateResult{
+		return sdk.ModelResult{
 			Text:         "denied gracefully",
 			FinishReason: sdk.FinishReasonStop,
 		}, nil
@@ -884,11 +900,11 @@ func TestClient_StreamText_ApprovalFlow(t *testing.T) {
 }
 
 func TestClient_StreamText_ApprovalDeferred(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
 		if call != 1 {
 			t.Fatalf("unexpected provider call %d", call)
 		}
-		return &sdk.GenerateResult{
+		return sdk.ModelResult{
 			FinishReason: sdk.FinishReasonToolCalls,
 			ToolCalls: []sdk.ToolCall{{
 				ToolCallID: "c1", ToolName: "rm_rf", Input: nil,
@@ -958,16 +974,16 @@ func TestClient_StreamText_ApprovalDeferred(t *testing.T) {
 }
 
 func TestClient_StreamText_OnStepCallback(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
 		if call == 1 {
-			return &sdk.GenerateResult{
+			return sdk.ModelResult{
 				FinishReason: sdk.FinishReasonToolCalls,
 				ToolCalls: []sdk.ToolCall{{
 					ToolCallID: "c1", ToolName: "noop", Input: nil,
 				}},
 			}, nil
 		}
-		return &sdk.GenerateResult{
+		return sdk.ModelResult{
 			Text:         "done",
 			FinishReason: sdk.FinishReasonStop,
 		}, nil
@@ -1031,8 +1047,8 @@ func TestClient_OnStepCommittedErrorStopsLoop(t *testing.T) {
 	for _, runner := range runners {
 		t.Run(runner.name, func(t *testing.T) {
 			commitErr := errors.New("checkpoint unavailable")
-			mp := &mockProvider{handler: func(int, sdk.GenerateParams) (*sdk.GenerateResult, error) {
-				return &sdk.GenerateResult{
+			mp := &mockProvider{handler: func(int, sdk.Request) (sdk.ModelResult, error) {
+				return sdk.ModelResult{
 					FinishReason: sdk.FinishReasonToolCalls,
 					ToolCalls:    []sdk.ToolCall{{ToolCallID: "c1", ToolName: "noop"}},
 				}, nil
@@ -1062,11 +1078,11 @@ func TestClient_OnStepCommittedErrorStopsLoop(t *testing.T) {
 }
 
 func TestClient_StreamText_DoesNotCommitIncompleteStep(t *testing.T) {
-	mp := &mockProvider{streamHandler: func(int, sdk.GenerateParams) (*sdk.StreamResult, error) {
+	mp := &mockProvider{streamHandler: func(int, sdk.Request) (<-chan sdk.StreamPart, error) {
 		ch := make(chan sdk.StreamPart, 1)
 		ch <- &sdk.TextDeltaPart{ID: "partial", Text: "partial"}
 		close(ch)
-		return &sdk.StreamResult{Stream: ch}, nil
+		return ch, nil
 	}}
 	committed := false
 
@@ -1093,9 +1109,9 @@ func TestClient_StreamText_DoesNotCommitIncompleteStep(t *testing.T) {
 // ---------- unit tests: Steps, Messages fields ----------
 
 func TestClient_GenerateTextResult_StepsAndMessages(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
 		if call == 1 {
-			return &sdk.GenerateResult{
+			return sdk.ModelResult{
 				Text:         "Let me add that.",
 				FinishReason: sdk.FinishReasonToolCalls,
 				ToolCalls: []sdk.ToolCall{{
@@ -1105,7 +1121,7 @@ func TestClient_GenerateTextResult_StepsAndMessages(t *testing.T) {
 				Usage: sdk.Usage{TotalTokens: 10},
 			}, nil
 		}
-		return &sdk.GenerateResult{
+		return sdk.ModelResult{
 			Text:         "The answer is 3.",
 			FinishReason: sdk.FinishReasonStop,
 			Usage:        sdk.Usage{TotalTokens: 10},
@@ -1167,16 +1183,16 @@ func TestClient_GenerateTextResult_StepsAndMessages(t *testing.T) {
 }
 
 func TestClient_StreamText_StepsAndMessages(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
 		if call == 1 {
-			return &sdk.GenerateResult{
+			return sdk.ModelResult{
 				FinishReason: sdk.FinishReasonToolCalls,
 				ToolCalls: []sdk.ToolCall{{
 					ToolCallID: "c1", ToolName: "ping", Input: nil,
 				}},
 			}, nil
 		}
-		return &sdk.GenerateResult{
+		return sdk.ModelResult{
 			Text:         "pong",
 			FinishReason: sdk.FinishReasonStop,
 		}, nil
@@ -1224,19 +1240,19 @@ func TestClient_StreamText_StepsAndMessages(t *testing.T) {
 // ---------- unit tests: callback return override ----------
 
 func TestClient_GenerateTextResult_OnStepOverride(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
 		if call == 1 {
-			return &sdk.GenerateResult{
+			return sdk.ModelResult{
 				FinishReason: sdk.FinishReasonToolCalls,
 				ToolCalls: []sdk.ToolCall{{
 					ToolCallID: "c1", ToolName: "x", Input: nil,
 				}},
 			}, nil
 		}
-		if params.System != "overridden-by-onstep" {
-			t.Errorf("onStep override not applied: system=%q", params.System)
+		if req.System != "overridden-by-onstep" {
+			t.Errorf("onStep override not applied: system=%q", req.System)
 		}
-		return &sdk.GenerateResult{
+		return sdk.ModelResult{
 			Text:         "ok",
 			FinishReason: sdk.FinishReasonStop,
 		}, nil
@@ -1269,19 +1285,19 @@ func TestClient_GenerateTextResult_OnStepOverride(t *testing.T) {
 }
 
 func TestClient_GenerateTextResult_PrepareStepOverride(t *testing.T) {
-	mp := &mockProvider{handler: func(call int, params sdk.GenerateParams) (*sdk.GenerateResult, error) {
+	mp := &mockProvider{handler: func(call int, req sdk.Request) (sdk.ModelResult, error) {
 		if call == 1 {
-			return &sdk.GenerateResult{
+			return sdk.ModelResult{
 				FinishReason: sdk.FinishReasonToolCalls,
 				ToolCalls: []sdk.ToolCall{{
 					ToolCallID: "c1", ToolName: "x", Input: nil,
 				}},
 			}, nil
 		}
-		if params.System != "replaced-by-preparestep" {
-			t.Errorf("prepareStep override not applied: system=%q", params.System)
+		if req.System != "replaced-by-preparestep" {
+			t.Errorf("prepareStep override not applied: system=%q", req.System)
 		}
-		return &sdk.GenerateResult{
+		return sdk.ModelResult{
 			Text:         "ok",
 			FinishReason: sdk.FinishReasonStop,
 		}, nil

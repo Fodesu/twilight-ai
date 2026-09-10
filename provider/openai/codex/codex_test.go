@@ -77,8 +77,8 @@ func TestCodexDoGenerate_RequestShapeAndStream(t *testing.T) {
 		codex.WithBaseURL(srv.URL),
 	)
 
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("gpt-5.2"),
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "gpt-5.2",
 		System:   "You are helpful.",
 		Messages: []sdk.Message{sdk.UserMessage("Hi")},
 	})
@@ -124,8 +124,8 @@ func TestCodexDoGenerate_PreservesMaxReasoningEffort(t *testing.T) {
 
 	p := codex.New(codex.WithAccessToken("token-123"), codex.WithBaseURL(srv.URL))
 	effort := "max"
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:           p.ChatModel("gpt-5.2"),
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:           "gpt-5.2",
 		Messages:        []sdk.Message{sdk.UserMessage("hi")},
 		ReasoningEffort: &effort,
 	})
@@ -180,8 +180,8 @@ func TestCodexDoStream_CapturesEncryptedContentFromItemDone(t *testing.T) {
 	defer srv.Close()
 
 	p := codex.New(codex.WithAccessToken("token-123"), codex.WithBaseURL(srv.URL))
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("gpt-5.2"),
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "gpt-5.2",
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
 	})
 	if err != nil {

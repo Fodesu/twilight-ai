@@ -1,5 +1,7 @@
 package sdk
 
+import "context"
+
 type StreamPartType string
 
 const (
@@ -259,57 +261,32 @@ func (sr *StreamResult) Text() (string, error) {
 }
 
 // ToResult consumes the entire stream and assembles a GenerateResult.
+//
+// It routes the legacy channel through the same assembler the boundary uses, so
+// a legacy caller and a boundary caller cannot disagree about the same parts.
+// Tool results are the one thing the assembler does not carry: they are
+// orchestration, so the legacy wrapper collects them on the way through.
 func (sr *StreamResult) ToResult() (*GenerateResult, error) {
-	result := &GenerateResult{}
-	var reasoning reasoningAccumulator
-
-	for part := range sr.Stream {
-		switch p := part.(type) {
-		case *TextDeltaPart:
-			result.Text += p.Text
-		case *TextEndPart:
-			if p.ProviderMetadata != nil {
-				result.TextProviderMetadata = p.ProviderMetadata
-			}
-		case *ReasoningStartPart:
-			reasoning.openBlock(p.ID, p.Format, p.Model, p.ProviderMetadata)
-		case *ReasoningDeltaPart:
-			reasoning.appendDelta(p.ID, p.Text, p.Format, p.Model, p.ProviderMetadata)
-		case *ReasoningEndPart:
-			reasoning.closeBlock(p.ID, p.Format, p.Model, p.ProviderMetadata)
-		case *StreamToolCallPart:
-			result.ToolCalls = append(result.ToolCalls, ToolCall{
-				ToolCallID:       p.ToolCallID,
-				ToolName:         p.ToolName,
-				Input:            p.Input,
-				ProviderMetadata: p.ProviderMetadata,
-			})
-		case *StreamToolResultPart:
-			result.ToolResults = append(result.ToolResults, ToolResult{
+	stream := assembleStream(context.Background(), sr.Stream)
+	var toolResults []ToolResult
+	for part := range stream.Parts {
+		if p, ok := part.(*StreamToolResultPart); ok {
+			toolResults = append(toolResults, ToolResult{
 				ToolCallID: p.ToolCallID,
 				ToolName:   p.ToolName,
 				Input:      p.Input,
 				Output:     p.Output,
 			})
-		case *StreamSourcePart:
-			result.Sources = append(result.Sources, p.Source)
-		case *StreamFilePart:
-			result.Files = append(result.Files, p.File)
-		case *FinishStepPart:
-			result.Response = p.Response
-		case *FinishPart:
-			result.FinishReason = p.FinishReason
-			result.RawFinishReason = p.RawFinishReason
-			result.Usage = p.TotalUsage
-		case *ErrorPart:
-			return result, p.Error
 		}
 	}
-
-	result.ReasoningParts = reasoning.result()
-	result.Reasoning = ReasoningText(result.ReasoningParts)
+	model, err := stream.Result()
+	if model == nil {
+		return nil, err
+	}
+	result := GenerateResultFromModelResult(*model)
+	result.ToolResults = toolResults
 	result.Steps = sr.Steps
 	result.Messages = sr.Messages
 	result.DeferredToolApproval = sr.DeferredToolApproval
-	return result, nil
+	return result, err
 }

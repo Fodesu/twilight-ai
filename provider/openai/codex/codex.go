@@ -93,8 +93,8 @@ func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult {
 }
 
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error) {
-	req, err := p.buildRequest(&sdk.GenerateParams{
-		Model:    p.ChatModel(modelID),
+	req, err := p.buildRequest(&sdk.Request{
+		Model:    modelID,
 		System:   "You are a helpful AI assistant.",
 		Messages: []sdk.Message{sdk.UserMessage("ping")},
 	})
@@ -124,28 +124,27 @@ func (p *Provider) ChatModel(id string) *sdk.Model {
 	}
 }
 
-func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*sdk.GenerateResult, error) { //nolint:gocritic // interface method
-	sr, err := p.DoStream(ctx, params)
+// DoGenerate answers a non-streaming call on an endpoint that only streams.
+// The parts are handed back to the SDK to fold, so the result cannot drift from
+// what the streamed call produces.
+func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error) { //nolint:gocritic // interface method
+	parts, err := p.DoStream(ctx, req)
 	if err != nil {
-		return nil, err
+		return sdk.ModelResult{}, err
 	}
-	result, err := sr.ToResult()
-	if err != nil {
-		return nil, err
-	}
-	return result, nil
+	return sdk.CollectStream(ctx, parts)
 }
 
-func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sdk.StreamResult, error) { //nolint:gocritic,gocyclo // provider streaming
-	if params.Model == nil {
+func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error) { //nolint:gocritic,gocyclo // provider streaming
+	if req.Model == "" {
 		return nil, fmt.Errorf("openai-codex: model is required")
 	}
 
-	req, err := p.buildRequest(&params)
+	out, err := p.buildRequest(&req)
 	if err != nil {
 		return nil, fmt.Errorf("openai-codex: build request: %w", err)
 	}
-	req.Stream = true
+	out.Stream = true
 
 	ch := make(chan sdk.StreamPart, 64)
 	go func() {
@@ -206,7 +205,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 			BaseURL: p.baseURL,
 			Path:    "/codex/responses",
 			Headers: p.authHeaders(),
-			Body:    req,
+			Body:    out,
 		}, func(ev *utils.SSEEvent) error {
 			switch ev.Event {
 			case "response.created":
@@ -392,49 +391,66 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 		})
 	}()
 
-	return &sdk.StreamResult{Stream: ch}, nil
+	return ch, nil
 }
 
-func (p *Provider) buildRequest(params *sdk.GenerateParams) (*codexRequest, error) {
-	messages, err := messagecompat.Normalize(params.Messages, sdk.MessageRoleCapabilities{})
+func (p *Provider) buildRequest(req *sdk.Request) (*codexRequest, error) {
+	messages, err := messagecompat.Normalize(req.Messages, sdk.MessageRoleCapabilities{})
 	if err != nil {
 		return nil, err
 	}
-	instructions, input := convertToCodexInput(params.System, messages)
-	req := &codexRequest{
-		Model:        params.Model.ID,
+	instructions, input := convertToCodexInput(req.System, messages)
+	out := &codexRequest{
+		Model:        req.Model,
 		Instructions: instructions,
 		Input:        input,
 		Include:      []string{"reasoning.encrypted_content"},
 		Store:        false,
 	}
 
-	if len(params.Tools) > 0 {
-		req.Tools = convertCodexTools(params.Tools)
-		req.ToolChoice = params.ToolChoice
+	if len(req.Tools) > 0 {
+		out.Tools = convertCodexTools(req.Tools)
+		out.ToolChoice = codexToolChoiceForWire(req.ToolChoice)
 	}
 
-	if params.ResponseFormat != nil {
+	if req.ResponseFormat != nil {
 		tf := &codexTextFmt{}
-		switch params.ResponseFormat.Type {
+		switch req.ResponseFormat.Type {
 		case sdk.ResponseFormatJSONObject:
 			tf.Format = &codexTextFormat{Type: "json_object"}
 		case sdk.ResponseFormatJSONSchema:
-			tf.Format = &codexTextFormat{Type: "json_schema", Name: "response", Schema: params.ResponseFormat.JSONSchema}
+			tf.Format = &codexTextFormat{Type: "json_schema", Name: "response", Schema: req.ResponseFormat.JSONSchema}
 		}
 		if tf.Format != nil {
-			req.Text = tf
+			out.Text = tf
 		}
 	}
 
-	if params.ReasoningEffort != nil && *params.ReasoningEffort != "" {
+	if req.ReasoningEffort != nil && *req.ReasoningEffort != "" {
 		// The Codex endpoint accepts max even though generic OpenAI endpoints do not.
-		req.Reasoning = &codexReasoning{Effort: *params.ReasoningEffort}
+		out.Reasoning = &codexReasoning{Effort: *req.ReasoningEffort}
 	}
-	return req, nil
+	return out, nil
 }
 
-func convertCodexTools(tools []sdk.Tool) []codexTool {
+// codexToolChoiceForWire maps the closed provider-neutral ToolChoice onto the
+// Codex wire shape, which follows OpenAI: a mode maps to its own string and a
+// named tool becomes the function object. An empty mode leaves the field unset.
+func codexToolChoiceForWire(choice sdk.ToolChoice) any {
+	switch choice.Mode {
+	case sdk.ToolChoiceAuto, sdk.ToolChoiceNone, sdk.ToolChoiceRequired:
+		return string(choice.Mode)
+	case sdk.ToolChoiceTool:
+		return map[string]any{
+			"type":     "function",
+			"function": map[string]any{"name": choice.Tool},
+		}
+	default:
+		return nil
+	}
+}
+
+func convertCodexTools(tools []sdk.ToolDefinition) []codexTool {
 	out := make([]codexTool, 0, len(tools))
 	for _, t := range tools {
 		out = append(out, codexTool{

@@ -8,7 +8,7 @@ type generationRequest struct {
 	N                 *int   `json:"n,omitempty"`
 	Size              string `json:"size,omitempty"`
 	Quality           string `json:"quality,omitempty"`
-	Style             string `json:"style,omitempty"`             // dall-e-3: "vivid", "natural"
+	Style             string `json:"style,omitempty"`              // dall-e-3: "vivid", "natural"
 	ResponseFormat    string `json:"response_format,omitempty"`    // dall-e-2/3: "url", "b64_json"
 	Background        string `json:"background,omitempty"`         // gpt-image: "transparent", "opaque", "auto"
 	OutputFormat      string `json:"output_format,omitempty"`      // gpt-image: "png", "jpeg", "webp"
@@ -20,20 +20,20 @@ type generationRequest struct {
 // --- Edit request (JSON mode for GPT Image models) ---
 
 type editRequest struct {
-	Model             string         `json:"model"`
-	Prompt            string         `json:"prompt"`
-	Images            []imageRef     `json:"images,omitempty"`
-	Mask              *imageRef      `json:"mask,omitempty"`
-	N                 *int           `json:"n,omitempty"`
-	Size              string         `json:"size,omitempty"`
-	Quality           string         `json:"quality,omitempty"`
-	Background        string         `json:"background,omitempty"`
-	OutputFormat      string         `json:"output_format,omitempty"`
-	OutputCompression *int           `json:"output_compression,omitempty"`
-	InputFidelity     string         `json:"input_fidelity,omitempty"`
-	Moderation        string         `json:"moderation,omitempty"`
-	ResponseFormat    string         `json:"response_format,omitempty"`
-	User              string         `json:"user,omitempty"`
+	Model             string     `json:"model"`
+	Prompt            string     `json:"prompt"`
+	Images            []imageRef `json:"images,omitempty"`
+	Mask              *imageRef  `json:"mask,omitempty"`
+	N                 *int       `json:"n,omitempty"`
+	Size              string     `json:"size,omitempty"`
+	Quality           string     `json:"quality,omitempty"`
+	Background        string     `json:"background,omitempty"`
+	OutputFormat      string     `json:"output_format,omitempty"`
+	OutputCompression *int       `json:"output_compression,omitempty"`
+	InputFidelity     string     `json:"input_fidelity,omitempty"`
+	Moderation        string     `json:"moderation,omitempty"`
+	ResponseFormat    string     `json:"response_format,omitempty"`
+	User              string     `json:"user,omitempty"`
 }
 
 type imageRef struct {

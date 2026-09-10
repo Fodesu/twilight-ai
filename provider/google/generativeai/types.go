@@ -1,5 +1,7 @@
 package generativeai
 
+import "encoding/json"
+
 // --- Request types ---
 
 type generateRequest struct {
@@ -92,10 +94,14 @@ type toolGroup struct {
 	FunctionDeclarations []functionDeclaration `json:"functionDeclarations,omitempty"`
 }
 
+// functionDeclaration carries an already-resolved JSON Schema document under
+// parametersJsonSchema (Google's full-JSON-Schema field, as opposed to the
+// OpenAPI subset in `parameters`). json.RawMessage embeds the schema verbatim
+// and, being a slice, omits cleanly when a tool declares no parameters.
 type functionDeclaration struct {
-	Name                 string `json:"name"`
-	Description          string `json:"description"`
-	ParametersJSONSchema any    `json:"parametersJsonSchema,omitempty"`
+	Name                 string          `json:"name"`
+	Description          string          `json:"description"`
+	ParametersJSONSchema json.RawMessage `json:"parametersJsonSchema,omitempty"`
 }
 
 type toolConfig struct {

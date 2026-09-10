@@ -1,10 +1,7 @@
 package sdk
 
 import (
-	"encoding/json"
 	"testing"
-
-	"github.com/google/jsonschema-go/jsonschema"
 )
 
 func TestRequestFromGenerateParams(t *testing.T) {
@@ -54,57 +51,14 @@ func TestRequestFromGenerateParams(t *testing.T) {
 	}
 }
 
-func TestGenerateParamsFromRequest(t *testing.T) {
-	topP := 0.5
-	req := Request{
-		Model:    "m-1",
-		Messages: []Message{UserMessage("hi")},
-		Tools: []ToolDefinition{{
-			Name:         "lookup",
-			Description:  "Lookup",
-			Parameters:   json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}}}`),
-			CacheControl: &CacheControl{Type: "ephemeral"},
-		}},
-		ToolChoice: ToolChoice{Mode: ToolChoiceTool, Tool: "lookup"},
-		TopP:       &topP,
-	}
-	model := &Model{ID: "m-1"}
-	params, err := GenerateParamsFromRequest(model, req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if params.Model != model || params.TopP == nil || *params.TopP != topP {
-		t.Fatalf("params = %+v", params)
-	}
-	if len(params.Tools) != 1 || params.Tools[0].Execute != nil || params.Tools[0].RequireApproval {
-		t.Fatalf("tool should contain definition only: %+v", params.Tools)
-	}
-	if _, ok := params.Tools[0].Parameters.(*jsonschema.Schema); !ok {
-		t.Fatalf("tool parameters type = %T", params.Tools[0].Parameters)
-	}
-	choice, ok := params.ToolChoice.(map[string]any)
-	if !ok || choice["type"] != "function" {
-		t.Fatalf("legacy tool choice = %#v", params.ToolChoice)
-	}
-
-	if _, err := GenerateParamsFromRequest(&Model{ID: "other"}, req); err == nil {
-		t.Fatal("expected model mismatch error")
-	}
-
-	req.ProviderOptions = map[string]json.RawMessage{"openai": json.RawMessage(`{"reasoning":{"effort":"low"}}`)}
-	if _, err := GenerateParamsFromRequest(model, req); err == nil {
-		t.Fatal("expected providerOptions to reject legacy adapter fallback")
-	}
-}
-
 func TestToolChoiceFromLegacy(t *testing.T) {
 	for _, mode := range []string{"auto", "none", "required"} {
 		choice, err := ToolChoiceFromLegacy(mode)
 		if err != nil {
 			t.Fatalf("%s: %v", mode, err)
 		}
-		if choice.Mode != ToolChoiceMode(mode) || choice.Legacy() != mode {
-			t.Fatalf("choice %s round trip = %+v / %#v", mode, choice, choice.Legacy())
+		if choice.Mode != ToolChoiceMode(mode) {
+			t.Fatalf("choice %s = %+v", mode, choice)
 		}
 	}
 	choice, err := ToolChoiceFromLegacy(map[string]any{"type": "function", "function": map[string]any{"name": "search"}})
@@ -119,9 +73,9 @@ func TestToolChoiceFromLegacy(t *testing.T) {
 	}
 }
 
-func TestModelResultAdapters(t *testing.T) {
-	response := ResponseMetadata{ID: "resp-1", Headers: map[string]string{"h": "v"}}
-	gen := &GenerateResult{
+func TestGenerateResultFromModelResult(t *testing.T) {
+	response := &ResponseMetadata{ID: "resp-1", Headers: map[string]string{"h": "v"}}
+	model := ModelResult{
 		Text:                 "ok",
 		Reasoning:            "why",
 		ReasoningParts:       []ReasoningPart{{ID: "r1", Text: "why", ProviderMetadata: map[string]any{"p": "v"}}},
@@ -131,27 +85,23 @@ func TestModelResultAdapters(t *testing.T) {
 		Sources:              []Source{{ID: "src", URL: "https://example.test", ProviderMetadata: map[string]any{"s": "m"}}},
 		ToolCalls:            []ToolCall{{ToolCallID: "c1", ToolName: "search", Input: map[string]any{"q": "go"}}},
 		Response:             response,
-		ToolResults:          []ToolResult{{ToolCallID: "c1"}},
-		Steps:                []StepResult{{Text: "step"}},
-		Messages:             []Message{AssistantMessage("step")},
 	}
 
-	model := ModelResultFromGenerateResult(gen)
-	if model.Text != "ok" || model.Response == nil || model.Response.Headers["h"] != "v" {
-		t.Fatalf("model result = %+v", model)
+	// The up-conversion is the client layer's one-way bridge: it may add the
+	// orchestration fields a ModelResult never carries, but it must not alias
+	// the boundary result it was given.
+	gen := GenerateResultFromModelResult(model)
+	if gen.Text != "ok" || gen.Response.Headers["h"] != "v" {
+		t.Fatalf("generate result = %+v", gen)
 	}
-	if len(model.ToolCalls) != 1 || len(model.Sources) != 1 || len(model.ReasoningParts) != 1 {
-		t.Fatalf("missing single-call fields: %+v", model)
+	if len(gen.ToolCalls) != 1 || len(gen.Sources) != 1 || len(gen.ReasoningParts) != 1 {
+		t.Fatalf("missing single-call fields: %+v", gen)
 	}
-
-	// Multi-step and tool execution fields intentionally do not round-trip
-	// through ModelResult.
-	back := GenerateResultFromModelResult(model)
-	if len(back.ToolResults) != 0 || len(back.Steps) != 0 || len(back.Messages) != 0 {
-		t.Fatalf("unexpected orchestration fields: %+v", back)
+	if len(gen.ToolResults) != 0 || len(gen.Steps) != 0 || len(gen.Messages) != 0 {
+		t.Fatalf("unexpected orchestration fields: %+v", gen)
 	}
 	model.TextProviderMetadata["t"] = "mutated"
-	if back.TextProviderMetadata["t"] != "sig" {
+	if gen.TextProviderMetadata["t"] != "sig" {
 		t.Fatal("GenerateResult aliased ModelResult metadata")
 	}
 }

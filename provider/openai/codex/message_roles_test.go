@@ -66,8 +66,8 @@ func TestUnsupportedInstructionRolesFallbackWithoutHoisting(t *testing.T) {
 	defer srv.Close()
 
 	p := codex.New(codex.WithAccessToken("token"), codex.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:  p.ChatModel("gpt-5"),
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:  "gpt-5",
 		System: "root policy",
 		Messages: []sdk.Message{
 			sdk.SystemMessage("leading system"),

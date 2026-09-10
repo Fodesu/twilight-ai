@@ -31,8 +31,8 @@ func captureInput(t *testing.T, messages []sdk.Message) []map[string]any {
 	defer srv.Close()
 
 	p := responses.New(responses.WithAPIKey("k"), responses.WithBaseURL(srv.URL))
-	if _, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("gpt-5.6"),
+	if _, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "gpt-5.6",
 		Messages: messages,
 	}); err != nil {
 		t.Fatalf("DoGenerate: %v", err)
@@ -165,8 +165,8 @@ func TestRequestAsksForEncryptedReasoning(t *testing.T) {
 	defer srv.Close()
 
 	p := responses.New(responses.WithAPIKey("k"), responses.WithBaseURL(srv.URL))
-	if _, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("gpt-5.6"),
+	if _, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "gpt-5.6",
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
 	}); err != nil {
 		t.Fatalf("DoGenerate: %v", err)
@@ -215,17 +215,18 @@ func TestDoStreamCapturesEncryptedContentFromItemDone(t *testing.T) {
 	defer srv.Close()
 
 	p := responses.New(responses.WithAPIKey("k"), responses.WithBaseURL(srv.URL))
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("gpt-5.6"),
+	stream, err := sdk.Stream(context.Background(), p.ChatModel("gpt-5.6"), sdk.Request{
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
 	})
 	if err != nil {
-		t.Fatalf("DoStream: %v", err)
+		t.Fatalf("Stream: %v", err)
 	}
 
-	result, err := sr.ToResult()
+	for range stream.Parts {
+	}
+	result, err := stream.Result()
 	if err != nil {
-		t.Fatalf("ToResult: %v", err)
+		t.Fatalf("stream result: %v", err)
 	}
 	if len(result.ReasoningParts) != 1 {
 		t.Fatalf("ReasoningParts: got %d, want 1 (%+v)", len(result.ReasoningParts), result.ReasoningParts)
@@ -274,17 +275,18 @@ func TestDoStreamKeepsEncryptedContentWhenToolCallClosesBlockFirst(t *testing.T)
 	defer srv.Close()
 
 	p := responses.New(responses.WithAPIKey("k"), responses.WithBaseURL(srv.URL))
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("gpt-5.6"),
+	stream, err := sdk.Stream(context.Background(), p.ChatModel("gpt-5.6"), sdk.Request{
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
 	})
 	if err != nil {
-		t.Fatalf("DoStream: %v", err)
+		t.Fatalf("Stream: %v", err)
 	}
 
-	result, err := sr.ToResult()
+	for range stream.Parts {
+	}
+	result, err := stream.Result()
 	if err != nil {
-		t.Fatalf("ToResult: %v", err)
+		t.Fatalf("stream result: %v", err)
 	}
 	if len(result.ReasoningParts) != 1 {
 		t.Fatalf("ReasoningParts: got %d, want 1 (%+v)", len(result.ReasoningParts), result.ReasoningParts)

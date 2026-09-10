@@ -12,19 +12,21 @@ import (
 // channel. New multi-step runtimes should use agent/run/loop.Loop instead of
 // this SDK loop.
 //
+// Every step goes through the same path: the legacy options are projected into
+// the Request boundary, the provider yields parts, and the SDK assembles those
+// same parts into the step result. There is no second, faster path that skips
+// assembly, because that is how a streamed step and a streamed result come to
+// disagree.
+//
 // StreamResult.Steps and StreamResult.Messages are populated during stream
-// consumption and safe to read after Stream is fully consumed.
+// consumption and safe to read after the stream is fully consumed.
 func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*StreamResult, error) {
-	cfg, prov, err := buildConfig(options)
+	cfg, _, err := buildConfig(options)
 	if err != nil {
 		return nil, err
 	}
+	model := cfg.Params.Model
 
-	// Preserve the direct provider fast path unless the caller requested a
-	// commit barrier, which requires the SDK to assemble and validate the step.
-	if cfg.MaxSteps == 0 && cfg.OnStepCommitted == nil {
-		return prov.DoStream(ctx, cfg.Params)
-	}
 	autoExecuteTools := cfg.MaxSteps != 0
 	maxSteps := cfg.MaxSteps
 	if maxSteps == 0 {
@@ -73,96 +75,46 @@ func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*St
 			params := cfg.Params
 			params.Messages = messages
 
-			provSR, err := prov.DoStream(ctx, params)
+			req, err := RequestFromGenerateParams(params)
+			if err != nil {
+				send(&ErrorPart{Error: fmt.Errorf("twilightai: stream step %d: %w", step, err)})
+				return
+			}
+			stream, err := model.Stream(ctx, req)
 			if err != nil {
 				send(&ErrorPart{Error: fmt.Errorf("twilightai: stream step %d: %w", step, err)})
 				return
 			}
 
-			var (
-				stepText            string
-				stepTextMeta        map[string]any
-				stepReasoning       reasoningAccumulator
-				stepToolCalls       []ToolCall
-				stepErrored         bool
-				stepUsage           Usage
-				stepResponse        ResponseMetadata
-				stepFinishReason    FinishReason
-				stepRawFinishReason string
-				sawFinishStep       bool
-			)
-
-			for part := range provSR.Stream {
-				switch p := part.(type) {
-				case *TextDeltaPart:
-					stepText += p.Text
-				case *TextEndPart:
-					if p.ProviderMetadata != nil {
-						stepTextMeta = p.ProviderMetadata
-					}
-				case *ReasoningStartPart:
-					stepReasoning.openBlock(p.ID, p.Format, p.Model, p.ProviderMetadata)
-				case *ReasoningDeltaPart:
-					stepReasoning.appendDelta(p.ID, p.Text, p.Format, p.Model, p.ProviderMetadata)
-				case *ReasoningEndPart:
-					stepReasoning.closeBlock(p.ID, p.Format, p.Model, p.ProviderMetadata)
-				case *StreamToolCallPart:
-					stepToolCalls = append(stepToolCalls, ToolCall{
-						ToolCallID:       p.ToolCallID,
-						ToolName:         p.ToolName,
-						Input:            p.Input,
-						ProviderMetadata: p.ProviderMetadata,
-					})
-				case *FinishStepPart:
-					sawFinishStep = true
-					stepUsage = p.Usage
-					stepResponse = p.Response
-					stepFinishReason = p.FinishReason
-					stepRawFinishReason = p.RawFinishReason
-				case *FinishPart:
-					stepFinishReason = p.FinishReason
-					stepRawFinishReason = p.RawFinishReason
-					continue
-				case *ErrorPart:
-					stepErrored = true
-				}
-
+			// Forward the parts as they arrive. The SDK assembler folds the very
+			// same parts into the step result, so what the consumer saw and what
+			// gets committed cannot disagree.
+			for part := range stream.Parts {
 				if !send(part) {
 					return
 				}
 			}
-			// A provider error poisons the step: the consumer already saw the
-			// ErrorPart, and committing what remains would persist a step the
-			// provider itself reported as broken. ToResult treats the same
-			// part as fatal; the streaming loop has to agree with it.
-			if stepErrored {
+			mr, err := stream.Result()
+			if err != nil {
+				// A provider failure already reached the consumer as an
+				// ErrorPart, and a cancelled step is not this loop's to commit:
+				// either way the step is poisoned, and committing what remains
+				// would persist a step the provider itself reported as broken.
 				return
 			}
-			if !sawFinishStep {
-				if ctx.Err() == nil {
-					send(&ErrorPart{Error: fmt.Errorf("twilightai: stream step %d ended before finish-step", step)})
-				}
+			if mr.FinishReason == "" && ctx.Err() == nil {
+				send(&ErrorPart{Error: fmt.Errorf("twilightai: stream step %d ended before finish-step", step)})
 				return
 			}
 
-			lastFinishReason = stepFinishReason
-			lastRawFinishReason = stepRawFinishReason
-			totalUsage = addUsage(&totalUsage, &stepUsage)
+			lastFinishReason = mr.FinishReason
+			lastRawFinishReason = mr.RawFinishReason
+			totalUsage = addUsage(&totalUsage, &mr.Usage)
 
 			// No tool calls or not a tool-calls finish → done
-			if !autoExecuteTools || stepFinishReason != FinishReasonToolCalls || len(stepToolCalls) == 0 || !hasExecutableTools(stepToolCalls, toolMap) {
-				stepMsgs := buildStepMessages(stepText, stepTextMeta, stepReasoning.result(), stepToolCalls, nil, &stepUsage)
-				stepR := StepResult{
-					Text:            stepText,
-					Reasoning:       ReasoningText(stepReasoning.result()),
-					ReasoningParts:  stepReasoning.result(),
-					FinishReason:    stepFinishReason,
-					RawFinishReason: stepRawFinishReason,
-					Usage:           stepUsage,
-					ToolCalls:       stepToolCalls,
-					Response:        stepResponse,
-					Messages:        stepMsgs,
-				}
+			if !autoExecuteTools || mr.FinishReason != FinishReasonToolCalls || len(mr.ToolCalls) == 0 || !hasExecutableTools(mr.ToolCalls, toolMap) {
+				stepMsgs := buildStepMessages(mr.Text, mr.TextProviderMetadata, mr.ReasoningParts, mr.ToolCalls, nil, &mr.Usage)
+				stepR := stepResultFromModelResult(*mr, stepMsgs, nil, nil)
 				if err := applyOnStepCommitted(ctx, cfg, step, &stepR); err != nil {
 					send(&ErrorPart{Error: err})
 					return
@@ -175,23 +127,12 @@ func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*St
 
 			// Execute tools
 			sendProgress := func(part StreamPart) { send(part) }
-			toolResults, err := executeTools(ctx, stepToolCalls, toolMap, cfg.ApprovalHandler, sendProgress)
+			toolResults, err := executeTools(ctx, mr.ToolCalls, toolMap, cfg.ApprovalHandler, sendProgress)
 			if err != nil {
 				var deferred *ToolApprovalDeferredError
 				if errors.As(err, &deferred) {
-					stepMsgs := buildStepMessages(stepText, stepTextMeta, stepReasoning.result(), stepToolCalls, nil, &stepUsage)
-					stepR := StepResult{
-						Text:                 stepText,
-						Reasoning:            ReasoningText(stepReasoning.result()),
-						ReasoningParts:       stepReasoning.result(),
-						FinishReason:         stepFinishReason,
-						RawFinishReason:      stepRawFinishReason,
-						Usage:                stepUsage,
-						ToolCalls:            stepToolCalls,
-						Response:             stepResponse,
-						DeferredToolApproval: &deferred.Approval,
-						Messages:             stepMsgs,
-					}
+					stepMsgs := buildStepMessages(mr.Text, mr.TextProviderMetadata, mr.ReasoningParts, mr.ToolCalls, nil, &mr.Usage)
+					stepR := stepResultFromModelResult(*mr, stepMsgs, nil, &deferred.Approval)
 					if err := applyOnStepCommitted(ctx, cfg, step, &stepR); err != nil {
 						send(&ErrorPart{Error: err})
 						return
@@ -205,19 +146,8 @@ func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*St
 				return
 			}
 
-			stepMsgs := buildStepMessages(stepText, stepTextMeta, stepReasoning.result(), stepToolCalls, toolResults, &stepUsage)
-			stepR := StepResult{
-				Text:            stepText,
-				Reasoning:       ReasoningText(stepReasoning.result()),
-				ReasoningParts:  stepReasoning.result(),
-				FinishReason:    stepFinishReason,
-				RawFinishReason: stepRawFinishReason,
-				Usage:           stepUsage,
-				ToolCalls:       stepToolCalls,
-				ToolResults:     toolCallResultsFromParts(toolResults),
-				Response:        stepResponse,
-				Messages:        stepMsgs,
-			}
+			stepMsgs := buildStepMessages(mr.Text, mr.TextProviderMetadata, mr.ReasoningParts, mr.ToolCalls, toolResults, &mr.Usage)
+			stepR := stepResultFromModelResult(*mr, stepMsgs, toolCallResultsFromParts(toolResults), nil)
 			if err := applyOnStepCommitted(ctx, cfg, step, &stepR); err != nil {
 				send(&ErrorPart{Error: err})
 				return

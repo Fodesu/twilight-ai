@@ -49,7 +49,7 @@ type ThinkingConfig struct {
 }
 
 // isEmpty reports whether the config carries no fields at all. An empty config
-// is treated as "not configured" so it falls through to params.ReasoningEffort
+// is treated as "not configured" so it falls through to req.ReasoningEffort
 // rather than sending a bare `thinkingConfig: {}` and swallowing the request's
 // effort.
 func (c *ThinkingConfig) isEmpty() bool {
@@ -93,7 +93,7 @@ func WithHTTPClient(client *http.Client) Option {
 }
 
 // WithThinking injects provider-level thinking configuration. When set, it
-// takes precedence over the generic params.ReasoningEffort from a Generate
+// takes precedence over the generic req.ReasoningEffort from a Generate
 // call — the more expressive provider option wins. See ThinkingConfig for
 // field semantics and generation-specific guidance.
 func WithThinking(cfg ThinkingConfig) Option {
@@ -214,30 +214,30 @@ func googleModelType(methods []string) sdk.ModelType {
 
 // ---------- DoGenerate ----------
 
-func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*sdk.GenerateResult, error) { //nolint:gocritic // interface method
-	if params.Model == nil {
-		return nil, fmt.Errorf("google: model is required")
+func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error) { //nolint:gocritic // interface method
+	if req.Model == "" {
+		return sdk.ModelResult{}, fmt.Errorf("google: model is required")
 	}
 
-	req, err := p.buildRequest(&params)
+	body, err := p.buildRequest(&req)
 	if err != nil {
-		return nil, fmt.Errorf("google: build request: %w", err)
+		return sdk.ModelResult{}, fmt.Errorf("google: build request: %w", err)
 	}
-	modelPath := getModelPath(params.Model.ID)
+	modelPath := getModelPath(req.Model)
 
 	resp, err := utils.FetchJSON[generateResponse](ctx, p.httpClient, &utils.RequestOptions{
 		Method:  http.MethodPost,
 		BaseURL: p.baseURL,
 		Path:    "/" + modelPath + ":generateContent",
 		Headers: p.authHeaders(),
-		Body:    req,
+		Body:    body,
 	})
 	if err != nil {
 		var apiErr *utils.APIError
 		if errors.As(err, &apiErr) {
-			return nil, fmt.Errorf("google: generateContent request failed: %s", apiErr.Detail())
+			return sdk.ModelResult{}, fmt.Errorf("google: generateContent request failed: %s", apiErr.Detail())
 		}
-		return nil, fmt.Errorf("google: generateContent request failed: %w", err)
+		return sdk.ModelResult{}, fmt.Errorf("google: generateContent request failed: %w", err)
 	}
 
 	return p.parseResponse(resp)
@@ -245,41 +245,41 @@ func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*
 
 // ---------- buildRequest ----------
 
-func (p *Provider) buildRequest(params *sdk.GenerateParams) (*generateRequest, error) {
-	messages, err := messagecompat.Normalize(params.Messages, sdk.MessageRoleCapabilities{})
+func (p *Provider) buildRequest(req *sdk.Request) (*generateRequest, error) {
+	messages, err := messagecompat.Normalize(req.Messages, sdk.MessageRoleCapabilities{})
 	if err != nil {
 		return nil, err
 	}
-	contents, sysInstruction := convertMessages(params.System, messages)
+	contents, sysInstruction := convertMessages(req.System, messages)
 
-	req := &generateRequest{
+	body := &generateRequest{
 		Contents:          contents,
 		SystemInstruction: sysInstruction,
 	}
 
 	genCfg := &generationConfig{
-		Temperature:      params.Temperature,
-		TopP:             params.TopP,
-		MaxOutputTokens:  params.MaxTokens,
-		FrequencyPenalty: params.FrequencyPenalty,
-		PresencePenalty:  params.PresencePenalty,
-		Seed:             params.Seed,
+		Temperature:      req.Temperature,
+		TopP:             req.TopP,
+		MaxOutputTokens:  req.MaxTokens,
+		FrequencyPenalty: req.FrequencyPenalty,
+		PresencePenalty:  req.PresencePenalty,
+		Seed:             req.Seed,
 	}
-	if len(params.StopSequences) > 0 {
-		genCfg.StopSequences = params.StopSequences
+	if len(req.StopSequences) > 0 {
+		genCfg.StopSequences = req.StopSequences
 	}
-	if params.ResponseFormat != nil {
-		switch params.ResponseFormat.Type {
+	if req.ResponseFormat != nil {
+		switch req.ResponseFormat.Type {
 		case sdk.ResponseFormatJSONObject, sdk.ResponseFormatJSONSchema:
 			genCfg.ResponseMimeType = "application/json"
-			if params.ResponseFormat.JSONSchema != nil {
-				genCfg.ResponseSchema = params.ResponseFormat.JSONSchema
+			if req.ResponseFormat.JSONSchema != nil {
+				genCfg.ResponseSchema = req.ResponseFormat.JSONSchema
 			}
 		}
 	}
 
 	// Thinking configuration: provider-level WithThinking takes precedence over
-	// the generic params.ReasoningEffort. When both are present the provider
+	// the generic req.ReasoningEffort. When both are present the provider
 	// option wins — it is more expressive and its intent is unambiguous. An
 	// empty WithThinking carries no intent, so it falls through to
 	// ReasoningEffort instead of suppressing it. When only ReasoningEffort is
@@ -305,21 +305,21 @@ func (p *Provider) buildRequest(params *sdk.GenerateParams) (*generateRequest, e
 			IncludeThoughts: p.thinking.IncludeThoughts,
 		}
 		genCfg.ThinkingConfig = tc
-	case params.ReasoningEffort != nil:
-		if level := normalizeThinkingLevel(*params.ReasoningEffort); level != "" {
+	case req.ReasoningEffort != nil:
+		if level := normalizeThinkingLevel(*req.ReasoningEffort); level != "" {
 			genCfg.ThinkingConfig = &thinkingConfig{ThinkingLevel: level}
 		}
 	}
 
-	req.GenerationConfig = genCfg
+	body.GenerationConfig = genCfg
 
-	if len(params.Tools) > 0 {
-		tools, toolCfg := convertTools(params.Tools, params.ToolChoice)
-		req.Tools = tools
-		req.ToolConfig = toolCfg
+	if len(req.Tools) > 0 {
+		tools, toolCfg := convertTools(req.Tools, req.ToolChoice)
+		body.Tools = tools
+		body.ToolConfig = toolCfg
 	}
 
-	return req, nil
+	return body, nil
 }
 
 // ---------- message conversion ----------
@@ -465,7 +465,7 @@ func convertToolResultMessage(msg sdk.Message) content {
 
 // ---------- tool conversion ----------
 
-func convertTools(tools []sdk.Tool, toolChoice any) ([]toolGroup, *toolConfig) {
+func convertTools(tools []sdk.ToolDefinition, choice sdk.ToolChoice) ([]toolGroup, *toolConfig) {
 	decls := make([]functionDeclaration, 0, len(tools))
 	for _, t := range tools {
 		decls = append(decls, functionDeclaration{
@@ -475,31 +475,38 @@ func convertTools(tools []sdk.Tool, toolChoice any) ([]toolGroup, *toolConfig) {
 		})
 	}
 
-	var tc *toolConfig
-	if toolChoice != nil {
-		if choice, ok := toolChoice.(string); ok {
-			switch choice {
-			case "auto":
-				tc = &toolConfig{FunctionCallingConfig: &functionCallingConfig{Mode: "AUTO"}}
-			case "none":
-				tc = &toolConfig{FunctionCallingConfig: &functionCallingConfig{Mode: "NONE"}}
-			case "required":
-				tc = &toolConfig{FunctionCallingConfig: &functionCallingConfig{Mode: "ANY"}}
-			}
-		}
-	}
+	return []toolGroup{{FunctionDeclarations: decls}}, convertToolChoice(choice)
+}
 
-	return []toolGroup{{FunctionDeclarations: decls}}, tc
+// convertToolChoice maps the provider-neutral ToolChoice onto Google's
+// toolConfig.functionCallingConfig form. The zero ToolChoice carries no intent,
+// so it emits no toolConfig at all — matching the legacy open-ended field where
+// an absent value left the API default alone. A tool-scoped choice becomes ANY
+// restricted to that one function name; Google expresses "only this tool" that
+// way rather than with a distinct mode.
+func convertToolChoice(choice sdk.ToolChoice) *toolConfig {
+	switch choice.Mode {
+	case sdk.ToolChoiceAuto:
+		return &toolConfig{FunctionCallingConfig: &functionCallingConfig{Mode: "AUTO"}}
+	case sdk.ToolChoiceNone:
+		return &toolConfig{FunctionCallingConfig: &functionCallingConfig{Mode: "NONE"}}
+	case sdk.ToolChoiceRequired:
+		return &toolConfig{FunctionCallingConfig: &functionCallingConfig{Mode: "ANY"}}
+	case sdk.ToolChoiceTool:
+		fcc := &functionCallingConfig{Mode: "ANY"}
+		if choice.Tool != "" {
+			fcc.AllowedFunctionNames = []string{choice.Tool}
+		}
+		return &toolConfig{FunctionCallingConfig: fcc}
+	default:
+		return nil
+	}
 }
 
 // ---------- parseResponse ----------
 
-func (p *Provider) parseResponse(resp *generateResponse) (*sdk.GenerateResult, error) {
-	result := &sdk.GenerateResult{
-		Response: sdk.ResponseMetadata{
-			ModelID: "",
-		},
-	}
+func (p *Provider) parseResponse(resp *generateResponse) (sdk.ModelResult, error) {
+	var result sdk.ModelResult
 
 	if resp.UsageMetadata != nil {
 		result.Usage = convertUsage(resp.UsageMetadata)
@@ -575,16 +582,16 @@ func (p *Provider) parseResponse(resp *generateResponse) (*sdk.GenerateResult, e
 
 // ---------- DoStream ----------
 
-func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sdk.StreamResult, error) { //nolint:gocritic // interface method
-	if params.Model == nil {
+func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error) { //nolint:gocritic // interface method
+	if req.Model == "" {
 		return nil, fmt.Errorf("google: model is required")
 	}
 
-	req, err := p.buildRequest(&params)
+	body, err := p.buildRequest(&req)
 	if err != nil {
 		return nil, fmt.Errorf("google: build request: %w", err)
 	}
-	modelPath := getModelPath(params.Model.ID)
+	modelPath := getModelPath(req.Model)
 
 	ch := make(chan sdk.StreamPart, 64)
 
@@ -662,7 +669,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 			Path:    "/" + modelPath + ":streamGenerateContent",
 			Query:   map[string]string{"alt": "sse"},
 			Headers: p.authHeaders(),
-			Body:    req,
+			Body:    body,
 		}, func(ev *utils.SSEEvent) error {
 			var chunk generateResponse
 			if err := json.Unmarshal([]byte(ev.Data), &chunk); err != nil {
@@ -811,7 +818,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 		})
 	}()
 
-	return &sdk.StreamResult{Stream: ch}, nil
+	return ch, nil
 }
 
 // ---------- helpers ----------

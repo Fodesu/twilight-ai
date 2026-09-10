@@ -15,6 +15,17 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
+// mustJSON is the test-side half of the seam change: the SDK resolves a tool's
+// Parameters into JSON Schema before a provider sees it, so a test that used to
+// hand the provider a Go schema value now hands it the resolved JSON.
+func mustJSON(v any) json.RawMessage {
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return encoded
+}
+
 // ---------- unit tests (mock server) ----------
 
 func TestDoGenerate(t *testing.T) {
@@ -57,8 +68,8 @@ func TestDoGenerate(t *testing.T) {
 	)
 
 	model := p.ChatModel("gemini-2.0-flash")
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:  model,
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:  model.ID,
 		System: "You are helpful.",
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
@@ -200,25 +211,25 @@ func TestDoGenerate_ToolCall(t *testing.T) {
 
 	p := generativeai.New(generativeai.WithAPIKey("test-key"), generativeai.WithBaseURL(srv.URL))
 
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: p.ChatModel("gemini-2.0-flash"),
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "gemini-2.0-flash",
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "What's the weather in Beijing?"}},
 		}},
-		Tools: []sdk.Tool{{
+		Tools: []sdk.ToolDefinition{{
 			Name:        "get_weather",
 			Description: "Get the weather for a location",
-			Parameters: &jsonschema.Schema{
+			Parameters: mustJSON(&jsonschema.Schema{
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
 					"location": {Type: "string"},
 				},
 				Required:             []string{"location"},
 				AdditionalProperties: &jsonschema.Schema{Not: &jsonschema.Schema{}},
-			},
+			}),
 		}},
-		ToolChoice: "auto",
+		ToolChoice: sdk.ToolChoice{Mode: sdk.ToolChoiceAuto},
 	})
 	if err != nil {
 		t.Fatalf("DoGenerate: %v", err)
@@ -322,8 +333,8 @@ func TestDoGenerate_ToolCallMultiTurn(t *testing.T) {
 
 	p := generativeai.New(generativeai.WithAPIKey("test-key"), generativeai.WithBaseURL(srv.URL))
 
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: p.ChatModel("gemini-2.0-flash"),
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "gemini-2.0-flash",
 		Messages: []sdk.Message{
 			{
 				Role:    sdk.MessageRoleUser,
@@ -386,8 +397,8 @@ func TestDoGenerate_Reasoning(t *testing.T) {
 	defer srv.Close()
 
 	p := generativeai.New(generativeai.WithAPIKey("k"), generativeai.WithBaseURL(srv.URL))
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("gemini-2.5-flash"),
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "gemini-2.5-flash",
 		Messages: []sdk.Message{sdk.UserMessage("2+2?")},
 	})
 	if err != nil {
@@ -452,8 +463,8 @@ func TestDoGenerate_SystemInstruction(t *testing.T) {
 	defer srv.Close()
 
 	p := generativeai.New(generativeai.WithAPIKey("k"), generativeai.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("gemini-2.0-flash"),
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "gemini-2.0-flash",
 		System:   "Be concise.",
 		Messages: []sdk.Message{sdk.UserMessage("Hi")},
 	})
@@ -479,8 +490,8 @@ func TestDoGenerate_ModelPathWithSlash(t *testing.T) {
 	defer srv.Close()
 
 	p := generativeai.New(generativeai.WithAPIKey("k"), generativeai.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("publishers/google/models/gemini-2.0-flash"),
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "publishers/google/models/gemini-2.0-flash",
 		Messages: []sdk.Message{sdk.UserMessage("Hi")},
 	})
 	if err != nil {
@@ -534,8 +545,8 @@ func TestDoGenerate_FinishReasonMapping(t *testing.T) {
 			defer srv.Close()
 
 			p := generativeai.New(generativeai.WithAPIKey("k"), generativeai.WithBaseURL(srv.URL))
-			result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-				Model:    p.ChatModel("gemini-2.0-flash"),
+			result, err := p.DoGenerate(context.Background(), sdk.Request{
+				Model:    "gemini-2.0-flash",
 				Messages: []sdk.Message{sdk.UserMessage("test")},
 			})
 			if err != nil {
@@ -553,7 +564,7 @@ func TestDoGenerate_FinishReasonMapping(t *testing.T) {
 
 func TestDoGenerate_NoModel(t *testing.T) {
 	p := generativeai.New(generativeai.WithAPIKey("k"))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{})
+	_, err := p.DoGenerate(context.Background(), sdk.Request{})
 	if err == nil {
 		t.Fatal("expected error for nil model")
 	}
@@ -561,7 +572,7 @@ func TestDoGenerate_NoModel(t *testing.T) {
 
 func TestDoStream_NoModel(t *testing.T) {
 	p := generativeai.New(generativeai.WithAPIKey("k"))
-	_, err := p.DoStream(context.Background(), sdk.GenerateParams{})
+	_, err := p.DoStream(context.Background(), sdk.Request{})
 	if err == nil {
 		t.Fatal("expected error for nil model")
 	}
@@ -601,8 +612,8 @@ func TestDoStream(t *testing.T) {
 		generativeai.WithBaseURL(srv.URL),
 	)
 
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model: p.ChatModel("gemini-2.0-flash"),
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model: "gemini-2.0-flash",
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "Hi"}},
@@ -614,7 +625,7 @@ func TestDoStream(t *testing.T) {
 
 	var collected string
 	var gotStart, gotFinish bool
-	for part := range sr.Stream {
+	for part := range sr {
 		switch p := part.(type) {
 		case *sdk.StartPart:
 			gotStart = true
@@ -656,13 +667,13 @@ func TestDoStream_ToolCall(t *testing.T) {
 
 	p := generativeai.New(generativeai.WithAPIKey("test-key"), generativeai.WithBaseURL(srv.URL))
 
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model: p.ChatModel("gemini-2.0-flash"),
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model: "gemini-2.0-flash",
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "Weather in Tokyo?"}},
 		}},
-		Tools: []sdk.Tool{{Name: "get_weather", Parameters: &jsonschema.Schema{Type: "object"}}},
+		Tools: []sdk.ToolDefinition{{Name: "get_weather", Parameters: mustJSON(&jsonschema.Schema{Type: "object"})}},
 	})
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
@@ -676,7 +687,7 @@ func TestDoStream_ToolCall(t *testing.T) {
 		gotFinish     bool
 	)
 
-	for part := range sr.Stream {
+	for part := range sr {
 		switch p := part.(type) {
 		case *sdk.ToolInputStartPart:
 			gotInputStart = true
@@ -748,8 +759,8 @@ func TestDoStream_Reasoning(t *testing.T) {
 	defer srv.Close()
 
 	p := generativeai.New(generativeai.WithAPIKey("k"), generativeai.WithBaseURL(srv.URL))
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("gemini-2.5-flash"),
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model:    "gemini-2.5-flash",
 		Messages: []sdk.Message{sdk.UserMessage("2+2?")},
 	})
 	if err != nil {
@@ -758,7 +769,7 @@ func TestDoStream_Reasoning(t *testing.T) {
 
 	var reasoning, text string
 	var gotReasoningStart, gotReasoningEnd, gotTextStart, gotTextEnd bool
-	for part := range sr.Stream {
+	for part := range sr {
 		switch p := part.(type) {
 		case *sdk.ReasoningStartPart:
 			gotReasoningStart = true
@@ -814,8 +825,8 @@ func TestDoStream_FlushOnAbruptEnd(t *testing.T) {
 	defer srv.Close()
 
 	p := generativeai.New(generativeai.WithAPIKey("k"), generativeai.WithBaseURL(srv.URL))
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("m"),
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model:    "m",
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
 	})
 	if err != nil {
@@ -823,7 +834,7 @@ func TestDoStream_FlushOnAbruptEnd(t *testing.T) {
 	}
 
 	var gotReasoningEnd, gotTextEnd, gotFinish bool
-	for part := range sr.Stream {
+	for part := range sr {
 		switch part.(type) {
 		case *sdk.ReasoningEndPart:
 			gotReasoningEnd = true
@@ -872,14 +883,14 @@ func TestDoGenerate_ToolChoiceNone(t *testing.T) {
 	defer srv.Close()
 
 	p := generativeai.New(generativeai.WithAPIKey("k"), generativeai.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("gemini-2.0-flash"),
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "gemini-2.0-flash",
 		Messages: []sdk.Message{sdk.UserMessage("test")},
-		Tools: []sdk.Tool{{
+		Tools: []sdk.ToolDefinition{{
 			Name:       "tool1",
-			Parameters: &jsonschema.Schema{Type: "object"},
+			Parameters: mustJSON(&jsonschema.Schema{Type: "object"}),
 		}},
-		ToolChoice: "none",
+		ToolChoice: sdk.ToolChoice{Mode: sdk.ToolChoiceNone},
 	})
 	if err != nil {
 		t.Fatalf("DoGenerate: %v", err)
@@ -916,14 +927,14 @@ func TestDoGenerate_ToolChoiceRequired(t *testing.T) {
 	defer srv.Close()
 
 	p := generativeai.New(generativeai.WithAPIKey("k"), generativeai.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("gemini-2.0-flash"),
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "gemini-2.0-flash",
 		Messages: []sdk.Message{sdk.UserMessage("test")},
-		Tools: []sdk.Tool{{
+		Tools: []sdk.ToolDefinition{{
 			Name:       "tool1",
-			Parameters: &jsonschema.Schema{Type: "object"},
+			Parameters: mustJSON(&jsonschema.Schema{Type: "object"}),
 		}},
-		ToolChoice: "required",
+		ToolChoice: sdk.ToolChoice{Mode: sdk.ToolChoiceRequired},
 	})
 	if err != nil {
 		t.Fatalf("DoGenerate: %v", err)
@@ -955,8 +966,8 @@ func TestDoGenerate_ResponseFormatJSON(t *testing.T) {
 	defer srv.Close()
 
 	p := generativeai.New(generativeai.WithAPIKey("k"), generativeai.WithBaseURL(srv.URL))
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:          p.ChatModel("gemini-2.0-flash"),
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:          "gemini-2.0-flash",
 		Messages:       []sdk.Message{sdk.UserMessage("test")},
 		ResponseFormat: &sdk.ResponseFormat{Type: sdk.ResponseFormatJSONObject},
 	})
@@ -988,8 +999,8 @@ func TestDoGenerate_Usage(t *testing.T) {
 	defer srv.Close()
 
 	p := generativeai.New(generativeai.WithAPIKey("k"), generativeai.WithBaseURL(srv.URL))
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("m"),
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "m",
 		Messages: []sdk.Message{sdk.UserMessage("test")},
 	})
 	if err != nil {
@@ -1201,8 +1212,8 @@ func TestDoGenerate_ThinkingConfig(t *testing.T) {
 			}, tt.providerOpts...)
 			p := generativeai.New(opts...)
 
-			params := sdk.GenerateParams{
-				Model:           p.ChatModel("gemini-test"),
+			params := sdk.Request{
+				Model:           "gemini-test",
 				Messages:        []sdk.Message{sdk.UserMessage("hi")},
 				ReasoningEffort: tt.reasoningEffort,
 			}
@@ -1297,8 +1308,8 @@ func TestIntegration_DoGenerate(t *testing.T) {
 	p := newIntegrationProvider(t)
 	model := integrationModel(t)
 	model.Provider = p
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: model,
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: model.ID,
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "Say hello in one word."}},
@@ -1319,8 +1330,8 @@ func TestIntegration_DoStream(t *testing.T) {
 	p := newIntegrationProvider(t)
 	model := integrationModel(t)
 	model.Provider = p
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model: model,
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model: model.ID,
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "Count from 1 to 5."}},
@@ -1331,7 +1342,7 @@ func TestIntegration_DoStream(t *testing.T) {
 	}
 
 	var text string
-	for part := range sr.Stream {
+	for part := range sr {
 		switch p := part.(type) {
 		case *sdk.TextDeltaPart:
 			text += p.Text
@@ -1352,24 +1363,24 @@ func TestIntegration_ToolCall(t *testing.T) {
 	p := newIntegrationProvider(t)
 	model := integrationModel(t)
 	model.Provider = p
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: model,
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: model.ID,
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "What's the weather in San Francisco?"}},
 		}},
-		Tools: []sdk.Tool{{
+		Tools: []sdk.ToolDefinition{{
 			Name:        "get_weather",
 			Description: "Get the weather for a location",
-			Parameters: &jsonschema.Schema{
+			Parameters: mustJSON(&jsonschema.Schema{
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
 					"location": {Type: "string", Description: "City name"},
 				},
 				Required: []string{"location"},
-			},
+			}),
 		}},
-		ToolChoice: "auto",
+		ToolChoice: sdk.ToolChoice{Mode: sdk.ToolChoiceAuto},
 	})
 	if err != nil {
 		t.Fatalf("DoGenerate: %v", err)
@@ -1389,27 +1400,27 @@ func TestIntegration_ToolCallWithAdditionalPropertiesSchema(t *testing.T) {
 	model := integrationModel(t)
 	model.Provider = p
 
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: model,
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: model.ID,
 		Messages: []sdk.Message{{
 			Role: sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{
 				Text: "Call get_weather with location San Francisco.",
 			}},
 		}},
-		Tools: []sdk.Tool{{
+		Tools: []sdk.ToolDefinition{{
 			Name:        "get_weather",
 			Description: "Get the weather for a location.",
-			Parameters: &jsonschema.Schema{
+			Parameters: mustJSON(&jsonschema.Schema{
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
 					"location": {Type: "string", Description: "City name"},
 				},
 				Required:             []string{"location"},
 				AdditionalProperties: &jsonschema.Schema{Not: &jsonschema.Schema{}},
-			},
+			}),
 		}},
-		ToolChoice: "required",
+		ToolChoice: sdk.ToolChoice{Mode: sdk.ToolChoiceRequired},
 	})
 	if err != nil {
 		t.Fatalf("DoGenerate with additionalProperties in tool schema: %v", err)

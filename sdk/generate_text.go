@@ -17,32 +17,25 @@ func (c *Client) GenerateText(ctx context.Context, options ...GenerateOption) (s
 // performs one model call; MaxSteps != 0 runs the compatibility tool loop.
 // New multi-step runtimes should use agent/run/loop.Loop instead of this SDK
 // loop.
+//
+// The legacy options are a client-side convenience: each step is projected into
+// the provider-neutral Request boundary by RequestFromGenerateParams, so the
+// provider only ever sees the single-call shape.
 func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOption) (*GenerateResult, error) {
-	cfg, prov, err := buildConfig(options)
+	cfg, _, err := buildConfig(options)
 	if err != nil {
 		return nil, err
 	}
+	model := cfg.Params.Model
 
-	// MaxSteps == 0: single call, no tool auto-execution. Keep the legacy
-	// provider path byte-compatible; new code that wants the Request/ModelResult
-	// boundary should call Generate or Model.Generate directly.
+	// MaxSteps == 0: single call, no tool auto-execution.
 	if cfg.MaxSteps == 0 {
-		result, err := prov.DoGenerate(ctx, cfg.Params)
+		result, mr, err := generateOnce(ctx, cfg, model, cfg.Params)
 		if err != nil {
 			return nil, err
 		}
-		stepMsgs := buildStepMessages(result.Text, result.TextProviderMetadata, result.ReasoningParts, result.ToolCalls, nil, &result.Usage)
-		step := StepResult{
-			Text:            result.Text,
-			Reasoning:       result.Reasoning,
-			ReasoningParts:  result.ReasoningParts,
-			FinishReason:    result.FinishReason,
-			RawFinishReason: result.RawFinishReason,
-			Usage:           result.Usage,
-			ToolCalls:       result.ToolCalls,
-			Response:        result.Response,
-			Messages:        stepMsgs,
-		}
+		stepMsgs := buildStepMessages(mr.Text, mr.TextProviderMetadata, mr.ReasoningParts, mr.ToolCalls, nil, &mr.Usage)
+		step := stepResultFromModelResult(mr, stepMsgs, nil, nil)
 		if err := applyOnStepCommitted(ctx, cfg, 0, &step); err != nil {
 			return nil, err
 		}
@@ -74,27 +67,17 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 		params := cfg.Params
 		params.Messages = messages
 
-		result, err := prov.DoGenerate(ctx, params)
+		result, mr, err := generateOnce(ctx, cfg, model, params)
 		if err != nil {
 			return nil, err
 		}
 		lastResult = result
-		totalUsage = addUsage(&totalUsage, &result.Usage)
+		totalUsage = addUsage(&totalUsage, &mr.Usage)
 
 		// No tool calls or not a tool-calls finish → final step
-		if result.FinishReason != FinishReasonToolCalls || len(result.ToolCalls) == 0 || !hasExecutableTools(result.ToolCalls, toolMap) {
-			stepMsgs := buildStepMessages(result.Text, result.TextProviderMetadata, result.ReasoningParts, result.ToolCalls, nil, &result.Usage)
-			sr := StepResult{
-				Text:            result.Text,
-				Reasoning:       result.Reasoning,
-				ReasoningParts:  result.ReasoningParts,
-				FinishReason:    result.FinishReason,
-				RawFinishReason: result.RawFinishReason,
-				Usage:           result.Usage,
-				ToolCalls:       result.ToolCalls,
-				Response:        result.Response,
-				Messages:        stepMsgs,
-			}
+		if mr.FinishReason != FinishReasonToolCalls || len(mr.ToolCalls) == 0 || !hasExecutableTools(mr.ToolCalls, toolMap) {
+			stepMsgs := buildStepMessages(mr.Text, mr.TextProviderMetadata, mr.ReasoningParts, mr.ToolCalls, nil, &mr.Usage)
+			sr := stepResultFromModelResult(mr, stepMsgs, nil, nil)
 			if err := applyOnStepCommitted(ctx, cfg, step, &sr); err != nil {
 				return nil, err
 			}
@@ -105,23 +88,12 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 		}
 
 		// Execute tools
-		toolResults, err := executeTools(ctx, result.ToolCalls, toolMap, cfg.ApprovalHandler, nil)
+		toolResults, err := executeTools(ctx, mr.ToolCalls, toolMap, cfg.ApprovalHandler, nil)
 		if err != nil {
 			var deferred *ToolApprovalDeferredError
 			if errors.As(err, &deferred) {
-				stepMsgs := buildStepMessages(result.Text, result.TextProviderMetadata, result.ReasoningParts, result.ToolCalls, nil, &result.Usage)
-				sr := StepResult{
-					Text:                 result.Text,
-					Reasoning:            result.Reasoning,
-					ReasoningParts:       result.ReasoningParts,
-					FinishReason:         result.FinishReason,
-					RawFinishReason:      result.RawFinishReason,
-					Usage:                result.Usage,
-					ToolCalls:            result.ToolCalls,
-					Response:             result.Response,
-					DeferredToolApproval: &deferred.Approval,
-					Messages:             stepMsgs,
-				}
+				stepMsgs := buildStepMessages(mr.Text, mr.TextProviderMetadata, mr.ReasoningParts, mr.ToolCalls, nil, &mr.Usage)
+				sr := stepResultFromModelResult(mr, stepMsgs, nil, &deferred.Approval)
 				if err := applyOnStepCommitted(ctx, cfg, step, &sr); err != nil {
 					return nil, err
 				}
@@ -134,19 +106,8 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 			return nil, err
 		}
 
-		stepMsgs := buildStepMessages(result.Text, result.TextProviderMetadata, result.ReasoningParts, result.ToolCalls, toolResults, &result.Usage)
-		sr := StepResult{
-			Text:            result.Text,
-			Reasoning:       result.Reasoning,
-			ReasoningParts:  result.ReasoningParts,
-			FinishReason:    result.FinishReason,
-			RawFinishReason: result.RawFinishReason,
-			Usage:           result.Usage,
-			ToolCalls:       result.ToolCalls,
-			ToolResults:     toolCallResultsFromParts(toolResults),
-			Response:        result.Response,
-			Messages:        stepMsgs,
-		}
+		stepMsgs := buildStepMessages(mr.Text, mr.TextProviderMetadata, mr.ReasoningParts, mr.ToolCalls, toolResults, &mr.Usage)
+		sr := stepResultFromModelResult(mr, stepMsgs, toolCallResultsFromParts(toolResults), nil)
 		if err := applyOnStepCommitted(ctx, cfg, step, &sr); err != nil {
 			return nil, err
 		}
@@ -176,4 +137,42 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 	}
 
 	return lastResult, nil
+}
+
+// generateOnce projects one step of the legacy options into the Request
+// boundary, makes exactly one model call, and adapts the single-call result
+// back to the legacy result shape.
+func generateOnce(ctx context.Context, cfg *generateConfig, model *Model, params GenerateParams) (*GenerateResult, ModelResult, error) {
+	req, err := RequestFromGenerateParams(params)
+	if err != nil {
+		return nil, ModelResult{}, err
+	}
+	mr, err := model.Generate(ctx, req)
+	if err != nil {
+		return nil, ModelResult{}, err
+	}
+	return GenerateResultFromModelResult(mr), mr, nil
+}
+
+// stepResultFromModelResult builds a legacy step from the single-call result.
+// StepResult carries response metadata by value while the boundary type carries
+// it by pointer, so an absent metadata becomes the zero value.
+func stepResultFromModelResult(mr ModelResult, messages []Message, toolResults []ToolResult, deferred *ToolApprovalResult) StepResult {
+	var response ResponseMetadata
+	if mr.Response != nil {
+		response = *mr.Response
+	}
+	return StepResult{
+		Text:                 mr.Text,
+		Reasoning:            mr.Reasoning,
+		ReasoningParts:       mr.ReasoningParts,
+		FinishReason:         mr.FinishReason,
+		RawFinishReason:      mr.RawFinishReason,
+		Usage:                mr.Usage,
+		ToolCalls:            mr.ToolCalls,
+		ToolResults:          toolResults,
+		Response:             response,
+		DeferredToolApproval: deferred,
+		Messages:             messages,
+	}
 }

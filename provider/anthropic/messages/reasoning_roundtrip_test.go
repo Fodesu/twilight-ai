@@ -300,8 +300,8 @@ func TestInterleavedThinkingSurvivesReplay(t *testing.T) {
 	p := New(WithAPIKey("k"), WithBaseURL(srv.URL))
 	model := &sdk.Model{ID: "claude-opus-5"}
 
-	first, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    model,
+	first, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    model.ID,
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
 	})
 	if err != nil {
@@ -317,8 +317,8 @@ func TestInterleavedThinkingSurvivesReplay(t *testing.T) {
 	}
 	content = append(content, sdk.TextPart{Text: first.Text})
 
-	if _, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: model,
+	if _, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: model.ID,
 		Messages: []sdk.Message{
 			sdk.UserMessage("hi"),
 			{Role: sdk.MessageRoleAssistant, Content: content},

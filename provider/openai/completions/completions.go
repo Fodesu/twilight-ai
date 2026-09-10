@@ -211,14 +211,14 @@ func (p *Provider) ChatModel(id string) *sdk.Model {
 
 // ---------- DoGenerate ----------
 
-func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*sdk.GenerateResult, error) { //nolint:gocritic // interface method
-	if params.Model == nil {
-		return nil, fmt.Errorf("openai: model is required")
+func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error) { //nolint:gocritic // interface method
+	if req.Model == "" {
+		return sdk.ModelResult{}, fmt.Errorf("openai: model is required")
 	}
 
-	req, err := p.buildRequest(&params)
+	chatReq, err := p.buildRequest(&req)
 	if err != nil {
-		return nil, fmt.Errorf("openai: build request: %w", err)
+		return sdk.ModelResult{}, fmt.Errorf("openai: build request: %w", err)
 	}
 
 	resp, err := utils.FetchJSON[chatResponse](ctx, p.httpClient, &utils.RequestOptions{
@@ -227,14 +227,14 @@ func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*
 		Path:    "/chat/completions",
 		Headers: p.authHeaders(),
 		Prepare: p.prepareRequest,
-		Body:    req,
+		Body:    chatReq,
 	})
 	if err != nil {
 		var apiErr *utils.APIError
 		if errors.As(err, &apiErr) {
-			return nil, fmt.Errorf("openai: chat completions request failed: %s", apiErr.Detail())
+			return sdk.ModelResult{}, fmt.Errorf("openai: chat completions request failed: %s", apiErr.Detail())
 		}
-		return nil, fmt.Errorf("openai: chat completions request failed: %w", err)
+		return sdk.ModelResult{}, fmt.Errorf("openai: chat completions request failed: %w", err)
 	}
 
 	return p.parseResponse(resp)
@@ -242,41 +242,41 @@ func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*
 
 // ---------- buildRequest ----------
 
-func (p *Provider) buildRequest(params *sdk.GenerateParams) (*chatRequest, error) {
-	messages, err := messagecompat.Normalize(params.Messages, p.messageRoles)
+func (p *Provider) buildRequest(req *sdk.Request) (*chatRequest, error) {
+	messages, err := messagecompat.Normalize(req.Messages, p.messageRoles)
 	if err != nil {
 		return nil, err
 	}
-	req := &chatRequest{
-		Model:               params.Model.ID,
-		Messages:            convertMessages(params.System, messages),
-		Temperature:         params.Temperature,
-		TopP:                params.TopP,
-		MaxCompletionTokens: params.MaxTokens,
-		FrequencyPenalty:    params.FrequencyPenalty,
-		PresencePenalty:     params.PresencePenalty,
-		Seed:                params.Seed,
-		ReasoningEffort:     params.ReasoningEffort,
-		PromptCacheKey:      params.PromptCacheKey,
+	chatReq := &chatRequest{
+		Model:               req.Model,
+		Messages:            convertMessages(req.System, messages),
+		Temperature:         req.Temperature,
+		TopP:                req.TopP,
+		MaxCompletionTokens: req.MaxTokens,
+		FrequencyPenalty:    req.FrequencyPenalty,
+		PresencePenalty:     req.PresencePenalty,
+		Seed:                req.Seed,
+		ReasoningEffort:     req.ReasoningEffort,
+		PromptCacheKey:      req.PromptCacheKey,
 	}
-	if len(params.StopSequences) > 0 {
-		req.Stop = params.StopSequences
+	if len(req.StopSequences) > 0 {
+		chatReq.Stop = req.StopSequences
 	}
-	if len(params.Tools) > 0 {
-		req.Tools = convertTools(params.Tools)
-		req.ToolChoice = params.ToolChoice
+	if len(req.Tools) > 0 {
+		chatReq.Tools = convertTools(req.Tools)
+		chatReq.ToolChoice = toolChoiceForWire(req.ToolChoice)
 	}
-	if params.ResponseFormat != nil {
-		req.ResponseFormat = &chatRespFormat{
-			Type:       string(params.ResponseFormat.Type),
-			JSONSchema: params.ResponseFormat.JSONSchema,
+	if req.ResponseFormat != nil {
+		chatReq.ResponseFormat = &chatRespFormat{
+			Type:       string(req.ResponseFormat.Type),
+			JSONSchema: req.ResponseFormat.JSONSchema,
 		}
 	}
-	if err := p.applyChatCompletionsCompat(req); err != nil {
+	if err := p.applyChatCompletionsCompat(chatReq); err != nil {
 		return nil, err
 	}
-	padThinkingReplay(req.Messages, p.compat)
-	return req, nil
+	padThinkingReplay(chatReq.Messages, p.compat)
+	return chatReq, nil
 }
 
 func (p *Provider) applyChatCompletionsCompat(req *chatRequest) error {
@@ -324,7 +324,7 @@ func (p *Provider) applyChatCompletionsCompat(req *chatRequest) error {
 	return nil
 }
 
-func convertTools(tools []sdk.Tool) []chatTool {
+func convertTools(tools []sdk.ToolDefinition) []chatTool {
 	out := make([]chatTool, 0, len(tools))
 	for _, t := range tools {
 		out = append(out, chatTool{
@@ -337,6 +337,23 @@ func convertTools(tools []sdk.Tool) []chatTool {
 		})
 	}
 	return out
+}
+
+// toolChoiceForWire maps the closed provider-neutral ToolChoice onto the
+// OpenAI Chat Completions wire shape. An empty mode leaves the field unset, a
+// mode maps to its own string, and a named tool becomes the function object.
+func toolChoiceForWire(choice sdk.ToolChoice) any {
+	switch choice.Mode {
+	case sdk.ToolChoiceAuto, sdk.ToolChoiceNone, sdk.ToolChoiceRequired:
+		return string(choice.Mode)
+	case sdk.ToolChoiceTool:
+		return map[string]any{
+			"type":     "function",
+			"function": map[string]any{"name": choice.Tool},
+		}
+	default:
+		return nil
+	}
 }
 
 // ---------- message conversion ----------
@@ -478,10 +495,10 @@ func convertContent(parts []sdk.MessagePart) any {
 
 // ---------- parseResponse ----------
 
-func (p *Provider) parseResponse(resp *chatResponse) (*sdk.GenerateResult, error) {
-	result := &sdk.GenerateResult{
+func (p *Provider) parseResponse(resp *chatResponse) (sdk.ModelResult, error) {
+	result := sdk.ModelResult{
 		Usage: convertUsage(&resp.Usage),
-		Response: sdk.ResponseMetadata{
+		Response: &sdk.ResponseMetadata{
 			ID:        resp.ID,
 			ModelID:   resp.Model,
 			Timestamp: time.Unix(resp.Created, 0),
@@ -540,17 +557,17 @@ func (p *Provider) parseResponse(resp *chatResponse) (*sdk.GenerateResult, error
 
 // ---------- DoStream ----------
 
-func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sdk.StreamResult, error) { //nolint:gocritic // interface method
-	if params.Model == nil {
+func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error) { //nolint:gocritic // interface method
+	if req.Model == "" {
 		return nil, fmt.Errorf("openai: model is required")
 	}
 
-	req, err := p.buildRequest(&params)
+	out, err := p.buildRequest(&req)
 	if err != nil {
 		return nil, fmt.Errorf("openai: build request: %w", err)
 	}
-	req.Stream = true
-	req.StreamOptions = &chatStreamOptions{IncludeUsage: true}
+	out.Stream = true
+	out.StreamOptions = &chatStreamOptions{IncludeUsage: true}
 
 	ch := make(chan sdk.StreamPart, 64)
 
@@ -576,7 +593,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 			Path:    "/chat/completions",
 			Headers: p.authHeaders(),
 			Prepare: p.prepareRequest,
-			Body:    req,
+			Body:    out,
 		}, func(ev *utils.SSEEvent) error {
 			if ev.Data == "[DONE]" {
 				return utils.ErrStreamDone
@@ -610,7 +627,7 @@ func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sd
 		})
 	}()
 
-	return &sdk.StreamResult{Stream: ch}, nil
+	return ch, nil
 }
 
 func (p *Provider) authHeaders() map[string]string {
