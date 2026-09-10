@@ -42,6 +42,14 @@ func GenerateImage(ctx context.Context, options ...ImageGenerateOption) (*ImageR
 func EditImage(ctx context.Context, options ...ImageEditOption) (*ImageResult, error)
 ```
 
+Deprecation notes:
+
+- The text-generation helpers above run the SDK's own multi-step tool loop and
+  are deprecated. Build a `Request` and call `Client.Generate` or
+  `Client.Stream`, which return a `ModelResult` or a `ModelStream`.
+- `Embed`, `EmbedMany`, `GenerateImage`, `EditImage` and the speech, transcribe
+  and video helpers are not deprecated; only the text-generation loop is.
+
 ### Provider Contracts
 
 ```go
@@ -298,6 +306,12 @@ type GenerateResult struct {
 }
 ```
 
+Deprecation notes:
+
+- `GenerateParams`, `GenerateResult` and `StepResult` are deprecated. A caller
+  builds a `Request` and reads a `ModelResult`; a runtime keeps its own step
+  record.
+
 ### Generate Options
 
 ```go
@@ -323,7 +337,8 @@ func WithOnFinish(fn func(*GenerateResult)) GenerateOption
 func WithOnStep(fn func(*StepResult) *GenerateParams) GenerateOption
 func WithOnStepCommitted(fn func(ctx context.Context, stepIndex int, step *StepResult) error) GenerateOption
 func WithPrepareStep(fn func(*GenerateParams) *GenerateParams) GenerateOption
-func WithApprovalHandler(fn func(ctx context.Context, call ToolCall) (bool, error)) GenerateOption
+func WithApprovalHandler(fn func(ctx context.Context, call ToolCall) (ToolApprovalResult, error)) GenerateOption
+func WithApprovalHandlerBool(fn func(ctx context.Context, call ToolCall) (bool, error)) GenerateOption
 ```
 
 Behavior notes:
@@ -333,6 +348,12 @@ Behavior notes:
 - `WithMaxSteps(-1)` means unlimited loop until the model stops requesting tools.
 - `WithOnStepCommitted` runs after a complete step is assembled and before it is accepted into accumulated history or the next model call begins. Returning an error stops generation.
 - `WithToolChoice` accepts `"auto"`, `"none"`, or `"required"`.
+
+Deprecation notes:
+
+- `GenerateOption` and every option above configure the deprecated client loop,
+  including the approval, step and multi-step callbacks. The single-call seam
+  takes its input through `Request` instead.
 
 ### Tools
 
@@ -611,6 +632,12 @@ type StreamResult struct {
 func (sr *StreamResult) Text() (string, error)
 func (sr *StreamResult) ToResult() (*GenerateResult, error)
 ```
+
+Deprecation notes:
+
+- `StreamResult` and its `Text` and `ToResult` methods are deprecated:
+  `Client.Stream` returns a `ModelStream`, and the caller assembles and
+  accumulates its own steps.
 
 ### Usage, Sources, Files, Response Metadata
 
