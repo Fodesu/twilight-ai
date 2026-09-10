@@ -115,7 +115,7 @@ type BindingReferenceDefinition struct {
 
 **EXT-REF-1** 声明以 `Extractor` 提取 typed value 内的全部 Artifact 引用，保留 appearance order，随后 group 才 sorted-unique。Extractor 随 EventDefinition 声明，本层不维护提取器注册表，也不提供路径式（JSONPointer）提取。
 
-**EXT-REF-2** `BuildRegistry` 验证 cardinality、Extractor 非 nil 与 scheme/durability 声明；最低 durability 至少为 `EventBound`。admission 解析每个 Binding，验证 Scheme、最低 durability、resolvability；任何违反拒绝整个 group，不作任何写入。
+**EXT-REF-2** `BuildRegistry` 验证 cardinality、Extractor 非 nil 与 scheme/durability 声明；最低 durability 至少为 `EventBound`。admission 解析每个 Binding，验证 Scheme、最低 durability、resolvability；任何违反拒绝整个 group，不作任何写入。声明只表示该事件的 payload **可能**含引用：不含引用时不经过 admission，因此从不引用 artifact 的宿主无需配置 `Admission`。反之，payload 含引用而对应的 `Bindings` 或 `Ledger` 为 nil 属宿主配置错误，`Commit` 返回 error 而非 `CommitInvalid`，以免配置失败被读成对 group 的判定。该检查不放在 `OpenWriter`：一个事件类型是否真的携带引用要到 payload 解码后才可知，在装配期按声明强制会连带拒绝纯文本部署。
 
 ## 5. Writer：进程内的写入串行与幂等
 
@@ -153,6 +153,16 @@ type CommitResult struct {
     Claim *artifact.RetentionClaim
     Detail string
 }
+```
+
+`Outcome` 承载语义结果，`error` 只表示基础设施失败：`CommitInvalid` 与 `CommitConflict` 是回答而非失败，因此以 nil error 返回。调用方必须按 `Outcome` 分支，只判断 `err != nil` 会把"group 被拒"读成写入成功。
+
+```go
+// Admission 提供 Binding admission 与 claim ledger。
+type Admission struct {
+    Bindings artifact.BindingResolver
+    Ledger   artifact.RetentionLedger
+}
 
 type Writer interface {
     SessionID() session.SessionID
@@ -161,7 +171,7 @@ type Writer interface {
     Projections() ProjectionReader   // 读取本 Writer 维护的投影
     Close(context.Context) error
 }
-func OpenWriter(ctx, store session.Store, registry *Registry, ledger artifact.RetentionLedger, sid session.SessionID, opts session.OpenOptions) (Writer, error)
+func OpenWriter(ctx, store session.Store, registry *Registry, admission Admission, sid session.SessionID, opts session.OpenOptions) (Writer, error)
 ```
 
 **EXT-WRT-1** `OpenWriter` 调 `store.Open` 取得所有权，读取整条日志重建三样内存状态：幂等索引（CommitID → 该组的行与 fingerprint）、每个已注册投影的当前状态、head。之后 `Commit` 在 Writer 的互斥区内执行：调 fn 得到 group，做 codec、admission、claim，`session.Writer.Append`，再把新行折进投影并更新索引。fn 只能通过 `View` 读；fn 返回 nil 记 `Noop`。Writer 是并发的唯一入口：Run 的 worker、Coordinator、恢复流程都经它串行，kernel 不再需要临界区回调。

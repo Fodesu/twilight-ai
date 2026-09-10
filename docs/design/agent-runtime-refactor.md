@@ -98,15 +98,15 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 | RunHeader、TransitionRecord、wire codec、fold/golden tests | 完成 |
 | 第 6.4 节的 `agent/run` 修改（digest-only fact、Owner/Attempt、RunCreated、Withdraw、任意状态入队） | 完成，2026-09-07；golden 重新冻结 |
 | per-Run `Store`、`stored_runtime`、`sqlitestore`、`RunHeader`、`TransitionRecord` | 已删除，2026-09-07 |
-| Session kernel Memory Store（`agent/session`） | 完成，2026-09-07；conformance 部分实现 |
-| `agent/session/extension`（Registry、SemanticAppender、Lease、ProjectionReader） | 完成，2026-09-07；conformance 部分实现 |
+| Session kernel Memory Store（`agent/session`） | 完成，2026-09-07；第 7 节 conformance 完成，2026-09-10 |
+| `agent/session/extension`（Registry、Writer/Writers、ProjectionReader、MemoryProjectionCache） | 完成，2026-09-07；第 7 节 conformance 完成，2026-09-10（多版本 codec 共存、并发串行、binding admission 补测）；`Admission` 缺失由 error 报告而非 `CommitInvalid` |
 | `agent/session/chatlog`（事件、parts codec、Surface、Context） | 完成，2026-09-07；checkpoint 完成，2026-09-09（CHT-EVT-3 转正，宿主策略见 REF-CKP-1/2） |
 | `agent/artifact`（Ref、Binding、Memory BindingStore、两态 KV ledger） | 完成，2026-09-07；Resolver/Store/Promoter 未实现 |
 | `agent/session/run`（module descriptor、machine 投影、Runtime、RecoverExpired） | 完成，2026-09-07 |
 | `agent/run/loop` 绑定 Session（`Run(ctx, runtime, sessionID, runID, sink)`、RunPosition、SessionCommit 观察） | 完成，2026-09-07 |
 | `agent/turn` 重写（Coordinator、CompanionV1、surface 投影） | 完成，2026-09-07；旧实现已删除 |
 | 参考组装 `agent/ref`（Agent 配置面（原 ExecutionBinding，2026-09-09 改名 Profile）、ContextPlanner、Memory 组装、SessionDriver、Session 宿主、崩溃恢复 example） | 完成，2026-09-07 |
-| Runtime conformance（RUN-CMP-2，`agent/session/run/runtimetest`，以 `session.Store` 为参数） | 完成，2026-09-07；对 Memory Store 通过。kernel 与 extension 的 conformance 部分实现 |
+| Runtime conformance（RUN-CMP-2，`agent/session/run/runtimetest`，以 `session.Store` 为参数） | 完成，2026-09-07；对 Memory Store 通过。kernel 与 extension 的 conformance 见 2026-09-10 各行 |
 | 第 8 节规范修订（session、extension、run、turn、chatlog、artifact、参考组装按单写者与扁平事件改写） | 完成，2026-09-08 |
 | 第 8 节代码重构（kernel 收缩、Writer、Runtime 去 lease/grant、接管处置、conformance 重建） | 完成，2026-09-08；`agent/` 下 9 个测试包全部通过，kernel 与 RUN-CMP-2 的 conformance 均以 Store 为参数 |
 | 文件 adapter（`agent/session/filestore`）、live 模型接入 | 未开始 |
@@ -114,8 +114,8 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 | `agent/session` kernel conformance（第 7 节，含崩溃残尾恢复） | 完成，2026-09-10；Memory 与 filestore 跑同一套 |
 | `agent/session` 版本隔离（digest domain 携带 profile 版本） | 完成，2026-09-10 |
 | `agent/es` 收敛到 canonical identity 与 digest 职责 | 完成，2026-09-10；删除 superseded 的 record/fold |
+| `agent/jsonstable` JCS 契约测试（键序、binary64 数字格式、拒绝面、canonical-by-construction） | 完成，2026-09-10；`Value` 仅未导出 `raw`，唯一赋值点在 `Parse` 内 |
 | Fork、ancestry、canonical import（agent-session.md 第 8 节） | 未实现；kernel 当前拒绝非 nil `ParentFork` |
-| `agent/session/extension`（Writer、Writers、ProjectionReader、MemoryProjectionCache） | 完成，2026-09-07；第 7 节 conformance 部分实现 |
 | `agent/session/chatlog` 开放项 | wire field names、输入 limits、golden fixtures 未冻结 |
 | `agent/artifact` | Ref、Binding、Memory BindingStore、BindingSetBuilder、两态 ledger 完成；Resolver、Store、Promoter、scheme registry 未实现 |
 | `agent/artifact` 保留子系统（claim、ledger、Reconcile） | 尚无真实内容存储与 GC 消费者；conformance 随第一个真实内容存储冻结，在此之前允许修订；`Prepared` 状态、provider 迁移 fence、archive import/export 未实现 |
@@ -391,7 +391,7 @@ v1 只有两类恢复动作：`RecoverInterrupted`（新 owner 一次性处置 E
 - 七份规范的状态行：改为文档成熟度加指向本文的指针，其中属于设计的句子（Writer 串行、Coordinator 只做协议、Runtime 无 lease/grant 等）保留；
 - [agent-session.md](agent-session.md)：删附录 A 标题与"不进入 v1"，Fork／ancestry／canonical import 转为第 8 节；SES-APP-2 去掉参考实现与 conformance 注入手段；删"参考实现为…"与 golden fixture 冻结段（该约束为工程约束，见 §3）；SES-SCP-3 的 conformance 断言随之删除；
 - [agent-artifact.md](agent-artifact.md)：第 7 节去掉"附录，不进入 v1"与"实现返回 `ErrUnsupported`"；ART-RET-3 去掉"参考实现"表述；
-- [agent-session-extension.md](agent-session-extension.md)：清单去掉 claim 断言的冻结说明；"通用 `Catalog` 仍不进入 v1"改为职责边界表述；
+- [agent-session-extension.md](agent-session-extension.md)：清单去掉 claim 断言的冻结说明；"通用 `Catalog` 仍不进入 v1"改为职责边界表述；`OpenWriter` 签名改为携带 `Admission{Bindings, Ledger}`（原签名只有 ledger，无法满足 EXT-REF-1/2 的 scheme/durability admission）；补上 `CommitResult` 的 outcome／error 分工，以及"payload 含引用而 admission 未配置即返回 error"的双向契约；
 - [agent-session-chatlog.md](agent-session-chatlog.md)：删"v1 freeze 前开放项"；checkpoint 失效段去掉"相对早期草案的修订"的历史框架；
 - [agent-run.md](agent-run.md)：RUN-CMP-1 去掉 fixture 状态，只保留版本演进规则。
 
