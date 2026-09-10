@@ -12,14 +12,30 @@ func NewClient() *Client {
 
 // --- Package-level convenience functions ---
 
+// GenerateText runs the SDK text-generation loop and returns the final text.
+//
+// Deprecated: this wrapper runs the SDK's own multi-step tool loop, which duplicates
+// the orchestration a runtime has to own. Build an sdk.Request and call
+// Client.Generate instead.
 func GenerateText(ctx context.Context, options ...GenerateOption) (string, error) {
 	return defaultClient.GenerateText(ctx, options...)
 }
 
+// GenerateTextResult runs the SDK text-generation loop and returns the
+// accumulated result.
+//
+// Deprecated: this wrapper runs the SDK's own multi-step tool loop, which duplicates
+// the orchestration a runtime has to own. Build an sdk.Request and call
+// Client.Generate instead.
 func GenerateTextResult(ctx context.Context, options ...GenerateOption) (*GenerateResult, error) {
 	return defaultClient.GenerateTextResult(ctx, options...)
 }
 
+// StreamText runs the SDK text-generation loop and returns its live stream.
+//
+// Deprecated: this wrapper runs the SDK's own multi-step tool loop, which duplicates
+// the orchestration a runtime has to own. Build an sdk.Request and call
+// Client.Stream instead.
 func StreamText(ctx context.Context, options ...GenerateOption) (*StreamResult, error) {
 	return defaultClient.StreamText(ctx, options...)
 }

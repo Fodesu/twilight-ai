@@ -20,6 +20,10 @@ import (
 //
 // StreamResult.Steps and StreamResult.Messages are populated during stream
 // consumption and safe to read after the stream is fully consumed.
+//
+// Deprecated: this wrapper runs the SDK's own multi-step tool loop, which duplicates
+// the orchestration a runtime has to own. Build an sdk.Request and call
+// Client.Stream instead.
 func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*StreamResult, error) {
 	cfg, _, err := buildConfig(options)
 	if err != nil {
