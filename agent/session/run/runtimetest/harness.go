@@ -84,7 +84,7 @@ func newHarness(t testing.TB, f Fixture) *harness {
 func (h *harness) open() {
 	h.t.Helper()
 	h.writers = extension.NewWriters(h.store, h.registry, extension.Admission{Bindings: h.bindings, Ledger: h.ledger}, session.OpenOptions{Takeover: true},
-		extension.WritersConfig{Cache: h.cache, CachePolicy: runmod.WriterCachePolicy()})
+		extension.WritersConfig{Cache: h.cache, CachePolicy: runmod.WriterCachePolicy(0)})
 	rt, err := runmod.NewRuntime(runmod.Config{Writers: h.writers, Registry: h.registry, Store: h.store,
 		Frozen: h.frozen, Companion: turn.CompanionV1{}, Cache: h.cache, Now: h.clock.Now})
 	if err != nil {

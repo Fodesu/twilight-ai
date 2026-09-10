@@ -132,7 +132,7 @@ const DefaultCacheEvery session.Seq = 64
 //
 // covered is the head the projection's entry already reflects, or the zero Head
 // when the cache holds no entry for it. A policy only governs *writing*: a
-// Writer always resumes from whatever entry it finds, whoever wrote it, because
+// Writer always uses whatever entry it finds, whoever wrote it, because
 // a stale or hostile entry is rejected when it is validated against the stream.
 type CachePolicy func(id ProjectionID, v ProjectionVersion, head, covered session.Head, closing bool) bool
 

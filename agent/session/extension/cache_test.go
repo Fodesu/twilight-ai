@@ -19,7 +19,7 @@ const (
 )
 
 // applyCounter records how many events each projection folded, which is how a
-// test tells a resumed fold from a full one.
+// test tells a fold that started from a cache entry from a full one.
 type applyCounter struct {
 	mu    sync.Mutex
 	calls map[ProjectionID]int
@@ -183,7 +183,7 @@ func TestWriterCachesAtCloseAndResumesEverything(t *testing.T) {
 	reopened := f.open(t, WritersConfig{Cache: f.cache})
 	for _, id := range []ProjectionID{alphaID, betaID} {
 		if n := f.counter.get(id); n != 0 {
-			t.Errorf("%s folded %d events, want 0 after a full resume", id, n)
+			t.Errorf("%s folded %d events, want 0 when the entry covers the whole log", id, n)
 		}
 		if got := f.notes(t, reopened, id); !sameNotes(got, []string{"n1", "n2", "n3"}) {
 			t.Errorf("%s notes = %v, want [n1 n2 n3]", id, got)
@@ -286,7 +286,7 @@ func TestWriterRejectsUnusableCacheEntries(t *testing.T) {
 
 // TestWriterCachePolicyGovernsWritingButNotReading separates the two halves of
 // the contract: a policy only decides who writes an entry, while a Writer
-// always resumes from an entry it finds.
+// always starts from an entry it finds.
 func TestWriterCachePolicyGovernsWritingButNotReading(t *testing.T) {
 	ctx := context.Background()
 	f := newCacheFixture(t)
@@ -310,7 +310,7 @@ func TestWriterCachePolicyGovernsWritingButNotReading(t *testing.T) {
 		t.Error("alpha has an entry after Close although the policy declines it")
 	}
 
-	// An entry alpha's owner wrote is still resumed, policy or not.
+	// An entry alpha's owner wrote is still used, policy or not.
 	rows := f.rows(t)
 	if err := f.cache.Save(ctx, "s", alphaID, 1, f.encodeState(t, "n1", "n2"), session.Head{Next: 2, Digest: rows[1].Digest}); err != nil {
 		t.Fatal(err)
@@ -318,7 +318,7 @@ func TestWriterCachePolicyGovernsWritingButNotReading(t *testing.T) {
 	f.counter.reset()
 	reopened := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: policy})
 	if n := f.counter.get(alphaID); n != 0 {
-		t.Errorf("alpha folded %d events, want 0: a declined projection is still resumed", n)
+		t.Errorf("alpha folded %d events, want 0: a declined projection is still started from", n)
 	}
 	if got := f.notes(t, reopened, alphaID); !sameNotes(got, []string{"n1", "n2"}) {
 		t.Errorf("alpha notes = %v, want [n1 n2]", got)
@@ -354,7 +354,7 @@ func TestCacheEveryBoundsHowFarBehindAnEntryFalls(t *testing.T) {
 }
 
 // TestWriterWithoutCacheFoldsEverything is the unchanged deployment: no cache
-// configured means no entry is written and nothing is resumed.
+// configured means no entry is written and none is started from.
 func TestWriterWithoutCacheFoldsEverything(t *testing.T) {
 	ctx := context.Background()
 	f := newCacheFixture(t)
@@ -378,7 +378,7 @@ func TestWriterWithoutCacheFoldsEverything(t *testing.T) {
 }
 
 // TestCoversGroupBoundary pins the validation that keeps a half-applied group
-// from being resumed (EXT-PRJ-1).
+// from being started from (EXT-PRJ-1).
 func TestCoversGroupBoundary(t *testing.T) {
 	rows := []session.SessionEvent{
 		{Seq: 0, Digest: "d0", Last: false},

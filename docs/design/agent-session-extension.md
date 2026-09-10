@@ -192,7 +192,7 @@ type Writers interface {
 // WritersConfig 是部署给出的投影缓存；两者都可缺省，缺省即每次从日志开头全折且不写。
 type WritersConfig struct {
     Cache       ProjectionCache // 折叠结果的存放处（EXT-PRJ-3）
-    CachePolicy CachePolicy     // 刷新哪个投影、何时刷新；nil 即 CacheEvery(DefaultCacheEvery)
+    CachePolicy CachePolicy     // 刷新哪个投影、何时刷新；nil 即 CacheEvery(DefaultCacheEvery)，部署调 n 即可改区间
 }
 func NewWriters(store session.Store, registry *Registry, admission Admission, opts session.OpenOptions, cfg WritersConfig) Writers
 ```
@@ -243,7 +243,7 @@ func NewProjectionReader(store session.Store, registry *Registry, cache Projecti
 
 **EXT-PRJ-6** 写入与读取的权限不对称：`WritersConfig.CachePolicy` 只决定 Writer 写哪个投影的条目；读取一律尝试缓存中的条目，不论谁写的。某个投影的条目由它的宿主在语义检查点上写入时（run 的 machine projection 经 `SnapshotPolicy`，见 RUN-CMT-2），组装层用 `CachePolicy.Exclude` 把它排除，Writer 便只读不写，绝不会把条目落在检查点之间。
 
-**EXT-PRJ-7** 缓存是派生数据，写入尽力而为：`Save` 失败只让下次多折，不影响 Commit 结果。缺省策略 `CacheEvery(DefaultCacheEvery)` 给出可依赖的代价上界——进程异常结束后续折不超过 `DefaultCacheEvery` 行，干净 `Close` 后为零；`Close` 的刷新同样受策略约束，因此被 `Exclude` 的投影在关闭时也不会被写入。
+**EXT-PRJ-7** 缓存是派生数据，写入尽力而为：`Save` 失败只让下次多折，不影响 Commit 结果。区间是部署参数而非常量：`CacheEvery(n)` 的 `n` 由部署给出，`n <= 0` 才取 `DefaultCacheEvery`，且必须能在不改代码的情况下调整：参考装配把它暴露为 `Options.CacheEvery`（REF-MEM-2），换值即换代价，不必重编译。间距给出可依赖的代价上界——进程异常结束后续折不超过 `n` 行，干净 `Close` 后为零；`Close` 的刷新同样受策略约束，因此被 `Exclude` 的投影在关闭时也不会被写入。
 
 ## 7. errors 与 conformance
 

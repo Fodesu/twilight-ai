@@ -18,7 +18,7 @@ import (
 const projectionsDir = "projections"
 
 // ProjectionCache returns the durable extension.ProjectionCache of this Store,
-// so a process that reopens a Session resumes its projections from the last
+// so a process that reopens a Session starts its projections from the last
 // cached entry instead of refolding the whole log.
 func (s *Store) ProjectionCache() extension.ProjectionCache { return projectionCache{s} }
 

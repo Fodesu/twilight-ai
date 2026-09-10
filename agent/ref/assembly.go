@@ -38,6 +38,13 @@ type Options struct {
 	// ProjectionCache overrides where folded projection states are stored; nil
 	// asks the Store for a durable cache and falls back to an in-memory one.
 	ProjectionCache extension.ProjectionCache
+	// CacheEvery is how far behind the head a cached projection state may fall,
+	// in rows; zero takes extension.DefaultCacheEvery. It bounds what a reopened
+	// Session folds again after an abrupt end, and a clean Close refreshes
+	// regardless, so a larger value trades a longer repeat fold for fewer writes
+	// (EXT-PRJ-7). The run machine projection is never written this way: its
+	// checkpoints belong to SnapshotPolicy (REF-MEM-2).
+	CacheEvery session.Seq
 }
 
 // Memory is the fully wired in-process agent (REF 5). One Memory is one
@@ -74,7 +81,7 @@ func New(opts Options) (*Memory, error) {
 	if ledger == nil {
 		ledger = artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings})
 	}
-	// A projection cache lets a reopened Session resume folding instead of
+	// A projection cache lets a reopened Session start folding instead of
 	// refolding the whole log (EXT-PRJ-3). An adapter that can store them
 	// durably provides its own; otherwise the entries live as long as the
 	// process.
@@ -87,7 +94,7 @@ func New(opts Options) (*Memory, error) {
 		}
 	}
 	writers := extension.NewWriters(store, registry, extension.Admission{Bindings: bindings, Ledger: ledger}, opts.Ownership,
-		extension.WritersConfig{Cache: cache, CachePolicy: runmod.WriterCachePolicy()})
+		extension.WritersConfig{Cache: cache, CachePolicy: runmod.WriterCachePolicy(opts.CacheEvery)})
 	now := opts.Now
 	if now == nil {
 		now = time.Now
