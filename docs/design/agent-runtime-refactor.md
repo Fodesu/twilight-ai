@@ -503,6 +503,26 @@ provider 接缝说的是旧类型：入参 `GenerateParams`，出参 `*GenerateR
 2. **google provider 丢弃 wire 上携带的 tool-call id**，总是自己 mint 一个（`provider/google/generativeai/types.go` 的 `functionCall` 没有 id 字段）。对照 `provider/openai/completions` 是保留 wire id、缺失才 `generateID`。
 3. **OpenAI 形状的 tool-choice 编码在 4 个 provider 里各有一份**（completions、copilot、codex、responses）。这是刻意的：wire 形状属于 provider；若后续确认四处永远一致，可抽成 internal helper。
 
+### 迁移前后的 wire 对拍（2026-09-11）
+
+以同一批 5 个用例（基础、工具 + 必需 tool choice、指定工具、json_schema 响应格式、图片/文件部件）在迁移前的构建（`289f22a`）与迁移后分别驱动同一个 provider，抓取请求体逐字节比较；`stream` 一列走 `DoStream`：
+
+| provider | 非流式 | 流式 |
+| --- | --- | --- |
+| `openai/completions` | 2942 B，5/5 一致 | 3212 B，5/5 一致 |
+| `openai/responses` | 3185 B，5/5 一致 | 3255 B，5/5 一致 |
+| `openai/codex` | 2832 B，5/5 一致 | 2832 B，5/5 一致 |
+| `github/copilot` | 2825 B，4/5 一致 | 3095 B，4/5 一致 |
+| `anthropic/messages` | 2709 B，5/5 一致 | 2779 B，5/5 一致 |
+| `google/generativeai` | 2970 B / 3060 B，4/5 一致 | 与左侧相同 |
+
+两处差异都已定性，都不是回归：
+
+1. **copilot 的 `tool_choice` 键序**：旧实现用 `map[string]any`（Go 按键排序）编码为 `{"function":{…},"type":"function"}`，新实现用结构体编码为 `{"type":"function","function":{…}}`。把两个请求体规范化后完全相等，JSON 对象键序无语义。
+2. **google 的强制工具选择是修复**：指定工具用例在旧构建里**完全没有 `toolConfig`**——上游要求的强制调用被静默丢弃，模型不会被约束到指定函数；新构建发出 `toolConfig.functionCallingConfig = {"mode":"ANY","allowedFunctionNames":["get_city"]}`。除该键外两个请求体逐字节相同。
+
+这套对拍是一次性验证，没有沉淀成仓库守卫：它需要迁移前的构建，无法在单一 revision 内重放。若要把 wire 形状长期钉住，应当按 provider 提交 golden 请求体，沿用 kernel wire fixtures 的 `-update` 重生成方式。
+
 ## 13. 2026-09-11 修订：SDK 文本生成客户端层标记过时
 
 ### 13.1 决定
