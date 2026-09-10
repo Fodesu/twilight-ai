@@ -100,6 +100,8 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 | per-Run `Store`、`stored_runtime`、`sqlitestore`、`RunHeader`、`TransitionRecord` | 已删除，2026-09-07 |
 | Session kernel Memory Store（`agent/session`） | 完成，2026-09-07；第 7 节 conformance 完成，2026-09-10 |
 | `agent/session/extension`（Registry、Writer/Writers、ProjectionReader、MemoryProjectionCache） | 完成，2026-09-07；第 7 节 conformance 完成，2026-09-10（多版本 codec 共存、并发串行、binding admission、current 版本必须有 codec 的校验）；`Admission` 缺失由 error 报告而非 `CommitInvalid` |
+| 投影缓存接入 Writer：`rebuild` 从缓存条目续折（组对齐校验 + 失效回退）、`CachePolicy`/`CacheEvery`/`Exclude` 只管写入、`Close` 刷新 | 完成，2026-09-10；EXT-PRJ-3/5/6/7 与 REF-MEM-2 新增 |
+| 文件 adapter（`agent/session/filestore`）的持久化投影缓存（`Store.ProjectionCache()`，`<sid>/projections/<id>/<v>.json`）与跨进程重启 conformance | 完成，2026-09-10；`agent/ref` 经 `ProjectionCacheProvider` 选中它 |
 | `agent/session/chatlog`（事件、parts codec、Surface、Context） | 完成，2026-09-07；checkpoint 完成，2026-09-09（CHT-EVT-3 转正，宿主策略见 REF-CKP-1/2） |
 | `agent/artifact`（Ref、Binding、Memory BindingStore、两态 KV ledger） | 完成，2026-09-07；Resolver/Store/Promoter 未实现 |
 | `agent/session/run`（module descriptor、machine 投影、Runtime、RecoverExpired） | 完成，2026-09-07 |
@@ -109,7 +111,7 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 | Runtime conformance（RUN-CMP-2，`agent/session/run/runtimetest`，以 `session.Store` 为参数） | 完成，2026-09-07；对 Memory Store 通过。kernel 与 extension 的 conformance 见 2026-09-10 各行 |
 | 第 8 节规范修订（session、extension、run、turn、chatlog、artifact、参考组装按单写者与扁平事件改写） | 完成，2026-09-08 |
 | 第 8 节代码重构（kernel 收缩、Writer、Runtime 去 lease/grant、接管处置、conformance 重建） | 完成，2026-09-08；`agent/` 下 9 个测试包全部通过，kernel 与 RUN-CMP-2 的 conformance 均以 Store 为参数 |
-| 文件 adapter（`agent/session/filestore`）、live 模型接入 | 未开始 |
+| 文件 adapter（`agent/session/filestore`）、live 模型接入 | kernel 落盘、崩溃残尾恢复与投影缓存已完成（2026-09-10）；live 模型接入未开始 |
 | kernel wire golden fixtures（header digest、行 digest 链、行 canonical JSON 形状、落盘字节） | 冻结，2026-09-09；`-update` 重生成 |
 | `agent/session` kernel conformance（第 7 节，含崩溃残尾恢复） | 完成，2026-09-10；Memory 与 filestore 跑同一套 |
 | `agent/session` 版本隔离（digest domain 携带 profile 版本） | 完成，2026-09-10 |

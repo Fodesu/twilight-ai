@@ -174,7 +174,7 @@ type Writer interface {
 func OpenWriter(ctx, store session.Store, registry *Registry, admission Admission, sid session.SessionID, opts session.OpenOptions) (Writer, error)
 ```
 
-**EXT-WRT-1** `OpenWriter` 调 `store.Open` 取得所有权，读取整条日志重建三样内存状态：幂等索引（CommitID → 该组的行与 fingerprint）、每个已注册投影的当前状态、head。之后 `Commit` 在 Writer 的互斥区内执行：调 fn 得到 group，做 codec、admission、claim，`session.Writer.Append`，再把新行折进投影并更新索引。fn 只能通过 `View` 读；fn 返回 nil 记 `Noop`。Writer 是并发的唯一入口：Run 的 worker、Coordinator、恢复流程都经它串行，kernel 不再需要临界区回调。
+**EXT-WRT-1** `OpenWriter` 调 `store.Open` 取得所有权，读取整条日志重建三样内存状态：幂等索引（CommitID → 该组的行与 fingerprint）、每个已注册投影的当前状态、head。投影的起始状态按 EXT-PRJ-3/5 取自缓存条目或 `Initial`。之后 `Commit` 在 Writer 的互斥区内执行：调 fn 得到 group，做 codec、admission、claim，`session.Writer.Append`，再把新行折进投影、更新索引，并按缓存策略刷新条目（EXT-PRJ-6/7）。fn 只能通过 `View` 读；fn 返回 nil 记 `Noop`。Writer 是并发的唯一入口：Run 的 worker、Coordinator、恢复流程都经它串行，kernel 不再需要临界区回调。
 
 **EXT-WRT-2** 幂等：fn 返回的 group 若 CommitID 已在索引中，比对 fingerprint（Type、SourceSeqs、Payload 的有序序列，不含时间），相同返回 `AlreadyApplied` 与原行，不同返回 `Conflict`；两者都不写入，也不做 admission 与 claim。fn 内可先经 `View.LookupCommit` 判断，避免为重放重新构造 group。
 
@@ -189,6 +189,12 @@ func OpenWriter(ctx, store session.Store, registry *Registry, admission Admissio
 type Writers interface {
     Writer(context.Context, session.SessionID) (Writer, error)
 }
+// WritersConfig 是部署给出的投影缓存；两者都可缺省，缺省即每次从日志开头全折且不写。
+type WritersConfig struct {
+    Cache       ProjectionCache // 折叠结果的存放处（EXT-PRJ-3）
+    CachePolicy CachePolicy     // 刷新哪个投影、何时刷新；nil 即 CacheEvery(DefaultCacheEvery)
+}
+func NewWriters(store session.Store, registry *Registry, admission Admission, opts session.OpenOptions, cfg WritersConfig) Writers
 ```
 
 **EXT-WRT-6** 一个进程对同一 Session 只打开一个 Writer，`Writers` 负责这一唯一性：首次请求时 `OpenWriter`，之后返回同一实例；Writer 失效（EXT-WRT-4）或 Close 后再次请求返回错误，是否重新 Open 由宿主决定。模块不自行调用 `OpenWriter`。
@@ -212,6 +218,16 @@ type ProjectionCache interface {
     Load(ctx, sid, id, v) (state jsonstable.Value, through session.Head, ok bool, err error)
     Save(ctx, sid, id, v, state jsonstable.Value, through session.Head) error
 }
+// ProjectionCacheProvider 由能把缓存落盘的 Store adapter 实现，组装层据此选中它。
+type ProjectionCacheProvider interface{ ProjectionCache() ProjectionCache }
+// CachePolicy 决定 Writer 刷新哪个投影的缓存条目；covered 是该条目的 through，
+// 或缓存中无条目时的零值 Head。它只约束写入，从不约束读取。
+// closing 为真表示这是 Close 前的最后一次询问。
+type CachePolicy func(id ProjectionID, v ProjectionVersion, head, covered session.Head, closing bool) bool
+// CacheEvery 在 head 落后 covered 满 n 行时刷新，并在 Close 时无条件刷新；n <= 0 取 DefaultCacheEvery。
+func CacheEvery(n session.Seq) CachePolicy
+// Exclude 拒绝被点名的投影，其余交给 p；组装层用它让宿主自己刷新的投影不被 Writer 抢占。
+func (p CachePolicy) Exclude(ids ...ProjectionID) CachePolicy
 func NewProjectionReader(store session.Store, registry *Registry, cache ProjectionCache) ProjectionReader
 ```
 
@@ -219,9 +235,15 @@ func NewProjectionReader(store session.Store, registry *Registry, cache Projecti
 
 **EXT-PRJ-2** 投影只处理 `Consumes` 中的 EventType。其他 EventType 按归属处理：属于本模块或 `Requires` 模块（EXT-REG-4 的范围）且 `Decode` 为 Unknown 的事件，`Ignorable` 为真则跳过，否则 Fold 失败；范围之外的模块的事件一律跳过。写入者对纯信息性事件声明 `Ignorable`（EXT-REG），默认不可忽略：忘记声明只会导致多拒绝，不会导致静默丢失。读取时以范围内模块的前缀作为 `Types` 过滤。
 
-**EXT-PRJ-3** 缓存条目记录 `through`：已折叠到的 stream head（`Next` 为下一未折叠行的 Seq，`Digest` 为最后一行的 digest）。复用条件：`Read(From: through.Next-1)` 返回的首行 Digest 等于 `through.Digest`，且 `StateCodec.Decode` 成功；否则从头重折。写入策略由投影或其宿主决定（例如 run 的 `SnapshotPolicy`）；缓存不在 kernel，也不与 append 同事务，丢失或过期只影响读取代价。
+**EXT-PRJ-3** 缓存条目记录 `through`：已折叠到的 stream head（`Next` 为下一未折叠行的 Seq，`Digest` 为最后一行的 digest）。复用条件是**组对齐**：`through.Next-1` 必须是某组最后一行的 Seq 与 digest（`Last` 为真），且 `StateCodec.Decode` 成功；否则从 `Initial` 重折。组对齐是 EXT-PRJ-1 的直接后果——落在组内部的条目意味着一个半应用的组，不可作为起点。
 
 **EXT-PRJ-4** `Writer.Projections()` 返回的 reader 直接读 Writer 内存中的状态，不经 Store；独立进程的观察者用 `NewProjectionReader` 从 Store 读，两者对同一 head 给出相同状态。
+
+**EXT-PRJ-5** `rebuild` 始终读完整条日志：幂等索引需要每个 CommitID 的 fingerprint。日志是 O(N)，投影折叠是 O(N²)（每次 Apply 复制状态），所以可省的只有折叠：条目通过 EXT-PRJ-3 校验的投影从该处续折，跳过它已覆盖的组；其余投影从 `Initial` 全折。篡改或过期的条目只让该投影多折一次，绝不影响正确性，也绝不让 `OpenWriter` 失败。
+
+**EXT-PRJ-6** 写入与读取的权限不对称：`WritersConfig.CachePolicy` 只决定 Writer 写哪个投影的条目；读取一律尝试缓存中的条目，不论谁写的。某个投影的条目由它的宿主在语义检查点上写入时（run 的 machine projection 经 `SnapshotPolicy`，见 RUN-CMT-2），组装层用 `CachePolicy.Exclude` 把它排除，Writer 便只读不写，绝不会把条目落在检查点之间。
+
+**EXT-PRJ-7** 缓存是派生数据，写入尽力而为：`Save` 失败只让下次多折，不影响 Commit 结果。缺省策略 `CacheEvery(DefaultCacheEvery)` 给出可依赖的代价上界——进程异常结束后续折不超过 `DefaultCacheEvery` 行，干净 `Close` 后为零；`Close` 的刷新同样受策略约束，因此被 `Exclude` 的投影在关闭时也不会被写入。
 
 ## 7. errors 与 conformance
 
@@ -241,6 +263,7 @@ v1 conformance 必须验证：
 - **EXT-REF-1/2**：Extractor 全量提取、cardinality、scheme/durability admission、拒绝时无写入；
 - **EXT-WRT-1 至 5**：OpenWriter 后索引与投影等于全量 fold；同 CommitID 重放 AlreadyApplied、不同内容 Conflict、两者无写入；并发调用方串行且各自看到前一次的结果；claim 先于 append，append 失败后 claim 被释放或可被核对回收；`ErrOwnershipLost` 后 Writer 失效；
 - **EXT-PRJ-1 至 4**：pure fold、组边界、Consumes 与范围外跳过、Ignorable 与非 Ignorable 的 Unknown、缓存复用条件、Writer 内投影与 Store 读取一致。
+- **EXT-PRJ-5 至 7**：干净 Close 后重开不折任何 event；条目只覆盖前缀时只折尾部；日志越界、digest 不符、落在组内、状态不可解码的条目一律回退为全折且不使 Open 失败；被策略排除的投影不被写入，但它已有的条目仍被复用；`CacheEvery(n)` 下条目落后不超过 n 行；未配置缓存时不写任何条目且行为不变。
 
 ## 8. Application module
 

@@ -138,8 +138,9 @@ sessionStore = session.NewMemoryStore()                       // Create、Header
 registry     = extension.BuildRegistry(protocolVersion, chatlog.Module, turn.Module, runmod.Module, opts.Modules...)   // app module 经 Options.Modules 注册（EXT 第 8 节）
 bindingStore = artifact.NewMemoryBindingStore()
 ledger       = artifact.NewMemoryLedger(bindingStore)          // 自持久化；claim 先于 Append 建立
-writers      = extension.NewWriters(sessionStore, registry, ledger, openOptions)   // 每 Session 一个 Writer（EXT-WRT-6）
-runtime      = runmod.NewRuntime(writers, runmod.NewMemoryFrozenValues(), turn.CompanionV1(registry))   // ProjectionCache 可选，参考装配不注入
+cache        = sessionStore 若实现 extension.ProjectionCacheProvider 则取 store.ProjectionCache()，否则 NewMemoryProjectionCache()   // 参考装配用 filestore 时快照落盘
+writers      = extension.NewWriters(sessionStore, registry, ledger, openOptions, {Cache: cache, CachePolicy: runmod.WriterCachePolicy()})   // 每 Session 一个 Writer（EXT-WRT-6、EXT-PRJ-6）
+runtime      = runmod.NewRuntime(writers, runmod.NewMemoryFrozenValues(), turn.CompanionV1(registry), {Cache: cache})   // machine projection 由 Runtime 自己刷（RUN-CMT-2）
 agents       = Agents.Register(id, agent) -> driver = loop.New(agent, agent, contextPlanner, policy, profile.Streaming)   // 每注册一个 Loop
 coordinator  = turn.Coordinator{Writers: writers, Runtime: runtime}   // 纯协议：提交 + Status；不驱动
 driver       = SessionDriver{Coordinator: coordinator, Writers: writers, Profile: profileRef, Companion: turn.CompanionV1Version}   // 提交后经 Memory.Drive 驱动
@@ -169,3 +170,5 @@ driver.OnTurnSettled                           // 有积压的 submitted 输入 
 参考 agent 的工具 ResponsePolicy 为 `DirectExecution`。ContextFold 在无 checkpoint 时输出全部有效条目。
 
 **REF-MEM-1（app module 开口）** `Options.Modules` 把 application module（EXT 第 8 节）追加进 Registry，须使用自有 Source。app module 的读写走既有入口，装配不另设通道：写事件经 `Memory.Writers` 取该 Session 的 Writer 后 `Commit`（与 `SubmitInput` 同路径）；读自己的投影经 `Memory.Projection(ctx, sid, id, version)`（`ChatlogSurface`/`TurnSurface` 是它对 first-party 投影的封装）。
+
+**REF-MEM-2（投影缓存归属）** 参考装配解析一次缓存并同时交给两处，各自只写自己有权写的投影（EXT-PRJ-6）：Store 实现 `extension.ProjectionCacheProvider` 时取 `store.ProjectionCache()`，于是 `filestore` 的快照落在 Session 目录内、跨进程存活；否则退回进程内 `NewMemoryProjectionCache()`。`Writers` 用 `runmod.WriterCachePolicy()`（即 `CacheEvery(DefaultCacheEvery).Exclude(MachineProjectionID)`）刷新全部投影，唯独不碰 machine projection；machine projection 由 `Runtime` 经 `SnapshotPolicy` 在自己的检查点写入（RUN-CMT-2）。两处的写入互不冲突，读取则不区分作者：重开的 Writer 从找到的任何合法条目续折。

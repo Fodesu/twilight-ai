@@ -328,7 +328,7 @@ func TestWriterOwnershipLost(t *testing.T) {
 	if got := notes(t, w2); len(got) != 1 {
 		t.Fatalf("fenced write leaked: %v", got)
 	}
-	ws := NewWriters(f.store, f.registry, f.admission(), session.OpenOptions{})
+	ws := NewWriters(f.store, f.registry, f.admission(), session.OpenOptions{}, WritersConfig{})
 	if _, err := ws.Writer(ctx, "s"); !session.IsCode(err, session.ErrOwned) {
 		t.Fatalf("writers while owned = %v", err)
 	}

@@ -58,7 +58,7 @@ func newTestStack(t testing.TB, now func() time.Time) *testStack {
 // one that is still open.
 func (s *testStack) open(t testing.TB) {
 	t.Helper()
-	s.writers = extension.NewWriters(s.store, s.registry, extension.Admission{}, session.OpenOptions{Takeover: true})
+	s.writers = extension.NewWriters(s.store, s.registry, extension.Admission{}, session.OpenOptions{Takeover: true}, extension.WritersConfig{})
 	rt, err := runmod.NewRuntime(runmod.Config{Writers: s.writers, Registry: s.registry, Store: s.store, Companion: nopCompanion{}, Now: s.now})
 	if err != nil {
 		t.Fatal(err)

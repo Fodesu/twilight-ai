@@ -111,6 +111,60 @@ type ProjectionCache interface {
 	Save(ctx context.Context, sid session.SessionID, id ProjectionID, v ProjectionVersion, state jsonstable.Value, through session.Head) error
 }
 
+// ProjectionCacheProvider is implemented by a Store adapter that can back its
+// projection cache durably, so assembly code can pick it without
+// knowing the adapter. A Store that does not implement it gets an in-memory
+// cache or none.
+type ProjectionCacheProvider interface {
+	ProjectionCache() ProjectionCache
+}
+
+// DefaultCacheEvery is the row gap a projection's cached state may fall behind
+// the head when the deployment chooses no other policy. It bounds the work a
+// reopening Writer repeats: after an abrupt end it refolds at most this many
+// rows, and after a clean Close none.
+const DefaultCacheEvery session.Seq = 64
+
+// CachePolicy decides whether the Writer refreshes one projection's entry in
+// the ProjectionCache. The Writer asks it after every applied commit, and once
+// more with closing set when it is closed, so a policy can treat the last
+// question differently from a routine one.
+//
+// covered is the head the projection's entry already reflects, or the zero Head
+// when the cache holds no entry for it. A policy only governs *writing*: a
+// Writer always resumes from whatever entry it finds, whoever wrote it, because
+// a stale or hostile entry is rejected when it is validated against the stream.
+type CachePolicy func(id ProjectionID, v ProjectionVersion, head, covered session.Head, closing bool) bool
+
+// CacheEvery refreshes a projection once the head has moved n rows past the
+// entry the cache already covers, and always at Close. n <= 0 means
+// DefaultCacheEvery.
+func CacheEvery(n session.Seq) CachePolicy {
+	return func(_ ProjectionID, _ ProjectionVersion, head, covered session.Head, closing bool) bool {
+		if closing {
+			return true
+		}
+		if n <= 0 {
+			n = DefaultCacheEvery
+		}
+		return head.Next >= covered.Next+n
+	}
+}
+
+// Exclude declines the named projections and defers to p for the rest. An
+// assembly uses it for a projection whose owning component refreshes the cache
+// itself at checkpoint points the Writer must not preempt.
+func (p CachePolicy) Exclude(ids ...ProjectionID) CachePolicy {
+	return func(id ProjectionID, v ProjectionVersion, head, covered session.Head, closing bool) bool {
+		for _, excluded := range ids {
+			if id == excluded {
+				return false
+			}
+		}
+		return p(id, v, head, covered, closing)
+	}
+}
+
 // MemoryProjectionCache is the in-process ProjectionCache.
 type MemoryProjectionCache struct {
 	mu      sync.Mutex

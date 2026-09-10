@@ -184,3 +184,11 @@ var MachineProjection = extension.ProjectionDefinition{
 }
 
 var _ session.EventType = Prefix
+
+// WriterCachePolicy is this module's use of the projection cache for the
+// Writer: every projection at the deployment's interval, except the machine
+// projection, whose entry the Runtime refreshes itself through SnapshotPolicy
+// and which must never be cached mid-step (RUN-CMT-2).
+func WriterCachePolicy() extension.CachePolicy {
+	return extension.CacheEvery(extension.DefaultCacheEvery).Exclude(MachineProjectionID)
+}

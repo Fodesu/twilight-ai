@@ -46,7 +46,7 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) run.Runtime {
 	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: defaultSession}); err != nil {
 		t.Fatal(err)
 	}
-	writers := extension.NewWriters(store, registry, extension.Admission{}, session.OpenOptions{})
+	writers := extension.NewWriters(store, registry, extension.Admission{}, session.OpenOptions{}, extension.WritersConfig{})
 	rt, err := runmod.NewRuntime(runmod.Config{Writers: writers, Registry: registry, Store: store, Companion: nopCompanion{}})
 	if err != nil {
 		t.Fatal(err)

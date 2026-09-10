@@ -88,6 +88,19 @@ type Admission struct {
 // ClaimOwnerKind is the ClaimOwner.Kind of Session commits (EXT-WRT-5).
 const ClaimOwnerKind = "twilight/session/commit"
 
+// WritersConfig carries the deployment's projection cache. Both fields are
+// optional: with no cache the Writer folds every registered projection from the
+// beginning of the log and stores nothing, exactly as before.
+type WritersConfig struct {
+	// Cache holds folded projection states, so a reopening Writer resumes from
+	// one instead of refolding the whole log (EXT-PRJ-3).
+	Cache ProjectionCache
+	// CachePolicy decides which projections the Writer refreshes and when; nil
+	// means CacheEvery(DefaultCacheEvery). It never affects reading: an entry
+	// the cache already holds is resumed from whoever wrote it.
+	CachePolicy CachePolicy
+}
+
 // DeriveClaimID is EXT-WRT-5.
 func DeriveClaimID(protocolVersion uint16, sid session.SessionID, commitID session.CommitID, refSet artifact.RefSetDigest) artifact.ClaimID {
 	raw, _ := es.EncodeTypedPayload(session.ProtocolVersion1, "twilight/session-extension/claim", []string{"1", fmt.Sprintf("%d", protocolVersion), string(sid), string(commitID), string(refSet)})
@@ -114,7 +127,13 @@ type writer struct {
 	index     map[session.CommitID]indexed
 	states    map[projectionKey]any
 	scopes    map[projectionKey]*projectionScope
-	lost      error
+	// cache, cachePolicy and cached carry EXT-PRJ-3: cached records the head
+	// each projection's cache entry already reflects, which is what a policy
+	// measures the next refresh against.
+	cache       ProjectionCache
+	cachePolicy CachePolicy
+	cached      map[projectionKey]session.Head
+	lost        error
 }
 
 // OpenWriter takes ownership of sid and rebuilds the idempotency index and
@@ -122,6 +141,10 @@ type writer struct {
 // is configured it reconciles this Session's claims before returning
 // (ART-RET-3): no Commit can be in flight yet.
 func OpenWriter(ctx context.Context, store session.Store, registry *Registry, admission Admission, sid session.SessionID, opts session.OpenOptions) (Writer, error) {
+	return openWriter(ctx, store, registry, admission, sid, opts, WritersConfig{})
+}
+
+func openWriter(ctx context.Context, store session.Store, registry *Registry, admission Admission, sid session.SessionID, opts session.OpenOptions, cfg WritersConfig) (Writer, error) {
 	if store == nil || registry == nil {
 		return nil, errors.New("extension: writer: nil store or registry")
 	}
@@ -129,8 +152,13 @@ func OpenWriter(ctx context.Context, store session.Store, registry *Registry, ad
 	if err != nil {
 		return nil, err
 	}
+	policy := cfg.CachePolicy
+	if policy == nil {
+		policy = CacheEvery(DefaultCacheEvery)
+	}
 	w := &writer{kernel: kernel, registry: registry, admission: admission, sid: sid,
-		index: make(map[session.CommitID]indexed), states: make(map[projectionKey]any), scopes: make(map[projectionKey]*projectionScope)}
+		index: make(map[session.CommitID]indexed), states: make(map[projectionKey]any), scopes: make(map[projectionKey]*projectionScope),
+		cache: cfg.Cache, cachePolicy: policy, cached: make(map[projectionKey]session.Head)}
 	if err := w.rebuild(ctx, store); err != nil {
 		_ = kernel.Close(ctx)
 		return nil, err
@@ -144,6 +172,11 @@ func OpenWriter(ctx context.Context, store session.Store, registry *Registry, ad
 	return w, nil
 }
 
+// rebuild restores the idempotency index and every registered projection
+// (EXT-WRT-1). The index needs every group, so the log is always read in full;
+// a projection whose cache entry ends on a group boundary of this log
+// resumes from that state and skips the groups it already covers, which is what
+// keeps a long session from refolding quadratically (EXT-PRJ-3).
 func (w *writer) rebuild(ctx context.Context, store session.Store) error {
 	page, err := store.Read(ctx, session.ReadRequest{SessionID: w.sid})
 	if err != nil {
@@ -154,11 +187,16 @@ func (w *writer) rebuild(ctx context.Context, store session.Store) error {
 		if err != nil {
 			return err
 		}
+		w.scopes[k] = scope
+		if state, through, ok := w.resume(ctx, scope, page.Events); ok {
+			w.states[k] = state
+			w.cached[k] = through
+			continue
+		}
 		state, err := scope.def.Initial()
 		if err != nil {
 			return err
 		}
-		w.scopes[k] = scope
 		w.states[k] = state
 	}
 	rows := page.Events
@@ -171,25 +209,59 @@ func (w *writer) rebuild(ctx context.Context, store session.Store) error {
 			return &Error{Code: ErrInvalid, Detail: "log ends in an incomplete group"}
 		}
 		group := rows[i : end+1]
-		if err := w.foldGroup(group); err != nil {
-			return err
-		}
 		fp, err := fingerprintRows(w.sid, group)
 		if err != nil {
 			return err
 		}
 		w.index[group[0].CommitID] = indexed{rows: group, fingerprint: fp}
+		if err := w.foldGroup(group); err != nil {
+			return err
+		}
 		i = end + 1
 	}
 	w.head = page.Head
 	return nil
 }
 
-// foldGroup folds one complete group into every projection; no state is
-// published if any projection rejects the group.
+// resume returns the cached state of one projection when the entry covers a
+// group boundary of this log and still decodes. Anything else -- absent,
+// corrupt, ahead of the log, or recorded mid-group -- falls back to folding
+// from Initial, so a stale or damaged cache only costs time (EXT-PRJ-3).
+func (w *writer) resume(ctx context.Context, scope *projectionScope, rows []session.SessionEvent) (any, session.Head, bool) {
+	if w.cache == nil {
+		return nil, session.Head{}, false
+	}
+	encoded, through, ok, err := w.cache.Load(ctx, w.sid, scope.def.ID, scope.def.Version)
+	if err != nil || !ok || !coversGroupBoundary(rows, through) {
+		return nil, session.Head{}, false
+	}
+	state, err := scope.def.StateCodec.Decode(encoded)
+	if err != nil {
+		return nil, session.Head{}, false
+	}
+	return state, through, true
+}
+
+// coversGroupBoundary reports whether through names the row before a group
+// boundary -- the last row of a complete group -- with the digest the entry
+// recorded. An entry that stops inside a group must not be resumed from,
+// because a group is applied atomically (EXT-PRJ-1).
+func coversGroupBoundary(rows []session.SessionEvent, through session.Head) bool {
+	if through.Next == 0 || through.Next > session.Seq(len(rows)) {
+		return false
+	}
+	last := rows[through.Next-1]
+	return last.Seq == through.Next-1 && last.Last && last.Digest == through.Digest
+}
+
+// foldGroup folds one complete group into every projection that does not
+// already cover it; no state is published if any projection rejects the group.
 func (w *writer) foldGroup(group []session.SessionEvent) error {
 	next := make(map[projectionKey]any, len(w.states))
 	for k, scope := range w.scopes {
+		if through, resumed := w.cached[k]; resumed && group[0].Seq < through.Next {
+			continue // already reflected by the entry it resumed from
+		}
 		state, err := w.registry.fold(scope, w.states[k], group)
 		if err != nil {
 			return err
@@ -200,6 +272,23 @@ func (w *writer) foldGroup(group []session.SessionEvent) error {
 		w.states[k] = s
 	}
 	return nil
+}
+
+// refreshCache writes the projection entries the deployment's policy asks for.
+// Best effort and never fatal: the cache is derived data, so a write failure
+// only means a later Writer folds more (EXT-PRJ-3).
+func (w *writer) refreshCache(ctx context.Context, closing bool) {
+	if w.cache == nil {
+		return
+	}
+	for k := range w.scopes {
+		if !w.cachePolicy(k.id, k.version, w.head, w.cached[k], closing) {
+			continue
+		}
+		if err := SaveProjection(ctx, w.cache, w.registry, w.sid, k.id, k.version, w.states[k], w.head); err == nil {
+			w.cached[k] = w.head
+		}
+	}
 }
 
 func (w *writer) SessionID() session.SessionID { return w.sid }
@@ -218,6 +307,9 @@ func (w *writer) OwnerExists(_ context.Context, owner artifact.ClaimOwner) (bool
 func (w *writer) Close(ctx context.Context) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.head.Next > 0 {
+		w.refreshCache(ctx, true)
+	}
 	w.lost = &Error{Code: ErrInvalid, Detail: "writer closed"}
 	return w.kernel.Close(ctx)
 }
@@ -334,6 +426,7 @@ func (w *writer) Commit(ctx context.Context, fn CommitFn) (CommitResult, error) 
 	}
 	w.index[group.CommitID] = indexed{rows: sealed, fingerprint: fp}
 	w.head = w.kernel.Head()
+	w.refreshCache(ctx, false)
 	return CommitResult{Outcome: CommitApplied, Events: append([]session.SessionEvent(nil), sealed...), Claim: claim}, nil
 }
 
@@ -468,14 +561,15 @@ type writers struct {
 	registry  *Registry
 	admission Admission
 	opts      session.OpenOptions
+	cfg       WritersConfig
 	mu        sync.Mutex
 	open      map[session.SessionID]Writer
 }
 
 // NewWriters returns a Writers that opens each Session once and hands out the
 // same Writer afterwards (EXT-WRT-6).
-func NewWriters(store session.Store, registry *Registry, admission Admission, opts session.OpenOptions) Writers {
-	return &writers{store: store, registry: registry, admission: admission, opts: opts, open: make(map[session.SessionID]Writer)}
+func NewWriters(store session.Store, registry *Registry, admission Admission, opts session.OpenOptions, cfg WritersConfig) Writers {
+	return &writers{store: store, registry: registry, admission: admission, opts: opts, cfg: cfg, open: make(map[session.SessionID]Writer)}
 }
 
 func (ws *writers) Writer(ctx context.Context, sid session.SessionID) (Writer, error) {
@@ -487,7 +581,7 @@ func (ws *writers) Writer(ctx context.Context, sid session.SessionID) (Writer, e
 		}
 		return w, nil
 	}
-	w, err := OpenWriter(ctx, ws.store, ws.registry, ws.admission, sid, ws.opts)
+	w, err := openWriter(ctx, ws.store, ws.registry, ws.admission, sid, ws.opts, ws.cfg)
 	if err != nil {
 		return nil, err
 	}

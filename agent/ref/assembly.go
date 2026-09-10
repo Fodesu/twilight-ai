@@ -35,6 +35,9 @@ type Options struct {
 	// Modules are application modules registered after the first-party three;
 	// each must carry its own non-twilight Source (EXT-REG-1).
 	Modules []extension.ModuleDescriptor
+	// ProjectionCache overrides where folded projection states are stored; nil
+	// asks the Store for a durable cache and falls back to an in-memory one.
+	ProjectionCache extension.ProjectionCache
 }
 
 // Memory is the fully wired in-process agent (REF 5). One Memory is one
@@ -71,14 +74,27 @@ func New(opts Options) (*Memory, error) {
 	if ledger == nil {
 		ledger = artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings})
 	}
-	writers := extension.NewWriters(store, registry, extension.Admission{Bindings: bindings, Ledger: ledger}, opts.Ownership)
+	// A projection cache lets a reopened Session resume folding instead of
+	// refolding the whole log (EXT-PRJ-3). An adapter that can store them
+	// durably provides its own; otherwise the entries live as long as the
+	// process.
+	cache := opts.ProjectionCache
+	if cache == nil {
+		if provider, ok := store.(extension.ProjectionCacheProvider); ok {
+			cache = provider.ProjectionCache()
+		} else {
+			cache = extension.NewMemoryProjectionCache()
+		}
+	}
+	writers := extension.NewWriters(store, registry, extension.Admission{Bindings: bindings, Ledger: ledger}, opts.Ownership,
+		extension.WritersConfig{Cache: cache, CachePolicy: runmod.WriterCachePolicy()})
 	now := opts.Now
 	if now == nil {
 		now = time.Now
 	}
 	runtime, err := runmod.NewRuntime(runmod.Config{
 		Writers: writers, Registry: registry, Store: store,
-		Frozen: opts.Frozen, Companion: turn.CompanionV1{}, Now: now,
+		Frozen: opts.Frozen, Companion: turn.CompanionV1{}, Cache: cache, Now: now,
 	})
 	if err != nil {
 		return nil, err
