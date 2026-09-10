@@ -99,7 +99,7 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 | 第 6.4 节的 `agent/run` 修改（digest-only fact、Owner/Attempt、RunCreated、Withdraw、任意状态入队） | 完成，2026-09-07；golden 重新冻结 |
 | per-Run `Store`、`stored_runtime`、`sqlitestore`、`RunHeader`、`TransitionRecord` | 已删除，2026-09-07 |
 | Session kernel Memory Store（`agent/session`） | 完成，2026-09-07；第 7 节 conformance 完成，2026-09-10 |
-| `agent/session/extension`（Registry、Writer/Writers、ProjectionReader、MemoryProjectionCache） | 完成，2026-09-07；第 7 节 conformance 完成，2026-09-10（多版本 codec 共存、并发串行、binding admission 补测）；`Admission` 缺失由 error 报告而非 `CommitInvalid` |
+| `agent/session/extension`（Registry、Writer/Writers、ProjectionReader、MemoryProjectionCache） | 完成，2026-09-07；第 7 节 conformance 完成，2026-09-10（多版本 codec 共存、并发串行、binding admission、current 版本必须有 codec 的校验）；`Admission` 缺失由 error 报告而非 `CommitInvalid` |
 | `agent/session/chatlog`（事件、parts codec、Surface、Context） | 完成，2026-09-07；checkpoint 完成，2026-09-09（CHT-EVT-3 转正，宿主策略见 REF-CKP-1/2） |
 | `agent/artifact`（Ref、Binding、Memory BindingStore、两态 KV ledger） | 完成，2026-09-07；Resolver/Store/Promoter 未实现 |
 | `agent/session/run`（module descriptor、machine 投影、Runtime、RecoverExpired） | 完成，2026-09-07 |

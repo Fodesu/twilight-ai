@@ -142,6 +142,40 @@ func TestRegistryPayloadVersion(t *testing.T) {
 	}
 }
 
+// EXT-REG-1: advancing Current obliges the module to supply that version's
+// codec. Encode selects def.Codecs[def.Current], so a missing entry must be
+// refused when the registry is built rather than discovered on first write.
+func TestBuildRegistryRequiresCodecForCurrent(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		current PayloadVersion
+	}{
+		{"current version without a codec", 2},
+		{"zero current version", 0},
+	} {
+		_, err := BuildRegistry(session.ProtocolVersion1, ModuleDescriptor{Source: SourceTwilight, ID: "a",
+			Events: []EventDefinition{{
+				Type: tpfx("a") + "note", Current: tc.current,
+				Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
+			}}})
+		if err == nil {
+			t.Fatalf("%s: registry built", tc.name)
+		}
+		if !strings.Contains(err.Error(), "no codec for the current payload version") {
+			t.Fatalf("%s: error = %v", tc.name, err)
+		}
+	}
+	// Retaining the older codec alongside the current one is the supported
+	// shape, so it must keep building.
+	if _, err := BuildRegistry(session.ProtocolVersion1, ModuleDescriptor{Source: SourceTwilight, ID: "a",
+		Events: []EventDefinition{{
+			Type: tpfx("a") + "note", Current: 2,
+			Codecs: map[PayloadVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}},
+		}}}); err != nil {
+		t.Fatalf("coexisting versions: %v", err)
+	}
+}
+
 type fixture struct {
 	store    *session.MemoryStore
 	registry *Registry
