@@ -9,8 +9,8 @@ import (
 // StreamText is the caller-facing high-level streaming text wrapper. When MaxSteps !=
 // 0 and tools have Execute handlers, it runs the compatibility multi-step loop,
 // forwarding all stream parts (including ToolProgressPart) through a single
-// channel. New multi-step runtimes should use agent/run/loop.Loop instead of
-// this SDK loop.
+// channel. A caller that owns its own step loop should drive
+// Model.Stream directly instead of this SDK loop.
 //
 // Every step goes through the same path: the legacy options are projected into
 // the Request boundary, the provider yields parts, and the SDK assembles those

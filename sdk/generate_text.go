@@ -15,8 +15,8 @@ func (c *Client) GenerateText(ctx context.Context, options ...GenerateOption) (s
 
 // GenerateTextResult is the legacy high-level text wrapper. MaxSteps == 0
 // performs one model call; MaxSteps != 0 runs the compatibility tool loop.
-// New multi-step runtimes should use agent/run/loop.Loop instead of this SDK
-// loop.
+// A caller that owns its own step loop should drive
+// Model.Generate directly instead of this SDK loop.
 //
 // The options are a client-side convenience: each step is projected into the
 // provider-neutral Request boundary by requestFromGenerateParams, so the
