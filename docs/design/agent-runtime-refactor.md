@@ -35,7 +35,7 @@
 ```text
 Session stream    唯一 authority：twilight/turn、twilight/chatlog、twilight/run 事件同在一条 stream，一行一个 event
 Session 所有权     一个 Session 同一时刻一个 Writer 进程；Epoch fencing 拒绝旧写者
-writer.Writer  进程内唯一写入口：串行、幂等索引、admission、claim、投影
+writer.Writer  进程内唯一写入口：串行、重放判定、admission、claim、投影
 MachineState      Run 的语义状态投影（twilight/run/machine），投影缓存为可丢弃缓存
 Runtime           Run command 的提交入口：Writer 内 Decide、Evolve、companion，一次 Append
 FrozenValueStore  内容寻址旁存：模型请求本体（含工具定义）
@@ -351,7 +351,8 @@ lease 的第二条出路：grant 由 `(Claim, start CommitID)` 派生，start fa
 | Session header 与 event 行 | authority | `Writer.Append` | 不可恢复；按行 digest 链使损坏可检测；不完整尾组在打开时截掉 |
 | 所有权记录（Epoch） | 控制 | `Open` | 接管由 Open 的 `Takeover` 声明，旧写者被 Epoch fencing |
 | 投影缓存 | 派生缓存 | `SnapshotPolicy` | 从 stream 重折 |
-| Writer 内存：幂等索引、投影状态、head | 派生 | `OpenWriter` 重建 | 随进程消失，重开时从日志重建 |
+| Writer 内存：投影状态、head | 派生 | `OpenWriter` 重建 | 随进程消失，重开时从日志重建 |
+| kernel 句柄内存：CommitID → 该组的行区间或字节区间 | 派生 | `Open` 从日志重建（第 11 节） | 随进程消失，重开时从日志重建 |
 | FrozenValueStore | 旁存，生命周期为 ModelStep | Commit 之前 `Put` | Executing/Prepared step 的重发失败为不可重试错误 |
 | artifact claim | 独立持久 | `Activate`，Append 之前 | 孤儿 claim 由回收前核对释放；不可能出现无 claim 的引用 |
 | Artifact content store 与 BindingStore | 外部内容 | artifact owner | resolve 失败按 ART-CAP-1 分类 |
@@ -454,6 +455,7 @@ EXT-WRT-1 要求 `OpenWriter` 读取整条日志，重建三样内存状态，�
 - `agent/session/sessiontest`：新增 **query** conformance，内存与文件两个 adapter 同跑，覆盖"当前句柄刚追加的组"与"重开后从日志重建的组"，并要求返回的行不暴露内部存储。
 - `agent/session/writer/retained_test.go`：守卫常驻内存与日志长度无关。
 - 两个 adapter：内存 adapter 直接从行区间复制；文件 adapter 记录并读取字节区间。
+- §2.1 的形态表与 §8.4 的持久结构表随之：Writer 的内存不再含索引，派生状态表新增 kernel 句柄的 CommitID 索引（两者的重建点分别是 `OpenWriter` 与 `Open`）。
 
 ### 11.4 后续（未做，代价已知）
 
