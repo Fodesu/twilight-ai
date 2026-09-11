@@ -238,11 +238,11 @@ func NewProjectionReader(store session.Store, registry *Registry, cache Projecti
 
 **EXT-PRJ-2** 投影只处理 `Consumes` 中的 EventType。其他 EventType 按归属处理：属于本模块或 `Requires` 模块（EXT-REG-4 的范围）且 `Decode` 为 Unknown 的事件，`Ignorable` 为真则跳过，否则 Fold 失败；范围之外的模块的事件一律跳过。写入者对纯信息性事件声明 `Ignorable`（EXT-REG），默认不可忽略：忘记声明只会导致多拒绝，不会导致静默丢失。读取时以范围内模块的前缀作为 `Types` 过滤。
 
-**EXT-PRJ-3** 缓存条目记录 `through`：已折叠到的 stream head（`Next` 为下一未折叠行的 Seq，`Digest` 为最后一行的 digest）。复用条件是**组对齐**：`through.Next-1` 必须是某组最后一行的 Seq 与 digest（`Last` 为真），且 `StateCodec.Decode` 成功；否则从 `Initial` 重折。组对齐是 EXT-PRJ-1 的直接后果——落在组内部的条目意味着一个半应用的组，不可作为起点。
+**EXT-PRJ-3** 缓存条目记录 `through`：已折叠到的 stream head（`Next` 为下一未折叠行的 Seq，`Digest` 为最后一行的 digest）。复用条件是**组对齐**：`through.Next-1` 必须是某组最后一行的 Seq 与 digest（`Last` 为真），且 `StateCodec.Decode` 成功；否则从 `Initial` 重折。组对齐是 EXT-PRJ-1 的直接后果——落在组内部的条目意味着一个半应用的组，不可作为起点。该判定只有一个实现（`EndsGroupAt(row, through)`），Writer 与 Store reader 共用，因此同一条目在两条路径上的判定相同。
 
-**EXT-PRJ-4** `Writer.Projections()` 返回的 reader 直接读 Writer 内存中的状态，不经 Store；独立进程的观察者用 `NewProjectionReader` 从 Store 读，两者对同一 head 给出相同状态。
+**EXT-PRJ-4** `Writer.Projections()` 返回的 reader 直接读 Writer 内存中的状态，不经 Store；独立进程的观察者用 `NewProjectionReader` 从 Store 读，两者对同一 head 给出相同状态。Writer 在 `Append` 之前折叠尚未封装的行（Digest 为空），reader 折叠已封装的行，因此 `Fold` 在调用 Apply 前清空行的 Digest：两条路径向 Apply 交付相同输入，投影不能依赖行 digest。
 
-**EXT-PRJ-5** `rebuild` 读一次日志：缓存条目未覆盖的投影需要它的行来折叠，而每个条目都要靠它校验组对齐（EXT-PRJ-3）。日志是 O(N)，投影折叠是 O(N²)（每次 Apply 复制状态），所以可省的只有折叠：条目通过 EXT-PRJ-3 校验的投影从该处续折，跳过它已覆盖的组；其余投影从 `Initial` 全折。篡改或过期的条目只让该投影多折一次，绝不影响正确性，也绝不让 `OpenWriter` 失败。这次读取只服务于投影，不服务于提交历史——Writer 不保留日志，也不建 CommitID 索引（EXT-WRT-1）；它对"必须读多少行"的代价上限取决于 adapter 的读取粒度（见 agent-runtime-refactor.md 11.4）。
+**EXT-PRJ-5** `rebuild` 读一次日志：缓存条目未覆盖的投影需要它的行来折叠，而每个条目都要靠它校验组对齐（EXT-PRJ-3）。日志是 O(N)，投影折叠随状态大小增长（Apply 为保持纯性复制它写入的部分），所以可省的只有折叠：条目通过 EXT-PRJ-3 校验的投影从该处续折，跳过它已覆盖的组；其余投影从 `Initial` 全折。篡改或过期的条目只让该投影多折一次，绝不影响正确性，也绝不让 `OpenWriter` 失败。这次读取只服务于投影，不服务于提交历史——Writer 不保留日志，也不建 CommitID 索引（EXT-WRT-1）；它对"必须读多少行"的代价上限取决于 adapter 的读取粒度（见 agent-runtime-refactor.md 11.4）。
 
 **EXT-PRJ-6** 写入与读取的权限不对称：`WritersConfig.CachePolicy` 只决定 Writer 写哪个投影的条目；读取一律尝试缓存中的条目，不论谁写的。某个投影的条目由它的宿主在语义检查点上写入时（run 的 machine projection 经 `SnapshotPolicy`，见 RUN-CMT-2），组装层用 `CachePolicy.Exclude` 把它排除，Writer 便只读不写，绝不会把条目落在检查点之间。
 

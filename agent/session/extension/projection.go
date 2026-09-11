@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/session"
 )
@@ -85,7 +84,13 @@ func (r *Registry) applyRow(s *ProjectionScope, state any, row *session.SessionE
 		}
 		return state, nil
 	}
-	decoded, err := r.Decode(*row)
+	// Apply never sees the row digest: the Writer folds a group before it is
+	// sealed (Digest empty) and a reader folds it after, so a projection that
+	// read the digest would diverge between the two paths (EXT-PRJ-4). Clearing
+	// it here makes both paths fold identical input.
+	unsealed := *row
+	unsealed.Digest = ""
+	decoded, err := r.Decode(unsealed)
 	if err != nil {
 		return nil, err
 	}
@@ -280,13 +285,28 @@ func (r *storeReader) startState(ctx context.Context, sid session.SessionID, sco
 	return state, session.Head{}, err
 }
 
-// isPrefix checks that the row before through.Next carries through.Digest.
+// isPrefix checks that the row before through.Next is the group boundary the
+// entry recorded. Read starts at the group boundary at or before From, so the
+// row is found by Seq rather than by position.
 func (r *storeReader) isPrefix(ctx context.Context, sid session.SessionID, through session.Head) bool {
 	page, err := r.store.Read(ctx, session.ReadRequest{SessionID: sid, From: through.Next - 1, Limit: 1})
-	if err != nil || len(page.Events) == 0 {
+	if err != nil {
 		return false
 	}
-	return page.Events[0].Seq == through.Next-1 && page.Events[0].Digest == through.Digest
+	for i := range page.Events {
+		if page.Events[i].Seq == through.Next-1 {
+			return EndsGroupAt(&page.Events[i], through)
+		}
+	}
+	return false
+}
+
+// EndsGroupAt reports whether row is the last row of a complete group and is
+// the row through records: Seq through.Next-1 with through.Digest. It is the
+// one group-alignment predicate of EXT-PRJ-3, shared by the Writer and the
+// Store reader so a cache entry is judged the same way on both paths.
+func EndsGroupAt(row *session.SessionEvent, through session.Head) bool {
+	return through.Next > 0 && row.Seq == through.Next-1 && row.Last && row.Digest == through.Digest
 }
 
 // JSONStateCodec is a StateCodec for projection states that marshal to JSON.
@@ -315,5 +335,3 @@ func (JSONStateCodec[T]) Decode(wire jsonstable.Value) (any, error) {
 	}
 	return v, nil
 }
-
-var _ = es.Digest("")

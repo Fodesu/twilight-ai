@@ -110,9 +110,22 @@ var SurfaceProjection = extension.ProjectionDefinition{
 	StateCodec: extension.JSONStateCodec[Surface]{},
 }
 
+// applySurface is copy-on-write: the Surface value is copied, every map is
+// shared with the previous state until this event writes it (cow), and
+// EntryOrder grows by append. Apply stays pure -- the previous state is never
+// written -- while an event pays only for the map it touches instead of for
+// every map and the whole entry order.
 func applySurface(state any, e extension.DecodedEvent) (any, error) {
 	s := state.(Surface)
-	s = cloneSurface(s)
+	if s.nextSeq == 0 {
+		// Restored from a snapshot: the counter is not persisted, but Seq only
+		// has to be monotonic, so continue from the largest known value.
+		for _, v := range s.Inputs {
+			if v.Seq > s.nextSeq {
+				s.nextSeq = v.Seq
+			}
+		}
+	}
 	pos := e.Event.Seq
 	switch p := e.Value.(type) {
 	case InputSubmittedPayload:
@@ -124,6 +137,7 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 			return nil, err
 		}
 		s.nextSeq++
+		s.Inputs = cow(s.Inputs)
 		s.Inputs[p.InputID] = InputView{Input: Input{ID: p.InputID, Content: p.Content, Digest: d}, Status: InputSubmitted, Seq: s.nextSeq}
 	case InputDeliveredPayload:
 		v, ok := s.Inputs[p.InputID]
@@ -132,6 +146,7 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		}
 		v.Status = InputDelivered
 		v.Input.TurnID = p.TurnID
+		s.Inputs = cow(s.Inputs)
 		s.Inputs[p.InputID] = v
 		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryInput, ID: string(p.InputID), Seq: pos})
 	case InputWithdrawnPayload:
@@ -146,12 +161,14 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		if _, dup := s.Assistants[p.Assistant.ID]; dup {
 			return nil, fmt.Errorf("assistant %s created twice", p.Assistant.ID)
 		}
+		s.Assistants = cow(s.Assistants)
 		s.Assistants[p.Assistant.ID] = p.Assistant
 		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryAssistant, ID: string(p.Assistant.ID), Seq: pos})
 	case ToolResultPayload:
 		if _, dup := s.ToolResults[p.ToolResult.ID]; dup {
 			return nil, fmt.Errorf("tool_result %s created twice", p.ToolResult.ID)
 		}
+		s.ToolResults = cow(s.ToolResults)
 		s.ToolResults[p.ToolResult.ID] = p.ToolResult
 		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryToolResult, ID: string(p.ToolResult.ID), Seq: pos})
 	case ToolResultSupersededPayload:
@@ -161,11 +178,13 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		if _, dup := s.Superseded[p.ToolResultID]; dup {
 			return nil, fmt.Errorf("tool_result %s superseded twice", p.ToolResultID)
 		}
+		s.Superseded = cow(s.Superseded)
 		s.Superseded[p.ToolResultID] = p.ReplacementToolResultID
 	case SummaryPayload:
 		if _, dup := s.Summaries[p.Summary.ID]; dup {
 			return nil, fmt.Errorf("summary %s created twice", p.Summary.ID)
 		}
+		s.Summaries = cow(s.Summaries)
 		s.Summaries[p.Summary.ID] = p.Summary
 		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntrySummary, ID: string(p.Summary.ID), Seq: pos})
 	case CheckpointCreatedPayload:
@@ -176,6 +195,7 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		if !ok || sum.Digest != p.SummaryDigest {
 			return nil, fmt.Errorf("checkpoint %s names summary %s which does not match", p.CheckpointID, p.SummaryID)
 		}
+		s.Checkpoints = cow(s.Checkpoints)
 		s.Checkpoints[p.CheckpointID] = CheckpointView{Checkpoint: p, Status: CheckpointActive, Seq: pos}
 	case CheckpointInvalidatedPayload:
 		v, ok := s.Checkpoints[p.CheckpointID]
@@ -184,6 +204,7 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		}
 		v.Status = CheckpointInvalidated
 		v.Reason = p.Reason
+		s.Checkpoints = cow(s.Checkpoints)
 		s.Checkpoints[p.CheckpointID] = v
 	default:
 		return nil, fmt.Errorf("chatlog surface: unexpected %T", e.Value)
@@ -197,44 +218,26 @@ func terminateInput(s *Surface, id InputID, status InputStatus) error {
 		return fmt.Errorf("input %s %s while %s", id, status, v.Status)
 	}
 	v.Status = status
+	s.Inputs = cow(s.Inputs)
 	s.Inputs[id] = v
 	return nil
 }
 
-func cloneSurface(s Surface) Surface {
-	out := Surface{Inputs: make(map[InputID]InputView, len(s.Inputs)), Assistants: make(map[AssistantID]Assistant, len(s.Assistants)),
-		ToolResults: make(map[ToolResultID]ToolResult, len(s.ToolResults)), Summaries: make(map[SummaryID]Summary, len(s.Summaries)),
-		Superseded: make(map[ToolResultID]ToolResultID, len(s.Superseded)), Checkpoints: make(map[CheckpointID]CheckpointView, len(s.Checkpoints)),
-		EntryOrder: append([]SurfaceEntry(nil), s.EntryOrder...), nextSeq: s.nextSeq}
-	for k, v := range s.Checkpoints {
-		out.Checkpoints[k] = v
-	}
-	for k, v := range s.Inputs {
-		out.Inputs[k] = v
-	}
-	for k, v := range s.Assistants {
-		out.Assistants[k] = v
-	}
-	for k, v := range s.ToolResults {
-		out.ToolResults[k] = v
-	}
-	for k, v := range s.Summaries {
-		out.Summaries[k] = v
-	}
-	for k, v := range s.Superseded {
-		out.Superseded[k] = v
-	}
-	if out.nextSeq == 0 {
-		// Restored from a snapshot: the counter is not persisted, but Seq only
-		// has to be monotonic, so continue from the largest known value.
-		for _, v := range out.Inputs {
-			if v.Seq > out.nextSeq {
-				out.nextSeq = v.Seq
-			}
-		}
+// cow returns a fresh copy of m for the one write that follows, so the
+// previous state keeps its map untouched. Reads never copy.
+func cow[K comparable, V any](m map[K]V) map[K]V {
+	out := make(map[K]V, len(m)+1)
+	for k, v := range m {
+		out[k] = v
 	}
 	return out
 }
+
+// clip returns s with its capacity cut to its length, so an append by a later
+// state cannot overwrite an element a holder of this state can still see.
+// Plain appends never need it: a previous state only reads within its own
+// length, so growth past it is invisible to it.
+func clip[T any](s []T) []T { return s[:len(s):len(s)] }
 
 // --- context ------------------------------------------------------------------
 
@@ -289,10 +292,12 @@ var ContextProjection = extension.ProjectionDefinition{
 	StateCodec: extension.JSONStateCodec[Context]{},
 }
 
+// applyContext is copy-on-write like applySurface: Entries and Checkpoints
+// grow by append, a shrunk slice is clipped so a later append cannot reach an
+// element the previous state still holds, and a map is copied only by the
+// event that writes it.
 func applyContext(state any, e extension.DecodedEvent) (any, error) {
 	c := state.(Context)
-	c = Context{Entries: append([]Entry(nil), c.Entries...), Pending: copyInputs(c.Pending), Superseded: copyIDs(c.Superseded),
-		Checkpoints: append([]AppliedCheckpoint(nil), c.Checkpoints...)}
 	pos := e.Event.Seq
 	switch p := e.Value.(type) {
 	case InputSubmittedPayload:
@@ -300,18 +305,22 @@ func applyContext(state any, e extension.DecodedEvent) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		c.Pending = cow(c.Pending)
 		c.Pending[p.InputID] = Input{ID: p.InputID, Content: p.Content, Digest: d}
 	case InputDeliveredPayload:
 		in, ok := c.Pending[p.InputID]
 		if !ok {
 			return nil, fmt.Errorf("input %s delivered before submission", p.InputID)
 		}
+		c.Pending = cow(c.Pending)
 		delete(c.Pending, p.InputID)
 		in.TurnID = p.TurnID
 		c.Entries = append(c.Entries, Entry{Kind: EntryInput, ID: string(in.ID), Digest: in.Digest, Seq: pos, Input: &in})
 	case InputWithdrawnPayload:
+		c.Pending = cow(c.Pending)
 		delete(c.Pending, p.InputID)
 	case InputRejectedPayload:
+		c.Pending = cow(c.Pending)
 		delete(c.Pending, p.InputID)
 	case AssistantPayload:
 		a := p.Assistant
@@ -320,6 +329,7 @@ func applyContext(state any, e extension.DecodedEvent) (any, error) {
 		r := p.ToolResult
 		c.Entries = append(c.Entries, Entry{Kind: EntryToolResult, ID: string(r.ID), Digest: r.Digest, Seq: pos, ToolResult: &r})
 	case ToolResultSupersededPayload:
+		c.Superseded = cow(c.Superseded)
 		c.Superseded[p.ToolResultID] = p.ReplacementToolResultID
 		kept := c.Entries[:0:0]
 		found := false
@@ -352,7 +362,7 @@ func applyContext(state any, e extension.DecodedEvent) (any, error) {
 			return nil, fmt.Errorf("checkpoint %s prefix exceeds the context", p.CheckpointID)
 		}
 		c.Entries = append(append([]Entry(nil), top.Base...), c.Entries[top.PrefixLen:]...)
-		c.Checkpoints = c.Checkpoints[:n-1]
+		c.Checkpoints = clip(c.Checkpoints[:n-1])
 	default:
 		return nil, fmt.Errorf("chatlog context: unexpected %T", e.Value)
 	}
@@ -392,7 +402,9 @@ func applyCheckpoint(c Context, p *CheckpointCreatedPayload, pos session.Seq) (a
 	if err != nil {
 		return nil, fmt.Errorf("checkpoint %s: %w", p.CheckpointID, err)
 	}
-	c.Checkpoints = append(c.Checkpoints, AppliedCheckpoint{ID: p.CheckpointID, Base: base, PrefixLen: 1 + len(retained)})
+	// Base is clipped: it shares the covered prefix's storage, and no later
+	// state may append into it.
+	c.Checkpoints = append(c.Checkpoints, AppliedCheckpoint{ID: p.CheckpointID, Base: clip(base), PrefixLen: 1 + len(retained)})
 	c.Entries = append([]Entry{gap[0]}, retained...)
 	return c, nil
 }
@@ -412,22 +424,6 @@ func selectRetained(base []Entry, pairs []EntryDigestPair) ([]Entry, error) {
 		i++
 	}
 	return out, nil
-}
-
-func copyInputs(m map[InputID]Input) map[InputID]Input {
-	out := make(map[InputID]Input, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
-}
-
-func copyIDs(m map[ToolResultID]ToolResultID) map[ToolResultID]ToolResultID {
-	out := make(map[ToolResultID]ToolResultID, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
 }
 
 // ContextFold folds decoded chatlog events into entries (CHT-CTX-1).

@@ -349,7 +349,7 @@ lease 的第二条出路：grant 由 `(Claim, start CommitID)` 派生，start fa
 | 结构 | 等级 | 写入点 | 丢失或不一致时 |
 |---|---|---|---|
 | Session header 与 event 行 | authority | `Writer.Append` | 不可恢复；按行 digest 链使损坏可检测；不完整尾组在打开时截掉 |
-| 所有权记录（Epoch） | 控制 | `Open` | 接管由 Open 的 `Takeover` 声明，旧写者被 Epoch fencing |
+| 所有权记录（Epoch） | 控制（进程内仲裁） | `Open` | 接管由 Open 的 `Takeover` 声明，旧写者被 Epoch fencing。文件 adapter 以 owner.json 仲裁、不取跨进程文件锁：同一 root 同一时刻至多一个进程是部署约束，两个存活进程同时持有同一 Session 的写者不被 adapter 阻止，只被 Epoch fencing 拒绝落后者的写入 |
 | 投影缓存 | 派生缓存 | `SnapshotPolicy` | 从 stream 重折 |
 | Writer 内存：投影状态、head | 派生 | `OpenWriter` 重建 | 随进程消失，重开时从日志重建 |
 | kernel 句柄内存：CommitID → 该组的行区间或字节区间 | 派生 | `Open` 从日志重建（第 11 节） | 随进程消失，重开时从日志重建 |
@@ -457,11 +457,13 @@ EXT-WRT-1 要求 `OpenWriter` 读取整条日志，重建三样内存状态，�
 - 两个 adapter：内存 adapter 直接从行区间复制；文件 adapter 记录并读取字节区间。
 - §2.1 的形态表与 §8.4 的持久结构表随之：Writer 的内存不再含索引，派生状态表新增 kernel 句柄的 CommitID 索引（两者的重建点分别是 `OpenWriter` 与 `Open`）。
 
-### 11.4 后续（未做，代价已知）
+### 11.4 后续（2026-09-12 已处理）
 
-**文件 adapter 的 `Read` 每次调用都全量解析日志**（`readLog` 无起读点），因此下列读取的代价都随日志长度增长，与只需读到多少行无关：(a) 全量 fold 的那次读取；(b) 校验缓存条目落在组边界上的那次读取（每个投影一次）；(c) `storeReader.Load` 的每次读取——它先 `isPrefix` 再 `Read`，即热缓存下每次 `Load` 都是**两次全量解析**。要让"热缓存下重开 Writer 不读整条日志"成立，需要让 `Read` 支持按字节区间起读（文件 adapter 已有每组的字节区间，缺的是行到字节的定位表），这同时会解决 (c)。本次改动只消除**常驻**内存，不改变这些读取的代价，故 11.1 的"读整条日志"在文件 adapter 上仍然发生，只是读完即释放。
+此前**文件 adapter 的 `Read` 每次调用都全量解析日志**（`readLog` 无起读点），因此全量 fold 的读取、校验缓存条目组对齐的读取（每个投影一次）与 `storeReader.Load` 的每次读取（先 `isPrefix` 再 `Read`，热缓存下每次 `Load` 两次全量解析）代价都随日志长度增长。现已改为：Store 为每个 Session 维护一张行到字节偏移的定位表（含每行所属组的首行与 head），以文件 size 与 mtime 判定有效；`Open` 与全量 `Read` 建表、`Append` 增量扩展、另一实例改动文件时自动回退全量解析并重建。`Read(From)` 只解析 From 所在组起的字节区间，`storeReader.Load` 热缓存下只读缓存条目之后的尾部。等价性由 `filestore/index_test.go` 对全量解析路径逐 From、过滤、Limit 比对。
 
-另有两处相邻的健壮性问题，均未改动：`storeReader.isPrefix` 只比对行不存在与 digest，不要求该行是组尾（`writer.coversGroupBoundary` 要求），对系统自身写出的条目无影响，对不正确的外部条目偏弱；`Agent` 层与 reader 的缓存写入策略分离（`runmod.WriterCachePolicy` 排除机器投影、Runtime 的 `SnapshotPolicy` 负责它）是刻意的，不在本次修订内。
+同期处理的两处相邻问题：`storeReader.isPrefix` 与 `writer.coversGroupBoundary` 收敛为同一个导出判定 `extension.EndsGroupAt`（要求该行为组尾且 digest 相符）；`Fold` 在调用 Apply 前清空行 digest，使 Writer 折临时行与 reader 折封装行的输入一致（EXT-PRJ-4 由机制保证而非约定）。`Agent` 层与 reader 的缓存写入策略分离（`runmod.WriterCachePolicy` 排除机器投影、Runtime 的 `SnapshotPolicy` 负责它）是刻意的，保持不变。
+
+chatlog 两个投影的折叠改为 copy-on-write（只复制被写的 map，切片共享底层数组并在收缩处 clip）。Context 投影的折叠从二次降为线性（3200 事件：65.7 ms → 0.21 ms）；Surface 投影每个事件仍复制被写的那个 map，只降常数（194 ms → 169 ms），完全消除需持久化 map 或原地修改加失败重建，未做。
 
 ## 12. 2026-09-11 修订：provider 接缝改用 `sdk.Request` → `ModelResult`/`ModelStream`
 

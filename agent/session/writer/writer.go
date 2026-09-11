@@ -255,8 +255,7 @@ func coversGroupBoundary(rows []session.SessionEvent, through session.Head) bool
 	if through.Next == 0 || through.Next > session.Seq(len(rows)) {
 		return false
 	}
-	last := rows[through.Next-1]
-	return last.Seq == through.Next-1 && last.Last && last.Digest == through.Digest
+	return extension.EndsGroupAt(&rows[through.Next-1], through)
 }
 
 // foldGroup folds one complete group into every projection that does not

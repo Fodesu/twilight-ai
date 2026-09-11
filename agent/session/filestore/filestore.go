@@ -37,6 +37,22 @@ type Store struct {
 	root    string
 	profile session.ProtocolProfile
 	mu      sync.Mutex // serializes every operation of this instance
+	// index maps each Session's rows to byte offsets so Read can start at
+	// From instead of parsing the whole log. It is derived from the file and
+	// keyed to the file's size and mtime: any change by another instance
+	// (append, takeover truncation) invalidates it and the next Read rebuilds.
+	index map[session.SessionID]*logIndex
+}
+
+// logIndex is the row-to-byte map of one log file as last seen by this
+// instance: offsets[i] is where row Seq i starts and offsets[len] is the
+// retained end; groupFirst[i] is the Seq of the first row of row i's group.
+type logIndex struct {
+	size       int64
+	modTime    int64
+	offsets    []int64
+	groupFirst []session.Seq
+	head       session.Head
 }
 
 // New opens the store root, creating it if needed.
@@ -44,7 +60,7 @@ func New(root string) (*Store, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, err
 	}
-	return &Store{root: root, profile: session.ProfileV1()}, nil
+	return &Store{root: root, profile: session.ProfileV1(), index: make(map[session.SessionID]*logIndex)}, nil
 }
 
 // LogPath returns the Session's JSONL log file for direct inspection.
@@ -230,9 +246,59 @@ func (s *Store) Open(ctx context.Context, sid session.SessionID, opts session.Op
 	if err := saveOwner(dir, rec); err != nil {
 		return nil, err
 	}
+	head := headOf(header, rows)
+	if len(offsets) > 0 {
+		s.setIndex(sid, logPath, buildIndex(rows, offsets, head))
+	} else {
+		s.dropIndex(sid) // no log file yet
+	}
 	w := &fileWriter{store: s, header: header, dir: dir, logPath: logPath, epoch: rec.Epoch,
-		head: headOf(header, rows), commits: spansOf(rows, offsets)}
+		head: head, commits: spansOf(rows, offsets)}
 	return w, nil
+}
+
+// buildIndex derives the row-to-byte map from a full parse. rows are complete
+// groups in Seq order and offsets has one entry per row plus the end.
+func buildIndex(rows []session.SessionEvent, offsets []int64, head session.Head) *logIndex {
+	idx := &logIndex{offsets: append([]int64(nil), offsets[:len(rows)+1]...), groupFirst: make([]session.Seq, len(rows)), head: head}
+	var first session.Seq
+	for i := range rows {
+		if rows[i].Index == 0 {
+			first = rows[i].Seq
+		}
+		idx.groupFirst[i] = first
+	}
+	return idx
+}
+
+// setIndex records idx for the log at path as it is on disk now. The caller
+// holds the store lock and has just read or written the whole retained log.
+func (s *Store) setIndex(sid session.SessionID, path string, idx *logIndex) {
+	st, err := os.Stat(path)
+	if err != nil {
+		delete(s.index, sid)
+		return
+	}
+	idx.size, idx.modTime = st.Size(), st.ModTime().UnixNano()
+	s.index[sid] = idx
+}
+
+// dropIndex forgets the derived map; the next Read rebuilds it from the file.
+func (s *Store) dropIndex(sid session.SessionID) { delete(s.index, sid) }
+
+// currentIndex returns the index when the file on disk still matches what it
+// was built from, or nil when it must be rebuilt. The caller holds the lock.
+func (s *Store) currentIndex(sid session.SessionID, path string) *logIndex {
+	idx, ok := s.index[sid]
+	if !ok {
+		return nil
+	}
+	st, err := os.Stat(path)
+	if err != nil || st.Size() != idx.size || st.ModTime().UnixNano() != idx.modTime {
+		delete(s.index, sid)
+		return nil
+	}
+	return idx
 }
 
 func headOf(h session.SessionHeader, rows []session.SessionEvent) session.Head {
@@ -361,6 +427,7 @@ func (w *fileWriter) Append(ctx context.Context, g session.Group) ([]session.Ses
 	}
 	prev := w.head.Digest
 	rows := make([]session.SessionEvent, len(g.Events))
+	lineStarts := make([]int64, len(g.Events))
 	var buf bytes.Buffer
 	for i := range g.Events {
 		e := &g.Events[i]
@@ -377,6 +444,7 @@ func (w *fileWriter) Append(ctx context.Context, g session.Group) ([]session.Ses
 		if err != nil {
 			return nil, err
 		}
+		lineStarts[i] = int64(buf.Len())
 		buf.Write(line)
 		buf.WriteByte('\n')
 	}
@@ -404,7 +472,33 @@ func (w *fileWriter) Append(ctx context.Context, g session.Group) ([]session.Ses
 	}
 	w.head = session.Head{Next: rows[len(rows)-1].Seq + 1, Digest: prev}
 	w.commits[g.CommitID] = commitSpan{start: start, end: start + int64(buf.Len())}
+	w.store.extendIndex(sid, w.logPath, rows, start, lineStarts, int64(buf.Len()), w.head)
 	return rows, nil
+}
+
+// extendIndex appends the rows of one group to the Session's index. When the
+// index does not end exactly where the group was written, another instance
+// has changed the file and the index is dropped for the next Read to rebuild.
+func (s *Store) extendIndex(sid session.SessionID, path string, rows []session.SessionEvent, start int64, lineStarts []int64, written int64, head session.Head) {
+	idx, ok := s.index[sid]
+	if !ok {
+		if start != 0 || rows[0].Seq != 0 {
+			return // no index to extend; the next Read rebuilds one
+		}
+		idx = &logIndex{offsets: []int64{0}} // the first group of a new log
+	}
+	if idx.size != start || len(idx.groupFirst) != int(rows[0].Seq) {
+		delete(s.index, sid)
+		return
+	}
+	idx.offsets = idx.offsets[:len(idx.offsets)-1]
+	for i := range rows {
+		idx.offsets = append(idx.offsets, start+lineStarts[i])
+		idx.groupFirst = append(idx.groupFirst, rows[0].Seq)
+	}
+	idx.offsets = append(idx.offsets, start+written)
+	idx.head = head
+	s.setIndex(sid, path, idx)
 }
 
 // --- read -----------------------------------------------------------------------
@@ -490,16 +584,23 @@ func (s *Store) Read(ctx context.Context, req session.ReadRequest) (session.Read
 	if err != nil {
 		return session.ReadPage{}, err
 	}
-	rows, _, _, _, err := readLog(filepath.Join(dir, logFile), req.SessionID, "read")
+	rows, head, err := s.rowsFrom(req.SessionID, filepath.Join(dir, logFile), header, req.From)
 	if err != nil {
 		return session.ReadPage{}, err
 	}
-	page := session.ReadPage{Header: header, Head: headOf(header, rows)}
-	if req.From > session.Seq(len(rows)) {
+	page := session.ReadPage{Header: header, Head: head}
+	if req.From >= head.Next {
 		return page, nil
 	}
 	// Start at a group boundary at or before From so no partial group leaks.
-	start := int(req.From)
+	// rows may begin after Seq 0 when the index located the group for us.
+	start := 0
+	if len(rows) > 0 && req.From > rows[0].Seq {
+		start = int(req.From - rows[0].Seq)
+		if start > len(rows) {
+			start = len(rows)
+		}
+	}
 	for start > 0 && start < len(rows) && rows[start].Index != 0 {
 		start--
 	}
@@ -531,6 +632,55 @@ func (s *Store) Read(ctx context.Context, req session.ReadRequest) (session.Read
 	return page, nil
 }
 
+// rowsFrom returns the rows a Read starting at from needs: with a current
+// index, the retained log from the first row of from's group onward, parsed
+// from that byte offset; without one, the whole log, which also rebuilds the
+// index. The caller holds the lock.
+func (s *Store) rowsFrom(sid session.SessionID, path string, header session.SessionHeader, from session.Seq) ([]session.SessionEvent, session.Head, error) {
+	if idx := s.currentIndex(sid, path); idx != nil {
+		n := len(idx.groupFirst)
+		if int(from) >= n {
+			return nil, idx.head, nil
+		}
+		first := idx.groupFirst[from]
+		data, err := readRange(path, idx.offsets[first], idx.offsets[n])
+		if err != nil {
+			return nil, session.Head{}, kerr(session.ErrCorrupt, "read", sid, err.Error())
+		}
+		rows, _, _, torn, err := parseLog(data, sid, "read")
+		if err != nil {
+			return nil, session.Head{}, err
+		}
+		if !torn && len(rows) == n-int(first) && rows[0].Seq == first {
+			return rows, idx.head, nil
+		}
+		s.dropIndex(sid) // the file no longer matches the index; fall back
+	}
+	rows, offsets, _, _, err := readLog(path, sid, "read")
+	if err != nil {
+		return nil, session.Head{}, err
+	}
+	head := headOf(header, rows)
+	if len(offsets) > 0 {
+		s.setIndex(sid, path, buildIndex(rows, offsets, head))
+	}
+	return rows, head, nil
+}
+
+// readRange reads [start, end) of the file.
+func readRange(path string, start, end int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data := make([]byte, end-start)
+	if _, err := f.ReadAt(data, start); err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	return data, nil
+}
+
 // Tamper rewrites one row on disk so conformance can prove the chain check at
 // Open detects corruption; production code never calls it.
 func (s *Store) Tamper(sid session.SessionID, seq session.Seq, mutate func(*session.SessionEvent)) {
@@ -555,6 +705,7 @@ func (s *Store) Tamper(sid session.SessionID, seq session.Seq, mutate func(*sess
 		buf.Write(line)
 		buf.WriteByte('\n')
 	}
+	s.dropIndex(sid)
 	_ = writeAtomic(path, buf.Bytes())
 }
 
@@ -589,6 +740,7 @@ func (s *Store) CrashTail(sid session.SessionID, keep int) error {
 		buf.Write(line)
 		buf.WriteByte('\n')
 	}
+	s.dropIndex(sid)
 	return writeAtomic(path, buf.Bytes())
 }
 
