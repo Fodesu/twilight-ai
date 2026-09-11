@@ -16,7 +16,7 @@ modules 负责：event ontology、typed codec、payload 版本、投影、投影
 
 **SES-SCP-1** kernel 不解释 payload，不校验 payload 的 schema，不知道模块、commit 的语义、投影或 lease。它保证四件事：日志只能追加；同一时刻一个 Session 至多一个有效写者；一次 `Append` 的整组 event 同时可见或同时不存在；每行携带覆盖前一行的 digest。
 
-**SES-SCP-2** 并发不在 kernel 解决。一个 Session 的全部写入者（Run 的 worker、Turn 的 Coordinator、恢复流程）在进程内经同一个 `writer.Writer` 串行（EXT-WRT），Writer 持有 kernel 的写者句柄。kernel 只拒绝不持有有效所有权的 `Append`。
+**SES-SCP-2** 并发不在 kernel 解决。一个 Session 的全部写入者（Run 的 worker、Turn 的 Coordinator、恢复流程）在进程内经同一个 `writer.Writer` 串行（EXT-WRT），它持有 kernel 的所有权句柄 `session.Handle`。kernel 只拒绝不持有有效所有权的 `Append`。
 
 **SES-SCP-3** kernel 的范围是单条 stream：header、Open/Append/Read、所有权与 epoch、按行 digest。Fork、ancestry 与 canonical import 建立在这条 stream 之上，见第 8 节。
 
@@ -92,11 +92,12 @@ digest 依 `agent/es` 的 versioned domain separator。链条按行连接；任�
 
 ```go
 type OpenOptions struct {
-    // Takeover 为假时，已有有效 Writer 的 Open 返回 ErrOwned；为真时接管：Epoch 加一，
-    // 旧写者被 fencing。何时允许接管是 kernel 之上的策略。
+    // Takeover 为假时，已有有效 Handle 的 Open 返回 ErrOwned；为真时接管：Epoch 加一，
+    // 旧持有者被 fencing。何时允许接管是 kernel 之上的策略。
     Takeover bool
 }
-type Writer interface {   // kernel 的写者句柄，由 Store.Open 返回
+// Handle 是 kernel 的所有权句柄，由 Store.Open 返回；进程内的写入者是 writer.Writer，它持有一个 Handle。
+type Handle interface {
     SessionID() SessionID
     Epoch() Epoch
     Head() Head
@@ -108,14 +109,14 @@ type Writer interface {   // kernel 的写者句柄，由 Store.Open 返回
 type Store interface {
     Create(context.Context, CreateRequest) (SessionHeader, error)
     Header(context.Context, SessionID) (SessionHeader, error)
-    Open(context.Context, SessionID, OpenOptions) (Writer, error)
+    Open(context.Context, SessionID, OpenOptions) (Handle, error)
     Read(context.Context, ReadRequest) (ReadPage, error)
 }
 ```
 
-**SES-OWN-1** 同一 Session 同一时刻至多一个有效 Writer。`Open` 在已有有效 Writer 且未声明 `Takeover` 时返回 `ErrOwned`；声明 `Takeover` 的 Open 接管所有权。接管的安全性由 Epoch fencing（SES-OWN-2）承担；何时允许接管（进程死亡判定、租约、人工指令）是 kernel 之上的策略，kernel 不承载 TTL 或心跳。
+**SES-OWN-1** 同一 Session 同一时刻至多一个有效 Handle。`Open` 在已有有效 Handle 且未声明 `Takeover` 时返回 `ErrOwned`；声明 `Takeover` 的 Open 接管所有权。接管的安全性由 Epoch fencing（SES-OWN-2）承担；何时允许接管（进程死亡判定、租约、人工指令）是 kernel 之上的策略，kernel 不承载 TTL 或心跳。
 
-**SES-OWN-2** 每次成功的 Open 使该 Session 的 `Epoch` 加一并持久化。`Append` 携带 Writer 的 Epoch；Store 对落后于当前持久化 Epoch 的调用返回 `ErrOwnershipLost`，不写入任何内容。这是 fencing：被接管的旧写者的迟到写入不可能进入日志。
+**SES-OWN-2** 每次成功的 Open 使该 Session 的 `Epoch` 加一并持久化。`Append` 携带 Handle 的 Epoch；Store 对落后于当前持久化 Epoch 的调用返回 `ErrOwnershipLost`，不写入任何内容。这是 fencing：被接管的旧 Handle 的迟到写入不可能进入日志。
 
 **SES-OWN-3** 所有权是 Session 级的，不是执行目标级的。一个进程取得 Session 的所有权即拥有其中全部执行；接管者读日志后对所有仍在执行中的目标做一次性处置（RUN-CMT-7）。kernel 不知道"执行中"是什么，这一步由 run 模块在 Writer 上完成。
 
@@ -164,7 +165,7 @@ const (
 v1 conformance 以 `Store` 为参数，每个 adapter 跑同一套，必须验证：
 
 - **SES-WIR-1/2/3**：Seq 连续、组内 Index/Last、CommitID 唯一、payload canonical、digest 链与 header 根、版本一致；
-- **SES-OWN-1/2**：第二个 Open 返回 `ErrOwned`；Close 后可再 Open 且 Epoch 加一；声明 `Takeover` 的 Open 在所有权存续期间接管且 Epoch 加一；旧 Writer 的 Append 返回 `ErrOwnershipLost` 且不写入；
+- **SES-OWN-1/2**：第二个 Open 返回 `ErrOwned`；Close 后可再 Open 且 Epoch 加一；声明 `Takeover` 的 Open 在所有权存续期间接管且 Epoch 加一；旧 Handle 的 Append 返回 `ErrOwnershipLost` 且不写入；
 - **SES-APP-1/2/3**：整组可见性；在组中途注入崩溃后打开，尾组不出现；拒绝项无写入；
 - **SES-REP-1/2**：顺序、From、Limit 在组边界截断、过滤与全量对匹配类型一致、篡改任一行后下一次 Open 报 `ErrCorrupt`。
 

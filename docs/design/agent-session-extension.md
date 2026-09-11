@@ -14,7 +14,7 @@ agent/artifact  ←  Session Module Framework  →  agent/session
 
 Framework 负责：typed event codec 与 payload 版本；Binding admission；进程内的写入串行、幂等重放与 claim 顺序（`Writer`）；pure projection 与投影缓存。first-party Source 为 `twilight`，Module 为 `chatlog`、`turn`、`run`。
 
-**EXT-SCP-1** 一个 Session 在一个进程内恰有一个 `Writer`，它持有 kernel 的 `session.Writer`（所有权句柄）。全部写入经 `Writer.Commit`：Run 的 Runtime、Turn 的 Coordinator、接管恢复都是它的调用方。模块读取投影经 `ProjectionReader`。
+**EXT-SCP-1** 一个 Session 在一个进程内恰有一个 `Writer`，它持有 kernel 的 `session.Handle`（所有权句柄）。全部写入经 `Writer.Commit`：Run 的 Runtime、Turn 的 Coordinator、接管恢复都是它的调用方。模块读取投影经 `ProjectionReader`。
 
 **EXT-SCP-2** 模块集合由组装代码在启动时传入 `BuildRegistry`，运行期不变；本层不 import 任何模块包。first-party 恰为三个 module；application module 与它们同构、经装配开口注册，见第 8 节。
 
@@ -177,7 +177,7 @@ type Writer interface {
 func OpenWriter(ctx, store session.Store, registry *Registry, admission Admission, sid session.SessionID, opts session.OpenOptions) (Writer, error)
 ```
 
-**EXT-WRT-1** `OpenWriter` 调 `store.Open` 取得所有权，然后重建每个已注册投影的当前状态与 head。投影的起始状态按 EXT-PRJ-3/5 取自缓存条目或 `Initial`；缓存条目未覆盖的部分（没有可用条目时即整条日志）被读出来 fold，读完即释放。Writer 不保留日志，也不保留提交历史索引——CommitID 的索引是 kernel 的（SES-REP-3/4），命中时才取该组的行；因此 Writer 的常驻内存只随已注册投影数增长，与日志长度无关。之后 `Commit` 在 Writer 的互斥区内执行：调 fn 得到 group，做 codec、admission、claim，`session.Writer.Append`，再把新行折进投影，并按缓存策略刷新条目（EXT-PRJ-6/7）。fn 只能通过 `View` 读；fn 返回 nil 记 `Noop`。Writer 是并发的唯一入口：Run 的 worker、Coordinator、恢复流程都经它串行，kernel 不再需要临界区回调。
+**EXT-WRT-1** `OpenWriter` 调 `store.Open` 取得所有权，然后重建每个已注册投影的当前状态与 head。投影的起始状态按 EXT-PRJ-3/5 取自缓存条目或 `Initial`；缓存条目未覆盖的部分（没有可用条目时即整条日志）被读出来 fold，读完即释放。Writer 不保留日志，也不保留提交历史索引——CommitID 的索引是 kernel 的（SES-REP-3/4），命中时才取该组的行；因此 Writer 的常驻内存只随已注册投影数增长，与日志长度无关。之后 `Commit` 在 Writer 的互斥区内执行：调 fn 得到 group，做 codec、admission、claim，`session.Handle.Append`，再把新行折进投影，并按缓存策略刷新条目（EXT-PRJ-6/7）。fn 只能通过 `View` 读；fn 返回 nil 记 `Noop`。Writer 是并发的唯一入口：Run 的 worker、Coordinator、恢复流程都经它串行，kernel 不再需要临界区回调。
 
 **EXT-WRT-2** 幂等：fn 返回的 group 若 CommitID 已提交（`View.Committed`，命中才取行），比对 fingerprint（Type、SourceSeqs、Payload 的有序序列，不含时间），相同返回 `AlreadyApplied` 与原行，不同返回 `Conflict`；两者都不写入，也不做 admission 与 claim。fn 内可先经 `View.Committed` 判断，避免为重放重新构造 group。
 

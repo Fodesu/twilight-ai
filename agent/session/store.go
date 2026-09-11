@@ -17,7 +17,7 @@ type CreateRequest struct {
 	Metadata           jsonstable.Value
 }
 
-// OpenOptions configures writer ownership (SES-OWN-1). While a Writer is
+// OpenOptions configures writer ownership (SES-OWN-1). While a Handle is
 // live, an Open without Takeover fails with ErrOwned; an Open with Takeover
 // supersedes it — safety rests on Epoch fencing (SES-OWN-2), and when to take
 // over is the caller's policy, above the kernel.
@@ -25,10 +25,10 @@ type OpenOptions struct {
 	Takeover bool
 }
 
-// Writer is the kernel's ownership handle returned by Store.Open. Append
-// carries its Epoch; a Writer whose Epoch has been superseded gets
+// Handle is the kernel's ownership handle returned by Store.Open. Append
+// carries its Epoch; a Handle whose Epoch has been superseded gets
 // ErrOwnershipLost and writes nothing (SES-OWN-2).
-type Writer interface {
+type Handle interface {
 	SessionID() SessionID
 	Epoch() Epoch
 	Head() Head
@@ -69,7 +69,7 @@ type ReadPage struct {
 type Store interface {
 	Create(context.Context, CreateRequest) (SessionHeader, error)
 	Header(context.Context, SessionID) (SessionHeader, error)
-	Open(context.Context, SessionID, OpenOptions) (Writer, error)
+	Open(context.Context, SessionID, OpenOptions) (Handle, error)
 	Read(context.Context, ReadRequest) (ReadPage, error)
 }
 

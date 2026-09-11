@@ -549,3 +549,7 @@ provider 接缝说的是旧类型：入参 `GenerateParams`，出参 `*GenerateR
 - **切分 `Client`**：embedding、image、speech、transcribe、video 入口仍挂在同一个类型上（Memoh 仍用 `GenerateImage` 与 embedding 路径），删除文本生成编排需要先把它们独立出来。
 - **确定 `sdk/` 的定位**：若 `sdk/` 仍需作为独立 SDK 使用，必须为独立用户保留唯一的 loop 实现（本分支的 `agent/run/loop`）；否则删除后独立用户没有多步能力。
 - **提升 pin 后重新验证**：删除是破坏性变更，届时应以迁移分支为准重跑编译与 conformance。
+
+## 14. 2026-09-12 修订：kernel 所有权句柄改名 `session.Handle`
+
+第 10 节把写入路径独立成 `agent/session/writer` 后，相邻两层各有一个 `Writer` 类型：kernel 由 `Store.Open` 返回的所有权句柄，与进程内的提交管线 `writer.Writer`，后者持有前者。两者职责不同（句柄承担 Append、Epoch、CommitID 索引与 Close；提交管线承担串行、幂等重放、admission 与投影），同名只能靠字段名区分。kernel 类型改名为 `session.Handle`，与规范一直使用的"所有权句柄"一致；两个 adapter 的实现类型随之为 `memoryHandle`、`fileHandle`。`writer.Writer` 不改。落点：[agent-session.md](agent-session.md) 第 4 节代码块、SES-SCP-2、SES-OWN-1/2 与 conformance 清单；[agent-session-extension.md](agent-session-extension.md) EXT-SCP-1、EXT-WRT-1。

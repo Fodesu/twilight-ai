@@ -77,7 +77,7 @@ func TestReadIndexedMatchesFullParse(t *testing.T) {
 	}
 }
 
-func appendGroups(t *testing.T, w session.Writer, firstCommit int, groups [][]string) {
+func appendGroups(t *testing.T, w session.Handle, firstCommit int, groups [][]string) {
 	t.Helper()
 	for i, g := range groups {
 		events := make([]session.UncommittedEvent, len(g))

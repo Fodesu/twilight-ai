@@ -40,7 +40,7 @@ func create(t *testing.T, store session.Store, sid session.SessionID) session.Se
 	return h
 }
 
-func open(t *testing.T, store session.Store, sid session.SessionID, takeover bool) session.Writer {
+func open(t *testing.T, store session.Store, sid session.SessionID, takeover bool) session.Handle {
 	t.Helper()
 	w, err := store.Open(context.Background(), sid, session.OpenOptions{Takeover: takeover})
 	if err != nil {
@@ -53,7 +53,7 @@ func ev(typ, payload string) session.UncommittedEvent {
 	return session.UncommittedEvent{Type: session.EventType(typ), Payload: jsonstable.MustParse(payload), RecordedAtUnixMilli: 1}
 }
 
-func appendGroup(t *testing.T, w session.Writer, id string, events ...session.UncommittedEvent) []session.SessionEvent {
+func appendGroup(t *testing.T, w session.Handle, id string, events ...session.UncommittedEvent) []session.SessionEvent {
 	t.Helper()
 	rows, err := w.Append(context.Background(), session.Group{CommitID: session.CommitID(id), Events: events})
 	if err != nil {

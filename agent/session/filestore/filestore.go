@@ -208,7 +208,7 @@ func saveOwner(dir string, rec ownerRecord) error {
 	return writeAtomic(filepath.Join(dir, ownerFile), raw)
 }
 
-func (s *Store) Open(ctx context.Context, sid session.SessionID, opts session.OpenOptions) (session.Writer, error) {
+func (s *Store) Open(ctx context.Context, sid session.SessionID, opts session.OpenOptions) (session.Handle, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -252,7 +252,7 @@ func (s *Store) Open(ctx context.Context, sid session.SessionID, opts session.Op
 	} else {
 		s.dropIndex(sid) // no log file yet
 	}
-	w := &fileWriter{store: s, header: header, dir: dir, logPath: logPath, epoch: rec.Epoch,
+	w := &fileHandle{store: s, header: header, dir: dir, logPath: logPath, epoch: rec.Epoch,
 		head: head, commits: spansOf(rows, offsets)}
 	return w, nil
 }
@@ -309,7 +309,7 @@ func headOf(h session.SessionHeader, rows []session.SessionEvent) session.Head {
 	return session.Head{Next: last.Seq + 1, Digest: last.Digest}
 }
 
-type fileWriter struct {
+type fileHandle struct {
 	store   *Store
 	header  session.SessionHeader
 	dir     string
@@ -319,10 +319,10 @@ type fileWriter struct {
 	commits map[session.CommitID]commitSpan
 }
 
-func (w *fileWriter) SessionID() session.SessionID { return w.header.SessionID }
-func (w *fileWriter) Epoch() session.Epoch         { return w.epoch }
+func (w *fileHandle) SessionID() session.SessionID { return w.header.SessionID }
+func (w *fileHandle) Epoch() session.Epoch         { return w.epoch }
 
-func (w *fileWriter) Head() session.Head {
+func (w *fileHandle) Head() session.Head {
 	w.store.mu.Lock()
 	defer w.store.mu.Unlock()
 	return w.head
@@ -331,7 +331,7 @@ func (w *fileWriter) Head() session.Head {
 // current re-reads owner.json: the file is the ownership authority, so a
 // takeover through another Store instance fences this writer. The caller
 // holds the store lock.
-func (w *fileWriter) current(op string) error {
+func (w *fileHandle) current(op string) error {
 	rec, err := loadOwner(w.dir)
 	if err != nil {
 		return err
@@ -344,7 +344,7 @@ func (w *fileWriter) current(op string) error {
 
 // Committed is SES-REP-3: the span map the kernel keeps to reject a duplicate
 // CommitID (SES-APP-3) answers membership without reading the file.
-func (w *fileWriter) Committed(id session.CommitID) bool {
+func (w *fileHandle) Committed(id session.CommitID) bool {
 	w.store.mu.Lock()
 	defer w.store.mu.Unlock()
 	_, ok := w.commits[id]
@@ -353,7 +353,7 @@ func (w *fileWriter) Committed(id session.CommitID) bool {
 
 // LookupCommit is SES-REP-4: it reads exactly the group's byte range, so the
 // cost of the answer does not grow with the length of the log.
-func (w *fileWriter) LookupCommit(id session.CommitID) ([]session.SessionEvent, bool, error) {
+func (w *fileHandle) LookupCommit(id session.CommitID) ([]session.SessionEvent, bool, error) {
 	w.store.mu.Lock()
 	defer w.store.mu.Unlock()
 	sp, ok := w.commits[id]
@@ -380,7 +380,7 @@ func (w *fileWriter) LookupCommit(id session.CommitID) ([]session.SessionEvent, 
 	return rows, true, nil
 }
 
-func (w *fileWriter) Close(ctx context.Context) error {
+func (w *fileHandle) Close(ctx context.Context) error {
 	w.store.mu.Lock()
 	defer w.store.mu.Unlock()
 	rec, err := loadOwner(w.dir)
@@ -395,7 +395,7 @@ func (w *fileWriter) Close(ctx context.Context) error {
 
 // --- append ---------------------------------------------------------------------
 
-func (w *fileWriter) Append(ctx context.Context, g session.Group) ([]session.SessionEvent, error) {
+func (w *fileHandle) Append(ctx context.Context, g session.Group) ([]session.SessionEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}

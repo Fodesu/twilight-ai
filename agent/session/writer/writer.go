@@ -127,7 +127,7 @@ type projectionKey struct {
 
 type sessionWriter struct {
 	mu        sync.Mutex
-	kernel    session.Writer
+	kernel    session.Handle
 	registry  *extension.Registry
 	admission Admission
 	sid       session.SessionID

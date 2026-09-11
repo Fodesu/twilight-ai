@@ -21,7 +21,7 @@ type memorySession struct {
 	rows     []SessionEvent
 	byCommit map[CommitID][2]int // [first, last] row index of the group
 	epoch    Epoch
-	owner    *memoryWriter // nil when no live owner
+	owner    *memoryHandle // nil when no live owner
 }
 
 // NewMemoryStore returns an empty MemoryStore.
@@ -92,13 +92,13 @@ func (s *memorySession) head() Head {
 
 // --- ownership ------------------------------------------------------------------
 
-type memoryWriter struct {
+type memoryHandle struct {
 	store *MemoryStore
 	s     *memorySession
 	epoch Epoch
 }
 
-func (m *MemoryStore) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Writer, error) {
+func (m *MemoryStore) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Handle, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -123,7 +123,7 @@ func (m *MemoryStore) Open(ctx context.Context, sid SessionID, opts OpenOptions)
 	// into one group that Read would hand back as a single group (SES-APP-2).
 	s.dropIncompleteTail()
 	s.epoch++
-	w := &memoryWriter{store: m, s: s, epoch: s.epoch}
+	w := &memoryHandle{store: m, s: s, epoch: s.epoch}
 	s.owner = w
 	return w, nil
 }
@@ -156,17 +156,17 @@ func (s *memorySession) rebuildIndex() {
 	}
 }
 
-func (w *memoryWriter) SessionID() SessionID { return w.s.header.SessionID }
-func (w *memoryWriter) Epoch() Epoch         { return w.epoch }
+func (w *memoryHandle) SessionID() SessionID { return w.s.header.SessionID }
+func (w *memoryHandle) Epoch() Epoch         { return w.epoch }
 
-func (w *memoryWriter) Head() Head {
+func (w *memoryHandle) Head() Head {
 	w.s.mu.Lock()
 	defer w.s.mu.Unlock()
 	return w.s.head()
 }
 
 // current reports whether w still owns the stream; the caller holds s.mu.
-func (w *memoryWriter) current(op string) error {
+func (w *memoryHandle) current(op string) error {
 	if w.s.owner != w || w.s.epoch != w.epoch {
 		return newError(ErrOwnershipLost, op, w.s.header.SessionID, fmt.Sprintf("epoch %d superseded by %d", w.epoch, w.s.epoch))
 	}
@@ -175,7 +175,7 @@ func (w *memoryWriter) current(op string) error {
 
 // Committed is SES-REP-3: the row index the kernel keeps to reject a duplicate
 // CommitID answers membership directly.
-func (w *memoryWriter) Committed(id CommitID) bool {
+func (w *memoryHandle) Committed(id CommitID) bool {
 	w.s.mu.Lock()
 	defer w.s.mu.Unlock()
 	_, ok := w.s.byCommit[id]
@@ -184,7 +184,7 @@ func (w *memoryWriter) Committed(id CommitID) bool {
 
 // LookupCommit is SES-REP-4: the session holds every row, so a hit copies the
 // group's span instead of reading storage.
-func (w *memoryWriter) LookupCommit(id CommitID) ([]SessionEvent, bool, error) {
+func (w *memoryHandle) LookupCommit(id CommitID) ([]SessionEvent, bool, error) {
 	w.s.mu.Lock()
 	defer w.s.mu.Unlock()
 	span, ok := w.s.byCommit[id]
@@ -194,7 +194,7 @@ func (w *memoryWriter) LookupCommit(id CommitID) ([]SessionEvent, bool, error) {
 	return cloneRows(w.s.rows[span[0] : span[1]+1]), true, nil
 }
 
-func (w *memoryWriter) Close(ctx context.Context) error {
+func (w *memoryHandle) Close(ctx context.Context) error {
 	w.s.mu.Lock()
 	defer w.s.mu.Unlock()
 	if w.s.owner == w {
@@ -205,7 +205,7 @@ func (w *memoryWriter) Close(ctx context.Context) error {
 
 // --- append -----------------------------------------------------------------------
 
-func (w *memoryWriter) Append(ctx context.Context, g Group) ([]SessionEvent, error) {
+func (w *memoryHandle) Append(ctx context.Context, g Group) ([]SessionEvent, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
