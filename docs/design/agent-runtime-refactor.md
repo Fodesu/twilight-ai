@@ -305,15 +305,15 @@ lease 的第二条出路：grant 由 `(Claim, start CommitID)` 派生，start fa
 
 ### 7.8 回合中途追加输入（2026-09-05）
 
-`PendingInputs` 已是持久化队列，缺的是入队入口与消费时机。改动：Turn 增加 `Deliver`，每条输入一个 Run commit（`AcceptInput` 加 Attach 的 `input_delivered`）；`AcceptInput` 前置从 `Open` 放宽为任意非终态；模型无 tool call 但有 pending 输入时 Run 回到 `Open` 而不结束；新增 `WithdrawPreparedStep`，Prepared 期间入队的输入使 `Next` 返回 `WithdrawPrepared`，Loop 放弃已冻结但未发出的请求并重规划。Executing 与 ToolStep 期间的输入等待该步结算，在随后的 `Open` 被 Prepare 一次消费，与 Codex、Claude Code 的注入点一致。Deliver 不打断进行中的调用；打断用 Stop。turn surface 消费 `run/input_accepted` 以跟踪全部输入，Retry 重放它们。
+`PendingInputs` 已是持久化队列，缺的是入队入口与消费时机。改动：Turn 增加 `Deliver`，每条输入一个 Run commit（`AcceptInput` 加 Attach 的 `input_delivered`）；`AcceptInput` 前置从 `Open` 放宽为任意非终态；模型无 tool call 但有 pending 输入时 Run 回到 `Open` 而不结束；新增 `WithdrawPreparedStep`，Prepared 期间入队的输入使 `Next` 返回 `WithdrawPrepared`，Loop 放弃已冻结但未发出的请求并重规划。Executing 与 ToolStep 期间的输入等待该步结算，在随后的 `Open` 被 Prepare 一次消费，与对照的外部 agent 运行时的注入点一致。Deliver 不打断进行中的调用；打断用 Stop。turn surface 消费 `run/input_accepted` 以跟踪全部输入，Retry 重放它们。
 
-对照 pi 与 DeepSeek harness 的 inbox 模型后补齐了 session 级的路由：pi 的 steering 在当前 step 的工具结果之后注入、不中断生成也不跳过剩余 tool call，follow-up 只在 agent 本来要停下时取用；DeepSeek harness 的 inbox 是 `next-step` 与 `next-turn` 两条持久化列表，steer 在最近的 step 边界消费，turn 关闭前做最后一次 drain。twilight 的对应：`PendingInputs` 即 next-step；chatlog 中已 submitted 未 delivered 的输入即 next-turn；缺的"空闲时被唤醒、turn 结束后自动取下一条"由参考组装的 `SessionDriver` 提供（REF-DRV），协议不变。Stop 后 Retry 等价于 `cancel(keepInbox)`，Settle 等价于默认 cancel（TRN-STP-1）。
+对照两个外部 agent 运行时的 inbox 模型后补齐了 session 级的路由。两者的共同形态：steering 在当前 step 的工具结果之后注入、不中断生成也不跳过剩余 tool call；follow-up 只在 agent 本来要停下时取用；inbox 分为 `next-step` 与 `next-turn` 两条持久化列表，steer 在最近的 step 边界消费，turn 关闭前做最后一次 drain。twilight 的对应：`PendingInputs` 即 next-step；chatlog 中已 submitted 未 delivered 的输入即 next-turn；缺的"空闲时被唤醒、turn 结束后自动取下一条"由参考组装的 `SessionDriver` 提供（REF-DRV），协议不变。Stop 后 Retry 等价于 `cancel(keepInbox)`，Settle 等价于默认 cancel（TRN-STP-1）。
 
 ## 8. 2026-09-08 修订：Session 级单写者与扁平事件
 
 ### 8.1 起因
 
-第 7 节形态的 Memory 栈跑通后（第 3 节），对照 dsh 与 Codex 的 session 日志实现发现：twilight 比它们多出的全部机制（`CommitIn` 临界区、`Commit` 的 CAS、控制面 KV、按目标的 lease 与 grant、`RenewLease` 心跳、`RecoverExpired` 按 deadline 枚举、commit 与 KV 同事务）都源于同一个假设：同一个 Session 可以有多个并发写者，包括不同进程。该假设没有部署需求支撑：Memoh 作为服务把一个 Session 固定到一个 worker，failover 走锁接管，不会两个 worker 同时写同一 Session；本地宿主是单进程。dsh 的做法（每 session 一个 write handle，进程内独占加跨进程 `flock`，第二个写者直接被拒）说明单写者足以支撑同类需求。
+第 7 节形态的 Memory 栈跑通后（第 3 节），对照两个外部 agent 的 session 日志实现发现：twilight 比它们多出的全部机制（`CommitIn` 临界区、`Commit` 的 CAS、控制面 KV、按目标的 lease 与 grant、`RenewLease` 心跳、`RecoverExpired` 按 deadline 枚举、commit 与 KV 同事务）都源于同一个假设：同一个 Session 可以有多个并发写者，包括不同进程。该假设没有部署需求支撑：Memoh 作为服务把一个 Session 固定到一个 worker，failover 走锁接管，不会两个 worker 同时写同一 Session；本地宿主是单进程。外部实现的做法（每 session 一个 write handle，进程内独占加跨进程文件锁，第二个写者直接被拒）说明单写者足以支撑同类需求。
 
 同时发现 `SessionCommit` 容器在读侧只是一层没有语义的嵌套（`ReplayPage.Commits[].Events[]`），它承担的三个作用中，幂等与 CAS 单位随单写者上移到进程内，commit 级元数据可以摊到每行，只剩"整组原子可见"一条，而这条只需要 append 以组为单位并在读侧不暴露不完整组，不需要嵌套类型。
 
@@ -342,7 +342,7 @@ lease 的第二条出路：grant 由 `(Claim, start CommitID)` 派生，start fa
 
 失去：同一 Session 的不同工具调用由不同进程并发执行（没有消费者）；claim 与 commit 的同事务一致性（降为先 claim 后 append，孤儿由核对清理）；修订前 conformance 中 grant 隔离、跨 Run grant、lease 续期的十几项断言。
 
-得到：kernel 接口从 15 个方法降到 4 个，adapter 只需实现独占、追加与读，JSONL 成为一等实现；Runtime 去掉 lease/grant 两套校验；Loop 去掉心跳与 ClaimStore；与 dsh、Codex 的心智模型一致（一个 session 同一时刻一个写者）。
+得到：kernel 接口从 15 个方法降到 4 个，adapter 只需实现独占、追加与读，JSONL 成为一等实现；Runtime 去掉 lease/grant 两套校验；Loop 去掉心跳与 ClaimStore；与对照的外部实现的模型一致（一个 session 同一时刻一个写者）。
 
 ### 8.4 持久结构与一致性等级（修订后）
 
