@@ -130,7 +130,7 @@ func TestSurfaceAndContextFold(t *testing.T) {
 	if pending := surface.SubmittedInputs(); len(pending) != 1 || pending[0].ID != "in-2" {
 		t.Fatalf("submitted = %+v", pending)
 	}
-	if len(surface.EntryOrder) != 3 || surface.Superseded["r1"] != "r2" {
+	if replaced, _ := surface.Superseded.Get("r1"); len(surface.EntryOrder) != 3 || replaced != "r2" {
 		t.Fatalf("surface = %+v", surface)
 	}
 	entries := contextState.(Context).Entries
@@ -308,7 +308,7 @@ func TestCheckpointFold(t *testing.T) {
 		if got := surf.SubmittedInputs(); len(got) != 1 || got[0].ID != "in-q" {
 			t.Fatalf("surface queue = %+v", got)
 		}
-		if v := surf.Checkpoints["ck1"]; v.Status != CheckpointActive {
+		if v, _ := surf.Checkpoints.Get("ck1"); v.Status != CheckpointActive {
 			t.Fatalf("surface checkpoint = %+v", v)
 		}
 		if len(surf.EntryOrder) != 4 { // full history stays visible
@@ -332,7 +332,7 @@ func TestCheckpointFold(t *testing.T) {
 		if len(ctxState.Checkpoints) != 0 {
 			t.Fatalf("checkpoint stack = %+v", ctxState.Checkpoints)
 		}
-		if v := surf.Checkpoints["ck1"]; v.Status != CheckpointInvalidated || v.Reason != "host" {
+		if v, _ := surf.Checkpoints.Get("ck1"); v.Status != CheckpointInvalidated || v.Reason != "host" {
 			t.Fatalf("surface checkpoint = %+v", v)
 		}
 	})

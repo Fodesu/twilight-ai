@@ -268,7 +268,7 @@ func lastAssistantText(chat *chatlog.Surface, turnID chatlog.TurnID) string {
 		if e.Kind != chatlog.EntryAssistant {
 			continue
 		}
-		a, ok := chat.Assistants[chatlog.AssistantID(e.ID)]
+		a, ok := chat.Assistants.Get(chatlog.AssistantID(e.ID))
 		if !ok || a.TurnID != turnID {
 			continue
 		}

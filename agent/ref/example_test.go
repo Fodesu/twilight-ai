@@ -92,7 +92,7 @@ func Example_recoverableTurn() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("process 2: took over; %d executing target disposed; chatlog has %d tool_result(s) with status %s\n", recovered, len(chat.ToolResults), toolResultStatus(&chat))
+	fmt.Printf("process 2: took over; %d executing target disposed; chatlog has %d tool_result(s) with status %s\n", recovered, chat.ToolResults.Len(), toolResultStatus(&chat))
 
 	resp, err := p2.Drive(ctx, ref1)
 	if err != nil {
@@ -142,10 +142,12 @@ func errorsIsOwnershipLost(err error) string {
 }
 
 func toolResultStatus(s *chatlog.Surface) string {
-	for _, r := range s.ToolResults {
-		return string(r.Status)
-	}
-	return "none"
+	status := "none"
+	s.ToolResults.Range(func(_ chatlog.ToolResultID, r chatlog.ToolResult) bool {
+		status = string(r.Status)
+		return false
+	})
+	return status
 }
 
 func waitForExecutingCall(ctx context.Context, m *ref.Memory, sid session.SessionID, turnID turn.TurnID) run.RunID {

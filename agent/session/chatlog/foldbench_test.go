@@ -37,11 +37,12 @@ func benchFold(b *testing.B, def extension.ProjectionDefinition, n int) {
 	}
 }
 
-// Both folds copy the whole derived state once per event, so folding an N-row
-// log costs O(N^2). These benchmarks are the baseline that shows it: each time
-// N doubles, elapsed time grows several-fold rather than twofold. The cost is
-// paid by OpenWriter's rebuild and ProjectionReader.Load, which both fold the
-// entire log, so it grows with session length.
+// Both folds once copied the whole derived state per event, so folding an
+// N-row log cost O(N^2) (3200 rows: 194 ms Surface, 66 ms Context). Context
+// now appends and copies only the map an event writes; Surface keeps its
+// content in persistent Tables (O(sqrt(n)) per write). These benchmarks pin
+// the shape: doubling N should roughly double elapsed time. The cost is paid
+// by OpenWriter's rebuild and ProjectionReader.Load, which fold the log.
 func BenchmarkSurfaceFold(b *testing.B) {
 	for _, n := range []int{400, 800, 1600, 3200} {
 		b.Run(fmt.Sprint(n), func(b *testing.B) { benchFold(b, SurfaceProjection, n) })

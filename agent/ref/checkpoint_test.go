@@ -109,7 +109,7 @@ func TestCompactShrinksContextAndReplaysAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v := chat.Checkpoints[id]; v.Status != chatlog.CheckpointActive {
+	if v, _ := chat.Checkpoints.Get(id); v.Status != chatlog.CheckpointActive {
 		t.Fatalf("checkpoint = %+v", v)
 	}
 
@@ -165,8 +165,8 @@ func TestAutoCompactAfterSettlement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(chat.Checkpoints) != 1 {
-		t.Fatalf("checkpoints = %+v", chat.Checkpoints)
+	if chat.Checkpoints.Len() != 1 {
+		t.Fatalf("checkpoints = %+v", chat.Checkpoints.Map())
 	}
 	state, _, err := m.Projection(ctx, "s-ckpt", chatlog.ContextProjectionID, chatlog.ContextProjection.Version)
 	if err != nil {

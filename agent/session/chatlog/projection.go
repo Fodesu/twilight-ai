@@ -61,15 +61,19 @@ type CheckpointView struct {
 	Seq        session.Seq              `json:"seq"`
 }
 
-// Surface is the UI-facing read model (CHT-SUR-1).
+// Surface is the UI-facing read model (CHT-SUR-1). The content tables are
+// persistent (Table): a fold shares them between states and pays O(sqrt(n))
+// per write. Inputs stays a plain map because the turn Coordinator indexes it
+// directly; each write copies it, so it is the one linear cost left in the
+// fold.
 type Surface struct {
-	Inputs      map[InputID]InputView           `json:"inputs"`
-	Assistants  map[AssistantID]Assistant       `json:"assistants"`
-	ToolResults map[ToolResultID]ToolResult     `json:"toolResults"`
-	Summaries   map[SummaryID]Summary           `json:"summaries"`
-	EntryOrder  []SurfaceEntry                  `json:"entryOrder"`
-	Superseded  map[ToolResultID]ToolResultID   `json:"superseded,omitempty"`
-	Checkpoints map[CheckpointID]CheckpointView `json:"checkpoints,omitempty"`
+	Inputs      map[InputID]InputView               `json:"inputs"`
+	Assistants  Table[AssistantID, Assistant]       `json:"assistants"`
+	ToolResults Table[ToolResultID, ToolResult]     `json:"toolResults"`
+	Summaries   Table[SummaryID, Summary]           `json:"summaries"`
+	EntryOrder  []SurfaceEntry                      `json:"entryOrder"`
+	Superseded  Table[ToolResultID, ToolResultID]   `json:"superseded,omitzero"`
+	Checkpoints Table[CheckpointID, CheckpointView] `json:"checkpoints,omitzero"`
 	nextSeq     uint64
 }
 
@@ -104,7 +108,7 @@ var SurfaceProjection = extension.ProjectionDefinition{
 	ID: SurfaceProjectionID, Version: 1,
 	Consumes: chatlogConsumes,
 	Initial: func() (any, error) {
-		return Surface{Inputs: map[InputID]InputView{}, Assistants: map[AssistantID]Assistant{}, ToolResults: map[ToolResultID]ToolResult{}, Summaries: map[SummaryID]Summary{}, Superseded: map[ToolResultID]ToolResultID{}, Checkpoints: map[CheckpointID]CheckpointView{}}, nil
+		return Surface{Inputs: map[InputID]InputView{}}, nil
 	},
 	Apply:      applySurface,
 	StateCodec: extension.JSONStateCodec[Surface]{},
@@ -158,54 +162,48 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 			return nil, err
 		}
 	case AssistantPayload:
-		if _, dup := s.Assistants[p.Assistant.ID]; dup {
+		if s.Assistants.Has(p.Assistant.ID) {
 			return nil, fmt.Errorf("assistant %s created twice", p.Assistant.ID)
 		}
-		s.Assistants = cow(s.Assistants)
-		s.Assistants[p.Assistant.ID] = p.Assistant
+		s.Assistants = s.Assistants.Set(p.Assistant.ID, p.Assistant)
 		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryAssistant, ID: string(p.Assistant.ID), Seq: pos})
 	case ToolResultPayload:
-		if _, dup := s.ToolResults[p.ToolResult.ID]; dup {
+		if s.ToolResults.Has(p.ToolResult.ID) {
 			return nil, fmt.Errorf("tool_result %s created twice", p.ToolResult.ID)
 		}
-		s.ToolResults = cow(s.ToolResults)
-		s.ToolResults[p.ToolResult.ID] = p.ToolResult
+		s.ToolResults = s.ToolResults.Set(p.ToolResult.ID, p.ToolResult)
 		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryToolResult, ID: string(p.ToolResult.ID), Seq: pos})
 	case ToolResultSupersededPayload:
-		if _, ok := s.ToolResults[p.ToolResultID]; !ok {
+		if !s.ToolResults.Has(p.ToolResultID) {
 			return nil, fmt.Errorf("superseded tool_result %s unknown", p.ToolResultID)
 		}
-		if _, dup := s.Superseded[p.ToolResultID]; dup {
+		if s.Superseded.Has(p.ToolResultID) {
 			return nil, fmt.Errorf("tool_result %s superseded twice", p.ToolResultID)
 		}
-		s.Superseded = cow(s.Superseded)
-		s.Superseded[p.ToolResultID] = p.ReplacementToolResultID
+		s.Superseded = s.Superseded.Set(p.ToolResultID, p.ReplacementToolResultID)
 	case SummaryPayload:
-		if _, dup := s.Summaries[p.Summary.ID]; dup {
+		if s.Summaries.Has(p.Summary.ID) {
 			return nil, fmt.Errorf("summary %s created twice", p.Summary.ID)
 		}
-		s.Summaries = cow(s.Summaries)
-		s.Summaries[p.Summary.ID] = p.Summary
+		s.Summaries = s.Summaries.Set(p.Summary.ID, p.Summary)
 		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntrySummary, ID: string(p.Summary.ID), Seq: pos})
 	case CheckpointCreatedPayload:
-		if _, dup := s.Checkpoints[p.CheckpointID]; dup {
+		if s.Checkpoints.Has(p.CheckpointID) {
 			return nil, fmt.Errorf("checkpoint %s created twice", p.CheckpointID)
 		}
-		sum, ok := s.Summaries[p.SummaryID]
+		sum, ok := s.Summaries.Get(p.SummaryID)
 		if !ok || sum.Digest != p.SummaryDigest {
 			return nil, fmt.Errorf("checkpoint %s names summary %s which does not match", p.CheckpointID, p.SummaryID)
 		}
-		s.Checkpoints = cow(s.Checkpoints)
-		s.Checkpoints[p.CheckpointID] = CheckpointView{Checkpoint: p, Status: CheckpointActive, Seq: pos}
+		s.Checkpoints = s.Checkpoints.Set(p.CheckpointID, CheckpointView{Checkpoint: p, Status: CheckpointActive, Seq: pos})
 	case CheckpointInvalidatedPayload:
-		v, ok := s.Checkpoints[p.CheckpointID]
+		v, ok := s.Checkpoints.Get(p.CheckpointID)
 		if !ok || v.Status != CheckpointActive {
 			return nil, fmt.Errorf("checkpoint %s invalidated while not active", p.CheckpointID)
 		}
 		v.Status = CheckpointInvalidated
 		v.Reason = p.Reason
-		s.Checkpoints = cow(s.Checkpoints)
-		s.Checkpoints[p.CheckpointID] = v
+		s.Checkpoints = s.Checkpoints.Set(p.CheckpointID, v)
 	default:
 		return nil, fmt.Errorf("chatlog surface: unexpected %T", e.Value)
 	}

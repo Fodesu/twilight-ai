@@ -245,13 +245,18 @@ type SurfaceEntry struct {
     Seq session.Seq
 }
 type Surface struct {
-    Inputs map[InputID]Input
-    Assistants map[AssistantID]Assistant
-    ToolResults map[ToolResultID]ToolResult
-    Summaries map[SummaryID]Summary
+    Inputs map[InputID]InputView
+    Assistants Table[AssistantID, Assistant]
+    ToolResults Table[ToolResultID, ToolResult]
+    Summaries Table[SummaryID, Summary]
     EntryOrder []SurfaceEntry
+    Superseded Table[ToolResultID, ToolResultID]
+    Checkpoints Table[CheckpointID, CheckpointView]
 }
+// Table 是持久化 map：Set 返回新值、不改写接收者，各状态共享未变的存储；编码为普通 JSON object。
 ```
+
+Surface 的折叠遵守 EXT-PRJ-1：Apply 不改写传入状态。内容表用 `Table` 承载，一次写入的代价为 O(√n)（基底共享、覆盖层复制、覆盖层超过 √n 时并入新基底），因此折叠一条 N 行日志的代价随 N 线性增长而非平方；`EntryOrder` 以 append 增长。`Inputs` 保持普通 map，每次写入复制，是折叠中唯一随输入数线性增长的一项。
 
 **CHT-SUR-1** SurfaceFold 消费 chatlog decoded events，其他事件按 EXT-PRJ-2 处理。`EntryOrder` 为 stream 顺序下的 delivered input、assistant、tool_result、summary，并带 Seq。回合列表由 turn 投影提供，按 `TurnID` 连接。checkpoint 记录于 `Surface.Checkpoints`（active / invalidated）；compaction 不改动 `EntryOrder`（全量历史保持可见），也不触及输入队列——排队中的输入不在 Context 条目里，不可能被压缩。
 
