@@ -4,6 +4,59 @@
 
 本文定义 Twilight Session 的 Event Sourcing kernel。文中的"必须""不得""应该"是协议约束。
 
+## 0. 设计原则
+
+Twilight Session 是一个单写者、可接管、幂等提交的 Event-Sourced Aggregate：Event Stream 是事实的唯一权威，Writer 提供语义事务与串行化，kernel 只提供原子 append、ownership/fencing 与持久化，Projection 与 Snapshot 全部是可重建的派生状态。下列原则贯穿本文与 [Session Module Framework](agent-session-extension.md)、[Run](agent-run.md)、[Turn](agent-turn.md)、[Chatlog](agent-session-chatlog.md)、[Artifact](agent-artifact.md) 各规范；每条给出承载它的条款。
+
+```text
+                  Session
+
+      ┌── Canonical Event Stream ──┐
+      │                            │
+Command                            │
+  ↓                                │
+Writer.Commit                      │
+  │                                │
+  ├─ semantic serialization        │
+  ├─ transaction boundary          │
+  ├─ validation                    │
+  ├─ idempotency                   │
+  ↓                                │
+Atomic Event Group ────────────────┘
+             │
+             ↓
+      Projections / Snapshots
+             │
+             ↓
+       Runtime / Context / UI
+```
+
+1. **唯一权威历史。** `Session = append-only Event Stream`，`State = Fold(Events)`。Turn、Run、Chatlog 不各自持有权威状态，它们的事实同在一条 stream 上（§2.1 authority）。stream 之外只有两类持久数据，且都以 digest 被 stream 锚定：`FrozenValueStore` 存模型请求本体，Run 事实只记其 digest（RUN-WIR-4）；artifact 的 `RetentionLedger` 自持久化，claim 先于 Append 建立（EXT-WRT-3）。
+
+2. **语义串行化。** 同一 Session 的全部写入（Turn、Run、恢复、Checkpoint）经进程内唯一的 `Writer.Commit`，形成一个确定的全序（EXT-SCP-1、EXT-WRT-1）。kernel 不承担并发控制（SES-SCP-2）。
+
+3. **事务边界。** `read state → decide → validate → append` 在 Writer 的互斥区内完成，不可被另一个语义提交插入：`CommitFn` 经 `View` 读取的 head、提交历史与投影状态即写入时的状态（EXT-WRT-1）。validate 有两层：Binding admission（EXT-REF-2）与投影预折叠——任一投影拒绝则不落盘（EXT-PRJ-1）。这条边界是进程内的；跨进程的隔离由第 5 条提供，两者合起来才是完整的隔离。
+
+4. **原子 Semantic Group。** 一个领域动作产生的多个 event 要么全部出现，要么全部不存在（SES-APP-1）；底层事务或 fsync 只是它的物理实现。崩溃只可能留下一个不完整尾组，`Open` 在确立 head 之前把它截掉，reader 在任何时刻都看不到不完整的组（SES-APP-2）。
+
+5. **Session 级 Ownership 与 Fencing。** `Handle + Epoch`：同一 Session 同一时刻至多一个有效写者；接管使 Epoch 加一并持久化，旧 Handle 的迟到写入被拒（SES-OWN-1/2）。所有权是 Session 级而非执行目标级：接管者对全部执行中的目标做一次性处置（SES-OWN-3、RUN-CMT-7）。何时接管是 kernel 之上的策略，kernel 不承载 TTL 或心跳。
+
+6. **幂等语义提交。** `CommitID + semantic fingerprint`：同 ID 同内容为 `AlreadyApplied`，同 ID 不同内容为 `Conflict`，两者都不写入（EXT-WRT-2）。fingerprint 覆盖 Type、SourceSeqs、Payload，不含时间。kernel 只拒绝重复 CommitID 并提供该索引的读侧（SES-APP-3、SES-REP-3/4），比对由 Writer 完成。恢复与重放因此不会重复写事实。
+
+7. **Projection 与 Snapshot 只是派生状态。** Projection 可重建，Snapshot（投影缓存）可丢弃；复用条件是组对齐（EXT-PRJ-3），篡改或过期的条目只让下次多折，绝不成为第二份 authority（EXT-PRJ-5/7）。owner 进程内的投影与观察者从 Store 折出的投影对同一 head 给出相同状态（EXT-PRJ-4）。
+
+8. **最小化、payload-opaque 的 kernel。** kernel 只懂 Open/ownership、Append、Read、Seq、CommitID 索引、digest 链（SES-SCP-1/3、第 4 至 6 节）。它不解释 payload，不知道 Turn、Run、Tool、Checkpoint 是什么；领域语义全部在 Module、Writer 与 Projection 层。
+
+9. **可验证历史。** 每行 digest 覆盖本行与前一行，`H0 → E0 → E1 → …` 成链，删除、篡改、重排都使其后全部行失效（SES-WIR-2）。校验的义务点是 `Open`，`Read` 信任存储（SES-REP-1）。
+
+10. **模块隔离与版本独立。** 事件按 `<source>/<module>/` 归属，`Requires` 图决定投影的消费范围：范围外事件跳过，范围内不可忽略的 Unknown 事件使折叠失败（EXT-REG-1/4、EXT-PRJ-2）。payload 版本 `v` 由模块携带，与 kernel 的 `ProtocolVersion` 分离（SES-VER-1）。application module 与 first-party 模块同构（EXT-APP）。
+
+11. **同组伴随写入。** Run 事实与它产生的对话内容（assistant、tool_result）写在同一组：内容只出现一次，事实只记 digest（RUN-WIR-4、TRN-CMP、Chatlog 第 1 节）。这是第 4 条最重要的应用。
+
+12. **崩溃后果的封闭集合。** 崩溃只可能留下不完整尾组（第 4 条）与孤儿 claim（回收前核对释放，ART-RET-3）；执行中的目标由接管者一次性处置（第 5 条）。没有其他需要修复的中间状态。
+
+13. **读不需要所有权。** 任何进程可随时读完整组构成的前缀（SES-OWN-4）；观察者用 `NewProjectionReader` 从 Store 折叠，与 owner 一致（第 7 条）。
+
 ## 1. 范围
 
 ```text
