@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agent/decision"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/writer"
@@ -244,7 +245,7 @@ func renderTranscript(entries []chatlog.Entry) string {
 		e := &entries[i]
 		switch e.Kind {
 		case chatlog.EntryInput:
-			text, err := v1InputText(e.Input.Content)
+			text, err := decision.InputText(e.Input.Content)
 			if err != nil {
 				text = e.Input.Content.String()
 			}
@@ -259,9 +260,9 @@ func renderTranscript(entries []chatlog.Entry) string {
 				}
 			}
 		case chatlog.EntryToolResult:
-			fmt.Fprintf(&b, "tool (%s): %s\n", e.ToolResult.Status, partsText(e.ToolResult.Parts))
+			fmt.Fprintf(&b, "tool (%s): %s\n", e.ToolResult.Status, decision.PartsText(e.ToolResult.Parts))
 		case chatlog.EntrySummary:
-			fmt.Fprintf(&b, "summary: %s\n", partsText(e.Summary.Parts))
+			fmt.Fprintf(&b, "summary: %s\n", decision.PartsText(e.Summary.Parts))
 		}
 	}
 	return b.String()

@@ -2,84 +2,33 @@
 
 状态：设计草案。本文是参考组装的目标设计。与 [Run](agent-run.md)、[Turn](agent-turn.md)、[Chatlog](agent-session-chatlog.md) 冲突时以各正式规范为准。
 
-补充说明：ContextPlanner 把回合中途投递的输入排在其之前尚未结算的工具结果之后。原因是这类输入的 `input_delivered` 先于 `tool_result` 进入 stream，而 provider 要求工具结果紧随发出调用的 assistant 消息。fold 顺序不变，只影响请求组装。
-
-本文规定 Memory 参考 agent 的六处组装：Agent 配置面（Profile 公开字段与 digest 边界）、Planner、用户正文在 Chatlog Input 与 Run AgentInput 上的同一份 payload、驱动（Memory.Drive——Coordinator 只做协议提交与状态读取，驱动的生命周期属宿主）、session 作用域的输入路由（SessionDriver）、宿主对象（Session）。
+本文规定 Memory 参考 agent 的组装：Agent 注册单元（Profile 见 Turn，决策组件见 Decision）、用户正文的提交、驱动（Memory.Drive——Coordinator 只做协议提交与状态读取，驱动的生命周期属宿主）、session 作用域的输入路由（SessionDriver）、宿主对象（Session）。
 
 ## 1. Agent 与 Profile
 
-Agent 是一个可注册的执行配置：持久的公开配置（Profile）加上解析它的进程内能力。Session 只保存 `turn.ProfileRef{ID, Digest}`；密钥、client 与工具实现留在进程内，重启后以同一公开配置重新注册即可继续解析。
+Profile 是 Turn 记录的决策身份，定义在 [Turn](agent-turn.md) 第 2 节（TRN-PRF-1/2）：SchemaVersion、Model、Tools、Streaming、PlannerRef、PolicyRef、WorkspaceRef 进摘要，SystemPrompt 不进。Agent 是宿主层把 Profile 与解析它的进程内效果能力放在一起的注册单元：
 
 ```go
 type Agent interface {
-    Profile() Profile
+    Profile() turn.Profile
     ResolveModel(run.ModelRef) (loop.ModelInvoker, error)
     ResolveTool(run.ToolRef) (loop.ExecutableTool, error)
 }
 // 常见形态（一个模型 + 一组工具）由构造器组装：
 // NewAgent(model run.ModelRef, invoker loop.ModelInvoker, opts ...AgentOption) (Agent, error)
-// 选项：WithTool、WithSystemPrompt、WithStreaming、WithPolicy。
-// 自定义 catalog 直接实现 Agent 接口。可选接口 PolicyProvider 提供 loop.ExecutionPolicy。
-
-type PublicTool struct {
-    Ref run.ToolRef
-    Definition run.ToolDefinition
-    Policy run.ResponsePolicy
-}
-type Profile struct {
-    SchemaVersion uint16 // 1
-    Model run.ModelRef
-    Tools []PublicTool   // ToolSpec 与 Request.Tools 都由此派生
-    Streaming bool
-    SystemPrompt string  // 在 digest 之外
-}
+// 选项：WithTool、WithSystemPrompt、WithStreaming、WithPlanner、WithPolicy、WithWorkspace；
+// Planner 与 Policy 默认为 decision.PlannerContextV1 与 decision.PolicyDefaultV1。
 ```
 
-**REF-BND-1** `Digest = Digest("twilight/ref/profile", canonical(Profile 去除 SystemPrompt))`。digest 只覆盖影响重放正确性的字段（SchemaVersion、Model、Tools、Streaming）；SystemPrompt 是调优文本，修改它不得使可恢复的 Turn 无法 Resolve。
+**REF-BND-1** 宿主不定义 Profile 的摘要边界；它按 TRN-PRF-1 计算并校验（TRN-PRF-2）。
 
-**REF-BND-2** `Agents.Register(id, agent)` 在注册时构建 driver 并返回 `ProfileRef`；`Resolve(ref)` 在 Digest 与注册 agent 的当前 Profile 匹配时返回该注册的 driver，未注册或 digest 不匹配为 `ErrProfileUnavailable`。`RunDriver`、`ProfileRegistry` 与 `ErrAlreadyDriving` 都是宿主层（ref）的合同，turn 协议不感知它们。同一注册的所有 drive 共享一个 Loop 实例，因此同一 Run 的第二个本地驱动者确定地得到 `ErrAlreadyDriving`（REF-DRV-1），而非与首个驱动者并发驱动。同一 Run 内同一 ModelRef 的解析语义保持等价（RUN-LOP-7）。
+**REF-BND-2** `Agents.Register(id, agent)` 校验 Profile、经 `decision.Catalogs` 解析 PlannerRef 与 PolicyRef（DEC-CAT-2）、构建 driver 并返回 `ProfileRef`；未注册的决策 ref 使注册失败。`Resolve(ref)` 在 Digest 与注册 agent 的当前 Profile 匹配时返回该注册的 driver，未注册或 digest 不匹配为 `ErrProfileUnavailable`。`RunDriver`、`ProfileRegistry` 与 `ErrAlreadyDriving` 都是宿主层的合同，turn 协议不感知它们。同一注册的所有 drive 共享一个 Loop 实例，因此同一 Run 的第二个本地驱动者确定地得到 `ErrAlreadyDriving`（REF-DRV-1）。同一 Run 内同一 ModelRef 的解析语义保持等价（RUN-LOP-7）。
 
-**REF-BND-3** 参考 Planner 的 `RequestPlan.Model` 等于 `Profile.Model`。
+## 2. Planner 与用户正文
 
-## 2. Planner
+Planner、Policy 与用户正文的 v1 形状属于决策层，见 [agent-decision.md](agent-decision.md)（DEC-PLN、DEC-POL、DEC-INP）。宿主只做两件事：`Memory.Options.Decisions` 传入目录（零值取 `decision.DefaultCatalogs()`）；`Memory.SubmitInput`/`SubmitText` 以 `decision.InputContent` 提交用户正文，`SubmitText` 以 `NewInputID()`（随机、跨重启无碰撞）生成 InputID，需要外部幂等键的调用方使用 `SubmitInput`。
 
-参考 Planner 为 context-v1；装配只有这一个 Planner，Profile 不记录 Planner 标识（第二个 Planner 出现时随 Planner 注册表重新引入）。
-
-```go
-func Plan(ctx context.Context, hint run.PlanningHint, fold []chatlog.Entry, profile Profile) (loop.RequestPlan, error)
-```
-
-**REF-PLN-1** `fold` 为 `ContextFold` 对该 Session chatlog 事件的输出（含已应用的 checkpoint）。Planner 在每次 Plan 时经该 Session Writer 的 `Projections()` 读取 `twilight/chatlog/context` 投影（EXT-PRJ-4）。
-
-**REF-PLN-2** `sdk.Messages` 顺序：
-
-1. `profile.SystemPrompt` 非空时一条 system message；
-2. 按 `fold`：`input` → user；`assistant` → assistant（ToolCallPart 的 `ProviderCallID` 写入 `sdk.ToolCallPart.ToolCallID`）；`tool_result` → tool（以同 Turn assistant 中同 CallID 的 `ProviderCallID` 配对）；`summary` → assistant text。
-
-上一步的 assistant 与 tool_result 已随对应 Run 事实同 commit 提交，Planner 消费时的 fold 总是包含它们；`PlanningHint` 不携带模型结果或工具结果。
-
-**REF-PLN-3** `hint.Inputs` 与本 Turn 已 delivered、且属于本次 Prepare 的 Input 按 ID 对齐，包括回合中途经 Deliver 进入的输入。这些 Input 的 `input_delivered` 与 `input_accepted` 同 commit，Plan 时一定已在 fold 中，只使用 fold。
-
-**REF-PLN-4** `RequestPlan.Model = profile.Model`；`Request.Tools` 与 `Tools`（ToolSpec：Ref、DefinitionDigest、Policy）都由 `profile.Tools` 派生，顺序一致；`InputIDs` 为本次消费的 PendingInput IDs。`PlanningToken` 随 fold 的 Entry digest 序列或 Profile Digest 变化。
-
-**REF-PLN-5** 无附件时 TextPart 直接写入 sdk.Message。ReferencePart 经 ContextMaterializer 转换。
-
-**REF-PLN-6** 同一 Turn 有多个 Run attempt 时，参考 Planner 把全部 attempt 的 assistant 与 tool_result 按 commit 顺序纳入请求，包括失败 attempt 的部分输出与 status=`unknown` 的工具结果。这与用户中断后继续的语义一致。Application 可以替换为其他策略（例如排除 `AttemptView.End` 为 failed 的 attempt 的条目），策略只影响请求组装，不影响 stream 与 ContextFold。
-
-## 3. 用户正文
-
-同一份 canonical JSON：
-
-```text
-twilight/chatlog/input_submitted.Content
-run.AgentInput.Payload
-```
-
-**REF-INP-1** v1 形状为 `{"text":"<用户字符串>"}`。
-
-**REF-INP-2** `StartRequest.Inputs[i].ID` 等于已 submitted 的 InputID，`Payload` 等于该 Input 的 Content。`input_delivered` 把 InputID 挂到 TurnID；`twilight/run/input_accepted` 在同一 commit 把同一 payload 交给 Run。`Memory.SubmitText` 以 `NewInputID()`（随机、跨重启无碰撞）提交；需要外部幂等键的调用方使用 `SubmitInput`。
-
-**REF-INP-3** Planner 把 `{"text":...}` 投影为 sdk user text。
+**REF-INP-2** `StartRequest.Inputs[i].ID` 等于已 submitted 的 InputID，`Payload` 等于该 Input 的 Content。`input_delivered` 把 InputID 挂到 TurnID；`twilight/run/input_accepted` 在同一 commit 把同一 payload 交给 Run。
 
 ## 4. 驱动与 SessionDriver
 

@@ -195,7 +195,7 @@ type ToolStep struct {
 
 `Current` 是 Active 期间的内容。`Open` 是规划区间：可提交 `PrepareModelRequest`，`Next` 返回 `NeedModelRequest`。`ModelStep` 与 `ToolStep` 表示正在进行的步骤。`AcceptInput` 在任意非终态都被接受，只把输入追加到 `PendingInputs`；`PendingInputs` 是回合中途追加输入的持久化队列，在下一次 Prepare 时被一次消费。终态的 `Current` 为空；终态由 `Status` 表达，不另设 Current variant。Active 的 `Current` 不得为空。`Step` 仍只有 `ModelStep` 与 `ToolStep`，提供 `Ref()`。
 
-MachineState 不保存模型输出与工具输出本体。上一步的内容由 Planner 从 chatlog fold 读取（REF-PLN），MachineState 只提供 `LastToolStep` 作为 Run 边界事实。
+MachineState 不保存模型输出与工具输出本体。上一步的内容由 Planner 从 chatlog fold 读取（DEC-PLN），MachineState 只提供 `LastToolStep` 作为 Run 边界事实。
 
 终态 fact 使用 Go 的 sealed-union 形式，终态结构由合法的 RunEnd variant 构成：
 

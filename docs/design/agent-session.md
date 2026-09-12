@@ -6,7 +6,7 @@
 
 ## 0. 设计原则
 
-Twilight Session 是一个单写者、可接管、幂等提交的 Event-Sourced Aggregate：Event Stream 是事实的唯一权威，Writer 提供语义事务与串行化，kernel 只提供原子 append、ownership/fencing 与持久化，Projection 与 Snapshot 全部是可重建的派生状态。下列原则贯穿本文与 [Session Module Framework](agent-session-extension.md)、[Run](agent-run.md)、[Turn](agent-turn.md)、[Chatlog](agent-session-chatlog.md)、[Artifact](agent-artifact.md) 各规范；每条给出承载它的条款。
+Twilight Session 是一个单写者、可接管、幂等提交的 Event-Sourced Aggregate：Event Stream 是事实的唯一权威，Writer 提供语义事务与串行化，kernel 只提供原子 append、ownership/fencing 与持久化，Projection 与 Snapshot 全部是可重建的派生状态。下列原则贯穿本文与 [Session Module Framework](agent-session-extension.md)、[Decision](agent-decision.md)、[Run](agent-run.md)、[Turn](agent-turn.md)、[Chatlog](agent-session-chatlog.md)、[Artifact](agent-artifact.md) 各规范；每条给出承载它的条款。
 
 ```text
                   Session

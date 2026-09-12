@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/felinics/twilight/agent/artifact"
+	"github.com/felinics/twilight/agent/decision"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -35,6 +36,9 @@ type Options struct {
 	// Modules are application modules registered after the first-party three;
 	// each must carry its own non-twilight Source (EXT-REG-1).
 	Modules []extension.ModuleDescriptor
+	// Decisions resolve the PlannerRef and PolicyRef of registered Profiles
+	// (DEC-CAT); zero value selects decision.DefaultCatalogs().
+	Decisions decision.Catalogs
 	// ProjectionCache overrides where folded projection states are stored; nil
 	// asks the Store for a durable cache and falls back to an in-memory one.
 	ProjectionCache extension.ProjectionCache
@@ -107,7 +111,11 @@ func New(opts Options) (*Memory, error) {
 		return nil, err
 	}
 	m := &Memory{Store: store, Registry: registry, Writers: writers, Runtime: runtime, BindingStore: bindings, Ledger: ledger, now: now}
-	m.Agents = NewAgents(runtime, writersProjections{writers}, opts.Sink)
+	decisions := opts.Decisions
+	if decisions.Planners == nil && decisions.Policies == nil {
+		decisions = decision.DefaultCatalogs()
+	}
+	m.Agents = NewAgents(runtime, writersProjections{writers}, opts.Sink, decisions)
 	m.Coordinator = &turn.Coordinator{Writers: writers, Runtime: runtime, Now: now}
 	return m, nil
 }
@@ -149,7 +157,7 @@ func (m *Memory) Drive(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse
 // writersProjections reads projections through the Session's Writer.
 type writersProjections struct{ writers writer.Writers }
 
-func (p writersProjections) Load(ctx context.Context, sid session.SessionID, id extensionProjectionID, v extensionProjectionVersion) (any, session.Head, error) {
+func (p writersProjections) Load(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (any, session.Head, error) {
 	w, err := p.writers.Writer(ctx, sid)
 	if err != nil {
 		return nil, session.Head{}, err
@@ -196,7 +204,7 @@ func (m *Memory) Close(ctx context.Context) error { return writer.CloseWriters(c
 // SubmitInput writes twilight/chatlog/input_submitted for one user text and
 // returns the AgentInput a Start or Deliver hands to the Turn (REF-INP-2).
 func (m *Memory) SubmitInput(ctx context.Context, sid session.SessionID, id run.InputID, text string) (run.AgentInput, error) {
-	content := InputContent(text)
+	content := decision.InputContent(text)
 	w, err := m.Writers.Writer(ctx, sid)
 	if err != nil {
 		return run.AgentInput{}, err

@@ -208,7 +208,7 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 		t.Fatalf("second send = %+v", resp2)
 	}
 	// The new Turn's request carried the stopped Turn's assistant tool call and
-	// its unknown tool_result (REF-PLN-6), then the new input.
+	// its unknown tool_result (DEC-PLN-6), then the new input.
 	last := model.seen[len(model.seen)-1].Messages
 	if got := roles(last); len(got) != 5 || got[0] != "system" || got[1] != "user" || got[2] != "assistant" || got[3] != "tool" || got[4] != "user" {
 		t.Fatalf("roles = %v", got)

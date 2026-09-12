@@ -6,83 +6,41 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/felinics/twilight/agent/decision"
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
-	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/turn"
-	"github.com/felinics/twilight/sdk"
 )
 
-type PublicTool struct {
-	Ref        run.ToolRef        `json:"ref"`
-	Definition run.ToolDefinition `json:"definition"`
-	Policy     run.ResponsePolicy `json:"policy"`
-}
+// Profile, PublicTool and DigestProfile live in the turn module now
+// (TRN-PRF); these aliases keep the host package readable until it is
+// rewritten by role.
+type (
+	Profile          = turn.Profile
+	PublicTool       = turn.PublicTool
+	ProjectionSource = decision.ProjectionSource
+)
 
-// Profile is the public configuration of an Agent (REF-BND-1). Credentials
-// and clients stay in process; the Session records turn.ProfileRef{ID, Digest}.
-type Profile struct {
-	SchemaVersion uint16       `json:"schemaVersion"`
-	Model         run.ModelRef `json:"model"`
-	Tools         []PublicTool `json:"tools,omitempty"`
-	Streaming     bool         `json:"streaming,omitempty"`
-	// SystemPrompt tunes the conversation. It is outside the profile digest,
-	// so editing it never orphans a resumable Turn.
-	SystemPrompt string `json:"systemPrompt,omitempty"`
-}
-
-// DigestProfile covers the fields that change replay correctness:
-// SchemaVersion, Model, Tools and Streaming. SystemPrompt is excluded.
-func DigestProfile(p *Profile) (es.Digest, error) {
-	body := struct {
-		SchemaVersion uint16       `json:"schemaVersion"`
-		Model         run.ModelRef `json:"model"`
-		Tools         []PublicTool `json:"tools,omitempty"`
-		Streaming     bool         `json:"streaming,omitempty"`
-	}{p.SchemaVersion, p.Model, p.Tools, p.Streaming}
-	raw, err := es.EncodeTypedPayload(1, "twilight/ref/profile", body)
-	if err != nil {
-		return "", err
-	}
-	return es.DigestBytes(raw), nil
-}
-
-// ToolSpecs derives the frozen ToolSpecs and provider definitions of p, in
-// order (REF-PLN-4).
-func (p *Profile) ToolSpecs() ([]run.ToolSpec, []sdk.ToolDefinition, error) {
-	specs := make([]run.ToolSpec, 0, len(p.Tools))
-	defs := make([]sdk.ToolDefinition, 0, len(p.Tools))
-	for _, t := range p.Tools {
-		d, err := run.ProtocolV1().DigestToolDefinition(t.Definition)
-		if err != nil {
-			return nil, nil, err
-		}
-		specs = append(specs, run.ToolSpec{Ref: t.Ref, Name: t.Definition.Name, DefinitionDigest: d, Policy: t.Policy})
-		defs = append(defs, t.Definition.SDK())
-	}
-	return specs, defs, nil
-}
+// DigestProfile is turn.DigestProfile.
+func DigestProfile(p *Profile) (es.Digest, error) { return turn.DigestProfile(p) }
 
 // Agent is one registrable execution configuration: the durable Profile plus
-// the live capabilities that resolve it. Implement it directly for custom
-// catalogs, or build the common shape with NewAgent.
+// the live effect capabilities that resolve it. Implement it directly for
+// custom catalogs, or build the common shape with NewAgent.
 type Agent interface {
 	Profile() Profile
 	ResolveModel(run.ModelRef) (loop.ModelInvoker, error)
 	ResolveTool(run.ToolRef) (loop.ExecutableTool, error)
 }
 
-// PolicyProvider is optional: an Agent that tunes the Loop's execution policy.
-type PolicyProvider interface {
-	Policy() loop.ExecutionPolicy
-}
-
 type agentConfig struct {
 	tools        []loop.ExecutableTool
 	systemPrompt string
 	streaming    bool
-	policy       loop.ExecutionPolicy
+	planner      turn.PlannerRef
+	policy       turn.PolicyRef
+	workspace    turn.WorkspaceRef
 }
 
 type AgentOption func(*agentConfig)
@@ -101,25 +59,39 @@ func WithStreaming(on bool) AgentOption {
 	return func(c *agentConfig) { c.streaming = on }
 }
 
-func WithPolicy(p loop.ExecutionPolicy) AgentOption {
-	return func(c *agentConfig) { c.policy = p }
+// WithPlanner selects the decision component; the default is
+// decision.PlannerContextV1.
+func WithPlanner(ref turn.PlannerRef) AgentOption {
+	return func(c *agentConfig) { c.planner = ref }
+}
+
+// WithPolicy selects the execution policy by ref; the default is
+// decision.PolicyDefaultV1. The policy value itself comes from the
+// PolicyCatalog at registration.
+func WithPolicy(ref turn.PolicyRef) AgentOption {
+	return func(c *agentConfig) { c.policy = ref }
+}
+
+// WithWorkspace records the execution environment identity in the Profile.
+func WithWorkspace(ref turn.WorkspaceRef) AgentOption {
+	return func(c *agentConfig) { c.workspace = ref }
 }
 
 // NewAgent builds the common one-model Agent: the Profile is assembled from
-// the model ref and the tools' frozen definitions.
+// the model ref, the tools' frozen definitions and the default decision refs.
 func NewAgent(model run.ModelRef, invoker loop.ModelInvoker, opts ...AgentOption) (Agent, error) {
 	if model == "" || invoker == nil {
 		return nil, errors.New("ref: agent requires a model ref and an invoker")
 	}
-	var cfg agentConfig
+	cfg := agentConfig{planner: decision.PlannerContextV1, policy: decision.PolicyDefaultV1}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
 	a := &builtAgent{
-		profile: Profile{SchemaVersion: 1, Model: model, Streaming: cfg.streaming, SystemPrompt: cfg.systemPrompt},
+		profile: Profile{SchemaVersion: 1, Model: model, Streaming: cfg.streaming, SystemPrompt: cfg.systemPrompt,
+			Planner: cfg.planner, Policy: cfg.policy, Workspace: cfg.workspace},
 		invoker: invoker,
 		tools:   make(map[run.ToolRef]loop.ExecutableTool, len(cfg.tools)),
-		policy:  cfg.policy,
 	}
 	for _, t := range cfg.tools {
 		if _, dup := a.tools[t.Ref()]; dup {
@@ -132,6 +104,9 @@ func NewAgent(model run.ModelRef, invoker loop.ModelInvoker, opts ...AgentOption
 		a.profile.Tools = append(a.profile.Tools, PublicTool{Ref: t.Ref(), Definition: def, Policy: t.ResponsePolicy()})
 		a.tools[t.Ref()] = t
 	}
+	if err := turn.ValidateProfile(&a.profile); err != nil {
+		return nil, err
+	}
 	return a, nil
 }
 
@@ -139,7 +114,6 @@ type builtAgent struct {
 	profile Profile
 	invoker loop.ModelInvoker
 	tools   map[run.ToolRef]loop.ExecutableTool
-	policy  loop.ExecutionPolicy
 }
 
 func (a *builtAgent) Profile() Profile { return a.profile }
@@ -153,8 +127,6 @@ func (a *builtAgent) ResolveTool(r run.ToolRef) (loop.ExecutableTool, error) {
 	}
 	return t, nil
 }
-
-func (a *builtAgent) Policy() loop.ExecutionPolicy { return a.policy }
 
 // ErrProfileUnavailable reports that the persisted profile cannot be resolved
 // by this process (REF-BND-2).
@@ -188,14 +160,15 @@ type ProfileRegistry interface {
 	Resolve(turn.ProfileRef) (RunDriver, error)
 }
 
-// Agents is the in-process ProfileRegistry (REF-BND-2). Register builds
-// one long-lived Loop per registration, so every drive of a profile shares
-// the already-driving guard: a second local driver of a running Run reports
-// ErrAlreadyDriving instead of racing the first.
+// Agents is the in-process ProfileRegistry (REF-BND-2). Register resolves the
+// Profile's decision components through the catalogs, builds one long-lived
+// Loop per registration, and every drive of a profile shares that Loop's
+// already-driving guard.
 type Agents struct {
 	runtime     run.Runtime
 	projections ProjectionSource
 	sink        loop.EventSink
+	decisions   decision.Catalogs
 
 	mu   sync.RWMutex
 	byID map[turn.ProfileID]registeredAgent
@@ -206,34 +179,30 @@ type registeredAgent struct {
 	driver RunDriver
 }
 
-// ProjectionSource is what the planner reads context from.
-type ProjectionSource interface {
-	Load(ctx context.Context, sid session.SessionID, id extensionProjectionID, v extensionProjectionVersion) (any, session.Head, error)
+// NewAgents builds the registry; decisions resolve PlannerRef and PolicyRef
+// at registration (DEC-CAT-2).
+func NewAgents(runtime run.Runtime, projections ProjectionSource, sink loop.EventSink, decisions decision.Catalogs) *Agents {
+	return &Agents{runtime: runtime, projections: projections, sink: sink, decisions: decisions, byID: map[turn.ProfileID]registeredAgent{}}
 }
 
-func NewAgents(runtime run.Runtime, projections ProjectionSource, sink loop.EventSink) *Agents {
-	return &Agents{runtime: runtime, projections: projections, sink: sink, byID: map[turn.ProfileID]registeredAgent{}}
-}
-
-// Register stores an agent, builds its driver and returns the ref the Session
-// records.
+// Register validates the Profile, resolves its decision components, builds
+// the driver and returns the ref the Session records.
 func (r *Agents) Register(id turn.ProfileID, agent Agent) (turn.ProfileRef, error) {
 	if id == "" || agent == nil {
 		return turn.ProfileRef{}, errors.New("ref: register requires an id and an agent")
 	}
 	p := agent.Profile()
-	if p.Model == "" || p.SchemaVersion == 0 {
-		return turn.ProfileRef{}, errors.New("ref: profile requires model and schemaVersion")
+	if err := turn.ValidateProfile(&p); err != nil {
+		return turn.ProfileRef{}, err
 	}
-	digest, err := DigestProfile(&p)
+	digest, err := turn.DigestProfile(&p)
 	if err != nil {
 		return turn.ProfileRef{}, err
 	}
-	var policy loop.ExecutionPolicy
-	if pp, ok := agent.(PolicyProvider); ok {
-		policy = pp.Policy()
+	planner, policy, err := r.decisions.Resolve(p, r.projections)
+	if err != nil {
+		return turn.ProfileRef{}, err
 	}
-	planner := &ContextPlanner{Projections: r.projections, Profile: p}
 	l, err := loop.New(agent, agent, planner, policy, p.Streaming)
 	if err != nil {
 		return turn.ProfileRef{}, err
@@ -272,7 +241,7 @@ func (r *Agents) lookup(ref turn.ProfileRef) (registeredAgent, error) {
 		return registeredAgent{}, fmt.Errorf("ref: unknown profile %s", ref.ID)
 	}
 	p := reg.agent.Profile()
-	digest, err := DigestProfile(&p)
+	digest, err := turn.DigestProfile(&p)
 	if err != nil {
 		return registeredAgent{}, err
 	}

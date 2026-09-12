@@ -43,7 +43,7 @@ type CheckpointID string
 | Summary | `summary` | 无 | 随 checkpoint 失效 | checkpoint 的摘要正文 |
 | Checkpoint | `checkpoint_created` | 无 | invalidated | 指向已有 Seq |
 
-**CHT-LIF-1** reducer 拒绝 identity mutation、非法状态迁移、replacement conflict 与重复 ID。模型步骤进行中走 EventSink；定稿随 `ModelStepCompleted` / `ToolCallCompleted` 等 Run 事实同组写入 `assistant` 或 `tool_result`。同一 Turn 的多个 Run attempt 各自产生 assistant 与 tool_result，全部保留在 stream 中并出现在 ContextFold 的输出里；哪些条目进入模型请求由 Planner 决定（TRN-RTY-3、REF-PLN-6），本模块不作取舍。
+**CHT-LIF-1** reducer 拒绝 identity mutation、非法状态迁移、replacement conflict 与重复 ID。模型步骤进行中走 EventSink；定稿随 `ModelStepCompleted` / `ToolCallCompleted` 等 Run 事实同组写入 `assistant` 或 `tool_result`。同一 Turn 的多个 Run attempt 各自产生 assistant 与 tool_result，全部保留在 stream 中并出现在 ContextFold 的输出里；哪些条目进入模型请求由 Planner 决定（TRN-RTY-3、DEC-PLN-6），本模块不作取舍。
 
 ## 3. parts 与条目
 
