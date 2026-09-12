@@ -88,6 +88,11 @@ type Resolver interface {
 }
 type Store interface { Put(context.Context, PutRequest) (Ref, error) }
 type Promoter interface { Promote(context.Context, Ref, PromoteRequest) (Ref, error) }
+// ContentStore 是一个 Authority 的完整 capability 集合。
+type ContentStore interface { Resolver; Store; Promoter }
+// CopyPromoter 是跨 store 的 promotion：从 Source resolve，以目标 durability Put 进 Target，
+// 校验两侧 integrity 一致后返回目标 Ref。
+type CopyPromoter struct { Source Resolver; Target Store }
 type BindingResolver interface { ResolveBinding(context.Context, BindingID) (Binding, error) }
 type BindingStore interface {
     CreateBinding(context.Context, Binding) (Binding, error)
@@ -97,13 +102,13 @@ type BindingStore interface {
 
 **ART-BND-1** Binding immutable。`BindingDigest` 覆盖 versioned domain separator、BindingID 和完整 RefWireIdentity。相同 BindingID 只可重建逐字段相同的 Binding；其他值为 conflict。
 
-**ART-BND-2** Resolver 必须验证返回 bytes 与声明的 size/integrity 一致。Store 只有在 durable acknowledgement 后返回 Ref；同 immutable identity 和 bytes 的重复 Put 幂等。promotion 流程为 `resolve → promote → CreateBinding(target Ref)`，不得重写旧 Binding。
+**ART-BND-2** Resolver 必须验证返回 bytes 与声明的 size/integrity 一致，Ref 声明的 MediaType 与存储时的声明不一致同样以 `corrupt` 拒绝。Store 只有在 durable acknowledgement 后返回 Ref；同 immutable identity 和 bytes 的重复 Put 幂等，同 bytes 以另一 MediaType 重复 Put 为 `conflict`。`Ephemeral` Put 返回的 Ref 是否携带 `ExpiresAtUnixMilli` 及其时长由 Store 的部署参数决定；`EventBound` 与 `Pinned` 的 Ref 不携带。promotion 流程为 `resolve → promote → CreateBinding(target Ref)`，不得重写旧 Binding；promote 产生的 Ref 与源 Ref 指向同一内容（integrity 相等），durability 不低于源，且离开 `Ephemeral` 后不再过期。同一 store 内的 promote 只提升 durability；跨 store 的 promote 经 `CopyPromoter` 复制字节。
 
 ## 4. capability interfaces
 
 **ART-CAP-1** Resolver、Store、Promoter 是 capability boundary：它们必须区分 `missing`、`expired`、`unauthorized`、`corrupt` 和 transient failure，并防护跨 `Authority` key confusion、path traversal、size amplification 与不安全 media-type trust。
 
-**ART-CAP-2** `Scheme` 是 resolution contract；`Authority` 是逻辑 store instance；`Key` 由 scheme 解释。标准 scheme 为 `cas`（content digest）、`spill`（opaque temporary key）和 `workspace`（immutable revision + canonical path）。自定义 scheme 使用 `ext:<module-id>/<name>`，发布后不得破坏其 key、integrity、durability 或 resolution contract。
+**ART-CAP-2** `Scheme` 是 resolution contract；`Authority` 是逻辑 store instance；`Key` 由 scheme 解释。标准 scheme 为 `cas`（content digest）、`spill`（opaque temporary key）和 `workspace`（immutable revision + canonical path）。`cas` 的 Key 为 `<algorithm>:<hex>`，与 Ref 的 Integrity 逐字相等；Put 的幂等与 Resolver 的 `missing`/`corrupt` 判定都以它为准。一个 Resolver 只服务自己的 Authority：另一 Authority 的 Ref 返回 `unauthorized`，未实现的 scheme 返回 `unsupported`。自定义 scheme 使用 `ext:<module-id>/<name>`，发布后不得破坏其 key、integrity、durability 或 resolution contract。
 
 ## 5. retention ledger
 
@@ -126,7 +131,8 @@ type RetentionClaim struct {
 }
 type ClaimCursor struct { Watermark ClaimID; After ClaimID }
 type ClaimPage struct { Items []RetentionClaim; Next *ClaimCursor }
-type ClaimOwnerQuery struct { Kind, Authority string; Identities []string }
+// Identities 为 nil 选中该 (Kind, Authority) 下的全部 owner；Limit 为页大小，0 取实现默认值。
+type ClaimOwnerQuery struct { Kind, Authority string; Identities []string; Limit int }
 
 // RetentionLedger 自行持久化（Memory、文件或数据库），不依赖宿主事务。
 type RetentionLedger interface {
@@ -158,7 +164,7 @@ type OwnerVerifier interface {
 | ReleaseActive | Released | 幂等成功 |
 | ReleaseActive | 不存在 | not found |
 
-**ART-RET-3** `ClaimsByOwner` 使用 watermark cursor，按 ClaimID 稳定排序；空 owner identities 不匹配。回收前核对：GC 在按 Active claim 计算 root 之前，对每个 Active claim 调用 `OwnerVerifier.OwnerExists`，不存在则 `ReleaseActive`；这一步清理 EXT-WRT-3 顺序下可能留下的孤儿 claim。核对只能在该 owner 的写入路径不可能仍在进行时执行：Session 部署中即该 Session 没有进行中的 `Writer.Commit`，在 `OpenWriter` 完成日志重建之后、接受第一个 Commit 之前对该 Session 的 claim 核对一次，运行期的核对必须与 Writer 互斥。`ReleaseActive` 的另一种授权（owner retention 已结束）由 Application 的 GC policy 提供。
+**ART-RET-3** `ClaimsByOwner` 按 ClaimID 稳定排序枚举匹配 owner 的全部状态的 claim（按状态筛选由调用者做），使用 watermark cursor：零值 cursor 开始一次枚举，第一页把 `Watermark` 固定为当时最大的 ClaimID，之后的页只返回 `After` 之后、`Watermark` 之内的 claim，枚举期间新 Activate 的 claim 不进入本次结果；`Next` 为 nil 表示枚举结束。`Identities` 为 nil 匹配该 (Kind, Authority) 下全部 owner，显式列表只匹配其成员，空 owner identity 不匹配任何 claim；Kind 或 Authority 为空是 `invalid`。回收前核对：GC 在按 Active claim 计算 root 之前，对每个 Active claim 调用 `OwnerVerifier.OwnerExists`，不存在则 `ReleaseActive`；这一步清理 EXT-WRT-3 顺序下可能留下的孤儿 claim。核对只能在该 owner 的写入路径不可能仍在进行时执行：Session 部署中即该 Session 没有进行中的 `Writer.Commit`，在 `OpenWriter` 完成日志重建之后、接受第一个 Commit 之前对该 Session 的 claim 核对一次，运行期的核对必须与 Writer 互斥。`ReleaseActive` 的另一种授权（owner retention 已结束）由 Application 的 GC policy 提供。
 
 ## 6. provider 与 scheme boundary
 
@@ -173,9 +179,15 @@ type ProviderDescriptor struct {
 type ProviderBinding struct {
     Scheme Scheme; Authority Authority; InstanceID ProviderInstanceID
 }
+type Registry struct { /* immutable indexes */ }
+func BuildRegistry(schemes []SchemeDefinition, bindings []ProviderBinding) (*Registry, error)
+func (r *Registry) Scheme(Scheme) (SchemeDefinition, bool)
+func (r *Registry) Provider(Scheme, Authority) (ProviderBinding, bool)
+func (r *Registry) Verify(Ref) error
+func CASScheme() SchemeDefinition // 标准 cas 定义：全部 durability，Key 等于 Integrity
 ```
 
-**ART-PRO-1** registry 在 startup 组合后 immutable；每个 Scheme 有唯一 definition，verified use 需要已注册 Scheme 和唯一 `(Scheme,Authority)` provider binding。provider config、secret、物理位置与迁移属于 adapter/Application。
+**ART-PRO-1** registry 在 startup 组合后 immutable；每个 Scheme 有唯一 definition（重复为 `conflict`），provider binding 只能指向已注册的 Scheme（否则 `invalid`），`(Scheme, Authority)` 唯一（重复为 `conflict`）。verified use（`Verify`）要求：Ref 自身合法、Scheme 已注册且支持该 durability、通过 scheme 自己的 `ValidateRef`、`(Scheme, Authority)` 有 provider binding（缺失为 `unavailable`）。未注册 Scheme 的 Ref 返回 `unsupported` 而非 `invalid`，使 GC 等调用者能按 ART-RET-2 保守保留它。provider config、secret、物理位置与迁移属于 adapter/Application。
 
 ## 7. archive 与 import/export
 
@@ -221,9 +233,9 @@ func (Error) Error() string
 
 实现必须以可判别 `ErrorCode` 返回预期失败；`Detail` 不得承载 provider secret。
 
-v1 conformance 必须验证：
+conformance suite 为 `agent/artifact/artifacttest`，以 `BindingStore`、`RetentionLedger`（经 `BindingSetBuilder` 验证 set）与按 Authority 构造 `ContentStore` 的工厂为参数；每个 adapter 以自己的工厂运行同一套断言。它必须验证：
 
 - **ART-ID-1、ART-REF-1、ART-REF-2、ART-WIR-1**：canonical round-trip、拒绝歧义 wire、identity-bound/untrusted MediaType、locator/integrity 和 durability；
-- **ART-BND-1、ART-BND-2、ART-CAP-1**：Binding conflict、promotion、resolver integrity 和 capability errors；
+- **ART-BND-1、ART-BND-2、ART-CAP-1、ART-CAP-2**：Binding conflict 与 digest 校验、cas Key 等于 Integrity、Put 幂等与 MediaType conflict、resolver 对 size/integrity/MediaType 的校验、`missing`/`expired`/`unauthorized`/`corrupt`/`unsupported` 分类、同 store 与跨 store 的 promotion（不降级、清除过期、不重写旧 Binding）；
 - **ART-RET-1、ART-RET-2、ART-RET-3**：BindingSetBuilder/ledger 独立重算与精确验证、RefSetDigest、不可复用 released claim、两态状态表、`Activate` 返回即持久且幂等、owner 不存在的 Active claim 被回收前核对释放而 owner 存在的不受影响、cursor pagination、Active GC protection；
 - **ART-PRO-1**：immutable registry 与 provider-instance isolation。

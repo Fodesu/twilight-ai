@@ -105,7 +105,7 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 | 文件 adapter（`agent/session/filestore`）的持久化投影缓存（`Store.ProjectionCache()`，`<sid>/projections/<id>/<v>.json`）与跨进程重启 conformance | 完成，2026-09-10；`agent/ref` 经 `ProjectionCacheProvider` 选中它 |
 | 提交历史索引归 kernel（SES-REP-3/4）：Writer 不再持有 CommitID → 行的索引，文件 adapter 记录每组的字节区间并按区间读取 | 完成，2026-09-10；重开后 Writer 的常驻内存与日志长度无关（守卫见 `agent/session/writer/retained_test.go`），query conformance 由内存与文件两个 adapter 同跑 |
 | `agent/session/chatlog`（事件、parts codec、Surface、Context） | 完成，2026-09-07；checkpoint 完成，2026-09-09（CHT-EVT-3 转正，宿主策略见 REF-CKP-1/2） |
-| `agent/artifact`（Ref、Binding、Memory BindingStore、两态 KV ledger） | 完成，2026-09-07；Resolver/Store/Promoter 未实现 |
+| `agent/artifact`（Ref、Binding、Memory BindingStore、两态 ledger、Resolver/Store/Promoter、scheme registry） | 完成，2026-09-07；Resolver/Store/Promoter（Memory cas `ContentStore`、`CopyPromoter`）、`ClaimsByOwner` watermark 分页、`Registry`/`CASScheme` 与 `artifacttest` conformance 完成，2026-09-12 |
 | `agent/session/run`（module descriptor、machine 投影、Runtime、RecoverExpired） | 完成，2026-09-07 |
 | `agent/run/loop` 绑定 Session（`Run(ctx, runtime, sessionID, runID, sink)`、RunPosition、SessionCommit 观察） | 完成，2026-09-07 |
 | `agent/turn` 重写（Coordinator、CompanionV1、surface 投影） | 完成，2026-09-07；旧实现已删除 |
@@ -121,8 +121,8 @@ run、turn、chatlog 三个模块构成一个 agent 领域，耦合方向固定�
 | `agent/jsonstable` JCS 契约测试（键序、binary64 数字格式、拒绝面、canonical-by-construction） | 完成，2026-09-10；`Value` 仅未导出 `raw`，唯一赋值点在 `Parse` 内 |
 | Fork、ancestry、canonical import（agent-session.md 第 8 节） | 未实现；kernel 当前拒绝非 nil `ParentFork` |
 | `agent/session/chatlog` 开放项 | wire field names、输入 limits、golden fixtures 未冻结 |
-| `agent/artifact` | Ref、Binding、Memory BindingStore、BindingSetBuilder、两态 ledger 完成；Resolver、Store、Promoter、scheme registry 未实现 |
-| `agent/artifact` 保留子系统（claim、ledger、Reconcile） | 尚无真实内容存储与 GC 消费者；conformance 随第一个真实内容存储冻结，在此之前允许修订；`Prepared` 状态、provider 迁移 fence、archive import/export 未实现 |
+| `agent/artifact` | Ref、Binding、Memory BindingStore、BindingSetBuilder、两态 ledger、Memory cas ContentStore（Resolver/Store/Promoter）、CopyPromoter、Registry 完成；文件后端的内容存储未实现 |
+| `agent/artifact` 保留子系统（claim、ledger、Reconcile） | conformance（`artifacttest`）已随 Memory 内容存储落地；GC 消费者、`Prepared` 状态、provider 迁移 fence、archive import/export 未实现 |
 | `agent/turn` 第 8 节 conformance | 部分实现，当前由 `agent/ref` 的测试覆盖 Start、Deliver、Stop 与新 Turn 的开启 |
 
 2026-09-07 的代码行是第 8 节修订前的形态，已于 2026-09-08 按第 8 节重写。当前正式调用形态为 `agent/ref` 的 Memory 组装：`ref.New` 返回 Store、Registry、Writers、Runtime、Coordinator 与 Agents；宿主对每个 Session 先 `Memory.Open`（取所有权并接管处置）再经 `SessionDriver.Send` 投递输入。Coordinator 只做协议提交与状态读取（Status），驱动编排（解析 profile、调用 driver、组装结果、取消）在宿主层的 `Memory.Drive`（REF-DRV-1）。Loop 不保存 authority state；Runtime 不读取 queue 或 planner context。

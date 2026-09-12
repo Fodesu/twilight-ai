@@ -279,14 +279,66 @@ func SortedUniqueBindingIDs(ids []BindingID) []BindingID {
 	return out[:n]
 }
 
+// ClaimOwnerQuery selects claims by owner (ART-RET-3). Identities nil selects
+// every owner of the Kind under the Authority; an explicit list selects those
+// owners only, and an empty identity in it matches nothing. Limit is the page
+// size, 0 meaning DefaultClaimPageSize.
+type ClaimOwnerQuery struct {
+	Kind       string
+	Authority  string
+	Identities []string
+	Limit      int
+}
+
+// ClaimCursor pages ClaimsByOwner. Watermark is the highest ClaimID the
+// enumeration covers, fixed on the first page so claims activated while paging
+// are excluded; After is the last ClaimID returned. The zero cursor starts an
+// enumeration.
+type ClaimCursor struct {
+	Watermark ClaimID
+	After     ClaimID
+}
+
+// ClaimPage is one page of ClaimsByOwner; Next is nil once exhausted.
+type ClaimPage struct {
+	Items []RetentionClaim
+	Next  *ClaimCursor
+}
+
+// DefaultClaimPageSize is the ClaimsByOwner page size when the query gives none.
+const DefaultClaimPageSize = 256
+
 // RetentionLedger keeps Active/Released claims (ART-RET-2). It persists
 // itself; Activate returns only once the claim is durable.
 type RetentionLedger interface {
 	Activate(context.Context, ClaimID, ClaimOwner, BindingSet) (RetentionClaim, error)
 	LookupClaim(context.Context, ClaimID) (RetentionClaim, bool, error)
 	ReleaseActive(context.Context, ClaimID) error
-	// ActiveClaims lists Active claims of every owner in scope, ordered by ClaimID.
-	ActiveClaims(context.Context, ClaimOwnerScope) ([]RetentionClaim, error)
+	// ClaimsByOwner enumerates the matching claims of every state in stable
+	// ClaimID order under a watermark cursor (ART-RET-3).
+	ClaimsByOwner(context.Context, ClaimOwnerQuery, ClaimCursor) (ClaimPage, error)
+}
+
+// ActiveClaims drains ClaimsByOwner for the scope and keeps the Active claims,
+// in ClaimID order.
+func ActiveClaims(ctx context.Context, ledger RetentionLedger, scope ClaimOwnerScope) ([]RetentionClaim, error) {
+	var out []RetentionClaim
+	cursor := ClaimCursor{}
+	for {
+		page, err := ledger.ClaimsByOwner(ctx, ClaimOwnerQuery{Kind: scope.Kind, Authority: scope.Authority}, cursor)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range page.Items {
+			if c.State == ClaimActive {
+				out = append(out, c)
+			}
+		}
+		if page.Next == nil {
+			return out, nil
+		}
+		cursor = *page.Next
+	}
 }
 
 // OwnerVerifier is supplied by the owner's host: does the owner fact exist?
@@ -297,7 +349,7 @@ type OwnerVerifier interface {
 // Reconcile releases Active claims in scope whose owner no longer exists
 // (ART-RET-3). The caller guarantees no owner write in scope is in flight.
 func Reconcile(ctx context.Context, ledger RetentionLedger, scope ClaimOwnerScope, verifier OwnerVerifier) (int, error) {
-	claims, err := ledger.ActiveClaims(ctx, scope)
+	claims, err := ActiveClaims(ctx, ledger, scope)
 	if err != nil {
 		return 0, err
 	}
@@ -387,20 +439,67 @@ func (l *MemoryLedger) ReleaseActive(ctx context.Context, id ClaimID) error {
 	return nil
 }
 
-func (l *MemoryLedger) ActiveClaims(ctx context.Context, scope ClaimOwnerScope) ([]RetentionClaim, error) {
+func (l *MemoryLedger) ClaimsByOwner(ctx context.Context, q ClaimOwnerQuery, cursor ClaimCursor) (ClaimPage, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return ClaimPage{}, err
+	}
+	if q.Kind == "" || q.Authority == "" {
+		return ClaimPage{}, &Error{Code: ErrInvalid, Operation: "claims_by_owner", Detail: "empty owner kind or authority"}
+	}
+	limit := q.Limit
+	if limit <= 0 {
+		limit = DefaultClaimPageSize
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	var out []RetentionClaim
+	var matched []RetentionClaim
 	for _, c := range l.claims {
-		if c.State == ClaimActive && c.Owner.Kind == scope.Kind && c.Owner.Authority == scope.Authority {
-			out = append(out, c)
+		if c.Owner.Kind == q.Kind && c.Owner.Authority == q.Authority && q.matchesIdentity(c.Owner.Identity) {
+			matched = append(matched, c)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
-	return out, nil
+	sort.Slice(matched, func(i, j int) bool { return matched[i].ID < matched[j].ID })
+	return pageClaims(matched, cursor, limit), nil
+}
+
+// matchesIdentity is ART-RET-3: nil selects every identity, an explicit list
+// selects its members, and an empty identity never matches.
+func (q ClaimOwnerQuery) matchesIdentity(identity string) bool {
+	if identity == "" {
+		return false
+	}
+	if q.Identities == nil {
+		return true
+	}
+	for _, want := range q.Identities {
+		if want != "" && want == identity {
+			return true
+		}
+	}
+	return false
+}
+
+// pageClaims applies the watermark cursor to claims sorted by ClaimID: the
+// first page fixes the watermark at the last ID present, later pages return
+// IDs after the cursor and never past the watermark.
+func pageClaims(sorted []RetentionClaim, cursor ClaimCursor, limit int) ClaimPage {
+	if cursor.Watermark == "" {
+		if len(sorted) == 0 {
+			return ClaimPage{}
+		}
+		cursor.Watermark = sorted[len(sorted)-1].ID
+	}
+	var items []RetentionClaim
+	for _, c := range sorted {
+		if c.ID <= cursor.After || c.ID > cursor.Watermark {
+			continue
+		}
+		if len(items) == limit {
+			return ClaimPage{Items: items, Next: &ClaimCursor{Watermark: cursor.Watermark, After: items[len(items)-1].ID}}
+		}
+		items = append(items, c)
+	}
+	return ClaimPage{Items: items}
 }
 
 func sameSet(a, b BindingSet) bool {
