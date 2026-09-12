@@ -287,11 +287,14 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 
 ## 8. conformance
 
-- **TRN-SCP-1 至 TRN-SCP-6**：一 Turn 至多一个非终态 Run、Source `twilight`、ModuleID `turn`、无隐藏状态、run 不依赖 turn；
-- **TRN-ID-1 至 TRN-EVT-3**：所列 EventType、`twilight/turn/plan`、`twilight/turn/run` 派生 RunID、每 Turn 至多一条结算事件、不同时间戳的重试幂等；
-- **TRN-PRJ-1**：surface 状态机，`active` 与 `attempt_failed` 的判定，`AttemptView.End` 来自 `run/ended`，`InputIDs` 含 Deliver 追加的输入；
-- **TRN-STR-1 至 TRN-RTY-3**：Start group 顺序与原子性、Input 状态与 Content 核对、Retry 前置条件与全部已 delivered 输入的重放、Attempt 递增、幂等 CommitID、失败 attempt 内容保留在 stream；
-- **TRN-DLV-1 至 TRN-DLV-3**：Deliver 前置条件、`input_accepted` 与 `input_delivered` 同 commit、Run 在 Executing 与 Waiting 时的输入入队、与最后一步结果并发时的两种定序结果、不打断进行中的调用；
-- **TRN-STA-1 至 TRN-STL-1**：Status disposition 判定、Stop 以 Attach 单 commit 结算、Application 的 Cancel 进入 `attempt_failed`、Settle 前置条件；
-- **TRN-CMP-1 至 TRN-MAP-4**：companion 纯函数、v1 映射表、`SourceDigest` 等于 Run fact 记录值、companion 中的 ReferencePart 经 admission 并建立 claim、同组可见性；
-- **TRN-REC-1 至 TRN-REC-3**：上表恢复情形、新 Writer 接管后 `RecoverInterrupted` 再由宿主 Drive、`ErrOwnershipLost` 后本进程放弃、无跨存储对账。
+套件以 `session.Store` 为参数（`agent/turn/turntest`），Memory 与每个 durable adapter 跑同一组断言。Coordinator 只做提交与读取，因此套件不含 Loop、driver、模型或工具桩：Run 的推进由 `run.Runtime` 的 command 提交完成，Application 的 `CancelRun` 制造 `attempt_failed`，`SubmitModelResult` 制造 completed 与 approval 等待。
+
+- **TRN-STR-1 至 TRN-STR-4、TRN-ID-2/3/4、TRN-EVT-2**：缺 profile 或 companion、重复 InputID、未 submitted 的输入、Payload 与 Content 不符各自被拒且不写入；Start 的 group 为 `started`、每输入一条 `input_delivered`、`created{Owner:TurnID, Attempt:1}`、每输入一条 `input_accepted`，CommitID 为 StartOperationDigest，RunID 为 `twilight/turn/run` 派生值；响应为 `active`、attempt 1、无 disposition；不同时间戳的重放为 already-applied 且不写入；同 TurnID 的另一 plan 与第二个活跃 Turn 为 conflict，被拒输入保持 `submitted`。
+- **TRN-DLV-1、TRN-DLV-2**：`input_accepted` 与 `input_delivered` 在以 input CommandID 为 CommitID 的同一 commit；Run 的 `PendingInputs` 与 surface 的 `InputIDs` 追加该输入；重放不写入；不存在或非 `active` 的 Turn 为 conflict 且输入保持 `submitted`；多条输入逐条 commit，后一条被拒时前一条已 delivered。
+- **TRN-RTY-1、TRN-RTY-2、TRN-RTY-3**：`active` 或不存在的 Turn 为 conflict；`attempt_failed` 的 Turn 得到 attempt n+1、`twilight/turn/retry` 派生的 CommitID、`created` 加全部已 delivered 输入按 `InputIDs` 顺序的 `input_accepted`（payload 同首次）；surface 的 `InputIDs` 不重复；失败 attempt 的行原样保留，其 Record 仍可读；重试后 Turn 为 `active`，再次 Retry 为 conflict。
+- **TRN-STP-1、TRN-STP-2、TRN-STL-1、TRN-EVT-3**：Stop 的 `CancelRun` 与 `failed{stopped, cancelled}` 在以 Cancel CommandID 为 CommitID 的同一 commit，其中含 `run_ended`；Settle 需要 `attempt_failed`，写 `failed{failed, FailureClass}`，CommitID 为 `twilight/turn/settle` 派生值；已结算（stopped、failed、completed）的 Turn 上 Stop、Retry、Settle、Deliver 一律 conflict；completed 由 companion 在 Run 终结的同一组写入。
+- **TRN-STA-1、TRN-API-3**：Open 的 Run 无 disposition 与 Waiting；模型 Executing 为 `waiting_for_recovery`；approval 调用为 `waiting_for_response` 且 `Waiting` 含该请求；completed 与 Application 取消的 Run 为 `finished`，`End` 分别为 completed 与 stopped；不存在的 Turn 为 conflict。
+- **TRN-PRJ-1、TRN-EVT-3、TRN-SCP-2/3**：Owner 不是本 Session Turn 的 Run 不进入 surface；第二条 `started`、未知 Turn 的结算、第二次结算、结算后的 `completed` 在 fold 阶段被拒且不写入；`run_ended` 写入 `AttemptView.End` 并使未结算 Turn 进入 `attempt_failed`、清空 `ActiveRun`；`Order` 按 started 顺序；结算后的 Session 没有活跃 Turn。
+- **TRN-REC-1、TRN-REC-2、TRN-SCP-3**：`started` 提交后接管，`RecoverInterrupted` 处置 0 个目标，Status 仅从投影重建为 `active`；模型 Executing 时接管，处置 1 个目标后 disposition 不再是 `waiting_for_recovery`；被替代的 Coordinator 的 Deliver 得到 `ErrOwnershipLost` 且不改变输入状态，新 owner 的 Deliver 成功。
+- **TRN-CMP-1 至 TRN-MAP-4**：companion 纯函数、v1 映射表、`SourceDigest` 等于 Run fact 记录值、companion 中的 ReferencePart 经 admission 并建立 claim、同组可见性，由 RUN-CMP-2 套件经 Runtime 的组构成观察。
+- **TRN-DLV-3** 的并发定序（输入与最后一步结果的两种先后）由 Writer 串行保证，单进程套件不构造并发，以 Deliver 对已终结 Run 的 `completed` 响应作为可观察结果。
