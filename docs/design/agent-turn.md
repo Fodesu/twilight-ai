@@ -24,11 +24,12 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 
 | 动作 | 语义 | RunID |
 |---|---|---|
-| resume | 继续一个非终态 Run（进程重启、lease 恢复、Waiting 响应后） | 不变 |
+| resume | 继续一个非终态 Run（进程重启、接管、Waiting 响应后） | 不变 |
 | retry | 前一 Run 已终结且未 completed，同一 Turn 再开一个 attempt | 新 RunID，`Attempt` 加 1 |
 | replace | 输入内容被替换，`twilight/turn/superseded` 指向新 Turn | 新 Turn、新 RunID |
+| regenerate | 已 completed 的回答需要重新生成：新 Turn（可经 `superseded` 关联）或 Session fork；原 Turn 不变 | 新 Turn、新 RunID，或新 stream |
 
-subagent 使用独立 Session 与独立 Turn。
+四种动作的持久性语义在第 7 节 TRN-DUR-1 至 4 逐条区分。subagent 使用独立 Session 与独立 Turn。
 
 **TRN-SCP-3** Coordinator 没有隐藏状态。它从 `twilight/turn/surface` 投影与 `twilight/run/machine` 投影重建。
 
@@ -266,6 +267,27 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 
 ## 7. recovery
 
+### 7.1 Run 的持久性语义
+
+下面四条区分四种表面相似、语义不同的情形。它们的差别只在两个问题上：哪个身份保持不变，谁做出决定。
+
+| 情形 | 保持不变 | 新建 | 决定者 |
+|---|---|---|---|
+| 进程崩溃 / 所有权丢失 | Turn、Run、attempt | 无 | 无人：接管处置是协议动作 |
+| 语义重试 | Turn | Run（attempt 加 1） | Application |
+| 重新生成已提交的回答 | 原 Turn 与其回答 | Turn，或 Session 分支 | Application |
+| 外部工具执行中且 owner 丢失 | Turn、Run、该 call 的 Unknown 事实 | 无 | 模型或 Application，从不自动 |
+
+**TRN-DUR-1（崩溃恢复同一 Run）** 进程崩溃或所有权丢失不结束 Run，也不创建 attempt。新 owner 的 `RecoverInterrupted`（RUN-CMT-7）对 Executing 的目标做一次性处置——模型步回到 Prepared，以同一 `RequestDigest` 的冻结请求继续；工具 call 记 Unknown——之后同一 RunID 在同一 Turn 下由宿主 Drive 继续。恢复不改变 Run 的身份、attempt 号或已提交的任何事实。
+
+**TRN-DUR-2（语义重试是新 Run、同一 Turn）** 只有 Run 已终结且未 completed、Turn 处于 `attempt_failed` 时才存在 Retry；Retry 创建 attempt n+1、新 RunID，同一 Turn，重新接受该 Turn 已 delivered 的全部输入（TRN-RTY-1）。协议从不自动 Retry：崩溃恢复走 TRN-DUR-1，Retry 是 Application 的显式决定。失败 attempt 的 assistant 与 tool_result 保留在 stream 中，是否进入新 attempt 的模型请求由 Planner 决定（TRN-RTY-3）。
+
+**TRN-DUR-3（重新生成已提交的回答是新 Turn 或分支）** 已 completed 的 Turn 及其回答是不可变事实：不存在"修改回答""重开同一 Turn"或"对 completed Turn 再开 attempt"。`Start` 要求输入处于 `submitted`（TRN-STR-1），已 delivered 的输入不能再次开 Turn，因此重新生成只有两种形态：(a) 同一 stream 内的新 Turn——Application 提交新 Input（内容可与原输入相同）并 Start；若它在语义上替代原 Turn，以 `twilight/turn/superseded` 关联（TRN-API-4），原回答是否进入上下文由 Planner 决定；(b) 分支——在原 Turn 的 `started` 之前的 Seq 处 fork Session（SES 第 8 节），在新 stream 上开 Turn。两种形态都不改写历史。
+
+**TRN-DUR-4（外部效果未知不等于重试）** owner 丢失时处于 Executing 的工具 call 由接管处置记为 Unknown（RUN-CMT-7），companion 写 status=`unknown` 的 `tool_result`。Unknown 是该 call 的终态事实，协议在任何路径上都不重新执行它：接管处置不执行（它只记录）；下一次 Loop 不执行（start barrier 只启动 Pending call，Executing 与终态 call 永不重跑，RUN-LOP-4）；Retry 不执行（新 attempt 从上下文重新规划步骤，Unknown 结果作为对话内容可见）。外部效果是否已经发生、是否需要重做，由模型依据上下文判断，或由 Application 在带外核实后以 `tool_result_superseded` 换成 `success`/`error`（CHT-ENT-2）；两者都是决定，不是协议的自动行为。`CancelRun` 留下的 `UncertainCalls` 同理。
+
+### 7.2 恢复表
+
 **TRN-REC-1** 恢复扫描 `twilight/turn/surface` 中 `active` 与 `attempt_failed` 的 Turn。
 
 **TRN-REC-2**
@@ -279,7 +301,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 | Writer 返回 `ErrOwnershipLost` | 本进程放弃该 Session 的全部 Turn 与 Loop（RUN-CMT-6）；由持有新 Epoch 的进程按上两行接管 |
 | Run 已 `failed`、Turn 未结算 | Turn 为 `attempt_failed`；Application 选择 Retry 或 Settle |
 | Stop 的 Commit 返回非 sentinel 错误 | 以同一 Cancel CommandID 重放 |
-| Deliver 中某条输入的 Commit 返回非 sentinel 错误 | 以同一 input CommandID 重放，得到 already-applied 后继续剩余条目 |
+| Deliver 的 Commit 返回非 sentinel 错误 | 以同一批次 CommandID 重放整批，得到 already-applied（TRN-DLV-2） |
 | Start 或 Retry 的 Commit 返回非 sentinel 错误 | 以同一 CommitID 重放，得到 already-applied |
 | profile 缺失 | 宿主 Drive 返回 `profile_unavailable`（REF-BND-2）；Turn 状态不变 |
 
@@ -298,3 +320,4 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 - **TRN-REC-1、TRN-REC-2、TRN-SCP-3**：`started` 提交后接管，`RecoverInterrupted` 处置 0 个目标，Status 仅从投影重建为 `active`；模型 Executing 时接管，处置 1 个目标后 disposition 不再是 `waiting_for_recovery`；被替代的 Coordinator 的 Deliver 得到 `ErrOwnershipLost` 且不改变输入状态，新 owner 的 Deliver 成功。
 - **TRN-CMP-1 至 TRN-MAP-4**：companion 纯函数、v1 映射表、`SourceDigest` 等于 Run fact 记录值、companion 中的 ReferencePart 经 admission 并建立 claim、同组可见性，由 RUN-CMP-2 套件经 Runtime 的组构成观察。
 - **TRN-DLV-3** 的并发定序（输入与最后一步结果的两种先后）由 Writer 串行保证，单进程套件不构造并发，以 Deliver 对已终结 Run 的 `completed` 响应作为可观察结果。
+- **TRN-DUR-1 至 TRN-DUR-4**：接管后同一 RunID 继续、`Attempt` 不变、Turn 保持 `active`；工具 Executing 时接管，该 call 记 Unknown 后，接管处置、随后的 Loop 与 Retry 的新 attempt 都不再出现该 call 的 `StartToolCall` 或 `ToolCallCompleted`；Retry 得到新 RunID 与 attempt 加 1、Turn 不变；对已 `completed` 的 Turn 以其已 delivered 的输入再次 Start 为 conflict。Unknown call 不被重跑的断言与 Loop 一起在 RUN-LOP-4/5 的套件中验证。
