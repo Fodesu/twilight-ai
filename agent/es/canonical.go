@@ -6,8 +6,8 @@
 // Runtime semantics, and it owns no storage, record envelope, folding or
 // validation: each domain defines its own event ontology, codec and fold on
 // top of these primitives. The per-Run record envelope this package once
-// carried was superseded by the flat Session log (see
-// docs/design/agent-runtime-refactor.md section 8).
+// carried was superseded by the flat Session log
+// (docs/design/agent-session.md).
 package es
 
 import (

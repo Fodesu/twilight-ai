@@ -1,6 +1,6 @@
 # Twilight Agent Session Protocol
 
-状态：设计草案。本文是 Session ES kernel 的目标设计；实现状态与迁移记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。
+状态：设计草案。本文是 Session ES kernel 的目标设计。
 
 本文定义 Twilight Session 的 Event Sourcing kernel。文中的"必须""不得""应该"是协议约束。
 

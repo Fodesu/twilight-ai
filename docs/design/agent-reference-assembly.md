@@ -1,6 +1,6 @@
 # Twilight Agent 参考组装
 
-状态：设计草案。本文是参考组装的目标设计；实现状态与迁移记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。与 [Run](agent-run.md)、[Turn](agent-turn.md)、[Chatlog](agent-session-chatlog.md) 冲突时以各正式规范为准。
+状态：设计草案。本文是参考组装的目标设计。与 [Run](agent-run.md)、[Turn](agent-turn.md)、[Chatlog](agent-session-chatlog.md) 冲突时以各正式规范为准。
 
 补充说明：ContextPlanner 把回合中途投递的输入排在其之前尚未结算的工具结果之后。原因是这类输入的 `input_delivered` 先于 `tool_result` 进入 stream，而 provider 要求工具结果紧随发出调用的 assistant 消息。fold 顺序不变，只影响请求组装。
 

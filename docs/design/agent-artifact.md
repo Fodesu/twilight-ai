@@ -1,6 +1,6 @@
 # Twilight Agent Artifact Core
 
-状态：设计草案。本文是 Artifact Core 的目标设计；实现状态与迁移记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。claim 在 `Active` 与 `Released` 两态之间迁移。
+状态：设计草案。本文是 Artifact Core 的目标设计。claim 在 `Active` 与 `Released` 两态之间迁移。
 
 本文定义 `agent/artifact`。文中的"必须""不得""应该"是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
 

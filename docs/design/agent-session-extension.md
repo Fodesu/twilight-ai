@@ -1,6 +1,6 @@
 # Twilight Agent Session Module Framework
 
-状态：设计草案。本文是 Session Module Framework 的目标设计；实现状态与迁移记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。写入串行与幂等重放由进程内的 `Writer` 承担，kernel 只提供追加日志（[agent-session.md](agent-session.md)）。
+状态：设计草案。本文是 Session Module Framework 的目标设计。写入串行与幂等重放由进程内的 `Writer` 承担，kernel 只提供追加日志（[agent-session.md](agent-session.md)）。
 
 本文定义建立在 `agent/session` 与 `agent/artifact` 之上的 Session Module Framework。实现分两个包：`agent/session/extension` 承载声明的词汇、`Registry` 与投影引擎，`agent/session/writer` 承载写入路径；文中的"必须""不得""应该"是协议约束；JSON canonicalization 与 digest 遵循 `agent/jsonstable`、`agent/es`。
 
@@ -242,7 +242,7 @@ func NewProjectionReader(store session.Store, registry *Registry, cache Projecti
 
 **EXT-PRJ-4** `Writer.Projections()` 返回的 reader 直接读 Writer 内存中的状态，不经 Store；独立进程的观察者用 `NewProjectionReader` 从 Store 读，两者对同一 head 给出相同状态。Writer 在 `Append` 之前折叠尚未封装的行（Digest 为空），reader 折叠已封装的行，因此 `Fold` 在调用 Apply 前清空行的 Digest：两条路径向 Apply 交付相同输入，投影不能依赖行 digest。
 
-**EXT-PRJ-5** `rebuild` 读一次日志：缓存条目未覆盖的投影需要它的行来折叠，而每个条目都要靠它校验组对齐（EXT-PRJ-3）。日志是 O(N)，投影折叠随状态大小增长（Apply 为保持纯性复制它写入的部分），所以可省的只有折叠：条目通过 EXT-PRJ-3 校验的投影从该处续折，跳过它已覆盖的组；其余投影从 `Initial` 全折。篡改或过期的条目只让该投影多折一次，绝不影响正确性，也绝不让 `OpenWriter` 失败。这次读取只服务于投影，不服务于提交历史——Writer 不保留日志，也不建 CommitID 索引（EXT-WRT-1）；它对"必须读多少行"的代价上限取决于 adapter 的读取粒度（见 agent-runtime-refactor.md 11.4）。
+**EXT-PRJ-5** `rebuild` 读一次日志：缓存条目未覆盖的投影需要它的行来折叠，而每个条目都要靠它校验组对齐（EXT-PRJ-3）。日志是 O(N)，投影折叠随状态大小增长（Apply 为保持纯性复制它写入的部分），所以可省的只有折叠：条目通过 EXT-PRJ-3 校验的投影从该处续折，跳过它已覆盖的组；其余投影从 `Initial` 全折。篡改或过期的条目只让该投影多折一次，绝不影响正确性，也绝不让 `OpenWriter` 失败。这次读取只服务于投影，不服务于提交历史——Writer 不保留日志，也不建 CommitID 索引（EXT-WRT-1）；它对"必须读多少行"的代价上限取决于 adapter 的读取粒度。
 
 **EXT-PRJ-6** 写入与读取的权限不对称：`WritersConfig.CachePolicy` 只决定 Writer 写哪个投影的条目；读取一律尝试缓存中的条目，不论谁写的。某个投影的条目由它的宿主在语义检查点上写入时（run 的 machine projection 经 `SnapshotPolicy`，见 RUN-CMT-2），组装层用 `CachePolicy.Exclude` 把它排除，Writer 便只读不写，绝不会把条目落在检查点之间。
 

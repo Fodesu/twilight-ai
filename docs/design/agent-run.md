@@ -1,6 +1,6 @@
 # Twilight Agent Run Protocol
 
-状态：设计规范。本文是 Run Machine、Runtime 与 Loop 的目标设计；实现状态与迁移记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。Runtime 经 `writer.Writer` 写入，无 lease/grant，`RecoverInterrupted` 为接管处置。本文依据 [agent-session.md](agent-session.md)（Session 级单写者、一行一个 event）与 [agent-session-extension.md](agent-session-extension.md)（`writer.Writer`）。
+状态：设计规范。本文是 Run Machine、Runtime 与 Loop 的目标设计。Runtime 经 `writer.Writer` 写入，无 lease/grant，`RecoverInterrupted` 为接管处置。本文依据 [agent-session.md](agent-session.md)（Session 级单写者、一行一个 event）与 [agent-session-extension.md](agent-session-extension.md)（`writer.Writer`）。
 
 本文定义 `agent/run`、`agent/run/loop` 与 Run 作为 Session Module 的存储形态。文中的"必须""不得""应该"是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
 
@@ -432,7 +432,7 @@ FrozenValueStore 的 `Put` 幂等且内容寻址，在进入 Writer 之前完成
 
 ### 5.1 不进入 stream 的数据
 
-`ExecutionClaim` 只存在于持有它的 worker 内存中；投影缓存是可丢弃的派生数据（EXT-PRJ-3）；`FrozenValueStore` 是内容寻址旁存。三者都不是 authority，丢失后的后果分别为：该 attempt 无法在本进程内重放（由 RUN-LOP-5 的一次重试之外的路径处理，或随进程崩溃由接管处置覆盖）、投影从 stream 重折、Executing/Prepared step 的重发失败为不可重试错误（Application 决定 Retry）。本协议没有控制面 KV、lease、grant 或 durable ClaimStore；曾有过这些机制及删除它们的决定见 [agent-runtime-refactor.md](agent-runtime-refactor.md) 第 8 节。
+`ExecutionClaim` 只存在于持有它的 worker 内存中；投影缓存是可丢弃的派生数据（EXT-PRJ-3）；`FrozenValueStore` 是内容寻址旁存。三者都不是 authority，丢失后的后果分别为：该 attempt 无法在本进程内重放（由 RUN-LOP-5 的一次重试之外的路径处理，或随进程崩溃由接管处置覆盖）、投影从 stream 重折、Executing/Prepared step 的重发失败为不可重试错误（Application 决定 Retry）。本协议没有控制面 KV、lease、grant 或 durable ClaimStore：Session 所有权即执行所有权（SES-OWN-1）。
 
 ## 6. Loop ports 与 policy
 
@@ -585,5 +585,3 @@ Loop conformance 必须覆盖：
 - 非 sentinel commit error 的一次重放、prepare no-progress rejection 与无 livelock；
 - 模型结算终结 Run 时 Loop 不再 Load，返回 `LoopFinished` 且 `Result` 等于 Record 的终态；
 - Writer 返回 `ErrOwnershipLost` 时 Loop 取消 worker、不再提交 settlement、以该错误返回；随后新 owner 的 `RecoverInterrupted` 把该 Executing 目标记为 Unknown 或回到 Prepared。
-
-package 迁移、实施阶段与未完成 adapter 工作记录在 [agent-runtime-refactor.md](agent-runtime-refactor.md)，本协议 authority 以本文为准。

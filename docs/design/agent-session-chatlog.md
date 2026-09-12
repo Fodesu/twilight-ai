@@ -1,6 +1,6 @@
 # Twilight Agent Session Chatlog Module
 
-状态：设计草案。本文是 chatlog first-party Module 的目标设计；实现状态与迁移记录见 [agent-runtime-refactor.md](agent-runtime-refactor.md)。
+状态：设计草案。本文是 chatlog first-party Module 的目标设计。
 
 本文定义 `agent/session/chatlog` first-party Module，依赖 [Session](agent-session.md) 与 [Session Module Framework](agent-session-extension.md)。回合生命周期由 [Turn](agent-turn.md) 拥有。文中的“必须”“不得”“应该”是协议约束；canonical JSON 与 digest 遵循 `agent/jsonstable`、`agent/es`。
 
