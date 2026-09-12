@@ -124,8 +124,10 @@ func TestSurfaceAndContextFold(t *testing.T) {
 		}
 	}
 	surface := surfaceState.(Surface)
-	if surface.Inputs["in-1"].Status != InputDelivered || surface.Inputs["in-2"].Status != InputSubmitted {
-		t.Fatalf("inputs = %+v", surface.Inputs)
+	in1, _ := surface.Inputs.Get("in-1")
+	in2, _ := surface.Inputs.Get("in-2")
+	if in1.Status != InputDelivered || in2.Status != InputSubmitted {
+		t.Fatalf("inputs = %+v", surface.Inputs.Map())
 	}
 	if pending := surface.SubmittedInputs(); len(pending) != 1 || pending[0].ID != "in-2" {
 		t.Fatalf("submitted = %+v", pending)

@@ -105,7 +105,8 @@ func Example_jsonlPrototype() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("steer: in-2 %s to turn-1 while its tool call executes\n", chat.Inputs["in-2"].Status)
+	steered, _ := chat.Inputs.Get("in-2")
+	fmt.Printf("steer: in-2 %s to turn-1 while its tool call executes\n", steered.Status)
 
 	// Queue: in-3 is only submitted; nothing delivers it into the running Turn.
 	if _, err := p1.SubmitInput(ctx, sid, "in-3", "book a table"); err != nil {

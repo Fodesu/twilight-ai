@@ -61,13 +61,10 @@ type CheckpointView struct {
 	Seq        session.Seq              `json:"seq"`
 }
 
-// Surface is the UI-facing read model (CHT-SUR-1). The content tables are
-// persistent (Table): a fold shares them between states and pays O(sqrt(n))
-// per write. Inputs stays a plain map because the turn Coordinator indexes it
-// directly; each write copies it, so it is the one linear cost left in the
-// fold.
+// Surface is the UI-facing read model (CHT-SUR-1). Every table is persistent
+// (Table): a fold shares them between states and pays O(sqrt(n)) per write.
 type Surface struct {
-	Inputs      map[InputID]InputView               `json:"inputs"`
+	Inputs      Table[InputID, InputView]           `json:"inputs"`
 	Assistants  Table[AssistantID, Assistant]       `json:"assistants"`
 	ToolResults Table[ToolResultID, ToolResult]     `json:"toolResults"`
 	Summaries   Table[SummaryID, Summary]           `json:"summaries"`
@@ -80,11 +77,12 @@ type Surface struct {
 // SubmittedInputs returns inputs still awaiting delivery, in submission order.
 func (s *Surface) SubmittedInputs() []Input {
 	var out []InputView
-	for _, v := range s.Inputs {
+	s.Inputs.Range(func(_ InputID, v InputView) bool {
 		if v.Status == InputSubmitted {
 			out = append(out, v)
 		}
-	}
+		return true
+	})
 	sortViews(out)
 	inputs := make([]Input, len(out))
 	for i := range out {
@@ -108,32 +106,31 @@ var SurfaceProjection = extension.ProjectionDefinition{
 	ID: SurfaceProjectionID, Version: 1,
 	Consumes: chatlogConsumes,
 	Initial: func() (any, error) {
-		return Surface{Inputs: map[InputID]InputView{}}, nil
+		return Surface{}, nil
 	},
 	Apply:      applySurface,
 	StateCodec: extension.JSONStateCodec[Surface]{},
 }
 
-// applySurface is copy-on-write: the Surface value is copied, every map is
-// shared with the previous state until this event writes it (cow), and
-// EntryOrder grows by append. Apply stays pure -- the previous state is never
-// written -- while an event pays only for the map it touches instead of for
-// every map and the whole entry order.
+// applySurface is copy-on-write: the Surface value is copied, every table is
+// shared with the previous state and Set returns a new one, and EntryOrder
+// grows by append. Apply stays pure -- the previous state is never written.
 func applySurface(state any, e extension.DecodedEvent) (any, error) {
 	s := state.(Surface)
 	if s.nextSeq == 0 {
 		// Restored from a snapshot: the counter is not persisted, but Seq only
 		// has to be monotonic, so continue from the largest known value.
-		for _, v := range s.Inputs {
+		s.Inputs.Range(func(_ InputID, v InputView) bool {
 			if v.Seq > s.nextSeq {
 				s.nextSeq = v.Seq
 			}
-		}
+			return true
+		})
 	}
 	pos := e.Event.Seq
 	switch p := e.Value.(type) {
 	case InputSubmittedPayload:
-		if _, dup := s.Inputs[p.InputID]; dup {
+		if s.Inputs.Has(p.InputID) {
 			return nil, fmt.Errorf("input %s submitted twice", p.InputID)
 		}
 		d, err := DigestInput(p.InputID, p.Content)
@@ -141,17 +138,15 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 			return nil, err
 		}
 		s.nextSeq++
-		s.Inputs = cow(s.Inputs)
-		s.Inputs[p.InputID] = InputView{Input: Input{ID: p.InputID, Content: p.Content, Digest: d}, Status: InputSubmitted, Seq: s.nextSeq}
+		s.Inputs = s.Inputs.Set(p.InputID, InputView{Input: Input{ID: p.InputID, Content: p.Content, Digest: d}, Status: InputSubmitted, Seq: s.nextSeq})
 	case InputDeliveredPayload:
-		v, ok := s.Inputs[p.InputID]
+		v, ok := s.Inputs.Get(p.InputID)
 		if !ok || v.Status != InputSubmitted {
 			return nil, fmt.Errorf("input %s delivered while %s", p.InputID, v.Status)
 		}
 		v.Status = InputDelivered
 		v.Input.TurnID = p.TurnID
-		s.Inputs = cow(s.Inputs)
-		s.Inputs[p.InputID] = v
+		s.Inputs = s.Inputs.Set(p.InputID, v)
 		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryInput, ID: string(p.InputID), Seq: pos})
 	case InputWithdrawnPayload:
 		if err := terminateInput(&s, p.InputID, InputWithdrawn); err != nil {
@@ -211,13 +206,12 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 }
 
 func terminateInput(s *Surface, id InputID, status InputStatus) error {
-	v, ok := s.Inputs[id]
+	v, ok := s.Inputs.Get(id)
 	if !ok || v.Status != InputSubmitted {
 		return fmt.Errorf("input %s %s while %s", id, status, v.Status)
 	}
 	v.Status = status
-	s.Inputs = cow(s.Inputs)
-	s.Inputs[id] = v
+	s.Inputs = s.Inputs.Set(id, v)
 	return nil
 }
 

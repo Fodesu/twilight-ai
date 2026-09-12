@@ -159,7 +159,7 @@ func (s *Session) absorbed(ctx context.Context, in run.AgentInput) (Result, bool
 	if err != nil {
 		return Result{}, false
 	}
-	v, ok := chat.Inputs[chatlog.InputID(in.ID)]
+	v, ok := chat.Inputs.Get(chatlog.InputID(in.ID))
 	if !ok || v.Status == chatlog.InputSubmitted {
 		return Result{}, false
 	}

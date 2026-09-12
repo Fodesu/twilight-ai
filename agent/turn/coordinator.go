@@ -224,7 +224,7 @@ func checkSubmitted(view writer.View, inputs []run.AgentInput) error {
 	}
 	surface := state.(chatlog.Surface)
 	for _, in := range inputs {
-		view, ok := surface.Inputs[chatlog.InputID(in.ID)]
+		view, ok := surface.Inputs.Get(chatlog.InputID(in.ID))
 		if !ok || view.Status != chatlog.InputSubmitted {
 			return fmt.Errorf("%w: input %s is not a submitted input", ErrConflict, in.ID)
 		}
@@ -329,7 +329,7 @@ func deliveredInputs(view writer.View, ids []chatlog.InputID) ([]run.AgentInput,
 	surface := state.(chatlog.Surface)
 	out := make([]run.AgentInput, 0, len(ids))
 	for _, id := range ids {
-		view, ok := surface.Inputs[id]
+		view, ok := surface.Inputs.Get(id)
 		if !ok {
 			return nil, fmt.Errorf("turn: retry: delivered input %s missing from chatlog", id)
 		}

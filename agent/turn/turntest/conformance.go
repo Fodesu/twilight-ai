@@ -94,7 +94,7 @@ func testStart(t *testing.T, factory Factory) {
 	}
 	chat := h.chat()
 	for _, id := range []chatlog.InputID{"in-1", "in-2"} {
-		if v := chat.Inputs[id]; v.Status != chatlog.InputDelivered || v.Input.TurnID != "t1" {
+		if v, _ := chat.Inputs.Get(id); v.Status != chatlog.InputDelivered || v.Input.TurnID != "t1" {
 			t.Fatalf("input %s = %+v, want delivered to t1", id, v)
 		}
 	}
@@ -128,7 +128,7 @@ func testStart(t *testing.T, factory Factory) {
 	if active, ok := surface.Active(); !ok || active.TurnID != "t1" {
 		t.Fatalf("active = %+v %v", active, ok)
 	}
-	if v := h.chat().Inputs["in-3"]; v.Status != chatlog.InputSubmitted {
+	if v, _ := h.chat().Inputs.Get("in-3"); v.Status != chatlog.InputSubmitted {
 		t.Fatalf("in-3 after rejected starts = %s, want submitted", v.Status)
 	}
 }
@@ -151,7 +151,7 @@ func testDeliver(t *testing.T, factory Factory) {
 	if !sameTypes(group, typeAccepted, chatlog.TypeInputDelivered) {
 		t.Fatalf("deliver group = %v, want input_accepted then input_delivered", eventTypes(group))
 	}
-	if v := h.chat().Inputs["in-2"]; v.Status != chatlog.InputDelivered || v.Input.TurnID != "t1" {
+	if v, _ := h.chat().Inputs.Get("in-2"); v.Status != chatlog.InputDelivered || v.Input.TurnID != "t1" {
 		t.Fatalf("in-2 = %+v", v)
 	}
 	if ids := h.surface().Turns["t1"].InputIDs; len(ids) != 2 || ids[1] != "in-2" {
@@ -179,7 +179,7 @@ func testDeliver(t *testing.T, factory Factory) {
 	if _, err := h.c.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("t1"), Inputs: in3}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("deliver to attempt_failed turn = %v, want conflict", err)
 	}
-	if v := h.chat().Inputs["in-3"]; v.Status != chatlog.InputSubmitted {
+	if v, _ := h.chat().Inputs.Get("in-3"); v.Status != chatlog.InputSubmitted {
 		t.Fatalf("in-3 after refused deliver = %s, want submitted", v.Status)
 	}
 
@@ -193,10 +193,10 @@ func testDeliver(t *testing.T, factory Factory) {
 		t.Fatalf("deliver with an unsubmitted input = %v, want a rejection", err)
 	}
 	chat := h.chat()
-	if chat.Inputs["in-5"].Status != chatlog.InputDelivered {
+	if v, _ := chat.Inputs.Get("in-5"); v.Status != chatlog.InputDelivered {
 		t.Fatal("the first input of a partially refused Deliver was not delivered")
 	}
-	if _, ok := chat.Inputs["never-submitted"]; ok {
+	if chat.Inputs.Has("never-submitted") {
 		t.Fatal("an unsubmitted input entered the chatlog")
 	}
 }
@@ -516,7 +516,7 @@ func testRecovery(t *testing.T, factory Factory) {
 	if _, err := old.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("t1"), Inputs: late}); !errors.Is(err, run.ErrOwnershipLost) {
 		t.Fatalf("superseded coordinator deliver = %v, want ownership lost", err)
 	}
-	if v := h.chat().Inputs["late"]; v.Status != chatlog.InputSubmitted {
+	if v, _ := h.chat().Inputs.Get("late"); v.Status != chatlog.InputSubmitted {
 		t.Fatalf("fenced deliver changed the input: %s", v.Status)
 	}
 	if _, err := h.c.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("t1"), Inputs: late}); err != nil {

@@ -112,19 +112,17 @@ func TestSurfaceFoldIsPure(t *testing.T) {
 		{"right", right.(Surface), 41, 1, "right", "left", "in-0", "in-left"},
 	}
 	for _, tc := range cases {
-		if tc.s.Assistants.Len() != tc.assistants || len(tc.s.Inputs) != tc.inputs {
-			t.Fatalf("%s: assistants=%d inputs=%d", tc.name, tc.s.Assistants.Len(), len(tc.s.Inputs))
+		if tc.s.Assistants.Len() != tc.assistants || tc.s.Inputs.Len() != tc.inputs {
+			t.Fatalf("%s: assistants=%d inputs=%d", tc.name, tc.s.Assistants.Len(), tc.s.Inputs.Len())
 		}
 		if !tc.s.Assistants.Has(AssistantID(tc.has)) || tc.s.Assistants.Has(AssistantID(tc.lacks)) {
 			t.Fatalf("%s: assistant visibility wrong", tc.name)
 		}
-		if _, ok := tc.s.Inputs[InputID(tc.hasIn)]; !ok {
+		if !tc.s.Inputs.Has(InputID(tc.hasIn)) {
 			t.Fatalf("%s: missing input %s", tc.name, tc.hasIn)
 		}
-		if tc.noIn != "" {
-			if _, ok := tc.s.Inputs[InputID(tc.noIn)]; ok {
-				t.Fatalf("%s: sees input %s", tc.name, tc.noIn)
-			}
+		if tc.noIn != "" && tc.s.Inputs.Has(InputID(tc.noIn)) {
+			t.Fatalf("%s: sees input %s", tc.name, tc.noIn)
 		}
 	}
 }

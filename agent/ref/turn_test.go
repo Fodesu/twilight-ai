@@ -153,7 +153,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := chat.Inputs["in-2"]; got.Status != chatlog.InputDelivered || got.Input.TurnID != "t1" {
+	if got, _ := chat.Inputs.Get("in-2"); got.Status != chatlog.InputDelivered || got.Input.TurnID != "t1" {
 		t.Fatalf("in-2 = %+v, want delivered to t1", got)
 	}
 }

@@ -125,8 +125,8 @@ func TestAppModuleSharesTheSessionStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := chat.Inputs["in-1"].Status; got != chatlog.InputDelivered {
-		t.Fatalf("input status = %s", got)
+	if in, _ := chat.Inputs.Get("in-1"); in.Status != chatlog.InputDelivered {
+		t.Fatalf("input status = %s", in.Status)
 	}
 	tsurf, err := m.TurnSurface(ctx, sid)
 	if err != nil {
