@@ -153,14 +153,24 @@ func toolCallFromSnapshot(state run.MachineState, stepID run.StepID, callID run.
 // resulting outcome can still reach Runtime (RUN-LOP-5). Unknown settles
 // only that call. A non-sentinel commit error leaves the same command in the
 // local settlement cache for the next Run invocation.
+//
+// Ownership loss is terminal for the whole step (RUN-LOP-5): the first
+// settlement the kernel fences cancels every other worker's ctx, workers that
+// finish afterwards commit nothing (the kernel would refuse them anyway), and
+// ErrOwnershipLost is returned ahead of any other worker error. External
+// effects that already happened are recorded as Unknown by the new owner's
+// takeover disposition (RUN-CMT-7).
 func (l *Loop) settleWorkers(ctx context.Context, runtime boundRuntime, events EventSink, runID run.RunID, stepID run.StepID, started []startedWorker, proto run.Protocol) error {
 	if len(started) == 0 {
 		return nil
 	}
 	controlCtx := context.WithoutCancel(ctx)
+	workerCtx, cancelWorkers := context.WithCancel(ctx)
+	defer cancelWorkers()
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	var firstErr error
+	fenced := false
 	for i := range started {
 		wg.Add(1)
 		w := started[i]
@@ -175,7 +185,7 @@ func (l *Loop) settleWorkers(ctx context.Context, runtime boundRuntime, events E
 				Arguments:        w.call.Arguments,
 				Progress:         &progressSink{events: events, run: runID, step: stepID, call: w.call.CallID},
 			}
-			outcome := executeToolSafely(ctx, w.tool, &req)
+			outcome := executeToolSafely(workerCtx, w.tool, &req)
 
 			var cmd run.AgentCommand
 			switch o := outcome.(type) {
@@ -201,14 +211,22 @@ func (l *Loop) settleWorkers(ctx context.Context, runtime boundRuntime, events E
 
 			mu.Lock()
 			defer mu.Unlock()
+			if fenced {
+				return // the Session changed hands; this outcome is not ours to write
+			}
 			// Commit on the worker's start base; stale bases rebase call-locally.
 			// Late results after terminal return ErrRunTerminal and are dropped
 			// (audit is the adapter's job). The one-shot same-CommandID replay
 			// lives inside l.commit. Tool settlements never terminate a Run;
 			// the result is ignored.
 			if _, err := l.settle(controlCtx, runtime, events, w.attempt, w.base, cmd, proto); err != nil {
-				if firstErr == nil {
-					firstErr = fmt.Errorf("agent: loop: settling call %q: %w", w.call.CallID, err)
+				wrapped := fmt.Errorf("agent: loop: settling call %q: %w", w.call.CallID, err)
+				if ownershipLost(err) {
+					fenced = true
+					firstErr = wrapped // terminal: reported ahead of any earlier worker error
+					cancelWorkers()
+				} else if firstErr == nil {
+					firstErr = wrapped
 				}
 				return
 			}
