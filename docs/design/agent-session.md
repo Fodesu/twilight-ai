@@ -35,7 +35,7 @@ Atomic Event Group ────────────────┘
 
 2. **语义串行化。** 同一 Session 的全部写入（Turn、Run、恢复、Checkpoint）经进程内唯一的 `Writer.Commit`，形成一个确定的全序（EXT-SCP-1、EXT-WRT-1）。kernel 不承担并发控制（SES-SCP-2）。
 
-3. **事务边界。** `read state → decide → validate → append` 在 Writer 的互斥区内完成，不可被另一个语义提交插入：`CommitFn` 经 `View` 读取的 head、提交历史与投影状态即写入时的状态（EXT-WRT-1）。validate 有两层：Binding admission（EXT-REF-2）与投影预折叠——任一投影拒绝则不落盘（EXT-PRJ-1）。这条边界是进程内的；跨进程的隔离由第 5 条提供，两者合起来才是完整的隔离。
+3. **事务边界。** `read state → decide → validate → append` 在 Writer 的互斥区内完成，不可被另一个语义提交插入：`CommitFn` 经 `View` 读取的 head、提交历史与投影状态即写入时的状态，fn 自身不做外部 IO（EXT-WRT-1）。validate 有两层：Binding admission（EXT-REF-2）与投影预折叠——任一投影拒绝则不落盘（EXT-PRJ-1）。这条边界是进程内的；跨进程的隔离由第 5 条提供，两者合起来才是完整的隔离。
 
 4. **原子 Semantic Group。** 一个领域动作产生的多个 event 要么全部出现，要么全部不存在（SES-APP-1）；底层事务或 fsync 只是它的物理实现。崩溃只可能留下一个不完整尾组，`Open` 在确立 head 之前把它截掉，reader 在任何时刻都看不到不完整的组（SES-APP-2）。
 

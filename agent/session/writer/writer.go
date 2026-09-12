@@ -278,20 +278,41 @@ func (w *sessionWriter) foldGroup(group []session.SessionEvent) error {
 	return nil
 }
 
-// refreshCache writes the projection entries the deployment's policy asks for.
-// Best effort and never fatal: the cache is derived data, so a write failure
-// only means a later Writer folds more (EXT-PRJ-3).
-func (w *sessionWriter) refreshCache(ctx context.Context, closing bool) {
+// cacheWrite is one projection entry the policy asked to refresh: the state
+// and the head it covers, captured under the lock and written outside it.
+type cacheWrite struct {
+	key   projectionKey
+	state any
+	head  session.Head
+}
+
+// planRefresh selects the entries the deployment's policy wants refreshed and
+// records them as covering the current head. The caller holds the lock. The
+// writes themselves happen outside it (saveRefresh): a cache entry is derived
+// data with no ordering constraint against later commits (EXT-PRJ-7), and the
+// captured states are immutable (EXT-PRJ-1), so nothing in the critical
+// section depends on the IO.
+func (w *sessionWriter) planRefresh(closing bool) []cacheWrite {
 	if w.cache == nil {
-		return
+		return nil
 	}
+	var writes []cacheWrite
 	for k := range w.scopes {
 		if !w.cachePolicy(k.id, k.version, w.head, w.cached[k], closing) {
 			continue
 		}
-		if err := extension.SaveProjection(ctx, w.cache, w.registry, w.sid, k.id, k.version, w.states[k], w.head); err == nil {
-			w.cached[k] = w.head
-		}
+		writes = append(writes, cacheWrite{key: k, state: w.states[k], head: w.head})
+		w.cached[k] = w.head
+	}
+	return writes
+}
+
+// saveRefresh performs planned writes. Best effort and never fatal: the cache
+// is derived data, so a failed Save only means a later Writer folds more
+// (EXT-PRJ-3); the policy then asks again at its next threshold.
+func (w *sessionWriter) saveRefresh(ctx context.Context, writes []cacheWrite) {
+	for _, cw := range writes {
+		_ = extension.SaveProjection(ctx, w.cache, w.registry, w.sid, cw.key.id, cw.key.version, cw.state, cw.head)
 	}
 }
 
@@ -309,12 +330,15 @@ func (w *sessionWriter) OwnerExists(_ context.Context, owner artifact.ClaimOwner
 
 func (w *sessionWriter) Close(ctx context.Context) error {
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	var writes []cacheWrite
 	if w.head.Next > 0 {
-		w.refreshCache(ctx, true)
+		writes = w.planRefresh(true)
 	}
 	w.lost = &extension.Error{Code: extension.ErrInvalid, Detail: "writer closed"}
-	return w.kernel.Close(ctx)
+	err := w.kernel.Close(ctx)
+	w.mu.Unlock()
+	w.saveRefresh(ctx, writes)
+	return err
 }
 
 // --- view --------------------------------------------------------------------------
@@ -361,7 +385,14 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 		return CommitResult{}, errors.New("writer: nil fn")
 	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
+	// The critical section is read → decide → validate → append (EXT-WRT-1).
+	// Cache writes planned by an applied commit run after the unlock: they are
+	// derived data and must not lengthen the section (EXT-PRJ-7).
+	var writes []cacheWrite
+	defer func() {
+		w.mu.Unlock()
+		w.saveRefresh(ctx, writes)
+	}()
 	if w.lost != nil {
 		return CommitResult{}, w.lost
 	}
@@ -439,7 +470,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 		w.states[k] = s
 	}
 	w.head = w.kernel.Head()
-	w.refreshCache(ctx, false)
+	writes = w.planRefresh(false)
 	return CommitResult{Outcome: CommitApplied, Events: append([]session.SessionEvent(nil), sealed...), Claim: claim}, nil
 }
 
