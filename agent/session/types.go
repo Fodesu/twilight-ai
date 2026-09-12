@@ -89,12 +89,17 @@ type Head struct {
 type ErrorCode string
 
 const (
-	ErrInvalid            ErrorCode = "invalid"
-	ErrNotFound           ErrorCode = "not_found"
-	ErrConflict           ErrorCode = "conflict"
-	ErrCorrupt            ErrorCode = "corrupt"
-	ErrOwned              ErrorCode = "owned"
-	ErrOwnershipLost      ErrorCode = "ownership_lost"
+	ErrInvalid       ErrorCode = "invalid"
+	ErrNotFound      ErrorCode = "not_found"
+	ErrConflict      ErrorCode = "conflict"
+	ErrCorrupt       ErrorCode = "corrupt"
+	ErrOwned         ErrorCode = "owned"
+	ErrOwnershipLost ErrorCode = "ownership_lost"
+	// ErrHandleFailed: a previous Append of this Handle failed while writing
+	// or persisting, so what reached storage is unknown. The Handle refuses
+	// further Appends; the caller reopens and Open reads the log as it is
+	// (SES-APP-1).
+	ErrHandleFailed       ErrorCode = "handle_failed"
 	ErrUnsupportedProfile ErrorCode = "unsupported_profile"
 	ErrUnsupported        ErrorCode = "unsupported"
 )

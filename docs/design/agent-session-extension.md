@@ -183,7 +183,7 @@ func OpenWriter(ctx, store session.Store, registry *Registry, admission Admissio
 
 **EXT-WRT-3** claim 顺序：group 含 Binding 时，Writer 在 `Append` 之前调用 `ledger.Activate(claimID, owner, set)`。顺序固定为先 claim 再 append，因此崩溃只可能留下孤儿 claim（有 claim 无 commit），不可能留下无 claim 的引用；孤儿由 artifact 的回收前核对释放（ART-RET-3）。`Append` 失败时 Writer 调用 `ledger.ReleaseActive(claimID)` 尽力回收，失败也只留孤儿。
 
-**EXT-WRT-4** `Append` 返回 `ErrOwnershipLost` 时 Writer 进入失效状态：本次与之后的 `Commit` 返回该错误，调用方必须放弃该 Session 的执行。这是 Session 级 fencing 在进程内的表现；Runtime 与 Loop 对它的处理见 RUN-CMT-6。
+**EXT-WRT-4** Writer 在两种情况下进入失效状态，本次与之后的 `Commit` 都返回同一错误：(a) `Append` 返回 `ErrOwnershipLost`——Session 级 fencing 在进程内的表现，调用方必须放弃该 Session 的执行，Runtime 与 Loop 对它的处理见 RUN-CMT-6；(b) `Append` 返回结果未知的错误（kernel 的 `ErrHandleFailed`、IO 错误或其他非验证性错误）——Writer 以 `ErrUnknownOutcome` 失效，因为它的 head 与投影状态可能已落后于日志一组，继续提交会给临时行赋 kernel 已用过的 Seq。宿主关闭并重开 Writer：`OpenWriter` 从日志重建，同一 group 的重放由 kernel 的索引回答（落盘则 `AlreadyApplied`，未落盘则 `Applied`）。只有保证未写入的错误不致失效：kernel 的验证拒绝（`ErrInvalid`、`ErrNotFound`）与写入开始前的 ctx 错误；`ErrConflict` 按 EXT-WRT-2 报告为 `Conflict`。
 
 **EXT-WRT-5** ClaimID 派生规则：`Digest("twilight/session-extension/claim", "1", ProtocolVersion, SessionID, CommitID, RefSetDigest)`；`ClaimOwner = {Kind:"twilight/session/commit", Authority:SessionID, Identity:CommitID}`。
 
@@ -256,6 +256,7 @@ const (
     ErrInvalid ErrorCode = "invalid"; ErrUnknownEvent ErrorCode = "unknown_event"
     ErrCodec ErrorCode = "codec"; ErrBinding ErrorCode = "binding"
     ErrConflict ErrorCode = "conflict"; ErrOwnershipLost ErrorCode = "ownership_lost"
+    ErrUnknownOutcome ErrorCode = "unknown_outcome" // Append 结果未知，Writer 已失效（EXT-WRT-4）
 )
 ```
 
@@ -264,7 +265,7 @@ v1 conformance 必须验证：
 - **EXT-REG-1 至 4**：immutable Registry、`v` 的写入与选择、多版本 codec 共存、Unknown 保留 raw payload、`Requires` 缺失或成环被拒绝、投影消费范围外事件被拒绝、被依赖事件版本不在声明范围被拒绝；Source 段非法（空、含 `/`、非 UTF-8）被拒绝、`(Source, ID)` 重复被拒绝、同名 ModuleID 在不同 Source 下共存且各自前缀可解析；
 - **EXT-COD-1/2**：wire-first、`v` 保留字段；canonical round-trip 由各模块的测试覆盖；
 - **EXT-REF-1/2**：Extractor 全量提取、cardinality、scheme/durability admission、拒绝时无写入；
-- **EXT-WRT-1 至 5**：OpenWriter 后投影等于全量 fold 且 Writer 不保留日志（重开后常驻内存不随日志长度增长）；同 CommitID 重放 AlreadyApplied、不同内容 Conflict、两者无写入；并发调用方串行且各自看到前一次的结果；claim 先于 append，append 失败后 claim 被释放或可被核对回收；`ErrOwnershipLost` 后 Writer 失效；
+- **EXT-WRT-1 至 5**：OpenWriter 后投影等于全量 fold 且 Writer 不保留日志（重开后常驻内存不随日志长度增长）；同 CommitID 重放 AlreadyApplied、不同内容 Conflict、两者无写入；并发调用方串行且各自看到前一次的结果；claim 先于 append，append 失败后 claim 被释放或可被核对回收；`ErrOwnershipLost` 后 Writer 失效；Append 在底层持久化之后返回错误时 Writer 以 `ErrUnknownOutcome` 失效、重开后同一 group 为 `AlreadyApplied` 且后续 Seq 连续、链完整；Append 在写入之前失败时重开后同一 group 为 `Applied`；
 - **EXT-PRJ-1 至 4**：pure fold、组边界、Consumes 与范围外跳过、Ignorable 与非 Ignorable 的 Unknown、缓存复用条件、Writer 内投影与 Store 读取一致。
 - **EXT-PRJ-5 至 7**：干净 Close 后重开不折任何 event；条目只覆盖前缀时只折尾部；日志越界、digest 不符、落在组内、状态不可解码的条目一律回退为全折且不使 Open 失败；被策略排除的投影不被写入，但它已有的条目仍被复用；`CacheEvery(n)` 下条目落后不超过 n 行；未配置缓存时不写任何条目且行为不变。
 

@@ -42,6 +42,9 @@ type Store struct {
 	// keyed to the file's size and mtime: any change by another instance
 	// (append, takeover truncation) invalidates it and the next Read rebuilds.
 	index map[session.SessionID]*logIndex
+	// sync persists an appended group; tests inject a failing one to exercise
+	// the unknown-outcome path of SES-APP-1. nil means (*os.File).Sync.
+	sync func(*os.File) error
 }
 
 // logIndex is the row-to-byte map of one log file as last seen by this
@@ -317,6 +320,10 @@ type fileHandle struct {
 	epoch   session.Epoch
 	head    session.Head
 	commits map[session.CommitID]commitSpan
+	// failed is set once an Append's write or sync errored: the bytes on disk
+	// are then unknown to this handle, so it refuses to append again
+	// (SES-APP-1). A reopen reads the log as it is and continues from there.
+	failed error
 }
 
 func (w *fileHandle) SessionID() session.SessionID { return w.header.SessionID }
@@ -419,6 +426,9 @@ func (w *fileHandle) Append(ctx context.Context, g session.Group) ([]session.Ses
 	}
 	w.store.mu.Lock()
 	defer w.store.mu.Unlock()
+	if w.failed != nil {
+		return nil, w.failed
+	}
 	if err := w.current("append"); err != nil {
 		return nil, err
 	}
@@ -459,16 +469,24 @@ func (w *fileHandle) Append(ctx context.Context, g session.Group) ([]session.Ses
 		f.Close()
 		return nil, err
 	}
+	// From the first byte written the outcome is unknown until sync and close
+	// succeed: a failure anywhere in between poisons the handle, because the
+	// group may or may not be on disk and appending after it would produce
+	// duplicate Seqs. Open decides what is there (SES-APP-1/2).
 	if _, err := f.Write(buf.Bytes()); err != nil {
 		f.Close()
-		return nil, err
+		return nil, w.fail("write", err)
 	}
-	if err := f.Sync(); err != nil {
+	sync := w.store.sync
+	if sync == nil {
+		sync = (*os.File).Sync
+	}
+	if err := sync(f); err != nil {
 		f.Close()
-		return nil, err
+		return nil, w.fail("sync", err)
 	}
 	if err := f.Close(); err != nil {
-		return nil, err
+		return nil, w.fail("close", err)
 	}
 	w.head = session.Head{Next: rows[len(rows)-1].Seq + 1, Digest: prev}
 	w.commits[g.CommitID] = commitSpan{start: start, end: start + int64(buf.Len())}
@@ -499,6 +517,13 @@ func (s *Store) extendIndex(sid session.SessionID, path string, rows []session.S
 	idx.offsets = append(idx.offsets, start+written)
 	idx.head = head
 	s.setIndex(sid, path, idx)
+}
+
+// fail records an Append whose durable outcome is unknown and returns the
+// error every later Append of this handle gets. The caller holds the lock.
+func (w *fileHandle) fail(step string, cause error) error {
+	w.failed = kerr(session.ErrHandleFailed, "append", w.header.SessionID, fmt.Sprintf("%s failed, durable outcome unknown: %v", step, cause))
+	return w.failed
 }
 
 // --- read -----------------------------------------------------------------------

@@ -464,7 +464,16 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 		if session.IsCode(err, session.ErrConflict) {
 			return CommitResult{Outcome: CommitConflict, Detail: err.Error()}, nil
 		}
-		return CommitResult{}, err
+		if appendOutcomeKnown(err) {
+			return CommitResult{}, err // rejected before any write; the Writer's state still matches the log
+		}
+		// Anything else leaves the log's content unknown to this Writer: its
+		// head and folded states may be one group behind what is on disk, and
+		// continuing would assign Seqs the kernel has already used. Fail
+		// closed; a reopened Writer rebuilds from the log and a replay of the
+		// same group is answered by the kernel's index (EXT-WRT-4).
+		w.lost = &extension.Error{Code: extension.ErrUnknownOutcome, Detail: err.Error()}
+		return CommitResult{}, w.lost
 	}
 	for k, s := range next {
 		w.states[k] = s
@@ -472,6 +481,16 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	w.head = w.kernel.Head()
 	writes = w.planRefresh(false)
 	return CommitResult{Outcome: CommitApplied, Events: append([]session.SessionEvent(nil), sealed...), Claim: claim}, nil
+}
+
+// appendOutcomeKnown reports the Append errors that guarantee nothing was
+// written: the kernel's validation rejections, and a context error, which an
+// adapter may only return before it starts writing (SES-APP-1).
+func appendOutcomeKnown(err error) bool {
+	if session.IsCode(err, session.ErrInvalid) || session.IsCode(err, session.ErrNotFound) {
+		return true
+	}
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // encode validates and encodes the group, extracts and admits bindings, and
