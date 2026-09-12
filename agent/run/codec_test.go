@@ -24,7 +24,7 @@ func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 		RejectToolCall{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp", Reason: "no"},
 		SubmitToolResponse{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp", Payload: cj(`{"answer":1}`)},
 		CancelRun{},
-		AcceptInput{Input: AgentInput{ID: "in", Payload: cj(`{"q":"hi"}`)}},
+		NextStep(AgentInput{ID: "in", Payload: cj(`{"q":"hi"}`)}),
 	}
 	for _, cmd := range commands {
 		env, err := ProtocolV1().BuildEnvelope("s-1", "run-1", CommandID("cmd-"+commandType(cmd)), cmd)
@@ -92,12 +92,12 @@ func TestFactCodecRoundTripRestoresVariants(t *testing.T) {
 }
 
 func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
-	cmd := AcceptInput{Input: AgentInput{ID: "in", Payload: cj(`1`)}}
+	cmd := NextStep(AgentInput{ID: "in", Payload: cj(`1`)})
 	env, err := ProtocolV1().BuildEnvelope("s-1", "run-1", DeriveInputCommandID("run-1", "in"), cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw := []byte(fmt.Sprintf(`{"schemaVersion":1,"type":"accept_input","runId":"run-1","id":%q,"command":{"input":{"id":"in","payload":1},"input":{"id":"in","payload":1}}}`, env.ID))
+	raw := []byte(fmt.Sprintf(`{"schemaVersion":1,"type":"accept_input","runId":"run-1","id":%q,"command":{"inputs":[{"id":"in","payload":1}],"inputs":[{"id":"in","payload":1}]}}`, env.ID))
 	if _, err := DecodeCommandEnvelope(raw); err == nil {
 		t.Fatal("duplicate key command decoded")
 	}

@@ -59,12 +59,12 @@ func testCreation(t *testing.T, factory Factory) {
 	if _, err := h.rt.Record(h.ctx, sid, "nope"); !errors.Is(err, run.ErrRunNotFound) {
 		t.Fatalf("record unknown = %v", err)
 	}
-	env, _ := run.ProtocolV1().BuildEnvelope(sid, "nope", run.DeriveInputCommandID("nope", "x"), run.AcceptInput{Input: input("x")})
+	env, _ := run.ProtocolV1().BuildEnvelope(sid, "nope", run.DeriveInputCommandID("nope", "x"), run.NextStep(input("x")))
 	if _, err := h.rt.Commit(h.ctx, sid, run.CommitRequest{Command: env}); !errors.Is(err, run.ErrRunNotFound) {
 		t.Fatalf("commit unknown = %v", err)
 	}
 	// Schema disagreement is a hard error, not a retriable rejection.
-	env, _ = run.ProtocolV1().BuildEnvelope(sid, "r1", run.DeriveInputCommandID("r1", "in-2"), run.AcceptInput{Input: input("in-2")})
+	env, _ = run.ProtocolV1().BuildEnvelope(sid, "r1", run.DeriveInputCommandID("r1", "in-2"), run.NextStep(input("in-2")))
 	env.SchemaVersion = 2
 	_, err := h.rt.Commit(h.ctx, sid, run.CommitRequest{Command: env})
 	if err == nil || errors.Is(err, run.ErrStaleRuntime) || errors.Is(err, run.ErrCommandConflict) {
@@ -80,7 +80,7 @@ func testCreation(t *testing.T, factory Factory) {
 	if !run.StatesEquivalent(&rec.Snapshot.State, &term.State) || rec.Snapshot.Position != term.Position {
 		t.Fatal("terminal Load and Record disagree")
 	}
-	if _, err := h.commit("r1", run.DeriveInputCommandID("r1", "late"), 0, run.AcceptInput{Input: input("late")}); !errors.Is(err, run.ErrRunTerminal) {
+	if _, err := h.commit("r1", run.DeriveInputCommandID("r1", "late"), 0, run.NextStep(input("late"))); !errors.Is(err, run.ErrRunTerminal) {
 		t.Fatalf("commit on terminal = %v", err)
 	}
 	// A second created for the same RunID is refused by the projection, so the
@@ -97,11 +97,11 @@ func testCreation(t *testing.T, factory Factory) {
 func testReplayAndBase(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
-	first := h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-2"), 0, run.AcceptInput{Input: input("in-2")})
+	first := h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-2"), 0, run.NextStep(input("in-2")))
 	if first.Status != run.CommitAccepted {
 		t.Fatal("first accept not accepted")
 	}
-	again := h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-2"), 0, run.AcceptInput{Input: input("in-2")})
+	again := h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-2"), 0, run.NextStep(input("in-2")))
 	if again.Status != run.CommitAlreadyApplied || len(again.Events) != len(first.Events) || again.Events[0].Digest != first.Events[0].Digest {
 		t.Fatalf("replay = %+v", again)
 	}
@@ -118,18 +118,18 @@ func testReplayAndBase(t *testing.T, factory Factory) {
 	cmd, id = h.preparedCommand(snap, false)
 	prepared := h.mustCommit("r1", id, snap.Position, cmd)
 	// Non-prepare commands accept a zero or stale Base (call-local rebase).
-	h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-3"), 0, run.AcceptInput{Input: input("in-3")})
+	h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-3"), 0, run.NextStep(input("in-3")))
 	// Terminal replay: an accepted command replays after termination.
 	h.mustCommit("r1", "cancel", prepared.Snapshot.Position, run.CancelRun{})
-	replay := h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-3"), 0, run.AcceptInput{Input: input("in-3")})
+	replay := h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-3"), 0, run.NextStep(input("in-3")))
 	if replay.Status != run.CommitAlreadyApplied || !replay.Snapshot.State.Status.Terminal() {
 		t.Fatalf("terminal replay = %+v", replay)
 	}
-	if _, err := h.commit("r1", run.DeriveInputCommandID("r1", "in-4"), 0, run.AcceptInput{Input: input("in-4")}); !errors.Is(err, run.ErrRunTerminal) {
+	if _, err := h.commit("r1", run.DeriveInputCommandID("r1", "in-4"), 0, run.NextStep(input("in-4"))); !errors.Is(err, run.ErrRunTerminal) {
 		t.Fatalf("new command after terminal = %v", err)
 	}
 	// Derived-identity families must use their derived CommandID.
-	if _, err := h.commit("r1", "random", 0, run.AcceptInput{Input: input("in-5")}); !errors.Is(err, run.ErrCommandConflict) && !errors.Is(err, run.ErrRunTerminal) {
+	if _, err := h.commit("r1", "random", 0, run.NextStep(input("in-5"))); !errors.Is(err, run.ErrCommandConflict) && !errors.Is(err, run.ErrRunTerminal) {
 		t.Fatalf("non-derived id = %v", err)
 	}
 }
@@ -141,7 +141,7 @@ func testInputQueue(t *testing.T, factory Factory) {
 	h.startRun("t1", "r1", input("in-1"))
 	// Prepared: the input queues and Next asks to withdraw.
 	step := h.prepare("r1", false)
-	h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-2"), 0, run.AcceptInput{Input: input("in-2")})
+	h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-2"), 0, run.NextStep(input("in-2")))
 	snap := h.load("r1")
 	eff, err := run.Next(snap.State)
 	if err != nil {
@@ -162,7 +162,7 @@ func testInputQueue(t *testing.T, factory Factory) {
 	h.mustCommit("r1", id, snap.Position, cmd)
 	// Executing: the input queues; a result without calls reopens instead of ending.
 	claim := h.startModel("r1", cmd.StepID)
-	h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-3"), 0, run.AcceptInput{Input: input("in-3")})
+	h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-3"), 0, run.NextStep(input("in-3")))
 	res := h.mustCommit("r1", run.DeriveSettlementCommandID("r1", cmd.StepID, "", claim), 0, run.SubmitModelResult{StepID: cmd.StepID, Result: textResult("a")})
 	if res.Snapshot.State.Status != run.RunActive {
 		t.Fatal("run ended with a pending input")
@@ -174,7 +174,7 @@ func testInputQueue(t *testing.T, factory Factory) {
 	h2 := newHarness(t, factory(t))
 	h2.startRun("t1", "r2", input("in-1"))
 	h2.openToolStep("r2", 1)
-	res = h2.mustCommit("r2", run.DeriveInputCommandID("r2", "in-9"), 0, run.AcceptInput{Input: input("in-9")})
+	res = h2.mustCommit("r2", run.DeriveInputCommandID("r2", "in-9"), 0, run.NextStep(input("in-9")))
 	if _, ok := res.Snapshot.State.Current.(run.ToolStep); !ok || len(res.Snapshot.State.PendingInputs) != 1 {
 		t.Fatalf("accept on tool step = %+v", res.Snapshot.State)
 	}
@@ -309,7 +309,7 @@ func testAdmission(t *testing.T, factory Factory) {
 	}
 	before := h.head()
 	// Unregistered binding: the whole group is refused and nothing is written.
-	if _, err := h.commit("r1", run.DeriveInputCommandID("r1", "in-2"), 0, run.AcceptInput{Input: input("in-2")}, attach("missing")); err == nil {
+	if _, err := h.commit("r1", run.DeriveInputCommandID("r1", "in-2"), 0, run.NextStep(input("in-2")), attach("missing")); err == nil {
 		t.Fatal("unregistered binding admitted")
 	}
 	if h.head() != before {
@@ -319,7 +319,7 @@ func testAdmission(t *testing.T, factory Factory) {
 		t.Fatal("refused commit changed the Run")
 	}
 	// Registered binding: the claim is Active once the group is committed.
-	res := h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-2"), 0, run.AcceptInput{Input: input("in-2")}, attach("b1"))
+	res := h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-2"), 0, run.NextStep(input("in-2")), attach("b1"))
 	claimID := writer.DeriveClaimID(session.ProtocolVersion1, sid, res.Events[0].CommitID, mustSet(t, h, "b1").RefSetDigest)
 	claim, ok, err := h.ledger.LookupClaim(h.ctx, claimID)
 	if err != nil || !ok || claim.State != artifact.ClaimActive || claim.Owner != writer.CommitOwner(sid, res.Events[0].CommitID) {

@@ -98,9 +98,16 @@ func DeriveResponseCommandID(run RunID, step StepID, call CallID, resp ResponseI
 }
 
 // DeriveInputCommandID derives the CommandID for AcceptInput from the Run and
-// the InputID. Queue-claim references stay private to the host.
-func DeriveInputCommandID(run RunID, input InputID) CommandID {
-	return CommandID(namespacedHash("twilight/input-command", string(run), string(input)))
+// the ordered InputIDs of the batch: the same inputs in the same order replay
+// to the same command, a different batch is a different command. Queue-claim
+// references stay private to the host.
+func DeriveInputCommandID(run RunID, inputs ...InputID) CommandID {
+	parts := make([]string, 0, len(inputs)+1)
+	parts = append(parts, string(run))
+	for _, in := range inputs {
+		parts = append(parts, string(in))
+	}
+	return CommandID(namespacedHash("twilight/input-command", parts...))
 }
 
 // DeriveWithdrawCommandID derives the CommandID of WithdrawPreparedStep: one

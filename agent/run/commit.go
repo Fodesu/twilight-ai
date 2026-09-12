@@ -143,7 +143,7 @@ func checkDerivedCommandID(env *CommandEnvelope, base RunPosition) error {
 	case PrepareModelRequest:
 		want = DeriveModelRequestCommandID(env.RunID, base)
 	case AcceptInput:
-		want = DeriveInputCommandID(env.RunID, cmd.Input.ID)
+		want = DeriveInputCommandID(env.RunID, cmd.InputIDs()...)
 	case WithdrawPreparedStep:
 		want = DeriveWithdrawCommandID(env.RunID, cmd.StepID)
 	case ApproveToolCall:

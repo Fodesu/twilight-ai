@@ -94,7 +94,7 @@ companion 与 Attach 事件与 Run 事实一起经 Module Framework 的 admissio
 | CallID | source ModelStepID、该 call 在模型结果 `ToolCalls` 中的位置 |
 | ResponseID | RunID、ToolStepID、CallID、ResponseKind |
 | response CommandID | RunID、StepID、CallID、ResponseID |
-| input CommandID | RunID、InputID |
+| input CommandID | RunID、有序 InputID 列表（批次） |
 | withdraw CommandID（WithdrawPreparedStep） | RunID、StepID |
 | start CommandID（StartModelExecution / StartToolCall） | RunID、StepID、CallID（model 为空）、Claim |
 | owner settlement CommandID（model result/failure/reject、tool result/failure） | RunID、StepID、CallID、Claim |
@@ -248,7 +248,7 @@ Recovered 回到 Prepared 后，下一次 Start 重发同一 `RequestDigest` 的
 
 | command | precondition / facts |
 |---|---|
-| `AcceptInput` | 任意非终态；`InputAccepted`，追加到 `PendingInputs`。同一 InputID 重复接受为错误 |
+| `AcceptInput` | 任意非终态；批内每个输入一条 `InputAccepted`，按顺序追加到 `PendingInputs`，全有或全无。空批次为拒绝；同一 InputID 已在 pending 或在批内重复为 conflict，整批无事实 |
 | `PrepareModelRequest` | `Open`，完整有序消费 PendingInputs，request/tools digests 有效；`ModelStepPrepared`。command 携带请求本体，fact 只留 digest，本体由 Runtime 写入 FrozenValueStore |
 | `WithdrawPreparedStep` | Model Prepared 且 `PendingInputs` 非空；`ModelStepWithdrawn`，`Current` 回到 `Open`，该请求本体可释放 |
 | `StartModelExecution` | Model Prepared；`ModelStepStarted`。command 必须携带本次 start 的 `ExecutionClaim` |
@@ -303,7 +303,7 @@ type RecoverModelExecution struct {
 
 Waiting call 上的 `ResponseRequest` 由 `WaitingCalls(state)` 读取。Executing call 由 `ExecutingCalls(state)` 读取。`NeedsRecovery(state)` 在 Model Executing 或 ToolStep 无 Pending 且仍有 Executing 时为 true。这些查询不是 Effect。
 
-**RUN-MCH-4** Effect 由调用方每次 Load 后重新派生。`AcceptInput` 在任意非终态入队，Decide 不因 Run 正在执行而拒绝它；`PendingInputs` 只在 `Open` 的 Prepare 中被消费。`PrepareModelRequest.InputIDs` 必须与当前 PendingInputs 等长、同顺序、逐项相同；prepare 接受后一次消费全部 pending input。ToolStep 的 Waiting call 禁止 Start，同一 step 中的 Pending call 仍可执行。没有可执行 Start 时 `Next` 返回 `Idle`。Application 从投影读取 `WaitingCalls` 并提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse`。Executing 目标在当前 owner 进程内由其 worker 结算；owner 崩溃后由接管者按 `NeedsRecovery` 一次性处置（RUN-CMT-7）。
+**RUN-MCH-4** Effect 由调用方每次 Load 后重新派生。`AcceptInput{Inputs}` 携带一个有序、非空的输入批次，在任意非终态入队，Decide 不因 Run 正在执行而拒绝它；批次全有或全无，任一输入非法则不产生任何事实；`PendingInputs` 只在 `Open` 的 Prepare 中被消费。`PrepareModelRequest.InputIDs` 必须与当前 PendingInputs 等长、同顺序、逐项相同；prepare 接受后一次消费全部 pending input。ToolStep 的 Waiting call 禁止 Start，同一 step 中的 Pending call 仍可执行。没有可执行 Start 时 `Next` 返回 `Idle`。Application 从投影读取 `WaitingCalls` 并提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse`。Executing 目标在当前 owner 进程内由其 worker 结算；owner 崩溃后由接管者按 `NeedsRecovery` 一次性处置（RUN-CMT-7）。
 
 ## 5. Runtime、投影与 Commit
 

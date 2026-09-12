@@ -418,7 +418,7 @@ func (f *Feature) commit(cmd run.AgentCommand) run.CommitResult {
 func (f *Feature) commandID(cmd run.AgentCommand, snap run.RuntimeSnapshot) run.CommandID {
 	switch c := cmd.(type) {
 	case run.AcceptInput:
-		return run.DeriveInputCommandID(f.runID, c.Input.ID)
+		return run.DeriveInputCommandID(f.runID, c.InputIDs()...)
 	case run.ApproveToolCall:
 		return run.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
 	case run.RejectToolCall:

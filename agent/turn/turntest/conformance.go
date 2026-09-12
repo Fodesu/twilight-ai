@@ -183,21 +183,61 @@ func testDeliver(t *testing.T, factory Factory) {
 		t.Fatalf("in-3 after refused deliver = %s, want submitted", v.Status)
 	}
 
-	// Several inputs are delivered one commit each (TRN-DLV-2): when a later
-	// input is refused, the earlier ones stay delivered. This pins the current
-	// contract, under which Deliver is a sequence of commits rather than one.
+	// TRN-DLV-1: Deliver validates like Start. An unsubmitted input, or a
+	// payload that differs from the submitted content, is a conflict and the
+	// batch writes nothing -- including its valid members (TRN-DLV-2).
 	h.start("t2", "in-4")
+	run2 := h.surface().Turns["t2"].ActiveRun
 	in5 := h.submit("in-5")
-	_, err = h.c.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("t2"), Inputs: []run.AgentInput{in5[0], input("never-submitted")}})
-	if err == nil || errors.Is(err, turn.ErrConflict) {
-		t.Fatalf("deliver with an unsubmitted input = %v, want a rejection", err)
+	before := h.head()
+	pendingBefore := len(h.load(run2).State.PendingInputs)
+	rejects := []struct {
+		name   string
+		inputs []run.AgentInput
+	}{
+		{"unsubmitted second input", []run.AgentInput{in5[0], input("never-submitted")}},
+		{"payload differs", []run.AgentInput{{ID: in5[0].ID, Payload: run.MustParseCanonicalJSON(`{"text":"other"}`)}}},
 	}
-	chat := h.chat()
-	if v, _ := chat.Inputs.Get("in-5"); v.Status != chatlog.InputDelivered {
-		t.Fatal("the first input of a partially refused Deliver was not delivered")
+	for _, tc := range rejects {
+		if _, err := h.c.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("t2"), Inputs: tc.inputs}); !errors.Is(err, turn.ErrConflict) {
+			t.Fatalf("%s: deliver = %v, want conflict", tc.name, err)
+		}
+		if h.head() != before {
+			t.Fatalf("%s: a refused Deliver wrote rows", tc.name)
+		}
+		if v, _ := h.chat().Inputs.Get("in-5"); v.Status != chatlog.InputSubmitted {
+			t.Fatalf("%s: in-5 = %s, want submitted", tc.name, v.Status)
+		}
+		if got := len(h.load(run2).State.PendingInputs); got != pendingBefore {
+			t.Fatalf("%s: pending inputs changed to %d", tc.name, got)
+		}
 	}
-	if chat.Inputs.Has("never-submitted") {
+	if h.chat().Inputs.Has("never-submitted") {
 		t.Fatal("an unsubmitted input entered the chatlog")
+	}
+
+	// TRN-DLV-2: a batch is one group under the batch CommandID -- every
+	// input_accepted and input_delivered together -- and its replay writes nothing.
+	in6 := h.submit("in-6")
+	batch := []run.AgentInput{in5[0], in6[0]}
+	if _, err := h.c.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("t2"), Inputs: batch}); err != nil {
+		t.Fatalf("batch deliver = %v", err)
+	}
+	group = h.group(session.CommitID(run.DeriveInputCommandID(run2, "in-5", "in-6")))
+	if !sameTypes(group, typeAccepted, typeAccepted, chatlog.TypeInputDelivered, chatlog.TypeInputDelivered) {
+		t.Fatalf("batch group = %v", eventTypes(group))
+	}
+	for _, id := range []chatlog.InputID{"in-5", "in-6"} {
+		if v, _ := h.chat().Inputs.Get(id); v.Status != chatlog.InputDelivered || v.Input.TurnID != "t2" {
+			t.Fatalf("%s after batch = %+v", id, v)
+		}
+	}
+	if pending := h.load(run2).State.PendingInputs; len(pending) != pendingBefore+2 {
+		t.Fatalf("pending after batch = %+v", pending)
+	}
+	head = h.head()
+	if _, err := h.c.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("t2"), Inputs: batch}); err != nil || h.head() != head {
+		t.Fatalf("batch replay: err=%v moved=%v", err, h.head() != head)
 	}
 }
 

@@ -20,7 +20,7 @@ func newRun(t *testing.T) MachineState {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return fold(t, s, mustDecide(t, s, AcceptInput{Input: AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)}}))
+	return fold(t, s, mustDecide(t, s, NextStep(AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)})))
 }
 
 func mustDecide(t *testing.T, s MachineState, c AgentCommand) []Fact {

@@ -222,7 +222,12 @@ func checkSubmitted(view writer.View, inputs []run.AgentInput) error {
 	if err != nil {
 		return err
 	}
-	surface := state.(chatlog.Surface)
+	return checkSubmittedIn(state.(chatlog.Surface), inputs)
+}
+
+// checkSubmittedIn is TRN-STR-1(2) against a loaded chatlog surface: every
+// input is a submitted chatlog Input whose content equals the payload.
+func checkSubmittedIn(surface chatlog.Surface, inputs []run.AgentInput) error {
 	for _, in := range inputs {
 		view, ok := surface.Inputs.Get(chatlog.InputID(in.ID))
 		if !ok || view.Status != chatlog.InputSubmitted {
@@ -255,24 +260,56 @@ func (c *Coordinator) Deliver(ctx context.Context, req DeliverRequest) (TurnResp
 		return TurnResponse{}, fmt.Errorf("%w: turn %s has no active attempt", ErrConflict, req.Ref.TurnID)
 	}
 	runID := att.RunID
+	if len(req.Inputs) == 0 {
+		return TurnResponse{}, fmt.Errorf("%w: deliver without inputs", ErrConflict)
+	}
 	proto, err := run.ProtocolFor(att.SchemaVersion)
 	if err != nil {
 		return TurnResponse{}, err
 	}
-	for _, in := range req.Inputs {
-		env, err := proto.BuildEnvelope(sid, runID, run.DeriveInputCommandID(runID, in.ID), run.AcceptInput{Input: in})
+	// TRN-DLV-2: one command carries the whole batch, so the Run accepts every
+	// input and the chatlog delivers every input in one group, or nothing is
+	// written. The CommandID derives from the ordered InputIDs; a replay of
+	// the same batch is AlreadyApplied.
+	cmd := run.AcceptInput{Inputs: req.Inputs}
+	env, err := proto.BuildEnvelope(sid, runID, run.DeriveInputCommandID(runID, cmd.InputIDs()...), cmd)
+	if err != nil {
+		return TurnResponse{}, err
+	}
+	w, err := c.writer(ctx, sid)
+	if err != nil {
+		return TurnResponse{}, err
+	}
+	// TRN-DLV-1: the same check as Start, skipped for a replay of a batch the
+	// stream already holds (its inputs are delivered by then; Runtime.Commit
+	// answers AlreadyApplied or Conflict). The check runs before Runtime.Commit,
+	// so a withdrawal landing in between is not caught here; the chatlog
+	// projection pre-fold then rejects input_delivered for a non-submitted
+	// input and the whole group is refused, which keeps the outcome
+	// all-or-nothing.
+	replayed, err := w.OwnerExists(ctx, writer.CommitOwner(sid, session.CommitID(env.ID)))
+	if err != nil {
+		return TurnResponse{}, err
+	}
+	if !replayed {
+		state, _, err := w.Projections().Load(ctx, sid, chatlog.SurfaceProjectionID, chatlog.SurfaceProjection.Version)
 		if err != nil {
 			return TurnResponse{}, err
 		}
-		_, err = c.Runtime.Commit(ctx, sid, run.CommitRequest{Command: env,
-			Attach: []run.ModuleEvent{{Type: chatlog.TypeInputDelivered, Value: chatlog.InputDeliveredPayload{InputID: chatlog.InputID(in.ID), TurnID: chatlog.TurnID(req.Ref.TurnID)}}}})
-		if err != nil {
-			if errors.Is(err, run.ErrRunTerminal) {
-				// The last step settled first (TRN-DLV-3): the input stays submitted.
-				return c.respond(ctx, req.Ref, runID)
-			}
+		if err := checkSubmittedIn(state.(chatlog.Surface), req.Inputs); err != nil {
 			return TurnResponse{}, err
 		}
+	}
+	attach := make([]run.ModuleEvent, len(req.Inputs))
+	for i, in := range req.Inputs {
+		attach[i] = run.ModuleEvent{Type: chatlog.TypeInputDelivered, Value: chatlog.InputDeliveredPayload{InputID: chatlog.InputID(in.ID), TurnID: chatlog.TurnID(req.Ref.TurnID)}}
+	}
+	if _, err := c.Runtime.Commit(ctx, sid, run.CommitRequest{Command: env, Attach: attach}); err != nil {
+		if errors.Is(err, run.ErrRunTerminal) {
+			// The last step settled first (TRN-DLV-3): the inputs stay submitted.
+			return c.respond(ctx, req.Ref, runID)
+		}
+		return TurnResponse{}, err
 	}
 	return c.respond(ctx, req.Ref, runID)
 }

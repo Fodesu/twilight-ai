@@ -14,8 +14,8 @@ type AgentInput struct {
 	Payload CanonicalJSON `json:"payload"`
 }
 
-// NextStep creates the AcceptInput command.
-func NextStep(input AgentInput) AcceptInput { return AcceptInput{Input: input} }
+// NextStep creates the AcceptInput command for one or more inputs.
+func NextStep(inputs ...AgentInput) AcceptInput { return AcceptInput{Inputs: inputs} }
 
 // PrepareModelRequest freezes the next model request. Its CommandID is
 // derived from the loaded Revision, which is also its concurrency control.
@@ -189,14 +189,25 @@ type CancelRun struct {
 
 func (CancelRun) agentCommand() {}
 
-// AcceptInput appends one input to PendingInputs. Legal in every non-terminal
-// state (Open, ModelStep, ToolStep, Waiting); the input is consumed by the next
-// Prepare. Idempotent per (RunID, InputID) with identical payload.
+// AcceptInput appends an ordered, non-empty list of inputs to PendingInputs as
+// one command: every input is accepted or none is. Legal in every non-terminal
+// state (Open, ModelStep, ToolStep, Waiting); the inputs are consumed by the
+// next Prepare. Its CommandID derives from the ordered InputIDs
+// (DeriveInputCommandID), so the same batch replays idempotently.
 type AcceptInput struct {
-	Input AgentInput `json:"input"`
+	Inputs []AgentInput `json:"inputs"`
 }
 
 func (AcceptInput) agentCommand() {}
+
+// InputIDs returns the ordered InputIDs of the batch.
+func (c AcceptInput) InputIDs() []InputID {
+	ids := make([]InputID, len(c.Inputs))
+	for i, in := range c.Inputs {
+		ids[i] = in.ID
+	}
+	return ids
+}
 
 // commandType returns the wire discriminator for a sealed command variant.
 func commandType(c AgentCommand) string {

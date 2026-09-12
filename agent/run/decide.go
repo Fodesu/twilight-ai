@@ -620,17 +620,30 @@ func unknownExecutingCalls(s *MachineState, failure ToolFailure) []Fact {
 	return facts
 }
 
-// decideAcceptInput queues an input in any non-terminal state (RUN-MCH-4):
-// PendingInputs is the durable mid-run input queue, consumed by the next
-// Prepare. A Prepared step with a non-empty queue is withdrawn by Next.
+// decideAcceptInput queues a batch of inputs in any non-terminal state
+// (RUN-MCH-4): PendingInputs is the durable mid-run input queue, consumed by
+// the next Prepare. A Prepared step with a non-empty queue is withdrawn by
+// Next. The batch is all-or-nothing: an empty list or an empty InputID is a
+// rejection, and an input already pending, or repeated inside the batch, is
+// ErrCommandConflict; in every failure no fact is produced.
 func decideAcceptInput(s *MachineState, cmd AcceptInput) ([]Fact, error) {
-	if cmd.Input.ID == "" {
-		return nil, rejectionf("accept input: empty InputID")
+	if len(cmd.Inputs) == 0 {
+		return nil, rejectionf("accept input: empty batch")
 	}
+	seen := make(map[InputID]struct{}, len(cmd.Inputs)+len(s.PendingInputs))
 	for _, in := range s.PendingInputs {
-		if in.ID == cmd.Input.ID {
+		seen[in.ID] = struct{}{}
+	}
+	facts := make([]Fact, 0, len(cmd.Inputs))
+	for _, in := range cmd.Inputs {
+		if in.ID == "" {
+			return nil, rejectionf("accept input: empty InputID")
+		}
+		if _, dup := seen[in.ID]; dup {
 			return nil, ErrCommandConflict
 		}
+		seen[in.ID] = struct{}{}
+		facts = append(facts, InputAccepted{Input: in})
 	}
-	return []Fact{InputAccepted(cmd)}, nil
+	return facts, nil
 }
