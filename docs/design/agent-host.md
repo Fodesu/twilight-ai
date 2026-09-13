@@ -12,6 +12,22 @@
 
 **HST-SCP-3** 分离成立的判据：authority 进程在没有任何模型客户端与工具实现的情况下能构建 Host、注册 Profile、Start Turn、把 Assignment 交给 Executor 并在 Outcome 到达时提交事实；effect 实现只存在于 Executor 一侧。
 
+**HST-SCP-4** Loop 运行在 authority 里，与 Host 同进程，executor 进程里没有 Loop。Loop 的层次要分开看：它的决策内容——Machine 的 `Next`、Planner、Policy——是纯函数，属于决策层，身份进 Profile 摘要；Loop 本身是把决策翻译成事实层提交与效果层 Assignment 的驱动器，读投影、经 Runtime 写事实、经 Executor 端口派发，因此不纯。这个区分决定了两条独立的替换轴：换 Planner 或 Policy 不动 Loop，换驱动方式（阻塞、后台、事件驱动）不动决策层。
+
+角色对照：
+
+| 角色 | 对应 |
+|---|---|
+| Session Store | `session.Store` 端口及其 adapter |
+| Session Service（authority） | Host：事实层 + 决策层 + Loop 驱动器，加部署提供的薄控制面 |
+| Executor | `loop.Executor` 端口；实现是进程内 `LocalExecutor` 或远端客户端，效果实现只在这一侧 |
+| Read Models / 观察者 | `extension.NewProjectionReader` 直接挂在 Store 上，不经 Host；`Host.Events` 是 owner 侧的实时流，两者对同一 head 一致（EXT-PRJ-4） |
+| Workspace | 只有 Profile 里的 `WorkspaceRef` 插槽；服务在 core 之外 |
+| 存活判定 / 何时 Takeover | 不在 core 也不在 Host；由部署（Agent Server 或运维）决定 |
+| Agent Server（API、Auth、路由） | core 之外 |
+
+本地部署把 authority 与 executor 折叠进一个进程；云端部署把它们展开。两种部署使用同一个 Host 与同一组端口。
+
 ## 2. 端口与 Host
 
 ```go
