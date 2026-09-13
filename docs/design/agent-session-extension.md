@@ -244,7 +244,7 @@ func (p CachePolicy) Exclude(ids ...ProjectionID) CachePolicy
 func NewProjectionReader(store session.Store, registry *Registry, cache ProjectionCache) ProjectionReader
 ```
 
-**EXT-PRJ-1** Initial、Apply、StateCodec 必须 pure。Fold 以组为单位：一组内任一 event 的 Apply 失败，不发布该组的部分状态。
+**EXT-PRJ-1** Initial、Apply、StateCodec 必须 pure。Fold 以组为单位：一组内任一 event 的 Apply 失败，不发布该组的部分状态。组边界以 CommitID 的变化判定，不以 `Last` 标记：kernel 从不暴露不完整组（SES-APP-2），而按 `Types` 过滤的读取（EXT-PRJ-2）会省掉一个组里属于其他模块的行，其中可能包括带 `Last` 的那一行。
 
 **EXT-PRJ-2** 投影只处理 `Consumes` 中的 EventType。其他 EventType 按归属处理：属于本模块或 `Requires` 模块（EXT-REG-4 的范围）且 `Decode` 为 Unknown 的事件，`Ignorable` 为真则跳过，否则 Fold 失败；范围之外的模块的事件一律跳过。写入者对纯信息性事件声明 `Ignorable`（EXT-REG），默认不可忽略：忘记声明只会导致多拒绝，不会导致静默丢失。读取时以范围内模块的前缀作为 `Types` 过滤。
 

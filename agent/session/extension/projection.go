@@ -48,16 +48,16 @@ func (r *Registry) ScopeFor(id ProjectionID, v ProjectionVersion) (*ProjectionSc
 }
 
 // Fold applies rows to state group by group (EXT-PRJ-1/2). rows must be whole
-// groups in Seq order, and it stops at the first incomplete group. It is pure
-// with respect to the Registry: the same Scope and rows always fold the same.
+// groups in Seq order. A group is a run of rows sharing one CommitID: the
+// kernel never exposes an incomplete group (SES-APP-2), and a Types-filtered
+// Read (EXT-PRJ-2) may omit a group's Last row, so the boundary is the
+// CommitID change, not the Last flag. It is pure with respect to the
+// Registry: the same Scope and rows always fold the same.
 func (r *Registry) Fold(s *ProjectionScope, state any, rows []session.SessionEvent) (any, error) {
 	for i := 0; i < len(rows); {
 		end := i
-		for end < len(rows) && !rows[end].Last {
+		for end+1 < len(rows) && rows[end+1].CommitID == rows[i].CommitID {
 			end++
-		}
-		if end >= len(rows) {
-			return nil, &Error{Code: ErrInvalid, Detail: "fold received an incomplete group"}
 		}
 		next := state
 		for j := i; j <= end; j++ {
