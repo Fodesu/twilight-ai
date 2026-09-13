@@ -51,7 +51,7 @@ func main() {
 
 func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID, compat, system string, mock bool, compactAfter int) error {
 	ctx := context.Background()
-	catalog, profile, err := buildAgent(mock, provider, baseURL, apiKey, modelID, compat, system)
+	catalog, preset, err := buildAgent(mock, provider, baseURL, apiKey, modelID, compat, system)
 	if err != nil {
 		return err
 	}
@@ -84,11 +84,11 @@ func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID
 	eventsCtx, stopEvents := context.WithCancel(ctx)
 	defer stopEvents()
 	go printToolActivity(h.Events(eventsCtx, sid))
-	profileRef, err := h.Profiles.Register("cli", profile)
+	presetRef, err := h.Presets.Register("cli", preset)
 	if err != nil {
 		return err
 	}
-	s, err := h.OpenSession(ctx, sid, host.SessionOptions{Profile: profileRef, CompactAfterEntries: compactAfter,
+	s, err := h.OpenSession(ctx, sid, host.SessionOptions{Preset: presetRef, CompactAfterEntries: compactAfter,
 		CompactWarn: func(err error) { fmt.Fprintln(os.Stderr, "compact:", err) }})
 	if err != nil {
 		return err
@@ -223,23 +223,23 @@ func printToolActivity(events <-chan host.Event) {
 // --- agent -------------------------------------------------------------------
 
 // buildAgent returns the two halves of the agent: the effect catalog the
-// LocalExecutor serves (model client, tool implementation) and the Profile
+// LocalExecutor serves (model client, tool implementation) and the AgentPreset
 // the authority records (model ref, frozen tool definition, system prompt).
-func buildAgent(mock bool, provider, baseURL, apiKey, modelID, compat, system string) (*host.Catalog, turn.Profile, error) {
+func buildAgent(mock bool, provider, baseURL, apiKey, modelID, compat, system string) (*host.Catalog, turn.AgentPreset, error) {
 	if mock {
 		tool := nowTool{}
 		catalog, err := host.NewCatalog(map[run.ModelRef]loop.ModelInvoker{"mock": mockModel{}}, tool)
 		if err != nil {
-			return nil, turn.Profile{}, err
+			return nil, turn.AgentPreset{}, err
 		}
-		profile, err := host.NewProfile("mock", []loop.ExecutableTool{tool}, host.WithSystemPrompt(system))
-		return catalog, profile, err
+		preset, err := host.NewPreset("mock", []loop.ExecutableTool{tool}, host.WithSystemPrompt(system))
+		return catalog, preset, err
 	}
 	if provider != "openai-completions" {
-		return nil, turn.Profile{}, fmt.Errorf("unsupported provider %q (only openai-completions)", provider)
+		return nil, turn.AgentPreset{}, fmt.Errorf("unsupported provider %q (only openai-completions)", provider)
 	}
 	if modelID == "" {
-		return nil, turn.Profile{}, errors.New("-model is required (or use -mock)")
+		return nil, turn.AgentPreset{}, errors.New("-model is required (or use -mock)")
 	}
 	if apiKey == "" {
 		apiKey = os.Getenv("TWILIGHT_API_KEY")
@@ -259,7 +259,7 @@ func buildAgent(mock bool, provider, baseURL, apiKey, modelID, compat, system st
 	case "deepseek":
 		opts = append(opts, completions.WithDeepSeekChatCompletionsCompat())
 	default:
-		return nil, turn.Profile{}, fmt.Errorf("unsupported compat %q (only deepseek)", compat)
+		return nil, turn.AgentPreset{}, fmt.Errorf("unsupported compat %q (only deepseek)", compat)
 	}
 	// *sdk.Model is itself the ModelInvoker: it exposes
 	// Generate(context.Context, sdk.Request) (sdk.ModelResult, error), so a
@@ -267,10 +267,10 @@ func buildAgent(mock bool, provider, baseURL, apiKey, modelID, compat, system st
 	invoker := &sdk.Model{ID: modelID, Provider: completions.New(opts...), Type: sdk.ModelTypeChat}
 	catalog, err := host.NewCatalog(map[run.ModelRef]loop.ModelInvoker{run.ModelRef(modelID): invoker})
 	if err != nil {
-		return nil, turn.Profile{}, err
+		return nil, turn.AgentPreset{}, err
 	}
-	profile, err := host.NewProfile(run.ModelRef(modelID), nil, host.WithSystemPrompt(system))
-	return catalog, profile, err
+	preset, err := host.NewPreset(run.ModelRef(modelID), nil, host.WithSystemPrompt(system))
+	return catalog, preset, err
 }
 
 // mockModel answers once a tool result is in the conversation and reports how

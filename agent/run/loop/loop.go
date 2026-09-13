@@ -17,9 +17,9 @@ import (
 // Deliver and are settled under the attempt's Claim; the Loop never waits on
 // an effect inside Advance.
 type Loop struct {
-	Executor  Executor
-	Planner   RequestPlanner
-	Execution ExecutionPolicy
+	Executor Executor
+	Builder  PromptBuilder
+	Settings Settings
 
 	mu       sync.Mutex
 	slots    map[run.RunID]*runSlot
@@ -34,29 +34,30 @@ type runSlot struct {
 	driving bool
 }
 
-// New validates the execution policy (RUN-LOP-1) and binds the executor.
-func New(exec Executor, planner RequestPlanner, policy ExecutionPolicy) (*Loop, error) {
+// New validates the settings (RUN-LOP-1) and binds the executor and the
+// prompt builder.
+func New(exec Executor, builder PromptBuilder, settings Settings) (*Loop, error) {
 	if exec == nil {
 		return nil, errors.New("agent: loop: nil executor")
 	}
-	if planner == nil {
-		return nil, errors.New("agent: loop: nil request planner")
+	if builder == nil {
+		return nil, errors.New("agent: loop: nil builder")
 	}
-	if policy.ToolExecution != "" && policy.ToolExecution != ToolExecutionParallel && policy.ToolExecution != ToolExecutionSequential {
-		return nil, fmt.Errorf("agent: loop: unknown ToolExecution mode %q", policy.ToolExecution)
+	if m := settings.Scheduling.Mode; m != "" && m != run.ToolScheduleParallel && m != run.ToolScheduleSequential {
+		return nil, fmt.Errorf("agent: loop: unknown scheduling mode %q", m)
 	}
-	if policy.MaxParallel < 0 {
+	if settings.Scheduling.MaxParallel < 0 {
 		return nil, errors.New("agent: loop: negative MaxParallel")
 	}
-	return &Loop{Executor: exec, Planner: planner, Execution: policy, slots: make(map[run.RunID]*runSlot)}, nil
+	return &Loop{Executor: exec, Builder: builder, Settings: settings, slots: make(map[run.RunID]*runSlot)}, nil
 }
 
 func (l *Loop) toolScheduling() run.ToolScheduling {
-	mode := run.ToolScheduleMode(l.Execution.ToolExecution)
-	if mode == "" {
-		mode = run.ToolScheduleParallel
+	s := l.Settings.Scheduling
+	if s.Mode == "" {
+		s.Mode = run.ToolScheduleParallel
 	}
-	return run.ToolScheduling{Mode: mode, MaxParallel: l.Execution.MaxParallel}
+	return s
 }
 
 func (l *Loop) slot(runID run.RunID) *runSlot {

@@ -19,7 +19,7 @@ const ModuleID extension.ModuleID = "turn"
 
 type (
 	TurnID           string
-	ProfileID        string
+	PresetID         string
 	CompanionVersion string
 )
 
@@ -28,8 +28,8 @@ type TurnRef struct {
 	TurnID    TurnID
 }
 
-type ProfileRef struct {
-	ID     ProfileID `json:"id"`
+type PresetRef struct {
+	ID     PresetID  `json:"id"`
 	Digest es.Digest `json:"digest"`
 }
 
@@ -51,7 +51,7 @@ const (
 type StartedPayload struct {
 	TurnID    TurnID            `json:"turnId"`
 	InputIDs  []chatlog.InputID `json:"inputIds,omitempty"`
-	Profile   ProfileRef        `json:"profile"`
+	Preset    PresetRef         `json:"preset"`
 	Companion CompanionVersion  `json:"companion"`
 }
 
@@ -80,8 +80,8 @@ func digestOf(domain string, parts ...string) es.Digest {
 }
 
 // PlanDigest is TRN-ID-2.
-func PlanDigest(turnID TurnID, profile es.Digest, companion CompanionVersion, inputs []chatlog.InputID) es.Digest {
-	parts := []string{string(turnID), string(profile), string(companion)}
+func PlanDigest(turnID TurnID, preset es.Digest, companion CompanionVersion, inputs []chatlog.InputID) es.Digest {
+	parts := []string{string(turnID), string(preset), string(companion)}
 	for _, id := range inputs {
 		parts = append(parts, string(id))
 	}
@@ -132,8 +132,8 @@ var Module = extension.ModuleDescriptor{
 	},
 	Events: []extension.EventDefinition{
 		def[StartedPayload](TypeStarted, func(p *StartedPayload) error {
-			if p.TurnID == "" || p.Profile.ID == "" || p.Profile.Digest == "" || p.Companion == "" {
-				return errors.New("started requires turnId, profile and companion")
+			if p.TurnID == "" || p.Preset.ID == "" || p.Preset.Digest == "" || p.Companion == "" {
+				return errors.New("started requires turnId, preset and companion")
 			}
 			return nil
 		}),

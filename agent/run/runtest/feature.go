@@ -91,7 +91,7 @@ type Feature struct {
 	defs    map[run.ToolRef]sdk.ToolDefinition // provider bodies behind specs; ToolSpec keeps only the digest
 	tools   map[run.ToolRef]*scriptTool
 	invoker *scriptInvoker
-	planner *scriptPlanner
+	builder *scriptBuilder
 	loop    *loop.Loop
 	seq     int
 
@@ -357,7 +357,7 @@ func (f *Feature) ensureLoop() {
 		return
 	}
 	f.invoker = &scriptInvoker{results: f.results}
-	f.planner = &scriptPlanner{model: f.model, specs: f.specs, defs: f.defs}
+	f.builder = &scriptBuilder{model: f.model, specs: f.specs, defs: f.defs}
 	tools := make(map[run.ToolRef]loop.ExecutableTool, len(f.tools))
 	for ref, tool := range f.tools {
 		tools[ref] = tool
@@ -366,7 +366,7 @@ func (f *Feature) ensureLoop() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	l, err := loop.New(exec, f.planner, loop.ExecutionPolicy{})
+	l, err := loop.New(exec, f.builder, loop.Settings{})
 	if err != nil {
 		f.t.Fatal(err)
 	}

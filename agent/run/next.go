@@ -8,7 +8,7 @@ import "github.com/felinics/twilight/agent/session"
 type Effect interface{ effect() }
 
 type NeedModelRequest struct {
-	Hint PlanningHint
+	Hint PromptInput
 }
 
 func (NeedModelRequest) effect() {}
@@ -101,10 +101,10 @@ func NeedsRecovery(s MachineState) bool {
 	}
 }
 
-// PlanningHint is what the Loop hands the application RequestPlanner: the Run
+// PromptInput is what the Loop hands the application PromptBuilder: the Run
 // boundary facts only. Conversation content (previous assistant output, tool
-// results) is read from the Session by the planner itself.
-type PlanningHint struct {
+// results) is read from the Session by the prompt builder itself.
+type PromptInput struct {
 	Session    session.SessionID // filled by the Loop; Next does not know it
 	Owner      OwnerID
 	RunID      RunID
@@ -126,7 +126,7 @@ func Next(s MachineState) (Effect, error) {
 		if s.LastToolStep != nil {
 			source = s.LastToolStep.RefValue.ID
 		}
-		return NeedModelRequest{Hint: PlanningHint{
+		return NeedModelRequest{Hint: PromptInput{
 			Owner:      s.Owner,
 			RunID:      s.RunID,
 			SourceStep: source,

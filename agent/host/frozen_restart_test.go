@@ -28,12 +28,12 @@ func (m *gateModel) Generate(_ context.Context, req sdk.Request) (sdk.ModelResul
 }
 
 // crashMidModel runs process 1 on root until its model call is Executing and
-// returns the request it was sent plus the profile ref; the process is then
+// returns the request it was sent plus the preset ref; the process is then
 // considered dead (its Send is left blocked and fenced later).
-func crashMidModel(t *testing.T, root string, sid session.SessionID) (turn.ProfileRef, turn.Profile, sdk.Request, *gateModel, chan error) {
+func crashMidModel(t *testing.T, root string, sid session.SessionID) (turn.PresetRef, turn.AgentPreset, sdk.Request, *gateModel, chan error) {
 	t.Helper()
 	ctx := context.Background()
-	profile := mustProfile("m-1", nil, host.WithSystemPrompt("be brief"))
+	preset := mustPreset("m-1", nil, host.WithSystemPrompt("be brief"))
 	store1, err := filestore.New(root)
 	if err != nil {
 		t.Fatal(err)
@@ -44,11 +44,11 @@ func crashMidModel(t *testing.T, root string, sid session.SessionID) (turn.Profi
 	}
 	gate := &gateModel{started: make(chan sdk.Request, 1), release: make(chan struct{})}
 	p1 := newHost(host.Ports{Store: store1, Content: content1}, map[run.ModelRef]loop.ModelInvoker{"m-1": gate})
-	profileRef, err := p1.Profiles.Register("a1", profile)
+	presetRef, err := p1.Presets.Register("a1", preset)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s1, err := p1.OpenSession(ctx, sid, host.SessionOptions{Profile: profileRef})
+	s1, err := p1.OpenSession(ctx, sid, host.SessionOptions{Preset: presetRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func crashMidModel(t *testing.T, root string, sid session.SessionID) (turn.Profi
 	case err := <-sendErr:
 		t.Fatalf("send returned before the model executed: %v", err)
 	}
-	return profileRef, profile, sent, gate, sendErr
+	return presetRef, preset, sent, gate, sendErr
 }
 
 // Process 2 cannot reattach (a colocated executor died with process 1), so the
@@ -74,7 +74,7 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	const sid session.SessionID = "s-frozen-replan"
-	profileRef, profile, sent, gate, sendErr := crashMidModel(t, root, sid)
+	presetRef, preset, sent, gate, sendErr := crashMidModel(t, root, sid)
 
 	store2, err := filestore.New(root)
 	if err != nil {
@@ -86,10 +86,10 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 	}
 	replan := &scriptedRequests{}
 	p2 := newHost(host.Ports{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": replan})
-	if _, err := p2.Profiles.Register("a1", profile); err != nil {
+	if _, err := p2.Presets.Register("a1", preset); err != nil {
 		t.Fatal(err)
 	}
-	s2, err := p2.OpenSession(ctx, sid, host.SessionOptions{Profile: profileRef})
+	s2, err := p2.OpenSession(ctx, sid, host.SessionOptions{Preset: presetRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	const sid session.SessionID = "s-frozen-reattach"
-	profileRef, profile, _, gate, sendErr := crashMidModel(t, root, sid)
+	presetRef, preset, _, gate, sendErr := crashMidModel(t, root, sid)
 
 	store2, err := filestore.New(root)
 	if err != nil {
@@ -176,10 +176,10 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p2.Profiles.Register("a1", profile); err != nil {
+	if _, err := p2.Presets.Register("a1", preset); err != nil {
 		t.Fatal(err)
 	}
-	s2, err := p2.OpenSession(ctx, sid, host.SessionOptions{Profile: profileRef})
+	s2, err := p2.OpenSession(ctx, sid, host.SessionOptions{Preset: presetRef})
 	if err != nil {
 		t.Fatal(err)
 	}

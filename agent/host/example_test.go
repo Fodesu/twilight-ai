@@ -26,7 +26,7 @@ import (
 // never closed — and takes the Session over (Epoch 2). Its Executor is fresh,
 // so no attempt reattaches: the takeover disposition settles the abandoned
 // call as Unknown in the same group as its chatlog tool_result, the Run stays
-// Active, and Drive runs the Loop: the planner reads the conversation back
+// Active, and Drive runs the Loop: the prompt builder reads the conversation back
 // from the chatlog projection and the Turn completes. The dead process's
 // worker finally returns and its settlement is fenced by the kernel: nothing
 // of Epoch 1 reaches the stream after the takeover.
@@ -39,7 +39,7 @@ func Example_recoverableTurn() {
 	store := session.NewMemoryStore()
 	content := memoryContent()
 	tool := &lookupTool{block: make(chan struct{})}
-	profile := mustProfile("m-1", []loop.ExecutableTool{tool})
+	preset := mustPreset("m-1", []loop.ExecutableTool{tool})
 
 	// ---- process 1 ----------------------------------------------------------
 	p1 := newHost(host.Ports{Store: store, Content: content, Clock: clock.Now},
@@ -50,7 +50,7 @@ func Example_recoverableTurn() {
 	if _, err := p1.Open(ctx, sid); err != nil {
 		panic(err)
 	}
-	profile1, err := p1.Profiles.Register("weather-agent", profile)
+	profile1, err := p1.Presets.Register("weather-agent", preset)
 	if err != nil {
 		panic(err)
 	}
@@ -62,7 +62,7 @@ func Example_recoverableTurn() {
 	startDone := make(chan error, 1)
 	go func() {
 		_, err := p1.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
-			Profile: profile1, Companion: turn.CompanionV1Version})
+			Preset: profile1, Companion: turn.CompanionV1Version})
 		if err == nil {
 			// The Coordinator only commits; the host drives (HST-DRV-1).
 			_, err = p1.Drive(ctx, ref1)
@@ -75,9 +75,9 @@ func Example_recoverableTurn() {
 	// ---- process 2 ----------------------------------------------------------
 	p2 := newHost(host.Ports{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}, Clock: clock.Now},
 		map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedModel{}}, tool)
-	// The profile is re-registered from the same public configuration, so the
+	// The preset is re-registered from the same public configuration, so the
 	// ref the Session recorded still resolves.
-	if _, err := p2.Profiles.Register("weather-agent", profile); err != nil {
+	if _, err := p2.Presets.Register("weather-agent", preset); err != nil {
 		panic(err)
 	}
 	recovered, err := p2.Open(ctx, sid)

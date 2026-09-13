@@ -15,8 +15,8 @@ import (
 )
 
 // setup composes a Host over an in-memory store with one model and one tool,
-// registers the profile and opens a Session whose new Turns are named t2, t3, ...
-func setup(t *testing.T, model loop.ModelInvoker, tool *gateTool, opts host.SessionOptions) (*host.Host, turn.ProfileRef, session.SessionID, *host.Session) {
+// registers the preset and opens a Session whose new Turns are named t2, t3, ...
+func setup(t *testing.T, model loop.ModelInvoker, tool *gateTool, opts host.SessionOptions) (*host.Host, turn.PresetRef, session.SessionID, *host.Session) {
 	t.Helper()
 	tools := []loop.ExecutableTool{}
 	if tool != nil {
@@ -27,11 +27,11 @@ func setup(t *testing.T, model loop.ModelInvoker, tool *gateTool, opts host.Sess
 	if err := h.CreateSession(context.Background(), sid); err != nil {
 		t.Fatal(err)
 	}
-	profile, err := h.Profiles.Register("b1", mustProfile("m-1", tools, host.WithSystemPrompt("be brief")))
+	preset, err := h.Presets.Register("b1", mustPreset("m-1", tools, host.WithSystemPrompt("be brief")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts.Profile = profile
+	opts.Preset = preset
 	next := 2
 	if opts.NewTurnID == nil {
 		opts.NewTurnID = func() turn.TurnID { id := turn.TurnID("t" + string(rune('0'+next))); next++; return id }
@@ -40,7 +40,7 @@ func setup(t *testing.T, model loop.ModelInvoker, tool *gateTool, opts host.Sess
 	if err != nil {
 		t.Fatal(err)
 	}
-	return h, profile, sid, s
+	return h, preset, sid, s
 }
 
 // An input delivered while a tool call is Executing queues on the Run, is
@@ -50,7 +50,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	ctx := context.Background()
 	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
-	h, profile, sid, s := setup(t, model, tool, host.SessionOptions{})
+	h, preset, sid, s := setup(t, model, tool, host.SessionOptions{})
 
 	first, err := h.SubmitInput(ctx, sid, "in-1", "what is the weather?")
 	if err != nil {
@@ -59,7 +59,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "t1"}
 	done := make(chan turn.TurnResponse, 1)
 	go func() {
-		resp, err := h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Profile: profile, Companion: turn.CompanionV1Version})
+		resp, err := h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: preset, Companion: turn.CompanionV1Version})
 		if err == nil {
 			// The Coordinator only commits; the host drives (HST-DRV-1).
 			resp, err = h.Drive(ctx, ref1)
@@ -127,18 +127,18 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 }
 
 // Stop settles the Turn as stopped in the same commit as CancelRun; a later
-// Route opens a new Turn whose planner sees the stopped Turn's content.
+// Route opens a new Turn whose prompt builder sees the stopped Turn's content.
 func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	ctx := context.Background()
 	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
-	h, profile, sid, s := setup(t, model, tool, host.SessionOptions{})
+	h, preset, sid, s := setup(t, model, tool, host.SessionOptions{})
 	first, _ := h.SubmitInput(ctx, sid, "in-1", "hello")
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "t1"}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if _, err := h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Profile: profile, Companion: turn.CompanionV1Version}); err == nil {
+		if _, err := h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: preset, Companion: turn.CompanionV1Version}); err == nil {
 			_, _ = h.Drive(ctx, ref1)
 		}
 	}()
@@ -175,7 +175,7 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 		t.Fatalf("second send = %+v", resp2)
 	}
 	// The new Turn's request carried the stopped Turn's assistant tool call and
-	// its unknown tool_result (DEC-PLN-6), then the new input.
+	// its unknown tool_result (DEC-PMT-6), then the new input.
 	seen := model.requests()
 	last := seen[len(seen)-1].Messages
 	if got := roles(last); len(got) != 5 || got[0] != "system" || got[1] != "user" || got[2] != "assistant" || got[3] != "tool" || got[4] != "user" {

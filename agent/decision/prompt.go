@@ -1,8 +1,8 @@
 // Package decision is the decision layer of the agent core
 // (docs/design/agent-decision.md): the components that turn committed state
-// and a Profile into the next effect request. Everything here is a
-// deterministic function of projection state and the Profile, runs on the
-// authority side, and is named by a ref the Profile digest covers, so the
+// and an AgentPreset into the next effect request. Everything here is a
+// deterministic function of projection state and the AgentPreset, runs on the
+// authority side, and is named by a ref the AgentPreset digest covers, so the
 // process that takes a Turn over rebuilds the same decision function.
 package decision
 
@@ -21,78 +21,78 @@ import (
 	"github.com/felinics/twilight/sdk"
 )
 
-// PlannerContextV1 names the context planner: the chatlog context projection
-// folded into one provider request (DEC-PLN-1).
-const PlannerContextV1 turn.PlannerRef = "twilight/decision/planner/context-v1"
+// PromptContextV1 names the context prompt builder: the chatlog context projection
+// folded into one provider request (DEC-PMT-1).
+const PromptContextV1 turn.PromptBuilderRef = "twilight/decision/prompt/context-v1"
 
-// ProjectionSource is what a planner reads state from. The owner process
+// ProjectionSource is what a prompt builder reads state from. The owner process
 // serves it from the Session Writer; an observer from the Store.
 type ProjectionSource interface {
 	Load(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (any, session.Head, error)
 }
 
-// ContextPlanner is the context-v1 RequestPlanner (DEC-PLN): it reads the
+// ContextPromptBuilder is the context-v1 PromptBuilder (DEC-PMT): it reads the
 // chatlog context projection and assembles the next sdk.Request. Every
 // assistant and tool_result of the Session is in the fold already, including
-// those of earlier attempts of the same Turn (DEC-PLN-6).
-type ContextPlanner struct {
+// those of earlier attempts of the same Turn (DEC-PMT-6).
+type ContextPromptBuilder struct {
 	Projections ProjectionSource
-	Profile     turn.Profile
+	Preset      turn.AgentPreset
 	// InputText extracts the user text of one input payload; nil selects the
 	// v1 shape {"text": ...} (DEC-INP-1).
 	InputText func(run.CanonicalJSON) (string, error)
 }
 
-// NewContextPlanner is the PlannerFactory of PlannerContextV1.
-func NewContextPlanner(profile turn.Profile, projections ProjectionSource) loop.RequestPlanner {
-	return &ContextPlanner{Projections: projections, Profile: profile}
+// NewContextPromptBuilder is the PromptBuilderFactory of PromptContextV1.
+func NewContextPromptBuilder(preset turn.AgentPreset, projections ProjectionSource) loop.PromptBuilder {
+	return &ContextPromptBuilder{Projections: projections, Preset: preset}
 }
 
-func (p *ContextPlanner) Plan(ctx context.Context, hint run.PlanningHint) (loop.RequestPlan, error) {
-	if p.Projections == nil || p.Profile.Model == "" {
-		return loop.RequestPlan{}, errors.New("decision: planner requires projections and a model")
+func (p *ContextPromptBuilder) Build(ctx context.Context, hint run.PromptInput) (loop.Prompt, error) {
+	if p.Projections == nil || p.Preset.Model == "" {
+		return loop.Prompt{}, errors.New("decision: builder requires projections and a model")
 	}
 	if hint.Session == "" {
-		return loop.RequestPlan{}, errors.New("decision: planner hint has no session")
+		return loop.Prompt{}, errors.New("decision: builder hint has no session")
 	}
 	state, head, err := p.Projections.Load(ctx, hint.Session, chatlog.ContextProjectionID, chatlog.ContextProjection.Version)
 	if err != nil {
-		return loop.RequestPlan{}, err
+		return loop.Prompt{}, err
 	}
 	entries := state.(chatlog.Context).Entries
 	msgs, err := p.messages(entries)
 	if err != nil {
-		return loop.RequestPlan{}, err
+		return loop.Prompt{}, err
 	}
-	specs, defs, err := p.Profile.ToolSpecs()
+	specs, defs, err := p.Preset.ToolSpecs()
 	if err != nil {
-		return loop.RequestPlan{}, err
+		return loop.Prompt{}, err
 	}
 	ids := make([]run.InputID, 0, len(hint.Inputs))
 	for _, in := range hint.Inputs {
 		ids = append(ids, in.ID)
 	}
-	return loop.RequestPlan{
-		Model:         p.Profile.Model,
-		Request:       sdk.Request{Model: string(p.Profile.Model), Messages: msgs, Tools: defs},
-		InputIDs:      ids,
-		PlanningToken: run.PlanningToken(fmt.Sprintf("%d:%s", head.Next, head.Digest)),
-		Tools:         specs,
+	return loop.Prompt{
+		Model:    p.Preset.Model,
+		Request:  sdk.Request{Model: string(p.Preset.Model), Messages: msgs, Tools: defs},
+		InputIDs: ids,
+		Token:    run.PromptToken(fmt.Sprintf("%d:%s", head.Next, head.Digest)),
+		Tools:    specs,
 	}, nil
 }
 
-// messages is DEC-PLN-2.
-func (p *ContextPlanner) messages(entries []chatlog.Entry) ([]sdk.Message, error) {
+// messages is DEC-PMT-2.
+func (p *ContextPromptBuilder) messages(entries []chatlog.Entry) ([]sdk.Message, error) {
 	var msgs []sdk.Message
-	if p.Profile.SystemPrompt != "" {
-		msgs = append(msgs, sdk.SystemMessage(p.Profile.SystemPrompt))
+	if p.Preset.SystemPrompt != "" {
+		msgs = append(msgs, sdk.SystemMessage(p.Preset.SystemPrompt))
 	}
 	inputText := p.InputText
 	if inputText == nil {
 		inputText = v1InputText
 	}
 	// ProviderCallID and tool name per CallID, from the assistant that issued
-	// the call, for pairing tool results (DEC-PLN-2 step 2).
+	// the call, for pairing tool results (DEC-PMT-2 step 2).
 	type callInfo struct{ provider, name string }
 	calls := map[chatlog.CallID]callInfo{}
 	// Inputs delivered mid-turn are committed while tool calls are still open
@@ -209,5 +209,5 @@ func mustJSONString(s string) string {
 func InputText(content run.CanonicalJSON) (string, error) { return v1InputText(content) }
 
 // PartsText renders the text of assistant, tool result or summary parts the
-// way the context planner does; references are named, not materialized.
+// way the context prompt builder does; references are named, not materialized.
 func PartsText(parts chatlog.Parts) string { return partsText(parts) }

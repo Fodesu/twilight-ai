@@ -23,11 +23,11 @@ func TestSubmitReturnsAtOnceAndEventsReportTheTurn(t *testing.T) {
 	const sid session.SessionID = "s-events"
 	gate := &gateModel{started: make(chan sdk.Request, 1), release: make(chan struct{})}
 	h := newHost(host.Ports{}, map[run.ModelRef]loop.ModelInvoker{"m-1": gate})
-	profileRef, err := h.Profiles.Register("a1", mustProfile("m-1", nil))
+	presetRef, err := h.Presets.Register("a1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := h.OpenSession(ctx, sid, host.SessionOptions{Profile: profileRef})
+	s, err := h.OpenSession(ctx, sid, host.SessionOptions{Preset: presetRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestSubmitReturnsAtOnceAndEventsReportTheTurn(t *testing.T) {
 	}
 }
 
-// A background drive that fails -- here the Profile names a model the
+// A background drive that fails -- here the AgentPreset names a model the
 // Executor cannot resolve, so Dispatch fails -- reports on the stream as a
 // host-level Event and through Ports.Warn; it never enters the Session log.
 func TestBackgroundDriveFailureIsReportedOnTheStream(t *testing.T) {
@@ -115,11 +115,11 @@ func TestBackgroundDriveFailureIsReportedOnTheStream(t *testing.T) {
 		default:
 		}
 	}}, map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}})
-	profileRef, err := h.Profiles.Register("a1", mustProfile("m-missing", nil))
+	presetRef, err := h.Presets.Register("a1", mustPreset("m-missing", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := h.OpenSession(ctx, sid, host.SessionOptions{Profile: profileRef})
+	s, err := h.OpenSession(ctx, sid, host.SessionOptions{Preset: presetRef})
 	if err != nil {
 		t.Fatal(err)
 	}

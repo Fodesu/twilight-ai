@@ -52,8 +52,8 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	}
 
 	ref := TurnRef{SessionID: sid, TurnID: "t1"}
-	profile := ProfileRef{ID: "p1", Digest: "sha256:p1"}
-	start := StartRequest{Ref: ref, Inputs: []run.AgentInput{submit("in-1")}, Profile: profile, Companion: CompanionV1Version}
+	preset := PresetRef{ID: "p1", Digest: "sha256:p1"}
+	start := StartRequest{Ref: ref, Inputs: []run.AgentInput{submit("in-1")}, Preset: preset, Companion: CompanionV1Version}
 	resp, err := c.Start(ctx, start)
 	if err != nil {
 		t.Fatalf("start: %v", err)

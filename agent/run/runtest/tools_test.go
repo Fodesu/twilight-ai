@@ -24,7 +24,7 @@ func TestToolRoundTripCompletes(t *testing.T) {
 	f.RequireModelCalls(2)
 	f.RequireUsage(3)
 	f.RequireFactOpened()
-	f.RequirePlannerSawTool("c1", `{"x":1}`)
+	f.RequireBuilderSawTool("c1", `{"x":1}`)
 }
 
 func TestKnownToolFailureContinues(t *testing.T) {

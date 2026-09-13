@@ -110,7 +110,7 @@ type ToolSpec struct {
 // ToolCallBinding is one frozen call inside ToolStepOpened.
 type ToolCallBinding struct {
 	CallID CallID `json:"callId"`
-	// ProviderCallID is the tool_call_id the model emitted. Planners echo it
+	// ProviderCallID is the tool_call_id the model emitted. PromptBuilders echo it
 	// back when they replay the call and its result; the Run never keys on it.
 	ProviderCallID   string         `json:"providerCallId,omitempty"`
 	ToolRef          ToolRef        `json:"toolRef"`
@@ -135,7 +135,7 @@ type Step interface {
 	Ref() StepRef
 }
 
-// Current is the contents of an Active run. Open is the planning interval:
+// Current is the contents of an Active run. Open is the prompt building interval:
 // Prepare is legal and Next returns NeedModelRequest. AcceptInput is legal in
 // every non-terminal state; PendingInputs is the durable queue it feeds.
 type Current interface{ current() }
@@ -384,9 +384,9 @@ type MachineState struct {
 	Current       Current      `json:"-"`
 	PendingInputs []AgentInput `json:"pendingInputs,omitempty"`
 	ModelSteps    int          `json:"modelSteps"`
-	// LastToolStep retains the most recently closed ToolStep so the planner can
+	// LastToolStep retains the most recently closed ToolStep so the prompt builder can
 	// locate the step boundary it continues from. Its RefValue.ID is the
-	// SourceStep of the next PlanningHint.
+	// SourceStep of the next PromptInput.
 	LastToolStep *ToolStep  `json:"lastToolStep,omitempty"`
 	Usage        Usage      `json:"usage"`
 	Result       *RunResult `json:"result,omitempty"`

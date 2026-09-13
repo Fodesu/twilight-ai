@@ -118,14 +118,14 @@ func (c scriptToolCatalog) ResolveTool(ref run.ToolRef) (loop.ExecutableTool, er
 	return tool, nil
 }
 
-type scriptPlanner struct {
+type scriptBuilder struct {
 	model    run.ModelRef
 	specs    []run.ToolSpec
 	defs     map[run.ToolRef]sdk.ToolDefinition
-	lastHint run.PlanningHint
+	lastHint run.PromptInput
 }
 
-func (p *scriptPlanner) Plan(_ context.Context, hint run.PlanningHint) (loop.RequestPlan, error) {
+func (p *scriptBuilder) Build(_ context.Context, hint run.PromptInput) (loop.Prompt, error) {
 	p.lastHint = hint
 	model := p.model
 	if model == "" {
@@ -139,5 +139,5 @@ func (p *scriptPlanner) Plan(_ context.Context, hint run.PlanningHint) (loop.Req
 	for i, in := range hint.Inputs {
 		ids[i] = in.ID
 	}
-	return loop.RequestPlan{Model: model, Request: req, InputIDs: ids, Tools: p.specs}, nil
+	return loop.Prompt{Model: model, Request: req, InputIDs: ids, Tools: p.specs}, nil
 }

@@ -42,7 +42,7 @@ func Example_jsonlPrototype() {
 
 	tool := &stagedTool{}
 	content := memoryContent()
-	profile := mustProfile("m-1", []loop.ExecutableTool{tool})
+	preset := mustPreset("m-1", []loop.ExecutableTool{tool})
 
 	// ---- process 1 ----------------------------------------------------------
 	store1, err := filestore.New(root)
@@ -51,12 +51,12 @@ func Example_jsonlPrototype() {
 	}
 	model1 := &scriptedRequests{answers: []sdk.ModelResult{protoToolCall("call-1"), protoText("done"), protoToolCall("call-2")}}
 	p1 := newHost(host.Ports{Store: store1, Content: content, Clock: clock.Now}, map[run.ModelRef]loop.ModelInvoker{"m-1": model1}, tool)
-	profile1, err := p1.Profiles.Register("jsonl-agent", profile)
+	profile1, err := p1.Presets.Register("jsonl-agent", preset)
 	if err != nil {
 		panic(err)
 	}
 	turnSeq := 0
-	s1, err := p1.OpenSession(ctx, sid, host.SessionOptions{Profile: profile1,
+	s1, err := p1.OpenSession(ctx, sid, host.SessionOptions{Preset: profile1,
 		NewTurnID: func() turn.TurnID { turnSeq++; return turn.TurnID(fmt.Sprintf("turn-%d", turnSeq)) }})
 	if err != nil {
 		panic(err)
@@ -132,7 +132,7 @@ func Example_jsonlPrototype() {
 	}
 	p2 := newHost(host.Ports{Store: store2, Content: content, Ownership: session.OpenOptions{Takeover: true}, Clock: clock.Now},
 		map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}}, tool)
-	if _, err := p2.Profiles.Register("jsonl-agent", profile); err != nil {
+	if _, err := p2.Presets.Register("jsonl-agent", preset); err != nil {
 		panic(err)
 	}
 	recovered, err := p2.Open(ctx, sid)

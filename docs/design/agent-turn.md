@@ -16,7 +16,7 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 | 回合存在、attempt 归属与结束 | `twilight/turn/` events | Coordinator |
 | Run 执行状态 | `twilight/run/` events（[agent-run.md](agent-run.md)） | `run.Runtime`，由 Loop 与 Coordinator 驱动 |
 | 对话内容 | `twilight/chatlog/` events | Start 与 Deliver 时 delivered input；Run commit 内的 companion events |
-| Application policy | Application | profile、driver、retry、context 策略、产品策略 |
+| Application policy | Application | preset、driver、retry、context 策略、产品策略 |
 
 **TRN-SCP-1** Source 为 `twilight`，ModuleID 为 `turn`。一个 Turn 与它的全部 Run attempt 在同一 Session stream 内。`Coordinator` 创建 Turn、创建 attempt、在回合中途投递输入、驱动 Run、结算 Turn。turn 依赖 run；run 不依赖 turn，Run 事实中的 `OwnerID` 由本模块以 `TurnID` 填充。本模块的 `Requires`（EXT-REG-4）为：`run`，消费 `twilight/run/created` v1、`twilight/run/input_accepted` v1 与 `twilight/run/ended` v1；`chatlog`，只要求存在。
 
@@ -35,35 +35,35 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 
 **TRN-SCP-4** Turn 自己的写入经该 Session 的 `writer.Writer.Commit`；Run 事实的写入经 `run.Runtime`，后者经同一个 Writer 落在同一 `session.Store`（EXT-SCP-1）。Coordinator 与 Runtime 经 `writer.Writers` 取得 Writer（EXT-WRT-6）。Artifact 由其 owner 管理。
 
-**TRN-SCP-5** Application 管理 model、provider、tool、prompt、token、approval、queue、retry 决策与并发。宿主按 persisted profile 解析 driver 并驱动（HST-DRV-1）。Planner 与 Policy 按 Profile 中的 ref 解析（DEC-CAT-2），Planner 每次 Plan 使用 Profile 的 `ModelRef`。
+**TRN-SCP-5** Application 管理 model、provider、tool、prompt、token、approval、queue、retry 决策与并发。宿主按 persisted preset 解析 driver 并驱动（HST-DRV-1）。PromptBuilder 按 AgentPreset 的 `Prompt` ref 解析（DEC-CAT-2），每次 Build 使用 AgentPreset 的 `ModelRef`；Scheduling 与 MalformedRetries 是 AgentPreset 上的数据，Loop 直接读取。
 
-**TRN-SCP-6** Start 之前建立 immutable execution profile。Session 保存 `ProfileRef{ID, Digest}`。密钥与 client 留在进程内。Resolve 失败返回 `profile_unavailable`。字段与 digest 边界见 TRN-PRF-1/2；决策组件的身份与解析见 [agent-decision.md](agent-decision.md)。
+**TRN-SCP-6** Start 之前建立 immutable execution preset。Session 保存 `PresetRef{ID, Digest}`。密钥与 client 留在进程内。Resolve 失败返回 `preset_unavailable`。字段与 digest 边界见 TRN-PST-1/2；决策组件的身份与解析见 [agent-decision.md](agent-decision.md)。
 
 ## 2. identity 与事件
 
 ```go
 type TurnID string
 type TurnRef struct { SessionID session.SessionID; TurnID TurnID }
-type ProfileRef struct { ID ProfileID; Digest es.Digest }
+type PresetRef struct { ID PresetID; Digest es.Digest }
 type CompanionVersion string
 
-// Profile 是 Turn 记录的决策身份；Session 只保存 ProfileRef{ID, Digest}。
-type PlannerRef string   // 决策组件身份（agent-decision.md）
-type PolicyRef string    // 执行策略身份
+// AgentPreset 是 Turn 记录的决策身份；Session 只保存 PresetRef{ID, Digest}。
+type PromptBuilderRef string // 决策组件身份（agent-decision.md）
 type WorkspaceRef string // 执行环境身份，core 不解释
 type PublicTool struct { Ref run.ToolRef; Definition run.ToolDefinition; Policy run.ResponsePolicy }
-type Profile struct {
+type AgentPreset struct {
     SchemaVersion uint16 // 1
     Model run.ModelRef
     Tools []PublicTool     // ToolSpec 与 Request.Tools 都由此派生
     Streaming bool
-    Planner PlannerRef
-    Policy PolicyRef
-    Workspace WorkspaceRef // 可空
+    Prompt PromptBuilderRef          // 决策组件身份（agent-decision.md）
+    Workspace WorkspaceRef           // 可空
+    Scheduling run.ToolScheduling    // 工具调用并行/串行与并发上限，冻结进 ToolStep（RUN-MCH）
+    MalformedRetries uint8           // 畸形模型结果的同步重试上限；0 即首次失败
     SystemPrompt string    // 在 digest 之外
 }
-func DigestProfile(*Profile) (es.Digest, error)
-func ValidateProfile(*Profile) error
+func DigestPreset(*AgentPreset) (es.Digest, error)
+func ValidatePreset(*AgentPreset) error
 
 type Settlement string
 const (
@@ -75,7 +75,7 @@ const (
 type StartedPayload struct {
     TurnID TurnID
     InputIDs []chatlog.InputID
-    Profile ProfileRef
+    AgentPreset PresetRef
     Companion CompanionVersion
 }
 type CompletedPayload struct {
@@ -94,15 +94,15 @@ type SupersededPayload struct {
 }
 ```
 
-**TRN-ID-1** `TurnRef`、RunID、profile ID、CompanionVersion、InputID 与 digest 非空且稳定。
+**TRN-ID-1** `TurnRef`、RunID、preset ID、CompanionVersion、InputID 与 digest 非空且稳定。
 
-**TRN-ID-2** `PlanDigest = Digest("twilight/turn/plan", TurnID, Profile.Digest, Companion, ordered InputIDs)`。PlanDigest 只参与 TRN-ID-3 的派生，不落盘：`started` payload 的每个字段都是它的 preimage 成员，落盘该 digest 不提供额外判定。
+**TRN-ID-2** `PlanDigest = Digest("twilight/turn/plan", TurnID, AgentPreset.Digest, Companion, ordered InputIDs)`。PlanDigest 只参与 TRN-ID-3 的派生，不落盘：`started` payload 的每个字段都是它的 preimage 成员，落盘该 digest 不提供额外判定。
 
 **TRN-ID-3** `StartOperationDigest = Digest("twilight/turn/start-operation", SessionID, TurnID, PlanDigest)`。用户正文 identity 在对应 `twilight/chatlog/input_submitted` 中。
 
-**TRN-PRF-1** `Profile.Digest = Digest("twilight/turn/profile", SchemaVersion, Model, Tools, Streaming, Planner, Policy, Workspace)`。摘要覆盖决策层的全部输入：模型与工具身份决定效果的形状，Planner 与 Policy 决定如何从状态得到下一个效果，Workspace 决定效果在哪个环境里发生——接管进程凭同一 ProfileRef 必须重建同一决策函数（DEC-SCP-1/2）。SystemPrompt 是调优文本，不进摘要：修改它不得使可恢复的 Turn 无法解析。
+**TRN-PST-1** `AgentPreset.Digest = Digest("twilight/turn/preset", SchemaVersion, Model, Tools, Streaming, Prompt, Workspace, Scheduling, MalformedRetries)`。摘要覆盖决策层的全部输入：模型与工具身份决定效果的形状，PromptBuilder 决定如何从状态构造下一条 prompt，Scheduling 与 MalformedRetries 决定效果如何调度、畸形结果如何处置，Workspace 决定效果在哪个环境里发生——接管进程凭同一 PresetRef 必须重建同一决策函数（DEC-SCP-1/2）。SystemPrompt 是调优文本，不进摘要：修改它不得使可恢复的 Turn 无法解析。
 
-**TRN-PRF-2** SchemaVersion、Model、Planner、Policy 非空是 Profile 可被注册的前提（`ValidateProfile`）；Workspace 可空。宿主在注册与解析时都按 TRN-PRF-1 计算摘要并与 `ProfileRef.Digest` 比对。
+**TRN-PST-2** SchemaVersion、Model、Prompt 非空，且 Scheduling 的 Mode 合法（空、parallel 或 sequential）、MaxParallel 非负，是 AgentPreset 可被注册的前提（`ValidatePreset`）；Workspace 可空。宿主在注册与解析时都按 TRN-PST-1 计算摘要并与 `PresetRef.Digest` 比对。
 
 **TRN-ID-4** attempt 的 RunID 由 Coordinator 派生：`RunID = Digest("twilight/turn/run", SessionID, TurnID, Attempt)`。Attempt 从 1 开始。`twilight/run/created` 的 `Owner` 等于 `OwnerID(TurnID)`，`Attempt` 等于该值（RUN-NEW-1）。
 
@@ -143,7 +143,7 @@ type TurnView struct {
     TurnID TurnID
     Status TurnStatus
     InputIDs []chatlog.InputID // started 的初始输入，加此后经 Deliver 进入任一 attempt 的输入，按 accepted 顺序去重
-    Profile ProfileRef
+    AgentPreset PresetRef
     Attempts []AttemptView // 按 Attempt 递增
     ActiveRun run.RunID    // Status=active 时非空
     ReplacementTurnID TurnID
@@ -177,7 +177,7 @@ type Service interface {
 type StartRequest struct {
     Ref TurnRef
     Inputs []run.AgentInput // ID 为已 submitted 的 InputID，Payload 等于其 Content
-    Profile ProfileRef
+    AgentPreset PresetRef
     Companion CompanionVersion
 }
 type DeliverRequest struct { Ref TurnRef; Inputs []run.AgentInput } // 回合中途追加输入
@@ -205,7 +205,7 @@ const (
 
 **TRN-API-1** Coordinator 经 Writer 的 `Projections()` 读取 `twilight/turn/surface` 与 `twilight/run/machine` 两个投影（EXT-PRJ-4）；每个方法先读投影再决定动作。Coordinator 不持有 `session.Store`。
 
-**TRN-API-2** Run 的写入只经 `run.Runtime`。driver 的组装与解析在宿主（HST-PRF-2）。
+**TRN-API-2** Run 的写入只经 `run.Runtime`。driver 的组装与解析在宿主（HST-PST-2）。
 
 **TRN-API-3** DTO 为值语义。`Waiting` 为 `twilight/run/machine` 的 `WaitingCalls`。`NeedsRecovery` 为 true 时返回 `ResumeWaitingForRecovery`；这只出现在接管处置之前，宿主调用 `Runtime.RecoverInterrupted`（RUN-CMT-7）后再驱动（HST-DRV-1）。
 
@@ -215,7 +215,7 @@ const (
 
 **TRN-STR-1** StartRequest：
 
-1. Ref、profile ref、companion version 非空；
+1. Ref、preset ref、companion version 非空；
 2. `Inputs` 无重复 ID；每个 ID 对应 chatlog 中状态为 submitted 的 Input，Payload 等于其 Content（Coordinator 经 chatlog surface 投影核对）。
 
 `started.InputIDs` 与 `input_delivered`、`input_accepted` 的顺序都取 `Inputs` 的顺序。
@@ -223,7 +223,7 @@ const (
 **TRN-STR-2** Start 是一次原子 commit，顺序为：
 
 ```text
-twilight/turn/started{TurnID, InputIDs, Profile, Companion}
+twilight/turn/started{TurnID, InputIDs, AgentPreset, Companion}
 twilight/chatlog/input_delivered{InputIDs[0], TurnID}
 ...
 twilight/chatlog/input_delivered{InputIDs[n-1], TurnID}
@@ -243,7 +243,7 @@ InputIDs 为空时 group 为 `started` 加 `created`。`created` 与 `input_acce
 
 **TRN-RTY-2** Retry 的 CommitID 由 `Digest("twilight/turn/retry", SessionID, TurnID, Attempt)` 派生。
 
-**TRN-RTY-3** 失败 attempt 已提交的 assistant 与 tool_result 保留在 stream 中，协议不删除、不隐藏。它们是否进入后续 attempt 的模型请求是 Application 策略，由 Planner 依据 turn surface 的 attempt 状态决定（DEC-PLN-6）；协议只保证内容可用。
+**TRN-RTY-3** 失败 attempt 已提交的 assistant 与 tool_result 保留在 stream 中，协议不删除、不隐藏。它们是否进入后续 attempt 的模型请求是 Application 策略，由 PromptBuilder 依据 turn surface 的 attempt 状态决定（DEC-PMT-6）；协议只保证内容可用。
 
 ## 5. Deliver、Status 与 Stop
 
@@ -300,11 +300,11 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 | 重新生成已提交的回答 | 原 Turn 与其回答 | Turn，或 Session 分支 | Application |
 | 外部工具执行中且 owner 丢失 | Turn、Run、该 call 的 Unknown 事实 | 无 | 模型或 Application，从不自动 |
 
-**TRN-DUR-1（崩溃恢复同一 Run）** 进程崩溃或所有权丢失不结束 Run，也不创建 attempt。新 owner 的 `RecoverInterrupted`（RUN-CMT-7）对每个 Executing 目标先经 Executor 询问其 attempt 是否仍在执行（start 事实记录了 attempt 的 Claim）：仍在执行则目标保持 Executing，Outcome 到达时以原 Claim 结算——同一次执行接着算完；不再执行则处置——模型步被撤回，Run 回到 Open，下一次 Prepare 以**恢复时刻**的状态重新规划：Executing 期间投递的输入、此时的上下文与 Profile 都进入新请求，并作为新的 Prepared 事实记录；旧请求不重发。工具 call 记 Unknown。之后同一 RunID 在同一 Turn 下由宿主 Drive 继续。恢复不改变 Run 的身份、attempt 号或已提交的任何事实。
+**TRN-DUR-1（崩溃恢复同一 Run）** 进程崩溃或所有权丢失不结束 Run，也不创建 attempt。新 owner 的 `RecoverInterrupted`（RUN-CMT-7）对每个 Executing 目标先经 Executor 询问其 attempt 是否仍在执行（start 事实记录了 attempt 的 Claim）：仍在执行则目标保持 Executing，Outcome 到达时以原 Claim 结算——同一次执行接着算完；不再执行则处置——模型步被撤回，Run 回到 Open，下一次 Prepare 以**恢复时刻**的状态重新规划：Executing 期间投递的输入、此时的上下文与 AgentPreset 都进入新请求，并作为新的 Prepared 事实记录；旧请求不重发。工具 call 记 Unknown。之后同一 RunID 在同一 Turn 下由宿主 Drive 继续。恢复不改变 Run 的身份、attempt 号或已提交的任何事实。
 
-**TRN-DUR-2（语义重试是新 Run、同一 Turn）** 只有 Run 已终结且未 completed、Turn 处于 `attempt_failed` 时才存在 Retry；Retry 创建 attempt n+1、新 RunID，同一 Turn，重新接受该 Turn 已 delivered 的全部输入（TRN-RTY-1）。协议从不自动 Retry：崩溃恢复走 TRN-DUR-1，Retry 是 Application 的显式决定。失败 attempt 的 assistant 与 tool_result 保留在 stream 中，是否进入新 attempt 的模型请求由 Planner 决定（TRN-RTY-3）。
+**TRN-DUR-2（语义重试是新 Run、同一 Turn）** 只有 Run 已终结且未 completed、Turn 处于 `attempt_failed` 时才存在 Retry；Retry 创建 attempt n+1、新 RunID，同一 Turn，重新接受该 Turn 已 delivered 的全部输入（TRN-RTY-1）。协议从不自动 Retry：崩溃恢复走 TRN-DUR-1，Retry 是 Application 的显式决定。失败 attempt 的 assistant 与 tool_result 保留在 stream 中，是否进入新 attempt 的模型请求由 PromptBuilder 决定（TRN-RTY-3）。
 
-**TRN-DUR-3（重新生成已提交的回答是新 Turn 或分支）** 已 completed 的 Turn 及其回答是不可变事实：不存在"修改回答""重开同一 Turn"或"对 completed Turn 再开 attempt"。`Start` 要求输入处于 `submitted`（TRN-STR-1），已 delivered 的输入不能再次开 Turn，因此重新生成只有两种形态：(a) 同一 stream 内的新 Turn——Application 提交新 Input（内容可与原输入相同）并 Start；若它在语义上替代原 Turn，以 `twilight/turn/superseded` 关联（TRN-API-4），原回答是否进入上下文由 Planner 决定；(b) 分支——在原 Turn 的 `started` 之前的 Seq 处 fork Session（SES 第 8 节），在新 stream 上开 Turn。两种形态都不改写历史。
+**TRN-DUR-3（重新生成已提交的回答是新 Turn 或分支）** 已 completed 的 Turn 及其回答是不可变事实：不存在"修改回答""重开同一 Turn"或"对 completed Turn 再开 attempt"。`Start` 要求输入处于 `submitted`（TRN-STR-1），已 delivered 的输入不能再次开 Turn，因此重新生成只有两种形态：(a) 同一 stream 内的新 Turn——Application 提交新 Input（内容可与原输入相同）并 Start；若它在语义上替代原 Turn，以 `twilight/turn/superseded` 关联（TRN-API-4），原回答是否进入上下文由 PromptBuilder 决定；(b) 分支——在原 Turn 的 `started` 之前的 Seq 处 fork Session（SES 第 8 节），在新 stream 上开 Turn。两种形态都不改写历史。
 
 **TRN-DUR-4（外部效果未知不等于重试）** owner 丢失时处于 Executing 的工具 call 有两种去向，由 Executor 是否仍持有该 attempt 决定（RUN-CMT-7）：仍持有则等待同一次执行的 Outcome，这是重连，不是重试；不再持有则由接管处置记为 Unknown，companion 写 status=`unknown` 的 `tool_result`。Unknown 是该 call 的终态事实，协议在任何路径上都不重新执行它：接管处置不执行（它只记录）；下一次 Loop 不执行（start barrier 只启动 Pending call，Executing 与终态 call 永不重跑，RUN-LOP-4）；Retry 不执行（新 attempt 从上下文重新规划步骤，Unknown 结果作为对话内容可见）。外部效果是否已经发生、是否需要重做，由模型依据上下文判断，或由 Application 在带外核实后以 `tool_result_superseded` 换成 `success`/`error`（CHT-ENT-2）；两者都是决定，不是协议的自动行为。`CancelRun` 留下的 `UncertainCalls` 同理。
 
@@ -325,7 +325,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 | Stop 的 Commit 返回非 sentinel 错误 | 以同一 Cancel CommandID 重放 |
 | Deliver 的 Commit 返回非 sentinel 错误 | 以同一批次 CommandID 重放整批，得到 already-applied（TRN-DLV-2） |
 | Start 或 Retry 的 Commit 返回非 sentinel 错误 | 以同一 CommitID 重放，得到 already-applied |
-| profile 缺失 | 宿主 Drive 返回 `profile_unavailable`（HST-PRF-2）；Turn 状态不变 |
+| preset 缺失 | 宿主 Drive 返回 `preset_unavailable`（HST-PST-2）；Turn 状态不变 |
 
 **TRN-REC-3** 没有跨存储的对账：Run 事实、companion 内容与 Turn 结算在同一组，`Append` 原子，要么全部可见要么全部不可见。claim 在 Append 之前建立，崩溃只可能留下孤儿 claim，由 artifact 的回收前核对释放（EXT-WRT-3、ART-RET-3）。
 
@@ -333,7 +333,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 
 套件以 `session.Store` 为参数（`agent/turn/turntest`），Memory 与每个 durable adapter 跑同一组断言。Coordinator 只做提交与读取，因此套件不含 Loop、driver、模型或工具桩：Run 的推进由 `run.Runtime` 的 command 提交完成，Application 的 `CancelRun` 制造 `attempt_failed`，`SubmitModelResult` 制造 completed 与 approval 等待。
 
-- **TRN-STR-1 至 TRN-STR-4、TRN-ID-2/3/4、TRN-EVT-2**：缺 profile 或 companion、重复 InputID、未 submitted 的输入、Payload 与 Content 不符各自被拒且不写入；Start 的 group 为 `started`、每输入一条 `input_delivered`、`created{Owner:TurnID, Attempt:1}`、每输入一条 `input_accepted`，CommitID 为 StartOperationDigest，RunID 为 `twilight/turn/run` 派生值；响应为 `active`、attempt 1、无 disposition；不同时间戳的重放为 already-applied 且不写入；同 TurnID 的另一 plan 与第二个活跃 Turn 为 conflict，被拒输入保持 `submitted`。
+- **TRN-STR-1 至 TRN-STR-4、TRN-ID-2/3/4、TRN-EVT-2**：缺 preset 或 companion、重复 InputID、未 submitted 的输入、Payload 与 Content 不符各自被拒且不写入；Start 的 group 为 `started`、每输入一条 `input_delivered`、`created{Owner:TurnID, Attempt:1}`、每输入一条 `input_accepted`，CommitID 为 StartOperationDigest，RunID 为 `twilight/turn/run` 派生值；响应为 `active`、attempt 1、无 disposition；不同时间戳的重放为 already-applied 且不写入；同 TurnID 的另一 plan 与第二个活跃 Turn 为 conflict，被拒输入保持 `submitted`。
 - **TRN-DLV-1、TRN-DLV-2**：一个批次的全部 `input_accepted` 与 `input_delivered` 在以批次 CommandID 为 CommitID 的同一 commit；Run 的 `PendingInputs` 与 surface 的 `InputIDs` 追加全部输入；同一批次重放不写入；不存在或非 `active` 的 Turn 为 conflict 且输入保持 `submitted`；未提交的输入或内容不一致的输入使整批 conflict，批内其他输入也不写入、Run 的 `PendingInputs` 不变。
 - **TRN-RTY-1、TRN-RTY-2、TRN-RTY-3**：`active` 或不存在的 Turn 为 conflict；`attempt_failed` 的 Turn 得到 attempt n+1、`twilight/turn/retry` 派生的 CommitID、`created` 加全部已 delivered 输入按 `InputIDs` 顺序的 `input_accepted`（payload 同首次）；surface 的 `InputIDs` 不重复；失败 attempt 的行原样保留，其 Record 仍可读；重试后 Turn 为 `active`，再次 Retry 为 conflict。
 - **TRN-STP-1、TRN-STP-2、TRN-STL-1、TRN-EVT-3**：Stop 的 `CancelRun` 与 `failed{stopped, cancelled}` 在以 Cancel CommandID 为 CommitID 的同一 commit，其中含 `run_ended`；Settle 需要 `attempt_failed`，写 `failed{failed, FailureClass}`，CommitID 为 `twilight/turn/settle` 派生值；已结算（stopped、failed、completed）的 Turn 上 Stop、Retry、Settle、Deliver 一律 conflict；completed 由 companion 在 Run 终结的同一组写入。
@@ -342,5 +342,5 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 - **TRN-REC-1、TRN-REC-2、TRN-SCP-3**：`started` 提交后接管，`RecoverInterrupted` 处置 0 个目标，Status 仅从投影重建为 `active`；模型 Executing 时接管，处置 1 个目标后 disposition 不再是 `waiting_for_recovery`；被替代的 Coordinator 的 Deliver 得到 `ErrOwnershipLost` 且不改变输入状态，新 owner 的 Deliver 成功。
 - **TRN-CMP-1 至 TRN-MAP-4**：companion 纯函数、v1 映射表、`SourceDigest` 等于 Run fact 记录值、companion 中的 ReferencePart 经 admission 并建立 claim、同组可见性，由 RUN-CMP-2 套件经 Runtime 的组构成观察。
 - **TRN-DLV-3** 的并发定序（输入与最后一步结果的两种先后）由 Writer 串行保证，单进程套件不构造并发，以 Deliver 对已终结 Run 的 `completed` 响应作为可观察结果。
-- **TRN-PRF-1、TRN-PRF-2**：SystemPrompt 不改变摘要；Streaming、Planner、Policy、Workspace 任一变化改变摘要；缺 SchemaVersion、Model、Planner 或 Policy 的 Profile 被拒绝。
+- **TRN-PST-1、TRN-PST-2**：SystemPrompt 不改变摘要；Streaming、Prompt、Workspace、Scheduling、MalformedRetries 任一变化改变摘要；缺 SchemaVersion、Model 或 Prompt、Scheduling 非法的 AgentPreset 被拒绝。
 - **TRN-DUR-1 至 TRN-DUR-4**：接管后同一 RunID 继续、`Attempt` 不变、Turn 保持 `active`；工具 Executing 时接管，该 call 记 Unknown 后，接管处置、随后的 Loop 与 Retry 的新 attempt 都不再出现该 call 的 `StartToolCall` 或 `ToolCallCompleted`；Retry 得到新 RunID 与 attempt 加 1、Turn 不变；对已 `completed` 的 Turn 以其已 delivered 的输入再次 Start 为 conflict。Unknown call 不被重跑的断言与 Loop 一起在 RUN-LOP-4/5 的套件中验证。

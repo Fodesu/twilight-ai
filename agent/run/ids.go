@@ -23,16 +23,16 @@ type ToolRef string
 type ModelRef string
 
 // WorkspaceRef names the execution environment a Turn's effects run in. Run
-// carries it to the executor and does not interpret it (TRN-PRF-1).
+// carries it to the executor and does not interpret it (TRN-PST-1).
 type WorkspaceRef string
 
 // Digest is "sha256:<64 lowercase hex>" over canonical protocol bytes.
 // It remains an alias while Run protocol types live in this package.
 type Digest = es.Digest
 
-// PlanningToken is opaque to agent; the application uses it to identify the
-// context revision from which a RequestPlan was built.
-type PlanningToken string
+// PromptToken is opaque to agent; the application uses it to identify the
+// context revision from which a Prompt was built.
+type PromptToken string
 
 // ExecutionClaim is an opaque identity chosen by the execution loop for one
 // start command. It lets a caller replay the same start request without
@@ -53,8 +53,8 @@ func namespacedHash(namespace string, parts ...string) string {
 }
 
 // DeriveModelRequestCommandID derives the CommandID for PrepareModelRequest
-// from the Run and the RunPosition the planner loaded (RUN-WIR-3): concurrent
-// planners on the same position converge on one command identity.
+// from the Run and the RunPosition the prompt builder loaded (RUN-WIR-3): concurrent
+// prompt builders on the same position converge on one command identity.
 func DeriveModelRequestCommandID(run RunID, position RunPosition) CommandID {
 	return CommandID(namespacedHash("twilight/model-request", string(run), fmt.Sprintf("%d", position)))
 }

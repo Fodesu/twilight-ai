@@ -48,9 +48,9 @@ func memoryContent() artifact.ContentStore {
 	return store
 }
 
-// mustProfile builds the one-model Profile the tests register.
-func mustProfile(model run.ModelRef, tools []loop.ExecutableTool, opts ...host.ProfileOption) turn.Profile {
-	p, err := host.NewProfile(model, tools, opts...)
+// mustPreset builds the one-model AgentPreset the tests register.
+func mustPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...host.PresetOption) turn.AgentPreset {
+	p, err := host.NewPreset(model, tools, opts...)
 	if err != nil {
 		panic(err)
 	}

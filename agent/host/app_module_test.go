@@ -75,7 +75,7 @@ func TestAppModuleSharesTheSessionStream(t *testing.T) {
 	if err := h.EnsureSession(ctx, sid); err != nil {
 		t.Fatal(err)
 	}
-	profile, err := h.Profiles.Register("b1", mustProfile("m-1", nil))
+	preset, err := h.Presets.Register("b1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestAppModuleSharesTheSessionStream(t *testing.T) {
 		t.Fatalf("audit commit = %+v %v", res, err)
 	}
 	if _, err := h.Coordinator.Start(ctx, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},
-		Inputs: []run.AgentInput{in}, Profile: profile, Companion: turn.CompanionV1Version}); err != nil {
+		Inputs: []run.AgentInput{in}, Preset: preset, Companion: turn.CompanionV1Version}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.Drive(ctx, turn.TurnRef{SessionID: sid, TurnID: "t1"}); err != nil {

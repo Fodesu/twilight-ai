@@ -288,6 +288,6 @@ Application 在自己的代码里定义 `ModuleDescriptor`（自有 Source 下�
 
 **EXT-APP-2（隔离）** EXT-PRJ-2 的范围规则双向保护：first-party 投影对 app 模块（范围外）的事件一律跳过；app 投影对未列入其 `Requires` 的模块同样跳过。app module 未注册时，其历史事件对所有投影是范围外事件，按 EXT-REG-3 保留原始 payload、不参与折叠。
 
-**EXT-APP-3（适用判据）** 需要"持久、可重放、参与投影"的事实才建 module；工具、模型、系统提示、planner、观测 sink 走既有接口扩展点（宿主层的 Profile 与 Executor、EventSink、Store adapter），不进 Session 流。
+**EXT-APP-3（适用判据）** 需要"持久、可重放、参与投影"的事实才建 module；工具、模型、系统提示、prompt builder、观测 sink 走既有接口扩展点（宿主层的 AgentPreset 与 Executor、EventSink、Store adapter），不进 Session 流。
 
 模块以 Go 值直接传入 `BuildRegistry`；把多个 Source 的 ModuleDescriptor 与 artifact SchemeDefinition 组合为只读索引的通用 `Catalog` 不在本层的职责内。

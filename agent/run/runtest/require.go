@@ -176,18 +176,18 @@ func (f *Feature) RequireUsage(total int) {
 	}
 }
 
-// RequirePlannerSawTool checks the next Plan was positioned after the ToolStep
+// RequireBuilderSawTool checks the next Plan was positioned after the ToolStep
 // on which callID completed with output. The hint carries only the boundary
 // (SourceStep); the completed call's OutputDigest is read from the Run state.
-func (f *Feature) RequirePlannerSawTool(callID run.CallID, output string) {
+func (f *Feature) RequireBuilderSawTool(callID run.CallID, output string) {
 	f.t.Helper()
 	callID = f.callByProvider(string(callID))
-	if f.planner == nil || f.planner.lastHint.SourceStep == "" {
-		f.t.Fatal("planner hint has no SourceStep")
+	if f.builder == nil || f.builder.lastHint.SourceStep == "" {
+		f.t.Fatal("builder hint has no SourceStep")
 	}
 	s := f.state()
-	if s.LastToolStep == nil || s.LastToolStep.RefValue.ID != f.planner.lastHint.SourceStep {
-		f.t.Fatalf("hint SourceStep = %s, LastToolStep = %+v", f.planner.lastHint.SourceStep, s.LastToolStep)
+	if s.LastToolStep == nil || s.LastToolStep.RefValue.ID != f.builder.lastHint.SourceStep {
+		f.t.Fatalf("hint SourceStep = %s, LastToolStep = %+v", f.builder.lastHint.SourceStep, s.LastToolStep)
 	}
 	want, err := run.ProtocolV1().DigestToolOutput(run.MustParseCanonicalJSON(output))
 	if err != nil {

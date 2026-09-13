@@ -46,7 +46,7 @@ type TurnView struct {
 	TurnID            TurnID            `json:"turnId"`
 	Status            TurnStatus        `json:"status"`
 	InputIDs          []chatlog.InputID `json:"inputIds,omitempty"`
-	Profile           ProfileRef        `json:"profile"`
+	Preset            PresetRef         `json:"preset"`
 	Companion         CompanionVersion  `json:"companion"`
 	Attempts          []AttemptView     `json:"attempts,omitempty"`
 	ActiveRun         run.RunID         `json:"activeRun,omitempty"`
@@ -121,7 +121,7 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		}
 		s.Order = append(s.Order, p.TurnID)
 		s.Turns[p.TurnID] = TurnView{TurnID: p.TurnID, Status: TurnActive, InputIDs: append([]chatlog.InputID(nil), p.InputIDs...),
-			Profile: p.Profile, Companion: p.Companion}
+			Preset: p.Preset, Companion: p.Companion}
 	case CompletedPayload:
 		v, err := s.settling(p.TurnID)
 		if err != nil {

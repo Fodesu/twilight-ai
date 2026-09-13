@@ -43,7 +43,7 @@ type CheckpointID string
 | Summary | `summary` | 无 | 随 checkpoint 失效 | checkpoint 的摘要正文 |
 | Checkpoint | `checkpoint_created` | 无 | invalidated | 指向已有 Seq |
 
-**CHT-LIF-1** reducer 拒绝 identity mutation、非法状态迁移、replacement conflict 与重复 ID。模型步骤进行中走 EventSink；定稿随 `ModelStepCompleted` / `ToolCallCompleted` 等 Run 事实同组写入 `assistant` 或 `tool_result`。同一 Turn 的多个 Run attempt 各自产生 assistant 与 tool_result，全部保留在 stream 中并出现在 ContextFold 的输出里；哪些条目进入模型请求由 Planner 决定（TRN-RTY-3、DEC-PLN-6），本模块不作取舍。
+**CHT-LIF-1** reducer 拒绝 identity mutation、非法状态迁移、replacement conflict 与重复 ID。模型步骤进行中走 EventSink；定稿随 `ModelStepCompleted` / `ToolCallCompleted` 等 Run 事实同组写入 `assistant` 或 `tool_result`。同一 Turn 的多个 Run attempt 各自产生 assistant 与 tool_result，全部保留在 stream 中并出现在 ContextFold 的输出里；哪些条目进入模型请求由 PromptBuilder 决定（TRN-RTY-3、DEC-PMT-6），本模块不作取舍。
 
 ## 3. parts 与条目
 
@@ -69,7 +69,7 @@ type ReasoningPart struct { Text string }
 func (ReasoningPart) PartKind() PartKind
 type ToolCallPart struct {
     CallID CallID          // Run 派生的 CallID，同一 Turn 内唯一
-    ProviderCallID string  // 模型发出的 tool_call_id，供 Planner 回传配对
+    ProviderCallID string  // 模型发出的 tool_call_id，供 PromptBuilder 回传配对
     Name string
     Input jsonstable.Value
 }
@@ -168,7 +168,7 @@ Digest("twilight/chatlog/summary", ...)
 
 ## 5. event payloads
 
-payload 为 object，identity 为 string，整数按 Session profile 编码。未列字段在 v1 拒绝。
+payload 为 object，identity 为 string，整数按 Session preset 编码。未列字段在 v1 拒绝。
 
 ```go
 type InputSubmittedPayload struct {
@@ -286,7 +286,7 @@ type ContextMaterializer interface {
 }
 ```
 
-**CHT-MAT-1** materializer 把语义条目转为目标模型表示。committed chatlog Events 保持不变。provider capability 与发送策略由 Application 决定。Planner 组装见 [Decision](agent-decision.md)（DEC-PLN）。
+**CHT-MAT-1** materializer 把语义条目转为目标模型表示。committed chatlog Events 保持不变。provider capability 与发送策略由 Application 决定。PromptBuilder 组装见 [Decision](agent-decision.md)（DEC-PMT）。
 
 ## 9. conformance
 

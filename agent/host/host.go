@@ -1,6 +1,6 @@
 // Package host is the deployment-neutral host layer over the agent core
 // (docs/design/agent-host.md). It composes the fact layer (Store, Writers,
-// Runtime, Coordinator), the decision layer (Profiles, planner and policy
+// Runtime, Coordinator), the decision layer (Presets, prompt builder and policy
 // catalogs) and the effect layer (an Executor port) into one Host, and offers
 // the Session facade on top. Whether the Executor runs effects in this process
 // or forwards them to remote workers, whether a Store is memory, files or a
@@ -50,12 +50,12 @@ type Ports struct {
 	// Artifacts are the binding store and retention ledger; nil fields select
 	// in-memory implementations.
 	Artifacts Artifacts
-	// Profiles is the authority-side registry of decision identities; nil
+	// Presets is the authority-side registry of decision identities; nil
 	// selects an in-memory registry. It holds no effect implementation.
-	Profiles ProfileRegistry
-	// Decisions resolve PlannerRef and PolicyRef (DEC-CAT); the zero value
-	// selects decision.DefaultCatalogs().
-	Decisions decision.Catalogs
+	Presets PresetRegistry
+	// Decisions resolve each preset's PromptBuilderRef (DEC-CAT); nil selects
+	// decision.DefaultPromptBuilders().
+	Decisions *decision.PromptBuilders
 	// Executor is the effect layer port (RUN-EXE-3): required. A colocated
 	// host passes NewLocalExecutor; a cloud host passes a remote client.
 	Executor loop.Executor
@@ -89,9 +89,9 @@ type Host struct {
 	Writers     writer.Writers
 	Runtime     run.Runtime
 	Coordinator turn.Service
-	Profiles    ProfileRegistry
+	Presets     PresetRegistry
 	Executor    loop.Executor
-	Decisions   decision.Catalogs
+	Decisions   *decision.PromptBuilders
 
 	registry *extension.Registry
 	frozen   run.FrozenValueStore
@@ -100,7 +100,7 @@ type Host struct {
 	warn     func(error)
 
 	mu    sync.Mutex
-	loops map[turn.ProfileRef]*loop.Loop
+	loops map[turn.PresetRef]*loop.Loop
 }
 
 // New composes a Host from its ports (HST-PRT-1).
@@ -155,21 +155,21 @@ func New(p Ports) (*Host, error) {
 	if err != nil {
 		return nil, err
 	}
-	profiles := p.Profiles
-	if profiles == nil {
-		profiles = NewProfiles()
+	presets := p.Presets
+	if presets == nil {
+		presets = NewPresets()
 	}
 	decisions := p.Decisions
-	if decisions.Planners == nil && decisions.Policies == nil {
-		decisions = decision.DefaultCatalogs()
+	if decisions == nil {
+		decisions = decision.DefaultPromptBuilders()
 	}
 	warn := p.Warn
 	if warn == nil {
 		warn = func(error) {}
 	}
 	h := &Host{
-		Store: store, Writers: writers, Runtime: runtime, Profiles: profiles, Executor: p.Executor, Decisions: decisions,
-		registry: registry, frozen: frozen, bus: bus, now: now, warn: warn, loops: make(map[turn.ProfileRef]*loop.Loop),
+		Store: store, Writers: writers, Runtime: runtime, Presets: presets, Executor: p.Executor, Decisions: decisions,
+		registry: registry, frozen: frozen, bus: bus, now: now, warn: warn, loops: make(map[turn.PresetRef]*loop.Loop),
 	}
 	h.Coordinator = &turn.Coordinator{Writers: writers, Runtime: runtime, Now: now}
 	return h, nil
@@ -184,63 +184,63 @@ func frozenValues(content artifact.ContentStore) (run.FrozenValueStore, error) {
 	return runmod.FrozenValues(content), nil
 }
 
-// --- profiles --------------------------------------------------------------------
+// --- presets --------------------------------------------------------------------
 
-// ProfileRegistry is the authority-side registry of decision identities
-// (HST-PRF-1): a Profile in, a digest-checked ProfileRef out. It never holds a
+// PresetRegistry is the authority-side registry of decision identities
+// (HST-PST-1): an AgentPreset in, a digest-checked PresetRef out. It never holds a
 // model client or a tool implementation; those live behind the Executor.
-type ProfileRegistry interface {
-	Register(turn.ProfileID, turn.Profile) (turn.ProfileRef, error)
-	Resolve(turn.ProfileRef) (turn.Profile, error)
+type PresetRegistry interface {
+	Register(turn.PresetID, turn.AgentPreset) (turn.PresetRef, error)
+	Resolve(turn.PresetRef) (turn.AgentPreset, error)
 }
 
-// ErrProfileUnavailable reports a ProfileRef this process cannot resolve: not
-// registered, or registered with a different digest (HST-PRF-2).
-var ErrProfileUnavailable = errors.New("host: profile_unavailable")
+// ErrPresetUnavailable reports a PresetRef this process cannot resolve: not
+// registered, or registered with a different digest (HST-PST-2).
+var ErrPresetUnavailable = errors.New("host: profile_unavailable")
 
-// Profiles is the in-memory ProfileRegistry.
-type Profiles struct {
+// Presets is the in-memory PresetRegistry.
+type Presets struct {
 	mu   sync.RWMutex
-	byID map[turn.ProfileID]turn.Profile
+	byID map[turn.PresetID]turn.AgentPreset
 }
 
-func NewProfiles() *Profiles { return &Profiles{byID: make(map[turn.ProfileID]turn.Profile)} }
+func NewPresets() *Presets { return &Presets{byID: make(map[turn.PresetID]turn.AgentPreset)} }
 
-// Register validates the Profile (TRN-PRF-2) and records it under id. A
-// re-registration replaces the Profile; refs recorded under the previous
+// Register validates the AgentPreset (TRN-PST-2) and records it under id. A
+// re-registration replaces the AgentPreset; refs recorded under the previous
 // digest stop resolving.
-func (r *Profiles) Register(id turn.ProfileID, p turn.Profile) (turn.ProfileRef, error) {
+func (r *Presets) Register(id turn.PresetID, p turn.AgentPreset) (turn.PresetRef, error) {
 	if id == "" {
-		return turn.ProfileRef{}, errors.New("host: register requires a profile id")
+		return turn.PresetRef{}, errors.New("host: register requires a preset id")
 	}
-	if err := turn.ValidateProfile(&p); err != nil {
-		return turn.ProfileRef{}, err
+	if err := turn.ValidatePreset(&p); err != nil {
+		return turn.PresetRef{}, err
 	}
-	digest, err := turn.DigestProfile(&p)
+	digest, err := turn.DigestPreset(&p)
 	if err != nil {
-		return turn.ProfileRef{}, err
+		return turn.PresetRef{}, err
 	}
 	r.mu.Lock()
 	r.byID[id] = p
 	r.mu.Unlock()
-	return turn.ProfileRef{ID: id, Digest: digest}, nil
+	return turn.PresetRef{ID: id, Digest: digest}, nil
 }
 
-// Resolve returns the Profile when the ref's digest matches the registered
-// one (TRN-PRF-2).
-func (r *Profiles) Resolve(ref turn.ProfileRef) (turn.Profile, error) {
+// Resolve returns the AgentPreset when the ref's digest matches the registered
+// one (TRN-PST-2).
+func (r *Presets) Resolve(ref turn.PresetRef) (turn.AgentPreset, error) {
 	r.mu.RLock()
 	p, ok := r.byID[ref.ID]
 	r.mu.RUnlock()
 	if !ok {
-		return turn.Profile{}, fmt.Errorf("%w: unknown profile %s", ErrProfileUnavailable, ref.ID)
+		return turn.AgentPreset{}, fmt.Errorf("%w: unknown preset %s", ErrPresetUnavailable, ref.ID)
 	}
-	digest, err := turn.DigestProfile(&p)
+	digest, err := turn.DigestPreset(&p)
 	if err != nil {
-		return turn.Profile{}, err
+		return turn.AgentPreset{}, err
 	}
 	if digest != ref.Digest {
-		return turn.Profile{}, fmt.Errorf("%w: profile %s digest mismatch", ErrProfileUnavailable, ref.ID)
+		return turn.AgentPreset{}, fmt.Errorf("%w: preset %s digest mismatch", ErrPresetUnavailable, ref.ID)
 	}
 	return p, nil
 }
@@ -252,33 +252,33 @@ func (r *Profiles) Resolve(ref turn.ProfileRef) (turn.Profile, error) {
 // carries them forward. The Coordinator itself never produces it.
 const ResumeAlreadyDriving turn.ResumeDisposition = "already_driving"
 
-// loopFor returns the Loop that drives Runs of one Profile. A Loop binds the
-// Profile's planner and policy to the shared Executor; it is built once per
-// ProfileRef so every drive of a Run meets the same already-driving guard
-// (HST-DRV-2).
-func (h *Host) loopFor(ref turn.ProfileRef) (*loop.Loop, turn.Profile, error) {
-	profile, err := h.Profiles.Resolve(ref)
+// loopFor returns the Loop that drives Runs of one AgentPreset. A Loop binds
+// the preset's prompt builder and settings to the shared Executor; it is
+// built once per PresetRef so every drive of a Run meets the same
+// already-driving guard (HST-DRV-2).
+func (h *Host) loopFor(ref turn.PresetRef) (*loop.Loop, turn.AgentPreset, error) {
+	preset, err := h.Presets.Resolve(ref)
 	if err != nil {
-		return nil, turn.Profile{}, err
+		return nil, turn.AgentPreset{}, err
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if l, ok := h.loops[ref]; ok {
-		return l, profile, nil
+		return l, preset, nil
 	}
-	planner, policy, err := h.Decisions.Resolve(profile, h.projections())
+	builder, err := h.Decisions.Resolve(preset, h.projections())
 	if err != nil {
-		return nil, turn.Profile{}, err
+		return nil, turn.AgentPreset{}, err
 	}
-	l, err := loop.New(h.Executor, planner, policy)
+	l, err := loop.New(h.Executor, builder, loop.Settings{Scheduling: preset.Scheduling, MalformedRetries: preset.MalformedRetries})
 	if err != nil {
-		return nil, turn.Profile{}, err
+		return nil, turn.AgentPreset{}, err
 	}
 	h.loops[ref] = l
-	return l, profile, nil
+	return l, preset, nil
 }
 
-// Drive is HST-DRV-1: while the Turn is active, resolve its recorded profile
+// Drive is HST-DRV-1: while the Turn is active, resolve its recorded preset
 // and drive the active attempt to the next quiescent point, then read the
 // committed Status. The caller's ctx bounds the drive, so cancellation is a
 // host decision. A concurrent local driver of the same Run yields
@@ -293,7 +293,7 @@ func (h *Host) Drive(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse, 
 		return turn.TurnResponse{}, fmt.Errorf("%w: unknown turn %s", turn.ErrConflict, ref.TurnID)
 	}
 	if view.Status == turn.TurnActive {
-		l, _, err := h.loopFor(view.Profile)
+		l, _, err := h.loopFor(view.Preset)
 		if err != nil {
 			return turn.TurnResponse{}, err
 		}
@@ -336,7 +336,7 @@ func (h *Host) reattachDeliver(sid session.SessionID) loop.Deliver {
 			h.fail(sid, fmt.Errorf("host: reattached outcome for run %s: no owning turn", out.Key.RunID))
 			return
 		}
-		l, _, err := h.loopFor(surface.Turns[turnID].Profile)
+		l, _, err := h.loopFor(surface.Turns[turnID].Preset)
 		if err != nil {
 			h.fail(sid, fmt.Errorf("host: reattached outcome for run %s: %w", out.Key.RunID, err))
 			return

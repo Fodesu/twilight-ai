@@ -46,7 +46,7 @@ type ToolAssignment struct {
 	DefinitionDigest run.Digest
 	Arguments        run.CanonicalJSON
 	Policy           run.ResponsePolicy
-	// Workspace is the execution environment recorded in the Turn's Profile;
+	// Workspace is the execution environment recorded in the Turn's AgentPreset;
 	// the Loop passes it through and does not interpret it.
 	Workspace run.WorkspaceRef
 }
@@ -60,7 +60,7 @@ type Assignment struct {
 	CallID  run.CallID // empty for a model step
 	Claim   run.ExecutionClaim
 	// Schema is the Run's protocol version; the executor uses it to pick the
-	// digest profile it validates tool definitions with.
+	// digest preset it validates tool definitions with.
 	Schema uint16
 	Kind   AssignmentKind
 	Model  *ModelAssignment
@@ -135,7 +135,7 @@ var ErrModelUnavailable = errors.New("agent: loop: executor cannot serve the mod
 // AssignmentFromTarget rebuilds the Assignment of an Executing target a
 // takeover found in the projection, so the new owner can ask the Executor
 // whether that attempt still runs (RUN-CMT-7). Workspace is not recorded in
-// Run facts; a host that needs it resolves it from the Turn's Profile.
+// Run facts; a host that needs it resolves it from the Turn's AgentPreset.
 func AssignmentFromTarget(sid session.SessionID, t run.RecoveryTarget) Assignment {
 	a := Assignment{Session: sid, RunID: t.RunID, StepID: t.StepID, CallID: t.CallID, Claim: t.Claim, Schema: t.Schema}
 	switch {

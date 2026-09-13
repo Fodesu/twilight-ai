@@ -47,7 +47,7 @@ func (e *recordingExecutor) assignments() []loop.Assignment {
 }
 
 // The authority side needs no effect implementation (HST-PRT-2): a Host built
-// over an Executor that is only a recorder registers a Profile, starts a Turn,
+// over an Executor that is only a recorder registers an AgentPreset, starts a Turn,
 // dispatches the model Assignment with the frozen request's digest, and
 // settles the Outcome the executor sends back. Every model client and tool
 // lives on the executor's side of the port.
@@ -60,11 +60,11 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	profileRef, err := h.Profiles.Register("remote", mustProfile("m-remote", nil, host.WithSystemPrompt("be brief")))
+	presetRef, err := h.Presets.Register("remote", mustPreset("m-remote", nil, host.WithSystemPrompt("be brief")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := h.OpenSession(ctx, "s-authority", host.SessionOptions{Profile: profileRef})
+	s, err := h.OpenSession(ctx, "s-authority", host.SessionOptions{Preset: presetRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,22 +99,22 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 	}
 }
 
-// A ProfileRef whose digest no longer matches the registration is
+// A PresetRef whose digest no longer matches the registration is
 // unavailable, so a Turn recorded under an older configuration is refused
-// rather than driven with a different decision function (HST-PRF-2).
-func TestStaleProfileRefIsUnavailable(t *testing.T) {
-	profiles := host.NewProfiles()
-	ref, err := profiles.Register("p", mustProfile("m-1", nil))
+// rather than driven with a different decision function (HST-PST-2).
+func TestStalePresetRefIsUnavailable(t *testing.T) {
+	presets := host.NewPresets()
+	ref, err := presets.Register("p", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := profiles.Register("p", mustProfile("m-1", nil, host.WithStreaming(true))); err != nil {
+	if _, err := presets.Register("p", mustPreset("m-1", nil, host.WithStreaming(true))); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := profiles.Resolve(ref); err == nil {
+	if _, err := presets.Resolve(ref); err == nil {
 		t.Fatal("stale ref resolved")
 	}
-	if _, err := profiles.Resolve(turn.ProfileRef{ID: "missing", Digest: ref.Digest}); err == nil {
-		t.Fatal("unknown profile resolved")
+	if _, err := presets.Resolve(turn.PresetRef{ID: "missing", Digest: ref.Digest}); err == nil {
+		t.Fatal("unknown preset resolved")
 	}
 }

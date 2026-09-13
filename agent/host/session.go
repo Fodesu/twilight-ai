@@ -15,8 +15,8 @@ import (
 
 // SessionOptions tunes OpenSession.
 type SessionOptions struct {
-	// Profile is the decision identity new Turns run under (required).
-	Profile turn.ProfileRef
+	// AgentPreset is the decision identity new Turns run under (required).
+	Preset turn.PresetRef
 	// Companion defaults to turn.CompanionV1Version.
 	Companion turn.CompanionVersion
 	// NewTurnID mints TurnIDs; nil selects the random default.
@@ -121,10 +121,10 @@ func (s *Session) Wait(ctx context.Context) error {
 // Ownership port, runs the takeover disposition and returns the facade
 // (HST-SES-1).
 func (h *Host) OpenSession(ctx context.Context, sid session.SessionID, opts SessionOptions) (*Session, error) {
-	if opts.Profile.ID == "" || opts.Profile.Digest == "" {
-		return nil, errors.New("host: open session requires a profile ref")
+	if opts.Preset.ID == "" || opts.Preset.Digest == "" {
+		return nil, errors.New("host: open session requires a preset ref")
 	}
-	if _, err := h.Profiles.Resolve(opts.Profile); err != nil {
+	if _, err := h.Presets.Resolve(opts.Preset); err != nil {
 		return nil, err
 	}
 	companion := opts.Companion
@@ -284,7 +284,7 @@ func (s *Session) commitRoute(ctx context.Context, inputs []run.AgentInput) (tur
 	}
 	ref := turn.TurnRef{SessionID: s.sid, TurnID: s.newTurnID()}
 	if _, err := s.h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref, Inputs: inputs,
-		Profile: s.opts.Profile, Companion: s.companion}); err != nil {
+		Preset: s.opts.Preset, Companion: s.companion}); err != nil {
 		return turn.TurnRef{}, err
 	}
 	return ref, nil

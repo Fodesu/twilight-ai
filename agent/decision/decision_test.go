@@ -29,8 +29,8 @@ func (s fixedSource) Load(_ context.Context, _ session.SessionID, id extension.P
 	return s.state, s.head, nil
 }
 
-func profile() turn.Profile {
-	return turn.Profile{SchemaVersion: 1, Model: "m-1", Planner: decision.PlannerContextV1, Policy: decision.PolicyDefaultV1, SystemPrompt: "be brief"}
+func preset() turn.AgentPreset {
+	return turn.AgentPreset{SchemaVersion: 1, Model: "m-1", Prompt: decision.PromptContextV1, SystemPrompt: "be brief"}
 }
 
 func entries() chatlog.Context {
@@ -42,82 +42,60 @@ func entries() chatlog.Context {
 	}}
 }
 
-// DEC-CAT-2 / DEC-PLN-1: two authorities resolving the same Profile against
-// the same projection state plan the same request; the catalogs refuse refs
-// they do not hold.
-func TestCatalogsResolveDeterministically(t *testing.T) {
+// DEC-CAT-2 / DEC-PMT-1: two authorities resolving the same AgentPreset
+// against the same projection state build the same prompt; the registry
+// refuses refs it does not hold.
+func TestPromptBuildersResolveDeterministically(t *testing.T) {
 	src := fixedSource{state: entries(), head: session.Head{Next: 3, Digest: "d3"}}
-	hint := run.PlanningHint{Session: "s", Inputs: []run.AgentInput{{ID: "in-1", Payload: decision.InputContent("hello")}}}
-	var plans []loop.RequestPlan
+	input := run.PromptInput{Session: "s", Inputs: []run.AgentInput{{ID: "in-1", Payload: decision.InputContent("hello")}}}
+	var prompts []loop.Prompt
 	for i := 0; i < 2; i++ {
-		catalogs := decision.DefaultCatalogs() // a fresh process builds its own catalogs
-		planner, policy, err := catalogs.Resolve(profile(), src)
+		builders := decision.DefaultPromptBuilders() // a fresh process builds its own registry
+		builder, err := builders.Resolve(preset(), src)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !reflect.DeepEqual(policy, decision.DefaultPolicy) {
-			t.Fatalf("policy = %+v", policy)
-		}
-		plan, err := planner.Plan(context.Background(), hint)
+		prompt, err := builder.Build(context.Background(), input)
 		if err != nil {
 			t.Fatal(err)
 		}
-		plans = append(plans, plan)
+		prompts = append(prompts, prompt)
 	}
-	if !reflect.DeepEqual(plans[0], plans[1]) {
-		t.Fatalf("plans differ across processes:\n%+v\n%+v", plans[0], plans[1])
+	if !reflect.DeepEqual(prompts[0], prompts[1]) {
+		t.Fatalf("prompts differ across processes:\n%+v\n%+v", prompts[0], prompts[1])
 	}
-	if plans[0].PlanningToken != "3:d3" || len(plans[0].Request.Messages) != 3 || plans[0].Model != "m-1" {
-		t.Fatalf("plan = %+v", plans[0])
+	if prompts[0].Token != "3:d3" || len(prompts[0].Request.Messages) != 3 || prompts[0].Model != "m-1" {
+		t.Fatalf("prompt = %+v", prompts[0])
 	}
 
-	cases := []struct {
-		name   string
-		mutate func(*turn.Profile)
-		want   error
-	}{
-		{"unknown planner", func(p *turn.Profile) { p.Planner = "x/planner" }, decision.ErrUnknownPlanner},
-		{"unknown policy", func(p *turn.Profile) { p.Policy = "x/policy" }, decision.ErrUnknownPolicy},
+	p := preset()
+	p.Prompt = "x/builder"
+	if _, err := decision.DefaultPromptBuilders().Resolve(p, src); !errors.Is(err, decision.ErrUnknownPromptBuilder) {
+		t.Fatalf("unknown builder: err = %v, want %v", err, decision.ErrUnknownPromptBuilder)
 	}
-	for _, tc := range cases {
-		p := profile()
-		tc.mutate(&p)
-		if _, _, err := decision.DefaultCatalogs().Resolve(p, src); !errors.Is(err, tc.want) {
-			t.Fatalf("%s: err = %v, want %v", tc.name, err, tc.want)
-		}
+	var none *decision.PromptBuilders
+	if _, err := none.Resolve(preset(), src); err == nil {
+		t.Fatal("nil registry resolved")
 	}
 }
 
 // DEC-CAT-1: registration rejects empty refs, nil factories and duplicates.
-func TestCatalogRegistration(t *testing.T) {
-	planners, err := decision.NewPlannerCatalog(nil)
+func TestPromptBuilderRegistration(t *testing.T) {
+	builders, err := decision.NewPromptBuilders(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := planners.Register("", decision.NewContextPlanner); err == nil {
-		t.Fatal("empty planner ref accepted")
+	if err := builders.Register("", decision.NewContextPromptBuilder); err == nil {
+		t.Fatal("empty builder ref accepted")
 	}
-	if err := planners.Register("p", nil); err == nil {
+	if err := builders.Register("p", nil); err == nil {
 		t.Fatal("nil factory accepted")
 	}
-	if err := planners.Register("p", decision.NewContextPlanner); err != nil {
+	if err := builders.Register("p", decision.NewContextPromptBuilder); err != nil {
 		t.Fatal(err)
 	}
-	if err := planners.Register("p", decision.NewContextPlanner); err == nil {
-		t.Fatal("duplicate planner accepted")
-	}
-	policies, _ := decision.NewPolicyCatalog(nil)
-	if err := policies.Register("", loop.ExecutionPolicy{}); err == nil {
-		t.Fatal("empty policy ref accepted")
-	}
-	if err := policies.Register("q", loop.ExecutionPolicy{}); err != nil {
-		t.Fatal(err)
-	}
-	if err := policies.Register("q", loop.ExecutionPolicy{}); err == nil {
-		t.Fatal("duplicate policy accepted")
-	}
-	if _, _, err := (decision.Catalogs{}).Resolve(profile(), nil); err == nil {
-		t.Fatal("incomplete catalogs resolved")
+	if err := builders.Register("p", decision.NewContextPromptBuilder); err == nil {
+		t.Fatal("duplicate builder accepted")
 	}
 }
 

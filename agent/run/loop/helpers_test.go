@@ -129,7 +129,7 @@ func loadState(t testing.TB, rt Runtime, runID RunID) RuntimeSnapshot {
 
 // newLoop builds a Loop over a LocalExecutor for tests: the executor reads
 // frozen request bodies from rt and reports provisional observations to sink.
-func newLoop(rt Runtime, sink EventSink, models ModelCatalog, tools ToolCatalog, planner RequestPlanner, policy ExecutionPolicy, streaming bool) (*Loop, error) {
+func newLoop(rt Runtime, sink EventSink, models ModelCatalog, tools ToolCatalog, builder PromptBuilder, settings Settings, streaming bool) (*Loop, error) {
 	if models == nil {
 		return nil, errors.New("agent: loop: nil model catalog")
 	}
@@ -140,5 +140,5 @@ func newLoop(rt Runtime, sink EventSink, models ModelCatalog, tools ToolCatalog,
 	if err != nil {
 		return nil, err
 	}
-	return New(exec, planner, policy)
+	return New(exec, builder, settings)
 }

@@ -30,7 +30,7 @@ const (
 )
 
 // gateDefinition is the tool's frozen public shape. The authority builds its
-// Profile from this alone; the implementation below never leaves the executor.
+// AgentPreset from this alone; the implementation below never leaves the executor.
 func gateDefinition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{Name: string(gateToolRef), Description: "blocks until released",
 		Parameters: []byte(`{"type":"object","properties":{}}`)}

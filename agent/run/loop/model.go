@@ -10,9 +10,9 @@ import (
 	"github.com/felinics/twilight/sdk"
 )
 
-func (l *Loop) planAndPrepare(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot, hint run.PlanningHint) error {
+func (l *Loop) planAndPrepare(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot, hint run.PromptInput) error {
 	hint.Session = runtime.sid
-	plan, err := l.Planner.Plan(ctx, hint)
+	plan, err := l.Builder.Build(ctx, hint)
 	if err != nil {
 		return err
 	}
@@ -54,7 +54,7 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime boundRuntime, events 
 		Request:       frozenRequest,
 		RequestDigest: requestDigest,
 		InputIDs:      plan.InputIDs,
-		PlanningToken: plan.PlanningToken,
+		PromptToken:   plan.Token,
 		Tools:         plan.Tools,
 		ToolsDigest:   toolsDigest,
 	}, proto)
@@ -70,7 +70,7 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime boundRuntime, events 
 	}
 	// A retriable rejection with no authority progress means the rejection
 	// was about THIS plan's content (InputIDs, digests), not concurrency:
-	// retrying the same planner at the same revision would spin forever.
+	// retrying the same prompt builder at the same revision would spin forever.
 	after, loadErr := runtime.Load(ctx, snapshot.State.RunID)
 	if loadErr != nil {
 		return loadErr
@@ -167,7 +167,7 @@ func (l *Loop) deliverTo(runtime boundRuntime, events EventSink, deliver Deliver
 //
 // A body the executor reports missing also withdraws the step, but the
 // condition is returned as an error alongside the command: the settlement
-// lands, and the drive stops instead of planning, freezing and dispatching
+// lands, and the drive stops instead of prompt building, freezing and dispatching
 // again against the same missing store. Whether to try again is the host's
 // decision, so a persistently unreadable store cannot spin the Run.
 func (l *Loop) modelCompletion(step *run.ModelStep, out Outcome) (run.AgentCommand, error) {
@@ -205,18 +205,14 @@ func (l *Loop) modelCompletion(step *run.ModelStep, out Outcome) (run.AgentComma
 	return run.SubmitModelResult{StepID: stepID, Result: frozenResult, Calls: bindings, Scheduling: l.toolScheduling()}, nil
 }
 
-func (l *Loop) modelRejectDisposition(step run.ModelStep, failure run.StepFailure) run.ModelRejectDisposition {
-	if l.Execution.OnMalformedModelResult != nil {
-		disposition := l.Execution.OnMalformedModelResult(step, failure)
-		if disposition == run.ModelRejectRetry || disposition == run.ModelRejectFailRun {
-			return disposition
-		}
-		// Do not leave a model step Executing because a host callback returned
-		// an unknown enum value; a malformed result must still settle.
-		return run.ModelRejectFailRun
+// modelRejectDisposition applies Settings.MalformedRetries: the step's
+// Rejects counts the malformed results already recorded, so the step is
+// retried while that count is below the bound and fails the Run otherwise.
+// Zero retries fails on the first malformed result.
+func (l *Loop) modelRejectDisposition(step run.ModelStep, _ run.StepFailure) run.ModelRejectDisposition {
+	if step.Rejects < int(l.Settings.MalformedRetries) {
+		return run.ModelRejectRetry
 	}
-	// A malformed result is never retried implicitly. Hosts that want a retry
-	// must provide the handler and return ModelRejectRetry explicitly.
 	return run.ModelRejectFailRun
 }
 

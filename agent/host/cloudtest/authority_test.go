@@ -20,7 +20,7 @@ import (
 
 // The authority process: the fact and decision layers over a shared file
 // store, with the effect layer behind a remote Executor. It constructs no
-// model client and no tool implementation; the Profile it registers names the
+// model client and no tool implementation; the AgentPreset it registers names the
 // model by ref and the tool by its frozen definition only.
 
 // warnings collects Ports.Warn so a test can observe host-level failures --
@@ -153,17 +153,17 @@ func (a *authorityServer) projection(ctx context.Context, id string) ([]byte, er
 	return nil, fmt.Errorf("unknown projection %q", id)
 }
 
-// cloudProfile is the decision identity the authority registers: model by
-// ref, the gate tool by frozen definition, default planner and policy.
-func cloudProfile() (turn.Profile, error) {
+// cloudPreset is the decision identity the authority registers: model by
+// ref, the gate tool by frozen definition, default prompt builder and policy.
+func cloudPreset() (turn.AgentPreset, error) {
 	def, err := run.FreezeToolDefinition(gateDefinition())
 	if err != nil {
-		return turn.Profile{}, err
+		return turn.AgentPreset{}, err
 	}
-	p := turn.Profile{SchemaVersion: 1, Model: scriptedModelRef,
-		Tools:   []turn.PublicTool{{Ref: gateToolRef, Definition: def, Policy: run.DirectExecution}},
-		Planner: decision.PlannerContextV1, Policy: decision.PolicyDefaultV1}
-	return p, turn.ValidateProfile(&p)
+	p := turn.AgentPreset{SchemaVersion: 1, Model: scriptedModelRef,
+		Tools:  []turn.PublicTool{{Ref: gateToolRef, Definition: def, Policy: run.DirectExecution}},
+		Prompt: decision.PromptContextV1}
+	return p, turn.ValidatePreset(&p)
 }
 
 // runAuthority is the authority role's main.
@@ -193,11 +193,11 @@ func runAuthority() int {
 	if err != nil {
 		return fail(err)
 	}
-	profile, err := cloudProfile()
+	preset, err := cloudPreset()
 	if err != nil {
 		return fail(err)
 	}
-	ref, err := h.Profiles.Register("cloud", profile)
+	ref, err := h.Presets.Register("cloud", preset)
 	if err != nil {
 		return fail(err)
 	}
@@ -209,7 +209,7 @@ func runAuthority() int {
 	go func() { _ = http.Serve(ln, mux) }()
 	go remote.monitor(ctx)
 
-	s, err := h.OpenSession(ctx, sid, host.SessionOptions{Profile: ref})
+	s, err := h.OpenSession(ctx, sid, host.SessionOptions{Preset: ref})
 	if err != nil {
 		return fail(err)
 	}

@@ -22,14 +22,14 @@ func NextStep(inputs ...AgentInput) AcceptInput { return AcceptInput{Inputs: inp
 // Request is the transient body; the fact keeps RequestDigest and the Runtime
 // stores the body in the FrozenValueStore.
 type PrepareModelRequest struct {
-	StepID        StepID        `json:"stepId"`
-	Model         ModelRef      `json:"model"`
-	Request       ModelRequest  `json:"request"`
-	RequestDigest Digest        `json:"requestDigest"`
-	InputIDs      []InputID     `json:"inputIds,omitempty"`
-	PlanningToken PlanningToken `json:"planningToken,omitempty"`
-	Tools         []ToolSpec    `json:"tools,omitempty"`
-	ToolsDigest   Digest        `json:"toolsDigest"`
+	StepID        StepID       `json:"stepId"`
+	Model         ModelRef     `json:"model"`
+	Request       ModelRequest `json:"request"`
+	RequestDigest Digest       `json:"requestDigest"`
+	InputIDs      []InputID    `json:"inputIds,omitempty"`
+	PromptToken   PromptToken  `json:"promptToken,omitempty"`
+	Tools         []ToolSpec   `json:"tools,omitempty"`
+	ToolsDigest   Digest       `json:"toolsDigest"`
 }
 
 func (PrepareModelRequest) agentCommand() {}

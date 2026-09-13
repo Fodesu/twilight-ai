@@ -15,7 +15,7 @@ import (
 
 // Catalog is a static effect catalog for a colocated deployment: the model
 // invokers and tool implementations one process serves. It is the
-// implementation side of the effect layer; nothing in it enters a Profile.
+// implementation side of the effect layer; nothing in it enters an AgentPreset.
 type Catalog struct {
 	models map[run.ModelRef]loop.ModelInvoker
 	tools  map[run.ToolRef]loop.ExecutableTool
@@ -90,52 +90,61 @@ func (r frozenReader) FrozenRequest(ctx context.Context, digest run.Digest) (run
 	return run.DecodeFrozenRequest(raw, digest)
 }
 
-// --- profiles --------------------------------------------------------------------
+// --- presets --------------------------------------------------------------------
 
-// ProfileOption tunes NewProfile.
-type ProfileOption func(*turn.Profile)
+// PresetOption tunes NewPreset.
+type PresetOption func(*turn.AgentPreset)
 
-func WithSystemPrompt(s string) ProfileOption { return func(p *turn.Profile) { p.SystemPrompt = s } }
-func WithStreaming(on bool) ProfileOption     { return func(p *turn.Profile) { p.Streaming = on } }
+func WithSystemPrompt(s string) PresetOption { return func(p *turn.AgentPreset) { p.SystemPrompt = s } }
+func WithStreaming(on bool) PresetOption     { return func(p *turn.AgentPreset) { p.Streaming = on } }
 
-// WithPlanner selects the decision component; the default is
-// decision.PlannerContextV1.
-func WithPlanner(ref turn.PlannerRef) ProfileOption { return func(p *turn.Profile) { p.Planner = ref } }
-
-// WithPolicy selects the execution policy by ref; the default is
-// decision.PolicyDefaultV1.
-func WithPolicy(ref turn.PolicyRef) ProfileOption { return func(p *turn.Profile) { p.Policy = ref } }
-
-// WithWorkspace records the execution environment identity in the Profile.
-func WithWorkspace(ref turn.WorkspaceRef) ProfileOption {
-	return func(p *turn.Profile) { p.Workspace = ref }
+// WithPromptBuilder selects the decision component; the default is
+// decision.PromptContextV1.
+func WithPromptBuilder(ref turn.PromptBuilderRef) PresetOption {
+	return func(p *turn.AgentPreset) { p.Prompt = ref }
 }
 
-// NewProfile builds the common one-model Profile: the tools' frozen
+// WithScheduling sets how one step's tool calls run (parallel by default).
+func WithScheduling(s run.ToolScheduling) PresetOption {
+	return func(p *turn.AgentPreset) { p.Scheduling = s }
+}
+
+// WithMalformedRetries bounds the retries of one model step after malformed
+// results; zero fails the Run on the first.
+func WithMalformedRetries(n uint8) PresetOption {
+	return func(p *turn.AgentPreset) { p.MalformedRetries = n }
+}
+
+// WithWorkspace records the execution environment identity in the AgentPreset.
+func WithWorkspace(ref turn.WorkspaceRef) PresetOption {
+	return func(p *turn.AgentPreset) { p.Workspace = ref }
+}
+
+// NewPreset builds the common one-model Preset: the tools' frozen
 // definitions and response policies enter it, their implementations do not.
 // The same tools are then served by the Executor's catalog.
-func NewProfile(model run.ModelRef, tools []loop.ExecutableTool, opts ...ProfileOption) (turn.Profile, error) {
+func NewPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...PresetOption) (turn.AgentPreset, error) {
 	if model == "" {
-		return turn.Profile{}, errors.New("host: profile requires a model ref")
+		return turn.AgentPreset{}, errors.New("host: preset requires a model ref")
 	}
-	p := turn.Profile{SchemaVersion: 1, Model: model, Planner: decision.PlannerContextV1, Policy: decision.PolicyDefaultV1}
+	p := turn.AgentPreset{SchemaVersion: 1, Model: model, Prompt: decision.PromptContextV1}
 	seen := map[run.ToolRef]struct{}{}
 	for _, t := range tools {
 		if _, dup := seen[t.Ref()]; dup {
-			return turn.Profile{}, fmt.Errorf("host: duplicate tool %q", t.Ref())
+			return turn.AgentPreset{}, fmt.Errorf("host: duplicate tool %q", t.Ref())
 		}
 		seen[t.Ref()] = struct{}{}
 		def, err := run.FreezeToolDefinition(t.Definition())
 		if err != nil {
-			return turn.Profile{}, err
+			return turn.AgentPreset{}, err
 		}
 		p.Tools = append(p.Tools, turn.PublicTool{Ref: t.Ref(), Definition: def, Policy: t.ResponsePolicy()})
 	}
 	for _, opt := range opts {
 		opt(&p)
 	}
-	if err := turn.ValidateProfile(&p); err != nil {
-		return turn.Profile{}, err
+	if err := turn.ValidatePreset(&p); err != nil {
+		return turn.AgentPreset{}, err
 	}
 	return p, nil
 }

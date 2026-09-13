@@ -79,7 +79,7 @@ func (e *recordingExecutor) deliver(t *testing.T, key AssignmentKey, out Outcome
 func TestAdvanceDispatchesAndDeliverSettles(t *testing.T) {
 	rt := loopRuntime(t)
 	exec := newRecordingExecutor()
-	l, err := New(exec, staticPlanner{}, ExecutionPolicy{})
+	l, err := New(exec, staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestAdvanceDispatchesAndDeliverSettles(t *testing.T) {
 func TestDeliverDropsStaleOutcome(t *testing.T) {
 	rt := loopRuntime(t)
 	exec := newRecordingExecutor()
-	l, err := New(exec, staticPlanner{}, ExecutionPolicy{})
+	l, err := New(exec, staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{}`)})
 	exec := newRecordingExecutor()
-	l, err := New(exec, staticPlanner{}, ExecutionPolicy{})
+	l, err := New(exec, staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 	// attempt (the same recording executor answers true).
 	stack.open(t)
 	exec.attachReply = true
-	newLoop, err := New(exec, staticPlanner{}, ExecutionPolicy{})
+	newLoop, err := New(exec, staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{}`)})
 	exec := newRecordingExecutor()
-	l, err := New(exec, staticPlanner{}, ExecutionPolicy{})
+	l, err := New(exec, staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,7 +311,7 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 func TestDeliverCancelledModelRecovers(t *testing.T) {
 	rt := loopRuntime(t)
 	exec := newRecordingExecutor()
-	l, err := New(exec, staticPlanner{}, ExecutionPolicy{})
+	l, err := New(exec, staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -333,12 +333,12 @@ func TestDeliverCancelledModelRecovers(t *testing.T) {
 
 // A frozen body a remote executor reports missing withdraws the step (the
 // settlement lands, the Run is Open) and the condition comes back as an error,
-// so the drive stops instead of planning again against the same missing
+// so the drive stops instead of prompt building again against the same missing
 // store. A later Advance -- the host's decision -- plans afresh (RUN-LOP-3).
 func TestDeliverMissingFrozenBodyWithdrawsAndReturnsTheError(t *testing.T) {
 	rt := loopRuntime(t)
 	exec := newRecordingExecutor()
-	l, err := New(exec, staticPlanner{}, ExecutionPolicy{})
+	l, err := New(exec, staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -407,7 +407,7 @@ func TestRunStopsAfterOneMissingBodyRecovery(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rt := loopRuntime(t)
-			l, err := New(tc.exec(t, rt), staticPlanner{}, ExecutionPolicy{})
+			l, err := New(tc.exec(t, rt), staticBuilder{}, Settings{})
 			if err != nil {
 				t.Fatal(err)
 			}

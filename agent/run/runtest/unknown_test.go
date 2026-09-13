@@ -27,5 +27,5 @@ func TestUnknownToolOutcomeLeavesSiblingRunning(t *testing.T) {
 	f.RequireRan("lost")
 	f.RequireRan("echo")
 	f.RequireCallFailed("c1", run.ToolOutcomeUnknown)
-	f.RequirePlannerSawTool("c2", `{"x":1}`)
+	f.RequireBuilderSawTool("c2", `{"x":1}`)
 }

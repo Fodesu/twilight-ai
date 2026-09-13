@@ -21,7 +21,7 @@ func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("done")}}
 	rt := loopRuntime(t)
 	interpreter, _ := newLoop(rt, nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
-		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
+		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 
 	res, err := interpreter.Run(context.Background(), rt, testSession, "run-1", nil)
 	if err != nil {
@@ -54,7 +54,7 @@ func TestRegressionRunFinishedEmitted(t *testing.T) {
 		return nil
 	})
 	interpreter, _ := newLoop(rt, nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("done")}}},
-		fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
+		fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
 	if _, err := interpreter.Run(context.Background(), rt, testSession, "run-1", sink); err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 	}}
 	rt := loopRuntime(t)
 	interpreter, _ := newLoop(rt, nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"fs.read": tool}},
-		staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{}, false)
+		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 
 	res, err := interpreter.Run(context.Background(), rt, testSession, "run-1", nil)
 	if err != nil {
@@ -109,7 +109,7 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 
 func TestRegressionStreamNilResult(t *testing.T) {
 	rt := loopRuntime(t)
-	interpreter, _ := newLoop(rt, nil, fakeCatalog{nilResultStreamer{}}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, true)
+	interpreter, _ := newLoop(rt, nil, fakeCatalog{nilResultStreamer{}}, fakeToolCatalog{}, staticBuilder{}, Settings{}, true)
 	res, err := interpreter.Run(context.Background(), rt, testSession, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)

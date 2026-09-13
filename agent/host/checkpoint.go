@@ -16,7 +16,7 @@ import (
 	"github.com/felinics/twilight/sdk"
 )
 
-// CompactorSystemPrompt asks the profile's model for the checkpoint summary.
+// CompactorSystemPrompt asks the preset's model for the checkpoint summary.
 const CompactorSystemPrompt = "You are the conversation compactor. Reply with a concise summary of the conversation transcript that preserves facts, decisions, names and open tasks. Reply with the summary text only."
 
 // RetainLast selects a pair-closed suffix of at most n entries: a retained
@@ -184,7 +184,7 @@ func checkRetainClosure(entries []chatlog.Entry, retain []chatlog.EntryDigestPai
 	return nil
 }
 
-// Compact summarizes the context with the profile's model and commits a
+// Compact summarizes the context with the preset's model and commits a
 // checkpoint retaining a pair-closed suffix; ok is false when the context is
 // already within the retain window (HST-CKP-1).
 func (s *Session) Compact(ctx context.Context) (chatlog.CheckpointID, bool, error) {
@@ -220,11 +220,11 @@ const defaultCompactRetain = 4
 // model client and a remote executor serves it the same way. A crash while
 // it generates writes nothing.
 func (s *Session) summarize(ctx context.Context, entries []chatlog.Entry) (string, error) {
-	profile, err := s.h.Profiles.Resolve(s.opts.Profile)
+	preset, err := s.h.Presets.Resolve(s.opts.Preset)
 	if err != nil {
 		return "", err
 	}
-	frozen, err := run.FreezeModelRequest(sdk.Request{Model: string(profile.Model), Messages: []sdk.Message{
+	frozen, err := run.FreezeModelRequest(sdk.Request{Model: string(preset.Model), Messages: []sdk.Message{
 		sdk.SystemMessage(CompactorSystemPrompt),
 		sdk.UserMessage(renderTranscript(entries)),
 	}})
@@ -244,7 +244,7 @@ func (s *Session) summarize(ctx context.Context, entries []chatlog.Entry) (strin
 	}
 	a := loop.Assignment{Session: s.sid, RunID: run.RunID("compact-" + randomHex(8)), StepID: "summary",
 		Claim: run.ExecutionClaim(randomHex(16)), Schema: run.SchemaVersion1, Kind: loop.AssignmentModel,
-		Model: &loop.ModelAssignment{Model: profile.Model, RequestDigest: digest}}
+		Model: &loop.ModelAssignment{Model: preset.Model, RequestDigest: digest}}
 	outcomes := make(chan loop.Outcome, 1)
 	if err := s.h.Executor.Dispatch(ctx, a, func(out loop.Outcome) { outcomes <- out }); err != nil {
 		return "", err

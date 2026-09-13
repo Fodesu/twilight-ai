@@ -367,7 +367,7 @@ func testPrepareCASIgnoresOtherModules(t *testing.T, factory Factory) {
 	h.startRun("t2", "r2", input("in-b"))
 	snap := h.load("r1")
 	cmd, id := h.preparedCommand(snap, false)
-	// Other modules and another Run write after the planner loaded.
+	// Other modules and another Run write after the prompt builder loaded.
 	h.submitInputs(input("late"))
 	h.prepare("r2", false)
 	after := h.load("r1")
@@ -456,7 +456,7 @@ func testIsolation(t *testing.T, factory Factory) {
 	h.prepare("r2", false)
 	h.submitInputs(input("noise"))
 	h.mustApply(writer.SemanticGroup{CommitID: "turn-noise", Events: []writer.TypedEvent{{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
-		Value: turn.StartedPayload{TurnID: "t9", Profile: turn.ProfileRef{ID: "b", Digest: "sha256:b"}, Companion: turn.CompanionV1Version}}}})
+		Value: turn.StartedPayload{TurnID: "t9", Preset: turn.PresetRef{ID: "b", Digest: "sha256:b"}, Companion: turn.CompanionV1Version}}}})
 	if h.load("r1").Position != p1 {
 		t.Fatal("r2, chatlog or turn writes moved r1")
 	}
@@ -501,7 +501,7 @@ func testTakeover(t *testing.T, factory Factory) {
 	}
 	// The next Prepare is a new decision: a new StepID (its identity derives
 	// from the Run position, which the recovery moved) that consumes the late
-	// input. What the request contains is the Planner's business; the harness
+	// input. What the request contains is the PromptBuilder's business; the harness
 	// plans a fixed request, so only the identities and the input flow are
 	// asserted here.
 	aborted := before.State.Current.(run.ModelStep).RefValue.ID

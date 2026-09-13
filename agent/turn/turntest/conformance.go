@@ -53,8 +53,8 @@ func testStart(t *testing.T, factory Factory) {
 		req      turn.StartRequest
 		conflict bool // ErrConflict, otherwise a validation error
 	}{
-		{"missing profile", turn.StartRequest{Ref: h.ref("t1"), Companion: turn.CompanionV1Version}, false},
-		{"missing companion", turn.StartRequest{Ref: h.ref("t1"), Profile: profile}, false},
+		{"missing preset", turn.StartRequest{Ref: h.ref("t1"), Companion: turn.CompanionV1Version}, false},
+		{"missing companion", turn.StartRequest{Ref: h.ref("t1"), Preset: preset}, false},
 		{"duplicate input ids", h.startRequest("t1", submitted[0], submitted[0]), false},
 		{"input never submitted", h.startRequest("t1", input("ghost")), true},
 		{"payload differs from submitted content", h.startRequest("t1", altered), true},
@@ -79,13 +79,13 @@ func testStart(t *testing.T, factory Factory) {
 	if resp.Status != turn.TurnActive || resp.Attempt != 1 || resp.RunID != runID || resp.Disposition != "" || resp.End != nil {
 		t.Fatalf("start response = %+v", resp)
 	}
-	plan := turn.PlanDigest("t1", profile.Digest, turn.CompanionV1Version, []chatlog.InputID{"in-1", "in-2"})
+	plan := turn.PlanDigest("t1", preset.Digest, turn.CompanionV1Version, []chatlog.InputID{"in-1", "in-2"})
 	group := h.group(session.CommitID(turn.StartOperationDigest(sid, "t1", plan)))
 	if !sameTypes(group, turn.TypeStarted, chatlog.TypeInputDelivered, chatlog.TypeInputDelivered, typeCreated, typeAccepted, typeAccepted) {
 		t.Fatalf("start group = %v", eventTypes(group))
 	}
 	started := decode[turn.StartedPayload](t, h.registry, &group[0])
-	if started.TurnID != "t1" || len(started.InputIDs) != 2 || started.Profile != profile || started.Companion != turn.CompanionV1Version {
+	if started.TurnID != "t1" || len(started.InputIDs) != 2 || started.Preset != preset || started.Companion != turn.CompanionV1Version {
 		t.Fatalf("started payload = %+v", started)
 	}
 	created := decode[runmod.Event](t, h.registry, &group[3])
@@ -480,7 +480,7 @@ func testProjection(t *testing.T, factory Factory) {
 		event writer.TypedEvent
 	}{
 		{"started twice", writer.TypedEvent{Type: turn.TypeStarted, RecordedAtUnixMilli: h.now,
-			Value: turn.StartedPayload{TurnID: "t1", Profile: profile, Companion: turn.CompanionV1Version}}},
+			Value: turn.StartedPayload{TurnID: "t1", Preset: preset, Companion: turn.CompanionV1Version}}},
 		{"failed for an unknown turn", failed("ghost", turn.SettlementFailed)},
 		{"settled twice", failed("t1", turn.SettlementStopped)},
 		{"completed after failed", writer.TypedEvent{Type: turn.TypeCompleted, RecordedAtUnixMilli: h.now,

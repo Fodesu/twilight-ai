@@ -16,20 +16,31 @@ import (
 // Run locally so every Executing target has one in-process owner (RUN-CMT-6).
 var ErrRunAlreadyRunning = errors.New("agent: loop: run already running")
 
-// RequestPlanner is the port the application injects: it projects application
-// context into the next boundary sdk.Request (RUN-LOP-2). Loop freezes it into
-// an agent-owned ModelRequest before crossing the Runtime boundary. Planning
-// implementations never live in agent.
-type RequestPlanner interface {
-	Plan(context.Context, run.PlanningHint) (RequestPlan, error)
+// PromptBuilder is the decision-layer port the host resolves from the
+// AgentPreset (DEC-PMT): it builds the next prompt from the Session's
+// projections (RUN-LOP-2). Loop freezes the prompt into an agent-owned
+// ModelRequest before crossing the Runtime boundary.
+type PromptBuilder interface {
+	Build(context.Context, run.PromptInput) (Prompt, error)
 }
 
-type RequestPlan struct {
-	Model         run.ModelRef
-	Request       sdk.Request
-	InputIDs      []run.InputID
-	PlanningToken run.PlanningToken
-	Tools         []run.ToolSpec
+// Prompt is one built model input: the model to call, the provider request
+// (messages and tool definitions), the inputs it consumed, the freshness
+// token of the context it was built from, and the frozen tool specs.
+type Prompt struct {
+	Model    run.ModelRef
+	Request  sdk.Request
+	InputIDs []run.InputID
+	Token    run.PromptToken
+	Tools    []run.ToolSpec
+}
+
+// Settings are the execution parameters the Loop takes from the AgentPreset
+// (RUN-LOP-1). Scheduling is frozen onto each ToolStep; MalformedRetries
+// bounds the retries of one model step after malformed results.
+type Settings struct {
+	Scheduling       run.ToolScheduling
+	MalformedRetries uint8
 }
 
 // ModelCatalog resolves a frozen run.ModelRef into an invoker at execution time;
@@ -63,7 +74,7 @@ type ToolExecutionRequest struct {
 	ToolRef          run.ToolRef
 	DefinitionDigest run.Digest
 	Arguments        run.CanonicalJSON
-	// Workspace is the execution environment of the Turn's Profile, passed
+	// Workspace is the execution environment of the Turn's AgentPreset, passed
 	// through for the tool; the Loop does not interpret it.
 	Workspace run.WorkspaceRef
 	Progress  ToolProgressSink
@@ -105,15 +116,6 @@ type ToolProgress struct {
 	Payload json.RawMessage
 }
 
-// ToolExecutionMode is Loop-local until SubmitModelResult snapshots it onto
-// ToolStep.Scheduling.
-type ToolExecutionMode string
-
-const (
-	ToolExecutionParallel   ToolExecutionMode = "parallel"
-	ToolExecutionSequential ToolExecutionMode = "sequential"
-)
-
 // --- EventSink: realtime observation, never authority (RUN-LOP-6) ---
 
 type EventSink interface {
@@ -153,19 +155,6 @@ type Event struct {
 	// Committed is set for an EventAgentCommitted observation: the accepted
 	// group (run facts, companion, attach); nil for provisional.
 	Committed []session.SessionEvent
-}
-
-// ExecutionPolicy is host-owned loop policy. ToolExecution and MaxParallel
-// are snapshotted onto ToolStep at SubmitModelResult and then frozen.
-// OnMalformedModelResult is not persisted.
-type ExecutionPolicy struct {
-	ToolExecution ToolExecutionMode
-	// OnMalformedModelResult chooses the disposition recorded for a malformed
-	// provider result. A nil handler fails the Run; retries must be explicit.
-	OnMalformedModelResult func(run.ModelStep, run.StepFailure) run.ModelRejectDisposition
-	// MaxParallel bounds local tool workers. Zero means all eligible calls in
-	// the current batch may run concurrently.
-	MaxParallel int
 }
 
 type LoopDisposition uint8

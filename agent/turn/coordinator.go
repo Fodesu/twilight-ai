@@ -20,7 +20,7 @@ var ErrConflict = errors.New("turn: conflict")
 type StartRequest struct {
 	Ref       TurnRef
 	Inputs    []run.AgentInput
-	Profile   ProfileRef
+	Preset    PresetRef
 	Companion CompanionVersion
 }
 type DeliverRequest struct {
@@ -137,8 +137,8 @@ func (c *Coordinator) commit(ctx context.Context, sid session.SessionID, op stri
 // --- Start ------------------------------------------------------------------------
 
 func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse, error) {
-	if req.Ref.SessionID == "" || req.Ref.TurnID == "" || req.Profile.ID == "" || req.Profile.Digest == "" || req.Companion == "" {
-		return TurnResponse{}, errors.New("turn: start requires ref, profile and companion")
+	if req.Ref.SessionID == "" || req.Ref.TurnID == "" || req.Preset.ID == "" || req.Preset.Digest == "" || req.Companion == "" {
+		return TurnResponse{}, errors.New("turn: start requires ref, preset and companion")
 	}
 	inputIDs := make([]chatlog.InputID, len(req.Inputs))
 	seen := map[run.InputID]struct{}{}
@@ -150,7 +150,7 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 		inputIDs[i] = chatlog.InputID(in.ID)
 	}
 	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
-	plan := PlanDigest(turnID, req.Profile.Digest, req.Companion, inputIDs)
+	plan := PlanDigest(turnID, req.Preset.Digest, req.Companion, inputIDs)
 	commitID := session.CommitID(StartOperationDigest(sid, turnID, plan))
 	runID := DeriveRunID(sid, turnID, 1)
 	newRun, err := run.BuildNewRunFor(runID, run.OwnerID(turnID), 1, es.CausationID(commitID))
@@ -192,7 +192,7 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 func (c *Coordinator) startGroup(commitID session.CommitID, turnID TurnID, inputIDs []chatlog.InputID, req StartRequest, facts []run.Fact, now int64) writer.SemanticGroup {
 	group := writer.SemanticGroup{CommitID: commitID}
 	group.Events = append(group.Events, writer.TypedEvent{Type: TypeStarted, RecordedAtUnixMilli: now,
-		Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, Profile: req.Profile, Companion: req.Companion}})
+		Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, Preset: req.Preset, Companion: req.Companion}})
 	for _, id := range inputIDs {
 		group.Events = append(group.Events, writer.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: now,
 			Value: chatlog.InputDeliveredPayload{InputID: id, TurnID: chatlog.TurnID(turnID)}})

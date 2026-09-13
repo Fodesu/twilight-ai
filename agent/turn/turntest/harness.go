@@ -30,7 +30,7 @@ type Factory func(t testing.TB) Fixture
 
 const sid session.SessionID = "turn-conformance"
 
-var profile = turn.ProfileRef{ID: "p-1", Digest: "sha256:p-1"}
+var preset = turn.PresetRef{ID: "p-1", Digest: "sha256:p-1"}
 
 // harness is one owner process: Writers, Runtime and Coordinator over the
 // Store. now is the clock every event is stamped with; tests move it to show
@@ -139,7 +139,7 @@ func (h *harness) submit(ids ...string) []run.AgentInput {
 }
 
 func (h *harness) startRequest(turnID turn.TurnID, inputs ...run.AgentInput) turn.StartRequest {
-	return turn.StartRequest{Ref: h.ref(turnID), Inputs: inputs, Profile: profile, Companion: turn.CompanionV1Version}
+	return turn.StartRequest{Ref: h.ref(turnID), Inputs: inputs, Preset: preset, Companion: turn.CompanionV1Version}
 }
 
 // start submits ids and starts turnID with them.

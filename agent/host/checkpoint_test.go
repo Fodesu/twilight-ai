@@ -54,11 +54,11 @@ func messageTexts(req sdk.Request) []string {
 func openCompactSession(t *testing.T, store session.Store, model *compactAwareModel, opts host.SessionOptions) (*host.Host, *host.Session) {
 	t.Helper()
 	h := newHost(host.Ports{Store: store, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
-	profile, err := h.Profiles.Register("b1", mustProfile("m-1", nil))
+	preset, err := h.Presets.Register("b1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	opts.Profile = profile
+	opts.Preset = preset
 	s, err := h.OpenSession(context.Background(), "s-ckpt", opts)
 	if err != nil {
 		t.Fatal(err)
