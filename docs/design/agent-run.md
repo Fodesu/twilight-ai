@@ -20,15 +20,15 @@ Run 的职责分成五个相互独立的层面：
 
 ```text
 Agent Machine   = Run/Step 状态与合法转移（Decide、Evolve、Next）
-Agent Loop      = Machine effect 的进程内解释器
+Agent Loop      = 决策解释器：把 Machine effect 记录为事实、交给 Executor 为 Assignment、把 Outcome 结算为事实
 Runtime         = command 到 Session event 组的原子提交边界、接管处置
-Model / Tool    = 一次模型请求或一次工具调用的 effect 执行器
+Executor        = 效果层端口：执行 Assignment（一次模型请求或一次工具调用）并交回 Outcome
 Request Planner = Session context 到 sdk.Request 的投影器
 ```
 
-Machine 处理已冻结的值和已提交的事实；Loop 解释 `Next` 产生的 transient effect；Runtime 保存并验证 Machine 的推进；Model/Tool 执行一次外部 effect；Request Planner 组装下一次模型请求。
+Machine 处理已冻结的值和已提交的事实；Loop 解释 `Next` 产生的 transient effect，只做决策与记录，从不在一次推进里等待效果；Runtime 保存并验证 Machine 的推进；Executor 执行外部 effect 并以数据形式交回结果，它与 Loop 是否同进程是部署选择（第 6 节 RUN-EXE）；Request Planner 组装下一次模型请求。
 
-`Step` 是 Run 的持久化恢复边界；`execution attempt` 表示某个 Loop 进程对该 Step 或 ToolCall 的一次易失执行。一个 Step 可以有多个 attempt。执行所有权是 Session 级的（SES-OWN-3）：持有该 Session `Writer` 的进程拥有其中全部执行，Run 不设按目标的 grant 或 lease。attempt 的 identity 由 start command 的 `ExecutionClaim` 表达；它不进入 stream。
+`Step` 是 Run 的持久化恢复边界；`execution attempt` 表示某个 Loop 进程对该 Step 或 ToolCall 的一次易失执行。一个 Step 可以有多个 attempt。执行所有权是 Session 级的（SES-OWN-3）：持有该 Session `Writer` 的进程拥有其中全部执行，Run 不设按目标的 grant 或 lease。attempt 的 identity 由 start command 的 `ExecutionClaim` 表达；start 事实记录它（`ModelStepStarted.Claim`、`ToolCallStarted.Claim`），接管者据此判断一个仍在执行的 attempt 能否继续（RUN-CMT-7）。
 
 **RUN-SCP-1** `agent/run` 拥有 Run identity、persisted frozen values、Machine、command/fact protocol、fact codec、fold 与 `Runtime`、`Companion` contract；它依赖 `agent/session` 的 identity 与 wire 类型，不依赖 loop、turn 或 extension。`agent/run/loop` 拥有 planner/model/tool ports、streaming、并发执行、EventSink 与 Loop policy。`agent/session/run` 是 Run 的 Session Module 实现：EventDefinition（按 SchemaVersion 的 codec）、`twilight/run/machine` projection、`Runtime` 实现（经 `writer.Writer.Commit` 写入）、接管处置、FrozenValueStore adapter。
 
@@ -51,7 +51,7 @@ type ExecutionClaim string
 type Digest = es.Digest
 ```
 
-**RUN-WIR-1** identity 必须非空、稳定且为有效 UTF-8。`ExecutionClaim` 由 Loop 为一次 start command 生成并在该 command 的重试中保持不变，用于把同一执行尝试的 start 与 settlement 派生为确定的 CommandID；接管处置使用 `TakeoverClaim = Digest("twilight/run/takeover", SessionID, Epoch)`（RUN-CMT-7）。Claim 不进入 fact。Run 跨 domain causation 记录在 `twilight/run/created` 的 `CausationID`。
+**RUN-WIR-1** identity 必须非空、稳定且为有效 UTF-8。`ExecutionClaim` 由 Loop 为一次 start command 生成并在该 command 的重试中保持不变，用于把同一执行尝试的 start 与 settlement 派生为确定的 CommandID；接管处置使用 `TakeoverClaim = Digest("twilight/run/takeover", SessionID, Epoch)`（RUN-CMT-7）。start 事实记录 Claim（`ModelStepStarted`、`ToolCallStarted`），Executing 的 step 与 call 在 MachineState 中携带它：这是接管者向 Executor 询问"这个 attempt 是否仍在执行"并接受其迟到 Outcome 所需的唯一身份；start command 缺少 Claim 被 Decide 拒绝。Run 跨 domain causation 记录在 `twilight/run/created` 的 `CausationID`。
 
 Run 持久化协议保存 run-owned frozen values。模型请求、模型结果、消息、工具定义、usage、provider metadata 与所有动态 JSON 在进入 command 前，分别经 `FreezeModelRequest`、`FreezeModelResult`、`FreezeToolDefinition`、`FreezeToolCallInput` 等入口转为纯数据和 immutable `CanonicalJSON`。Runtime 接收 agent-owned value；调用方负责在边界前完成冻结。
 
@@ -426,13 +426,13 @@ FrozenValueStore 的 `Put` 幂等且内容寻址，在进入 Writer 之前完成
 
 **RUN-CMT-6** 执行授权与所有权失效。Runtime 不签发 grant，也不校验按目标的执行授权：Session 所有权（SES-OWN-1）即执行所有权，同一进程内同一 Run 至多一个 Loop 在驱动（第 7 节的 driver slot），Executing 目标的 settlement 只可能来自该 Loop 的 worker 或接管处置。跨进程的迟到写入由 kernel 的 Epoch fencing 拒绝（SES-OWN-2）：Writer 返回 `ErrOwnershipLost` 时 Runtime 原样返回该错误，Loop 必须取消全部 worker、放弃 settlement 并以该错误返回（RUN-LOP-5）；Coordinator 同样放弃该 Session（TRN-REC-2）。
 
-**RUN-CMT-7** 接管处置。处置只恢复同一 Run：不创建 attempt、不结束 Run；对工具 call 的 Unknown 结算是该 call 的终态事实，协议在任何路径上都不据此自动重新执行（TRN-DUR-1、TRN-DUR-4）。新 owner 取得 Writer 后，在驱动任何 Run 之前调用一次 `RecoverInterrupted`：对投影中每个 Executing 的 ModelStep 提交 `RecoverModelExecution{Claim: TakeoverClaim}`，对每个 Executing 的 tool call 提交 `SubmitToolFailure{Outcome: Unknown}`（CommandID 以 TakeoverClaim 派生，第 2 节 identity 表）；Pending call 不处置（start barrier 证明它从未运行，由下一次 Loop 启动）；Waiting call 不处置。每个处置是一次普通 Commit，companion 在同组写入 status=`unknown` 的 `tool_result`（TRN-CMP-2）；Run 保持 Active，同一 RunID 继续。`TakeoverClaim` 由 Writer 的 Epoch 派生，因此同一 owner 重复调用幂等（同 CommandID 得到 AlreadyApplied），不同 owner 的处置各自成为新 command。宿主在 `RecoverInterrupted` 返回后才 Resume 各 Turn（TRN-REC-1）。
+**RUN-CMT-7** 接管处置。处置只恢复同一 Run：不创建 attempt、不结束 Run；对工具 call 的 Unknown 结算是该 call 的终态事实，协议在任何路径上都不据此自动重新执行（TRN-DUR-1、TRN-DUR-4）。新 owner 取得 Writer 后，在驱动任何 Run 之前调用一次 `RecoverInterrupted(sid, reattach)`。对投影中每个 Executing 目标（`RecoveryTargets`：模型步或工具 call，连同其 start 事实记录的 Claim），它先经 `Reattacher.Attach` 询问 Executor 该 attempt 是否仍在执行：true 则目标保持 Executing、不写任何事实，attempt 的 Outcome 到达时以原 Claim 派生的结算 CommandID 结算（RUN-EXE-4）——这是重连同一次执行，不是重试；false（或 reattach 为 nil，即 executor 随 owner 一起消失的 colocated 部署）则处置：对 Executing 的 ModelStep 提交 `RecoverModelExecution{Claim: TakeoverClaim}`，对 Executing 的 tool call 提交 `SubmitToolFailure{Outcome: Unknown}`（CommandID 以 TakeoverClaim 派生，第 2 节 identity 表）；Pending call 不处置（start barrier 证明它从未运行，由下一次 Loop 启动）；Waiting call 不处置。每个处置是一次普通 Commit，companion 在同组写入 status=`unknown` 的 `tool_result`（TRN-CMP-2）；Run 保持 Active，同一 RunID 继续。`TakeoverClaim` 由 Writer 的 Epoch 派生，因此同一 owner 重复调用幂等（同 CommandID 得到 AlreadyApplied），不同 owner 的处置各自成为新 command。宿主在 `RecoverInterrupted` 返回后才 Resume 各 Turn（TRN-REC-1）。
 
 **RUN-CMT-8** 每个 Run 的协议版本是 `created.SchemaVersion`，创建时冻结。`RuntimeSnapshot.SchemaVersion` 等于该值；`ProtocolFor(schemaVersion)` 返回绑定该版本 digest/codec/Decide/Evolve 的 `Protocol`。`EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Run 的版本。新 Run 由 `NewRun.SchemaVersion` 决定版本；同一 Session 内不同 Run 可以使用不同版本；v1 Run 的 replay 必须继续使用 `ProtocolV1()`。Run 的版本与 Session kernel 的 `ProtocolVersion` 无关（SES-VER-1）。
 
 ### 5.1 不进入 stream 的数据
 
-`ExecutionClaim` 只存在于持有它的 worker 内存中；投影缓存是可丢弃的派生数据（EXT-PRJ-3）；`FrozenValueStore` 是内容寻址旁存。三者都不是 authority，丢失后的后果分别为：该 attempt 无法在本进程内重放（由 RUN-LOP-5 的一次重试之外的路径处理，或随进程崩溃由接管处置覆盖）、投影从 stream 重折、Executing/Prepared step 的重发失败为不可重试错误（Application 决定 Retry）。本协议没有控制面 KV、lease、grant 或 durable ClaimStore：Session 所有权即执行所有权（SES-OWN-1）。
+Executor 的 in-flight 表（哪些 Assignment 仍在执行）只存在于 executor 进程内存中；投影缓存是可丢弃的派生数据（EXT-PRJ-3）；`FrozenValueStore` 是内容寻址旁存。三者都不是 authority，丢失后的后果分别为：接管者的 `Attach` 得到 false、该 attempt 按 RUN-CMT-7 处置；投影从 stream 重折；Executing/Prepared step 的重发失败为不可重试错误（Application 决定 Retry）。本协议没有控制面 KV、lease、grant 或 durable ClaimStore：Session 所有权即执行所有权（SES-OWN-1）。
 
 ## 6. Loop ports 与 policy
 
@@ -469,7 +469,41 @@ type ExecutableTool interface {
 }
 ```
 
-`ToolExecutionOutcome` 是 sealed interface：`ToolExecutionSucceeded`、`ToolExecutionFailed`（明确未完成）或 `ToolExecutionUnknown`（可能已发生）。`ValidateArguments` 在 start barrier 前运行，并保持无外部 effect。
+`ToolExecutionOutcome` 是 sealed interface：`ToolExecutionSucceeded`、`ToolExecutionFailed`（明确未完成）或 `ToolExecutionUnknown`（可能已发生）。`ValidateArguments` 在 start barrier 前运行，并保持无外部 effect。`ToolExecutionRequest` 携带 RunID、StepID、CallID、attempt 的 `Claim`、冻结 binding 与 Profile 的 `WorkspaceRef`（透传，Loop 不解释）。
+
+```go
+// 效果层端口（RUN-EXE）
+type AssignmentKind string // model | tool
+type AssignmentKey struct { RunID run.RunID; StepID run.StepID; CallID run.CallID; Claim run.ExecutionClaim }
+type ModelAssignment struct { Model run.ModelRef; RequestDigest run.Digest } // 本体经 FrozenValueStore 按 digest 取
+type ToolAssignment struct { ToolRef run.ToolRef; DefinitionDigest run.Digest; Arguments run.CanonicalJSON; Policy run.ResponsePolicy; Workspace run.WorkspaceRef }
+type Assignment struct {
+    Session session.SessionID; RunID run.RunID; StepID run.StepID; CallID run.CallID; Claim run.ExecutionClaim
+    Schema uint16 // Run 的协议版本
+    Kind AssignmentKind; Model *ModelAssignment; Tool *ToolAssignment
+}
+type Outcome struct { Key AssignmentKey; Model *sdk.ModelResult; Tool ToolExecutionOutcome; Err error; Cancelled bool }
+type Deliver func(Outcome)
+type Executor interface {
+    Validate(context.Context, Assignment) (*run.ToolFailure, error)      // start barrier 前的无副作用校验
+    Dispatch(context.Context, Assignment, Deliver) error                 // 接受即返回；Outcome 经 Deliver 回到 authority
+    Attach(context.Context, Assignment, Deliver) (bool, error)           // 接管时询问 attempt 是否仍在执行
+    Cancel(context.Context, run.RunID) error                            // 停止该 Run 的全部 in-flight
+}
+type FrozenRequestReader interface { FrozenRequest(context.Context, run.Digest) (run.ModelRequest, error) }
+func NewLocalExecutor(models ModelCatalog, tools ToolCatalog, frozen FrozenRequestReader, sink EventSink, streaming bool) (*LocalExecutor, error)
+func Reattach(exec Executor, sid session.SessionID, deliver Deliver) run.Reattacher
+```
+
+**RUN-EXE-1（Assignment）** Assignment 是 authority 交给 Executor 的工作单元：目标（RunID、StepID、CallID）、attempt 身份（Claim）、Run 的协议版本，以及执行所需的全部冻结输入。模型 Assignment 只携带 `RequestDigest`，本体由 Executor 从内容寻址的 `FrozenValueStore` 取回（RUN-WIR-4），wire 上不重复请求体；工具 Assignment 携带冻结 binding 的全部字段与 Profile 的 `WorkspaceRef`。`Key()` 是 attempt 的身份，也是其结算 CommandID 的 preimage（第 2 节 identity 表）。
+
+**RUN-EXE-2（Outcome）** Outcome 是 Executor 对一个 Assignment 的唯一回答：模型 Assignment 得到 `Model` 或 `Err`，工具 Assignment 得到 sealed 的 `Tool`；`Cancelled` 表示 Executor 按要求停止了该效果。Outcome 以数据形式经 `Deliver` 回到 authority，可来自任意 goroutine、任意时刻、任意进程；每个被接受的 Assignment 恰好交回一个 Outcome。
+
+**RUN-EXE-3（Dispatch 与 Attach）** `Dispatch` 接受 Assignment 后立即返回，返回 error 表示效果未开始（Loop 据此把 step 放回 Prepared 或把 call 记为 Known 失败，不会留下 Executing）。`Attach` 在接管时回答该 attempt 是否仍由本 Executor 执行：true 登记新的 Deliver 并使目标保持 Executing，false 交给接管处置（RUN-CMT-7）。`Cancel` 停止一个 Run 的全部 in-flight 效果，它们仍各自交回 Outcome（标记 Cancelled）；所有权丢失后 Loop 不再结算这些 Outcome。`LocalExecutor` 是参考实现：在 authority 进程内以 goroutine 执行，维护 in-flight 表；进程重启后表为空，`Attach` 一律 false，因此 colocated 部署的接管行为与 Executor 缺席时相同。远端 Executor 实现同一接口，Assignment 与 Outcome 经传输层往返，协议不变。
+
+**RUN-EXE-4（Outcome 的结算）** `Loop.Deliver` 以 `Outcome.Key` 在投影中定位 Executing 的目标：同一 step 或 call、同一 Claim。找到则以该 Claim 派生的结算 CommandID 提交 Submit*（模型：结果、provider 失败、畸形结果的 Reject、取消或本体缺失的 Recover；工具：按 sealed outcome 映射，无 outcome 或传输错误记 Unknown）；找不到——attempt 已被结算或处置、Run 已终结、Claim 不符——则丢弃，不写任何事实（`LoopDropped`）。结算使用独立 control context（RUN-LOP-5）。
+
+**RUN-EXE-5（在 start barrier 前校验）** 工具 Assignment 在 `StartToolCall` 之前经 `Executor.Validate` 校验 lookup、definition digest、response policy 与 arguments；非 nil 的失败以空 Claim 的 CommandID 提交 `SubmitToolFailure(Known)`，不跨越 start barrier（RUN-LOP-4）。校验不产生外部效果。
 
 ```go
 type ToolExecutionMode string
@@ -485,13 +519,16 @@ type ExecutionPolicy struct {
     OnMalformedModelResult func(run.ModelStep, run.StepFailure) run.ModelRejectDisposition
 }
 type LoopResult struct {
-    Disposition LoopDisposition // LoopWaiting | LoopFinished
+    Disposition LoopDisposition // LoopWaiting | LoopFinished | LoopDispatched | LoopDelivered | LoopDropped
     Reason WaitReason           // 仅 ExecutionRecovery 时为 execution_recovery；否则为空
     ExecutionRecovery bool
     Result *run.RunResult
+    Dispatched []AssignmentKey  // Advance 交给 Executor 的 Assignment
 }
-func New(models ModelCatalog, tools ToolCatalog, planner RequestPlanner, policy ExecutionPolicy, streaming bool) (*Loop, error)
-func (*Loop) Run(context.Context, run.Runtime, session.SessionID, run.RunID, EventSink) (LoopResult, error)
+func New(exec Executor, planner RequestPlanner, policy ExecutionPolicy) (*Loop, error)
+func (*Loop) Advance(context.Context, run.Runtime, session.SessionID, run.RunID, EventSink) (LoopResult, error)
+func (*Loop) Deliver(context.Context, run.Runtime, session.SessionID, Outcome, EventSink) (LoopResult, error)
+func (*Loop) Run(context.Context, run.Runtime, session.SessionID, run.RunID, EventSink) (LoopResult, error) // 阻塞封装
 ```
 
 **RUN-LOP-1** `ExecutionPolicy` 是 Loop 的本地执行策略。`ToolExecution` 与 `MaxParallel` 在 `SubmitModelResult` 时写入 `ToolStepOpened.Scheduling` 并冻结在该 ToolStep 上；后续 Loop 必须按冻结值调度，不得改用当时进程的 ExecutionPolicy。未指定 `ToolExecution` 时冻结为 `parallel`，`MaxParallel` 零值表示当前 Start 批次全部 Pending call 可并行。空 Mode 按 parallel 解释，不得在 normalize 时填入默认字符串。nil handler 时结构错误的模型结果选择 `ModelRejectFailRun`；重试由 handler 明确返回 `ModelRejectRetry`。`streaming` 表示是否请求可用的流式模型端口；两种模式都产生同一完整 `sdk.ModelResult`。Loop 没有租约续期与 durable ClaimStore：执行所有权由 Session Writer 承担（RUN-CMT-6）。
@@ -505,28 +542,40 @@ func (*Loop) Run(context.Context, run.Runtime, session.SessionID, run.RunID, Eve
 ## 7. Loop execution
 
 ```text
-Loop.Run(ctx, runtime, sessionID, runID, sink):
+Loop.Advance(ctx, runtime, sessionID, runID, sink):        // 不等待任何效果
   repeat:
     snapshot = Runtime.Load(sessionID, runID)
     if terminal: emit observational run_finished; return Finished(snapshot.Result)
     effect = run.Next(snapshot.State)
-    dispatch effect
-    // 模型结算（无 tool call 的 SubmitModelResult、SubmitModelFailure、FailRun 的 RejectModelResult）
-    // 可能终结 Run；此时 CommitResult.Snapshot 已是终态，Loop 直接 emit run_finished 并
-    // return Finished(snapshot.Result)，不再 Load。工具结算不会终结 Run。
+    NeedModelRequest  → Plan、Freeze、Commit Prepare；continue
+    WithdrawPrepared  → Commit Withdraw；continue
+    StartModelCall    → Commit StartModelExecution{Claim}；Executor.Dispatch(Assignment{model})；return Dispatched
+    StartToolCalls    → 对冻结 Scheduling 允许的每个 Pending call：Validate → Known 失败直接结算；
+                        否则 Commit StartToolCall{Claim}，Executor.Dispatch(Assignment{tool})；return Dispatched
+    Idle              → return Waiting（NeedsRecovery 设 ExecutionRecovery）
+
+Loop.Deliver(ctx, runtime, sessionID, outcome, sink):      // Outcome 到达时，来自任何地方
+  snapshot = Runtime.Load
+  目标不再 Executing 或 Claim 不符 → return Dropped（不写）
+  Commit Submit*（以 outcome.Key.Claim 派生结算 CommandID）
+  终态 → emit run_finished；return Finished   否则 return Delivered（宿主接着 Advance）
+
+Loop.Run(...):  // 阻塞封装：Advance → 等待本次 dispatch 的 Outcome → Deliver → Advance，直到 Waiting 或 Finished
 ```
 
-每个 `Loop` 实例为每个 `(SessionID, RunID)` 分配一个本地 driver slot。同一实例对同一 Run 的并发 `Run` 调用返回 `ErrRunAlreadyRunning`；不同 Run 可以并行驱动。宿主必须保证一个 Session 在一个进程内只有一个 Loop 实例驱动它的 Run（与 `Writer` 一一对应）。
+模型结算（无 tool call 的 SubmitModelResult、SubmitModelFailure、FailRun 的 RejectModelResult）可能终结 Run；此时 CommitResult.Snapshot 已是终态，Loop 直接 emit run_finished 并返回 Finished，不再 Load。工具结算不会终结 Run。
+
+每个 `Loop` 实例为每个 `(SessionID, RunID)` 分配一个本地 slot：同一 Run 的 `Advance` 与 `Deliver` 串行；`Run` 进行期间对同一 Run 的 `Advance` 或第二个 `Run` 返回 `ErrRunAlreadyRunning`；不同 Run 可以并行驱动。宿主必须保证一个 Session 在一个进程内只有一个 Loop 实例驱动它的 Run（与 `Writer` 一一对应）。
 
 **RUN-LOP-2** `NeedModelRequest` 调用 Planner，冻结 sdk.Request，验证 model、ordered InputIDs 与 ToolSpecs，计算 request/tools/binding digests 和 derived CommandID/StepID，再提交 Prepare（command 携带本体）。prepare stale 后重新 Load；同 Position 的内容拒绝不得 livelock 重试。业务停止统一使用 `CancelRun`。
 
 **RUN-LOP-8** `WithdrawPrepared` 时 Loop 提交 `WithdrawPreparedStep{StepID}`，随后重新 Load；被放弃请求的本体在 FrozenValueStore 中可立即释放。Loop 不为输入做任何其他事：Executing 与 ToolStep 期间到达的输入留在 `PendingInputs`，由随后 `Open` 的 `NeedModelRequest` 经 `PlanningHint.Inputs` 交给 Planner。
 
-**RUN-LOP-3** `StartModelCall` 先 Commit start barrier；`CommitAccepted`，或以同一 Claim 重试得到的 `CommitAlreadyApplied`（RUN-LOP-5 的一次重放），表示本 Loop 拥有该 execution。worker 在内存中保留该 attempt 的 Claim 直到完成 settlement，其余 identity 按需派生。调用使用 `Runtime.FrozenRequest(snapshot.State.Current.RequestDigest)` 取回的本体的 detached SDK materialization；本体缺失为不可重试错误，交由 Application 处理。streaming 与 non-streaming 必须产生同一种完整 `sdk.ModelResult`；delta 只发 EventSink。`ModelCatalog.ResolveModel` 失败或返回 nil 时提交 `RecoverModelExecution` 并返回错误，不得把 Run 记为 `provider_failure`：尚未发生模型调用。provider 调用失败提交 `SubmitModelFailure`；ctx cancellation 提交 `RecoverModelExecution`；结构、binding 或 freeze 失败提交 `RejectModelResult`，并由调用方显式选择 retry 或 fail-run。成功结果只提交一次 `SubmitModelResult`。
+**RUN-LOP-3** `StartModelCall` 先 Commit start barrier；`CommitAccepted`，或以同一 Claim 重试得到的 `CommitAlreadyApplied`（RUN-LOP-5 的一次重放），表示该 attempt 拥有 execution。随后 Loop 把模型调用作为 Assignment 交给 Executor（RUN-EXE-1）并返回；attempt 的 Claim 记录在 start 事实中，Outcome 以它定位目标（RUN-EXE-4）。Executor 以 `RequestDigest` 从 FrozenValueStore 取回本体的 detached SDK materialization；本体缺失以 `Err` 交回，Loop 提交 `RecoverModelExecution` 并向宿主返回该不可重试错误。streaming 与 non-streaming 必须产生同一种完整 `sdk.ModelResult`；delta 只发 EventSink。`Dispatch` 失败（`ModelCatalog.ResolveModel` 失败或返回 nil）时提交 `RecoverModelExecution` 并返回错误，不得把 Run 记为 `provider_failure`：尚未发生模型调用。Outcome 的映射：provider 失败提交 `SubmitModelFailure`；`Cancelled` 提交 `RecoverModelExecution`；结构、binding 或 freeze 失败提交 `RejectModelResult`，并由 Policy 显式选择 retry 或 fail-run；成功结果只提交一次 `SubmitModelResult`。
 
-**RUN-LOP-4** Tool execution 先按 frozen binding resolve tool，并验证 Ref、definition digest、response policy 和 arguments。lookup/definition/argument failure 在 Pending 状态提交 `SubmitToolFailure(Known)`，不得跨越 start barrier。通过验证后逐 call 提交 `StartToolCall`；只有 start 被接受的 worker 可执行。start barrier 只对 Pending call 生效：Executing 的 call 属于启动它的 worker 或接管处置，已终态（含 Unknown）的 call 永不由 Loop 重新执行（TRN-DUR-4）。冻结的 `ToolStep.Scheduling` 决定 `parallel` 或 `sequential` 以及 `MaxParallel`；不得改用 Loop 进程当前的 ExecutionPolicy。每个结果以自己的 Claim 派生 CommandID 提交。同一 ToolStep 中 DirectExecution 的 Pending call，在外层 ctx 未取消时于本次 `Run` 内按冻结 Scheduling 分批 Start 并结算；ctx 已取消时停止再 Start，只结算已 Start 的 call。`Next` 返回 `Idle` 时 Loop 返回 `LoopWaiting`，并用 `NeedsRecovery(state)` 设置 `ExecutionRecovery`。Loop 不解释 Waiting call，也不携带 `ResponseRequest`。Application 从投影读取 `WaitingCalls`，提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 之后再次 `Run`。tool panic 或 effect 状态无法确定的错误转为对该 call 的 Unknown，并提交 `SubmitToolFailure(Unknown)`。该 settlement 不取消同批 sibling workers，也不结束 Run。`CancelRun` 先把仍 Executing 的 call 记为 `ToolCallFailed(Unknown)`，再 `RunEnded(stopped/cancelled)`，并把这些 CallID 与仍 Executing 的 ModelStep 写入 `RunStoppedEnd` / `RunResult` 的 `UncertainCalls`、`UncertainModel`。Waiting call 无论有无 Executing sibling 都不记 Failed。已接受 start 的 worker 必须在收到外层取消后返回并尝试 settlement；settlement 使用独立 control context。lookup/definition/argument failure 只允许发生在 Pending。
+**RUN-LOP-4** Tool execution 先经 `Executor.Validate` 按 frozen binding resolve tool，并验证 Ref、definition digest、response policy 和 arguments（RUN-EXE-5）。lookup/definition/argument failure 在 Pending 状态提交 `SubmitToolFailure(Known)`，不得跨越 start barrier。通过验证后逐 call 提交 `StartToolCall{Claim}`，再 `Dispatch` 该 call 的 Assignment；只有 start 被接受的 attempt 可执行，`Dispatch` 失败以 Known 执行失败结算该 attempt。start barrier 只对 Pending call 生效：Executing 的 call 属于启动它的 worker 或接管处置，已终态（含 Unknown）的 call 永不由 Loop 重新执行（TRN-DUR-4）。冻结的 `ToolStep.Scheduling` 决定 `parallel` 或 `sequential` 以及 `MaxParallel`；不得改用 Loop 进程当前的 ExecutionPolicy。每个结果以自己的 Claim 派生 CommandID 提交。同一 ToolStep 中 DirectExecution 的 Pending call，在外层 ctx 未取消时于一次 `Advance` 内按冻结 Scheduling 分批 Start 并 Dispatch，其 Outcome 各自经 `Deliver` 结算；ctx 已取消时停止再 Start，已 Dispatch 的 call 由其 Outcome 结算。`Next` 返回 `Idle` 时 Loop 返回 `LoopWaiting`，并用 `NeedsRecovery(state)` 设置 `ExecutionRecovery`。Loop 不解释 Waiting call，也不携带 `ResponseRequest`。Application 从投影读取 `WaitingCalls`，提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 之后再次 `Run`。tool panic 或 effect 状态无法确定的错误转为对该 call 的 Unknown，并提交 `SubmitToolFailure(Unknown)`。该 settlement 不取消同批 sibling workers，也不结束 Run。`CancelRun` 先把仍 Executing 的 call 记为 `ToolCallFailed(Unknown)`，再 `RunEnded(stopped/cancelled)`，并把这些 CallID 与仍 Executing 的 ModelStep 写入 `RunStoppedEnd` / `RunResult` 的 `UncertainCalls`、`UncertainModel`。Waiting call 无论有无 Executing sibling 都不记 Failed。已接受 start 的 worker 必须在收到外层取消后返回并尝试 settlement；settlement 使用独立 control context。lookup/definition/argument failure 只允许发生在 Pending。
 
-**RUN-LOP-5** model 与 tool worker 都接收外层 ctx；Loop 对已接受 effect 使用独立 control context 完成 known/unknown outcome settlement。Application 的业务停止顺序为先 Commit `CancelRun`，再取消 Loop ctx。非 sentinel Commit error 以同 CommandID 重放一次；仍未知时返回错误，由后续 Load/Record 查询 authority。stale/terminal/conflict 触发 reload/drop，旧 external effect 保持单次执行尝试。`ErrOwnershipLost` 是终止性错误：第一个被 kernel 围栏的 settlement 使 Loop 取消全部 worker 的 ctx，其后完成的 worker 不再提交任何 settlement（提交也会被 kernel 拒绝），Loop 不等待仍在执行的 worker 自行结束，以该错误返回，且该错误优先于同一步内其他 worker 的错误；模型步的 settlement 遇该错误同样不做一次重放。已发生的外部 effect 由接管者按 RUN-CMT-7 记为 Unknown。工具实现配合 context 返回；永久阻塞由 application 处理。
+**RUN-LOP-5** 效果在 Executor 的上下文里运行；Loop 对已接受 effect 的结算使用独立 control context（`Deliver` 内），调用方请求的取消不能丢弃一个已发生效果的 Outcome。Application 的业务停止顺序为先 Commit `CancelRun`，再取消驱动 ctx；阻塞式 `Run` 的 ctx 取消使它调用 `Executor.Cancel(runID)`，已 dispatch 的效果各自交回 Cancelled 的 Outcome 并被结算（模型步回到 Prepared、工具按其 outcome），之后 `Run` 以 `ctx.Err()` 返回。非 sentinel Commit error 以同 CommandID 重放一次；仍未知时返回错误，由后续 Load/Record 查询 authority。stale/terminal/conflict 触发 reload/drop，旧 external effect 保持单次执行尝试。`ErrOwnershipLost` 是终止性错误：第一个被 kernel 围栏的结算使 Loop 调用 `Executor.Cancel(runID)`，其后到达的 Outcome 不再提交（提交也会被 kernel 拒绝），Loop 以该错误返回，且该错误优先于同一步内其他错误；模型步的结算遇该错误同样不做一次重放。已发生的外部 effect 由接管者按 RUN-CMT-7 询问后处置。工具实现配合 context 返回；永久阻塞由 application 处理。
 
 Waiting call 的批准与外部结果由 Application 提交。Loop 不生成、不返回、不解释 `ResponseRequest`。Application 以投影中的 stable ResponseID、derived CommandID 与 payload/decision digest 提交 `ApproveToolCall`、`RejectToolCall` 或 `SubmitToolResponse`；随后再次运行 Loop。
 
@@ -569,6 +618,8 @@ type Event struct {
 - 投影：`SnapshotPolicy` 在 Run 回到 Open 或终结时写入投影缓存；终态 Run 不出现在 `Active`，其 RunID 在 `Ended`；Record 对活动 Run 的 fold 与投影一致；非法 fact 序列使 FoldRun 报错（篡改与缺口的检测属于 SES-REP-1）；
 - 隔离：同一 Session 内多 Run 互不影响 Position 与 Record；chatlog 与 turn 事件不影响 Run fold。不同 SchemaVersion 的 Run 共存在第二个 SchemaVersion 发布后启用；
 - 接管处置：关闭 Writer 后以新 Writer 打开（Epoch 加一）并调用 `RecoverInterrupted`：Executing model 回到 Prepared 且 `FrozenRequest` 返回同一 RequestDigest 的请求；Executing tool 记 Unknown 且 companion 在同组写入 status=`unknown` 的 `tool_result`，同 step 的 Pending 与 Waiting call 不受影响；Run 保持 Active；同一 Epoch 重复调用返回 0 且无新写入；没有 Executing 目标时返回 0；
+- 接管重连：`RecoverInterrupted` 对每个 Executing 目标先经 `Reattacher.Attach` 询问，携带 start 事实记录的 Claim 与 Run 的协议版本；回答 true 的目标不写任何事实、保持 Executing 且 Claim 不变，随后以该 Claim 派生的结算 CommandID 提交结算被接受，事实中没有 Recovered；回答 false 的目标按接管处置；`Reattacher` 为 nil 时全部处置。
+- 效果层：`Advance` 提交 start barrier 后把 Assignment 交给 Executor 并返回 `LoopDispatched`，不等待效果；`Deliver` 以 Key 定位 Executing 目标并结算，Run 终结时返回 `LoopFinished`；attempt 已处置或 Claim 不符的迟到 Outcome 返回 `LoopDropped` 且不写入；`Cancelled` 的模型 Outcome 使 step 回到 Prepared；`LocalExecutor` 的 `Attach` 对仍在执行的 attempt 为 true、完成后为 false，`Cancel` 使 in-flight 效果交回 Cancelled 的 Outcome。
 - 所有权失效：旧 Writer 上的 Runtime 在被接管后 Commit 返回 `ErrOwnershipLost` 且 stream 无新行（fencing 由 SES-OWN-2 保证，本层观察结果）；
 - FrozenValueStore：`Put` 幂等；未知 digest 的 `FrozenRequest` 返回 `ErrFrozenValueMissing`；step 终结后删除本体不影响 Record；
 - MachineState codec：每个 Current variant 与终态 round-trip、拒绝 unknown field / 非法判别式 / trailing data（`agent/run` 单元测试）。

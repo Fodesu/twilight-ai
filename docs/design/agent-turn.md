@@ -300,13 +300,13 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 | 重新生成已提交的回答 | 原 Turn 与其回答 | Turn，或 Session 分支 | Application |
 | 外部工具执行中且 owner 丢失 | Turn、Run、该 call 的 Unknown 事实 | 无 | 模型或 Application，从不自动 |
 
-**TRN-DUR-1（崩溃恢复同一 Run）** 进程崩溃或所有权丢失不结束 Run，也不创建 attempt。新 owner 的 `RecoverInterrupted`（RUN-CMT-7）对 Executing 的目标做一次性处置——模型步回到 Prepared，以同一 `RequestDigest` 的冻结请求继续；工具 call 记 Unknown——之后同一 RunID 在同一 Turn 下由宿主 Drive 继续。恢复不改变 Run 的身份、attempt 号或已提交的任何事实。
+**TRN-DUR-1（崩溃恢复同一 Run）** 进程崩溃或所有权丢失不结束 Run，也不创建 attempt。新 owner 的 `RecoverInterrupted`（RUN-CMT-7）对每个 Executing 目标先经 Executor 询问其 attempt 是否仍在执行（start 事实记录了 attempt 的 Claim）：仍在执行则目标保持 Executing，Outcome 到达时以原 Claim 结算——同一次执行接着算完；不再执行则处置——模型步回到 Prepared，以同一 `RequestDigest` 的冻结请求继续；工具 call 记 Unknown——之后同一 RunID 在同一 Turn 下由宿主 Drive 继续。恢复不改变 Run 的身份、attempt 号或已提交的任何事实。
 
 **TRN-DUR-2（语义重试是新 Run、同一 Turn）** 只有 Run 已终结且未 completed、Turn 处于 `attempt_failed` 时才存在 Retry；Retry 创建 attempt n+1、新 RunID，同一 Turn，重新接受该 Turn 已 delivered 的全部输入（TRN-RTY-1）。协议从不自动 Retry：崩溃恢复走 TRN-DUR-1，Retry 是 Application 的显式决定。失败 attempt 的 assistant 与 tool_result 保留在 stream 中，是否进入新 attempt 的模型请求由 Planner 决定（TRN-RTY-3）。
 
 **TRN-DUR-3（重新生成已提交的回答是新 Turn 或分支）** 已 completed 的 Turn 及其回答是不可变事实：不存在"修改回答""重开同一 Turn"或"对 completed Turn 再开 attempt"。`Start` 要求输入处于 `submitted`（TRN-STR-1），已 delivered 的输入不能再次开 Turn，因此重新生成只有两种形态：(a) 同一 stream 内的新 Turn——Application 提交新 Input（内容可与原输入相同）并 Start；若它在语义上替代原 Turn，以 `twilight/turn/superseded` 关联（TRN-API-4），原回答是否进入上下文由 Planner 决定；(b) 分支——在原 Turn 的 `started` 之前的 Seq 处 fork Session（SES 第 8 节），在新 stream 上开 Turn。两种形态都不改写历史。
 
-**TRN-DUR-4（外部效果未知不等于重试）** owner 丢失时处于 Executing 的工具 call 由接管处置记为 Unknown（RUN-CMT-7），companion 写 status=`unknown` 的 `tool_result`。Unknown 是该 call 的终态事实，协议在任何路径上都不重新执行它：接管处置不执行（它只记录）；下一次 Loop 不执行（start barrier 只启动 Pending call，Executing 与终态 call 永不重跑，RUN-LOP-4）；Retry 不执行（新 attempt 从上下文重新规划步骤，Unknown 结果作为对话内容可见）。外部效果是否已经发生、是否需要重做，由模型依据上下文判断，或由 Application 在带外核实后以 `tool_result_superseded` 换成 `success`/`error`（CHT-ENT-2）；两者都是决定，不是协议的自动行为。`CancelRun` 留下的 `UncertainCalls` 同理。
+**TRN-DUR-4（外部效果未知不等于重试）** owner 丢失时处于 Executing 的工具 call 有两种去向，由 Executor 是否仍持有该 attempt 决定（RUN-CMT-7）：仍持有则等待同一次执行的 Outcome，这是重连，不是重试；不再持有则由接管处置记为 Unknown，companion 写 status=`unknown` 的 `tool_result`。Unknown 是该 call 的终态事实，协议在任何路径上都不重新执行它：接管处置不执行（它只记录）；下一次 Loop 不执行（start barrier 只启动 Pending call，Executing 与终态 call 永不重跑，RUN-LOP-4）；Retry 不执行（新 attempt 从上下文重新规划步骤，Unknown 结果作为对话内容可见）。外部效果是否已经发生、是否需要重做，由模型依据上下文判断，或由 Application 在带外核实后以 `tool_result_superseded` 换成 `success`/`error`（CHT-ENT-2）；两者都是决定，不是协议的自动行为。`CancelRun` 留下的 `UncertainCalls` 同理。
 
 ### 7.2 恢复表
 
@@ -318,8 +318,8 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 |---|---|
 | `started` 已提交、进程在驱动前退出 | 新 owner 的 `RecoverInterrupted` 无事可做（Run 在 Open）；宿主 Drive |
 | Loop 的 Commit 返回非 sentinel 错误 | Loop 以同一 Claim 重放一次（RUN-LOP-5）；Writer 按 CommitID 幂等 |
-| 模型 Executing、owner 进程崩溃 | 新 owner 的 `RecoverInterrupted` 提交 `RecoverModelExecution`（RUN-CMT-7）；Run 保持 Active，同一 RunID 以同一冻结请求继续 |
-| 工具 Executing、owner 进程崩溃 | 新 owner 的 `RecoverInterrupted` 提交该 call 的 Unknown，companion 写 status=`unknown`；Run 保持 Active |
+| 模型 Executing、owner 进程崩溃 | 新 owner 的 `RecoverInterrupted` 先经 Executor 询问该 attempt 是否仍在执行：是则保持 Executing、等待其 Outcome；否则提交 `RecoverModelExecution`（RUN-CMT-7）。Run 保持 Active，同一 RunID 以同一冻结请求继续 |
+| 工具 Executing、owner 进程崩溃 | 新 owner 的 `RecoverInterrupted` 先经 Executor 询问该 attempt 是否仍在执行：是则保持 Executing、以原 Claim 接受其 Outcome（重连，不是重试）；否则提交该 call 的 Unknown，companion 写 status=`unknown`。Run 保持 Active |
 | Writer 返回 `ErrOwnershipLost` | 本进程放弃该 Session 的全部 Turn 与 Loop（RUN-CMT-6）；由持有新 Epoch 的进程按上两行接管 |
 | Run 已 `failed`、Turn 未结算 | Turn 为 `attempt_failed`；Application 选择 Retry 或 Settle |
 | Stop 的 Commit 返回非 sentinel 错误 | 以同一 Cancel CommandID 重放 |

@@ -203,7 +203,11 @@ func (r *Agents) Register(id turn.ProfileID, agent Agent) (turn.ProfileRef, erro
 	if err != nil {
 		return turn.ProfileRef{}, err
 	}
-	l, err := loop.New(agent, agent, planner, policy, p.Streaming)
+	exec, err := loop.NewLocalExecutor(agent, agent, r.runtime, r.sink, p.Streaming)
+	if err != nil {
+		return turn.ProfileRef{}, err
+	}
+	l, err := loop.New(exec, planner, policy)
 	if err != nil {
 		return turn.ProfileRef{}, err
 	}

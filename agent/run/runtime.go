@@ -29,11 +29,15 @@ type Runtime interface {
 	// FrozenRequest returns the request body a Prepared or Executing ModelStep
 	// names by RequestDigest (RUN-WIR-4); a missing body is ErrFrozenValueMissing.
 	FrozenRequest(context.Context, Digest) (ModelRequest, error)
-	// RecoverInterrupted is the takeover disposition (RUN-CMT-7): one recovery
-	// command per Executing target of the Session. The host calls it once after
-	// opening the Writer and before driving any Run; it returns the number of
-	// accepted commands.
-	RecoverInterrupted(context.Context, session.SessionID) (int, error)
+	// RecoverInterrupted is the takeover disposition (RUN-CMT-7). For every
+	// Executing target of the Session it first asks reattach whether the
+	// attempt that started it is still producing an Outcome; a target it can
+	// reattach stays Executing and its Outcome settles under the original
+	// Claim, every other target gets one recovery command. A nil reattach
+	// disposes everything. The host calls it once after opening the Writer and
+	// before driving any Run; it returns the number of accepted recovery
+	// commands.
+	RecoverInterrupted(context.Context, session.SessionID, Reattacher) (int, error)
 }
 
 type RuntimeSnapshot struct {

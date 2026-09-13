@@ -39,7 +39,7 @@ Atomic Event Group ────────────────┘
 
 4. **原子 Semantic Group。** 一个领域动作产生的多个 event 要么全部出现，要么全部不存在（SES-APP-1）；底层事务或 fsync 只是它的物理实现。崩溃只可能留下一个不完整尾组，`Open` 在确立 head 之前把它截掉，reader 在任何时刻都看不到不完整的组（SES-APP-2）。
 
-5. **Session 级 Ownership 与 Fencing。** `Handle + Epoch`：同一 Session 同一时刻至多一个有效写者；接管使 Epoch 加一并持久化，旧 Handle 的迟到写入被拒（SES-OWN-1/2）。所有权是 Session 级而非执行目标级：接管者对全部执行中的目标做一次性处置（SES-OWN-3、RUN-CMT-7）。何时接管是 kernel 之上的策略，kernel 不承载 TTL 或心跳。
+5. **Session 级 Ownership 与 Fencing。** `Handle + Epoch`：同一 Session 同一时刻至多一个有效写者；接管使 Epoch 加一并持久化，旧 Handle 的迟到写入被拒（SES-OWN-1/2）。所有权是 Session 级而非执行目标级：接管者对全部执行中的目标做一次询问后处置——仍在执行的 attempt 重连，其余处置（SES-OWN-3、RUN-CMT-7）。何时接管是 kernel 之上的策略，kernel 不承载 TTL 或心跳。
 
 6. **幂等语义提交。** `CommitID + semantic fingerprint`：同 ID 同内容为 `AlreadyApplied`，同 ID 不同内容为 `Conflict`，两者都不写入（EXT-WRT-2）。fingerprint 覆盖 Type、SourceSeqs、Payload，不含时间。kernel 只拒绝重复 CommitID 并提供该索引的读侧（SES-APP-3、SES-REP-3/4），比对由 Writer 完成。恢复与重放因此不会重复写事实。
 
@@ -53,7 +53,7 @@ Atomic Event Group ────────────────┘
 
 11. **同组伴随写入。** Run 事实与它产生的对话内容（assistant、tool_result）写在同一组：内容只出现一次，事实只记 digest（RUN-WIR-4、TRN-CMP、Chatlog 第 1 节）。这是第 4 条最重要的应用。
 
-12. **崩溃后果的封闭集合。** 崩溃只可能留下不完整尾组（第 4 条）与孤儿 claim（回收前核对释放，ART-RET-3）；执行中的目标由接管者一次性处置（第 5 条），处置结果是终态事实，不触发自动重试；崩溃恢复、语义重试、重新生成回答四种情形的身份边界见 TRN-DUR-1 至 4。没有其他需要修复的中间状态。
+12. **崩溃后果的封闭集合。** 崩溃只可能留下不完整尾组（第 4 条）与孤儿 claim（回收前核对释放，ART-RET-3）；执行中的目标由接管者询问后处置（第 5 条）：仍在执行的 attempt 重连、其余记为终态事实，两者都不触发自动重试；崩溃恢复、语义重试、重新生成回答四种情形的身份边界见 TRN-DUR-1 至 4。没有其他需要修复的中间状态。
 
 13. **读不需要所有权。** 任何进程可随时读完整组构成的前缀（SES-OWN-4）；观察者用 `NewProjectionReader` 从 Store 折叠，与 owner 一致（第 7 条）。
 
@@ -171,7 +171,7 @@ type Store interface {
 
 **SES-OWN-2** 每次成功的 Open 使该 Session 的 `Epoch` 加一并持久化。`Append` 携带 Handle 的 Epoch；Store 对落后于当前持久化 Epoch 的调用返回 `ErrOwnershipLost`，不写入任何内容。这是 fencing：被接管的旧 Handle 的迟到写入不可能进入日志。
 
-**SES-OWN-3** 所有权是 Session 级的，不是执行目标级的。一个进程取得 Session 的所有权即拥有其中全部执行；接管者读日志后对所有仍在执行中的目标做一次性处置（RUN-CMT-7）。kernel 不知道"执行中"是什么，这一步由 run 模块在 Writer 上完成。
+**SES-OWN-3** 所有权是 Session 级的，不是执行目标级的。一个进程取得 Session 的所有权即拥有其中全部执行；接管者读日志后对所有仍在执行中的目标做询问后处置（RUN-CMT-7）。kernel 不知道"执行中"是什么，这一步由 run 模块在 Writer 上完成。
 
 **SES-OWN-4** `Read` 不需要所有权，任何进程可以随时读；读到的是完整组构成的前缀（SES-APP-2）。
 

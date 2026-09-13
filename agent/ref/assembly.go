@@ -195,7 +195,7 @@ func (m *Memory) Open(ctx context.Context, sid session.SessionID) (int, error) {
 	if _, err := m.Writers.Writer(ctx, sid); err != nil {
 		return 0, err
 	}
-	return m.Runtime.RecoverInterrupted(ctx, sid)
+	return m.Runtime.RecoverInterrupted(ctx, sid, nil)
 }
 
 // Close releases every Session this assembly owns.

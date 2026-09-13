@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"errors"
 	. "github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
@@ -124,4 +125,20 @@ func loadState(t testing.TB, rt Runtime, runID RunID) RuntimeSnapshot {
 		t.Fatal(err)
 	}
 	return snap
+}
+
+// newLoop builds a Loop over a LocalExecutor for tests: the executor reads
+// frozen request bodies from rt and reports provisional observations to sink.
+func newLoop(rt Runtime, sink EventSink, models ModelCatalog, tools ToolCatalog, planner RequestPlanner, policy ExecutionPolicy, streaming bool) (*Loop, error) {
+	if models == nil {
+		return nil, errors.New("agent: loop: nil model catalog")
+	}
+	if tools == nil {
+		return nil, errors.New("agent: loop: nil tool catalog")
+	}
+	exec, err := NewLocalExecutor(models, tools, rt, sink, streaming)
+	if err != nil {
+		return nil, err
+	}
+	return New(exec, planner, policy)
 }

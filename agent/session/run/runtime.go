@@ -434,9 +434,11 @@ func (r *Runtime) FrozenRequest(ctx context.Context, digest run.Digest) (run.Mod
 	return run.DecodeFrozenRequest(raw, digest)
 }
 
-// RecoverInterrupted is RUN-CMT-7: every Executing target of the Session gets
-// one recovery command under the takeover claim of the current Epoch.
-func (r *Runtime) RecoverInterrupted(ctx context.Context, sid session.SessionID) (int, error) {
+// RecoverInterrupted is RUN-CMT-7: every Executing target of the Session is
+// either reattached (its attempt still runs under an executor the new owner
+// can reach, so the Outcome will arrive under the original Claim) or disposed
+// with one recovery command under the takeover claim of the current Epoch.
+func (r *Runtime) RecoverInterrupted(ctx context.Context, sid session.SessionID, reattach run.Reattacher) (int, error) {
 	if err := run.CheckContext(ctx); err != nil {
 		return 0, err
 	}
@@ -455,7 +457,18 @@ func (r *Runtime) RecoverInterrupted(ctx context.Context, sid session.SessionID)
 		if err != nil {
 			return n, err
 		}
-		for _, rec := range run.RecoveryCommands(&ms, claim) {
+		for _, target := range run.RecoveryTargets(&ms) {
+			target.Schema = state.(Machine).Schemas[runID]
+			if reattach != nil && target.Claim != "" {
+				attached, err := reattach.Attach(ctx, target)
+				if err != nil {
+					return n, err
+				}
+				if attached {
+					continue // the attempt is still running; its Outcome settles it
+				}
+			}
+			rec := run.RecoveryCommand(target, claim)
 			env, err := proto.BuildEnvelope(sid, runID, rec.ID, rec.Command)
 			if err != nil {
 				return n, err

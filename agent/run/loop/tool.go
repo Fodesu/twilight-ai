@@ -3,17 +3,9 @@ package loop
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	run "github.com/felinics/twilight/agent/run"
 )
-
-type startedWorker struct {
-	call    run.ToolCallState
-	base    run.RunPosition
-	tool    ExecutableTool
-	attempt attempt
-}
 
 func toolCallIndex(step run.ToolStep, callID run.CallID) int {
 	for i := range step.Calls {
@@ -24,43 +16,21 @@ func toolCallIndex(step run.ToolStep, callID run.CallID) int {
 	return -1
 }
 
-func (l *Loop) resolveExecutableTool(proto run.Protocol, call run.ToolCallState) (ExecutableTool, *run.ToolFailure) {
-	tool, resolveErr := l.Tools.ResolveTool(call.ToolRef)
-	if resolveErr != nil {
-		return nil, &run.ToolFailure{Class: run.FailureToolLookup, Message: resolveErr.Error()}
-	}
-	if tool == nil {
-		return nil, &run.ToolFailure{Class: run.FailureToolLookup, Message: "tool catalog returned a nil tool"}
-	}
-	toolDef, freezeErr := run.FreezeToolDefinition(tool.Definition())
-	if freezeErr != nil {
-		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: freezeErr.Error()}
-	}
-	defDigest, digestErr := proto.DigestToolDefinition(toolDef)
-	if digestErr != nil {
-		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: digestErr.Error()}
-	}
-	switch {
-	case tool.Ref() != call.ToolRef || defDigest != call.DefinitionDigest:
-		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "tool definition digest mismatch"}
-	case tool.ResponsePolicy() != call.Policy:
-		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "response policy mismatch"}
-	}
-	if argErr := tool.ValidateArguments(call.Arguments); argErr != nil {
-		return nil, &run.ToolFailure{Class: run.FailureInvalidArguments, Message: argErr.Error()}
-	}
-	return tool, nil
-}
-
-func (l *Loop) runToolCalls(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot, eff run.StartToolCalls) error {
+// startToolCalls validates, starts and dispatches the Pending calls the
+// frozen Scheduling allows (RUN-LOP-4). Validation happens before the start
+// barrier through the Executor and settles as a Known failure without a
+// claim; a validated call is started under a fresh attempt and handed to the
+// Executor. It returns the dispatched keys; an empty list with no error means
+// nothing is executing on this Loop's behalf and the reload decides.
+func (l *Loop) startToolCalls(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot, eff run.StartToolCalls, deliver Deliver) ([]AssignmentKey, error) {
 	runID := snapshot.State.RunID
 	proto, err := snapshot.Protocol()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ts, ok := snapshot.State.Current.(run.ToolStep)
 	if !ok || ts.RefValue.ID != eff.StepID {
-		return fmt.Errorf("agent: loop: tool step %q is not current", eff.StepID)
+		return nil, fmt.Errorf("agent: loop: tool step %q is not current", eff.StepID)
 	}
 
 	limit := len(eff.CallIDs)
@@ -70,12 +40,13 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime boundRuntime, events Ev
 	if ts.Scheduling.MaxParallel > 0 && ts.Scheduling.MaxParallel < limit {
 		limit = ts.Scheduling.MaxParallel
 	}
-	var started []startedWorker
+	var dispatched []AssignmentKey
 	for _, callID := range eff.CallIDs {
-		if len(started) >= limit {
+		if len(dispatched) >= limit {
 			break
 		}
-		// Outer ctx cancelled: stop starting new calls; settle what we own.
+		// Outer ctx cancelled: stop starting new calls; what was dispatched
+		// settles through its Outcome.
 		if ctx.Err() != nil {
 			break
 		}
@@ -85,12 +56,16 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime boundRuntime, events Ev
 		}
 		call := ts.Calls[i]
 		if call.Status != run.ToolPending {
-			// Executing calls belong to the worker that started them (this
-			// process) or to the owner's takeover disposition; never re-run.
+			// Executing calls belong to the attempt that started them or to the
+			// owner's takeover disposition; never re-run (TRN-DUR-4).
 			continue
 		}
-
-		tool, known := l.resolveExecutableTool(proto, call)
+		binding := &ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy}
+		probe := Assignment{Session: runtime.sid, RunID: runID, StepID: eff.StepID, CallID: callID, Schema: snapshot.SchemaVersion, Kind: AssignmentTool, Tool: binding}
+		known, err := l.Executor.Validate(ctx, probe)
+		if err != nil {
+			return dispatched, err
+		}
 		if known != nil {
 			// Known failure of a Pending call: no start barrier, no tool call,
 			// no claim. Its identity derives from the call alone; a retry of
@@ -98,11 +73,10 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime boundRuntime, events Ev
 			res, err := l.commit(ctx, runtime, runID, run.DeriveSettlementCommandID(runID, eff.StepID, callID, ""), snapshot.Position,
 				run.SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: *known, Outcome: run.ToolOutcomeKnown}, proto)
 			if err != nil {
-				settleErr := l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, proto)
-				if !retriable(err) {
-					return err
+				if retriable(err) {
+					return dispatched, nil // another actor moved the call; reload decides
 				}
-				return settleErr
+				return dispatched, err
 			}
 			l.emitCommitted(ctx, events, runtime.sid, runID, res.Events)
 			continue
@@ -112,15 +86,15 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime boundRuntime, events Ev
 		start, err := l.commit(ctx, runtime, runID, a.startID(), snapshot.Position,
 			run.StartToolCall{StepID: eff.StepID, CallID: callID, Claim: a.claim}, proto)
 		if err != nil {
-			settleErr := l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, proto)
 			if retriable(err) {
-				return settleErr // another actor moved the call; reload decides
+				return dispatched, nil // another actor moved the call; reload decides
 			}
-			return err
+			return dispatched, err
 		}
-		if startedCall, ok := toolCallFromSnapshot(start.Snapshot.State, eff.StepID, callID); !ok || startedCall.Status != run.ToolExecuting {
-			// The one-shot replay may land after the call was settled. Never
-			// invoke an effect for a call that is no longer Executing.
+		if startedCall, ok := toolCallFromSnapshot(start.Snapshot.State, eff.StepID, callID); !ok || startedCall.Status != run.ToolExecuting || startedCall.Claim != a.claim {
+			// The one-shot replay may land after the call was settled, or the
+			// call is Executing under another attempt. Never invoke an effect
+			// for a call this attempt does not own.
 			continue
 		}
 		l.emitCommitted(ctx, events, runtime.sid, runID, start.Events)
@@ -128,10 +102,21 @@ func (l *Loop) runToolCalls(ctx context.Context, runtime boundRuntime, events Ev
 			_ = events.Emit(ctx, Event{Session: runtime.sid, RunID: runID, StepID: eff.StepID, CallID: callID,
 				Kind: EventToolStarted, Durability: EventCommitted})
 		}
-		started = append(started, startedWorker{call: call, base: start.Snapshot.Position, tool: tool, attempt: a})
+		assignment := probe
+		assignment.Claim = a.claim
+		if err := l.Executor.Dispatch(ctx, assignment, l.deliverTo(runtime, events, deliver)); err != nil {
+			// The effect never started: settle the attempt as a Known execution
+			// failure so the call does not stay Executing.
+			failure := run.ToolFailure{Class: run.FailureExecution, Message: "dispatch: " + err.Error()}
+			if _, serr := l.settle(context.WithoutCancel(ctx), runtime, events, a, start.Snapshot.Position,
+				run.SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: failure, Outcome: run.ToolOutcomeKnown}, proto); serr != nil {
+				return dispatched, serr
+			}
+			continue
+		}
+		dispatched = append(dispatched, assignment.Key())
 	}
-
-	return l.settleWorkers(ctx, runtime, events, runID, eff.StepID, started, proto)
+	return dispatched, nil
 }
 
 func toolCallFromSnapshot(state run.MachineState, stepID run.StepID, callID run.CallID) (run.ToolCallState, bool) {
@@ -147,110 +132,31 @@ func toolCallFromSnapshot(state run.MachineState, stepID run.StepID, callID run.
 	return run.ToolCallState{}, false
 }
 
-// settleWorkers executes every started worker and commits its outcome. An
-// accepted start is never abandoned (RUN-LOP-4). Tool workers receive outer
-// context cancellation; settlement uses a detached control context so the
-// resulting outcome can still reach Runtime (RUN-LOP-5). Unknown settles
-// only that call. A non-sentinel commit error leaves the same command in the
-// local settlement cache for the next Run invocation.
-//
-// Ownership loss is terminal for the whole step (RUN-LOP-5): the first
-// settlement the kernel fences cancels every other worker's ctx, workers that
-// finish afterwards commit nothing (the kernel would refuse them anyway), and
-// ErrOwnershipLost is returned ahead of any other worker error. External
-// effects that already happened are recorded as Unknown by the new owner's
-// takeover disposition (RUN-CMT-7).
-func (l *Loop) settleWorkers(ctx context.Context, runtime boundRuntime, events EventSink, runID run.RunID, stepID run.StepID, started []startedWorker, proto run.Protocol) error {
-	if len(started) == 0 {
-		return nil
-	}
-	controlCtx := context.WithoutCancel(ctx)
-	workerCtx, cancelWorkers := context.WithCancel(ctx)
-	defer cancelWorkers()
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	var firstErr error
-	fenced := false
-	for i := range started {
-		wg.Add(1)
-		w := started[i]
-		go func(w startedWorker) {
-			defer wg.Done()
-			req := ToolExecutionRequest{
-				RunID:            runID,
-				StepID:           stepID,
-				CallID:           w.call.CallID,
-				ToolRef:          w.call.ToolRef,
-				DefinitionDigest: w.call.DefinitionDigest,
-				Arguments:        w.call.Arguments,
-				Progress:         &progressSink{events: events, run: runID, step: stepID, call: w.call.CallID},
-			}
-			outcome := executeToolSafely(workerCtx, w.tool, &req)
-
-			var cmd run.AgentCommand
-			switch o := outcome.(type) {
-			case ToolExecutionSucceeded:
-				cmd = run.SubmitToolResult{StepID: stepID, CallID: w.call.CallID, Result: o.Result}
-			case ToolExecutionFailed:
-				failure := o.Failure
-				if failure.Class == "" || failure.Class == run.FailureEffectUnknown {
-					failure.Class = run.FailureExecution
-				}
-				cmd = run.SubmitToolFailure{StepID: stepID, CallID: w.call.CallID, Failure: failure, Outcome: run.ToolOutcomeKnown}
-			case ToolExecutionUnknown:
-				failure := o.Failure
-				if failure.Class != "" && failure.Class != run.FailureEffectUnknown && failure.Message == "" {
-					failure.Message = "tool reported " + failure.Class
-				}
-				failure.Class = run.FailureEffectUnknown
-				cmd = run.SubmitToolFailure{StepID: stepID, CallID: w.call.CallID, Failure: failure, Outcome: run.ToolOutcomeUnknown}
-			default:
-				cmd = run.SubmitToolFailure{StepID: stepID, CallID: w.call.CallID,
-					Failure: run.ToolFailure{Class: run.FailureEffectUnknown, Message: "tool returned no outcome"}, Outcome: run.ToolOutcomeUnknown}
-			}
-
-			mu.Lock()
-			defer mu.Unlock()
-			if fenced {
-				return // the Session changed hands; this outcome is not ours to write
-			}
-			// Commit on the worker's start base; stale bases rebase call-locally.
-			// Late results after terminal return ErrRunTerminal and are dropped
-			// (audit is the adapter's job). The one-shot same-CommandID replay
-			// lives inside l.commit. Tool settlements never terminate a Run;
-			// the result is ignored.
-			if _, err := l.settle(controlCtx, runtime, events, w.attempt, w.base, cmd, proto); err != nil {
-				wrapped := fmt.Errorf("agent: loop: settling call %q: %w", w.call.CallID, err)
-				if ownershipLost(err) {
-					fenced = true
-					firstErr = wrapped // terminal: reported ahead of any earlier worker error
-					cancelWorkers()
-				} else if firstErr == nil {
-					firstErr = wrapped
-				}
-				return
-			}
-			if events != nil {
-				_ = events.Emit(ctx, Event{Session: runtime.sid, RunID: runID, StepID: stepID, CallID: w.call.CallID,
-					Kind: EventToolCompleted, Durability: EventCommitted})
-			}
-		}(w)
-	}
-	wg.Wait()
-	return firstErr
-}
-
-// executeToolSafely runs an application tool and converts a panic into
-// ToolExecutionUnknown: the effect may have happened before the panic, and a
-// crashing tool must not take down every run in the process.
-func executeToolSafely(ctx context.Context, tool ExecutableTool, req *ToolExecutionRequest) (outcome ToolExecutionOutcome) {
-	defer func() {
-		if r := recover(); r != nil {
-			outcome = ToolExecutionUnknown{Failure: run.ToolFailure{
-				Class:   run.FailureEffectUnknown,
-				Message: fmt.Sprintf("tool panic: %v", r),
-			}}
+// toolCompletion maps a tool Outcome to the attempt's settlement command. A
+// sealed outcome maps directly; a missing outcome or a transport error is
+// Unknown, because the effect may have happened (RUN-LOP-5).
+func toolCompletion(key AssignmentKey, out Outcome) run.AgentCommand {
+	switch o := out.Tool.(type) {
+	case ToolExecutionSucceeded:
+		return run.SubmitToolResult{StepID: key.StepID, CallID: key.CallID, Result: o.Result}
+	case ToolExecutionFailed:
+		failure := o.Failure
+		if failure.Class == "" || failure.Class == run.FailureEffectUnknown {
+			failure.Class = run.FailureExecution
 		}
-	}()
-	return tool.Execute(ctx, *req)
+		return run.SubmitToolFailure{StepID: key.StepID, CallID: key.CallID, Failure: failure, Outcome: run.ToolOutcomeKnown}
+	case ToolExecutionUnknown:
+		failure := o.Failure
+		if failure.Class != "" && failure.Class != run.FailureEffectUnknown && failure.Message == "" {
+			failure.Message = "tool reported " + failure.Class
+		}
+		failure.Class = run.FailureEffectUnknown
+		return run.SubmitToolFailure{StepID: key.StepID, CallID: key.CallID, Failure: failure, Outcome: run.ToolOutcomeUnknown}
+	}
+	msg := "tool returned no outcome"
+	if out.Err != nil {
+		msg = "executor: " + out.Err.Error()
+	}
+	return run.SubmitToolFailure{StepID: key.StepID, CallID: key.CallID,
+		Failure: run.ToolFailure{Class: run.FailureEffectUnknown, Message: msg}, Outcome: run.ToolOutcomeUnknown}
 }

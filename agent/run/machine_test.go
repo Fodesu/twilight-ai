@@ -174,7 +174,7 @@ func advanceToExecuting(t *testing.T, s MachineState, req sdk.Request, specs []T
 	t.Helper()
 	prep, _ := buildPrepare(t, s, req, specs)
 	s = fold(t, s, mustDecide(t, s, prep))
-	s = fold(t, s, mustDecide(t, s, StartModelExecution{StepID: prep.StepID}))
+	s = fold(t, s, mustDecide(t, s, StartModelExecution{StepID: prep.StepID, Claim: "attempt-1"}))
 	return s, prep.StepID
 }
 
@@ -396,7 +396,7 @@ func TestParallelWaitingDoesNotBlockPending(t *testing.T) {
 	}
 
 	// Complete B; step must stay open because A is Waiting.
-	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: cid(stepID, 1)}))
+	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: cid(stepID, 1), Claim: "attempt-1"}))
 	facts = mustDecide(t, s, SubmitToolResult{StepID: opened.StepID, CallID: cid(stepID, 1), Result: ToolExecutionResult{Output: cj(`"ok"`)}})
 	if len(facts) != 1 {
 		t.Fatalf("facts = %d, step must not close with A waiting", len(facts))
@@ -419,7 +419,7 @@ func TestParallelWaitingDoesNotBlockPending(t *testing.T) {
 	respID := opened.Calls[0].Response.ID
 	s = fold(t, s, mustDecide(t, s, ApproveToolCall{StepID: opened.StepID, CallID: cid(stepID, 0), ResponseID: respID,
 		ResponseDigest: responseDecisionDigest(t, ResponseApproval, ResponseDecisionApproved, "")}))
-	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: cid(stepID, 0)}))
+	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: cid(stepID, 0), Claim: "attempt-1"}))
 	facts = mustDecide(t, s, SubmitToolResult{StepID: opened.StepID, CallID: cid(stepID, 0), Result: ToolExecutionResult{Output: cj(`"done"`)}})
 	if len(facts) != 1 {
 		t.Fatalf("facts = %d, want [completed]", len(facts))
@@ -453,8 +453,8 @@ func TestUnknownToolFailureSettlesOnlyThatCall(t *testing.T) {
 	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: r, Calls: []ToolCallBinding{bA, bB}})
 	opened := facts[1].(ToolStepOpened)
 	s = fold(t, s, facts)
-	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: cid(stepID, 0)}))
-	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: cid(stepID, 1)}))
+	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: cid(stepID, 0), Claim: "attempt-1"}))
+	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: cid(stepID, 1), Claim: "attempt-1"}))
 
 	facts = mustDecide(t, s, SubmitToolFailure{
 		StepID:  opened.StepID,
@@ -511,14 +511,14 @@ func TestRejectModelResultDispositionRetriesThenFails(t *testing.T) {
 	}
 
 	// Start again, reject 2: host policy still chooses retry.
-	s = fold(t, s, mustDecide(t, s, StartModelExecution{StepID: stepID}))
+	s = fold(t, s, mustDecide(t, s, StartModelExecution{StepID: stepID, Claim: "attempt-1"}))
 	s = fold(t, s, mustDecide(t, s, RejectModelResult{StepID: stepID, Usage: usage, Failure: StepFailure{Class: FailureMalformedModel}}))
 	if ms := s.Current.(ModelStep); ms.Rejects != 2 {
 		t.Fatalf("rejects = %d", ms.Rejects)
 	}
 
 	// Third reject: host policy chooses fail-run disposition.
-	s = fold(t, s, mustDecide(t, s, StartModelExecution{StepID: stepID}))
+	s = fold(t, s, mustDecide(t, s, StartModelExecution{StepID: stepID, Claim: "attempt-1"}))
 	facts = mustDecide(t, s, RejectModelResult{StepID: stepID, Usage: usage, Failure: StepFailure{Class: FailureMalformedModel}, Disposition: ModelRejectFailRun})
 	if len(facts) != 2 {
 		t.Fatalf("facts = %d, want [rejected, ended]", len(facts))
@@ -585,7 +585,7 @@ func TestAcceptInputQueuesInAnyActiveState(t *testing.T) {
 
 	// Executing: input queues, Next stays Idle, no tool calls + pending input
 	// returns to Open instead of ending the Run.
-	s = fold(t, s, mustDecide(t, s, StartModelExecution{StepID: prep2.StepID}))
+	s = fold(t, s, mustDecide(t, s, StartModelExecution{StepID: prep2.StepID, Claim: "attempt-1"}))
 	s = fold(t, s, mustDecide(t, s, NextStep(AgentInput{ID: "in-4", Payload: cj(`4`)})))
 	if eff, _ := Next(s); eff != (Idle{}) {
 		t.Fatalf("effect while Executing with pending input = %#v, want Idle", eff)

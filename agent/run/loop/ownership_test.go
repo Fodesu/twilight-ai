@@ -83,7 +83,7 @@ func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 			<-takenOver // A settles only after the Session changed hands
 			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
 		}}
-	loop, err := New(fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1", "c2")}}},
+	loop, err := newLoop(oldRuntime, nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1", "c2")}}},
 		fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": tool}}, staticPlanner{specs: []ToolSpec{spec}}, ExecutionPolicy{MaxParallel: 2}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +110,7 @@ func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 	// A new owner takes the Session over: opening its Writer bumps the Epoch
 	// and its takeover disposition records both Executing calls as Unknown.
 	stack.open(t)
-	if n, err := stack.runtime.RecoverInterrupted(context.Background(), testSession); err != nil || n != 2 {
+	if n, err := stack.runtime.RecoverInterrupted(context.Background(), testSession, nil); err != nil || n != 2 {
 		t.Fatalf("RecoverInterrupted = %d %v, want 2", n, err)
 	}
 	close(takenOver)
@@ -157,7 +157,7 @@ func TestOwnershipLossOnModelSettlementIsNotRetried(t *testing.T) {
 	oldRuntime := &commitLog{Runtime: stack.runtime}
 
 	invoker := &blockingInvoker{started: make(chan struct{}), release: make(chan struct{})}
-	loop, err := New(fakeCatalog{invoker}, fakeToolCatalog{nil}, staticPlanner{}, ExecutionPolicy{}, false)
+	loop, err := newLoop(oldRuntime, nil, fakeCatalog{invoker}, fakeToolCatalog{nil}, staticPlanner{}, ExecutionPolicy{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestOwnershipLossOnModelSettlementIsNotRetried(t *testing.T) {
 	<-invoker.started
 
 	stack.open(t)
-	if n, err := stack.runtime.RecoverInterrupted(context.Background(), testSession); err != nil || n != 1 {
+	if n, err := stack.runtime.RecoverInterrupted(context.Background(), testSession, nil); err != nil || n != 1 {
 		t.Fatalf("RecoverInterrupted = %d %v, want 1", n, err)
 	}
 	close(invoker.release)

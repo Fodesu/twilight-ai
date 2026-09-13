@@ -58,7 +58,7 @@ func TestRegressionEvolveRejectsIllegalCallState(t *testing.T) {
 	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
 	opened := facts[1].(ToolStepOpened)
 	s = fold(t, s, facts)
-	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: cid(stepID, 0)}))
+	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: opened.StepID, CallID: cid(stepID, 0), Claim: "attempt-1"}))
 
 	_, err := ProtocolV1().Evolve(s, ToolCallFailed{
 		StepID:  opened.StepID,

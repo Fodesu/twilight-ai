@@ -177,6 +177,10 @@ type ModelStep struct {
 	Tools         []ToolSpec      `json:"tools,omitempty"`
 	ToolsDigest   Digest          `json:"toolsDigest"`
 	Status        ModelStepStatus `json:"status"`
+	// Claim is the execution attempt that owns the step while it is Executing
+	// (from ModelStepStarted); empty otherwise. A takeover derives the
+	// attempt's settlement CommandID from it (RUN-CMT-7).
+	Claim ExecutionClaim `json:"claim,omitempty"`
 	// Rejects counts accepted ModelStepRejected facts; progress, not part of
 	// RefValue.Digest.
 	Rejects int `json:"rejects,omitempty"`
@@ -248,17 +252,20 @@ type ToolCallFailure struct {
 }
 
 type ToolCallState struct {
-	CallID           CallID           `json:"callId"`
-	ProviderCallID   string           `json:"providerCallId,omitempty"`
-	ToolRef          ToolRef          `json:"toolRef"`
-	DefinitionDigest Digest           `json:"definitionDigest"`
-	BindingDigest    Digest           `json:"bindingDigest"`
-	Arguments        CanonicalJSON    `json:"arguments"`
-	Policy           ResponsePolicy   `json:"policy"`
-	Status           ToolCallStatus   `json:"status"`
-	Result           *ToolCallResult  `json:"result,omitempty"`
-	Failure          *ToolCallFailure `json:"failure,omitempty"`
-	Waiting          *ResponseRequest `json:"waiting,omitempty"`
+	CallID           CallID         `json:"callId"`
+	ProviderCallID   string         `json:"providerCallId,omitempty"`
+	ToolRef          ToolRef        `json:"toolRef"`
+	DefinitionDigest Digest         `json:"definitionDigest"`
+	BindingDigest    Digest         `json:"bindingDigest"`
+	Arguments        CanonicalJSON  `json:"arguments"`
+	Policy           ResponsePolicy `json:"policy"`
+	Status           ToolCallStatus `json:"status"`
+	// Claim is the execution attempt that owns the call while it is Executing
+	// (from ToolCallStarted); empty otherwise.
+	Claim   ExecutionClaim   `json:"claim,omitempty"`
+	Result  *ToolCallResult  `json:"result,omitempty"`
+	Failure *ToolCallFailure `json:"failure,omitempty"`
+	Waiting *ResponseRequest `json:"waiting,omitempty"`
 }
 
 // ValidateToolCallState rejects illegal field combinations (RUN-MCH-2).

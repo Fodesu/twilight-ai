@@ -271,7 +271,7 @@ func (f *Feature) Cancel() *Feature {
 func (f *Feature) ExecutingModel() *Feature {
 	f.t.Helper()
 	f.commitPrepare()
-	f.commit(run.StartModelExecution{StepID: f.modelStepID})
+	f.commit(run.StartModelExecution{StepID: f.modelStepID, Claim: "feature-attempt"})
 	return f
 }
 
@@ -340,7 +340,7 @@ func (f *Feature) ExecutingTool(name string, callID run.CallID) *Feature {
 	if !ok {
 		f.t.Fatalf("after model result: %T", res.Snapshot.State.Current)
 	}
-	f.commit(run.StartToolCall{StepID: ts.Ref().ID, CallID: callID})
+	f.commit(run.StartToolCall{StepID: ts.Ref().ID, CallID: callID, Claim: "feature-attempt"})
 	return f
 }
 
@@ -362,7 +362,11 @@ func (f *Feature) ensureLoop() {
 	for ref, tool := range f.tools {
 		tools[ref] = tool
 	}
-	l, err := loop.New(scriptCatalog{invoker: f.invoker, err: f.resolveErr}, scriptToolCatalog{tools}, f.planner, loop.ExecutionPolicy{}, false)
+	exec, err := loop.NewLocalExecutor(scriptCatalog{invoker: f.invoker, err: f.resolveErr}, scriptToolCatalog{tools}, f.rt, nil, false)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	l, err := loop.New(exec, f.planner, loop.ExecutionPolicy{})
 	if err != nil {
 		f.t.Fatal(err)
 	}

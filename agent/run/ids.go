@@ -22,6 +22,10 @@ type InputID string
 type ToolRef string
 type ModelRef string
 
+// WorkspaceRef names the execution environment a Turn's effects run in. Run
+// carries it to the executor and does not interpret it (TRN-PRF-1).
+type WorkspaceRef string
+
 // Digest is "sha256:<64 lowercase hex>" over canonical protocol bytes.
 // It remains an alias while Run protocol types live in this package.
 type Digest = es.Digest

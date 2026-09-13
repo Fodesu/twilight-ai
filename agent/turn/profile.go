@@ -18,7 +18,7 @@ type (
 	// WorkspaceRef names the execution environment a Turn's effects run in.
 	// The core does not interpret it; it is recorded so a takeover knows the
 	// environment the Turn was started in.
-	WorkspaceRef string
+	WorkspaceRef = run.WorkspaceRef
 )
 
 // PublicTool is one tool of a Profile: its ref, frozen definition and

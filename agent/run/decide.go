@@ -169,7 +169,10 @@ func decideStartModelExecution(s *MachineState, cmd StartModelExecution) ([]Fact
 	if ms.Status != ModelPrepared {
 		return nil, rejectionf("start model: step is not Prepared")
 	}
-	return []Fact{ModelStepStarted{StepID: cmd.StepID}}, nil
+	if cmd.Claim == "" {
+		return nil, rejectionf("start model: missing execution claim")
+	}
+	return []Fact{ModelStepStarted{StepID: cmd.StepID, Claim: cmd.Claim}}, nil
 }
 
 func decideRecoverModelExecution(s *MachineState, cmd RecoverModelExecution) ([]Fact, error) {
@@ -419,7 +422,10 @@ func decideStartToolCall(s *MachineState, cmd StartToolCall) ([]Fact, error) {
 	if ts.Calls[i].Status != ToolPending {
 		return nil, rejectionf("start tool: call %q is not Pending", cmd.CallID)
 	}
-	return []Fact{ToolCallStarted{StepID: cmd.StepID, CallID: cmd.CallID}}, nil
+	if cmd.Claim == "" {
+		return nil, rejectionf("start tool: missing execution claim")
+	}
+	return []Fact{ToolCallStarted{StepID: cmd.StepID, CallID: cmd.CallID, Claim: cmd.Claim}}, nil
 }
 
 func decideSubmitToolResult(s *MachineState, cmd SubmitToolResult) ([]Fact, error) {

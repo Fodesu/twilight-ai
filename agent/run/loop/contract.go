@@ -54,13 +54,19 @@ type ToolCatalog interface {
 }
 
 type ToolExecutionRequest struct {
-	RunID            run.RunID
-	StepID           run.StepID
-	CallID           run.CallID
+	RunID  run.RunID
+	StepID run.StepID
+	CallID run.CallID
+	// Claim is the execution attempt the call runs under; it identifies the
+	// Outcome the executor delivers (RUN-EXE-2).
+	Claim            run.ExecutionClaim
 	ToolRef          run.ToolRef
 	DefinitionDigest run.Digest
 	Arguments        run.CanonicalJSON
-	Progress         ToolProgressSink
+	// Workspace is the execution environment of the Turn's Profile, passed
+	// through for the tool; the Loop does not interpret it.
+	Workspace run.WorkspaceRef
+	Progress  ToolProgressSink
 }
 
 // ExecutableTool is the application-side execution contract (RUN-LOP-1).
@@ -165,8 +171,22 @@ type ExecutionPolicy struct {
 type LoopDisposition uint8
 
 const (
+	// LoopWaiting: no executable effect; the Run waits for a response, a
+	// recovery, or an Outcome of an attempt this Loop did not dispatch.
 	LoopWaiting LoopDisposition = iota
+	// LoopFinished: the Run is terminal; Result is set.
 	LoopFinished
+	// LoopDispatched: Advance handed at least one Assignment to the Executor
+	// and returned; Dispatched lists them. The Run moves again when their
+	// Outcomes are delivered.
+	LoopDispatched
+	// LoopDelivered: Deliver settled an Outcome and the Run is not terminal;
+	// the host advances it next.
+	LoopDelivered
+	// LoopDropped: Deliver found no Executing target under the Outcome's
+	// key -- a late Outcome of a settled or disposed attempt -- and wrote
+	// nothing.
+	LoopDropped
 )
 
 type LoopResult struct {
@@ -175,10 +195,13 @@ type LoopResult struct {
 	Reason WaitReason
 	// ExecutionRecovery is true when NeedsRecovery(state) is true after this
 	// Loop has no further executable effect: a ModelStep is Executing, or a
-	// ToolStep has Executing calls and no Pending calls. Under Session-level
-	// ownership this only happens before the owner's takeover disposition.
+	// ToolStep has Executing calls and no Pending calls, and none of them was
+	// dispatched by this Loop. Under Session-level ownership this only happens
+	// before the owner's takeover disposition.
 	ExecutionRecovery bool
 	Result            *run.RunResult
+	// Dispatched lists the assignments an Advance handed to the Executor.
+	Dispatched []AssignmentKey
 }
 
 type WaitReason string

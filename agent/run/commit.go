@@ -1,6 +1,7 @@
 package run
 
 import (
+	"context"
 	"errors"
 	"fmt"
 )
@@ -195,11 +196,33 @@ type Recovery struct {
 	ID      CommandID
 }
 
-// RecoveryCommands lists the takeover dispositions of every Executing target
-// in state (RUN-CMT-7): an Executing model step recovers to Prepared; each
-// Executing tool call settles as Unknown. Pending and Waiting calls are left
-// alone. claim is the takeover claim of the new owner.
-func RecoveryCommands(state *MachineState, claim ExecutionClaim) []Recovery {
+// RecoveryTarget is one Executing target a takeover has to decide about: the
+// model step or tool call, and the Claim of the attempt that started it (from
+// the started fact). The new owner first asks whether that attempt is still
+// producing an Outcome (Reattacher); only if not does it issue the recovery
+// command (RUN-CMT-7).
+type RecoveryTarget struct {
+	RunID  RunID
+	Schema uint16 // the Run's protocol version, for the executor's digest checks
+	StepID StepID
+	CallID CallID // empty for a model step
+	Claim  ExecutionClaim
+	Model  *ModelStep     // set for a model target
+	Call   *ToolCallState // set for a tool target
+}
+
+// Reattacher answers, for one Executing target, whether the attempt named by
+// Target.Claim is still running under an executor the new owner can reach. A
+// true answer means the executor will deliver that attempt's Outcome to the
+// new owner, so the target is left Executing; false means the target is
+// disposed (RUN-CMT-7). A nil Reattacher answers false for everything.
+type Reattacher interface {
+	Attach(context.Context, RecoveryTarget) (bool, error)
+}
+
+// RecoveryTargets lists the Executing targets of state in the order
+// RecoveryCommands disposes them.
+func RecoveryTargets(state *MachineState) []RecoveryTarget {
 	if state.Status.Terminal() {
 		return nil
 	}
@@ -208,28 +231,55 @@ func RecoveryCommands(state *MachineState, claim ExecutionClaim) []Recovery {
 		if cur.Status != ModelExecuting {
 			return nil
 		}
-		return []Recovery{{
-			Command: RecoverModelExecution{StepID: cur.RefValue.ID, Claim: claim},
-			ID:      DeriveModelRecoveryCommandID(state.RunID, cur.RefValue.ID, claim),
-		}}
+		ms := cur
+		return []RecoveryTarget{{RunID: state.RunID, StepID: cur.RefValue.ID, Claim: cur.Claim, Model: &ms}}
 	case ToolStep:
-		var out []Recovery
-		for _, call := range cur.Calls {
+		var out []RecoveryTarget
+		for i := range cur.Calls {
+			call := cur.Calls[i]
 			if call.Status != ToolExecuting {
 				continue
 			}
-			out = append(out, Recovery{
-				Command: SubmitToolFailure{
-					StepID:  cur.RefValue.ID,
-					CallID:  call.CallID,
-					Failure: ToolFailure{Class: FailureEffectUnknown, Message: "owner process lost before settlement"},
-					Outcome: ToolOutcomeUnknown,
-				},
-				ID: DeriveToolRecoveryCommandID(state.RunID, cur.RefValue.ID, call.CallID, claim),
-			})
+			out = append(out, RecoveryTarget{RunID: state.RunID, StepID: cur.RefValue.ID, CallID: call.CallID, Claim: call.Claim, Call: &call})
 		}
 		return out
 	default:
 		return nil
 	}
+}
+
+// RecoveryCommand is the disposition of one target under the takeover claim:
+// an Executing model step recovers to Prepared; an Executing tool call
+// settles as Unknown.
+func RecoveryCommand(target RecoveryTarget, claim ExecutionClaim) Recovery {
+	if target.Call == nil {
+		return Recovery{
+			Command: RecoverModelExecution{StepID: target.StepID, Claim: claim},
+			ID:      DeriveModelRecoveryCommandID(target.RunID, target.StepID, claim),
+		}
+	}
+	return Recovery{
+		Command: SubmitToolFailure{
+			StepID:  target.StepID,
+			CallID:  target.CallID,
+			Failure: ToolFailure{Class: FailureEffectUnknown, Message: "owner process lost before settlement"},
+			Outcome: ToolOutcomeUnknown,
+		},
+		ID: DeriveToolRecoveryCommandID(target.RunID, target.StepID, target.CallID, claim),
+	}
+}
+
+// RecoveryCommands lists the takeover dispositions of every Executing target
+// in state (RUN-CMT-7). Pending and Waiting calls are left alone. claim is the
+// takeover claim of the new owner.
+func RecoveryCommands(state *MachineState, claim ExecutionClaim) []Recovery {
+	targets := RecoveryTargets(state)
+	if len(targets) == 0 {
+		return nil
+	}
+	out := make([]Recovery, len(targets))
+	for i, t := range targets {
+		out[i] = RecoveryCommand(t, claim)
+	}
+	return out
 }

@@ -83,10 +83,12 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime boundRuntime, events 
 
 // --- StartModelCall ---
 
-// runModelStep owns one model execution attempt. It returns the terminal
-// RunResult when its settlement ended the Run (RUN 7: no reload after a
-// terminal settlement).
-func (l *Loop) runModelStep(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot, stepID run.StepID) (*run.RunResult, error) {
+// startModelStep commits the start barrier of one model attempt and hands the
+// call to the Executor (RUN-LOP-3). It returns the dispatched key, or nil when
+// the reload should decide (another actor moved the step). A model catalog
+// that cannot serve the step releases it back to Prepared and reports the
+// error: no model call has happened.
+func (l *Loop) startModelStep(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot, stepID run.StepID, deliver Deliver) (*AssignmentKey, error) {
 	runID := snapshot.State.RunID
 	proto, err := snapshot.Protocol()
 	if err != nil {
@@ -112,68 +114,74 @@ func (l *Loop) runModelStep(ctx context.Context, runtime boundRuntime, events Ev
 		return nil, fmt.Errorf("agent: loop: started step %q is not current", stepID)
 	}
 
-	var completion run.AgentCommand
-	var catalogErr error
-	invoker, resolveErr := l.Models.ResolveModel(modelStep.Model)
-	switch {
-	case resolveErr != nil:
-		catalogErr = resolveErr
-		completion = run.RecoverModelExecution{StepID: stepID, Claim: a.claim}
-	case invoker == nil:
-		catalogErr = errors.New("model catalog returned a nil invoker")
-		completion = run.RecoverModelExecution{StepID: stepID, Claim: a.claim}
-	default:
-		// Model workers derive from the outer ctx: cancelling a model call is
-		// safe, the frozen request retries after recovery (RUN-LOP-3). The body
-		// is fetched by digest; a missing body cannot be retried by this Loop.
-		frozenRequest, fetchErr := runtime.FrozenRequest(ctx, modelStep.RequestDigest)
-		var sdkRequest sdk.Request
-		if fetchErr == nil {
-			sdkRequest, fetchErr = frozenRequest.SDK()
+	assignment := Assignment{Session: runtime.sid, RunID: runID, StepID: stepID, Claim: a.claim, Schema: snapshot.SchemaVersion,
+		Kind: AssignmentModel, Model: &ModelAssignment{Model: modelStep.Model, RequestDigest: modelStep.RequestDigest}}
+	if err := l.Executor.Dispatch(ctx, assignment, l.deliverTo(runtime, events, deliver)); err != nil {
+		// Nothing was called: release the step to Prepared under this attempt's
+		// recovery identity and surface the condition (RUN-LOP-3).
+		if _, serr := l.settle(context.WithoutCancel(ctx), runtime, events, a, start.Snapshot.Position,
+			run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, proto); serr != nil {
+			return nil, serr
 		}
-		if fetchErr != nil {
-			if errors.Is(fetchErr, run.ErrFrozenValueMissing) {
-				// Release ownership so recovery or a fresh plan can proceed;
-				// surface the condition to the host.
-				if _, err := l.settle(ctx, runtime, events, a, start.Snapshot.Position, run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, proto); err != nil {
-					return nil, err
-				}
-				return nil, fetchErr
-			}
-			failure := run.StepFailure{Class: run.FailureMalformedModel, Message: fetchErr.Error()}
-			completion = run.RejectModelResult{StepID: stepID, Failure: failure, Disposition: l.modelRejectDisposition(modelStep, failure)}
-		} else {
-			result, invokeErr := l.invokeModel(ctx, invoker, &sdkRequest, runID, stepID, events)
-			switch {
-			case invokeErr != nil && ctx.Err() != nil:
-				completion = run.RecoverModelExecution{StepID: stepID, Claim: a.claim}
-			case invokeErr != nil:
-				completion = run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: invokeErr.Error()}}
-			default:
-				bindings, bindErr := l.bindToolCalls(&result, &modelStep)
-				if bindErr != nil {
-					completion = run.RejectModelResult{StepID: stepID, Usage: run.UsageFromSDK(result.Usage),
-						Failure:     run.StepFailure{Class: run.FailureMalformedModel, Message: bindErr.Error()},
-						Disposition: l.modelRejectDisposition(modelStep, run.StepFailure{Class: run.FailureMalformedModel, Message: bindErr.Error()})}
-				} else if frozenResult, freezeErr := run.FreezeModelResult(result); freezeErr != nil {
-					completion = run.RejectModelResult{StepID: stepID, Usage: run.UsageFromSDK(result.Usage),
-						Failure:     run.StepFailure{Class: run.FailureMalformedModel, Message: freezeErr.Error()},
-						Disposition: l.modelRejectDisposition(modelStep, run.StepFailure{Class: run.FailureMalformedModel, Message: freezeErr.Error()})}
-				} else {
-					completion = run.SubmitModelResult{StepID: stepID, Result: frozenResult, Calls: bindings, Scheduling: l.toolScheduling()}
-				}
-			}
-		}
+		return nil, fmt.Errorf("agent: loop: model dispatch: %w", err)
 	}
+	key := assignment.Key()
+	return &key, nil
+}
 
-	finished, err := l.settle(ctx, runtime, events, a, start.Snapshot.Position, completion, proto)
-	if err != nil {
-		return nil, err
+// deliverTo is the callback a dispatched assignment reports to. A blocking
+// Run supplies its own wait-loop callback; a host calling Advance directly
+// gets the Outcome settled here, on the executor's goroutine, through the
+// Loop's Deliver.
+func (l *Loop) deliverTo(runtime boundRuntime, events EventSink, deliver Deliver) Deliver {
+	if deliver != nil {
+		return deliver
 	}
-	if catalogErr != nil {
-		return nil, fmt.Errorf("agent: loop: model catalog: %w", catalogErr)
+	return func(out Outcome) {
+		_, _ = l.Deliver(context.Background(), runtime.rt, runtime.sid, out, events)
 	}
-	return finished, nil
+}
+
+// modelCompletion maps a model Outcome to the attempt's settlement command
+// (RUN-LOP-3): a cancelled or unstartable call recovers the step to Prepared,
+// a provider failure is SubmitModelFailure, a result that cannot be bound or
+// frozen is RejectModelResult with the host's disposition, and a result binds
+// its tool calls into SubmitModelResult. The returned error, when non-nil,
+// accompanies a recovery settlement the Loop cannot retry itself (a missing
+// frozen body).
+func (l *Loop) modelCompletion(step *run.ModelStep, out Outcome) (run.AgentCommand, error) {
+	stepID := step.RefValue.ID
+	recover := run.RecoverModelExecution{StepID: stepID, Claim: out.Key.Claim}
+	switch {
+	case out.Err != nil && errors.Is(out.Err, run.ErrFrozenValueMissing):
+		return recover, out.Err
+	case out.Err != nil && errors.Is(out.Err, errMalformedFrozenRequest):
+		failure := run.StepFailure{Class: run.FailureMalformedModel, Message: out.Err.Error()}
+		return run.RejectModelResult{StepID: stepID, Failure: failure, Disposition: l.modelRejectDisposition(*step, failure)}, nil
+	case out.Err != nil && (out.Cancelled || errors.Is(out.Err, context.Canceled) || errors.Is(out.Err, context.DeadlineExceeded)):
+		return recover, nil
+	case out.Err != nil:
+		return run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: out.Err.Error()}}, nil
+	case out.Model == nil:
+		if out.Cancelled {
+			return recover, nil
+		}
+		return run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: "executor delivered no result"}}, nil
+	}
+	result := *out.Model
+	bindings, bindErr := l.bindToolCalls(&result, step)
+	if bindErr != nil {
+		failure := run.StepFailure{Class: run.FailureMalformedModel, Message: bindErr.Error()}
+		return run.RejectModelResult{StepID: stepID, Usage: run.UsageFromSDK(result.Usage), Failure: failure,
+			Disposition: l.modelRejectDisposition(*step, failure)}, nil
+	}
+	frozenResult, freezeErr := run.FreezeModelResult(result)
+	if freezeErr != nil {
+		failure := run.StepFailure{Class: run.FailureMalformedModel, Message: freezeErr.Error()}
+		return run.RejectModelResult{StepID: stepID, Usage: run.UsageFromSDK(result.Usage), Failure: failure,
+			Disposition: l.modelRejectDisposition(*step, failure)}, nil
+	}
+	return run.SubmitModelResult{StepID: stepID, Result: frozenResult, Calls: bindings, Scheduling: l.toolScheduling()}, nil
 }
 
 func (l *Loop) modelRejectDisposition(step run.ModelStep, failure run.StepFailure) run.ModelRejectDisposition {
@@ -189,62 +197,6 @@ func (l *Loop) modelRejectDisposition(step run.ModelStep, failure run.StepFailur
 	// A malformed result is never retried implicitly. Hosts that want a retry
 	// must provide the handler and return ModelRejectRetry explicitly.
 	return run.ModelRejectFailRun
-}
-
-func (l *Loop) invokeModel(ctx context.Context, invoker ModelInvoker, req *sdk.Request, runID run.RunID, step run.StepID, events EventSink) (sdk.ModelResult, error) {
-	if l.Streaming {
-		if streamer, ok := invoker.(StreamingModelInvoker); ok {
-			stream, err := streamer.Stream(ctx, *req)
-			if err != nil {
-				return sdk.ModelResult{}, err
-			}
-			// The range has an explicit ctx escape: a stream that stops
-			// sending without closing Parts must not block cancellation and
-			// the recovery path behind it. Returning early also abandons
-			// Parts, which the assembler behind them tolerates: it stops
-			// forwarding once ctx is done and drains the provider, so neither
-			// side is left blocked on the other.
-			var sequence uint64
-			emitDelta := func(kind EventKind, payload any) {
-				if events == nil {
-					return
-				}
-				sequence++
-				_ = events.Emit(ctx, Event{RunID: runID, StepID: step,
-					Sequence: sequence, Kind: kind, Durability: EventProvisional,
-					Payload: mustJSON(payload)})
-			}
-		consume:
-			for {
-				select {
-				case part, open := <-stream.Parts:
-					if !open {
-						break consume
-					}
-					if events == nil {
-						continue
-					}
-					switch p := part.(type) {
-					case *sdk.TextDeltaPart:
-						emitDelta(EventModelTextDelta, p.Text)
-					case *sdk.ReasoningDeltaPart:
-						emitDelta(EventModelReasoningDelta, p.Text)
-					}
-				case <-ctx.Done():
-					return sdk.ModelResult{}, ctx.Err()
-				}
-			}
-			result, err := stream.Result()
-			if err != nil {
-				return sdk.ModelResult{}, err
-			}
-			if result == nil {
-				return sdk.ModelResult{}, errors.New("agent: loop: stream returned no result")
-			}
-			return *result, nil
-		}
-	}
-	return invoker.Generate(ctx, *req)
 }
 
 // bindToolCalls validates tool-call IDs/order/shape and produces bindings

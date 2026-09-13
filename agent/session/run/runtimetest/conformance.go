@@ -1,6 +1,7 @@
 package runtimetest
 
 import (
+	"context"
 	"errors"
 	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/es"
@@ -31,6 +32,7 @@ func Run(t *testing.T, factory Factory) {
 		"Projection":         testProjection,
 		"Isolation":          testIsolation,
 		"Takeover":           testTakeover,
+		"Reattach":           testReattach,
 		"OwnershipLost":      testOwnershipLost,
 		"FrozenValues":       testFrozenValues,
 	} {
@@ -481,7 +483,7 @@ func testTakeover(t *testing.T, factory Factory) {
 	h.startTool("r2", toolStep, ids[0])
 
 	h.takeover()
-	n, err := h.rt.RecoverInterrupted(h.ctx, sid)
+	n, err := h.rt.RecoverInterrupted(h.ctx, sid, nil)
 	if err != nil || n != 2 {
 		t.Fatalf("RecoverInterrupted = %d %v, want 2", n, err)
 	}
@@ -519,13 +521,84 @@ func testTakeover(t *testing.T, factory Factory) {
 	}
 	// Same owner repeats: idempotent, nothing new.
 	head := h.head()
-	if n, err := h.rt.RecoverInterrupted(h.ctx, sid); err != nil || n != 0 || h.head() != head {
+	if n, err := h.rt.RecoverInterrupted(h.ctx, sid, nil); err != nil || n != 0 || h.head() != head {
 		t.Fatalf("second RecoverInterrupted = %d %v", n, err)
 	}
 	// Another takeover with nothing Executing does nothing.
 	h.takeover()
-	if n, err := h.rt.RecoverInterrupted(h.ctx, sid); err != nil || n != 0 {
+	if n, err := h.rt.RecoverInterrupted(h.ctx, sid, nil); err != nil || n != 0 {
 		t.Fatalf("RecoverInterrupted with no executing target = %d %v", n, err)
+	}
+}
+
+// selectiveReattacher answers true for the targets whose Claim it holds and
+// records every question the takeover asked.
+type selectiveReattacher struct {
+	live  map[run.ExecutionClaim]bool
+	asked []run.RecoveryTarget
+}
+
+func (r *selectiveReattacher) Attach(_ context.Context, t run.RecoveryTarget) (bool, error) {
+	r.asked = append(r.asked, t)
+	return r.live[t.Claim], nil
+}
+
+// RUN-CMT-7 with a reachable executor: a target whose attempt the executor
+// still runs is not disposed -- it stays Executing under its original Claim
+// and that Claim's settlement is accepted afterwards -- while a target the
+// executor no longer holds is disposed as before.
+func testReattach(t *testing.T, factory Factory) {
+	h := newHarness(t, factory(t))
+	h.startRun("t1", "r1", input("in-1"))
+	h.startRun("t2", "r2", input("in-b"))
+	modelStep, modelClaim := h.executingModel("r1", false)
+	// Two calls so the step stays open after one is disposed.
+	toolStep, ids := h.openToolStep("r2", 2)
+	toolClaim := h.startTool("r2", toolStep, ids[0])
+
+	h.takeover()
+	re := &selectiveReattacher{live: map[run.ExecutionClaim]bool{modelClaim: true}}
+	n, err := h.rt.RecoverInterrupted(h.ctx, sid, re)
+	if err != nil || n != 1 {
+		t.Fatalf("RecoverInterrupted = %d %v, want exactly the tool disposed", n, err)
+	}
+	if len(re.asked) != 2 {
+		t.Fatalf("takeover asked about %d targets, want 2", len(re.asked))
+	}
+	for _, target := range re.asked {
+		switch target.Claim {
+		case modelClaim:
+			if target.Model == nil || target.StepID != modelStep || target.CallID != "" || target.Schema != run.SchemaVersion1 {
+				t.Fatalf("model target = %+v", target)
+			}
+		case toolClaim:
+			if target.Call == nil || target.StepID != toolStep || target.CallID != ids[0] {
+				t.Fatalf("tool target = %+v", target)
+			}
+		default:
+			t.Fatalf("takeover asked about an unknown claim %q", target.Claim)
+		}
+	}
+	ms := h.load("r1").State.Current.(run.ModelStep)
+	if ms.Status != run.ModelExecuting || ms.Claim != modelClaim {
+		t.Fatalf("reattached model step = %+v, want Executing under the original claim", ms)
+	}
+	ts := h.load("r2").State.Current.(run.ToolStep)
+	if ts.Calls[0].Status != run.ToolFailed || ts.Calls[0].Failure == nil || ts.Calls[0].Failure.Outcome != run.ToolOutcomeUnknown {
+		t.Fatalf("unreachable tool call = %+v, want Unknown", ts.Calls[0])
+	}
+	if ts.Calls[1].Status != run.ToolPending {
+		t.Fatalf("pending sibling = %+v, want untouched", ts.Calls[1])
+	}
+	// The reattached attempt's Outcome settles under the original Claim.
+	res := h.mustCommit("r1", run.DeriveSettlementCommandID("r1", modelStep, "", modelClaim), 0, run.SubmitModelResult{StepID: modelStep, Result: textResult("done")})
+	if res.Status != run.CommitAccepted || !res.Snapshot.State.Status.Terminal() {
+		t.Fatalf("settlement after reattach = %v %v", res.Status, res.Snapshot.State.Status)
+	}
+	for _, f := range h.record("r1").Facts {
+		if _, recovered := f.(run.ModelStepRecovered); recovered {
+			t.Fatal("a reattached attempt must not be recovered")
+		}
 	}
 }
 

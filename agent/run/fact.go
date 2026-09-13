@@ -54,9 +54,12 @@ type ModelStepWithdrawn struct {
 
 func (ModelStepWithdrawn) fact() {}
 
-// ModelStepStarted: Prepared -> Executing.
+// ModelStepStarted: Prepared -> Executing. Claim identifies the execution
+// attempt that owns the step; a takeover uses it to accept a late Outcome of
+// the same attempt instead of recovering the step (RUN-WIR-1, RUN-CMT-7).
 type ModelStepStarted struct {
-	StepID StepID `json:"stepId"`
+	StepID StepID         `json:"stepId"`
+	Claim  ExecutionClaim `json:"claim"`
 }
 
 func (ModelStepStarted) fact() {}
@@ -106,10 +109,12 @@ type ToolStepOpened struct {
 
 func (ToolStepOpened) fact() {}
 
-// ToolCallStarted: Pending -> Executing.
+// ToolCallStarted: Pending -> Executing. Claim identifies the execution
+// attempt that owns the call (see ModelStepStarted).
 type ToolCallStarted struct {
-	StepID StepID `json:"stepId"`
-	CallID CallID `json:"callId"`
+	StepID StepID         `json:"stepId"`
+	CallID CallID         `json:"callId"`
+	Claim  ExecutionClaim `json:"claim"`
 }
 
 func (ToolCallStarted) fact() {}
