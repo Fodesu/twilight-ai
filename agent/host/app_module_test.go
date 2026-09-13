@@ -1,16 +1,18 @@
-package ref_test
+package host_test
 
 import (
 	"context"
-	"github.com/felinics/twilight/agent/ref"
+	"strings"
+	"testing"
+
+	"github.com/felinics/twilight/agent/host"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
 	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/agent/turn"
-	"strings"
-	"testing"
 )
 
 // The example application module: source "example", module "audit". It records
@@ -63,34 +65,27 @@ var auditModule = extension.ModuleDescriptor{
 	}},
 }
 
-// An application module registered through Options.Modules writes its own
+// An application module registered through Ports.Modules writes its own
 // events into the Session stream and folds its own projection, while the
 // first-party projections skip its rows as out-of-scope (EXT-REG-1, EXT-PRJ-2).
 func TestAppModuleSharesTheSessionStream(t *testing.T) {
 	ctx := context.Background()
-	m, err := ref.New(ref.Options{Modules: []extension.ModuleDescriptor{auditModule}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := newHost(host.Ports{Modules: []extension.ModuleDescriptor{auditModule}}, map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}})
 	const sid session.SessionID = "s-app"
-	if err := m.EnsureSession(ctx, sid); err != nil {
+	if err := h.EnsureSession(ctx, sid); err != nil {
 		t.Fatal(err)
 	}
-	agent, err := ref.NewAgent("m-1", &scriptedRequests{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	profile, err := m.Agents.Register("b1", agent)
+	profile, err := h.Profiles.Register("b1", mustProfile("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	in, err := m.SubmitInput(ctx, sid, "in-1", "hello")
+	in, err := h.SubmitInput(ctx, sid, "in-1", "hello")
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The app module commits its own event through the shared Writer.
-	w, err := m.Writers.Writer(ctx, sid)
+	w, err := h.Writers.Writer(ctx, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,16 +97,16 @@ func TestAppModuleSharesTheSessionStream(t *testing.T) {
 	if err != nil || res.Outcome != writer.CommitApplied {
 		t.Fatalf("audit commit = %+v %v", res, err)
 	}
-	if _, err := m.Coordinator.Start(ctx, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},
+	if _, err := h.Coordinator.Start(ctx, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},
 		Inputs: []run.AgentInput{in}, Profile: profile, Companion: turn.CompanionV1Version}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.Drive(ctx, turn.TurnRef{SessionID: sid, TurnID: "t1"}); err != nil {
+	if _, err := h.Drive(ctx, turn.TurnRef{SessionID: sid, TurnID: "t1"}); err != nil {
 		t.Fatal(err)
 	}
 
 	// The app projection folded both its own event and the chatlog input.
-	state, _, err := m.Projection(ctx, sid, auditTrail, 1)
+	state, _, err := h.Projection(ctx, sid, auditTrail, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,14 +116,14 @@ func TestAppModuleSharesTheSessionStream(t *testing.T) {
 	}
 
 	// First-party projections fold across the app rows untouched.
-	chat, err := m.ChatlogSurface(ctx, sid)
+	chat, err := h.ChatlogSurface(ctx, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if in, _ := chat.Inputs.Get("in-1"); in.Status != chatlog.InputDelivered {
 		t.Fatalf("input status = %s", in.Status)
 	}
-	tsurf, err := m.TurnSurface(ctx, sid)
+	tsurf, err := h.TurnSurface(ctx, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +132,7 @@ func TestAppModuleSharesTheSessionStream(t *testing.T) {
 	}
 
 	// Both sources coexist in one stream.
-	page, err := m.Store.Read(ctx, session.ReadRequest{SessionID: sid})
+	page, err := h.Store.Read(ctx, session.ReadRequest{SessionID: sid})
 	if err != nil {
 		t.Fatal(err)
 	}

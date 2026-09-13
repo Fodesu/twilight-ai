@@ -1,18 +1,18 @@
-package ref_test
+package host_test
 
 import (
 	"context"
 	"sync"
 	"testing"
 
+	"github.com/felinics/twilight/agent/host"
 	"github.com/felinics/twilight/agent/jsonstable"
-	"github.com/felinics/twilight/agent/ref"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
 )
 
 // countingCache wraps the in-memory cache to count writes, so a test can see
-// whether the assembly's interval reached the Writer (REF-MEM-2, EXT-PRJ-7).
+// whether the Host's interval reached the Writer (HST-MEM-2, EXT-PRJ-7).
 type countingCache struct {
 	inner *extension.MemoryProjectionCache
 	mu    sync.Mutex
@@ -40,10 +40,10 @@ func (c *countingCache) count() int {
 	return c.saves
 }
 
-// TestAssemblyCacheEveryIsConfigurable pins the deployment's knob all the way
-// to the Writer: a small interval writes entries as the log grows, a large one
+// TestHostCacheEveryIsConfigurable pins the deployment's knob all the way to
+// the Writer: a small interval writes entries as the log grows, a large one
 // leaves the log uncached until Close, and Close writes regardless.
-func TestAssemblyCacheEveryIsConfigurable(t *testing.T) {
+func TestHostCacheEveryIsConfigurable(t *testing.T) {
 	ctx := context.Background()
 	for name, tc := range map[string]struct {
 		every      session.Seq
@@ -54,22 +54,19 @@ func TestAssemblyCacheEveryIsConfigurable(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			cache := newCountingCache()
-			m, err := ref.New(ref.Options{ProjectionCache: cache, CacheEvery: tc.every})
-			if err != nil {
-				t.Fatal(err)
-			}
+			h := newHost(host.Ports{Cache: cache, CacheEvery: tc.every}, nil)
 			const sid session.SessionID = "s-interval"
-			if err := m.EnsureSession(ctx, sid); err != nil {
+			if err := h.EnsureSession(ctx, sid); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := m.SubmitInput(ctx, sid, "in-1", "hello"); err != nil {
+			if _, err := h.SubmitInput(ctx, sid, "in-1", "hello"); err != nil {
 				t.Fatal(err)
 			}
 			if got := cache.count() > 0; got != tc.wantBefore {
 				t.Fatalf("wrote entries after one commit = %v, want %v (every=%d)", got, tc.wantBefore, tc.every)
 			}
 			// Close is always a refresh point, whatever the interval.
-			if err := m.Close(ctx); err != nil {
+			if err := h.Close(ctx); err != nil {
 				t.Fatal(err)
 			}
 			if cache.count() == 0 {
@@ -79,24 +76,21 @@ func TestAssemblyCacheEveryIsConfigurable(t *testing.T) {
 	}
 }
 
-// TestAssemblyNeverCachesTheMachineProjection is the other half of REF-MEM-2:
+// TestHostNeverCachesTheMachineProjection is the other half of HST-MEM-2:
 // the Writer leaves the machine projection to the Runtime's SnapshotPolicy, so
 // no entry appears for it however small the interval is.
-func TestAssemblyNeverCachesTheMachineProjection(t *testing.T) {
+func TestHostNeverCachesTheMachineProjection(t *testing.T) {
 	ctx := context.Background()
 	cache := newCountingCache()
-	m, err := ref.New(ref.Options{ProjectionCache: cache, CacheEvery: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
+	h := newHost(host.Ports{Cache: cache, CacheEvery: 1}, nil)
 	const sid session.SessionID = "s-machine"
-	if err := m.EnsureSession(ctx, sid); err != nil {
+	if err := h.EnsureSession(ctx, sid); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := m.SubmitInput(ctx, sid, "in-1", "hello"); err != nil {
+	if _, err := h.SubmitInput(ctx, sid, "in-1", "hello"); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.Close(ctx); err != nil {
+	if err := h.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if cache.count() == 0 {

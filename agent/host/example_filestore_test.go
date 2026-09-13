@@ -1,4 +1,4 @@
-package ref_test
+package host_test
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/felinics/twilight/agent/ref"
+	"github.com/felinics/twilight/agent/host"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -20,14 +20,14 @@ import (
 // Example_jsonlPrototype is the full prototype on the JSONL file store: one
 // Session directory on disk carries the whole agent.
 //
-// Turn 1 shows steer and queue: while its tool call executes, a second Send
-// routes to Deliver (the input joins the running Turn) and a third input is
-// only submitted (it queues). After the Turn settles, OnTurnSettled starts
-// Turn 2 from the queued input.
+// Turn 1 shows steer and queue: while its tool call executes, a second Route
+// goes to Deliver (the input joins the running Turn) and a third input is
+// only submitted (it queues). After the Turn settles, Drain starts Turn 2
+// from the queued input.
 //
 // Turn 2 shows resume: the process "crashes" while its tool call executes.
 // A second Store instance over the same directory — a new process — opens
-// with Takeover, disposes the abandoned call and Resume completes the Turn.
+// with Takeover, disposes the abandoned call and Drive completes the Turn.
 // The dead process's late settlement is fenced by owner.json. The log stays
 // one JSONL file, readable with standard tools.
 func Example_jsonlPrototype() {
@@ -42,32 +42,27 @@ func Example_jsonlPrototype() {
 
 	tool := &stagedTool{}
 	frozen := run.NewMemoryFrozenValues()
+	profile := mustProfile("m-1", []loop.ExecutableTool{tool})
 
 	// ---- process 1 ----------------------------------------------------------
 	store1, err := filestore.New(root)
 	if err != nil {
 		panic(err)
 	}
-	p1, err := ref.New(ref.Options{Store: store1, Frozen: frozen, Now: clock.Now})
-	if err != nil {
-		panic(err)
-	}
-	if err := p1.CreateSession(ctx, sid); err != nil {
-		panic(err)
-	}
-	if _, err := p1.Open(ctx, sid); err != nil {
-		panic(err)
-	}
 	model1 := &scriptedRequests{answers: []sdk.ModelResult{protoToolCall("call-1"), protoText("done"), protoToolCall("call-2")}}
-	profile1, err := p1.Agents.Register("jsonl-agent", protoAgent(model1, tool))
+	p1 := newHost(host.Ports{Store: store1, Frozen: frozen, Clock: clock.Now}, map[run.ModelRef]loop.ModelInvoker{"m-1": model1}, tool)
+	profile1, err := p1.Profiles.Register("jsonl-agent", profile)
 	if err != nil {
 		panic(err)
 	}
 	turnSeq := 0
-	driver := &ref.SessionDriver{Coordinator: p1.Coordinator, Memory: p1, Profile: profile1, Companion: turn.CompanionV1Version,
-		NewTurnID: func() turn.TurnID { turnSeq++; return turn.TurnID(fmt.Sprintf("turn-%d", turnSeq)) }}
+	s1, err := p1.OpenSession(ctx, sid, host.SessionOptions{Profile: profile1,
+		NewTurnID: func() turn.TurnID { turnSeq++; return turn.TurnID(fmt.Sprintf("turn-%d", turnSeq)) }})
+	if err != nil {
+		panic(err)
+	}
 
-	// Turn 1: Send starts the Turn; the model asks for the tool, which blocks.
+	// Turn 1: Route starts the Turn; the model asks for the tool, which blocks.
 	stage1 := tool.stage()
 	in1, err := p1.SubmitInput(ctx, sid, "in-1", "what is the weather?")
 	if err != nil {
@@ -75,7 +70,7 @@ func Example_jsonlPrototype() {
 	}
 	turn1Done := make(chan turn.TurnResponse, 1)
 	go func() {
-		resp, err := driver.Send(ctx, sid, []run.AgentInput{in1})
+		resp, err := s1.Route(ctx, []run.AgentInput{in1})
 		if err != nil {
 			panic(err)
 		}
@@ -83,7 +78,7 @@ func Example_jsonlPrototype() {
 	}()
 	<-stage1.started
 
-	// Steer: a second Send while turn-1 runs routes to Deliver (REF-DRV-2).
+	// Steer: a second Route while turn-1 runs goes to Deliver (HST-DRV-3).
 	in2, err := p1.SubmitInput(ctx, sid, "in-2", "and tomorrow?")
 	if err != nil {
 		panic(err)
@@ -92,7 +87,7 @@ func Example_jsonlPrototype() {
 	go func() {
 		defer close(steerDone)
 		// Deliver into the running Turn returns already_driving, not an error.
-		if _, err := driver.Send(ctx, sid, []run.AgentInput{in2}); err != nil {
+		if _, err := s1.Route(ctx, []run.AgentInput{in2}); err != nil {
 			panic(err)
 		}
 	}()
@@ -119,12 +114,12 @@ func Example_jsonlPrototype() {
 	resp1 := <-turn1Done
 	fmt.Printf("turn-1: %s\n", resp1.Status)
 
-	// Turn 2 opens from the backlog (REF-DRV-3); its tool call blocks and the
+	// Turn 2 opens from the backlog (HST-DRV-4); its tool call blocks and the
 	// process dies while the call is Executing.
 	stage2 := tool.stage()
 	turn2Err := make(chan error, 1)
 	go func() {
-		_, _, err := driver.OnTurnSettled(ctx, sid)
+		_, _, err := s1.Drain(ctx)
 		turn2Err <- err
 	}()
 	<-stage2.started
@@ -135,11 +130,9 @@ func Example_jsonlPrototype() {
 	if err != nil {
 		panic(err)
 	}
-	p2, err := ref.New(ref.Options{Store: store2, Frozen: frozen, Ownership: session.OpenOptions{Takeover: true}, Now: clock.Now})
-	if err != nil {
-		panic(err)
-	}
-	if _, err := p2.Agents.Register("jsonl-agent", protoAgent(&scriptedRequests{}, tool)); err != nil {
+	p2 := newHost(host.Ports{Store: store2, Frozen: frozen, Ownership: session.OpenOptions{Takeover: true}, Clock: clock.Now},
+		map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}}, tool)
+	if _, err := p2.Profiles.Register("jsonl-agent", profile); err != nil {
 		panic(err)
 	}
 	recovered, err := p2.Open(ctx, sid)
@@ -182,16 +175,6 @@ func Example_jsonlPrototype() {
 	// first row: twilight/chatlog/input_submitted; last row: twilight/turn/completed
 }
 
-func waitUntil(cond func() bool) {
-	deadline := time.Now().Add(10 * time.Second)
-	for !cond() {
-		if time.Now().After(deadline) {
-			panic("condition not reached")
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-}
-
 func protoToolCall(id string) sdk.ModelResult {
 	return sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 1},
 		ToolCalls: []sdk.ToolCall{{ToolCallID: id, ToolName: "lookup", Input: `{"q":"weather"}`}}}
@@ -199,14 +182,6 @@ func protoToolCall(id string) sdk.ModelResult {
 
 func protoText(text string) sdk.ModelResult {
 	return sdk.ModelResult{Text: text, FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}
-}
-
-func protoAgent(model loop.ModelInvoker, tool *stagedTool) ref.Agent {
-	agent, err := ref.NewAgent("m-1", model, ref.WithTool(tool))
-	if err != nil {
-		panic(err)
-	}
-	return agent
 }
 
 // stagedTool blocks each staged execution until its stage is released;

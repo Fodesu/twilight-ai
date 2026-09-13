@@ -35,7 +35,7 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 
 **TRN-SCP-4** Turn 自己的写入经该 Session 的 `writer.Writer.Commit`；Run 事实的写入经 `run.Runtime`，后者经同一个 Writer 落在同一 `session.Store`（EXT-SCP-1）。Coordinator 与 Runtime 经 `writer.Writers` 取得 Writer（EXT-WRT-6）。Artifact 由其 owner 管理。
 
-**TRN-SCP-5** Application 管理 model、provider、tool、prompt、token、approval、queue、retry 决策与并发。宿主按 persisted profile 解析 driver 并驱动（REF-DRV-1）。Planner 与 Policy 按 Profile 中的 ref 解析（DEC-CAT-2），Planner 每次 Plan 使用 Profile 的 `ModelRef`。
+**TRN-SCP-5** Application 管理 model、provider、tool、prompt、token、approval、queue、retry 决策与并发。宿主按 persisted profile 解析 driver 并驱动（HST-DRV-1）。Planner 与 Policy 按 Profile 中的 ref 解析（DEC-CAT-2），Planner 每次 Plan 使用 Profile 的 `ModelRef`。
 
 **TRN-SCP-6** Start 之前建立 immutable execution profile。Session 保存 `ProfileRef{ID, Digest}`。密钥与 client 留在进程内。Resolve 失败返回 `profile_unavailable`。字段与 digest 边界见 TRN-PRF-1/2；决策组件的身份与解析见 [agent-decision.md](agent-decision.md)。
 
@@ -164,7 +164,7 @@ type Coordinator struct {
     Runtime run.Runtime
 }
 
-// Service 只做协议提交与状态读取；驱动 Run 属宿主（REF-DRV）。
+// Service 只做协议提交与状态读取；驱动 Run 属宿主（HST-DRV）。
 // 每个方法在提交落盘后立即返回，响应反映已提交的状态。
 type Service interface {
     Start(context.Context, StartRequest) (TurnResponse, error)
@@ -201,13 +201,13 @@ const (
 )
 ```
 
-宿主在该词汇表上扩展 `already_driving`（`ref.ResumeAlreadyDriving`，REF-DRV-1）：输入已提交、同 Run 的另一个本地驱动者继续推进。Coordinator 本身不产生该值。
+宿主在该词汇表上扩展 `already_driving`（`host.ResumeAlreadyDriving`，HST-DRV-1）：输入已提交、同 Run 的另一个本地驱动者继续推进。Coordinator 本身不产生该值。
 
 **TRN-API-1** Coordinator 经 Writer 的 `Projections()` 读取 `twilight/turn/surface` 与 `twilight/run/machine` 两个投影（EXT-PRJ-4）；每个方法先读投影再决定动作。Coordinator 不持有 `session.Store`。
 
-**TRN-API-2** Run 的写入只经 `run.Runtime`。driver 的组装与解析在宿主（REF-BND-2）。
+**TRN-API-2** Run 的写入只经 `run.Runtime`。driver 的组装与解析在宿主（HST-PRF-2）。
 
-**TRN-API-3** DTO 为值语义。`Waiting` 为 `twilight/run/machine` 的 `WaitingCalls`。`NeedsRecovery` 为 true 时返回 `ResumeWaitingForRecovery`；这只出现在接管处置之前，宿主调用 `Runtime.RecoverInterrupted`（RUN-CMT-7）后再驱动（REF-DRV-1）。
+**TRN-API-3** DTO 为值语义。`Waiting` 为 `twilight/run/machine` 的 `WaitingCalls`。`NeedsRecovery` 为 true 时返回 `ResumeWaitingForRecovery`；这只出现在接管处置之前，宿主调用 `Runtime.RecoverInterrupted`（RUN-CMT-7）后再驱动（HST-DRV-1）。
 
 **TRN-API-4** `twilight/turn/superseded` 由 Application 追加。Coordinator 的方法不写该事件。superseded 的 Turn 若仍有非终态 Run，Application 必须先 Stop。
 
@@ -237,7 +237,7 @@ InputIDs 为空时 group 为 `started` 加 `created`。`created` 与 `input_acce
 
 **TRN-STR-3** 派生 PlanDigest、StartOperationDigest、RunID 与 group identity，再经 `Writer.Commit` 写入一组。相同 identity 为 applied / already-applied；Writer 串行执行全部写入，不存在 head conflict。
 
-**TRN-STR-4** append 成功后 Start 返回已提交状态的响应；驱动新 Run 是宿主的下一步（REF-DRV-1）。
+**TRN-STR-4** append 成功后 Start 返回已提交状态的响应；驱动新 Run 是宿主的下一步（HST-DRV-1）。
 
 **TRN-RTY-1** Retry 要求投影中该 Turn 为 `attempt_failed`。commit 为 `twilight/run/created{Attempt: n+1}` 加该 Turn 已 delivered 的全部 Input 的 `input_accepted`，顺序与 `TurnView.InputIDs` 相同（初始输入在前，中途 Deliver 的输入按 accepted 顺序在后）；payload 与首次 delivered 时相同，仅 RunID 与 Attempt 不同。Turn 为其他状态时 Retry 返回 conflict。
 
@@ -251,11 +251,11 @@ InputIDs 为空时 group 为 `started` 加 `created`。`created` 与 `input_acce
 
 **TRN-DLV-2** `Inputs` 作为一个批次以一次 `Runtime.Commit` 提交：命令为 `AcceptInput{Inputs}`（有序列表，RUN-MCH-4），`Attach` 为每个输入一条 `twilight/chatlog/input_delivered{InputID, TurnID}`。Run 接受全部输入与 chatlog 把全部输入挂到 Turn 在同一组可见；任一输入被拒则一条都不写。envelope 的 SchemaVersion 取自 turn surface 中该 attempt 的 `SchemaVersion`，`Base` 为零值（`AcceptInput` 不做 hard CAS，RUN-CMT-4）；Deliver 不读取 `twilight/run/machine` 投影。`AcceptInput` 在 Run 的任意非终态都被接受，Deliver 不关心 Run 当前处于哪一步。CommandID 由 RunID 与有序 InputID 列表派生（RUN-WIR-4），同一批次重放幂等；不同批次（含子集或另一顺序）是不同命令，其中已接受过的输入使该批次整体被 Decide 以 conflict 拒绝。
 
-**TRN-DLV-3** Deliver 不取消正在进行的模型调用或工具调用；要打断用 Stop。提交后 Deliver 返回；是否驱动由宿主决定（REF-DRV-1），已在驱动时运行中的 Loop 在下一次 Load 看到 `PendingInputs`。Deliver 与该 Run 的最后一步 `SubmitModelResult` 并发时由 Writer 串行定序：输入先提交，Run 回到 `Open` 继续；结果先提交，Run 已终结，Deliver 得到 `ErrRunTerminal` 并返回 `completed`，该输入未被 delivered。
+**TRN-DLV-3** Deliver 不取消正在进行的模型调用或工具调用；要打断用 Stop。提交后 Deliver 返回；是否驱动由宿主决定（HST-DRV-1），已在驱动时运行中的 Loop 在下一次 Load 看到 `PendingInputs`。Deliver 与该 Run 的最后一步 `SubmitModelResult` 并发时由 Writer 串行定序：输入先提交，Run 回到 `Open` 继续；结果先提交，Run 已终结，Deliver 得到 `ErrRunTerminal` 并返回 `completed`，该输入未被 delivered。
 
-**TRN-STA-1** Status 是纯读取，disposition 判定的单一来源：读投影设置 `Disposition` 与 `End`。Run 终态为 `ResumeFinished`，`End` 取 surface 中该 attempt 的 `AttemptView.End`；`NeedsRecovery` 为 true 为 `ResumeWaitingForRecovery`；仅有 WaitingCalls 为 `ResumeWaitingForResponse`。宿主驱动结束后调用 Status 组装结果（REF-DRV-1）；Start/Deliver/Retry/Stop/Settle 的响应用同一判定。
+**TRN-STA-1** Status 是纯读取，disposition 判定的单一来源：读投影设置 `Disposition` 与 `End`。Run 终态为 `ResumeFinished`，`End` 取 surface 中该 attempt 的 `AttemptView.End`；`NeedsRecovery` 为 true 为 `ResumeWaitingForRecovery`；仅有 WaitingCalls 为 `ResumeWaitingForResponse`。宿主驱动结束后调用 Status 组装结果（HST-DRV-1）；Start/Deliver/Retry/Stop/Settle 的响应用同一判定。
 
-**TRN-STA-2** EventSink 的 `text_delta` / `reasoning_delta` 为临时观察。Waiting 由 Application 提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 后再次驱动（REF-DRV-1）。
+**TRN-STA-2** EventSink 的 `text_delta` / `reasoning_delta` 为临时观察。Waiting 由 Application 提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 后再次驱动（HST-DRV-1）。
 
 **TRN-STP-1** Stop 要求 Turn 为 `active`。Coordinator 提交 `CancelRun{Reason:ReasonCancelled}`，并在 `CommitRequest.Attach` 中附加 `twilight/turn/failed{Settlement:stopped, FailureClass:"cancelled"}`；两者在同一 commit 可见。envelope 的 SchemaVersion 与 Deliver 同样取自 `AttemptView`，`Base` 为零值。结算 Turn 是 Turn 层的决定，由发起 Stop 的 Coordinator 声明，Run 事实与 companion 不推断它。Application 直接提交的 `CancelRun` 不附加结算事件，Turn 进入 `attempt_failed`。Stop 时仍在 `PendingInputs` 中、尚未被 Prepare 消费的输入已经 delivered 到该 Turn：随后 Retry 会把它们与其他已 delivered 输入一起重放给新 attempt；Settle 则让它们随该 Turn 一起结束，不再进入任何模型请求。
 
@@ -325,7 +325,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 | Stop 的 Commit 返回非 sentinel 错误 | 以同一 Cancel CommandID 重放 |
 | Deliver 的 Commit 返回非 sentinel 错误 | 以同一批次 CommandID 重放整批，得到 already-applied（TRN-DLV-2） |
 | Start 或 Retry 的 Commit 返回非 sentinel 错误 | 以同一 CommitID 重放，得到 already-applied |
-| profile 缺失 | 宿主 Drive 返回 `profile_unavailable`（REF-BND-2）；Turn 状态不变 |
+| profile 缺失 | 宿主 Drive 返回 `profile_unavailable`（HST-PRF-2）；Turn 状态不变 |
 
 **TRN-REC-3** 没有跨存储的对账：Run 事实、companion 内容与 Turn 结算在同一组，`Append` 原子，要么全部可见要么全部不可见。claim 在 Append 之前建立，崩溃只可能留下孤儿 claim，由 artifact 的回收前核对释放（EXT-WRT-3、ART-RET-3）。
 

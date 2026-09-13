@@ -1,26 +1,27 @@
-package ref
+package host
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+
 	"github.com/felinics/twilight/agent/decision"
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
-	"strings"
 )
 
 // CompactorSystemPrompt asks the profile's model for the checkpoint summary.
-// Compaction is a host-level model call outside any Run: a crash while it
-// generates writes nothing (REF-CKP-1).
 const CompactorSystemPrompt = "You are the conversation compactor. Reply with a concise summary of the conversation transcript that preserves facts, decisions, names and open tasks. Reply with the summary text only."
 
 // RetainLast selects a pair-closed suffix of at most n entries: a retained
 // tool result pulls in the assistant that issued its call, so the retained
-// set stays valid provider input (REF-CKP-2).
+// set stays valid provider input (HST-CKP-2).
 func RetainLast(entries []chatlog.Entry, n int) []chatlog.EntryDigestPair {
 	if n <= 0 || len(entries) == 0 {
 		return nil
@@ -64,11 +65,11 @@ func RetainLast(entries []chatlog.Entry, n int) []chatlog.EntryDigestPair {
 // The base is read inside the commit's critical section, so the digest pins
 // exactly the context being replaced; a Turn must not be active. retain names
 // entries of the current context (RetainLast builds a pair-closed suffix).
-func (m *Memory) Checkpoint(ctx context.Context, sid session.SessionID, summaryText string, retain []chatlog.EntryDigestPair) (chatlog.CheckpointID, error) {
+func (h *Host) Checkpoint(ctx context.Context, sid session.SessionID, summaryText string, retain []chatlog.EntryDigestPair) (chatlog.CheckpointID, error) {
 	if strings.TrimSpace(summaryText) == "" {
-		return "", errors.New("ref: checkpoint requires a summary text")
+		return "", errors.New("host: checkpoint requires a summary text")
 	}
-	w, err := m.Writers.Writer(ctx, sid)
+	w, err := h.Writers.Writer(ctx, sid)
 	if err != nil {
 		return "", err
 	}
@@ -89,7 +90,7 @@ func (m *Memory) Checkpoint(ctx context.Context, sid session.SessionID, summaryT
 		}
 		entries := cstate.(chatlog.Context).Entries
 		if len(entries) == 0 {
-			return nil, errors.New("ref: checkpoint over an empty context")
+			return nil, errors.New("host: checkpoint over an empty context")
 		}
 		if err := checkRetainClosure(entries, retain); err != nil {
 			return nil, err
@@ -114,7 +115,7 @@ func (m *Memory) Checkpoint(ctx context.Context, sid session.SessionID, summaryT
 		if payload.Digest, err = chatlog.DigestCheckpoint(&payload); err != nil {
 			return nil, err
 		}
-		now := m.now().UnixMilli()
+		now := h.now().UnixMilli()
 		return &writer.SemanticGroup{CommitID: session.CommitID("checkpoint/" + string(checkpointID)), Events: []writer.TypedEvent{
 			{Type: chatlog.TypeSummary, RecordedAtUnixMilli: now, Value: chatlog.SummaryPayload{Summary: summary}},
 			{Type: chatlog.TypeCheckpointCreated, RecordedAtUnixMilli: now, Value: payload},
@@ -127,13 +128,13 @@ func (m *Memory) Checkpoint(ctx context.Context, sid session.SessionID, summaryT
 	case writer.CommitApplied, writer.CommitAlreadyApplied:
 		return checkpointID, nil
 	default:
-		return "", fmt.Errorf("ref: checkpoint: %s: %s", res.Outcome, res.Detail)
+		return "", fmt.Errorf("host: checkpoint: %s: %s", res.Outcome, res.Detail)
 	}
 }
 
 // checkRetainClosure requires retained tool results and their issuing
 // assistants to travel together, so the compacted context stays valid
-// provider input (REF-CKP-2). Subset and order are the fold's job.
+// provider input (HST-CKP-2). Subset and order are the fold's job.
 func checkRetainClosure(entries []chatlog.Entry, retain []chatlog.EntryDigestPair) error {
 	kept := make(map[chatlog.EntryDigestPair]bool, len(retain))
 	for _, p := range retain {
@@ -166,7 +167,7 @@ func checkRetainClosure(entries []chatlog.Entry, retain []chatlog.EntryDigestPai
 		switch e.Kind {
 		case chatlog.EntryToolResult:
 			if a := owner[e.ToolResult.CallID]; a != nil && !kept[a.Pair()] {
-				return fmt.Errorf("ref: retained tool_result %s without its assistant", e.ID)
+				return fmt.Errorf("host: retained tool_result %s without its assistant", e.ID)
 			}
 		case chatlog.EntryAssistant:
 			for _, part := range e.Assistant.Parts {
@@ -175,7 +176,7 @@ func checkRetainClosure(entries []chatlog.Entry, retain []chatlog.EntryDigestPai
 					continue
 				}
 				if r := results[call.CallID]; r != nil && !kept[r.Pair()] {
-					return fmt.Errorf("ref: retained assistant %s without the result of call %s", e.ID, call.CallID)
+					return fmt.Errorf("host: retained assistant %s without the result of call %s", e.ID, call.CallID)
 				}
 			}
 		}
@@ -185,13 +186,13 @@ func checkRetainClosure(entries []chatlog.Entry, retain []chatlog.EntryDigestPai
 
 // Compact summarizes the context with the profile's model and commits a
 // checkpoint retaining a pair-closed suffix; ok is false when the context is
-// already within the retain window (REF-CKP-1).
+// already within the retain window (HST-CKP-1).
 func (s *Session) Compact(ctx context.Context) (chatlog.CheckpointID, bool, error) {
 	retainN := s.opts.CompactRetainEntries
 	if retainN <= 0 {
 		retainN = defaultCompactRetain
 	}
-	state, _, err := s.m.Projection(ctx, s.sid, chatlog.ContextProjectionID, chatlog.ContextProjection.Version)
+	state, _, err := s.h.Projection(ctx, s.sid, chatlog.ContextProjectionID, chatlog.ContextProjection.Version)
 	if err != nil {
 		return "", false, err
 	}
@@ -204,7 +205,7 @@ func (s *Session) Compact(ctx context.Context) (chatlog.CheckpointID, bool, erro
 	if err != nil {
 		return "", false, err
 	}
-	id, err := s.m.Checkpoint(ctx, s.sid, summary, retain)
+	id, err := s.h.Checkpoint(ctx, s.sid, summary, retain)
 	if err != nil {
 		return "", false, err
 	}
@@ -213,29 +214,57 @@ func (s *Session) Compact(ctx context.Context) (chatlog.CheckpointID, bool, erro
 
 const defaultCompactRetain = 4
 
-// summarize is the host-level model call: the profile's model reads a plain
-// transcript and returns the summary text.
+// summarize is the compactor's model call. It is an effect like any other and
+// goes through the Executor port (HST-CKP-1): the request is frozen and
+// dispatched as a model Assignment outside any Run, so the authority holds no
+// model client and a remote executor serves it the same way. A crash while
+// it generates writes nothing.
 func (s *Session) summarize(ctx context.Context, entries []chatlog.Entry) (string, error) {
-	agent, err := s.m.Agents.Agent(s.driver.Profile)
+	profile, err := s.h.Profiles.Resolve(s.opts.Profile)
 	if err != nil {
 		return "", err
 	}
-	profile := agent.Profile()
-	invoker, err := agent.ResolveModel(profile.Model)
-	if err != nil {
-		return "", err
-	}
-	res, err := invoker.Generate(ctx, sdk.Request{Model: string(profile.Model), Messages: []sdk.Message{
+	frozen, err := run.FreezeModelRequest(sdk.Request{Model: string(profile.Model), Messages: []sdk.Message{
 		sdk.SystemMessage(CompactorSystemPrompt),
 		sdk.UserMessage(renderTranscript(entries)),
 	}})
 	if err != nil {
 		return "", err
 	}
-	if strings.TrimSpace(res.Text) == "" {
-		return "", errors.New("ref: compactor returned an empty summary")
+	digest, err := run.ProtocolV1().DigestRequest(frozen)
+	if err != nil {
+		return "", err
 	}
-	return res.Text, nil
+	raw, err := run.EncodeFrozenRequest(&frozen, digest)
+	if err != nil {
+		return "", err
+	}
+	if err := s.h.frozen.Put(ctx, digest, raw); err != nil {
+		return "", err
+	}
+	a := loop.Assignment{Session: s.sid, RunID: run.RunID("compact-" + randomHex(8)), StepID: "summary",
+		Claim: run.ExecutionClaim(randomHex(16)), Schema: run.SchemaVersion1, Kind: loop.AssignmentModel,
+		Model: &loop.ModelAssignment{Model: profile.Model, RequestDigest: digest}}
+	outcomes := make(chan loop.Outcome, 1)
+	if err := s.h.Executor.Dispatch(ctx, a, func(out loop.Outcome) { outcomes <- out }); err != nil {
+		return "", err
+	}
+	var out loop.Outcome
+	select {
+	case out = <-outcomes:
+	case <-ctx.Done():
+		_ = s.h.Executor.Cancel(context.WithoutCancel(ctx), a.RunID)
+		return "", ctx.Err()
+	}
+	switch {
+	case out.Err != nil:
+		return "", out.Err
+	case out.Cancelled:
+		return "", errors.New("host: compactor call was cancelled")
+	case out.Model == nil || strings.TrimSpace(out.Model.Text) == "":
+		return "", errors.New("host: compactor returned an empty summary")
+	}
+	return out.Model.Text, nil
 }
 
 // renderTranscript flattens entries into the compactor's input.
@@ -274,7 +303,7 @@ func (s *Session) maybeCompact(ctx context.Context) {
 	if s.opts.CompactAfterEntries <= 0 {
 		return
 	}
-	state, _, err := s.m.Projection(ctx, s.sid, chatlog.ContextProjectionID, chatlog.ContextProjection.Version)
+	state, _, err := s.h.Projection(ctx, s.sid, chatlog.ContextProjectionID, chatlog.ContextProjection.Version)
 	if err == nil && len(state.(chatlog.Context).Entries) <= s.opts.CompactAfterEntries {
 		return
 	}

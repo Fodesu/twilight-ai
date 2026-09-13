@@ -1,13 +1,12 @@
-package ref_test
+package host_test
 
 import (
 	"context"
 	"fmt"
-	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/felinics/twilight/agent/ref"
+	"github.com/felinics/twilight/agent/host"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -24,13 +23,13 @@ import (
 // while the call is Executing. Nothing is written on the way down.
 //
 // Process 2 reopens the same Session store with Takeover — the crashed owner
-// never closed — and takes the Session over (Epoch 2). Its takeover
-// disposition settles the
-// abandoned call as Unknown in the same group as its chatlog tool_result, the
-// Run stays Active, and Resume drives the Loop: the planner reads the
-// conversation back from the chatlog projection and the Turn completes. The
-// dead process's worker finally returns and its settlement is fenced by the
-// kernel: nothing of Epoch 1 reaches the stream after the takeover.
+// never closed — and takes the Session over (Epoch 2). Its Executor is fresh,
+// so no attempt reattaches: the takeover disposition settles the abandoned
+// call as Unknown in the same group as its chatlog tool_result, the Run stays
+// Active, and Drive runs the Loop: the planner reads the conversation back
+// from the chatlog projection and the Turn completes. The dead process's
+// worker finally returns and its settlement is fenced by the kernel: nothing
+// of Epoch 1 reaches the stream after the takeover.
 func Example_recoverableTurn() {
 	ctx := context.Background()
 	const sid session.SessionID = "session-1"
@@ -40,19 +39,18 @@ func Example_recoverableTurn() {
 	store := session.NewMemoryStore()
 	frozen := run.NewMemoryFrozenValues()
 	tool := &lookupTool{block: make(chan struct{})}
+	profile := mustProfile("m-1", []loop.ExecutableTool{tool})
 
 	// ---- process 1 ----------------------------------------------------------
-	p1, err := ref.New(ref.Options{Store: store, Frozen: frozen, Now: clock.Now})
-	if err != nil {
-		panic(err)
-	}
+	p1 := newHost(host.Ports{Store: store, Frozen: frozen, Clock: clock.Now},
+		map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedModel{}}, tool)
 	if err := p1.CreateSession(ctx, sid); err != nil {
 		panic(err)
 	}
 	if _, err := p1.Open(ctx, sid); err != nil {
 		panic(err)
 	}
-	profile1, err := p1.Agents.Register("weather-agent", newAgent(tool))
+	profile1, err := p1.Profiles.Register("weather-agent", profile)
 	if err != nil {
 		panic(err)
 	}
@@ -66,7 +64,7 @@ func Example_recoverableTurn() {
 		_, err := p1.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
 			Profile: profile1, Companion: turn.CompanionV1Version})
 		if err == nil {
-			// The Coordinator only commits; the host drives (REF-DRV-1).
+			// The Coordinator only commits; the host drives (HST-DRV-1).
 			_, err = p1.Drive(ctx, ref1)
 		}
 		startDone <- err
@@ -75,13 +73,11 @@ func Example_recoverableTurn() {
 	fmt.Println("process 1: tool call is Executing; process crashes")
 
 	// ---- process 2 ----------------------------------------------------------
-	p2, err := ref.New(ref.Options{Store: store, Frozen: frozen, Ownership: session.OpenOptions{Takeover: true}, Now: clock.Now})
-	if err != nil {
-		panic(err)
-	}
-	// The agent is re-registered from the same public configuration, so the
-	// profile ref the Session recorded still resolves.
-	if _, err := p2.Agents.Register("weather-agent", newAgent(tool)); err != nil {
+	p2 := newHost(host.Ports{Store: store, Frozen: frozen, Ownership: session.OpenOptions{Takeover: true}, Clock: clock.Now},
+		map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedModel{}}, tool)
+	// The profile is re-registered from the same public configuration, so the
+	// ref the Session recorded still resolves.
+	if _, err := p2.Profiles.Register("weather-agent", profile); err != nil {
 		panic(err)
 	}
 	recovered, err := p2.Open(ctx, sid)
@@ -124,23 +120,6 @@ func Example_recoverableTurn() {
 	// stream unchanged by the fenced worker: true
 }
 
-func errorsIsOwnershipLost(err error) string {
-	if err == nil {
-		return "no error"
-	}
-	for e := err; e != nil; {
-		if e == run.ErrOwnershipLost {
-			return "ownership lost"
-		}
-		u, ok := e.(interface{ Unwrap() error })
-		if !ok {
-			break
-		}
-		e = u.Unwrap()
-	}
-	return err.Error()
-}
-
 func toolResultStatus(s *chatlog.Surface) string {
 	status := "none"
 	s.ToolResults.Range(func(_ chatlog.ToolResultID, r chatlog.ToolResult) bool {
@@ -150,13 +129,13 @@ func toolResultStatus(s *chatlog.Surface) string {
 	return status
 }
 
-func waitForExecutingCall(ctx context.Context, m *ref.Memory, sid session.SessionID, turnID turn.TurnID) run.RunID {
+func waitForExecutingCall(ctx context.Context, h *host.Host, sid session.SessionID, turnID turn.TurnID) run.RunID {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		surface, err := m.TurnSurface(ctx, sid)
+		surface, err := h.TurnSurface(ctx, sid)
 		if err == nil {
 			if v, ok := surface.Turns[turnID]; ok && v.ActiveRun != "" {
-				snap, err := m.Runtime.Load(ctx, sid, v.ActiveRun)
+				snap, err := h.Runtime.Load(ctx, sid, v.ActiveRun)
 				if err == nil && len(run.ExecutingCalls(snap.State)) == 1 {
 					return v.ActiveRun
 				}
@@ -167,25 +146,6 @@ func waitForExecutingCall(ctx context.Context, m *ref.Memory, sid session.Sessio
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-}
-
-func newAgent(tool *lookupTool) ref.Agent {
-	agent, err := ref.NewAgent("m-1", &scriptedModel{}, ref.WithTool(tool))
-	if err != nil {
-		panic(err)
-	}
-	return agent
-}
-
-type fakeClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
 }
 
 // scriptedModel asks for the tool until a tool result is in the conversation,

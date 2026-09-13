@@ -59,7 +59,7 @@ type TurnResponse struct {
 }
 
 // Service is the Turn API (TRN 3): protocol commits plus the Status read.
-// Driving a Run belongs to the host (REF-DRV): every method returns as soon
+// Driving a Run belongs to the host (HST-DRV): every method returns as soon
 // as its commit landed, with the response reflecting the committed state.
 type Service interface {
 	Start(context.Context, StartRequest) (TurnResponse, error)

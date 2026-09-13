@@ -1,10 +1,12 @@
-package ref_test
+package host_test
 
 import (
 	"context"
 	"testing"
 
-	"github.com/felinics/twilight/agent/ref"
+	"github.com/felinics/twilight/agent/host"
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/filestore"
 	"github.com/felinics/twilight/sdk"
@@ -25,13 +27,15 @@ func (m *gateModel) Generate(_ context.Context, req sdk.Request) (sdk.ModelResul
 
 // The file-backed FrozenValueStore closes the model-interruption recovery
 // path: process 1 dies while a ModelStep is Executing, and process 2 — whose
-// FrozenValues instance is new, so the body can only come from disk — takes
-// over (RecoverModelExecution returns the step to Prepared) and Resume
-// replays the same frozen request to its model (RUN-WIR-4, RUN-CMT-7).
+// FrozenValues instance and Executor are new, so the body can only come from
+// disk and no attempt reattaches — takes over (RecoverModelExecution returns
+// the step to Prepared) and Resume replays the same frozen request to its
+// model (RUN-WIR-4, RUN-CMT-7).
 func TestFrozenRequestReplayedAcrossRestart(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	const sid session.SessionID = "s-frozen"
+	profile := mustProfile("m-1", nil, host.WithSystemPrompt("be brief"))
 
 	// ---- process 1: the model call hangs; the process dies -------------------
 	store1, err := filestore.New(root)
@@ -42,20 +46,13 @@ func TestFrozenRequestReplayedAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p1, err := ref.New(ref.Options{Store: store1, Frozen: frozen1})
-	if err != nil {
-		t.Fatal(err)
-	}
 	gate := &gateModel{started: make(chan sdk.Request, 1), release: make(chan struct{})}
-	agent1, err := ref.NewAgent("m-1", gate, ref.WithSystemPrompt("be brief"))
+	p1 := newHost(host.Ports{Store: store1, Frozen: frozen1}, map[run.ModelRef]loop.ModelInvoker{"m-1": gate})
+	profileRef, err := p1.Profiles.Register("a1", profile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile, err := p1.Agents.Register("a1", agent1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s1, err := p1.OpenSession(ctx, sid, ref.SessionOptions{Profile: profile})
+	s1, err := p1.OpenSession(ctx, sid, host.SessionOptions{Profile: profileRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,19 +77,12 @@ func TestFrozenRequestReplayedAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	p2, err := ref.New(ref.Options{Store: store2, Frozen: frozen2, Ownership: session.OpenOptions{Takeover: true}})
-	if err != nil {
-		t.Fatal(err)
-	}
 	replay := &scriptedRequests{}
-	agent2, err := ref.NewAgent("m-1", replay, ref.WithSystemPrompt("be brief"))
-	if err != nil {
+	p2 := newHost(host.Ports{Store: store2, Frozen: frozen2, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": replay})
+	if _, err := p2.Profiles.Register("a1", profile); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p2.Agents.Register("a1", agent2); err != nil {
-		t.Fatal(err)
-	}
-	s2, err := p2.OpenSession(ctx, sid, ref.SessionOptions{Profile: profile})
+	s2, err := p2.OpenSession(ctx, sid, host.SessionOptions{Profile: profileRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,10 +99,11 @@ func TestFrozenRequestReplayedAcrossRestart(t *testing.T) {
 
 	// The replayed request is the frozen one: same conversation, read from disk
 	// by a store instance that never saw the Put.
-	if len(replay.seen) != 1 {
-		t.Fatalf("replay model saw %d requests, want 1", len(replay.seen))
+	seen := replay.requests()
+	if len(seen) != 1 {
+		t.Fatalf("replay model saw %d requests, want 1", len(seen))
 	}
-	if got, want := len(replay.seen[0].Messages), len(sent.Messages); got != want {
+	if got, want := len(seen[0].Messages), len(sent.Messages); got != want {
 		t.Fatalf("replayed request has %d messages, frozen one had %d", got, want)
 	}
 

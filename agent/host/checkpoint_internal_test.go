@@ -1,4 +1,4 @@
-package ref
+package host
 
 import (
 	"testing"
@@ -22,7 +22,7 @@ func pairEntries() []chatlog.Entry {
 }
 
 // RetainLast expands a window that cuts a tool pair back to the issuing
-// assistant, so the retained suffix stays valid provider input (REF-CKP-2).
+// assistant, so the retained suffix stays valid provider input (HST-CKP-2).
 func TestRetainLastPairClosure(t *testing.T) {
 	entries := pairEntries()
 	cases := []struct {
@@ -51,7 +51,7 @@ func TestRetainLastPairClosure(t *testing.T) {
 }
 
 // checkRetainClosure rejects a retained set that splits a tool pair in either
-// direction and accepts closed sets (REF-CKP-2).
+// direction and accepts closed sets (HST-CKP-2).
 func TestCheckRetainClosure(t *testing.T) {
 	entries := pairEntries()
 	pair := func(i int) chatlog.EntryDigestPair { return entries[i].Pair() }

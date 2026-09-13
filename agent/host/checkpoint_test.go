@@ -1,14 +1,15 @@
-package ref_test
+package host_test
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"testing"
 
-	"github.com/felinics/twilight/agent/ref"
+	"github.com/felinics/twilight/agent/host"
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/turn"
@@ -16,8 +17,9 @@ import (
 )
 
 // compactAwareModel answers turns with numbered replies and compactor
-// requests (ref.CompactorSystemPrompt) with a fixed summary, recording every
-// request.
+// requests (host.CompactorSystemPrompt) with a fixed summary, recording every
+// request. The compactor request reaches it through the Executor like any
+// other model effect.
 type compactAwareModel struct {
 	mu      sync.Mutex
 	seen    []sdk.Request
@@ -28,7 +30,7 @@ func (m *compactAwareModel) Generate(_ context.Context, req sdk.Request) (sdk.Mo
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.seen = append(m.seen, req)
-	if len(req.Messages) > 0 && req.Messages[0].Role == sdk.MessageRoleSystem && messageText(req.Messages[0]) == ref.CompactorSystemPrompt {
+	if len(req.Messages) > 0 && req.Messages[0].Role == sdk.MessageRoleSystem && messageText(req.Messages[0]) == host.CompactorSystemPrompt {
 		return sdk.ModelResult{Text: "summary-of-the-past", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}, nil
 	}
 	m.replies++
@@ -41,16 +43,6 @@ func (m *compactAwareModel) requests() []sdk.Request {
 	return append([]sdk.Request(nil), m.seen...)
 }
 
-func messageText(m sdk.Message) string {
-	var b strings.Builder
-	for _, part := range m.Content {
-		if t, ok := part.(sdk.TextPart); ok {
-			b.WriteString(t.Text)
-		}
-	}
-	return b.String()
-}
-
 func messageTexts(req sdk.Request) []string {
 	out := make([]string, 0, len(req.Messages))
 	for _, msg := range req.Messages {
@@ -59,36 +51,29 @@ func messageTexts(req sdk.Request) []string {
 	return out
 }
 
-func openCompactSession(t *testing.T, store session.Store, model *compactAwareModel, opts ref.SessionOptions) (*ref.Memory, *ref.Session) {
+func openCompactSession(t *testing.T, store session.Store, model *compactAwareModel, opts host.SessionOptions) (*host.Host, *host.Session) {
 	t.Helper()
-	m, err := ref.New(ref.Options{Store: store, Ownership: session.OpenOptions{Takeover: true}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	agent, err := ref.NewAgent("m-1", model)
-	if err != nil {
-		t.Fatal(err)
-	}
-	profile, err := m.Agents.Register("b1", agent)
+	h := newHost(host.Ports{Store: store, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+	profile, err := h.Profiles.Register("b1", mustProfile("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
 	opts.Profile = profile
-	s, err := m.OpenSession(context.Background(), "s-ckpt", opts)
+	s, err := h.OpenSession(context.Background(), "s-ckpt", opts)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return m, s
+	return h, s
 }
 
 // An explicit Compact shrinks the next model request to the summary plus the
 // retained suffix, and a restarted process assembles exactly the same context
-// from the checkpointed log (CHT-EVT-3, REF-CKP-1).
+// from the checkpointed log (CHT-EVT-3, HST-CKP-1).
 func TestCompactShrinksContextAndReplaysAcrossRestart(t *testing.T) {
 	ctx := context.Background()
 	store := session.NewMemoryStore()
 	model := &compactAwareModel{}
-	m, s := openCompactSession(t, store, model, ref.SessionOptions{CompactRetainEntries: 1})
+	h, s := openCompactSession(t, store, model, host.SessionOptions{CompactRetainEntries: 1})
 
 	for _, text := range []string{"one", "two"} {
 		if _, err := s.Send(ctx, text); err != nil {
@@ -105,7 +90,7 @@ func TestCompactShrinksContextAndReplaysAcrossRestart(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("compact = %s %v %v", id, ok, err)
 	}
-	chat, err := m.ChatlogSurface(ctx, "s-ckpt")
+	chat, err := h.ChatlogSurface(ctx, "s-ckpt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,14 +108,14 @@ func TestCompactShrinksContextAndReplaysAcrossRestart(t *testing.T) {
 		t.Fatalf("post-compact request = %v, want %v", got, want)
 	}
 
-	// "Restart": a second assembly over the same store must assemble the next
+	// "Restart": a second Host over the same store must assemble the next
 	// request as exactly the settled continuation of the first process's view.
 	if err := s.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
 	model2 := &compactAwareModel{}
 	model2.replies = 3 // keep reply numbering aligned for readability only
-	_, s2 := openCompactSession(t, store, model2, ref.SessionOptions{CompactRetainEntries: 1})
+	_, s2 := openCompactSession(t, store, model2, host.SessionOptions{CompactRetainEntries: 1})
 	if _, err := s2.Send(ctx, "four"); err != nil {
 		t.Fatal(err)
 	}
@@ -143,12 +128,12 @@ func TestCompactShrinksContextAndReplaysAcrossRestart(t *testing.T) {
 }
 
 // The automatic policy compacts after settlement once the context passes the
-// threshold; failures reach CompactWarn only (REF-CKP-1).
+// threshold; failures reach CompactWarn only (HST-CKP-1).
 func TestAutoCompactAfterSettlement(t *testing.T) {
 	ctx := context.Background()
 	var warned []error
 	model := &compactAwareModel{}
-	m, s := openCompactSession(t, store4(t), model, ref.SessionOptions{
+	h, s := openCompactSession(t, session.NewMemoryStore(), model, host.SessionOptions{
 		CompactAfterEntries: 3, CompactRetainEntries: 1,
 		CompactWarn: func(err error) { warned = append(warned, err) },
 	})
@@ -161,14 +146,14 @@ func TestAutoCompactAfterSettlement(t *testing.T) {
 	if len(warned) != 0 {
 		t.Fatalf("warnings = %v", warned)
 	}
-	chat, err := m.ChatlogSurface(ctx, "s-ckpt")
+	chat, err := h.ChatlogSurface(ctx, "s-ckpt")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if chat.Checkpoints.Len() != 1 {
 		t.Fatalf("checkpoints = %+v", chat.Checkpoints.Map())
 	}
-	state, _, err := m.Projection(ctx, "s-ckpt", chatlog.ContextProjectionID, chatlog.ContextProjection.Version)
+	state, _, err := h.Projection(ctx, "s-ckpt", chatlog.ContextProjectionID, chatlog.ContextProjection.Version)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,16 +163,12 @@ func TestAutoCompactAfterSettlement(t *testing.T) {
 }
 
 // Compact refuses while a Turn is active: compaction is a between-turns
-// policy (REF-CKP-1).
+// policy (HST-CKP-1).
 func TestCompactRefusesWhileTurnActive(t *testing.T) {
 	ctx := context.Background()
 	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
-	m, profile, sid := setup(t, model, tool)
-	s, err := m.OpenSession(ctx, sid, ref.SessionOptions{Profile: profile, CompactRetainEntries: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
+	_, _, _, s := setup(t, model, tool, host.SessionOptions{CompactRetainEntries: 1})
 	done := make(chan error, 1)
 	go func() {
 		_, err := s.Send(ctx, "one")
@@ -201,11 +182,6 @@ func TestCompactRefusesWhileTurnActive(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
-}
-
-func store4(t *testing.T) session.Store {
-	t.Helper()
-	return session.NewMemoryStore()
 }
 
 func equalStrings(a, b []string) bool {

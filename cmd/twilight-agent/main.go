@@ -1,7 +1,8 @@
-// Command twilight-agent is a line-oriented CLI agent over the agent core:
-// the JSONL file store carries the Session and ref.Session is the host
-// object. Each stdin line goes through Session.Send — a line typed while a
-// Turn runs steers it (already_driving), a line the running Turn cannot
+// Command twilight-agent is a line-oriented CLI agent over the agent core: a
+// colocated Host — the JSONL file store carries the Session, a LocalExecutor
+// runs the model and the built-in tool in this process — and host.Session is
+// the facade. Each stdin line goes through Session.Send — a line typed while
+// a Turn runs steers it (already_driving), a line the running Turn cannot
 // accept queues and opens the next Turn after settlement, and a restart over
 // the same root takes the Session over and resumes.
 package main
@@ -17,11 +18,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/felinics/twilight/agent/ref"
+	"github.com/felinics/twilight/agent/host"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/filestore"
+	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/provider/openai/completions"
 	"github.com/felinics/twilight/sdk"
 )
@@ -48,7 +50,7 @@ func main() {
 
 func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID, compat, system string, mock bool, compactAfter int) error {
 	ctx := context.Background()
-	agent, err := buildAgent(mock, provider, baseURL, apiKey, modelID, compat, system)
+	catalog, profile, err := buildAgent(mock, provider, baseURL, apiKey, modelID, compat, system)
 	if err != nil {
 		return err
 	}
@@ -63,15 +65,23 @@ func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID
 	if err != nil {
 		return err
 	}
-	m, err := ref.New(ref.Options{Store: store, Frozen: frozen, Ownership: session.OpenOptions{Takeover: true}, Sink: printSink{}})
+	// The effect layer: the model and the tool run in this process behind the
+	// Executor port; the Host itself holds neither.
+	executor, err := host.NewLocalExecutor(catalog, frozen, nil, false)
 	if err != nil {
 		return err
 	}
-	profile, err := m.Agents.Register("cli", agent)
+	h, err := host.New(host.Ports{Store: store, Frozen: frozen, Executor: executor,
+		Observers: []loop.EventSink{printSink{}}, Ownership: session.OpenOptions{Takeover: true},
+		Warn: func(err error) { fmt.Fprintln(os.Stderr, "host:", err) }})
 	if err != nil {
 		return err
 	}
-	s, err := m.OpenSession(ctx, sid, ref.SessionOptions{Profile: profile, CompactAfterEntries: compactAfter,
+	profileRef, err := h.Profiles.Register("cli", profile)
+	if err != nil {
+		return err
+	}
+	s, err := h.OpenSession(ctx, sid, host.SessionOptions{Profile: profileRef, CompactAfterEntries: compactAfter,
 		CompactWarn: func(err error) { fmt.Fprintln(os.Stderr, "compact:", err) }})
 	if err != nil {
 		return err
@@ -151,9 +161,9 @@ func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID
 	return shutdown(ctx, s, cancel, &wg)
 }
 
-func report(results []ref.Result, err error) {
+func report(results []host.Result, err error) {
 	for _, r := range results {
-		if r.Disposition == ref.ResumeAlreadyDriving {
+		if r.Disposition == host.ResumeAlreadyDriving {
 			fmt.Println("steer: input delivered into the running turn")
 			continue
 		}
@@ -169,7 +179,7 @@ func report(results []ref.Result, err error) {
 
 // shutdown waits for running turns, then cancels the stragglers: a cancelled
 // Turn stays Active in the log and the next start resumes it.
-func shutdown(ctx context.Context, s *ref.Session, cancel func(), wg *sync.WaitGroup) error {
+func shutdown(ctx context.Context, s *host.Session, cancel func(), wg *sync.WaitGroup) error {
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
 	select {
@@ -201,15 +211,24 @@ func (printSink) Emit(_ context.Context, e loop.Event) error {
 
 // --- agent -------------------------------------------------------------------
 
-func buildAgent(mock bool, provider, baseURL, apiKey, modelID, compat, system string) (ref.Agent, error) {
+// buildAgent returns the two halves of the agent: the effect catalog the
+// LocalExecutor serves (model client, tool implementation) and the Profile
+// the authority records (model ref, frozen tool definition, system prompt).
+func buildAgent(mock bool, provider, baseURL, apiKey, modelID, compat, system string) (*host.Catalog, turn.Profile, error) {
 	if mock {
-		return ref.NewAgent("mock", mockModel{}, ref.WithTool(nowTool{}), ref.WithSystemPrompt(system))
+		tool := nowTool{}
+		catalog, err := host.NewCatalog(map[run.ModelRef]loop.ModelInvoker{"mock": mockModel{}}, tool)
+		if err != nil {
+			return nil, turn.Profile{}, err
+		}
+		profile, err := host.NewProfile("mock", []loop.ExecutableTool{tool}, host.WithSystemPrompt(system))
+		return catalog, profile, err
 	}
 	if provider != "openai-completions" {
-		return nil, fmt.Errorf("unsupported provider %q (only openai-completions)", provider)
+		return nil, turn.Profile{}, fmt.Errorf("unsupported provider %q (only openai-completions)", provider)
 	}
 	if modelID == "" {
-		return nil, errors.New("-model is required (or use -mock)")
+		return nil, turn.Profile{}, errors.New("-model is required (or use -mock)")
 	}
 	if apiKey == "" {
 		apiKey = os.Getenv("TWILIGHT_API_KEY")
@@ -229,23 +248,28 @@ func buildAgent(mock bool, provider, baseURL, apiKey, modelID, compat, system st
 	case "deepseek":
 		opts = append(opts, completions.WithDeepSeekChatCompletionsCompat())
 	default:
-		return nil, fmt.Errorf("unsupported compat %q (only deepseek)", compat)
+		return nil, turn.Profile{}, fmt.Errorf("unsupported compat %q (only deepseek)", compat)
 	}
 	// *sdk.Model is itself the ModelInvoker: it exposes
 	// Generate(context.Context, sdk.Request) (sdk.ModelResult, error), so a
 	// hand-written wrapper would only be ceremony between two identical shapes.
 	invoker := &sdk.Model{ID: modelID, Provider: completions.New(opts...), Type: sdk.ModelTypeChat}
-	return ref.NewAgent(run.ModelRef(modelID), invoker, ref.WithSystemPrompt(system))
+	catalog, err := host.NewCatalog(map[run.ModelRef]loop.ModelInvoker{run.ModelRef(modelID): invoker})
+	if err != nil {
+		return nil, turn.Profile{}, err
+	}
+	profile, err := host.NewProfile(run.ModelRef(modelID), nil, host.WithSystemPrompt(system))
+	return catalog, profile, err
 }
 
 // mockModel answers once a tool result is in the conversation and reports how
 // many messages it saw, so a restart over the same session shows the context
 // growing; otherwise it asks for the built-in tool first. A compactor request
-// (ref.CompactorSystemPrompt) gets a fixed summary for deterministic smoke.
+// (host.CompactorSystemPrompt) gets a fixed summary for deterministic smoke.
 type mockModel struct{}
 
 func (mockModel) Generate(_ context.Context, req sdk.Request) (sdk.ModelResult, error) {
-	if len(req.Messages) > 0 && req.Messages[0].Role == sdk.MessageRoleSystem && messageText(req.Messages[0]) == ref.CompactorSystemPrompt {
+	if len(req.Messages) > 0 && req.Messages[0].Role == sdk.MessageRoleSystem && messageText(req.Messages[0]) == host.CompactorSystemPrompt {
 		return sdk.ModelResult{Text: "mock summary of the compacted conversation",
 			FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}, nil
 	}

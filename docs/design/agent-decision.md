@@ -64,7 +64,7 @@ func (Catalogs) Resolve(turn.Profile, ProjectionSource) (loop.RequestPlanner, lo
 
 **DEC-CAT-1** 目录在装配期构建、运行期只读：空 ref、nil factory、重复 ref 被拒绝。目录是 authority 侧的组件，不需要效果实现即可构建。
 
-**DEC-CAT-2** `Catalogs.Resolve(profile, source)` 按 `profile.Planner` 与 `profile.Policy` 解析；任一未注册返回 `ErrUnknownPlanner`/`ErrUnknownPolicy`，该 Profile 不得被注册或驱动（REF-BND-2 的 `profile_unavailable`）。接管进程以同一 Profile 解析得到同一决策函数。
+**DEC-CAT-2** `Catalogs.Resolve(profile, source)` 按 `profile.Planner` 与 `profile.Policy` 解析；任一未注册返回 `ErrUnknownPlanner`/`ErrUnknownPolicy`，该 Profile 不得被注册或驱动（HST-PRF-2 的 `profile_unavailable`）。接管进程以同一 Profile 解析得到同一决策函数。
 
 ## 4. 用户正文
 
