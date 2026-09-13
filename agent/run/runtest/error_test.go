@@ -14,7 +14,9 @@ func TestCatalogResolveErrorLeavesRunActive(t *testing.T) {
 	f.ModelResolveError(missing)
 	f.RunError(missing)
 	f.RequireActive()
-	f.RequirePrepared()
+	// The unstartable attempt is withdrawn: the Run is Open for a fresh plan
+	// once a model is available (RUN-LOP-3).
+	f.RequireOpen()
 }
 
 func TestContextCancelBeforeRunLeavesRunActive(t *testing.T) {

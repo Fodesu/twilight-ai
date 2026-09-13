@@ -249,8 +249,8 @@ func RecoveryTargets(state *MachineState) []RecoveryTarget {
 }
 
 // RecoveryCommand is the disposition of one target under the takeover claim:
-// an Executing model step recovers to Prepared; an Executing tool call
-// settles as Unknown.
+// an Executing model step is withdrawn to Open (the next Prepare plans again);
+// an Executing tool call settles as Unknown.
 func RecoveryCommand(target RecoveryTarget, claim ExecutionClaim) Recovery {
 	if target.Call == nil {
 		return Recovery{

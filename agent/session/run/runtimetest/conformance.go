@@ -478,7 +478,11 @@ func testTakeover(t *testing.T, factory Factory) {
 	h.startRun("t2", "r2", input("in-b"))
 	// r1: executing model; r2: one executing and one pending tool call.
 	h.executingModel("r1", false)
-	requestDigest := h.load("r1").State.Current.(run.ModelStep).RequestDigest
+	before := h.load("r1")
+	// An input delivered while the model runs waits in PendingInputs; the
+	// recovery-time plan must include it (TRN-DUR-1).
+	h.submitInputs(input("in-late"))
+	h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-late"), 0, run.NextStep(input("in-late")))
 	toolStep, ids := h.openToolStep("r2", 2)
 	h.startTool("r2", toolStep, ids[0])
 
@@ -487,13 +491,27 @@ func testTakeover(t *testing.T, factory Factory) {
 	if err != nil || n != 2 {
 		t.Fatalf("RecoverInterrupted = %d %v, want 2", n, err)
 	}
+	// The unreachable model attempt is withdrawn: the Run is Open again with
+	// the late input still pending and the step no longer counted, so the
+	// next Prepare is a fresh decision, not a replay (RUN-CMT-7, TRN-DUR-1).
 	r1 := h.load("r1")
-	ms := r1.State.Current.(run.ModelStep)
-	if r1.State.Status != run.RunActive || ms.Status != run.ModelPrepared || ms.RequestDigest != requestDigest {
-		t.Fatalf("model after takeover = %+v", r1.State)
+	if _, open := r1.State.Current.(run.Open); !open || r1.State.Status != run.RunActive || r1.State.ModelSteps != 0 ||
+		len(r1.State.PendingInputs) != 1 || r1.State.PendingInputs[0].ID != "in-late" {
+		t.Fatalf("model run after takeover = %+v, want Open with the late input pending", r1.State)
 	}
-	if _, err := h.rt.FrozenRequest(h.ctx, requestDigest); err != nil {
-		t.Fatalf("frozen request after takeover: %v", err)
+	// The next Prepare is a new decision: a new StepID (its identity derives
+	// from the Run position, which the recovery moved) that consumes the late
+	// input. What the request contains is the Planner's business; the harness
+	// plans a fixed request, so only the identities and the input flow are
+	// asserted here.
+	aborted := before.State.Current.(run.ModelStep).RefValue.ID
+	replanned := h.prepare("r1", false)
+	after := h.load("r1")
+	if replanned == aborted || after.State.Current.(run.ModelStep).RefValue.ID != replanned {
+		t.Fatalf("replan reused the aborted step %s", aborted)
+	}
+	if len(after.State.PendingInputs) != 0 || after.State.ModelSteps != 1 {
+		t.Fatalf("replan left pending=%d steps=%d, want the late input consumed and one counted step", len(after.State.PendingInputs), after.State.ModelSteps)
 	}
 	r2 := h.load("r2")
 	ts := r2.State.Current.(run.ToolStep)

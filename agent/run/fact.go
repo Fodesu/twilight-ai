@@ -64,7 +64,12 @@ type ModelStepStarted struct {
 
 func (ModelStepStarted) fact() {}
 
-// ModelStepRecovered: Executing -> Prepared, no accepted result.
+// ModelStepRecovered: Executing -> Open. The attempt that owned the step is
+// gone and its result cannot be reached (RUN-CMT-7), so the step is withdrawn
+// like a Prepared step whose request went stale: the frozen request is not
+// resent. Recovery is a decision point -- the next Prepare plans again from
+// the state at recovery time, including inputs delivered meanwhile -- and the
+// record shows it as one (TRN-DUR-1). ModelSteps is not counted for it.
 type ModelStepRecovered struct {
 	StepID StepID `json:"stepId"`
 }

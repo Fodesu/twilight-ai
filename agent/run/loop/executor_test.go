@@ -230,14 +230,24 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 	if _, err := l.Advance(ctx, stack.runtime, testSession, "run-1", nil); err != nil {
 		t.Fatal(err)
 	}
+	a := exec.last()
 	stack.open(t)
 	n, err := stack.runtime.RecoverInterrupted(ctx, testSession, Reattach(exec, testSession, func(Outcome) {}))
 	if err != nil || n != 1 || len(exec.attached) != 1 {
 		t.Fatalf("RecoverInterrupted = %d %v attached=%d, want one disposition after one refused attach", n, err, len(exec.attached))
 	}
-	step := loadState(t, stack.runtime, "run-1").State.Current.(ModelStep)
-	if step.Status != ModelPrepared || step.Claim != "" {
-		t.Fatalf("step after disposition = %+v, want Prepared without a claim", step)
+	// The unreachable attempt is withdrawn: the Run is Open, the step is not
+	// counted, and the next Advance plans again (TRN-DUR-1).
+	state := loadState(t, stack.runtime, "run-1").State
+	if _, open := state.Current.(Open); !open || state.ModelSteps != 0 {
+		t.Fatalf("state after disposition = %+v, want Open with no counted step", state)
+	}
+	res, err := l.Advance(ctx, stack.runtime, testSession, "run-1", nil)
+	if err != nil || res.Disposition != LoopDispatched || len(res.Dispatched) != 1 {
+		t.Fatalf("advance after disposition = %+v %v, want a fresh dispatch", res, err)
+	}
+	if replanned := exec.last(); replanned.Key() == a.Key() || replanned.Model.RequestDigest == "" {
+		t.Fatalf("replan reused the disposed attempt: %+v", replanned)
 	}
 }
 
@@ -296,8 +306,8 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 	}
 }
 
-// A model outcome that reports cancellation recovers the step to Prepared
-// rather than failing the Run (RUN-LOP-3).
+// A model outcome that reports cancellation withdraws the step to Open for
+// replanning rather than failing the Run (RUN-LOP-3).
 func TestDeliverCancelledModelRecovers(t *testing.T) {
 	rt := loopRuntime(t)
 	exec := newRecordingExecutor()
@@ -314,9 +324,37 @@ func TestDeliverCancelledModelRecovers(t *testing.T) {
 	if err != nil || res.Disposition != LoopDelivered {
 		t.Fatalf("deliver cancelled = %+v %v", res, err)
 	}
-	step := loadState(t, rt, "run-1").State.Current.(ModelStep)
-	if step.Status != ModelPrepared {
-		t.Fatalf("step = %+v, want Prepared", step)
+	state := loadState(t, rt, "run-1").State
+	if _, open := state.Current.(Open); !open || state.Status != RunActive {
+		t.Fatalf("state = %+v, want Open and active", state)
 	}
 	var _ sdk.ModelResult // keep sdk imported for result helpers above
+}
+
+// A frozen body the executor cannot fetch is not an unrecoverable error: the
+// transfer copy is gone, so the step is withdrawn and the next Advance plans
+// and freezes again (RUN-LOP-3).
+func TestDeliverMissingFrozenBodyReplans(t *testing.T) {
+	rt := loopRuntime(t)
+	exec := newRecordingExecutor()
+	l, err := New(exec, staticPlanner{}, ExecutionPolicy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := l.Advance(ctx, rt, testSession, "run-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	first := exec.last()
+	res, err := l.Deliver(ctx, rt, testSession, Outcome{Key: first.Key(), Err: ErrFrozenValueMissing}, nil)
+	if err != nil || res.Disposition != LoopDelivered {
+		t.Fatalf("deliver missing body = %+v %v, want a plain delivered settlement", res, err)
+	}
+	again, err := l.Advance(ctx, rt, testSession, "run-1", nil)
+	if err != nil || again.Disposition != LoopDispatched {
+		t.Fatalf("advance after missing body = %+v %v", again, err)
+	}
+	if second := exec.last(); second.Key() == first.Key() {
+		t.Fatal("the replan reused the lost attempt")
+	}
 }

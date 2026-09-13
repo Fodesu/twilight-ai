@@ -53,10 +53,12 @@ type StartModelExecution struct {
 
 func (StartModelExecution) agentCommand() {}
 
-// RecoverModelExecution releases or recovers model execution: no provider
-// result was accepted, so the same frozen request may be prepared for another
-// attempt. Legal sources: the current grant holder, or the Runtime's own
-// lease-expiry recovery.
+// RecoverModelExecution withdraws an Executing ModelStep whose attempt is
+// lost: no provider result was accepted and none can be reattached. The Run
+// returns to Open and the next Prepare plans from the current state (the
+// frozen request is a transfer copy for the Executor, not a replay target).
+// Sources: the Loop when a dispatched attempt ends without a result, or the
+// takeover disposition under TakeoverClaim (RUN-CMT-7).
 type RecoverModelExecution struct {
 	StepID StepID `json:"stepId"`
 	// Claim identifies the execution attempt being recovered. Durable recovery

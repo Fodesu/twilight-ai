@@ -77,7 +77,8 @@ func (a Assignment) Key() AssignmentKey {
 // call yields Model or Err (a provider failure, a missing frozen body, or a
 // cancellation), a tool call yields a sealed ToolExecutionOutcome. Cancelled
 // reports that the executor stopped the effect on request; a model call that
-// was cancelled recovers to Prepared instead of failing the Run (RUN-LOP-3).
+// was cancelled withdraws the step to Open for replanning instead of failing
+// the Run (RUN-LOP-3).
 type Outcome struct {
 	Key       AssignmentKey
 	Model     *sdk.ModelResult

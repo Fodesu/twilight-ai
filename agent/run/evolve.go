@@ -24,7 +24,7 @@ func evolveV1(s MachineState, f Fact) (MachineState, error) {
 	case ModelStepStarted:
 		return applyModelClaim(applyModelStatus(s, ModelExecuting, Usage{}, false), fact.Claim), nil
 	case ModelStepRecovered:
-		return applyModelClaim(applyModelStatus(s, ModelPrepared, Usage{}, false), ""), nil
+		return applyModelStepWithdrawn(s), nil
 	case ModelStepRejected:
 		return applyModelStatus(s, ModelPrepared, fact.Usage, true), nil
 	case ModelStepCompleted:
@@ -76,8 +76,10 @@ func applyModelStepPrepared(s MachineState, fact *ModelStepPrepared) MachineStat
 	return s
 }
 
-// applyModelStepWithdrawn discards the Prepared step: it never executed, so it
-// does not count as a model step. PendingInputs are untouched.
+// applyModelStepWithdrawn discards the current step: Withdrawn (Prepared,
+// never sent) and Recovered (Executing, attempt lost) both return the Run to
+// Open without counting a model step. PendingInputs are untouched, so the
+// next Prepare consumes them.
 func applyModelStepWithdrawn(s MachineState) MachineState {
 	s.Current = Open{}
 	s.ModelSteps--

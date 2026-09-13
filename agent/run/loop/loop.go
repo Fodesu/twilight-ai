@@ -282,7 +282,7 @@ func (l *Loop) deliver(ctx context.Context, runtime boundRuntime, out Outcome, e
 			Kind: EventToolCompleted, Durability: EventCommitted})
 	}
 	if settleErr != nil {
-		// The settlement landed (the step is back to Prepared); the condition
+		// The settlement landed (the step is withdrawn to Open); the condition
 		// itself is not retriable by this Loop.
 		return LoopResult{Disposition: LoopDelivered}, settleErr
 	}

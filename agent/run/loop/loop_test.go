@@ -185,12 +185,13 @@ func TestLoopModelCatalogErrorRecoversWithFreshLoop(t *testing.T) {
 	if snap.State.Status != RunActive {
 		t.Fatalf("status = %v", snap.State.Status)
 	}
-	ms, ok := snap.State.Current.(ModelStep)
-	if !ok || ms.Status != ModelPrepared {
-		t.Fatalf("current = %+v", snap.State.Current)
+	// The unstartable attempt is withdrawn: the Run is Open and the step is
+	// not counted, so a working Loop plans afresh (RUN-LOP-3).
+	if _, open := snap.State.Current.(Open); !open {
+		t.Fatalf("current = %+v, want Open", snap.State.Current)
 	}
-	if snap.State.ModelSteps != 1 {
-		t.Fatalf("ModelSteps = %d, want 1", snap.State.ModelSteps)
+	if snap.State.ModelSteps != 0 {
+		t.Fatalf("ModelSteps = %d, want 0", snap.State.ModelSteps)
 	}
 
 	invoker := &fakeInvoker{results: []sdk.ModelResult{textResult("resumed")}}
@@ -367,8 +368,8 @@ func TestLoopReplaysStartAfterTwoLostResponses(t *testing.T) {
 	if err != nil || res.Disposition != LoopWaiting || !res.ExecutionRecovery {
 		t.Fatalf("run with an orphaned Executing step = %+v %v, want waiting for recovery", res, err)
 	}
-	// The owner's takeover disposition returns the step to Prepared; the next
-	// Run reissues the same frozen request exactly once (RUN-CMT-7).
+	// The owner's takeover disposition withdraws the orphaned step; the next
+	// Run plans again and calls the model exactly once (RUN-CMT-7).
 	if n, err := rt.RecoverInterrupted(context.Background(), testSession, nil); err != nil || n != 1 {
 		t.Fatalf("RecoverInterrupted = %d %v", n, err)
 	}
@@ -474,14 +475,13 @@ func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
-	// The model step must be back to Prepared via RecoverModelExecution:
-	// same frozen request, run still active, ModelSteps not recounted.
+	// The model step is withdrawn via RecoverModelExecution: the Run is Open,
+	// still active, and the aborted step is not counted (RUN-LOP-3).
 	snap, _ := rt.Load(context.Background(), testSession, "run-1")
-	ms, ok := snap.State.Current.(ModelStep)
-	if !ok || ms.Status != ModelPrepared {
-		t.Fatalf("current = %#v, want Prepared ModelStep", snap.State.Current)
+	if _, open := snap.State.Current.(Open); !open {
+		t.Fatalf("current = %#v, want Open", snap.State.Current)
 	}
-	if snap.State.ModelSteps != 1 {
+	if snap.State.ModelSteps != 0 {
 		t.Fatalf("ModelSteps = %d", snap.State.ModelSteps)
 	}
 	recovered := false
@@ -494,7 +494,7 @@ func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
 		t.Fatal("no ModelStepRecovered fact committed")
 	}
 
-	// A fresh Loop resumes the SAME frozen step without a new Prepare.
+	// A fresh Loop plans a new step; the cancelled one left no count behind.
 	invoker2 := &fakeInvoker{results: []sdk.ModelResult{textResult("resumed")}}
 	loop2, _ := newLoop(rt, nil, fakeCatalog{invoker2}, fakeToolCatalog{}, staticPlanner{}, ExecutionPolicy{}, false)
 	res, err := loop2.Run(context.Background(), rt, testSession, "run-1", nil)
@@ -506,6 +506,6 @@ func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
 	}
 	final, _ := rt.Load(context.Background(), testSession, "run-1")
 	if final.State.ModelSteps != 1 {
-		t.Fatalf("ModelSteps = %d after resume, want 1 (same frozen step)", final.State.ModelSteps)
+		t.Fatalf("ModelSteps = %d after resume, want 1 (only the replanned step counts)", final.State.ModelSteps)
 	}
 }

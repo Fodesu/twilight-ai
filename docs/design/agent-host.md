@@ -138,7 +138,7 @@ loops       = ProfileRef → loop.New(Executor, planner, policy)   // 首次 Dri
 - **HST-PRF-1/2**：注册后同 ID 改进摘要字段的字段再注册，旧 ref 解析为 `ErrProfileUnavailable`；未知 ID 同样；未注册的 PlannerRef/PolicyRef 使 Loop 组合失败。
 - **HST-DRV-1/2**：同一 Run 的第二个本地驱动者得到 `already_driving` 的成功响应；ctx 取消后 Turn 保持 active、重开后驱动完成。
 - **HST-DRV-3/4**：active Turn 时 Route 走 Deliver，输入在下一次模型请求里紧随工具结果之后；无 active Turn 时 Route 开新 Turn；Drain 取全部积压开一个 Turn；`attempt_failed` 时 Route 为 conflict。
-- **HST-DRV-5**：接管后 Executing 工具记 Unknown 且同一 RunID 继续；Executing 模型回到 Prepared 并以同一冻结请求重发（文件 Frozen 下由新进程从盘取回）；旧进程的迟到结算被围栏。
+- **HST-DRV-5**：接管后 Executing 工具记 Unknown 且同一 RunID 继续；不可重连的 Executing 模型步被撤回，Resume 时按恢复时刻的状态重新规划并只调用模型一次（`ModelSteps` 只计重规划的那一步）；可重连的模型 attempt 不被处置，其 Outcome 经宿主的 deliver 完成同一步；旧进程的迟到结算被围栏。
 - **HST-SES-1/2/3**：OpenSession 顺序；Send 的首个 Result 与排空 Result；并发 Send 的 `already_driving` 收敛。
 - **HST-SES-4、HST-EVT-1**：Submit 在模型仍阻塞时已返回且 Turn 为 active；事件流按 Seq 顺序交付该 Turn 的 `started` 与 `completed`；后台驱动失败以 `Event{Err}` 与 `Ports.Warn` 报告；同一 Session 上 Send 仍阻塞到 Result。
 - **HST-CKP-1/2**：Compact 的模型请求经 Executor 到达模型；压缩后下一请求以 summary 开头且只含 retained 后缀；重启进程组装同一上下文；active Turn 时 Compact 为 conflict；封闭校验的四类边界。

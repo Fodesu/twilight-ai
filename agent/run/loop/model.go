@@ -86,8 +86,8 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime boundRuntime, events 
 // startModelStep commits the start barrier of one model attempt and hands the
 // call to the Executor (RUN-LOP-3). It returns the dispatched key, or nil when
 // the reload should decide (another actor moved the step). A model catalog
-// that cannot serve the step releases it back to Prepared and reports the
-// error: no model call has happened.
+// that cannot serve the step withdraws it to Open and reports the error: no
+// model call has happened.
 func (l *Loop) startModelStep(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot, stepID run.StepID, deliver Deliver) (*AssignmentKey, error) {
 	runID := snapshot.State.RunID
 	proto, err := snapshot.Protocol()
@@ -117,7 +117,7 @@ func (l *Loop) startModelStep(ctx context.Context, runtime boundRuntime, events 
 	assignment := Assignment{Session: runtime.sid, RunID: runID, StepID: stepID, Claim: a.claim, Schema: snapshot.SchemaVersion,
 		Kind: AssignmentModel, Model: &ModelAssignment{Model: modelStep.Model, RequestDigest: modelStep.RequestDigest}}
 	if err := l.Executor.Dispatch(ctx, assignment, l.deliverTo(runtime, events, deliver)); err != nil {
-		// Nothing was called: release the step to Prepared under this attempt's
+		// Nothing was called: withdraw the step to Open under this attempt's
 		// recovery identity and surface the condition (RUN-LOP-3).
 		if _, serr := l.settle(context.WithoutCancel(ctx), runtime, events, a, start.Snapshot.Position,
 			run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, proto); serr != nil {
@@ -143,18 +143,19 @@ func (l *Loop) deliverTo(runtime boundRuntime, events EventSink, deliver Deliver
 }
 
 // modelCompletion maps a model Outcome to the attempt's settlement command
-// (RUN-LOP-3): a cancelled or unstartable call recovers the step to Prepared,
-// a provider failure is SubmitModelFailure, a result that cannot be bound or
-// frozen is RejectModelResult with the host's disposition, and a result binds
-// its tool calls into SubmitModelResult. The returned error, when non-nil,
-// accompanies a recovery settlement the Loop cannot retry itself (a missing
-// frozen body).
+// (RUN-LOP-3): a cancelled call, or one whose frozen body the executor could
+// not fetch, withdraws the step to Open -- the next Advance plans again from
+// the current state, so a lost transfer copy is not an unrecoverable error;
+// a provider failure is SubmitModelFailure; a result that cannot be bound or
+// frozen is RejectModelResult with the host's disposition; a result binds its
+// tool calls into SubmitModelResult. The returned error is always nil now and
+// kept for the call shape.
 func (l *Loop) modelCompletion(step *run.ModelStep, out Outcome) (run.AgentCommand, error) {
 	stepID := step.RefValue.ID
 	recover := run.RecoverModelExecution{StepID: stepID, Claim: out.Key.Claim}
 	switch {
 	case out.Err != nil && errors.Is(out.Err, run.ErrFrozenValueMissing):
-		return recover, out.Err
+		return recover, nil
 	case out.Err != nil && errors.Is(out.Err, errMalformedFrozenRequest):
 		failure := run.StepFailure{Class: run.FailureMalformedModel, Message: out.Err.Error()}
 		return run.RejectModelResult{StepID: stepID, Failure: failure, Disposition: l.modelRejectDisposition(*step, failure)}, nil
