@@ -13,10 +13,16 @@ import (
 	"github.com/felinics/twilight/sdk"
 )
 
-// dispatchRequest carries an Assignment and where its Outcome goes.
+// dispatchRequest carries an Assignment. Callback is only an optional
+// low-latency notification endpoint; the result is queried by key.
 type dispatchRequest struct {
 	Assignment loop.Assignment `json:"assignment"`
-	Callback   string          `json:"callback"`
+	Callback   string          `json:"callback,omitempty"`
+}
+
+type attachRequest struct {
+	Key      loop.AssignmentKey `json:"key"`
+	Callback string             `json:"callback,omitempty"`
 }
 
 // wireOutcome is loop.Outcome on the wire: the sealed tool outcome becomes a

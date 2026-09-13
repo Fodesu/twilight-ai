@@ -96,26 +96,34 @@ type executorServer struct {
 	callbacks map[loop.AssignmentKey][]string
 }
 
-// deliverTo fans one Outcome out to every callback registered for key.
-func (s *executorServer) deliverTo(key loop.AssignmentKey) loop.Deliver {
-	return func(out loop.Outcome) {
-		s.mu.Lock()
-		cbs := s.callbacks[key]
-		delete(s.callbacks, key)
-		s.mu.Unlock()
-		wire := encodeOutcome(out)
-		var wg sync.WaitGroup
-		for _, cb := range cbs {
-			wg.Add(1)
-			go func(cb string) {
-				defer wg.Done()
-				if err := postJSON(s.client, cb, wire, nil); err != nil {
-					fmt.Fprintf(os.Stderr, "executor: outcome to %s: %v\n", cb, err)
-				}
-			}(cb)
-		}
-		wg.Wait()
+// deliverTo posts one Outcome to every callback registered for key. Callback
+// is only the transport's low-latency notification; the authority also reads
+// the same result through GetOutcome.
+func (s *executorServer) deliverTo(key loop.AssignmentKey, out loop.Outcome) {
+	s.mu.Lock()
+	cbs := append([]string(nil), s.callbacks[key]...)
+	delete(s.callbacks, key)
+	s.mu.Unlock()
+	wire := encodeOutcome(out)
+	var wg sync.WaitGroup
+	for _, cb := range cbs {
+		wg.Add(1)
+		go func(cb string) {
+			defer wg.Done()
+			if err := postJSON(s.client, cb, wire, nil); err != nil {
+				fmt.Fprintf(os.Stderr, "executor: outcome to %s: %v\n", cb, err)
+			}
+		}(cb)
 	}
+	wg.Wait()
+}
+
+func (s *executorServer) watch(key loop.AssignmentKey) {
+	out, err := s.exec.GetOutcome(context.Background(), key)
+	if err != nil {
+		out = loop.Outcome{Key: key, Err: err}
+	}
+	s.deliverTo(key, out)
 }
 
 func (s *executorServer) addCallback(key loop.AssignmentKey, cb string) {
@@ -163,22 +171,23 @@ func (s *executorServer) routes(mux *http.ServeMux) {
 		}
 		key := req.Assignment.Key()
 		s.addCallback(key, req.Callback)
-		if err := s.exec.Dispatch(context.Background(), req.Assignment, s.deliverTo(key)); err != nil {
+		if err := s.exec.Dispatch(context.Background(), req.Assignment); err != nil {
 			s.dropCallback(key, req.Callback)
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
+		go s.watch(key)
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/attach", func(w http.ResponseWriter, r *http.Request) {
-		var req dispatchRequest
+		var req attachRequest
 		if err := readJSON(r, &req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		key := req.Assignment.Key()
+		key := req.Key
 		s.addCallback(key, req.Callback)
-		attached, err := s.exec.Attach(context.Background(), req.Assignment, s.deliverTo(key))
+		attached, err := s.exec.Attach(context.Background(), key)
 		if err != nil {
 			s.dropCallback(key, req.Callback)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -186,18 +195,20 @@ func (s *executorServer) routes(mux *http.ServeMux) {
 		}
 		if !attached {
 			s.dropCallback(key, req.Callback)
+		} else {
+			go s.watch(key)
 		}
 		writeJSON(w, http.StatusOK, map[string]bool{"attached": attached})
 	})
 	mux.HandleFunc("/cancel", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			RunID run.RunID `json:"runId"`
+			Key loop.AssignmentKey `json:"key"`
 		}
 		if err := readJSON(r, &req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if err := s.exec.Cancel(context.Background(), req.RunID); err != nil {
+		if err := s.exec.Cancel(context.Background(), req.Key); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}

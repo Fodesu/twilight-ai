@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	run "github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
@@ -13,9 +14,9 @@ import (
 // Loop is the decision interpreter of one Run (RUN-LOP-2). It holds no
 // authoritative state: every step starts from Runtime.Load, derives the next
 // effect with run.Next, records the protocol transition and hands the effect
-// to the Executor as an Assignment. Outcomes come back as data through
-// Deliver and are settled under the attempt's Claim; the Loop never waits on
-// an effect inside Advance.
+// to the Executor as an Assignment. Outcomes are read by key through the
+// Executor port and settled under the attempt's Claim; the Loop never waits
+// on an effect inside Advance.
 type Loop struct {
 	Executor Executor
 	Builder  PromptBuilder
@@ -120,8 +121,9 @@ func (l *Loop) wrapSink(events EventSink) EventSink {
 // Advance moves the Run to its next quiescent point without waiting on any
 // effect (RUN-LOP-2): it records protocol transitions (prepare, withdraw,
 // start barriers) and dispatches Assignments, then returns LoopDispatched,
-// LoopWaiting or LoopFinished. A concurrent Advance or a blocking Run of the
-// same Run is reported as ErrRunAlreadyRunning.
+// LoopWaiting or LoopFinished. The caller reads each returned key through
+// Executor.GetOutcome and passes it to Deliver. A concurrent Advance or a
+// blocking Run of the same Run is reported as ErrRunAlreadyRunning.
 func (l *Loop) Advance(ctx context.Context, rt run.Runtime, sid session.SessionID, runID run.RunID, events EventSink) (LoopResult, error) {
 	if err := l.checkArgs(ctx, rt, sid, runID); err != nil {
 		return LoopResult{}, err
@@ -134,14 +136,14 @@ func (l *Loop) Advance(ctx context.Context, rt run.Runtime, sid session.SessionI
 		return LoopResult{}, ErrRunAlreadyRunning
 	}
 	defer s.step.Unlock()
-	return l.advance(ctx, boundRuntime{rt: rt, sid: sid}, runID, l.wrapSink(events), nil)
+	return l.advance(ctx, boundRuntime{rt: rt, sid: sid}, runID, l.wrapSink(events))
 }
 
-// advance is the body of Advance. deliver, when non-nil, is the callback
-// dispatched assignments report to; the blocking Run passes its own so
-// Outcomes reach its wait loop, while a host calling Advance directly gets
-// Outcomes through the Executor it configured (see Deliver).
-func (l *Loop) advance(ctx context.Context, runtime boundRuntime, runID run.RunID, events EventSink, deliver Deliver) (LoopResult, error) {
+// advance is the body of Advance. It only dispatches assignments and returns
+// their keys; outcome retrieval is a separate message-shaped operation through
+// Executor.GetOutcome. This keeps the Executor boundary usable across process
+// boundaries.
+func (l *Loop) advance(ctx context.Context, runtime boundRuntime, runID run.RunID, events EventSink) (LoopResult, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return LoopResult{}, err
@@ -184,7 +186,7 @@ func (l *Loop) advance(ctx context.Context, runtime boundRuntime, runID run.RunI
 				l.emitCommitted(ctx, events, runtime.sid, runID, res.Events)
 			}
 		case run.StartModelCall:
-			dispatched, err := l.startModelStep(ctx, runtime, events, &snapshot, eff.StepID, deliver)
+			dispatched, err := l.startModelStep(ctx, runtime, events, &snapshot, eff.StepID)
 			if err != nil {
 				return LoopResult{}, err
 			}
@@ -192,7 +194,7 @@ func (l *Loop) advance(ctx context.Context, runtime boundRuntime, runID run.RunI
 				return LoopResult{Disposition: LoopDispatched, Dispatched: []AssignmentKey{*dispatched}}, nil
 			}
 		case run.StartToolCalls:
-			dispatched, err := l.startToolCalls(ctx, runtime, events, &snapshot, eff, deliver)
+			dispatched, err := l.startToolCalls(ctx, runtime, events, &snapshot, eff)
 			if err != nil {
 				return LoopResult{}, err
 			}
@@ -239,6 +241,9 @@ func (l *Loop) Deliver(ctx context.Context, rt run.Runtime, sid session.SessionI
 }
 
 func (l *Loop) deliver(ctx context.Context, runtime boundRuntime, out Outcome, events EventSink) (LoopResult, error) {
+	if out.Key.Session != "" && out.Key.Session != runtime.sid {
+		return LoopResult{Disposition: LoopDropped}, nil
+	}
 	runID := out.Key.RunID
 	snapshot, err := runtime.Load(ctx, runID)
 	if err != nil {
@@ -297,9 +302,9 @@ func (l *Loop) deliver(ctx context.Context, runtime boundRuntime, out Outcome, e
 
 // Run drives the Run until it finishes, has no executable effect, or the
 // context is cancelled (RUN-LOP-2): Advance, wait for the Outcomes of what it
-// dispatched, Deliver, repeat. It is the blocking form every colocated host
-// uses; hosts that receive Outcomes from elsewhere call Advance and Deliver
-// themselves. The caller context bounds the drive: on cancellation the
+// dispatched, GetOutcome, Deliver, repeat. It is the blocking form every
+// host uses; hosts that receive Outcomes from elsewhere call Advance and
+// Deliver themselves. The caller context bounds the drive: on cancellation the
 // in-flight assignments of the Run are cancelled and their Outcomes are still
 // settled (RUN-LOP-5) before ctx.Err() is returned.
 func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, runID run.RunID, events EventSink) (LoopResult, error) {
@@ -315,7 +320,6 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 	s := l.slot(runID)
 
 	outcomes := make(chan Outcome, 64)
-	deliver := func(out Outcome) { outcomes <- out }
 	pending := map[AssignmentKey]struct{}{}
 	cancelled := false
 	settleCtx := context.WithoutCancel(ctx)
@@ -325,7 +329,9 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 	// pending Outcomes are drained -- never settled -- before returning; a tool
 	// that ignores its context blocks here as it always would.
 	onOwnershipLost := func(err error) (LoopResult, error) {
-		_ = l.Executor.Cancel(settleCtx, runID)
+		for key := range pending {
+			_ = l.Executor.Cancel(settleCtx, key)
+		}
 		for len(pending) > 0 {
 			out := <-outcomes
 			delete(pending, out.Key)
@@ -339,7 +345,7 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 				return LoopResult{}, ctx.Err()
 			}
 			s.step.Lock()
-			res, err := l.advance(ctx, runtime, runID, events, deliver)
+			res, err := l.advance(ctx, runtime, runID, events)
 			s.step.Unlock()
 			if err != nil {
 				if ownershipLost(err) {
@@ -352,6 +358,7 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 			}
 			for _, k := range res.Dispatched {
 				pending[k] = struct{}{}
+				go l.awaitOutcome(settleCtx, k, outcomes)
 			}
 		}
 
@@ -365,7 +372,9 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 				// Stop what we started; each cancelled effect still reports an
 				// Outcome, settled below under the detached context.
 				cancelled = true
-				_ = l.Executor.Cancel(settleCtx, runID)
+				for key := range pending {
+					_ = l.Executor.Cancel(settleCtx, key)
+				}
 				continue
 			}
 		}
@@ -385,6 +394,34 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 		}
 		if res.Disposition == LoopFinished {
 			return res, nil
+		}
+	}
+}
+
+// awaitOutcome is the Loop's outcome pump. It retrieves a message by key
+// rather than handing a callback into the Executor. A transport may implement
+// GetOutcome as a long poll; a non-blocking implementation can report
+// ErrOutcomeNotReady and retry here.
+func (l *Loop) awaitOutcome(ctx context.Context, key AssignmentKey, outcomes chan<- Outcome) {
+	for {
+		out, err := l.Executor.GetOutcome(ctx, key)
+		if err == nil {
+			outcomes <- out
+			return
+		}
+		if !errors.Is(err, ErrOutcomeNotReady) {
+			outcomes <- Outcome{Key: key, Err: err}
+			return
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			outcomes <- Outcome{Key: key, Err: ctx.Err()}
+			return
 		}
 	}
 }

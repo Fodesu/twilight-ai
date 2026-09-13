@@ -22,7 +22,7 @@ func toolCallIndex(step run.ToolStep, callID run.CallID) int {
 // claim; a validated call is started under a fresh attempt and handed to the
 // Executor. It returns the dispatched keys; an empty list with no error means
 // nothing is executing on this Loop's behalf and the reload decides.
-func (l *Loop) startToolCalls(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot, eff run.StartToolCalls, deliver Deliver) ([]AssignmentKey, error) {
+func (l *Loop) startToolCalls(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot, eff run.StartToolCalls) ([]AssignmentKey, error) {
 	runID := snapshot.State.RunID
 	proto, err := snapshot.Protocol()
 	if err != nil {
@@ -104,7 +104,7 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime boundRuntime, events 
 		}
 		assignment := probe
 		assignment.Claim = a.claim
-		if err := l.Executor.Dispatch(ctx, assignment, l.deliverTo(runtime, events, deliver)); err != nil {
+		if err := l.Executor.Dispatch(ctx, assignment); err != nil {
 			// The effect never started: settle the attempt as a Known execution
 			// failure so the call does not stay Executing.
 			failure := run.ToolFailure{Class: run.FailureExecution, Message: "dispatch: " + err.Error()}

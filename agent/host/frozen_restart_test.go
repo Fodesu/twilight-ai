@@ -3,6 +3,7 @@ package host_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/felinics/twilight/agent/host"
 	"github.com/felinics/twilight/agent/run"
@@ -137,21 +138,33 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 	}
 }
 
-// reattachingExecutor answers Attach with true for one key and delivers the
-// attempt's real Outcome to whoever attached: the executor outlived the
-// authority, as a remote executor does.
+// reattachingExecutor answers Attach with true for one key and retains the
+// attempt's real Outcome for GetOutcome: the executor outlived the authority,
+// as a remote executor does.
 type reattachingExecutor struct {
 	recordingExecutor
-	attached []loop.Assignment
-	deliver  loop.Deliver
+	attached []loop.AssignmentKey
 }
 
-func (e *reattachingExecutor) Attach(_ context.Context, a loop.Assignment, deliver loop.Deliver) (bool, error) {
+func (e *reattachingExecutor) Attach(_ context.Context, key loop.AssignmentKey) (bool, error) {
 	e.mu.Lock()
-	e.attached = append(e.attached, a)
-	e.deliver = deliver
-	e.mu.Unlock()
+	defer e.mu.Unlock()
+	e.attached = append(e.attached, key)
+	if e.outcomes == nil {
+		e.outcomes = make(map[loop.AssignmentKey]chan loop.Outcome)
+	}
+	if e.outcomes[key] == nil {
+		e.outcomes[key] = make(chan loop.Outcome, 1)
+	}
 	return true, nil
+}
+
+func (e *reattachingExecutor) complete(key loop.AssignmentKey, out loop.Outcome) {
+	e.mu.Lock()
+	ch := e.outcomes[key]
+	e.mu.Unlock()
+	out.Key = key
+	ch <- out
 }
 
 // When the attempt is still running on an executor that outlived the
@@ -187,10 +200,14 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 		t.Fatalf("recovered = %d, want 0 (the attempt was reattached, not disposed)", s2.Recovered)
 	}
 	exec.mu.Lock()
-	attached, deliver := len(exec.attached), exec.deliver
+	var key loop.AssignmentKey
+	if len(exec.attached) > 0 {
+		key = exec.attached[0]
+	}
+	attached, hasOutcome := len(exec.attached), exec.outcomes[key] != nil
 	exec.mu.Unlock()
-	if attached != 1 || deliver == nil {
-		t.Fatalf("attach calls = %d, deliver registered = %v", attached, deliver != nil)
+	if attached != 1 || !hasOutcome {
+		t.Fatalf("attach calls = %d, outcome record = %v", attached, hasOutcome)
 	}
 	tsurf, err := p2.TurnSurface(ctx, sid)
 	if err != nil {
@@ -210,16 +227,21 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	}
 
 	// The executor finishes the original attempt; its Outcome reaches process 2.
-	deliver(loop.Outcome{Key: exec.attached[0].Key(), Model: &sdk.ModelResult{Text: "reattached", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}})
-	if err := s2.Wait(ctx); err != nil {
-		t.Fatal(err)
-	}
-	tsurf, err = p2.TurnSurface(ctx, sid)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if v := tsurf.Turns[active.TurnID]; v.Status != turn.TurnCompleted {
-		t.Fatalf("turn after reattached outcome = %s, want completed", v.Status)
+	exec.complete(exec.attached[0], loop.Outcome{Model: &sdk.ModelResult{Text: "reattached", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}})
+	deadline := time.After(2 * time.Second)
+	for {
+		tsurf, err = p2.TurnSurface(ctx, sid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if v := tsurf.Turns[active.TurnID]; v.Status == turn.TurnCompleted {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("turn after reattached outcome = %s, want completed", tsurf.Turns[active.TurnID].Status)
+		case <-time.After(time.Millisecond):
+		}
 	}
 	final, err := p2.Runtime.Load(ctx, sid, active.ActiveRun)
 	if err != nil || final.State.ModelSteps != 1 {

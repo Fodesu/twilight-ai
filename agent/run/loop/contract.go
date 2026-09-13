@@ -6,6 +6,7 @@ import (
 	"errors"
 
 	run "github.com/felinics/twilight/agent/run"
+	effect "github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/session"
 
 	"github.com/felinics/twilight/sdk"
@@ -69,7 +70,7 @@ type ToolExecutionRequest struct {
 	StepID run.StepID
 	CallID run.CallID
 	// Claim is the execution attempt the call runs under; it identifies the
-	// Outcome the executor delivers (RUN-EXE-2).
+	// Outcome the Executor returns through its message-shaped port (RUN-EXE-2).
 	Claim            run.ExecutionClaim
 	ToolRef          run.ToolRef
 	DefinitionDigest run.Digest
@@ -91,22 +92,12 @@ type ExecutableTool interface {
 	Execute(context.Context, ToolExecutionRequest) ToolExecutionOutcome
 }
 
-// ToolExecutionOutcome is sealed: succeeded, failed-known, or unknown.
-type ToolExecutionOutcome interface{ toolExecutionOutcome() }
-
-type ToolExecutionSucceeded struct{ Result run.ToolExecutionResult }
-
-func (ToolExecutionSucceeded) toolExecutionOutcome() {}
-
-// ToolExecutionFailed asserts the external effect did NOT complete.
-type ToolExecutionFailed struct{ Failure run.ToolFailure }
-
-func (ToolExecutionFailed) toolExecutionOutcome() {}
-
-// ToolExecutionUnknown means the effect may or may not have happened.
-type ToolExecutionUnknown struct{ Failure run.ToolFailure }
-
-func (ToolExecutionUnknown) toolExecutionOutcome() {}
+// Tool outcomes belong to the process-independent effect protocol. Aliases
+// keep the local tool implementation source-compatible.
+type ToolExecutionOutcome = effect.ToolExecutionOutcome
+type ToolExecutionSucceeded = effect.ToolExecutionSucceeded
+type ToolExecutionFailed = effect.ToolExecutionFailed
+type ToolExecutionUnknown = effect.ToolExecutionUnknown
 
 type ToolProgressSink interface {
 	Publish(context.Context, ToolProgress)
@@ -167,7 +158,7 @@ const (
 	LoopFinished
 	// LoopDispatched: Advance handed at least one Assignment to the Executor
 	// and returned; Dispatched lists them. The Run moves again when their
-	// Outcomes are delivered.
+	// Outcomes are read by key and then settled.
 	LoopDispatched
 	// LoopDelivered: Deliver settled an Outcome and the Run is not terminal;
 	// the host advances it next.

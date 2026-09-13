@@ -16,41 +16,62 @@ import (
 type recordingExecutor struct {
 	mu          sync.Mutex
 	dispatched  []Assignment
-	delivers    map[AssignmentKey]Deliver
+	outcomes    map[AssignmentKey]chan Outcome
 	attached    []Assignment
 	attachReply bool
-	cancelled   []RunID
+	cancelled   []AssignmentKey
 }
 
 func newRecordingExecutor() *recordingExecutor {
-	return &recordingExecutor{delivers: map[AssignmentKey]Deliver{}}
+	return &recordingExecutor{outcomes: map[AssignmentKey]chan Outcome{}}
 }
 
 func (e *recordingExecutor) Validate(context.Context, Assignment) (*ToolFailure, error) {
 	return nil, nil
 }
 
-func (e *recordingExecutor) Dispatch(_ context.Context, a Assignment, deliver Deliver) error {
+func (e *recordingExecutor) Dispatch(_ context.Context, a Assignment) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.dispatched = append(e.dispatched, a)
-	e.delivers[a.Key()] = deliver
+	e.outcomes[a.Key()] = make(chan Outcome, 1)
 	return nil
 }
 
-func (e *recordingExecutor) Attach(_ context.Context, a Assignment, deliver Deliver) (bool, error) {
+func (e *recordingExecutor) Attach(_ context.Context, key AssignmentKey) (bool, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.attached = append(e.attached, a)
-	if e.attachReply {
-		e.delivers[a.Key()] = deliver
+	for _, a := range e.dispatched {
+		if a.Key() == key {
+			e.attached = append(e.attached, a)
+			break
+		}
 	}
 	return e.attachReply, nil
 }
 
-func (e *recordingExecutor) Cancel(_ context.Context, runID RunID) error {
+func (e *recordingExecutor) GetStatus(context.Context, AssignmentKey) (ExecutionStatus, error) {
+	return ExecutionRunning, nil
+}
+
+func (e *recordingExecutor) GetOutcome(ctx context.Context, key AssignmentKey) (Outcome, error) {
 	e.mu.Lock()
-	e.cancelled = append(e.cancelled, runID)
+	ch, ok := e.outcomes[key]
+	e.mu.Unlock()
+	if !ok {
+		return Outcome{}, ErrExecutionNotFound
+	}
+	select {
+	case out := <-ch:
+		return out, nil
+	case <-ctx.Done():
+		return Outcome{}, ctx.Err()
+	}
+}
+
+func (e *recordingExecutor) Cancel(_ context.Context, key AssignmentKey) error {
+	e.mu.Lock()
+	e.cancelled = append(e.cancelled, key)
 	e.mu.Unlock()
 	return nil
 }
@@ -64,13 +85,13 @@ func (e *recordingExecutor) last() Assignment {
 func (e *recordingExecutor) deliver(t *testing.T, key AssignmentKey, out Outcome) {
 	t.Helper()
 	e.mu.Lock()
-	d, ok := e.delivers[key]
+	ch, ok := e.outcomes[key]
 	e.mu.Unlock()
 	if !ok {
-		t.Fatalf("no deliver registered for %+v", key)
+		t.Fatalf("no outcome record for %+v", key)
 	}
 	out.Key = key
-	d(out)
+	ch <- out
 }
 
 // Advance records the start barrier and hands the model call to the executor
@@ -200,11 +221,19 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 	// The attempt finishes on the executor; its Outcome reaches the new owner.
 	result := textResult("done")
 	exec.deliver(t, a.Key(), Outcome{Model: &result})
-	mu.Lock()
-	got := len(reattached)
-	mu.Unlock()
-	if got != 1 {
-		t.Fatalf("reattached outcomes = %d", got)
+	deadline := time.After(2 * time.Second)
+	for {
+		mu.Lock()
+		got := len(reattached)
+		mu.Unlock()
+		if got == 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("reattached outcomes = %d", got)
+		case <-time.After(time.Millisecond):
+		}
 	}
 	record, err := stack.runtime.Record(ctx, testSession, "run-1")
 	if err != nil || record.Snapshot.State.Status != RunCompleted {
@@ -251,9 +280,8 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 	}
 }
 
-// LocalExecutor.Attach answers for attempts this process still runs and
-// refuses once they completed; Cancel stops in-flight effects and their
-// Outcomes come back marked Cancelled.
+// LocalExecutor exposes in-process execution through the same message-shaped
+// port; GetOutcome reads the eventual result and Cancel stops in-flight effects.
 func TestLocalExecutorAttachAndCancel(t *testing.T) {
 	rt := loopRuntime(t)
 	block := make(chan struct{})
@@ -273,33 +301,31 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
 	a := Assignment{Session: testSession, RunID: "run-1", StepID: "step-1", CallID: "call-1", Claim: "claim-1", Schema: SchemaVersion1,
 		Kind: AssignmentTool, Tool: &ToolAssignment{ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest, Arguments: cj(`{}`), Policy: DirectExecution}}
-	outcomes := make(chan Outcome, 2)
-	if err := exec.Dispatch(context.Background(), a, func(o Outcome) { outcomes <- o }); err != nil {
+	if err := exec.Dispatch(context.Background(), a); err != nil {
 		t.Fatal(err)
 	}
-	if dup := exec.Dispatch(context.Background(), a, func(Outcome) {}); !errors.Is(dup, ErrExecutorRejected) {
-		t.Fatalf("duplicate dispatch = %v", dup)
+	if dup := exec.Dispatch(context.Background(), a); dup != nil {
+		t.Fatalf("idempotent duplicate dispatch = %v", dup)
 	}
-	attached, err := exec.Attach(context.Background(), a, func(o Outcome) { outcomes <- o })
+	attached, err := exec.Attach(context.Background(), a.Key())
 	if err != nil || !attached {
 		t.Fatalf("attach running = %v %v", attached, err)
 	}
-	if err := exec.Cancel(context.Background(), "run-1"); err != nil {
+	if err := exec.Cancel(context.Background(), a.Key()); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case out := <-outcomes:
-		if !out.Cancelled || out.Key != a.Key() {
-			t.Fatalf("cancelled outcome = %+v", out)
-		}
-		if _, unknown := out.Tool.(ToolExecutionUnknown); !unknown {
-			t.Fatalf("cancelled tool outcome = %T", out.Tool)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("cancelled effect never reported")
+	out, err := exec.GetOutcome(context.Background(), a.Key())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if attached, _ := exec.Attach(context.Background(), a, func(Outcome) {}); attached {
-		t.Fatal("attach after completion must be false")
+	if !out.Cancelled || out.Key != a.Key() {
+		t.Fatalf("cancelled outcome = %+v", out)
+	}
+	if _, unknown := out.Tool.(ToolExecutionUnknown); !unknown {
+		t.Fatalf("cancelled tool outcome = %T", out.Tool)
+	}
+	if attached, _ := exec.Attach(context.Background(), a.Key()); !attached {
+		t.Fatal("attach after completion must still find the retained record")
 	}
 	if exec.InFlight() != 0 {
 		t.Fatalf("in-flight = %d after completion", exec.InFlight())
@@ -367,11 +393,14 @@ func TestDeliverMissingFrozenBodyWithdrawsAndReturnsTheError(t *testing.T) {
 // accepts every model assignment and reports the miss as an Outcome.
 type missingBodyExecutor struct{ recordingExecutor }
 
-func (e *missingBodyExecutor) Dispatch(ctx context.Context, a Assignment, deliver Deliver) error {
-	if err := e.recordingExecutor.Dispatch(ctx, a, deliver); err != nil {
+func (e *missingBodyExecutor) Dispatch(ctx context.Context, a Assignment) error {
+	if err := e.recordingExecutor.Dispatch(ctx, a); err != nil {
 		return err
 	}
-	go deliver(Outcome{Key: a.Key(), Err: ErrFrozenValueMissing})
+	e.mu.Lock()
+	ch := e.outcomes[a.Key()]
+	e.mu.Unlock()
+	go func() { ch <- Outcome{Key: a.Key(), Err: ErrFrozenValueMissing} }()
 	return nil
 }
 

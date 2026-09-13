@@ -7,117 +7,52 @@ import (
 	"sync"
 
 	run "github.com/felinics/twilight/agent/run"
+	effect "github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/sdk"
 )
 
-// AssignmentKind names the effect an Assignment asks for.
-type AssignmentKind string
+// The Loop package keeps aliases for the protocol types so existing Run/Loop
+// call sites remain source-compatible. The definitions live in run/effect;
+// this package owns only the local execution implementation and Loop helpers.
+type AssignmentKind = effect.AssignmentKind
+
+type AssignmentKey = effect.AssignmentKey
+
+type ModelAssignment = effect.ModelAssignment
+
+type ToolAssignment = effect.ToolAssignment
+
+type Assignment = effect.Assignment
+
+type Outcome = effect.Outcome
+
+type ExecutionStatus = effect.ExecutionStatus
+
+type Executor = effect.Port
 
 const (
-	AssignmentModel AssignmentKind = "model"
-	AssignmentTool  AssignmentKind = "tool"
+	AssignmentModel          = effect.AssignmentModel
+	AssignmentTool           = effect.AssignmentTool
+	ExecutionNotFound        = effect.ExecutionNotFound
+	ExecutionAccepted        = effect.ExecutionAccepted
+	ExecutionRunning         = effect.ExecutionRunning
+	ExecutionCancelRequested = effect.ExecutionCancelRequested
+	ExecutionCompleted       = effect.ExecutionCompleted
+	ExecutionFailed          = effect.ExecutionFailed
+	ExecutionCancelled       = effect.ExecutionCancelled
+	ExecutionUnknown         = effect.ExecutionUnknown
 )
 
-// AssignmentKey identifies one execution attempt of one target. It is the
-// preimage of the attempt's settlement CommandID (RUN-WIR-4), so an Outcome
-// carrying the key of an attempt that is no longer Executing is stale and is
-// dropped rather than settled.
-type AssignmentKey struct {
-	RunID  run.RunID
-	StepID run.StepID
-	CallID run.CallID // empty for a model step
-	Claim  run.ExecutionClaim
-}
+var (
+	ErrExecutionNotFound = effect.ErrExecutionNotFound
+	ErrOutcomeNotReady   = effect.ErrOutcomeNotReady
+)
 
-// ModelAssignment is one model call. The request body is named by digest:
-// the executor fetches it from the content-addressed frozen value store, so
-// the assignment itself never carries the body (RUN-WIR-4).
-type ModelAssignment struct {
-	Model         run.ModelRef
-	RequestDigest run.Digest
-}
-
-// ToolAssignment is one tool call under a frozen binding (RUN-MCH-2). The
-// executor validates the binding against its implementation before the start
-// barrier (Validate) and executes it after (Dispatch).
-type ToolAssignment struct {
-	ToolRef          run.ToolRef
-	DefinitionDigest run.Digest
-	Arguments        run.CanonicalJSON
-	Policy           run.ResponsePolicy
-	// Workspace is the execution environment recorded in the Turn's AgentPreset;
-	// the Loop passes it through and does not interpret it.
-	Workspace run.WorkspaceRef
-}
-
-// Assignment is the unit of work the authority hands to an Executor
-// (RUN-EXE-1): which effect, under which attempt, with what frozen inputs.
-type Assignment struct {
-	Session session.SessionID
-	RunID   run.RunID
-	StepID  run.StepID
-	CallID  run.CallID // empty for a model step
-	Claim   run.ExecutionClaim
-	// Schema is the Run's protocol version; the executor uses it to pick the
-	// digest preset it validates tool definitions with.
-	Schema uint16
-	Kind   AssignmentKind
-	Model  *ModelAssignment
-	Tool   *ToolAssignment
-}
-
-// Key returns the attempt identity of the assignment.
-func (a Assignment) Key() AssignmentKey {
-	return AssignmentKey{RunID: a.RunID, StepID: a.StepID, CallID: a.CallID, Claim: a.Claim}
-}
-
-// Outcome is what an executor returns for one Assignment (RUN-EXE-2). Exactly
-// one of Model, Tool or Err is meaningful for the assignment's kind: a model
-// call yields Model or Err (a provider failure, a missing frozen body, or a
-// cancellation), a tool call yields a sealed ToolExecutionOutcome. Cancelled
-// reports that the executor stopped the effect on request; a model call that
-// was cancelled withdraws the step to Open for replanning instead of failing
-// the Run (RUN-LOP-3).
-type Outcome struct {
-	Key       AssignmentKey
-	Model     *sdk.ModelResult
-	Tool      ToolExecutionOutcome
-	Err       error
-	Cancelled bool
-}
-
-// Deliver receives an Outcome. An executor may call it from any goroutine at
-// any time after Dispatch or Attach accepted the assignment; it calls it
-// exactly once per accepted assignment.
+// Deliver is an authority-local outcome sink. It is intentionally not part of
+// Executor: the execution port is message-shaped, while this type is used only
+// inside the authority to feed Loop.Deliver.
 type Deliver func(Outcome)
-
-// Executor is the effect layer port (RUN-EXE-3). The Loop decides and
-// records; the Executor performs effects and reports Outcomes. Whether the
-// two live in one process is a deployment choice: LocalExecutor runs effects
-// in goroutines, a remote implementation forwards Assignments over a
-// transport and delivers the Outcomes it receives.
-type Executor interface {
-	// Validate checks an assignment against the implementation without
-	// producing an effect, before the start barrier (RUN-EXE-5). For a tool:
-	// lookup, definition digest, response policy and arguments (RUN-LOP-4); a
-	// non-nil failure is the Known failure the Loop settles. For a model: that
-	// this executor can serve the ModelRef; a non-nil failure keeps the step
-	// Prepared and no start fact is written (RUN-LOP-3). error reports the
-	// executor itself being unreachable.
-	Validate(ctx context.Context, a Assignment) (*run.ToolFailure, error)
-	// Dispatch accepts an assignment and returns at once; the Outcome arrives
-	// through deliver. An error means the effect was not started.
-	Dispatch(ctx context.Context, a Assignment, deliver Deliver) error
-	// Attach asks, during a takeover, whether the attempt named by a.Key is
-	// still running here. True registers deliver for its Outcome and leaves the
-	// target Executing; false lets the takeover dispose it (RUN-CMT-7).
-	Attach(ctx context.Context, a Assignment, deliver Deliver) (bool, error)
-	// Cancel stops every in-flight assignment of the Run. Their Outcomes are
-	// still delivered (as cancelled or unknown) unless ownership was lost, in
-	// which case the Loop no longer settles them.
-	Cancel(ctx context.Context, runID run.RunID) error
-}
 
 // FrozenRequestReader is the read side of the frozen value store an executor
 // fetches model request bodies from (RUN-WIR-4). run.Runtime satisfies it.
@@ -149,9 +84,11 @@ func AssignmentFromTarget(sid session.SessionID, t run.RecoveryTarget) Assignmen
 	return a
 }
 
-// Reattach adapts an Executor to run.Reattacher for one Session: every target
-// the takeover asks about is turned into its Assignment and offered to the
-// Executor; a reattached attempt delivers its Outcome to deliver.
+// Reattach adapts an Executor to run.Reattacher for one Session. The
+// transport-facing Attach call only deals in the assignment key; the adapter
+// waits for the result and feeds it to the Loop's internal Deliver path. The
+// callback is therefore an authority-local concern, not part of Executor's
+// process-independent interface.
 func Reattach(exec Executor, sid session.SessionID, deliver Deliver) run.Reattacher {
 	return reattacher{exec: exec, sid: sid, deliver: deliver}
 }
@@ -166,15 +103,27 @@ func (r reattacher) Attach(ctx context.Context, t run.RecoveryTarget) (bool, err
 	if r.exec == nil || r.deliver == nil {
 		return false, nil
 	}
-	return r.exec.Attach(ctx, AssignmentFromTarget(r.sid, t), r.deliver)
+	a := AssignmentFromTarget(r.sid, t)
+	attached, err := r.exec.Attach(ctx, a.Key())
+	if err != nil || !attached {
+		return attached, err
+	}
+	go func() {
+		out, err := r.exec.GetOutcome(context.Background(), a.Key())
+		if err != nil {
+			out = Outcome{Key: a.Key(), Err: err}
+		}
+		r.deliver(out)
+	}()
+	return true, nil
 }
 
 // --- LocalExecutor ------------------------------------------------------------
 
-// LocalExecutor runs effects in goroutines of the authority process: the
-// reference Executor and the one every colocated host uses. It keeps an
-// in-flight table so Attach can answer for attempts this process started;
-// after a process restart the table is empty and every Attach is false.
+// LocalExecutor runs effects in goroutines of the authority process. It is
+// the compact in-process implementation of the message-shaped Executor port.
+// Its records are process-scoped: after a process restart Attach cannot find
+// an old assignment and recovery disposes it according to Run policy.
 type LocalExecutor struct {
 	models    ModelCatalog
 	tools     ToolCatalog
@@ -188,10 +137,11 @@ type LocalExecutor struct {
 
 type inflight struct {
 	runID   run.RunID
+	digest  run.Digest
 	cancel  context.CancelFunc
-	mu      sync.Mutex
-	deliver Deliver
-	done    bool
+	done    chan struct{}
+	outcome Outcome
+	closed  bool
 }
 
 // NewLocalExecutor builds the in-process executor. sink receives provisional
@@ -273,11 +223,27 @@ func (e *LocalExecutor) resolveTool(proto run.Protocol, t *ToolAssignment) (Exec
 
 // Dispatch starts the effect in a goroutine. The effect's context is derived
 // from ctx's values but not its cancellation: the caller's request ends when
-// Dispatch returns, while the effect ends by Outcome or Cancel.
-func (e *LocalExecutor) Dispatch(ctx context.Context, a Assignment, deliver Deliver) error {
-	if deliver == nil {
-		return errors.New("agent: loop: nil deliver")
+// Dispatch returns, while the effect ends by Outcome or Cancel. The outcome
+// is retained in the execution record and is read through GetOutcome; it is
+// not delivered through a process-local callback.
+func (e *LocalExecutor) Dispatch(ctx context.Context, a Assignment) error {
+	key := a.Key()
+	digest, err := a.Digest()
+	if err != nil {
+		return fmt.Errorf("%w: assignment digest: %v", ErrExecutorRejected, err)
 	}
+	// Check before resolving catalogs or fetching frozen content: an
+	// idempotent retry must not depend on transient execution dependencies.
+	e.mu.Lock()
+	if existing, ok := e.inflight[key]; ok {
+		e.mu.Unlock()
+		if existing.digest == digest {
+			return nil
+		}
+		return fmt.Errorf("%w: assignment key reused with different content", ErrExecutorRejected)
+	}
+	e.mu.Unlock()
+
 	var execute func(context.Context) Outcome
 	switch a.Kind {
 	case AssignmentModel:
@@ -317,14 +283,16 @@ func (e *LocalExecutor) Dispatch(ctx context.Context, a Assignment, deliver Deli
 		return fmt.Errorf("%w: unknown assignment kind %q", ErrExecutorRejected, a.Kind)
 	}
 
-	key := a.Key()
 	effectCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	entry := &inflight{runID: a.RunID, cancel: cancel, deliver: deliver}
+	entry := &inflight{runID: a.RunID, digest: digest, cancel: cancel, done: make(chan struct{})}
 	e.mu.Lock()
-	if _, dup := e.inflight[key]; dup {
+	if existing, dup := e.inflight[key]; dup {
 		e.mu.Unlock()
 		cancel()
-		return fmt.Errorf("%w: assignment already in flight", ErrExecutorRejected)
+		if existing.digest == digest {
+			return nil // idempotent retry of the same accepted assignment
+		}
+		return fmt.Errorf("%w: assignment key reused with different content", ErrExecutorRejected)
 	}
 	e.inflight[key] = entry
 	e.mu.Unlock()
@@ -336,51 +304,79 @@ func (e *LocalExecutor) Dispatch(ctx context.Context, a Assignment, deliver Deli
 			out.Cancelled = true
 		}
 		e.mu.Lock()
-		delete(e.inflight, key)
+		entry.outcome = out
+		entry.closed = true
+		close(entry.done)
 		e.mu.Unlock()
-		entry.mu.Lock()
-		entry.done = true
-		d := entry.deliver
-		entry.mu.Unlock()
 		cancel()
-		d(out)
 	}()
 	return nil
 }
 
-// Attach answers for attempts this process still runs.
-func (e *LocalExecutor) Attach(_ context.Context, a Assignment, deliver Deliver) (bool, error) {
-	if deliver == nil {
-		return false, errors.New("agent: loop: nil deliver")
-	}
+// Attach answers for attempts this process still runs or has completed. It
+// only observes an existing record and never starts a second effect.
+func (e *LocalExecutor) Attach(_ context.Context, key AssignmentKey) (bool, error) {
 	e.mu.Lock()
-	entry, ok := e.inflight[a.Key()]
+	_, ok := e.inflight[key]
 	e.mu.Unlock()
-	if !ok {
-		return false, nil
-	}
-	entry.mu.Lock()
-	defer entry.mu.Unlock()
-	if entry.done {
-		return false, nil
-	}
-	entry.deliver = deliver
-	return true, nil
+	return ok, nil
 }
 
-// Cancel stops every in-flight assignment of runID; their Outcomes still
-// arrive, marked Cancelled.
-func (e *LocalExecutor) Cancel(_ context.Context, runID run.RunID) error {
+// GetStatus returns the current process-scoped execution status.
+func (e *LocalExecutor) GetStatus(_ context.Context, key AssignmentKey) (ExecutionStatus, error) {
 	e.mu.Lock()
-	var cancels []context.CancelFunc
-	for _, entry := range e.inflight {
-		if entry.runID == runID {
-			cancels = append(cancels, entry.cancel)
-		}
+	entry, ok := e.inflight[key]
+	if !ok {
+		e.mu.Unlock()
+		return ExecutionNotFound, ErrExecutionNotFound
 	}
+	closed := entry.closed
+	out := entry.outcome
 	e.mu.Unlock()
-	for _, c := range cancels {
-		c()
+	if !closed {
+		return ExecutionRunning, nil
+	}
+	if out.Cancelled {
+		return ExecutionCancelled, nil
+	}
+	if _, unknown := out.Tool.(ToolExecutionUnknown); unknown {
+		return ExecutionUnknown, nil
+	}
+	if out.Err != nil {
+		return ExecutionFailed, nil
+	}
+	return ExecutionCompleted, nil
+}
+
+// GetOutcome waits for and returns the stable outcome of an accepted
+// assignment. The local record is intentionally retained for idempotent reads;
+// a production implementation should apply an explicit retention policy.
+func (e *LocalExecutor) GetOutcome(ctx context.Context, key AssignmentKey) (Outcome, error) {
+	e.mu.Lock()
+	entry, ok := e.inflight[key]
+	e.mu.Unlock()
+	if !ok {
+		return Outcome{}, ErrExecutionNotFound
+	}
+	select {
+	case <-entry.done:
+		e.mu.Lock()
+		out := entry.outcome
+		e.mu.Unlock()
+		return out, nil
+	case <-ctx.Done():
+		return Outcome{}, ctx.Err()
+	}
+}
+
+// Cancel requests cancellation of one assignment; its Outcome remains
+// observable through GetOutcome.
+func (e *LocalExecutor) Cancel(_ context.Context, key AssignmentKey) error {
+	e.mu.Lock()
+	entry, ok := e.inflight[key]
+	e.mu.Unlock()
+	if ok {
+		entry.cancel()
 	}
 	return nil
 }
@@ -389,7 +385,13 @@ func (e *LocalExecutor) Cancel(_ context.Context, runID run.RunID) error {
 func (e *LocalExecutor) InFlight() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return len(e.inflight)
+	n := 0
+	for _, entry := range e.inflight {
+		if !entry.closed {
+			n++
+		}
+	}
+	return n
 }
 
 func (e *LocalExecutor) runModel(ctx context.Context, a Assignment, frozenRequest run.ModelRequest, invoker ModelInvoker) Outcome {

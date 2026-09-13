@@ -245,16 +245,15 @@ func (s *Session) summarize(ctx context.Context, entries []chatlog.Entry) (strin
 	a := loop.Assignment{Session: s.sid, RunID: run.RunID("compact-" + randomHex(8)), StepID: "summary",
 		Claim: run.ExecutionClaim(randomHex(16)), Schema: run.SchemaVersion1, Kind: loop.AssignmentModel,
 		Model: &loop.ModelAssignment{Model: preset.Model, RequestDigest: digest}}
-	outcomes := make(chan loop.Outcome, 1)
-	if err := s.h.Executor.Dispatch(ctx, a, func(out loop.Outcome) { outcomes <- out }); err != nil {
+	if err := s.h.Executor.Dispatch(ctx, a); err != nil {
 		return "", err
 	}
-	var out loop.Outcome
-	select {
-	case out = <-outcomes:
-	case <-ctx.Done():
-		_ = s.h.Executor.Cancel(context.WithoutCancel(ctx), a.RunID)
-		return "", ctx.Err()
+	out, err := s.h.Executor.GetOutcome(ctx, a.Key())
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			_ = s.h.Executor.Cancel(context.WithoutCancel(ctx), a.Key())
+		}
+		return "", err
 	}
 	switch {
 	case out.Err != nil:

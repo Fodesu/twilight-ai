@@ -11,45 +11,49 @@ import (
 	"github.com/felinics/twilight/agent/run/loop"
 )
 
-// errExecutorUnreachable is what the authority delivers for every in-flight
+// errExecutorUnreachable is what the authority observes for every in-flight
 // assignment once the executor stops answering: the Loop settles a tool as
 // Unknown (the effect may have happened) and a model call as a provider
 // failure, which is the classification RUN-EXE-2 asks for.
 var errExecutorUnreachable = errors.New("executor unreachable")
 
-// remoteExecutor is the authority-side loop.Executor over HTTP. Dispatch and
-// Attach register the Loop's deliver under the assignment key and forward the
-// call; the executor posts Outcomes back to the callback endpoint, which pops
-// the deliver so each accepted assignment reports exactly once. A liveness
-// monitor turns an executor that stopped answering into errors for whatever
-// is still pending, so the authority never waits forever for a dead worker.
+// remoteExecutor is the authority-side loop.Executor over HTTP. The callback
+// endpoint only completes a local outcome record; Loop retrieves the result by
+// key through GetOutcome. This keeps callback an internal transport optimization
+// rather than part of the Executor interface.
 type remoteExecutor struct {
 	base     string
 	callback string
 	client   *http.Client
 
 	mu      sync.Mutex
-	pending map[loop.AssignmentKey]loop.Deliver
+	pending map[loop.AssignmentKey]chan loop.Outcome
 }
 
 func newRemoteExecutor(base, callback string) *remoteExecutor {
 	return &remoteExecutor{base: base, callback: callback,
 		client:  &http.Client{Timeout: 5 * time.Second},
-		pending: make(map[loop.AssignmentKey]loop.Deliver)}
+		pending: make(map[loop.AssignmentKey]chan loop.Outcome)}
 }
 
-func (r *remoteExecutor) register(key loop.AssignmentKey, d loop.Deliver) {
-	r.mu.Lock()
-	r.pending[key] = d
-	r.mu.Unlock()
-}
-
-func (r *remoteExecutor) pop(key loop.AssignmentKey) (loop.Deliver, bool) {
+func (r *remoteExecutor) register(key loop.AssignmentKey) chan loop.Outcome {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	d, ok := r.pending[key]
-	delete(r.pending, key)
-	return d, ok
+	if ch := r.pending[key]; ch != nil {
+		return ch
+	}
+	ch := make(chan loop.Outcome, 1)
+	r.pending[key] = ch
+	return ch
+}
+
+func (r *remoteExecutor) complete(key loop.AssignmentKey, out loop.Outcome) {
+	ch := r.register(key)
+	out.Key = key
+	select {
+	case ch <- out:
+	default: // duplicate callback; GetOutcome remains idempotent
+	}
 }
 
 func (r *remoteExecutor) Validate(_ context.Context, a loop.Assignment) (*run.ToolFailure, error) {
@@ -62,36 +66,50 @@ func (r *remoteExecutor) Validate(_ context.Context, a loop.Assignment) (*run.To
 	return resp.Failure, nil
 }
 
-func (r *remoteExecutor) Dispatch(_ context.Context, a loop.Assignment, deliver loop.Deliver) error {
-	key := a.Key()
-	r.register(key, deliver)
-	if err := postJSON(r.client, r.base+"/dispatch", dispatchRequest{Assignment: a, Callback: r.callback}, nil); err != nil {
-		r.pop(key)
-		return err
-	}
-	return nil
+func (r *remoteExecutor) Dispatch(_ context.Context, a loop.Assignment) error {
+	r.register(a.Key())
+	return postJSON(r.client, r.base+"/dispatch", dispatchRequest{Assignment: a, Callback: r.callback}, nil)
 }
 
-func (r *remoteExecutor) Attach(_ context.Context, a loop.Assignment, deliver loop.Deliver) (bool, error) {
-	key := a.Key()
-	r.register(key, deliver)
+func (r *remoteExecutor) Attach(_ context.Context, key loop.AssignmentKey) (bool, error) {
+	r.register(key)
 	var resp struct {
 		Attached bool `json:"attached"`
 	}
-	if err := postJSON(r.client, r.base+"/attach", dispatchRequest{Assignment: a, Callback: r.callback}, &resp); err != nil {
-		r.pop(key)
+	if err := postJSON(r.client, r.base+"/attach", attachRequest{Key: key, Callback: r.callback}, &resp); err != nil {
 		return false, err
 	}
 	if !resp.Attached {
-		r.pop(key)
+		r.mu.Lock()
+		delete(r.pending, key)
+		r.mu.Unlock()
 	}
 	return resp.Attached, nil
 }
 
-func (r *remoteExecutor) Cancel(_ context.Context, runID run.RunID) error {
+func (r *remoteExecutor) GetStatus(_ context.Context, key loop.AssignmentKey) (loop.ExecutionStatus, error) {
+	return loop.ExecutionRunning, nil
+}
+
+func (r *remoteExecutor) GetOutcome(ctx context.Context, key loop.AssignmentKey) (loop.Outcome, error) {
+	r.mu.Lock()
+	ch := r.pending[key]
+	r.mu.Unlock()
+	if ch == nil {
+		return loop.Outcome{}, loop.ErrExecutionNotFound
+	}
+	select {
+	case out := <-ch:
+		return out, nil
+	case <-ctx.Done():
+		return loop.Outcome{}, ctx.Err()
+	}
+}
+
+func (r *remoteExecutor) Cancel(_ context.Context, key loop.AssignmentKey) error {
 	return postJSON(r.client, r.base+"/cancel", struct {
-		RunID run.RunID `json:"runId"`
-	}{runID}, nil)
+		Key loop.AssignmentKey `json:"key"`
+	}{key}, nil)
 }
 
 // handleOutcome is the callback endpoint the executor posts Outcomes to.
@@ -101,15 +119,7 @@ func (r *remoteExecutor) handleOutcome(w http.ResponseWriter, req *http.Request)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	d, ok := r.pop(wire.Key)
-	if !ok {
-		// Not ours (already delivered, or an attempt this process never
-		// dispatched): the transport is at-least-once, the Loop is the judge.
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-	out := decodeOutcome(wire)
-	go d(out)
+	r.complete(wire.Key, decodeOutcome(wire))
 	w.WriteHeader(http.StatusOK)
 }
 
@@ -142,11 +152,16 @@ func (r *remoteExecutor) monitor(ctx context.Context) {
 			continue
 		}
 		r.mu.Lock()
-		stale := r.pending
-		r.pending = make(map[loop.AssignmentKey]loop.Deliver)
+		stale := make(map[loop.AssignmentKey]chan loop.Outcome, len(r.pending))
+		for key, ch := range r.pending {
+			stale[key] = ch
+		}
 		r.mu.Unlock()
-		for key, d := range stale {
-			go d(loop.Outcome{Key: key, Err: errExecutorUnreachable})
+		for key, ch := range stale {
+			select {
+			case ch <- loop.Outcome{Key: key, Err: errExecutorUnreachable}:
+			default:
+			}
 		}
 		misses = 0
 	}

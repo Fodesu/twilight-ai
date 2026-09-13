@@ -20,25 +20,53 @@ type recordingExecutor struct {
 	mu       sync.Mutex
 	assigned []loop.Assignment
 	reply    string
+	outcomes map[loop.AssignmentKey]chan loop.Outcome
 }
 
 func (e *recordingExecutor) Validate(context.Context, loop.Assignment) (*run.ToolFailure, error) {
 	return nil, nil
 }
 
-func (e *recordingExecutor) Dispatch(_ context.Context, a loop.Assignment, deliver loop.Deliver) error {
+func (e *recordingExecutor) Dispatch(_ context.Context, a loop.Assignment) error {
 	e.mu.Lock()
+	if e.outcomes == nil {
+		e.outcomes = make(map[loop.AssignmentKey]chan loop.Outcome)
+	}
 	e.assigned = append(e.assigned, a)
+	e.outcomes[a.Key()] = make(chan loop.Outcome, 1)
+	ch := e.outcomes[a.Key()]
+	reply := e.reply
 	e.mu.Unlock()
-	go deliver(loop.Outcome{Key: a.Key(), Model: &sdk.ModelResult{Text: e.reply, FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}})
+	go func() {
+		ch <- loop.Outcome{Key: a.Key(), Model: &sdk.ModelResult{Text: reply, FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}}
+	}()
 	return nil
 }
 
-func (e *recordingExecutor) Attach(context.Context, loop.Assignment, loop.Deliver) (bool, error) {
+func (e *recordingExecutor) Attach(context.Context, loop.AssignmentKey) (bool, error) {
 	return false, nil
 }
 
-func (e *recordingExecutor) Cancel(context.Context, run.RunID) error { return nil }
+func (e *recordingExecutor) GetStatus(context.Context, loop.AssignmentKey) (loop.ExecutionStatus, error) {
+	return loop.ExecutionRunning, nil
+}
+
+func (e *recordingExecutor) GetOutcome(ctx context.Context, key loop.AssignmentKey) (loop.Outcome, error) {
+	e.mu.Lock()
+	ch := e.outcomes[key]
+	e.mu.Unlock()
+	if ch == nil {
+		return loop.Outcome{}, loop.ErrExecutionNotFound
+	}
+	select {
+	case out := <-ch:
+		return out, nil
+	case <-ctx.Done():
+		return loop.Outcome{}, ctx.Err()
+	}
+}
+
+func (e *recordingExecutor) Cancel(context.Context, loop.AssignmentKey) error { return nil }
 
 func (e *recordingExecutor) assignments() []loop.Assignment {
 	e.mu.Lock()

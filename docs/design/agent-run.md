@@ -474,7 +474,7 @@ type ExecutableTool interface {
 ```go
 // 效果层端口（RUN-EXE）
 type AssignmentKind string // model | tool
-type AssignmentKey struct { RunID run.RunID; StepID run.StepID; CallID run.CallID; Claim run.ExecutionClaim }
+type AssignmentKey struct { Session session.SessionID; RunID run.RunID; StepID run.StepID; CallID run.CallID; Claim run.ExecutionClaim }
 type ModelAssignment struct { Model run.ModelRef; RequestDigest run.Digest } // 本体经 FrozenValueStore 按 digest 取
 type ToolAssignment struct { ToolRef run.ToolRef; DefinitionDigest run.Digest; Arguments run.CanonicalJSON; Policy run.ResponsePolicy; Workspace run.WorkspaceRef }
 type Assignment struct {

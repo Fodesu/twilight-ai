@@ -88,7 +88,7 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime boundRuntime, events 
 // the reload should decide (another actor moved the step). A model catalog
 // that cannot serve the step withdraws it to Open and reports the error: no
 // model call has happened.
-func (l *Loop) startModelStep(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot, stepID run.StepID, deliver Deliver) (*AssignmentKey, error) {
+func (l *Loop) startModelStep(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot, stepID run.StepID) (*AssignmentKey, error) {
 	runID := snapshot.State.RunID
 	proto, err := snapshot.Protocol()
 	if err != nil {
@@ -129,7 +129,7 @@ func (l *Loop) startModelStep(ctx context.Context, runtime boundRuntime, events 
 		return nil, fmt.Errorf("agent: loop: started step %q is not current", stepID)
 	}
 
-	if err := l.Executor.Dispatch(ctx, assignment, l.deliverTo(runtime, events, deliver)); err != nil {
+	if err := l.Executor.Dispatch(ctx, assignment); err != nil {
 		// Nothing was called: withdraw the step to Open under this attempt's
 		// recovery identity and surface the condition (RUN-LOP-3).
 		if _, serr := l.settle(context.WithoutCancel(ctx), runtime, events, a, start.Snapshot.Position,
@@ -140,22 +140,6 @@ func (l *Loop) startModelStep(ctx context.Context, runtime boundRuntime, events 
 	}
 	key := assignment.Key()
 	return &key, nil
-}
-
-// deliverTo is the callback a dispatched assignment reports to. A blocking
-// Run supplies its own wait-loop callback. A host calling Advance directly
-// without a callback gets the Outcome settled here, on the executor's
-// goroutine, and has no way to observe a settlement error (a missing frozen
-// body, a fenced write): such a host must pass its own deliver and call
-// Loop.Deliver itself to see the error. The Host does so through its
-// reattach glue and otherwise drives with Run.
-func (l *Loop) deliverTo(runtime boundRuntime, events EventSink, deliver Deliver) Deliver {
-	if deliver != nil {
-		return deliver
-	}
-	return func(out Outcome) {
-		_, _ = l.Deliver(context.Background(), runtime.rt, runtime.sid, out, events)
-	}
 }
 
 // modelCompletion maps a model Outcome to the attempt's settlement command

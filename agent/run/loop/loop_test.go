@@ -311,7 +311,7 @@ func TestToolStartStaleIsNotAnError(t *testing.T) {
 	}, Position: 1, SchemaVersion: SchemaVersion1}
 
 	dispatched, err := loop.startToolCalls(context.Background(), boundRuntime{rt: staleCommitRuntime{}, sid: testSession}, nil, snapshot,
-		StartToolCalls{StepID: stepID, CallIDs: []CallID{callID}}, nil)
+		StartToolCalls{StepID: stepID, CallIDs: []CallID{callID}})
 	if err != nil || len(dispatched) != 0 {
 		t.Fatalf("stale start: dispatched=%d err=%v", len(dispatched), err)
 	}
