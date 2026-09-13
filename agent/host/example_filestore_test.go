@@ -41,7 +41,7 @@ func Example_jsonlPrototype() {
 	defer os.RemoveAll(root)
 
 	tool := &stagedTool{}
-	frozen := run.NewMemoryFrozenValues()
+	content := memoryContent()
 	profile := mustProfile("m-1", []loop.ExecutableTool{tool})
 
 	// ---- process 1 ----------------------------------------------------------
@@ -50,7 +50,7 @@ func Example_jsonlPrototype() {
 		panic(err)
 	}
 	model1 := &scriptedRequests{answers: []sdk.ModelResult{protoToolCall("call-1"), protoText("done"), protoToolCall("call-2")}}
-	p1 := newHost(host.Ports{Store: store1, Frozen: frozen, Clock: clock.Now}, map[run.ModelRef]loop.ModelInvoker{"m-1": model1}, tool)
+	p1 := newHost(host.Ports{Store: store1, Content: content, Clock: clock.Now}, map[run.ModelRef]loop.ModelInvoker{"m-1": model1}, tool)
 	profile1, err := p1.Profiles.Register("jsonl-agent", profile)
 	if err != nil {
 		panic(err)
@@ -130,7 +130,7 @@ func Example_jsonlPrototype() {
 	if err != nil {
 		panic(err)
 	}
-	p2 := newHost(host.Ports{Store: store2, Frozen: frozen, Ownership: session.OpenOptions{Takeover: true}, Clock: clock.Now},
+	p2 := newHost(host.Ports{Store: store2, Content: content, Ownership: session.OpenOptions{Takeover: true}, Clock: clock.Now},
 		map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}}, tool)
 	if _, err := p2.Profiles.Register("jsonl-agent", profile); err != nil {
 		panic(err)

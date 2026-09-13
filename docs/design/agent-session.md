@@ -31,7 +31,7 @@ Atomic Event Group ────────────────┘
        Runtime / Context / UI
 ```
 
-1. **唯一权威历史。** `Session = append-only Event Stream`，`State = Fold(Events)`。Turn、Run、Chatlog 不各自持有权威状态，它们的事实同在一条 stream 上（§2.1 authority）。stream 之外只有两类持久数据，且都以 digest 被 stream 锚定：`FrozenValueStore` 存模型请求本体，Run 事实只记其 digest（RUN-WIR-4）；artifact 的 `RetentionLedger` 自持久化，claim 先于 Append 建立（EXT-WRT-3）。
+1. **唯一权威历史。** `Session = append-only Event Stream`，`State = Fold(Events)`。Turn、Run、Chatlog 不各自持有权威状态，它们的事实同在一条 stream 上（§2.1 authority）。stream 之外只有两类持久数据，且都以 digest 被 stream 锚定：内容寻址的 artifact `cas` ContentStore 存内容本体——模型请求本体是其一个 Authority，Run 事实只记其 digest（RUN-WIR-4）；artifact 的 `RetentionLedger` 自持久化，claim 先于 Append 建立（EXT-WRT-3）。
 
 2. **语义串行化。** 同一 Session 的全部写入（Turn、Run、恢复、Checkpoint）经进程内唯一的 `Writer.Commit`，形成一个确定的全序（EXT-SCP-1、EXT-WRT-1）。kernel 不承担并发控制（SES-SCP-2）。
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
@@ -51,10 +52,13 @@ type SessionStatus struct {
 }
 
 // Session is the facade over one open Session (HST-SES): it submits text,
-// routes it (Deliver into the running Turn, or Start), drains the backlog of
-// queued inputs after settlement, and reads replies from the chatlog.
-// Concurrent Send calls are safe: writes serialize in the Session Writer, and
-// a Send that lands in a running Turn returns already_driving.
+// routes it (Deliver into the running Turn, or Start), drives the Turn,
+// drains the backlog of queued inputs after settlement, and reads replies
+// from the chatlog. Submit routes and returns at once, driving in the
+// background and reporting through Events; Send is the blocking form over
+// the same route-and-drive path. Concurrent calls are safe: writes serialize
+// in the Session Writer, and a call whose input lands in a running Turn
+// reports already_driving.
 type Session struct {
 	// Recovered is the takeover disposition count from opening (RUN-CMT-7).
 	Recovered int
@@ -64,6 +68,53 @@ type Session struct {
 	opts      SessionOptions
 	companion turn.CompanionVersion
 	newTurnID func() turn.TurnID
+
+	// bg bounds the background drives Submit starts; Close cancels it and
+	// waits for them (HST-SES-4). bgN counts the drives in flight and bgIdle
+	// is closed when the count returns to zero, so Wait can observe quiescence
+	// while later Submits are still allowed.
+	bg     context.Context
+	cancel context.CancelFunc
+	bgMu   sync.Mutex
+	bgN    int
+	bgIdle chan struct{}
+}
+
+func (s *Session) bgStart() {
+	s.bgMu.Lock()
+	if s.bgN == 0 {
+		s.bgIdle = make(chan struct{})
+	}
+	s.bgN++
+	s.bgMu.Unlock()
+}
+
+func (s *Session) bgDone() {
+	s.bgMu.Lock()
+	s.bgN--
+	if s.bgN == 0 {
+		close(s.bgIdle)
+	}
+	s.bgMu.Unlock()
+}
+
+// Wait blocks until every background drive Submit has started so far has
+// finished, or ctx ends. It does not cancel anything; Close does. A caller
+// that wants a synchronous view after Submit -- a test, a shutdown sequence,
+// a Send that must not race the backlog drain -- waits here first.
+func (s *Session) Wait(ctx context.Context) error {
+	s.bgMu.Lock()
+	idle, n := s.bgIdle, s.bgN
+	s.bgMu.Unlock()
+	if n == 0 {
+		return nil
+	}
+	select {
+	case <-idle:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // OpenSession ensures the stream exists, takes ownership per the Host's
@@ -92,6 +143,7 @@ func (h *Host) OpenSession(ctx context.Context, sid session.SessionID, opts Sess
 		return nil, err
 	}
 	s := &Session{Recovered: recovered, h: h, sid: sid, opts: opts, companion: companion, newTurnID: newTurnID}
+	s.bg, s.cancel = context.WithCancel(context.Background())
 	if opts.ResumeActive {
 		if _, _, err := s.Resume(ctx); err != nil {
 			return nil, err
@@ -120,58 +172,122 @@ func (s *Session) Status(ctx context.Context) (SessionStatus, error) {
 
 // Send submits text and blocks until it is settled or absorbed: the first
 // Result is the Turn the input landed in, further Results are backlog Turns
-// this call drained after settlement (HST-SES-2). Concurrent Sends race on
-// routing (Deliver or Start); a lost race re-routes, and an input another
-// driver already took returns as already_driving.
+// this call drained after settlement (HST-SES-2). It is Submit's route
+// followed by a synchronous drive. Concurrent Sends race on routing (Deliver
+// or Start); a lost race re-routes, and an input another driver already took
+// returns as already_driving.
 func (s *Session) Send(ctx context.Context, text string) ([]Result, error) {
 	in, err := s.h.SubmitText(ctx, s.sid, text)
 	if err != nil {
 		return nil, err
 	}
+	ref, absorbed, err := s.routeInput(ctx, in)
+	if err != nil {
+		return nil, err
+	}
+	if absorbed != nil {
+		return []Result{*absorbed}, nil
+	}
+	resp, err := s.h.Drive(ctx, ref)
+	if err != nil {
+		return nil, err
+	}
+	return s.settled(ctx, resp)
+}
+
+// Submit submits text, commits its route and returns the Turn it landed in
+// without waiting (HST-SES-4). The Turn is driven to settlement -- and the
+// backlog drained -- in the background; progress and the reply arrive on
+// Events, failures on Events and Ports.Warn. Close cancels the background
+// drive; a cancelled Turn stays active and resumes on the next open.
+func (s *Session) Submit(ctx context.Context, text string) (turn.TurnRef, error) {
+	in, err := s.h.SubmitText(ctx, s.sid, text)
+	if err != nil {
+		return turn.TurnRef{}, err
+	}
+	ref, absorbed, err := s.routeInput(ctx, in)
+	if err != nil {
+		return turn.TurnRef{}, err
+	}
+	if absorbed != nil {
+		// A running driver carries the input; nothing to drive here.
+		return turn.TurnRef{SessionID: s.sid, TurnID: absorbed.TurnID}, nil
+	}
+	s.bgStart()
+	go func() {
+		defer s.bgDone()
+		resp, err := s.h.Drive(s.bg, ref)
+		if err != nil {
+			s.h.fail(s.sid, fmt.Errorf("host: driving turn %s: %w", ref.TurnID, err))
+			return
+		}
+		if _, err := s.settled(s.bg, resp); err != nil {
+			s.h.fail(s.sid, fmt.Errorf("host: settling turn %s: %w", ref.TurnID, err))
+		}
+	}()
+	return ref, nil
+}
+
+// Events is this Session's event stream from now on (HST-EVT-1).
+func (s *Session) Events(ctx context.Context) <-chan Event { return s.h.Events(ctx, s.sid) }
+
+// routeInput commits one input's route with the conflict retry of HST-SES-3.
+// It returns the Turn to drive, or the already_driving Result when another
+// driver took the input first.
+func (s *Session) routeInput(ctx context.Context, in run.AgentInput) (turn.TurnRef, *Result, error) {
 	var lastErr error
 	for attempt := 0; attempt < 4; attempt++ {
-		resp, err := s.Route(ctx, []run.AgentInput{in})
+		ref, err := s.commitRoute(ctx, []run.AgentInput{in})
 		if err == nil {
-			return s.settled(ctx, resp)
+			return ref, nil, nil
 		}
 		if !errors.Is(err, turn.ErrConflict) {
-			return nil, err
+			return turn.TurnRef{}, nil, err
 		}
 		lastErr = err
 		if r, taken := s.absorbed(ctx, in); taken {
-			return []Result{r}, nil
+			return turn.TurnRef{}, &r, nil
 		}
 	}
-	return nil, lastErr
+	return turn.TurnRef{}, nil, lastErr
 }
 
 // Route is HST-DRV-3: commit the inputs' route -- Deliver into the active
 // Turn, or Start a new one -- then drive the Turn to its next quiescent point.
 // A Turn awaiting Retry or Settle is a conflict: those are host decisions.
 func (s *Session) Route(ctx context.Context, inputs []run.AgentInput) (turn.TurnResponse, error) {
-	surface, err := s.h.TurnSurface(ctx, s.sid)
+	ref, err := s.commitRoute(ctx, inputs)
 	if err != nil {
 		return turn.TurnResponse{}, err
 	}
-	var ref turn.TurnRef
+	return s.h.Drive(ctx, ref)
+}
+
+// commitRoute is the commit half of Route: Deliver into the active Turn or
+// Start a new one, returning the Turn the inputs landed in.
+func (s *Session) commitRoute(ctx context.Context, inputs []run.AgentInput) (turn.TurnRef, error) {
+	surface, err := s.h.TurnSurface(ctx, s.sid)
+	if err != nil {
+		return turn.TurnRef{}, err
+	}
 	if active, ok := surface.Active(); ok {
-		ref = turn.TurnRef{SessionID: s.sid, TurnID: active.TurnID}
+		ref := turn.TurnRef{SessionID: s.sid, TurnID: active.TurnID}
 		if _, err := s.h.Coordinator.Deliver(ctx, turn.DeliverRequest{Ref: ref, Inputs: inputs}); err != nil {
-			return turn.TurnResponse{}, err
+			return turn.TurnRef{}, err
 		}
-	} else {
-		for _, v := range surface.Turns {
-			if v.Status == turn.TurnAttemptFailed {
-				return turn.TurnResponse{}, fmt.Errorf("%w: turn %s awaits Retry or Settle", turn.ErrConflict, v.TurnID)
-			}
-		}
-		ref = turn.TurnRef{SessionID: s.sid, TurnID: s.newTurnID()}
-		if _, err := s.h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref, Inputs: inputs,
-			Profile: s.opts.Profile, Companion: s.companion}); err != nil {
-			return turn.TurnResponse{}, err
+		return ref, nil
+	}
+	for _, v := range surface.Turns {
+		if v.Status == turn.TurnAttemptFailed {
+			return turn.TurnRef{}, fmt.Errorf("%w: turn %s awaits Retry or Settle", turn.ErrConflict, v.TurnID)
 		}
 	}
-	return s.h.Drive(ctx, ref)
+	ref := turn.TurnRef{SessionID: s.sid, TurnID: s.newTurnID()}
+	if _, err := s.h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref, Inputs: inputs,
+		Profile: s.opts.Profile, Companion: s.companion}); err != nil {
+		return turn.TurnRef{}, err
+	}
+	return ref, nil
 }
 
 // Drain is HST-DRV-4: start the next Turn from the backlog of
@@ -250,8 +366,14 @@ func (s *Session) Retry(ctx context.Context) ([]Result, bool, error) {
 	return out, true, err
 }
 
-// Close releases this Session's Writer; other Sessions of the Host stay open.
+// Close cancels the background drives Submit started, waits for them to
+// return, then releases this Session's Writer; other Sessions of the Host
+// stay open. A Turn a cancelled drive left active resumes on the next open.
 func (s *Session) Close(ctx context.Context) error {
+	if s.cancel != nil {
+		s.cancel()
+	}
+	_ = s.Wait(context.Background()) // drives observe the cancelled bg ctx and return
 	w, err := s.h.Writers.Writer(ctx, s.sid)
 	if err != nil {
 		return err

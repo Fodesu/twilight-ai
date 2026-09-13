@@ -54,7 +54,7 @@ type harness struct {
 	registry *extension.Registry
 	bindings *artifact.MemoryBindingStore
 	ledger   *artifact.MemoryLedger
-	frozen   *run.MemoryFrozenValues
+	frozen   run.FrozenValueStore
 	cache    *extension.MemoryProjectionCache
 	clock    *clock
 	writers  writer.Writers
@@ -70,7 +70,7 @@ func newHarness(t testing.TB, f Fixture) *harness {
 	}
 	bindings := artifact.NewMemoryBindingStore()
 	h := &harness{t: t, ctx: context.Background(), fixture: f, store: f.Store, registry: registry, bindings: bindings,
-		ledger: artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings}), frozen: run.NewMemoryFrozenValues(),
+		ledger: artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings}), frozen: runmod.FrozenValuesInMemory(),
 		cache: extension.NewMemoryProjectionCache(), clock: &clock{now: time.Unix(1_000_000, 0)}}
 	if _, err := f.Store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid}); err != nil {
 		t.Fatal(err)

@@ -644,8 +644,9 @@ func testFrozenValues(t *testing.T, factory Factory) {
 		t.Fatalf("unknown digest = %v", err)
 	}
 	h.mustCommit("r1", run.DeriveSettlementCommandID("r1", step, "", claim), 0, run.SubmitModelResult{StepID: step, Result: textResult("done")})
-	h.frozen.Delete(digest)
+	// The body is EventBound content the artifact layer retains; Record never
+	// depends on it (RUN-WIR-4).
 	if _, err := h.rt.Record(h.ctx, sid, "r1"); err != nil {
-		t.Fatalf("record after dropping the settled body: %v", err)
+		t.Fatalf("record after settlement: %v", err)
 	}
 }

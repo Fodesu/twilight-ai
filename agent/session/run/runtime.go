@@ -58,7 +58,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		return nil, errors.New("runmod: runtime requires a Companion")
 	}
 	if cfg.Frozen == nil {
-		cfg.Frozen = run.NewMemoryFrozenValues()
+		cfg.Frozen = FrozenValuesInMemory()
 	}
 	if cfg.Snapshot == nil {
 		cfg.Snapshot = DefaultSnapshotPolicy
@@ -68,9 +68,6 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 	return &Runtime{cfg: cfg}, nil
 }
-
-// NewMemoryFrozenValues is the in-process FrozenValueStore.
-func NewMemoryFrozenValues() *run.MemoryFrozenValues { return run.NewMemoryFrozenValues() }
 
 func (r *Runtime) nowMilli() int64 { return r.cfg.Now().UnixMilli() }
 

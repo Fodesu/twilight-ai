@@ -8,6 +8,7 @@ import (
 	"github.com/felinics/twilight/agent/host"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
+	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -53,8 +54,9 @@ func (e *recordingExecutor) assignments() []loop.Assignment {
 func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 	ctx := context.Background()
 	exec := &recordingExecutor{reply: "hello from the executor"}
-	frozen := run.NewMemoryFrozenValues()
-	h, err := host.New(host.Ports{Executor: exec, Frozen: frozen})
+	content := memoryContent()
+	frozen := runmod.FrozenValues(content)
+	h, err := host.New(host.Ports{Executor: exec, Content: content})
 	if err != nil {
 		t.Fatal(err)
 	}

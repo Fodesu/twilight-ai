@@ -40,7 +40,7 @@ type harness struct {
 	ctx      context.Context
 	store    session.Store
 	registry *extension.Registry
-	frozen   *run.MemoryFrozenValues
+	frozen   run.FrozenValueStore
 	now      int64
 	seq      int
 	writers  writer.Writers
@@ -54,7 +54,7 @@ func newHarness(t testing.TB, f Fixture) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, ctx: context.Background(), store: f.Store, registry: registry, frozen: run.NewMemoryFrozenValues(), now: 1_000}
+	h := &harness{t: t, ctx: context.Background(), store: f.Store, registry: registry, frozen: runmod.FrozenValuesInMemory(), now: 1_000}
 	if _, err := f.Store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
 	}

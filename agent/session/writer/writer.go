@@ -95,9 +95,20 @@ type Admission struct {
 // ClaimOwnerKind is the ClaimOwner.Kind of Session commits (EXT-WRT-5).
 const ClaimOwnerKind = "twilight/session/commit"
 
-// WritersConfig carries the deployment's projection cache. Both fields are
-// optional: with no cache the Writer folds every registered projection from the
-// beginning of the log and stores nothing, exactly as before.
+// CommitObserver sees every group a Writer applies, in commit order, after
+// it is durable (EXT-WRT-7). It is the one source every observation of a
+// Session derives from: Loop events, turn lifecycle and chatlog entries are
+// all rows of applied groups. Observers run outside the Writer's critical
+// section and are best effort: a panic is contained and never reaches the
+// committer.
+type CommitObserver interface {
+	Committed(ctx context.Context, sid session.SessionID, rows []session.SessionEvent)
+}
+
+// WritersConfig carries the deployment's projection cache and observers. Every
+// field is optional: with no cache the Writer folds every registered
+// projection from the beginning of the log and stores nothing; with no
+// observers nothing is notified.
 type WritersConfig struct {
 	// Cache holds folded projection states, so a reopening Writer starts from
 	// one instead of refolding the whole log (EXT-PRJ-3).
@@ -106,6 +117,8 @@ type WritersConfig struct {
 	// means extension.CacheEvery(extension.DefaultCacheEvery). It never affects reading: an entry
 	// the cache already holds is used whoever wrote it.
 	CachePolicy extension.CachePolicy
+	// Observers are notified of every applied group (EXT-WRT-7).
+	Observers []CommitObserver
 }
 
 // DeriveClaimID is EXT-WRT-5.
@@ -141,6 +154,10 @@ type sessionWriter struct {
 	cachePolicy extension.CachePolicy
 	cached      map[projectionKey]session.Head
 	lost        error
+	// observers are notified after each applied commit; notifyMu keeps the
+	// notifications in commit order without holding mu (EXT-WRT-7).
+	observers []CommitObserver
+	notifyMu  sync.Mutex
 }
 
 // OpenWriter takes ownership of sid and rebuilds the idempotency index and
@@ -165,7 +182,7 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 	}
 	w := &sessionWriter{kernel: kernel, registry: registry, admission: admission, sid: sid,
 		states: make(map[projectionKey]any), scopes: make(map[projectionKey]*extension.ProjectionScope),
-		cache: cfg.Cache, cachePolicy: policy, cached: make(map[projectionKey]session.Head)}
+		cache: cfg.Cache, cachePolicy: policy, cached: make(map[projectionKey]session.Head), observers: cfg.Observers}
 	if err := w.rebuild(ctx, store); err != nil {
 		_ = kernel.Close(ctx)
 		return nil, err
@@ -386,10 +403,21 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	}
 	w.mu.Lock()
 	// The critical section is read → decide → validate → append (EXT-WRT-1).
-	// Cache writes planned by an applied commit run after the unlock: they are
-	// derived data and must not lengthen the section (EXT-PRJ-7).
+	// Cache writes and observer notifications of an applied commit run after
+	// the unlock: they are derived work and must not lengthen the section
+	// (EXT-PRJ-7, EXT-WRT-7). notifyMu is taken before mu is released, so
+	// notifications keep the commit order while a later Commit already runs.
 	var writes []cacheWrite
+	var applied []session.SessionEvent
 	defer func() {
+		if applied != nil && len(w.observers) > 0 {
+			w.notifyMu.Lock()
+			w.mu.Unlock()
+			w.saveRefresh(ctx, writes)
+			w.notify(ctx, applied)
+			w.notifyMu.Unlock()
+			return
+		}
 		w.mu.Unlock()
 		w.saveRefresh(ctx, writes)
 	}()
@@ -480,7 +508,19 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	}
 	w.head = w.kernel.Head()
 	writes = w.planRefresh(false)
+	applied = append([]session.SessionEvent(nil), sealed...)
 	return CommitResult{Outcome: CommitApplied, Events: append([]session.SessionEvent(nil), sealed...), Claim: claim}, nil
+}
+
+// notify hands an applied group to every observer. A panicking observer is
+// contained: observation is derived work and never fails a Commit.
+func (w *sessionWriter) notify(ctx context.Context, rows []session.SessionEvent) {
+	for _, o := range w.observers {
+		func() {
+			defer func() { _ = recover() }()
+			o.Committed(ctx, w.sid, rows)
+		}()
+	}
 }
 
 // appendOutcomeKnown reports the Append errors that guarantee nothing was

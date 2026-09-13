@@ -23,6 +23,7 @@ import (
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/filestore"
+	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/provider/openai/completions"
 	"github.com/felinics/twilight/sdk"
@@ -59,24 +60,30 @@ func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID
 	if err != nil {
 		return err
 	}
-	// Frozen request bodies persist next to the session log, so a restart can
-	// replay the request of a ModelStep that was executing at the crash.
-	frozen, err := filestore.NewFrozenValues(root)
+	// Frozen request bodies persist as cas content next to the session log, so
+	// a restart can replay the request of a ModelStep that was executing at
+	// the crash.
+	content, err := filestore.NewContentStore(root, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
 	if err != nil {
 		return err
 	}
 	// The effect layer: the model and the tool run in this process behind the
 	// Executor port; the Host itself holds neither.
-	executor, err := host.NewLocalExecutor(catalog, frozen, nil, false)
+	executor, err := host.NewLocalExecutor(catalog, content, nil, false)
 	if err != nil {
 		return err
 	}
-	h, err := host.New(host.Ports{Store: store, Frozen: frozen, Executor: executor,
-		Observers: []loop.EventSink{printSink{}}, Ownership: session.OpenOptions{Takeover: true},
-		Warn: func(err error) { fmt.Fprintln(os.Stderr, "host:", err) }})
+	h, err := host.New(host.Ports{Store: store, Content: content, Executor: executor,
+		Ownership: session.OpenOptions{Takeover: true},
+		Warn:      func(err error) { fmt.Fprintln(os.Stderr, "host:", err) }})
 	if err != nil {
 		return err
 	}
+	// Every observation derives from the committed stream: tool activity is
+	// read off the Session's event stream, not from the executor.
+	eventsCtx, stopEvents := context.WithCancel(ctx)
+	defer stopEvents()
+	go printToolActivity(h.Events(eventsCtx, sid))
 	profileRef, err := h.Profiles.Register("cli", profile)
 	if err != nil {
 		return err
@@ -196,17 +203,21 @@ func shutdown(ctx context.Context, s *host.Session, cancel func(), wg *sync.Wait
 	return s.Close(ctx)
 }
 
-// printSink surfaces tool activity while a Turn runs (observation only).
-type printSink struct{}
-
-func (printSink) Emit(_ context.Context, e loop.Event) error {
-	switch e.Kind {
-	case loop.EventToolStarted:
-		fmt.Printf("tool call %s started\n", e.CallID)
-	case loop.EventToolCompleted:
-		fmt.Printf("tool call %s completed\n", e.CallID)
+// printToolActivity surfaces tool activity from the Session's event stream:
+// the run facts that start and settle a tool call, decoded by the Host.
+func printToolActivity(events <-chan host.Event) {
+	for e := range events {
+		ev, ok := e.Value.(runmod.Event)
+		if !ok {
+			continue
+		}
+		switch f := ev.Fact.(type) {
+		case run.ToolCallStarted:
+			fmt.Printf("tool call %s started\n", f.CallID)
+		case run.ToolCallCompleted:
+			fmt.Printf("tool call %s completed\n", f.CallID)
+		}
 	}
-	return nil
 }
 
 // --- agent -------------------------------------------------------------------

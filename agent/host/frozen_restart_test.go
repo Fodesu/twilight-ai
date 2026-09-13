@@ -9,6 +9,7 @@ import (
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/filestore"
+	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -25,9 +26,9 @@ func (m *gateModel) Generate(_ context.Context, req sdk.Request) (sdk.ModelResul
 	return sdk.ModelResult{Text: "late", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}, nil
 }
 
-// The file-backed FrozenValueStore closes the model-interruption recovery
+// The file-backed cas content store closes the model-interruption recovery
 // path: process 1 dies while a ModelStep is Executing, and process 2 — whose
-// FrozenValues instance and Executor are new, so the body can only come from
+// ContentStore instance and Executor are new, so the body can only come from
 // disk and no attempt reattaches — takes over (RecoverModelExecution returns
 // the step to Prepared) and Resume replays the same frozen request to its
 // model (RUN-WIR-4, RUN-CMT-7).
@@ -42,12 +43,12 @@ func TestFrozenRequestReplayedAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	frozen1, err := filestore.NewFrozenValues(root)
+	content1, err := filestore.NewContentStore(root, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	gate := &gateModel{started: make(chan sdk.Request, 1), release: make(chan struct{})}
-	p1 := newHost(host.Ports{Store: store1, Frozen: frozen1}, map[run.ModelRef]loop.ModelInvoker{"m-1": gate})
+	p1 := newHost(host.Ports{Store: store1, Content: content1}, map[run.ModelRef]loop.ModelInvoker{"m-1": gate})
 	profileRef, err := p1.Profiles.Register("a1", profile)
 	if err != nil {
 		t.Fatal(err)
@@ -73,12 +74,12 @@ func TestFrozenRequestReplayedAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	frozen2, err := filestore.NewFrozenValues(root)
+	content2, err := filestore.NewContentStore(root, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	replay := &scriptedRequests{}
-	p2 := newHost(host.Ports{Store: store2, Frozen: frozen2, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": replay})
+	p2 := newHost(host.Ports{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": replay})
 	if _, err := p2.Profiles.Register("a1", profile); err != nil {
 		t.Fatal(err)
 	}

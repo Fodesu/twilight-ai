@@ -82,7 +82,7 @@ command 不持久化。`CommandEnvelope.ID` 就是该 command 产生的 event �
 | 工具输出 | `ToolCallCompleted.OutputDigest` / `ToolCallAnswered.ResponseDigest` | 同组的 `twilight/chatlog/tool_result`，其 `SourceDigest` 等于该 digest |
 | tool call 参数 | `ToolCallBinding.Arguments` | fact 本身（执行不得依赖 chatlog 解码） |
 
-companion 与 Attach 事件与 Run 事实一起经 Module Framework 的 admission（EXT-REF-2）：它们可以携带 `ReferencePart`，其 Binding 的 claim 由 Writer 在 `Append` 之前建立（EXT-WRT-3）。`FrozenValueStore` 是内容寻址存储：`Put(digest, bytes)` 幂等，`Get(digest)`。请求本体的有效期是该 ModelStep 从 Prepared 到终结；step 终结后 adapter 可按保留策略删除或归档，Record 校验不依赖本体。适配器有内存实现（`run.MemoryFrozenValues`）与文件实现（`agent/session/filestore.NewFrozenValues`，与 session 目录同根落盘）；宿主用文件实现时，进程重启后 `RecoverModelExecution` 的重放可从盘上取回请求本体。工具列表摘要（`DigestToolSpecs`）的预映像不区分 nil 与空列表：fact wire 省略空列表，重算方拿到的是 nil。
+companion 与 Attach 事件与 Run 事实一起经 Module Framework 的 admission（EXT-REF-2）：它们可以携带 `ReferencePart`，其 Binding 的 claim 由 Writer 在 `Append` 之前建立（EXT-WRT-3）。`FrozenValueStore` 是 run 层对内容寻址存储的端口：`Put(digest, bytes)` 幂等，`Get(digest)`。它不是第二个内容寻址存储，而是 artifact `cas` ContentStore 的一个 Authority（`twilight/run/frozen`，`agent/session/run.FrozenValues` 适配）：存储的字节是 RequestDigest 的完整 preimage（versioned envelope body），因此 `digest == sha256(bytes)` 即 cas Key，Get 只凭 digest 重建 Ref，不需要索引。本体以 `EventBound` durability 存入：命名它的事实存在多久它就保留多久，回收是 artifact 层的保留策略，run 不删除。Record 校验不依赖本体。内存与文件两种 ContentStore（`artifact.NewMemoryContentStore`、`filestore.NewContentStore`）经同一适配器服务；宿主用文件实现时，进程重启后 `RecoverModelExecution` 的重放可从盘上取回请求本体。工具列表摘要（`DigestToolSpecs`）的预映像不区分 nil 与空列表：fact wire 省略空列表，重算方拿到的是 nil。
 
 下列 identity 稳定派生并由 Commit 验证：
 

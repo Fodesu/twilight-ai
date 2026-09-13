@@ -27,7 +27,7 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	}
 	writers := writer.NewWriters(store, registry, writer.Admission{}, session.OpenOptions{}, writer.WritersConfig{})
 	runtime, err := runmod.NewRuntime(runmod.Config{Writers: writers, Registry: registry, Store: store,
-		Frozen: run.NewMemoryFrozenValues(), Companion: CompanionV1{}})
+		Frozen: runmod.FrozenValuesInMemory(), Companion: CompanionV1{}})
 	if err != nil {
 		t.Fatal(err)
 	}

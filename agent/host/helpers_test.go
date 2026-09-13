@@ -6,26 +6,28 @@ import (
 	"sync"
 	"time"
 
+	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/host"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
+	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
 )
 
 // newHost composes a colocated Host for tests: a LocalExecutor over the given
-// models and tools shares the Host's frozen store, so the executor reads the
-// request bodies the Runtime writes. ports.Frozen and ports.Executor are
+// models and tools shares the Host's content store, so the executor reads the
+// request bodies the Runtime writes. ports.Content and ports.Executor are
 // filled in; the other ports are taken as given.
 func newHost(ports host.Ports, models map[run.ModelRef]loop.ModelInvoker, tools ...loop.ExecutableTool) *host.Host {
-	if ports.Frozen == nil {
-		ports.Frozen = run.NewMemoryFrozenValues()
+	if ports.Content == nil {
+		ports.Content = memoryContent()
 	}
 	cat, err := host.NewCatalog(models, tools...)
 	if err != nil {
 		panic(err)
 	}
-	exec, err := host.NewLocalExecutor(cat, ports.Frozen, nil, false)
+	exec, err := host.NewLocalExecutor(cat, ports.Content, nil, false)
 	if err != nil {
 		panic(err)
 	}
@@ -35,6 +37,15 @@ func newHost(ports host.Ports, models map[run.ModelRef]loop.ModelInvoker, tools 
 		panic(err)
 	}
 	return h
+}
+
+// memoryContent is an in-process cas store under the frozen authority.
+func memoryContent() artifact.ContentStore {
+	store, err := artifact.NewMemoryContentStore(runmod.FrozenAuthority, artifact.MemoryContentStoreOptions{})
+	if err != nil {
+		panic(err)
+	}
+	return store
 }
 
 // mustProfile builds the one-model Profile the tests register.

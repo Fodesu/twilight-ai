@@ -42,9 +42,11 @@ type Artifacts struct {
 type Ports struct {
 	// Store is the Session kernel; nil selects an in-memory store.
 	Store session.Store
-	// Frozen holds model request bodies by digest (RUN-WIR-4); nil selects an
-	// in-memory store. Executors read it; the Runtime writes it.
-	Frozen run.FrozenValueStore
+	// Content is the cas ContentStore the frozen model request bodies live in
+	// under runmod.FrozenAuthority (RUN-WIR-4); nil selects an in-memory store.
+	// The Runtime writes bodies there and executors read them, so a colocated
+	// LocalExecutor is built over the same store.
+	Content artifact.ContentStore
 	// Artifacts are the binding store and retention ledger; nil fields select
 	// in-memory implementations.
 	Artifacts Artifacts
@@ -57,8 +59,9 @@ type Ports struct {
 	// Executor is the effect layer port (RUN-EXE-3): required. A colocated
 	// host passes NewLocalExecutor; a cloud host passes a remote client.
 	Executor loop.Executor
-	// Observers receive Loop observations; nil discards them.
-	Observers []loop.EventSink
+	// Observers are notified of every group the Host's Writers apply
+	// (EXT-WRT-7); the Host's own event stream (Events) is one of them.
+	Observers []writer.CommitObserver
 	// Modules are application modules registered after the first-party three
 	// (EXT-APP); each carries its own non-twilight Source.
 	Modules []extension.ModuleDescriptor
@@ -92,7 +95,7 @@ type Host struct {
 
 	registry *extension.Registry
 	frozen   run.FrozenValueStore
-	sink     loop.EventSink
+	bus      *eventBus
 	now      func() time.Time
 	warn     func(error)
 
@@ -133,16 +136,18 @@ func New(p Ports) (*Host, error) {
 			cache = extension.NewMemoryProjectionCache()
 		}
 	}
-	frozen := p.Frozen
-	if frozen == nil {
-		frozen = run.NewMemoryFrozenValues()
+	frozen, err := frozenValues(p.Content)
+	if err != nil {
+		return nil, err
 	}
 	now := p.Clock
 	if now == nil {
 		now = time.Now
 	}
+	bus := newEventBus(registry)
+	observers := append([]writer.CommitObserver{bus}, p.Observers...)
 	writers := writer.NewWriters(store, registry, writer.Admission{Bindings: bindings, Ledger: ledger}, p.Ownership,
-		writer.WritersConfig{Cache: cache, CachePolicy: runmod.WriterCachePolicy(p.CacheEvery)})
+		writer.WritersConfig{Cache: cache, CachePolicy: runmod.WriterCachePolicy(p.CacheEvery), Observers: observers})
 	runtime, err := runmod.NewRuntime(runmod.Config{
 		Writers: writers, Registry: registry, Store: store,
 		Frozen: frozen, Companion: turn.CompanionV1{}, Cache: cache, Now: now,
@@ -164,10 +169,19 @@ func New(p Ports) (*Host, error) {
 	}
 	h := &Host{
 		Store: store, Writers: writers, Runtime: runtime, Profiles: profiles, Executor: p.Executor, Decisions: decisions,
-		registry: registry, frozen: frozen, sink: fanOut(p.Observers), now: now, warn: warn, loops: make(map[turn.ProfileRef]*loop.Loop),
+		registry: registry, frozen: frozen, bus: bus, now: now, warn: warn, loops: make(map[turn.ProfileRef]*loop.Loop),
 	}
 	h.Coordinator = &turn.Coordinator{Writers: writers, Runtime: runtime, Now: now}
 	return h, nil
+}
+
+// frozenValues is the run layer's view of the content store: nil selects an
+// in-memory cas store under runmod.FrozenAuthority.
+func frozenValues(content artifact.ContentStore) (run.FrozenValueStore, error) {
+	if content == nil {
+		return runmod.FrozenValuesInMemory(), nil
+	}
+	return runmod.FrozenValues(content), nil
 }
 
 // --- profiles --------------------------------------------------------------------
@@ -283,7 +297,7 @@ func (h *Host) Drive(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse, 
 		if err != nil {
 			return turn.TurnResponse{}, err
 		}
-		if _, err := l.Run(ctx, h.Runtime, ref.SessionID, view.ActiveRun, h.sink); err != nil {
+		if _, err := l.Run(ctx, h.Runtime, ref.SessionID, view.ActiveRun, nil); err != nil {
 			if errors.Is(err, loop.ErrRunAlreadyRunning) {
 				resp, rerr := h.Coordinator.Status(ctx, ref)
 				if rerr != nil {
@@ -298,6 +312,14 @@ func (h *Host) Drive(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse, 
 	return h.Coordinator.Status(ctx, ref)
 }
 
+// fail reports a failure of work the Host does outside any caller's call:
+// to Ports.Warn and, as a host-level Event, to the Session's subscribers
+// (HST-EVT-1).
+func (h *Host) fail(sid session.SessionID, err error) {
+	h.warn(err)
+	h.bus.failed(sid, err)
+}
+
 // reattachDeliver is the glue a takeover hands the Executor (RUN-CMT-7): an
 // Outcome of an attempt that survived the previous owner is settled through
 // the Loop of the Turn that owns its Run, and the Run is driven on from there.
@@ -306,29 +328,29 @@ func (h *Host) reattachDeliver(sid session.SessionID) loop.Deliver {
 		ctx := context.Background()
 		surface, err := h.TurnSurface(ctx, sid)
 		if err != nil {
-			h.warn(fmt.Errorf("host: reattached outcome for run %s: %w", out.Key.RunID, err))
+			h.fail(sid, fmt.Errorf("host: reattached outcome for run %s: %w", out.Key.RunID, err))
 			return
 		}
 		turnID, ok := surface.RunOwner[out.Key.RunID]
 		if !ok {
-			h.warn(fmt.Errorf("host: reattached outcome for run %s: no owning turn", out.Key.RunID))
+			h.fail(sid, fmt.Errorf("host: reattached outcome for run %s: no owning turn", out.Key.RunID))
 			return
 		}
 		l, _, err := h.loopFor(surface.Turns[turnID].Profile)
 		if err != nil {
-			h.warn(fmt.Errorf("host: reattached outcome for run %s: %w", out.Key.RunID, err))
+			h.fail(sid, fmt.Errorf("host: reattached outcome for run %s: %w", out.Key.RunID, err))
 			return
 		}
-		res, err := l.Deliver(ctx, h.Runtime, sid, out, h.sink)
+		res, err := l.Deliver(ctx, h.Runtime, sid, out, nil)
 		if err != nil {
-			h.warn(fmt.Errorf("host: settling reattached outcome for run %s: %w", out.Key.RunID, err))
+			h.fail(sid, fmt.Errorf("host: settling reattached outcome for run %s: %w", out.Key.RunID, err))
 			return
 		}
 		if res.Disposition != loop.LoopDelivered {
 			return
 		}
-		if _, err := l.Run(ctx, h.Runtime, sid, out.Key.RunID, h.sink); err != nil && !errors.Is(err, loop.ErrRunAlreadyRunning) {
-			h.warn(fmt.Errorf("host: driving run %s after a reattached outcome: %w", out.Key.RunID, err))
+		if _, err := l.Run(ctx, h.Runtime, sid, out.Key.RunID, nil); err != nil && !errors.Is(err, loop.ErrRunAlreadyRunning) {
+			h.fail(sid, fmt.Errorf("host: driving run %s after a reattached outcome: %w", out.Key.RunID, err))
 		}
 	}
 }
@@ -455,33 +477,4 @@ func randomHex(n int) string {
 		panic("host: rand: " + err.Error())
 	}
 	return hex.EncodeToString(b)
-}
-
-// fanOut delivers every observation to each sink; nil when there is none.
-func fanOut(sinks []loop.EventSink) loop.EventSink {
-	var live []loop.EventSink
-	for _, s := range sinks {
-		if s != nil {
-			live = append(live, s)
-		}
-	}
-	switch len(live) {
-	case 0:
-		return nil
-	case 1:
-		return live[0]
-	}
-	return multiSink(live)
-}
-
-type multiSink []loop.EventSink
-
-func (m multiSink) Emit(ctx context.Context, e loop.Event) error {
-	var first error
-	for _, s := range m {
-		if err := s.Emit(ctx, e); err != nil && first == nil {
-			first = err
-		}
-	}
-	return first
 }

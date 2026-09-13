@@ -35,14 +35,14 @@ func Example_recoverableTurn() {
 	const sid session.SessionID = "session-1"
 	clock := &fakeClock{now: time.Unix(1_000_000, 0)}
 
-	// Shared "durable" state: the Session store and the frozen request bodies.
+	// Shared "durable" state: the Session store and the content store of frozen request bodies.
 	store := session.NewMemoryStore()
-	frozen := run.NewMemoryFrozenValues()
+	content := memoryContent()
 	tool := &lookupTool{block: make(chan struct{})}
 	profile := mustProfile("m-1", []loop.ExecutableTool{tool})
 
 	// ---- process 1 ----------------------------------------------------------
-	p1 := newHost(host.Ports{Store: store, Frozen: frozen, Clock: clock.Now},
+	p1 := newHost(host.Ports{Store: store, Content: content, Clock: clock.Now},
 		map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedModel{}}, tool)
 	if err := p1.CreateSession(ctx, sid); err != nil {
 		panic(err)
@@ -73,7 +73,7 @@ func Example_recoverableTurn() {
 	fmt.Println("process 1: tool call is Executing; process crashes")
 
 	// ---- process 2 ----------------------------------------------------------
-	p2 := newHost(host.Ports{Store: store, Frozen: frozen, Ownership: session.OpenOptions{Takeover: true}, Clock: clock.Now},
+	p2 := newHost(host.Ports{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}, Clock: clock.Now},
 		map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedModel{}}, tool)
 	// The profile is re-registered from the same public configuration, so the
 	// ref the Session recorded still resolves.

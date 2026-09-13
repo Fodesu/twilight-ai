@@ -18,12 +18,12 @@
 type Artifacts struct { Bindings artifact.BindingStore; Ledger artifact.RetentionLedger }
 type Ports struct {
     Store      session.Store              // nil → 内存
-    Frozen     run.FrozenValueStore       // nil → 内存；Runtime 写、Executor 读（RUN-WIR-4）
+    Content    artifact.ContentStore      // nil → 内存；冻结请求本体的 cas 存储（RUN-WIR-4），Runtime 写、Executor 读
     Artifacts  Artifacts                  // 可为零值
     Profiles   ProfileRegistry            // nil → 内存注册表；只存决策身份
     Decisions  decision.Catalogs          // 零值 → decision.DefaultCatalogs()
     Executor   loop.Executor              // 必填：效果层端口（RUN-EXE-3）
-    Observers  []loop.EventSink
+    Observers  []writer.CommitObserver   // 提交观察（EXT-WRT-7）；Host 自己的事件流是其一
     Modules    []extension.ModuleDescriptor
     Clock      func() time.Time
     Cache      extension.ProjectionCache  // nil → Store 能力或内存
@@ -39,6 +39,8 @@ func New(Ports) (*Host, error)
 ```
 
 **HST-PRT-1** 端口按角色分组，每个字段是接口或 core 值类型；Host 不知道拿到的是哪个实现，导出的字段也只有接口与 core 类型。缺省实现只在 nil 时选用，且都是进程内的。
+
+**HST-PRT-3** 内容寻址只有一个端口：`Content` 是 artifact `cas` ContentStore，冻结请求本体是它在 `runmod.FrozenAuthority` 下的内容，Host 与 `NewLocalExecutor` 各以 `runmod.FrozenValues` 适配同一个 store，authority 侧写、executor 侧读。
 
 **HST-PRT-2** Executor 是唯一必填端口：没有效果层的 Host 无法完成任何 Turn，而效果层的实现从不属于宿主层。HST-SCP-3 的判据以一个只记录 Assignment 并按脚本回送 Outcome 的 Executor 验收。
 
@@ -59,7 +61,7 @@ func NewProfile(model run.ModelRef, tools []loop.ExecutableTool, opts ...Profile
 
 ## 4. 驱动
 
-**HST-DRV-1** `Host.Drive(ctx, ref)`：读 `twilight/turn/surface`，Turn 为 `active` 时解析其 Profile、取该 Profile 的 Loop、驱动 `ActiveRun` 到下一个静止点，随后（或 Turn 非 active 时直接）调用 `Coordinator.Status` 组装响应（TRN-STA-1）。Loop 报告同一 Run 已有本地驱动者时，Drive 转为成功响应并置 `ResumeAlreadyDriving`：提交的输入由运行中的驱动者继续推进，调用方不经错误通道分辨这一情形。驱动受调用方 ctx 约束：取消是宿主决定，被取消的驱动使 Turn 保持 `active`，下次 Open 后再驱动即恢复。
+**HST-DRV-1** `Host.Drive(ctx, ref)`：读 `twilight/turn/surface`，Turn 为 `active` 时解析其 Profile、取该 Profile 的 Loop、驱动 `ActiveRun` 到下一个静止点（阻塞式 `Loop.Run`，即 Advance/Deliver 之上的封装，RUN-LOP），随后（或 Turn 非 active 时直接）调用 `Coordinator.Status` 组装响应（TRN-STA-1）。Loop 报告同一 Run 已有本地驱动者时，Drive 转为成功响应并置 `ResumeAlreadyDriving`：提交的输入由运行中的驱动者继续推进，调用方不经错误通道分辨这一情形。驱动受调用方 ctx 约束：取消是宿主决定，被取消的驱动使 Turn 保持 `active`，下次 Open 后再驱动即恢复。
 
 **HST-DRV-2** Loop 按 ProfileRef 组合并缓存：`Decisions.Resolve(profile)` 得到 planner 与 policy，与共享的 Executor 一起构成 `loop.New(executor, planner, policy)`。一个 Run 属于一个 Turn、一个 Turn 只有一个 Profile，因此同一 Run 的全部驱动落在同一个 Loop 上，Loop 的 already-driving 守卫成立（RUN-CMT-6）。
 
@@ -74,7 +76,9 @@ func NewProfile(model run.ModelRef, tools []loop.ExecutableTool, opts ...Profile
 ```go
 func (h *Host) OpenSession(ctx, sid, SessionOptions{Profile, Companion, NewTurnID, ResumeActive, Compact*}) (*Session, error)
 type Result struct { TurnID; Status; Disposition; Reply string }
-func (s *Session) Send(ctx, text string) ([]Result, error)                  // 提交 + Route + 结算后排空
+func (s *Session) Send(ctx, text string) ([]Result, error)                  // 提交 + 路由 + 同步驱动 + 结算后排空
+func (s *Session) Submit(ctx, text string) (turn.TurnRef, error)            // 提交 + 路由，后台驱动，立即返回
+func (s *Session) Events(ctx) <-chan Event                                   // 该 Session 的事件流（HST-EVT-1）
 func (s *Session) Route(ctx, inputs []run.AgentInput) (turn.TurnResponse, error)
 func (s *Session) Drain(ctx) (turn.TurnResponse, bool, error)
 func (s *Session) Resume(ctx) ([]Result, bool, error)
@@ -90,6 +94,10 @@ func (s *Session) Close(ctx) error
 
 **HST-SES-3** 并发 `Send` 安全：写入由该 Session 的 Writer 串行化。路由竞态（两个 Send 同时判定 Start，或投递瞬间结算）表现为 `turn.ErrConflict`，门面重试路由；重试前发现输入已被其他驱动者投递时，返回 `already_driving` 的 `Result`。
 
+**HST-SES-4** `Submit` 提交文本并提交其路由（Deliver 或 Start，同 HST-DRV-3 的提交半段），返回输入落入的 `TurnRef` 后立即返回；驱动、结算后排空与自动 compaction 在门面拥有的后台 goroutine 里进行，其 ctx 由 `Session` 持有、`Close` 取消并等待。进展与回复经 Events 观察；驱动失败经 `Ports.Warn` 与事件流上的一条 host 级 `Event{Err}` 报告，不进 stream。输入被运行中的驱动者接走（already_driving）时 Submit 直接返回该 Turn，不起驱动。`Send` 与 `Submit` 共用路由与结算逻辑，差别只在驱动是同步还是后台。`Wait` 阻塞到已启动的后台驱动全部结束而不取消它们；后台驱动在结算后会排空积压，因此紧随 Submit 的 Send 若不先 Wait，可能被该排空接走而得到 already_driving（HST-SES-3）。
+
+**HST-EVT-1** `Host.Events(ctx, sid)` 是该 Session 从订阅时刻起的事件流：Host 以 `writer.CommitObserver` 接在自己的 `Writers` 上（EXT-WRT-7），每个已应用组的每一行经 Registry 解码为 `Event{Row, Module, Version, Value, Unknown}`，按提交顺序交付；无 codec 的类型或版本以 `Unknown` 交付原行。订阅者之间互不阻塞，慢读者只延迟自己的交付，从不阻塞 Commit。历史不在此流上：从 Store 或投影读取。UI、SSE 与 CLI 的观察都从这一个源头派生，Loop 的 `EventSink` 只保留给 executor 侧的流式增量。
+
 **HST-INP-1** `SubmitInput(ctx, sid, id, text)` 以 `decision.InputContent` 提交用户正文（DEC-INP-1），`SubmitText` 以随机、跨重启无碰撞的 InputID 提交；需要外部幂等键的调用方使用前者。`StartRequest.Inputs[i].ID` 等于已 submitted 的 InputID，`Payload` 等于其 Content。
 
 ## 6. compaction
@@ -103,7 +111,9 @@ func (s *Session) Close(ctx) error
 ```text
 registry    = extension.BuildRegistry(v1, chatlog.Module, runmod.Module, turn.Module, Ports.Modules...)
 writers     = writer.NewWriters(Store, registry, Admission{Artifacts}, Ownership, {Cache, CachePolicy: runmod.WriterCachePolicy(CacheEvery)})
-runtime     = runmod.NewRuntime{Writers, registry, Store, Frozen, Companion: turn.CompanionV1, Cache, Clock}
+frozen      = runmod.FrozenValues(Content)                       // 同一 store 也交给 NewLocalExecutor
+writers     = writer.NewWriters(..., {Cache, CachePolicy, Observers: [eventBus, Ports.Observers...]})
+runtime     = runmod.NewRuntime{Writers, registry, Store, Frozen: frozen, Companion: turn.CompanionV1, Cache, Clock}
 coordinator = turn.Coordinator{Writers, runtime}                 // 纯协议：提交 + Status
 loops       = ProfileRef → loop.New(Executor, planner, policy)   // 首次 Drive 时组合
 ```
@@ -115,9 +125,9 @@ loops       = ProfileRef → loop.New(Executor, planner, policy)   // 首次 Dri
 ## 8. 部署形态
 
 ```text
-本地（colocated）          Store: filestore    Executor: NewLocalExecutor(Catalog, Frozen)   一个进程
+本地（colocated）          Store: filestore    Executor: NewLocalExecutor(Catalog, Content)  一个进程
 云端（Session Service）    Store: 共享/数据库   Executor: 远端 worker 的客户端                 authority 进程无模型客户端、无工具实现
-                           Executor 进程：Catalog + Frozen 只读 + Assignment/Outcome 传输，无 Store
+                           Executor 进程：Catalog + Content 只读 + Assignment/Outcome 传输，无 Store
 ```
 
 两种形态用同一个 `host.New`，差别只在端口实现。core 与宿主层在两者之间没有一行分叉代码。
@@ -130,5 +140,6 @@ loops       = ProfileRef → loop.New(Executor, planner, policy)   // 首次 Dri
 - **HST-DRV-3/4**：active Turn 时 Route 走 Deliver，输入在下一次模型请求里紧随工具结果之后；无 active Turn 时 Route 开新 Turn；Drain 取全部积压开一个 Turn；`attempt_failed` 时 Route 为 conflict。
 - **HST-DRV-5**：接管后 Executing 工具记 Unknown 且同一 RunID 继续；Executing 模型回到 Prepared 并以同一冻结请求重发（文件 Frozen 下由新进程从盘取回）；旧进程的迟到结算被围栏。
 - **HST-SES-1/2/3**：OpenSession 顺序；Send 的首个 Result 与排空 Result；并发 Send 的 `already_driving` 收敛。
+- **HST-SES-4、HST-EVT-1**：Submit 在模型仍阻塞时已返回且 Turn 为 active；事件流按 Seq 顺序交付该 Turn 的 `started` 与 `completed`；后台驱动失败以 `Event{Err}` 与 `Ports.Warn` 报告；同一 Session 上 Send 仍阻塞到 Result。
 - **HST-CKP-1/2**：Compact 的模型请求经 Executor 到达模型；压缩后下一请求以 summary 开头且只含 retained 后缀；重启进程组装同一上下文；active Turn 时 Compact 为 conflict；封闭校验的四类边界。
 - **HST-MEM-2**：`CacheEvery` 到达 Writer；machine projection 从不被 Writer 写入。

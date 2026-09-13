@@ -202,6 +202,16 @@ func NewWriters(store session.Store, registry *Registry, admission Admission, op
 
 **EXT-WRT-6** 一个进程对同一 Session 只打开一个 Writer，`Writers` 负责这一唯一性：首次请求时 `OpenWriter`，之后返回同一实例；Writer 失效（EXT-WRT-4）或 Close 后再次请求返回错误，是否重新 Open 由宿主决定。模块不自行调用 `OpenWriter`。
 
+```go
+// CommitObserver 看到 Writer 应用的每个 group：持久之后、按提交顺序、带封装后的行。
+type CommitObserver interface {
+    Committed(ctx context.Context, sid session.SessionID, rows []session.SessionEvent)
+}
+// WritersConfig.Observers []CommitObserver
+```
+
+**EXT-WRT-7** 提交观察。`WritersConfig.Observers` 在每个 `CommitApplied` 之后收到该组的封装行；被拒、重放（AlreadyApplied/Conflict）与 Noop 不通知。通知在互斥区之外执行——观察者不延长事务边界——但按提交全序串行：Writer 在释放互斥锁之前取得通知锁，后一个 Commit 可以立即进入临界区，它的通知却排在前一个之后。观察是派生工作、尽力而为：观察者 panic 被捕获，不影响 Commit 的结果与返回。它是一个 Session 全部观察的唯一源头：Loop 事件、Turn 生命周期、chatlog 条目都是已应用组里的行；宿主在其上派生事件流（HST-EVT-1），不再有第二条观察通道。
+
 ## 6. pure projection 与缓存
 
 ```go
@@ -265,6 +275,7 @@ v1 conformance 必须验证：
 - **EXT-REG-1 至 4**：immutable Registry、`v` 的写入与选择、多版本 codec 共存、Unknown 保留 raw payload、`Requires` 缺失或成环被拒绝、投影消费范围外事件被拒绝、被依赖事件版本不在声明范围被拒绝；Source 段非法（空、含 `/`、非 UTF-8）被拒绝、`(Source, ID)` 重复被拒绝、同名 ModuleID 在不同 Source 下共存且各自前缀可解析；
 - **EXT-COD-1/2**：wire-first、`v` 保留字段；canonical round-trip 由各模块的测试覆盖；
 - **EXT-REF-1/2**：Extractor 全量提取、cardinality、scheme/durability admission、拒绝时无写入；
+- **EXT-WRT-7**：每个 applied group 恰通知一次、行与日志一致、顺序与 Seq 一致（含并发提交）；被拒与重放不通知；观察者 panic 不影响 Commit；
 - **EXT-WRT-1 至 5**：OpenWriter 后投影等于全量 fold 且 Writer 不保留日志（重开后常驻内存不随日志长度增长）；同 CommitID 重放 AlreadyApplied、不同内容 Conflict、两者无写入；并发调用方串行且各自看到前一次的结果；claim 先于 append，append 失败后 claim 被释放或可被核对回收；`ErrOwnershipLost` 后 Writer 失效；Append 在底层持久化之后返回错误时 Writer 以 `ErrUnknownOutcome` 失效、重开后同一 group 为 `AlreadyApplied` 且后续 Seq 连续、链完整；Append 在写入之前失败时重开后同一 group 为 `Applied`；
 - **EXT-PRJ-1 至 4**：pure fold、组边界、Consumes 与范围外跳过、Ignorable 与非 Ignorable 的 Unknown、缓存复用条件、Writer 内投影与 Store 读取一致。
 - **EXT-PRJ-5 至 7**：干净 Close 后重开不折任何 event；条目只覆盖前缀时只折尾部；日志越界、digest 不符、落在组内、状态不可解码的条目一律回退为全折且不使 Open 失败；被策略排除的投影不被写入，但它已有的条目仍被复用；`CacheEvery(n)` 下条目落后不超过 n 行；未配置缓存时不写任何条目且行为不变。

@@ -1,100 +1,69 @@
 package run
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"sync"
 )
 
-// FrozenValueStore is the content-addressed side store for frozen bodies that
-// facts name by digest only (RUN-WIR-4): today the ModelRequest of a Prepared
-// step. Put is idempotent; a body may be dropped once the step that named it
-// has settled, so readers must treat a missing body as a distinct condition.
+// FrozenValueStore is the run layer's port to the content-addressed side
+// store for frozen bodies that facts name by digest only (RUN-WIR-4): today
+// the ModelRequest of a Prepared step. The digest is the SHA-256 of the stored
+// bytes, so a body is one cas entry whose key is its digest; the adapter that
+// realizes this port over a cas ContentStore lives in agent/session/run.
+// Put is idempotent; a body may be dropped once the step that named it has
+// settled, so readers must treat a missing body as a distinct condition.
 type FrozenValueStore interface {
 	Put(ctx context.Context, digest Digest, value []byte) error
 	Get(ctx context.Context, digest Digest) ([]byte, bool, error)
 }
+
+// FrozenAuthority is the cas Authority under which frozen bodies are stored.
+// It is a string, not an artifact type, because run does not depend on
+// artifact; the adapter converts it.
+const FrozenAuthority = "twilight/run/frozen"
 
 // ErrFrozenValueMissing reports that a body named by a fact is no longer in
 // the FrozenValueStore. Recovery cannot resend the request; the caller decides
 // whether to retry the attempt with a fresh plan.
 var ErrFrozenValueMissing = errors.New("agent: frozen value missing")
 
-// MemoryFrozenValues is the in-process FrozenValueStore. Tests that simulate a
-// process restart share one instance across Runtimes, as a durable adapter
-// would share its table.
-type MemoryFrozenValues struct {
-	mu     sync.RWMutex
-	values map[Digest][]byte
-}
+const frozenRequestType = "model_request"
 
-func NewMemoryFrozenValues() *MemoryFrozenValues {
-	return &MemoryFrozenValues{values: make(map[Digest][]byte)}
-}
-
-func (m *MemoryFrozenValues) Put(ctx context.Context, digest Digest, value []byte) error {
-	if err := checkContext(ctx); err != nil {
-		return err
-	}
-	if digest == "" {
-		return errors.New("agent: frozen values: empty digest")
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, exists := m.values[digest]; exists {
-		return nil
-	}
-	m.values[digest] = append([]byte(nil), value...)
-	return nil
-}
-
-func (m *MemoryFrozenValues) Get(ctx context.Context, digest Digest) ([]byte, bool, error) {
-	if err := checkContext(ctx); err != nil {
-		return nil, false, err
-	}
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	value, ok := m.values[digest]
-	if !ok {
-		return nil, false, nil
-	}
-	return append([]byte(nil), value...), true, nil
-}
-
-// Delete drops one body; adapters call it when the naming step has settled.
-func (m *MemoryFrozenValues) Delete(digest Digest) {
-	m.mu.Lock()
-	delete(m.values, digest)
-	m.mu.Unlock()
-}
-
-// EncodeFrozenRequest renders the canonical bytes stored for a request and
-// verifies they digest to the name the fact will carry.
+// EncodeFrozenRequest renders the bytes stored for a request: the same
+// versioned envelope body the RequestDigest is computed from, so that
+// sha256(bytes) == want and the body is addressable by its own digest.
 func EncodeFrozenRequest(req *ModelRequest, want Digest) ([]byte, error) {
-	got, err := digestRequestV1(*req)
+	body, err := encodeEnvelopeBody(SchemaVersion1, frozenRequestType, *req)
 	if err != nil {
 		return nil, err
 	}
-	if got != want {
+	if got := sha256Digest(body); got != want {
 		return nil, fmt.Errorf("agent: frozen request: body digest %s does not match %s", got, want)
 	}
-	return marshalCanonical(req)
+	return body, nil
 }
 
 // DecodeFrozenRequest restores a request body and checks it still digests to
 // the name it was stored under.
 func DecodeFrozenRequest(raw []byte, want Digest) (ModelRequest, error) {
-	var req ModelRequest
-	if err := decodeStrictJSON(raw, &req); err != nil {
-		return ModelRequest{}, fmt.Errorf("agent: frozen request: %w", err)
-	}
-	got, err := digestRequestV1(req)
-	if err != nil {
-		return ModelRequest{}, err
-	}
-	if got != want {
+	if got := sha256Digest(raw); got != want {
 		return ModelRequest{}, fmt.Errorf("agent: frozen request: stored body digest %s does not match %s", got, want)
 	}
+	prefix := envelopePrefix(SchemaVersion1, frozenRequestType)
+	if !bytes.HasPrefix(raw, prefix) {
+		return ModelRequest{}, errors.New("agent: frozen request: stored body is not a model_request envelope")
+	}
+	var req ModelRequest
+	if err := decodeStrictJSON(raw[len(prefix):], &req); err != nil {
+		return ModelRequest{}, fmt.Errorf("agent: frozen request: %w", err)
+	}
 	return req, nil
+}
+
+// envelopePrefix is the domain prefix EncodeTypedPayload puts before the
+// canonical body (agent/es).
+func envelopePrefix(schemaVersion uint16, typ string) []byte {
+	return []byte(fmt.Sprintf("v%d:%d:%s:", schemaVersion, len(typ), typ))
 }
