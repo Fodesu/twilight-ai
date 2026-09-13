@@ -94,7 +94,22 @@ func (l *Loop) startModelStep(ctx context.Context, runtime boundRuntime, events 
 	if err != nil {
 		return nil, err
 	}
+	prepared, ok := snapshot.State.Current.(run.ModelStep)
+	if !ok || prepared.RefValue.ID != stepID {
+		return nil, fmt.Errorf("agent: loop: model step %q is not current", stepID)
+	}
 	a := newAttempt(runID, stepID, "")
+	assignment := Assignment{Session: runtime.sid, RunID: runID, StepID: stepID, Claim: a.claim, Schema: snapshot.SchemaVersion,
+		Kind: AssignmentModel, Model: &ModelAssignment{Model: prepared.Model, RequestDigest: prepared.RequestDigest}}
+	// Pre-start check (RUN-EXE-5): an executor that cannot serve the model
+	// fails here, with the step still Prepared and no start or recovery fact.
+	unavailable, err := l.Executor.Validate(ctx, assignment)
+	if err != nil {
+		return nil, err
+	}
+	if unavailable != nil {
+		return nil, fmt.Errorf("%w: %s: %s: %s", ErrModelUnavailable, prepared.Model, unavailable.Class, unavailable.Message)
+	}
 	start, err := l.commit(ctx, runtime, runID, a.startID(), snapshot.Position, run.StartModelExecution{StepID: stepID, Claim: a.claim}, proto)
 	if err != nil {
 		if retriable(err) {
@@ -114,8 +129,6 @@ func (l *Loop) startModelStep(ctx context.Context, runtime boundRuntime, events 
 		return nil, fmt.Errorf("agent: loop: started step %q is not current", stepID)
 	}
 
-	assignment := Assignment{Session: runtime.sid, RunID: runID, StepID: stepID, Claim: a.claim, Schema: snapshot.SchemaVersion,
-		Kind: AssignmentModel, Model: &ModelAssignment{Model: modelStep.Model, RequestDigest: modelStep.RequestDigest}}
 	if err := l.Executor.Dispatch(ctx, assignment, l.deliverTo(runtime, events, deliver)); err != nil {
 		// Nothing was called: withdraw the step to Open under this attempt's
 		// recovery identity and surface the condition (RUN-LOP-3).
@@ -130,9 +143,12 @@ func (l *Loop) startModelStep(ctx context.Context, runtime boundRuntime, events 
 }
 
 // deliverTo is the callback a dispatched assignment reports to. A blocking
-// Run supplies its own wait-loop callback; a host calling Advance directly
-// gets the Outcome settled here, on the executor's goroutine, through the
-// Loop's Deliver.
+// Run supplies its own wait-loop callback. A host calling Advance directly
+// without a callback gets the Outcome settled here, on the executor's
+// goroutine, and has no way to observe a settlement error (a missing frozen
+// body, a fenced write): such a host must pass its own deliver and call
+// Loop.Deliver itself to see the error. The Host does so through its
+// reattach glue and otherwise drives with Run.
 func (l *Loop) deliverTo(runtime boundRuntime, events EventSink, deliver Deliver) Deliver {
 	if deliver != nil {
 		return deliver
@@ -143,19 +159,23 @@ func (l *Loop) deliverTo(runtime boundRuntime, events EventSink, deliver Deliver
 }
 
 // modelCompletion maps a model Outcome to the attempt's settlement command
-// (RUN-LOP-3): a cancelled call, or one whose frozen body the executor could
-// not fetch, withdraws the step to Open -- the next Advance plans again from
-// the current state, so a lost transfer copy is not an unrecoverable error;
-// a provider failure is SubmitModelFailure; a result that cannot be bound or
-// frozen is RejectModelResult with the host's disposition; a result binds its
-// tool calls into SubmitModelResult. The returned error is always nil now and
-// kept for the call shape.
+// (RUN-LOP-3): a cancelled call withdraws the step to Open (the next Advance
+// plans again from the current state); a provider failure is
+// SubmitModelFailure; a result that cannot be bound or frozen is
+// RejectModelResult with the host's disposition; a result binds its tool
+// calls into SubmitModelResult.
+//
+// A body the executor reports missing also withdraws the step, but the
+// condition is returned as an error alongside the command: the settlement
+// lands, and the drive stops instead of planning, freezing and dispatching
+// again against the same missing store. Whether to try again is the host's
+// decision, so a persistently unreadable store cannot spin the Run.
 func (l *Loop) modelCompletion(step *run.ModelStep, out Outcome) (run.AgentCommand, error) {
 	stepID := step.RefValue.ID
 	recover := run.RecoverModelExecution{StepID: stepID, Claim: out.Key.Claim}
 	switch {
 	case out.Err != nil && errors.Is(out.Err, run.ErrFrozenValueMissing):
-		return recover, nil
+		return recover, fmt.Errorf("agent: loop: model dispatch: %w", out.Err)
 	case out.Err != nil && errors.Is(out.Err, errMalformedFrozenRequest):
 		failure := run.StepFailure{Class: run.FailureMalformedModel, Message: out.Err.Error()}
 		return run.RejectModelResult{StepID: stepID, Failure: failure, Disposition: l.modelRejectDisposition(*step, failure)}, nil

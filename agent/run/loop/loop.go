@@ -282,8 +282,10 @@ func (l *Loop) deliver(ctx context.Context, runtime boundRuntime, out Outcome, e
 			Kind: EventToolCompleted, Durability: EventCommitted})
 	}
 	if settleErr != nil {
-		// The settlement landed (the step is withdrawn to Open); the condition
-		// itself is not retriable by this Loop.
+		// The settlement landed (the step is withdrawn to Open) but the
+		// condition -- a frozen body the executor cannot read -- would recur
+		// on the next Advance, so the drive stops here and the host decides
+		// whether to try again (RUN-LOP-3).
 		return LoopResult{Disposition: LoopDelivered}, settleErr
 	}
 	if finished != nil {

@@ -300,7 +300,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 | 重新生成已提交的回答 | 原 Turn 与其回答 | Turn，或 Session 分支 | Application |
 | 外部工具执行中且 owner 丢失 | Turn、Run、该 call 的 Unknown 事实 | 无 | 模型或 Application，从不自动 |
 
-**TRN-DUR-1（崩溃恢复同一 Run）** 进程崩溃或所有权丢失不结束 Run，也不创建 attempt。新 owner 的 `RecoverInterrupted`（RUN-CMT-7）对每个 Executing 目标先经 Executor 询问其 attempt 是否仍在执行（start 事实记录了 attempt 的 Claim）：仍在执行则目标保持 Executing，Outcome 到达时以原 Claim 结算——同一次执行接着算完；不再执行则处置——模型步被撤回，Run 回到 Open，下一次 Prepare 以**恢复时刻**的状态重新规划：Executing 期间投递的输入、此时的上下文与 Profile 都进入新请求，并作为新的 Prepared 事实记录。恢复是一次新的决策时刻，协议把它记录为决策，而不重发旧请求把它伪装成旧计划的延续；工具 call 记 Unknown。之后同一 RunID 在同一 Turn 下由宿主 Drive 继续。恢复不改变 Run 的身份、attempt 号或已提交的任何事实。
+**TRN-DUR-1（崩溃恢复同一 Run）** 进程崩溃或所有权丢失不结束 Run，也不创建 attempt。新 owner 的 `RecoverInterrupted`（RUN-CMT-7）对每个 Executing 目标先经 Executor 询问其 attempt 是否仍在执行（start 事实记录了 attempt 的 Claim）：仍在执行则目标保持 Executing，Outcome 到达时以原 Claim 结算——同一次执行接着算完；不再执行则处置——模型步被撤回，Run 回到 Open，下一次 Prepare 以**恢复时刻**的状态重新规划：Executing 期间投递的输入、此时的上下文与 Profile 都进入新请求，并作为新的 Prepared 事实记录；旧请求不重发。工具 call 记 Unknown。之后同一 RunID 在同一 Turn 下由宿主 Drive 继续。恢复不改变 Run 的身份、attempt 号或已提交的任何事实。
 
 **TRN-DUR-2（语义重试是新 Run、同一 Turn）** 只有 Run 已终结且未 completed、Turn 处于 `attempt_failed` 时才存在 Retry；Retry 创建 attempt n+1、新 RunID，同一 Turn，重新接受该 Turn 已 delivered 的全部输入（TRN-RTY-1）。协议从不自动 Retry：崩溃恢复走 TRN-DUR-1，Retry 是 Application 的显式决定。失败 attempt 的 assistant 与 tool_result 保留在 stream 中，是否进入新 attempt 的模型请求由 Planner 决定（TRN-RTY-3）。
 

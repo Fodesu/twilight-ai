@@ -2,7 +2,6 @@ package host_test
 
 import (
 	"context"
-	"sync"
 	"testing"
 
 	"github.com/felinics/twilight/agent/host"
@@ -142,19 +141,11 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 // attempt's real Outcome to whoever attached: the executor outlived the
 // authority, as a remote executor does.
 type reattachingExecutor struct {
-	mu       sync.Mutex
+	recordingExecutor
 	attached []loop.Assignment
 	deliver  loop.Deliver
-	reply    string
 }
 
-func (e *reattachingExecutor) Validate(context.Context, loop.Assignment) (*run.ToolFailure, error) {
-	return nil, nil
-}
-func (e *reattachingExecutor) Dispatch(_ context.Context, a loop.Assignment, deliver loop.Deliver) error {
-	go deliver(loop.Outcome{Key: a.Key(), Model: &sdk.ModelResult{Text: e.reply, FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}})
-	return nil
-}
 func (e *reattachingExecutor) Attach(_ context.Context, a loop.Assignment, deliver loop.Deliver) (bool, error) {
 	e.mu.Lock()
 	e.attached = append(e.attached, a)
@@ -162,7 +153,6 @@ func (e *reattachingExecutor) Attach(_ context.Context, a loop.Assignment, deliv
 	e.mu.Unlock()
 	return true, nil
 }
-func (e *reattachingExecutor) Cancel(context.Context, run.RunID) error { return nil }
 
 // When the attempt is still running on an executor that outlived the
 // authority, the new owner reattaches: nothing is withdrawn, no new plan is
@@ -181,7 +171,7 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exec := &reattachingExecutor{reply: "reattached"}
+	exec := &reattachingExecutor{recordingExecutor: recordingExecutor{reply: "reattached"}}
 	p2, err := host.New(host.Ports{Store: store2, Content: content2, Executor: exec, Ownership: session.OpenOptions{Takeover: true}})
 	if err != nil {
 		t.Fatal(err)

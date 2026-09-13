@@ -372,14 +372,6 @@ func (r *Runtime) evaluate(ctx context.Context, view writer.View, sid session.Se
 	for _, me := range req.Attach {
 		group.Events = append(group.Events, writer.TypedEvent{Type: me.Type, RecordedAtUnixMilli: now, Value: me.Value})
 	}
-	// A withdrawn request body ends its useful life; a Recovered step keeps it.
-	if step, ok := env.Command.(run.WithdrawPreparedStep); ok {
-		if ms, isModel := state.Current.(run.ModelStep); isModel && ms.RefValue.ID == step.StepID {
-			if dropper, can := r.cfg.Frozen.(interface{ Delete(run.Digest) }); can {
-				dropper.Delete(ms.RequestDigest)
-			}
-		}
-	}
 	result := evaluated{
 		CommitResult: run.CommitResult{Snapshot: run.RuntimeSnapshot{State: decision.NewState, SchemaVersion: schema}},
 		before:       state,

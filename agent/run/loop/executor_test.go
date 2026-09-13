@@ -331,10 +331,11 @@ func TestDeliverCancelledModelRecovers(t *testing.T) {
 	var _ sdk.ModelResult // keep sdk imported for result helpers above
 }
 
-// A frozen body the executor cannot fetch is not an unrecoverable error: the
-// transfer copy is gone, so the step is withdrawn and the next Advance plans
-// and freezes again (RUN-LOP-3).
-func TestDeliverMissingFrozenBodyReplans(t *testing.T) {
+// A frozen body a remote executor reports missing withdraws the step (the
+// settlement lands, the Run is Open) and the condition comes back as an error,
+// so the drive stops instead of planning again against the same missing
+// store. A later Advance -- the host's decision -- plans afresh (RUN-LOP-3).
+func TestDeliverMissingFrozenBodyWithdrawsAndReturnsTheError(t *testing.T) {
 	rt := loopRuntime(t)
 	exec := newRecordingExecutor()
 	l, err := New(exec, staticPlanner{}, ExecutionPolicy{})
@@ -347,8 +348,11 @@ func TestDeliverMissingFrozenBodyReplans(t *testing.T) {
 	}
 	first := exec.last()
 	res, err := l.Deliver(ctx, rt, testSession, Outcome{Key: first.Key(), Err: ErrFrozenValueMissing}, nil)
-	if err != nil || res.Disposition != LoopDelivered {
-		t.Fatalf("deliver missing body = %+v %v, want a plain delivered settlement", res, err)
+	if !errors.Is(err, ErrFrozenValueMissing) || res.Disposition != LoopDelivered {
+		t.Fatalf("deliver missing body = %+v %v, want delivered plus the missing-body error", res, err)
+	}
+	if snap := loadState(t, rt, "run-1"); snap.State.ModelSteps != 0 {
+		t.Fatalf("withdrawn step still counted: %+v", snap.State)
 	}
 	again, err := l.Advance(ctx, rt, testSession, "run-1", nil)
 	if err != nil || again.Disposition != LoopDispatched {
@@ -356,5 +360,78 @@ func TestDeliverMissingFrozenBodyReplans(t *testing.T) {
 	}
 	if second := exec.last(); second.Key() == first.Key() {
 		t.Fatal("the replan reused the lost attempt")
+	}
+}
+
+// missingBodyExecutor is a remote executor whose store never has the body: it
+// accepts every model assignment and reports the miss as an Outcome.
+type missingBodyExecutor struct{ recordingExecutor }
+
+func (e *missingBodyExecutor) Dispatch(ctx context.Context, a Assignment, deliver Deliver) error {
+	if err := e.recordingExecutor.Dispatch(ctx, a, deliver); err != nil {
+		return err
+	}
+	go deliver(Outcome{Key: a.Key(), Err: ErrFrozenValueMissing})
+	return nil
+}
+
+// missingFrozen is a frozen store with nothing in it, standing in for an
+// executor whose store diverged from the authority's.
+type missingFrozen struct{}
+
+func (missingFrozen) FrozenRequest(context.Context, Digest) (ModelRequest, error) {
+	return ModelRequest{}, ErrFrozenValueMissing
+}
+
+// A persistently missing body must not spin the Run: the blocking Run returns
+// the error after one withdrawal, whether the miss is reported by a remote
+// executor as an Outcome or found by LocalExecutor.Dispatch before the effect
+// starts. Either way the stream grows by one Prepared/Started/Recovered round
+// per drive, and only the host can start another.
+func TestRunStopsAfterOneMissingBodyRecovery(t *testing.T) {
+	cases := []struct {
+		name string
+		exec func(t *testing.T, rt Runtime) Executor
+	}{
+		{"remote outcome", func(*testing.T, Runtime) Executor {
+			return &missingBodyExecutor{recordingExecutor: *newRecordingExecutor()}
+		}},
+		{"local dispatch", func(t *testing.T, rt Runtime) Executor {
+			exec, err := NewLocalExecutor(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{}, missingFrozen{}, nil, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return exec
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rt := loopRuntime(t)
+			l, err := New(tc.exec(t, rt), staticPlanner{}, ExecutionPolicy{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, err = l.Run(ctx, rt, testSession, "run-1", nil)
+			if !errors.Is(err, ErrFrozenValueMissing) {
+				t.Fatalf("Run = %v, want the missing-body error", err)
+			}
+			started, recovered := 0, 0
+			for _, f := range recordFacts(t, rt, "run-1") {
+				switch f.(type) {
+				case ModelStepStarted:
+					started++
+				case ModelStepRecovered:
+					recovered++
+				}
+			}
+			if started != 1 || recovered != 1 {
+				t.Fatalf("started=%d recovered=%d, want exactly one round", started, recovered)
+			}
+			if snap := loadState(t, rt, "run-1"); snap.State.ModelSteps != 0 {
+				t.Fatalf("state after the failed drive = %+v, want Open with no counted step", snap.State)
+			}
+		})
 	}
 }

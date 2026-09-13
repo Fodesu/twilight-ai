@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -175,8 +176,8 @@ func TestLoopModelCatalogErrorRecoversWithFreshLoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = broken.Run(context.Background(), rt, testSession, "run-1", nil)
-	if !errors.Is(err, missing) {
-		t.Fatalf("err = %v, want %v", err, missing)
+	if !errors.Is(err, ErrModelUnavailable) || !strings.Contains(err.Error(), missing.Error()) {
+		t.Fatalf("err = %v, want ErrModelUnavailable carrying %q", err, missing)
 	}
 	snap, loadErr := rt.Load(context.Background(), testSession, "run-1")
 	if loadErr != nil {
@@ -185,13 +186,18 @@ func TestLoopModelCatalogErrorRecoversWithFreshLoop(t *testing.T) {
 	if snap.State.Status != RunActive {
 		t.Fatalf("status = %v", snap.State.Status)
 	}
-	// The unstartable attempt is withdrawn: the Run is Open and the step is
-	// not counted, so a working Loop plans afresh (RUN-LOP-3).
-	if _, open := snap.State.Current.(Open); !open {
-		t.Fatalf("current = %+v, want Open", snap.State.Current)
+	// Validate caught the missing model before the start barrier: the step is
+	// still Prepared and no start or recovery fact was written, so a working
+	// Loop starts the same step (RUN-EXE-5, RUN-LOP-3).
+	step, isModel := snap.State.Current.(ModelStep)
+	if !isModel || step.Status != ModelPrepared {
+		t.Fatalf("current = %+v, want the Prepared model step", snap.State.Current)
 	}
-	if snap.State.ModelSteps != 0 {
-		t.Fatalf("ModelSteps = %d, want 0", snap.State.ModelSteps)
+	for _, f := range recordFacts(t, rt, "run-1") {
+		switch f.(type) {
+		case ModelStepStarted, ModelStepRecovered:
+			t.Fatalf("a missing model wrote %T before the start barrier", f)
+		}
 	}
 
 	invoker := &fakeInvoker{results: []sdk.ModelResult{textResult("resumed")}}

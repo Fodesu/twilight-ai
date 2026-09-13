@@ -98,11 +98,13 @@ type Deliver func(Outcome)
 // in goroutines, a remote implementation forwards Assignments over a
 // transport and delivers the Outcomes it receives.
 type Executor interface {
-	// Validate checks a tool assignment against the implementation without
-	// producing an effect: lookup, definition digest, response policy and
-	// arguments (RUN-LOP-4). A non-nil failure is the Known failure the Loop
-	// settles without crossing the start barrier. Model assignments validate
-	// trivially. error reports the executor itself being unreachable.
+	// Validate checks an assignment against the implementation without
+	// producing an effect, before the start barrier (RUN-EXE-5). For a tool:
+	// lookup, definition digest, response policy and arguments (RUN-LOP-4); a
+	// non-nil failure is the Known failure the Loop settles. For a model: that
+	// this executor can serve the ModelRef; a non-nil failure keeps the step
+	// Prepared and no start fact is written (RUN-LOP-3). error reports the
+	// executor itself being unreachable.
 	Validate(ctx context.Context, a Assignment) (*run.ToolFailure, error)
 	// Dispatch accepts an assignment and returns at once; the Outcome arrives
 	// through deliver. An error means the effect was not started.
@@ -125,6 +127,10 @@ type FrozenRequestReader interface {
 
 // ErrExecutorRejected reports an assignment the executor would not start.
 var ErrExecutorRejected = errors.New("agent: loop: executor rejected the assignment")
+
+// ErrModelUnavailable reports a model assignment the executor cannot serve,
+// found by Validate before the start barrier: the step stays Prepared.
+var ErrModelUnavailable = errors.New("agent: loop: executor cannot serve the model")
 
 // AssignmentFromTarget rebuilds the Assignment of an Executing target a
 // takeover found in the projection, so the new owner can ask the Executor
@@ -205,17 +211,36 @@ func NewLocalExecutor(models ModelCatalog, tools ToolCatalog, frozen FrozenReque
 		inflight: make(map[AssignmentKey]*inflight)}, nil
 }
 
-// Validate is RUN-LOP-4's pre-start check for tools.
+// Validate is the pre-start check (RUN-EXE-5): tools per RUN-LOP-4, models
+// by resolving the ModelRef in the catalog so a missing model fails before
+// any start fact is written (RUN-LOP-3).
 func (e *LocalExecutor) Validate(_ context.Context, a Assignment) (*run.ToolFailure, error) {
-	if a.Kind != AssignmentTool || a.Tool == nil {
+	switch a.Kind {
+	case AssignmentModel:
+		if a.Model == nil {
+			return &run.ToolFailure{Class: run.FailureProvider, Message: "model assignment without body"}, nil
+		}
+		invoker, err := e.models.ResolveModel(a.Model.Model)
+		if err != nil {
+			return &run.ToolFailure{Class: run.FailureProvider, Message: err.Error()}, nil
+		}
+		if invoker == nil {
+			return &run.ToolFailure{Class: run.FailureProvider, Message: "model catalog returned a nil invoker"}, nil
+		}
+		return nil, nil
+	case AssignmentTool:
+		if a.Tool == nil {
+			return nil, nil
+		}
+		proto, err := run.ProtocolFor(a.Schema)
+		if err != nil {
+			return nil, err
+		}
+		_, failure := e.resolveTool(proto, a.Tool)
+		return failure, nil
+	default:
 		return nil, nil
 	}
-	proto, err := run.ProtocolFor(a.Schema)
-	if err != nil {
-		return nil, err
-	}
-	_, failure := e.resolveTool(proto, a.Tool)
-	return failure, nil
 }
 
 func (e *LocalExecutor) resolveTool(proto run.Protocol, t *ToolAssignment) (ExecutableTool, *run.ToolFailure) {
@@ -266,8 +291,14 @@ func (e *LocalExecutor) Dispatch(ctx context.Context, a Assignment, deliver Deli
 		if invoker == nil {
 			return fmt.Errorf("%w: model catalog returned a nil invoker", ErrExecutorRejected)
 		}
-		model := *a.Model
-		execute = func(ctx context.Context) Outcome { return e.runModel(ctx, a, model, invoker) }
+		// The body is fetched before the effect starts: a missing transfer
+		// copy is a Dispatch failure (the Loop withdraws the step and returns
+		// the error), not an Outcome that would re-enter the plan cycle.
+		frozenRequest, err := e.frozen.FrozenRequest(ctx, a.Model.RequestDigest)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrExecutorRejected, err)
+		}
+		execute = func(ctx context.Context) Outcome { return e.runModel(ctx, a, frozenRequest, invoker) }
 	case AssignmentTool:
 		if a.Tool == nil {
 			return fmt.Errorf("%w: tool assignment without binding", ErrExecutorRejected)
@@ -361,11 +392,7 @@ func (e *LocalExecutor) InFlight() int {
 	return len(e.inflight)
 }
 
-func (e *LocalExecutor) runModel(ctx context.Context, a Assignment, m ModelAssignment, invoker ModelInvoker) Outcome {
-	frozenRequest, err := e.frozen.FrozenRequest(ctx, m.RequestDigest)
-	if err != nil {
-		return Outcome{Err: err}
-	}
+func (e *LocalExecutor) runModel(ctx context.Context, a Assignment, frozenRequest run.ModelRequest, invoker ModelInvoker) Outcome {
 	sdkRequest, err := frozenRequest.SDK()
 	if err != nil {
 		return Outcome{Err: fmt.Errorf("%w: %v", errMalformedFrozenRequest, err)}
