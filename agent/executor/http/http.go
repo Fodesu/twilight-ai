@@ -43,13 +43,16 @@ func (c *Client) Validate(ctx context.Context, a effect.Assignment) (*run.ToolFa
 }
 
 func (c *Client) Dispatch(ctx context.Context, a effect.Assignment) error {
-	err := c.post(ctx, "/dispatch", makeAssignmentRequest(a), nil)
-	var responseErr *responseError
-	if err == nil || errors.As(err, &responseErr) || errors.Is(err, context.Canceled) {
+	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// A transport failure does not tell the authority whether the server
-	// accepted the assignment. Preserve the executing target for recovery.
+	err := c.post(ctx, "/dispatch", makeAssignmentRequest(a), nil)
+	var responseErr *responseError
+	if err == nil || errors.As(err, &responseErr) && responseErr.statusCode < stdhttp.StatusInternalServerError {
+		return err
+	}
+	// A transport failure or server/gateway 5xx can follow acceptance.
+	// Preserve the executing target for outcome observation and recovery.
 	return fmt.Errorf("%w: %w", effect.ErrDispatchUnknown, err)
 }
 
@@ -109,7 +112,7 @@ func (c *Client) post(ctx context.Context, path string, in, out any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		message, _ := io.ReadAll(resp.Body)
-		return &responseError{status: resp.Status, body: strings.TrimSpace(string(message))}
+		return &responseError{status: resp.Status, statusCode: resp.StatusCode, body: strings.TrimSpace(string(message))}
 	}
 	if out == nil {
 		return nil
@@ -123,8 +126,9 @@ func (c *Client) post(ctx context.Context, path string, in, out any) error {
 type Server struct{ Worker *executor.Worker }
 
 type responseError struct {
-	status string
-	body   string
+	status     string
+	statusCode int
+	body       string
 }
 
 func (e *responseError) Error() string {
@@ -200,11 +204,17 @@ func (s *Server) dispatch(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		return
 	}
 	if err := validateAssignmentRequest(req); err != nil {
-		writeError(w, err)
+		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
 		return
 	}
-	if err := s.Worker.Dispatch(r.Context(), req.Assignment); err != nil {
-		writeError(w, err)
+	// The Worker has persisted acceptance and observes the backend even
+	// when the backend's dispatch acknowledgement is uncertain.
+	if err := s.Worker.Dispatch(r.Context(), req.Assignment); err != nil && !errors.Is(err, effect.ErrDispatchUnknown) {
+		status := stdhttp.StatusInternalServerError
+		if errors.Is(err, store.ErrAssignmentConflict) {
+			status = stdhttp.StatusConflict
+		}
+		stdhttp.Error(w, err.Error(), status)
 		return
 	}
 	w.WriteHeader(stdhttp.StatusAccepted)
@@ -277,7 +287,7 @@ func (s *Server) takeover(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 
 func readJSON(w stdhttp.ResponseWriter, r *stdhttp.Request, out any) bool {
 	if err := json.NewDecoder(r.Body).Decode(out); err != nil {
-		writeError(w, err)
+		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
 		return false
 	}
 	return true

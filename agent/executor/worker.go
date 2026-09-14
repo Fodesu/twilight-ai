@@ -105,17 +105,10 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 	if !created && old.AssignmentDigest != digest {
 		return executionstore.ErrAssignmentConflict
 	}
-	if !created && protocol.StatusTerminal(old.State) {
+	if !created {
+		// A replay acknowledges the persisted acceptance. Recovery of an
+		// existing record is authorized separately through Takeover.
 		return nil
-	}
-	if !created && old.Owner == w.id && old.FencingEpoch != 0 {
-		owned, err := w.store.LeaseOwned(ctx, key, w.id, old.FencingEpoch)
-		if err != nil {
-			return err
-		}
-		if owned {
-			return nil
-		}
 	}
 	return w.acquireAndStart(ctx, key)
 }
@@ -133,6 +126,9 @@ func (w *Worker) Takeover(ctx context.Context, key effect.AssignmentKey) error {
 	}
 	if protocol.StatusTerminal(r.State) {
 		return nil
+	}
+	if err := w.checkBinding(r.ExecutionBinding); err != nil {
+		return err
 	}
 	owned, err := w.store.LeaseOwned(ctx, key, w.id, r.FencingEpoch)
 	if err != nil {
@@ -152,10 +148,13 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 	if !acquired {
 		return nil
 	}
+	if err := w.checkBinding(claimed.ExecutionBinding); err != nil {
+		return err
+	}
 	digest := claimed.AssignmentDigest
-	var binding *effect.BackendBinding
-	if claimed.BackendBinding != nil {
-		b := *claimed.BackendBinding
+	var binding *effect.ExecutionBinding
+	if claimed.ExecutionBinding != nil {
+		b := *claimed.ExecutionBinding
 		binding = &b
 	}
 	if claimed.State != effect.ExecutionCancelRequested {
@@ -168,7 +167,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 				return errors.New("executor: backend returned an empty execution binding")
 			}
 			binding = &b
-			claimed.BackendBinding = binding
+			claimed.ExecutionBinding = binding
 			if err := w.store.PutOwned(ctx, claimed, w.id, claimed.FencingEpoch); err != nil {
 				return err
 			}
@@ -189,8 +188,8 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 			close(leaseDone)
 			return nil
 		}
-		cancelErr := w.backend.Cancel(ctx, key)
-		go w.watch(key, digest, claimed.FencingEpoch, leaseDone)
+		cancelErr := w.cancelBackend(ctx, key, binding)
+		go w.watch(key, digest, claimed.FencingEpoch, binding, leaseDone)
 		return cancelErr
 	}
 	if claimed.State == effect.ExecutionRunning || claimed.State == effect.ExecutionDispatching {
@@ -205,7 +204,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 			go w.heartbeat(key, claimed.FencingEpoch, leaseDone)
 			// Keep Dispatching as a conservative pre-outcome state. The watcher
 			// will terminalize it after the adopted backend produces an outcome.
-			go w.watch(key, digest, claimed.FencingEpoch, leaseDone)
+			go w.watch(key, digest, claimed.FencingEpoch, binding, leaseDone)
 			return nil
 		}
 	}
@@ -220,6 +219,10 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 	leaseDone := make(chan struct{})
 	go w.heartbeat(key, claimed.FencingEpoch, leaseDone)
 	if err := w.dispatchBackend(context.WithoutCancel(ctx), claimed.Assignment, binding); err != nil {
+		if errors.Is(err, effect.ErrDispatchUnknown) {
+			go w.watch(key, digest, claimed.FencingEpoch, binding, leaseDone)
+			return err
+		}
 		settleErr := w.finishOwned(ctx, key, claimed.FencingEpoch, protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest,
 			Error: &protocol.WireError{Code: "dispatch_failed", Message: err.Error()}}, effect.ExecutionFailed, err)
 		close(leaseDone)
@@ -229,41 +232,111 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 		// The backend call may already have crossed its external boundary.
 		// Keep the watcher alive and report Dispatch as accepted; recovery
 		// must reconcile the Dispatching/Running record rather than replan.
-		go w.watch(key, digest, claimed.FencingEpoch, leaseDone)
+		go w.watch(key, digest, claimed.FencingEpoch, binding, leaseDone)
 		return nil
 	}
-	go w.watch(key, digest, claimed.FencingEpoch, leaseDone)
+	go w.watch(key, digest, claimed.FencingEpoch, binding, leaseDone)
 	return nil
 }
 
-func (w *Worker) dispatchBackend(ctx context.Context, assignment effect.Assignment, binding *effect.BackendBinding) error {
-	if provider, ok := w.backend.(effect.BindingPort); ok && binding != nil {
+func (w *Worker) dispatchBackend(ctx context.Context, assignment effect.Assignment, binding *effect.ExecutionBinding) error {
+	if err := w.checkBinding(binding); err != nil {
+		return err
+	}
+	if binding != nil {
+		provider := w.backend.(effect.BindingPort)
 		return provider.DispatchBound(ctx, assignment, *binding)
 	}
 	return w.backend.Dispatch(ctx, assignment)
 }
 
-func (w *Worker) attachBackend(ctx context.Context, key effect.AssignmentKey, binding *effect.BackendBinding) (effect.Attachment, error) {
-	if provider, ok := w.backend.(effect.BindingPort); ok && binding != nil {
+func (w *Worker) attachBackend(ctx context.Context, key effect.AssignmentKey, binding *effect.ExecutionBinding) (effect.Attachment, error) {
+	if err := w.checkBinding(binding); err != nil {
+		return effect.Attachment{}, err
+	}
+	if binding != nil {
+		provider := w.backend.(effect.BindingPort)
 		return provider.AttachBound(ctx, key, *binding)
 	}
 	return w.backend.Attach(ctx, key)
 }
 
-func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64, done chan struct{}) {
-	out, err := w.backend.GetOutcome(w.lifecycle, key)
-	if err != nil {
-		// GetOutcome failure is a lifecycle/transport failure after dispatch,
-		// not evidence that the provider rejected the request. Persist Unknown
-		// so the authority can reconcile or explicitly dispose the attempt.
-		out = effect.Outcome{Key: key, Err: err, Unknown: true}
+func (w *Worker) getOutcomeBackend(ctx context.Context, key effect.AssignmentKey, binding *effect.ExecutionBinding) (effect.Outcome, error) {
+	if err := w.checkBinding(binding); err != nil {
+		return effect.Outcome{}, err
+	}
+	if binding != nil {
+		provider := w.backend.(effect.BindingPort)
+		return provider.GetOutcomeBound(ctx, key, *binding)
+	}
+	return w.backend.GetOutcome(ctx, key)
+}
+
+func (w *Worker) cancelBackend(ctx context.Context, key effect.AssignmentKey, binding *effect.ExecutionBinding) error {
+	if err := w.checkBinding(binding); err != nil {
+		return err
+	}
+	if binding != nil {
+		provider := w.backend.(effect.BindingPort)
+		return provider.CancelBound(ctx, key, *binding)
+	}
+	return w.backend.Cancel(ctx, key)
+}
+
+func (w *Worker) checkBinding(binding *effect.ExecutionBinding) error {
+	if binding != nil {
+		if _, ok := w.backend.(effect.BindingPort); !ok {
+			return effect.ErrBindingUnsupported
+		}
+	}
+	return nil
+}
+
+func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64, binding *effect.ExecutionBinding, done chan struct{}) {
+	defer close(done)
+	delay := 10 * time.Millisecond
+	var out effect.Outcome
+	for {
+		// Bound each read by the execution lease so a blocked backend read
+		// eventually yields to the ownership check before the next poll.
+		readCtx, cancelRead := context.WithTimeout(w.lifecycle, w.lease)
+		var err error
+		out, err = w.getOutcomeBackend(readCtx, key, binding)
+		cancelRead()
+		if err == nil {
+			break
+		}
+		if !w.waitOwned(key, epoch, delay) {
+			return
+		}
+		delay = min(delay*2, time.Second)
 	}
 	env := protocol.EncodeOutcome(out, digest)
 	state := protocol.StatusForOutcome(out)
-	_ = w.finishOwned(w.lifecycle, key, epoch, env, state, nil)
-	// Keep the lease until the terminal outcome has been durably accepted;
-	// otherwise a takeover can start a duplicate while this worker settles.
-	close(done)
+	for {
+		if err := w.finishOwned(w.lifecycle, key, epoch, env, state, nil); err == nil {
+			return
+		}
+		if !w.waitOwned(key, epoch, delay) {
+			return
+		}
+		delay = min(delay*2, time.Second)
+	}
+}
+
+func (w *Worker) waitOwned(key effect.AssignmentKey, epoch uint64, delay time.Duration) bool {
+	owned, err := w.store.LeaseOwned(w.lifecycle, key, w.id, epoch)
+	if (err == nil && !owned) || errors.Is(err, effect.ErrExecutionNotFound) {
+		return false
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-w.lifecycle.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func (w *Worker) heartbeat(key effect.AssignmentKey, epoch uint64, done <-chan struct{}) {
@@ -341,7 +414,7 @@ func (w *Worker) Attach(ctx context.Context, key effect.AssignmentKey) (effect.A
 		attachment.State = effect.AttachmentOrphaned
 		return attachment, nil
 	}
-	backendAttachment, err := w.attachBackend(ctx, key, r.BackendBinding)
+	backendAttachment, err := w.attachBackend(ctx, key, r.ExecutionBinding)
 	if err != nil {
 		return effect.Attachment{}, err
 	}
@@ -361,6 +434,13 @@ func (w *Worker) GetStatus(ctx context.Context, key effect.AssignmentKey) (effec
 	}
 	if !ok {
 		return effect.ExecutionNotFound, effect.ErrExecutionNotFound
+	}
+	if r.ExecutionBinding != nil && !protocol.StatusTerminal(r.State) {
+		if err := w.checkBinding(r.ExecutionBinding); err != nil {
+			return r.State, err
+		}
+		provider := w.backend.(effect.BindingPort)
+		return provider.GetStatusBound(ctx, key, *r.ExecutionBinding)
 	}
 	return r.State, nil
 }
@@ -432,10 +512,13 @@ func (w *Worker) Cancel(ctx context.Context, key effect.AssignmentKey) error {
 	if protocol.StatusTerminal(r.State) {
 		return nil
 	}
+	if err := w.checkBinding(r.ExecutionBinding); err != nil {
+		return err
+	}
 	if err := w.requestCancelOwned(ctx, key, r.FencingEpoch); err != nil {
 		return err
 	}
-	return w.backend.Cancel(ctx, key)
+	return w.cancelBackend(ctx, key, r.ExecutionBinding)
 }
 
 func (w *Worker) requestCancelOwned(ctx context.Context, key effect.AssignmentKey, epoch uint64) error {
@@ -474,14 +557,14 @@ func (w *Worker) recover(ctx context.Context) error {
 		if !owned {
 			continue
 		}
-		attachment, attachErr := w.attachBackend(ctx, r.Assignment.Key(), r.BackendBinding)
+		attachment, attachErr := w.attachBackend(ctx, r.Assignment.Key(), r.ExecutionBinding)
 		if attachErr != nil {
 			return attachErr
 		}
 		if attachment.State == effect.AttachmentActive || attachment.State == effect.AttachmentTerminal {
 			done := make(chan struct{})
 			go w.heartbeat(r.Assignment.Key(), r.FencingEpoch, done)
-			go w.watch(r.Assignment.Key(), r.AssignmentDigest, r.FencingEpoch, done)
+			go w.watch(r.Assignment.Key(), r.AssignmentDigest, r.FencingEpoch, r.ExecutionBinding, done)
 		}
 	}
 	return nil

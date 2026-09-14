@@ -2,7 +2,10 @@ package executor_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
@@ -34,14 +37,14 @@ type bindingBackend struct {
 	bound    int
 }
 
-func (b *bindingBackend) PrepareBinding(context.Context, effect.Assignment) (effect.BackendBinding, error) {
+func (b *bindingBackend) PrepareBinding(context.Context, effect.Assignment) (effect.ExecutionBinding, error) {
 	b.mu.Lock()
 	b.prepared++
 	b.mu.Unlock()
-	return effect.BackendBinding{Provider: "test", ExecutionRef: "execution-1"}, nil
+	return effect.ExecutionBinding{Provider: "test", ExecutionRef: "execution-1"}, nil
 }
 
-func (b *bindingBackend) DispatchBound(ctx context.Context, a effect.Assignment, binding effect.BackendBinding) error {
+func (b *bindingBackend) DispatchBound(ctx context.Context, a effect.Assignment, binding effect.ExecutionBinding) error {
 	if binding.ExecutionRef == "" {
 		return errors.New("missing execution binding")
 	}
@@ -51,12 +54,34 @@ func (b *bindingBackend) DispatchBound(ctx context.Context, a effect.Assignment,
 	return b.testBackend.Dispatch(ctx, a)
 }
 
-func (b *bindingBackend) AttachBound(ctx context.Context, key effect.AssignmentKey, binding effect.BackendBinding) (effect.Attachment, error) {
+func (b *bindingBackend) AttachBound(ctx context.Context, key effect.AssignmentKey, binding effect.ExecutionBinding) (effect.Attachment, error) {
 	if binding.ExecutionRef == "" {
 		return effect.Attachment{}, errors.New("missing execution binding")
 	}
 	return b.testBackend.Attach(ctx, key)
 }
+
+func (b *bindingBackend) GetStatusBound(ctx context.Context, key effect.AssignmentKey, binding effect.ExecutionBinding) (effect.ExecutionStatus, error) {
+	if binding.ExecutionRef == "" {
+		return effect.ExecutionNotFound, errors.New("missing execution binding")
+	}
+	return b.testBackend.GetStatus(ctx, key)
+}
+
+func (b *bindingBackend) GetOutcomeBound(ctx context.Context, key effect.AssignmentKey, binding effect.ExecutionBinding) (effect.Outcome, error) {
+	if binding.ExecutionRef == "" {
+		return effect.Outcome{}, errors.New("missing execution binding")
+	}
+	return b.testBackend.GetOutcome(ctx, key)
+}
+
+func (b *bindingBackend) CancelBound(ctx context.Context, key effect.AssignmentKey, binding effect.ExecutionBinding) error {
+	if binding.ExecutionRef == "" {
+		return errors.New("missing execution binding")
+	}
+	return b.testBackend.Cancel(ctx, key)
+}
+
 func (b *testBackend) Validate(context.Context, effect.Assignment) (*run.ToolFailure, error) {
 	return nil, nil
 }
@@ -144,7 +169,245 @@ func TestWorkerIdempotentAndOutcome(t *testing.T) {
 	}
 }
 
-func TestWorkerPersistsBackendBindingBeforeDispatch(t *testing.T) {
+func TestWorkerDispatchReplayPreservesExistingExecution(t *testing.T) {
+	for _, state := range []effect.ExecutionStatus{effect.ExecutionAccepted, effect.ExecutionDispatching, effect.ExecutionRunning, effect.ExecutionCancelRequested} {
+		t.Run(string(state), func(t *testing.T) {
+			ctx := context.Background()
+			records := store.NewMemoryStore()
+			a := testAssignment()
+			digest, err := a.Digest()
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := store.Record{Assignment: a, AssignmentDigest: digest, State: state,
+				Owner: "expired-worker", FencingEpoch: 4, LeaseUntilUnixMilli: 1}
+			if err := records.Put(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+			backend := newTestBackend()
+			worker, err := executor.NewWorker(ctx, records, backend, executor.WorkerOptions{ID: "new-worker"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := worker.Dispatch(ctx, a); err != nil {
+				t.Fatal(err)
+			}
+			got, _, err := records.Get(ctx, a.Key())
+			if err != nil || got.State != r.State || got.Owner != r.Owner || got.FencingEpoch != r.FencingEpoch {
+				t.Fatalf("replay changed execution: %+v, %v", got, err)
+			}
+			backend.mu.Lock()
+			calls := backend.calls
+			backend.mu.Unlock()
+			if calls != 0 {
+				t.Fatalf("replay dispatched %d backend calls", calls)
+			}
+		})
+	}
+}
+
+type uncertainDispatchBackend struct {
+	*testBackend
+	ready chan struct{}
+}
+
+func (b *uncertainDispatchBackend) Dispatch(_ context.Context, a effect.Assignment) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.calls++
+	b.last = a
+	return effect.ErrDispatchUnknown
+}
+
+func (b *uncertainDispatchBackend) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
+	select {
+	case <-b.ready:
+		return effect.Outcome{Key: key, Model: &sdk.ModelResult{Text: "accepted before response was lost"}}, nil
+	case <-ctx.Done():
+		return effect.Outcome{}, ctx.Err()
+	}
+}
+
+type handlerTransport struct{ handler http.Handler }
+
+func (t handlerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	response := httptest.NewRecorder()
+	t.handler.ServeHTTP(response, request)
+	return response.Result(), nil
+}
+
+func TestWorkerUncertainDispatchPreservesExecution(t *testing.T) {
+	for _, overHTTP := range []bool{false, true} {
+		t.Run(fmt.Sprint("http=", overHTTP), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			records := store.NewMemoryStore()
+			backend := &uncertainDispatchBackend{testBackend: newTestBackend(), ready: make(chan struct{})}
+			defer close(backend.ready)
+			worker, err := executor.NewWorker(ctx, records, backend)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var port effect.Port = worker
+			if overHTTP {
+				port = &executorhttp.Client{BaseURL: "http://executor.invalid",
+					HTTP: &http.Client{Transport: handlerTransport{handler: (&executorhttp.Server{Worker: worker}).Handler()}}}
+			}
+			a := testAssignment()
+			err = port.Dispatch(ctx, a)
+			if overHTTP && err != nil || !overHTTP && !errors.Is(err, effect.ErrDispatchUnknown) {
+				t.Fatalf("dispatch error = %v", err)
+			}
+			r, _, err := records.Get(ctx, a.Key())
+			if err != nil || r.State != effect.ExecutionDispatching || r.Outcome != nil {
+				t.Fatalf("uncertain dispatch changed execution: %+v, %v", r, err)
+			}
+			if err := port.Dispatch(ctx, a); err != nil {
+				t.Fatalf("acceptance replay = %v", err)
+			}
+			backend.mu.Lock()
+			calls := backend.calls
+			backend.mu.Unlock()
+			if calls != 1 {
+				t.Fatalf("backend calls = %d, want 1", calls)
+			}
+			select {
+			case backend.ready <- struct{}{}:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			out, err := port.GetOutcome(ctx, a.Key())
+			if err != nil || out.Unknown || out.Err != nil || out.Model == nil || out.Model.Text != "accepted before response was lost" {
+				t.Fatalf("eventual outcome = %+v, %v", out, err)
+			}
+		})
+	}
+}
+
+func TestHTTPDispatchAssignmentConflictIsDefinite(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	worker, err := executor.NewWorker(ctx, store.NewMemoryStore(), newTestBackend())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &executorhttp.Client{BaseURL: "http://executor.invalid",
+		HTTP: &http.Client{Transport: handlerTransport{handler: (&executorhttp.Server{Worker: worker}).Handler()}}}
+	a := testAssignment()
+	if err := client.Dispatch(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.GetOutcome(ctx, a.Key()); err != nil {
+		t.Fatal(err)
+	}
+	a.Target = &run.TargetRef{Kind: "workspace", ID: "conflicting-target"}
+	if err := client.Dispatch(ctx, a); err == nil || errors.Is(err, effect.ErrDispatchUnknown) {
+		t.Fatalf("assignment conflict = %v, want definite rejection", err)
+	}
+}
+
+type temporarilyUnreadableBackend struct {
+	*testBackend
+	failed  chan struct{}
+	ready   chan struct{}
+	once    sync.Once
+	unknown bool
+}
+
+func (b *temporarilyUnreadableBackend) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
+	select {
+	case <-b.ready:
+		if b.unknown {
+			return effect.Outcome{Key: key, Unknown: true, Err: errors.New("execution explicitly abandoned")}, nil
+		}
+		return b.testBackend.GetOutcome(ctx, key)
+	default:
+		b.once.Do(func() { close(b.failed) })
+		return effect.Outcome{}, errors.New("temporary outcome transport failure")
+	}
+}
+
+func TestWorkerOutcomeReadFailurePreservesExecution(t *testing.T) {
+	for _, unknown := range []bool{false, true} {
+		t.Run(fmt.Sprint("explicit_unknown=", unknown), func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			records := store.NewMemoryStore()
+			backend := &temporarilyUnreadableBackend{testBackend: newTestBackend(), failed: make(chan struct{}), ready: make(chan struct{}), unknown: unknown}
+			worker, err := executor.NewWorker(ctx, records, backend)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := testAssignment()
+			if err := worker.Dispatch(ctx, a); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-backend.failed:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			r, _, err := records.Get(ctx, a.Key())
+			if err != nil || r.State != effect.ExecutionRunning || r.Outcome != nil {
+				t.Fatalf("read error changed execution: %+v, %v", r, err)
+			}
+			close(backend.ready)
+			out, err := worker.GetOutcome(ctx, a.Key())
+			if err != nil || out.Unknown != unknown || (!unknown && (out.Model == nil || out.Model.Text != "ok")) {
+				t.Fatalf("eventual outcome = %+v, %v", out, err)
+			}
+		})
+	}
+}
+
+func TestWorkerTakeoverRequiresPersistedBindingCapability(t *testing.T) {
+	ctx := context.Background()
+	records := store.NewMemoryStore()
+	a := testAssignment()
+	digest, err := a.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+		ExecutionBinding: &effect.ExecutionBinding{Provider: "provider", ExecutionRef: "existing-job"},
+		Owner:            "expired-worker", FencingEpoch: 3, LeaseUntilUnixMilli: 1}
+	if err := records.Put(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	backend := newTestBackend()
+	worker, err := executor.NewWorker(ctx, records, backend, executor.WorkerOptions{ID: "new-worker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.Takeover(ctx, a.Key()); !errors.Is(err, effect.ErrBindingUnsupported) {
+		t.Fatalf("takeover = %v, want ErrBindingUnsupported", err)
+	}
+	if _, err := worker.GetStatus(ctx, a.Key()); !errors.Is(err, effect.ErrBindingUnsupported) {
+		t.Fatalf("status = %v, want ErrBindingUnsupported", err)
+	}
+	got, _, err := records.Get(ctx, a.Key())
+	if err != nil || got.Owner != r.Owner || got.FencingEpoch != r.FencingEpoch || got.ExecutionBinding.ExecutionRef != "existing-job" {
+		t.Fatalf("unsupported takeover changed execution: %+v, %v", got, err)
+	}
+	backend.mu.Lock()
+	calls := backend.calls
+	backend.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("unsupported takeover dispatched %d calls", calls)
+	}
+}
+
+func TestRecordReadsLegacyBackendBinding(t *testing.T) {
+	var record store.Record
+	if err := json.Unmarshal([]byte(`{"backendBinding":{"provider":"local","workspace":"ws-1","executionRef":"exec-1"}}`), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.ExecutionBinding == nil || record.ExecutionBinding.Provider != "local" || record.ExecutionBinding.ExecutionRef != "exec-1" {
+		t.Fatalf("execution binding = %+v", record.ExecutionBinding)
+	}
+}
+
+func TestWorkerPersistsExecutionBindingBeforeDispatch(t *testing.T) {
 	ctx := context.Background()
 	records := store.NewMemoryStore()
 	backend := &bindingBackend{testBackend: newTestBackend()}
@@ -160,8 +423,8 @@ func TestWorkerPersistsBackendBindingBeforeDispatch(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("record = %+v, ok=%v, err=%v", record, ok, err)
 	}
-	if record.BackendBinding == nil || record.BackendBinding.ExecutionRef != "execution-1" {
-		t.Fatalf("backend binding = %+v", record.BackendBinding)
+	if record.ExecutionBinding == nil || record.ExecutionBinding.ExecutionRef != "execution-1" {
+		t.Fatalf("execution binding = %+v", record.ExecutionBinding)
 	}
 	backend.mu.Lock()
 	prepared, bound := backend.prepared, backend.bound

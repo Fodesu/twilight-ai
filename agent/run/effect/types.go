@@ -43,7 +43,6 @@ type ToolAssignment struct {
 	DefinitionDigest run.Digest
 	Arguments        run.CanonicalJSON
 	Policy           run.ResponsePolicy
-	Workspace        run.WorkspaceRef
 }
 
 // Assignment is the complete immutable description of one external effect.
@@ -53,6 +52,7 @@ type Assignment struct {
 	StepID  run.StepID
 	CallID  run.CallID
 	Claim   run.ExecutionClaim
+	Target  *run.TargetRef
 	Schema  uint16
 	Kind    AssignmentKind
 	Model   *ModelAssignment
@@ -113,8 +113,9 @@ const (
 )
 
 var (
-	ErrExecutionNotFound = errors.New("agent: effect: execution not found")
-	ErrOutcomeNotReady   = errors.New("agent: effect: outcome not ready")
+	ErrExecutionNotFound  = errors.New("agent: effect: execution not found")
+	ErrOutcomeNotReady    = errors.New("agent: effect: outcome not ready")
+	ErrBindingUnsupported = errors.New("agent: effect: backend does not support execution binding")
 	// ErrDispatchUnknown means the dispatch response was lost after the
 	// request may have crossed the effect boundary. It must not trigger a
 	// compensating re-dispatch or a RecoverModelExecution automatically.
@@ -144,25 +145,27 @@ type Attachment struct {
 	BackendAttached     bool            `json:"backendAttached,omitempty"`
 }
 
-// BackendBinding identifies a provider-side execution that belongs to one
-// Assignment. ExecutionRef is opaque to Agent Core; Workspace is the logical
-// environment selected by the preset. Providers must make PrepareBinding
-// idempotent by AssignmentKey because a crash can happen before the binding
-// is returned to the Worker.
-type BackendBinding struct {
-	Provider     string           `json:"provider,omitempty"`
-	Workspace    run.WorkspaceRef `json:"workspace,omitempty"`
-	ExecutionRef string           `json:"executionRef"`
+// ExecutionBinding identifies one provider-side execution for one
+// Assignment. ExecutionRef is opaque to Agent Core. Providers must make
+// PrepareBinding idempotent by AssignmentKey because a crash can happen
+// before the binding is returned to the Worker.
+type ExecutionBinding struct {
+	Provider     string `json:"provider,omitempty"`
+	ExecutionRef string `json:"executionRef"`
 }
 
 // BindingPort is an optional backend capability for durable provider jobs.
-// The Worker persists the returned binding before dispatching. DispatchBound
-// and AttachBound must address the same provider execution; they must not
-// silently create a new execution for the same binding.
+// The Worker persists the returned binding before dispatching. All bound
+// lifecycle operations must address the same provider execution; they must
+// not silently create a new execution for the same binding.
+// A persisted binding requires this capability throughout its lifecycle.
 type BindingPort interface {
-	PrepareBinding(context.Context, Assignment) (BackendBinding, error)
-	DispatchBound(context.Context, Assignment, BackendBinding) error
-	AttachBound(context.Context, AssignmentKey, BackendBinding) (Attachment, error)
+	PrepareBinding(context.Context, Assignment) (ExecutionBinding, error)
+	DispatchBound(context.Context, Assignment, ExecutionBinding) error
+	AttachBound(context.Context, AssignmentKey, ExecutionBinding) (Attachment, error)
+	GetStatusBound(context.Context, AssignmentKey, ExecutionBinding) (ExecutionStatus, error)
+	GetOutcomeBound(context.Context, AssignmentKey, ExecutionBinding) (Outcome, error)
+	CancelBound(context.Context, AssignmentKey, ExecutionBinding) error
 }
 
 // Port is the Agent Core effect port. It is intentionally message-shaped:
@@ -172,6 +175,8 @@ type Port interface {
 	Dispatch(context.Context, Assignment) error
 	Attach(context.Context, AssignmentKey) (Attachment, error)
 	GetStatus(context.Context, AssignmentKey) (ExecutionStatus, error)
+	// A returned error describes the read operation. The execution remains
+	// unsettled until a successful read returns its explicit Outcome.
 	GetOutcome(context.Context, AssignmentKey) (Outcome, error)
 	Cancel(context.Context, AssignmentKey) error
 }

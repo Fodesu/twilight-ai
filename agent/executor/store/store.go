@@ -46,12 +46,34 @@ func legalTransition(from, to effect.ExecutionStatus) bool {
 type Record struct {
 	Assignment          effect.Assignment         `json:"assignment"`
 	AssignmentDigest    run.Digest                `json:"assignmentDigest"`
-	BackendBinding      *effect.BackendBinding    `json:"backendBinding,omitempty"`
+	ExecutionBinding    *effect.ExecutionBinding  `json:"executionBinding,omitempty"`
 	State               effect.ExecutionStatus    `json:"state"`
 	Owner               string                    `json:"owner,omitempty"`
 	FencingEpoch        uint64                    `json:"fencingEpoch,omitempty"`
 	LeaseUntilUnixMilli int64                     `json:"leaseUntilUnixMilli,omitempty"`
 	Outcome             *protocol.OutcomeEnvelope `json:"outcome,omitempty"`
+}
+
+// UnmarshalJSON keeps records written before the BackendBinding split
+// recoverable. The legacy workspace field is intentionally ignored: resource
+// routing now comes from Assignment.Target and the application resolver.
+func (r *Record) UnmarshalJSON(data []byte) error {
+	type recordAlias Record
+	aux := struct {
+		*recordAlias
+		LegacyBinding json.RawMessage `json:"backendBinding"`
+	}{recordAlias: (*recordAlias)(r)}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if r.ExecutionBinding == nil && len(aux.LegacyBinding) != 0 && string(aux.LegacyBinding) != "null" {
+		var binding effect.ExecutionBinding
+		if err := json.Unmarshal(aux.LegacyBinding, &binding); err != nil {
+			return err
+		}
+		r.ExecutionBinding = &binding
+	}
+	return nil
 }
 
 type Store interface {
