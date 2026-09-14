@@ -432,7 +432,7 @@ FrozenValueStore 的 `Put` 幂等且内容寻址，在进入 Writer 之前完成
 
 ### 5.1 不进入 stream 的数据
 
-Executor 的 in-flight 表可以只是进程内缓存；跨 Worker 恢复所需的是 durable Execution Record。投影缓存是可丢弃的派生数据（EXT-PRJ-3）；`FrozenValueStore` 是 Authority 侧的内容寻址旁存。Worker crash 后，接管者从共享 Execution Store 获取同一 AssignmentKey 的 payload，并由 control plane 决定 Attach、Reconcile、Retry 或 Unknown。Session 所有权与 Worker execution ownership 是两层不同的 ownership。
+Executor 的 in-flight 表可以只是进程内缓存；跨 Worker 恢复所需的是 durable Execution Record。投影缓存是可丢弃的派生数据（EXT-PRJ-3）；`FrozenValueStore` 是 Authority 侧的内容寻址旁存。Worker crash 后，接管者从共享 Execution Store 获取同一 AssignmentKey 的 payload，并由 control plane 决定 Attach、Reconcile、Retry 或 Unknown。对于不能仅凭 AssignmentKey 重新发现的 provider job，Execution Record 还持久化 opaque `BackendBinding{Provider, Workspace, ExecutionRef}`；实现 `BindingPort` 的 backend 必须按同一 binding 执行 `DispatchBound`/`AttachBound`，并使 `PrepareBinding` 按 AssignmentKey 幂等。Session 所有权与 Worker execution ownership 是两层不同的 ownership。
 
 ## 6. Loop ports 与 policy
 
