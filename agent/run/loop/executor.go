@@ -29,6 +29,7 @@ type Assignment = effect.Assignment
 type Outcome = effect.Outcome
 
 type ExecutionStatus = effect.ExecutionStatus
+type AttachmentState = effect.AttachmentState
 type Attachment = effect.Attachment
 
 type Executor = effect.Port
@@ -93,6 +94,25 @@ func AssignmentFromTarget(sid session.SessionID, t run.RecoveryTarget) Assignmen
 	return a
 }
 
+// RecoveryDispositionFromAttachment translates an executor observation into
+// the recovery control-plane vocabulary. The two types stay separate on
+// purpose: orphaned means the executor found a durable record without a live
+// backend association; deferred means recovery must not dispose the Run yet.
+func RecoveryDispositionFromAttachment(state AttachmentState) (run.RecoveryDisposition, error) {
+	switch state {
+	case effect.AttachmentActive:
+		return run.RecoveryActive, nil
+	case effect.AttachmentTerminal:
+		return run.RecoveryTerminal, nil
+	case effect.AttachmentOrphaned:
+		return run.RecoveryDeferred, nil
+	case effect.AttachmentMissing:
+		return run.RecoveryMissing, nil
+	default:
+		return run.RecoveryMissing, fmt.Errorf("agent: loop: unknown attachment state %q", state)
+	}
+}
+
 // Reattach adapts an Executor to run.Reattacher for one Session. The
 // transport-facing Attach call only deals in the assignment key; the adapter
 // waits for the result and feeds it to the Loop's internal Deliver path. The
@@ -110,23 +130,26 @@ type reattacher struct {
 	deliver  Deliver
 }
 
-func (r reattacher) Attach(ctx context.Context, t run.RecoveryTarget) (run.ReattachResult, error) {
+func (r reattacher) Attach(ctx context.Context, t run.RecoveryTarget) (run.RecoveryDisposition, error) {
 	if r.lifetime == nil {
-		return run.ReattachMissing, errors.New("agent: loop: nil reattach lifetime")
+		return run.RecoveryMissing, errors.New("agent: loop: nil reattach lifetime")
 	}
 	if err := r.lifetime.Err(); err != nil {
-		return run.ReattachMissing, err
+		return run.RecoveryMissing, err
 	}
 	if r.exec == nil || r.deliver == nil {
-		return run.ReattachMissing, nil
+		return run.RecoveryMissing, nil
 	}
 	a := AssignmentFromTarget(r.sid, t)
 	attachment, err := r.exec.Attach(ctx, a.Key())
 	if err != nil {
-		return run.ReattachMissing, err
+		return run.RecoveryMissing, err
 	}
-	switch attachment.State {
-	case effect.AttachmentActive, effect.AttachmentTerminal:
+	disposition, err := RecoveryDispositionFromAttachment(attachment.State)
+	if err != nil {
+		return disposition, err
+	}
+	if disposition.PreservesExecution() {
 		go func() {
 			delay := 10 * time.Millisecond
 			for {
@@ -149,17 +172,8 @@ func (r reattacher) Attach(ctx context.Context, t run.RecoveryTarget) (run.Reatt
 				}
 			}
 		}()
-		if attachment.State == effect.AttachmentTerminal {
-			return run.ReattachTerminal, nil
-		}
-		return run.ReattachActive, nil
-	case effect.AttachmentOrphaned:
-		return run.ReattachDeferred, nil
-	case effect.AttachmentMissing:
-		return run.ReattachMissing, nil
-	default:
-		return run.ReattachMissing, fmt.Errorf("agent: loop: unknown attachment state %q", attachment.State)
 	}
+	return disposition, nil
 }
 
 // --- LocalExecutor ------------------------------------------------------------

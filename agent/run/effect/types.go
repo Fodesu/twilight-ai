@@ -112,6 +112,16 @@ const (
 	ExecutionUnknown         ExecutionStatus = "unknown"
 )
 
+// Terminal reports whether the provider execution has a final outcome.
+func (s ExecutionStatus) Terminal() bool {
+	switch s {
+	case ExecutionCompleted, ExecutionFailed, ExecutionCancelled, ExecutionUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
 var (
 	ErrExecutionNotFound  = errors.New("agent: effect: execution not found")
 	ErrOutcomeNotReady    = errors.New("agent: effect: outcome not ready")
@@ -131,6 +141,21 @@ const (
 	AttachmentOrphaned AttachmentState = "orphaned"
 	AttachmentTerminal AttachmentState = "terminal"
 )
+
+// Valid reports whether the executor returned a defined attachment state.
+func (s AttachmentState) Valid() bool {
+	switch s {
+	case AttachmentMissing, AttachmentActive, AttachmentOrphaned, AttachmentTerminal:
+		return true
+	default:
+		return false
+	}
+}
+
+// Terminal reports whether the executor has a durable terminal observation.
+// This describes the attachment observation, not the provider lifecycle; use
+// ExecutionStatus.Terminal for the latter.
+func (s AttachmentState) Terminal() bool { return s == AttachmentTerminal }
 
 // Attachment is the result of an attach/inspection request. Orphaned means a
 // durable execution record exists, but this Worker does not currently own a

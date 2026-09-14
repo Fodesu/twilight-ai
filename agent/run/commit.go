@@ -211,22 +211,43 @@ type RecoveryTarget struct {
 	Call   *ToolCallState // set for a tool target
 }
 
-// ReattachResult describes the recovery information returned by an executor.
-type ReattachResult string
+// RecoveryDisposition is the result of the recovery control-plane handshake
+// for one Executing target. It is deliberately distinct from
+// effect.AttachmentState: an executor reports what it observes, while
+// recovery reports what the authority may do next.
+type RecoveryDisposition string
 
 const (
-	ReattachMissing  ReattachResult = "missing"
-	ReattachActive   ReattachResult = "active"
-	ReattachDeferred ReattachResult = "deferred"
-	ReattachTerminal ReattachResult = "terminal"
+	RecoveryMissing  RecoveryDisposition = "missing"
+	RecoveryActive   RecoveryDisposition = "active"
+	RecoveryDeferred RecoveryDisposition = "deferred"
+	RecoveryTerminal RecoveryDisposition = "terminal"
 )
+
+// Valid reports whether d is a defined recovery disposition.
+func (d RecoveryDisposition) Valid() bool {
+	switch d {
+	case RecoveryMissing, RecoveryActive, RecoveryDeferred, RecoveryTerminal:
+		return true
+	default:
+		return false
+	}
+}
+
+// PreservesExecution reports whether recovery must leave the target Executing.
+// Active and terminal targets have an executor-owned outcome to read; deferred
+// targets require an explicit control-plane decision. Only missing permits the
+// protocol's automatic disposition.
+func (d RecoveryDisposition) PreservesExecution() bool {
+	return d == RecoveryActive || d == RecoveryTerminal || d == RecoveryDeferred
+}
 
 // Reattacher answers, for one Executing target, whether the attempt named by
 // Target.Claim is still running, durably exists but needs control-plane
-// takeover, or is absent. Only Missing is permission to dispose the target;
-// Deferred must remain Executing until reconciliation or explicit takeover.
+// takeover, or is absent. Only RecoveryMissing permits automatic disposition;
+// RecoveryDeferred remains Executing until reconciliation or explicit takeover.
 type Reattacher interface {
-	Attach(context.Context, RecoveryTarget) (ReattachResult, error)
+	Attach(context.Context, RecoveryTarget) (RecoveryDisposition, error)
 }
 
 // RecoveryTargets lists the Executing targets of state in the order

@@ -210,7 +210,7 @@ const (
 
 **TRN-API-2** Run 的写入只经 `run.Runtime`。driver 的组装与解析在宿主（HST-PST-2）。
 
-**TRN-API-3** DTO 为值语义。`Waiting` 为 `twilight/run/machine` 的 `WaitingCalls`。`NeedsRecovery` 为 true 时返回 `ResumeWaitingForRecovery`，表示仍有待结算的 Executing 目标；宿主按 RUN-CMT-7 重连或接管处置。可重连与 deferred 目标在处置后仍可保持该 disposition，直到实际结算。
+**TRN-API-3** DTO 为值语义。`Waiting` 为 `twilight/run/machine` 的 `WaitingCalls`。`NeedsRecovery` 为 true 时返回 `ResumeWaitingForRecovery`，表示仍有待结算的 Executing 目标；宿主按 RUN-CMT-7 重连或接管处置。`ResumeWaitingForRecovery` 是 Turn API 的观察 disposition，不等同于 Executor 的 `AttachmentState`；其中 `AttachmentState=orphaned` 经 recovery 映射为 `RecoveryDisposition=deferred`，在显式 reconcile/takeover 前保持该 disposition。可重连与 deferred 目标在处置后仍可保持 `ResumeWaitingForRecovery`，直到实际结算。
 
 **TRN-API-4** `twilight/turn/superseded` 由 Application 追加。Coordinator 的方法不写该事件。superseded 的 Turn 若仍有非终态 Run，Application 必须先 Stop。
 

@@ -14,7 +14,7 @@ Binding：稳定 BindingID 到 immutable Ref 的映射
 RetentionClaim：owner 对一个 BindingSet 的 durable 保留事实
 ```
 
-`BindingSet` 是 claim 的内容集合。`Active` claim 是 retention root；`Released` claim 结束对内容的保留。claim 由 Session Module Framework 的 `Writer` 在 Append owner fact 之前以 `Active` 状态建立（EXT-WRT-3），使已提交引用始终具有 retention root。Append 结果未知时，claim 保持 Active，重开后的日志核对确认 owner fact 已提交则继续保留，确认未提交则释放孤儿 claim（ART-RET-3）。`Prepared` 保留给需要显式 in-flight 状态的部署（第 7 节）。Core 通过 `ClaimOwner` 表达引用所属的权威身份，owner 的领域语义由对应模块解释。Attachment 等 owner module 可以关联 `AttachmentID`、subject 与 `BindingID`，artifact 边界使用 BindingID。
+`BindingSet` 是 claim 的内容集合。`Active` claim 是 retention root；`Released` claim 结束对内容的保留。claim 由 Session Module Framework 的 `Writer` 在 Append owner fact 之前以 `Active` 状态建立（EXT-WRT-3），使已提交引用始终具有 retention root。Append 结果未知时，claim 保持 Active，重开后的日志核对确认 owner fact 已提交则继续保留，确认未提交则释放孤儿 claim（ART-RET-3）。这里的“孤儿 claim”只描述 retention claim 没有对应 owner fact，不表示 Executor 的 `AttachmentState=orphaned`。`Prepared` 保留给需要显式 in-flight 状态的部署（第 7 节）。Core 通过 `ClaimOwner` 表达引用所属的权威身份，owner 的领域语义由对应模块解释。Attachment 等 owner module 可以关联 `AttachmentID`、subject 与 `BindingID`，artifact 边界使用 BindingID。
 
 **ART-SCP-1** Core 不得解释 `ClaimOwner`，不得要求某种数据库、文件系统或 provider 实现。参考实现与 conformance suite 见第 8 节。
 

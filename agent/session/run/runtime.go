@@ -453,15 +453,16 @@ func (r *Runtime) RecoverInterrupted(ctx context.Context, sid session.SessionID,
 				if err != nil {
 					return n, err
 				}
-				switch attached {
-				case run.ReattachActive, run.ReattachTerminal, run.ReattachDeferred:
+				if !attached.Valid() {
+					return n, fmt.Errorf("runmod: unknown recovery disposition %q", attached)
+				}
+				if attached.PreservesExecution() {
 					// Active/terminal delivery is already arranged; deferred means
 					// a durable record exists but control-plane takeover is still
 					// required. Neither case proves the effect was absent.
 					continue
-				case run.ReattachMissing:
-					// Only a missing durable record permits disposal below.
 				}
+				// Only RecoveryMissing permits automatic disposition below.
 			}
 			rec := run.RecoveryCommand(target, claim)
 			env, err := proto.BuildEnvelope(sid, runID, rec.ID, rec.Command)

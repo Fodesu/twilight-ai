@@ -12,6 +12,26 @@ import (
 	"github.com/felinics/twilight/sdk"
 )
 
+func TestRecoveryDispositionMapping(t *testing.T) {
+	for _, tc := range []struct {
+		state AttachmentState
+		want  RecoveryDisposition
+	}{
+		{AttachmentActive, RecoveryActive},
+		{AttachmentTerminal, RecoveryTerminal},
+		{AttachmentOrphaned, RecoveryDeferred},
+		{AttachmentMissing, RecoveryMissing},
+	} {
+		got, err := RecoveryDispositionFromAttachment(tc.state)
+		if err != nil || got != tc.want {
+			t.Errorf("map(%q) = %q, %v; want %q", tc.state, got, err, tc.want)
+		}
+	}
+	if _, err := RecoveryDispositionFromAttachment(AttachmentState("unknown")); err == nil {
+		t.Fatal("unknown attachment state was accepted")
+	}
+}
+
 // recordingExecutor captures Assignments instead of executing them, so a test
 // can observe the Loop's dispatch and hand Outcomes back at will.
 type recordingExecutor struct {
@@ -215,7 +235,7 @@ func TestReattachRetriesOutcomeReadErrors(t *testing.T) {
 	handshake, cancelHandshake := context.WithCancel(ctx)
 	defer cancelHandshake()
 	status, err := reattach.Attach(handshake, RecoveryTarget{RunID: a.RunID, StepID: a.StepID, Claim: a.Claim})
-	if err != nil || status != ReattachActive {
+	if err != nil || status != RecoveryActive {
 		t.Fatalf("reattach = %v, %v", status, err)
 	}
 	select {
@@ -265,7 +285,7 @@ func TestReattachLifetimeStopsOutcomeWatcher(t *testing.T) {
 	delivered := make(chan Outcome, 1)
 	reattach := Reattach(lifetime, exec, testSession, func(out Outcome) { delivered <- out })
 	status, err := reattach.Attach(ctx, RecoveryTarget{RunID: "run-1", StepID: "step-1", Claim: "claim-1"})
-	if err != nil || status != ReattachActive {
+	if err != nil || status != RecoveryActive {
 		t.Fatalf("reattach = %v, %v", status, err)
 	}
 	select {

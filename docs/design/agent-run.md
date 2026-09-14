@@ -512,9 +512,11 @@ type Executor interface {
 type WorkerOptions struct { ID string; LeaseDuration time.Duration }
 func (*Worker) Takeover(context.Context, AssignmentKey) error // control plane 在确认可接管后调用
 func NewLocalExecutor(models ModelCatalog, tools ToolCatalog, frozen FrozenRequestReader, sink EventSink, streaming bool) (*LocalExecutor, error)
-type ReattachResult string // missing | active | deferred | terminal
+type RecoveryDisposition string // missing | active | deferred | terminal
 func Reattach(lifetime context.Context, exec Executor, sid session.SessionID, deliver Deliver) run.Reattacher
 ```
+
+这里有三个不同的状态域，不能用同一个枚举替代：`ExecutionStatus` 描述 provider execution 的生命周期；`AttachmentState` 描述 Executor 对 Assignment 的观察（`missing | active | orphaned | terminal`）；`RecoveryDisposition` 描述 authority 的下一步权限（`missing | active | deferred | terminal`）。因此 `AttachmentState=orphaned` 明确映射为 `RecoveryDisposition=deferred`：前者是资源观察，后者表示暂时不得处置 Run。`RunStatus` 与 `TurnStatus` 的 `active` 也只表示各自聚合仍未终态，不等价于 Executor 的 `active`。
 
 **RUN-EXE-1（Assignment）** Assignment 是 authority 交给 Executor 的工作单元：目标（RunID、StepID、CallID）、attempt 身份（Claim）、Run 的协议版本，以及执行所需的冻结输入。模型 Assignment 携带 `ModelRequest` 与 `RequestDigest`；Executor 接受后必须将该 payload 写入自己的 durable Execution Record，不能依赖 Authority Session 或某个 Worker 的本地存储。Assignment 可携带 opaque `TargetRef`，但 Agent Core 不解释其 Kind 或生命周期。`Key()` 是 attempt 的身份，也是其结算 CommandID 的 preimage（第 2 节 identity 表）。
 

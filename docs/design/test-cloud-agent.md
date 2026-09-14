@@ -136,7 +136,7 @@ failed Turn 的结算完成后允许新 InputID。用户再次提出问题会创
 
 请求查询返回 `inputId`、`turnId`、`runId`、`status`、`reply`、`error` 与 `observedThrough`。投递前 Turn/Run 为空。状态由 Input 与 Turn 投影导出：`accepted`、`running`、`completed`、`failed`、`stopped`。Run 的 waiting/recovery 详情单独返回。
 
-executor 的当前连接状态放在独立的 `execution` 字段，包含 `observedAt`、`unavailable` 或 `recovery_required` 等观察值。持久 Run 状态与当前连通性各自保留来源。读取失败返回结构化错误；确认 InputID 缺失时返回 404。
+executor 的当前连接状态放在独立的 `execution` 字段，包含 `observedAt`、`unavailable` 或 `recovery_required` 等应用层观察值。`recovery_required` 表示 control plane 尚需采取恢复、对账或处置动作，不是 Executor 的 `AttachmentState`，也不等同于 Run/Turn 的终态。持久 Run 状态与当前连通性各自保留来源。读取失败返回结构化错误；确认 InputID 缺失时返回 404。
 
 组合投影读取使用同一 committed head。可复用 Writer 的只读 View，或校验各投影返回的 Head 一致后组装响应。最终回复按该 Input 的 TurnID 读取最后一条 assistant 文本；历史保留工具调用及结果。`completed` 响应包含同一提交视图中的回复，空文本结果允许成立。
 
@@ -173,7 +173,7 @@ Host 安装的 recovery listener 由 Host 生命周期管理。当前应用只�
 | authority 在输入提交后退出 | 启动扫描 submitted 输入，继续投递 |
 | authority 在工具执行中被终止，worker 存活 | 新 authority Attach 原 Assignment，等待同一次执行的 Outcome |
 | worker 已保存 Outcome 后重启 | 从 execution store 返回原结果 |
-| worker 在普通模型/工具调用中被终止 | 未完成记录为 orphaned，查询暴露 `recovery_required`；操作员可停止该 Turn 后发起新请求 |
+| worker 在普通模型/工具调用中被终止 | Executor 观察为 `orphaned`，Recovery disposition 为 `deferred`；查询暴露 `recovery_required`，操作员必须先显式 reconcile/takeover/dispose，或停止该 Turn 后发起新请求 |
 | worker 暂时不可达 | 保留当前 Run，连接恢复后重新 Attach/读取 |
 
 服务的信号 context 与工作 context 分开管理。`serve` 收到第一次终止信号后进入 draining：停止新输入 admission，查询服务与现有工作继续，等待已接受请求结算。进入需人工处理的等待状态时输出请求身份并保持可查询。操作员可显式停止 Turn；第二次终止信号触发进程强制退出，后续按上表的 crash 路径恢复。
@@ -194,7 +194,7 @@ Session 与 Execution records 保留已提交事实。恢复同一 Assignment �
 | authority 崩溃 | 真实子进程 SIGKILL 后重开；worker 存活；Run/Step/Call/Claim 相同，测试工具调用一次 |
 | 并行工具恢复 | A 已完成、B 在 worker 等待时 authority 崩溃；重启后保留 A 并接回 B |
 | Outcome 恢复 | worker 已持久化结果后退出，重启读取原结果，工具调用计数保持不变 |
-| worker 崩溃 | 显示 recovery_required；停止请求能结算 Turn，随后可以提交新任务 |
+| worker 崩溃 | 若执行记录存在但无法关联 backend，观察为 `orphaned → deferred` 并显示 `recovery_required`；若记录缺失才自动进入 `missing` 处置。停止请求可以结算 Turn，随后提交新任务 |
 | 短暂断网 | 恢复连接后原请求继续，事件序列与回复可完整回读 |
 | 失败收尾 | attempt_failed 被结算并保存错误，新的输入可被接受 |
 | 服务管理 | draining、目录排他锁、配置冲突、存储不可用均有确定响应 |

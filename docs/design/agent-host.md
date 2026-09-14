@@ -87,7 +87,18 @@ func NewPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...PresetOp
 
 **HST-DRV-5** 崩溃恢复：`Host.Open(sid)` 经 `Writers` 取得 Writer，随后调用 `Runtime.RecoverInterrupted(sid, reattach)`（RUN-CMT-7），其中 `reattach = loop.Reattach(lifetime, executor, sid, deliver)`。Attach 握手受 Open 请求的 context 约束；后台 Outcome 读取与交付使用该 Session 的 recovery lifetime。Open 返回后请求取消仍允许恢复继续；再次 Open 会替换旧监听，`Session.Close` 与 `Host.Close` 取消各自拥有的监听。
 
-Attach 的 `active` / `terminal` 保留 Executing 并等待实际 Outcome；`orphaned` 保留状态供 control plane 处理；`missing` 进入接管处置。进程内 Executor 重启后旧记录为 `missing`，持久 Executor 按其 Execution Store 返回状态。`deliver` 按 Outcome 的 RunID 查找 Turn，使用其 preset 的 Loop 结算并继续驱动；后台失败经 `Ports.Warn` 上报。
+Attach 的 `active` / `terminal` 保留 Executing 并等待实际 Outcome；`orphaned` 表示 Executor 找到 durable record 但无法关联 live backend，映射为 recovery 层的 `deferred`，必须保留 Executing 供 control plane reconcile/takeover；`missing` 才进入接管处置。这里的 `orphaned` 是 Executor 观察状态，不等同于 artifact claim 的 orphan，也不等同于 API 的 `recovery_required`。进程内 Executor 重启后旧记录为 `missing`，持久 Executor 按其 Execution Store 返回状态。`deliver` 按 Outcome 的 RunID 查找 Turn，使用其 preset 的 Loop 结算并继续驱动；后台失败经 `Ports.Warn` 上报。
+
+恢复状态的跨层映射固定如下：
+
+| Executor observation (`AttachmentState`) | Recovery disposition | authority 行为 | API 观察 |
+|---|---|---|---|
+| `missing` | `missing` | 允许协议自动处置 | `recovery_required`，直到处置完成 |
+| `active` | `active` | 保留 Executing，等待 Outcome | `observed` |
+| `terminal` | `terminal` | 读取并结算 Outcome | `observed` |
+| `orphaned` | `deferred` | 保留 Executing，等待显式 reconcile/takeover | `recovery_required` |
+
+`RunStatus=active`、`TurnStatus=active` 与 `AttachmentState=active` 分属三个状态域；API 不直接暴露它们的内部枚举，而通过明确的 view 映射输出。
 
 ## 5. Session 门面
 
