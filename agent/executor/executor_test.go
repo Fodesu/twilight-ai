@@ -26,6 +26,37 @@ type testBackend struct {
 func newTestBackend() *testBackend {
 	return &testBackend{outcomes: make(map[effect.AssignmentKey]chan effect.Outcome)}
 }
+
+type bindingBackend struct {
+	*testBackend
+	mu       sync.Mutex
+	prepared int
+	bound    int
+}
+
+func (b *bindingBackend) PrepareBinding(context.Context, effect.Assignment) (effect.BackendBinding, error) {
+	b.mu.Lock()
+	b.prepared++
+	b.mu.Unlock()
+	return effect.BackendBinding{Provider: "test", ExecutionRef: "execution-1"}, nil
+}
+
+func (b *bindingBackend) DispatchBound(ctx context.Context, a effect.Assignment, binding effect.BackendBinding) error {
+	if binding.ExecutionRef == "" {
+		return errors.New("missing execution binding")
+	}
+	b.mu.Lock()
+	b.bound++
+	b.mu.Unlock()
+	return b.testBackend.Dispatch(ctx, a)
+}
+
+func (b *bindingBackend) AttachBound(ctx context.Context, key effect.AssignmentKey, binding effect.BackendBinding) (effect.Attachment, error) {
+	if binding.ExecutionRef == "" {
+		return effect.Attachment{}, errors.New("missing execution binding")
+	}
+	return b.testBackend.Attach(ctx, key)
+}
 func (b *testBackend) Validate(context.Context, effect.Assignment) (*run.ToolFailure, error) {
 	return nil, nil
 }
@@ -110,6 +141,33 @@ func TestWorkerIdempotentAndOutcome(t *testing.T) {
 	out2, err := worker.GetOutcome(ctx, a.Key())
 	if err != nil || out2.Model == nil || out2.Model.Text != "ok" {
 		t.Fatalf("replayed outcome = %+v, %v", out2, err)
+	}
+}
+
+func TestWorkerPersistsBackendBindingBeforeDispatch(t *testing.T) {
+	ctx := context.Background()
+	records := store.NewMemoryStore()
+	backend := &bindingBackend{testBackend: newTestBackend()}
+	worker, err := executor.NewWorker(ctx, records, backend, executor.WorkerOptions{ID: "worker-a", LeaseDuration: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := testAssignment()
+	if err := worker.Dispatch(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	record, ok, err := records.Get(ctx, a.Key())
+	if err != nil || !ok {
+		t.Fatalf("record = %+v, ok=%v, err=%v", record, ok, err)
+	}
+	if record.BackendBinding == nil || record.BackendBinding.ExecutionRef != "execution-1" {
+		t.Fatalf("backend binding = %+v", record.BackendBinding)
+	}
+	backend.mu.Lock()
+	prepared, bound := backend.prepared, backend.bound
+	backend.mu.Unlock()
+	if prepared != 1 || bound != 1 {
+		t.Fatalf("binding calls = prepared:%d bound:%d, want 1/1", prepared, bound)
 	}
 }
 
