@@ -144,6 +144,27 @@ type Attachment struct {
 	BackendAttached     bool            `json:"backendAttached,omitempty"`
 }
 
+// BackendBinding identifies a provider-side execution that belongs to one
+// Assignment. ExecutionRef is opaque to Agent Core; Workspace is the logical
+// environment selected by the preset. Providers must make PrepareBinding
+// idempotent by AssignmentKey because a crash can happen before the binding
+// is returned to the Worker.
+type BackendBinding struct {
+	Provider     string           `json:"provider,omitempty"`
+	Workspace    run.WorkspaceRef `json:"workspace,omitempty"`
+	ExecutionRef string           `json:"executionRef"`
+}
+
+// BindingPort is an optional backend capability for durable provider jobs.
+// The Worker persists the returned binding before dispatching. DispatchBound
+// and AttachBound must address the same provider execution; they must not
+// silently create a new execution for the same binding.
+type BindingPort interface {
+	PrepareBinding(context.Context, Assignment) (BackendBinding, error)
+	DispatchBound(context.Context, Assignment, BackendBinding) error
+	AttachBound(context.Context, AssignmentKey, BackendBinding) (Attachment, error)
+}
+
 // Port is the Agent Core effect port. It is intentionally message-shaped:
 // none of its methods accepts a process-local callback.
 type Port interface {

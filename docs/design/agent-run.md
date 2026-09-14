@@ -489,6 +489,14 @@ type Attachment struct {
     Owner string; FencingEpoch uint64; LeaseUntilUnixMilli int64
     BackendAttached bool
 }
+type BackendBinding struct {
+    Provider string; Workspace run.WorkspaceRef; ExecutionRef string
+}
+type BindingPort interface {
+    PrepareBinding(context.Context, Assignment) (BackendBinding, error) // idempotent by AssignmentKey
+    DispatchBound(context.Context, Assignment, BackendBinding) error
+    AttachBound(context.Context, AssignmentKey, BackendBinding) (Attachment, error)
+}
 type Executor interface {
     Validate(context.Context, Assignment) (*run.ToolFailure, error) // start barrier 前的无副作用校验
     Dispatch(context.Context, Assignment) error                    // 接受后通过 GetOutcome 读取结果
@@ -508,7 +516,7 @@ func Reattach(exec Executor, sid session.SessionID, deliver Deliver) run.Reattac
 
 **RUN-EXE-2（Outcome）** Outcome 是 Executor 对一个 Assignment 的唯一回答：模型 Assignment 得到 `Model` 或 `Err`，工具 Assignment 得到 sealed 的 `Tool`；`Cancelled` 表示 Executor 按要求停止了该效果；`Unknown` 表示 effect 已跨过 invocation boundary 但 Executor 无法确认 terminal provider outcome，不能当作 Dispatch rejection 或普通 provider failure。Outcome 通过 `GetOutcome` 按 key 读取，也可以由 deployment 层通过通知唤醒读取方；每个被接受的 Assignment 最终至多提交一个 authoritative Outcome。
 
-**RUN-EXE-3（Dispatch 与 Attach）** `Dispatch` 接受 Assignment 后立即返回，只有在 effect 尚未跨过 invocation boundary 且 acceptance 失败时才返回 error；网络超时或响应丢失不能证明未执行。接受时 Executor 必须先持久化完整 Assignment payload，再进入 `Dispatching`，然后才调用 backend；`Accepted` 表示确定尚未开始，`Dispatching` 表示可能已经开始，`Running` 表示 backend 已接受。之后 Worker 可在 crash/restart 后从 Execution Record 恢复。`Attach` 按 AssignmentKey 返回 `active`、`orphaned`、`terminal` 或 `missing`：只有 `missing` 才允许 Authority 自动 dispose；`orphaned` 必须由 control plane reconcile、takeover 或明确处置。`GetStatus` 与 `GetOutcome` 不读取 Session。对已失效 owner 的 takeover 由 control plane 决定，Worker 以新的 fencing epoch 获取同一个 AssignmentKey。`Cancel` 针对一个 Assignment；Run 级批量取消由上层枚举 targets。`LocalExecutor` 可以继续是进程内的轻量实现；durable Worker 则使用共享 Execution Store。
+**RUN-EXE-3（Dispatch 与 Attach）** `Dispatch` 接受 Assignment 后立即返回，只有在 effect 尚未跨过 invocation boundary 且 acceptance 失败时才返回 error；网络超时或响应丢失不能证明未执行。接受时 Executor 必须先持久化完整 Assignment payload，再进入 `Dispatching`，然后才调用 backend；`Accepted` 表示确定尚未开始，`Dispatching` 表示可能已经开始，`Running` 表示 backend 已接受。之后 Worker 可在 crash/restart 后从 Execution Record 恢复。`Attach` 按 AssignmentKey 返回 `active`、`orphaned`、`terminal` 或 `missing`：只有 `missing` 才允许 Authority 自动 dispose；`orphaned` 必须由 control plane reconcile、takeover 或明确处置。`GetStatus` 与 `GetOutcome` 不读取 Session。对已失效 owner 的 takeover 由 control plane 决定，Worker 以新的 fencing epoch 获取同一个 AssignmentKey；接管 `Running`/`Dispatching` 时先尝试 backend attach，只有确认不可 attach 后才允许显式 retry dispatch，避免把 adopt 误写成 duplicate retry。`Cancel` 针对一个 Assignment；Run 级批量取消由上层枚举 targets。`LocalExecutor` 可以继续是进程内的轻量实现；durable Worker 则使用共享 Execution Store。
 
 **RUN-EXE-4（Outcome 的结算）** `Loop.Deliver` 以 `Outcome.Key` 在投影中定位 Executing 的目标：同一 step 或 call、同一 Claim。找到则以该 Claim 派生的结算 CommandID 提交 Submit*（模型：结果、provider 失败、畸形结果的 Reject、取消或本体缺失的 Recover；工具：按 sealed outcome 映射，无 outcome 或传输错误记 Unknown）；找不到——attempt 已被结算或处置、Run 已终结、Claim 不符——则丢弃，不写任何事实（`LoopDropped`）。结算使用独立 control context（RUN-LOP-5）。
 

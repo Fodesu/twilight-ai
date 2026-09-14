@@ -270,7 +270,11 @@ func (h *Host) loopFor(ref turn.PresetRef) (*loop.Loop, turn.AgentPreset, error)
 	if err != nil {
 		return nil, turn.AgentPreset{}, err
 	}
-	l, err := loop.New(h.Executor, builder, loop.Settings{Scheduling: preset.Scheduling, MalformedRetries: preset.MalformedRetries})
+	l, err := loop.New(h.Executor, builder, loop.Settings{
+		Scheduling:       preset.Scheduling,
+		MalformedRetries: preset.MalformedRetries,
+		Workspace:        preset.Workspace,
+	})
 	if err != nil {
 		return nil, turn.AgentPreset{}, err
 	}

@@ -151,10 +151,31 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 		return nil
 	}
 	digest := claimed.AssignmentDigest
+	var binding *effect.BackendBinding
+	if claimed.BackendBinding != nil {
+		b := *claimed.BackendBinding
+		binding = &b
+	}
+	if claimed.State != effect.ExecutionCancelRequested {
+		if provider, ok := w.backend.(effect.BindingPort); ok && binding == nil {
+			b, err := provider.PrepareBinding(ctx, claimed.Assignment)
+			if err != nil {
+				return err
+			}
+			if b.ExecutionRef == "" {
+				return errors.New("executor: backend returned an empty execution binding")
+			}
+			binding = &b
+			claimed.BackendBinding = binding
+			if err := w.store.PutOwned(ctx, claimed, w.id, claimed.FencingEpoch); err != nil {
+				return err
+			}
+		}
+	}
 	if claimed.State == effect.ExecutionCancelRequested {
 		leaseDone := make(chan struct{})
 		go w.heartbeat(key, claimed.FencingEpoch, leaseDone)
-		attachment, attachErr := w.backend.Attach(ctx, key)
+		attachment, attachErr := w.attachBackend(ctx, key, binding)
 		if attachErr != nil {
 			close(leaseDone)
 			return attachErr
@@ -170,6 +191,26 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 		go w.watch(key, digest, claimed.FencingEpoch, leaseDone)
 		return cancelErr
 	}
+	if claimed.State == effect.ExecutionRunning || claimed.State == effect.ExecutionDispatching {
+		// Prefer adoption over retry. Takeover is allowed to retry only after
+		// the backend says that the old execution is not attachable.
+		attachment, attachErr := w.attachBackend(ctx, key, binding)
+		if attachErr != nil {
+			return attachErr
+		}
+		if attachment.State == effect.AttachmentActive || attachment.State == effect.AttachmentTerminal {
+			leaseDone := make(chan struct{})
+			go w.heartbeat(key, claimed.FencingEpoch, leaseDone)
+			if claimed.State == effect.ExecutionDispatching {
+				if err := w.store.TransitionOwned(ctx, key, w.id, claimed.FencingEpoch, effect.ExecutionDispatching, effect.ExecutionRunning); err != nil {
+					// Keep watching: the effect may have completed even if the
+					// bookkeeping transition was lost.
+				}
+			}
+			go w.watch(key, digest, claimed.FencingEpoch, leaseDone)
+			return nil
+		}
+	}
 	if claimed.State != effect.ExecutionDispatching {
 		if err := w.store.TransitionOwned(ctx, key, w.id, claimed.FencingEpoch, claimed.State, effect.ExecutionDispatching); err != nil {
 			if errors.Is(err, executionstore.ErrLeaseLost) || errors.Is(err, executionstore.ErrStateConflict) {
@@ -180,7 +221,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 	}
 	leaseDone := make(chan struct{})
 	go w.heartbeat(key, claimed.FencingEpoch, leaseDone)
-	if err := w.backend.Dispatch(context.WithoutCancel(ctx), claimed.Assignment); err != nil {
+	if err := w.dispatchBackend(context.WithoutCancel(ctx), claimed.Assignment, binding); err != nil {
 		settleErr := w.finishOwned(ctx, key, claimed.FencingEpoch, protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest,
 			Error: &protocol.WireError{Code: "dispatch_failed", Message: err.Error()}}, effect.ExecutionFailed, err)
 		close(leaseDone)
@@ -195,6 +236,20 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 	}
 	go w.watch(key, digest, claimed.FencingEpoch, leaseDone)
 	return nil
+}
+
+func (w *Worker) dispatchBackend(ctx context.Context, assignment effect.Assignment, binding *effect.BackendBinding) error {
+	if provider, ok := w.backend.(effect.BindingPort); ok && binding != nil {
+		return provider.DispatchBound(ctx, assignment, *binding)
+	}
+	return w.backend.Dispatch(ctx, assignment)
+}
+
+func (w *Worker) attachBackend(ctx context.Context, key effect.AssignmentKey, binding *effect.BackendBinding) (effect.Attachment, error) {
+	if provider, ok := w.backend.(effect.BindingPort); ok && binding != nil {
+		return provider.AttachBound(ctx, key, *binding)
+	}
+	return w.backend.Attach(ctx, key)
 }
 
 func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64, done chan struct{}) {
@@ -288,7 +343,7 @@ func (w *Worker) Attach(ctx context.Context, key effect.AssignmentKey) (effect.A
 		attachment.State = effect.AttachmentOrphaned
 		return attachment, nil
 	}
-	backendAttachment, err := w.backend.Attach(ctx, key)
+	backendAttachment, err := w.attachBackend(ctx, key, r.BackendBinding)
 	if err != nil {
 		return effect.Attachment{}, err
 	}
@@ -421,7 +476,7 @@ func (w *Worker) recover(ctx context.Context) error {
 		if !owned {
 			continue
 		}
-		attachment, attachErr := w.backend.Attach(ctx, r.Assignment.Key())
+		attachment, attachErr := w.attachBackend(ctx, r.Assignment.Key(), r.BackendBinding)
 		if attachErr != nil {
 			return attachErr
 		}

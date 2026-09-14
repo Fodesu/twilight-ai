@@ -62,7 +62,7 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime boundRuntime, events 
 			// owner's takeover disposition; never re-run (TRN-DUR-4).
 			continue
 		}
-		binding := &ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy}
+		binding := &ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy, Workspace: l.Settings.Workspace}
 		probe := Assignment{Session: runtime.sid, RunID: runID, StepID: eff.StepID, CallID: callID, Schema: snapshot.SchemaVersion, Kind: AssignmentTool, Tool: binding}
 		known, err := l.Executor.Validate(ctx, probe)
 		if err != nil {

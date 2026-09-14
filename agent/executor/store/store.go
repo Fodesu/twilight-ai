@@ -31,6 +31,10 @@ func legalTransition(from, to effect.ExecutionStatus) bool {
 		return to == effect.ExecutionDispatching
 	case effect.ExecutionDispatching:
 		return to == effect.ExecutionRunning
+	case effect.ExecutionRunning:
+		// This transition is only used by explicit control-plane retry after
+		// backend reconciliation found no attachable execution.
+		return to == effect.ExecutionDispatching
 	default:
 		return false
 	}
@@ -42,6 +46,7 @@ func legalTransition(from, to effect.ExecutionStatus) bool {
 type Record struct {
 	Assignment          effect.Assignment         `json:"assignment"`
 	AssignmentDigest    run.Digest                `json:"assignmentDigest"`
+	BackendBinding      *effect.BackendBinding    `json:"backendBinding,omitempty"`
 	State               effect.ExecutionStatus    `json:"state"`
 	Owner               string                    `json:"owner,omitempty"`
 	FencingEpoch        uint64                    `json:"fencingEpoch,omitempty"`

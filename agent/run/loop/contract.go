@@ -42,6 +42,10 @@ type Prompt struct {
 type Settings struct {
 	Scheduling       run.ToolScheduling
 	MalformedRetries uint8
+	// Workspace is the logical execution environment selected by the
+	// AgentPreset. The Loop only transports it into ToolAssignment; executors
+	// resolve it to a concrete sandbox/runtime.
+	Workspace run.WorkspaceRef
 }
 
 // ModelCatalog resolves a frozen run.ModelRef into an invoker at execution time;
