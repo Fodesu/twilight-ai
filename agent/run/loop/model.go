@@ -129,6 +129,16 @@ func (l *Loop) startModelStep(ctx context.Context, runtime boundRuntime, events 
 		return nil, fmt.Errorf("agent: loop: started step %q is not current", stepID)
 	}
 
+	request, err := runtime.FrozenRequest(ctx, prepared.RequestDigest)
+	if err != nil {
+		if _, serr := l.settle(context.WithoutCancel(ctx), runtime, events, a, start.Snapshot.Position,
+			run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, proto); serr != nil {
+			return nil, serr
+		}
+		return nil, fmt.Errorf("agent: loop: load frozen model request: %w", err)
+	}
+	assignment.Model.Request = &request
+
 	if err := l.Executor.Dispatch(ctx, assignment); err != nil {
 		// Nothing was called: withdraw the step to Open under this attempt's
 		// recovery identity and surface the condition (RUN-LOP-3).

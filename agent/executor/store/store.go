@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
@@ -15,21 +16,31 @@ import (
 	"github.com/felinics/twilight/agent/run/protocol"
 )
 
-var ErrAssignmentConflict = errors.New("executor/store: assignment conflict")
+var (
+	ErrAssignmentConflict = errors.New("executor/store: assignment conflict")
+	ErrLeaseLost          = errors.New("executor/store: execution lease lost")
+)
 
-// Record is the worker's durable execution record. Assignment is immutable;
-// State and Outcome move monotonically to a terminal state.
+// Record is the worker's durable execution record. Assignment is immutable
+// and carries the execution payload; State and Outcome move monotonically to
+// a terminal state. Owner and FencingEpoch protect takeover.
 type Record struct {
-	Assignment       effect.Assignment         `json:"assignment"`
-	AssignmentDigest run.Digest                `json:"assignmentDigest"`
-	State            effect.ExecutionStatus    `json:"state"`
-	Outcome          *protocol.OutcomeEnvelope `json:"outcome,omitempty"`
+	Assignment          effect.Assignment         `json:"assignment"`
+	AssignmentDigest    run.Digest                `json:"assignmentDigest"`
+	State               effect.ExecutionStatus    `json:"state"`
+	Owner               string                    `json:"owner,omitempty"`
+	FencingEpoch        uint64                    `json:"fencingEpoch,omitempty"`
+	LeaseUntilUnixMilli int64                     `json:"leaseUntilUnixMilli,omitempty"`
+	Outcome             *protocol.OutcomeEnvelope `json:"outcome,omitempty"`
 }
 
 type Store interface {
 	Create(context.Context, Record) (Record, bool, error)
 	Get(context.Context, effect.AssignmentKey) (Record, bool, error)
 	Put(context.Context, Record) error
+	PutOwned(context.Context, Record, string, uint64) error
+	Acquire(context.Context, effect.AssignmentKey, string, time.Time, time.Duration) (Record, bool, error)
+	Renew(context.Context, effect.AssignmentKey, string, uint64, time.Time, time.Duration) error
 	List(context.Context) ([]Record, error)
 }
 
@@ -74,6 +85,60 @@ func (s *MemoryStore) Put(_ context.Context, record Record) error {
 	return nil
 }
 
+func (s *MemoryStore) PutOwned(_ context.Context, record Record, owner string, epoch uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old, ok := s.records[record.Assignment.Key()]
+	if !ok {
+		return effect.ErrExecutionNotFound
+	}
+	if old.AssignmentDigest != record.AssignmentDigest {
+		return ErrAssignmentConflict
+	}
+	if old.Owner != owner || old.FencingEpoch != epoch {
+		return ErrLeaseLost
+	}
+	s.records[record.Assignment.Key()] = record
+	return nil
+}
+
+func (s *MemoryStore) Acquire(_ context.Context, key effect.AssignmentKey, owner string, now time.Time, ttl time.Duration) (Record, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.records[key]
+	if !ok {
+		return Record{}, false, effect.ErrExecutionNotFound
+	}
+	if protocol.StatusTerminal(r.State) {
+		return r, false, nil
+	}
+	if r.Owner != "" && r.Owner != owner && r.LeaseUntilUnixMilli > now.UnixMilli() {
+		return r, false, nil
+	}
+	if r.Owner != owner || r.FencingEpoch == 0 {
+		r.FencingEpoch++
+	}
+	r.Owner = owner
+	r.LeaseUntilUnixMilli = now.Add(ttl).UnixMilli()
+	s.records[key] = r
+	return r, true, nil
+}
+
+func (s *MemoryStore) Renew(_ context.Context, key effect.AssignmentKey, owner string, epoch uint64, now time.Time, ttl time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.records[key]
+	if !ok {
+		return effect.ErrExecutionNotFound
+	}
+	if protocol.StatusTerminal(r.State) || r.Owner != owner || r.FencingEpoch != epoch {
+		return ErrLeaseLost
+	}
+	r.LeaseUntilUnixMilli = now.Add(ttl).UnixMilli()
+	s.records[key] = r
+	return nil
+}
+
 func (s *MemoryStore) List(_ context.Context) ([]Record, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -85,9 +150,9 @@ func (s *MemoryStore) List(_ context.Context) ([]Record, error) {
 }
 
 // FileStore is a single-worker durable store. Each record is replaced with an
-// fsync + atomic rename. Cross-process ownership of one directory is a
-// deployment concern; use a transactional database when multiple workers
-// share a store.
+// fsync + atomic rename. Its lease operations are only process-safe because
+// the mutex is local; use a transactional shared store when multiple Workers
+// may acquire the same Assignment.
 type FileStore struct {
 	mu   sync.Mutex
 	root string
@@ -142,6 +207,69 @@ func (s *FileStore) Put(ctx context.Context, record Record) error {
 		return ErrAssignmentConflict
 	}
 	return s.putLocked(ctx, record)
+}
+
+func (s *FileStore) PutOwned(ctx context.Context, record Record, owner string, epoch uint64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old, ok, err := s.getLocked(ctx, record.Assignment.Key())
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return effect.ErrExecutionNotFound
+	}
+	if old.AssignmentDigest != record.AssignmentDigest {
+		return ErrAssignmentConflict
+	}
+	if old.Owner != owner || old.FencingEpoch != epoch {
+		return ErrLeaseLost
+	}
+	return s.putLocked(ctx, record)
+}
+
+func (s *FileStore) Acquire(ctx context.Context, key effect.AssignmentKey, owner string, now time.Time, ttl time.Duration) (Record, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok, err := s.getLocked(ctx, key)
+	if err != nil {
+		return Record{}, false, err
+	}
+	if !ok {
+		return Record{}, false, effect.ErrExecutionNotFound
+	}
+	if protocol.StatusTerminal(r.State) {
+		return r, false, nil
+	}
+	if r.Owner != "" && r.Owner != owner && r.LeaseUntilUnixMilli > now.UnixMilli() {
+		return r, false, nil
+	}
+	if r.Owner != owner || r.FencingEpoch == 0 {
+		r.FencingEpoch++
+	}
+	r.Owner = owner
+	r.LeaseUntilUnixMilli = now.Add(ttl).UnixMilli()
+	if err := s.putLocked(ctx, r); err != nil {
+		return Record{}, false, err
+	}
+	return r, true, nil
+}
+
+func (s *FileStore) Renew(ctx context.Context, key effect.AssignmentKey, owner string, epoch uint64, now time.Time, ttl time.Duration) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok, err := s.getLocked(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return effect.ErrExecutionNotFound
+	}
+	if protocol.StatusTerminal(r.State) || r.Owner != owner || r.FencingEpoch != epoch {
+		return ErrLeaseLost
+	}
+	r.LeaseUntilUnixMilli = now.Add(ttl).UnixMilli()
+	return s.putLocked(ctx, r)
 }
 
 func (s *FileStore) List(ctx context.Context) ([]Record, error) {

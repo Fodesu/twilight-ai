@@ -2,6 +2,7 @@ package executor_test
 
 import (
 	"context"
+	"errors"
 	"net/http/httptest"
 	"sync"
 	"testing"
@@ -18,6 +19,7 @@ import (
 type testBackend struct {
 	mu       sync.Mutex
 	calls    int
+	last     effect.Assignment
 	outcomes map[effect.AssignmentKey]chan effect.Outcome
 }
 
@@ -30,6 +32,7 @@ func (b *testBackend) Validate(context.Context, effect.Assignment) (*run.ToolFai
 func (b *testBackend) Dispatch(_ context.Context, a effect.Assignment) error {
 	b.mu.Lock()
 	b.calls++
+	b.last = a
 	if b.outcomes[a.Key()] == nil {
 		b.outcomes[a.Key()] = make(chan effect.Outcome, 1)
 	}
@@ -68,8 +71,13 @@ func (b *testBackend) GetOutcome(ctx context.Context, key effect.AssignmentKey) 
 func (b *testBackend) Cancel(context.Context, effect.AssignmentKey) error { return nil }
 
 func testAssignment() effect.Assignment {
+	request := run.ModelRequest{Model: "m"}
+	digest, err := run.ProtocolV1().DigestRequest(request)
+	if err != nil {
+		panic(err)
+	}
 	return effect.Assignment{Session: "s", RunID: "r", StepID: "step", Claim: "claim", Schema: 1,
-		Kind: effect.AssignmentModel, Model: &effect.ModelAssignment{Model: "m", RequestDigest: "sha256:req"}}
+		Kind: effect.AssignmentModel, Model: &effect.ModelAssignment{Model: "m", Request: &request, RequestDigest: digest}}
 }
 
 func TestWorkerIdempotentAndOutcome(t *testing.T) {
@@ -99,6 +107,78 @@ func TestWorkerIdempotentAndOutcome(t *testing.T) {
 	out2, err := worker.GetOutcome(ctx, a.Key())
 	if err != nil || out2.Model == nil || out2.Model.Text != "ok" {
 		t.Fatalf("replayed outcome = %+v, %v", out2, err)
+	}
+}
+
+func TestExecutionStoreFencesTakeover(t *testing.T) {
+	ctx := context.Background()
+	records := store.NewMemoryStore()
+	a := testAssignment()
+	digest, err := a.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, created, err := records.Create(ctx, store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionAccepted}); err != nil || !created {
+		t.Fatalf("create = %v, created=%v", err, created)
+	}
+	base := time.Unix(100, 0)
+	first, acquired, err := records.Acquire(ctx, a.Key(), "worker-a", base, time.Second)
+	if err != nil || !acquired || first.FencingEpoch != 1 {
+		t.Fatalf("first acquire = %+v, acquired=%v, err=%v", first, acquired, err)
+	}
+	if _, acquired, err := records.Acquire(ctx, a.Key(), "worker-b", base.Add(500*time.Millisecond), time.Second); err != nil || acquired {
+		t.Fatalf("live lease acquire = acquired=%v, err=%v; want rejected", acquired, err)
+	}
+	second, acquired, err := records.Acquire(ctx, a.Key(), "worker-b", base.Add(2*time.Second), time.Second)
+	if err != nil || !acquired || second.FencingEpoch != 2 {
+		t.Fatalf("takeover = %+v, acquired=%v, err=%v", second, acquired, err)
+	}
+	if err := records.PutOwned(ctx, first, "worker-a", first.FencingEpoch); !errors.Is(err, store.ErrLeaseLost) {
+		t.Fatalf("stale put = %v, want ErrLeaseLost", err)
+	}
+}
+
+func TestWorkerReclaimsExpiredAssignment(t *testing.T) {
+	ctx := context.Background()
+	records := store.NewMemoryStore()
+	a := testAssignment()
+	digest, err := a.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, created, err := records.Create(ctx, store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionAccepted}); err != nil || !created {
+		t.Fatalf("create = %v, created=%v", err, created)
+	}
+	base := time.Unix(100, 0)
+	if _, acquired, err := records.Acquire(ctx, a.Key(), "worker-a", base, time.Second); err != nil || !acquired {
+		t.Fatalf("initial acquire = %v, acquired=%v", err, acquired)
+	}
+	backend := newTestBackend()
+	worker, err := executor.NewWorker(ctx, records, backend, executor.WorkerOptions{
+		ID: "worker-b", LeaseDuration: time.Second,
+		Now: func() time.Time { return base.Add(2 * time.Second) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := worker.Takeover(ctx, a.Key()); err != nil {
+		t.Fatal(err)
+	}
+	readCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	out, err := worker.GetOutcome(readCtx, a.Key())
+	if err != nil || out.Model == nil || out.Model.Text != "ok" {
+		t.Fatalf("recovered outcome = %+v, %v", out, err)
+	}
+	backend.mu.Lock()
+	calls := backend.calls
+	var request *run.ModelRequest
+	if backend.last.Model != nil {
+		request = backend.last.Model.Request
+	}
+	backend.mu.Unlock()
+	if calls != 1 || request == nil {
+		t.Fatalf("recovery dispatch calls=%d request=%v, want one inline request", calls, request)
 	}
 }
 

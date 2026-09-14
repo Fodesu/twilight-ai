@@ -54,8 +54,9 @@ var (
 // inside the authority to feed Loop.Deliver.
 type Deliver func(Outcome)
 
-// FrozenRequestReader is the read side of the frozen value store an executor
-// fetches model request bodies from (RUN-WIR-4). run.Runtime satisfies it.
+// FrozenRequestReader is the compatibility read side of the frozen value
+// store. New process-independent Assignments carry the model request inline;
+// the reader remains for legacy digest-only local callers.
 type FrozenRequestReader interface {
 	FrozenRequest(context.Context, run.Digest) (run.ModelRequest, error)
 }
@@ -120,10 +121,10 @@ func (r reattacher) Attach(ctx context.Context, t run.RecoveryTarget) (bool, err
 
 // --- LocalExecutor ------------------------------------------------------------
 
-// LocalExecutor runs effects in goroutines of the authority process. It is
-// the compact in-process implementation of the message-shaped Executor port.
-// Its records are process-scoped: after a process restart Attach cannot find
-// an old assignment and recovery disposes it according to Run policy.
+// LocalExecutor runs effects in goroutines of one process. It is the compact
+// in-process implementation of the message-shaped Executor port. Its records
+// are process-scoped: after a process restart Attach cannot find an old
+// assignment. Durable cross-worker recovery belongs to executor.Worker.
 type LocalExecutor struct {
 	models    ModelCatalog
 	tools     ToolCatalog
@@ -257,12 +258,30 @@ func (e *LocalExecutor) Dispatch(ctx context.Context, a Assignment) error {
 		if invoker == nil {
 			return fmt.Errorf("%w: model catalog returned a nil invoker", ErrExecutorRejected)
 		}
-		// The body is fetched before the effect starts: a missing transfer
-		// copy is a Dispatch failure (the Loop withdraws the step and returns
-		// the error), not an Outcome that would re-enter the plan cycle.
-		frozenRequest, err := e.frozen.FrozenRequest(ctx, a.Model.RequestDigest)
-		if err != nil {
-			return fmt.Errorf("%w: %w", ErrExecutorRejected, err)
+		// A process-independent assignment carries the immutable request when
+		// available. The reader fallback keeps the compact local API compatible
+		// with older callers that dispatch digest-only assignments.
+		var frozenRequest run.ModelRequest
+		if a.Model.Request != nil {
+			frozenRequest = *a.Model.Request
+			requestDigest, err := run.ProtocolFor(a.Schema)
+			if err != nil {
+				return err
+			}
+			got, err := requestDigest.DigestRequest(frozenRequest)
+			if err != nil {
+				return fmt.Errorf("%w: request digest: %v", ErrExecutorRejected, err)
+			}
+			if got != a.Model.RequestDigest || frozenRequest.Model != string(a.Model.Model) {
+				return fmt.Errorf("%w: model request digest or model mismatch", ErrExecutorRejected)
+			}
+		} else {
+			// The body is fetched before the effect starts: a missing transfer
+			// copy is a Dispatch failure, not an Outcome that re-enters planning.
+			frozenRequest, err = e.frozen.FrozenRequest(ctx, a.Model.RequestDigest)
+			if err != nil {
+				return fmt.Errorf("%w: %w", ErrExecutorRejected, err)
+			}
 		}
 		execute = func(ctx context.Context) Outcome { return e.runModel(ctx, a, frozenRequest, invoker) }
 	case AssignmentTool:

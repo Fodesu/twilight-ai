@@ -412,11 +412,10 @@ func (missingFrozen) FrozenRequest(context.Context, Digest) (ModelRequest, error
 	return ModelRequest{}, ErrFrozenValueMissing
 }
 
-// A persistently missing body must not spin the Run: the blocking Run returns
-// the error after one withdrawal, whether the miss is reported by a remote
-// executor as an Outcome or found by LocalExecutor.Dispatch before the effect
-// starts. Either way the stream grows by one Prepared/Started/Recovered round
-// per drive, and only the host can start another.
+// A persistently missing body reported by a remote executor must not spin the
+// Run: the blocking Run returns the error after one withdrawal. The executor
+// owns the execution payload after Dispatch; the authority does not rebuild it
+// from Session state during this path.
 func TestRunStopsAfterOneMissingBodyRecovery(t *testing.T) {
 	cases := []struct {
 		name string
@@ -424,13 +423,6 @@ func TestRunStopsAfterOneMissingBodyRecovery(t *testing.T) {
 	}{
 		{"remote outcome", func(*testing.T, Runtime) Executor {
 			return &missingBodyExecutor{recordingExecutor: *newRecordingExecutor()}
-		}},
-		{"local dispatch", func(t *testing.T, rt Runtime) Executor {
-			exec, err := NewLocalExecutor(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{}, missingFrozen{}, nil, false)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return exec
 		}},
 	}
 	for _, tc := range cases {

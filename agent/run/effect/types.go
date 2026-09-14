@@ -33,8 +33,9 @@ type AssignmentKey struct {
 }
 
 type ModelAssignment struct {
-	Model         run.ModelRef
-	RequestDigest run.Digest
+	Model         run.ModelRef      `json:"model"`
+	Request       *run.ModelRequest `json:"request,omitempty"`
+	RequestDigest run.Digest        `json:"requestDigest"`
 }
 
 type ToolAssignment struct {
