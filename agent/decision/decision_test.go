@@ -108,3 +108,37 @@ func TestInputContentRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestPromptRejectsUnpairedToolHistory(t *testing.T) {
+	call := chatlog.Entry{Kind: chatlog.EntryAssistant, Assistant: &chatlog.Assistant{Parts: chatlog.Parts{
+		chatlog.ToolCallPart{CallID: "call", ProviderCallID: "provider-call", Name: "tool", Input: run.MustParseCanonicalJSON(`{}`)},
+	}}}
+	result := chatlog.Entry{Kind: chatlog.EntryToolResult, ToolResult: &chatlog.ToolResult{CallID: "call", Status: chatlog.ToolError}}
+	input := chatlog.Entry{Kind: chatlog.EntryInput, Input: &chatlog.Input{Content: decision.InputContent("next")}}
+	for _, tc := range []struct {
+		name    string
+		entries []chatlog.Entry
+	}{
+		{"unfinished call", []chatlog.Entry{call, input}},
+		{"orphan result", []chatlog.Entry{result}},
+		{"duplicate result", []chatlog.Entry{call, result, result}},
+		{"interleaved assistant", []chatlog.Entry{call, {Kind: chatlog.EntryAssistant}, result}},
+		{"interleaved summary", []chatlog.Entry{call, {Kind: chatlog.EntrySummary}, result}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			builder := decision.NewContextPromptBuilder(preset(), fixedSource{state: chatlog.Context{Entries: tc.entries}})
+			if _, err := builder.Build(context.Background(), run.PromptInput{Session: "s"}); err == nil {
+				t.Fatal("unpaired history produced a provider request")
+			}
+		})
+	}
+	builder := decision.NewContextPromptBuilder(preset(), fixedSource{state: chatlog.Context{Entries: []chatlog.Entry{call, input, result}}})
+	prompt, err := builder.Build(context.Background(), run.PromptInput{Session: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := prompt.Request.Messages
+	if len(msgs) != 4 || msgs[2].Role != "tool" || msgs[3].Role != "user" {
+		t.Fatalf("paired context = %+v", msgs)
+	}
+}

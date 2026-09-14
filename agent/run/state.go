@@ -38,7 +38,7 @@ type RunResult struct {
 	Status  RunStatus   `json:"status"`
 	Reason  RunReason   `json:"reason,omitempty"`
 	Failure *RunFailure `json:"failure,omitempty"`
-	// UncertainCalls are tool calls left Executing when the Run stopped.
+	// UncertainCalls are tool calls settled as Unknown when the Run stopped.
 	UncertainCalls []CallID `json:"uncertainCalls,omitempty"`
 	// UncertainModel is the ModelStep left Executing when the Run stopped.
 	UncertainModel StepID `json:"uncertainModel,omitempty"`
@@ -59,6 +59,7 @@ const (
 	FailureDefinitionMismatch = "tool_definition_mismatch"
 	FailureExecution          = "execution_failed"
 	FailureEffectUnknown      = "effect_unknown"
+	FailureCancelled          = "cancelled"
 	FailureProvider           = "provider_failure"
 )
 

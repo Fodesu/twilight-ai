@@ -594,10 +594,10 @@ func decideCancelRun(s *MachineState, cmd CancelRun) ([]Fact, error) {
 	if cmd.Reason != "" && cmd.Reason != ReasonCancelled {
 		return nil, rejectionf("cancel: reason must be empty or %q", ReasonCancelled)
 	}
-	facts := unknownExecutingCalls(s, ToolFailure{Class: FailureEffectUnknown, Message: "execution cancelled before settlement"})
+	facts := cancelledToolCalls(s)
 	uncertain := make([]CallID, 0, len(facts))
 	for _, f := range facts {
-		if failed, ok := f.(ToolCallFailed); ok {
+		if failed, ok := f.(ToolCallFailed); ok && failed.Outcome == ToolOutcomeUnknown {
 			uncertain = append(uncertain, failed.CallID)
 		}
 	}
@@ -613,19 +613,25 @@ func decideCancelRun(s *MachineState, cmd CancelRun) ([]Fact, error) {
 	return facts, nil
 }
 
-// unknownExecutingCalls records every Executing call that CancelRun is about
-// to abandon. Waiting and already-settled calls are left unchanged.
-func unknownExecutingCalls(s *MachineState, failure ToolFailure) []Fact {
+// cancelledToolCalls settles every unfinished call before the Run stops.
+func cancelledToolCalls(s *MachineState) []Fact {
 	ts, ok := s.Current.(ToolStep)
 	if !ok {
 		return nil
 	}
 	facts := make([]Fact, 0, len(ts.Calls))
 	for i := range ts.Calls {
-		if ts.Calls[i].Status != ToolExecuting {
+		failure := ToolFailure{Class: FailureCancelled, Message: "run cancelled before tool execution"}
+		outcome := ToolOutcomeKnown
+		switch ts.Calls[i].Status {
+		case ToolPending, ToolWaiting:
+		case ToolExecuting:
+			failure = ToolFailure{Class: FailureEffectUnknown, Message: "execution cancelled before settlement"}
+			outcome = ToolOutcomeUnknown
+		default:
 			continue
 		}
-		facts = append(facts, ToolCallFailed{StepID: ts.RefValue.ID, CallID: ts.Calls[i].CallID, Failure: failure, Outcome: ToolOutcomeUnknown})
+		facts = append(facts, ToolCallFailed{StepID: ts.RefValue.ID, CallID: ts.Calls[i].CallID, Failure: failure, Outcome: outcome})
 	}
 	return facts
 }

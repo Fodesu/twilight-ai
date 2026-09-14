@@ -120,6 +120,9 @@ func (p *ContextPromptBuilder) messages(entries []chatlog.Entry) ([]sdk.Message,
 				msgs = append(msgs, sdk.UserMessage(text))
 			}
 		case chatlog.EntryAssistant:
+			if len(open) > 0 {
+				return nil, errors.New("decision: assistant follows unresolved tool calls")
+			}
 			flushDeferred()
 			var parts []sdk.MessagePart
 			for _, part := range e.Assistant.Parts {
@@ -146,6 +149,9 @@ func (p *ContextPromptBuilder) messages(entries []chatlog.Entry) ([]sdk.Message,
 			}
 		case chatlog.EntryToolResult:
 			r := e.ToolResult
+			if _, ok := open[r.CallID]; !ok {
+				return nil, fmt.Errorf("decision: tool result %s has no open call", r.CallID)
+			}
 			info := calls[r.CallID]
 			part := sdk.ToolResultPart{ToolCallID: info.provider, ToolName: info.name}
 			text := partsText(r.Parts)
@@ -161,12 +167,16 @@ func (p *ContextPromptBuilder) messages(entries []chatlog.Entry) ([]sdk.Message,
 			delete(open, r.CallID)
 			flushDeferred()
 		case chatlog.EntrySummary:
+			if len(open) > 0 {
+				return nil, errors.New("decision: summary follows unresolved tool calls")
+			}
 			flushDeferred()
 			msgs = append(msgs, sdk.AssistantMessage(partsText(e.Summary.Parts)))
 		}
 	}
-	// Calls left open (a stopped attempt) never resolve: release the inputs.
-	msgs = append(msgs, deferred...)
+	if len(open) > 0 {
+		return nil, errors.New("decision: context has unresolved tool calls")
+	}
 	return msgs, nil
 }
 
