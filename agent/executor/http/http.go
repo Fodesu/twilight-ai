@@ -50,7 +50,7 @@ func (c *Client) Dispatch(ctx context.Context, a effect.Assignment) error {
 	}
 	// A transport failure does not tell the authority whether the server
 	// accepted the assignment. Preserve the executing target for recovery.
-	return fmt.Errorf("%w: %v", effect.ErrDispatchUnknown, err)
+	return fmt.Errorf("%w: %w", effect.ErrDispatchUnknown, err)
 }
 
 func (c *Client) Attach(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {

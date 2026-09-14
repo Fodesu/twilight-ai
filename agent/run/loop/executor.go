@@ -119,7 +119,7 @@ func (r reattacher) Attach(ctx context.Context, t run.RecoveryTarget) (run.Reatt
 	switch attachment.State {
 	case effect.AttachmentActive, effect.AttachmentTerminal:
 		go func() {
-			out, err := r.exec.GetOutcome(context.Background(), a.Key())
+			out, err := r.exec.GetOutcome(context.WithoutCancel(ctx), a.Key())
 			if err != nil {
 				out = Outcome{Key: a.Key(), Err: err, Unknown: true}
 			}

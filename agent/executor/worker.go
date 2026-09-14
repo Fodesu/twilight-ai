@@ -32,10 +32,11 @@ const defaultLeaseDuration = 30 * time.Second
 // persisted in the execution record. Takeover is explicit: failure detection
 // and the decision to retry an effect belong to the control plane.
 type Worker struct {
-	store   executionstore.Store
-	backend effect.Port
-	id      string
-	lease   time.Duration
+	store     executionstore.Store
+	backend   effect.Port
+	id        string
+	lease     time.Duration
+	lifecycle context.Context
 
 	mu     sync.Mutex
 	notify map[effect.AssignmentKey]chan struct{}
@@ -62,7 +63,8 @@ func NewWorker(ctx context.Context, records executionstore.Store, backend effect
 	if opts.LeaseDuration <= 0 {
 		opts.LeaseDuration = defaultLeaseDuration
 	}
-	w := &Worker{store: records, backend: backend, id: opts.ID, lease: opts.LeaseDuration, notify: make(map[effect.AssignmentKey]chan struct{})}
+	w := &Worker{store: records, backend: backend, id: opts.ID, lease: opts.LeaseDuration,
+		lifecycle: context.WithoutCancel(ctx), notify: make(map[effect.AssignmentKey]chan struct{})}
 	if err := w.recover(ctx); err != nil {
 		return nil, err
 	}
@@ -201,12 +203,8 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 		if attachment.State == effect.AttachmentActive || attachment.State == effect.AttachmentTerminal {
 			leaseDone := make(chan struct{})
 			go w.heartbeat(key, claimed.FencingEpoch, leaseDone)
-			if claimed.State == effect.ExecutionDispatching {
-				if err := w.store.TransitionOwned(ctx, key, w.id, claimed.FencingEpoch, effect.ExecutionDispatching, effect.ExecutionRunning); err != nil {
-					// Keep watching: the effect may have completed even if the
-					// bookkeeping transition was lost.
-				}
-			}
+			// Keep Dispatching as a conservative pre-outcome state. The watcher
+			// will terminalize it after the adopted backend produces an outcome.
 			go w.watch(key, digest, claimed.FencingEpoch, leaseDone)
 			return nil
 		}
@@ -253,7 +251,7 @@ func (w *Worker) attachBackend(ctx context.Context, key effect.AssignmentKey, bi
 }
 
 func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64, done chan struct{}) {
-	out, err := w.backend.GetOutcome(context.Background(), key)
+	out, err := w.backend.GetOutcome(w.lifecycle, key)
 	if err != nil {
 		// GetOutcome failure is a lifecycle/transport failure after dispatch,
 		// not evidence that the provider rejected the request. Persist Unknown
@@ -262,7 +260,7 @@ func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64
 	}
 	env := protocol.EncodeOutcome(out, digest)
 	state := protocol.StatusForOutcome(out)
-	_ = w.finishOwned(context.Background(), key, epoch, env, state, nil)
+	_ = w.finishOwned(w.lifecycle, key, epoch, env, state, nil)
 	// Keep the lease until the terminal outcome has been durably accepted;
 	// otherwise a takeover can start a duplicate while this worker settles.
 	close(done)
@@ -280,7 +278,7 @@ func (w *Worker) heartbeat(key effect.AssignmentKey, epoch uint64, done <-chan s
 		case <-done:
 			return
 		case <-ticker.C:
-			if err := w.store.Renew(context.Background(), key, w.id, epoch, w.lease); err != nil {
+			if err := w.store.Renew(w.lifecycle, key, w.id, epoch, w.lease); err != nil {
 				return
 			}
 		}
