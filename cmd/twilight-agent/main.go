@@ -1,6 +1,6 @@
 // Command twilight-agent is a line-oriented CLI agent over the agent core: a
 // colocated Host — the JSONL file store carries the Session, a LocalExecutor
-// runs the model and the built-in tool in this process — and host.Session is
+// runs the model and the built-in tool in this process — and app.Session is
 // the facade. Each stdin line goes through Session.Send — a line typed while
 // a Turn runs steers it (already_driving), a line the running Turn cannot
 // accept queues and opens the next Turn after settlement, and a restart over
@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/felinics/twilight/agent/host"
+	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -51,7 +51,7 @@ func main() {
 
 func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID, compat, system string, mock bool, compactAfter int) error {
 	ctx := context.Background()
-	catalog, preset, err := buildAgent(mock, provider, baseURL, apiKey, modelID, compat, system)
+	models, tools, preset, err := buildAgent(mock, provider, baseURL, apiKey, modelID, compat, system)
 	if err != nil {
 		return err
 	}
@@ -67,28 +67,34 @@ func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID
 	if err != nil {
 		return err
 	}
-	// The effect layer: the model and the tool run in this process behind the
-	// Executor port; the Host itself holds neither.
-	executor, err := host.NewLocalExecutor(catalog, content, nil, false)
-	if err != nil {
-		return err
-	}
-	h, err := host.New(host.Ports{Store: store, Content: content, Executor: executor,
+	// The application builder selects the local effect profile and wires the
+	// authority, content store and preset registry in one place.
+	a, err := app.Build(app.Config{
+		Store:   store,
+		Content: content,
+		Executor: app.ExecutorConfig{
+			Mode:   app.ExecutorLocal,
+			Models: models,
+			Tools:  tools,
+		},
+		Presets:   []app.Preset{{ID: "cli", Value: preset}},
 		Ownership: session.OpenOptions{Takeover: true},
-		Warn:      func(err error) { fmt.Fprintln(os.Stderr, "host:", err) }})
+		Warn:      func(err error) { fmt.Fprintln(os.Stderr, "agent:", err) },
+	})
 	if err != nil {
 		return err
 	}
+	defer a.Close(ctx)
 	// Every observation derives from the committed stream: tool activity is
 	// read off the Session's event stream, not from the executor.
 	eventsCtx, stopEvents := context.WithCancel(ctx)
 	defer stopEvents()
-	go printToolActivity(h.Events(eventsCtx, sid))
-	presetRef, err := h.Presets.Register("cli", preset)
+	go printToolActivity(a.Events(eventsCtx, sid))
+	presetRef, err := a.PresetRef("cli")
 	if err != nil {
 		return err
 	}
-	s, err := h.OpenSession(ctx, sid, host.SessionOptions{Preset: presetRef, CompactAfterEntries: compactAfter,
+	s, err := a.OpenSession(ctx, sid, app.SessionOptions{Preset: presetRef, CompactAfterEntries: compactAfter,
 		CompactWarn: func(err error) { fmt.Fprintln(os.Stderr, "compact:", err) }})
 	if err != nil {
 		return err
@@ -168,9 +174,9 @@ func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID
 	return shutdown(ctx, s, cancel, &wg)
 }
 
-func report(results []host.Result, err error) {
+func report(results []app.Result, err error) {
 	for _, r := range results {
-		if r.Disposition == host.ResumeAlreadyDriving {
+		if r.Disposition == app.ResumeAlreadyDriving {
 			fmt.Println("steer: input delivered into the running turn")
 			continue
 		}
@@ -186,7 +192,7 @@ func report(results []host.Result, err error) {
 
 // shutdown waits for running turns, then cancels the stragglers: a cancelled
 // Turn stays Active in the log and the next start resumes it.
-func shutdown(ctx context.Context, s *host.Session, cancel func(), wg *sync.WaitGroup) error {
+func shutdown(ctx context.Context, s *app.Session, cancel func(), wg *sync.WaitGroup) error {
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
 	select {
@@ -205,7 +211,7 @@ func shutdown(ctx context.Context, s *host.Session, cancel func(), wg *sync.Wait
 
 // printToolActivity surfaces tool activity from the Session's event stream:
 // the run facts that start and settle a tool call, decoded by the Host.
-func printToolActivity(events <-chan host.Event) {
+func printToolActivity(events <-chan app.Event) {
 	for e := range events {
 		ev, ok := e.Value.(runmod.Event)
 		if !ok {
@@ -222,24 +228,20 @@ func printToolActivity(events <-chan host.Event) {
 
 // --- agent -------------------------------------------------------------------
 
-// buildAgent returns the two halves of the agent: the effect catalog the
-// LocalExecutor serves (model client, tool implementation) and the AgentPreset
-// the authority records (model ref, frozen tool definition, system prompt).
-func buildAgent(mock bool, provider, baseURL, apiKey, modelID, compat, system string) (*host.Catalog, turn.AgentPreset, error) {
+// buildAgent returns the effect capabilities and the AgentPreset. The app
+// builder performs the actual authority/executor assembly.
+func buildAgent(mock bool, provider, baseURL, apiKey, modelID, compat, system string) (map[run.ModelRef]loop.ModelInvoker, []loop.ExecutableTool, turn.AgentPreset, error) {
 	if mock {
 		tool := nowTool{}
-		catalog, err := host.NewCatalog(map[run.ModelRef]loop.ModelInvoker{"mock": mockModel{}}, tool)
-		if err != nil {
-			return nil, turn.AgentPreset{}, err
-		}
-		preset, err := host.NewPreset("mock", []loop.ExecutableTool{tool}, host.WithSystemPrompt(system))
-		return catalog, preset, err
+		models := map[run.ModelRef]loop.ModelInvoker{"mock": mockModel{}}
+		preset, err := app.NewPreset("mock", []loop.ExecutableTool{tool}, app.WithSystemPrompt(system))
+		return models, []loop.ExecutableTool{tool}, preset, err
 	}
 	if provider != "openai-completions" {
-		return nil, turn.AgentPreset{}, fmt.Errorf("unsupported provider %q (only openai-completions)", provider)
+		return nil, nil, turn.AgentPreset{}, fmt.Errorf("unsupported provider %q (only openai-completions)", provider)
 	}
 	if modelID == "" {
-		return nil, turn.AgentPreset{}, errors.New("-model is required (or use -mock)")
+		return nil, nil, turn.AgentPreset{}, errors.New("-model is required (or use -mock)")
 	}
 	if apiKey == "" {
 		apiKey = os.Getenv("TWILIGHT_API_KEY")
@@ -259,28 +261,25 @@ func buildAgent(mock bool, provider, baseURL, apiKey, modelID, compat, system st
 	case "deepseek":
 		opts = append(opts, completions.WithDeepSeekChatCompletionsCompat())
 	default:
-		return nil, turn.AgentPreset{}, fmt.Errorf("unsupported compat %q (only deepseek)", compat)
+		return nil, nil, turn.AgentPreset{}, fmt.Errorf("unsupported compat %q (only deepseek)", compat)
 	}
 	// *sdk.Model is itself the ModelInvoker: it exposes
 	// Generate(context.Context, sdk.Request) (sdk.ModelResult, error), so a
 	// hand-written wrapper would only be ceremony between two identical shapes.
 	invoker := &sdk.Model{ID: modelID, Provider: completions.New(opts...), Type: sdk.ModelTypeChat}
-	catalog, err := host.NewCatalog(map[run.ModelRef]loop.ModelInvoker{run.ModelRef(modelID): invoker})
-	if err != nil {
-		return nil, turn.AgentPreset{}, err
-	}
-	preset, err := host.NewPreset(run.ModelRef(modelID), nil, host.WithSystemPrompt(system))
-	return catalog, preset, err
+	models := map[run.ModelRef]loop.ModelInvoker{run.ModelRef(modelID): invoker}
+	preset, err := app.NewPreset(run.ModelRef(modelID), nil, app.WithSystemPrompt(system))
+	return models, nil, preset, err
 }
 
 // mockModel answers once a tool result is in the conversation and reports how
 // many messages it saw, so a restart over the same session shows the context
 // growing; otherwise it asks for the built-in tool first. A compactor request
-// (host.CompactorSystemPrompt) gets a fixed summary for deterministic smoke.
+// (app.CompactorSystemPrompt) gets a fixed summary for deterministic smoke.
 type mockModel struct{}
 
 func (mockModel) Generate(_ context.Context, req sdk.Request) (sdk.ModelResult, error) {
-	if len(req.Messages) > 0 && req.Messages[0].Role == sdk.MessageRoleSystem && messageText(req.Messages[0]) == host.CompactorSystemPrompt {
+	if len(req.Messages) > 0 && req.Messages[0].Role == sdk.MessageRoleSystem && messageText(req.Messages[0]) == app.CompactorSystemPrompt {
 		return sdk.ModelResult{Text: "mock summary of the compacted conversation",
 			FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}, nil
 	}
