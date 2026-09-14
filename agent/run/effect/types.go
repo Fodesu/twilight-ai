@@ -99,6 +99,7 @@ type ExecutionStatus string
 const (
 	ExecutionNotFound        ExecutionStatus = "not_found"
 	ExecutionAccepted        ExecutionStatus = "accepted"
+	ExecutionDispatching     ExecutionStatus = "dispatching"
 	ExecutionRunning         ExecutionStatus = "running"
 	ExecutionCancelRequested ExecutionStatus = "cancel_requested"
 	ExecutionCompleted       ExecutionStatus = "completed"

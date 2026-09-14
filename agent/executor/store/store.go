@@ -19,7 +19,22 @@ import (
 var (
 	ErrAssignmentConflict = errors.New("executor/store: assignment conflict")
 	ErrLeaseLost          = errors.New("executor/store: execution lease lost")
+	ErrStateConflict      = errors.New("executor/store: state conflict")
 )
+
+func legalTransition(from, to effect.ExecutionStatus) bool {
+	if to == effect.ExecutionCancelRequested {
+		return from == effect.ExecutionAccepted || from == effect.ExecutionDispatching || from == effect.ExecutionRunning
+	}
+	switch from {
+	case effect.ExecutionAccepted:
+		return to == effect.ExecutionDispatching
+	case effect.ExecutionDispatching:
+		return to == effect.ExecutionRunning
+	default:
+		return false
+	}
+}
 
 // Record is the worker's durable execution record. Assignment is immutable
 // and carries the execution payload; State and Outcome move monotonically to
@@ -39,8 +54,10 @@ type Store interface {
 	Get(context.Context, effect.AssignmentKey) (Record, bool, error)
 	Put(context.Context, Record) error
 	PutOwned(context.Context, Record, string, uint64) error
-	Acquire(context.Context, effect.AssignmentKey, string, time.Time, time.Duration) (Record, bool, error)
-	Renew(context.Context, effect.AssignmentKey, string, uint64, time.Time, time.Duration) error
+	TransitionOwned(context.Context, effect.AssignmentKey, string, uint64, effect.ExecutionStatus, effect.ExecutionStatus) error
+	Acquire(context.Context, effect.AssignmentKey, string, time.Duration) (Record, bool, error)
+	Renew(context.Context, effect.AssignmentKey, string, uint64, time.Duration) error
+	LeaseOwned(context.Context, effect.AssignmentKey, string, uint64) (bool, error)
 	List(context.Context) ([]Record, error)
 }
 
@@ -48,10 +65,19 @@ type Store interface {
 type MemoryStore struct {
 	mu      sync.Mutex
 	records map[effect.AssignmentKey]Record
+	now     func() time.Time
 }
 
-func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{records: make(map[effect.AssignmentKey]Record)}
+type MemoryStoreOptions struct {
+	Now func() time.Time
+}
+
+func NewMemoryStore(options ...MemoryStoreOptions) *MemoryStore {
+	now := time.Now
+	if len(options) > 0 && options[0].Now != nil {
+		now = options[0].Now
+	}
+	return &MemoryStore{records: make(map[effect.AssignmentKey]Record), now: now}
 }
 
 func (s *MemoryStore) Create(_ context.Context, record Record) (Record, bool, error) {
@@ -95,14 +121,33 @@ func (s *MemoryStore) PutOwned(_ context.Context, record Record, owner string, e
 	if old.AssignmentDigest != record.AssignmentDigest {
 		return ErrAssignmentConflict
 	}
-	if old.Owner != owner || old.FencingEpoch != epoch {
+	if old.Owner != owner || old.FencingEpoch != epoch || old.LeaseUntilUnixMilli <= s.now().UnixMilli() {
 		return ErrLeaseLost
 	}
 	s.records[record.Assignment.Key()] = record
 	return nil
 }
 
-func (s *MemoryStore) Acquire(_ context.Context, key effect.AssignmentKey, owner string, now time.Time, ttl time.Duration) (Record, bool, error) {
+func (s *MemoryStore) TransitionOwned(_ context.Context, key effect.AssignmentKey, owner string, epoch uint64, from, to effect.ExecutionStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.records[key]
+	if !ok {
+		return effect.ErrExecutionNotFound
+	}
+	if r.Owner != owner || r.FencingEpoch != epoch || r.LeaseUntilUnixMilli <= s.now().UnixMilli() {
+		return ErrLeaseLost
+	}
+	if r.State != from || !legalTransition(from, to) {
+		return ErrStateConflict
+	}
+	r.State = to
+	s.records[key] = r
+	return nil
+}
+
+func (s *MemoryStore) Acquire(_ context.Context, key effect.AssignmentKey, owner string, ttl time.Duration) (Record, bool, error) {
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.records[key]
@@ -112,10 +157,11 @@ func (s *MemoryStore) Acquire(_ context.Context, key effect.AssignmentKey, owner
 	if protocol.StatusTerminal(r.State) {
 		return r, false, nil
 	}
-	if r.Owner != "" && r.Owner != owner && r.LeaseUntilUnixMilli > now.UnixMilli() {
+	expired := r.LeaseUntilUnixMilli <= now.UnixMilli()
+	if r.Owner != "" && r.Owner != owner && !expired {
 		return r, false, nil
 	}
-	if r.Owner != owner || r.FencingEpoch == 0 {
+	if r.Owner != owner || r.FencingEpoch == 0 || expired {
 		r.FencingEpoch++
 	}
 	r.Owner = owner
@@ -124,7 +170,8 @@ func (s *MemoryStore) Acquire(_ context.Context, key effect.AssignmentKey, owner
 	return r, true, nil
 }
 
-func (s *MemoryStore) Renew(_ context.Context, key effect.AssignmentKey, owner string, epoch uint64, now time.Time, ttl time.Duration) error {
+func (s *MemoryStore) Renew(_ context.Context, key effect.AssignmentKey, owner string, epoch uint64, ttl time.Duration) error {
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok := s.records[key]
@@ -137,6 +184,16 @@ func (s *MemoryStore) Renew(_ context.Context, key effect.AssignmentKey, owner s
 	r.LeaseUntilUnixMilli = now.Add(ttl).UnixMilli()
 	s.records[key] = r
 	return nil
+}
+
+func (s *MemoryStore) LeaseOwned(_ context.Context, key effect.AssignmentKey, owner string, epoch uint64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok := s.records[key]
+	if !ok {
+		return false, effect.ErrExecutionNotFound
+	}
+	return !protocol.StatusTerminal(r.State) && r.Owner == owner && r.FencingEpoch == epoch && r.LeaseUntilUnixMilli > s.now().UnixMilli(), nil
 }
 
 func (s *MemoryStore) List(_ context.Context) ([]Record, error) {
@@ -156,16 +213,25 @@ func (s *MemoryStore) List(_ context.Context) ([]Record, error) {
 type FileStore struct {
 	mu   sync.Mutex
 	root string
+	now  func() time.Time
 }
 
-func NewFileStore(root string) (*FileStore, error) {
+type FileStoreOptions struct {
+	Now func() time.Time
+}
+
+func NewFileStore(root string, options ...FileStoreOptions) (*FileStore, error) {
 	if root == "" {
 		return nil, errors.New("executor/store: empty store root")
 	}
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, err
 	}
-	return &FileStore{root: root}, nil
+	now := time.Now
+	if len(options) > 0 && options[0].Now != nil {
+		now = options[0].Now
+	}
+	return &FileStore{root: root, now: now}, nil
 }
 
 func recordFile(root string, key effect.AssignmentKey) string {
@@ -222,13 +288,34 @@ func (s *FileStore) PutOwned(ctx context.Context, record Record, owner string, e
 	if old.AssignmentDigest != record.AssignmentDigest {
 		return ErrAssignmentConflict
 	}
-	if old.Owner != owner || old.FencingEpoch != epoch {
+	if old.Owner != owner || old.FencingEpoch != epoch || old.LeaseUntilUnixMilli <= s.now().UnixMilli() {
 		return ErrLeaseLost
 	}
 	return s.putLocked(ctx, record)
 }
 
-func (s *FileStore) Acquire(ctx context.Context, key effect.AssignmentKey, owner string, now time.Time, ttl time.Duration) (Record, bool, error) {
+func (s *FileStore) TransitionOwned(ctx context.Context, key effect.AssignmentKey, owner string, epoch uint64, from, to effect.ExecutionStatus) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok, err := s.getLocked(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return effect.ErrExecutionNotFound
+	}
+	if r.Owner != owner || r.FencingEpoch != epoch || r.LeaseUntilUnixMilli <= s.now().UnixMilli() {
+		return ErrLeaseLost
+	}
+	if r.State != from || !legalTransition(from, to) {
+		return ErrStateConflict
+	}
+	r.State = to
+	return s.putLocked(ctx, r)
+}
+
+func (s *FileStore) Acquire(ctx context.Context, key effect.AssignmentKey, owner string, ttl time.Duration) (Record, bool, error) {
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok, err := s.getLocked(ctx, key)
@@ -241,10 +328,11 @@ func (s *FileStore) Acquire(ctx context.Context, key effect.AssignmentKey, owner
 	if protocol.StatusTerminal(r.State) {
 		return r, false, nil
 	}
-	if r.Owner != "" && r.Owner != owner && r.LeaseUntilUnixMilli > now.UnixMilli() {
+	expired := r.LeaseUntilUnixMilli <= now.UnixMilli()
+	if r.Owner != "" && r.Owner != owner && !expired {
 		return r, false, nil
 	}
-	if r.Owner != owner || r.FencingEpoch == 0 {
+	if r.Owner != owner || r.FencingEpoch == 0 || expired {
 		r.FencingEpoch++
 	}
 	r.Owner = owner
@@ -255,7 +343,8 @@ func (s *FileStore) Acquire(ctx context.Context, key effect.AssignmentKey, owner
 	return r, true, nil
 }
 
-func (s *FileStore) Renew(ctx context.Context, key effect.AssignmentKey, owner string, epoch uint64, now time.Time, ttl time.Duration) error {
+func (s *FileStore) Renew(ctx context.Context, key effect.AssignmentKey, owner string, epoch uint64, ttl time.Duration) error {
+	now := s.now()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	r, ok, err := s.getLocked(ctx, key)
@@ -270,6 +359,19 @@ func (s *FileStore) Renew(ctx context.Context, key effect.AssignmentKey, owner s
 	}
 	r.LeaseUntilUnixMilli = now.Add(ttl).UnixMilli()
 	return s.putLocked(ctx, r)
+}
+
+func (s *FileStore) LeaseOwned(ctx context.Context, key effect.AssignmentKey, owner string, epoch uint64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, ok, err := s.getLocked(ctx, key)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, effect.ErrExecutionNotFound
+	}
+	return !protocol.StatusTerminal(r.State) && r.Owner == owner && r.FencingEpoch == epoch && r.LeaseUntilUnixMilli > s.now().UnixMilli(), nil
 }
 
 func (s *FileStore) List(ctx context.Context) ([]Record, error) {

@@ -112,7 +112,9 @@ func TestWorkerIdempotentAndOutcome(t *testing.T) {
 
 func TestExecutionStoreFencesTakeover(t *testing.T) {
 	ctx := context.Background()
-	records := store.NewMemoryStore()
+	base := time.Unix(100, 0)
+	now := base
+	records := store.NewMemoryStore(store.MemoryStoreOptions{Now: func() time.Time { return now }})
 	a := testAssignment()
 	digest, err := a.Digest()
 	if err != nil {
@@ -121,15 +123,16 @@ func TestExecutionStoreFencesTakeover(t *testing.T) {
 	if _, created, err := records.Create(ctx, store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionAccepted}); err != nil || !created {
 		t.Fatalf("create = %v, created=%v", err, created)
 	}
-	base := time.Unix(100, 0)
-	first, acquired, err := records.Acquire(ctx, a.Key(), "worker-a", base, time.Second)
+	first, acquired, err := records.Acquire(ctx, a.Key(), "worker-a", time.Second)
 	if err != nil || !acquired || first.FencingEpoch != 1 {
 		t.Fatalf("first acquire = %+v, acquired=%v, err=%v", first, acquired, err)
 	}
-	if _, acquired, err := records.Acquire(ctx, a.Key(), "worker-b", base.Add(500*time.Millisecond), time.Second); err != nil || acquired {
+	now = base.Add(500 * time.Millisecond)
+	if _, acquired, err := records.Acquire(ctx, a.Key(), "worker-b", time.Second); err != nil || acquired {
 		t.Fatalf("live lease acquire = acquired=%v, err=%v; want rejected", acquired, err)
 	}
-	second, acquired, err := records.Acquire(ctx, a.Key(), "worker-b", base.Add(2*time.Second), time.Second)
+	now = base.Add(2 * time.Second)
+	second, acquired, err := records.Acquire(ctx, a.Key(), "worker-b", time.Second)
 	if err != nil || !acquired || second.FencingEpoch != 2 {
 		t.Fatalf("takeover = %+v, acquired=%v, err=%v", second, acquired, err)
 	}
@@ -138,9 +141,40 @@ func TestExecutionStoreFencesTakeover(t *testing.T) {
 	}
 }
 
+func TestExecutionStoreRequiresDispatchingBarrier(t *testing.T) {
+	ctx := context.Background()
+	base := time.Unix(100, 0)
+	now := base
+	records := store.NewMemoryStore(store.MemoryStoreOptions{Now: func() time.Time { return now }})
+	a := testAssignment()
+	digest, err := a.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := records.Create(ctx, store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionAccepted}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, acquired, err := records.Acquire(ctx, a.Key(), "worker-a", time.Second)
+	if err != nil || !acquired {
+		t.Fatalf("acquire = %+v, acquired=%v, err=%v", claimed, acquired, err)
+	}
+	if err := records.TransitionOwned(ctx, a.Key(), "worker-a", claimed.FencingEpoch, effect.ExecutionAccepted, effect.ExecutionRunning); !errors.Is(err, store.ErrStateConflict) {
+		t.Fatalf("accepted to running = %v, want ErrStateConflict", err)
+	}
+	if err := records.TransitionOwned(ctx, a.Key(), "worker-a", claimed.FencingEpoch, effect.ExecutionAccepted, effect.ExecutionDispatching); err != nil {
+		t.Fatalf("accepted to dispatching = %v", err)
+	}
+	now = base.Add(2 * time.Second)
+	if err := records.TransitionOwned(ctx, a.Key(), "worker-a", claimed.FencingEpoch, effect.ExecutionDispatching, effect.ExecutionRunning); !errors.Is(err, store.ErrLeaseLost) {
+		t.Fatalf("expired transition = %v, want ErrLeaseLost", err)
+	}
+}
+
 func TestWorkerReclaimsExpiredAssignment(t *testing.T) {
 	ctx := context.Background()
-	records := store.NewMemoryStore()
+	base := time.Unix(100, 0)
+	now := base
+	records := store.NewMemoryStore(store.MemoryStoreOptions{Now: func() time.Time { return now }})
 	a := testAssignment()
 	digest, err := a.Digest()
 	if err != nil {
@@ -149,18 +183,17 @@ func TestWorkerReclaimsExpiredAssignment(t *testing.T) {
 	if _, created, err := records.Create(ctx, store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionAccepted}); err != nil || !created {
 		t.Fatalf("create = %v, created=%v", err, created)
 	}
-	base := time.Unix(100, 0)
-	if _, acquired, err := records.Acquire(ctx, a.Key(), "worker-a", base, time.Second); err != nil || !acquired {
+	if _, acquired, err := records.Acquire(ctx, a.Key(), "worker-a", time.Second); err != nil || !acquired {
 		t.Fatalf("initial acquire = %v, acquired=%v", err, acquired)
 	}
 	backend := newTestBackend()
 	worker, err := executor.NewWorker(ctx, records, backend, executor.WorkerOptions{
 		ID: "worker-b", LeaseDuration: time.Second,
-		Now: func() time.Time { return base.Add(2 * time.Second) },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	now = base.Add(2 * time.Second)
 	if err := worker.Takeover(ctx, a.Key()); err != nil {
 		t.Fatal(err)
 	}

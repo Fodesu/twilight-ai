@@ -2,10 +2,11 @@ package executor
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	executionstore "github.com/felinics/twilight/agent/executor/store"
@@ -18,14 +19,13 @@ import (
 // record. The backend performs the actual Model/Tool effect; Worker owns the
 // accepted-assignment and outcome lifecycle.
 type WorkerOptions struct {
+	// ID identifies this process incarnation. It must not be reused by a
+	// restarted process while an older incarnation could still be alive.
 	ID            string
 	LeaseDuration time.Duration
-	Now           func() time.Time
 }
 
 const defaultLeaseDuration = 30 * time.Second
-
-var workerSequence uint64
 
 // Worker owns execution leases, not Session ownership. A Worker can acquire
 // an expired Assignment from a shared Store and resume it using the payload
@@ -36,7 +36,6 @@ type Worker struct {
 	backend effect.Port
 	id      string
 	lease   time.Duration
-	now     func() time.Time
 
 	mu     sync.Mutex
 	notify map[effect.AssignmentKey]chan struct{}
@@ -54,15 +53,16 @@ func NewWorker(ctx context.Context, records executionstore.Store, backend effect
 		opts = options[0]
 	}
 	if opts.ID == "" {
-		opts.ID = fmt.Sprintf("worker-%d", atomic.AddUint64(&workerSequence, 1))
+		var raw [16]byte
+		if _, err := rand.Read(raw[:]); err != nil {
+			return nil, fmt.Errorf("executor: generate worker id: %w", err)
+		}
+		opts.ID = "worker-" + hex.EncodeToString(raw[:])
 	}
 	if opts.LeaseDuration <= 0 {
 		opts.LeaseDuration = defaultLeaseDuration
 	}
-	if opts.Now == nil {
-		opts.Now = time.Now
-	}
-	w := &Worker{store: records, backend: backend, id: opts.ID, lease: opts.LeaseDuration, now: opts.Now, notify: make(map[effect.AssignmentKey]chan struct{})}
+	w := &Worker{store: records, backend: backend, id: opts.ID, lease: opts.LeaseDuration, notify: make(map[effect.AssignmentKey]chan struct{})}
 	if err := w.recover(ctx); err != nil {
 		return nil, err
 	}
@@ -116,11 +116,28 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 // caller is the control plane: it must have decided that retrying this effect
 // is safe or that provider reconciliation has already been attempted.
 func (w *Worker) Takeover(ctx context.Context, key effect.AssignmentKey) error {
+	r, ok, err := w.store.Get(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return effect.ErrExecutionNotFound
+	}
+	if protocol.StatusTerminal(r.State) {
+		return nil
+	}
+	owned, err := w.store.LeaseOwned(ctx, key, w.id, r.FencingEpoch)
+	if err != nil {
+		return err
+	}
+	if owned {
+		return nil
+	}
 	return w.acquireAndStart(ctx, key)
 }
 
 func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) error {
-	claimed, acquired, err := w.store.Acquire(ctx, key, w.id, w.now(), w.lease)
+	claimed, acquired, err := w.store.Acquire(ctx, key, w.id, w.lease)
 	if err != nil {
 		return err
 	}
@@ -128,16 +145,45 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 		return nil
 	}
 	digest := claimed.AssignmentDigest
+	if claimed.State == effect.ExecutionCancelRequested {
+		leaseDone := make(chan struct{})
+		go w.heartbeat(key, claimed.FencingEpoch, leaseDone)
+		attached, attachErr := w.backend.Attach(ctx, key)
+		if attachErr != nil {
+			close(leaseDone)
+			return attachErr
+		}
+		if !attached {
+			env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest,
+				Error: &protocol.WireError{Code: "cancel_reconciliation_unknown", Message: "cancelled execution is no longer attached"}}
+			_ = w.finishOwned(ctx, key, claimed.FencingEpoch, env, effect.ExecutionUnknown, nil)
+			close(leaseDone)
+			return nil
+		}
+		_ = w.backend.Cancel(ctx, key)
+		go w.watch(key, digest, claimed.FencingEpoch, leaseDone)
+		return nil
+	}
+	if err := w.store.TransitionOwned(ctx, key, w.id, claimed.FencingEpoch, claimed.State, effect.ExecutionDispatching); err != nil {
+		if errors.Is(err, executionstore.ErrLeaseLost) || errors.Is(err, executionstore.ErrStateConflict) {
+			return nil
+		}
+		return err
+	}
 	leaseDone := make(chan struct{})
 	go w.heartbeat(key, claimed.FencingEpoch, leaseDone)
 	if err := w.backend.Dispatch(context.WithoutCancel(ctx), claimed.Assignment); err != nil {
-		close(leaseDone)
-		return w.finishOwned(ctx, key, claimed.FencingEpoch, protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest,
+		settleErr := w.finishOwned(ctx, key, claimed.FencingEpoch, protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest,
 			Error: &protocol.WireError{Code: "dispatch_failed", Message: err.Error()}}, effect.ExecutionFailed, err)
-	}
-	if err := w.setStateOwned(ctx, key, claimed.FencingEpoch, effect.ExecutionRunning); err != nil {
 		close(leaseDone)
-		return err
+		return settleErr
+	}
+	if err := w.store.TransitionOwned(ctx, key, w.id, claimed.FencingEpoch, effect.ExecutionDispatching, effect.ExecutionRunning); err != nil {
+		// The backend call may already have crossed its external boundary.
+		// Keep the watcher alive and report Dispatch as accepted; recovery
+		// must reconcile the Dispatching/Running record rather than replan.
+		go w.watch(key, digest, claimed.FencingEpoch, leaseDone)
+		return nil
 	}
 	go w.watch(key, digest, claimed.FencingEpoch, leaseDone)
 	return nil
@@ -148,10 +194,12 @@ func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64
 	if err != nil {
 		out = effect.Outcome{Key: key, Err: err}
 	}
-	close(done)
 	env := protocol.EncodeOutcome(out, digest)
 	state := protocol.StatusForOutcome(out)
 	_ = w.finishOwned(context.Background(), key, epoch, env, state, nil)
+	// Keep the lease until the terminal outcome has been durably accepted;
+	// otherwise a takeover can start a duplicate while this worker settles.
+	close(done)
 }
 
 func (w *Worker) heartbeat(key effect.AssignmentKey, epoch uint64, done <-chan struct{}) {
@@ -165,8 +213,8 @@ func (w *Worker) heartbeat(key effect.AssignmentKey, epoch uint64, done <-chan s
 		select {
 		case <-done:
 			return
-		case now := <-ticker.C:
-			if err := w.store.Renew(context.Background(), key, w.id, epoch, now, w.lease); err != nil {
+		case <-ticker.C:
+			if err := w.store.Renew(context.Background(), key, w.id, epoch, w.lease); err != nil {
 				return
 			}
 		}
@@ -203,23 +251,6 @@ func (w *Worker) finishOwned(ctx context.Context, key effect.AssignmentKey, epoc
 	return dispatchErr
 }
 
-func (w *Worker) setStateOwned(ctx context.Context, key effect.AssignmentKey, epoch uint64, state effect.ExecutionStatus) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	r, ok, err := w.store.Get(ctx, key)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return effect.ErrExecutionNotFound
-	}
-	if protocol.StatusTerminal(r.State) {
-		return nil
-	}
-	r.State = state
-	return w.store.PutOwned(ctx, r, w.id, epoch)
-}
-
 func (w *Worker) Attach(ctx context.Context, key effect.AssignmentKey) (bool, error) {
 	r, ok, err := w.store.Get(ctx, key)
 	if err != nil {
@@ -228,12 +259,25 @@ func (w *Worker) Attach(ctx context.Context, key effect.AssignmentKey) (bool, er
 	if !ok {
 		return false, nil
 	}
-	// A model whose worker record became Unknown must be disposed by the
-	// authority's model recovery path rather than reported as a provider error.
+	// An Unknown model must be disposed by the authority's recovery policy,
+	// not reported as a provider error.
 	if r.State == effect.ExecutionUnknown && r.Assignment.Kind == effect.AssignmentModel {
 		return false, nil
 	}
-	return true, nil
+	if protocol.StatusTerminal(r.State) {
+		return true, nil
+	}
+	if r.Owner != w.id || r.FencingEpoch == 0 {
+		return false, nil
+	}
+	owned, err := w.store.LeaseOwned(ctx, key, w.id, r.FencingEpoch)
+	if err != nil {
+		return false, err
+	}
+	if !owned {
+		return false, nil
+	}
+	return w.backend.Attach(ctx, key)
 }
 
 func (w *Worker) GetStatus(ctx context.Context, key effect.AssignmentKey) (effect.ExecutionStatus, error) {
@@ -314,10 +358,30 @@ func (w *Worker) Cancel(ctx context.Context, key effect.AssignmentKey) error {
 	if protocol.StatusTerminal(r.State) {
 		return nil
 	}
-	if err := w.setStateOwned(ctx, key, r.FencingEpoch, effect.ExecutionCancelRequested); err != nil {
+	if err := w.requestCancelOwned(ctx, key, r.FencingEpoch); err != nil {
 		return err
 	}
 	return w.backend.Cancel(ctx, key)
+}
+
+func (w *Worker) requestCancelOwned(ctx context.Context, key effect.AssignmentKey, epoch uint64) error {
+	for {
+		r, ok, err := w.store.Get(ctx, key)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return effect.ErrExecutionNotFound
+		}
+		if protocol.StatusTerminal(r.State) || r.State == effect.ExecutionCancelRequested {
+			return nil
+		}
+		err = w.store.TransitionOwned(ctx, key, w.id, epoch, r.State, effect.ExecutionCancelRequested)
+		if errors.Is(err, executionstore.ErrStateConflict) {
+			continue
+		}
+		return err
+	}
 }
 
 func (w *Worker) recover(ctx context.Context) error {
@@ -327,6 +391,13 @@ func (w *Worker) recover(ctx context.Context) error {
 	}
 	for _, r := range records {
 		if protocol.StatusTerminal(r.State) || r.Owner != w.id || r.FencingEpoch == 0 {
+			continue
+		}
+		owned, err := w.store.LeaseOwned(ctx, r.Assignment.Key(), w.id, r.FencingEpoch)
+		if err != nil {
+			return err
+		}
+		if !owned {
 			continue
 		}
 		attached, attachErr := w.backend.Attach(ctx, r.Assignment.Key())
