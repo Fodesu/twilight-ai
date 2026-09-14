@@ -2,6 +2,8 @@ package host_test
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -180,6 +182,104 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	last := seen[len(seen)-1].Messages
 	if got := roles(last); len(got) != 5 || got[0] != "system" || got[1] != "user" || got[2] != "assistant" || got[3] != "tool" || got[4] != "user" {
 		t.Fatalf("roles = %v", got)
+	}
+}
+
+type approvalGateTool struct{ *gateTool }
+
+func (*approvalGateTool) Ref() run.ToolRef { return "approve" }
+func (*approvalGateTool) Definition() sdk.ToolDefinition {
+	return sdk.ToolDefinition{Name: "approve", Parameters: []byte(`{"type":"object"}`)}
+}
+func (*approvalGateTool) ResponsePolicy() run.ResponsePolicy { return run.ApprovalRequired }
+
+func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
+	ctx := context.Background()
+	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
+	approval := &approvalGateTool{gateTool: tool}
+	model := &scriptedRequests{answers: []sdk.ModelResult{{FinishReason: sdk.FinishReasonToolCalls,
+		ToolCalls: []sdk.ToolCall{
+			{ToolCallID: "c1", ToolName: "lookup", Input: `{}`},
+			{ToolCallID: "c2", ToolName: "lookup", Input: `{}`},
+			{ToolCallID: "c3", ToolName: "approve", Input: `{}`},
+		}}}}
+	h := newHost(host.Ports{}, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tool, approval)
+	preset, err := h.Presets.Register("sequential", mustPreset("m-1", []loop.ExecutableTool{tool, approval},
+		host.WithScheduling(run.ToolScheduling{Mode: run.ToolScheduleSequential})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const sid session.SessionID = "s-stop-mixed"
+	s, err := h.OpenSession(ctx, sid, host.SessionOptions{Preset: preset, NewTurnID: func() turn.TurnID { return "t2" }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := h.SubmitInput(ctx, sid, "in-1", "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := turn.TurnRef{SessionID: sid, TurnID: "t1"}
+	started, err := h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref, Inputs: []run.AgentInput{input}, Preset: preset, Companion: turn.CompanionV1Version})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = h.Drive(ctx, ref)
+	}()
+	t.Cleanup(func() { close(tool.release); <-done })
+	<-tool.started
+	snapshot, err := h.Runtime.Load(ctx, sid, started.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := snapshot.State.Current.(run.ToolStep).Calls
+	if calls[0].Status != run.ToolExecuting || calls[1].Status != run.ToolPending || calls[2].Status != run.ToolWaiting {
+		t.Fatalf("calls before stop = %+v", calls)
+	}
+	if _, err := h.Coordinator.Stop(ctx, turn.StopRequest{Ref: ref}); err != nil {
+		t.Fatal(err)
+	}
+	record, err := h.Runtime.Record(ctx, sid, started.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := record.Snapshot.State.Result
+	if len(result.UncertainCalls) != 1 || result.UncertainCalls[0] != calls[0].CallID {
+		t.Fatalf("uncertain calls = %v", result.UncertainCalls)
+	}
+	input, err = h.SubmitInput(ctx, sid, "in-2", "continue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Route(ctx, []run.AgentInput{input}); err != nil {
+		t.Fatal(err)
+	}
+	requests := model.requests()
+	if len(requests) != 2 {
+		t.Fatalf("model requests = %d, want 2", len(requests))
+	}
+	toolResults := make(map[string]sdk.ToolResultPart)
+	for _, msg := range requests[1].Messages {
+		for _, part := range msg.Content {
+			if result, ok := part.(sdk.ToolResultPart); ok {
+				toolResults[result.ToolCallID] = result
+			}
+		}
+	}
+	if len(toolResults) != 3 {
+		t.Fatalf("tool results = %+v, want one for every original call", toolResults)
+	}
+	for _, id := range []string{"c1", "c2", "c3"} {
+		result, ok := toolResults[id]
+		class := run.FailureCancelled
+		if id == "c1" {
+			class = run.FailureEffectUnknown
+		}
+		if !ok || !result.IsError || !strings.Contains(fmt.Sprint(result.Result), class) {
+			t.Fatalf("tool result %s = %+v, want %s error", id, result, class)
+		}
 	}
 }
 

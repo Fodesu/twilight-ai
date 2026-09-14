@@ -22,7 +22,7 @@
 | Session Service（authority） | Host：事实层 + 决策层 + Loop 驱动器，加部署提供的薄控制面 |
 | Executor | `loop.Executor` 端口；实现是进程内 `LocalExecutor` 或远端客户端，效果实现只在这一侧 |
 | Read Models / 观察者 | `extension.NewProjectionReader` 直接挂在 Store 上，不经 Host；`Host.Events` 是 owner 侧的实时流，两者对同一 head 一致（EXT-PRJ-4） |
-| Workspace | 只有 AgentPreset 里的 `WorkspaceRef` 插槽；服务在 core 之外 |
+| Workspace | Host 只接收 opaque `TargetRef`/resolver；Workspace 与 Runtime 服务在 core 之外 |
 | 存活判定 / 何时 Takeover | 不在 core 也不在 Host；由部署（Agent Server 或运维）决定 |
 | Agent Server（API、Auth、路由） | core 之外 |
 
@@ -73,7 +73,7 @@ func NewPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...PresetOp
 
 **HST-PST-1** 注册表只存决策身份。`Register` 按 TRN-PST-2 校验、按 TRN-PST-1 计算摘要并返回 `PresetRef`；`Resolve` 在摘要匹配时返回 AgentPreset。它不持有模型客户端或工具实现：AgentPreset 里的工具只是 `PublicTool{Ref, Definition, Policy}`，实现由 Executor 一侧的目录提供。`NewPreset` 是本地便捷构造：从工具实现取冻结定义与响应策略进 AgentPreset，实现本身不进。
 
-**HST-PST-2** 未注册的 ID 或摘要不匹配的 ref 解析为 `ErrPresetUnavailable`；宿主对这样的 Turn 不驱动（Turn 状态不变，TRN-REC-2）。同一 ID 重新注册替换 AgentPreset，旧摘要下记录的 Turn 随之不可解析——修改进摘要的字段是有意的决策变更，不得被静默沿用。
+**HST-PST-2** 注册表按完整 `PresetRef{ID, Digest}` 保存 immutable 版本。同一 ID 注册新摘要时保留旧版本，已有 Turn 继续解析其记录的版本。注册与 Resolve 均隔离可变字段；SystemPrompt 参与摘要。缺少指定版本时返回 `ErrPresetUnavailable`，Turn 保持原状态，等待宿主提供该版本（TRN-REC-2）。跨进程恢复的部署负责提供仍被 Turn 引用的 preset 版本。
 
 ## 4. 驱动
 
@@ -85,7 +85,9 @@ func NewPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...PresetOp
 
 **HST-DRV-4** `Session.Drain(ctx)`：读 chatlog surface，若存在 `submitted` 且未 delivered 的输入，按 stream 顺序取全部，经 Route 开新 Turn；否则返回 false。已提交而未投递的输入就是 inbox 的 next-turn 列表，不需要另一份持久结构。
 
-**HST-DRV-5** 崩溃恢复：`Host.Open(sid)` 经 `Writers` 取得 Writer（新 Epoch），随后调用 `Runtime.RecoverInterrupted(sid, reattach)`（RUN-CMT-7），其中 `reattach` 是 `loop.Reattach(executor, sid, deliver)`：每个 Executing 目标先被问 Executor 是否仍在执行，能重连的保持 Executing，其 Outcome 稍后经 `deliver` 到达。宿主提供的 `deliver` 按 Outcome 的 RunID 从 turn surface 找到拥有它的 Turn，取该 AgentPreset 的 Loop 调用 `Loop.Deliver` 结算，再驱动该 Run 到静止点；这段工作发生在任何调用之外，失败经 `Ports.Warn` 上报。进程内 Executor 在新进程里对一切 Attach 回答 false，因此本地部署的接管等价于全部处置；远端 Executor 的重连由它的实现决定。
+**HST-DRV-5** 崩溃恢复：`Host.Open(sid)` 经 `Writers` 取得 Writer，随后调用 `Runtime.RecoverInterrupted(sid, reattach)`（RUN-CMT-7），其中 `reattach = loop.Reattach(lifetime, executor, sid, deliver)`。Attach 握手受 Open 请求的 context 约束；后台 Outcome 读取与交付使用该 Session 的 recovery lifetime。Open 返回后请求取消仍允许恢复继续；再次 Open 会替换旧监听，`Session.Close` 与 `Host.Close` 取消各自拥有的监听。
+
+Attach 的 `active` / `terminal` 保留 Executing 并等待实际 Outcome；`orphaned` 保留状态供 control plane 处理；`missing` 进入接管处置。进程内 Executor 重启后旧记录为 `missing`，持久 Executor 按其 Execution Store 返回状态。`deliver` 按 Outcome 的 RunID 查找 Turn，使用其 preset 的 Loop 结算并继续驱动；后台失败经 `Ports.Warn` 上报。
 
 ## 5. Session 门面
 
@@ -151,10 +153,10 @@ loops       = PresetRef → loop.New(Executor, builder, Settings{preset.Scheduli
 ## 9. conformance
 
 - **HST-SCP-3 / HST-PRT-2**：以只记录 Assignment 的 Executor 构建 Host，注册 AgentPreset、Send 一条输入：模型 Assignment 被 Dispatch 且携带冻结请求的 digest，该 digest 在 Frozen 中可取回，Outcome 回送后 Turn `completed`、`Reply` 等于 Outcome 文本。
-- **HST-PST-1/2**：注册后同 ID 改进摘要字段的字段再注册，旧 ref 解析为 `ErrPresetUnavailable`；未知 ID 同样；未注册的 PromptBuilderRef 使 Loop 组合失败。
+- **HST-PST-1/2**：同 ID 注册不同 SystemPrompt 得到不同摘要，两版均可解析；修改注册入参或 Resolve 返回值中的嵌套字段保持注册版本不变；未知 ID 或摘要返回 `ErrPresetUnavailable`；未注册的 PromptBuilderRef 使 Loop 组合失败。
 - **HST-DRV-1/2**：同一 Run 的第二个本地驱动者得到 `already_driving` 的成功响应；ctx 取消后 Turn 保持 active、重开后驱动完成。
 - **HST-DRV-3/4**：active Turn 时 Route 走 Deliver，输入在下一次模型请求里紧随工具结果之后；无 active Turn 时 Route 开新 Turn；Drain 取全部积压开一个 Turn；`attempt_failed` 时 Route 为 conflict。
-- **HST-DRV-5**：接管后 Executing 工具记 Unknown 且同一 RunID 继续；不可重连的 Executing 模型步被撤回，Resume 时按恢复时刻的状态重新规划并只调用模型一次（`ModelSteps` 只计重规划的那一步）；可重连的模型 attempt 不被处置，其 Outcome 经宿主的 deliver 完成同一步；旧进程的迟到结算被围栏。
+- **HST-DRV-5**：缺失 execution record 的工具记 Unknown 且同一 RunID 继续；缺失记录的模型步被撤回，Resume 时重新规划（`ModelSteps` 只计重规划的那一步）；可重连 attempt 以实际 Outcome 完成原步骤，orphaned 保持 Executing；Open 请求取消后恢复监听继续，Session/Host 关闭后监听退出；旧进程的迟到结算被围栏。
 - **HST-SES-1/2/3**：OpenSession 顺序；Send 的首个 Result 与排空 Result；并发 Send 的 `already_driving` 收敛。
 - **HST-SES-4、HST-EVT-1**：Submit 在模型仍阻塞时已返回且 Turn 为 active；事件流按 Seq 顺序交付该 Turn 的 `started` 与 `completed`；后台驱动失败以 `Event{Err}` 与 `Ports.Warn` 报告；同一 Session 上 Send 仍阻塞到 Result。
 - **HST-CKP-1/2**：Compact 的模型请求经 Executor 到达模型；压缩后下一请求以 summary 开头且只含 retained 后缀；重启进程组装同一上下文；active Turn 时 Compact 为 conflict；封闭校验的四类边界。

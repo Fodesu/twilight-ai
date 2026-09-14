@@ -14,7 +14,7 @@ Binding：稳定 BindingID 到 immutable Ref 的映射
 RetentionClaim：owner 对一个 BindingSet 的 durable 保留事实
 ```
 
-`BindingSet` 是 claim 的内容集合。`Active` claim 是 retention root；`Released` claim 不再保留任何内容。claim 由 Session Module Framework 的 `Writer` 在 Append owner fact 之前以 `Active` 状态建立（EXT-WRT-3）。顺序固定为先 claim 后 append，因此不可能出现"stream 引用了内容而没有 claim"；可能出现的只有孤儿 claim（有 claim、owner fact 未写入），它只多占空间，由回收前核对释放（ART-RET-3）。`Prepared` 保留给需要显式 in-flight 状态的部署（第 7 节）。Core 不依赖 Session、Event、Chatlog 或 Application，且不解释 owner 的领域语义。Attachment 等 owner module 可以关联 `AttachmentID`、subject 与 `BindingID`，但该边界只使用 BindingID，不引入 Event 依赖。
+`BindingSet` 是 claim 的内容集合。`Active` claim 是 retention root；`Released` claim 结束对内容的保留。claim 由 Session Module Framework 的 `Writer` 在 Append owner fact 之前以 `Active` 状态建立（EXT-WRT-3），使已提交引用始终具有 retention root。Append 结果未知时，claim 保持 Active，重开后的日志核对确认 owner fact 已提交则继续保留，确认未提交则释放孤儿 claim（ART-RET-3）。`Prepared` 保留给需要显式 in-flight 状态的部署（第 7 节）。Core 通过 `ClaimOwner` 表达引用所属的权威身份，owner 的领域语义由对应模块解释。Attachment 等 owner module 可以关联 `AttachmentID`、subject 与 `BindingID`，artifact 边界使用 BindingID。
 
 **ART-SCP-1** Core 不得解释 `ClaimOwner`，不得要求某种数据库、文件系统或 provider 实现。参考实现与 conformance suite 见第 8 节。
 
@@ -165,6 +165,8 @@ type OwnerVerifier interface {
 | ReleaseActive | 不存在 | not found |
 
 **ART-RET-3** `ClaimsByOwner` 按 ClaimID 稳定排序枚举匹配 owner 的全部状态的 claim（按状态筛选由调用者做），使用 watermark cursor：零值 cursor 开始一次枚举，第一页把 `Watermark` 固定为当时最大的 ClaimID，之后的页只返回 `After` 之后、`Watermark` 之内的 claim，枚举期间新 Activate 的 claim 不进入本次结果；`Next` 为 nil 表示枚举结束。`Identities` 为 nil 匹配该 (Kind, Authority) 下全部 owner，显式列表只匹配其成员，空 owner identity 不匹配任何 claim；Kind 或 Authority 为空是 `invalid`。回收前核对：GC 在按 Active claim 计算 root 之前，对每个 Active claim 调用 `OwnerVerifier.OwnerExists`，不存在则 `ReleaseActive`；这一步清理 EXT-WRT-3 顺序下可能留下的孤儿 claim。核对只能在该 owner 的写入路径不可能仍在进行时执行：Session 部署中即该 Session 没有进行中的 `Writer.Commit`，在 `OpenWriter` 完成日志重建之后、接受第一个 Commit 之前对该 Session 的 claim 核对一次，运行期的核对必须与 Writer 互斥。`ReleaseActive` 的另一种授权（owner retention 已结束）由 Application 的 GC policy 提供。
+
+结果未知而失效的 Writer 在 `OwnerExists` 返回其失效错误，核对流程保持 claim 原状态。宿主重开 Writer、重建完整提交索引后恢复核对。已释放的孤儿 claim 保持 Released；同一 owner 的提交重试通过新的 ClaimID 建立 retention root，Session Writer 的确定性派生规则见 EXT-WRT-5。
 
 ## 6. provider 与 scheme boundary
 

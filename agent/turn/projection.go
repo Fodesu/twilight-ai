@@ -29,7 +29,7 @@ type AttemptView struct {
 	// SchemaVersion is created.SchemaVersion: the Coordinator builds command
 	// envelopes for this attempt from it without reading the machine projection.
 	SchemaVersion uint16 `json:"schemaVersion"`
-	// End is the terminal result from twilight/run/ended; nil while active.
+	// End is the terminal result from twilight/run/run_ended; nil while active.
 	End *run.RunEnded `json:"end,omitempty"`
 }
 

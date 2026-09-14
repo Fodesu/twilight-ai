@@ -28,8 +28,10 @@ type DeliverRequest struct {
 	Inputs []run.AgentInput
 }
 type RetryRequest struct {
-	Ref    TurnRef
-	Reason string
+	Ref TurnRef
+	// PreviousRunID binds retries and their replays to one failed attempt.
+	PreviousRunID run.RunID
+	Reason        string
 }
 type StopRequest struct {
 	Ref    TurnRef
@@ -125,7 +127,7 @@ func (c *Coordinator) commit(ctx context.Context, sid session.SessionID, op stri
 		return err
 	}
 	switch res.Outcome {
-	case writer.CommitApplied, writer.CommitAlreadyApplied:
+	case writer.CommitApplied, writer.CommitAlreadyApplied, writer.CommitNoop:
 		return nil
 	case writer.CommitConflict:
 		return fmt.Errorf("%w: %s replayed with different content", ErrConflict, op)
@@ -326,12 +328,32 @@ func (c *Coordinator) Retry(ctx context.Context, req RetryRequest) (TurnResponse
 			return nil, err
 		}
 		view, ok := surface.Turns[turnID]
-		if !ok || view.Status != TurnAttemptFailed {
-			return nil, fmt.Errorf("%w: turn %s is not attempt_failed", ErrConflict, turnID)
+		if !ok || req.PreviousRunID == "" {
+			return nil, fmt.Errorf("%w: retry requires a previous run of turn %s", ErrConflict, turnID)
 		}
-		attempt := uint32(len(view.Attempts)) + 1
+		var previous *AttemptView
+		for i := range view.Attempts {
+			if view.Attempts[i].RunID == req.PreviousRunID {
+				previous = &view.Attempts[i]
+				break
+			}
+		}
+		if previous == nil {
+			return nil, fmt.Errorf("%w: run %s does not belong to turn %s", ErrConflict, req.PreviousRunID, turnID)
+		}
+		attempt := previous.Attempt + 1
 		runID = DeriveRunID(sid, turnID, attempt)
 		commitID := RetryCommitID(sid, turnID, attempt)
+		// A committed retry keeps its identity as later attempts advance.
+		if v.Committed(commitID) {
+			return nil, nil
+		}
+		if view.Status != TurnAttemptFailed || view.LastAttempt().RunID != req.PreviousRunID {
+			return nil, fmt.Errorf("%w: run %s is not the latest failed attempt of turn %s", ErrConflict, req.PreviousRunID, turnID)
+		}
+		if _, active := surface.Active(); active {
+			return nil, fmt.Errorf("%w: session already has an active turn", ErrConflict)
+		}
 		newRun, err := run.BuildNewRunFor(runID, run.OwnerID(turnID), attempt, es.CausationID(commitID))
 		if err != nil {
 			return nil, err

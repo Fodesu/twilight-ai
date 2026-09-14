@@ -12,7 +12,7 @@ Facts → Decision → Assignment → Effect → Outcome → Facts
         决策层：Machine.Next（run 模块）、PromptBuilder
 ```
 
-决策层的输入分两类。需要代码的只有一类组件：PromptBuilder，它以 ref 命名并经目录解析；其余决策输入——工具调度（`Scheduling`）、畸形结果重试上限（`MalformedRetries`）、模型与工具身份、执行环境——是 AgentPreset 上的数据，不经目录、不需要实现。
+决策层的 PromptBuilder 以 ref 命名并经目录解析。工具调度（`Scheduling`）、畸形结果重试上限（`MalformedRetries`）、模型与工具身份、SystemPrompt 是 AgentPreset 上的数据。每次执行的外部资源目标由宿主的 TargetResolver 提供。
 
 **DEC-SCP-1** 决策层的每个组件是投影状态与 AgentPreset 的确定性函数，不做外部 IO：同一 AgentPreset、同一投影状态，任何进程得到同一结果。这是接管后新进程续跑同一 Turn 的前提。
 
@@ -39,11 +39,11 @@ const PromptContextV1 turn.PromptBuilderRef = "twilight/decision/prompt/context-
 1. `AgentPreset.SystemPrompt` 非空时一条 system message；
 2. 按 fold 顺序：`input` → user；`assistant` → assistant（ToolCallPart 的 `ProviderCallID` 写入 `sdk.ToolCallPart.ToolCallID`）；`tool_result` → tool（以同 Turn assistant 中同 CallID 的 `ProviderCallID` 配对；`unknown` 状态渲染为标记 error 的说明文本）；`summary` → assistant text。
 
-回合中途投递的输入在其之前尚未结算的工具结果之后排列：这类输入的 `input_delivered` 先于 `tool_result` 进入 stream，而 provider 要求工具结果紧随发出调用的 assistant 消息。fold 顺序不变，只影响 prompt 的构造。已停止 attempt 留下的永不结算的调用不阻塞其后输入。
+回合中途投递的输入在其之前尚未结算的工具结果之后排列：这类输入的 `input_delivered` 先于 `tool_result` 进入 stream，provider 要求工具结果紧随发出调用的 assistant 消息。prompt 构造时暂存这类输入，待工具结果配对后写入。CancelRun 为全部未完成调用提交终态结果，后续 Turn 继承完整配对的上下文；构造器遇到未配对调用或结果时返回错误。
 
 **DEC-PMT-3** `PromptInput.Inputs` 与本 Turn 已 delivered 且属于本次 Prepare 的 Input 按 ID 对齐，包括回合中途经 Deliver 进入的输入。这些 Input 的 `input_delivered` 与 `input_accepted` 同 commit，Build 时一定已在 fold 中；PromptBuilder 只使用 fold。
 
-**DEC-PMT-4** `Prompt.Model = AgentPreset.Model`；`Request.Tools` 与 `Prompt.Tools`（ToolSpec：Ref、DefinitionDigest、Policy）都由 `AgentPreset.Tools` 派生，顺序一致；`InputIDs` 为本次消费的 PendingInput IDs；`Token` 为投影 head 的 `Next:Digest`，随 fold 或 AgentPreset 变化。
+**DEC-PMT-4** `Prompt.Model = AgentPreset.Model`；`Request.Tools` 与 `Prompt.Tools`（ToolSpec：Ref、DefinitionDigest、Policy）都由 `AgentPreset.Tools` 派生，顺序一致；`InputIDs` 为本次消费的 PendingInput IDs；`Token` 为投影 head 的 `Next:Digest`。PresetRef 独立标识冻结的决策配置。
 
 **DEC-PMT-5** TextPart 直接写入 sdk.Message；ReferencePart 在 context-v1 中以名字呈现，不物化。
 
@@ -75,6 +75,6 @@ func DefaultPromptBuilders() *PromptBuilders // 含 PromptContextV1
 
 - **DEC-SCP-1、DEC-CAT-2**：两个独立构建的目录对同一 AgentPreset 与同一投影状态解析出的 PromptBuilder 给出逐字段相同的 `Prompt`；未注册的 PromptBuilderRef 解析失败；nil 目录不可解析。
 - **DEC-CAT-1**：空 ref、nil factory、重复注册被拒绝。
-- **DEC-PMT-2**：中途输入排在未结算工具结果之后；`unknown` 工具结果标记 error；多 attempt 的条目全部进入 prompt（由 turn 与 host 的集成测试覆盖）。
+- **DEC-PMT-2**：中途输入排在未结算工具结果之后；`unknown` 工具结果标记 error；未配对调用或结果被拒绝；多 attempt 的条目全部进入 prompt（由 turn 与 host 的集成测试覆盖）。
 - **DEC-INP-1**：`InputText(InputContent(s)) == s`。
-- **TRN-PST-1**：Prompt、Workspace、Scheduling、MalformedRetries 任一变化改变 AgentPreset 摘要，SystemPrompt 不改变（turn 的 golden）。
+- **TRN-PST-1**：Prompt、Scheduling、MalformedRetries、SystemPrompt 任一变化改变 AgentPreset 摘要（turn 的 golden）。

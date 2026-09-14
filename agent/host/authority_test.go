@@ -127,22 +127,45 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 	}
 }
 
-// A PresetRef whose digest no longer matches the registration is
-// unavailable, so a Turn recorded under an older configuration is refused
-// rather than driven with a different decision function (HST-PST-2).
-func TestStalePresetRefIsUnavailable(t *testing.T) {
+// Older Turns keep resolving their recorded decision identity (HST-PST-2).
+func TestPresetVersionsRemainAvailable(t *testing.T) {
 	presets := host.NewPresets()
-	ref, err := presets.Register("p", mustPreset("m-1", nil))
+	preset := mustPreset("m-1", nil, host.WithSystemPrompt("original"))
+	preset.Tools = []turn.PublicTool{{Ref: "tool", Definition: run.ToolDefinition{
+		Name: "tool", Parameters: run.MustParseCanonicalJSON(`{}`), CacheControl: &run.CacheControl{Type: "ephemeral"},
+	}}}
+	ref, err := presets.Register("p", preset)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := presets.Register("p", mustPreset("m-1", nil, host.WithStreaming(true))); err != nil {
+	preset.SystemPrompt = "updated"
+	preset.Tools[0].Definition.Name = "updated_tool"
+	preset.Tools[0].Definition.CacheControl.Type = "updated"
+	newRef, err := presets.Register("p", preset)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := presets.Resolve(ref); err == nil {
-		t.Fatal("stale ref resolved")
+	if newRef == ref {
+		t.Fatal("changed decision inputs reused the old preset ref")
+	}
+	old, err := presets.Resolve(ref)
+	if err != nil || old.SystemPrompt != "original" || old.Tools[0].Definition.Name != "tool" || old.Tools[0].Definition.CacheControl.Type != "ephemeral" {
+		t.Fatalf("original preset = %+v, %v", old, err)
+	}
+	old.Tools[0].Definition.Name = "mutated_read"
+	old.Tools[0].Definition.CacheControl.Type = "mutated_read"
+	again, err := presets.Resolve(ref)
+	if err != nil || again.Tools[0].Definition.Name != "tool" || again.Tools[0].Definition.CacheControl.Type != "ephemeral" {
+		t.Fatalf("resolve leaked mutable preset state: %+v, %v", again, err)
+	}
+	current, err := presets.Resolve(newRef)
+	if err != nil || current.SystemPrompt != "updated" {
+		t.Fatalf("updated preset = %+v, %v", current, err)
 	}
 	if _, err := presets.Resolve(turn.PresetRef{ID: "missing", Digest: ref.Digest}); err == nil {
 		t.Fatal("unknown preset resolved")
+	}
+	if _, err := presets.Resolve(turn.PresetRef{ID: ref.ID, Digest: "unknown"}); err == nil {
+		t.Fatal("unknown digest resolved")
 	}
 }

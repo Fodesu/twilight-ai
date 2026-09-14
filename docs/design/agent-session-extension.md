@@ -181,11 +181,11 @@ func OpenWriter(ctx, store session.Store, registry *Registry, admission Admissio
 
 **EXT-WRT-2** 幂等：fn 返回的 group 若 CommitID 已提交（`View.Committed`，命中才取行），比对 fingerprint（Type、SourceSeqs、Payload 的有序序列，不含时间），相同返回 `AlreadyApplied` 与原行，不同返回 `Conflict`；两者都不写入，也不做 admission 与 claim。fn 内可先经 `View.Committed` 判断，避免为重放重新构造 group。
 
-**EXT-WRT-3** claim 顺序：group 含 Binding 时，Writer 在 `Append` 之前调用 `ledger.Activate(claimID, owner, set)`。顺序固定为先 claim 再 append，因此崩溃只可能留下孤儿 claim（有 claim 无 commit），不可能留下无 claim 的引用；孤儿由 artifact 的回收前核对释放（ART-RET-3）。`Append` 失败时 Writer 调用 `ledger.ReleaseActive(claimID)` 尽力回收，失败也只留孤儿。
+**EXT-WRT-3** claim 顺序：group 含 Binding 时，Writer 在 `Append` 之前调用 `ledger.Activate(claimID, owner, set)`，让 stream 中的引用从提交开始就具有 retention root。`Append` 确认写入前拒绝时，Writer 调用 `ledger.ReleaseActive(claimID)` 尽力回收；结果未知、ownership 丢失或 CommitID 冲突时保留 Active claim。`OpenWriter` 重建日志后核对 owner commit：已提交的 claim 保持 Active，未提交的孤儿 claim 被释放（ART-RET-3）。
 
 **EXT-WRT-4** Writer 在两种情况下进入失效状态，本次与之后的 `Commit` 都返回同一错误：(a) `Append` 返回 `ErrOwnershipLost`——Session 级 fencing 在进程内的表现，调用方必须放弃该 Session 的执行，Runtime 与 Loop 对它的处理见 RUN-CMT-6；(b) `Append` 返回结果未知的错误（kernel 的 `ErrHandleFailed`、IO 错误或其他非验证性错误）——Writer 以 `ErrUnknownOutcome` 失效，因为它的 head 与投影状态可能已落后于日志一组，继续提交会给临时行赋 kernel 已用过的 Seq。宿主关闭并重开 Writer：`OpenWriter` 从日志重建，同一 group 的重放由 kernel 的索引回答（落盘则 `AlreadyApplied`，未落盘则 `Applied`）。只有保证未写入的错误不致失效：kernel 的验证拒绝（`ErrInvalid`、`ErrNotFound`）与写入开始前的 ctx 错误；`ErrConflict` 按 EXT-WRT-2 报告为 `Conflict`。
 
-**EXT-WRT-5** ClaimID 派生规则：`Digest("twilight/session-extension/claim", "1", ProtocolVersion, SessionID, CommitID, RefSetDigest)`；`ClaimOwner = {Kind:"twilight/session/commit", Authority:SessionID, Identity:CommitID}`。
+**EXT-WRT-5** 首个 ClaimID 派生规则：`Digest("twilight/session-extension/claim", "1", ProtocolVersion, SessionID, CommitID, RefSetDigest)`；`ClaimOwner = {Kind:"twilight/session/commit", Authority:SessionID, Identity:CommitID}`。重放先完整执行 binding admission 与 BindingSet 构建，再查找该 claim。已有记录的 owner、BindingIDs 和 RefSetDigest 必须完全相同。Active claim 由 `Activate` 幂等复用；Released claim 保持终态，Writer 派生后继 `Digest("twilight/session-extension/claim-successor", "1", ReleasedClaimID)` 并重复查找，直到复用 Active claim 或建立新的 retention root。该链允许同一 CommitID 在孤儿回收后继续重试；任一记录的身份或集合冲突都拒绝本次提交。
 
 ```go
 // Writers 是宿主维护的 SessionID → Writer 映射；模块（run 的 Runtime、turn 的 Coordinator）经它取得 Writer。
@@ -250,7 +250,7 @@ func NewProjectionReader(store session.Store, registry *Registry, cache Projecti
 
 **EXT-PRJ-3** 缓存条目记录 `through`：已折叠到的 stream head（`Next` 为下一未折叠行的 Seq，`Digest` 为最后一行的 digest）。复用条件是**组对齐**：`through.Next-1` 必须是某组最后一行的 Seq 与 digest（`Last` 为真），且 `StateCodec.Decode` 成功；否则从 `Initial` 重折。组对齐是 EXT-PRJ-1 的直接后果——落在组内部的条目意味着一个半应用的组，不可作为起点。该判定只有一个实现（`EndsGroupAt(row, through)`），Writer 与 Store reader 共用，因此同一条目在两条路径上的判定相同。
 
-**EXT-PRJ-4** `Writer.Projections()` 返回的 reader 直接读 Writer 内存中的状态，不经 Store；独立进程的观察者用 `NewProjectionReader` 从 Store 读，两者对同一 head 给出相同状态。Writer 在 `Append` 之前折叠尚未封装的行（Digest 为空），reader 折叠已封装的行，因此 `Fold` 在调用 Apply 前清空行的 Digest：两条路径向 Apply 交付相同输入，投影不能依赖行 digest。
+**EXT-PRJ-4** `Writer.Projections()` 返回的 reader 从 Writer 内存状态生成独立副本；`View.Projection` 同样通过该投影的 `StateCodec` encode/decode 交付调用方拥有的副本，包括嵌套 map、slice 与指针。独立进程的观察者用 `NewProjectionReader` 从 Store 读，两者对同一 head 给出相同状态。Writer 在 `Append` 之前折叠尚未封装的行（Digest 为空），reader 折叠已封装的行，因此 `Fold` 在调用 Apply 前清空行的 Digest，让两条路径向 Apply 交付相同输入。
 
 **EXT-PRJ-5** `rebuild` 读一次日志：缓存条目未覆盖的投影需要它的行来折叠，而每个条目都要靠它校验组对齐（EXT-PRJ-3）。日志是 O(N)，投影折叠随状态大小增长（Apply 为保持纯性复制它写入的部分），所以可省的只有折叠：条目通过 EXT-PRJ-3 校验的投影从该处续折，跳过它已覆盖的组；其余投影从 `Initial` 全折。篡改或过期的条目只让该投影多折一次，绝不影响正确性，也绝不让 `OpenWriter` 失败。这次读取只服务于投影，不服务于提交历史——Writer 不保留日志，也不建 CommitID 索引（EXT-WRT-1）；它对"必须读多少行"的代价上限取决于 adapter 的读取粒度。
 
@@ -276,8 +276,8 @@ v1 conformance 必须验证：
 - **EXT-COD-1/2**：wire-first、`v` 保留字段；canonical round-trip 由各模块的测试覆盖；
 - **EXT-REF-1/2**：Extractor 全量提取、cardinality、scheme/durability admission、拒绝时无写入；
 - **EXT-WRT-7**：每个 applied group 恰通知一次、行与日志一致、顺序与 Seq 一致（含并发提交）；被拒与重放不通知；观察者 panic 不影响 Commit；
-- **EXT-WRT-1 至 5**：OpenWriter 后投影等于全量 fold 且 Writer 不保留日志（重开后常驻内存不随日志长度增长）；同 CommitID 重放 AlreadyApplied、不同内容 Conflict、两者无写入；并发调用方串行且各自看到前一次的结果；claim 先于 append，append 失败后 claim 被释放或可被核对回收；`ErrOwnershipLost` 后 Writer 失效；Append 在底层持久化之后返回错误时 Writer 以 `ErrUnknownOutcome` 失效、重开后同一 group 为 `AlreadyApplied` 且后续 Seq 连续、链完整；Append 在写入之前失败时重开后同一 group 为 `Applied`；
-- **EXT-PRJ-1 至 4**：pure fold、组边界、Consumes 与范围外跳过、Ignorable 与非 Ignorable 的 Unknown、缓存复用条件、Writer 内投影与 Store 读取一致。
+- **EXT-WRT-1 至 5**：OpenWriter 后投影等于全量 fold 且 Writer 不保留日志（重开后常驻内存不随日志长度增长）；同 CommitID 重放 AlreadyApplied、不同内容 Conflict、两者无写入；并发调用方串行且各自看到前一次的结果；claim 先于 append，已确认写入前拒绝时释放 claim，结果未知时保持 Active 至重开核对；`ErrOwnershipLost` 后 Writer 失效；Append 在底层持久化之后返回错误时 Writer 以 `ErrUnknownOutcome` 失效、重开后同一 group 为 `AlreadyApplied`，claim 保持 Active，后续 Seq 连续、链完整；Append 在写入之前发生结果未知的错误时，重开核对释放孤儿 claim；同一提交经历多次写入前失败与重开后，通过后继 claim 成功提交且仅保留一个 Active root；owner 或 BindingSet 冲突时拒绝派生后继；
+- **EXT-PRJ-1 至 4**：pure fold、组边界、Consumes 与范围外跳过、Ignorable 与非 Ignorable 的 Unknown、缓存复用条件、Writer 内投影与 Store 读取一致；修改 `Projections().Load` 或 `View.Projection` 返回的嵌套状态后，后续读取与提交仍保持原事实流的投影。
 - **EXT-PRJ-5 至 7**：干净 Close 后重开不折任何 event；条目只覆盖前缀时只折尾部；日志越界、digest 不符、落在组内、状态不可解码的条目一律回退为全折且不使 Open 失败；被策略排除的投影不被写入，但它已有的条目仍被复用；`CacheEvery(n)` 下条目落后不超过 n 行；未配置缓存时不写任何条目且行为不变。
 
 ## 8. Application module

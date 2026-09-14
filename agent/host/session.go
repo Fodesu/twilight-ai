@@ -146,6 +146,7 @@ func (h *Host) OpenSession(ctx context.Context, sid session.SessionID, opts Sess
 	s.bg, s.cancel = context.WithCancel(context.Background())
 	if opts.ResumeActive {
 		if _, _, err := s.Resume(ctx); err != nil {
+			_ = s.Close(context.WithoutCancel(ctx))
 			return nil, err
 		}
 	}
@@ -355,7 +356,11 @@ func (s *Session) Retry(ctx context.Context) ([]Result, bool, error) {
 		return nil, false, nil
 	}
 	ref := turn.TurnRef{SessionID: s.sid, TurnID: status.Failed[0]}
-	if _, err := s.h.Coordinator.Retry(ctx, turn.RetryRequest{Ref: ref, Reason: "host retry"}); err != nil {
+	previous, err := s.h.Coordinator.Status(ctx, ref)
+	if err != nil {
+		return nil, false, err
+	}
+	if _, err := s.h.Coordinator.Retry(ctx, turn.RetryRequest{Ref: ref, PreviousRunID: previous.RunID, Reason: "host retry"}); err != nil {
 		return nil, false, err
 	}
 	resp, err := s.h.Drive(ctx, ref)
@@ -370,6 +375,7 @@ func (s *Session) Retry(ctx context.Context) ([]Result, bool, error) {
 // return, then releases this Session's Writer; other Sessions of the Host
 // stay open. A Turn a cancelled drive left active resumes on the next open.
 func (s *Session) Close(ctx context.Context) error {
+	s.h.stopRecovery(s.sid)
 	if s.cancel != nil {
 		s.cancel()
 	}

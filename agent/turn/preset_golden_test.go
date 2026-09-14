@@ -8,9 +8,7 @@ import (
 )
 
 // TestPresetDigestGolden freezes the preset digest and its field boundary
-// (TRN-PST-1): the system prompt is tunable and stays outside the digest;
-// the prompt builder ref, workspace, scheduling and malformed-retry bound
-// are decision inputs and change it.
+// (TRN-PST-1): all frozen decision inputs change the digest.
 func TestPresetDigestGolden(t *testing.T) {
 	base := turn.AgentPreset{SchemaVersion: 1, Model: "m-1", Prompt: "twilight/decision/prompt/context-v1"}
 	d, err := turn.DigestPreset(&base)
@@ -24,18 +22,13 @@ func TestPresetDigestGolden(t *testing.T) {
 		t.Errorf("golden preset digest drifted — an intentional wire change must update this fixture and agent-turn.md TRN-PST-1:\n got: %s\nwant: %s", d, want)
 	}
 
-	prompted := base
-	prompted.SystemPrompt = "be brief"
-	if pd, _ := turn.DigestPreset(&prompted); pd != d {
-		t.Fatal("system prompt leaked into the preset digest")
-	}
 	cases := []struct {
 		name   string
 		mutate func(*turn.AgentPreset)
 	}{
+		{"system prompt", func(p *turn.AgentPreset) { p.SystemPrompt = "be brief" }},
 		{"streaming", func(p *turn.AgentPreset) { p.Streaming = true }},
 		{"builder", func(p *turn.AgentPreset) { p.Prompt = "other/builder" }},
-		{"workspace", func(p *turn.AgentPreset) { p.Workspace = "ws-1" }},
 		{"scheduling mode", func(p *turn.AgentPreset) { p.Scheduling.Mode = run.ToolScheduleSequential }},
 		{"scheduling bound", func(p *turn.AgentPreset) { p.Scheduling.MaxParallel = 2 }},
 		{"malformed retries", func(p *turn.AgentPreset) { p.MalformedRetries = 1 }},

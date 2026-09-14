@@ -67,8 +67,9 @@ type Config struct {
 	Executor ExecutorConfig
 	Presets  []Preset
 
-	Ownership session.OpenOptions
-	Warn      func(error)
+	Ownership      session.OpenOptions
+	TargetResolver loop.TargetResolver
+	Warn           func(error)
 }
 
 // Session and SessionOptions are the application-facing conversation facade
@@ -115,11 +116,12 @@ func Build(c Config) (*Application, error) {
 	}
 
 	h, err := host.New(host.Ports{
-		Store:     c.Store,
-		Content:   content,
-		Executor:  port,
-		Ownership: c.Ownership,
-		Warn:      c.Warn,
+		Store:          c.Store,
+		Content:        content,
+		Executor:       port,
+		TargetResolver: c.TargetResolver,
+		Ownership:      c.Ownership,
+		Warn:           c.Warn,
 	})
 	if err != nil {
 		return nil, err
@@ -267,7 +269,7 @@ func NewPresetFromDefinitions(model run.ModelRef, tools []turn.PublicTool, opts 
 // implementation.
 type PresetOption func(*turn.AgentPreset)
 
-// WithSystemPrompt sets the system prompt outside the preset digest.
+// WithSystemPrompt sets the instruction included in the preset digest.
 func WithSystemPrompt(s string) PresetOption {
 	return func(p *turn.AgentPreset) { p.SystemPrompt = s }
 }
@@ -290,9 +292,4 @@ func WithScheduling(s run.ToolScheduling) PresetOption {
 // WithMalformedRetries sets malformed model response retries.
 func WithMalformedRetries(n uint8) PresetOption {
 	return func(p *turn.AgentPreset) { p.MalformedRetries = n }
-}
-
-// WithWorkspace records the execution environment identity.
-func WithWorkspace(ref turn.WorkspaceRef) PresetOption {
-	return func(p *turn.AgentPreset) { p.Workspace = ref }
 }

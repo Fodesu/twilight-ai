@@ -14,6 +14,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -59,6 +60,9 @@ type Ports struct {
 	// Executor is the effect layer port (RUN-EXE-3): required. A colocated
 	// host passes NewLocalExecutor; a cloud host passes a remote client.
 	Executor loop.Executor
+	// TargetResolver supplies opaque per-Run resource targets. Workspace and
+	// runtime semantics remain outside Agent Core.
+	TargetResolver loop.TargetResolver
 	// Observers are notified of every group the Host's Writers apply
 	// (EXT-WRT-7); the Host's own event stream (Events) is one of them.
 	Observers []writer.CommitObserver
@@ -93,14 +97,16 @@ type Host struct {
 	Executor    loop.Executor
 	Decisions   *decision.PromptBuilders
 
-	registry *extension.Registry
-	frozen   run.FrozenValueStore
-	bus      *eventBus
-	now      func() time.Time
-	warn     func(error)
+	registry       *extension.Registry
+	frozen         run.FrozenValueStore
+	bus            *eventBus
+	now            func() time.Time
+	warn           func(error)
+	targetResolver loop.TargetResolver
 
-	mu    sync.Mutex
-	loops map[turn.PresetRef]*loop.Loop
+	mu       sync.Mutex
+	loops    map[turn.PresetRef]*loop.Loop
+	recovery map[session.SessionID]context.CancelFunc
 }
 
 // New composes a Host from its ports (HST-PRT-1).
@@ -169,7 +175,9 @@ func New(p Ports) (*Host, error) {
 	}
 	h := &Host{
 		Store: store, Writers: writers, Runtime: runtime, Presets: presets, Executor: p.Executor, Decisions: decisions,
-		registry: registry, frozen: frozen, bus: bus, now: now, warn: warn, loops: make(map[turn.PresetRef]*loop.Loop),
+		registry: registry, frozen: frozen, bus: bus, now: now, warn: warn,
+		targetResolver: p.TargetResolver, loops: make(map[turn.PresetRef]*loop.Loop),
+		recovery: make(map[session.SessionID]context.CancelFunc),
 	}
 	h.Coordinator = &turn.Coordinator{Writers: writers, Runtime: runtime, Now: now}
 	return h, nil
@@ -194,21 +202,20 @@ type PresetRegistry interface {
 	Resolve(turn.PresetRef) (turn.AgentPreset, error)
 }
 
-// ErrPresetUnavailable reports a PresetRef this process cannot resolve: not
-// registered, or registered with a different digest (HST-PST-2).
+// ErrPresetUnavailable reports a PresetRef this process cannot resolve
+// (HST-PST-2).
 var ErrPresetUnavailable = errors.New("host: profile_unavailable")
 
 // Presets is the in-memory PresetRegistry.
 type Presets struct {
-	mu   sync.RWMutex
-	byID map[turn.PresetID]turn.AgentPreset
+	mu    sync.RWMutex
+	byRef map[turn.PresetRef]turn.AgentPreset
 }
 
-func NewPresets() *Presets { return &Presets{byID: make(map[turn.PresetID]turn.AgentPreset)} }
+func NewPresets() *Presets { return &Presets{byRef: make(map[turn.PresetRef]turn.AgentPreset)} }
 
-// Register validates the AgentPreset (TRN-PST-2) and records it under id. A
-// re-registration replaces the AgentPreset; refs recorded under the previous
-// digest stop resolving.
+// Register validates and retains an immutable preset version (TRN-PST-2).
+// Re-registration under the same ID retains previous digest-addressed versions.
 func (r *Presets) Register(id turn.PresetID, p turn.AgentPreset) (turn.PresetRef, error) {
 	if id == "" {
 		return turn.PresetRef{}, errors.New("host: register requires a preset id")
@@ -220,17 +227,18 @@ func (r *Presets) Register(id turn.PresetID, p turn.AgentPreset) (turn.PresetRef
 	if err != nil {
 		return turn.PresetRef{}, err
 	}
+	ref := turn.PresetRef{ID: id, Digest: digest}
 	r.mu.Lock()
-	r.byID[id] = p
+	r.byRef[ref] = clonePreset(p)
 	r.mu.Unlock()
-	return turn.PresetRef{ID: id, Digest: digest}, nil
+	return ref, nil
 }
 
 // Resolve returns the AgentPreset when the ref's digest matches the registered
 // one (TRN-PST-2).
 func (r *Presets) Resolve(ref turn.PresetRef) (turn.AgentPreset, error) {
 	r.mu.RLock()
-	p, ok := r.byID[ref.ID]
+	p, ok := r.byRef[ref]
 	r.mu.RUnlock()
 	if !ok {
 		return turn.AgentPreset{}, fmt.Errorf("%w: unknown preset %s", ErrPresetUnavailable, ref.ID)
@@ -242,7 +250,18 @@ func (r *Presets) Resolve(ref turn.PresetRef) (turn.AgentPreset, error) {
 	if digest != ref.Digest {
 		return turn.AgentPreset{}, fmt.Errorf("%w: preset %s digest mismatch", ErrPresetUnavailable, ref.ID)
 	}
-	return p, nil
+	return clonePreset(p), nil
+}
+
+func clonePreset(p turn.AgentPreset) turn.AgentPreset {
+	p.Tools = slices.Clone(p.Tools)
+	for i := range p.Tools {
+		if cache := p.Tools[i].Definition.CacheControl; cache != nil {
+			copy := *cache
+			p.Tools[i].Definition.CacheControl = &copy
+		}
+	}
+	return p
 }
 
 // --- driving ---------------------------------------------------------------------
@@ -273,7 +292,7 @@ func (h *Host) loopFor(ref turn.PresetRef) (*loop.Loop, turn.AgentPreset, error)
 	l, err := loop.New(h.Executor, builder, loop.Settings{
 		Scheduling:       preset.Scheduling,
 		MalformedRetries: preset.MalformedRetries,
-		Workspace:        preset.Workspace,
+		TargetResolver:   h.targetResolver,
 	})
 	if err != nil {
 		return nil, turn.AgentPreset{}, err
@@ -327,9 +346,11 @@ func (h *Host) fail(sid session.SessionID, err error) {
 // reattachDeliver is the glue a takeover hands the Executor (RUN-CMT-7): an
 // Outcome of an attempt that survived the previous owner is settled through
 // the Loop of the Turn that owns its Run, and the Run is driven on from there.
-func (h *Host) reattachDeliver(sid session.SessionID) loop.Deliver {
+func (h *Host) reattachDeliver(ctx context.Context, sid session.SessionID) loop.Deliver {
 	return func(out loop.Outcome) {
-		ctx := context.Background()
+		if ctx.Err() != nil {
+			return
+		}
 		surface, err := h.TurnSurface(ctx, sid)
 		if err != nil {
 			h.fail(sid, fmt.Errorf("host: reattached outcome for run %s: %w", out.Key.RunID, err))
@@ -393,11 +414,39 @@ func (h *Host) Open(ctx context.Context, sid session.SessionID) (int, error) {
 	if _, err := h.Writers.Writer(ctx, sid); err != nil {
 		return 0, err
 	}
-	return h.Runtime.RecoverInterrupted(ctx, sid, loop.Reattach(h.Executor, sid, h.reattachDeliver(sid)))
+	lifetime, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	h.mu.Lock()
+	if previous := h.recovery[sid]; previous != nil {
+		previous()
+	}
+	h.recovery[sid] = cancel
+	h.mu.Unlock()
+	n, err := h.Runtime.RecoverInterrupted(ctx, sid, loop.Reattach(lifetime, h.Executor, sid, h.reattachDeliver(lifetime, sid)))
+	if err != nil {
+		cancel()
+	}
+	return n, err
 }
 
-// Close releases every Session this Host owns.
-func (h *Host) Close(ctx context.Context) error { return writer.CloseWriters(ctx, h.Writers) }
+func (h *Host) stopRecovery(sid session.SessionID) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if cancel := h.recovery[sid]; cancel != nil {
+		cancel()
+		delete(h.recovery, sid)
+	}
+}
+
+// Close stops recovery listeners and releases every Session this Host owns.
+func (h *Host) Close(ctx context.Context) error {
+	h.mu.Lock()
+	for sid, cancel := range h.recovery {
+		cancel()
+		delete(h.recovery, sid)
+	}
+	h.mu.Unlock()
+	return writer.CloseWriters(ctx, h.Writers)
+}
 
 // SubmitInput writes twilight/chatlog/input_submitted for one user text and
 // returns the AgentInput a Start or Deliver hands to the Turn (HST-INP-1).

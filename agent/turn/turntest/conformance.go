@@ -252,10 +252,10 @@ func testRetry(t *testing.T, factory Factory) {
 		t.Fatal(err)
 	}
 	// TRN-RTY-1: only an attempt_failed Turn may be retried.
-	if _, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t1")}); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: run1}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("retry of an active turn = %v, want conflict", err)
 	}
-	if _, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("nope")}); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("nope"), PreviousRunID: run1}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("retry of an unknown turn = %v, want conflict", err)
 	}
 	h.appCancel(run1)
@@ -267,10 +267,16 @@ func testRetry(t *testing.T, factory Factory) {
 		t.Fatalf("end = %T, want RunStoppedEnd", *st.End)
 	}
 	rowsBefore := len(h.rows())
+	for _, previous := range []run.RunID{"", "unrelated-run"} {
+		if _, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: previous}); !errors.Is(err, turn.ErrConflict) {
+			t.Fatalf("retry with previous run %q = %v, want conflict", previous, err)
+		}
+	}
 
 	// TRN-RTY-1/2: attempt n+1 under the derived CommitID, replaying every
 	// delivered input in InputIDs order with its original payload.
-	rresp, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t1"), Reason: "test"})
+	req := turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: run1, Reason: "test"}
+	rresp, err := h.c.Retry(h.ctx, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -301,10 +307,36 @@ func testRetry(t *testing.T, factory Factory) {
 	if _, err := h.rt.Record(h.ctx, sid, run1); err != nil {
 		t.Fatalf("failed attempt record: %v", err)
 	}
-	// The Turn is active again: another Retry is a conflict, and the guard is
-	// the status, so the same attempt number is never re-derived.
-	if _, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t1")}); !errors.Is(err, turn.ErrConflict) {
+	// Replaying the operation confirms the same attempt, even after it ends
+	// and another Turn has acquired the Session's active slot.
+	head := h.head()
+	if again, err := h.c.Retry(h.ctx, req); err != nil || again.RunID != run2 || h.head() != head {
+		t.Fatalf("active retry replay = %+v %v, moved=%v", again, err, h.head() != head)
+	}
+	if _, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: run2}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("retry of the retried turn = %v, want conflict", err)
+	}
+	h.appCancel(run2)
+	other := h.start("t2", "in-3")
+	head = h.head()
+	if again, err := h.c.Retry(h.ctx, req); err != nil || again.RunID != run2 || again.Attempt != 2 || h.head() != head {
+		t.Fatalf("ended retry replay = %+v %v, moved=%v", again, err, h.head() != head)
+	}
+	if _, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: run2}); !errors.Is(err, turn.ErrConflict) || h.head() != head {
+		t.Fatalf("retry with another active turn = %v, moved=%v", err, h.head() != head)
+	}
+	h.appCancel(other.RunID)
+	third, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: run2})
+	if err != nil || third.RunID != turn.DeriveRunID(sid, "t1", 3) || third.Attempt != 3 {
+		t.Fatalf("next explicit retry = %+v %v", third, err)
+	}
+	head = h.head()
+	if again, err := h.c.Retry(h.ctx, req); err != nil || again.RunID != run2 || again.Attempt != 2 || h.head() != head {
+		t.Fatalf("old retry replay after later attempt = %+v %v, moved=%v", again, err, h.head() != head)
+	}
+	h.takeover()
+	if again, err := h.c.Retry(h.ctx, req); err != nil || again.RunID != run2 || again.Attempt != 2 || h.head() != head {
+		t.Fatalf("retry replay after takeover = %+v %v, moved=%v", again, err, h.head() != head)
 	}
 }
 
@@ -339,8 +371,11 @@ func testStopAndSettle(t *testing.T, factory Factory) {
 	}
 	// A settled Turn admits nothing else (TRN-EVT-3).
 	for name, call := range map[string]func() error{
-		"stop":   func() error { _, err := h.c.Stop(h.ctx, turn.StopRequest{Ref: h.ref("t1")}); return err },
-		"retry":  func() error { _, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t1")}); return err },
+		"stop": func() error { _, err := h.c.Stop(h.ctx, turn.StopRequest{Ref: h.ref("t1")}); return err },
+		"retry": func() error {
+			_, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: resp.RunID})
+			return err
+		},
 		"settle": func() error { _, err := h.c.Settle(h.ctx, turn.SettleRequest{Ref: h.ref("t1")}); return err },
 		"deliver": func() error {
 			_, err := h.c.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("t1"), Inputs: h.submit("late")})
@@ -372,7 +407,7 @@ func testStopAndSettle(t *testing.T, factory Factory) {
 	if _, err := h.c.Settle(h.ctx, turn.SettleRequest{Ref: h.ref("t2")}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("second settle = %v, want conflict", err)
 	}
-	if _, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t2")}); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t2"), PreviousRunID: resp.RunID}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("retry after settle = %v, want conflict", err)
 	}
 
@@ -392,8 +427,11 @@ func testStopAndSettle(t *testing.T, factory Factory) {
 		t.Fatalf("end = %T", *st.End)
 	}
 	for name, call := range map[string]func() error{
-		"stop":   func() error { _, err := h.c.Stop(h.ctx, turn.StopRequest{Ref: h.ref("t3")}); return err },
-		"retry":  func() error { _, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t3")}); return err },
+		"stop": func() error { _, err := h.c.Stop(h.ctx, turn.StopRequest{Ref: h.ref("t3")}); return err },
+		"retry": func() error {
+			_, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t3"), PreviousRunID: resp.RunID})
+			return err
+		},
 		"settle": func() error { _, err := h.c.Settle(h.ctx, turn.SettleRequest{Ref: h.ref("t3")}); return err },
 	} {
 		if err := call(); !errors.Is(err, turn.ErrConflict) {

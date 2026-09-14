@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/felinics/twilight/agent/artifact"
@@ -38,6 +39,7 @@ type View interface {
 	// storage when the kernel handle does not hold them, so a caller that only
 	// needs the answer uses Committed.
 	LookupCommit(session.CommitID) ([]session.SessionEvent, bool, error)
+	// Projection returns a detached state that the caller owns.
 	Projection(extension.ProjectionID, extension.ProjectionVersion) (any, error)
 }
 
@@ -124,6 +126,11 @@ type WritersConfig struct {
 // DeriveClaimID is EXT-WRT-5.
 func DeriveClaimID(protocolVersion uint16, sid session.SessionID, commitID session.CommitID, refSet artifact.RefSetDigest) artifact.ClaimID {
 	raw, _ := es.EncodeTypedPayload(session.ProtocolVersion1, "twilight/session-extension/claim", []string{"1", fmt.Sprintf("%d", protocolVersion), string(sid), string(commitID), string(refSet)})
+	return artifact.ClaimID(es.DigestBytes(raw))
+}
+
+func nextClaimID(released artifact.ClaimID) artifact.ClaimID {
+	raw, _ := es.EncodeTypedPayload(session.ProtocolVersion1, "twilight/session-extension/claim-successor", []string{"1", string(released)})
 	return artifact.ClaimID(es.DigestBytes(raw))
 }
 
@@ -342,6 +349,9 @@ func (w *sessionWriter) OwnerExists(_ context.Context, owner artifact.ClaimOwner
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.lost != nil {
+		return false, w.lost
+	}
 	return w.kernel.Committed(session.CommitID(owner.Identity)), nil
 }
 
@@ -374,11 +384,17 @@ func (v view) LookupCommit(id session.CommitID) ([]session.SessionEvent, bool, e
 	return v.w.kernel.LookupCommit(id)
 }
 func (v view) Projection(id extension.ProjectionID, ver extension.ProjectionVersion) (any, error) {
-	state, ok := v.w.states[projectionKey{id, ver}]
+	k := projectionKey{id, ver}
+	state, ok := v.w.states[k]
 	if !ok {
 		return nil, &extension.Error{Code: extension.ErrInvalid, Detail: fmt.Sprintf("unknown projection %q v%d", id, ver)}
 	}
-	return state, nil
+	codec := v.w.scopes[k].Def.StateCodec
+	encoded, err := codec.Encode(state)
+	if err != nil {
+		return nil, err
+	}
+	return codec.Decode(encoded)
 }
 
 type memoryReader struct{ w *sessionWriter }
@@ -482,8 +498,8 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	}
 	sealed, err := w.kernel.Append(ctx, session.Group{CommitID: group.CommitID, Events: uncommitted})
 	if err != nil {
-		if claim != nil {
-			_ = w.admission.Ledger.ReleaseActive(ctx, claim.ID) // best effort; an orphan is reconciled later
+		if claim != nil && appendOutcomeKnown(err) {
+			_ = w.admission.Ledger.ReleaseActive(ctx, claim.ID) // best effort; OpenWriter reconciles any orphan
 		}
 		if session.IsCode(err, session.ErrOwnershipLost) {
 			w.lost = &extension.Error{Code: extension.ErrOwnershipLost, Detail: err.Error()}
@@ -495,6 +511,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 		if appendOutcomeKnown(err) {
 			return CommitResult{}, err // rejected before any write; the Writer's state still matches the log
 		}
+		// The claim stays active until reopening can verify the owner commit.
 		// Anything else leaves the log's content unknown to this Writer: its
 		// head and folded states may be one group behind what is on disk, and
 		// continuing would assign Seqs the kernel has already used. Fail
@@ -622,7 +639,25 @@ func (w *sessionWriter) claim(ctx context.Context, commitID session.CommitID, re
 		return nil, "", err
 	}
 	id := DeriveClaimID(w.registry.ProtocolVersion, w.sid, commitID, set.RefSetDigest)
-	claim, err := w.admission.Ledger.Activate(ctx, id, CommitOwner(w.sid, commitID), set)
+	owner := CommitOwner(w.sid, commitID)
+	for {
+		existing, ok, err := w.admission.Ledger.LookupClaim(ctx, id)
+		if err != nil {
+			return nil, "", err
+		}
+		if !ok {
+			break
+		}
+		if existing.ID != id || existing.Owner != owner || existing.BindingSet.RefSetDigest != set.RefSetDigest || !slices.Equal(existing.BindingSet.BindingIDs, set.BindingIDs) {
+			return nil, fmt.Sprintf("claim %s: owner or binding set conflicts", id), nil
+		}
+		if existing.State != artifact.ClaimReleased {
+			break
+		}
+		// Released claims remain terminal; a replay acquires a new retention root.
+		id = nextClaimID(id)
+	}
+	claim, err := w.admission.Ledger.Activate(ctx, id, owner, set)
 	if err != nil {
 		var aerr *artifact.Error
 		if errors.As(err, &aerr) {

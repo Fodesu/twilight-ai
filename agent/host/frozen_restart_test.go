@@ -144,6 +144,14 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 type reattachingExecutor struct {
 	recordingExecutor
 	attached []loop.AssignmentKey
+	reads    chan context.Context
+}
+
+func (e *reattachingExecutor) GetOutcome(ctx context.Context, key loop.AssignmentKey) (loop.Outcome, error) {
+	if e.reads != nil {
+		e.reads <- ctx
+	}
+	return e.recordingExecutor.GetOutcome(ctx, key)
 }
 
 func (e *reattachingExecutor) Attach(_ context.Context, key loop.AssignmentKey) (loop.Attachment, error) {
@@ -184,7 +192,7 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exec := &reattachingExecutor{recordingExecutor: recordingExecutor{reply: "reattached"}}
+	exec := &reattachingExecutor{recordingExecutor: recordingExecutor{reply: "reattached"}, reads: make(chan context.Context, 4)}
 	p2, err := host.New(host.Ports{Store: store2, Content: content2, Executor: exec, Ownership: session.OpenOptions{Takeover: true}})
 	if err != nil {
 		t.Fatal(err)
@@ -192,9 +200,21 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	if _, err := p2.Presets.Register("a1", preset); err != nil {
 		t.Fatal(err)
 	}
-	s2, err := p2.OpenSession(ctx, sid, host.SessionOptions{Preset: presetRef})
+	openCtx, cancelOpen := context.WithCancel(ctx)
+	defer cancelOpen()
+	s2, err := p2.OpenSession(openCtx, sid, host.SessionOptions{Preset: presetRef})
 	if err != nil {
 		t.Fatal(err)
+	}
+	cancelOpen()
+	var readCtx context.Context
+	select {
+	case readCtx = <-exec.reads:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reattach did not start outcome reading")
+	}
+	if err := readCtx.Err(); err != nil {
+		t.Fatalf("open request cancellation stopped recovery: %v", err)
 	}
 	if s2.Recovered != 0 {
 		t.Fatalf("recovered = %d, want 0 (the attempt was reattached, not disposed)", s2.Recovered)
@@ -252,10 +272,72 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 			t.Fatal("a reattached attempt must not be recovered")
 		}
 	}
+	if err := s2.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-readCtx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("session close left recovery lifetime active")
+	}
 
 	close(gate.release)
 	if err := <-sendErr; err == nil {
 		t.Fatal("the superseded process's Send settled without an ownership error")
+	}
+}
+
+func TestCloseStopsPendingRecoveryRead(t *testing.T) {
+	for _, scope := range []string{"host", "session"} {
+		t.Run(scope, func(t *testing.T) {
+			ctx := context.Background()
+			root := t.TempDir()
+			const sid session.SessionID = "close-recovery"
+			ref, preset, _, gate, sendErr := crashMidModel(t, root, sid)
+			t.Cleanup(func() {
+				close(gate.release)
+				<-sendErr
+			})
+			store, err := filestore.New(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			content, err := filestore.NewContentStore(root, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			exec := &reattachingExecutor{reads: make(chan context.Context, 4)}
+			h, err := host.New(host.Ports{Store: store, Content: content, Executor: exec, Ownership: session.OpenOptions{Takeover: true}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := h.Presets.Register("a1", preset); err != nil {
+				t.Fatal(err)
+			}
+			s, err := h.OpenSession(ctx, sid, host.SessionOptions{Preset: ref})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var readCtx context.Context
+			select {
+			case readCtx = <-exec.reads:
+			case <-time.After(2 * time.Second):
+				t.Fatal("recovery did not start reading")
+			}
+			if scope == "host" {
+				err = h.Close(ctx)
+			} else {
+				err = s.Close(ctx)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-readCtx.Done():
+			case <-time.After(2 * time.Second):
+				t.Fatal("close left a recovery read active")
+			}
+		})
 	}
 }
 

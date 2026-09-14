@@ -13,10 +13,6 @@ type (
 	// PromptBuilderRef names the decision component that builds the model
 	// prompt for a Turn (DEC-PMT). It is part of the preset digest.
 	PromptBuilderRef string
-	// WorkspaceRef names the execution environment a Turn's effects run in.
-	// The core does not interpret it; it is recorded so a takeover knows the
-	// environment the Turn was started in.
-	WorkspaceRef = run.WorkspaceRef
 )
 
 // PublicTool is one tool of an AgentPreset: its ref, frozen definition and
@@ -37,10 +33,8 @@ type AgentPreset struct {
 	Model         run.ModelRef `json:"model"`
 	Tools         []PublicTool `json:"tools,omitempty"`
 	Streaming     bool         `json:"streaming,omitempty"`
-	// Prompt names the decision component resolved on the authority side;
-	// Workspace is the environment identity handed to effect execution.
-	Prompt    PromptBuilderRef `json:"prompt"`
-	Workspace WorkspaceRef     `json:"workspace,omitempty"`
+	// Prompt names the decision component resolved on the authority side.
+	Prompt PromptBuilderRef `json:"prompt"`
 	// Scheduling is how the tool calls of one step run: parallel (default) or
 	// sequential, with an optional bound on concurrent workers. It is frozen
 	// onto each ToolStep (RUN-MCH).
@@ -48,8 +42,7 @@ type AgentPreset struct {
 	// MalformedRetries is how many times one model step is retried after a
 	// malformed result before the Run fails; zero fails on the first.
 	MalformedRetries uint8 `json:"malformedRetries,omitempty"`
-	// SystemPrompt tunes the conversation. It is outside the preset digest,
-	// so editing it never orphans a resumable Turn.
+	// SystemPrompt is the conversation instruction frozen by the preset digest.
 	SystemPrompt string `json:"systemPrompt,omitempty"`
 }
 
@@ -57,8 +50,8 @@ type AgentPreset struct {
 const PresetDigestDomain = "twilight/turn/preset"
 
 // DigestPreset covers the fields that change what the decision layer does
-// for a Turn: SchemaVersion, Model, Tools, Streaming, Prompt, Workspace,
-// Scheduling and MalformedRetries. SystemPrompt is excluded (TRN-PST-1).
+// for a Turn: SchemaVersion, Model, Tools, Streaming, Prompt, Scheduling and
+// MalformedRetries and SystemPrompt (TRN-PST-1).
 func DigestPreset(p *AgentPreset) (es.Digest, error) {
 	body := struct {
 		SchemaVersion    uint16             `json:"schemaVersion"`
@@ -66,10 +59,10 @@ func DigestPreset(p *AgentPreset) (es.Digest, error) {
 		Tools            []PublicTool       `json:"tools,omitempty"`
 		Streaming        bool               `json:"streaming,omitempty"`
 		Prompt           PromptBuilderRef   `json:"prompt"`
-		Workspace        WorkspaceRef       `json:"workspace,omitempty"`
 		Scheduling       run.ToolScheduling `json:"scheduling,omitempty"`
 		MalformedRetries uint8              `json:"malformedRetries,omitempty"`
-	}{p.SchemaVersion, p.Model, p.Tools, p.Streaming, p.Prompt, p.Workspace, p.Scheduling, p.MalformedRetries}
+		SystemPrompt     string             `json:"systemPrompt,omitempty"`
+	}{p.SchemaVersion, p.Model, p.Tools, p.Streaming, p.Prompt, p.Scheduling, p.MalformedRetries, p.SystemPrompt}
 	raw, err := es.EncodeTypedPayload(1, PresetDigestDomain, body)
 	if err != nil {
 		return "", err
@@ -79,7 +72,7 @@ func DigestPreset(p *AgentPreset) (es.Digest, error) {
 
 // ValidatePreset checks the identity fields a registry must refuse to record
 // without (TRN-PST-2): schema version, model and prompt builder, plus a
-// well-formed Scheduling. Workspace may be empty.
+// well-formed Scheduling.
 func ValidatePreset(p *AgentPreset) error {
 	switch {
 	case p.SchemaVersion == 0:

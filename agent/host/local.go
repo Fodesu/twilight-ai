@@ -115,11 +115,6 @@ func WithMalformedRetries(n uint8) PresetOption {
 	return func(p *turn.AgentPreset) { p.MalformedRetries = n }
 }
 
-// WithWorkspace records the execution environment identity in the AgentPreset.
-func WithWorkspace(ref turn.WorkspaceRef) PresetOption {
-	return func(p *turn.AgentPreset) { p.Workspace = ref }
-}
-
 // NewPreset builds the common one-model Preset: the tools' frozen
 // definitions and response policies enter it, their implementations do not.
 // The same tools are then served by the Executor's catalog.

@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
 )
@@ -17,7 +18,7 @@ import (
 type faultStore struct {
 	session.Store
 	mu   sync.Mutex
-	mode string // "", "before", "after"; consumed by the next Append
+	mode string // "", "before", "after", "invalid"; consumed by the next Append
 }
 
 func (f *faultStore) arm(mode string) {
@@ -53,6 +54,8 @@ func (h *faultHandle) Append(ctx context.Context, g session.Group) ([]session.Se
 	switch h.store.take() {
 	case "before":
 		return nil, errInjected
+	case "invalid":
+		return nil, &session.Error{Code: session.ErrInvalid, Operation: "append", Detail: "injected validation rejection"}
 	case "after":
 		if _, err := h.Handle.Append(ctx, g); err != nil {
 			return nil, err
@@ -60,6 +63,86 @@ func (h *faultHandle) Append(ctx context.Context, g session.Group) ([]session.Se
 		return nil, errInjected // durable, but the response is lost
 	}
 	return h.Handle.Append(ctx, g)
+}
+
+func TestWriterReconcilesClaimsAfterAppendFailure(t *testing.T) {
+	for _, tc := range []struct {
+		mode       string
+		beforeOpen artifact.ClaimState
+		afterOpen  artifact.ClaimState
+		committed  bool
+	}{
+		{"after", artifact.ClaimActive, artifact.ClaimActive, true},
+		{"before", artifact.ClaimActive, artifact.ClaimReleased, false},
+		{"invalid", artifact.ClaimReleased, artifact.ClaimReleased, false},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
+			ctx := context.Background()
+			f := newFixture(t)
+			binding, err := artifact.NewBinding("b1", artifact.Ref{Scheme: "spill", Authority: "local", Key: "k", Durability: artifact.EventBound})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.bindings.CreateBinding(ctx, binding); err != nil {
+				t.Fatal(err)
+			}
+			set, err := (artifact.SetBuilder{Resolver: f.bindings}).Build(ctx, []artifact.BindingID{binding.ID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			claimID := DeriveClaimID(session.ProtocolVersion1, "s", "c1", set.RefSetDigest)
+			fs := &faultStore{Store: f.store}
+			w, err := OpenWriter(ctx, fs, f.registry, f.admission(), "s", session.OpenOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			group := func(View) (*SemanticGroup, error) {
+				return &SemanticGroup{CommitID: "c1", Events: []TypedEvent{{Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}}}}, nil
+			}
+			assertClaim := func(want artifact.ClaimState) {
+				t.Helper()
+				claim, ok, err := f.ledger.LookupClaim(ctx, claimID)
+				if err != nil || !ok || claim.State != want {
+					t.Fatalf("claim = %+v, %v, %v; want %s", claim, ok, err, want)
+				}
+			}
+			fs.arm(tc.mode)
+			if _, err := w.Commit(ctx, group); err == nil {
+				t.Fatal("faulted append succeeded")
+			}
+			assertClaim(tc.beforeOpen)
+			if tc.mode != "invalid" {
+				if _, err := artifact.Reconcile(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ClaimOwnerKind, Authority: "s"}, w); !errors.Is(err, &extension.Error{Code: extension.ErrUnknownOutcome}) {
+					t.Fatalf("reconcile against failed writer = %v, want unknown_outcome", err)
+				}
+				assertClaim(artifact.ClaimActive)
+			}
+			if err := w.Close(ctx); err != nil {
+				t.Fatal(err)
+			}
+			w, err = OpenWriter(ctx, fs, f.registry, f.admission(), "s", session.OpenOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer w.Close(ctx)
+			assertClaim(tc.afterOpen)
+			if exists, err := w.OwnerExists(ctx, CommitOwner("s", "c1")); err != nil || exists != tc.committed {
+				t.Fatalf("owner exists = %v, %v; want %v", exists, err, tc.committed)
+			}
+			if tc.committed {
+				if res, err := w.Commit(ctx, group); err != nil || res.Outcome != CommitAlreadyApplied {
+					t.Fatalf("committed group replay = %+v, %v", res, err)
+				}
+				assertClaim(artifact.ClaimActive)
+			} else {
+				res, err := w.Commit(ctx, group)
+				if err != nil || res.Outcome != CommitApplied || res.Claim == nil || res.Claim.ID != nextClaimID(claimID) || res.Claim.State != artifact.ClaimActive {
+					t.Fatalf("unwritten group replay = %+v, %v", res, err)
+				}
+				assertClaim(artifact.ClaimReleased)
+			}
+		})
+	}
 }
 
 // EXT-WRT-4(b): an Append whose outcome is unknown fails the Writer closed. A
