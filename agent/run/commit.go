@@ -211,13 +211,22 @@ type RecoveryTarget struct {
 	Call   *ToolCallState // set for a tool target
 }
 
+// ReattachResult describes the recovery information returned by an executor.
+type ReattachResult string
+
+const (
+	ReattachMissing  ReattachResult = "missing"
+	ReattachActive   ReattachResult = "active"
+	ReattachDeferred ReattachResult = "deferred"
+	ReattachTerminal ReattachResult = "terminal"
+)
+
 // Reattacher answers, for one Executing target, whether the attempt named by
-// Target.Claim is still running under an executor the new owner can reach. A
-// true answer means the executor will deliver that attempt's Outcome to the
-// new owner, so the target is left Executing; false means the target is
-// disposed (RUN-CMT-7). A nil Reattacher answers false for everything.
+// Target.Claim is still running, durably exists but needs control-plane
+// takeover, or is absent. Only Missing is permission to dispose the target;
+// Deferred must remain Executing until reconciliation or explicit takeover.
 type Reattacher interface {
-	Attach(context.Context, RecoveryTarget) (bool, error)
+	Attach(context.Context, RecoveryTarget) (ReattachResult, error)
 }
 
 // RecoveryTargets lists the Executing targets of state in the order

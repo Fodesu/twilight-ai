@@ -410,7 +410,9 @@ func (l *Loop) awaitOutcome(ctx context.Context, key AssignmentKey, outcomes cha
 			return
 		}
 		if !errors.Is(err, ErrOutcomeNotReady) {
-			outcomes <- Outcome{Key: key, Err: err}
+			// The assignment was accepted before this read. A read/transport
+			// failure therefore cannot prove that the effect did not happen.
+			outcomes <- Outcome{Key: key, Err: err, Unknown: true}
 			return
 		}
 		timer := time.NewTimer(10 * time.Millisecond)

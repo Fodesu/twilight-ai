@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	run "github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/effect"
 
 	"github.com/felinics/twilight/sdk"
 )
@@ -140,6 +141,11 @@ func (l *Loop) startModelStep(ctx context.Context, runtime boundRuntime, events 
 	assignment.Model.Request = &request
 
 	if err := l.Executor.Dispatch(ctx, assignment); err != nil {
+		if errors.Is(err, effect.ErrDispatchUnknown) {
+			// The request may have crossed the external boundary. Leave the
+			// model Executing so recovery can Attach/Reconcile/Takeover it.
+			return nil, fmt.Errorf("agent: loop: model dispatch outcome: %w", err)
+		}
 		// Nothing was called: withdraw the step to Open under this attempt's
 		// recovery identity and surface the condition (RUN-LOP-3).
 		if _, serr := l.settle(context.WithoutCancel(ctx), runtime, events, a, start.Snapshot.Position,
@@ -168,6 +174,12 @@ func (l *Loop) modelCompletion(step *run.ModelStep, out Outcome) (run.AgentComma
 	stepID := step.RefValue.ID
 	recover := run.RecoverModelExecution{StepID: stepID, Claim: out.Key.Claim}
 	switch {
+	case out.Unknown:
+		message := "model execution outcome is unknown"
+		if out.Err != nil {
+			message = out.Err.Error()
+		}
+		return run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureEffectUnknown, Message: message}}, nil
 	case out.Err != nil && errors.Is(out.Err, run.ErrFrozenValueMissing):
 		return recover, fmt.Errorf("agent: loop: model dispatch: %w", out.Err)
 	case out.Err != nil && errors.Is(out.Err, errMalformedFrozenRequest):

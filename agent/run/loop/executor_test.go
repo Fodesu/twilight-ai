@@ -38,7 +38,7 @@ func (e *recordingExecutor) Dispatch(_ context.Context, a Assignment) error {
 	return nil
 }
 
-func (e *recordingExecutor) Attach(_ context.Context, key AssignmentKey) (bool, error) {
+func (e *recordingExecutor) Attach(_ context.Context, key AssignmentKey) (Attachment, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for _, a := range e.dispatched {
@@ -47,7 +47,10 @@ func (e *recordingExecutor) Attach(_ context.Context, key AssignmentKey) (bool, 
 			break
 		}
 	}
-	return e.attachReply, nil
+	if e.attachReply {
+		return Attachment{State: AttachmentActive, Execution: ExecutionRunning, BackendAttached: true}, nil
+	}
+	return Attachment{State: AttachmentMissing, Execution: ExecutionNotFound}, nil
 }
 
 func (e *recordingExecutor) GetStatus(context.Context, AssignmentKey) (ExecutionStatus, error) {
@@ -308,8 +311,8 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 		t.Fatalf("idempotent duplicate dispatch = %v", dup)
 	}
 	attached, err := exec.Attach(context.Background(), a.Key())
-	if err != nil || !attached {
-		t.Fatalf("attach running = %v %v", attached, err)
+	if err != nil || attached.State != AttachmentActive {
+		t.Fatalf("attach running = %+v %v", attached, err)
 	}
 	if err := exec.Cancel(context.Background(), a.Key()); err != nil {
 		t.Fatal(err)
@@ -324,8 +327,8 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 	if _, unknown := out.Tool.(ToolExecutionUnknown); !unknown {
 		t.Fatalf("cancelled tool outcome = %T", out.Tool)
 	}
-	if attached, _ := exec.Attach(context.Background(), a.Key()); !attached {
-		t.Fatal("attach after completion must still find the retained record")
+	if attached, _ := exec.Attach(context.Background(), a.Key()); attached.State != AttachmentTerminal {
+		t.Fatalf("attach after completion = %+v; want terminal", attached)
 	}
 	if exec.InFlight() != 0 {
 		t.Fatalf("in-flight = %d after completion", exec.InFlight())

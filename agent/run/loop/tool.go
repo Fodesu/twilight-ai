@@ -2,9 +2,11 @@ package loop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	run "github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/effect"
 )
 
 func toolCallIndex(step run.ToolStep, callID run.CallID) int {
@@ -105,6 +107,12 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime boundRuntime, events 
 		assignment := probe
 		assignment.Claim = a.claim
 		if err := l.Executor.Dispatch(ctx, assignment); err != nil {
+			if errors.Is(err, effect.ErrDispatchUnknown) {
+				// The request may have crossed the external boundary. Keep the
+				// call Executing for explicit recovery rather than claiming a
+				// known failure or dispatching a duplicate.
+				return dispatched, fmt.Errorf("agent: loop: tool dispatch outcome: %w", err)
+			}
 			// The effect never started: settle the attempt as a Known execution
 			// failure so the call does not stay Executing.
 			failure := run.ToolFailure{Class: run.FailureExecution, Message: "dispatch: " + err.Error()}

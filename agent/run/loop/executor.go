@@ -28,6 +28,7 @@ type Assignment = effect.Assignment
 type Outcome = effect.Outcome
 
 type ExecutionStatus = effect.ExecutionStatus
+type Attachment = effect.Attachment
 
 type Executor = effect.Port
 
@@ -42,11 +43,17 @@ const (
 	ExecutionFailed          = effect.ExecutionFailed
 	ExecutionCancelled       = effect.ExecutionCancelled
 	ExecutionUnknown         = effect.ExecutionUnknown
+
+	AttachmentMissing  = effect.AttachmentMissing
+	AttachmentActive   = effect.AttachmentActive
+	AttachmentOrphaned = effect.AttachmentOrphaned
+	AttachmentTerminal = effect.AttachmentTerminal
 )
 
 var (
 	ErrExecutionNotFound = effect.ErrExecutionNotFound
 	ErrOutcomeNotReady   = effect.ErrOutcomeNotReady
+	ErrDispatchUnknown   = effect.ErrDispatchUnknown
 )
 
 // Deliver is an authority-local outcome sink. It is intentionally not part of
@@ -100,23 +107,35 @@ type reattacher struct {
 	deliver Deliver
 }
 
-func (r reattacher) Attach(ctx context.Context, t run.RecoveryTarget) (bool, error) {
+func (r reattacher) Attach(ctx context.Context, t run.RecoveryTarget) (run.ReattachResult, error) {
 	if r.exec == nil || r.deliver == nil {
-		return false, nil
+		return run.ReattachMissing, nil
 	}
 	a := AssignmentFromTarget(r.sid, t)
-	attached, err := r.exec.Attach(ctx, a.Key())
-	if err != nil || !attached {
-		return attached, err
+	attachment, err := r.exec.Attach(ctx, a.Key())
+	if err != nil {
+		return run.ReattachMissing, err
 	}
-	go func() {
-		out, err := r.exec.GetOutcome(context.Background(), a.Key())
-		if err != nil {
-			out = Outcome{Key: a.Key(), Err: err}
+	switch attachment.State {
+	case effect.AttachmentActive, effect.AttachmentTerminal:
+		go func() {
+			out, err := r.exec.GetOutcome(context.Background(), a.Key())
+			if err != nil {
+				out = Outcome{Key: a.Key(), Err: err, Unknown: true}
+			}
+			r.deliver(out)
+		}()
+		if attachment.State == effect.AttachmentTerminal {
+			return run.ReattachTerminal, nil
 		}
-		r.deliver(out)
-	}()
-	return true, nil
+		return run.ReattachActive, nil
+	case effect.AttachmentOrphaned:
+		return run.ReattachDeferred, nil
+	case effect.AttachmentMissing:
+		return run.ReattachMissing, nil
+	default:
+		return run.ReattachMissing, fmt.Errorf("agent: loop: unknown attachment state %q", attachment.State)
+	}
 }
 
 // --- LocalExecutor ------------------------------------------------------------
@@ -334,11 +353,20 @@ func (e *LocalExecutor) Dispatch(ctx context.Context, a Assignment) error {
 
 // Attach answers for attempts this process still runs or has completed. It
 // only observes an existing record and never starts a second effect.
-func (e *LocalExecutor) Attach(_ context.Context, key AssignmentKey) (bool, error) {
+func (e *LocalExecutor) Attach(_ context.Context, key AssignmentKey) (effect.Attachment, error) {
 	e.mu.Lock()
-	_, ok := e.inflight[key]
+	entry, ok := e.inflight[key]
+	if !ok {
+		e.mu.Unlock()
+		return effect.Attachment{State: effect.AttachmentMissing, Execution: effect.ExecutionNotFound}, nil
+	}
+	closed := entry.closed
+	out := entry.outcome
 	e.mu.Unlock()
-	return ok, nil
+	if !closed {
+		return effect.Attachment{State: effect.AttachmentActive, Execution: effect.ExecutionRunning, BackendAttached: true}, nil
+	}
+	return effect.Attachment{State: effect.AttachmentTerminal, Execution: localStatus(out), BackendAttached: true}, nil
 }
 
 // GetStatus returns the current process-scoped execution status.
@@ -355,16 +383,23 @@ func (e *LocalExecutor) GetStatus(_ context.Context, key AssignmentKey) (Executi
 	if !closed {
 		return ExecutionRunning, nil
 	}
+	return localStatus(out), nil
+}
+
+func localStatus(out Outcome) ExecutionStatus {
+	if out.Unknown {
+		return ExecutionUnknown
+	}
 	if out.Cancelled {
-		return ExecutionCancelled, nil
+		return ExecutionCancelled
 	}
 	if _, unknown := out.Tool.(ToolExecutionUnknown); unknown {
-		return ExecutionUnknown, nil
+		return ExecutionUnknown
 	}
 	if out.Err != nil {
-		return ExecutionFailed, nil
+		return ExecutionFailed
 	}
-	return ExecutionCompleted, nil
+	return ExecutionCompleted
 }
 
 // GetOutcome waits for and returns the stable outcome of an accepted

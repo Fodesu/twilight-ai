@@ -556,9 +556,12 @@ type selectiveReattacher struct {
 	asked []run.RecoveryTarget
 }
 
-func (r *selectiveReattacher) Attach(_ context.Context, t run.RecoveryTarget) (bool, error) {
+func (r *selectiveReattacher) Attach(_ context.Context, t run.RecoveryTarget) (run.ReattachResult, error) {
 	r.asked = append(r.asked, t)
-	return r.live[t.Claim], nil
+	if r.live[t.Claim] {
+		return run.ReattachActive, nil
+	}
+	return run.ReattachMissing, nil
 }
 
 // RUN-CMT-7 with a reachable executor: a target whose attempt the executor

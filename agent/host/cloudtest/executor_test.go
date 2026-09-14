@@ -187,18 +187,18 @@ func (s *executorServer) routes(mux *http.ServeMux) {
 		}
 		key := req.Key
 		s.addCallback(key, req.Callback)
-		attached, err := s.exec.Attach(context.Background(), key)
+		attachment, err := s.exec.Attach(context.Background(), key)
 		if err != nil {
 			s.dropCallback(key, req.Callback)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		if !attached {
+		if attachment.State != loop.AttachmentActive && attachment.State != loop.AttachmentTerminal {
 			s.dropCallback(key, req.Callback)
 		} else {
 			go s.watch(key)
 		}
-		writeJSON(w, http.StatusOK, map[string]bool{"attached": attached})
+		writeJSON(w, http.StatusOK, attachment)
 	})
 	mux.HandleFunc("/cancel", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {

@@ -43,8 +43,8 @@ func (e *recordingExecutor) Dispatch(_ context.Context, a loop.Assignment) error
 	return nil
 }
 
-func (e *recordingExecutor) Attach(context.Context, loop.AssignmentKey) (bool, error) {
-	return false, nil
+func (e *recordingExecutor) Attach(context.Context, loop.AssignmentKey) (loop.Attachment, error) {
+	return loop.Attachment{State: loop.AttachmentMissing, Execution: loop.ExecutionNotFound}, nil
 }
 
 func (e *recordingExecutor) GetStatus(context.Context, loop.AssignmentKey) (loop.ExecutionStatus, error) {

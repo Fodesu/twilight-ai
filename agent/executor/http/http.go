@@ -43,17 +43,22 @@ func (c *Client) Validate(ctx context.Context, a effect.Assignment) (*run.ToolFa
 }
 
 func (c *Client) Dispatch(ctx context.Context, a effect.Assignment) error {
-	return c.post(ctx, "/dispatch", makeAssignmentRequest(a), nil)
+	err := c.post(ctx, "/dispatch", makeAssignmentRequest(a), nil)
+	var responseErr *responseError
+	if err == nil || errors.As(err, &responseErr) || errors.Is(err, context.Canceled) {
+		return err
+	}
+	// A transport failure does not tell the authority whether the server
+	// accepted the assignment. Preserve the executing target for recovery.
+	return fmt.Errorf("%w: %v", effect.ErrDispatchUnknown, err)
 }
 
-func (c *Client) Attach(ctx context.Context, key effect.AssignmentKey) (bool, error) {
-	var response struct {
-		Attached bool `json:"attached"`
-	}
+func (c *Client) Attach(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
+	var response effect.Attachment
 	if err := c.post(ctx, "/attach", keyRequest{Key: key}, &response); err != nil {
-		return false, err
+		return effect.Attachment{}, err
 	}
-	return response.Attached, nil
+	return response, nil
 }
 
 func (c *Client) GetStatus(ctx context.Context, key effect.AssignmentKey) (effect.ExecutionStatus, error) {
@@ -104,10 +109,7 @@ func (c *Client) post(ctx context.Context, path string, in, out any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		message, _ := io.ReadAll(resp.Body)
-		if len(message) == 0 {
-			message = []byte(resp.Status)
-		}
-		return fmt.Errorf("executor/http: %s: %s", resp.Status, strings.TrimSpace(string(message)))
+		return &responseError{status: resp.Status, body: strings.TrimSpace(string(message))}
 	}
 	if out == nil {
 		return nil
@@ -119,6 +121,18 @@ func (c *Client) post(ctx context.Context, path string, in, out any) error {
 // add authentication, TLS, routing and callback notifications around this
 // handler; none of those are part of the Agent Core protocol.
 type Server struct{ Worker *executor.Worker }
+
+type responseError struct {
+	status string
+	body   string
+}
+
+func (e *responseError) Error() string {
+	if e.body == "" {
+		return "executor/http: " + e.status
+	}
+	return "executor/http: " + e.status + ": " + e.body
+}
 
 type assignmentRequest struct {
 	ProtocolVersion  uint16            `json:"protocolVersion"`
@@ -201,14 +215,12 @@ func (s *Server) attach(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	if !readJSON(w, r, &req) {
 		return
 	}
-	attached, err := s.Worker.Attach(r.Context(), req.Key)
+	attachment, err := s.Worker.Attach(r.Context(), req.Key)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, stdhttp.StatusOK, struct {
-		Attached bool `json:"attached"`
-	}{attached})
+	writeJSON(w, stdhttp.StatusOK, attachment)
 }
 
 func (s *Server) status(w stdhttp.ResponseWriter, r *stdhttp.Request) {

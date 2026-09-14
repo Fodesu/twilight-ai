@@ -12,9 +12,8 @@ import (
 )
 
 // errExecutorUnreachable is what the authority observes for every in-flight
-// assignment once the executor stops answering: the Loop settles a tool as
-// Unknown (the effect may have happened) and a model call as a provider
-// failure, which is the classification RUN-EXE-2 asks for.
+// assignment once the executor stops answering. The Loop treats this as an
+// unknown effect boundary rather than a provider rejection.
 var errExecutorUnreachable = errors.New("executor unreachable")
 
 // remoteExecutor is the authority-side loop.Executor over HTTP. The callback
@@ -71,20 +70,18 @@ func (r *remoteExecutor) Dispatch(_ context.Context, a loop.Assignment) error {
 	return postJSON(r.client, r.base+"/dispatch", dispatchRequest{Assignment: a, Callback: r.callback}, nil)
 }
 
-func (r *remoteExecutor) Attach(_ context.Context, key loop.AssignmentKey) (bool, error) {
+func (r *remoteExecutor) Attach(_ context.Context, key loop.AssignmentKey) (loop.Attachment, error) {
 	r.register(key)
-	var resp struct {
-		Attached bool `json:"attached"`
+	var attachment loop.Attachment
+	if err := postJSON(r.client, r.base+"/attach", attachRequest{Key: key, Callback: r.callback}, &attachment); err != nil {
+		return loop.Attachment{}, err
 	}
-	if err := postJSON(r.client, r.base+"/attach", attachRequest{Key: key, Callback: r.callback}, &resp); err != nil {
-		return false, err
-	}
-	if !resp.Attached {
+	if attachment.State != loop.AttachmentActive && attachment.State != loop.AttachmentTerminal {
 		r.mu.Lock()
 		delete(r.pending, key)
 		r.mu.Unlock()
 	}
-	return resp.Attached, nil
+	return attachment, nil
 }
 
 func (r *remoteExecutor) GetStatus(_ context.Context, key loop.AssignmentKey) (loop.ExecutionStatus, error) {

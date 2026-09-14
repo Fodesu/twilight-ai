@@ -22,7 +22,7 @@ const (
 	ReasonCancelled       RunReason = "cancelled"
 	ReasonProviderFailure RunReason = "provider_failure"
 	ReasonMalformedModel  RunReason = "malformed_model_result"
-	// ReasonEffectUnknown is unused as a RunEnded reason. Unknown tool
+	// Unknown model outcomes end the Run with this reason; unknown tool
 	// outcomes use FailureEffectUnknown on ToolCallFailed and leave the Run
 	// active.
 	ReasonEffectUnknown RunReason = "effect_unknown"

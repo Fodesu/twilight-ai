@@ -41,10 +41,13 @@ func (b *testBackend) Dispatch(_ context.Context, a effect.Assignment) error {
 	go func() { ch <- effect.Outcome{Key: a.Key(), Model: &sdk.ModelResult{Text: "ok"}} }()
 	return nil
 }
-func (b *testBackend) Attach(_ context.Context, key effect.AssignmentKey) (bool, error) {
+func (b *testBackend) Attach(_ context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.outcomes[key] != nil, nil
+	if b.outcomes[key] == nil {
+		return effect.Attachment{State: effect.AttachmentMissing, Execution: effect.ExecutionNotFound}, nil
+	}
+	return effect.Attachment{State: effect.AttachmentActive, Execution: effect.ExecutionRunning, BackendAttached: true}, nil
 }
 func (b *testBackend) GetStatus(_ context.Context, key effect.AssignmentKey) (effect.ExecutionStatus, error) {
 	b.mu.Lock()
@@ -183,8 +186,12 @@ func TestWorkerReclaimsExpiredAssignment(t *testing.T) {
 	if _, created, err := records.Create(ctx, store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionAccepted}); err != nil || !created {
 		t.Fatalf("create = %v, created=%v", err, created)
 	}
-	if _, acquired, err := records.Acquire(ctx, a.Key(), "worker-a", time.Second); err != nil || !acquired {
-		t.Fatalf("initial acquire = %v, acquired=%v", err, acquired)
+	claimed, acquired, err := records.Acquire(ctx, a.Key(), "worker-a", time.Second)
+	if err != nil || !acquired {
+		t.Fatalf("initial acquire = %+v, acquired=%v", claimed, acquired)
+	}
+	if err := records.TransitionOwned(ctx, a.Key(), "worker-a", claimed.FencingEpoch, effect.ExecutionAccepted, effect.ExecutionDispatching); err != nil {
+		t.Fatalf("mark dispatching = %v", err)
 	}
 	backend := newTestBackend()
 	worker, err := executor.NewWorker(ctx, records, backend, executor.WorkerOptions{

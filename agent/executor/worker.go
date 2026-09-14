@@ -107,7 +107,13 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 		return nil
 	}
 	if !created && old.Owner == w.id && old.FencingEpoch != 0 {
-		return nil
+		owned, err := w.store.LeaseOwned(ctx, key, w.id, old.FencingEpoch)
+		if err != nil {
+			return err
+		}
+		if owned {
+			return nil
+		}
 	}
 	return w.acquireAndStart(ctx, key)
 }
@@ -148,27 +154,29 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 	if claimed.State == effect.ExecutionCancelRequested {
 		leaseDone := make(chan struct{})
 		go w.heartbeat(key, claimed.FencingEpoch, leaseDone)
-		attached, attachErr := w.backend.Attach(ctx, key)
+		attachment, attachErr := w.backend.Attach(ctx, key)
 		if attachErr != nil {
 			close(leaseDone)
 			return attachErr
 		}
-		if !attached {
-			env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest,
+		if attachment.State != effect.AttachmentActive && attachment.State != effect.AttachmentTerminal {
+			env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest, Unknown: true,
 				Error: &protocol.WireError{Code: "cancel_reconciliation_unknown", Message: "cancelled execution is no longer attached"}}
 			_ = w.finishOwned(ctx, key, claimed.FencingEpoch, env, effect.ExecutionUnknown, nil)
 			close(leaseDone)
 			return nil
 		}
-		_ = w.backend.Cancel(ctx, key)
+		cancelErr := w.backend.Cancel(ctx, key)
 		go w.watch(key, digest, claimed.FencingEpoch, leaseDone)
-		return nil
+		return cancelErr
 	}
-	if err := w.store.TransitionOwned(ctx, key, w.id, claimed.FencingEpoch, claimed.State, effect.ExecutionDispatching); err != nil {
-		if errors.Is(err, executionstore.ErrLeaseLost) || errors.Is(err, executionstore.ErrStateConflict) {
-			return nil
+	if claimed.State != effect.ExecutionDispatching {
+		if err := w.store.TransitionOwned(ctx, key, w.id, claimed.FencingEpoch, claimed.State, effect.ExecutionDispatching); err != nil {
+			if errors.Is(err, executionstore.ErrLeaseLost) || errors.Is(err, executionstore.ErrStateConflict) {
+				return nil
+			}
+			return err
 		}
-		return err
 	}
 	leaseDone := make(chan struct{})
 	go w.heartbeat(key, claimed.FencingEpoch, leaseDone)
@@ -192,7 +200,10 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64, done chan struct{}) {
 	out, err := w.backend.GetOutcome(context.Background(), key)
 	if err != nil {
-		out = effect.Outcome{Key: key, Err: err}
+		// GetOutcome failure is a lifecycle/transport failure after dispatch,
+		// not evidence that the provider rejected the request. Persist Unknown
+		// so the authority can reconcile or explicitly dispose the attempt.
+		out = effect.Outcome{Key: key, Err: err, Unknown: true}
 	}
 	env := protocol.EncodeOutcome(out, digest)
 	state := protocol.StatusForOutcome(out)
@@ -251,33 +262,43 @@ func (w *Worker) finishOwned(ctx context.Context, key effect.AssignmentKey, epoc
 	return dispatchErr
 }
 
-func (w *Worker) Attach(ctx context.Context, key effect.AssignmentKey) (bool, error) {
+func (w *Worker) Attach(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
 	r, ok, err := w.store.Get(ctx, key)
 	if err != nil {
-		return false, err
+		return effect.Attachment{}, err
 	}
 	if !ok {
-		return false, nil
+		return effect.Attachment{State: effect.AttachmentMissing, Execution: effect.ExecutionNotFound}, nil
 	}
-	// An Unknown model must be disposed by the authority's recovery policy,
-	// not reported as a provider error.
-	if r.State == effect.ExecutionUnknown && r.Assignment.Kind == effect.AssignmentModel {
-		return false, nil
-	}
+	attachment := effect.Attachment{Execution: r.State, Owner: r.Owner, FencingEpoch: r.FencingEpoch, LeaseUntilUnixMilli: r.LeaseUntilUnixMilli}
 	if protocol.StatusTerminal(r.State) {
-		return true, nil
+		attachment.State = effect.AttachmentTerminal
+		attachment.BackendAttached = false
+		return attachment, nil
 	}
 	if r.Owner != w.id || r.FencingEpoch == 0 {
-		return false, nil
+		attachment.State = effect.AttachmentOrphaned
+		return attachment, nil
 	}
 	owned, err := w.store.LeaseOwned(ctx, key, w.id, r.FencingEpoch)
 	if err != nil {
-		return false, err
+		return effect.Attachment{}, err
 	}
 	if !owned {
-		return false, nil
+		attachment.State = effect.AttachmentOrphaned
+		return attachment, nil
 	}
-	return w.backend.Attach(ctx, key)
+	backendAttachment, err := w.backend.Attach(ctx, key)
+	if err != nil {
+		return effect.Attachment{}, err
+	}
+	attachment.BackendAttached = backendAttachment.State == effect.AttachmentActive || backendAttachment.State == effect.AttachmentTerminal
+	if attachment.BackendAttached {
+		attachment.State = effect.AttachmentActive
+	} else {
+		attachment.State = effect.AttachmentOrphaned
+	}
+	return attachment, nil
 }
 
 func (w *Worker) GetStatus(ctx context.Context, key effect.AssignmentKey) (effect.ExecutionStatus, error) {
@@ -400,11 +421,11 @@ func (w *Worker) recover(ctx context.Context) error {
 		if !owned {
 			continue
 		}
-		attached, attachErr := w.backend.Attach(ctx, r.Assignment.Key())
+		attachment, attachErr := w.backend.Attach(ctx, r.Assignment.Key())
 		if attachErr != nil {
 			return attachErr
 		}
-		if attached {
+		if attachment.State == effect.AttachmentActive || attachment.State == effect.AttachmentTerminal {
 			done := make(chan struct{})
 			go w.heartbeat(r.Assignment.Key(), r.FencingEpoch, done)
 			go w.watch(r.Assignment.Key(), r.AssignmentDigest, r.FencingEpoch, done)

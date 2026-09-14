@@ -426,7 +426,7 @@ FrozenValueStore 的 `Put` 幂等且内容寻址，在进入 Writer 之前完成
 
 **RUN-CMT-6** Run 语义提交的 ownership fencing。Runtime 不签发 per-effect grant，也不校验 Worker 的 operational lease；同一进程内同一 Run 至多一个 Loop 在驱动（第 7 节的 driver slot）。Executing 目标的 settlement 必须通过 Session Writer；跨进程的迟到语义写入由 kernel 的 Epoch fencing 拒绝（SES-OWN-2）。Writer 返回 `ErrOwnershipLost` 时 Runtime 原样返回该错误，Loop 必须取消全部 worker、放弃 settlement 并以该错误返回（RUN-LOP-5）。Executor Worker 的 owner/epoch 由 Execution Store 独立校验。
 
-**RUN-CMT-7** 接管处置。处置只恢复同一 Run：不创建 attempt、不结束 Run；对工具 call 的 Unknown 结算是该 call 的终态事实，协议在任何路径上都不据此自动重新执行（TRN-DUR-1、TRN-DUR-4）。新 owner 取得 Writer 后，在驱动任何 Run 之前调用一次 `RecoverInterrupted(sid, reattach)`。对投影中每个 Executing 目标（`RecoveryTargets`：模型步或 tool call，连同其 start 事实记录的 Claim），Executor/control plane 可以先使用同一 AssignmentKey 对 durable Execution Record 做 Attach、Reconcile 或显式 Takeover；若同一 attempt 被接管，Run 仍保持 Executing，结果以原 Claim 结算——这是重连同一次执行，不是新的 Run attempt。只有执行记录不存在、无法关联或 control plane 明确放弃时，才由 `RecoverInterrupted` 处置：Executing ModelStep 提交 `RecoverModelExecution{Claim: TakeoverClaim}`，回到 `Open` 并按恢复时刻重新规划；Executing tool call 提交 `SubmitToolFailure{Outcome: Unknown}`。Pending call 不处置，Waiting call 不处置。每个处置是一次普通 Commit，Run 保持 Active，同一 RunID 继续。`TakeoverClaim` 由 Writer 的 Epoch 派生，因此同一 owner 重复调用幂等（同 CommandID 得到 AlreadyApplied）。
+**RUN-CMT-7** 接管处置。处置只恢复同一 Run：不创建 attempt、不结束 Run；对工具 call 的 Unknown 结算是该 call 的终态事实，协议在任何路径上都不据此自动重新执行（TRN-DUR-1、TRN-DUR-4）。新 owner 取得 Writer 后，在驱动任何 Run 之前调用一次 `RecoverInterrupted(sid, reattach)`。对投影中每个 Executing 目标（`RecoveryTargets`：模型步或 tool call，连同其 start 事实记录的 Claim），Executor/control plane 可以先使用同一 AssignmentKey 对 durable Execution Record 做 Attach、Reconcile 或显式 Takeover；Attach 返回 `orphaned` 时表示记录存在但当前没有可关联 backend，不能当作 `missing`，Run 必须保持 Executing，直到 control plane 显式 takeover/reconcile/dispose。若同一 attempt 被接管，Run 仍保持 Executing，结果以原 Claim 结算——这是重连同一次执行，不是新的 Run attempt。只有执行记录不存在或 control plane 明确放弃时，才由 `RecoverInterrupted` 处置：Executing ModelStep 提交 `RecoverModelExecution{Claim: TakeoverClaim}`，回到 `Open` 并按恢复时刻重新规划；Executing tool call 提交 `SubmitToolFailure{Outcome: Unknown}`。Pending call 不处置，Waiting call 不处置。每个处置是一次普通 Commit，Run 保持 Active，同一 RunID 继续。`TakeoverClaim` 由 Writer 的 Epoch 派生，因此同一 owner 重复调用幂等（同 CommandID 得到 AlreadyApplied）。
 
 **RUN-CMT-8** 每个 Run 的协议版本是 `created.SchemaVersion`，创建时冻结。`RuntimeSnapshot.SchemaVersion` 等于该值；`ProtocolFor(schemaVersion)` 返回绑定该版本 digest/codec/Decide/Evolve 的 `Protocol`。`EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Run 的版本。新 Run 由 `NewRun.SchemaVersion` 决定版本；同一 Session 内不同 Run 可以使用不同版本；v1 Run 的 replay 必须继续使用 `ProtocolV1()`。pre-release 期间 v1 的 Evolve 语义可以修订，早期二进制写下的流不保证在修订后的 v1 下可折叠；发布冻结后，任何 Evolve 变化必须以新的 SchemaVersion 发布，已发布版本的 Decide、Evolve 与 codec 永久保留。Run 的版本与 Session kernel 的 `ProtocolVersion` 无关（SES-VER-1）。
 
@@ -482,11 +482,17 @@ type Assignment struct {
     Schema uint16 // Run 的协议版本
     Kind AssignmentKind; Model *ModelAssignment; Tool *ToolAssignment
 }
-type Outcome struct { Key AssignmentKey; Model *sdk.ModelResult; Tool ToolExecutionOutcome; Err error; Cancelled bool }
+type Outcome struct { Key AssignmentKey; Model *sdk.ModelResult; Tool ToolExecutionOutcome; Err error; Cancelled bool; Unknown bool }
+type Attachment struct {
+    State AttachmentState // missing | active | orphaned | terminal
+    Execution ExecutionStatus
+    Owner string; FencingEpoch uint64; LeaseUntilUnixMilli int64
+    BackendAttached bool
+}
 type Executor interface {
     Validate(context.Context, Assignment) (*run.ToolFailure, error) // start barrier 前的无副作用校验
     Dispatch(context.Context, Assignment) error                    // 接受后通过 GetOutcome 读取结果
-    Attach(context.Context, AssignmentKey) (bool, error)           // 询问该 attempt 是否仍可关联
+    Attach(context.Context, AssignmentKey) (Attachment, error)     // 区分 active、orphaned、terminal、missing
     GetStatus(context.Context, AssignmentKey) (ExecutionStatus, error)
     GetOutcome(context.Context, AssignmentKey) (Outcome, error)
     Cancel(context.Context, AssignmentKey) error
@@ -494,14 +500,15 @@ type Executor interface {
 type WorkerOptions struct { ID string; LeaseDuration time.Duration }
 func (*Worker) Takeover(context.Context, AssignmentKey) error // control plane 在确认可接管后调用
 func NewLocalExecutor(models ModelCatalog, tools ToolCatalog, frozen FrozenRequestReader, sink EventSink, streaming bool) (*LocalExecutor, error)
+type ReattachResult string // missing | active | deferred | terminal
 func Reattach(exec Executor, sid session.SessionID, deliver Deliver) run.Reattacher
 ```
 
 **RUN-EXE-1（Assignment）** Assignment 是 authority 交给 Executor 的工作单元：目标（RunID、StepID、CallID）、attempt 身份（Claim）、Run 的协议版本，以及执行所需的冻结输入。模型 Assignment 携带 `ModelRequest` 与 `RequestDigest`；Executor 接受后必须将该 payload 写入自己的 durable Execution Record，不能依赖 Authority Session 或某个 Worker 的本地存储。工具 Assignment 携带冻结 binding 的全部字段与 AgentPreset 的 `WorkspaceRef`。`Key()` 是 attempt 的身份，也是其结算 CommandID 的 preimage（第 2 节 identity 表）。
 
-**RUN-EXE-2（Outcome）** Outcome 是 Executor 对一个 Assignment 的唯一回答：模型 Assignment 得到 `Model` 或 `Err`，工具 Assignment 得到 sealed 的 `Tool`；`Cancelled` 表示 Executor 按要求停止了该效果。Outcome 通过 `GetOutcome` 按 key 读取，也可以由 deployment 层通过通知唤醒读取方；每个被接受的 Assignment 最终至多提交一个 authoritative Outcome。
+**RUN-EXE-2（Outcome）** Outcome 是 Executor 对一个 Assignment 的唯一回答：模型 Assignment 得到 `Model` 或 `Err`，工具 Assignment 得到 sealed 的 `Tool`；`Cancelled` 表示 Executor 按要求停止了该效果；`Unknown` 表示 effect 已跨过 invocation boundary 但 Executor 无法确认 terminal provider outcome，不能当作 Dispatch rejection 或普通 provider failure。Outcome 通过 `GetOutcome` 按 key 读取，也可以由 deployment 层通过通知唤醒读取方；每个被接受的 Assignment 最终至多提交一个 authoritative Outcome。
 
-**RUN-EXE-3（Dispatch 与 Attach）** `Dispatch` 接受 Assignment 后立即返回，返回 error 表示效果未开始。接受时 Executor 必须持久化完整 Assignment payload；之后 Worker 可在 crash/restart 后从 Execution Record 恢复。`Attach` 按 AssignmentKey 查询现有 execution record；`GetStatus` 与 `GetOutcome` 不读取 Session。对已失效 owner 的 takeover 由 control plane 决定，Worker 以新的 fencing epoch 获取同一个 AssignmentKey。`Cancel` 针对一个 Assignment；Run 级批量取消由上层枚举 targets。`LocalExecutor` 可以继续是进程内的轻量实现；durable Worker 则使用共享 Execution Store。
+**RUN-EXE-3（Dispatch 与 Attach）** `Dispatch` 接受 Assignment 后立即返回，只有在 effect 尚未跨过 invocation boundary 且 acceptance 失败时才返回 error；网络超时或响应丢失不能证明未执行。接受时 Executor 必须先持久化完整 Assignment payload，再进入 `Dispatching`，然后才调用 backend；`Accepted` 表示确定尚未开始，`Dispatching` 表示可能已经开始，`Running` 表示 backend 已接受。之后 Worker 可在 crash/restart 后从 Execution Record 恢复。`Attach` 按 AssignmentKey 返回 `active`、`orphaned`、`terminal` 或 `missing`：只有 `missing` 才允许 Authority 自动 dispose；`orphaned` 必须由 control plane reconcile、takeover 或明确处置。`GetStatus` 与 `GetOutcome` 不读取 Session。对已失效 owner 的 takeover 由 control plane 决定，Worker 以新的 fencing epoch 获取同一个 AssignmentKey。`Cancel` 针对一个 Assignment；Run 级批量取消由上层枚举 targets。`LocalExecutor` 可以继续是进程内的轻量实现；durable Worker 则使用共享 Execution Store。
 
 **RUN-EXE-4（Outcome 的结算）** `Loop.Deliver` 以 `Outcome.Key` 在投影中定位 Executing 的目标：同一 step 或 call、同一 Claim。找到则以该 Claim 派生的结算 CommandID 提交 Submit*（模型：结果、provider 失败、畸形结果的 Reject、取消或本体缺失的 Recover；工具：按 sealed outcome 映射，无 outcome 或传输错误记 Unknown）；找不到——attempt 已被结算或处置、Run 已终结、Claim 不符——则丢弃，不写任何事实（`LoopDropped`）。结算使用独立 control context（RUN-LOP-5）。
 

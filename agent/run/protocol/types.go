@@ -48,6 +48,7 @@ type OutcomeEnvelope struct {
 	Tool             *ToolOutcomeEnvelope `json:"tool,omitempty"`
 	Error            *WireError           `json:"error,omitempty"`
 	Cancelled        bool                 `json:"cancelled,omitempty"`
+	Unknown          bool                 `json:"unknown,omitempty"`
 }
 
 func (a AssignmentEnvelope) Digest() (run.Digest, error) {
@@ -60,7 +61,7 @@ func (o OutcomeEnvelope) Digest() (run.Digest, error) {
 
 func EncodeOutcome(out effect.Outcome, assignmentDigest run.Digest) OutcomeEnvelope {
 	w := OutcomeEnvelope{ProtocolVersion: ProtocolVersion, Key: out.Key, AssignmentDigest: assignmentDigest,
-		Model: out.Model, Cancelled: out.Cancelled}
+		Model: out.Model, Cancelled: out.Cancelled, Unknown: out.Unknown}
 	if out.Err != nil {
 		code := "executor_error"
 		switch {
@@ -88,7 +89,7 @@ func EncodeOutcome(out effect.Outcome, assignmentDigest run.Digest) OutcomeEnvel
 }
 
 func DecodeOutcome(w OutcomeEnvelope) effect.Outcome {
-	out := effect.Outcome{Key: w.Key, Model: w.Model, Cancelled: w.Cancelled}
+	out := effect.Outcome{Key: w.Key, Model: w.Model, Cancelled: w.Cancelled, Unknown: w.Unknown}
 	if w.Error != nil {
 		switch w.Error.Code {
 		case "frozen_value_missing":
@@ -139,6 +140,9 @@ func StatusTerminal(s effect.ExecutionStatus) bool {
 }
 
 func StatusForOutcome(out effect.Outcome) effect.ExecutionStatus {
+	if out.Unknown {
+		return effect.ExecutionUnknown
+	}
 	if out.Cancelled {
 		return effect.ExecutionCancelled
 	}

@@ -146,7 +146,7 @@ type reattachingExecutor struct {
 	attached []loop.AssignmentKey
 }
 
-func (e *reattachingExecutor) Attach(_ context.Context, key loop.AssignmentKey) (bool, error) {
+func (e *reattachingExecutor) Attach(_ context.Context, key loop.AssignmentKey) (loop.Attachment, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.attached = append(e.attached, key)
@@ -156,7 +156,7 @@ func (e *reattachingExecutor) Attach(_ context.Context, key loop.AssignmentKey) 
 	if e.outcomes[key] == nil {
 		e.outcomes[key] = make(chan loop.Outcome, 1)
 	}
-	return true, nil
+	return loop.Attachment{State: loop.AttachmentActive, Execution: loop.ExecutionRunning, BackendAttached: true}, nil
 }
 
 func (e *reattachingExecutor) complete(key loop.AssignmentKey, out loop.Outcome) {

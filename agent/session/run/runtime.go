@@ -453,8 +453,14 @@ func (r *Runtime) RecoverInterrupted(ctx context.Context, sid session.SessionID,
 				if err != nil {
 					return n, err
 				}
-				if attached {
-					continue // the attempt is still running; its Outcome settles it
+				switch attached {
+				case run.ReattachActive, run.ReattachTerminal, run.ReattachDeferred:
+					// Active/terminal delivery is already arranged; deferred means
+					// a durable record exists but control-plane takeover is still
+					// required. Neither case proves the effect was absent.
+					continue
+				case run.ReattachMissing:
+					// Only a missing durable record permits disposal below.
 				}
 			}
 			rec := run.RecoveryCommand(target, claim)

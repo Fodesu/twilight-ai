@@ -367,8 +367,12 @@ func decideSubmitModelFailure(s *MachineState, cmd SubmitModelFailure) ([]Fact, 
 	if cmd.Failure.Class == "" {
 		return nil, rejectionf("model failure: empty failure class")
 	}
+	reason := ReasonProviderFailure
+	if cmd.Failure.Class == FailureEffectUnknown {
+		reason = ReasonEffectUnknown
+	}
 	return []Fact{RunEnded{End: RunFailedEnd{
-		Reason:  ReasonProviderFailure,
+		Reason:  reason,
 		Failure: RunFailure{Class: cmd.Failure.Class, Message: cmd.Failure.Message},
 	}}}, nil
 }

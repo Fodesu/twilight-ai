@@ -75,6 +75,10 @@ type Outcome struct {
 	Tool      ToolExecutionOutcome
 	Err       error
 	Cancelled bool
+	// Unknown means the assignment crossed the effect boundary but the
+	// executor could not establish a terminal provider outcome. It must not
+	// be interpreted as a dispatch rejection or an ordinary provider failure.
+	Unknown bool
 }
 
 // ToolExecutionOutcome is sealed: succeeded, failed-known, or unknown.
@@ -111,14 +115,41 @@ const (
 var (
 	ErrExecutionNotFound = errors.New("agent: effect: execution not found")
 	ErrOutcomeNotReady   = errors.New("agent: effect: outcome not ready")
+	// ErrDispatchUnknown means the dispatch response was lost after the
+	// request may have crossed the effect boundary. It must not trigger a
+	// compensating re-dispatch or a RecoverModelExecution automatically.
+	ErrDispatchUnknown = errors.New("agent: effect: dispatch outcome unknown")
 )
+
+// AttachmentState describes what an executor found for an AssignmentKey.
+type AttachmentState string
+
+const (
+	AttachmentMissing  AttachmentState = "missing"
+	AttachmentActive   AttachmentState = "active"
+	AttachmentOrphaned AttachmentState = "orphaned"
+	AttachmentTerminal AttachmentState = "terminal"
+)
+
+// Attachment is the result of an attach/inspection request. Orphaned means a
+// durable execution record exists, but this Worker does not currently own a
+// live backend execution. The control plane must decide whether to reconcile,
+// take over, or dispose it; it must not treat it as proof of no effect.
+type Attachment struct {
+	State               AttachmentState `json:"state"`
+	Execution           ExecutionStatus `json:"execution"`
+	Owner               string          `json:"owner,omitempty"`
+	FencingEpoch        uint64          `json:"fencingEpoch,omitempty"`
+	LeaseUntilUnixMilli int64           `json:"leaseUntilUnixMilli,omitempty"`
+	BackendAttached     bool            `json:"backendAttached,omitempty"`
+}
 
 // Port is the Agent Core effect port. It is intentionally message-shaped:
 // none of its methods accepts a process-local callback.
 type Port interface {
 	Validate(context.Context, Assignment) (*run.ToolFailure, error)
 	Dispatch(context.Context, Assignment) error
-	Attach(context.Context, AssignmentKey) (bool, error)
+	Attach(context.Context, AssignmentKey) (Attachment, error)
 	GetStatus(context.Context, AssignmentKey) (ExecutionStatus, error)
 	GetOutcome(context.Context, AssignmentKey) (Outcome, error)
 	Cancel(context.Context, AssignmentKey) error
