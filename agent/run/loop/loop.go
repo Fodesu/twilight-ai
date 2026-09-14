@@ -61,6 +61,24 @@ func (l *Loop) toolScheduling() run.ToolScheduling {
 	return s
 }
 
+func (l *Loop) targetFor(ctx context.Context, sid session.SessionID, runID run.RunID) (*run.TargetRef, error) {
+	if l.Settings.TargetResolver == nil {
+		return nil, nil
+	}
+	target, err := l.Settings.TargetResolver.ResolveTarget(ctx, sid, runID)
+	if err != nil {
+		return nil, err
+	}
+	if target == nil {
+		return nil, nil
+	}
+	if target.Kind == "" || target.ID == "" {
+		return nil, errors.New("agent: loop: target resolver returned an incomplete target")
+	}
+	copy := *target
+	return &copy, nil
+}
+
 func (l *Loop) slot(runID run.RunID) *runSlot {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -319,10 +337,12 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 	runtime := boundRuntime{rt: rt, sid: sid}
 	s := l.slot(runID)
 
-	outcomes := make(chan Outcome, 64)
+	outcomes := make(chan outcomeRead, 64)
 	pending := map[AssignmentKey]struct{}{}
 	cancelled := false
 	settleCtx := context.WithoutCancel(ctx)
+	readCtx, stopReads := context.WithCancel(settleCtx)
+	defer stopReads()
 
 	// onOwnershipLost stops every in-flight effect: their Outcomes are not ours
 	// to write any more (RUN-LOP-5). The cancelled effects still report, so the
@@ -333,8 +353,8 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 			_ = l.Executor.Cancel(settleCtx, key)
 		}
 		for len(pending) > 0 {
-			out := <-outcomes
-			delete(pending, out.Key)
+			read := <-outcomes
+			delete(pending, read.key)
 		}
 		return LoopResult{}, err
 	}
@@ -358,16 +378,16 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 			}
 			for _, k := range res.Dispatched {
 				pending[k] = struct{}{}
-				go l.awaitOutcome(settleCtx, k, outcomes)
+				go l.awaitOutcome(readCtx, k, outcomes)
 			}
 		}
 
-		var out Outcome
+		var read outcomeRead
 		if cancelled {
-			out = <-outcomes
+			read = <-outcomes
 		} else {
 			select {
-			case out = <-outcomes:
+			case read = <-outcomes:
 			case <-ctx.Done():
 				// Stop what we started; each cancelled effect still reports an
 				// Outcome, settled below under the detached context.
@@ -378,13 +398,16 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 				continue
 			}
 		}
-		if _, ours := pending[out.Key]; !ours {
+		if _, ours := pending[read.key]; !ours {
 			continue // an Outcome of an attempt this drive did not dispatch
 		}
-		delete(pending, out.Key)
+		if read.err != nil {
+			return LoopResult{}, fmt.Errorf("agent: loop: read outcome: %w", read.err)
+		}
+		delete(pending, read.key)
 
 		s.step.Lock()
-		res, err := l.deliver(settleCtx, runtime, out, events)
+		res, err := l.deliver(settleCtx, runtime, read.outcome, events)
 		s.step.Unlock()
 		if err != nil {
 			if ownershipLost(err) {
@@ -398,21 +421,23 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 	}
 }
 
-// awaitOutcome is the Loop's outcome pump. It retrieves a message by key
-// rather than handing a callback into the Executor. A transport may implement
-// GetOutcome as a long poll; a non-blocking implementation can report
-// ErrOutcomeNotReady and retry here.
-func (l *Loop) awaitOutcome(ctx context.Context, key AssignmentKey, outcomes chan<- Outcome) {
+type outcomeRead struct {
+	key     AssignmentKey
+	outcome Outcome
+	err     error
+}
+
+// awaitOutcome is the Loop's outcome pump. It retrieves a message by key.
+// A transport may long poll or report ErrOutcomeNotReady; other read errors
+// return to the driver while the accepted execution remains unsettled.
+func (l *Loop) awaitOutcome(ctx context.Context, key AssignmentKey, outcomes chan<- outcomeRead) {
 	for {
 		out, err := l.Executor.GetOutcome(ctx, key)
-		if err == nil {
-			outcomes <- out
-			return
-		}
 		if !errors.Is(err, ErrOutcomeNotReady) {
-			// The assignment was accepted before this read. A read/transport
-			// failure therefore cannot prove that the effect did not happen.
-			outcomes <- Outcome{Key: key, Err: err, Unknown: true}
+			select {
+			case outcomes <- outcomeRead{key: key, outcome: out, err: err}:
+			case <-ctx.Done():
+			}
 			return
 		}
 		timer := time.NewTimer(10 * time.Millisecond)
@@ -422,7 +447,6 @@ func (l *Loop) awaitOutcome(ctx context.Context, key AssignmentKey, outcomes cha
 			if !timer.Stop() {
 				<-timer.C
 			}
-			outcomes <- Outcome{Key: key, Err: ctx.Err()}
 			return
 		}
 	}

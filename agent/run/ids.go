@@ -22,9 +22,13 @@ type InputID string
 type ToolRef string
 type ModelRef string
 
-// WorkspaceRef names the execution environment a Turn's effects run in. Run
-// carries it to the executor and does not interpret it (TRN-PST-1).
-type WorkspaceRef string
+// TargetRef is an opaque resource identity an Effect may operate on. Agent
+// Core preserves it for execution routing but never interprets its Kind or
+// lifecycle; optional domains such as Workspace define those semantics.
+type TargetRef struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+}
 
 // Digest is "sha256:<64 lowercase hex>" over canonical protocol bytes.
 // It remains an alias while Run protocol types live in this package.

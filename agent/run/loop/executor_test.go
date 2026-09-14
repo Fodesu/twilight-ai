@@ -8,6 +8,7 @@ import (
 	"time"
 
 	. "github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -97,6 +98,29 @@ func (e *recordingExecutor) deliver(t *testing.T, key AssignmentKey, out Outcome
 	ch <- out
 }
 
+type fixedTargetResolver struct{ target TargetRef }
+
+func (r fixedTargetResolver) ResolveTarget(context.Context, session.SessionID, RunID) (*TargetRef, error) {
+	target := r.target
+	return &target, nil
+}
+
+func TestAdvanceCopiesOpaqueTargetIntoAssignment(t *testing.T) {
+	rt := loopRuntime(t)
+	exec := newRecordingExecutor()
+	l, err := New(exec, staticBuilder{}, Settings{TargetResolver: fixedTargetResolver{target: TargetRef{Kind: "workspace", ID: "ws-1"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Advance(context.Background(), rt, testSession, "run-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	assignment := exec.last()
+	if assignment.Target == nil || *assignment.Target != (TargetRef{Kind: "workspace", ID: "ws-1"}) {
+		t.Fatalf("target = %+v", assignment.Target)
+	}
+}
+
 // Advance records the start barrier and hands the model call to the executor
 // without waiting for it; Deliver settles the Outcome and the next Advance
 // finishes the Run (RUN-EXE-3/4).
@@ -132,6 +156,133 @@ func TestAdvanceDispatchesAndDeliverSettles(t *testing.T) {
 	delivered, err := l.Deliver(ctx, rt, testSession, Outcome{Key: a.Key(), Model: &result}, nil)
 	if err != nil || delivered.Disposition != LoopFinished || delivered.Result == nil || delivered.Result.Status != RunCompleted {
 		t.Fatalf("deliver = %+v %v", delivered, err)
+	}
+}
+
+type failingOutcomeReader struct {
+	*recordingExecutor
+	readErr error
+	failed  chan struct{}
+	ready   chan struct{}
+	once    sync.Once
+}
+
+func (e *failingOutcomeReader) GetOutcome(ctx context.Context, key AssignmentKey) (Outcome, error) {
+	select {
+	case <-e.ready:
+		return e.recordingExecutor.GetOutcome(ctx, key)
+	default:
+		e.once.Do(func() { close(e.failed) })
+		return Outcome{}, e.readErr
+	}
+}
+
+func TestRunOutcomeReadErrorPreservesExecutingStep(t *testing.T) {
+	rt := loopRuntime(t)
+	exec := &failingOutcomeReader{recordingExecutor: newRecordingExecutor(), readErr: errors.New("temporary transport error"), failed: make(chan struct{}), ready: make(chan struct{})}
+	l, err := New(exec, staticBuilder{}, Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Run(context.Background(), rt, testSession, "run-1", nil); !errors.Is(err, exec.readErr) {
+		t.Fatalf("Run error = %v, want read failure", err)
+	}
+	snapshot := loadState(t, rt, "run-1")
+	step, ok := snapshot.State.Current.(ModelStep)
+	if !ok || step.Status != ModelExecuting || snapshot.State.Status != RunActive {
+		t.Fatalf("read error changed Run: %+v", snapshot.State)
+	}
+	result := textResult("eventual result")
+	if _, err := l.Deliver(context.Background(), rt, testSession, Outcome{Key: exec.last().Key(), Model: &result}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := loadState(t, rt, "run-1").State.Status; got != RunCompleted {
+		t.Fatalf("Run status after actual outcome = %v", got)
+	}
+}
+
+func TestReattachRetriesOutcomeReadErrors(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	exec := &failingOutcomeReader{recordingExecutor: newRecordingExecutor(), readErr: errors.New("temporary transport error"), failed: make(chan struct{}), ready: make(chan struct{})}
+	exec.attachReply = true
+	a := Assignment{Session: testSession, RunID: "run-1", StepID: "step-1", Claim: "claim-1"}
+	if err := exec.Dispatch(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	delivered := make(chan Outcome, 1)
+	reattach := Reattach(ctx, exec, testSession, func(out Outcome) { delivered <- out })
+	handshake, cancelHandshake := context.WithCancel(ctx)
+	defer cancelHandshake()
+	status, err := reattach.Attach(handshake, RecoveryTarget{RunID: a.RunID, StepID: a.StepID, Claim: a.Claim})
+	if err != nil || status != ReattachActive {
+		t.Fatalf("reattach = %v, %v", status, err)
+	}
+	select {
+	case <-exec.failed:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	cancelHandshake()
+	select {
+	case out := <-delivered:
+		t.Fatalf("read failure fabricated outcome: %+v", out)
+	default:
+	}
+	result := textResult("eventual result")
+	exec.deliver(t, a.Key(), Outcome{Model: &result})
+	close(exec.ready)
+	select {
+	case out := <-delivered:
+		if out.Unknown || out.Err != nil || out.Model == nil || out.Model.Text != result.Text {
+			t.Fatalf("reattached outcome = %+v", out)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+}
+
+type lifetimeOutcomeReader struct {
+	*recordingExecutor
+	started chan struct{}
+	stopped chan struct{}
+}
+
+func (e *lifetimeOutcomeReader) GetOutcome(ctx context.Context, _ AssignmentKey) (Outcome, error) {
+	close(e.started)
+	<-ctx.Done()
+	close(e.stopped)
+	return Outcome{}, ctx.Err()
+}
+
+func TestReattachLifetimeStopsOutcomeWatcher(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	lifetime, stop := context.WithCancel(ctx)
+	defer stop()
+	exec := &lifetimeOutcomeReader{recordingExecutor: newRecordingExecutor(), started: make(chan struct{}), stopped: make(chan struct{})}
+	exec.attachReply = true
+	delivered := make(chan Outcome, 1)
+	reattach := Reattach(lifetime, exec, testSession, func(out Outcome) { delivered <- out })
+	status, err := reattach.Attach(ctx, RecoveryTarget{RunID: "run-1", StepID: "step-1", Claim: "claim-1"})
+	if err != nil || status != ReattachActive {
+		t.Fatalf("reattach = %v, %v", status, err)
+	}
+	select {
+	case <-exec.started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	stop()
+	select {
+	case <-exec.stopped:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	select {
+	case out := <-delivered:
+		t.Fatalf("cancelled watcher fabricated outcome: %+v", out)
+	default:
 	}
 }
 
@@ -202,14 +353,14 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 	var reattached []Outcome
 	var mu sync.Mutex
 	deliverToNew := func(out Outcome) {
-		mu.Lock()
-		reattached = append(reattached, out)
-		mu.Unlock()
 		if _, err := newLoop.Deliver(ctx, stack.runtime, testSession, out, nil); err != nil {
 			t.Errorf("reattached deliver: %v", err)
 		}
+		mu.Lock()
+		reattached = append(reattached, out)
+		mu.Unlock()
 	}
-	n, err := stack.runtime.RecoverInterrupted(ctx, testSession, Reattach(exec, testSession, deliverToNew))
+	n, err := stack.runtime.RecoverInterrupted(ctx, testSession, Reattach(ctx, exec, testSession, deliverToNew))
 	if err != nil || n != 0 {
 		t.Fatalf("RecoverInterrupted with a reachable executor = %d %v, want 0 dispositions", n, err)
 	}
@@ -264,7 +415,7 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 	}
 	a := exec.last()
 	stack.open(t)
-	n, err := stack.runtime.RecoverInterrupted(ctx, testSession, Reattach(exec, testSession, func(Outcome) {}))
+	n, err := stack.runtime.RecoverInterrupted(ctx, testSession, Reattach(ctx, exec, testSession, func(Outcome) {}))
 	if err != nil || n != 1 || len(exec.attached) != 1 {
 		t.Fatalf("RecoverInterrupted = %d %v attached=%d, want one disposition after one refused attach", n, err, len(exec.attached))
 	}
@@ -288,8 +439,10 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 func TestLocalExecutorAttachAndCancel(t *testing.T) {
 	rt := loopRuntime(t)
 	block := make(chan struct{})
+	seenTarget := make(chan *TargetRef, 1)
 	tool := &fakeTool{ref: "echo", def: toolDef("echo"), policy: DirectExecution,
 		execute: func(ctx context.Context, req ToolExecutionRequest) ToolExecutionOutcome {
+			seenTarget <- req.Target
 			select {
 			case <-ctx.Done():
 				return ToolExecutionUnknown{Failure: ToolFailure{Class: FailureEffectUnknown, Message: ctx.Err().Error()}}
@@ -302,10 +455,19 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec := toolSpec(t, "echo", DirectExecution)
-	a := Assignment{Session: testSession, RunID: "run-1", StepID: "step-1", CallID: "call-1", Claim: "claim-1", Schema: SchemaVersion1,
+	target := TargetRef{Kind: "workspace", ID: "ws-1"}
+	a := Assignment{Session: testSession, RunID: "run-1", StepID: "step-1", CallID: "call-1", Claim: "claim-1", Target: &target, Schema: SchemaVersion1,
 		Kind: AssignmentTool, Tool: &ToolAssignment{ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest, Arguments: cj(`{}`), Policy: DirectExecution}}
 	if err := exec.Dispatch(context.Background(), a); err != nil {
 		t.Fatal(err)
+	}
+	select {
+	case got := <-seenTarget:
+		if got == nil || *got != target {
+			t.Fatalf("tool target = %+v, want %+v", got, target)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("tool did not receive target")
 	}
 	if dup := exec.Dispatch(context.Background(), a); dup != nil {
 		t.Fatalf("idempotent duplicate dispatch = %v", dup)

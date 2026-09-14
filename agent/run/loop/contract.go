@@ -36,16 +36,20 @@ type Prompt struct {
 	Tools    []run.ToolSpec
 }
 
+// TargetResolver supplies an opaque target for a Run. It belongs to the
+// application/resource layer; Loop only copies the reference into an
+// Assignment and never interprets it.
+type TargetResolver interface {
+	ResolveTarget(context.Context, session.SessionID, run.RunID) (*run.TargetRef, error)
+}
+
 // Settings are the execution parameters the Loop takes from the AgentPreset
 // (RUN-LOP-1). Scheduling is frozen onto each ToolStep; MalformedRetries
 // bounds the retries of one model step after malformed results.
 type Settings struct {
 	Scheduling       run.ToolScheduling
 	MalformedRetries uint8
-	// Workspace is the logical execution environment selected by the
-	// AgentPreset. The Loop only transports it into ToolAssignment; executors
-	// resolve it to a concrete sandbox/runtime.
-	Workspace run.WorkspaceRef
+	TargetResolver   TargetResolver
 }
 
 // ModelCatalog resolves a frozen run.ModelRef into an invoker at execution time;
@@ -79,10 +83,10 @@ type ToolExecutionRequest struct {
 	ToolRef          run.ToolRef
 	DefinitionDigest run.Digest
 	Arguments        run.CanonicalJSON
-	// Workspace is the execution environment of the Turn's AgentPreset, passed
-	// through for the tool; the Loop does not interpret it.
-	Workspace run.WorkspaceRef
-	Progress  ToolProgressSink
+	// Target is an opaque resource reference supplied by the application; the
+	// Loop does not interpret it.
+	Target   *run.TargetRef
+	Progress ToolProgressSink
 }
 
 // ExecutableTool is the application-side execution contract (RUN-LOP-1).

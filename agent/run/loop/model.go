@@ -99,8 +99,12 @@ func (l *Loop) startModelStep(ctx context.Context, runtime boundRuntime, events 
 	if !ok || prepared.RefValue.ID != stepID {
 		return nil, fmt.Errorf("agent: loop: model step %q is not current", stepID)
 	}
+	target, err := l.targetFor(ctx, runtime.sid, runID)
+	if err != nil {
+		return nil, err
+	}
 	a := newAttempt(runID, stepID, "")
-	assignment := Assignment{Session: runtime.sid, RunID: runID, StepID: stepID, Claim: a.claim, Schema: snapshot.SchemaVersion,
+	assignment := Assignment{Session: runtime.sid, RunID: runID, StepID: stepID, Claim: a.claim, Target: target, Schema: snapshot.SchemaVersion,
 		Kind: AssignmentModel, Model: &ModelAssignment{Model: prepared.Model, RequestDigest: prepared.RequestDigest}}
 	// Pre-start check (RUN-EXE-5): an executor that cannot serve the model
 	// fails here, with the step still Prepared and no start or recovery fact.

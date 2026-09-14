@@ -34,6 +34,10 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime boundRuntime, events 
 	if !ok || ts.RefValue.ID != eff.StepID {
 		return nil, fmt.Errorf("agent: loop: tool step %q is not current", eff.StepID)
 	}
+	target, err := l.targetFor(ctx, runtime.sid, runID)
+	if err != nil {
+		return nil, err
+	}
 
 	limit := len(eff.CallIDs)
 	if ts.Scheduling.Mode == run.ToolScheduleSequential {
@@ -62,8 +66,8 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime boundRuntime, events 
 			// owner's takeover disposition; never re-run (TRN-DUR-4).
 			continue
 		}
-		binding := &ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy, Workspace: l.Settings.Workspace}
-		probe := Assignment{Session: runtime.sid, RunID: runID, StepID: eff.StepID, CallID: callID, Schema: snapshot.SchemaVersion, Kind: AssignmentTool, Tool: binding}
+		binding := &ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy}
+		probe := Assignment{Session: runtime.sid, RunID: runID, StepID: eff.StepID, CallID: callID, Target: target, Schema: snapshot.SchemaVersion, Kind: AssignmentTool, Tool: binding}
 		known, err := l.Executor.Validate(ctx, probe)
 		if err != nil {
 			return dispatched, err

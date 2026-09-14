@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	run "github.com/felinics/twilight/agent/run"
 	effect "github.com/felinics/twilight/agent/run/effect"
@@ -77,8 +78,8 @@ var ErrModelUnavailable = errors.New("agent: loop: executor cannot serve the mod
 
 // AssignmentFromTarget rebuilds the Assignment of an Executing target a
 // takeover found in the projection, so the new owner can ask the Executor
-// whether that attempt still runs (RUN-CMT-7). Workspace is not recorded in
-// Run facts; a host that needs it resolves it from the Turn's AgentPreset.
+// whether that attempt still runs (RUN-CMT-7). Resource semantics stay outside
+// Run facts; an executor obtains any opaque TargetRef from its Assignment.
 func AssignmentFromTarget(sid session.SessionID, t run.RecoveryTarget) Assignment {
 	a := Assignment{Session: sid, RunID: t.RunID, StepID: t.StepID, CallID: t.CallID, Claim: t.Claim, Schema: t.Schema}
 	switch {
@@ -96,18 +97,26 @@ func AssignmentFromTarget(sid session.SessionID, t run.RecoveryTarget) Assignmen
 // transport-facing Attach call only deals in the assignment key; the adapter
 // waits for the result and feeds it to the Loop's internal Deliver path. The
 // callback is therefore an authority-local concern, not part of Executor's
-// process-independent interface.
-func Reattach(exec Executor, sid session.SessionID, deliver Deliver) run.Reattacher {
-	return reattacher{exec: exec, sid: sid, deliver: deliver}
+// process-independent interface. lifetime bounds background result reads;
+// Attach's context bounds the initial attachment request.
+func Reattach(lifetime context.Context, exec Executor, sid session.SessionID, deliver Deliver) run.Reattacher {
+	return reattacher{lifetime: lifetime, exec: exec, sid: sid, deliver: deliver}
 }
 
 type reattacher struct {
-	exec    Executor
-	sid     session.SessionID
-	deliver Deliver
+	lifetime context.Context
+	exec     Executor
+	sid      session.SessionID
+	deliver  Deliver
 }
 
 func (r reattacher) Attach(ctx context.Context, t run.RecoveryTarget) (run.ReattachResult, error) {
+	if r.lifetime == nil {
+		return run.ReattachMissing, errors.New("agent: loop: nil reattach lifetime")
+	}
+	if err := r.lifetime.Err(); err != nil {
+		return run.ReattachMissing, err
+	}
 	if r.exec == nil || r.deliver == nil {
 		return run.ReattachMissing, nil
 	}
@@ -119,11 +128,26 @@ func (r reattacher) Attach(ctx context.Context, t run.RecoveryTarget) (run.Reatt
 	switch attachment.State {
 	case effect.AttachmentActive, effect.AttachmentTerminal:
 		go func() {
-			out, err := r.exec.GetOutcome(context.WithoutCancel(ctx), a.Key())
-			if err != nil {
-				out = Outcome{Key: a.Key(), Err: err, Unknown: true}
+			delay := 10 * time.Millisecond
+			for {
+				out, err := r.exec.GetOutcome(r.lifetime, a.Key())
+				if err == nil {
+					if r.lifetime.Err() == nil {
+						r.deliver(out)
+					}
+					return
+				}
+				timer := time.NewTimer(delay)
+				select {
+				case <-r.lifetime.Done():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+				if delay < time.Second {
+					delay = min(delay*2, time.Second)
+				}
 			}
-			r.deliver(out)
 		}()
 		if attachment.State == effect.AttachmentTerminal {
 			return run.ReattachTerminal, nil
@@ -524,10 +548,18 @@ func (e *LocalExecutor) runTool(ctx context.Context, a Assignment, t ToolAssignm
 		ToolRef:          t.ToolRef,
 		DefinitionDigest: t.DefinitionDigest,
 		Arguments:        t.Arguments,
-		Workspace:        t.Workspace,
+		Target:           cloneTarget(a.Target),
 		Progress:         &progressSink{events: e.sink, run: a.RunID, step: a.StepID, call: a.CallID},
 	}
 	return Outcome{Tool: executeToolSafely(ctx, tool, &req)}
+}
+
+func cloneTarget(target *run.TargetRef) *run.TargetRef {
+	if target == nil {
+		return nil
+	}
+	copy := *target
+	return &copy
 }
 
 // executeToolSafely runs an application tool and converts a panic into
