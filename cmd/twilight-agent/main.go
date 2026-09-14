@@ -1,10 +1,6 @@
-// Command twilight-agent is a line-oriented CLI agent over the agent core: a
-// colocated Host — the JSONL file store carries the Session, a LocalExecutor
-// runs the model and the built-in tool in this process — and app.Session is
-// the facade. Each stdin line goes through Session.Send — a line typed while
-// a Turn runs steers it (already_driving), a line the running Turn cannot
-// accept queues and opens the next Turn after settlement, and a restart over
-// the same root takes the Session over and resumes.
+// Command twilight-agent runs an interactive agent, an HTTP authority, or a
+// standalone execution worker. Each process owns its file store. The authority
+// resumes its Session on startup and can reattach work on a surviving worker.
 package main
 
 import (
@@ -13,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"sync"
@@ -29,6 +26,15 @@ import (
 	"github.com/felinics/twilight/sdk"
 )
 
+type agentOptions struct {
+	root, provider, baseURL, apiKey, modelID, compat, system string
+	sid                                                      session.SessionID
+	mock                                                     bool
+	compactAfter                                             int
+	endpoint, mode, address                                  string
+	toolDelay                                                time.Duration
+}
+
 func main() {
 	var (
 		root     = flag.String("root", "./.twilight", "session store root directory (one subdirectory per session)")
@@ -41,42 +47,98 @@ func main() {
 		system   = flag.String("system", "", "system prompt")
 		mock     = flag.Bool("mock", false, "offline mode: scripted model plus a built-in `now` tool, no API key")
 		compactN = flag.Int("compact-after", 0, "auto-compact the context after this many entries (0 disables; /compact always works)")
+		endpoint = flag.String("executor-url", "", "execute remotely through this executor HTTP endpoint")
+		mode     = flag.String("mode", "cli", "cli (interactive), agent (HTTP authority), or worker (HTTP executor)")
+		listen   = flag.String("listen", "", "loopback listen address (agent: 127.0.0.1:8088, worker: 127.0.0.1:8089)")
+		delay    = flag.Duration("tool-delay", 0, "delay the now tool to exercise recovery, e.g. 30s")
 	)
 	flag.Parse()
-	if err := run_(*root, session.SessionID(*sid), *provider, *baseURL, *apiKey, *modelID, *compat, *system, *mock, *compactN); err != nil {
+	var err error
+	switch {
+	case *delay < 0:
+		err = errors.New("-tool-delay must be non-negative")
+	case *mode != "cli" && *mode != "agent" && *mode != "worker":
+		err = errors.New("-mode must be cli, agent, or worker")
+	case *mode == "worker" && *endpoint != "":
+		err = errors.New("worker mode uses local model and tool implementations; omit -executor-url")
+	case *mode == "worker":
+		if *listen == "" {
+			*listen = "127.0.0.1:8089"
+		}
+		models, tools, _, buildErr := buildAgent(*mock, *provider, *baseURL, *apiKey, *modelID, *compat, *system)
+		if buildErr != nil {
+			err = buildErr
+			break
+		}
+		tools[0] = nowTool{delay: *delay}
+		err = serveExecutor(*root, *listen, models, tools)
+	default:
+		if *mode == "agent" && *listen == "" {
+			*listen = "127.0.0.1:8088"
+		}
+		err = runAgent(agentOptions{root: *root, sid: session.SessionID(*sid), provider: *provider,
+			baseURL: *baseURL, apiKey: *apiKey, modelID: *modelID, compat: *compat, system: *system,
+			mock: *mock, compactAfter: *compactN, endpoint: *endpoint, toolDelay: *delay, mode: *mode, address: *listen})
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "twilight-agent:", err)
 		os.Exit(1)
 	}
 }
 
-func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID, compat, system string, mock bool, compactAfter int) error {
+func runAgent(o agentOptions) error {
 	ctx := context.Background()
-	models, tools, preset, err := buildAgent(mock, provider, baseURL, apiKey, modelID, compat, system)
+	var listener net.Listener
+	if o.mode == "agent" {
+		var err error
+		listener, err = listenLoopback(o.address)
+		if err != nil {
+			return err
+		}
+		defer listener.Close()
+	}
+	var (
+		models map[run.ModelRef]loop.ModelInvoker
+		tools  []loop.ExecutableTool
+		preset turn.AgentPreset
+		err    error
+	)
+	if o.endpoint == "" {
+		models, tools, preset, err = buildAgent(o.mock, o.provider, o.baseURL, o.apiKey, o.modelID, o.compat, o.system)
+		if err == nil {
+			tools[0] = nowTool{delay: o.toolDelay}
+		}
+	} else {
+		if o.mock {
+			o.modelID = "mock"
+		}
+		preset, err = app.NewPreset(run.ModelRef(o.modelID), []loop.ExecutableTool{nowTool{}}, app.WithSystemPrompt(o.system))
+	}
 	if err != nil {
 		return err
 	}
+	execConfig := app.ExecutorConfig{Mode: app.ExecutorLocal, Models: models, Tools: tools}
+	if o.endpoint != "" {
+		execConfig = app.ExecutorConfig{Mode: app.ExecutorRemote, Endpoint: o.endpoint}
+	}
 
-	store, err := filestore.New(root)
+	store, err := filestore.New(o.root)
 	if err != nil {
 		return err
 	}
 	// Frozen request bodies persist as cas content next to the session log, so
 	// a restart can replay the request of a ModelStep that was executing at
 	// the crash.
-	content, err := filestore.NewContentStore(root, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
+	content, err := filestore.NewContentStore(o.root, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
 	if err != nil {
 		return err
 	}
 	// The application builder selects the local effect profile and wires the
 	// authority, content store and preset registry in one place.
 	a, err := app.Build(app.Config{
-		Store:   store,
-		Content: content,
-		Executor: app.ExecutorConfig{
-			Mode:   app.ExecutorLocal,
-			Models: models,
-			Tools:  tools,
-		},
+		Store:     store,
+		Content:   content,
+		Executor:  execConfig,
 		Presets:   []app.Preset{{ID: "cli", Value: preset}},
 		Ownership: session.OpenOptions{Takeover: true},
 		Warn:      func(err error) { fmt.Fprintln(os.Stderr, "agent:", err) },
@@ -89,23 +151,28 @@ func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID
 	// read off the Session's event stream, not from the executor.
 	eventsCtx, stopEvents := context.WithCancel(ctx)
 	defer stopEvents()
-	go printToolActivity(a.Events(eventsCtx, sid))
+	go printToolActivity(a.Events(eventsCtx, o.sid))
 	presetRef, err := a.PresetRef("cli")
 	if err != nil {
 		return err
 	}
-	s, err := a.OpenSession(ctx, sid, app.SessionOptions{Preset: presetRef, CompactAfterEntries: compactAfter,
+	s, err := a.OpenSession(ctx, o.sid, app.SessionOptions{Preset: presetRef, CompactAfterEntries: o.compactAfter,
 		CompactWarn: func(err error) { fmt.Fprintln(os.Stderr, "compact:", err) }})
 	if err != nil {
 		return err
 	}
-	fmt.Printf("session %s — log at %s\n", sid, store.LogPath(sid))
+	fmt.Printf("session %s - log at %s\n", o.sid, store.LogPath(o.sid))
+	if o.endpoint != "" {
+		fmt.Printf("executor %s\n", o.endpoint)
+	}
 	if s.Recovered > 0 {
 		fmt.Printf("takeover: %d executing target disposed\n", s.Recovered)
 	}
+	if o.mode == "agent" {
+		return serveAgent(listener, s, store, o.sid)
+	}
 
-	// Turns run in per-call goroutines; /quit cancels them. A cancelled Turn
-	// stays Active in the log and the next start resumes it.
+	// Interactive commands share one lifetime, bounded by shutdown's grace.
 	driveCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	var wg sync.WaitGroup
@@ -134,7 +201,7 @@ func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID
 		case line == "/quit":
 			return shutdown(ctx, s, cancel, &wg)
 		case line == "/log":
-			fmt.Println(store.LogPath(sid))
+			fmt.Println(store.LogPath(o.sid))
 		case line == "/retry":
 			wg.Add(1)
 			go func() {
@@ -171,7 +238,7 @@ func run_(root string, sid session.SessionID, provider, baseURL, apiKey, modelID
 			}(line)
 		}
 	}
-	return shutdown(ctx, s, cancel, &wg)
+	return errors.Join(scanner.Err(), shutdown(ctx, s, cancel, &wg))
 }
 
 func report(results []app.Result, err error) {
@@ -190,15 +257,14 @@ func report(results []app.Result, err error) {
 	}
 }
 
-// shutdown waits for running turns, then cancels the stragglers: a cancelled
-// Turn stays Active in the log and the next start resumes it.
+// shutdown waits for running turns, then cancels outstanding drives.
 func shutdown(ctx context.Context, s *app.Session, cancel func(), wg *sync.WaitGroup) error {
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		fmt.Fprintln(os.Stderr, "cancelling the running turn; it resumes on the next start")
+		fmt.Fprintln(os.Stderr, "cancelling outstanding drives")
 		cancel()
 		select {
 		case <-done:
@@ -268,8 +334,9 @@ func buildAgent(mock bool, provider, baseURL, apiKey, modelID, compat, system st
 	// hand-written wrapper would only be ceremony between two identical shapes.
 	invoker := &sdk.Model{ID: modelID, Provider: completions.New(opts...), Type: sdk.ModelTypeChat}
 	models := map[run.ModelRef]loop.ModelInvoker{run.ModelRef(modelID): invoker}
-	preset, err := app.NewPreset(run.ModelRef(modelID), nil, app.WithSystemPrompt(system))
-	return models, nil, preset, err
+	tools := []loop.ExecutableTool{nowTool{}}
+	preset, err := app.NewPreset(run.ModelRef(modelID), tools, app.WithSystemPrompt(system))
+	return models, tools, preset, err
 }
 
 // mockModel answers once a tool result is in the conversation and reports how
@@ -283,7 +350,11 @@ func (mockModel) Generate(_ context.Context, req sdk.Request) (sdk.ModelResult, 
 		return sdk.ModelResult{Text: "mock summary of the compacted conversation",
 			FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}, nil
 	}
-	for _, msg := range req.Messages {
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		msg := req.Messages[i]
+		if msg.Role == sdk.MessageRoleUser {
+			break
+		}
 		if msg.Role == sdk.MessageRoleTool {
 			return sdk.ModelResult{Text: fmt.Sprintf("mock: %d messages in context", len(req.Messages)),
 				FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}, nil
@@ -303,7 +374,7 @@ func messageText(m sdk.Message) string {
 	return b.String()
 }
 
-type nowTool struct{}
+type nowTool struct{ delay time.Duration }
 
 func (nowTool) Ref() run.ToolRef { return "now" }
 func (nowTool) Definition() sdk.ToolDefinition {
@@ -311,7 +382,17 @@ func (nowTool) Definition() sdk.ToolDefinition {
 }
 func (nowTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
 func (nowTool) ValidateArguments(run.CanonicalJSON) error { return nil }
-func (nowTool) Execute(context.Context, loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
+func (t nowTool) Execute(ctx context.Context, _ loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
+	if t.delay > 0 {
+		fmt.Fprintf(os.Stderr, "now: started (delay %s)\n", t.delay)
+		timer := time.NewTimer(t.delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return loop.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureCancelled, Message: ctx.Err().Error()}}
+		}
+	}
 	out := run.MustParseCanonicalJSON(fmt.Sprintf(`{"now":%q}`, time.Now().UTC().Format(time.RFC3339)))
 	return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: out}}
 }
