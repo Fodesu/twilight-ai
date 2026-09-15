@@ -29,7 +29,7 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 		}}
 	call := sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 2},
 		ToolCalls: []sdk.ToolCall{{ToolCallID: "c1", ToolName: "slow", Input: `{"x":1}`}}}
-	first, err := newLoop(oldRuntime, nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{call}}}, fakeToolCatalog{map[ToolRef]ExecutableTool{"slow": slow}},
+	first, err := newLoop(nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{call}}}, fakeToolCatalog{map[ToolRef]ExecutableTool{"slow": slow}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -56,7 +56,7 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 		t.Fatalf("after takeover current = %T, want Open", snap.State.Current)
 	}
 
-	second, err := newLoop(stack.runtime, nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("done")}}}, fakeToolCatalog{map[ToolRef]ExecutableTool{"slow": slow}},
+	second, err := newLoop(nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("done")}}}, fakeToolCatalog{map[ToolRef]ExecutableTool{"slow": slow}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)

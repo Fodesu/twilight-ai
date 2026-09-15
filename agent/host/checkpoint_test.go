@@ -199,7 +199,7 @@ func TestCompactDispatchServesDurableWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	local, err := host.NewLocalExecutor(cat, content, nil, false)
+	local, err := host.NewLocalExecutor(cat, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -110,7 +110,7 @@ func Build(c Config) (*Application, error) {
 			return nil, fmt.Errorf("app: create default content store: %w", err)
 		}
 	}
-	port, err := buildExecutor(c.Executor, content)
+	port, err := buildExecutor(c.Executor)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +184,7 @@ func (a *Application) Events(ctx context.Context, sid session.SessionID) <-chan 
 	return a.authority.Events(ctx, sid)
 }
 
-func buildExecutor(c ExecutorConfig, content artifact.ContentStore) (effect.Port, error) {
+func buildExecutor(c ExecutorConfig) (effect.Port, error) {
 	if c.Port != nil {
 		return c.Port, nil
 	}
@@ -194,7 +194,7 @@ func buildExecutor(c ExecutorConfig, content artifact.ContentStore) (effect.Port
 		if err != nil {
 			return nil, err
 		}
-		port, err := host.NewLocalExecutor(catalog, content, nil, false)
+		port, err := host.NewLocalExecutor(catalog, nil, false)
 		if err != nil {
 			return nil, err
 		}

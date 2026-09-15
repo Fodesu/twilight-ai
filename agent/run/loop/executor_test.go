@@ -457,7 +457,6 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 // LocalExecutor exposes in-process execution through the same message-shaped
 // port; GetOutcome reads the eventual result and Cancel stops in-flight effects.
 func TestLocalExecutorAttachAndCancel(t *testing.T) {
-	rt := loopRuntime(t)
 	block := make(chan struct{})
 	seenTarget := make(chan *TargetRef, 1)
 	tool := &fakeTool{ref: "echo", def: toolDef("echo"), policy: DirectExecution,
@@ -470,7 +469,7 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 				return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
 			}
 		}}
-	exec, err := NewLocalExecutor(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": tool}}, rt, nil, false)
+	exec, err := NewLocalExecutor(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": tool}}, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -587,14 +586,6 @@ func (e *missingBodyExecutor) Dispatch(ctx context.Context, a Assignment) error 
 	e.mu.Unlock()
 	go func() { ch <- Outcome{Key: a.Key(), Err: ErrFrozenValueMissing} }()
 	return nil
-}
-
-// missingFrozen is a frozen store with nothing in it, standing in for an
-// executor whose store diverged from the authority's.
-type missingFrozen struct{}
-
-func (missingFrozen) FrozenRequest(context.Context, Digest) (ModelRequest, error) {
-	return ModelRequest{}, ErrFrozenValueMissing
 }
 
 // A persistently missing body reported by a remote executor must not spin the

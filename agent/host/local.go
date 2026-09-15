@@ -1,15 +1,12 @@
 package host
 
 import (
-	"context"
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/decision"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
-	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/turn"
 )
 
@@ -59,35 +56,16 @@ func (c *Catalog) ResolveTool(ref run.ToolRef) (loop.ExecutableTool, error) {
 }
 
 // NewLocalExecutor is the colocated Executor: effects run in goroutines of
-// this process against the Catalog, model bodies are read from the cas
-// content store the Host writes them to (Ports.Content, RUN-WIR-4), and
-// provisional observations go to sink. streaming selects
+// this process against the Catalog, and provisional observations go to sink.
+// Model assignments must carry the request inline (RUN-EXE-7); the Host still
+// writes frozen bodies to Ports.Content (RUN-WIR-4) for the Session record,
+// and the executor never reads them back. streaming selects
 // StreamingModelInvoker when an invoker offers it.
-func NewLocalExecutor(cat *Catalog, content artifact.ContentStore, sink loop.EventSink, streaming bool) (loop.Executor, error) {
+func NewLocalExecutor(cat *Catalog, sink loop.EventSink, streaming bool) (loop.Executor, error) {
 	if cat == nil {
 		return nil, errors.New("host: nil catalog")
 	}
-	if content == nil {
-		return nil, errors.New("host: nil content store")
-	}
-	return loop.NewLocalExecutor(cat, cat, frozenReader{runmod.FrozenValues(content)}, sink, streaming)
-}
-
-// frozenReader adapts a FrozenValueStore to the executor's read side.
-type frozenReader struct{ store run.FrozenValueStore }
-
-func (r frozenReader) FrozenRequest(ctx context.Context, digest run.Digest) (run.ModelRequest, error) {
-	if digest == "" {
-		return run.ModelRequest{}, errors.New("host: empty request digest")
-	}
-	raw, ok, err := r.store.Get(ctx, digest)
-	if err != nil {
-		return run.ModelRequest{}, err
-	}
-	if !ok {
-		return run.ModelRequest{}, fmt.Errorf("%w: request %s", run.ErrFrozenValueMissing, digest)
-	}
-	return run.DecodeFrozenRequest(raw, digest)
+	return loop.NewLocalExecutor(cat, cat, sink, streaming)
 }
 
 // --- presets --------------------------------------------------------------------

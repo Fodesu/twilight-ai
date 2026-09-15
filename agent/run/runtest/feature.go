@@ -362,7 +362,7 @@ func (f *Feature) ensureLoop() {
 	for ref, tool := range f.tools {
 		tools[ref] = tool
 	}
-	exec, err := loop.NewLocalExecutor(scriptCatalog{invoker: f.invoker, err: f.resolveErr}, scriptToolCatalog{tools}, f.rt, nil, false)
+	exec, err := loop.NewLocalExecutor(scriptCatalog{invoker: f.invoker, err: f.resolveErr}, scriptToolCatalog{tools}, nil, false)
 	if err != nil {
 		f.t.Fatal(err)
 	}

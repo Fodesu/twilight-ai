@@ -83,7 +83,7 @@ func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 			<-takenOver // A settles only after the Session changed hands
 			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
 		}}
-	loop, err := newLoop(oldRuntime, nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1", "c2")}}},
+	loop, err := newLoop(nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1", "c2")}}},
 		fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": tool}}, staticBuilder{specs: []ToolSpec{spec}}, Settings{Scheduling: ToolScheduling{MaxParallel: 2}}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +157,7 @@ func TestOwnershipLossOnModelSettlementIsNotRetried(t *testing.T) {
 	oldRuntime := &commitLog{Runtime: stack.runtime}
 
 	invoker := &blockingInvoker{started: make(chan struct{}), release: make(chan struct{})}
-	loop, err := newLoop(oldRuntime, nil, fakeCatalog{invoker}, fakeToolCatalog{nil}, staticBuilder{}, Settings{}, false)
+	loop, err := newLoop(nil, fakeCatalog{invoker}, fakeToolCatalog{nil}, staticBuilder{}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,9 +16,9 @@ import (
 )
 
 // newHost composes a colocated Host for tests: a LocalExecutor over the given
-// models and tools shares the Host's content store, so the executor reads the
-// request bodies the Runtime writes. ports.Content and ports.Executor are
-// filled in; the other ports are taken as given.
+// models and tools; the Runtime still writes request bodies to ports.Content
+// (RUN-WIR-4) and the executor never reads them back (RUN-EXE-7). ports.Content
+// and ports.Executor are filled in; the other ports are taken as given.
 func newHost(ports host.Ports, models map[run.ModelRef]loop.ModelInvoker, tools ...loop.ExecutableTool) *host.Host {
 	if ports.Content == nil {
 		ports.Content = memoryContent()
@@ -27,7 +27,7 @@ func newHost(ports host.Ports, models map[run.ModelRef]loop.ModelInvoker, tools 
 	if err != nil {
 		panic(err)
 	}
-	exec, err := host.NewLocalExecutor(cat, ports.Content, nil, false)
+	exec, err := host.NewLocalExecutor(cat, nil, false)
 	if err != nil {
 		panic(err)
 	}

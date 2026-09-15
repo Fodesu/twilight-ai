@@ -131,8 +131,7 @@ func toolCallResult(ids ...string) sdk.ModelResult {
 // --- tests ---
 
 func TestNewLeavesEmptySchedulingMode(t *testing.T) {
-	rt := loopRuntime(t)
-	loop, err := newLoop(rt, nil, fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
+	loop, err := newLoop(nil, fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +143,7 @@ func TestNewLeavesEmptySchedulingMode(t *testing.T) {
 func TestLoopRejectsConcurrentRunForSameID(t *testing.T) {
 	rt := loopRuntime(t)
 	invoker := &blockingInvoker{started: make(chan struct{}), release: make(chan struct{})}
-	loop, err := newLoop(rt, nil, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
+	loop, err := newLoop(nil, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +170,7 @@ func (c errCatalog) ResolveModel(ModelRef) (ModelInvoker, error) { return nil, c
 func TestLoopModelCatalogErrorRecoversWithFreshLoop(t *testing.T) {
 	rt := loopRuntime(t)
 	missing := errors.New("missing provider")
-	broken, err := newLoop(rt, nil, errCatalog{missing}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
+	broken, err := newLoop(nil, errCatalog{missing}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +200,7 @@ func TestLoopModelCatalogErrorRecoversWithFreshLoop(t *testing.T) {
 	}
 
 	invoker := &fakeInvoker{results: []sdk.ModelResult{textResult("resumed")}}
-	ready, err := newLoop(rt, nil, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
+	ready, err := newLoop(nil, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +241,7 @@ func TestLoopParallelBounded(t *testing.T) {
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1", "c2", "c3"), textResult("done")}}
 	rt := loopRuntime(t)
-	loop, _ := newLoop(rt, nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
+	loop, _ := newLoop(nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{Scheduling: ToolScheduling{MaxParallel: 2}}, false)
 
 	done := make(chan struct{})
@@ -292,7 +291,7 @@ func TestToolStartStaleIsNotAnError(t *testing.T) {
 		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
 			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: args}}
 		}}
-	loop, err := newLoop(loopRuntime(t), nil, fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
+	loop, err := newLoop(nil, fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
 		staticBuilder{}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -353,7 +352,7 @@ func TestLoopReplaysStartAfterTwoLostResponses(t *testing.T) {
 	rt := newResponseLossRuntime(t)
 	rt.loseModelStart = true
 	invoker := &fakeInvoker{results: []sdk.ModelResult{textResult("recovered")}}
-	loop, err := newLoop(rt, nil, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
+	loop, err := newLoop(nil, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,7 +397,7 @@ func TestLoopReplaysSettlementWithoutRepeatingTool(t *testing.T) {
 			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("done")}}
-	loop, err := newLoop(rt, nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
+	loop, err := newLoop(nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 	if err != nil {
 		t.Fatal(err)
@@ -432,7 +431,7 @@ func TestLoopMalformedModelResultDispositionFailsRun(t *testing.T) {
 		Usage:        sdk.Usage{TotalTokens: 1},
 	}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{bad, bad, bad}}
-	loop, err := newLoop(rt, nil, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{MalformedRetries: 2}, false)
+	loop, err := newLoop(nil, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{MalformedRetries: 2}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -468,7 +467,7 @@ func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	invoker := &cancellingInvoker{cancel: cancel}
 	rt := loopRuntime(t)
-	loop, _ := newLoop(rt, nil, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
+	loop, _ := newLoop(nil, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
 
 	_, err := loop.Run(ctx, rt, testSession, "run-1", nil)
 	if !errors.Is(err, context.Canceled) {
@@ -495,7 +494,7 @@ func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
 
 	// A fresh Loop plans a new step; the cancelled one left no count behind.
 	invoker2 := &fakeInvoker{results: []sdk.ModelResult{textResult("resumed")}}
-	loop2, _ := newLoop(rt, nil, fakeCatalog{invoker2}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
+	loop2, _ := newLoop(nil, fakeCatalog{invoker2}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
 	res, err := loop2.Run(context.Background(), rt, testSession, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
