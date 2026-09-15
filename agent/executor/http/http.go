@@ -92,6 +92,26 @@ func (c *Client) Takeover(ctx context.Context, key effect.AssignmentKey) error {
 	return c.post(ctx, "/takeover", keyRequest{Key: key}, nil)
 }
 
+// Reconcile asks the Worker to adopt every execution record whose lease
+// expired, returning the number of records handed to Takeover. This is a
+// control-plane operation and is intentionally not part of effect.Port.
+func (c *Client) Reconcile(ctx context.Context) (int, error) {
+	var response struct {
+		Adopted int `json:"adopted"`
+	}
+	if err := c.post(ctx, "/reconcile", struct{}{}, &response); err != nil {
+		return 0, err
+	}
+	return response.Adopted, nil
+}
+
+// Dispose settles an execution record as Unknown without re-dispatching it,
+// so the authority disposes the Run target on its next read. This is a
+// control-plane operation and is intentionally not part of effect.Port.
+func (c *Client) Dispose(ctx context.Context, key effect.AssignmentKey) error {
+	return c.post(ctx, "/dispose", keyRequest{Key: key}, nil)
+}
+
 func (c *Client) post(ctx context.Context, path string, in, out any) error {
 	if strings.TrimSpace(c.BaseURL) == "" {
 		return errors.New("executor/http: empty executor URL")
@@ -157,6 +177,8 @@ func (s *Server) Handler() stdhttp.Handler {
 	mux.HandleFunc("/outcome", s.outcome)
 	mux.HandleFunc("/cancel", s.cancel)
 	mux.HandleFunc("/takeover", s.takeover)
+	mux.HandleFunc("/reconcile", s.reconcile)
+	mux.HandleFunc("/dispose", s.dispose)
 	return mux
 }
 
@@ -285,6 +307,29 @@ func (s *Server) takeover(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	w.WriteHeader(stdhttp.StatusAccepted)
 }
 
+func (s *Server) reconcile(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	n, err := s.Worker.Reconcile(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, stdhttp.StatusOK, struct {
+		Adopted int `json:"adopted"`
+	}{n})
+}
+
+func (s *Server) dispose(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	var req keyRequest
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if err := s.Worker.Dispose(r.Context(), req.Key); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(stdhttp.StatusAccepted)
+}
+
 func readJSON(w stdhttp.ResponseWriter, r *stdhttp.Request, out any) bool {
 	if err := json.NewDecoder(r.Body).Decode(out); err != nil {
 		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
@@ -308,7 +353,9 @@ func writeError(w stdhttp.ResponseWriter, err error) {
 		status = stdhttp.StatusConflict
 	}
 	if errors.Is(err, effect.ErrOutcomeNotReady) {
-		status = stdhttp.StatusNoContent
+		// 204 responses carry no body; writing one violates the HTTP contract.
+		w.WriteHeader(stdhttp.StatusNoContent)
+		return
 	}
 	stdhttp.Error(w, err.Error(), status)
 }

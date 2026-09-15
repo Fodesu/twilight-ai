@@ -41,7 +41,9 @@ const defaultLeaseDuration = 30 * time.Second
 // persisted in the execution record. Takeover is explicit: failure detection
 // and the decision to retry an effect belong to the control plane; Reconcile
 // is the built-in loop form of that decision, while deployments with an
-// external control plane drive Takeover directly.
+// external control plane drive Takeover directly. Dispose settles a record
+// the control plane has given up on. None of the three is part of effect.Port,
+// which stays the per-assignment data plane.
 type Worker struct {
 	store     executionstore.Store
 	backend   effect.Port
@@ -203,6 +205,47 @@ func (w *Worker) reconcileLoop(interval time.Duration) {
 	}
 }
 
+// Dispose settles a non-terminal record as Unknown without re-dispatching it.
+// The caller is the control plane: it has decided that the execution cannot be
+// recovered and that the authority should dispose the Run target (RUN-CMT-7).
+// Unlike Takeover, Dispose is unconditional — it also applies to records whose
+// owner is dead or absent — and unlike Cancel it does not require backend
+// reachability: a bound backend is cancelled best-effort after the settle.
+func (w *Worker) Dispose(ctx context.Context, key effect.AssignmentKey) error {
+	r, ok, err := w.store.Get(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return effect.ErrExecutionNotFound
+	}
+	if protocol.StatusTerminal(r.State) {
+		return nil
+	}
+	env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: r.AssignmentDigest, Unknown: true,
+		Error: &protocol.WireError{Code: "disposed", Message: "execution record disposed by the control plane"}}
+	r.Outcome = &env
+	r.State = effect.ExecutionUnknown
+	if err := w.store.Put(ctx, r); err != nil {
+		return err
+	}
+	_ = w.cancelBackend(context.WithoutCancel(ctx), key, r.ExecutionBinding)
+	w.wake(key)
+	return nil
+}
+
+// wake notifies one blocked GetOutcome waiter, if any.
+func (w *Worker) wake(key effect.AssignmentKey) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if ch := w.notify[key]; ch != nil {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
+}
+
 func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) error {
 	claimed, acquired, err := w.store.Acquire(ctx, key, w.id, w.lease)
 	if err != nil {
@@ -269,6 +312,17 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 			// will terminalize it after the adopted backend produces an outcome.
 			go w.watch(key, digest, claimed.FencingEpoch, binding, leaseDone)
 			return nil
+		}
+		if claimed.Assignment.Kind == effect.AssignmentTool && binding == nil {
+			// An unbound tool execution may have crossed the effect boundary
+			// before its worker died, and the backend cannot confirm what it
+			// did. Re-dispatch may repeat side effects, so adoption settles
+			// Unknown (TRN-DUR-4) instead of retrying. A replayable tool
+			// declares that on its definition; until the declaration exists,
+			// no unbound tool is re-dispatched by adoption.
+			env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest, Unknown: true,
+				Error: &protocol.WireError{Code: "adopted_without_replay", Message: "unbound tool execution adopted without a replay declaration"}}
+			return w.finishOwned(ctx, key, claimed.FencingEpoch, env, effect.ExecutionUnknown, nil)
 		}
 	}
 	if claimed.State != effect.ExecutionDispatching {
@@ -388,8 +442,7 @@ func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64
 }
 
 func (w *Worker) waitOwned(key effect.AssignmentKey, epoch uint64, delay time.Duration) bool {
-	owned, err := w.store.LeaseOwned(w.lifecycle, key, w.id, epoch)
-	if (err == nil && !owned) || errors.Is(err, effect.ErrExecutionNotFound) {
+	if !w.ownershipIntact(key, epoch) {
 		return false
 	}
 	timer := time.NewTimer(delay)
@@ -398,8 +451,27 @@ func (w *Worker) waitOwned(key effect.AssignmentKey, epoch uint64, delay time.Du
 	case <-w.lifecycle.Done():
 		return false
 	case <-timer.C:
+		return w.ownershipIntact(key, epoch)
+	}
+}
+
+// ownershipIntact reports whether this Worker incarnation still owns the
+// record: same owner, same fencing epoch, non-terminal. A lapsed lease does
+// not end ownership — Renew re-establishes it once transient store errors
+// stop — so watchers keep polling through outages shorter than adoption.
+// Missing, terminal, or re-acquired records (a higher epoch) end ownership;
+// the heartbeat then exits too, because Renew reports ErrLeaseLost for them.
+func (w *Worker) ownershipIntact(key effect.AssignmentKey, epoch uint64) bool {
+	r, ok, err := w.store.Get(w.lifecycle, key)
+	if err != nil {
+		// A transient read error must not stop the watcher; the caller's
+		// backoff retries the ownership check.
 		return true
 	}
+	if !ok {
+		return false
+	}
+	return !protocol.StatusTerminal(r.State) && r.Owner == w.id && r.FencingEpoch == epoch
 }
 
 func (w *Worker) heartbeat(key effect.AssignmentKey, epoch uint64, done <-chan struct{}) {
@@ -415,7 +487,12 @@ func (w *Worker) heartbeat(key effect.AssignmentKey, epoch uint64, done <-chan s
 			return
 		case <-ticker.C:
 			if err := w.store.Renew(w.lifecycle, key, w.id, epoch, w.lease); err != nil {
-				return
+				if errors.Is(err, executionstore.ErrLeaseLost) || errors.Is(err, effect.ErrExecutionNotFound) {
+					return
+				}
+				// Transient store errors must not silently stop lease
+				// maintenance; the next tick retries. If the lease nonetheless
+				// expires, Reconcile re-adopts the record.
 			}
 		}
 	}
@@ -518,6 +595,9 @@ func (w *Worker) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effe
 			return effect.Outcome{}, effect.ErrExecutionNotFound
 		}
 		if r.Outcome != nil {
+			w.mu.Lock()
+			delete(w.notify, key)
+			w.mu.Unlock()
 			return protocol.DecodeOutcome(*r.Outcome), nil
 		}
 		ch := w.signal(key)

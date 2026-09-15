@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +18,7 @@ import (
 	"github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
+	"github.com/felinics/twilight/agent/run/protocol"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -706,4 +709,257 @@ func TestHTTPClientAndServer(t *testing.T) {
 	if err != nil || out.Model == nil || out.Model.Text != "ok" {
 		t.Fatalf("HTTP outcome = %+v, %v", out, err)
 	}
+}
+
+func testToolAssignment() effect.Assignment {
+	return effect.Assignment{Session: "s", RunID: "r", StepID: "step", CallID: "call-1", Claim: "claim", Schema: 1,
+		Kind: effect.AssignmentTool,
+		Tool: &effect.ToolAssignment{ToolRef: "gate", DefinitionDigest: "d", Arguments: run.MustParseCanonicalJSON(`{}`), Policy: run.DirectExecution}}
+}
+
+// Dispose is the control plane's give-up path: the record settles Unknown
+// regardless of owner or lease, so the authority's next read disposes the Run
+// target; terminal records and missing keys are not errors.
+func TestWorkerDisposeSettlesUnknown(t *testing.T) {
+	completedEnv := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Unknown: false}
+	rows := []struct {
+		name    string
+		record  *store.Record // nil means the key was never written
+		wantErr error
+	}{
+		{"expired foreign owner", &store.Record{State: effect.ExecutionRunning, Owner: "dead-worker", FencingEpoch: 3, LeaseUntilUnixMilli: 1}, nil},
+		{"live foreign owner", &store.Record{State: effect.ExecutionDispatching, Owner: "live-worker", FencingEpoch: 3,
+			LeaseUntilUnixMilli: time.Now().Add(time.Hour).UnixMilli()}, nil},
+		{"already terminal", &store.Record{State: effect.ExecutionCompleted, Owner: "dead-worker", FencingEpoch: 3, LeaseUntilUnixMilli: 1, Outcome: &completedEnv}, nil},
+		{"missing record", nil, effect.ErrExecutionNotFound},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			ctx := context.Background()
+			records := store.NewMemoryStore()
+			a := testAssignment()
+			key := a.Key()
+			if row.record != nil {
+				digest, err := a.Digest()
+				if err != nil {
+					t.Fatal(err)
+				}
+				r := *row.record
+				r.Assignment, r.AssignmentDigest = a, digest
+				if err := records.Put(ctx, r); err != nil {
+					t.Fatal(err)
+				}
+			}
+			worker, err := executor.NewWorker(ctx, records, newTestBackend(), executor.WorkerOptions{ID: "worker-a"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = worker.Dispose(ctx, key)
+			if !errors.Is(err, row.wantErr) {
+				t.Fatalf("dispose = %v, want %v", err, row.wantErr)
+			}
+			if row.record == nil {
+				return
+			}
+			got, _, err := records.Get(ctx, key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if row.record.State == effect.ExecutionCompleted {
+				if got.State != effect.ExecutionCompleted || got.Outcome == nil || got.Outcome.Unknown {
+					t.Fatalf("terminal record changed: %+v", got)
+				}
+				return
+			}
+			if got.State != effect.ExecutionUnknown || got.Outcome == nil || !got.Outcome.Unknown {
+				t.Fatalf("record after dispose = %+v", got)
+			}
+		})
+	}
+}
+
+// Adoption never re-dispatches an unbound tool whose prior execution may have
+// crossed the effect boundary (TRN-DUR-4); it settles Unknown instead. A
+// record that never dispatched (Accepted) still executes on adoption, and
+// model assignments stay replayable (TestWorkerReconcileAdoptsExpiredLease).
+func TestWorkerAdoptionOfUnboundToolSettlesUnknown(t *testing.T) {
+	rows := []struct {
+		state     effect.ExecutionStatus
+		wantCalls int
+		wantUnknown bool
+	}{
+		{effect.ExecutionRunning, 0, true},
+		{effect.ExecutionDispatching, 0, true},
+		{effect.ExecutionAccepted, 1, false},
+	}
+	base := time.Unix(100, 0)
+	now := base.Add(2 * time.Second)
+	for _, row := range rows {
+		t.Run(string(row.state), func(t *testing.T) {
+			ctx := context.Background()
+			records := store.NewMemoryStore(store.MemoryStoreOptions{Now: func() time.Time { return now }})
+			a := testToolAssignment()
+			digest, err := a.Digest()
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := store.Record{Assignment: a, AssignmentDigest: digest, State: row.state,
+				Owner: "dead-worker", FencingEpoch: 2, LeaseUntilUnixMilli: base.Add(time.Second).UnixMilli()}
+			if err := records.Put(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+			backend := newTestBackend()
+			worker, err := executor.NewWorker(ctx, records, backend, executor.WorkerOptions{
+				ID: "worker-b", LeaseDuration: time.Second, Clock: func() time.Time { return now }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := worker.Takeover(ctx, a.Key()); err != nil {
+				t.Fatal(err)
+			}
+			got, _, err := records.Get(ctx, a.Key())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if row.wantUnknown {
+				if got.State != effect.ExecutionUnknown || got.Outcome == nil || !got.Outcome.Unknown {
+					t.Fatalf("adopted record = %+v, want Unknown settle", got)
+				}
+			} else if got.Owner != "worker-b" {
+				t.Fatalf("adopted record owner = %q, want worker-b", got.Owner)
+			}
+			backend.mu.Lock()
+			calls := backend.calls
+			backend.mu.Unlock()
+			if calls != row.wantCalls {
+				t.Fatalf("backend calls = %d, want %d", calls, row.wantCalls)
+			}
+		})
+	}
+}
+
+type flakyRenewStore struct {
+	store.Store
+	mu       sync.Mutex
+	deadline time.Time
+	renewals int
+}
+
+func (s *flakyRenewStore) Renew(ctx context.Context, key effect.AssignmentKey, owner string, epoch uint64, ttl time.Duration) error {
+	s.mu.Lock()
+	s.renewals++
+	failing := time.Now().Before(s.deadline)
+	s.mu.Unlock()
+	if failing {
+		return errors.New("store temporarily unavailable")
+	}
+	return s.Store.Renew(ctx, key, owner, epoch, ttl)
+}
+
+// A transient Renew failure must not stop lease maintenance; the heartbeat
+// retries and the record stays owned. Without the retry the heartbeat exited
+// on the first error and the lease stayed lost once the failure outlasted it.
+func TestWorkerHeartbeatRetriesTransientRenewErrors(t *testing.T) {
+	records := &flakyRenewStore{Store: store.NewMemoryStore(), deadline: time.Now().Add(1100 * time.Millisecond)}
+	backend := &uncertainDispatchBackend{testBackend: newTestBackend(), ready: make(chan struct{})}
+	defer close(backend.ready)
+	worker, err := executor.NewWorker(context.Background(), records, backend, executor.WorkerOptions{ID: "worker-a", LeaseDuration: 800 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := testAssignment()
+	if err := worker.Dispatch(context.Background(), a); err == nil || !errors.Is(err, effect.ErrDispatchUnknown) {
+		t.Fatalf("dispatch = %v, want ErrDispatchUnknown", err)
+	}
+	// The injected failure outlasts one 800ms lease; only a retrying
+	// heartbeat re-establishes the lease after the store recovers.
+	time.Sleep(time.Until(records.deadline) + 400*time.Millisecond)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		r, ok, err := records.Get(context.Background(), a.Key())
+		if err != nil || !ok {
+			t.Fatalf("record = %+v ok=%v err=%v", r, ok, err)
+		}
+		owned, err := records.LeaseOwned(context.Background(), a.Key(), "worker-a", r.FencingEpoch)
+		if err == nil && owned {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("lease lost after transient Renew failures; heartbeat did not retry")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	records.mu.Lock()
+	renewals := records.renewals
+	records.mu.Unlock()
+	if renewals < 4 {
+		t.Fatalf("renewals = %d, want at least 4 (failures retried)", renewals)
+	}
+}
+
+func TestHTTPControlEndpoints(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	// The backend never answers, so Dispose races no watcher settlement.
+	backend := &uncertainDispatchBackend{testBackend: newTestBackend(), ready: make(chan struct{})}
+	defer close(backend.ready)
+	worker, err := executor.NewWorker(ctx, store.NewMemoryStore(), backend)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &executorhttp.Client{BaseURL: "http://executor.invalid",
+		HTTP: &http.Client{Transport: handlerTransport{handler: (&executorhttp.Server{Worker: worker}).Handler()}}}
+	a := testAssignment()
+	if err := client.Dispatch(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Takeover(ctx, a.Key()); err != nil {
+		t.Fatalf("takeover = %v", err)
+	}
+	if n, err := client.Reconcile(ctx); err != nil || n != 0 {
+		t.Fatalf("reconcile = %d, %v; want no candidates", n, err)
+	}
+	b := testAssignment()
+	b.CallID = "call-2"
+	if err := client.Dispatch(ctx, b); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Dispose(ctx, b.Key()); err != nil {
+		t.Fatalf("dispose = %v", err)
+	}
+	out, err := client.GetOutcome(ctx, b.Key())
+	if err != nil || !out.Unknown {
+		t.Fatalf("disposed outcome = %+v, %v", out, err)
+	}
+}
+
+func TestFileStoreListSkipsCorruptRecords(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	fs, err := store.NewFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := testAssignment()
+	if err := fs.Put(ctx, store.Record{Assignment: a, AssignmentDigest: mustDigest(a), State: effect.ExecutionRunning}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "corrupt.json"), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	records, err := fs.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("list = %d records, want 1 (corrupt skipped)", len(records))
+	}
+}
+
+func mustDigest(a effect.Assignment) run.Digest {
+	d, err := a.Digest()
+	if err != nil {
+		panic(err)
+	}
+	return d
 }

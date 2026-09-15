@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -419,7 +418,9 @@ func (s *FileStore) List(ctx context.Context) ([]Record, error) {
 		}
 		var r Record
 		if err := json.Unmarshal(raw, &r); err != nil {
-			return nil, fmt.Errorf("executor/store: decode %s: %w", entry.Name(), err)
+			// One corrupt record must not hide the adoptable records from
+			// Reconcile; the control plane disposes irrecoverable ones.
+			continue
 		}
 		out = append(out, r)
 	}
