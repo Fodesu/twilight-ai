@@ -1,5 +1,8 @@
 # Workspace / Runtime boundary
 
+状态：v1 设计规范。Workspace 是 Agent Core 之外的可选 application domain；本文只定义
+它如何通过 opaque target 接入执行。
+
 Workspace is an optional application domain for logical work environments.
 
 - **Workspace** is a durable logical mutable-world identity. Its identity is

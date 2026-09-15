@@ -1,6 +1,6 @@
 # Twilight Agent Run Protocol
 
-状态：设计规范。本文是 Run Machine、Runtime 与 Loop 的目标设计。Runtime 经 `writer.Writer` 写入；Session/Run 语义不使用 per-effect lease，Executor Worker 的 ownership 由 control plane 与 Execution Store 管理。`RecoverInterrupted` 负责无法关联或明确放弃的语义接管处置。本文依据 [agent-session.md](agent-session.md)（Session 级单写者、一行一个 event）与 [agent-session-extension.md](agent-session-extension.md)（`writer.Writer`）。
+状态：v1 设计规范。本文定义 Run Machine、Runtime 与 Loop。Runtime 经 `writer.Writer` 写入；Session/Run 语义不使用 per-effect lease，Executor Worker 的 ownership 由 control plane 与 Execution Store 管理。`RecoverInterrupted` 负责无法关联或明确放弃的语义接管处置。本文依据 [agent-session.md](agent-session.md)（Session 级单写者、一行一个 event）与 [agent-session-extension.md](agent-session-extension.md)（`writer.Writer`）。
 
 本文定义 `agent/run`、`agent/run/loop` 与 Run 作为 Session Module 的存储形态。文中的"必须""不得""应该"是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
 

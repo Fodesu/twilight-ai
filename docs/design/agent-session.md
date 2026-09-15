@@ -1,6 +1,6 @@
 # Twilight Agent Session Protocol
 
-状态：设计草案。本文是 Session ES kernel 的目标设计。
+状态：v1 设计规范。本文定义 Session ES kernel。
 
 本文定义 Twilight Session 的 Event Sourcing kernel。文中的"必须""不得""应该"是协议约束。
 

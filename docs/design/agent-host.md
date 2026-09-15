@@ -1,6 +1,6 @@
 # Twilight Agent 宿主层
 
-状态：设计草案。本文是宿主层（`agent/host`）的目标设计。与 [Run](agent-run.md)、[Turn](agent-turn.md)、[Decision](agent-decision.md)、[Chatlog](agent-session-chatlog.md)、[Session](agent-session.md) 冲突时以各正式规范为准。
+状态：v1 设计规范。本文定义宿主层（`agent/host`）的组装、Session facade 与生命周期边界。协议细节分别见 [Run](agent-run.md)、[Turn](agent-turn.md)、[Decision](agent-decision.md)、[Chatlog](agent-session-chatlog.md) 与 [Session](agent-session.md)。
 
 宿主层把 core 的三层——事实层（Store、Writer、Runtime、Coordinator）、决策层（AgentPreset 与 PromptBuilder 目录）、效果层（Executor 端口）——按角色端口组合成一个 authority 进程，并在其上提供 Session 门面。它是部署中立的：Store 是内存、文件还是数据库，Executor 在本进程执行效果还是转发给远端 worker，驱动阻塞还是异步，都由端口的实现决定，宿主层本身不含任何模型客户端、工具实现或执行环境。
 
@@ -103,7 +103,7 @@ Attach 的 `active` / `terminal` 保留 Executing 并等待实际 Outcome；`orp
 ## 5. Session 门面
 
 ```go
-func (h *Host) OpenSession(ctx, sid, SessionOptions{AgentPreset, Companion, NewTurnID, ResumeActive, Compact*}) (*Session, error)
+func (h *Host) OpenSession(ctx, sid, SessionOptions{Preset, Companion, NewTurnID, ResumeActive, Compact*}) (*Session, error)
 type Result struct { TurnID; Status; Disposition; Reply string }
 func (s *Session) Send(ctx, text string) ([]Result, error)                  // 提交 + 路由 + 同步驱动 + 结算后排空
 func (s *Session) Submit(ctx, text string) (turn.TurnRef, error)            // 提交 + 路由，后台驱动，立即返回
@@ -117,7 +117,7 @@ func (s *Session) Compact(ctx) (chatlog.CheckpointID, bool, error)
 func (s *Session) Close(ctx) error
 ```
 
-**HST-SES-1** `OpenSession` 依次：解析 AgentPreset（HST-PST-2）、确保 stream 存在（先 `Header` 探测再 `Create`——Create 的幂等要求字段全同，重启后 `CreatedAtUnixMilli` 必然不同）、`Host.Open`（打开 Writer 并接管处置，HST-DRV-5）；处置数暴露为 `Session.Recovered`。`ResumeActive` 为真时同步 Resume 仍在 `active` 的 Turn。
+**HST-SES-1** `OpenSession` 依次：解析 Preset（HST-PST-2）、确保 stream 存在（先 `Header` 探测再 `Create`——Create 的幂等要求字段全同，重启后 `CreatedAtUnixMilli` 必然不同）、`Host.Open`（打开 Writer 并接管处置，HST-DRV-5）；处置数暴露为 `Session.Recovered`。`ResumeActive` 为真时同步 Resume 仍在 `active` 的 Turn。
 
 **HST-SES-2** `Send` 提交文本（`SubmitText`）、Route 并阻塞到结算：首个 `Result` 是输入落入的 Turn，其后是本次调用在结算后从积压开启并结算的 Turn（Drain 的循环内化在门面里）。`Disposition` 为 `already_driving` 时该输入由运行中的驱动者推进，本次调用不再排空。`Reply` 为该 Turn 最后一条 assistant 的 TextPart 拼接，仅在 `finished` 时读取——回复是对话层概念，turn 层只报协议结果。阻塞式 `Send` 是门面的第一种驱动形态；异步形态加在同一门面上，不另建宿主。
 
@@ -167,7 +167,7 @@ loops       = PresetRef → loop.New(Executor, builder, Settings{preset.Scheduli
 - **HST-PST-1/2**：同 ID 注册不同 SystemPrompt 得到不同摘要，两版均可解析；修改注册入参或 Resolve 返回值中的嵌套字段保持注册版本不变；未知 ID 或摘要返回 `ErrPresetUnavailable`；未注册的 PromptBuilderRef 使 Loop 组合失败。
 - **HST-DRV-1/2**：同一 Run 的第二个本地驱动者得到 `already_driving` 的成功响应；ctx 取消后 Turn 保持 active、重开后驱动完成。
 - **HST-DRV-3/4**：active Turn 时 Route 走 Deliver，输入在下一次模型请求里紧随工具结果之后；无 active Turn 时 Route 开新 Turn；Drain 取全部积压开一个 Turn；`attempt_failed` 时 Route 为 conflict。
-- **HST-DRV-5**：缺失 execution record 的工具记 Unknown 且同一 RunID 继续；缺失记录的模型步被撤回，Resume 时重新规划（`ModelSteps` 只计重规划的那一步）；可重连 attempt 以实际 Outcome 完成原步骤，orphaned 保持 Executing；Open 请求取消后恢复监听继续，Session/Host 关闭后监听退出；旧进程的迟到结算被围栏。
+- **HST-DRV-5**：`missing` execution record 的工具记 Unknown 且同一 RunID 继续；缺失记录的模型步被撤回，Resume 时重新规划（`ModelSteps` 只计重规划的那一步）；`active`/`terminal` attempt 以实际 Outcome 完成原步骤，`orphaned` 映射为 `deferred` 并保持 Executing；Open 请求取消后恢复监听继续，Session/Host 关闭后监听退出；旧进程的迟到结算被围栏。
 - **HST-SES-1/2/3**：OpenSession 顺序；Send 的首个 Result 与排空 Result；并发 Send 的 `already_driving` 收敛。
 - **HST-SES-4、HST-EVT-1**：Submit 在模型仍阻塞时已返回且 Turn 为 active；事件流按 Seq 顺序交付该 Turn 的 `started` 与 `completed`；后台驱动失败以 `Event{Err}` 与 `Ports.Warn` 报告；同一 Session 上 Send 仍阻塞到 Result。
 - **HST-CKP-1/2**：Compact 的模型请求经 Executor 到达模型；压缩后下一请求以 summary 开头且只含 retained 后缀；重启进程组装同一上下文；active Turn 时 Compact 为 conflict；封闭校验的四类边界。

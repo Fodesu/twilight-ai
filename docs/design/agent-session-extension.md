@@ -1,6 +1,6 @@
 # Twilight Agent Session Module Framework
 
-状态：设计草案。本文是 Session Module Framework 的目标设计。写入串行与幂等重放由进程内的 `Writer` 承担，kernel 只提供追加日志（[agent-session.md](agent-session.md)）。
+状态：v1 设计规范。本文定义 Session Module Framework。写入串行与幂等重放由进程内的 `Writer` 承担，kernel 只提供追加日志（[agent-session.md](agent-session.md)）。
 
 本文定义建立在 `agent/session` 与 `agent/artifact` 之上的 Session Module Framework。实现分两个包：`agent/session/extension` 承载声明的词汇、`Registry` 与投影引擎，`agent/session/writer` 承载写入路径；文中的"必须""不得""应该"是协议约束；JSON canonicalization 与 digest 遵循 `agent/jsonstable`、`agent/es`。
 
@@ -172,6 +172,7 @@ type Writer interface {
     Epoch() session.Epoch
     Commit(context.Context, CommitFn) (CommitResult, error)
     Projections() ProjectionReader   // 读取本 Writer 维护的投影
+    OwnerExists(context.Context, artifact.ClaimOwner) (bool, error)
     Close(context.Context) error
 }
 func OpenWriter(ctx, store session.Store, registry *Registry, admission Admission, sid session.SessionID, opts session.OpenOptions) (Writer, error)
@@ -196,6 +197,7 @@ type Writers interface {
 type WritersConfig struct {
     Cache       ProjectionCache // 折叠结果的存放处（EXT-PRJ-3）
     CachePolicy CachePolicy     // 刷新哪个投影、何时刷新；nil 即 CacheEvery(DefaultCacheEvery)，部署调 n 即可改区间
+    Observers   []CommitObserver // 已应用 group 的最佳努力通知
 }
 func NewWriters(store session.Store, registry *Registry, admission Admission, opts session.OpenOptions, cfg WritersConfig) Writers
 ```
