@@ -20,16 +20,19 @@ agent-workspace.md            可选 Workspace/Runtime/TargetRef domain
 依赖方向是：
 
 ```text
-Session kernel
-    ↑
-Module framework / Artifact
-    ↑
-Chatlog / Run / Turn
-    ↑
-Decision / Host
-    ↑
-Application / transport / provider adapter
+agent/session (kernel)       agent/artifact (independent core)
+          \                  /
+           agent/session/extension
+                    ↓
+        chatlog / session-run / turn
+                    ↓
+             decision / host
+                    ↓
+       application / transport / provider adapter
 ```
+
+`agent/run` 与 `agent/turn` 的协议核心保持独立；它们的 Session adapter 才依赖
+Module Framework。Workspace 同样是可选 application domain，不是 Core 的依赖。
 
 Workspace 是可选的 application domain。Agent Core 只携带 opaque `TargetRef`，不
 解释 Workspace、Runtime 或 provider 的生命周期。

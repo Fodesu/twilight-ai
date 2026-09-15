@@ -31,7 +31,7 @@ Atomic Event Group ────────────────┘
        Runtime / Context / UI
 ```
 
-1. **唯一权威历史。** `Session = append-only Event Stream`，`State = Fold(Events)`。Turn、Run、Chatlog 不各自持有权威状态，它们的事实同在一条 stream 上（§2.1 authority）。stream 之外只有两类持久数据，且都以 digest 被 stream 锚定：内容寻址的 artifact `cas` ContentStore 存内容本体——模型请求本体是其一个 Authority，作为 Assignment 内容从 authority 传递到 executor 的副本，Run 事实只记其 digest，恢复不依赖它（RUN-WIR-4、RUN-CMT-7）；artifact 的 `RetentionLedger` 自持久化，claim 先于 Append 建立（EXT-WRT-3）。
+1. **唯一权威历史。** `Session = append-only Event Stream`，`State = Fold(Events)`。Turn、Run、Chatlog 不各自持有 Session 的权威状态，它们的事实同在一条 stream 上（§2 authority）。stream 之外还有三类有明确 owner 的持久数据：内容寻址的 artifact `cas` ContentStore 存内容本体；artifact 的 `RetentionLedger` 保存 claim；Executor 的 durable Execution Store 保存已接受 Assignment 的执行状态与结果。前两类中被 Session 引用的内容以 digest 锚定，模型请求本体作为 Assignment 内容从 authority 传递到 executor，Run 事实只记其 digest，恢复不依赖 authority 的短期本体（RUN-WIR-4、RUN-CMT-7）。Execution Store 是效果层的 authority，不是 Session 事实的第二份来源；Session 只通过 Assignment/Outcome 与它交互。claim 先于 Append 建立（EXT-WRT-3）。
 
 2. **语义串行化。** 同一 Session 的全部写入（Turn、Run、恢复、Checkpoint）经进程内唯一的 `Writer.Commit`，形成一个确定的全序（EXT-SCP-1、EXT-WRT-1）。kernel 不承担并发控制（SES-SCP-2）。
 
@@ -39,7 +39,7 @@ Atomic Event Group ────────────────┘
 
 4. **原子 Semantic Group。** 一个领域动作产生的多个 event 要么全部出现，要么全部不存在（SES-APP-1）；底层事务或 fsync 只是它的物理实现。崩溃只可能留下一个不完整尾组，`Open` 在确立 head 之前把它截掉，reader 在任何时刻都看不到不完整的组（SES-APP-2）。
 
-5. **Session 级 Ownership 与 Fencing。** `Handle + Epoch`：同一 Session 同一时刻至多一个有效写者；接管使 Epoch 加一并持久化，旧 Handle 的迟到写入被拒（SES-OWN-1/2）。所有权是 Session 级而非执行目标级：接管者对全部执行中的目标做一次询问后处置——仍在执行的 attempt 重连，其余处置（SES-OWN-3、RUN-CMT-7）。何时接管是 kernel 之上的策略，kernel 不承载 TTL 或心跳。
+5. **Session 级 Ownership 与 Fencing。** `Handle + Epoch`：同一 Session 同一时刻至多一个有效写者；接管使 Epoch 加一并持久化，旧 Handle 的迟到写入被拒（SES-OWN-1/2）。所有权是 Session 级而非执行目标级：接管者对全部执行中的目标查询，并根据结果重连、延迟或处置（SES-OWN-3、RUN-CMT-7）。何时接管是 kernel 之上的策略，kernel 不承载 TTL 或心跳。
 
 6. **幂等语义提交。** `CommitID + semantic fingerprint`：同 ID 同内容为 `AlreadyApplied`，同 ID 不同内容为 `Conflict`，两者都不写入（EXT-WRT-2）。fingerprint 覆盖 Type、SourceSeqs、Payload，不含时间。kernel 只拒绝重复 CommitID 并提供该索引的读侧（SES-APP-3、SES-REP-3/4），比对由 Writer 完成。恢复与重放因此不会重复写事实。
 
@@ -53,7 +53,7 @@ Atomic Event Group ────────────────┘
 
 11. **同组伴随写入。** Run 事实与它产生的对话内容（assistant、tool_result）写在同一组：内容只出现一次，事实只记 digest（RUN-WIR-4、TRN-CMP、Chatlog 第 1 节）。这是第 4 条最重要的应用。
 
-12. **崩溃后果的封闭集合。** 崩溃只可能留下不完整尾组（第 4 条）与孤儿 claim（回收前核对释放，ART-RET-3）；执行中的目标由接管者询问后处置（第 5 条）：仍在执行的 attempt 重连、其余记为终态事实，两者都不触发自动重试；崩溃恢复、语义重试、重新生成回答四种情形的身份边界见 TRN-DUR-1 至 4。没有其他需要修复的中间状态。
+12. **崩溃后果的封闭集合。** Session 崩溃只可能留下不完整尾组（第 4 条）与孤儿 claim（回收前核对释放，ART-RET-3）；Executor 崩溃还可能留下需要查询的 durable execution record。Session 接管者询问执行目标后重连或处置；两者都不触发自动重试。崩溃恢复、语义重试、重新生成回答和外部效果未知的身份边界见 TRN-DUR-1 至 4；Execution Store 的恢复由效果层合同负责。
 
 13. **读不需要所有权。** 任何进程可随时读完整组构成的前缀（SES-OWN-4）；观察者用 `NewProjectionReader` 从 Store 折叠，与 owner 一致（第 7 条）。
 
@@ -225,10 +225,8 @@ v1 conformance 以 `Store` 为参数，每个 adapter 跑同一套，必须验�
 
 kernel 的 `ProtocolVersion` 覆盖 header 字段、event 行字段、digest preimage 与组完整性规则（SES-VER-2）。
 
-## 8. fork、ancestry 与 canonical import
+## 8. v1 范围外
 
-**Fork。** `ForkPoint{ParentSessionID, Seq, Digest}`；子 Session 以父在 `Digest` 处的状态为 seed，header 记 `ParentFork`，seed 之后第一行的 prev digest 为 `ForkPoint.Digest`。
-
-**Canonical import。** 按行校验 digest 链后导入完整日志，或导入已有可验证前缀的连续尾部；同 `(SessionID, Seq)` 仅在行逐字节相同时幂等。
-
-**投影缓存与 ancestry。** Fork 之后，投影缓存的 `Through` 绑定 ancestry 而非单个 `Seq`（EXT-PRJ-3）。
+Fork、ancestry 和 canonical import 不属于当前 v1 Session 合同。当前 profile 对非空
+`ParentFork` 拒绝；实现这些能力前，必须先定义新的 stream seed、digest 链、投影缓存
+through 和导入幂等语义。任何 v1 authority 不得依赖 fork 或 canonical import。

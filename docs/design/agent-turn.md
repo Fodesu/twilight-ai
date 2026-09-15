@@ -27,7 +27,7 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 | resume | 继续一个非终态 Run（进程重启、接管、Waiting 响应后） | 不变 |
 | retry | 前一 Run 已终结且未 completed，同一 Turn 再开一个 attempt | 新 RunID，`Attempt` 加 1 |
 | replace | 输入内容被替换，`twilight/turn/superseded` 指向新 Turn | 新 Turn、新 RunID |
-| regenerate | 已 completed 的回答需要重新生成：新 Turn（可经 `superseded` 关联）或 Session fork；原 Turn 不变 | 新 Turn、新 RunID，或新 stream |
+| regenerate | 已 completed 的回答需要重新生成：v1 使用新 Turn（可经 `superseded` 关联）；Session fork 暂不支持 | 新 Turn、新 RunID |
 
 四种动作的持久性语义在第 7 节 TRN-DUR-1 至 4 逐条区分。subagent 使用独立 Session 与独立 Turn。
 
@@ -308,7 +308,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 
 **TRN-DUR-2（语义重试是新 Run、同一 Turn）** Application 显式指定 `PreviousRunID` 发起新 Retry，按 TRN-RTY-1 创建 attempt n+1、新 RunID，并重新接受该 Turn 已 delivered 的全部输入。历史 Retry 按 TRN-RTY-2 确认原提交；崩溃恢复按 TRN-DUR-1 继续原 Run。失败 attempt 的 assistant 与 tool_result 保留在 stream 中，是否进入新 attempt 的模型请求由 PromptBuilder 决定（TRN-RTY-3）。
 
-**TRN-DUR-3（重新生成已提交的回答是新 Turn 或分支）** 已 completed 的 Turn 及其回答是不可变事实：不存在"修改回答""重开同一 Turn"或"对 completed Turn 再开 attempt"。`Start` 要求输入处于 `submitted`（TRN-STR-1），已 delivered 的输入不能再次开 Turn，因此重新生成只有两种形态：(a) 同一 stream 内的新 Turn——Application 提交新 Input（内容可与原输入相同）并 Start；若它在语义上替代原 Turn，以 `twilight/turn/superseded` 关联（TRN-API-4），原回答是否进入上下文由 PromptBuilder 决定；(b) 分支——在原 Turn 的 `started` 之前的 Seq 处 fork Session（SES 第 8 节），在新 stream 上开 Turn。两种形态都不改写历史。
+**TRN-DUR-3（重新生成已提交的回答是新 Turn）** 已 completed 的 Turn 及其回答是不可变事实：不存在"修改回答"、"重开同一 Turn"或"对 completed Turn 再开 attempt"。`Start` 要求输入处于 `submitted`（TRN-STR-1），已 delivered 的输入不能再次开 Turn，因此 v1 重新生成只能在同一 stream 内创建新 Turn——Application 提交新 Input（内容可与原输入相同）并 Start；若它在语义上替代原 Turn，以 `twilight/turn/superseded` 关联（TRN-API-4），原回答是否进入上下文由 PromptBuilder 决定。Session fork 属于 v1 范围外（SES 第 8 节）；该形态不改写已有历史。
 
 **TRN-DUR-4（外部效果未知不等于重试）** owner 丢失时处于 Executing 的工具 call 有两种去向，由 Executor 是否仍持有该 attempt 决定（RUN-CMT-7）：仍持有则等待同一次执行的 Outcome，这是重连，不是重试；不再持有则由接管处置记为 Unknown，companion 写 status=`unknown` 的 `tool_result`。Unknown 是该 call 的终态事实，协议在任何路径上都不重新执行它：接管处置不执行（它只记录）；下一次 Loop 不执行（start barrier 只启动 Pending call，Executing 与终态 call 永不重跑，RUN-LOP-4）；Retry 不执行（新 attempt 从上下文重新规划步骤，Unknown 结果作为对话内容可见）。外部效果是否已经发生、是否需要重做，由模型依据上下文判断，或由 Application 在带外核实后以 `tool_result_superseded` 换成 `success`/`error`（CHT-ENT-2）；两者都是决定，不是协议的自动行为。`CancelRun` 留下的 `UncertainCalls` 同理。
 

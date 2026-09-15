@@ -530,8 +530,9 @@ func Reattach(lifetime context.Context, exec Executor, sid session.SessionID, de
 
 ```go
 type Settings struct {
-    Scheduling run.ToolScheduling // 来自 AgentPreset：工具调用并行/串行与并发上限
-    MalformedRetries uint8        // 来自 AgentPreset：畸形模型结果的重试上限
+    Scheduling       run.ToolScheduling // 来自 AgentPreset：工具调用并行/串行与并发上限
+    MalformedRetries uint8              // 来自 AgentPreset：畸形模型结果的重试上限
+    TargetResolver   TargetResolver     // application 提供的 opaque target 解析器
 }
 type LoopResult struct {
     Disposition LoopDisposition // LoopWaiting | LoopFinished | LoopDispatched | LoopDelivered | LoopDropped
