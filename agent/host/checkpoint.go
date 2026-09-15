@@ -244,7 +244,7 @@ func (s *Session) summarize(ctx context.Context, entries []chatlog.Entry) (strin
 	}
 	a := loop.Assignment{Session: s.sid, RunID: run.RunID("compact-" + randomHex(8)), StepID: "summary",
 		Claim: run.ExecutionClaim(randomHex(16)), Schema: run.SchemaVersion1, Kind: loop.AssignmentModel,
-		Model: &loop.ModelAssignment{Model: preset.Model, RequestDigest: digest}}
+		Model: &loop.ModelAssignment{Model: preset.Model, Request: &frozen, RequestDigest: digest}}
 	if err := s.h.Executor.Dispatch(ctx, a); err != nil {
 		return "", err
 	}

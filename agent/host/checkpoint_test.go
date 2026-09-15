@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/felinics/twilight/agent/executor"
+	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/host"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
@@ -181,6 +183,65 @@ func TestCompactRefusesWhileTurnActive(t *testing.T) {
 	close(tool.release)
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The compactor's model Assignment must carry the frozen request inline: the
+// durable Worker (the remote executor shape) cannot read the authority's
+// frozen store and rejects digest-only model assignments (HST-CKP-1,
+// RUN-EXE-1, RUN-EXE-3).
+func TestCompactDispatchServesDurableWorker(t *testing.T) {
+	ctx := context.Background()
+	store := session.NewMemoryStore()
+	content := memoryContent()
+	model := &compactAwareModel{}
+	cat, err := host.NewCatalog(map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := host.NewLocalExecutor(cat, content, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, err := executor.NewWorker(ctx, executionstore.NewMemoryStore(), local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := host.New(host.Ports{Store: store, Content: content, Executor: worker,
+		Ownership: session.OpenOptions{Takeover: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := h.Presets.Register("b1", mustPreset("m-1", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := h.OpenSession(ctx, "s-ckpt-remote", host.SessionOptions{Preset: ref, CompactRetainEntries: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"one", "two"} {
+		if _, err := s.Send(ctx, text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id, ok, err := s.Compact(ctx)
+	if err != nil || !ok {
+		t.Fatalf("compact through durable worker = %s %v %v", id, ok, err)
+	}
+	chat, err := h.ChatlogSurface(ctx, "s-ckpt-remote")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := chat.Checkpoints.Get(id); v.Status != chatlog.CheckpointActive {
+		t.Fatalf("checkpoint = %+v", v)
+	}
+	if _, err := s.Send(ctx, "three"); err != nil {
+		t.Fatal(err)
+	}
+	reqs := model.requests()
+	if got := messageTexts(reqs[len(reqs)-1]); !equalStrings(got, []string{"assistant: summary-of-the-past", "assistant: reply-2", "user: three"}) {
+		t.Fatalf("post-compact request = %v", got)
 	}
 }
 
