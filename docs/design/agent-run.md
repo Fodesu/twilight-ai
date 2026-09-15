@@ -534,6 +534,8 @@ func Reattach(lifetime context.Context, exec Executor, sid session.SessionID, de
 
 **RUN-EXE-7（Assignment payload）** Dispatch 必须携带内联 payload：模型 Assignment 的 `ModelRequest` 随 Assignment 内联，Executor 派生 request digest 并校验 `RequestDigest` 与 ModelRef 一致后才接受，接受时把完整 Assignment 持久化进 Execution Record；`Attach`/`GetStatus`/`GetOutcome`/`Cancel` 只按 AssignmentKey 定位记录，从不读取 payload。digest-only 的模型 Assignment 只允许出现在 authority 内部的 `AssignmentFromTarget` 重建（RUN-CMT-7 的 Attach 询问），不得进入 Dispatch：缺少内联请求体的 Dispatch 是确定的 acceptance 拒绝，效果未开始。FrozenValueStore 仍是 Authority 侧的持久旁存（RUN-WIR-4）；执行 payload 的生命周期由 Execution Record 管理，Executor 在执行时不反查 Authority 的 FrozenValueStore。
 
+**RUN-EXE-8（部署说明）** v1 假设 worker 池同构：池内全部节点服务同一 Catalog（同一 ModelRef、ToolRef 集合与定义 digest），Assignment 的 definition digest 校验在同构池上恒通过，异构池上转为确定性拒绝；跨异构池的放置由 application 路由，协议不规定。数据面与控制面只面向 loopback 同机信任域：协议层的线上身份只有 ExecutionClaim（RUN-EXE-1）与 Execution Store 的 owner/fencing epoch，无认证机制；跨机器部署由 application 在信任域边界提供传输保护，协议不规定。v1 不规定推送通道：authority 侧统一经 GetOutcome 长轮询读取结果，deployment 层的通知只作为唤醒读取方的优化（RUN-EXE-2），不改变读取语义。
+
 ```go
 type Settings struct {
     Scheduling       run.ToolScheduling // 来自 AgentPreset：工具调用并行/串行与并发上限
