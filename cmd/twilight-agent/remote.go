@@ -22,6 +22,8 @@ import (
 	runmod "github.com/felinics/twilight/agent/session/run"
 )
 
+const reconcileInterval = 2 * time.Second
+
 func newExecutor(ctx context.Context, root string, models map[run.ModelRef]loop.ModelInvoker, tools []loop.ExecutableTool) (*executor.Worker, error) {
 	content, err := filestore.NewContentStore(root, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
 	if err != nil {
@@ -39,7 +41,7 @@ func newExecutor(ctx context.Context, root string, models map[run.ModelRef]loop.
 	if err != nil {
 		return nil, err
 	}
-	return executor.NewWorker(ctx, records, backend)
+	return executor.NewWorker(ctx, records, backend, executor.WorkerOptions{ReconcileInterval: reconcileInterval})
 }
 
 func listenLoopback(address string) (net.Listener, error) {

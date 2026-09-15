@@ -543,6 +543,120 @@ func TestWorkerReclaimsExpiredAssignment(t *testing.T) {
 	}
 }
 
+func TestWorkerReconcileAdoptsExpiredLease(t *testing.T) {
+	ctx := context.Background()
+	base := time.Unix(100, 0)
+	now := base.Add(2 * time.Second)
+	records := store.NewMemoryStore(store.MemoryStoreOptions{Now: func() time.Time { return now }})
+	a := testAssignment()
+	digest, err := a.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+		Owner: "dead-worker", FencingEpoch: 4, LeaseUntilUnixMilli: base.Add(time.Second).UnixMilli()}
+	if err := records.Put(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	backend := newTestBackend()
+	worker, err := executor.NewWorker(ctx, records, backend, executor.WorkerOptions{
+		ID: "worker-b", LeaseDuration: time.Second, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n, err := worker.Reconcile(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("reconcile offered = %d, want 1", n)
+	}
+	readCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	out, err := worker.GetOutcome(readCtx, a.Key())
+	if err != nil || out.Model == nil || out.Model.Text != "ok" {
+		t.Fatalf("adopted outcome = %+v, %v", out, err)
+	}
+	got, _, err := records.Get(ctx, a.Key())
+	if err != nil || got.Owner != "worker-b" {
+		t.Fatalf("adopted record = %+v, %v", got, err)
+	}
+	backend.mu.Lock()
+	calls := backend.calls
+	backend.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("backend calls = %d, want 1", calls)
+	}
+}
+
+func TestWorkerReconcileLeavesLiveLease(t *testing.T) {
+	ctx := context.Background()
+	base := time.Unix(100, 0)
+	now := base
+	records := store.NewMemoryStore(store.MemoryStoreOptions{Now: func() time.Time { return now }})
+	a := testAssignment()
+	digest, err := a.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+		Owner: "worker-a", FencingEpoch: 4, LeaseUntilUnixMilli: base.Add(time.Second).UnixMilli()}
+	if err := records.Put(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	backend := newTestBackend()
+	worker, err := executor.NewWorker(ctx, records, backend, executor.WorkerOptions{
+		ID: "worker-b", LeaseDuration: time.Second, Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := worker.Reconcile(ctx); err != nil || n != 0 {
+		t.Fatalf("reconcile = %d, %v; want no candidates", n, err)
+	}
+	got, _, err := records.Get(ctx, a.Key())
+	if err != nil || got.Owner != "worker-a" || got.FencingEpoch != 4 {
+		t.Fatalf("live record changed: %+v, %v", got, err)
+	}
+	backend.mu.Lock()
+	calls := backend.calls
+	backend.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("reconcile dispatched %d backend calls", calls)
+	}
+}
+
+func TestWorkerReconcileLoopAdoptsOrphanedRecord(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	records := store.NewMemoryStore()
+	a := testAssignment()
+	digest, err := a.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionDispatching,
+		Owner: "dead-worker", FencingEpoch: 2, LeaseUntilUnixMilli: time.Now().Add(-time.Second).UnixMilli()}
+	if err := records.Put(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	backend := newTestBackend()
+	worker, err := executor.NewWorker(ctx, records, backend, executor.WorkerOptions{
+		ID: "worker-b", LeaseDuration: time.Second, ReconcileInterval: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := worker.GetOutcome(ctx, a.Key())
+	if err != nil || out.Model == nil || out.Model.Text != "ok" {
+		t.Fatalf("reconciled outcome = %+v, %v", out, err)
+	}
+	backend.mu.Lock()
+	calls := backend.calls
+	backend.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("backend calls = %d, want 1", calls)
+	}
+}
+
 func TestFileStoreSurvivesWorkerRecreation(t *testing.T) {
 	ctx := context.Background()
 	fs, err := store.NewFileStore(t.TempDir())

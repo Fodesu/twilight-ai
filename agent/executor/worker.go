@@ -23,6 +23,15 @@ type WorkerOptions struct {
 	// restarted process while an older incarnation could still be alive.
 	ID            string
 	LeaseDuration time.Duration
+	// ReconcileInterval starts a background control-plane loop that adopts
+	// execution records whose lease expired — orphaned assignments left by a
+	// dead incarnation, including ones this Worker's own heartbeat lost. Zero
+	// disables the loop; deployments with an external control plane call
+	// Takeover explicitly instead.
+	ReconcileInterval time.Duration
+	// Clock reads the lease clock. It must agree with the Store's clock; the
+	// Store remains the fencing authority. Defaults to time.Now.
+	Clock func() time.Time
 }
 
 const defaultLeaseDuration = 30 * time.Second
@@ -30,12 +39,15 @@ const defaultLeaseDuration = 30 * time.Second
 // Worker owns execution leases, not Session ownership. A Worker can acquire
 // an expired Assignment from a shared Store and resume it using the payload
 // persisted in the execution record. Takeover is explicit: failure detection
-// and the decision to retry an effect belong to the control plane.
+// and the decision to retry an effect belong to the control plane; Reconcile
+// is the built-in loop form of that decision, while deployments with an
+// external control plane drive Takeover directly.
 type Worker struct {
 	store     executionstore.Store
 	backend   effect.Port
 	id        string
 	lease     time.Duration
+	now       func() time.Time
 	lifecycle context.Context
 
 	mu     sync.Mutex
@@ -63,10 +75,17 @@ func NewWorker(ctx context.Context, records executionstore.Store, backend effect
 	if opts.LeaseDuration <= 0 {
 		opts.LeaseDuration = defaultLeaseDuration
 	}
-	w := &Worker{store: records, backend: backend, id: opts.ID, lease: opts.LeaseDuration,
+	now := opts.Clock
+	if now == nil {
+		now = time.Now
+	}
+	w := &Worker{store: records, backend: backend, id: opts.ID, lease: opts.LeaseDuration, now: now,
 		lifecycle: context.WithoutCancel(ctx), notify: make(map[effect.AssignmentKey]chan struct{})}
 	if err := w.recover(ctx); err != nil {
 		return nil, err
+	}
+	if opts.ReconcileInterval > 0 {
+		go w.reconcileLoop(opts.ReconcileInterval)
 	}
 	return w, nil
 }
@@ -138,6 +157,50 @@ func (w *Worker) Takeover(ctx context.Context, key effect.AssignmentKey) error {
 		return nil
 	}
 	return w.acquireAndStart(ctx, key)
+}
+
+// Reconcile offers every non-terminal execution record whose lease expired —
+// or that was never acquired — to Takeover. It is the control-plane step for
+// orphaned executions: a restarted Worker resumes them from the persisted
+// payload, first trying to attach the previous backend execution and only
+// re-dispatching after the backend reports it unattachable. Records under a
+// live lease, this Worker's or another's, are skipped; the store remains the
+// fencing authority. One record's failure does not stop the others. It
+// returns the number of records handed to Takeover.
+func (w *Worker) Reconcile(ctx context.Context) (int, error) {
+	records, err := w.store.List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	now := w.now().UnixMilli()
+	var firstErr error
+	n := 0
+	for _, r := range records {
+		if protocol.StatusTerminal(r.State) {
+			continue
+		}
+		if r.FencingEpoch != 0 && r.LeaseUntilUnixMilli > now {
+			continue
+		}
+		if err := w.Takeover(ctx, r.Assignment.Key()); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		n++
+	}
+	return n, firstErr
+}
+
+func (w *Worker) reconcileLoop(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-w.lifecycle.Done():
+			return
+		case <-ticker.C:
+			_, _ = w.Reconcile(w.lifecycle)
+		}
+	}
 }
 
 func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) error {
@@ -559,7 +622,9 @@ func (w *Worker) recover(ctx context.Context) error {
 		}
 		attachment, attachErr := w.attachBackend(ctx, r.Assignment.Key(), r.ExecutionBinding)
 		if attachErr != nil {
-			return attachErr
+			// One broken backend read must not block recovery of the other
+			// records; a later Reconcile or explicit Takeover retries this one.
+			continue
 		}
 		if attachment.State == effect.AttachmentActive || attachment.State == effect.AttachmentTerminal {
 			done := make(chan struct{})
