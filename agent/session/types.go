@@ -27,6 +27,11 @@ type (
 // only; payload versions are carried by modules (SES-VER-1).
 const ProtocolVersion1 uint16 = 1
 
+// ProtocolVersion2 replaces the v1 row model with the commit ledger: events
+// carry no transaction metadata (no Seq/CommitID/Index/Last per row); the
+// Commit is the atomic, chained unit and one Commit may span logical streams.
+const ProtocolVersion2 uint16 = 2
+
 // SessionHeader is the immutable creation record of a stream.
 type SessionHeader struct {
 	ProtocolVersion    uint16           `json:"protocolVersion"`

@@ -118,20 +118,27 @@ func ValidateChain(p ProtocolProfile, header SessionHeader, rows []SessionEvent)
 // ValidateUncommitted checks one event of a group before it is sealed:
 // identities and a canonical JSON object payload (SES-WIR-1).
 func ValidateUncommitted(e *UncommittedEvent) error {
-	if err := validIdentity("EventType", string(e.Type)); err != nil {
+	return validateEventShape(e.Type, e.Payload)
+}
+
+// validateEventShape checks the event invariants every protocol version
+// seals: a non-empty valid-UTF-8 type and a canonical JSON object payload.
+// It is shared by the v1 row writer and the v2 commit sealer.
+func validateEventShape(typ EventType, payload jsonstable.Value) error {
+	if err := validIdentity("EventType", string(typ)); err != nil {
 		return err
 	}
-	if e.Payload.IsZero() {
+	if payload.IsZero() {
 		return errors.New("empty payload")
 	}
-	canon, err := jsonstable.Canonicalize(e.Payload.Bytes())
+	canon, err := jsonstable.Canonicalize(payload.Bytes())
 	if err != nil {
 		return fmt.Errorf("payload: %w", err)
 	}
-	if !bytes.Equal(canon, e.Payload.Bytes()) {
+	if !bytes.Equal(canon, payload.Bytes()) {
 		return errors.New("payload is not canonical")
 	}
-	if !bytes.HasPrefix(bytes.TrimSpace(e.Payload.Bytes()), []byte("{")) {
+	if !bytes.HasPrefix(bytes.TrimSpace(payload.Bytes()), []byte("{")) {
 		return errors.New("payload is not an object")
 	}
 	return nil
