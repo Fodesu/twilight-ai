@@ -43,7 +43,7 @@ func TestWriterRetriesReleasedClaims(t *testing.T) {
 	}
 	w := open()
 	defer func() { _ = w.Close(ctx) }()
-	id := DeriveClaimID(session.ProtocolVersion2, "s", "c1", set.RefSetDigest)
+	id := DeriveClaimID(session.ProtocolVersion1, "s", "c1", set.RefSetDigest)
 	for _, mode := range []string{"invalid", "invalid", "before", "before"} {
 		fs.arm(mode)
 		if _, err := w.Commit(ctx, group); err == nil {
@@ -83,7 +83,7 @@ func TestWriterRejectsMismatchedReleasedClaim(t *testing.T) {
 			f.ledger = artifact.NewMemoryLedger(nil)
 			w := f.open(t, false)
 			defer w.Close(ctx)
-			id := DeriveClaimID(session.ProtocolVersion2, "s", "c1", set.RefSetDigest)
+			id := DeriveClaimID(session.ProtocolVersion1, "s", "c1", set.RefSetDigest)
 			owner := CommitOwner("s", "c1")
 			switch field {
 			case "owner":

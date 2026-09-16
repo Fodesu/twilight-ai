@@ -1,6 +1,6 @@
 # Twilight Agent Session Protocol
 
-状态：v2 设计规范（commit ledger）。本文定义 Session ES kernel；v1 行格式（一行一个 SessionEvent、按行 digest）已被 v2 取代。
+状态：v1 设计规范（commit ledger）。本文定义 Session ES kernel。本文档随 feat/agent-runtime 分支首次发布；定稿前的行格式（一行一个 SessionEvent、按行 digest）从未对外发布，由 commit ledger 取代。
 
 本文定义 Twilight Session 的 Event Sourcing kernel。文中的"必须""不得""应该"是协议约束。
 

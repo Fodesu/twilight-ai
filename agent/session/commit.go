@@ -127,22 +127,22 @@ type LedgerProfile interface {
 	ValidateHeader(SessionHeader) error
 }
 
-// ProfileV2 returns the ProtocolVersion2 commit-ledger profile.
-func ProfileV2() LedgerProfile { return profileV2{version: ProtocolVersion2} }
+// ProfileV1 returns the ProtocolVersion1 commit-ledger profile.
+func ProfileV1() LedgerProfile { return profileV1{version: ProtocolVersion1} }
 
 // LedgerProfileFor returns the commit-ledger profile bound to version.
 func LedgerProfileFor(version uint16) (LedgerProfile, error) {
-	if version == ProtocolVersion2 {
-		return profileV2{version: version}, nil
+	if version == ProtocolVersion1 {
+		return profileV1{version: version}, nil
 	}
 	return nil, &Error{Code: ErrUnsupportedProfile, Operation: "profile", Detail: fmt.Sprintf("protocol version %d", version)}
 }
 
-// profileV2 freezes the commit wire of one ProtocolVersion. The version is a
+// profileV1 freezes the commit wire of one ProtocolVersion. The version is a
 // field so it reaches every digest domain separator (SES-VER-2).
-type profileV2 struct{ version uint16 }
+type profileV1 struct{ version uint16 }
 
-func (p profileV2) Version() uint16 { return p.version }
+func (p profileV1) Version() uint16 { return p.version }
 
 type batchEventBody struct {
 	Type                EventType
@@ -165,14 +165,14 @@ type commitDigestBody struct {
 	Batches   []es.Digest
 }
 
-func (p profileV2) HeaderDigest(h SessionHeader) (es.Digest, error) {
+func (p profileV1) HeaderDigest(h SessionHeader) (es.Digest, error) {
 	if h.ParentFork != nil {
 		return "", &Error{Code: ErrUnsupported, Operation: "header", SessionID: h.SessionID, Detail: "fork is not implemented"}
 	}
 	return digestDomain(p.version, "twilight/session/header", headerDigestBody{h.ProtocolVersion, h.SessionID, h.CreatedAtUnixMilli, h.CausationID, h.Metadata})
 }
 
-func (p profileV2) BatchDigest(sid SessionID, batch StreamBatch) (es.Digest, error) {
+func (p profileV1) BatchDigest(sid SessionID, batch StreamBatch) (es.Digest, error) {
 	body := batchDigestBody{SessionID: sid, Stream: batch.Stream, Events: make([]batchEventBody, len(batch.Events))}
 	for i := range batch.Events {
 		e := &batch.Events[i]
@@ -181,11 +181,11 @@ func (p profileV2) BatchDigest(sid SessionID, batch StreamBatch) (es.Digest, err
 	return digestDomain(p.version, "twilight/session/batch", body)
 }
 
-func (p profileV2) CommitDigest(prev es.Digest, sid SessionID, seq CommitSeq, commitID CommitID, epoch Epoch, batches []es.Digest) (es.Digest, error) {
+func (p profileV1) CommitDigest(prev es.Digest, sid SessionID, seq CommitSeq, commitID CommitID, epoch Epoch, batches []es.Digest) (es.Digest, error) {
 	return digestDomain(p.version, "twilight/session/commit", commitDigestBody{prev, sid, seq, commitID, epoch, batches})
 }
 
-func (p profileV2) ValidateHeader(h SessionHeader) error {
+func (p profileV1) ValidateHeader(h SessionHeader) error {
 	if h.ProtocolVersion != p.version {
 		return &Error{Code: ErrUnsupportedProfile, Operation: "header", SessionID: h.SessionID}
 	}

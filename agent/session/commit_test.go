@@ -10,8 +10,8 @@ import (
 
 func v2Header(t *testing.T, sid SessionID) SessionHeader {
 	t.Helper()
-	h := SessionHeader{ProtocolVersion: ProtocolVersion2, SessionID: sid, CreatedAtUnixMilli: 1}
-	d, err := ProfileV2().HeaderDigest(h)
+	h := SessionHeader{ProtocolVersion: ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}
+	d, err := ProfileV1().HeaderDigest(h)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestValidateBatches(t *testing.T) {
 }
 
 func TestSealCommit(t *testing.T) {
-	p := ProfileV2()
+	p := ProfileV1()
 	h := v2Header(t, "s")
 	c := Commit{Seq: 0, CommitID: "c1", Epoch: 3, Batches: []StreamBatch{
 		oneEventBatch(StreamRef{Kind: StreamKindSession}, "twilight/x/a", `{"a":1}`),
@@ -182,7 +182,7 @@ func TestSealCommit(t *testing.T) {
 // commit spanning the session stream and run stream r7.
 func sealedPair(t *testing.T) (LedgerProfile, SessionHeader, []Commit) {
 	t.Helper()
-	p := ProfileV2()
+	p := ProfileV1()
 	h := v2Header(t, "s")
 	c0 := Commit{Seq: 0, CommitID: "c1", Epoch: 1, Batches: []StreamBatch{
 		oneEventBatch(StreamRef{Kind: StreamKindSession}, "twilight/x/a", `{"a":1}`),

@@ -63,7 +63,7 @@ func New(root string) (*Store, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, err
 	}
-	return &Store{root: root, profile: session.ProfileV2(), index: make(map[session.SessionID]*logIndex)}, nil
+	return &Store{root: root, profile: session.ProfileV1(), index: make(map[session.SessionID]*logIndex)}, nil
 }
 
 // LogPath returns the Session's JSONL log file for direct inspection.

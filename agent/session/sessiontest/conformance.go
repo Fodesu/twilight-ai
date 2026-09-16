@@ -34,7 +34,7 @@ func Run(t *testing.T, factory Factory) {
 
 func create(t *testing.T, store session.Store, sid session.SessionID) session.SessionHeader {
 	t.Helper()
-	h, err := store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: sid, CreatedAtUnixMilli: 1})
+	h, err := store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -79,13 +79,13 @@ func appendCommit(t *testing.T, w session.Handle, id string, batches ...session.
 func testWire(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	h := create(t, f.Store, "s")
-	if h.ProtocolVersion != session.ProtocolVersion2 || h.HeaderDigest == "" {
+	if h.ProtocolVersion != session.ProtocolVersion1 || h.HeaderDigest == "" {
 		t.Fatalf("header = %+v", h)
 	}
-	if again, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: "s", CreatedAtUnixMilli: 1}); err != nil || again.HeaderDigest != h.HeaderDigest {
+	if again, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", CreatedAtUnixMilli: 1}); err != nil || again.HeaderDigest != h.HeaderDigest {
 		t.Fatalf("identical create is not idempotent: %+v %v", again, err)
 	}
-	if _, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: "s", CreatedAtUnixMilli: 2}); !session.IsCode(err, session.ErrConflict) {
+	if _, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", CreatedAtUnixMilli: 2}); !session.IsCode(err, session.ErrConflict) {
 		t.Fatalf("different create = %v, want conflict", err)
 	}
 	if _, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: 9, SessionID: "v9"}); !session.IsCode(err, session.ErrUnsupportedProfile) {
@@ -120,7 +120,7 @@ func testWire(t *testing.T, f Fixture) {
 	if err != nil || len(page.Commits) != 2 {
 		t.Fatalf("read = %+v %v", page, err)
 	}
-	if err := session.ValidateLedger(session.ProfileV2(), page.Header, page.Commits); err != nil {
+	if err := session.ValidateLedger(session.ProfileV1(), page.Header, page.Commits); err != nil {
 		t.Fatalf("ledger: %v", err)
 	}
 	if page.Header.HeaderDigest != h.HeaderDigest || page.Head.Next != 2 {
@@ -335,7 +335,7 @@ func testCrashTail(t *testing.T, f Fixture) {
 	if err != nil || len(page.Commits) != 1 {
 		t.Fatalf("commits after a torn tail = %+v, err %v; want the 1 whole commit", page.Commits, err)
 	}
-	if err := session.ValidateLedger(session.ProfileV2(), header, page.Commits); err != nil {
+	if err := session.ValidateLedger(session.ProfileV1(), header, page.Commits); err != nil {
 		t.Fatalf("ledger after recovery: %v", err)
 	}
 
@@ -349,7 +349,7 @@ func testCrashTail(t *testing.T, f Fixture) {
 	if err != nil || len(page.Commits) != 2 {
 		t.Fatalf("commits after re-append = %d, err %v; want 2", len(page.Commits), err)
 	}
-	if err := session.ValidateLedger(session.ProfileV2(), header, page.Commits); err != nil {
+	if err := session.ValidateLedger(session.ProfileV1(), header, page.Commits); err != nil {
 		t.Fatalf("ledger after re-append: %v", err)
 	}
 	for i := range page.Commits {

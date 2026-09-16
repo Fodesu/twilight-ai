@@ -77,14 +77,14 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{}
 	f.store = session.NewMemoryStore()
-	r, err := extension.BuildRegistry(session.ProtocolVersion2, noteModule("a"))
+	r, err := extension.BuildRegistry(session.ProtocolVersion1, noteModule("a"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.registry = r
 	f.bindings = artifact.NewMemoryBindingStore()
 	f.ledger = artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: f.bindings})
-	if _, err := f.store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: "s"}); err != nil {
+	if _, err := f.store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	return f
@@ -434,7 +434,7 @@ func TestBindingAdmission(t *testing.T) {
 
 	maxTwo := uint32(2)
 	typ := tpfx("r") + "ref"
-	reg, err := extension.BuildRegistry(session.ProtocolVersion2, extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "r",
+	reg, err := extension.BuildRegistry(session.ProtocolVersion1, extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "r",
 		Events: []extension.EventDefinition{{
 			Type: typ, Current: 1, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
 			Bindings: []extension.BindingReferenceDefinition{{
@@ -532,7 +532,7 @@ func TestWriterClaimsAndReconcile(t *testing.T) {
 	// Simulate a crash between claim and append: an Active claim whose owner
 	// commit never made it into the stream.
 	set, _ := artifact.SetBuilder{Resolver: f.bindings}.Build(ctx, []artifact.BindingID{"b1"})
-	orphanID := DeriveClaimID(session.ProtocolVersion2, "s", "never", set.RefSetDigest)
+	orphanID := DeriveClaimID(session.ProtocolVersion1, "s", "never", set.RefSetDigest)
 	if _, err := f.ledger.Activate(ctx, orphanID, CommitOwner("s", "never"), set); err != nil {
 		t.Fatal(err)
 	}

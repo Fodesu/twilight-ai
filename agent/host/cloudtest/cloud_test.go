@@ -252,7 +252,7 @@ func newObserver(t *testing.T, root string) *observer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := extension.BuildRegistry(session.ProtocolVersion2, chatlog.Module, runmod.Module, turn.Module)
+	registry, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module, runmod.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -239,7 +239,7 @@ func TestRemoteAuthorityReopensRunningTool(t *testing.T) {
 	if err != nil || status.Active != "" || len(status.Failed) != 0 {
 		t.Fatalf("recovered session status = %+v, %v", status, err)
 	}
-	registry, err := extension.BuildRegistry(session.ProtocolVersion2, chatlog.Module, runmod.Module, turn.Module)
+	registry, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module, runmod.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}

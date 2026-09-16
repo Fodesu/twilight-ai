@@ -26,7 +26,7 @@ type memorySession struct {
 
 // NewMemoryStore returns an empty MemoryStore.
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{profile: ProfileV2(), sessions: make(map[SessionID]*memorySession)}
+	return &MemoryStore{profile: ProfileV1(), sessions: make(map[SessionID]*memorySession)}
 }
 
 func (m *MemoryStore) session(sid SessionID, op string) (*memorySession, error) {

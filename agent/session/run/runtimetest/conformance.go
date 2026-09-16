@@ -320,7 +320,7 @@ func testAdmission(t *testing.T, factory Factory) {
 	cmdID := run.DeriveInputCommandID("r1", "in-2")
 	h.mustCommit("r1", cmdID, 0, run.NextStep(input("in-2")), attach("b1"))
 	commitID := session.CommitID(cmdID)
-	claimID := writer.DeriveClaimID(session.ProtocolVersion2, sid, commitID, mustSet(t, h, "b1").RefSetDigest)
+	claimID := writer.DeriveClaimID(session.ProtocolVersion1, sid, commitID, mustSet(t, h, "b1").RefSetDigest)
 	claim, ok, err := h.ledger.LookupClaim(h.ctx, claimID)
 	if err != nil || !ok || claim.State != artifact.ClaimActive || claim.Owner != writer.CommitOwner(sid, commitID) {
 		t.Fatalf("claim = %+v ok=%v err=%v", claim, ok, err)

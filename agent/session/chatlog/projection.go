@@ -118,7 +118,7 @@ var SurfaceProjection = extension.ProjectionDefinition{
 // applySurface is copy-on-write: the Surface value is copied, every table is
 // shared with the previous state and Set returns a new one, and EntryOrder
 // grows by append. Apply stays pure -- the previous state is never written.
-// Positions come from nextPos: v2 wire events carry no Seq, so the projection
+// Positions come from nextPos: wire events carry no Seq, so the projection
 // numbers its own entries; only monotonic order is required.
 func applySurface(state any, e extension.DecodedEvent) (any, error) {
 	s := state.(Surface)

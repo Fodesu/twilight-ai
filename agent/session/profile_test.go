@@ -18,8 +18,8 @@ import (
 // version 3 is not a registered protocol version; it stands in for any
 // future one, which is exactly the case this pins.
 func TestProfileVersionSeparatesDigests(t *testing.T) {
-	v2 := profileV2{version: ProtocolVersion2}
-	v3 := profileV2{version: 3}
+	v2 := profileV1{version: ProtocolVersion1}
+	v3 := profileV1{version: 3}
 
 	batch := StreamBatch{Stream: StreamRef{Kind: StreamKindSession}, Events: []Event{
 		{Type: "twilight/x/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"a":1}`)},
@@ -59,7 +59,7 @@ func TestProfileVersionSeparatesDigests(t *testing.T) {
 
 	// The header carries the version as a field too, so it separates for two
 	// independent reasons; both must hold.
-	h2 := SessionHeader{ProtocolVersion: ProtocolVersion2, SessionID: "s", CreatedAtUnixMilli: 1}
+	h2 := SessionHeader{ProtocolVersion: ProtocolVersion1, SessionID: "s", CreatedAtUnixMilli: 1}
 	h3 := h2
 	h3.ProtocolVersion = 3
 	hd2, err := v2.HeaderDigest(h2)
@@ -76,12 +76,12 @@ func TestProfileVersionSeparatesDigests(t *testing.T) {
 
 	// LedgerProfileFor must hand back the version it was asked for; the
 	// registered profile and the bare constructor must agree.
-	p, err := LedgerProfileFor(ProtocolVersion2)
+	p, err := LedgerProfileFor(ProtocolVersion1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Version() != ProfileV2().Version() {
-		t.Fatalf("LedgerProfileFor(2).Version() = %d, ProfileV2().Version() = %d", p.Version(), ProfileV2().Version())
+	if p.Version() != ProfileV1().Version() {
+		t.Fatalf("LedgerProfileFor(2).Version() = %d, ProfileV1().Version() = %d", p.Version(), ProfileV1().Version())
 	}
 	if _, err := LedgerProfileFor(3); err == nil {
 		t.Fatal("an unregistered protocol version must be rejected")

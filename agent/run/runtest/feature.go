@@ -38,12 +38,12 @@ func (nopCompanion) Map(run.CompanionRequest) ([]run.ModuleEvent, error) { retur
 func newRuntime(t testing.TB, inputs ...run.AgentInput) run.Runtime {
 	t.Helper()
 	store := session.NewMemoryStore()
-	registry, err := extension.BuildRegistry(session.ProtocolVersion2, runmod.Module)
+	registry, err := extension.BuildRegistry(session.ProtocolVersion1, runmod.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: defaultSession}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: defaultSession}); err != nil {
 		t.Fatal(err)
 	}
 	writers := writer.NewWriters(store, registry, writer.Admission{}, session.OpenOptions{}, writer.WritersConfig{})

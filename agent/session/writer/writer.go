@@ -135,12 +135,12 @@ type WritersConfig struct {
 
 // DeriveClaimID is EXT-WRT-5.
 func DeriveClaimID(protocolVersion uint16, sid session.SessionID, commitID session.CommitID, refSet artifact.RefSetDigest) artifact.ClaimID {
-	raw, _ := es.EncodeTypedPayload(session.ProtocolVersion2, "twilight/session-extension/claim", []string{"1", fmt.Sprintf("%d", protocolVersion), string(sid), string(commitID), string(refSet)})
+	raw, _ := es.EncodeTypedPayload(session.ProtocolVersion1, "twilight/session-extension/claim", []string{"1", fmt.Sprintf("%d", protocolVersion), string(sid), string(commitID), string(refSet)})
 	return artifact.ClaimID(es.DigestBytes(raw))
 }
 
 func nextClaimID(released artifact.ClaimID) artifact.ClaimID {
-	raw, _ := es.EncodeTypedPayload(session.ProtocolVersion2, "twilight/session-extension/claim-successor", []string{"1", string(released)})
+	raw, _ := es.EncodeTypedPayload(session.ProtocolVersion1, "twilight/session-extension/claim-successor", []string{"1", string(released)})
 	return artifact.ClaimID(es.DigestBytes(raw))
 }
 
@@ -678,7 +678,7 @@ func fingerprintCommit(sid session.SessionID, commitID session.CommitID, batches
 		}
 		body.Batches[i] = fb
 	}
-	raw, err := es.EncodeTypedPayload(session.ProtocolVersion2, "twilight/session-extension/fingerprint", body)
+	raw, err := es.EncodeTypedPayload(session.ProtocolVersion1, "twilight/session-extension/fingerprint", body)
 	if err != nil {
 		return "", err
 	}

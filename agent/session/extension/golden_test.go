@@ -15,7 +15,7 @@ type goldenPayload struct {
 // want is an intentional wire change or an accident — update the fixture and
 // agent-session-extension.md only for the former.
 func TestEncodeWireGolden(t *testing.T) {
-	reg, err := extension.BuildRegistry(session.ProtocolVersion2, extension.ModuleDescriptor{
+	reg, err := extension.BuildRegistry(session.ProtocolVersion1, extension.ModuleDescriptor{
 		Source: "goldsrc",
 		ID:     "gold",
 		Events: []extension.EventDefinition{{

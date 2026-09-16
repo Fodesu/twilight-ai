@@ -21,7 +21,7 @@ func TestReadIndexedMatchesFullParse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := indexed.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
+	if _, err := indexed.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
 	}
 	w, err := indexed.Open(ctx, sid, session.OpenOptions{})

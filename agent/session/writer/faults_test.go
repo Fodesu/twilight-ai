@@ -90,7 +90,7 @@ func TestWriterReconcilesClaimsAfterAppendFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			claimID := DeriveClaimID(session.ProtocolVersion2, "s", "c1", set.RefSetDigest)
+			claimID := DeriveClaimID(session.ProtocolVersion1, "s", "c1", set.RefSetDigest)
 			fs := &faultStore{Store: f.store}
 			w, err := OpenWriter(ctx, fs, f.registry, f.admission(), "s", session.OpenOptions{})
 			if err != nil {
@@ -228,7 +228,7 @@ func TestWriterFailsClosedWhenAppendOutcomeUnknown(t *testing.T) {
 			t.Fatalf("seq at position %d is %d", i, page.Commits[i].Seq)
 		}
 	}
-	if err := session.ValidateLedger(session.ProfileV2(), page.Header, page.Commits); err != nil {
+	if err := session.ValidateLedger(session.ProfileV1(), page.Header, page.Commits); err != nil {
 		t.Fatalf("ledger after faults: %v", err)
 	}
 }

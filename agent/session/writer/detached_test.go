@@ -37,7 +37,7 @@ func TestProjectionReadsAreDetached(t *testing.T) {
 		StateCodec: extension.JSONStateCodec[nestedState]{},
 	}}
 	var err error
-	f.registry, err = extension.BuildRegistry(session.ProtocolVersion2, module)
+	f.registry, err = extension.BuildRegistry(session.ProtocolVersion1, module)
 	if err != nil {
 		t.Fatal(err)
 	}

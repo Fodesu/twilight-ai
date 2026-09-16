@@ -21,12 +21,13 @@ type (
 	Epoch uint64
 )
 
-// ProtocolVersion2 is the current pre-release kernel wire version: the
-// commit ledger, in which events carry no transaction metadata and the
-// Commit is the atomic, chained unit that may span logical streams. It
-// covers header fields and the commit/batch digest preimages only; payload
-// versions are carried by modules (SES-VER-1).
-const ProtocolVersion2 uint16 = 2
+// ProtocolVersion1 is the kernel wire version of the commit ledger: events
+// carry no transaction metadata and the Commit is the atomic, chained unit
+// that may span logical streams. It covers header fields and the
+// commit/batch digest preimages only; payload versions are carried by
+// modules (SES-VER-1). It ships with the feat/agent-runtime branch; the
+// earlier row model it replaced never left the branch.
+const ProtocolVersion1 uint16 = 1
 
 // SessionHeader is the immutable creation record of a stream.
 type SessionHeader struct {

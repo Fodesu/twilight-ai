@@ -119,7 +119,7 @@ func New(p Ports) (*Host, error) {
 		store = session.NewMemoryStore()
 	}
 	modules := append([]extension.ModuleDescriptor{chatlog.Module, runmod.Module, turn.Module}, p.Modules...)
-	registry, err := extension.BuildRegistry(session.ProtocolVersion2, modules...)
+	registry, err := extension.BuildRegistry(session.ProtocolVersion1, modules...)
 	if err != nil {
 		return nil, err
 	}
@@ -394,7 +394,7 @@ func (h *Host) reattachDeliver(ctx context.Context, sid session.SessionID) loop.
 
 // CreateSession creates the Session stream.
 func (h *Host) CreateSession(ctx context.Context, sid session.SessionID) error {
-	_, err := h.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: sid, CreatedAtUnixMilli: h.now().UnixMilli()})
+	_, err := h.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: h.now().UnixMilli()})
 	return err
 }
 
