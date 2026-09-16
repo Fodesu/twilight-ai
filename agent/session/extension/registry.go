@@ -53,6 +53,29 @@ type EventDefinition struct {
 	// Ignorable marks purely informational events: a fold that cannot decode
 	// the event's payload version skips it instead of failing (EXT-PRJ-2).
 	Ignorable bool
+	// Stream declares which logical stream kind the event may be appended to
+	// and how a run-stream event binds to its stream ID (EXT-STR-1).
+	Stream StreamPolicy
+}
+
+// StreamPolicy declares which logical stream kind an event type may be
+// appended to (EXT-STR-1). The Writer rejects an event placed in a batch
+// whose stream does not match; a run-bound event must also carry its stream
+// ID under IDField in the encoded payload.
+type StreamPolicy struct {
+	Kind session.StreamKind
+	// IDField is the payload key holding the stream ID; StreamKindRun only
+	// (the session stream carries no ID).
+	IDField string
+}
+
+// SessionStream marks an event as belonging to the session stream.
+var SessionStream = StreamPolicy{Kind: session.StreamKindSession}
+
+// RunStream marks an event as belonging to a run stream and names the payload
+// key that binds it to the stream ID.
+func RunStream(idField string) StreamPolicy {
+	return StreamPolicy{Kind: session.StreamKindRun, IDField: idField}
 }
 
 // ModuleRequirement declares that a module consumes another module's events
@@ -157,6 +180,18 @@ func BuildRegistry(protocolVersion uint16, modules ...ModuleDescriptor) (*Regist
 			}
 			if def.Current == 0 || def.Codecs[def.Current] == nil {
 				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "no codec for the current payload version"}
+			}
+			switch def.Stream.Kind {
+			case session.StreamKindSession:
+				if def.Stream.IDField != "" {
+					return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "session-scoped event must not declare a stream ID field"}
+				}
+			case session.StreamKindRun:
+				if def.Stream.IDField == "" {
+					return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "run-scoped event must declare its stream ID field"}
+				}
+			default:
+				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "event declares no stream policy"}
 			}
 			for _, b := range def.Bindings {
 				if err := b.validate(); err != nil {

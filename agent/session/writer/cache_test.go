@@ -64,7 +64,7 @@ func cacheModule(c *applyCounter) extension.ModuleDescriptor {
 		}
 	}
 	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "k",
-		Events:      []extension.EventDefinition{{Type: typ, Current: 1, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
+		Events:      []extension.EventDefinition{{Type: typ, Current: 1, Stream: extension.SessionStream, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
 		Projections: []extension.ProjectionDefinition{mk(alphaID), mk(betaID)}}
 }
 

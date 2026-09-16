@@ -21,7 +21,7 @@ type countPayload struct {
 func countModule() extension.ModuleDescriptor {
 	typ := tpfx("q") + "row"
 	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "q",
-		Events: []extension.EventDefinition{{Type: typ, Current: 1,
+		Events: []extension.EventDefinition{{Type: typ, Current: 1, Stream: extension.SessionStream,
 			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[countPayload]{}}}},
 		Projections: []extension.ProjectionDefinition{{
 			ID: extension.ProjectionID(string(typ) + "s"), Version: 1, Consumes: []session.EventType{typ},

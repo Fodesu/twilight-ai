@@ -114,6 +114,7 @@ func SettleCommitID(sid session.SessionID, turnID TurnID, runID run.RunID) sessi
 
 func def[T any](typ session.EventType, check func(*T) error) extension.EventDefinition {
 	return extension.EventDefinition{Type: typ, Current: 1,
+		Stream: extension.SessionStream,
 		Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[T]{Check: check}}}
 }
 

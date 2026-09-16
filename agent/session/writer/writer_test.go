@@ -40,9 +40,9 @@ func noteModule(id extension.ModuleID, requires ...extension.ModuleRequirement) 
 	typ := tpfx(id) + "note"
 	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: id, Requires: requires,
 		Events: []extension.EventDefinition{
-			{Type: typ, Current: 1, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
+			{Type: typ, Current: 1, Stream: extension.SessionStream, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
 				Bindings: []extension.BindingReferenceDefinition{{Extractor: refsExtractor, RequiredDurability: artifact.EventBound}}},
-			{Type: tpfx(id) + "hint", Current: 1, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}, Ignorable: true},
+			{Type: tpfx(id) + "hint", Current: 1, Stream: extension.SessionStream, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}, Ignorable: true},
 		},
 		Projections: []extension.ProjectionDefinition{{
 			ID: extension.ProjectionID(string(typ) + "s"), Version: 1, Consumes: []session.EventType{typ},
@@ -436,7 +436,7 @@ func TestBindingAdmission(t *testing.T) {
 	typ := tpfx("r") + "ref"
 	reg, err := extension.BuildRegistry(session.ProtocolVersion1, extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "r",
 		Events: []extension.EventDefinition{{
-			Type: typ, Current: 1, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
+			Type: typ, Current: 1, Stream: extension.SessionStream, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
 			Bindings: []extension.BindingReferenceDefinition{{
 				Extractor: refsExtractor, Cardinality: extension.Cardinality{Min: 1, Max: &maxTwo},
 				AllowedSchemes:     []artifact.Scheme{"spill"},

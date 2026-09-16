@@ -88,17 +88,25 @@ type PayloadCodec interface {
     Validate(value any) error
 }
 type DecodedEvent struct {
-    Event session.SessionEvent
+    Stream session.StreamRef
+    Event session.Event
     Module ModuleKey
     Version PayloadVersion
     Value any
     Unknown bool
+}
+
+type StreamPolicy struct {
+    Kind session.StreamKind // session | run
+    IDField string          // run only: payload 内绑定 RunID 的字段名
 }
 ```
 
 **EXT-COD-1** codec、Validate、Binding extraction 必须纯、确定、无 IO。Decode wire-first。Encode/Decode 拒绝 nil、typed nil、kind mismatch、未知 kind 与非 canonical value。有效值满足 `Encode → Decode → Encode` 的 canonical round-trip；该性质是模块的测试义务（每个注册事件类型一条往返断言），Registry 的 Encode 不在运行期重验。
 
 **EXT-COD-2** 已提交事件的 payload 保持原始 canonical bytes。`v` 由 Registry 在 Encode 后加入、Decode 前取出；payload 的其他第一层字段不得命名为 `v`。
+
+**EXT-STR-1** 每个事件类型通过 EventDefinition.Stream 声明 StreamPolicy：Kind 为 session 或 run；run 事件必须给出 IDField（payload 内绑定 stream ID 的字段名），session 事件不得带 IDField。Writer 在 encode 时强制校验：事件放入 Kind 不匹配的 batch 即拒绝整个 group；run 事件另校验 payload 的 IDField 非空且等于 batch 的 stream ID。kernel 保持 payload 不透明，校验只在 writer 层执行；BuildRegistry 验证声明本身（缺 Kind、run 缺 IDField、session 带 IDField 均为装配错误）。写侧强制后，投影按 EventType 折叠即不可能跨 stream 读到外来事件，fold 侧无需再查。
 
 ## 4. Binding reference declaration 与 admission
 

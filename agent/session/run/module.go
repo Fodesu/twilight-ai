@@ -125,6 +125,7 @@ func buildModule() extension.ModuleDescriptor {
 	for _, name := range factNames {
 		m.Events = append(m.Events, extension.EventDefinition{
 			Type:    Prefix + session.EventType(name),
+			Stream:  extension.RunStream("runId"),
 			Current: extension.PayloadVersion(run.SchemaVersion1),
 			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{
 				extension.PayloadVersion(run.SchemaVersion1): factCodec{local: name, proto: run.ProtocolV1()},

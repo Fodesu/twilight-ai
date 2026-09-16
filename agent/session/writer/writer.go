@@ -9,6 +9,7 @@ import (
 
 	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/es"
+	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
 )
@@ -553,6 +554,9 @@ func (w *sessionWriter) encode(ctx context.Context, group *SemanticGroup) ([]ses
 			if err != nil {
 				return nil, nil, fmt.Sprintf("%s: %v", where, err), nil
 			}
+			if verdict := checkStreamAffinity(tb.Stream, def.Stream, payload); verdict != "" {
+				return nil, nil, fmt.Sprintf("%s: %s", where, verdict), nil
+			}
 			for _, decl := range def.Bindings {
 				ids, err := decl.Extractor.BindingIDs(te.Value)
 				if err != nil {
@@ -575,6 +579,40 @@ func (w *sessionWriter) encode(ctx context.Context, group *SemanticGroup) ([]ses
 		batches[bi] = session.StreamBatch{Stream: tb.Stream, Events: events}
 	}
 	return batches, refs, "", nil
+}
+
+// checkStreamAffinity verifies a batch's stream attribution against the
+// event type's declared StreamPolicy. It returns a human verdict for the
+// commit's detail string; policies themselves are validated at BuildRegistry.
+func checkStreamAffinity(stream session.StreamRef, pol extension.StreamPolicy, payload jsonstable.Value) string {
+	switch pol.Kind {
+	case session.StreamKindSession:
+		if stream.Kind != session.StreamKindSession {
+			return fmt.Sprintf("event is session-scoped but the batch is %s", stream.Kind)
+		}
+	case session.StreamKindRun:
+		if stream.Kind != session.StreamKindRun {
+			return fmt.Sprintf("event is run-scoped but the batch is %s", stream.Kind)
+		}
+		decoded, err := payload.Any()
+		if err != nil {
+			return fmt.Sprintf("payload is not decodable for the stream binding: %v", err)
+		}
+		fields, ok := decoded.(map[string]any)
+		if !ok {
+			return "payload is not an object"
+		}
+		id, ok := fields[pol.IDField].(string)
+		if !ok || id == "" {
+			return fmt.Sprintf("payload lacks the stream binding field %q", pol.IDField)
+		}
+		if id != stream.ID {
+			return fmt.Sprintf("payload %s %q does not match the batch stream %q", pol.IDField, id, stream.ID)
+		}
+	default:
+		return "event type declares no stream policy"
+	}
+	return ""
 }
 
 func (w *sessionWriter) admit(ctx context.Context, id artifact.BindingID, decl *extension.BindingReferenceDefinition) (string, error) {

@@ -33,9 +33,9 @@ func noteModule(id ModuleID, requires ...ModuleRequirement) ModuleDescriptor {
 	typ := tpfx(id) + "note"
 	return ModuleDescriptor{Source: SourceTwilight, ID: id, Requires: requires,
 		Events: []EventDefinition{
-			{Type: typ, Current: 1, Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
+			{Type: typ, Current: 1, Stream: SessionStream, Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
 				Bindings: []BindingReferenceDefinition{{Extractor: refsExtractor, RequiredDurability: artifact.EventBound}}},
-			{Type: tpfx(id) + "hint", Current: 1, Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}}, Ignorable: true},
+			{Type: tpfx(id) + "hint", Current: 1, Stream: SessionStream, Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}}, Ignorable: true},
 		},
 		Projections: []ProjectionDefinition{{
 			ID: ProjectionID(string(typ) + "s"), Version: 1, Consumes: []session.EventType{typ},
@@ -78,7 +78,7 @@ func TestBuildRegistryValidatesRequires(t *testing.T) {
 // srcModule is a minimal module under an arbitrary source.
 func srcModule(source SourceID, id ModuleID) ModuleDescriptor {
 	return ModuleDescriptor{Source: source, ID: id, Events: []EventDefinition{{
-		Type: ModulePrefix(source, id) + "note", Current: 1,
+		Type: ModulePrefix(source, id) + "note", Current: 1, Stream: SessionStream,
 		Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
 	}}}
 }
@@ -165,7 +165,7 @@ func TestBuildRegistryRequiresCodecForCurrent(t *testing.T) {
 	// shape, so it must keep building.
 	if _, err := BuildRegistry(session.ProtocolVersion1, ModuleDescriptor{Source: SourceTwilight, ID: "a",
 		Events: []EventDefinition{{
-			Type: tpfx("a") + "note", Current: 2,
+			Type: tpfx("a") + "note", Current: 2, Stream: SessionStream,
 			Codecs: map[PayloadVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}},
 		}}}); err != nil {
 		t.Fatalf("coexisting versions: %v", err)
@@ -205,7 +205,7 @@ func (legacyCodec) Validate(v any) error {
 func TestRegistryMultiVersionCodecsCoexist(t *testing.T) {
 	typ := tpfx("v") + "note"
 	upgraded := ModuleDescriptor{Source: SourceTwilight, ID: "v", Events: []EventDefinition{{
-		Type: typ, Current: 2,
+		Type: typ, Current: 2, Stream: SessionStream,
 		Codecs: map[PayloadVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}},
 	}}}
 	r, err := BuildRegistry(session.ProtocolVersion1, upgraded)

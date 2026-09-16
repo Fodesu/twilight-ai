@@ -44,7 +44,7 @@ var auditModule = extension.ModuleDescriptor{
 		Events: map[session.EventType][]extension.PayloadVersion{chatlog.TypeInputSubmitted: {1}},
 	}},
 	Events: []extension.EventDefinition{{
-		Type: auditNoteType, Current: 1,
+		Type: auditNoteType, Current: 1, Stream: extension.SessionStream,
 		Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[auditNote]{}},
 	}},
 	Projections: []extension.ProjectionDefinition{{
