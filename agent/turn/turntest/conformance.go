@@ -81,14 +81,14 @@ func testStart(t *testing.T, factory Factory) {
 	}
 	plan := turn.PlanDigest("t1", preset.Digest, turn.CompanionV1Version, []chatlog.InputID{"in-1", "in-2"})
 	group := h.group(session.CommitID(turn.StartOperationDigest(sid, "t1", plan)))
-	if !sameTypes(group, turn.TypeStarted, chatlog.TypeInputDelivered, chatlog.TypeInputDelivered, typeCreated, typeAccepted, typeAccepted) {
+	if !sameTypes(group, turn.TypeStarted, turn.TypeAttemptStarted, chatlog.TypeInputDelivered, chatlog.TypeInputDelivered, typeCreated, typeAccepted, typeAccepted) {
 		t.Fatalf("start group = %v", eventTypes(group))
 	}
 	started := decode[turn.StartedPayload](t, h.registry, &group[0])
 	if started.TurnID != "t1" || len(started.InputIDs) != 2 || started.Preset != preset || started.Companion != turn.CompanionV1Version {
 		t.Fatalf("started payload = %+v", started)
 	}
-	created := decode[runmod.Event](t, h.registry, &group[3])
+	created := decode[runmod.Event](t, h.registry, &group[4])
 	if c, ok := created.Fact.(run.RunCreated); !ok || c.Owner != run.OwnerID("t1") || c.Attempt != 1 || created.RunID != runID {
 		t.Fatalf("created fact = %+v", created)
 	}
@@ -285,10 +285,10 @@ func testRetry(t *testing.T, factory Factory) {
 		t.Fatalf("retry response = %+v", rresp)
 	}
 	group := h.group(turn.RetryCommitID(sid, "t1", 2))
-	if !sameTypes(group, typeCreated, typeAccepted, typeAccepted) {
+	if !sameTypes(group, turn.TypeAttemptStarted, typeCreated, typeAccepted, typeAccepted) {
 		t.Fatalf("retry group = %v", eventTypes(group))
 	}
-	created := decode[runmod.Event](t, h.registry, &group[0])
+	created := decode[runmod.Event](t, h.registry, &group[1])
 	if c := created.Fact.(run.RunCreated); c.Attempt != 2 || c.Owner != run.OwnerID("t1") {
 		t.Fatalf("retry created = %+v", c)
 	}

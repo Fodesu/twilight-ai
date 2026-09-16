@@ -82,7 +82,9 @@ func (CompanionV1) Map(req run.CompanionRequest) ([]run.ModuleEvent, error) {
 			out = append(out, run.ModuleEvent{Type: chatlog.TypeToolResult, Value: chatlog.ToolResultPayload{ToolResult: r}})
 		case run.RunEnded:
 			if _, completed := fact.End.(run.RunCompletedEnd); completed {
-				out = append(out, run.ModuleEvent{Type: TypeCompleted, Value: CompletedPayload{TurnID: turnID, RunID: req.RunID}})
+				out = append(out, run.ModuleEvent{Type: TypeCompleted, Value: CompletedPayload{TurnID: turnID, RunID: req.RunID, End: fact}})
+			} else {
+				out = append(out, run.ModuleEvent{Type: TypeAttemptFailed, Value: AttemptFailedPayload{TurnID: turnID, RunID: req.RunID, End: fact}})
 			}
 		}
 	}

@@ -7,7 +7,6 @@ import (
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
-	runmod "github.com/felinics/twilight/agent/session/run"
 )
 
 const SurfaceProjectionID extension.ProjectionID = "twilight/turn/surface"
@@ -103,8 +102,8 @@ func (s *TurnSurface) Active() (TurnView, bool) {
 
 var SurfaceProjection = extension.ProjectionDefinition{
 	ID: SurfaceProjectionID, Version: 1,
-	Consumes: []session.EventType{TypeStarted, TypeCompleted, TypeFailed, TypeSuperseded,
-		runmod.Prefix + "run_created", runmod.Prefix + "input_accepted", runmod.Prefix + "run_ended"},
+	Consumes: []session.EventType{TypeStarted, TypeAttemptStarted, TypeAttemptFailed, TypeCompleted, TypeFailed, TypeSuperseded,
+		chatlog.TypeInputDelivered},
 	Initial: func() (any, error) {
 		return TurnSurface{Turns: map[TurnID]TurnView{}, RunOwner: map[run.RunID]TurnID{}}, nil
 	},
@@ -127,6 +126,11 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		for i := range v.Attempts {
+			if v.Attempts[i].RunID == p.RunID {
+				v.Attempts[i].End = &p.End
+			}
+		}
 		v.Status, v.ActiveRun = TurnCompleted, ""
 		s.Turns[p.TurnID] = v
 	case FailedPayload:
@@ -148,8 +152,47 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		}
 		v.Status, v.ActiveRun, v.ReplacementTurnID = TurnSuperseded, "", p.ReplacementTurnID
 		s.Turns[p.TurnID] = v
-	case runmod.Event:
-		return s.applyRun(p)
+	case AttemptStartedPayload:
+		v, ok := s.Turns[p.TurnID]
+		if !ok {
+			return nil, fmt.Errorf("turn %s attempt before started", p.TurnID)
+		}
+		if v.ActiveRun != "" {
+			return nil, fmt.Errorf("turn %s already has active run %s", p.TurnID, v.ActiveRun)
+		}
+		v.Attempts = append(v.Attempts, AttemptView{RunID: p.RunID, Attempt: p.Attempt, SchemaVersion: p.SchemaVersion})
+		v.ActiveRun, v.Status = p.RunID, TurnActive
+		s.Turns[p.TurnID] = v
+		s.RunOwner[p.RunID] = p.TurnID
+	case AttemptFailedPayload:
+		v, ok := s.Turns[p.TurnID]
+		if !ok {
+			return nil, fmt.Errorf("turn %s attempt failure before started", p.TurnID)
+		}
+		for i := range v.Attempts {
+			if v.Attempts[i].RunID == p.RunID {
+				v.Attempts[i].End = &p.End
+			}
+		}
+		v.ActiveRun = ""
+		if v.Status == TurnActive {
+			// completed runs are settled by the companion's turn/completed in
+			// the same commit; anything else waits for Retry or Settle.
+			v.Status = TurnAttemptFailed
+		}
+		s.Turns[p.TurnID] = v
+	case chatlog.InputDeliveredPayload:
+		v, ok := s.Turns[TurnID(p.TurnID)]
+		if !ok {
+			return s, nil
+		}
+		for _, have := range v.InputIDs {
+			if have == p.InputID {
+				return s, nil
+			}
+		}
+		v.InputIDs = append(v.InputIDs, p.InputID)
+		s.Turns[TurnID(p.TurnID)] = v
 	default:
 		return nil, fmt.Errorf("turn surface: unexpected %T", e.Value)
 	}
@@ -165,57 +208,4 @@ func (s *TurnSurface) settling(id TurnID) (TurnView, error) {
 		return TurnView{}, fmt.Errorf("turn %s settled twice", id)
 	}
 	return v, nil
-}
-
-func (s TurnSurface) applyRun(ev runmod.Event) (any, error) {
-	switch f := ev.Fact.(type) {
-	case run.RunCreated:
-		turnID := TurnID(f.Owner)
-		v, ok := s.Turns[turnID]
-		if !ok {
-			// A Run whose owner is not a Turn of this Session is not ours.
-			return s, nil
-		}
-		if v.ActiveRun != "" {
-			return nil, fmt.Errorf("turn %s already has active run %s", turnID, v.ActiveRun)
-		}
-		v.Attempts = append(v.Attempts, AttemptView{RunID: ev.RunID, Attempt: f.Attempt, SchemaVersion: f.SchemaVersion})
-		v.ActiveRun = ev.RunID
-		v.Status = TurnActive
-		s.Turns[turnID] = v
-		s.RunOwner[ev.RunID] = turnID
-	case run.InputAccepted:
-		turnID, ok := s.RunOwner[ev.RunID]
-		if !ok {
-			return s, nil
-		}
-		v := s.Turns[turnID]
-		id := chatlog.InputID(f.Input.ID)
-		for _, have := range v.InputIDs {
-			if have == id {
-				return s, nil
-			}
-		}
-		v.InputIDs = append(v.InputIDs, id)
-		s.Turns[turnID] = v
-	case run.RunEnded:
-		turnID, ok := s.RunOwner[ev.RunID]
-		if !ok {
-			return s, nil
-		}
-		v := s.Turns[turnID]
-		for i := range v.Attempts {
-			if v.Attempts[i].RunID == ev.RunID {
-				v.Attempts[i].End = &run.RunEnded{End: f.End}
-			}
-		}
-		v.ActiveRun = ""
-		if v.Status == TurnActive {
-			// completed runs are settled by the companion's turn/completed in
-			// the same commit; anything else waits for Retry or Settle.
-			v.Status = TurnAttemptFailed
-		}
-		s.Turns[turnID] = v
-	}
-	return s, nil
 }

@@ -177,7 +177,7 @@ func Example_jsonlPrototype() {
 	// process 2: took over; 1 executing target disposed
 	// turn-2: completed, disposition finished, attempt 1
 	// process 1: ownership lost
-	// log.jsonl: 22 lines, chain verified over 41 events
+	// log.jsonl: 22 lines, chain verified over 43 events
 	// first event: twilight/chatlog/input_submitted; last event: twilight/turn/completed
 }
 

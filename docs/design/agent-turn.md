@@ -18,7 +18,7 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 | 对话内容 | `twilight/chatlog/` events | Start 与 Deliver 时 delivered input；Run commit 内的 companion events |
 | Application policy | Application | preset、driver、retry、context 策略、产品策略 |
 
-**TRN-SCP-1** Source 为 `twilight`，ModuleID 为 `turn`。一个 Turn 与它的全部 Run attempt 在同一 Session stream 内。`Coordinator` 创建 Turn 与 attempt、投递输入、停止及结算 Turn；宿主驱动 Run。turn 依赖 run，Run 事实中的 `OwnerID` 由本模块以 `TurnID` 填充。本模块的 `Requires`（EXT-REG-4）为：`run`，消费 `twilight/run/run_created` v1、`twilight/run/input_accepted` v1 与 `twilight/run/run_ended` v1；`chatlog`，只要求存在。
+**TRN-SCP-1** Source 为 `twilight`，ModuleID 为 `turn`。一个 Turn 与它的全部 Run attempt 注册在同一 Session stream 内：attempt 由 session 侧的 `twilight/turn/attempt_started` 注册，终态由 companion 在同 commit 写回的 `attempt_failed` / `completed` 记录，surface 不消费 `twilight/run/` 事件（session semantic state 可脱离 run history 重建）。`Coordinator` 创建 Turn 与 attempt、投递输入、停止及结算 Turn；宿主驱动 Run。Run 事实中的 `OwnerID` 由本模块以 `TurnID` 填充。本模块的 `Requires`（EXT-REG-4）为：`chatlog`，只要求存在。
 
 **TRN-SCP-2** Turn 与 Run 的关系为 1:N。同一 Turn 至多一个非终态 Run，同一 Session 至多一个 `active` Turn。Start 与新 Retry 在 Writer 的串行提交边界内校验这一约束；已提交操作按各自的重放规则确认：
 
@@ -109,6 +109,8 @@ type SupersededPayload struct {
 
 ```text
 twilight/turn/started
+twilight/turn/attempt_started
+twilight/turn/attempt_failed
 twilight/turn/completed
 twilight/turn/failed
 twilight/turn/superseded
@@ -120,7 +122,7 @@ unsettled Turn 是尚未 completed、failed 或 superseded 的 `started`。
 
 **TRN-EVT-3** stream 内每个 TurnID 至多一条 `started`，至多一条 `completed` / `failed` / `superseded`。
 
-**TRN-PRJ-1** ProjectionID 为 `twilight/turn/surface`。消费 `twilight/turn/started|completed|failed|superseded` 与 `twilight/run/run_created|input_accepted|run_ended`，其他事件按 EXT-PRJ-2 处理：
+**TRN-PRJ-1** ProjectionID 为 `twilight/turn/surface`。只消费 session stream 事件：`twilight/turn/started|attempt_started|attempt_failed|completed|failed|superseded` 与 `twilight/chatlog/input_delivered`，其他事件按 EXT-PRJ-2 处理：
 
 ```go
 type TurnStatus string
@@ -135,8 +137,8 @@ const (
 type AttemptView struct {
     RunID run.RunID
     Attempt uint32
-    SchemaVersion uint16 // run_created.SchemaVersion；Coordinator 据此构造该 attempt 的 command envelope
-    End *run.RunEnd      // 非终态时为 nil
+    SchemaVersion uint16 // attempt_started 携带（与 run_created.SchemaVersion 相同）；Coordinator 据此构造该 attempt 的 command envelope
+    End *run.RunEnded    // 非终态时为 nil；终态来自 companion 同 commit 写回的 attempt_failed / completed
 }
 type TurnView struct {
     TurnID TurnID
@@ -151,10 +153,11 @@ type TurnView struct {
 type TurnSurface struct {
     Order []TurnID
     Turns map[TurnID]TurnView
+    RunOwner map[run.RunID]TurnID // attempt_started 建立；宿主按 RunID 找 Turn
 }
 ```
 
-UI 按 `TurnID` 连接 `twilight/chatlog/surface` 的条目，按 `RunID` 连接 `twilight/run/machine` 的实时视图。终态 attempt 的结果从 `twilight/run/run_ended` 记录在 `AttemptView.End`，不依赖 Run 投影。
+UI 按 `TurnID` 连接 `twilight/chatlog/surface` 的条目，按 `RunID` 连接 `twilight/run/machine` 的实时视图。终态 attempt 的结果由 companion 在同 commit 写回 session 侧的 `attempt_failed` 与 `completed` 记录在 `AttemptView.End`；surface 的重建不读 run stream。
 
 ## 3. API
 
@@ -228,6 +231,7 @@ const (
 
 ```text
 twilight/turn/started{TurnID, InputIDs, Preset, Companion}
+twilight/turn/attempt_started{TurnID, RunID, Attempt:1, SchemaVersion}
 twilight/chatlog/input_delivered{InputIDs[0], TurnID}
 ...
 twilight/chatlog/input_delivered{InputIDs[n-1], TurnID}
@@ -237,13 +241,13 @@ twilight/run/input_accepted{RunID, InputIDs[0], Payload}
 twilight/run/input_accepted{RunID, InputIDs[n-1], Payload}
 ```
 
-InputIDs 为空时 group 为 `started` 加 `run_created`。`run_created` 与 `input_accepted` 的 facts 由 `run.Protocol.BuildCreateGroup` 构造（RUN-NEW-1），Coordinator 只负责把它们放入 group。
+InputIDs 为空时 group 为 `started`、`attempt_started` 加 `run_created`。`run_created` 与 `input_accepted` 的 facts 由 `run.Protocol.BuildCreateGroup` 构造（RUN-NEW-1），Coordinator 只负责把它们放入 group。
 
 **TRN-STR-3** 派生 PlanDigest、StartOperationDigest、RunID 与 group identity，再经 `Writer.Commit` 写入一组。相同 identity 为 applied / already-applied；Writer 串行执行全部写入，不存在 head conflict。
 
 **TRN-STR-4** append 成功后 Start 返回已提交状态的响应；驱动新 Run 是宿主的下一步（HST-DRV-1）。
 
-**TRN-RTY-1** 新 Retry 要求 Turn 为 `attempt_failed`、`PreviousRunID` 指向该 Turn 最新的失败 attempt n、Session 当前无 `active` Turn。Coordinator 在 Writer 的串行提交边界内校验这些条件。commit 为 `twilight/run/run_created{Attempt: n+1}` 加该 Turn 已 delivered 的全部 Input 的 `input_accepted`，顺序与 `TurnView.InputIDs` 相同（初始输入在前，中途 Deliver 的输入按 accepted 顺序在后）；payload 与首次 delivered 时相同，仅 RunID 与 Attempt 不同。准入失败返回 conflict。
+**TRN-RTY-1** 新 Retry 要求 Turn 为 `attempt_failed`、`PreviousRunID` 指向该 Turn 最新的失败 attempt n、Session 当前无 `active` Turn。Coordinator 在 Writer 的串行提交边界内校验这些条件。commit 的 session 侧为 `twilight/turn/attempt_started{Attempt: n+1}`，run 侧为 `twilight/run/run_created` 加该 Turn 已 delivered 的全部 Input 的 `input_accepted`，顺序与 `TurnView.InputIDs` 相同（初始输入在前，中途 Deliver 的输入按 accepted 顺序在后）；payload 与首次 delivered 时相同，仅 RunID 与 Attempt 不同。准入失败返回 conflict。
 
 **TRN-RTY-2** Coordinator 在该 Turn 的历史中按 `PreviousRunID` 取得 previous attempt，令 `Attempt = previous.Attempt + 1`。Retry 的 CommitID 由 `Digest("twilight/turn/retry", SessionID, TurnID, Attempt)` 派生。Coordinator 先查询该 CommitID：已提交时直接返回原 Retry 创建的 RunID 与 Attempt，以及当前 Turn 状态和该 attempt 的 End；确认后 stream 保持原样。该重放先于 TRN-RTY-1 的准入校验，适用于后继 attempt 已 active、已终结、已有更晚 Retry、另一 Turn active 或接管后的情形。下一次新的 Retry 显式传入新的失败 RunID。
 

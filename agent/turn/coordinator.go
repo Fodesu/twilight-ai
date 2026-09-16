@@ -166,7 +166,7 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 	now := c.now()
 	err = c.commit(ctx, sid, "start", func(view writer.View) (*writer.SemanticGroup, error) {
 		if view.Committed(commitID) {
-			group := c.startGroup(commitID, turnID, inputIDs, req, facts, now)
+			group := c.startGroup(commitID, turnID, inputIDs, req, newRun, facts, now)
 			return &group, nil // exact replay: the Writer compares fingerprints
 		}
 		surface, err := loadSurface(view)
@@ -182,7 +182,7 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 		if err := checkSubmitted(view, req.Inputs); err != nil {
 			return nil, err
 		}
-		group := c.startGroup(commitID, turnID, inputIDs, req, facts, now)
+		group := c.startGroup(commitID, turnID, inputIDs, req, newRun, facts, now)
 		return &group, nil
 	})
 	if err != nil {
@@ -191,10 +191,12 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 	return c.respond(ctx, req.Ref, runID)
 }
 
-func (c *Coordinator) startGroup(commitID session.CommitID, turnID TurnID, inputIDs []chatlog.InputID, req StartRequest, facts []run.Fact, now int64) writer.SemanticGroup {
+func (c *Coordinator) startGroup(commitID session.CommitID, turnID TurnID, inputIDs []chatlog.InputID, req StartRequest, newRun run.NewRun, facts []run.Fact, now int64) writer.SemanticGroup {
 	group := writer.SemanticGroup{CommitID: commitID}
 	sessionEvents := []writer.TypedEvent{{Type: TypeStarted, RecordedAtUnixMilli: now,
-		Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, Preset: req.Preset, Companion: req.Companion}}}
+		Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, Preset: req.Preset, Companion: req.Companion}},
+		{Type: TypeAttemptStarted, RecordedAtUnixMilli: now,
+			Value: AttemptStartedPayload{TurnID: turnID, RunID: newRun.RunID, Attempt: newRun.Attempt, SchemaVersion: newRun.SchemaVersion}}}
 	for _, id := range inputIDs {
 		sessionEvents = append(sessionEvents, writer.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: now,
 			Value: chatlog.InputDeliveredPayload{InputID: id, TurnID: chatlog.TurnID(turnID)}})
@@ -376,6 +378,10 @@ func (c *Coordinator) Retry(ctx context.Context, req RetryRequest) (TurnResponse
 			runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: now, Value: runmod.Event{RunID: runID, Fact: f}})
 		}
 		group := &writer.SemanticGroup{CommitID: commitID, Batches: []writer.TypedBatch{
+			{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{
+				{Type: TypeAttemptStarted, RecordedAtUnixMilli: now,
+					Value: AttemptStartedPayload{TurnID: turnID, RunID: runID, Attempt: attempt, SchemaVersion: newRun.SchemaVersion}},
+			}},
 			{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: string(runID)}, Events: runEvents},
 		}}
 		return group, nil

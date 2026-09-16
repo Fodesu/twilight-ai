@@ -46,6 +46,12 @@ const (
 	TypeCompleted  session.EventType = "twilight/turn/completed"
 	TypeFailed     session.EventType = "twilight/turn/failed"
 	TypeSuperseded session.EventType = "twilight/turn/superseded"
+	// TypeAttemptStarted registers one Run attempt of a Turn on the session
+	// stream, so the surface folds without the run stream (TRN-SCP-1).
+	TypeAttemptStarted session.EventType = "twilight/turn/attempt_started"
+	// TypeAttemptFailed records a non-completed attempt end on the session
+	// stream, written by the Companion in the same commit as run_ended.
+	TypeAttemptFailed session.EventType = "twilight/turn/attempt_failed"
 )
 
 type StartedPayload struct {
@@ -56,8 +62,25 @@ type StartedPayload struct {
 }
 
 type CompletedPayload struct {
-	TurnID TurnID    `json:"turnId"`
-	RunID  run.RunID `json:"runId"`
+	TurnID TurnID       `json:"turnId"`
+	RunID  run.RunID    `json:"runId"`
+	End    run.RunEnded `json:"end"`
+}
+
+// AttemptStartedPayload registers one attempt on the session stream.
+type AttemptStartedPayload struct {
+	TurnID        TurnID    `json:"turnId"`
+	RunID         run.RunID `json:"runId"`
+	Attempt       uint32    `json:"attempt"`
+	SchemaVersion uint16    `json:"schemaVersion"`
+}
+
+// AttemptFailedPayload carries a non-completed attempt's terminal result,
+// mirroring the run_ended fact of the same commit.
+type AttemptFailedPayload struct {
+	TurnID TurnID       `json:"turnId"`
+	RunID  run.RunID    `json:"runId"`
+	End    run.RunEnded `json:"end"`
 }
 
 type FailedPayload struct {
@@ -113,8 +136,7 @@ func SettleCommitID(sid session.SessionID, turnID TurnID, runID run.RunID) sessi
 // --- module -----------------------------------------------------------------------
 
 func def[T any](typ session.EventType, check func(*T) error) extension.EventDefinition {
-	return extension.EventDefinition{Type: typ, Current: 1,
-		Stream: extension.SessionStream,
+	return extension.EventDefinition{Type: typ, Current: 1, Stream: extension.SessionStream,
 		Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[T]{Check: check}}}
 }
 
@@ -153,6 +175,18 @@ var Module = extension.ModuleDescriptor{
 		def[SupersededPayload](TypeSuperseded, func(p *SupersededPayload) error {
 			if p.TurnID == "" || p.ReplacementTurnID == "" {
 				return errors.New("superseded requires turnId and replacementTurnId")
+			}
+			return nil
+		}),
+		def[AttemptStartedPayload](TypeAttemptStarted, func(p *AttemptStartedPayload) error {
+			if p.TurnID == "" || p.RunID == "" || p.Attempt == 0 || p.SchemaVersion == 0 {
+				return errors.New("attempt_started requires turnId, runId, attempt and schemaVersion")
+			}
+			return nil
+		}),
+		def[AttemptFailedPayload](TypeAttemptFailed, func(p *AttemptFailedPayload) error {
+			if p.TurnID == "" || p.RunID == "" {
+				return errors.New("attempt_failed requires turnId and runId")
 			}
 			return nil
 		}),
