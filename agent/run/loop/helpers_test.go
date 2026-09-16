@@ -43,11 +43,11 @@ func newTestStack(t testing.TB, now func() time.Time) *testStack {
 		now = time.Now
 	}
 	store := session.NewMemoryStore()
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, runmod.Module)
+	registry, err := extension.BuildRegistry(session.ProtocolVersion2, runmod.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: testSession}); err != nil {
+	if _, err := store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: testSession}); err != nil {
 		t.Fatal(err)
 	}
 	s := &testStack{store: store, registry: registry, now: now}
@@ -78,10 +78,12 @@ func (s *testStack) createRun(t testing.TB, runID RunID, inputs ...AgentInput) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	group := &writer.SemanticGroup{CommitID: session.CommitID("create/" + string(runID))}
+	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		group.Events = append(group.Events, writer.TypedEvent{Type: runmod.EventType(f), Value: runmod.Event{RunID: runID, Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), Value: runmod.Event{RunID: runID, Fact: f}})
 	}
+	group := &writer.SemanticGroup{CommitID: session.CommitID("create/" + string(runID)),
+		Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: string(runID)}, Events: runEvents}}}
 	w, err := s.writers.Writer(context.Background(), testSession)
 	if err != nil {
 		t.Fatal(err)

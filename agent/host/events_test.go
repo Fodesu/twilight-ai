@@ -50,7 +50,6 @@ func TestSubmitReturnsAtOnceAndEventsReportTheTurn(t *testing.T) {
 	close(gate.release)
 
 	var sawStarted, sawCompleted bool
-	var lastSeq session.Seq
 	deadline := time.After(5 * time.Second)
 	for !sawCompleted {
 		select {
@@ -58,10 +57,6 @@ func TestSubmitReturnsAtOnceAndEventsReportTheTurn(t *testing.T) {
 			if e.Err != nil {
 				t.Fatalf("host-level failure on the stream: %v", e.Err)
 			}
-			if e.Row.Seq < lastSeq {
-				t.Fatalf("events out of order: seq %d after %d", e.Row.Seq, lastSeq)
-			}
-			lastSeq = e.Row.Seq
 			switch v := e.Value.(type) {
 			case turn.StartedPayload:
 				sawStarted = v.TurnID == ref.TurnID
@@ -131,7 +126,7 @@ func TestBackgroundDriveFailureIsReportedOnTheStream(t *testing.T) {
 	for {
 		select {
 		case e := <-events:
-			if e.Err != nil && e.Row.Seq == 0 && e.Row.Type == "" {
+			if e.Err != nil && e.Row.Type == "" {
 				select {
 				case <-warned:
 				case <-time.After(time.Second):

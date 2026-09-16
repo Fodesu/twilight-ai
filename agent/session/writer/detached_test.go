@@ -37,7 +37,7 @@ func TestProjectionReadsAreDetached(t *testing.T) {
 		StateCodec: extension.JSONStateCodec[nestedState]{},
 	}}
 	var err error
-	f.registry, err = extension.BuildRegistry(session.ProtocolVersion1, module)
+	f.registry, err = extension.BuildRegistry(session.ProtocolVersion2, module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestProjectionReadsAreDetached(t *testing.T) {
 	commit := func(text string) {
 		t.Helper()
 		res, err := w.Commit(ctx, func(View) (*SemanticGroup, error) {
-			return &SemanticGroup{CommitID: session.CommitID(text), Events: []TypedEvent{{Type: tpfx("nested") + "note", Value: notePayload{Text: text}}}}, nil
+			return &SemanticGroup{CommitID: session.CommitID(text), Batches: sessionBatch(TypedEvent{Type: tpfx("nested") + "note", Value: notePayload{Text: text}})}, nil
 		})
 		if err != nil || res.Outcome != CommitApplied {
 			t.Fatalf("commit = %+v, %v", res, err)

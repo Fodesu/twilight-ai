@@ -492,11 +492,13 @@ func testProjection(t *testing.T, factory Factory) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	group := writer.SemanticGroup{CommitID: "foreign-run"}
+	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		group.Events = append(group.Events, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: h.now, Value: runmod.Event{RunID: "r-foreign", Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: h.now, Value: runmod.Event{RunID: "r-foreign", Fact: f}})
 	}
-	h.mustApply(group)
+	h.mustApply(writer.SemanticGroup{CommitID: "foreign-run", Batches: []writer.TypedBatch{
+		{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: "r-foreign"}, Events: runEvents},
+	}})
 	surface := h.surface()
 	if len(surface.Turns) != 1 || surface.RunOwner["r-foreign"] != "" {
 		t.Fatalf("foreign run entered the surface: %+v", surface)
@@ -511,7 +513,9 @@ func testProjection(t *testing.T, factory Factory) {
 			Value: turn.FailedPayload{TurnID: turnID, RunID: resp.RunID, Settlement: s, FailureClass: "x"}}
 	}
 	h.appCancel(resp.RunID)
-	h.mustApply(writer.SemanticGroup{CommitID: "settle-t1", Events: []writer.TypedEvent{failed("t1", turn.SettlementFailed)}})
+	h.mustApply(writer.SemanticGroup{CommitID: "settle-t1", Batches: []writer.TypedBatch{
+		{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{failed("t1", turn.SettlementFailed)}},
+	}})
 	before := h.head()
 	rejects := []struct {
 		name  string
@@ -525,7 +529,9 @@ func testProjection(t *testing.T, factory Factory) {
 			Value: turn.CompletedPayload{TurnID: "t1", RunID: resp.RunID}}},
 	}
 	for i, tc := range rejects {
-		res := h.commit(writer.SemanticGroup{CommitID: session.CommitID("reject-" + string(rune('a'+i))), Events: []writer.TypedEvent{tc.event}})
+		res := h.commit(writer.SemanticGroup{CommitID: session.CommitID("reject-" + string(rune('a'+i))), Batches: []writer.TypedBatch{
+			{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{tc.event}},
+		}})
 		if res.Outcome != writer.CommitInvalid {
 			t.Fatalf("%s: outcome = %s, want invalid", tc.name, res.Outcome)
 		}

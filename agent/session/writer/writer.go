@@ -13,18 +13,27 @@ import (
 	"github.com/felinics/twilight/agent/session/extension"
 )
 
-// TypedEvent is a module value plus row metadata. Ignorable comes from the
-// EventDefinition, not from the caller.
+// TypedEvent is a module value plus its event metadata. The payload is
+// encoded and validated against the Registry at commit time.
 type TypedEvent struct {
 	Type                session.EventType
 	RecordedAtUnixMilli int64
-	SourceSeqs          []session.Seq
 	Value               any
 }
 
+// TypedBatch is the caller's view of one StreamBatch: the events of one
+// logical stream inside one commit. A commit carries at most one batch per
+// stream and may span several streams.
+type TypedBatch struct {
+	Stream session.StreamRef
+	Events []TypedEvent
+}
+
+// SemanticGroup is what a CommitFn decides: the commit identity and the
+// per-stream batches it carries.
 type SemanticGroup struct {
 	CommitID session.CommitID
-	Events   []TypedEvent
+	Batches  []TypedBatch
 }
 
 // View is what a CommitFn may read: head, idempotency index and projections
@@ -35,15 +44,15 @@ type View interface {
 	// Committed reports whether a commit is already in the stream. It is
 	// answered from an index the kernel already keeps, without touching storage.
 	Committed(session.CommitID) bool
-	// LookupCommit returns the rows of a committed group. The rows come from
-	// storage when the kernel handle does not hold them, so a caller that only
-	// needs the answer uses Committed.
-	LookupCommit(session.CommitID) ([]session.SessionEvent, bool, error)
+	// LookupCommit returns the sealed commit. It comes from storage when the
+	// kernel handle does not hold it, so a caller that only needs the answer
+	// uses Committed.
+	LookupCommit(session.CommitID) (session.Commit, bool, error)
 	// Projection returns a detached state that the caller owns.
 	Projection(extension.ProjectionID, extension.ProjectionVersion) (any, error)
 }
 
-// CommitFn decides the group to write; nil means write nothing.
+// CommitFn decides the commit to write; nil means write nothing.
 type CommitFn func(View) (*SemanticGroup, error)
 
 type CommitOutcome string
@@ -61,9 +70,10 @@ const (
 // branch on Outcome: CommitInvalid and CommitConflict are reported with a nil
 // error because they are answers, not failures. A configuration that cannot
 // serve the registry is not an answer -- OpenWriter rejects it up front.
+// Commit is the sealed commit for applied and already_applied, zero otherwise.
 type CommitResult struct {
 	Outcome CommitOutcome
-	Events  []session.SessionEvent
+	Commit  session.Commit
 	Claim   *artifact.RetentionClaim
 	Detail  string
 }
@@ -97,14 +107,14 @@ type Admission struct {
 // ClaimOwnerKind is the ClaimOwner.Kind of Session commits (EXT-WRT-5).
 const ClaimOwnerKind = "twilight/session/commit"
 
-// CommitObserver sees every group a Writer applies, in commit order, after
+// CommitObserver sees every commit a Writer applies, in commit order, after
 // it is durable (EXT-WRT-7). It is the one source every observation of a
 // Session derives from: Loop events, turn lifecycle and chatlog entries are
-// all rows of applied groups. Observers run outside the Writer's critical
+// all events of applied commits. Observers run outside the Writer's critical
 // section and are best effort: a panic is contained and never reaches the
 // committer.
 type CommitObserver interface {
-	Committed(ctx context.Context, sid session.SessionID, rows []session.SessionEvent)
+	Committed(ctx context.Context, sid session.SessionID, commit session.Commit)
 }
 
 // WritersConfig carries the deployment's projection cache and observers. Every
@@ -119,18 +129,18 @@ type WritersConfig struct {
 	// means extension.CacheEvery(extension.DefaultCacheEvery). It never affects reading: an entry
 	// the cache already holds is used whoever wrote it.
 	CachePolicy extension.CachePolicy
-	// Observers are notified of every applied group (EXT-WRT-7).
+	// Observers are notified of every applied commit (EXT-WRT-7).
 	Observers []CommitObserver
 }
 
 // DeriveClaimID is EXT-WRT-5.
 func DeriveClaimID(protocolVersion uint16, sid session.SessionID, commitID session.CommitID, refSet artifact.RefSetDigest) artifact.ClaimID {
-	raw, _ := es.EncodeTypedPayload(session.ProtocolVersion1, "twilight/session-extension/claim", []string{"1", fmt.Sprintf("%d", protocolVersion), string(sid), string(commitID), string(refSet)})
+	raw, _ := es.EncodeTypedPayload(session.ProtocolVersion2, "twilight/session-extension/claim", []string{"1", fmt.Sprintf("%d", protocolVersion), string(sid), string(commitID), string(refSet)})
 	return artifact.ClaimID(es.DigestBytes(raw))
 }
 
 func nextClaimID(released artifact.ClaimID) artifact.ClaimID {
-	raw, _ := es.EncodeTypedPayload(session.ProtocolVersion1, "twilight/session-extension/claim-successor", []string{"1", string(released)})
+	raw, _ := es.EncodeTypedPayload(session.ProtocolVersion2, "twilight/session-extension/claim-successor", []string{"1", string(released)})
 	return artifact.ClaimID(es.DigestBytes(raw))
 }
 
@@ -204,12 +214,12 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 }
 
 // rebuild restores the idempotency index and every registered projection
-// (EXT-WRT-1). The index needs every group, so the log is always read in full;
-// a projection whose cache entry ends on a group boundary of this log
-// starts from that state and skips the groups it already covers, which is what
-// keeps a long session from refolding quadratically (EXT-PRJ-3).
+// (EXT-WRT-1). The kernel keeps the CommitID index Append needs; projections
+// fold from the whole log, or from a cache entry that ends on a commit
+// boundary of this log plus the commits after it, which is what keeps a long
+// session from refolding quadratically (EXT-PRJ-3).
 func (w *sessionWriter) rebuild(ctx context.Context, store session.Store) error {
-	page, err := store.Read(ctx, session.ReadRequest{SessionID: w.sid})
+	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: w.sid})
 	if err != nil {
 		return err
 	}
@@ -220,48 +230,40 @@ func (w *sessionWriter) rebuild(ctx context.Context, store session.Store) error 
 			return err
 		}
 		w.scopes[k] = scope
-		if state, through, ok := w.startState(ctx, scope, page.Events); ok {
-			w.states[k] = state
-			w.cached[k] = through
-			continue
+		state, through, ok := w.startState(ctx, scope, page.Commits)
+		if !ok {
+			if state, err = scope.Def.Initial(); err != nil {
+				return err
+			}
 		}
-		state, err := scope.Def.Initial()
-		if err != nil {
-			return err
+		from := session.CommitSeq(0)
+		if ok {
+			w.cached[k] = through
+			from = through.Next
+		}
+		if from < session.CommitSeq(len(page.Commits)) {
+			if state, err = w.registry.Fold(scope, state, page.Commits[from:]); err != nil {
+				return err
+			}
 		}
 		w.states[k] = state
-	}
-	rows := page.Events
-	for i := 0; i < len(rows); {
-		end := i
-		for end < len(rows) && !rows[end].Last {
-			end++
-		}
-		if end >= len(rows) {
-			return &extension.Error{Code: extension.ErrInvalid, Detail: "log ends in an incomplete group"}
-		}
-		group := rows[i : end+1]
-		if err := w.foldGroup(group); err != nil {
-			return err
-		}
-		i = end + 1
 	}
 	w.head = page.Head
 	return nil
 }
 
 // startState returns the state this projection should begin folding from: the
-// cached one when its entry covers a group boundary of this log and still
-// decodes, otherwise Initial. Anything unusable -- absent, corrupt, ahead of the
-// log, or recorded mid-group -- falls back to a full fold, so a stale or
-// damaged cache only costs time (EXT-PRJ-3). It is the Writer's counterpart of
-// storeReader.startState.
-func (w *sessionWriter) startState(ctx context.Context, scope *extension.ProjectionScope, rows []session.SessionEvent) (any, session.Head, bool) {
+// cached one when its entry covers a commit boundary of this log and still
+// decodes, otherwise nothing. Anything unusable -- absent, corrupt, ahead of
+// the log, or recorded at a digest the log does not have -- falls back to a
+// full fold, so a stale or damaged cache only costs time (EXT-PRJ-3). It is
+// the Writer's counterpart of the store reader's startState.
+func (w *sessionWriter) startState(ctx context.Context, scope *extension.ProjectionScope, commits []session.Commit) (any, session.Head, bool) {
 	if w.cache == nil {
 		return nil, session.Head{}, false
 	}
 	encoded, through, ok, err := w.cache.Load(ctx, w.sid, scope.Def.ID, scope.Def.Version)
-	if err != nil || !ok || !coversGroupBoundary(rows, through) {
+	if err != nil || !ok || !coversCommit(commits, through) {
 		return nil, session.Head{}, false
 	}
 	state, err := scope.Def.StateCodec.Decode(encoded)
@@ -271,35 +273,13 @@ func (w *sessionWriter) startState(ctx context.Context, scope *extension.Project
 	return state, through, true
 }
 
-// coversGroupBoundary reports whether through names the row before a group
-// boundary -- the last row of a complete group -- with the digest the entry
-// recorded. An entry that stops inside a group must not be started from,
-// because a group is applied atomically (EXT-PRJ-1).
-func coversGroupBoundary(rows []session.SessionEvent, through session.Head) bool {
-	if through.Next == 0 || through.Next > session.Seq(len(rows)) {
+// coversCommit reports whether through names the commit before its Next -- a
+// commit boundary of this log -- with the digest the entry recorded.
+func coversCommit(commits []session.Commit, through session.Head) bool {
+	if through.Next == 0 || through.Next > session.CommitSeq(len(commits)) {
 		return false
 	}
-	return extension.EndsGroupAt(&rows[through.Next-1], through)
-}
-
-// foldGroup folds one complete group into every projection that does not
-// already cover it; no state is published if any projection rejects the group.
-func (w *sessionWriter) foldGroup(group []session.SessionEvent) error {
-	next := make(map[projectionKey]any, len(w.states))
-	for k, scope := range w.scopes {
-		if through, fromCache := w.cached[k]; fromCache && group[0].Seq < through.Next {
-			continue // already covered by the entry the fold started from
-		}
-		state, err := w.registry.Fold(scope, w.states[k], group)
-		if err != nil {
-			return err
-		}
-		next[k] = state
-	}
-	for k, s := range next {
-		w.states[k] = s
-	}
-	return nil
+	return extension.SealedAt(commits[through.Next-1], through)
 }
 
 // cacheWrite is one projection entry the policy asked to refresh: the state
@@ -380,7 +360,7 @@ func (v view) Epoch() session.Epoch { return v.w.kernel.Epoch() }
 // the log.
 func (v view) Committed(id session.CommitID) bool { return v.w.kernel.Committed(id) }
 
-func (v view) LookupCommit(id session.CommitID) ([]session.SessionEvent, bool, error) {
+func (v view) LookupCommit(id session.CommitID) (session.Commit, bool, error) {
 	return v.w.kernel.LookupCommit(id)
 }
 func (v view) Projection(id extension.ProjectionID, ver extension.ProjectionVersion) (any, error) {
@@ -424,13 +404,13 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	// (EXT-PRJ-7, EXT-WRT-7). notifyMu is taken before mu is released, so
 	// notifications keep the commit order while a later Commit already runs.
 	var writes []cacheWrite
-	var applied []session.SessionEvent
+	var applied *session.Commit
 	defer func() {
 		if applied != nil && len(w.observers) > 0 {
 			w.notifyMu.Lock()
 			w.mu.Unlock()
 			w.saveRefresh(ctx, writes)
-			w.notify(ctx, applied)
+			w.notify(ctx, *applied)
 			w.notifyMu.Unlock()
 			return
 		}
@@ -447,40 +427,46 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	if group == nil {
 		return CommitResult{Outcome: CommitNoop}, nil
 	}
-	if group.CommitID == "" || len(group.Events) == 0 {
-		return CommitResult{Outcome: CommitInvalid, Detail: "empty CommitID or event group"}, nil
+	if group.CommitID == "" {
+		return CommitResult{Outcome: CommitInvalid, Detail: "empty CommitID"}, nil
 	}
-	rows, uncommitted, refs, invalid, err := w.encode(ctx, group)
+	batches, refs, invalid, err := w.encode(ctx, group)
 	if err != nil {
 		return CommitResult{}, err
 	}
 	if invalid != "" {
 		return CommitResult{Outcome: CommitInvalid, Detail: invalid}, nil
 	}
-	fp, err := fingerprintRows(w.sid, rows)
+	if err := session.ValidateBatches(batches); err != nil {
+		return CommitResult{Outcome: CommitInvalid, Detail: err.Error()}, nil
+	}
+	fp, err := fingerprintCommit(w.sid, group.CommitID, batches)
 	if err != nil {
 		return CommitResult{}, err
 	}
 	if existing, committed, err := w.kernel.LookupCommit(group.CommitID); err != nil {
 		return CommitResult{}, err
 	} else if committed {
-		// The kernel holds the rows, not a fingerprint, so a replay recomputes
-		// the old group's fingerprint to tell a replay from a conflict
+		// The kernel holds the commit, not a fingerprint, so a replay recomputes
+		// the old commit's fingerprint to tell a replay from a conflict
 		// (EXT-WRT-2). Only a hit pays for this.
-		old, err := fingerprintRows(w.sid, existing)
+		old, err := fingerprintCommit(w.sid, existing.CommitID, existing.Batches)
 		if err != nil {
 			return CommitResult{}, err
 		}
 		if old == fp {
-			return CommitResult{Outcome: CommitAlreadyApplied, Events: append([]session.SessionEvent(nil), existing...)}, nil
+			return CommitResult{Outcome: CommitAlreadyApplied, Commit: existing}, nil
 		}
 		return CommitResult{Outcome: CommitConflict}, nil
 	}
-	// Projections must accept the group before anything is persisted; the
-	// provisional rows carry every field Apply may read except Digest.
+	// Projections must accept the commit before anything is persisted. The
+	// provisional commit is what a reader folds too: the kernel assigns
+	// PrevDigest and Digest inside Append, and nothing a projection may read
+	// differs between the two paths.
+	provisional := session.Commit{Seq: w.head.Next, CommitID: group.CommitID, Epoch: w.kernel.Epoch(), Batches: batches}
 	next := make(map[projectionKey]any, len(w.states))
 	for k, scope := range w.scopes {
-		state, err := w.registry.Fold(scope, w.states[k], rows)
+		state, err := w.registry.Fold(scope, w.states[k], []session.Commit{provisional})
 		if err != nil {
 			return CommitResult{Outcome: CommitInvalid, Detail: err.Error()}, nil
 		}
@@ -496,7 +482,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 			return CommitResult{Outcome: CommitInvalid, Detail: invalid}, nil
 		}
 	}
-	sealed, err := w.kernel.Append(ctx, session.Group{CommitID: group.CommitID, Events: uncommitted})
+	sealed, err := w.kernel.Append(ctx, session.Proposal{CommitID: group.CommitID, Batches: batches})
 	if err != nil {
 		if claim != nil && appendOutcomeKnown(err) {
 			_ = w.admission.Ledger.ReleaseActive(ctx, claim.ID) // best effort; OpenWriter reconciles any orphan
@@ -513,10 +499,10 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 		}
 		// The claim stays active until reopening can verify the owner commit.
 		// Anything else leaves the log's content unknown to this Writer: its
-		// head and folded states may be one group behind what is on disk, and
+		// head and folded states may be one commit behind what is on disk, and
 		// continuing would assign Seqs the kernel has already used. Fail
 		// closed; a reopened Writer rebuilds from the log and a replay of the
-		// same group is answered by the kernel's index (EXT-WRT-4).
+		// same commit is answered by the kernel's index (EXT-WRT-4).
 		w.lost = &extension.Error{Code: extension.ErrUnknownOutcome, Detail: err.Error()}
 		return CommitResult{}, w.lost
 	}
@@ -525,17 +511,17 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	}
 	w.head = w.kernel.Head()
 	writes = w.planRefresh(false)
-	applied = append([]session.SessionEvent(nil), sealed...)
-	return CommitResult{Outcome: CommitApplied, Events: append([]session.SessionEvent(nil), sealed...), Claim: claim}, nil
+	applied = &sealed
+	return CommitResult{Outcome: CommitApplied, Commit: sealed, Claim: claim}, nil
 }
 
-// notify hands an applied group to every observer. A panicking observer is
+// notify hands an applied commit to every observer. A panicking observer is
 // contained: observation is derived work and never fails a Commit.
-func (w *sessionWriter) notify(ctx context.Context, rows []session.SessionEvent) {
+func (w *sessionWriter) notify(ctx context.Context, commit session.Commit) {
 	for _, o := range w.observers {
 		func() {
 			defer func() { _ = recover() }()
-			o.Committed(ctx, w.sid, rows)
+			o.Committed(ctx, w.sid, commit)
 		}()
 	}
 }
@@ -550,52 +536,50 @@ func appendOutcomeKnown(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// encode validates and encodes the group, extracts and admits bindings, and
-// returns provisional rows (Seq assigned, Digest empty) plus the kernel input.
-func (w *sessionWriter) encode(ctx context.Context, group *SemanticGroup) ([]session.SessionEvent, []session.UncommittedEvent, []artifact.BindingID, string, error) {
-	rows := make([]session.SessionEvent, len(group.Events))
-	uncommitted := make([]session.UncommittedEvent, len(group.Events))
+// encode validates and encodes every event, extracts and admits bindings, and
+// returns the proposal batches.
+func (w *sessionWriter) encode(ctx context.Context, group *SemanticGroup) ([]session.StreamBatch, []artifact.BindingID, string, error) {
+	batches := make([]session.StreamBatch, len(group.Batches))
 	var refs []artifact.BindingID
-	for i, te := range group.Events {
-		_, def, ok := w.registry.LookupEvent(te.Type)
-		if !ok {
-			return nil, nil, nil, fmt.Sprintf("event %d: unknown type %s", i, te.Type), nil
-		}
-		payload, _, err := w.registry.Encode(te.Type, te.Value)
-		if err != nil {
-			return nil, nil, nil, fmt.Sprintf("event %d: %v", i, err), nil
-		}
-		for _, decl := range def.Bindings {
-			ids, err := decl.Extractor.BindingIDs(te.Value)
+	for bi, tb := range group.Batches {
+		events := make([]session.Event, len(tb.Events))
+		for i, te := range tb.Events {
+			where := fmt.Sprintf("batch %d event %d", bi, i)
+			_, def, ok := w.registry.LookupEvent(te.Type)
+			if !ok {
+				return nil, nil, fmt.Sprintf("%s: unknown type %s", where, te.Type), nil
+			}
+			payload, _, err := w.registry.Encode(te.Type, te.Value)
 			if err != nil {
-				return nil, nil, nil, fmt.Sprintf("event %d: binding extraction: %v", i, err), nil
+				return nil, nil, fmt.Sprintf("%s: %v", where, err), nil
 			}
-			if uint32(len(ids)) < decl.Cardinality.Min || (decl.Cardinality.Max != nil && uint32(len(ids)) > *decl.Cardinality.Max) {
-				return nil, nil, nil, fmt.Sprintf("event %d: binding cardinality violated", i), nil
-			}
-			for _, id := range ids {
-				if invalid, err := w.admit(ctx, id, &decl); err != nil {
-					return nil, nil, nil, "", err
-				} else if invalid != "" {
-					return nil, nil, nil, fmt.Sprintf("event %d: %s", i, invalid), nil
+			for _, decl := range def.Bindings {
+				ids, err := decl.Extractor.BindingIDs(te.Value)
+				if err != nil {
+					return nil, nil, fmt.Sprintf("%s: binding extraction: %v", where, err), nil
 				}
+				if uint32(len(ids)) < decl.Cardinality.Min || (decl.Cardinality.Max != nil && uint32(len(ids)) > *decl.Cardinality.Max) {
+					return nil, nil, fmt.Sprintf("%s: binding cardinality violated", where), nil
+				}
+				for _, id := range ids {
+					if invalid, err := w.admit(ctx, id, &decl); err != nil {
+						return nil, nil, "", err
+					} else if invalid != "" {
+						return nil, nil, fmt.Sprintf("%s: %s", where, invalid), nil
+					}
+				}
+				refs = append(refs, ids...)
 			}
-			refs = append(refs, ids...)
+			events[i] = session.Event{Type: te.Type, RecordedAtUnixMilli: te.RecordedAtUnixMilli, Payload: payload}
 		}
-		u := session.UncommittedEvent{Type: te.Type, RecordedAtUnixMilli: te.RecordedAtUnixMilli, SourceSeqs: append([]session.Seq(nil), te.SourceSeqs...), Ignorable: def.Ignorable, Payload: payload}
-		if err := session.ValidateUncommitted(&u); err != nil {
-			return nil, nil, nil, fmt.Sprintf("event %d: %v", i, err), nil
-		}
-		uncommitted[i] = u
-		rows[i] = session.SessionEvent{Seq: w.head.Next + session.Seq(i), CommitID: group.CommitID, Index: uint16(i), Last: i == len(group.Events)-1,
-			Type: u.Type, RecordedAtUnixMilli: u.RecordedAtUnixMilli, SourceSeqs: u.SourceSeqs, Ignorable: u.Ignorable, Payload: u.Payload}
+		batches[bi] = session.StreamBatch{Stream: tb.Stream, Events: events}
 	}
-	return rows, uncommitted, refs, "", nil
+	return batches, refs, "", nil
 }
 
 func (w *sessionWriter) admit(ctx context.Context, id artifact.BindingID, decl *extension.BindingReferenceDefinition) (string, error) {
 	if w.admission.Bindings == nil {
-		// A configuration error, not a verdict on the group: returning it as an
+		// A configuration error, not a verdict on the commit: returning it as an
 		// error keeps it from reading like a data rejection.
 		return "", errors.New("writer: the event references artifacts but no binding resolver is configured")
 	}
@@ -628,7 +612,7 @@ func (w *sessionWriter) admit(ctx context.Context, id artifact.BindingID, decl *
 func (w *sessionWriter) claim(ctx context.Context, commitID session.CommitID, refs []artifact.BindingID) (*artifact.RetentionClaim, string, error) {
 	if w.admission.Ledger == nil {
 		// See admit: a missing ledger is a configuration error.
-		return nil, "", errors.New("writer: the group references artifacts but no retention ledger is configured")
+		return nil, "", errors.New("writer: the commit references artifacts but no retention ledger is configured")
 	}
 	set, err := artifact.SetBuilder{Resolver: w.admission.Bindings}.Build(ctx, refs)
 	if err != nil {
@@ -668,24 +652,33 @@ func (w *sessionWriter) claim(ctx context.Context, commitID session.CommitID, re
 	return &claim, "", nil
 }
 
-type fingerprintRow struct {
-	Type       session.EventType `json:"type"`
-	SourceSeqs []session.Seq     `json:"sourceSeqs,omitempty"`
-	Payload    string            `json:"payload"`
+type fingerprintEvent struct {
+	Type    session.EventType `json:"type"`
+	Payload string            `json:"payload"`
 }
 
-// fingerprintRows covers what makes a retry "the same group": CommitID,
-// Types, SourceSeqs and payloads, never timestamps (EXT-WRT-2).
-func fingerprintRows(sid session.SessionID, rows []session.SessionEvent) (es.Digest, error) {
+type fingerprintBatch struct {
+	Stream session.StreamRef  `json:"stream"`
+	Events []fingerprintEvent `json:"events"`
+}
+
+// fingerprintCommit covers what makes a retry "the same commit": CommitID,
+// stream attribution, Types and payloads, never timestamps or Seq (a retry
+// after reopen lands at the head the log actually has) (EXT-WRT-2).
+func fingerprintCommit(sid session.SessionID, commitID session.CommitID, batches []session.StreamBatch) (es.Digest, error) {
 	body := struct {
-		SessionID session.SessionID `json:"sessionId"`
-		CommitID  session.CommitID  `json:"commitId"`
-		Rows      []fingerprintRow  `json:"rows"`
-	}{SessionID: sid, CommitID: rows[0].CommitID, Rows: make([]fingerprintRow, len(rows))}
-	for i, r := range rows {
-		body.Rows[i] = fingerprintRow{r.Type, r.SourceSeqs, r.Payload.String()}
+		SessionID session.SessionID  `json:"sessionId"`
+		CommitID  session.CommitID   `json:"commitId"`
+		Batches   []fingerprintBatch `json:"batches"`
+	}{SessionID: sid, CommitID: commitID, Batches: make([]fingerprintBatch, len(batches))}
+	for i, b := range batches {
+		fb := fingerprintBatch{Stream: b.Stream, Events: make([]fingerprintEvent, len(b.Events))}
+		for j, e := range b.Events {
+			fb.Events[j] = fingerprintEvent{e.Type, e.Payload.String()}
+		}
+		body.Batches[i] = fb
 	}
-	raw, err := es.EncodeTypedPayload(session.ProtocolVersion1, "twilight/session-extension/fingerprint", body)
+	raw, err := es.EncodeTypedPayload(session.ProtocolVersion2, "twilight/session-extension/fingerprint", body)
 	if err != nil {
 		return "", err
 	}

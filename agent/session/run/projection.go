@@ -53,6 +53,9 @@ func (m Machine) Apply(e extension.DecodedEvent) (Machine, error) {
 	if !ok {
 		return m, fmt.Errorf("run machine: unexpected %T", e.Value)
 	}
+	if want := (session.StreamRef{Kind: session.StreamKindRun, ID: string(ev.RunID)}); e.Stream != want {
+		return m, fmt.Errorf("run machine: fact for %s arrived via stream %s/%s", ev.RunID, e.Stream.Kind, e.Stream.ID)
+	}
 	out := m.clone()
 	var proto run.Protocol
 	var state run.MachineState
@@ -91,8 +94,12 @@ func (m Machine) Apply(e extension.DecodedEvent) (Machine, error) {
 		out.Ended[ev.RunID] = struct{}{}
 		return out, nil
 	}
+	if _, tracked := out.Positions[ev.RunID]; tracked {
+		out.Positions[ev.RunID]++
+	} else {
+		out.Positions[ev.RunID] = 0
+	}
 	out.Active[ev.RunID] = next
-	out.Positions[ev.RunID] = e.Event.Seq
 	return out, nil
 }
 
@@ -189,7 +196,7 @@ var _ session.EventType = Prefix
 // Writer: every projection at the deployment's interval, except the machine
 // projection, whose entry the Runtime refreshes itself through SnapshotPolicy
 // and which must never be cached mid-step (RUN-CMT-2). every is the interval in
-// rows; zero or less takes extension.DefaultCacheEvery.
-func WriterCachePolicy(every session.Seq) extension.CachePolicy {
+// commits; zero or less takes extension.DefaultCacheEvery.
+func WriterCachePolicy(every session.CommitSeq) extension.CachePolicy {
 	return extension.CacheEvery(every).Exclude(MachineProjectionID)
 }

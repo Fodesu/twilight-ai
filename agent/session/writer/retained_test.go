@@ -45,11 +45,11 @@ var sinkWriter Writer
 func TestWriterRetainsNoHistory(t *testing.T) {
 	small := retainedOnReopen(t, 1600)
 	large := retainedOnReopen(t, 12800)
-	t.Logf("retained on reopen: 1600 rows = %.3f MB, 12800 rows = %.3f MB", mib(small), mib(large))
-	// Eight times the rows must not cost a linear amount: a returning index
+	t.Logf("retained on reopen: 1600 commits = %.3f MB, 12800 commits = %.3f MB", mib(small), mib(large))
+	// Eight times the commits must not cost a linear amount: a returning index
 	// would put the larger session in the megabytes.
 	if large > 512<<10 {
-		t.Fatalf("reopening a 12800-row session retained %.3f MB; the Writer holds no per-commit state", mib(large))
+		t.Fatalf("reopening a 12800-commit session retained %.3f MB; the Writer holds no per-commit state", mib(large))
 	}
 }
 
@@ -57,15 +57,15 @@ func mib(n uint64) float64 { return float64(n) / (1 << 20) }
 
 // retainedOnReopen reports the heap an opened Writer keeps alive, taking the
 // worse of the fold-everything and resume-from-cache paths.
-func retainedOnReopen(t *testing.T, rows int) uint64 {
+func retainedOnReopen(t *testing.T, commits int) uint64 {
 	t.Helper()
 	ctx := context.Background()
 	store := session.NewMemoryStore()
-	reg, err := extension.BuildRegistry(session.ProtocolVersion1, countModule())
+	reg, err := extension.BuildRegistry(session.ProtocolVersion2, countModule())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	cache := extension.NewMemoryProjectionCache()
@@ -73,9 +73,9 @@ func retainedOnReopen(t *testing.T, rows int) uint64 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < rows; i++ {
-		group := &SemanticGroup{CommitID: session.CommitID(fmt.Sprintf("c%d", i))}
-		group.Events = append(group.Events, TypedEvent{Type: tpfx("q") + "row", Value: countPayload{Text: fmt.Sprintf("t%d", i)}})
+	for i := 0; i < commits; i++ {
+		group := &SemanticGroup{CommitID: session.CommitID(fmt.Sprintf("c%d", i)),
+			Batches: sessionBatch(TypedEvent{Type: tpfx("q") + "row", Value: countPayload{Text: fmt.Sprintf("t%d", i)}})}
 		if _, err := w.Commit(ctx, func(View) (*SemanticGroup, error) { return group, nil }); err != nil {
 			t.Fatal(err)
 		}

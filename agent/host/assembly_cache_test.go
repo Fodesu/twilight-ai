@@ -46,11 +46,11 @@ func (c *countingCache) count() int {
 func TestHostCacheEveryIsConfigurable(t *testing.T) {
 	ctx := context.Background()
 	for name, tc := range map[string]struct {
-		every      session.Seq
+		every      session.CommitSeq
 		wantBefore bool
 	}{
-		"an interval of one row writes after the first commit": {every: 1, wantBefore: true},
-		"a large interval defers to Close":                     {every: 1 << 40, wantBefore: false},
+		"an interval of one commit writes after the first commit": {every: 1, wantBefore: true},
+		"a large interval defers to Close":                        {every: 1 << 40, wantBefore: false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cache := newCountingCache()

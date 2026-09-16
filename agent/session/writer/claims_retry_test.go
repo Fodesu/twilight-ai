@@ -25,7 +25,7 @@ func claimFixture(t *testing.T) (*fixture, artifact.BindingSet, CommitFn) {
 		t.Fatal(err)
 	}
 	return f, set, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c1", Events: []TypedEvent{{Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}}}}, nil
+		return &SemanticGroup{CommitID: "c1", Batches: sessionBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}})}, nil
 	}
 }
 
@@ -43,7 +43,7 @@ func TestWriterRetriesReleasedClaims(t *testing.T) {
 	}
 	w := open()
 	defer func() { _ = w.Close(ctx) }()
-	id := DeriveClaimID(session.ProtocolVersion1, "s", "c1", set.RefSetDigest)
+	id := DeriveClaimID(session.ProtocolVersion2, "s", "c1", set.RefSetDigest)
 	for _, mode := range []string{"invalid", "invalid", "before", "before"} {
 		fs.arm(mode)
 		if _, err := w.Commit(ctx, group); err == nil {
@@ -83,7 +83,7 @@ func TestWriterRejectsMismatchedReleasedClaim(t *testing.T) {
 			f.ledger = artifact.NewMemoryLedger(nil)
 			w := f.open(t, false)
 			defer w.Close(ctx)
-			id := DeriveClaimID(session.ProtocolVersion1, "s", "c1", set.RefSetDigest)
+			id := DeriveClaimID(session.ProtocolVersion2, "s", "c1", set.RefSetDigest)
 			owner := CommitOwner("s", "c1")
 			switch field {
 			case "owner":
@@ -106,8 +106,8 @@ func TestWriterRejectsMismatchedReleasedClaim(t *testing.T) {
 			if _, ok, err := f.ledger.LookupClaim(ctx, nextClaimID(id)); err != nil || ok {
 				t.Fatalf("successor of mismatched claim exists = %v, %v", ok, err)
 			}
-			if page, err := f.store.Read(ctx, session.ReadRequest{SessionID: "s"}); err != nil || len(page.Events) != 0 {
-				t.Fatalf("mismatched claim wrote events = %+v, %v", page, err)
+			if page, err := f.store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"}); err != nil || len(page.Commits) != 0 {
+				t.Fatalf("mismatched claim wrote commits = %+v, %v", page.Commits, err)
 			}
 		})
 	}

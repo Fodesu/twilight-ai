@@ -1,6 +1,6 @@
 # Twilight Agent Session Protocol
 
-状态：v1 设计规范。本文定义 Session ES kernel。
+状态：v2 设计规范（commit ledger）。本文定义 Session ES kernel；v1 行格式（一行一个 SessionEvent、按行 digest）已被 v2 取代。
 
 本文定义 Twilight Session 的 Event Sourcing kernel。文中的"必须""不得""应该"是协议约束。
 
@@ -11,7 +11,7 @@ Twilight Session 是一个单写者、可接管、幂等提交的 Event-Sourced 
 ```text
                   Session
 
-      ┌── Canonical Event Stream ──┐
+      ┌── Canonical Commit Ledger ─┐
       │                            │
 Command                            │
   ↓                                │
@@ -22,7 +22,7 @@ Writer.Commit                      │
   ├─ validation                    │
   ├─ idempotency                   │
   ↓                                │
-Atomic Event Group ────────────────┘
+Atomic Commit ─────────────────────┘
              │
              ↓
       Projections / Snapshots
@@ -31,55 +31,55 @@ Atomic Event Group ────────────────┘
        Runtime / Context / UI
 ```
 
-1. **唯一权威历史。** `Session = append-only Event Stream`，`State = Fold(Events)`。Turn、Run、Chatlog 不各自持有 Session 的权威状态，它们的事实同在一条 stream 上（§2 authority）。stream 之外还有三类有明确 owner 的持久数据：内容寻址的 artifact `cas` ContentStore 存内容本体；artifact 的 `RetentionLedger` 保存 claim；Executor 的 durable Execution Store 保存已接受 Assignment 的执行状态与结果。前两类中被 Session 引用的内容以 digest 锚定，模型请求本体作为 Assignment 内容从 authority 传递到 executor，Run 事实只记其 digest，恢复不依赖 authority 的短期本体（RUN-WIR-4、RUN-CMT-7）。Execution Store 是效果层的 authority，不是 Session 事实的第二份来源；Session 只通过 Assignment/Outcome 与它交互。claim 先于 Append 建立（EXT-WRT-3）。
+1. **唯一权威历史。** `Session = append-only Commit Ledger`，`State = Fold(Events)`。Turn、Run、Chatlog 不各自持有 Session 的权威状态，它们的事实同在一条 ledger 上；session 流与 run/&lt;RunID&gt; 流是这条 ledger 的两个逻辑流，CommitSeq 是权威全序，StreamSeq 只是读优化（§3）。stream 之外还有三类有明确 owner 的持久数据：内容寻址的 artifact `cas` ContentStore 存内容本体；artifact 的 `RetentionLedger` 保存 claim；Executor 的 durable Execution Store 保存已接受 Assignment 的执行状态与结果。前两类中被 Session 引用的内容以 digest 锚定，模型请求本体作为 Assignment 内容从 authority 传递到 executor，Run 事实只记其 digest，恢复不依赖 authority 的短期本体（RUN-WIR-4、RUN-CMT-7）。Execution Store 是效果层的 authority，不是 Session 事实的第二份来源；Session 只通过 Assignment/Outcome 与它交互。claim 先于 Append 建立（EXT-WRT-3）。
 
 2. **语义串行化。** 同一 Session 的全部写入（Turn、Run、恢复、Checkpoint）经进程内唯一的 `Writer.Commit`，形成一个确定的全序（EXT-SCP-1、EXT-WRT-1）。kernel 不承担并发控制（SES-SCP-2）。
 
 3. **事务边界。** `read state → decide → validate → append` 在 Writer 的互斥区内完成，不可被另一个语义提交插入：`CommitFn` 经 `View` 读取的 head、提交历史与投影状态即写入时的状态，fn 自身不做外部 IO（EXT-WRT-1）。validate 有两层：Binding admission（EXT-REF-2）与投影预折叠——任一投影拒绝则不落盘（EXT-PRJ-1）。这条边界是进程内的；跨进程的隔离由第 5 条提供，两者合起来才是完整的隔离。
 
-4. **原子 Semantic Group。** 一个领域动作产生的多个 event 要么全部出现，要么全部不存在（SES-APP-1）；底层事务或 fsync 只是它的物理实现。崩溃只可能留下一个不完整尾组，`Open` 在确立 head 之前把它截掉，reader 在任何时刻都看不到不完整的组（SES-APP-2）。
+4. **原子 Commit。** 一个领域动作产生的多个 event 要么全部出现，要么全部不存在（SES-APP-1）；底层事务或 fsync 只是它的物理实现。崩溃只可能留下一个不完整的尾 Commit，`Open` 在确立 head 之前把它截掉，reader 在任何时刻都看不到不完整的 Commit（SES-APP-2）。
 
 5. **Session 级 Ownership 与 Fencing。** `Handle + Epoch`：同一 Session 同一时刻至多一个有效写者；接管使 Epoch 加一并持久化，旧 Handle 的迟到写入被拒（SES-OWN-1/2）。所有权是 Session 级而非执行目标级：接管者对全部执行中的目标查询，并根据结果重连、延迟或处置（SES-OWN-3、RUN-CMT-7）。何时接管是 kernel 之上的策略，kernel 不承载 TTL 或心跳。
 
 6. **幂等语义提交。** `CommitID + semantic fingerprint`：同 ID 同内容为 `AlreadyApplied`，同 ID 不同内容为 `Conflict`，两者都不写入（EXT-WRT-2）。fingerprint 覆盖 Type、SourceSeqs、Payload，不含时间。kernel 只拒绝重复 CommitID 并提供该索引的读侧（SES-APP-3、SES-REP-3/4），比对由 Writer 完成。恢复与重放因此不会重复写事实。
 
-7. **Projection 与 Snapshot 只是派生状态。** Projection 可重建，Snapshot（投影缓存）可丢弃；复用条件是组对齐（EXT-PRJ-3），篡改或过期的条目只让下次多折，绝不成为第二份 authority（EXT-PRJ-5/7）。owner 进程内的投影与观察者从 Store 折出的投影对同一 head 给出相同状态（EXT-PRJ-4）。
+7. **Projection 与 Snapshot 只是派生状态。** Projection 可重建，Snapshot（投影缓存）可丢弃；复用条件是 Commit 边界对齐（EXT-PRJ-3），篡改或过期的条目只让下次多折，绝不成为第二份 authority（EXT-PRJ-5/7）。owner 进程内的投影与观察者从 Store 折出的投影对同一 head 给出相同状态（EXT-PRJ-4）。
 
 8. **最小化、payload-opaque 的 kernel。** kernel 只懂 Open/ownership、Append、Read、Seq、CommitID 索引、digest 链（SES-SCP-1/3、第 4 至 6 节）。它不解释 payload，不知道 Turn、Run、Tool、Checkpoint 是什么；领域语义全部在 Module、Writer 与 Projection 层。
 
-9. **可验证历史。** 每行 digest 覆盖本行与前一行，`H0 → E0 → E1 → …` 成链，删除、篡改、重排都使其后全部行失效（SES-WIR-2）。校验的义务点是 `Open`，`Read` 信任存储（SES-REP-1）。
+9. **可验证历史。** 每个 Commit 的 digest 覆盖 PrevDigest、Seq、CommitID、Epoch 与全部批次 digest，`H0 → C0 → C1 → …` 成链，删除、篡改、重排都使其后全部 Commit 失效（SES-WIR-2）。校验的义务点是 `Open`，读路径信任存储（SES-REP-1）。
 
 10. **模块隔离与版本独立。** 事件按 `<source>/<module>/` 归属，`Requires` 图决定投影的消费范围：范围外事件跳过，范围内不可忽略的 Unknown 事件使折叠失败（EXT-REG-1/4、EXT-PRJ-2）。payload 版本 `v` 由模块携带，与 kernel 的 `ProtocolVersion` 分离（SES-VER-1）。application module 与 first-party 模块同构（EXT-APP）。
 
-11. **同组伴随写入。** Run 事实与它产生的对话内容（assistant、tool_result）写在同一组：内容只出现一次，事实只记 digest（RUN-WIR-4、TRN-CMP、Chatlog 第 1 节）。这是第 4 条最重要的应用。
+11. **同 Commit 伴随写入。** Run 事实与它产生的对话内容（assistant、tool_result）写在同一 Commit：内容只出现一次，事实只记 digest（RUN-WIR-4、TRN-CMP、Chatlog 第 1 节）。这是第 4 条最重要的应用。
 
-12. **崩溃后果的封闭集合。** Session 崩溃只可能留下不完整尾组（第 4 条）与孤儿 claim（回收前核对释放，ART-RET-3）；Executor 崩溃还可能留下需要查询的 durable execution record。Session 接管者询问执行目标后重连或处置；两者都不触发自动重试。崩溃恢复、语义重试、重新生成回答和外部效果未知的身份边界见 TRN-DUR-1 至 4；Execution Store 的恢复由效果层合同负责。
+12. **崩溃后果的封闭集合。** Session 崩溃只可能留下不完整尾 Commit（第 4 条）与孤儿 claim（回收前核对释放，ART-RET-3）；Executor 崩溃还可能留下需要查询的 durable execution record。Session 接管者询问执行目标后重连或处置；两者都不触发自动重试。崩溃恢复、语义重试、重新生成回答和外部效果未知的身份边界见 TRN-DUR-1 至 4；Execution Store 的恢复由效果层合同负责。
 
-13. **读不需要所有权。** 任何进程可随时读完整组构成的前缀（SES-OWN-4）；观察者用 `NewProjectionReader` 从 Store 折叠，与 owner 一致（第 7 条）。
+13. **读不需要所有权。** 任何进程可随时读完整 Commit 构成的前缀（SES-OWN-4）；观察者用 `NewProjectionReader` 从 Store 折叠，与 owner 一致（第 7 条）。
 
 ## 1. 范围
 
 ```text
-Events = 一条 Session 的有序 SessionEvent 日志，追加式，一行一个 event
+Events = 一条 Session 的 commit ledger：有序的原子 Commit 日志，一个 Commit 内含若干按逻辑流分组的 batch
 State  = Fold(Events)
 
-kernel 负责：header、event 行、seq、原子的组追加、Session 级写者独占、按行 digest、顺序读
+kernel 负责：header、Commit（Seq、CommitID、Epoch、批次）、原子的 Commit 追加、Session 级写者独占、按 Commit 的 digest 链、CommitSeq 顺序读与按逻辑流（StreamRef）的流读
 modules 负责：event ontology、typed codec、payload 版本、投影、投影缓存、幂等重放、并发串行
 ```
 
-**SES-SCP-1** kernel 不解释 payload，不校验 payload 的 schema，不知道模块、commit 的语义、投影或 lease。它保证四件事：日志只能追加；同一时刻一个 Session 至多一个有效写者；一次 `Append` 的整组 event 同时可见或同时不存在；每行携带覆盖前一行的 digest。
+**SES-SCP-1** kernel 不解释 payload，不校验 payload 的 schema，不知道模块、commit 的语义、投影或 lease。它保证四件事：日志只能追加；同一时刻一个 Session 至多一个有效写者；一次 `Append` 的整 Commit event 同时可见或同时不存在；每个 Commit 携带覆盖前一 Commit 的 digest。
 
 **SES-SCP-2** 并发不在 kernel 解决。一个 Session 的全部写入者（Run 的 worker、Turn 的 Coordinator、恢复流程）在进程内经同一个 `writer.Writer` 串行（EXT-WRT），它持有 kernel 的所有权句柄 `session.Handle`。kernel 只拒绝不持有有效所有权的 `Append`。
 
-**SES-SCP-3** kernel 的范围是单条 stream：header、Open/Append/Read、所有权与 epoch、按行 digest。Fork、ancestry 与 canonical import 不属于 v1；未来若实现，必须建立在这组原语之上并遵守第 8 节的兼容约束。
+**SES-SCP-3** kernel 的范围是单条 ledger：header、Open/Append/ReadCommits/ReadStream、所有权与 epoch、按 Commit 的 digest 链。Fork、ancestry 与 canonical import 不属于当前合同；未来若实现，必须建立在这组原语之上并遵守第 8 节的兼容约束。
 
 ## 2. 版本
 
-`ProtocolVersion` 覆盖 kernel wire：header 字段、event 行字段、digest preimage、组完整性规则。它不覆盖 payload。
+`ProtocolVersion` 覆盖 kernel wire：header 字段、commit 字段、digest preimage、批次完整性规则。它不覆盖 payload。
 
 **SES-VER-1** payload 的版本由模块负责：每个 payload object 第一层携带整数字段 `v`，模块按 `(EventType, v)` 选 codec（EXT-REG-2）。kernel 不读取该字段。
 
-**SES-VER-2** `ProtocolVersion` 在旧 reader 无法保持行结构或 digest 语义时递增；payload、EventType、模块 codec 的变化不触发。kernel 版本变化由外部 migration tool 生成新版本日志，旧日志原样保留（adjacent migration）。
+**SES-VER-2** `ProtocolVersion` 在旧 reader 无法保持 Commit 结构或 digest 语义时递增；payload、EventType、模块 codec 的变化不触发。kernel 版本变化由外部 migration tool 生成新版本日志，旧日志原样保留（adjacent migration）。
 
 ## 3. wire types
 
@@ -87,8 +87,16 @@ modules 负责：event ontology、typed codec、payload 版本、投影、投影
 type SessionID string
 type CommitID string
 type EventType string
-type Seq uint64      // 行号，从 0 连续递增
-type Epoch uint64    // 写者所有权代数，从 1 递增
+type CommitSeq uint64   // Commit 在 ledger 中的位置，从 0 连续递增，是权威全序
+type StreamSeq uint64   // event 在其逻辑流内的位置，从 0 连续递增；读优化，不进 digest
+type Epoch uint64       // 写者所有权代数，从 1 递增
+
+type StreamKind string
+const (
+    StreamKindSession StreamKind = "session" // 全 Session 共享的语义流，ID 必须为空
+    StreamKindRun     StreamKind = "run"     // 一个 Run 的流，ID 为 RunID
+)
+type StreamRef struct { Kind StreamKind; ID string }
 
 type SessionHeader struct {
     ProtocolVersion uint16
@@ -100,46 +108,41 @@ type SessionHeader struct {
     HeaderDigest es.Digest
 }
 
-type SessionEvent struct {
-    Seq Seq
-    CommitID CommitID   // 同一次 Append 的行相同
-    Index uint16        // 组内序号，从 0 递增
-    Last bool           // 组内最后一行
+type Event struct {
     Type EventType
     RecordedAtUnixMilli int64
-    SourceSeqs []Seq    // 可选；语义由声明它的模块解释，kernel 不校验
-    Ignorable bool      // 写者声明：不认识该 Type 的 reader 可以跳过它
     Payload jsonstable.Value
-    Digest es.Digest    // 覆盖本行全部字段与前一行的 Digest
 }
 
-type UncommittedEvent struct {
-    Type EventType
-    RecordedAtUnixMilli int64
-    SourceSeqs []Seq
-    Ignorable bool
-    Payload jsonstable.Value
+type StreamBatch struct {
+    Stream StreamRef
+    Events []Event // 非空
 }
-type Group struct {
+
+type Commit struct {
+    Seq CommitSeq
     CommitID CommitID
-    Events []UncommittedEvent // 非空
+    Epoch Epoch
+    Batches []StreamBatch // 非空；同一 Commit 内每个流至多一个 batch
+    PrevDigest es.Digest
+    Digest es.Digest
 }
-type Head struct { Next Seq; Digest es.Digest } // 空日志为 {0, HeaderDigest}
+type Head struct { Next CommitSeq; Digest es.Digest } // 空日志为 {0, HeaderDigest}
 ```
 
-**SES-WIR-1** identity 非空、稳定、有效 UTF-8。`Seq` 从 0 连续；一次 `Append` 写入的行 `CommitID` 相同，`Index` 从 0 连续，最后一行 `Last=true`；`CommitID` 在同一 stream 内唯一。`Payload` 必须是 canonical JSON object（RFC 8785），完整字节进入 digest。
+**SES-WIR-1** identity 非空、稳定、有效 UTF-8。`CommitSeq` 从 0 连续；一次 `Append` 持久化恰好一个 `Commit`，`CommitID` 在同一 ledger 内唯一。每个 batch 的流归因必须合法：session 流不带 ID，run 流的 ID 是有效 RunID；同一 Commit 内同一流至多一个 batch，每个 batch 与每个 Commit 都非空。`Payload` 必须是 canonical JSON object（RFC 8785），完整字节进入 digest。event 不携带事务元数据（无 Seq、Index、SourceSeqs、Ignorable）：事件的权威顺序由 CommitSeq 加上其在 batch 内的位置决定。
 
 **SES-WIR-2** digest preimage：
 
 ```text
 HeaderDigest = Digest("twilight/session/header", ProtocolVersion, SessionID, CreatedAtUnixMilli, CausationID, Metadata)
-Digest(row)  = Digest("twilight/session/event", prev, SessionID, Seq, CommitID, Index, Last, Type, RecordedAtUnixMilli, SourceSeqs, Ignorable, Payload)
-              其中 prev 为前一行的 Digest，Seq 0 的 prev 为 HeaderDigest
+BatchDigest  = Digest("twilight/session/batch", SessionID, Stream, [{Type, RecordedAtUnixMilli, Payload}, ...])
+CommitDigest = Digest("twilight/session/commit", PrevDigest, SessionID, Seq, CommitID, Epoch, [BatchDigest, ...])
 ```
 
-digest 依 `agent/es` 的 versioned domain separator。链条按行连接；任何行被改写、删除或重排都使其后所有行的 digest 失效。
+digest 依 `agent/es` 的 versioned domain separator。链条按 Commit 连接，batch digest 又把 batch 内的事件按序绑定；任何 Commit 被改写、删除或重排都使其后所有 Commit 的 digest 失效。封印（`SealCommit`）以 Handle 的 Epoch 与当前 head digest 计算，验证时重算比对。
 
-**SES-WIR-3** 同一 Session 的 header 与每一行使用同一 `ProtocolVersion`；Store 从 header 派生版本，调用方不传版本。
+**SES-WIR-3** 同一 Session 的 header 与每个 Commit 使用同一 `ProtocolVersion`；Store 从 header 派生 profile（`LedgerProfileFor`），调用方不传版本。
 
 ## 4. 所有权
 
@@ -150,20 +153,25 @@ type OpenOptions struct {
     Takeover bool
 }
 // Handle 是 kernel 的所有权句柄，由 Store.Open 返回；进程内的写入者是 writer.Writer，它持有一个 Handle。
+type Proposal struct {
+    CommitID CommitID
+    Batches []StreamBatch // 非空；调用方按批归因流
+}
 type Handle interface {
     SessionID() SessionID
     Epoch() Epoch
     Head() Head
-    Append(context.Context, Group) ([]SessionEvent, error)
+    Append(context.Context, Proposal) (Commit, error)
     Committed(CommitID) bool
-    LookupCommit(CommitID) ([]SessionEvent, bool, error)
+    LookupCommit(CommitID) (Commit, bool, error)
     Close(context.Context) error
 }
 type Store interface {
     Create(context.Context, CreateRequest) (SessionHeader, error)
     Header(context.Context, SessionID) (SessionHeader, error)
     Open(context.Context, SessionID, OpenOptions) (Handle, error)
-    Read(context.Context, ReadRequest) (ReadPage, error)
+    ReadCommits(context.Context, CommitReadRequest) (CommitPage, error)
+    ReadStream(context.Context, StreamReadRequest) (StreamPage, error)
 }
 ```
 
@@ -173,35 +181,41 @@ type Store interface {
 
 **SES-OWN-3** 所有权是 Session 级的，不是执行目标级的。一个进程取得 Session 的所有权即拥有其中全部执行；接管者读日志后对所有仍在执行中的目标做询问后处置（RUN-CMT-7）。kernel 不知道"执行中"是什么，这一步由 run 模块在 Writer 上完成。
 
-**SES-OWN-4** `Read` 不需要所有权，任何进程可以随时读；读到的是完整组构成的前缀（SES-APP-2）。
+**SES-OWN-4** `ReadCommits` 与 `ReadStream` 不需要所有权，任何进程可以随时读；读到的是完整 Commit 构成的前缀（SES-APP-2）。
 
 ## 5. append
 
-**SES-APP-1** `Append(group)` 原子：整组 event 同时可见或同时不存在。Store 为组内每行赋 `Seq`（从当前 `Head.Next` 起连续）、`Index`、`Last`，计算 `Digest`，持久化，然后返回带完整字段的行。返回即持久（文件 adapter 每次 Append 一次 `fsync`；数据库 adapter 一个事务）。写入开始之后的任何失败（write、fsync、事务提交返回错误）使该组是否落盘对句柄成为未知：句柄进入失效状态，本次与之后的 `Append` 返回 `ErrHandleFailed`，不再写入；调用方 Close 并重开，`Open` 按磁盘实况决定该组是否存在（完整则接纳进索引，残缺则按 SES-APP-2 截断），随后的重放由 `Committed`/`LookupCommit` 回答。adapter 只能在写入开始之前返回 ctx 错误；写入开始后的中断按未知结果报告。
+**SES-APP-1** `Append(proposal)` 原子：整个 Commit 同时可见或同时不存在。Store 为 Commit 赋 `Seq`（从当前 `Head.Next` 起连续），以 Handle 的 Epoch 与当前 head digest 封印（SES-WIR-2），持久化，然后返回封印后的 Commit。返回即持久（文件 adapter 每次 Append 一次 `fsync`；数据库 adapter 一个事务）。写入开始之后的任何失败（write、fsync、事务提交返回错误）使该 Commit 是否落盘对句柄成为未知：句柄进入失效状态，本次与之后的 `Append` 返回 `ErrHandleFailed`，不再写入；调用方 Close 并重开，`Open` 按磁盘实况决定该 Commit 是否存在（完整则接纳进索引，残缺则按 SES-APP-2 截断），随后的重放由 `Committed`/`LookupCommit` 回答。adapter 只能在写入开始之前返回 ctx 错误；写入开始后的中断按未知结果报告。
 
-**SES-APP-2** 崩溃只可能留下一个不完整的尾组：文件 adapter 打开时把末尾 `Last=false` 且没有后续行的整组截掉；数据库 adapter 由事务保证不会出现。截断必须发生在 `Head` 确立之前：否则 `Head.Next` 落在残组内部，下一次 `Append` 会把残组与后续组焊成一组。reader 在任何时刻都不会看到不完整的组。
+**SES-APP-2** 崩溃只可能留下一个不完整的尾 Commit：文件 adapter 打开时把末尾帧不完整且没有后续 Commit 的尾部截掉；数据库 adapter 由事务保证不会出现。截断必须发生在 `Head` 确立之前：否则 `Head.Next` 落在残 Commit 内部，下一次 `Append` 会把残 Commit 与后续 Commit 焊成一个。reader 在任何时刻都不会看到不完整的 Commit。
 
-**SES-APP-3** kernel 拒绝：空组、重复 `CommitID`、非 canonical 或非 object 的 payload、无效 identity、落后的 Epoch。拒绝不写入任何内容，返回 `ErrInvalid`（重复 CommitID 为 `ErrConflict`）。kernel 不比对重复 CommitID 的内容，不返回"已应用"：幂等重放由 `writer.Writer` 比对 fingerprint 完成（EXT-WRT-2），它为此需要的行经 `LookupCommit` 从 kernel 取（SES-REP-4）。
+**SES-APP-3** kernel 拒绝：空 Commit、空 batch、同一 Commit 内重复的流、非法流归因、重复 `CommitID`、非 canonical 或非 object 的 payload、无效 identity、落后的 Epoch。拒绝不写入任何内容，返回 `ErrInvalid`（重复 CommitID 为 `ErrConflict`）。kernel 不比对重复 CommitID 的内容，不返回"已应用"：幂等重放由 `writer.Writer` 比对 fingerprint 完成（EXT-WRT-2），它为此需要的 Commit 经 `LookupCommit` 从 kernel 取（SES-REP-4）。
 
 ## 6. read
 
 ```go
-type ReadRequest struct {
+type CommitReadRequest struct {
     SessionID SessionID
-    From Seq            // 起点，含
-    Types []EventType   // 空为全部；非空为 EventType 前缀过滤（优化，不改变语义）
+    From CommitSeq      // 起点，含
     Limit uint32        // 0 为不限
 }
-type ReadPage struct { Header SessionHeader; Events []SessionEvent; Head Head; HasMore bool }
+type CommitPage struct { Header SessionHeader; Commits []Commit; Head Head; HasMore bool }
+type StreamReadRequest struct {
+    SessionID SessionID
+    Stream StreamRef   // 只读该逻辑流的事件
+    From StreamSeq      // 起点，含
+    Limit uint32        // 0 为不限
+}
+type StreamPage struct { Header SessionHeader; Stream StreamRef; Events []Event; Head Head; HasMore bool }
 ```
 
-**SES-REP-1** `Read` 按 `Seq` 递增返回 `From` 起的行，只返回完整组内的行；`Limit` 截断只发生在组边界。损坏检测的义务点在 `Open`：Open 在建立所有权前校验整条 `Digest` 链，损坏必须 fail loudly（`ErrCorrupt`）；`ValidateChain` 同时作为显式校验入口导出。`Read` 信任存储，不逐次重算链。
+**SES-REP-1** `ReadCommits` 按 `CommitSeq` 递增返回 `From` 起的完整 Commit。损坏检测的义务点在 `Open`：Open 在建立所有权前用 `ValidateLedger` 重算整条 digest 链，损坏必须 fail loudly（`ErrCorrupt`）；`ValidateLedger` 同时作为显式校验入口导出。读路径信任存储，不逐次重算链。
 
-**SES-REP-2** `Types` 过滤是读取代价的优化：文件 adapter 全量扫描后过滤，数据库 adapter 用 `(SessionID, Type 前缀)` 索引。过滤与不过滤读到的事件集合对匹配类型完全一致。
+**SES-REP-2** `StreamSeq` 是流内位置，由 Store 按 CommitSeq 顺序数出，是读侧的优化：`ReadStream` 只返回该流的事件，但其顺序与从 `ReadCommits` 折叠出的流内顺序完全一致。它不进 digest，也不是第二种排序。
 
-**SES-REP-3** `Committed` 报告某个 `CommitID` 是否已在 stream 中。`Append` 必须拒绝重复 `CommitID`（SES-APP-3），kernel 因此本来就持有这个索引；`Committed` 是该索引的读侧，只做索引查找，不触碰存储。调用者（`writer.Writer`、Run 的重放判定）不必自己再维护一份同样的索引。
+**SES-REP-3** `Committed` 报告某个 `CommitID` 是否已在 ledger 中。`Append` 必须拒绝重复 `CommitID`（SES-APP-3），kernel 因此本来就持有这个索引；`Committed` 是该索引的读侧，只做索引查找，不触碰存储。调用者（`writer.Writer`、Run 的重放判定）不必自己再维护一份同样的索引。
 
-**SES-REP-4** `LookupCommit` 返回某个已提交组的行，未提交时 `ok=false`。句柄不持有这些行时从存储读取：文件 adapter 按 `Open` 时记录的字节区间读该组，代价与日志长度无关；内存 adapter 复制该组的行区间。代价只落在命中，未命中是一次索引查找。这是幂等重放唯一需要的读取能力：重放不必读整条日志（EXT-WRT-2）。
+**SES-REP-4** `LookupCommit` 返回某个已提交的 Commit，未提交时 `ok=false`。句柄不持有它时从存储读取：文件 adapter 按 `Open` 时记录的字节区间读该 Commit，代价与日志长度无关；内存 adapter 复制该 Commit。代价只落在命中，未命中是一次索引查找。这是幂等重放唯一需要的读取能力：重放不必读整条日志（EXT-WRT-2）。
 
 ## 7. errors 与 conformance
 
@@ -216,17 +230,17 @@ const (
 )
 ```
 
-v1 conformance 以 `Store` 为参数，每个 adapter 跑同一套，必须验证：
+conformance 以 `Store` 为参数，每个 adapter 跑同一套，必须验证：
 
-- **SES-WIR-1/2/3**：Seq 连续、组内 Index/Last、CommitID 唯一、payload canonical、digest 链与 header 根、版本一致；
+- **SES-WIR-1/2/3**：CommitSeq 连续、批次非空、同 Commit 内流唯一且归因合法、CommitID 唯一、payload canonical、header/batch/commit digest 链、版本一致；
 - **SES-OWN-1/2**：第二个 Open 返回 `ErrOwned`；Close 后可再 Open 且 Epoch 加一；声明 `Takeover` 的 Open 在所有权存续期间接管且 Epoch 加一；旧 Handle 的 Append 返回 `ErrOwnershipLost` 且不写入；
-- **SES-APP-1/2/3**：整组可见性；在组中途注入崩溃后打开，尾组不出现；拒绝项无写入；注入持久化失败后句柄返回 `ErrHandleFailed`，重开后已落盘的完整组在索引中、链完整、同 CommitID 的 Append 为 `ErrConflict`；
-- **SES-REP-1/2**：顺序、From、Limit 在组边界截断、过滤与全量对匹配类型一致、篡改任一行后下一次 Open 报 `ErrCorrupt`。
+- **SES-APP-1/2/3**：整 Commit 可见性；在 Commit 中途注入崩溃后打开，尾 Commit 不出现；拒绝项无写入；注入持久化失败后句柄返回 `ErrHandleFailed`，重开后已落盘的完整 Commit 在索引中、链完整、同 CommitID 的 Append 为 `ErrConflict`；
+- **SES-REP-1/2**：顺序、From、Limit 截断、ReadStream 与折叠一致、篡改任一 Commit 后下一次 Open 报 `ErrCorrupt`。
 
-kernel 的 `ProtocolVersion` 覆盖 header 字段、event 行字段、digest preimage 与组完整性规则（SES-VER-2）。
+kernel 的 `ProtocolVersion` 覆盖 header 字段、commit 字段、digest preimage 与批次完整性规则（SES-VER-2）。
 
-## 8. v1 范围外
+## 8. 范围外
 
-Fork、ancestry 和 canonical import 不属于当前 v1 Session 合同。当前 profile 对非空
+Fork、ancestry 和 canonical import 不属于当前 Session 合同。当前 profile 对非空
 `ParentFork` 拒绝；实现这些能力前，必须先定义新的 stream seed、digest 链、投影缓存
-through 和导入幂等语义。任何 v1 authority 不得依赖 fork 或 canonical import。
+through 和导入幂等语义。任何 authority 不得依赖 fork 或 canonical import。

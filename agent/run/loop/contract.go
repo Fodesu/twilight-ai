@@ -146,14 +146,15 @@ type Event struct {
 	StepID  run.StepID
 	CallID  run.CallID
 	// Sequence orders provisional observations within one stream. Committed
-	// observations use the Session Seq for authority ordering.
+	// observations never set it: the commit order is the authority.
 	Sequence   uint64
 	Kind       EventKind
 	Durability EventDurability
 	Payload    json.RawMessage
 	// Committed is set for an EventAgentCommitted observation: the accepted
-	// group (run facts, companion, attach); nil for provisional.
-	Committed []session.SessionEvent
+	// commit in batch order (run facts, companion, attach); nil for
+	// provisional.
+	Committed []session.Event
 }
 
 type LoopDisposition uint8

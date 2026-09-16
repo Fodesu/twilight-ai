@@ -2,11 +2,12 @@ package writer
 
 import (
 	"context"
+	"sync"
+	"testing"
+
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
-	"sync"
-	"testing"
 )
 
 // This file covers EXT-PRJ-3: a projection's folded state living in the
@@ -77,12 +78,12 @@ type cacheFixture struct {
 func newCacheFixture(t testing.TB) *cacheFixture {
 	t.Helper()
 	f := &cacheFixture{store: session.NewMemoryStore(), cache: extension.NewMemoryProjectionCache(), counter: newApplyCounter()}
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, cacheModule(f.counter))
+	registry, err := extension.BuildRegistry(session.ProtocolVersion2, cacheModule(f.counter))
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.registry = registry
-	if _, err := f.store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
+	if _, err := f.store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	return f
@@ -97,14 +98,16 @@ func (f *cacheFixture) open(t testing.TB, cfg WritersConfig) Writer {
 	return w
 }
 
-// commit appends one group; each text becomes one event.
+// commit appends one commit; each text becomes one event.
 func (f *cacheFixture) commit(t testing.TB, w Writer, id string, texts ...string) {
 	t.Helper()
 	res, err := w.Commit(context.Background(), func(View) (*SemanticGroup, error) {
 		g := &SemanticGroup{CommitID: session.CommitID(id)}
+		var events []TypedEvent
 		for _, tx := range texts {
-			g.Events = append(g.Events, TypedEvent{Type: tpfx("k") + "row", Value: notePayload{Text: tx}})
+			events = append(events, TypedEvent{Type: tpfx("k") + "row", Value: notePayload{Text: tx}})
 		}
+		g.Batches = sessionBatch(events...)
 		return g, nil
 	})
 	if err != nil {
@@ -124,15 +127,15 @@ func (f *cacheFixture) notes(t testing.TB, w Writer, id extension.ProjectionID) 
 	return state.(noteState).Notes
 }
 
-// rows reads the committed log, which is where the digests a cache entry must
-// record come from.
-func (f *cacheFixture) rows(t *testing.T) []session.SessionEvent {
+// commits reads the committed log, which is where the digests a cache entry
+// must record come from.
+func (f *cacheFixture) commits(t *testing.T) []session.Commit {
 	t.Helper()
-	page, err := f.store.Read(context.Background(), session.ReadRequest{SessionID: "s"})
+	page, err := f.store.ReadCommits(context.Background(), session.CommitReadRequest{SessionID: "s"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return page.Events
+	return page.Commits
 }
 
 // encodeState builds the cached form of a projection state.
@@ -203,12 +206,12 @@ func TestWriterResumesOnlyTheUncoveredTail(t *testing.T) {
 	if err := w.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	rows := f.rows(t)
-	if len(rows) != 3 {
-		t.Fatalf("log has %d rows, want 3", len(rows))
+	commits := f.commits(t)
+	if len(commits) != 3 {
+		t.Fatalf("log has %d commits, want 3", len(commits))
 	}
-	// Rewind alpha's entry to cover the first two rows only.
-	if err := f.cache.Save(ctx, "s", alphaID, 1, f.encodeState(t, "n1", "n2"), session.Head{Next: 2, Digest: rows[1].Digest}); err != nil {
+	// Rewind alpha's entry to cover the first two commits only.
+	if err := f.cache.Save(ctx, "s", alphaID, 1, f.encodeState(t, "n1", "n2"), session.Head{Next: 2, Digest: commits[1].Digest}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -229,7 +232,6 @@ func TestWriterResumesOnlyTheUncoveredTail(t *testing.T) {
 // falls back to folding the whole log, and never fails the open.
 func TestWriterRejectsUnusableCacheEntries(t *testing.T) {
 	ctx := context.Background()
-	// A log whose first group holds two events, so a row inside a group exists.
 	f := newCacheFixture(t)
 	w := f.open(t, WritersConfig{Cache: f.cache})
 	f.commit(t, w, "c1", "n1", "n2")
@@ -237,9 +239,9 @@ func TestWriterRejectsUnusableCacheEntries(t *testing.T) {
 	if err := w.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	rows := f.rows(t)
-	if len(rows) != 3 || rows[0].Last || !rows[1].Last {
-		t.Fatalf("fixture log is not shaped as expected: %+v", rows)
+	commits := f.commits(t)
+	if len(commits) != 2 {
+		t.Fatalf("fixture log is not shaped as expected: %+v", commits)
 	}
 	garbage, err := jsonstable.FromValue(map[string]any{"notes": 7})
 	if err != nil {
@@ -250,11 +252,10 @@ func TestWriterRejectsUnusableCacheEntries(t *testing.T) {
 		through session.Head
 		state   jsonstable.Value
 	}{
-		"ahead of the log":  {through: session.Head{Next: 9, Digest: rows[2].Digest}},
+		"ahead of the log":  {through: session.Head{Next: 9, Digest: commits[1].Digest}},
 		"empty head":        {through: session.Head{}},
-		"unknown digest":    {through: session.Head{Next: 3, Digest: "sha256:0000"}},
-		"inside a group":    {through: session.Head{Next: 1, Digest: rows[0].Digest}},
-		"undecodable state": {through: session.Head{Next: 3, Digest: rows[2].Digest}, state: garbage},
+		"unknown digest":    {through: session.Head{Next: 2, Digest: "sha256:0000"}},
+		"undecodable state": {through: session.Head{Next: 2, Digest: commits[1].Digest}, state: garbage},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -311,8 +312,8 @@ func TestWriterCachePolicyGovernsWritingButNotReading(t *testing.T) {
 	}
 
 	// An entry alpha's owner wrote is still used, policy or not.
-	rows := f.rows(t)
-	if err := f.cache.Save(ctx, "s", alphaID, 1, f.encodeState(t, "n1", "n2"), session.Head{Next: 2, Digest: rows[1].Digest}); err != nil {
+	commits := f.commits(t)
+	if err := f.cache.Save(ctx, "s", alphaID, 1, f.encodeState(t, "n1", "n2"), session.Head{Next: 2, Digest: commits[1].Digest}); err != nil {
 		t.Fatal(err)
 	}
 	f.counter.reset()
@@ -326,12 +327,12 @@ func TestWriterCachePolicyGovernsWritingButNotReading(t *testing.T) {
 }
 
 // TestCacheEveryBoundsHowFarBehindAnEntryFalls pins the invariant a deployment
-// relies on: between refreshes a projection's entry is at most n rows behind.
+// relies on: between refreshes a projection's entry is at most n commits behind.
 func TestCacheEveryBoundsHowFarBehindAnEntryFalls(t *testing.T) {
 	ctx := context.Background()
 	f := newCacheFixture(t)
 	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: extension.CacheEvery(3)})
-	// The first two rows are inside the interval: nothing is written yet.
+	// The first two commits are inside the interval: nothing is written yet.
 	f.commit(t, w, "c1", "n1")
 	f.commit(t, w, "c2", "n2")
 	if _, _, ok, _ := f.cache.Load(ctx, "s", alphaID, 1); ok {
@@ -340,7 +341,7 @@ func TestCacheEveryBoundsHowFarBehindAnEntryFalls(t *testing.T) {
 	f.commit(t, w, "c3", "n3")
 	_, through, ok, err := f.cache.Load(ctx, "s", alphaID, 1)
 	if err != nil || !ok || through.Next != 3 {
-		t.Fatalf("entry after three rows: ok=%v through=%d err=%v, want an entry at 3", ok, through.Next, err)
+		t.Fatalf("entry after three commits: ok=%v through=%d err=%v, want an entry at 3", ok, through.Next, err)
 	}
 	// Close refreshes regardless of the interval.
 	f.commit(t, w, "c4", "n4")
@@ -377,29 +378,30 @@ func TestWriterWithoutCacheFoldsEverything(t *testing.T) {
 	}
 }
 
-// TestCoversGroupBoundary pins the validation that keeps a half-applied group
-// from being started from (EXT-PRJ-1).
-func TestCoversGroupBoundary(t *testing.T) {
-	rows := []session.SessionEvent{
-		{Seq: 0, Digest: "d0", Last: false},
-		{Seq: 1, Digest: "d1", Last: true},
-		{Seq: 2, Digest: "d2", Last: true},
+// TestCoversCommit pins the validation that keeps an entry recorded at a head
+// the log does not have from being started from (EXT-PRJ-3). The commit is the
+// atomic unit: every commit boundary is a fold boundary.
+func TestCoversCommit(t *testing.T) {
+	commits := []session.Commit{
+		{Seq: 0, Digest: "d0"},
+		{Seq: 1, Digest: "d1"},
+		{Seq: 2, Digest: "d2"},
 	}
 	cases := map[string]struct {
 		through session.Head
 		want    bool
 	}{
-		"end of the first group":  {session.Head{Next: 2, Digest: "d1"}, true},
+		"first commit":            {session.Head{Next: 1, Digest: "d0"}, true},
+		"mid log":                 {session.Head{Next: 2, Digest: "d1"}, true},
 		"end of the log":          {session.Head{Next: 3, Digest: "d2"}, true},
-		"inside a group":          {session.Head{Next: 1, Digest: "d0"}, false},
 		"empty":                   {session.Head{}, false},
 		"past the log":            {session.Head{Next: 4, Digest: "d2"}, false},
 		"digest does not match":   {session.Head{Next: 2, Digest: "nope"}, false},
 		"seq does not match head": {session.Head{Next: 99, Digest: "d2"}, false},
 	}
 	for name, tc := range cases {
-		if got := coversGroupBoundary(rows, tc.through); got != tc.want {
-			t.Errorf("%s: coversGroupBoundary = %v, want %v", name, got, tc.want)
+		if got := coversCommit(commits, tc.through); got != tc.want {
+			t.Errorf("%s: coversCommit = %v, want %v", name, got, tc.want)
 		}
 	}
 }

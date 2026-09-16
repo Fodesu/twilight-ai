@@ -1,5 +1,5 @@
 // Package filestore is the JSONL-backed session.Store: one directory per
-// Session holding header.json, log.jsonl (one committed row per line) and
+// Session holding header.json, log.jsonl (one committed line per Commit) and
 // owner.json (writer ownership: epoch and owned flag). The log is plain JSONL
 // so a stream can be inspected and diffed with standard tools.
 //
@@ -35,27 +35,27 @@ const (
 // Store is the JSONL session.Store.
 type Store struct {
 	root    string
-	profile session.ProtocolProfile
+	profile session.LedgerProfile
 	mu      sync.Mutex // serializes every operation of this instance
-	// index maps each Session's rows to byte offsets so Read can start at
-	// From instead of parsing the whole log. It is derived from the file and
-	// keyed to the file's size and mtime: any change by another instance
-	// (append, takeover truncation) invalidates it and the next Read rebuilds.
+	// index maps each Session's commits to byte offsets so ReadCommits can
+	// start at From instead of parsing the whole log. It is derived from the
+	// file and keyed to the file's size and mtime: any change by another
+	// instance (append, takeover, truncation) invalidates it and the next
+	// read rebuilds it.
 	index map[session.SessionID]*logIndex
-	// sync persists an appended group; tests inject a failing one to exercise
+	// sync persists an appended commit; tests inject a failing one to exercise
 	// the unknown-outcome path of SES-APP-1. nil means (*os.File).Sync.
 	sync func(*os.File) error
 }
 
-// logIndex is the row-to-byte map of one log file as last seen by this
-// instance: offsets[i] is where row Seq i starts and offsets[len] is the
-// retained end; groupFirst[i] is the Seq of the first row of row i's group.
+// logIndex is the commit-to-byte map of one log file as last seen by this
+// instance: offsets[i] is where commit Seq i starts and offsets[len] is the
+// retained end.
 type logIndex struct {
-	size       int64
-	modTime    int64
-	offsets    []int64
-	groupFirst []session.Seq
-	head       session.Head
+	size    int64
+	modTime int64
+	offsets []int64
+	head    session.Head
 }
 
 // New opens the store root, creating it if needed.
@@ -63,7 +63,7 @@ func New(root string) (*Store, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, err
 	}
-	return &Store{root: root, profile: session.ProfileV1(), index: make(map[session.SessionID]*logIndex)}, nil
+	return &Store{root: root, profile: session.ProfileV2(), index: make(map[session.SessionID]*logIndex)}, nil
 }
 
 // LogPath returns the Session's JSONL log file for direct inspection.
@@ -229,16 +229,16 @@ func (s *Store) Open(ctx context.Context, sid session.SessionID, opts session.Op
 		return nil, kerr(session.ErrOwned, "open", sid, fmt.Sprintf("owned by epoch %d", rec.Epoch))
 	}
 	logPath := filepath.Join(dir, logFile)
-	rows, offsets, retained, torn, err := readLog(logPath, sid, "open")
+	commits, offsets, retained, torn, err := readLog(logPath, sid, "open")
 	if err != nil {
 		return nil, err
 	}
-	if err := session.ValidateChain(s.profile, header, rows); err != nil {
+	if err := session.ValidateLedger(s.profile, header, commits); err != nil {
 		return nil, err
 	}
-	// A torn tail — a partial line or a group whose Last row never landed —
-	// is the remnant of a crashed append; the new owner truncates it so the
-	// stream continues from the last complete group.
+	// A torn tail — a partial line or a line that does not parse — is the
+	// remnant of a crashed append; the new owner truncates it so the stream
+	// continues from the last whole commit.
 	if torn {
 		if err := os.Truncate(logPath, retained); err != nil {
 			return nil, err
@@ -249,29 +249,17 @@ func (s *Store) Open(ctx context.Context, sid session.SessionID, opts session.Op
 	if err := saveOwner(dir, rec); err != nil {
 		return nil, err
 	}
-	head := headOf(header, rows)
-	if len(offsets) > 0 {
-		s.setIndex(sid, logPath, buildIndex(rows, offsets, head))
-	} else {
-		s.dropIndex(sid) // no log file yet
-	}
+	head := headOf(header, commits)
+	s.setIndex(sid, logPath, buildIndex(offsets, head))
 	w := &fileHandle{store: s, header: header, dir: dir, logPath: logPath, epoch: rec.Epoch,
-		head: head, commits: spansOf(rows, offsets)}
+		head: head, commits: spansOf(commits, offsets)}
 	return w, nil
 }
 
-// buildIndex derives the row-to-byte map from a full parse. rows are complete
-// groups in Seq order and offsets has one entry per row plus the end.
-func buildIndex(rows []session.SessionEvent, offsets []int64, head session.Head) *logIndex {
-	idx := &logIndex{offsets: append([]int64(nil), offsets[:len(rows)+1]...), groupFirst: make([]session.Seq, len(rows)), head: head}
-	var first session.Seq
-	for i := range rows {
-		if rows[i].Index == 0 {
-			first = rows[i].Seq
-		}
-		idx.groupFirst[i] = first
-	}
-	return idx
+// buildIndex derives the commit-to-byte map from a full parse. offsets has one
+// entry per commit plus the retained end.
+func buildIndex(offsets []int64, head session.Head) *logIndex {
+	return &logIndex{offsets: append([]int64(nil), offsets...), head: head}
 }
 
 // setIndex records idx for the log at path as it is on disk now. The caller
@@ -286,7 +274,7 @@ func (s *Store) setIndex(sid session.SessionID, path string, idx *logIndex) {
 	s.index[sid] = idx
 }
 
-// dropIndex forgets the derived map; the next Read rebuilds it from the file.
+// dropIndex forgets the derived map; the next read rebuilds it from the file.
 func (s *Store) dropIndex(sid session.SessionID) { delete(s.index, sid) }
 
 // currentIndex returns the index when the file on disk still matches what it
@@ -304,11 +292,11 @@ func (s *Store) currentIndex(sid session.SessionID, path string) *logIndex {
 	return idx
 }
 
-func headOf(h session.SessionHeader, rows []session.SessionEvent) session.Head {
-	if len(rows) == 0 {
+func headOf(h session.SessionHeader, commits []session.Commit) session.Head {
+	if len(commits) == 0 {
 		return session.Head{Next: 0, Digest: h.HeaderDigest}
 	}
-	last := &rows[len(rows)-1]
+	last := &commits[len(commits)-1]
 	return session.Head{Next: last.Seq + 1, Digest: last.Digest}
 }
 
@@ -358,33 +346,33 @@ func (w *fileHandle) Committed(id session.CommitID) bool {
 	return ok
 }
 
-// LookupCommit is SES-REP-4: it reads exactly the group's byte range, so the
+// LookupCommit is SES-REP-4: it reads exactly the commit's byte range, so the
 // cost of the answer does not grow with the length of the log.
-func (w *fileHandle) LookupCommit(id session.CommitID) ([]session.SessionEvent, bool, error) {
+func (w *fileHandle) LookupCommit(id session.CommitID) (session.Commit, bool, error) {
 	w.store.mu.Lock()
 	defer w.store.mu.Unlock()
 	sp, ok := w.commits[id]
 	if !ok {
-		return nil, false, nil
+		return session.Commit{}, false, nil
 	}
 	sid := w.header.SessionID
 	f, err := os.Open(w.logPath)
 	if err != nil {
-		return nil, false, kerr(session.ErrCorrupt, "lookup", sid, err.Error())
+		return session.Commit{}, false, kerr(session.ErrCorrupt, "lookup", sid, err.Error())
 	}
 	defer f.Close()
 	data := make([]byte, sp.end-sp.start)
 	if _, err := f.ReadAt(data, sp.start); err != nil && !errors.Is(err, io.EOF) {
-		return nil, false, kerr(session.ErrCorrupt, "lookup", sid, err.Error())
+		return session.Commit{}, false, kerr(session.ErrCorrupt, "lookup", sid, err.Error())
 	}
-	rows, _, _, torn, err := parseLog(data, sid, "lookup")
+	commits, _, _, torn, err := parseLog(data, sid, "lookup")
 	if err != nil {
-		return nil, false, err
+		return session.Commit{}, false, err
 	}
-	if torn || len(rows) == 0 {
-		return nil, false, kerr(session.ErrCorrupt, "lookup", sid, "commit does not occupy a whole group")
+	if torn || len(commits) != 1 {
+		return session.Commit{}, false, kerr(session.ErrCorrupt, "lookup", sid, "commit does not occupy a whole line")
 	}
-	return rows, true, nil
+	return commits[0], true, nil
 }
 
 func (w *fileHandle) Close(ctx context.Context) error {
@@ -402,80 +390,58 @@ func (w *fileHandle) Close(ctx context.Context) error {
 
 // --- append ---------------------------------------------------------------------
 
-func (w *fileHandle) Append(ctx context.Context, g session.Group) ([]session.SessionEvent, error) {
+func (w *fileHandle) Append(ctx context.Context, p session.Proposal) (session.Commit, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return session.Commit{}, err
 	}
 	sid := w.header.SessionID
-	if g.CommitID == "" {
-		return nil, kerr(session.ErrInvalid, "append", sid, "empty CommitID")
+	if p.CommitID == "" {
+		return session.Commit{}, kerr(session.ErrInvalid, "append", sid, "empty CommitID")
 	}
-	if !utf8.ValidString(string(g.CommitID)) {
-		return nil, kerr(session.ErrInvalid, "append", sid, "CommitID is not valid UTF-8")
+	if !utf8.ValidString(string(p.CommitID)) {
+		return session.Commit{}, kerr(session.ErrInvalid, "append", sid, "CommitID is not valid UTF-8")
 	}
-	if len(g.Events) == 0 {
-		return nil, kerr(session.ErrInvalid, "append", sid, "empty group")
-	}
-	if len(g.Events) > int(^uint16(0)) {
-		return nil, kerr(session.ErrInvalid, "append", sid, "group too large")
-	}
-	for i := range g.Events {
-		if err := session.ValidateUncommitted(&g.Events[i]); err != nil {
-			return nil, kerr(session.ErrInvalid, "append", sid, fmt.Sprintf("event %d: %v", i, err))
-		}
+	if err := session.ValidateBatches(p.Batches); err != nil {
+		return session.Commit{}, kerr(session.ErrInvalid, "append", sid, err.Error())
 	}
 	w.store.mu.Lock()
 	defer w.store.mu.Unlock()
 	if w.failed != nil {
-		return nil, w.failed
+		return session.Commit{}, w.failed
 	}
 	if err := w.current("append"); err != nil {
-		return nil, err
+		return session.Commit{}, err
 	}
-	if _, dup := w.commits[g.CommitID]; dup {
-		return nil, &session.Error{Code: session.ErrConflict, Operation: "append", SessionID: sid, CommitID: g.CommitID, Detail: "CommitID already in stream"}
+	if _, dup := w.commits[p.CommitID]; dup {
+		return session.Commit{}, &session.Error{Code: session.ErrConflict, Operation: "append", SessionID: sid, CommitID: p.CommitID, Detail: "CommitID already in stream"}
 	}
-	prev := w.head.Digest
-	rows := make([]session.SessionEvent, len(g.Events))
-	lineStarts := make([]int64, len(g.Events))
-	var buf bytes.Buffer
-	for i := range g.Events {
-		e := &g.Events[i]
-		row := session.SessionEvent{Seq: w.head.Next + session.Seq(i), CommitID: g.CommitID, Index: uint16(i), Last: i == len(g.Events)-1,
-			Type: e.Type, RecordedAtUnixMilli: e.RecordedAtUnixMilli, SourceSeqs: append([]session.Seq(nil), e.SourceSeqs...), Ignorable: e.Ignorable, Payload: e.Payload}
-		d, err := w.store.profile.EventDigest(prev, sid, row)
-		if err != nil {
-			return nil, err
-		}
-		row.Digest = d
-		prev = d
-		rows[i] = row
-		line, err := json.Marshal(row)
-		if err != nil {
-			return nil, err
-		}
-		lineStarts[i] = int64(buf.Len())
-		buf.Write(line)
-		buf.WriteByte('\n')
+	c := session.Commit{Seq: w.head.Next, CommitID: p.CommitID, Epoch: w.epoch, Batches: copyBatches(p.Batches)}
+	if err := session.SealCommit(w.store.profile, w.head.Digest, sid, &c); err != nil {
+		return session.Commit{}, err
 	}
-	// The whole group goes down in one write so a crash can only tear the
+	line, err := json.Marshal(c)
+	if err != nil {
+		return session.Commit{}, err
+	}
+	line = append(line, '\n')
+	// The whole commit goes down in one write so a crash can only tear the
 	// tail, which the next Open truncates.
 	f, err := os.OpenFile(w.logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
-		return nil, err
+		return session.Commit{}, err
 	}
 	start, err := f.Seek(0, io.SeekEnd)
 	if err != nil {
 		f.Close()
-		return nil, err
+		return session.Commit{}, err
 	}
 	// From the first byte written the outcome is unknown until sync and close
 	// succeed: a failure anywhere in between poisons the handle, because the
-	// group may or may not be on disk and appending after it would produce
+	// commit may or may not be on disk and appending after it would produce
 	// duplicate Seqs. Open decides what is there (SES-APP-1/2).
-	if _, err := f.Write(buf.Bytes()); err != nil {
+	if _, err := f.Write(line); err != nil {
 		f.Close()
-		return nil, w.fail("write", err)
+		return session.Commit{}, w.fail("write", err)
 	}
 	sync := w.store.sync
 	if sync == nil {
@@ -483,36 +449,31 @@ func (w *fileHandle) Append(ctx context.Context, g session.Group) ([]session.Ses
 	}
 	if err := sync(f); err != nil {
 		f.Close()
-		return nil, w.fail("sync", err)
+		return session.Commit{}, w.fail("sync", err)
 	}
 	if err := f.Close(); err != nil {
-		return nil, w.fail("close", err)
+		return session.Commit{}, w.fail("close", err)
 	}
-	w.head = session.Head{Next: rows[len(rows)-1].Seq + 1, Digest: prev}
-	w.commits[g.CommitID] = commitSpan{start: start, end: start + int64(buf.Len())}
-	w.store.extendIndex(sid, w.logPath, rows, start, lineStarts, int64(buf.Len()), w.head)
-	return rows, nil
+	w.head = session.Head{Next: c.Seq + 1, Digest: c.Digest}
+	w.commits[p.CommitID] = commitSpan{start: start, end: start + int64(len(line))}
+	w.store.extendIndex(sid, w.logPath, c, start, int64(len(line)), w.head)
+	return c, nil
 }
 
-// extendIndex appends the rows of one group to the Session's index. When the
-// index does not end exactly where the group was written, another instance
-// has changed the file and the index is dropped for the next Read to rebuild.
-func (s *Store) extendIndex(sid session.SessionID, path string, rows []session.SessionEvent, start int64, lineStarts []int64, written int64, head session.Head) {
+// extendIndex appends one commit to the Session's index. When the index does
+// not end exactly where the commit was written, another instance has changed
+// the file and the index is dropped for the next read to rebuild.
+func (s *Store) extendIndex(sid session.SessionID, path string, c session.Commit, start, written int64, head session.Head) {
 	idx, ok := s.index[sid]
 	if !ok {
-		if start != 0 || rows[0].Seq != 0 {
-			return // no index to extend; the next Read rebuilds one
+		if start != 0 || c.Seq != 0 {
+			return // no index to extend; the next read rebuilds one
 		}
-		idx = &logIndex{offsets: []int64{0}} // the first group of a new log
+		idx = &logIndex{offsets: []int64{0}} // the first commit of a new log
 	}
-	if idx.size != start || len(idx.groupFirst) != int(rows[0].Seq) {
+	if idx.size != start || len(idx.offsets)-1 != int(c.Seq) {
 		delete(s.index, sid)
 		return
-	}
-	idx.offsets = idx.offsets[:len(idx.offsets)-1]
-	for i := range rows {
-		idx.offsets = append(idx.offsets, start+lineStarts[i])
-		idx.groupFirst = append(idx.groupFirst, rows[0].Seq)
 	}
 	idx.offsets = append(idx.offsets, start+written)
 	idx.head = head
@@ -528,12 +489,12 @@ func (w *fileHandle) fail(step string, cause error) error {
 
 // --- read -----------------------------------------------------------------------
 
-// readLog parses log.jsonl. A torn tail — a final line without its newline, a
-// final line that does not parse, or trailing rows of a group whose Last row
-// never landed — is excluded; retained is the byte length of the retained
-// prefix and torn reports whether anything was excluded. Malformed content
-// before the final line is ErrCorrupt.
-func readLog(path string, sid session.SessionID, op string) (rows []session.SessionEvent, offsets []int64, retained int64, torn bool, err error) {
+// readLog parses log.jsonl, one committed line per Commit. A torn tail — a
+// final line without its newline or one that does not parse — is excluded;
+// retained is the byte length of the retained prefix and torn reports whether
+// anything was excluded. Malformed content before the final line is
+// ErrCorrupt.
+func readLog(path string, sid session.SessionID, op string) (commits []session.Commit, offsets []int64, retained int64, torn bool, err error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -544,10 +505,10 @@ func readLog(path string, sid session.SessionID, op string) (rows []session.Sess
 	return parseLog(data, sid, op)
 }
 
-// parseLog parses whole lines. offsets has one entry per parsed row plus a final
-// entry holding the end of the last one, so offsets[len(rows)] is the retained
-// byte length whether or not a tail was dropped.
-func parseLog(data []byte, sid session.SessionID, op string) (rows []session.SessionEvent, offsets []int64, retained int64, torn bool, err error) {
+// parseLog parses whole lines. offsets has one entry per parsed commit plus a
+// final entry holding the end of the last one, so offsets[len(commits)] is
+// the retained byte length whether or not a tail was dropped.
+func parseLog(data []byte, sid session.SessionID, op string) (commits []session.Commit, offsets []int64, retained int64, torn bool, err error) {
 	off := 0
 	for off < len(data) {
 		nl := bytes.IndexByte(data[off:], '\n')
@@ -556,140 +517,150 @@ func parseLog(data []byte, sid session.SessionID, op string) (rows []session.Ses
 			break
 		}
 		line := data[off : off+nl]
-		var row session.SessionEvent
-		if uerr := json.Unmarshal(line, &row); uerr != nil {
+		var c session.Commit
+		if uerr := json.Unmarshal(line, &c); uerr != nil {
 			if off+nl+1 == len(data) {
 				torn = true // torn write of the final line
 				break
 			}
-			return nil, nil, 0, false, kerr(session.ErrCorrupt, op, sid, fmt.Sprintf("row at byte %d: %v", off, uerr))
+			return nil, nil, 0, false, kerr(session.ErrCorrupt, op, sid, fmt.Sprintf("commit at byte %d: %v", off, uerr))
 		}
-		rows = append(rows, row)
+		commits = append(commits, c)
 		offsets = append(offsets, int64(off))
 		off += nl + 1
 	}
 	offsets = append(offsets, int64(off))
 	retained = int64(off)
-	for len(rows) > 0 && !rows[len(rows)-1].Last {
-		rows = rows[:len(rows)-1]
-		retained = offsets[len(rows)]
-		torn = true
-	}
-	return rows, offsets, retained, torn, nil
+	return commits, offsets, retained, torn, nil
 }
 
-// commitSpan is the byte range [start, end) of one committed group in
+// commitSpan is the byte range [start, end) of one committed line in
 // log.jsonl. The kernel must know which CommitIDs it holds (SES-APP-3); the
-// span is what lets it return that group's rows without re-reading the log.
+// span is what lets it return that commit without re-reading the log.
 type commitSpan struct{ start, end int64 }
 
-// spansOf groups the row offsets by CommitID. rows are complete groups in Seq
-// order, so the first row of a group starts its span and the offset after the
-// last row ends it.
-func spansOf(rows []session.SessionEvent, offsets []int64) map[session.CommitID]commitSpan {
-	spans := make(map[session.CommitID]commitSpan, len(rows))
-	for i := range rows {
-		sp := spans[rows[i].CommitID]
-		if rows[i].Index == 0 {
-			sp.start = offsets[i]
-		}
-		sp.end = offsets[i+1]
-		spans[rows[i].CommitID] = sp
+// spansOf maps each commit to its line's byte range.
+func spansOf(commits []session.Commit, offsets []int64) map[session.CommitID]commitSpan {
+	spans := make(map[session.CommitID]commitSpan, len(commits))
+	for i := range commits {
+		spans[commits[i].CommitID] = commitSpan{start: offsets[i], end: offsets[i+1]}
 	}
 	return spans
 }
 
-func (s *Store) Read(ctx context.Context, req session.ReadRequest) (session.ReadPage, error) {
+func (s *Store) ReadCommits(ctx context.Context, req session.CommitReadRequest) (session.CommitPage, error) {
 	if err := ctx.Err(); err != nil {
-		return session.ReadPage{}, err
+		return session.CommitPage{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	header, dir, err := s.loadHeader(req.SessionID, "read")
 	if err != nil {
-		return session.ReadPage{}, err
+		return session.CommitPage{}, err
 	}
-	rows, head, err := s.rowsFrom(req.SessionID, filepath.Join(dir, logFile), header, req.From)
+	commits, head, err := s.commitsFrom(req.SessionID, filepath.Join(dir, logFile), header, req.From)
 	if err != nil {
-		return session.ReadPage{}, err
+		return session.CommitPage{}, err
 	}
-	page := session.ReadPage{Header: header, Head: head}
+	page := session.CommitPage{Header: header, Head: head}
 	if req.From >= head.Next {
 		return page, nil
 	}
-	// Start at a group boundary at or before From so no partial group leaks.
-	// rows may begin after Seq 0 when the index located the group for us.
+	// Without an index the whole log was parsed, so the page starts at From;
+	// with one, commits begin at From already.
 	start := 0
-	if len(rows) > 0 && req.From > rows[0].Seq {
-		start = int(req.From - rows[0].Seq)
-		if start > len(rows) {
-			start = len(rows)
+	if len(commits) > 0 && req.From > commits[0].Seq {
+		start = int(req.From - commits[0].Seq)
+		if start > len(commits) {
+			start = len(commits)
 		}
 	}
-	for start > 0 && start < len(rows) && rows[start].Index != 0 {
-		start--
+	end := len(commits)
+	if req.Limit > 0 && start+int(req.Limit) < end {
+		end = start + int(req.Limit)
+		page.HasMore = true
 	}
-	for i := start; i < len(rows); {
-		end := i
-		for end < len(rows) && !rows[end].Last {
-			end++
-		}
-		if end >= len(rows) {
-			break // incomplete tail group is never exposed (SES-APP-2)
-		}
-		var matched []session.SessionEvent
-		for j := i; j <= end; j++ {
-			if rows[j].Seq >= req.From && session.HasTypePrefix(rows[j].Type, req.Types) {
-				matched = append(matched, rows[j])
-			}
-		}
-		if len(matched) > 0 {
-			// Limit counts rows but only truncates between groups; the first
-			// group is always returned so a caller can make progress.
-			if req.Limit > 0 && len(page.Events) > 0 && len(page.Events)+len(matched) > int(req.Limit) {
-				page.HasMore = true
-				break
-			}
-			page.Events = append(page.Events, matched...)
-		}
-		i = end + 1
+	page.Commits = make([]session.Commit, 0, end-start)
+	for i := start; i < end; i++ {
+		page.Commits = append(page.Commits, commits[i])
 	}
 	return page, nil
 }
 
-// rowsFrom returns the rows a Read starting at from needs: with a current
-// index, the retained log from the first row of from's group onward, parsed
-// from that byte offset; without one, the whole log, which also rebuilds the
+func (s *Store) ReadStream(ctx context.Context, req session.StreamReadRequest) (session.StreamPage, error) {
+	if err := ctx.Err(); err != nil {
+		return session.StreamPage{}, err
+	}
+	if err := session.ValidateStreamRef(req.Stream); err != nil {
+		return session.StreamPage{}, kerr(session.ErrInvalid, "read_stream", req.SessionID, err.Error())
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	header, dir, err := s.loadHeader(req.SessionID, "read_stream")
+	if err != nil {
+		return session.StreamPage{}, err
+	}
+	// Stream positions are derived by counting a stream's events in CommitSeq
+	// order, so the walk always starts at the beginning of the log.
+	commits, head, err := s.commitsFrom(req.SessionID, filepath.Join(dir, logFile), header, 0)
+	if err != nil {
+		return session.StreamPage{}, err
+	}
+	page := session.StreamPage{Header: header, Stream: req.Stream, Head: head}
+	var pos session.StreamSeq
+	for i := range commits {
+		for j := range commits[i].Batches {
+			b := &commits[i].Batches[j]
+			if b.Stream != req.Stream {
+				continue
+			}
+			for _, e := range b.Events {
+				if pos < req.From {
+					pos++
+					continue
+				}
+				if req.Limit > 0 && uint32(len(page.Events)) >= req.Limit {
+					page.HasMore = true
+					return page, nil
+				}
+				page.Events = append(page.Events, e)
+				pos++
+			}
+		}
+	}
+	return page, nil
+}
+
+// commitsFrom returns the commits a ReadCommits starting at from needs: with
+// a current index, the retained log from commit from onward, parsed from
+// that byte offset; without one, the whole log, which also rebuilds the
 // index. The caller holds the lock.
-func (s *Store) rowsFrom(sid session.SessionID, path string, header session.SessionHeader, from session.Seq) ([]session.SessionEvent, session.Head, error) {
+func (s *Store) commitsFrom(sid session.SessionID, path string, header session.SessionHeader, from session.CommitSeq) ([]session.Commit, session.Head, error) {
 	if idx := s.currentIndex(sid, path); idx != nil {
-		n := len(idx.groupFirst)
+		n := len(idx.offsets) - 1 // commits covered by the index
 		if int(from) >= n {
 			return nil, idx.head, nil
 		}
-		first := idx.groupFirst[from]
-		data, err := readRange(path, idx.offsets[first], idx.offsets[n])
+		data, err := readRange(path, idx.offsets[from], idx.offsets[n])
 		if err != nil {
 			return nil, session.Head{}, kerr(session.ErrCorrupt, "read", sid, err.Error())
 		}
-		rows, _, _, torn, err := parseLog(data, sid, "read")
+		commits, _, _, torn, err := parseLog(data, sid, "read")
 		if err != nil {
 			return nil, session.Head{}, err
 		}
-		if !torn && len(rows) == n-int(first) && rows[0].Seq == first {
-			return rows, idx.head, nil
+		if !torn && len(commits) == n-int(from) && commits[0].Seq == from {
+			return commits, idx.head, nil
 		}
 		s.dropIndex(sid) // the file no longer matches the index; fall back
 	}
-	rows, offsets, _, _, err := readLog(path, sid, "read")
+	commits, offsets, _, _, err := readLog(path, sid, "read")
 	if err != nil {
 		return nil, session.Head{}, err
 	}
-	head := headOf(header, rows)
-	if len(offsets) > 0 {
-		s.setIndex(sid, path, buildIndex(rows, offsets, head))
-	}
-	return rows, head, nil
+	head := headOf(header, commits)
+	s.setIndex(sid, path, buildIndex(offsets, head))
+	return commits, head, nil
 }
 
 // readRange reads [start, end) of the file.
@@ -706,9 +677,9 @@ func readRange(path string, start, end int64) ([]byte, error) {
 	return data, nil
 }
 
-// Tamper rewrites one row on disk so conformance can prove the chain check at
-// Open detects corruption; production code never calls it.
-func (s *Store) Tamper(sid session.SessionID, seq session.Seq, mutate func(*session.SessionEvent)) {
+// Tamper rewrites one commit on disk so conformance can prove the ledger
+// check at Open detects corruption; production code never calls it.
+func (s *Store) Tamper(sid session.SessionID, seq session.CommitSeq, mutate func(*session.Commit)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, dir, err := s.loadHeader(sid, "tamper")
@@ -716,14 +687,14 @@ func (s *Store) Tamper(sid session.SessionID, seq session.Seq, mutate func(*sess
 		return
 	}
 	path := filepath.Join(dir, logFile)
-	rows, _, _, _, err := readLog(path, sid, "tamper")
-	if err != nil || int(seq) >= len(rows) {
+	commits, _, _, _, err := readLog(path, sid, "tamper")
+	if err != nil || int(seq) >= len(commits) {
 		return
 	}
-	mutate(&rows[seq])
+	mutate(&commits[seq])
 	var buf bytes.Buffer
-	for i := range rows {
-		line, err := json.Marshal(rows[i])
+	for i := range commits {
+		line, err := json.Marshal(commits[i])
 		if err != nil {
 			return
 		}
@@ -734,10 +705,10 @@ func (s *Store) Tamper(sid session.SessionID, seq session.Seq, mutate func(*sess
 	_ = writeAtomic(path, buf.Bytes())
 }
 
-// CrashTail rewrites log.jsonl keeping only the first keep rows, so the last
-// group on disk is left without its Last row — the residue a crash inside
-// Append leaves. It exists so conformance can prove that Open recovers to the
-// last complete group (SES-APP-2); production code never calls it.
+// CrashTail rewrites log.jsonl keeping only the first keep commits, so every
+// commit after them never became durable. It exists so conformance can prove
+// that Open recovers to the last whole commit (SES-APP-2); production code
+// never calls it.
 func (s *Store) CrashTail(sid session.SessionID, keep int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -746,19 +717,19 @@ func (s *Store) CrashTail(sid session.SessionID, keep int) error {
 		return err
 	}
 	path := filepath.Join(dir, logFile)
-	rows, _, _, _, err := readLog(path, sid, "crash_tail")
+	commits, _, _, _, err := readLog(path, sid, "crash_tail")
 	if err != nil {
 		return err
 	}
 	if keep < 0 {
 		keep = 0
 	}
-	if keep > len(rows) {
-		keep = len(rows)
+	if keep > len(commits) {
+		keep = len(commits)
 	}
 	var buf bytes.Buffer
 	for i := 0; i < keep; i++ {
-		line, err := json.Marshal(rows[i])
+		line, err := json.Marshal(commits[i])
 		if err != nil {
 			return err
 		}
@@ -791,6 +762,16 @@ func writeAtomic(path string, data []byte) error {
 		return err
 	}
 	return nil
+}
+
+// copyBatches deep-copies proposal batches so a sealed commit owns its events.
+func copyBatches(batches []session.StreamBatch) []session.StreamBatch {
+	out := make([]session.StreamBatch, len(batches))
+	for i := range batches {
+		out[i] = batches[i]
+		out[i].Events = append([]session.Event(nil), batches[i].Events...)
+	}
+	return out
 }
 
 var _ session.Store = (*Store)(nil)

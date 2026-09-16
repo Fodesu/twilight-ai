@@ -108,7 +108,7 @@ func (h *Host) Checkpoint(ctx context.Context, sid session.SessionID, summaryTex
 			return nil, err
 		}
 		payload := chatlog.CheckpointCreatedPayload{
-			CheckpointID: checkpointID, CoveredThrough: v.Head().Next - 1,
+			CheckpointID: checkpointID, CoveredThrough: entries[len(entries)-1].Seq,
 			BaseContextDigest: baseDigest, SummaryID: summaryID, SummaryDigest: summary.Digest,
 			Retained: retain,
 		}
@@ -116,10 +116,11 @@ func (h *Host) Checkpoint(ctx context.Context, sid session.SessionID, summaryTex
 			return nil, err
 		}
 		now := h.now().UnixMilli()
-		return &writer.SemanticGroup{CommitID: session.CommitID("checkpoint/" + string(checkpointID)), Events: []writer.TypedEvent{
-			{Type: chatlog.TypeSummary, RecordedAtUnixMilli: now, Value: chatlog.SummaryPayload{Summary: summary}},
-			{Type: chatlog.TypeCheckpointCreated, RecordedAtUnixMilli: now, Value: payload},
-		}}, nil
+		return &writer.SemanticGroup{CommitID: session.CommitID("checkpoint/" + string(checkpointID)),
+			Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{
+				{Type: chatlog.TypeSummary, RecordedAtUnixMilli: now, Value: chatlog.SummaryPayload{Summary: summary}},
+				{Type: chatlog.TypeCheckpointCreated, RecordedAtUnixMilli: now, Value: payload},
+			}}}}, nil
 	})
 	if err != nil {
 		return "", err

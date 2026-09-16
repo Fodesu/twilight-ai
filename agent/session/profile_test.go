@@ -8,70 +8,82 @@ import (
 )
 
 // TestProfileVersionSeparatesDigests pins SES-VER-2 at the one place it can
-// silently break. A row digest preimage carries prev, SessionID, Seq, CommitID,
-// Index, Last, Type, time, SourceSeqs, Ignorable and Payload — but not the
-// ProtocolVersion. The version therefore reaches a row digest only through the
-// digest domain separator, so a profile whose separator ignored the version
-// would let a later ProtocolVersion reproduce v1 row digests byte for byte.
+// silently break. A batch digest preimage carries SessionID, Stream and the
+// events; a commit digest preimage carries prev, SessionID, Seq, CommitID,
+// Epoch and the batch digests — but neither carries the ProtocolVersion as a
+// field. The version therefore reaches a digest only through the digest
+// domain separator, so a profile whose separator ignored the version would
+// let a later ProtocolVersion reproduce v2 digests byte for byte.
 //
-// version 2 is not a registered protocol version; it stands in for any future
-// one, which is exactly the case this pins.
+// version 3 is not a registered protocol version; it stands in for any
+// future one, which is exactly the case this pins.
 func TestProfileVersionSeparatesDigests(t *testing.T) {
-	v1 := profileV1{version: ProtocolVersion1}
-	v2 := profileV1{version: 2}
+	v2 := profileV2{version: ProtocolVersion2}
+	v3 := profileV2{version: 3}
 
-	row := SessionEvent{
-		Seq: 0, CommitID: "c1", Index: 0, Last: true, Type: "twilight/x/a",
-		RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"a":1}`),
-	}
+	batch := StreamBatch{Stream: StreamRef{Kind: StreamKindSession}, Events: []Event{
+		{Type: "twilight/x/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"a":1}`)},
+	}}
 	prev := es.Digest("sha256:0000000000000000000000000000000000000000000000000000000000000000")
 
-	got1, err := v1.EventDigest(prev, "s", row)
+	got2, err := v2.BatchDigest("s", batch)
 	if err != nil {
 		t.Fatal(err)
 	}
-	again, err := v1.EventDigest(prev, "s", row)
+	again, err := v2.BatchDigest("s", batch)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got1 != again {
-		t.Fatal("EventDigest is not deterministic")
+	if got2 != again {
+		t.Fatal("BatchDigest is not deterministic")
 	}
-	got2, err := v2.EventDigest(prev, "s", row)
+	got3, err := v3.BatchDigest("s", batch)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got1 == got2 {
-		t.Fatal("row digests ignore the ProtocolVersion: a new version would reuse v1 digests")
+	if got2 == got3 {
+		t.Fatal("batch digests ignore the ProtocolVersion: a new version would reuse v2 digests")
+	}
+
+	c2, err := v2.CommitDigest(prev, "s", 0, "c1", 1, []es.Digest{got2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c3, err := v3.CommitDigest(prev, "s", 0, "c1", 1, []es.Digest{got3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2 == c3 {
+		t.Fatal("commit digests ignore the ProtocolVersion")
 	}
 
 	// The header carries the version as a field too, so it separates for two
 	// independent reasons; both must hold.
-	h1 := SessionHeader{ProtocolVersion: ProtocolVersion1, SessionID: "s", CreatedAtUnixMilli: 1}
-	h2 := h1
-	h2.ProtocolVersion = 2
-	hd1, err := v1.HeaderDigest(h1)
-	if err != nil {
-		t.Fatal(err)
-	}
+	h2 := SessionHeader{ProtocolVersion: ProtocolVersion2, SessionID: "s", CreatedAtUnixMilli: 1}
+	h3 := h2
+	h3.ProtocolVersion = 3
 	hd2, err := v2.HeaderDigest(h2)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if hd1 == hd2 {
-		t.Fatal("header digests must separate across protocol versions")
-	}
-
-	// ProfileFor must hand back the version it was asked for; the registered
-	// profile and the bare constructor must agree.
-	p, err := ProfileFor(ProtocolVersion1)
+	hd3, err := v3.HeaderDigest(h3)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Version() != ProfileV1().Version() {
-		t.Fatalf("ProfileFor(1).Version() = %d, ProfileV1().Version() = %d", p.Version(), ProfileV1().Version())
+	if hd2 == hd3 {
+		t.Fatal("header digests must separate across protocol versions")
 	}
-	if _, err := ProfileFor(2); err == nil {
+
+	// LedgerProfileFor must hand back the version it was asked for; the
+	// registered profile and the bare constructor must agree.
+	p, err := LedgerProfileFor(ProtocolVersion2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Version() != ProfileV2().Version() {
+		t.Fatalf("LedgerProfileFor(2).Version() = %d, ProfileV2().Version() = %d", p.Version(), ProfileV2().Version())
+	}
+	if _, err := LedgerProfileFor(3); err == nil {
 		t.Fatal("an unregistered protocol version must be rejected")
 	}
 }

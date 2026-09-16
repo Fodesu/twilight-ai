@@ -10,7 +10,7 @@ import (
 
 func registry(t *testing.T) *extension.Registry {
 	t.Helper()
-	r, err := extension.BuildRegistry(session.ProtocolVersion1, Module)
+	r, err := extension.BuildRegistry(session.ProtocolVersion2, Module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestAssistantDigestIsVerified(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := r.Decode(session.SessionEvent{Type: TypeAssistant, Payload: wire})
+	decoded, err := r.Decode(session.Event{Type: TypeAssistant, Payload: wire})
 	if err != nil || decoded.Value.(AssistantPayload).Assistant.Digest != d {
 		t.Fatalf("decode = %+v %v", decoded, err)
 	}
@@ -80,7 +80,7 @@ func TestAssistantDigestIsVerified(t *testing.T) {
 }
 
 // Surface and Context agree: only delivered inputs enter the context, in
-// stream order with assistant and tool_result entries; a superseded tool
+// fold order with assistant and tool_result entries; a superseded tool
 // result leaves the context.
 func TestSurfaceAndContextFold(t *testing.T) {
 	r := registry(t)
@@ -106,7 +106,7 @@ func TestSurfaceAndContextFold(t *testing.T) {
 		if err != nil {
 			t.Fatalf("event %d: %v", i, err)
 		}
-		d, err := r.Decode(session.SessionEvent{Type: e.typ, Payload: wire, Index: uint16(i)})
+		d, err := r.Decode(session.Event{Type: e.typ, Payload: wire})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -212,7 +212,9 @@ type step struct {
 }
 
 // foldSteps encodes, decodes and folds steps through both projections,
-// returning the states and the first fold error.
+// returning the states and the first fold error. Entry positions are
+// projection-internal: the delivered input folds at position 1, the
+// assistant at 2, the summary at 3, so a checkpoint names them by number.
 func foldSteps(t *testing.T, steps []step) (Context, Surface, error) {
 	t.Helper()
 	r := registry(t)
@@ -223,7 +225,7 @@ func foldSteps(t *testing.T, steps []step) (Context, Surface, error) {
 		if err != nil {
 			t.Fatalf("step %d encode: %v", i, err)
 		}
-		d, err := r.Decode(session.SessionEvent{Type: st.typ, Payload: wire, Seq: session.Seq(i)})
+		d, err := r.Decode(session.Event{Type: st.typ, Payload: wire})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -242,7 +244,7 @@ func foldSteps(t *testing.T, steps []step) (Context, Surface, error) {
 
 func mustSummary(t *testing.T, id SummaryID, text string) Summary {
 	t.Helper()
-	s := Summary{ID: id, Parts: Parts{TextPart{Text: text}}}
+	s := Summary{ID: id, Parts: Parts{TextPart{text}}}
 	var err error
 	if s.Digest, err = DigestSummary(&s); err != nil {
 		t.Fatal(err)
@@ -260,7 +262,7 @@ func mustAssistant(t *testing.T, id AssistantID, parts Parts) Assistant {
 	return a
 }
 
-func mustCheckpoint(t *testing.T, id CheckpointID, covered session.Seq, base []EntryDigestPair, sum Summary, retained []EntryDigestPair) CheckpointCreatedPayload {
+func mustCheckpoint(t *testing.T, id CheckpointID, covered uint64, base []EntryDigestPair, sum Summary, retained []EntryDigestPair) CheckpointCreatedPayload {
 	t.Helper()
 	baseDigest, err := DigestBaseContext(base)
 	if err != nil {
@@ -283,8 +285,8 @@ func TestCheckpointFold(t *testing.T) {
 	a1 := mustAssistant(t, "a1", Parts{TextPart{Text: "one"}})
 	sum := mustSummary(t, "sum1", "so far")
 	base := []EntryDigestPair{{Kind: EntryInput, ID: "in-1", Digest: inDigest}, {Kind: EntryAssistant, ID: "a1", Digest: a1.Digest}}
-	// Steps 0..4: delivered input (entry seq 1), assistant (seq 2), a queued
-	// input that must survive compaction, the summary (seq 4).
+	// The prefix folds to entry positions 1 (delivered input), 2 (assistant),
+	// 3 (summary), with a queued input that must survive compaction.
 	prefix := []step{
 		{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-1", Content: content, SubmittedAtUnixMilli: 1}},
 		{TypeInputDelivered, InputDeliveredPayload{InputID: "in-1", TurnID: "t1"}},
@@ -292,7 +294,7 @@ func TestCheckpointFold(t *testing.T) {
 		{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-q", Content: content, SubmittedAtUnixMilli: 2}},
 		{TypeSummary, SummaryPayload{Summary: sum}},
 	}
-	valid := mustCheckpoint(t, "ck1", 3, base, sum, base[1:])
+	valid := mustCheckpoint(t, "ck1", 2, base, sum, base[1:])
 
 	t.Run("valid checkpoint replaces the base and keeps the queue", func(t *testing.T) {
 		a2 := mustAssistant(t, "a2", Parts{TextPart{Text: "after"}})
@@ -343,12 +345,12 @@ func TestCheckpointFold(t *testing.T) {
 		name  string
 		steps []step
 	}{
-		{"covered through at or past the checkpoint row",
-			append(prefix, step{TypeCheckpointCreated, mustCheckpoint(t, "ck2", 5, base, sum, nil)})},
+		{"covered through at or past the checkpoint position",
+			append(prefix, step{TypeCheckpointCreated, mustCheckpoint(t, "ck2", 4, base, sum, nil)})},
 		{"base context digest mismatch",
-			append(prefix, step{TypeCheckpointCreated, mustCheckpoint(t, "ck3", 3, base[:1], sum, nil)})},
+			append(prefix, step{TypeCheckpointCreated, mustCheckpoint(t, "ck3", 2, base[:1], sum, nil)})},
 		{"retained outside the base",
-			append(prefix, step{TypeCheckpointCreated, mustCheckpoint(t, "ck4", 3, base,
+			append(prefix, step{TypeCheckpointCreated, mustCheckpoint(t, "ck4", 2, base,
 				sum, []EntryDigestPair{{Kind: EntryAssistant, ID: "a1", Digest: "sha256:wrong"}})})},
 		{"gap holds more than the summary",
 			append(append([]step{}, prefix...), step{TypeAssistant, AssistantPayload{Assistant: mustAssistant(t, "a9", Parts{TextPart{Text: "x"}})}},
@@ -378,7 +380,7 @@ func TestCheckpointFold(t *testing.T) {
 			{TypeAssistant, AssistantPayload{Assistant: aCall}},
 			{TypeToolResult, ToolResultPayload{ToolResult: r1}},
 			{TypeSummary, SummaryPayload{Summary: sum2}},
-			{TypeCheckpointCreated, mustCheckpoint(t, "ck6", 1, toolBase, sum2, nil)},
+			{TypeCheckpointCreated, mustCheckpoint(t, "ck6", 2, toolBase, sum2, nil)},
 			{TypeToolResultSuperseded, ToolResultSupersededPayload{ToolResultID: "r1", ReplacementToolResultID: "r2"}},
 		}
 		if _, _, err := foldSteps(t, steps); err == nil {

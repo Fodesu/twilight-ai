@@ -66,36 +66,37 @@ func TestTablePersistence(t *testing.T) {
 	}
 }
 
-// TestSurfaceFoldIsPure folds two different groups from one state: the old
-// state keeps its contents and the two results do not see each other
-// (EXT-PRJ-1).
+// TestSurfaceFoldIsPure folds two different continuations from one state: the
+// old state keeps its contents and the two results do not see each other
+// (EXT-PRJ-1). Positions come from the projection's own counter, so the wire
+// events carry no Seq.
 func TestSurfaceFoldIsPure(t *testing.T) {
-	assistant := func(id string, seq session.Seq) extension.DecodedEvent {
-		return extension.DecodedEvent{Event: session.SessionEvent{Seq: seq}, Value: AssistantPayload{Assistant: Assistant{ID: AssistantID(id), Digest: "sha256:x"}}}
+	assistant := func(id string) extension.DecodedEvent {
+		return extension.DecodedEvent{Event: session.Event{}, Value: AssistantPayload{Assistant: Assistant{ID: AssistantID(id), Digest: "sha256:x"}}}
 	}
-	input := func(id string, seq session.Seq) extension.DecodedEvent {
-		return extension.DecodedEvent{Event: session.SessionEvent{Seq: seq}, Value: InputSubmittedPayload{InputID: InputID(id), Content: jsonstable.MustParse(`{"text":"x"}`)}}
+	input := func(id string) extension.DecodedEvent {
+		return extension.DecodedEvent{Event: session.Event{}, Value: InputSubmittedPayload{InputID: InputID(id), Content: jsonstable.MustParse(`{"text":"x"}`)}}
 	}
 	state, _ := SurfaceProjection.Initial()
 	var err error
 	for i := 0; i < 40; i++ {
-		if state, err = SurfaceProjection.Apply(state, assistant(fmt.Sprint("a", i), session.Seq(i))); err != nil {
+		if state, err = SurfaceProjection.Apply(state, assistant(fmt.Sprint("a", i))); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if state, err = SurfaceProjection.Apply(state, input("in-0", 40)); err != nil {
+	if state, err = SurfaceProjection.Apply(state, input("in-0")); err != nil {
 		t.Fatal(err)
 	}
 	old := state.(Surface)
-	left, err := SurfaceProjection.Apply(state, assistant("left", 41))
+	left, err := SurfaceProjection.Apply(state, assistant("left"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	left, err = SurfaceProjection.Apply(left, input("in-left", 42))
+	left, err = SurfaceProjection.Apply(left, input("in-left"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	right, err := SurfaceProjection.Apply(state, assistant("right", 41))
+	right, err := SurfaceProjection.Apply(state, assistant("right"))
 	if err != nil {
 		t.Fatal(err)
 	}

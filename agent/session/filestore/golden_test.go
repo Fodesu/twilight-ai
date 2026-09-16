@@ -16,9 +16,9 @@ var update = flag.Bool("update", false, "rewrite the golden testdata files from 
 
 // TestLogFileGolden freezes the exact on-disk bytes of a stream: header.json
 // and log.jsonl produced from fixed inputs. It is the end-of-line fixture for
-// the kernel wire — a diff here is a wire change. Regenerate deliberately with
-// `go test -run TestLogFileGolden -update ./agent/session/filestore` and record
-// the change in agent-session.md.
+// the kernel wire — a diff here is a wire change. Regenerate deliberately
+// with `go test -run TestLogFileGolden -update ./agent/session/filestore` and
+// record the change in agent-session.md.
 func TestLogFileGolden(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -27,24 +27,31 @@ func TestLogFileGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	const sid session.SessionID = "golden"
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
 	}
 	w, err := store.Open(ctx, sid, session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ev := func(typ, payload string, at int64) session.UncommittedEvent {
-		return session.UncommittedEvent{Type: session.EventType(typ), Payload: jsonstable.MustParse(payload), RecordedAtUnixMilli: at}
+	ev := func(typ, payload string, at int64) session.Event {
+		return session.Event{Type: session.EventType(typ), Payload: jsonstable.MustParse(payload), RecordedAtUnixMilli: at}
 	}
-	if _, err := w.Append(ctx, session.Group{CommitID: "c1", Events: []session.UncommittedEvent{
-		ev("twilight/x/a", `{"a":1}`, 1),
-		ev("twilight/x/b", `{"b":[1,2]}`, 2),
+	if _, err := w.Append(ctx, session.Proposal{CommitID: "c1", Batches: []session.StreamBatch{
+		{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []session.Event{
+			ev("twilight/x/a", `{"a":1}`, 1),
+			ev("twilight/x/b", `{"b":[1,2]}`, 2),
+		}},
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := w.Append(ctx, session.Group{CommitID: "c2", Events: []session.UncommittedEvent{
-		{Type: "twilight/x/c", Payload: jsonstable.MustParse(`{}`), RecordedAtUnixMilli: 3, SourceSeqs: []session.Seq{0}, Ignorable: true},
+	if _, err := w.Append(ctx, session.Proposal{CommitID: "c2", Batches: []session.StreamBatch{
+		{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []session.Event{
+			ev("twilight/x/c", `{}`, 3),
+		}},
+		{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: "r7"}, Events: []session.Event{
+			ev("twilight/run/created", `{"runId":"r7"}`, 3),
+		}},
 	}}); err != nil {
 		t.Fatal(err)
 	}

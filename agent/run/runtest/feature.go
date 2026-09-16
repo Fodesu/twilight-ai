@@ -38,12 +38,12 @@ func (nopCompanion) Map(run.CompanionRequest) ([]run.ModuleEvent, error) { retur
 func newRuntime(t testing.TB, inputs ...run.AgentInput) run.Runtime {
 	t.Helper()
 	store := session.NewMemoryStore()
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, runmod.Module)
+	registry, err := extension.BuildRegistry(session.ProtocolVersion2, runmod.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: defaultSession}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: defaultSession}); err != nil {
 		t.Fatal(err)
 	}
 	writers := writer.NewWriters(store, registry, writer.Admission{}, session.OpenOptions{}, writer.WritersConfig{})
@@ -59,10 +59,12 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) run.Runtime {
 	if err != nil {
 		t.Fatal(err)
 	}
-	group := &writer.SemanticGroup{CommitID: "create/" + defaultRunID}
+	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		group.Events = append(group.Events, writer.TypedEvent{Type: runmod.EventType(f), Value: runmod.Event{RunID: defaultRunID, Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), Value: runmod.Event{RunID: defaultRunID, Fact: f}})
 	}
+	group := &writer.SemanticGroup{CommitID: "create/" + defaultRunID,
+		Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: string(defaultRunID)}, Events: runEvents}}}
 	w, err := writers.Writer(ctx, defaultSession)
 	if err != nil {
 		t.Fatal(err)

@@ -26,7 +26,8 @@ const (
 type InputView struct {
 	Input  Input       `json:"input"`
 	Status InputStatus `json:"status"`
-	// Seq orders inputs by submission within the stream.
+	// Seq orders inputs by submission; it comes from a projection-internal
+	// counter, not the wire (v2 events carry no Seq).
 	Seq uint64 `json:"seq"`
 }
 
@@ -40,9 +41,9 @@ const (
 )
 
 type SurfaceEntry struct {
-	Kind EntryKind   `json:"kind"`
-	ID   string      `json:"id"`
-	Seq  session.Seq `json:"seq"`
+	Kind EntryKind `json:"kind"`
+	ID   string    `json:"id"`
+	Seq  uint64    `json:"seq"`
 }
 
 type CheckpointStatus string
@@ -58,7 +59,7 @@ type CheckpointView struct {
 	Checkpoint CheckpointCreatedPayload `json:"checkpoint"`
 	Status     CheckpointStatus         `json:"status"`
 	Reason     string                   `json:"reason,omitempty"`
-	Seq        session.Seq              `json:"seq"`
+	Seq        uint64                   `json:"seq"`
 }
 
 // Surface is the UI-facing read model (CHT-SUR-1). Every table is persistent
@@ -71,7 +72,9 @@ type Surface struct {
 	EntryOrder  []SurfaceEntry                      `json:"entryOrder"`
 	Superseded  Table[ToolResultID, ToolResultID]   `json:"superseded,omitzero"`
 	Checkpoints Table[CheckpointID, CheckpointView] `json:"checkpoints,omitzero"`
-	nextSeq     uint64
+	// nextPos assigns the next entry or input position; it is not persisted
+	// and is reconstructed from the state when a snapshot is restored.
+	nextPos uint64
 }
 
 // SubmittedInputs returns inputs still awaiting delivery, in submission order.
@@ -115,19 +118,31 @@ var SurfaceProjection = extension.ProjectionDefinition{
 // applySurface is copy-on-write: the Surface value is copied, every table is
 // shared with the previous state and Set returns a new one, and EntryOrder
 // grows by append. Apply stays pure -- the previous state is never written.
+// Positions come from nextPos: v2 wire events carry no Seq, so the projection
+// numbers its own entries; only monotonic order is required.
 func applySurface(state any, e extension.DecodedEvent) (any, error) {
 	s := state.(Surface)
-	if s.nextSeq == 0 {
-		// Restored from a snapshot: the counter is not persisted, but Seq only
-		// has to be monotonic, so continue from the largest known value.
+	if s.nextPos == 0 {
+		// Restored from a snapshot: the counter is not persisted, so continue
+		// from the largest position already assigned.
 		s.Inputs.Range(func(_ InputID, v InputView) bool {
-			if v.Seq > s.nextSeq {
-				s.nextSeq = v.Seq
+			if v.Seq > s.nextPos {
+				s.nextPos = v.Seq
+			}
+			return true
+		})
+		for _, en := range s.EntryOrder {
+			if en.Seq > s.nextPos {
+				s.nextPos = en.Seq
+			}
+		}
+		s.Checkpoints.Range(func(_ CheckpointID, v CheckpointView) bool {
+			if v.Seq > s.nextPos {
+				s.nextPos = v.Seq
 			}
 			return true
 		})
 	}
-	pos := e.Event.Seq
 	switch p := e.Value.(type) {
 	case InputSubmittedPayload:
 		if s.Inputs.Has(p.InputID) {
@@ -137,8 +152,8 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		s.nextSeq++
-		s.Inputs = s.Inputs.Set(p.InputID, InputView{Input: Input{ID: p.InputID, Content: p.Content, Digest: d}, Status: InputSubmitted, Seq: s.nextSeq})
+		s.nextPos++
+		s.Inputs = s.Inputs.Set(p.InputID, InputView{Input: Input{ID: p.InputID, Content: p.Content, Digest: d}, Status: InputSubmitted, Seq: s.nextPos})
 	case InputDeliveredPayload:
 		v, ok := s.Inputs.Get(p.InputID)
 		if !ok || v.Status != InputSubmitted {
@@ -147,7 +162,8 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		v.Status = InputDelivered
 		v.Input.TurnID = p.TurnID
 		s.Inputs = s.Inputs.Set(p.InputID, v)
-		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryInput, ID: string(p.InputID), Seq: pos})
+		s.nextPos++
+		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryInput, ID: string(p.InputID), Seq: s.nextPos})
 	case InputWithdrawnPayload:
 		if err := terminateInput(&s, p.InputID, InputWithdrawn); err != nil {
 			return nil, err
@@ -161,13 +177,15 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 			return nil, fmt.Errorf("assistant %s created twice", p.Assistant.ID)
 		}
 		s.Assistants = s.Assistants.Set(p.Assistant.ID, p.Assistant)
-		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryAssistant, ID: string(p.Assistant.ID), Seq: pos})
+		s.nextPos++
+		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryAssistant, ID: string(p.Assistant.ID), Seq: s.nextPos})
 	case ToolResultPayload:
 		if s.ToolResults.Has(p.ToolResult.ID) {
 			return nil, fmt.Errorf("tool_result %s created twice", p.ToolResult.ID)
 		}
 		s.ToolResults = s.ToolResults.Set(p.ToolResult.ID, p.ToolResult)
-		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryToolResult, ID: string(p.ToolResult.ID), Seq: pos})
+		s.nextPos++
+		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryToolResult, ID: string(p.ToolResult.ID), Seq: s.nextPos})
 	case ToolResultSupersededPayload:
 		if !s.ToolResults.Has(p.ToolResultID) {
 			return nil, fmt.Errorf("superseded tool_result %s unknown", p.ToolResultID)
@@ -181,7 +199,8 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 			return nil, fmt.Errorf("summary %s created twice", p.Summary.ID)
 		}
 		s.Summaries = s.Summaries.Set(p.Summary.ID, p.Summary)
-		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntrySummary, ID: string(p.Summary.ID), Seq: pos})
+		s.nextPos++
+		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntrySummary, ID: string(p.Summary.ID), Seq: s.nextPos})
 	case CheckpointCreatedPayload:
 		if s.Checkpoints.Has(p.CheckpointID) {
 			return nil, fmt.Errorf("checkpoint %s created twice", p.CheckpointID)
@@ -190,7 +209,8 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		if !ok || sum.Digest != p.SummaryDigest {
 			return nil, fmt.Errorf("checkpoint %s names summary %s which does not match", p.CheckpointID, p.SummaryID)
 		}
-		s.Checkpoints = s.Checkpoints.Set(p.CheckpointID, CheckpointView{Checkpoint: p, Status: CheckpointActive, Seq: pos})
+		s.nextPos++
+		s.Checkpoints = s.Checkpoints.Set(p.CheckpointID, CheckpointView{Checkpoint: p, Status: CheckpointActive, Seq: s.nextPos})
 	case CheckpointInvalidatedPayload:
 		v, ok := s.Checkpoints.Get(p.CheckpointID)
 		if !ok || v.Status != CheckpointActive {
@@ -234,13 +254,13 @@ func clip[T any](s []T) []T { return s[:len(s):len(s)] }
 // --- context ------------------------------------------------------------------
 
 // Entry is one element of the model-facing conversation (CHT-CTX-1). Seq is
-// the stream row that folded the entry in; checkpoints split base from gap by
-// it (CHT-EVT-3).
+// the projection-internal position of the entry; checkpoints split base from
+// gap by it (CHT-EVT-3).
 type Entry struct {
 	Kind       EntryKind   `json:"kind"`
 	ID         string      `json:"id"`
 	Digest     es.Digest   `json:"digest"`
-	Seq        session.Seq `json:"seq"`
+	Seq        uint64      `json:"seq"`
 	Input      *Input      `json:"input,omitempty"`
 	Assistant  *Assistant  `json:"assistant,omitempty"`
 	ToolResult *ToolResult `json:"toolResult,omitempty"`
@@ -272,6 +292,10 @@ type Context struct {
 	Pending     map[InputID]Input             `json:"pending,omitempty"`
 	Superseded  map[ToolResultID]ToolResultID `json:"superseded,omitempty"`
 	Checkpoints []AppliedCheckpoint           `json:"checkpoints,omitempty"`
+	// nextPos assigns entry positions like Surface.nextPos; it is not
+	// persisted and is reconstructed on restore, including from the entries
+	// archived in checkpoint bases.
+	nextPos uint64
 }
 
 var ContextProjection = extension.ProjectionDefinition{
@@ -287,10 +311,25 @@ var ContextProjection = extension.ProjectionDefinition{
 // applyContext is copy-on-write like applySurface: Entries and Checkpoints
 // grow by append, a shrunk slice is clipped so a later append cannot reach an
 // element the previous state still holds, and a map is copied only by the
-// event that writes it.
+// event that writes it. Entry positions come from nextPos, not the wire.
 func applyContext(state any, e extension.DecodedEvent) (any, error) {
 	c := state.(Context)
-	pos := e.Event.Seq
+	if c.nextPos == 0 {
+		// Restored from a snapshot: continue from the largest entry position,
+		// including entries archived in checkpoint bases.
+		for _, en := range c.Entries {
+			if en.Seq > c.nextPos {
+				c.nextPos = en.Seq
+			}
+		}
+		for _, ap := range c.Checkpoints {
+			for _, en := range ap.Base {
+				if en.Seq > c.nextPos {
+					c.nextPos = en.Seq
+				}
+			}
+		}
+	}
 	switch p := e.Value.(type) {
 	case InputSubmittedPayload:
 		d, err := DigestInput(p.InputID, p.Content)
@@ -307,7 +346,8 @@ func applyContext(state any, e extension.DecodedEvent) (any, error) {
 		c.Pending = cow(c.Pending)
 		delete(c.Pending, p.InputID)
 		in.TurnID = p.TurnID
-		c.Entries = append(c.Entries, Entry{Kind: EntryInput, ID: string(in.ID), Digest: in.Digest, Seq: pos, Input: &in})
+		c.nextPos++
+		c.Entries = append(c.Entries, Entry{Kind: EntryInput, ID: string(in.ID), Digest: in.Digest, Seq: c.nextPos, Input: &in})
 	case InputWithdrawnPayload:
 		c.Pending = cow(c.Pending)
 		delete(c.Pending, p.InputID)
@@ -316,10 +356,12 @@ func applyContext(state any, e extension.DecodedEvent) (any, error) {
 		delete(c.Pending, p.InputID)
 	case AssistantPayload:
 		a := p.Assistant
-		c.Entries = append(c.Entries, Entry{Kind: EntryAssistant, ID: string(a.ID), Digest: a.Digest, Seq: pos, Assistant: &a})
+		c.nextPos++
+		c.Entries = append(c.Entries, Entry{Kind: EntryAssistant, ID: string(a.ID), Digest: a.Digest, Seq: c.nextPos, Assistant: &a})
 	case ToolResultPayload:
 		r := p.ToolResult
-		c.Entries = append(c.Entries, Entry{Kind: EntryToolResult, ID: string(r.ID), Digest: r.Digest, Seq: pos, ToolResult: &r})
+		c.nextPos++
+		c.Entries = append(c.Entries, Entry{Kind: EntryToolResult, ID: string(r.ID), Digest: r.Digest, Seq: c.nextPos, ToolResult: &r})
 	case ToolResultSupersededPayload:
 		c.Superseded = cow(c.Superseded)
 		c.Superseded[p.ToolResultID] = p.ReplacementToolResultID
@@ -341,9 +383,11 @@ func applyContext(state any, e extension.DecodedEvent) (any, error) {
 		c.Entries = kept
 	case SummaryPayload:
 		s := p.Summary
-		c.Entries = append(c.Entries, Entry{Kind: EntrySummary, ID: string(s.ID), Digest: s.Digest, Seq: pos, Summary: &s})
+		c.nextPos++
+		c.Entries = append(c.Entries, Entry{Kind: EntrySummary, ID: string(s.ID), Digest: s.Digest, Seq: c.nextPos, Summary: &s})
 	case CheckpointCreatedPayload:
-		return applyCheckpoint(c, &p, pos)
+		c.nextPos++
+		return applyCheckpoint(c, &p, c.nextPos)
 	case CheckpointInvalidatedPayload:
 		n := len(c.Checkpoints)
 		if n == 0 || c.Checkpoints[n-1].ID != p.CheckpointID {
@@ -362,9 +406,11 @@ func applyContext(state any, e extension.DecodedEvent) (any, error) {
 }
 
 // applyCheckpoint validates and applies one checkpoint_created (CHT-EVT-3).
-func applyCheckpoint(c Context, p *CheckpointCreatedPayload, pos session.Seq) (any, error) {
+// pos is the checkpoint's own position; CoveredThrough names an entry
+// position, so it must precede the checkpoint event.
+func applyCheckpoint(c Context, p *CheckpointCreatedPayload, pos uint64) (any, error) {
 	if p.CoveredThrough >= pos {
-		return nil, fmt.Errorf("checkpoint %s covers through %d at row %d", p.CheckpointID, p.CoveredThrough, pos)
+		return nil, fmt.Errorf("checkpoint %s covers through %d at position %d", p.CheckpointID, p.CoveredThrough, pos)
 	}
 	for _, ap := range c.Checkpoints {
 		if ap.ID == p.CheckpointID {

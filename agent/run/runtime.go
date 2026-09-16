@@ -7,11 +7,11 @@ import (
 	"github.com/felinics/twilight/agent/session"
 )
 
-// RunPosition is the Seq of a Run's last twilight/run/ event. Only the Run's
-// own events move it; other modules' rows in the same Session leave it
-// untouched, which is what makes Prepare's hard CAS insensitive to concurrent
-// chatlog or turn writes (RUN-CMT-4).
-type RunPosition = session.Seq
+// RunPosition is the StreamSeq of a Run's last twilight/run/ event. Only the
+// Run's own events move it; other modules' events in the same Session leave
+// it untouched, which is what makes Prepare's hard CAS insensitive to
+// concurrent chatlog or turn writes (RUN-CMT-4).
+type RunPosition = session.StreamSeq
 
 // ErrOwnershipLost reports that the Session Writer behind the Runtime was
 // superseded (RUN-CMT-6). It is terminal for the caller: no further command of
@@ -106,15 +106,16 @@ const (
 type CommitResult struct {
 	Status   CommitStatus
 	Snapshot RuntimeSnapshot
-	// Events is the complete group: run facts, companion, attach.
-	Events []session.SessionEvent
+	// Events is the complete commit in batch order: run facts, then
+	// companion and attach.
+	Events []session.Event
 }
 
 // RunRecord is one verified read of a Run: every twilight/run/ event of the
-// RunID in Seq order, folded and compared with the projection.
+// RunID in stream order, folded and compared with the projection.
 type RunRecord struct {
-	Created  session.Seq
+	Created  session.StreamSeq
 	Snapshot RuntimeSnapshot
-	Events   []session.SessionEvent
+	Events   []session.Event
 	Facts    []Fact
 }

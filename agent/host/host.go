@@ -76,7 +76,7 @@ type Ports struct {
 	Cache extension.ProjectionCache
 	// CacheEvery bounds how far a cached projection may fall behind the head;
 	// zero takes extension.DefaultCacheEvery (EXT-PRJ-7).
-	CacheEvery session.Seq
+	CacheEvery session.CommitSeq
 	// Ownership configures how Writers open Sessions: Takeover supersedes a
 	// previous owner, whose writer is then fenced by its Epoch.
 	Ownership session.OpenOptions
@@ -119,7 +119,7 @@ func New(p Ports) (*Host, error) {
 		store = session.NewMemoryStore()
 	}
 	modules := append([]extension.ModuleDescriptor{chatlog.Module, runmod.Module, turn.Module}, p.Modules...)
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, modules...)
+	registry, err := extension.BuildRegistry(session.ProtocolVersion2, modules...)
 	if err != nil {
 		return nil, err
 	}
@@ -394,7 +394,7 @@ func (h *Host) reattachDeliver(ctx context.Context, sid session.SessionID) loop.
 
 // CreateSession creates the Session stream.
 func (h *Host) CreateSession(ctx context.Context, sid session.SessionID) error {
-	_, err := h.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: h.now().UnixMilli()})
+	_, err := h.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: sid, CreatedAtUnixMilli: h.now().UnixMilli()})
 	return err
 }
 
@@ -506,10 +506,11 @@ func (h *Host) SubmitInput(ctx context.Context, sid session.SessionID, id run.In
 		return run.AgentInput{}, err
 	}
 	res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
-		return &writer.SemanticGroup{CommitID: session.CommitID("input-submitted/" + string(id)), Events: []writer.TypedEvent{{
-			Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: h.now().UnixMilli(),
-			Value: chatlog.InputSubmittedPayload{InputID: chatlog.InputID(id), Content: content, SubmittedAtUnixMilli: h.now().UnixMilli()},
-		}}}, nil
+		return &writer.SemanticGroup{CommitID: session.CommitID("input-submitted/" + string(id)),
+			Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{{
+				Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: h.now().UnixMilli(),
+				Value: chatlog.InputSubmittedPayload{InputID: chatlog.InputID(id), Content: content, SubmittedAtUnixMilli: h.now().UnixMilli()},
+			}}}}}, nil
 	})
 	if err != nil {
 		return run.AgentInput{}, err

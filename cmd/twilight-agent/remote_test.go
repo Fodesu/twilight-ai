@@ -239,16 +239,22 @@ func TestRemoteAuthorityReopensRunningTool(t *testing.T) {
 	if err != nil || status.Active != "" || len(status.Failed) != 0 {
 		t.Fatalf("recovered session status = %+v, %v", status, err)
 	}
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module, runmod.Module, turn.Module)
+	registry, err := extension.BuildRegistry(session.ProtocolVersion2, chatlog.Module, runmod.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
-	page, err := store.Read(ctx, session.ReadRequest{SessionID: sid})
+	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
 	if err != nil {
 		t.Fatal(err)
+	}
+	var rows []session.Event
+	for _, c := range page.Commits {
+		for _, b := range c.Batches {
+			rows = append(rows, b.Events...)
+		}
 	}
 	counts := map[string]int{}
-	for _, row := range page.Events {
+	for _, row := range rows {
 		decoded, err := registry.Decode(row)
 		if err != nil {
 			t.Fatal(err)

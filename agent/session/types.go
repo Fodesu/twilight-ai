@@ -1,8 +1,9 @@
-// Package session is the append-only log kernel of a Twilight Session
-// (docs/design/agent-session.md). It owns the header, one row per
-// event, group-atomic append, Session-level writer ownership with epoch
-// fencing, the per-row digest chain and ordered reads. Payloads are opaque
-// canonical JSON that Session modules encode and interpret.
+// Package session is the commit-ledger kernel of a Twilight Session
+// (docs/design/agent-session.md). It owns the header, the Commit as the
+// atomic unit of append, logical streams within commits, Session-level
+// writer ownership with epoch fencing, the commit digest chain and ordered
+// reads. Payloads are opaque canonical JSON that Session modules encode and
+// interpret.
 package session
 
 import (
@@ -16,20 +17,15 @@ type (
 	SessionID string
 	CommitID  string
 	EventType string
-	// Seq is the row number inside one stream, contiguous from 0.
-	Seq uint64
 	// Epoch is the writer ownership generation of a stream, from 1.
 	Epoch uint64
 )
 
-// ProtocolVersion1 is the current pre-release kernel wire version. It covers
-// header fields, row fields, digest preimages and the group completeness rule
-// only; payload versions are carried by modules (SES-VER-1).
-const ProtocolVersion1 uint16 = 1
-
-// ProtocolVersion2 replaces the v1 row model with the commit ledger: events
-// carry no transaction metadata (no Seq/CommitID/Index/Last per row); the
-// Commit is the atomic, chained unit and one Commit may span logical streams.
+// ProtocolVersion2 is the current pre-release kernel wire version: the
+// commit ledger, in which events carry no transaction metadata and the
+// Commit is the atomic, chained unit that may span logical streams. It
+// covers header fields and the commit/batch digest preimages only; payload
+// versions are carried by modules (SES-VER-1).
 const ProtocolVersion2 uint16 = 2
 
 // SessionHeader is the immutable creation record of a stream.
@@ -48,46 +44,8 @@ type SessionHeader struct {
 // profile does not implement fork and rejects a non-nil ParentFork.
 type ForkPoint struct {
 	ParentSessionID SessionID `json:"parentSessionId"`
-	Seq             Seq       `json:"seq"`
+	Seq             CommitSeq `json:"seq"`
 	Digest          es.Digest `json:"digest"`
-}
-
-// SessionEvent is one committed row (SES-WIR-1). Rows written by one Append
-// share CommitID; Index orders them and Last marks the group's end. Digest
-// covers every other field plus the previous row's Digest (SES-WIR-2).
-type SessionEvent struct {
-	Seq                 Seq              `json:"seq"`
-	CommitID            CommitID         `json:"commitId"`
-	Index               uint16           `json:"index"`
-	Last                bool             `json:"last"`
-	Type                EventType        `json:"type"`
-	RecordedAtUnixMilli int64            `json:"recordedAtUnixMilli"`
-	SourceSeqs          []Seq            `json:"sourceSeqs,omitempty"`
-	Ignorable           bool             `json:"ignorable,omitempty"`
-	Payload             jsonstable.Value `json:"payload"`
-	Digest              es.Digest        `json:"digest"`
-}
-
-// UncommittedEvent is what a producer hands to Append.
-type UncommittedEvent struct {
-	Type                EventType
-	RecordedAtUnixMilli int64
-	SourceSeqs          []Seq
-	Ignorable           bool
-	Payload             jsonstable.Value
-}
-
-// Group is one atomic append: a non-empty event list under one CommitID.
-type Group struct {
-	CommitID CommitID
-	Events   []UncommittedEvent
-}
-
-// Head is the stream position after the last row: the next Seq to assign and
-// the last row's Digest. The empty stream head is {0, HeaderDigest}.
-type Head struct {
-	Next   Seq       `json:"next"`
-	Digest es.Digest `json:"digest"`
 }
 
 // ErrorCode classifies kernel failures (SES 7).

@@ -20,13 +20,12 @@ type ProjectionDefinition struct {
 	StateCodec PayloadCodec
 }
 
-// ProjectionScope is a definition bound to its module scope: the type prefixes
-// a reader filters on and the modules whose unknown events must not be skipped.
+// ProjectionScope is a definition bound to its module scope: the modules
+// whose unknown events the fold must not silently skip.
 type ProjectionScope struct {
 	Def      ProjectionDefinition
 	consumes map[session.EventType]struct{}
 	modules  map[ModuleKey]struct{}
-	types    []session.EventType
 }
 
 // ScopeFor resolves a projection definition together with the module scope its
@@ -41,68 +40,64 @@ func (r *Registry) ScopeFor(id ProjectionID, v ProjectionVersion) (*ProjectionSc
 	for _, t := range def.Consumes {
 		s.consumes[t] = struct{}{}
 	}
-	for m := range s.modules {
-		s.types = append(s.types, ModulePrefix(m.Source, m.ID))
-	}
 	return s, nil
 }
 
-// Fold applies rows to state group by group (EXT-PRJ-1/2). rows must be whole
-// groups in Seq order. A group is a run of rows sharing one CommitID: the
-// kernel never exposes an incomplete group (SES-APP-2), and a Types-filtered
-// Read (EXT-PRJ-2) may omit a group's Last row, so the boundary is the
-// CommitID change, not the Last flag. It is pure with respect to the
-// Registry: the same Scope and rows always fold the same.
-func (r *Registry) Fold(s *ProjectionScope, state any, rows []session.SessionEvent) (any, error) {
-	for i := 0; i < len(rows); {
-		end := i
-		for end+1 < len(rows) && rows[end+1].CommitID == rows[i].CommitID {
-			end++
-		}
-		next := state
-		for j := i; j <= end; j++ {
-			var err error
-			next, err = r.applyRow(s, next, &rows[j])
-			if err != nil {
-				return nil, err
+// Fold applies whole commits to state, event by event in CommitSeq order
+// (EXT-PRJ-1/2). commits must be contiguous from the ledger and complete: the
+// kernel never exposes a torn commit (SES-APP-2). A fold reads every stream:
+// the commits carry their own stream attribution, and a projection whose
+// Consumes spans modules sees their events wherever the commits placed them.
+// It is pure with respect to the Registry: the same Scope and commits always
+// fold the same. A Commit's Digest is assigned by SealCommit inside the
+// Store, so fold input never carries one: nothing a projection can read
+// differs between the Writer's pre-seal fold and a reader's post-seal fold
+// (the EXT-PRJ-4 concern of the row model does not arise).
+func (r *Registry) Fold(s *ProjectionScope, state any, commits []session.Commit) (any, error) {
+	for i := range commits {
+		for j := range commits[i].Batches {
+			b := &commits[i].Batches[j]
+			for _, e := range b.Events {
+				var err error
+				state, err = r.applyEvent(s, state, commits[i].Seq, b.Stream, e)
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
-		state = next
-		i = end + 1
 	}
 	return state, nil
 }
 
-func (r *Registry) applyRow(s *ProjectionScope, state any, row *session.SessionEvent) (any, error) {
-	if _, want := s.consumes[row.Type]; !want {
-		if _, registered := r.events[row.Type]; registered {
+func (r *Registry) applyEvent(s *ProjectionScope, state any, seq session.CommitSeq, stream session.StreamRef, e session.Event) (any, error) {
+	entry, registered := r.events[e.Type]
+	if _, want := s.consumes[e.Type]; !want {
+		if registered {
 			return state, nil // known type of some module, not consumed here
 		}
-		module, known := r.ModuleOf(row.Type)
-		if _, inScope := s.modules[module]; known && inScope && !row.Ignorable {
-			return nil, &Error{Code: ErrUnknownEvent, Type: row.Type, Detail: fmt.Sprintf("projection %q: unregistered non-ignorable event of module %s/%s at seq %d", s.Def.ID, module.Source, module.ID, row.Seq)}
+		module, known := r.ModuleOf(e.Type)
+		if _, inScope := s.modules[module]; known && inScope {
+			// The registry is the only authority on Ignorable, and an
+			// unregistered type has no entry to consult: an in-scope event
+			// the registry does not know is an error (EXT-PRJ-2).
+			return nil, &Error{Code: ErrUnknownEvent, Type: e.Type, Detail: fmt.Sprintf("projection %q: unregistered event of module %s/%s at commit %d", s.Def.ID, module.Source, module.ID, seq)}
 		}
 		return state, nil
 	}
-	// Apply never sees the row digest: the Writer folds a group before it is
-	// sealed (Digest empty) and a reader folds it after, so a projection that
-	// read the digest would diverge between the two paths (EXT-PRJ-4). Clearing
-	// it here makes both paths fold identical input.
-	unsealed := *row
-	unsealed.Digest = ""
-	decoded, err := r.Decode(unsealed)
+	decoded, err := r.Decode(e)
 	if err != nil {
 		return nil, err
 	}
+	decoded.Stream = stream
 	if decoded.Unknown {
-		if row.Ignorable {
+		if entry.def.Ignorable {
 			return state, nil
 		}
-		return nil, &Error{Code: ErrUnknownEvent, Type: row.Type, Detail: fmt.Sprintf("projection %q cannot decode v%d at seq %d", s.Def.ID, decoded.Version, row.Seq)}
+		return nil, &Error{Code: ErrUnknownEvent, Type: e.Type, Detail: fmt.Sprintf("projection %q cannot decode v%d at commit %d", s.Def.ID, decoded.Version, seq)}
 	}
 	next, err := s.Def.Apply(state, decoded)
 	if err != nil {
-		return nil, fmt.Errorf("projection %s: seq %d: %w", s.Def.ID, row.Seq, err)
+		return nil, fmt.Errorf("projection %s: commit %d: %w", s.Def.ID, seq, err)
 	}
 	return next, nil
 }
@@ -128,11 +123,11 @@ type ProjectionCacheProvider interface {
 	ProjectionCache() ProjectionCache
 }
 
-// DefaultCacheEvery is the row gap a projection's cached state may fall behind
-// the head when the deployment chooses no other policy. It bounds the work a
-// reopening Writer repeats: after an abrupt end it refolds at most this many
-// rows, and after a clean Close none.
-const DefaultCacheEvery session.Seq = 64
+// DefaultCacheEvery is the commit gap a projection's cached state may fall
+// behind the head when the deployment chooses no other policy. It bounds the
+// work a reopening Writer repeats: after an abrupt end it refolds at most
+// this many commits, and after a clean Close none.
+const DefaultCacheEvery session.CommitSeq = 64
 
 // CachePolicy decides whether the Writer refreshes one projection's entry in
 // the ProjectionCache. The Writer asks it after every applied commit, and once
@@ -147,10 +142,10 @@ const DefaultCacheEvery session.Seq = 64
 // rejected when it is validated against the stream.
 type CachePolicy func(id ProjectionID, v ProjectionVersion, head, cached session.Head, closing bool) bool
 
-// CacheEvery refreshes a projection once the head has moved n rows past the
-// entry the cache already covers, and always at Close. n <= 0 means
+// CacheEvery refreshes a projection once the head has moved n commits past
+// the entry the cache already covers, and always at Close. n <= 0 means
 // DefaultCacheEvery.
-func CacheEvery(n session.Seq) CachePolicy {
+func CacheEvery(n session.CommitSeq) CachePolicy {
 	return func(_ ProjectionID, _ ProjectionVersion, head, cached session.Head, closing bool) bool {
 		if closing {
 			return true
@@ -240,8 +235,8 @@ type storeReader struct {
 	cache    ProjectionCache
 }
 
-// NewProjectionReader reads projections from the Store: cache entry (when it
-// is a prefix of the stream) plus the filtered tail, or a full fold. It is
+// NewProjectionReader reads projections from the Store: a cache entry (when
+// it is a prefix of the stream) plus the tail commits, or a full fold. It is
 // the observer's path; the owner process reads through Writer.Projections().
 func NewProjectionReader(store session.Store, registry *Registry, cache ProjectionCache) ProjectionReader {
 	return &storeReader{store: store, registry: registry, cache: cache}
@@ -256,11 +251,11 @@ func (r *storeReader) Load(ctx context.Context, sid session.SessionID, id Projec
 	if err != nil {
 		return nil, session.Head{}, err
 	}
-	page, err := r.store.Read(ctx, session.ReadRequest{SessionID: sid, From: from.Next, Types: scope.types})
+	page, err := r.store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid, From: from.Next})
 	if err != nil {
 		return nil, session.Head{}, err
 	}
-	state, err = r.registry.Fold(scope, state, page.Events)
+	state, err = r.registry.Fold(scope, state, page.Commits)
 	if err != nil {
 		return nil, session.Head{}, err
 	}
@@ -285,28 +280,23 @@ func (r *storeReader) startState(ctx context.Context, sid session.SessionID, sco
 	return state, session.Head{}, err
 }
 
-// isPrefix checks that the row before through.Next is the group boundary the
-// entry recorded. Read starts at the group boundary at or before From, so the
-// row is found by Seq rather than by position.
+// isPrefix checks that the commit at through.Next-1 is the commit the entry
+// recorded.
 func (r *storeReader) isPrefix(ctx context.Context, sid session.SessionID, through session.Head) bool {
-	page, err := r.store.Read(ctx, session.ReadRequest{SessionID: sid, From: through.Next - 1, Limit: 1})
-	if err != nil {
+	page, err := r.store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid, From: through.Next - 1, Limit: 1})
+	if err != nil || len(page.Commits) != 1 {
 		return false
 	}
-	for i := range page.Events {
-		if page.Events[i].Seq == through.Next-1 {
-			return EndsGroupAt(&page.Events[i], through)
-		}
-	}
-	return false
+	return SealedAt(page.Commits[0], through)
 }
 
-// EndsGroupAt reports whether row is the last row of a complete group and is
-// the row through records: Seq through.Next-1 with through.Digest. It is the
-// one group-alignment predicate of EXT-PRJ-3, shared by the Writer and the
-// Store reader so a cache entry is judged the same way on both paths.
-func EndsGroupAt(row *session.SessionEvent, through session.Head) bool {
-	return through.Next > 0 && row.Seq == through.Next-1 && row.Last && row.Digest == through.Digest
+// SealedAt reports whether c is the commit through records: the commit at
+// through.Next-1 carrying through.Digest. It is the one head-alignment
+// predicate of EXT-PRJ-3, shared by the Writer and the Store reader so a
+// cache entry is judged the same way on both paths. The commit is the atomic
+// unit of the ledger: there is no finer boundary to check.
+func SealedAt(c session.Commit, through session.Head) bool {
+	return through.Next > 0 && c.Seq == through.Next-1 && c.Digest == through.Digest
 }
 
 // JSONStateCodec is a StateCodec for projection states that marshal to JSON.

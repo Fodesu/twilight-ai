@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
+	"testing"
+
 	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
-	"strings"
-	"sync"
-	"testing"
 )
 
 type notePayload struct {
@@ -60,6 +61,11 @@ func noteModule(id extension.ModuleID, requires ...extension.ModuleRequirement) 
 	}
 }
 
+// sessionBatch wraps events as the single session-stream batch tests write.
+func sessionBatch(events ...TypedEvent) []TypedBatch {
+	return []TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: events}}
+}
+
 type fixture struct {
 	store    *session.MemoryStore
 	registry *extension.Registry
@@ -71,14 +77,14 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{}
 	f.store = session.NewMemoryStore()
-	r, err := extension.BuildRegistry(session.ProtocolVersion1, noteModule("a"))
+	r, err := extension.BuildRegistry(session.ProtocolVersion2, noteModule("a"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.registry = r
 	f.bindings = artifact.NewMemoryBindingStore()
 	f.ledger = artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: f.bindings})
-	if _, err := f.store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
+	if _, err := f.store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	return f
@@ -98,9 +104,11 @@ func (f *fixture) open(t *testing.T, takeover bool) Writer {
 func noteGroup(id string, texts ...string) CommitFn {
 	return func(View) (*SemanticGroup, error) {
 		g := &SemanticGroup{CommitID: session.CommitID(id)}
+		var events []TypedEvent
 		for _, tx := range texts {
-			g.Events = append(g.Events, TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: tx}})
+			events = append(events, TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: tx}})
 		}
+		g.Batches = sessionBatch(events...)
 		return g, nil
 	}
 }
@@ -121,14 +129,14 @@ func TestWriterCommitReplayAndRebuild(t *testing.T) {
 	ctx := context.Background()
 	w := f.open(t, false)
 	res, err := w.Commit(ctx, noteGroup("c1", "one", "two"))
-	if err != nil || res.Outcome != CommitApplied || len(res.Events) != 2 || res.Events[0].Seq != 0 {
+	if err != nil || res.Outcome != CommitApplied || res.Commit.Seq != 0 || len(res.Commit.Batches[0].Events) != 2 {
 		t.Fatalf("commit = %+v %v", res, err)
 	}
 	if got := notes(t, w); len(got) != 2 || got[1] != "two" {
 		t.Fatalf("projection after commit = %v", got)
 	}
 	replay, _ := w.Commit(ctx, noteGroup("c1", "one", "two"))
-	if replay.Outcome != CommitAlreadyApplied || len(replay.Events) != 2 || replay.Events[1].Digest != res.Events[1].Digest {
+	if replay.Outcome != CommitAlreadyApplied || replay.Commit.Digest != res.Commit.Digest || len(replay.Commit.Batches[0].Events) != 2 {
 		t.Fatalf("replay = %+v", replay)
 	}
 	conflict, _ := w.Commit(ctx, noteGroup("c1", "changed"))
@@ -140,7 +148,7 @@ func TestWriterCommitReplayAndRebuild(t *testing.T) {
 		t.Fatalf("noop = %+v", noop)
 	}
 	invalid, _ := w.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c2", Events: []TypedEvent{{Type: "twilight/a/unknown", Value: notePayload{}}}}, nil
+		return &SemanticGroup{CommitID: "c2", Batches: sessionBatch(TypedEvent{Type: "twilight/a/unknown", Value: notePayload{}})}, nil
 	})
 	if invalid.Outcome != CommitInvalid {
 		t.Fatalf("invalid = %+v", invalid)
@@ -149,19 +157,19 @@ func TestWriterCommitReplayAndRebuild(t *testing.T) {
 	if rejected.Outcome != CommitInvalid {
 		t.Fatalf("projection rejection must block the append: %+v", rejected)
 	}
-	if page, _ := f.store.Read(ctx, session.ReadRequest{SessionID: "s"}); len(page.Events) != 2 {
-		t.Fatalf("rejected groups wrote rows: %d", len(page.Events))
+	if page, _ := f.store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"}); len(page.Commits) != 1 {
+		t.Fatalf("rejected commits wrote commits: %d", len(page.Commits))
 	}
 	// The View sees head, commit history and projection; fn may use them.
 	_, err = w.Commit(ctx, func(v View) (*SemanticGroup, error) {
-		if v.Head().Next != 2 || v.Epoch() != 1 {
+		if v.Head().Next != 1 || v.Epoch() != 1 {
 			t.Fatalf("view head/epoch = %+v %d", v.Head(), v.Epoch())
 		}
 		if !v.Committed("c1") {
-			t.Fatal("view does not see the committed group")
+			t.Fatal("view does not see the committed commit")
 		}
-		if rows, ok, err := v.LookupCommit("c1"); err != nil || !ok || len(rows) != 2 {
-			t.Fatalf("view lookup = %d %v %v", len(rows), ok, err)
+		if c, ok, err := v.LookupCommit("c1"); err != nil || !ok || len(c.Batches) != 1 || len(c.Batches[0].Events) != 2 {
+			t.Fatalf("view lookup = %+v %v %v", c, ok, err)
 		}
 		if s, err := v.Projection(extension.ProjectionID(string(tpfx("a"))+"notes"), 1); err != nil || len(s.(noteState).Notes) != 2 {
 			t.Fatalf("view projection = %+v %v", s, err)
@@ -192,7 +200,7 @@ func TestWriterCommitReplayAndRebuild(t *testing.T) {
 	}
 	reader := extension.NewProjectionReader(f.store, f.registry, nil)
 	state, through, err := reader.Load(ctx, "s", extension.ProjectionID(string(tpfx("a"))+"notes"), 1)
-	if err != nil || len(state.(noteState).Notes) != 2 || through.Next != 2 {
+	if err != nil || len(state.(noteState).Notes) != 2 || through.Next != 1 {
 		t.Fatalf("store reader = %+v %+v %v", state, through, err)
 	}
 }
@@ -229,8 +237,10 @@ func TestWriterOwnershipLost(t *testing.T) {
 	}
 }
 
-// EXT-PRJ-2: unknown events in scope fail the fold unless Ignorable; unknown
-// events of other modules are skipped.
+// EXT-PRJ-2: unknown events in scope fail the fold unless the module marked
+// the type Ignorable; unknown events of other modules are skipped. The
+// registry is the only authority on Ignorable: an in-scope event whose type
+// is not registered at all cannot prove it is ignorable and fails the fold.
 func TestProjectionUnknownEvents(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -239,39 +249,41 @@ func TestProjectionUnknownEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	hint, _ := w.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c2", Events: []TypedEvent{{Type: tpfx("a") + "hint", Value: notePayload{Text: "h"}}}}, nil
+		return &SemanticGroup{CommitID: "c2", Batches: sessionBatch(TypedEvent{Type: tpfx("a") + "hint", Value: notePayload{Text: "h"}})}, nil
 	})
-	if hint.Outcome != CommitApplied || !hint.Events[0].Ignorable {
-		t.Fatalf("ignorable definition not applied to the row: %+v", hint)
+	if hint.Outcome != CommitApplied {
+		t.Fatalf("ignorable event commit = %+v", hint)
 	}
 	_ = w.Close(ctx)
 	kw, _ := f.store.Open(ctx, "s", session.OpenOptions{})
-	raw := func(id, typ string, ignorable bool) {
-		if _, err := kw.Append(ctx, session.Group{CommitID: session.CommitID(id), Events: []session.UncommittedEvent{{Type: session.EventType(typ), Payload: jsonstable.MustParse(`{"v":1}`), Ignorable: ignorable}}}); err != nil {
+	raw := func(id string, typ session.EventType, payload string) {
+		if _, err := kw.Append(ctx, session.Proposal{CommitID: session.CommitID(id), Batches: []session.StreamBatch{
+			{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []session.Event{{Type: typ, Payload: jsonstable.MustParse(payload)}}},
+		}}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	raw("other", "twilight/zzz/thing", false) // out of scope: skipped
-	raw("future", "twilight/a/future", true)  // in scope, ignorable: skipped
+	raw("other", "twilight/zzz/thing", `{"v":1}`)         // out of scope: skipped
+	raw("hinted", tpfx("a")+"hint", `{"text":"x","v":2}`) // in scope, ignorable, unknown version: skipped
 	_ = kw.Close(ctx)
 	w = f.open(t, false)
 	if got := notes(t, w); len(got) != 1 {
-		t.Fatalf("notes = %v", got)
+		t.Fatalf("notes = %v, want [one]", got)
 	}
 	_ = w.Close(ctx)
 	kw, _ = f.store.Open(ctx, "s", session.OpenOptions{})
-	raw("strict", "twilight/a/strict", false) // in scope, not ignorable: fold fails
+	raw("strict", "twilight/a/strict", `{"v":1}`) // in scope, not registered: fold fails
 	_ = kw.Close(ctx)
 	if _, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !errors.Is(err, &extension.Error{Code: extension.ErrUnknownEvent}) {
 		t.Fatalf("open with unknown strict event = %v", err)
 	}
 }
 
-// EXT-WRT-3 and ART-RET-3: claims are Active before the rows exist; an
+// EXT-WRT-3 and ART-RET-3: claims are Active before the commit exists; an
 // orphan claim is released on the next OpenWriter; a live claim survives.
 // EXT-REF-1/2, EXT-WRT-3: a missing resolver or ledger is a configuration
 // error, so it must surface as an error rather than as a CommitInvalid outcome
-// that reads like a verdict on the group. It must not be rejected earlier
+// that reads like a verdict on the commit. It must not be rejected earlier
 // either: an event type declaring Bindings only means its payloads may carry
 // references, so a deployment that never attaches an artifact needs neither.
 func TestCommitWithoutAdmission(t *testing.T) {
@@ -300,16 +312,16 @@ func TestCommitWithoutAdmission(t *testing.T) {
 	}
 
 	// A payload that does carry a reference against a nil resolver is a
-	// configuration error, not an invalid group.
+	// configuration error, not an invalid commit.
 	withRef, err := OpenWriter(ctx, f.store, f.registry, Admission{}, "s", session.OpenOptions{Takeover: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer withRef.Close(ctx)
 	res, err = withRef.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c2", Events: []TypedEvent{
-			{Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}},
-		}}, nil
+		return &SemanticGroup{CommitID: "c2", Batches: sessionBatch(TypedEvent{
+			Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}}),
+		}, nil
 	})
 	if err == nil {
 		t.Fatalf("commit with a reference and no resolver = %+v, want an error (got no error)", res)
@@ -325,9 +337,9 @@ func TestCommitWithoutAdmission(t *testing.T) {
 	}
 	defer noLedger.Close(ctx)
 	res, err = noLedger.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c3", Events: []TypedEvent{
-			{Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}},
-		}}, nil
+		return &SemanticGroup{CommitID: "c3", Batches: sessionBatch(TypedEvent{
+			Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}}),
+		}, nil
 	})
 	if err == nil {
 		t.Fatalf("commit with a reference and no ledger = %+v, want an error (got no error)", res)
@@ -337,12 +349,12 @@ func TestCommitWithoutAdmission(t *testing.T) {
 	}
 
 	// None of the rejected commits may have written anything.
-	page, err := f.store.Read(ctx, session.ReadRequest{SessionID: "s"})
+	page, err := f.store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Events) != 1 || page.Events[0].CommitID != "c1" {
-		t.Fatalf("rejected commits wrote rows: %+v", page.Events)
+	if len(page.Commits) != 1 || page.Commits[0].CommitID != "c1" {
+		t.Fatalf("rejected commits wrote commits: %+v", page.Commits)
 	}
 }
 
@@ -375,21 +387,19 @@ func TestWriterSerializesConcurrentCommits(t *testing.T) {
 			t.Fatalf("commit %d = %+v %v", i, results[i], errs[i])
 		}
 	}
-	// Every commit was serialized onto its own contiguous Seq range.
-	seen := map[session.Seq]bool{}
+	// Every commit was serialized onto its own Seq.
+	seen := map[session.CommitSeq]bool{}
 	for _, res := range results {
-		for _, e := range res.Events {
-			if seen[e.Seq] {
-				t.Fatalf("seq %d assigned twice: commits raced", e.Seq)
-			}
-			seen[e.Seq] = true
+		if seen[res.Commit.Seq] {
+			t.Fatalf("seq %d assigned twice: commits raced", res.Commit.Seq)
 		}
+		seen[res.Commit.Seq] = true
 	}
 	if len(seen) != n {
 		t.Fatalf("distinct seqs = %d, want %d", len(seen), n)
 	}
 	for i := 0; i < n; i++ {
-		if !seen[session.Seq(i)] {
+		if !seen[session.CommitSeq(i)] {
 			t.Fatalf("seq %d missing; head is not contiguous", i)
 		}
 	}
@@ -400,7 +410,7 @@ func TestWriterSerializesConcurrentCommits(t *testing.T) {
 
 // EXT-REF-1/2: the extractor returns every reference in appearance order,
 // cardinality and scheme/durability admission bound what may commit, and a
-// rejected group writes nothing.
+// rejected commit writes nothing.
 func TestBindingAdmission(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
@@ -424,7 +434,7 @@ func TestBindingAdmission(t *testing.T) {
 
 	maxTwo := uint32(2)
 	typ := tpfx("r") + "ref"
-	reg, err := extension.BuildRegistry(session.ProtocolVersion1, extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "r",
+	reg, err := extension.BuildRegistry(session.ProtocolVersion2, extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "r",
 		Events: []extension.EventDefinition{{
 			Type: typ, Current: 1, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
 			Bindings: []extension.BindingReferenceDefinition{{
@@ -445,9 +455,9 @@ func TestBindingAdmission(t *testing.T) {
 	commit := func(id string, refs ...string) CommitResult {
 		t.Helper()
 		res, err := w.Commit(ctx, func(View) (*SemanticGroup, error) {
-			return &SemanticGroup{CommitID: session.CommitID(id), Events: []TypedEvent{
-				{Type: typ, Value: notePayload{Text: "r", Refs: refs}},
-			}}, nil
+			return &SemanticGroup{CommitID: session.CommitID(id), Batches: sessionBatch(TypedEvent{
+				Type: typ, Value: notePayload{Text: "r", Refs: refs}}),
+			}, nil
 		})
 		if err != nil {
 			t.Fatalf("commit %s: %v", id, err)
@@ -458,7 +468,7 @@ func TestBindingAdmission(t *testing.T) {
 	// Admissible: the claim covers every extracted reference, in order.
 	res := commit("c1", "ok1", "ok2")
 	if res.Outcome != CommitApplied || res.Claim == nil {
-		t.Fatalf("admissible group = %+v", res)
+		t.Fatalf("admissible commit = %+v", res)
 	}
 	claim, ok, err := f.ledger.LookupClaim(ctx, res.Claim.ID)
 	if err != nil || !ok {
@@ -482,20 +492,20 @@ func TestBindingAdmission(t *testing.T) {
 		if got.Outcome != CommitInvalid {
 			t.Fatalf("%s = %+v, want invalid", tc.name, got)
 		}
-		// Assert the reason so a group rejected for some other cause cannot
+		// Assert the reason so a commit rejected for some other cause cannot
 		// make this pass.
 		if !strings.Contains(got.Detail, tc.want) {
 			t.Fatalf("%s detail = %q, want mention of %q", tc.name, got.Detail, tc.want)
 		}
 	}
 
-	// Only the admissible group may have landed.
-	page, err := f.store.Read(ctx, session.ReadRequest{SessionID: "s"})
+	// Only the admissible commit may have landed.
+	page, err := f.store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(page.Events) != 1 || page.Events[0].CommitID != "c1" {
-		t.Fatalf("rejected groups wrote rows: %+v", page.Events)
+	if len(page.Commits) != 1 || page.Commits[0].CommitID != "c1" {
+		t.Fatalf("rejected commits wrote commits: %+v", page.Commits)
 	}
 }
 
@@ -508,13 +518,13 @@ func TestWriterClaimsAndReconcile(t *testing.T) {
 	}
 	w := f.open(t, false)
 	res, err := w.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c1", Events: []TypedEvent{{Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}}}}, nil
+		return &SemanticGroup{CommitID: "c1", Batches: sessionBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}})}, nil
 	})
 	if err != nil || res.Outcome != CommitApplied || res.Claim == nil || res.Claim.State != artifact.ClaimActive {
 		t.Fatalf("commit with binding = %+v %v", res, err)
 	}
 	missing, _ := w.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c2", Events: []TypedEvent{{Type: tpfx("a") + "note", Value: notePayload{Text: "x", Refs: []string{"nope"}}}}}, nil
+		return &SemanticGroup{CommitID: "c2", Batches: sessionBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "x", Refs: []string{"nope"}}})}, nil
 	})
 	if missing.Outcome != CommitInvalid {
 		t.Fatalf("unknown binding = %+v", missing)
@@ -522,7 +532,7 @@ func TestWriterClaimsAndReconcile(t *testing.T) {
 	// Simulate a crash between claim and append: an Active claim whose owner
 	// commit never made it into the stream.
 	set, _ := artifact.SetBuilder{Resolver: f.bindings}.Build(ctx, []artifact.BindingID{"b1"})
-	orphanID := DeriveClaimID(session.ProtocolVersion1, "s", "never", set.RefSetDigest)
+	orphanID := DeriveClaimID(session.ProtocolVersion2, "s", "never", set.RefSetDigest)
 	if _, err := f.ledger.Activate(ctx, orphanID, CommitOwner("s", "never"), set); err != nil {
 		t.Fatal(err)
 	}

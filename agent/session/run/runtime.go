@@ -137,7 +137,7 @@ func (r *Runtime) Record(ctx context.Context, sid session.SessionID, runID run.R
 // record reads the Run's events from the Store, folds them and (when expect
 // is given) compares the fold with the projection state.
 func (r *Runtime) record(ctx context.Context, sid session.SessionID, runID run.RunID, expect *run.MachineState) (run.RunRecord, error) {
-	page, err := r.cfg.Store.Read(ctx, session.ReadRequest{SessionID: sid, Types: []session.EventType{Prefix}})
+	page, err := r.cfg.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: sid, Stream: runStream(runID)})
 	if err != nil {
 		return run.RunRecord{}, err
 	}
@@ -157,11 +157,11 @@ func (r *Runtime) record(ctx context.Context, sid session.SessionID, runID run.R
 			continue
 		}
 		if len(record.Events) == 0 {
-			record.Created = e.Seq
+			record.Created = session.StreamSeq(i)
 		}
 		record.Events = append(record.Events, *e)
 		record.Facts = append(record.Facts, ev.Fact)
-		position = e.Seq
+		position = session.StreamSeq(i)
 	}
 	if len(record.Facts) == 0 {
 		return run.RunRecord{}, run.ErrRunNotFound
@@ -176,6 +176,20 @@ func (r *Runtime) record(ctx context.Context, sid session.SessionID, runID run.R
 	created := record.Facts[0].(run.RunCreated)
 	record.Snapshot = run.RuntimeSnapshot{State: state, Position: position, Head: page.Head, SchemaVersion: created.SchemaVersion}
 	return record, nil
+}
+
+// runStream is the fixed logical stream of one Run's facts.
+func runStream(runID run.RunID) session.StreamRef {
+	return session.StreamRef{Kind: session.StreamKindRun, ID: string(runID)}
+}
+
+// flattenCommitEvents returns the commit's events in batch order.
+func flattenCommitEvents(c session.Commit) []session.Event {
+	var out []session.Event
+	for _, b := range c.Batches {
+		out = append(out, b.Events...)
+	}
+	return out
 }
 
 // --- Commit ------------------------------------------------------------------------
@@ -236,10 +250,9 @@ func (r *Runtime) Commit(ctx context.Context, sid session.SessionID, req run.Com
 	switch res.Outcome {
 	case writer.CommitApplied:
 		out.Status = run.CommitAccepted
-		out.Events = res.Events
-		last := res.Events[len(res.Events)-1]
-		out.Snapshot.Head = session.Head{Next: last.Seq + 1, Digest: last.Digest}
-		out.Snapshot.Position = res.Events[out.lastFact].Seq
+		out.Events = flattenCommitEvents(res.Commit)
+		out.Snapshot.Head = session.Head{Next: res.Commit.Seq + 1, Digest: res.Commit.Digest}
+		out.Snapshot.Position = out.position
 		r.afterCommit(ctx, w, sid, &before, &after)
 		return out.CommitResult, nil
 	case writer.CommitNoop:
@@ -268,7 +281,7 @@ func (r *Runtime) afterCommit(ctx context.Context, w writer.Writer, sid session.
 type evaluated struct {
 	run.CommitResult
 	before   run.MachineState
-	lastFact int
+	position session.StreamSeq
 }
 
 // evaluate is RUN-CMT-3 inside the Writer. It returns either a group to
@@ -289,7 +302,7 @@ func (r *Runtime) evaluate(ctx context.Context, view writer.View, sid session.Se
 		if err != nil {
 			return nil, evaluated{}, nil, err
 		}
-		return nil, evaluated{CommitResult: run.CommitResult{Status: run.CommitAlreadyApplied, Snapshot: snapshot, Events: existing}}, nil, nil
+		return nil, evaluated{CommitResult: run.CommitResult{Status: run.CommitAlreadyApplied, Snapshot: snapshot, Events: flattenCommitEvents(existing)}}, nil, nil
 	}
 
 	// Step 5: current state from the Writer's projection.
@@ -333,12 +346,13 @@ func (r *Runtime) evaluate(ctx context.Context, view writer.View, sid session.Se
 		return nil, evaluated{}, run.ErrRunTerminal, nil
 	}
 
-	// Step 8: facts -> events.
+	// Step 8: facts -> the Run's own stream.
 	now := r.nowMilli()
 	group := &writer.SemanticGroup{CommitID: commitID}
+	runEvents := make([]writer.TypedEvent, 0, len(decision.Facts))
 	recorded := map[es.Digest]struct{}{}
 	for _, f := range decision.Facts {
-		group.Events = append(group.Events, writer.TypedEvent{Type: EventType(f), RecordedAtUnixMilli: now, Value: Event{RunID: runID, Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: EventType(f), RecordedAtUnixMilli: now, Value: Event{RunID: runID, Fact: f}})
 		switch fact := f.(type) {
 		case run.ModelStepCompleted:
 			recorded[fact.ResultDigest] = struct{}{}
@@ -348,6 +362,7 @@ func (r *Runtime) evaluate(ctx context.Context, view writer.View, sid session.Se
 			recorded[fact.ResponseDigest] = struct{}{}
 		}
 	}
+	sessionEvents := []writer.TypedEvent{}
 	// Step 9: companion, then Attach.
 	companion, err := r.cfg.Companion.Map(run.CompanionRequest{Session: sid, Owner: state.Owner, RunID: runID,
 		Command: env.Command, Facts: decision.Facts, State: decision.NewState, RecordedAtUnixMilli: now})
@@ -367,15 +382,19 @@ func (r *Runtime) evaluate(ctx context.Context, view writer.View, sid session.Se
 				}
 			}
 		}
-		group.Events = append(group.Events, writer.TypedEvent{Type: me.Type, RecordedAtUnixMilli: now, Value: me.Value})
+		sessionEvents = append(sessionEvents, writer.TypedEvent{Type: me.Type, RecordedAtUnixMilli: now, Value: me.Value})
 	}
 	for _, me := range req.Attach {
-		group.Events = append(group.Events, writer.TypedEvent{Type: me.Type, RecordedAtUnixMilli: now, Value: me.Value})
+		sessionEvents = append(sessionEvents, writer.TypedEvent{Type: me.Type, RecordedAtUnixMilli: now, Value: me.Value})
+	}
+	group.Batches = []writer.TypedBatch{{Stream: runStream(runID), Events: runEvents}}
+	if len(sessionEvents) > 0 {
+		group.Batches = append(group.Batches, writer.TypedBatch{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: sessionEvents})
 	}
 	result := evaluated{
 		CommitResult: run.CommitResult{Snapshot: run.RuntimeSnapshot{State: decision.NewState, SchemaVersion: schema}},
 		before:       state,
-		lastFact:     len(decision.Facts) - 1,
+		position:     proj.Positions[runID] + session.StreamSeq(len(decision.Facts)),
 	}
 	return group, result, nil, nil
 }

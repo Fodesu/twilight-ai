@@ -83,16 +83,22 @@ func agentHandler(s *app.Session, store session.Store, sid session.SessionID) ht
 				return
 			}
 		}
-		page, err := store.Read(r.Context(), session.ReadRequest{SessionID: sid, From: session.Seq(from), Limit: 200})
+		page, err := store.ReadCommits(r.Context(), session.CommitReadRequest{SessionID: sid, From: session.CommitSeq(from), Limit: 200})
 		if err != nil {
 			writeError(w, err)
 			return
 		}
-		next := session.Seq(from)
-		if len(page.Events) > 0 {
-			next = page.Events[len(page.Events)-1].Seq + 1
+		var events []session.Event
+		for _, c := range page.Commits {
+			for _, b := range c.Batches {
+				events = append(events, b.Events...)
+			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"events": page.Events, "next": next, "hasMore": page.HasMore, "head": page.Head})
+		next := session.CommitSeq(from)
+		if len(page.Commits) > 0 {
+			next = page.Commits[len(page.Commits)-1].Seq + 1
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"events": events, "next": next, "hasMore": page.HasMore, "head": page.Head})
 	})
 	return mux
 }

@@ -50,12 +50,12 @@ type harness struct {
 
 func newHarness(t testing.TB, f Fixture) *harness {
 	t.Helper()
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module, runmod.Module, turn.Module)
+	registry, err := extension.BuildRegistry(session.ProtocolVersion2, chatlog.Module, runmod.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := &harness{t: t, ctx: context.Background(), store: f.Store, registry: registry, frozen: runmod.FrozenValuesInMemory(), now: 1_000}
-	if _, err := f.Store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
+	if _, err := f.Store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
 	}
 	h.open()
@@ -110,13 +110,22 @@ func (h *harness) commit(group writer.SemanticGroup) writer.CommitResult {
 	return res
 }
 
-func (h *harness) mustApply(group writer.SemanticGroup) []session.SessionEvent {
+func (h *harness) mustApply(group writer.SemanticGroup) []session.Event {
 	h.t.Helper()
 	res := h.commit(group)
 	if res.Outcome != writer.CommitApplied {
 		h.fatal(fmt.Sprintf("append %s: %s %s", group.CommitID, res.Outcome, res.Detail))
 	}
-	return res.Events
+	return flattenCommit(res.Commit)
+}
+
+// flattenCommit returns the commit's events in batch order.
+func flattenCommit(c session.Commit) []session.Event {
+	var out []session.Event
+	for _, b := range c.Batches {
+		out = append(out, b.Events...)
+	}
+	return out
 }
 
 func input(id string) run.AgentInput {
@@ -130,9 +139,10 @@ func (h *harness) submit(ids ...string) []run.AgentInput {
 	out := make([]run.AgentInput, len(ids))
 	for i, id := range ids {
 		in := input(id)
-		h.mustApply(writer.SemanticGroup{CommitID: session.CommitID("submitted/" + id), Events: []writer.TypedEvent{{
-			Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: h.now,
-			Value: chatlog.InputSubmittedPayload{InputID: chatlog.InputID(id), Content: in.Payload, SubmittedAtUnixMilli: h.now}}}})
+		h.mustApply(writer.SemanticGroup{CommitID: session.CommitID("submitted/" + id),
+			Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{{
+				Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: h.now,
+				Value: chatlog.InputSubmittedPayload{InputID: chatlog.InputID(id), Content: in.Payload, SubmittedAtUnixMilli: h.now}}}}}})
 		out[i] = in
 	}
 	return out
@@ -179,57 +189,76 @@ func (h *harness) chat() chatlog.Surface {
 	return state.(chatlog.Surface)
 }
 
-func (h *harness) rows() []session.SessionEvent {
+func (h *harness) rows() []session.Event {
 	h.t.Helper()
-	page, err := h.store.Read(h.ctx, session.ReadRequest{SessionID: sid})
-	if err != nil {
-		h.fatal(err)
+	var out []session.Event
+	for _, c := range h.commits() {
+		out = append(out, flattenCommit(c)...)
 	}
-	return page.Events
+	return out
+}
+
+// commits reads the whole commit log in order.
+func (h *harness) commits() []session.Commit {
+	h.t.Helper()
+	var out []session.Commit
+	from := session.CommitSeq(0)
+	for {
+		page, err := h.store.ReadCommits(h.ctx, session.CommitReadRequest{SessionID: sid, From: from, Limit: 256})
+		if err != nil {
+			h.fatal(err)
+		}
+		out = append(out, page.Commits...)
+		if !page.HasMore || len(page.Commits) == 0 {
+			return out
+		}
+		from = page.Commits[len(page.Commits)-1].Seq + 1
+	}
 }
 
 func (h *harness) head() session.Head {
 	h.t.Helper()
-	page, err := h.store.Read(h.ctx, session.ReadRequest{SessionID: sid, From: ^session.Seq(0) >> 1})
+	page, err := h.store.ReadCommits(h.ctx, session.CommitReadRequest{SessionID: sid, From: ^session.CommitSeq(0) >> 1})
 	if err != nil {
 		h.fatal(err)
 	}
 	return page.Head
 }
 
-// group returns the rows sharing commitID.
-func (h *harness) group(commitID session.CommitID) []session.SessionEvent {
+// group returns the events of the commit commitID.
+func (h *harness) group(commitID session.CommitID) []session.Event {
 	h.t.Helper()
-	var out []session.SessionEvent
-	for _, r := range h.rows() {
-		if r.CommitID == commitID {
-			out = append(out, r)
-		}
-	}
-	return out
-}
-
-// groupContaining returns the whole group of the first row that satisfies
-// match.
-func (h *harness) groupContaining(match func(*session.SessionEvent) bool) []session.SessionEvent {
-	h.t.Helper()
-	for _, r := range h.rows() {
-		if match(&r) {
-			return h.group(r.CommitID)
+	for _, c := range h.commits() {
+		if c.CommitID == commitID {
+			return flattenCommit(c)
 		}
 	}
 	return nil
 }
 
-func eventTypes(rows []session.SessionEvent) []session.EventType {
-	out := make([]session.EventType, len(rows))
-	for i := range rows {
-		out[i] = rows[i].Type
+// groupContaining returns the whole group of the first row that satisfies
+// match.
+func (h *harness) groupContaining(match func(*session.Event) bool) []session.Event {
+	h.t.Helper()
+	for _, c := range h.commits() {
+		for _, e := range flattenCommit(c) {
+			if match(&e) {
+				return flattenCommit(c)
+			}
+		}
+	}
+	return nil
+}
+
+func eventTypes(events []session.Event) []session.EventType {
+	out := make([]session.EventType, len(events))
+	for i := range events {
+		out[i] = events[i].Type
 	}
 	return out
 }
 
-func sameTypes(got []session.SessionEvent, want ...session.EventType) bool {
+func sameTypes(got []session.Event, want ...session.EventType) bool {
 	if len(got) != len(want) {
 		return false
 	}
@@ -241,16 +270,16 @@ func sameTypes(got []session.SessionEvent, want ...session.EventType) bool {
 	return true
 }
 
-func decode[T any](t testing.TB, registry *extension.Registry, row *session.SessionEvent) T {
+func decode[T any](t testing.TB, registry *extension.Registry, event *session.Event) T {
 	t.Helper()
-	d, err := registry.Decode(*row)
+	d, err := registry.Decode(*event)
 	if err != nil {
 		t.Fatal(err)
 	}
 	v, ok := d.Value.(T)
 	if !ok {
 		var zero T
-		t.Fatalf("row %d is %T, want %T", row.Seq, d.Value, zero)
+		t.Fatalf("event is %T, want %T", d.Value, zero)
 	}
 	return v
 }

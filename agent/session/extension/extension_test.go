@@ -65,11 +65,11 @@ func TestBuildRegistryValidatesRequires(t *testing.T) {
 			Initial: func() (any, error) { return nil, nil }, Apply: func(s any, _ DecodedEvent) (any, error) { return s, nil }, StateCodec: JSONStateCodec[noteState]{}}}}},
 	}
 	for name, modules := range cases {
-		if _, err := BuildRegistry(session.ProtocolVersion1, modules...); err == nil {
+		if _, err := BuildRegistry(session.ProtocolVersion2, modules...); err == nil {
 			t.Errorf("%s: registry built", name)
 		}
 	}
-	if _, err := BuildRegistry(session.ProtocolVersion1, noteModule("a"), noteModule("b", ModuleRequirement{Source: SourceTwilight, Module: "a",
+	if _, err := BuildRegistry(session.ProtocolVersion2, noteModule("a"), noteModule("b", ModuleRequirement{Source: SourceTwilight, Module: "a",
 		Events: map[session.EventType][]PayloadVersion{tpfx("a") + "note": {1}}})); err != nil {
 		t.Fatalf("valid registry: %v", err)
 	}
@@ -94,12 +94,12 @@ func TestBuildRegistryValidatesSource(t *testing.T) {
 		"requirement without source":                  {noteModule("a"), {Source: "app", ID: "b", Requires: []ModuleRequirement{{Module: "a"}}}},
 	}
 	for name, modules := range rejects {
-		if _, err := BuildRegistry(session.ProtocolVersion1, modules...); err == nil {
+		if _, err := BuildRegistry(session.ProtocolVersion2, modules...); err == nil {
 			t.Errorf("%s: registry built", name)
 		}
 	}
 	// The same ID under two sources coexists and both prefixes resolve.
-	r, err := BuildRegistry(session.ProtocolVersion1, noteModule("a"), srcModule("app", "a"))
+	r, err := BuildRegistry(session.ProtocolVersion2, noteModule("a"), srcModule("app", "a"))
 	if err != nil {
 		t.Fatalf("two sources, one id: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestBuildRegistryValidatesSource(t *testing.T) {
 
 // Encode adds v; Decode selects the codec by v and keeps unknown versions raw.
 func TestRegistryPayloadVersion(t *testing.T) {
-	r, err := BuildRegistry(session.ProtocolVersion1, noteModule("a"))
+	r, err := BuildRegistry(session.ProtocolVersion2, noteModule("a"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,11 +125,11 @@ func TestRegistryPayloadVersion(t *testing.T) {
 	if err != nil || v != 1 || wire.String() != `{"text":"hi","v":1}` {
 		t.Fatalf("encode = %s v%d %v", wire, v, err)
 	}
-	decoded, err := r.Decode(session.SessionEvent{Type: typ, Payload: wire})
+	decoded, err := r.Decode(session.Event{Type: typ, Payload: wire})
 	if err != nil || decoded.Unknown || decoded.Value.(notePayload).Text != "hi" {
 		t.Fatalf("decode = %+v %v", decoded, err)
 	}
-	future, err := r.Decode(session.SessionEvent{Type: typ, Payload: jsonstable.MustParse(`{"text":"hi","v":2}`)})
+	future, err := r.Decode(session.Event{Type: typ, Payload: jsonstable.MustParse(`{"text":"hi","v":2}`)})
 	if err != nil || !future.Unknown || future.Version != 2 {
 		t.Fatalf("future version = %+v %v", future, err)
 	}
@@ -149,7 +149,7 @@ func TestBuildRegistryRequiresCodecForCurrent(t *testing.T) {
 		{"current version without a codec", 2},
 		{"zero current version", 0},
 	} {
-		_, err := BuildRegistry(session.ProtocolVersion1, ModuleDescriptor{Source: SourceTwilight, ID: "a",
+		_, err := BuildRegistry(session.ProtocolVersion2, ModuleDescriptor{Source: SourceTwilight, ID: "a",
 			Events: []EventDefinition{{
 				Type: tpfx("a") + "note", Current: tc.current,
 				Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
@@ -163,7 +163,7 @@ func TestBuildRegistryRequiresCodecForCurrent(t *testing.T) {
 	}
 	// Retaining the older codec alongside the current one is the supported
 	// shape, so it must keep building.
-	if _, err := BuildRegistry(session.ProtocolVersion1, ModuleDescriptor{Source: SourceTwilight, ID: "a",
+	if _, err := BuildRegistry(session.ProtocolVersion2, ModuleDescriptor{Source: SourceTwilight, ID: "a",
 		Events: []EventDefinition{{
 			Type: tpfx("a") + "note", Current: 2,
 			Codecs: map[PayloadVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}},
@@ -208,7 +208,7 @@ func TestRegistryMultiVersionCodecsCoexist(t *testing.T) {
 		Type: typ, Current: 2,
 		Codecs: map[PayloadVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}},
 	}}}
-	r, err := BuildRegistry(session.ProtocolVersion1, upgraded)
+	r, err := BuildRegistry(session.ProtocolVersion2, upgraded)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +223,7 @@ func TestRegistryMultiVersionCodecsCoexist(t *testing.T) {
 	}
 
 	// A row written before the upgrade still decodes, through its own codec.
-	old, err := r.Decode(session.SessionEvent{Type: typ, Payload: jsonstable.MustParse(`{"text":"old","v":1}`)})
+	old, err := r.Decode(session.Event{Type: typ, Payload: jsonstable.MustParse(`{"text":"old","v":1}`)})
 	if err != nil {
 		t.Fatalf("decode v1: %v", err)
 	}
@@ -233,13 +233,13 @@ func TestRegistryMultiVersionCodecsCoexist(t *testing.T) {
 	if old.Version != 1 || old.Value.(notePayload).Text != "v1:old" {
 		t.Fatalf("v1 row = version %d value %+v: the v1 codec did not run", old.Version, old.Value)
 	}
-	current, err := r.Decode(session.SessionEvent{Type: typ, Payload: wire})
+	current, err := r.Decode(session.Event{Type: typ, Payload: wire})
 	if err != nil || current.Unknown || current.Value.(notePayload).Text != "hi" {
 		t.Fatalf("v2 row = %+v %v", current, err)
 	}
 
 	// A version no codec claims is preserved raw rather than reinterpreted.
-	future, err := r.Decode(session.SessionEvent{Type: typ, Payload: jsonstable.MustParse(`{"text":"x","v":3}`)})
+	future, err := r.Decode(session.Event{Type: typ, Payload: jsonstable.MustParse(`{"text":"x","v":3}`)})
 	if err != nil || !future.Unknown || future.Version != 3 {
 		t.Fatalf("v3 row = %+v %v, want Unknown v3", future, err)
 	}

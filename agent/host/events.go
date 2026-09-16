@@ -10,15 +10,15 @@ import (
 
 // Event is one item of a Session's event stream (HST-EVT-1). Every
 // observation of a Session derives from applied commits, so an Event is
-// normally one committed row decoded through the Registry: Module, Version
+// normally one committed event decoded through the Registry: Module, Version
 // and Value are the decoded payload, Unknown reports a type or version this
-// process has no codec for (the row is still delivered). An Event with Err
+// process has no codec for (the event is still delivered). An Event with Err
 // set and a zero Row is a host-level failure of background work (a drive
 // that errored); it is reported here for the same audience but never enters
 // the stream.
 type Event struct {
 	Session session.SessionID
-	Row     session.SessionEvent
+	Row     session.Event
 	Module  extension.ModuleKey
 	Version extension.PayloadVersion
 	Value   any
@@ -38,18 +38,21 @@ func newEventBus(registry *extension.Registry) *eventBus {
 	return &eventBus{registry: registry, subs: make(map[session.SessionID]map[*subscriber]struct{})}
 }
 
-// Committed is writer.CommitObserver: one Event per row, in row order.
-func (b *eventBus) Committed(_ context.Context, sid session.SessionID, rows []session.SessionEvent) {
-	events := make([]Event, 0, len(rows))
-	for _, row := range rows {
-		e := Event{Session: sid, Row: row}
-		decoded, err := b.registry.Decode(row)
-		if err != nil {
-			e.Unknown, e.Err = true, err
-		} else {
-			e.Module, e.Version, e.Value, e.Unknown = decoded.Module, decoded.Version, decoded.Value, decoded.Unknown
+// Committed is writer.CommitObserver: one Event per committed event, in
+// commit order.
+func (b *eventBus) Committed(_ context.Context, sid session.SessionID, commit session.Commit) {
+	var events []Event
+	for _, batch := range commit.Batches {
+		for _, row := range batch.Events {
+			e := Event{Session: sid, Row: row}
+			decoded, err := b.registry.Decode(row)
+			if err != nil {
+				e.Unknown, e.Err = true, err
+			} else {
+				e.Module, e.Version, e.Value, e.Unknown = decoded.Module, decoded.Version, decoded.Value, decoded.Unknown
+			}
+			events = append(events, e)
 		}
-		events = append(events, e)
 	}
 	b.publish(sid, events...)
 }

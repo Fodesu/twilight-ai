@@ -151,17 +151,23 @@ func Example_jsonlPrototype() {
 	close(stage2.release)
 	fmt.Printf("process 1: %v\n", errorsIsOwnershipLost(<-turn2Err))
 
-	// The whole Session is one JSONL file: one event per line, digest-chained.
-	page, err := store2.Read(ctx, session.ReadRequest{SessionID: sid})
+	// The whole Session is one JSONL file: one commit per line, digest-chained.
+	page, err := store2.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
 	if err != nil {
 		panic(err)
+	}
+	var events []session.Event
+	for _, c := range page.Commits {
+		for _, b := range c.Batches {
+			events = append(events, b.Events...)
+		}
 	}
 	raw, err := os.ReadFile(store2.LogPath(sid))
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("log.jsonl: %d lines, chain verified over %d rows\n", strings.Count(string(raw), "\n"), len(page.Events))
-	fmt.Printf("first row: %s; last row: %s\n", page.Events[0].Type, page.Events[len(page.Events)-1].Type)
+	fmt.Printf("log.jsonl: %d lines, chain verified over %d events\n", strings.Count(string(raw), "\n"), len(events))
+	fmt.Printf("first event: %s; last event: %s\n", events[0].Type, events[len(events)-1].Type)
 
 	// Output:
 	// steer: in-2 delivered to turn-1 while its tool call executes
@@ -171,8 +177,8 @@ func Example_jsonlPrototype() {
 	// process 2: took over; 1 executing target disposed
 	// turn-2: completed, disposition finished, attempt 1
 	// process 1: ownership lost
-	// log.jsonl: 41 lines, chain verified over 41 rows
-	// first row: twilight/chatlog/input_submitted; last row: twilight/turn/completed
+	// log.jsonl: 22 lines, chain verified over 41 events
+	// first event: twilight/chatlog/input_submitted; last event: twilight/turn/completed
 }
 
 func protoToolCall(id string) sdk.ModelResult {

@@ -13,8 +13,8 @@ import (
 
 // faultStore wraps a Store so one Append can be made to fail either before
 // the kernel writes (nothing reaches the log) or after it has written (the
-// group is durable but the caller gets an error instead of the rows). Both
-// are "outcome unknown" from the Writer's side; the log tells them apart.
+// commit is durable but the caller gets an error instead of it). Both are
+// "outcome unknown" from the Writer's side; the log tells them apart.
 type faultStore struct {
 	session.Store
 	mu   sync.Mutex
@@ -50,19 +50,19 @@ type faultHandle struct {
 
 var errInjected = errors.New("injected transport failure")
 
-func (h *faultHandle) Append(ctx context.Context, g session.Group) ([]session.SessionEvent, error) {
+func (h *faultHandle) Append(ctx context.Context, p session.Proposal) (session.Commit, error) {
 	switch h.store.take() {
 	case "before":
-		return nil, errInjected
+		return session.Commit{}, errInjected
 	case "invalid":
-		return nil, &session.Error{Code: session.ErrInvalid, Operation: "append", Detail: "injected validation rejection"}
+		return session.Commit{}, &session.Error{Code: session.ErrInvalid, Operation: "append", Detail: "injected validation rejection"}
 	case "after":
-		if _, err := h.Handle.Append(ctx, g); err != nil {
-			return nil, err
+		if _, err := h.Handle.Append(ctx, p); err != nil {
+			return session.Commit{}, err
 		}
-		return nil, errInjected // durable, but the response is lost
+		return session.Commit{}, errInjected // durable, but the response is lost
 	}
-	return h.Handle.Append(ctx, g)
+	return h.Handle.Append(ctx, p)
 }
 
 func TestWriterReconcilesClaimsAfterAppendFailure(t *testing.T) {
@@ -90,14 +90,14 @@ func TestWriterReconcilesClaimsAfterAppendFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			claimID := DeriveClaimID(session.ProtocolVersion1, "s", "c1", set.RefSetDigest)
+			claimID := DeriveClaimID(session.ProtocolVersion2, "s", "c1", set.RefSetDigest)
 			fs := &faultStore{Store: f.store}
 			w, err := OpenWriter(ctx, fs, f.registry, f.admission(), "s", session.OpenOptions{})
 			if err != nil {
 				t.Fatal(err)
 			}
 			group := func(View) (*SemanticGroup, error) {
-				return &SemanticGroup{CommitID: "c1", Events: []TypedEvent{{Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}}}}, nil
+				return &SemanticGroup{CommitID: "c1", Batches: sessionBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}})}, nil
 			}
 			assertClaim := func(want artifact.ClaimState) {
 				t.Helper()
@@ -131,13 +131,13 @@ func TestWriterReconcilesClaimsAfterAppendFailure(t *testing.T) {
 			}
 			if tc.committed {
 				if res, err := w.Commit(ctx, group); err != nil || res.Outcome != CommitAlreadyApplied {
-					t.Fatalf("committed group replay = %+v, %v", res, err)
+					t.Fatalf("committed commit replay = %+v, %v", res, err)
 				}
 				assertClaim(artifact.ClaimActive)
 			} else {
 				res, err := w.Commit(ctx, group)
 				if err != nil || res.Outcome != CommitApplied || res.Claim == nil || res.Claim.ID != nextClaimID(claimID) || res.Claim.State != artifact.ClaimActive {
-					t.Fatalf("unwritten group replay = %+v, %v", res, err)
+					t.Fatalf("unwritten commit replay = %+v, %v", res, err)
 				}
 				assertClaim(artifact.ClaimReleased)
 			}
@@ -146,8 +146,8 @@ func TestWriterReconcilesClaimsAfterAppendFailure(t *testing.T) {
 }
 
 // EXT-WRT-4(b): an Append whose outcome is unknown fails the Writer closed. A
-// reopened Writer replays the same group and the kernel's index answers:
-// AlreadyApplied when the group reached the log, Applied when it did not. In
+// reopened Writer replays the same commit and the kernel's index answers:
+// AlreadyApplied when the commit reached the log, Applied when it did not. In
 // both cases the log stays a valid chain with contiguous Seqs.
 func TestWriterFailsClosedWhenAppendOutcomeUnknown(t *testing.T) {
 	ctx := context.Background()
@@ -176,27 +176,27 @@ func TestWriterFailsClosedWhenAppendOutcomeUnknown(t *testing.T) {
 	if _, err := w1.Commit(ctx, noteGroup("c3", "three")); !errors.Is(err, unknown) {
 		t.Fatalf("writer did not stay failed: %v", err)
 	}
-	if page, _ := base.store.Read(ctx, session.ReadRequest{SessionID: "s"}); len(page.Events) != 2 {
-		t.Fatalf("log has %d rows after the lost-response append, want 2", len(page.Events))
+	if page, _ := base.store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"}); len(page.Commits) != 2 {
+		t.Fatalf("log has %d commits after the lost-response append, want 2", len(page.Commits))
 	}
 
-	// Reopen: the replay is answered by the kernel, the next group continues
+	// Reopen: the replay is answered by the kernel, the next commit continues
 	// from the real head.
 	_ = w1.Close(ctx)
 	w2 := open(true)
 	res, err := w2.Commit(ctx, noteGroup("c2", "two"))
-	if err != nil || res.Outcome != CommitAlreadyApplied || len(res.Events) != 1 || res.Events[0].Seq != 1 {
-		t.Fatalf("replay of the durable group = %+v %v, want already_applied at seq 1", res, err)
+	if err != nil || res.Outcome != CommitAlreadyApplied || res.Commit.Seq != 1 {
+		t.Fatalf("replay of the durable commit = %+v %v, want already_applied at seq 1", res, err)
 	}
 	res, err = w2.Commit(ctx, noteGroup("c3", "three"))
-	if err != nil || res.Outcome != CommitApplied || res.Events[0].Seq != 2 {
-		t.Fatalf("next group = %+v %v, want applied at seq 2", res, err)
+	if err != nil || res.Outcome != CommitApplied || res.Commit.Seq != 2 {
+		t.Fatalf("next commit = %+v %v, want applied at seq 2", res, err)
 	}
 	if got := notes(t, w2); len(got) != 3 || got[0] != "one" || got[1] != "two" || got[2] != "three" {
 		t.Fatalf("notes after reopen = %v", got)
 	}
 
-	// Failure before any write: the reopened Writer applies the group.
+	// Failure before any write: the reopened Writer applies the commit.
 	fs.arm("before")
 	if _, err := w2.Commit(ctx, noteGroup("c4", "four")); !errors.Is(err, unknown) {
 		t.Fatalf("commit after pre-write failure = %v, want unknown_outcome", err)
@@ -204,8 +204,8 @@ func TestWriterFailsClosedWhenAppendOutcomeUnknown(t *testing.T) {
 	_ = w2.Close(ctx)
 	w3 := open(true)
 	res, err = w3.Commit(ctx, noteGroup("c4", "four"))
-	if err != nil || res.Outcome != CommitApplied || res.Events[0].Seq != 3 {
-		t.Fatalf("replay of the unwritten group = %+v %v, want applied at seq 3", res, err)
+	if err != nil || res.Outcome != CommitApplied || res.Commit.Seq != 3 {
+		t.Fatalf("replay of the unwritten commit = %+v %v, want applied at seq 3", res, err)
 	}
 
 	// A context error is returned before the kernel writes, so it is a known
@@ -215,20 +215,20 @@ func TestWriterFailsClosedWhenAppendOutcomeUnknown(t *testing.T) {
 	if _, err := w3.Commit(cancelled, noteGroup("c5", "five")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("commit with cancelled ctx = %v, want context.Canceled", err)
 	}
-	if res, err := w3.Commit(ctx, noteGroup("c5", "five")); err != nil || res.Outcome != CommitApplied || res.Events[0].Seq != 4 {
+	if res, err := w3.Commit(ctx, noteGroup("c5", "five")); err != nil || res.Outcome != CommitApplied || res.Commit.Seq != 4 {
 		t.Fatalf("commit after a cancelled attempt = %+v %v, want applied at seq 4", res, err)
 	}
 
-	page, err := base.store.Read(ctx, session.ReadRequest{SessionID: "s"})
-	if err != nil || len(page.Events) != 5 {
-		t.Fatalf("final log = %d rows %v, want 5", len(page.Events), err)
+	page, err := base.store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
+	if err != nil || len(page.Commits) != 5 {
+		t.Fatalf("final log = %d commits %v, want 5", len(page.Commits), err)
 	}
-	for i := range page.Events {
-		if page.Events[i].Seq != session.Seq(i) {
-			t.Fatalf("seq at position %d is %d", i, page.Events[i].Seq)
+	for i := range page.Commits {
+		if page.Commits[i].Seq != session.CommitSeq(i) {
+			t.Fatalf("seq at position %d is %d", i, page.Commits[i].Seq)
 		}
 	}
-	if err := session.ValidateChain(session.ProfileV1(), page.Header, page.Events); err != nil {
-		t.Fatalf("chain after faults: %v", err)
+	if err := session.ValidateLedger(session.ProfileV2(), page.Header, page.Commits); err != nil {
+		t.Fatalf("ledger after faults: %v", err)
 	}
 }

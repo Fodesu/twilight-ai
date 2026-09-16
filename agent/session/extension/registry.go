@@ -50,9 +50,8 @@ type EventDefinition struct {
 	Current  PayloadVersion
 	Codecs   map[PayloadVersion]PayloadCodec
 	Bindings []BindingReferenceDefinition
-	// Ignorable marks purely informational events: rows are written with
-	// session.SessionEvent.Ignorable so readers that do not know the type may
-	// skip them (EXT-PRJ-2).
+	// Ignorable marks purely informational events: a fold that cannot decode
+	// the event's payload version skips it instead of failing (EXT-PRJ-2).
 	Ignorable bool
 }
 
@@ -79,8 +78,12 @@ type ModuleDescriptor struct {
 // Key is the module's registry identity.
 func (m ModuleDescriptor) Key() ModuleKey { return ModuleKey{Source: m.Source, ID: m.ID} }
 
+// DecodedEvent is one ledger event decoded against the registry. Stream is
+// the logical stream the fold read the event from; Decode alone cannot know
+// it, so folds set it after decoding.
 type DecodedEvent struct {
-	Event   session.SessionEvent
+	Stream  session.StreamRef
+	Event   session.Event
 	Module  ModuleKey
 	Version PayloadVersion
 	Value   any
@@ -318,7 +321,7 @@ func (r *Registry) Encode(typ session.EventType, value any) (jsonstable.Value, P
 
 // Decode selects the codec by (EventType, v). Unknown types or versions are
 // returned as Unknown with the raw payload retained (EXT-REG-3).
-func (r *Registry) Decode(e session.SessionEvent) (DecodedEvent, error) {
+func (r *Registry) Decode(e session.Event) (DecodedEvent, error) {
 	out := DecodedEvent{Event: e}
 	module, def, ok := r.LookupEvent(e.Type)
 	if !ok {

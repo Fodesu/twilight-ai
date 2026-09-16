@@ -10,26 +10,26 @@ import (
 
 // recordingObserver keeps every notification in the order it arrived.
 type recordingObserver struct {
-	mu     sync.Mutex
-	groups [][]session.SessionEvent
+	mu      sync.Mutex
+	commits []session.Commit
 }
 
-func (o *recordingObserver) Committed(_ context.Context, _ session.SessionID, rows []session.SessionEvent) {
+func (o *recordingObserver) Committed(_ context.Context, _ session.SessionID, commit session.Commit) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.groups = append(o.groups, append([]session.SessionEvent(nil), rows...))
+	o.commits = append(o.commits, commit)
 }
 
 type panickingObserver struct{}
 
-func (panickingObserver) Committed(context.Context, session.SessionID, []session.SessionEvent) {
+func (panickingObserver) Committed(context.Context, session.SessionID, session.Commit) {
 	panic("observer failed")
 }
 
-// EXT-WRT-7: every applied group reaches the observers once, in commit order,
-// with the sealed rows; rejected and replayed commits notify nothing; a
+// EXT-WRT-7: every applied commit reaches the observers once, in commit order,
+// with the sealed commit; rejected and replayed commits notify nothing; a
 // panicking observer neither fails the Commit nor starves the next observer.
-func TestCommitObserversSeeAppliedGroupsInOrder(t *testing.T) {
+func TestCommitObserversSeeAppliedCommitsInOrder(t *testing.T) {
 	f := newCacheFixture(t)
 	rec := &recordingObserver{}
 	w := f.open(t, WritersConfig{Observers: []CommitObserver{panickingObserver{}, rec}})
@@ -38,14 +38,16 @@ func TestCommitObserversSeeAppliedGroupsInOrder(t *testing.T) {
 	f.commit(t, w, "c2", "three")
 	// Replay: already applied, no notification.
 	res, err := w.Commit(context.Background(), func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c1", Events: []TypedEvent{{Type: tpfx("k") + "row", Value: notePayload{Text: "one"}}, {Type: tpfx("k") + "row", Value: notePayload{Text: "two"}}}}, nil
+		return &SemanticGroup{CommitID: "c1", Batches: sessionBatch(
+			TypedEvent{Type: tpfx("k") + "row", Value: notePayload{Text: "one"}},
+			TypedEvent{Type: tpfx("k") + "row", Value: notePayload{Text: "two"}})}, nil
 	})
 	if err != nil || res.Outcome != CommitAlreadyApplied {
 		t.Fatalf("replay = %v %v", res.Outcome, err)
 	}
 	// Rejected: unknown event type, no notification.
 	res, err = w.Commit(context.Background(), func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c3", Events: []TypedEvent{{Type: "twilight/nope/x", Value: notePayload{Text: "x"}}}}, nil
+		return &SemanticGroup{CommitID: "c3", Batches: sessionBatch(TypedEvent{Type: "twilight/nope/x", Value: notePayload{Text: "x"}})}, nil
 	})
 	if err != nil || res.Outcome != CommitInvalid {
 		t.Fatalf("invalid = %v %v", res.Outcome, err)
@@ -53,25 +55,21 @@ func TestCommitObserversSeeAppliedGroupsInOrder(t *testing.T) {
 
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	if len(rec.groups) != 2 {
-		t.Fatalf("notifications = %d, want 2", len(rec.groups))
+	if len(rec.commits) != 2 {
+		t.Fatalf("notifications = %d, want 2", len(rec.commits))
 	}
-	rows := f.rows(t)
-	var seq session.Seq
-	for i, g := range rec.groups {
-		for _, r := range g {
-			if r.Seq != seq || r.Digest != rows[seq].Digest || r.CommitID != rows[seq].CommitID {
-				t.Fatalf("notification %d row %d = %+v, want log row %+v", i, r.Seq, r, rows[seq])
-			}
-			seq++
+	commits := f.commits(t)
+	for i, c := range rec.commits {
+		if c.Seq != commits[i].Seq || c.Digest != commits[i].Digest || c.CommitID != commits[i].CommitID {
+			t.Fatalf("notification %d = %+v, want log commit %+v", i, c, commits[i])
 		}
 	}
-	if seq != session.Seq(len(rows)) {
-		t.Fatalf("observed %d rows, log has %d", seq, len(rows))
+	if len(rec.commits) != len(commits) {
+		t.Fatalf("observed %d commits, log has %d", len(rec.commits), len(commits))
 	}
 }
 
-// Concurrent committers are notified in the order their groups landed: the
+// Concurrent committers are notified in the order their commits landed: the
 // observer sees a strictly increasing Seq sequence.
 func TestCommitObserverOrderUnderConcurrency(t *testing.T) {
 	f := newCacheFixture(t)
@@ -88,12 +86,12 @@ func TestCommitObserverOrderUnderConcurrency(t *testing.T) {
 	wg.Wait()
 	rec.mu.Lock()
 	defer rec.mu.Unlock()
-	if len(rec.groups) != 16 {
-		t.Fatalf("notifications = %d, want 16", len(rec.groups))
+	if len(rec.commits) != 16 {
+		t.Fatalf("notifications = %d, want 16", len(rec.commits))
 	}
-	for i := 1; i < len(rec.groups); i++ {
-		if rec.groups[i][0].Seq <= rec.groups[i-1][0].Seq {
-			t.Fatalf("notification %d (seq %d) arrived after seq %d", i, rec.groups[i][0].Seq, rec.groups[i-1][0].Seq)
+	for i := 1; i < len(rec.commits); i++ {
+		if rec.commits[i].Seq <= rec.commits[i-1].Seq {
+			t.Fatalf("notification %d (seq %d) arrived after seq %d", i, rec.commits[i].Seq, rec.commits[i-1].Seq)
 		}
 	}
 }

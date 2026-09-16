@@ -49,10 +49,11 @@ func testCreation(t *testing.T, factory Factory) {
 	if snap.State.Owner != "t1" || snap.State.Attempt != 1 || len(snap.State.PendingInputs) != 1 || snap.SchemaVersion != run.SchemaVersion1 {
 		t.Fatalf("created state = %+v", snap.State)
 	}
-	// Position is the Seq of the Run's last row: the start group is submitted
-	// (0), started (1), delivered (2), created (3), accepted (4).
-	if snap.Position != h.head().Next-1 || snap.Position != 4 {
-		t.Fatalf("position = %d, want %d (last row of the start group)", snap.Position, h.head().Next-1)
+	// Position is the StreamSeq of the Run's last event: the start group's run
+	// batch is created (0), accepted (1). The session-stream started and
+	// delivered events of the same commit do not move it.
+	if snap.Position != 1 {
+		t.Fatalf("position = %d, want 1 (last run event of the start group)", snap.Position)
 	}
 	// Unknown RunID.
 	if _, err := h.rt.Load(h.ctx, sid, "nope"); !errors.Is(err, run.ErrRunNotFound) {
@@ -104,11 +105,11 @@ func testReplayAndBase(t *testing.T, factory Factory) {
 		t.Fatal("first accept not accepted")
 	}
 	again := h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-2"), 0, run.NextStep(input("in-2")))
-	if again.Status != run.CommitAlreadyApplied || len(again.Events) != len(first.Events) || again.Events[0].Digest != first.Events[0].Digest {
+	if again.Status != run.CommitAlreadyApplied || len(again.Events) != len(first.Events) || again.Snapshot.Head != first.Snapshot.Head {
 		t.Fatalf("replay = %+v", again)
 	}
-	if h.head().Next != first.Snapshot.Head.Next {
-		t.Fatal("replay appended rows")
+	if h.head() != first.Snapshot.Head {
+		t.Fatal("replay appended commits")
 	}
 	// Prepare is a hard CAS on the Run's own position.
 	snap := h.load("r1")
@@ -228,21 +229,16 @@ func testGroupComposition(t *testing.T, factory Factory) {
 	before := h.head()
 	res := h.mustCommit("r1", run.DeriveSettlementCommandID("r1", step, "", claim), 0,
 		run.SubmitModelResult{StepID: step, Result: result, Calls: bindings})
-	if h.head().Next != before.Next+session.Seq(len(res.Events)) {
-		t.Fatal("one command did not produce exactly one group")
-	}
-	for i, e := range res.Events {
-		if e.CommitID != session.CommitID(run.DeriveSettlementCommandID("r1", step, "", claim)) || int(e.Index) != i || e.Last != (i == len(res.Events)-1) {
-			t.Fatalf("row %d markers = %+v", i, e)
-		}
+	if h.head().Next != before.Next+1 {
+		t.Fatal("one command did not produce exactly one commit")
 	}
 	types := eventTypes(res.Events)
 	want := []session.EventType{runmod.Prefix + "model_step_completed", runmod.Prefix + "tool_step_opened", chatlog.TypeAssistant}
 	if strings.Join(asStrings(types), ",") != strings.Join(asStrings(want), ",") {
-		t.Fatalf("group events = %v, want %v", types, want)
+		t.Fatalf("commit events = %v, want %v", types, want)
 	}
-	if res.Snapshot.Position != res.Events[1].Seq {
-		t.Fatalf("position = %d, want the last run row %d", res.Snapshot.Position, res.Events[1].Seq)
+	if rec := h.record("r1"); res.Snapshot.Position != rec.Snapshot.Position {
+		t.Fatalf("position = %d, want the record's last stream position %d", res.Snapshot.Position, rec.Snapshot.Position)
 	}
 	// The companion's SourceDigest equals the fact's ResultDigest.
 	var resultDigest es.Digest
@@ -320,11 +316,13 @@ func testAdmission(t *testing.T, factory Factory) {
 	if len(h.load("r1").State.PendingInputs) != 1 {
 		t.Fatal("refused commit changed the Run")
 	}
-	// Registered binding: the claim is Active once the group is committed.
-	res := h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-2"), 0, run.NextStep(input("in-2")), attach("b1"))
-	claimID := writer.DeriveClaimID(session.ProtocolVersion1, sid, res.Events[0].CommitID, mustSet(t, h, "b1").RefSetDigest)
+	// Registered binding: the claim is Active once the commit is applied.
+	cmdID := run.DeriveInputCommandID("r1", "in-2")
+	h.mustCommit("r1", cmdID, 0, run.NextStep(input("in-2")), attach("b1"))
+	commitID := session.CommitID(cmdID)
+	claimID := writer.DeriveClaimID(session.ProtocolVersion2, sid, commitID, mustSet(t, h, "b1").RefSetDigest)
 	claim, ok, err := h.ledger.LookupClaim(h.ctx, claimID)
-	if err != nil || !ok || claim.State != artifact.ClaimActive || claim.Owner != writer.CommitOwner(sid, res.Events[0].CommitID) {
+	if err != nil || !ok || claim.State != artifact.ClaimActive || claim.Owner != writer.CommitOwner(sid, commitID) {
 		t.Fatalf("claim = %+v ok=%v err=%v", claim, ok, err)
 	}
 }
@@ -455,8 +453,11 @@ func testIsolation(t *testing.T, factory Factory) {
 	p1 := h.load("r1").Position
 	h.prepare("r2", false)
 	h.submitInputs(input("noise"))
-	h.mustApply(writer.SemanticGroup{CommitID: "turn-noise", Events: []writer.TypedEvent{{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
-		Value: turn.StartedPayload{TurnID: "t9", Preset: turn.PresetRef{ID: "b", Digest: "sha256:b"}, Companion: turn.CompanionV1Version}}}})
+	h.mustApply(writer.SemanticGroup{CommitID: "turn-noise", Batches: []writer.TypedBatch{{
+		Stream: session.StreamRef{Kind: session.StreamKindSession},
+		Events: []writer.TypedEvent{{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
+			Value: turn.StartedPayload{TurnID: "t9", Preset: turn.PresetRef{ID: "b", Digest: "sha256:b"}, Companion: turn.CompanionV1Version}}},
+	}}})
 	if h.load("r1").Position != p1 {
 		t.Fatal("r2, chatlog or turn writes moved r1")
 	}
@@ -521,19 +522,50 @@ func testTakeover(t *testing.T, factory Factory) {
 	if ts.Calls[1].Status != run.ToolPending {
 		t.Fatalf("pending sibling = %+v, want untouched", ts.Calls[1])
 	}
-	// The Unknown travels with its chatlog tool_result in one group.
+	// The Unknown travels with its chatlog tool_result in one commit.
 	rec := h.record("r2")
-	var unknownSeq session.Seq
+	found := false
 	for _, e := range rec.Events {
 		if strings.HasSuffix(string(e.Type), "tool_call_failed") {
-			unknownSeq = e.Seq
+			found = true
 		}
 	}
-	page, err := h.store.Read(h.ctx, session.ReadRequest{SessionID: sid, From: unknownSeq})
-	if err != nil || len(page.Events) < 2 || page.Events[1].Type != chatlog.TypeToolResult || page.Events[1].CommitID != page.Events[0].CommitID {
-		t.Fatalf("rows after the Unknown = %v %v", eventTypes(page.Events), err)
+	if !found {
+		t.Fatal("record of r2 has no tool_call_failed")
 	}
-	decoded, _ := h.registry.Decode(page.Events[1])
+	page, err := h.store.ReadCommits(h.ctx, session.CommitReadRequest{SessionID: sid})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var toolResult *session.Event
+	for i := range page.Commits {
+		c := &page.Commits[i]
+		hasUnknown := false
+		for _, b := range c.Batches {
+			if b.Stream.Kind != session.StreamKindRun {
+				continue
+			}
+			for _, e := range b.Events {
+				if strings.HasSuffix(string(e.Type), "tool_call_failed") {
+					hasUnknown = true
+				}
+			}
+		}
+		if !hasUnknown {
+			continue
+		}
+		for bi := range c.Batches {
+			for ei := range c.Batches[bi].Events {
+				if c.Batches[bi].Events[ei].Type == chatlog.TypeToolResult {
+					toolResult = &c.Batches[bi].Events[ei]
+				}
+			}
+		}
+	}
+	if toolResult == nil {
+		t.Fatal("no tool_result in the Unknown's commit")
+	}
+	decoded, _ := h.registry.Decode(*toolResult)
 	if tr := decoded.Value.(chatlog.ToolResultPayload).ToolResult; tr.Status != chatlog.ToolUnknown || tr.SourceDigest != "" {
 		t.Fatalf("tool_result = %+v", tr)
 	}

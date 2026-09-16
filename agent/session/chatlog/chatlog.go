@@ -273,7 +273,7 @@ func DigestCheckpoint(p *CheckpointCreatedPayload) (es.Digest, error) {
 	}
 	return digestDomain(TypeCheckpointCreated, struct {
 		CheckpointID      CheckpointID      `json:"checkpointId"`
-		CoveredThrough    session.Seq       `json:"coveredThrough"`
+		CoveredThrough    uint64            `json:"coveredThrough"`
 		BaseContextDigest es.Digest         `json:"baseContextDigest"`
 		SummaryID         SummaryID         `json:"summaryId"`
 		SummaryDigest     es.Digest         `json:"summaryDigest"`
@@ -332,10 +332,11 @@ type SummaryPayload struct {
 }
 
 // CheckpointCreatedPayload compacts the context (CHT-EVT-3): entries up to
-// CoveredThrough are replaced by the summary plus the Retained subset.
+// CoveredThrough — a Context projection position (Entry.Seq) — are replaced by
+// the summary plus the Retained subset.
 type CheckpointCreatedPayload struct {
 	CheckpointID      CheckpointID      `json:"checkpointId"`
-	CoveredThrough    session.Seq       `json:"coveredThrough"`
+	CoveredThrough    uint64            `json:"coveredThrough"`
 	BaseContextDigest es.Digest         `json:"baseContextDigest"`
 	SummaryID         SummaryID         `json:"summaryId"`
 	SummaryDigest     es.Digest         `json:"summaryDigest"`

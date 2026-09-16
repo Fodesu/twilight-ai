@@ -193,15 +193,20 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 
 func (c *Coordinator) startGroup(commitID session.CommitID, turnID TurnID, inputIDs []chatlog.InputID, req StartRequest, facts []run.Fact, now int64) writer.SemanticGroup {
 	group := writer.SemanticGroup{CommitID: commitID}
-	group.Events = append(group.Events, writer.TypedEvent{Type: TypeStarted, RecordedAtUnixMilli: now,
-		Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, Preset: req.Preset, Companion: req.Companion}})
+	sessionEvents := []writer.TypedEvent{{Type: TypeStarted, RecordedAtUnixMilli: now,
+		Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, Preset: req.Preset, Companion: req.Companion}}}
 	for _, id := range inputIDs {
-		group.Events = append(group.Events, writer.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: now,
+		sessionEvents = append(sessionEvents, writer.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: now,
 			Value: chatlog.InputDeliveredPayload{InputID: id, TurnID: chatlog.TurnID(turnID)}})
 	}
 	runID := DeriveRunID(req.Ref.SessionID, turnID, 1)
+	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		group.Events = append(group.Events, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: now, Value: runmod.Event{RunID: runID, Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: now, Value: runmod.Event{RunID: runID, Fact: f}})
+	}
+	group.Batches = []writer.TypedBatch{
+		{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: sessionEvents},
+		{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: string(runID)}, Events: runEvents},
 	}
 	return group
 }
@@ -366,10 +371,13 @@ func (c *Coordinator) Retry(ctx context.Context, req RetryRequest) (TurnResponse
 		if err != nil {
 			return nil, err
 		}
-		group := &writer.SemanticGroup{CommitID: commitID}
+		runEvents := make([]writer.TypedEvent, 0, len(facts))
 		for _, f := range facts {
-			group.Events = append(group.Events, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: now, Value: runmod.Event{RunID: runID, Fact: f}})
+			runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: now, Value: runmod.Event{RunID: runID, Fact: f}})
 		}
+		group := &writer.SemanticGroup{CommitID: commitID, Batches: []writer.TypedBatch{
+			{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: string(runID)}, Events: runEvents},
+		}}
 		return group, nil
 	})
 	if err != nil {
@@ -443,9 +451,11 @@ func (c *Coordinator) Settle(ctx context.Context, req SettleRequest) (TurnRespon
 			return nil, fmt.Errorf("%w: turn %s is not attempt_failed", ErrConflict, turnID)
 		}
 		runID = view.LastAttempt().RunID
-		return &writer.SemanticGroup{CommitID: SettleCommitID(sid, turnID, runID), Events: []writer.TypedEvent{{
-			Type: TypeFailed, RecordedAtUnixMilli: now,
-			Value: FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementFailed, FailureClass: req.FailureClass}}}}, nil
+		return &writer.SemanticGroup{CommitID: SettleCommitID(sid, turnID, runID), Batches: []writer.TypedBatch{{
+			Stream: session.StreamRef{Kind: session.StreamKindSession},
+			Events: []writer.TypedEvent{{
+				Type: TypeFailed, RecordedAtUnixMilli: now,
+				Value: FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementFailed, FailureClass: req.FailureClass}}}}}}, nil
 	})
 	if err != nil {
 		return TurnResponse{}, err

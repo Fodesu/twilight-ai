@@ -90,9 +90,10 @@ func TestAppModuleSharesTheSessionStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
-		return &writer.SemanticGroup{CommitID: "audit/n1", Events: []writer.TypedEvent{{
-			Type: auditNoteType, RecordedAtUnixMilli: 1, Value: auditNote{InputID: "in-1", Text: "flagged"},
-		}}}, nil
+		return &writer.SemanticGroup{CommitID: "audit/n1",
+			Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{{
+				Type: auditNoteType, RecordedAtUnixMilli: 1, Value: auditNote{InputID: "in-1", Text: "flagged"},
+			}}}}}, nil
 	})
 	if err != nil || res.Outcome != writer.CommitApplied {
 		t.Fatalf("audit commit = %+v %v", res, err)
@@ -131,20 +132,24 @@ func TestAppModuleSharesTheSessionStream(t *testing.T) {
 		t.Fatalf("turn status = %s", tsurf.Turns["t1"].Status)
 	}
 
-	// Both sources coexist in one stream.
-	page, err := h.Store.Read(ctx, session.ReadRequest{SessionID: sid})
+	// Both sources coexist in one commit ledger.
+	page, err := h.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var app, core int
-	for _, e := range page.Events {
-		switch {
-		case strings.HasPrefix(string(e.Type), string(extension.ModulePrefix(auditSource, auditID))):
-			app++
-		case strings.HasPrefix(string(e.Type), "twilight/"):
-			core++
-		default:
-			t.Fatalf("unexpected type %s", e.Type)
+	for _, c := range page.Commits {
+		for _, b := range c.Batches {
+			for _, e := range b.Events {
+				switch {
+				case strings.HasPrefix(string(e.Type), string(extension.ModulePrefix(auditSource, auditID))):
+					app++
+				case strings.HasPrefix(string(e.Type), "twilight/"):
+					core++
+				default:
+					t.Fatalf("unexpected type %s", e.Type)
+				}
+			}
 		}
 	}
 	if app != 1 || core < 3 {

@@ -69,7 +69,7 @@ func counterModule(c *foldCounter) extension.ModuleDescriptor {
 
 func mustRegistry(t *testing.T, c *foldCounter) *extension.Registry {
 	t.Helper()
-	r, err := extension.BuildRegistry(session.ProtocolVersion1, counterModule(c))
+	r, err := extension.BuildRegistry(session.ProtocolVersion2, counterModule(c))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestProjectionCacheSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := first.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid}); err != nil {
+	if _, err := first.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: sid}); err != nil {
 		t.Fatal(err)
 	}
 	writers := writer.NewWriters(first, mustRegistry(t, counter), writer.Admission{}, session.OpenOptions{},
@@ -170,7 +170,8 @@ func TestProjectionCacheSurvivesRestart(t *testing.T) {
 	for i, text := range []string{"a", "b", "c"} {
 		res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
 			return &writer.SemanticGroup{CommitID: session.CommitID(string(rune('1' + i))),
-				Events: []writer.TypedEvent{{Type: "twilight/z/row", Value: rowPayload{Text: text}}}}, nil
+				Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession},
+					Events: []writer.TypedEvent{{Type: "twilight/z/row", Value: rowPayload{Text: text}}}}}}, nil
 		})
 		if err != nil || res.Outcome != writer.CommitApplied {
 			t.Fatalf("commit %d: outcome=%s err=%v", i, res.Outcome, err)

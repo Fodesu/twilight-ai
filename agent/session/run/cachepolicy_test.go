@@ -13,7 +13,7 @@ import (
 // deployment's, not a constant of this module.
 func TestWriterCachePolicyExcludesTheMachineProjection(t *testing.T) {
 	other := extension.ProjectionID("twilight/chatlog/surface")
-	for _, every := range []session.Seq{1, extension.DefaultCacheEvery, 4096} {
+	for _, every := range []session.CommitSeq{1, extension.DefaultCacheEvery, 4096} {
 		policy := WriterCachePolicy(every)
 		// The interval has elapsed for any of these, so only the exclusion can
 		// decline.
@@ -35,9 +35,9 @@ func TestWriterCachePolicyExcludesTheMachineProjection(t *testing.T) {
 func TestWriterCachePolicyHonoursTheInterval(t *testing.T) {
 	other := extension.ProjectionID("twilight/chatlog/surface")
 	cases := []struct {
-		every  session.Seq
-		head   session.Seq
-		cached session.Seq
+		every  session.CommitSeq
+		head   session.CommitSeq
+		cached session.CommitSeq
 		want   bool
 	}{
 		{every: 8, head: 7, cached: 0, want: false},

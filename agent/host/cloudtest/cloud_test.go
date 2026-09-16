@@ -252,22 +252,28 @@ func newObserver(t *testing.T, root string) *observer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module, runmod.Module, turn.Module)
+	registry, err := extension.BuildRegistry(session.ProtocolVersion2, chatlog.Module, runmod.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return &observer{t: t, store: store, registry: registry, reader: extension.NewProjectionReader(store, registry, nil)}
 }
 
-func (o *observer) rows() []session.SessionEvent {
-	page, err := o.store.Read(context.Background(), session.ReadRequest{SessionID: sid})
+func (o *observer) rows() []session.Event {
+	page, err := o.store.ReadCommits(context.Background(), session.CommitReadRequest{SessionID: sid})
 	if err != nil {
 		if session.IsCode(err, session.ErrNotFound) {
 			return nil
 		}
 		o.t.Fatalf("read: %v", err)
 	}
-	return page.Events
+	var rows []session.Event
+	for _, c := range page.Commits {
+		for _, b := range c.Batches {
+			rows = append(rows, b.Events...)
+		}
+	}
+	return rows
 }
 
 func (o *observer) has(typ session.EventType) bool {

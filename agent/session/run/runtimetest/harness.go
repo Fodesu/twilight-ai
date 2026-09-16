@@ -64,7 +64,7 @@ type harness struct {
 
 func newHarness(t testing.TB, f Fixture) *harness {
 	t.Helper()
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module, runmod.Module, turn.Module)
+	registry, err := extension.BuildRegistry(session.ProtocolVersion2, chatlog.Module, runmod.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func newHarness(t testing.TB, f Fixture) *harness {
 	h := &harness{t: t, ctx: context.Background(), fixture: f, store: f.Store, registry: registry, bindings: bindings,
 		ledger: artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings}), frozen: runmod.FrozenValuesInMemory(),
 		cache: extension.NewMemoryProjectionCache(), clock: &clock{now: time.Unix(1_000_000, 0)}}
-	if _, err := f.Store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid}); err != nil {
+	if _, err := f.Store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: sid}); err != nil {
 		t.Fatal(err)
 	}
 	h.open()
@@ -115,15 +115,15 @@ func (h *harness) writer() writer.Writer {
 
 func (h *harness) head() session.Head {
 	h.t.Helper()
-	page, err := h.store.Read(h.ctx, session.ReadRequest{SessionID: sid, From: ^session.Seq(0) >> 1})
+	page, err := h.store.ReadCommits(h.ctx, session.CommitReadRequest{SessionID: sid, From: ^session.CommitSeq(0) >> 1})
 	if err != nil {
 		h.fatal(err)
 	}
 	return page.Head
 }
 
-// mustApply commits a typed group through the Writer and returns its rows.
-func (h *harness) mustApply(group writer.SemanticGroup) []session.SessionEvent {
+// mustApply commits a typed group through the Writer and returns its events.
+func (h *harness) mustApply(group writer.SemanticGroup) []session.Event {
 	h.t.Helper()
 	res, err := h.writer().Commit(h.ctx, func(writer.View) (*writer.SemanticGroup, error) { return &group, nil })
 	if err != nil {
@@ -132,7 +132,16 @@ func (h *harness) mustApply(group writer.SemanticGroup) []session.SessionEvent {
 	if res.Outcome != writer.CommitApplied {
 		h.fatal(fmt.Sprintf("append %s: %s %s", group.CommitID, res.Outcome, res.Detail))
 	}
-	return res.Events
+	return flattenCommit(res.Commit)
+}
+
+// flattenCommit returns the commit's events in batch order.
+func flattenCommit(c session.Commit) []session.Event {
+	var out []session.Event
+	for _, b := range c.Batches {
+		out = append(out, b.Events...)
+	}
+	return out
 }
 
 func input(id string) run.AgentInput {
@@ -144,9 +153,10 @@ func (h *harness) submitInputs(inputs ...run.AgentInput) {
 	h.t.Helper()
 	for _, in := range inputs {
 		h.seq++
-		h.mustApply(writer.SemanticGroup{CommitID: session.CommitID(fmt.Sprintf("submitted/%s/%d", in.ID, h.seq)), Events: []writer.TypedEvent{{
-			Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: 1,
-			Value: chatlog.InputSubmittedPayload{InputID: chatlog.InputID(in.ID), Content: in.Payload, SubmittedAtUnixMilli: 1}}}})
+		h.mustApply(writer.SemanticGroup{CommitID: session.CommitID(fmt.Sprintf("submitted/%s/%d", in.ID, h.seq)),
+			Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{{
+				Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: 1,
+				Value: chatlog.InputSubmittedPayload{InputID: chatlog.InputID(in.ID), Content: in.Payload, SubmittedAtUnixMilli: 1}}}}}})
 	}
 }
 
@@ -167,18 +177,25 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	for i, in := range inputs {
 		ids[i] = chatlog.InputID(in.ID)
 	}
+	var sessionEvents []writer.TypedEvent
 	if attempt == 1 {
-		group.Events = append(group.Events, writer.TypedEvent{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
+		sessionEvents = append(sessionEvents, writer.TypedEvent{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
 			Value: turn.StartedPayload{TurnID: turnID, InputIDs: ids, Preset: turn.PresetRef{ID: "b", Digest: "sha256:b"},
 				Companion: turn.CompanionV1Version}})
 		for _, id := range ids {
-			group.Events = append(group.Events, writer.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: 1,
+			sessionEvents = append(sessionEvents, writer.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: 1,
 				Value: chatlog.InputDeliveredPayload{InputID: id, TurnID: chatlog.TurnID(turnID)}})
 		}
 	}
+	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		group.Events = append(group.Events, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: 1, Value: runmod.Event{RunID: runID, Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: 1, Value: runmod.Event{RunID: runID, Fact: f}})
 	}
+	group.Batches = []writer.TypedBatch{}
+	if len(sessionEvents) > 0 {
+		group.Batches = append(group.Batches, writer.TypedBatch{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: sessionEvents})
+	}
+	group.Batches = append(group.Batches, writer.TypedBatch{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: string(runID)}, Events: runEvents})
 	return group
 }
 
@@ -393,10 +410,10 @@ func (h *harness) machine() runmod.Machine {
 	return state.(runmod.Machine)
 }
 
-func eventTypes(rows []session.SessionEvent) []session.EventType {
-	out := make([]session.EventType, len(rows))
-	for i := range rows {
-		out[i] = rows[i].Type
+func eventTypes(events []session.Event) []session.EventType {
+	out := make([]session.EventType, len(events))
+	for i := range events {
+		out[i] = events[i].Type
 	}
 	return out
 }

@@ -1,6 +1,6 @@
 // Package sessiontest is the Store-parameterized conformance suite of the
-// Session kernel (agent-session.md section 7). Memory and durable adapters run
-// the same suite.
+// Session kernel (agent-session.md section 7). Memory and durable adapters
+// run the same suite.
 package sessiontest
 
 import (
@@ -23,6 +23,7 @@ type Factory func(t *testing.T) Fixture
 func Run(t *testing.T, factory Factory) {
 	t.Helper()
 	t.Run("wire", func(t *testing.T) { testWire(t, factory(t)) })
+	t.Run("streams", func(t *testing.T) { testStreams(t, factory(t)) })
 	t.Run("ownership", func(t *testing.T) { testOwnership(t, factory(t)) })
 	t.Run("append", func(t *testing.T) { testAppend(t, factory(t)) })
 	t.Run("crash", func(t *testing.T) { testCrashTail(t, factory(t)) })
@@ -33,7 +34,7 @@ func Run(t *testing.T, factory Factory) {
 
 func create(t *testing.T, store session.Store, sid session.SessionID) session.SessionHeader {
 	t.Helper()
-	h, err := store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1})
+	h, err := store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: sid, CreatedAtUnixMilli: 1})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -49,31 +50,42 @@ func open(t *testing.T, store session.Store, sid session.SessionID, takeover boo
 	return w
 }
 
-func ev(typ, payload string) session.UncommittedEvent {
-	return session.UncommittedEvent{Type: session.EventType(typ), Payload: jsonstable.MustParse(payload), RecordedAtUnixMilli: 1}
+func sessionStream() session.StreamRef { return session.StreamRef{Kind: session.StreamKindSession} }
+
+func runStream(id string) session.StreamRef {
+	return session.StreamRef{Kind: session.StreamKindRun, ID: id}
 }
 
-func appendGroup(t *testing.T, w session.Handle, id string, events ...session.UncommittedEvent) []session.SessionEvent {
+// batch builds one single-event batch for stream.
+func batch(stream session.StreamRef, typ, payload string) session.StreamBatch {
+	return session.StreamBatch{Stream: stream, Events: []session.Event{
+		{Type: session.EventType(typ), Payload: jsonstable.MustParse(payload), RecordedAtUnixMilli: 1},
+	}}
+}
+
+// appendCommit appends one commit and returns it sealed.
+func appendCommit(t *testing.T, w session.Handle, id string, batches ...session.StreamBatch) session.Commit {
 	t.Helper()
-	rows, err := w.Append(context.Background(), session.Group{CommitID: session.CommitID(id), Events: events})
+	c, err := w.Append(context.Background(), session.Proposal{CommitID: session.CommitID(id), Batches: batches})
 	if err != nil {
 		t.Fatalf("append %s: %v", id, err)
 	}
-	return rows
+	return c
 }
 
-// SES-WIR-1/2/3: contiguous Seq, group Index/Last, unique CommitID, canonical
-// payload, chain rooted at the header, one version per stream.
+// SES-WIR-1/2/3: contiguous CommitSeq, one CommitID per commit, unique
+// CommitID, canonical payload, the digest chain rooted at the header, one
+// protocol version per stream.
 func testWire(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	h := create(t, f.Store, "s")
-	if h.ProtocolVersion != session.ProtocolVersion1 || h.HeaderDigest == "" {
+	if h.ProtocolVersion != session.ProtocolVersion2 || h.HeaderDigest == "" {
 		t.Fatalf("header = %+v", h)
 	}
-	if again, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", CreatedAtUnixMilli: 1}); err != nil || again.HeaderDigest != h.HeaderDigest {
+	if again, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: "s", CreatedAtUnixMilli: 1}); err != nil || again.HeaderDigest != h.HeaderDigest {
 		t.Fatalf("identical create is not idempotent: %+v %v", again, err)
 	}
-	if _, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", CreatedAtUnixMilli: 2}); !session.IsCode(err, session.ErrConflict) {
+	if _, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion2, SessionID: "s", CreatedAtUnixMilli: 2}); !session.IsCode(err, session.ErrConflict) {
 		t.Fatalf("different create = %v, want conflict", err)
 	}
 	if _, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: 9, SessionID: "v9"}); !session.IsCode(err, session.ErrUnsupportedProfile) {
@@ -83,33 +95,99 @@ func testWire(t *testing.T, f Fixture) {
 	if head := w.Head(); head.Next != 0 || head.Digest != h.HeaderDigest {
 		t.Fatalf("empty head = %+v", head)
 	}
-	g1 := appendGroup(t, w, "c1", ev("twilight/x/a", `{"a":1}`), ev("twilight/y/b", `{"b":2}`))
-	g2 := appendGroup(t, w, "c2", ev("twilight/x/c", `{}`))
-	if g1[0].Seq != 0 || g1[1].Seq != 1 || g2[0].Seq != 2 {
-		t.Fatalf("seq not contiguous: %v %v", g1, g2)
+	c1 := appendCommit(t, w, "c1",
+		session.StreamBatch{Stream: sessionStream(), Events: []session.Event{
+			{Type: "twilight/x/a", Payload: jsonstable.MustParse(`{"a":1}`), RecordedAtUnixMilli: 1},
+			{Type: "twilight/y/b", Payload: jsonstable.MustParse(`{"b":2}`), RecordedAtUnixMilli: 1},
+		}})
+	c2 := appendCommit(t, w, "c2", batch(sessionStream(), "twilight/x/c", `{}`))
+	if c1.Seq != 0 || c2.Seq != 1 {
+		t.Fatalf("seq not contiguous: %v %v", c1.Seq, c2.Seq)
 	}
-	if g1[0].Index != 0 || g1[0].Last || g1[1].Index != 1 || !g1[1].Last || !g2[0].Last {
-		t.Fatalf("group markers wrong: %+v %+v", g1, g2)
+	if c1.CommitID != "c1" || c2.CommitID != "c2" || c1.Epoch != 1 {
+		t.Fatalf("commit identity = %+v %+v", c1, c2)
 	}
-	if g1[0].CommitID != "c1" || g1[1].CommitID != "c1" {
-		t.Fatal("rows of one append must share CommitID")
+	if c1.Digest == "" || c1.PrevDigest != h.HeaderDigest || c2.PrevDigest != c1.Digest {
+		t.Fatalf("chain stamps = %+v %+v", c1, c2)
 	}
-	if _, err := w.Append(ctx, session.Group{CommitID: "c1", Events: []session.UncommittedEvent{ev("twilight/x/a", `{}`)}}); !session.IsCode(err, session.ErrConflict) {
+	if _, err := w.Append(ctx, session.Proposal{CommitID: "c1", Batches: []session.StreamBatch{batch(sessionStream(), "twilight/x/a", `{}`)}}); !session.IsCode(err, session.ErrConflict) {
 		t.Fatalf("duplicate CommitID = %v, want conflict", err)
 	}
-	if head := w.Head(); head.Next != 3 || head.Digest != g2[0].Digest {
+	if head := w.Head(); head.Next != 2 || head.Digest != c2.Digest {
 		t.Fatalf("head = %+v", head)
 	}
-	// Chain: every digest recomputes from the previous row and the header.
-	page, err := f.Store.Read(ctx, session.ReadRequest{SessionID: "s"})
-	if err != nil || len(page.Events) != 3 {
+	page, err := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
+	if err != nil || len(page.Commits) != 2 {
 		t.Fatalf("read = %+v %v", page, err)
 	}
-	if err := session.ValidateChain(session.ProfileV1(), page.Header, page.Events); err != nil {
-		t.Fatalf("chain: %v", err)
+	if err := session.ValidateLedger(session.ProfileV2(), page.Header, page.Commits); err != nil {
+		t.Fatalf("ledger: %v", err)
 	}
-	if page.Header.HeaderDigest != h.HeaderDigest || page.Head.Next != 3 {
+	if page.Header.HeaderDigest != h.HeaderDigest || page.Head.Next != 2 {
 		t.Fatalf("page header/head = %+v", page)
+	}
+}
+
+// Streams: one commit may span several logical streams atomically; ReadStream
+// returns one stream's events in CommitSeq order with From counting events
+// inside the stream.
+func testStreams(t *testing.T, f Fixture) {
+	ctx := context.Background()
+	create(t, f.Store, "s")
+	w := open(t, f.Store, "s", false)
+	appendCommit(t, w, "c1", batch(sessionStream(), "twilight/chat/a", `{"n":1}`))
+	appendCommit(t, w, "c2",
+		batch(sessionStream(), "twilight/chat/b", `{"n":2}`),
+		session.StreamBatch{Stream: runStream("r7"), Events: []session.Event{
+			{Type: "twilight/run/run_created", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"runId":"r7"}`)},
+			{Type: "twilight/run/model_step_completed", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"runId":"r7"}`)},
+		}})
+	appendCommit(t, w, "c3", batch(runStream("r7"), "twilight/run/run_ended", `{"runId":"r7"}`))
+	appendCommit(t, w, "c4", batch(sessionStream(), "twilight/chat/c", `{"n":3}`))
+
+	page, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Stream: sessionStream()})
+	if err != nil || len(page.Events) != 3 {
+		t.Fatalf("session stream = %d events, err %v", len(page.Events), err)
+	}
+	runs, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Stream: runStream("r7")})
+	if err != nil || len(runs.Events) != 3 {
+		t.Fatalf("run stream = %d events, err %v", len(runs.Events), err)
+	}
+	for i, want := range []string{"twilight/chat/a", "twilight/chat/b", "twilight/chat/c"} {
+		if page.Events[i].Type != session.EventType(want) {
+			t.Fatalf("session event %d = %s, want %s", i, page.Events[i].Type, want)
+		}
+	}
+	for i, want := range []string{"twilight/run/run_created", "twilight/run/model_step_completed", "twilight/run/run_ended"} {
+		if runs.Events[i].Type != session.EventType(want) {
+			t.Fatalf("run event %d = %s, want %s", i, runs.Events[i].Type, want)
+		}
+	}
+	// From counts inside the stream: it skips a stream's own events only.
+	tail, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Stream: sessionStream(), From: 1})
+	if err != nil || len(tail.Events) != 2 || tail.Events[0].Type != "twilight/chat/b" {
+		t.Fatalf("session stream from 1 = %+v, err %v", tail.Events, err)
+	}
+	runTail, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Stream: runStream("r7"), From: 2})
+	if err != nil || len(runTail.Events) != 1 || runTail.Events[0].Type != "twilight/run/run_ended" {
+		t.Fatalf("run stream from 2 = %+v, err %v", runTail.Events, err)
+	}
+	limited, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Stream: sessionStream(), Limit: 2})
+	if err != nil || len(limited.Events) != 2 || !limited.HasMore {
+		t.Fatalf("limited stream = %d more=%v, err %v", len(limited.Events), limited.HasMore, err)
+	}
+	// The spanning commit is whole from every angle: both streams see their
+	// side and ReadCommits returns it with both batches.
+	commits, err := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s", From: 1, Limit: 1})
+	if err != nil || len(commits.Commits) != 1 || len(commits.Commits[0].Batches) != 2 {
+		t.Fatalf("spanning commit = %+v, err %v", commits, err)
+	}
+	// Malformed stream refs are rejected before anything is read.
+	if _, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Stream: session.StreamRef{}}); !session.IsCode(err, session.ErrInvalid) {
+		t.Fatalf("empty stream ref = %v, want invalid", err)
+	}
+	if _, err := f.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: "s", Stream: session.StreamRef{Kind: session.StreamKindRun}}); !session.IsCode(err, session.ErrInvalid) {
+		t.Fatalf("run ref without ID = %v, want invalid", err)
 	}
 }
 
@@ -126,7 +204,7 @@ func testOwnership(t *testing.T, f Fixture) {
 	if _, err := f.Store.Open(ctx, "s", session.OpenOptions{}); !session.IsCode(err, session.ErrOwned) {
 		t.Fatalf("second open = %v, want owned", err)
 	}
-	appendGroup(t, w1, "c1", ev("twilight/x/a", `{}`))
+	appendCommit(t, w1, "c1", batch(sessionStream(), "twilight/x/a", `{}`))
 	if err := w1.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -134,14 +212,14 @@ func testOwnership(t *testing.T, f Fixture) {
 	if w2.Epoch() != 2 {
 		t.Fatalf("epoch after reopen = %d, want 2", w2.Epoch())
 	}
-	if _, err := w1.Append(ctx, session.Group{CommitID: "c2", Events: []session.UncommittedEvent{ev("twilight/x/a", `{}`)}}); !session.IsCode(err, session.ErrOwnershipLost) {
+	if _, err := w1.Append(ctx, session.Proposal{CommitID: "c2", Batches: []session.StreamBatch{batch(sessionStream(), "twilight/x/a", `{}`)}}); !session.IsCode(err, session.ErrOwnershipLost) {
 		t.Fatalf("old writer append = %v, want ownership_lost", err)
 	}
-	page, _ := f.Store.Read(ctx, session.ReadRequest{SessionID: "s"})
-	if len(page.Events) != 1 {
-		t.Fatalf("fenced append wrote rows: %d", len(page.Events))
+	page, _ := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
+	if len(page.Commits) != 1 {
+		t.Fatalf("fenced append wrote commits: %d", len(page.Commits))
 	}
-	appendGroup(t, w2, "c2", ev("twilight/x/a", `{}`))
+	appendCommit(t, w2, "c2", batch(sessionStream(), "twilight/x/a", `{}`))
 	if err := w1.Close(ctx); err != nil {
 		t.Fatalf("closing a superseded writer must be a no-op: %v", err)
 	}
@@ -153,130 +231,76 @@ func testOwnership(t *testing.T, f Fixture) {
 	if w3.Epoch() != w2.Epoch()+1 {
 		t.Fatalf("takeover epoch = %d, want %d", w3.Epoch(), w2.Epoch()+1)
 	}
-	if _, err := w2.Append(ctx, session.Group{CommitID: "late", Events: []session.UncommittedEvent{ev("twilight/x/a", `{}`)}}); !session.IsCode(err, session.ErrOwnershipLost) {
+	if _, err := w2.Append(ctx, session.Proposal{CommitID: "late", Batches: []session.StreamBatch{batch(sessionStream(), "twilight/x/a", `{}`)}}); !session.IsCode(err, session.ErrOwnershipLost) {
 		t.Fatalf("superseded writer append = %v, want ownership_lost", err)
 	}
-	appendGroup(t, w3, "c3", ev("twilight/x/a", `{}`))
-	page, _ = f.Store.Read(ctx, session.ReadRequest{SessionID: "s"})
-	if len(page.Events) != 3 {
-		t.Fatalf("stream after takeover = %d rows, want 3", len(page.Events))
+	appendCommit(t, w3, "c3", batch(sessionStream(), "twilight/x/a", `{}`))
+	page, _ = f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
+	if len(page.Commits) != 3 {
+		t.Fatalf("ledger after takeover = %d commits, want 3", len(page.Commits))
 	}
 	// Read never needs ownership (SES-OWN-4): already exercised above while owned.
 }
 
-// SES-APP-1/3: whole-group visibility and the rejection list, none writing.
+// SES-APP-1/3: whole-commit visibility and the rejection list, none writing.
 func testAppend(t *testing.T, f Fixture) {
 	ctx := context.Background()
-	create(t, f.Store, "s")
+	h := create(t, f.Store, "s")
 	w := open(t, f.Store, "s", false)
 	rejects := []struct {
 		name string
-		g    session.Group
+		p    session.Proposal
 		code session.ErrorCode
 	}{
-		{"empty group", session.Group{CommitID: "c"}, session.ErrInvalid},
-		{"empty commit id", session.Group{Events: []session.UncommittedEvent{ev("twilight/x/a", `{}`)}}, session.ErrInvalid},
-		{"empty type", session.Group{CommitID: "c", Events: []session.UncommittedEvent{ev("", `{}`)}}, session.ErrInvalid},
-		{"non-object payload", session.Group{CommitID: "c", Events: []session.UncommittedEvent{ev("twilight/x/a", `[1]`)}}, session.ErrInvalid},
-		{"empty payload", session.Group{CommitID: "c", Events: []session.UncommittedEvent{{Type: "twilight/x/a"}}}, session.ErrInvalid},
+		{"no batches", session.Proposal{CommitID: "c"}, session.ErrInvalid},
+		{"empty commit id", session.Proposal{Batches: []session.StreamBatch{batch(sessionStream(), "twilight/x/a", `{}`)}}, session.ErrInvalid},
+		{"batch without events", session.Proposal{CommitID: "c", Batches: []session.StreamBatch{{Stream: sessionStream()}}}, session.ErrInvalid},
+		{"empty type", session.Proposal{CommitID: "c", Batches: []session.StreamBatch{{Stream: sessionStream(), Events: []session.Event{{Payload: jsonstable.MustParse(`{}`), RecordedAtUnixMilli: 1}}}}}, session.ErrInvalid},
+		{"non-object payload", session.Proposal{CommitID: "c", Batches: []session.StreamBatch{batch(sessionStream(), "twilight/x/a", `[1]`)}}, session.ErrInvalid},
+		{"zero payload", session.Proposal{CommitID: "c", Batches: []session.StreamBatch{{Stream: sessionStream(), Events: []session.Event{{Type: "twilight/x/a", RecordedAtUnixMilli: 1}}}}}, session.ErrInvalid},
+		{"run stream without ID", session.Proposal{CommitID: "c", Batches: []session.StreamBatch{batch(session.StreamRef{Kind: session.StreamKindRun}, "twilight/run/a", `{}`)}}, session.ErrInvalid},
+		{"same stream twice", session.Proposal{CommitID: "c", Batches: []session.StreamBatch{batch(sessionStream(), "twilight/x/a", `{}`), batch(sessionStream(), "twilight/x/b", `{}`)}}, session.ErrInvalid},
 	}
 	for _, tc := range rejects {
-		if _, err := w.Append(ctx, tc.g); !session.IsCode(err, tc.code) {
+		if _, err := w.Append(ctx, tc.p); !session.IsCode(err, tc.code) {
 			t.Fatalf("%s: err = %v, want %s", tc.name, err, tc.code)
 		}
 	}
-	if head := w.Head(); head.Next != 0 {
-		t.Fatalf("rejections wrote rows: head %+v", head)
+	if head := w.Head(); head.Next != 0 || head.Digest != h.HeaderDigest {
+		t.Fatalf("rejections wrote commits: head %+v", head)
 	}
-	rows := appendGroup(t, w, "c1", ev("twilight/x/a", `{"i":0}`), ev("twilight/x/a", `{"i":1}`), ev("twilight/x/a", `{"i":2}`))
-	page, _ := f.Store.Read(ctx, session.ReadRequest{SessionID: "s"})
-	if len(page.Events) != 3 || page.Events[2].Digest != rows[2].Digest {
-		t.Fatalf("group not visible as a whole: %+v", page.Events)
+	c1 := appendCommit(t, w, "c1",
+		session.StreamBatch{Stream: sessionStream(), Events: []session.Event{
+			{Type: "twilight/x/a", Payload: jsonstable.MustParse(`{"i":0}`), RecordedAtUnixMilli: 1},
+			{Type: "twilight/x/a", Payload: jsonstable.MustParse(`{"i":1}`), RecordedAtUnixMilli: 1},
+			{Type: "twilight/x/a", Payload: jsonstable.MustParse(`{"i":2}`), RecordedAtUnixMilli: 1},
+		}})
+	page, _ := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
+	if len(page.Commits) != 1 || len(page.Commits[0].Batches) != 1 || len(page.Commits[0].Batches[0].Events) != 3 || page.Commits[0].Digest != c1.Digest {
+		t.Fatalf("commit not visible as a whole: %+v", page.Commits)
 	}
-	// SourceSeqs and Ignorable round-trip untouched; the kernel does not
-	// interpret them.
-	out := appendGroup(t, w, "c2", session.UncommittedEvent{Type: "twilight/x/b", Payload: jsonstable.MustParse(`{}`), SourceSeqs: []session.Seq{7, 1}, Ignorable: true})
-	if len(out[0].SourceSeqs) != 2 || out[0].SourceSeqs[0] != 7 || !out[0].Ignorable {
-		t.Fatalf("row metadata altered: %+v", out[0])
-	}
-}
-
-// SES-REP-1/2: order, From, Limit at group boundaries, filter equivalence,
-// tamper detection at Open.
-func testRead(t *testing.T, f Fixture) {
-	ctx := context.Background()
-	create(t, f.Store, "s")
-	w := open(t, f.Store, "s", false)
-	appendGroup(t, w, "c1", ev("twilight/run/a", `{}`), ev("twilight/chat/a", `{}`))                             // 0,1
-	appendGroup(t, w, "c2", ev("twilight/chat/b", `{}`))                                                         // 2
-	appendGroup(t, w, "c3", ev("twilight/run/c", `{}`), ev("twilight/run/d", `{}`), ev("twilight/chat/e", `{}`)) // 3,4,5
-	all, err := f.Store.Read(ctx, session.ReadRequest{SessionID: "s"})
-	if err != nil || len(all.Events) != 6 || all.HasMore {
-		t.Fatalf("read all = %d %v %v", len(all.Events), all.HasMore, err)
-	}
-	for i, e := range all.Events {
-		if e.Seq != session.Seq(i) {
-			t.Fatalf("order broken at %d: %+v", i, e)
-		}
-	}
-	from, _ := f.Store.Read(ctx, session.ReadRequest{SessionID: "s", From: 4})
-	if len(from.Events) != 2 || from.Events[0].Seq != 4 {
-		t.Fatalf("from = %+v", from.Events)
-	}
-	beyond, _ := f.Store.Read(ctx, session.ReadRequest{SessionID: "s", From: 99})
-	if len(beyond.Events) != 0 || beyond.Head.Next != 6 {
-		t.Fatalf("beyond head = %+v", beyond)
-	}
-	limited, _ := f.Store.Read(ctx, session.ReadRequest{SessionID: "s", Limit: 2})
-	if len(limited.Events) != 2 || !limited.HasMore || !limited.Events[1].Last {
-		t.Fatalf("limit must cut at a group boundary: %+v more=%v", limited.Events, limited.HasMore)
-	}
-	tiny, _ := f.Store.Read(ctx, session.ReadRequest{SessionID: "s", Limit: 1})
-	if len(tiny.Events) != 2 || !tiny.HasMore {
-		t.Fatalf("a limit below one group still returns the whole first group: %d more=%v", len(tiny.Events), tiny.HasMore)
-	}
-	filtered, _ := f.Store.Read(ctx, session.ReadRequest{SessionID: "s", Types: []session.EventType{"twilight/run/"}})
-	var want []session.SessionEvent
-	for _, e := range all.Events {
-		if session.HasTypePrefix(e.Type, []session.EventType{"twilight/run/"}) {
-			want = append(want, e)
-		}
-	}
-	if len(filtered.Events) != len(want) {
-		t.Fatalf("filtered = %d, want %d", len(filtered.Events), len(want))
-	}
-	for i := range want {
-		if filtered.Events[i].Digest != want[i].Digest {
-			t.Fatalf("filtered row %d differs from unfiltered", i)
-		}
-	}
-	if _, err := f.Store.Read(ctx, session.ReadRequest{SessionID: "nope"}); !session.IsCode(err, session.ErrNotFound) {
-		t.Fatalf("unknown session = %v", err)
-	}
-	if tamper, ok := f.Store.(interface {
-		Tamper(session.SessionID, session.Seq, func(*session.SessionEvent))
-	}); ok {
-		if err := w.Close(ctx); err != nil {
-			t.Fatal(err)
-		}
-		tamper.Tamper("s", 2, func(e *session.SessionEvent) { e.Payload = jsonstable.MustParse(`{"x":1}`) })
-		if _, err := f.Store.Open(ctx, "s", session.OpenOptions{}); !session.IsCode(err, session.ErrCorrupt) {
-			t.Fatalf("open over a tampered stream = %v, want corrupt", err)
-		}
+	// A spanning commit lands every batch or none: both sides are visible.
+	appendCommit(t, w, "c2",
+		batch(sessionStream(), "twilight/chat/a", `{}`),
+		batch(runStream("r9"), "twilight/run/run_created", `{"runId":"r9"}`))
+	page, _ = f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s", From: 1})
+	if len(page.Commits) != 1 || len(page.Commits[0].Batches) != 2 {
+		t.Fatalf("spanning commit not whole: %+v", page.Commits)
 	}
 }
 
-// TailCrasher is the optional adapter capability that simulates a crash inside
-// Append by dropping every durable row after the first keep rows. An adapter
-// whose writes cannot tear (a database transaction) need not implement it, and
-// the crash case is then skipped rather than silently passing.
+// TailCrasher is the optional adapter capability that simulates a crash
+// inside Append by dropping every durable commit after the first keep. An
+// adapter whose writes cannot tear (a database transaction) need not
+// implement it, and the crash case is then skipped rather than silently
+// passing.
 type TailCrasher interface {
 	CrashTail(session.SessionID, int) error
 }
 
-// SES-APP-2: a crash leaves at most one incomplete tail group. Open must
-// recover to the last complete group, so no reader ever sees a partial group
-// and the next Append cannot extend a group that never got its Last row.
+// SES-APP-2: a crash leaves at most one torn commit. Open must recover to
+// the last whole commit, so no reader ever sees a partial commit and the
+// next Append cannot extend a commit that never became durable.
 func testCrashTail(t *testing.T, f Fixture) {
 	crash, ok := f.Store.(TailCrasher)
 	if !ok {
@@ -285,71 +309,173 @@ func testCrashTail(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	header := create(t, f.Store, "s")
 	w := open(t, f.Store, "s", false)
-	g1 := appendGroup(t, w, "c1", ev("twilight/x/a", `{"a":1}`), ev("twilight/x/b", `{"b":2}`))
-	appendGroup(t, w, "c2", ev("twilight/x/c", `{"c":3}`), ev("twilight/x/d", `{"d":4}`))
+	c1 := appendCommit(t, w, "c1",
+		session.StreamBatch{Stream: sessionStream(), Events: []session.Event{
+			{Type: "twilight/x/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"a":1}`)},
+			{Type: "twilight/x/b", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"b":2}`)},
+		}})
+	appendCommit(t, w, "c2",
+		batch(sessionStream(), "twilight/x/c", `{"c":3}`),
+		batch(runStream("r7"), "twilight/run/run_created", `{"runId":"r7"}`))
 	if err := w.Close(ctx); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 
-	// Only c1 and the first row of c2 reached durable storage.
-	if err := crash.CrashTail("s", 3); err != nil {
+	// Only c1 reached durable storage.
+	if err := crash.CrashTail("s", 1); err != nil {
 		t.Fatalf("crash injection: %v", err)
 	}
 
 	w2 := open(t, f.Store, "s", false)
-	if got, want := w2.Head(), (session.Head{Next: 2, Digest: g1[1].Digest}); got != want {
-		t.Fatalf("head after a torn tail = %+v, want %+v (the torn group must be dropped, not continued)", got, want)
+	if got, want := w2.Head(), (session.Head{Next: 1, Digest: c1.Digest}); got != want {
+		t.Fatalf("head after a torn tail = %+v, want %+v (the torn commit must be dropped, not continued)", got, want)
 	}
 
-	// A reader never sees the partial group.
-	page, err := f.Store.Read(ctx, session.ReadRequest{SessionID: "s"})
-	if err != nil {
-		t.Fatalf("read after crash: %v", err)
+	page, err := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
+	if err != nil || len(page.Commits) != 1 {
+		t.Fatalf("commits after a torn tail = %+v, err %v; want the 1 whole commit", page.Commits, err)
 	}
-	if len(page.Events) != 2 {
-		t.Fatalf("rows after a torn tail = %d, want the 2 complete rows of c1", len(page.Events))
-	}
-	if err := session.ValidateChain(session.ProfileV1(), header, page.Events); err != nil {
-		t.Fatalf("chain after recovery: %v", err)
+	if err := session.ValidateLedger(session.ProfileV2(), header, page.Commits); err != nil {
+		t.Fatalf("ledger after recovery: %v", err)
 	}
 
-	// The group that never committed must be admissible again, and it must
-	// start at the recovered head rather than inside the torn group.
-	re := appendGroup(t, w2, "c2", ev("twilight/x/c", `{"c":3}`))
-	if re[0].Seq != 2 {
-		t.Fatalf("re-appended group starts at seq %d, want 2", re[0].Seq)
+	// The commit that never became durable must be admissible again, and it
+	// must chain from the recovered head rather than from the torn bytes.
+	re := appendCommit(t, w2, "c2", batch(sessionStream(), "twilight/x/c", `{"c":3}`))
+	if re.Seq != 1 || re.PrevDigest != c1.Digest {
+		t.Fatalf("re-appended commit = seq %d prev %s, want seq 1 after %s", re.Seq, re.PrevDigest, c1.Digest)
+	}
+	page, err = f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
+	if err != nil || len(page.Commits) != 2 {
+		t.Fatalf("commits after re-append = %d, err %v; want 2", len(page.Commits), err)
+	}
+	if err := session.ValidateLedger(session.ProfileV2(), header, page.Commits); err != nil {
+		t.Fatalf("ledger after re-append: %v", err)
+	}
+	for i := range page.Commits {
+		if page.Commits[i].Seq != session.CommitSeq(i) {
+			t.Fatalf("seq gap at %d: %+v", i, page.Commits[i])
+		}
+	}
+}
+
+// SES-REP-1/2: order, From, Limit at commit boundaries, tamper detection at
+// Open.
+func testRead(t *testing.T, f Fixture) {
+	ctx := context.Background()
+	create(t, f.Store, "s")
+	w := open(t, f.Store, "s", false)
+	appendCommit(t, w, "c1",
+		session.StreamBatch{Stream: sessionStream(), Events: []session.Event{
+			{Type: "twilight/run/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{}`)},
+			{Type: "twilight/chat/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{}`)},
+		}},
+		batch(runStream("r1"), "twilight/run/model_step", `{"runId":"r1"}`))
+	appendCommit(t, w, "c2", batch(sessionStream(), "twilight/chat/b", `{}`))
+	appendCommit(t, w, "c3",
+		session.StreamBatch{Stream: sessionStream(), Events: []session.Event{
+			{Type: "twilight/run/c", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{}`)},
+			{Type: "twilight/run/d", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{}`)},
+			{Type: "twilight/chat/e", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{}`)},
+		}})
+	all, err := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
+	if err != nil || len(all.Commits) != 3 || all.HasMore {
+		t.Fatalf("read all = %d %v %v", len(all.Commits), all.HasMore, err)
+	}
+	for i, c := range all.Commits {
+		if c.Seq != session.CommitSeq(i) {
+			t.Fatalf("order broken at %d: %+v", i, c)
+		}
+	}
+	from, _ := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s", From: 2})
+	if len(from.Commits) != 1 || from.Commits[0].Seq != 2 {
+		t.Fatalf("from = %+v", from.Commits)
+	}
+	beyond, _ := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s", From: 99})
+	if len(beyond.Commits) != 0 || beyond.Head.Next != 3 {
+		t.Fatalf("beyond head = %+v", beyond)
+	}
+	limited, _ := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s", Limit: 1})
+	if len(limited.Commits) != 1 || !limited.HasMore || limited.Commits[0].Seq != 0 {
+		t.Fatalf("limit must cut at a commit boundary: %+v more=%v", limited.Commits, limited.HasMore)
+	}
+	two, _ := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s", Limit: 2})
+	if len(two.Commits) != 2 || !two.HasMore {
+		t.Fatalf("limit 2 = %d more=%v", len(two.Commits), two.HasMore)
+	}
+	if _, err := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "nope"}); !session.IsCode(err, session.ErrNotFound) {
+		t.Fatalf("unknown session = %v", err)
+	}
+	if tamper, ok := f.Store.(interface {
+		Tamper(session.SessionID, session.CommitSeq, func(*session.Commit))
+	}); ok {
+		if err := w.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+		tamper.Tamper("s", 1, func(c *session.Commit) { c.Batches[0].Events[0].Payload = jsonstable.MustParse(`{"x":1}`) })
+		if _, err := f.Store.Open(ctx, "s", session.OpenOptions{}); !session.IsCode(err, session.ErrCorrupt) {
+			t.Fatalf("open over a tampered ledger = %v, want corrupt", err)
+		}
+	}
+}
+
+// SES-REP-3/4: the kernel answers which CommitIDs it holds and what commit
+// they carry, from the index Append already needs (SES-APP-3). Both answers
+// must hold for a commit appended by the current handle and again after a
+// reopen, which is where a durable adapter rebuilds that index from the log;
+// and a caller that mutates the returned commit must not reach the stored
+// one.
+func testQuery(t *testing.T, f Fixture) {
+	ctx := context.Background()
+	create(t, f.Store, "s")
+	w := open(t, f.Store, "s", false)
+	first := appendCommit(t, w, "c1",
+		session.StreamBatch{Stream: sessionStream(), Events: []session.Event{
+			{Type: "twilight/run/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"n":1}`)},
+			{Type: "twilight/run/b", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"n":2}`)},
+		}})
+	appendCommit(t, w, "c2", batch(sessionStream(), "twilight/run/c", `{"n":3}`))
+
+	if w.Committed("absent") {
+		t.Fatal("an unknown CommitID was reported committed")
+	}
+	if !w.Committed("c1") || !w.Committed("c2") {
+		t.Fatal("an appended CommitID was not reported committed")
+	}
+	got, ok, err := w.LookupCommit("c1")
+	if err != nil || !ok || len(got.Batches) != len(first.Batches) {
+		t.Fatalf("lookup c1 = %+v, ok=%v, err=%v", got, ok, err)
+	}
+	if got.Seq != first.Seq || got.Digest != first.Digest || got.CommitID != "c1" {
+		t.Fatalf("lookup c1 = %+v, want %+v", got, first)
+	}
+	if got.Batches[0].Events[0].Type != first.Batches[0].Events[0].Type {
+		t.Fatalf("lookup event = %+v, want %+v", got.Batches[0].Events[0], first.Batches[0].Events[0])
+	}
+	if _, ok, err := w.LookupCommit("absent"); ok || err != nil {
+		t.Fatalf("unknown lookup = ok=%v, err=%v", ok, err)
+	}
+	got.Batches[0].Events[0].Type = "twilight/tampered/x"
+	if again, _, _ := w.LookupCommit("c1"); again.Batches[0].Events[0].Type != first.Batches[0].Events[0].Type {
+		t.Fatal("mutating the returned commit reached the stored one")
 	}
 
-	page, err = f.Store.Read(ctx, session.ReadRequest{SessionID: "s"})
-	if err != nil {
-		t.Fatalf("read after re-append: %v", err)
+	if err := w.Close(ctx); err != nil {
+		t.Fatal(err)
 	}
-	if len(page.Events) != 3 {
-		t.Fatalf("rows after re-append = %d, want 3", len(page.Events))
+	w = open(t, f.Store, "s", false)
+	if !w.Committed("c2") {
+		t.Fatal("a reopened handle lost a committed CommitID")
 	}
-	if err := session.ValidateChain(session.ProfileV1(), header, page.Events); err != nil {
-		t.Fatalf("chain after re-append: %v", err)
+	if got, ok, err := w.LookupCommit("c2"); err != nil || !ok || len(got.Batches) != 1 {
+		t.Fatalf("reopened lookup c2 = %+v, ok=%v, err=%v", got, ok, err)
 	}
-	// No group may weld the torn row to the group that replaced it: every row
-	// must arrive in a complete group whose CommitID is uniform.
-	for i := 0; i < len(page.Events); {
-		end := i
-		for end < len(page.Events) && !page.Events[end].Last {
-			end++
-		}
-		if end >= len(page.Events) {
-			t.Fatalf("row %d: an incomplete group reached a reader", i)
-		}
-		for j := i; j <= end; j++ {
-			if page.Events[j].Seq != session.Seq(j) {
-				t.Fatalf("seq %d at row %d", page.Events[j].Seq, j)
-			}
-			if page.Events[j].CommitID != page.Events[i].CommitID {
-				t.Fatalf("rows %d..%d mix CommitIDs %s and %s: a torn group was welded to the next one",
-					i, end, page.Events[i].CommitID, page.Events[j].CommitID)
-			}
-		}
-		i = end + 1
+	last := appendCommit(t, w, "c3", batch(sessionStream(), "twilight/run/d", `{"n":4}`))
+	if got, ok, err := w.LookupCommit("c3"); err != nil || !ok || got.Digest != last.Digest {
+		t.Fatalf("lookup after append = %+v, ok=%v, err=%v", got, ok, err)
+	}
+	if err := w.Close(ctx); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -362,63 +488,5 @@ func testScope(t *testing.T, f Fixture) {
 	}
 	if _, err := f.Store.Header(ctx, "missing"); !session.IsCode(err, session.ErrNotFound) {
 		t.Fatalf("header unknown session = %v", err)
-	}
-}
-
-// SES-REP-3/4: the kernel answers which CommitIDs it holds and what rows they
-// carry, from the index Append already needs (SES-APP-3). Both answers must hold
-// for a group appended by the current handle and again after a reopen, which is
-// where a durable adapter rebuilds that index from the log; and a caller that
-// mutates the returned rows must not reach the stored ones.
-func testQuery(t *testing.T, f Fixture) {
-	ctx := context.Background()
-	create(t, f.Store, "s")
-	w := open(t, f.Store, "s", false)
-	first := appendGroup(t, w, "c1", ev("twilight/run/a", `{"n":1}`), ev("twilight/run/b", `{"n":2}`))
-	appendGroup(t, w, "c2", ev("twilight/run/c", `{"n":3}`))
-
-	if w.Committed("absent") {
-		t.Fatal("an unknown CommitID was reported committed")
-	}
-	if !w.Committed("c1") || !w.Committed("c2") {
-		t.Fatal("an appended CommitID was not reported committed")
-	}
-	rows, ok, err := w.LookupCommit("c1")
-	if err != nil || !ok || len(rows) != len(first) {
-		t.Fatalf("lookup c1 = %d rows, ok=%v, err=%v", len(rows), ok, err)
-	}
-	for i := range rows {
-		want := first[i]
-		if rows[i].Seq != want.Seq || rows[i].Digest != want.Digest || rows[i].CommitID != "c1" || rows[i].Index != uint16(i) {
-			t.Fatalf("row %d = %+v, want %+v", i, rows[i], want)
-		}
-		if rows[i].Last != (i == len(rows)-1) {
-			t.Fatalf("row %d Last = %v", i, rows[i].Last)
-		}
-	}
-	if rows, ok, err := w.LookupCommit("absent"); ok || err != nil || rows != nil {
-		t.Fatalf("unknown lookup = %+v, ok=%v, err=%v", rows, ok, err)
-	}
-	rows[0].Type = "twilight/tampered/x"
-	if again, _, _ := w.LookupCommit("c1"); again[0].Type != first[0].Type {
-		t.Fatal("mutating the returned rows reached the stored ones")
-	}
-
-	if err := w.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
-	w = open(t, f.Store, "s", false)
-	if !w.Committed("c2") {
-		t.Fatal("a reopened handle lost a committed CommitID")
-	}
-	if rows, ok, err := w.LookupCommit("c2"); err != nil || !ok || len(rows) != 1 {
-		t.Fatalf("reopened lookup c2 = %d rows, ok=%v, err=%v", len(rows), ok, err)
-	}
-	last := appendGroup(t, w, "c3", ev("twilight/run/d", `{"n":4}`))
-	if rows, ok, err := w.LookupCommit("c3"); err != nil || !ok || len(rows) != 1 || rows[0].Digest != last[0].Digest {
-		t.Fatalf("lookup after append = %+v, ok=%v, err=%v", rows, ok, err)
-	}
-	if err := w.Close(ctx); err != nil {
-		t.Fatal(err)
 	}
 }

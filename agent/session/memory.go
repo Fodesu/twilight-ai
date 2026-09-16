@@ -10,7 +10,7 @@ import (
 // an Open with Takeover supersedes a live owner, which is then fenced by its
 // stale Epoch.
 type MemoryStore struct {
-	profile  ProtocolProfile
+	profile  LedgerProfile
 	mu       sync.RWMutex // guards sessions map
 	sessions map[SessionID]*memorySession
 }
@@ -18,18 +18,16 @@ type MemoryStore struct {
 type memorySession struct {
 	mu       sync.Mutex
 	header   SessionHeader
-	rows     []SessionEvent
-	byCommit map[CommitID][2]int // [first, last] row index of the group
+	commits  []Commit
+	byCommit map[CommitID]int // index into commits
 	epoch    Epoch
 	owner    *memoryHandle // nil when no live owner
 }
 
 // NewMemoryStore returns an empty MemoryStore.
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{profile: ProfileV1(), sessions: make(map[SessionID]*memorySession)}
+	return &MemoryStore{profile: ProfileV2(), sessions: make(map[SessionID]*memorySession)}
 }
-
-func (m *MemoryStore) Profile() ProtocolProfile { return m.profile }
 
 func (m *MemoryStore) session(sid SessionID, op string) (*memorySession, error) {
 	m.mu.RLock()
@@ -65,7 +63,7 @@ func (m *MemoryStore) Create(ctx context.Context, req CreateRequest) (SessionHea
 		}
 		return SessionHeader{}, newError(ErrConflict, "create", req.SessionID, "session exists with a different header")
 	}
-	m.sessions[req.SessionID] = &memorySession{header: header, byCommit: make(map[CommitID][2]int)}
+	m.sessions[req.SessionID] = &memorySession{header: header, byCommit: make(map[CommitID]int)}
 	return header, nil
 }
 
@@ -83,10 +81,10 @@ func (m *MemoryStore) Header(ctx context.Context, sid SessionID) (SessionHeader,
 }
 
 func (s *memorySession) head() Head {
-	if len(s.rows) == 0 {
+	if len(s.commits) == 0 {
 		return Head{Next: 0, Digest: s.header.HeaderDigest}
 	}
-	last := &s.rows[len(s.rows)-1]
+	last := &s.commits[len(s.commits)-1]
 	return Head{Next: last.Seq + 1, Digest: last.Digest}
 }
 
@@ -112,48 +110,14 @@ func (m *MemoryStore) Open(ctx context.Context, sid SessionID, opts OpenOptions)
 		return nil, newError(ErrOwned, "open", sid, fmt.Sprintf("owned by epoch %d", s.epoch))
 	}
 	// Corruption detection happens here, before ownership is established
-	// (SES-REP-1); Read trusts the store.
-	if err := ValidateChain(m.profile, s.header, s.rows); err != nil {
+	// (SES-REP-1); reads trust the store.
+	if err := ValidateLedger(m.profile, s.header, s.commits); err != nil {
 		return nil, err
 	}
-	// A crash can leave one incomplete tail group. Drop it before the head is
-	// established, exactly as the file adapter truncates the file: otherwise
-	// Head.Next would sit inside the torn group and the next Append would
-	// extend a group that can never get its Last row, welding two CommitIDs
-	// into one group that Read would hand back as a single group (SES-APP-2).
-	s.dropIncompleteTail()
 	s.epoch++
 	w := &memoryHandle{store: m, s: s, epoch: s.epoch}
 	s.owner = w
 	return w, nil
-}
-
-// dropIncompleteTail removes a trailing group whose Last row never landed and
-// rebuilds the CommitID index from the surviving rows, so a retry of the
-// dropped CommitID is admissible again.
-func (s *memorySession) dropIncompleteTail() {
-	keep := len(s.rows)
-	for keep > 0 && !s.rows[keep-1].Last {
-		keep--
-	}
-	if keep == len(s.rows) {
-		return
-	}
-	s.rows = s.rows[:keep]
-	s.rebuildIndex()
-}
-
-// rebuildIndex recomputes the CommitID to row-range index from rows.
-func (s *memorySession) rebuildIndex() {
-	s.byCommit = make(map[CommitID][2]int)
-	for i := 0; i < len(s.rows); {
-		end := i
-		for end < len(s.rows) && !s.rows[end].Last {
-			end++
-		}
-		s.byCommit[s.rows[i].CommitID] = [2]int{i, end}
-		i = end + 1
-	}
 }
 
 func (w *memoryHandle) SessionID() SessionID { return w.s.header.SessionID }
@@ -173,8 +137,8 @@ func (w *memoryHandle) current(op string) error {
 	return nil
 }
 
-// Committed is SES-REP-3: the row index the kernel keeps to reject a duplicate
-// CommitID answers membership directly.
+// Committed is SES-REP-3: the CommitID index Append already keeps answers
+// membership directly.
 func (w *memoryHandle) Committed(id CommitID) bool {
 	w.s.mu.Lock()
 	defer w.s.mu.Unlock()
@@ -182,16 +146,16 @@ func (w *memoryHandle) Committed(id CommitID) bool {
 	return ok
 }
 
-// LookupCommit is SES-REP-4: the session holds every row, so a hit copies the
-// group's span instead of reading storage.
-func (w *memoryHandle) LookupCommit(id CommitID) ([]SessionEvent, bool, error) {
+// LookupCommit is SES-REP-4: the session holds every commit, so a hit copies
+// it instead of reading storage.
+func (w *memoryHandle) LookupCommit(id CommitID) (Commit, bool, error) {
 	w.s.mu.Lock()
 	defer w.s.mu.Unlock()
-	span, ok := w.s.byCommit[id]
+	i, ok := w.s.byCommit[id]
 	if !ok {
-		return nil, false, nil
+		return Commit{}, false, nil
 	}
-	return cloneRows(w.s.rows[span[0] : span[1]+1]), true, nil
+	return cloneCommit(w.s.commits[i]), true, nil
 }
 
 func (w *memoryHandle) Close(ctx context.Context) error {
@@ -205,125 +169,121 @@ func (w *memoryHandle) Close(ctx context.Context) error {
 
 // --- append -----------------------------------------------------------------------
 
-func (w *memoryHandle) Append(ctx context.Context, g Group) ([]SessionEvent, error) {
+func (w *memoryHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return Commit{}, err
 	}
 	sid := w.s.header.SessionID
-	if g.CommitID == "" {
-		return nil, newError(ErrInvalid, "append", sid, "empty CommitID")
+	if err := validIdentity("CommitID", string(p.CommitID)); err != nil {
+		return Commit{}, newError(ErrInvalid, "append", sid, err.Error())
 	}
-	if err := validIdentity("CommitID", string(g.CommitID)); err != nil {
-		return nil, newError(ErrInvalid, "append", sid, err.Error())
-	}
-	if len(g.Events) == 0 {
-		return nil, newError(ErrInvalid, "append", sid, "empty group")
-	}
-	if len(g.Events) > int(^uint16(0)) {
-		return nil, newError(ErrInvalid, "append", sid, "group too large")
-	}
-	for i := range g.Events {
-		if err := ValidateUncommitted(&g.Events[i]); err != nil {
-			return nil, newError(ErrInvalid, "append", sid, fmt.Sprintf("event %d: %v", i, err))
-		}
+	if err := ValidateBatches(p.Batches); err != nil {
+		return Commit{}, newError(ErrInvalid, "append", sid, err.Error())
 	}
 	w.s.mu.Lock()
 	defer w.s.mu.Unlock()
 	if err := w.current("append"); err != nil {
-		return nil, err
+		return Commit{}, err
 	}
-	if _, dup := w.s.byCommit[g.CommitID]; dup {
-		return nil, &Error{Code: ErrConflict, Operation: "append", SessionID: sid, CommitID: g.CommitID, Detail: "CommitID already in stream"}
+	if _, dup := w.s.byCommit[p.CommitID]; dup {
+		return Commit{}, &Error{Code: ErrConflict, Operation: "append", SessionID: sid, CommitID: p.CommitID, Detail: "CommitID already in stream"}
 	}
 	head := w.s.head()
-	prev := head.Digest
-	rows := make([]SessionEvent, len(g.Events))
-	for i := range g.Events {
-		e := &g.Events[i]
-		row := SessionEvent{Seq: head.Next + Seq(i), CommitID: g.CommitID, Index: uint16(i), Last: i == len(g.Events)-1,
-			Type: e.Type, RecordedAtUnixMilli: e.RecordedAtUnixMilli, SourceSeqs: append([]Seq(nil), e.SourceSeqs...), Ignorable: e.Ignorable, Payload: e.Payload}
-		d, err := w.store.profile.EventDigest(prev, sid, row)
-		if err != nil {
-			return nil, err
-		}
-		row.Digest = d
-		prev = d
-		rows[i] = row
+	c := Commit{Seq: head.Next, CommitID: p.CommitID, Epoch: w.epoch, Batches: cloneBatches(p.Batches)}
+	if err := SealCommit(w.store.profile, head.Digest, sid, &c); err != nil {
+		return Commit{}, err
 	}
-	first := len(w.s.rows)
-	w.s.rows = append(w.s.rows, rows...)
-	w.s.byCommit[g.CommitID] = [2]int{first, first + len(rows) - 1}
-	return cloneRows(rows), nil
+	w.s.commits = append(w.s.commits, c)
+	w.s.byCommit[p.CommitID] = len(w.s.commits) - 1
+	return cloneCommit(c), nil
 }
 
 // --- read --------------------------------------------------------------------------
 
-func (m *MemoryStore) Read(ctx context.Context, req ReadRequest) (ReadPage, error) {
+func (m *MemoryStore) ReadCommits(ctx context.Context, req CommitReadRequest) (CommitPage, error) {
 	if err := ctx.Err(); err != nil {
-		return ReadPage{}, err
+		return CommitPage{}, err
 	}
 	s, err := m.session(req.SessionID, "read")
 	if err != nil {
-		return ReadPage{}, err
+		return CommitPage{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	page := ReadPage{Header: s.header, Head: s.head()}
-	if int(req.From) > len(s.rows) {
+	page := CommitPage{Header: s.header, Head: s.head()}
+	if int(req.From) >= len(s.commits) {
 		return page, nil
 	}
-	// Start at a group boundary at or before From so no partial group leaks.
 	start := int(req.From)
-	for start > 0 && start < len(s.rows) && s.rows[start].Index != 0 {
-		start--
+	end := len(s.commits)
+	if req.Limit > 0 && start+int(req.Limit) < end {
+		end = start + int(req.Limit)
+		page.HasMore = true
 	}
-	for i := start; i < len(s.rows); {
-		end := i
-		for end < len(s.rows) && !s.rows[end].Last {
-			end++
-		}
-		if end >= len(s.rows) {
-			break // incomplete tail group is never exposed (SES-APP-2)
-		}
-		var matched []SessionEvent
-		for j := i; j <= end; j++ {
-			if s.rows[j].Seq >= req.From && HasTypePrefix(s.rows[j].Type, req.Types) {
-				matched = append(matched, s.rows[j])
-			}
-		}
-		if len(matched) > 0 {
-			// Limit counts rows but only truncates between groups; the first
-			// group is always returned so a caller can make progress.
-			if req.Limit > 0 && len(page.Events) > 0 && len(page.Events)+len(matched) > int(req.Limit) {
-				page.HasMore = true
-				break
-			}
-			page.Events = append(page.Events, cloneRows(matched)...)
-		}
-		i = end + 1
+	page.Commits = make([]Commit, 0, end-start)
+	for i := start; i < end; i++ {
+		page.Commits = append(page.Commits, cloneCommit(s.commits[i]))
 	}
 	return page, nil
 }
 
-// Tamper mutates one stored row in place. It exists so conformance can prove
-// that the chain check at Open detects corruption; production code never
-// calls it.
-func (m *MemoryStore) Tamper(sid SessionID, seq Seq, mutate func(*SessionEvent)) {
+func (m *MemoryStore) ReadStream(ctx context.Context, req StreamReadRequest) (StreamPage, error) {
+	if err := ctx.Err(); err != nil {
+		return StreamPage{}, err
+	}
+	if err := ValidateStreamRef(req.Stream); err != nil {
+		return StreamPage{}, newError(ErrInvalid, "read_stream", req.SessionID, err.Error())
+	}
+	s, err := m.session(req.SessionID, "read_stream")
+	if err != nil {
+		return StreamPage{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	page := StreamPage{Header: s.header, Stream: req.Stream, Head: s.head()}
+	var pos StreamSeq
+	for i := range s.commits {
+		for j := range s.commits[i].Batches {
+			b := &s.commits[i].Batches[j]
+			if b.Stream != req.Stream {
+				continue
+			}
+			for _, e := range b.Events {
+				if pos < req.From {
+					pos++
+					continue
+				}
+				if req.Limit > 0 && uint32(len(page.Events)) >= req.Limit {
+					page.HasMore = true
+					return page, nil
+				}
+				page.Events = append(page.Events, e)
+				pos++
+			}
+		}
+	}
+	return page, nil
+}
+
+// Tamper mutates one stored commit in place. It exists so conformance can
+// prove that the ledger check at Open detects corruption; production code
+// never calls it.
+func (m *MemoryStore) Tamper(sid SessionID, seq CommitSeq, mutate func(*Commit)) {
 	s, err := m.session(sid, "tamper")
 	if err != nil {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if int(seq) < len(s.rows) {
-		mutate(&s.rows[seq])
+	if int(seq) < len(s.commits) {
+		mutate(&s.commits[seq])
 	}
 }
 
-// CrashTail drops every stored row after the first keep, simulating a crash
-// whose last group never finished landing. It exists so conformance can prove
-// that Open recovers to the last complete group (SES-APP-2); production code
-// never calls it.
+// CrashTail drops every stored commit after the first keep, simulating a
+// crash whose last commit never became durable. It exists so conformance can
+// prove that Open recovers to the last whole commit (SES-APP-2); production
+// code never calls it.
 func (m *MemoryStore) CrashTail(sid SessionID, keep int) error {
 	s, err := m.session(sid, "crash_tail")
 	if err != nil {
@@ -334,18 +294,34 @@ func (m *MemoryStore) CrashTail(sid SessionID, keep int) error {
 	if keep < 0 {
 		keep = 0
 	}
-	if keep > len(s.rows) {
-		keep = len(s.rows)
+	if keep > len(s.commits) {
+		keep = len(s.commits)
 	}
-	s.rows = s.rows[:keep]
+	s.commits = s.commits[:keep]
+	s.rebuildIndex()
 	return nil
 }
 
-func cloneRows(rows []SessionEvent) []SessionEvent {
-	out := make([]SessionEvent, len(rows))
-	for i := range rows {
-		out[i] = rows[i]
-		out[i].SourceSeqs = append([]Seq(nil), rows[i].SourceSeqs...)
+// rebuildIndex recomputes the CommitID index after a crash truncation, so the
+// dropped CommitIDs are admissible again.
+func (s *memorySession) rebuildIndex() {
+	s.byCommit = make(map[CommitID]int, len(s.commits))
+	for i := range s.commits {
+		s.byCommit[s.commits[i].CommitID] = i
+	}
+}
+
+func cloneCommit(c Commit) Commit {
+	out := c
+	out.Batches = cloneBatches(c.Batches)
+	return out
+}
+
+func cloneBatches(batches []StreamBatch) []StreamBatch {
+	out := make([]StreamBatch, len(batches))
+	for i := range batches {
+		out[i] = batches[i]
+		out[i].Events = append([]Event(nil), batches[i].Events...)
 	}
 	return out
 }
