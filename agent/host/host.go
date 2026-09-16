@@ -106,7 +106,7 @@ type Host struct {
 
 	mu       sync.Mutex
 	loops    map[turn.PresetRef]*loop.Loop
-	recovery map[session.SessionID]context.CancelFunc
+	recovery map[session.SessionID]*recoveryLifetime
 }
 
 // New composes a Host from its ports (HST-PRT-1).
@@ -177,7 +177,7 @@ func New(p Ports) (*Host, error) {
 		Store: store, Writers: writers, Runtime: runtime, Presets: presets, Executor: p.Executor, Decisions: decisions,
 		registry: registry, frozen: frozen, bus: bus, now: now, warn: warn,
 		targetResolver: p.TargetResolver, loops: make(map[turn.PresetRef]*loop.Loop),
-		recovery: make(map[session.SessionID]context.CancelFunc),
+		recovery: make(map[session.SessionID]*recoveryLifetime),
 	}
 	h.Coordinator = &turn.Coordinator{Writers: writers, Runtime: runtime, Now: now}
 	return h, nil
@@ -320,7 +320,8 @@ func (h *Host) Drive(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse, 
 		if err != nil {
 			return turn.TurnResponse{}, err
 		}
-		if _, err := l.Run(ctx, h.Runtime, ref.SessionID, view.ActiveRun, nil); err != nil {
+		res, err := l.Run(ctx, h.Runtime, ref.SessionID, view.ActiveRun, nil)
+		if err != nil {
 			if errors.Is(err, loop.ErrRunAlreadyRunning) {
 				resp, rerr := h.Coordinator.Status(ctx, ref)
 				if rerr != nil {
@@ -330,6 +331,15 @@ func (h *Host) Drive(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse, 
 				return resp, nil
 			}
 			return turn.TurnResponse{}, err
+		}
+		if res.ExecutionRecovery {
+			// The drive quiesced with executions in flight and no local
+			// waiter. Offer every Executing target reattachment and dispose
+			// what no executor answers, instead of leaving the Turn to a
+			// driver that already returned (RUN-CMT-7).
+			if _, err := h.recoverInterrupted(context.WithoutCancel(ctx), ref.SessionID); err != nil {
+				h.fail(ref.SessionID, fmt.Errorf("host: recovering a quiesced drive: %w", err))
+			}
 		}
 	}
 	return h.Coordinator.Status(ctx, ref)
@@ -406,6 +416,49 @@ func (h *Host) EnsureSession(ctx context.Context, sid session.SessionID) error {
 	return nil
 }
 
+// recoveryLifetime is the detached context the Session's recovery goroutines
+// -- reattached outcome reads -- live under, and the cancel that stops them.
+type recoveryLifetime struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+// installRecoveryLifetimeLocked replaces the Session's recovery lifetime with
+// one derived from parent, stopping the previous listeners. Callers hold h.mu.
+func (h *Host) installRecoveryLifetimeLocked(sid session.SessionID, parent context.Context) *recoveryLifetime {
+	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	if previous := h.recovery[sid]; previous != nil {
+		previous.cancel()
+	}
+	lt := &recoveryLifetime{ctx: ctx, cancel: cancel}
+	h.recovery[sid] = lt
+	return lt
+}
+
+// ensureRecoveryLifetime returns the Session's recovery lifetime, installing a
+// detached one when absent. Open replaces it instead: a takeover supersedes
+// the previous owner's listeners.
+func (h *Host) ensureRecoveryLifetime(sid session.SessionID) *recoveryLifetime {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if lt, ok := h.recovery[sid]; ok {
+		return lt
+	}
+	return h.installRecoveryLifetimeLocked(sid, context.Background())
+}
+
+// recoverInterrupted runs the takeover disposition (RUN-CMT-7) for the
+// Session: every Executing target is offered to the Executor for reattachment
+// and disposed only when no running attempt answers. It is the explicit
+// recovery behind an unknown dispatch boundary -- the drive kept the call
+// Executing, so the durable record, not a duplicate dispatch, decides the
+// settlement.
+func (h *Host) recoverInterrupted(ctx context.Context, sid session.SessionID) (int, error) {
+	lt := h.ensureRecoveryLifetime(sid)
+	n, err := h.Runtime.RecoverInterrupted(ctx, sid, loop.Reattach(lt.ctx, h.Executor, sid, h.reattachDeliver(lt.ctx, sid)))
+	return n, err
+}
+
 // Open takes ownership of the Session and runs the takeover disposition
 // (RUN-CMT-7): every Executing target is first offered to the Executor for
 // reattachment and disposed only when no running attempt answers. It returns
@@ -414,16 +467,12 @@ func (h *Host) Open(ctx context.Context, sid session.SessionID) (int, error) {
 	if _, err := h.Writers.Writer(ctx, sid); err != nil {
 		return 0, err
 	}
-	lifetime, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	h.mu.Lock()
-	if previous := h.recovery[sid]; previous != nil {
-		previous()
-	}
-	h.recovery[sid] = cancel
+	h.installRecoveryLifetimeLocked(sid, ctx)
 	h.mu.Unlock()
-	n, err := h.Runtime.RecoverInterrupted(ctx, sid, loop.Reattach(lifetime, h.Executor, sid, h.reattachDeliver(lifetime, sid)))
+	n, err := h.recoverInterrupted(ctx, sid)
 	if err != nil {
-		cancel()
+		h.stopRecovery(sid)
 	}
 	return n, err
 }
@@ -431,8 +480,8 @@ func (h *Host) Open(ctx context.Context, sid session.SessionID) (int, error) {
 func (h *Host) stopRecovery(sid session.SessionID) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if cancel := h.recovery[sid]; cancel != nil {
-		cancel()
+	if lt := h.recovery[sid]; lt != nil {
+		lt.cancel()
 		delete(h.recovery, sid)
 	}
 }
@@ -440,8 +489,8 @@ func (h *Host) stopRecovery(sid session.SessionID) {
 // Close stops recovery listeners and releases every Session this Host owns.
 func (h *Host) Close(ctx context.Context) error {
 	h.mu.Lock()
-	for sid, cancel := range h.recovery {
-		cancel()
+	for sid, lt := range h.recovery {
+		lt.cancel()
 		delete(h.recovery, sid)
 	}
 	h.mu.Unlock()

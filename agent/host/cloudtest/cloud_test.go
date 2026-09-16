@@ -220,6 +220,20 @@ func release(t *testing.T, e *proc) {
 	}
 }
 
+// gateStats reads how many times the role's gate tool has begun executing.
+// The crash scenario uses it to prove the replacement settled by adoption
+// rather than by re-running the tool.
+func gateStats(t *testing.T, e *proc) int {
+	t.Helper()
+	var out struct {
+		Starts int `json:"starts"`
+	}
+	if err := getJSON(httpc, e.url()+"/gate-stats", &out); err != nil {
+		t.Fatalf("gate-stats: %v", err)
+	}
+	return out.Starts
+}
+
 // --- observer -----------------------------------------------------------------------
 
 // observer reads the shared store directly, the way any process without
@@ -341,8 +355,9 @@ func waitFor(t *testing.T, what string, timeout time.Duration, cond func() bool)
 // --- scenarios ----------------------------------------------------------------------
 
 // A crashed executor settles the effect it was running as Unknown, and the
-// Run goes on once an executor is back (TRN-DUR-4: Unknown is a fact, not a
-// retry; the model sees it and answers).
+// Run goes on once an executor is back. The replacement adopts the durable
+// execution record and settles Unknown without re-running the tool
+// (TRN-DUR-4: Unknown is a fact, not a retry; the model sees it and answers).
 func TestExecutorCrashSettlesUnknown(t *testing.T) {
 	root := t.TempDir()
 	execAddr := freeAddr(t)
@@ -354,17 +369,23 @@ func TestExecutorCrashSettlesUnknown(t *testing.T) {
 	waitToolStarted(t, e1)
 	e1.kill()
 
+	// The durable Execution Record outlives the process: the replacement
+	// adopts the orphaned lease and settles Unknown instead of re-dispatching
+	// an unbound tool (TRN-DUR-4). The lost dispatch ack left the call
+	// Executing at an unknown boundary (RUN-EXE-3); /resume re-drives, the
+	// drive quiesces with recovery pending, and the host's recovery
+	// disposition re-attaches and reads the settled record (RUN-CMT-7). The
+	// outcome reaches the model as an unknown tool result.
+	e2 := startExecutor(t, root, execAddr)
+	if err := postJSON(httpc, a.url()+"/resume", struct{}{}, nil); err != nil {
+		t.Fatal(err)
+	}
 	waitFor(t, "the Unknown settlement", 10*time.Second, func() bool {
 		_, _, unknown := obs.toolSettlements()
 		return unknown == 1
 	})
-	// The model step that follows cannot be dispatched to a dead executor;
-	// the Turn stays active. A replacement listens on the same address and
-	// the host resumes the Turn.
-	e2 := startExecutor(t, root, execAddr)
-	_ = e2
-	if err := postJSON(httpc, a.url()+"/resume", struct{}{}, nil); err != nil {
-		t.Fatal(err)
+	if n := gateStats(t, e2); n != 0 {
+		t.Fatalf("replacement executor started the gate %d times; adoption must not re-dispatch an unbound tool", n)
 	}
 	waitFor(t, "turn completion", 10*time.Second, func() bool { return obs.has(turn.TypeCompleted) })
 	if got := obs.reply(); got != "answer: tool unknown" {

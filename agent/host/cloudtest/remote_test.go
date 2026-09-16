@@ -3,7 +3,9 @@ package cloudtest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
 	"sync"
 	"time"
 
@@ -27,12 +29,18 @@ type remoteExecutor struct {
 
 	mu      sync.Mutex
 	pending map[loop.AssignmentKey]chan loop.Outcome
+	// waiters counts blocked GetOutcome calls per key. The monitor's
+	// errExecutorUnreachable push only reaches assignments a drive is
+	// actually waiting for: a settled replacement's durable outcome must
+	// not lose to a synthetic error left over from an unawaited dispatch.
+	waiters map[loop.AssignmentKey]int
 }
 
 func newRemoteExecutor(base, callback string) *remoteExecutor {
 	return &remoteExecutor{base: base, callback: callback,
 		client:  &http.Client{Timeout: 5 * time.Second},
-		pending: make(map[loop.AssignmentKey]chan loop.Outcome)}
+		pending: make(map[loop.AssignmentKey]chan loop.Outcome),
+		waiters: make(map[loop.AssignmentKey]int)}
 }
 
 func (r *remoteExecutor) register(key loop.AssignmentKey) chan loop.Outcome {
@@ -67,7 +75,20 @@ func (r *remoteExecutor) Validate(_ context.Context, a loop.Assignment) (*run.To
 
 func (r *remoteExecutor) Dispatch(_ context.Context, a loop.Assignment) error {
 	r.register(a.Key())
-	return postJSON(r.client, r.base+"/dispatch", dispatchRequest{Assignment: a, Callback: r.callback}, nil)
+	err := postJSON(r.client, r.base+"/dispatch", dispatchRequest{Assignment: a, Callback: r.callback}, nil)
+	if err == nil {
+		return nil
+	}
+	// A transport failure means the request may have reached the executor and
+	// crossed its acceptance boundary before the process died — the response
+	// was lost, not the request rejected. Report the unknown boundary instead
+	// of a definite error (RUN-EXE-3); the durable record remains the single
+	// source of the outcome.
+	var transport *url.Error
+	if errors.As(err, &transport) {
+		return fmt.Errorf("%w: %v", loop.ErrDispatchUnknown, err)
+	}
+	return err
 }
 
 func (r *remoteExecutor) Attach(_ context.Context, key loop.AssignmentKey) (loop.Attachment, error) {
@@ -76,11 +97,10 @@ func (r *remoteExecutor) Attach(_ context.Context, key loop.AssignmentKey) (loop
 	if err := postJSON(r.client, r.base+"/attach", attachRequest{Key: key, Callback: r.callback}, &attachment); err != nil {
 		return loop.Attachment{}, err
 	}
-	if attachment.State != loop.AttachmentActive && attachment.State != loop.AttachmentTerminal {
-		r.mu.Lock()
-		delete(r.pending, key)
-		r.mu.Unlock()
-	}
+	// The pending entry stays: an orphaned record (not yet adopted by a
+	// replacement worker) still settles, and GetOutcome's long-poll is how
+	// this authority reads that settlement. Only a missing record avoids a
+	// read, and RecoverInterrupted disposes that target instead.
 	return attachment, nil
 }
 
@@ -91,15 +111,41 @@ func (r *remoteExecutor) GetStatus(_ context.Context, key loop.AssignmentKey) (l
 func (r *remoteExecutor) GetOutcome(ctx context.Context, key loop.AssignmentKey) (loop.Outcome, error) {
 	r.mu.Lock()
 	ch := r.pending[key]
-	r.mu.Unlock()
 	if ch == nil {
+		r.mu.Unlock()
 		return loop.Outcome{}, loop.ErrExecutionNotFound
 	}
-	select {
-	case out := <-ch:
-		return out, nil
-	case <-ctx.Done():
-		return loop.Outcome{}, ctx.Err()
+	r.waiters[key]++
+	r.mu.Unlock()
+	defer func() {
+		r.mu.Lock()
+		r.waiters[key]--
+		r.mu.Unlock()
+	}()
+	for {
+		select {
+		case out := <-ch:
+			return out, nil
+		default:
+		}
+		// The callback only wakes a waiter; the durable read is a long-poll
+		// of the executor's GetOutcome (RUN-EXE-8 pull channel). A dead
+		// executor fails the poll, and the health misses above report
+		// errExecutorUnreachable through the channel.
+		var wire wireOutcome
+		err := postJSON(r.client, r.base+"/outcome", struct {
+			Key loop.AssignmentKey `json:"key"`
+		}{key}, &wire)
+		if err == nil {
+			return decodeOutcome(wire), nil
+		}
+		select {
+		case out := <-ch:
+			return out, nil
+		case <-time.After(200 * time.Millisecond):
+		case <-ctx.Done():
+			return loop.Outcome{}, ctx.Err()
+		}
 	}
 }
 
@@ -121,7 +167,10 @@ func (r *remoteExecutor) handleOutcome(w http.ResponseWriter, req *http.Request)
 }
 
 // monitor polls the executor while assignments are pending; after two missed
-// health checks every pending assignment reports errExecutorUnreachable.
+// health checks every pending assignment with a blocked reader reports
+// errExecutorUnreachable. Assignments no drive waits on are left to their
+// long-poll: a replacement executor's durable record is authoritative, and a
+// stale synthetic error must not preempt it.
 func (r *remoteExecutor) monitor(ctx context.Context) {
 	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
@@ -151,6 +200,9 @@ func (r *remoteExecutor) monitor(ctx context.Context) {
 		r.mu.Lock()
 		stale := make(map[loop.AssignmentKey]chan loop.Outcome, len(r.pending))
 		for key, ch := range r.pending {
+			if r.waiters[key] == 0 {
+				continue
+			}
 			stale[key] = ch
 		}
 		r.mu.Unlock()

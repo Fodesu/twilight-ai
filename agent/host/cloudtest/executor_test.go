@@ -6,10 +6,13 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/felinics/twilight/agent/executor"
+	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/host"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
@@ -63,6 +66,9 @@ type gateTool struct {
 	releaseOnce sync.Once
 	started     chan struct{}
 	release     chan struct{}
+
+	mu     sync.Mutex
+	starts int
 }
 
 func newGateTool() *gateTool {
@@ -75,6 +81,9 @@ func (t *gateTool) ResponsePolicy() run.ResponsePolicy        { return run.Direc
 func (t *gateTool) ValidateArguments(run.CanonicalJSON) error { return nil }
 func (t *gateTool) Execute(ctx context.Context, _ loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	t.startOnce.Do(func() { close(t.started) })
+	t.mu.Lock()
+	t.starts++
+	t.mu.Unlock()
 	select {
 	case <-t.release:
 		return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: run.MustParseCanonicalJSON(`{"gate":"released"}`)}}
@@ -84,6 +93,15 @@ func (t *gateTool) Execute(ctx context.Context, _ loop.ToolExecutionRequest) loo
 }
 
 func (t *gateTool) Release() { t.releaseOnce.Do(func() { close(t.release) }) }
+
+// Starts reports how many times Execute has begun. A replacement executor
+// process must not increment it: adopting the call settles Unknown without
+// re-dispatching the tool.
+func (t *gateTool) Starts() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.starts
+}
 
 type executorServer struct {
 	exec   loop.Executor
@@ -212,6 +230,25 @@ func (s *executorServer) routes(mux *http.ServeMux) {
 		}
 		w.WriteHeader(http.StatusOK)
 	})
+	// /outcome is the pull channel (RUN-EXE-8): GetOutcome blocks until the
+	// record settles, so an authority that missed the callback — for example
+	// one blocked while the executor process was replaced — still reads the
+	// durable outcome here.
+	mux.HandleFunc("/outcome", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Key loop.AssignmentKey `json:"key"`
+		}
+		if err := readJSON(r, &req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		out, err := s.exec.GetOutcome(r.Context(), req.Key)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, encodeOutcome(out))
+	})
 	// Test control: has the gate tool started executing; release it.
 	mux.HandleFunc("/started", func(w http.ResponseWriter, _ *http.Request) {
 		select {
@@ -225,6 +262,9 @@ func (s *executorServer) routes(mux *http.ServeMux) {
 		s.gate.Release()
 		w.WriteHeader(http.StatusOK)
 	})
+	mux.HandleFunc("/gate-stats", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]int{"starts": s.gate.Starts()})
+	})
 }
 
 // runExecutor is the executor role's main.
@@ -235,11 +275,23 @@ func runExecutor() int {
 	if err != nil {
 		return fail(err)
 	}
-	exec, err := host.NewLocalExecutor(cat, nil, false)
+	local, err := host.NewLocalExecutor(cat, nil, false)
 	if err != nil {
 		return fail(err)
 	}
-	srv := &executorServer{exec: exec, gate: gate, client: &http.Client{Timeout: 15 * time.Second},
+	records, err := executionstore.NewFileStore(filepath.Join(os.Getenv(envRoot), "executions"))
+	if err != nil {
+		return fail(err)
+	}
+	// The Worker fronts the in-process executor with a durable record: a
+	// replacement process adopts orphaned leases and settles them per
+	// RUN-EXE-3 instead of losing every in-flight effect with the process.
+	worker, err := executor.NewWorker(context.Background(), records, local,
+		executor.WorkerOptions{LeaseDuration: 2 * time.Second, ReconcileInterval: 500 * time.Millisecond})
+	if err != nil {
+		return fail(err)
+	}
+	srv := &executorServer{exec: worker, gate: gate, client: &http.Client{Timeout: 15 * time.Second},
 		callbacks: make(map[loop.AssignmentKey][]string)}
 	mux := http.NewServeMux()
 	srv.routes(mux)
