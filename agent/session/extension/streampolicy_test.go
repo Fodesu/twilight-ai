@@ -29,10 +29,11 @@ func TestBuildRegistryValidatesStreamPolicy(t *testing.T) {
 		stream StreamPolicy
 		detail string
 	}{
-		"valid session":     {stream: SessionStream},
-		"valid run":         {stream: RunStream("runId")},
-		"missing kind":      {stream: StreamPolicy{}, detail: "no stream policy"},
-		"run without field": {stream: StreamPolicy{Kind: session.StreamKindRun}, detail: "must declare its stream ID field"},
+		"valid session":            {stream: SessionStream},
+		"valid run":                {stream: RunStream("runId")},
+		"missing kind":             {stream: StreamPolicy{}, detail: "no stream policy"},
+		"run without field":        {stream: StreamPolicy{Kind: session.StreamKindRun}, detail: "must declare its stream ID field"},
+		"run with the version key": {stream: RunStream("v"), detail: "collides with the payload version key"},
 		"session with field": {stream: StreamPolicy{Kind: session.StreamKindSession, IDField: "runId"},
 			detail: "must not declare a stream ID field"},
 	}

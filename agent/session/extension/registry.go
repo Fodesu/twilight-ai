@@ -190,6 +190,12 @@ func BuildRegistry(protocolVersion uint16, modules ...ModuleDescriptor) (*Regist
 				if def.Stream.IDField == "" {
 					return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "run-scoped event must declare its stream ID field"}
 				}
+				// "v" is written into every encoded payload as its version key
+				// (addVersion); a binding field of that name would read the
+				// version number in place of the stream ID.
+				if def.Stream.IDField == "v" {
+					return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "stream ID field \"v\" collides with the payload version key"}
+				}
 			default:
 				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "event declares no stream policy"}
 			}

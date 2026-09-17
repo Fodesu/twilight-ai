@@ -10,6 +10,7 @@ import (
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
+	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/agent/turn"
 )
 
@@ -380,11 +381,9 @@ func (s *Session) Close(ctx context.Context) error {
 		s.cancel()
 	}
 	_ = s.Wait(context.Background()) // drives observe the cancelled bg ctx and return
-	w, err := s.h.Writers.Writer(ctx, s.sid)
-	if err != nil {
-		return err
-	}
-	return w.Close(ctx)
+	// Closing and forgetting go together: a Writer that failed (EXT-WRT-4)
+	// does not block the close, and the next OpenSession reopens from the log.
+	return writer.CloseWriter(ctx, s.h.Writers, s.sid)
 }
 
 // settled turns a TurnResponse into Results and drains the backlog: while a

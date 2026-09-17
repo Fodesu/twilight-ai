@@ -190,6 +190,16 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 	if store == nil || registry == nil {
 		return nil, errors.New("writer: nil store or registry")
 	}
+	header, err := store.Header(ctx, sid)
+	if err != nil {
+		return nil, err
+	}
+	// The registry encodes payloads for one protocol version; a Session
+	// created under another one must not be written through it (EXT-WRT-1).
+	if header.ProtocolVersion != registry.ProtocolVersion {
+		return nil, &session.Error{Code: session.ErrUnsupportedProfile, Operation: "open", SessionID: sid,
+			Detail: fmt.Sprintf("session protocol v%d, registry protocol v%d", header.ProtocolVersion, registry.ProtocolVersion)}
+	}
 	kernel, err := store.Open(ctx, sid, opts)
 	if err != nil {
 		return nil, err
@@ -336,13 +346,17 @@ func (w *sessionWriter) OwnerExists(_ context.Context, owner artifact.ClaimOwner
 	return w.kernel.Committed(session.CommitID(owner.Identity)), nil
 }
 
+// errWriterClosed is the failure a closed Writer keeps returning; Writers
+// recognizes it so a forgotten Writer is not closed a second time.
+var errWriterClosed = &extension.Error{Code: extension.ErrInvalid, Detail: "writer closed"}
+
 func (w *sessionWriter) Close(ctx context.Context) error {
 	w.mu.Lock()
 	var writes []cacheWrite
 	if w.head.Next > 0 {
 		writes = w.planRefresh(true)
 	}
-	w.lost = &extension.Error{Code: extension.ErrInvalid, Detail: "writer closed"}
+	w.lost = errWriterClosed
 	err := w.kernel.Close(ctx)
 	w.mu.Unlock()
 	w.saveRefresh(ctx, writes)
@@ -745,10 +759,22 @@ func (ws *writerSet) Writer(ctx context.Context, sid session.SessionID) (Writer,
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	if w, ok := ws.open[sid]; ok {
-		if lw, ok := w.(*sessionWriter); ok && lw.lost != nil {
-			return nil, lw.lost
+		lost := failure(w)
+		if lost == nil {
+			return w, nil
 		}
-		return w, nil
+		// Ownership loss is not confined to this instance: reopening would take
+		// the Session back from the process that owns it now, and that is the
+		// host's decision (CloseWriter forgets the failed Writer first). Every
+		// other failure is: a fresh Writer rebuilds from the log and a replay
+		// of the same CommitID is answered by the kernel's index (EXT-WRT-4).
+		if errors.Is(lost, &extension.Error{Code: extension.ErrOwnershipLost}) {
+			return nil, lost
+		}
+		if lost != errWriterClosed {
+			_ = w.Close(ctx)
+		}
+		delete(ws.open, sid)
 	}
 	w, err := openWriter(ctx, ws.store, ws.registry, ws.admission, sid, ws.opts, ws.cfg)
 	if err != nil {
@@ -758,16 +784,47 @@ func (ws *writerSet) Writer(ctx context.Context, sid session.SessionID) (Writer,
 	return w, nil
 }
 
+// failure returns the error a failed Writer keeps returning, or nil.
+func failure(w Writer) error {
+	lw, ok := w.(*sessionWriter)
+	if !ok {
+		return nil
+	}
+	lw.mu.Lock()
+	defer lw.mu.Unlock()
+	return lw.lost
+}
+
+// CloseWriter closes and forgets the Writer of one Session, so the next
+// Writer(sid) reopens it from the log; a Session without an open Writer is a
+// no-op.
+func (ws *writerSet) CloseWriter(ctx context.Context, sid session.SessionID) error {
+	ws.mu.Lock()
+	defer ws.mu.Unlock()
+	w, ok := ws.open[sid]
+	if !ok {
+		return nil
+	}
+	delete(ws.open, sid)
+	if failure(w) == errWriterClosed {
+		return nil
+	}
+	return w.Close(ctx)
+}
+
 // Close closes every open Writer and forgets it; a later Writer(sid) reopens.
 func (ws *writerSet) Close(ctx context.Context) error {
 	ws.mu.Lock()
 	defer ws.mu.Unlock()
 	var first error
 	for sid, w := range ws.open {
+		delete(ws.open, sid)
+		if failure(w) == errWriterClosed {
+			continue
+		}
 		if err := w.Close(ctx); err != nil && first == nil {
 			first = err
 		}
-		delete(ws.open, sid)
 	}
 	return first
 }
@@ -778,4 +835,19 @@ func CloseWriters(ctx context.Context, ws Writers) error {
 		return c.Close(ctx)
 	}
 	return nil
+}
+
+// CloseWriter closes and forgets one Session's Writer of a NewWriters value
+// (EXT-WRT-6). Another Writers implementation has its Writer closed in place.
+func CloseWriter(ctx context.Context, ws Writers, sid session.SessionID) error {
+	if c, ok := ws.(interface {
+		CloseWriter(context.Context, session.SessionID) error
+	}); ok {
+		return c.CloseWriter(ctx, sid)
+	}
+	w, err := ws.Writer(ctx, sid)
+	if err != nil {
+		return err
+	}
+	return w.Close(ctx)
 }
