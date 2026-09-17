@@ -61,5 +61,6 @@ Workspace 是可选的 application domain。Agent Core 只携带 opaque `TargetR
 5. 未实现的部署能力不得写成已经存在的 Core 能力；应放在 reference application
    或 adapter 的实施计划中。
 
-`test-cloud-agent.md` 是 reference application 的 E2E 规范；可执行 harness 当前
-位于 `agent/host/cloudtest`。它验证上述合同，但不重新定义合同。
+`test-cloud-agent.md` 是 reference application 的 E2E 规范。进程级 harness 与演示
+入口已于 2026-09-17 移除，待 authority / app 分层稳定后在 app 层重建；harness 验证上述
+合同，但不重新定义合同。

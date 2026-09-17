@@ -11,8 +11,9 @@ Session、Run、Turn、Executor 或 Workspace 协议。协议权威分别是：
 - [Host](agent-host.md)：authority 组装与 Session 门面；
 - [Workspace](agent-workspace.md)：逻辑工作空间、RuntimeBinding 与 TargetRef。
 
-如果本文与上述协议冲突，以上述协议为准。`agent/host/cloudtest` 是当前的进程级
-验证 harness；`cmd/twilight-agent` 是演示入口，不是本规范的 API 合同。
+如果本文与上述协议冲突，以上述协议为准。进程级验证 harness 与演示入口已于
+2026-09-17 移除（原 `agent/host/cloudtest`、`cmd/twilight-agent`），待 authority / app
+分层稳定后在 app 层重建；两者都不是本规范的 API 合同。
 
 ## 1. 目标
 
@@ -178,7 +179,7 @@ Executor contract，至少验证：
 
 ### 6.3 Process conformance
 
-`agent/host/cloudtest` 通过真实子进程验证：
+进程级 harness（待重建）通过真实子进程验证：
 
 - authority crash/restart；
 - worker crash/restart；
@@ -212,7 +213,7 @@ Result：最终回复、Failure/Unknown/Recovery disposition
 
 ## 8. 实施顺序
 
-1. 以 `agent/host/cloudtest` 为唯一 executable harness，先补齐故障窗口矩阵；
+1. 在 app 层重建唯一的 executable harness，先补齐故障窗口矩阵；
 2. 抽取 authority/worker 的最小组装函数，保证没有重复的 Host/Loop/Executor 组装；
 3. 为测试应用接入稳定 `TargetRef` 和 `TargetResolver`；
 4. 增加 orphaned/deferred 的 control-plane 测试；
