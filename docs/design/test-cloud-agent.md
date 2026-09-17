@@ -8,7 +8,7 @@ Session、Run、Turn、Executor 或 Workspace 协议。协议权威分别是：
 - [Session](agent-session.md) 与 [Session Module Framework](agent-session-extension.md)：事实流、Writer、所有权、幂等与投影；
 - [Run](agent-run.md)：执行状态机、Assignment、Outcome 与 recovery；
 - [Turn](agent-turn.md)：回合、attempt、输入投递与结算；
-- [Host](agent-host.md)：authority 组装与 Session 门面；
+- [Runtime](agent-runtime.md)：authority 组装、Session 所有权与 app 策略；
 - [Workspace](agent-workspace.md)：逻辑工作空间、RuntimeBinding 与 TargetRef。
 
 如果本文与上述协议冲突，以上述协议为准。进程级验证 harness 与演示入口已于
@@ -144,7 +144,7 @@ Store/Execution Store 读取它们。
 
 ## 5. Recovery 验证
 
-Recovery 的状态域和跨层映射以 [Host](agent-host.md) 的 HST-DRV-5 表格和
+Recovery 的状态域和跨层映射以 [Runtime](agent-runtime.md) 的 HST-DRV-5 表格和
 [Run](agent-run.md) 的 RUN-CMT-7 为唯一来源。这个应用只验证映射后的行为：
 
 - `active` / `terminal`：保留 Executing，读取并结算原 Outcome；

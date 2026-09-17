@@ -26,7 +26,7 @@ func DefaultSnapshotPolicy(_, after *run.MachineState) bool {
 	return open
 }
 
-// Config assembles a Runtime (agent-host.md 7).
+// Config assembles a Runtime (agent-runtime.md 8).
 type Config struct {
 	Writers  writer.Writers
 	Registry *extension.Registry

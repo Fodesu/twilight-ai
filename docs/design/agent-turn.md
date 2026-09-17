@@ -34,7 +34,7 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 
 **TRN-SCP-3** Coordinator 没有隐藏状态。它从 `twilight/turn/surface` 投影与 `twilight/run/machine` 投影重建。
 
-**TRN-SCP-4** Turn 自己的写入经该 Session 的 `writer.Writer.Commit`；Run 事实的写入经 `run.Runtime`，后者经同一个 Writer 落在同一 `session.Store`（EXT-SCP-1）。Coordinator 与 Runtime 经 `writer.Writers` 取得 Writer（EXT-WRT-6）。Artifact 由其 owner 管理。
+**TRN-SCP-4** Turn 自己的写入经该 Session 的 `writer.Writer.Commit`；Run 事实的写入经 `run.Runtime`，后者经同一个 Writer 落在同一 `session.Store`（EXT-SCP-1）。命令以调用方持有的 Writer 为参数（所有权能力，HST-OWN-2）；Status 读取与 Runtime 经 `writer.Writers` 取得 Writer（EXT-WRT-6）。Artifact 由其 owner 管理。
 
 **TRN-SCP-5** Application 管理 model、provider、tool、prompt、token、approval、queue、retry 决策与并发。宿主按 persisted preset 解析 driver 并驱动（HST-DRV-1）。PromptBuilder 按 AgentPreset 的 `Prompt` ref 解析（DEC-CAT-2），每次 Build 使用 AgentPreset 的 `ModelRef`；Scheduling 与 MalformedRetries 是 AgentPreset 上的数据，Loop 直接读取。
 
@@ -161,18 +161,22 @@ UI 按 `TurnID` 连接 `twilight/chatlog/surface` 的条目，按 `RunID` 连接
 
 ```go
 type Coordinator struct {
-    Writers writer.Writers // 每个方法按 Ref.SessionID 取 Writer：写入经 Commit，读取经 Projections()
+    Writers writer.Writers // Status 按 Ref.SessionID 取 Writer 读 Projections()
     Runtime run.Runtime
 }
 
-// Service 只做协议提交与状态读取；驱动 Run 属宿主（HST-DRV）。
-// 每个方法在提交落盘后立即返回，响应反映已提交的状态。
-type Service interface {
-    Start(context.Context, StartRequest) (TurnResponse, error)
-    Deliver(context.Context, DeliverRequest) (TurnResponse, error)
-    Retry(context.Context, RetryRequest) (TurnResponse, error)
-    Stop(context.Context, StopRequest) (TurnResponse, error)
-    Settle(context.Context, SettleRequest) (TurnResponse, error)
+// Commands 只做协议提交；驱动 Run 属 driver（HST-DRV）。每个命令以该 Session 的
+// Writer——调用方的所有权能力（HST-OWN-2）——为参数，经它提交；请求所指
+// Session 与 Writer 不一致为 conflict。每个方法在提交落盘后立即返回，响应反映已提交的状态。
+type Commands interface {
+    Start(context.Context, writer.Writer, StartRequest) (TurnResponse, error)
+    Deliver(context.Context, writer.Writer, DeliverRequest) (TurnResponse, error)
+    Retry(context.Context, writer.Writer, RetryRequest) (TurnResponse, error)
+    Stop(context.Context, writer.Writer, StopRequest) (TurnResponse, error)
+    Settle(context.Context, writer.Writer, SettleRequest) (TurnResponse, error)
+}
+// Reader 是状态读取，不要求所有权。
+type Reader interface {
     Status(context.Context, TurnRef) (TurnResponse, error)
 }
 type StartRequest struct {
@@ -205,9 +209,9 @@ const (
 )
 ```
 
-宿主在该词汇表上扩展 `already_driving`（`host.ResumeAlreadyDriving`，HST-DRV-1）：输入已提交、同 Run 的另一个本地驱动者继续推进。Coordinator 本身不产生该值。
+driver 在该词汇表上扩展 `already_driving`（`driver.ResumeAlreadyDriving`，HST-DRV-1）：输入已提交、同 Run 的另一个本地驱动者继续推进。Coordinator 本身不产生该值。
 
-**TRN-API-1** Coordinator 经 Writer 的 `Projections()` 读取 `twilight/turn/surface` 与 `twilight/run/machine` 两个投影（EXT-PRJ-4）；每个方法先读投影再决定动作。Coordinator 不持有 `session.Store`。
+**TRN-API-1** Coordinator 经 Writer 的 `Projections()` 读取 `twilight/turn/surface` 与 `twilight/run/machine` 两个投影（EXT-PRJ-4）；命令读传入 Writer 的投影，每个方法先读投影再决定动作。Coordinator 不持有 `session.Store`。
 
 **TRN-API-2** Run 的写入只经 `run.Runtime`。driver 的组装与解析在宿主（HST-PST-2）。
 
