@@ -169,37 +169,14 @@ func (h *Host) Collect(ctx context.Context) (session.CollectReport, error) {
 	return writer.Collect(ctx, h.Store)
 }
 
-// WithdrawInput writes twilight/chatlog/input_withdrawn for a submitted,
-// undelivered input (CHT-EVT-2): the Application's decision that an input is
-// not to be delivered, for example the original input of a Turn the caller
-// forked before in order to edit it (HST-FRK-2).
+// WithdrawInput marks a submitted, undelivered input as withdrawn
+// (CHT-EVT-2): the Application's decision that an input is not to be
+// delivered, for example the original input of a Turn the caller forked
+// before in order to edit it (HST-FRK-2).
 func (h *Host) WithdrawInput(ctx context.Context, sid session.SessionID, id run.InputID, reason string) error {
-	w, err := h.Writers.Writer(ctx, sid)
-	if err != nil {
-		return err
+	err := h.chatlog.WithdrawInput(ctx, sid, id, reason)
+	if errors.Is(err, chatlog.ErrNotSubmitted) {
+		return fmt.Errorf("%w: input %s is not a submitted input", turn.ErrConflict, id)
 	}
-	res, err := w.Commit(ctx, func(v writer.View) (*writer.SemanticGroup, error) {
-		state, err := v.Projection(chatlog.SurfaceProjectionID, chatlog.SurfaceProjection.Version)
-		if err != nil {
-			return nil, err
-		}
-		view, ok := state.(chatlog.Surface).Inputs.Get(chatlog.InputID(id))
-		if !ok || view.Status != chatlog.InputSubmitted {
-			return nil, fmt.Errorf("%w: input %s is not a submitted input", turn.ErrConflict, id)
-		}
-		return &writer.SemanticGroup{CommitID: session.CommitID("input-withdrawn/" + string(id)),
-			Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{{
-				Type: chatlog.TypeInputWithdrawn, RecordedAtUnixMilli: h.now().UnixMilli(),
-				Value: chatlog.InputWithdrawnPayload{InputID: chatlog.InputID(id), Reason: reason},
-			}}}}}, nil
-	})
-	if err != nil {
-		return err
-	}
-	switch res.Outcome {
-	case writer.CommitApplied, writer.CommitAlreadyApplied:
-		return nil
-	default:
-		return fmt.Errorf("host: withdraw input: %s: %s", res.Outcome, res.Detail)
-	}
+	return err
 }

@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/felinics/twilight/agent/artifact"
+	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/decision"
 	"github.com/felinics/twilight/agent/executor/http"
 	executorlocal "github.com/felinics/twilight/agent/executor/local"
@@ -86,7 +87,7 @@ const ResumeAlreadyDriving = host.ResumeAlreadyDriving
 
 // CompactorSystemPrompt is kept here for deterministic model test doubles and
 // applications that need to recognize the built-in compaction request.
-const CompactorSystemPrompt = host.CompactorSystemPrompt
+const CompactorSystemPrompt = compaction.CompactorSystemPrompt
 
 // Application is the public authority facade returned by Build. The
 // underlying authority implementation is deliberately hidden from callers;

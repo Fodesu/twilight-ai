@@ -14,7 +14,6 @@ import (
 	"github.com/felinics/twilight/agent/executor"
 	executionstore "github.com/felinics/twilight/agent/executor/store"
 	executorlocal "github.com/felinics/twilight/agent/executor/local"
-	"github.com/felinics/twilight/agent/host"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/sdk"

@@ -11,6 +11,7 @@ import (
 	"github.com/felinics/twilight/agent/executor"
 	executionstore "github.com/felinics/twilight/agent/executor/store"
 	executorlocal "github.com/felinics/twilight/agent/executor/local"
+	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/host"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
@@ -21,7 +22,7 @@ import (
 )
 
 // compactAwareModel answers turns with numbered replies and compactor
-// requests (host.CompactorSystemPrompt) with a fixed summary, recording every
+// requests (compaction.CompactorSystemPrompt) with a fixed summary, recording every
 // request. The compactor request reaches it through the Executor like any
 // other model effect.
 type compactAwareModel struct {
@@ -34,7 +35,7 @@ func (m *compactAwareModel) Generate(_ context.Context, req sdk.Request) (sdk.Mo
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.seen = append(m.seen, req)
-	if len(req.Messages) > 0 && req.Messages[0].Role == sdk.MessageRoleSystem && messageText(req.Messages[0]) == host.CompactorSystemPrompt {
+	if len(req.Messages) > 0 && req.Messages[0].Role == sdk.MessageRoleSystem && messageText(req.Messages[0]) == compaction.CompactorSystemPrompt {
 		return sdk.ModelResult{Text: "summary-of-the-past", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}, nil
 	}
 	m.replies++

@@ -1,4 +1,4 @@
-package host
+package chatlog_test
 
 import (
 	"testing"
@@ -6,6 +6,8 @@ import (
 	"github.com/felinics/twilight/agent/session/chatlog"
 )
 
+// pairEntries builds a context with one tool call pair: input, assistant
+// with call c1, the result of c1, and a final plain assistant.
 func pairEntries() []chatlog.Entry {
 	in := chatlog.Input{ID: "in1", Digest: "sha256:in1"}
 	a1 := chatlog.Assistant{ID: "a1", TurnID: "t1", StepID: "a1", ResultDigest: "sha256:a1r", CallIDs: []chatlog.CallID{"c1"}, Digest: "sha256:a1"}
@@ -19,36 +21,7 @@ func pairEntries() []chatlog.Entry {
 	}
 }
 
-// RetainLast expands a window that cuts a tool pair back to the issuing
-// assistant, so the retained suffix stays valid provider input (HST-CKP-2).
-func TestRetainLastPairClosure(t *testing.T) {
-	entries := pairEntries()
-	cases := []struct {
-		name string
-		n    int
-		want []string
-	}{
-		{"zero keeps nothing", 0, nil},
-		{"suffix without pairs stays as asked", 1, []string{"a2"}},
-		{"orphan result pulls in its assistant", 2, []string{"a1", "r1", "a2"}},
-		{"window past the start keeps everything", 10, []string{"in1", "a1", "r1", "a2"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := RetainLast(entries, tc.n)
-			if len(got) != len(tc.want) {
-				t.Fatalf("retain = %+v, want ids %v", got, tc.want)
-			}
-			for i := range got {
-				if got[i].ID != tc.want[i] {
-					t.Fatalf("retain[%d] = %s, want %s", i, got[i].ID, tc.want[i])
-				}
-			}
-		})
-	}
-}
-
-// checkRetainClosure rejects a retained set that splits a tool pair in either
+// CheckRetainClosure rejects a retained set that splits a tool pair in either
 // direction and accepts closed sets (HST-CKP-2).
 func TestCheckRetainClosure(t *testing.T) {
 	entries := pairEntries()
@@ -66,7 +39,7 @@ func TestCheckRetainClosure(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := checkRetainClosure(entries, tc.retain)
+			err := chatlog.CheckRetainClosure(entries, tc.retain)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
 			}

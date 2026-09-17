@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -205,14 +204,10 @@ func v1InputText(content run.CanonicalJSON) (string, error) {
 }
 
 // InputContent is the v1 user body shape (DEC-INP-1): the same canonical
-// JSON is the chatlog Input content and the Run AgentInput payload.
+// JSON is the chatlog Input content and the Run AgentInput payload. The
+// constructor lives in chatlog, which owns the Input.Content wire shape.
 func InputContent(text string) run.CanonicalJSON {
-	return run.MustParseCanonicalJSON(fmt.Sprintf(`{"text":%s}`, mustJSONString(text)))
-}
-
-func mustJSONString(s string) string {
-	raw, _ := es.MarshalCanonical(s)
-	return string(raw)
+	return chatlog.TextContent(text)
 }
 
 // InputText is the v1 inverse of InputContent: the user text of an input

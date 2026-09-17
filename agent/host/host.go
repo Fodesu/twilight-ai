@@ -106,6 +106,7 @@ type Host struct {
 	admission      writer.Admission
 	frozen         run.FrozenValueStore
 	content        *runmod.Content
+	chatlog        *chatlog.Service
 	bus            *eventBus
 	now            func() time.Time
 	warn           func(error)
@@ -183,7 +184,7 @@ func New(p Ports) (*Host, error) {
 	}
 	h := &Host{
 		Store: store, Writers: writers, Runtime: runtime, Presets: presets, Executor: p.Executor, Decisions: decisions,
-		registry: registry, admission: admission, frozen: frozen, content: runmod.NewContent(frozen), bus: bus, now: now, warn: warn,
+		registry: registry, admission: admission, frozen: frozen, content: runmod.NewContent(frozen), chatlog: &chatlog.Service{Writers: writers, Now: now}, bus: bus, now: now, warn: warn,
 		targetResolver: p.TargetResolver, loops: make(map[turn.PresetRef]*loop.Loop),
 		recovery: make(map[session.SessionID]*recoveryLifetime),
 	}
@@ -515,27 +516,7 @@ func (h *Host) Close(ctx context.Context) error {
 // SubmitInput writes twilight/chatlog/input_submitted for one user text and
 // returns the AgentInput a Start or Deliver hands to the Turn (HST-INP-1).
 func (h *Host) SubmitInput(ctx context.Context, sid session.SessionID, id run.InputID, text string) (run.AgentInput, error) {
-	content := decision.InputContent(text)
-	w, err := h.Writers.Writer(ctx, sid)
-	if err != nil {
-		return run.AgentInput{}, err
-	}
-	res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
-		return &writer.SemanticGroup{CommitID: session.CommitID("input-submitted/" + string(id)),
-			Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{{
-				Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: h.now().UnixMilli(),
-				Value: chatlog.InputSubmittedPayload{InputID: chatlog.InputID(id), Content: content, SubmittedAtUnixMilli: h.now().UnixMilli()},
-			}}}}}, nil
-	})
-	if err != nil {
-		return run.AgentInput{}, err
-	}
-	switch res.Outcome {
-	case writer.CommitApplied, writer.CommitAlreadyApplied:
-		return run.AgentInput{ID: id, Payload: content}, nil
-	default:
-		return run.AgentInput{}, fmt.Errorf("host: submit input: %s: %s", res.Outcome, res.Detail)
-	}
+	return h.chatlog.SubmitInput(ctx, sid, id, text)
 }
 
 // SubmitText submits one user text under a fresh InputID.
