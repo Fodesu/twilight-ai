@@ -113,13 +113,33 @@ type StreamPage struct {
 	HasMore bool
 }
 
-// Store is the kernel port (SES 4 to 6).
+// CollectReport is what one Collect reclaimed (SES-GC-2): the segments it
+// removed entirely and, for deleted segments other Sessions still reach, the
+// new Head.Next after their unreachable suffix was dropped.
+type CollectReport struct {
+	Removed   []SessionID
+	Truncated map[SessionID]CommitSeq
+}
+
+// Store is the kernel port (SES 4 to 6, 8). A Session is a root reference
+// into a DAG of immutable commit segments: its own segment plus, through
+// ParentFork, the prefix of its parent's. Delete drops the root; Collect
+// reclaims what no root reaches.
 type Store interface {
 	Create(context.Context, CreateRequest) (SessionHeader, error)
 	Header(context.Context, SessionID) (SessionHeader, error)
 	Open(context.Context, SessionID, OpenOptions) (Handle, error)
 	ReadCommits(context.Context, CommitReadRequest) (CommitPage, error)
 	ReadStream(context.Context, StreamReadRequest) (StreamPage, error)
+	// Delete drops the Session's root (SES-GC-1): the Session is no longer
+	// found, opened, read or forked, and its SessionID cannot be recreated
+	// until Collect has reclaimed the segment. Its commits stay for as long
+	// as a live Session inherits them. An owned Session is ErrOwned.
+	Delete(context.Context, SessionID) error
+	// Collect reclaims every segment and suffix no live Session reaches
+	// (SES-GC-2). It is idempotent and safe while live Sessions are open:
+	// nothing they reach is touched.
+	Collect(context.Context) (CollectReport, error)
 }
 
 // HasTypePrefix reports whether typ matches one of the prefixes (empty list

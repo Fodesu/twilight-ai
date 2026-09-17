@@ -77,7 +77,7 @@ func TestAppendSyncFailurePoisonsHandle(t *testing.T) {
 	if err != nil || len(page.Commits) != 3 || page.Head.Next != 3 {
 		t.Fatalf("read = %d commits head %+v %v", len(page.Commits), page.Head, err)
 	}
-	if err := session.ValidateLedger(s.profile, page.Header, page.Commits); err != nil {
+	if err := session.ValidateLedger(session.ProfileV1(), page.Header, page.Commits); err != nil {
 		t.Fatalf("ledger after sync failure and reopen: %v", err)
 	}
 }

@@ -88,6 +88,24 @@ func (h *Host) turnStartCommit(ctx context.Context, sid session.SessionID, turnI
 	}
 }
 
+// DeleteSession drops a Session's root and releases its claims (HST-FRK-3,
+// SES-GC-1): the Session is gone, but every commit a live fork inherits stays
+// until Collect finds it unreachable. A Session this Host holds open is
+// closed first; one owned by another process is ErrOwned.
+func (h *Host) DeleteSession(ctx context.Context, sid session.SessionID) error {
+	h.stopRecovery(sid)
+	if err := writer.CloseWriter(ctx, h.Writers, sid); err != nil {
+		return err
+	}
+	return writer.Delete(ctx, h.Store, h.admission, sid)
+}
+
+// Collect reclaims the storage of deleted Sessions no live Session reaches
+// (SES-GC-2).
+func (h *Host) Collect(ctx context.Context) (session.CollectReport, error) {
+	return writer.Collect(ctx, h.Store)
+}
+
 // WithdrawInput writes twilight/chatlog/input_withdrawn for a submitted,
 // undelivered input (CHT-EVT-2): the Application's decision that an input is
 // not to be delivered, for example the original input of a Turn the caller

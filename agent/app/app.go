@@ -181,6 +181,17 @@ func (a *Application) ForkBeforeTurn(ctx context.Context, parent session.Session
 	return a.authority.ForkBeforeTurn(ctx, parent, turnID, child)
 }
 
+// DeleteSession drops a session's root; forks that inherit its commits keep
+// reading them until Collect reclaims what nothing reaches (SES-GC).
+func (a *Application) DeleteSession(ctx context.Context, sid session.SessionID) error {
+	return a.authority.DeleteSession(ctx, sid)
+}
+
+// Collect reclaims unreachable session segments.
+func (a *Application) Collect(ctx context.Context) (session.CollectReport, error) {
+	return a.authority.Collect(ctx)
+}
+
 // WithdrawInput marks a submitted, undelivered input as withdrawn.
 func (a *Application) WithdrawInput(ctx context.Context, sid session.SessionID, id run.InputID, reason string) error {
 	return a.authority.WithdrawInput(ctx, sid, id, reason)

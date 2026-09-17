@@ -63,15 +63,20 @@ Atomic Commit ─────────────────────┘
 Events = 一条 Session 的 commit ledger：有序的原子 Commit 日志，一个 Commit 内含若干按逻辑流分组的 batch
 State  = Fold(Events)
 
-kernel 负责：header、Commit（Seq、CommitID、Epoch、批次）、原子的 Commit 追加、Session 级写者独占、按 Commit 的 digest 链、CommitSeq 顺序读与按逻辑流（StreamRef）的流读
+kernel 负责：header、Commit（Seq、CommitID、Epoch、批次）、原子的 Commit 追加、Session 级写者独占、按 Commit 的 digest 链、CommitSeq 顺序读与按逻辑流（StreamRef）的流读、Session lineage DAG（fork、继承前缀、可达性回收）
+adapter 负责：SegmentStore——独立的只追加 commit 段、每段的所有权与 epoch、段的截断与删除
 modules 负责：event ontology、typed codec、payload 版本、投影、投影缓存、幂等重放、并发串行
 ```
+
+kernel 的 `session.Ledger` 实现 `Store`，只依赖 `SegmentStore` 端口；Memory 与文件 adapter 只实现该端口。DAG 语义由 Go 领域代码定义一次，存储实现它，而不是从存储布局里产生。
 
 **SES-SCP-1** kernel 不解释 payload，不校验 payload 的 schema，不知道模块、commit 的语义、投影或 lease。它保证四件事：日志只能追加；同一时刻一个 Session 至多一个有效写者；一次 `Append` 的整 Commit event 同时可见或同时不存在；每个 Commit 携带覆盖前一 Commit 的 digest。
 
 **SES-SCP-2** 并发不在 kernel 解决。一个 Session 的全部写入者（Run 的 worker、Turn 的 Coordinator、恢复流程）在进程内经同一个 `writer.Writer` 串行（EXT-WRT），它持有 kernel 的所有权句柄 `session.Handle`。kernel 只拒绝不持有有效所有权的 `Append`。
 
-**SES-SCP-3** kernel 的范围是单条 ledger 及其 fork：header、Open/Append/ReadCommits/ReadStream、所有权与 epoch、按 Commit 的 digest 链，以及以父 ledger 前缀为种子的子 Session（第 8 节）。canonical import 不属于当前合同。
+**SES-SCP-3** kernel 的范围是 Session lineage DAG：header、Open/Append/ReadCommits/ReadStream、所有权与 epoch、按 Commit 的 digest 链、fork、删除与可达性回收（第 8 节）。canonical import 不属于当前合同。
+
+**SES-SCP-4** adapter 端口是 `SegmentStore`：`CreateSegment`、`SegmentHeader`（含 deleted 标记）、`ListSegments`、`ReadSegment`（只读该段自身的 commit）、`OpenSegment`（所有权、torn tail 修复）、`MarkDeleted`、`TruncateSegment`、`RemoveSegment`，以及 `SegmentHandle`（`Epoch`、`Head`、`Own`、`LookupOwn`、对已封印 Commit 的 `Append`、`Close`）。adapter 不知道 fork、前缀与可达性；`Ledger` 在该端口之上一次实现 SES-FRK 与 SES-GC。conformance 以 `Store` 为参数运行，因此每个 adapter 得到同一套 DAG 语义。
 
 ## 2. 版本
 
@@ -236,6 +241,7 @@ conformance 以 `Store` 为参数，每个 adapter 跑同一套，必须验证�
 - **SES-OWN-1/2**：第二个 Open 返回 `ErrOwned`；Close 后可再 Open 且 Epoch 加一；声明 `Takeover` 的 Open 在所有权存续期间接管且 Epoch 加一；旧 Handle 的 Append 返回 `ErrOwnershipLost` 且不写入；
 - **SES-APP-1/2/3**：整 Commit 可见性；在 Commit 中途注入崩溃后打开，尾 Commit 不出现；拒绝项无写入；注入持久化失败后句柄返回 `ErrHandleFailed`，重开后已落盘的完整 Commit 在索引中、链完整、同 CommitID 的 Append 为 `ErrConflict`；
 - **SES-REP-1/2**：顺序、From、Limit 截断、ReadStream 与折叠一致、篡改任一 Commit 后下一次 Open 报 `ErrCorrupt`；`From` 取到 `CommitSeq` 最大值仍为空页；无法 reseal 的 Commit 经 `ValidateLedger` 报带坐标的 `ErrCorrupt`；header 归属另一 Session 或所有权记录无法解析时 Open 与 Header 报 `ErrCorrupt`；
+- **SES-GC-1/2**：Delete 对持有中、未知的 Session 分别为 `ErrOwned`、`ErrNotFound`；删除后不可见、不可开、不可 fork、不可重建、再次 Delete 为 `ErrNotFound`；子仍读到已删除父的前缀；Collect 截掉最大 anchor 之后的自身 commit、整段删除不可达段、对存活 Session 无影响、幂等；回收后可重建同名 Session；
 - **SES-FRK-1/2/3**：未知父、超出父 head 的 Seq、digest 不符、自身为父的 fork 被拒且不留 header；相同 anchor 重复 Create 幂等，不同 anchor 为 `ErrConflict`；空 fork 的 head 为 seed；`ReadCommits`/`ReadStream` 返回前缀加自身，`From`/`Limit` 跨越前缀边界计数，流内位置计入继承事件；首个自身 commit 的 Seq 为 `Seq+1`、PrevDigest 为 anchor digest；继承的 CommitID 对 `Committed`/`LookupCommit` 可见、对 `Append` 为 `ErrConflict`；父在 fork 之后的追加对子不可见，反之亦然；自身 commit 在子 header 下、前缀在父 header 下各自通过 `ValidateLedger`；fork 的 fork 读穿两层前缀。
 
 kernel 的 `ProtocolVersion` 覆盖 header 字段、commit 字段、digest preimage 与批次完整性规则（SES-VER-2）。
@@ -258,6 +264,23 @@ func CheckForkAnchor(child SessionHeader, parentPage CommitPage) error
 
 **SES-FRK-3（身份）** 继承前缀中的 CommitID 是子的 CommitID：`Committed` 与 `LookupCommit` 对它们返回命中，`Append` 对它们返回 `ErrConflict`。Writer 的幂等 fingerprint 因此不覆盖 SessionID（EXT-WRT-2）：前缀 commit 由祖先的 SessionID 封印，经子重放仍须判为 `AlreadyApplied`。Session 级派生身份（RunID、Start/Retry/Settle 的 CommitID、TakeoverClaim）在子中以子的 SessionID 派生，与父此后可能派生的同名身份不冲突。
 
-**SES-FRK-4（所有权与恢复）** 子有独立的所有权与 Epoch；打开子不需要父的所有权，父的写者也不受子影响。前缀中处于 Executing 的目标属于父的执行：子的接管处置以子的 AssignmentKey 询问 Executor，得到 `missing` 后按 RUN-CMT-7 处置（模型步撤回重规划、工具 call 记 Unknown），不接管父的 attempt。子引用的冻结正文与 artifact 由 fork claim 保留（EXT-WRT-8）；在实现 GC 之前，父 ledger 不得在有子存在时删除。
+**SES-FRK-4（所有权与恢复）** 子有独立的所有权与 Epoch；打开子不需要父的所有权，父的写者也不受子影响。前缀中处于 Executing 的目标属于父的执行：子的接管处置以子的 AssignmentKey 询问 Executor，得到 `missing` 后按 RUN-CMT-7 处置（模型步撤回重规划、工具 call 记 Unknown），不接管父的 attempt。子引用的冻结正文与 artifact 由 fork claim 保留（EXT-WRT-8）。
+
+## 9. 删除与回收
+
+Session lineage 是一个 DAG：不可变的 commit 段是节点，`ParentFork` 是引用边，Session 是指向自身段的根。fork 只是新增一条边并从该点继续追加（COW）；删除只是撤掉一个根。
+
+```go
+func (Store) Delete(ctx, SessionID) error
+func (Store) Collect(ctx) (CollectReport, error)
+type CollectReport struct { Removed []SessionID; Truncated map[SessionID]CommitSeq }
+func Reachable(headers map[SessionID]SessionHeader, live map[SessionID]bool) map[SessionID]CommitSeq
+```
+
+**SES-GC-1（删除撤根）** `Delete(sid)` 撤掉 Session 的根：此后 `Header`、`Open`、`ReadCommits`、`ReadStream`、以它为父的 `Create` 都返回 `ErrNotFound`，同一 SessionID 在段被回收前不得重建（`ErrConflict`），第二次 `Delete` 为 `ErrNotFound`。被写者持有的 Session 为 `ErrOwned`。段本身不动：仍以它为前缀的 fork 继续经 `readCommits(asSegment)` 读到它，无论它的根是否存在。
+
+**SES-GC-2（可达性回收）** `Collect` 由 kernel 按 `Reachable` 计算每个段必须保留到的 CommitSeq：存活的根保留全部自身 commit；只经 fork 到达的段保留到到达它的最大 anchor Seq，anchor 沿 `ParentFork` 传递。未被任何存活根到达的已删除段整段删除；被到达的已删除段截掉 anchor 之后的自身 commit。存活 Session 的任何 commit 不被触碰，因此 `Collect` 可以在有写者打开时运行，且幂等。回收后释放的 SessionID 可以重建。
+
+**SES-GC-3（claim 与回收的分工）** `writer.Delete` 在撤根后释放该 Session 拥有的全部 claim（commit claim 与 fork claim，EXT-WRT-9）；继承前缀所引用的内容由每个存活 fork 自己的 fork claim 保留，所以父的 claim 释放不影响子。`Collect` 只回收段的存储，不再涉及 claim。
 
 canonical import 仍在范围外。

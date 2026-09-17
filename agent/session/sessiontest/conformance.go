@@ -32,6 +32,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("query", func(t *testing.T) { testQuery(t, factory(t)) })
 	t.Run("scope", func(t *testing.T) { testScope(t, factory(t)) })
 	t.Run("fork", func(t *testing.T) { testFork(t, factory(t)) })
+	t.Run("lineage", func(t *testing.T) { testLineage(t, factory(t)) })
 }
 
 func create(t *testing.T, store session.Store, sid session.SessionID) session.SessionHeader {

@@ -149,3 +149,70 @@ func TestForkWriterSeedsFromParentCache(t *testing.T) {
 		t.Fatalf("late = %v folds=%d, want the cached state with no fold", got, f.counter.get(alphaID))
 	}
 }
+
+// SES-GC-1/2, EXT-WRT-9: deleting a Session drops its root and releases the
+// claims it owns; a fork that inherits its commits keeps reading them through
+// its own prefix claim, and Collect reclaims only what no root reaches.
+func TestDeleteReleasesClaimsAndKeepsInheritedPrefix(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	ref := artifact.Ref{Scheme: "cas", Authority: "local", Key: "k1", Durability: artifact.EventBound, Integrity: &artifact.Integrity{Algorithm: "sha256", Value: "x"}}
+	binding, _ := artifact.NewBinding("b1", ref)
+	if _, err := f.bindings.CreateBinding(ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	parent := f.open(t, false)
+	if _, err := parent.Commit(ctx, func(View) (*SemanticGroup, error) {
+		return &SemanticGroup{CommitID: "c1", Batches: sessionBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "one", Refs: []string{"b1"}}})}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parent.Commit(ctx, noteGroup("c2", "two")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Fork(ctx, f.store, f.registry, f.admission(), ForkRequest{Parent: "s", At: 0, Child: "child"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := Delete(ctx, f.store, f.admission(), "s"); err != nil {
+		t.Fatal(err)
+	}
+	if claims, _ := artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ClaimOwnerKind, Authority: "s"}); len(claims) != 0 {
+		t.Fatalf("parent commit claims after delete = %+v", claims)
+	}
+	if claims, _ := artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ForkOwnerKind, Authority: "child"}); len(claims) != 1 {
+		t.Fatalf("child fork claim after deleting the parent = %+v", claims)
+	}
+	if _, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !session.IsCode(err, session.ErrNotFound) {
+		t.Fatalf("open deleted = %v", err)
+	}
+	child, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "child", session.OpenOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, _, err := child.Projections().Load(ctx, "child", extension.ProjectionID(string(tpfx("a"))+"notes"), 1)
+	if err != nil || len(state.(noteState).Notes) != 1 || state.(noteState).Notes[0] != "one" {
+		t.Fatalf("child after deleting the parent = %+v %v", state, err)
+	}
+	report, err := Collect(ctx, f.store)
+	if err != nil || len(report.Removed) != 0 || report.Truncated["s"] != 1 {
+		t.Fatalf("collect = %+v %v, want the parent kept through commit 0", report, err)
+	}
+	if _, err := child.Commit(ctx, noteGroup("c3", "three")); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := Delete(ctx, f.store, f.admission(), "child"); err != nil {
+		t.Fatal(err)
+	}
+	if claims, _ := artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ForkOwnerKind, Authority: "child"}); len(claims) != 0 {
+		t.Fatalf("fork claim after deleting the child = %+v", claims)
+	}
+	if report, err := Collect(ctx, f.store); err != nil || len(report.Removed) != 2 {
+		t.Fatalf("final collect = %+v %v", report, err)
+	}
+}

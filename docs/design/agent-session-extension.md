@@ -199,6 +199,8 @@ func OpenWriter(ctx, store session.Store, registry *Registry, admission Admissio
 
 **EXT-WRT-8（fork claim）** `writer.Fork(store, registry, admission, ForkRequest{Parent, At, Child})` 读取父 Commit `At` 的 digest，以 `ParentFork` 调用 `Store.Create`（SES-FRK-1），然后在配置了 ledger 时对继承前缀的全部 artifact 引用建立一个 claim：按 commit 顺序解码前缀事件，经各 EventDefinition 声明的提取器收集 BindingID（无法解码的事件不携带已知引用），`ClaimOwner = {Kind:"twilight/session/fork", Authority:ChildSessionID, Identity:"<Parent>@<At>"}`，ClaimID 按 EXT-WRT-5 以 `CommitID = "fork:<Parent>@<At>"` 派生。owner kind 与 commit claim 不同，`OpenWriter` 对 commit claim 的核对不触及它。重复 Fork 幂等；同 ID 而 owner 或集合不同为 `ErrConflict`。父的 commit claim 与 fork claim 同时保留前缀内容；父被回收后 fork claim 仍是 GC root。
 
+**EXT-WRT-9（删除）** `writer.Delete(store, admission, sid)` 调 `Store.Delete` 撤根（SES-GC-1），然后释放该 Session 拥有的全部 Active claim：`{Kind: commit, Authority: sid}` 与 `{Kind: fork, Authority: sid}` 两个 scope 下的每一条。子 fork 继承的前缀内容由子自己的 fork claim 保留（EXT-WRT-8）。宿主必须先关闭该 Session 的 Writer。`writer.Collect(store)` 直接调 `Store.Collect`（SES-GC-2），不涉及 claim。
+
 **EXT-WRT-5** 首个 ClaimID 派生规则：`Digest("twilight/session-extension/claim", "1", ProtocolVersion, SessionID, CommitID, RefSetDigest)`；`ClaimOwner = {Kind:"twilight/session/commit", Authority:SessionID, Identity:CommitID}`。重放先完整执行 binding admission 与 BindingSet 构建，再查找该 claim。已有记录的 owner、BindingIDs 和 RefSetDigest 必须完全相同。Active claim 由 `Activate` 幂等复用；Released claim 保持终态，Writer 派生后继 `Digest("twilight/session-extension/claim-successor", "1", ReleasedClaimID)` 并重复查找，直到复用 Active claim 或建立新的 retention root。该链允许同一 CommitID 在孤儿回收后继续重试；任一记录的身份或集合冲突都拒绝本次提交。
 
 ```go
