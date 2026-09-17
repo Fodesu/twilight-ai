@@ -1,0 +1,70 @@
+// Package local is the colocated executor: model and tool effects run in
+// goroutines of this process against a static Catalog. It is the
+// implementation side of the effect layer; nothing in it enters an
+// AgentPreset.
+package local
+
+import (
+	"errors"
+	"fmt"
+
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/loop"
+)
+
+// Catalog is a static effect catalog for a colocated deployment: the model
+// invokers and tool implementations one process serves.
+type Catalog struct {
+	models map[run.ModelRef]loop.ModelInvoker
+	tools  map[run.ToolRef]loop.ExecutableTool
+}
+
+// NewCatalog builds a Catalog; models maps each ModelRef to its invoker.
+func NewCatalog(models map[run.ModelRef]loop.ModelInvoker, tools ...loop.ExecutableTool) (*Catalog, error) {
+	c := &Catalog{models: make(map[run.ModelRef]loop.ModelInvoker, len(models)), tools: make(map[run.ToolRef]loop.ExecutableTool, len(tools))}
+	for ref, inv := range models {
+		if ref == "" || inv == nil {
+			return nil, errors.New("local: catalog requires a model ref and an invoker")
+		}
+		c.models[ref] = inv
+	}
+	for _, t := range tools {
+		if t == nil {
+			return nil, errors.New("local: catalog got a nil tool")
+		}
+		if _, dup := c.tools[t.Ref()]; dup {
+			return nil, fmt.Errorf("local: duplicate tool %q", t.Ref())
+		}
+		c.tools[t.Ref()] = t
+	}
+	return c, nil
+}
+
+func (c *Catalog) ResolveModel(ref run.ModelRef) (loop.ModelInvoker, error) {
+	inv, ok := c.models[ref]
+	if !ok {
+		return nil, fmt.Errorf("local: unknown model %q", ref)
+	}
+	return inv, nil
+}
+
+func (c *Catalog) ResolveTool(ref run.ToolRef) (loop.ExecutableTool, error) {
+	t, ok := c.tools[ref]
+	if !ok {
+		return nil, fmt.Errorf("local: unknown tool %q", ref)
+	}
+	return t, nil
+}
+
+// NewLocalExecutor is the colocated Executor: effects run in goroutines of
+// this process against the Catalog, and provisional observations go to sink.
+// Model assignments must carry the request inline (RUN-EXE-7); the authority
+// still writes frozen bodies to the content store (RUN-WIR-4) for the
+// Session record, and the executor never reads them back. streaming selects
+// StreamingModelInvoker when an invoker offers it.
+func NewLocalExecutor(cat *Catalog, sink loop.EventSink, streaming bool) (loop.Executor, error) {
+	if cat == nil {
+		return nil, errors.New("local: nil catalog")
+	}
+	return loop.NewLocalExecutor(cat, cat, sink, streaming)
+}

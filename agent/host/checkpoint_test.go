@@ -10,6 +10,7 @@ import (
 
 	"github.com/felinics/twilight/agent/executor"
 	executionstore "github.com/felinics/twilight/agent/executor/store"
+	executorlocal "github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/host"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
@@ -198,11 +199,11 @@ func TestCompactDispatchServesDurableWorker(t *testing.T) {
 	store := session.NewMemoryStore()
 	content := memoryContent()
 	model := &compactAwareModel{}
-	cat, err := host.NewCatalog(map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+	cat, err := executorlocal.NewCatalog(map[run.ModelRef]loop.ModelInvoker{"m-1": model})
 	if err != nil {
 		t.Fatal(err)
 	}
-	local, err := host.NewLocalExecutor(cat, nil, false)
+	local, err := executorlocal.NewLocalExecutor(cat, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}

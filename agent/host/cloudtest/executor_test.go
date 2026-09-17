@@ -13,6 +13,7 @@ import (
 
 	"github.com/felinics/twilight/agent/executor"
 	executionstore "github.com/felinics/twilight/agent/executor/store"
+	executorlocal "github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/host"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
@@ -271,11 +272,11 @@ func (s *executorServer) routes(mux *http.ServeMux) {
 func runExecutor() int {
 	listen := os.Getenv(envListen)
 	gate := newGateTool()
-	cat, err := host.NewCatalog(map[run.ModelRef]loop.ModelInvoker{scriptedModelRef: scriptedModel{}}, gate)
+	cat, err := executorlocal.NewCatalog(map[run.ModelRef]loop.ModelInvoker{scriptedModelRef: scriptedModel{}}, gate)
 	if err != nil {
 		return fail(err)
 	}
-	local, err := host.NewLocalExecutor(cat, nil, false)
+	local, err := executorlocal.NewLocalExecutor(cat, nil, false)
 	if err != nil {
 		return fail(err)
 	}

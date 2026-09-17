@@ -14,6 +14,7 @@ import (
 	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/decision"
 	"github.com/felinics/twilight/agent/executor/http"
+	executorlocal "github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/host"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
@@ -218,11 +219,11 @@ func buildExecutor(c ExecutorConfig) (effect.Port, error) {
 	}
 	switch c.Mode {
 	case "", ExecutorLocal:
-		catalog, err := host.NewCatalog(c.Models, c.Tools...)
+		catalog, err := executorlocal.NewCatalog(c.Models, c.Tools...)
 		if err != nil {
 			return nil, err
 		}
-		port, err := host.NewLocalExecutor(catalog, nil, false)
+		port, err := executorlocal.NewLocalExecutor(catalog, nil, false)
 		if err != nil {
 			return nil, err
 		}

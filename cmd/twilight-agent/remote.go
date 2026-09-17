@@ -14,8 +14,8 @@ import (
 
 	"github.com/felinics/twilight/agent/executor"
 	executorhttp "github.com/felinics/twilight/agent/executor/http"
+	executorlocal "github.com/felinics/twilight/agent/executor/local"
 	executionstore "github.com/felinics/twilight/agent/executor/store"
-	"github.com/felinics/twilight/agent/host"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 )
@@ -23,11 +23,11 @@ import (
 const reconcileInterval = 2 * time.Second
 
 func newExecutor(ctx context.Context, root string, models map[run.ModelRef]loop.ModelInvoker, tools []loop.ExecutableTool) (*executor.Worker, error) {
-	catalog, err := host.NewCatalog(models, tools...)
+	catalog, err := executorlocal.NewCatalog(models, tools...)
 	if err != nil {
 		return nil, err
 	}
-	backend, err := host.NewLocalExecutor(catalog, nil, false)
+	backend, err := executorlocal.NewLocalExecutor(catalog, nil, false)
 	if err != nil {
 		return nil, err
 	}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/artifact"
+	executorlocal "github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/host"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
@@ -23,11 +24,11 @@ func newHost(ports host.Ports, models map[run.ModelRef]loop.ModelInvoker, tools 
 	if ports.Content == nil {
 		ports.Content = memoryContent()
 	}
-	cat, err := host.NewCatalog(models, tools...)
+	cat, err := executorlocal.NewCatalog(models, tools...)
 	if err != nil {
 		panic(err)
 	}
-	exec, err := host.NewLocalExecutor(cat, nil, false)
+	exec, err := executorlocal.NewLocalExecutor(cat, nil, false)
 	if err != nil {
 		panic(err)
 	}
