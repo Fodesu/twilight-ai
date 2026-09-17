@@ -9,20 +9,19 @@ import (
 
 // CreateRequest establishes a Session: a root naming a new segment. A
 // repeat for an existing SessionID whose ProtocolVersion, resolved parent
-// edge, CausationID, Metadata, CreatedAtUnixMilli and (when given) Nonce
-// match the existing Session is idempotent; any difference is a Conflict.
-// Fork makes the new segment a child of another Session's history
-// (SES-FRK-1): that Session must be live in the same Store, its ancestry
-// must hold commit Seq, and it must share the protocol version; otherwise
-// Create fails and writes nothing. Nonce is the segment nonce; empty lets the
-// kernel draw one (NewNonce), which is the normal case. A caller that needs a
-// deterministic segment identity supplies it.
+// edge, CausationID, Metadata and CreatedAtUnixMilli match the existing
+// Session is idempotent; any difference is a Conflict. Fork makes the new
+// segment a child of another Session's history (SES-FRK-1): that Session
+// must be live in the same Store, its ancestry must hold commit Seq, and it
+// must share the protocol version; otherwise Create fails and writes
+// nothing. The segment's nonce is always the kernel's to draw: a caller
+// never names a writable node, so no two roots can be made to share one
+// (SES-FRK-4).
 type CreateRequest struct {
 	ProtocolVersion    uint16
 	SessionID          SessionID
 	CreatedAtUnixMilli int64
 	Fork               *ForkOrigin
-	Nonce              string
 	CausationID        es.CausationID
 	Metadata           jsonstable.Value
 }

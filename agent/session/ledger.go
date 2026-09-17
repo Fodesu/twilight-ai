@@ -14,18 +14,36 @@ import (
 // root reaches. Every adapter gets these semantics from here and implements
 // none of them.
 type Ledger struct {
-	be Backend
+	be    Backend
+	nonce func() (string, error)
 	// graph serializes the operations that change the set of roots and
 	// nodes (Create, Delete, Collect) against each other (SES-GC-4): a
 	// Create's check that its parent is live, and its write, cannot
 	// interleave with a Collect that would reclaim that parent or the new
 	// node. Append and reads never take it; a live root's segments are never
-	// touched by Collect.
+	// touched by Collect. The lock is per process: a Backend shared by
+	// several processes must provide this exclusion itself.
 	graph sync.Mutex
 }
 
+// LedgerOption configures a Ledger.
+type LedgerOption func(*Ledger)
+
+// WithNonceSource replaces the segment nonce generator. Production uses
+// NewNonce; wire fixtures inject a deterministic source so the bytes they
+// freeze are reproducible.
+func WithNonceSource(src func() (string, error)) LedgerOption {
+	return func(l *Ledger) { l.nonce = src }
+}
+
 // NewLedger returns the Store over be.
-func NewLedger(be Backend) *Ledger { return &Ledger{be: be} }
+func NewLedger(be Backend, opts ...LedgerOption) *Ledger {
+	l := &Ledger{be: be, nonce: NewNonce}
+	for _, o := range opts {
+		o(l)
+	}
+	return l
+}
 
 // resolve loads a live Session's root and the Ancestry of its segment.
 func (l *Ledger) resolve(ctx context.Context, sid SessionID) (SessionRecord, *Ancestry, error) {
@@ -55,7 +73,7 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 	if err := validIdentity("SessionID", string(req.SessionID)); err != nil {
 		return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, err.Error())
 	}
-	header := SegmentHeader{ProtocolVersion: req.ProtocolVersion, Nonce: req.Nonce, CausationID: req.CausationID, Metadata: req.Metadata}
+	header := SegmentHeader{ProtocolVersion: req.ProtocolVersion, CausationID: req.CausationID, Metadata: req.Metadata}
 	if req.Fork != nil {
 		// The edge names the segment that contributes the inherited commit,
 		// wherever in the parent's ancestry it lives (SES-FRK-1).
@@ -87,8 +105,8 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 		header.Parent = &LedgerRef{Segment: owner.Segment.ID, Seq: req.Fork.Seq, Digest: commits[0].Digest}
 	}
 	// Idempotency is judged on what the request determines, not on the
-	// segment identity: with a kernel-drawn nonce the identity is fresh each
-	// time, so a repeat is recognized by matching every requested field.
+	// segment identity: the nonce is drawn fresh each time, so a repeat is
+	// recognized by matching every requested field (SES-CRT-1).
 	if existing, err := l.be.Record(ctx, req.SessionID); err == nil {
 		seg, err := l.be.Segment(ctx, existing.Tip)
 		if err != nil {
@@ -101,10 +119,8 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 	} else if !IsCode(err, ErrNotFound) {
 		return SegmentHeader{}, err
 	}
-	if header.Nonce == "" {
-		if header.Nonce, err = NewNonce(); err != nil {
-			return SegmentHeader{}, err
-		}
+	if header.Nonce, err = l.nonce(); err != nil {
+		return SegmentHeader{}, err
 	}
 	digest, err := profile.HeaderDigest(header)
 	if err != nil {
@@ -124,7 +140,7 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 
 // sameCreation reports whether req would create exactly the Session that
 // exists: same protocol, same resolved edge, same causation and metadata,
-// same creation time, and the same nonce when the request pins one.
+// same creation time.
 func sameCreation(req CreateRequest, want SegmentHeader, root SessionRecord, have SegmentHeader) bool {
 	if have.ProtocolVersion != want.ProtocolVersion || root.CreatedAtUnixMilli != req.CreatedAtUnixMilli {
 		return false
@@ -132,10 +148,7 @@ func sameCreation(req CreateRequest, want SegmentHeader, root SessionRecord, hav
 	if (have.Parent == nil) != (want.Parent == nil) || (have.Parent != nil && *have.Parent != *want.Parent) {
 		return false
 	}
-	if have.CausationID != want.CausationID || have.Metadata.String() != want.Metadata.String() {
-		return false
-	}
-	return req.Nonce == "" || req.Nonce == have.Nonce
+	return have.CausationID == want.CausationID && have.Metadata.String() == want.Metadata.String()
 }
 
 func (l *Ledger) Header(ctx context.Context, sid SessionID) (SegmentHeader, error) {

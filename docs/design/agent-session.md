@@ -80,7 +80,7 @@ kernel 的 `session.Ledger` 实现 `Store`，只依赖 `Backend` 端口；Memory
 
 **SES-SCP-2** 并发不在 kernel 解决。一个 Session 的全部写入者（Run 的 worker、Turn 的 Coordinator、恢复流程）在进程内经同一个 `writer.Writer` 串行（EXT-WRT），它持有 kernel 的所有权句柄 `session.Handle`。kernel 只拒绝不持有有效所有权的 `Append`。
 
-**SES-SCP-3** kernel 的范围是 Session lineage DAG：header、Open/Append/ReadCommits/ReadStream、所有权与 epoch、按 Commit 的 digest 链、fork、删除与可达性回收（第 8、9 节）。canonical import 与多父合并不属于当前合同。
+**SES-SCP-3** kernel 的范围是 Session lineage DAG：header、Open/Append/ReadCommits/ReadStream、所有权与 epoch、按 Commit 的 digest 链、fork、删除与可达性回收（第 8、9 节）。canonical import 不属于当前合同。
 
 **SES-SCP-4** adapter 端口是 `Backend = LedgerStore + SessionStore + CreateSession`。`LedgerStore` 存节点：`Segment`、`ListSegments`、`ReadSegment`（只读该段自身的 commit）、`Contains`、`LookupCommit`、对已封印 Commit 的 `Append(lease, segment, commit)`、`TruncateSegment`、`RemoveSegment`。`SessionStore` 存根：`Record`、`ListRecords`、`Acquire`（所有权与 torn tail 修复）、`Release`、`DeleteRecord`。两者共享一个一致性域，使 `Append` 能与 Lease 检查原子进行。adapter 不知道 fork、前缀与可达性；`Ledger` 在该端口之上一次实现 SES-FRK 与 SES-GC。conformance 以 `Store` 为参数运行，因此每个 adapter 得到同一套 DAG 语义。
 
@@ -193,7 +193,7 @@ type Store interface {
 }
 ```
 
-**SES-CRT-1** `Create` 建立一个根与它的 tip 段：kernel 解析 `Fork`（SES-FRK-1）、在 `Nonce` 为空时抽取 128 位随机 nonce、封印 `SegmentHeader`，以 `Backend.CreateSession` 一步落下段与根。对已存在的 SessionID，请求所决定的每个字段（ProtocolVersion、解析后的边、CausationID、Metadata、CreatedAtUnixMilli，以及请求显式给出时的 Nonce）都与现有 Session 相同则幂等返回现有 tip 的 header，否则 `ErrConflict`；幂等判定不比较 SegmentID，因为 kernel 抽取的 nonce 每次不同。
+**SES-CRT-1** `Create` 建立一个根与它的 tip 段：kernel 解析 `Fork`（SES-FRK-1）、抽取 128 位随机 nonce、封印 `SegmentHeader`，以 `Backend.CreateSession` 一步落下段与根。nonce 只由 kernel 抽取，调用方不能指定：可写节点的身份不对外开放，因此两个根不可能被构造成共用一个 tip（SES-FRK-4）；`CreateSession` 对已存在的 SegmentID 也返回 `ErrConflict`。对已存在的 SessionID，请求所决定的每个字段（ProtocolVersion、解析后的边、CausationID、Metadata、CreatedAtUnixMilli）都与现有 Session 相同则幂等返回现有 tip 的 header，否则 `ErrConflict`；幂等判定不比较 SegmentID，因为 nonce 每次不同。wire 夹具以 `NewLedger(be, WithNonceSource(...))` 注入确定性 nonce。
 
 **SES-OWN-1** 同一 Session 同一时刻至多一个有效 Handle。`Open` 在已有有效 Handle 且未声明 `Takeover` 时返回 `ErrOwned`；声明 `Takeover` 的 Open 接管所有权。接管的安全性由 Epoch fencing（SES-OWN-2）承担；何时允许接管（进程死亡判定、租约、人工指令）是 kernel 之上的策略，kernel 不承载 TTL 或心跳。
 
@@ -273,7 +273,7 @@ type Segment struct { ID SegmentID; Header SegmentHeader }  // Header.Parent *Le
 type SessionRecord struct { ID SessionID; Tip SegmentID; CreatedAtUnixMilli int64 }
 type Lease struct { Session SessionID; Epoch Epoch }
 type ForkOrigin struct { Session SessionID; Seq CommitSeq }  // CreateRequest.Fork
-type CreateRequest struct { ProtocolVersion; SessionID; CreatedAtUnixMilli; Fork *ForkOrigin; Nonce string; CausationID; Metadata }  // Nonce 为空时由 kernel 抽取
+type CreateRequest struct { ProtocolVersion; SessionID; CreatedAtUnixMilli; Fork *ForkOrigin; CausationID; Metadata }  // 段 nonce 由 kernel 抽取，调用方不能命名节点
 type Ancestry struct { Segments []AncestrySegment }          // 根段在前，tip 在后；每段带 From/Through
 func LoadAncestry(ctx, LedgerStore, tip SegmentID) (*Ancestry, error)
 func (*Ancestry) Read / Lookup / Contains / Owner(seq)
@@ -303,8 +303,7 @@ type CollectReport struct { Removed []SegmentID; Truncated map[SegmentID]CommitS
 
 **SES-GC-2（可达性回收）** `Collect` 由 kernel 以 `Reachable(nodes, roots)` 计算每个段必须保留到的 CommitSeq：某个根的 tip 段保留全部自身 commit；只经边到达的段保留到到达它的最大 `Parent.Seq`，边沿 `Parent.Segment` 传递。未被任何根到达的段整段删除；被到达但无根的段截掉边之后的自身 commit。任何根 tip 的 commit 不被触碰，因此 `Collect` 可以在有写者打开时运行，且幂等。
 
-**SES-GC-4（图变更的串行）** 改变根与节点集合的操作（`Create`、`Delete`、`Collect`）在 kernel 内互斥：`Create` 对父存活的核对与它的写入不会与回收该父或新节点的 `Collect` 交错；adapter 以 `CreateSession(Segment, SessionRecord)` 一步落下节点与根，不存在有根无段或有段无根的持久状态。`Append` 与读不取该锁：根 tip 的段从不被 `Collect` 触及。
+**SES-GC-4（图变更的串行）** 改变根与节点集合的操作（`Create`、`Delete`、`Collect`）在 kernel 内互斥：`Create` 对父存活的核对与它的写入不会与回收该父或新节点的 `Collect` 交错；adapter 以 `CreateSession(Segment, SessionRecord)` 一步落下节点与根，不存在有根无段或有段无根的持久状态。`Append` 与读不取该锁：根 tip 的段从不被 `Collect` 触及。该互斥是进程内的：多个进程共享一个 Backend 时，根集合变更与可达性回收的互斥必须由该 Backend 的存储事务或 GC 权威提供，当前两个 adapter 都是单进程的。
 
 **SES-GC-3（claim 与回收的分工）** `writer.Delete` 在撤根后释放该 Session 拥有的全部 claim（commit claim 与 fork claim，EXT-WRT-9）；继承前缀所引用的内容由每个存活 fork 自己的 fork claim 保留，所以父的 claim 释放不影响子。`Collect` 只回收段的存储，不再涉及 claim。
 
-canonical import 与多父合并（merge）仍在范围外；`SegmentHeader.Parent` 为单条边，合并需要多条入边与新的 seed 规则。

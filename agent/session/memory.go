@@ -284,9 +284,10 @@ func (m *memoryBackend) CreateSession(ctx context.Context, seg Segment, rec Sess
 	if _, exists := m.roots[rec.ID]; exists {
 		return newError(ErrConflict, "create", rec.ID, "session exists")
 	}
-	if _, exists := m.segments[seg.ID]; !exists {
-		m.segments[seg.ID] = &memorySegment{header: seg.Header, byCommit: make(map[CommitID]int)}
+	if _, exists := m.segments[seg.ID]; exists {
+		return newError(ErrConflict, "create", rec.ID, fmt.Sprintf("segment %s exists", seg.ID))
 	}
+	m.segments[seg.ID] = &memorySegment{header: seg.Header, byCommit: make(map[CommitID]int)}
 	m.roots[rec.ID] = &memoryRoot{record: rec}
 	return nil
 }

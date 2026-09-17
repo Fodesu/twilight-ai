@@ -454,10 +454,10 @@ func (s *Store) saveRoot(sid session.SessionID, rec ownerRecord) error {
 	return writeAtomic(s.rootPath(sid), raw)
 }
 
-// CreateSession lands the node, then the root, under the store lock. The
+// CreateSession lands a new node, then the root, under the store lock. The
 // root file is the last atomic write, so a crash in between leaves a segment
 // no root names: exactly what Collect reclaims (SES-GC-2). There is never a
-// root without its segment.
+// root without its segment, and never a second root on an existing one.
 func (s *Store) CreateSession(ctx context.Context, seg session.Segment, rec session.SessionRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -470,19 +470,20 @@ func (s *Store) CreateSession(ctx context.Context, seg session.Segment, rec sess
 		return kerr(session.ErrCorrupt, "create", rec.ID, err.Error())
 	}
 	dir := s.segmentDir(seg.ID)
-	if _, err := readHeader(dir); os.IsNotExist(err) {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
-		}
-		raw, err := json.Marshal(seg.Header)
-		if err != nil {
-			return err
-		}
-		if err := writeAtomic(filepath.Join(dir, headerFile), raw); err != nil {
-			return err
-		}
-	} else if err != nil {
+	if _, err := readHeader(dir); err == nil {
+		return kerr(session.ErrConflict, "create", rec.ID, fmt.Sprintf("segment %s exists", seg.ID))
+	} else if !os.IsNotExist(err) {
 		return segerr(session.ErrCorrupt, "create", seg.ID, err.Error())
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(seg.Header)
+	if err != nil {
+		return err
+	}
+	if err := writeAtomic(filepath.Join(dir, headerFile), raw); err != nil {
+		return err
 	}
 	return s.saveRoot(rec.ID, ownerRecord{SessionRecord: rec})
 }

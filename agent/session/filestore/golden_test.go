@@ -26,8 +26,11 @@ func TestLogFileGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The segment nonce is the kernel's; the fixture pins it so the frozen
+	// bytes are reproducible.
+	store.Ledger = session.NewLedger(store, session.WithNonceSource(func() (string, error) { return "golden", nil }))
 	const sid session.SessionID = "golden"
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1, Nonce: "golden"}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
 	}
 	w, err := store.Open(ctx, sid, session.OpenOptions{})

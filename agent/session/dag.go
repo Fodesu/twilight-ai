@@ -133,11 +133,11 @@ type SessionStore interface {
 type Backend interface {
 	LedgerStore
 	SessionStore
-	// CreateSession persists a node and the root that names it as one
+	// CreateSession persists a new node and the root that names it as one
 	// durable step (SES-FRK-1): never a root without its segment, never a
-	// segment a Collect could see without its root. The segment may already
-	// exist (another root created it with the same record); the root must
-	// not: ErrConflict when the SessionID exists.
+	// segment a Collect could see without its root. Both must be new:
+	// ErrConflict when the SessionID or the SegmentID exists, so no two
+	// roots ever name one writable tip (SES-FRK-4).
 	CreateSession(context.Context, Segment, SessionRecord) error
 }
 
