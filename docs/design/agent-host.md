@@ -136,15 +136,27 @@ func (s *Session) Close(ctx) error
 
 **HST-FRK-3** `DeleteSession` 先停止该 Session 的恢复监听并关闭其 Writer，再以 `writer.Delete` 撤根并释放 claim（EXT-WRT-9）；被另一进程持有的 Session 为 `ErrOwned`。以它为前缀的 fork 不受影响。`Collect` 调 `writer.Collect` 回收无根可达的段（SES-GC-2）。
 
+## 5.1 子代理
+
+**HST-SPN-1** 子代理是一个由 ToolCall 启动的普通 Session。模型调用 spawn 工具（默认 `agent_spawn`，经 `Ports.Spawn` 配置 Tool、命名 Preset 解析与最大深度）；Host 在 Executor 之前拦截该工具的 Assignment 并亲自驱动其子 Session。工具定义、参数与结果形状、派生身份、定义摘要核对、深度与重放冲突判定在 `agent/spawn` 协议包；创建、驱动、结算与端口编排在 host 的 spawnExecutor（实现 `effect.Port` 与 `effect.BindingPort`）。Run 事实本体不新增子代理生命周期：父只看到一个以子代理回复完成的工具调用。
+
+**HST-SPN-2** 调用到子 Session 的绑定是派生的，不单独存储：`ChildSessionID = spawn.ChildID(parent, runID, callID)`（preimage `twilight/spawn/child`）；子段创建元数据在 `twilight/spawn` 键下记录完整 provenance（父 Session、父 Run、CallID、深度、全量参数），接管方据此在崩溃后重建同一调用。同一 CallID 以不同参数重放在 Validate 与 drive 两侧都被拒绝（RUN-EXE-3）。经持久 Worker 部署时 `PrepareBinding` 返回 `ExecutionBinding{Provider: twilight/session, ExecutionRef: child}`，由 execution store 随调用记录持久化。
+
+**HST-SPN-3** 嵌套深度从 provenance 链得出：未由 spawn 创建的 Session 深度为 0，子的深度为父深度加一。深度达到 `Ports.Spawn.MaxDepth`（默认 3）的 Session 发起 spawn 调用在开始前被拒（FailureExecution），不创建子 Session。
+
+**HST-SPN-4** 崩溃接管沿既有 RUN-CMT-7 Attach 路径：新进程对 Executing 的 spawn 调用执行 Attach 时，本地无记录则以派生 ChildID 查 `SessionStore.Record`——子存在即收养（参数取子 provenance）继续同一调用，不存在交回内层 Executor。`Host.Close` 取消本进程的全部 drive，子的 Turn 保持 active 等待收养。
+
+**HST-SPN-5** 模式 `spawn`（默认）从空 Session 起；`fork` 以 `turnPrefixCommit` 为根，即父在调用 Turn 及其输入之前的全部历史，子拿到的是当前 Turn 开始之前的对话。驱动依子的持久状态推进：无输入则 `Send(task)`；有 active Turn 则 `Resume`；有 submitted 输入则 `Drain` 投递；否则比较最新输入与 task——相同则读取已结算结果，不同则补 `Send(task)`（fork 子的前缀只含已交付对话的情形）。子 Turn 非 `completed` 时调用失败。
+
 **HST-EVT-1** `Host.Events(ctx, sid)` 是该 Session 从订阅时刻起的事件流：Host 以 `writer.CommitObserver` 接在自己的 `Writers` 上（EXT-WRT-7），每个已应用组的每一行经 Registry 解码为 `Event{Row, Module, Version, Value, Unknown}`，按提交顺序交付；无 codec 的类型或版本以 `Unknown` 交付原行。订阅者之间互不阻塞，慢读者只延迟自己的交付，从不阻塞 Commit。历史不在此流上：从 Store 或投影读取。UI、SSE 与 CLI 的观察都从这一个源头派生，Loop 的 `EventSink` 只保留给 executor 侧的流式增量。
 
-**HST-INP-1** `SubmitInput(ctx, sid, id, text)` 以 `decision.InputContent` 提交用户正文（DEC-INP-1），`SubmitText` 以随机、跨重启无碰撞的 InputID 提交；需要外部幂等键的调用方使用前者。`StartRequest.Inputs[i].ID` 等于已 submitted 的 InputID，`Payload` 等于其 Content。
+**HST-INP-1** `SubmitInput(ctx, sid, id, text)` 委托 `chatlog.Service.SubmitInput` 提交用户正文（构造器为 `chatlog.TextContent`，DEC-INP-1），`SubmitText` 以随机、跨重启无碰撞的 InputID 提交；需要外部幂等键的调用方使用前者。`StartRequest.Inputs[i].ID` 等于已 submitted 的 InputID，`Payload` 等于其 Content。
 
 ## 6. compaction
 
-**HST-CKP-1** 机制在 chatlog（CHT-EVT-3），策略在宿主。`Host.Checkpoint(ctx, sid, summaryText, retain)` 在该 Session Writer 的 Commit 临界区内读 turn surface（存在 active Turn 则拒绝——compaction 是回合之间的操作）与 `twilight/chatlog/context`，以 `View.Head().Next - 1` 为 `CoveredThrough`，把 summary 与 `checkpoint_created` 同组提交。CheckpointID 与 SummaryID 由 SessionID、base context digest 与摘要文本派生（同一后缀，前缀分别为 `ckpt-` 与 `sum-`），CommitID 为 `checkpoint/<CheckpointID>`：对同一 base 重试的 Checkpoint 重放同一 CommitID，Writer 按 EXT-WRT-2 回答 `AlreadyApplied`，不会写入第二个 checkpoint。`Session.Compact` 用 AgentPreset 的模型生成摘要，**这次模型调用与其他效果一样经 Executor 端口**：请求经 `FreezeModelRequest` 冻结并 `Put` 进 Frozen，以一个不属于任何 Run 的临时 key 构成模型 Assignment 交给 `Executor.Dispatch`，等待 Outcome；authority 因此不需要模型客户端，远端 Executor 以同一方式服务它。生成中崩溃不写任何事件。自动策略由 `SessionOptions.CompactAfterEntries` 启用：结算且积压排空后、Context 条目数超阈值时触发；失败经 `CompactWarn` 上报，不改变已结算的 `Result`。
+**HST-CKP-1** 机制与命令在 chatlog，策略在 `agent/context/compaction`。`chatlog.Service.Checkpoint(ctx, sid, summaryText, retain, guard)` 在该 Session Writer 的 Commit 临界区内读 `twilight/chatlog/context`，以 `View.Head().Next - 1` 为 `CoveredThrough`，把 summary 与 `checkpoint_created` 同组提交；active Turn 的拒绝规则由调用方以 `guard` 注入同一临界区（turn 域策略，chatlog 不能反向依赖）。`Host.Checkpoint` 是这个命令带上宿主 quiescence 规则的薄封装。CheckpointID 与 SummaryID 由 SessionID、base context digest 与摘要文本派生（同一后缀，前缀分别为 `ckpt-` 与 `sum-`），CommitID 为 `checkpoint/<CheckpointID>`：对同一 base 重试的 Checkpoint 重放同一 CommitID，Writer 按 EXT-WRT-2 回答 `AlreadyApplied`，不会写入第二个 checkpoint。`Session.Compact` 经 `compaction.Summarizer` 用 AgentPreset 的模型生成摘要，**这次模型调用与其他效果一样经 Executor 端口**：请求经 `FreezeModelRequest` 冻结并 `Put` 进 Frozen，以一个不属于任何 Run 的临时 key 构成模型 Assignment 交给 `Executor.Dispatch`，等待 Outcome；authority 因此不需要模型客户端，远端 Executor 以同一方式服务它。生成中崩溃不写任何事件。自动策略由 `SessionOptions.CompactAfterEntries` 启用：结算且积压排空后、Context 条目数超阈值时触发；失败经 `CompactWarn` 上报，不改变已结算的 `Result`。
 
-**HST-CKP-2** retained 集必须封闭：保留的 tool_result 连同签发该 call 的 assistant，保留的带 tool_call 的 assistant 连同其在 Context 中的 result。`RetainLast(entries, n)` 返回满足封闭的最短后缀；`Host.Checkpoint` 校验封闭并拒绝违反者。子集与顺序由 fold 校验（CHT-EVT-3），封闭由宿主校验。
+**HST-CKP-2** retained 集必须封闭：保留的 tool_result 连同签发该 call 的 assistant，保留的带 tool_call 的 assistant 连同其在 Context 中的 result。`compaction.RetainLast(entries, n)` 返回满足封闭的最短后缀；`chatlog.CheckRetainClosure` 在命令内校验封闭并拒绝违反者。子集与顺序由 fold 校验（CHT-EVT-3）。
 
 ## 7. 组成
 
@@ -156,6 +168,7 @@ content     = runmod.NewContent(frozen)                          // materializer
 writers     = writer.NewWriters(..., {Cache, CachePolicy, Observers: [eventBus, Ports.Observers...]})
 runtime     = runmod.NewRuntime{Writers, registry, Store, Frozen: frozen, Bindings: Artifacts.Bindings, Cache, Clock}
 coordinator = turn.Coordinator{Writers, runtime}                 // 纯协议：提交 + Status
+spawn      = Ports.Spawn != nil → Executor 外包一层 spawnExecutor（HST-SPN-1）
 loops       = PresetRef → loop.New(Executor, builder, Settings{preset.Scheduling, preset.MalformedRetries})   // 首次 Drive 时组合
 ```
 
@@ -183,5 +196,6 @@ loops       = PresetRef → loop.New(Executor, builder, Settings{preset.Scheduli
 - **HST-SES-1/2/3**：OpenSession 顺序；Send 的首个 Result 与排空 Result；并发 Send 的 `already_driving` 收敛。
 - **HST-SES-4、HST-EVT-1**：Submit 在模型仍阻塞时已返回且 Turn 为 active；事件流按 Seq 顺序交付该 Turn 的 `started`、`attempt_started` 与其 Run 的 `run_ended`；后台驱动失败以 `Event{Err}` 与 `Ports.Warn` 报告；同一 Session 上 Send 仍阻塞到 Result。
 - **HST-CKP-1/2**：Compact 的模型请求经 Executor 到达模型；压缩后下一请求以 summary 开头且只含 retained 后缀；重启进程组装同一上下文；active Turn 时 Compact 为 conflict；封闭校验的四类边界。
+- **HST-SPN-1..5**：spawn 调用以派生身份建子 Session 并以子回复完成父的工具调用；fork 模式拿到当前 Turn 之前的对话且收到 task；参数错误、未知命名 Preset 与深度超限在开始前被拒且不建子；所有者进程在子模型调用中途退出后，新进程收养同一调用并完成父 Turn；收养后子的 Turn 数与输入数不变。
 - **HST-MEM-2**：`CacheEvery` 到达 Writer；machine projection 从不被 Writer 写入。
 - **HST-FRK-1/2**：在某 Turn 之前 fork 得到的子 Session 只含该 Turn 之前的回答且其输入仍待投递；`Drain` 以同一输入重新生成，`WithdrawInput` 后 `Send` 以新输入替代；两个子都读到共享前缀的冻结正文；父的 head 不变；每个子的首个自身 Commit 从 anchor 续链；未知 Turn 与自身为父被拒。
