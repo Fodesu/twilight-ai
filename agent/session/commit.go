@@ -246,7 +246,8 @@ func ValidateLedger(p LedgerProfile, header SessionHeader, commits []Commit) err
 		resealed.PrevDigest = ""
 		resealed.Digest = ""
 		if err := SealCommit(p, prev, header.SessionID, &resealed); err != nil {
-			return err
+			// A stored commit the profile cannot reseal is corrupt to a reader, whatever the seal rejected.
+			return &Error{Code: ErrCorrupt, Operation: "read", SessionID: header.SessionID, CommitID: c.CommitID, Detail: fmt.Sprintf("commit %d cannot be resealed: %v", i, err)}
 		}
 		if c.PrevDigest != prev || c.Digest != resealed.Digest {
 			return &Error{Code: ErrCorrupt, Operation: "read", SessionID: header.SessionID, CommitID: c.CommitID, Detail: fmt.Sprintf("digest mismatch at commit %d", i)}

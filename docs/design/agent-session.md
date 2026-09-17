@@ -41,7 +41,7 @@ Atomic Commit ─────────────────────┘
 
 5. **Session 级 Ownership 与 Fencing。** `Handle + Epoch`：同一 Session 同一时刻至多一个有效写者；接管使 Epoch 加一并持久化，旧 Handle 的迟到写入被拒（SES-OWN-1/2）。所有权是 Session 级而非执行目标级：接管者对全部执行中的目标查询，并根据结果重连、延迟或处置（SES-OWN-3、RUN-CMT-7）。何时接管是 kernel 之上的策略，kernel 不承载 TTL 或心跳。
 
-6. **幂等语义提交。** `CommitID + semantic fingerprint`：同 ID 同内容为 `AlreadyApplied`，同 ID 不同内容为 `Conflict`，两者都不写入（EXT-WRT-2）。fingerprint 覆盖 Type、SourceSeqs、Payload，不含时间。kernel 只拒绝重复 CommitID 并提供该索引的读侧（SES-APP-3、SES-REP-3/4），比对由 Writer 完成。恢复与重放因此不会重复写事实。
+6. **幂等语义提交。** `CommitID + semantic fingerprint`：同 ID 同内容为 `AlreadyApplied`，同 ID 不同内容为 `Conflict`，两者都不写入（EXT-WRT-2）。fingerprint 覆盖 SessionID、CommitID、各 batch 的 stream 与其事件的 Type、Payload 有序序列，不含时间。kernel 只拒绝重复 CommitID 并提供该索引的读侧（SES-APP-3、SES-REP-3/4），比对由 Writer 完成。恢复与重放因此不会重复写事实。
 
 7. **Projection 与 Snapshot 只是派生状态。** Projection 可重建，Snapshot（投影缓存）可丢弃；复用条件是 Commit 边界对齐（EXT-PRJ-3），篡改或过期的条目只让下次多折，绝不成为第二份 authority（EXT-PRJ-5/7）。owner 进程内的投影与观察者从 Store 折出的投影对同一 head 给出相同状态（EXT-PRJ-4）。
 
@@ -209,7 +209,7 @@ type StreamReadRequest struct {
 type StreamPage struct { Header SessionHeader; Stream StreamRef; Events []Event; Head Head; HasMore bool }
 ```
 
-**SES-REP-1** `ReadCommits` 按 `CommitSeq` 递增返回 `From` 起的完整 Commit。损坏检测的义务点在 `Open`：Open 在建立所有权前用 `ValidateLedger` 重算整条 digest 链，损坏必须 fail loudly（`ErrCorrupt`）；`ValidateLedger` 同时作为显式校验入口导出。读路径信任存储，不逐次重算链。
+**SES-REP-1** `ReadCommits` 按 `CommitSeq` 递增返回 `From` 起的完整 Commit。`From` 大于等于 `Head.Next` 时返回空页且 `HasMore` 为假，这对 `CommitSeq` 的全部值域成立：实现必须以 `CommitSeq` 比较起点，不得先把它转换为 `int` 再索引日志。损坏检测的义务点在 `Open`：Open 在建立所有权前用 `ValidateLedger` 重算整条 digest 链，损坏必须 fail loudly（`ErrCorrupt`）；`ValidateLedger` 同时作为显式校验入口导出，对任何无法重算的 Commit（包括 profile 拒绝 reseal 的形状错误）返回带该 Commit 坐标的 `ErrCorrupt`，不暴露底层封装错误。Open 读取的 Session 元数据同属校验范围：header 归属另一 Session 或所有权记录无法解析时报 `ErrCorrupt`，不得报告为不存在。读路径信任存储，不逐次重算链。
 
 **SES-REP-2** `StreamSeq` 是流内位置，由 Store 按 CommitSeq 顺序数出，是读侧的优化：`ReadStream` 只返回该流的事件，但其顺序与从 `ReadCommits` 折叠出的流内顺序完全一致。它不进 digest，也不是第二种排序。
 
@@ -235,7 +235,7 @@ conformance 以 `Store` 为参数，每个 adapter 跑同一套，必须验证�
 - **SES-WIR-1/2/3**：CommitSeq 连续、批次非空、同 Commit 内流唯一且归因合法、CommitID 唯一、payload canonical、header/batch/commit digest 链、版本一致；
 - **SES-OWN-1/2**：第二个 Open 返回 `ErrOwned`；Close 后可再 Open 且 Epoch 加一；声明 `Takeover` 的 Open 在所有权存续期间接管且 Epoch 加一；旧 Handle 的 Append 返回 `ErrOwnershipLost` 且不写入；
 - **SES-APP-1/2/3**：整 Commit 可见性；在 Commit 中途注入崩溃后打开，尾 Commit 不出现；拒绝项无写入；注入持久化失败后句柄返回 `ErrHandleFailed`，重开后已落盘的完整 Commit 在索引中、链完整、同 CommitID 的 Append 为 `ErrConflict`；
-- **SES-REP-1/2**：顺序、From、Limit 截断、ReadStream 与折叠一致、篡改任一 Commit 后下一次 Open 报 `ErrCorrupt`。
+- **SES-REP-1/2**：顺序、From、Limit 截断、ReadStream 与折叠一致、篡改任一 Commit 后下一次 Open 报 `ErrCorrupt`；`From` 取到 `CommitSeq` 最大值仍为空页；无法 reseal 的 Commit 经 `ValidateLedger` 报带坐标的 `ErrCorrupt`；header 归属另一 Session 或所有权记录无法解析时 Open 与 Header 报 `ErrCorrupt`。
 
 kernel 的 `ProtocolVersion` 覆盖 header 字段、commit 字段、digest preimage 与批次完整性规则（SES-VER-2）。
 

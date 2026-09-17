@@ -102,7 +102,7 @@ type BindingStore interface {
 
 **ART-BND-1** Binding immutable。`BindingDigest` 覆盖 versioned domain separator、BindingID 和完整 RefWireIdentity。相同 BindingID 只可重建逐字段相同的 Binding；其他值为 conflict。
 
-**ART-BND-2** Resolver 必须验证返回 bytes 与声明的 size/integrity 一致，Ref 声明的 MediaType 与存储时的声明不一致同样以 `corrupt` 拒绝。Store 只有在 durable acknowledgement 后返回 Ref；同 immutable identity 和 bytes 的重复 Put 幂等，同 bytes 以另一 MediaType 重复 Put 为 `conflict`。`Ephemeral` Put 返回的 Ref 是否携带 `ExpiresAtUnixMilli` 及其时长由 Store 的部署参数决定；`EventBound` 与 `Pinned` 的 Ref 不携带。promotion 流程为 `resolve → promote → CreateBinding(target Ref)`，不得重写旧 Binding；promote 产生的 Ref 与源 Ref 指向同一内容（integrity 相等），durability 不低于源，且离开 `Ephemeral` 后不再过期。同一 store 内的 promote 只提升 durability；跨 store 的 promote 经 `CopyPromoter` 复制字节。
+**ART-BND-2** Resolver 必须验证返回 bytes 与声明的 size/integrity 一致，Ref 声明的 MediaType 与存储时的声明不一致同样以 `corrupt` 拒绝。Store 只有在 durable acknowledgement 后返回 Ref；同 immutable identity 和 bytes 的重复 Put 幂等，同 bytes 以另一 MediaType 重复 Put 为 `conflict`。`Ephemeral` Put 返回的 Ref 是否携带 `ExpiresAtUnixMilli` 及其时长由 Store 的部署参数决定；`EventBound` 与 `Pinned` 的 Ref 不携带。promotion 流程为 `resolve → promote → CreateBinding(target Ref)`，不得重写旧 Binding；promote 产生的 Ref 与源 Ref 指向同一内容（integrity 相等），durability 不低于源，且离开 `Ephemeral` 后不再过期。同一 store 内的 promote 只提升 durability；跨 store 的 promote 经 `CopyPromoter` 复制字节。Store 可配置单次 Put 的字节上限（`MaxBytes`）：长度恰为上限的内容正常存入，超过上限的 Put 以 `invalid` 拒绝且不写入；实现最多读取上限加一个字节即可判定，不得先缓冲整个输入，上限取 int64 最大值时不得溢出。
 
 ## 4. capability interfaces
 
@@ -238,6 +238,6 @@ func (Error) Error() string
 conformance suite 为 `agent/artifact/artifacttest`，以 `BindingStore`、`RetentionLedger`（经 `BindingSetBuilder` 验证 set）与按 Authority 构造 `ContentStore` 的工厂为参数；每个 adapter 以自己的工厂运行同一套断言。它必须验证：
 
 - **ART-ID-1、ART-REF-1、ART-REF-2、ART-WIR-1**：canonical round-trip、拒绝歧义 wire、identity-bound/untrusted MediaType、locator/integrity 和 durability；
-- **ART-BND-1、ART-BND-2、ART-CAP-1、ART-CAP-2**：Binding conflict 与 digest 校验、cas Key 等于 Integrity、Put 幂等与 MediaType conflict、resolver 对 size/integrity/MediaType 的校验、`missing`/`expired`/`unauthorized`/`corrupt`/`unsupported` 分类、同 store 与跨 store 的 promotion（不降级、清除过期、不重写旧 Binding）；
+- **ART-BND-1、ART-BND-2、ART-CAP-1、ART-CAP-2**：Binding conflict 与 digest 校验、cas Key 等于 Integrity、Put 幂等与 MediaType conflict、resolver 对 size/integrity/MediaType 的校验、`missing`/`expired`/`unauthorized`/`corrupt`/`unsupported` 分类、Put 字节上限（恰为上限存入、超出一字节为 `invalid`、最大上限不溢出）、同 store 与跨 store 的 promotion（不降级、清除过期、不重写旧 Binding）；
 - **ART-RET-1、ART-RET-2、ART-RET-3**：BindingSetBuilder/ledger 独立重算与精确验证、RefSetDigest、不可复用 released claim、两态状态表、`Activate` 返回即持久且幂等、owner 不存在的 Active claim 被回收前核对释放而 owner 存在的不受影响、cursor pagination、Active GC protection；
 - **ART-PRO-1**：immutable registry 与 provider-instance isolation。

@@ -121,6 +121,11 @@ func (s *Store) loadHeader(sid session.SessionID, op string) (session.SessionHea
 		}
 		return session.SessionHeader{}, "", kerr(session.ErrCorrupt, op, sid, err.Error())
 	}
+	if h.SessionID != sid {
+		// A valid header of another Session under this directory (a copied or
+		// renamed directory) must not be served as sid's.
+		return session.SessionHeader{}, "", kerr(session.ErrCorrupt, op, sid, fmt.Sprintf("header names session %q", h.SessionID))
+	}
 	if err := s.profile.ValidateHeader(h); err != nil {
 		return session.SessionHeader{}, "", err
 	}
@@ -188,17 +193,20 @@ type ownerRecord struct {
 	Owned bool          `json:"owned"`
 }
 
-func loadOwner(dir string) (ownerRecord, error) {
+// loadOwner reads the ownership record; a missing file means unowned. Any
+// other failure is reported as corrupt: the file is the ownership authority,
+// and a Store that cannot read it cannot tell who owns the Session.
+func loadOwner(dir string, sid session.SessionID, op string) (ownerRecord, error) {
 	raw, err := os.ReadFile(filepath.Join(dir, ownerFile))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return ownerRecord{}, nil
 		}
-		return ownerRecord{}, err
+		return ownerRecord{}, kerr(session.ErrCorrupt, op, sid, fmt.Sprintf("%s: %v", ownerFile, err))
 	}
 	var rec ownerRecord
 	if err := json.Unmarshal(raw, &rec); err != nil {
-		return ownerRecord{}, fmt.Errorf("%s: %w", ownerFile, err)
+		return ownerRecord{}, kerr(session.ErrCorrupt, op, sid, fmt.Sprintf("%s: %v", ownerFile, err))
 	}
 	return rec, nil
 }
@@ -221,7 +229,7 @@ func (s *Store) Open(ctx context.Context, sid session.SessionID, opts session.Op
 	if err != nil {
 		return nil, err
 	}
-	rec, err := loadOwner(dir)
+	rec, err := loadOwner(dir, sid, "open")
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +335,7 @@ func (w *fileHandle) Head() session.Head {
 // takeover through another Store instance fences this writer. The caller
 // holds the store lock.
 func (w *fileHandle) current(op string) error {
-	rec, err := loadOwner(w.dir)
+	rec, err := loadOwner(w.dir, w.header.SessionID, op)
 	if err != nil {
 		return err
 	}
@@ -378,7 +386,7 @@ func (w *fileHandle) LookupCommit(id session.CommitID) (session.Commit, bool, er
 func (w *fileHandle) Close(ctx context.Context) error {
 	w.store.mu.Lock()
 	defer w.store.mu.Unlock()
-	rec, err := loadOwner(w.dir)
+	rec, err := loadOwner(w.dir, w.header.SessionID, "close")
 	if err != nil {
 		return err
 	}
@@ -637,8 +645,8 @@ func (s *Store) ReadStream(ctx context.Context, req session.StreamReadRequest) (
 // index. The caller holds the lock.
 func (s *Store) commitsFrom(sid session.SessionID, path string, header session.SessionHeader, from session.CommitSeq) ([]session.Commit, session.Head, error) {
 	if idx := s.currentIndex(sid, path); idx != nil {
-		n := len(idx.offsets) - 1 // commits covered by the index
-		if int(from) >= n {
+		n := len(idx.offsets) - 1                   // commits covered by the index
+		if n <= 0 || from >= session.CommitSeq(n) { // compared as CommitSeq: int(from) wraps above MaxInt
 			return nil, idx.head, nil
 		}
 		data, err := readRange(path, idx.offsets[from], idx.offsets[n])

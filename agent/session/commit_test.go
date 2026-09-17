@@ -216,6 +216,9 @@ func TestValidateLedgerDetects(t *testing.T) {
 		{"batch stream tamper", func(cs *[]Commit) { (*cs)[1].Batches[1].Stream.ID = "r8" }},
 		{"stored digest tamper", func(cs *[]Commit) { (*cs)[1].Digest = zero }},
 		{"stored prev tamper", func(cs *[]Commit) { (*cs)[1].PrevDigest = zero }},
+		// Commits the profile refuses to reseal are corrupt too, not raw seal errors.
+		{"empty commit id", func(cs *[]Commit) { (*cs)[1].CommitID = "" }},
+		{"batch without events", func(cs *[]Commit) { (*cs)[1].Batches[0].Events = nil }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

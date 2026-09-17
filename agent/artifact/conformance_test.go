@@ -29,3 +29,13 @@ func TestMemoryConformance(t *testing.T) {
 		}
 	})
 }
+
+func TestMemoryContentStorePutLimit(t *testing.T) {
+	artifacttest.PutLimit(t, func(t *testing.T, maxBytes int64) artifact.ContentStore {
+		store, err := artifact.NewMemoryContentStore("a", artifact.MemoryContentStoreOptions{MaxBytes: maxBytes})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return store
+	})
+}

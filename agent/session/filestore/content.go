@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sync"
@@ -126,7 +127,9 @@ func (s *ContentStore) Put(ctx context.Context, req artifact.PutRequest) (artifa
 	if req.Durability.Rank() < 0 {
 		return artifact.Ref{}, &artifact.Error{Code: artifact.ErrInvalid, Operation: "put", Detail: "unknown durability"}
 	}
-	data, err := io.ReadAll(io.LimitReader(req.Reader, s.opts.MaxBytes+1))
+	// One byte past the cap tells an oversized body from one at the cap; the
+	// min keeps that byte representable when MaxBytes is MaxInt64.
+	data, err := io.ReadAll(io.LimitReader(req.Reader, min(s.opts.MaxBytes, math.MaxInt64-1)+1))
 	if err != nil {
 		return artifact.Ref{}, &artifact.Error{Code: artifact.ErrUnavailable, Operation: "put", Detail: err.Error()}
 	}

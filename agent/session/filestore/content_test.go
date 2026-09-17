@@ -32,3 +32,13 @@ func TestContentStoreConformance(t *testing.T) {
 		}
 	})
 }
+
+func TestContentStorePutLimit(t *testing.T) {
+	artifacttest.PutLimit(t, func(t *testing.T, maxBytes int64) artifact.ContentStore {
+		store, err := NewContentStore(t.TempDir(), "a", ContentStoreOptions{MaxBytes: maxBytes})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return store
+	})
+}

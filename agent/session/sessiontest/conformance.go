@@ -5,6 +5,7 @@ package sessiontest
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	"github.com/felinics/twilight/agent/jsonstable"
@@ -391,9 +392,13 @@ func testRead(t *testing.T, f Fixture) {
 	if len(from.Commits) != 1 || from.Commits[0].Seq != 2 {
 		t.Fatalf("from = %+v", from.Commits)
 	}
-	beyond, _ := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s", From: 99})
-	if len(beyond.Commits) != 0 || beyond.Head.Next != 3 {
-		t.Fatalf("beyond head = %+v", beyond)
+	// A From at or past the head is an empty page up to the largest CommitSeq;
+	// an int conversion of that value would wrap negative and index the log.
+	for _, from := range []session.CommitSeq{3, 4, 99, math.MaxUint64} {
+		beyond, err := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s", From: from})
+		if err != nil || len(beyond.Commits) != 0 || beyond.HasMore || beyond.Head.Next != 3 {
+			t.Fatalf("from %d beyond head = %+v err=%v", from, beyond, err)
+		}
 	}
 	limited, _ := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s", Limit: 1})
 	if len(limited.Commits) != 1 || !limited.HasMore || limited.Commits[0].Seq != 0 {

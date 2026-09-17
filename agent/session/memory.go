@@ -211,7 +211,7 @@ func (m *MemoryStore) ReadCommits(ctx context.Context, req CommitReadRequest) (C
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	page := CommitPage{Header: s.header, Head: s.head()}
-	if int(req.From) >= len(s.commits) {
+	if req.From >= CommitSeq(len(s.commits)) { // compared as CommitSeq: int(From) wraps above MaxInt
 		return page, nil
 	}
 	start := int(req.From)

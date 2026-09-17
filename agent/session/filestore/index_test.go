@@ -3,6 +3,7 @@ package filestore
 import (
 	"context"
 	"fmt"
+	"math"
 	"testing"
 
 	"github.com/felinics/twilight/agent/jsonstable"
@@ -42,6 +43,9 @@ func TestReadIndexedMatchesFullParse(t *testing.T) {
 			samePage(t, fmt.Sprintf("from=%d limit=%d", from, limit), indexed, fresh, req)
 		}
 	}
+	// The largest CommitSeq is past the head on both paths; an int conversion
+	// of it would wrap negative.
+	samePage(t, "from=max", indexed, fresh, session.CommitReadRequest{SessionID: sid, From: math.MaxUint64})
 	if indexed.currentIndex(sid, indexed.LogPath(sid)) == nil {
 		t.Fatal("reads dropped the index")
 	}

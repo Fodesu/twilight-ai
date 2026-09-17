@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"sync"
 	"time"
 )
@@ -138,7 +139,9 @@ func (s *MemoryContentStore) Put(ctx context.Context, req PutRequest) (Ref, erro
 	if req.Durability.Rank() < 0 {
 		return Ref{}, &Error{Code: ErrInvalid, Operation: "put", Detail: "unknown durability"}
 	}
-	data, err := io.ReadAll(io.LimitReader(req.Reader, s.opts.MaxBytes+1))
+	// One byte past the cap tells an oversized body from one at the cap; the
+	// min keeps that byte representable when MaxBytes is MaxInt64.
+	data, err := io.ReadAll(io.LimitReader(req.Reader, min(s.opts.MaxBytes, math.MaxInt64-1)+1))
 	if err != nil {
 		return Ref{}, &Error{Code: ErrUnavailable, Operation: "put", Detail: err.Error()}
 	}
