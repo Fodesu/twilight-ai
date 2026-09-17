@@ -126,13 +126,13 @@ func (r fixedTargetResolver) ResolveTarget(context.Context, session.SessionID, R
 }
 
 func TestAdvanceCopiesOpaqueTargetIntoAssignment(t *testing.T) {
-	rt := loopRuntime(t)
+	rt, w := loopRuntime(t)
 	exec := newRecordingExecutor()
 	l, err := New(exec, staticBuilder{}, Settings{TargetResolver: fixedTargetResolver{target: TargetRef{Kind: "workspace", ID: "ws-1"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.Advance(context.Background(), rt, testSession, "run-1", nil); err != nil {
+	if _, err := l.Advance(context.Background(), rt, w, "run-1", nil); err != nil {
 		t.Fatal(err)
 	}
 	assignment := exec.last()
@@ -145,7 +145,7 @@ func TestAdvanceCopiesOpaqueTargetIntoAssignment(t *testing.T) {
 // without waiting for it; Deliver settles the Outcome and the next Advance
 // finishes the Run (RUN-EXE-3/4).
 func TestAdvanceDispatchesAndDeliverSettles(t *testing.T) {
-	rt := loopRuntime(t)
+	rt, w := loopRuntime(t)
 	exec := newRecordingExecutor()
 	l, err := New(exec, staticBuilder{}, Settings{})
 	if err != nil {
@@ -153,7 +153,7 @@ func TestAdvanceDispatchesAndDeliverSettles(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	res, err := l.Advance(ctx, rt, testSession, "run-1", nil)
+	res, err := l.Advance(ctx, rt, w, "run-1", nil)
 	if err != nil || res.Disposition != LoopDispatched || len(res.Dispatched) != 1 {
 		t.Fatalf("advance = %+v %v", res, err)
 	}
@@ -161,19 +161,19 @@ func TestAdvanceDispatchesAndDeliverSettles(t *testing.T) {
 	if a.Kind != AssignmentModel || a.Model == nil || a.Model.RequestDigest == "" || a.Claim == "" || a.Key() != res.Dispatched[0] {
 		t.Fatalf("model assignment = %+v", a)
 	}
-	step := loadState(t, rt, "run-1").State.Current.(ModelStep)
+	step := loadState(t, rt, w, "run-1").State.Current.(ModelStep)
 	if step.Status != ModelExecuting || step.Claim != a.Claim {
 		t.Fatalf("started step = %+v", step)
 	}
 
 	// Nothing moves while the effect is outstanding.
-	again, err := l.Advance(ctx, rt, testSession, "run-1", nil)
+	again, err := l.Advance(ctx, rt, w, "run-1", nil)
 	if err != nil || again.Disposition != LoopWaiting || !again.ExecutionRecovery {
 		t.Fatalf("advance while executing = %+v %v", again, err)
 	}
 
 	result := textResult("done")
-	delivered, err := l.Deliver(ctx, rt, testSession, Outcome{Key: a.Key(), Model: &result}, nil)
+	delivered, err := l.Deliver(ctx, rt, w, Outcome{Key: a.Key(), Model: &result}, nil)
 	if err != nil || delivered.Disposition != LoopFinished || delivered.Result == nil || delivered.Result.Status != RunCompleted {
 		t.Fatalf("deliver = %+v %v", delivered, err)
 	}
@@ -198,25 +198,25 @@ func (e *failingOutcomeReader) GetOutcome(ctx context.Context, key AssignmentKey
 }
 
 func TestRunOutcomeReadErrorPreservesExecutingStep(t *testing.T) {
-	rt := loopRuntime(t)
+	rt, w := loopRuntime(t)
 	exec := &failingOutcomeReader{recordingExecutor: newRecordingExecutor(), readErr: errors.New("temporary transport error"), failed: make(chan struct{}), ready: make(chan struct{})}
 	l, err := New(exec, staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.Run(context.Background(), rt, testSession, "run-1", nil); !errors.Is(err, exec.readErr) {
+	if _, err := l.Run(context.Background(), rt, w, "run-1", nil); !errors.Is(err, exec.readErr) {
 		t.Fatalf("Run error = %v, want read failure", err)
 	}
-	snapshot := loadState(t, rt, "run-1")
+	snapshot := loadState(t, rt, w, "run-1")
 	step, ok := snapshot.State.Current.(ModelStep)
 	if !ok || step.Status != ModelExecuting || snapshot.State.Status != RunActive {
 		t.Fatalf("read error changed Run: %+v", snapshot.State)
 	}
 	result := textResult("eventual result")
-	if _, err := l.Deliver(context.Background(), rt, testSession, Outcome{Key: exec.last().Key(), Model: &result}, nil); err != nil {
+	if _, err := l.Deliver(context.Background(), rt, w, Outcome{Key: exec.last().Key(), Model: &result}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if got := loadState(t, rt, "run-1").State.Status; got != RunCompleted {
+	if got := loadState(t, rt, w, "run-1").State.Status; got != RunCompleted {
 		t.Fatalf("Run status after actual outcome = %v", got)
 	}
 }
@@ -309,24 +309,24 @@ func TestReattachLifetimeStopsOutcomeWatcher(t *testing.T) {
 // A late Outcome -- its attempt already settled or disposed -- is dropped:
 // nothing is written and the Loop reports LoopDropped.
 func TestDeliverDropsStaleOutcome(t *testing.T) {
-	rt := loopRuntime(t)
+	rt, w := loopRuntime(t)
 	exec := newRecordingExecutor()
 	l, err := New(exec, staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := l.Advance(ctx, rt, testSession, "run-1", nil); err != nil {
+	if _, err := l.Advance(ctx, rt, w, "run-1", nil); err != nil {
 		t.Fatal(err)
 	}
 	key := exec.last().Key()
 	// The new owner disposes the attempt (no executor to reattach).
-	if n, err := rt.RecoverInterrupted(ctx, testSession, nil); err != nil || n != 1 {
+	if n, err := rt.RecoverInterrupted(ctx, w, nil); err != nil || n != 1 {
 		t.Fatalf("RecoverInterrupted = %d %v", n, err)
 	}
 	before := len(recordFacts(t, rt, "run-1"))
 	result := textResult("late")
-	res, err := l.Deliver(ctx, rt, testSession, Outcome{Key: key, Model: &result}, nil)
+	res, err := l.Deliver(ctx, rt, w, Outcome{Key: key, Model: &result}, nil)
 	if err != nil || res.Disposition != LoopDropped {
 		t.Fatalf("late deliver = %+v %v", res, err)
 	}
@@ -334,12 +334,12 @@ func TestDeliverDropsStaleOutcome(t *testing.T) {
 		t.Fatalf("stale outcome wrote %d fact(s)", after-before)
 	}
 	// A key with the wrong claim is stale too.
-	if _, err := l.Advance(ctx, rt, testSession, "run-1", nil); err != nil {
+	if _, err := l.Advance(ctx, rt, w, "run-1", nil); err != nil {
 		t.Fatal(err)
 	}
 	forged := exec.last().Key()
 	forged.Claim = "someone-else"
-	res, err = l.Deliver(ctx, rt, testSession, Outcome{Key: forged, Model: &result}, nil)
+	res, err = l.Deliver(ctx, rt, w, Outcome{Key: forged, Model: &result}, nil)
 	if err != nil || res.Disposition != LoopDropped {
 		t.Fatalf("forged deliver = %+v %v", res, err)
 	}
@@ -357,7 +357,7 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := l.Advance(ctx, stack.runtime, testSession, "run-1", nil); err != nil {
+	if _, err := l.Advance(ctx, stack.runtime, stack.writer(t), "run-1", nil); err != nil {
 		t.Fatal(err)
 	}
 	a := exec.last()
@@ -373,21 +373,21 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 	var reattached []Outcome
 	var mu sync.Mutex
 	deliverToNew := func(out Outcome) {
-		if _, err := newLoop.Deliver(ctx, stack.runtime, testSession, out, nil); err != nil {
+		if _, err := newLoop.Deliver(ctx, stack.runtime, stack.writer(t), out, nil); err != nil {
 			t.Errorf("reattached deliver: %v", err)
 		}
 		mu.Lock()
 		reattached = append(reattached, out)
 		mu.Unlock()
 	}
-	n, err := stack.runtime.RecoverInterrupted(ctx, testSession, Reattach(ctx, exec, testSession, deliverToNew))
+	n, err := stack.runtime.RecoverInterrupted(ctx, stack.writer(t), Reattach(ctx, exec, testSession, deliverToNew))
 	if err != nil || n != 0 {
 		t.Fatalf("RecoverInterrupted with a reachable executor = %d %v, want 0 dispositions", n, err)
 	}
 	if len(exec.attached) != 1 || exec.attached[0].Key() != a.Key() {
 		t.Fatalf("attach asked about %+v, want %+v", exec.attached, a.Key())
 	}
-	step := loadState(t, stack.runtime, "run-1").State.Current.(ModelStep)
+	step := loadState(t, stack.runtime, stack.writer(t), "run-1").State.Current.(ModelStep)
 	if step.Status != ModelExecuting || step.Claim != a.Claim {
 		t.Fatalf("step after reattach = %+v, want Executing under the original claim", step)
 	}
@@ -430,22 +430,22 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := l.Advance(ctx, stack.runtime, testSession, "run-1", nil); err != nil {
+	if _, err := l.Advance(ctx, stack.runtime, stack.writer(t), "run-1", nil); err != nil {
 		t.Fatal(err)
 	}
 	a := exec.last()
 	stack.open(t)
-	n, err := stack.runtime.RecoverInterrupted(ctx, testSession, Reattach(ctx, exec, testSession, func(Outcome) {}))
+	n, err := stack.runtime.RecoverInterrupted(ctx, stack.writer(t), Reattach(ctx, exec, testSession, func(Outcome) {}))
 	if err != nil || n != 1 || len(exec.attached) != 1 {
 		t.Fatalf("RecoverInterrupted = %d %v attached=%d, want one disposition after one refused attach", n, err, len(exec.attached))
 	}
 	// The unreachable attempt is withdrawn: the Run is Open, the step is not
 	// counted, and the next Advance plans again (TRN-DUR-1).
-	state := loadState(t, stack.runtime, "run-1").State
+	state := loadState(t, stack.runtime, stack.writer(t), "run-1").State
 	if _, open := state.Current.(Open); !open || state.ModelSteps != 0 {
 		t.Fatalf("state after disposition = %+v, want Open with no counted step", state)
 	}
-	res, err := l.Advance(ctx, stack.runtime, testSession, "run-1", nil)
+	res, err := l.Advance(ctx, stack.runtime, stack.writer(t), "run-1", nil)
 	if err != nil || res.Disposition != LoopDispatched || len(res.Dispatched) != 1 {
 		t.Fatalf("advance after disposition = %+v %v, want a fresh dispatch", res, err)
 	}
@@ -519,22 +519,22 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 // A model outcome that reports cancellation withdraws the step to Open for
 // replanning rather than failing the Run (RUN-LOP-3).
 func TestDeliverCancelledModelRecovers(t *testing.T) {
-	rt := loopRuntime(t)
+	rt, w := loopRuntime(t)
 	exec := newRecordingExecutor()
 	l, err := New(exec, staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := l.Advance(ctx, rt, testSession, "run-1", nil); err != nil {
+	if _, err := l.Advance(ctx, rt, w, "run-1", nil); err != nil {
 		t.Fatal(err)
 	}
 	key := exec.last().Key()
-	res, err := l.Deliver(ctx, rt, testSession, Outcome{Key: key, Err: context.Canceled, Cancelled: true}, nil)
+	res, err := l.Deliver(ctx, rt, w, Outcome{Key: key, Err: context.Canceled, Cancelled: true}, nil)
 	if err != nil || res.Disposition != LoopDelivered {
 		t.Fatalf("deliver cancelled = %+v %v", res, err)
 	}
-	state := loadState(t, rt, "run-1").State
+	state := loadState(t, rt, w, "run-1").State
 	if _, open := state.Current.(Open); !open || state.Status != RunActive {
 		t.Fatalf("state = %+v, want Open and active", state)
 	}
@@ -546,25 +546,25 @@ func TestDeliverCancelledModelRecovers(t *testing.T) {
 // so the drive stops instead of prompt building again against the same missing
 // store. A later Advance -- the host's decision -- plans afresh (RUN-LOP-3).
 func TestDeliverMissingFrozenBodyWithdrawsAndReturnsTheError(t *testing.T) {
-	rt := loopRuntime(t)
+	rt, w := loopRuntime(t)
 	exec := newRecordingExecutor()
 	l, err := New(exec, staticBuilder{}, Settings{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := l.Advance(ctx, rt, testSession, "run-1", nil); err != nil {
+	if _, err := l.Advance(ctx, rt, w, "run-1", nil); err != nil {
 		t.Fatal(err)
 	}
 	first := exec.last()
-	res, err := l.Deliver(ctx, rt, testSession, Outcome{Key: first.Key(), Err: ErrFrozenValueMissing}, nil)
+	res, err := l.Deliver(ctx, rt, w, Outcome{Key: first.Key(), Err: ErrFrozenValueMissing}, nil)
 	if !errors.Is(err, ErrFrozenValueMissing) || res.Disposition != LoopDelivered {
 		t.Fatalf("deliver missing body = %+v %v, want delivered plus the missing-body error", res, err)
 	}
-	if snap := loadState(t, rt, "run-1"); snap.State.ModelSteps != 0 {
+	if snap := loadState(t, rt, w, "run-1"); snap.State.ModelSteps != 0 {
 		t.Fatalf("withdrawn step still counted: %+v", snap.State)
 	}
-	again, err := l.Advance(ctx, rt, testSession, "run-1", nil)
+	again, err := l.Advance(ctx, rt, w, "run-1", nil)
 	if err != nil || again.Disposition != LoopDispatched {
 		t.Fatalf("advance after missing body = %+v %v", again, err)
 	}
@@ -603,14 +603,14 @@ func TestRunStopsAfterOneMissingBodyRecovery(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			rt := loopRuntime(t)
+			rt, w := loopRuntime(t)
 			l, err := New(tc.exec(t, rt), staticBuilder{}, Settings{})
 			if err != nil {
 				t.Fatal(err)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			_, err = l.Run(ctx, rt, testSession, "run-1", nil)
+			_, err = l.Run(ctx, rt, w, "run-1", nil)
 			if !errors.Is(err, ErrFrozenValueMissing) {
 				t.Fatalf("Run = %v, want the missing-body error", err)
 			}
@@ -626,7 +626,7 @@ func TestRunStopsAfterOneMissingBodyRecovery(t *testing.T) {
 			if started != 1 || recovered != 1 {
 				t.Fatalf("started=%d recovered=%d, want exactly one round", started, recovered)
 			}
-			if snap := loadState(t, rt, "run-1"); snap.State.ModelSteps != 0 {
+			if snap := loadState(t, rt, w, "run-1"); snap.State.ModelSteps != 0 {
 				t.Fatalf("state after the failed drive = %+v, want Open with no counted step", snap.State)
 			}
 		})

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	. "github.com/felinics/twilight/agent/run"
-	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -21,11 +21,11 @@ type commitLog struct {
 	cmds []AgentCommand
 }
 
-func (c *commitLog) Commit(ctx context.Context, sid session.SessionID, req CommitRequest) (CommitResult, error) {
+func (c *commitLog) Commit(ctx context.Context, w writer.Writer, req CommitRequest) (CommitResult, error) {
 	c.mu.Lock()
 	c.cmds = append(c.cmds, req.Command.Command)
 	c.mu.Unlock()
-	return c.Runtime.Commit(ctx, sid, req)
+	return c.Runtime.Commit(ctx, w, req)
 }
 
 func (c *commitLog) settlementsFor(callID CallID) int {
@@ -56,6 +56,7 @@ func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{}`)})
 	oldRuntime := &commitLog{Runtime: stack.runtime}
+	oldWriter := stack.writer(t) // the superseded owner's capability
 
 	spec := toolSpec(t, "echo", DirectExecution)
 	started := make(chan CallID, 2)
@@ -100,7 +101,7 @@ func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 	})
 	done := make(chan error, 1)
 	go func() {
-		_, err := loop.Run(context.Background(), oldRuntime, testSession, "run-1", sink)
+		_, err := loop.Run(context.Background(), oldRuntime, oldWriter, "run-1", sink)
 		done <- err
 	}()
 	<-started
@@ -110,7 +111,7 @@ func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 	// A new owner takes the Session over: opening its Writer bumps the Epoch
 	// and its takeover disposition records both Executing calls as Unknown.
 	stack.open(t)
-	if n, err := stack.runtime.RecoverInterrupted(context.Background(), testSession, nil); err != nil || n != 2 {
+	if n, err := stack.runtime.RecoverInterrupted(context.Background(), stack.writer(t), nil); err != nil || n != 2 {
 		t.Fatalf("RecoverInterrupted = %d %v, want 2", n, err)
 	}
 	close(takenOver)
@@ -155,6 +156,7 @@ func TestOwnershipLossOnModelSettlementIsNotRetried(t *testing.T) {
 	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{}`)})
 	oldRuntime := &commitLog{Runtime: stack.runtime}
+	oldWriter := stack.writer(t) // the superseded owner's capability
 
 	invoker := &blockingInvoker{started: make(chan struct{}), release: make(chan struct{})}
 	loop, err := newLoop(nil, fakeCatalog{invoker}, fakeToolCatalog{nil}, staticBuilder{}, Settings{}, false)
@@ -163,13 +165,13 @@ func TestOwnershipLossOnModelSettlementIsNotRetried(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := loop.Run(context.Background(), oldRuntime, testSession, "run-1", nil)
+		_, err := loop.Run(context.Background(), oldRuntime, oldWriter, "run-1", nil)
 		done <- err
 	}()
 	<-invoker.started
 
 	stack.open(t)
-	if n, err := stack.runtime.RecoverInterrupted(context.Background(), testSession, nil); err != nil || n != 1 {
+	if n, err := stack.runtime.RecoverInterrupted(context.Background(), stack.writer(t), nil); err != nil || n != 1 {
 		t.Fatalf("RecoverInterrupted = %d %v, want 1", n, err)
 	}
 	close(invoker.release)

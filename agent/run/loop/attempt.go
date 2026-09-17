@@ -55,7 +55,7 @@ func (l *Loop) settle(ctx context.Context, runtime boundRuntime, events EventSin
 		}
 		return nil, err
 	}
-	l.emitCommitted(ctx, events, runtime.sid, a.runID, res.Events)
+	l.emitCommitted(ctx, events, runtime.sid(), a.runID, res.Events)
 	if res.Snapshot.State.Status.Terminal() {
 		return res.Snapshot.State.Result, nil
 	}

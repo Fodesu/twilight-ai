@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/felinics/twilight/agent/artifact"
@@ -103,6 +104,9 @@ type Authority struct {
 	// History answers fork-boundary questions (AUTH-FRK-2, SPN-5).
 	History turn.History
 	Clock   func() time.Time
+
+	mu   sync.Mutex
+	open map[session.SessionID]*openSession
 }
 
 // New composes an Authority from its ports (AUTH-PRT-1).
@@ -152,7 +156,7 @@ func New(p Ports) (*Authority, error) {
 	writers := writer.NewWriters(store, registry, admission, p.Ownership,
 		writer.WritersConfig{Cache: cache, CachePolicy: runmod.WriterCachePolicy(p.CacheEvery), Observers: p.Observers})
 	runtime, err := runmod.NewRuntime(runmod.Config{
-		Writers: writers, Registry: registry, Store: store,
+		Registry: registry, Store: store,
 		Frozen: frozen, Bindings: bindings, Cache: cache, Now: now,
 	})
 	if err != nil {
@@ -166,15 +170,19 @@ func New(p Ports) (*Authority, error) {
 	if decisions == nil {
 		decisions = decision.DefaultPromptBuilders()
 	}
-	projections := writer.Projections(writers)
+	// The read model folds from the Store through the cache: reading a Session
+	// takes no ownership (AUTH-OWN-2). The Writer keeps its own transactional
+	// projections for the commit critical section.
+	projections := extension.NewProjectionReader(store, registry, cache)
 	content := runmod.NewContent(frozen)
 	a := &Authority{
 		Store: store, Writers: writers, Registry: registry, Admission: admission, Runtime: runtime,
-		Turns:   &turn.Coordinator{Writers: writers, Runtime: runtime, Now: now},
+		Turns:   &turn.Coordinator{Projections: projections, Runtime: runtime, Now: now},
 		Presets: presets, Executor: p.Executor, Frozen: frozen, Projections: projections, Content: content,
 		Chatlog: &chatlog.Commands{Now: now},
 		History: turn.History{Store: store, Registry: registry, Projections: projections},
 		Clock:   now,
+		open:    make(map[session.SessionID]*openSession),
 	}
 	a.Driver = driver.New()
 	a.Driver.Runtime, a.Driver.Turns, a.Driver.Executor = runtime, a.Turns, p.Executor
@@ -185,8 +193,11 @@ func New(p Ports) (*Authority, error) {
 }
 
 // Close stops every recovery listener and releases every Session this
-// authority owns.
+// authority owns; every outstanding Handle is stale afterwards.
 func (a *Authority) Close(ctx context.Context) error {
+	a.mu.Lock()
+	a.open = make(map[session.SessionID]*openSession)
+	a.mu.Unlock()
 	a.Driver.Close()
 	return writer.CloseWriters(ctx, a.Writers)
 }
@@ -261,6 +272,9 @@ func (a *Authority) ForkBeforeTurn(ctx context.Context, parent session.SessionID
 // SES-GC-1). A Session this authority holds open is closed first; one owned
 // by another process is ErrOwned.
 func (a *Authority) DeleteSession(ctx context.Context, sid session.SessionID) error {
+	a.mu.Lock()
+	delete(a.open, sid)
+	a.mu.Unlock()
 	a.Driver.Stop(sid)
 	if err := writer.CloseWriter(ctx, a.Writers, sid); err != nil {
 		return err

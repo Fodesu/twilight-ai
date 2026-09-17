@@ -9,6 +9,7 @@ import (
 
 	run "github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/writer"
 )
 
 // Loop is the decision interpreter of one Run (RUN-LOP-2). It holds no
@@ -147,14 +148,17 @@ func (l *Loop) isDriving(runID run.RunID) bool {
 	return ok && s.driving
 }
 
-func (l *Loop) checkArgs(ctx context.Context, rt run.Runtime, sid session.SessionID, runID run.RunID) error {
+func (l *Loop) checkArgs(ctx context.Context, rt run.Runtime, w writer.Writer, runID run.RunID) error {
 	if ctx == nil {
 		return errors.New("agent: loop: nil context")
 	}
 	if rt == nil {
 		return errors.New("agent: loop: nil runtime")
 	}
-	if sid == "" || runID == "" {
+	if w == nil {
+		return errors.New("agent: loop: nil session writer")
+	}
+	if w.SessionID() == "" || runID == "" {
 		return errors.New("agent: loop: empty SessionID or RunID")
 	}
 	return nil
@@ -173,8 +177,8 @@ func (l *Loop) wrapSink(events EventSink) EventSink {
 // LoopWaiting or LoopFinished. The caller reads each returned key through
 // Executor.GetOutcome and passes it to Deliver. A concurrent Advance or a
 // blocking Run of the same Run is reported as ErrRunAlreadyRunning.
-func (l *Loop) Advance(ctx context.Context, rt run.Runtime, sid session.SessionID, runID run.RunID, events EventSink) (LoopResult, error) {
-	if err := l.checkArgs(ctx, rt, sid, runID); err != nil {
+func (l *Loop) Advance(ctx context.Context, rt run.Runtime, w writer.Writer, runID run.RunID, events EventSink) (LoopResult, error) {
+	if err := l.checkArgs(ctx, rt, w, runID); err != nil {
 		return LoopResult{}, err
 	}
 	if l.isDriving(runID) {
@@ -186,7 +190,7 @@ func (l *Loop) Advance(ctx context.Context, rt run.Runtime, sid session.SessionI
 		return LoopResult{}, ErrRunAlreadyRunning
 	}
 	defer s.step.Unlock()
-	return l.advance(ctx, boundRuntime{rt: rt, sid: sid}, runID, l.wrapSink(events))
+	return l.advance(ctx, boundRuntime{rt: rt, w: w}, runID, l.wrapSink(events))
 }
 
 // advance is the body of Advance. It only dispatches assignments and returns
@@ -206,7 +210,7 @@ func (l *Loop) advance(ctx context.Context, runtime boundRuntime, runID run.RunI
 			return LoopResult{}, fmt.Errorf("agent: loop: runtime returned RunID %q for %q", snapshot.State.RunID, runID)
 		}
 		if snapshot.State.Status.Terminal() {
-			return l.finish(ctx, events, runtime.sid, runID, snapshot.State.Result), nil
+			return l.finish(ctx, events, runtime.sid(), runID, snapshot.State.Result), nil
 		}
 
 		effect, err := run.Next(snapshot.State)
@@ -233,7 +237,7 @@ func (l *Loop) advance(ctx context.Context, runtime boundRuntime, runID run.RunI
 				return LoopResult{}, err
 			}
 			if err == nil {
-				l.emitCommitted(ctx, events, runtime.sid, runID, res.Events)
+				l.emitCommitted(ctx, events, runtime.sid(), runID, res.Events)
 			}
 		case run.StartModelCall:
 			dispatched, err := l.startModelStep(ctx, runtime, events, &snapshot, eff.StepID)
@@ -280,19 +284,19 @@ func (l *Loop) finish(ctx context.Context, events EventSink, sid session.Session
 // LoopFinished when the settlement terminated the Run, LoopDelivered when the
 // host should Advance next, LoopDropped for a stale Outcome. Ownership loss
 // is returned as is (RUN-LOP-5).
-func (l *Loop) Deliver(ctx context.Context, rt run.Runtime, sid session.SessionID, out Outcome, events EventSink) (LoopResult, error) {
-	if err := l.checkArgs(ctx, rt, sid, out.Key.RunID); err != nil {
+func (l *Loop) Deliver(ctx context.Context, rt run.Runtime, w writer.Writer, out Outcome, events EventSink) (LoopResult, error) {
+	if err := l.checkArgs(ctx, rt, w, out.Key.RunID); err != nil {
 		return LoopResult{}, err
 	}
 	s := l.acquire(out.Key.RunID)
 	defer l.release(out.Key.RunID)
 	s.step.Lock()
 	defer s.step.Unlock()
-	return l.deliver(ctx, boundRuntime{rt: rt, sid: sid}, out, l.wrapSink(events))
+	return l.deliver(ctx, boundRuntime{rt: rt, w: w}, out, l.wrapSink(events))
 }
 
 func (l *Loop) deliver(ctx context.Context, runtime boundRuntime, out Outcome, events EventSink) (LoopResult, error) {
-	if out.Key.Session != "" && out.Key.Session != runtime.sid {
+	if out.Key.Session != "" && out.Key.Session != runtime.sid() {
 		return LoopResult{Disposition: LoopDropped}, nil
 	}
 	runID := out.Key.RunID
@@ -335,7 +339,7 @@ func (l *Loop) deliver(ctx context.Context, runtime boundRuntime, out Outcome, e
 		return LoopResult{}, err
 	}
 	if out.Key.CallID != "" && events != nil {
-		_ = events.Emit(ctx, Event{Session: runtime.sid, RunID: runID, StepID: out.Key.StepID, CallID: out.Key.CallID,
+		_ = events.Emit(ctx, Event{Session: runtime.sid(), RunID: runID, StepID: out.Key.StepID, CallID: out.Key.CallID,
 			Kind: EventToolCompleted, Durability: EventCommitted})
 	}
 	if settleErr != nil {
@@ -346,7 +350,7 @@ func (l *Loop) deliver(ctx context.Context, runtime boundRuntime, out Outcome, e
 		return LoopResult{Disposition: LoopDelivered}, settleErr
 	}
 	if finished != nil {
-		return l.finish(ctx, events, runtime.sid, runID, finished), nil
+		return l.finish(ctx, events, runtime.sid(), runID, finished), nil
 	}
 	return LoopResult{Disposition: LoopDelivered}, nil
 }
@@ -358,8 +362,8 @@ func (l *Loop) deliver(ctx context.Context, runtime boundRuntime, out Outcome, e
 // Deliver themselves. The caller context bounds the drive: on cancellation the
 // in-flight assignments of the Run are cancelled and their Outcomes are still
 // settled (RUN-LOP-5) before ctx.Err() is returned.
-func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, runID run.RunID, events EventSink) (LoopResult, error) {
-	if err := l.checkArgs(ctx, rt, sid, runID); err != nil {
+func (l *Loop) Run(ctx context.Context, rt run.Runtime, w writer.Writer, runID run.RunID, events EventSink) (LoopResult, error) {
+	if err := l.checkArgs(ctx, rt, w, runID); err != nil {
 		return LoopResult{}, err
 	}
 	s, err := l.startDriving(runID)
@@ -368,7 +372,7 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 	}
 	defer l.stopDriving(runID)
 	events = l.wrapSink(events)
-	runtime := boundRuntime{rt: rt, sid: sid}
+	runtime := boundRuntime{rt: rt, w: w}
 
 	outcomes := make(chan outcomeRead, 64)
 	pending := map[AssignmentKey]struct{}{}
@@ -494,7 +498,7 @@ func (l *Loop) commit(ctx context.Context, runtime boundRuntime, runID run.RunID
 	if proto.Version() == 0 {
 		return run.CommitResult{}, errors.New("agent: loop: uninitialized protocol")
 	}
-	env, err := proto.BuildEnvelope(runtime.sid, runID, id, cmd)
+	env, err := proto.BuildEnvelope(runtime.sid(), runID, id, cmd)
 	if err != nil {
 		return run.CommitResult{}, err
 	}

@@ -28,10 +28,12 @@ func DefaultSnapshotPolicy(_, after *run.MachineState) bool {
 
 // Config assembles a Runtime (agent-runtime.md 10).
 type Config struct {
-	Writers  writer.Writers
 	Registry *extension.Registry
-	Store    session.Store // read side for Record and the terminal-Run fallback
-	Frozen   run.FrozenValueStore
+	// Store is the read side: Load and Record fold from it (through Cache)
+	// without taking ownership; commands write through the Writer they are
+	// handed (AUTH-OWN-2).
+	Store  session.Store
+	Frozen run.FrozenValueStore
 	// Bindings registers the Binding of every frozen body before the fact
 	// naming it is committed, so the Writer's admission can resolve it and
 	// claim the body for the commit (RUN-WIR-4, EXT-WRT-3). It must be the
@@ -44,14 +46,16 @@ type Config struct {
 	Now   func() time.Time
 }
 
-// Runtime is the run.Runtime over a Session Writer (RUN-CMT-1).
+// Runtime is the run.Runtime (RUN-CMT-1): commands commit through the
+// caller's Writer, reads fold from the Store.
 type Runtime struct {
-	cfg Config
+	cfg    Config
+	reader extension.ProjectionReader
 }
 
 func NewRuntime(cfg Config) (*Runtime, error) {
-	if cfg.Writers == nil || cfg.Registry == nil || cfg.Store == nil {
-		return nil, errors.New("runmod: runtime requires writers, registry and store")
+	if cfg.Registry == nil || cfg.Store == nil {
+		return nil, errors.New("runmod: runtime requires registry and store")
 	}
 	if cfg.Frozen == nil {
 		cfg.Frozen = FrozenValuesInMemory()
@@ -62,18 +66,10 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &Runtime{cfg: cfg}, nil
+	return &Runtime{cfg: cfg, reader: extension.NewProjectionReader(cfg.Store, cfg.Registry, cfg.Cache)}, nil
 }
 
 func (r *Runtime) nowMilli() int64 { return r.cfg.Now().UnixMilli() }
-
-func (r *Runtime) writer(ctx context.Context, sid session.SessionID) (writer.Writer, error) {
-	w, err := r.cfg.Writers.Writer(ctx, sid)
-	if err != nil {
-		return nil, ownershipError(err)
-	}
-	return w, nil
-}
 
 // ownershipError maps the Writer's ownership loss onto the Run sentinel.
 func ownershipError(err error) error {
@@ -85,14 +81,14 @@ func ownershipError(err error) error {
 
 // --- Load / Record --------------------------------------------------------------
 
-func (r *Runtime) Load(ctx context.Context, sid session.SessionID, runID run.RunID) (run.RuntimeSnapshot, error) {
+func (r *Runtime) Load(ctx context.Context, w writer.Writer, runID run.RunID) (run.RuntimeSnapshot, error) {
 	if err := run.CheckContext(ctx); err != nil {
 		return run.RuntimeSnapshot{}, err
 	}
-	w, err := r.writer(ctx, sid)
-	if err != nil {
-		return run.RuntimeSnapshot{}, err
+	if w == nil {
+		return run.RuntimeSnapshot{}, errors.New("runmod: load requires the session's writer")
 	}
+	sid := w.SessionID()
 	state, head, err := w.Projections().Load(ctx, sid, MachineProjectionID, MachineProjection.Version)
 	if err != nil {
 		return run.RuntimeSnapshot{}, err
@@ -114,11 +110,7 @@ func (r *Runtime) Record(ctx context.Context, sid session.SessionID, runID run.R
 	if err := run.CheckContext(ctx); err != nil {
 		return run.RunRecord{}, err
 	}
-	w, err := r.writer(ctx, sid)
-	if err != nil {
-		return run.RunRecord{}, err
-	}
-	state, _, err := w.Projections().Load(ctx, sid, MachineProjectionID, MachineProjection.Version)
+	state, _, err := r.reader.Load(ctx, sid, MachineProjectionID, MachineProjection.Version)
 	if err != nil {
 		return run.RunRecord{}, err
 	}
@@ -190,10 +182,14 @@ func flattenCommitEvents(c session.Commit) []session.Event {
 
 // --- Commit ------------------------------------------------------------------------
 
-func (r *Runtime) Commit(ctx context.Context, sid session.SessionID, req run.CommitRequest) (run.CommitResult, error) {
+func (r *Runtime) Commit(ctx context.Context, w writer.Writer, req run.CommitRequest) (run.CommitResult, error) {
 	if err := run.CheckContext(ctx); err != nil {
 		return run.CommitResult{}, err
 	}
+	if w == nil {
+		return run.CommitResult{}, errors.New("runmod: commit requires the session's writer")
+	}
+	sid := w.SessionID()
 	env := &req.Command
 	if env.SessionID != sid {
 		return run.CommitResult{}, fmt.Errorf("runmod: commit: envelope session %q does not match %q", env.SessionID, sid)
@@ -207,10 +203,6 @@ func (r *Runtime) Commit(ctx context.Context, sid session.SessionID, req run.Com
 	// visible; Put is idempotent and content-addressed, so a rejected or
 	// replayed command leaves nothing inconsistent behind (RUN-CMT-3).
 	if err := r.freezeBodies(ctx, env.Command); err != nil {
-		return run.CommitResult{}, err
-	}
-	w, err := r.writer(ctx, sid)
-	if err != nil {
 		return run.CommitResult{}, err
 	}
 
@@ -454,14 +446,14 @@ func (r *Runtime) FrozenRequest(ctx context.Context, digest run.Digest) (run.Mod
 // either reattached (its attempt still runs under an executor the new owner
 // can reach, so the Outcome will arrive under the original Claim) or disposed
 // with one recovery command under the takeover claim of the current Epoch.
-func (r *Runtime) RecoverInterrupted(ctx context.Context, sid session.SessionID, reattach run.Reattacher) (int, error) {
+func (r *Runtime) RecoverInterrupted(ctx context.Context, w writer.Writer, reattach run.Reattacher) (int, error) {
 	if err := run.CheckContext(ctx); err != nil {
 		return 0, err
 	}
-	w, err := r.writer(ctx, sid)
-	if err != nil {
-		return 0, err
+	if w == nil {
+		return 0, errors.New("runmod: recovery requires the session's writer")
 	}
+	sid := w.SessionID()
 	state, _, err := w.Projections().Load(ctx, sid, MachineProjectionID, MachineProjection.Version)
 	if err != nil {
 		return 0, err
@@ -496,7 +488,7 @@ func (r *Runtime) RecoverInterrupted(ctx context.Context, sid session.SessionID,
 			if err != nil {
 				return n, err
 			}
-			res, err := r.Commit(ctx, sid, run.CommitRequest{Command: env})
+			res, err := r.Commit(ctx, w, run.CommitRequest{Command: env})
 			if err != nil {
 				if errors.Is(err, run.ErrStaleRuntime) || errors.Is(err, run.ErrRunTerminal) || errors.Is(err, run.ErrCommandConflict) {
 					continue

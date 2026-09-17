@@ -34,7 +34,7 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 
 **TRN-SCP-3** Coordinator 没有隐藏状态。它从 `twilight/turn/surface` 投影与 `twilight/run/machine` 投影重建。
 
-**TRN-SCP-4** Turn 自己的写入经该 Session 的 `writer.Writer.Commit`；Run 事实的写入经 `run.Runtime`，后者经同一个 Writer 落在同一 `session.Store`（EXT-SCP-1）。命令以调用方持有的 Writer 为参数（所有权能力，AUTH-OWN-2）；Status 读取与 Runtime 经 `writer.Writers` 取得 Writer（EXT-WRT-6）。Artifact 由其 owner 管理。
+**TRN-SCP-4** Turn 自己的写入经该 Session 的 `writer.Writer.Commit`；Run 事实的写入经 `run.Runtime`，后者经同一个 Writer 落在同一 `session.Store`（EXT-SCP-1）。命令以调用方持有的 Writer 为参数（所有权能力，AUTH-OWN-2），并把它传给 `Runtime.Commit`；Status 经 `extension.ProjectionReader` 与 `Runtime.Record` 按 SessionID 读取，不取得 Writer。Artifact 由其 owner 管理。
 
 **TRN-SCP-5** Application 管理 model、provider、tool、prompt、token、approval、queue、retry 决策与并发。宿主按 persisted preset 解析 driver 并驱动（DRV-1）。PromptBuilder 按 AgentPreset 的 `Prompt` ref 解析（DEC-CAT-2），每次 Build 使用 AgentPreset 的 `ModelRef`；Scheduling 与 MalformedRetries 是 AgentPreset 上的数据，Loop 直接读取。
 

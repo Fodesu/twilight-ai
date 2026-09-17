@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/writer"
 )
 
 // RunPosition is the StreamSeq of a Run's last twilight/run/ event. Only the
@@ -24,9 +25,16 @@ var ErrOwnershipLost = errors.New("agent: session ownership lost")
 // name by digest (RUN-WIR-4) are frozen before the group is appended. Runs are
 // created by the Coordinator's Start group; there is no Create.
 type Runtime interface {
-	Load(context.Context, session.SessionID, RunID) (RuntimeSnapshot, error)
-	Commit(context.Context, session.SessionID, CommitRequest) (CommitResult, error)
+	// Load is the owner's view of a Run for the next command: it reads the
+	// Writer's transactional projections, so a Loop holding a superseded
+	// Writer plans against its own epoch's state and is fenced at commit
+	// (RUN-LOP-5). Record is the read: it folds from the Store by SessionID
+	// and needs no ownership (AUTH-OWN-2).
+	Load(context.Context, writer.Writer, RunID) (RuntimeSnapshot, error)
 	Record(context.Context, session.SessionID, RunID) (RunRecord, error)
+	// Commit is a command: it takes the Session's Writer, the caller's
+	// ownership capability, and commits through it (AUTH-OWN-2).
+	Commit(context.Context, writer.Writer, CommitRequest) (CommitResult, error)
 	// FrozenRequest returns the request body a Prepared or Executing ModelStep
 	// names by RequestDigest (RUN-WIR-4); a missing body is ErrFrozenValueMissing.
 	FrozenRequest(context.Context, Digest) (ModelRequest, error)
@@ -38,7 +46,7 @@ type Runtime interface {
 	// disposes everything. The host calls it once after opening the Writer and
 	// before driving any Run; it returns the number of accepted recovery
 	// commands.
-	RecoverInterrupted(context.Context, session.SessionID, Reattacher) (int, error)
+	RecoverInterrupted(context.Context, writer.Writer, Reattacher) (int, error)
 }
 
 type RuntimeSnapshot struct {

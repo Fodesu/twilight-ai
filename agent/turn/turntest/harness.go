@@ -72,13 +72,13 @@ func (h *harness) open() {
 	h.t.Helper()
 	clock := func() time.Time { return time.UnixMilli(h.now) }
 	h.writers = writer.NewWriters(h.store, h.registry, writer.Admission{Bindings: h.bindings, Ledger: h.ledger}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
-	rt, err := runmod.NewRuntime(runmod.Config{Writers: h.writers, Registry: h.registry, Store: h.store,
+	rt, err := runmod.NewRuntime(runmod.Config{Registry: h.registry, Store: h.store,
 		Frozen: h.frozen, Bindings: h.bindings, Now: clock})
 	if err != nil {
 		h.t.Fatal(err)
 	}
 	h.rt = rt
-	h.c = &turn.Coordinator{Writers: h.writers, Runtime: rt, Now: clock}
+	h.c = &turn.Coordinator{Projections: extension.NewProjectionReader(h.store, h.registry, nil), Runtime: rt, Now: clock}
 }
 
 // takeover opens a new owner process and returns the superseded Coordinator
@@ -87,6 +87,7 @@ func (h *harness) takeover() (*turn.Coordinator, writer.Writer) {
 	h.t.Helper()
 	old, oldWriter := h.c, h.writer()
 	h.open()
+	h.writer() // ownership changes hands on Open of the new Writer, not on a read
 	return old, oldWriter
 }
 
@@ -291,7 +292,7 @@ func decode[T any](t testing.TB, registry *extension.Registry, event *session.Ev
 
 func (h *harness) load(runID run.RunID) run.RuntimeSnapshot {
 	h.t.Helper()
-	snap, err := h.rt.Load(h.ctx, sid, runID)
+	snap, err := h.rt.Load(h.ctx, h.writer(), runID)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -311,7 +312,7 @@ func (h *harness) runCommit(runID run.RunID, id run.CommandID, base run.RunPosit
 	if err != nil {
 		h.fatal(err)
 	}
-	return h.rt.Commit(h.ctx, sid, run.CommitRequest{Base: base, Command: env, Attach: attach})
+	return h.rt.Commit(h.ctx, h.writer(), run.CommitRequest{Base: base, Command: env, Attach: attach})
 }
 
 func (h *harness) mustRunCommit(runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand) run.CommitResult {

@@ -56,20 +56,20 @@ func testCreation(t *testing.T, factory Factory) {
 		t.Fatalf("position = %d, want 1 (last run event of the start group)", snap.Position)
 	}
 	// Unknown RunID.
-	if _, err := h.rt.Load(h.ctx, sid, "nope"); !errors.Is(err, run.ErrRunNotFound) {
+	if _, err := h.rt.Load(h.ctx, h.writer(), "nope"); !errors.Is(err, run.ErrRunNotFound) {
 		t.Fatalf("load unknown = %v", err)
 	}
 	if _, err := h.rt.Record(h.ctx, sid, "nope"); !errors.Is(err, run.ErrRunNotFound) {
 		t.Fatalf("record unknown = %v", err)
 	}
 	env, _ := run.ProtocolV1().BuildEnvelope(sid, "nope", run.DeriveInputCommandID("nope", "x"), run.NextStep(input("x")))
-	if _, err := h.rt.Commit(h.ctx, sid, run.CommitRequest{Command: env}); !errors.Is(err, run.ErrRunNotFound) {
+	if _, err := h.rt.Commit(h.ctx, h.writer(), run.CommitRequest{Command: env}); !errors.Is(err, run.ErrRunNotFound) {
 		t.Fatalf("commit unknown = %v", err)
 	}
 	// Schema disagreement is a hard error, not a retriable rejection.
 	env, _ = run.ProtocolV1().BuildEnvelope(sid, "r1", run.DeriveInputCommandID("r1", "in-2"), run.NextStep(input("in-2")))
 	env.SchemaVersion = 2
-	_, err := h.rt.Commit(h.ctx, sid, run.CommitRequest{Command: env})
+	_, err := h.rt.Commit(h.ctx, h.writer(), run.CommitRequest{Command: env})
 	if err == nil || errors.Is(err, run.ErrStaleRuntime) || errors.Is(err, run.ErrCommandConflict) {
 		t.Fatalf("schema mismatch = %v, want a non-retriable error", err)
 	}
@@ -524,7 +524,7 @@ func testTakeover(t *testing.T, factory Factory) {
 	h.startTool("r2", toolStep, ids[0])
 
 	h.takeover()
-	n, err := h.rt.RecoverInterrupted(h.ctx, sid, nil)
+	n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), nil)
 	if err != nil || n != 2 {
 		t.Fatalf("RecoverInterrupted = %d %v, want 2", n, err)
 	}
@@ -581,12 +581,12 @@ func testTakeover(t *testing.T, factory Factory) {
 	}
 	// Same owner repeats: idempotent, nothing new.
 	head := h.head()
-	if n, err := h.rt.RecoverInterrupted(h.ctx, sid, nil); err != nil || n != 0 || h.head() != head {
+	if n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), nil); err != nil || n != 0 || h.head() != head {
 		t.Fatalf("second RecoverInterrupted = %d %v", n, err)
 	}
 	// Another takeover with nothing Executing does nothing.
 	h.takeover()
-	if n, err := h.rt.RecoverInterrupted(h.ctx, sid, nil); err != nil || n != 0 {
+	if n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), nil); err != nil || n != 0 {
 		t.Fatalf("RecoverInterrupted with no executing target = %d %v", n, err)
 	}
 }
@@ -621,7 +621,7 @@ func testReattach(t *testing.T, factory Factory) {
 
 	h.takeover()
 	re := &selectiveReattacher{live: map[run.ExecutionClaim]bool{modelClaim: true}}
-	n, err := h.rt.RecoverInterrupted(h.ctx, sid, re)
+	n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), re)
 	if err != nil || n != 1 {
 		t.Fatalf("RecoverInterrupted = %d %v, want exactly the tool disposed", n, err)
 	}
@@ -671,17 +671,20 @@ func testOwnershipLost(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	step, claim := h.executingModel("r1", false)
-	old := h.takeover()
+	old, oldWriter := h.takeover()
 	head := h.head()
-	_, err := h.commitWith(old, "r1", run.DeriveSettlementCommandID("r1", step, "", claim), 0, run.SubmitModelResult{StepID: step, Result: textResult("late")})
+	_, err := h.commitWith(old, oldWriter, "r1", run.DeriveSettlementCommandID("r1", step, "", claim), 0, run.SubmitModelResult{StepID: step, Result: textResult("late")})
 	if !errors.Is(err, run.ErrOwnershipLost) {
 		t.Fatalf("old owner commit = %v, want ErrOwnershipLost", err)
 	}
 	if h.head() != head {
 		t.Fatal("fenced commit reached the stream")
 	}
-	if _, err := old.Load(h.ctx, sid, "r1"); !errors.Is(err, run.ErrOwnershipLost) {
-		t.Fatalf("old owner load = %v, want ErrOwnershipLost", err)
+	// Reading needs no ownership: the superseded process still reads the
+	// stream by SessionID and sees the state as the new owner left it
+	// (AUTH-OWN-2); only its Writer's view and commits are fenced.
+	if rec, err := old.Record(h.ctx, sid, "r1"); err != nil || rec.Snapshot.State.Current.(run.ModelStep).Status != run.ModelExecuting {
+		t.Fatalf("old owner record = %v, want the current state without an ownership error", err)
 	}
 	// The new owner is unaffected.
 	if h.load("r1").State.Current.(run.ModelStep).Status != run.ModelExecuting {

@@ -29,7 +29,7 @@ const (
 
 // newRuntime assembles the Memory Session stack with only the run module and
 // creates the Run with its seed input through a Start-like group.
-func newRuntime(t testing.TB, inputs ...run.AgentInput) run.Runtime {
+func newRuntime(t testing.TB, inputs ...run.AgentInput) (run.Runtime, writer.Writer) {
 	t.Helper()
 	store := session.NewMemoryStore()
 	registry, err := extension.BuildRegistry(session.ProtocolVersion1, runmod.Module)
@@ -43,7 +43,7 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) run.Runtime {
 	bindings := artifact.NewMemoryBindingStore()
 	ledger := artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings})
 	writers := writer.NewWriters(store, registry, writer.Admission{Bindings: bindings, Ledger: ledger}, session.OpenOptions{}, writer.WritersConfig{})
-	rt, err := runmod.NewRuntime(runmod.Config{Writers: writers, Registry: registry, Store: store, Bindings: bindings})
+	rt, err := runmod.NewRuntime(runmod.Config{Registry: registry, Store: store, Bindings: bindings})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) run.Runtime {
 	if res.Outcome != writer.CommitApplied {
 		t.Fatalf("create run: %s %s", res.Outcome, res.Detail)
 	}
-	return rt
+	return rt, w
 }
 
 // Feature is one seeded Run plus the Loop/Runtime used to drive it.
@@ -82,6 +82,7 @@ type Feature struct {
 	runCtx context.Context
 	runID  run.RunID
 	rt     run.Runtime
+	w      writer.Writer // the owner's capability over defaultSession
 
 	model   run.ModelRef
 	results []sdk.ModelResult
@@ -102,13 +103,14 @@ type Feature struct {
 // model results before Run or Executing*.
 func New(t testing.TB) *Feature {
 	t.Helper()
-	rt := newRuntime(t, run.AgentInput{ID: "seed", Payload: run.MustParseCanonicalJSON(`{"q":"hi"}`)})
+	rt, w := newRuntime(t, run.AgentInput{ID: "seed", Payload: run.MustParseCanonicalJSON(`{"q":"hi"}`)})
 	f := &Feature{
 		t:      t,
 		ctx:    context.Background(),
 		runCtx: context.Background(),
 		runID:  defaultRunID,
 		rt:     rt,
+		w:      w,
 		model:  defaultModel,
 		defs:   make(map[run.ToolRef]sdk.ToolDefinition),
 		tools:  make(map[run.ToolRef]*scriptTool),
@@ -197,7 +199,7 @@ func (f *Feature) RunError(want error) *Feature {
 func (f *Feature) drive() error {
 	f.t.Helper()
 	f.ensureLoop()
-	res, err := f.loop.Run(f.runCtx, f.rt, defaultSession, f.runID, nil)
+	res, err := f.loop.Run(f.runCtx, f.rt, f.w, f.runID, nil)
 	f.last = res
 	return err
 }
@@ -225,7 +227,7 @@ func (f *Feature) TryCommit(cmd run.AgentCommand) error {
 	if err != nil {
 		return err
 	}
-	_, err = f.rt.Commit(f.ctx, defaultSession, run.CommitRequest{Base: snap.Position, Command: env})
+	_, err = f.rt.Commit(f.ctx, f.w, run.CommitRequest{Base: snap.Position, Command: env})
 	return err
 }
 
@@ -373,7 +375,7 @@ func (f *Feature) ensureLoop() {
 
 func (f *Feature) load() run.RuntimeSnapshot {
 	f.t.Helper()
-	snap, err := f.rt.Load(f.ctx, defaultSession, f.runID)
+	snap, err := f.rt.Load(f.ctx, f.w, f.runID)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -408,7 +410,7 @@ func (f *Feature) commit(cmd run.AgentCommand) run.CommitResult {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	res, err := f.rt.Commit(f.ctx, defaultSession, run.CommitRequest{
+	res, err := f.rt.Commit(f.ctx, f.w, run.CommitRequest{
 		Base: snap.Position, Command: env,
 	})
 	if err != nil {

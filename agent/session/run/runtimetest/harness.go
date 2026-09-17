@@ -85,7 +85,7 @@ func (h *harness) open() {
 	h.t.Helper()
 	h.writers = writer.NewWriters(h.store, h.registry, writer.Admission{Bindings: h.bindings, Ledger: h.ledger}, session.OpenOptions{Takeover: true},
 		writer.WritersConfig{Cache: h.cache, CachePolicy: runmod.WriterCachePolicy(0)})
-	rt, err := runmod.NewRuntime(runmod.Config{Writers: h.writers, Registry: h.registry, Store: h.store,
+	rt, err := runmod.NewRuntime(runmod.Config{Registry: h.registry, Store: h.store,
 		Frozen: h.frozen, Bindings: h.bindings, Cache: h.cache, Now: h.clock.Now})
 	if err != nil {
 		h.fatal(err)
@@ -95,11 +95,14 @@ func (h *harness) open() {
 
 // takeover opens a new owner process over the same store; the previous
 // Runtime stays usable so tests can observe its fencing.
-func (h *harness) takeover() *runmod.Runtime {
+func (h *harness) takeover() (*runmod.Runtime, writer.Writer) {
 	h.t.Helper()
-	old := h.rt
+	old, oldWriter := h.rt, h.writer()
 	h.open()
-	return old
+	// Ownership changes hands when the new process opens its Writer, not
+	// when it reads: reads take no lease (AUTH-OWN-2).
+	h.writer()
+	return old, oldWriter
 }
 
 func (h *harness) fatal(args ...any) { h.t.Helper(); h.t.Fatal(args...) }
@@ -215,7 +218,7 @@ func (h *harness) startRun(turnID turn.TurnID, runID run.RunID, inputs ...run.Ag
 
 func (h *harness) load(runID run.RunID) run.RuntimeSnapshot {
 	h.t.Helper()
-	snap, err := h.rt.Load(h.ctx, sid, runID)
+	snap, err := h.rt.Load(h.ctx, h.writer(), runID)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -243,16 +246,16 @@ func (h *harness) proto(runID run.RunID) run.Protocol {
 // commit builds the envelope and submits it; attach events follow the facts.
 func (h *harness) commit(runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, attach ...run.ModuleEvent) (run.CommitResult, error) {
 	h.t.Helper()
-	return h.commitWith(h.rt, runID, id, base, cmd, attach...)
+	return h.commitWith(h.rt, h.writer(), runID, id, base, cmd, attach...)
 }
 
-func (h *harness) commitWith(rt *runmod.Runtime, runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, attach ...run.ModuleEvent) (run.CommitResult, error) {
+func (h *harness) commitWith(rt *runmod.Runtime, w writer.Writer, runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, attach ...run.ModuleEvent) (run.CommitResult, error) {
 	h.t.Helper()
 	env, err := h.proto(runID).BuildEnvelope(sid, runID, id, cmd)
 	if err != nil {
 		h.fatal(err)
 	}
-	return rt.Commit(h.ctx, sid, run.CommitRequest{Base: base, Command: env, Attach: attach})
+	return rt.Commit(h.ctx, w, run.CommitRequest{Base: base, Command: env, Attach: attach})
 }
 
 func (h *harness) mustCommit(runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, attach ...run.ModuleEvent) run.CommitResult {

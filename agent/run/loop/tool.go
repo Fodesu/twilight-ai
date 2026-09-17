@@ -34,7 +34,7 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime boundRuntime, events 
 	if !ok || ts.RefValue.ID != eff.StepID {
 		return nil, fmt.Errorf("agent: loop: tool step %q is not current", eff.StepID)
 	}
-	target, err := l.targetFor(ctx, runtime.sid, runID)
+	target, err := l.targetFor(ctx, runtime.sid(), runID)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +67,7 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime boundRuntime, events 
 			continue
 		}
 		binding := &ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy}
-		probe := Assignment{Session: runtime.sid, RunID: runID, StepID: eff.StepID, CallID: callID, Target: target, Schema: snapshot.SchemaVersion, Kind: AssignmentTool, Tool: binding}
+		probe := Assignment{Session: runtime.sid(), RunID: runID, StepID: eff.StepID, CallID: callID, Target: target, Schema: snapshot.SchemaVersion, Kind: AssignmentTool, Tool: binding}
 		known, err := l.Executor.Validate(ctx, probe)
 		if err != nil {
 			return dispatched, err
@@ -84,7 +84,7 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime boundRuntime, events 
 				}
 				return dispatched, err
 			}
-			l.emitCommitted(ctx, events, runtime.sid, runID, res.Events)
+			l.emitCommitted(ctx, events, runtime.sid(), runID, res.Events)
 			continue
 		}
 
@@ -103,9 +103,9 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime boundRuntime, events 
 			// for a call this attempt does not own.
 			continue
 		}
-		l.emitCommitted(ctx, events, runtime.sid, runID, start.Events)
+		l.emitCommitted(ctx, events, runtime.sid(), runID, start.Events)
 		if events != nil {
-			_ = events.Emit(ctx, Event{Session: runtime.sid, RunID: runID, StepID: eff.StepID, CallID: callID,
+			_ = events.Emit(ctx, Event{Session: runtime.sid(), RunID: runID, StepID: eff.StepID, CallID: callID,
 				Kind: EventToolStarted, Durability: EventCommitted})
 		}
 		assignment := probe

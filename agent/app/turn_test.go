@@ -230,7 +230,7 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 	}()
 	t.Cleanup(func() { close(tool.release); <-done })
 	<-tool.started
-	snapshot, err := h.Authority.Runtime.Load(ctx, sid, started.RunID)
+	snapshot, err := runState(h, sid, started.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}

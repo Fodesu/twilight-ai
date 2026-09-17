@@ -237,7 +237,9 @@ type storeReader struct {
 
 // NewProjectionReader reads projections from the Store: a cache entry (when
 // it is a prefix of the stream) plus the tail commits, or a full fold. It is
-// the observer's path; the owner process reads through Writer.Projections().
+// the public read model, in the owner process and in observers alike: it
+// takes no ownership. Writer.Projections() is the owner's transactional
+// view inside a commit's critical section.
 func NewProjectionReader(store session.Store, registry *Registry, cache ProjectionCache) ProjectionReader {
 	return &storeReader{store: store, registry: registry, cache: cache}
 }

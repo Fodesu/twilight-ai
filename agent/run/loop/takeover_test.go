@@ -17,6 +17,7 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{}`)})
 	oldRuntime := stack.runtime
+	oldWriter := stack.writer(t) // the superseded owner's capability
 
 	spec := toolSpec(t, "slow", DirectExecution)
 	block := make(chan struct{})
@@ -36,22 +37,22 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 	}
 	firstDone := make(chan error, 1)
 	go func() {
-		_, err := first.Run(context.Background(), oldRuntime, testSession, "run-1", nil)
+		_, err := first.Run(context.Background(), oldRuntime, oldWriter, "run-1", nil)
 		firstDone <- err
 	}()
 	<-started
 
 	// The old owner is presumed dead; a new owner opens with Takeover.
 	stack.open(t)
-	n, err := stack.runtime.RecoverInterrupted(context.Background(), testSession, nil)
+	n, err := stack.runtime.RecoverInterrupted(context.Background(), stack.writer(t), nil)
 	if err != nil || n != 1 {
 		t.Fatalf("RecoverInterrupted = %d %v, want 1", n, err)
 	}
-	again, err := stack.runtime.RecoverInterrupted(context.Background(), testSession, nil)
+	again, err := stack.runtime.RecoverInterrupted(context.Background(), stack.writer(t), nil)
 	if err != nil || again != 0 {
 		t.Fatalf("second RecoverInterrupted = %d %v, want 0", again, err)
 	}
-	snap := loadState(t, stack.runtime, "run-1")
+	snap := loadState(t, stack.runtime, stack.writer(t), "run-1")
 	if _, open := snap.State.Current.(Open); !open {
 		t.Fatalf("after takeover current = %T, want Open", snap.State.Current)
 	}
@@ -61,7 +62,7 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := second.Run(context.Background(), stack.runtime, testSession, "run-1", nil)
+	res, err := second.Run(context.Background(), stack.runtime, stack.writer(t), "run-1", nil)
 	if err != nil || res.Disposition != LoopFinished || res.Result.Status != RunCompleted {
 		t.Fatalf("second loop = %+v %v", res, err)
 	}

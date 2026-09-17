@@ -85,8 +85,9 @@ type Reader interface {
 // Writers. It never drives a Run: it commits protocol transitions and
 // computes dispositions.
 type Coordinator struct {
-	Writers writer.Writers
-	Runtime run.Runtime
+	// Projections is the lease-free read side for Status (AUTH-OWN-2).
+	Projections extension.ProjectionReader
+	Runtime     run.Runtime
 	// Now stamps event times; nil selects time.Now.
 	Now func() time.Time
 }
@@ -98,23 +99,8 @@ func (c *Coordinator) now() int64 {
 	return time.Now().UnixMilli()
 }
 
-func (c *Coordinator) writer(ctx context.Context, sid session.SessionID) (writer.Writer, error) {
-	w, err := c.Writers.Writer(ctx, sid)
-	if err != nil {
-		if errors.Is(err, &extension.Error{Code: extension.ErrOwnershipLost}) {
-			return nil, fmt.Errorf("%w: %v", run.ErrOwnershipLost, err)
-		}
-		return nil, err
-	}
-	return w, nil
-}
-
 func (c *Coordinator) surface(ctx context.Context, sid session.SessionID) (TurnSurface, error) {
-	w, err := c.writer(ctx, sid)
-	if err != nil {
-		return TurnSurface{}, err
-	}
-	return ReadSurface(ctx, w.Projections(), sid)
+	return ReadSurface(ctx, c.Projections, sid)
 }
 
 // owned checks that the request addresses the Session the Writer owns.
@@ -326,7 +312,7 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req DeliverR
 	for i, in := range req.Inputs {
 		attach[i] = run.ModuleEvent{Type: chatlog.TypeInputDelivered, Value: chatlog.InputDeliveredPayload{InputID: chatlog.InputID(in.ID), TurnID: chatlog.TurnID(req.Ref.TurnID)}}
 	}
-	if _, err := c.Runtime.Commit(ctx, sid, run.CommitRequest{Command: env, Attach: attach}); err != nil {
+	if _, err := c.Runtime.Commit(ctx, w, run.CommitRequest{Command: env, Attach: attach}); err != nil {
 		if errors.Is(err, run.ErrRunTerminal) {
 			// The last step settled first (TRN-DLV-3): the inputs stay submitted.
 			return c.respond(ctx, req.Ref, runID)
@@ -454,7 +440,7 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest
 		return TurnResponse{}, err
 	}
 	// CancelRun rebases on the current state; no Base and no machine read.
-	_, err = c.Runtime.Commit(ctx, sid, run.CommitRequest{Command: env,
+	_, err = c.Runtime.Commit(ctx, w, run.CommitRequest{Command: env,
 		Attach: []run.ModuleEvent{{Type: TypeFailed, Value: FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementStopped, FailureClass: "cancelled"}}}})
 	if err != nil && !errors.Is(err, run.ErrRunTerminal) {
 		return TurnResponse{}, err
@@ -539,10 +525,11 @@ func (c *Coordinator) responseFor(ctx context.Context, ref TurnRef, view *TurnVi
 		resp.Disposition = ResumeFinished
 		return resp, nil
 	}
-	snapshot, err := c.Runtime.Load(ctx, ref.SessionID, att.RunID)
+	record, err := c.Runtime.Record(ctx, ref.SessionID, att.RunID)
 	if err != nil {
 		return TurnResponse{}, err
 	}
+	snapshot := record.Snapshot
 	switch {
 	case snapshot.State.Status.Terminal():
 		resp.Disposition = ResumeFinished

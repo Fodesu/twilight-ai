@@ -136,7 +136,7 @@ func waitForExecutingCall(ctx context.Context, h *app.Application, sid session.S
 		surface, err := h.TurnSurface(ctx, sid)
 		if err == nil {
 			if v, ok := surface.Turns[turnID]; ok && v.ActiveRun != "" {
-				snap, err := h.Authority.Runtime.Load(ctx, sid, v.ActiveRun)
+				snap, err := runState(h, sid, v.ActiveRun)
 				if err == nil && len(run.ExecutingCalls(snap.State)) == 1 {
 					return v.ActiveRun
 				}

@@ -98,23 +98,24 @@ func TestLoopReleasesSlots(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := l.Advance(ctx, loopRuntime(t), testSession, "run-1", nil); err != nil {
+			rt, w := loopRuntime(t)
+			if _, err := l.Advance(ctx, rt, w, "run-1", nil); err != nil {
 				t.Fatal(err)
 			}
 			return l
 		}},
 		{"deliver", func(t *testing.T) *Loop {
-			rt := loopRuntime(t)
+			rt, w := loopRuntime(t)
 			exec := newRecordingExecutor()
 			l, err := New(exec, staticBuilder{}, Settings{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := l.Advance(ctx, rt, testSession, "run-1", nil); err != nil {
+			if _, err := l.Advance(ctx, rt, w, "run-1", nil); err != nil {
 				t.Fatal(err)
 			}
 			result := textResult("done")
-			if _, err := l.Deliver(ctx, rt, testSession, Outcome{Key: exec.last().Key(), Model: &result}, nil); err != nil {
+			if _, err := l.Deliver(ctx, rt, w, Outcome{Key: exec.last().Key(), Model: &result}, nil); err != nil {
 				t.Fatal(err)
 			}
 			return l
@@ -125,7 +126,8 @@ func TestLoopReleasesSlots(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			res, err := l.Run(ctx, loopRuntime(t), testSession, "run-1", nil)
+			rt, w := loopRuntime(t)
+			res, err := l.Run(ctx, rt, w, "run-1", nil)
 			if err != nil || res.Result == nil || res.Result.Status != RunCompleted {
 				t.Fatalf("run = %+v %v", res, err)
 			}

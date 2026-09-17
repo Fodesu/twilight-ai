@@ -19,11 +19,11 @@ func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
 			panic("nil map write")
 		}}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{toolCallResult("c1"), textResult("done")}}
-	rt := loopRuntime(t)
+	rt, w := loopRuntime(t)
 	interpreter, _ := newLoop(nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 
-	res, err := interpreter.Run(context.Background(), rt, testSession, "run-1", nil)
+	res, err := interpreter.Run(context.Background(), rt, w, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
 }
 
 func TestRegressionRunFinishedEmitted(t *testing.T) {
-	rt := loopRuntime(t)
+	rt, w := loopRuntime(t)
 	var kinds []EventKind
 	sink := sinkFunc(func(_ context.Context, e Event) error {
 		kinds = append(kinds, e.Kind)
@@ -55,7 +55,7 @@ func TestRegressionRunFinishedEmitted(t *testing.T) {
 	})
 	interpreter, _ := newLoop(nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("done")}}},
 		fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
-	if _, err := interpreter.Run(context.Background(), rt, testSession, "run-1", sink); err != nil {
+	if _, err := interpreter.Run(context.Background(), rt, w, "run-1", sink); err != nil {
 		t.Fatal(err)
 	}
 	for _, k := range kinds {
@@ -91,11 +91,11 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 		}(),
 		textResult("done"),
 	}}
-	rt := loopRuntime(t)
+	rt, w := loopRuntime(t)
 	interpreter, _ := newLoop(nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"fs.read": tool}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 
-	res, err := interpreter.Run(context.Background(), rt, testSession, "run-1", nil)
+	res, err := interpreter.Run(context.Background(), rt, w, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,9 +108,9 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 }
 
 func TestRegressionStreamNilResult(t *testing.T) {
-	rt := loopRuntime(t)
+	rt, w := loopRuntime(t)
 	interpreter, _ := newLoop(nil, fakeCatalog{nilResultStreamer{}}, fakeToolCatalog{}, staticBuilder{}, Settings{}, true)
-	res, err := interpreter.Run(context.Background(), rt, testSession, "run-1", nil)
+	res, err := interpreter.Run(context.Background(), rt, w, "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

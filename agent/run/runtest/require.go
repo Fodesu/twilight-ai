@@ -296,7 +296,7 @@ func (f *Feature) RequireAbsorbsCommands() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	_, err = f.rt.Commit(f.ctx, defaultSession, run.CommitRequest{Base: snap.Position, Command: env})
+	_, err = f.rt.Commit(f.ctx, f.w, run.CommitRequest{Base: snap.Position, Command: env})
 	if !errors.Is(err, run.ErrRunTerminal) {
 		f.t.Fatalf("err = %v, want ErrRunTerminal", err)
 	}

@@ -105,7 +105,7 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 	if !ok {
 		t.Fatal("takeover lost the active turn")
 	}
-	snap, err := p2.Authority.Runtime.Load(ctx, sid, active.ActiveRun)
+	snap, err := runState(p2, sid, active.ActiveRun)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 	if got, want := len(seen[0].Messages), len(sent.Messages); got != want {
 		t.Fatalf("replanned request has %d messages, the aborted one had %d", got, want)
 	}
-	final, err := p2.Authority.Runtime.Load(ctx, sid, active.ActiveRun)
+	final, err := runState(p2, sid, active.ActiveRun)
 	if err != nil || final.State.ModelSteps != 1 {
 		t.Fatalf("model steps after replan = %d %v, want exactly the replanned step", final.State.ModelSteps, err)
 	}
@@ -237,7 +237,7 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	if !ok {
 		t.Fatal("takeover lost the active turn")
 	}
-	snap, err := p2.Authority.Runtime.Load(ctx, sid, active.ActiveRun)
+	snap, err := runState(p2, sid, active.ActiveRun)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 		case <-time.After(time.Millisecond):
 		}
 	}
-	final, err := p2.Authority.Runtime.Load(ctx, sid, active.ActiveRun)
+	final, err := runState(p2, sid, active.ActiveRun)
 	if err != nil || final.State.ModelSteps != 1 {
 		t.Fatalf("model steps = %d %v, want the one original step", final.State.ModelSteps, err)
 	}

@@ -114,7 +114,7 @@ func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID)
 		if err != nil {
 			return turn.TurnResponse{}, err
 		}
-		res, err := l.Run(ctx, d.Runtime, ref.SessionID, view.ActiveRun, nil)
+		res, err := l.Run(ctx, d.Runtime, w, view.ActiveRun, nil)
 		if err != nil {
 			if errors.Is(err, loop.ErrRunAlreadyRunning) {
 				resp, rerr := d.Turns.Status(ctx, ref)
@@ -131,7 +131,7 @@ func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID)
 			// waiter. Offer every Executing target reattachment and dispose
 			// what no executor answers, instead of leaving the Turn to a
 			// driver that already returned (RUN-CMT-7).
-			if _, err := d.recoverInterrupted(context.WithoutCancel(ctx), ref.SessionID); err != nil {
+			if _, err := d.recoverInterrupted(context.WithoutCancel(ctx), w); err != nil {
 				d.fail(ref.SessionID, fmt.Errorf("driver: recovering a quiesced drive: %w", err))
 			}
 		}
@@ -142,7 +142,8 @@ func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID)
 // reattachDeliver is the glue a takeover hands the Executor (RUN-CMT-7): an
 // Outcome of an attempt that survived the previous owner is settled through
 // the Loop of the Turn that owns its Run, and the Run is driven on from there.
-func (d *Driver) reattachDeliver(ctx context.Context, sid session.SessionID) loop.Deliver {
+func (d *Driver) reattachDeliver(ctx context.Context, w writer.Writer) loop.Deliver {
+	sid := w.SessionID()
 	return func(out loop.Outcome) {
 		if ctx.Err() != nil {
 			return
@@ -162,7 +163,7 @@ func (d *Driver) reattachDeliver(ctx context.Context, sid session.SessionID) loo
 			d.fail(sid, fmt.Errorf("driver: reattached outcome for run %s: %w", out.Key.RunID, err))
 			return
 		}
-		res, err := l.Deliver(ctx, d.Runtime, sid, out, nil)
+		res, err := l.Deliver(ctx, d.Runtime, w, out, nil)
 		if err != nil {
 			d.fail(sid, fmt.Errorf("driver: settling reattached outcome for run %s: %w", out.Key.RunID, err))
 			return
@@ -170,7 +171,7 @@ func (d *Driver) reattachDeliver(ctx context.Context, sid session.SessionID) loo
 		if res.Disposition != loop.LoopDelivered {
 			return
 		}
-		if _, err := l.Run(ctx, d.Runtime, sid, out.Key.RunID, nil); err != nil && !errors.Is(err, loop.ErrRunAlreadyRunning) {
+		if _, err := l.Run(ctx, d.Runtime, w, out.Key.RunID, nil); err != nil && !errors.Is(err, loop.ErrRunAlreadyRunning) {
 			d.fail(sid, fmt.Errorf("driver: driving run %s after a reattached outcome: %w", out.Key.RunID, err))
 		}
 	}
@@ -183,16 +184,20 @@ func (d *Driver) reattachDeliver(ctx context.Context, sid session.SessionID) loo
 type recoveryLifetime struct {
 	ctx    context.Context
 	cancel context.CancelFunc
+	// w is the Writer the Session was opened with; reattached Outcomes settle
+	// through it (AUTH-OWN-2).
+	w writer.Writer
 }
 
 // installRecoveryLifetimeLocked replaces the Session's recovery lifetime with
 // one derived from parent, stopping the previous listeners. Callers hold d.mu.
-func (d *Driver) installRecoveryLifetimeLocked(sid session.SessionID, parent context.Context) *recoveryLifetime {
+func (d *Driver) installRecoveryLifetimeLocked(w writer.Writer, parent context.Context) *recoveryLifetime {
+	sid := w.SessionID()
 	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
 	if previous := d.recovery[sid]; previous != nil {
 		previous.cancel()
 	}
-	lt := &recoveryLifetime{ctx: ctx, cancel: cancel}
+	lt := &recoveryLifetime{ctx: ctx, cancel: cancel, w: w}
 	d.recovery[sid] = lt
 	return lt
 }
@@ -200,13 +205,13 @@ func (d *Driver) installRecoveryLifetimeLocked(sid session.SessionID, parent con
 // ensureRecoveryLifetime returns the Session's recovery lifetime, installing a
 // detached one when absent. Open replaces it instead: a takeover supersedes
 // the previous owner's listeners.
-func (d *Driver) ensureRecoveryLifetime(sid session.SessionID) *recoveryLifetime {
+func (d *Driver) ensureRecoveryLifetime(w writer.Writer) *recoveryLifetime {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if lt, ok := d.recovery[sid]; ok {
+	if lt, ok := d.recovery[w.SessionID()]; ok {
 		return lt
 	}
-	return d.installRecoveryLifetimeLocked(sid, context.Background())
+	return d.installRecoveryLifetimeLocked(w, context.Background())
 }
 
 // recoverInterrupted runs the takeover disposition (RUN-CMT-7) for the
@@ -215,20 +220,22 @@ func (d *Driver) ensureRecoveryLifetime(sid session.SessionID) *recoveryLifetime
 // recovery behind an unknown dispatch boundary -- the drive kept the call
 // Executing, so the durable record, not a duplicate dispatch, decides the
 // settlement.
-func (d *Driver) recoverInterrupted(ctx context.Context, sid session.SessionID) (int, error) {
-	lt := d.ensureRecoveryLifetime(sid)
-	return d.Runtime.RecoverInterrupted(ctx, sid, loop.Reattach(lt.ctx, d.Executor, sid, d.reattachDeliver(lt.ctx, sid)))
+func (d *Driver) recoverInterrupted(ctx context.Context, w writer.Writer) (int, error) {
+	lt := d.ensureRecoveryLifetime(w)
+	sid := w.SessionID()
+	return d.Runtime.RecoverInterrupted(ctx, w, loop.Reattach(lt.ctx, d.Executor, sid, d.reattachDeliver(lt.ctx, lt.w)))
 }
 
-// Open takes ownership of the Session's recovery and runs the takeover
-// disposition (RUN-CMT-7). It returns the number of recovery commands issued.
-func (d *Driver) Open(ctx context.Context, sid session.SessionID) (int, error) {
+// Open installs the Session's recovery lifetime under w and runs the
+// takeover disposition (RUN-CMT-7). It returns the number of recovery
+// commands issued.
+func (d *Driver) Open(ctx context.Context, w writer.Writer) (int, error) {
 	d.mu.Lock()
-	d.installRecoveryLifetimeLocked(sid, ctx)
+	d.installRecoveryLifetimeLocked(w, ctx)
 	d.mu.Unlock()
-	n, err := d.recoverInterrupted(ctx, sid)
+	n, err := d.recoverInterrupted(ctx, w)
 	if err != nil {
-		d.Stop(sid)
+		d.Stop(w.SessionID())
 	}
 	return n, err
 }

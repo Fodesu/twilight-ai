@@ -12,7 +12,7 @@ import (
 )
 
 func (l *Loop) planAndPrepare(ctx context.Context, runtime boundRuntime, events EventSink, snapshot *run.RuntimeSnapshot, hint run.PromptInput) error {
-	hint.Session = runtime.sid
+	hint.Session = runtime.sid()
 	plan, err := l.Builder.Build(ctx, hint)
 	if err != nil {
 		return err
@@ -63,7 +63,7 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime boundRuntime, events 
 		// ModelStepPrepared carries the frozen request — the most informative
 		// fact of the run; observers must see it like every other accepted
 		// transition.
-		l.emitCommitted(ctx, events, runtime.sid, snapshot.State.RunID, res.Events)
+		l.emitCommitted(ctx, events, runtime.sid(), snapshot.State.RunID, res.Events)
 		return nil
 	}
 	if !retriable(err) {
@@ -99,12 +99,12 @@ func (l *Loop) startModelStep(ctx context.Context, runtime boundRuntime, events 
 	if !ok || prepared.RefValue.ID != stepID {
 		return nil, fmt.Errorf("agent: loop: model step %q is not current", stepID)
 	}
-	target, err := l.targetFor(ctx, runtime.sid, runID)
+	target, err := l.targetFor(ctx, runtime.sid(), runID)
 	if err != nil {
 		return nil, err
 	}
 	a := newAttempt(runID, stepID, "")
-	assignment := Assignment{Session: runtime.sid, RunID: runID, StepID: stepID, Claim: a.claim, Target: target, Schema: snapshot.SchemaVersion,
+	assignment := Assignment{Session: runtime.sid(), RunID: runID, StepID: stepID, Claim: a.claim, Target: target, Schema: snapshot.SchemaVersion,
 		Kind: AssignmentModel, Model: &ModelAssignment{Model: prepared.Model, RequestDigest: prepared.RequestDigest}}
 	// Pre-start check (RUN-EXE-5): an executor that cannot serve the model
 	// fails here, with the step still Prepared and no start or recovery fact.
@@ -122,7 +122,7 @@ func (l *Loop) startModelStep(ctx context.Context, runtime boundRuntime, events 
 		}
 		return nil, err
 	}
-	l.emitCommitted(ctx, events, runtime.sid, runID, start.Events)
+	l.emitCommitted(ctx, events, runtime.sid(), runID, start.Events)
 
 	modelStep, ok := start.Snapshot.State.Current.(run.ModelStep)
 	if !ok || modelStep.RefValue.ID != stepID || modelStep.Status != run.ModelExecuting {

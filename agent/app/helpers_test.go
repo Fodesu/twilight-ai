@@ -10,6 +10,7 @@ import (
 	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/session"
 	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
@@ -28,6 +29,16 @@ func newHost(cfg app.Config, models map[run.ModelRef]loop.ModelInvoker, tools ..
 		panic(err)
 	}
 	return a
+}
+
+// runState reads a Run's committed state by SessionID: the lease-free read
+// (AUTH-OWN-2), so a test observes without owning.
+func runState(a *app.Application, sid session.SessionID, runID run.RunID) (run.RuntimeSnapshot, error) {
+	record, err := a.Authority.Runtime.Record(context.Background(), sid, runID)
+	if err != nil {
+		return run.RuntimeSnapshot{}, err
+	}
+	return record.Snapshot, nil
 }
 
 // memoryContent is an in-process cas store under the frozen authority.

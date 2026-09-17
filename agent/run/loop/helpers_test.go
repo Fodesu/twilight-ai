@@ -59,11 +59,22 @@ func (s *testStack) open(t testing.TB) {
 		s.ledger = artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: s.bindings})
 	}
 	s.writers = writer.NewWriters(s.store, s.registry, writer.Admission{Bindings: s.bindings, Ledger: s.ledger}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
-	rt, err := runmod.NewRuntime(runmod.Config{Writers: s.writers, Registry: s.registry, Store: s.store, Bindings: s.bindings, Now: s.now})
+	rt, err := runmod.NewRuntime(runmod.Config{Registry: s.registry, Store: s.store, Bindings: s.bindings, Now: s.now})
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.runtime = rt
+}
+
+// writer is the owner's Writer for testSession: the capability every
+// command of the drive takes.
+func (s *testStack) writer(t testing.TB) writer.Writer {
+	t.Helper()
+	w, err := s.writers.Writer(context.Background(), testSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return w
 }
 
 // createRun appends the Start group of one Run with a seed input (RUN-NEW-1).
@@ -97,14 +108,14 @@ func (s *testStack) createRun(t testing.TB, runID RunID, inputs ...AgentInput) {
 }
 
 // newTestRuntime is a Runtime holding "run-1" seeded with one input.
-func newTestRuntime(t testing.TB) Runtime {
+func newTestRuntime(t testing.TB) (Runtime, writer.Writer) {
 	t.Helper()
 	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)})
-	return stack.runtime
+	return stack.runtime, stack.writer(t)
 }
 
-func loopRuntime(t *testing.T) Runtime {
+func loopRuntime(t *testing.T) (Runtime, writer.Writer) {
 	t.Helper()
 	return newTestRuntime(t)
 }
@@ -119,9 +130,9 @@ func recordFacts(t testing.TB, rt Runtime, runID RunID) []Fact {
 	return record.Facts
 }
 
-func loadState(t testing.TB, rt Runtime, runID RunID) RuntimeSnapshot {
+func loadState(t testing.TB, rt Runtime, w writer.Writer, runID RunID) RuntimeSnapshot {
 	t.Helper()
-	snap, err := rt.Load(context.Background(), testSession, runID)
+	snap, err := rt.Load(context.Background(), w, runID)
 	if err != nil {
 		t.Fatal(err)
 	}
