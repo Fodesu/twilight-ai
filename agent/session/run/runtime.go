@@ -99,7 +99,7 @@ func (r *Runtime) Load(ctx context.Context, w writer.Writer, runID run.RunID) (r
 	}
 	// Not active: terminal or unknown. Terminal Runs leave the projection, so
 	// fold the Run's own events to answer (RUN-CMT-1).
-	record, err := r.record(ctx, sid, runID, nil)
+	record, err := r.record(ctx, sid, runID, nil, session.Head{})
 	if err != nil {
 		return run.RuntimeSnapshot{}, err
 	}
@@ -110,7 +110,7 @@ func (r *Runtime) Record(ctx context.Context, sid session.SessionID, runID run.R
 	if err := run.CheckContext(ctx); err != nil {
 		return run.RunRecord{}, err
 	}
-	state, _, err := r.reader.Load(ctx, sid, MachineProjectionID, MachineProjection.Version)
+	state, head, err := r.reader.Load(ctx, sid, MachineProjectionID, MachineProjection.Version)
 	if err != nil {
 		return run.RunRecord{}, err
 	}
@@ -119,12 +119,15 @@ func (r *Runtime) Record(ctx context.Context, sid session.SessionID, runID run.R
 	if ms, ok := m.Active[runID]; ok {
 		expect = &ms
 	}
-	return r.record(ctx, sid, runID, expect)
+	return r.record(ctx, sid, runID, expect, head)
 }
 
-// record reads the Run's events from the Store, folds them and (when expect
-// is given) compares the fold with the projection state.
-func (r *Runtime) record(ctx context.Context, sid session.SessionID, runID run.RunID, expect *run.MachineState) (run.RunRecord, error) {
+// record reads the Run's events from the Store and folds them: the ledger
+// fold is the authoritative read (RUN-CMT-1). When expect is given, the fold
+// is compared with the projection state, but only if both were read at the
+// same head: the two reads are separate round trips, and a commit landing
+// between them makes both correct at different points, not divergent.
+func (r *Runtime) record(ctx context.Context, sid session.SessionID, runID run.RunID, expect *run.MachineState, expectHead session.Head) (run.RunRecord, error) {
 	page, err := r.cfg.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: sid, Stream: runStream(runID)})
 	if err != nil {
 		return run.RunRecord{}, err
@@ -158,7 +161,7 @@ func (r *Runtime) record(ctx context.Context, sid session.SessionID, runID run.R
 	if err != nil {
 		return run.RunRecord{}, fmt.Errorf("runmod: record: %w", err)
 	}
-	if expect != nil && !run.StatesEquivalent(&state, expect) {
+	if expect != nil && page.Head == expectHead && !run.StatesEquivalent(&state, expect) {
 		return run.RunRecord{}, errors.New("runmod: record: projection diverges from the event fold")
 	}
 	created := record.Facts[0].(run.RunCreated)
@@ -345,7 +348,7 @@ func (r *Runtime) evaluate(ctx context.Context, view writer.View, sid session.Se
 		if _, ended := proj.Ended[runID]; ended {
 			return nil, evaluated{}, run.ErrRunTerminal, nil
 		}
-		if _, err := r.record(ctx, sid, runID, nil); err != nil {
+		if _, err := r.record(ctx, sid, runID, nil, session.Head{}); err != nil {
 			return nil, evaluated{}, err, nil
 		}
 		return nil, evaluated{}, run.ErrRunTerminal, nil
@@ -416,7 +419,7 @@ func (r *Runtime) snapshotIn(ctx context.Context, view writer.View, sid session.
 	if ms, ok := proj.Active[runID]; ok {
 		return run.RuntimeSnapshot{State: ms, Position: proj.Positions[runID], Head: view.Head(), SchemaVersion: proj.Schemas[runID]}, nil
 	}
-	record, err := r.record(ctx, sid, runID, nil)
+	record, err := r.record(ctx, sid, runID, nil, session.Head{})
 	if err != nil {
 		return run.RuntimeSnapshot{}, err
 	}

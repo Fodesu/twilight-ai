@@ -15,14 +15,27 @@ import (
 const ResumeAlreadyDriving = driver.ResumeAlreadyDriving
 
 // ErrSessionOpen reports an Open of a Session this authority already holds
-// open: one generation of ownership at a time (AUTH-OWN-1).
+// open, or is still opening or closing: one generation of ownership at a
+// time, and a generation's release completes before the next begins
+// (AUTH-OWN-1).
 var ErrSessionOpen = errors.New("authority: session is already open")
+
+type openState uint8
+
+const (
+	opening openState = iota // Writer being acquired, recovery being installed
+	open                     // owned; commands run through the Writer
+	closing                  // release in progress; Open still refuses
+)
 
 // openSession is one generation of ownership over a Session: the Writer
 // taken at Open and the recovery lifetime installed with it. Handles point
-// at a generation, so a Close releases only the generation it belongs to.
+// at a generation, so a Close releases only the generation it belongs to,
+// and the table keeps the generation until its release has completed, so an
+// Open racing a Close cannot take a Writer the Close is about to shut.
 type openSession struct {
-	w writer.Writer
+	state openState
+	w     writer.Writer
 }
 
 // Handle is this authority's current execution capability over one Session
@@ -45,42 +58,65 @@ type Handle struct {
 
 // Open takes ownership of the Session -- its Writer and its recovery
 // listeners -- and runs the takeover disposition (DRV-3). The stream must
-// exist. A Session this authority already holds open is ErrSessionOpen:
-// close the Handle first. A failed takeover disposition releases the Writer
-// again, so a failed Open leaves nothing owned.
+// exist. A Session this authority holds open, is opening, or is still
+// closing is ErrSessionOpen. A failed takeover disposition releases the
+// Writer again, so a failed Open leaves nothing owned.
 func (a *Authority) Open(ctx context.Context, sid session.SessionID) (*Handle, error) {
+	gen := &openSession{state: opening}
 	a.mu.Lock()
-	if _, open := a.open[sid]; open {
+	if _, held := a.open[sid]; held {
 		a.mu.Unlock()
 		return nil, fmt.Errorf("%w: %s", ErrSessionOpen, sid)
 	}
-	gen := &openSession{}
 	a.open[sid] = gen
 	a.mu.Unlock()
 	w, err := a.Writers.Writer(ctx, sid)
 	if err != nil {
-		a.forget(sid, gen)
+		_ = a.release(context.WithoutCancel(ctx), sid, gen, false)
 		return nil, err
 	}
 	gen.w = w
 	n, err := a.Driver.Open(ctx, w)
 	if err != nil {
-		a.forget(sid, gen)
-		_ = writer.CloseWriter(context.WithoutCancel(ctx), a.Writers, sid)
+		_ = a.release(context.WithoutCancel(ctx), sid, gen, true)
 		return nil, err
 	}
+	a.mu.Lock()
+	gen.state = open
+	a.mu.Unlock()
 	return &Handle{Recovered: n, gen: gen, a: a}, nil
 }
 
-// forget drops gen from the open table when it is still the current one.
-func (a *Authority) forget(sid session.SessionID, gen *openSession) bool {
+// beginClose moves the Session's current generation to closing when it is
+// gen (or any generation when gen is nil) and in the open state; it returns
+// the generation to release, or nil when there is nothing this caller owns.
+func (a *Authority) beginClose(sid session.SessionID, gen *openSession) *openSession {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.open[sid] != gen {
-		return false
+	current := a.open[sid]
+	if current == nil || (gen != nil && current != gen) || current.state != open {
+		return nil
 	}
-	delete(a.open, sid)
-	return true
+	current.state = closing
+	return current
+}
+
+// release shuts a generation down -- recovery listeners, then the Writer --
+// and drops it from the table. It is the one release path: Close,
+// DeleteSession and a failed Open all end here, so no Writer is closed while
+// another generation may be using it.
+func (a *Authority) release(ctx context.Context, sid session.SessionID, gen *openSession, closeWriter bool) error {
+	var err error
+	if closeWriter {
+		a.Driver.Stop(sid)
+		err = writer.CloseWriter(ctx, a.Writers, sid)
+	}
+	a.mu.Lock()
+	if a.open[sid] == gen {
+		delete(a.open, sid)
+	}
+	a.mu.Unlock()
+	return err
 }
 
 // ID is the Session this Handle owns.
@@ -94,14 +130,15 @@ func (h *Handle) Writer() writer.Writer { return h.gen.w }
 
 // Close releases this Handle's generation of ownership: it stops the
 // Session's recovery listeners and releases its Writer. A Handle whose
-// generation was already released (by Close, DeleteSession or a later Open
-// after its Close) does nothing. A Writer that failed (EXT-WRT-4) does not
-// block the close; the next Open reopens from the log.
+// generation was already released or is being released (by Close,
+// DeleteSession or Authority.Close) does nothing; a later generation is
+// never touched. A Writer that failed (EXT-WRT-4) does not block the close;
+// the next Open reopens from the log.
 func (h *Handle) Close(ctx context.Context) error {
 	sid := h.ID()
-	if !h.a.forget(sid, h.gen) {
+	gen := h.a.beginClose(sid, h.gen)
+	if gen == nil {
 		return nil
 	}
-	h.a.Driver.Stop(sid)
-	return writer.CloseWriter(ctx, h.a.Writers, sid)
+	return h.a.release(ctx, sid, gen, true)
 }

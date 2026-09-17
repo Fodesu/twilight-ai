@@ -188,18 +188,32 @@ func New(p Ports) (*Authority, error) {
 	a.Driver.Runtime, a.Driver.Turns, a.Driver.Executor = runtime, a.Turns, p.Executor
 	a.Driver.Presets, a.Driver.Decisions, a.Driver.Targets = presets, decisions, p.TargetResolver
 	a.Driver.Sources = decision.Sources{Projections: projections, Content: content}
-	a.Driver.Projections, a.Driver.Fail = projections, p.Fail
+	a.Driver.Fail = p.Fail
 	return a, nil
 }
 
-// Close stops every recovery listener and releases every Session this
-// authority owns; every outstanding Handle is stale afterwards.
+// Close releases every generation this authority holds -- recovery
+// listeners, then Writers -- and every outstanding Handle is stale
+// afterwards. Generations still opening or closing on another goroutine
+// finish their own release.
 func (a *Authority) Close(ctx context.Context) error {
 	a.mu.Lock()
-	a.open = make(map[session.SessionID]*openSession)
+	var owned []session.SessionID
+	for sid, gen := range a.open {
+		if gen.state == open {
+			gen.state = closing
+			owned = append(owned, sid)
+		}
+	}
 	a.mu.Unlock()
 	a.Driver.Close()
-	return writer.CloseWriters(ctx, a.Writers)
+	err := writer.CloseWriters(ctx, a.Writers)
+	a.mu.Lock()
+	for _, sid := range owned {
+		delete(a.open, sid)
+	}
+	a.mu.Unlock()
+	return err
 }
 
 // --- session lifecycle -------------------------------------------------------------
@@ -272,12 +286,20 @@ func (a *Authority) ForkBeforeTurn(ctx context.Context, parent session.SessionID
 // SES-GC-1). A Session this authority holds open is closed first; one owned
 // by another process is ErrOwned.
 func (a *Authority) DeleteSession(ctx context.Context, sid session.SessionID) error {
-	a.mu.Lock()
-	delete(a.open, sid)
-	a.mu.Unlock()
-	a.Driver.Stop(sid)
-	if err := writer.CloseWriter(ctx, a.Writers, sid); err != nil {
-		return err
+	if gen := a.beginClose(sid, nil); gen != nil {
+		if err := a.release(ctx, sid, gen, true); err != nil {
+			return err
+		}
+	} else {
+		a.mu.Lock()
+		_, transition := a.open[sid]
+		a.mu.Unlock()
+		if transition {
+			return fmt.Errorf("%w: %s is opening or closing", ErrSessionOpen, sid)
+		}
+		if err := writer.CloseWriter(ctx, a.Writers, sid); err != nil {
+			return err
+		}
 	}
 	return writer.Delete(ctx, a.Store, a.Admission, sid)
 }

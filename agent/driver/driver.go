@@ -18,7 +18,6 @@ import (
 	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
-	"github.com/felinics/twilight/agent/session/extension"
 	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/agent/turn"
 )
@@ -36,14 +35,13 @@ type Presets interface {
 // Driver is the execution orchestrator over the fact and effect layers
 // (DRV).
 type Driver struct {
-	Runtime     run.Runtime
-	Turns       turn.Reader
-	Executor    effect.Port
-	Presets     Presets
-	Decisions   *decision.PromptBuilders
-	Sources     decision.Sources
-	Targets     loop.TargetResolver
-	Projections extension.ProjectionReader
+	Runtime   run.Runtime
+	Turns     turn.Reader
+	Executor  effect.Port
+	Presets   Presets
+	Decisions *decision.PromptBuilders
+	Sources   decision.Sources
+	Targets   loop.TargetResolver
 	// Fail receives failures of work the Driver does outside any caller's
 	// call, such as settling a reattached Outcome; nil discards them.
 	Fail func(session.SessionID, error)
@@ -95,13 +93,16 @@ func (d *Driver) loopFor(ref turn.PresetRef) (*loop.Loop, error) {
 
 // Drive is DRV-1: while the Turn is active, resolve its recorded preset
 // and drive the active attempt to the next quiescent point, then read the
-// committed Status. w is the caller's ownership capability over the Session
-// (the Loop commits through the Runtime under the same epoch). The caller's
-// ctx bounds the drive, so cancellation is the caller's decision. A
-// concurrent local driver of the same Run yields ResumeAlreadyDriving.
+// committed Status. w is the caller's ownership capability over the Session:
+// the decision whether to drive reads w's own projections, and the Loop
+// commits through w, so a superseded owner plans against its own epoch's
+// view and is fenced at commit instead of adopting the new owner's state
+// (AUTH-OWN-2, RUN-LOP-5). The caller's ctx bounds the drive, so
+// cancellation is the caller's decision. A concurrent local driver of the
+// same Run yields ResumeAlreadyDriving.
 func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID) (turn.TurnResponse, error) {
 	ref := turn.TurnRef{SessionID: w.SessionID(), TurnID: turnID}
-	surface, err := turn.ReadSurface(ctx, d.Projections, ref.SessionID)
+	surface, err := turn.ReadSurface(ctx, w.Projections(), ref.SessionID)
 	if err != nil {
 		return turn.TurnResponse{}, err
 	}
@@ -148,7 +149,7 @@ func (d *Driver) reattachDeliver(ctx context.Context, w writer.Writer) loop.Deli
 		if ctx.Err() != nil {
 			return
 		}
-		surface, err := turn.ReadSurface(ctx, d.Projections, sid)
+		surface, err := turn.ReadSurface(ctx, w.Projections(), sid)
 		if err != nil {
 			d.fail(sid, fmt.Errorf("driver: reattached outcome for run %s: %w", out.Key.RunID, err))
 			return

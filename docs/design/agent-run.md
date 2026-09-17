@@ -383,7 +383,7 @@ type MachineProjection struct {
 }
 ```
 
-终态 Run 在 `RunEnded` 折叠后从 `Active` 与 `Positions` 移除，只在 `Ended` 保留 RunID 用于拒绝同一 RunID 的第二条 `created`（RUN-NEW-1）；终态结果由 `Record` 与 turn surface 提供，投影大小与活动 Run 数成正比，加上已终结 RunID 的集合。`Load(ctx, w, runID)` 是命令路径的读取：经传入 Writer 的 `Projections()` 读 owner 内存中的投影（EXT-PRJ-4），失去所有权的 owner 因此仍按自己的视图规划并在提交时被围栏；`Record(ctx, sid, runID)` 与独立进程的观察者经 `extension.NewProjectionReader` 从 Store 读取，不取得所有权（AUTH-OWN-2），投影缓存（EXT-PRJ-3）是可丢弃的派生数据，写入策略由 `agent/session/run` 的 `SnapshotPolicy` 决定，默认在 Run 的 `Current` 回到 `Open` 或 Run 终结时写入，并可按组计数补充。`Record` 以 `Types=[twilight/run/]` 过滤 `Read` 读取该 RunID 的全部事件（SES-REP-2），FoldRun 重建；该 Run 仍在投影中时与投影状态比对，divergence 必须失败。
+终态 Run 在 `RunEnded` 折叠后从 `Active` 与 `Positions` 移除，只在 `Ended` 保留 RunID 用于拒绝同一 RunID 的第二条 `created`（RUN-NEW-1）；终态结果由 `Record` 与 turn surface 提供，投影大小与活动 Run 数成正比，加上已终结 RunID 的集合。`Load(ctx, w, runID)` 是命令路径的读取：经传入 Writer 的 `Projections()` 读 owner 内存中的投影（EXT-PRJ-4），失去所有权的 owner 因此仍按自己的视图规划并在提交时被围栏；`Record(ctx, sid, runID)` 与独立进程的观察者经 `extension.NewProjectionReader` 从 Store 读取，不取得所有权（AUTH-OWN-2），投影缓存（EXT-PRJ-3）是可丢弃的派生数据，写入策略由 `agent/session/run` 的 `SnapshotPolicy` 决定，默认在 Run 的 `Current` 回到 `Open` 或 Run 终结时写入，并可按组计数补充。`Record` 以 `Types=[twilight/run/]` 过滤 `Read` 读取该 RunID 的全部事件（SES-REP-2），FoldRun 重建，该折叠即权威读取；该 Run 仍在投影中且两次读取落在同一 head 时与投影状态比对，divergence 必须失败；head 不同说明两次读取之间有提交落盘，两者各自正确，不比对。
 
 **RUN-CMT-3** Commit 经 `writer.Writer.Commit` 在该 Session 的 Writer 互斥区内完成（EXT-WRT-1）。所有 Runtime implementation 在 fn 内调用同一个 pure `EvaluateCommit`，顺序固定为：
 
