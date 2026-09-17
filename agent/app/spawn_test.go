@@ -3,11 +3,14 @@ package app_test
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/executor"
+	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
@@ -165,6 +168,11 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	const sid session.SessionID = "parent"
+	// Both processes share the Session store and the execution record store
+	// on disk. The second process's clocks run an hour ahead, so the first
+	// process's execution lease reads as expired: that is what a dead owner
+	// looks like to a takeover, and its Worker's reconcile loop adopts the
+	// orphaned spawn record (RUN-EXE-6, SPN-4).
 	open := func(model loop.ModelInvoker, takeover bool) (*app.Application, *app.Session, turn.PresetRef) {
 		t.Helper()
 		store, err := filestore.New(root)
@@ -175,8 +183,17 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		h := newHost(app.Config{Store: store, Content: content, Spawn: &spawn.Options{}, Ownership: session.OpenOptions{Takeover: takeover}},
-			map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+		cfg := app.Config{Store: store, Content: content, Spawn: &spawn.Options{}, Ownership: session.OpenOptions{Takeover: takeover}}
+		var clock func() time.Time
+		if takeover {
+			clock = func() time.Time { return time.Now().Add(time.Hour) }
+			cfg.Worker = executor.WorkerOptions{Clock: clock, ReconcileInterval: 5 * time.Millisecond}
+		}
+		cfg.Executions, err = executionstore.NewFileStore(filepath.Join(root, "executions"), executionstore.FileStoreOptions{Now: clock})
+		if err != nil {
+			t.Fatal(err)
+		}
+		h := newHost(cfg, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
 		preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{spawn.Options{}.ExecutableTool()}))
 		if err != nil {
 			t.Fatal(err)

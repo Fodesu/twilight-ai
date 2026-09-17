@@ -454,6 +454,9 @@ func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64
 		}
 		delay = min(delay*2, time.Second)
 	}
+	// The backend knows the Ref, not the attempt: the record's key is the
+	// Outcome's key (RUN-EXE-9).
+	out.Key = key
 	env := protocol.EncodeOutcome(out, digest)
 	state := protocol.StatusForOutcome(out)
 	for {

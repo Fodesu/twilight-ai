@@ -14,7 +14,7 @@
 // child segment's creation metadata records the provenance and the full
 // arguments. That record is what a takeover needs to continue the same
 // invocation after a crash; when the effect runs through a durable Worker,
-// the Worker also persists it as ExecutionBinding{twilight/session, child}.
+// the Worker persists it as ExecutionRef{twilight/session, child} (RUN-EXE-9).
 //
 // This package is the protocol core. The orchestration that creates, drives
 // and settles child Sessions lives in the Host (Ports.Spawn).
@@ -42,7 +42,7 @@ const DefaultTool run.ToolRef = "agent_spawn"
 // DefaultDepth bounds how deep subagents may nest.
 const DefaultDepth = 3
 
-// Provider is the ExecutionBinding provider of a subagent effect.
+// Provider is the ExecutionRef provider of the subagent Backend.
 const Provider = "twilight/session"
 
 // MetadataKey is the metadata key the provenance lives under in the child

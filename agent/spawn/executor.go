@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/felinics/twilight/agent/authority"
+	"github.com/felinics/twilight/agent/executor"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/loop"
@@ -38,8 +40,8 @@ func (o Options) ToolRef() run.ToolRef {
 }
 
 // ExecutableTool is the model-facing definition of the spawn tool for preset
-// catalogs. Its Execute never runs: the Executor claims the tool's
-// Assignments before the deployment's Executor sees them.
+// catalogs. Its Execute never runs: the Worker routes the tool's Assignments
+// to the spawn Backend (SPN-1).
 func (o Options) ExecutableTool() loop.ExecutableTool { return Tool(o.ToolRef()) }
 
 func (o Options) depth() int {
@@ -49,9 +51,14 @@ func (o Options) depth() int {
 	return o.MaxDepth
 }
 
-// Executor runs the spawn tool's Assignments as child Sessions this process
-// drives (SPN-1). The in-flight table is process-scoped like a local
-// executor's; what outlives the process is the child Session.
+// Executor is the subagent Backend (SPN-1, RUN-EXE-9): the spawn tool's
+// Assignments are executions whose Ref is the child SessionID. Start creates
+// the child (or continues one on record) and drives it through the
+// authority to a settled Turn; Attach adopts a child that exists while no
+// drive of it runs here, which is how a takeover continues a call the dead
+// owner left executing (SPN-4). The in-flight table is process-scoped like
+// the colocated backend's; what outlives the process is the child Session
+// and the Worker's record.
 type Executor struct {
 	opts Options
 	tool loop.ExecutableTool
@@ -61,51 +68,36 @@ type Executor struct {
 	a *authority.Authority
 
 	mu       sync.Mutex
-	inflight map[effect.AssignmentKey]*spawnRun
+	inflight map[string]*spawnRun
 	closed   bool
 }
 
 type spawnRun struct {
-	child   session.SessionID
 	cancel  context.CancelFunc
 	done    chan struct{}
 	outcome effect.Outcome
 	closed  bool
 }
 
-// NewExecutor returns the spawn effect; Bind supplies the authority it
+// NewExecutor returns the spawn Backend; Bind supplies the authority it
 // drives children through once that authority exists (it is built over the
-// Port that intercepts for this Executor).
+// Worker that routes to this Backend).
 func NewExecutor(opts Options) *Executor {
-	return &Executor{opts: opts, tool: Tool(opts.ToolRef()), inflight: make(map[effect.AssignmentKey]*spawnRun)}
+	return &Executor{opts: opts, tool: Tool(opts.ToolRef()), inflight: make(map[string]*spawnRun)}
 }
 
-// Bind supplies the authority. It must precede the first Dispatch or Attach.
+// Bind supplies the authority. It must precede the first Start or Attach.
 func (e *Executor) Bind(a *authority.Authority) { e.a = a }
 
-// Intercept wraps inner so the spawn tool's Assignments reach e and every
-// other Assignment reaches inner. Key-only operations go to e for keys it
-// drives or whose derived child exists on record (SPN-4), else to inner.
-func Intercept(e *Executor, inner effect.Port) effect.Port { return &intercept{e: e, inner: inner} }
-
-func (e *Executor) ours(a effect.Assignment) bool {
+// Match reports the Assignments this Backend serves: the spawn tool's.
+func (e *Executor) Match(a effect.Assignment) bool {
 	return a.Kind == effect.AssignmentTool && a.Tool != nil && a.Tool.ToolRef == e.tool.Ref()
 }
 
-// owns reports a key this process drives or drove, or whose derived child
-// Session exists on record.
-func (e *Executor) owns(ctx context.Context, key effect.AssignmentKey) (bool, error) {
-	if _, ok := e.local(key); ok {
-		return true, nil
-	}
-	_, err := e.a.Store.Record(ctx, ChildID(key.Session, key.RunID, key.CallID))
-	if err == nil {
-		return true, nil
-	}
-	if session.IsCode(err, session.ErrNotFound) {
-		return false, nil
-	}
-	return false, err
+// Route is the Worker route that hands the spawn tool's Assignments to e
+// under Provider (RUN-EXE-10).
+func Route(e *Executor) executor.Route {
+	return executor.Route{Provider: Provider, Match: e.Match, Backend: e}
 }
 
 // Close cancels every child drive; their Turns stay active and resume on
@@ -181,30 +173,38 @@ func (e *Executor) provenance(ctx context.Context, sid session.SessionID) (Prove
 	return ProvenanceFromHeader(header)
 }
 
-func (e *Executor) Dispatch(ctx context.Context, a effect.Assignment) error {
+// Prepare derives the Ref: the child SessionID, a function of the call's
+// identity (SPN-2), so a replayed Prepare names the same child.
+func (e *Executor) Prepare(_ context.Context, a effect.Assignment) (string, error) {
+	return string(ChildID(a.Session, a.RunID, a.CallID)), nil
+}
+
+// Start begins driving the child ref names for the call a; a ref already
+// driven here is a no-op.
+func (e *Executor) Start(_ context.Context, ref string, a effect.Assignment) error {
 	args, err := DecodeArguments(a.Tool.Arguments)
 	if err != nil {
 		return fmt.Errorf("%w: %v", loop.ErrExecutorRejected, err)
 	}
-	e.start(a.Key(), &args)
+	e.start(ref, a.Key(), &args)
 	return nil
 }
 
-// start registers the call and begins driving its child; a key already in
-// flight is an idempotent replay. args is nil when a takeover adopts the
-// call from its child's provenance.
-func (e *Executor) start(key effect.AssignmentKey, args *Arguments) {
+// start registers the drive of ref and begins it; a ref already in flight is
+// an idempotent replay. args is nil when an adoption continues the call from
+// the child's provenance.
+func (e *Executor) start(ref string, key effect.AssignmentKey, args *Arguments) {
 	e.mu.Lock()
-	if _, dup := e.inflight[key]; dup || e.closed {
+	if _, dup := e.inflight[ref]; dup || e.closed {
 		e.mu.Unlock()
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	r := &spawnRun{child: ChildID(key.Session, key.RunID, key.CallID), cancel: cancel, done: make(chan struct{})}
-	e.inflight[key] = r
+	r := &spawnRun{cancel: cancel, done: make(chan struct{})}
+	e.inflight[ref] = r
 	e.mu.Unlock()
 	go func() {
-		out := e.drive(ctx, key, r.child, args)
+		out := e.drive(ctx, key, session.SessionID(ref), args)
 		out.Key = key
 		if ctx.Err() != nil {
 			out.Cancelled = true
@@ -394,16 +394,52 @@ func (e *Executor) startAndDrive(ctx context.Context, h *authority.Handle, prese
 
 // driveTurn drives the Turn to settlement; a Turn another local driver
 // already carries is an error, since the parent's call needs this drive's
-// result.
+// result. A drive that quiesces waiting for recovery -- the child's own
+// execution records belong to a dead owner and await the control plane's
+// takeover (RUN-EXE-6) -- is not the end of the Turn: the adopted Outcome is
+// delivered and the Run driven on by the recovery lifetime, so this waits for
+// the Turn to move and drives again.
 func (e *Executor) driveTurn(ctx context.Context, h *authority.Handle, turnID turn.TurnID) (turn.TurnID, error) {
-	resp, err := e.a.Driver.Drive(ctx, h.Writer(), turnID)
-	if err != nil {
-		return "", err
+	ref := turn.TurnRef{SessionID: h.ID(), TurnID: turnID}
+	for {
+		resp, err := e.a.Driver.Drive(ctx, h.Writer(), turnID)
+		if err != nil {
+			return "", err
+		}
+		switch resp.Disposition {
+		case authority.ResumeAlreadyDriving:
+			return "", fmt.Errorf("subagent %s is driven elsewhere", h.ID())
+		case turn.ResumeWaitingForRecovery:
+			if err := e.awaitRecovery(ctx, ref); err != nil {
+				return "", err
+			}
+		default:
+			return turnID, nil
+		}
 	}
-	if resp.Disposition == authority.ResumeAlreadyDriving {
-		return "", fmt.Errorf("subagent %s is driven elsewhere", h.ID())
+}
+
+// awaitRecovery waits until the Turn leaves waiting_for_recovery: its
+// deferred executions were adopted and settled, or the Turn settled.
+func (e *Executor) awaitRecovery(ctx context.Context, ref turn.TurnRef) error {
+	delay := 10 * time.Millisecond
+	for {
+		resp, err := e.a.Turns.Status(ctx, ref)
+		if err != nil {
+			return err
+		}
+		if resp.Status != turn.TurnActive || resp.Disposition != turn.ResumeWaitingForRecovery {
+			return nil
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+		delay = min(delay*2, 250*time.Millisecond)
 	}
-	return turnID, nil
 }
 
 // newestInput is the most recently submitted input of the chatlog surface.
@@ -419,23 +455,31 @@ func newestInput(chat chatlog.Surface) (chatlog.InputView, bool) {
 	return best, found
 }
 
-// Attach answers for calls this process drives or drove; for a key whose
-// derived child Session exists, it adopts the call and continues the child
-// (RUN-CMT-7, SPN-4).
-func (e *Executor) Attach(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
-	if att, ok := e.local(key); ok {
+// Attach answers for refs this process drives or drove. A ref no drive here
+// knows whose child Session exists is adopted: its provenance names the call,
+// and the drive continues from the child's durable state (SPN-4). A ref with
+// no child is missing.
+func (e *Executor) Attach(ctx context.Context, ref string) (effect.Attachment, error) {
+	if att, ok := e.local(ref); ok {
 		return att, nil
 	}
-	e.start(key, nil)
-	if att, ok := e.local(key); ok {
+	prov, exists, err := e.provenance(ctx, session.SessionID(ref))
+	if err != nil {
+		return effect.Attachment{}, err
+	}
+	if !exists {
+		return effect.Attachment{State: effect.AttachmentMissing, Execution: effect.ExecutionNotFound}, nil
+	}
+	e.start(ref, effect.AssignmentKey{Session: prov.ParentSession, RunID: prov.ParentRun, CallID: prov.CallID}, nil)
+	if att, ok := e.local(ref); ok {
 		return att, nil
 	}
 	return effect.Attachment{State: effect.AttachmentMissing, Execution: effect.ExecutionNotFound}, nil
 }
 
-func (e *Executor) local(key effect.AssignmentKey) (effect.Attachment, bool) {
+func (e *Executor) local(ref string) (effect.Attachment, bool) {
 	e.mu.Lock()
-	r, ok := e.inflight[key]
+	r, ok := e.inflight[ref]
 	if !ok {
 		e.mu.Unlock()
 		return effect.Attachment{}, false
@@ -464,16 +508,16 @@ func status(out effect.Outcome) effect.ExecutionStatus {
 	return effect.ExecutionCompleted
 }
 
-func (e *Executor) GetStatus(ctx context.Context, key effect.AssignmentKey) (effect.ExecutionStatus, error) {
-	if att, ok := e.local(key); ok {
+func (e *Executor) Status(_ context.Context, ref string) (effect.ExecutionStatus, error) {
+	if att, ok := e.local(ref); ok {
 		return att.Execution, nil
 	}
 	return effect.ExecutionNotFound, effect.ErrExecutionNotFound
 }
 
-func (e *Executor) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
+func (e *Executor) Outcome(ctx context.Context, ref string) (effect.Outcome, error) {
 	e.mu.Lock()
-	r, ok := e.inflight[key]
+	r, ok := e.inflight[ref]
 	e.mu.Unlock()
 	if !ok {
 		return effect.Outcome{}, effect.ErrExecutionNotFound
@@ -490,9 +534,9 @@ func (e *Executor) GetOutcome(ctx context.Context, key effect.AssignmentKey) (ef
 }
 
 // Cancel stops driving the child; its Turn stays active for a later resume.
-func (e *Executor) Cancel(ctx context.Context, key effect.AssignmentKey) error {
+func (e *Executor) Cancel(_ context.Context, ref string) error {
 	e.mu.Lock()
-	r, ok := e.inflight[key]
+	r, ok := e.inflight[ref]
 	e.mu.Unlock()
 	if !ok {
 		return effect.ErrExecutionNotFound
@@ -501,173 +545,4 @@ func (e *Executor) Cancel(ctx context.Context, key effect.AssignmentKey) error {
 	return nil
 }
 
-// PrepareBinding names the child Session as the durable execution reference
-// a Worker records for the call (RUN-EXE-3, SPN-2).
-func (e *Executor) PrepareBinding(_ context.Context, a effect.Assignment) (effect.ExecutionBinding, error) {
-	return effect.ExecutionBinding{Provider: Provider, ExecutionRef: string(ChildID(a.Session, a.RunID, a.CallID))}, nil
-}
-
-func (e *Executor) checkBinding(key effect.AssignmentKey, b effect.ExecutionBinding) error {
-	if b.ExecutionRef != string(ChildID(key.Session, key.RunID, key.CallID)) {
-		return fmt.Errorf("spawn: binding %s is not the child of call %s", b.ExecutionRef, key.CallID)
-	}
-	return nil
-}
-
-var _ effect.Port = (*Executor)(nil)
-
-// --- interception ------------------------------------------------------------------
-
-// intercept is the Port the Runs drive against when the spawn effect is
-// enabled: the spawn tool's Assignments and the keys of children on record
-// reach the Executor, everything else the inner Port.
-type intercept struct {
-	e     *Executor
-	inner effect.Port
-}
-
-func (p *intercept) route(ctx context.Context, key effect.AssignmentKey) (effect.Port, error) {
-	owns, err := p.e.owns(ctx, key)
-	if err != nil {
-		return nil, err
-	}
-	if owns {
-		return p.e, nil
-	}
-	return p.inner, nil
-}
-
-func (p *intercept) Validate(ctx context.Context, a effect.Assignment) (*run.ToolFailure, error) {
-	if p.e.ours(a) {
-		return p.e.Validate(ctx, a)
-	}
-	return p.inner.Validate(ctx, a)
-}
-
-func (p *intercept) Dispatch(ctx context.Context, a effect.Assignment) error {
-	if p.e.ours(a) {
-		return p.e.Dispatch(ctx, a)
-	}
-	return p.inner.Dispatch(ctx, a)
-}
-
-func (p *intercept) Attach(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
-	port, err := p.route(ctx, key)
-	if err != nil {
-		return effect.Attachment{}, err
-	}
-	return port.Attach(ctx, key)
-}
-
-func (p *intercept) GetStatus(ctx context.Context, key effect.AssignmentKey) (effect.ExecutionStatus, error) {
-	port, err := p.route(ctx, key)
-	if err != nil {
-		return effect.ExecutionNotFound, err
-	}
-	return port.GetStatus(ctx, key)
-}
-
-func (p *intercept) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
-	port, err := p.route(ctx, key)
-	if err != nil {
-		return effect.Outcome{}, err
-	}
-	return port.GetOutcome(ctx, key)
-}
-
-func (p *intercept) Cancel(ctx context.Context, key effect.AssignmentKey) error {
-	port, err := p.route(ctx, key)
-	if err != nil {
-		return err
-	}
-	return port.Cancel(ctx, key)
-}
-
-func (p *intercept) innerBinding() (effect.BindingPort, error) {
-	if bp, ok := p.inner.(effect.BindingPort); ok {
-		return bp, nil
-	}
-	return nil, effect.ErrBindingUnsupported
-}
-
-func (p *intercept) PrepareBinding(ctx context.Context, a effect.Assignment) (effect.ExecutionBinding, error) {
-	if p.e.ours(a) {
-		return p.e.PrepareBinding(ctx, a)
-	}
-	bp, err := p.innerBinding()
-	if err != nil {
-		return effect.ExecutionBinding{}, err
-	}
-	return bp.PrepareBinding(ctx, a)
-}
-
-func (p *intercept) DispatchBound(ctx context.Context, a effect.Assignment, b effect.ExecutionBinding) error {
-	if p.e.ours(a) {
-		if err := p.e.checkBinding(a.Key(), b); err != nil {
-			return err
-		}
-		return p.e.Dispatch(ctx, a)
-	}
-	bp, err := p.innerBinding()
-	if err != nil {
-		return err
-	}
-	return bp.DispatchBound(ctx, a, b)
-}
-
-func (p *intercept) boundRoute(ctx context.Context, key effect.AssignmentKey, b effect.ExecutionBinding) (ours bool, bp effect.BindingPort, err error) {
-	if b.Provider == Provider {
-		return true, nil, p.e.checkBinding(key, b)
-	}
-	bp, err = p.innerBinding()
-	return false, bp, err
-}
-
-func (p *intercept) AttachBound(ctx context.Context, key effect.AssignmentKey, b effect.ExecutionBinding) (effect.Attachment, error) {
-	ours, bp, err := p.boundRoute(ctx, key, b)
-	if err != nil {
-		return effect.Attachment{}, err
-	}
-	if ours {
-		return p.e.Attach(ctx, key)
-	}
-	return bp.AttachBound(ctx, key, b)
-}
-
-func (p *intercept) GetStatusBound(ctx context.Context, key effect.AssignmentKey, b effect.ExecutionBinding) (effect.ExecutionStatus, error) {
-	ours, bp, err := p.boundRoute(ctx, key, b)
-	if err != nil {
-		return effect.ExecutionNotFound, err
-	}
-	if ours {
-		return p.e.GetStatus(ctx, key)
-	}
-	return bp.GetStatusBound(ctx, key, b)
-}
-
-func (p *intercept) GetOutcomeBound(ctx context.Context, key effect.AssignmentKey, b effect.ExecutionBinding) (effect.Outcome, error) {
-	ours, bp, err := p.boundRoute(ctx, key, b)
-	if err != nil {
-		return effect.Outcome{}, err
-	}
-	if ours {
-		return p.e.GetOutcome(ctx, key)
-	}
-	return bp.GetOutcomeBound(ctx, key, b)
-}
-
-func (p *intercept) CancelBound(ctx context.Context, key effect.AssignmentKey, b effect.ExecutionBinding) error {
-	ours, bp, err := p.boundRoute(ctx, key, b)
-	if err != nil {
-		return err
-	}
-	if ours {
-		return p.e.Cancel(ctx, key)
-	}
-	return bp.CancelBound(ctx, key, b)
-}
-
-var (
-	_ effect.Port        = (*intercept)(nil)
-	_ effect.BindingPort = (*intercept)(nil)
-)
+var _ executor.Backend = (*Executor)(nil)

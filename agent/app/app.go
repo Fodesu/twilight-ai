@@ -105,6 +105,11 @@ type Config struct {
 	Warn func(error)
 	// Spawn enables the subagent tool (SPN); nil leaves it unavailable.
 	Spawn *spawn.Options
+	// Worker configures the Worker that owns execution records (lease, id,
+	// reconcile loop, clock). It applies whenever Build composes a Worker:
+	// the local mode always does; a supplied Port or the remote mode do when
+	// Spawn is set, so the spawn Backend can be routed beside them.
+	Worker executor.WorkerOptions
 }
 
 // CompactorSystemPrompt is kept here for deterministic model test doubles and
@@ -138,31 +143,30 @@ func Build(c Config) (*Application, error) {
 			return nil, fmt.Errorf("app: create default content store: %w", err)
 		}
 	}
-	port, err := buildExecutor(c.Executor, c.Executions)
-	if err != nil {
-		return nil, err
-	}
 	warn := c.Warn
 	if warn == nil {
 		warn = func(error) {}
 	}
 	app := &Application{warn: warn, refs: make(map[turn.PresetID]turn.PresetRef, len(c.Presets))}
+	// The spawn Backend is one Route of the Worker (SPN-1, RUN-EXE-10); it
+	// drives children through the Authority, so it is bound after New.
+	var routes []executor.Route
+	if c.Spawn != nil {
+		app.spawn = spawn.NewExecutor(*c.Spawn)
+		routes = append(routes, spawn.Route(app.spawn))
+	}
+	port, err := buildExecutor(c, routes)
+	if err != nil {
+		return nil, err
+	}
 	// The event stream is a CommitObserver on the Writers (EXT-WRT-7); it
 	// needs the Registry, which the Authority builds, so the bus is wired
 	// through a forwarding observer bound after New.
 	var bus *observe.Bus
 	observers := append([]writer.CommitObserver{forwardingObserver{&bus}}, c.Observers...)
-	// The spawn effect claims its tool's Assignments before the deployment's
-	// Executor sees them (SPN-1); it drives children through the
-	// Authority, so it is bound after New as well.
-	executor := port
-	if c.Spawn != nil {
-		app.spawn = spawn.NewExecutor(*c.Spawn)
-		executor = spawn.Intercept(app.spawn, port)
-	}
 	a, err := authority.New(authority.Ports{
 		Store: c.Store, Content: content, Artifacts: c.Artifacts, Presets: c.Registry, Decisions: c.Decisions,
-		Executor: executor, TargetResolver: c.TargetResolver, Observers: observers, Modules: c.Modules,
+		Executor: port, TargetResolver: c.TargetResolver, Observers: observers, Modules: c.Modules,
 		Clock: c.Clock, Cache: c.Cache, CacheEvery: c.CacheEvery, Ownership: c.Ownership, Fail: app.fail,
 	})
 	if err != nil {
@@ -241,13 +245,28 @@ func (app *Application) Close(ctx context.Context) error {
 	return app.Authority.Close(ctx)
 }
 
-func buildExecutor(c ExecutorConfig, records executionstore.Store) (effect.Port, error) {
-	if c.Port != nil {
-		return c.Port, nil
+// buildExecutor is the effect Port the Authority drives against. The local
+// mode is a Worker over the colocated Backend (RUN-EXE-8). A supplied Port or
+// the remote client is used as is unless extra routes (spawn) are configured,
+// in which case a Worker routes to them and to the Port as its default
+// Backend; the remote Worker keeps its own record of the physical execution.
+func buildExecutor(c Config, extra []executor.Route) (effect.Port, error) {
+	worker := func(routes ...executor.Route) (effect.Port, error) {
+		records := c.Executions
+		if records == nil {
+			records = executionstore.NewMemoryStore()
+		}
+		return executor.NewWorker(context.Background(), records, append(extra, routes...), c.Worker)
 	}
-	switch c.Mode {
+	if c.Executor.Port != nil {
+		if len(extra) == 0 {
+			return c.Executor.Port, nil
+		}
+		return worker(executor.Default("port", executor.PortBackend(c.Executor.Port)))
+	}
+	switch c.Executor.Mode {
 	case "", ExecutorLocal:
-		catalog, err := executorlocal.NewCatalog(c.Models, c.Tools...)
+		catalog, err := executorlocal.NewCatalog(c.Executor.Models, c.Executor.Tools...)
 		if err != nil {
 			return nil, err
 		}
@@ -255,19 +274,18 @@ func buildExecutor(c ExecutorConfig, records executionstore.Store) (effect.Port,
 		if err != nil {
 			return nil, err
 		}
-		if records == nil {
-			records = executionstore.NewMemoryStore()
-		}
-		// Colocated deployments run their effects through the same Worker
-		// and record lifecycle as remote ones (RUN-EXE-8).
-		return executor.NewWorker(context.Background(), records, []executor.Route{executorlocal.Route(backend)})
+		return worker(executorlocal.Route(backend))
 	case ExecutorRemote:
-		if c.Endpoint == "" {
+		if c.Executor.Endpoint == "" {
 			return nil, errors.New("app: remote executor requires an endpoint")
 		}
-		return &http.Client{BaseURL: c.Endpoint, HTTP: c.HTTP}, nil
+		client := &http.Client{BaseURL: c.Executor.Endpoint, HTTP: c.Executor.HTTP}
+		if len(extra) == 0 {
+			return client, nil
+		}
+		return worker(executor.Default("remote", executor.PortBackend(client)))
 	default:
-		return nil, fmt.Errorf("app: unknown executor mode %q", c.Mode)
+		return nil, fmt.Errorf("app: unknown executor mode %q", c.Executor.Mode)
 	}
 }
 
