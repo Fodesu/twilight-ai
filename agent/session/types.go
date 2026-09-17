@@ -29,19 +29,21 @@ type (
 // earlier row model it replaced never left the branch.
 const ProtocolVersion1 uint16 = 1
 
-// SessionHeader is the immutable creation record of a commit segment
-// (agent-session.md section 8): the node of the lineage DAG the Session that
-// created it appends to. SessionID names that creating Session; HeaderDigest
-// is the segment's identity (SegmentIDOf). Readers of a Session see the
-// header of the segment its root names.
-type SessionHeader struct {
-	ProtocolVersion    uint16           `json:"protocolVersion"`
-	SessionID          SessionID        `json:"sessionId"`
-	CreatedAtUnixMilli int64            `json:"createdAtUnixMilli"`
-	Parent             *LedgerRef       `json:"parent,omitempty"` // nil for a root segment; the edge to the parent otherwise
-	CausationID        es.CausationID   `json:"causationId,omitempty"`
-	Metadata           jsonstable.Value `json:"metadata,omitempty"`
-	HeaderDigest       es.Digest        `json:"headerDigest"`
+// SegmentHeader is the immutable creation record of a commit segment
+// (agent-session.md section 8): a node of the lineage DAG. It names no
+// Session: which roots append to or inherit from the segment is the roots'
+// business (SessionRecord), and a segment outlives every Session that named
+// it for as long as some root reaches it. HeaderDigest is the segment's
+// identity (SegmentIDOf); Nonce makes two otherwise identical records two
+// segments. Readers of a Session see the header of the segment its root
+// names as its tip.
+type SegmentHeader struct {
+	ProtocolVersion uint16           `json:"protocolVersion"`
+	Parent          *LedgerRef       `json:"parent,omitempty"` // nil for a root segment; the edge to the parent otherwise
+	Nonce           string           `json:"nonce"`
+	CausationID     es.CausationID   `json:"causationId,omitempty"`
+	Metadata        jsonstable.Value `json:"metadata,omitempty"`
+	HeaderDigest    es.Digest        `json:"headerDigest"`
 }
 
 // ErrorCode classifies kernel failures (SES 7).

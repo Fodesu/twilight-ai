@@ -2,6 +2,8 @@ package session
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/felinics/twilight/agent/es"
@@ -33,15 +35,23 @@ type LedgerRef struct {
 
 // Segment is a node: an immutable creation record whose commits chain from
 // LedgerSeed(Header). Header.Parent is the edge to the parent segment; a
-// root segment has none. The record doubles as the SessionHeader readers see
-// for the Session that created the segment.
+// root segment has none.
 type Segment struct {
 	ID     SegmentID
-	Header SessionHeader
+	Header SegmentHeader
 }
 
 // SegmentIDOf derives a segment's identity from its sealed creation record.
-func SegmentIDOf(h SessionHeader) SegmentID { return SegmentID(h.HeaderDigest) }
+func SegmentIDOf(h SegmentHeader) SegmentID { return SegmentID(h.HeaderDigest) }
+
+// NewNonce returns a fresh segment nonce: 128 random bits, hex encoded.
+func NewNonce() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("session: nonce: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
 
 // Parent returns the edge to the parent segment, or nil for a root.
 func (s Segment) Parent() *LedgerRef {
@@ -55,12 +65,15 @@ func (s Segment) Parent() *LedgerRef {
 // Seed is the head of the segment while it holds no commits of its own.
 func (s Segment) Seed() Head { return LedgerSeed(s.Header) }
 
-// SessionRecord is a root: a Session's identity and the segment it appends
-// to. Dropping the record is deleting the Session; the segment stays a node
-// of the DAG for as long as any root reaches it.
+// SessionRecord is a root: a Session's identity, the segment it appends to
+// (its tip) and the Session's own metadata. Dropping the record is deleting
+// the Session; the tip stays a node of the DAG for as long as any root
+// reaches it. Two roots never share a tip (SES-FRK-4): a fork gets a new
+// child segment, so writers of different Sessions never append to one node.
 type SessionRecord struct {
-	ID      SessionID `json:"sessionId"`
-	Segment SegmentID `json:"segment"`
+	ID                 SessionID `json:"sessionId"`
+	Tip                SegmentID `json:"tip"`
+	CreatedAtUnixMilli int64     `json:"createdAtUnixMilli"`
 }
 
 // Lease is writer ownership of one Session root (SES-OWN-1/2): the adapter
@@ -86,8 +99,10 @@ type LedgerStore interface {
 	Contains(context.Context, SegmentID, CommitID) (bool, error)
 	LookupCommit(context.Context, SegmentID, CommitID) (Commit, bool, error)
 	// Append persists a commit the Ledger sealed against the segment head,
-	// under a Lease the adapter checks atomically with the write: a
-	// superseded Lease gets ErrOwnershipLost and writes nothing.
+	// under a Lease the adapter checks atomically with the write: the Lease
+	// must be current for its Session and that Session's Tip must be the
+	// segment (SES-OWN-2). A superseded Lease gets ErrOwnershipLost and
+	// writes nothing.
 	Append(context.Context, Lease, SegmentID, Commit) error
 	// TruncateSegment drops the segment's own commits after through and
 	// returns the new head; RemoveSegment deletes the node.
@@ -152,7 +167,7 @@ type AncestrySegment struct {
 func (a *Ancestry) Tip() Segment { return a.Segments[len(a.Segments)-1].Segment }
 
 // Header is the tip's creation record: the Session's public header.
-func (a *Ancestry) Header() SessionHeader { return a.Tip().Header }
+func (a *Ancestry) Header() SegmentHeader { return a.Tip().Header }
 
 // Owner returns the segment that contributes the commit at seq.
 func (a *Ancestry) Owner(seq CommitSeq) (AncestrySegment, bool) {
@@ -301,7 +316,7 @@ func Reachable(nodes map[SegmentID]Segment, roots []SessionRecord) map[SegmentID
 	const all = ^CommitSeq(0)
 	need := make(map[SegmentID]CommitSeq, len(nodes))
 	for _, r := range roots {
-		id := r.Segment
+		id := r.Tip
 		seg, ok := nodes[id]
 		if !ok {
 			continue

@@ -71,7 +71,7 @@ type memoryBackend struct {
 
 type memorySegment struct {
 	mu       sync.Mutex
-	header   SessionHeader
+	header   SegmentHeader
 	commits  []Commit         // own commits only, from LedgerSeed(header).Next
 	byCommit map[CommitID]int // index into commits
 }
@@ -100,7 +100,7 @@ func (m *memoryBackend) tipOf(sid SessionID) *memorySegment {
 	if !ok {
 		return nil
 	}
-	return m.segments[r.record.Segment]
+	return m.segments[r.record.Tip]
 }
 
 func (s *memorySegment) head() Head {
@@ -226,7 +226,7 @@ func (m *memoryBackend) Append(ctx context.Context, lease Lease, id SegmentID, c
 		}
 		return newError(ErrOwnershipLost, "append", lease.Session, fmt.Sprintf("epoch %d superseded by %d", lease.Epoch, current))
 	}
-	if r.record.Segment != id {
+	if r.record.Tip != id {
 		return newError(ErrInvalid, "append", lease.Session, "lease does not cover the segment")
 	}
 	s, ok := m.segments[id]

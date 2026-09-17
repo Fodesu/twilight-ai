@@ -10,15 +10,16 @@ import (
 	"github.com/felinics/twilight/agent/jsonstable"
 )
 
-// headerDigestBody is the preimage of the SessionHeader digest: every header
-// field except the digest itself.
+// headerDigestBody is the preimage of the SegmentHeader digest: every header
+// field except the digest itself. No Session identity enters it: the segment
+// is a canonical object of the ledger DAG, named by roots but not by any one
+// of them (SES-WIR-2).
 type headerDigestBody struct {
-	ProtocolVersion    uint16
-	SessionID          SessionID
-	CreatedAtUnixMilli int64
-	// Parent is omitted when nil, so a root Session's header digest is
-	// the same with or without fork support (SES-WIR-2).
+	ProtocolVersion uint16
+	// Parent is omitted when nil, so a root segment's preimage has no edge
+	// slot (SES-WIR-2).
 	Parent      *LedgerRef `json:",omitempty"`
+	Nonce       string
 	CausationID es.CausationID
 	Metadata    jsonstable.Value
 }

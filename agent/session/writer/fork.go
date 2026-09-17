@@ -43,17 +43,17 @@ func forkClaimCommitID(edge session.LedgerRef) session.CommitID {
 // keeps it should the parent be deleted first. Fork is idempotent: a repeat
 // with the same arguments returns the same header and leaves the claim as it
 // is.
-func Fork(ctx context.Context, store session.Store, registry *extension.Registry, admission Admission, req ForkRequest) (session.SessionHeader, error) {
+func Fork(ctx context.Context, store session.Store, registry *extension.Registry, admission Admission, req ForkRequest) (session.SegmentHeader, error) {
 	if store == nil || registry == nil {
-		return session.SessionHeader{}, errors.New("writer: nil store or registry")
+		return session.SegmentHeader{}, errors.New("writer: nil store or registry")
 	}
 	if req.Parent == "" || req.Child == "" {
-		return session.SessionHeader{}, errors.New("writer: fork requires parent and child session ids")
+		return session.SegmentHeader{}, errors.New("writer: fork requires parent and child session ids")
 	}
 	header, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: registry.ProtocolVersion, SessionID: req.Child,
 		CreatedAtUnixMilli: req.CreatedAtUnixMilli, Fork: &session.ForkOrigin{Session: req.Parent, Seq: req.At}})
 	if err != nil {
-		return session.SessionHeader{}, err
+		return session.SegmentHeader{}, err
 	}
 	fork := *header.Parent
 	if admission.Ledger == nil {
@@ -61,32 +61,32 @@ func Fork(ctx context.Context, store session.Store, registry *extension.Registry
 	}
 	refs, err := prefixBindings(ctx, store, registry, req.Child, fork)
 	if err != nil {
-		return session.SessionHeader{}, err
+		return session.SegmentHeader{}, err
 	}
 	if len(refs) == 0 {
 		return header, nil
 	}
 	if admission.Bindings == nil {
-		return session.SessionHeader{}, errors.New("writer: the inherited prefix references artifacts but no binding resolver is configured")
+		return session.SegmentHeader{}, errors.New("writer: the inherited prefix references artifacts but no binding resolver is configured")
 	}
 	set, err := artifact.SetBuilder{Resolver: admission.Bindings}.Build(ctx, refs)
 	if err != nil {
-		return session.SessionHeader{}, err
+		return session.SegmentHeader{}, err
 	}
 	id := DeriveClaimID(registry.ProtocolVersion, req.Child, forkClaimCommitID(fork), set.RefSetDigest)
 	owner := ForkOwner(req.Child, fork)
 	existing, ok, err := admission.Ledger.LookupClaim(ctx, id)
 	if err != nil {
-		return session.SessionHeader{}, err
+		return session.SegmentHeader{}, err
 	}
 	if ok {
 		if existing.Owner != owner || existing.BindingSet.RefSetDigest != set.RefSetDigest {
-			return session.SessionHeader{}, &session.Error{Code: session.ErrConflict, Operation: "fork", SessionID: req.Child, Detail: "fork claim owner or binding set conflicts"}
+			return session.SegmentHeader{}, &session.Error{Code: session.ErrConflict, Operation: "fork", SessionID: req.Child, Detail: "fork claim owner or binding set conflicts"}
 		}
 		return header, nil
 	}
 	if _, err := admission.Ledger.Activate(ctx, id, owner, set); err != nil {
-		return session.SessionHeader{}, err
+		return session.SegmentHeader{}, err
 	}
 	return header, nil
 }

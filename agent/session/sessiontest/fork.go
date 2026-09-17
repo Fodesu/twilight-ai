@@ -8,7 +8,7 @@ import (
 )
 
 // forkAt creates child from the history of parent at commit seq.
-func forkAt(t *testing.T, store session.Store, child, parent session.SessionID, seq session.CommitSeq) (session.SessionHeader, error) {
+func forkAt(t *testing.T, store session.Store, child, parent session.SessionID, seq session.CommitSeq) (session.SegmentHeader, error) {
 	t.Helper()
 	return store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: child, CreatedAtUnixMilli: 2,
 		Fork: &session.ForkOrigin{Session: parent, Seq: seq}})
@@ -80,8 +80,8 @@ func testFork(t *testing.T, f Fixture) {
 	if page.Head != seed || len(page.Commits) != 2 || page.Commits[0].CommitID != "c0" || page.Commits[1].CommitID != "c1" || page.HasMore {
 		t.Fatalf("empty child page = %+v", page)
 	}
-	if page.Header.SessionID != "child" {
-		t.Fatalf("child page carries header of %s", page.Header.SessionID)
+	if page.Header.HeaderDigest != child.HeaderDigest {
+		t.Fatalf("child page carries header %s, want the child's tip", page.Header.HeaderDigest)
 	}
 	// The prefix is validated under the parent segment's header; the child's
 	// own commits (none yet) under the child's.

@@ -8,8 +8,8 @@ import (
 
 // Ledger is the kernel's Store over a Backend (SES 4 to 6, 8, 9): the
 // Session lineage DAG in code. Roots (SessionRecord) name the segment they
-// append to; segments (Segment) chain to their parents through LedgerRef
-// edges; a Session's history is the stitched Ancestry of its segment. Fork
+// append to as their tip; segments (Segment) chain to their parents through
+// LedgerRef edges; a Session's history is the stitched Ancestry of its segment. Fork
 // adds a node and an edge; Delete drops a root; Collect reclaims what no
 // root reaches. Every adapter gets these semantics from here and implements
 // none of them.
@@ -33,7 +33,7 @@ func (l *Ledger) resolve(ctx context.Context, sid SessionID) (SessionRecord, *An
 	if err != nil {
 		return SessionRecord{}, nil, err
 	}
-	a, err := LoadAncestry(ctx, l.be, root.Segment)
+	a, err := LoadAncestry(ctx, l.be, root.Tip)
 	if err != nil {
 		return SessionRecord{}, nil, err
 	}
@@ -42,85 +42,122 @@ func (l *Ledger) resolve(ctx context.Context, sid SessionID) (SessionRecord, *An
 
 // --- create -----------------------------------------------------------------------
 
-func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SessionHeader, error) {
+func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, error) {
 	if err := ctx.Err(); err != nil {
-		return SessionHeader{}, err
+		return SegmentHeader{}, err
 	}
 	l.graph.Lock()
 	defer l.graph.Unlock()
 	profile, err := LedgerProfileFor(req.ProtocolVersion)
 	if err != nil {
-		return SessionHeader{}, &Error{Code: ErrUnsupportedProfile, Operation: "create", SessionID: req.SessionID}
+		return SegmentHeader{}, &Error{Code: ErrUnsupportedProfile, Operation: "create", SessionID: req.SessionID}
 	}
-	header := SessionHeader{ProtocolVersion: req.ProtocolVersion, SessionID: req.SessionID, CreatedAtUnixMilli: req.CreatedAtUnixMilli,
-		CausationID: req.CausationID, Metadata: req.Metadata}
+	if err := validIdentity("SessionID", string(req.SessionID)); err != nil {
+		return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, err.Error())
+	}
+	header := SegmentHeader{ProtocolVersion: req.ProtocolVersion, Nonce: req.Nonce, CausationID: req.CausationID, Metadata: req.Metadata}
 	if req.Fork != nil {
 		// The edge names the segment that contributes the inherited commit,
 		// wherever in the parent's ancestry it lives (SES-FRK-1).
 		if req.Fork.Session == req.SessionID {
-			return SessionHeader{}, newError(ErrInvalid, "create", req.SessionID, "a session cannot fork itself")
+			return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, "a session cannot fork itself")
 		}
 		_, parent, err := l.resolve(ctx, req.Fork.Session)
 		if err != nil {
 			if IsCode(err, ErrNotFound) {
-				return SessionHeader{}, newError(ErrNotFound, "create", req.SessionID, fmt.Sprintf("parent session %s not found", req.Fork.Session))
+				return SegmentHeader{}, newError(ErrNotFound, "create", req.SessionID, fmt.Sprintf("parent session %s not found", req.Fork.Session))
 			}
-			return SessionHeader{}, err
+			return SegmentHeader{}, err
 		}
 		if parent.Header().ProtocolVersion != req.ProtocolVersion {
-			return SessionHeader{}, &Error{Code: ErrUnsupportedProfile, Operation: "create", SessionID: req.SessionID,
+			return SegmentHeader{}, &Error{Code: ErrUnsupportedProfile, Operation: "create", SessionID: req.SessionID,
 				Detail: fmt.Sprintf("parent %s is protocol v%d", req.Fork.Session, parent.Header().ProtocolVersion)}
 		}
 		owner, ok := parent.Owner(req.Fork.Seq)
 		if !ok {
-			return SessionHeader{}, newError(ErrInvalid, "create", req.SessionID, fmt.Sprintf("parent %s has no commit %d", req.Fork.Session, req.Fork.Seq))
+			return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, fmt.Sprintf("parent %s has no commit %d", req.Fork.Session, req.Fork.Seq))
 		}
 		commits, _, _, err := l.be.ReadSegment(ctx, owner.Segment.ID, req.Fork.Seq, 1)
 		if err != nil {
-			return SessionHeader{}, err
+			return SegmentHeader{}, err
 		}
 		if len(commits) != 1 || commits[0].Seq != req.Fork.Seq {
-			return SessionHeader{}, newError(ErrInvalid, "create", req.SessionID, fmt.Sprintf("parent %s has no commit %d", req.Fork.Session, req.Fork.Seq))
+			return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, fmt.Sprintf("parent %s has no commit %d", req.Fork.Session, req.Fork.Seq))
 		}
 		header.Parent = &LedgerRef{Segment: owner.Segment.ID, Seq: req.Fork.Seq, Digest: commits[0].Digest}
 	}
+	// Idempotency is judged on what the request determines, not on the
+	// segment identity: with a kernel-drawn nonce the identity is fresh each
+	// time, so a repeat is recognized by matching every requested field.
+	if existing, err := l.be.Record(ctx, req.SessionID); err == nil {
+		seg, err := l.be.Segment(ctx, existing.Tip)
+		if err != nil {
+			return SegmentHeader{}, err
+		}
+		if sameCreation(req, header, existing, seg.Header) {
+			return seg.Header, nil
+		}
+		return SegmentHeader{}, newError(ErrConflict, "create", req.SessionID, "session exists with a different creation record")
+	} else if !IsCode(err, ErrNotFound) {
+		return SegmentHeader{}, err
+	}
+	if header.Nonce == "" {
+		if header.Nonce, err = NewNonce(); err != nil {
+			return SegmentHeader{}, err
+		}
+	}
 	digest, err := profile.HeaderDigest(header)
 	if err != nil {
-		return SessionHeader{}, err
+		return SegmentHeader{}, err
 	}
 	header.HeaderDigest = digest
 	if err := profile.ValidateHeader(header); err != nil {
-		return SessionHeader{}, err
+		return SegmentHeader{}, err
 	}
 	segment := Segment{ID: SegmentIDOf(header), Header: header}
-	// Idempotency: the same request yields the same segment identity.
-	if existing, err := l.be.Record(ctx, req.SessionID); err == nil {
-		if existing.Segment == segment.ID {
-			return header, nil
-		}
-		return SessionHeader{}, newError(ErrConflict, "create", req.SessionID, "session exists with a different header")
-	} else if !IsCode(err, ErrNotFound) {
-		return SessionHeader{}, err
-	}
-	if err := l.be.CreateSession(ctx, segment, SessionRecord{ID: req.SessionID, Segment: segment.ID}); err != nil {
-		return SessionHeader{}, err
+	root := SessionRecord{ID: req.SessionID, Tip: segment.ID, CreatedAtUnixMilli: req.CreatedAtUnixMilli}
+	if err := l.be.CreateSession(ctx, segment, root); err != nil {
+		return SegmentHeader{}, err
 	}
 	return header, nil
 }
 
-func (l *Ledger) Header(ctx context.Context, sid SessionID) (SessionHeader, error) {
+// sameCreation reports whether req would create exactly the Session that
+// exists: same protocol, same resolved edge, same causation and metadata,
+// same creation time, and the same nonce when the request pins one.
+func sameCreation(req CreateRequest, want SegmentHeader, root SessionRecord, have SegmentHeader) bool {
+	if have.ProtocolVersion != want.ProtocolVersion || root.CreatedAtUnixMilli != req.CreatedAtUnixMilli {
+		return false
+	}
+	if (have.Parent == nil) != (want.Parent == nil) || (have.Parent != nil && *have.Parent != *want.Parent) {
+		return false
+	}
+	if have.CausationID != want.CausationID || have.Metadata.String() != want.Metadata.String() {
+		return false
+	}
+	return req.Nonce == "" || req.Nonce == have.Nonce
+}
+
+func (l *Ledger) Header(ctx context.Context, sid SessionID) (SegmentHeader, error) {
 	if err := ctx.Err(); err != nil {
-		return SessionHeader{}, err
+		return SegmentHeader{}, err
 	}
 	root, err := l.be.Record(ctx, sid)
 	if err != nil {
-		return SessionHeader{}, err
+		return SegmentHeader{}, err
 	}
-	seg, err := l.be.Segment(ctx, root.Segment)
+	seg, err := l.be.Segment(ctx, root.Tip)
 	if err != nil {
-		return SessionHeader{}, err
+		return SegmentHeader{}, err
 	}
 	return seg.Header, nil
+}
+
+func (l *Ledger) Record(ctx context.Context, sid SessionID) (SessionRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return SessionRecord{}, err
+	}
+	return l.be.Record(ctx, sid)
 }
 
 // --- open -------------------------------------------------------------------------
@@ -223,7 +260,7 @@ func (w *ledgerHandle) LookupCommit(id CommitID) (Commit, bool, error) {
 		return Commit{}, false, failed
 	}
 	if own {
-		c, ok, err := w.l.be.LookupCommit(context.Background(), w.root.Segment, id)
+		c, ok, err := w.l.be.LookupCommit(context.Background(), w.root.Tip, id)
 		if err != nil || !ok {
 			return Commit{}, false, err
 		}
@@ -252,10 +289,10 @@ func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 		return Commit{}, w.failed
 	}
 	c := Commit{Seq: w.head.Next, CommitID: p.CommitID, Epoch: w.lease.Epoch, Batches: cloneBatches(p.Batches)}
-	if err := SealCommit(w.profile, w.head.Digest, sid, &c); err != nil {
+	if err := SealCommit(w.profile, w.head.Digest, w.root.Tip, &c); err != nil {
 		return Commit{}, err
 	}
-	if err := w.l.be.Append(ctx, w.lease, w.root.Segment, c); err != nil {
+	if err := w.l.be.Append(ctx, w.lease, w.root.Tip, c); err != nil {
 		if IsCode(err, ErrHandleFailed) {
 			w.failed = err
 		}

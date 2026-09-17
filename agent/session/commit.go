@@ -119,12 +119,14 @@ func ValidateBatches(batches []StreamBatch) error {
 
 // LedgerProfile freezes the commit-ledger wire for one ProtocolVersion: the
 // header digest plus the batch and commit digest preimages (SES-WIR-2).
+// Every preimage binds to the segment, never to a Session: the segment is
+// the canonical object, roots only name it.
 type LedgerProfile interface {
 	Version() uint16
-	HeaderDigest(SessionHeader) (es.Digest, error)
-	BatchDigest(sid SessionID, batch StreamBatch) (es.Digest, error)
-	CommitDigest(prev es.Digest, sid SessionID, seq CommitSeq, commitID CommitID, epoch Epoch, batches []es.Digest) (es.Digest, error)
-	ValidateHeader(SessionHeader) error
+	HeaderDigest(SegmentHeader) (es.Digest, error)
+	BatchDigest(segment SegmentID, batch StreamBatch) (es.Digest, error)
+	CommitDigest(prev es.Digest, segment SegmentID, seq CommitSeq, commitID CommitID, epoch Epoch, batches []es.Digest) (es.Digest, error)
+	ValidateHeader(SegmentHeader) error
 }
 
 // ProfileV1 returns the ProtocolVersion1 commit-ledger profile.
@@ -151,26 +153,26 @@ type batchEventBody struct {
 }
 
 type batchDigestBody struct {
-	SessionID SessionID
-	Stream    StreamRef
-	Events    []batchEventBody
+	Segment SegmentID
+	Stream  StreamRef
+	Events  []batchEventBody
 }
 
 type commitDigestBody struct {
-	Prev      es.Digest
-	SessionID SessionID
-	Seq       CommitSeq
-	CommitID  CommitID
-	Epoch     Epoch
-	Batches   []es.Digest
+	Prev     es.Digest
+	Segment  SegmentID
+	Seq      CommitSeq
+	CommitID CommitID
+	Epoch    Epoch
+	Batches  []es.Digest
 }
 
-func (p profileV1) HeaderDigest(h SessionHeader) (es.Digest, error) {
-	return digestDomain(p.version, "twilight/session/header", headerDigestBody{h.ProtocolVersion, h.SessionID, h.CreatedAtUnixMilli, h.Parent, h.CausationID, h.Metadata})
+func (p profileV1) HeaderDigest(h SegmentHeader) (es.Digest, error) {
+	return digestDomain(p.version, "twilight/session/header", headerDigestBody{h.ProtocolVersion, h.Parent, h.Nonce, h.CausationID, h.Metadata})
 }
 
-func (p profileV1) BatchDigest(sid SessionID, batch StreamBatch) (es.Digest, error) {
-	body := batchDigestBody{SessionID: sid, Stream: batch.Stream, Events: make([]batchEventBody, len(batch.Events))}
+func (p profileV1) BatchDigest(segment SegmentID, batch StreamBatch) (es.Digest, error) {
+	body := batchDigestBody{Segment: segment, Stream: batch.Stream, Events: make([]batchEventBody, len(batch.Events))}
 	for i := range batch.Events {
 		e := &batch.Events[i]
 		body.Events[i] = batchEventBody{e.Type, e.RecordedAtUnixMilli, e.Payload}
@@ -178,35 +180,35 @@ func (p profileV1) BatchDigest(sid SessionID, batch StreamBatch) (es.Digest, err
 	return digestDomain(p.version, "twilight/session/batch", body)
 }
 
-func (p profileV1) CommitDigest(prev es.Digest, sid SessionID, seq CommitSeq, commitID CommitID, epoch Epoch, batches []es.Digest) (es.Digest, error) {
-	return digestDomain(p.version, "twilight/session/commit", commitDigestBody{prev, sid, seq, commitID, epoch, batches})
+func (p profileV1) CommitDigest(prev es.Digest, segment SegmentID, seq CommitSeq, commitID CommitID, epoch Epoch, batches []es.Digest) (es.Digest, error) {
+	return digestDomain(p.version, "twilight/session/commit", commitDigestBody{prev, segment, seq, commitID, epoch, batches})
 }
 
-func (p profileV1) ValidateHeader(h SessionHeader) error {
+func (p profileV1) ValidateHeader(h SegmentHeader) error {
 	if h.ProtocolVersion != p.version {
-		return &Error{Code: ErrUnsupportedProfile, Operation: "header", SessionID: h.SessionID}
+		return &Error{Code: ErrUnsupportedProfile, Operation: "header"}
 	}
-	if err := validIdentity("SessionID", string(h.SessionID)); err != nil {
-		return newError(ErrInvalid, "header", h.SessionID, err.Error())
+	if err := validIdentity("Nonce", h.Nonce); err != nil {
+		return newError(ErrInvalid, "header", "", err.Error())
 	}
 	if err := ValidateEdge(h.Parent); err != nil {
-		return newError(ErrInvalid, "header", h.SessionID, err.Error())
+		return newError(ErrInvalid, "header", "", err.Error())
 	}
 	want, err := p.HeaderDigest(h)
 	if err != nil {
 		return err
 	}
 	if h.HeaderDigest != want {
-		return newError(ErrCorrupt, "header", h.SessionID, "header digest mismatch")
+		return newError(ErrCorrupt, "header", "", "header digest mismatch")
 	}
 	return nil
 }
 
-// SealCommit stamps PrevDigest and Digest onto c, chaining from prev. It
-// validates the batches first, so a sealed Commit is always well-formed. The
-// kernel seals with its current Epoch and the head digest; validation reseals
-// and compares.
-func SealCommit(p LedgerProfile, prev es.Digest, sid SessionID, c *Commit) error {
+// SealCommit stamps PrevDigest and Digest onto c, chaining from prev and
+// binding the commit to the segment it belongs to. It validates the batches
+// first, so a sealed Commit is always well-formed. The kernel seals with its
+// current Epoch and the head digest; validation reseals and compares.
+func SealCommit(p LedgerProfile, prev es.Digest, segment SegmentID, c *Commit) error {
 	if err := validIdentity("CommitID", string(c.CommitID)); err != nil {
 		return err
 	}
@@ -215,13 +217,13 @@ func SealCommit(p LedgerProfile, prev es.Digest, sid SessionID, c *Commit) error
 	}
 	batchDigests := make([]es.Digest, len(c.Batches))
 	for i := range c.Batches {
-		d, err := p.BatchDigest(sid, c.Batches[i])
+		d, err := p.BatchDigest(segment, c.Batches[i])
 		if err != nil {
 			return err
 		}
 		batchDigests[i] = d
 	}
-	d, err := p.CommitDigest(prev, sid, c.Seq, c.CommitID, c.Epoch, batchDigests)
+	d, err := p.CommitDigest(prev, segment, c.Seq, c.CommitID, c.Epoch, batchDigests)
 	if err != nil {
 		return err
 	}
@@ -249,9 +251,9 @@ func ValidateEdge(edge *LedgerRef) error {
 // LedgerSeed is the head of a segment that holds no commits of its own: the
 // chain start every own commit is sealed from (SES-FRK-2). A root segment
 // seeds at {0, HeaderDigest}; a child continues the parent's chain at
-// {Parent.Seq+1, Parent.Digest}, so its own commits are verifiable
-// from the edge alone while their digests cover the creating SessionID.
-func LedgerSeed(h SessionHeader) Head {
+// {Parent.Seq+1, Parent.Digest}, so its own commits are verifiable from the
+// edge alone while their digests bind them to this segment.
+func LedgerSeed(h SegmentHeader) Head {
 	if h.Parent != nil {
 		return Head{Next: h.Parent.Seq + 1, Digest: h.Parent.Digest}
 	}
@@ -262,23 +264,24 @@ func LedgerSeed(h SessionHeader) Head {
 // reports the first corrupt commit (SES-REP-1). commits are the segment's own
 // commits, contiguous from LedgerSeed(header).Next; an inherited prefix is
 // validated under its own segment's header.
-func ValidateLedger(p LedgerProfile, header SessionHeader, commits []Commit) error {
+func ValidateLedger(p LedgerProfile, header SegmentHeader, commits []Commit) error {
 	seed := LedgerSeed(header)
+	segment := SegmentIDOf(header)
 	prev := seed.Digest
 	for i := range commits {
 		c := &commits[i]
 		if c.Seq != seed.Next+CommitSeq(i) {
-			return &Error{Code: ErrCorrupt, Operation: "read", SessionID: header.SessionID, Detail: fmt.Sprintf("seq gap at %d", i)}
+			return &Error{Code: ErrCorrupt, Operation: "read", Detail: fmt.Sprintf("segment %s: seq gap at %d", segment, i)}
 		}
 		resealed := *c
 		resealed.PrevDigest = ""
 		resealed.Digest = ""
-		if err := SealCommit(p, prev, header.SessionID, &resealed); err != nil {
+		if err := SealCommit(p, prev, segment, &resealed); err != nil {
 			// A stored commit the profile cannot reseal is corrupt to a reader, whatever the seal rejected.
-			return &Error{Code: ErrCorrupt, Operation: "read", SessionID: header.SessionID, CommitID: c.CommitID, Detail: fmt.Sprintf("commit %d cannot be resealed: %v", i, err)}
+			return &Error{Code: ErrCorrupt, Operation: "read", CommitID: c.CommitID, Detail: fmt.Sprintf("segment %s: commit %d cannot be resealed: %v", segment, i, err)}
 		}
 		if c.PrevDigest != prev || c.Digest != resealed.Digest {
-			return &Error{Code: ErrCorrupt, Operation: "read", SessionID: header.SessionID, CommitID: c.CommitID, Detail: fmt.Sprintf("digest mismatch at commit %d", i)}
+			return &Error{Code: ErrCorrupt, Operation: "read", CommitID: c.CommitID, Detail: fmt.Sprintf("segment %s: digest mismatch at commit %d", segment, i)}
 		}
 		prev = c.Digest
 	}

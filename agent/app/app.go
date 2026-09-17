@@ -171,13 +171,13 @@ func (a *Application) OpenSession(ctx context.Context, sid session.SessionID, op
 }
 
 // Fork creates a child session from a parent's ledger prefix (HST-FRK-1).
-func (a *Application) Fork(ctx context.Context, req ForkRequest) (session.SessionHeader, error) {
+func (a *Application) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
 	return a.authority.Fork(ctx, req)
 }
 
 // ForkBeforeTurn forks a session at the commit before the named turn started
 // (HST-FRK-2), so the turn's inputs can be regenerated or edited in the child.
-func (a *Application) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SessionHeader, error) {
+func (a *Application) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
 	return a.authority.ForkBeforeTurn(ctx, parent, turnID, child)
 }
 

@@ -8,8 +8,8 @@ import (
 )
 
 // TestProfileVersionSeparatesDigests pins SES-VER-2 at the one place it can
-// silently break. A batch digest preimage carries SessionID, Stream and the
-// events; a commit digest preimage carries prev, SessionID, Seq, CommitID,
+// silently break. A batch digest preimage carries SegmentID, Stream and the
+// events; a commit digest preimage carries prev, SegmentID, Seq, CommitID,
 // Epoch and the batch digests — but neither carries the ProtocolVersion as a
 // field. The version therefore reaches a digest only through the digest
 // domain separator, so a profile whose separator ignored the version would
@@ -59,7 +59,7 @@ func TestProfileVersionSeparatesDigests(t *testing.T) {
 
 	// The header carries the version as a field too, so it separates for two
 	// independent reasons; both must hold.
-	h2 := SessionHeader{ProtocolVersion: ProtocolVersion1, SessionID: "s", CreatedAtUnixMilli: 1}
+	h2 := SegmentHeader{ProtocolVersion: ProtocolVersion1, Nonce: "s"}
 	h3 := h2
 	h3.ProtocolVersion = 3
 	hd2, err := v2.HeaderDigest(h2)

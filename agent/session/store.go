@@ -7,24 +7,29 @@ import (
 	"github.com/felinics/twilight/agent/jsonstable"
 )
 
-// CreateRequest establishes a Session: a root naming a new segment.
-// Field-identical repeats are idempotent; a different request for the same
-// SessionID is a Conflict. Fork makes the new segment a child of another
-// Session's history (SES-FRK-1): that Session must be live in the same Store,
-// its ancestry must hold commit Seq, and it must share the protocol version;
-// otherwise Create fails and writes nothing.
+// CreateRequest establishes a Session: a root naming a new segment. A
+// repeat for an existing SessionID whose ProtocolVersion, resolved parent
+// edge, CausationID, Metadata, CreatedAtUnixMilli and (when given) Nonce
+// match the existing Session is idempotent; any difference is a Conflict.
+// Fork makes the new segment a child of another Session's history
+// (SES-FRK-1): that Session must be live in the same Store, its ancestry
+// must hold commit Seq, and it must share the protocol version; otherwise
+// Create fails and writes nothing. Nonce is the segment nonce; empty lets the
+// kernel draw one (NewNonce), which is the normal case. A caller that needs a
+// deterministic segment identity supplies it.
 type CreateRequest struct {
 	ProtocolVersion    uint16
 	SessionID          SessionID
 	CreatedAtUnixMilli int64
 	Fork               *ForkOrigin
+	Nonce              string
 	CausationID        es.CausationID
 	Metadata           jsonstable.Value
 }
 
 // ForkOrigin names the point a fork inherits: a Session and a CommitSeq of
 // its stitched history. The Ledger resolves it to the segment that
-// contributes that commit and records the edge as SessionHeader.Parent.
+// contributes that commit and records the edge as SegmentHeader.Parent.
 type ForkOrigin struct {
 	Session SessionID
 	Seq     CommitSeq
@@ -93,10 +98,11 @@ type CommitReadRequest struct {
 	Limit     uint32 // 0 = unlimited
 }
 
-// CommitPage is the result of one ReadCommits. Head is the ledger head at
-// read time; HasMore reports whether commits beyond the returned ones exist.
+// CommitPage is the result of one ReadCommits. Header is the tip segment's;
+// Head is the ledger head at read time; HasMore reports whether commits
+// beyond the returned ones exist.
 type CommitPage struct {
-	Header  SessionHeader
+	Header  SegmentHeader
 	Commits []Commit
 	Head    Head
 	HasMore bool
@@ -115,7 +121,7 @@ type StreamReadRequest struct {
 // StreamPage is the result of one ReadStream. Head is the ledger head at
 // read time; HasMore reports whether events beyond the returned ones exist.
 type StreamPage struct {
-	Header  SessionHeader
+	Header  SegmentHeader
 	Stream  StreamRef
 	Events  []Event
 	Head    Head
@@ -135,8 +141,13 @@ type CollectReport struct {
 // history of that segment's ancestry. Delete drops the root; Collect
 // reclaims the nodes no root reaches.
 type Store interface {
-	Create(context.Context, CreateRequest) (SessionHeader, error)
-	Header(context.Context, SessionID) (SessionHeader, error)
+	// Create establishes a root and its tip segment and returns the tip's
+	// header.
+	Create(context.Context, CreateRequest) (SegmentHeader, error)
+	// Header returns the header of the Session's tip segment.
+	Header(context.Context, SessionID) (SegmentHeader, error)
+	// Record returns the Session's root.
+	Record(context.Context, SessionID) (SessionRecord, error)
 	Open(context.Context, SessionID, OpenOptions) (Handle, error)
 	ReadCommits(context.Context, CommitReadRequest) (CommitPage, error)
 	ReadStream(context.Context, StreamReadRequest) (StreamPage, error)

@@ -26,12 +26,12 @@ type ForkRequest struct {
 // with OpenSession like any Session. Executing targets the prefix leaves
 // behind belong to the parent's executions; the child's takeover disposition
 // treats them as missing and replans or records Unknown (RUN-CMT-7).
-func (h *Host) Fork(ctx context.Context, req ForkRequest) (session.SessionHeader, error) {
+func (h *Host) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
 	if req.Parent == "" || req.Child == "" {
-		return session.SessionHeader{}, errors.New("host: fork requires parent and child session ids")
+		return session.SegmentHeader{}, errors.New("host: fork requires parent and child session ids")
 	}
 	if req.Parent == req.Child {
-		return session.SessionHeader{}, errors.New("host: a session cannot fork itself")
+		return session.SegmentHeader{}, errors.New("host: a session cannot fork itself")
 	}
 	return writer.Fork(ctx, h.Store, h.registry, h.admission, writer.ForkRequest{
 		Parent: req.Parent, At: req.At, Child: req.Child, CreatedAtUnixMilli: h.now().UnixMilli(),
@@ -44,13 +44,13 @@ func (h *Host) Fork(ctx context.Context, req ForkRequest) (session.SessionHeader
 // regenerated (Route delivers them to a new Turn) or withdrawn and replaced
 // (WithdrawInput, then Submit). A Turn started by the first commit of the
 // ledger leaves no prefix to fork; create a new Session instead.
-func (h *Host) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SessionHeader, error) {
+func (h *Host) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
 	seq, err := h.turnStartCommit(ctx, parent, turnID)
 	if err != nil {
-		return session.SessionHeader{}, err
+		return session.SegmentHeader{}, err
 	}
 	if seq == 0 {
-		return session.SessionHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: child,
+		return session.SegmentHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: child,
 			Detail: fmt.Sprintf("turn %s started in the first commit of %s; there is no prefix to fork", turnID, parent)}
 	}
 	return h.Fork(ctx, ForkRequest{Parent: parent, At: seq - 1, Child: child})

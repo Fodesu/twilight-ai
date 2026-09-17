@@ -22,7 +22,7 @@ func testLineage(t *testing.T, f Fixture) {
 	for i := 0; i < 4; i++ {
 		a = append(a, appendCommit(t, aw, "a"+string(rune('0'+i)), batch(sessionStream(), "twilight/x/a", `{"n":`+string(rune('0'+i))+`}`)))
 	}
-	fork := func(child, parent session.SessionID, at session.Commit) session.SessionHeader {
+	fork := func(child, parent session.SessionID, at session.Commit) session.SegmentHeader {
 		t.Helper()
 		h, err := forkAt(t, store, child, parent, at.Seq)
 		if err != nil {

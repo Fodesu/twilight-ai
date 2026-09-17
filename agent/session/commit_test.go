@@ -8,9 +8,10 @@ import (
 	"github.com/felinics/twilight/agent/jsonstable"
 )
 
-func v2Header(t *testing.T, sid SessionID) SessionHeader {
+// v2Header builds a sealed root segment header whose nonce is nonce.
+func v2Header(t *testing.T, nonce string) SegmentHeader {
 	t.Helper()
-	h := SessionHeader{ProtocolVersion: ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}
+	h := SegmentHeader{ProtocolVersion: ProtocolVersion1, Nonce: nonce}
 	d, err := ProfileV1().HeaderDigest(h)
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +108,7 @@ func TestSealCommit(t *testing.T) {
 		oneEventBatch(StreamRef{Kind: StreamKindSession}, "twilight/x/a", `{"a":1}`),
 		oneEventBatch(StreamRef{Kind: StreamKindRun, ID: "r7"}, "twilight/run/created", `{"runId":"r7"}`),
 	}}
-	if err := SealCommit(p, h.HeaderDigest, "s", &c); err != nil {
+	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &c); err != nil {
 		t.Fatal(err)
 	}
 	if c.PrevDigest != h.HeaderDigest {
@@ -118,7 +119,7 @@ func TestSealCommit(t *testing.T) {
 	}
 	resealed := c
 	resealed.PrevDigest, resealed.Digest = "", ""
-	if err := SealCommit(p, h.HeaderDigest, "s", &resealed); err != nil {
+	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &resealed); err != nil {
 		t.Fatal(err)
 	}
 	if resealed.Digest != c.Digest {
@@ -129,7 +130,7 @@ func TestSealCommit(t *testing.T) {
 	otherEpoch := c
 	otherEpoch.Epoch = 4
 	otherEpoch.PrevDigest, otherEpoch.Digest = "", ""
-	if err := SealCommit(p, h.HeaderDigest, "s", &otherEpoch); err != nil {
+	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &otherEpoch); err != nil {
 		t.Fatal(err)
 	}
 	if otherEpoch.Digest == c.Digest {
@@ -144,7 +145,7 @@ func TestSealCommit(t *testing.T) {
 			{Type: "twilight/x/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"a":1}`)},
 		}},
 	}}
-	if err := SealCommit(p, h.HeaderDigest, "s", &swappedEvents); err != nil {
+	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &swappedEvents); err != nil {
 		t.Fatal(err)
 	}
 	twoEvents := Commit{Seq: 0, CommitID: "c1", Epoch: 3, Batches: []StreamBatch{
@@ -153,7 +154,7 @@ func TestSealCommit(t *testing.T) {
 			{Type: "twilight/x/b", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"b":2}`)},
 		}},
 	}}
-	if err := SealCommit(p, h.HeaderDigest, "s", &twoEvents); err != nil {
+	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &twoEvents); err != nil {
 		t.Fatal(err)
 	}
 	if swappedEvents.Digest == twoEvents.Digest {
@@ -163,38 +164,38 @@ func TestSealCommit(t *testing.T) {
 		oneEventBatch(StreamRef{Kind: StreamKindRun, ID: "r7"}, "twilight/run/created", `{"runId":"r7"}`),
 		oneEventBatch(StreamRef{Kind: StreamKindSession}, "twilight/x/a", `{"a":1}`),
 	}}
-	if err := SealCommit(p, h.HeaderDigest, "s", &swappedBatches); err != nil {
+	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &swappedBatches); err != nil {
 		t.Fatal(err)
 	}
 	if swappedBatches.Digest == c.Digest {
 		t.Fatal("batch order inside a commit does not reach the digest")
 	}
 
-	if err := SealCommit(p, h.HeaderDigest, "s", &Commit{Seq: 0, Batches: c.Batches}); err == nil {
+	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &Commit{Seq: 0, Batches: c.Batches}); err == nil {
 		t.Fatal("empty CommitID accepted")
 	}
-	if err := SealCommit(p, h.HeaderDigest, "s", &Commit{Seq: 0, CommitID: "c2"}); err == nil {
+	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &Commit{Seq: 0, CommitID: "c2"}); err == nil {
 		t.Fatal("commit without batches accepted")
 	}
 }
 
 // sealedPair builds a two-commit sealed ledger: one session batch, then a
 // commit spanning the session stream and run stream r7.
-func sealedPair(t *testing.T) (LedgerProfile, SessionHeader, []Commit) {
+func sealedPair(t *testing.T) (LedgerProfile, SegmentHeader, []Commit) {
 	t.Helper()
 	p := ProfileV1()
 	h := v2Header(t, "s")
 	c0 := Commit{Seq: 0, CommitID: "c1", Epoch: 1, Batches: []StreamBatch{
 		oneEventBatch(StreamRef{Kind: StreamKindSession}, "twilight/x/a", `{"a":1}`),
 	}}
-	if err := SealCommit(p, h.HeaderDigest, "s", &c0); err != nil {
+	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &c0); err != nil {
 		t.Fatal(err)
 	}
 	c1 := Commit{Seq: 1, CommitID: "c2", Epoch: 1, Batches: []StreamBatch{
 		oneEventBatch(StreamRef{Kind: StreamKindSession}, "twilight/x/b", `{"b":2}`),
 		oneEventBatch(StreamRef{Kind: StreamKindRun, ID: "r7"}, "twilight/run/created", `{"runId":"r7"}`),
 	}}
-	if err := SealCommit(p, c0.Digest, "s", &c1); err != nil {
+	if err := SealCommit(p, c0.Digest, SegmentIDOf(h), &c1); err != nil {
 		t.Fatal(err)
 	}
 	return p, h, []Commit{c0, c1}
@@ -239,10 +240,10 @@ func TestValidateLedgerDetects(t *testing.T) {
 		})
 	}
 
-	// A ledger validated under another session's header must fail at commit 0.
-	p, h, commits := sealedPair(t)
-	h.SessionID = "other"
-	if err := ValidateLedger(p, h, commits); !IsCode(err, ErrCorrupt) {
+	// A ledger validated under another segment's header must fail at commit 0:
+	// the seed digest and the segment the commits are bound to both differ.
+	p, _, commits := sealedPair(t)
+	if err := ValidateLedger(p, v2Header(t, "other"), commits); !IsCode(err, ErrCorrupt) {
 		t.Fatalf("ValidateLedger under foreign header = %v, want code corrupt", err)
 	}
 }

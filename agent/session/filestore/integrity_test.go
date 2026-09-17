@@ -14,7 +14,7 @@ import (
 // must not serve it under the requested identity nor treat it as unowned.
 func TestSessionDirectoryIntegrity(t *testing.T) {
 	ctx := context.Background()
-	create := func(t *testing.T, s *Store, sid session.SessionID) session.SessionHeader {
+	create := func(t *testing.T, s *Store, sid session.SessionID) session.SegmentHeader {
 		t.Helper()
 		h, err := s.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1})
 		if err != nil {
@@ -24,10 +24,10 @@ func TestSessionDirectoryIntegrity(t *testing.T) {
 	}
 	cases := []struct {
 		name          string
-		damage        func(t *testing.T, s *Store, a session.SessionHeader)
+		damage        func(t *testing.T, s *Store, a session.SegmentHeader)
 		headerCorrupt bool
 	}{
-		{"header of another segment", func(t *testing.T, s *Store, a session.SessionHeader) {
+		{"header of another segment", func(t *testing.T, s *Store, a session.SegmentHeader) {
 			b := create(t, s, "b")
 			raw, err := os.ReadFile(filepath.Join(s.segmentDir(session.SegmentIDOf(b)), headerFile))
 			if err != nil {
@@ -37,7 +37,7 @@ func TestSessionDirectoryIntegrity(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, true},
-		{"unreadable root record", func(t *testing.T, s *Store, _ session.SessionHeader) {
+		{"unreadable root record", func(t *testing.T, s *Store, _ session.SegmentHeader) {
 			if err := os.WriteFile(s.rootPath("a"), []byte("{not json"), 0o644); err != nil {
 				t.Fatal(err)
 			}

@@ -104,8 +104,8 @@ Attach 的 `active` / `terminal` 保留 Executing 并等待实际 Outcome；`orp
 
 ```go
 func (h *Host) OpenSession(ctx, sid, SessionOptions{Preset, NewTurnID, ResumeActive, Compact*}) (*Session, error)
-func (h *Host) Fork(ctx, ForkRequest{Parent, At, Child}) (session.SessionHeader, error)          // HST-FRK-1
-func (h *Host) ForkBeforeTurn(ctx, parent, turnID, child) (session.SessionHeader, error)          // HST-FRK-2
+func (h *Host) Fork(ctx, ForkRequest{Parent, At, Child}) (session.SegmentHeader, error)          // HST-FRK-1
+func (h *Host) ForkBeforeTurn(ctx, parent, turnID, child) (session.SegmentHeader, error)          // HST-FRK-2
 func (h *Host) WithdrawInput(ctx, sid, id run.InputID, reason string) error
 func (h *Host) DeleteSession(ctx, sid) error                                                     // HST-FRK-3
 func (h *Host) Collect(ctx) (session.CollectReport, error)

@@ -29,18 +29,18 @@ func freezeKernel(t *testing.T, name, got, want string) {
 // line bytes a durable store writes).
 func TestKernelWireGolden(t *testing.T) {
 	profile := session.ProfileV1()
-	header := session.SessionHeader{
-		ProtocolVersion:    session.ProtocolVersion1,
-		SessionID:          "golden",
-		CreatedAtUnixMilli: 1,
-		CausationID:        es.CausationID("cause-1"),
-		Metadata:           jsonstable.MustParse(`{"k":"v"}`),
+	header := session.SegmentHeader{
+		ProtocolVersion: session.ProtocolVersion1,
+		Nonce:           "golden",
+		CausationID:     es.CausationID("cause-1"),
+		Metadata:        jsonstable.MustParse(`{"k":"v"}`),
 	}
 	hd, err := profile.HeaderDigest(header)
 	if err != nil {
 		t.Fatal(err)
 	}
-	freezeKernel(t, "header digest", string(hd), "sha256:29333838670a343459d7326bce6a93031f4ac41e2a002f8c4b5baf6b5feafe47")
+	freezeKernel(t, "header digest", string(hd), "sha256:1eb09b1cf1e2d020e3892b04e9dad1f4b2db377f7b3bb7731a27a081b2dab258")
+	segment := session.SegmentID(hd)
 
 	sess := session.StreamRef{Kind: session.StreamKindSession}
 	run := session.StreamRef{Kind: session.StreamKindRun, ID: "r7"}
@@ -50,7 +50,7 @@ func TestKernelWireGolden(t *testing.T) {
 			{Type: "twilight/x/b", RecordedAtUnixMilli: 2, Payload: jsonstable.MustParse(`{}`)},
 		}},
 	}}
-	if err := session.SealCommit(profile, hd, header.SessionID, &c0); err != nil {
+	if err := session.SealCommit(profile, hd, segment, &c0); err != nil {
 		t.Fatal(err)
 	}
 	c1 := session.Commit{Seq: 1, CommitID: "c2", Epoch: 1, Batches: []session.StreamBatch{
@@ -61,22 +61,22 @@ func TestKernelWireGolden(t *testing.T) {
 			{Type: "twilight/run/created", RecordedAtUnixMilli: 3, Payload: jsonstable.MustParse(`{"runId":"r7"}`)},
 		}},
 	}}
-	if err := session.SealCommit(profile, c0.Digest, header.SessionID, &c1); err != nil {
+	if err := session.SealCommit(profile, c0.Digest, segment, &c1); err != nil {
 		t.Fatal(err)
 	}
-	freezeKernel(t, "commit 0 digest", string(c0.Digest), "sha256:19f3eb6148c45c936680d53f1249bda560cebabb648fc512b02958e4eca3d9e8")
-	freezeKernel(t, "commit 1 digest", string(c1.Digest), "sha256:57aecb4ba38897412c473a93a838ff7ddf89d5b0cc906171f9c1efa038b3d5f6")
+	freezeKernel(t, "commit 0 digest", string(c0.Digest), "sha256:e538e55abe0e903b91101effb44ef50c1e6491cc596ecfbfc827652f0ab84697")
+	freezeKernel(t, "commit 1 digest", string(c1.Digest), "sha256:f1e6aeb408763670b6859bd7996e47fa640923704989fbf809d6cda8f4d50819")
 
 	line0, err := json.Marshal(c0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	freezeKernel(t, "commit 0 json", string(line0), `{"seq":0,"commitId":"c1","epoch":1,"batches":[{"stream":{"kind":"session"},"events":[{"type":"twilight/x/a","recordedAtUnixMilli":1,"payload":{"a":1}},{"type":"twilight/x/b","recordedAtUnixMilli":2,"payload":{}}]}],"prevDigest":"sha256:29333838670a343459d7326bce6a93031f4ac41e2a002f8c4b5baf6b5feafe47","digest":"sha256:19f3eb6148c45c936680d53f1249bda560cebabb648fc512b02958e4eca3d9e8"}`)
+	freezeKernel(t, "commit 0 json", string(line0), `{"seq":0,"commitId":"c1","epoch":1,"batches":[{"stream":{"kind":"session"},"events":[{"type":"twilight/x/a","recordedAtUnixMilli":1,"payload":{"a":1}},{"type":"twilight/x/b","recordedAtUnixMilli":2,"payload":{}}]}],"prevDigest":"sha256:1eb09b1cf1e2d020e3892b04e9dad1f4b2db377f7b3bb7731a27a081b2dab258","digest":"sha256:e538e55abe0e903b91101effb44ef50c1e6491cc596ecfbfc827652f0ab84697"}`)
 	line1, err := json.Marshal(c1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	freezeKernel(t, "commit 1 json", string(line1), `{"seq":1,"commitId":"c2","epoch":1,"batches":[{"stream":{"kind":"session"},"events":[{"type":"twilight/x/c","recordedAtUnixMilli":3,"payload":{"c":3}}]},{"stream":{"kind":"run","id":"r7"},"events":[{"type":"twilight/run/created","recordedAtUnixMilli":3,"payload":{"runId":"r7"}}]}],"prevDigest":"sha256:19f3eb6148c45c936680d53f1249bda560cebabb648fc512b02958e4eca3d9e8","digest":"sha256:57aecb4ba38897412c473a93a838ff7ddf89d5b0cc906171f9c1efa038b3d5f6"}`)
+	freezeKernel(t, "commit 1 json", string(line1), `{"seq":1,"commitId":"c2","epoch":1,"batches":[{"stream":{"kind":"session"},"events":[{"type":"twilight/x/c","recordedAtUnixMilli":3,"payload":{"c":3}}]},{"stream":{"kind":"run","id":"r7"},"events":[{"type":"twilight/run/created","recordedAtUnixMilli":3,"payload":{"runId":"r7"}}]}],"prevDigest":"sha256:e538e55abe0e903b91101effb44ef50c1e6491cc596ecfbfc827652f0ab84697","digest":"sha256:f1e6aeb408763670b6859bd7996e47fa640923704989fbf809d6cda8f4d50819"}`)
 
 	header.HeaderDigest = hd
 	if err := session.ValidateLedger(profile, header, []session.Commit{c0, c1}); err != nil {

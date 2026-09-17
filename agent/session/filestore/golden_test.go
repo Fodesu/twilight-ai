@@ -27,7 +27,7 @@ func TestLogFileGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	const sid session.SessionID = "golden"
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1, Nonce: "golden"}); err != nil {
 		t.Fatal(err)
 	}
 	w, err := store.Open(ctx, sid, session.OpenOptions{})

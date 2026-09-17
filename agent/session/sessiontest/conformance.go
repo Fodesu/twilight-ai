@@ -35,7 +35,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("lineage", func(t *testing.T) { testLineage(t, factory(t)) })
 }
 
-func create(t *testing.T, store session.Store, sid session.SessionID) session.SessionHeader {
+func create(t *testing.T, store session.Store, sid session.SessionID) session.SegmentHeader {
 	t.Helper()
 	h, err := store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1})
 	if err != nil {
