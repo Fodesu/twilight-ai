@@ -183,7 +183,15 @@ type LocalExecutor struct {
 
 	mu       sync.Mutex
 	inflight map[AssignmentKey]*inflight
+	// terminal lists the closed records oldest first; once more than retain
+	// of them are held the oldest are dropped from inflight.
+	terminal []AssignmentKey
+	retain   int
 }
+
+// DefaultRetainedOutcomes bounds the terminal records a LocalExecutor keeps
+// for idempotent reads (RUN-EXE-3); records still executing are never dropped.
+const DefaultRetainedOutcomes = 1024
 
 type inflight struct {
 	runID   run.RunID
@@ -205,7 +213,27 @@ func NewLocalExecutor(models ModelCatalog, tools ToolCatalog, sink EventSink, st
 		return nil, errors.New("agent: loop: nil tool catalog")
 	}
 	return &LocalExecutor{models: models, tools: tools, sink: sink, streaming: streaming,
-		inflight: make(map[AssignmentKey]*inflight)}, nil
+		inflight: make(map[AssignmentKey]*inflight), retain: DefaultRetainedOutcomes}, nil
+}
+
+// SetRetainedOutcomes bounds the terminal records kept for Attach, GetStatus
+// and GetOutcome after an assignment closes; n < 1 keeps one. A dropped record
+// answers missing, so the Authority disposes it instead of reading an Outcome,
+// and a Dispatch replay of its key is a new execution (RUN-EXE-3).
+func (e *LocalExecutor) SetRetainedOutcomes(n int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.retain = max(n, 1)
+	e.evictLocked()
+}
+
+// evictLocked drops the oldest terminal records beyond the retention bound;
+// e.mu must be held.
+func (e *LocalExecutor) evictLocked() {
+	for len(e.terminal) > e.retain {
+		delete(e.inflight, e.terminal[0])
+		e.terminal = e.terminal[1:]
+	}
 }
 
 // Validate is the pre-start check (RUN-EXE-5): tools per RUN-LOP-4, models
@@ -365,6 +393,8 @@ func (e *LocalExecutor) Dispatch(ctx context.Context, a Assignment) error {
 		entry.outcome = out
 		entry.closed = true
 		close(entry.done)
+		e.terminal = append(e.terminal, key)
+		e.evictLocked()
 		e.mu.Unlock()
 		cancel()
 	}()
@@ -423,8 +453,8 @@ func localStatus(out Outcome) ExecutionStatus {
 }
 
 // GetOutcome waits for and returns the stable outcome of an accepted
-// assignment. The local record is intentionally retained for idempotent reads;
-// a production implementation should apply an explicit retention policy.
+// assignment. A terminal record stays readable until the retention bound
+// drops it (SetRetainedOutcomes); a dropped record is ErrExecutionNotFound.
 func (e *LocalExecutor) GetOutcome(ctx context.Context, key AssignmentKey) (Outcome, error) {
 	e.mu.Lock()
 	entry, ok := e.inflight[key]

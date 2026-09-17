@@ -43,7 +43,7 @@ type Ports struct {
     Modules    []extension.ModuleDescriptor
     Clock      func() time.Time
     Cache      extension.ProjectionCache  // nil → Store 能力或内存
-    CacheEvery session.Seq
+    CacheEvery session.CommitSeq
     Ownership  session.OpenOptions
     Warn       func(error)                // 宿主在调用之外做的工作失败时
 }
@@ -131,7 +131,7 @@ func (s *Session) Close(ctx) error
 
 ## 6. compaction
 
-**HST-CKP-1** 机制在 chatlog（CHT-EVT-3），策略在宿主。`Host.Checkpoint(ctx, sid, summaryText, retain)` 在该 Session Writer 的 Commit 临界区内读 turn surface（存在 active Turn 则拒绝——compaction 是回合之间的操作）与 `twilight/chatlog/context`，以 `View.Head().Next - 1` 为 `CoveredThrough`，把 summary 与 `checkpoint_created` 同组提交。`Session.Compact` 用 AgentPreset 的模型生成摘要，**这次模型调用与其他效果一样经 Executor 端口**：请求经 `FreezeModelRequest` 冻结并 `Put` 进 Frozen，以一个不属于任何 Run 的临时 key 构成模型 Assignment 交给 `Executor.Dispatch`，等待 Outcome；authority 因此不需要模型客户端，远端 Executor 以同一方式服务它。生成中崩溃不写任何事件。自动策略由 `SessionOptions.CompactAfterEntries` 启用：结算且积压排空后、Context 条目数超阈值时触发；失败经 `CompactWarn` 上报，不改变已结算的 `Result`。
+**HST-CKP-1** 机制在 chatlog（CHT-EVT-3），策略在宿主。`Host.Checkpoint(ctx, sid, summaryText, retain)` 在该 Session Writer 的 Commit 临界区内读 turn surface（存在 active Turn 则拒绝——compaction 是回合之间的操作）与 `twilight/chatlog/context`，以 `View.Head().Next - 1` 为 `CoveredThrough`，把 summary 与 `checkpoint_created` 同组提交。CheckpointID 与 SummaryID 由 SessionID、base context digest 与摘要文本派生（同一后缀，前缀分别为 `ckpt-` 与 `sum-`），CommitID 为 `checkpoint/<CheckpointID>`：对同一 base 重试的 Checkpoint 重放同一 CommitID，Writer 按 EXT-WRT-2 回答 `AlreadyApplied`，不会写入第二个 checkpoint。`Session.Compact` 用 AgentPreset 的模型生成摘要，**这次模型调用与其他效果一样经 Executor 端口**：请求经 `FreezeModelRequest` 冻结并 `Put` 进 Frozen，以一个不属于任何 Run 的临时 key 构成模型 Assignment 交给 `Executor.Dispatch`，等待 Outcome；authority 因此不需要模型客户端，远端 Executor 以同一方式服务它。生成中崩溃不写任何事件。自动策略由 `SessionOptions.CompactAfterEntries` 启用：结算且积压排空后、Context 条目数超阈值时触发；失败经 `CompactWarn` 上报，不改变已结算的 `Result`。
 
 **HST-CKP-2** retained 集必须封闭：保留的 tool_result 连同签发该 call 的 assistant，保留的带 tool_call 的 assistant 连同其在 Context 中的 result。`RetainLast(entries, n)` 返回满足封闭的最短后缀；`Host.Checkpoint` 校验封闭并拒绝违反者。子集与顺序由 fold 校验（CHT-EVT-3），封闭由宿主校验。
 

@@ -122,9 +122,9 @@ type RunCreated struct {
     CausationID es.CausationID
 }
 type RunRecord struct {
-    Created session.Seq
+    Created session.StreamSeq
     Snapshot RuntimeSnapshot
-    Events []session.SessionEvent // 该 RunID 的全部 twilight/run/ 事件，按 Seq 顺序
+    Events []session.Event // 该 RunID 的 run stream 的全部事件，按 StreamSeq 顺序
 }
 ```
 
@@ -317,8 +317,8 @@ type Runtime interface {
     // 宿主在 OpenWriter 之后、驱动任何 Run 之前调用（RUN-CMT-7）。
     RecoverInterrupted(context.Context, session.SessionID, Reattacher) (int, error)
 }
-// RunPosition 是该 RunID 最后一条 twilight/run/ 事件的 Seq；只有这个 Run 自己的事件会移动它。
-type RunPosition = session.Seq
+// RunPosition 是该 RunID 的 run stream 中最后一条事件的 StreamSeq；只有这个 Run 自己的事件会移动它。
+type RunPosition = session.StreamSeq
 type RuntimeSnapshot struct {
     State MachineState // detached in-process view
     Position RunPosition
@@ -377,7 +377,7 @@ type CommitRequest struct {
 type CommitResult struct {
     Status CommitStatus // CommitAccepted | CommitAlreadyApplied
     Snapshot RuntimeSnapshot
-    Events []session.SessionEvent // 本次 command 的完整组：run facts、companion、Attach
+    Events []session.Event // 本次 command 的完整组：run facts、companion、Attach
 }
 ```
 
@@ -524,7 +524,7 @@ func Reattach(lifetime context.Context, exec Executor, sid session.SessionID, de
 
 **RUN-EXE-2（Outcome）** Outcome 是 Executor 对一个 Assignment 的唯一回答：模型 Assignment 得到 `Model` 或 `Err`，工具 Assignment 得到 sealed 的 `Tool`；`Cancelled` 表示 Executor 按要求停止了该效果；`Unknown` 表示 Executor 已明确结束该执行的恢复，外部结果仍无法确定。Outcome 通过 `GetOutcome` 按 key 读取，也可以由 deployment 层通过通知唤醒读取方；每个被接受的 Assignment 最终至多提交一个 authoritative Outcome。`GetOutcome` 返回的 error 表示读取操作失败，执行状态保持原值。Worker 对读取失败退避重试并保持 lease；失去 ownership 后停止处理。Loop.Run 将读取错误返回给调用方，保留 Executing，后续可重新关联结果。Reattach 的 Attach 请求由调用 context 控制，后台结果读取由构造时传入的 Session ownership `lifetime` 控制。
 
-**RUN-EXE-3（Dispatch 与 Attach）** `Dispatch` 接受 Assignment 后立即返回。确定的 acceptance 失败返回普通 error；请求发出后的超时、取消或响应丢失返回 `ErrDispatchUnknown`，Authority 保留 Executing。接受时 Executor 先持久化完整 Assignment payload，再进入 `Dispatching`，然后调用 backend；`Accepted` 表示确定尚未开始，`Dispatching` 表示可能已经开始，`Running` 表示 backend 已接受。backend 返回 `ErrDispatchUnknown` 时，Worker 保持 Dispatching、续租并读取最终 Outcome；HTTP Server 可确认 Worker 已持久化的 acceptance。相同 Assignment 的 Dispatch 重放确认已有 acceptance，并保留该记录的 owner、epoch 与状态；已有记录的恢复通过显式 `Takeover` 触发，包括首次接受后尚未开始的记录。`Attach` 按 AssignmentKey 返回 `active`、`orphaned`、`terminal` 或 `missing`：只有 `missing` 才允许 Authority 自动 dispose；`orphaned` 必须由 control plane reconcile、takeover 或明确处置。`GetStatus` 与 `GetOutcome` 不读取 Session。对已失效 owner 的 takeover 由 control plane 决定，Worker 以新的 fencing epoch 获取同一个 AssignmentKey；接管 `Running`/`Dispatching` 时先尝试 backend attach：可 attach 则继续观察原执行；不可 attach 时模型 Assignment 允许显式 retry dispatch（同一冻结请求重放），已绑定 backend job 的工具经 BindingPort 按 binding 重连或重派；未绑定 ExecutionBinding 的工具执行可能已越过效果边界、重派可能重复外部效果，采用后直接以 Unknown 结算（TRN-DUR-4），工具定义声明可重放之前不允许重派。已有 ExecutionBinding 的记录使用 BindingPort 完成全部 backend 操作；backend 缺少该能力时返回 `ErrBindingUnsupported`，保留原 binding。`Cancel` 针对一个 Assignment；Run 级批量取消由上层枚举 targets。`LocalExecutor` 使用进程内记录；durable Worker 使用共享 Execution Store。Worker 可配置定时 reconcile（`ReconcileInterval`）：每个 tick 对租约过期的记录显式执行 `Takeover`，由同一进程内嵌的控制面接管 orphaned 执行；带外部控制面的部署保持该循环关闭，直接调用 `Takeover`/`Reconcile`。
+**RUN-EXE-3（Dispatch 与 Attach）** `Dispatch` 接受 Assignment 后立即返回。确定的 acceptance 失败返回普通 error；请求发出后的超时、取消或响应丢失返回 `ErrDispatchUnknown`，Authority 保留 Executing。接受时 Executor 先持久化完整 Assignment payload，再进入 `Dispatching`，然后调用 backend；`Accepted` 表示确定尚未开始，`Dispatching` 表示可能已经开始，`Running` 表示 backend 已接受。backend 返回 `ErrDispatchUnknown` 时，Worker 保持 Dispatching、续租并读取最终 Outcome；HTTP Server 可确认 Worker 已持久化的 acceptance。相同 Assignment 的 Dispatch 重放确认已有 acceptance，并保留该记录的 owner、epoch 与状态；已有记录的恢复通过显式 `Takeover` 触发，包括首次接受后尚未开始的记录。`Attach` 按 AssignmentKey 返回 `active`、`orphaned`、`terminal` 或 `missing`：只有 `missing` 才允许 Authority 自动 dispose；`orphaned` 必须由 control plane reconcile、takeover 或明确处置。`GetStatus` 与 `GetOutcome` 不读取 Session。对已失效 owner 的 takeover 由 control plane 决定，Worker 以新的 fencing epoch 获取同一个 AssignmentKey；接管 `Running`/`Dispatching` 时先尝试 backend attach：可 attach 则继续观察原执行；不可 attach 时模型 Assignment 允许显式 retry dispatch（同一冻结请求重放），已绑定 backend job 的工具经 BindingPort 按 binding 重连或重派；未绑定 ExecutionBinding 的工具执行可能已越过效果边界、重派可能重复外部效果，采用后直接以 Unknown 结算（TRN-DUR-4），工具定义声明可重放之前不允许重派。已有 ExecutionBinding 的记录使用 BindingPort 完成全部 backend 操作；backend 缺少该能力时返回 `ErrBindingUnsupported`，保留原 binding。`Cancel` 针对一个 Assignment；Run 级批量取消由上层枚举 targets。`LocalExecutor` 使用进程内记录，终态记录按上限保留（`SetRetainedOutcomes`，默认 1024 条，执行中的记录不受上限影响）：被淘汰的记录对 `Attach` 返回 `missing`，对 `GetStatus` 与 `GetOutcome` 返回 `ErrExecutionNotFound`，同一 key 的 Dispatch 重放视为新执行；durable Worker 使用共享 Execution Store。HTTP Server 只接受 POST：其他方法返回 405，请求体超过 `MaxBodyBytes`（默认 16 MiB）返回 413，非 JSON 请求体返回 400，三者都在 Worker 之前拒绝。Worker 可配置定时 reconcile（`ReconcileInterval`）：每个 tick 对租约过期的记录显式执行 `Takeover`，由同一进程内嵌的控制面接管 orphaned 执行；带外部控制面的部署保持该循环关闭，直接调用 `Takeover`/`Reconcile`。
 
 **RUN-EXE-4（Outcome 的结算）** `Loop.Deliver` 以 `Outcome.Key` 在投影中定位 Executing 的目标：同一 step 或 call、同一 Claim。找到则以该 Claim 派生的结算 CommandID 提交 Submit*（模型：结果、provider 失败、畸形结果的 Reject、取消或本体缺失的 Recover；工具：按 sealed outcome 映射，Executor 返回的缺失或未知执行结果记 Unknown）；找不到——attempt 已被结算或处置、Run 已终结、Claim 不符——则丢弃，不写任何事实（`LoopDropped`）。GetOutcome 的读取错误保留 Executing，只有成功读取的 Outcome 进入 Deliver。结算使用独立 control context（RUN-LOP-5）。
 
@@ -589,7 +589,7 @@ Loop.Run(...):  // 阻塞封装：Advance → 等待本次 dispatch 的 Outcome 
 
 模型结算（无 tool call 的 SubmitModelResult、SubmitModelFailure、FailRun 的 RejectModelResult）可能终结 Run；此时 CommitResult.Snapshot 已是终态，Loop 直接 emit run_finished 并返回 Finished，不再 Load。工具结算不会终结 Run。
 
-每个 `Loop` 实例为每个 `(SessionID, RunID)` 分配一个本地 slot：同一 Run 的 `Advance` 与 `Deliver` 串行；`Run` 进行期间对同一 Run 的 `Advance` 或第二个 `Run` 返回 `ErrRunAlreadyRunning`；不同 Run 可以并行驱动。宿主必须保证一个 Session 在一个进程内只有一个 Loop 实例驱动它的 Run（与 `Writer` 一一对应）。
+每个 `Loop` 实例为每个 `(SessionID, RunID)` 分配一个本地 slot：同一 Run 的 `Advance` 与 `Deliver` 串行；`Run` 进行期间对同一 Run 的 `Advance` 或第二个 `Run` 返回 `ErrRunAlreadyRunning`；不同 Run 可以并行驱动。slot 只在有 `Advance`、`Deliver` 或 `Run` 持有它时存在，最后一个持有者返回后释放，因此 slot 表的大小随正在驱动的 Run 数变化，与 Loop 见过的 Run 总数无关。宿主必须保证一个 Session 在一个进程内只有一个 Loop 实例驱动它的 Run（与 `Writer` 一一对应）。
 
 **RUN-LOP-2** `NeedModelRequest` 调用 PromptBuilder，冻结 sdk.Request，验证 model、ordered InputIDs 与 ToolSpecs，计算 request/tools/binding digests 和 derived CommandID/StepID，再提交 Prepare（command 携带本体）。prepare stale 后重新 Load；同 Position 的内容拒绝不得 livelock 重试。业务停止统一使用 `CancelRun`。
 
@@ -622,7 +622,7 @@ type Event struct {
     Kind EventKind
     Durability EventDurability
     Payload json.RawMessage
-    Committed []session.SessionEvent // EventAgentCommitted 携带本次 command 的完整组
+    Committed []session.Event // EventAgentCommitted 携带本次 command 的完整组
 }
 ```
 
@@ -649,7 +649,7 @@ type Event struct {
 - 隔离：同一 Session 内多 Run 互不影响 Position 与 Record；chatlog 与 turn 事件不影响 Run fold。不同 SchemaVersion 的 Run 共存在第二个 SchemaVersion 发布后启用；
 - 接管处置：关闭 Writer 后以新 Writer 打开（Epoch 加一）并调用 `RecoverInterrupted`：Executing model 被撤回，Run 回到 `Open`、`ModelSteps` 不计入该步、Executing 期间投递的输入仍在 `PendingInputs`；随后的 Prepare 产生新的 StepID 并消费这些输入，不重发原 RequestDigest；Executing tool 记 Unknown 且 companion 在同组写入 status=`unknown` 的 `tool_result`，同 step 的 Pending 与 Waiting call 不受影响；Run 保持 Active；同一 Epoch 重复调用返回 0 且无新写入；没有 Executing 目标时返回 0；
 - 接管重连：`RecoverInterrupted` 对每个 Executing 目标先经 `Reattacher.Attach` 询问，携带 start 事实记录的 Claim 与 Run 的协议版本；`active`、`terminal` 保持 Executing 与 Claim，随后以原 Claim 结算；`deferred` 保持原状态，等待 control plane 处置；`missing` 按接管处置；`Reattacher` 为 nil 时全部处置。
-- 效果层：`Advance` 提交 start barrier 后把 Assignment 交给 Executor 并返回 `LoopDispatched`，不等待效果；`Deliver` 以 Key 定位 Executing 目标并结算，Run 终结时返回 `LoopFinished`；attempt 已处置或 Claim 不符的迟到 Outcome 返回 `LoopDropped` 且不写入；`Cancelled` 的模型 Outcome 使 step 撤回到 Open；`LocalExecutor.Attach` 对执行中 attempt 返回 `active`，完成后返回 `terminal`，记录不存在时返回 `missing`；GetOutcome 读取失败保持执行状态，真实结果稍后仍可结算；Dispatch 重放保持已有记录，显式 Takeover 处理恢复；已有 binding 缺少 BindingPort 时返回错误。
+- 效果层：`Advance` 提交 start barrier 后把 Assignment 交给 Executor 并返回 `LoopDispatched`，不等待效果；`Deliver` 以 Key 定位 Executing 目标并结算，Run 终结时返回 `LoopFinished`；attempt 已处置或 Claim 不符的迟到 Outcome 返回 `LoopDropped` 且不写入；`Cancelled` 的模型 Outcome 使 step 撤回到 Open；`LocalExecutor.Attach` 对执行中 attempt 返回 `active`，完成后返回 `terminal`，记录不存在时返回 `missing`；超出保留上限的最早终态记录对 `GetStatus` 返回 `ErrExecutionNotFound`、对 `Attach` 返回 `missing`，仍在上限内的记录返回 `terminal`；`Advance`、`Deliver`、`Run` 返回后 Loop 的 slot 表为空；HTTP Server 对非 POST 返回 405、对超过 `MaxBodyBytes` 的请求体返回 413、对非 JSON 请求体返回 400；GetOutcome 读取失败保持执行状态，真实结果稍后仍可结算；Dispatch 重放保持已有记录，显式 Takeover 处理恢复；已有 binding 缺少 BindingPort 时返回错误。
 - 所有权失效：旧 Writer 上的 Runtime 在被接管后 Commit 返回 `ErrOwnershipLost` 且 stream 无新行（fencing 由 SES-OWN-2 保证，本层观察结果）；
 - FrozenValueStore：`Put` 幂等；未知 digest 的 `FrozenRequest` 返回 `ErrFrozenValueMissing`；Authority 侧本体可按策略回收，Assignment 被接受后执行 payload 由 Execution Store 管理；Worker takeover 不读取 Session；
 - MachineState codec：每个 Current variant 与终态 round-trip、拒绝 unknown field / 非法判别式 / trailing data（`agent/run` 单元测试）。

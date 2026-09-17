@@ -29,10 +29,13 @@ type Loop struct {
 
 // runSlot serializes one Run: step guards a single Advance or Deliver at a
 // time; driving marks a blocking Run in progress so a second driver is
-// reported instead of interleaved (RUN-CMT-6).
+// reported instead of interleaved (RUN-CMT-6). refs counts the callers holding
+// the slot; the entry is dropped with the last release, so the map is bounded
+// by the Runs being driven now rather than by every Run the Loop has seen.
 type runSlot struct {
 	step    sync.Mutex
 	driving bool
+	refs    int
 }
 
 // New validates the settings (RUN-LOP-1) and binds the executor and the
@@ -79,9 +82,8 @@ func (l *Loop) targetFor(ctx context.Context, sid session.SessionID, runID run.R
 	return &copy, nil
 }
 
-func (l *Loop) slot(runID run.RunID) *runSlot {
-	l.mu.Lock()
-	defer l.mu.Unlock()
+// slotLocked returns the slot of runID, creating it; l.mu must be held.
+func (l *Loop) slotLocked(runID run.RunID) *runSlot {
 	s, ok := l.slots[runID]
 	if !ok {
 		s = &runSlot{}
@@ -90,15 +92,43 @@ func (l *Loop) slot(runID run.RunID) *runSlot {
 	return s
 }
 
-func (l *Loop) startDriving(runID run.RunID) error {
-	s := l.slot(runID)
+// releaseLocked drops one reference to the slot of runID and forgets the slot
+// with the last one; l.mu must be held.
+func (l *Loop) releaseLocked(runID run.RunID) {
+	if s, ok := l.slots[runID]; ok {
+		if s.refs--; s.refs <= 0 {
+			delete(l.slots, runID)
+		}
+	}
+}
+
+// acquire returns the slot of runID and holds a reference until release.
+func (l *Loop) acquire(runID run.RunID) *runSlot {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	s := l.slotLocked(runID)
+	s.refs++
+	return s
+}
+
+func (l *Loop) release(runID run.RunID) {
+	l.mu.Lock()
+	l.releaseLocked(runID)
+	l.mu.Unlock()
+}
+
+// startDriving marks runID as driven by a blocking Run and holds its slot for
+// the drive; stopDriving releases both.
+func (l *Loop) startDriving(runID run.RunID) (*runSlot, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	s := l.slotLocked(runID)
 	if s.driving {
-		return ErrRunAlreadyRunning
+		return nil, ErrRunAlreadyRunning
 	}
 	s.driving = true
-	return nil
+	s.refs++
+	return s, nil
 }
 
 func (l *Loop) stopDriving(runID run.RunID) {
@@ -106,6 +136,7 @@ func (l *Loop) stopDriving(runID run.RunID) {
 	if s, ok := l.slots[runID]; ok {
 		s.driving = false
 	}
+	l.releaseLocked(runID)
 	l.mu.Unlock()
 }
 
@@ -149,7 +180,8 @@ func (l *Loop) Advance(ctx context.Context, rt run.Runtime, sid session.SessionI
 	if l.isDriving(runID) {
 		return LoopResult{}, ErrRunAlreadyRunning
 	}
-	s := l.slot(runID)
+	s := l.acquire(runID)
+	defer l.release(runID)
 	if !s.step.TryLock() {
 		return LoopResult{}, ErrRunAlreadyRunning
 	}
@@ -252,7 +284,8 @@ func (l *Loop) Deliver(ctx context.Context, rt run.Runtime, sid session.SessionI
 	if err := l.checkArgs(ctx, rt, sid, out.Key.RunID); err != nil {
 		return LoopResult{}, err
 	}
-	s := l.slot(out.Key.RunID)
+	s := l.acquire(out.Key.RunID)
+	defer l.release(out.Key.RunID)
 	s.step.Lock()
 	defer s.step.Unlock()
 	return l.deliver(ctx, boundRuntime{rt: rt, sid: sid}, out, l.wrapSink(events))
@@ -329,13 +362,13 @@ func (l *Loop) Run(ctx context.Context, rt run.Runtime, sid session.SessionID, r
 	if err := l.checkArgs(ctx, rt, sid, runID); err != nil {
 		return LoopResult{}, err
 	}
-	if err := l.startDriving(runID); err != nil {
+	s, err := l.startDriving(runID)
+	if err != nil {
 		return LoopResult{}, err
 	}
 	defer l.stopDriving(runID)
 	events = l.wrapSink(events)
 	runtime := boundRuntime{rt: rt, sid: sid}
-	s := l.slot(runID)
 
 	outcomes := make(chan outcomeRead, 64)
 	pending := map[AssignmentKey]struct{}{}

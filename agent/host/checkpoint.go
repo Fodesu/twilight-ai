@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/felinics/twilight/agent/decision"
+	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -61,6 +62,32 @@ func RetainLast(entries []chatlog.Entry, n int) []chatlog.EntryDigestPair {
 	return out
 }
 
+// checkpointIDs derives the checkpoint and summary identifiers from what the
+// checkpoint replaces: the Session, the base context digest and the summary
+// text. A Checkpoint retried over the same base therefore carries the same
+// CommitID and is answered as already applied instead of writing a second
+// checkpoint (HST-CKP-1).
+func checkpointIDs(sid session.SessionID, base es.Digest, summaryText string) (chatlog.CheckpointID, chatlog.SummaryID, error) {
+	raw, err := es.EncodeTypedPayload(uint16(session.ProtocolVersion1), "twilight/host/checkpoint", struct {
+		SessionID session.SessionID `json:"sessionId"`
+		Base      es.Digest         `json:"base"`
+		Summary   string            `json:"summary"`
+	}{sid, base, summaryText})
+	if err != nil {
+		return "", "", err
+	}
+	// The digest is "sha256:<hex>"; the IDs carry the first 16 hex digits.
+	d := string(es.DigestBytes(raw))
+	const prefix = "sha256:"
+	if len(d) > len(prefix) && d[:len(prefix)] == prefix {
+		d = d[len(prefix):]
+	}
+	if len(d) > 16 {
+		d = d[:16]
+	}
+	return chatlog.CheckpointID("ckpt-" + d), chatlog.SummaryID("sum-" + d), nil
+}
+
 // Checkpoint commits a summary and its checkpoint in one group (CHT-EVT-3).
 // The base is read inside the commit's critical section, so the digest pins
 // exactly the context being replaced; a Turn must not be active. retain names
@@ -73,8 +100,7 @@ func (h *Host) Checkpoint(ctx context.Context, sid session.SessionID, summaryTex
 	if err != nil {
 		return "", err
 	}
-	checkpointID := chatlog.CheckpointID("ckpt-" + randomHex(8))
-	summaryID := chatlog.SummaryID("sum-" + randomHex(8))
+	var checkpointID chatlog.CheckpointID
 	res, err := w.Commit(ctx, func(v writer.View) (*writer.SemanticGroup, error) {
 		state, err := v.Projection(turn.SurfaceProjectionID, turn.SurfaceProjection.Version)
 		if err != nil {
@@ -101,6 +127,10 @@ func (h *Host) Checkpoint(ctx context.Context, sid session.SessionID, summaryTex
 		}
 		baseDigest, err := chatlog.DigestBaseContext(pairs)
 		if err != nil {
+			return nil, err
+		}
+		var summaryID chatlog.SummaryID
+		if checkpointID, summaryID, err = checkpointIDs(sid, baseDigest, summaryText); err != nil {
 			return nil, err
 		}
 		summary := chatlog.Summary{ID: summaryID, Parts: chatlog.Parts{chatlog.TextPart{Text: summaryText}}}

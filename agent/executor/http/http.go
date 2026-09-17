@@ -140,10 +140,18 @@ func (c *Client) post(ctx context.Context, path string, in, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
+// DefaultMaxBodyBytes bounds a request body when Server.MaxBodyBytes is zero.
+const DefaultMaxBodyBytes int64 = 16 << 20
+
 // Server exposes a Worker using only request/reply messages. A deployment may
 // add authentication, TLS, routing and callback notifications around this
-// handler; none of those are part of the Agent Core protocol.
-type Server struct{ Worker *executor.Worker }
+// handler; none of those are part of the Agent Core protocol. Every endpoint
+// accepts POST only, and a body larger than MaxBodyBytes (zero takes
+// DefaultMaxBodyBytes) is rejected before the Worker sees the request.
+type Server struct {
+	Worker       *executor.Worker
+	MaxBodyBytes int64
+}
 
 type responseError struct {
 	status     string
@@ -170,15 +178,15 @@ type keyRequest struct {
 
 func (s *Server) Handler() stdhttp.Handler {
 	mux := stdhttp.NewServeMux()
-	mux.HandleFunc("/validate", s.validate)
-	mux.HandleFunc("/dispatch", s.dispatch)
-	mux.HandleFunc("/attach", s.attach)
-	mux.HandleFunc("/status", s.status)
-	mux.HandleFunc("/outcome", s.outcome)
-	mux.HandleFunc("/cancel", s.cancel)
-	mux.HandleFunc("/takeover", s.takeover)
-	mux.HandleFunc("/reconcile", s.reconcile)
-	mux.HandleFunc("/dispose", s.dispose)
+	mux.HandleFunc("POST /validate", s.validate)
+	mux.HandleFunc("POST /dispatch", s.dispatch)
+	mux.HandleFunc("POST /attach", s.attach)
+	mux.HandleFunc("POST /status", s.status)
+	mux.HandleFunc("POST /outcome", s.outcome)
+	mux.HandleFunc("POST /cancel", s.cancel)
+	mux.HandleFunc("POST /takeover", s.takeover)
+	mux.HandleFunc("POST /reconcile", s.reconcile)
+	mux.HandleFunc("POST /dispose", s.dispose)
 	return mux
 }
 
@@ -203,7 +211,7 @@ func validateAssignmentRequest(req assignmentRequest) error {
 
 func (s *Server) validate(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	var req assignmentRequest
-	if !readJSON(w, r, &req) {
+	if !s.readJSON(w, r, &req) {
 		return
 	}
 	if err := validateAssignmentRequest(req); err != nil {
@@ -222,7 +230,7 @@ func (s *Server) validate(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 
 func (s *Server) dispatch(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	var req assignmentRequest
-	if !readJSON(w, r, &req) {
+	if !s.readJSON(w, r, &req) {
 		return
 	}
 	if err := validateAssignmentRequest(req); err != nil {
@@ -244,7 +252,7 @@ func (s *Server) dispatch(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 
 func (s *Server) attach(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	var req keyRequest
-	if !readJSON(w, r, &req) {
+	if !s.readJSON(w, r, &req) {
 		return
 	}
 	attachment, err := s.Worker.Attach(r.Context(), req.Key)
@@ -257,7 +265,7 @@ func (s *Server) attach(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 
 func (s *Server) status(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	var req keyRequest
-	if !readJSON(w, r, &req) {
+	if !s.readJSON(w, r, &req) {
 		return
 	}
 	status, err := s.Worker.GetStatus(r.Context(), req.Key)
@@ -272,7 +280,7 @@ func (s *Server) status(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 
 func (s *Server) outcome(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	var req keyRequest
-	if !readJSON(w, r, &req) {
+	if !s.readJSON(w, r, &req) {
 		return
 	}
 	outcome, err := s.Worker.GetOutcomeEnvelope(r.Context(), req.Key)
@@ -285,7 +293,7 @@ func (s *Server) outcome(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 
 func (s *Server) cancel(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	var req keyRequest
-	if !readJSON(w, r, &req) {
+	if !s.readJSON(w, r, &req) {
 		return
 	}
 	if err := s.Worker.Cancel(r.Context(), req.Key); err != nil {
@@ -297,7 +305,7 @@ func (s *Server) cancel(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 
 func (s *Server) takeover(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	var req keyRequest
-	if !readJSON(w, r, &req) {
+	if !s.readJSON(w, r, &req) {
 		return
 	}
 	if err := s.Worker.Takeover(r.Context(), req.Key); err != nil {
@@ -320,7 +328,7 @@ func (s *Server) reconcile(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 
 func (s *Server) dispose(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	var req keyRequest
-	if !readJSON(w, r, &req) {
+	if !s.readJSON(w, r, &req) {
 		return
 	}
 	if err := s.Worker.Dispose(r.Context(), req.Key); err != nil {
@@ -330,8 +338,20 @@ func (s *Server) dispose(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	w.WriteHeader(stdhttp.StatusAccepted)
 }
 
-func readJSON(w stdhttp.ResponseWriter, r *stdhttp.Request, out any) bool {
+// readJSON decodes the request body within the Server's size bound: a body
+// past it is 413, any other decoding failure 400.
+func (s *Server) readJSON(w stdhttp.ResponseWriter, r *stdhttp.Request, out any) bool {
+	limit := s.MaxBodyBytes
+	if limit <= 0 {
+		limit = DefaultMaxBodyBytes
+	}
+	r.Body = stdhttp.MaxBytesReader(w, r.Body, limit)
 	if err := json.NewDecoder(r.Body).Decode(out); err != nil {
+		var tooLarge *stdhttp.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			stdhttp.Error(w, err.Error(), stdhttp.StatusRequestEntityTooLarge)
+			return false
+		}
 		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
 		return false
 	}
