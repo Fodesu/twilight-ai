@@ -6,8 +6,8 @@ package workspace
 import (
 	"context"
 
+	"github.com/felinics/twilight/agent/environment"
 	"github.com/felinics/twilight/agent/run"
-	runtimepkg "github.com/felinics/twilight/agent/runtime"
 )
 
 // ID identifies one logical mutable work world. It remains stable when the
@@ -23,25 +23,25 @@ type CheckpointRef string
 
 // BackendID identifies a runtime provider without exposing its API to the
 // workspace domain.
-type BackendID = runtimepkg.Backend
+type BackendID = environment.Backend
 
 // EnvironmentRef identifies a provider environment. It is distinct from an
 // execution/job ID: many executions may run in one environment.
-type EnvironmentRef = runtimepkg.EnvironmentRef
+type EnvironmentRef = environment.EnvironmentRef
 
 // RuntimeBinding records the current physical materialization of a Workspace.
 // Generation changes when the workspace is rebound to a new environment.
-type RuntimeBinding = runtimepkg.Binding
+type RuntimeBinding = environment.Binding
 
 // Checkpoint is an immutable durable snapshot anchor produced by a provider.
 // StateRef is provider-neutral at this boundary and is interpreted by the
 // provider selected by Backend.
 type Checkpoint struct {
-	Ref       CheckpointRef       `json:"ref"`
-	Workspace ID                  `json:"workspace"`
-	Backend   BackendID           `json:"backend"`
-	StateRef  runtimepkg.StateRef `json:"stateRef"`
-	Parent    *CheckpointRef      `json:"parent,omitempty"`
+	Ref       CheckpointRef        `json:"ref"`
+	Workspace ID                   `json:"workspace"`
+	Backend   BackendID            `json:"backend"`
+	StateRef  environment.StateRef `json:"stateRef"`
+	Parent    *CheckpointRef       `json:"parent,omitempty"`
 }
 
 // Fork describes creation of a new logical workspace from an existing durable

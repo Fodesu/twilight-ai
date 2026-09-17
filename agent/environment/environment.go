@@ -1,7 +1,7 @@
-// Package runtime defines the provider-neutral physical materialization
+// Package environment defines the provider-neutral physical materialization
 // boundary for logical workspaces. It deliberately does not depend on E2B,
 // Docker, a VM SDK, or Agent Core effect types.
-package runtime
+package environment
 
 import "context"
 
