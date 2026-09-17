@@ -86,7 +86,7 @@ func (h *harness) open() {
 	h.writers = writer.NewWriters(h.store, h.registry, writer.Admission{Bindings: h.bindings, Ledger: h.ledger}, session.OpenOptions{Takeover: true},
 		writer.WritersConfig{Cache: h.cache, CachePolicy: runmod.WriterCachePolicy(0)})
 	rt, err := runmod.NewRuntime(runmod.Config{Registry: h.registry, Store: h.store,
-		Frozen: h.frozen, Bindings: h.bindings, Cache: h.cache, Now: h.clock.Now})
+		Frozen: h.frozen, Bindings: h.bindings, Cache: h.cache, Now: h.clock.Now, Attachers: []runmod.Attacher{turn.AttemptEnder{}}})
 	if err != nil {
 		h.fatal(err)
 	}

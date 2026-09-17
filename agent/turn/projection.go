@@ -7,7 +7,6 @@ import (
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
-	runmod "github.com/felinics/twilight/agent/session/run"
 )
 
 const SurfaceProjectionID extension.ProjectionID = "twilight/turn/surface"
@@ -29,7 +28,7 @@ type AttemptView struct {
 	// SchemaVersion is created.SchemaVersion: the Coordinator builds command
 	// envelopes for this attempt from it without reading the machine projection.
 	SchemaVersion uint16 `json:"schemaVersion"`
-	// End is the terminal result from twilight/run/run_ended; nil while active.
+	// End is the terminal result attempt_ended recorded; nil while active.
 	End *run.RunEnded `json:"end,omitempty"`
 }
 
@@ -73,7 +72,7 @@ func (v *TurnView) ActiveAttempt() *AttemptView {
 type TurnSurface struct {
 	Order []TurnID            `json:"order"`
 	Turns map[TurnID]TurnView `json:"turns"`
-	// RunOwner maps a RunID to its Turn, from attempt_started, so run_ended
+	// RunOwner maps a RunID to its Turn, from attempt_started, so AttemptEnder
 	// is routed to the attempt it settles (TRN-PRJ-1).
 	RunOwner map[run.RunID]TurnID `json:"runOwner"`
 }
@@ -103,12 +102,11 @@ func (s *TurnSurface) Active() (TurnView, bool) {
 
 var SurfaceProjection = extension.ProjectionDefinition{
 	ID: SurfaceProjectionID, Version: 1,
-	Consumes: []session.EventType{TypeStarted, TypeAttemptStarted, TypeFailed, TypeSuperseded,
-		chatlog.TypeInputDelivered, runmod.Prefix + "run_ended"},
-	// Attempt settlement is folded from run_ended, so inherited Turns settle
-	// from the parent's run streams (EXT-PRJ-8); a fork point inside a Turn
-	// is refused by the authority (AUTH-FRK-1).
-	Inherits: extension.InheritAll,
+	// Session stream only (TRN-SCP-1): the attempt's end arrives as
+	// attempt_ended, so a fork inherits settled Turns with the conversation
+	// and none of the parent's run streams (EXT-PRJ-8).
+	Consumes: []session.EventType{TypeStarted, TypeAttemptStarted, TypeAttemptEnded, TypeFailed, TypeSuperseded,
+		chatlog.TypeInputDelivered},
 	Initial: func() (any, error) {
 		return TurnSurface{Turns: map[TurnID]TurnView{}, RunOwner: map[run.RunID]TurnID{}}, nil
 	},
@@ -126,8 +124,8 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		s.Order = append(s.Order, p.TurnID)
 		s.Turns[p.TurnID] = TurnView{TurnID: p.TurnID, Status: TurnActive, InputIDs: append([]chatlog.InputID(nil), p.InputIDs...),
 			Preset: p.Preset}
-	case runmod.Event:
-		return s.applyRun(p)
+	case AttemptEndedPayload:
+		return s.applyEnded(p)
 	case FailedPayload:
 		v, err := s.settling(p.TurnID)
 		if err != nil {
@@ -177,33 +175,28 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 	return s, nil
 }
 
-// applyRun settles the attempt a run_ended fact ends (TRN-PRJ-1): a
+// applyEnded settles the attempt attempt_ended names (TRN-PRJ-1): a
 // completed Run completes the Turn; any other end leaves the Turn
-// attempt_failed until Retry, Stop or Settle decide. A Run owned by no Turn
-// of this Session is not ours.
-func (s TurnSurface) applyRun(ev runmod.Event) (any, error) {
-	ended, ok := ev.Fact.(run.RunEnded)
+// attempt_failed until Retry, Stop or Settle decide.
+func (s TurnSurface) applyEnded(p AttemptEndedPayload) (any, error) {
+	v, ok := s.Turns[p.TurnID]
 	if !ok {
-		return nil, fmt.Errorf("turn surface: unexpected run fact %T", ev.Fact)
+		return nil, fmt.Errorf("turn %s attempt ended before started", p.TurnID)
 	}
-	turnID, ok := s.RunOwner[ev.RunID]
-	if !ok {
-		return s, nil
-	}
-	v := s.Turns[turnID]
-	if err := v.end(ev.RunID, &ended); err != nil {
+	ended := p.End
+	if err := v.end(p.RunID, &ended); err != nil {
 		return nil, err
 	}
 	v.ActiveRun = ""
 	if _, completed := ended.End.(run.RunCompletedEnd); completed {
 		if v.Status != TurnActive {
-			return nil, fmt.Errorf("turn %s completed while %s", turnID, v.Status)
+			return nil, fmt.Errorf("turn %s completed while %s", p.TurnID, v.Status)
 		}
 		v.Status = TurnCompleted
 	} else if v.Status == TurnActive {
 		v.Status = TurnAttemptFailed
 	}
-	s.Turns[turnID] = v
+	s.Turns[p.TurnID] = v
 	return s, nil
 }
 

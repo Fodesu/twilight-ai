@@ -355,17 +355,21 @@ func testStopAndSettle(t *testing.T, factory Factory) {
 	}
 	group := h.group(session.CommitID(turn.CancelCommandID(sid, "t1", resp.RunID)))
 	var failed *turn.FailedPayload
-	sawEnded := false
+	sawEnded, attemptEndedAt, failedAt := false, -1, -1
 	for i := range group {
 		switch group[i].Type {
 		case turn.TypeFailed:
 			p := decode[turn.FailedPayload](t, h.registry, &group[i])
 			failed = &p
+			failedAt = i
+		case turn.TypeAttemptEnded:
+			attemptEndedAt = i
 		case typeEnded:
 			sawEnded = true
 		}
 	}
-	if !sawEnded || failed == nil || failed.Settlement != turn.SettlementStopped || failed.FailureClass != "cancelled" || failed.RunID != resp.RunID {
+	// The attacher's attempt_ended precedes the caller's failed (RUN-CMT-9).
+	if !sawEnded || attemptEndedAt < 0 || failedAt < attemptEndedAt || failed == nil || failed.Settlement != turn.SettlementStopped || failed.FailureClass != "cancelled" || failed.RunID != resp.RunID {
 		t.Fatalf("stop group = %v, failed=%+v", eventTypes(group), failed)
 	}
 	// A settled Turn admits nothing else (TRN-EVT-3).
@@ -413,14 +417,27 @@ func testStopAndSettle(t *testing.T, factory Factory) {
 		t.Fatalf("retry after settle = %v, want conflict", err)
 	}
 
-	// A completed Run settles the Turn through the run_ended of its own
-	// group; no turn event is written, and every Coordinator transition then
+	// A completed Run settles the Turn through its own group: run_ended on
+	// the run stream, then the attempt_ended AttemptEnder adds on the session
+	// stream (RUN-CMT-9, TRN-EVT-1); every Coordinator transition then
 	// conflicts.
 	resp = h.start("t3", "in-3")
 	res := h.complete(resp.RunID)
 	types := eventTypes(res.Events)
-	if types[len(types)-1] != runmod.Prefix+"run_ended" {
-		t.Fatalf("completion group = %v, want run_ended last and no turn event", types)
+	if len(types) < 2 || types[len(types)-2] != typeEnded || types[len(types)-1] != turn.TypeAttemptEnded {
+		t.Fatalf("completion group = %v, want run_ended then attempt_ended last", types)
+	}
+	for i := range res.Events {
+		if res.Events[i].Type != turn.TypeAttemptEnded {
+			continue
+		}
+		p := decode[turn.AttemptEndedPayload](t, h.registry, &res.Events[i])
+		if p.TurnID != "t3" || p.RunID != resp.RunID || p.Attempt != 1 {
+			t.Fatalf("attempt_ended = %+v", p)
+		}
+		if _, ok := p.End.End.(run.RunCompletedEnd); !ok {
+			t.Fatalf("attempt_ended end = %T", p.End.End)
+		}
 	}
 	st := h.status("t3")
 	if st.Status != turn.TurnCompleted || st.Disposition != turn.ResumeFinished || st.End == nil {
@@ -548,7 +565,7 @@ func testProjection(t *testing.T, factory Factory) {
 		t.Fatalf("end = %T", h.surface().Turns["t1"].Attempts[0].End.End)
 	}
 
-	// A completed Run settles the Turn from its own run_ended.
+	// A completed Run settles the Turn from the attempt_ended of its group.
 	resp2 := h.start("t2", "in-2")
 	h.complete(resp2.RunID)
 	if v := h.surface().Turns["t2"]; v.Status != turn.TurnCompleted || v.ActiveRun != "" {

@@ -158,6 +158,7 @@ func New(p Ports) (*Authority, error) {
 	runtime, err := runmod.NewRuntime(runmod.Config{
 		Registry: registry, Store: store,
 		Frozen: frozen, Bindings: bindings, Cache: cache, Now: now,
+		Attachers: []runmod.Attacher{turn.AttemptEnder{}},
 	})
 	if err != nil {
 		return nil, err

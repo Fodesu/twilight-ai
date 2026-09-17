@@ -1,7 +1,8 @@
 // Package turn is the first-party Turn module (docs/design/agent-turn.md):
 // the logical turn, its Run attempts, mid-turn input delivery and
-// settlement. Attempt outcomes are projected from the Run's own run_ended
-// fact; the module writes no derived copy of them.
+// settlement. An attempt's end is a Turn fact of its own, attempt_ended,
+// recorded on the session stream in the same commit as the Run's run_ended
+// (TRN-EVT-1, RUN-CMT-9): the surface folds the session stream only.
 package turn
 
 import (
@@ -13,7 +14,7 @@ import (
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
-	runmod "github.com/felinics/twilight/agent/session/run"
+	"github.com/felinics/twilight/agent/session/writer"
 )
 
 const ModuleID extension.ModuleID = "turn"
@@ -41,8 +42,7 @@ const (
 	SettlementStopped   Settlement = "stopped"
 )
 
-// EventTypes (TRN-EVT-1): the Turn domain's own decisions. An attempt's end
-// is not among them: the surface folds it from twilight/run/run_ended.
+// EventTypes (TRN-EVT-1): the Turn domain's facts.
 const (
 	TypeStarted    session.EventType = "twilight/turn/started"
 	TypeFailed     session.EventType = "twilight/turn/failed"
@@ -51,6 +51,10 @@ const (
 	// stream: the Turn's decision to run, carrying the identities the
 	// Coordinator needs without the machine projection (TRN-SCP-1).
 	TypeAttemptStarted session.EventType = "twilight/turn/attempt_started"
+	// TypeAttemptEnded records the end of one attempt on the session stream,
+	// in the same commit as the Run's run_ended (RUN-CMT-9). run_ended is the
+	// execution aggregate's fact; attempt_ended is the conversation's.
+	TypeAttemptEnded session.EventType = "twilight/turn/attempt_ended"
 )
 
 type StartedPayload struct {
@@ -65,6 +69,15 @@ type AttemptStartedPayload struct {
 	RunID         run.RunID `json:"runId"`
 	Attempt       uint32    `json:"attempt"`
 	SchemaVersion uint16    `json:"schemaVersion"`
+}
+
+// AttemptEndedPayload settles one attempt: the Run's terminal result as the
+// Turn records it. AttemptEnder writes it from the Run's facts.
+type AttemptEndedPayload struct {
+	TurnID  TurnID       `json:"turnId"`
+	RunID   run.RunID    `json:"runId"`
+	Attempt uint32       `json:"attempt"`
+	End     run.RunEnded `json:"end"`
 }
 
 type FailedPayload struct {
@@ -125,20 +138,23 @@ func def[T any](typ session.EventType, check func(*T) error) extension.EventDefi
 }
 
 // Module declares the turn events, the surface projection and the Requires of
-// TRN-SCP-1: run (run_ended v1, which settles attempts) and chatlog
-// (input_delivered v1).
+// TRN-SCP-1: chatlog (input_delivered v1). The surface reads no run-stream
+// event; the attempt's end reaches it as attempt_ended.
 var Module = extension.ModuleDescriptor{
 	Source: extension.SourceTwilight,
 	ID:     ModuleID,
 	Requires: []extension.ModuleRequirement{
-		{Source: extension.SourceTwilight, Module: runmod.ModuleID, Events: map[session.EventType][]extension.PayloadVersion{
-			runmod.Prefix + "run_ended": {1},
-		}},
 		{Source: extension.SourceTwilight, Module: chatlog.ModuleID, Events: map[session.EventType][]extension.PayloadVersion{
 			chatlog.TypeInputDelivered: {1},
 		}},
 	},
 	Events: []extension.EventDefinition{
+		def[AttemptEndedPayload](TypeAttemptEnded, func(p *AttemptEndedPayload) error {
+			if p.TurnID == "" || p.RunID == "" || p.Attempt == 0 || p.End.End == nil {
+				return errors.New("attempt_ended requires turnId, runId, attempt and end")
+			}
+			return nil
+		}),
 		def[StartedPayload](TypeStarted, func(p *StartedPayload) error {
 			if p.TurnID == "" || p.Preset.ID == "" || p.Preset.Digest == "" {
 				return errors.New("started requires turnId and preset")
@@ -165,4 +181,37 @@ var Module = extension.ModuleDescriptor{
 		}),
 	},
 	Projections: []extension.ProjectionDefinition{SurfaceProjection},
+}
+
+// AttemptEnder is the runmod.Attacher of this module (RUN-CMT-9): when a
+// commit records run_ended for a Run some Turn of the Session owns, it adds
+// attempt_ended for that attempt to the same group, from the Writer's view of
+// the surface. A Run no Turn owns adds nothing.
+type AttemptEnder struct{}
+
+func (AttemptEnder) Attach(view writer.View, runID run.RunID, facts []run.Fact) ([]run.ModuleEvent, error) {
+	var ended *run.RunEnded
+	for _, f := range facts {
+		if e, ok := f.(run.RunEnded); ok {
+			ended = &e
+		}
+	}
+	if ended == nil {
+		return nil, nil
+	}
+	state, err := view.Projection(SurfaceProjectionID, SurfaceProjection.Version)
+	if err != nil {
+		return nil, err
+	}
+	s := state.(TurnSurface)
+	turnID, ok := s.RunOwner[runID]
+	if !ok {
+		return nil, nil
+	}
+	for _, a := range s.Turns[turnID].Attempts {
+		if a.RunID == runID {
+			return []run.ModuleEvent{{Type: TypeAttemptEnded, Value: AttemptEndedPayload{TurnID: turnID, RunID: runID, Attempt: a.Attempt, End: *ended}}}, nil
+		}
+	}
+	return nil, fmt.Errorf("turn: run %s is owned by turn %s but has no attempt", runID, turnID)
 }

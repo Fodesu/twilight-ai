@@ -383,10 +383,11 @@ func testSettlementSnapshot(t *testing.T, factory Factory) {
 	if !run.StatesEquivalent(&rec.Snapshot.State, &res.Snapshot.State) || rec.Snapshot.Position != res.Snapshot.Position {
 		t.Fatalf("settlement snapshot %+v disagrees with record %+v", res.Snapshot, rec.Snapshot)
 	}
-	// The Turn settles from the Run's own run_ended: no turn event is written.
+	// The Turn settles in the same group: run_ended is the last run fact and
+	// the attempt_ended AttemptEnder adds follows it (RUN-CMT-9).
 	types := eventTypes(res.Events)
-	if types[len(types)-1] != runmod.Prefix+"run_ended" {
-		t.Fatalf("terminal group events = %v, want run_ended last", types)
+	if len(types) < 2 || types[len(types)-2] != runmod.Prefix+"run_ended" || types[len(types)-1] != turn.TypeAttemptEnded {
+		t.Fatalf("terminal group events = %v, want run_ended then attempt_ended", types)
 	}
 	if v := h.turnSurface().Turns["t1"]; v.Status != turn.TurnCompleted || v.Attempts[0].End == nil {
 		t.Fatalf("turn after run_ended = %+v, want completed", v)

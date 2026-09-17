@@ -13,6 +13,7 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 	samples := map[session.EventType]any{
 		TypeStarted:        StartedPayload{TurnID: "t1", InputIDs: nil, Preset: PresetRef{ID: "b", Digest: "sha256:b"}},
 		TypeAttemptStarted: AttemptStartedPayload{TurnID: "t1", RunID: "run-1", Attempt: 1, SchemaVersion: run.SchemaVersion1},
+		TypeAttemptEnded:   AttemptEndedPayload{TurnID: "t1", RunID: "run-1", Attempt: 1, End: run.RunEnded{End: run.RunFailedEnd{Reason: "provider", Failure: run.RunFailure{Class: "provider"}}}},
 		TypeFailed:         FailedPayload{TurnID: "t1", RunID: "run-1", Settlement: SettlementFailed, FailureClass: "provider"},
 		TypeSuperseded:     SupersededPayload{TurnID: "t1", ReplacementTurnID: "t2"},
 	}
