@@ -16,9 +16,9 @@ type headerDigestBody struct {
 	ProtocolVersion    uint16
 	SessionID          SessionID
 	CreatedAtUnixMilli int64
-	// ParentFork is omitted when nil, so a root Session's header digest is
+	// Parent is omitted when nil, so a root Session's header digest is
 	// the same with or without fork support (SES-WIR-2).
-	ParentFork  *ForkPoint `json:",omitempty"`
+	Parent      *LedgerRef `json:",omitempty"`
 	CausationID es.CausationID
 	Metadata    jsonstable.Value
 }

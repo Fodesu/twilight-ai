@@ -24,7 +24,7 @@ type CreateRequest struct {
 
 // ForkOrigin names the point a fork inherits: a Session and a CommitSeq of
 // its stitched history. The Ledger resolves it to the segment that
-// contributes that commit and records the edge as ForkPoint.
+// contributes that commit and records the edge as SessionHeader.Parent.
 type ForkOrigin struct {
 	Session SessionID
 	Seq     CommitSeq
@@ -41,7 +41,7 @@ type OpenOptions struct {
 // Head is the ledger head after the last commit: the next CommitSeq to
 // assign and that commit's Digest. A segment with no commits of its own has
 // head LedgerSeed(header): {0, HeaderDigest} for a root segment,
-// {ParentFork.Seq+1, ParentFork.Digest} for a child.
+// {Parent.Seq+1, Parent.Digest} for a child.
 type Head struct {
 	Next   CommitSeq
 	Digest es.Digest

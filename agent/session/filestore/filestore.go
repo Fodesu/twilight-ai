@@ -164,28 +164,6 @@ func (s *Store) loadSegment(id session.SegmentID, op string) (session.SessionHea
 	return h, dir, nil
 }
 
-func (s *Store) CreateSegment(ctx context.Context, seg session.Segment) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	dir := s.segmentDir(seg.ID)
-	if _, err := readHeader(dir); err == nil {
-		return &session.Error{Code: session.ErrConflict, Operation: "create", SessionID: seg.Header.SessionID, Detail: "segment exists"}
-	} else if !os.IsNotExist(err) {
-		return &session.Error{Code: session.ErrCorrupt, Operation: "create", SessionID: seg.Header.SessionID, Detail: err.Error()}
-	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	raw, err := json.Marshal(seg.Header)
-	if err != nil {
-		return err
-	}
-	return writeAtomic(filepath.Join(dir, headerFile), raw)
-}
-
 func (s *Store) Segment(ctx context.Context, id session.SegmentID) (session.Segment, error) {
 	if err := ctx.Err(); err != nil {
 		return session.Segment{}, err
@@ -470,7 +448,11 @@ func (s *Store) saveRoot(sid session.SessionID, rec ownerRecord) error {
 	return writeAtomic(s.rootPath(sid), raw)
 }
 
-func (s *Store) CreateRecord(ctx context.Context, rec session.SessionRecord) error {
+// CreateSession lands the node, then the root, under the store lock. The
+// root file is the last atomic write, so a crash in between leaves a segment
+// no root names: exactly what Collect reclaims (SES-GC-2). There is never a
+// root without its segment.
+func (s *Store) CreateSession(ctx context.Context, seg session.Segment, rec session.SessionRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -480,6 +462,21 @@ func (s *Store) CreateRecord(ctx context.Context, rec session.SessionRecord) err
 		return kerr(session.ErrConflict, "create", rec.ID, "session exists")
 	} else if !os.IsNotExist(err) {
 		return kerr(session.ErrCorrupt, "create", rec.ID, err.Error())
+	}
+	dir := s.segmentDir(seg.ID)
+	if _, err := readHeader(dir); os.IsNotExist(err) {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+		raw, err := json.Marshal(seg.Header)
+		if err != nil {
+			return err
+		}
+		if err := writeAtomic(filepath.Join(dir, headerFile), raw); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return &session.Error{Code: session.ErrCorrupt, Operation: "create", SessionID: seg.Header.SessionID, Detail: err.Error()}
 	}
 	return s.saveRoot(rec.ID, ownerRecord{SessionRecord: rec})
 }

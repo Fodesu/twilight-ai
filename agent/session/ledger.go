@@ -8,13 +8,20 @@ import (
 
 // Ledger is the kernel's Store over a Backend (SES 4 to 6, 8, 9): the
 // Session lineage DAG in code. Roots (SessionRecord) name the segment they
-// append to; segments (Segment) chain to their parents through ForkPoint
+// append to; segments (Segment) chain to their parents through LedgerRef
 // edges; a Session's history is the stitched Ancestry of its segment. Fork
 // adds a node and an edge; Delete drops a root; Collect reclaims what no
 // root reaches. Every adapter gets these semantics from here and implements
 // none of them.
 type Ledger struct {
 	be Backend
+	// graph serializes the operations that change the set of roots and
+	// nodes (Create, Delete, Collect) against each other (SES-GC-4): a
+	// Create's check that its parent is live, and its write, cannot
+	// interleave with a Collect that would reclaim that parent or the new
+	// node. Append and reads never take it; a live root's segments are never
+	// touched by Collect.
+	graph sync.Mutex
 }
 
 // NewLedger returns the Store over be.
@@ -39,6 +46,8 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SessionHeader, 
 	if err := ctx.Err(); err != nil {
 		return SessionHeader{}, err
 	}
+	l.graph.Lock()
+	defer l.graph.Unlock()
 	profile, err := LedgerProfileFor(req.ProtocolVersion)
 	if err != nil {
 		return SessionHeader{}, &Error{Code: ErrUnsupportedProfile, Operation: "create", SessionID: req.SessionID}
@@ -73,7 +82,7 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SessionHeader, 
 		if len(commits) != 1 || commits[0].Seq != req.Fork.Seq {
 			return SessionHeader{}, newError(ErrInvalid, "create", req.SessionID, fmt.Sprintf("parent %s has no commit %d", req.Fork.Session, req.Fork.Seq))
 		}
-		header.ParentFork = &ForkPoint{Parent: owner.Segment.ID, Seq: req.Fork.Seq, Digest: commits[0].Digest}
+		header.Parent = &LedgerRef{Segment: owner.Segment.ID, Seq: req.Fork.Seq, Digest: commits[0].Digest}
 	}
 	digest, err := profile.HeaderDigest(header)
 	if err != nil {
@@ -93,16 +102,7 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SessionHeader, 
 	} else if !IsCode(err, ErrNotFound) {
 		return SessionHeader{}, err
 	}
-	if err := l.be.CreateSegment(ctx, segment); err != nil && !IsCode(err, ErrConflict) {
-		return SessionHeader{}, err
-	}
-	if err := l.be.CreateRecord(ctx, SessionRecord{ID: req.SessionID, Segment: segment.ID}); err != nil {
-		if IsCode(err, ErrConflict) {
-			// A concurrent creator won; answer as the idempotent path would.
-			if existing, rerr := l.be.Record(ctx, req.SessionID); rerr == nil && existing.Segment == segment.ID {
-				return header, nil
-			}
-		}
+	if err := l.be.CreateSession(ctx, segment, SessionRecord{ID: req.SessionID, Segment: segment.ID}); err != nil {
 		return SessionHeader{}, err
 	}
 	return header, nil
@@ -337,6 +337,8 @@ func (l *Ledger) Delete(ctx context.Context, sid SessionID) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	l.graph.Lock()
+	defer l.graph.Unlock()
 	return l.be.DeleteRecord(ctx, sid)
 }
 
@@ -344,6 +346,8 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 	if err := ctx.Err(); err != nil {
 		return CollectReport{}, err
 	}
+	l.graph.Lock()
+	defer l.graph.Unlock()
 	ids, err := l.be.ListSegments(ctx)
 	if err != nil {
 		return CollectReport{}, err

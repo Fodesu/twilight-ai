@@ -166,7 +166,7 @@ type commitDigestBody struct {
 }
 
 func (p profileV1) HeaderDigest(h SessionHeader) (es.Digest, error) {
-	return digestDomain(p.version, "twilight/session/header", headerDigestBody{h.ProtocolVersion, h.SessionID, h.CreatedAtUnixMilli, h.ParentFork, h.CausationID, h.Metadata})
+	return digestDomain(p.version, "twilight/session/header", headerDigestBody{h.ProtocolVersion, h.SessionID, h.CreatedAtUnixMilli, h.Parent, h.CausationID, h.Metadata})
 }
 
 func (p profileV1) BatchDigest(sid SessionID, batch StreamBatch) (es.Digest, error) {
@@ -189,7 +189,7 @@ func (p profileV1) ValidateHeader(h SessionHeader) error {
 	if err := validIdentity("SessionID", string(h.SessionID)); err != nil {
 		return newError(ErrInvalid, "header", h.SessionID, err.Error())
 	}
-	if err := ValidateForkPoint(h.ParentFork); err != nil {
+	if err := ValidateEdge(h.Parent); err != nil {
 		return newError(ErrInvalid, "header", h.SessionID, err.Error())
 	}
 	want, err := p.HeaderDigest(h)
@@ -230,18 +230,18 @@ func SealCommit(p LedgerProfile, prev es.Digest, sid SessionID, c *Commit) error
 	return nil
 }
 
-// ValidateForkPoint checks the shape of an edge: nil is a root segment;
+// ValidateEdge checks the shape of a parent edge: nil is a root segment;
 // otherwise it names a parent segment and a commit digest. Whether the
 // parent holds that commit is the Ledger's check at Create (SES-FRK-1).
-func ValidateForkPoint(fork *ForkPoint) error {
-	if fork == nil {
+func ValidateEdge(edge *LedgerRef) error {
+	if edge == nil {
 		return nil
 	}
-	if err := validIdentity("Parent", string(fork.Parent)); err != nil {
+	if err := validIdentity("Parent.Segment", string(edge.Segment)); err != nil {
 		return err
 	}
-	if fork.Digest == "" {
-		return fmt.Errorf("fork point has no digest")
+	if edge.Digest == "" {
+		return fmt.Errorf("parent edge has no digest")
 	}
 	return nil
 }
@@ -249,11 +249,11 @@ func ValidateForkPoint(fork *ForkPoint) error {
 // LedgerSeed is the head of a segment that holds no commits of its own: the
 // chain start every own commit is sealed from (SES-FRK-2). A root segment
 // seeds at {0, HeaderDigest}; a child continues the parent's chain at
-// {ParentFork.Seq+1, ParentFork.Digest}, so its own commits are verifiable
+// {Parent.Seq+1, Parent.Digest}, so its own commits are verifiable
 // from the edge alone while their digests cover the creating SessionID.
 func LedgerSeed(h SessionHeader) Head {
-	if h.ParentFork != nil {
-		return Head{Next: h.ParentFork.Seq + 1, Digest: h.ParentFork.Digest}
+	if h.Parent != nil {
+		return Head{Next: h.Parent.Seq + 1, Digest: h.Parent.Digest}
 	}
 	return Head{Next: 0, Digest: h.HeaderDigest}
 }

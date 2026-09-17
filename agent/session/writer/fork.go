@@ -27,13 +27,13 @@ type ForkRequest struct {
 
 // ForkOwner is the ClaimOwner of a fork's prefix claim: the child Session
 // and the edge it was created with.
-func ForkOwner(child session.SessionID, fork session.ForkPoint) artifact.ClaimOwner {
-	return artifact.ClaimOwner{Kind: ForkOwnerKind, Authority: string(child), Identity: fmt.Sprintf("%s@%d", fork.Parent, fork.Seq)}
+func ForkOwner(child session.SessionID, edge session.LedgerRef) artifact.ClaimOwner {
+	return artifact.ClaimOwner{Kind: ForkOwnerKind, Authority: string(child), Identity: fmt.Sprintf("%s@%d", edge.Segment, edge.Seq)}
 }
 
 // forkClaimCommitID names the fork claim in DeriveClaimID's CommitID slot.
-func forkClaimCommitID(fork session.ForkPoint) session.CommitID {
-	return session.CommitID(fmt.Sprintf("fork:%s@%d", fork.Parent, fork.Seq))
+func forkClaimCommitID(edge session.LedgerRef) session.CommitID {
+	return session.CommitID(fmt.Sprintf("fork:%s@%d", edge.Segment, edge.Seq))
 }
 
 // Fork creates req.Child from req.Parent's history at commit req.At
@@ -55,7 +55,7 @@ func Fork(ctx context.Context, store session.Store, registry *extension.Registry
 	if err != nil {
 		return session.SessionHeader{}, err
 	}
-	fork := *header.ParentFork
+	fork := *header.Parent
 	if admission.Ledger == nil {
 		return header, nil
 	}
@@ -95,7 +95,7 @@ func Fork(ctx context.Context, store session.Store, registry *extension.Registry
 // fork's inherited prefix reference, through the extractors their event
 // definitions declare. Events the registry cannot decode carry no known
 // references and are skipped.
-func prefixBindings(ctx context.Context, store session.Store, registry *extension.Registry, child session.SessionID, fork session.ForkPoint) ([]artifact.BindingID, error) {
+func prefixBindings(ctx context.Context, store session.Store, registry *extension.Registry, child session.SessionID, fork session.LedgerRef) ([]artifact.BindingID, error) {
 	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: child, Limit: uint32(fork.Seq) + 1})
 	if err != nil {
 		return nil, err

@@ -60,7 +60,7 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 		t.Fatal(err)
 	}
 	parentHeader, _ := h.Store.Header(ctx, "parent")
-	if header.ParentFork == nil || header.ParentFork.Parent != session.SegmentIDOf(parentHeader) {
+	if header.Parent == nil || header.Parent.Segment != session.SegmentIDOf(parentHeader) {
 		t.Fatalf("fork header = %+v, want an edge to the parent's segment", header)
 	}
 	regen := open("regen", "r")
@@ -125,7 +125,7 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 	}
 	for _, sid := range []session.SessionID{"regen", "edit"} {
 		page, _ := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
-		if len(page.Commits) <= int(header.ParentFork.Seq)+1 || page.Commits[header.ParentFork.Seq+1].PrevDigest != header.ParentFork.Digest {
+		if len(page.Commits) <= int(header.Parent.Seq)+1 || page.Commits[header.Parent.Seq+1].PrevDigest != header.Parent.Digest {
 			t.Fatalf("%s does not continue from the anchor", sid)
 		}
 	}

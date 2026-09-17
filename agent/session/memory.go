@@ -120,19 +120,6 @@ func (s *memorySegment) rebuildIndex() {
 
 // --- LedgerStore -----------------------------------------------------------------
 
-func (m *memoryBackend) CreateSegment(ctx context.Context, seg Segment) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if _, exists := m.segments[seg.ID]; exists {
-		return &Error{Code: ErrConflict, Operation: "create", SessionID: seg.Header.SessionID, Detail: "segment exists"}
-	}
-	m.segments[seg.ID] = &memorySegment{header: seg.Header, byCommit: make(map[CommitID]int)}
-	return nil
-}
-
 func (m *memoryBackend) Segment(ctx context.Context, id SegmentID) (Segment, error) {
 	if err := ctx.Err(); err != nil {
 		return Segment{}, err
@@ -285,9 +272,10 @@ func (m *memoryBackend) RemoveSegment(ctx context.Context, id SegmentID) error {
 	return nil
 }
 
-// --- SessionStore ----------------------------------------------------------------
+// --- Backend ---------------------------------------------------------------------
 
-func (m *memoryBackend) CreateRecord(ctx context.Context, rec SessionRecord) error {
+// CreateSession lands the node and the root under one lock (SES-FRK-1).
+func (m *memoryBackend) CreateSession(ctx context.Context, seg Segment, rec SessionRecord) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -296,9 +284,14 @@ func (m *memoryBackend) CreateRecord(ctx context.Context, rec SessionRecord) err
 	if _, exists := m.roots[rec.ID]; exists {
 		return newError(ErrConflict, "create", rec.ID, "session exists")
 	}
+	if _, exists := m.segments[seg.ID]; !exists {
+		m.segments[seg.ID] = &memorySegment{header: seg.Header, byCommit: make(map[CommitID]int)}
+	}
 	m.roots[rec.ID] = &memoryRoot{record: rec}
 	return nil
 }
+
+// --- SessionStore ----------------------------------------------------------------
 
 func (m *memoryBackend) Record(ctx context.Context, sid SessionID) (SessionRecord, error) {
 	if err := ctx.Err(); err != nil {

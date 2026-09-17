@@ -19,7 +19,12 @@ import (
 type SegmentID string
 
 // LedgerRef names one position in the DAG: a commit of a segment, by its
-// place in the stitched sequence and by its digest.
+// place in the stitched sequence and by its digest. As SessionHeader.Parent
+// it is the edge from a child segment to the last commit it inherits: the
+// child's own commits are numbered from Seq+1 and chained from Digest, and
+// readers see the prefix [0, Seq] followed by them. The prefix is immutable,
+// so the edge is a stable reference, and it is covered by the child's header
+// digest.
 type LedgerRef struct {
 	Segment SegmentID `json:"segment"`
 	Seq     CommitSeq `json:"seq"`
@@ -27,7 +32,7 @@ type LedgerRef struct {
 }
 
 // Segment is a node: an immutable creation record whose commits chain from
-// LedgerSeed(Header). Header.ParentFork is the edge to the parent segment; a
+// LedgerSeed(Header). Header.Parent is the edge to the parent segment; a
 // root segment has none. The record doubles as the SessionHeader readers see
 // for the Session that created the segment.
 type Segment struct {
@@ -40,11 +45,11 @@ func SegmentIDOf(h SessionHeader) SegmentID { return SegmentID(h.HeaderDigest) }
 
 // Parent returns the edge to the parent segment, or nil for a root.
 func (s Segment) Parent() *LedgerRef {
-	f := s.Header.ParentFork
-	if f == nil {
+	if s.Header.Parent == nil {
 		return nil
 	}
-	return &LedgerRef{Segment: f.Parent, Seq: f.Seq, Digest: f.Digest}
+	edge := *s.Header.Parent
+	return &edge
 }
 
 // Seed is the head of the segment while it holds no commits of its own.
@@ -68,8 +73,6 @@ type Lease struct {
 // LedgerStore is the adapter port for nodes: independent, append-only
 // segments. It knows nothing of Sessions, forks or reachability.
 type LedgerStore interface {
-	// CreateSegment persists a node; ErrConflict when its ID exists.
-	CreateSegment(context.Context, Segment) error
 	// Segment returns a node; ErrNotFound when absent.
 	Segment(context.Context, SegmentID) (Segment, error)
 	// ListSegments returns every node.
@@ -95,8 +98,6 @@ type LedgerStore interface {
 // SessionStore is the adapter port for roots: Session records and their
 // writer ownership.
 type SessionStore interface {
-	// CreateRecord persists a root; ErrConflict when the SessionID exists.
-	CreateRecord(context.Context, SessionRecord) error
 	// Record returns a root; ErrNotFound when absent.
 	Record(context.Context, SessionID) (SessionRecord, error)
 	// ListRecords returns every root.
@@ -112,10 +113,17 @@ type SessionStore interface {
 }
 
 // Backend is what an adapter implements: both ports, sharing one
-// consistency domain so Append can check a Lease atomically.
+// consistency domain so Append can check a Lease atomically, plus the one
+// write that spans them.
 type Backend interface {
 	LedgerStore
 	SessionStore
+	// CreateSession persists a node and the root that names it as one
+	// durable step (SES-FRK-1): never a root without its segment, never a
+	// segment a Collect could see without its root. The segment may already
+	// exist (another root created it with the same record); the root must
+	// not: ErrConflict when the SessionID exists.
+	CreateSession(context.Context, Segment, SessionRecord) error
 }
 
 // Ancestry is the explicit path of a Session through the DAG: its segments
@@ -208,7 +216,8 @@ func (a *Ancestry) Read(ctx context.Context, store LedgerStore, from CommitSeq, 
 		if limit > 0 {
 			remaining := int(limit) - len(out)
 			if remaining <= 0 {
-				return out, a.tipHead(ctx, store), true, nil
+				head, err := a.tipHead(ctx, store)
+				return out, head, true, err
 			}
 			want = uint32(remaining)
 			if i < tip && CommitSeq(want) > s.Through-start+1 {
@@ -236,18 +245,17 @@ func (a *Ancestry) Read(ctx context.Context, store LedgerStore, from CommitSeq, 
 			// Anything after the last returned commit exists by construction:
 			// either the rest of this segment's range or the segments below.
 			last := out[len(out)-1].Seq
-			return out, a.tipHead(ctx, store), last < s.Through || i < tip, nil
+			head, err := a.tipHead(ctx, store)
+			return out, head, last < s.Through || i < tip, err
 		}
 	}
 	return out, head, false, nil
 }
 
-func (a *Ancestry) tipHead(ctx context.Context, store LedgerStore) Head {
+// tipHead reads the tip's head without reading commits.
+func (a *Ancestry) tipHead(ctx context.Context, store LedgerStore) (Head, error) {
 	_, head, _, err := store.ReadSegment(ctx, a.Tip().ID, ^CommitSeq(0), 1)
-	if err != nil {
-		return a.Tip().Seed()
-	}
-	return head
+	return head, err
 }
 
 // Contains reports whether id is a commit of the Ancestry: one of the tip's

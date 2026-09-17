@@ -56,8 +56,8 @@ func testFork(t *testing.T, f Fixture) {
 	}
 	// The edge names the parent's segment, not the parent Session, and
 	// carries the anchor commit's digest.
-	wantEdge := session.ForkPoint{Parent: session.SegmentIDOf(parent), Seq: c1.Seq, Digest: c1.Digest}
-	if child.ParentFork == nil || *child.ParentFork != wantEdge || child.HeaderDigest == parent.HeaderDigest {
+	wantEdge := session.LedgerRef{Segment: session.SegmentIDOf(parent), Seq: c1.Seq, Digest: c1.Digest}
+	if child.Parent == nil || *child.Parent != wantEdge || child.HeaderDigest == parent.HeaderDigest {
 		t.Fatalf("child header = %+v, want edge %+v", child, wantEdge)
 	}
 	// Idempotent repeat; a different origin for the same SessionID conflicts.
@@ -171,8 +171,8 @@ func testFork(t *testing.T, f Fixture) {
 	if err != nil {
 		t.Fatalf("fork of fork: %v", err)
 	}
-	if grand.ParentFork.Parent != session.SegmentIDOf(child) {
-		t.Fatalf("grandchild edge = %+v, want the child's segment", grand.ParentFork)
+	if grand.Parent.Segment != session.SegmentIDOf(child) {
+		t.Fatalf("grandchild edge = %+v, want the child's segment", grand.Parent)
 	}
 	gw := open(t, store, "grandchild", false)
 	c5 := appendCommit(t, gw, "c5", batch(sessionStream(), "twilight/x/a", `{"n":5}`))
@@ -191,8 +191,8 @@ func testFork(t *testing.T, f Fixture) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if flat.ParentFork.Parent != session.SegmentIDOf(parent) {
-		t.Fatalf("fork at an inherited commit edge = %+v, want the root segment", flat.ParentFork)
+	if flat.Parent.Segment != session.SegmentIDOf(parent) {
+		t.Fatalf("fork at an inherited commit edge = %+v, want the root segment", flat.Parent)
 	}
 	_ = pw.Close(ctx)
 }

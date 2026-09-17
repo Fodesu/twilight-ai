@@ -42,7 +42,7 @@ func TestForkWriterInheritsPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if header.ParentFork == nil || header.ParentFork.Seq != 1 {
+	if header.Parent == nil || header.Parent.Seq != 1 {
 		t.Fatalf("header = %+v", header)
 	}
 	// The fork claim covers b1 under the fork owner and is idempotent.
