@@ -208,5 +208,5 @@ func (tool) ValidateArguments(args run.CanonicalJSON) error {
 
 func (t tool) Execute(context.Context, loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	return loop.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureExecution,
-		Message: fmt.Sprintf("%s executes on the authority through host.Ports.Spawn", t.ref)}}
+		Message: fmt.Sprintf("%s executes on the authority through the spawn effect (app.Config.Spawn)", t.ref)}}
 }

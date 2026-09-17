@@ -302,7 +302,7 @@ v1 conformance 必须验证：
 
 ## 8. Application module
 
-Application 在自己的代码里定义 `ModuleDescriptor`（自有 Source 下的事件类型、codec、投影），经装配开口（宿主层为 `host.Ports.Modules`）与 first-party 模块一起传入 `BuildRegistry`。app module 与 first-party 模块同构、同权：同一 Registry、同一 `Writer.Commit` 提交路径、同一投影框架。
+Application 在自己的代码里定义 `ModuleDescriptor`（自有 Source 下的事件类型、codec、投影），经装配开口（`authority.Ports.Modules`，经 `app.Config.Modules` 传入）与 first-party 模块一起传入 `BuildRegistry`。app module 与 first-party 模块同构、同权：同一 Registry、同一 `Writer.Commit` 提交路径、同一投影框架。
 
 **EXT-APP-1（承诺面）** app module 的 `Requires` 可依赖 first-party 模块的事件；三个 first-party 模块各事件的当前 payload 版本即稳定消费面。first-party 推进 `Current` 时，未声明新版本的 app module 在 `BuildRegistry` 即失败（EXT-REG-4 的握手校验），不会在运行期静默错读。
 
