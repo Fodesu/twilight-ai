@@ -77,7 +77,7 @@ func NewPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...PresetOp
 
 ## 4. 驱动
 
-**HST-DRV-1** `Host.Drive(ctx, ref)`：读 `twilight/turn/surface`，Turn 为 `active` 时解析其 AgentPreset、取该 AgentPreset 的 Loop、驱动 `ActiveRun` 到下一个静止点（阻塞式 `Loop.Run`，即 Advance/Deliver 之上的封装，RUN-LOP），随后（或 Turn 非 active 时直接）调用 `Coordinator.Status` 组装响应（TRN-STA-1）。Loop 报告同一 Run 已有本地驱动者时，Drive 转为成功响应并置 `ResumeAlreadyDriving`：提交的输入由运行中的驱动者继续推进，调用方不经错误通道分辨这一情形。驱动受调用方 ctx 约束：取消是宿主决定，被取消的驱动使 Turn 保持 `active`，下次 Open 后再驱动即恢复。
+**HST-DRV-1** `Host.Drive(ctx, ref)`：读 `twilight/turn/surface`，Turn 为 `active` 时解析其 AgentPreset、取该 AgentPreset 的 Loop、驱动 `ActiveRun` 到下一个静止点（阻塞式 `Loop.Run`，即 Advance/Deliver 之上的封装，RUN-LOP），随后（或 Turn 非 active 时直接）调用 `Coordinator.Status` 组装响应（TRN-STA-1）。实现位于 `agent/orchestration.Driver`，`Host.Drive` 与其 Open/recovery 生命周期都委托它；子代理驱动复用同一个 Driver。Loop 报告同一 Run 已有本地驱动者时，Drive 转为成功响应并置 `ResumeAlreadyDriving`：提交的输入由运行中的驱动者继续推进，调用方不经错误通道分辨这一情形。驱动受调用方 ctx 约束：取消是宿主决定，被取消的驱动使 Turn 保持 `active`，下次 Open 后再驱动即恢复。
 
 **HST-DRV-2** Loop 按 PresetRef 组合并缓存：`Decisions.Resolve(preset)` 得到 prompt builder，与 preset 上的 Scheduling、MalformedRetries 及共享的 Executor 一起构成 `loop.New(executor, builder, loop.Settings{Scheduling, MalformedRetries})`。一个 Run 属于一个 Turn、一个 Turn 只有一个 AgentPreset，因此同一 Run 的全部驱动落在同一个 Loop 上，Loop 的 already-driving 守卫成立（RUN-CMT-6）。
 
@@ -85,7 +85,7 @@ func NewPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...PresetOp
 
 **HST-DRV-4** `Session.Drain(ctx)`：读 chatlog surface，若存在 `submitted` 且未 delivered 的输入，按 stream 顺序取全部，经 Route 开新 Turn；否则返回 false。已提交而未投递的输入就是 inbox 的 next-turn 列表，不需要另一份持久结构。
 
-**HST-DRV-5** 崩溃恢复：`Host.Open(sid)` 经 `Writers` 取得 Writer，随后调用 `Runtime.RecoverInterrupted(sid, reattach)`（RUN-CMT-7），其中 `reattach = loop.Reattach(lifetime, executor, sid, deliver)`。Attach 握手受 Open 请求的 context 约束；后台 Outcome 读取与交付使用该 Session 的 recovery lifetime。Open 返回后请求取消仍允许恢复继续；再次 Open 会替换旧监听，`Session.Close` 与 `Host.Close` 取消各自拥有的监听。
+**HST-DRV-5** `Host.Open(sid)` 委托 `orchestration.Driver.Open`：经 `Writers` 取得 Writer，随后调用 `Runtime.RecoverInterrupted(sid, reattach)`（RUN-CMT-7），其中 `reattach = loop.Reattach(lifetime, executor, sid, deliver)`。Attach 握手受 Open 请求的 context 约束；后台 Outcome 读取与交付使用该 Session 的 recovery lifetime。Open 返回后请求取消仍允许恢复继续；再次 Open 会替换旧监听，`Session.Close` 与 `Host.Close` 取消各自拥有的监听。
 
 Attach 的 `active` / `terminal` 保留 Executing 并等待实际 Outcome；`orphaned` 表示 Executor 找到 durable record 但无法关联 live backend，映射为 recovery 层的 `deferred`，必须保留 Executing 供 control plane reconcile/takeover；`missing` 才进入接管处置。这里的 `orphaned` 是 Executor 观察状态，不等同于 artifact claim 的 orphan，也不等同于 API 的 `recovery_required`。进程内 Executor 重启后旧记录为 `missing`，持久 Executor 按其 Execution Store 返回状态。`deliver` 按 Outcome 的 RunID 查找 Turn，使用其 preset 的 Loop 结算并继续驱动；后台失败经 `Ports.Warn` 上报。
 
@@ -138,7 +138,7 @@ func (s *Session) Close(ctx) error
 
 ## 5.1 子代理
 
-**HST-SPN-1** 子代理是一个由 ToolCall 启动的普通 Session。模型调用 spawn 工具（默认 `agent_spawn`，经 `Ports.Spawn` 配置 Tool、命名 Preset 解析与最大深度）；Host 在 Executor 之前拦截该工具的 Assignment 并亲自驱动其子 Session。工具定义、参数与结果形状、派生身份、定义摘要核对、深度与重放冲突判定在 `agent/spawn` 协议包；创建、驱动、结算与端口编排在 host 的 spawnExecutor（实现 `effect.Port` 与 `effect.BindingPort`）。Run 事实本体不新增子代理生命周期：父只看到一个以子代理回复完成的工具调用。
+**HST-SPN-1** 子代理是一个由 ToolCall 启动的普通 Session。模型调用 spawn 工具（默认 `agent_spawn`，经 `Ports.Spawn` 配置 Tool、命名 Preset 解析与最大深度）；Host 在 Executor 之前拦截该工具的 Assignment 并交给 spawn effect 驱动其子 Session。工具定义、参数与结果形状、派生身份、定义摘要核对、深度与重放冲突判定在 `agent/spawn` 协议包；创建、驱动、结算与端口编排在 `agent/orchestration` 的 SpawnExecutor（实现 `effect.Port` 与 `effect.BindingPort`），其环境依赖经 SpawnPorts 窄端口注入（Store、Registry、Admission、History、Surfaces、Chatlog、Coordinator、Driver、Writers、Content、时钟与 ID 铸造），不依赖 Host。Run 事实本体不新增子代理生命周期：父只看到一个以子代理回复完成的工具调用。
 
 **HST-SPN-2** 调用到子 Session 的绑定是派生的，不单独存储：`ChildSessionID = spawn.ChildID(parent, runID, callID)`（preimage `twilight/spawn/child`）；子段创建元数据在 `twilight/spawn` 键下记录完整 provenance（父 Session、父 Run、CallID、深度、全量参数），接管方据此在崩溃后重建同一调用。同一 CallID 以不同参数重放在 Validate 与 drive 两侧都被拒绝（RUN-EXE-3）。经持久 Worker 部署时 `PrepareBinding` 返回 `ExecutionBinding{Provider: twilight/session, ExecutionRef: child}`，由 execution store 随调用记录持久化。
 
@@ -146,7 +146,7 @@ func (s *Session) Close(ctx) error
 
 **HST-SPN-4** 崩溃接管沿既有 RUN-CMT-7 Attach 路径：新进程对 Executing 的 spawn 调用执行 Attach 时，本地无记录则以派生 ChildID 查 `SessionStore.Record`——子存在即收养（参数取子 provenance）继续同一调用，不存在交回内层 Executor。`Host.Close` 取消本进程的全部 drive，子的 Turn 保持 active 等待收养。
 
-**HST-SPN-5** 模式 `spawn`（默认）从空 Session 起；`fork` 以 `turnPrefixCommit` 为根，即父在调用 Turn 及其输入之前的全部历史，子拿到的是当前 Turn 开始之前的对话。驱动依子的持久状态推进：无输入则 `Send(task)`；有 active Turn 则 `Resume`；有 submitted 输入则 `Drain` 投递；否则比较最新输入与 task——相同则读取已结算结果，不同则补 `Send(task)`（fork 子的前缀只含已交付对话的情形）。子 Turn 非 `completed` 时调用失败。
+**HST-SPN-5** 模式 `spawn`（默认）从空 Session 起；`fork` 以 `turn.History.PrefixCommit` 为根，即父在调用 Turn 及其输入之前的全部历史，子拿到的是当前 Turn 开始之前的对话。驱动依子的持久状态推进：无输入则提交 task 并驱动至结算；有 active Turn 则驱动至结算；有 submitted 输入则开新 Turn 投递积压；否则比较最新输入与 task——相同则读取已结算结果，不同则补提交 task（fork 子的前缀只含已交付对话的情形）。提交、路由（Deliver/Start、冲突重试、already_driving 吸收判定）、驱动与积压排空复用 orchestration.Driver 与 chatlog.Service 直接完成，不经 Session 门面。子 Turn 非 `completed` 时调用失败。
 
 **HST-EVT-1** `Host.Events(ctx, sid)` 是该 Session 从订阅时刻起的事件流：Host 以 `writer.CommitObserver` 接在自己的 `Writers` 上（EXT-WRT-7），每个已应用组的每一行经 Registry 解码为 `Event{Row, Module, Version, Value, Unknown}`，按提交顺序交付；无 codec 的类型或版本以 `Unknown` 交付原行。订阅者之间互不阻塞，慢读者只延迟自己的交付，从不阻塞 Commit。历史不在此流上：从 Store 或投影读取。UI、SSE 与 CLI 的观察都从这一个源头派生，Loop 的 `EventSink` 只保留给 executor 侧的流式增量。
 
@@ -168,7 +168,7 @@ content     = runmod.NewContent(frozen)                          // materializer
 writers     = writer.NewWriters(..., {Cache, CachePolicy, Observers: [eventBus, Ports.Observers...]})
 runtime     = runmod.NewRuntime{Writers, registry, Store, Frozen: frozen, Bindings: Artifacts.Bindings, Cache, Clock}
 coordinator = turn.Coordinator{Writers, runtime}                 // 纯协议：提交 + Status
-spawn      = Ports.Spawn != nil → Executor 外包一层 spawnExecutor（HST-SPN-1）
+spawn      = Ports.Spawn != nil → Executor 外包一层 orchestration.SpawnExecutor（HST-SPN-1，SpawnPorts 注入，子经同一 Driver 驱动）
 loops       = PresetRef → loop.New(Executor, builder, Settings{preset.Scheduling, preset.MalformedRetries})   // 首次 Drive 时组合
 ```
 
