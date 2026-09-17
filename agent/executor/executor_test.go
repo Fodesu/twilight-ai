@@ -2,7 +2,6 @@ package executor_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -31,58 +30,6 @@ type testBackend struct {
 
 func newTestBackend() *testBackend {
 	return &testBackend{outcomes: make(map[effect.AssignmentKey]chan effect.Outcome)}
-}
-
-type bindingBackend struct {
-	*testBackend
-	mu       sync.Mutex
-	prepared int
-	bound    int
-}
-
-func (b *bindingBackend) PrepareBinding(context.Context, effect.Assignment) (effect.ExecutionBinding, error) {
-	b.mu.Lock()
-	b.prepared++
-	b.mu.Unlock()
-	return effect.ExecutionBinding{Provider: "test", ExecutionRef: "execution-1"}, nil
-}
-
-func (b *bindingBackend) DispatchBound(ctx context.Context, a effect.Assignment, binding effect.ExecutionBinding) error {
-	if binding.ExecutionRef == "" {
-		return errors.New("missing execution binding")
-	}
-	b.mu.Lock()
-	b.bound++
-	b.mu.Unlock()
-	return b.testBackend.Dispatch(ctx, a)
-}
-
-func (b *bindingBackend) AttachBound(ctx context.Context, key effect.AssignmentKey, binding effect.ExecutionBinding) (effect.Attachment, error) {
-	if binding.ExecutionRef == "" {
-		return effect.Attachment{}, errors.New("missing execution binding")
-	}
-	return b.testBackend.Attach(ctx, key)
-}
-
-func (b *bindingBackend) GetStatusBound(ctx context.Context, key effect.AssignmentKey, binding effect.ExecutionBinding) (effect.ExecutionStatus, error) {
-	if binding.ExecutionRef == "" {
-		return effect.ExecutionNotFound, errors.New("missing execution binding")
-	}
-	return b.testBackend.GetStatus(ctx, key)
-}
-
-func (b *bindingBackend) GetOutcomeBound(ctx context.Context, key effect.AssignmentKey, binding effect.ExecutionBinding) (effect.Outcome, error) {
-	if binding.ExecutionRef == "" {
-		return effect.Outcome{}, errors.New("missing execution binding")
-	}
-	return b.testBackend.GetOutcome(ctx, key)
-}
-
-func (b *bindingBackend) CancelBound(ctx context.Context, key effect.AssignmentKey, binding effect.ExecutionBinding) error {
-	if binding.ExecutionRef == "" {
-		return errors.New("missing execution binding")
-	}
-	return b.testBackend.Cancel(ctx, key)
 }
 
 func (b *testBackend) Validate(context.Context, effect.Assignment) (*run.ToolFailure, error) {
@@ -132,6 +79,61 @@ func (b *testBackend) GetOutcome(ctx context.Context, key effect.AssignmentKey) 
 }
 func (b *testBackend) Cancel(context.Context, effect.AssignmentKey) error { return nil }
 
+// routes serves every Assignment from one Port-shaped fake under the "test"
+// provider.
+func routes(p effect.Port) []executor.Route {
+	return []executor.Route{executor.Default("test", executor.PortBackend(p))}
+}
+
+// refBackend implements the Backend contract directly and counts its
+// lifecycle calls; the Ref it prepares is fixed.
+type refBackend struct {
+	*testBackend
+	mu       sync.Mutex
+	prepared int
+	started  int
+	startRef string
+}
+
+func (b *refBackend) Prepare(context.Context, effect.Assignment) (string, error) {
+	b.mu.Lock()
+	b.prepared++
+	b.mu.Unlock()
+	return "execution-1", nil
+}
+
+func (b *refBackend) Start(ctx context.Context, ref string, a effect.Assignment) error {
+	b.mu.Lock()
+	b.started++
+	b.startRef = ref
+	b.mu.Unlock()
+	return b.testBackend.Dispatch(ctx, a)
+}
+
+func (b *refBackend) keyOf(a effect.Assignment) effect.AssignmentKey { return a.Key() }
+
+func (b *refBackend) Attach(ctx context.Context, ref string) (effect.Attachment, error) {
+	return b.testBackend.Attach(ctx, b.testBackend.lastKey())
+}
+
+func (b *refBackend) Status(ctx context.Context, ref string) (effect.ExecutionStatus, error) {
+	return b.testBackend.GetStatus(ctx, b.testBackend.lastKey())
+}
+
+func (b *refBackend) Outcome(ctx context.Context, ref string) (effect.Outcome, error) {
+	return b.testBackend.GetOutcome(ctx, b.testBackend.lastKey())
+}
+
+func (b *refBackend) Cancel(ctx context.Context, ref string) error {
+	return b.testBackend.Cancel(ctx, b.testBackend.lastKey())
+}
+
+func (b *testBackend) lastKey() effect.AssignmentKey {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.last.Key()
+}
+
 func testAssignment() effect.Assignment {
 	request := run.ModelRequest{Model: "m"}
 	digest, err := run.ProtocolV1().DigestRequest(request)
@@ -145,7 +147,7 @@ func testAssignment() effect.Assignment {
 func TestWorkerIdempotentAndOutcome(t *testing.T) {
 	ctx := context.Background()
 	backend := newTestBackend()
-	worker, err := executor.NewWorker(ctx, store.NewMemoryStore(), backend)
+	worker, err := executor.NewWorker(ctx, store.NewMemoryStore(), routes(backend))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +190,7 @@ func TestWorkerDispatchReplayPreservesExistingExecution(t *testing.T) {
 				t.Fatal(err)
 			}
 			backend := newTestBackend()
-			worker, err := executor.NewWorker(ctx, records, backend, executor.WorkerOptions{ID: "new-worker"})
+			worker, err := executor.NewWorker(ctx, records, routes(backend), executor.WorkerOptions{ID: "new-worker"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -247,7 +249,7 @@ func TestWorkerUncertainDispatchPreservesExecution(t *testing.T) {
 			records := store.NewMemoryStore()
 			backend := &uncertainDispatchBackend{testBackend: newTestBackend(), ready: make(chan struct{})}
 			defer close(backend.ready)
-			worker, err := executor.NewWorker(ctx, records, backend)
+			worker, err := executor.NewWorker(ctx, records, routes(backend))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -290,7 +292,7 @@ func TestWorkerUncertainDispatchPreservesExecution(t *testing.T) {
 func TestHTTPDispatchAssignmentConflictIsDefinite(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	worker, err := executor.NewWorker(ctx, store.NewMemoryStore(), newTestBackend())
+	worker, err := executor.NewWorker(ctx, store.NewMemoryStore(), routes(newTestBackend()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +339,7 @@ func TestWorkerOutcomeReadFailurePreservesExecution(t *testing.T) {
 			defer cancel()
 			records := store.NewMemoryStore()
 			backend := &temporarilyUnreadableBackend{testBackend: newTestBackend(), failed: make(chan struct{}), ready: make(chan struct{}), unknown: unknown}
-			worker, err := executor.NewWorker(ctx, records, backend)
+			worker, err := executor.NewWorker(ctx, records, routes(backend))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -363,7 +365,10 @@ func TestWorkerOutcomeReadFailurePreservesExecution(t *testing.T) {
 	}
 }
 
-func TestWorkerTakeoverRequiresPersistedBindingCapability(t *testing.T) {
+// A record whose ExecutionRef names a provider this Worker has no Backend
+// for is left untouched: Takeover and GetStatus report ErrUnknownProvider and
+// no backend is called (RUN-EXE-10).
+func TestWorkerTakeoverRefusesUnknownProvider(t *testing.T) {
 	ctx := context.Background()
 	records := store.NewMemoryStore()
 	a := testAssignment()
@@ -372,49 +377,42 @@ func TestWorkerTakeoverRequiresPersistedBindingCapability(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
-		ExecutionBinding: &effect.ExecutionBinding{Provider: "provider", ExecutionRef: "existing-job"},
-		Owner:            "expired-worker", FencingEpoch: 3, LeaseUntilUnixMilli: 1}
+		ExecutionRef: store.ExecutionRef{Provider: "elsewhere", Ref: "existing-job"},
+		Owner:        "expired-worker", FencingEpoch: 3, LeaseUntilUnixMilli: 1}
 	if err := records.Put(ctx, r); err != nil {
 		t.Fatal(err)
 	}
 	backend := newTestBackend()
-	worker, err := executor.NewWorker(ctx, records, backend, executor.WorkerOptions{ID: "new-worker"})
+	worker, err := executor.NewWorker(ctx, records, routes(backend), executor.WorkerOptions{ID: "new-worker"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := worker.Takeover(ctx, a.Key()); !errors.Is(err, effect.ErrBindingUnsupported) {
-		t.Fatalf("takeover = %v, want ErrBindingUnsupported", err)
+	if err := worker.Takeover(ctx, a.Key()); !errors.Is(err, executor.ErrUnknownProvider) {
+		t.Fatalf("takeover = %v, want ErrUnknownProvider", err)
 	}
-	if _, err := worker.GetStatus(ctx, a.Key()); !errors.Is(err, effect.ErrBindingUnsupported) {
-		t.Fatalf("status = %v, want ErrBindingUnsupported", err)
+	if _, err := worker.GetStatus(ctx, a.Key()); !errors.Is(err, executor.ErrUnknownProvider) {
+		t.Fatalf("status = %v, want ErrUnknownProvider", err)
 	}
 	got, _, err := records.Get(ctx, a.Key())
-	if err != nil || got.Owner != r.Owner || got.FencingEpoch != r.FencingEpoch || got.ExecutionBinding.ExecutionRef != "existing-job" {
-		t.Fatalf("unsupported takeover changed execution: %+v, %v", got, err)
+	if err != nil || got.Owner != r.Owner || got.FencingEpoch != r.FencingEpoch || got.ExecutionRef != r.ExecutionRef {
+		t.Fatalf("unknown-provider takeover changed the record: %+v, %v", got, err)
 	}
 	backend.mu.Lock()
 	calls := backend.calls
 	backend.mu.Unlock()
 	if calls != 0 {
-		t.Fatalf("unsupported takeover dispatched %d calls", calls)
+		t.Fatalf("unknown-provider takeover dispatched %d calls", calls)
 	}
 }
 
-func TestRecordReadsLegacyBackendBinding(t *testing.T) {
-	var record store.Record
-	if err := json.Unmarshal([]byte(`{"backendBinding":{"provider":"local","workspace":"ws-1","executionRef":"exec-1"}}`), &record); err != nil {
-		t.Fatal(err)
-	}
-	if record.ExecutionBinding == nil || record.ExecutionBinding.Provider != "local" || record.ExecutionBinding.ExecutionRef != "exec-1" {
-		t.Fatalf("execution binding = %+v", record.ExecutionBinding)
-	}
-}
-
-func TestWorkerPersistsExecutionBindingBeforeDispatch(t *testing.T) {
+// Dispatch selects the Backend once, prepares the Ref and persists it with the
+// record before Start; Start receives the persisted Ref (RUN-EXE-9/10).
+func TestWorkerPersistsExecutionRefBeforeStart(t *testing.T) {
 	ctx := context.Background()
 	records := store.NewMemoryStore()
-	backend := &bindingBackend{testBackend: newTestBackend()}
-	worker, err := executor.NewWorker(ctx, records, backend, executor.WorkerOptions{ID: "worker-a", LeaseDuration: time.Second})
+	backend := &refBackend{testBackend: newTestBackend()}
+	worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("ref", backend)},
+		executor.WorkerOptions{ID: "worker-a", LeaseDuration: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,14 +424,23 @@ func TestWorkerPersistsExecutionBindingBeforeDispatch(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("record = %+v, ok=%v, err=%v", record, ok, err)
 	}
-	if record.ExecutionBinding == nil || record.ExecutionBinding.ExecutionRef != "execution-1" {
-		t.Fatalf("execution binding = %+v", record.ExecutionBinding)
+	if record.ExecutionRef != (store.ExecutionRef{Provider: "ref", Ref: "execution-1"}) {
+		t.Fatalf("execution ref = %+v", record.ExecutionRef)
 	}
 	backend.mu.Lock()
-	prepared, bound := backend.prepared, backend.bound
+	prepared, started, startRef := backend.prepared, backend.started, backend.startRef
 	backend.mu.Unlock()
-	if prepared != 1 || bound != 1 {
-		t.Fatalf("binding calls = prepared:%d bound:%d, want 1/1", prepared, bound)
+	if prepared != 1 || started != 1 || startRef != "execution-1" {
+		t.Fatalf("backend calls = prepared:%d started:%d ref:%q, want 1/1/execution-1", prepared, started, startRef)
+	}
+	if err := worker.Dispatch(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	backend.mu.Lock()
+	prepared, started = backend.prepared, backend.started
+	backend.mu.Unlock()
+	if prepared != 2 || started != 1 {
+		t.Fatalf("replay prepared %d times and started %d times, want a second prepare and no second start", prepared, started)
 	}
 }
 
@@ -518,7 +525,7 @@ func TestWorkerReclaimsExpiredAssignment(t *testing.T) {
 		t.Fatalf("mark dispatching = %v", err)
 	}
 	backend := newTestBackend()
-	worker, err := executor.NewWorker(ctx, records, backend, executor.WorkerOptions{
+	worker, err := executor.NewWorker(ctx, records, routes(backend), executor.WorkerOptions{
 		ID: "worker-b", LeaseDuration: time.Second,
 	})
 	if err != nil {
@@ -562,7 +569,7 @@ func TestWorkerReconcileAdoptsExpiredLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	backend := newTestBackend()
-	worker, err := executor.NewWorker(ctx, records, backend, executor.WorkerOptions{
+	worker, err := executor.NewWorker(ctx, records, routes(backend), executor.WorkerOptions{
 		ID: "worker-b", LeaseDuration: time.Second, Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
@@ -608,7 +615,7 @@ func TestWorkerReconcileLeavesLiveLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	backend := newTestBackend()
-	worker, err := executor.NewWorker(ctx, records, backend, executor.WorkerOptions{
+	worker, err := executor.NewWorker(ctx, records, routes(backend), executor.WorkerOptions{
 		ID: "worker-b", LeaseDuration: time.Second, Clock: func() time.Time { return now }})
 	if err != nil {
 		t.Fatal(err)
@@ -643,7 +650,7 @@ func TestWorkerReconcileLoopAdoptsOrphanedRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	backend := newTestBackend()
-	worker, err := executor.NewWorker(ctx, records, backend, executor.WorkerOptions{
+	worker, err := executor.NewWorker(ctx, records, routes(backend), executor.WorkerOptions{
 		ID: "worker-b", LeaseDuration: time.Second, ReconcileInterval: 50 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
@@ -667,7 +674,7 @@ func TestFileStoreSurvivesWorkerRecreation(t *testing.T) {
 		t.Fatal(err)
 	}
 	a := testAssignment()
-	first, err := executor.NewWorker(ctx, fs, newTestBackend())
+	first, err := executor.NewWorker(ctx, fs, routes(newTestBackend()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -677,7 +684,7 @@ func TestFileStoreSurvivesWorkerRecreation(t *testing.T) {
 	if _, err := first.GetOutcome(ctx, a.Key()); err != nil {
 		t.Fatal(err)
 	}
-	second, err := executor.NewWorker(ctx, fs, newTestBackend())
+	second, err := executor.NewWorker(ctx, fs, routes(newTestBackend()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -690,7 +697,7 @@ func TestFileStoreSurvivesWorkerRecreation(t *testing.T) {
 func TestHTTPClientAndServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	worker, err := executor.NewWorker(ctx, store.NewMemoryStore(), newTestBackend())
+	worker, err := executor.NewWorker(ctx, store.NewMemoryStore(), routes(newTestBackend()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -750,7 +757,7 @@ func TestWorkerDisposeSettlesUnknown(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			worker, err := executor.NewWorker(ctx, records, newTestBackend(), executor.WorkerOptions{ID: "worker-a"})
+			worker, err := executor.NewWorker(ctx, records, routes(newTestBackend()), executor.WorkerOptions{ID: "worker-a"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -782,10 +789,10 @@ func TestWorkerDisposeSettlesUnknown(t *testing.T) {
 // crossed the effect boundary (TRN-DUR-4); it settles Unknown instead. A
 // record that never dispatched (Accepted) still executes on adoption, and
 // model assignments stay replayable (TestWorkerReconcileAdoptsExpiredLease).
-func TestWorkerAdoptionOfUnboundToolSettlesUnknown(t *testing.T) {
+func TestWorkerAdoptionOfUnattachableToolSettlesUnknown(t *testing.T) {
 	rows := []struct {
-		state     effect.ExecutionStatus
-		wantCalls int
+		state       effect.ExecutionStatus
+		wantCalls   int
 		wantUnknown bool
 	}{
 		{effect.ExecutionRunning, 0, true},
@@ -809,7 +816,7 @@ func TestWorkerAdoptionOfUnboundToolSettlesUnknown(t *testing.T) {
 				t.Fatal(err)
 			}
 			backend := newTestBackend()
-			worker, err := executor.NewWorker(ctx, records, backend, executor.WorkerOptions{
+			worker, err := executor.NewWorker(ctx, records, routes(backend), executor.WorkerOptions{
 				ID: "worker-b", LeaseDuration: time.Second, Clock: func() time.Time { return now }})
 			if err != nil {
 				t.Fatal(err)
@@ -863,7 +870,7 @@ func TestWorkerHeartbeatRetriesTransientRenewErrors(t *testing.T) {
 	records := &flakyRenewStore{Store: store.NewMemoryStore(), deadline: time.Now().Add(1100 * time.Millisecond)}
 	backend := &uncertainDispatchBackend{testBackend: newTestBackend(), ready: make(chan struct{})}
 	defer close(backend.ready)
-	worker, err := executor.NewWorker(context.Background(), records, backend, executor.WorkerOptions{ID: "worker-a", LeaseDuration: 800 * time.Millisecond})
+	worker, err := executor.NewWorker(context.Background(), records, routes(backend), executor.WorkerOptions{ID: "worker-a", LeaseDuration: 800 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -903,7 +910,7 @@ func TestHTTPControlEndpoints(t *testing.T) {
 	// The backend never answers, so Dispose races no watcher settlement.
 	backend := &uncertainDispatchBackend{testBackend: newTestBackend(), ready: make(chan struct{})}
 	defer close(backend.ready)
-	worker, err := executor.NewWorker(ctx, store.NewMemoryStore(), backend)
+	worker, err := executor.NewWorker(ctx, store.NewMemoryStore(), routes(backend))
 	if err != nil {
 		t.Fatal(err)
 	}

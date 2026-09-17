@@ -1,3 +1,9 @@
+// Package executor makes provider effects durable: a Worker owns the
+// execution record of every accepted Assignment -- its payload, its
+// ExecutionRef, its lifecycle state and its Outcome -- and hands the effect
+// itself to one Backend chosen once, at Dispatch (RUN-EXE-3, RUN-EXE-10).
+// Agent Core sees the Worker as an effect.Port addressed by AssignmentKey;
+// Backends see only the Ref the record holds for them.
 package executor
 
 import (
@@ -15,9 +21,7 @@ import (
 	"github.com/felinics/twilight/agent/run/protocol"
 )
 
-// Worker makes any local effect.Port available behind a durable execution
-// record. The backend performs the actual Model/Tool effect; Worker owns the
-// accepted-assignment and outcome lifecycle.
+// WorkerOptions configure one Worker incarnation.
 type WorkerOptions struct {
 	// ID identifies this process incarnation. It must not be reused by a
 	// restarted process while an older incarnation could still be alive.
@@ -36,17 +40,20 @@ type WorkerOptions struct {
 
 const defaultLeaseDuration = 30 * time.Second
 
-// Worker owns execution leases, not Session ownership. A Worker can acquire
-// an expired Assignment from a shared Store and resume it using the payload
-// persisted in the execution record. Takeover is explicit: failure detection
+// Worker owns execution leases, not Session ownership. It selects a Backend
+// for an Assignment once, persists the resulting ExecutionRef, and from then
+// on resolves record -> provider -> Backend for every lifecycle operation. A
+// Worker can acquire an expired record from a shared Store and continue it
+// from the persisted payload and Ref. Takeover is explicit: failure detection
 // and the decision to retry an effect belong to the control plane; Reconcile
 // is the built-in loop form of that decision, while deployments with an
 // external control plane drive Takeover directly. Dispose settles a record
-// the control plane has given up on. None of the three is part of effect.Port,
-// which stays the per-assignment data plane.
+// the control plane has given up on. None of the three is part of
+// effect.Port, which stays the per-assignment data plane.
 type Worker struct {
 	store     executionstore.Store
-	backend   effect.Port
+	routes    []Route
+	backends  map[string]Backend
 	id        string
 	lease     time.Duration
 	now       func() time.Time
@@ -56,12 +63,24 @@ type Worker struct {
 	notify map[effect.AssignmentKey]chan struct{}
 }
 
-func NewWorker(ctx context.Context, records executionstore.Store, backend effect.Port, options ...WorkerOptions) (*Worker, error) {
+// NewWorker builds a Worker over records with the given routes; the last
+// route is normally Default. A Worker with no route serves nothing.
+func NewWorker(ctx context.Context, records executionstore.Store, routes []Route, options ...WorkerOptions) (*Worker, error) {
 	if records == nil {
 		return nil, errors.New("executor: nil worker store")
 	}
-	if backend == nil {
-		return nil, errors.New("executor: nil worker backend")
+	if len(routes) == 0 {
+		return nil, errors.New("executor: worker requires at least one route")
+	}
+	backends := make(map[string]Backend, len(routes))
+	for _, r := range routes {
+		if r.Provider == "" || r.Backend == nil {
+			return nil, errors.New("executor: route requires a provider and a backend")
+		}
+		if _, dup := backends[r.Provider]; dup {
+			return nil, fmt.Errorf("executor: duplicate provider %q", r.Provider)
+		}
+		backends[r.Provider] = r.Backend
 	}
 	var opts WorkerOptions
 	if len(options) > 0 {
@@ -81,7 +100,7 @@ func NewWorker(ctx context.Context, records executionstore.Store, backend effect
 	if now == nil {
 		now = time.Now
 	}
-	w := &Worker{store: records, backend: backend, id: opts.ID, lease: opts.LeaseDuration, now: now,
+	w := &Worker{store: records, routes: routes, backends: backends, id: opts.ID, lease: opts.LeaseDuration, now: now,
 		lifecycle: context.WithoutCancel(ctx), notify: make(map[effect.AssignmentKey]chan struct{})}
 	if err := w.recover(ctx); err != nil {
 		return nil, err
@@ -92,10 +111,38 @@ func NewWorker(ctx context.Context, records executionstore.Store, backend effect
 	return w, nil
 }
 
-func (w *Worker) Validate(ctx context.Context, a effect.Assignment) (*run.ToolFailure, error) {
-	return w.backend.Validate(ctx, a)
+// route selects the Backend for an Assignment: the first Route whose Match
+// accepts it (RUN-EXE-10).
+func (w *Worker) route(a effect.Assignment) (Route, error) {
+	for _, r := range w.routes {
+		if r.Match == nil || r.Match(a) {
+			return r, nil
+		}
+	}
+	return Route{}, fmt.Errorf("%w: no route accepts the assignment", ErrUnknownProvider)
 }
 
+// backend resolves the Backend a record's ExecutionRef names.
+func (w *Worker) backend(ref ExecutionRef) (Backend, error) {
+	b, ok := w.backends[ref.Provider]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrUnknownProvider, ref.Provider)
+	}
+	return b, nil
+}
+
+func (w *Worker) Validate(ctx context.Context, a effect.Assignment) (*run.ToolFailure, error) {
+	r, err := w.route(a)
+	if err != nil {
+		return nil, err
+	}
+	return r.Backend.Validate(ctx, a)
+}
+
+// Dispatch accepts an Assignment (RUN-EXE-3): it selects the Backend,
+// prepares the Ref, persists the record with its ExecutionRef, then starts
+// the execution. A replay of the same Assignment acknowledges the persisted
+// acceptance; recovery of an existing record goes through Takeover.
 func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 	if a.Kind == effect.AssignmentModel {
 		if a.Model == nil || a.Model.Request == nil {
@@ -117,8 +164,20 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 	if err != nil {
 		return err
 	}
+	route, err := w.route(a)
+	if err != nil {
+		return err
+	}
+	ref, err := route.Backend.Prepare(ctx, a)
+	if err != nil {
+		return err
+	}
+	if ref == "" {
+		return errors.New("executor: backend prepared an empty execution ref")
+	}
 	key := a.Key()
-	record := executionstore.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionAccepted}
+	record := executionstore.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionAccepted,
+		ExecutionRef: ExecutionRef{Provider: route.Provider, Ref: ref}}
 	old, created, err := w.store.Create(ctx, record)
 	if err != nil {
 		return err
@@ -127,8 +186,6 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 		return executionstore.ErrAssignmentConflict
 	}
 	if !created {
-		// A replay acknowledges the persisted acceptance. Recovery of an
-		// existing record is authorized separately through Takeover.
 		return nil
 	}
 	return w.acquireAndStart(ctx, key)
@@ -148,8 +205,10 @@ func (w *Worker) Takeover(ctx context.Context, key effect.AssignmentKey) error {
 	if protocol.StatusTerminal(r.State) {
 		return nil
 	}
-	if err := w.checkBinding(r.ExecutionBinding); err != nil {
-		return err
+	if r.ExecutionRef.Provider != "" {
+		if _, err := w.backend(r.ExecutionRef); err != nil {
+			return err
+		}
 	}
 	owned, err := w.store.LeaseOwned(ctx, key, w.id, r.FencingEpoch)
 	if err != nil {
@@ -164,11 +223,11 @@ func (w *Worker) Takeover(ctx context.Context, key effect.AssignmentKey) error {
 // Reconcile offers every non-terminal execution record whose lease expired —
 // or that was never acquired — to Takeover. It is the control-plane step for
 // orphaned executions: a restarted Worker resumes them from the persisted
-// payload, first trying to attach the previous backend execution and only
-// re-dispatching after the backend reports it unattachable. Records under a
-// live lease, this Worker's or another's, are skipped; the store remains the
-// fencing authority. One record's failure does not stop the others. It
-// returns the number of records handed to Takeover.
+// payload and Ref, first trying to attach the previous backend execution and
+// only re-dispatching after the backend reports it unattachable. Records
+// under a live lease, this Worker's or another's, are skipped; the store
+// remains the fencing authority. One record's failure does not stop the
+// others. It returns the number of records handed to Takeover.
 func (w *Worker) Reconcile(ctx context.Context) (int, error) {
 	records, err := w.store.List(ctx)
 	if err != nil {
@@ -210,7 +269,7 @@ func (w *Worker) reconcileLoop(interval time.Duration) {
 // recovered and that the authority should dispose the Run target (RUN-CMT-7).
 // Unlike Takeover, Dispose is unconditional — it also applies to records whose
 // owner is dead or absent — and unlike Cancel it does not require backend
-// reachability: a bound backend is cancelled best-effort after the settle.
+// reachability: the backend is cancelled best-effort after the settle.
 func (w *Worker) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 	r, ok, err := w.store.Get(ctx, key)
 	if err != nil {
@@ -229,7 +288,9 @@ func (w *Worker) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 	if err := w.store.Put(ctx, r); err != nil {
 		return err
 	}
-	_ = w.cancelBackend(context.WithoutCancel(ctx), key, r.ExecutionBinding)
+	if b, err := w.backend(r.ExecutionRef); err == nil {
+		_ = b.Cancel(context.WithoutCancel(ctx), r.ExecutionRef.Ref)
+	}
 	w.wake(key)
 	return nil
 }
@@ -246,6 +307,10 @@ func (w *Worker) wake(key effect.AssignmentKey) {
 	}
 }
 
+// acquireAndStart takes the record's lease and brings its execution to
+// Running: a record with an attachable execution is observed, one whose
+// execution the backend no longer finds is re-started (model) or settled
+// Unknown (tool, TRN-DUR-4), one never started is started.
 func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) error {
 	claimed, acquired, err := w.store.Acquire(ctx, key, w.id, w.lease)
 	if err != nil {
@@ -254,35 +319,33 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 	if !acquired {
 		return nil
 	}
-	if err := w.checkBinding(claimed.ExecutionBinding); err != nil {
-		return err
-	}
 	digest := claimed.AssignmentDigest
-	var binding *effect.ExecutionBinding
-	if claimed.ExecutionBinding != nil {
-		b := *claimed.ExecutionBinding
-		binding = &b
-	}
-	if claimed.State != effect.ExecutionCancelRequested {
-		if provider, ok := w.backend.(effect.BindingPort); ok && binding == nil {
-			b, err := provider.PrepareBinding(ctx, claimed.Assignment)
-			if err != nil {
-				return err
-			}
-			if b.ExecutionRef == "" {
-				return errors.New("executor: backend returned an empty execution binding")
-			}
-			binding = &b
-			claimed.ExecutionBinding = binding
-			if err := w.store.PutOwned(ctx, claimed, w.id, claimed.FencingEpoch); err != nil {
-				return err
-			}
+	// A record written outside Dispatch (an older store, a test fixture) may
+	// lack its ExecutionRef; it is routed and prepared here, before any
+	// backend call, and the Ref is persisted first (RUN-EXE-9).
+	if claimed.ExecutionRef.Provider == "" && claimed.State != effect.ExecutionCancelRequested {
+		route, err := w.route(claimed.Assignment)
+		if err != nil {
+			return err
+		}
+		ref, err := route.Backend.Prepare(ctx, claimed.Assignment)
+		if err != nil {
+			return err
+		}
+		claimed.ExecutionRef = ExecutionRef{Provider: route.Provider, Ref: ref}
+		if err := w.store.PutOwned(ctx, claimed, w.id, claimed.FencingEpoch); err != nil {
+			return err
 		}
 	}
+	backend, err := w.backend(claimed.ExecutionRef)
+	if err != nil {
+		return err
+	}
+	ref := claimed.ExecutionRef.Ref
 	if claimed.State == effect.ExecutionCancelRequested {
 		leaseDone := make(chan struct{})
 		go w.heartbeat(key, claimed.FencingEpoch, leaseDone)
-		attachment, attachErr := w.attachBackend(ctx, key, binding)
+		attachment, attachErr := backend.Attach(ctx, ref)
 		if attachErr != nil {
 			close(leaseDone)
 			return attachErr
@@ -294,14 +357,14 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 			close(leaseDone)
 			return nil
 		}
-		cancelErr := w.cancelBackend(ctx, key, binding)
-		go w.watch(key, digest, claimed.FencingEpoch, binding, leaseDone)
+		cancelErr := backend.Cancel(ctx, ref)
+		go w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone)
 		return cancelErr
 	}
 	if claimed.State == effect.ExecutionRunning || claimed.State == effect.ExecutionDispatching {
 		// Prefer adoption over retry. Takeover is allowed to retry only after
 		// the backend says that the old execution is not attachable.
-		attachment, attachErr := w.attachBackend(ctx, key, binding)
+		attachment, attachErr := backend.Attach(ctx, ref)
 		if attachErr != nil {
 			return attachErr
 		}
@@ -310,19 +373,33 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 			go w.heartbeat(key, claimed.FencingEpoch, leaseDone)
 			// Keep Dispatching as a conservative pre-outcome state. The watcher
 			// will terminalize it after the adopted backend produces an outcome.
-			go w.watch(key, digest, claimed.FencingEpoch, binding, leaseDone)
+			go w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone)
 			return nil
 		}
-		if claimed.Assignment.Kind == effect.AssignmentTool && binding == nil {
-			// An unbound tool execution may have crossed the effect boundary
-			// before its worker died, and the backend cannot confirm what it
-			// did. Re-dispatch may repeat side effects, so adoption settles
-			// Unknown (TRN-DUR-4) instead of retrying. A replayable tool
-			// declares that on its definition; until the declaration exists,
-			// no unbound tool is re-dispatched by adoption.
+		if claimed.Assignment.Kind == effect.AssignmentTool {
+			// A tool execution the backend no longer finds may have crossed
+			// the effect boundary before its worker died. Re-dispatch may
+			// repeat side effects, so adoption settles Unknown (TRN-DUR-4)
+			// instead of retrying. A replayable tool declares that on its
+			// definition; until the declaration exists, no tool is
+			// re-dispatched by adoption.
 			env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest, Unknown: true,
-				Error: &protocol.WireError{Code: "adopted_without_replay", Message: "unbound tool execution adopted without a replay declaration"}}
+				Error: &protocol.WireError{Code: "adopted_without_replay", Message: "tool execution adopted without a replay declaration"}}
 			return w.finishOwned(ctx, key, claimed.FencingEpoch, env, effect.ExecutionUnknown, nil)
+		}
+		// A model execution replays the same frozen request: Prepare again so
+		// an allocating backend may hand out a fresh Ref for the new physical
+		// execution; the old Ref was just confirmed missing (RUN-EXE-9).
+		fresh, err := backend.Prepare(ctx, claimed.Assignment)
+		if err != nil {
+			return err
+		}
+		if fresh != ref {
+			claimed.ExecutionRef.Ref = fresh
+			if err := w.store.PutOwned(ctx, claimed, w.id, claimed.FencingEpoch); err != nil {
+				return err
+			}
+			ref = fresh
 		}
 	}
 	if claimed.State != effect.ExecutionDispatching {
@@ -335,9 +412,9 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 	}
 	leaseDone := make(chan struct{})
 	go w.heartbeat(key, claimed.FencingEpoch, leaseDone)
-	if err := w.dispatchBackend(context.WithoutCancel(ctx), claimed.Assignment, binding); err != nil {
+	if err := backend.Start(context.WithoutCancel(ctx), ref, claimed.Assignment); err != nil {
 		if errors.Is(err, effect.ErrDispatchUnknown) {
-			go w.watch(key, digest, claimed.FencingEpoch, binding, leaseDone)
+			go w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone)
 			return err
 		}
 		settleErr := w.finishOwned(ctx, key, claimed.FencingEpoch, protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest,
@@ -349,67 +426,16 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 		// The backend call may already have crossed its external boundary.
 		// Keep the watcher alive and report Dispatch as accepted; recovery
 		// must reconcile the Dispatching/Running record rather than replan.
-		go w.watch(key, digest, claimed.FencingEpoch, binding, leaseDone)
+		go w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone)
 		return nil
 	}
-	go w.watch(key, digest, claimed.FencingEpoch, binding, leaseDone)
+	go w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone)
 	return nil
 }
 
-func (w *Worker) dispatchBackend(ctx context.Context, assignment effect.Assignment, binding *effect.ExecutionBinding) error {
-	if err := w.checkBinding(binding); err != nil {
-		return err
-	}
-	if binding != nil {
-		provider := w.backend.(effect.BindingPort)
-		return provider.DispatchBound(ctx, assignment, *binding)
-	}
-	return w.backend.Dispatch(ctx, assignment)
-}
-
-func (w *Worker) attachBackend(ctx context.Context, key effect.AssignmentKey, binding *effect.ExecutionBinding) (effect.Attachment, error) {
-	if err := w.checkBinding(binding); err != nil {
-		return effect.Attachment{}, err
-	}
-	if binding != nil {
-		provider := w.backend.(effect.BindingPort)
-		return provider.AttachBound(ctx, key, *binding)
-	}
-	return w.backend.Attach(ctx, key)
-}
-
-func (w *Worker) getOutcomeBackend(ctx context.Context, key effect.AssignmentKey, binding *effect.ExecutionBinding) (effect.Outcome, error) {
-	if err := w.checkBinding(binding); err != nil {
-		return effect.Outcome{}, err
-	}
-	if binding != nil {
-		provider := w.backend.(effect.BindingPort)
-		return provider.GetOutcomeBound(ctx, key, *binding)
-	}
-	return w.backend.GetOutcome(ctx, key)
-}
-
-func (w *Worker) cancelBackend(ctx context.Context, key effect.AssignmentKey, binding *effect.ExecutionBinding) error {
-	if err := w.checkBinding(binding); err != nil {
-		return err
-	}
-	if binding != nil {
-		provider := w.backend.(effect.BindingPort)
-		return provider.CancelBound(ctx, key, *binding)
-	}
-	return w.backend.Cancel(ctx, key)
-}
-
-func (w *Worker) checkBinding(binding *effect.ExecutionBinding) error {
-	if binding != nil {
-		if _, ok := w.backend.(effect.BindingPort); !ok {
-			return effect.ErrBindingUnsupported
-		}
-	}
-	return nil
-}
-
-func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64, binding *effect.ExecutionBinding, done chan struct{}) {
+// watch reads the backend's Outcome for ref and settles the record under
+// this incarnation's lease.
+func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64, backend Backend, ref string, done chan struct{}) {
 	defer close(done)
 	delay := 10 * time.Millisecond
 	var out effect.Outcome
@@ -418,7 +444,7 @@ func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64
 		// eventually yields to the ownership check before the next poll.
 		readCtx, cancelRead := context.WithTimeout(w.lifecycle, w.lease)
 		var err error
-		out, err = w.getOutcomeBackend(readCtx, key, binding)
+		out, err = backend.Outcome(readCtx, ref)
 		cancelRead()
 		if err == nil {
 			break
@@ -528,6 +554,9 @@ func (w *Worker) finishOwned(ctx context.Context, key effect.AssignmentKey, epoc
 	return dispatchErr
 }
 
+// Attach reports the record's observation state (RUN-EXE-3): missing without
+// a record, terminal once settled, orphaned when no live incarnation owns it,
+// and otherwise what this incarnation's Backend finds for the Ref.
 func (w *Worker) Attach(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
 	r, ok, err := w.store.Get(ctx, key)
 	if err != nil {
@@ -554,7 +583,11 @@ func (w *Worker) Attach(ctx context.Context, key effect.AssignmentKey) (effect.A
 		attachment.State = effect.AttachmentOrphaned
 		return attachment, nil
 	}
-	backendAttachment, err := w.attachBackend(ctx, key, r.ExecutionBinding)
+	backend, err := w.backend(r.ExecutionRef)
+	if err != nil {
+		return effect.Attachment{}, err
+	}
+	backendAttachment, err := backend.Attach(ctx, r.ExecutionRef.Ref)
 	if err != nil {
 		return effect.Attachment{}, err
 	}
@@ -567,6 +600,8 @@ func (w *Worker) Attach(ctx context.Context, key effect.AssignmentKey) (effect.A
 	return attachment, nil
 }
 
+// GetStatus is the record's state; while the execution is with the backend
+// (Dispatching, Running, CancelRequested) it is the backend's view of the Ref.
 func (w *Worker) GetStatus(ctx context.Context, key effect.AssignmentKey) (effect.ExecutionStatus, error) {
 	r, ok, err := w.store.Get(ctx, key)
 	if err != nil {
@@ -575,12 +610,13 @@ func (w *Worker) GetStatus(ctx context.Context, key effect.AssignmentKey) (effec
 	if !ok {
 		return effect.ExecutionNotFound, effect.ErrExecutionNotFound
 	}
-	if r.ExecutionBinding != nil && !protocol.StatusTerminal(r.State) {
-		if err := w.checkBinding(r.ExecutionBinding); err != nil {
+	switch r.State {
+	case effect.ExecutionDispatching, effect.ExecutionRunning, effect.ExecutionCancelRequested:
+		backend, err := w.backend(r.ExecutionRef)
+		if err != nil {
 			return r.State, err
 		}
-		provider := w.backend.(effect.BindingPort)
-		return provider.GetStatusBound(ctx, key, *r.ExecutionBinding)
+		return backend.Status(ctx, r.ExecutionRef.Ref)
 	}
 	return r.State, nil
 }
@@ -655,13 +691,14 @@ func (w *Worker) Cancel(ctx context.Context, key effect.AssignmentKey) error {
 	if protocol.StatusTerminal(r.State) {
 		return nil
 	}
-	if err := w.checkBinding(r.ExecutionBinding); err != nil {
+	backend, err := w.backend(r.ExecutionRef)
+	if err != nil {
 		return err
 	}
 	if err := w.requestCancelOwned(ctx, key, r.FencingEpoch); err != nil {
 		return err
 	}
-	return w.cancelBackend(ctx, key, r.ExecutionBinding)
+	return backend.Cancel(ctx, r.ExecutionRef.Ref)
 }
 
 func (w *Worker) requestCancelOwned(ctx context.Context, key effect.AssignmentKey, epoch uint64) error {
@@ -684,6 +721,8 @@ func (w *Worker) requestCancelOwned(ctx context.Context, key effect.AssignmentKe
 	}
 }
 
+// recover resumes observation of the records this incarnation still owns
+// after a restart with the same ID.
 func (w *Worker) recover(ctx context.Context) error {
 	records, err := w.store.List(ctx)
 	if err != nil {
@@ -700,7 +739,11 @@ func (w *Worker) recover(ctx context.Context) error {
 		if !owned {
 			continue
 		}
-		attachment, attachErr := w.attachBackend(ctx, r.Assignment.Key(), r.ExecutionBinding)
+		backend, err := w.backend(r.ExecutionRef)
+		if err != nil {
+			continue
+		}
+		attachment, attachErr := backend.Attach(ctx, r.ExecutionRef.Ref)
 		if attachErr != nil {
 			// One broken backend read must not block recovery of the other
 			// records; a later Reconcile or explicit Takeover retries this one.
@@ -709,7 +752,7 @@ func (w *Worker) recover(ctx context.Context) error {
 		if attachment.State == effect.AttachmentActive || attachment.State == effect.AttachmentTerminal {
 			done := make(chan struct{})
 			go w.heartbeat(r.Assignment.Key(), r.FencingEpoch, done)
-			go w.watch(r.Assignment.Key(), r.AssignmentDigest, r.FencingEpoch, r.ExecutionBinding, done)
+			go w.watch(r.Assignment.Key(), r.AssignmentDigest, r.FencingEpoch, backend, r.ExecutionRef.Ref, done)
 		}
 	}
 	return nil
