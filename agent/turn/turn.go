@@ -1,6 +1,7 @@
 // Package turn is the first-party Turn module (docs/design/agent-turn.md):
-// the logical turn, its Run attempts, mid-turn input delivery, settlement,
-// and the companion that turns Run facts into conversation content.
+// the logical turn, its Run attempts, mid-turn input delivery and
+// settlement. Attempt outcomes are projected from the Run's own run_ended
+// fact; the module writes no derived copy of them.
 package turn
 
 import (
@@ -18,9 +19,8 @@ import (
 const ModuleID extension.ModuleID = "turn"
 
 type (
-	TurnID           string
-	PresetID         string
-	CompanionVersion string
+	TurnID   string
+	PresetID string
 )
 
 type TurnRef struct {
@@ -41,30 +41,22 @@ const (
 	SettlementStopped   Settlement = "stopped"
 )
 
+// EventTypes (TRN-EVT-1): the Turn domain's own decisions. An attempt's end
+// is not among them: the surface folds it from twilight/run/run_ended.
 const (
 	TypeStarted    session.EventType = "twilight/turn/started"
-	TypeCompleted  session.EventType = "twilight/turn/completed"
 	TypeFailed     session.EventType = "twilight/turn/failed"
 	TypeSuperseded session.EventType = "twilight/turn/superseded"
 	// TypeAttemptStarted registers one Run attempt of a Turn on the session
-	// stream, so the surface folds without the run stream (TRN-SCP-1).
+	// stream: the Turn's decision to run, carrying the identities the
+	// Coordinator needs without the machine projection (TRN-SCP-1).
 	TypeAttemptStarted session.EventType = "twilight/turn/attempt_started"
-	// TypeAttemptFailed records a non-completed attempt end on the session
-	// stream, written by the Companion in the same commit as run_ended.
-	TypeAttemptFailed session.EventType = "twilight/turn/attempt_failed"
 )
 
 type StartedPayload struct {
-	TurnID    TurnID            `json:"turnId"`
-	InputIDs  []chatlog.InputID `json:"inputIds,omitempty"`
-	Preset    PresetRef         `json:"preset"`
-	Companion CompanionVersion  `json:"companion"`
-}
-
-type CompletedPayload struct {
-	TurnID TurnID       `json:"turnId"`
-	RunID  run.RunID    `json:"runId"`
-	End    run.RunEnded `json:"end"`
+	TurnID   TurnID            `json:"turnId"`
+	InputIDs []chatlog.InputID `json:"inputIds,omitempty"`
+	Preset   PresetRef         `json:"preset"`
 }
 
 // AttemptStartedPayload registers one attempt on the session stream.
@@ -73,14 +65,6 @@ type AttemptStartedPayload struct {
 	RunID         run.RunID `json:"runId"`
 	Attempt       uint32    `json:"attempt"`
 	SchemaVersion uint16    `json:"schemaVersion"`
-}
-
-// AttemptFailedPayload carries a non-completed attempt's terminal result,
-// mirroring the run_ended fact of the same commit.
-type AttemptFailedPayload struct {
-	TurnID TurnID       `json:"turnId"`
-	RunID  run.RunID    `json:"runId"`
-	End    run.RunEnded `json:"end"`
 }
 
 type FailedPayload struct {
@@ -103,8 +87,8 @@ func digestOf(domain string, parts ...string) es.Digest {
 }
 
 // PlanDigest is TRN-ID-2.
-func PlanDigest(turnID TurnID, preset es.Digest, companion CompanionVersion, inputs []chatlog.InputID) es.Digest {
-	parts := []string{string(turnID), string(preset), string(companion)}
+func PlanDigest(turnID TurnID, preset es.Digest, inputs []chatlog.InputID) es.Digest {
+	parts := []string{string(turnID), string(preset)}
 	for _, id := range inputs {
 		parts = append(parts, string(id))
 	}
@@ -141,28 +125,23 @@ func def[T any](typ session.EventType, check func(*T) error) extension.EventDefi
 }
 
 // Module declares the turn events, the surface projection and the Requires of
-// TRN-SCP-1: run (created, input_accepted, ended v1) and chatlog (present).
+// TRN-SCP-1: run (run_ended v1, which settles attempts) and chatlog
+// (input_delivered v1).
 var Module = extension.ModuleDescriptor{
 	Source: extension.SourceTwilight,
 	ID:     ModuleID,
 	Requires: []extension.ModuleRequirement{
 		{Source: extension.SourceTwilight, Module: runmod.ModuleID, Events: map[session.EventType][]extension.PayloadVersion{
-			runmod.Prefix + "run_created":    {1},
-			runmod.Prefix + "input_accepted": {1},
-			runmod.Prefix + "run_ended":      {1},
+			runmod.Prefix + "run_ended": {1},
 		}},
-		{Source: extension.SourceTwilight, Module: chatlog.ModuleID},
+		{Source: extension.SourceTwilight, Module: chatlog.ModuleID, Events: map[session.EventType][]extension.PayloadVersion{
+			chatlog.TypeInputDelivered: {1},
+		}},
 	},
 	Events: []extension.EventDefinition{
 		def[StartedPayload](TypeStarted, func(p *StartedPayload) error {
-			if p.TurnID == "" || p.Preset.ID == "" || p.Preset.Digest == "" || p.Companion == "" {
-				return errors.New("started requires turnId, preset and companion")
-			}
-			return nil
-		}),
-		def[CompletedPayload](TypeCompleted, func(p *CompletedPayload) error {
-			if p.TurnID == "" || p.RunID == "" {
-				return errors.New("completed requires turnId and runId")
+			if p.TurnID == "" || p.Preset.ID == "" || p.Preset.Digest == "" {
+				return errors.New("started requires turnId and preset")
 			}
 			return nil
 		}),
@@ -181,12 +160,6 @@ var Module = extension.ModuleDescriptor{
 		def[AttemptStartedPayload](TypeAttemptStarted, func(p *AttemptStartedPayload) error {
 			if p.TurnID == "" || p.RunID == "" || p.Attempt == 0 || p.SchemaVersion == 0 {
 				return errors.New("attempt_started requires turnId, runId, attempt and schemaVersion")
-			}
-			return nil
-		}),
-		def[AttemptFailedPayload](TypeAttemptFailed, func(p *AttemptFailedPayload) error {
-			if p.TurnID == "" || p.RunID == "" {
-				return errors.New("attempt_failed requires turnId and runId")
 			}
 			return nil
 		}),

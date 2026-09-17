@@ -1,8 +1,12 @@
-// Package chatlog is the first-party conversation-content module
-// (docs/design/agent-session-chatlog.md): Input, assistant, tool_result and
-// summary entries, their canonical codec, and the Surface and Context
-// projections. Turn lifecycle belongs to agent/turn; execution facts to
-// agent/run.
+// Package chatlog is the first-party conversation module
+// (docs/design/agent-session-chatlog.md). It owns the conversation's own
+// facts -- the input lifecycle, summaries, checkpoints and out-of-band
+// result supersession -- and projects the conversation (Surface) and the
+// model-facing context (Context) from those facts together with the Run
+// facts of agent/run. Assistant and tool_result entries are projections of
+// ModelStepCompleted, ToolCallCompleted, ToolCallAnswered and ToolCallFailed:
+// the module writes no second copy of a model or tool outcome. Turn lifecycle
+// belongs to agent/turn; execution facts to agent/run.
 package chatlog
 
 import (
@@ -13,8 +17,10 @@ import (
 	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/jsonstable"
+	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
+	runmod "github.com/felinics/twilight/agent/session/run"
 )
 
 const ModuleID extension.ModuleID = "chatlog"
@@ -29,63 +35,58 @@ type (
 	CheckpointID string
 )
 
-// EventTypes (CHT-EVT-1). v1 companion and coordinator write the first six;
-// checkpoints are written by the host's compaction (CHT-EVT-3).
+// EventTypes (CHT-EVT-1): the conversation's own facts. Inputs are written by
+// the host and the Coordinator, checkpoints by the host's compaction
+// (CHT-EVT-3), tool_result_superseded by the Application after an
+// out-of-band verification (CHT-ENT-2).
 const (
 	TypeInputSubmitted        session.EventType = "twilight/chatlog/input_submitted"
 	TypeInputDelivered        session.EventType = "twilight/chatlog/input_delivered"
 	TypeInputWithdrawn        session.EventType = "twilight/chatlog/input_withdrawn"
 	TypeInputRejected         session.EventType = "twilight/chatlog/input_rejected"
-	TypeAssistant             session.EventType = "twilight/chatlog/assistant"
-	TypeToolResult            session.EventType = "twilight/chatlog/tool_result"
 	TypeToolResultSuperseded  session.EventType = "twilight/chatlog/tool_result_superseded"
 	TypeSummary               session.EventType = "twilight/chatlog/summary"
 	TypeCheckpointCreated     session.EventType = "twilight/chatlog/checkpoint_created"
 	TypeCheckpointInvalidated session.EventType = "twilight/chatlog/checkpoint_invalidated"
 )
 
+// Digest domains of the projected entries (CHT-COD-3). They are not event
+// types: an assistant or tool_result entry is folded from Run facts.
+const (
+	assistantDomain  = "twilight/chatlog/assistant"
+	toolResultDomain = "twilight/chatlog/tool_result"
+)
+
 // --- parts --------------------------------------------------------------------
 
+// PartKind is the discriminator of summary parts. Model output is not parts:
+// an assistant entry names its frozen ModelResult by digest.
 type PartKind string
 
 const (
 	PartText      PartKind = "twilight/chatlog/text"
-	PartReasoning PartKind = "twilight/chatlog/reasoning"
-	PartToolCall  PartKind = "twilight/chatlog/tool_call"
 	PartReference PartKind = "twilight/chatlog/reference"
 )
 
 type Part interface{ PartKind() PartKind }
 
 type TextPart struct{ Text string }
-type ReasoningPart struct{ Text string }
-type ToolCallPart struct {
-	CallID         CallID
-	ProviderCallID string
-	Name           string
-	Input          jsonstable.Value
-}
 type ReferencePart struct {
 	BindingID artifact.BindingID
 	Name      string
 }
 
 func (TextPart) PartKind() PartKind      { return PartText }
-func (ReasoningPart) PartKind() PartKind { return PartReasoning }
-func (ToolCallPart) PartKind() PartKind  { return PartToolCall }
 func (ReferencePart) PartKind() PartKind { return PartReference }
 
 // Parts is the ordered part list with its discriminated-union wire.
 type Parts []Part
 
 type partWire struct {
-	Kind           PartKind          `json:"kind"`
-	Text           string            `json:"text,omitempty"`
-	CallID         CallID            `json:"callId,omitempty"`
-	ProviderCallID string            `json:"providerCallId,omitempty"`
-	Name           string            `json:"name,omitempty"`
-	Input          *jsonstable.Value `json:"input,omitempty"`
-	BindingID      string            `json:"bindingId,omitempty"`
+	Kind      PartKind `json:"kind"`
+	Text      string   `json:"text,omitempty"`
+	Name      string   `json:"name,omitempty"`
+	BindingID string   `json:"bindingId,omitempty"`
 }
 
 func (ps Parts) MarshalJSON() ([]byte, error) {
@@ -125,14 +126,6 @@ func encodePart(p Part) (partWire, error) {
 	switch v := p.(type) {
 	case TextPart:
 		return partWire{Kind: PartText, Text: v.Text}, nil
-	case ReasoningPart:
-		return partWire{Kind: PartReasoning, Text: v.Text}, nil
-	case ToolCallPart:
-		if v.CallID == "" || v.Name == "" || v.Input.IsZero() {
-			return partWire{}, errors.New("tool_call part requires callId, name and input")
-		}
-		input := v.Input
-		return partWire{Kind: PartToolCall, CallID: v.CallID, ProviderCallID: v.ProviderCallID, Name: v.Name, Input: &input}, nil
 	case ReferencePart:
 		if v.BindingID == "" {
 			return partWire{}, errors.New("reference part requires bindingId")
@@ -146,28 +139,33 @@ func encodePart(p Part) (partWire, error) {
 func decodePart(w *partWire) (Part, error) {
 	switch w.Kind {
 	case PartText:
-		if w.CallID != "" || w.BindingID != "" || w.Input != nil {
+		if w.BindingID != "" || w.Name != "" {
 			return nil, errors.New("text part carries foreign fields")
 		}
 		return TextPart{Text: w.Text}, nil
-	case PartReasoning:
-		if w.CallID != "" || w.BindingID != "" || w.Input != nil {
-			return nil, errors.New("reasoning part carries foreign fields")
-		}
-		return ReasoningPart{Text: w.Text}, nil
-	case PartToolCall:
-		if w.CallID == "" || w.Name == "" || w.Input == nil || w.Input.IsZero() || w.Text != "" || w.BindingID != "" {
-			return nil, errors.New("malformed tool_call part")
-		}
-		return ToolCallPart{CallID: w.CallID, ProviderCallID: w.ProviderCallID, Name: w.Name, Input: *w.Input}, nil
 	case PartReference:
-		if w.BindingID == "" || w.Text != "" || w.CallID != "" {
+		if w.BindingID == "" || w.Text != "" {
 			return nil, errors.New("malformed reference part")
 		}
 		return ReferencePart{BindingID: artifact.BindingID(w.BindingID), Name: w.Name}, nil
 	default:
 		return nil, fmt.Errorf("unknown part kind %q", w.Kind)
 	}
+}
+
+// PartsText renders the text of summary parts; references are named, not
+// materialized.
+func PartsText(parts Parts) string {
+	var out string
+	for _, part := range parts {
+		switch v := part.(type) {
+		case TextPart:
+			out += v.Text
+		case ReferencePart:
+			out += "[attachment " + v.Name + "]"
+		}
+	}
+	return out
 }
 
 // --- entries ------------------------------------------------------------------
@@ -180,6 +178,16 @@ const (
 	ToolUnknown ToolResultStatus = "unknown"
 )
 
+// ToolResultSource says which frozen body a successful tool result names:
+// the tool's own output (ToolCallCompleted) or an external answer
+// (ToolCallAnswered). A failed result names no body.
+type ToolResultSource string
+
+const (
+	SourceToolOutput   ToolResultSource = "tool_output"
+	SourceToolResponse ToolResultSource = "tool_response"
+)
+
 type Input struct {
 	ID      InputID          `json:"id"`
 	TurnID  TurnID           `json:"turnId,omitempty"`
@@ -187,22 +195,47 @@ type Input struct {
 	Digest  es.Digest        `json:"digest"`
 }
 
+// Assistant is the structural projection of one ModelStepCompleted
+// (CHT-ENT-1): the identities of the step and its Turn, the digest that names
+// the frozen ModelResult, and the CallIDs of the calls the result issued, in
+// the result's ToolCalls order (from ToolStepOpened). The text, reasoning and
+// tool call arguments live in the frozen body; Materialize resolves them.
 type Assistant struct {
-	ID           AssistantID `json:"id"`
-	TurnID       TurnID      `json:"turnId"`
-	Parts        Parts       `json:"parts"`
-	SourceDigest es.Digest   `json:"sourceDigest,omitempty"`
-	Digest       es.Digest   `json:"digest"`
+	ID           AssistantID      `json:"id"`
+	TurnID       TurnID           `json:"turnId,omitempty"`
+	RunID        run.RunID        `json:"runId"`
+	StepID       run.StepID       `json:"stepId"`
+	FinishReason run.FinishReason `json:"finishReason"`
+	ResultDigest es.Digest        `json:"resultDigest"`
+	CallIDs      []CallID         `json:"callIds,omitempty"`
+	Digest       es.Digest        `json:"digest"`
 }
 
+// ToolResult is the structural projection of one call's terminal outcome
+// (CHT-ENT-2): success names the frozen output or response by digest;
+// error and unknown carry the Run-recorded failure.
 type ToolResult struct {
 	ID           ToolResultID     `json:"id"`
-	TurnID       TurnID           `json:"turnId"`
+	TurnID       TurnID           `json:"turnId,omitempty"`
+	RunID        run.RunID        `json:"runId"`
 	CallID       CallID           `json:"callId"`
 	Status       ToolResultStatus `json:"status"`
-	Parts        Parts            `json:"parts"`
-	SourceDigest es.Digest        `json:"sourceDigest,omitempty"`
+	Source       ToolResultSource `json:"source,omitempty"`
+	OutputDigest es.Digest        `json:"outputDigest,omitempty"`
+	Failure      *run.ToolFailure `json:"failure,omitempty"`
 	Digest       es.Digest        `json:"digest"`
+}
+
+// FailureText renders an error or unknown result's failure the way the
+// context builder shows it to the model.
+func (r *ToolResult) FailureText() string {
+	if r.Failure == nil {
+		return string(r.Status)
+	}
+	if r.Failure.Message == "" {
+		return r.Failure.Class
+	}
+	return r.Failure.Class + ": " + r.Failure.Message
 }
 
 type Summary struct {
@@ -211,37 +244,55 @@ type Summary struct {
 	Digest es.Digest `json:"digest"`
 }
 
-// Digests (CHT-COD-3): domain equals the EventType; `v` is not covered.
+// AssistantIDFor is the entry identity of a model step's result: the StepID
+// itself, which is unique across Runs (TRN-MAP-2).
+func AssistantIDFor(step run.StepID) AssistantID { return AssistantID(step) }
+
+// ToolResultIDFor is the entry identity of a call's terminal result: the
+// CallID itself.
+func ToolResultIDFor(call run.CallID) ToolResultID { return ToolResultID(call) }
+
+// SupersedingToolResultID is the identity of the result an out-of-band
+// verification substitutes for id (CHT-ENT-2).
+func SupersedingToolResultID(id ToolResultID) ToolResultID { return id + "/superseded" }
+
+// Digests (CHT-COD-3): the domain is the EventType or the entry domain; `v`
+// is not covered.
 
 func DigestInput(id InputID, content jsonstable.Value) (es.Digest, error) {
-	return digestDomain(TypeInputSubmitted, struct {
+	return digestDomain(string(TypeInputSubmitted), struct {
 		ID      InputID          `json:"id"`
 		Content jsonstable.Value `json:"content"`
 	}{id, content})
 }
 
 func DigestAssistant(a *Assistant) (es.Digest, error) {
-	return digestDomain(TypeAssistant, struct {
-		ID           AssistantID `json:"id"`
-		TurnID       TurnID      `json:"turnId"`
-		Parts        Parts       `json:"parts"`
-		SourceDigest es.Digest   `json:"sourceDigest,omitempty"`
-	}{a.ID, a.TurnID, a.Parts, a.SourceDigest})
+	return digestDomain(assistantDomain, struct {
+		ID           AssistantID      `json:"id"`
+		TurnID       TurnID           `json:"turnId,omitempty"`
+		RunID        run.RunID        `json:"runId"`
+		StepID       run.StepID       `json:"stepId"`
+		FinishReason run.FinishReason `json:"finishReason"`
+		ResultDigest es.Digest        `json:"resultDigest"`
+		CallIDs      []CallID         `json:"callIds,omitempty"`
+	}{a.ID, a.TurnID, a.RunID, a.StepID, a.FinishReason, a.ResultDigest, a.CallIDs})
 }
 
 func DigestToolResult(r *ToolResult) (es.Digest, error) {
-	return digestDomain(TypeToolResult, struct {
+	return digestDomain(toolResultDomain, struct {
 		ID           ToolResultID     `json:"id"`
-		TurnID       TurnID           `json:"turnId"`
+		TurnID       TurnID           `json:"turnId,omitempty"`
+		RunID        run.RunID        `json:"runId"`
 		CallID       CallID           `json:"callId"`
 		Status       ToolResultStatus `json:"status"`
-		Parts        Parts            `json:"parts"`
-		SourceDigest es.Digest        `json:"sourceDigest,omitempty"`
-	}{r.ID, r.TurnID, r.CallID, r.Status, r.Parts, r.SourceDigest})
+		Source       ToolResultSource `json:"source,omitempty"`
+		OutputDigest es.Digest        `json:"outputDigest,omitempty"`
+		Failure      *run.ToolFailure `json:"failure,omitempty"`
+	}{r.ID, r.TurnID, r.RunID, r.CallID, r.Status, r.Source, r.OutputDigest, r.Failure})
 }
 
 func DigestSummary(s *Summary) (es.Digest, error) {
-	return digestDomain(TypeSummary, struct {
+	return digestDomain(string(TypeSummary), struct {
 		ID    SummaryID `json:"id"`
 		Parts Parts     `json:"parts"`
 	}{s.ID, s.Parts})
@@ -260,7 +311,7 @@ func DigestBaseContext(pairs []EntryDigestPair) (es.Digest, error) {
 	if len(pairs) == 0 {
 		pairs = nil
 	}
-	return digestDomain(TypeCheckpointCreated, struct {
+	return digestDomain(string(TypeCheckpointCreated), struct {
 		Base []EntryDigestPair `json:"base"`
 	}{pairs})
 }
@@ -271,7 +322,7 @@ func DigestCheckpoint(p *CheckpointCreatedPayload) (es.Digest, error) {
 	if len(retained) == 0 {
 		retained = nil
 	}
-	return digestDomain(TypeCheckpointCreated, struct {
+	return digestDomain(string(TypeCheckpointCreated), struct {
 		CheckpointID      CheckpointID      `json:"checkpointId"`
 		CoveredThrough    uint64            `json:"coveredThrough"`
 		BaseContextDigest es.Digest         `json:"baseContextDigest"`
@@ -281,8 +332,8 @@ func DigestCheckpoint(p *CheckpointCreatedPayload) (es.Digest, error) {
 	}{p.CheckpointID, p.CoveredThrough, p.BaseContextDigest, p.SummaryID, p.SummaryDigest, retained})
 }
 
-func digestDomain(typ session.EventType, body any) (es.Digest, error) {
-	raw, err := es.EncodeTypedPayload(1, string(typ), body)
+func digestDomain(domain string, body any) (es.Digest, error) {
+	raw, err := es.EncodeTypedPayload(1, domain, body)
 	if err != nil {
 		return "", err
 	}
@@ -308,24 +359,17 @@ type InputRejectedPayload struct {
 	InputID InputID `json:"inputId"`
 	Reason  string  `json:"reason,omitempty"`
 }
-type AssistantPayload struct {
-	Assistant Assistant `json:"assistant"`
-}
 
-// SourceDigest lets the run Runtime verify the assistant names a digest that a
-// fact of the same commit recorded (TRN-MAP-3).
-func (p AssistantPayload) SourceDigest() es.Digest { return p.Assistant.SourceDigest }
-
-type ToolResultPayload struct {
-	ToolResult ToolResult `json:"toolResult"`
-}
-
-// SourceDigest is the fact-recorded digest of the tool output (TRN-MAP-3).
-func (p ToolResultPayload) SourceDigest() es.Digest { return p.ToolResult.SourceDigest }
-
+// ToolResultSupersededPayload substitutes a verified outcome for a call's
+// projected result (CHT-ENT-2): an unknown result the Application confirmed
+// out of band becomes success (its output frozen under OutputDigest, written
+// through the run FrozenValueStore) or error. The Run fact is untouched; the
+// substitution is a conversation decision.
 type ToolResultSupersededPayload struct {
-	ToolResultID            ToolResultID `json:"toolResultId"`
-	ReplacementToolResultID ToolResultID `json:"replacementToolResultId"`
+	ToolResultID ToolResultID     `json:"toolResultId"`
+	Status       ToolResultStatus `json:"status"`
+	OutputDigest es.Digest        `json:"outputDigest,omitempty"`
+	Reason       string           `json:"reason,omitempty"`
 }
 type SummaryPayload struct {
 	Summary Summary `json:"summary"`
@@ -349,44 +393,21 @@ type CheckpointInvalidatedPayload struct {
 	Reason       string       `json:"reason,omitempty"`
 }
 
-func checkAssistant(p *AssistantPayload) error {
-	a := &p.Assistant
-	if a.ID == "" || a.TurnID == "" {
-		return errors.New("assistant requires id and turnId")
+func checkSuperseded(p *ToolResultSupersededPayload) error {
+	if p.ToolResultID == "" {
+		return errors.New("tool_result_superseded requires toolResultId")
 	}
-	want, err := DigestAssistant(a)
-	if err != nil {
-		return err
-	}
-	if a.Digest != want {
-		return errors.New("assistant digest mismatch")
-	}
-	return nil
-}
-
-func checkToolResult(p *ToolResultPayload) error {
-	r := &p.ToolResult
-	if r.ID == "" || r.TurnID == "" || r.CallID == "" {
-		return errors.New("tool_result requires id, turnId and callId")
-	}
-	switch r.Status {
-	case ToolSuccess, ToolError, ToolUnknown:
-	default:
-		return fmt.Errorf("unknown tool_result status %q", r.Status)
-	}
-	for _, part := range r.Parts {
-		switch part.(type) {
-		case TextPart, ReferencePart:
-		default:
-			return errors.New("tool_result parts must be text or reference")
+	switch p.Status {
+	case ToolSuccess:
+		if p.OutputDigest == "" {
+			return errors.New("tool_result_superseded with status success requires outputDigest")
 		}
-	}
-	want, err := DigestToolResult(r)
-	if err != nil {
-		return err
-	}
-	if r.Digest != want {
-		return errors.New("tool_result digest mismatch")
+	case ToolError:
+		if p.OutputDigest != "" {
+			return errors.New("tool_result_superseded with status error carries no outputDigest")
+		}
+	default:
+		return fmt.Errorf("tool_result_superseded status must be success or error, got %q", p.Status)
 	}
 	return nil
 }
@@ -439,29 +460,42 @@ func checkSummary(p *SummaryPayload) error {
 // PartsExtractor returns the BindingIDs of ReferenceParts in appearance
 // order (CHT-COD-2).
 var PartsExtractor extension.BindingExtractor = extension.BindingExtractorFunc(func(value any) ([]artifact.BindingID, error) {
-	var parts Parts
-	switch v := value.(type) {
-	case AssistantPayload:
-		parts = v.Assistant.Parts
-	case ToolResultPayload:
-		parts = v.ToolResult.Parts
-	case SummaryPayload:
-		parts = v.Summary.Parts
-	default:
+	p, ok := value.(SummaryPayload)
+	if !ok {
 		return nil, fmt.Errorf("parts extractor: unexpected %T", value)
 	}
 	var out []artifact.BindingID
-	for _, p := range parts {
-		if ref, ok := p.(ReferencePart); ok {
+	for _, part := range p.Summary.Parts {
+		if ref, ok := part.(ReferencePart); ok {
 			out = append(out, ref.BindingID)
 		}
 	}
 	return out, nil
 })
 
+// supersededExtractor names the frozen output a success supersession
+// carries, under the run module's frozen Binding derivation.
+var supersededExtractor extension.BindingExtractor = extension.BindingExtractorFunc(func(value any) ([]artifact.BindingID, error) {
+	p, ok := value.(ToolResultSupersededPayload)
+	if !ok {
+		return nil, fmt.Errorf("superseded extractor: unexpected %T", value)
+	}
+	if p.OutputDigest == "" {
+		return nil, nil
+	}
+	return []artifact.BindingID{runmod.FrozenBindingID(p.OutputDigest)}, nil
+})
+
 var partsBinding = extension.BindingReferenceDefinition{
 	Extractor:          PartsExtractor,
 	Cardinality:        extension.Cardinality{Min: 0},
+	RequiredDurability: artifact.EventBound,
+}
+
+var supersededBinding = extension.BindingReferenceDefinition{
+	Extractor:          supersededExtractor,
+	Cardinality:        extension.Cardinality{Min: 0},
+	AllowedSchemes:     []artifact.Scheme{artifact.SchemeCAS},
 	RequiredDurability: artifact.EventBound,
 }
 
@@ -471,10 +505,24 @@ func def[T any](typ session.EventType, check func(*T) error, bindings ...extensi
 		Bindings: bindings}
 }
 
-// Module is the chatlog ModuleDescriptor (CHT-SCP-1: no Requires).
+// consumedRunFacts are the Run facts the chatlog projections fold
+// (CHT-SCP-1): run_created for the Run's Turn, the model and tool outcomes
+// for the entries, tool_step_opened for the CallIDs a result issued.
+var consumedRunFacts = []string{"run_created", "model_step_completed", "tool_step_opened", "tool_call_completed", "tool_call_answered", "tool_call_failed"}
+
+func runRequirement() extension.ModuleRequirement {
+	events := make(map[session.EventType][]extension.PayloadVersion, len(consumedRunFacts))
+	for _, name := range consumedRunFacts {
+		events[runmod.Type(name)] = []extension.PayloadVersion{extension.PayloadVersion(run.SchemaVersion1)}
+	}
+	return extension.ModuleRequirement{Source: extension.SourceTwilight, Module: runmod.ModuleID, Events: events}
+}
+
+// Module is the chatlog ModuleDescriptor (CHT-SCP-1: Requires run v1 facts).
 var Module = extension.ModuleDescriptor{
-	Source: extension.SourceTwilight,
-	ID:     ModuleID,
+	Source:   extension.SourceTwilight,
+	ID:       ModuleID,
+	Requires: []extension.ModuleRequirement{runRequirement()},
 	Events: []extension.EventDefinition{
 		def[InputSubmittedPayload](TypeInputSubmitted, func(p *InputSubmittedPayload) error {
 			if p.InputID == "" || p.Content.IsZero() {
@@ -490,9 +538,7 @@ var Module = extension.ModuleDescriptor{
 		}),
 		def[InputWithdrawnPayload](TypeInputWithdrawn, nil),
 		def[InputRejectedPayload](TypeInputRejected, nil),
-		def[AssistantPayload](TypeAssistant, checkAssistant, partsBinding),
-		def[ToolResultPayload](TypeToolResult, checkToolResult, partsBinding),
-		def[ToolResultSupersededPayload](TypeToolResultSuperseded, nil),
+		def[ToolResultSupersededPayload](TypeToolResultSuperseded, checkSuperseded, supersededBinding),
 		def[SummaryPayload](TypeSummary, checkSummary, partsBinding),
 		def[CheckpointCreatedPayload](TypeCheckpointCreated, checkCheckpointCreated),
 		def[CheckpointInvalidatedPayload](TypeCheckpointInvalidated, checkCheckpointInvalidated),

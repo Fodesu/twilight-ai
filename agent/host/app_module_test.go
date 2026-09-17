@@ -99,7 +99,7 @@ func TestAppModuleSharesTheSessionStream(t *testing.T) {
 		t.Fatalf("audit commit = %+v %v", res, err)
 	}
 	if _, err := h.Coordinator.Start(ctx, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},
-		Inputs: []run.AgentInput{in}, Preset: preset, Companion: turn.CompanionV1Version}); err != nil {
+		Inputs: []run.AgentInput{in}, Preset: preset}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.Drive(ctx, turn.TurnRef{SessionID: sid, TurnID: "t1"}); err != nil {

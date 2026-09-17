@@ -77,7 +77,7 @@ func (r *Registry) Decode(session.Event) (DecodedEvent, error)
 
 **EXT-REG-3** `Decode` 对未注册的 EventType 或未注册的 `v` 返回 `DecodedEvent{Unknown:true}` 并保留原始 payload。投影对 Unknown 的处置见 EXT-PRJ-2。
 
-**EXT-REG-4** 模块间依赖由 `Requires` 声明，构建时校验：被依赖模块已注册、依赖图无环、投影消费的 EventType 属于本模块或 `Requires` 中的模块、被依赖事件的 `Current` 在声明的版本列表内。`Requires` 只表达事件消费依赖；接口实现（如 run 的 `Companion` 由 turn 实现）是构造参数，不进入 `Requires`。
+**EXT-REG-4** 模块间依赖由 `Requires` 声明，构建时校验：被依赖模块已注册、依赖图无环、投影消费的 EventType 属于本模块或 `Requires` 中的模块、被依赖事件的 `Current` 在声明的版本列表内。`Requires` 只表达事件消费依赖；接口实现（如 Runtime 的 FrozenValueStore）是构造参数，不进入 `Requires`。
 
 ## 3. event codec
 

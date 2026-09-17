@@ -224,8 +224,8 @@ func (s ToolCallStatus) String() string {
 func (s ToolCallStatus) Terminal() bool { return s == ToolCompleted || s == ToolFailed }
 
 // ToolExecutionResult is the transient output a tool worker submits. The
-// state and the fact keep only its digest; the content is carried to the
-// conversation by the companion (RUN-WIR-4).
+// state and the fact keep only its digest; the body is frozen under that
+// digest before the fact is committed (RUN-WIR-4).
 type ToolExecutionResult struct {
 	Output CanonicalJSON `json:"output"`
 }
@@ -374,7 +374,7 @@ func (s *ToolStep) callIndex(id CallID) int {
 // MachineState is the complete semantic state of one Run (RUN-MCH-1).
 // Control metadata (owner, fence, lease, attempts, queue claims) never
 // appears here. Content bodies (model output, tool output) never appear
-// either: facts record digests and the companion carries the content.
+// either: facts record digests and the FrozenValueStore holds the bodies.
 type MachineState struct {
 	RunID RunID `json:"runId"`
 	// Owner is the opaque upper-level identity this Run serves; Attempt is its

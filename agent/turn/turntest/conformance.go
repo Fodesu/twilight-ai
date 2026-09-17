@@ -53,8 +53,7 @@ func testStart(t *testing.T, factory Factory) {
 		req      turn.StartRequest
 		conflict bool // ErrConflict, otherwise a validation error
 	}{
-		{"missing preset", turn.StartRequest{Ref: h.ref("t1"), Companion: turn.CompanionV1Version}, false},
-		{"missing companion", turn.StartRequest{Ref: h.ref("t1"), Preset: preset}, false},
+		{"missing preset", turn.StartRequest{Ref: h.ref("t1")}, false},
 		{"duplicate input ids", h.startRequest("t1", submitted[0], submitted[0]), false},
 		{"input never submitted", h.startRequest("t1", input("ghost")), true},
 		{"payload differs from submitted content", h.startRequest("t1", altered), true},
@@ -79,13 +78,13 @@ func testStart(t *testing.T, factory Factory) {
 	if resp.Status != turn.TurnActive || resp.Attempt != 1 || resp.RunID != runID || resp.Disposition != "" || resp.End != nil {
 		t.Fatalf("start response = %+v", resp)
 	}
-	plan := turn.PlanDigest("t1", preset.Digest, turn.CompanionV1Version, []chatlog.InputID{"in-1", "in-2"})
+	plan := turn.PlanDigest("t1", preset.Digest, []chatlog.InputID{"in-1", "in-2"})
 	group := h.group(session.CommitID(turn.StartOperationDigest(sid, "t1", plan)))
 	if !sameTypes(group, turn.TypeStarted, turn.TypeAttemptStarted, chatlog.TypeInputDelivered, chatlog.TypeInputDelivered, typeCreated, typeAccepted, typeAccepted) {
 		t.Fatalf("start group = %v", eventTypes(group))
 	}
 	started := decode[turn.StartedPayload](t, h.registry, &group[0])
-	if started.TurnID != "t1" || len(started.InputIDs) != 2 || started.Preset != preset || started.Companion != turn.CompanionV1Version {
+	if started.TurnID != "t1" || len(started.InputIDs) != 2 || started.Preset != preset {
 		t.Fatalf("started payload = %+v", started)
 	}
 	created := decode[runmod.Event](t, h.registry, &group[4])
@@ -411,13 +410,14 @@ func testStopAndSettle(t *testing.T, factory Factory) {
 		t.Fatalf("retry after settle = %v, want conflict", err)
 	}
 
-	// A completed Run is settled by the companion in the same group; every
-	// Coordinator transition then conflicts.
+	// A completed Run settles the Turn through the run_ended of its own
+	// group; no turn event is written, and every Coordinator transition then
+	// conflicts.
 	resp = h.start("t3", "in-3")
 	res := h.complete(resp.RunID)
 	types := eventTypes(res.Events)
-	if types[len(types)-1] != turn.TypeCompleted {
-		t.Fatalf("completion group = %v, want turn/completed last", types)
+	if types[len(types)-1] != runmod.Prefix+"run_ended" {
+		t.Fatalf("completion group = %v, want run_ended last and no turn event", types)
 	}
 	st := h.status("t3")
 	if st.Status != turn.TurnCompleted || st.Disposition != turn.ResumeFinished || st.End == nil {
@@ -505,9 +505,7 @@ func testProjection(t *testing.T, factory Factory) {
 	}
 
 	// TRN-EVT-3: a second started, a settlement of an unknown Turn and a second
-	// settlement are refused by the fold before anything is written. A lone
-	// turn/completed on an active Turn is accepted (the fold does not require
-	// the run_ended it is meant to accompany), so it is not in this table.
+	// settlement are refused by the fold before anything is written.
 	failed := func(turnID turn.TurnID, s turn.Settlement) writer.TypedEvent {
 		return writer.TypedEvent{Type: turn.TypeFailed, RecordedAtUnixMilli: h.now,
 			Value: turn.FailedPayload{TurnID: turnID, RunID: resp.RunID, Settlement: s, FailureClass: "x"}}
@@ -522,11 +520,9 @@ func testProjection(t *testing.T, factory Factory) {
 		event writer.TypedEvent
 	}{
 		{"started twice", writer.TypedEvent{Type: turn.TypeStarted, RecordedAtUnixMilli: h.now,
-			Value: turn.StartedPayload{TurnID: "t1", Preset: preset, Companion: turn.CompanionV1Version}}},
+			Value: turn.StartedPayload{TurnID: "t1", Preset: preset}}},
 		{"failed for an unknown turn", failed("ghost", turn.SettlementFailed)},
 		{"settled twice", failed("t1", turn.SettlementStopped)},
-		{"completed after failed", writer.TypedEvent{Type: turn.TypeCompleted, RecordedAtUnixMilli: h.now,
-			Value: turn.CompletedPayload{TurnID: "t1", RunID: resp.RunID}}},
 	}
 	for i, tc := range rejects {
 		res := h.commit(writer.SemanticGroup{CommitID: session.CommitID("reject-" + string(rune('a'+i))), Batches: []writer.TypedBatch{
@@ -546,7 +542,7 @@ func testProjection(t *testing.T, factory Factory) {
 		t.Fatalf("end = %T", h.surface().Turns["t1"].Attempts[0].End.End)
 	}
 
-	// A completed Run is settled by the companion in the same group.
+	// A completed Run settles the Turn from its own run_ended.
 	resp2 := h.start("t2", "in-2")
 	h.complete(resp2.RunID)
 	if v := h.surface().Turns["t2"]; v.Status != turn.TurnCompleted || v.ActiveRun != "" {

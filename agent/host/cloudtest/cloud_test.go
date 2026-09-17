@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/felinics/twilight/agent/decision"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
@@ -244,6 +243,7 @@ type observer struct {
 	store    *filestore.Store
 	registry *extension.Registry
 	reader   extension.ProjectionReader
+	content  chatlog.ContentResolver
 }
 
 func newObserver(t *testing.T, root string) *observer {
@@ -256,7 +256,14 @@ func newObserver(t *testing.T, root string) *observer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &observer{t: t, store: store, registry: registry, reader: extension.NewProjectionReader(store, registry, nil)}
+	// An observer materializes replies from the same frozen store the
+	// authority writes; the ledger alone carries only digests.
+	content, err := filestore.NewContentStore(root, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &observer{t: t, store: store, registry: registry, reader: extension.NewProjectionReader(store, registry, nil),
+		content: runmod.NewContent(runmod.FrozenValues(content))}
 }
 
 func (o *observer) rows() []session.Event {
@@ -315,7 +322,11 @@ func (o *observer) reply() string {
 	entries := state.(chatlog.Context).Entries
 	for i := len(entries) - 1; i >= 0; i-- {
 		if entries[i].Kind == chatlog.EntryAssistant {
-			return decision.PartsText(entries[i].Assistant.Parts)
+			m, err := chatlog.NewMaterializer(o.content).Entry(context.Background(), &entries[i])
+			if err != nil {
+				o.t.Fatalf("materialize reply: %v", err)
+			}
+			return m.Text()
 		}
 	}
 	return ""
@@ -393,7 +404,7 @@ func TestExecutorCrashSettlesUnknown(t *testing.T) {
 	if n := gateStats(t, e2); n != 0 {
 		t.Fatalf("replacement executor started the gate %d times; adoption must not re-dispatch an unbound tool", n)
 	}
-	waitFor(t, "turn completion", 10*time.Second, func() bool { return obs.has(turn.TypeCompleted) })
+	waitFor(t, "turn completion", 10*time.Second, func() bool { return obs.has(runmod.Prefix + "run_ended") })
 	if got := obs.reply(); got != "answer: tool unknown" {
 		t.Fatalf("reply = %q, want the model to see an unknown tool result", got)
 	}
@@ -438,7 +449,7 @@ func takeover(t *testing.T, freeze bool) (root string, a, b, e *proc, obs *obser
 	}
 
 	release(t, e)
-	waitFor(t, "turn completion after takeover", 10*time.Second, func() bool { return obs.has(turn.TypeCompleted) })
+	waitFor(t, "turn completion after takeover", 10*time.Second, func() bool { return obs.has(runmod.Prefix + "run_ended") })
 	if got := obs.reply(); got != "answer: tool ok" {
 		t.Fatalf("reply = %q, want the real tool result", got)
 	}

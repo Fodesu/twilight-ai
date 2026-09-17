@@ -4,19 +4,21 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
+	runmod "github.com/felinics/twilight/agent/session/run"
 )
 
-// benchEvents builds n assistant events, the cheapest event that grows both
-// the maps and EntryOrder of each projection. Positions come from the
-// projection's own counter, so the wire event carries no Seq.
+// benchEvents builds n model_step_completed facts, the cheapest event that
+// grows both the maps and EntryOrder of each projection. Positions come from
+// the projection's own counter, so the wire event carries no Seq.
 func benchEvents(n int) []extension.DecodedEvent {
 	out := make([]extension.DecodedEvent, n)
 	for i := range out {
 		out[i] = extension.DecodedEvent{
 			Event: session.Event{},
-			Value: AssistantPayload{Assistant: Assistant{ID: AssistantID(fmt.Sprint(i)), Digest: "sha256:x"}},
+			Value: runmod.Event{RunID: "r", Fact: run.ModelStepCompleted{StepID: run.StepID(fmt.Sprint(i)), FinishReason: run.FinishReasonStop, ResultDigest: "sha256:x"}},
 		}
 	}
 	return out

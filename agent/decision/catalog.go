@@ -9,8 +9,8 @@ import (
 
 // PromptBuilderFactory builds the PromptBuilder of one PromptBuilderRef for
 // one AgentPreset. The factory is pure configuration: the builder it returns
-// reads state only through the ProjectionSource (DEC-CAT-1).
-type PromptBuilderFactory func(turn.AgentPreset, ProjectionSource) loop.PromptBuilder
+// reads state only through the Sources (DEC-CAT-1).
+type PromptBuilderFactory func(turn.AgentPreset, Sources) loop.PromptBuilder
 
 // PromptBuilders resolves PromptBuilderRefs on the authority side (DEC-CAT-1).
 // It is the decision layer's only registry: every other decision input is
@@ -45,7 +45,7 @@ func (c *PromptBuilders) Register(ref turn.PromptBuilderRef, f PromptBuilderFact
 
 // Resolve returns the builder of preset.Prompt or ErrUnknownPromptBuilder
 // (DEC-CAT-2).
-func (c *PromptBuilders) Resolve(preset turn.AgentPreset, projections ProjectionSource) (loop.PromptBuilder, error) {
+func (c *PromptBuilders) Resolve(preset turn.AgentPreset, sources Sources) (loop.PromptBuilder, error) {
 	if c == nil {
 		return nil, fmt.Errorf("decision: no prompt builders configured")
 	}
@@ -53,7 +53,7 @@ func (c *PromptBuilders) Resolve(preset turn.AgentPreset, projections Projection
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrUnknownPromptBuilder, preset.Prompt)
 	}
-	return f(preset, projections), nil
+	return f(preset, sources), nil
 }
 
 // DefaultPromptBuilders holds the first-party prompt builder: the context

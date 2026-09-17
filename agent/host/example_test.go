@@ -62,7 +62,7 @@ func Example_recoverableTurn() {
 	startDone := make(chan error, 1)
 	go func() {
 		_, err := p1.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
-			Preset: profile1, Companion: turn.CompanionV1Version})
+			Preset: profile1})
 		if err == nil {
 			// The Coordinator only commits; the host drives (HST-DRV-1).
 			_, err = p1.Drive(ctx, ref1)

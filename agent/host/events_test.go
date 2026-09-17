@@ -10,6 +10,7 @@ import (
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
+	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -49,7 +50,10 @@ func TestSubmitReturnsAtOnceAndEventsReportTheTurn(t *testing.T) {
 	}
 	close(gate.release)
 
+	// The Turn completes through its Run's run_ended: attempt_started names the
+	// Run of the Turn, run_ended(completed) of that Run is the settlement.
 	var sawStarted, sawCompleted bool
+	var runID run.RunID
 	deadline := time.After(5 * time.Second)
 	for !sawCompleted {
 		select {
@@ -60,9 +64,13 @@ func TestSubmitReturnsAtOnceAndEventsReportTheTurn(t *testing.T) {
 			switch v := e.Value.(type) {
 			case turn.StartedPayload:
 				sawStarted = v.TurnID == ref.TurnID
-			case turn.CompletedPayload:
+			case turn.AttemptStartedPayload:
 				if v.TurnID == ref.TurnID {
-					sawCompleted = true
+					runID = v.RunID
+				}
+			case runmod.Event:
+				if ended, ok := v.Fact.(run.RunEnded); ok && v.RunID == runID {
+					_, sawCompleted = ended.End.(run.RunCompletedEnd)
 				}
 			}
 		case <-deadline:
@@ -72,7 +80,8 @@ func TestSubmitReturnsAtOnceAndEventsReportTheTurn(t *testing.T) {
 	if !sawStarted {
 		t.Fatal("the stream did not carry the turn's started row")
 	}
-	// The reply is in the stream as an assistant row and in the projection.
+	// The reply is an assistant entry projected from the model_step_completed
+	// row.
 	chat, err := h.ChatlogSurface(ctx, sid)
 	if err != nil {
 		t.Fatal(err)

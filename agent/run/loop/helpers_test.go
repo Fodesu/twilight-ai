@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"errors"
+	"github.com/felinics/twilight/agent/artifact"
 	. "github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
@@ -19,19 +20,13 @@ const (
 
 func cj(raw string) CanonicalJSON { return MustParseCanonicalJSON(raw) }
 
-// nopCompanion writes no conversation content; Loop tests exercise the Run
-// facts only.
-type nopCompanion struct{}
-
-func (nopCompanion) Version() string                             { return "test/nop" }
-func (nopCompanion) Map(CompanionRequest) ([]ModuleEvent, error) { return nil, nil }
-
 // testStack is the minimal Session stack a Loop test drives: kernel Memory
-// Store, the run module, one owner process (Writers) and a Runtime with a
-// no-op companion.
+// Store, the run module, one owner process (Writers) and a Runtime.
 type testStack struct {
 	store    *session.MemoryStore
 	registry *extension.Registry
+	bindings *artifact.MemoryBindingStore
+	ledger   *artifact.MemoryLedger
 	writers  writer.Writers
 	runtime  *runmod.Runtime
 	now      func() time.Time
@@ -59,8 +54,12 @@ func newTestStack(t testing.TB, now func() time.Time) *testStack {
 // one that is still open.
 func (s *testStack) open(t testing.TB) {
 	t.Helper()
-	s.writers = writer.NewWriters(s.store, s.registry, writer.Admission{}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
-	rt, err := runmod.NewRuntime(runmod.Config{Writers: s.writers, Registry: s.registry, Store: s.store, Companion: nopCompanion{}, Now: s.now})
+	if s.bindings == nil {
+		s.bindings = artifact.NewMemoryBindingStore()
+		s.ledger = artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: s.bindings})
+	}
+	s.writers = writer.NewWriters(s.store, s.registry, writer.Admission{Bindings: s.bindings, Ledger: s.ledger}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
+	rt, err := runmod.NewRuntime(runmod.Config{Writers: s.writers, Registry: s.registry, Store: s.store, Bindings: s.bindings, Now: s.now})
 	if err != nil {
 		t.Fatal(err)
 	}

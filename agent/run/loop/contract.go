@@ -152,7 +152,7 @@ type Event struct {
 	Durability EventDurability
 	Payload    json.RawMessage
 	// Committed is set for an EventAgentCommitted observation: the accepted
-	// commit in batch order (run facts, companion, attach); nil for
+	// commit in batch order (run facts, attach); nil for
 	// provisional.
 	Committed []session.Event
 }

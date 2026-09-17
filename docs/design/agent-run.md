@@ -9,9 +9,9 @@
 ```text
 Session stream               唯一 authority：twilight/run/ 事实与 turn、chatlog 事件同在一条 stream，一行一个 event
 MachineState                 Run 的语义状态投影（twilight/run/machine）；投影缓存为可丢弃的派生缓存
-Runtime                      Run 的 command 入口：在 Session 的 writer.Writer 内 Decide、Evolve、companion，一次 Append
+Runtime                      Run 的 command 入口：冻结正文入 FrozenValueStore，在 Session 的 writer.Writer 内 Decide、Evolve，一次 Append
 loop.Loop                    当前进程的 execution interpreter
-FrozenValueStore             Authority 侧的不可变请求存储；Dispatch 时形成 executor-owned payload，按 digest 校验
+FrozenValueStore             Authority 侧的不可变正文存储：模型请求、模型结果、工具输出与外部响应，按 digest 寻址；请求在 Dispatch 时形成 executor-owned payload
 ```
 
 `MachineState` 决定 Run 当前可执行动作。每次接受的 command 产生一组同 CommitID 的 Session event，其中的 `twilight/run/` 事件经该 Run 版本的 `Protocol.Evolve` 从 `twilight/run/run_created` 重放后必须得到同一 `MachineState`。
@@ -30,9 +30,9 @@ Machine 处理已冻结的值和已提交的事实；Loop 解释 `Next` 产生�
 
 `Step` 是 Run 的持久化恢复边界；`execution attempt` 表示某个 Loop 进程对该 Step 或 ToolCall 的一次逻辑执行尝试。一个 Step 可以有多个 attempt。Session Writer 负责 Run 语义事实的 ownership；Executor Worker 可以在另一个 control-plane ownership 下执行同一个 Assignment。attempt 的 identity 由 start command 的 `ExecutionClaim` 表达；start 事实记录它（`ModelStepStarted.Claim`、`ToolCallStarted.Claim`），接管者据此判断一个仍在执行的 attempt 能否继续（RUN-CMT-7）。
 
-**RUN-SCP-1** `agent/run` 拥有 Run identity、persisted frozen values、Machine、command/fact protocol、fact codec、fold 与 `Runtime`、`Companion` contract；它依赖 `agent/session` 的 identity 与 wire 类型，不依赖 loop、turn 或 extension。`agent/run/loop` 拥有 prompt builder/model/tool ports、streaming、并发执行、EventSink 与 Loop policy。`agent/session/run` 是 Run 的 Session Module 实现：EventDefinition（按 SchemaVersion 的 codec）、`twilight/run/machine` projection、`Runtime` 实现（经 `writer.Writer.Commit` 写入）、接管处置、FrozenValueStore adapter。
+**RUN-SCP-1** `agent/run` 拥有 Run identity、persisted frozen values、Machine、command/fact protocol、fact codec、fold 与 `Runtime` contract；它依赖 `agent/session` 的 identity 与 wire 类型，不依赖 loop、turn 或 extension。`agent/run/loop` 拥有 prompt builder/model/tool ports、streaming、并发执行、EventSink 与 Loop policy。`agent/session/run` 是 Run 的 Session Module 实现：EventDefinition（按 SchemaVersion 的 codec）、`twilight/run/machine` projection、`Runtime` 实现（经 `writer.Writer.Commit` 写入）、接管处置、FrozenValueStore adapter。
 
-**RUN-SCP-2** Run 是 first-party Session Module（Source `twilight`，ModuleID `run`）。Run 不解释它的上层实体：`OwnerID` 是 opaque 字符串，由 turn 模块以 TurnID 填充。本模块的 `Requires`（EXT-REG-4）为空；`Companion` 是 Runtime 的构造参数，由组装代码注入，为 nil 时构造失败，不作为模块依赖声明。Turn 的创建、attempt 归属与结算、Run 事实到对话内容的 companion 映射由 [agent-turn.md](agent-turn.md) 定义；对话内容 ontology 由 [agent-session-chatlog.md](agent-session-chatlog.md) 定义；stream、所有权、组追加与投影机制由 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md) 定义。Artifact、queue、provider registry、权限与产品 policy 分别由其 package 或 Application 拥有。
+**RUN-SCP-2** Run 是 first-party Session Module（Source `twilight`，ModuleID `run`）。Run 不解释它的上层实体：`OwnerID` 是 opaque 字符串，由 turn 模块以 TurnID 填充。本模块的 `Requires`（EXT-REG-4）为空。Run 不写任何其他模块的事件：Turn 结算与对话内容是 Run 事实的投影，由 [agent-turn.md](agent-turn.md) 与 [agent-session-chatlog.md](agent-session-chatlog.md) 定义；stream、所有权、组追加与投影机制由 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md) 定义。Artifact、queue、provider registry、权限与产品 policy 分别由其 package 或 Application 拥有。
 
 ## 2. identity、persisted values 与 wire
 
@@ -70,19 +70,20 @@ type CommandEnvelope struct {
 
 command 不持久化。`CommandEnvelope.ID` 就是该 command 产生的 event 组的 `CommitID`；重放与冲突由 Writer 的行 fingerprint 判定（EXT-WRT-2）。envelope 只经 `Protocol.BuildEnvelope` 构造（RUN-WIR-3），不携带自校验 digest。
 
-**RUN-WIR-3** 一个 command 恰产生一组事件（一次 `Append`，同一 CommitID）；其 `twilight/run/` 事件在组内 Index 从 0 连续递增，companion 事件（TRN-CMP）与调用方附加事件（`CommitRequest.Attach`）依次紧随其后。事件没有独立 EventID，`Seq` 即身份（SES-WIR-1）。Runtime 提交的组其 CommitID 等于 CommandID，Coordinator 写入的 Start 与 Retry 组使用该组自己的 CommitID。`RecordedAtUnixMilli` 由写入方的时钟填入，是 metadata，不参与 Run 的任何派生，也不进入 Writer 的幂等 fingerprint（EXT-WRT-2）。构造 command 必须使用该 Run 版本的 `Protocol.BuildEnvelope`（Loop 通过 `RuntimeSnapshot.Protocol()` 取得）。`agent/run` 不提供隐式选择版本的包级 `BuildEnvelope`、`Decide`、`Evolve` 或 `Digest*` 函数；新 Run 与测试显式使用 `ProtocolV1()`。
+**RUN-WIR-3** 一个 command 恰产生一组事件（一次 `Append`，同一 CommitID）；其 `twilight/run/` 事件在组内 Index 从 0 连续递增，调用方附加事件（`CommitRequest.Attach`）紧随其后。事件没有独立 EventID，`Seq` 即身份（SES-WIR-1）。Runtime 提交的组其 CommitID 等于 CommandID，Coordinator 写入的 Start 与 Retry 组使用该组自己的 CommitID。`RecordedAtUnixMilli` 由写入方的时钟填入，是 metadata，不参与 Run 的任何派生，也不进入 Writer 的幂等 fingerprint（EXT-WRT-2）。构造 command 必须使用该 Run 版本的 `Protocol.BuildEnvelope`（Loop 通过 `RuntimeSnapshot.Protocol()` 取得）。`agent/run` 不提供隐式选择版本的包级 `BuildEnvelope`、`Decide`、`Evolve` 或 `Digest*` 函数；新 Run 与测试显式使用 `ProtocolV1()`。
 
-**RUN-WIR-4** 内容与执行状态分离。fact 只保存执行状态与内容 digest，内容本体落在两处：
+**RUN-WIR-4** 内容与执行状态分离。fact 只保存执行状态与内容 digest；digest 是不可变正文在 `FrozenValueStore` 中的 canonical 身份，命名它的 fact 是正文的 retention root。fact 不携带 `artifact.Ref`：Scheme、Authority、MediaType、Durability 属于存储层，由 `agent/session/run` 的适配器从 digest 确定性派生（`FrozenRef`、`FrozenBinding`），Run 协议只知道 digest。
 
-| 内容 | fact 中的字段 | 本体位置 |
+| 内容 | fact 中的字段 | 正文信封 |
 |---|---|---|
-| 冻结模型请求 `ModelRequest`（含工具定义） | `ModelStepPrepared.RequestDigest` | Authority 的 `FrozenValueStore`；Dispatch 后由 Execution Record 持有 payload 或 payload ref |
+| 冻结模型请求 `ModelRequest`（含工具定义） | `ModelStepPrepared.RequestDigest` | `model_request`；Dispatch 后由 Execution Record 另持有 payload |
 | 工具定义 `ToolDefinition` | `ToolSpec.DefinitionDigest`，只用于执行前校验 | 请求本体内；不另设存储 |
-| 模型输出文本、reasoning、tool call 列表 | `ModelStepCompleted.ResultDigest` | 同组的 `twilight/chatlog/assistant`，其 `SourceDigest` 等于 ResultDigest |
-| 工具输出 | `ToolCallCompleted.OutputDigest` / `ToolCallAnswered.ResponseDigest` | 同组的 `twilight/chatlog/tool_result`，其 `SourceDigest` 等于该 digest |
-| tool call 参数 | `ToolCallBinding.Arguments` | fact 本身（执行不得依赖 chatlog 解码） |
+| 模型结果 `ModelResult`（文本、reasoning、tool call 列表、usage、provider metadata） | `ModelStepCompleted.ResultDigest` | `model_result` |
+| 工具输出 | `ToolCallCompleted.OutputDigest` | `tool_output` |
+| 外部响应 | `ToolCallAnswered.ResponseDigest` | `tool_response_payload` |
+| tool call 参数 | `ToolCallBinding.Arguments` | fact 本身 |
 
-companion 与 Attach 事件与 Run 事实一起经 Module Framework 的 admission（EXT-REF-2）：它们可以携带 `ReferencePart`，其 Binding 的 claim 由 Writer 在 `Append` 之前建立（EXT-WRT-3）。`FrozenValueStore` 是 run 层对内容寻址存储的端口：`Put(digest, bytes)` 幂等，`Get(digest)`。它不是第二个内容寻址存储，而是 artifact `cas` ContentStore 的一个 Authority（`twilight/run/frozen`，`agent/session/run.FrozenValues` 适配）。它保存 Authority 生成的 frozen request；Dispatch 时必须把请求复制到 executor-owned 的 durable Execution Record，或复制到 Worker 可访问的 payload store。Worker 不应在执行时反查 Authority 的 Session 或依赖某个 Worker 的本地文件。接管时继续使用相同 AssignmentKey；是否重试由 control plane 和 effect recovery policy 决定。内存与文件两种 ContentStore（`artifact.NewMemoryContentStore`、`filestore.NewContentStore`）经同一适配器服务。工具列表摘要（`DigestToolSpecs`）的预映像不区分 nil 与空列表：fact wire 省略空列表，重算方拿到的是 nil。
+正文以其 digest 的预映像信封存储（`run.EncodeFrozen*`），因此 `sha256(bytes) == digest`，cas Key 即 digest。`Runtime.Commit` 在进入 Writer 之前存入命令携带的正文并登记 Binding（RUN-CMT-3 第 0 步）；命名正文的四种 fact 在 EventDefinition 上声明该 Binding 的提取，Writer 在 `Append` 之前 admission 并建立 claim（EXT-REF-2、EXT-WRT-3），正文的保留期与 ledger 中的 fact 一致。对话与 Turn 的投影只保存 digest，正文在读取时经 materializer 取回（CHT-MAT-1）；因此 run 流是 canonical history，不能独立回收，正文可以迁移到冷存储但不得丢弃。`FrozenValueStore` 是 run 层对内容寻址存储的端口：`Put(digest, bytes)` 幂等，`Get(digest)`。它不是第二个内容寻址存储，而是 artifact `cas` ContentStore 的一个 Authority（`twilight/run/frozen`，`agent/session/run.FrozenValues` 适配）。Dispatch 时必须把请求复制到 executor-owned 的 durable Execution Record，或复制到 Worker 可访问的 payload store。Worker 不应在执行时反查 Authority 的 Session 或依赖某个 Worker 的本地文件。接管时继续使用相同 AssignmentKey；是否重试由 control plane 和 effect recovery policy 决定。内存与文件两种 ContentStore（`artifact.NewMemoryContentStore`、`filestore.NewContentStore`）经同一适配器服务。工具列表摘要（`DigestToolSpecs`）的预映像不区分 nil 与空列表：fact wire 省略空列表，重算方拿到的是 nil。
 
 下列 identity 稳定派生并由 Commit 验证：
 
@@ -253,17 +254,17 @@ ToolCall:
 | `WithdrawPreparedStep` | Model Prepared 且 `PendingInputs` 非空；`ModelStepWithdrawn`，`Current` 回到 `Open`，该请求本体可释放 |
 | `StartModelExecution` | Model Prepared；`ModelStepStarted`。command 必须携带本次 start 的 `ExecutionClaim` |
 | `RecoverModelExecution` | Model Executing；`ModelStepRecovered`，`Current` 回到 `Open`、不计入 `ModelSteps`、PendingInputs 保留。携带该 attempt 的 `Claim`，接管处置时为 `TakeoverClaim` |
-| `SubmitModelResult` | Model Executing；`ModelStepCompleted{Usage, FinishReason, ResultDigest}`。有 calls 时随后 `ToolStepOpened`（携带冻结的 `Scheduling` 与 bindings）；无 calls 且 `PendingInputs` 为空时随后 `RunEnded(completed)`；无 calls 且 `PendingInputs` 非空时 `Current` 回到 `Open`，Run 继续。command 携带冻结 `ModelResult` 本体，companion 写 `twilight/chatlog/assistant` |
+| `SubmitModelResult` | Model Executing；`ModelStepCompleted{Usage, FinishReason, ResultDigest}`。有 calls 时随后 `ToolStepOpened`（携带冻结的 `Scheduling` 与 bindings）；无 calls 且 `PendingInputs` 为空时随后 `RunEnded(completed)`；无 calls 且 `PendingInputs` 非空时 `Current` 回到 `Open`，Run 继续。command 携带冻结 `ModelResult` 本体，Runtime 先以 ResultDigest 存入 FrozenValueStore |
 | `SubmitModelFailure` | Model Executing；`RunEnded(failed/provider_failure)` |
 | `RejectModelResult` | Model Executing；`ModelStepRejected`，由调用方显式选择回到 Prepared 或在同一组追加 `RunEnded(failed/malformed_model_result)` |
 | `StartToolCall` | Tool Pending；`ToolCallStarted`。command 必须携带本次 start 的 `ExecutionClaim` |
-| `SubmitToolResult` | Tool Executing；`ToolCallCompleted{OutputDigest}`。command 携带输出本体，companion 写 `tool_result`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
+| `SubmitToolResult` | Tool Executing；`ToolCallCompleted{OutputDigest}`。command 携带输出本体，Runtime 先以 OutputDigest 存入 FrozenValueStore。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
 | `SubmitToolFailure(Known)` | Tool Pending/Executing；`ToolCallFailed(Known)`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
 | `SubmitToolFailure(Unknown)` | Tool Executing；`ToolCallFailed(Unknown)`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
 | `ApproveToolCall` | Waiting(Approval)；`ToolCallApproved` |
 | `RejectToolCall` | Waiting(Approval) 记 `ToolCallFailed(Known/permission_denied)`；Waiting(ExternalResponse) 记 `ToolCallFailed(Known/response_rejected)`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
 | `SubmitToolResponse` | Waiting(ExternalResponse)；`ToolCallAnswered{ResponseDigest}`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
-| `CancelRun` | active；Pending / Waiting tool call 记 `ToolCallFailed(Known/cancelled)`，Executing call 记 `ToolCallFailed(Unknown/effect_unknown)`，保留已有终态结果。全部 call 进入终态后关闭 ToolStep 并写入 `LastToolStep`，随后 `RunEnded(stopped/cancelled)` 把 `Current` 置空。`RunStoppedEnd` / `RunResult` 的 `UncertainCalls` 只列本次产生 Unknown 的 CallID，`UncertainModel` 标识仍 Executing 的模型步骤。companion 为每个新 failure 写入配对的 tool result。 |
+| `CancelRun` | active；Pending / Waiting tool call 记 `ToolCallFailed(Known/cancelled)`，Executing call 记 `ToolCallFailed(Unknown/effect_unknown)`，保留已有终态结果。全部 call 进入终态后关闭 ToolStep 并写入 `LastToolStep`，随后 `RunEnded(stopped/cancelled)` 把 `Current` 置空。`RunStoppedEnd` / `RunResult` 的 `UncertainCalls` 只列本次产生 Unknown 的 CallID，`UncertainModel` 标识仍 Executing 的模型步骤。 |
 
 最后一个 ToolCall 进入 Completed 或 Failed 时，`Evolve` 在折叠该 fact 后若全部 call 已 terminal，则把 Current 设为 `Open` 并写入 `LastToolStep`；下一次 `PromptInput.SourceStep` 取自 `LastToolStep.RefValue.ID`。Cancel 产生的 failure facts 同样走这条关闭规则；`RunEnded` 再把 Current 置空。
 
@@ -326,25 +327,12 @@ type RuntimeSnapshot struct {
     SchemaVersion uint16 // created.SchemaVersion
 }
 
-// ModuleEvent 是其他模块的 typed event，由 agent/session/run 经 Registry 编码。
+// ModuleEvent 是其他模块的 typed event，由 agent/session/run 经 Registry 编码：
+// 调用方在同一语义操作下产生的、该模块自己的事实（input_delivered、turn/failed）。
+// 由 Run facts 派生的内容不经此传递，它们是投影。
 type ModuleEvent struct {
     Type session.EventType
     Value any
-}
-// Companion 把一组 Run facts 与 command 携带的 transient 内容映射为
-// 其他模块的事件（对话内容、Turn completed）。实现由 agent/turn 提供（TRN-CMP）。
-type CompanionRequest struct {
-    Session session.SessionID
-    Owner OwnerID
-    RunID RunID
-    Command AgentCommand
-    Facts []Fact
-    State MachineState // Evolve 后
-    RecordedAtUnixMilli int64
-}
-type Companion interface {
-    Version() string
-    Map(CompanionRequest) ([]ModuleEvent, error)
 }
 type Protocol struct {
     // ProtocolFor 一次绑定该 SchemaVersion 的函数。方法不再接受 version 参数。
@@ -372,16 +360,16 @@ func ProtocolV1() Protocol
 type CommitRequest struct {
     Base RunPosition // Load 时的 Position；PrepareModelRequest 为 hard CAS，其他 command 可为零值
     Command CommandEnvelope
-    Attach []ModuleEvent // 调用方附加事件，追加在 companion 之后；例如 Coordinator.Stop 的 twilight/turn/failed
+    Attach []ModuleEvent // 调用方附加事件，追加在 run facts 之后；例如 Coordinator.Stop 的 twilight/turn/failed
 }
 type CommitResult struct {
     Status CommitStatus // CommitAccepted | CommitAlreadyApplied
     Snapshot RuntimeSnapshot
-    Events []session.Event // 本次 command 的完整组：run facts、companion、Attach
+    Events []session.Event // 本次 command 的完整组：run facts、Attach
 }
 ```
 
-Runtime 由组装代码以 `writer.Writers`（EXT-WRT-6）、`FrozenValueStore`、`Companion` 与 `SnapshotPolicy` 构造；它按 SessionID 取得该 Session 的 `Writer`，全部语义事实读写经该 Writer。FrozenValueStore 只保存 Authority 生成的 immutable payload；Executor 接受 Assignment 后必须转存为 executor-owned payload。
+Runtime 由组装代码以 `writer.Writers`（EXT-WRT-6）、`FrozenValueStore`、Binding store（与 Writer admission 同一个）与 `SnapshotPolicy` 构造；它按 SessionID 取得该 Session 的 `Writer`，全部语义事实读写经该 Writer。FrozenValueStore 保存 Authority 生成的 immutable 正文；Executor 接受 Assignment 后必须把请求转存为 executor-owned payload。
 
 **RUN-CMT-1** Runtime 按 `(SessionID, RunID)` 寻址。Run 由 Coordinator 的 Start 组创建（TRN-STR-2），Runtime 没有 `Create`。`ErrRunNotFound` 只用于该 Session 中不存在的 RunID。已终结的 Run 不在 `twilight/run/machine` 投影中（RUN-CMT-2），`Load` 对它以 `Types=[twilight/run/]` 过滤 `Read`、按 RunID 筛出全部事实后 FoldRun，返回终态 snapshot；`Commit` 对它返回 `ErrRunTerminal`。这条路径是兜底：正常流程中 Loop 从结算返回的 snapshot 读到终态（第 7 节），Coordinator 从 turn surface 的 `AttemptView` 取终态与 SchemaVersion（TRN-PRJ-1），都不依赖它。
 
@@ -400,6 +388,8 @@ type MachineProjection struct {
 **RUN-CMT-3** Commit 经 `writer.Writer.Commit` 在该 Session 的 Writer 互斥区内完成（EXT-WRT-1）。所有 Runtime implementation 在 fn 内调用同一个 pure `EvaluateCommit`，顺序固定为：
 
 ```text
+  0  冻结正文：PrepareModelRequest 的 Request、SubmitModelResult 的 Result、SubmitToolResult 的 Output、
+     SubmitToolResponse 的 Payload 以其 digest 的信封存入 FrozenValueStore（Put 幂等），并登记 FrozenBinding(digest)
 writer.Commit(func(view):
   1  validate envelope SessionID/RunID/schema/type
   2  view.LookupCommit(CommitID = CommandID)
@@ -411,10 +401,10 @@ writer.Commit(func(view):
   6  validate hard CAS（prepare 的 Base == Positions[RunID]）/ target state
   7  facts = Protocol.Decide(state, command) exactly once
   8  Protocol.Evolve in order；facts -> ModuleEvent（Type twilight/run/<name>，v = SchemaVersion）
-  9  companion = Companion.Map(...)；校验 SourceDigest（TRN-MAP-3）；追加 request.Attach（不得为 twilight/run/ 事件）
-  10 return SemanticGroup{CommitID: CommandID, Events: run ++ companion ++ attach}
+  9  追加 request.Attach（不得为 twilight/run/ 事件）
+  10 return SemanticGroup{CommitID: CommandID, Batches: [run/<RunID>: facts] ++ [session: attach]}
 )
-// Writer 完成 codec、Binding admission、claim（先于 Append）、Append 与投影折叠（EXT-WRT-1/3）。
+// Writer 完成 codec、Binding admission（含命名正文的 fact 的 FrozenBinding）、claim（先于 Append）、Append 与投影折叠（EXT-WRT-1/3）。
 // Runtime 在 Commit 返回后按 SnapshotPolicy 写投影缓存；缓存写入失败不影响 commit 结果。
 ```
 
@@ -561,7 +551,7 @@ func (*Loop) Run(context.Context, run.Runtime, session.SessionID, run.RunID, Eve
 
 `LoopResult` 的语义固定为：`LoopWaiting` 时 `Result` 为 nil，表示没有可执行 effect、Run 仍为 active。`ExecutionRecovery` 等于 `NeedsRecovery(state)`。该值为 true 表示存在本进程未持有 Claim 的 Executing 目标（只在崩溃后、接管处置之前出现），`Reason` 为 `execution_recovery`；否则 `Reason` 为空。Waiting call 不进入 `LoopResult`；Application 通过投影的 `WaitingCalls` 读取。`LoopFinished` 时 `Result` 非 nil，并等于 terminal Run 的 `RunResult`。
 
-`PromptBuilder` 从 `PromptInput` 接收 Run 边界事实；它从 Session 的 chatlog fold 读取对话内容（上一步的 assistant 与 tool_result 已随 Run fact 同组提交），并使用自己注入的 memory、attachments 与 product policy 组装 `sdk.Request`。Runtime 验证并冻结 prompt builder 返回的 request，PromptBuilder 管理 application context。
+`PromptBuilder` 从 `PromptInput` 接收 Run 边界事实；它从 Session 的 chatlog fold 读取对话结构（上一步的 assistant 与 tool_result 条目由 Run fact 折叠得到）并经 materializer 取回正文，并使用自己注入的 memory、attachments 与 product policy 组装 `sdk.Request`。Runtime 验证并冻结 prompt builder 返回的 request，PromptBuilder 管理 application context。
 
 ## 7. Loop execution
 
@@ -630,7 +620,7 @@ type Event struct {
 
 **RUN-LOP-6** EventSink 提供 realtime observation，Loop 通过序列化调用向 sink 发送事件。`EventAgentCommitted` 携带 accepted 组；text/reasoning delta、tool progress、tool lifecycle 与 run-finished observation 可丢失、重复或断流。sink failure 保持 Commit 结果；恢复与审计读取 Session stream，EventSink gap 通过 stream 对账。
 
-`AcceptInput` 在任意非终态提交，`PendingInputs` 就是回合中途输入的队列；Loop 不解释 queue 或 steer：`Open` 时立刻 `NeedModelRequest`，Prepare 一次消费全部 pending input。Application 负责 admission；Turn 创建、attempt、中途投递、结算与 companion 映射由 [agent-turn.md](agent-turn.md) 定义。
+`AcceptInput` 在任意非终态提交，`PendingInputs` 就是回合中途输入的队列；Loop 不解释 queue 或 steer：`Open` 时立刻 `NeedModelRequest`，Prepare 一次消费全部 pending input。Application 负责 admission；Turn 创建、attempt、中途投递与结算由 [agent-turn.md](agent-turn.md) 定义。
 
 ## 9. compatibility 与 conformance
 
@@ -642,12 +632,12 @@ type Event struct {
 - 重放与 Base：同 CommandID 返回 `CommitAlreadyApplied` 与原组且不再 Decide；Run 已终结后对已接受 command 的重放仍返回 AlreadyApplied，新 command 返回 `ErrRunTerminal`；prepare 的 Base 不等于该 Run 的 Position 时返回 `ErrStaleRuntime`；非 Prepare command 接受零值或过期的 Base（call-local rebase）；
 - 输入入队：`AcceptInput` 在 Open、Model Prepared、Model Executing、ToolStep 都被接受；Prepared 期间入队后 `Next` 返回 `WithdrawPrepared`，Withdraw 后重规划的 Prepare 包含该输入；Executing 期间入队的输入在无 tool call 的 `SubmitModelResult` 后使 Run 回到 Open 而不结束；
 - start 与 claim：同 claim 的 start 重放返回 AlreadyApplied；不同 claim 的 start 在 target 已是 Executing 时返回 `ErrStaleRuntime`；同一 attempt 的 settlement 以其 Claim 派生 CommandID，重放返回 AlreadyApplied；
-- 组的组成：一 command 一组，同一 CommitID；组内 run 事实在 companion 与 Attach 之前；companion 中非空 `SourceDigest` 等于同组 fact 记录的 ResultDigest / OutputDigest / ResponseDigest；Attach 携带 `twilight/run/` 事件被拒绝；companion 与 Attach 中的 ReferencePart 经 admission，未注册 Binding 使 Commit 失败且无写入，合法 Binding 在 Append 之前建立 Active claim（EXT-WRT-3）；
+- 组的组成：一 command 一组，同一 CommitID；组内只有 run 事实与 Attach，run 事实在前，没有对话或 Turn 的派生事件；chatlog Context 中的 assistant 条目 `ResultDigest` 等于同组 fact 记录值且 `CallIDs` 等于 `ToolStepOpened` 的 CallID，tool_result 条目 `OutputDigest` 等于 fact 记录值，两者的正文可从 FrozenValueStore 取回；Attach 携带 `twilight/run/` 事件被拒绝；Attach 中的 ReferencePart 经 admission，未注册 Binding 使 Commit 失败且无写入，合法 Binding 在 Append 之前建立 Active claim（EXT-WRT-3）；
 - 结算返回值：`CommitResult.Snapshot` 是 Evolve 后状态；终结 Run 的结算其 `Snapshot.Status` 为终态且 `Result` 非空，与 Record 一致；
 - Prepare hard CAS 只对该 Run 自己的事件敏感：同一 Session 内 chatlog、turn 或其他 Run 的写入不改变该 Run 的 Position，也不使 Prepare 失效；
 - 投影：`SnapshotPolicy` 在 Run 回到 Open 或终结时写入投影缓存；终态 Run 不出现在 `Active`，其 RunID 在 `Ended`；Record 对活动 Run 的 fold 与投影一致；非法 fact 序列使 FoldRun 报错（篡改与缺口的检测属于 SES-REP-1）；
 - 隔离：同一 Session 内多 Run 互不影响 Position 与 Record；chatlog 与 turn 事件不影响 Run fold。不同 SchemaVersion 的 Run 共存在第二个 SchemaVersion 发布后启用；
-- 接管处置：关闭 Writer 后以新 Writer 打开（Epoch 加一）并调用 `RecoverInterrupted`：Executing model 被撤回，Run 回到 `Open`、`ModelSteps` 不计入该步、Executing 期间投递的输入仍在 `PendingInputs`；随后的 Prepare 产生新的 StepID 并消费这些输入，不重发原 RequestDigest；Executing tool 记 Unknown 且 companion 在同组写入 status=`unknown` 的 `tool_result`，同 step 的 Pending 与 Waiting call 不受影响；Run 保持 Active；同一 Epoch 重复调用返回 0 且无新写入；没有 Executing 目标时返回 0；
+- 接管处置：关闭 Writer 后以新 Writer 打开（Epoch 加一）并调用 `RecoverInterrupted`：Executing model 被撤回，Run 回到 `Open`、`ModelSteps` 不计入该步、Executing 期间投递的输入仍在 `PendingInputs`；随后的 Prepare 产生新的 StepID 并消费这些输入，不重发原 RequestDigest；Executing tool 记 Unknown 且 chatlog Context 中该 call 的条目 status=`unknown`、无正文 digest，同 step 的 Pending 与 Waiting call 不受影响；Run 保持 Active；同一 Epoch 重复调用返回 0 且无新写入；没有 Executing 目标时返回 0；
 - 接管重连：`RecoverInterrupted` 对每个 Executing 目标先经 `Reattacher.Attach` 询问，携带 start 事实记录的 Claim 与 Run 的协议版本；`active`、`terminal` 保持 Executing 与 Claim，随后以原 Claim 结算；`deferred` 保持原状态，等待 control plane 处置；`missing` 按接管处置；`Reattacher` 为 nil 时全部处置。
 - 效果层：`Advance` 提交 start barrier 后把 Assignment 交给 Executor 并返回 `LoopDispatched`，不等待效果；`Deliver` 以 Key 定位 Executing 目标并结算，Run 终结时返回 `LoopFinished`；attempt 已处置或 Claim 不符的迟到 Outcome 返回 `LoopDropped` 且不写入；`Cancelled` 的模型 Outcome 使 step 撤回到 Open；`LocalExecutor.Attach` 对执行中 attempt 返回 `active`，完成后返回 `terminal`，记录不存在时返回 `missing`；超出保留上限的最早终态记录对 `GetStatus` 返回 `ErrExecutionNotFound`、对 `Attach` 返回 `missing`，仍在上限内的记录返回 `terminal`；`Advance`、`Deliver`、`Run` 返回后 Loop 的 slot 表为空；HTTP Server 对非 POST 返回 405、对超过 `MaxBodyBytes` 的请求体返回 413、对非 JSON 请求体返回 400；GetOutcome 读取失败保持执行状态，真实结果稍后仍可结算；Dispatch 重放保持已有记录，显式 Takeover 处理恢复；已有 binding 缺少 BindingPort 时返回错误。
 - 所有权失效：旧 Writer 上的 Runtime 在被接管后 Commit 返回 `ErrOwnershipLost` 且 stream 无新行（fencing 由 SES-OWN-2 保证，本层观察结果）；

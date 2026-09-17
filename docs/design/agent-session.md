@@ -51,7 +51,7 @@ Atomic Commit ─────────────────────┘
 
 10. **模块隔离与版本独立。** 事件按 `<source>/<module>/` 归属，`Requires` 图决定投影的消费范围：范围外事件跳过，范围内不可忽略的 Unknown 事件使折叠失败（EXT-REG-1/4、EXT-PRJ-2）。payload 版本 `v` 由模块携带，与 kernel 的 `ProtocolVersion` 分离（SES-VER-1）。application module 与 first-party 模块同构（EXT-APP）。
 
-11. **同 Commit 伴随写入。** Run 事实与它产生的对话内容（assistant、tool_result）写在同一 Commit：内容只出现一次，事实只记 digest（RUN-WIR-4、TRN-CMP、Chatlog 第 1 节）。这是第 4 条最重要的应用。
+11. **事实只 canonical 一次。** 一个模型或工具结果在 ledger 上只有一份表达：Run 事实记录 digest，正文在 `FrozenValueStore`；对话条目与 Turn 结算是这些事实的纯投影，读取时经 materializer 取回正文（RUN-WIR-4、TRN-MAP-1、Chatlog 第 1 与第 8 节）。一次语义操作仍可以在一个 Commit 内写多个 domain 的事实（Run 的 `input_accepted` 与 Chatlog 的 `input_delivered`），它们是各自 domain 的真实事实，不是同一事实的两种表示。run 流因此是 canonical history 的一部分，不能独立于 session 流回收；正文可以迁移到冷存储，不得丢弃。
 
 12. **崩溃后果的封闭集合。** Session 崩溃只可能留下不完整尾 Commit（第 4 条）与孤儿 claim（回收前核对释放，ART-RET-3）；Executor 崩溃还可能留下需要查询的 durable execution record。Session 接管者询问执行目标后重连或处置；两者都不触发自动重试。崩溃恢复、语义重试、重新生成回答和外部效果未知的身份边界见 TRN-DUR-1 至 4；Execution Store 的恢复由效果层合同负责。
 

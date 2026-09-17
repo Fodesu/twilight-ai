@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/run"
@@ -116,24 +117,47 @@ func (c factCodec) Decode(wire jsonstable.Value) (any, error) {
 	return Event{RunID: id, Fact: fact}, nil
 }
 
-// Module is the run ModuleDescriptor (RUN-SCP-2: no Requires; Companion is a
-// constructor parameter, not a module dependency).
+// frozenBodyFacts are the fact types whose digest names a frozen body; each
+// declares one artifact reference so the Writer admits the body's Binding
+// and claims it for the commit (RUN-WIR-4, EXT-REF-2).
+var frozenBodyFacts = map[string]bool{
+	"model_step_prepared": true, "model_step_completed": true, "tool_call_completed": true, "tool_call_answered": true,
+}
+
+var frozenBinding = extension.BindingReferenceDefinition{
+	Extractor:          extension.BindingExtractorFunc(frozenRefs),
+	Cardinality:        extension.Cardinality{Min: 1, Max: &one},
+	AllowedSchemes:     []artifact.Scheme{artifact.SchemeCAS},
+	RequiredDurability: artifact.EventBound,
+}
+
+var one uint32 = 1
+
+// Module is the run ModuleDescriptor (RUN-SCP-2: no Requires). Conversation
+// and Turn projections consume its facts; nothing of theirs is written here.
 var Module = buildModule()
 
 func buildModule() extension.ModuleDescriptor {
 	m := extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: ModuleID, Projections: []extension.ProjectionDefinition{MachineProjection}}
 	for _, name := range factNames {
-		m.Events = append(m.Events, extension.EventDefinition{
+		def := extension.EventDefinition{
 			Type:    Prefix + session.EventType(name),
 			Stream:  extension.RunStream("runId"),
 			Current: extension.PayloadVersion(run.SchemaVersion1),
 			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{
 				extension.PayloadVersion(run.SchemaVersion1): factCodec{local: name, proto: run.ProtocolV1()},
 			},
-		})
+		}
+		if frozenBodyFacts[name] {
+			def.Bindings = []extension.BindingReferenceDefinition{frozenBinding}
+		}
+		m.Events = append(m.Events, def)
 	}
 	return m
 }
+
+// Type returns the EventType of one fact discriminator.
+func Type(name string) session.EventType { return Prefix + session.EventType(name) }
 
 // AllTypes lists every registered twilight/run/ EventType.
 func AllTypes() []session.EventType {

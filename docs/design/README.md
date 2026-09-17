@@ -11,7 +11,7 @@ agent-session-extension.md    Writer、module registry、projection、claim admi
 agent-artifact.md             Artifact binding、content reference、retention claim
 agent-session-chatlog.md      对话内容与 context projection
 agent-run.md                  Run machine、Runtime、Loop、Executor contract
-agent-turn.md                 Turn、attempt、input routing、companion
+agent-turn.md                 Turn、attempt、input routing、结算投影
 agent-decision.md             PromptBuilder 与决策组件目录
 agent-host.md                 Host 组装、Session facade、authority 生命周期
 agent-workspace.md            可选 Workspace/Runtime/TargetRef domain

@@ -13,8 +13,10 @@ import (
 // Fact is one committed outcome produced by Machine.Decide. Facts are wrapped
 // as AgentEvents; Machine.Evolve folds them mechanically (RUN-MCH-3). The
 // interface is sealed: only the variants below exist. Facts carry execution
-// state and content digests only; content bodies travel with the companion
-// (RUN-WIR-4).
+// state and content digests only: a digest is the canonical identity of an
+// immutable body in the FrozenValueStore, and the fact that names it is the
+// body's retention root (RUN-WIR-4). Conversation and Turn state are
+// projections of these facts; no second copy of a body is written.
 type Fact interface{ fact() }
 
 // RunCreated is the first fact of a Run (RUN-NEW-1). Folding it onto the zero
@@ -87,9 +89,9 @@ type ModelStepRejected struct {
 func (ModelStepRejected) fact() {}
 
 // ModelStepCompleted accepts one model result: usage is accumulated and
-// Current becomes Open. The result body is not in the fact; ResultDigest names
-// it and the companion writes the content. The same transition may then open
-// a ToolStep or end the Run.
+// Current becomes Open. The result body is not in the fact; ResultDigest is
+// its canonical identity in the FrozenValueStore. The same transition may then
+// open a ToolStep or end the Run.
 type ModelStepCompleted struct {
 	StepID       StepID       `json:"stepId"`
 	Usage        Usage        `json:"usage"`
@@ -134,8 +136,8 @@ type ToolCallApproved struct {
 
 func (ToolCallApproved) fact() {}
 
-// ToolCallCompleted: Executing -> Completed. OutputDigest names the tool
-// output the companion carries.
+// ToolCallCompleted: Executing -> Completed. OutputDigest names the frozen
+// tool output.
 type ToolCallCompleted struct {
 	StepID       StepID `json:"stepId"`
 	CallID       CallID `json:"callId"`
@@ -144,8 +146,8 @@ type ToolCallCompleted struct {
 
 func (ToolCallCompleted) fact() {}
 
-// ToolCallAnswered: Waiting(ExternalResponse) -> Completed. ResponseDigest is
-// the digest of the external answer payload the companion carries.
+// ToolCallAnswered: Waiting(ExternalResponse) -> Completed. ResponseDigest
+// names the frozen external answer payload.
 type ToolCallAnswered struct {
 	StepID         StepID     `json:"stepId"`
 	CallID         CallID     `json:"callId"`

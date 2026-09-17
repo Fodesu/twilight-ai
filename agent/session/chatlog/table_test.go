@@ -3,6 +3,8 @@ package chatlog
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/felinics/twilight/agent/run"
+	runmod "github.com/felinics/twilight/agent/session/run"
 	"testing"
 
 	"github.com/felinics/twilight/agent/jsonstable"
@@ -72,7 +74,7 @@ func TestTablePersistence(t *testing.T) {
 // events carry no Seq.
 func TestSurfaceFoldIsPure(t *testing.T) {
 	assistant := func(id string) extension.DecodedEvent {
-		return extension.DecodedEvent{Event: session.Event{}, Value: AssistantPayload{Assistant: Assistant{ID: AssistantID(id), Digest: "sha256:x"}}}
+		return extension.DecodedEvent{Event: session.Event{}, Value: runmod.Event{RunID: "r", Fact: run.ModelStepCompleted{StepID: run.StepID(id), FinishReason: run.FinishReasonStop, ResultDigest: "sha256:x"}}}
 	}
 	input := func(id string) extension.DecodedEvent {
 		return extension.DecodedEvent{Event: session.Event{}, Value: InputSubmittedPayload{InputID: InputID(id), Content: jsonstable.MustParse(`{"text":"x"}`)}}

@@ -3,16 +3,14 @@ package host
 import (
 	"testing"
 
-	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/session/chatlog"
 )
 
 func pairEntries() []chatlog.Entry {
 	in := chatlog.Input{ID: "in1", Digest: "sha256:in1"}
-	a1 := chatlog.Assistant{ID: "a1", TurnID: "t1",
-		Parts: chatlog.Parts{chatlog.ToolCallPart{CallID: "c1", Name: "lookup", Input: jsonstable.MustParse(`{}`)}}, Digest: "sha256:a1"}
-	r1 := chatlog.ToolResult{ID: "r1", TurnID: "t1", CallID: "c1", Status: chatlog.ToolSuccess, Digest: "sha256:r1"}
-	a2 := chatlog.Assistant{ID: "a2", TurnID: "t1", Parts: chatlog.Parts{chatlog.TextPart{Text: "done"}}, Digest: "sha256:a2"}
+	a1 := chatlog.Assistant{ID: "a1", TurnID: "t1", StepID: "a1", ResultDigest: "sha256:a1r", CallIDs: []chatlog.CallID{"c1"}, Digest: "sha256:a1"}
+	r1 := chatlog.ToolResult{ID: "r1", TurnID: "t1", CallID: "c1", Status: chatlog.ToolSuccess, Source: chatlog.SourceToolOutput, OutputDigest: "sha256:r1o", Digest: "sha256:r1"}
+	a2 := chatlog.Assistant{ID: "a2", TurnID: "t1", StepID: "a2", ResultDigest: "sha256:a2r", Digest: "sha256:a2"}
 	return []chatlog.Entry{
 		{Kind: chatlog.EntryInput, ID: "in1", Digest: in.Digest, Seq: 1, Input: &in},
 		{Kind: chatlog.EntryAssistant, ID: "a1", Digest: a1.Digest, Seq: 2, Assistant: &a1},

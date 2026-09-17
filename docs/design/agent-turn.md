@@ -1,8 +1,8 @@
 # Twilight Agent Turn 协议
 
-状态：v1 设计规范。本文定义 Turn 协议。Coordinator 只做协议提交与状态读取（Start / Deliver / Retry / Stop / Settle / Status），驱动属宿主；写入经 `writer.Writer`、以 `Seq` 定位、恢复走接管处置。Run 事实与 Turn、Chatlog 事件同在一条 Session stream。
+状态：v1 设计规范。本文定义 Turn 协议。Coordinator 只做协议提交与状态读取（Start / Deliver / Retry / Stop / Settle / Status），驱动属宿主；写入经 `writer.Writer`、以 `Seq` 定位、恢复走接管处置。Run 事实与 Turn、Chatlog 事件同在一条 Session Commit Ledger。
 
-本文定义 `agent/turn`：回合生命周期、Run attempt 的创建与结算、Run 事实到对话内容的伴随映射。"必须""应该"为协议约束。Run Machine 与 Runtime 的 authority 是 [agent-run.md](agent-run.md)；对话内容的 authority 是 [agent-session-chatlog.md](agent-session-chatlog.md)；stream、commit 与 projection 机制的 authority 是 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md)。
+本文定义 `agent/turn`：回合生命周期、Run attempt 的创建与结算。attempt 的终态由 Run 自己的 `run_ended` 事实投影得到，本模块不写它的第二份表达。"必须""应该"为协议约束。Run Machine 与 Runtime 的 authority 是 [agent-run.md](agent-run.md)；对话内容的 authority 是 [agent-session-chatlog.md](agent-session-chatlog.md)；stream、commit 与 projection 机制的 authority 是 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md)。
 
 ## 1. 模型与范围
 
@@ -15,7 +15,7 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 |---|---|---|
 | 回合存在、attempt 归属与结束 | `twilight/turn/` events | Coordinator |
 | Run 执行状态 | `twilight/run/` events（[agent-run.md](agent-run.md)） | `run.Runtime`，接收 Loop 与 Coordinator 的命令 |
-| 对话内容 | `twilight/chatlog/` events | Start 与 Deliver 时 delivered input；Run commit 内的 companion events |
+| 对话内容 | `twilight/chatlog/` events 与 `twilight/run/` 事实的投影 | Start 与 Deliver 时 delivered input；assistant 与 tool_result 是 Run 事实的投影条目（CHT-ENT-1/2），不另写事件 |
 | Application policy | Application | preset、driver、retry、context 策略、产品策略 |
 
 **TRN-SCP-1** Source 为 `twilight`，ModuleID 为 `turn`。一个 Turn 与它的全部 Run attempt 注册在同一 Session stream 内：attempt 由 session 侧的 `twilight/turn/attempt_started` 注册，终态由 companion 在同 commit 写回的 `attempt_failed` / `completed` 记录，surface 不消费 `twilight/run/` 事件（session semantic state 可脱离 run history 重建）。`Coordinator` 创建 Turn 与 attempt、投递输入、停止及结算 Turn；宿主驱动 Run。Run 事实中的 `OwnerID` 由本模块以 `TurnID` 填充。本模块的 `Requires`（EXT-REG-4）为：`chatlog`，只要求存在。
@@ -45,7 +45,6 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 type TurnID string
 type TurnRef struct { SessionID session.SessionID; TurnID TurnID }
 type PresetRef struct { ID PresetID; Digest es.Digest }
-type CompanionVersion string
 
 // AgentPreset 是 Turn 记录的决策身份；Session 只保存 PresetRef{ID, Digest}。
 type PromptBuilderRef string // 决策组件身份（agent-decision.md）
@@ -75,11 +74,12 @@ type StartedPayload struct {
     TurnID TurnID
     InputIDs []chatlog.InputID
     Preset PresetRef
-    Companion CompanionVersion
 }
-type CompletedPayload struct {
+type AttemptStartedPayload struct {
     TurnID TurnID
-    RunID run.RunID // 产生 completed 的 attempt
+    RunID run.RunID
+    Attempt uint32
+    SchemaVersion uint16
 }
 type FailedPayload struct {
     TurnID TurnID
@@ -93,9 +93,9 @@ type SupersededPayload struct {
 }
 ```
 
-**TRN-ID-1** `TurnRef`、RunID、preset ID、CompanionVersion、InputID 与 digest 非空且稳定。
+**TRN-ID-1** `TurnRef`、RunID、preset ID、InputID 与 digest 非空且稳定。
 
-**TRN-ID-2** `PlanDigest = Digest("twilight/turn/plan", TurnID, AgentPreset.Digest, Companion, ordered InputIDs)`。PlanDigest 只参与 TRN-ID-3 的派生，不落盘：`started` payload 的每个字段都是它的 preimage 成员，落盘该 digest 不提供额外判定。
+**TRN-ID-2** `PlanDigest = Digest("twilight/turn/plan", TurnID, AgentPreset.Digest, ordered InputIDs)`。PlanDigest 只参与 TRN-ID-3 的派生，不落盘：`started` payload 的每个字段都是它的 preimage 成员，落盘该 digest 不提供额外判定。
 
 **TRN-ID-3** `StartOperationDigest = Digest("twilight/turn/start-operation", SessionID, TurnID, PlanDigest)`。用户正文 identity 在对应 `twilight/chatlog/input_submitted` 中。
 
@@ -110,19 +110,17 @@ type SupersededPayload struct {
 ```text
 twilight/turn/started
 twilight/turn/attempt_started
-twilight/turn/attempt_failed
-twilight/turn/completed
 twilight/turn/failed
 twilight/turn/superseded
 ```
 
-unsettled Turn 是尚未 completed、failed 或 superseded 的 `started`。
+四种事件都是 Turn 域自己的决定。attempt 的终态与 Turn 的 `completed` 不是事件：它们由 `twilight/run/run_ended` 折叠得到（TRN-PRJ-1）。unsettled Turn 是尚未 completed、failed 或 superseded 的 `started`。
 
-**TRN-EVT-2** 本模块产生的事件（含 companion 与 Attach 产生的）没有独立 EventID，`Seq` 即身份（SES-WIR-1）；同一次写入的事件共用 CommitID。Start 的 CommitID 由 StartOperationDigest 派生；Retry、Settle、Stop 的 CommitID 见各自条目。同 CommitID 相同 canonical payload 为 already-applied；差异为 conflict（EXT-WRT-2）。事件时间戳不参与幂等判定。
+**TRN-EVT-2** 本模块产生的事件（含 Attach 产生的）没有独立 EventID，`Seq` 即身份（SES-WIR-1）；同一次写入的事件共用 CommitID。Start 的 CommitID 由 StartOperationDigest 派生；Retry、Settle、Stop 的 CommitID 见各自条目。同 CommitID 相同 canonical payload 为 already-applied；差异为 conflict（EXT-WRT-2）。事件时间戳不参与幂等判定。
 
-**TRN-EVT-3** stream 内每个 TurnID 至多一条 `started`，至多一条 `completed` / `failed` / `superseded`。
+**TRN-EVT-3** stream 内每个 TurnID 至多一条 `started`，至多一条 `failed` / `superseded`；一个 Turn 至多有一个 attempt 以 `run_ended(completed)` 终结。
 
-**TRN-PRJ-1** ProjectionID 为 `twilight/turn/surface`。只消费 session stream 事件：`twilight/turn/started|attempt_started|attempt_failed|completed|failed|superseded` 与 `twilight/chatlog/input_delivered`，其他事件按 EXT-PRJ-2 处理。`completed` 与 `attempt_failed` 的 RunID 必须是该 Turn 已登记且 `End` 为空的 attempt；指向未登记 RunID 或已终结 attempt 的事件在 fold 阶段报错，不写入：
+**TRN-PRJ-1** ProjectionID 为 `twilight/turn/surface`。消费 `twilight/turn/started|attempt_started|failed|superseded`、`twilight/chatlog/input_delivered` 与 `twilight/run/run_ended`，其他事件按 EXT-PRJ-2 处理。`run_ended` 经 `RunOwner`（由 `attempt_started` 建立）路由到它终结的 attempt：`RunOwner` 中没有的 RunID 不属于本 Session 的 Turn，跳过；已有 `End` 的 attempt 再次终结在 fold 阶段报错，不写入。`completed` 结束使 Turn 为 `completed`；`failed` 与 `stopped` 结束使 `active` 的 Turn 进入 `attempt_failed`，同 commit 附加的 `failed` 事件（TRN-STP-1）随后把它结算为 `stopped`：
 
 ```go
 type TurnStatus string
@@ -138,14 +136,13 @@ type AttemptView struct {
     RunID run.RunID
     Attempt uint32
     SchemaVersion uint16 // attempt_started 携带（与 run_created.SchemaVersion 相同）；Coordinator 据此构造该 attempt 的 command envelope
-    End *run.RunEnded    // 非终态时为 nil；终态来自 companion 同 commit 写回的 attempt_failed / completed
+    End *run.RunEnded    // 非终态时为 nil；终态来自该 Run 的 twilight/run/run_ended
 }
 type TurnView struct {
     TurnID TurnID
     Status TurnStatus
     InputIDs []chatlog.InputID // started 的初始输入，加此后经 Deliver 进入任一 attempt 的输入，按 accepted 顺序去重
     Preset PresetRef
-    Companion CompanionVersion
     Attempts []AttemptView // 按 Attempt 递增
     ActiveRun run.RunID    // Status=active 时非空
     ReplacementTurnID TurnID
@@ -157,7 +154,7 @@ type TurnSurface struct {
 }
 ```
 
-UI 按 `TurnID` 连接 `twilight/chatlog/surface` 的条目，按 `RunID` 连接 `twilight/run/machine` 的实时视图。终态 attempt 的结果由 companion 在同 commit 写回 session 侧的 `attempt_failed` 与 `completed` 记录在 `AttemptView.End`；surface 的重建不读 run stream。
+UI 按 `TurnID` 连接 `twilight/chatlog/surface` 的条目，按 `RunID` 连接 `twilight/run/machine` 的实时视图。终态 attempt 的结果记录在 `AttemptView.End`，来自 run 流的 `run_ended`；surface 的重建读取 session 流与 run 流两条逻辑流。
 
 ## 3. API
 
@@ -181,7 +178,6 @@ type StartRequest struct {
     Ref TurnRef
     Inputs []run.AgentInput // ID 为已 submitted 的 InputID，Payload 等于其 Content
     Preset PresetRef
-    Companion CompanionVersion
 }
 type DeliverRequest struct { Ref TurnRef; Inputs []run.AgentInput } // 回合中途追加输入
 type RetryRequest struct {
@@ -222,7 +218,7 @@ const (
 
 **TRN-STR-1** StartRequest：
 
-1. Ref、preset ref、companion version 非空；
+1. Ref、preset ref 非空；
 2. `Inputs` 无重复 ID；每个 ID 对应 chatlog 中状态为 submitted 的 Input，Payload 等于其 Content（Coordinator 经 chatlog surface 投影核对）。
 
 `started.InputIDs` 与 `input_delivered`、`input_accepted` 的顺序都取 `Inputs` 的顺序。
@@ -230,7 +226,7 @@ const (
 **TRN-STR-2** Start 是一次原子 commit，顺序为：
 
 ```text
-twilight/turn/started{TurnID, InputIDs, Preset, Companion}
+twilight/turn/started{TurnID, InputIDs, Preset}
 twilight/turn/attempt_started{TurnID, RunID, Attempt:1, SchemaVersion}
 twilight/chatlog/input_delivered{InputIDs[0], TurnID}
 ...
@@ -251,7 +247,7 @@ InputIDs 为空时 group 为 `started`、`attempt_started` 加 `run_created`。`
 
 **TRN-RTY-2** Coordinator 在该 Turn 的历史中按 `PreviousRunID` 取得 previous attempt，令 `Attempt = previous.Attempt + 1`。Retry 的 CommitID 由 `Digest("twilight/turn/retry", SessionID, TurnID, Attempt)` 派生。Coordinator 先查询该 CommitID：已提交时直接返回原 Retry 创建的 RunID 与 Attempt，以及当前 Turn 状态和该 attempt 的 End；确认后 stream 保持原样。该重放先于 TRN-RTY-1 的准入校验，适用于后继 attempt 已 active、已终结、已有更晚 Retry、另一 Turn active 或接管后的情形。下一次新的 Retry 显式传入新的失败 RunID。
 
-**TRN-RTY-3** 失败 attempt 已提交的 assistant 与 tool_result 保留在 stream 中，协议不删除、不隐藏。它们是否进入后续 attempt 的模型请求是 Application 策略，由 PromptBuilder 依据 turn surface 的 attempt 状态决定（DEC-PMT-6）；协议只保证内容可用。
+**TRN-RTY-3** 失败 attempt 已提交的 Run 事实保留在 ledger 中，其 assistant 与 tool_result 投影条目随之保留，协议不删除、不隐藏。它们是否进入后续 attempt 的模型请求是 Application 策略，由 PromptBuilder 依据 turn surface 的 attempt 状态决定（DEC-PMT-6）；协议只保证内容可用。
 
 ## 5. Deliver、Status 与 Stop
 
@@ -277,23 +273,25 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 
 **TRN-CMP-1** `Map` 为确定性纯函数，不做 IO；时间取 `CompanionRequest.RecordedAtUnixMilli`。条目自身的 identity（AssistantID、ToolResultID）按 TRN-MAP-2 派生。同一 command 重放得到同一 group。companion 事件可以携带 `ReferencePart`；其 Binding 由 Writer 在 Append 之前 admission 并建立 claim（EXT-WRT-3），Runtime 不另行处理。
 
-**TRN-CMP-2** v1 映射：
+**TRN-MAP-1** 事实到投影的对应：
 
-| Run fact | companion event |
+| Run fact | 投影结果 |
 |---|---|
-| `ModelStepCompleted` | `twilight/chatlog/assistant{TurnID, Parts: text, reasoning, tool_call*, SourceDigest}` |
-| `ToolCallCompleted` / `ToolCallAnswered` | `twilight/chatlog/tool_result` status=`success` |
-| `ToolCallFailed` Outcome=`Known` | `twilight/chatlog/tool_result` status=`error` |
-| `ToolCallFailed` Outcome=`Unknown` 或 class=`effect_unknown` | `twilight/chatlog/tool_result` status=`unknown` |
-| `RunEnded(completed)` | `twilight/turn/completed{TurnID, RunID}` |
+| `ModelStepCompleted` | chatlog assistant 条目 `{TurnID, RunID, StepID, ResultDigest}`（CHT-ENT-1） |
+| `ToolStepOpened` | 补入所属 assistant 条目的 `CallIDs` |
+| `ToolCallCompleted` / `ToolCallAnswered` | chatlog tool_result 条目 status=`success`，命名冻结正文 |
+| `ToolCallFailed` Outcome=`Known` | tool_result 条目 status=`error`，携带 Failure |
+| `ToolCallFailed` Outcome=`Unknown` 或 class=`effect_unknown` | tool_result 条目 status=`unknown`，携带 Failure |
+| `RunEnded(completed)` | turn surface：attempt `End`，Turn `completed` |
+| `RunEnded(failed / stopped)` | turn surface：attempt `End`，`active` 的 Turn 进入 `attempt_failed`，由 Retry、Stop 的 Attach 或 Settle 决定 |
 
-其余 fact 不产生 companion。`RunEnded(failed)` 与 `RunEnded(stopped)` 都不由 companion 结算 Turn：没有附加结算事件时 Turn 进入 `attempt_failed`，由 Retry 或 Settle 决定；Coordinator.Stop 以 `Attach` 声明 stopped 结算（TRN-STP-1）。模型无 tool call 但 Run 有 pending 输入时不产生 `RunEnded`（RUN-MCH 表），companion 只写 assistant，Turn 保持 `active`。
+其余 fact 不影响这两个投影。模型无 tool call 但 Run 有 pending 输入时不产生 `RunEnded`（RUN-MCH 表），Turn 保持 `active`。
 
-**TRN-MAP-2** `AssistantID = Digest("twilight/chatlog/assistant-id", TurnID, ModelStepID, CompanionVersion)`。`ToolResultID = Digest("twilight/chatlog/tool-result-id", TurnID, CallID, CompanionVersion)`。assistant 的 ToolCall 顺序与模型结果一致；`ToolCallPart` 携带 `CallID` 与 `ProviderCallID`。tool_result 以 CallID 与同 Turn 的 call 配对。CallID 由 Run 从 `(ModelStepID, index)` 派生，同一 Turn 内不跨 ModelStep 复用。
+**TRN-MAP-2** 条目 identity 直接取 Run identity：`AssistantID = ModelStepID`，`ToolResultID = CallID`；带外替换结果为 `<CallID>/superseded`（CHT-ENT-2）。CallID 由 Run 从 `(ModelStepID, index)` 派生，同一 Turn 内不跨 ModelStep 复用。materializer 按 `Assistant.CallIDs` 与冻结 `ModelResult.ToolCalls` 逐位配对出 `ProviderCallID`（CHT-MAT-1）。
 
-**TRN-MAP-3** assistant 正文与工具输出来自 command 携带的冻结值。`Assistant.SourceDigest` 等于 `ModelStepCompleted.ResultDigest`，`ToolResult.SourceDigest` 等于 `ToolCallCompleted.OutputDigest` 或 `ToolCallAnswered.ResponseDigest`；`ToolCallFailed` 产生的 `tool_result` 没有 fact 记录的 digest，其 `SourceDigest` 为空。chatlog 条目自身的 `Digest` 仍按 CHT-COD-3 覆盖 parts。Runtime 在写入前校验非空 `SourceDigest` 的这一等式（RUN-CMT-3 第 9 步）。
+**TRN-MAP-3** assistant 条目的 `ResultDigest` 等于 `ModelStepCompleted.ResultDigest`，tool_result 条目的 `OutputDigest` 等于 `ToolCallCompleted.OutputDigest` 或 `ToolCallAnswered.ResponseDigest`；`ToolCallFailed` 产生的条目没有正文 digest。这些 digest 命名 `FrozenValueStore` 中的冻结正文，Runtime 在写入事实之前存入正文并登记其 Binding（RUN-CMT-3 第 0 步、RUN-WIR-4）。
 
-**TRN-MAP-4** Known 对应 `error`；Unknown 对应 `unknown`。v1 companion 不写 `tool_result_superseded`。
+**TRN-MAP-4** Known 对应 `error`；Unknown 对应 `unknown`。`tool_result_superseded` 由 Application 写入，本模块不写。
 
 ## 7. recovery
 
@@ -310,11 +308,11 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 
 **TRN-DUR-1（崩溃恢复同一 Run）** 进程崩溃或所有权丢失不结束 Run，也不创建 attempt。新 owner 的 `RecoverInterrupted`（RUN-CMT-7）对每个 Executing 目标先经 Executor 询问其 attempt 是否仍在执行（start 事实记录了 attempt 的 Claim）：仍在执行则目标保持 Executing，Outcome 到达时以原 Claim 结算——同一次执行接着算完；不再执行则处置——模型步被撤回，Run 回到 Open，下一次 Prepare 以**恢复时刻**的状态重新规划：Executing 期间投递的输入、此时的上下文与 AgentPreset 都进入新请求，并作为新的 Prepared 事实记录；旧请求不重发。工具 call 记 Unknown。之后同一 RunID 在同一 Turn 下由宿主 Drive 继续。恢复不改变 Run 的身份、attempt 号或已提交的任何事实。
 
-**TRN-DUR-2（语义重试是新 Run、同一 Turn）** Application 显式指定 `PreviousRunID` 发起新 Retry，按 TRN-RTY-1 创建 attempt n+1、新 RunID，并重新接受该 Turn 已 delivered 的全部输入。历史 Retry 按 TRN-RTY-2 确认原提交；崩溃恢复按 TRN-DUR-1 继续原 Run。失败 attempt 的 assistant 与 tool_result 保留在 stream 中，是否进入新 attempt 的模型请求由 PromptBuilder 决定（TRN-RTY-3）。
+**TRN-DUR-2（语义重试是新 Run、同一 Turn）** Application 显式指定 `PreviousRunID` 发起新 Retry，按 TRN-RTY-1 创建 attempt n+1、新 RunID，并重新接受该 Turn 已 delivered 的全部输入。历史 Retry 按 TRN-RTY-2 确认原提交；崩溃恢复按 TRN-DUR-1 继续原 Run。失败 attempt 的 Run 事实及其投影条目保留在 ledger 中，是否进入新 attempt 的模型请求由 PromptBuilder 决定（TRN-RTY-3）。
 
 **TRN-DUR-3（重新生成已提交的回答是新 Turn）** 已 completed 的 Turn 及其回答是不可变事实：不存在"修改回答"、"重开同一 Turn"或"对 completed Turn 再开 attempt"。`Start` 要求输入处于 `submitted`（TRN-STR-1），已 delivered 的输入不能再次开 Turn，因此 v1 重新生成只能在同一 stream 内创建新 Turn——Application 提交新 Input（内容可与原输入相同）并 Start；若它在语义上替代原 Turn，以 `twilight/turn/superseded` 关联（TRN-API-4），原回答是否进入上下文由 PromptBuilder 决定。Session fork 属于 v1 范围外（SES 第 8 节）；该形态不改写已有历史。
 
-**TRN-DUR-4（外部效果未知不等于重试）** owner 丢失时处于 Executing 的工具 call 有两种去向，由 Executor 是否仍持有该 attempt 决定（RUN-CMT-7）：仍持有则等待同一次执行的 Outcome，这是重连，不是重试；不再持有则由接管处置记为 Unknown，companion 写 status=`unknown` 的 `tool_result`。Unknown 是该 call 的终态事实，协议在任何路径上都不重新执行它：接管处置不执行（它只记录）；下一次 Loop 不执行（start barrier 只启动 Pending call，Executing 与终态 call 永不重跑，RUN-LOP-4）；Retry 不执行（新 attempt 从上下文重新规划步骤，Unknown 结果作为对话内容可见）。外部效果是否已经发生、是否需要重做，由模型依据上下文判断，或由 Application 在带外核实后以 `tool_result_superseded` 换成 `success`/`error`（CHT-ENT-2）；两者都是决定，不是协议的自动行为。`CancelRun` 留下的 `UncertainCalls` 同理。
+**TRN-DUR-4（外部效果未知不等于重试）** owner 丢失时处于 Executing 的工具 call 有两种去向，由 Executor 是否仍持有该 attempt 决定（RUN-CMT-7）：仍持有则等待同一次执行的 Outcome，这是重连，不是重试；不再持有则由接管处置记为 Unknown，对话投影得到 status=`unknown` 的 tool_result 条目。Unknown 是该 call 的终态事实，协议在任何路径上都不重新执行它：接管处置不执行（它只记录）；下一次 Loop 不执行（start barrier 只启动 Pending call，Executing 与终态 call 永不重跑，RUN-LOP-4）；Retry 不执行（新 attempt 从上下文重新规划步骤，Unknown 结果作为对话内容可见）。外部效果是否已经发生、是否需要重做，由模型依据上下文判断，或由 Application 在带外核实后以 `tool_result_superseded` 换成 `success`/`error`（CHT-ENT-2）；两者都是决定，不是协议的自动行为。`CancelRun` 留下的 `UncertainCalls` 同理。
 
 ### 7.2 恢复表
 
@@ -327,7 +325,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 | `started` 已提交、进程在驱动前退出 | 新 owner 的 `RecoverInterrupted` 无事可做（Run 在 Open）；宿主 Drive |
 | Loop 的 Commit 返回非 sentinel 错误 | Loop 以同一 Claim 重放一次（RUN-LOP-5）；Writer 按 CommitID 幂等 |
 | 模型 Executing、owner 进程崩溃 | 新 owner 的 `RecoverInterrupted` 先经 Executor 询问该 attempt 是否仍在执行：是则保持 Executing、等待其 Outcome；否则提交 `RecoverModelExecution`（RUN-CMT-7），该步撤回、Run 回到 Open，宿主 Drive 时按恢复时刻的状态重新规划。Run 保持 Active，同一 RunID 继续 |
-| 工具 Executing、owner 进程崩溃 | 新 owner 的 `RecoverInterrupted` 先经 Executor 询问该 attempt 是否仍在执行：是则保持 Executing、以原 Claim 接受其 Outcome（重连，不是重试）；否则提交该 call 的 Unknown，companion 写 status=`unknown`。Run 保持 Active |
+| 工具 Executing、owner 进程崩溃 | 新 owner 的 `RecoverInterrupted` 先经 Executor 询问该 attempt 是否仍在执行：是则保持 Executing、以原 Claim 接受其 Outcome（重连，不是重试）；否则提交该 call 的 Unknown，对话投影得到 status=`unknown` 的条目。Run 保持 Active |
 | Writer 返回 `ErrOwnershipLost` | 本进程放弃该 Session 的全部 Turn 与 Loop（RUN-CMT-6）；由持有新 Epoch 的进程按上两行接管 |
 | Run 已 `failed`、Turn 未结算 | Turn 为 `attempt_failed`；Application 选择 Retry 或 Settle |
 | Stop 的 Commit 返回非 sentinel 错误 | 以同一 Cancel CommandID 重放 |
@@ -336,18 +334,18 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 | Retry 的 Commit 返回非 sentinel 错误 | 重放相同 RetryRequest（含 PreviousRunID），按 TRN-RTY-2 确认原 RunID 与 Attempt |
 | preset 缺失 | 宿主 Drive 返回 `preset_unavailable`（HST-PST-2）；Turn 状态不变 |
 
-**TRN-REC-3** 没有跨存储的对账：Run 事实、companion 内容与 Turn 结算在同一组，`Append` 原子，要么全部可见要么全部不可见。claim 在 Append 之前建立，崩溃只可能留下孤儿 claim，由 artifact 的回收前核对释放（EXT-WRT-3、ART-RET-3）。
+**TRN-REC-3** 没有跨存储的对账：Run 事实与 Attach 的 Turn 事实在同一组，`Append` 原子，要么全部可见要么全部不可见；对话内容与 Turn 结算是这些事实的投影，没有第二份需要对齐的写入。冻结正文在 Append 之前存入并建立 claim，崩溃只可能留下未被任何事实引用的正文与孤儿 claim，由 artifact 的回收前核对释放（EXT-WRT-3、ART-RET-3）。
 
 ## 8. conformance
 
 套件以 `session.Store` 为参数（`agent/turn/turntest`），Memory 与每个 durable adapter 跑同一组断言。Coordinator 只做提交与读取，因此套件不含 Loop、driver、模型或工具桩：Run 的推进由 `run.Runtime` 的 command 提交完成，Application 的 `CancelRun` 制造 `attempt_failed`，`SubmitModelResult` 制造 completed 与 approval 等待。
 
-- **TRN-STR-1 至 TRN-STR-4、TRN-ID-2/3/4、TRN-EVT-2**：缺 preset 或 companion、重复 InputID、未 submitted 的输入、Payload 与 Content 不符各自被拒且不写入；Start 的 group 为 `started`、每输入一条 `input_delivered`、`run_created{Owner:TurnID, Attempt:1}`、每输入一条 `input_accepted`，CommitID 为 StartOperationDigest，RunID 为 `twilight/turn/run` 派生值；响应为 `active`、attempt 1、无 disposition；不同时间戳的重放为 already-applied 且不写入；同 TurnID 的另一 plan 与第二个活跃 Turn 为 conflict，被拒输入保持 `submitted`。
+- **TRN-STR-1 至 TRN-STR-4、TRN-ID-2/3/4、TRN-EVT-2**：缺 preset、重复 InputID、未 submitted 的输入、Payload 与 Content 不符各自被拒且不写入；Start 的 group 为 `started`、每输入一条 `input_delivered`、`run_created{Owner:TurnID, Attempt:1}`、每输入一条 `input_accepted`，CommitID 为 StartOperationDigest，RunID 为 `twilight/turn/run` 派生值；响应为 `active`、attempt 1、无 disposition；不同时间戳的重放为 already-applied 且不写入；同 TurnID 的另一 plan 与第二个活跃 Turn 为 conflict，被拒输入保持 `submitted`。
 - **TRN-DLV-1、TRN-DLV-2**：一个批次的全部 `input_accepted` 与 `input_delivered` 在以批次 CommandID 为 CommitID 的同一 commit；Run 的 `PendingInputs` 与 surface 的 `InputIDs` 追加全部输入；同一批次重放不写入；不存在或非 `active` 的 Turn 为 conflict 且输入保持 `submitted`；未提交的输入或内容不一致的输入使整批 conflict，批内其他输入也不写入、Run 的 `PendingInputs` 不变。
 - **TRN-RTY-1、TRN-RTY-2、TRN-RTY-3**：新 Retry 对缺失、错误或非最新失败的 `PreviousRunID`、非 `attempt_failed` Turn、已有其他 `active` Turn 的 Session 返回 conflict；合法请求得到 attempt n+1、`twilight/turn/retry` 派生的 CommitID、`run_created` 加全部已 delivered 输入按 `InputIDs` 顺序的 `input_accepted`（payload 同首次）；surface 的 `InputIDs` 唯一，失败 attempt 的记录保留。相同 RetryRequest 在后继 active、后继失败、另一 Turn active、更晚 Retry 和接管后均返回原 RunID 与 Attempt，stream 长度保持不变；后续新 Retry 以新的失败 RunID 为 PreviousRunID。
-- **TRN-STP-1、TRN-STP-2、TRN-STL-1、TRN-EVT-3**：Stop 的 `CancelRun` 与 `failed{stopped, cancelled}` 在以 Cancel CommandID 为 CommitID 的同一 commit，其中含 `run_ended`；Settle 需要 `attempt_failed`，写 `failed{failed, FailureClass}`，CommitID 为 `twilight/turn/settle` 派生值；已结算（stopped、failed、completed）的 Turn 上 Stop、新 Retry、Settle、Deliver 返回 conflict，历史 Retry 仍按 TRN-RTY-2 确认原提交；completed 由 companion 在 Run 终结的同一组写入。
+- **TRN-STP-1、TRN-STP-2、TRN-STL-1、TRN-EVT-3**：Stop 的 `CancelRun` 与 `failed{stopped, cancelled}` 在以 Cancel CommandID 为 CommitID 的同一 commit，其中含 `run_ended`；Settle 需要 `attempt_failed`，写 `failed{failed, FailureClass}`，CommitID 为 `twilight/turn/settle` 派生值；已结算（stopped、failed、completed）的 Turn 上 Stop、新 Retry、Settle、Deliver 返回 conflict，历史 Retry 仍按 TRN-RTY-2 确认原提交；completed 由 Run 终结组内的 `run_ended` 折叠得到，该组不含任何 turn 事件。
 - **TRN-STA-1、TRN-API-3**：Open 的 Run 无 disposition 与 Waiting；模型 Executing 为 `waiting_for_recovery`；approval 调用为 `waiting_for_response` 且 `Waiting` 含该请求；completed 与 Application 取消的 Run 为 `finished`，`End` 分别为 completed 与 stopped；不存在的 Turn 为 conflict。
-- **TRN-PRJ-1、TRN-EVT-3、TRN-SCP-2/3**：Owner 不是本 Session Turn 的 Run 不进入 surface；第二条 `started`、未知 Turn 的结算、第二次结算、结算后的 `completed`、指向未登记 RunID 或已有 `End` 的 attempt 的 `completed` 与 `attempt_failed` 在 fold 阶段被拒且不写入；`run_ended` 写入 `AttemptView.End` 并使未结算 Turn 进入 `attempt_failed`、清空 `ActiveRun`；`Order` 按 started 顺序；结算后的 Session 没有活跃 Turn。
+- **TRN-PRJ-1、TRN-EVT-3、TRN-SCP-2/3**：Owner 不是本 Session Turn 的 Run 不进入 surface；第二条 `started`、未知 Turn 的结算、第二次结算在 fold 阶段被拒且不写入；已有 `End` 的 attempt 再次 `run_ended` 为 fold 错误；`run_ended(completed)` 使 Turn `completed`，其他结束写入 `AttemptView.End` 并使未结算 Turn 进入 `attempt_failed`、清空 `ActiveRun`；`Order` 按 started 顺序；结算后的 Session 没有活跃 Turn。
 - **TRN-REC-1、TRN-REC-2、TRN-SCP-3**：`started` 提交后接管，`RecoverInterrupted` 处置 0 个目标，Status 仅从投影重建为 `active`；模型 Executing 时接管，处置 1 个目标后 disposition 不再是 `waiting_for_recovery`；被替代的 Coordinator 的 Deliver 得到 `ErrOwnershipLost` 且不改变输入状态，新 owner 的 Deliver 成功。
 - **TRN-CMP-1 至 TRN-MAP-4**：companion 纯函数、v1 映射表、`SourceDigest` 等于 Run fact 记录值、companion 中的 ReferencePart 经 admission 并建立 claim、同组可见性，由 RUN-CMP-2 套件经 Runtime 的组构成观察。
 - **TRN-DLV-3** 的并发定序（输入与最后一步结果的两种先后）由 Writer 串行保证，单进程套件不构造并发，以 Deliver 对已终结 Run 的 `completed` 响应作为可观察结果。

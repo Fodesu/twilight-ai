@@ -6,36 +6,32 @@ import (
 
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session/extension"
+	runmod "github.com/felinics/twilight/agent/session/run"
 )
 
-// TRN-PRJ-1: a settlement names the attempt it ends. The fold rejects a
-// completed or attempt_failed whose RunID the Turn never started, and a second
-// end for one attempt, instead of settling the Turn with no attempt carrying
-// the result.
+// TRN-PRJ-1: run_ended settles the attempt attempt_started registered. A
+// completed Run completes the Turn, any other end leaves it attempt_failed; a
+// Run no Turn of the Session owns is ignored; a second end of one attempt is
+// a fold error rather than a silent no-op.
 func TestSurfaceSettlementNamesAnAttempt(t *testing.T) {
 	started := StartedPayload{TurnID: "t1"}
 	attempt := AttemptStartedPayload{TurnID: "t1", RunID: "r1", Attempt: 1}
-	completed := run.RunEnded{End: run.RunCompletedEnd{}}
-	failed := run.RunEnded{End: run.RunFailedEnd{}}
+	ended := func(runID run.RunID, end run.RunEnd) runmod.Event {
+		return runmod.Event{RunID: runID, Fact: run.RunEnded{End: end}}
+	}
+	completed, failed := run.RunCompletedEnd{}, run.RunFailedEnd{Reason: "provider"}
 	cases := []struct {
-		name    string
-		events  []any
-		wantErr string
+		name       string
+		events     []any
+		wantStatus TurnStatus
+		wantEnded  bool
+		wantErr    string
 	}{
-		{"completed ends the active attempt", []any{started, attempt,
-			CompletedPayload{TurnID: "t1", RunID: "r1", End: completed}}, ""},
-		{"attempt failure ends the active attempt", []any{started, attempt,
-			AttemptFailedPayload{TurnID: "t1", RunID: "r1", End: failed}}, ""},
-		{"completed for an unknown run", []any{started, attempt,
-			CompletedPayload{TurnID: "t1", RunID: "r9", End: completed}}, "has no attempt r9"},
-		{"attempt failure for an unknown run", []any{started, attempt,
-			AttemptFailedPayload{TurnID: "t1", RunID: "r9", End: failed}}, "has no attempt r9"},
-		{"attempt failure twice", []any{started, attempt,
-			AttemptFailedPayload{TurnID: "t1", RunID: "r1", End: failed},
-			AttemptFailedPayload{TurnID: "t1", RunID: "r1", End: failed}}, "ended twice"},
-		{"completed after the attempt failed", []any{started, attempt,
-			AttemptFailedPayload{TurnID: "t1", RunID: "r1", End: failed},
-			CompletedPayload{TurnID: "t1", RunID: "r1", End: completed}}, "ended twice"},
+		{"completed ends the active attempt", []any{started, attempt, ended("r1", completed)}, TurnCompleted, true, ""},
+		{"failure ends the active attempt", []any{started, attempt, ended("r1", failed)}, TurnAttemptFailed, true, ""},
+		{"a foreign run is ignored", []any{started, attempt, ended("r9", completed)}, TurnActive, false, ""},
+		{"failure twice", []any{started, attempt, ended("r1", failed), ended("r1", failed)}, "", false, "ended twice"},
+		{"completed after the attempt failed", []any{started, attempt, ended("r1", failed), ended("r1", completed)}, "", false, "ended twice"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -61,8 +57,8 @@ func TestSurfaceSettlementNamesAnAttempt(t *testing.T) {
 				t.Fatal(err)
 			}
 			v := state.(TurnSurface).Turns["t1"]
-			if len(v.Attempts) != 1 || v.Attempts[0].End == nil || v.ActiveRun != "" {
-				t.Fatalf("attempt not ended: %+v", v)
+			if v.Status != tc.wantStatus || len(v.Attempts) != 1 || (v.Attempts[0].End != nil) != tc.wantEnded || (v.ActiveRun == "") != tc.wantEnded {
+				t.Fatalf("view = %+v, want status %s ended=%v", v, tc.wantStatus, tc.wantEnded)
 			}
 		})
 	}

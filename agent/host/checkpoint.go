@@ -32,10 +32,8 @@ func RetainLast(entries []chatlog.Entry, n int) []chatlog.EntryDigestPair {
 		if e.Kind != chatlog.EntryAssistant || e.Assistant == nil {
 			continue
 		}
-		for _, part := range e.Assistant.Parts {
-			if call, ok := part.(chatlog.ToolCallPart); ok {
-				owner[call.CallID] = i
-			}
+		for _, call := range e.Assistant.CallIDs {
+			owner[call] = i
 		}
 	}
 	start := len(entries) - n
@@ -177,10 +175,8 @@ func checkRetainClosure(entries []chatlog.Entry, retain []chatlog.EntryDigestPai
 		if e.Kind != chatlog.EntryAssistant || e.Assistant == nil {
 			continue
 		}
-		for _, part := range e.Assistant.Parts {
-			if call, ok := part.(chatlog.ToolCallPart); ok {
-				owner[call.CallID] = e
-			}
+		for _, call := range e.Assistant.CallIDs {
+			owner[call] = e
 		}
 	}
 	results := map[chatlog.CallID]*chatlog.Entry{}
@@ -201,13 +197,9 @@ func checkRetainClosure(entries []chatlog.Entry, retain []chatlog.EntryDigestPai
 				return fmt.Errorf("host: retained tool_result %s without its assistant", e.ID)
 			}
 		case chatlog.EntryAssistant:
-			for _, part := range e.Assistant.Parts {
-				call, ok := part.(chatlog.ToolCallPart)
-				if !ok {
-					continue
-				}
-				if r := results[call.CallID]; r != nil && !kept[r.Pair()] {
-					return fmt.Errorf("host: retained assistant %s without the result of call %s", e.ID, call.CallID)
+			for _, call := range e.Assistant.CallIDs {
+				if r := results[call]; r != nil && !kept[r.Pair()] {
+					return fmt.Errorf("host: retained assistant %s without the result of call %s", e.ID, call)
 				}
 			}
 		}
@@ -232,7 +224,11 @@ func (s *Session) Compact(ctx context.Context) (chatlog.CheckpointID, bool, erro
 	if len(entries) == 0 || len(retain) >= len(entries) {
 		return "", false, nil
 	}
-	summary, err := s.summarize(ctx, entries)
+	materialized, err := chatlog.NewMaterializer(s.h.content).Entries(ctx, entries)
+	if err != nil {
+		return "", false, err
+	}
+	summary, err := s.summarize(ctx, materialized)
 	if err != nil {
 		return "", false, err
 	}
@@ -250,7 +246,7 @@ const defaultCompactRetain = 4
 // dispatched as a model Assignment outside any Run, so the authority holds no
 // model client and a remote executor serves it the same way. A crash while
 // it generates writes nothing.
-func (s *Session) summarize(ctx context.Context, entries []chatlog.Entry) (string, error) {
+func (s *Session) summarize(ctx context.Context, entries []chatlog.Materialized) (string, error) {
 	preset, err := s.h.Presets.Resolve(s.opts.Preset)
 	if err != nil {
 		return "", err
@@ -297,11 +293,12 @@ func (s *Session) summarize(ctx context.Context, entries []chatlog.Entry) (strin
 	return out.Model.Text, nil
 }
 
-// renderTranscript flattens entries into the compactor's input.
-func renderTranscript(entries []chatlog.Entry) string {
+// renderTranscript flattens materialized entries into the compactor's input.
+func renderTranscript(entries []chatlog.Materialized) string {
 	var b strings.Builder
 	for i := range entries {
-		e := &entries[i]
+		m := &entries[i]
+		e := m.Entry
 		switch e.Kind {
 		case chatlog.EntryInput:
 			text, err := decision.InputText(e.Input.Content)
@@ -310,18 +307,16 @@ func renderTranscript(entries []chatlog.Entry) string {
 			}
 			fmt.Fprintf(&b, "user: %s\n", text)
 		case chatlog.EntryAssistant:
-			for _, part := range e.Assistant.Parts {
-				switch v := part.(type) {
-				case chatlog.TextPart:
-					fmt.Fprintf(&b, "assistant: %s\n", v.Text)
-				case chatlog.ToolCallPart:
-					fmt.Fprintf(&b, "assistant: [calls %s %s]\n", v.Name, v.Input.String())
-				}
+			if text := m.Text(); text != "" {
+				fmt.Fprintf(&b, "assistant: %s\n", text)
+			}
+			for _, call := range m.Calls {
+				fmt.Fprintf(&b, "assistant: [calls %s %s]\n", call.Name, call.Input.String())
 			}
 		case chatlog.EntryToolResult:
-			fmt.Fprintf(&b, "tool (%s): %s\n", e.ToolResult.Status, decision.PartsText(e.ToolResult.Parts))
+			fmt.Fprintf(&b, "tool (%s): %s\n", e.ToolResult.Status, m.Text())
 		case chatlog.EntrySummary:
-			fmt.Fprintf(&b, "summary: %s\n", decision.PartsText(e.Summary.Parts))
+			fmt.Fprintf(&b, "summary: %s\n", m.Text())
 		}
 	}
 	return b.String()

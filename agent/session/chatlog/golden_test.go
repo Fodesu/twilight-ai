@@ -1,6 +1,7 @@
 package chatlog_test
 
 import (
+	runmod "github.com/felinics/twilight/agent/session/run"
 	"testing"
 
 	"github.com/felinics/twilight/agent/jsonstable"
@@ -61,7 +62,7 @@ func TestChatlogWireGolden(t *testing.T) {
 	}
 	freezeChatlog(t, "checkpoint digest", string(cpd), "sha256:739d88db6e3a394d8443528c0099935d7cd46f3fe293db027b1f95d63e644bbb")
 
-	reg, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module)
+	reg, err := extension.BuildRegistry(session.ProtocolVersion1, runmod.Module, chatlog.Module)
 	if err != nil {
 		t.Fatal(err)
 	}

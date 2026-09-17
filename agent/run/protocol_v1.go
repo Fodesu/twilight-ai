@@ -72,7 +72,7 @@ func digestToolResponsePayloadV1(payload CanonicalJSON) (Digest, error) {
 }
 
 // digestModelResultV1 names a frozen model result; ModelStepCompleted carries
-// this digest and the companion carries the content (RUN-WIR-4).
+// this digest and the FrozenValueStore holds the body (RUN-WIR-4).
 func digestModelResultV1(result ModelResult) (Digest, error) { //nolint:gocritic // hugeParam: digest covers the complete immutable ModelResult value.
 	body, err := encodeEnvelopeBody(SchemaVersion1, "model_result", result)
 	if err != nil {

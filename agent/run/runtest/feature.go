@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -26,13 +27,6 @@ const (
 	defaultSession session.SessionID = "s-1"
 )
 
-// nopCompanion writes no conversation content: Feature tests exercise Run
-// facts, not the chatlog.
-type nopCompanion struct{}
-
-func (nopCompanion) Version() string                                     { return "runtest/nop" }
-func (nopCompanion) Map(run.CompanionRequest) ([]run.ModuleEvent, error) { return nil, nil }
-
 // newRuntime assembles the Memory Session stack with only the run module and
 // creates the Run with its seed input through a Start-like group.
 func newRuntime(t testing.TB, inputs ...run.AgentInput) run.Runtime {
@@ -46,8 +40,10 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) run.Runtime {
 	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: defaultSession}); err != nil {
 		t.Fatal(err)
 	}
-	writers := writer.NewWriters(store, registry, writer.Admission{}, session.OpenOptions{}, writer.WritersConfig{})
-	rt, err := runmod.NewRuntime(runmod.Config{Writers: writers, Registry: registry, Store: store, Companion: nopCompanion{}})
+	bindings := artifact.NewMemoryBindingStore()
+	ledger := artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings})
+	writers := writer.NewWriters(store, registry, writer.Admission{Bindings: bindings, Ledger: ledger}, session.OpenOptions{}, writer.WritersConfig{})
+	rt, err := runmod.NewRuntime(runmod.Config{Writers: writers, Registry: registry, Store: store, Bindings: bindings})
 	if err != nil {
 		t.Fatal(err)
 	}

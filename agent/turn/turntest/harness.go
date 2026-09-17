@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/felinics/twilight/agent/artifact"
 	"testing"
 	"time"
 
@@ -41,6 +42,8 @@ type harness struct {
 	store    session.Store
 	registry *extension.Registry
 	frozen   run.FrozenValueStore
+	bindings *artifact.MemoryBindingStore
+	ledger   *artifact.MemoryLedger
 	now      int64
 	seq      int
 	writers  writer.Writers
@@ -54,7 +57,9 @@ func newHarness(t testing.TB, f Fixture) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, ctx: context.Background(), store: f.Store, registry: registry, frozen: runmod.FrozenValuesInMemory(), now: 1_000}
+	bindings := artifact.NewMemoryBindingStore()
+	h := &harness{t: t, ctx: context.Background(), store: f.Store, registry: registry, frozen: runmod.FrozenValuesInMemory(), now: 1_000,
+		bindings: bindings, ledger: artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings})}
 	if _, err := f.Store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
 	}
@@ -66,9 +71,9 @@ func newHarness(t testing.TB, f Fixture) *harness {
 func (h *harness) open() {
 	h.t.Helper()
 	clock := func() time.Time { return time.UnixMilli(h.now) }
-	h.writers = writer.NewWriters(h.store, h.registry, writer.Admission{}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
+	h.writers = writer.NewWriters(h.store, h.registry, writer.Admission{Bindings: h.bindings, Ledger: h.ledger}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
 	rt, err := runmod.NewRuntime(runmod.Config{Writers: h.writers, Registry: h.registry, Store: h.store,
-		Frozen: h.frozen, Companion: turn.CompanionV1{}, Now: clock})
+		Frozen: h.frozen, Bindings: h.bindings, Now: clock})
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -149,7 +154,7 @@ func (h *harness) submit(ids ...string) []run.AgentInput {
 }
 
 func (h *harness) startRequest(turnID turn.TurnID, inputs ...run.AgentInput) turn.StartRequest {
-	return turn.StartRequest{Ref: h.ref(turnID), Inputs: inputs, Preset: preset, Companion: turn.CompanionV1Version}
+	return turn.StartRequest{Ref: h.ref(turnID), Inputs: inputs, Preset: preset}
 }
 
 // start submits ids and starts turnID with them.
@@ -391,8 +396,8 @@ func textResult(text string) run.ModelResult {
 	return r
 }
 
-// complete finishes the Run with a text result; the companion settles the Turn
-// as completed in the same group.
+// complete finishes the Run with a text result; the surface folds the Turn to
+// completed from the run_ended of the same group.
 func (h *harness) complete(runID run.RunID) run.CommitResult {
 	h.t.Helper()
 	step, claim := h.executingModel(runID)

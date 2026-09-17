@@ -86,7 +86,7 @@ func (h *harness) open() {
 	h.writers = writer.NewWriters(h.store, h.registry, writer.Admission{Bindings: h.bindings, Ledger: h.ledger}, session.OpenOptions{Takeover: true},
 		writer.WritersConfig{Cache: h.cache, CachePolicy: runmod.WriterCachePolicy(0)})
 	rt, err := runmod.NewRuntime(runmod.Config{Writers: h.writers, Registry: h.registry, Store: h.store,
-		Frozen: h.frozen, Companion: turn.CompanionV1{}, Cache: h.cache, Now: h.clock.Now})
+		Frozen: h.frozen, Bindings: h.bindings, Cache: h.cache, Now: h.clock.Now})
 	if err != nil {
 		h.fatal(err)
 	}
@@ -181,12 +181,11 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	var sessionEvents []writer.TypedEvent
 	if attempt == 1 {
 		sessionEvents = append(sessionEvents, writer.TypedEvent{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
-			Value: turn.StartedPayload{TurnID: turnID, InputIDs: ids, Preset: turn.PresetRef{ID: "b", Digest: "sha256:b"},
-				Companion: turn.CompanionV1Version}})
+			Value: turn.StartedPayload{TurnID: turnID, InputIDs: ids, Preset: turn.PresetRef{ID: "b", Digest: "sha256:b"}}})
 	}
 	// The Coordinator announces every attempt, initial or retry, with
-	// turn/attempt_started; without it the surface has no open attempt for the
-	// Run and rejects the companion's settlement (TRN-PRJ-1).
+	// turn/attempt_started; it is what routes the Run's run_ended to the
+	// attempt it settles (TRN-PRJ-1).
 	sessionEvents = append(sessionEvents, writer.TypedEvent{Type: turn.TypeAttemptStarted, RecordedAtUnixMilli: 1,
 		Value: turn.AttemptStartedPayload{TurnID: turnID, RunID: runID, Attempt: attempt, SchemaVersion: newRun.SchemaVersion}})
 	if attempt == 1 {
@@ -241,7 +240,7 @@ func (h *harness) proto(runID run.RunID) run.Protocol {
 	return p
 }
 
-// commit builds the envelope and submits it; attach events follow the companion.
+// commit builds the envelope and submits it; attach events follow the facts.
 func (h *harness) commit(runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, attach ...run.ModuleEvent) (run.CommitResult, error) {
 	h.t.Helper()
 	return h.commitWith(h.rt, runID, id, base, cmd, attach...)

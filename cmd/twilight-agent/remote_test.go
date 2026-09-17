@@ -218,7 +218,7 @@ func TestRemoteAuthorityReopensRunningTool(t *testing.T) {
 			if event.Err != nil {
 				t.Fatal(event.Err)
 			}
-			completed = event.Row.Type == turn.TypeCompleted
+			completed = event.Row.Type == runmod.Prefix+"run_ended"
 		case <-ctx.Done():
 			t.Fatal("reopened authority did not complete: ", ctx.Err())
 		}

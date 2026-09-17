@@ -34,7 +34,7 @@
 type Artifacts struct { Bindings artifact.BindingStore; Ledger artifact.RetentionLedger }
 type Ports struct {
     Store      session.Store              // nil → 内存
-    Content    artifact.ContentStore      // nil → 内存；冻结请求本体的 cas 存储（RUN-WIR-4），Runtime 写、Executor 读
+    Content    artifact.ContentStore      // nil → 内存；冻结正文（请求、结果、工具输出）的 cas 存储（RUN-WIR-4），Runtime 写、Host 的 materializer 读
     Artifacts  Artifacts                  // 可为零值
     Presets   PresetRegistry            // nil → 内存注册表；只存决策身份
     Decisions  *decision.PromptBuilders          // 零值 → decision.DefaultPromptBuilders()
@@ -56,7 +56,7 @@ func New(Ports) (*Host, error)
 
 **HST-PRT-1** 端口按角色分组，每个字段是接口或 core 值类型；Host 不知道拿到的是哪个实现，导出的字段也只有接口与 core 类型。缺省实现只在 nil 时选用，且都是进程内的。
 
-**HST-PRT-3** 内容寻址只有一个端口：`Content` 是 artifact `cas` ContentStore，冻结请求本体是它在 `runmod.FrozenAuthority` 下的内容，Host 与 `NewLocalExecutor` 各以 `runmod.FrozenValues` 适配同一个 store，authority 侧写、executor 侧读。
+**HST-PRT-3** 内容寻址只有一个端口：`Content` 是 artifact `cas` ContentStore，冻结正文是它在 `runmod.FrozenAuthority` 下的内容。Runtime 写入；Host 以 `runmod.NewContent` 建立 materializer（`Host.Content()`），供 prompt 构造、`Result.Reply` 与 compaction transcript 读取（CHT-MAT-1）。Executor 不读它：Dispatch 携带内联请求（RUN-EXE-7）。重启或接管的进程必须拿到同一个 store，ledger 只有 digest。
 
 **HST-PRT-2** Executor 是唯一必填端口：没有效果层的 Host 无法完成任何 Turn，而效果层的实现从不属于宿主层。HST-SCP-3 的判据以一个只记录 Assignment 并按脚本回送 Outcome 的 Executor 验收。
 
@@ -81,7 +81,7 @@ func NewPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...PresetOp
 
 **HST-DRV-2** Loop 按 PresetRef 组合并缓存：`Decisions.Resolve(preset)` 得到 prompt builder，与 preset 上的 Scheduling、MalformedRetries 及共享的 Executor 一起构成 `loop.New(executor, builder, loop.Settings{Scheduling, MalformedRetries})`。一个 Run 属于一个 Turn、一个 Turn 只有一个 AgentPreset，因此同一 Run 的全部驱动落在同一个 Loop 上，Loop 的 already-driving 守卫成立（RUN-CMT-6）。
 
-**HST-DRV-3** `Session.Route(ctx, inputs)`：先读 turn surface——存在 `active` 的 Turn 时调用 `Deliver`（输入进入该 Run 的下一步）；否则以新 TurnID、Session 的 AgentPreset 与 Companion 调用 `Start`；`attempt_failed` 的 Turn 使 Route 返回 conflict，不自动 Retry 或 Settle，那是宿主的决定。提交成功后进入 `Host.Drive`。输入在两种情形下都已先写入 `input_submitted`。
+**HST-DRV-3** `Session.Route(ctx, inputs)`：先读 turn surface——存在 `active` 的 Turn 时调用 `Deliver`（输入进入该 Run 的下一步）；否则以新 TurnID 与 Session 的 AgentPreset 调用 `Start`；`attempt_failed` 的 Turn 使 Route 返回 conflict，不自动 Retry 或 Settle，那是宿主的决定。提交成功后进入 `Host.Drive`。输入在两种情形下都已先写入 `input_submitted`。
 
 **HST-DRV-4** `Session.Drain(ctx)`：读 chatlog surface，若存在 `submitted` 且未 delivered 的输入，按 stream 顺序取全部，经 Route 开新 Turn；否则返回 false。已提交而未投递的输入就是 inbox 的 next-turn 列表，不需要另一份持久结构。
 
@@ -142,7 +142,7 @@ registry    = extension.BuildRegistry(v1, chatlog.Module, runmod.Module, turn.Mo
 writers     = writer.NewWriters(Store, registry, Admission{Artifacts}, Ownership, {Cache, CachePolicy: runmod.WriterCachePolicy(CacheEvery)})
 frozen      = runmod.FrozenValues(Content)                       // 同一 store 也交给 NewLocalExecutor
 writers     = writer.NewWriters(..., {Cache, CachePolicy, Observers: [eventBus, Ports.Observers...]})
-runtime     = runmod.NewRuntime{Writers, registry, Store, Frozen: frozen, Companion: turn.CompanionV1, Cache, Clock}
+runtime     = runmod.NewRuntime{Writers, registry, Store, Frozen: frozen, Bindings: Artifacts.Bindings, Cache, Clock}
 coordinator = turn.Coordinator{Writers, runtime}                 // 纯协议：提交 + Status
 loops       = PresetRef → loop.New(Executor, builder, Settings{preset.Scheduling, preset.MalformedRetries})   // 首次 Drive 时组合
 ```
@@ -154,9 +154,9 @@ loops       = PresetRef → loop.New(Executor, builder, Settings{preset.Scheduli
 ## 8. 部署形态
 
 ```text
-本地（colocated）          Store: filestore    Executor: NewLocalExecutor(Catalog, Content)  一个进程
-云端（Session Service）    Store: 共享/数据库   Executor: 远端 worker 的客户端                 authority 进程无模型客户端、无工具实现
-                           Executor 进程：Catalog + Content 只读 + Assignment/Outcome 传输，无 Store
+本地（colocated）          Store: filestore    Content: filestore    Executor: NewLocalExecutor(Catalog)  一个进程
+云端（Session Service）    Store: 共享/数据库   Content: 共享 cas     Executor: 远端 worker 的客户端        authority 进程无模型客户端、无工具实现
+                           Executor 进程：Catalog + Assignment/Outcome 传输，无 Store、无 Content
 ```
 
 两种形态用同一个 `host.New`，差别只在端口实现。core 与宿主层在两者之间没有一行分叉代码。
@@ -169,6 +169,6 @@ loops       = PresetRef → loop.New(Executor, builder, Settings{preset.Scheduli
 - **HST-DRV-3/4**：active Turn 时 Route 走 Deliver，输入在下一次模型请求里紧随工具结果之后；无 active Turn 时 Route 开新 Turn；Drain 取全部积压开一个 Turn；`attempt_failed` 时 Route 为 conflict。
 - **HST-DRV-5**：`missing` execution record 的工具记 Unknown 且同一 RunID 继续；缺失记录的模型步被撤回，Resume 时重新规划（`ModelSteps` 只计重规划的那一步）；`active`/`terminal` attempt 以实际 Outcome 完成原步骤，`orphaned` 映射为 `deferred` 并保持 Executing；Open 请求取消后恢复监听继续，Session/Host 关闭后监听退出；旧进程的迟到结算被围栏。
 - **HST-SES-1/2/3**：OpenSession 顺序；Send 的首个 Result 与排空 Result；并发 Send 的 `already_driving` 收敛。
-- **HST-SES-4、HST-EVT-1**：Submit 在模型仍阻塞时已返回且 Turn 为 active；事件流按 Seq 顺序交付该 Turn 的 `started` 与 `completed`；后台驱动失败以 `Event{Err}` 与 `Ports.Warn` 报告；同一 Session 上 Send 仍阻塞到 Result。
+- **HST-SES-4、HST-EVT-1**：Submit 在模型仍阻塞时已返回且 Turn 为 active；事件流按 Seq 顺序交付该 Turn 的 `started`、`attempt_started` 与其 Run 的 `run_ended`；后台驱动失败以 `Event{Err}` 与 `Ports.Warn` 报告；同一 Session 上 Send 仍阻塞到 Result。
 - **HST-CKP-1/2**：Compact 的模型请求经 Executor 到达模型；压缩后下一请求以 summary 开头且只含 retained 后缀；重启进程组装同一上下文；active Turn 时 Compact 为 conflict；封闭校验的四类边界。
 - **HST-MEM-2**：`CacheEvery` 到达 Writer；machine projection 从不被 Writer 写入。

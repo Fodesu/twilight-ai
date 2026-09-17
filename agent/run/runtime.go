@@ -19,9 +19,10 @@ type RunPosition = session.StreamSeq
 var ErrOwnershipLost = errors.New("agent: session ownership lost")
 
 // Runtime is the Run command entry (RUN-CMT-1): addressed by (SessionID,
-// RunID), it evaluates commands inside the Session Writer and appends facts,
-// companion content and attached events as one group. Runs are created by the
-// Coordinator's Start group; there is no Create.
+// RunID), it evaluates commands inside the Session Writer and appends the
+// facts and the caller's attached events as one group. The bodies the facts
+// name by digest (RUN-WIR-4) are frozen before the group is appended. Runs are
+// created by the Coordinator's Start group; there is no Create.
 type Runtime interface {
 	Load(context.Context, session.SessionID, RunID) (RuntimeSnapshot, error)
 	Commit(context.Context, session.SessionID, CommitRequest) (CommitResult, error)
@@ -58,31 +59,14 @@ func (s RuntimeSnapshot) Protocol() (Protocol, error) {
 }
 
 // ModuleEvent is a typed event of another module (chatlog, turn) that the
-// Runtime appends after the Run facts in the same group. The module
-// implementation encodes it through the Registry.
+// caller attaches to a command: a genuine fact of that module produced by the
+// same semantic operation (an input delivered, a Turn stopped), appended
+// after the Run facts in the same group. The module implementation encodes it
+// through the Registry. Nothing derived from the Run facts travels this way:
+// conversation and Turn state are projections of the facts themselves.
 type ModuleEvent struct {
 	Type  session.EventType
 	Value any
-}
-
-// CompanionRequest is what the Runtime hands the Companion after Evolve:
-// the command (with its transient content), the facts and the new state.
-type CompanionRequest struct {
-	Session             session.SessionID
-	Owner               OwnerID
-	RunID               RunID
-	Command             AgentCommand
-	Facts               []Fact
-	State               MachineState
-	RecordedAtUnixMilli int64
-}
-
-// Companion maps Run facts and the command's transient content to the
-// conversation events that travel in the same group (TRN-CMP). Map must be a
-// deterministic pure function.
-type Companion interface {
-	Version() string
-	Map(CompanionRequest) ([]ModuleEvent, error)
 }
 
 type CommitRequest struct {
@@ -91,8 +75,8 @@ type CommitRequest struct {
 	// (RUN-CMT-4).
 	Base    RunPosition
 	Command CommandEnvelope
-	// Attach are caller events appended after the companion events; they must
-	// not be twilight/run/ events.
+	// Attach are caller events appended after the Run facts; they must not be
+	// twilight/run/ events.
 	Attach []ModuleEvent
 }
 
@@ -106,8 +90,7 @@ const (
 type CommitResult struct {
 	Status   CommitStatus
 	Snapshot RuntimeSnapshot
-	// Events is the complete commit in batch order: run facts, then
-	// companion and attach.
+	// Events is the complete commit in batch order: run facts, then attach.
 	Events []session.Event
 }
 

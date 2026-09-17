@@ -61,7 +61,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "t1"}
 	done := make(chan turn.TurnResponse, 1)
 	go func() {
-		resp, err := h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: preset, Companion: turn.CompanionV1Version})
+		resp, err := h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: preset})
 		if err == nil {
 			// The Coordinator only commits; the host drives (HST-DRV-1).
 			resp, err = h.Drive(ctx, ref1)
@@ -140,7 +140,7 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if _, err := h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: preset, Companion: turn.CompanionV1Version}); err == nil {
+		if _, err := h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: preset}); err == nil {
 			_, _ = h.Drive(ctx, ref1)
 		}
 	}()
@@ -219,7 +219,7 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := turn.TurnRef{SessionID: sid, TurnID: "t1"}
-	started, err := h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref, Inputs: []run.AgentInput{input}, Preset: preset, Companion: turn.CompanionV1Version})
+	started, err := h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref, Inputs: []run.AgentInput{input}, Preset: preset})
 	if err != nil {
 		t.Fatal(err)
 	}

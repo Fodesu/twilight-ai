@@ -2,6 +2,7 @@ package turn
 
 import (
 	"context"
+	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
@@ -25,9 +26,11 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
 	}
-	writers := writer.NewWriters(store, registry, writer.Admission{}, session.OpenOptions{}, writer.WritersConfig{})
+	bindings := artifact.NewMemoryBindingStore()
+	ledger := artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings})
+	writers := writer.NewWriters(store, registry, writer.Admission{Bindings: bindings, Ledger: ledger}, session.OpenOptions{}, writer.WritersConfig{})
 	runtime, err := runmod.NewRuntime(runmod.Config{Writers: writers, Registry: registry, Store: store,
-		Frozen: runmod.FrozenValuesInMemory(), Companion: CompanionV1{}})
+		Frozen: runmod.FrozenValuesInMemory(), Bindings: bindings})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +57,7 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 
 	ref := TurnRef{SessionID: sid, TurnID: "t1"}
 	preset := PresetRef{ID: "p1", Digest: "sha256:p1"}
-	start := StartRequest{Ref: ref, Inputs: []run.AgentInput{submit("in-1")}, Preset: preset, Companion: CompanionV1Version}
+	start := StartRequest{Ref: ref, Inputs: []run.AgentInput{submit("in-1")}, Preset: preset}
 	resp, err := c.Start(ctx, start)
 	if err != nil {
 		t.Fatalf("start: %v", err)

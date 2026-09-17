@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agent/artifact"
 	"sync"
 	"testing"
 
@@ -53,9 +54,11 @@ func messageTexts(req sdk.Request) []string {
 	return out
 }
 
-func openCompactSession(t *testing.T, store session.Store, model *compactAwareModel, opts host.SessionOptions) (*host.Host, *host.Session) {
+// openCompactSession opens one process over the store and the content store:
+// a restart shares both, since the ledger names the frozen bodies by digest.
+func openCompactSession(t *testing.T, store session.Store, content artifact.ContentStore, model *compactAwareModel, opts host.SessionOptions) (*host.Host, *host.Session) {
 	t.Helper()
-	h := newHost(host.Ports{Store: store, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+	h := newHost(host.Ports{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
 	preset, err := h.Presets.Register("b1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
@@ -73,9 +76,9 @@ func openCompactSession(t *testing.T, store session.Store, model *compactAwareMo
 // from the checkpointed log (CHT-EVT-3, HST-CKP-1).
 func TestCompactShrinksContextAndReplaysAcrossRestart(t *testing.T) {
 	ctx := context.Background()
-	store := session.NewMemoryStore()
+	store, content := session.NewMemoryStore(), memoryContent()
 	model := &compactAwareModel{}
-	h, s := openCompactSession(t, store, model, host.SessionOptions{CompactRetainEntries: 1})
+	h, s := openCompactSession(t, store, content, model, host.SessionOptions{CompactRetainEntries: 1})
 
 	for _, text := range []string{"one", "two"} {
 		if _, err := s.Send(ctx, text); err != nil {
@@ -117,7 +120,7 @@ func TestCompactShrinksContextAndReplaysAcrossRestart(t *testing.T) {
 	}
 	model2 := &compactAwareModel{}
 	model2.replies = 3 // keep reply numbering aligned for readability only
-	_, s2 := openCompactSession(t, store, model2, host.SessionOptions{CompactRetainEntries: 1})
+	_, s2 := openCompactSession(t, store, content, model2, host.SessionOptions{CompactRetainEntries: 1})
 	if _, err := s2.Send(ctx, "four"); err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +138,7 @@ func TestAutoCompactAfterSettlement(t *testing.T) {
 	ctx := context.Background()
 	var warned []error
 	model := &compactAwareModel{}
-	h, s := openCompactSession(t, session.NewMemoryStore(), model, host.SessionOptions{
+	h, s := openCompactSession(t, session.NewMemoryStore(), memoryContent(), model, host.SessionOptions{
 		CompactAfterEntries: 3, CompactRetainEntries: 1,
 		CompactWarn: func(err error) { warned = append(warned, err) },
 	})

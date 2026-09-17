@@ -4,20 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/felinics/twilight/agent/es"
+	"time"
+
+	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
 	"github.com/felinics/twilight/agent/session/writer"
-	"time"
 )
-
-// SourceDigestCarrier is implemented by companion event values whose content
-// a Run fact names by digest (TRN-MAP-3). The Runtime verifies every carried
-// digest was recorded by a fact of the same group (RUN-CMT-3 step 9).
-type SourceDigestCarrier interface {
-	SourceDigest() es.Digest
-}
 
 // SnapshotPolicy decides whether the machine projection is written to the
 // projection cache after a commit. It sees the state before and after Evolve.
@@ -34,12 +28,17 @@ func DefaultSnapshotPolicy(_, after *run.MachineState) bool {
 
 // Config assembles a Runtime (agent-host.md 7).
 type Config struct {
-	Writers   writer.Writers
-	Registry  *extension.Registry
-	Store     session.Store // read side for Record and the terminal-Run fallback
-	Frozen    run.FrozenValueStore
-	Companion run.Companion
-	Snapshot  SnapshotPolicy
+	Writers  writer.Writers
+	Registry *extension.Registry
+	Store    session.Store // read side for Record and the terminal-Run fallback
+	Frozen   run.FrozenValueStore
+	// Bindings registers the Binding of every frozen body before the fact
+	// naming it is committed, so the Writer's admission can resolve it and
+	// claim the body for the commit (RUN-WIR-4, EXT-WRT-3). It must be the
+	// same store the Writers admit against; nil skips registration, which
+	// is only correct for Writers whose Admission has no resolver.
+	Bindings artifact.BindingStore
+	Snapshot SnapshotPolicy
 	// Cache receives the machine projection per SnapshotPolicy; nil disables.
 	Cache extension.ProjectionCache
 	Now   func() time.Time
@@ -51,11 +50,8 @@ type Runtime struct {
 }
 
 func NewRuntime(cfg Config) (*Runtime, error) {
-	switch {
-	case cfg.Writers == nil, cfg.Registry == nil, cfg.Store == nil:
+	if cfg.Writers == nil || cfg.Registry == nil || cfg.Store == nil {
 		return nil, errors.New("runmod: runtime requires writers, registry and store")
-	case cfg.Companion == nil:
-		return nil, errors.New("runmod: runtime requires a Companion")
 	}
 	if cfg.Frozen == nil {
 		cfg.Frozen = FrozenValuesInMemory()
@@ -207,16 +203,11 @@ func (r *Runtime) Commit(ctx context.Context, sid session.SessionID, req run.Com
 			return run.CommitResult{}, errors.New("runmod: commit: Attach must not carry twilight/run/ events")
 		}
 	}
-	// The frozen request body must be readable before the fact that names it
-	// is visible; Put is idempotent and content-addressed (RUN-CMT-3).
-	if prep, ok := env.Command.(run.PrepareModelRequest); ok {
-		body, err := run.EncodeFrozenRequest(&prep.Request, prep.RequestDigest)
-		if err != nil {
-			return run.CommitResult{}, fmt.Errorf("%w: %w", run.ErrStaleRuntime, err)
-		}
-		if err := r.cfg.Frozen.Put(ctx, prep.RequestDigest, body); err != nil {
-			return run.CommitResult{}, err
-		}
+	// A frozen body must be readable before the fact that names it is
+	// visible; Put is idempotent and content-addressed, so a rejected or
+	// replayed command leaves nothing inconsistent behind (RUN-CMT-3).
+	if err := r.freezeBodies(ctx, env.Command); err != nil {
+		return run.CommitResult{}, err
 	}
 	w, err := r.writer(ctx, sid)
 	if err != nil {
@@ -263,6 +254,52 @@ func (r *Runtime) Commit(ctx context.Context, sid session.SessionID, req run.Com
 	default:
 		return run.CommitResult{}, fmt.Errorf("runmod: commit: %s: %s", res.Outcome, res.Detail)
 	}
+}
+
+// freezeBodies stores the bodies a command's facts will name by digest
+// (RUN-WIR-4): the request of a Prepare, the result of a model settlement,
+// the output of a tool settlement and the payload of an external response.
+// Each body is encoded as the envelope its digest was computed from and its
+// Binding is registered for the Writer's admission.
+func (r *Runtime) freezeBodies(ctx context.Context, cmd run.AgentCommand) error {
+	var digest run.Digest
+	var body []byte
+	var err error
+	switch c := cmd.(type) {
+	case run.PrepareModelRequest:
+		digest = c.RequestDigest
+		body, err = run.EncodeFrozenRequest(&c.Request, digest)
+	case run.SubmitModelResult:
+		if digest, err = run.ProtocolV1().DigestModelResult(c.Result); err == nil {
+			body, err = run.EncodeFrozenModelResult(&c.Result, digest)
+		}
+	case run.SubmitToolResult:
+		if digest, err = run.ProtocolV1().DigestToolOutput(c.Result.Output); err == nil {
+			body, err = run.EncodeFrozenToolOutput(c.Result.Output, digest)
+		}
+	case run.SubmitToolResponse:
+		digest = c.ResponseDigest
+		body, err = run.EncodeFrozenToolResponse(c.Payload, digest)
+	default:
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%w: %w", run.ErrStaleRuntime, err)
+	}
+	if err := r.cfg.Frozen.Put(ctx, digest, body); err != nil {
+		return err
+	}
+	if r.cfg.Bindings == nil {
+		return nil
+	}
+	binding, err := FrozenBinding(digest)
+	if err != nil {
+		return err
+	}
+	// An identical Binding is already registered on a replay; only a
+	// differing Ref under the same BindingID conflicts (ART-BND-1).
+	_, err = r.cfg.Bindings.CreateBinding(ctx, binding)
+	return err
 }
 
 // afterCommit writes the machine projection to the cache when the policy asks
@@ -350,40 +387,11 @@ func (r *Runtime) evaluate(ctx context.Context, view writer.View, sid session.Se
 	now := r.nowMilli()
 	group := &writer.SemanticGroup{CommitID: commitID}
 	runEvents := make([]writer.TypedEvent, 0, len(decision.Facts))
-	recorded := map[es.Digest]struct{}{}
 	for _, f := range decision.Facts {
 		runEvents = append(runEvents, writer.TypedEvent{Type: EventType(f), RecordedAtUnixMilli: now, Value: Event{RunID: runID, Fact: f}})
-		switch fact := f.(type) {
-		case run.ModelStepCompleted:
-			recorded[fact.ResultDigest] = struct{}{}
-		case run.ToolCallCompleted:
-			recorded[fact.OutputDigest] = struct{}{}
-		case run.ToolCallAnswered:
-			recorded[fact.ResponseDigest] = struct{}{}
-		}
 	}
+	// Step 9: the caller's attached events -> the session stream.
 	sessionEvents := []writer.TypedEvent{}
-	// Step 9: companion, then Attach.
-	companion, err := r.cfg.Companion.Map(run.CompanionRequest{Session: sid, Owner: state.Owner, RunID: runID,
-		Command: env.Command, Facts: decision.Facts, State: decision.NewState, RecordedAtUnixMilli: now})
-	if err != nil {
-		return nil, evaluated{}, nil, fmt.Errorf("runmod: companion: %w", err)
-	}
-	for _, me := range companion {
-		if session.HasTypePrefix(me.Type, []session.EventType{Prefix}) {
-			return nil, evaluated{}, nil, errors.New("runmod: companion must not produce twilight/run/ events")
-		}
-		// A carried digest must be one a fact of this group recorded; content
-		// without a Run-recorded digest (a failed call's tool_result) carries none.
-		if carrier, ok := me.Value.(SourceDigestCarrier); ok {
-			if d := carrier.SourceDigest(); d != "" {
-				if _, recordedHere := recorded[d]; !recordedHere {
-					return nil, evaluated{}, nil, fmt.Errorf("runmod: companion %s SourceDigest is not recorded by a fact of this group", me.Type)
-				}
-			}
-		}
-		sessionEvents = append(sessionEvents, writer.TypedEvent{Type: me.Type, RecordedAtUnixMilli: now, Value: me.Value})
-	}
 	for _, me := range req.Attach {
 		sessionEvents = append(sessionEvents, writer.TypedEvent{Type: me.Type, RecordedAtUnixMilli: now, Value: me.Value})
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 
 	"github.com/felinics/twilight/agent/run"
@@ -18,8 +17,6 @@ import (
 type SessionOptions struct {
 	// AgentPreset is the decision identity new Turns run under (required).
 	Preset turn.PresetRef
-	// Companion defaults to turn.CompanionV1Version.
-	Companion turn.CompanionVersion
 	// NewTurnID mints TurnIDs; nil selects the random default.
 	NewTurnID func() turn.TurnID
 	// ResumeActive resumes a still-active Turn synchronously inside
@@ -67,7 +64,6 @@ type Session struct {
 	h         *Host
 	sid       session.SessionID
 	opts      SessionOptions
-	companion turn.CompanionVersion
 	newTurnID func() turn.TurnID
 
 	// bg bounds the background drives Submit starts; Close cancels it and
@@ -128,10 +124,6 @@ func (h *Host) OpenSession(ctx context.Context, sid session.SessionID, opts Sess
 	if _, err := h.Presets.Resolve(opts.Preset); err != nil {
 		return nil, err
 	}
-	companion := opts.Companion
-	if companion == "" {
-		companion = turn.CompanionV1Version
-	}
 	newTurnID := opts.NewTurnID
 	if newTurnID == nil {
 		newTurnID = NewTurnID
@@ -143,7 +135,7 @@ func (h *Host) OpenSession(ctx context.Context, sid session.SessionID, opts Sess
 	if err != nil {
 		return nil, err
 	}
-	s := &Session{Recovered: recovered, h: h, sid: sid, opts: opts, companion: companion, newTurnID: newTurnID}
+	s := &Session{Recovered: recovered, h: h, sid: sid, opts: opts, newTurnID: newTurnID}
 	s.bg, s.cancel = context.WithCancel(context.Background())
 	if opts.ResumeActive {
 		if _, _, err := s.Resume(ctx); err != nil {
@@ -285,8 +277,7 @@ func (s *Session) commitRoute(ctx context.Context, inputs []run.AgentInput) (tur
 		}
 	}
 	ref := turn.TurnRef{SessionID: s.sid, TurnID: s.newTurnID()}
-	if _, err := s.h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref, Inputs: inputs,
-		Preset: s.opts.Preset, Companion: s.companion}); err != nil {
+	if _, err := s.h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref, Inputs: inputs, Preset: s.opts.Preset}); err != nil {
 		return turn.TurnRef{}, err
 	}
 	return ref, nil
@@ -422,14 +413,16 @@ func (s *Session) result(ctx context.Context, resp turn.TurnResponse) Result {
 	r := Result{TurnID: resp.Ref.TurnID, Status: resp.Status, Disposition: resp.Disposition}
 	if resp.Disposition == turn.ResumeFinished {
 		if chat, err := s.h.ChatlogSurface(ctx, s.sid); err == nil {
-			r.Reply = lastAssistantText(&chat, chatlog.TurnID(resp.Ref.TurnID))
+			r.Reply = s.lastAssistantText(ctx, &chat, chatlog.TurnID(resp.Ref.TurnID))
 		}
 	}
 	return r
 }
 
-// lastAssistantText is the text of the Turn's last assistant entry.
-func lastAssistantText(chat *chatlog.Surface, turnID chatlog.TurnID) string {
+// lastAssistantText materializes the text of the Turn's last assistant
+// entry: the Surface names the frozen ModelResult by digest, the Host's
+// content store holds it (CHT-MAT-1).
+func (s *Session) lastAssistantText(ctx context.Context, chat *chatlog.Surface, turnID chatlog.TurnID) string {
 	for i := len(chat.EntryOrder) - 1; i >= 0; i-- {
 		e := chat.EntryOrder[i]
 		if e.Kind != chatlog.EntryAssistant {
@@ -439,13 +432,13 @@ func lastAssistantText(chat *chatlog.Surface, turnID chatlog.TurnID) string {
 		if !ok || a.TurnID != turnID {
 			continue
 		}
-		var b strings.Builder
-		for _, part := range a.Parts {
-			if t, isText := part.(chatlog.TextPart); isText {
-				b.WriteString(t.Text)
-			}
+		entry := chatlog.Entry{Kind: chatlog.EntryAssistant, ID: e.ID, Digest: a.Digest, Assistant: &a}
+		m, err := chatlog.NewMaterializer(s.h.content).Entry(ctx, &entry)
+		if err != nil {
+			s.h.warn(fmt.Errorf("host: materialize reply of turn %s: %w", turnID, err))
+			return ""
 		}
-		return b.String()
+		return m.Text()
 	}
 	return ""
 }

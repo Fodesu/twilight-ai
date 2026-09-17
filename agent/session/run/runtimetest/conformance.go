@@ -233,30 +233,33 @@ func testGroupComposition(t *testing.T, factory Factory) {
 		t.Fatal("one command did not produce exactly one commit")
 	}
 	types := eventTypes(res.Events)
-	want := []session.EventType{runmod.Prefix + "model_step_completed", runmod.Prefix + "tool_step_opened", chatlog.TypeAssistant}
+	want := []session.EventType{runmod.Prefix + "model_step_completed", runmod.Prefix + "tool_step_opened"}
 	if strings.Join(asStrings(types), ",") != strings.Join(asStrings(want), ",") {
-		t.Fatalf("commit events = %v, want %v", types, want)
+		t.Fatalf("commit events = %v, want %v and no conversation copy", types, want)
 	}
 	if rec := h.record("r1"); res.Snapshot.Position != rec.Snapshot.Position {
 		t.Fatalf("position = %d, want the record's last stream position %d", res.Snapshot.Position, rec.Snapshot.Position)
 	}
-	// The companion's SourceDigest equals the fact's ResultDigest.
+	// The assistant entry is a projection of the fact: it names the frozen
+	// result by the fact's ResultDigest, and the body is readable under it.
 	var resultDigest es.Digest
 	for _, f := range h.record("r1").Facts {
 		if c, ok := f.(run.ModelStepCompleted); ok {
 			resultDigest = c.ResultDigest
 		}
 	}
-	decoded, err := h.registry.Decode(res.Events[2])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if a := decoded.Value.(chatlog.AssistantPayload).Assistant; a.SourceDigest != resultDigest || a.TurnID != "t1" {
-		t.Fatalf("assistant = %+v, want SourceDigest %s", a, resultDigest)
-	}
-	// Attach follows the companion; twilight/run/ events are refused.
 	ts := res.Snapshot.State.Current.(run.ToolStep)
 	call := ts.Calls[0].CallID
+	entries := h.contextEntries()
+	last := entries[len(entries)-1]
+	if last.Kind != chatlog.EntryAssistant || last.Assistant.ResultDigest != resultDigest || last.Assistant.TurnID != "t1" ||
+		len(last.Assistant.CallIDs) != 1 || last.Assistant.CallIDs[0] != chatlog.CallID(call) {
+		t.Fatalf("assistant entry = %+v, want ResultDigest %s and call %s", last.Assistant, resultDigest, call)
+	}
+	if body, err := runmod.NewContent(h.frozen).ModelResult(h.ctx, resultDigest); err != nil || len(body.ToolCalls) != 1 {
+		t.Fatalf("frozen result = %+v %v", body, err)
+	}
+	// Attach follows the facts; twilight/run/ events are refused.
 	toolClaim := h.startTool("r1", ts.RefValue.ID, call)
 	output := run.MustParseCanonicalJSON(`{"ok":true}`)
 	if _, err := h.commit("r1", run.DeriveSettlementCommandID("r1", ts.RefValue.ID, call, toolClaim), 0,
@@ -269,14 +272,44 @@ func testGroupComposition(t *testing.T, factory Factory) {
 		run.SubmitToolResult{StepID: ts.RefValue.ID, CallID: call, Result: run.ToolExecutionResult{Output: output}},
 		run.ModuleEvent{Type: chatlog.TypeInputDelivered, Value: chatlog.InputDeliveredPayload{InputID: "in-attach", TurnID: "t1"}})
 	types = eventTypes(res.Events)
-	if len(types) != 3 || types[0] != runmod.Prefix+"tool_call_completed" || types[1] != chatlog.TypeToolResult || types[2] != chatlog.TypeInputDelivered {
+	if len(types) != 2 || types[0] != runmod.Prefix+"tool_call_completed" || types[1] != chatlog.TypeInputDelivered {
 		t.Fatalf("group events = %v", types)
 	}
 	outputDigest, _ := run.ProtocolV1().DigestToolOutput(output)
-	decoded, _ = h.registry.Decode(res.Events[1])
-	if r := decoded.Value.(chatlog.ToolResultPayload).ToolResult; r.SourceDigest != outputDigest || r.Status != chatlog.ToolSuccess {
-		t.Fatalf("tool_result = %+v", r)
+	entries = h.contextEntries()
+	var tr *chatlog.ToolResult
+	for i := range entries {
+		if entries[i].Kind == chatlog.EntryToolResult && entries[i].ToolResult.CallID == chatlog.CallID(call) {
+			tr = entries[i].ToolResult
+		}
 	}
+	if tr == nil || tr.OutputDigest != outputDigest || tr.Status != chatlog.ToolSuccess || tr.Source != chatlog.SourceToolOutput {
+		t.Fatalf("tool_result entry = %+v", tr)
+	}
+	if body, err := runmod.NewContent(h.frozen).ToolOutput(h.ctx, outputDigest); err != nil || !body.Equal(output) {
+		t.Fatalf("frozen output = %s %v", body, err)
+	}
+}
+
+// contextEntries reads the chatlog Context projection through the owner's
+// Writer.
+func (h *harness) contextEntries() []chatlog.Entry {
+	h.t.Helper()
+	state, _, err := h.writer().Projections().Load(h.ctx, sid, chatlog.ContextProjectionID, chatlog.ContextProjection.Version)
+	if err != nil {
+		h.fatal(err)
+	}
+	return state.(chatlog.Context).Entries
+}
+
+// turnSurface reads the turn surface projection through the owner's Writer.
+func (h *harness) turnSurface() turn.TurnSurface {
+	h.t.Helper()
+	state, _, err := h.writer().Projections().Load(h.ctx, sid, turn.SurfaceProjectionID, turn.SurfaceProjection.Version)
+	if err != nil {
+		h.fatal(err)
+	}
+	return state.(turn.TurnSurface)
 }
 
 func asStrings(types []session.EventType) []string {
@@ -301,9 +334,9 @@ func testAdmission(t *testing.T, factory Factory) {
 		t.Fatal(err)
 	}
 	attach := func(bindingID artifact.BindingID) run.ModuleEvent {
-		a := chatlog.Assistant{ID: "a-attach", TurnID: "t1", Parts: chatlog.Parts{chatlog.ReferencePart{BindingID: bindingID, Name: "f"}}}
-		a.Digest, _ = chatlog.DigestAssistant(&a)
-		return run.ModuleEvent{Type: chatlog.TypeAssistant, Value: chatlog.AssistantPayload{Assistant: a}}
+		s := chatlog.Summary{ID: "s-attach", Parts: chatlog.Parts{chatlog.ReferencePart{BindingID: bindingID, Name: "f"}}}
+		s.Digest, _ = chatlog.DigestSummary(&s)
+		return run.ModuleEvent{Type: chatlog.TypeSummary, Value: chatlog.SummaryPayload{Summary: s}}
 	}
 	before := h.head()
 	// Unregistered binding: the whole group is refused and nothing is written.
@@ -350,10 +383,13 @@ func testSettlementSnapshot(t *testing.T, factory Factory) {
 	if !run.StatesEquivalent(&rec.Snapshot.State, &res.Snapshot.State) || rec.Snapshot.Position != res.Snapshot.Position {
 		t.Fatalf("settlement snapshot %+v disagrees with record %+v", res.Snapshot, rec.Snapshot)
 	}
-	// The completed turn is settled in the same group (companion).
+	// The Turn settles from the Run's own run_ended: no turn event is written.
 	types := eventTypes(res.Events)
-	if types[len(types)-1] != turn.TypeCompleted {
-		t.Fatalf("terminal group events = %v, want turn/completed last", types)
+	if types[len(types)-1] != runmod.Prefix+"run_ended" {
+		t.Fatalf("terminal group events = %v, want run_ended last", types)
+	}
+	if v := h.turnSurface().Turns["t1"]; v.Status != turn.TurnCompleted || v.Attempts[0].End == nil {
+		t.Fatalf("turn after run_ended = %+v, want completed", v)
 	}
 }
 
@@ -456,7 +492,7 @@ func testIsolation(t *testing.T, factory Factory) {
 	h.mustApply(writer.SemanticGroup{CommitID: "turn-noise", Batches: []writer.TypedBatch{{
 		Stream: session.StreamRef{Kind: session.StreamKindSession},
 		Events: []writer.TypedEvent{{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
-			Value: turn.StartedPayload{TurnID: "t9", Preset: turn.PresetRef{ID: "b", Digest: "sha256:b"}, Companion: turn.CompanionV1Version}}},
+			Value: turn.StartedPayload{TurnID: "t9", Preset: turn.PresetRef{ID: "b", Digest: "sha256:b"}}}},
 	}}})
 	if h.load("r1").Position != p1 {
 		t.Fatal("r2, chatlog or turn writes moved r1")
@@ -522,7 +558,8 @@ func testTakeover(t *testing.T, factory Factory) {
 	if ts.Calls[1].Status != run.ToolPending {
 		t.Fatalf("pending sibling = %+v, want untouched", ts.Calls[1])
 	}
-	// The Unknown travels with its chatlog tool_result in one commit.
+	// The Unknown is the call's terminal fact; the conversation projects it
+	// as a tool_result with status unknown and no body (TRN-DUR-4).
 	rec := h.record("r2")
 	found := false
 	for _, e := range rec.Events {
@@ -533,41 +570,14 @@ func testTakeover(t *testing.T, factory Factory) {
 	if !found {
 		t.Fatal("record of r2 has no tool_call_failed")
 	}
-	page, err := h.store.ReadCommits(h.ctx, session.CommitReadRequest{SessionID: sid})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var toolResult *session.Event
-	for i := range page.Commits {
-		c := &page.Commits[i]
-		hasUnknown := false
-		for _, b := range c.Batches {
-			if b.Stream.Kind != session.StreamKindRun {
-				continue
-			}
-			for _, e := range b.Events {
-				if strings.HasSuffix(string(e.Type), "tool_call_failed") {
-					hasUnknown = true
-				}
-			}
-		}
-		if !hasUnknown {
-			continue
-		}
-		for bi := range c.Batches {
-			for ei := range c.Batches[bi].Events {
-				if c.Batches[bi].Events[ei].Type == chatlog.TypeToolResult {
-					toolResult = &c.Batches[bi].Events[ei]
-				}
-			}
+	var unknown *chatlog.ToolResult
+	for _, e := range h.contextEntries() {
+		if e.Kind == chatlog.EntryToolResult && e.ToolResult.CallID == chatlog.CallID(ids[0]) {
+			unknown = e.ToolResult
 		}
 	}
-	if toolResult == nil {
-		t.Fatal("no tool_result in the Unknown's commit")
-	}
-	decoded, _ := h.registry.Decode(*toolResult)
-	if tr := decoded.Value.(chatlog.ToolResultPayload).ToolResult; tr.Status != chatlog.ToolUnknown || tr.SourceDigest != "" {
-		t.Fatalf("tool_result = %+v", tr)
+	if unknown == nil || unknown.Status != chatlog.ToolUnknown || unknown.OutputDigest != "" || unknown.Failure == nil {
+		t.Fatalf("tool_result entry = %+v", unknown)
 	}
 	// Same owner repeats: idempotent, nothing new.
 	head := h.head()

@@ -26,18 +26,22 @@ Facts → Decision → Assignment → Effect → Outcome → Facts
 type ProjectionSource interface {
     Load(ctx, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (any, session.Head, error)
 }
-type PromptBuilderFactory func(turn.AgentPreset, ProjectionSource) loop.PromptBuilder
+type Sources struct {
+    Projections ProjectionSource        // 结构投影
+    Content     chatlog.ContentResolver // 按 digest 取回冻结正文（CHT-MAT-1）
+}
+type PromptBuilderFactory func(turn.AgentPreset, Sources) loop.PromptBuilder
 const PromptContextV1 turn.PromptBuilderRef = "twilight/decision/prompt/context-v1"
 ```
 
-`ContextPromptBuilder` 是 `PromptContextV1` 的实现：读 `twilight/chatlog/context` 投影，构造 `loop.Prompt`（模型、`sdk.Request`、消费的 InputID、context 新鲜度 token、冻结的 ToolSpec）。
+`ContextPromptBuilder` 是 `PromptContextV1` 的实现：读 `twilight/chatlog/context` 投影，经 `chatlog.Materializer` 取回正文，构造 `loop.Prompt`（模型、`sdk.Request`、消费的 InputID、context 新鲜度 token、冻结的 ToolSpec）。
 
-**DEC-PMT-1** PromptBuilder 在每次 Build 时经 `ProjectionSource` 读取 `twilight/chatlog/context` 投影（含已应用的 checkpoint，CHT-EVT-3）。owner 进程从 Session Writer 读，观察者从 Store 读，两者对同一 head 给出同一状态（EXT-PRJ-4）。
+**DEC-PMT-1** PromptBuilder 在每次 Build 时经 `ProjectionSource` 读取 `twilight/chatlog/context` 投影（含已应用的 checkpoint，CHT-EVT-3），再经 `Content` 物化条目命名的冻结正文；同一次 Build 内每个 digest 至多读取一次。折叠是纯函数，读正文是 IO：正文缺失使 Build 以 `run.ErrFrozenValueMissing` 失败，投影不受影响。owner 进程从 Session Writer 读，观察者从 Store 读，两者对同一 head 给出同一状态（EXT-PRJ-4）；两者共用同一 cas ContentStore。
 
 **DEC-PMT-2** `sdk.Messages` 顺序：
 
 1. `AgentPreset.SystemPrompt` 非空时一条 system message；
-2. 按 fold 顺序：`input` → user；`assistant` → assistant（ToolCallPart 的 `ProviderCallID` 写入 `sdk.ToolCallPart.ToolCallID`）；`tool_result` → tool（以同 Turn assistant 中同 CallID 的 `ProviderCallID` 配对；`unknown` 状态渲染为标记 error 的说明文本）；`summary` → assistant text。
+2. 按 fold 顺序：`input` → user；`assistant` → assistant（冻结 `ModelResult` 的 reasoning、text 与 tool calls；`Materialized.Calls[i].ProviderCallID` 写入 `sdk.ToolCallPart.ToolCallID`）；`tool_result` → tool（以同 Turn assistant 中同 CallID 的 `ProviderCallID` 配对；success 的正文为物化的输出，error 为 Failure 文本，`unknown` 渲染为标记 error 的说明文本）；`summary` → assistant text。
 
 回合中途投递的输入在其之前尚未结算的工具结果之后排列：这类输入的 `input_delivered` 先于 `tool_result` 进入 stream，provider 要求工具结果紧随发出调用的 assistant 消息。prompt 构造时暂存这类输入，待工具结果配对后写入。CancelRun 为全部未完成调用提交终态结果，后续 Turn 继承完整配对的上下文；构造器遇到未配对调用或结果时返回错误。
 
@@ -45,7 +49,7 @@ const PromptContextV1 turn.PromptBuilderRef = "twilight/decision/prompt/context-
 
 **DEC-PMT-4** `Prompt.Model = AgentPreset.Model`；`Request.Tools` 与 `Prompt.Tools`（ToolSpec：Ref、DefinitionDigest、Policy）都由 `AgentPreset.Tools` 派生，顺序一致；`InputIDs` 为本次消费的 PendingInput IDs；`Token` 为投影 head 的 `Next:Digest`。PresetRef 独立标识冻结的决策配置。
 
-**DEC-PMT-5** TextPart 直接写入 sdk.Message；ReferencePart 在 context-v1 中以名字呈现，不物化。
+**DEC-PMT-5** summary 的 TextPart 直接写入 sdk.Message；ReferencePart 在 context-v1 中以名字呈现，不物化。assistant 与 tool_result 的正文来自冻结值，不是 parts。
 
 **DEC-PMT-6** 同一 Turn 有多个 Run attempt 时，context-v1 把全部 attempt 的 assistant 与 tool_result 按 commit 顺序纳入 prompt，包括失败 attempt 的部分输出与 status=`unknown` 的工具结果。其他策略以另一个 `PromptBuilderRef` 注册，不修改本实现。
 
@@ -55,7 +59,7 @@ const PromptContextV1 turn.PromptBuilderRef = "twilight/decision/prompt/context-
 type PromptBuilders struct{ /* PromptBuilderRef → PromptBuilderFactory */ }
 func NewPromptBuilders(map[turn.PromptBuilderRef]PromptBuilderFactory) (*PromptBuilders, error)
 func (*PromptBuilders) Register(turn.PromptBuilderRef, PromptBuilderFactory) error
-func (*PromptBuilders) Resolve(turn.AgentPreset, ProjectionSource) (loop.PromptBuilder, error)
+func (*PromptBuilders) Resolve(turn.AgentPreset, Sources) (loop.PromptBuilder, error)
 func DefaultPromptBuilders() *PromptBuilders // 含 PromptContextV1
 ```
 
@@ -73,7 +77,7 @@ func DefaultPromptBuilders() *PromptBuilders // 含 PromptContextV1
 
 ## 5. conformance
 
-- **DEC-SCP-1、DEC-CAT-2**：两个独立构建的目录对同一 AgentPreset 与同一投影状态解析出的 PromptBuilder 给出逐字段相同的 `Prompt`；未注册的 PromptBuilderRef 解析失败；nil 目录不可解析。
+- **DEC-SCP-1、DEC-CAT-2、DEC-PMT-1**：两个独立构建的目录对同一 AgentPreset、同一投影状态与同一冻结正文解析出的 PromptBuilder 给出逐字段相同的 `Prompt`；正文缺失使 Build 失败；未注册的 PromptBuilderRef 解析失败；nil 目录不可解析。
 - **DEC-CAT-1**：空 ref、nil factory、重复注册被拒绝。
 - **DEC-PMT-2**：中途输入排在未结算工具结果之后；`unknown` 工具结果标记 error；未配对调用或结果被拒绝；多 attempt 的条目全部进入 prompt（由 turn 与 host 的集成测试覆盖）。
 - **DEC-INP-1**：`InputText(InputContent(s)) == s`。

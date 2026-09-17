@@ -5,8 +5,10 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agent/es"
+	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
+	runmod "github.com/felinics/twilight/agent/session/run"
 )
 
 const (
@@ -64,6 +66,8 @@ type CheckpointView struct {
 
 // Surface is the UI-facing read model (CHT-SUR-1). Every table is persistent
 // (Table): a fold shares them between states and pays O(sqrt(n)) per write.
+// Assistants and ToolResults are structural: they name frozen bodies by
+// digest and are rendered through Materialize.
 type Surface struct {
 	Inputs      Table[InputID, InputView]           `json:"inputs"`
 	Assistants  Table[AssistantID, Assistant]       `json:"assistants"`
@@ -72,6 +76,9 @@ type Surface struct {
 	EntryOrder  []SurfaceEntry                      `json:"entryOrder"`
 	Superseded  Table[ToolResultID, ToolResultID]   `json:"superseded,omitzero"`
 	Checkpoints Table[CheckpointID, CheckpointView] `json:"checkpoints,omitzero"`
+	// Runs maps each Run of the Session to its Turn (RunCreated.Owner) so the
+	// entries folded from Run facts carry their TurnID.
+	Runs Table[run.RunID, TurnID] `json:"runs,omitzero"`
 	// nextPos assigns the next entry or input position; it is not persisted
 	// and is reconstructed from the state when a snapshot is restored.
 	nextPos uint64
@@ -102,8 +109,16 @@ func sortViews(views []InputView) {
 	}
 }
 
-var chatlogConsumes = []session.EventType{TypeInputSubmitted, TypeInputDelivered, TypeInputWithdrawn, TypeInputRejected,
-	TypeAssistant, TypeToolResult, TypeToolResultSuperseded, TypeSummary, TypeCheckpointCreated, TypeCheckpointInvalidated}
+// chatlogConsumes is what both projections fold: the module's own facts and
+// the Run facts that produce assistant and tool_result entries (CHT-SCP-1).
+var chatlogConsumes = func() []session.EventType {
+	out := []session.EventType{TypeInputSubmitted, TypeInputDelivered, TypeInputWithdrawn, TypeInputRejected,
+		TypeToolResultSuperseded, TypeSummary, TypeCheckpointCreated, TypeCheckpointInvalidated}
+	for _, name := range consumedRunFacts {
+		out = append(out, runmod.Type(name))
+	}
+	return out
+}()
 
 var SurfaceProjection = extension.ProjectionDefinition{
 	ID: SurfaceProjectionID, Version: 1,
@@ -172,28 +187,24 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		if err := terminateInput(&s, p.InputID, InputRejected); err != nil {
 			return nil, err
 		}
-	case AssistantPayload:
-		if s.Assistants.Has(p.Assistant.ID) {
-			return nil, fmt.Errorf("assistant %s created twice", p.Assistant.ID)
-		}
-		s.Assistants = s.Assistants.Set(p.Assistant.ID, p.Assistant)
-		s.nextPos++
-		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryAssistant, ID: string(p.Assistant.ID), Seq: s.nextPos})
-	case ToolResultPayload:
-		if s.ToolResults.Has(p.ToolResult.ID) {
-			return nil, fmt.Errorf("tool_result %s created twice", p.ToolResult.ID)
-		}
-		s.ToolResults = s.ToolResults.Set(p.ToolResult.ID, p.ToolResult)
-		s.nextPos++
-		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryToolResult, ID: string(p.ToolResult.ID), Seq: s.nextPos})
+	case runmod.Event:
+		return s.applyRun(p)
 	case ToolResultSupersededPayload:
-		if !s.ToolResults.Has(p.ToolResultID) {
+		old, ok := s.ToolResults.Get(p.ToolResultID)
+		if !ok {
 			return nil, fmt.Errorf("superseded tool_result %s unknown", p.ToolResultID)
 		}
 		if s.Superseded.Has(p.ToolResultID) {
 			return nil, fmt.Errorf("tool_result %s superseded twice", p.ToolResultID)
 		}
-		s.Superseded = s.Superseded.Set(p.ToolResultID, p.ReplacementToolResultID)
+		replacement, err := supersedingResult(&old, &p)
+		if err != nil {
+			return nil, err
+		}
+		s.ToolResults = s.ToolResults.Set(replacement.ID, replacement)
+		s.Superseded = s.Superseded.Set(p.ToolResultID, replacement.ID)
+		s.nextPos++
+		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryToolResult, ID: string(replacement.ID), Seq: s.nextPos})
 	case SummaryPayload:
 		if s.Summaries.Has(p.Summary.ID) {
 			return nil, fmt.Errorf("summary %s created twice", p.Summary.ID)
@@ -223,6 +234,128 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		return nil, fmt.Errorf("chatlog surface: unexpected %T", e.Value)
 	}
 	return s, nil
+}
+
+// applyRun folds one Run fact into the Surface (CHT-ENT-1, CHT-ENT-2).
+func (s Surface) applyRun(ev runmod.Event) (any, error) {
+	switch f := ev.Fact.(type) {
+	case run.RunCreated:
+		if f.Owner != "" {
+			s.Runs = s.Runs.Set(ev.RunID, TurnID(f.Owner))
+		}
+	case run.ModelStepCompleted:
+		turnID, _ := s.Runs.Get(ev.RunID)
+		a, err := assistantOf(turnID, ev.RunID, &f)
+		if err != nil {
+			return nil, err
+		}
+		if s.Assistants.Has(a.ID) {
+			return nil, fmt.Errorf("assistant %s created twice", a.ID)
+		}
+		s.Assistants = s.Assistants.Set(a.ID, a)
+		s.nextPos++
+		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryAssistant, ID: string(a.ID), Seq: s.nextPos})
+	case run.ToolStepOpened:
+		a, ok := s.Assistants.Get(AssistantIDFor(f.Source))
+		if !ok {
+			return nil, fmt.Errorf("tool step %s opened for unknown assistant %s", f.StepID, f.Source)
+		}
+		if err := attachCalls(&a, &f); err != nil {
+			return nil, err
+		}
+		s.Assistants = s.Assistants.Set(a.ID, a)
+	case run.ToolCallCompleted, run.ToolCallAnswered, run.ToolCallFailed:
+		turnID, _ := s.Runs.Get(ev.RunID)
+		r, err := toolResultOf(turnID, ev.RunID, ev.Fact)
+		if err != nil {
+			return nil, err
+		}
+		if s.ToolResults.Has(r.ID) {
+			return nil, fmt.Errorf("tool_result %s created twice", r.ID)
+		}
+		s.ToolResults = s.ToolResults.Set(r.ID, r)
+		s.nextPos++
+		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryToolResult, ID: string(r.ID), Seq: s.nextPos})
+	default:
+		return nil, fmt.Errorf("chatlog surface: unexpected run fact %T", ev.Fact)
+	}
+	return s, nil
+}
+
+// assistantOf projects ModelStepCompleted into a structural entry.
+func assistantOf(turnID TurnID, runID run.RunID, f *run.ModelStepCompleted) (Assistant, error) {
+	a := Assistant{ID: AssistantIDFor(f.StepID), TurnID: turnID, RunID: runID, StepID: f.StepID,
+		FinishReason: f.FinishReason, ResultDigest: f.ResultDigest}
+	d, err := DigestAssistant(&a)
+	if err != nil {
+		return Assistant{}, err
+	}
+	a.Digest = d
+	return a, nil
+}
+
+// attachCalls records the CallIDs ToolStepOpened assigned, in the result's
+// ToolCalls order, on the assistant that issued them.
+func attachCalls(a *Assistant, f *run.ToolStepOpened) error {
+	if len(a.CallIDs) != 0 {
+		return fmt.Errorf("assistant %s opened a tool step twice", a.ID)
+	}
+	a.CallIDs = make([]CallID, len(f.Calls))
+	for i, c := range f.Calls {
+		a.CallIDs[i] = CallID(c.CallID)
+	}
+	d, err := DigestAssistant(a)
+	if err != nil {
+		return err
+	}
+	a.Digest = d
+	return nil
+}
+
+// toolResultOf projects a call's terminal fact into a structural entry
+// (TRN-MAP-3, TRN-MAP-4 semantics: Unknown outcome or effect_unknown class
+// is status unknown, every other failure is error).
+func toolResultOf(turnID TurnID, runID run.RunID, fact run.Fact) (ToolResult, error) {
+	var r ToolResult
+	switch f := fact.(type) {
+	case run.ToolCallCompleted:
+		r = ToolResult{CallID: CallID(f.CallID), Status: ToolSuccess, Source: SourceToolOutput, OutputDigest: f.OutputDigest}
+	case run.ToolCallAnswered:
+		r = ToolResult{CallID: CallID(f.CallID), Status: ToolSuccess, Source: SourceToolResponse, OutputDigest: f.ResponseDigest}
+	case run.ToolCallFailed:
+		status := ToolError
+		if f.Outcome == run.ToolOutcomeUnknown || f.Failure.Class == run.FailureEffectUnknown {
+			status = ToolUnknown
+		}
+		failure := f.Failure
+		r = ToolResult{CallID: CallID(f.CallID), Status: status, Failure: &failure}
+	default:
+		return ToolResult{}, fmt.Errorf("chatlog: %T is not a tool result fact", fact)
+	}
+	r.ID, r.TurnID, r.RunID = ToolResultIDFor(run.CallID(r.CallID)), turnID, runID
+	d, err := DigestToolResult(&r)
+	if err != nil {
+		return ToolResult{}, err
+	}
+	r.Digest = d
+	return r, nil
+}
+
+// supersedingResult is the entry an out-of-band verification substitutes for
+// old (CHT-ENT-2): same call, the verified status and body.
+func supersedingResult(old *ToolResult, p *ToolResultSupersededPayload) (ToolResult, error) {
+	r := ToolResult{ID: SupersedingToolResultID(old.ID), TurnID: old.TurnID, RunID: old.RunID, CallID: old.CallID, Status: p.Status}
+	if p.Status == ToolSuccess {
+		r.Source, r.OutputDigest = SourceToolOutput, p.OutputDigest
+	} else {
+		r.Failure = &run.ToolFailure{Class: "superseded", Message: p.Reason}
+	}
+	d, err := DigestToolResult(&r)
+	if err != nil {
+		return ToolResult{}, err
+	}
+	r.Digest = d
+	return r, nil
 }
 
 func terminateInput(s *Surface, id InputID, status InputStatus) error {
@@ -255,7 +388,8 @@ func clip[T any](s []T) []T { return s[:len(s):len(s)] }
 
 // Entry is one element of the model-facing conversation (CHT-CTX-1). Seq is
 // the projection-internal position of the entry; checkpoints split base from
-// gap by it (CHT-EVT-3).
+// gap by it (CHT-EVT-3). An assistant or tool_result entry is structural: it
+// names its frozen body by digest and is rendered through Materialize.
 type Entry struct {
 	Kind       EntryKind   `json:"kind"`
 	ID         string      `json:"id"`
@@ -286,12 +420,13 @@ type AppliedCheckpoint struct {
 
 // Context is the projection state: the ordered entries plus the bookkeeping
 // ContextFold needs (submitted inputs awaiting delivery, superseded results,
-// applied checkpoints).
+// applied checkpoints, the Turn of each Run).
 type Context struct {
 	Entries     []Entry                       `json:"entries"`
 	Pending     map[InputID]Input             `json:"pending,omitempty"`
 	Superseded  map[ToolResultID]ToolResultID `json:"superseded,omitempty"`
 	Checkpoints []AppliedCheckpoint           `json:"checkpoints,omitempty"`
+	Runs        map[run.RunID]TurnID          `json:"runs,omitempty"`
 	// nextPos assigns entry positions like Surface.nextPos; it is not
 	// persisted and is reconstructed on restore, including from the entries
 	// archived in checkpoint bases.
@@ -302,7 +437,7 @@ var ContextProjection = extension.ProjectionDefinition{
 	ID: ContextProjectionID, Version: 1,
 	Consumes: chatlogConsumes,
 	Initial: func() (any, error) {
-		return Context{Pending: map[InputID]Input{}, Superseded: map[ToolResultID]ToolResultID{}}, nil
+		return Context{Pending: map[InputID]Input{}, Superseded: map[ToolResultID]ToolResultID{}, Runs: map[run.RunID]TurnID{}}, nil
 	},
 	Apply:      applyContext,
 	StateCodec: extension.JSONStateCodec[Context]{},
@@ -354,33 +489,30 @@ func applyContext(state any, e extension.DecodedEvent) (any, error) {
 	case InputRejectedPayload:
 		c.Pending = cow(c.Pending)
 		delete(c.Pending, p.InputID)
-	case AssistantPayload:
-		a := p.Assistant
-		c.nextPos++
-		c.Entries = append(c.Entries, Entry{Kind: EntryAssistant, ID: string(a.ID), Digest: a.Digest, Seq: c.nextPos, Assistant: &a})
-	case ToolResultPayload:
-		r := p.ToolResult
-		c.nextPos++
-		c.Entries = append(c.Entries, Entry{Kind: EntryToolResult, ID: string(r.ID), Digest: r.Digest, Seq: c.nextPos, ToolResult: &r})
+	case runmod.Event:
+		return c.applyRun(p)
 	case ToolResultSupersededPayload:
-		c.Superseded = cow(c.Superseded)
-		c.Superseded[p.ToolResultID] = p.ReplacementToolResultID
-		kept := c.Entries[:0:0]
-		found := false
-		for _, en := range c.Entries {
-			if en.Kind == EntryToolResult && en.ID == string(p.ToolResultID) {
-				found = true
-				continue
-			}
-			kept = append(kept, en)
-		}
-		if !found {
+		i := c.indexOf(EntryToolResult, string(p.ToolResultID))
+		if i < 0 {
 			// A result outside the active context was either never created or
 			// compacted; its Turn completed, so superseding it violates
 			// CHT-ENT-2 rather than invalidating the checkpoint.
 			return nil, fmt.Errorf("tool_result %s superseded outside the active context", p.ToolResultID)
 		}
-		c.Entries = kept
+		if _, twice := c.Superseded[p.ToolResultID]; twice {
+			return nil, fmt.Errorf("tool_result %s superseded twice", p.ToolResultID)
+		}
+		replacement, err := supersedingResult(c.Entries[i].ToolResult, &p)
+		if err != nil {
+			return nil, err
+		}
+		c.Superseded = cow(c.Superseded)
+		c.Superseded[p.ToolResultID] = replacement.ID
+		// The verified result takes the superseded one's place, so the pairing
+		// with its call is unchanged.
+		entries := append([]Entry(nil), c.Entries...)
+		entries[i] = Entry{Kind: EntryToolResult, ID: string(replacement.ID), Digest: replacement.Digest, Seq: entries[i].Seq, ToolResult: &replacement}
+		c.Entries = entries
 	case SummaryPayload:
 		s := p.Summary
 		c.nextPos++
@@ -403,6 +535,56 @@ func applyContext(state any, e extension.DecodedEvent) (any, error) {
 		return nil, fmt.Errorf("chatlog context: unexpected %T", e.Value)
 	}
 	return c, nil
+}
+
+// applyRun folds one Run fact into the Context (CHT-CTX-2).
+func (c Context) applyRun(ev runmod.Event) (any, error) {
+	switch f := ev.Fact.(type) {
+	case run.RunCreated:
+		if f.Owner != "" {
+			c.Runs = cow(c.Runs)
+			c.Runs[ev.RunID] = TurnID(f.Owner)
+		}
+	case run.ModelStepCompleted:
+		a, err := assistantOf(c.Runs[ev.RunID], ev.RunID, &f)
+		if err != nil {
+			return nil, err
+		}
+		c.nextPos++
+		c.Entries = append(c.Entries, Entry{Kind: EntryAssistant, ID: string(a.ID), Digest: a.Digest, Seq: c.nextPos, Assistant: &a})
+	case run.ToolStepOpened:
+		i := c.indexOf(EntryAssistant, string(AssistantIDFor(f.Source)))
+		if i < 0 {
+			return nil, fmt.Errorf("tool step %s opened for assistant %s outside the active context", f.StepID, f.Source)
+		}
+		a := *c.Entries[i].Assistant
+		if err := attachCalls(&a, &f); err != nil {
+			return nil, err
+		}
+		entries := append([]Entry(nil), c.Entries...)
+		entries[i].Assistant, entries[i].Digest = &a, a.Digest
+		c.Entries = entries
+	case run.ToolCallCompleted, run.ToolCallAnswered, run.ToolCallFailed:
+		r, err := toolResultOf(c.Runs[ev.RunID], ev.RunID, ev.Fact)
+		if err != nil {
+			return nil, err
+		}
+		c.nextPos++
+		c.Entries = append(c.Entries, Entry{Kind: EntryToolResult, ID: string(r.ID), Digest: r.Digest, Seq: c.nextPos, ToolResult: &r})
+	default:
+		return nil, fmt.Errorf("chatlog context: unexpected run fact %T", ev.Fact)
+	}
+	return c, nil
+}
+
+// indexOf finds the active entry of kind and id, searching from the end.
+func (c *Context) indexOf(kind EntryKind, id string) int {
+	for i := len(c.Entries) - 1; i >= 0; i-- {
+		if c.Entries[i].Kind == kind && c.Entries[i].ID == id {
+			return i
+		}
+	}
+	return -1
 }
 
 // applyCheckpoint validates and applies one checkpoint_created (CHT-EVT-3).
@@ -464,12 +646,12 @@ func selectRetained(base []Entry, pairs []EntryDigestPair) ([]Entry, error) {
 	return out, nil
 }
 
-// ContextFold folds decoded chatlog events into entries (CHT-CTX-1).
+// ContextFold folds decoded chatlog and run events into entries (CHT-CTX-1).
 func ContextFold(events []extension.DecodedEvent) ([]Entry, error) {
 	state, _ := ContextProjection.Initial()
 	for _, e := range events {
-		if e.Module != extension.TwilightModule(ModuleID) || e.Unknown {
-			return nil, errors.New("chatlog: context fold requires decoded chatlog events")
+		if e.Unknown || (e.Module != extension.TwilightModule(ModuleID) && e.Module != extension.TwilightModule(runmod.ModuleID)) {
+			return nil, errors.New("chatlog: context fold requires decoded chatlog or run events")
 		}
 		next, err := applyContext(state, e)
 		if err != nil {

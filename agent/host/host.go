@@ -43,10 +43,11 @@ type Artifacts struct {
 type Ports struct {
 	// Store is the Session kernel; nil selects an in-memory store.
 	Store session.Store
-	// Content is the cas ContentStore the frozen model request bodies live in
-	// under runmod.FrozenAuthority (RUN-WIR-4); nil selects an in-memory store.
-	// The Runtime writes bodies there and executors read them, so a colocated
-	// LocalExecutor is built over the same store.
+	// Content is the cas ContentStore the frozen bodies live in under
+	// runmod.FrozenAuthority (RUN-WIR-4): model requests, model results, tool
+	// outputs and external responses. The Runtime writes them; the Host's
+	// materializer reads them for prompts, replies and transcripts. Nil
+	// selects an in-memory store.
 	Content artifact.ContentStore
 	// Artifacts are the binding store and retention ledger; nil fields select
 	// in-memory implementations.
@@ -100,6 +101,7 @@ type Host struct {
 	registry       *extension.Registry
 	frozen         run.FrozenValueStore
 	bus            *eventBus
+	content        *runmod.Content
 	now            func() time.Time
 	warn           func(error)
 	targetResolver loop.TargetResolver
@@ -156,7 +158,7 @@ func New(p Ports) (*Host, error) {
 		writer.WritersConfig{Cache: cache, CachePolicy: runmod.WriterCachePolicy(p.CacheEvery), Observers: observers})
 	runtime, err := runmod.NewRuntime(runmod.Config{
 		Writers: writers, Registry: registry, Store: store,
-		Frozen: frozen, Companion: turn.CompanionV1{}, Cache: cache, Now: now,
+		Frozen: frozen, Bindings: bindings, Cache: cache, Now: now,
 	})
 	if err != nil {
 		return nil, err
@@ -175,7 +177,7 @@ func New(p Ports) (*Host, error) {
 	}
 	h := &Host{
 		Store: store, Writers: writers, Runtime: runtime, Presets: presets, Executor: p.Executor, Decisions: decisions,
-		registry: registry, frozen: frozen, bus: bus, now: now, warn: warn,
+		registry: registry, frozen: frozen, content: runmod.NewContent(frozen), bus: bus, now: now, warn: warn,
 		targetResolver: p.TargetResolver, loops: make(map[turn.PresetRef]*loop.Loop),
 		recovery: make(map[session.SessionID]*recoveryLifetime),
 	}
@@ -285,7 +287,7 @@ func (h *Host) loopFor(ref turn.PresetRef) (*loop.Loop, turn.AgentPreset, error)
 	if l, ok := h.loops[ref]; ok {
 		return l, preset, nil
 	}
-	builder, err := h.Decisions.Resolve(preset, h.projections())
+	builder, err := h.Decisions.Resolve(preset, h.sources())
 	if err != nil {
 		return nil, turn.AgentPreset{}, err
 	}
@@ -556,6 +558,16 @@ func (h *Host) projections() decision.ProjectionSource { return writersProjectio
 
 // writersProjections reads projections through the Session's Writer.
 type writersProjections struct{ writers writer.Writers }
+// sources are the prompt builder's read ports: projections through the
+// Writer and frozen bodies through the content store (DEC-PMT-1).
+func (h *Host) sources() decision.Sources {
+	return decision.Sources{Projections: h.projections(), Content: h.content}
+}
+
+// Content is the materializer over the Host's frozen bodies (CHT-MAT-1):
+// what renders a structural projection into text.
+func (h *Host) Content() chatlog.ContentResolver { return h.content }
+
 
 func (p writersProjections) Load(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (any, session.Head, error) {
 	w, err := p.writers.Writer(ctx, sid)

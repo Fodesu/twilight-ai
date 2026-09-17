@@ -31,35 +31,47 @@ type ProjectionSource interface {
 	Load(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (any, session.Head, error)
 }
 
-// ContextPromptBuilder is the context-v1 PromptBuilder (DEC-PMT): it reads the
-// chatlog context projection and assembles the next sdk.Request. Every
-// assistant and tool_result of the Session is in the fold already, including
-// those of earlier attempts of the same Turn (DEC-PMT-6).
-type ContextPromptBuilder struct {
+// Sources are the two read ports of a prompt builder (DEC-PMT-1): the
+// structural projections and the content resolver that materializes the
+// frozen bodies the projections name by digest. Folding is pure; reading a
+// body is I/O and happens only here.
+type Sources struct {
 	Projections ProjectionSource
-	Preset      turn.AgentPreset
+	Content     chatlog.ContentResolver
+}
+
+// ContextPromptBuilder is the context-v1 PromptBuilder (DEC-PMT): it reads the
+// chatlog context projection, materializes its entries and assembles the next
+// sdk.Request. Every assistant and tool_result of the Session is in the fold
+// already, including those of earlier attempts of the same Turn (DEC-PMT-6).
+type ContextPromptBuilder struct {
+	Sources Sources
+	Preset  turn.AgentPreset
 	// InputText extracts the user text of one input payload; nil selects the
 	// v1 shape {"text": ...} (DEC-INP-1).
 	InputText func(run.CanonicalJSON) (string, error)
 }
 
 // NewContextPromptBuilder is the PromptBuilderFactory of PromptContextV1.
-func NewContextPromptBuilder(preset turn.AgentPreset, projections ProjectionSource) loop.PromptBuilder {
-	return &ContextPromptBuilder{Projections: projections, Preset: preset}
+func NewContextPromptBuilder(preset turn.AgentPreset, sources Sources) loop.PromptBuilder {
+	return &ContextPromptBuilder{Sources: sources, Preset: preset}
 }
 
 func (p *ContextPromptBuilder) Build(ctx context.Context, hint run.PromptInput) (loop.Prompt, error) {
-	if p.Projections == nil || p.Preset.Model == "" {
+	if p.Sources.Projections == nil || p.Preset.Model == "" {
 		return loop.Prompt{}, errors.New("decision: builder requires projections and a model")
 	}
 	if hint.Session == "" {
 		return loop.Prompt{}, errors.New("decision: builder hint has no session")
 	}
-	state, head, err := p.Projections.Load(ctx, hint.Session, chatlog.ContextProjectionID, chatlog.ContextProjection.Version)
+	state, head, err := p.Sources.Projections.Load(ctx, hint.Session, chatlog.ContextProjectionID, chatlog.ContextProjection.Version)
 	if err != nil {
 		return loop.Prompt{}, err
 	}
-	entries := state.(chatlog.Context).Entries
+	entries, err := chatlog.NewMaterializer(p.Sources.Content).Entries(ctx, state.(chatlog.Context).Entries)
+	if err != nil {
+		return loop.Prompt{}, err
+	}
 	msgs, err := p.messages(entries)
 	if err != nil {
 		return loop.Prompt{}, err
@@ -82,7 +94,7 @@ func (p *ContextPromptBuilder) Build(ctx context.Context, hint run.PromptInput) 
 }
 
 // messages is DEC-PMT-2.
-func (p *ContextPromptBuilder) messages(entries []chatlog.Entry) ([]sdk.Message, error) {
+func (p *ContextPromptBuilder) messages(entries []chatlog.Materialized) ([]sdk.Message, error) {
 	var msgs []sdk.Message
 	if p.Preset.SystemPrompt != "" {
 		msgs = append(msgs, sdk.SystemMessage(p.Preset.SystemPrompt))
@@ -107,7 +119,8 @@ func (p *ContextPromptBuilder) messages(entries []chatlog.Entry) ([]sdk.Message,
 		}
 	}
 	for i := range entries {
-		e := &entries[i]
+		m := &entries[i]
+		e := m.Entry
 		switch e.Kind {
 		case chatlog.EntryInput:
 			text, err := inputText(e.Input.Content)
@@ -124,25 +137,26 @@ func (p *ContextPromptBuilder) messages(entries []chatlog.Entry) ([]sdk.Message,
 				return nil, errors.New("decision: assistant follows unresolved tool calls")
 			}
 			flushDeferred()
+			if m.Result == nil {
+				return nil, fmt.Errorf("decision: assistant %s is not materialized", e.ID)
+			}
 			var parts []sdk.MessagePart
-			for _, part := range e.Assistant.Parts {
-				switch v := part.(type) {
-				case chatlog.TextPart:
-					parts = append(parts, sdk.TextPart{Text: v.Text})
-				case chatlog.ReasoningPart:
-					parts = append(parts, sdk.ReasoningPart{Text: v.Text})
-				case chatlog.ToolCallPart:
-					calls[v.CallID] = callInfo{provider: v.ProviderCallID, name: v.Name}
-					open[v.CallID] = struct{}{}
-					input, err := v.Input.Any()
-					if err != nil {
-						return nil, err
-					}
-					parts = append(parts, sdk.ToolCallPart{ToolCallID: v.ProviderCallID, ToolName: v.Name, Input: input})
-				case chatlog.ReferencePart:
-					// context-v1 has no materializer; the reference is named.
-					parts = append(parts, sdk.TextPart{Text: "[attachment " + v.Name + "]"})
+			for _, rp := range m.Result.ReasoningParts {
+				if rp.Text != "" {
+					parts = append(parts, sdk.ReasoningPart{Text: rp.Text})
 				}
+			}
+			if m.Result.Text != "" {
+				parts = append(parts, sdk.TextPart{Text: m.Result.Text})
+			}
+			for _, call := range m.Calls {
+				calls[call.CallID] = callInfo{provider: call.ProviderCallID, name: call.Name}
+				open[call.CallID] = struct{}{}
+				input, err := call.Input.Any()
+				if err != nil {
+					return nil, err
+				}
+				parts = append(parts, sdk.ToolCallPart{ToolCallID: call.ProviderCallID, ToolName: call.Name, Input: input})
 			}
 			if len(parts) > 0 {
 				msgs = append(msgs, sdk.Message{Role: sdk.MessageRoleAssistant, Content: parts})
@@ -154,7 +168,7 @@ func (p *ContextPromptBuilder) messages(entries []chatlog.Entry) ([]sdk.Message,
 			}
 			info := calls[r.CallID]
 			part := sdk.ToolResultPart{ToolCallID: info.provider, ToolName: info.name}
-			text := partsText(r.Parts)
+			text := m.Text()
 			switch r.Status {
 			case chatlog.ToolSuccess:
 				part.Result = text
@@ -171,26 +185,13 @@ func (p *ContextPromptBuilder) messages(entries []chatlog.Entry) ([]sdk.Message,
 				return nil, errors.New("decision: summary follows unresolved tool calls")
 			}
 			flushDeferred()
-			msgs = append(msgs, sdk.AssistantMessage(partsText(e.Summary.Parts)))
+			msgs = append(msgs, sdk.AssistantMessage(chatlog.PartsText(e.Summary.Parts)))
 		}
 	}
 	if len(open) > 0 {
 		return nil, errors.New("decision: context has unresolved tool calls")
 	}
 	return msgs, nil
-}
-
-func partsText(parts chatlog.Parts) string {
-	var out string
-	for _, part := range parts {
-		switch v := part.(type) {
-		case chatlog.TextPart:
-			out += v.Text
-		case chatlog.ReferencePart:
-			out += "[attachment " + v.Name + "]"
-		}
-	}
-	return out
 }
 
 func v1InputText(content run.CanonicalJSON) (string, error) {
@@ -217,7 +218,3 @@ func mustJSONString(s string) string {
 // InputText is the v1 inverse of InputContent: the user text of an input
 // payload (DEC-INP-1). Hosts use it to render transcripts.
 func InputText(content run.CanonicalJSON) (string, error) { return v1InputText(content) }
-
-// PartsText renders the text of assistant, tool result or summary parts the
-// way the context prompt builder does; references are named, not materialized.
-func PartsText(parts chatlog.Parts) string { return partsText(parts) }
