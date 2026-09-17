@@ -27,6 +27,7 @@ import (
 	"github.com/felinics/twilight/agent/session/extension"
 	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/session/writer"
+	"github.com/felinics/twilight/agent/orchestration"
 	"github.com/felinics/twilight/agent/turn"
 )
 
@@ -111,10 +112,7 @@ type Host struct {
 	now            func() time.Time
 	warn           func(error)
 	targetResolver loop.TargetResolver
-
-	mu       sync.Mutex
-	loops    map[turn.PresetRef]*loop.Loop
-	recovery map[session.SessionID]*recoveryLifetime
+	driver         *orchestration.Driver
 }
 
 // New composes a Host from its ports (HST-PRT-1).
@@ -185,13 +183,21 @@ func New(p Ports) (*Host, error) {
 	h := &Host{
 		Store: store, Writers: writers, Runtime: runtime, Presets: presets, Executor: p.Executor, Decisions: decisions,
 		registry: registry, admission: admission, frozen: frozen, content: runmod.NewContent(frozen), chatlog: &chatlog.Service{Writers: writers, Now: now}, bus: bus, now: now, warn: warn,
-		targetResolver: p.TargetResolver, loops: make(map[turn.PresetRef]*loop.Loop),
-		recovery: make(map[session.SessionID]*recoveryLifetime),
+		targetResolver: p.TargetResolver,
 	}
 	h.Coordinator = &turn.Coordinator{Writers: writers, Runtime: runtime, Now: now}
+	executor := p.Executor
 	if p.Spawn != nil {
-		h.Executor = newSpawnExecutor(h, p.Executor, *p.Spawn)
+		// The spawn effect intercepts its tool's Assignments before the
+		// deployment's Executor sees them; Runs drive against the wrapped
+		// port so a model's spawn call reaches the interceptor.
+		executor = newSpawnExecutor(h, p.Executor, *p.Spawn)
+		h.Executor = executor
 	}
+	h.driver = orchestration.New()
+	h.driver.Runtime, h.driver.Coordinator, h.driver.Executor = runtime, h.Coordinator, executor
+	h.driver.Presets, h.driver.Decisions, h.driver.Sources = presets, decisions, h.sources()
+	h.driver.Targets, h.driver.Surfaces, h.driver.Fail = p.TargetResolver, h.TurnSurface, h.fail
 	return h, nil
 }
 
@@ -278,83 +284,16 @@ func clonePreset(p turn.AgentPreset) turn.AgentPreset {
 
 // --- driving ---------------------------------------------------------------------
 
-// ResumeAlreadyDriving extends the turn disposition vocabulary for hosts: the
-// inputs (if any) are committed and another local driver of the same Run
-// carries them forward. The Coordinator itself never produces it.
-const ResumeAlreadyDriving turn.ResumeDisposition = "already_driving"
+// ResumeAlreadyDriving extends the turn disposition vocabulary for hosts:
+// the inputs (if any) are committed and another local driver of the same
+// Run carries them forward. The Coordinator itself never produces it.
+const ResumeAlreadyDriving = orchestration.ResumeAlreadyDriving
 
-// loopFor returns the Loop that drives Runs of one AgentPreset. A Loop binds
-// the preset's prompt builder and settings to the shared Executor; it is
-// built once per PresetRef so every drive of a Run meets the same
-// already-driving guard (HST-DRV-2).
-func (h *Host) loopFor(ref turn.PresetRef) (*loop.Loop, turn.AgentPreset, error) {
-	preset, err := h.Presets.Resolve(ref)
-	if err != nil {
-		return nil, turn.AgentPreset{}, err
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if l, ok := h.loops[ref]; ok {
-		return l, preset, nil
-	}
-	builder, err := h.Decisions.Resolve(preset, h.sources())
-	if err != nil {
-		return nil, turn.AgentPreset{}, err
-	}
-	l, err := loop.New(h.Executor, builder, loop.Settings{
-		Scheduling:       preset.Scheduling,
-		MalformedRetries: preset.MalformedRetries,
-		TargetResolver:   h.targetResolver,
-	})
-	if err != nil {
-		return nil, turn.AgentPreset{}, err
-	}
-	h.loops[ref] = l
-	return l, preset, nil
-}
-
-// Drive is HST-DRV-1: while the Turn is active, resolve its recorded preset
-// and drive the active attempt to the next quiescent point, then read the
-// committed Status. The caller's ctx bounds the drive, so cancellation is a
-// host decision. A concurrent local driver of the same Run yields
-// ResumeAlreadyDriving.
+// Drive is HST-DRV-1: while the Turn is active, drive the active attempt to
+// the next quiescent point, then read the committed Status. It is the
+// orchestration Driver's method with the Host's surfaces and ports.
 func (h *Host) Drive(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse, error) {
-	surface, err := h.TurnSurface(ctx, ref.SessionID)
-	if err != nil {
-		return turn.TurnResponse{}, err
-	}
-	view, ok := surface.Turns[ref.TurnID]
-	if !ok {
-		return turn.TurnResponse{}, fmt.Errorf("%w: unknown turn %s", turn.ErrConflict, ref.TurnID)
-	}
-	if view.Status == turn.TurnActive {
-		l, _, err := h.loopFor(view.Preset)
-		if err != nil {
-			return turn.TurnResponse{}, err
-		}
-		res, err := l.Run(ctx, h.Runtime, ref.SessionID, view.ActiveRun, nil)
-		if err != nil {
-			if errors.Is(err, loop.ErrRunAlreadyRunning) {
-				resp, rerr := h.Coordinator.Status(ctx, ref)
-				if rerr != nil {
-					return turn.TurnResponse{}, rerr
-				}
-				resp.Disposition = ResumeAlreadyDriving
-				return resp, nil
-			}
-			return turn.TurnResponse{}, err
-		}
-		if res.ExecutionRecovery {
-			// The drive quiesced with executions in flight and no local
-			// waiter. Offer every Executing target reattachment and dispose
-			// what no executor answers, instead of leaving the Turn to a
-			// driver that already returned (RUN-CMT-7).
-			if _, err := h.recoverInterrupted(context.WithoutCancel(ctx), ref.SessionID); err != nil {
-				h.fail(ref.SessionID, fmt.Errorf("host: recovering a quiesced drive: %w", err))
-			}
-		}
-	}
-	return h.Coordinator.Status(ctx, ref)
+	return h.driver.Drive(ctx, ref)
 }
 
 // fail reports a failure of work the Host does outside any caller's call:
@@ -365,41 +304,25 @@ func (h *Host) fail(sid session.SessionID, err error) {
 	h.bus.failed(sid, err)
 }
 
-// reattachDeliver is the glue a takeover hands the Executor (RUN-CMT-7): an
-// Outcome of an attempt that survived the previous owner is settled through
-// the Loop of the Turn that owns its Run, and the Run is driven on from there.
-func (h *Host) reattachDeliver(ctx context.Context, sid session.SessionID) loop.Deliver {
-	return func(out loop.Outcome) {
-		if ctx.Err() != nil {
-			return
-		}
-		surface, err := h.TurnSurface(ctx, sid)
-		if err != nil {
-			h.fail(sid, fmt.Errorf("host: reattached outcome for run %s: %w", out.Key.RunID, err))
-			return
-		}
-		turnID, ok := surface.RunOwner[out.Key.RunID]
-		if !ok {
-			h.fail(sid, fmt.Errorf("host: reattached outcome for run %s: no owning turn", out.Key.RunID))
-			return
-		}
-		l, _, err := h.loopFor(surface.Turns[turnID].Preset)
-		if err != nil {
-			h.fail(sid, fmt.Errorf("host: reattached outcome for run %s: %w", out.Key.RunID, err))
-			return
-		}
-		res, err := l.Deliver(ctx, h.Runtime, sid, out, nil)
-		if err != nil {
-			h.fail(sid, fmt.Errorf("host: settling reattached outcome for run %s: %w", out.Key.RunID, err))
-			return
-		}
-		if res.Disposition != loop.LoopDelivered {
-			return
-		}
-		if _, err := l.Run(ctx, h.Runtime, sid, out.Key.RunID, nil); err != nil && !errors.Is(err, loop.ErrRunAlreadyRunning) {
-			h.fail(sid, fmt.Errorf("host: driving run %s after a reattached outcome: %w", out.Key.RunID, err))
-		}
+// Open takes ownership of the Session and runs the takeover disposition
+// (RUN-CMT-7). It returns the number of recovery commands issued.
+func (h *Host) Open(ctx context.Context, sid session.SessionID) (int, error) {
+	if _, err := h.Writers.Writer(ctx, sid); err != nil {
+		return 0, err
 	}
+	return h.driver.Open(ctx, sid)
+}
+
+func (h *Host) stopRecovery(sid session.SessionID) { h.driver.Stop(sid) }
+
+// Close stops recovery listeners, cancels the child drives of the spawn
+// effect and releases every Session this Host owns.
+func (h *Host) Close(ctx context.Context) error {
+	h.driver.Close()
+	if se, ok := h.Executor.(*spawnExecutor); ok {
+		se.close()
+	}
+	return writer.CloseWriters(ctx, h.Writers)
 }
 
 // --- sessions ---------------------------------------------------------------------
@@ -426,91 +349,6 @@ func (h *Host) EnsureSession(ctx context.Context, sid session.SessionID) error {
 		return err
 	}
 	return nil
-}
-
-// recoveryLifetime is the detached context the Session's recovery goroutines
-// -- reattached outcome reads -- live under, and the cancel that stops them.
-type recoveryLifetime struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-}
-
-// installRecoveryLifetimeLocked replaces the Session's recovery lifetime with
-// one derived from parent, stopping the previous listeners. Callers hold h.mu.
-func (h *Host) installRecoveryLifetimeLocked(sid session.SessionID, parent context.Context) *recoveryLifetime {
-	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
-	if previous := h.recovery[sid]; previous != nil {
-		previous.cancel()
-	}
-	lt := &recoveryLifetime{ctx: ctx, cancel: cancel}
-	h.recovery[sid] = lt
-	return lt
-}
-
-// ensureRecoveryLifetime returns the Session's recovery lifetime, installing a
-// detached one when absent. Open replaces it instead: a takeover supersedes
-// the previous owner's listeners.
-func (h *Host) ensureRecoveryLifetime(sid session.SessionID) *recoveryLifetime {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if lt, ok := h.recovery[sid]; ok {
-		return lt
-	}
-	return h.installRecoveryLifetimeLocked(sid, context.Background())
-}
-
-// recoverInterrupted runs the takeover disposition (RUN-CMT-7) for the
-// Session: every Executing target is offered to the Executor for reattachment
-// and disposed only when no running attempt answers. It is the explicit
-// recovery behind an unknown dispatch boundary -- the drive kept the call
-// Executing, so the durable record, not a duplicate dispatch, decides the
-// settlement.
-func (h *Host) recoverInterrupted(ctx context.Context, sid session.SessionID) (int, error) {
-	lt := h.ensureRecoveryLifetime(sid)
-	n, err := h.Runtime.RecoverInterrupted(ctx, sid, loop.Reattach(lt.ctx, h.Executor, sid, h.reattachDeliver(lt.ctx, sid)))
-	return n, err
-}
-
-// Open takes ownership of the Session and runs the takeover disposition
-// (RUN-CMT-7): every Executing target is first offered to the Executor for
-// reattachment and disposed only when no running attempt answers. It returns
-// the number of recovery commands issued.
-func (h *Host) Open(ctx context.Context, sid session.SessionID) (int, error) {
-	if _, err := h.Writers.Writer(ctx, sid); err != nil {
-		return 0, err
-	}
-	h.mu.Lock()
-	h.installRecoveryLifetimeLocked(sid, ctx)
-	h.mu.Unlock()
-	n, err := h.recoverInterrupted(ctx, sid)
-	if err != nil {
-		h.stopRecovery(sid)
-	}
-	return n, err
-}
-
-func (h *Host) stopRecovery(sid session.SessionID) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if lt := h.recovery[sid]; lt != nil {
-		lt.cancel()
-		delete(h.recovery, sid)
-	}
-}
-
-// Close stops recovery listeners, cancels the child drives of the spawn
-// effect and releases every Session this Host owns.
-func (h *Host) Close(ctx context.Context) error {
-	h.mu.Lock()
-	for sid, lt := range h.recovery {
-		lt.cancel()
-		delete(h.recovery, sid)
-	}
-	h.mu.Unlock()
-	if se, ok := h.Executor.(*spawnExecutor); ok {
-		se.close()
-	}
-	return writer.CloseWriters(ctx, h.Writers)
 }
 
 // SubmitInput writes twilight/chatlog/input_submitted for one user text and
