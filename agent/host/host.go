@@ -113,6 +113,7 @@ type Host struct {
 	warn           func(error)
 	targetResolver loop.TargetResolver
 	driver         *orchestration.Driver
+	history        turn.History
 }
 
 // New composes a Host from its ports (HST-PRT-1).
@@ -186,15 +187,22 @@ func New(p Ports) (*Host, error) {
 		targetResolver: p.TargetResolver,
 	}
 	h.Coordinator = &turn.Coordinator{Writers: writers, Runtime: runtime, Now: now}
+	h.history = turn.History{Store: store, Registry: registry, Surfaces: h.TurnSurface}
+	h.driver = orchestration.New()
 	executor := p.Executor
 	if p.Spawn != nil {
 		// The spawn effect intercepts its tool's Assignments before the
 		// deployment's Executor sees them; Runs drive against the wrapped
-		// port so a model's spawn call reaches the interceptor.
-		executor = newSpawnExecutor(h, p.Executor, *p.Spawn)
+		// port so a model's spawn call reaches the interceptor. Children
+		// drive through the same Driver as any Turn, over narrow ports.
+		executor = orchestration.NewSpawnExecutor(p.Executor, *p.Spawn, orchestration.SpawnPorts{
+			Store: store, Registry: registry, Admission: admission, History: h.history,
+			Surfaces: h, Chatlog: h.chatlog, Coordinator: h.Coordinator, Driver: h.driver,
+			Writers: writers, Content: h.content, Now: now, NewTurnID: NewTurnID, NewInputID: NewInputID,
+			Warn: warn,
+		})
 		h.Executor = executor
 	}
-	h.driver = orchestration.New()
 	h.driver.Runtime, h.driver.Coordinator, h.driver.Executor = runtime, h.Coordinator, executor
 	h.driver.Presets, h.driver.Decisions, h.driver.Sources = presets, decisions, h.sources()
 	h.driver.Targets, h.driver.Surfaces, h.driver.Fail = p.TargetResolver, h.TurnSurface, h.fail
@@ -319,8 +327,8 @@ func (h *Host) stopRecovery(sid session.SessionID) { h.driver.Stop(sid) }
 // effect and releases every Session this Host owns.
 func (h *Host) Close(ctx context.Context) error {
 	h.driver.Close()
-	if se, ok := h.Executor.(*spawnExecutor); ok {
-		se.close()
+	if se, ok := h.Executor.(*orchestration.SpawnExecutor); ok {
+		se.Close()
 	}
 	return writer.CloseWriters(ctx, h.Writers)
 }
