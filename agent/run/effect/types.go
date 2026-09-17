@@ -123,9 +123,8 @@ func (s ExecutionStatus) Terminal() bool {
 }
 
 var (
-	ErrExecutionNotFound  = errors.New("agent: effect: execution not found")
-	ErrOutcomeNotReady    = errors.New("agent: effect: outcome not ready")
-	ErrBindingUnsupported = errors.New("agent: effect: backend does not support execution binding")
+	ErrExecutionNotFound = errors.New("agent: effect: execution not found")
+	ErrOutcomeNotReady   = errors.New("agent: effect: outcome not ready")
 	// ErrDispatchUnknown means the dispatch response was lost after the
 	// request may have crossed the effect boundary. It must not trigger a
 	// compensating re-dispatch or a RecoverModelExecution automatically.
@@ -168,29 +167,6 @@ type Attachment struct {
 	FencingEpoch        uint64          `json:"fencingEpoch,omitempty"`
 	LeaseUntilUnixMilli int64           `json:"leaseUntilUnixMilli,omitempty"`
 	BackendAttached     bool            `json:"backendAttached,omitempty"`
-}
-
-// ExecutionBinding identifies one provider-side execution for one
-// Assignment. ExecutionRef is opaque to Agent Core. Providers must make
-// PrepareBinding idempotent by AssignmentKey because a crash can happen
-// before the binding is returned to the Worker.
-type ExecutionBinding struct {
-	Provider     string `json:"provider,omitempty"`
-	ExecutionRef string `json:"executionRef"`
-}
-
-// BindingPort is an optional backend capability for durable provider jobs.
-// The Worker persists the returned binding before dispatching. All bound
-// lifecycle operations must address the same provider execution; they must
-// not silently create a new execution for the same binding.
-// A persisted binding requires this capability throughout its lifecycle.
-type BindingPort interface {
-	PrepareBinding(context.Context, Assignment) (ExecutionBinding, error)
-	DispatchBound(context.Context, Assignment, ExecutionBinding) error
-	AttachBound(context.Context, AssignmentKey, ExecutionBinding) (Attachment, error)
-	GetStatusBound(context.Context, AssignmentKey, ExecutionBinding) (ExecutionStatus, error)
-	GetOutcomeBound(context.Context, AssignmentKey, ExecutionBinding) (Outcome, error)
-	CancelBound(context.Context, AssignmentKey, ExecutionBinding) error
 }
 
 // Port is the Agent Core effect port. It is intentionally message-shaped:
