@@ -81,7 +81,7 @@ func (b *testBackend) Cancel(context.Context, effect.AssignmentKey) error { retu
 
 // routes serves every Assignment from one Port-shaped fake under the "test"
 // provider.
-func routes(p effect.Port) []executor.Route {
+func routes(p effect.ExecutionPort) []executor.Route {
 	return []executor.Route{executor.Default("test", executor.PortBackend(p))}
 }
 
@@ -142,7 +142,7 @@ func (b *testBackend) lastKey() effect.AssignmentKey {
 
 func testAssignment() effect.Assignment {
 	request := run.ModelRequest{Model: "m"}
-	digest, err := run.ProtocolV1().DigestRequest(request)
+	digest, err := run.SchemaV1().Canonical.DigestRequest(request)
 	if err != nil {
 		panic(err)
 	}
@@ -259,7 +259,7 @@ func TestWorkerUncertainDispatchPreservesExecution(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var port effect.Port = worker
+			var port effect.ExecutionPort = worker
 			if overHTTP {
 				port = &executorhttp.Client{BaseURL: "http://executor.invalid",
 					HTTP: &http.Client{Transport: handlerTransport{handler: (&executorhttp.Server{Worker: worker}).Handler()}}}

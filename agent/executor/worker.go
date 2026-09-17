@@ -2,7 +2,7 @@
 // execution record of every accepted Assignment -- its payload, its
 // ExecutionRef, its lifecycle state and its Outcome -- and hands the effect
 // itself to one Backend chosen once, at Dispatch (RUN-EXE-3, RUN-EXE-10).
-// Agent Core sees the Worker as an effect.Port addressed by AssignmentKey;
+// Agent Core sees the Worker as an effect.ExecutionPort addressed by AssignmentKey;
 // Backends see only the Ref the record holds for them.
 package executor
 
@@ -49,11 +49,11 @@ const defaultLeaseDuration = 30 * time.Second
 // is the built-in loop form of that decision, while deployments with an
 // external control plane drive Takeover directly. Dispose settles a record
 // the control plane has given up on. None of the three is part of
-// effect.Port, which stays the per-assignment data plane.
+// effect.ExecutionPort, which stays the per-assignment data plane.
 type Worker struct {
 	store     executionstore.Store
 	routes    []Route
-	backends  map[string]Backend
+	backends  map[string]ExecutionBackend
 	id        string
 	lease     time.Duration
 	now       func() time.Time
@@ -76,7 +76,7 @@ func NewWorker(ctx context.Context, records executionstore.Store, routes []Route
 	if len(routes) == 0 {
 		return nil, errors.New("executor: worker requires at least one route")
 	}
-	backends := make(map[string]Backend, len(routes))
+	backends := make(map[string]ExecutionBackend, len(routes))
 	for _, r := range routes {
 		if r.Provider == "" || r.Backend == nil {
 			return nil, errors.New("executor: route requires a provider and a backend")
@@ -147,7 +147,7 @@ func (w *Worker) route(a effect.Assignment) (Route, error) {
 }
 
 // backend resolves the Backend a record's ExecutionRef names.
-func (w *Worker) backend(ref ExecutionRef) (Backend, error) {
+func (w *Worker) backend(ref ExecutionRef) (ExecutionBackend, error) {
 	b, ok := w.backends[ref.Provider]
 	if !ok {
 		return nil, fmt.Errorf("%w: %q", ErrUnknownProvider, ref.Provider)
@@ -172,11 +172,11 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 		if a.Model == nil || a.Model.Request == nil {
 			return errors.New("executor: model assignment requires an inline request payload")
 		}
-		proto, err := run.ProtocolFor(a.Schema)
+		schema, err := run.SchemaFor(a.Schema)
 		if err != nil {
 			return err
 		}
-		requestDigest, err := proto.DigestRequest(*a.Model.Request)
+		requestDigest, err := schema.Canonical.DigestRequest(*a.Model.Request)
 		if err != nil {
 			return err
 		}
@@ -464,7 +464,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 
 // watch reads the backend's Outcome for ref and settles the record under
 // this incarnation's lease.
-func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64, backend Backend, ref string, done chan struct{}) {
+func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64, backend ExecutionBackend, ref string, done chan struct{}) {
 	defer close(done)
 	delay := 10 * time.Millisecond
 	var out effect.Outcome
@@ -794,4 +794,4 @@ func (w *Worker) recover(ctx context.Context) error {
 	return nil
 }
 
-var _ effect.Port = (*Worker)(nil)
+var _ effect.ExecutionPort = (*Worker)(nil)

@@ -21,11 +21,11 @@ type ExecutionRef = executionstore.ExecutionRef
 // this Worker has no Backend for (RUN-EXE-10).
 var ErrUnknownProvider = errors.New("executor: unknown execution provider")
 
-// Backend performs one provider's effects. It is addressed by Ref: the
-// Worker persists the Ref Prepare returns before Start, and every later
-// lifecycle operation names that Ref. A Backend keeps no table keyed by
+// ExecutionBackend performs one provider's effects. It is addressed by Ref:
+// the Worker persists the Ref Prepare returns before Start, and every later
+// lifecycle operation names that Ref. A backend keeps no table keyed by
 // AssignmentKey.
-type Backend interface {
+type ExecutionBackend interface {
 	// Validate checks that this Backend can serve the Assignment; it produces
 	// no external effect (RUN-EXE-5).
 	Validate(ctx context.Context, a effect.Assignment) (*run.ToolFailure, error)
@@ -61,21 +61,21 @@ type Backend interface {
 type Route struct {
 	Provider string
 	Match    func(effect.Assignment) bool
-	Backend  Backend
+	Backend  ExecutionBackend
 }
 
 // Default is the Route that accepts every Assignment: the last route of a
 // Worker's table.
-func Default(provider string, b Backend) Route { return Route{Provider: provider, Backend: b} }
+func Default(provider string, b ExecutionBackend) Route { return Route{Provider: provider, Backend: b} }
 
-// PortBackend adapts a process-local effect.Port -- an executor that keys
-// its own table by AssignmentKey -- to the Backend contract. The Ref is the
-// key itself, encoded, so Prepare is deterministic and the adapter holds no
-// state. It is the bridge for executors written against Port before the
-// Backend contract; new backends implement Backend directly.
-func PortBackend(p effect.Port) Backend { return portBackend{p} }
+// PortBackend adapts an effect.ExecutionPort -- an executor addressed by
+// AssignmentKey, such as the remote HTTP client -- to the ExecutionBackend
+// contract, so a Worker can route between it and colocated backends. The Ref
+// is the key itself, encoded, so Prepare is deterministic and the adapter
+// holds no state. New backends implement ExecutionBackend directly.
+func PortBackend(p effect.ExecutionPort) ExecutionBackend { return portBackend{p} }
 
-type portBackend struct{ port effect.Port }
+type portBackend struct{ port effect.ExecutionPort }
 
 func (b portBackend) Validate(ctx context.Context, a effect.Assignment) (*run.ToolFailure, error) {
 	return b.port.Validate(ctx, a)

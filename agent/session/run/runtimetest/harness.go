@@ -15,6 +15,7 @@ import (
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
 	runmod "github.com/felinics/twilight/agent/session/run"
+	"github.com/felinics/twilight/agent/session/unit"
 	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
@@ -58,7 +59,7 @@ type harness struct {
 	cache    *extension.MemoryProjectionCache
 	clock    *clock
 	writers  writer.Writers
-	rt       *runmod.Runtime
+	rt       *runmod.SessionRunStore
 	seq      int
 }
 
@@ -70,7 +71,7 @@ func newHarness(t testing.TB, f Fixture) *harness {
 	}
 	bindings := artifact.NewMemoryBindingStore()
 	h := &harness{t: t, ctx: context.Background(), fixture: f, store: f.Store, registry: registry, bindings: bindings,
-		ledger: artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings}), frozen: runmod.FrozenValuesInMemory(),
+		ledger: artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings}), frozen: runmod.FrozenValuesInMemory(bindings),
 		cache: extension.NewMemoryProjectionCache(), clock: &clock{now: time.Unix(1_000_000, 0)}}
 	if _, err := f.Store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid}); err != nil {
 		t.Fatal(err)
@@ -79,14 +80,14 @@ func newHarness(t testing.TB, f Fixture) *harness {
 	return h
 }
 
-// open starts an owner process: Writers over the shared store and a Runtime.
+// open starts an owner process: Writers over the shared store and a run store.
 // Takeover lets it supersede the previous owner process, if any.
 func (h *harness) open() {
 	h.t.Helper()
 	h.writers = writer.NewWriters(h.store, h.registry, writer.Admission{Bindings: h.bindings, Ledger: h.ledger}, session.OpenOptions{Takeover: true},
 		writer.WritersConfig{Cache: h.cache, CachePolicy: runmod.WriterCachePolicy(0)})
-	rt, err := runmod.NewRuntime(runmod.Config{Registry: h.registry, Store: h.store,
-		Frozen: h.frozen, Bindings: h.bindings, Cache: h.cache, Now: h.clock.Now})
+	rt, err := runmod.NewSessionRunStore(runmod.Config{Registry: h.registry, Store: h.store,
+		Frozen: h.frozen, Cache: h.cache, Now: h.clock.Now})
 	if err != nil {
 		h.fatal(err)
 	}
@@ -94,8 +95,8 @@ func (h *harness) open() {
 }
 
 // takeover opens a new owner process over the same store; the previous
-// Runtime stays usable so tests can observe its fencing.
-func (h *harness) takeover() (*runmod.Runtime, writer.Writer) {
+// store stays usable so tests can observe its fencing.
+func (h *harness) takeover() (*runmod.SessionRunStore, writer.Writer) {
 	h.t.Helper()
 	old, oldWriter := h.rt, h.writer()
 	h.open()
@@ -172,7 +173,7 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	if err != nil {
 		h.fatal(err)
 	}
-	facts, err := run.ProtocolV1().BuildCreateGroup(newRun, inputs)
+	facts, err := run.SchemaV1().Machine.CreateGroup(newRun, inputs)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -218,14 +219,14 @@ func (h *harness) startRun(turnID turn.TurnID, runID run.RunID, inputs ...run.Ag
 
 func (h *harness) load(runID run.RunID) run.RuntimeSnapshot {
 	h.t.Helper()
-	snap, err := h.rt.Load(h.ctx, h.writer(), runID)
+	snap, err := h.rt.Bind(h.writer()).Load(h.ctx, runID)
 	if err != nil {
 		h.fatal(err)
 	}
 	return snap
 }
 
-func (h *harness) record(runID run.RunID) run.RunRecord {
+func (h *harness) record(runID run.RunID) runmod.Record {
 	h.t.Helper()
 	rec, err := h.rt.Record(h.ctx, sid, runID)
 	if err != nil {
@@ -234,31 +235,98 @@ func (h *harness) record(runID run.RunID) run.RunRecord {
 	return rec
 }
 
-func (h *harness) proto(runID run.RunID) run.Protocol {
+func (h *harness) proto(runID run.RunID) run.Schema {
 	h.t.Helper()
-	p, err := h.load(runID).Protocol()
+	p, err := h.load(runID).Schema()
 	if err != nil {
 		h.fatal(err)
 	}
 	return p
 }
 
-// commit builds the envelope and submits it; attach events follow the facts.
-func (h *harness) commit(runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, attach ...run.ModuleEvent) (run.CommitResult, error) {
+// moduleEvent is another module's event a test commits in the same unit as
+// a Run command: the Turn or the chatlog contributing its Part.
+type moduleEvent struct {
+	Type  session.EventType
+	Value any
+}
+
+// attachPart writes moduleEvents to the session stream as one Part.
+type attachPart []moduleEvent
+
+func (a attachPart) Prepare(_ context.Context, _ writer.View, now int64) ([]writer.TypedBatch, error) {
+	events := make([]writer.TypedEvent, len(a))
+	for i, me := range a {
+		events[i] = writer.TypedEvent{Type: me.Type, RecordedAtUnixMilli: now, Value: me.Value}
+	}
+	return []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: events}}, nil
+}
+
+// commitResult is a Run command's result plus the sealed commit it landed in.
+type commitResult struct {
+	run.CommitResult
+	Events []session.Event
+	Head   session.Head
+}
+
+// commit builds the envelope and submits it as one unit; attach events follow
+// the facts in the same commit.
+func (h *harness) commit(runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, attach ...moduleEvent) (commitResult, error) {
 	h.t.Helper()
 	return h.commitWith(h.rt, h.writer(), runID, id, base, cmd, attach...)
 }
 
-func (h *harness) commitWith(rt *runmod.Runtime, w writer.Writer, runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, attach ...run.ModuleEvent) (run.CommitResult, error) {
+func (h *harness) commitWith(rt *runmod.SessionRunStore, w writer.Writer, runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, attach ...moduleEvent) (commitResult, error) {
 	h.t.Helper()
-	env, err := h.proto(runID).BuildEnvelope(sid, runID, id, cmd)
+	env, err := h.proto(runID).Wire.Envelope(runID, id, cmd)
 	if err != nil {
 		h.fatal(err)
 	}
-	return rt.Commit(h.ctx, w, run.CommitRequest{Base: base, Command: env, Attach: attach})
+	req := run.CommitRequest{Base: base, Command: env}
+	if len(attach) == 0 {
+		res, err := rt.Bind(w).Commit(h.ctx, req)
+		if err != nil {
+			return commitResult{}, err
+		}
+		return h.withCommit(res, session.CommitID(env.ID)), nil
+	}
+	part, err := rt.Command(h.ctx, req)
+	if err != nil {
+		return commitResult{}, err
+	}
+	res, err := unit.Commit(h.ctx, w, h.clock.Now().UnixMilli(), unit.Work{CommitID: session.CommitID(env.ID), Parts: []unit.Part{part, attachPart(attach)}})
+	if err != nil {
+		return commitResult{}, err
+	}
+	out, err := part.Result(h.ctx, w, res)
+	if err != nil {
+		return commitResult{}, err
+	}
+	return commitResult{CommitResult: out, Events: flattenCommit(res.Commit), Head: session.Head{Next: res.Commit.Seq + 1, Digest: res.Commit.Digest}}, nil
 }
 
-func (h *harness) mustCommit(runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, attach ...run.ModuleEvent) run.CommitResult {
+// withCommit looks the command's sealed commit up so a test can inspect the
+// group it produced.
+func (h *harness) withCommit(res run.CommitResult, id session.CommitID) commitResult {
+	h.t.Helper()
+	var out commitResult
+	out.CommitResult = res
+	_, err := h.writer().Commit(h.ctx, func(v writer.View) (*writer.SemanticGroup, error) {
+		c, ok, err := v.LookupCommit(id)
+		if err != nil || !ok {
+			return nil, fmt.Errorf("commit %s not found: %v", id, err)
+		}
+		out.Events = flattenCommit(c)
+		out.Head = session.Head{Next: c.Seq + 1, Digest: c.Digest}
+		return nil, nil
+	})
+	if err != nil {
+		h.fatal(err)
+	}
+	return out
+}
+
+func (h *harness) mustCommit(runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, attach ...moduleEvent) commitResult {
 	h.t.Helper()
 	res, err := h.commit(runID, id, base, cmd, attach...)
 	if err != nil {
@@ -282,7 +350,7 @@ func (h *harness) spec() run.ToolSpec {
 	if err != nil {
 		h.fatal(err)
 	}
-	d, err := run.ProtocolV1().DigestToolDefinition(frozen)
+	d, err := run.SchemaV1().Canonical.DigestToolDefinition(frozen)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -302,16 +370,16 @@ func (h *harness) preparedCommand(snap run.RuntimeSnapshot, withTool bool) (run.
 	if err != nil {
 		h.fatal(err)
 	}
-	proto, _ := snap.Protocol()
-	reqDigest, err := proto.DigestRequest(frozen)
+	proto, _ := snap.Schema()
+	reqDigest, err := proto.Canonical.DigestRequest(frozen)
 	if err != nil {
 		h.fatal(err)
 	}
-	toolsDigest, err := proto.DigestToolSpecs(specs)
+	toolsDigest, err := proto.Canonical.DigestToolSpecs(specs)
 	if err != nil {
 		h.fatal(err)
 	}
-	binding, err := proto.DigestModelStepBinding("m-1", reqDigest, toolsDigest)
+	binding, err := proto.Canonical.DigestModelStepBinding("m-1", reqDigest, toolsDigest)
 	if err != nil {
 		h.fatal(err)
 	}

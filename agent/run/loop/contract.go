@@ -7,7 +7,6 @@ import (
 
 	run "github.com/felinics/twilight/agent/run"
 	effect "github.com/felinics/twilight/agent/run/effect"
-	"github.com/felinics/twilight/agent/session"
 
 	"github.com/felinics/twilight/sdk"
 )
@@ -18,9 +17,10 @@ import (
 var ErrRunAlreadyRunning = errors.New("agent: loop: run already running")
 
 // PromptBuilder is the decision-layer port the host resolves from the
-// AgentPreset (DEC-PMT): it builds the next prompt from the Session's
-// projections (RUN-LOP-2). Loop freezes the prompt into an agent-owned
-// ModelRequest before crossing the Runtime boundary.
+// AgentPreset (DEC-PMT): it builds the next prompt from the surrounding
+// conversation, which it reads by the PromptInput's Scope (RUN-LOP-2). Loop
+// freezes the prompt into an agent-owned ModelRequest before crossing the
+// RunStore boundary.
 type PromptBuilder interface {
 	Build(context.Context, run.PromptInput) (Prompt, error)
 }
@@ -40,7 +40,7 @@ type Prompt struct {
 // application/resource layer; Loop only copies the reference into an
 // Assignment and never interprets it.
 type TargetResolver interface {
-	ResolveTarget(context.Context, session.SessionID, run.RunID) (*run.TargetRef, error)
+	ResolveTarget(context.Context, run.Scope, run.RunID) (*run.TargetRef, error)
 }
 
 // Settings are the execution parameters the Loop takes from the AgentPreset
@@ -141,7 +141,8 @@ const (
 )
 
 type Event struct {
-	Session session.SessionID
+	// Session is the Run's Scope.
+	Session run.Scope
 	RunID   run.RunID
 	StepID  run.StepID
 	CallID  run.CallID
@@ -151,10 +152,9 @@ type Event struct {
 	Kind       EventKind
 	Durability EventDurability
 	Payload    json.RawMessage
-	// Committed is set for an EventAgentCommitted observation: the accepted
-	// commit in batch order (run facts, attach); nil for
-	// provisional.
-	Committed []session.Event
+	// Committed is set for an EventAgentCommitted observation: the Run facts
+	// the accepted command produced, in stream order; nil for provisional.
+	Committed []run.Fact
 }
 
 type LoopDisposition uint8

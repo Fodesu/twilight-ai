@@ -160,7 +160,7 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	<-done
 
 	// The abandoned worker's settlement was rejected; the Run is terminal.
-	record, err := h.Authority.Runtime.Record(ctx, sid, resp.RunID)
+	record, err := h.Authority.Runs.Record(ctx, sid, resp.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 	if _, err := h.Authority.Turns.Stop(ctx, s.Handle().Writer(), turn.StopRequest{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	record, err := h.Authority.Runtime.Record(ctx, sid, started.RunID)
+	record, err := h.Authority.Runs.Record(ctx, sid, started.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}

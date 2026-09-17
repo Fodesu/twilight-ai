@@ -97,7 +97,7 @@ func (p *AgentPreset) ToolSpecs() ([]run.ToolSpec, []sdk.ToolDefinition, error) 
 	specs := make([]run.ToolSpec, 0, len(p.Tools))
 	defs := make([]sdk.ToolDefinition, 0, len(p.Tools))
 	for _, t := range p.Tools {
-		d, err := run.ProtocolV1().DigestToolDefinition(t.Definition)
+		d, err := run.SchemaV1().Canonical.DigestToolDefinition(t.Definition)
 		if err != nil {
 			return nil, nil, err
 		}

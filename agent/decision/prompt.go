@@ -13,6 +13,7 @@ import (
 
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
 	"github.com/felinics/twilight/agent/turn"
@@ -58,10 +59,10 @@ func (p *ContextPromptBuilder) Build(ctx context.Context, hint run.PromptInput) 
 	if p.Sources.Projections == nil || p.Preset.Model == "" {
 		return loop.Prompt{}, errors.New("decision: builder requires projections and a model")
 	}
-	if hint.Session == "" {
+	if hint.Scope == "" {
 		return loop.Prompt{}, errors.New("decision: builder hint has no session")
 	}
-	state, head, err := p.Sources.Projections.Load(ctx, hint.Session, chatlog.ContextProjectionID, chatlog.ContextProjection.Version)
+	state, head, err := p.Sources.Projections.Load(ctx, session.SessionID(hint.Scope), chatlog.ContextProjectionID, chatlog.ContextProjection.Version)
 	if err != nil {
 		return loop.Prompt{}, err
 	}

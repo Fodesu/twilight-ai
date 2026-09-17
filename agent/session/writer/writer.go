@@ -49,6 +49,9 @@ type View interface {
 	// kernel handle does not hold it, so a caller that only needs the answer
 	// uses Committed.
 	LookupCommit(session.CommitID) (session.Commit, bool, error)
+	// StreamHead reports whether this Session has written to a logical
+	// stream and the StreamSeq its next event takes (SES-REP-3).
+	StreamHead(session.StreamRef) (session.StreamSeq, bool)
 	// Projection returns a detached state that the caller owns.
 	Projection(extension.ProjectionID, extension.ProjectionVersion) (any, error)
 }
@@ -379,6 +382,10 @@ func (v view) Committed(id session.CommitID) bool { return v.w.kernel.Committed(
 
 func (v view) LookupCommit(id session.CommitID) (session.Commit, bool, error) {
 	return v.w.kernel.LookupCommit(id)
+}
+
+func (v view) StreamHead(stream session.StreamRef) (session.StreamSeq, bool) {
+	return v.w.kernel.StreamHead(stream)
 }
 func (v view) Projection(id extension.ProjectionID, ver extension.ProjectionVersion) (any, error) {
 	k := projectionKey{id, ver}

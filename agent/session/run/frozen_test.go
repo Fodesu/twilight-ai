@@ -18,7 +18,7 @@ func frozenBody(t *testing.T, text string) (run.Digest, []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest, err := run.ProtocolV1().DigestRequest(req)
+	digest, err := run.SchemaV1().Canonical.DigestRequest(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,11 @@ func fileFrozen(t *testing.T, root string) run.FrozenValueStore {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return FrozenValues(store)
+	frozen, err := FrozenValues(store, artifact.NewMemoryBindingStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return frozen
 }
 
 // The FrozenValueStore adapter over both cas ContentStores (RUN-WIR-4): the
@@ -50,7 +54,9 @@ func TestFrozenValuesOverContentStores(t *testing.T) {
 		open func(t *testing.T, root string) run.FrozenValueStore
 		file bool
 	}{
-		{"memory", func(*testing.T, string) run.FrozenValueStore { return FrozenValuesInMemory() }, false},
+		{"memory", func(*testing.T, string) run.FrozenValueStore {
+			return FrozenValuesInMemory(artifact.NewMemoryBindingStore())
+		}, false},
 		{"file", fileFrozen, true},
 	}
 	for _, tc := range cases {
@@ -99,7 +105,10 @@ func TestFrozenValuesRejectsForeignAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fv := FrozenValues(store)
+	fv, err := FrozenValues(store, artifact.NewMemoryBindingStore())
+	if err != nil {
+		t.Fatal(err)
+	}
 	digest, raw := frozenBody(t, "hello")
 	if err := fv.Put(ctx, digest, raw); err != nil {
 		t.Fatalf("the store accepts the bytes; authority is checked on read: %v", err)

@@ -115,11 +115,11 @@ func (e *Executor) Close() {
 // and, for a replayed call, that the child on record was created for the
 // same arguments (RUN-EXE-3).
 func (e *Executor) Validate(ctx context.Context, a effect.Assignment) (*run.ToolFailure, error) {
-	proto, err := run.ProtocolFor(a.Schema)
+	schema, err := run.SchemaFor(a.Schema)
 	if err != nil {
 		return nil, err
 	}
-	if failure, err := CheckDefinition(proto, e.tool, a.Tool); err != nil || failure != nil {
+	if failure, err := CheckDefinition(schema, e.tool, a.Tool); err != nil || failure != nil {
 		return failure, err
 	}
 	args, err := DecodeArguments(a.Tool.Arguments)
@@ -134,14 +134,14 @@ func (e *Executor) Validate(ctx context.Context, a effect.Assignment) (*run.Tool
 			return &run.ToolFailure{Class: run.FailureInvalidArguments, Message: err.Error()}, nil
 		}
 	}
-	depth, err := e.depthOf(ctx, a.Session)
+	depth, err := e.depthOf(ctx, session.SessionID(a.Session))
 	if err != nil {
 		return nil, err
 	}
 	if DepthExceeded(depth, e.opts.depth()) {
 		return &run.ToolFailure{Class: run.FailureExecution, Message: fmt.Sprintf("subagent depth %d reached", e.opts.depth())}, nil
 	}
-	child := ChildID(a.Session, a.RunID, a.CallID)
+	child := ChildID(session.SessionID(a.Session), a.RunID, a.CallID)
 	if prov, ok, err := e.provenance(ctx, child); err != nil {
 		return nil, err
 	} else if ok && ArgumentsConflict(prov, args) {
@@ -176,7 +176,7 @@ func (e *Executor) provenance(ctx context.Context, sid session.SessionID) (Prove
 // Prepare derives the Ref: the child SessionID, a function of the call's
 // identity (SPN-2), so a replayed Prepare names the same child.
 func (e *Executor) Prepare(_ context.Context, a effect.Assignment) (string, error) {
-	return string(ChildID(a.Session, a.RunID, a.CallID)), nil
+	return string(ChildID(session.SessionID(a.Session), a.RunID, a.CallID)), nil
 }
 
 // Restart keeps the Ref: the child Session is the durable execution and a
@@ -285,11 +285,11 @@ func (e *Executor) drive(ctx context.Context, key effect.AssignmentKey, child se
 // empty for Empty, a fork of the parent's history before the calling Turn
 // for Fork (SPN-5).
 func (e *Executor) create(ctx context.Context, key effect.AssignmentKey, child session.SessionID, args Arguments) (Provenance, error) {
-	depth, err := e.depthOf(ctx, key.Session)
+	depth, err := e.depthOf(ctx, session.SessionID(key.Session))
 	if err != nil {
 		return Provenance{}, err
 	}
-	prov := Provenance{ParentSession: key.Session, ParentRun: key.RunID, CallID: key.CallID, Depth: depth + 1, Arguments: args}
+	prov := Provenance{ParentSession: session.SessionID(key.Session), ParentRun: key.RunID, CallID: key.CallID, Depth: depth + 1, Arguments: args}
 	meta, err := Metadata(prov)
 	if err != nil {
 		return Provenance{}, err
@@ -301,12 +301,12 @@ func (e *Executor) create(ctx context.Context, key effect.AssignmentKey, child s
 		if err != nil {
 			return Provenance{}, err
 		}
-		at, err := e.a.History.PrefixCommit(ctx, key.Session, turnID)
+		at, err := e.a.History.PrefixCommit(ctx, session.SessionID(key.Session), turnID)
 		if err != nil {
 			return Provenance{}, err
 		}
 		_, err = writer.Fork(ctx, e.a.Store, e.a.Registry, e.a.Admission, writer.ForkRequest{
-			Parent: key.Session, At: at, Child: child, CreatedAtUnixMilli: now, Metadata: meta})
+			Parent: session.SessionID(key.Session), At: at, Child: child, CreatedAtUnixMilli: now, Metadata: meta})
 		return prov, err
 	default:
 		_, err := e.a.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: child, CreatedAtUnixMilli: now, Metadata: meta})
@@ -316,11 +316,11 @@ func (e *Executor) create(ctx context.Context, key effect.AssignmentKey, child s
 
 // callingTurn is the parent Turn that owns the Run the call belongs to.
 func (e *Executor) callingTurn(ctx context.Context, key effect.AssignmentKey) (turn.TurnID, error) {
-	surface, err := turn.ReadSurface(ctx, e.a.Projections, key.Session)
+	surface, err := turn.ReadSurface(ctx, e.a.Projections, session.SessionID(key.Session))
 	if err != nil {
 		return "", err
 	}
-	turnID, ok := surface.RunOwner[key.RunID]
+	turnID, ok := surface.OwnerOf(key.RunID)
 	if !ok {
 		return "", fmt.Errorf("run %s has no owning turn in %s", key.RunID, key.Session)
 	}
@@ -340,7 +340,7 @@ func (e *Executor) childPreset(ctx context.Context, key effect.AssignmentKey, ar
 	if err != nil {
 		return turn.PresetRef{}, err
 	}
-	surface, err := turn.ReadSurface(ctx, e.a.Projections, key.Session)
+	surface, err := turn.ReadSurface(ctx, e.a.Projections, session.SessionID(key.Session))
 	if err != nil {
 		return turn.PresetRef{}, err
 	}
@@ -476,7 +476,7 @@ func (e *Executor) Attach(ctx context.Context, ref string) (effect.Attachment, e
 	if !exists {
 		return effect.Attachment{State: effect.AttachmentMissing, Execution: effect.ExecutionNotFound}, nil
 	}
-	e.start(ref, effect.AssignmentKey{Session: prov.ParentSession, RunID: prov.ParentRun, CallID: prov.CallID}, nil)
+	e.start(ref, effect.AssignmentKey{Session: run.Scope(prov.ParentSession), RunID: prov.ParentRun, CallID: prov.CallID}, nil)
 	if att, ok := e.local(ref); ok {
 		return att, nil
 	}
@@ -551,4 +551,4 @@ func (e *Executor) Cancel(_ context.Context, ref string) error {
 	return nil
 }
 
-var _ executor.Backend = (*Executor)(nil)
+var _ executor.ExecutionBackend = (*Executor)(nil)

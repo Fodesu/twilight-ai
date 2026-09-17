@@ -341,9 +341,9 @@ func TestCloseStopsPendingRecoveryRead(t *testing.T) {
 	}
 }
 
-func mustRecord(t *testing.T, h *app.Application, sid session.SessionID, runID run.RunID) run.RunRecord {
+func mustRecord(t *testing.T, h *app.Application, sid session.SessionID, runID run.RunID) runmod.Record {
 	t.Helper()
-	rec, err := h.Authority.Runtime.Record(context.Background(), sid, runID)
+	rec, err := h.Authority.Runs.Record(context.Background(), sid, runID)
 	if err != nil {
 		t.Fatal(err)
 	}

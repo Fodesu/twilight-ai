@@ -47,7 +47,7 @@ type harness struct {
 	now      int64
 	seq      int
 	writers  writer.Writers
-	rt       *runmod.Runtime
+	rt       *runmod.SessionRunStore
 	c        *turn.Coordinator
 }
 
@@ -58,7 +58,7 @@ func newHarness(t testing.TB, f Fixture) *harness {
 		t.Fatal(err)
 	}
 	bindings := artifact.NewMemoryBindingStore()
-	h := &harness{t: t, ctx: context.Background(), store: f.Store, registry: registry, frozen: runmod.FrozenValuesInMemory(), now: 1_000,
+	h := &harness{t: t, ctx: context.Background(), store: f.Store, registry: registry, frozen: runmod.FrozenValuesInMemory(bindings), now: 1_000,
 		bindings: bindings, ledger: artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings})}
 	if _, err := f.Store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
@@ -72,13 +72,12 @@ func (h *harness) open() {
 	h.t.Helper()
 	clock := func() time.Time { return time.UnixMilli(h.now) }
 	h.writers = writer.NewWriters(h.store, h.registry, writer.Admission{Bindings: h.bindings, Ledger: h.ledger}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
-	rt, err := runmod.NewRuntime(runmod.Config{Registry: h.registry, Store: h.store,
-		Frozen: h.frozen, Bindings: h.bindings, Now: clock})
+	rt, err := runmod.NewSessionRunStore(runmod.Config{Registry: h.registry, Store: h.store, Frozen: h.frozen, Now: clock})
 	if err != nil {
 		h.t.Fatal(err)
 	}
 	h.rt = rt
-	h.c = &turn.Coordinator{Projections: extension.NewProjectionReader(h.store, h.registry, nil), Runtime: rt, Now: clock}
+	h.c = &turn.Coordinator{Projections: extension.NewProjectionReader(h.store, h.registry, nil), Runs: rt, Now: clock}
 }
 
 // takeover opens a new owner process and returns the superseded Coordinator
@@ -292,7 +291,7 @@ func decode[T any](t testing.TB, registry *extension.Registry, event *session.Ev
 
 func (h *harness) load(runID run.RunID) run.RuntimeSnapshot {
 	h.t.Helper()
-	snap, err := h.rt.Load(h.ctx, h.writer(), runID)
+	snap, err := h.rt.Bind(h.writer()).Load(h.ctx, runID)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -306,16 +305,41 @@ func (h *harness) claim() run.ExecutionClaim {
 	return run.ExecutionClaim(fmt.Sprintf("claim-%d", h.seq))
 }
 
-func (h *harness) runCommit(runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, attach ...run.ModuleEvent) (run.CommitResult, error) {
+// commitResult is a Run command's result plus the events of the commit it
+// landed in.
+type commitResult struct {
+	run.CommitResult
+	Events []session.Event
+}
+
+func (h *harness) runCommit(runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand) (commitResult, error) {
 	h.t.Helper()
-	env, err := run.ProtocolV1().BuildEnvelope(sid, runID, id, cmd)
+	env, err := run.SchemaV1().Wire.Envelope(runID, id, cmd)
 	if err != nil {
 		h.fatal(err)
 	}
-	return h.rt.Commit(h.ctx, h.writer(), run.CommitRequest{Base: base, Command: env, Attach: attach})
+	res, err := h.rt.Bind(h.writer()).Commit(h.ctx, run.CommitRequest{Base: base, Command: env})
+	if err != nil {
+		return commitResult{}, err
+	}
+	out := commitResult{CommitResult: res}
+	_, err = h.writer().Commit(h.ctx, func(v writer.View) (*writer.SemanticGroup, error) {
+		c, ok, err := v.LookupCommit(session.CommitID(env.ID))
+		if err != nil || !ok {
+			return nil, fmt.Errorf("commit %s not found: %v", env.ID, err)
+		}
+		for _, b := range c.Batches {
+			out.Events = append(out.Events, b.Events...)
+		}
+		return nil, nil
+	})
+	if err != nil {
+		h.fatal(err)
+	}
+	return out, nil
 }
 
-func (h *harness) mustRunCommit(runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand) run.CommitResult {
+func (h *harness) mustRunCommit(runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand) commitResult {
 	h.t.Helper()
 	res, err := h.runCommit(runID, id, base, cmd)
 	if err != nil {
@@ -332,7 +356,7 @@ func (h *harness) spec(policy run.ResponsePolicy) run.ToolSpec {
 	if err != nil {
 		h.fatal(err)
 	}
-	d, err := run.ProtocolV1().DigestToolDefinition(frozen)
+	d, err := run.SchemaV1().Canonical.DigestToolDefinition(frozen)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -352,7 +376,7 @@ func (h *harness) prepare(runID run.RunID, specs []run.ToolSpec) run.StepID {
 	if err != nil {
 		h.fatal(err)
 	}
-	proto := run.ProtocolV1()
+	proto := run.SchemaV1().Canonical
 	reqDigest, err := proto.DigestRequest(frozen)
 	if err != nil {
 		h.fatal(err)
@@ -399,7 +423,7 @@ func textResult(text string) run.ModelResult {
 
 // complete finishes the Run with a text result; the surface folds the Turn to
 // completed from the run_ended of the same group.
-func (h *harness) complete(runID run.RunID) run.CommitResult {
+func (h *harness) complete(runID run.RunID) commitResult {
 	h.t.Helper()
 	step, claim := h.executingModel(runID)
 	return h.mustRunCommit(runID, run.DeriveSettlementCommandID(runID, step, "", claim), 0, run.SubmitModelResult{StepID: step, Result: textResult("done")})

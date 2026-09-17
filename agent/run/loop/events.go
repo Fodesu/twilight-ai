@@ -6,7 +6,6 @@ import (
 	"sync"
 
 	run "github.com/felinics/twilight/agent/run"
-	"github.com/felinics/twilight/agent/session"
 )
 
 type serializedEventSink struct {
@@ -23,16 +22,16 @@ func (s *serializedEventSink) Emit(ctx context.Context, event Event) error {
 	return s.sink.Emit(ctx, event)
 }
 
-func (l *Loop) emitCommitted(ctx context.Context, events EventSink, sid session.SessionID, runID run.RunID, committed []session.Event) {
+func (l *Loop) emitCommitted(ctx context.Context, events EventSink, scope run.Scope, runID run.RunID, committed []run.Fact) {
 	if events == nil || len(committed) == 0 {
 		return
 	}
 	_ = events.Emit(ctx, Event{
-		Session:    sid,
+		Session:    scope,
 		RunID:      runID,
 		Kind:       EventAgentCommitted,
 		Durability: EventCommitted,
-		Committed:  append([]session.Event(nil), committed...),
+		Committed:  append([]run.Fact(nil), committed...),
 	})
 }
 

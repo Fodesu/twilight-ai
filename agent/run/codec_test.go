@@ -27,7 +27,7 @@ func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 		NextStep(AgentInput{ID: "in", Payload: cj(`{"q":"hi"}`)}),
 	}
 	for _, cmd := range commands {
-		env, err := ProtocolV1().BuildEnvelope("s-1", "run-1", CommandID("cmd-"+commandType(cmd)), cmd)
+		env, err := SchemaV1().Wire.Envelope("run-1", CommandID("cmd-"+commandType(cmd)), cmd)
 		if err != nil {
 			t.Fatalf("ProtocolV1().BuildEnvelope(%T): %v", cmd, err)
 		}
@@ -74,7 +74,7 @@ func TestFactCodecRoundTripRestoresVariants(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal(%T): %v", fact, err)
 		}
-		decoded, err := ProtocolV1().DecodeFact(typ, raw)
+		decoded, err := SchemaV1().Wire.DecodeFact(typ, raw)
 		if err != nil {
 			t.Fatalf("DecodeFact(%T): %v\n%s", fact, err, raw)
 		}
@@ -85,7 +85,7 @@ func TestFactCodecRoundTripRestoresVariants(t *testing.T) {
 		if err != nil || string(again) != string(raw) {
 			t.Fatalf("re-encode of %T differs:\n%s\n%s", fact, raw, again)
 		}
-		if _, err := ProtocolV1().DecodeFact("unknown", raw); err == nil {
+		if _, err := SchemaV1().Wire.DecodeFact("unknown", raw); err == nil {
 			t.Fatalf("unknown fact type decoded for %T", fact)
 		}
 	}
@@ -93,7 +93,7 @@ func TestFactCodecRoundTripRestoresVariants(t *testing.T) {
 
 func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
 	cmd := NextStep(AgentInput{ID: "in", Payload: cj(`1`)})
-	env, err := ProtocolV1().BuildEnvelope("s-1", "run-1", DeriveInputCommandID("run-1", "in"), cmd)
+	env, err := SchemaV1().Wire.Envelope("run-1", DeriveInputCommandID("run-1", "in"), cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
 }
 
 func TestWireCodecRejectsUnknownType(t *testing.T) {
-	env, err := ProtocolV1().BuildEnvelope("s-1", "run-1", "cmd-1", CancelRun{})
+	env, err := SchemaV1().Wire.Envelope("run-1", "cmd-1", CancelRun{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestRunEndedTaggedUnionRejectsInvalidValues(t *testing.T) {
 		"unknown end variant":    {End: fakeRunEnd{}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := ProtocolV1().DigestFact("run_ended", fact); err == nil {
+			if _, err := SchemaV1().Wire.EncodeFact("run_ended", fact); err == nil {
 				t.Fatal("invalid tagged terminal value was accepted")
 			}
 		})

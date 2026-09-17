@@ -14,10 +14,11 @@ import (
 	"sync"
 
 	"github.com/felinics/twilight/agent/decision"
-	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/run/reconcile"
 	"github.com/felinics/twilight/agent/session"
+	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/agent/turn"
 )
@@ -35,9 +36,11 @@ type Presets interface {
 // Driver is the execution orchestrator over the fact and effect layers
 // (DRV).
 type Driver struct {
-	Runtime   run.Runtime
+	// Runs is the Run module's Session adapter; every drive binds it to the
+	// caller's Writer (AUTH-OWN-2).
+	Runs      *runmod.SessionRunStore
 	Turns     turn.Reader
-	Executor  effect.Port
+	Executor  effect.ExecutionPort
 	Presets   Presets
 	Decisions *decision.PromptBuilders
 	Sources   decision.Sources
@@ -115,7 +118,7 @@ func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID)
 		if err != nil {
 			return turn.TurnResponse{}, err
 		}
-		res, err := l.Run(ctx, d.Runtime, w, view.ActiveRun, nil)
+		res, err := l.Run(ctx, d.Runs.Bind(w), view.ActiveRun, nil)
 		if err != nil {
 			if errors.Is(err, loop.ErrRunAlreadyRunning) {
 				resp, rerr := d.Turns.Status(ctx, ref)
@@ -140,12 +143,13 @@ func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID)
 	return d.Turns.Status(ctx, ref)
 }
 
-// reattachDeliver is the glue a takeover hands the Executor (RUN-CMT-7): an
-// Outcome of an attempt that survived the previous owner is settled through
-// the Loop of the Turn that owns its Run, and the Run is driven on from there.
-func (d *Driver) reattachDeliver(ctx context.Context, w writer.Writer) loop.Deliver {
+// reattachDeliver is what the reconciler hands a kept attempt's Outcome to
+// (RUN-CMT-7): an Outcome of an attempt that survived the previous owner is
+// settled through the Loop of the Turn that owns its Run, and the Run is
+// driven on from there.
+func (d *Driver) reattachDeliver(ctx context.Context, w writer.Writer) func(effect.Outcome) {
 	sid := w.SessionID()
-	return func(out loop.Outcome) {
+	return func(out effect.Outcome) {
 		if ctx.Err() != nil {
 			return
 		}
@@ -154,7 +158,7 @@ func (d *Driver) reattachDeliver(ctx context.Context, w writer.Writer) loop.Deli
 			d.fail(sid, fmt.Errorf("driver: reattached outcome for run %s: %w", out.Key.RunID, err))
 			return
 		}
-		turnID, ok := surface.RunOwner[out.Key.RunID]
+		turnID, ok := surface.OwnerOf(out.Key.RunID)
 		if !ok {
 			d.fail(sid, fmt.Errorf("driver: reattached outcome for run %s: no owning turn", out.Key.RunID))
 			return
@@ -164,7 +168,7 @@ func (d *Driver) reattachDeliver(ctx context.Context, w writer.Writer) loop.Deli
 			d.fail(sid, fmt.Errorf("driver: reattached outcome for run %s: %w", out.Key.RunID, err))
 			return
 		}
-		res, err := l.Deliver(ctx, d.Runtime, w, out, nil)
+		res, err := l.Deliver(ctx, d.Runs.Bind(w), out, nil)
 		if err != nil {
 			d.fail(sid, fmt.Errorf("driver: settling reattached outcome for run %s: %w", out.Key.RunID, err))
 			return
@@ -172,7 +176,7 @@ func (d *Driver) reattachDeliver(ctx context.Context, w writer.Writer) loop.Deli
 		if res.Disposition != loop.LoopDelivered {
 			return
 		}
-		if _, err := l.Run(ctx, d.Runtime, w, out.Key.RunID, nil); err != nil && !errors.Is(err, loop.ErrRunAlreadyRunning) {
+		if _, err := l.Run(ctx, d.Runs.Bind(w), out.Key.RunID, nil); err != nil && !errors.Is(err, loop.ErrRunAlreadyRunning) {
 			d.fail(sid, fmt.Errorf("driver: driving run %s after a reattached outcome: %w", out.Key.RunID, err))
 		}
 	}
@@ -216,15 +220,15 @@ func (d *Driver) ensureRecoveryLifetime(w writer.Writer) *recoveryLifetime {
 }
 
 // recoverInterrupted runs the takeover disposition (RUN-CMT-7) for the
-// Session: every Executing target is offered to the Executor for reattachment
-// and disposed only when no running attempt answers. It is the explicit
+// Session: the reconciler compares every Executing target with the execution
+// store and disposes only what no record answers for. It is the explicit
 // recovery behind an unknown dispatch boundary -- the drive kept the call
 // Executing, so the durable record, not a duplicate dispatch, decides the
 // settlement.
 func (d *Driver) recoverInterrupted(ctx context.Context, w writer.Writer) (int, error) {
 	lt := d.ensureRecoveryLifetime(w)
-	sid := w.SessionID()
-	return d.Runtime.RecoverInterrupted(ctx, w, loop.Reattach(lt.ctx, d.Executor, sid, d.reattachDeliver(lt.ctx, lt.w)))
+	rec := &reconcile.Reconciler{Executions: d.Executor, Lifetime: lt.ctx, Deliver: d.reattachDeliver(lt.ctx, lt.w)}
+	return d.Runs.RecoverInterrupted(ctx, w, rec)
 }
 
 // Open installs the Session's recovery lifetime under w and runs the

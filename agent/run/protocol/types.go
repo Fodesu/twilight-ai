@@ -11,7 +11,6 @@ import (
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
-	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -21,7 +20,7 @@ const ProtocolVersion uint16 = 1
 // binds the complete effect payload to AssignmentKey.
 type AssignmentEnvelope struct {
 	ProtocolVersion  uint16            `json:"protocolVersion"`
-	Session          session.SessionID `json:"session"`
+	Session          run.Scope         `json:"session"`
 	Assignment       effect.Assignment `json:"assignment"`
 	AssignmentDigest run.Digest        `json:"assignmentDigest"`
 }

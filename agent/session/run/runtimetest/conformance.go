@@ -6,10 +6,13 @@ import (
 	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/effect"
+	"github.com/felinics/twilight/agent/run/reconcile"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
 	runmod "github.com/felinics/twilight/agent/session/run"
+	"github.com/felinics/twilight/agent/session/unit"
 	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/agent/turn"
 	"strings"
@@ -56,20 +59,20 @@ func testCreation(t *testing.T, factory Factory) {
 		t.Fatalf("position = %d, want 1 (last run event of the start group)", snap.Position)
 	}
 	// Unknown RunID.
-	if _, err := h.rt.Load(h.ctx, h.writer(), "nope"); !errors.Is(err, run.ErrRunNotFound) {
+	if _, err := h.rt.Bind(h.writer()).Load(h.ctx, "nope"); !errors.Is(err, run.ErrRunNotFound) {
 		t.Fatalf("load unknown = %v", err)
 	}
 	if _, err := h.rt.Record(h.ctx, sid, "nope"); !errors.Is(err, run.ErrRunNotFound) {
 		t.Fatalf("record unknown = %v", err)
 	}
-	env, _ := run.ProtocolV1().BuildEnvelope(sid, "nope", run.DeriveInputCommandID("nope", "x"), run.NextStep(input("x")))
-	if _, err := h.rt.Commit(h.ctx, h.writer(), run.CommitRequest{Command: env}); !errors.Is(err, run.ErrRunNotFound) {
+	env, _ := run.SchemaV1().Wire.Envelope("nope", run.DeriveInputCommandID("nope", "x"), run.NextStep(input("x")))
+	if _, err := h.rt.Bind(h.writer()).Commit(h.ctx, run.CommitRequest{Command: env}); !errors.Is(err, run.ErrRunNotFound) {
 		t.Fatalf("commit unknown = %v", err)
 	}
 	// Schema disagreement is a hard error, not a retriable rejection.
-	env, _ = run.ProtocolV1().BuildEnvelope(sid, "r1", run.DeriveInputCommandID("r1", "in-2"), run.NextStep(input("in-2")))
+	env, _ = run.SchemaV1().Wire.Envelope("r1", run.DeriveInputCommandID("r1", "in-2"), run.NextStep(input("in-2")))
 	env.SchemaVersion = 2
-	_, err := h.rt.Commit(h.ctx, h.writer(), run.CommitRequest{Command: env})
+	_, err := h.rt.Bind(h.writer()).Commit(h.ctx, run.CommitRequest{Command: env})
 	if err == nil || errors.Is(err, run.ErrStaleRuntime) || errors.Is(err, run.ErrCommandConflict) {
 		t.Fatalf("schema mismatch = %v, want a non-retriable error", err)
 	}
@@ -86,12 +89,19 @@ func testCreation(t *testing.T, factory Factory) {
 	if _, err := h.commit("r1", run.DeriveInputCommandID("r1", "late"), 0, run.NextStep(input("late"))); !errors.Is(err, run.ErrRunTerminal) {
 		t.Fatalf("commit on terminal = %v", err)
 	}
-	// A second created for the same RunID is refused by the projection, so the
-	// Writer rejects the group before it reaches the stream.
-	group := h.startGroup("t2", "r1", 1)
-	res, err := h.writer().Commit(h.ctx, func(writer.View) (*writer.SemanticGroup, error) { return &group, nil })
-	if err != nil || res.Outcome != writer.CommitInvalid {
-		t.Fatalf("duplicate created = %+v %v, want invalid", res, err)
+	// A second created for the same RunID -- active or ended -- is refused by
+	// the Run module's creation Part from the ledger's stream index, before
+	// anything reaches the stream (RUN-NEW-1).
+	again, err := run.BuildNewRunFor("r1", "t2", 1, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := h.head()
+	if _, err := unit.Commit(h.ctx, h.writer(), 1, unit.Work{CommitID: "start/t2/1", Parts: []unit.Part{runmod.CreateRun(again, nil)}}); !errors.Is(err, runmod.ErrRunExists) {
+		t.Fatalf("duplicate created = %v, want ErrRunExists", err)
+	}
+	if h.head() != head {
+		t.Fatal("refused creation wrote to the stream")
 	}
 }
 
@@ -105,10 +115,10 @@ func testReplayAndBase(t *testing.T, factory Factory) {
 		t.Fatal("first accept not accepted")
 	}
 	again := h.mustCommit("r1", run.DeriveInputCommandID("r1", "in-2"), 0, run.NextStep(input("in-2")))
-	if again.Status != run.CommitAlreadyApplied || len(again.Events) != len(first.Events) || again.Snapshot.Head != first.Snapshot.Head {
+	if again.Status != run.CommitAlreadyApplied || len(again.Events) != len(first.Events) || again.Head != first.Head {
 		t.Fatalf("replay = %+v", again)
 	}
-	if h.head() != first.Snapshot.Head {
+	if h.head() != first.Head {
 		t.Fatal("replay appended commits")
 	}
 	// Prepare is a hard CAS on the Run's own position.
@@ -264,18 +274,18 @@ func testGroupComposition(t *testing.T, factory Factory) {
 	output := run.MustParseCanonicalJSON(`{"ok":true}`)
 	if _, err := h.commit("r1", run.DeriveSettlementCommandID("r1", ts.RefValue.ID, call, toolClaim), 0,
 		run.SubmitToolResult{StepID: ts.RefValue.ID, CallID: call, Result: run.ToolExecutionResult{Output: output}},
-		run.ModuleEvent{Type: runmod.Prefix + "input_accepted", Value: runmod.Event{RunID: "r1", Fact: run.InputAccepted{Input: input("x")}}}); err == nil {
+		moduleEvent{Type: runmod.Prefix + "input_accepted", Value: runmod.Event{RunID: "r1", Fact: run.InputAccepted{Input: input("x")}}}); err == nil {
 		t.Fatal("Attach with a twilight/run/ event accepted")
 	}
 	h.submitInputs(input("in-attach"))
 	res = h.mustCommit("r1", run.DeriveSettlementCommandID("r1", ts.RefValue.ID, call, toolClaim), 0,
 		run.SubmitToolResult{StepID: ts.RefValue.ID, CallID: call, Result: run.ToolExecutionResult{Output: output}},
-		run.ModuleEvent{Type: chatlog.TypeInputDelivered, Value: chatlog.InputDeliveredPayload{InputID: "in-attach", TurnID: "t1"}})
+		moduleEvent{Type: chatlog.TypeInputDelivered, Value: chatlog.InputDeliveredPayload{InputID: "in-attach", TurnID: "t1"}})
 	types = eventTypes(res.Events)
 	if len(types) != 2 || types[0] != runmod.Prefix+"tool_call_completed" || types[1] != chatlog.TypeInputDelivered {
 		t.Fatalf("group events = %v", types)
 	}
-	outputDigest, _ := run.ProtocolV1().DigestToolOutput(output)
+	outputDigest, _ := run.SchemaV1().Canonical.DigestToolOutput(output)
 	entries = h.contextEntries()
 	var tr *chatlog.ToolResult
 	for i := range entries {
@@ -333,10 +343,10 @@ func testAdmission(t *testing.T, factory Factory) {
 	if _, err := h.bindings.CreateBinding(h.ctx, binding); err != nil {
 		t.Fatal(err)
 	}
-	attach := func(bindingID artifact.BindingID) run.ModuleEvent {
+	attach := func(bindingID artifact.BindingID) moduleEvent {
 		s := chatlog.Summary{ID: "s-attach", Parts: chatlog.Parts{chatlog.ReferencePart{BindingID: bindingID, Name: "f"}}}
 		s.Digest, _ = chatlog.DigestSummary(&s)
-		return run.ModuleEvent{Type: chatlog.TypeSummary, Value: chatlog.SummaryPayload{Summary: s}}
+		return moduleEvent{Type: chatlog.TypeSummary, Value: chatlog.SummaryPayload{Summary: s}}
 	}
 	before := h.head()
 	// Unregistered binding: the whole group is refused and nothing is written.
@@ -402,13 +412,14 @@ func testPrepareCASIgnoresOtherModules(t *testing.T, factory Factory) {
 	snap := h.load("r1")
 	cmd, id := h.preparedCommand(snap, false)
 	// Other modules and another Run write after the prompt builder loaded.
+	head := h.head()
 	h.submitInputs(input("late"))
 	h.prepare("r2", false)
 	after := h.load("r1")
 	if after.Position != snap.Position {
 		t.Fatalf("foreign writes moved r1 position %d -> %d", snap.Position, after.Position)
 	}
-	if after.Head == snap.Head {
+	if h.head() == head {
 		t.Fatal("session head did not move")
 	}
 	if _, err := h.commit("r1", id, snap.Position, cmd); err != nil {
@@ -443,8 +454,8 @@ func testProjection(t *testing.T, factory Factory) {
 	if _, open := res.Snapshot.State.Current.(run.Open); !open {
 		t.Fatalf("after tool settlement current = %T", res.Snapshot.State.Current)
 	}
-	if through, ok := cached(); !ok || through != res.Snapshot.Head {
-		t.Fatalf("cache after return to Open = %+v ok=%v, want head %+v", through, ok, res.Snapshot.Head)
+	if through, ok := cached(); !ok || through != res.Head {
+		t.Fatalf("cache after return to Open = %+v ok=%v, want head %+v", through, ok, res.Head)
 	}
 	// The cached state plus tail equals the Writer's state.
 	observer := extension.NewProjectionReader(h.store, h.registry, h.cache)
@@ -462,17 +473,21 @@ func testProjection(t *testing.T, factory Factory) {
 	if fromCache := fromCache.(runmod.Machine).Active["r1"]; !run.StatesEquivalent(&fromCache, &active) {
 		t.Fatal("observer's cache+tail disagrees with the writer's projection")
 	}
-	// Terminal Run leaves Active, stays in Ended; Load and Record still answer.
+	// Terminal Run leaves the projection entirely; Load and Record still
+	// answer from the Run's stream, and a second creation of its RunID is
+	// refused from the ledger's stream index, not from projection state.
 	h.mustCommit("r1", "cancel", 0, run.CancelRun{})
 	m = h.machine()
 	if _, still := m.Active["r1"]; still {
 		t.Fatal("terminal run still in the projection")
 	}
-	if _, ended := m.Ended["r1"]; !ended {
-		t.Fatal("terminal run not remembered in Ended")
-	}
 	if h.load("r1").State.Status != run.RunStopped || h.record("r1").Snapshot.State.Status != run.RunStopped {
 		t.Fatal("terminal run not readable")
+	}
+	if again, err := run.BuildNewRunFor("r1", "t1", 1, ""); err != nil {
+		t.Fatal(err)
+	} else if _, err := unit.Commit(h.ctx, h.writer(), 1, unit.Work{CommitID: "recreate/r1", Parts: []unit.Part{runmod.CreateRun(again, nil)}}); !errors.Is(err, runmod.ErrRunExists) {
+		t.Fatalf("recreating an ended run = %v, want ErrRunExists", err)
 	}
 	// An illegal fact sequence does not fold.
 	if _, err := run.FoldRun([]run.Fact{run.InputAccepted{Input: input("x")}}); err == nil {
@@ -591,20 +606,32 @@ func testTakeover(t *testing.T, factory Factory) {
 	}
 }
 
-// selectiveReattacher answers true for the targets whose Claim it holds and
-// records every question the takeover asked.
-type selectiveReattacher struct {
+// livePort is an execution store that still holds the attempts whose Claim
+// it lists and records every key the takeover asked about.
+type livePort struct {
 	live  map[run.ExecutionClaim]bool
-	asked []run.RecoveryTarget
+	asked []effect.AssignmentKey
 }
 
-func (r *selectiveReattacher) Attach(_ context.Context, t run.RecoveryTarget) (run.RecoveryDisposition, error) {
-	r.asked = append(r.asked, t)
-	if r.live[t.Claim] {
-		return run.RecoveryActive, nil
+func (p *livePort) Attach(_ context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
+	p.asked = append(p.asked, key)
+	if p.live[key.Claim] {
+		return effect.Attachment{State: effect.AttachmentActive, Execution: effect.ExecutionRunning}, nil
 	}
-	return run.RecoveryMissing, nil
+	return effect.Attachment{State: effect.AttachmentMissing, Execution: effect.ExecutionNotFound}, nil
 }
+
+func (p *livePort) Validate(context.Context, effect.Assignment) (*run.ToolFailure, error) {
+	return nil, nil
+}
+func (p *livePort) Dispatch(context.Context, effect.Assignment) error { return nil }
+func (p *livePort) GetStatus(context.Context, effect.AssignmentKey) (effect.ExecutionStatus, error) {
+	return effect.ExecutionRunning, nil
+}
+func (p *livePort) GetOutcome(context.Context, effect.AssignmentKey) (effect.Outcome, error) {
+	return effect.Outcome{}, effect.ErrOutcomeNotReady
+}
+func (p *livePort) Cancel(context.Context, effect.AssignmentKey) error { return nil }
 
 // RUN-CMT-7 with a reachable executor: a target whose attempt the executor
 // still runs is not disposed -- it stays Executing under its original Claim
@@ -620,26 +647,29 @@ func testReattach(t *testing.T, factory Factory) {
 	toolClaim := h.startTool("r2", toolStep, ids[0])
 
 	h.takeover()
-	re := &selectiveReattacher{live: map[run.ExecutionClaim]bool{modelClaim: true}}
-	n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), re)
+	port := &livePort{live: map[run.ExecutionClaim]bool{modelClaim: true}}
+	n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), &reconcile.Reconciler{Executions: port})
 	if err != nil || n != 1 {
 		t.Fatalf("RecoverInterrupted = %d %v, want exactly the tool disposed", n, err)
 	}
-	if len(re.asked) != 2 {
-		t.Fatalf("takeover asked about %d targets, want 2", len(re.asked))
+	if len(port.asked) != 2 {
+		t.Fatalf("takeover asked about %d targets, want 2", len(port.asked))
 	}
-	for _, target := range re.asked {
-		switch target.Claim {
+	for _, key := range port.asked {
+		if key.Session != run.Scope(sid) {
+			t.Fatalf("takeover asked outside the session: %+v", key)
+		}
+		switch key.Claim {
 		case modelClaim:
-			if target.Model == nil || target.StepID != modelStep || target.CallID != "" || target.Schema != run.SchemaVersion1 {
-				t.Fatalf("model target = %+v", target)
+			if key.RunID != "r1" || key.StepID != modelStep || key.CallID != "" {
+				t.Fatalf("model key = %+v", key)
 			}
 		case toolClaim:
-			if target.Call == nil || target.StepID != toolStep || target.CallID != ids[0] {
-				t.Fatalf("tool target = %+v", target)
+			if key.RunID != "r2" || key.StepID != toolStep || key.CallID != ids[0] {
+				t.Fatalf("tool key = %+v", key)
 			}
 		default:
-			t.Fatalf("takeover asked about an unknown claim %q", target.Claim)
+			t.Fatalf("takeover asked about an unknown claim %q", key.Claim)
 		}
 	}
 	ms := h.load("r1").State.Current.(run.ModelStep)

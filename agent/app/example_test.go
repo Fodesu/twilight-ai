@@ -97,7 +97,7 @@ func Example_recoverableTurn() {
 	}
 	fmt.Printf("process 2: turn %s, disposition %s, attempt %d\n", resp.Status, resp.Disposition, resp.Attempt)
 
-	record, err := p2.Authority.Runtime.Record(ctx, sid, runID)
+	record, err := p2.Authority.Runs.Record(ctx, sid, runID)
 	if err != nil {
 		panic(err)
 	}
@@ -109,7 +109,7 @@ func Example_recoverableTurn() {
 	close(tool.block)
 	err = <-startDone
 	fmt.Printf("process 1: %v\n", errorsIsOwnershipLost(err))
-	after, _ := p2.Authority.Runtime.Record(ctx, sid, runID)
+	after, _ := p2.Authority.Runs.Record(ctx, sid, runID)
 	fmt.Printf("stream unchanged by the fenced worker: %v\n", len(after.Facts) == len(record.Facts))
 
 	// Output:

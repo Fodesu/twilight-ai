@@ -139,10 +139,10 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 		t.Fatalf("parent turns = %+v %v", parentTurns.Turns, err)
 	}
 	p1Run := parentTurns.Turns["p1"].Attempts[0].RunID
-	if _, err := h.Authority.Runtime.Record(ctx, "parent", p1Run); err != nil {
+	if _, err := h.Authority.Runs.Record(ctx, "parent", p1Run); err != nil {
 		t.Fatalf("parent record of its own run: %v", err)
 	}
-	if _, err := h.Authority.Runtime.Record(ctx, "regen", p1Run); !errors.Is(err, run.ErrRunNotFound) {
+	if _, err := h.Authority.Runs.Record(ctx, "regen", p1Run); !errors.Is(err, run.ErrRunNotFound) {
 		t.Fatalf("child record of the parent's run = %v, want ErrRunNotFound", err)
 	}
 	childTurns, err := turn.ReadSurface(ctx, h.Authority.Projections, "regen")

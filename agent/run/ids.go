@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agent/es"
-	"github.com/felinics/twilight/agent/session"
 )
 
 type RunID string
@@ -63,11 +62,12 @@ func DeriveModelRequestCommandID(run RunID, position RunPosition) CommandID {
 	return CommandID(namespacedHash("twilight/model-request", string(run), fmt.Sprintf("%d", position)))
 }
 
-// DeriveTakeoverClaim is the ExecutionClaim a new Session owner uses for its
-// takeover dispositions (RUN-CMT-7): the same owner repeats idempotently,
-// distinct owners issue distinct commands.
-func DeriveTakeoverClaim(sid session.SessionID, epoch session.Epoch) ExecutionClaim {
-	return ExecutionClaim(namespacedHash("twilight/run/takeover", string(sid), fmt.Sprintf("%d", epoch)))
+// DeriveTakeoverClaim is the ExecutionClaim a new owner of a Scope uses for
+// its takeover dispositions (RUN-CMT-7): epoch is the owner's generation over
+// the store, so the same owner repeats idempotently and distinct owners issue
+// distinct commands.
+func DeriveTakeoverClaim(scope Scope, epoch uint64) ExecutionClaim {
+	return ExecutionClaim(namespacedHash("twilight/run/takeover", string(scope), fmt.Sprintf("%d", epoch)))
 }
 
 // DeriveModelStepID derives the frozen ModelStep identity from the Run, the

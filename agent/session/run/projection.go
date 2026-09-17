@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/run"
@@ -16,18 +15,18 @@ const MachineProjectionID extension.ProjectionID = "twilight/run/machine"
 
 // Machine is the twilight/run/machine projection state (RUN-CMT-2): every
 // non-terminal Run of the Session with its last event position and schema.
-// Terminal Runs leave the projection; Record and the turn surface keep their
-// results. Ended keeps only the RunIDs of terminated Runs so a second
-// run_created for a used RunID is refused (RUN-NEW-1) without keeping state.
+// Terminal Runs leave the projection entirely; Record and the turn surface
+// keep their results, and a second creation of a used RunID is refused at
+// commit time from the ledger's stream index (CreateRun), so the projection
+// is bounded by the Runs active now.
 type Machine struct {
 	Active    map[run.RunID]run.MachineState
 	Positions map[run.RunID]run.RunPosition
 	Schemas   map[run.RunID]uint16
-	Ended     map[run.RunID]struct{}
 }
 
 func newMachine() Machine {
-	return Machine{Active: map[run.RunID]run.MachineState{}, Positions: map[run.RunID]run.RunPosition{}, Schemas: map[run.RunID]uint16{}, Ended: map[run.RunID]struct{}{}}
+	return Machine{Active: map[run.RunID]run.MachineState{}, Positions: map[run.RunID]run.RunPosition{}, Schemas: map[run.RunID]uint16{}}
 }
 
 func (m Machine) clone() Machine {
@@ -41,10 +40,16 @@ func (m Machine) clone() Machine {
 	for k, v := range m.Schemas {
 		out.Schemas[k] = v
 	}
-	for k := range m.Ended {
-		out.Ended[k] = struct{}{}
-	}
 	return out
+}
+
+// snapshot returns the RuntimeSnapshot of an active Run.
+func (m Machine) snapshot(runID run.RunID) (run.RuntimeSnapshot, bool) {
+	ms, ok := m.Active[runID]
+	if !ok {
+		return run.RuntimeSnapshot{}, false
+	}
+	return run.RuntimeSnapshot{State: ms, Position: m.Positions[runID], SchemaVersion: m.Schemas[runID]}, true
 }
 
 // Apply folds one decoded run event (RUN-MCH-3 via Protocol.Evolve).
@@ -57,33 +62,30 @@ func (m Machine) Apply(e extension.DecodedEvent) (Machine, error) {
 		return m, fmt.Errorf("run machine: fact for %s arrived via stream %s/%s", ev.RunID, e.Stream.Kind, e.Stream.ID)
 	}
 	out := m.clone()
-	var proto run.Protocol
+	var schema run.Schema
 	var state run.MachineState
 	if created, isCreated := ev.Fact.(run.RunCreated); isCreated {
 		if _, dup := out.Active[ev.RunID]; dup {
 			return m, fmt.Errorf("run machine: %s created twice", ev.RunID)
 		}
-		if _, ended := out.Ended[ev.RunID]; ended {
-			return m, fmt.Errorf("run machine: %s created again after it ended", ev.RunID)
-		}
-		p, err := run.ProtocolFor(created.SchemaVersion)
+		p, err := run.SchemaFor(created.SchemaVersion)
 		if err != nil {
 			return m, err
 		}
-		proto = p
+		schema = p
 		out.Schemas[ev.RunID] = created.SchemaVersion
 	} else {
 		cur, active := out.Active[ev.RunID]
 		if !active {
 			return m, fmt.Errorf("run machine: fact %s for unknown or terminal run %s", run.FactType(ev.Fact), ev.RunID)
 		}
-		p, err := run.ProtocolFor(out.Schemas[ev.RunID])
+		p, err := run.SchemaFor(out.Schemas[ev.RunID])
 		if err != nil {
 			return m, err
 		}
-		proto, state = p, cur
+		schema, state = p, cur
 	}
-	next, err := proto.Evolve(state, ev.Fact)
+	next, err := schema.Machine.Evolve(state, ev.Fact)
 	if err != nil {
 		return m, err
 	}
@@ -91,7 +93,6 @@ func (m Machine) Apply(e extension.DecodedEvent) (Machine, error) {
 		delete(out.Active, ev.RunID)
 		delete(out.Positions, ev.RunID)
 		delete(out.Schemas, ev.RunID)
-		out.Ended[ev.RunID] = struct{}{}
 		return out, nil
 	}
 	if _, tracked := out.Positions[ev.RunID]; tracked {
@@ -104,8 +105,7 @@ func (m Machine) Apply(e extension.DecodedEvent) (Machine, error) {
 }
 
 type machineWire struct {
-	Runs  map[run.RunID]machineRunWire `json:"runs"`
-	Ended []run.RunID                  `json:"ended,omitempty"`
+	Runs map[run.RunID]machineRunWire `json:"runs"`
 }
 
 type machineRunWire struct {
@@ -130,11 +130,11 @@ func (c machineCodec) Encode(value any) (jsonstable.Value, error) {
 	m := value.(Machine)
 	wire := machineWire{Runs: make(map[run.RunID]machineRunWire, len(m.Active))}
 	for id, state := range m.Active {
-		proto, err := run.ProtocolFor(m.Schemas[id])
+		schema, err := run.SchemaFor(m.Schemas[id])
 		if err != nil {
 			return jsonstable.Value{}, err
 		}
-		raw, err := proto.EncodeMachineState(&state)
+		raw, err := schema.Snapshot.Encode(&state)
 		if err != nil {
 			return jsonstable.Value{}, err
 		}
@@ -144,10 +144,6 @@ func (c machineCodec) Encode(value any) (jsonstable.Value, error) {
 		}
 		wire.Runs[id] = machineRunWire{Schema: m.Schemas[id], Position: m.Positions[id], State: encoded}
 	}
-	for id := range m.Ended {
-		wire.Ended = append(wire.Ended, id)
-	}
-	sort.Slice(wire.Ended, func(i, j int) bool { return wire.Ended[i] < wire.Ended[j] })
 	return jsonstable.FromValue(wire)
 }
 
@@ -161,20 +157,17 @@ func (machineCodec) Decode(wire jsonstable.Value) (any, error) {
 	}
 	m := newMachine()
 	for id, r := range w.Runs {
-		proto, err := run.ProtocolFor(r.Schema)
+		schema, err := run.SchemaFor(r.Schema)
 		if err != nil {
 			return nil, err
 		}
-		state, err := proto.DecodeMachineState(r.State.Bytes())
+		state, err := schema.Snapshot.Decode(r.State.Bytes())
 		if err != nil {
 			return nil, err
 		}
 		m.Active[id] = state
 		m.Positions[id] = r.Position
 		m.Schemas[id] = r.Schema
-	}
-	for _, id := range w.Ended {
-		m.Ended[id] = struct{}{}
 	}
 	return m, nil
 }
@@ -194,7 +187,7 @@ var _ session.EventType = Prefix
 
 // WriterCachePolicy is this module's use of the projection cache for the
 // Writer: every projection at the deployment's interval, except the machine
-// projection, whose entry the Runtime refreshes itself through SnapshotPolicy
+// projection, whose entry the SessionRunStore refreshes itself through SnapshotPolicy
 // and which must never be cached mid-step (RUN-CMT-2). every is the interval in
 // commits; zero or less takes extension.DefaultCacheEvery.
 func WriterCachePolicy(every session.CommitSeq) extension.CachePolicy {

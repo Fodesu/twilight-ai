@@ -9,7 +9,6 @@ import (
 
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
-	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -22,10 +21,11 @@ const (
 )
 
 // AssignmentKey identifies one execution attempt of one target. Session is
-// part of the identity so a shared executor cannot collide two Sessions that
-// happen to use the same Run/Step/Call identifiers.
+// the Run's Scope (its Session, in Twilight) and part of the identity, so a
+// shared executor cannot collide two stores that happen to use the same
+// Run/Step/Call identifiers.
 type AssignmentKey struct {
-	Session session.SessionID
+	Session run.Scope
 	RunID   run.RunID
 	StepID  run.StepID
 	CallID  run.CallID
@@ -47,7 +47,7 @@ type ToolAssignment struct {
 
 // Assignment is the complete immutable description of one external effect.
 type Assignment struct {
-	Session session.SessionID
+	Session run.Scope
 	RunID   run.RunID
 	StepID  run.StepID
 	CallID  run.CallID
@@ -169,9 +169,11 @@ type Attachment struct {
 	BackendAttached     bool            `json:"backendAttached,omitempty"`
 }
 
-// Port is the Agent Core effect port. It is intentionally message-shaped:
-// none of its methods accepts a process-local callback.
-type Port interface {
+// ExecutionPort is the Agent Core effect port: the process-independent
+// contract through which the Loop hands effects to whatever executes them.
+// It is intentionally message-shaped: none of its methods accepts a
+// process-local callback.
+type ExecutionPort interface {
 	Validate(context.Context, Assignment) (*run.ToolFailure, error)
 	Dispatch(context.Context, Assignment) error
 	Attach(context.Context, AssignmentKey) (Attachment, error)

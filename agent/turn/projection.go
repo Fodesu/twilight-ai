@@ -73,9 +73,27 @@ func (v *TurnView) ActiveAttempt() *AttemptView {
 type TurnSurface struct {
 	Order []TurnID            `json:"order"`
 	Turns map[TurnID]TurnView `json:"turns"`
-	// RunOwner maps a RunID to its Turn, from attempt_started, so run_ended
-	// is routed to the attempt it settles (TRN-PRJ-1).
+	// RunOwner maps each active Run to its Turn, from attempt_started until
+	// run_ended, so a settlement is routed to the attempt it ends
+	// (TRN-PRJ-1). An ended Run leaves it: its attempt keeps the result, and
+	// OwnerOf still answers for it from the attempts.
 	RunOwner map[run.RunID]TurnID `json:"runOwner"`
+}
+
+// OwnerOf returns the Turn a Run belongs to: the active table first, then
+// the attempts of every Turn for a Run that already ended.
+func (s *TurnSurface) OwnerOf(runID run.RunID) (TurnID, bool) {
+	if turnID, ok := s.RunOwner[runID]; ok {
+		return turnID, true
+	}
+	for _, id := range s.Order {
+		for _, att := range s.Turns[id].Attempts {
+			if att.RunID == runID {
+				return id, true
+			}
+		}
+	}
+	return "", false
 }
 
 func (s TurnSurface) clone() TurnSurface {
@@ -186,7 +204,7 @@ func (s TurnSurface) applyRun(ev runmod.Event) (any, error) {
 	if !ok {
 		return nil, fmt.Errorf("turn surface: unexpected run fact %T", ev.Fact)
 	}
-	turnID, ok := s.RunOwner[ev.RunID]
+	turnID, ok := s.OwnerOf(ev.RunID)
 	if !ok {
 		return s, nil
 	}
@@ -194,6 +212,7 @@ func (s TurnSurface) applyRun(ev runmod.Event) (any, error) {
 	if err := v.end(ev.RunID, &ended); err != nil {
 		return nil, err
 	}
+	delete(s.RunOwner, ev.RunID)
 	v.ActiveRun = ""
 	if _, completed := ended.End.(run.RunCompletedEnd); completed {
 		if v.Status != TurnActive {

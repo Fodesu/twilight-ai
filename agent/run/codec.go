@@ -6,31 +6,27 @@ import (
 	"errors"
 	"fmt"
 	"io"
-
-	"github.com/felinics/twilight/agent/session"
 )
 
 type commandEnvelopeWire struct {
-	SchemaVersion uint16            `json:"schemaVersion"`
-	Type          string            `json:"type"`
-	SessionID     session.SessionID `json:"sessionId,omitempty"`
-	RunID         RunID             `json:"runId"`
-	ID            CommandID         `json:"id"`
-	Command       json.RawMessage   `json:"command"`
+	SchemaVersion uint16          `json:"schemaVersion"`
+	Type          string          `json:"type"`
+	RunID         RunID           `json:"runId"`
+	ID            CommandID       `json:"id"`
+	Command       json.RawMessage `json:"command"`
 }
 
 type commandEnvelopeMarshal struct {
-	SchemaVersion uint16            `json:"schemaVersion"`
-	Type          string            `json:"type"`
-	SessionID     session.SessionID `json:"sessionId,omitempty"`
-	RunID         RunID             `json:"runId"`
-	ID            CommandID         `json:"id"`
-	Command       AgentCommand      `json:"command"`
+	SchemaVersion uint16       `json:"schemaVersion"`
+	Type          string       `json:"type"`
+	RunID         RunID        `json:"runId"`
+	ID            CommandID    `json:"id"`
+	Command       AgentCommand `json:"command"`
 }
 
 // DecodeCommandEnvelope decodes the command wire shape and restores the
 // sealed command variant from Type; malformed or unsupported wire data is
-// rejected before it can enter Runtime.
+// rejected before it can enter a RunStore.
 func DecodeCommandEnvelope(raw []byte) (CommandEnvelope, error) {
 	var env CommandEnvelope
 	if err := decodeStrictJSON(raw, &env); err != nil {
@@ -51,14 +47,7 @@ func (e CommandEnvelope) MarshalJSON() ([]byte, error) {
 	if e.Type != "" && e.Type != typ {
 		return nil, fmt.Errorf("agent: codec: command type %q does not match variant %q", e.Type, typ)
 	}
-	return json.Marshal(commandEnvelopeMarshal{
-		SchemaVersion: e.SchemaVersion,
-		Type:          typ,
-		SessionID:     e.SessionID,
-		RunID:         e.RunID,
-		ID:            e.ID,
-		Command:       e.Command,
-	})
+	return json.Marshal(commandEnvelopeMarshal{SchemaVersion: e.SchemaVersion, Type: typ, RunID: e.RunID, ID: e.ID, Command: e.Command})
 }
 
 func (e *CommandEnvelope) UnmarshalJSON(raw []byte) error {
@@ -66,37 +55,21 @@ func (e *CommandEnvelope) UnmarshalJSON(raw []byte) error {
 	if err := decodeStrictJSON(raw, &wire); err != nil {
 		return err
 	}
-	proto, err := ProtocolFor(wire.SchemaVersion)
+	schema, err := SchemaFor(wire.SchemaVersion)
 	if err != nil {
 		return err
 	}
-	cmd, err := proto.DecodeCommand(wire.Type, wire.Command)
+	cmd, err := schema.Wire.DecodeCommand(wire.Type, wire.Command)
 	if err != nil {
 		return err
 	}
 	if err := requireCanonicalEquivalent(raw, commandEnvelopeMarshal{
-		SchemaVersion: wire.SchemaVersion,
-		Type:          wire.Type,
-		SessionID:     wire.SessionID,
-		RunID:         wire.RunID,
-		ID:            wire.ID,
-		Command:       cmd,
+		SchemaVersion: wire.SchemaVersion, Type: wire.Type, RunID: wire.RunID, ID: wire.ID, Command: cmd,
 	}); err != nil {
 		return err
 	}
-	*e = CommandEnvelope{
-		SchemaVersion: wire.SchemaVersion,
-		Type:          wire.Type,
-		SessionID:     wire.SessionID,
-		RunID:         wire.RunID,
-		ID:            wire.ID,
-		Command:       cmd,
-	}
+	*e = CommandEnvelope{SchemaVersion: wire.SchemaVersion, Type: wire.Type, RunID: wire.RunID, ID: wire.ID, Command: cmd}
 	return nil
-}
-
-func isSupportedSchemaVersion(v uint16) bool {
-	return v == SchemaVersion1
 }
 
 func requireCanonicalEquivalent(raw []byte, canonicalShape any) error {
@@ -131,96 +104,4 @@ func decodeStrictJSON(raw []byte, dst any) error {
 		return err
 	}
 	return nil
-}
-
-func decodeCommandAs[T AgentCommand](raw []byte) (AgentCommand, error) {
-	var c T
-	err := decodeStrictJSON(raw, &c)
-	return c, err
-}
-
-func decodeFactAs[T Fact](raw []byte) (Fact, error) {
-	var f T
-	err := decodeStrictJSON(raw, &f)
-	return f, err
-}
-
-func decodeCommandVariantV1(typ string, raw []byte) (AgentCommand, error) {
-	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return nil, fmt.Errorf("agent: codec: command %q has empty body", typ)
-	}
-	switch typ {
-	case "prepare_model_request":
-		return decodeCommandAs[PrepareModelRequest](raw)
-	case "withdraw_prepared_step":
-		return decodeCommandAs[WithdrawPreparedStep](raw)
-	case "start_model_execution":
-		return decodeCommandAs[StartModelExecution](raw)
-	case "recover_model_execution":
-		return decodeCommandAs[RecoverModelExecution](raw)
-	case "submit_model_result":
-		return decodeCommandAs[SubmitModelResult](raw)
-	case "submit_model_failure":
-		return decodeCommandAs[SubmitModelFailure](raw)
-	case "reject_model_result":
-		return decodeCommandAs[RejectModelResult](raw)
-	case "start_tool_call":
-		return decodeCommandAs[StartToolCall](raw)
-	case "submit_tool_result":
-		return decodeCommandAs[SubmitToolResult](raw)
-	case "submit_tool_failure":
-		return decodeCommandAs[SubmitToolFailure](raw)
-	case "approve_tool_call":
-		return decodeCommandAs[ApproveToolCall](raw)
-	case "reject_tool_call":
-		return decodeCommandAs[RejectToolCall](raw)
-	case "submit_tool_response":
-		return decodeCommandAs[SubmitToolResponse](raw)
-	case "cancel_run":
-		return decodeCommandAs[CancelRun](raw)
-	case "accept_input":
-		return decodeCommandAs[AcceptInput](raw)
-	default:
-		return nil, fmt.Errorf("agent: codec: unknown command type %q", typ)
-	}
-}
-
-func decodeFactVariantV1(typ string, raw []byte) (Fact, error) {
-	if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return nil, fmt.Errorf("agent: codec: fact %q has empty body", typ)
-	}
-	switch typ {
-	case "run_created":
-		return decodeFactAs[RunCreated](raw)
-	case "model_step_prepared":
-		return decodeFactAs[ModelStepPrepared](raw)
-	case "model_step_withdrawn":
-		return decodeFactAs[ModelStepWithdrawn](raw)
-	case "model_step_started":
-		return decodeFactAs[ModelStepStarted](raw)
-	case "model_step_recovered":
-		return decodeFactAs[ModelStepRecovered](raw)
-	case "model_step_rejected":
-		return decodeFactAs[ModelStepRejected](raw)
-	case "model_step_completed":
-		return decodeFactAs[ModelStepCompleted](raw)
-	case "tool_step_opened":
-		return decodeFactAs[ToolStepOpened](raw)
-	case "tool_call_started":
-		return decodeFactAs[ToolCallStarted](raw)
-	case "tool_call_approved":
-		return decodeFactAs[ToolCallApproved](raw)
-	case "tool_call_completed":
-		return decodeFactAs[ToolCallCompleted](raw)
-	case "tool_call_answered":
-		return decodeFactAs[ToolCallAnswered](raw)
-	case "tool_call_failed":
-		return decodeFactAs[ToolCallFailed](raw)
-	case "input_accepted":
-		return decodeFactAs[InputAccepted](raw)
-	case "run_ended":
-		return decodeFactAs[RunEnded](raw)
-	default:
-		return nil, fmt.Errorf("agent: codec: unknown fact type %q", typ)
-	}
 }

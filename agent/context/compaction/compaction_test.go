@@ -48,4 +48,3 @@ func TestRetainLastPairClosure(t *testing.T) {
 		})
 	}
 }
-

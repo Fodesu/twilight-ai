@@ -34,7 +34,7 @@ func newHost(cfg app.Config, models map[run.ModelRef]loop.ModelInvoker, tools ..
 // runState reads a Run's committed state by SessionID: the lease-free read
 // (AUTH-OWN-2), so a test observes without owning.
 func runState(a *app.Application, sid session.SessionID, runID run.RunID) (run.RuntimeSnapshot, error) {
-	record, err := a.Authority.Runtime.Record(context.Background(), sid, runID)
+	record, err := a.Authority.Runs.Record(context.Background(), sid, runID)
 	if err != nil {
 		return run.RuntimeSnapshot{}, err
 	}

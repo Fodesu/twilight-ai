@@ -41,21 +41,21 @@ func (a attempt) recoveryID() run.CommandID {
 // moved the target); ownership loss is returned as is.
 //
 // When the accepted settlement terminates the Run, the terminal RunResult is
-// returned: the Runtime already handed back the folded state, so the Loop
+// returned: the RunStore already handed back the folded state, so the Loop
 // finishes from it instead of reloading a Run the projection no longer holds.
-func (l *Loop) settle(ctx context.Context, runtime boundRuntime, events EventSink, a attempt, base run.RunPosition, cmd run.AgentCommand, proto run.Protocol) (*run.RunResult, error) {
+func (l *Loop) settle(ctx context.Context, runtime run.RunStore, events EventSink, a attempt, base run.RunPosition, cmd run.AgentCommand, schema run.Schema) (*run.RunResult, error) {
 	id := a.settlementID()
 	if _, recovering := cmd.(run.RecoverModelExecution); recovering {
 		id = a.recoveryID()
 	}
-	res, err := l.commit(context.WithoutCancel(ctx), runtime, a.runID, id, base, cmd, proto)
+	res, err := l.commit(context.WithoutCancel(ctx), runtime, a.runID, id, base, cmd, schema)
 	if err != nil {
 		if retriable(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	l.emitCommitted(ctx, events, runtime.sid(), a.runID, res.Events)
+	l.emitCommitted(ctx, events, runtime.Scope(), a.runID, res.Facts)
 	if res.Snapshot.State.Status.Terminal() {
 		return res.Snapshot.State.Result, nil
 	}

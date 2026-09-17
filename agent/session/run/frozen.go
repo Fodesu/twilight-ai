@@ -21,32 +21,46 @@ const FrozenAuthority artifact.Authority = run.FrozenAuthority
 // store binds it to the key, so every Put and Get of a body agrees on it.
 const FrozenMediaType = "application/vnd.twilight.frozen+json"
 
-// frozenValues realizes run.FrozenValueStore over a cas ContentStore. A body's
-// digest is the SHA-256 of its bytes (run.EncodeFrozen*), which is exactly
-// the cas Key, so no index maps digests to refs: Get rebuilds the Ref from the
-// digest alone. Bodies are EventBound content whose retention root is the
-// fact that names them (FrozenBinding); the adapter offers no Delete.
+// frozenValues realizes run.FrozenValueStore over a cas ContentStore and the
+// BindingStore the Session Writers admit against. A body's digest is the
+// SHA-256 of its bytes (run.EncodeFrozen*), which is exactly the cas Key, so
+// no index maps digests to refs: Get rebuilds the Ref from the digest alone.
+// Put stores the body and registers its Binding in one call, so a fact that
+// names the digest is admissible as soon as Put returns and no caller has to
+// coordinate two stores before a commit (RUN-WIR-4, EXT-WRT-3). Bodies are
+// EventBound content whose retention root is the fact that names them; the
+// adapter offers no Delete.
 type frozenValues struct {
-	store artifact.ContentStore
+	store    artifact.ContentStore
+	bindings artifact.BindingStore
 }
 
-// FrozenValues adapts a cas ContentStore serving FrozenAuthority to the run
-// layer's FrozenValueStore port. A store of another Authority answers every
-// Get with ErrUnauthorized, which surfaces as an error rather than a miss.
-func FrozenValues(store artifact.ContentStore) run.FrozenValueStore {
-	return &frozenValues{store: store}
+// FrozenValues adapts a cas ContentStore serving FrozenAuthority and the
+// Writers' BindingStore to the run layer's FrozenValueStore port. bindings
+// must be the store the Writers' Admission resolves against. A content store
+// of another Authority answers every Get with ErrUnauthorized, which surfaces
+// as an error rather than a miss.
+func FrozenValues(store artifact.ContentStore, bindings artifact.BindingStore) (run.FrozenValueStore, error) {
+	if store == nil || bindings == nil {
+		return nil, errors.New("runmod: frozen values require a content store and a binding store")
+	}
+	return &frozenValues{store: store, bindings: bindings}, nil
 }
 
 // FrozenValuesInMemory is the in-process FrozenValueStore: a memory cas store
-// under FrozenAuthority behind the adapter. Tests that simulate a process
-// restart share one instance across Runtimes, as a durable store would share
-// its files.
-func FrozenValuesInMemory() run.FrozenValueStore {
+// under FrozenAuthority behind the adapter, registering Bindings in bindings.
+// Tests that simulate a process restart share one instance across stores, as
+// a durable store would share its files.
+func FrozenValuesInMemory(bindings artifact.BindingStore) run.FrozenValueStore {
 	store, err := artifact.NewMemoryContentStore(FrozenAuthority, artifact.MemoryContentStoreOptions{})
 	if err != nil {
 		panic(err) // the authority is a constant; only an empty one fails
 	}
-	return FrozenValues(store)
+	frozen, err := FrozenValues(store, bindings)
+	if err != nil {
+		panic(err)
+	}
+	return frozen
 }
 
 func (f *frozenValues) Put(ctx context.Context, digest run.Digest, value []byte) error {
@@ -60,7 +74,16 @@ func (f *frozenValues) Put(ctx context.Context, digest run.Digest, value []byte)
 	if key, _ := artifact.CASKey(value); key != ref.Key {
 		return fmt.Errorf("agent: frozen values: body digests to %s, not to its name %s", key, digest)
 	}
-	_, err = f.store.Put(ctx, artifact.PutRequest{MediaType: FrozenMediaType, Reader: bytes.NewReader(value), Durability: artifact.EventBound})
+	if _, err := f.store.Put(ctx, artifact.PutRequest{MediaType: FrozenMediaType, Reader: bytes.NewReader(value), Durability: artifact.EventBound}); err != nil {
+		return err
+	}
+	binding, err := FrozenBinding(digest)
+	if err != nil {
+		return err
+	}
+	// An identical Binding is already registered on a replay; only a
+	// differing Ref under the same BindingID conflicts (ART-BND-1).
+	_, err = f.bindings.CreateBinding(ctx, binding)
 	return err
 }
 

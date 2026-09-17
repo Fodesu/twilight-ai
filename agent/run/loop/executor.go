@@ -8,11 +8,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 
 	run "github.com/felinics/twilight/agent/run"
 	effect "github.com/felinics/twilight/agent/run/effect"
-	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -35,7 +33,7 @@ type ExecutionStatus = effect.ExecutionStatus
 type AttachmentState = effect.AttachmentState
 type Attachment = effect.Attachment
 
-type Executor = effect.Port
+type Executor = effect.ExecutionPort
 
 const (
 	AssignmentModel          = effect.AssignmentModel
@@ -61,116 +59,12 @@ var (
 	ErrDispatchUnknown   = effect.ErrDispatchUnknown
 )
 
-// Deliver is an authority-local outcome sink. It is intentionally not part of
-// Executor: the execution port is message-shaped, while this type is used only
-// inside the authority to feed Loop.Deliver.
-type Deliver func(Outcome)
-
 // ErrExecutorRejected reports an assignment the executor would not start.
 var ErrExecutorRejected = errors.New("agent: loop: executor rejected the assignment")
 
 // ErrModelUnavailable reports a model assignment the executor cannot serve,
 // found by Validate before the start barrier: the step stays Prepared.
 var ErrModelUnavailable = errors.New("agent: loop: executor cannot serve the model")
-
-// AssignmentFromTarget rebuilds the Assignment of an Executing target a
-// takeover found in the projection, so the new owner can ask the Executor
-// whether that attempt still runs (RUN-CMT-7). Resource semantics stay outside
-// Run facts; an executor obtains any opaque TargetRef from its Assignment.
-func AssignmentFromTarget(sid session.SessionID, t run.RecoveryTarget) Assignment {
-	a := Assignment{Session: sid, RunID: t.RunID, StepID: t.StepID, CallID: t.CallID, Claim: t.Claim, Schema: t.Schema}
-	switch {
-	case t.Call != nil:
-		a.Kind = AssignmentTool
-		a.Tool = &ToolAssignment{ToolRef: t.Call.ToolRef, DefinitionDigest: t.Call.DefinitionDigest, Arguments: t.Call.Arguments, Policy: t.Call.Policy}
-	case t.Model != nil:
-		a.Kind = AssignmentModel
-		a.Model = &ModelAssignment{Model: t.Model.Model, RequestDigest: t.Model.RequestDigest}
-	}
-	return a
-}
-
-// RecoveryDispositionFromAttachment translates an executor observation into
-// the recovery control-plane vocabulary. The two types stay separate on
-// purpose: orphaned means the executor found a durable record without a live
-// backend association; deferred means recovery must not dispose the Run yet.
-func RecoveryDispositionFromAttachment(state AttachmentState) (run.RecoveryDisposition, error) {
-	switch state {
-	case effect.AttachmentActive:
-		return run.RecoveryActive, nil
-	case effect.AttachmentTerminal:
-		return run.RecoveryTerminal, nil
-	case effect.AttachmentOrphaned:
-		return run.RecoveryDeferred, nil
-	case effect.AttachmentMissing:
-		return run.RecoveryMissing, nil
-	default:
-		return run.RecoveryMissing, fmt.Errorf("agent: loop: unknown attachment state %q", state)
-	}
-}
-
-// Reattach adapts an Executor to run.Reattacher for one Session. The
-// transport-facing Attach call only deals in the assignment key; the adapter
-// waits for the result and feeds it to the Loop's internal Deliver path. The
-// callback is therefore an authority-local concern, not part of Executor's
-// process-independent interface. lifetime bounds background result reads;
-// Attach's context bounds the initial attachment request.
-func Reattach(lifetime context.Context, exec Executor, sid session.SessionID, deliver Deliver) run.Reattacher {
-	return reattacher{lifetime: lifetime, exec: exec, sid: sid, deliver: deliver}
-}
-
-type reattacher struct {
-	lifetime context.Context
-	exec     Executor
-	sid      session.SessionID
-	deliver  Deliver
-}
-
-func (r reattacher) Attach(ctx context.Context, t run.RecoveryTarget) (run.RecoveryDisposition, error) {
-	if r.lifetime == nil {
-		return run.RecoveryMissing, errors.New("agent: loop: nil reattach lifetime")
-	}
-	if err := r.lifetime.Err(); err != nil {
-		return run.RecoveryMissing, err
-	}
-	if r.exec == nil || r.deliver == nil {
-		return run.RecoveryMissing, nil
-	}
-	a := AssignmentFromTarget(r.sid, t)
-	attachment, err := r.exec.Attach(ctx, a.Key())
-	if err != nil {
-		return run.RecoveryMissing, err
-	}
-	disposition, err := RecoveryDispositionFromAttachment(attachment.State)
-	if err != nil {
-		return disposition, err
-	}
-	if disposition.PreservesExecution() {
-		go func() {
-			delay := 10 * time.Millisecond
-			for {
-				out, err := r.exec.GetOutcome(r.lifetime, a.Key())
-				if err == nil {
-					if r.lifetime.Err() == nil {
-						r.deliver(out)
-					}
-					return
-				}
-				timer := time.NewTimer(delay)
-				select {
-				case <-r.lifetime.Done():
-					timer.Stop()
-					return
-				case <-timer.C:
-				}
-				if delay < time.Second {
-					delay = min(delay*2, time.Second)
-				}
-			}
-		}()
-	}
-	return disposition, nil
-}
 
 // --- LocalExecutor ------------------------------------------------------------
 
@@ -183,7 +77,7 @@ func (r reattacher) Attach(ctx context.Context, t run.RecoveryTarget) (run.Recov
 // executor Backend contract structurally -- Prepare derives the Ref from the
 // AssignmentKey, the other methods address that Ref -- and keeps a bounded
 // table of terminal entries for the Worker's outcome reads. It does not
-// implement effect.Port: Agent Core reaches it through executor.Worker.
+// implement effect.ExecutionPort: Agent Core reaches it through executor.Worker.
 type LocalExecutor struct {
 	models    ModelCatalog
 	tools     ToolCatalog
@@ -294,18 +188,18 @@ func (e *LocalExecutor) Validate(_ context.Context, a Assignment) (*run.ToolFail
 		if a.Tool == nil {
 			return nil, nil
 		}
-		proto, err := run.ProtocolFor(a.Schema)
+		schema, err := run.SchemaFor(a.Schema)
 		if err != nil {
 			return nil, err
 		}
-		_, failure := e.resolveTool(proto, a.Tool)
+		_, failure := e.resolveTool(schema, a.Tool)
 		return failure, nil
 	default:
 		return nil, nil
 	}
 }
 
-func (e *LocalExecutor) resolveTool(proto run.Protocol, t *ToolAssignment) (ExecutableTool, *run.ToolFailure) {
+func (e *LocalExecutor) resolveTool(schema run.Schema, t *ToolAssignment) (ExecutableTool, *run.ToolFailure) {
 	tool, resolveErr := e.tools.ResolveTool(t.ToolRef)
 	if resolveErr != nil {
 		return nil, &run.ToolFailure{Class: run.FailureToolLookup, Message: resolveErr.Error()}
@@ -317,7 +211,7 @@ func (e *LocalExecutor) resolveTool(proto run.Protocol, t *ToolAssignment) (Exec
 	if freezeErr != nil {
 		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: freezeErr.Error()}
 	}
-	defDigest, digestErr := proto.DigestToolDefinition(toolDef)
+	defDigest, digestErr := schema.Canonical.DigestToolDefinition(toolDef)
 	if digestErr != nil {
 		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: digestErr.Error()}
 	}
@@ -377,11 +271,11 @@ func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) err
 			return fmt.Errorf("%w: model assignment without an inline request payload", ErrExecutorRejected)
 		}
 		frozenRequest := *a.Model.Request
-		proto, err := run.ProtocolFor(a.Schema)
+		schema, err := run.SchemaFor(a.Schema)
 		if err != nil {
 			return err
 		}
-		got, err := proto.DigestRequest(frozenRequest)
+		got, err := schema.Canonical.DigestRequest(frozenRequest)
 		if err != nil {
 			return fmt.Errorf("%w: request digest: %v", ErrExecutorRejected, err)
 		}
@@ -393,11 +287,11 @@ func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) err
 		if a.Tool == nil {
 			return fmt.Errorf("%w: tool assignment without binding", ErrExecutorRejected)
 		}
-		proto, err := run.ProtocolFor(a.Schema)
+		schema, err := run.SchemaFor(a.Schema)
 		if err != nil {
 			return err
 		}
-		tool, failure := e.resolveTool(proto, a.Tool)
+		tool, failure := e.resolveTool(schema, a.Tool)
 		if failure != nil {
 			return fmt.Errorf("%w: %s: %s", ErrExecutorRejected, failure.Class, failure.Message)
 		}

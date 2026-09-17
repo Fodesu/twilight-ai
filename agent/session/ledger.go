@@ -208,9 +208,11 @@ func (l *Ledger) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Han
 		_ = l.be.Release(ctx, lease)
 		return nil, err
 	}
-	h := &ledgerHandle{l: l, root: root, ancestry: a, profile: profile, lease: lease, head: head, own: make(map[CommitID]struct{}, len(own))}
+	h := &ledgerHandle{l: l, root: root, ancestry: a, profile: profile, lease: lease, head: head,
+		own: make(map[CommitID]struct{}, len(own)), streams: make(map[StreamRef]StreamSeq)}
 	for i := range own {
 		h.own[own[i].CommitID] = struct{}{}
+		h.countStreams(&own[i])
 	}
 	return h, nil
 }
@@ -230,6 +232,9 @@ type ledgerHandle struct {
 	lease    Lease
 	head     Head
 	own      map[CommitID]struct{}
+	// streams counts the events of each logical stream the tip segment
+	// holds, so StreamHead is answered without a read (SES-REP-3).
+	streams map[StreamRef]StreamSeq
 	// failed is set once an Append's durable outcome is unknown (SES-APP-1):
 	// the handle then answers nothing about the ledger, because what reached
 	// storage is exactly what it cannot know. The caller reopens.
@@ -260,6 +265,24 @@ func (w *ledgerHandle) Committed(id CommitID) bool {
 	}
 	_, inherited, err := w.ancestry.LookupInherited(context.Background(), w.l.be, id)
 	return err == nil && inherited
+}
+
+// countStreams extends the stream index with one own commit; w.mu is held or
+// the handle is still being built.
+func (w *ledgerHandle) countStreams(c *Commit) {
+	for i := range c.Batches {
+		w.streams[c.Batches[i].Stream] += StreamSeq(len(c.Batches[i].Events))
+	}
+}
+
+func (w *ledgerHandle) StreamHead(stream StreamRef) (StreamSeq, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.failed != nil {
+		return 0, false
+	}
+	n, ok := w.streams[stream]
+	return n, ok
 }
 
 // LookupCommit is SES-REP-4: an own commit is read from the tip segment, an
@@ -313,6 +336,7 @@ func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 	}
 	w.head = Head{Next: c.Seq + 1, Digest: c.Digest}
 	w.own[c.CommitID] = struct{}{}
+	w.countStreams(&c)
 	return cloneCommit(c), nil
 }
 

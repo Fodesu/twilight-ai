@@ -78,6 +78,14 @@ type Handle interface {
 	// the handle does not already hold it, so a caller that needs the commit
 	// pays for it only on a hit (SES-REP-4).
 	LookupCommit(CommitID) (Commit, bool, error)
+	// StreamHead reports whether the tip segment holds any event of a
+	// logical stream and, if so, the StreamSeq the next one takes. It is
+	// answered from the same index Committed uses: which streams this
+	// ledger has written is a ledger fact, so a module that must refuse a
+	// second creation of a stream asks here instead of remembering every
+	// stream it ever closed in a projection. Inherited segments are not
+	// counted: a fork's run streams are its own (SES-FRK-5).
+	StreamHead(StreamRef) (StreamSeq, bool)
 	Close(context.Context) error
 }
 

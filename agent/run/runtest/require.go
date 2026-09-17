@@ -55,7 +55,7 @@ func (f *Feature) RequireCompleted(text string) {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	want, err := run.ProtocolV1().DigestModelResult(frozen)
+	want, err := run.SchemaV1().Canonical.DigestModelResult(frozen)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func (f *Feature) RequireBuilderSawTool(callID run.CallID, output string) {
 	if s.LastToolStep == nil || s.LastToolStep.RefValue.ID != f.builder.lastHint.SourceStep {
 		f.t.Fatalf("hint SourceStep = %s, LastToolStep = %+v", f.builder.lastHint.SourceStep, s.LastToolStep)
 	}
-	want, err := run.ProtocolV1().DigestToolOutput(run.MustParseCanonicalJSON(output))
+	want, err := run.SchemaV1().Canonical.DigestToolOutput(run.MustParseCanonicalJSON(output))
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -288,15 +288,15 @@ func (f *Feature) RequireUncertainModel() {
 func (f *Feature) RequireAbsorbsCommands() {
 	f.t.Helper()
 	snap := f.load()
-	proto, err := snap.Protocol()
+	proto, err := snap.Schema()
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	env, err := proto.BuildEnvelope(defaultSession, f.runID, "after-terminal", run.CancelRun{})
+	env, err := proto.Wire.Envelope(f.runID, "after-terminal", run.CancelRun{})
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	_, err = f.rt.Commit(f.ctx, f.w, run.CommitRequest{Base: snap.Position, Command: env})
+	_, err = f.rt.Commit(f.ctx, run.CommitRequest{Base: snap.Position, Command: env})
 	if !errors.Is(err, run.ErrRunTerminal) {
 		f.t.Fatalf("err = %v, want ErrRunTerminal", err)
 	}

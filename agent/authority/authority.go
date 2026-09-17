@@ -1,5 +1,5 @@
 // Package authority composes the agent core -- the fact layer (Store,
-// Writers, Runtime, Coordinator), the decision layer (preset registry and
+// Writers, SessionRunStore, Coordinator), the decision layer (preset registry and
 // prompt builder catalog) and the effect layer (an Executor port) -- into
 // one authority process (AUTH). Its exported fields are the core services a
 // caller drives a Session with; Open hands out the ownership capability
@@ -45,7 +45,7 @@ type Ports struct {
 	// Store is the Session kernel; nil selects an in-memory store.
 	Store session.Store
 	// Content is the cas ContentStore the frozen bodies live in under
-	// runmod.FrozenAuthority (RUN-WIR-4). The Runtime writes them; the
+	// runmod.FrozenAuthority (RUN-WIR-4). The run store writes them; the
 	// materializer reads them for prompts, replies and transcripts. Nil
 	// selects an in-memory store.
 	Content artifact.ContentStore
@@ -58,7 +58,7 @@ type Ports struct {
 	// decision.DefaultPromptBuilders().
 	Decisions *decision.PromptBuilders
 	// Executor is the effect layer port (RUN-EXE-3): required.
-	Executor effect.Port
+	Executor effect.ExecutionPort
 	// TargetResolver supplies opaque per-Run resource targets.
 	TargetResolver loop.TargetResolver
 	// Observers are notified of every group the Writers apply (EXT-WRT-7).
@@ -88,12 +88,14 @@ type Authority struct {
 	Writers   writer.Writers
 	Registry  *extension.Registry
 	Admission writer.Admission
-	Runtime   run.Runtime
+	// Runs is the Run module's Session adapter: the Run core's store bound
+	// per Writer, Run reads by SessionID and the Run Parts of Turn units.
+	Runs *runmod.SessionRunStore
 	// Turns commits the Turn protocol and reads Turn status.
 	Turns    *turn.Coordinator
 	Driver   *driver.Driver
 	Presets  preset.Registry
-	Executor effect.Port
+	Executor effect.ExecutionPort
 	Frozen   run.FrozenValueStore
 	// Projections reads every projection through the Session's Writer.
 	Projections extension.ProjectionReader
@@ -142,11 +144,16 @@ func New(p Ports) (*Authority, error) {
 			cache = extension.NewMemoryProjectionCache()
 		}
 	}
+	// Frozen bodies live in the content store and are admitted through the
+	// same binding store the Writers resolve against (RUN-WIR-4).
 	var frozen run.FrozenValueStore
 	if p.Content == nil {
-		frozen = runmod.FrozenValuesInMemory()
+		frozen = runmod.FrozenValuesInMemory(bindings)
 	} else {
-		frozen = runmod.FrozenValues(p.Content)
+		frozen, err = runmod.FrozenValues(p.Content, bindings)
+		if err != nil {
+			return nil, err
+		}
 	}
 	now := p.Clock
 	if now == nil {
@@ -155,10 +162,7 @@ func New(p Ports) (*Authority, error) {
 	admission := writer.Admission{Bindings: bindings, Ledger: ledger}
 	writers := writer.NewWriters(store, registry, admission, p.Ownership,
 		writer.WritersConfig{Cache: cache, CachePolicy: runmod.WriterCachePolicy(p.CacheEvery), Observers: p.Observers})
-	runtime, err := runmod.NewRuntime(runmod.Config{
-		Registry: registry, Store: store,
-		Frozen: frozen, Bindings: bindings, Cache: cache, Now: now,
-	})
+	runs, err := runmod.NewSessionRunStore(runmod.Config{Registry: registry, Store: store, Frozen: frozen, Cache: cache, Now: now})
 	if err != nil {
 		return nil, err
 	}
@@ -176,8 +180,8 @@ func New(p Ports) (*Authority, error) {
 	projections := extension.NewProjectionReader(store, registry, cache)
 	content := runmod.NewContent(frozen)
 	a := &Authority{
-		Store: store, Writers: writers, Registry: registry, Admission: admission, Runtime: runtime,
-		Turns:   &turn.Coordinator{Projections: projections, Runtime: runtime, Now: now},
+		Store: store, Writers: writers, Registry: registry, Admission: admission, Runs: runs,
+		Turns:   &turn.Coordinator{Projections: projections, Runs: runs, Now: now},
 		Presets: presets, Executor: p.Executor, Frozen: frozen, Projections: projections, Content: content,
 		Chatlog: &chatlog.Commands{Now: now},
 		History: turn.History{Store: store, Registry: registry, Projections: projections},
@@ -185,7 +189,7 @@ func New(p Ports) (*Authority, error) {
 		open:    make(map[session.SessionID]*openSession),
 	}
 	a.Driver = driver.New()
-	a.Driver.Runtime, a.Driver.Turns, a.Driver.Executor = runtime, a.Turns, p.Executor
+	a.Driver.Runs, a.Driver.Turns, a.Driver.Executor = runs, a.Turns, p.Executor
 	a.Driver.Presets, a.Driver.Decisions, a.Driver.Targets = presets, decisions, p.TargetResolver
 	a.Driver.Sources = decision.Sources{Projections: projections, Content: content}
 	a.Driver.Fail = p.Fail

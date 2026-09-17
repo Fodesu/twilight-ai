@@ -50,7 +50,7 @@ const (
 // transports. Local and Remote are the standard deployment profiles.
 type ExecutorConfig struct {
 	Mode ExecutorMode
-	Port effect.Port
+	Port effect.ExecutionPort
 
 	// Models and Tools are required for ExecutorLocal. They are ignored by
 	// ExecutorRemote because implementations live in the worker process.
@@ -250,8 +250,8 @@ func (app *Application) Close(ctx context.Context) error {
 // the remote client is used as is unless extra routes (spawn) are configured,
 // in which case a Worker routes to them and to the Port as its default
 // Backend; the remote Worker keeps its own record of the physical execution.
-func buildExecutor(c Config, extra []executor.Route) (effect.Port, error) {
-	worker := func(routes ...executor.Route) (effect.Port, error) {
+func buildExecutor(c Config, extra []executor.Route) (effect.ExecutionPort, error) {
+	worker := func(routes ...executor.Route) (effect.ExecutionPort, error) {
 		records := c.Executions
 		if records == nil {
 			records = executionstore.NewMemoryStore()

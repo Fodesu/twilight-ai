@@ -328,10 +328,10 @@ func guardModelStepPrepared(s *MachineState, fact *ModelStepPrepared) error {
 	// The request body is not in the fact; its digest is checked against the
 	// body by Decide and by the FrozenValueStore on read. Tools and binding
 	// digests are recomputable from the fact and must agree.
-	if d, err := digestToolSpecsV1(fact.Tools); err != nil || d != fact.ToolsDigest {
+	if d, err := (canonicalV1{}).DigestToolSpecs(fact.Tools); err != nil || d != fact.ToolsDigest {
 		return errors.New("agent: evolve: model step prepared tools digest mismatch")
 	}
-	if d, err := digestModelStepBindingV1(fact.Model, fact.RequestDigest, fact.ToolsDigest); err != nil || d != fact.BindingDigest {
+	if d, err := (canonicalV1{}).DigestModelStepBinding(fact.Model, fact.RequestDigest, fact.ToolsDigest); err != nil || d != fact.BindingDigest {
 		return errors.New("agent: evolve: model step prepared binding digest mismatch")
 	}
 	return nil
@@ -402,7 +402,7 @@ func guardToolCallApproved(s *MachineState, fact *ToolCallApproved) error {
 	if err := requireWaitingFor(&call, ResponseApproval, fact.ResponseID); err != nil {
 		return err
 	}
-	if d, err := digestToolResponseDecisionV1(ResponseApproval, ResponseDecisionApproved, ""); err != nil || d != fact.ResponseDigest {
+	if d, err := (canonicalV1{}).DigestToolResponseDecision(ResponseApproval, ResponseDecisionApproved, ""); err != nil || d != fact.ResponseDigest {
 		return fmt.Errorf("agent: evolve: tool call %q approval digest mismatch", fact.CallID)
 	}
 	return nil

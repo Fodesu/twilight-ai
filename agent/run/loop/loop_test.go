@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	. "github.com/felinics/twilight/agent/run"
+	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/session/writer"
 
 	"github.com/felinics/twilight/sdk"
@@ -109,7 +110,7 @@ func toolSpec(t *testing.T, name string, policy ResponsePolicy) ToolSpec {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := ProtocolV1().DigestToolDefinition(frozen)
+	d, err := SchemaV1().Canonical.DigestToolDefinition(frozen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,11 +151,11 @@ func TestLoopRejectsConcurrentRunForSameID(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, runErr := loop.Run(context.Background(), rt, w, "run-1", nil)
+		_, runErr := loop.Run(context.Background(), rt.Bind(w), "run-1", nil)
 		done <- runErr
 	}()
 	<-invoker.started
-	if _, err := loop.Run(context.Background(), rt, w, "run-1", nil); !errors.Is(err, ErrRunAlreadyRunning) {
+	if _, err := loop.Run(context.Background(), rt.Bind(w), "run-1", nil); !errors.Is(err, ErrRunAlreadyRunning) {
 		t.Fatalf("concurrent Run error = %v, want ErrRunAlreadyRunning", err)
 	}
 	close(invoker.release)
@@ -174,11 +175,11 @@ func TestLoopModelCatalogErrorRecoversWithFreshLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = broken.Run(context.Background(), rt, w, "run-1", nil)
+	_, err = broken.Run(context.Background(), rt.Bind(w), "run-1", nil)
 	if !errors.Is(err, ErrModelUnavailable) || !strings.Contains(err.Error(), missing.Error()) {
 		t.Fatalf("err = %v, want ErrModelUnavailable carrying %q", err, missing)
 	}
-	snap, loadErr := rt.Load(context.Background(), w, "run-1")
+	snap, loadErr := rt.Bind(w).Load(context.Background(), "run-1")
 	if loadErr != nil {
 		t.Fatal(loadErr)
 	}
@@ -204,14 +205,14 @@ func TestLoopModelCatalogErrorRecoversWithFreshLoop(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := ready.Run(context.Background(), rt, w, "run-1", nil)
+	res, err := ready.Run(context.Background(), rt.Bind(w), "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Result == nil || res.Result.Status != RunCompleted || invoker.calls.Load() != 1 {
 		t.Fatalf("res = %+v, model calls = %d", res, invoker.calls.Load())
 	}
-	final, err := rt.Load(context.Background(), w, "run-1")
+	final, err := rt.Bind(w).Load(context.Background(), "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +249,7 @@ func TestLoopParallelBounded(t *testing.T) {
 	var res LoopResult
 	var runErr error
 	go func() {
-		res, runErr = loop.Run(context.Background(), rt, w, "run-1", nil)
+		res, runErr = loop.Run(context.Background(), rt.Bind(w), "run-1", nil)
 		close(done)
 	}()
 
@@ -271,9 +272,9 @@ func TestLoopParallelBounded(t *testing.T) {
 	}
 }
 
-type staleCommitRuntime struct{ Runtime }
+type staleCommitRuntime struct{ RunStore }
 
-func (staleCommitRuntime) Commit(context.Context, writer.Writer, CommitRequest) (CommitResult, error) {
+func (staleCommitRuntime) Commit(context.Context, CommitRequest) (CommitResult, error) {
 	return CommitResult{}, ErrStaleRuntime
 }
 
@@ -309,16 +310,18 @@ func TestToolStartStaleIsNotAnError(t *testing.T) {
 		},
 	}, Position: 1, SchemaVersion: SchemaVersion1}
 
-	_, w := loopRuntime(t)
-	dispatched, err := loop.startToolCalls(context.Background(), boundRuntime{rt: staleCommitRuntime{}, w: w}, nil, snapshot,
+	rt, w := loopRuntime(t)
+	dispatched, err := loop.startToolCalls(context.Background(), staleCommitRuntime{RunStore: rt.Bind(w)}, nil, snapshot,
 		StartToolCalls{StepID: stepID, CallIDs: []CallID{callID}})
 	if err != nil || len(dispatched) != 0 {
 		t.Fatalf("stale start: dispatched=%d err=%v", len(dispatched), err)
 	}
 }
 
+// responseLossRuntime is a run store whose bound ports lose the response of
+// some accepted commits, so a test can see the Loop's one-shot replay.
 type responseLossRuntime struct {
-	Runtime
+	*runmod.SessionRunStore
 	mu             sync.Mutex
 	count          map[CommandID]int
 	loseModelStart bool
@@ -327,11 +330,21 @@ type responseLossRuntime struct {
 func newResponseLossRuntime(t *testing.T) (*responseLossRuntime, writer.Writer) {
 	t.Helper()
 	rt, w := loopRuntime(t)
-	return &responseLossRuntime{Runtime: rt, count: make(map[CommandID]int)}, w
+	return &responseLossRuntime{SessionRunStore: rt, count: make(map[CommandID]int)}, w
 }
 
-func (r *responseLossRuntime) Commit(ctx context.Context, w writer.Writer, req CommitRequest) (CommitResult, error) {
-	result, err := r.Runtime.Commit(ctx, w, req)
+func (r *responseLossRuntime) Bind(w writer.Writer) RunStore {
+	return lossyStore{RunStore: r.SessionRunStore.Bind(w), r: r}
+}
+
+type lossyStore struct {
+	RunStore
+	r *responseLossRuntime
+}
+
+func (s lossyStore) Commit(ctx context.Context, req CommitRequest) (CommitResult, error) {
+	r := s.r
+	result, err := s.RunStore.Commit(ctx, req)
 	if err != nil {
 		return result, err
 	}
@@ -358,10 +371,10 @@ func TestLoopReplaysStartAfterTwoLostResponses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loop.Run(context.Background(), rt, w, "run-1", nil); err == nil {
+	if _, err := loop.Run(context.Background(), rt.Bind(w), "run-1", nil); err == nil {
 		t.Fatal("first run unexpectedly completed after lost start responses")
 	}
-	snapshot, err := rt.Load(context.Background(), w, "run-1")
+	snapshot, err := rt.Bind(w).Load(context.Background(), "run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +384,7 @@ func TestLoopReplaysStartAfterTwoLostResponses(t *testing.T) {
 	if current, ok := snapshot.State.Current.(ModelStep); !ok || current.Status != ModelExecuting {
 		t.Fatalf("current = %#v, want Executing ModelStep", snapshot.State.Current)
 	}
-	res, err := loop.Run(context.Background(), rt, w, "run-1", nil)
+	res, err := loop.Run(context.Background(), rt.Bind(w), "run-1", nil)
 	if err != nil || res.Disposition != LoopWaiting || !res.ExecutionRecovery {
 		t.Fatalf("run with an orphaned Executing step = %+v %v, want waiting for recovery", res, err)
 	}
@@ -381,7 +394,7 @@ func TestLoopReplaysStartAfterTwoLostResponses(t *testing.T) {
 		t.Fatalf("RecoverInterrupted = %d %v", n, err)
 	}
 	rt.loseModelStart = false // the transport is healthy again
-	if _, err := loop.Run(context.Background(), rt, w, "run-1", nil); err != nil {
+	if _, err := loop.Run(context.Background(), rt.Bind(w), "run-1", nil); err != nil {
 		t.Fatal(err)
 	}
 	if invoker.calls.Load() != 1 {
@@ -404,13 +417,13 @@ func TestLoopReplaysSettlementWithoutRepeatingTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loop.Run(context.Background(), rt, w, "run-1", nil); err == nil {
+	if _, err := loop.Run(context.Background(), rt.Bind(w), "run-1", nil); err == nil {
 		t.Fatal("first run unexpectedly completed after lost settlement responses")
 	}
 	if executions.Load() != 1 {
 		t.Fatalf("tool executions = %d, want 1", executions.Load())
 	}
-	res, err := loop.Run(context.Background(), rt, w, "run-1", nil)
+	res, err := loop.Run(context.Background(), rt.Bind(w), "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -437,7 +450,7 @@ func TestLoopMalformedModelResultDispositionFailsRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := loop.Run(context.Background(), rt, w, "run-1", nil)
+	res, err := loop.Run(context.Background(), rt.Bind(w), "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -471,13 +484,13 @@ func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
 	rt, w := loopRuntime(t)
 	loop, _ := newLoop(nil, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
 
-	_, err := loop.Run(ctx, rt, w, "run-1", nil)
+	_, err := loop.Run(ctx, rt.Bind(w), "run-1", nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	// The model step is withdrawn via RecoverModelExecution: the Run is Open,
 	// still active, and the aborted step is not counted (RUN-LOP-3).
-	snap, _ := rt.Load(context.Background(), w, "run-1")
+	snap, _ := rt.Bind(w).Load(context.Background(), "run-1")
 	if _, open := snap.State.Current.(Open); !open {
 		t.Fatalf("current = %#v, want Open", snap.State.Current)
 	}
@@ -497,14 +510,14 @@ func TestLoopMidExecutionCancelRecoversModelStep(t *testing.T) {
 	// A fresh Loop plans a new step; the cancelled one left no count behind.
 	invoker2 := &fakeInvoker{results: []sdk.ModelResult{textResult("resumed")}}
 	loop2, _ := newLoop(nil, fakeCatalog{invoker2}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
-	res, err := loop2.Run(context.Background(), rt, w, "run-1", nil)
+	res, err := loop2.Run(context.Background(), rt.Bind(w), "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Result == nil || res.Result.Status != RunCompleted || invoker2.calls.Load() != 1 {
 		t.Fatalf("res = %+v, model calls = %d", res, invoker2.calls.Load())
 	}
-	final, _ := rt.Load(context.Background(), w, "run-1")
+	final, _ := rt.Bind(w).Load(context.Background(), "run-1")
 	if final.State.ModelSteps != 1 {
 		t.Fatalf("ModelSteps = %d after resume, want 1 (only the replanned step counts)", final.State.ModelSteps)
 	}

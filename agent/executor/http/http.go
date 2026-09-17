@@ -87,14 +87,14 @@ func (c *Client) Cancel(ctx context.Context, key effect.AssignmentKey) error {
 }
 
 // Takeover asks the Worker to acquire an expired execution record. This is a
-// control-plane operation and is intentionally not part of effect.Port.
+// control-plane operation and is intentionally not part of effect.ExecutionPort.
 func (c *Client) Takeover(ctx context.Context, key effect.AssignmentKey) error {
 	return c.post(ctx, "/takeover", keyRequest{Key: key}, nil)
 }
 
 // Reconcile asks the Worker to adopt every execution record whose lease
 // expired, returning the number of records handed to Takeover. This is a
-// control-plane operation and is intentionally not part of effect.Port.
+// control-plane operation and is intentionally not part of effect.ExecutionPort.
 func (c *Client) Reconcile(ctx context.Context) (int, error) {
 	var response struct {
 		Adopted int `json:"adopted"`
@@ -107,7 +107,7 @@ func (c *Client) Reconcile(ctx context.Context) (int, error) {
 
 // Dispose settles an execution record as Unknown without re-dispatching it,
 // so the authority disposes the Run target on its next read. This is a
-// control-plane operation and is intentionally not part of effect.Port.
+// control-plane operation and is intentionally not part of effect.ExecutionPort.
 func (c *Client) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 	return c.post(ctx, "/dispose", keyRequest{Key: key}, nil)
 }
@@ -380,4 +380,4 @@ func writeError(w stdhttp.ResponseWriter, err error) {
 	stdhttp.Error(w, err.Error(), status)
 }
 
-var _ effect.Port = (*Client)(nil)
+var _ effect.ExecutionPort = (*Client)(nil)

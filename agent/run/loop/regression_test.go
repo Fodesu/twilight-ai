@@ -23,7 +23,7 @@ func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
 	interpreter, _ := newLoop(nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": echo}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 
-	res, err := interpreter.Run(context.Background(), rt, w, "run-1", nil)
+	res, err := interpreter.Run(context.Background(), rt.Bind(w), "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestRegressionRunFinishedEmitted(t *testing.T) {
 	})
 	interpreter, _ := newLoop(nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{textResult("done")}}},
 		fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
-	if _, err := interpreter.Run(context.Background(), rt, w, "run-1", sink); err != nil {
+	if _, err := interpreter.Run(context.Background(), rt.Bind(w), "run-1", sink); err != nil {
 		t.Fatal(err)
 	}
 	for _, k := range kinds {
@@ -72,7 +72,7 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := ProtocolV1().DigestToolDefinition(frozenDef)
+	d, err := SchemaV1().Canonical.DigestToolDefinition(frozenDef)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 	interpreter, _ := newLoop(nil, fakeCatalog{invoker}, fakeToolCatalog{map[ToolRef]ExecutableTool{"fs.read": tool}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 
-	res, err := interpreter.Run(context.Background(), rt, w, "run-1", nil)
+	res, err := interpreter.Run(context.Background(), rt.Bind(w), "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 func TestRegressionStreamNilResult(t *testing.T) {
 	rt, w := loopRuntime(t)
 	interpreter, _ := newLoop(nil, fakeCatalog{nilResultStreamer{}}, fakeToolCatalog{}, staticBuilder{}, Settings{}, true)
-	res, err := interpreter.Run(context.Background(), rt, w, "run-1", nil)
+	res, err := interpreter.Run(context.Background(), rt.Bind(w), "run-1", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

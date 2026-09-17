@@ -1,6 +1,7 @@
 // Package runmod is the first-party Run Session Module (agent-run.md 5): the
 // twilight/run/ EventDefinitions, the twilight/run/machine projection and the
-// run.Runtime implementation over the Session Module Framework.
+// Session adapter of the Run core (SessionRunStore) over the Session Module
+// Framework.
 package runmod
 
 import (
@@ -22,12 +23,10 @@ const (
 	Prefix session.EventType = "twilight/run/"
 )
 
-// factNames is the closed list of v1 fact discriminators.
-var factNames = []string{
-	"run_created", "model_step_prepared", "model_step_withdrawn", "model_step_started", "model_step_recovered",
-	"model_step_rejected", "model_step_completed", "tool_step_opened", "tool_call_started", "tool_call_approved",
-	"tool_call_completed", "tool_call_answered", "tool_call_failed", "input_accepted", "run_ended",
-}
+// factNames is the closed list of fact discriminators, from the Run core's
+// variant registry: a fact the core knows is a wire type this module
+// registers, with no second list to keep in step.
+var factNames = run.FactTypes()
 
 // EventType returns the EventType of a fact.
 func EventType(f run.Fact) session.EventType { return Prefix + session.EventType(run.FactType(f)) }
@@ -43,7 +42,7 @@ type Event struct {
 // canonical fact object with "runId" added; `v` is the Registry's.
 type factCodec struct {
 	local string
-	proto run.Protocol
+	wire  run.WireSchema
 }
 
 func (c factCodec) Validate(value any) error {
@@ -107,7 +106,7 @@ func (c factCodec) Decode(wire jsonstable.Value) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	fact, err := c.proto.DecodeFact(c.local, body.Bytes())
+	fact, err := c.wire.DecodeFact(c.local, body.Bytes())
 	if err != nil {
 		return nil, err
 	}
@@ -145,7 +144,7 @@ func buildModule() extension.ModuleDescriptor {
 			Stream:  extension.RunStream("runId"),
 			Current: extension.PayloadVersion(run.SchemaVersion1),
 			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{
-				extension.PayloadVersion(run.SchemaVersion1): factCodec{local: name, proto: run.ProtocolV1()},
+				extension.PayloadVersion(run.SchemaVersion1): factCodec{local: name, wire: run.SchemaV1().Wire},
 			},
 		}
 		if frozenBodyFacts[name] {

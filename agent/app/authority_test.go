@@ -9,7 +9,6 @@ import (
 	"github.com/felinics/twilight/agent/preset"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
-	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -84,11 +83,11 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 	ctx := context.Background()
 	exec := &recordingExecutor{reply: "hello from the executor"}
 	content := memoryContent()
-	frozen := runmod.FrozenValues(content)
 	h, err := app.Build(app.Config{Executor: app.ExecutorConfig{Port: exec}, Content: content})
 	if err != nil {
 		t.Fatal(err)
 	}
+	frozen := h.Authority.Frozen
 	presetRef, err := h.RegisterPreset("remote", mustPreset("m-remote", nil, app.WithSystemPrompt("be brief")))
 	if err != nil {
 		t.Fatal(err)

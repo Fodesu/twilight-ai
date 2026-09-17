@@ -193,7 +193,7 @@ func TestSchemaVersion1Golden(t *testing.T) {
 	}
 
 	fact := InputAccepted{Input: AgentInput{ID: "in-1", Payload: cj(`{"text":"hi"}`)}}
-	fbody, err := ProtocolV1().EncodeFact("input_accepted", fact)
+	fbody, err := SchemaV1().Wire.EncodeFact("input_accepted", fact)
 	if err != nil {
 		t.Fatal(err)
 	}

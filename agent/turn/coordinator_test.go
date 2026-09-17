@@ -29,12 +29,11 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	bindings := artifact.NewMemoryBindingStore()
 	ledger := artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings})
 	writers := writer.NewWriters(store, registry, writer.Admission{Bindings: bindings, Ledger: ledger}, session.OpenOptions{}, writer.WritersConfig{})
-	runtime, err := runmod.NewRuntime(runmod.Config{Registry: registry, Store: store,
-		Frozen: runmod.FrozenValuesInMemory(), Bindings: bindings})
+	runs, err := runmod.NewSessionRunStore(runmod.Config{Registry: registry, Store: store, Frozen: runmod.FrozenValuesInMemory(bindings)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &Coordinator{Projections: extension.NewProjectionReader(store, registry, nil), Runtime: runtime}
+	c := &Coordinator{Projections: extension.NewProjectionReader(store, registry, nil), Runs: runs}
 	w, err := writers.Writer(ctx, sid)
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +78,7 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	if err != nil || status.Status != TurnActive || status.RunID != resp.RunID {
 		t.Fatalf("status = %+v %v", status, err)
 	}
-	snap, err := runtime.Load(ctx, w, resp.RunID)
+	snap, err := runs.Bind(w).Load(ctx, resp.RunID)
 	if err != nil || snap.State.Status.Terminal() {
 		t.Fatalf("run advanced without a driver: %+v %v", snap.State.Status, err)
 	}

@@ -101,7 +101,7 @@ type Summarizer struct {
 	// Content stores frozen request bodies.
 	Content run.FrozenValueStore
 	// Executor performs the model effect.
-	Executor effect.Port
+	Executor effect.ExecutionPort
 }
 
 // Summarize renders entries and asks the preset's model for the summary.
@@ -117,7 +117,7 @@ func (s Summarizer) Summarize(ctx context.Context, sid session.SessionID, preset
 	if err != nil {
 		return "", err
 	}
-	digest, err := run.ProtocolV1().DigestRequest(frozen)
+	digest, err := run.SchemaV1().Canonical.DigestRequest(frozen)
 	if err != nil {
 		return "", err
 	}
@@ -128,7 +128,7 @@ func (s Summarizer) Summarize(ctx context.Context, sid session.SessionID, preset
 	if err := s.Content.Put(ctx, digest, raw); err != nil {
 		return "", err
 	}
-	a := effect.Assignment{Session: sid, RunID: run.RunID("compact-" + randomHex(8)), StepID: "summary",
+	a := effect.Assignment{Session: run.Scope(sid), RunID: run.RunID("compact-" + randomHex(8)), StepID: "summary",
 		Claim: run.ExecutionClaim(randomHex(16)), Schema: run.SchemaVersion1, Kind: effect.AssignmentModel,
 		Model: &effect.ModelAssignment{Model: preset.Model, Request: &frozen, RequestDigest: digest}}
 	if err := s.Executor.Dispatch(ctx, a); err != nil {

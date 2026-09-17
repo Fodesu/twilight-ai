@@ -32,7 +32,7 @@ func TestLocalExecutorRetainsBoundedOutcomes(t *testing.T) {
 	ctx := context.Background()
 	var keys []string
 	for _, n := range []string{"1", "2", "3"} {
-		a := Assignment{Session: testSession, RunID: "run-1", StepID: StepID("step-" + n), CallID: CallID("call-" + n),
+		a := Assignment{Session: testScope, RunID: "run-1", StepID: StepID("step-" + n), CallID: CallID("call-" + n),
 			Claim: ExecutionClaim("claim-" + n), Schema: SchemaVersion1, Kind: AssignmentTool,
 			Tool: &ToolAssignment{ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest, Arguments: cj(`{}`), Policy: DirectExecution}}
 		ref, err := exec.Prepare(ctx, a)
@@ -102,7 +102,7 @@ func TestLoopReleasesSlots(t *testing.T) {
 				t.Fatal(err)
 			}
 			rt, w := loopRuntime(t)
-			if _, err := l.Advance(ctx, rt, w, "run-1", nil); err != nil {
+			if _, err := l.Advance(ctx, rt.Bind(w), "run-1", nil); err != nil {
 				t.Fatal(err)
 			}
 			return l
@@ -114,11 +114,11 @@ func TestLoopReleasesSlots(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := l.Advance(ctx, rt, w, "run-1", nil); err != nil {
+			if _, err := l.Advance(ctx, rt.Bind(w), "run-1", nil); err != nil {
 				t.Fatal(err)
 			}
 			result := textResult("done")
-			if _, err := l.Deliver(ctx, rt, w, Outcome{Key: exec.last().Key(), Model: &result}, nil); err != nil {
+			if _, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: exec.last().Key(), Model: &result}, nil); err != nil {
 				t.Fatal(err)
 			}
 			return l
@@ -130,7 +130,7 @@ func TestLoopReleasesSlots(t *testing.T) {
 				t.Fatal(err)
 			}
 			rt, w := loopRuntime(t)
-			res, err := l.Run(ctx, rt, w, "run-1", nil)
+			res, err := l.Run(ctx, rt.Bind(w), "run-1", nil)
 			if err != nil || res.Result == nil || res.Result.Status != RunCompleted {
 				t.Fatalf("run = %+v %v", res, err)
 			}

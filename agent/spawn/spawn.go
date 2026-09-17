@@ -148,12 +148,12 @@ func ProvenanceFromHeader(header session.SegmentHeader) (prov Provenance, ok boo
 // CheckDefinition verifies the assignment's recorded definition digest and
 // response policy against the tool's canonical definition (SPN-1). It
 // returns a nil failure when they match.
-func CheckDefinition(proto run.Protocol, tool loop.ExecutableTool, assigned *effect.ToolAssignment) (*run.ToolFailure, error) {
+func CheckDefinition(schema run.Schema, tool loop.ExecutableTool, assigned *effect.ToolAssignment) (*run.ToolFailure, error) {
 	def, err := run.FreezeToolDefinition(tool.Definition())
 	if err != nil {
 		return &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: err.Error()}, nil
 	}
-	digest, err := proto.DigestToolDefinition(def)
+	digest, err := schema.Canonical.DigestToolDefinition(def)
 	if err != nil {
 		return &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: err.Error()}, nil
 	}

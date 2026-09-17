@@ -82,7 +82,7 @@ func entries() (chatlog.Context, fixedContent) {
 func TestPromptBuildersResolveDeterministically(t *testing.T) {
 	state, content := entries()
 	src := sources(state, session.Head{Next: 3, Digest: "d3"}, content)
-	input := run.PromptInput{Session: "s", Inputs: []run.AgentInput{{ID: "in-1", Payload: decision.InputContent("hello")}}}
+	input := run.PromptInput{Scope: "s", Inputs: []run.AgentInput{{ID: "in-1", Payload: decision.InputContent("hello")}}}
 	var prompts []loop.Prompt
 	for i := 0; i < 2; i++ {
 		builders := decision.DefaultPromptBuilders() // a fresh process builds its own registry
@@ -171,13 +171,13 @@ func TestPromptRejectsUnpairedToolHistory(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			builder := decision.NewContextPromptBuilder(preset(), sources(chatlog.Context{Entries: tc.entries}, session.Head{}, content))
-			if _, err := builder.Build(context.Background(), run.PromptInput{Session: "s"}); err == nil {
+			if _, err := builder.Build(context.Background(), run.PromptInput{Scope: "s"}); err == nil {
 				t.Fatal("unpaired history produced a provider request")
 			}
 		})
 	}
 	builder := decision.NewContextPromptBuilder(preset(), sources(chatlog.Context{Entries: []chatlog.Entry{call, input, result}}, session.Head{}, content))
-	prompt, err := builder.Build(context.Background(), run.PromptInput{Session: "s"})
+	prompt, err := builder.Build(context.Background(), run.PromptInput{Scope: "s"})
 	if err != nil {
 		t.Fatal(err)
 	}

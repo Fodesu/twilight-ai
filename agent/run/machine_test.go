@@ -25,9 +25,9 @@ func newRun(t *testing.T) MachineState {
 
 func mustDecide(t *testing.T, s MachineState, c AgentCommand) []Fact {
 	t.Helper()
-	facts, err := ProtocolV1().Decide(s, c)
+	facts, err := SchemaV1().Machine.Decide(s, c)
 	if err != nil {
-		t.Fatalf("ProtocolV1().Decide(%T): %v", c, err)
+		t.Fatalf("SchemaV1().Machine.Decide(%T): %v", c, err)
 	}
 	return facts
 }
@@ -36,9 +36,9 @@ func fold(t *testing.T, s MachineState, facts []Fact) MachineState {
 	t.Helper()
 	for _, f := range facts {
 		var err error
-		s, err = ProtocolV1().Evolve(s, f)
+		s, err = SchemaV1().Machine.Evolve(s, f)
 		if err != nil {
-			t.Fatalf("ProtocolV1().Evolve(%T): %v", f, err)
+			t.Fatalf("SchemaV1().Machine.Evolve(%T): %v", f, err)
 		}
 	}
 	return s
@@ -62,16 +62,16 @@ func buildPrepare(t *testing.T, s MachineState, req sdk.Request, specs []ToolSpe
 	if err != nil {
 		t.Fatal(err)
 	}
-	reqDigest, err := ProtocolV1().DigestRequest(frozenReq)
+	reqDigest, err := SchemaV1().Canonical.DigestRequest(frozenReq)
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolsDigest, err := ProtocolV1().DigestToolSpecs(specs)
+	toolsDigest, err := SchemaV1().Canonical.DigestToolSpecs(specs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	model := ModelRef(frozenReq.Model)
-	binding, err := ProtocolV1().DigestModelStepBinding(model, reqDigest, toolsDigest)
+	binding, err := SchemaV1().Canonical.DigestModelStepBinding(model, reqDigest, toolsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func makeSpec(t *testing.T, def sdk.ToolDefinition, policy ResponsePolicy) ToolS
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := ProtocolV1().DigestToolDefinition(frozen)
+	d, err := SchemaV1().Canonical.DigestToolDefinition(frozen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func makeSpec(t *testing.T, def sdk.ToolDefinition, policy ResponsePolicy) ToolS
 
 func responseDecisionDigest(t *testing.T, kind ResponseKind, decision ResponseDecision, reason string) Digest {
 	t.Helper()
-	d, err := ProtocolV1().DigestToolResponseDecision(kind, decision, reason)
+	d, err := SchemaV1().Canonical.DigestToolResponseDecision(kind, decision, reason)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func responseDecisionDigest(t *testing.T, kind ResponseKind, decision ResponseDe
 
 func responsePayloadDigest(t *testing.T, payload CanonicalJSON) Digest {
 	t.Helper()
-	d, err := ProtocolV1().DigestToolResponsePayload(payload)
+	d, err := SchemaV1().Canonical.DigestToolResponsePayload(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +195,7 @@ func TestRunCreatedFoldsOntoZeroState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	facts, err := ProtocolV1().BuildCreateGroup(newRun, []AgentInput{{ID: "in-1", Payload: cj(`1`)}})
+	facts, err := SchemaV1().Machine.CreateGroup(newRun, []AgentInput{{ID: "in-1", Payload: cj(`1`)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,10 +206,10 @@ func TestRunCreatedFoldsOntoZeroState(t *testing.T) {
 	if s.RunID != "r" || s.Owner != "turn-1" || s.Attempt != 2 || !atOpen(s.Current) || len(s.PendingInputs) != 1 {
 		t.Fatalf("state after create group = %+v", s)
 	}
-	if _, err := ProtocolV1().Evolve(s, facts[0]); err == nil {
+	if _, err := SchemaV1().Machine.Evolve(s, facts[0]); err == nil {
 		t.Fatal("second RunCreated folded")
 	}
-	if _, err := ProtocolV1().Evolve(MachineState{}, facts[1]); err == nil {
+	if _, err := SchemaV1().Machine.Evolve(MachineState{}, facts[1]); err == nil {
 		t.Fatal("InputAccepted folded before RunCreated")
 	}
 }
@@ -252,7 +252,7 @@ func TestPrepareRejectsIncompleteInputIDs(t *testing.T) {
 	s := newRun(t)
 	prep, _ := buildPrepare(t, s, testRequest(), nil)
 	prep.InputIDs = nil
-	if _, err := ProtocolV1().Decide(s, prep); err == nil {
+	if _, err := SchemaV1().Machine.Decide(s, prep); err == nil {
 		t.Fatal("prepare with missing InputIDs accepted")
 	}
 }
@@ -299,7 +299,7 @@ func TestExternalResponseRequiresPayloadDigest(t *testing.T) {
 	s = fold(t, s, facts)
 	respID := opened.Calls[0].Response.ID
 	payload := cj(`{"answer":"ok"}`)
-	if _, err := ProtocolV1().Decide(s, SubmitToolResponse{StepID: opened.StepID, CallID: cid(stepID, 0), ResponseID: respID, ResponseDigest: "sha256:bad", Payload: payload}); err == nil {
+	if _, err := SchemaV1().Machine.Decide(s, SubmitToolResponse{StepID: opened.StepID, CallID: cid(stepID, 0), ResponseID: respID, ResponseDigest: "sha256:bad", Payload: payload}); err == nil {
 		t.Fatal("external response with bad payload digest accepted")
 	}
 	facts = mustDecide(t, s, SubmitToolResponse{StepID: opened.StepID, CallID: cid(stepID, 0), ResponseID: respID,
@@ -315,7 +315,7 @@ func TestExternalResponseRequiresPayloadDigest(t *testing.T) {
 	opened = facts[1].(ToolStepOpened)
 	s = fold(t, s, facts)
 	respID = opened.Calls[0].Response.ID
-	facts, err := ProtocolV1().Decide(s, RejectToolCall{StepID: opened.StepID, CallID: cid(stepID, 0), ResponseID: respID,
+	facts, err := SchemaV1().Machine.Decide(s, RejectToolCall{StepID: opened.StepID, CallID: cid(stepID, 0), ResponseID: respID,
 		ResponseDigest: responseDecisionDigest(t, ResponseExternal, ResponseDecisionRejected, "user dismissed"), Reason: "user dismissed"})
 	if err != nil {
 		t.Fatal(err)
@@ -353,7 +353,7 @@ func TestToolSchedulingRejectsUnknownMode(t *testing.T) {
 	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
 	b := makeBinding(t, stepID, 0, "c1", spec, `{}`)
-	_, err := ProtocolV1().Decide(s, SubmitModelResult{
+	_, err := SchemaV1().Machine.Decide(s, SubmitModelResult{
 		StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b},
 		Scheduling: ToolScheduling{Mode: "round-robin"},
 	})
@@ -542,7 +542,7 @@ func TestAcceptInputDuplicateIsGuarded(t *testing.T) {
 	// Decide rejects a duplicate and an exact command replay never reaches
 	// Evolve, so a persisted duplicate InputAccepted is a corrupt log: the
 	// guard refuses it instead of silently deduplicating.
-	if _, err := ProtocolV1().Evolve(s, facts[0]); err == nil {
+	if _, err := SchemaV1().Machine.Evolve(s, facts[0]); err == nil {
 		t.Fatal("duplicate InputAccepted folded silently")
 	}
 }
@@ -579,7 +579,7 @@ func TestAcceptInputQueuesInAnyActiveState(t *testing.T) {
 	// Withdraw without pending inputs is rejected: the request is complete.
 	prep2, _ := buildPrepare(t, s, testRequest(), nil)
 	s = fold(t, s, mustDecide(t, s, prep2))
-	if _, err := ProtocolV1().Decide(s, WithdrawPreparedStep{StepID: prep2.StepID}); err == nil {
+	if _, err := SchemaV1().Machine.Decide(s, WithdrawPreparedStep{StepID: prep2.StepID}); err == nil {
 		t.Fatal("withdraw accepted with no pending inputs")
 	}
 
@@ -599,7 +599,7 @@ func TestAcceptInputQueuesInAnyActiveState(t *testing.T) {
 		t.Fatalf("facts = %d, want [completed] without RunEnded while inputs are pending", len(facts))
 	}
 	completed := facts[0].(ModelStepCompleted)
-	wantDigest, err := ProtocolV1().DigestModelResult(result)
+	wantDigest, err := SchemaV1().Canonical.DigestModelResult(result)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -619,7 +619,7 @@ func TestAcceptInputQueuesInAnyActiveState(t *testing.T) {
 
 func TestAcceptInputRejectsSeedDuplicateID(t *testing.T) {
 	s := newRun(t)
-	_, err := ProtocolV1().Decide(s, NextStep(AgentInput{ID: "seed", Payload: cj(`{"q":"other"}`)}))
+	_, err := SchemaV1().Machine.Decide(s, NextStep(AgentInput{ID: "seed", Payload: cj(`{"q":"other"}`)}))
 	if !errors.Is(err, ErrCommandConflict) {
 		t.Fatalf("duplicate seed input err = %v, want ErrCommandConflict", err)
 	}
@@ -635,7 +635,7 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 		s := minimal
 		for _, id := range ids {
 			var foldErr error
-			s, foldErr = ProtocolV1().Evolve(s, InputAccepted{Input: AgentInput{ID: id, Payload: cj(`null`)}})
+			s, foldErr = SchemaV1().Machine.Evolve(s, InputAccepted{Input: AgentInput{ID: id, Payload: cj(`null`)}})
 			if foldErr != nil {
 				t.Fatal(foldErr)
 			}
@@ -644,15 +644,15 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 	}
 	prepared := func(ids ...InputID) ModelStepPrepared {
 		request := ModelRequest{Model: string(testModel)}
-		requestDigest, err := ProtocolV1().DigestRequest(request)
+		requestDigest, err := SchemaV1().Canonical.DigestRequest(request)
 		if err != nil {
 			t.Fatal(err)
 		}
-		toolsDigest, err := ProtocolV1().DigestToolSpecs(nil)
+		toolsDigest, err := SchemaV1().Canonical.DigestToolSpecs(nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		binding, err := ProtocolV1().DigestModelStepBinding(testModel, requestDigest, toolsDigest)
+		binding, err := SchemaV1().Canonical.DigestModelStepBinding(testModel, requestDigest, toolsDigest)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -661,25 +661,25 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 
 	t.Run("nonexistent input", func(t *testing.T) {
 		s := withInputs("in-1")
-		if _, err := ProtocolV1().Evolve(s, prepared("missing")); err == nil {
+		if _, err := SchemaV1().Machine.Evolve(s, prepared("missing")); err == nil {
 			t.Fatal("ModelStepPrepared consuming a nonexistent input folded")
 		}
 	})
 	t.Run("length mismatch", func(t *testing.T) {
 		s := withInputs("in-1", "in-2")
-		if _, err := ProtocolV1().Evolve(s, prepared("in-1")); err == nil {
+		if _, err := SchemaV1().Machine.Evolve(s, prepared("in-1")); err == nil {
 			t.Fatal("ModelStepPrepared consuming only a pending-input prefix folded")
 		}
 	})
 	t.Run("order mismatch", func(t *testing.T) {
 		s := withInputs("in-1", "in-2")
-		if _, err := ProtocolV1().Evolve(s, prepared("in-2", "in-1")); err == nil {
+		if _, err := SchemaV1().Machine.Evolve(s, prepared("in-2", "in-1")); err == nil {
 			t.Fatal("ModelStepPrepared consuming pending inputs out of order folded")
 		}
 	})
 	t.Run("complete ordered IDs", func(t *testing.T) {
 		s := withInputs("in-1", "in-2")
-		next, err := ProtocolV1().Evolve(s, prepared("in-1", "in-2"))
+		next, err := SchemaV1().Machine.Evolve(s, prepared("in-1", "in-2"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -692,7 +692,7 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 func TestEvolveRejectsModelPrepareOverCurrentStep(t *testing.T) {
 	s := newRun(t)
 	s, _ = advanceToExecuting(t, s, testRequest(), nil)
-	_, err := ProtocolV1().Evolve(s, ModelStepPrepared{
+	_, err := SchemaV1().Machine.Evolve(s, ModelStepPrepared{
 		StepID:        "other",
 		Model:         testModel,
 		RequestDigest: "sha256:req",
@@ -733,7 +733,7 @@ func TestDerivedCallIDToleratesProviderIDReuse(t *testing.T) {
 	// A binding whose CallID is not the derived one is rejected.
 	forged := bindings
 	forged[1].CallID = "call_0"
-	if _, err := ProtocolV1().Decide(s, SubmitModelResult{StepID: stepID, Result: result, Calls: forged}); err == nil {
+	if _, err := SchemaV1().Machine.Decide(s, SubmitModelResult{StepID: stepID, Result: result, Calls: forged}); err == nil {
 		t.Fatal("non-derived CallID accepted")
 	}
 }

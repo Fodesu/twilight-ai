@@ -67,7 +67,7 @@ const Provider = "local"
 // Session record, and the backend never reads them back. streaming selects
 // StreamingModelInvoker when an invoker offers it. Agent Core reaches the
 // backend through an executor.Worker (RUN-EXE-8).
-func NewLocalExecutor(cat *Catalog, sink loop.EventSink, streaming bool) (executor.Backend, error) {
+func NewLocalExecutor(cat *Catalog, sink loop.EventSink, streaming bool) (executor.ExecutionBackend, error) {
 	if cat == nil {
 		return nil, errors.New("local: nil catalog")
 	}
@@ -75,6 +75,6 @@ func NewLocalExecutor(cat *Catalog, sink loop.EventSink, streaming bool) (execut
 }
 
 // Route is the Worker route that hands every remaining Assignment to b.
-func Route(b executor.Backend) executor.Route { return executor.Default(Provider, b) }
+func Route(b executor.ExecutionBackend) executor.Route { return executor.Default(Provider, b) }
 
-var _ executor.Backend = (*loop.LocalExecutor)(nil)
+var _ executor.ExecutionBackend = (*loop.LocalExecutor)(nil)

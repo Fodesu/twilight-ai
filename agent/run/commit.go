@@ -1,7 +1,6 @@
 package run
 
 import (
-	"context"
 	"errors"
 	"fmt"
 )
@@ -15,7 +14,7 @@ const (
 	DecisionTerminal
 )
 
-// CommitDecision is EvaluateCommit's verdict. The Runtime maps rejections
+// CommitDecision is EvaluateCommit's verdict. The RunStore maps rejections
 // onto the sentinel errors: Conflict -> ErrCommandConflict, Stale ->
 // ErrStaleRuntime, Terminal -> ErrRunTerminal.
 type CommitDecision struct {
@@ -27,33 +26,33 @@ type CommitDecision struct {
 }
 
 // ValidateEnvelope is step 1 of RUN-CMT-3: identity and schema. Envelopes are
-// only built by Protocol.BuildEnvelope (RUN-WIR-3), so there is no per-commit
+// only built by WireSchema.Envelope (RUN-WIR-3), so there is no per-commit
 // self-verification of the command bytes.
-func ValidateEnvelope(env *CommandEnvelope, proto Protocol) error {
-	if env.SessionID == "" || env.RunID == "" || env.ID == "" {
-		return errors.New("agent: commit: empty SessionID, RunID or CommandID")
+func ValidateEnvelope(env *CommandEnvelope, schema Schema) error {
+	if env.RunID == "" || env.ID == "" {
+		return errors.New("agent: commit: empty RunID or CommandID")
 	}
-	if err := proto.ready(); err != nil {
-		return err
+	if !schema.Valid() {
+		return errors.New("agent: commit: unbound schema")
 	}
-	if env.SchemaVersion != proto.Version() {
-		return fmt.Errorf("agent: commit: command schema %d does not match run schema %d", env.SchemaVersion, proto.Version())
+	if env.SchemaVersion != schema.Version {
+		return fmt.Errorf("agent: commit: command schema %d does not match run schema %d", env.SchemaVersion, schema.Version)
 	}
 	return nil
 }
 
-// EvaluateCommit is the pure evaluation every Runtime runs inside the Session
-// Writer after the replay lookup (RUN-CMT-3 steps 4-8). Execution ownership is
+// EvaluateCommit is the pure evaluation every RunStore runs inside its
+// store's critical section after the replay lookup (RUN-CMT-3 steps 4-8). Execution ownership is
 // Session-level (RUN-CMT-6), so there is no per-target authorization: a
 // command against a target whose state does not admit it is Stale.
 //
 //nolint:gocritic // hugeParam: public pure commit evaluator keeps state/request as value protocol inputs.
-func EvaluateCommit(cur MachineState, position RunPosition, req CommitRequest, proto Protocol) (CommitDecision, error) {
+func EvaluateCommit(cur MachineState, position RunPosition, req CommitRequest, schema Schema) (CommitDecision, error) {
 	env := req.Command
 	if env.RunID != cur.RunID {
 		return CommitDecision{}, fmt.Errorf("agent: commit: command run %q does not match authority run %q", env.RunID, cur.RunID)
 	}
-	if err := ValidateEnvelope(&env, proto); err != nil {
+	if err := ValidateEnvelope(&env, schema); err != nil {
 		return CommitDecision{}, err
 	}
 	// A start claim is part of the command identity (RUN-WIR-1).
@@ -89,7 +88,7 @@ func EvaluateCommit(cur MachineState, position RunPosition, req CommitRequest, p
 	}
 
 	// Step 7: Decide once, fold with Evolve.
-	facts, err := proto.Decide(cur, env.Command)
+	facts, err := schema.Machine.Decide(cur, env.Command)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrRunTerminal):
@@ -128,7 +127,7 @@ func EvaluateCommit(cur MachineState, position RunPosition, req CommitRequest, p
 		if err != nil {
 			return CommitDecision{}, err
 		}
-		state, err = proto.Evolve(state, f)
+		state, err = schema.Machine.Evolve(state, f)
 		if err != nil {
 			return CommitDecision{}, err
 		}
@@ -198,9 +197,9 @@ type Recovery struct {
 
 // RecoveryTarget is one Executing target a takeover has to decide about: the
 // model step or tool call, and the Claim of the attempt that started it (from
-// the started fact). The new owner first asks whether that attempt is still
-// producing an Outcome (Reattacher); only if not does it issue the recovery
-// command (RUN-CMT-7).
+// the started fact). The reconciler (agent/run/reconcile) asks the executor
+// whether that attempt still exists; only if not is the recovery command
+// issued (RUN-CMT-7).
 type RecoveryTarget struct {
 	RunID  RunID
 	Schema uint16 // the Run's protocol version, for the executor's digest checks
@@ -209,45 +208,6 @@ type RecoveryTarget struct {
 	Claim  ExecutionClaim
 	Model  *ModelStep     // set for a model target
 	Call   *ToolCallState // set for a tool target
-}
-
-// RecoveryDisposition is the result of the recovery control-plane handshake
-// for one Executing target. It is deliberately distinct from
-// effect.AttachmentState: an executor reports what it observes, while
-// recovery reports what the authority may do next.
-type RecoveryDisposition string
-
-const (
-	RecoveryMissing  RecoveryDisposition = "missing"
-	RecoveryActive   RecoveryDisposition = "active"
-	RecoveryDeferred RecoveryDisposition = "deferred"
-	RecoveryTerminal RecoveryDisposition = "terminal"
-)
-
-// Valid reports whether d is a defined recovery disposition.
-func (d RecoveryDisposition) Valid() bool {
-	switch d {
-	case RecoveryMissing, RecoveryActive, RecoveryDeferred, RecoveryTerminal:
-		return true
-	default:
-		return false
-	}
-}
-
-// PreservesExecution reports whether recovery must leave the target Executing.
-// Active and terminal targets have an executor-owned outcome to read; deferred
-// targets require an explicit control-plane decision. Only missing permits the
-// protocol's automatic disposition.
-func (d RecoveryDisposition) PreservesExecution() bool {
-	return d == RecoveryActive || d == RecoveryTerminal || d == RecoveryDeferred
-}
-
-// Reattacher answers, for one Executing target, whether the attempt named by
-// Target.Claim is still running, durably exists but needs control-plane
-// takeover, or is absent. Only RecoveryMissing permits automatic disposition;
-// RecoveryDeferred remains Executing until reconciliation or explicit takeover.
-type Reattacher interface {
-	Attach(context.Context, RecoveryTarget) (RecoveryDisposition, error)
 }
 
 // RecoveryTargets lists the Executing targets of state in the order

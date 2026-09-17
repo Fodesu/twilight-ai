@@ -9,23 +9,23 @@ import (
 	"time"
 
 	. "github.com/felinics/twilight/agent/run"
-	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/sdk"
 )
 
-// commitLog wraps a Runtime and records every AgentCommand it is asked to
-// commit, so a test can assert what a fenced Loop still tried to write.
+// commitLog wraps a bound RunStore and records every AgentCommand it is
+// asked to commit, so a test can assert what a fenced Loop still tried to
+// write.
 type commitLog struct {
-	Runtime
+	RunStore
 	mu   sync.Mutex
 	cmds []AgentCommand
 }
 
-func (c *commitLog) Commit(ctx context.Context, w writer.Writer, req CommitRequest) (CommitResult, error) {
+func (c *commitLog) Commit(ctx context.Context, req CommitRequest) (CommitResult, error) {
 	c.mu.Lock()
 	c.cmds = append(c.cmds, req.Command.Command)
 	c.mu.Unlock()
-	return c.Runtime.Commit(ctx, w, req)
+	return c.RunStore.Commit(ctx, req)
 }
 
 func (c *commitLog) settlementsFor(callID CallID) int {
@@ -55,8 +55,8 @@ func (c *commitLog) settlementsFor(callID CallID) int {
 func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{}`)})
-	oldRuntime := &commitLog{Runtime: stack.runtime}
 	oldWriter := stack.writer(t) // the superseded owner's capability
+	oldRuntime := &commitLog{RunStore: stack.runtime.Bind(oldWriter)}
 
 	spec := toolSpec(t, "echo", DirectExecution)
 	started := make(chan CallID, 2)
@@ -101,7 +101,7 @@ func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 	})
 	done := make(chan error, 1)
 	go func() {
-		_, err := loop.Run(context.Background(), oldRuntime, oldWriter, "run-1", sink)
+		_, err := loop.Run(context.Background(), oldRuntime, "run-1", sink)
 		done <- err
 	}()
 	<-started
@@ -155,8 +155,8 @@ func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 func TestOwnershipLossOnModelSettlementIsNotRetried(t *testing.T) {
 	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{}`)})
-	oldRuntime := &commitLog{Runtime: stack.runtime}
 	oldWriter := stack.writer(t) // the superseded owner's capability
+	oldRuntime := &commitLog{RunStore: stack.runtime.Bind(oldWriter)}
 
 	invoker := &blockingInvoker{started: make(chan struct{}), release: make(chan struct{})}
 	loop, err := newLoop(nil, fakeCatalog{invoker}, fakeToolCatalog{nil}, staticBuilder{}, Settings{}, false)
@@ -165,7 +165,7 @@ func TestOwnershipLossOnModelSettlementIsNotRetried(t *testing.T) {
 	}
 	done := make(chan error, 1)
 	go func() {
-		_, err := loop.Run(context.Background(), oldRuntime, oldWriter, "run-1", nil)
+		_, err := loop.Run(context.Background(), oldRuntime, "run-1", nil)
 		done <- err
 	}()
 	<-invoker.started

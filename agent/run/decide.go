@@ -95,7 +95,7 @@ func decidePrepareModelRequest(s *MachineState, cmd *PrepareModelRequest) ([]Fac
 		if spec.Name == "" || spec.Name != cmd.Request.Tools[i].Name {
 			return nil, rejectionf("prepare: ToolSpec[%d] %q does not match request tool %q", i, spec.Name, cmd.Request.Tools[i].Name)
 		}
-		wantDigest, err := digestToolDefinitionV1(cmd.Request.Tools[i])
+		wantDigest, err := (canonicalV1{}).DigestToolDefinition(cmd.Request.Tools[i])
 		if err != nil {
 			return nil, err
 		}
@@ -103,21 +103,21 @@ func decidePrepareModelRequest(s *MachineState, cmd *PrepareModelRequest) ([]Fac
 			return nil, rejectionf("prepare: ToolSpec[%d] definition digest mismatch", i)
 		}
 	}
-	wantReq, err := digestRequestV1(cmd.Request)
+	wantReq, err := (canonicalV1{}).DigestRequest(cmd.Request)
 	if err != nil {
 		return nil, err
 	}
 	if cmd.RequestDigest != wantReq {
 		return nil, rejectionf("prepare: request digest mismatch")
 	}
-	wantTools, err := digestToolSpecsV1(cmd.Tools)
+	wantTools, err := (canonicalV1{}).DigestToolSpecs(cmd.Tools)
 	if err != nil {
 		return nil, err
 	}
 	if cmd.ToolsDigest != wantTools {
 		return nil, rejectionf("prepare: tools digest mismatch")
 	}
-	binding, err := digestModelStepBindingV1(cmd.Model, cmd.RequestDigest, cmd.ToolsDigest)
+	binding, err := (canonicalV1{}).DigestModelStepBinding(cmd.Model, cmd.RequestDigest, cmd.ToolsDigest)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +196,7 @@ func decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, e
 	if ms.Status != ModelExecuting {
 		return nil, rejectionf("model result: step is not Executing")
 	}
-	resultDigest, err := digestModelResultV1(cmd.Result)
+	resultDigest, err := (canonicalV1{}).DigestModelResult(cmd.Result)
 	if err != nil {
 		return nil, err
 	}
@@ -444,7 +444,7 @@ func decideSubmitToolResult(s *MachineState, cmd SubmitToolResult) ([]Fact, erro
 	if ts.Calls[i].Status != ToolExecuting {
 		return nil, rejectionf("tool result: call %q is not Executing", cmd.CallID)
 	}
-	outputDigest, err := digestToolOutputV1(cmd.Result.Output)
+	outputDigest, err := (canonicalV1{}).DigestToolOutput(cmd.Result.Output)
 	if err != nil {
 		return nil, err
 	}
@@ -522,7 +522,7 @@ func decideApproveToolCall(s *MachineState, cmd ApproveToolCall) ([]Fact, error)
 	if err := waitingCall(s, cmd.StepID, cmd.CallID, ResponseApproval, cmd.ResponseID); err != nil {
 		return nil, err
 	}
-	wantDigest, err := digestToolResponseDecisionV1(ResponseApproval, ResponseDecisionApproved, "")
+	wantDigest, err := (canonicalV1{}).DigestToolResponseDecision(ResponseApproval, ResponseDecisionApproved, "")
 	if err != nil {
 		return nil, err
 	}
@@ -553,7 +553,7 @@ func decideRejectToolCall(s *MachineState, cmd *RejectToolCall) ([]Fact, error) 
 	if c.Waiting.ID != cmd.ResponseID {
 		return nil, rejectionf("response: call %q expects ResponseID %q, got %q", cmd.CallID, c.Waiting.ID, cmd.ResponseID)
 	}
-	wantDigest, err := digestToolResponseDecisionV1(c.Waiting.Kind, ResponseDecisionRejected, cmd.Reason)
+	wantDigest, err := (canonicalV1{}).DigestToolResponseDecision(c.Waiting.Kind, ResponseDecisionRejected, cmd.Reason)
 	if err != nil {
 		return nil, err
 	}
@@ -577,7 +577,7 @@ func decideSubmitToolResponse(s *MachineState, cmd *SubmitToolResponse) ([]Fact,
 	if err := waitingCall(s, cmd.StepID, cmd.CallID, ResponseExternal, cmd.ResponseID); err != nil {
 		return nil, err
 	}
-	wantDigest, err := digestToolResponsePayloadV1(cmd.Payload)
+	wantDigest, err := (canonicalV1{}).DigestToolResponsePayload(cmd.Payload)
 	if err != nil {
 		return nil, err
 	}

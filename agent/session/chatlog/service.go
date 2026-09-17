@@ -10,6 +10,7 @@ import (
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/unit"
 	"github.com/felinics/twilight/agent/session/writer"
 )
 
@@ -234,4 +235,43 @@ func CheckRetainClosure(entries []Entry, retain []EntryDigestPair) error {
 		}
 	}
 	return nil
+}
+
+// DeliverInputs is the chatlog's Part of a Turn's start or delivery unit
+// (CHT-EVT, TRN-DLV-1): it checks, on the unit's own View, that every input
+// is a submitted chatlog Input whose content equals the payload the Run
+// accepts, and writes one input_delivered per input. A failed check is
+// ErrNotSubmitted and refuses the whole unit, so an input withdrawn between
+// the caller's read and the commit is caught inside the critical section.
+func DeliverInputs(turnID TurnID, inputs []run.AgentInput) unit.Part {
+	return deliverInputs{turnID: turnID, inputs: inputs}
+}
+
+type deliverInputs struct {
+	turnID TurnID
+	inputs []run.AgentInput
+}
+
+func (d deliverInputs) Prepare(_ context.Context, view writer.View, now int64) ([]writer.TypedBatch, error) {
+	if len(d.inputs) == 0 {
+		return nil, nil
+	}
+	state, err := view.Projection(SurfaceProjectionID, SurfaceProjection.Version)
+	if err != nil {
+		return nil, err
+	}
+	surface := state.(Surface)
+	events := make([]writer.TypedEvent, 0, len(d.inputs))
+	for _, in := range d.inputs {
+		v, ok := surface.Inputs.Get(InputID(in.ID))
+		if !ok || v.Status != InputSubmitted {
+			return nil, fmt.Errorf("%w: input %s is not a submitted input", ErrNotSubmitted, in.ID)
+		}
+		if !v.Input.Content.Equal(in.Payload) {
+			return nil, fmt.Errorf("%w: input %s payload differs from its submitted content", ErrNotSubmitted, in.ID)
+		}
+		events = append(events, writer.TypedEvent{Type: TypeInputDelivered, RecordedAtUnixMilli: now,
+			Value: InputDeliveredPayload{InputID: InputID(in.ID), TurnID: d.turnID}})
+	}
+	return []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: events}}, nil
 }

@@ -494,7 +494,7 @@ func testProjection(t *testing.T, factory Factory) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	facts, err := run.ProtocolV1().BuildCreateGroup(foreign, nil)
+	facts, err := run.SchemaV1().Machine.CreateGroup(foreign, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

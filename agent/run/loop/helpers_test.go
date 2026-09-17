@@ -18,6 +18,7 @@ import (
 const (
 	testModel   ModelRef          = "m-1"
 	testSession session.SessionID = "s-1"
+	testScope   Scope             = Scope(testSession)
 )
 
 func cj(raw string) CanonicalJSON { return MustParseCanonicalJSON(raw) }
@@ -30,7 +31,7 @@ type testStack struct {
 	bindings *artifact.MemoryBindingStore
 	ledger   *artifact.MemoryLedger
 	writers  writer.Writers
-	runtime  *runmod.Runtime
+	runtime  *runmod.SessionRunStore
 	now      func() time.Time
 }
 
@@ -61,7 +62,7 @@ func (s *testStack) open(t testing.TB) {
 		s.ledger = artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: s.bindings})
 	}
 	s.writers = writer.NewWriters(s.store, s.registry, writer.Admission{Bindings: s.bindings, Ledger: s.ledger}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
-	rt, err := runmod.NewRuntime(runmod.Config{Registry: s.registry, Store: s.store, Bindings: s.bindings, Now: s.now})
+	rt, err := runmod.NewSessionRunStore(runmod.Config{Registry: s.registry, Store: s.store, Frozen: runmod.FrozenValuesInMemory(s.bindings), Now: s.now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +87,7 @@ func (s *testStack) createRun(t testing.TB, runID RunID, inputs ...AgentInput) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	facts, err := ProtocolV1().BuildCreateGroup(newRun, inputs)
+	facts, err := SchemaV1().Machine.CreateGroup(newRun, inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,21 +110,21 @@ func (s *testStack) createRun(t testing.TB, runID RunID, inputs ...AgentInput) {
 	}
 }
 
-// newTestRuntime is a Runtime holding "run-1" seeded with one input.
-func newTestRuntime(t testing.TB) (Runtime, writer.Writer) {
+// newTestRuntime is a run store holding "run-1" seeded with one input.
+func newTestRuntime(t testing.TB) (*runmod.SessionRunStore, writer.Writer) {
 	t.Helper()
 	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)})
 	return stack.runtime, stack.writer(t)
 }
 
-func loopRuntime(t *testing.T) (Runtime, writer.Writer) {
+func loopRuntime(t *testing.T) (*runmod.SessionRunStore, writer.Writer) {
 	t.Helper()
 	return newTestRuntime(t)
 }
 
 // recordFacts returns every committed fact of runID in stream order.
-func recordFacts(t testing.TB, rt Runtime, runID RunID) []Fact {
+func recordFacts(t testing.TB, rt *runmod.SessionRunStore, runID RunID) []Fact {
 	t.Helper()
 	record, err := rt.Record(context.Background(), testSession, runID)
 	if err != nil {
@@ -132,9 +133,9 @@ func recordFacts(t testing.TB, rt Runtime, runID RunID) []Fact {
 	return record.Facts
 }
 
-func loadState(t testing.TB, rt Runtime, w writer.Writer, runID RunID) RuntimeSnapshot {
+func loadState(t testing.TB, rt *runmod.SessionRunStore, w writer.Writer, runID RunID) RuntimeSnapshot {
 	t.Helper()
-	snap, err := rt.Load(context.Background(), w, runID)
+	snap, err := rt.Bind(w).Load(context.Background(), runID)
 	if err != nil {
 		t.Fatal(err)
 	}

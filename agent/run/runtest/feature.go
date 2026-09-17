@@ -31,7 +31,7 @@ const (
 
 // newRuntime assembles the Memory Session stack with only the run module and
 // creates the Run with its seed input through a Start-like group.
-func newRuntime(t testing.TB, inputs ...run.AgentInput) (run.Runtime, writer.Writer) {
+func newRuntime(t testing.TB, inputs ...run.AgentInput) (*runmod.SessionRunStore, writer.Writer) {
 	t.Helper()
 	store := session.NewMemoryStore()
 	registry, err := extension.BuildRegistry(session.ProtocolVersion1, runmod.Module)
@@ -45,7 +45,7 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) (run.Runtime, writer.Wri
 	bindings := artifact.NewMemoryBindingStore()
 	ledger := artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings})
 	writers := writer.NewWriters(store, registry, writer.Admission{Bindings: bindings, Ledger: ledger}, session.OpenOptions{}, writer.WritersConfig{})
-	rt, err := runmod.NewRuntime(runmod.Config{Registry: registry, Store: store, Bindings: bindings})
+	rt, err := runmod.NewSessionRunStore(runmod.Config{Registry: registry, Store: store, Frozen: runmod.FrozenValuesInMemory(bindings)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) (run.Runtime, writer.Wri
 	if err != nil {
 		t.Fatal(err)
 	}
-	facts, err := run.ProtocolV1().BuildCreateGroup(newRun, inputs)
+	facts, err := run.SchemaV1().Machine.CreateGroup(newRun, inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,8 @@ type Feature struct {
 	ctx    context.Context
 	runCtx context.Context
 	runID  run.RunID
-	rt     run.Runtime
+	runs   *runmod.SessionRunStore
+	rt     run.RunStore  // runs bound to w
 	w      writer.Writer // the owner's capability over defaultSession
 
 	model   run.ModelRef
@@ -105,13 +106,14 @@ type Feature struct {
 // model results before Run or Executing*.
 func New(t testing.TB) *Feature {
 	t.Helper()
-	rt, w := newRuntime(t, run.AgentInput{ID: "seed", Payload: run.MustParseCanonicalJSON(`{"q":"hi"}`)})
+	runs, w := newRuntime(t, run.AgentInput{ID: "seed", Payload: run.MustParseCanonicalJSON(`{"q":"hi"}`)})
 	f := &Feature{
 		t:      t,
 		ctx:    context.Background(),
 		runCtx: context.Background(),
 		runID:  defaultRunID,
-		rt:     rt,
+		runs:   runs,
+		rt:     runs.Bind(w),
 		w:      w,
 		model:  defaultModel,
 		defs:   make(map[run.ToolRef]sdk.ToolDefinition),
@@ -201,7 +203,7 @@ func (f *Feature) RunError(want error) *Feature {
 func (f *Feature) drive() error {
 	f.t.Helper()
 	f.ensureLoop()
-	res, err := f.loop.Run(f.runCtx, f.rt, f.w, f.runID, nil)
+	res, err := f.loop.Run(f.runCtx, f.rt, f.runID, nil)
 	f.last = res
 	return err
 }
@@ -218,18 +220,18 @@ func (f *Feature) Waiting() run.ResponseRequest {
 func (f *Feature) TryCommit(cmd run.AgentCommand) error {
 	f.t.Helper()
 	snap := f.load()
-	proto, err := snap.Protocol()
+	proto, err := snap.Schema()
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	f.seq++
 	cmd = withClaim(run.CommandID(fmt.Sprintf("attempt-%d", f.seq)), cmd)
 	id := f.commandID(cmd, snap)
-	env, err := proto.BuildEnvelope(defaultSession, f.runID, id, cmd)
+	env, err := proto.Wire.Envelope(f.runID, id, cmd)
 	if err != nil {
 		return err
 	}
-	_, err = f.rt.Commit(f.ctx, f.w, run.CommitRequest{Base: snap.Position, Command: env})
+	_, err = f.rt.Commit(f.ctx, run.CommitRequest{Base: snap.Position, Command: env})
 	return err
 }
 
@@ -237,7 +239,7 @@ func (f *Feature) TryCommit(cmd run.AgentCommand) error {
 func (f *Feature) Approve() *Feature {
 	f.t.Helper()
 	w := f.waiting()
-	digest, err := run.ProtocolV1().DigestToolResponseDecision(w.Kind, run.ResponseDecisionApproved, "")
+	digest, err := run.SchemaV1().Canonical.DigestToolResponseDecision(w.Kind, run.ResponseDecisionApproved, "")
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -251,7 +253,7 @@ func (f *Feature) Approve() *Feature {
 func (f *Feature) Reject(reason string) *Feature {
 	f.t.Helper()
 	w := f.waiting()
-	digest, err := run.ProtocolV1().DigestToolResponseDecision(w.Kind, run.ResponseDecisionRejected, reason)
+	digest, err := run.SchemaV1().Canonical.DigestToolResponseDecision(w.Kind, run.ResponseDecisionRejected, reason)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -381,7 +383,7 @@ func (f *Feature) ensureLoop() {
 
 func (f *Feature) load() run.RuntimeSnapshot {
 	f.t.Helper()
-	snap, err := f.rt.Load(f.ctx, f.w, f.runID)
+	snap, err := f.rt.Load(f.ctx, f.runID)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -405,18 +407,18 @@ func (f *Feature) waiting() run.ResponseRequest {
 func (f *Feature) commit(cmd run.AgentCommand) run.CommitResult {
 	f.t.Helper()
 	snap := f.load()
-	proto, err := snap.Protocol()
+	proto, err := snap.Schema()
 	if err != nil {
 		f.t.Fatal(err)
 	}
 	f.seq++
 	cmd = withClaim(run.CommandID(fmt.Sprintf("attempt-%d", f.seq)), cmd)
 	id := f.commandID(cmd, snap)
-	env, err := proto.BuildEnvelope(defaultSession, f.runID, id, cmd)
+	env, err := proto.Wire.Envelope(f.runID, id, cmd)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	res, err := f.rt.Commit(f.ctx, f.w, run.CommitRequest{
+	res, err := f.rt.Commit(f.ctx, run.CommitRequest{
 		Base: snap.Position, Command: env,
 	})
 	if err != nil {
@@ -460,19 +462,19 @@ func (f *Feature) commitPrepare() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	proto, err := snap.Protocol()
+	proto, err := snap.Schema()
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	reqDigest, err := proto.DigestRequest(frozen)
+	reqDigest, err := proto.Canonical.DigestRequest(frozen)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	toolsDigest, err := proto.DigestToolSpecs(f.specs)
+	toolsDigest, err := proto.Canonical.DigestToolSpecs(f.specs)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	binding, err := proto.DigestModelStepBinding(f.model, reqDigest, toolsDigest)
+	binding, err := proto.Canonical.DigestModelStepBinding(f.model, reqDigest, toolsDigest)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -497,7 +499,7 @@ func (f *Feature) mustSpec(name string, policy run.ResponsePolicy) (run.ToolSpec
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	d, err := run.ProtocolV1().DigestToolDefinition(frozen)
+	d, err := run.SchemaV1().Canonical.DigestToolDefinition(frozen)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -506,7 +508,7 @@ func (f *Feature) mustSpec(name string, policy run.ResponsePolicy) (run.ToolSpec
 
 func (f *Feature) facts() []run.Fact {
 	f.t.Helper()
-	record, err := f.rt.Record(f.ctx, defaultSession, f.runID)
+	record, err := f.runs.Record(f.ctx, defaultSession, f.runID)
 	if err != nil {
 		f.t.Fatal(err)
 	}

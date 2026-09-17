@@ -10,6 +10,7 @@ import (
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
 	runmod "github.com/felinics/twilight/agent/session/run"
+	"github.com/felinics/twilight/agent/session/unit"
 	"github.com/felinics/twilight/agent/session/writer"
 	"time"
 )
@@ -80,14 +81,17 @@ type Reader interface {
 }
 
 // Coordinator has no hidden state (TRN-SCP-3): every method reads the turn
-// surface and the machine projection first. Commands commit through the
-// Writer they are handed (TRN-SCP-4, TRN-API-1); Status reads through
-// Writers. It never drives a Run: it commits protocol transitions and
-// computes dispositions.
+// surface first. Every command is one unit of work (SES-ATM): the Turn's own
+// Part beside the chatlog's and the Run module's, prepared against one View
+// and appended as one commit. The Coordinator never encodes another module's
+// events and never drives a Run: it commits protocol transitions and computes
+// dispositions.
 type Coordinator struct {
 	// Projections is the lease-free read side for Status (AUTH-OWN-2).
 	Projections extension.ProjectionReader
-	Runtime     run.Runtime
+	// Runs is the Run module's Session adapter: it reads Runs for Status and
+	// contributes the Run Parts of every Turn unit.
+	Runs *runmod.SessionRunStore
 	// Now stamps event times; nil selects time.Now.
 	Now func() time.Time
 }
@@ -114,12 +118,16 @@ func owned(w writer.Writer, ref TurnRef) error {
 	return nil
 }
 
-// commit runs fn in the Session Writer and maps the outcome (TRN-STR-3).
-func (c *Coordinator) commit(ctx context.Context, w writer.Writer, op string, fn writer.CommitFn) error {
-	res, err := w.Commit(ctx, fn)
+// commit appends one unit of work and maps the outcome (TRN-STR-3). A
+// chatlog refusal (an input no longer submitted) is the Turn's conflict.
+func (c *Coordinator) commit(ctx context.Context, w writer.Writer, op string, work unit.Work) error {
+	res, err := unit.Commit(ctx, w, c.now(), work)
 	if err != nil {
-		if errors.Is(err, &extension.Error{Code: extension.ErrOwnershipLost}) {
+		switch {
+		case errors.Is(err, &extension.Error{Code: extension.ErrOwnershipLost}):
 			return fmt.Errorf("%w: %v", run.ErrOwnershipLost, err)
+		case errors.Is(err, chatlog.ErrNotSubmitted), errors.Is(err, runmod.ErrRunExists):
+			return fmt.Errorf("%w: %w", ErrConflict, err)
 		}
 		return err
 	}
@@ -131,6 +139,22 @@ func (c *Coordinator) commit(ctx context.Context, w writer.Writer, op string, fn
 	default:
 		return fmt.Errorf("turn: %s: %s: %s", op, res.Outcome, res.Detail)
 	}
+}
+
+func loadSurface(view writer.View) (TurnSurface, error) {
+	state, err := view.Projection(SurfaceProjectionID, SurfaceProjection.Version)
+	if err != nil {
+		return TurnSurface{}, err
+	}
+	return state.(TurnSurface), nil
+}
+
+// sessionBatch is one batch of Turn events in the session stream.
+func sessionBatch(now int64, events ...writer.TypedEvent) []writer.TypedBatch {
+	for i := range events {
+		events[i].RecordedAtUnixMilli = now
+	}
+	return []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: events}}
 }
 
 // --- Start ------------------------------------------------------------------------
@@ -159,94 +183,33 @@ func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req StartReque
 	if err != nil {
 		return TurnResponse{}, err
 	}
-	facts, err := run.ProtocolV1().BuildCreateGroup(newRun, req.Inputs)
-	if err != nil {
-		return TurnResponse{}, err
-	}
-	now := c.now()
-	err = c.commit(ctx, w, "start", func(view writer.View) (*writer.SemanticGroup, error) {
-		if view.Committed(commitID) {
-			group := c.startGroup(commitID, turnID, inputIDs, req, newRun, facts, now)
-			return &group, nil // exact replay: the Writer compares fingerprints
-		}
-		surface, err := loadSurface(view)
-		if err != nil {
-			return nil, err
-		}
-		if _, exists := surface.Turns[turnID]; exists {
-			return nil, fmt.Errorf("%w: turn %s already started", ErrConflict, turnID)
-		}
-		if _, active := surface.Active(); active {
-			return nil, fmt.Errorf("%w: session already has an active turn", ErrConflict)
-		}
-		if err := checkSubmitted(view, req.Inputs); err != nil {
-			return nil, err
-		}
-		group := c.startGroup(commitID, turnID, inputIDs, req, newRun, facts, now)
-		return &group, nil
-	})
-	if err != nil {
+	// TRN-STR-2: the Turn's facts, the chatlog's deliveries and the Run's
+	// creation are one unit; the chatlog Part enforces TRN-STR-1 (2) on the
+	// same View.
+	work := unit.Work{CommitID: commitID, Parts: []unit.Part{
+		unit.PartFunc(func(_ context.Context, view writer.View, now int64) ([]writer.TypedBatch, error) {
+			surface, err := loadSurface(view)
+			if err != nil {
+				return nil, err
+			}
+			if _, exists := surface.Turns[turnID]; exists {
+				return nil, fmt.Errorf("%w: turn %s already started", ErrConflict, turnID)
+			}
+			if _, active := surface.Active(); active {
+				return nil, fmt.Errorf("%w: session already has an active turn", ErrConflict)
+			}
+			return sessionBatch(now,
+				writer.TypedEvent{Type: TypeStarted, Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, Preset: req.Preset}},
+				writer.TypedEvent{Type: TypeAttemptStarted, Value: AttemptStartedPayload{TurnID: turnID, RunID: runID, Attempt: 1, SchemaVersion: newRun.SchemaVersion}},
+			), nil
+		}),
+		chatlog.DeliverInputs(chatlog.TurnID(turnID), req.Inputs),
+		runmod.CreateRun(newRun, req.Inputs),
+	}}
+	if err := c.commit(ctx, w, "start", work); err != nil {
 		return TurnResponse{}, err
 	}
 	return c.respond(ctx, req.Ref, runID)
-}
-
-func (c *Coordinator) startGroup(commitID session.CommitID, turnID TurnID, inputIDs []chatlog.InputID, req StartRequest, newRun run.NewRun, facts []run.Fact, now int64) writer.SemanticGroup {
-	group := writer.SemanticGroup{CommitID: commitID}
-	sessionEvents := []writer.TypedEvent{{Type: TypeStarted, RecordedAtUnixMilli: now,
-		Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, Preset: req.Preset}},
-		{Type: TypeAttemptStarted, RecordedAtUnixMilli: now,
-			Value: AttemptStartedPayload{TurnID: turnID, RunID: newRun.RunID, Attempt: newRun.Attempt, SchemaVersion: newRun.SchemaVersion}}}
-	for _, id := range inputIDs {
-		sessionEvents = append(sessionEvents, writer.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: now,
-			Value: chatlog.InputDeliveredPayload{InputID: id, TurnID: chatlog.TurnID(turnID)}})
-	}
-	runID := DeriveRunID(req.Ref.SessionID, turnID, 1)
-	runEvents := make([]writer.TypedEvent, 0, len(facts))
-	for _, f := range facts {
-		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: now, Value: runmod.Event{RunID: runID, Fact: f}})
-	}
-	group.Batches = []writer.TypedBatch{
-		{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: sessionEvents},
-		{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: string(runID)}, Events: runEvents},
-	}
-	return group
-}
-
-func loadSurface(view writer.View) (TurnSurface, error) {
-	state, err := view.Projection(SurfaceProjectionID, SurfaceProjection.Version)
-	if err != nil {
-		return TurnSurface{}, err
-	}
-	return state.(TurnSurface), nil
-}
-
-// checkSubmitted enforces TRN-STR-1 (2): each input is a submitted chatlog
-// Input whose Content equals the payload.
-func checkSubmitted(view writer.View, inputs []run.AgentInput) error {
-	if len(inputs) == 0 {
-		return nil
-	}
-	state, err := view.Projection(chatlog.SurfaceProjectionID, chatlog.SurfaceProjection.Version)
-	if err != nil {
-		return err
-	}
-	return checkSubmittedIn(state.(chatlog.Surface), inputs)
-}
-
-// checkSubmittedIn is TRN-STR-1(2) against a loaded chatlog surface: every
-// input is a submitted chatlog Input whose content equals the payload.
-func checkSubmittedIn(surface chatlog.Surface, inputs []run.AgentInput) error {
-	for _, in := range inputs {
-		view, ok := surface.Inputs.Get(chatlog.InputID(in.ID))
-		if !ok || view.Status != chatlog.InputSubmitted {
-			return fmt.Errorf("%w: input %s is not a submitted input", ErrConflict, in.ID)
-		}
-		if !view.Input.Content.Equal(in.Payload) {
-			return fmt.Errorf("%w: input %s payload differs from its submitted content", ErrConflict, in.ID)
-		}
-	}
-	return nil
 }
 
 // --- Deliver ----------------------------------------------------------------------
@@ -275,44 +238,27 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req DeliverR
 	if len(req.Inputs) == 0 {
 		return TurnResponse{}, fmt.Errorf("%w: deliver without inputs", ErrConflict)
 	}
-	proto, err := run.ProtocolFor(att.SchemaVersion)
+	schema, err := run.SchemaFor(att.SchemaVersion)
 	if err != nil {
 		return TurnResponse{}, err
 	}
 	// TRN-DLV-2: one command carries the whole batch, so the Run accepts every
-	// input and the chatlog delivers every input in one group, or nothing is
+	// input and the chatlog delivers every input in one unit, or nothing is
 	// written. The CommandID derives from the ordered InputIDs; a replay of
-	// the same batch is AlreadyApplied.
+	// the same batch is AlreadyApplied. The chatlog Part enforces TRN-DLV-1 on
+	// the unit's View, so a withdrawal landing between this read and the
+	// commit refuses the unit.
 	cmd := run.AcceptInput{Inputs: req.Inputs}
-	env, err := proto.BuildEnvelope(sid, runID, run.DeriveInputCommandID(runID, cmd.InputIDs()...), cmd)
+	env, err := schema.Wire.Envelope(runID, run.DeriveInputCommandID(runID, cmd.InputIDs()...), cmd)
 	if err != nil {
 		return TurnResponse{}, err
 	}
-	// TRN-DLV-1: the same check as Start, skipped for a replay of a batch the
-	// stream already holds (its inputs are delivered by then; Runtime.Commit
-	// answers AlreadyApplied or Conflict). The check runs before Runtime.Commit,
-	// so a withdrawal landing in between is not caught here; the chatlog
-	// projection pre-fold then rejects input_delivered for a non-submitted
-	// input and the whole group is refused, which keeps the outcome
-	// all-or-nothing.
-	replayed, err := w.OwnerExists(ctx, writer.CommitOwner(sid, session.CommitID(env.ID)))
+	accept, err := c.Runs.Command(ctx, run.CommitRequest{Command: env})
 	if err != nil {
 		return TurnResponse{}, err
 	}
-	if !replayed {
-		state, _, err := w.Projections().Load(ctx, sid, chatlog.SurfaceProjectionID, chatlog.SurfaceProjection.Version)
-		if err != nil {
-			return TurnResponse{}, err
-		}
-		if err := checkSubmittedIn(state.(chatlog.Surface), req.Inputs); err != nil {
-			return TurnResponse{}, err
-		}
-	}
-	attach := make([]run.ModuleEvent, len(req.Inputs))
-	for i, in := range req.Inputs {
-		attach[i] = run.ModuleEvent{Type: chatlog.TypeInputDelivered, Value: chatlog.InputDeliveredPayload{InputID: chatlog.InputID(in.ID), TurnID: chatlog.TurnID(req.Ref.TurnID)}}
-	}
-	if _, err := c.Runtime.Commit(ctx, w, run.CommitRequest{Command: env, Attach: attach}); err != nil {
+	work := unit.Work{CommitID: session.CommitID(env.ID), Parts: []unit.Part{accept, chatlog.DeliverInputs(chatlog.TurnID(req.Ref.TurnID), req.Inputs)}}
+	if err := c.commit(ctx, w, "deliver", work); err != nil {
 		if errors.Is(err, run.ErrRunTerminal) {
 			// The last step settled first (TRN-DLV-3): the inputs stay submitted.
 			return c.respond(ctx, req.Ref, runID)
@@ -329,66 +275,60 @@ func (c *Coordinator) Retry(ctx context.Context, w writer.Writer, req RetryReque
 		return TurnResponse{}, err
 	}
 	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
-	var runID run.RunID
-	now := c.now()
-	err := c.commit(ctx, w, "retry", func(v writer.View) (*writer.SemanticGroup, error) {
-		surface, err := loadSurface(v)
-		if err != nil {
-			return nil, err
-		}
-		view, ok := surface.Turns[turnID]
-		if !ok || req.PreviousRunID == "" {
-			return nil, fmt.Errorf("%w: retry requires a previous run of turn %s", ErrConflict, turnID)
-		}
-		var previous *AttemptView
-		for i := range view.Attempts {
-			if view.Attempts[i].RunID == req.PreviousRunID {
-				previous = &view.Attempts[i]
-				break
-			}
-		}
-		if previous == nil {
-			return nil, fmt.Errorf("%w: run %s does not belong to turn %s", ErrConflict, req.PreviousRunID, turnID)
-		}
-		attempt := previous.Attempt + 1
-		runID = DeriveRunID(sid, turnID, attempt)
-		commitID := RetryCommitID(sid, turnID, attempt)
-		// A committed retry keeps its identity as later attempts advance.
-		if v.Committed(commitID) {
-			return nil, nil
-		}
-		if view.Status != TurnAttemptFailed || view.LastAttempt().RunID != req.PreviousRunID {
-			return nil, fmt.Errorf("%w: run %s is not the latest failed attempt of turn %s", ErrConflict, req.PreviousRunID, turnID)
-		}
-		if _, active := surface.Active(); active {
-			return nil, fmt.Errorf("%w: session already has an active turn", ErrConflict)
-		}
-		newRun, err := run.BuildNewRunFor(runID, run.OwnerID(turnID), attempt, es.CausationID(commitID))
-		if err != nil {
-			return nil, err
-		}
-		inputs, err := deliveredInputs(v, view.InputIDs)
-		if err != nil {
-			return nil, err
-		}
-		facts, err := run.ProtocolV1().BuildCreateGroup(newRun, inputs)
-		if err != nil {
-			return nil, err
-		}
-		runEvents := make([]writer.TypedEvent, 0, len(facts))
-		for _, f := range facts {
-			runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: now, Value: runmod.Event{RunID: runID, Fact: f}})
-		}
-		group := &writer.SemanticGroup{CommitID: commitID, Batches: []writer.TypedBatch{
-			{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{
-				{Type: TypeAttemptStarted, RecordedAtUnixMilli: now,
-					Value: AttemptStartedPayload{TurnID: turnID, RunID: runID, Attempt: attempt, SchemaVersion: newRun.SchemaVersion}},
-			}},
-			{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: string(runID)}, Events: runEvents},
-		}}
-		return group, nil
-	})
+	surface, err := ReadSurface(ctx, w.Projections(), sid)
 	if err != nil {
+		return TurnResponse{}, err
+	}
+	view, ok := surface.Turns[turnID]
+	if !ok || req.PreviousRunID == "" {
+		return TurnResponse{}, fmt.Errorf("%w: retry requires a previous run of turn %s", ErrConflict, turnID)
+	}
+	var previous *AttemptView
+	for i := range view.Attempts {
+		if view.Attempts[i].RunID == req.PreviousRunID {
+			previous = &view.Attempts[i]
+			break
+		}
+	}
+	if previous == nil {
+		return TurnResponse{}, fmt.Errorf("%w: run %s does not belong to turn %s", ErrConflict, req.PreviousRunID, turnID)
+	}
+	attempt := previous.Attempt + 1
+	runID := DeriveRunID(sid, turnID, attempt)
+	commitID := RetryCommitID(sid, turnID, attempt)
+	newRun, err := run.BuildNewRunFor(runID, run.OwnerID(turnID), attempt, es.CausationID(commitID))
+	if err != nil {
+		return TurnResponse{}, err
+	}
+	// TRN-RTY-1: the new attempt replays the Turn's delivered inputs. They
+	// are read here and checked again inside the unit: a Turn that is not
+	// active receives no delivery, so its InputIDs cannot move meanwhile.
+	inputs, err := deliveredInputs(ctx, w.Projections(), sid, view.InputIDs)
+	if err != nil {
+		return TurnResponse{}, err
+	}
+	work := unit.Work{CommitID: commitID, Parts: []unit.Part{
+		unit.PartFunc(func(_ context.Context, v writer.View, now int64) ([]writer.TypedBatch, error) {
+			surface, err := loadSurface(v)
+			if err != nil {
+				return nil, err
+			}
+			cur, ok := surface.Turns[turnID]
+			if !ok || cur.Status != TurnAttemptFailed || cur.LastAttempt().RunID != req.PreviousRunID {
+				return nil, fmt.Errorf("%w: run %s is not the latest failed attempt of turn %s", ErrConflict, req.PreviousRunID, turnID)
+			}
+			if _, active := surface.Active(); active {
+				return nil, fmt.Errorf("%w: session already has an active turn", ErrConflict)
+			}
+			if len(cur.InputIDs) != len(inputs) {
+				return nil, fmt.Errorf("%w: inputs of turn %s changed during retry", ErrConflict, turnID)
+			}
+			return sessionBatch(now, writer.TypedEvent{Type: TypeAttemptStarted,
+				Value: AttemptStartedPayload{TurnID: turnID, RunID: runID, Attempt: attempt, SchemaVersion: newRun.SchemaVersion}}), nil
+		}),
+		runmod.CreateRun(newRun, inputs),
+	}}
+	if err := c.commit(ctx, w, "retry", work); err != nil {
 		return TurnResponse{}, err
 	}
 	return c.respond(ctx, req.Ref, runID)
@@ -396,8 +336,8 @@ func (c *Coordinator) Retry(ctx context.Context, w writer.Writer, req RetryReque
 
 // deliveredInputs rebuilds the AgentInputs of a Turn from the chatlog surface,
 // in TurnView.InputIDs order (TRN-RTY-1).
-func deliveredInputs(view writer.View, ids []chatlog.InputID) ([]run.AgentInput, error) {
-	state, err := view.Projection(chatlog.SurfaceProjectionID, chatlog.SurfaceProjection.Version)
+func deliveredInputs(ctx context.Context, reader extension.ProjectionReader, sid session.SessionID, ids []chatlog.InputID) ([]run.AgentInput, error) {
+	state, _, err := reader.Load(ctx, sid, chatlog.SurfaceProjectionID, chatlog.SurfaceProjection.Version)
 	if err != nil {
 		return nil, err
 	}
@@ -431,18 +371,27 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest
 		return TurnResponse{}, fmt.Errorf("%w: turn %s has no active attempt", ErrConflict, turnID)
 	}
 	runID := att.RunID
-	proto, err := run.ProtocolFor(att.SchemaVersion)
+	schema, err := run.SchemaFor(att.SchemaVersion)
 	if err != nil {
 		return TurnResponse{}, err
 	}
-	env, err := proto.BuildEnvelope(sid, runID, CancelCommandID(sid, turnID, runID), run.CancelRun{})
+	env, err := schema.Wire.Envelope(runID, CancelCommandID(sid, turnID, runID), run.CancelRun{})
 	if err != nil {
 		return TurnResponse{}, err
 	}
 	// CancelRun rebases on the current state; no Base and no machine read.
-	_, err = c.Runtime.Commit(ctx, w, run.CommitRequest{Command: env,
-		Attach: []run.ModuleEvent{{Type: TypeFailed, Value: FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementStopped, FailureClass: "cancelled"}}}})
-	if err != nil && !errors.Is(err, run.ErrRunTerminal) {
+	// The Run's cancellation and the Turn's failed settlement are one unit.
+	cancel, err := c.Runs.Command(ctx, run.CommitRequest{Command: env})
+	if err != nil {
+		return TurnResponse{}, err
+	}
+	work := unit.Work{CommitID: session.CommitID(env.ID), Parts: []unit.Part{cancel,
+		unit.PartFunc(func(_ context.Context, _ writer.View, now int64) ([]writer.TypedBatch, error) {
+			return sessionBatch(now, writer.TypedEvent{Type: TypeFailed,
+				Value: FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementStopped, FailureClass: "cancelled"}}), nil
+		}),
+	}}
+	if err := c.commit(ctx, w, "stop", work); err != nil && !errors.Is(err, run.ErrRunTerminal) {
 		return TurnResponse{}, err
 	}
 	return c.respond(ctx, req.Ref, runID)
@@ -453,25 +402,30 @@ func (c *Coordinator) Settle(ctx context.Context, w writer.Writer, req SettleReq
 		return TurnResponse{}, err
 	}
 	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
-	var runID run.RunID
-	now := c.now()
-	err := c.commit(ctx, w, "settle", func(v writer.View) (*writer.SemanticGroup, error) {
-		surface, err := loadSurface(v)
-		if err != nil {
-			return nil, err
-		}
-		view, ok := surface.Turns[turnID]
-		if !ok || view.Status != TurnAttemptFailed {
-			return nil, fmt.Errorf("%w: turn %s is not attempt_failed", ErrConflict, turnID)
-		}
-		runID = view.LastAttempt().RunID
-		return &writer.SemanticGroup{CommitID: SettleCommitID(sid, turnID, runID), Batches: []writer.TypedBatch{{
-			Stream: session.StreamRef{Kind: session.StreamKindSession},
-			Events: []writer.TypedEvent{{
-				Type: TypeFailed, RecordedAtUnixMilli: now,
-				Value: FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementFailed, FailureClass: req.FailureClass}}}}}}, nil
-	})
+	surface, err := ReadSurface(ctx, w.Projections(), sid)
 	if err != nil {
+		return TurnResponse{}, err
+	}
+	view, ok := surface.Turns[turnID]
+	if !ok || view.Status != TurnAttemptFailed {
+		return TurnResponse{}, fmt.Errorf("%w: turn %s is not attempt_failed", ErrConflict, turnID)
+	}
+	runID := view.LastAttempt().RunID
+	work := unit.Work{CommitID: SettleCommitID(sid, turnID, runID), Parts: []unit.Part{
+		unit.PartFunc(func(_ context.Context, v writer.View, now int64) ([]writer.TypedBatch, error) {
+			surface, err := loadSurface(v)
+			if err != nil {
+				return nil, err
+			}
+			cur, ok := surface.Turns[turnID]
+			if !ok || cur.Status != TurnAttemptFailed || cur.LastAttempt().RunID != runID {
+				return nil, fmt.Errorf("%w: turn %s is not attempt_failed", ErrConflict, turnID)
+			}
+			return sessionBatch(now, writer.TypedEvent{Type: TypeFailed,
+				Value: FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementFailed, FailureClass: req.FailureClass}}), nil
+		}),
+	}}
+	if err := c.commit(ctx, w, "settle", work); err != nil {
 		return TurnResponse{}, err
 	}
 	return c.respond(ctx, req.Ref, runID)
@@ -525,7 +479,7 @@ func (c *Coordinator) responseFor(ctx context.Context, ref TurnRef, view *TurnVi
 		resp.Disposition = ResumeFinished
 		return resp, nil
 	}
-	record, err := c.Runtime.Record(ctx, ref.SessionID, att.RunID)
+	record, err := c.Runs.Record(ctx, ref.SessionID, att.RunID)
 	if err != nil {
 		if errors.Is(err, run.ErrRunNotFound) && att.End != nil {
 			// The attempt ran in a parent Session: its Run is not this
