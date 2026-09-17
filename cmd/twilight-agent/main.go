@@ -27,12 +27,12 @@ import (
 )
 
 type agentOptions struct {
-	root, provider, baseURL, apiKey, modelID, compat, system string
-	sid                                                      session.SessionID
-	mock                                                     bool
-	compactAfter                                             int
-	endpoint, mode, address                                  string
-	toolDelay                                                time.Duration
+	root, provider, baseURL, modelID, compat, system string
+	sid                                              session.SessionID
+	mock                                             bool
+	compactAfter                                     int
+	endpoint, mode, address                          string
+	toolDelay                                        time.Duration
 }
 
 func main() {
@@ -41,7 +41,6 @@ func main() {
 		sid      = flag.String("session", "default", "session id; reopening the same id resumes its history")
 		provider = flag.String("provider", "openai-completions", "model provider (only openai-completions)")
 		baseURL  = flag.String("base-url", "", "provider base URL (default: the provider's public endpoint)")
-		apiKey   = flag.String("api-key", "", "provider API key (default: $TWILIGHT_API_KEY)")
 		modelID  = flag.String("model", "", "model id, e.g. gpt-4o or deepseek-chat (required unless -mock)")
 		compat   = flag.String("compat", "", "provider compatibility profile: deepseek")
 		system   = flag.String("system", "", "system prompt")
@@ -65,7 +64,7 @@ func main() {
 		if *listen == "" {
 			*listen = "127.0.0.1:8089"
 		}
-		models, tools, _, buildErr := buildAgent(*mock, *provider, *baseURL, *apiKey, *modelID, *compat, *system)
+		models, tools, _, buildErr := buildAgent(*mock, *provider, *baseURL, *modelID, *compat, *system)
 		if buildErr != nil {
 			err = buildErr
 			break
@@ -77,7 +76,7 @@ func main() {
 			*listen = "127.0.0.1:8088"
 		}
 		err = runAgent(agentOptions{root: *root, sid: session.SessionID(*sid), provider: *provider,
-			baseURL: *baseURL, apiKey: *apiKey, modelID: *modelID, compat: *compat, system: *system,
+			baseURL: *baseURL, modelID: *modelID, compat: *compat, system: *system,
 			mock: *mock, compactAfter: *compactN, endpoint: *endpoint, toolDelay: *delay, mode: *mode, address: *listen})
 	}
 	if err != nil {
@@ -104,7 +103,7 @@ func runAgent(o agentOptions) error {
 		err    error
 	)
 	if o.endpoint == "" {
-		models, tools, preset, err = buildAgent(o.mock, o.provider, o.baseURL, o.apiKey, o.modelID, o.compat, o.system)
+		models, tools, preset, err = buildAgent(o.mock, o.provider, o.baseURL, o.modelID, o.compat, o.system)
 		if err == nil {
 			tools[0] = nowTool{delay: o.toolDelay}
 		}
@@ -296,7 +295,7 @@ func printToolActivity(events <-chan app.Event) {
 
 // buildAgent returns the effect capabilities and the AgentPreset. The app
 // builder performs the actual authority/executor assembly.
-func buildAgent(mock bool, provider, baseURL, apiKey, modelID, compat, system string) (map[run.ModelRef]loop.ModelInvoker, []loop.ExecutableTool, turn.AgentPreset, error) {
+func buildAgent(mock bool, provider, baseURL, modelID, compat, system string) (map[run.ModelRef]loop.ModelInvoker, []loop.ExecutableTool, turn.AgentPreset, error) {
 	if mock {
 		tool := nowTool{}
 		models := map[run.ModelRef]loop.ModelInvoker{"mock": mockModel{}}
@@ -309,11 +308,11 @@ func buildAgent(mock bool, provider, baseURL, apiKey, modelID, compat, system st
 	if modelID == "" {
 		return nil, nil, turn.AgentPreset{}, errors.New("-model is required (or use -mock)")
 	}
+	// The key is read from the environment only: a flag value would be visible
+	// in the process list and in shell history.
+	apiKey := os.Getenv("TWILIGHT_API_KEY")
 	if apiKey == "" {
-		apiKey = os.Getenv("TWILIGHT_API_KEY")
-	}
-	if apiKey == "" {
-		fmt.Fprintln(os.Stderr, "warning: no API key (-api-key or $TWILIGHT_API_KEY)")
+		fmt.Fprintln(os.Stderr, "warning: no API key ($TWILIGHT_API_KEY is empty)")
 	}
 	var opts []completions.Option
 	if baseURL != "" {

@@ -122,7 +122,7 @@ unsettled Turn 是尚未 completed、failed 或 superseded 的 `started`。
 
 **TRN-EVT-3** stream 内每个 TurnID 至多一条 `started`，至多一条 `completed` / `failed` / `superseded`。
 
-**TRN-PRJ-1** ProjectionID 为 `twilight/turn/surface`。只消费 session stream 事件：`twilight/turn/started|attempt_started|attempt_failed|completed|failed|superseded` 与 `twilight/chatlog/input_delivered`，其他事件按 EXT-PRJ-2 处理：
+**TRN-PRJ-1** ProjectionID 为 `twilight/turn/surface`。只消费 session stream 事件：`twilight/turn/started|attempt_started|attempt_failed|completed|failed|superseded` 与 `twilight/chatlog/input_delivered`，其他事件按 EXT-PRJ-2 处理。`completed` 与 `attempt_failed` 的 RunID 必须是该 Turn 已登记且 `End` 为空的 attempt；指向未登记 RunID 或已终结 attempt 的事件在 fold 阶段报错，不写入：
 
 ```go
 type TurnStatus string
@@ -347,7 +347,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 - **TRN-RTY-1、TRN-RTY-2、TRN-RTY-3**：新 Retry 对缺失、错误或非最新失败的 `PreviousRunID`、非 `attempt_failed` Turn、已有其他 `active` Turn 的 Session 返回 conflict；合法请求得到 attempt n+1、`twilight/turn/retry` 派生的 CommitID、`run_created` 加全部已 delivered 输入按 `InputIDs` 顺序的 `input_accepted`（payload 同首次）；surface 的 `InputIDs` 唯一，失败 attempt 的记录保留。相同 RetryRequest 在后继 active、后继失败、另一 Turn active、更晚 Retry 和接管后均返回原 RunID 与 Attempt，stream 长度保持不变；后续新 Retry 以新的失败 RunID 为 PreviousRunID。
 - **TRN-STP-1、TRN-STP-2、TRN-STL-1、TRN-EVT-3**：Stop 的 `CancelRun` 与 `failed{stopped, cancelled}` 在以 Cancel CommandID 为 CommitID 的同一 commit，其中含 `run_ended`；Settle 需要 `attempt_failed`，写 `failed{failed, FailureClass}`，CommitID 为 `twilight/turn/settle` 派生值；已结算（stopped、failed、completed）的 Turn 上 Stop、新 Retry、Settle、Deliver 返回 conflict，历史 Retry 仍按 TRN-RTY-2 确认原提交；completed 由 companion 在 Run 终结的同一组写入。
 - **TRN-STA-1、TRN-API-3**：Open 的 Run 无 disposition 与 Waiting；模型 Executing 为 `waiting_for_recovery`；approval 调用为 `waiting_for_response` 且 `Waiting` 含该请求；completed 与 Application 取消的 Run 为 `finished`，`End` 分别为 completed 与 stopped；不存在的 Turn 为 conflict。
-- **TRN-PRJ-1、TRN-EVT-3、TRN-SCP-2/3**：Owner 不是本 Session Turn 的 Run 不进入 surface；第二条 `started`、未知 Turn 的结算、第二次结算、结算后的 `completed` 在 fold 阶段被拒且不写入；`run_ended` 写入 `AttemptView.End` 并使未结算 Turn 进入 `attempt_failed`、清空 `ActiveRun`；`Order` 按 started 顺序；结算后的 Session 没有活跃 Turn。
+- **TRN-PRJ-1、TRN-EVT-3、TRN-SCP-2/3**：Owner 不是本 Session Turn 的 Run 不进入 surface；第二条 `started`、未知 Turn 的结算、第二次结算、结算后的 `completed`、指向未登记 RunID 或已有 `End` 的 attempt 的 `completed` 与 `attempt_failed` 在 fold 阶段被拒且不写入；`run_ended` 写入 `AttemptView.End` 并使未结算 Turn 进入 `attempt_failed`、清空 `ActiveRun`；`Order` 按 started 顺序；结算后的 Session 没有活跃 Turn。
 - **TRN-REC-1、TRN-REC-2、TRN-SCP-3**：`started` 提交后接管，`RecoverInterrupted` 处置 0 个目标，Status 仅从投影重建为 `active`；模型 Executing 时接管，处置 1 个目标后 disposition 不再是 `waiting_for_recovery`；被替代的 Coordinator 的 Deliver 得到 `ErrOwnershipLost` 且不改变输入状态，新 owner 的 Deliver 成功。
 - **TRN-CMP-1 至 TRN-MAP-4**：companion 纯函数、v1 映射表、`SourceDigest` 等于 Run fact 记录值、companion 中的 ReferencePart 经 admission 并建立 claim、同组可见性，由 RUN-CMP-2 套件经 Runtime 的组构成观察。
 - **TRN-DLV-3** 的并发定序（输入与最后一步结果的两种先后）由 Writer 串行保证，单进程套件不构造并发，以 Deliver 对已终结 Run 的 `completed` 响应作为可观察结果。

@@ -128,10 +128,20 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
+// writeError maps the error classes the handlers surface onto HTTP statuses:
+// a turn conflict and every kernel conflict (duplicate CommitID, owned or
+// superseded Session) are 409, an unknown Session is 404, a malformed request
+// is 400, and anything else is 500.
 func writeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
-	if errors.Is(err, turn.ErrConflict) {
+	switch {
+	case errors.Is(err, turn.ErrConflict), session.IsCode(err, session.ErrConflict),
+		session.IsCode(err, session.ErrOwned), session.IsCode(err, session.ErrOwnershipLost):
 		status = http.StatusConflict
+	case session.IsCode(err, session.ErrNotFound):
+		status = http.StatusNotFound
+	case session.IsCode(err, session.ErrInvalid):
+		status = http.StatusBadRequest
 	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }

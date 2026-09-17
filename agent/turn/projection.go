@@ -126,10 +126,8 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		for i := range v.Attempts {
-			if v.Attempts[i].RunID == p.RunID {
-				v.Attempts[i].End = &p.End
-			}
+		if err := v.end(p.RunID, &p.End); err != nil {
+			return nil, err
 		}
 		v.Status, v.ActiveRun = TurnCompleted, ""
 		s.Turns[p.TurnID] = v
@@ -169,10 +167,8 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		if !ok {
 			return nil, fmt.Errorf("turn %s attempt failure before started", p.TurnID)
 		}
-		for i := range v.Attempts {
-			if v.Attempts[i].RunID == p.RunID {
-				v.Attempts[i].End = &p.End
-			}
+		if err := v.end(p.RunID, &p.End); err != nil {
+			return nil, err
 		}
 		v.ActiveRun = ""
 		if v.Status == TurnActive {
@@ -197,6 +193,24 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		return nil, fmt.Errorf("turn surface: unexpected %T", e.Value)
 	}
 	return s, nil
+}
+
+// end records the terminal result of the attempt behind runID. A settlement
+// naming a Run the Turn never started, or an attempt that already ended, is a
+// fold error rather than a silent no-op: the surface would otherwise report
+// the Turn settled with no attempt carrying the result.
+func (v *TurnView) end(runID run.RunID, result *run.RunEnded) error {
+	for i := range v.Attempts {
+		if v.Attempts[i].RunID != runID {
+			continue
+		}
+		if v.Attempts[i].End != nil {
+			return fmt.Errorf("turn %s attempt %s ended twice", v.TurnID, runID)
+		}
+		v.Attempts[i].End = result
+		return nil
+	}
+	return fmt.Errorf("turn %s has no attempt %s", v.TurnID, runID)
 }
 
 func (s *TurnSurface) settling(id TurnID) (TurnView, error) {

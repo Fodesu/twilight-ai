@@ -160,8 +160,9 @@ func (h *harness) submitInputs(inputs ...run.AgentInput) {
 	}
 }
 
-// startGroup is TRN-STR-2 without a Coordinator: turn/started, input_delivered*,
-// run/created, input_accepted*. Owner is the TurnID.
+// startGroup is TRN-STR-2 without a Coordinator: turn/started,
+// turn/attempt_started, input_delivered*, run/created, input_accepted*. Owner
+// is the TurnID.
 func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32, inputs ...run.AgentInput) writer.SemanticGroup {
 	h.t.Helper()
 	newRun, err := run.BuildNewRunFor(runID, run.OwnerID(turnID), attempt, "")
@@ -182,6 +183,13 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 		sessionEvents = append(sessionEvents, writer.TypedEvent{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
 			Value: turn.StartedPayload{TurnID: turnID, InputIDs: ids, Preset: turn.PresetRef{ID: "b", Digest: "sha256:b"},
 				Companion: turn.CompanionV1Version}})
+	}
+	// The Coordinator announces every attempt, initial or retry, with
+	// turn/attempt_started; without it the surface has no open attempt for the
+	// Run and rejects the companion's settlement (TRN-PRJ-1).
+	sessionEvents = append(sessionEvents, writer.TypedEvent{Type: turn.TypeAttemptStarted, RecordedAtUnixMilli: 1,
+		Value: turn.AttemptStartedPayload{TurnID: turnID, RunID: runID, Attempt: attempt, SchemaVersion: newRun.SchemaVersion}})
+	if attempt == 1 {
 		for _, id := range ids {
 			sessionEvents = append(sessionEvents, writer.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: 1,
 				Value: chatlog.InputDeliveredPayload{InputID: id, TurnID: chatlog.TurnID(turnID)}})
