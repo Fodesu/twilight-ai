@@ -14,7 +14,6 @@ agent-run.md                  Run machine、Runtime、Loop、Executor contract
 agent-turn.md                 Turn、attempt、input routing、结算投影
 agent-decision.md             PromptBuilder 与决策组件目录
 agent-runtime.md              authority 组装与 Session 所有权、driver、spawn、app 策略
-agent-run-exe-revision.md     RUN-EXE 修订稿（未实现）：ExecutionRef、Backend 契约、backend 一次选择
 agent-workspace.md            可选 Workspace/Runtime/TargetRef domain
 ```
 

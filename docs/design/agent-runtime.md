@@ -178,13 +178,13 @@ func (s *Session) Close(ctx) error
 
 ## 8. 子代理（spawn）
 
-**SPN-1** 子代理是一个由 ToolCall 启动的普通 Session。模型调用 spawn 工具（默认 `agent_spawn`，经 `Config.Spawn` 配置 Tool、命名 Preset 解析与最大深度）；`spawn.Intercept` 在部署 Executor 之前拦截该工具的 Assignment 交给 `spawn.Executor`。工具定义、参数与结果形状、派生身份、定义摘要核对、深度与重放冲突判定在 `agent/spawn` 协议部分；`spawn.Executor` 只做子 Session 的创建与结算状态机：`Authority.Open(child)` 取得子的 Handle，经 `turn.Commands.Start`、`driver.Drive` 与 `chatlog.Commands.Submit` 推进，不经 app 门面。Run 事实本体不新增子代理生命周期：父只看到一个以子代理回复完成的工具调用。
+**SPN-1** 子代理是一个由 ToolCall 启动的普通 Session。模型调用 spawn 工具（默认 `agent_spawn`，经 `Config.Spawn` 配置 Tool、命名 Preset 解析与最大深度）；`spawn.Executor` 是 Worker 的一个 Backend（provider `twilight/session`），`app.Build` 以 `spawn.Route` 把该工具的 Assignment 路由给它，其余 Assignment 走默认 backend（RUN-EXE-10）。工具定义、参数与结果形状、派生身份、定义摘要核对、深度与重放冲突判定在 `agent/spawn` 协议部分；Backend 部分只做子 Session 的创建与结算状态机：`Authority.Open(child)` 取得子的 Handle，经 `turn.Commands.Start`、`driver.Drive` 与 `chatlog.Commands.Submit` 推进，不经 app 门面；子 Turn 静止于 `waiting_for_recovery` 时等待控制面收养其执行后继续驱动。Run 事实本体不新增子代理生命周期：父只看到一个以子代理回复完成的工具调用。
 
-**SPN-2** 调用到子 Session 的绑定是派生的，不单独存储：`ChildSessionID = spawn.ChildID(parent, runID, callID)`（preimage `twilight/spawn/child`）；子段创建元数据在 `twilight/spawn` 键下记录完整 provenance（父 Session、父 Run、CallID、深度、全量参数），接管方据此在崩溃后重建同一调用。同一 CallID 以不同参数重放在 Validate 与 drive 两侧都被拒绝（RUN-EXE-3）。经持久 Worker 部署时 `PrepareBinding` 返回 `ExecutionBinding{Provider: twilight/session, ExecutionRef: child}`，由 execution store 随调用记录持久化。
+**SPN-2** 调用到子 Session 的绑定是派生的：`ChildSessionID = spawn.ChildID(parent, runID, callID)`（preimage `twilight/spawn/child`），它就是该执行的 Ref，`Prepare` 直接计算，Worker 把 `ExecutionRef{twilight/session, child}` 随 record 持久化（RUN-EXE-9）；子段创建元数据在 `twilight/spawn` 键下记录完整 provenance（父 Session、父 Run、CallID、深度、全量参数），收养据此重建同一调用。同一 CallID 以不同参数重放在 Validate 与 drive 两侧都被拒绝（RUN-EXE-3）。
 
 **SPN-3** 嵌套深度从 provenance 链得出：未由 spawn 创建的 Session 深度为 0，子的深度为父深度加一。深度达到 `Options.MaxDepth`（默认 3）的 Session 发起 spawn 调用在开始前被拒（FailureExecution），不创建子 Session。
 
-**SPN-4** 崩溃接管沿既有 RUN-CMT-7 Attach 路径：新进程对 Executing 的 spawn 调用执行 Attach 时，本地无记录则以派生 ChildID 查 `SessionStore.Record`——子存在即收养（参数取子 provenance）继续同一调用，不存在交回内层 Executor。`Application.Close` 取消本进程的全部 drive，子的 Turn 保持 active 等待收养。
+**SPN-4** 崩溃接管沿 RUN-CMT-7 与 RUN-EXE-10：新进程对 Executing 的 spawn 调用执行 Attach 时查 Worker 的 record——record 缺失即 `missing`，按 RUN-CMT-7 处置，子 Session 保留在 Session store 中但不再被自动继续；record 存在而 owner 已死时为 `orphaned`，由控制面（Worker 的 reconcile 循环或显式 Takeover）在租约过期后收养，spawn Backend 的 `Attach(ref)` 对本地无 drive 的已存在子 Session 以其 provenance 重建调用并继续驱动。因此跨进程收养要求持久 record store（`Config.Executions` 为文件或共享实现）；内存 record store 下崩溃后的 spawn 调用按 `missing` 处置。`Application.Close` 取消本进程的全部 drive，子的 Turn 保持 active 等待收养。
 
 **SPN-5** 模式 `spawn`（默认）从空 Session 起；`fork` 以 `turn.History.PrefixCommit` 为根，即父在调用 Turn 及其输入之前的全部历史，子拿到的是当前 Turn 开始之前的对话。结算依子的持久状态推进：有 active Turn 则驱动至结算；有 submitted 输入则以其开新 Turn 并驱动；否则比较最新输入与 task——相同且已有 Turn 则读取已结算结果，不同则提交 task 开新 Turn（fork 子的前缀只含已交付对话的情形）。一个子每个 task 只运行一个 Turn，不排空积压。子 Turn 非 `completed` 时调用失败。
 
@@ -207,7 +207,8 @@ chatlog     = chatlog.Commands{Clock}
 driver      = driver.New{runtime, turns, Executor, Presets, Decisions, Sources{projections, content}, Targets, Fail}   // 规划读经传入 Writer 的投影
                                                                   // Loop 按 PresetRef 在 driver 内组合并缓存
 // app.Build
-executor    = Config.Spawn != nil → spawn.Intercept(spawn.Executor, port) else port
+routes      = [spawn.Route(spawn.Executor)]? + Default(local | port | remote)          // backend 选择一次，持久化为 ExecutionRef.Provider
+executor    = executor.NewWorker(ctx, Config.Executions or memory store, routes, Config.Worker)  // 本地模式恒经 Worker；Port/远端仅在配置 spawn 时经 Worker
 authority   = authority.New(Ports{..., Executor: executor, Observers: [observe.Bus, Config.Observers...], Fail: warn+bus.Failed})
 spawn.Bind(authority)                                            // 子经 Authority.Open + turn/chatlog/driver 命令驱动
 ```
@@ -224,7 +225,6 @@ spawn.Bind(authority)                                            // 子经 Autho
 
 ## 12. 未决
 
-- **effect.Port 的可组合性**：`spawn.Intercept` 需要为 Port 与 BindingPort 的每个生命周期方法各转发一次，按 Assignment 内容或 key 归属判定路由。修订方案见 [agent-run-exe-revision.md](agent-run-exe-revision.md)：backend 选择只在 execution 创建时发生一次并作为 `ExecutionRef` 持久化进 record，此后生命周期只认 record；spawn 成为一个 backend，Intercept 删除。
 - **公共读取的成本**：`extension.NewProjectionReader` 每次 Load 从最近的缓存条目起折叠尾部提交，`CacheEvery` 决定尾部长度；`Coordinator.Status`、prompt 构造之外的应用读取都走这条路。命令路径（Loop 的 `Runtime.Load`）读 Writer 内存投影，不受影响。若公共读取成为瓶颈，后续是 owner 进程内一份随 Writer 更新、按 head 校验的只读缓存，仍不经 `Writers`。
 - **重复 Open 的策略**：当前同一 authority 内一个 Session 同时只有一代所有权（`ErrSessionOpen`）；若产品需要两个门面共享一个 Session，替代方案是共享 openSession 加引用计数。
 
@@ -240,6 +240,6 @@ spawn.Bind(authority)                                            // 子经 Autho
 - **APP-SES-1/2/3**：OpenSession 顺序；Send 的首个 Result 与排空 Result；并发 Send 的 `already_driving` 收敛。
 - **APP-SES-4、OBS-1**：Submit 在模型仍阻塞时已返回且 Turn 为 active；事件流按 Seq 顺序交付该 Turn 的 `started`、`attempt_started` 与其 Run 的 `run_ended`；后台驱动失败以 `Event{Err}` 与 `Config.Warn` 报告；同一 Session 上 Send 仍阻塞到 Result。
 - **APP-CKP-1/2**：Compact 的模型请求经 Executor 到达模型；压缩后下一请求以 summary 开头且只含 retained 后缀；重启进程组装同一上下文；active Turn 时 Compact 为 conflict；封闭校验的四类边界。
-- **SPN-1..5**：spawn 调用以派生身份建子 Session 并以子回复完成父的工具调用；fork 模式拿到当前 Turn 之前的对话且收到 task；参数错误、未知命名 Preset 与深度超限在开始前被拒且不建子；所有者进程在子模型调用中途退出后，新进程收养同一调用并完成父 Turn；收养后子的 Turn 数与输入数不变。
+- **SPN-1..5**：spawn 调用以派生身份建子 Session 并以子回复完成父的工具调用；fork 模式拿到当前 Turn 之前的对话且收到 task；参数错误、未知命名 Preset 与深度超限在开始前被拒且不建子；共享文件 record store 下所有者进程在子模型调用中途退出后（对接管方而言租约已过期），新进程的 reconcile 循环收养同一调用并完成父 Turn，收养后子的 Turn 数与输入数不变；spawn 工具的 Assignment 落到 `twilight/session` provider。
 - **APP-MEM-2**：`CacheEvery` 到达 Writer；machine projection 从不被 Writer 写入。
 - **AUTH-FRK-1/2**：在某 Turn 之前 fork 得到的子 Session 只含该 Turn 之前的回答且其输入仍待投递；`Drain` 以同一输入重新生成，`Withdraw` 后 `Send` 以新输入替代；两个子都读到共享前缀的冻结正文；父的 head 不变；每个子的首个自身 Commit 从 anchor 续链；未知 Turn 与自身为父被拒。

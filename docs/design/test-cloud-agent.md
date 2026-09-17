@@ -173,7 +173,7 @@ retry 和工具 Unknown。任何恢复路径都不得自动再次执行 Unknown 
 Executor contract，至少验证：
 
 - dispatch replay 不重复调用 backend；
-- persisted ExecutionBinding 在 attach/status/outcome/cancel 中保持不变；
+- persisted ExecutionRef 在 attach/status/outcome/cancel 中保持不变，backend 选择只发生在 Dispatch；
 - read error 不改变 execution state；
 - HTTP transport 的 4xx、5xx、取消和响应丢失分类稳定。
 

@@ -422,7 +422,7 @@ FrozenValueStore 的 `Put` 幂等且内容寻址，在进入 Writer 之前完成
 
 ### 5.1 不进入 stream 的数据
 
-Executor 的 in-flight 表可以只是进程内缓存；跨 Worker 恢复所需的是 durable Execution Record。投影缓存是可丢弃的派生数据（EXT-PRJ-3）；`FrozenValueStore` 是 Authority 侧的内容寻址旁存。Worker crash 后，接管者从共享 Execution Store 获取同一 AssignmentKey 的 payload，并由 control plane 决定 Attach、Reconcile、Retry 或 Unknown。对于不能仅凭 AssignmentKey 重新发现的 provider job，Execution Record 还持久化 opaque `ExecutionBinding{Provider, ExecutionRef}`；目标到 Workspace/Runtime 的解析由外部 target resolver/provider adapter 负责，实现 `BindingPort` 的 backend 必须按同一 binding 执行 `DispatchBound`、`AttachBound`、`GetStatusBound`、`GetOutcomeBound` 与 `CancelBound`，并使 `PrepareBinding` 按 AssignmentKey 幂等。Session 所有权与 Worker execution ownership 是两层不同的 ownership。
+Executor 的 in-flight 表可以只是进程内缓存；跨 Worker 恢复所需的是 durable Execution Record。投影缓存是可丢弃的派生数据（EXT-PRJ-3）；`FrozenValueStore` 是 Authority 侧的内容寻址旁存。Worker crash 后，接管者从共享 Execution Store 获取同一 AssignmentKey 的 payload，并由 control plane 决定 Attach、Reconcile、Retry 或 Unknown。Execution Record 还持久化 `ExecutionRef{Provider, Ref}`（RUN-EXE-9）：backend 只按 Ref 寻址，Attach、Status、Outcome、Cancel 都经 record 的 Ref 到达它；目标到 Workspace/Runtime 的解析由 backend（provider adapter）在 `Prepare` 与 `Start` 中完成。Session 所有权与 Worker execution ownership 是两层不同的 ownership。
 
 ## 6. Loop ports 与 policy
 
@@ -480,17 +480,18 @@ type Attachment struct {
     Owner string; FencingEpoch uint64; LeaseUntilUnixMilli int64
     BackendAttached bool
 }
-type ExecutionBinding struct {
-    Provider string; ExecutionRef string
+// agent/executor —— Worker 之下的 backend 契约（RUN-EXE-9/10）
+type ExecutionRef struct { Provider string; Ref string }            // 只在 Execution Record 与 Backend 契约中出现
+type Backend interface {
+    Validate(context.Context, Assignment) (*run.ToolFailure, error)
+    Prepare(context.Context, Assignment) (ref string, err error)     // 分配或派生 Ref，不启动；按 AssignmentKey 幂等
+    Start(context.Context, ref string, Assignment) error             // 启动 Ref；ErrDispatchUnknown 语义同 Dispatch
+    Attach(context.Context, ref string) (Attachment, error)
+    Status(context.Context, ref string) (ExecutionStatus, error)
+    Outcome(context.Context, ref string) (Outcome, error)            // 阻塞到终态 Outcome
+    Cancel(context.Context, ref string) error
 }
-type BindingPort interface {
-    PrepareBinding(context.Context, Assignment) (ExecutionBinding, error) // idempotent by AssignmentKey
-    DispatchBound(context.Context, Assignment, ExecutionBinding) error
-    AttachBound(context.Context, AssignmentKey, ExecutionBinding) (Attachment, error)
-    GetStatusBound(context.Context, AssignmentKey, ExecutionBinding) (ExecutionStatus, error)
-    GetOutcomeBound(context.Context, AssignmentKey, ExecutionBinding) (Outcome, error)
-    CancelBound(context.Context, AssignmentKey, ExecutionBinding) error
-}
+type Route struct { Provider string; Match func(Assignment) bool; Backend Backend } // nil Match 接受全部
 type Executor interface {
     Validate(context.Context, Assignment) (*run.ToolFailure, error) // start barrier 前的无副作用校验
     Dispatch(context.Context, Assignment) error                    // 接受后通过 GetOutcome 读取结果
@@ -499,32 +500,37 @@ type Executor interface {
     GetOutcome(context.Context, AssignmentKey) (Outcome, error)
     Cancel(context.Context, AssignmentKey) error
 }
-type WorkerOptions struct { ID string; LeaseDuration time.Duration; ReconcileInterval time.Duration }
+type WorkerOptions struct { ID string; LeaseDuration time.Duration; ReconcileInterval time.Duration; Clock func() time.Time }
+func NewWorker(ctx context.Context, records executionstore.Store, routes []Route, options ...WorkerOptions) (*Worker, error)
 func (*Worker) Takeover(context.Context, AssignmentKey) error // control plane 在确认可接管后调用
 func (*Worker) Reconcile(context.Context) (int, error)        // control plane 采用全部租约过期记录，返回采用数
 func (*Worker) Dispose(context.Context, AssignmentKey) error   // control plane 放弃一条记录：结算为 Unknown 终态
-func NewLocalExecutor(models ModelCatalog, tools ToolCatalog, sink EventSink, streaming bool) (*LocalExecutor, error)
+func NewLocalExecutor(models ModelCatalog, tools ToolCatalog, sink EventSink, streaming bool) (*LocalExecutor, error) // Backend；经 Worker 成为 Executor
 type RecoveryDisposition string // missing | active | deferred | terminal
 func Reattach(lifetime context.Context, exec Executor, sid session.SessionID, deliver Deliver) run.Reattacher
 ```
 
 这里有三个不同的状态域，不能用同一个枚举替代：`ExecutionStatus` 描述 provider execution 的生命周期；`AttachmentState` 描述 Executor 对 Assignment 的观察（`missing | active | orphaned | terminal`）；`RecoveryDisposition` 描述 authority 的下一步权限（`missing | active | deferred | terminal`）。因此 `AttachmentState=orphaned` 明确映射为 `RecoveryDisposition=deferred`：前者是资源观察，后者表示暂时不得处置 Run。`RunStatus` 与 `TurnStatus` 的 `active` 也只表示各自聚合仍未终态，不等价于 Executor 的 `active`。
 
-**RUN-EXE-1（Assignment）** Assignment 是 authority 交给 Executor 的工作单元：目标（RunID、StepID、CallID）、attempt 身份（Claim）、Run 的协议版本，以及执行所需的冻结输入。模型 Assignment 携带 `ModelRequest` 与 `RequestDigest`；Executor 接受后必须将该 payload 写入自己的 durable Execution Record，不能依赖 Authority Session 或某个 Worker 的本地存储。Assignment 可携带 opaque `TargetRef`，但 Agent Core 不解释其 Kind 或生命周期。`Key()` 是 attempt 的身份，也是其结算 CommandID 的 preimage（第 2 节 identity 表）。
+**RUN-EXE-1（Assignment）** Assignment 是 authority 交给 Executor 的工作单元：目标（RunID、StepID、CallID）、attempt 身份（Claim）、Run 的协议版本，以及执行所需的冻结输入。模型 Assignment 携带 `ModelRequest` 与 `RequestDigest`；Executor 接受后必须将该 payload 写入自己的 durable Execution Record，不能依赖 Authority Session 或某个 Worker 的本地存储。Assignment 可携带 opaque `TargetRef`，但 Agent Core 不解释其 Kind 或生命周期。`Key()` 是 attempt 的身份，也是其结算 CommandID 的 preimage（第 2 节 identity 表）。AssignmentKey 是 Agent Core 的 attempt 身份；它到物理执行的映射（`ExecutionRef{Provider, Ref}`，RUN-EXE-9）只由 Executor 的 Execution Record 持有，不进入 Session 事实，也不出现在 `effect.Port` 或 Agent Core 的任何接口上。
 
 **RUN-EXE-2（Outcome）** Outcome 是 Executor 对一个 Assignment 的唯一回答：模型 Assignment 得到 `Model` 或 `Err`，工具 Assignment 得到 sealed 的 `Tool`；`Cancelled` 表示 Executor 按要求停止了该效果；`Unknown` 表示 Executor 已明确结束该执行的恢复，外部结果仍无法确定。Outcome 通过 `GetOutcome` 按 key 读取，也可以由 deployment 层通过通知唤醒读取方；每个被接受的 Assignment 最终至多提交一个 authoritative Outcome。`GetOutcome` 返回的 error 表示读取操作失败，执行状态保持原值。Worker 对读取失败退避重试并保持 lease；失去 ownership 后停止处理。Loop.Run 将读取错误返回给调用方，保留 Executing，后续可重新关联结果。Reattach 的 Attach 请求由调用 context 控制，后台结果读取由构造时传入的 Session ownership `lifetime` 控制。
 
-**RUN-EXE-3（Dispatch 与 Attach）** `Dispatch` 接受 Assignment 后立即返回。确定的 acceptance 失败返回普通 error；请求发出后的超时、取消或响应丢失返回 `ErrDispatchUnknown`，Authority 保留 Executing。接受时 Executor 先持久化完整 Assignment payload，再进入 `Dispatching`，然后调用 backend；`Accepted` 表示确定尚未开始，`Dispatching` 表示可能已经开始，`Running` 表示 backend 已接受。backend 返回 `ErrDispatchUnknown` 时，Worker 保持 Dispatching、续租并读取最终 Outcome；HTTP Server 可确认 Worker 已持久化的 acceptance。相同 Assignment 的 Dispatch 重放确认已有 acceptance，并保留该记录的 owner、epoch 与状态；已有记录的恢复通过显式 `Takeover` 触发，包括首次接受后尚未开始的记录。`Attach` 按 AssignmentKey 返回 `active`、`orphaned`、`terminal` 或 `missing`：只有 `missing` 才允许 Authority 自动 dispose；`orphaned` 必须由 control plane reconcile、takeover 或明确处置。`GetStatus` 与 `GetOutcome` 不读取 Session。对已失效 owner 的 takeover 由 control plane 决定，Worker 以新的 fencing epoch 获取同一个 AssignmentKey；接管 `Running`/`Dispatching` 时先尝试 backend attach：可 attach 则继续观察原执行；不可 attach 时模型 Assignment 允许显式 retry dispatch（同一冻结请求重放），已绑定 backend job 的工具经 BindingPort 按 binding 重连或重派；未绑定 ExecutionBinding 的工具执行可能已越过效果边界、重派可能重复外部效果，采用后直接以 Unknown 结算（TRN-DUR-4），工具定义声明可重放之前不允许重派。已有 ExecutionBinding 的记录使用 BindingPort 完成全部 backend 操作；backend 缺少该能力时返回 `ErrBindingUnsupported`，保留原 binding。`Cancel` 针对一个 Assignment；Run 级批量取消由上层枚举 targets。`LocalExecutor` 使用进程内记录，终态记录按上限保留（`SetRetainedOutcomes`，默认 1024 条，执行中的记录不受上限影响）：被淘汰的记录对 `Attach` 返回 `missing`，对 `GetStatus` 与 `GetOutcome` 返回 `ErrExecutionNotFound`，同一 key 的 Dispatch 重放视为新执行；durable Worker 使用共享 Execution Store。HTTP Server 只接受 POST：其他方法返回 405，请求体超过 `MaxBodyBytes`（默认 16 MiB）返回 413，非 JSON 请求体返回 400，三者都在 Worker 之前拒绝。Worker 可配置定时 reconcile（`ReconcileInterval`）：每个 tick 对租约过期的记录显式执行 `Takeover`，由同一进程内嵌的控制面接管 orphaned 执行；带外部控制面的部署保持该循环关闭，直接调用 `Takeover`/`Reconcile`。
+**RUN-EXE-3（Dispatch 与 Attach）** `Dispatch` 接受 Assignment 后立即返回。确定的 acceptance 失败返回普通 error；请求发出后的超时、取消或响应丢失返回 `ErrDispatchUnknown`，Authority 保留 Executing。接受时 Worker 先选择 backend（RUN-EXE-10）并经 `Backend.Prepare` 取得 Ref，把完整 Assignment payload 与 `ExecutionRef` 一起持久化为 record，再进入 `Dispatching`，然后 `Backend.Start(ref)`；`Accepted` 表示确定尚未开始，`Dispatching` 表示可能已经开始，`Running` 表示 backend 已接受。backend 返回 `ErrDispatchUnknown` 时 Worker 保持 Dispatching、续租并读取最终 Outcome；HTTP Server 可确认 Worker 已持久化的 acceptance。相同 Assignment 的 Dispatch 重放确认已有 acceptance，并保留该 record 的 owner、epoch、状态与 `ExecutionRef`；已有 record 的恢复通过显式 `Takeover` 触发，包括首次接受后尚未开始的记录。`Attach` 按 AssignmentKey 查 record：record 缺失即 `missing`；record 存在则经 `ExecutionRef` 向所属 backend 查询，返回 `active`、`orphaned`、`terminal` 或 `missing`；只有 `missing` 允许 Authority 自动处置，`orphaned` 必须由控制面 reconcile、takeover 或明确处置。`GetStatus` 与 `GetOutcome` 不读取 Session。对已失效 owner 的 takeover 由控制面决定，Worker 以新的 fencing epoch 获取同一个 AssignmentKey；接管 `Running`/`Dispatching` 的 record 时先 `Backend.Attach(ref)`：可 attach 则继续观察原执行；backend 报 `missing` 时模型 Assignment 重放 Prepare 与 Start（同一冻结请求；分配式 backend 可得新 Ref，record 更新为新 Ref），工具 Assignment 以 Unknown 结算（TRN-DUR-4），工具定义声明可重放之前不允许重派。`Cancel` 针对一个 Assignment；Run 级批量取消由上层枚举 targets。终态 record 的保留由 record store 决定：内存 store 按上限保留（`RetainTerminal`，默认 1024 条，执行中的记录不受上限影响），被淘汰的 record 对 `Attach` 返回 `missing`、对 `GetStatus` 与 `GetOutcome` 返回 `ErrExecutionNotFound`，同一 key 的 Dispatch 重放视为新执行；durable store 不淘汰。HTTP Server 只接受 POST：其他方法返回 405，请求体超过 `MaxBodyBytes`（默认 16 MiB）返回 413，非 JSON 请求体返回 400，三者都在 Worker 之前拒绝。Worker 可配置定时 reconcile（`ReconcileInterval`）：每个 tick 对租约过期的记录显式执行 `Takeover`，由同一进程内嵌的控制面接管 orphaned 执行；带外部控制面的部署保持该循环关闭，直接调用 `Takeover`/`Reconcile`。
 
 **RUN-EXE-4（Outcome 的结算）** `Loop.Deliver` 以 `Outcome.Key` 在投影中定位 Executing 的目标：同一 step 或 call、同一 Claim。找到则以该 Claim 派生的结算 CommandID 提交 Submit*（模型：结果、provider 失败、畸形结果的 Reject、取消或本体缺失的 Recover；工具：按 sealed outcome 映射，Executor 返回的缺失或未知执行结果记 Unknown）；找不到——attempt 已被结算或处置、Run 已终结、Claim 不符——则丢弃，不写任何事实（`LoopDropped`）。GetOutcome 的读取错误保留 Executing，只有成功读取的 Outcome 进入 Deliver。结算使用独立 control context（RUN-LOP-5）。
 
 **RUN-EXE-5（在 start barrier 前校验）** 工具 Assignment 在 `StartToolCall` 之前经 `Executor.Validate` 校验 lookup、definition digest、response policy 与 arguments；非 nil 的失败以空 Claim 的 CommandID 提交 `SubmitToolFailure(Known)`，不跨越 start barrier（RUN-LOP-4）。模型 Assignment 在 `StartModelExecution` 之前经同一入口校验 Executor 能否服务该 `ModelRef`；非 nil 的失败使 Loop 以 `ErrModelUnavailable` 返回，step 保持 Prepared，不写入 start 或 recovery 事实——目录缺失不应在每次驱动上留下三条事实。校验不产生外部效果。
 
-**RUN-EXE-6（控制面）** failure 检测与重试决策不属于数据面：`effect.Port` 的六个方法按单个 Assignment 收发消息，而 Takeover/Reconcile/Dispose 作用于 durable Execution Record，因此控制面是 application 层职责，不进 `effect.Port`。控制面只有三个操作：`Reconcile` 采用全部租约过期记录；`Takeover` 采用一条；`Dispose` 将一条非终态记录无条件结算为 Unknown 终态（OutcomeEnvelope 携带 `WireError{Code:"disposed"}`，best-effort cancel backend，不要求 backend 可达），authority 经下一次 GetOutcome 读取后按 RUN-CMT-7 处置。authority 永不采用。两种存在形态：Worker 内嵌循环（`ReconcileInterval`，每个 tick 对所有过期记录执行 Takeover）或外部控制面经 HTTP 控制端点（`/takeover`、`/reconcile`、`/dispose`）驱动同一组方法；两者取一，带内嵌循环的部署不从外部驱动。会产生孤儿记录的部署（worker 进程可能死亡或与其 store 断连）必须提供其中一种；控制面缺席是部署缺陷，协议本身检测不到控制面是否存在。`RecoveryDisposition=deferred` 无界是设计使然（反重复执行，TRN-DUR-4），Application 必须提供 stuck-Run 的可观测性（事件时间戳）并把 Dispose 暴露为运维入口。Execution Store 是 fencing authority：所有权终止条件是记录缺失、进入终态、或 owner/fencing epoch 被新 owner 改变；租约过期不终止所有权，heartbeat 与 watch 在短暂 store 故障下继续工作（Renew 不检查过期，恢复后续租；PutOwned 要求活租约，结算随续租恢复）。单条记录损坏或读取失败不中断 Reconcile（FileStore.List 跳过无法解码的记录）。
+**RUN-EXE-6（控制面）** failure 检测与重试决策不属于数据面：`effect.Port` 的六个方法按单个 Assignment 收发消息，而 Takeover/Reconcile/Dispose 作用于 durable Execution Record，因此控制面是 application 层职责，不进 `effect.Port`。控制面只有三个操作：`Reconcile` 采用全部租约过期记录；`Takeover` 采用一条；`Dispose` 将一条非终态记录无条件结算为 Unknown 终态（OutcomeEnvelope 携带 `WireError{Code:"disposed"}`，经 record 的 `ExecutionRef` 找到 backend 后 best-effort `Cancel(ref)`，不要求 backend 可达），authority 经下一次 GetOutcome 读取后按 RUN-CMT-7 处置。authority 永不采用。两种存在形态：Worker 内嵌循环（`ReconcileInterval`，每个 tick 对所有过期记录执行 Takeover）或外部控制面经 HTTP 控制端点（`/takeover`、`/reconcile`、`/dispose`）驱动同一组方法；两者取一，带内嵌循环的部署不从外部驱动。会产生孤儿记录的部署（worker 进程可能死亡或与其 store 断连）必须提供其中一种；控制面缺席是部署缺陷，协议本身检测不到控制面是否存在。`RecoveryDisposition=deferred` 无界是设计使然（反重复执行，TRN-DUR-4），Application 必须提供 stuck-Run 的可观测性（事件时间戳）并把 Dispose 暴露为运维入口。Execution Store 是 fencing authority：所有权终止条件是记录缺失、进入终态、或 owner/fencing epoch 被新 owner 改变；租约过期不终止所有权，heartbeat 与 watch 在短暂 store 故障下继续工作（Renew 不检查过期，恢复后续租；PutOwned 要求活租约，结算随续租恢复）。单条记录损坏或读取失败不中断 Reconcile（FileStore.List 跳过无法解码的记录）。
 
 **RUN-EXE-7（Assignment payload）** Dispatch 必须携带内联 payload：模型 Assignment 的 `ModelRequest` 随 Assignment 内联，Executor 派生 request digest 并校验 `RequestDigest` 与 ModelRef 一致后才接受，接受时把完整 Assignment 持久化进 Execution Record；`Attach`/`GetStatus`/`GetOutcome`/`Cancel` 只按 AssignmentKey 定位记录，从不读取 payload。digest-only 的模型 Assignment 只允许出现在 authority 内部的 `AssignmentFromTarget` 重建（RUN-CMT-7 的 Attach 询问），不得进入 Dispatch：缺少内联请求体的 Dispatch 是确定的 acceptance 拒绝，效果未开始。FrozenValueStore 仍是 Authority 侧的持久旁存（RUN-WIR-4）；执行 payload 的生命周期由 Execution Record 管理，Executor 在执行时不反查 Authority 的 FrozenValueStore。
 
-**RUN-EXE-8（部署说明）** v1 假设 worker 池同构：池内全部节点服务同一 Catalog（同一 ModelRef、ToolRef 集合与定义 digest），Assignment 的 definition digest 校验在同构池上恒通过，异构池上转为确定性拒绝；跨异构池的放置由 application 路由，协议不规定。数据面与控制面只面向 loopback 同机信任域：协议层的线上身份只有 ExecutionClaim（RUN-EXE-1）与 Execution Store 的 owner/fencing epoch，无认证机制；跨机器部署由 application 在信任域边界提供传输保护，协议不规定。v1 不规定推送通道：authority 侧统一经 GetOutcome 长轮询读取结果，deployment 层的通知只作为唤醒读取方的优化（RUN-EXE-2），不改变读取语义。
+**RUN-EXE-8（部署说明）** v1 假设 worker 池同构：池内全部节点服务同一 Catalog（同一 ModelRef、ToolRef 集合与定义 digest），Assignment 的 definition digest 校验在同构池上恒通过，异构池上转为确定性拒绝；跨异构池的放置由 application 路由，协议不规定。数据面与控制面只面向 loopback 同机信任域：协议层的线上身份只有 ExecutionClaim（RUN-EXE-1）与 Execution Store 的 owner/fencing epoch，无认证机制；跨机器部署由 application 在信任域边界提供传输保护，协议不规定。v1 不规定推送通道：authority 侧统一经 GetOutcome 长轮询读取结果，deployment 层的通知只作为唤醒读取方的优化（RUN-EXE-2），不改变读取语义。colocated 部署同样经 Worker 与 record store 运行效果：`app.Build` 的本地模式组装 `executor.NewWorker(ctx, records, routes)`，默认 record store 为内存实现，`Config.Executions` 可换为文件或共享实现；`LocalExecutor` 是 local provider 的 Backend 实现，不实现 `effect.Port`。本地与远端部署之间没有分叉的生命周期代码，差别只在 record store 与 backend 表。
+
+**RUN-EXE-9（ExecutionRef）** `ExecutionRef{Provider, Ref}` 是 Executor 对一个 attempt 的物理绑定。Provider 命名 backend（`local`、`twilight/session`，部署自定的 provider 名），Ref 是该 backend 内的不透明句柄。它在 `Backend.Prepare` 时确定，在 Start 之前随 record 持久化，之后不变；模型 Assignment 在接管发现 backend `missing` 时重放 Prepare，分配式 backend 可返回新 Ref，record 更新为新 Ref，旧 Ref 被确认不存在。Prepare 按 AssignmentKey 幂等：派生式 backend 直接计算（local 以编码后的 AssignmentKey 为 Ref，spawn 以 ChildID 为 Ref），分配式 backend 以 key 为幂等键记录分配结果。`ExecutionRef` 不进入 Session 事实、`effect.Port`、Loop 或 Driver：Agent Core 只认 AssignmentKey；backend 只认 Ref，Worker 在结算时以 record 的 key 作为 Outcome 的 key。经 HTTP 传输时它是 Worker 侧 record 的字段，不出现在 Assignment 与 Outcome 的 wire 形状上。
+
+**RUN-EXE-10（Backend 选择与 record 的权威性）** backend 选择是 execution 创建的一部分：Worker 在 Dispatch 时按 `Route` 表评估一次（第一个 `Match` 为真的 provider，`Match` 为 nil 的 route 接受全部），结果作为 `ExecutionRef.Provider` 持久化；此后 Attach、GetStatus、GetOutcome、Cancel、Takeover、Dispose 只查 record 并按 Provider 找 backend，不再评估 Assignment 内容，也不询问任何 backend 是否认识某个 key；record 的 Provider 在本 Worker 没有对应 backend 时为 `ErrUnknownProvider`，record 不被改动。record 是 execution identity 的唯一来源：record 缺失即 execution 不存在（`missing`）。record 的持久性由部署决定——内存 store 随进程消失，此时崩溃后的接管处置按 `missing` 进行（RUN-CMT-7）；需要跨进程收养执行的部署使用文件或共享 record store，收养是控制面对 orphaned record 的 Takeover（RUN-EXE-6）。`Validate` 按同一 route 表选择 backend 但不持久化选择。
 
 ```go
 type Settings struct {
@@ -641,6 +647,7 @@ type Event struct {
 - 接管重连：`RecoverInterrupted` 对每个 Executing 目标先经 `Reattacher.Attach` 询问，携带 start 事实记录的 Claim 与 Run 的协议版本；`active`、`terminal` 保持 Executing 与 Claim，随后以原 Claim 结算；`deferred` 保持原状态，等待 control plane 处置；`missing` 按接管处置；`Reattacher` 为 nil 时全部处置。
 - 效果层：`Advance` 提交 start barrier 后把 Assignment 交给 Executor 并返回 `LoopDispatched`，不等待效果；`Deliver` 以 Key 定位 Executing 目标并结算，Run 终结时返回 `LoopFinished`；attempt 已处置或 Claim 不符的迟到 Outcome 返回 `LoopDropped` 且不写入；`Cancelled` 的模型 Outcome 使 step 撤回到 Open；`LocalExecutor.Attach` 对执行中 attempt 返回 `active`，完成后返回 `terminal`，记录不存在时返回 `missing`；超出保留上限的最早终态记录对 `GetStatus` 返回 `ErrExecutionNotFound`、对 `Attach` 返回 `missing`，仍在上限内的记录返回 `terminal`；`Advance`、`Deliver`、`Run` 返回后 Loop 的 slot 表为空；HTTP Server 对非 POST 返回 405、对超过 `MaxBodyBytes` 的请求体返回 413、对非 JSON 请求体返回 400；GetOutcome 读取失败保持执行状态，真实结果稍后仍可结算；Dispatch 重放保持已有记录，显式 Takeover 处理恢复；已有 binding 缺少 BindingPort 时返回错误。
 - 所有权失效：旧 Writer 上的 Runtime 在被接管后 Commit 返回 `ErrOwnershipLost` 且 stream 无新行（fencing 由 SES-OWN-2 保证，本层观察结果）；
+- 执行身份（RUN-EXE-9/10）：同一 Assignment 两次 Dispatch 得到同一 record 与同一 `ExecutionRef`，第二次 Prepare 而不第二次 Start；record 的 Provider 无对应 backend 时 Takeover 与 GetStatus 返回 `ErrUnknownProvider` 且 record 不变、backend 不被调用；接管时 backend `missing` 的模型 Assignment 重放 Prepare+Start，工具 Assignment 记 Unknown；匹配 spawn 工具的 Assignment 落到 `twilight/session` provider，其余落到默认 provider；内存 record store 超过 `RetainTerminal` 的终态 record 对 Attach 为 `missing`；
 - FrozenValueStore：`Put` 幂等；未知 digest 的 `FrozenRequest` 返回 `ErrFrozenValueMissing`；Authority 侧本体可按策略回收，Assignment 被接受后执行 payload 由 Execution Store 管理；Worker takeover 不读取 Session；
 - MachineState codec：每个 Current variant 与终态 round-trip、拒绝 unknown field / 非法判别式 / trailing data（`agent/run` 单元测试）。
 

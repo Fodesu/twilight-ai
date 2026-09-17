@@ -15,8 +15,8 @@ Workspace is an optional application domain for logical work environments.
   lifecycle (`Create`, `Restore`, `Attach`).
 - **RuntimeBinding** belongs to the Workspace domain and records the provider,
   environment reference, and generation of the current materialization.
-- **ExecutionBinding** belongs to one Effect Assignment and records only the
-  provider-side execution reference.
+- **ExecutionRef** belongs to one execution record of the Executor and records
+  only the provider and its opaque execution handle (RUN-EXE-9).
 
 `Provider.Attach(EnvironmentRef)` adopts an existing environment.
 `Provider.Restore(RestoreSpec{State, Destination})` materializes checkpoint state
@@ -28,11 +28,11 @@ Agent Core carries an opaque `run.TargetRef{Kind, ID}` on an Assignment. An
 application-provided `loop.TargetResolver` supplies the target for a Run; its
 mapping must be durable if a Run can outlive the process that started it.
 
-The provider adapter resolves the target to a RuntimeBinding and creates or
-adopts an ExecutionBinding before dispatch. The durable execution record keeps
-that execution binding before the external dispatch crosses its uncertainty
-barrier. Attach, status, outcome, and cancel use the same binding, preventing a
-Worker takeover from accidentally addressing a newly created provider job.
+The provider adapter is a Backend of the Worker: it resolves the target to a
+RuntimeBinding and, in Prepare, allocates or derives the ExecutionRef the
+Worker persists before Start crosses the external uncertainty barrier. Attach,
+status, outcome, and cancel address that Ref, preventing a Worker takeover from
+accidentally addressing a newly created provider job.
 
 `AgentPreset` is decision identity (model, tools, prompt policy, and scheduling);
 the same preset can be
