@@ -64,7 +64,7 @@ func Example_jsonlPrototype() {
 
 	// Turn 1: Route starts the Turn; the model asks for the tool, which blocks.
 	stage1 := tool.stage()
-	in1, err := p1.SubmitInput(ctx, sid, "in-1", "what is the weather?")
+	in1, err := p1.Authority.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-1", "what is the weather?")
 	if err != nil {
 		panic(err)
 	}
@@ -79,7 +79,7 @@ func Example_jsonlPrototype() {
 	<-stage1.started
 
 	// Steer: a second Route while turn-1 runs goes to Deliver (HST-DRV-3).
-	in2, err := p1.SubmitInput(ctx, sid, "in-2", "and tomorrow?")
+	in2, err := p1.Authority.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-2", "and tomorrow?")
 	if err != nil {
 		panic(err)
 	}
@@ -104,7 +104,7 @@ func Example_jsonlPrototype() {
 	fmt.Printf("steer: in-2 %s to turn-1 while its tool call executes\n", steered.Status)
 
 	// Queue: in-3 is only submitted; nothing delivers it into the running Turn.
-	if _, err := p1.SubmitInput(ctx, sid, "in-3", "book a table"); err != nil {
+	if _, err := p1.Authority.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-3", "book a table"); err != nil {
 		panic(err)
 	}
 	chat, _ = p1.ChatlogSurface(ctx, sid)
@@ -141,7 +141,7 @@ func Example_jsonlPrototype() {
 	}
 	fmt.Printf("process 2: took over; %d executing target disposed\n", owned.Recovered)
 
-	resp2, err := p2.Drive(ctx, turn.TurnRef{SessionID: sid, TurnID: "turn-2"})
+	resp2, err := p2.Authority.Driver.Drive(ctx, owned.Writer(), "turn-2")
 	if err != nil {
 		panic(err)
 	}

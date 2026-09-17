@@ -80,15 +80,16 @@ func TestAppModuleSharesTheSessionStream(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	in, err := h.SubmitInput(ctx, sid, "in-1", "hello")
+	owned, err := h.Authority.Open(ctx, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The app module commits its own event through the shared Writer.
-	w, err := h.Authority.Writers.Writer(ctx, sid)
+	w := owned.Writer()
+	in, err := h.Authority.Chatlog.Submit(ctx, w, "in-1", "hello")
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The app module commits its own event through the same Writer.
 	res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
 		return &writer.SemanticGroup{CommitID: "audit/n1",
 			Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{{
@@ -98,11 +99,11 @@ func TestAppModuleSharesTheSessionStream(t *testing.T) {
 	if err != nil || res.Outcome != writer.CommitApplied {
 		t.Fatalf("audit commit = %+v %v", res, err)
 	}
-	if _, err := h.Authority.Coordinator.Start(ctx, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},
+	if _, err := h.Authority.Turns.Start(ctx, w, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},
 		Inputs: []run.AgentInput{in}, Preset: preset}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Drive(ctx, turn.TurnRef{SessionID: sid, TurnID: "t1"}); err != nil {
+	if _, err := h.Authority.Driver.Drive(ctx, w, "t1"); err != nil {
 		t.Fatal(err)
 	}
 

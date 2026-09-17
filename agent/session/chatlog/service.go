@@ -17,9 +17,8 @@ import (
 // withdrawing inputs, committing checkpoints — through the Session's Writer
 // (CHT-EVT). It is the only writer of chatlog facts: callers go through
 // these methods instead of building chatlog TypedEvents by hand.
-type Service struct {
-	Writers writer.Writers
-	Now     func() time.Time
+type Commands struct {
+	Now func() time.Time
 }
 
 // Guard is a caller-supplied precondition evaluated inside a command's
@@ -44,12 +43,8 @@ func TextContent(text string) run.CanonicalJSON {
 
 // SubmitInput records one user input as submitted (CHT-EVT-1); idempotency
 // rides on the CommitID, so a retried submission replays.
-func (s *Service) SubmitInput(ctx context.Context, sid session.SessionID, id run.InputID, text string) (run.AgentInput, error) {
+func (s *Commands) Submit(ctx context.Context, w writer.Writer, id run.InputID, text string) (run.AgentInput, error) {
 	content := TextContent(text)
-	w, err := s.Writers.Writer(ctx, sid)
-	if err != nil {
-		return run.AgentInput{}, err
-	}
 	res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
 		return &writer.SemanticGroup{CommitID: session.CommitID("input-submitted/" + string(id)),
 			Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{{
@@ -71,11 +66,7 @@ func (s *Service) SubmitInput(ctx context.Context, sid session.SessionID, id run
 // WithdrawInput marks a submitted, undelivered input as withdrawn
 // (CHT-EVT-2), for example the original input of a Turn the caller forked
 // before in order to edit it (HST-FRK-2).
-func (s *Service) WithdrawInput(ctx context.Context, sid session.SessionID, id run.InputID, reason string) error {
-	w, err := s.Writers.Writer(ctx, sid)
-	if err != nil {
-		return err
-	}
+func (s *Commands) Withdraw(ctx context.Context, w writer.Writer, id run.InputID, reason string) error {
 	res, err := w.Commit(ctx, func(v writer.View) (*writer.SemanticGroup, error) {
 		state, err := v.Projection(SurfaceProjectionID, SurfaceProjection.Version)
 		if err != nil {
@@ -108,13 +99,9 @@ func (s *Service) WithdrawInput(ctx context.Context, sid session.SessionID, id r
 // critical section first; callers pass the active-Turn rule there.
 // retain names entries of the current context (compaction.RetainLast builds
 // a pair-closed suffix, which CheckRetainClosure verifies).
-func (s *Service) Checkpoint(ctx context.Context, sid session.SessionID, summaryText string, retain []EntryDigestPair, guard Guard) (CheckpointID, error) {
+func (s *Commands) Checkpoint(ctx context.Context, w writer.Writer, summaryText string, retain []EntryDigestPair, guard Guard) (CheckpointID, error) {
 	if strings.TrimSpace(summaryText) == "" {
 		return "", errors.New("chatlog: checkpoint requires a summary text")
-	}
-	w, err := s.Writers.Writer(ctx, sid)
-	if err != nil {
-		return "", err
 	}
 	var checkpointID CheckpointID
 	res, err := w.Commit(ctx, func(v writer.View) (*writer.SemanticGroup, error) {
@@ -143,7 +130,7 @@ func (s *Service) Checkpoint(ctx context.Context, sid session.SessionID, summary
 			return nil, err
 		}
 		var summaryID SummaryID
-		if checkpointID, summaryID, err = checkpointIDs(sid, baseDigest, summaryText); err != nil {
+		if checkpointID, summaryID, err = checkpointIDs(w.SessionID(), baseDigest, summaryText); err != nil {
 			return nil, err
 		}
 		summary := Summary{ID: summaryID, Parts: Parts{TextPart{Text: summaryText}}}

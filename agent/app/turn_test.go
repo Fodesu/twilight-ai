@@ -54,17 +54,17 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
 	h, preset, sid, s := setup(t, model, tool, app.SessionOptions{})
 
-	first, err := h.SubmitInput(ctx, sid, "in-1", "what is the weather?")
+	first, err := h.Authority.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", "what is the weather?")
 	if err != nil {
 		t.Fatal(err)
 	}
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "t1"}
 	done := make(chan turn.TurnResponse, 1)
 	go func() {
-		resp, err := h.Authority.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: preset})
+		resp, err := h.Authority.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: preset})
 		if err == nil {
 			// The Coordinator only commits; the host drives (HST-DRV-1).
-			resp, err = h.Drive(ctx, ref1)
+			resp, err = h.Authority.Driver.Drive(ctx, s.Handle().Writer(), ref1.TurnID)
 		}
 		if err != nil {
 			t.Error(err)
@@ -73,7 +73,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	}()
 	<-tool.started
 
-	second, err := h.SubmitInput(ctx, sid, "in-2", "and tomorrow?")
+	second, err := h.Authority.Chatlog.Submit(ctx, s.Handle().Writer(), "in-2", "and tomorrow?")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,18 +135,18 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
 	h, preset, sid, s := setup(t, model, tool, app.SessionOptions{})
-	first, _ := h.SubmitInput(ctx, sid, "in-1", "hello")
+	first, _ := h.Authority.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", "hello")
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "t1"}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if _, err := h.Authority.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: preset}); err == nil {
-			_, _ = h.Drive(ctx, ref1)
+		if _, err := h.Authority.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: preset}); err == nil {
+			_, _ = h.Authority.Driver.Drive(ctx, s.Handle().Writer(), ref1.TurnID)
 		}
 	}()
 	<-tool.started
 
-	resp, err := h.Authority.Coordinator.Stop(ctx, turn.StopRequest{Ref: ref1, Reason: "user"})
+	resp, err := h.Authority.Turns.Stop(ctx, s.Handle().Writer(), turn.StopRequest{Ref: ref1, Reason: "user"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 		t.Fatalf("stopped run = %+v", record.Snapshot.State.Result)
 	}
 
-	second, _ := h.SubmitInput(ctx, sid, "in-2", "again")
+	second, _ := h.Authority.Chatlog.Submit(ctx, s.Handle().Writer(), "in-2", "again")
 	resp2, err := s.Route(ctx, []run.AgentInput{second})
 	if err != nil {
 		t.Fatal(err)
@@ -214,19 +214,19 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	input, err := h.SubmitInput(ctx, sid, "in-1", "hello")
+	input, err := h.Authority.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", "hello")
 	if err != nil {
 		t.Fatal(err)
 	}
 	ref := turn.TurnRef{SessionID: sid, TurnID: "t1"}
-	started, err := h.Authority.Coordinator.Start(ctx, turn.StartRequest{Ref: ref, Inputs: []run.AgentInput{input}, Preset: preset})
+	started, err := h.Authority.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref, Inputs: []run.AgentInput{input}, Preset: preset})
 	if err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = h.Drive(ctx, ref)
+		_, _ = h.Authority.Driver.Drive(ctx, s.Handle().Writer(), ref.TurnID)
 	}()
 	t.Cleanup(func() { close(tool.release); <-done })
 	<-tool.started
@@ -238,7 +238,7 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 	if calls[0].Status != run.ToolExecuting || calls[1].Status != run.ToolPending || calls[2].Status != run.ToolWaiting {
 		t.Fatalf("calls before stop = %+v", calls)
 	}
-	if _, err := h.Authority.Coordinator.Stop(ctx, turn.StopRequest{Ref: ref}); err != nil {
+	if _, err := h.Authority.Turns.Stop(ctx, s.Handle().Writer(), turn.StopRequest{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
 	record, err := h.Authority.Runtime.Record(ctx, sid, started.RunID)
@@ -249,7 +249,7 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 	if len(result.UncertainCalls) != 1 || result.UncertainCalls[0] != calls[0].CallID {
 		t.Fatalf("uncertain calls = %v", result.UncertainCalls)
 	}
-	input, err = h.SubmitInput(ctx, sid, "in-2", "continue")
+	input, err = h.Authority.Chatlog.Submit(ctx, s.Handle().Writer(), "in-2", "continue")
 	if err != nil {
 		t.Fatal(err)
 	}

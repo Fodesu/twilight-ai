@@ -19,6 +19,7 @@ import (
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/agent/turn"
 )
 
@@ -36,7 +37,7 @@ type Presets interface {
 // (HST-DRV).
 type Driver struct {
 	Runtime     run.Runtime
-	Coordinator turn.Service
+	Turns       turn.Reader
 	Executor    effect.Port
 	Presets     Presets
 	Decisions   *decision.PromptBuilders
@@ -94,10 +95,12 @@ func (d *Driver) loopFor(ref turn.PresetRef) (*loop.Loop, error) {
 
 // Drive is HST-DRV-1: while the Turn is active, resolve its recorded preset
 // and drive the active attempt to the next quiescent point, then read the
-// committed Status. The caller's ctx bounds the drive, so cancellation is the
-// caller's decision. A concurrent local driver of the same Run yields
-// ResumeAlreadyDriving.
-func (d *Driver) Drive(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse, error) {
+// committed Status. w is the caller's ownership capability over the Session
+// (the Loop commits through the Runtime under the same epoch). The caller's
+// ctx bounds the drive, so cancellation is the caller's decision. A
+// concurrent local driver of the same Run yields ResumeAlreadyDriving.
+func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID) (turn.TurnResponse, error) {
+	ref := turn.TurnRef{SessionID: w.SessionID(), TurnID: turnID}
 	surface, err := turn.ReadSurface(ctx, d.Projections, ref.SessionID)
 	if err != nil {
 		return turn.TurnResponse{}, err
@@ -114,7 +117,7 @@ func (d *Driver) Drive(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse
 		res, err := l.Run(ctx, d.Runtime, ref.SessionID, view.ActiveRun, nil)
 		if err != nil {
 			if errors.Is(err, loop.ErrRunAlreadyRunning) {
-				resp, rerr := d.Coordinator.Status(ctx, ref)
+				resp, rerr := d.Turns.Status(ctx, ref)
 				if rerr != nil {
 					return turn.TurnResponse{}, rerr
 				}
@@ -133,7 +136,7 @@ func (d *Driver) Drive(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse
 			}
 		}
 	}
-	return d.Coordinator.Status(ctx, ref)
+	return d.Turns.Status(ctx, ref)
 }
 
 // reattachDeliver is the glue a takeover hands the Executor (RUN-CMT-7): an

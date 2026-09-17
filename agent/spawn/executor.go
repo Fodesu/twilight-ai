@@ -55,9 +55,9 @@ func (o Options) depth() int {
 type Executor struct {
 	opts Options
 	tool loop.ExecutableTool
-	// a is the authority children are created in and driven through: it
-	// opens the child (ownership, takeover disposition) and its Coordinator,
-	// Driver and chatlog Service act on the child by identity.
+	// a is the authority children are created in and driven through: Open
+	// yields the child's ownership Handle and its Turns, Driver and Chatlog
+	// commands run through that Handle's Writer.
 	a *authority.Authority
 
 	mu       sync.Mutex
@@ -257,7 +257,7 @@ func (e *Executor) drive(ctx context.Context, key effect.AssignmentKey, child se
 		return fail(run.FailureExecution, fmt.Sprintf("drive subagent: %v", err))
 	}
 	ref := turn.TurnRef{SessionID: child, TurnID: turnID}
-	status, err := e.a.Coordinator.Status(ctx, ref)
+	status, err := e.a.Turns.Status(ctx, ref)
 	if err != nil {
 		return fail(run.FailureExecution, err.Error())
 	}
@@ -377,7 +377,7 @@ func (e *Executor) settle(ctx context.Context, h *authority.Handle, preset turn.
 			return turns.Order[len(turns.Order)-1], nil
 		}
 	}
-	in, err := e.a.Chatlog.SubmitInput(ctx, h.ID(), chatlog.NewInputID(), task)
+	in, err := e.a.Chatlog.Submit(ctx, h.Writer(), chatlog.NewInputID(), task)
 	if err != nil {
 		return "", err
 	}
@@ -386,7 +386,7 @@ func (e *Executor) settle(ctx context.Context, h *authority.Handle, preset turn.
 
 func (e *Executor) startAndDrive(ctx context.Context, h *authority.Handle, preset turn.PresetRef, inputs []run.AgentInput) (turn.TurnID, error) {
 	ref := turn.TurnRef{SessionID: h.ID(), TurnID: turn.NewTurnID()}
-	if _, err := e.a.Coordinator.Start(ctx, turn.StartRequest{Ref: ref, Inputs: inputs, Preset: preset}); err != nil {
+	if _, err := e.a.Turns.Start(ctx, h.Writer(), turn.StartRequest{Ref: ref, Inputs: inputs, Preset: preset}); err != nil {
 		return "", err
 	}
 	return e.driveTurn(ctx, h, ref.TurnID)
@@ -396,7 +396,7 @@ func (e *Executor) startAndDrive(ctx context.Context, h *authority.Handle, prese
 // already carries is an error, since the parent's call needs this drive's
 // result.
 func (e *Executor) driveTurn(ctx context.Context, h *authority.Handle, turnID turn.TurnID) (turn.TurnID, error) {
-	resp, err := e.a.Driver.Drive(ctx, turn.TurnRef{SessionID: h.ID(), TurnID: turnID})
+	resp, err := e.a.Driver.Drive(ctx, h.Writer(), turnID)
 	if err != nil {
 		return "", err
 	}

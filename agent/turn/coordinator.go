@@ -59,22 +59,31 @@ type TurnResponse struct {
 	Waiting     []run.ResponseRequest
 }
 
-// Service is the Turn API (TRN 3): protocol commits plus the Status read.
-// Driving a Run belongs to the host (HST-DRV): every method returns as soon
-// as its commit landed, with the response reflecting the committed state.
-type Service interface {
-	Start(context.Context, StartRequest) (TurnResponse, error)
-	Deliver(context.Context, DeliverRequest) (TurnResponse, error)
-	Retry(context.Context, RetryRequest) (TurnResponse, error)
-	Stop(context.Context, StopRequest) (TurnResponse, error)
-	Settle(context.Context, SettleRequest) (TurnResponse, error)
+// Commands are the Turn protocol commits (TRN 3). Each takes the Writer of
+// the Session it commits to: the caller's ownership capability, so every
+// command lands on the same Writer, epoch and projection view as the other
+// domains' commands, and a stale owner is fenced by the Writer itself.
+// Driving a Run belongs to the driver (HST-DRV): every method returns as
+// soon as its commit landed, with the response reflecting the committed
+// state.
+type Commands interface {
+	Start(context.Context, writer.Writer, StartRequest) (TurnResponse, error)
+	Deliver(context.Context, writer.Writer, DeliverRequest) (TurnResponse, error)
+	Retry(context.Context, writer.Writer, RetryRequest) (TurnResponse, error)
+	Stop(context.Context, writer.Writer, StopRequest) (TurnResponse, error)
+	Settle(context.Context, writer.Writer, SettleRequest) (TurnResponse, error)
+}
+
+// Reader is the Turn status read (TRN-STA-1); it needs no ownership.
+type Reader interface {
 	Status(context.Context, TurnRef) (TurnResponse, error)
 }
 
 // Coordinator has no hidden state (TRN-SCP-3): every method reads the turn
-// surface and the machine projection first. Writes and projection reads go
-// through the Session's Writer (TRN-SCP-4, TRN-API-1). It never drives a
-// Run: it commits protocol transitions and computes dispositions.
+// surface and the machine projection first. Commands commit through the
+// Writer they are handed (TRN-SCP-4, TRN-API-1); Status reads through
+// Writers. It never drives a Run: it commits protocol transitions and
+// computes dispositions.
 type Coordinator struct {
 	Writers writer.Writers
 	Runtime run.Runtime
@@ -105,19 +114,22 @@ func (c *Coordinator) surface(ctx context.Context, sid session.SessionID) (TurnS
 	if err != nil {
 		return TurnSurface{}, err
 	}
-	state, _, err := w.Projections().Load(ctx, sid, SurfaceProjectionID, SurfaceProjection.Version)
-	if err != nil {
-		return TurnSurface{}, err
+	return ReadSurface(ctx, w.Projections(), sid)
+}
+
+// owned checks that the request addresses the Session the Writer owns.
+func owned(w writer.Writer, ref TurnRef) error {
+	if w == nil {
+		return errors.New("turn: command requires the session's writer")
 	}
-	return state.(TurnSurface), nil
+	if ref.SessionID != w.SessionID() {
+		return fmt.Errorf("%w: request for %s through the writer of %s", ErrConflict, ref.SessionID, w.SessionID())
+	}
+	return nil
 }
 
 // commit runs fn in the Session Writer and maps the outcome (TRN-STR-3).
-func (c *Coordinator) commit(ctx context.Context, sid session.SessionID, op string, fn writer.CommitFn) error {
-	w, err := c.writer(ctx, sid)
-	if err != nil {
-		return err
-	}
+func (c *Coordinator) commit(ctx context.Context, w writer.Writer, op string, fn writer.CommitFn) error {
 	res, err := w.Commit(ctx, fn)
 	if err != nil {
 		if errors.Is(err, &extension.Error{Code: extension.ErrOwnershipLost}) {
@@ -137,9 +149,12 @@ func (c *Coordinator) commit(ctx context.Context, sid session.SessionID, op stri
 
 // --- Start ------------------------------------------------------------------------
 
-func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse, error) {
+func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req StartRequest) (TurnResponse, error) {
 	if req.Ref.SessionID == "" || req.Ref.TurnID == "" || req.Preset.ID == "" || req.Preset.Digest == "" {
 		return TurnResponse{}, errors.New("turn: start requires ref and preset")
+	}
+	if err := owned(w, req.Ref); err != nil {
+		return TurnResponse{}, err
 	}
 	inputIDs := make([]chatlog.InputID, len(req.Inputs))
 	seen := map[run.InputID]struct{}{}
@@ -163,7 +178,7 @@ func (c *Coordinator) Start(ctx context.Context, req StartRequest) (TurnResponse
 		return TurnResponse{}, err
 	}
 	now := c.now()
-	err = c.commit(ctx, sid, "start", func(view writer.View) (*writer.SemanticGroup, error) {
+	err = c.commit(ctx, w, "start", func(view writer.View) (*writer.SemanticGroup, error) {
 		if view.Committed(commitID) {
 			group := c.startGroup(commitID, turnID, inputIDs, req, newRun, facts, now)
 			return &group, nil // exact replay: the Writer compares fingerprints
@@ -250,9 +265,12 @@ func checkSubmittedIn(surface chatlog.Surface, inputs []run.AgentInput) error {
 
 // --- Deliver ----------------------------------------------------------------------
 
-func (c *Coordinator) Deliver(ctx context.Context, req DeliverRequest) (TurnResponse, error) {
+func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req DeliverRequest) (TurnResponse, error) {
+	if err := owned(w, req.Ref); err != nil {
+		return TurnResponse{}, err
+	}
 	sid := req.Ref.SessionID
-	surface, err := c.surface(ctx, sid)
+	surface, err := ReadSurface(ctx, w.Projections(), sid)
 	if err != nil {
 		return TurnResponse{}, err
 	}
@@ -281,10 +299,6 @@ func (c *Coordinator) Deliver(ctx context.Context, req DeliverRequest) (TurnResp
 	// the same batch is AlreadyApplied.
 	cmd := run.AcceptInput{Inputs: req.Inputs}
 	env, err := proto.BuildEnvelope(sid, runID, run.DeriveInputCommandID(runID, cmd.InputIDs()...), cmd)
-	if err != nil {
-		return TurnResponse{}, err
-	}
-	w, err := c.writer(ctx, sid)
 	if err != nil {
 		return TurnResponse{}, err
 	}
@@ -324,11 +338,14 @@ func (c *Coordinator) Deliver(ctx context.Context, req DeliverRequest) (TurnResp
 
 // --- Retry / Stop / Settle ------------------------------------------------------
 
-func (c *Coordinator) Retry(ctx context.Context, req RetryRequest) (TurnResponse, error) {
+func (c *Coordinator) Retry(ctx context.Context, w writer.Writer, req RetryRequest) (TurnResponse, error) {
+	if err := owned(w, req.Ref); err != nil {
+		return TurnResponse{}, err
+	}
 	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
 	var runID run.RunID
 	now := c.now()
-	err := c.commit(ctx, sid, "retry", func(v writer.View) (*writer.SemanticGroup, error) {
+	err := c.commit(ctx, w, "retry", func(v writer.View) (*writer.SemanticGroup, error) {
 		surface, err := loadSurface(v)
 		if err != nil {
 			return nil, err
@@ -410,9 +427,12 @@ func deliveredInputs(view writer.View, ids []chatlog.InputID) ([]run.AgentInput,
 	return out, nil
 }
 
-func (c *Coordinator) Stop(ctx context.Context, req StopRequest) (TurnResponse, error) {
+func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest) (TurnResponse, error) {
+	if err := owned(w, req.Ref); err != nil {
+		return TurnResponse{}, err
+	}
 	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
-	surface, err := c.surface(ctx, sid)
+	surface, err := ReadSurface(ctx, w.Projections(), sid)
 	if err != nil {
 		return TurnResponse{}, err
 	}
@@ -442,11 +462,14 @@ func (c *Coordinator) Stop(ctx context.Context, req StopRequest) (TurnResponse, 
 	return c.respond(ctx, req.Ref, runID)
 }
 
-func (c *Coordinator) Settle(ctx context.Context, req SettleRequest) (TurnResponse, error) {
+func (c *Coordinator) Settle(ctx context.Context, w writer.Writer, req SettleRequest) (TurnResponse, error) {
+	if err := owned(w, req.Ref); err != nil {
+		return TurnResponse{}, err
+	}
 	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
 	var runID run.RunID
 	now := c.now()
-	err := c.commit(ctx, sid, "settle", func(v writer.View) (*writer.SemanticGroup, error) {
+	err := c.commit(ctx, w, "settle", func(v writer.View) (*writer.SemanticGroup, error) {
 		surface, err := loadSurface(v)
 		if err != nil {
 			return nil, err
@@ -534,4 +557,7 @@ func (c *Coordinator) responseFor(ctx context.Context, ref TurnRef, view *TurnVi
 	return resp, nil
 }
 
-var _ Service = (*Coordinator)(nil)
+var (
+	_ Commands = (*Coordinator)(nil)
+	_ Reader   = (*Coordinator)(nil)
+)

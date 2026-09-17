@@ -59,7 +59,7 @@ func testStart(t *testing.T, factory Factory) {
 		{"payload differs from submitted content", h.startRequest("t1", altered), true},
 	}
 	for _, tc := range rejects {
-		_, err := h.c.Start(h.ctx, tc.req)
+		_, err := h.c.Start(h.ctx, h.writer(), tc.req)
 		if err == nil || errors.Is(err, turn.ErrConflict) != tc.conflict {
 			t.Fatalf("%s: err = %v, want conflict=%v", tc.name, err, tc.conflict)
 		}
@@ -70,7 +70,7 @@ func testStart(t *testing.T, factory Factory) {
 
 	// TRN-STR-2/3: one atomic group in the specified order under the derived
 	// CommitID; the response reflects the committed state (TRN-STR-4).
-	resp, err := h.c.Start(h.ctx, h.startRequest("t1", submitted...))
+	resp, err := h.c.Start(h.ctx, h.writer(), h.startRequest("t1", submitted...))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func testStart(t *testing.T, factory Factory) {
 	// TRN-EVT-2: a replay at a later time is already-applied and writes nothing.
 	after := h.head()
 	h.now += 60_000
-	again, err := h.c.Start(h.ctx, h.startRequest("t1", submitted...))
+	again, err := h.c.Start(h.ctx, h.writer(), h.startRequest("t1", submitted...))
 	if err != nil || again.RunID != runID || h.head() != after {
 		t.Fatalf("replay = %+v %v, head moved=%v", again, err, h.head() != after)
 	}
@@ -117,10 +117,10 @@ func testStart(t *testing.T, factory Factory) {
 	// TRN-EVT-3 / TRN-SCP-2: the same TurnID with another plan, and a second
 	// Turn while one is active, are conflicts.
 	extra := h.submit("in-3")
-	if _, err := h.c.Start(h.ctx, h.startRequest("t1", extra...)); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Start(h.ctx, h.writer(), h.startRequest("t1", extra...)); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("restart with a different plan = %v, want conflict", err)
 	}
-	if _, err := h.c.Start(h.ctx, h.startRequest("t2", extra...)); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Start(h.ctx, h.writer(), h.startRequest("t2", extra...)); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("second active turn = %v, want conflict", err)
 	}
 	surface := h.surface()
@@ -142,7 +142,7 @@ func testDeliver(t *testing.T, factory Factory) {
 	// TRN-DLV-2: input_accepted and input_delivered share one commit whose
 	// CommitID is the Run's input CommandID; the Run queues the input.
 	in2 := h.submit("in-2")
-	dresp, err := h.c.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("t1"), Inputs: in2})
+	dresp, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t1"), Inputs: in2})
 	if err != nil || dresp.Status != turn.TurnActive || dresp.RunID != runID {
 		t.Fatalf("deliver = %+v %v", dresp, err)
 	}
@@ -161,21 +161,21 @@ func testDeliver(t *testing.T, factory Factory) {
 	}
 	// Replay of the same delivery writes nothing.
 	head := h.head()
-	if _, err := h.c.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("t1"), Inputs: in2}); err != nil || h.head() != head {
+	if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t1"), Inputs: in2}); err != nil || h.head() != head {
 		t.Fatalf("deliver replay: err=%v moved=%v", err, h.head() != head)
 	}
 
 	// TRN-DLV-1: an unknown Turn and a Turn that is not active are conflicts;
 	// the input stays submitted.
 	in3 := h.submit("in-3")
-	if _, err := h.c.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("nope"), Inputs: in3}); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("nope"), Inputs: in3}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("deliver to unknown turn = %v", err)
 	}
 	h.appCancel(runID)
 	if st := h.status("t1"); st.Status != turn.TurnAttemptFailed {
 		t.Fatalf("after app cancel status = %s", st.Status)
 	}
-	if _, err := h.c.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("t1"), Inputs: in3}); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t1"), Inputs: in3}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("deliver to attempt_failed turn = %v, want conflict", err)
 	}
 	if v, _ := h.chat().Inputs.Get("in-3"); v.Status != chatlog.InputSubmitted {
@@ -198,7 +198,7 @@ func testDeliver(t *testing.T, factory Factory) {
 		{"payload differs", []run.AgentInput{{ID: in5[0].ID, Payload: run.MustParseCanonicalJSON(`{"text":"other"}`)}}},
 	}
 	for _, tc := range rejects {
-		if _, err := h.c.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("t2"), Inputs: tc.inputs}); !errors.Is(err, turn.ErrConflict) {
+		if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t2"), Inputs: tc.inputs}); !errors.Is(err, turn.ErrConflict) {
 			t.Fatalf("%s: deliver = %v, want conflict", tc.name, err)
 		}
 		if h.head() != before {
@@ -219,7 +219,7 @@ func testDeliver(t *testing.T, factory Factory) {
 	// input_accepted and input_delivered together -- and its replay writes nothing.
 	in6 := h.submit("in-6")
 	batch := []run.AgentInput{in5[0], in6[0]}
-	if _, err := h.c.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("t2"), Inputs: batch}); err != nil {
+	if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t2"), Inputs: batch}); err != nil {
 		t.Fatalf("batch deliver = %v", err)
 	}
 	group = h.group(session.CommitID(run.DeriveInputCommandID(run2, "in-5", "in-6")))
@@ -235,7 +235,7 @@ func testDeliver(t *testing.T, factory Factory) {
 		t.Fatalf("pending after batch = %+v", pending)
 	}
 	head = h.head()
-	if _, err := h.c.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("t2"), Inputs: batch}); err != nil || h.head() != head {
+	if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t2"), Inputs: batch}); err != nil || h.head() != head {
 		t.Fatalf("batch replay: err=%v moved=%v", err, h.head() != head)
 	}
 }
@@ -247,14 +247,14 @@ func testRetry(t *testing.T, factory Factory) {
 	resp := h.start("t1", "in-1")
 	run1 := resp.RunID
 	in2 := h.submit("in-2")
-	if _, err := h.c.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("t1"), Inputs: in2}); err != nil {
+	if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t1"), Inputs: in2}); err != nil {
 		t.Fatal(err)
 	}
 	// TRN-RTY-1: only an attempt_failed Turn may be retried.
-	if _, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: run1}); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Retry(h.ctx, h.writer(), turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: run1}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("retry of an active turn = %v, want conflict", err)
 	}
-	if _, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("nope"), PreviousRunID: run1}); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Retry(h.ctx, h.writer(), turn.RetryRequest{Ref: h.ref("nope"), PreviousRunID: run1}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("retry of an unknown turn = %v, want conflict", err)
 	}
 	h.appCancel(run1)
@@ -267,7 +267,7 @@ func testRetry(t *testing.T, factory Factory) {
 	}
 	rowsBefore := len(h.rows())
 	for _, previous := range []run.RunID{"", "unrelated-run"} {
-		if _, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: previous}); !errors.Is(err, turn.ErrConflict) {
+		if _, err := h.c.Retry(h.ctx, h.writer(), turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: previous}); !errors.Is(err, turn.ErrConflict) {
 			t.Fatalf("retry with previous run %q = %v, want conflict", previous, err)
 		}
 	}
@@ -275,7 +275,7 @@ func testRetry(t *testing.T, factory Factory) {
 	// TRN-RTY-1/2: attempt n+1 under the derived CommitID, replaying every
 	// delivered input in InputIDs order with its original payload.
 	req := turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: run1, Reason: "test"}
-	rresp, err := h.c.Retry(h.ctx, req)
+	rresp, err := h.c.Retry(h.ctx, h.writer(), req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,32 +309,32 @@ func testRetry(t *testing.T, factory Factory) {
 	// Replaying the operation confirms the same attempt, even after it ends
 	// and another Turn has acquired the Session's active slot.
 	head := h.head()
-	if again, err := h.c.Retry(h.ctx, req); err != nil || again.RunID != run2 || h.head() != head {
+	if again, err := h.c.Retry(h.ctx, h.writer(), req); err != nil || again.RunID != run2 || h.head() != head {
 		t.Fatalf("active retry replay = %+v %v, moved=%v", again, err, h.head() != head)
 	}
-	if _, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: run2}); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Retry(h.ctx, h.writer(), turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: run2}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("retry of the retried turn = %v, want conflict", err)
 	}
 	h.appCancel(run2)
 	other := h.start("t2", "in-3")
 	head = h.head()
-	if again, err := h.c.Retry(h.ctx, req); err != nil || again.RunID != run2 || again.Attempt != 2 || h.head() != head {
+	if again, err := h.c.Retry(h.ctx, h.writer(), req); err != nil || again.RunID != run2 || again.Attempt != 2 || h.head() != head {
 		t.Fatalf("ended retry replay = %+v %v, moved=%v", again, err, h.head() != head)
 	}
-	if _, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: run2}); !errors.Is(err, turn.ErrConflict) || h.head() != head {
+	if _, err := h.c.Retry(h.ctx, h.writer(), turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: run2}); !errors.Is(err, turn.ErrConflict) || h.head() != head {
 		t.Fatalf("retry with another active turn = %v, moved=%v", err, h.head() != head)
 	}
 	h.appCancel(other.RunID)
-	third, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: run2})
+	third, err := h.c.Retry(h.ctx, h.writer(), turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: run2})
 	if err != nil || third.RunID != turn.DeriveRunID(sid, "t1", 3) || third.Attempt != 3 {
 		t.Fatalf("next explicit retry = %+v %v", third, err)
 	}
 	head = h.head()
-	if again, err := h.c.Retry(h.ctx, req); err != nil || again.RunID != run2 || again.Attempt != 2 || h.head() != head {
+	if again, err := h.c.Retry(h.ctx, h.writer(), req); err != nil || again.RunID != run2 || again.Attempt != 2 || h.head() != head {
 		t.Fatalf("old retry replay after later attempt = %+v %v, moved=%v", again, err, h.head() != head)
 	}
 	h.takeover()
-	if again, err := h.c.Retry(h.ctx, req); err != nil || again.RunID != run2 || again.Attempt != 2 || h.head() != head {
+	if again, err := h.c.Retry(h.ctx, h.writer(), req); err != nil || again.RunID != run2 || again.Attempt != 2 || h.head() != head {
 		t.Fatalf("retry replay after takeover = %+v %v, moved=%v", again, err, h.head() != head)
 	}
 }
@@ -343,13 +343,13 @@ func testRetry(t *testing.T, factory Factory) {
 
 func testStopAndSettle(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
-	if _, err := h.c.Stop(h.ctx, turn.StopRequest{Ref: h.ref("nope")}); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Stop(h.ctx, h.writer(), turn.StopRequest{Ref: h.ref("nope")}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("stop unknown = %v", err)
 	}
 
 	// TRN-STP-1: CancelRun and turn/failed{stopped} land in one commit.
 	resp := h.start("t1", "in-1")
-	sresp, err := h.c.Stop(h.ctx, turn.StopRequest{Ref: h.ref("t1"), Reason: "user"})
+	sresp, err := h.c.Stop(h.ctx, h.writer(), turn.StopRequest{Ref: h.ref("t1"), Reason: "user"})
 	if err != nil || sresp.Status != turn.TurnStopped || sresp.Disposition != turn.ResumeFinished || sresp.End == nil {
 		t.Fatalf("stop = %+v %v", sresp, err)
 	}
@@ -370,14 +370,17 @@ func testStopAndSettle(t *testing.T, factory Factory) {
 	}
 	// A settled Turn admits nothing else (TRN-EVT-3).
 	for name, call := range map[string]func() error{
-		"stop": func() error { _, err := h.c.Stop(h.ctx, turn.StopRequest{Ref: h.ref("t1")}); return err },
+		"stop": func() error { _, err := h.c.Stop(h.ctx, h.writer(), turn.StopRequest{Ref: h.ref("t1")}); return err },
 		"retry": func() error {
-			_, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: resp.RunID})
+			_, err := h.c.Retry(h.ctx, h.writer(), turn.RetryRequest{Ref: h.ref("t1"), PreviousRunID: resp.RunID})
 			return err
 		},
-		"settle": func() error { _, err := h.c.Settle(h.ctx, turn.SettleRequest{Ref: h.ref("t1")}); return err },
+		"settle": func() error {
+			_, err := h.c.Settle(h.ctx, h.writer(), turn.SettleRequest{Ref: h.ref("t1")})
+			return err
+		},
 		"deliver": func() error {
-			_, err := h.c.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("t1"), Inputs: h.submit("late")})
+			_, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t1"), Inputs: h.submit("late")})
 			return err
 		},
 	} {
@@ -388,11 +391,11 @@ func testStopAndSettle(t *testing.T, factory Factory) {
 
 	// TRN-STL-1: Settle needs attempt_failed and writes failed{failed, class}.
 	resp = h.start("t2", "in-2")
-	if _, err := h.c.Settle(h.ctx, turn.SettleRequest{Ref: h.ref("t2")}); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Settle(h.ctx, h.writer(), turn.SettleRequest{Ref: h.ref("t2")}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("settle of an active turn = %v, want conflict", err)
 	}
 	h.appCancel(resp.RunID)
-	tresp, err := h.c.Settle(h.ctx, turn.SettleRequest{Ref: h.ref("t2"), FailureClass: "gave_up"})
+	tresp, err := h.c.Settle(h.ctx, h.writer(), turn.SettleRequest{Ref: h.ref("t2"), FailureClass: "gave_up"})
 	if err != nil || tresp.Status != turn.TurnFailed || tresp.Disposition != turn.ResumeFinished {
 		t.Fatalf("settle = %+v %v", tresp, err)
 	}
@@ -403,10 +406,10 @@ func testStopAndSettle(t *testing.T, factory Factory) {
 	if p := decode[turn.FailedPayload](t, h.registry, &group[0]); p.Settlement != turn.SettlementFailed || p.FailureClass != "gave_up" {
 		t.Fatalf("settle payload = %+v", p)
 	}
-	if _, err := h.c.Settle(h.ctx, turn.SettleRequest{Ref: h.ref("t2")}); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Settle(h.ctx, h.writer(), turn.SettleRequest{Ref: h.ref("t2")}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("second settle = %v, want conflict", err)
 	}
-	if _, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t2"), PreviousRunID: resp.RunID}); !errors.Is(err, turn.ErrConflict) {
+	if _, err := h.c.Retry(h.ctx, h.writer(), turn.RetryRequest{Ref: h.ref("t2"), PreviousRunID: resp.RunID}); !errors.Is(err, turn.ErrConflict) {
 		t.Fatalf("retry after settle = %v, want conflict", err)
 	}
 
@@ -427,12 +430,15 @@ func testStopAndSettle(t *testing.T, factory Factory) {
 		t.Fatalf("end = %T", *st.End)
 	}
 	for name, call := range map[string]func() error{
-		"stop": func() error { _, err := h.c.Stop(h.ctx, turn.StopRequest{Ref: h.ref("t3")}); return err },
+		"stop": func() error { _, err := h.c.Stop(h.ctx, h.writer(), turn.StopRequest{Ref: h.ref("t3")}); return err },
 		"retry": func() error {
-			_, err := h.c.Retry(h.ctx, turn.RetryRequest{Ref: h.ref("t3"), PreviousRunID: resp.RunID})
+			_, err := h.c.Retry(h.ctx, h.writer(), turn.RetryRequest{Ref: h.ref("t3"), PreviousRunID: resp.RunID})
 			return err
 		},
-		"settle": func() error { _, err := h.c.Settle(h.ctx, turn.SettleRequest{Ref: h.ref("t3")}); return err },
+		"settle": func() error {
+			_, err := h.c.Settle(h.ctx, h.writer(), turn.SettleRequest{Ref: h.ref("t3")})
+			return err
+		},
 	} {
 		if err := call(); !errors.Is(err, turn.ErrConflict) {
 			t.Fatalf("%s after completion = %v, want conflict", name, err)
@@ -585,7 +591,7 @@ func testRecovery(t *testing.T, factory Factory) {
 	// (A superseded Writer whose projections are stale rejects the group in
 	// its own pre-fold instead and never learns of the ownership loss.)
 	late := h.submit("late")
-	old := h.takeover()
+	old, oldWriter := h.takeover()
 	if n, err := h.rt.RecoverInterrupted(h.ctx, sid, nil); err != nil || n != 1 {
 		t.Fatalf("recover executing model = %d %v", n, err)
 	}
@@ -593,13 +599,13 @@ func testRecovery(t *testing.T, factory Factory) {
 	if st.Status != turn.TurnActive || st.Disposition == turn.ResumeWaitingForRecovery {
 		t.Fatalf("status after recovery = %+v", st)
 	}
-	if _, err := old.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("t1"), Inputs: late}); !errors.Is(err, run.ErrOwnershipLost) {
+	if _, err := old.Deliver(h.ctx, oldWriter, turn.DeliverRequest{Ref: h.ref("t1"), Inputs: late}); !errors.Is(err, run.ErrOwnershipLost) {
 		t.Fatalf("superseded coordinator deliver = %v, want ownership lost", err)
 	}
 	if v, _ := h.chat().Inputs.Get("late"); v.Status != chatlog.InputSubmitted {
 		t.Fatalf("fenced deliver changed the input: %s", v.Status)
 	}
-	if _, err := h.c.Deliver(h.ctx, turn.DeliverRequest{Ref: h.ref("t1"), Inputs: late}); err != nil {
+	if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t1"), Inputs: late}); err != nil {
 		t.Fatalf("owner deliver after takeover: %v", err)
 	}
 }

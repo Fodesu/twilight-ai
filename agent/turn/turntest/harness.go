@@ -81,13 +81,13 @@ func (h *harness) open() {
 	h.c = &turn.Coordinator{Writers: h.writers, Runtime: rt, Now: clock}
 }
 
-// takeover opens a new owner process and returns the superseded Coordinator so
-// a test can observe its fencing.
-func (h *harness) takeover() *turn.Coordinator {
+// takeover opens a new owner process and returns the superseded Coordinator
+// and its Writer, so a test can observe their fencing.
+func (h *harness) takeover() (*turn.Coordinator, writer.Writer) {
 	h.t.Helper()
-	old := h.c
+	old, oldWriter := h.c, h.writer()
 	h.open()
-	return old
+	return old, oldWriter
 }
 
 func (h *harness) fatal(args ...any) { h.t.Helper(); h.t.Fatal(args...) }
@@ -160,7 +160,7 @@ func (h *harness) startRequest(turnID turn.TurnID, inputs ...run.AgentInput) tur
 // start submits ids and starts turnID with them.
 func (h *harness) start(turnID turn.TurnID, ids ...string) turn.TurnResponse {
 	h.t.Helper()
-	resp, err := h.c.Start(h.ctx, h.startRequest(turnID, h.submit(ids...)...))
+	resp, err := h.c.Start(h.ctx, h.writer(), h.startRequest(turnID, h.submit(ids...)...))
 	if err != nil {
 		h.fatal(fmt.Sprintf("start %s: %v", turnID, err))
 	}

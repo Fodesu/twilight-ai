@@ -95,10 +95,10 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 	edit := open("edit", "e")
 	chat, _ = h.ChatlogSurface(ctx, "edit")
 	pending := chat.SubmittedInputs()
-	if err := h.WithdrawInput(ctx, "edit", run.InputID(pending[0].ID), "edited"); err != nil {
+	if err := h.Authority.Chatlog.Withdraw(ctx, edit.Handle().Writer(), run.InputID(pending[0].ID), "edited"); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.WithdrawInput(ctx, "edit", run.InputID(pending[0].ID), "edited"); err == nil {
+	if err := h.Authority.Chatlog.Withdraw(ctx, edit.Handle().Writer(), run.InputID(pending[0].ID), "edited"); err == nil {
 		t.Fatal("withdrawing a withdrawn input succeeded")
 	}
 	results, err := edit.Send(ctx, "how is the weather")

@@ -83,22 +83,23 @@ type Ports struct {
 // Authority is the composed core (HST-PRT-2). Exported fields are the ports
 // and core services; none is a product facade.
 type Authority struct {
-	Store       session.Store
-	Writers     writer.Writers
-	Registry    *extension.Registry
-	Admission   writer.Admission
-	Runtime     run.Runtime
-	Coordinator turn.Service
-	Driver      *driver.Driver
-	Presets     preset.Registry
-	Executor    effect.Port
-	Frozen      run.FrozenValueStore
+	Store     session.Store
+	Writers   writer.Writers
+	Registry  *extension.Registry
+	Admission writer.Admission
+	Runtime   run.Runtime
+	// Turns commits the Turn protocol and reads Turn status.
+	Turns    *turn.Coordinator
+	Driver   *driver.Driver
+	Presets  preset.Registry
+	Executor effect.Port
+	Frozen   run.FrozenValueStore
 	// Projections reads every projection through the Session's Writer.
 	Projections extension.ProjectionReader
 	// Content materializes the frozen bodies projections name (CHT-MAT-1).
 	Content chatlog.ContentResolver
 	// Chatlog commits the chatlog's own facts (HST-INP-1, HST-CKP-1).
-	Chatlog *chatlog.Service
+	Chatlog *chatlog.Commands
 	// History answers fork-boundary questions (HST-FRK-2, HST-SPN-5).
 	History turn.History
 	Clock   func() time.Time
@@ -169,14 +170,14 @@ func New(p Ports) (*Authority, error) {
 	content := runmod.NewContent(frozen)
 	a := &Authority{
 		Store: store, Writers: writers, Registry: registry, Admission: admission, Runtime: runtime,
-		Coordinator: &turn.Coordinator{Writers: writers, Runtime: runtime, Now: now},
-		Presets:     presets, Executor: p.Executor, Frozen: frozen, Projections: projections, Content: content,
-		Chatlog: &chatlog.Service{Writers: writers, Now: now},
+		Turns:   &turn.Coordinator{Writers: writers, Runtime: runtime, Now: now},
+		Presets: presets, Executor: p.Executor, Frozen: frozen, Projections: projections, Content: content,
+		Chatlog: &chatlog.Commands{Now: now},
 		History: turn.History{Store: store, Registry: registry, Projections: projections},
 		Clock:   now,
 	}
 	a.Driver = driver.New()
-	a.Driver.Runtime, a.Driver.Coordinator, a.Driver.Executor = runtime, a.Coordinator, p.Executor
+	a.Driver.Runtime, a.Driver.Turns, a.Driver.Executor = runtime, a.Turns, p.Executor
 	a.Driver.Presets, a.Driver.Decisions, a.Driver.Targets = presets, decisions, p.TargetResolver
 	a.Driver.Sources = decision.Sources{Projections: projections, Content: content}
 	a.Driver.Projections, a.Driver.Fail = projections, p.Fail
@@ -273,33 +274,10 @@ func (a *Authority) Collect(ctx context.Context) (session.CollectReport, error) 
 	return writer.Collect(ctx, a.Store)
 }
 
-// --- commands and reads by SessionID -------------------------------------------------
+// --- reads by SessionID ----------------------------------------------------------------
 
-// The services below act on a Session by identity; a caller that mutates a
-// Session holds its Handle, and the Writer's epoch fencing refuses a stale
-// owner regardless (SES-OWN).
-
-// SubmitInput writes twilight/chatlog/input_submitted for one user text and
-// returns the AgentInput a Start or Deliver hands to the Turn (HST-INP-1).
-func (a *Authority) SubmitInput(ctx context.Context, sid session.SessionID, id run.InputID, text string) (run.AgentInput, error) {
-	return a.Chatlog.SubmitInput(ctx, sid, id, text)
-}
-
-// WithdrawInput marks a submitted, undelivered input as withdrawn
-// (CHT-EVT-2); an input that is not submitted is turn.ErrConflict.
-func (a *Authority) WithdrawInput(ctx context.Context, sid session.SessionID, id run.InputID, reason string) error {
-	err := a.Chatlog.WithdrawInput(ctx, sid, id, reason)
-	if errors.Is(err, chatlog.ErrNotSubmitted) {
-		return fmt.Errorf("%w: input %s is not a submitted input", turn.ErrConflict, id)
-	}
-	return err
-}
-
-// Checkpoint commits a summary and its checkpoint in one group (CHT-EVT-3)
-// under the turn layer's quiescence rule: no Turn may be active (HST-CKP-1).
-func (a *Authority) Checkpoint(ctx context.Context, sid session.SessionID, summaryText string, retain []chatlog.EntryDigestPair) (chatlog.CheckpointID, error) {
-	return a.Chatlog.Checkpoint(ctx, sid, summaryText, retain, turn.RequireNoActiveTurn)
-}
+// Reading a Session needs no ownership: projections are queried by identity.
+// Commands take the Writer of an open Handle (HST-SES-1).
 
 // Projection reads any registered projection through the Session's Writer
 // (HST-MEM-1).

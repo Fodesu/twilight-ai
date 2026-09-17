@@ -47,25 +47,26 @@ func Example_recoverableTurn() {
 	if err := p1.CreateSession(ctx, sid); err != nil {
 		panic(err)
 	}
-	if _, err := p1.Authority.Open(ctx, sid); err != nil {
+	owned1, err := p1.Authority.Open(ctx, sid)
+	if err != nil {
 		panic(err)
 	}
 	profile1, err := p1.RegisterPreset("weather-agent", preset)
 	if err != nil {
 		panic(err)
 	}
-	input, err := p1.SubmitInput(ctx, sid, "in-1", "what is the weather?")
+	input, err := p1.Authority.Chatlog.Submit(ctx, owned1.Writer(), "in-1", "what is the weather?")
 	if err != nil {
 		panic(err)
 	}
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "turn-1"}
 	startDone := make(chan error, 1)
 	go func() {
-		_, err := p1.Authority.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
+		_, err := p1.Authority.Turns.Start(ctx, owned1.Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
 			Preset: profile1})
 		if err == nil {
 			// The Coordinator only commits; the host drives (HST-DRV-1).
-			_, err = p1.Drive(ctx, ref1)
+			_, err = p1.Authority.Driver.Drive(ctx, owned1.Writer(), ref1.TurnID)
 		}
 		startDone <- err
 	}()
@@ -90,7 +91,7 @@ func Example_recoverableTurn() {
 	}
 	fmt.Printf("process 2: took over; %d executing target disposed; chatlog has %d tool_result(s) with status %s\n", owned.Recovered, chat.ToolResults.Len(), toolResultStatus(&chat))
 
-	resp, err := p2.Drive(ctx, ref1)
+	resp, err := p2.Authority.Driver.Drive(ctx, owned.Writer(), ref1.TurnID)
 	if err != nil {
 		panic(err)
 	}

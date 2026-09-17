@@ -35,6 +35,10 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := &Coordinator{Writers: writers, Runtime: runtime}
+	w, err := writers.Writer(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	submit := func(id chatlog.InputID) run.AgentInput {
 		t.Helper()
@@ -58,17 +62,17 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	ref := TurnRef{SessionID: sid, TurnID: "t1"}
 	preset := PresetRef{ID: "p1", Digest: "sha256:p1"}
 	start := StartRequest{Ref: ref, Inputs: []run.AgentInput{submit("in-1")}, Preset: preset}
-	resp, err := c.Start(ctx, start)
+	resp, err := c.Start(ctx, w, start)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	if resp.Status != TurnActive || resp.Attempt != 1 || resp.RunID == "" || resp.Disposition != "" {
 		t.Fatalf("start response = %+v, want active attempt 1 with no disposition", resp)
 	}
-	if again, err := c.Start(ctx, start); err != nil || again.RunID != resp.RunID {
+	if again, err := c.Start(ctx, w, start); err != nil || again.RunID != resp.RunID {
 		t.Fatalf("start replay = %+v %v", again, err)
 	}
-	if _, err := c.Deliver(ctx, DeliverRequest{Ref: ref, Inputs: []run.AgentInput{submit("in-2")}}); err != nil {
+	if _, err := c.Deliver(ctx, w, DeliverRequest{Ref: ref, Inputs: []run.AgentInput{submit("in-2")}}); err != nil {
 		t.Fatalf("deliver: %v", err)
 	}
 	status, err := c.Status(ctx, ref)

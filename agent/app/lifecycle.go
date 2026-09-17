@@ -36,11 +36,6 @@ func (app *Application) Collect(ctx context.Context) (session.CollectReport, err
 	return app.Authority.Collect(ctx)
 }
 
-// WithdrawInput marks a submitted, undelivered input as withdrawn.
-func (app *Application) WithdrawInput(ctx context.Context, sid session.SessionID, id run.InputID, reason string) error {
-	return app.Authority.WithdrawInput(ctx, sid, id, reason)
-}
-
 // ChatlogSurface reads the chatlog surface of a Session.
 func (app *Application) ChatlogSurface(ctx context.Context, sid session.SessionID) (chatlog.Surface, error) {
 	return chatlog.ReadSurface(ctx, app.Authority.Projections, sid)
@@ -67,16 +62,6 @@ func (app *Application) CreateSession(ctx context.Context, sid session.SessionID
 // EnsureSession creates the stream when it does not exist yet.
 func (app *Application) EnsureSession(ctx context.Context, sid session.SessionID) error {
 	return app.Authority.EnsureSession(ctx, sid)
-}
-
-// SubmitInput writes one user text as a submitted input (HST-INP-1).
-func (app *Application) SubmitInput(ctx context.Context, sid session.SessionID, id run.InputID, text string) (run.AgentInput, error) {
-	return app.Authority.SubmitInput(ctx, sid, id, text)
-}
-
-// Drive drives a Turn to its next quiescent point (HST-DRV-1).
-func (app *Application) Drive(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse, error) {
-	return app.Authority.Driver.Drive(ctx, ref)
 }
 
 // --- presets ------------------------------------------------------------------------

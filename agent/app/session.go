@@ -51,8 +51,9 @@ type SessionStatus struct {
 }
 
 // Session is the application's conversation over one owned Session
-// (HST-SES): the routing, driving, draining and compaction policies, run
-// against the authority's services under the ownership Handle it holds.
+// (HST-SES): the routing, driving, draining and compaction policies. Every
+// command runs through the Writer of the Handle it holds; reads go by
+// SessionID.
 // Concurrent calls are safe: writes serialize in the Session Writer, and a
 // call whose input lands in a running Turn reports already_driving.
 type Session struct {
@@ -179,7 +180,7 @@ func (s *Session) Events(ctx context.Context) <-chan Event { return s.app.Events
 // Result is the Turn the input landed in, further Results are backlog Turns
 // this call drained after settlement (HST-SES-2).
 func (s *Session) Send(ctx context.Context, text string) ([]Result, error) {
-	in, err := s.a.Chatlog.SubmitInput(ctx, s.sid, chatlog.NewInputID(), text)
+	in, err := s.a.Chatlog.Submit(ctx, s.h.Writer(), chatlog.NewInputID(), text)
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +191,7 @@ func (s *Session) Send(ctx context.Context, text string) ([]Result, error) {
 	if absorbed != nil {
 		return []Result{*absorbed}, nil
 	}
-	resp, err := s.a.Driver.Drive(ctx, ref)
+	resp, err := s.a.Driver.Drive(ctx, s.h.Writer(), ref.TurnID)
 	if err != nil {
 		return nil, err
 	}
@@ -203,7 +204,7 @@ func (s *Session) Send(ctx context.Context, text string) ([]Result, error) {
 // Events, failures on Events and Config.Warn. Close cancels the background
 // drive; a cancelled Turn stays active and resumes on the next open.
 func (s *Session) Submit(ctx context.Context, text string) (turn.TurnRef, error) {
-	in, err := s.a.Chatlog.SubmitInput(ctx, s.sid, chatlog.NewInputID(), text)
+	in, err := s.a.Chatlog.Submit(ctx, s.h.Writer(), chatlog.NewInputID(), text)
 	if err != nil {
 		return turn.TurnRef{}, err
 	}
@@ -218,7 +219,7 @@ func (s *Session) Submit(ctx context.Context, text string) (turn.TurnRef, error)
 	s.bgStart()
 	go func() {
 		defer s.bgDone()
-		resp, err := s.a.Driver.Drive(s.bg, ref)
+		resp, err := s.a.Driver.Drive(s.bg, s.h.Writer(), ref.TurnID)
 		if err != nil {
 			s.app.fail(s.sid, fmt.Errorf("app: driving turn %s: %w", ref.TurnID, err))
 			return
@@ -260,7 +261,7 @@ func (s *Session) Route(ctx context.Context, inputs []run.AgentInput) (turn.Turn
 	if err != nil {
 		return turn.TurnResponse{}, err
 	}
-	return s.a.Driver.Drive(ctx, ref)
+	return s.a.Driver.Drive(ctx, s.h.Writer(), ref.TurnID)
 }
 
 // commitRoute is the commit half of Route: Deliver into the active Turn or
@@ -272,7 +273,7 @@ func (s *Session) commitRoute(ctx context.Context, inputs []run.AgentInput) (tur
 	}
 	if active, ok := surface.Active(); ok {
 		ref := s.ref(active.TurnID)
-		if _, err := s.a.Coordinator.Deliver(ctx, turn.DeliverRequest{Ref: ref, Inputs: inputs}); err != nil {
+		if _, err := s.a.Turns.Deliver(ctx, s.h.Writer(), turn.DeliverRequest{Ref: ref, Inputs: inputs}); err != nil {
 			return turn.TurnRef{}, err
 		}
 		return ref, nil
@@ -283,7 +284,7 @@ func (s *Session) commitRoute(ctx context.Context, inputs []run.AgentInput) (tur
 		}
 	}
 	ref := s.ref(s.newTurnID())
-	if _, err := s.a.Coordinator.Start(ctx, turn.StartRequest{Ref: ref, Inputs: inputs, Preset: s.opts.Preset}); err != nil {
+	if _, err := s.a.Turns.Start(ctx, s.h.Writer(), turn.StartRequest{Ref: ref, Inputs: inputs, Preset: s.opts.Preset}); err != nil {
 		return turn.TurnRef{}, err
 	}
 	return ref, nil
@@ -333,7 +334,7 @@ func (s *Session) Resume(ctx context.Context) ([]Result, bool, error) {
 	if err != nil || status.Active == "" {
 		return nil, false, err
 	}
-	resp, err := s.a.Driver.Drive(ctx, s.ref(status.Active))
+	resp, err := s.a.Driver.Drive(ctx, s.h.Writer(), status.Active)
 	if err != nil {
 		return nil, false, err
 	}
@@ -348,14 +349,14 @@ func (s *Session) Retry(ctx context.Context) ([]Result, bool, error) {
 		return nil, false, err
 	}
 	ref := s.ref(status.Failed[0])
-	previous, err := s.a.Coordinator.Status(ctx, ref)
+	previous, err := s.a.Turns.Status(ctx, ref)
 	if err != nil {
 		return nil, false, err
 	}
-	if _, err := s.a.Coordinator.Retry(ctx, turn.RetryRequest{Ref: ref, PreviousRunID: previous.RunID, Reason: "app retry"}); err != nil {
+	if _, err := s.a.Turns.Retry(ctx, s.h.Writer(), turn.RetryRequest{Ref: ref, PreviousRunID: previous.RunID, Reason: "app retry"}); err != nil {
 		return nil, false, err
 	}
-	resp, err := s.a.Driver.Drive(ctx, ref)
+	resp, err := s.a.Driver.Drive(ctx, s.h.Writer(), ref.TurnID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -431,7 +432,7 @@ func (s *Session) Compact(ctx context.Context) (chatlog.CheckpointID, bool, erro
 	if err != nil {
 		return "", false, err
 	}
-	id, err := s.a.Checkpoint(ctx, s.sid, summary, retain)
+	id, err := s.a.Chatlog.Checkpoint(ctx, s.h.Writer(), summary, retain, turn.RequireNoActiveTurn)
 	if err != nil {
 		return "", false, err
 	}
