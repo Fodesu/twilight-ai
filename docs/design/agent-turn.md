@@ -2,7 +2,7 @@
 
 状态：v1 设计规范。本文定义 Turn 协议。Coordinator 只做协议提交与状态读取（Start / Deliver / Retry / Stop / Settle / Status），驱动属宿主；写入经 `writer.Writer`、以 `Seq` 定位、恢复走接管处置。Run 事实与 Turn、Chatlog 事件同在一条 Session Commit Ledger。
 
-本文定义 `agent/turn`：回合生命周期、Run attempt 的创建与结算。attempt 的终态由 Run 自己的 `run_ended` 事实投影得到，本模块不写它的第二份表达。"必须""应该"为协议约束。Run Machine 与 Runtime 的 authority 是 [agent-run.md](agent-run.md)；对话内容的 authority 是 [agent-session-chatlog.md](agent-session-chatlog.md)；stream、commit 与 projection 机制的 authority 是 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md)。
+本文定义 `agent/turn`：回合生命周期、Run attempt 的创建与结算。attempt 的终态由 Run 自己的 `run_ended` 事实投影得到，本模块不写它的第二份表达：事实按发生的域只写一次，投影可以跨流折叠；判定一个事件是否该存在的标准是它是否记录了本域的独立决定（Retry、Stop、Settle、Superseded 是；`run_ended` 的确定性镜像不是），而不是某个投影希望只读哪条流。"必须""应该"为协议约束。Run Machine 与 Runtime 的 authority 是 [agent-run.md](agent-run.md)；对话内容的 authority 是 [agent-session-chatlog.md](agent-session-chatlog.md)；stream、commit 与 projection 机制的 authority 是 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md)。
 
 ## 1. 模型与范围
 
@@ -18,7 +18,7 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 | 对话内容 | `twilight/chatlog/` events 与 `twilight/run/` 事实的投影 | Start 与 Deliver 时 delivered input；assistant 与 tool_result 是 Run 事实的投影条目（CHT-ENT-1/2），不另写事件 |
 | Application policy | Application | preset、driver、retry、context 策略、产品策略 |
 
-**TRN-SCP-1** Source 为 `twilight`，ModuleID 为 `turn`。一个 Turn 与它的全部 Run attempt 注册在同一 Session Commit Ledger 内：attempt 由 session 流的 `twilight/turn/attempt_started` 注册（它建立 RunID 到 TurnID 的路由），终态由该 Run 在 run 流上的 `twilight/run/run_ended` 事实折叠得到；surface 跨两条逻辑流折叠（EXT-PRJ-1）。run 流因此是 canonical history 的一部分，不能独立于 session 流回收；fork 以整条 ledger 的前缀为单位（SES 第 8 节）。`Coordinator` 创建 Turn 与 attempt、投递输入、停止及结算 Turn；宿主驱动 Run。Run 事实中的 `OwnerID` 由本模块以 `TurnID` 填充。本模块的 `Requires`（EXT-REG-4）为：`run`（`twilight/run/run_ended` v1）、`chatlog`（`twilight/chatlog/input_delivered` v1）。
+**TRN-SCP-1** Source 为 `twilight`，ModuleID 为 `turn`。一个 Turn 与它的全部 Run attempt 注册在同一 Session Commit Ledger 内：attempt 由 session 流的 `twilight/turn/attempt_started` 注册（它建立 RunID 到 TurnID 的路由），终态由该 Run 在 run 流上的 `twilight/run/run_ended` 事实折叠得到；surface 跨两条逻辑流折叠（EXT-PRJ-1）。run 流因此是 canonical history 的一部分，与 session 流同为长期保留的事实；可回收的是冻结正文、execution record 与投影缓存，历史长度问题日后经 compaction 产出的 checkpoint（对某个前缀的权威 materialization）加尾部折叠解决，而不是复制第二套事实。fork 继承 run 流中的历史证据但不继承其执行所有权（SES-FRK-5、EXT-PRJ-8）。`Coordinator` 创建 Turn 与 attempt、投递输入、停止及结算 Turn；宿主驱动 Run。Run 事实中的 `OwnerID` 由本模块以 `TurnID` 填充。本模块的 `Requires`（EXT-REG-4）为：`run`（`twilight/run/run_ended` v1）、`chatlog`（`twilight/chatlog/input_delivered` v1）。
 
 **TRN-SCP-2** Turn 与 Run 的关系为 1:N。同一 Turn 至多一个非终态 Run，同一 Session 至多一个 `active` Turn。Start 与新 Retry 在 Writer 的串行提交边界内校验这一约束；已提交操作按各自的重放规则确认：
 
