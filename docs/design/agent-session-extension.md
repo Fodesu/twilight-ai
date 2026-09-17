@@ -230,7 +230,7 @@ type CommitObserver interface {
 // WritersConfig.Observers []CommitObserver
 ```
 
-**EXT-WRT-7** 提交观察。`WritersConfig.Observers` 在每个 `CommitApplied` 之后收到该组的封装行；被拒、重放（AlreadyApplied/Conflict）与 Noop 不通知。通知在互斥区之外执行——观察者不延长事务边界——但按提交全序串行：Writer 在释放互斥锁之前取得通知锁，后一个 Commit 可以立即进入临界区，它的通知却排在前一个之后。观察是派生工作、尽力而为：观察者 panic 被捕获，不影响 Commit 的结果与返回。它是一个 Session 全部观察的唯一源头：Loop 事件、Turn 生命周期、chatlog 条目都是已应用组里的行；宿主在其上派生事件流（HST-EVT-1），不再有第二条观察通道。
+**EXT-WRT-7** 提交观察。`WritersConfig.Observers` 在每个 `CommitApplied` 之后收到该组的封装行；被拒、重放（AlreadyApplied/Conflict）与 Noop 不通知。通知在互斥区之外执行——观察者不延长事务边界——但按提交全序串行：Writer 在释放互斥锁之前取得通知锁，后一个 Commit 可以立即进入临界区，它的通知却排在前一个之后。观察是派生工作、尽力而为：观察者 panic 被捕获，不影响 Commit 的结果与返回。它是一个 Session 全部观察的唯一源头：Loop 事件、Turn 生命周期、chatlog 条目都是已应用组里的行；宿主在其上派生事件流（OBS-1），不再有第二条观察通道。
 
 ## 6. pure projection 与缓存
 
@@ -276,7 +276,7 @@ func NewProjectionReader(store session.Store, registry *Registry, cache Projecti
 
 **EXT-PRJ-6** 写入与读取的权限不对称：`WritersConfig.CachePolicy` 只决定 Writer 写哪个投影的条目；读取一律尝试缓存中的条目，不论谁写的。某个投影的条目由它的宿主在语义检查点上写入时（run 的 machine projection 经 `SnapshotPolicy`，见 RUN-CMT-2），组装层用 `CachePolicy.Exclude` 把它排除，Writer 便只读不写，绝不会把条目落在检查点之间。
 
-**EXT-PRJ-7** 缓存是派生数据，写入尽力而为：`Save` 失败只让下次多折，不影响 Commit 结果。刷新在 Writer 的互斥区之外执行：策略判定与状态快照在区内完成（状态按 EXT-PRJ-1 不可变，快照即引用），编码与 `Save` 在解锁后进行，因此缓存 IO 不延长事务边界，与后续提交也没有顺序约束。区间是部署参数而非常量：`CacheEvery(n)` 的 `n` 由部署给出，`n <= 0` 才取 `DefaultCacheEvery`，且必须能在不改代码的情况下调整：宿主层把它暴露为 `Ports.CacheEvery`（HST-MEM-2），换值即换代价，不必重编译。间距给出可依赖的代价上界——进程异常结束后续折不超过 `n` 行，干净 `Close` 后为零；`Close` 的刷新同样受策略约束，因此被 `Exclude` 的投影在关闭时也不会被写入。
+**EXT-PRJ-7** 缓存是派生数据，写入尽力而为：`Save` 失败只让下次多折，不影响 Commit 结果。刷新在 Writer 的互斥区之外执行：策略判定与状态快照在区内完成（状态按 EXT-PRJ-1 不可变，快照即引用），编码与 `Save` 在解锁后进行，因此缓存 IO 不延长事务边界，与后续提交也没有顺序约束。区间是部署参数而非常量：`CacheEvery(n)` 的 `n` 由部署给出，`n <= 0` 才取 `DefaultCacheEvery`，且必须能在不改代码的情况下调整：宿主层把它暴露为 `Ports.CacheEvery`（APP-MEM-2），换值即换代价，不必重编译。间距给出可依赖的代价上界——进程异常结束后续折不超过 `n` 行，干净 `Close` 后为零；`Close` 的刷新同样受策略约束，因此被 `Exclude` 的投影在关闭时也不会被写入。
 
 ## 7. errors 与 conformance
 

@@ -15,7 +15,7 @@ import (
 	"github.com/felinics/twilight/sdk"
 )
 
-// HST-SES-4 / HST-EVT-1: Submit returns while the model is still blocked, and
+// APP-SES-4 / OBS-1: Submit returns while the model is still blocked, and
 // the Session's event stream carries the Turn's started and completed rows,
 // decoded, in commit order. Send over the same Session keeps its blocking
 // contract.
@@ -92,7 +92,7 @@ func TestSubmitReturnsAtOnceAndEventsReportTheTurn(t *testing.T) {
 
 	// The background drive may still be draining the backlog after the
 	// completed row landed; a Send racing it would be absorbed as
-	// already_driving (HST-SES-3). Wait for quiescence first.
+	// already_driving (APP-SES-3). Wait for quiescence first.
 	if err := s.Wait(ctx); err != nil {
 		t.Fatal(err)
 	}

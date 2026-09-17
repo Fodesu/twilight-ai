@@ -63,7 +63,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	go func() {
 		resp, err := h.Authority.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: preset})
 		if err == nil {
-			// The Coordinator only commits; the host drives (HST-DRV-1).
+			// The Coordinator only commits; the host drives (DRV-1).
 			resp, err = h.Authority.Driver.Drive(ctx, s.Handle().Writer(), ref1.TurnID)
 		}
 		if err != nil {

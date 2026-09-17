@@ -16,7 +16,7 @@ import (
 	"github.com/felinics/twilight/agent/turn"
 )
 
-// Options configures the subagent effect (HST-SPN).
+// Options configures the subagent effect (SPN).
 type Options struct {
 	// Tool is the ToolRef the model calls; empty selects DefaultTool.
 	Tool run.ToolRef
@@ -50,7 +50,7 @@ func (o Options) depth() int {
 }
 
 // Executor runs the spawn tool's Assignments as child Sessions this process
-// drives (HST-SPN-1). The in-flight table is process-scoped like a local
+// drives (SPN-1). The in-flight table is process-scoped like a local
 // executor's; what outlives the process is the child Session.
 type Executor struct {
 	opts Options
@@ -85,7 +85,7 @@ func (e *Executor) Bind(a *authority.Authority) { e.a = a }
 
 // Intercept wraps inner so the spawn tool's Assignments reach e and every
 // other Assignment reaches inner. Key-only operations go to e for keys it
-// drives or whose derived child exists on record (HST-SPN-4), else to inner.
+// drives or whose derived child exists on record (SPN-4), else to inner.
 func Intercept(e *Executor, inner effect.Port) effect.Port { return &intercept{e: e, inner: inner} }
 
 func (e *Executor) ours(a effect.Assignment) bool {
@@ -277,7 +277,7 @@ func (e *Executor) drive(ctx context.Context, key effect.AssignmentKey, child se
 
 // create makes the child Session with its provenance as segment metadata:
 // empty for Empty, a fork of the parent's history before the calling Turn
-// for Fork (HST-SPN-5).
+// for Fork (SPN-5).
 func (e *Executor) create(ctx context.Context, key effect.AssignmentKey, child session.SessionID, args Arguments) (Provenance, error) {
 	depth, err := e.depthOf(ctx, key.Session)
 	if err != nil {
@@ -421,7 +421,7 @@ func newestInput(chat chatlog.Surface) (chatlog.InputView, bool) {
 
 // Attach answers for calls this process drives or drove; for a key whose
 // derived child Session exists, it adopts the call and continues the child
-// (RUN-CMT-7, HST-SPN-4).
+// (RUN-CMT-7, SPN-4).
 func (e *Executor) Attach(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
 	if att, ok := e.local(key); ok {
 		return att, nil
@@ -502,7 +502,7 @@ func (e *Executor) Cancel(ctx context.Context, key effect.AssignmentKey) error {
 }
 
 // PrepareBinding names the child Session as the durable execution reference
-// a Worker records for the call (RUN-EXE-3, HST-SPN-2).
+// a Worker records for the call (RUN-EXE-3, SPN-2).
 func (e *Executor) PrepareBinding(_ context.Context, a effect.Assignment) (effect.ExecutionBinding, error) {
 	return effect.ExecutionBinding{Provider: Provider, ExecutionRef: string(ChildID(a.Session, a.RunID, a.CallID))}, nil
 }

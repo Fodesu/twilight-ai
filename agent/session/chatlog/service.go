@@ -13,17 +13,18 @@ import (
 	"github.com/felinics/twilight/agent/session/writer"
 )
 
-// Service drives the chatlog's canonical commands — submitting and
-// withdrawing inputs, committing checkpoints — through the Session's Writer
-// (CHT-EVT). It is the only writer of chatlog facts: callers go through
-// these methods instead of building chatlog TypedEvents by hand.
+// Commands are the chatlog's canonical commands -- submitting and
+// withdrawing inputs, committing checkpoints -- each through the Writer the
+// caller owns (CHT-EVT, AUTH-OWN-2). They are the only writer of chatlog
+// facts: callers go through these methods instead of building chatlog
+// TypedEvents by hand.
 type Commands struct {
 	Now func() time.Time
 }
 
 // Guard is a caller-supplied precondition evaluated inside a command's
 // commit critical section, on the same View the command reads. Checkpoint
-// uses it for the "no Turn may be active" rule (HST-CKP-1), which is turn
+// uses it for the "no Turn may be active" rule (APP-CKP-1), which is turn
 // domain policy this package cannot import.
 type Guard func(v writer.View) error
 
@@ -41,7 +42,7 @@ func TextContent(text string) run.CanonicalJSON {
 	return run.MustParseCanonicalJSON(`{"text":` + string(raw) + `}`)
 }
 
-// SubmitInput records one user input as submitted (CHT-EVT-1); idempotency
+// Submit records one user input as submitted (CHT-EVT-1); idempotency
 // rides on the CommitID, so a retried submission replays.
 func (s *Commands) Submit(ctx context.Context, w writer.Writer, id run.InputID, text string) (run.AgentInput, error) {
 	content := TextContent(text)
@@ -63,9 +64,9 @@ func (s *Commands) Submit(ctx context.Context, w writer.Writer, id run.InputID, 
 	}
 }
 
-// WithdrawInput marks a submitted, undelivered input as withdrawn
+// Withdraw marks a submitted, undelivered input as withdrawn
 // (CHT-EVT-2), for example the original input of a Turn the caller forked
-// before in order to edit it (HST-FRK-2).
+// before in order to edit it (AUTH-FRK-2).
 func (s *Commands) Withdraw(ctx context.Context, w writer.Writer, id run.InputID, reason string) error {
 	res, err := w.Commit(ctx, func(v writer.View) (*writer.SemanticGroup, error) {
 		state, err := v.Projection(SurfaceProjectionID, SurfaceProjection.Version)
@@ -167,7 +168,7 @@ func (s *Commands) Checkpoint(ctx context.Context, w writer.Writer, summaryText 
 // checkpoint replaces: the Session, the base context digest and the summary
 // text. A Checkpoint retried over the same base therefore carries the same
 // CommitID and is answered as already applied instead of writing a second
-// checkpoint (HST-CKP-1).
+// checkpoint (APP-CKP-1).
 func checkpointIDs(sid session.SessionID, base es.Digest, summaryText string) (CheckpointID, SummaryID, error) {
 	raw, err := es.EncodeTypedPayload(uint16(session.ProtocolVersion1), "twilight/chatlog/checkpoint", struct {
 		SessionID session.SessionID `json:"sessionId"`
@@ -191,7 +192,7 @@ func checkpointIDs(sid session.SessionID, base es.Digest, summaryText string) (C
 
 // CheckRetainClosure requires retained tool results and their issuing
 // assistants to travel together, so the compacted context stays valid
-// provider input (HST-CKP-2). Subset and order are the fold's job.
+// provider input (APP-CKP-2). Subset and order are the fold's job.
 func CheckRetainClosure(entries []Entry, retain []EntryDigestPair) error {
 	kept := make(map[EntryDigestPair]bool, len(retain))
 	for _, p := range retain {

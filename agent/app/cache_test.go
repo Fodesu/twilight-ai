@@ -12,7 +12,7 @@ import (
 )
 
 // countingCache wraps the in-memory cache to count writes, so a test can see
-// whether the Host's interval reached the Writer (HST-MEM-2, EXT-PRJ-7).
+// whether the Host's interval reached the Writer (APP-MEM-2, EXT-PRJ-7).
 type countingCache struct {
 	inner *extension.MemoryProjectionCache
 	mu    sync.Mutex
@@ -80,7 +80,7 @@ func TestHostCacheEveryIsConfigurable(t *testing.T) {
 	}
 }
 
-// TestHostNeverCachesTheMachineProjection is the other half of HST-MEM-2:
+// TestHostNeverCachesTheMachineProjection is the other half of APP-MEM-2:
 // the Writer leaves the machine projection to the Runtime's SnapshotPolicy, so
 // no entry appears for it however small the interval is.
 func TestHostNeverCachesTheMachineProjection(t *testing.T) {

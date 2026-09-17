@@ -204,7 +204,7 @@ twilight/chatlog/checkpoint_invalidated
 
 **CHT-EVT-3**（checkpoint）checkpoint 压缩 active Context：合法 checkpoint 使其变为 `[Summary] + Retained`，其后的事件照常折叠。digest 规则：`Digest` 的 domain 为 `twilight/chatlog/checkpoint_created`，覆盖除 `Digest` 外的全部字段；`BaseContextDigest` 以同一 domain 对 `{base: [(Kind, ID, Digest)]}` 计算，覆盖截至 `CoveredThrough` 的有序 active Context 序列；`Retained` 为空与省略是同一 wire 值，两个 digest 预映像都把空列表折叠为 nil。summary 应与 checkpoint 同组提交，gap 不变量因此原子成立。
 
-fold 在提交前逐条校验（EXT-WRT-1 的投影预折叠），违反者整组拒绝：`CoveredThrough` 早于 checkpoint 行的 Seq；`CoveredThrough` 与 checkpoint 之间的 Context 条目恰为该 `SummaryID` 的 summary 且 digest 相符；`BaseContextDigest` 与 base 序列重算值相符；`Retained` 是 base 序列的有序子集（逐项 (Kind, ID, Digest) 全等）。retained 集的 provider 合法性（tool call 与 result 的配对封闭，按 `Assistant.CallIDs` 判定）是宿主的职责（HST-CKP-2），fold 不校验。
+fold 在提交前逐条校验（EXT-WRT-1 的投影预折叠），违反者整组拒绝：`CoveredThrough` 早于 checkpoint 行的 Seq；`CoveredThrough` 与 checkpoint 之间的 Context 条目恰为该 `SummaryID` 的 summary 且 digest 相符；`BaseContextDigest` 与 base 序列重算值相符；`Retained` 是 base 序列的有序子集（逐项 (Kind, ID, Digest) 全等）。retained 集的 provider 合法性（tool call 与 result 的配对封闭，按 `Assistant.CallIDs` 判定）是宿主的职责（APP-CKP-2），fold 不校验。
 
 `checkpoint_invalidated` 只能指向最近一个仍 active 的 checkpoint：active Context 回到 base 加 checkpoint 之后折叠的尾部，summary 条目随之离开 active Context（Surface 与历史保留）；连续 invalidate 逐层回退。指向被压缩条目的 `tool_result_superseded` 是协议违规而非 checkpoint 失效条件：被压缩条目的 Turn 已结束，CHT-ENT-2 已排除对它的 supersede。失效途径只有显式 invalidate 最近的 active checkpoint。
 

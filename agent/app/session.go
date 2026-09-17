@@ -51,7 +51,7 @@ type SessionStatus struct {
 }
 
 // Session is the application's conversation over one owned Session
-// (HST-SES): the routing, driving, draining and compaction policies. Every
+// (APP-SES): the routing, driving, draining and compaction policies. Every
 // command runs through the Writer of the Handle it holds; reads go by
 // SessionID.
 // Concurrent calls are safe: writes serialize in the Session Writer, and a
@@ -68,7 +68,7 @@ type Session struct {
 	newTurnID func() turn.TurnID
 
 	// bg bounds the background drives Submit starts; Close cancels it and
-	// waits for them (HST-SES-4). bgN counts the drives in flight and bgIdle
+	// waits for them (APP-SES-4). bgN counts the drives in flight and bgIdle
 	// is closed when the count returns to zero, so Wait can observe quiescence
 	// while later Submits are still allowed.
 	bg     context.Context
@@ -80,7 +80,7 @@ type Session struct {
 
 // OpenSession ensures the stream exists, takes ownership per the
 // application's Ownership configuration, runs the takeover disposition and
-// returns the conversation (HST-SES-1).
+// returns the conversation (APP-SES-1).
 func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, opts SessionOptions) (*Session, error) {
 	if opts.Preset.ID == "" || opts.Preset.Digest == "" {
 		return nil, errors.New("app: open session requires a preset ref")
@@ -173,12 +173,12 @@ func (s *Session) Status(ctx context.Context) (SessionStatus, error) {
 	return out, nil
 }
 
-// Events is this Session's event stream from now on (HST-EVT-1).
+// Events is this Session's event stream from now on (OBS-1).
 func (s *Session) Events(ctx context.Context) <-chan Event { return s.app.Events(ctx, s.sid) }
 
 // Send submits text and blocks until it is settled or absorbed: the first
 // Result is the Turn the input landed in, further Results are backlog Turns
-// this call drained after settlement (HST-SES-2).
+// this call drained after settlement (APP-SES-2).
 func (s *Session) Send(ctx context.Context, text string) ([]Result, error) {
 	in, err := s.a.Chatlog.Submit(ctx, s.h.Writer(), chatlog.NewInputID(), text)
 	if err != nil {
@@ -199,7 +199,7 @@ func (s *Session) Send(ctx context.Context, text string) ([]Result, error) {
 }
 
 // Submit submits text, commits its route and returns the Turn it landed in
-// without waiting (HST-SES-4). The Turn is driven to settlement -- and the
+// without waiting (APP-SES-4). The Turn is driven to settlement -- and the
 // backlog drained -- in the background; progress and the reply arrive on
 // Events, failures on Events and Config.Warn. Close cancels the background
 // drive; a cancelled Turn stays active and resumes on the next open.
@@ -231,7 +231,7 @@ func (s *Session) Submit(ctx context.Context, text string) (turn.TurnRef, error)
 	return ref, nil
 }
 
-// routeInput commits one input's route with the conflict retry of HST-SES-3.
+// routeInput commits one input's route with the conflict retry of APP-SES-3.
 // It returns the Turn to drive, or the already_driving Result when another
 // driver took the input first.
 func (s *Session) routeInput(ctx context.Context, in run.AgentInput) (turn.TurnRef, *Result, error) {
@@ -252,7 +252,7 @@ func (s *Session) routeInput(ctx context.Context, in run.AgentInput) (turn.TurnR
 	return turn.TurnRef{}, nil, lastErr
 }
 
-// Route is HST-DRV-3: commit the inputs' route -- Deliver into the active
+// Route is APP-RTE-1: commit the inputs' route -- Deliver into the active
 // Turn, or Start a new one -- then drive the Turn to its next quiescent point.
 // A Turn awaiting Retry or Settle is a conflict: those are the caller's
 // decisions.
@@ -290,7 +290,7 @@ func (s *Session) commitRoute(ctx context.Context, inputs []run.AgentInput) (tur
 	return ref, nil
 }
 
-// Drain is HST-DRV-4: start the next Turn from the backlog of submitted,
+// Drain is APP-RTE-2: start the next Turn from the backlog of submitted,
 // undelivered inputs; ok is false when there is none.
 func (s *Session) Drain(ctx context.Context) (turn.TurnResponse, bool, error) {
 	chat, err := chatlog.ReadSurface(ctx, s.a.Projections, s.sid)
@@ -366,8 +366,8 @@ func (s *Session) Retry(ctx context.Context) ([]Result, bool, error) {
 
 // settled turns a TurnResponse into Results and drains the backlog: while a
 // settlement leaves submitted, undelivered inputs, the next Turn starts from
-// them (HST-DRV-4). When the backlog is drained and no Turn is active, the
-// automatic compaction policy runs (HST-CKP-1).
+// them (APP-RTE-2). When the backlog is drained and no Turn is active, the
+// automatic compaction policy runs (APP-CKP-1).
 func (s *Session) settled(ctx context.Context, resp turn.TurnResponse) ([]Result, error) {
 	out := []Result{s.result(ctx, resp)}
 	if resp.Disposition == ResumeAlreadyDriving {
@@ -411,7 +411,7 @@ func (s *Session) result(ctx context.Context, resp turn.TurnResponse) Result {
 
 // Compact summarizes the context with the preset's model and commits a
 // checkpoint retaining a pair-closed suffix; ok is false when the context is
-// already within the retain window (HST-CKP-1).
+// already within the retain window (APP-CKP-1).
 func (s *Session) Compact(ctx context.Context) (chatlog.CheckpointID, bool, error) {
 	policy := compaction.Policy{AfterEntries: s.opts.CompactAfterEntries, RetainEntries: s.opts.CompactRetainEntries}
 	cctx, err := chatlog.ReadContext(ctx, s.a.Projections, s.sid)

@@ -13,7 +13,7 @@ import (
 	"github.com/felinics/twilight/sdk"
 )
 
-// HST-FRK-1/2: forking before a Turn yields a child whose conversation ends
+// AUTH-FRK-1/2: forking before a Turn yields a child whose conversation ends
 // where the Turn's inputs were still undelivered. Resuming the child
 // regenerates the Turn from the same input; withdrawing the input and sending
 // another edits it. The parent is unchanged either way, and both children

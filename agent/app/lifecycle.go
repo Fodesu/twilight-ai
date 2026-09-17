@@ -15,18 +15,18 @@ import (
 
 // --- session lifecycle, forwarded from the Authority ---------------------------------
 
-// Fork creates a child session from a parent's ledger prefix (HST-FRK-1).
+// Fork creates a child session from a parent's ledger prefix (AUTH-FRK-1).
 func (app *Application) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
 	return app.Authority.Fork(ctx, req)
 }
 
 // ForkBeforeTurn forks a session at the commit before the named turn started
-// (HST-FRK-2), so the turn's inputs can be regenerated or edited in the child.
+// (AUTH-FRK-2), so the turn's inputs can be regenerated or edited in the child.
 func (app *Application) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
 	return app.Authority.ForkBeforeTurn(ctx, parent, turnID, child)
 }
 
-// DeleteSession drops a session's root (HST-FRK-3).
+// DeleteSession drops a session's root (AUTH-FRK-3).
 func (app *Application) DeleteSession(ctx context.Context, sid session.SessionID) error {
 	return app.Authority.DeleteSession(ctx, sid)
 }
@@ -46,7 +46,7 @@ func (app *Application) TurnSurface(ctx context.Context, sid session.SessionID) 
 	return turn.ReadSurface(ctx, app.Authority.Projections, sid)
 }
 
-// Projection reads any registered projection of a Session (HST-MEM-1).
+// Projection reads any registered projection of a Session (APP-MEM-1).
 func (app *Application) Projection(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (any, session.Head, error) {
 	return app.Authority.Projection(ctx, sid, id, v)
 }

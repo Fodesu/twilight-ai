@@ -65,7 +65,7 @@ func DefaultPromptBuilders() *PromptBuilders // 含 PromptContextV1
 
 **DEC-CAT-1** 目录在装配期构建、运行期只读：空 ref、nil factory、重复 ref 被拒绝。目录是 authority 侧的组件，不需要效果实现即可构建。
 
-**DEC-CAT-2** `PromptBuilders.Resolve(preset, source)` 按 `preset.Prompt` 解析；未注册返回 `ErrUnknownPromptBuilder`，该 AgentPreset 不得被注册或驱动（HST-PST-2 的 `preset_unavailable`）。接管进程以同一 AgentPreset 解析得到同一决策函数。
+**DEC-CAT-2** `PromptBuilders.Resolve(preset, source)` 按 `preset.Prompt` 解析；未注册返回 `ErrUnknownPromptBuilder`，该 AgentPreset 不得被注册或驱动（PST-2 的 `preset_unavailable`）。接管进程以同一 AgentPreset 解析得到同一决策函数。
 
 **DEC-CAT-3** 目录只承载需要代码的组件。工具调度与畸形结果重试上限是数据，直接作为 AgentPreset 的字段进摘要，Loop 从 AgentPreset 读取（RUN-LOP-1）；给数据加 ref 与目录不带来任何判定，只增加一层间接。
 

@@ -1,4 +1,4 @@
-// Package spawn defines the subagent protocol primitives (HST-SPN): the tool
+// Package spawn defines the subagent protocol primitives (SPN): the tool
 // a model calls to delegate a task, the argument and result shapes, the
 // deterministic child Session identity, and the provenance record that makes
 // a spawn call recoverable after a crash.
@@ -56,7 +56,7 @@ const (
 	// Empty starts the child from an empty Session.
 	Empty Mode = "spawn"
 	// Fork starts the child from the parent's history before the Turn that
-	// made the call (HST-FRK-2): the conversation so far, without the Turn
+	// made the call (AUTH-FRK-2): the conversation so far, without the Turn
 	// that is still executing.
 	Fork Mode = "fork"
 )
@@ -146,7 +146,7 @@ func ProvenanceFromHeader(header session.SegmentHeader) (prov Provenance, ok boo
 }
 
 // CheckDefinition verifies the assignment's recorded definition digest and
-// response policy against the tool's canonical definition (HST-SPN-1). It
+// response policy against the tool's canonical definition (SPN-1). It
 // returns a nil failure when they match.
 func CheckDefinition(proto run.Protocol, tool loop.ExecutableTool, assigned *effect.ToolAssignment) (*run.ToolFailure, error) {
 	def, err := run.FreezeToolDefinition(tool.Definition())
@@ -167,13 +167,13 @@ func CheckDefinition(proto run.Protocol, tool loop.ExecutableTool, assigned *eff
 }
 
 // DepthExceeded reports whether a Session at depth has reached the nesting
-// limit and may no longer spawn (HST-SPN-3).
+// limit and may no longer spawn (SPN-3).
 func DepthExceeded(depth, limit int) bool {
 	return depth >= limit
 }
 
 // ArgumentsConflict reports whether a recorded child was created for
-// different arguments than the call carries now (HST-SPN-2, RUN-EXE-3).
+// different arguments than the call carries now (SPN-2, RUN-EXE-3).
 func ArgumentsConflict(prov Provenance, args Arguments) bool {
 	return prov.Arguments != args
 }

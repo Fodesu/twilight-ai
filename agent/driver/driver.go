@@ -28,13 +28,13 @@ import (
 // them forward. The Coordinator itself never produces it.
 const ResumeAlreadyDriving turn.ResumeDisposition = "already_driving"
 
-// Presets resolves a PresetRef to its immutable AgentPreset (HST-PST-2).
+// Presets resolves a PresetRef to its immutable AgentPreset (PST-2).
 type Presets interface {
 	Resolve(turn.PresetRef) (turn.AgentPreset, error)
 }
 
 // Driver is the execution orchestrator over the fact and effect layers
-// (HST-DRV).
+// (DRV).
 type Driver struct {
 	Runtime     run.Runtime
 	Turns       turn.Reader
@@ -66,7 +66,7 @@ func (d *Driver) fail(sid session.SessionID, err error) {
 
 // loopFor returns the Loop that drives Runs of one AgentPreset. A Loop binds
 // the preset's prompt builder and settings to the shared Executor; it is
-// built once per PresetRef (HST-DRV-2, RUN-CMT-6).
+// built once per PresetRef (DRV-2, RUN-CMT-6).
 func (d *Driver) loopFor(ref turn.PresetRef) (*loop.Loop, error) {
 	preset, err := d.Presets.Resolve(ref)
 	if err != nil {
@@ -93,7 +93,7 @@ func (d *Driver) loopFor(ref turn.PresetRef) (*loop.Loop, error) {
 	return l, nil
 }
 
-// Drive is HST-DRV-1: while the Turn is active, resolve its recorded preset
+// Drive is DRV-1: while the Turn is active, resolve its recorded preset
 // and drive the active attempt to the next quiescent point, then read the
 // committed Status. w is the caller's ownership capability over the Session
 // (the Loop commits through the Runtime under the same epoch). The caller's

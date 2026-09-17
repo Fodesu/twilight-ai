@@ -1,4 +1,4 @@
-// Package observe is the Session event stream (HST-EVT-1): a
+// Package observe is the Session event stream (OBS-1): a
 // writer.CommitObserver that decodes every applied commit through the
 // Registry and fans it out, in commit order, to the subscribers of each
 // Session. UI, SSE and CLI observation all derive from this one source;

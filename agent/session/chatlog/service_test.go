@@ -22,7 +22,7 @@ func pairEntries() []chatlog.Entry {
 }
 
 // CheckRetainClosure rejects a retained set that splits a tool pair in either
-// direction and accepts closed sets (HST-CKP-2).
+// direction and accepts closed sets (APP-CKP-2).
 func TestCheckRetainClosure(t *testing.T) {
 	entries := pairEntries()
 	pair := func(i int) chatlog.EntryDigestPair { return entries[i].Pair() }

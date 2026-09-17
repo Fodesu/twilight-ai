@@ -20,7 +20,7 @@ func ReadSurface(ctx context.Context, r extension.ProjectionReader, sid session.
 
 // RequireNoActiveTurn is the turn layer's quiescence precondition for a
 // commit of another domain, evaluated inside the Writer's critical section:
-// ErrConflict while a Turn is active (HST-CKP-1).
+// ErrConflict while a Turn is active (APP-CKP-1).
 func RequireNoActiveTurn(v writer.View) error {
 	state, err := v.Projection(SurfaceProjectionID, SurfaceProjection.Version)
 	if err != nil {

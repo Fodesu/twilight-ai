@@ -1,5 +1,5 @@
 // Package preset is the authority-side registry of decision identities
-// (HST-PST): an AgentPreset in, a digest-checked PresetRef out. It never
+// (PST): an AgentPreset in, a digest-checked PresetRef out. It never
 // holds a model client or a tool implementation; those live behind the
 // effect port.
 package preset
@@ -13,14 +13,14 @@ import (
 	"github.com/felinics/twilight/agent/turn"
 )
 
-// Registry registers presets and resolves PresetRefs (HST-PST-1).
+// Registry registers presets and resolves PresetRefs (PST-1).
 type Registry interface {
 	Register(turn.PresetID, turn.AgentPreset) (turn.PresetRef, error)
 	Resolve(turn.PresetRef) (turn.AgentPreset, error)
 }
 
 // ErrUnavailable reports a PresetRef this process cannot resolve
-// (HST-PST-2).
+// (PST-2).
 var ErrUnavailable = errors.New("preset: preset_unavailable")
 
 // Memory is the in-memory Registry.

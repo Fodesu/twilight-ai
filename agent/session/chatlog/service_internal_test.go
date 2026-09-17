@@ -8,7 +8,7 @@ import (
 	"github.com/felinics/twilight/agent/session"
 )
 
-// HST-CKP-1: checkpoint identifiers are a function of the Session, the base
+// APP-CKP-1: checkpoint identifiers are a function of the Session, the base
 // context digest and the summary text, so a Checkpoint retried over the same
 // base replays the same CommitID.
 func TestCheckpointIDsAreDerived(t *testing.T) {

@@ -78,7 +78,7 @@ func Example_jsonlPrototype() {
 	}()
 	<-stage1.started
 
-	// Steer: a second Route while turn-1 runs goes to Deliver (HST-DRV-3).
+	// Steer: a second Route while turn-1 runs goes to Deliver (APP-RTE-1).
 	in2, err := p1.Authority.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-2", "and tomorrow?")
 	if err != nil {
 		panic(err)
@@ -114,7 +114,7 @@ func Example_jsonlPrototype() {
 	resp1 := <-turn1Done
 	fmt.Printf("turn-1: %s\n", resp1.Status)
 
-	// Turn 2 opens from the backlog (HST-DRV-4); its tool call blocks and the
+	// Turn 2 opens from the backlog (APP-RTE-2); its tool call blocks and the
 	// process dies while the call is Executing.
 	stage2 := tool.stage()
 	turn2Err := make(chan error, 1)

@@ -27,16 +27,16 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 | resume | 继续一个非终态 Run（进程重启、接管、Waiting 响应后） | 不变 |
 | retry | 前一 Run 已终结且未 completed，同一 Turn 再开一个 attempt | 新 RunID，`Attempt` 加 1 |
 | replace | 输入内容被替换，`twilight/turn/superseded` 指向新 Turn | 新 Turn、新 RunID |
-| regenerate | 已 completed 的回答需要重新生成：在该 Turn 之前 fork（HST-FRK-2），子 Session 里以同一输入开新 Turn；同一 Session 内也可提交新 Input 开新 Turn 并以 `superseded` 关联 | 新 Session 或新 Turn、新 RunID |
+| regenerate | 已 completed 的回答需要重新生成：在该 Turn 之前 fork（AUTH-FRK-2），子 Session 里以同一输入开新 Turn；同一 Session 内也可提交新 Input 开新 Turn 并以 `superseded` 关联 | 新 Session 或新 Turn、新 RunID |
 | edit | 已投递的输入需要修改：在该 Turn 之前 fork，撤回原输入（`input_withdrawn`）后提交新输入 | 新 Session、新 Turn、新 RunID |
 
 四种动作的持久性语义在第 7 节 TRN-DUR-1 至 4 逐条区分。subagent 使用独立 Session 与独立 Turn。
 
 **TRN-SCP-3** Coordinator 没有隐藏状态。它从 `twilight/turn/surface` 投影与 `twilight/run/machine` 投影重建。
 
-**TRN-SCP-4** Turn 自己的写入经该 Session 的 `writer.Writer.Commit`；Run 事实的写入经 `run.Runtime`，后者经同一个 Writer 落在同一 `session.Store`（EXT-SCP-1）。命令以调用方持有的 Writer 为参数（所有权能力，HST-OWN-2）；Status 读取与 Runtime 经 `writer.Writers` 取得 Writer（EXT-WRT-6）。Artifact 由其 owner 管理。
+**TRN-SCP-4** Turn 自己的写入经该 Session 的 `writer.Writer.Commit`；Run 事实的写入经 `run.Runtime`，后者经同一个 Writer 落在同一 `session.Store`（EXT-SCP-1）。命令以调用方持有的 Writer 为参数（所有权能力，AUTH-OWN-2）；Status 读取与 Runtime 经 `writer.Writers` 取得 Writer（EXT-WRT-6）。Artifact 由其 owner 管理。
 
-**TRN-SCP-5** Application 管理 model、provider、tool、prompt、token、approval、queue、retry 决策与并发。宿主按 persisted preset 解析 driver 并驱动（HST-DRV-1）。PromptBuilder 按 AgentPreset 的 `Prompt` ref 解析（DEC-CAT-2），每次 Build 使用 AgentPreset 的 `ModelRef`；Scheduling 与 MalformedRetries 是 AgentPreset 上的数据，Loop 直接读取。
+**TRN-SCP-5** Application 管理 model、provider、tool、prompt、token、approval、queue、retry 决策与并发。宿主按 persisted preset 解析 driver 并驱动（DRV-1）。PromptBuilder 按 AgentPreset 的 `Prompt` ref 解析（DEC-CAT-2），每次 Build 使用 AgentPreset 的 `ModelRef`；Scheduling 与 MalformedRetries 是 AgentPreset 上的数据，Loop 直接读取。
 
 **TRN-SCP-6** Start 之前建立 immutable execution preset。Session 保存 `PresetRef{ID, Digest}`。密钥与 client 留在进程内。Resolve 失败返回 `preset_unavailable`。字段与 digest 边界见 TRN-PST-1/2；决策组件的身份与解析见 [agent-decision.md](agent-decision.md)。
 
@@ -165,8 +165,8 @@ type Coordinator struct {
     Runtime run.Runtime
 }
 
-// Commands 只做协议提交；驱动 Run 属 driver（HST-DRV）。每个命令以该 Session 的
-// Writer——调用方的所有权能力（HST-OWN-2）——为参数，经它提交；请求所指
+// Commands 只做协议提交；驱动 Run 属 driver（DRV）。每个命令以该 Session 的
+// Writer——调用方的所有权能力（AUTH-OWN-2）——为参数，经它提交；请求所指
 // Session 与 Writer 不一致为 conflict。每个方法在提交落盘后立即返回，响应反映已提交的状态。
 type Commands interface {
     Start(context.Context, writer.Writer, StartRequest) (TurnResponse, error)
@@ -209,11 +209,11 @@ const (
 )
 ```
 
-driver 在该词汇表上扩展 `already_driving`（`driver.ResumeAlreadyDriving`，HST-DRV-1）：输入已提交、同 Run 的另一个本地驱动者继续推进。Coordinator 本身不产生该值。
+driver 在该词汇表上扩展 `already_driving`（`driver.ResumeAlreadyDriving`，DRV-1）：输入已提交、同 Run 的另一个本地驱动者继续推进。Coordinator 本身不产生该值。
 
 **TRN-API-1** Coordinator 经 Writer 的 `Projections()` 读取 `twilight/turn/surface` 与 `twilight/run/machine` 两个投影（EXT-PRJ-4）；命令读传入 Writer 的投影，每个方法先读投影再决定动作。Coordinator 不持有 `session.Store`。
 
-**TRN-API-2** Run 的写入只经 `run.Runtime`。driver 的组装与解析在宿主（HST-PST-2）。
+**TRN-API-2** Run 的写入只经 `run.Runtime`。driver 的组装与解析在宿主（PST-2）。
 
 **TRN-API-3** DTO 为值语义。`Waiting` 为 `twilight/run/machine` 的 `WaitingCalls`。`NeedsRecovery` 为 true 时返回 `ResumeWaitingForRecovery`，表示仍有待结算的 Executing 目标；宿主按 RUN-CMT-7 重连或接管处置。`ResumeWaitingForRecovery` 是 Turn API 的观察 disposition，不等同于 Executor 的 `AttachmentState`；其中 `AttachmentState=orphaned` 经 recovery 映射为 `RecoveryDisposition=deferred`，在显式 reconcile/takeover 前保持该 disposition。可重连与 deferred 目标在处置后仍可保持 `ResumeWaitingForRecovery`，直到实际结算。
 
@@ -246,7 +246,7 @@ InputIDs 为空时 group 为 `started`、`attempt_started` 加 `run_created`。`
 
 **TRN-STR-3** 派生 PlanDigest、StartOperationDigest、RunID 与 group identity，再经 `Writer.Commit` 写入一组。相同 identity 为 applied / already-applied；Writer 串行执行全部写入，不存在 head conflict。
 
-**TRN-STR-4** append 成功后 Start 返回已提交状态的响应；驱动新 Run 是宿主的下一步（HST-DRV-1）。
+**TRN-STR-4** append 成功后 Start 返回已提交状态的响应；驱动新 Run 是宿主的下一步（DRV-1）。
 
 **TRN-RTY-1** 新 Retry 要求 Turn 为 `attempt_failed`、`PreviousRunID` 指向该 Turn 最新的失败 attempt n、Session 当前无 `active` Turn。Coordinator 在 Writer 的串行提交边界内校验这些条件。commit 的 session 侧为 `twilight/turn/attempt_started{Attempt: n+1}`，run 侧为 `twilight/run/run_created` 加该 Turn 已 delivered 的全部 Input 的 `input_accepted`，顺序与 `TurnView.InputIDs` 相同（初始输入在前，中途 Deliver 的输入按 accepted 顺序在后）；payload 与首次 delivered 时相同，仅 RunID 与 Attempt 不同。准入失败返回 conflict。
 
@@ -260,11 +260,11 @@ InputIDs 为空时 group 为 `started`、`attempt_started` 加 `run_created`。`
 
 **TRN-DLV-2** `Inputs` 作为一个批次以一次 `Runtime.Commit` 提交：命令为 `AcceptInput{Inputs}`（有序列表，RUN-MCH-4），`Attach` 为每个输入一条 `twilight/chatlog/input_delivered{InputID, TurnID}`。Run 接受全部输入与 chatlog 把全部输入挂到 Turn 在同一组可见；任一输入被拒则一条都不写。envelope 的 SchemaVersion 取自 turn surface 中该 attempt 的 `SchemaVersion`，`Base` 为零值（`AcceptInput` 不做 hard CAS，RUN-CMT-4）；Deliver 不读取 `twilight/run/machine` 投影。`AcceptInput` 在 Run 的任意非终态都被接受，Deliver 不关心 Run 当前处于哪一步。CommandID 由 RunID 与有序 InputID 列表派生（RUN-WIR-4），同一批次重放幂等；不同批次（含子集或另一顺序）是不同命令，其中已接受过的输入使该批次整体被 Decide 以 conflict 拒绝。
 
-**TRN-DLV-3** Deliver 不取消正在进行的模型调用或工具调用；要打断用 Stop。提交后 Deliver 返回；是否驱动由宿主决定（HST-DRV-1），已在驱动时运行中的 Loop 在下一次 Load 看到 `PendingInputs`。Deliver 与该 Run 的最后一步 `SubmitModelResult` 并发时由 Writer 串行定序：输入先提交，Run 回到 `Open` 继续；结果先提交，Run 已终结，Deliver 得到 `ErrRunTerminal` 并返回 `completed`，该输入未被 delivered。
+**TRN-DLV-3** Deliver 不取消正在进行的模型调用或工具调用；要打断用 Stop。提交后 Deliver 返回；是否驱动由宿主决定（DRV-1），已在驱动时运行中的 Loop 在下一次 Load 看到 `PendingInputs`。Deliver 与该 Run 的最后一步 `SubmitModelResult` 并发时由 Writer 串行定序：输入先提交，Run 回到 `Open` 继续；结果先提交，Run 已终结，Deliver 得到 `ErrRunTerminal` 并返回 `completed`，该输入未被 delivered。
 
-**TRN-STA-1** Status 是纯读取，disposition 判定的单一来源：读投影设置 `Disposition` 与 `End`。Run 终态为 `ResumeFinished`，`End` 取 surface 中该 attempt 的 `AttemptView.End`；`NeedsRecovery` 为 true 为 `ResumeWaitingForRecovery`；仅有 WaitingCalls 为 `ResumeWaitingForResponse`。宿主驱动结束后调用 Status 组装结果（HST-DRV-1）；Start/Deliver/Retry/Stop/Settle 的响应用同一判定。
+**TRN-STA-1** Status 是纯读取，disposition 判定的单一来源：读投影设置 `Disposition` 与 `End`。Run 终态为 `ResumeFinished`，`End` 取 surface 中该 attempt 的 `AttemptView.End`；`NeedsRecovery` 为 true 为 `ResumeWaitingForRecovery`；仅有 WaitingCalls 为 `ResumeWaitingForResponse`。宿主驱动结束后调用 Status 组装结果（DRV-1）；Start/Deliver/Retry/Stop/Settle 的响应用同一判定。
 
-**TRN-STA-2** EventSink 的 `text_delta` / `reasoning_delta` 为临时观察。Waiting 由 Application 提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 后再次驱动（HST-DRV-1）。
+**TRN-STA-2** EventSink 的 `text_delta` / `reasoning_delta` 为临时观察。Waiting 由 Application 提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 后再次驱动（DRV-1）。
 
 **TRN-STP-1** Stop 要求 Turn 为 `active`。Coordinator 提交 `CancelRun{Reason:ReasonCancelled}`，并在 `CommitRequest.Attach` 中附加 `twilight/turn/failed{Settlement:stopped, FailureClass:"cancelled"}`；两者在同一 commit 可见。envelope 的 SchemaVersion 与 Deliver 同样取自 `AttemptView`，`Base` 为零值。Stop 结算 Turn，已 delivered 的 PendingInputs 保留归属。Application 单独提交 `CancelRun` 时，Turn 进入 `attempt_failed`；此时 Retry 为新 attempt 重放全部 delivered 输入，Settle 则结束该 Turn。
 
@@ -313,7 +313,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 
 **TRN-DUR-2（语义重试是新 Run、同一 Turn）** Application 显式指定 `PreviousRunID` 发起新 Retry，按 TRN-RTY-1 创建 attempt n+1、新 RunID，并重新接受该 Turn 已 delivered 的全部输入。历史 Retry 按 TRN-RTY-2 确认原提交；崩溃恢复按 TRN-DUR-1 继续原 Run。失败 attempt 的 Run 事实及其投影条目保留在 ledger 中，是否进入新 attempt 的模型请求由 PromptBuilder 决定（TRN-RTY-3）。
 
-**TRN-DUR-3（重新生成与编辑不改写历史）** 已 completed 的 Turn 及其回答是不可变事实：不存在"修改回答"、"重开同一 Turn"或"对 completed Turn 再开 attempt"。`Start` 要求输入处于 `submitted`（TRN-STR-1），已 delivered 的输入不能再次开 Turn。重新生成有两种形态：在该 Turn 之前 fork（SES 第 8 节、HST-FRK-2），子 Session 继承到该 Turn 开始之前的全部事实，其输入仍为 `submitted`，投递它即为新 Turn；或在同一 Session 内提交新 Input（内容可与原输入相同）并 Start，以 `twilight/turn/superseded` 关联原 Turn（TRN-API-4）。编辑只有 fork 形态：撤回原输入后提交新输入。两种形态都不改写已有历史；原回答是否进入上下文由 PromptBuilder 决定。
+**TRN-DUR-3（重新生成与编辑不改写历史）** 已 completed 的 Turn 及其回答是不可变事实：不存在"修改回答"、"重开同一 Turn"或"对 completed Turn 再开 attempt"。`Start` 要求输入处于 `submitted`（TRN-STR-1），已 delivered 的输入不能再次开 Turn。重新生成有两种形态：在该 Turn 之前 fork（SES 第 8 节、AUTH-FRK-2），子 Session 继承到该 Turn 开始之前的全部事实，其输入仍为 `submitted`，投递它即为新 Turn；或在同一 Session 内提交新 Input（内容可与原输入相同）并 Start，以 `twilight/turn/superseded` 关联原 Turn（TRN-API-4）。编辑只有 fork 形态：撤回原输入后提交新输入。两种形态都不改写已有历史；原回答是否进入上下文由 PromptBuilder 决定。
 
 **TRN-DUR-4（外部效果未知不等于重试）** owner 丢失时处于 Executing 的工具 call 有两种去向，由 Executor 是否仍持有该 attempt 决定（RUN-CMT-7）：仍持有则等待同一次执行的 Outcome，这是重连，不是重试；不再持有则由接管处置记为 Unknown，对话投影得到 status=`unknown` 的 tool_result 条目。Unknown 是该 call 的终态事实，协议在任何路径上都不重新执行它：接管处置不执行（它只记录）；下一次 Loop 不执行（start barrier 只启动 Pending call，Executing 与终态 call 永不重跑，RUN-LOP-4）；Retry 不执行（新 attempt 从上下文重新规划步骤，Unknown 结果作为对话内容可见）。外部效果是否已经发生、是否需要重做，由模型依据上下文判断，或由 Application 在带外核实后以 `tool_result_superseded` 换成 `success`/`error`（CHT-ENT-2）；两者都是决定，不是协议的自动行为。`CancelRun` 留下的 `UncertainCalls` 同理。
 
@@ -335,7 +335,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 | Deliver 的 Commit 返回非 sentinel 错误 | 以同一批次 CommandID 重放整批，得到 already-applied（TRN-DLV-2） |
 | Start 的 Commit 返回非 sentinel 错误 | 重放相同 StartRequest，以同一 CommitID 确认原提交 |
 | Retry 的 Commit 返回非 sentinel 错误 | 重放相同 RetryRequest（含 PreviousRunID），按 TRN-RTY-2 确认原 RunID 与 Attempt |
-| preset 缺失 | 宿主 Drive 返回 `preset_unavailable`（HST-PST-2）；Turn 状态不变 |
+| preset 缺失 | 宿主 Drive 返回 `preset_unavailable`（PST-2）；Turn 状态不变 |
 
 **TRN-REC-3** 没有跨存储的对账：Run 事实与 Attach 的 Turn 事实在同一组，`Append` 原子，要么全部可见要么全部不可见；对话内容与 Turn 结算是这些事实的投影，没有第二份需要对齐的写入。冻结正文在 Append 之前存入并建立 claim，崩溃只可能留下未被任何事实引用的正文与孤儿 claim，由 artifact 的回收前核对释放（EXT-WRT-3、ART-RET-3）。
 

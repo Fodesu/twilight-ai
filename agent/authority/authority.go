@@ -1,7 +1,7 @@
 // Package authority composes the agent core -- the fact layer (Store,
 // Writers, Runtime, Coordinator), the decision layer (preset registry and
 // prompt builder catalog) and the effect layer (an Executor port) -- into
-// one authority process (HST). Its exported fields are the core services a
+// one authority process (AUTH). Its exported fields are the core services a
 // caller drives a Session with; Open hands out the ownership capability
 // those services act under. It is deployment-neutral and carries no product
 // policy: what to send, when to drain a backlog, whether to drive in the
@@ -37,7 +37,7 @@ type Artifacts struct {
 	Ledger   artifact.RetentionLedger
 }
 
-// Ports are the roles an Authority is composed from (HST-PRT-1). Every field
+// Ports are the roles an Authority is composed from (AUTH-PRT-1). Every field
 // is an interface or a core value; nil fields take the defaults documented
 // on each, all of them in-process.
 type Ports struct {
@@ -68,7 +68,7 @@ type Ports struct {
 	// Clock stamps event times; nil selects time.Now.
 	Clock func() time.Time
 	// Cache stores folded projection states; nil asks the Store for a durable
-	// cache and falls back to an in-memory one (HST-MEM-2).
+	// cache and falls back to an in-memory one (APP-MEM-2).
 	Cache extension.ProjectionCache
 	// CacheEvery bounds how far a cached projection may fall behind the head;
 	// zero takes extension.DefaultCacheEvery (EXT-PRJ-7).
@@ -80,7 +80,7 @@ type Ports struct {
 	Fail func(session.SessionID, error)
 }
 
-// Authority is the composed core (HST-PRT-2). Exported fields are the ports
+// Authority is the composed core (AUTH-PRT-2). Exported fields are the ports
 // and core services; none is a product facade.
 type Authority struct {
 	Store     session.Store
@@ -98,14 +98,14 @@ type Authority struct {
 	Projections extension.ProjectionReader
 	// Content materializes the frozen bodies projections name (CHT-MAT-1).
 	Content chatlog.ContentResolver
-	// Chatlog commits the chatlog's own facts (HST-INP-1, HST-CKP-1).
+	// Chatlog commits the chatlog's own facts (APP-INP-1, APP-CKP-1).
 	Chatlog *chatlog.Commands
-	// History answers fork-boundary questions (HST-FRK-2, HST-SPN-5).
+	// History answers fork-boundary questions (AUTH-FRK-2, SPN-5).
 	History turn.History
 	Clock   func() time.Time
 }
 
-// New composes an Authority from its ports (HST-PRT-1).
+// New composes an Authority from its ports (AUTH-PRT-1).
 func New(p Ports) (*Authority, error) {
 	if p.Executor == nil {
 		return nil, errors.New("authority: an Executor port is required")
@@ -218,7 +218,7 @@ func (a *Authority) EnsureSession(ctx context.Context, sid session.SessionID) er
 	return nil
 }
 
-// ForkRequest forks a Session at one commit of its ledger (HST-FRK-1): the
+// ForkRequest forks a Session at one commit of its ledger (AUTH-FRK-1): the
 // child inherits every commit of Parent up to and including At and continues
 // from there under its own identity.
 type ForkRequest struct {
@@ -243,7 +243,7 @@ func (a *Authority) Fork(ctx context.Context, req ForkRequest) (session.SegmentH
 }
 
 // ForkBeforeTurn forks Parent at the commit just before turnID started
-// (HST-FRK-2): the child holds the conversation as it was when that Turn's
+// (AUTH-FRK-2): the child holds the conversation as it was when that Turn's
 // inputs were still submitted and undelivered.
 func (a *Authority) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
 	seq, err := a.History.StartCommit(ctx, parent, turnID)
@@ -257,7 +257,7 @@ func (a *Authority) ForkBeforeTurn(ctx context.Context, parent session.SessionID
 	return a.Fork(ctx, ForkRequest{Parent: parent, At: seq - 1, Child: child})
 }
 
-// DeleteSession drops a Session's root and releases its claims (HST-FRK-3,
+// DeleteSession drops a Session's root and releases its claims (AUTH-FRK-3,
 // SES-GC-1). A Session this authority holds open is closed first; one owned
 // by another process is ErrOwned.
 func (a *Authority) DeleteSession(ctx context.Context, sid session.SessionID) error {
@@ -277,10 +277,10 @@ func (a *Authority) Collect(ctx context.Context) (session.CollectReport, error) 
 // --- reads by SessionID ----------------------------------------------------------------
 
 // Reading a Session needs no ownership: projections are queried by identity.
-// Commands take the Writer of an open Handle (HST-SES-1).
+// Commands take the Writer of an open Handle (APP-SES-1).
 
 // Projection reads any registered projection through the Session's Writer
-// (HST-MEM-1).
+// (APP-MEM-1).
 func (a *Authority) Projection(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (any, session.Head, error) {
 	return a.Projections.Load(ctx, sid, id, v)
 }

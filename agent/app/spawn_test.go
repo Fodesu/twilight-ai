@@ -63,7 +63,7 @@ func spawnOutput(t *testing.T, h *app.Application, sid session.SessionID) (spawn
 	return spawn.Result{}, chatlog.ToolResult{}
 }
 
-// HST-SPN-1/2/3: a spawn call runs a child Session under the parent's
+// SPN-1/2/3: a spawn call runs a child Session under the parent's
 // preset, the child's reply becomes the tool result, the child's identity is
 // derived from the call, its creation metadata records the provenance, and
 // fork mode gives it the parent's history before the calling Turn.
@@ -157,7 +157,7 @@ func (m *gatedModel) Generate(_ context.Context, _ sdk.Request) (sdk.ModelResult
 	return text("late"), nil
 }
 
-// HST-SPN-4: after the parent's process dies while the child is executing,
+// SPN-4: after the parent's process dies while the child is executing,
 // the new owner finds the parent's call Executing, derives the child from it
 // and continues the same child Session; the parent's Turn then completes with
 // the child's reply. No second child is created.

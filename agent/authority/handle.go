@@ -9,11 +9,11 @@ import (
 )
 
 // ResumeAlreadyDriving is the Drive disposition when another local driver of
-// the same Run carries the Turn forward (HST-DRV-1).
+// the same Run carries the Turn forward (DRV-1).
 const ResumeAlreadyDriving = driver.ResumeAlreadyDriving
 
 // Handle is this authority's current execution capability over one Session
-// (HST-SES-1, HST-DRV-5): its Writer is open under this process's epoch, the
+// (AUTH-OWN-1, DRV-3): its Writer is open under this process's epoch, the
 // takeover disposition has run, and the recovery lifetime is installed. A
 // SessionID is a durable identity; a Handle says this process owns it now.
 //
@@ -31,7 +31,7 @@ type Handle struct {
 }
 
 // Open takes ownership of the Session -- its Writer and its recovery
-// listeners -- and runs the takeover disposition (HST-DRV-5). The stream
+// listeners -- and runs the takeover disposition (DRV-3). The stream
 // must exist. Opening a Session again replaces its recovery listeners.
 func (a *Authority) Open(ctx context.Context, sid session.SessionID) (*Handle, error) {
 	w, err := a.Writers.Writer(ctx, sid)

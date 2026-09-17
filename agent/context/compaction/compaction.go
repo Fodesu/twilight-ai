@@ -40,7 +40,7 @@ type Policy struct {
 
 // Retain selects the pair-closed suffix of at most RetainEntries entries;
 // withinWindow reports whether the whole context already fits the window,
-// so compaction has nothing to replace (HST-CKP-1).
+// so compaction has nothing to replace (APP-CKP-1).
 func (p Policy) Retain(entries []chatlog.Entry) (retain []chatlog.EntryDigestPair, withinWindow bool) {
 	n := p.RetainEntries
 	if n <= 0 {
@@ -52,7 +52,7 @@ func (p Policy) Retain(entries []chatlog.Entry) (retain []chatlog.EntryDigestPai
 
 // RetainLast selects a pair-closed suffix of at most n entries: a retained
 // tool result pulls in the assistant that issued its call, so the retained
-// set stays valid provider input (HST-CKP-2).
+// set stays valid provider input (APP-CKP-2).
 func RetainLast(entries []chatlog.Entry, n int) []chatlog.EntryDigestPair {
 	if n <= 0 || len(entries) == 0 {
 		return nil
@@ -91,7 +91,7 @@ func RetainLast(entries []chatlog.Entry, n int) []chatlog.EntryDigestPair {
 }
 
 // Summarizer asks a preset's model for the checkpoint summary. The call is
-// an effect like any other and goes through the effect port (HST-CKP-1):
+// an effect like any other and goes through the effect port (APP-CKP-1):
 // the request is frozen and dispatched as a model Assignment outside any
 // Run, so the authority holds no model client and a remote executor serves
 // it the same way. A crash while it generates writes nothing.

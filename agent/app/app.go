@@ -91,12 +91,12 @@ type Config struct {
 	// Observers are notified of every applied group besides the event stream.
 	Observers []writer.CommitObserver
 	Clock     func() time.Time
-	// Cache and CacheEvery configure the projection cache (HST-MEM-2).
+	// Cache and CacheEvery configure the projection cache (APP-MEM-2).
 	Cache      extension.ProjectionCache
 	CacheEvery session.CommitSeq
 	// Warn receives failures of background work; nil discards them.
 	Warn func(error)
-	// Spawn enables the subagent tool (HST-SPN); nil leaves it unavailable.
+	// Spawn enables the subagent tool (SPN); nil leaves it unavailable.
 	Spawn *spawn.Options
 }
 
@@ -146,7 +146,7 @@ func Build(c Config) (*Application, error) {
 	var bus *observe.Bus
 	observers := append([]writer.CommitObserver{forwardingObserver{&bus}}, c.Observers...)
 	// The spawn effect claims its tool's Assignments before the deployment's
-	// Executor sees them (HST-SPN-1); it drives children through the
+	// Executor sees them (SPN-1); it drives children through the
 	// Authority, so it is bound after New as well.
 	executor := port
 	if c.Spawn != nil {
@@ -189,7 +189,7 @@ func (o forwardingObserver) Committed(ctx context.Context, sid session.SessionID
 }
 
 // fail reports a failure of background work to Warn and, as an Event, to the
-// Session's subscribers (HST-EVT-1).
+// Session's subscribers (OBS-1).
 func (app *Application) fail(sid session.SessionID, err error) {
 	app.warn(err)
 	app.bus.Failed(sid, err)
@@ -219,7 +219,7 @@ func (app *Application) PresetRef(id turn.PresetID) (turn.PresetRef, error) {
 }
 
 // Events subscribes to one Session's event stream from this moment on
-// (HST-EVT-1): every event of every group applied by this application's
+// (OBS-1): every event of every group applied by this application's
 // Writers, in commit order, plus failures of background drives.
 func (app *Application) Events(ctx context.Context, sid session.SessionID) <-chan Event {
 	return app.bus.Subscribe(ctx, sid)
@@ -255,8 +255,8 @@ func buildExecutor(c ExecutorConfig) (effect.Port, error) {
 	}
 }
 
-// Event is one item of a Session's event stream (HST-EVT-1).
+// Event is one item of a Session's event stream (OBS-1).
 type Event = observe.Event
 
-// ForkRequest forks a Session at one commit of its ledger (HST-FRK-1).
+// ForkRequest forks a Session at one commit of its ledger (AUTH-FRK-1).
 type ForkRequest = authority.ForkRequest

@@ -75,7 +75,7 @@ func (e *recordingExecutor) assignments() []loop.Assignment {
 	return append([]loop.Assignment(nil), e.assigned...)
 }
 
-// The authority side needs no effect implementation (HST-PRT-2): a Host built
+// The authority side needs no effect implementation (AUTH-PRT-2): a Host built
 // over an Executor that is only a recorder registers an AgentPreset, starts a Turn,
 // dispatches the model Assignment with the frozen request's digest, and
 // settles the Outcome the executor sends back. Every model client and tool
@@ -128,7 +128,7 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 	}
 }
 
-// Older Turns keep resolving their recorded decision identity (HST-PST-2).
+// Older Turns keep resolving their recorded decision identity (PST-2).
 func TestPresetVersionsRemainAvailable(t *testing.T) {
 	presets := preset.NewMemory()
 	preset := mustPreset("m-1", nil, app.WithSystemPrompt("original"))

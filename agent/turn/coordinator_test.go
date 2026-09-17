@@ -14,7 +14,7 @@ import (
 
 // The Coordinator is pure protocol: Start, Deliver and Status commit and read
 // without any driver, registry or Loop in the assembly. The Run stays Open
-// until a host drives it (HST-DRV-1).
+// until a host drives it (DRV-1).
 func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	ctx := context.Background()
 	const sid session.SessionID = "s-protocol"

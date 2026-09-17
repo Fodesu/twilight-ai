@@ -9,8 +9,8 @@ import (
 	"github.com/felinics/twilight/agent/session/extension"
 )
 
-// History answers boundary questions about a Session's ledger (HST-FRK-2,
-// HST-SPN-5): it reads the turn and chatlog event types, so callers need
+// History answers boundary questions about a Session's ledger (AUTH-FRK-2,
+// SPN-5): it reads the turn and chatlog event types, so callers need
 // not scan raw commits themselves.
 type History struct {
 	Store       session.Store
@@ -27,7 +27,7 @@ func (h History) StartCommit(ctx context.Context, sid session.SessionID, turnID 
 // PrefixCommit finds the last commit of sid's history that precedes turnID
 // and its inputs: the fork point that excludes the whole Turn, so a child
 // rooted there sees the conversation as it stood before the Turn opened,
-// without the Turn's submitted inputs (HST-SPN-5). It errors when the Turn
+// without the Turn's submitted inputs (SPN-5). It errors when the Turn
 // opens the history.
 func (h History) PrefixCommit(ctx context.Context, sid session.SessionID, turnID TurnID) (session.CommitSeq, error) {
 	at, err := h.scanBoundary(ctx, sid, turnID, true)

@@ -21,7 +21,7 @@ func pairEntries() []chatlog.Entry {
 }
 
 // RetainLast expands a window that cuts a tool pair back to the issuing
-// assistant, so the retained suffix stays valid provider input (HST-CKP-2).
+// assistant, so the retained suffix stays valid provider input (APP-CKP-2).
 func TestRetainLastPairClosure(t *testing.T) {
 	entries := pairEntries()
 	cases := []struct {

@@ -144,7 +144,7 @@ Store/Execution Store 读取它们。
 
 ## 5. Recovery 验证
 
-Recovery 的状态域和跨层映射以 [Runtime](agent-runtime.md) 的 HST-DRV-5 表格和
+Recovery 的状态域和跨层映射以 [Runtime](agent-runtime.md) 的 DRV-3 表格和
 [Run](agent-run.md) 的 RUN-CMT-7 为唯一来源。这个应用只验证映射后的行为：
 
 - `active` / `terminal`：保留 Executing，读取并结算原 Outcome；
