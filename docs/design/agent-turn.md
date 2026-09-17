@@ -14,7 +14,7 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 | Concern | Canonical owner | 写入者 |
 |---|---|---|
 | 回合存在、attempt 归属与结束 | `twilight/turn/` events | Coordinator |
-| Run 执行状态 | `twilight/run/` events（[agent-run.md](agent-run.md)） | `run.Runtime`，接收 Loop 与 Coordinator 的命令 |
+| Run 执行状态 | `twilight/run/` events（[agent-run.md](agent-run.md)） | `runmod.SessionRunStore`：Loop 经 `Bind(w)` 得到的 `run.RunStore` 提交命令，Coordinator 在 unit of work 里放入它的 `Command` / `CreateRun` Part |
 | 对话内容 | `twilight/chatlog/` events 与 `twilight/run/` 事实的投影 | Start 与 Deliver 时 delivered input；assistant 与 tool_result 是 Run 事实的投影条目（CHT-ENT-1/2），不另写事件 |
 | Application policy | Application | preset、driver、retry、context 策略、产品策略 |
 
@@ -34,7 +34,7 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 
 **TRN-SCP-3** Coordinator 没有隐藏状态。它从 `twilight/turn/surface` 投影与 `twilight/run/machine` 投影重建。
 
-**TRN-SCP-4** Turn 自己的写入经该 Session 的 `writer.Writer.Commit`；Run 事实的写入经 `run.Runtime`，后者经同一个 Writer 落在同一 `session.Store`（EXT-SCP-1）。命令以调用方持有的 Writer 为参数（所有权能力，AUTH-OWN-2），并把它传给 `Runtime.Commit`；Status 经 `extension.ProjectionReader` 与 `Runtime.Record` 按 SessionID 读取，不取得 Writer。Artifact 由其 owner 管理。
+**TRN-SCP-4** 每个 Turn 命令是一个 unit of work（`agent/session/unit`）：Turn 自己的 Part、chatlog 的 `DeliverInputs` Part 与 Run 模块的 `CreateRun` / `Command` Part 在同一 View 上准备，经同一个 Writer 一次落盘（EXT-SCP-1）。Coordinator 不编码任何其他模块的事件。命令以调用方持有的 Writer 为参数（所有权能力，AUTH-OWN-2）；Status 经 `extension.ProjectionReader` 与 `SessionRunStore.Record` 按 SessionID 读取，不取得 Writer。Artifact 由其 owner 管理。
 
 **TRN-SCP-5** Application 管理 model、provider、tool、prompt、token、approval、queue、retry 决策与并发。宿主按 persisted preset 解析 driver 并驱动（DRV-1）。PromptBuilder 按 AgentPreset 的 `Prompt` ref 解析（DEC-CAT-2），每次 Build 使用 AgentPreset 的 `ModelRef`；Scheduling 与 MalformedRetries 是 AgentPreset 上的数据，Loop 直接读取。
 
@@ -161,8 +161,8 @@ UI 按 `TurnID` 连接 `twilight/chatlog/surface` 的条目，按 `RunID` 连接
 
 ```go
 type Coordinator struct {
-    Writers writer.Writers // Status 按 Ref.SessionID 取 Writer 读 Projections()
-    Runtime run.Runtime
+    Projections extension.ProjectionReader // Status 的无所有权读侧
+    Runs *runmod.SessionRunStore           // Record 与 Run 模块的 Part
 }
 
 // Commands 只做协议提交；驱动 Run 属 driver（DRV）。每个命令以该 Session 的
@@ -213,9 +213,9 @@ driver 在该词汇表上扩展 `already_driving`（`driver.ResumeAlreadyDriving
 
 **TRN-API-1** Coordinator 经 Writer 的 `Projections()` 读取 `twilight/turn/surface` 与 `twilight/run/machine` 两个投影（EXT-PRJ-4）；命令读传入 Writer 的投影，每个方法先读投影再决定动作。Coordinator 不持有 `session.Store`。
 
-**TRN-API-2** Run 的写入只经 `run.Runtime`。driver 的组装与解析在宿主（PST-2）。
+**TRN-API-2** Run 的写入只经 Run 模块自己的 Part（`runmod.Command`、`runmod.CreateRun`）与 Loop 手里的 `run.RunStore`。driver 的组装与解析在宿主（PST-2）。
 
-**TRN-API-3** DTO 为值语义。`Waiting` 为 `twilight/run/machine` 的 `WaitingCalls`。`NeedsRecovery` 为 true 时返回 `ResumeWaitingForRecovery`，表示仍有待结算的 Executing 目标；宿主按 RUN-CMT-7 重连或接管处置。`ResumeWaitingForRecovery` 是 Turn API 的观察 disposition，不等同于 Executor 的 `AttachmentState`；其中 `AttachmentState=orphaned` 经 recovery 映射为 `RecoveryDisposition=deferred`，在显式 reconcile/takeover 前保持该 disposition。可重连与 deferred 目标在处置后仍可保持 `ResumeWaitingForRecovery`，直到实际结算。
+**TRN-API-3** DTO 为值语义。`Waiting` 为 `twilight/run/machine` 的 `WaitingCalls`。`NeedsRecovery` 为 true 时返回 `ResumeWaitingForRecovery`，表示仍有待结算的 Executing 目标；宿主按 RUN-CMT-7 重连或接管处置。`ResumeWaitingForRecovery` 是 Turn API 的观察 disposition，不等同于 Executor 的 `AttachmentState`；其中 `AttachmentState=orphaned` 经 `agent/run/reconcile` 映射为 `Verdict=defer`，在显式 reconcile/takeover 前保持该 disposition。可重连与 deferred 目标在处置后仍可保持 `ResumeWaitingForRecovery`，直到实际结算。
 
 **TRN-API-4** `twilight/turn/superseded` 由 Application 追加。Coordinator 的方法不写该事件。superseded 的 Turn 若仍有非终态 Run，Application 必须先 Stop。
 
@@ -242,9 +242,9 @@ twilight/run/input_accepted{RunID, InputIDs[0], Payload}
 twilight/run/input_accepted{RunID, InputIDs[n-1], Payload}
 ```
 
-InputIDs 为空时 group 为 `started`、`attempt_started` 加 `run_created`。`run_created` 与 `input_accepted` 的 facts 由 `run.Protocol.BuildCreateGroup` 构造（RUN-NEW-1），Coordinator 只负责把它们放入 group。
+InputIDs 为空时 group 为 `started`、`attempt_started` 加 `run_created`。`run_created` 与 `input_accepted` 由 Run 模块的 `runmod.CreateRun(newRun, inputs)` Part 写入（RUN-NEW-1），`input_delivered` 由 chatlog 的 `DeliverInputs` Part 写入并在同一 View 上检查 TRN-STR-1 (2)；Coordinator 只负责把三个 Part 放进同一个 `unit.Work`。
 
-**TRN-STR-3** 派生 PlanDigest、StartOperationDigest、RunID 与 group identity，再经 `Writer.Commit` 写入一组。相同 identity 为 applied / already-applied；Writer 串行执行全部写入，不存在 head conflict。
+**TRN-STR-3** 派生 PlanDigest、StartOperationDigest、RunID 与 group identity，再经 `unit.Commit` 写入一组。相同 identity 为 applied / already-applied；Writer 串行执行全部写入，不存在 head conflict。
 
 **TRN-STR-4** append 成功后 Start 返回已提交状态的响应；驱动新 Run 是宿主的下一步（DRV-1）。
 
@@ -266,7 +266,7 @@ InputIDs 为空时 group 为 `started`、`attempt_started` 加 `run_created`。`
 
 **TRN-STA-2** EventSink 的 `text_delta` / `reasoning_delta` 为临时观察。Waiting 由 Application 提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 后再次驱动（DRV-1）。
 
-**TRN-STP-1** Stop 要求 Turn 为 `active`。Coordinator 提交 `CancelRun{Reason:ReasonCancelled}`，并在 `CommitRequest.Attach` 中附加 `twilight/turn/failed{Settlement:stopped, FailureClass:"cancelled"}`；两者在同一 commit 可见。envelope 的 SchemaVersion 与 Deliver 同样取自 `AttemptView`，`Base` 为零值。Stop 结算 Turn，已 delivered 的 PendingInputs 保留归属。Application 单独提交 `CancelRun` 时，Turn 进入 `attempt_failed`；此时 Retry 为新 attempt 重放全部 delivered 输入，Settle 则结束该 Turn。
+**TRN-STP-1** Stop 要求 Turn 为 `active`。Coordinator 的 unit 由 Run 的 `Command` Part（`CancelRun{Reason:ReasonCancelled}`）与 Turn 自己的 Part（`twilight/turn/failed{Settlement:stopped, FailureClass:"cancelled"}`）组成；两者在同一 commit 可见。envelope 的 SchemaVersion 与 Deliver 同样取自 `AttemptView`，`Base` 为零值。Stop 结算 Turn，已 delivered 的 PendingInputs 保留归属。Application 单独提交 `CancelRun` 时，Turn 进入 `attempt_failed`；此时 Retry 为新 attempt 重放全部 delivered 输入，Settle 则结束该 Turn。
 
 **TRN-STP-2** Cancel CommandID = `Digest("twilight/turn/cancel-run", SessionID, TurnID, RunID, ReasonCancelled)`。StopRequest.Reason 供审计。
 
@@ -274,7 +274,7 @@ InputIDs 为空时 group 为 `started`、`attempt_started` 加 `run_created`。`
 
 ## 6. 对话内容与结算：Run 事实的投影
 
-Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、工具调用与工具输出的正文在 `FrozenValueStore` 中，由 `run.Runtime.Commit` 在写入事实之前存入；对话条目（assistant、tool_result）与 Turn 的结算都是这些事实的纯投影，本模块与 chatlog 都不再写第二份表达。`run.Runtime.Commit` 只追加 Run facts 与调用方的 `CommitRequest.Attach`（TRN-DLV-2、TRN-STP-1 使用它写本模块自己的事实）。
+Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、工具调用与工具输出的正文在 `FrozenValueStore` 中，由 Run 的 `Command` Part 在构造时存入；对话条目（assistant、tool_result）与 Turn 的结算都是这些事实的纯投影，本模块与 chatlog 都不再写第二份表达。Run 的 Part 只写 Run facts；TRN-DLV-2、TRN-STP-1 里本模块与 chatlog 的事实由各自的 Part 写在同一个 unit 中。
 
 **TRN-MAP-1** 事实到投影的对应：
 
@@ -341,7 +341,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 
 ## 8. conformance
 
-套件以 `session.Store` 为参数（`agent/turn/turntest`），Memory 与每个 durable adapter 跑同一组断言。Coordinator 只做提交与读取，因此套件不含 Loop、driver、模型或工具桩：Run 的推进由 `run.Runtime` 的 command 提交完成，Application 的 `CancelRun` 制造 `attempt_failed`，`SubmitModelResult` 制造 completed 与 approval 等待。
+套件以 `session.Store` 为参数（`agent/turn/turntest`），Memory 与每个 durable adapter 跑同一组断言。Coordinator 只做提交与读取，因此套件不含 Loop、driver、模型或工具桩：Run 的推进由 `SessionRunStore.Bind(w)` 的 command 提交完成，Application 的 `CancelRun` 制造 `attempt_failed`，`SubmitModelResult` 制造 completed 与 approval 等待。
 
 - **TRN-STR-1 至 TRN-STR-4、TRN-ID-2/3/4、TRN-EVT-2**：缺 preset、重复 InputID、未 submitted 的输入、Payload 与 Content 不符各自被拒且不写入；Start 的 group 为 `started`、每输入一条 `input_delivered`、`run_created{Owner:TurnID, Attempt:1}`、每输入一条 `input_accepted`，CommitID 为 StartOperationDigest，RunID 为 `twilight/turn/run` 派生值；响应为 `active`、attempt 1、无 disposition；不同时间戳的重放为 already-applied 且不写入；同 TurnID 的另一 plan 与第二个活跃 Turn 为 conflict，被拒输入保持 `submitted`。
 - **TRN-DLV-1、TRN-DLV-2**：一个批次的全部 `input_accepted` 与 `input_delivered` 在以批次 CommandID 为 CommitID 的同一 commit；Run 的 `PendingInputs` 与 surface 的 `InputIDs` 追加全部输入；同一批次重放不写入；不存在或非 `active` 的 Turn 为 conflict 且输入保持 `submitted`；未提交的输入或内容不一致的输入使整批 conflict，批内其他输入也不写入、Run 的 `PendingInputs` 不变。

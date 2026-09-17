@@ -149,6 +149,7 @@ type View interface {
     Epoch() session.Epoch
     Committed(session.CommitID) bool                              // 只问是否已提交，不读 commit
     LookupCommit(session.CommitID) (session.Commit, bool, error) // 还要该 commit 的全部 batch
+    StreamHead(session.StreamRef) (session.StreamSeq, bool)     // 本 Session 是否写过该逻辑 stream，及下一条的 StreamSeq（kernel 索引）
     Projection(ProjectionID, ProjectionVersion) (any, error)      // 折叠到当前 head 的状态
 }
 type CommitFn func(View) (*SemanticGroup, error) // nil 表示不写

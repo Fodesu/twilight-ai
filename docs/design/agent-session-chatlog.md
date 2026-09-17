@@ -49,7 +49,7 @@ type CheckpointID string
 | Assistant | `run/model_step_completed`，其 `tool_step_opened` 补入 CallIDs | 无 | — | immutable；StepID 单次出现 |
 | Tool result | `run/tool_call_completed` / `tool_call_answered` / `tool_call_failed` | 无 | 可被 `tool_result_superseded` | 同一 CallID 至多一条 active |
 | Summary | `summary` | 无 | 随 checkpoint 失效 | checkpoint 的摘要正文 |
-| Checkpoint | `checkpoint_created` | 无 | invalidated | 指向已有 Seq |
+| Checkpoint | `checkpoint_created` | 无 | invalidated | 指向已有条目的 ledger Position |
 
 **CHT-LIF-1** reducer 拒绝 identity mutation、非法状态迁移、replacement conflict 与重复 ID。模型步骤进行中走 EventSink；定稿即 `ModelStepCompleted` / `ToolCallCompleted` 等 Run 事实本身。同一 Turn 的多个 Run attempt 各自产生 assistant 与 tool_result 条目，全部保留并出现在 ContextFold 的输出里；哪些条目进入模型请求由 PromptBuilder 决定（TRN-RTY-3、DEC-PMT-6），本模块不作取舍。
 
@@ -176,7 +176,7 @@ type SummaryPayload struct { Summary Summary }
 
 type CheckpointCreatedPayload struct {
     CheckpointID CheckpointID
-    CoveredThrough uint64
+    CoveredThrough session.Position // 最后一条被覆盖条目的事件在 ledger 中的位置（commit seq + 组内下标）
     BaseContextDigest es.Digest
     SummaryID SummaryID
     SummaryDigest es.Digest
@@ -204,14 +204,14 @@ twilight/chatlog/checkpoint_invalidated
 
 **CHT-EVT-3**（checkpoint）checkpoint 压缩 active Context：合法 checkpoint 使其变为 `[Summary] + Retained`，其后的事件照常折叠。digest 规则：`Digest` 的 domain 为 `twilight/chatlog/checkpoint_created`，覆盖除 `Digest` 外的全部字段；`BaseContextDigest` 以同一 domain 对 `{base: [(Kind, ID, Digest)]}` 计算，覆盖截至 `CoveredThrough` 的有序 active Context 序列；`Retained` 为空与省略是同一 wire 值，两个 digest 预映像都把空列表折叠为 nil。summary 应与 checkpoint 同组提交，gap 不变量因此原子成立。
 
-fold 在提交前逐条校验（EXT-WRT-1 的投影预折叠），违反者整组拒绝：`CoveredThrough` 早于 checkpoint 行的 Seq；`CoveredThrough` 与 checkpoint 之间的 Context 条目恰为该 `SummaryID` 的 summary 且 digest 相符；`BaseContextDigest` 与 base 序列重算值相符；`Retained` 是 base 序列的有序子集（逐项 (Kind, ID, Digest) 全等）。retained 集的 provider 合法性（tool call 与 result 的配对封闭，按 `Assistant.CallIDs` 判定）是宿主的职责（APP-CKP-2），fold 不校验。
+fold 在提交前逐条校验（EXT-WRT-1 的投影预折叠），违反者整组拒绝：`CoveredThrough` 早于 checkpoint 事件自己的 Position；`CoveredThrough` 与 checkpoint 之间的 Context 条目恰为该 `SummaryID` 的 summary 且 digest 相符；`BaseContextDigest` 与 base 序列重算值相符；`Retained` 是 base 序列的有序子集（逐项 (Kind, ID, Digest) 全等）。retained 集的 provider 合法性（tool call 与 result 的配对封闭，按 `Assistant.CallIDs` 判定）是宿主的职责（APP-CKP-2），fold 不校验。
 
 `checkpoint_invalidated` 只能指向最近一个仍 active 的 checkpoint：active Context 回到 base 加 checkpoint 之后折叠的尾部，summary 条目随之离开 active Context（Surface 与历史保留）；连续 invalidate 逐层回退。指向被压缩条目的 `tool_result_superseded` 是协议违规而非 checkpoint 失效条件：被压缩条目的 Turn 已结束，CHT-ENT-2 已排除对它的 supersede。失效途径只有显式 invalidate 最近的 active checkpoint。
 
 ## 6. Surface projection
 
 ```go
-type SurfaceEntry struct { Kind EntryKind; ID string; Seq uint64 }
+type SurfaceEntry struct { Kind EntryKind; ID string; Position session.Position }
 type Surface struct {
     Inputs Table[InputID, InputView]
     Assistants Table[AssistantID, Assistant]
@@ -227,7 +227,7 @@ type Surface struct {
 
 Surface 的折叠遵守 EXT-PRJ-1：Apply 不改写传入状态。内容表用 `Table` 承载，一次写入的代价为 O(√n)，因此折叠一条 N 行日志的代价随 N 线性增长；`EntryOrder` 以 append 增长。
 
-**CHT-SUR-1** SurfaceFold 消费本模块事件与 CHT-SCP-1 列出的 run 事实，跨 session 流与 run 流折叠（EXT-PRJ-1），其他事件按 EXT-PRJ-2 处理。`EntryOrder` 为 commit 顺序下的 delivered input、assistant、tool_result、summary，并带 Seq。回合列表由 turn 投影提供，按 `TurnID` 连接。checkpoint 记录于 `Surface.Checkpoints`（active / invalidated）；compaction 不改动 `EntryOrder`，也不触及输入队列。
+**CHT-SUR-1** SurfaceFold 消费本模块事件与 CHT-SCP-1 列出的 run 事实，跨 session 流与 run 流折叠（EXT-PRJ-1），其他事件按 EXT-PRJ-2 处理。`EntryOrder` 为 commit 顺序下的 delivered input、assistant、tool_result、summary，并带产生它的事件的 ledger Position（`extension.DecodedEvent.Position`，由 fold 盖上）：投影不维护自己的计数器，快照恢复也不需要重扫。`Surface.Runs` 与 `Context.Runs` 在 `run_ended` 时释放该 Run 的条目，大小与活动 Run 数成正比。回合列表由 turn 投影提供，按 `TurnID` 连接。checkpoint 记录于 `Surface.Checkpoints`（active / invalidated）；compaction 不改动 `EntryOrder`，也不触及输入队列。
 
 ## 7. Context projection
 
