@@ -142,15 +142,24 @@ func testFork(t *testing.T, f Fixture) {
 			t.Fatalf("read from %d limit %d = %s more=%v %v, want %s more=%v", tc.from, tc.limit, ids(p.Commits), p.HasMore, err, tc.want, tc.hasMore)
 		}
 	}
-	// Stream positions count the inherited events: r1 has one inherited event
-	// (c1) and one own (c3); the parent's c2 and c4 are not the child's.
-	sp, err := store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Stream: runStream("r1")})
-	if err != nil || len(sp.Events) != 2 || sp.Events[0].Payload.String() != `{"n":1}` || sp.Events[1].Payload.String() != `{"n":3}` {
-		t.Fatalf("child run stream = %+v %v", sp.Events, err)
+	// The session stream counts the inherited events (c0, c1) before the
+	// child's own (c3); a run stream is execution history of the segment that
+	// wrote it, so the child's r1 holds only c3 and the parent's c1 event is
+	// not the child's (SES-FRK-5).
+	sp, err := store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Stream: sessionStream()})
+	if err != nil || len(sp.Events) != 3 || sp.Events[0].Payload.String() != `{"n":0}` || sp.Events[2].Payload.String() != `{"n":3}` {
+		t.Fatalf("child session stream = %+v %v", sp.Events, err)
 	}
-	sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Stream: runStream("r1"), From: 1})
+	sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Stream: sessionStream(), From: 2})
 	if len(sp.Events) != 1 || sp.Events[0].Payload.String() != `{"n":3}` {
-		t.Fatalf("child run stream from 1 = %+v", sp.Events)
+		t.Fatalf("child session stream from 2 = %+v", sp.Events)
+	}
+	sp, err = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Stream: runStream("r1")})
+	if err != nil || len(sp.Events) != 1 || sp.Events[0].Payload.String() != `{"n":3}` {
+		t.Fatalf("child run stream = %+v %v, want the child's own event only", sp.Events, err)
+	}
+	if sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "parent", Stream: runStream("r1")}); len(sp.Events) != 2 {
+		t.Fatalf("parent run stream = %+v, want c1 and c2", sp.Events)
 	}
 
 	// Reopen validates the own chain from the edge and keeps the prefix

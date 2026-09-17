@@ -262,6 +262,15 @@ func (a *Authority) Fork(ctx context.Context, req ForkRequest) (session.SegmentH
 	if req.Parent == req.Child {
 		return session.SegmentHeader{}, errors.New("authority: a session cannot fork itself")
 	}
+	// A fork point inside a Turn would hand the child a Turn whose Run is
+	// the parent's execution (SES-FRK-5): semantic history branches only at
+	// quiescent points (AUTH-FRK-1).
+	if active, ok, err := a.History.ActiveAt(ctx, req.Parent, req.At); err != nil {
+		return session.SegmentHeader{}, err
+	} else if ok {
+		return session.SegmentHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: req.Child,
+			Detail: fmt.Sprintf("turn %s of %s is active at commit %d; fork at a quiescent point", active, req.Parent, req.At)}
+	}
 	return writer.Fork(ctx, a.Store, a.Registry, a.Admission, writer.ForkRequest{
 		Parent: req.Parent, At: req.At, Child: req.Child, CreatedAtUnixMilli: a.Clock().UnixMilli(), Metadata: req.Metadata,
 	})

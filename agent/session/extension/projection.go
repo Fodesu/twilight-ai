@@ -18,7 +18,25 @@ type ProjectionDefinition struct {
 	Initial    func() (any, error)
 	Apply      func(any, DecodedEvent) (any, error)
 	StateCodec PayloadCodec
+	// Inherits is what the fold takes from the commits a fork inherits
+	// (EXT-PRJ-8). The zero value, InheritSemantic, folds only the session
+	// stream of ancestor segments: a child never interprets its parent's run
+	// streams as its own execution. A projection whose semantic content
+	// lives in run facts declares InheritAll.
+	Inherits InheritPolicy
 }
+
+// InheritPolicy is what a projection folds from a fork's inherited prefix.
+type InheritPolicy uint8
+
+const (
+	// InheritSemantic folds only session-stream batches of inherited
+	// commits; run streams of the parent are execution history the child
+	// does not own.
+	InheritSemantic InheritPolicy = iota
+	// InheritAll folds every batch of inherited commits.
+	InheritAll
+)
 
 // ProjectionScope is a definition bound to its module scope: the modules
 // whose unknown events the fold must not silently skip.
@@ -54,9 +72,23 @@ func (r *Registry) ScopeFor(id ProjectionID, v ProjectionVersion) (*ProjectionSc
 // differs between the Writer's pre-seal fold and a reader's post-seal fold
 // (the EXT-PRJ-4 concern of the row model does not arise).
 func (r *Registry) Fold(s *ProjectionScope, state any, commits []session.Commit) (any, error) {
+	return r.FoldFrom(s, state, commits, session.SegmentHeader{})
+}
+
+// FoldFrom folds commits under the inheritance policy of the projection
+// (EXT-PRJ-8): header is the Session's tip header, whose Parent edge marks
+// the inherited prefix; commits at or below Parent.Seq contribute only their
+// session-stream batches unless the projection declares InheritAll. A header
+// without a Parent (a root Session, or a caller folding tip commits only)
+// inherits nothing and folds everything.
+func (r *Registry) FoldFrom(s *ProjectionScope, state any, commits []session.Commit, header session.SegmentHeader) (any, error) {
 	for i := range commits {
+		inherited := header.Parent != nil && commits[i].Seq <= header.Parent.Seq
 		for j := range commits[i].Batches {
 			b := &commits[i].Batches[j]
+			if inherited && s.Def.Inherits == InheritSemantic && b.Stream.Kind != session.StreamKindSession {
+				continue
+			}
 			for _, e := range b.Events {
 				var err error
 				state, err = r.applyEvent(s, state, commits[i].Seq, b.Stream, e)
@@ -257,7 +289,7 @@ func (r *storeReader) Load(ctx context.Context, sid session.SessionID, id Projec
 	if err != nil {
 		return nil, session.Head{}, err
 	}
-	state, err = r.registry.Fold(scope, state, page.Commits)
+	state, err = r.registry.FoldFrom(scope, state, page.Commits, page.Header)
 	if err != nil {
 		return nil, session.Head{}, err
 	}

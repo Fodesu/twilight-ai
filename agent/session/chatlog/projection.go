@@ -123,6 +123,9 @@ var chatlogConsumes = func() []session.EventType {
 var SurfaceProjection = extension.ProjectionDefinition{
 	ID: SurfaceProjectionID, Version: 1,
 	Consumes: chatlogConsumes,
+	// Assistant and tool_result entries are projected from run facts
+	// (CHT-SCP-1); a fork inherits that conversation content (EXT-PRJ-8).
+	Inherits: extension.InheritAll,
 	Initial: func() (any, error) {
 		return Surface{}, nil
 	},
@@ -436,6 +439,7 @@ type Context struct {
 var ContextProjection = extension.ProjectionDefinition{
 	ID: ContextProjectionID, Version: 1,
 	Consumes: chatlogConsumes,
+	Inherits: extension.InheritAll,
 	Initial: func() (any, error) {
 		return Context{Pending: map[InputID]Input{}, Superseded: map[ToolResultID]ToolResultID{}, Runs: map[run.RunID]TurnID{}}, nil
 	},

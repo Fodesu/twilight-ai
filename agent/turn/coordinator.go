@@ -527,6 +527,13 @@ func (c *Coordinator) responseFor(ctx context.Context, ref TurnRef, view *TurnVi
 	}
 	record, err := c.Runtime.Record(ctx, ref.SessionID, att.RunID)
 	if err != nil {
+		if errors.Is(err, run.ErrRunNotFound) && att.End != nil {
+			// The attempt ran in a parent Session: its Run is not this
+			// Session's execution history (SES-FRK-5), but the surface holds
+			// its settlement.
+			resp.Disposition = ResumeFinished
+			return resp, nil
+		}
 		return TurnResponse{}, err
 	}
 	snapshot := record.Snapshot

@@ -343,13 +343,25 @@ func (l *Ledger) ReadStream(ctx context.Context, req StreamReadRequest) (StreamP
 		return StreamPage{}, newError(ErrInvalid, "read_stream", req.SessionID, err.Error())
 	}
 	// Stream positions count the stream's events from the first commit the
-	// Session sees, inherited prefix included (SES-REP-2).
+	// Session sees (SES-REP-2). The session stream includes the inherited
+	// prefix; every other stream kind is execution history of the segment
+	// that wrote it, so a fork reads its own run streams only (SES-FRK-5).
 	all, err := l.ReadCommits(ctx, CommitReadRequest{SessionID: req.SessionID})
 	if err != nil {
 		return StreamPage{}, err
 	}
+	commits := all.Commits
+	if req.Stream.Kind != StreamKindSession && all.Header.Parent != nil {
+		own := commits[:0:0]
+		for _, c := range commits {
+			if c.Seq > all.Header.Parent.Seq {
+				own = append(own, c)
+			}
+		}
+		commits = own
+	}
 	page := StreamPage{Header: all.Header, Stream: req.Stream, Head: all.Head}
-	page.Events, page.HasMore = StreamEvents(all.Commits, req.Stream, req.From, req.Limit)
+	page.Events, page.HasMore = StreamEvents(commits, req.Stream, req.From, req.Limit)
 	return page, nil
 }
 

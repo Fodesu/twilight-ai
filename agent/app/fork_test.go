@@ -2,7 +2,9 @@ package app_test
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/run"
@@ -129,6 +131,24 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 			t.Fatalf("%s does not continue from the anchor", sid)
 		}
 	}
+	// The children inherited the conversation, not the parent's execution:
+	// the parent's Runs are unknown to a child (SES-FRK-5), while the
+	// parent's own turn surface still settles them.
+	parentTurns, err := turn.ReadSurface(ctx, h.Authority.Projections, "parent")
+	if err != nil || len(parentTurns.Turns["p1"].Attempts) != 1 {
+		t.Fatalf("parent turns = %+v %v", parentTurns.Turns, err)
+	}
+	p1Run := parentTurns.Turns["p1"].Attempts[0].RunID
+	if _, err := h.Authority.Runtime.Record(ctx, "parent", p1Run); err != nil {
+		t.Fatalf("parent record of its own run: %v", err)
+	}
+	if _, err := h.Authority.Runtime.Record(ctx, "regen", p1Run); !errors.Is(err, run.ErrRunNotFound) {
+		t.Fatalf("child record of the parent's run = %v, want ErrRunNotFound", err)
+	}
+	childTurns, err := turn.ReadSurface(ctx, h.Authority.Projections, "regen")
+	if err != nil || childTurns.Turns["p1"].Status != turn.TurnCompleted {
+		t.Fatalf("child view of the inherited turn = %+v %v, want completed", childTurns.Turns["p1"], err)
+	}
 	// A Turn started by the first commit has no prefix; an unknown Turn is a
 	// conflict; a Session cannot fork itself.
 	if _, err := h.ForkBeforeTurn(ctx, "parent", "p9", "x"); err == nil {
@@ -158,4 +178,64 @@ func lastReply(t *testing.T, h *app.Application, sid session.SessionID) string {
 		}
 	}
 	return ""
+}
+
+// AUTH-FRK-1: a fork point inside an active Turn is refused -- the child
+// would inherit a Turn whose execution belongs to the parent -- and the same
+// parent forks once the Turn has settled.
+func TestForkInsideActiveTurnIsRefused(t *testing.T) {
+	ctx := context.Background()
+	const sid session.SessionID = "s-fork-active"
+	gate := &gateModel{started: make(chan sdk.Request, 1), release: make(chan struct{})}
+	store := session.NewMemoryStore()
+	h := newHost(app.Config{Store: store}, map[run.ModelRef]loop.ModelInvoker{"m-1": gate})
+	presetRef, err := h.RegisterPreset("a1", mustPreset("m-1", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: presetRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Submit(ctx, "hello"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-gate.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the background drive never reached the model")
+	}
+	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
+	if err != nil || len(page.Commits) == 0 {
+		t.Fatalf("parent commits = %d %v", len(page.Commits), err)
+	}
+	mid := page.Commits[len(page.Commits)-1].Seq
+	if _, err := h.Fork(ctx, app.ForkRequest{Parent: sid, At: mid, Child: "mid"}); !session.IsCode(err, session.ErrInvalid) {
+		t.Fatalf("fork inside an active turn = %v, want ErrInvalid", err)
+	}
+	if _, err := store.Header(ctx, "mid"); !session.IsCode(err, session.ErrNotFound) {
+		t.Fatalf("refused fork left a root: %v", err)
+	}
+	close(gate.release)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		status, err := s.Status(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status.Active == "" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("turn still active: %+v", status)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := s.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	page, _ = store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
+	if _, err := h.Fork(ctx, app.ForkRequest{Parent: sid, At: page.Commits[len(page.Commits)-1].Seq, Child: "after"}); err != nil {
+		t.Fatalf("fork at a quiescent point: %v", err)
+	}
 }

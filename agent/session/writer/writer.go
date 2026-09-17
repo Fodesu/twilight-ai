@@ -253,7 +253,7 @@ func (w *sessionWriter) rebuild(ctx context.Context, store session.Store) error 
 			from = through.Next
 		}
 		if from < session.CommitSeq(len(page.Commits)) {
-			if state, err = w.registry.Fold(scope, state, page.Commits[from:]); err != nil {
+			if state, err = w.registry.FoldFrom(scope, state, page.Commits[from:], page.Header); err != nil {
 				return err
 			}
 		}
