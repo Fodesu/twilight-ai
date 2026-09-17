@@ -73,7 +73,7 @@ func (h *harness) open() {
 	clock := func() time.Time { return time.UnixMilli(h.now) }
 	h.writers = writer.NewWriters(h.store, h.registry, writer.Admission{Bindings: h.bindings, Ledger: h.ledger}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
 	rt, err := runmod.NewRuntime(runmod.Config{Registry: h.registry, Store: h.store,
-		Frozen: h.frozen, Bindings: h.bindings, Now: clock, Attachers: []runmod.Attacher{turn.AttemptEnder{}}})
+		Frozen: h.frozen, Bindings: h.bindings, Now: clock})
 	if err != nil {
 		h.t.Fatal(err)
 	}
@@ -397,8 +397,8 @@ func textResult(text string) run.ModelResult {
 	return r
 }
 
-// complete finishes the Run with a text result; the group carries run_ended
-// and the attempt_ended AttemptEnder adds, which folds the Turn to completed.
+// complete finishes the Run with a text result; the surface folds the Turn to
+// completed from the run_ended of the same group.
 func (h *harness) complete(runID run.RunID) run.CommitResult {
 	h.t.Helper()
 	step, claim := h.executingModel(runID)

@@ -26,7 +26,7 @@ Framework 负责：typed event codec 与 payload 版本；Binding admission；�
 |---|---|
 | `chatlog` | `run`（`run_created`、`model_step_completed`、`tool_step_opened`、`tool_call_completed`、`tool_call_answered`、`tool_call_failed` v1）：assistant 与 tool_result 条目由这些事实折叠 |
 | `run` | 无 |
-| `turn` | `chatlog`（`input_delivered` v1） |
+| `turn` | `run`（`twilight/run/run_ended` v1）、`chatlog`（`input_delivered` v1） |
 
 ## 2. Registry 与版本
 
@@ -278,7 +278,7 @@ func NewProjectionReader(store session.Store, registry *Registry, cache Projecti
 
 **EXT-PRJ-7** 缓存是派生数据，写入尽力而为：`Save` 失败只让下次多折，不影响 Commit 结果。刷新在 Writer 的互斥区之外执行：策略判定与状态快照在区内完成（状态按 EXT-PRJ-1 不可变，快照即引用），编码与 `Save` 在解锁后进行，因此缓存 IO 不延长事务边界，与后续提交也没有顺序约束。区间是部署参数而非常量：`CacheEvery(n)` 的 `n` 由部署给出，`n <= 0` 才取 `DefaultCacheEvery`，且必须能在不改代码的情况下调整：宿主层把它暴露为 `Ports.CacheEvery`（APP-MEM-2），换值即换代价，不必重编译。间距给出可依赖的代价上界——进程异常结束后续折不超过 `n` 行，干净 `Close` 后为零；`Close` 的刷新同样受策略约束，因此被 `Exclude` 的投影在关闭时也不会被写入。
 
-**EXT-PRJ-8（继承策略）** `ProjectionDefinition.Inherits` 声明投影从 fork 继承前缀中折叠什么。零值 `InheritSemantic`：继承 commit（`Seq <= header.Parent.Seq`）只折叠 session 流批次，其他流的批次跳过；`InheritAll`：继承 commit 的全部批次都折叠。tip 段的 commit 总是全部折叠。`Registry.FoldFrom(scope, state, commits, header)` 以 Session 的 tip header 判定继承边界，`Writer.rebuild` 与 `ProjectionReader` 都经它折叠；`Fold` 等价于无 Parent 的 `FoldFrom`，用于只含 tip commit 的折叠（provisional group）。默认值使执行状态投影（`twilight/run` 的 Machine）不把父的 Run 当作子的执行（SES-FRK-5）；chatlog 的 Surface/Context 声明 `InheritAll`，因为它们的语义内容（assistant、tool_result）来自 run 事实；turn 的 Surface 只折 session 流（`attempt_ended`，RUN-CMT-9），用默认值。app module 不声明时得到默认值。
+**EXT-PRJ-8（继承策略）** `ProjectionDefinition.Inherits` 声明投影从 fork 继承前缀中折叠什么。零值 `InheritSemantic`：继承 commit（`Seq <= header.Parent.Seq`）只折叠 session 流批次，其他流的批次跳过；`InheritAll`：继承 commit 的全部批次都折叠。tip 段的 commit 总是全部折叠。`Registry.FoldFrom(scope, state, commits, header)` 以 Session 的 tip header 判定继承边界，`Writer.rebuild` 与 `ProjectionReader` 都经它折叠；`Fold` 等价于无 Parent 的 `FoldFrom`，用于只含 tip commit 的折叠（provisional group）。默认值使执行状态投影（`twilight/run` 的 Machine）不把父的 Run 当作子的执行（SES-FRK-5）；chatlog 的 Surface/Context 与 turn 的 Surface 声明 `InheritAll`，因为它们的语义内容（assistant、tool_result、attempt 结算）来自 run 事实。app module 不声明时得到默认值。
 
 ## 7. errors 与 conformance
 

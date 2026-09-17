@@ -238,7 +238,7 @@ spawn.Bind(authority)                                            // 子经 Autho
 - **APP-RTE-1/2**：active Turn 时 Route 走 Deliver，输入在下一次模型请求里紧随工具结果之后；无 active Turn 时 Route 开新 Turn；Drain 取全部积压开一个 Turn；`attempt_failed` 时 Route 为 conflict。
 - **DRV-3**：`missing` execution record 的工具记 Unknown 且同一 RunID 继续；缺失记录的模型步被撤回，Resume 时重新规划（`ModelSteps` 只计重规划的那一步）；`active`/`terminal` attempt 以实际 Outcome 完成原步骤，`orphaned` 映射为 `deferred` 并保持 Executing；Open 请求取消后恢复监听继续，Session/Authority 关闭后监听退出；旧进程的迟到结算被围栏。
 - **APP-SES-1/2/3**：OpenSession 顺序；Send 的首个 Result 与排空 Result；并发 Send 的 `already_driving` 收敛。
-- **APP-SES-4、OBS-1**：Submit 在模型仍阻塞时已返回且 Turn 为 active；事件流按 Seq 顺序交付该 Turn 的 `started`、`attempt_started`、其 Run 的 `run_ended` 与随后的 `attempt_ended`；后台驱动失败以 `Event{Err}` 与 `Config.Warn` 报告；同一 Session 上 Send 仍阻塞到 Result。
+- **APP-SES-4、OBS-1**：Submit 在模型仍阻塞时已返回且 Turn 为 active；事件流按 Seq 顺序交付该 Turn 的 `started`、`attempt_started` 与其 Run 的 `run_ended`；后台驱动失败以 `Event{Err}` 与 `Config.Warn` 报告；同一 Session 上 Send 仍阻塞到 Result。
 - **APP-CKP-1/2**：Compact 的模型请求经 Executor 到达模型；压缩后下一请求以 summary 开头且只含 retained 后缀；重启进程组装同一上下文；active Turn 时 Compact 为 conflict；封闭校验的四类边界。
 - **SPN-1..5**：spawn 调用以派生身份建子 Session 并以子回复完成父的工具调用；fork 模式拿到当前 Turn 之前的对话且收到 task；参数错误、未知命名 Preset 与深度超限在开始前被拒且不建子；共享文件 record store 下所有者进程在子模型调用中途退出后（对接管方而言租约已过期），新进程的 reconcile 循环收养同一调用并完成父 Turn，收养后子的 Turn 数与输入数不变；spawn 工具的 Assignment 落到 `twilight/session` provider。
 - **APP-MEM-2**：`CacheEvery` 到达 Writer；machine projection 从不被 Writer 写入。

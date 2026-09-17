@@ -360,12 +360,12 @@ func ProtocolV1() Protocol
 type CommitRequest struct {
     Base RunPosition // Load 时的 Position；PrepareModelRequest 为 hard CAS，其他 command 可为零值
     Command CommandEnvelope
-    Attach []ModuleEvent // 调用方附加事件，追加在 run facts 与 Attacher 事件之后；例如 Coordinator.Stop 的 twilight/turn/failed
+    Attach []ModuleEvent // 调用方附加事件，追加在 run facts 之后；例如 Coordinator.Stop 的 twilight/turn/failed
 }
 type CommitResult struct {
     Status CommitStatus // CommitAccepted | CommitAlreadyApplied
     Snapshot RuntimeSnapshot
-    Events []session.Event // 本次 command 的完整组：run facts、Attacher 事件、Attach
+    Events []session.Event // 本次 command 的完整组：run facts、Attach
 }
 ```
 
@@ -401,8 +401,8 @@ writer.Commit(func(view):
   6  validate hard CAS（prepare 的 Base == Positions[RunID]）/ target state
   7  facts = Protocol.Decide(state, command) exactly once
   8  Protocol.Evolve in order；facts -> ModuleEvent（Type twilight/run/<name>，v = SchemaVersion）
-  9  对每个 Config.Attachers：events = Attach(view, RunID, facts)（RUN-CMT-9）；再追加 request.Attach；两者都不得为 twilight/run/ 事件
-  10 return SemanticGroup{CommitID: CommandID, Batches: [run/<RunID>: facts] ++ [session: attacher events ++ attach]}
+  9  追加 request.Attach（不得为 twilight/run/ 事件）
+  10 return SemanticGroup{CommitID: CommandID, Batches: [run/<RunID>: facts] ++ [session: attach]}
 )
 // Writer 完成 codec、Binding admission（含命名正文的 fact 的 FrozenBinding）、claim（先于 Append）、Append 与投影折叠（EXT-WRT-1/3）。
 // Runtime 在 Commit 返回后按 SnapshotPolicy 写投影缓存；缓存写入失败不影响 commit 结果。
@@ -419,8 +419,6 @@ FrozenValueStore 的 `Put` 幂等且内容寻址，在进入 Writer 之前完成
 **RUN-CMT-7** 接管处置。处置只恢复同一 Run：不创建 attempt、不结束 Run；对工具 call 的 Unknown 结算是该 call 的终态事实，协议在任何路径上都不据此自动重新执行（TRN-DUR-1、TRN-DUR-4）。新 owner 取得 Writer 后，在驱动任何 Run 之前以该 Writer 调用一次 `RecoverInterrupted(ctx, w, reattach)`。对投影中每个 Executing 目标（`RecoveryTargets`：模型步或 tool call，连同其 start 事实记录的 Claim），Executor/control plane 可以先使用同一 AssignmentKey 对 durable Execution Record 做 Attach、Reconcile 或显式 Takeover；Attach 返回 `orphaned` 时表示记录存在但当前没有可关联 backend，不能当作 `missing`，Run 必须保持 Executing，直到 control plane 显式 takeover/reconcile/dispose。若同一 attempt 被接管，Run 仍保持 Executing，结果以原 Claim 结算——这是重连同一次执行，不是新的 Run attempt。只有执行记录不存在或 control plane 明确放弃时，才由 `RecoverInterrupted` 处置：Executing ModelStep 提交 `RecoverModelExecution{Claim: TakeoverClaim}`，回到 `Open` 并按恢复时刻重新规划；Executing tool call 提交 `SubmitToolFailure{Outcome: Unknown}`。Pending call 不处置，Waiting call 不处置。每个处置是一次普通 Commit，Run 保持 Active，同一 RunID 继续。`TakeoverClaim` 由 Writer 的 Epoch 派生，因此同一 owner 重复调用幂等（同 CommandID 得到 AlreadyApplied）。
 
 **RUN-CMT-8** 每个 Run 的协议版本是 `created.SchemaVersion`，创建时冻结。`RuntimeSnapshot.SchemaVersion` 等于该值；`ProtocolFor(schemaVersion)` 返回绑定该版本 digest/codec/Decide/Evolve 的 `Protocol`。`EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Run 的版本。新 Run 由 `NewRun.SchemaVersion` 决定版本；同一 Session 内不同 Run 可以使用不同版本；v1 Run 的 replay 必须继续使用 `ProtocolV1()`。pre-release 期间 v1 的 Evolve 语义可以修订，早期二进制写下的流不保证在修订后的 v1 下可折叠；发布冻结后，任何 Evolve 变化必须以新的 SchemaVersion 发布，已发布版本的 Decide、Evolve 与 codec 永久保留。Run 的版本与 Session kernel 的 `ProtocolVersion` 无关（SES-VER-1）。
-
-**RUN-CMT-9（Attacher：其他模块在同一 commit 内的事实）** 一次 Run transition 可以同时是另一个聚合的事实：Run 的 `run_ended` 是执行聚合的事实，Turn 的 `twilight/turn/attempt_ended` 是会话聚合的事实，二者必须同时存在或同时不存在。`Config.Attachers []Attacher` 在 evaluate 的第 9 步被调用：`Attach(view, runID, facts)` 在 Writer 的事务视图上读取该模块自己的投影，返回要写入 session 流的 `ModuleEvent`，位于 run 事实之后、调用方 `CommitRequest.Attach` 之前。Attacher 的事件不得是 `twilight/run/` 事件；它读到的 facts 是 Decide 的输出，不改变 Run 的 Decide/Evolve，不进入 Run 的 digest 与幂等 fingerprint 之外的任何 Run 派生。Attacher 不是派生副本：它写的是另一个域对同一 transition 的记录，该域的投影只折自己的流（TRN-SCP-1），run 流因此可以独立于 session 流回收或不被 fork 继承（SES-FRK-5）。v1 唯一的 Attacher 是 `turn.AttemptEnder`，由 authority 组装；`runtimetest` 与 `turntest` 同样组装它。
 
 ### 5.1 不进入 stream 的数据
 
@@ -642,7 +640,7 @@ type Event struct {
 - 重放与 Base：同 CommandID 返回 `CommitAlreadyApplied` 与原组且不再 Decide；Run 已终结后对已接受 command 的重放仍返回 AlreadyApplied，新 command 返回 `ErrRunTerminal`；prepare 的 Base 不等于该 Run 的 Position 时返回 `ErrStaleRuntime`；非 Prepare command 接受零值或过期的 Base（call-local rebase）；
 - 输入入队：`AcceptInput` 在 Open、Model Prepared、Model Executing、ToolStep 都被接受；Prepared 期间入队后 `Next` 返回 `WithdrawPrepared`，Withdraw 后重规划的 Prepare 包含该输入；Executing 期间入队的输入在无 tool call 的 `SubmitModelResult` 后使 Run 回到 Open 而不结束；
 - start 与 claim：同 claim 的 start 重放返回 AlreadyApplied；不同 claim 的 start 在 target 已是 Executing 时返回 `ErrStaleRuntime`；同一 attempt 的 settlement 以其 Claim 派生 CommandID，重放返回 AlreadyApplied；
-- 组的组成：一 command 一组，同一 CommitID；组内是 run 事实、Attacher 事件、Attach，按此顺序，没有对话的派生事件；终结 Run 的组在 `run_ended` 之后含该 attempt 的 `twilight/turn/attempt_ended`（RUN-CMT-9），Owner 不是本 Session Turn 的 Run 不产生它；chatlog Context 中的 assistant 条目 `ResultDigest` 等于同组 fact 记录值且 `CallIDs` 等于 `ToolStepOpened` 的 CallID，tool_result 条目 `OutputDigest` 等于 fact 记录值，两者的正文可从 FrozenValueStore 取回；Attach 携带 `twilight/run/` 事件被拒绝；Attach 中的 ReferencePart 经 admission，未注册 Binding 使 Commit 失败且无写入，合法 Binding 在 Append 之前建立 Active claim（EXT-WRT-3）；
+- 组的组成：一 command 一组，同一 CommitID；组内只有 run 事实与 Attach，run 事实在前，没有对话或 Turn 的派生事件；chatlog Context 中的 assistant 条目 `ResultDigest` 等于同组 fact 记录值且 `CallIDs` 等于 `ToolStepOpened` 的 CallID，tool_result 条目 `OutputDigest` 等于 fact 记录值，两者的正文可从 FrozenValueStore 取回；Attach 携带 `twilight/run/` 事件被拒绝；Attach 中的 ReferencePart 经 admission，未注册 Binding 使 Commit 失败且无写入，合法 Binding 在 Append 之前建立 Active claim（EXT-WRT-3）；
 - 结算返回值：`CommitResult.Snapshot` 是 Evolve 后状态；终结 Run 的结算其 `Snapshot.Status` 为终态且 `Result` 非空，与 Record 一致；
 - Prepare hard CAS 只对该 Run 自己的事件敏感：同一 Session 内 chatlog、turn 或其他 Run 的写入不改变该 Run 的 Position，也不使 Prepare 失效；
 - 投影：`SnapshotPolicy` 在 Run 回到 Open 或终结时写入投影缓存；终态 Run 不出现在 `Active`，其 RunID 在 `Ended`；Record 对活动 Run 的 fold 与投影一致；非法 fact 序列使 FoldRun 报错（篡改与缺口的检测属于 SES-REP-1）；

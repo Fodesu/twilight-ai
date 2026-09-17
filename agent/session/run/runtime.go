@@ -44,17 +44,6 @@ type Config struct {
 	// Cache receives the machine projection per SnapshotPolicy; nil disables.
 	Cache extension.ProjectionCache
 	Now   func() time.Time
-	// Attachers contribute other modules' session-stream facts to the group
-	// that records a command's Run facts (RUN-CMT-9): the two land in one
-	// atomic commit. Their events precede the caller's CommitRequest.Attach.
-	Attachers []Attacher
-}
-
-// Attacher derives the session-stream facts another module records in the
-// same commit as a Run's facts, from the Writer's view at commit time
-// (RUN-CMT-9). It returns no event when the facts concern it not.
-type Attacher interface {
-	Attach(view writer.View, runID run.RunID, facts []run.Fact) ([]run.ModuleEvent, error)
 }
 
 // Runtime is the run.Runtime (RUN-CMT-1): commands commit through the
@@ -396,21 +385,8 @@ func (r *Runtime) evaluate(ctx context.Context, view writer.View, sid session.Se
 	for _, f := range decision.Facts {
 		runEvents = append(runEvents, writer.TypedEvent{Type: EventType(f), RecordedAtUnixMilli: now, Value: Event{RunID: runID, Fact: f}})
 	}
-	// Step 9: attachers' facts, then the caller's attached events -> the
-	// session stream (RUN-CMT-9).
+	// Step 9: the caller's attached events -> the session stream.
 	sessionEvents := []writer.TypedEvent{}
-	for _, at := range r.cfg.Attachers {
-		events, err := at.Attach(view, runID, decision.Facts)
-		if err != nil {
-			return nil, evaluated{}, nil, err
-		}
-		for _, me := range events {
-			if session.HasTypePrefix(me.Type, []session.EventType{Prefix}) {
-				return nil, evaluated{}, nil, errors.New("runmod: commit: an attacher must not produce twilight/run/ events")
-			}
-			sessionEvents = append(sessionEvents, writer.TypedEvent{Type: me.Type, RecordedAtUnixMilli: now, Value: me.Value})
-		}
-	}
 	for _, me := range req.Attach {
 		sessionEvents = append(sessionEvents, writer.TypedEvent{Type: me.Type, RecordedAtUnixMilli: now, Value: me.Value})
 	}
