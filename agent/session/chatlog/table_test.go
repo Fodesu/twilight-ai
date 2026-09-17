@@ -70,14 +70,16 @@ func TestTablePersistence(t *testing.T) {
 
 // TestSurfaceFoldIsPure folds two different continuations from one state: the
 // old state keeps its contents and the two results do not see each other
-// (EXT-PRJ-1). Positions come from the projection's own counter, so the wire
-// events carry no Seq.
+// (EXT-PRJ-1). Each event carries its own ledger Position, as a fold would
+// stamp it.
 func TestSurfaceFoldIsPure(t *testing.T) {
+	var seq session.CommitSeq
+	next := func() session.Position { seq++; return session.Position{Commit: seq} }
 	assistant := func(id string) extension.DecodedEvent {
-		return extension.DecodedEvent{Event: session.Event{}, Value: runmod.Event{RunID: "r", Fact: run.ModelStepCompleted{StepID: run.StepID(id), FinishReason: run.FinishReasonStop, ResultDigest: "sha256:x"}}}
+		return extension.DecodedEvent{Position: next(), Value: runmod.Event{RunID: "r", Fact: run.ModelStepCompleted{StepID: run.StepID(id), FinishReason: run.FinishReasonStop, ResultDigest: "sha256:x"}}}
 	}
 	input := func(id string) extension.DecodedEvent {
-		return extension.DecodedEvent{Event: session.Event{}, Value: InputSubmittedPayload{InputID: InputID(id), Content: jsonstable.MustParse(`{"text":"x"}`)}}
+		return extension.DecodedEvent{Position: next(), Value: InputSubmittedPayload{InputID: InputID(id), Content: jsonstable.MustParse(`{"text":"x"}`)}}
 	}
 	state, _ := SurfaceProjection.Initial()
 	var err error

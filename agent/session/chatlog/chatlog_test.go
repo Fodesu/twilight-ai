@@ -48,8 +48,9 @@ func opened(runID run.RunID, source run.StepID, calls ...run.CallID) step {
 }
 
 // foldSteps encodes, decodes and folds steps through both projections,
-// returning the states and the first fold error. Entry positions are
-// projection-internal, so a checkpoint names them by number.
+// returning the states and the first fold error. Each step is one commit, so
+// step i lands at ledger Position{Commit: i} and a checkpoint names entries
+// by the step that produced them.
 func foldSteps(t *testing.T, steps []step) (Context, Surface, error) {
 	t.Helper()
 	r := registry(t)
@@ -64,6 +65,7 @@ func foldSteps(t *testing.T, steps []step) (Context, Surface, error) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		d.Position = session.Position{Commit: session.CommitSeq(i)}
 		nextSurface, err := SurfaceProjection.Apply(surfaceState, d)
 		if err != nil {
 			return contextState.(Context), surfaceState.(Surface), err
@@ -229,7 +231,7 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 	if summary.Digest, err = DigestSummary(&summary); err != nil {
 		t.Fatal(err)
 	}
-	checkpoint := CheckpointCreatedPayload{CheckpointID: "ck1", CoveredThrough: 3, BaseContextDigest: "sha256:base",
+	checkpoint := CheckpointCreatedPayload{CheckpointID: "ck1", CoveredThrough: session.Position{Commit: 3}, BaseContextDigest: "sha256:base",
 		SummaryID: summary.ID, SummaryDigest: summary.Digest,
 		Retained: []EntryDigestPair{{Kind: EntryAssistant, ID: "a1", Digest: "sha256:a1"}}}
 	if checkpoint.Digest, err = DigestCheckpoint(&checkpoint); err != nil {
@@ -383,7 +385,10 @@ func entryDigest(t *testing.T, stepID run.StepID, result es.Digest) es.Digest {
 	return a.Digest
 }
 
-func mustCheckpoint(t *testing.T, id CheckpointID, covered uint64, base []EntryDigestPair, sum Summary, retained []EntryDigestPair) CheckpointCreatedPayload {
+// at is the ledger Position of foldSteps' step i.
+func at(i int) session.Position { return session.Position{Commit: session.CommitSeq(i)} }
+
+func mustCheckpoint(t *testing.T, id CheckpointID, covered session.Position, base []EntryDigestPair, sum Summary, retained []EntryDigestPair) CheckpointCreatedPayload {
 	t.Helper()
 	baseDigest, err := DigestBaseContext(base)
 	if err != nil {
@@ -405,8 +410,9 @@ func TestCheckpointFold(t *testing.T) {
 	}
 	sum := mustSummary(t, "sum1", "so far")
 	base := []EntryDigestPair{{Kind: EntryInput, ID: "in-1", Digest: inDigest}, {Kind: EntryAssistant, ID: "s1", Digest: entryDigest(t, "s1", "sha256:one")}}
-	// The prefix folds to entry positions 1 (delivered input), 2 (assistant),
-	// 3 (summary), with a queued input that must survive compaction.
+	// The prefix folds to entries at steps 1 (delivered input), 3 (assistant),
+	// 5 (summary), with a queued input that must survive compaction; the
+	// checkpoint itself lands at step 6.
 	prefix := []step{
 		{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-1", Content: content, SubmittedAtUnixMilli: 1}},
 		{TypeInputDelivered, InputDeliveredPayload{InputID: "in-1", TurnID: "t1"}},
@@ -415,7 +421,7 @@ func TestCheckpointFold(t *testing.T) {
 		{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-q", Content: content, SubmittedAtUnixMilli: 2}},
 		{TypeSummary, SummaryPayload{Summary: sum}},
 	}
-	valid := mustCheckpoint(t, "ck1", 2, base, sum, base[1:])
+	valid := mustCheckpoint(t, "ck1", at(3), base, sum, base[1:])
 
 	t.Run("valid checkpoint replaces the base and keeps the queue", func(t *testing.T) {
 		ctxState, surf, err := foldSteps(t, append(prefix, step{TypeCheckpointCreated, valid}, completed("r1", "s2", "sha256:after")))
@@ -465,15 +471,15 @@ func TestCheckpointFold(t *testing.T) {
 		steps []step
 	}{
 		{"covered through at or past the checkpoint position",
-			append(prefix, step{TypeCheckpointCreated, mustCheckpoint(t, "ck2", 4, base, sum, nil)})},
+			append(prefix, step{TypeCheckpointCreated, mustCheckpoint(t, "ck2", at(6), base, sum, nil)})},
 		{"base context digest mismatch",
-			append(prefix, step{TypeCheckpointCreated, mustCheckpoint(t, "ck3", 2, base[:1], sum, nil)})},
+			append(prefix, step{TypeCheckpointCreated, mustCheckpoint(t, "ck3", at(3), base[:1], sum, nil)})},
 		{"retained outside the base",
-			append(prefix, step{TypeCheckpointCreated, mustCheckpoint(t, "ck4", 2, base,
+			append(prefix, step{TypeCheckpointCreated, mustCheckpoint(t, "ck4", at(3), base,
 				sum, []EntryDigestPair{{Kind: EntryAssistant, ID: "s1", Digest: "sha256:wrong"}})})},
 		{"gap holds more than the summary",
 			append(append([]step{}, prefix...), completed("r1", "s9", "sha256:x"),
-				step{TypeCheckpointCreated, mustCheckpoint(t, "ck5", 3,
+				step{TypeCheckpointCreated, mustCheckpoint(t, "ck5", at(5),
 					append(base, EntryDigestPair{Kind: EntryAssistant, ID: "s9"}), sum, nil)})},
 		{"invalidating an unknown checkpoint",
 			append(prefix, step{TypeCheckpointInvalidated, CheckpointInvalidatedPayload{CheckpointID: "nope"}})},
@@ -499,7 +505,7 @@ func TestCheckpointFold(t *testing.T) {
 		sum2 := mustSummary(t, "sum2", "tools done")
 		steps = append(steps,
 			step{TypeSummary, SummaryPayload{Summary: sum2}},
-			step{TypeCheckpointCreated, mustCheckpoint(t, "ck6", 2, toolBase, sum2, nil)},
+			step{TypeCheckpointCreated, mustCheckpoint(t, "ck6", at(3), toolBase, sum2, nil)},
 			step{TypeToolResultSuperseded, ToolResultSupersededPayload{ToolResultID: "c1", Status: ToolError}})
 		if _, _, err := foldSteps(t, steps); err == nil {
 			t.Fatal("supersede of a compacted result accepted")

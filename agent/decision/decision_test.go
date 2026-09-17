@@ -71,8 +71,8 @@ func entries() (chatlog.Context, fixedContent) {
 	as := chatlog.Assistant{ID: "a-1", TurnID: "t1", StepID: "a-1", ResultDigest: "sha256:r1"}
 	content := fixedContent{results: map[es.Digest]run.ModelResult{"sha256:r1": {Text: "hi", FinishReason: run.FinishReasonStop}}}
 	return chatlog.Context{Entries: []chatlog.Entry{
-		{Kind: chatlog.EntryInput, ID: "in-1", Seq: 1, Input: &in},
-		{Kind: chatlog.EntryAssistant, ID: "a-1", Seq: 2, Assistant: &as},
+		{Kind: chatlog.EntryInput, ID: "in-1", Position: session.Position{Commit: 1}, Input: &in},
+		{Kind: chatlog.EntryAssistant, ID: "a-1", Position: session.Position{Commit: 2}, Assistant: &as},
 	}}, content
 }
 

@@ -11,14 +11,14 @@ import (
 )
 
 // benchEvents builds n model_step_completed facts, the cheapest event that
-// grows both the maps and EntryOrder of each projection. Positions come from
-// the projection's own counter, so the wire event carries no Seq.
+// grows both the maps and EntryOrder of each projection. Each event carries
+// the ledger Position a fold would stamp on it.
 func benchEvents(n int) []extension.DecodedEvent {
 	out := make([]extension.DecodedEvent, n)
 	for i := range out {
 		out[i] = extension.DecodedEvent{
-			Event: session.Event{},
-			Value: runmod.Event{RunID: "r", Fact: run.ModelStepCompleted{StepID: run.StepID(fmt.Sprint(i)), FinishReason: run.FinishReasonStop, ResultDigest: "sha256:x"}},
+			Position: session.Position{Commit: session.CommitSeq(i)},
+			Value:    runmod.Event{RunID: "r", Fact: run.ModelStepCompleted{StepID: run.StepID(fmt.Sprint(i)), FinishReason: run.FinishReasonStop, ResultDigest: "sha256:x"}},
 		}
 	}
 	return out

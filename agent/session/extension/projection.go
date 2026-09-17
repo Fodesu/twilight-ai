@@ -84,14 +84,21 @@ func (r *Registry) Fold(s *ProjectionScope, state any, commits []session.Commit)
 func (r *Registry) FoldFrom(s *ProjectionScope, state any, commits []session.Commit, header session.SegmentHeader) (any, error) {
 	for i := range commits {
 		inherited := header.Parent != nil && commits[i].Seq <= header.Parent.Seq
+		// index numbers every event of the commit in batch order, skipped
+		// batches included, so an event's Position does not depend on the
+		// projection folding it.
+		var index uint32
 		for j := range commits[i].Batches {
 			b := &commits[i].Batches[j]
 			if inherited && s.Def.Inherits == InheritSemantic && b.Stream.Kind != session.StreamKindSession {
+				index += uint32(len(b.Events))
 				continue
 			}
 			for _, e := range b.Events {
 				var err error
-				state, err = r.applyEvent(s, state, commits[i].Seq, b.Stream, e)
+				pos := session.Position{Commit: commits[i].Seq, Index: index}
+				index++
+				state, err = r.applyEvent(s, state, pos, b.Stream, e)
 				if err != nil {
 					return nil, err
 				}
@@ -101,7 +108,8 @@ func (r *Registry) FoldFrom(s *ProjectionScope, state any, commits []session.Com
 	return state, nil
 }
 
-func (r *Registry) applyEvent(s *ProjectionScope, state any, seq session.CommitSeq, stream session.StreamRef, e session.Event) (any, error) {
+func (r *Registry) applyEvent(s *ProjectionScope, state any, pos session.Position, stream session.StreamRef, e session.Event) (any, error) {
+	seq := pos.Commit
 	entry, registered := r.events[e.Type]
 	if _, want := s.consumes[e.Type]; !want {
 		if registered {
@@ -120,7 +128,7 @@ func (r *Registry) applyEvent(s *ProjectionScope, state any, seq session.CommitS
 	if err != nil {
 		return nil, err
 	}
-	decoded.Stream = stream
+	decoded.Stream, decoded.Position = stream, pos
 	if decoded.Unknown {
 		if entry.def.Ignorable {
 			return state, nil

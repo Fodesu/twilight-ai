@@ -47,6 +47,24 @@ type Event struct {
 	Payload             jsonstable.Value `json:"payload"`
 }
 
+// Position is the ledger position of one event: the commit it landed in and
+// its index among that commit's events in batch order. Positions order every
+// event of a Session totally, so a projection that needs to order what it
+// derives records the position of the event that produced it instead of
+// keeping a counter of its own.
+type Position struct {
+	Commit CommitSeq `json:"commit"`
+	Index  uint32    `json:"index"`
+}
+
+// Less reports whether p precedes q in the ledger.
+func (p Position) Less(q Position) bool {
+	if p.Commit != q.Commit {
+		return p.Commit < q.Commit
+	}
+	return p.Index < q.Index
+}
+
 // StreamBatch is the ordered slice of one commit that belongs to one stream.
 // Batches are the chain leaves: a commit digest binds every batch, and a
 // batch digest binds every event, in order.

@@ -453,7 +453,7 @@ func newestInput(chat chatlog.Surface) (chatlog.InputView, bool) {
 	var best chatlog.InputView
 	var found bool
 	chat.Inputs.Range(func(_ chatlog.InputID, v chatlog.InputView) bool {
-		if !found || v.Seq > best.Seq {
+		if !found || best.Position.Less(v.Position) {
 			best, found = v, true
 		}
 		return true

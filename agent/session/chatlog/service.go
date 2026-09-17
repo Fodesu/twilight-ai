@@ -140,7 +140,7 @@ func (s *Commands) Checkpoint(ctx context.Context, w writer.Writer, summaryText 
 			return nil, err
 		}
 		payload := CheckpointCreatedPayload{
-			CheckpointID: checkpointID, CoveredThrough: entries[len(entries)-1].Seq,
+			CheckpointID: checkpointID, CoveredThrough: entries[len(entries)-1].Position,
 			BaseContextDigest: baseDigest, SummaryID: summaryID, SummaryDigest: summary.Digest,
 			Retained: retain,
 		}

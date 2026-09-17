@@ -71,6 +71,27 @@ func (t Table[K, V]) Set(k K, v V) Table[K, V] {
 	return next
 }
 
+// Delete returns a Table without k; the receiver is unchanged. It rebuilds the
+// base, so it costs O(n): callers delete from tables that stay small (the
+// Runs table, bounded by the Runs active now), not from the entry tables.
+func (t Table[K, V]) Delete(k K) Table[K, V] {
+	if !t.Has(k) {
+		return t
+	}
+	merged := make(map[K]V, len(t.base)+len(t.overlay))
+	for bk, bv := range t.base {
+		if bk != k {
+			merged[bk] = bv
+		}
+	}
+	for ok, ov := range t.overlay {
+		if ok != k {
+			merged[ok] = ov
+		}
+	}
+	return Table[K, V]{base: merged, n: t.n - 1}
+}
+
 // mergeLimit is the overlay size that triggers a merge: at least 16 writes,
 // or the square root of the base when that is larger.
 func mergeLimit(base int) int {

@@ -3,6 +3,7 @@ package chatlog_test
 import (
 	"testing"
 
+	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 )
 
@@ -14,10 +15,10 @@ func pairEntries() []chatlog.Entry {
 	r1 := chatlog.ToolResult{ID: "r1", TurnID: "t1", CallID: "c1", Status: chatlog.ToolSuccess, Source: chatlog.SourceToolOutput, OutputDigest: "sha256:r1o", Digest: "sha256:r1"}
 	a2 := chatlog.Assistant{ID: "a2", TurnID: "t1", StepID: "a2", ResultDigest: "sha256:a2r", Digest: "sha256:a2"}
 	return []chatlog.Entry{
-		{Kind: chatlog.EntryInput, ID: "in1", Digest: in.Digest, Seq: 1, Input: &in},
-		{Kind: chatlog.EntryAssistant, ID: "a1", Digest: a1.Digest, Seq: 2, Assistant: &a1},
-		{Kind: chatlog.EntryToolResult, ID: "r1", Digest: r1.Digest, Seq: 3, ToolResult: &r1},
-		{Kind: chatlog.EntryAssistant, ID: "a2", Digest: a2.Digest, Seq: 4, Assistant: &a2},
+		{Kind: chatlog.EntryInput, ID: "in1", Digest: in.Digest, Position: session.Position{Commit: 1}, Input: &in},
+		{Kind: chatlog.EntryAssistant, ID: "a1", Digest: a1.Digest, Position: session.Position{Commit: 2}, Assistant: &a1},
+		{Kind: chatlog.EntryToolResult, ID: "r1", Digest: r1.Digest, Position: session.Position{Commit: 3}, ToolResult: &r1},
+		{Kind: chatlog.EntryAssistant, ID: "a2", Digest: a2.Digest, Position: session.Position{Commit: 4}, Assistant: &a2},
 	}
 }
 

@@ -324,7 +324,7 @@ func DigestCheckpoint(p *CheckpointCreatedPayload) (es.Digest, error) {
 	}
 	return digestDomain(string(TypeCheckpointCreated), struct {
 		CheckpointID      CheckpointID      `json:"checkpointId"`
-		CoveredThrough    uint64            `json:"coveredThrough"`
+		CoveredThrough    session.Position  `json:"coveredThrough"`
 		BaseContextDigest es.Digest         `json:"baseContextDigest"`
 		SummaryID         SummaryID         `json:"summaryId"`
 		SummaryDigest     es.Digest         `json:"summaryDigest"`
@@ -376,11 +376,11 @@ type SummaryPayload struct {
 }
 
 // CheckpointCreatedPayload compacts the context (CHT-EVT-3): entries up to
-// CoveredThrough — a Context projection position (Entry.Seq) — are replaced by
-// the summary plus the Retained subset.
+// CoveredThrough — the ledger Position of the last covered entry's event —
+// are replaced by the summary plus the Retained subset.
 type CheckpointCreatedPayload struct {
 	CheckpointID      CheckpointID      `json:"checkpointId"`
-	CoveredThrough    uint64            `json:"coveredThrough"`
+	CoveredThrough    session.Position  `json:"coveredThrough"`
 	BaseContextDigest es.Digest         `json:"baseContextDigest"`
 	SummaryID         SummaryID         `json:"summaryId"`
 	SummaryDigest     es.Digest         `json:"summaryDigest"`
@@ -507,8 +507,9 @@ func def[T any](typ session.EventType, check func(*T) error, bindings ...extensi
 
 // consumedRunFacts are the Run facts the chatlog projections fold
 // (CHT-SCP-1): run_created for the Run's Turn, the model and tool outcomes
-// for the entries, tool_step_opened for the CallIDs a result issued.
-var consumedRunFacts = []string{"run_created", "model_step_completed", "tool_step_opened", "tool_call_completed", "tool_call_answered", "tool_call_failed"}
+// for the entries, tool_step_opened for the CallIDs a result issued, and
+// run_ended to forget the Run's Turn.
+var consumedRunFacts = []string{"run_created", "model_step_completed", "tool_step_opened", "tool_call_completed", "tool_call_answered", "tool_call_failed", "run_ended"}
 
 func runRequirement() extension.ModuleRequirement {
 	events := make(map[session.EventType][]extension.PayloadVersion, len(consumedRunFacts))

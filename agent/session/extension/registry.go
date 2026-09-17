@@ -105,12 +105,15 @@ func (m ModuleDescriptor) Key() ModuleKey { return ModuleKey{Source: m.Source, I
 // the logical stream the fold read the event from; Decode alone cannot know
 // it, so folds set it after decoding.
 type DecodedEvent struct {
-	Stream  session.StreamRef
-	Event   session.Event
-	Module  ModuleKey
-	Version PayloadVersion
-	Value   any
-	Unknown bool
+	Stream session.StreamRef
+	// Position is the event's ledger position; a fold fills it, a bare Decode
+	// leaves it zero.
+	Position session.Position
+	Event    session.Event
+	Module   ModuleKey
+	Version  PayloadVersion
+	Value    any
+	Unknown  bool
 }
 
 // Registry is the immutable index built once at startup (EXT-REG-1).
