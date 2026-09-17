@@ -49,11 +49,13 @@ type Store struct {
 }
 
 // logIndex is the commit-to-byte map of one log file as last seen by this
-// instance: offsets[i] is where commit Seq i starts and offsets[len] is the
-// retained end.
+// instance: offsets[i] is where the Session's own commit Seq base+i starts
+// and offsets[len] is the retained end. base is LedgerSeed(header).Next: 0
+// for a root Session, ParentFork.Seq+1 for a fork.
 type logIndex struct {
 	size    int64
 	modTime int64
+	base    session.CommitSeq
 	offsets []int64
 	head    session.Head
 }
@@ -139,7 +141,12 @@ func (s *Store) Create(ctx context.Context, req session.CreateRequest) (session.
 	if req.ProtocolVersion != s.profile.Version() {
 		return session.SessionHeader{}, kerr(session.ErrUnsupportedProfile, "create", req.SessionID, "")
 	}
-	header := session.SessionHeader{ProtocolVersion: req.ProtocolVersion, SessionID: req.SessionID, CreatedAtUnixMilli: req.CreatedAtUnixMilli, CausationID: req.CausationID, Metadata: req.Metadata}
+	header := session.SessionHeader{ProtocolVersion: req.ProtocolVersion, SessionID: req.SessionID, CreatedAtUnixMilli: req.CreatedAtUnixMilli,
+		CausationID: req.CausationID, Metadata: req.Metadata}
+	if req.ParentFork != nil {
+		fork := *req.ParentFork
+		header.ParentFork = &fork
+	}
 	digest, err := s.profile.HeaderDigest(header)
 	if err != nil {
 		return session.SessionHeader{}, err
@@ -150,6 +157,19 @@ func (s *Store) Create(ctx context.Context, req session.CreateRequest) (session.
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if fork := header.ParentFork; fork != nil {
+		// The anchor must name a commit the parent holds (SES-FRK-1).
+		parent, err := s.readCommitsLocked(session.CommitReadRequest{SessionID: fork.ParentSessionID, From: fork.Seq, Limit: 1})
+		if err != nil {
+			if session.IsCode(err, session.ErrNotFound) {
+				return session.SessionHeader{}, kerr(session.ErrNotFound, "create", req.SessionID, fmt.Sprintf("parent session %s not found", fork.ParentSessionID))
+			}
+			return session.SessionHeader{}, err
+		}
+		if err := session.CheckForkAnchor(header, parent); err != nil {
+			return session.SessionHeader{}, err
+		}
+	}
 	dir := s.dir(req.SessionID)
 	existing, err := readHeader(dir)
 	switch {
@@ -258,16 +278,48 @@ func (s *Store) Open(ctx context.Context, sid session.SessionID, opts session.Op
 		return nil, err
 	}
 	head := headOf(header, commits)
-	s.setIndex(sid, logPath, buildIndex(offsets, head))
+	s.setIndex(sid, logPath, buildIndex(header, offsets, head))
 	w := &fileHandle{store: s, header: header, dir: dir, logPath: logPath, epoch: rec.Epoch,
 		head: head, commits: spansOf(commits, offsets)}
+	if header.ParentFork != nil {
+		// The inherited prefix is immutable, so its CommitID index is built
+		// once here; a hit is read back by (session, seq) through the parent's
+		// own index (SES-FRK-3).
+		if w.prefix, err = s.prefixIndex(header.ParentFork); err != nil {
+			return nil, err
+		}
+	}
 	return w, nil
 }
 
+// prefixRef locates an inherited commit: the ancestor Session that holds it
+// and its CommitSeq there.
+type prefixRef struct {
+	sid session.SessionID
+	seq session.CommitSeq
+}
+
+// prefixIndex maps every CommitID a fork inherits to where it is stored. The
+// caller holds the lock.
+func (s *Store) prefixIndex(fork *session.ForkPoint) (map[session.CommitID]prefixRef, error) {
+	page, err := s.readCommitsLocked(session.CommitReadRequest{SessionID: fork.ParentSessionID, Limit: uint32(fork.Seq) + 1})
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[session.CommitID]prefixRef, len(page.Commits))
+	for _, c := range page.Commits {
+		if c.Seq > fork.Seq {
+			break
+		}
+		out[c.CommitID] = prefixRef{sid: fork.ParentSessionID, seq: c.Seq}
+	}
+	return out, nil
+}
+
 // buildIndex derives the commit-to-byte map from a full parse. offsets has one
-// entry per commit plus the retained end.
-func buildIndex(offsets []int64, head session.Head) *logIndex {
-	return &logIndex{offsets: append([]int64(nil), offsets...), head: head}
+// entry per own commit plus the retained end.
+func buildIndex(header session.SessionHeader, offsets []int64, head session.Head) *logIndex {
+	return &logIndex{base: session.LedgerSeed(header).Next, offsets: append([]int64(nil), offsets...), head: head}
 }
 
 // setIndex records idx for the log at path as it is on disk now. The caller
@@ -302,7 +354,7 @@ func (s *Store) currentIndex(sid session.SessionID, path string) *logIndex {
 
 func headOf(h session.SessionHeader, commits []session.Commit) session.Head {
 	if len(commits) == 0 {
-		return session.Head{Next: 0, Digest: h.HeaderDigest}
+		return session.LedgerSeed(h)
 	}
 	last := &commits[len(commits)-1]
 	return session.Head{Next: last.Seq + 1, Digest: last.Digest}
@@ -316,6 +368,8 @@ type fileHandle struct {
 	epoch   session.Epoch
 	head    session.Head
 	commits map[session.CommitID]commitSpan
+	// prefix indexes the commits a fork inherits (nil for a root Session).
+	prefix map[session.CommitID]prefixRef
 	// failed is set once an Append's write or sync errored: the bytes on disk
 	// are then unknown to this handle, so it refuses to append again
 	// (SES-APP-1). A reopen reads the log as it is and continues from there.
@@ -350,18 +404,33 @@ func (w *fileHandle) current(op string) error {
 func (w *fileHandle) Committed(id session.CommitID) bool {
 	w.store.mu.Lock()
 	defer w.store.mu.Unlock()
-	_, ok := w.commits[id]
-	return ok
+	if _, ok := w.commits[id]; ok {
+		return true
+	}
+	_, inherited := w.prefix[id]
+	return inherited
 }
 
 // LookupCommit is SES-REP-4: it reads exactly the commit's byte range, so the
-// cost of the answer does not grow with the length of the log.
+// cost of the answer does not grow with the length of the log. An inherited
+// commit is read through its ancestor's index.
 func (w *fileHandle) LookupCommit(id session.CommitID) (session.Commit, bool, error) {
 	w.store.mu.Lock()
 	defer w.store.mu.Unlock()
 	sp, ok := w.commits[id]
 	if !ok {
-		return session.Commit{}, false, nil
+		ref, inherited := w.prefix[id]
+		if !inherited {
+			return session.Commit{}, false, nil
+		}
+		page, err := w.store.readCommitsLocked(session.CommitReadRequest{SessionID: ref.sid, From: ref.seq, Limit: 1})
+		if err != nil {
+			return session.Commit{}, false, err
+		}
+		if len(page.Commits) != 1 || page.Commits[0].CommitID != id {
+			return session.Commit{}, false, kerr(session.ErrCorrupt, "lookup", w.header.SessionID, fmt.Sprintf("inherited commit %s not at %s@%d", id, ref.sid, ref.seq))
+		}
+		return page.Commits[0], true, nil
 	}
 	sid := w.header.SessionID
 	f, err := os.Open(w.logPath)
@@ -423,6 +492,9 @@ func (w *fileHandle) Append(ctx context.Context, p session.Proposal) (session.Co
 	if _, dup := w.commits[p.CommitID]; dup {
 		return session.Commit{}, &session.Error{Code: session.ErrConflict, Operation: "append", SessionID: sid, CommitID: p.CommitID, Detail: "CommitID already in stream"}
 	}
+	if _, dup := w.prefix[p.CommitID]; dup {
+		return session.Commit{}, &session.Error{Code: session.ErrConflict, Operation: "append", SessionID: sid, CommitID: p.CommitID, Detail: "CommitID already in the inherited prefix"}
+	}
 	c := session.Commit{Seq: w.head.Next, CommitID: p.CommitID, Epoch: w.epoch, Batches: copyBatches(p.Batches)}
 	if err := session.SealCommit(w.store.profile, w.head.Digest, sid, &c); err != nil {
 		return session.Commit{}, err
@@ -464,22 +536,24 @@ func (w *fileHandle) Append(ctx context.Context, p session.Proposal) (session.Co
 	}
 	w.head = session.Head{Next: c.Seq + 1, Digest: c.Digest}
 	w.commits[p.CommitID] = commitSpan{start: start, end: start + int64(len(line))}
-	w.store.extendIndex(sid, w.logPath, c, start, int64(len(line)), w.head)
+	w.store.extendIndex(w.header, w.logPath, c, start, int64(len(line)), w.head)
 	return c, nil
 }
 
 // extendIndex appends one commit to the Session's index. When the index does
 // not end exactly where the commit was written, another instance has changed
 // the file and the index is dropped for the next read to rebuild.
-func (s *Store) extendIndex(sid session.SessionID, path string, c session.Commit, start, written int64, head session.Head) {
+func (s *Store) extendIndex(header session.SessionHeader, path string, c session.Commit, start, written int64, head session.Head) {
+	sid := header.SessionID
+	base := session.LedgerSeed(header).Next
 	idx, ok := s.index[sid]
 	if !ok {
-		if start != 0 || c.Seq != 0 {
+		if start != 0 || c.Seq != base {
 			return // no index to extend; the next read rebuilds one
 		}
-		idx = &logIndex{offsets: []int64{0}} // the first commit of a new log
+		idx = &logIndex{base: base, offsets: []int64{0}} // the first commit of a new log
 	}
-	if idx.size != start || len(idx.offsets)-1 != int(c.Seq) {
+	if idx.size != start || idx.base+session.CommitSeq(len(idx.offsets)-1) != c.Seq {
 		delete(s.index, sid)
 		return
 	}
@@ -562,33 +636,70 @@ func (s *Store) ReadCommits(ctx context.Context, req session.CommitReadRequest) 
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.readCommitsLocked(req)
+}
+
+// readCommitsLocked is ReadCommits under the store lock: the inherited prefix
+// of a fork (read through the parent, which stitches its own) followed by the
+// Session's own commits (SES-FRK-2).
+func (s *Store) readCommitsLocked(req session.CommitReadRequest) (session.CommitPage, error) {
 	header, dir, err := s.loadHeader(req.SessionID, "read")
 	if err != nil {
 		return session.CommitPage{}, err
 	}
-	commits, head, err := s.commitsFrom(req.SessionID, filepath.Join(dir, logFile), header, req.From)
+	seed := session.LedgerSeed(header)
+	path := filepath.Join(dir, logFile)
+	page := session.CommitPage{Header: header}
+	if fork := header.ParentFork; fork != nil && req.From <= fork.Seq {
+		prefix, err := s.readCommitsLocked(session.CommitReadRequest{SessionID: fork.ParentSessionID, From: req.From, Limit: req.Limit})
+		if err != nil {
+			return session.CommitPage{}, err
+		}
+		for _, c := range prefix.Commits {
+			if c.Seq > fork.Seq {
+				break
+			}
+			page.Commits = append(page.Commits, c)
+		}
+		if req.Limit > 0 && uint32(len(page.Commits)) >= req.Limit {
+			_, head, err := s.commitsFrom(req.SessionID, path, header, seed.Next)
+			if err != nil {
+				return session.CommitPage{}, err
+			}
+			page.Head = head
+			page.HasMore = page.Commits[len(page.Commits)-1].Seq < fork.Seq || head.Next > seed.Next
+			return page, nil
+		}
+	}
+	from := req.From
+	if from < seed.Next {
+		from = seed.Next
+	}
+	commits, head, err := s.commitsFrom(req.SessionID, path, header, from)
 	if err != nil {
 		return session.CommitPage{}, err
 	}
-	page := session.CommitPage{Header: header, Head: head}
-	if req.From >= head.Next {
+	page.Head = head
+	if from >= head.Next {
 		return page, nil
 	}
-	// Without an index the whole log was parsed, so the page starts at From;
-	// with one, commits begin at From already.
+	// Without an index the whole log was parsed, so the page starts at from;
+	// with one, commits begin at from already.
 	start := 0
-	if len(commits) > 0 && req.From > commits[0].Seq {
-		start = int(req.From - commits[0].Seq)
+	if len(commits) > 0 && from > commits[0].Seq {
+		start = int(from - commits[0].Seq)
 		if start > len(commits) {
 			start = len(commits)
 		}
 	}
 	end := len(commits)
-	if req.Limit > 0 && start+int(req.Limit) < end {
-		end = start + int(req.Limit)
-		page.HasMore = true
+	if req.Limit > 0 {
+		room := int(req.Limit) - len(page.Commits)
+		if start+room < end {
+			end = start + room
+			page.HasMore = true
+		}
 	}
-	page.Commits = make([]session.Commit, 0, end-start)
 	for i := start; i < end; i++ {
 		page.Commits = append(page.Commits, commits[i])
 	}
@@ -604,52 +715,31 @@ func (s *Store) ReadStream(ctx context.Context, req session.StreamReadRequest) (
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	header, dir, err := s.loadHeader(req.SessionID, "read_stream")
-	if err != nil {
-		return session.StreamPage{}, err
-	}
 	// Stream positions are derived by counting a stream's events in CommitSeq
-	// order, so the walk always starts at the beginning of the log.
-	commits, head, err := s.commitsFrom(req.SessionID, filepath.Join(dir, logFile), header, 0)
+	// order, so the walk always starts at the first commit the Session sees,
+	// inherited prefix included.
+	all, err := s.readCommitsLocked(session.CommitReadRequest{SessionID: req.SessionID})
 	if err != nil {
 		return session.StreamPage{}, err
 	}
-	page := session.StreamPage{Header: header, Stream: req.Stream, Head: head}
-	var pos session.StreamSeq
-	for i := range commits {
-		for j := range commits[i].Batches {
-			b := &commits[i].Batches[j]
-			if b.Stream != req.Stream {
-				continue
-			}
-			for _, e := range b.Events {
-				if pos < req.From {
-					pos++
-					continue
-				}
-				if req.Limit > 0 && uint32(len(page.Events)) >= req.Limit {
-					page.HasMore = true
-					return page, nil
-				}
-				page.Events = append(page.Events, e)
-				pos++
-			}
-		}
-	}
+	page := session.StreamPage{Header: all.Header, Stream: req.Stream, Head: all.Head}
+	page.Events, page.HasMore = session.StreamEvents(all.Commits, req.Stream, req.From, req.Limit)
 	return page, nil
 }
 
-// commitsFrom returns the commits a ReadCommits starting at from needs: with
-// a current index, the retained log from commit from onward, parsed from
-// that byte offset; without one, the whole log, which also rebuilds the
-// index. The caller holds the lock.
+// commitsFrom returns the Session's own commits a read starting at from
+// needs: with a current index, the retained log from commit from onward,
+// parsed from that byte offset; without one, the whole log, which also
+// rebuilds the index. from is at least the ledger seed. The caller holds the
+// lock.
 func (s *Store) commitsFrom(sid session.SessionID, path string, header session.SessionHeader, from session.CommitSeq) ([]session.Commit, session.Head, error) {
 	if idx := s.currentIndex(sid, path); idx != nil {
-		n := len(idx.offsets) - 1                   // commits covered by the index
-		if n <= 0 || from >= session.CommitSeq(n) { // compared as CommitSeq: int(from) wraps above MaxInt
+		n := len(idx.offsets) - 1 // own commits covered by the index
+		if n <= 0 || from < idx.base || from >= idx.base+session.CommitSeq(n) {
 			return nil, idx.head, nil
 		}
-		data, err := readRange(path, idx.offsets[from], idx.offsets[n])
+		slot := from - idx.base
+		data, err := readRange(path, idx.offsets[slot], idx.offsets[n])
 		if err != nil {
 			return nil, session.Head{}, kerr(session.ErrCorrupt, "read", sid, err.Error())
 		}
@@ -657,7 +747,7 @@ func (s *Store) commitsFrom(sid session.SessionID, path string, header session.S
 		if err != nil {
 			return nil, session.Head{}, err
 		}
-		if !torn && len(commits) == n-int(from) && commits[0].Seq == from {
+		if !torn && len(commits) == n-int(slot) && commits[0].Seq == from {
 			return commits, idx.head, nil
 		}
 		s.dropIndex(sid) // the file no longer matches the index; fall back
@@ -667,7 +757,7 @@ func (s *Store) commitsFrom(sid session.SessionID, path string, header session.S
 		return nil, session.Head{}, err
 	}
 	head := headOf(header, commits)
-	s.setIndex(sid, path, buildIndex(offsets, head))
+	s.setIndex(sid, path, buildIndex(header, offsets, head))
 	return commits, head, nil
 }
 
@@ -690,16 +780,17 @@ func readRange(path string, start, end int64) ([]byte, error) {
 func (s *Store) Tamper(sid session.SessionID, seq session.CommitSeq, mutate func(*session.Commit)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, dir, err := s.loadHeader(sid, "tamper")
+	header, dir, err := s.loadHeader(sid, "tamper")
 	if err != nil {
 		return
 	}
 	path := filepath.Join(dir, logFile)
 	commits, _, _, _, err := readLog(path, sid, "tamper")
-	if err != nil || int(seq) >= len(commits) {
+	seed := session.LedgerSeed(header)
+	if err != nil || seq < seed.Next || int(seq-seed.Next) >= len(commits) {
 		return
 	}
-	mutate(&commits[seq])
+	mutate(&commits[seq-seed.Next])
 	var buf bytes.Buffer
 	for i := range commits {
 		line, err := json.Marshal(commits[i])

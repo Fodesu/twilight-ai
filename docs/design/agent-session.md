@@ -71,7 +71,7 @@ modules 负责：event ontology、typed codec、payload 版本、投影、投影
 
 **SES-SCP-2** 并发不在 kernel 解决。一个 Session 的全部写入者（Run 的 worker、Turn 的 Coordinator、恢复流程）在进程内经同一个 `writer.Writer` 串行（EXT-WRT），它持有 kernel 的所有权句柄 `session.Handle`。kernel 只拒绝不持有有效所有权的 `Append`。
 
-**SES-SCP-3** kernel 的范围是单条 ledger：header、Open/Append/ReadCommits/ReadStream、所有权与 epoch、按 Commit 的 digest 链。Fork、ancestry 与 canonical import 不属于当前合同；未来若实现，必须建立在这组原语之上并遵守第 8 节的兼容约束。
+**SES-SCP-3** kernel 的范围是单条 ledger 及其 fork：header、Open/Append/ReadCommits/ReadStream、所有权与 epoch、按 Commit 的 digest 链，以及以父 ledger 前缀为种子的子 Session（第 8 节）。canonical import 不属于当前合同。
 
 ## 2. 版本
 
@@ -127,15 +127,15 @@ type Commit struct {
     PrevDigest es.Digest
     Digest es.Digest
 }
-type Head struct { Next CommitSeq; Digest es.Digest } // 空日志为 {0, HeaderDigest}
+type Head struct { Next CommitSeq; Digest es.Digest } // 空日志为 LedgerSeed(header)：根 Session {0, HeaderDigest}，fork {ParentFork.Seq+1, ParentFork.Digest}
 ```
 
-**SES-WIR-1** identity 非空、稳定、有效 UTF-8。`CommitSeq` 从 0 连续；一次 `Append` 持久化恰好一个 `Commit`，`CommitID` 在同一 ledger 内唯一。每个 batch 的流归因必须合法：session 流不带 ID，run 流的 ID 是有效 RunID；同一 Commit 内同一流至多一个 batch，每个 batch 与每个 Commit 都非空。`Payload` 必须是 canonical JSON object（RFC 8785），完整字节进入 digest。event 不携带事务元数据（无 Seq、Index、SourceSeqs、Ignorable）：事件的权威顺序由 CommitSeq 加上其在 batch 内的位置决定。
+**SES-WIR-1** identity 非空、稳定、有效 UTF-8。`CommitSeq` 从 `LedgerSeed(header).Next` 连续（根 Session 从 0，fork 从 `ParentFork.Seq+1`，见第 8 节）；一次 `Append` 持久化恰好一个 `Commit`，`CommitID` 在同一 ledger 内唯一。每个 batch 的流归因必须合法：session 流不带 ID，run 流的 ID 是有效 RunID；同一 Commit 内同一流至多一个 batch，每个 batch 与每个 Commit 都非空。`Payload` 必须是 canonical JSON object（RFC 8785），完整字节进入 digest。event 不携带事务元数据（无 Seq、Index、SourceSeqs、Ignorable）：事件的权威顺序由 CommitSeq 加上其在 batch 内的位置决定。
 
 **SES-WIR-2** digest preimage：
 
 ```text
-HeaderDigest = Digest("twilight/session/header", ProtocolVersion, SessionID, CreatedAtUnixMilli, CausationID, Metadata)
+HeaderDigest = Digest("twilight/session/header", ProtocolVersion, SessionID, CreatedAtUnixMilli, [ParentFork], CausationID, Metadata)  // ParentFork 为 nil 时不进入预映像
 BatchDigest  = Digest("twilight/session/batch", SessionID, Stream, [{Type, RecordedAtUnixMilli, Payload}, ...])
 CommitDigest = Digest("twilight/session/commit", PrevDigest, SessionID, Seq, CommitID, Epoch, [BatchDigest, ...])
 ```
@@ -185,7 +185,7 @@ type Store interface {
 
 ## 5. append
 
-**SES-APP-1** `Append(proposal)` 原子：整个 Commit 同时可见或同时不存在。Store 为 Commit 赋 `Seq`（从当前 `Head.Next` 起连续），以 Handle 的 Epoch 与当前 head digest 封印（SES-WIR-2），持久化，然后返回封印后的 Commit。返回即持久（文件 adapter 每次 Append 一次 `fsync`；数据库 adapter 一个事务）。写入开始之后的任何失败（write、fsync、事务提交返回错误）使该 Commit 是否落盘对句柄成为未知：句柄进入失效状态，本次与之后的 `Append` 返回 `ErrHandleFailed`，不再写入；调用方 Close 并重开，`Open` 按磁盘实况决定该 Commit 是否存在（完整则接纳进索引，残缺则按 SES-APP-2 截断），随后的重放由 `Committed`/`LookupCommit` 回答。adapter 只能在写入开始之前返回 ctx 错误；写入开始后的中断按未知结果报告。
+**SES-APP-1** `Append(proposal)` 原子：整个 Commit 同时可见或同时不存在。Store 为 Commit 赋 `Seq`（从当前 `Head.Next` 起连续，空 ledger 的 head 为 `LedgerSeed(header)`），以 Handle 的 Epoch 与当前 head digest 封印（SES-WIR-2），持久化，然后返回封印后的 Commit。返回即持久（文件 adapter 每次 Append 一次 `fsync`；数据库 adapter 一个事务）。写入开始之后的任何失败（write、fsync、事务提交返回错误）使该 Commit 是否落盘对句柄成为未知：句柄进入失效状态，本次与之后的 `Append` 返回 `ErrHandleFailed`，不再写入；调用方 Close 并重开，`Open` 按磁盘实况决定该 Commit 是否存在（完整则接纳进索引，残缺则按 SES-APP-2 截断），随后的重放由 `Committed`/`LookupCommit` 回答。adapter 只能在写入开始之前返回 ctx 错误；写入开始后的中断按未知结果报告。
 
 **SES-APP-2** 崩溃只可能留下一个不完整的尾 Commit：文件 adapter 打开时把末尾帧不完整且没有后续 Commit 的尾部截掉；数据库 adapter 由事务保证不会出现。截断必须发生在 `Head` 确立之前：否则 `Head.Next` 落在残 Commit 内部，下一次 `Append` 会把残 Commit 与后续 Commit 焊成一个。reader 在任何时刻都不会看到不完整的 Commit。
 
@@ -209,7 +209,7 @@ type StreamReadRequest struct {
 type StreamPage struct { Header SessionHeader; Stream StreamRef; Events []Event; Head Head; HasMore bool }
 ```
 
-**SES-REP-1** `ReadCommits` 按 `CommitSeq` 递增返回 `From` 起的完整 Commit。`From` 大于等于 `Head.Next` 时返回空页且 `HasMore` 为假，这对 `CommitSeq` 的全部值域成立：实现必须以 `CommitSeq` 比较起点，不得先把它转换为 `int` 再索引日志。损坏检测的义务点在 `Open`：Open 在建立所有权前用 `ValidateLedger` 重算整条 digest 链，损坏必须 fail loudly（`ErrCorrupt`）；`ValidateLedger` 同时作为显式校验入口导出，对任何无法重算的 Commit（包括 profile 拒绝 reseal 的形状错误）返回带该 Commit 坐标的 `ErrCorrupt`，不暴露底层封装错误。Open 读取的 Session 元数据同属校验范围：header 归属另一 Session 或所有权记录无法解析时报 `ErrCorrupt`，不得报告为不存在。读路径信任存储，不逐次重算链。
+**SES-REP-1** `ReadCommits` 按 `CommitSeq` 递增返回 `From` 起的完整 Commit；fork 的序列是继承前缀加自身 commit（SES-FRK-2）。`From` 大于等于 `Head.Next` 时返回空页且 `HasMore` 为假，这对 `CommitSeq` 的全部值域成立：实现必须以 `CommitSeq` 比较起点，不得先把它转换为 `int` 再索引日志。损坏检测的义务点在 `Open`：Open 在建立所有权前用 `ValidateLedger` 重算整条 digest 链，损坏必须 fail loudly（`ErrCorrupt`）；`ValidateLedger` 同时作为显式校验入口导出，对任何无法重算的 Commit（包括 profile 拒绝 reseal 的形状错误）返回带该 Commit 坐标的 `ErrCorrupt`，不暴露底层封装错误。Open 读取的 Session 元数据同属校验范围：header 归属另一 Session 或所有权记录无法解析时报 `ErrCorrupt`，不得报告为不存在。读路径信任存储，不逐次重算链。
 
 **SES-REP-2** `StreamSeq` 是流内位置，由 Store 按 CommitSeq 顺序数出，是读侧的优化：`ReadStream` 只返回该流的事件，但其顺序与从 `ReadCommits` 折叠出的流内顺序完全一致。它不进 digest，也不是第二种排序。
 
@@ -235,12 +235,29 @@ conformance 以 `Store` 为参数，每个 adapter 跑同一套，必须验证�
 - **SES-WIR-1/2/3**：CommitSeq 连续、批次非空、同 Commit 内流唯一且归因合法、CommitID 唯一、payload canonical、header/batch/commit digest 链、版本一致；
 - **SES-OWN-1/2**：第二个 Open 返回 `ErrOwned`；Close 后可再 Open 且 Epoch 加一；声明 `Takeover` 的 Open 在所有权存续期间接管且 Epoch 加一；旧 Handle 的 Append 返回 `ErrOwnershipLost` 且不写入；
 - **SES-APP-1/2/3**：整 Commit 可见性；在 Commit 中途注入崩溃后打开，尾 Commit 不出现；拒绝项无写入；注入持久化失败后句柄返回 `ErrHandleFailed`，重开后已落盘的完整 Commit 在索引中、链完整、同 CommitID 的 Append 为 `ErrConflict`；
-- **SES-REP-1/2**：顺序、From、Limit 截断、ReadStream 与折叠一致、篡改任一 Commit 后下一次 Open 报 `ErrCorrupt`；`From` 取到 `CommitSeq` 最大值仍为空页；无法 reseal 的 Commit 经 `ValidateLedger` 报带坐标的 `ErrCorrupt`；header 归属另一 Session 或所有权记录无法解析时 Open 与 Header 报 `ErrCorrupt`。
+- **SES-REP-1/2**：顺序、From、Limit 截断、ReadStream 与折叠一致、篡改任一 Commit 后下一次 Open 报 `ErrCorrupt`；`From` 取到 `CommitSeq` 最大值仍为空页；无法 reseal 的 Commit 经 `ValidateLedger` 报带坐标的 `ErrCorrupt`；header 归属另一 Session 或所有权记录无法解析时 Open 与 Header 报 `ErrCorrupt`；
+- **SES-FRK-1/2/3**：未知父、超出父 head 的 Seq、digest 不符、自身为父的 fork 被拒且不留 header；相同 anchor 重复 Create 幂等，不同 anchor 为 `ErrConflict`；空 fork 的 head 为 seed；`ReadCommits`/`ReadStream` 返回前缀加自身，`From`/`Limit` 跨越前缀边界计数，流内位置计入继承事件；首个自身 commit 的 Seq 为 `Seq+1`、PrevDigest 为 anchor digest；继承的 CommitID 对 `Committed`/`LookupCommit` 可见、对 `Append` 为 `ErrConflict`；父在 fork 之后的追加对子不可见，反之亦然；自身 commit 在子 header 下、前缀在父 header 下各自通过 `ValidateLedger`；fork 的 fork 读穿两层前缀。
 
 kernel 的 `ProtocolVersion` 覆盖 header 字段、commit 字段、digest preimage 与批次完整性规则（SES-VER-2）。
 
-## 8. 范围外
+## 8. fork
 
-Fork、ancestry 和 canonical import 不属于当前 Session 合同。当前 profile 对非空
-`ParentFork` 拒绝；实现这些能力前，必须先定义新的 stream seed、digest 链、投影缓存
-through 和导入幂等语义。任何 authority 不得依赖 fork 或 canonical import。
+fork 的单位是整条 ledger 的前缀 `Session @ CommitSeq N`：session 流与全部 run 流到该 Commit 为止的事实。对话与 Turn 状态是 run 事实的投影（第 11 条），只复制 session 流得不到完整的 canonical history，因此 fork 不复制任何流，而是以引用继承。
+
+```go
+type ForkPoint struct { ParentSessionID SessionID; Seq CommitSeq; Digest es.Digest } // 子继承父 [0, Seq]，Digest 为父 Commit Seq 的 digest
+type CreateRequest struct { ...; ParentFork *ForkPoint }
+func LedgerSeed(SessionHeader) Head        // 根 {0, HeaderDigest}；fork {Seq+1, Digest}
+func ValidateForkPoint(SessionID, *ForkPoint) error
+func CheckForkAnchor(child SessionHeader, parentPage CommitPage) error
+```
+
+**SES-FRK-1（创建）** `Create` 携带 `ParentFork` 时建立 fork。Store 必须核对：父在同一 Store 中存在（否则 `ErrNotFound`）、父与子同一 ProtocolVersion、父的（含其自身继承前缀的）Commit `Seq` 存在且 digest 等于 `Digest`（否则 `ErrInvalid`）、父不是子自身。任一不满足则不写 header。`ParentFork` 进入 header digest 预映像（SES-WIR-2），因此相同 anchor 的重复 Create 幂等、不同 anchor 为 `ErrConflict`。父 ledger 只追加，anchor 一经建立永久有效。
+
+**SES-FRK-2（读与链）** fork 的 ledger 只存自身 commit，从 `LedgerSeed(header)` 起连续编号并从 anchor digest 起链：首个自身 Commit 的 `Seq = ParentFork.Seq+1`、`PrevDigest = ParentFork.Digest`，其 digest 覆盖子的 SessionID（SES-WIR-2）。`ValidateLedger` 以 seed 为起点校验自身 commit；继承前缀由父在自己的 header 下校验，anchor 由子 header digest 钉住。`ReadCommits` 与 `ReadStream` 返回继承前缀加自身 commit 的拼接序列：`From`、`Limit`、`HasMore` 与 `StreamSeq` 都按拼接后的序列计数，`Head` 为子的 head。父在 fork 之后追加的 Commit 不属于子；子的 Commit 不属于父。fork 的父可以是另一个 fork，读穿每一层前缀。
+
+**SES-FRK-3（身份）** 继承前缀中的 CommitID 是子的 CommitID：`Committed` 与 `LookupCommit` 对它们返回命中，`Append` 对它们返回 `ErrConflict`。Writer 的幂等 fingerprint 因此不覆盖 SessionID（EXT-WRT-2）：前缀 commit 由祖先的 SessionID 封印，经子重放仍须判为 `AlreadyApplied`。Session 级派生身份（RunID、Start/Retry/Settle 的 CommitID、TakeoverClaim）在子中以子的 SessionID 派生，与父此后可能派生的同名身份不冲突。
+
+**SES-FRK-4（所有权与恢复）** 子有独立的所有权与 Epoch；打开子不需要父的所有权，父的写者也不受子影响。前缀中处于 Executing 的目标属于父的执行：子的接管处置以子的 AssignmentKey 询问 Executor，得到 `missing` 后按 RUN-CMT-7 处置（模型步撤回重规划、工具 call 记 Unknown），不接管父的 attempt。子引用的冻结正文与 artifact 由 fork claim 保留（EXT-WRT-8）；在实现 GC 之前，父 ledger 不得在有子存在时删除。
+
+canonical import 仍在范围外。

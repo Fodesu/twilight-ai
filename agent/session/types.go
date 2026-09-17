@@ -34,15 +34,18 @@ type SessionHeader struct {
 	ProtocolVersion    uint16           `json:"protocolVersion"`
 	SessionID          SessionID        `json:"sessionId"`
 	CreatedAtUnixMilli int64            `json:"createdAtUnixMilli"`
-	ParentFork         *ForkPoint       `json:"parentFork,omitempty"` // nil for a root stream; see section 8
+	ParentFork         *ForkPoint       `json:"parentFork,omitempty"` // nil for a root Session; see section 8
 	CausationID        es.CausationID   `json:"causationId,omitempty"`
 	Metadata           jsonstable.Value `json:"metadata,omitempty"`
 	HeaderDigest       es.Digest        `json:"headerDigest"`
 }
 
-// ForkPoint is a child stream's provenance anchor: the parent Session and the
-// point in it the child was seeded from (agent-session.md section 8). The v1
-// profile does not implement fork and rejects a non-nil ParentFork.
+// ForkPoint is a child Session's provenance anchor (agent-session.md section
+// 8): the parent Session and the last commit of it the child inherits. The
+// child's ledger holds only its own commits, numbered from Seq+1 and chained
+// from Digest; readers see the parent's prefix [0, Seq] followed by them. The
+// prefix is immutable in the parent (append-only ledger), so the anchor is a
+// stable reference, and it is covered by the child's header digest.
 type ForkPoint struct {
 	ParentSessionID SessionID `json:"parentSessionId"`
 	Seq             CommitSeq `json:"seq"`

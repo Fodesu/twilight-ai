@@ -24,9 +24,9 @@ Framework 负责：typed event codec 与 payload 版本；Binding admission；�
 
 | 模块 | Requires |
 |---|---|
-| `chatlog` | 无 |
-| `run` | 无。`Companion` 是 Runtime 的构造参数，不是模块依赖 |
-| `turn` | `run`（`twilight/run/run_created`、`input_accepted`、`run_ended` v1）、`chatlog`（存在即可） |
+| `chatlog` | `run`（`run_created`、`model_step_completed`、`tool_step_opened`、`tool_call_completed`、`tool_call_answered`、`tool_call_failed` v1）：assistant 与 tool_result 条目由这些事实折叠 |
+| `run` | 无 |
+| `turn` | `run`（`twilight/run/run_ended` v1）、`chatlog`（`input_delivered` v1） |
 
 ## 2. Registry 与版本
 
@@ -191,11 +191,13 @@ func OpenWriter(ctx, store session.Store, registry *Registry, admission Admissio
 
 **EXT-WRT-1** `OpenWriter` 先读 Session header：其 ProtocolVersion 与 Registry 的 ProtocolVersion 不同则返回 `ErrUnsupportedProfile`，不取所有权，因为 Registry 只为一个协议版本编码 payload。随后调 `store.Open` 取得所有权，然后重建每个已注册投影的当前状态与 head。投影的起始状态按 EXT-PRJ-3/5 取自缓存条目或 `Initial`；缓存条目未覆盖的部分（没有可用条目时即整条日志）被读出来 fold，读完即释放。Writer 不保留日志，也不保留提交历史索引——CommitID 的索引是 kernel 的（SES-REP-3/4），命中时才取该组的行；因此 Writer 的常驻内存只随已注册投影数增长，与日志长度无关。之后 `Commit` 在 Writer 的互斥区内执行：调 fn 得到 group，做 codec、admission、claim，`session.Handle.Append`，再把新行折进投影，并按缓存策略刷新条目（EXT-PRJ-6/7）。fn 只能通过 `View` 读，且必须是纯函数：不做外部 IO（模型调用、网络、读远端存储），需要外部数据的调用方在 `Commit` 之前取得并作为闭包值带入。互斥区是全 Session 的串行点，fn 内的 IO 会把它的延迟施加给该 Session 的全部提交方，其失败也无法与"决策失败"区分。admission 与 claim 是互斥区内唯一的 IO，它们是边界的组成部分（EXT-REF-2、EXT-WRT-3）。fn 返回 nil 记 `Noop`。Writer 是并发的唯一入口：Run 的 worker、Coordinator、恢复流程都经它串行，kernel 不再需要临界区回调。
 
-**EXT-WRT-2** 幂等：fn 返回的 group 若 CommitID 已提交（`View.Committed`，命中才取行），比对 fingerprint（SessionID、CommitID、各 batch 的 stream 与其事件 Type、Payload 的有序序列，不含时间），相同返回 `AlreadyApplied` 与原 commit，不同返回 `Conflict`；两者都不写入，也不做 admission 与 claim。fn 内可先经 `View.Committed` 判断，避免为重放重新构造 group。
+**EXT-WRT-2** 幂等：fn 返回的 group 若 CommitID 已提交（`View.Committed`，命中才取行，fork 的继承前缀计入），比对 fingerprint（CommitID、各 batch 的 stream 与其事件 Type、Payload 的有序序列，不含时间，也不含 SessionID：CommitID 索引本身按 Session 隔离，而继承前缀的 commit 由祖先 SessionID 封印，SES-FRK-3），相同返回 `AlreadyApplied` 与原 commit，不同返回 `Conflict`；两者都不写入，也不做 admission 与 claim。fn 内可先经 `View.Committed` 判断，避免为重放重新构造 group。
 
 **EXT-WRT-3** claim 顺序：group 含 Binding 时，Writer 在 `Append` 之前调用 `ledger.Activate(claimID, owner, set)`，让 stream 中的引用从提交开始就具有 retention root。`Append` 确认写入前拒绝时，Writer 调用 `ledger.ReleaseActive(claimID)` 尽力回收；结果未知、ownership 丢失或 CommitID 冲突时保留 Active claim。`OpenWriter` 重建日志后核对 owner commit：已提交的 claim 保持 Active，未提交的孤儿 claim 被释放（ART-RET-3）。
 
 **EXT-WRT-4** Writer 在两种情况下进入失效状态，本次与之后的 `Commit` 都返回同一错误：(a) `Append` 返回 `ErrOwnershipLost`——Session 级 fencing 在进程内的表现，调用方必须放弃该 Session 的执行，Runtime 与 Loop 对它的处理见 RUN-CMT-6；(b) `Append` 返回结果未知的错误（kernel 的 `ErrHandleFailed`、IO 错误或其他非验证性错误）——Writer 以 `ErrUnknownOutcome` 失效，因为它的 head 与投影状态可能已落后于日志一组，继续提交会给临时行赋 kernel 已用过的 Seq。(b) 的失效限于该实例：宿主经 `Writers` 再次请求即得到重开的 Writer（EXT-WRT-6），`OpenWriter` 从日志重建，同一 group 的重放由 kernel 的索引回答（落盘则 `AlreadyApplied`，未落盘则 `Applied`）。只有保证未写入的错误不致失效：kernel 的验证拒绝（`ErrInvalid`、`ErrNotFound`）与写入开始前的 ctx 错误；`ErrConflict` 按 EXT-WRT-2 报告为 `Conflict`。
+
+**EXT-WRT-8（fork claim）** `writer.Fork(store, registry, admission, ForkRequest{Parent, At, Child})` 读取父 Commit `At` 的 digest，以 `ParentFork` 调用 `Store.Create`（SES-FRK-1），然后在配置了 ledger 时对继承前缀的全部 artifact 引用建立一个 claim：按 commit 顺序解码前缀事件，经各 EventDefinition 声明的提取器收集 BindingID（无法解码的事件不携带已知引用），`ClaimOwner = {Kind:"twilight/session/fork", Authority:ChildSessionID, Identity:"<Parent>@<At>"}`，ClaimID 按 EXT-WRT-5 以 `CommitID = "fork:<Parent>@<At>"` 派生。owner kind 与 commit claim 不同，`OpenWriter` 对 commit claim 的核对不触及它。重复 Fork 幂等；同 ID 而 owner 或集合不同为 `ErrConflict`。父的 commit claim 与 fork claim 同时保留前缀内容；父被回收后 fork claim 仍是 GC root。
 
 **EXT-WRT-5** 首个 ClaimID 派生规则：`Digest("twilight/session-extension/claim", "1", ProtocolVersion, SessionID, CommitID, RefSetDigest)`；`ClaimOwner = {Kind:"twilight/session/commit", Authority:SessionID, Identity:CommitID}`。重放先完整执行 binding admission 与 BindingSet 构建，再查找该 claim。已有记录的 owner、BindingIDs 和 RefSetDigest 必须完全相同。Active claim 由 `Activate` 幂等复用；Released claim 保持终态，Writer 派生后继 `Digest("twilight/session-extension/claim-successor", "1", ReleasedClaimID)` 并重复查找，直到复用 Active claim 或建立新的 retention root。该链允许同一 CommitID 在孤儿回收后继续重试；任一记录的身份或集合冲突都拒绝本次提交。
 
@@ -264,7 +266,7 @@ func NewProjectionReader(store session.Store, registry *Registry, cache Projecti
 
 **EXT-PRJ-2** 投影只处理 `Consumes` 中的 EventType。其他 EventType 按归属处理：属于本模块或 `Requires` 模块（EXT-REG-4 的范围）且 `Decode` 为 Unknown 的事件，`Ignorable` 为真则跳过，否则 Fold 失败；范围之外的模块的事件一律跳过。写入者对纯信息性事件声明 `Ignorable`（EXT-REG），默认不可忽略：忘记声明只会导致多拒绝，不会导致静默丢失。读取时以范围内模块的前缀作为 `Types` 过滤。
 
-**EXT-PRJ-3** 缓存条目记录 `through`（`session.Head`）：`Next` 为下一个未折叠 commit 的 CommitSeq，`Digest` 为最后一个已折叠 commit 的 digest。复用条件是 **commit 对齐**：`through.Next-1` 必须是日志中一个 commit 的 Seq，该 commit 的 Digest 等于 `through.Digest`，且 `StateCodec.Decode` 成功；否则从 `Initial` 重折。commit 对齐是 EXT-PRJ-1 的直接后果：状态只在 commit 边界上发布，不存在半应用的 commit。该判定只有一个实现（`SealedAt(commit, through)`），Writer 与 Store reader 共用，因此同一条目在两条路径上的判定相同。缓存是派生数据：条目缺失、无法解码、超出日志长度或 digest 不符都只导致重折，不产生错误。
+**EXT-PRJ-3** 缓存条目记录 `through`（`session.Head`）：`Next` 为下一个未折叠 commit 的 CommitSeq，`Digest` 为最后一个已折叠 commit 的 digest。复用条件是 **commit 对齐**：`through.Next-1` 必须是日志中一个 commit 的 Seq，该 commit 的 Digest 等于 `through.Digest`，且 `StateCodec.Decode` 成功；否则从 `Initial` 重折。commit 对齐是 EXT-PRJ-1 的直接后果：状态只在 commit 边界上发布，不存在半应用的 commit。该判定只有一个实现（`SealedAt(commit, through)`），Writer 与 Store reader 共用，因此同一条目在两条路径上的判定相同。缓存是派生数据：条目缺失、无法解码、超出日志长度或 digest 不符都只导致重折，不产生错误。fork 的 Writer 在没有自己的条目时可以从父的条目续折，条件是该条目的 `through.Next-1` 不超过 `ParentFork.Seq` 且通过同一对齐判定：继承前缀与父的同一段 commit 逐位相同，判定结果因此相同（SES-FRK-2）。
 
 **EXT-PRJ-4** `Writer.Projections()` 返回的 reader 从 Writer 内存状态生成独立副本；`View.Projection` 同样通过该投影的 `StateCodec` encode/decode 交付调用方拥有的副本，包括嵌套 map、slice 与指针。独立进程的观察者用 `NewProjectionReader` 从 Store 读，两者对同一 head 给出相同状态。Writer 在 `Append` 之前折叠一个临时 commit（Seq 为当前 head 的 Next，带 CommitID、Epoch 与全部 batch，PrevDigest 与 Digest 为空），reader 折叠 kernel 封装后的 commit；Apply 只见到 `DecodedEvent`（stream、事件与解码值），不见 commit 的 digest，因此两条路径向 Apply 交付相同输入。
 

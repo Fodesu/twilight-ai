@@ -18,7 +18,7 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 | 对话内容 | `twilight/chatlog/` events 与 `twilight/run/` 事实的投影 | Start 与 Deliver 时 delivered input；assistant 与 tool_result 是 Run 事实的投影条目（CHT-ENT-1/2），不另写事件 |
 | Application policy | Application | preset、driver、retry、context 策略、产品策略 |
 
-**TRN-SCP-1** Source 为 `twilight`，ModuleID 为 `turn`。一个 Turn 与它的全部 Run attempt 注册在同一 Session stream 内：attempt 由 session 侧的 `twilight/turn/attempt_started` 注册，终态由 companion 在同 commit 写回的 `attempt_failed` / `completed` 记录，surface 不消费 `twilight/run/` 事件（session semantic state 可脱离 run history 重建）。`Coordinator` 创建 Turn 与 attempt、投递输入、停止及结算 Turn；宿主驱动 Run。Run 事实中的 `OwnerID` 由本模块以 `TurnID` 填充。本模块的 `Requires`（EXT-REG-4）为：`chatlog`，只要求存在。
+**TRN-SCP-1** Source 为 `twilight`，ModuleID 为 `turn`。一个 Turn 与它的全部 Run attempt 注册在同一 Session Commit Ledger 内：attempt 由 session 流的 `twilight/turn/attempt_started` 注册（它建立 RunID 到 TurnID 的路由），终态由该 Run 在 run 流上的 `twilight/run/run_ended` 事实折叠得到；surface 跨两条逻辑流折叠（EXT-PRJ-1）。run 流因此是 canonical history 的一部分，不能独立于 session 流回收；fork 以整条 ledger 的前缀为单位（SES 第 8 节）。`Coordinator` 创建 Turn 与 attempt、投递输入、停止及结算 Turn；宿主驱动 Run。Run 事实中的 `OwnerID` 由本模块以 `TurnID` 填充。本模块的 `Requires`（EXT-REG-4）为：`run`（`twilight/run/run_ended` v1）、`chatlog`（`twilight/chatlog/input_delivered` v1）。
 
 **TRN-SCP-2** Turn 与 Run 的关系为 1:N。同一 Turn 至多一个非终态 Run，同一 Session 至多一个 `active` Turn。Start 与新 Retry 在 Writer 的串行提交边界内校验这一约束；已提交操作按各自的重放规则确认：
 
@@ -27,7 +27,8 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 | resume | 继续一个非终态 Run（进程重启、接管、Waiting 响应后） | 不变 |
 | retry | 前一 Run 已终结且未 completed，同一 Turn 再开一个 attempt | 新 RunID，`Attempt` 加 1 |
 | replace | 输入内容被替换，`twilight/turn/superseded` 指向新 Turn | 新 Turn、新 RunID |
-| regenerate | 已 completed 的回答需要重新生成：v1 使用新 Turn（可经 `superseded` 关联）；Session fork 暂不支持 | 新 Turn、新 RunID |
+| regenerate | 已 completed 的回答需要重新生成：在该 Turn 之前 fork（HST-FRK-2），子 Session 里以同一输入开新 Turn；同一 Session 内也可提交新 Input 开新 Turn 并以 `superseded` 关联 | 新 Session 或新 Turn、新 RunID |
+| edit | 已投递的输入需要修改：在该 Turn 之前 fork，撤回原输入（`input_withdrawn`）后提交新输入 | 新 Session、新 Turn、新 RunID |
 
 四种动作的持久性语义在第 7 节 TRN-DUR-1 至 4 逐条区分。subagent 使用独立 Session 与独立 Turn。
 
@@ -267,11 +268,9 @@ InputIDs 为空时 group 为 `started`、`attempt_started` 加 `run_created`。`
 
 **TRN-STL-1** Settle 要求 Turn 为 `attempt_failed`，追加 `twilight/turn/failed{Settlement:failed, FailureClass}`。CommitID 由 `Digest("twilight/turn/settle", SessionID, TurnID, RunID)` 派生。
 
-## 6. companion：Run 事实到对话内容
+## 6. 对话内容与结算：Run 事实的投影
 
-Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、工具调用与工具输出以 chatlog 事件形式与产生它们的 Run 事实写在同一组（一次 `Append`，同一 CommitID）。`run.Runtime.Commit` 在 Decide 之后、写入之前调用注入的 `run.Companion`，把本组的 facts 与 command 携带的 transient 内容映射为 `run.ModuleEvent`，追加在 Run facts 之后；随后整个 group 经 `Writer` 的 codec、Binding admission 与 claim 写入（EXT-WRT-1、EXT-WRT-3）。接口定义在 `agent/run`（第 5 节）；本模块提供实现 `CompanionV1`，它把 `CompanionRequest.Owner` 解释为 TurnID。
-
-**TRN-CMP-1** `Map` 为确定性纯函数，不做 IO；时间取 `CompanionRequest.RecordedAtUnixMilli`。条目自身的 identity（AssistantID、ToolResultID）按 TRN-MAP-2 派生。同一 command 重放得到同一 group。companion 事件可以携带 `ReferencePart`；其 Binding 由 Writer 在 Append 之前 admission 并建立 claim（EXT-WRT-3），Runtime 不另行处理。
+Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、工具调用与工具输出的正文在 `FrozenValueStore` 中，由 `run.Runtime.Commit` 在写入事实之前存入；对话条目（assistant、tool_result）与 Turn 的结算都是这些事实的纯投影，本模块与 chatlog 都不再写第二份表达。`run.Runtime.Commit` 只追加 Run facts 与调用方的 `CommitRequest.Attach`（TRN-DLV-2、TRN-STP-1 使用它写本模块自己的事实）。
 
 **TRN-MAP-1** 事实到投影的对应：
 
@@ -310,7 +309,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 
 **TRN-DUR-2（语义重试是新 Run、同一 Turn）** Application 显式指定 `PreviousRunID` 发起新 Retry，按 TRN-RTY-1 创建 attempt n+1、新 RunID，并重新接受该 Turn 已 delivered 的全部输入。历史 Retry 按 TRN-RTY-2 确认原提交；崩溃恢复按 TRN-DUR-1 继续原 Run。失败 attempt 的 Run 事实及其投影条目保留在 ledger 中，是否进入新 attempt 的模型请求由 PromptBuilder 决定（TRN-RTY-3）。
 
-**TRN-DUR-3（重新生成已提交的回答是新 Turn）** 已 completed 的 Turn 及其回答是不可变事实：不存在"修改回答"、"重开同一 Turn"或"对 completed Turn 再开 attempt"。`Start` 要求输入处于 `submitted`（TRN-STR-1），已 delivered 的输入不能再次开 Turn，因此 v1 重新生成只能在同一 stream 内创建新 Turn——Application 提交新 Input（内容可与原输入相同）并 Start；若它在语义上替代原 Turn，以 `twilight/turn/superseded` 关联（TRN-API-4），原回答是否进入上下文由 PromptBuilder 决定。Session fork 属于 v1 范围外（SES 第 8 节）；该形态不改写已有历史。
+**TRN-DUR-3（重新生成与编辑不改写历史）** 已 completed 的 Turn 及其回答是不可变事实：不存在"修改回答"、"重开同一 Turn"或"对 completed Turn 再开 attempt"。`Start` 要求输入处于 `submitted`（TRN-STR-1），已 delivered 的输入不能再次开 Turn。重新生成有两种形态：在该 Turn 之前 fork（SES 第 8 节、HST-FRK-2），子 Session 继承到该 Turn 开始之前的全部事实，其输入仍为 `submitted`，投递它即为新 Turn；或在同一 Session 内提交新 Input（内容可与原输入相同）并 Start，以 `twilight/turn/superseded` 关联原 Turn（TRN-API-4）。编辑只有 fork 形态：撤回原输入后提交新输入。两种形态都不改写已有历史；原回答是否进入上下文由 PromptBuilder 决定。
 
 **TRN-DUR-4（外部效果未知不等于重试）** owner 丢失时处于 Executing 的工具 call 有两种去向，由 Executor 是否仍持有该 attempt 决定（RUN-CMT-7）：仍持有则等待同一次执行的 Outcome，这是重连，不是重试；不再持有则由接管处置记为 Unknown，对话投影得到 status=`unknown` 的 tool_result 条目。Unknown 是该 call 的终态事实，协议在任何路径上都不重新执行它：接管处置不执行（它只记录）；下一次 Loop 不执行（start barrier 只启动 Pending call，Executing 与终态 call 永不重跑，RUN-LOP-4）；Retry 不执行（新 attempt 从上下文重新规划步骤，Unknown 结果作为对话内容可见）。外部效果是否已经发生、是否需要重做，由模型依据上下文判断，或由 Application 在带外核实后以 `tool_result_superseded` 换成 `success`/`error`（CHT-ENT-2）；两者都是决定，不是协议的自动行为。`CancelRun` 留下的 `UncertainCalls` 同理。
 
@@ -347,7 +346,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 - **TRN-STA-1、TRN-API-3**：Open 的 Run 无 disposition 与 Waiting；模型 Executing 为 `waiting_for_recovery`；approval 调用为 `waiting_for_response` 且 `Waiting` 含该请求；completed 与 Application 取消的 Run 为 `finished`，`End` 分别为 completed 与 stopped；不存在的 Turn 为 conflict。
 - **TRN-PRJ-1、TRN-EVT-3、TRN-SCP-2/3**：Owner 不是本 Session Turn 的 Run 不进入 surface；第二条 `started`、未知 Turn 的结算、第二次结算在 fold 阶段被拒且不写入；已有 `End` 的 attempt 再次 `run_ended` 为 fold 错误；`run_ended(completed)` 使 Turn `completed`，其他结束写入 `AttemptView.End` 并使未结算 Turn 进入 `attempt_failed`、清空 `ActiveRun`；`Order` 按 started 顺序；结算后的 Session 没有活跃 Turn。
 - **TRN-REC-1、TRN-REC-2、TRN-SCP-3**：`started` 提交后接管，`RecoverInterrupted` 处置 0 个目标，Status 仅从投影重建为 `active`；模型 Executing 时接管，处置 1 个目标后 disposition 不再是 `waiting_for_recovery`；被替代的 Coordinator 的 Deliver 得到 `ErrOwnershipLost` 且不改变输入状态，新 owner 的 Deliver 成功。
-- **TRN-CMP-1 至 TRN-MAP-4**：companion 纯函数、v1 映射表、`SourceDigest` 等于 Run fact 记录值、companion 中的 ReferencePart 经 admission 并建立 claim、同组可见性，由 RUN-CMP-2 套件经 Runtime 的组构成观察。
+- **TRN-MAP-1 至 TRN-MAP-4**：Run 终结组不含 turn 事件；assistant 与 tool_result 条目的 digest 等于 Run fact 记录值且正文可从 FrozenValueStore 取回；Unknown 的条目 status=`unknown` 且无正文 digest，由 RUN-CMP-2 套件经 Runtime 的组构成与 chatlog 投影观察。
 - **TRN-DLV-3** 的并发定序（输入与最后一步结果的两种先后）由 Writer 串行保证，单进程套件不构造并发，以 Deliver 对已终结 Run 的 `completed` 响应作为可观察结果。
 - **TRN-PST-1、TRN-PST-2**：SystemPrompt、Streaming、Prompt、Scheduling、MalformedRetries 任一变化改变摘要；相同 ID 注册变更后的 preset 得到新 ref，旧 ref 仍解析为原内容；修改注册输入或解析结果后，再次 Resolve 得到原注册值；缺 SchemaVersion、Model 或 Prompt、Scheduling 非法的 AgentPreset 被拒绝。
 - **TRN-DUR-1 至 TRN-DUR-4**：接管后同一 RunID 继续、`Attempt` 不变、Turn 保持 `active`；工具 Executing 时接管，该 call 记 Unknown 后，接管处置、随后的 Loop 与 Retry 的新 attempt 都不再出现该 call 的 `StartToolCall` 或 `ToolCallCompleted`；Retry 得到新 RunID 与 attempt 加 1、Turn 不变；对已 `completed` 的 Turn 以其已 delivered 的输入再次 Start 为 conflict。Unknown call 不被重跑的断言与 Loop 一起在 RUN-LOP-4/5 的套件中验证。

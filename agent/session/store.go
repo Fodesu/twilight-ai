@@ -7,12 +7,16 @@ import (
 	"github.com/felinics/twilight/agent/jsonstable"
 )
 
-// CreateRequest establishes a stream. Field-identical repeats are idempotent;
-// a different request for the same SessionID is a Conflict.
+// CreateRequest establishes a Session. Field-identical repeats are
+// idempotent; a different request for the same SessionID is a Conflict.
+// ParentFork makes the Session a fork (SES-FRK-1): the parent must exist in
+// the same Store, hold the commit ParentFork names with that digest, and
+// share the protocol version; otherwise Create fails and writes nothing.
 type CreateRequest struct {
 	ProtocolVersion    uint16
 	SessionID          SessionID
 	CreatedAtUnixMilli int64
+	ParentFork         *ForkPoint
 	CausationID        es.CausationID
 	Metadata           jsonstable.Value
 }
@@ -26,7 +30,9 @@ type OpenOptions struct {
 }
 
 // Head is the ledger head after the last commit: the next CommitSeq to
-// assign and that commit's Digest. The empty ledger head is {0, HeaderDigest}.
+// assign and that commit's Digest. The empty ledger head is LedgerSeed(header):
+// {0, HeaderDigest} for a root Session, {ParentFork.Seq+1, ParentFork.Digest}
+// for a fork.
 type Head struct {
 	Next   CommitSeq
 	Digest es.Digest
@@ -69,7 +75,9 @@ type Handle interface {
 type StreamSeq uint64
 
 // CommitReadRequest reads whole commits from From (inclusive). Limit counts
-// commits and never truncates inside one (SES-REP-1).
+// commits and never truncates inside one (SES-REP-1). On a fork the sequence
+// read is the inherited parent prefix followed by the Session's own commits
+// (SES-FRK-2).
 type CommitReadRequest struct {
 	SessionID SessionID
 	From      CommitSeq

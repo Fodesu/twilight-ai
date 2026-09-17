@@ -78,6 +78,7 @@ type Session = host.Session
 type SessionOptions = host.SessionOptions
 type Result = host.Result
 type Event = host.Event
+type ForkRequest = host.ForkRequest
 
 // ResumeAlreadyDriving is returned when another driver already owns a Run.
 const ResumeAlreadyDriving = host.ResumeAlreadyDriving
@@ -167,6 +168,22 @@ func (a *Application) PresetRef(id turn.PresetID) (turn.PresetRef, error) {
 // OpenSession opens a session using a registered preset.
 func (a *Application) OpenSession(ctx context.Context, sid session.SessionID, opts SessionOptions) (*Session, error) {
 	return a.authority.OpenSession(ctx, sid, opts)
+}
+
+// Fork creates a child session from a parent's ledger prefix (HST-FRK-1).
+func (a *Application) Fork(ctx context.Context, req ForkRequest) (session.SessionHeader, error) {
+	return a.authority.Fork(ctx, req)
+}
+
+// ForkBeforeTurn forks a session at the commit before the named turn started
+// (HST-FRK-2), so the turn's inputs can be regenerated or edited in the child.
+func (a *Application) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SessionHeader, error) {
+	return a.authority.ForkBeforeTurn(ctx, parent, turnID, child)
+}
+
+// WithdrawInput marks a submitted, undelivered input as withdrawn.
+func (a *Application) WithdrawInput(ctx context.Context, sid session.SessionID, id run.InputID, reason string) error {
+	return a.authority.WithdrawInput(ctx, sid, id, reason)
 }
 
 // Close releases sessions owned by the application.

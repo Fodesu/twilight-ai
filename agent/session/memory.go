@@ -8,7 +8,8 @@ import (
 
 // MemoryStore is the in-process reference Store. Ownership lasts until Close;
 // an Open with Takeover supersedes a live owner, which is then fenced by its
-// stale Epoch.
+// stale Epoch. A fork holds only its own commits; reads stitch the parent's
+// inherited prefix in front of them (SES-FRK-2).
 type MemoryStore struct {
 	profile  LedgerProfile
 	mu       sync.RWMutex // guards sessions map
@@ -18,7 +19,7 @@ type MemoryStore struct {
 type memorySession struct {
 	mu       sync.Mutex
 	header   SessionHeader
-	commits  []Commit
+	commits  []Commit         // own commits only, from LedgerSeed(header).Next
 	byCommit map[CommitID]int // index into commits
 	epoch    Epoch
 	owner    *memoryHandle // nil when no live owner
@@ -46,7 +47,8 @@ func (m *MemoryStore) Create(ctx context.Context, req CreateRequest) (SessionHea
 	if req.ProtocolVersion != m.profile.Version() {
 		return SessionHeader{}, &Error{Code: ErrUnsupportedProfile, Operation: "create", SessionID: req.SessionID}
 	}
-	header := SessionHeader{ProtocolVersion: req.ProtocolVersion, SessionID: req.SessionID, CreatedAtUnixMilli: req.CreatedAtUnixMilli, CausationID: req.CausationID, Metadata: req.Metadata}
+	header := SessionHeader{ProtocolVersion: req.ProtocolVersion, SessionID: req.SessionID, CreatedAtUnixMilli: req.CreatedAtUnixMilli,
+		ParentFork: cloneFork(req.ParentFork), CausationID: req.CausationID, Metadata: req.Metadata}
 	digest, err := m.profile.HeaderDigest(header)
 	if err != nil {
 		return SessionHeader{}, err
@@ -54,6 +56,14 @@ func (m *MemoryStore) Create(ctx context.Context, req CreateRequest) (SessionHea
 	header.HeaderDigest = digest
 	if err := m.profile.ValidateHeader(header); err != nil {
 		return SessionHeader{}, err
+	}
+	if header.ParentFork != nil {
+		// The anchor must name a commit the parent holds (SES-FRK-1). The
+		// parent is read outside the sessions lock; it is append-only, so the
+		// commit cannot disappear before the child is registered.
+		if err := m.checkFork(ctx, header); err != nil {
+			return SessionHeader{}, err
+		}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -65,6 +75,46 @@ func (m *MemoryStore) Create(ctx context.Context, req CreateRequest) (SessionHea
 	}
 	m.sessions[req.SessionID] = &memorySession{header: header, byCommit: make(map[CommitID]int)}
 	return header, nil
+}
+
+// checkFork verifies a fork anchor against the parent: same protocol, and the
+// parent's (possibly itself inherited) commit at Seq carries Digest.
+func (m *MemoryStore) checkFork(ctx context.Context, header SessionHeader) error {
+	fork := header.ParentFork
+	page, err := m.ReadCommits(ctx, CommitReadRequest{SessionID: fork.ParentSessionID, From: fork.Seq, Limit: 1})
+	if err != nil {
+		if IsCode(err, ErrNotFound) {
+			return newError(ErrNotFound, "create", header.SessionID, fmt.Sprintf("parent session %s not found", fork.ParentSessionID))
+		}
+		return err
+	}
+	return CheckForkAnchor(header, page)
+}
+
+// CheckForkAnchor is the Store-independent half of SES-FRK-1: the parent page
+// read at ParentFork.Seq (Limit 1) must hold that commit with that digest and
+// share the child's protocol version.
+func CheckForkAnchor(child SessionHeader, parent CommitPage) error {
+	fork := child.ParentFork
+	if parent.Header.ProtocolVersion != child.ProtocolVersion {
+		return &Error{Code: ErrUnsupportedProfile, Operation: "create", SessionID: child.SessionID,
+			Detail: fmt.Sprintf("parent %s is protocol v%d", fork.ParentSessionID, parent.Header.ProtocolVersion)}
+	}
+	if len(parent.Commits) == 0 || parent.Commits[0].Seq != fork.Seq {
+		return newError(ErrInvalid, "create", child.SessionID, fmt.Sprintf("parent %s has no commit %d", fork.ParentSessionID, fork.Seq))
+	}
+	if parent.Commits[0].Digest != fork.Digest {
+		return newError(ErrInvalid, "create", child.SessionID, fmt.Sprintf("parent %s commit %d digest mismatch", fork.ParentSessionID, fork.Seq))
+	}
+	return nil
+}
+
+func cloneFork(f *ForkPoint) *ForkPoint {
+	if f == nil {
+		return nil
+	}
+	c := *f
+	return &c
 }
 
 func (m *MemoryStore) Header(ctx context.Context, sid SessionID) (SessionHeader, error) {
@@ -82,7 +132,7 @@ func (m *MemoryStore) Header(ctx context.Context, sid SessionID) (SessionHeader,
 
 func (s *memorySession) head() Head {
 	if len(s.commits) == 0 {
-		return Head{Next: 0, Digest: s.header.HeaderDigest}
+		return LedgerSeed(s.header)
 	}
 	last := &s.commits[len(s.commits)-1]
 	return Head{Next: last.Seq + 1, Digest: last.Digest}
@@ -138,24 +188,62 @@ func (w *memoryHandle) current(op string) error {
 }
 
 // Committed is SES-REP-3: the CommitID index Append already keeps answers
-// membership directly.
+// membership directly; on a fork the inherited prefix counts too (SES-FRK-3).
 func (w *memoryHandle) Committed(id CommitID) bool {
 	w.s.mu.Lock()
-	defer w.s.mu.Unlock()
 	_, ok := w.s.byCommit[id]
-	return ok
+	fork := w.s.header.ParentFork
+	w.s.mu.Unlock()
+	if ok || fork == nil {
+		return ok
+	}
+	_, found := w.store.lookupPrefix(fork, id)
+	return found
 }
 
 // LookupCommit is SES-REP-4: the session holds every commit, so a hit copies
 // it instead of reading storage.
 func (w *memoryHandle) LookupCommit(id CommitID) (Commit, bool, error) {
 	w.s.mu.Lock()
-	defer w.s.mu.Unlock()
 	i, ok := w.s.byCommit[id]
-	if !ok {
+	if ok {
+		c := cloneCommit(w.s.commits[i])
+		w.s.mu.Unlock()
+		return c, true, nil
+	}
+	fork := w.s.header.ParentFork
+	w.s.mu.Unlock()
+	if fork == nil {
 		return Commit{}, false, nil
 	}
-	return cloneCommit(w.s.commits[i]), true, nil
+	c, found := w.store.lookupPrefix(fork, id)
+	return c, found, nil
+}
+
+// lookupPrefix finds id among the commits a fork inherits: the parent's own
+// commits up to fork.Seq, then the parent's own inherited prefix.
+func (m *MemoryStore) lookupPrefix(fork *ForkPoint, id CommitID) (Commit, bool) {
+	for fork != nil {
+		p, err := m.session(fork.ParentSessionID, "lookup")
+		if err != nil {
+			return Commit{}, false
+		}
+		p.mu.Lock()
+		i, ok := p.byCommit[id]
+		var c Commit
+		if ok && p.commits[i].Seq <= fork.Seq {
+			c = cloneCommit(p.commits[i])
+		} else {
+			ok = false
+		}
+		next := p.header.ParentFork
+		p.mu.Unlock()
+		if ok {
+			return c, true
+		}
+		fork = next
+	}
+	return Commit{}, false
 }
 
 func (w *memoryHandle) Close(ctx context.Context) error {
@@ -179,6 +267,13 @@ func (w *memoryHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 	}
 	if err := ValidateBatches(p.Batches); err != nil {
 		return Commit{}, newError(ErrInvalid, "append", sid, err.Error())
+	}
+	// A CommitID the inherited prefix holds is a duplicate too (SES-FRK-3);
+	// the prefix is immutable, so this check needs no lock on w.s.
+	if fork := w.s.header.ParentFork; fork != nil {
+		if _, dup := w.store.lookupPrefix(fork, p.CommitID); dup {
+			return Commit{}, &Error{Code: ErrConflict, Operation: "append", SessionID: sid, CommitID: p.CommitID, Detail: "CommitID already in the inherited prefix"}
+		}
 	}
 	w.s.mu.Lock()
 	defer w.s.mu.Unlock()
@@ -209,20 +304,48 @@ func (m *MemoryStore) ReadCommits(ctx context.Context, req CommitReadRequest) (C
 		return CommitPage{}, err
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	page := CommitPage{Header: s.header, Head: s.head()}
-	if req.From >= CommitSeq(len(s.commits)) { // compared as CommitSeq: int(From) wraps above MaxInt
+	header, head := s.header, s.head()
+	own := make([]Commit, len(s.commits))
+	for i := range s.commits {
+		own[i] = cloneCommit(s.commits[i])
+	}
+	s.mu.Unlock()
+	page := CommitPage{Header: header, Head: head}
+	if req.From >= head.Next {
 		return page, nil
 	}
-	start := int(req.From)
-	end := len(s.commits)
-	if req.Limit > 0 && start+int(req.Limit) < end {
-		end = start + int(req.Limit)
-		page.HasMore = true
+	// The inherited prefix comes first (SES-FRK-2); the parent stitches its
+	// own prefix in turn, so a fork of a fork reads through both.
+	if fork := header.ParentFork; fork != nil && req.From <= fork.Seq {
+		prefix, err := m.ReadCommits(ctx, CommitReadRequest{SessionID: fork.ParentSessionID, From: req.From, Limit: req.Limit})
+		if err != nil {
+			return CommitPage{}, err
+		}
+		for _, c := range prefix.Commits {
+			if c.Seq > fork.Seq {
+				break
+			}
+			page.Commits = append(page.Commits, c)
+		}
+		if req.Limit > 0 && uint32(len(page.Commits)) >= req.Limit {
+			// The limit was reached inside the prefix: more follows when the
+			// prefix continues or the fork has commits of its own.
+			last := page.Commits[len(page.Commits)-1].Seq
+			page.HasMore = last < fork.Seq || len(own) > 0
+			return page, nil
+		}
 	}
-	page.Commits = make([]Commit, 0, end-start)
-	for i := start; i < end; i++ {
-		page.Commits = append(page.Commits, cloneCommit(s.commits[i]))
+	seed := LedgerSeed(header)
+	start := 0
+	if req.From > seed.Next {
+		start = int(req.From - seed.Next)
+	}
+	for i := start; i < len(own); i++ {
+		if req.Limit > 0 && uint32(len(page.Commits)) >= req.Limit {
+			page.HasMore = true
+			break
+		}
+		page.Commits = append(page.Commits, own[i])
 	}
 	return page, nil
 }
@@ -234,40 +357,48 @@ func (m *MemoryStore) ReadStream(ctx context.Context, req StreamReadRequest) (St
 	if err := ValidateStreamRef(req.Stream); err != nil {
 		return StreamPage{}, newError(ErrInvalid, "read_stream", req.SessionID, err.Error())
 	}
-	s, err := m.session(req.SessionID, "read_stream")
+	// Stream positions count the stream's events from the first commit the
+	// Session sees, inherited prefix included.
+	all, err := m.ReadCommits(ctx, CommitReadRequest{SessionID: req.SessionID})
 	if err != nil {
 		return StreamPage{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	page := StreamPage{Header: s.header, Stream: req.Stream, Head: s.head()}
+	page := StreamPage{Header: all.Header, Stream: req.Stream, Head: all.Head}
+	page.Events, page.HasMore = StreamEvents(all.Commits, req.Stream, req.From, req.Limit)
+	return page, nil
+}
+
+// StreamEvents walks commits in order and returns the events of stream from
+// position from, at most limit (0 = unlimited); more reports whether events
+// beyond the returned ones exist. It is the one StreamSeq derivation the
+// adapters share (SES-REP-2).
+func StreamEvents(commits []Commit, stream StreamRef, from StreamSeq, limit uint32) (events []Event, more bool) {
 	var pos StreamSeq
-	for i := range s.commits {
-		for j := range s.commits[i].Batches {
-			b := &s.commits[i].Batches[j]
-			if b.Stream != req.Stream {
+	for i := range commits {
+		for j := range commits[i].Batches {
+			b := &commits[i].Batches[j]
+			if b.Stream != stream {
 				continue
 			}
 			for _, e := range b.Events {
-				if pos < req.From {
+				if pos < from {
 					pos++
 					continue
 				}
-				if req.Limit > 0 && uint32(len(page.Events)) >= req.Limit {
-					page.HasMore = true
-					return page, nil
+				if limit > 0 && uint32(len(events)) >= limit {
+					return events, true
 				}
-				page.Events = append(page.Events, e)
+				events = append(events, e)
 				pos++
 			}
 		}
 	}
-	return page, nil
+	return events, false
 }
 
 // Tamper mutates one stored commit in place. It exists so conformance can
 // prove that the ledger check at Open detects corruption; production code
-// never calls it.
+// never calls it. seq names one of the Session's own commits.
 func (m *MemoryStore) Tamper(sid SessionID, seq CommitSeq, mutate func(*Commit)) {
 	s, err := m.session(sid, "tamper")
 	if err != nil {
@@ -275,8 +406,9 @@ func (m *MemoryStore) Tamper(sid SessionID, seq CommitSeq, mutate func(*Commit))
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if int(seq) < len(s.commits) {
-		mutate(&s.commits[seq])
+	seed := LedgerSeed(s.header)
+	if seq >= seed.Next && int(seq-seed.Next) < len(s.commits) {
+		mutate(&s.commits[seq-seed.Next])
 	}
 }
 

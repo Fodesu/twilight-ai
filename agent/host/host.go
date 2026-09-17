@@ -99,9 +99,10 @@ type Host struct {
 	Decisions   *decision.PromptBuilders
 
 	registry       *extension.Registry
+	admission      writer.Admission
 	frozen         run.FrozenValueStore
-	bus            *eventBus
 	content        *runmod.Content
+	bus            *eventBus
 	now            func() time.Time
 	warn           func(error)
 	targetResolver loop.TargetResolver
@@ -154,7 +155,8 @@ func New(p Ports) (*Host, error) {
 	}
 	bus := newEventBus(registry)
 	observers := append([]writer.CommitObserver{bus}, p.Observers...)
-	writers := writer.NewWriters(store, registry, writer.Admission{Bindings: bindings, Ledger: ledger}, p.Ownership,
+	admission := writer.Admission{Bindings: bindings, Ledger: ledger}
+	writers := writer.NewWriters(store, registry, admission, p.Ownership,
 		writer.WritersConfig{Cache: cache, CachePolicy: runmod.WriterCachePolicy(p.CacheEvery), Observers: observers})
 	runtime, err := runmod.NewRuntime(runmod.Config{
 		Writers: writers, Registry: registry, Store: store,
@@ -177,7 +179,7 @@ func New(p Ports) (*Host, error) {
 	}
 	h := &Host{
 		Store: store, Writers: writers, Runtime: runtime, Presets: presets, Executor: p.Executor, Decisions: decisions,
-		registry: registry, frozen: frozen, content: runmod.NewContent(frozen), bus: bus, now: now, warn: warn,
+		registry: registry, admission: admission, frozen: frozen, content: runmod.NewContent(frozen), bus: bus, now: now, warn: warn,
 		targetResolver: p.TargetResolver, loops: make(map[turn.PresetRef]*loop.Loop),
 		recovery: make(map[session.SessionID]*recoveryLifetime),
 	}
@@ -556,8 +558,6 @@ func (h *Host) TurnSurface(ctx context.Context, sid session.SessionID) (turn.Tur
 
 func (h *Host) projections() decision.ProjectionSource { return writersProjections{h.Writers} }
 
-// writersProjections reads projections through the Session's Writer.
-type writersProjections struct{ writers writer.Writers }
 // sources are the prompt builder's read ports: projections through the
 // Writer and frozen bodies through the content store (DEC-PMT-1).
 func (h *Host) sources() decision.Sources {
@@ -568,6 +568,8 @@ func (h *Host) sources() decision.Sources {
 // what renders a structural projection into text.
 func (h *Host) Content() chatlog.ContentResolver { return h.content }
 
+// writersProjections reads projections through the Session's Writer.
+type writersProjections struct{ writers writer.Writers }
 
 func (p writersProjections) Load(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (any, session.Head, error) {
 	w, err := p.writers.Writer(ctx, sid)

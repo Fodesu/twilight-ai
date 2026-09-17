@@ -103,7 +103,10 @@ Attach 的 `active` / `terminal` 保留 Executing 并等待实际 Outcome；`orp
 ## 5. Session 门面
 
 ```go
-func (h *Host) OpenSession(ctx, sid, SessionOptions{Preset, Companion, NewTurnID, ResumeActive, Compact*}) (*Session, error)
+func (h *Host) OpenSession(ctx, sid, SessionOptions{Preset, NewTurnID, ResumeActive, Compact*}) (*Session, error)
+func (h *Host) Fork(ctx, ForkRequest{Parent, At, Child}) (session.SessionHeader, error)          // HST-FRK-1
+func (h *Host) ForkBeforeTurn(ctx, parent, turnID, child) (session.SessionHeader, error)          // HST-FRK-2
+func (h *Host) WithdrawInput(ctx, sid, id run.InputID, reason string) error
 type Result struct { TurnID; Status; Disposition; Reply string }
 func (s *Session) Send(ctx, text string) ([]Result, error)                  // 提交 + 路由 + 同步驱动 + 结算后排空
 func (s *Session) Submit(ctx, text string) (turn.TurnRef, error)            // 提交 + 路由，后台驱动，立即返回
@@ -125,6 +128,10 @@ func (s *Session) Close(ctx) error
 
 **HST-SES-4** `Submit` 提交文本并提交其路由（Deliver 或 Start，同 HST-DRV-3 的提交半段），返回输入落入的 `TurnRef` 后立即返回；驱动、结算后排空与自动 compaction 在门面拥有的后台 goroutine 里进行，其 ctx 由 `Session` 持有、`Close` 取消并等待。进展与回复经 Events 观察；驱动失败经 `Ports.Warn` 与事件流上的一条 host 级 `Event{Err}` 报告，不进 stream。输入被运行中的驱动者接走（already_driving）时 Submit 直接返回该 Turn，不起驱动。`Send` 与 `Submit` 共用路由与结算逻辑，差别只在驱动是同步还是后台。`Wait` 阻塞到已启动的后台驱动全部结束而不取消它们；后台驱动在结算后会排空积压，因此紧随 Submit 的 Send 若不先 Wait，可能被该排空接走而得到 already_driving（HST-SES-3）。
 
+**HST-FRK-1** `Fork` 以 `writer.Fork` 建立子 Session（SES-FRK-1、EXT-WRT-8），不打开它；调用方随后以 `OpenSession` 打开，其接管处置对前缀遗留的 Executing 目标得到 `missing` 并按 RUN-CMT-7 处置（SES-FRK-4）。父不受影响，可以继续被驱动。
+
+**HST-FRK-2** `ForkBeforeTurn(parent, turnID, child)` 扫描父 ledger 找到携带该 Turn `twilight/turn/started` 的 Commit `k`，在 `k-1` 处 fork：子的对话止于该 Turn 的输入仍为 `submitted` 的状态。`Drain` 或 `Route` 把这些输入投递给新 Turn 即重新生成；`WithdrawInput` 写 `input_withdrawn`（CHT-EVT-2，要求输入为 `submitted`）后再 `Send` 即编辑。`k = 0` 时没有可 fork 的前缀，返回 `ErrInvalid`；未知 Turn 返回 conflict。edit / retry / regenerate 三种动作因此都归到同一个 fork 原语加输入投递上（TRN 第 1 节）。
+
 **HST-EVT-1** `Host.Events(ctx, sid)` 是该 Session 从订阅时刻起的事件流：Host 以 `writer.CommitObserver` 接在自己的 `Writers` 上（EXT-WRT-7），每个已应用组的每一行经 Registry 解码为 `Event{Row, Module, Version, Value, Unknown}`，按提交顺序交付；无 codec 的类型或版本以 `Unknown` 交付原行。订阅者之间互不阻塞，慢读者只延迟自己的交付，从不阻塞 Commit。历史不在此流上：从 Store 或投影读取。UI、SSE 与 CLI 的观察都从这一个源头派生，Loop 的 `EventSink` 只保留给 executor 侧的流式增量。
 
 **HST-INP-1** `SubmitInput(ctx, sid, id, text)` 以 `decision.InputContent` 提交用户正文（DEC-INP-1），`SubmitText` 以随机、跨重启无碰撞的 InputID 提交；需要外部幂等键的调用方使用前者。`StartRequest.Inputs[i].ID` 等于已 submitted 的 InputID，`Payload` 等于其 Content。
@@ -140,7 +147,8 @@ func (s *Session) Close(ctx) error
 ```text
 registry    = extension.BuildRegistry(v1, chatlog.Module, runmod.Module, turn.Module, Ports.Modules...)
 writers     = writer.NewWriters(Store, registry, Admission{Artifacts}, Ownership, {Cache, CachePolicy: runmod.WriterCachePolicy(CacheEvery)})
-frozen      = runmod.FrozenValues(Content)                       // 同一 store 也交给 NewLocalExecutor
+frozen      = runmod.FrozenValues(Content)
+content     = runmod.NewContent(frozen)                          // materializer：prompt、Reply、transcript
 writers     = writer.NewWriters(..., {Cache, CachePolicy, Observers: [eventBus, Ports.Observers...]})
 runtime     = runmod.NewRuntime{Writers, registry, Store, Frozen: frozen, Bindings: Artifacts.Bindings, Cache, Clock}
 coordinator = turn.Coordinator{Writers, runtime}                 // 纯协议：提交 + Status
@@ -172,3 +180,4 @@ loops       = PresetRef → loop.New(Executor, builder, Settings{preset.Scheduli
 - **HST-SES-4、HST-EVT-1**：Submit 在模型仍阻塞时已返回且 Turn 为 active；事件流按 Seq 顺序交付该 Turn 的 `started`、`attempt_started` 与其 Run 的 `run_ended`；后台驱动失败以 `Event{Err}` 与 `Ports.Warn` 报告；同一 Session 上 Send 仍阻塞到 Result。
 - **HST-CKP-1/2**：Compact 的模型请求经 Executor 到达模型；压缩后下一请求以 summary 开头且只含 retained 后缀；重启进程组装同一上下文；active Turn 时 Compact 为 conflict；封闭校验的四类边界。
 - **HST-MEM-2**：`CacheEvery` 到达 Writer；machine projection 从不被 Writer 写入。
+- **HST-FRK-1/2**：在某 Turn 之前 fork 得到的子 Session 只含该 Turn 之前的回答且其输入仍待投递；`Drain` 以同一输入重新生成，`WithdrawInput` 后 `Send` 以新输入替代；两个子都读到共享前缀的冻结正文；父的 head 不变；每个子的首个自身 Commit 从 anchor 续链；未知 Turn 与自身为父被拒。

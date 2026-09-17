@@ -16,8 +16,11 @@ type headerDigestBody struct {
 	ProtocolVersion    uint16
 	SessionID          SessionID
 	CreatedAtUnixMilli int64
-	CausationID        es.CausationID
-	Metadata           jsonstable.Value
+	// ParentFork is omitted when nil, so a root Session's header digest is
+	// the same with or without fork support (SES-WIR-2).
+	ParentFork  *ForkPoint `json:",omitempty"`
+	CausationID es.CausationID
+	Metadata    jsonstable.Value
 }
 
 // validateEventShape checks the event invariants every protocol version

@@ -162,9 +162,12 @@ type sessionWriter struct {
 	registry  *extension.Registry
 	admission Admission
 	sid       session.SessionID
-	head      session.Head
-	states    map[projectionKey]any
-	scopes    map[projectionKey]*extension.ProjectionScope
+	// fork is the Session's anchor when it is a fork; its parent's cache
+	// entries may seed a projection (EXT-PRJ-3).
+	fork   *session.ForkPoint
+	head   session.Head
+	states map[projectionKey]any
+	scopes map[projectionKey]*extension.ProjectionScope
 	// cache, cachePolicy and cached carry EXT-PRJ-3: cached records the head each
 	// projection's cache entry already reflects, which is what a policy measures
 	// the next refresh against.
@@ -208,7 +211,7 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 	if policy == nil {
 		policy = extension.CacheEvery(extension.DefaultCacheEvery)
 	}
-	w := &sessionWriter{kernel: kernel, registry: registry, admission: admission, sid: sid,
+	w := &sessionWriter{kernel: kernel, registry: registry, admission: admission, sid: sid, fork: header.ParentFork,
 		states: make(map[projectionKey]any), scopes: make(map[projectionKey]*extension.ProjectionScope),
 		cache: cfg.Cache, cachePolicy: policy, cached: make(map[projectionKey]session.Head), observers: cfg.Observers}
 	if err := w.rebuild(ctx, store); err != nil {
@@ -268,12 +271,28 @@ func (w *sessionWriter) rebuild(ctx context.Context, store session.Store) error 
 // decodes, otherwise nothing. Anything unusable -- absent, corrupt, ahead of
 // the log, or recorded at a digest the log does not have -- falls back to a
 // full fold, so a stale or damaged cache only costs time (EXT-PRJ-3). It is
-// the Writer's counterpart of the store reader's startState.
+// the Writer's counterpart of the store reader's startState. A fork with no
+// entry of its own may start from its parent's entry when that entry ends
+// inside the inherited prefix: the prefix is the same commits under the same
+// digests, so the alignment predicate judges it exactly as it would the
+// fork's own entry.
 func (w *sessionWriter) startState(ctx context.Context, scope *extension.ProjectionScope, commits []session.Commit) (any, session.Head, bool) {
 	if w.cache == nil {
 		return nil, session.Head{}, false
 	}
-	encoded, through, ok, err := w.cache.Load(ctx, w.sid, scope.Def.ID, scope.Def.Version)
+	if state, through, ok := w.cachedState(ctx, w.sid, scope, commits); ok {
+		return state, through, true
+	}
+	if w.fork != nil {
+		if state, through, ok := w.cachedState(ctx, w.fork.ParentSessionID, scope, commits); ok && through.Next <= w.fork.Seq+1 {
+			return state, through, true
+		}
+	}
+	return nil, session.Head{}, false
+}
+
+func (w *sessionWriter) cachedState(ctx context.Context, sid session.SessionID, scope *extension.ProjectionScope, commits []session.Commit) (any, session.Head, bool) {
+	encoded, through, ok, err := w.cache.Load(ctx, sid, scope.Def.ID, scope.Def.Version)
 	if err != nil || !ok || !coversCommit(commits, through) {
 		return nil, session.Head{}, false
 	}
@@ -455,7 +474,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	if err := session.ValidateBatches(batches); err != nil {
 		return CommitResult{Outcome: CommitInvalid, Detail: err.Error()}, nil
 	}
-	fp, err := fingerprintCommit(w.sid, group.CommitID, batches)
+	fp, err := fingerprintCommit(group.CommitID, batches)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -465,7 +484,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 		// The kernel holds the commit, not a fingerprint, so a replay recomputes
 		// the old commit's fingerprint to tell a replay from a conflict
 		// (EXT-WRT-2). Only a hit pays for this.
-		old, err := fingerprintCommit(w.sid, existing.CommitID, existing.Batches)
+		old, err := fingerprintCommit(existing.CommitID, existing.Batches)
 		if err != nil {
 			return CommitResult{}, err
 		}
@@ -716,13 +735,15 @@ type fingerprintBatch struct {
 
 // fingerprintCommit covers what makes a retry "the same commit": CommitID,
 // stream attribution, Types and payloads, never timestamps or Seq (a retry
-// after reopen lands at the head the log actually has) (EXT-WRT-2).
-func fingerprintCommit(sid session.SessionID, commitID session.CommitID, batches []session.StreamBatch) (es.Digest, error) {
+// after reopen lands at the head the log actually has) (EXT-WRT-2). The
+// SessionID is not covered: the CommitID index is already per Session, and a
+// fork's inherited commits were sealed under an ancestor's SessionID yet must
+// answer a replay through the fork as already applied (SES-FRK-3).
+func fingerprintCommit(commitID session.CommitID, batches []session.StreamBatch) (es.Digest, error) {
 	body := struct {
-		SessionID session.SessionID  `json:"sessionId"`
-		CommitID  session.CommitID   `json:"commitId"`
-		Batches   []fingerprintBatch `json:"batches"`
-	}{SessionID: sid, CommitID: commitID, Batches: make([]fingerprintBatch, len(batches))}
+		CommitID session.CommitID   `json:"commitId"`
+		Batches  []fingerprintBatch `json:"batches"`
+	}{CommitID: commitID, Batches: make([]fingerprintBatch, len(batches))}
 	for i, b := range batches {
 		fb := fingerprintBatch{Stream: b.Stream, Events: make([]fingerprintEvent, len(b.Events))}
 		for j, e := range b.Events {

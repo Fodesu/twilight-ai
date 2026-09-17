@@ -1,0 +1,124 @@
+package host
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/chatlog"
+	"github.com/felinics/twilight/agent/session/writer"
+	"github.com/felinics/twilight/agent/turn"
+)
+
+// ForkRequest forks a Session at one commit of its ledger (HST-FRK-1): the
+// child inherits every commit of Parent up to and including At and continues
+// from there under its own identity.
+type ForkRequest struct {
+	Parent session.SessionID
+	At     session.CommitSeq
+	Child  session.SessionID
+}
+
+// Fork creates the child Session (SES-FRK-1) and claims the artifacts its
+// inherited prefix references (EXT-WRT-8). The child is not opened: open it
+// with OpenSession like any Session. Executing targets the prefix leaves
+// behind belong to the parent's executions; the child's takeover disposition
+// treats them as missing and replans or records Unknown (RUN-CMT-7).
+func (h *Host) Fork(ctx context.Context, req ForkRequest) (session.SessionHeader, error) {
+	if req.Parent == "" || req.Child == "" {
+		return session.SessionHeader{}, errors.New("host: fork requires parent and child session ids")
+	}
+	if req.Parent == req.Child {
+		return session.SessionHeader{}, errors.New("host: a session cannot fork itself")
+	}
+	return writer.Fork(ctx, h.Store, h.registry, h.admission, writer.ForkRequest{
+		Parent: req.Parent, At: req.At, Child: req.Child, CreatedAtUnixMilli: h.now().UnixMilli(),
+	})
+}
+
+// ForkBeforeTurn forks Parent at the commit just before turnID started
+// (HST-FRK-2): the child holds the conversation as it was when that Turn's
+// inputs were still submitted and undelivered, so the same inputs can be
+// regenerated (Route delivers them to a new Turn) or withdrawn and replaced
+// (WithdrawInput, then Submit). A Turn started by the first commit of the
+// ledger leaves no prefix to fork; create a new Session instead.
+func (h *Host) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SessionHeader, error) {
+	seq, err := h.turnStartCommit(ctx, parent, turnID)
+	if err != nil {
+		return session.SessionHeader{}, err
+	}
+	if seq == 0 {
+		return session.SessionHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: child,
+			Detail: fmt.Sprintf("turn %s started in the first commit of %s; there is no prefix to fork", turnID, parent)}
+	}
+	return h.Fork(ctx, ForkRequest{Parent: parent, At: seq - 1, Child: child})
+}
+
+// turnStartCommit finds the commit that carries twilight/turn/started for
+// turnID.
+func (h *Host) turnStartCommit(ctx context.Context, sid session.SessionID, turnID turn.TurnID) (session.CommitSeq, error) {
+	var from session.CommitSeq
+	for {
+		page, err := h.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid, From: from, Limit: 256})
+		if err != nil {
+			return 0, err
+		}
+		for _, c := range page.Commits {
+			for _, b := range c.Batches {
+				for _, e := range b.Events {
+					if e.Type != turn.TypeStarted {
+						continue
+					}
+					decoded, err := h.registry.Decode(e)
+					if err != nil || decoded.Unknown {
+						continue
+					}
+					if p, ok := decoded.Value.(turn.StartedPayload); ok && p.TurnID == turnID {
+						return c.Seq, nil
+					}
+				}
+			}
+		}
+		if !page.HasMore || len(page.Commits) == 0 {
+			return 0, fmt.Errorf("%w: turn %s not found in %s", turn.ErrConflict, turnID, sid)
+		}
+		from = page.Commits[len(page.Commits)-1].Seq + 1
+	}
+}
+
+// WithdrawInput writes twilight/chatlog/input_withdrawn for a submitted,
+// undelivered input (CHT-EVT-2): the Application's decision that an input is
+// not to be delivered, for example the original input of a Turn the caller
+// forked before in order to edit it (HST-FRK-2).
+func (h *Host) WithdrawInput(ctx context.Context, sid session.SessionID, id run.InputID, reason string) error {
+	w, err := h.Writers.Writer(ctx, sid)
+	if err != nil {
+		return err
+	}
+	res, err := w.Commit(ctx, func(v writer.View) (*writer.SemanticGroup, error) {
+		state, err := v.Projection(chatlog.SurfaceProjectionID, chatlog.SurfaceProjection.Version)
+		if err != nil {
+			return nil, err
+		}
+		view, ok := state.(chatlog.Surface).Inputs.Get(chatlog.InputID(id))
+		if !ok || view.Status != chatlog.InputSubmitted {
+			return nil, fmt.Errorf("%w: input %s is not a submitted input", turn.ErrConflict, id)
+		}
+		return &writer.SemanticGroup{CommitID: session.CommitID("input-withdrawn/" + string(id)),
+			Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{{
+				Type: chatlog.TypeInputWithdrawn, RecordedAtUnixMilli: h.now().UnixMilli(),
+				Value: chatlog.InputWithdrawnPayload{InputID: chatlog.InputID(id), Reason: reason},
+			}}}}}, nil
+	})
+	if err != nil {
+		return err
+	}
+	switch res.Outcome {
+	case writer.CommitApplied, writer.CommitAlreadyApplied:
+		return nil
+	default:
+		return fmt.Errorf("host: withdraw input: %s: %s", res.Outcome, res.Detail)
+	}
+}
