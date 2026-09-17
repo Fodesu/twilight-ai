@@ -1,11 +1,11 @@
-// Package orchestration drives durable Turns: it advances active attempts
-// to their next quiescent point (Drive), runs the takeover disposition when
-// a Session opens (Open), and settles Outcomes that survived a previous
-// owner (reattach). It is the reusable execution orchestration between the
-// application host and any child-session driver (subagents): it holds no
-// model client, tool implementation or event stream — failures leave
-// through Fail, observations through the caller's surfaces.
-package orchestration
+// Package driver advances durable Turns: it drives an active attempt to its
+// next quiescent point (Drive), runs the takeover disposition when a Session
+// is opened (Open) and settles Outcomes that survived a previous owner
+// (reattach). It composes the Loop of each AgentPreset over the shared
+// Executor and caches it, so every drive of a Run meets the same
+// already-driving guard. It decides nothing about where inputs go or what a
+// reply is; those are the caller's.
+package driver
 
 import (
 	"context"
@@ -18,12 +18,13 @@ import (
 	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/extension"
 	"github.com/felinics/twilight/agent/turn"
 )
 
-// ResumeAlreadyDriving extends the turn disposition vocabulary for hosts:
-// the inputs (if any) are committed and another local driver of the same
-// Run carries them forward. The Coordinator itself never produces it.
+// ResumeAlreadyDriving extends the turn disposition vocabulary: the inputs
+// (if any) are committed and another local driver of the same Run carries
+// them forward. The Coordinator itself never produces it.
 const ResumeAlreadyDriving turn.ResumeDisposition = "already_driving"
 
 // Presets resolves a PresetRef to its immutable AgentPreset (HST-PST-2).
@@ -31,13 +32,8 @@ type Presets interface {
 	Resolve(turn.PresetRef) (turn.AgentPreset, error)
 }
 
-// Surfaces reads the turn surface projection of one Session.
-type Surfaces func(ctx context.Context, sid session.SessionID) (turn.TurnSurface, error)
-
 // Driver is the execution orchestrator over the fact and effect layers
-// (HST-DRV). Construct it with the Executor effects actually dispatch to —
-// for a Host with the subagent effect, that is the wrapped Executor, not
-// the deployment's inner one.
+// (HST-DRV).
 type Driver struct {
 	Runtime     run.Runtime
 	Coordinator turn.Service
@@ -46,8 +42,7 @@ type Driver struct {
 	Decisions   *decision.PromptBuilders
 	Sources     decision.Sources
 	Targets     loop.TargetResolver
-	// Surfaces reads turn surfaces.
-	Surfaces Surfaces
+	Projections extension.ProjectionReader
 	// Fail receives failures of work the Driver does outside any caller's
 	// call, such as settling a reattached Outcome; nil discards them.
 	Fail func(session.SessionID, error)
@@ -57,7 +52,7 @@ type Driver struct {
 	recovery map[session.SessionID]*recoveryLifetime
 }
 
-// New returns an empty Driver.
+// New returns a Driver with no Loops built and no Sessions open.
 func New() *Driver {
 	return &Driver{loops: make(map[turn.PresetRef]*loop.Loop), recovery: make(map[session.SessionID]*recoveryLifetime)}
 }
@@ -70,21 +65,20 @@ func (d *Driver) fail(sid session.SessionID, err error) {
 
 // loopFor returns the Loop that drives Runs of one AgentPreset. A Loop binds
 // the preset's prompt builder and settings to the shared Executor; it is
-// built once per PresetRef so every drive of a Run meets the same
-// already-driving guard (HST-DRV-2).
-func (d *Driver) loopFor(ref turn.PresetRef) (*loop.Loop, turn.AgentPreset, error) {
+// built once per PresetRef (HST-DRV-2, RUN-CMT-6).
+func (d *Driver) loopFor(ref turn.PresetRef) (*loop.Loop, error) {
 	preset, err := d.Presets.Resolve(ref)
 	if err != nil {
-		return nil, turn.AgentPreset{}, err
+		return nil, err
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if l, ok := d.loops[ref]; ok {
-		return l, preset, nil
+		return l, nil
 	}
 	builder, err := d.Decisions.Resolve(preset, d.Sources)
 	if err != nil {
-		return nil, turn.AgentPreset{}, err
+		return nil, err
 	}
 	l, err := loop.New(d.Executor, builder, loop.Settings{
 		Scheduling:       preset.Scheduling,
@@ -92,19 +86,19 @@ func (d *Driver) loopFor(ref turn.PresetRef) (*loop.Loop, turn.AgentPreset, erro
 		TargetResolver:   d.Targets,
 	})
 	if err != nil {
-		return nil, turn.AgentPreset{}, err
+		return nil, err
 	}
 	d.loops[ref] = l
-	return l, preset, nil
+	return l, nil
 }
 
 // Drive is HST-DRV-1: while the Turn is active, resolve its recorded preset
 // and drive the active attempt to the next quiescent point, then read the
-// committed Status. The caller's ctx bounds the drive, so cancellation is a
-// host decision. A concurrent local driver of the same Run yields
+// committed Status. The caller's ctx bounds the drive, so cancellation is the
+// caller's decision. A concurrent local driver of the same Run yields
 // ResumeAlreadyDriving.
 func (d *Driver) Drive(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse, error) {
-	surface, err := d.Surfaces(ctx, ref.SessionID)
+	surface, err := turn.ReadSurface(ctx, d.Projections, ref.SessionID)
 	if err != nil {
 		return turn.TurnResponse{}, err
 	}
@@ -113,7 +107,7 @@ func (d *Driver) Drive(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse
 		return turn.TurnResponse{}, fmt.Errorf("%w: unknown turn %s", turn.ErrConflict, ref.TurnID)
 	}
 	if view.Status == turn.TurnActive {
-		l, _, err := d.loopFor(view.Preset)
+		l, err := d.loopFor(view.Preset)
 		if err != nil {
 			return turn.TurnResponse{}, err
 		}
@@ -135,7 +129,7 @@ func (d *Driver) Drive(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse
 			// what no executor answers, instead of leaving the Turn to a
 			// driver that already returned (RUN-CMT-7).
 			if _, err := d.recoverInterrupted(context.WithoutCancel(ctx), ref.SessionID); err != nil {
-				d.fail(ref.SessionID, fmt.Errorf("orchestration: recovering a quiesced drive: %w", err))
+				d.fail(ref.SessionID, fmt.Errorf("driver: recovering a quiesced drive: %w", err))
 			}
 		}
 	}
@@ -150,31 +144,31 @@ func (d *Driver) reattachDeliver(ctx context.Context, sid session.SessionID) loo
 		if ctx.Err() != nil {
 			return
 		}
-		surface, err := d.Surfaces(ctx, sid)
+		surface, err := turn.ReadSurface(ctx, d.Projections, sid)
 		if err != nil {
-			d.fail(sid, fmt.Errorf("orchestration: reattached outcome for run %s: %w", out.Key.RunID, err))
+			d.fail(sid, fmt.Errorf("driver: reattached outcome for run %s: %w", out.Key.RunID, err))
 			return
 		}
 		turnID, ok := surface.RunOwner[out.Key.RunID]
 		if !ok {
-			d.fail(sid, fmt.Errorf("orchestration: reattached outcome for run %s: no owning turn", out.Key.RunID))
+			d.fail(sid, fmt.Errorf("driver: reattached outcome for run %s: no owning turn", out.Key.RunID))
 			return
 		}
-		l, _, err := d.loopFor(surface.Turns[turnID].Preset)
+		l, err := d.loopFor(surface.Turns[turnID].Preset)
 		if err != nil {
-			d.fail(sid, fmt.Errorf("orchestration: reattached outcome for run %s: %w", out.Key.RunID, err))
+			d.fail(sid, fmt.Errorf("driver: reattached outcome for run %s: %w", out.Key.RunID, err))
 			return
 		}
 		res, err := l.Deliver(ctx, d.Runtime, sid, out, nil)
 		if err != nil {
-			d.fail(sid, fmt.Errorf("orchestration: settling reattached outcome for run %s: %w", out.Key.RunID, err))
+			d.fail(sid, fmt.Errorf("driver: settling reattached outcome for run %s: %w", out.Key.RunID, err))
 			return
 		}
 		if res.Disposition != loop.LoopDelivered {
 			return
 		}
 		if _, err := l.Run(ctx, d.Runtime, sid, out.Key.RunID, nil); err != nil && !errors.Is(err, loop.ErrRunAlreadyRunning) {
-			d.fail(sid, fmt.Errorf("orchestration: driving run %s after a reattached outcome: %w", out.Key.RunID, err))
+			d.fail(sid, fmt.Errorf("driver: driving run %s after a reattached outcome: %w", out.Key.RunID, err))
 		}
 	}
 }
@@ -220,12 +214,11 @@ func (d *Driver) ensureRecoveryLifetime(sid session.SessionID) *recoveryLifetime
 // settlement.
 func (d *Driver) recoverInterrupted(ctx context.Context, sid session.SessionID) (int, error) {
 	lt := d.ensureRecoveryLifetime(sid)
-	n, err := d.Runtime.RecoverInterrupted(ctx, sid, loop.Reattach(lt.ctx, d.Executor, sid, d.reattachDeliver(lt.ctx, sid)))
-	return n, err
+	return d.Runtime.RecoverInterrupted(ctx, sid, loop.Reattach(lt.ctx, d.Executor, sid, d.reattachDeliver(lt.ctx, sid)))
 }
 
-// Open takes ownership of the Session and runs the takeover disposition
-// (RUN-CMT-7). It returns the number of recovery commands issued.
+// Open takes ownership of the Session's recovery and runs the takeover
+// disposition (RUN-CMT-7). It returns the number of recovery commands issued.
 func (d *Driver) Open(ctx context.Context, sid session.SessionID) (int, error) {
 	d.mu.Lock()
 	d.installRecoveryLifetimeLocked(sid, ctx)

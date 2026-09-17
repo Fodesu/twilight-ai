@@ -1,4 +1,9 @@
-package host
+// Package observe is the Session event stream (HST-EVT-1): a
+// writer.CommitObserver that decodes every applied commit through the
+// Registry and fans it out, in commit order, to the subscribers of each
+// Session. UI, SSE and CLI observation all derive from this one source;
+// history is read from the Store or a projection, never from here.
+package observe
 
 import (
 	"context"
@@ -8,14 +13,13 @@ import (
 	"github.com/felinics/twilight/agent/session/extension"
 )
 
-// Event is one item of a Session's event stream (HST-EVT-1). Every
-// observation of a Session derives from applied commits, so an Event is
-// normally one committed event decoded through the Registry: Module, Version
-// and Value are the decoded payload, Unknown reports a type or version this
-// process has no codec for (the event is still delivered). An Event with Err
-// set and a zero Row is a host-level failure of background work (a drive
-// that errored); it is reported here for the same audience but never enters
-// the stream.
+// Event is one item of a Session's event stream. Every observation of a
+// Session derives from applied commits, so an Event is normally one
+// committed event decoded through the Registry: Module, Version and Value
+// are the decoded payload, Unknown reports a type or version this process
+// has no codec for (the event is still delivered). An Event with Err set and
+// a zero Row is a failure of background work (a drive that errored); it is
+// reported here for the same audience but never enters the stream.
 type Event struct {
 	Session session.SessionID
 	Row     session.Event
@@ -26,21 +30,21 @@ type Event struct {
 	Err     error
 }
 
-// eventBus is the Host's CommitObserver: it decodes applied rows and fans
-// them out to the subscribers of each Session (HST-EVT-1).
-type eventBus struct {
+// Bus decodes applied commits and fans them out per Session.
+type Bus struct {
 	registry *extension.Registry
 	mu       sync.Mutex
 	subs     map[session.SessionID]map[*subscriber]struct{}
 }
 
-func newEventBus(registry *extension.Registry) *eventBus {
-	return &eventBus{registry: registry, subs: make(map[session.SessionID]map[*subscriber]struct{})}
+// NewBus returns a Bus decoding through registry.
+func NewBus(registry *extension.Registry) *Bus {
+	return &Bus{registry: registry, subs: make(map[session.SessionID]map[*subscriber]struct{})}
 }
 
 // Committed is writer.CommitObserver: one Event per committed event, in
 // commit order.
-func (b *eventBus) Committed(_ context.Context, sid session.SessionID, commit session.Commit) {
+func (b *Bus) Committed(_ context.Context, sid session.SessionID, commit session.Commit) {
 	var events []Event
 	for _, batch := range commit.Batches {
 		for _, row := range batch.Events {
@@ -57,12 +61,12 @@ func (b *eventBus) Committed(_ context.Context, sid session.SessionID, commit se
 	b.publish(sid, events...)
 }
 
-// failed reports a host-level failure to the Session's subscribers.
-func (b *eventBus) failed(sid session.SessionID, err error) {
+// Failed reports a background failure to the Session's subscribers.
+func (b *Bus) Failed(sid session.SessionID, err error) {
 	b.publish(sid, Event{Session: sid, Err: err})
 }
 
-func (b *eventBus) publish(sid session.SessionID, events ...Event) {
+func (b *Bus) publish(sid session.SessionID, events ...Event) {
 	b.mu.Lock()
 	subs := make([]*subscriber, 0, len(b.subs[sid]))
 	for s := range b.subs[sid] {
@@ -74,8 +78,9 @@ func (b *eventBus) publish(sid session.SessionID, events ...Event) {
 	}
 }
 
-// subscribe registers a subscriber that lives until ctx is done.
-func (b *eventBus) subscribe(ctx context.Context, sid session.SessionID) <-chan Event {
+// Subscribe registers a subscriber to one Session's stream from this moment
+// on; the channel closes when ctx is done.
+func (b *Bus) Subscribe(ctx context.Context, sid session.SessionID) <-chan Event {
 	s := &subscriber{out: make(chan Event, 64), wake: make(chan struct{}, 1)}
 	b.mu.Lock()
 	if b.subs[sid] == nil {
@@ -138,13 +143,4 @@ func (s *subscriber) drain(ctx context.Context, unsubscribe func()) {
 			return
 		}
 	}
-}
-
-// Events subscribes to one Session's event stream from this moment on
-// (HST-EVT-1): every row of every group applied by this Host's Writer, in
-// commit order, plus host-level failures of background drives. The channel
-// closes when ctx is done. Earlier history is read from the Store or a
-// projection, not from this stream.
-func (h *Host) Events(ctx context.Context, sid session.SessionID) <-chan Event {
-	return h.bus.subscribe(ctx, sid)
 }

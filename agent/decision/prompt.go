@@ -13,7 +13,6 @@ import (
 
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
-	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
 	"github.com/felinics/twilight/agent/turn"
@@ -24,11 +23,10 @@ import (
 // folded into one provider request (DEC-PMT-1).
 const PromptContextV1 turn.PromptBuilderRef = "twilight/decision/prompt/context-v1"
 
-// ProjectionSource is what a prompt builder reads state from. The owner process
-// serves it from the Session Writer; an observer from the Store.
-type ProjectionSource interface {
-	Load(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (any, session.Head, error)
-}
+// ProjectionSource is what a prompt builder reads state from: the owner
+// process serves it from the Session Writer (writer.Projections), an observer
+// from the Store.
+type ProjectionSource = extension.ProjectionReader
 
 // Sources are the two read ports of a prompt builder (DEC-PMT-1): the
 // structural projections and the content resolver that materializes the

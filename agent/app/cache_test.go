@@ -1,11 +1,11 @@
-package host_test
+package app_test
 
 import (
 	"context"
 	"sync"
 	"testing"
 
-	"github.com/felinics/twilight/agent/host"
+	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
@@ -54,7 +54,7 @@ func TestHostCacheEveryIsConfigurable(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			cache := newCountingCache()
-			h := newHost(host.Ports{Cache: cache, CacheEvery: tc.every}, nil)
+			h := newHost(app.Config{Cache: cache, CacheEvery: tc.every}, nil)
 			const sid session.SessionID = "s-interval"
 			if err := h.EnsureSession(ctx, sid); err != nil {
 				t.Fatal(err)
@@ -82,7 +82,7 @@ func TestHostCacheEveryIsConfigurable(t *testing.T) {
 func TestHostNeverCachesTheMachineProjection(t *testing.T) {
 	ctx := context.Background()
 	cache := newCountingCache()
-	h := newHost(host.Ports{Cache: cache, CacheEvery: 1}, nil)
+	h := newHost(app.Config{Cache: cache, CacheEvery: 1}, nil)
 	const sid session.SessionID = "s-machine"
 	if err := h.EnsureSession(ctx, sid); err != nil {
 		t.Fatal(err)

@@ -1,4 +1,4 @@
-package host_test
+package app_test
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/felinics/twilight/agent/host"
+	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -50,13 +50,13 @@ func Example_jsonlPrototype() {
 		panic(err)
 	}
 	model1 := &scriptedRequests{answers: []sdk.ModelResult{protoToolCall("call-1"), protoText("done"), protoToolCall("call-2")}}
-	p1 := newHost(host.Ports{Store: store1, Content: content, Clock: clock.Now}, map[run.ModelRef]loop.ModelInvoker{"m-1": model1}, tool)
-	profile1, err := p1.Presets.Register("jsonl-agent", preset)
+	p1 := newHost(app.Config{Store: store1, Content: content, Clock: clock.Now}, map[run.ModelRef]loop.ModelInvoker{"m-1": model1}, tool)
+	profile1, err := p1.RegisterPreset("jsonl-agent", preset)
 	if err != nil {
 		panic(err)
 	}
 	turnSeq := 0
-	s1, err := p1.OpenSession(ctx, sid, host.SessionOptions{Preset: profile1,
+	s1, err := p1.OpenSession(ctx, sid, app.SessionOptions{Preset: profile1,
 		NewTurnID: func() turn.TurnID { turnSeq++; return turn.TurnID(fmt.Sprintf("turn-%d", turnSeq)) }})
 	if err != nil {
 		panic(err)
@@ -130,16 +130,16 @@ func Example_jsonlPrototype() {
 	if err != nil {
 		panic(err)
 	}
-	p2 := newHost(host.Ports{Store: store2, Content: content, Ownership: session.OpenOptions{Takeover: true}, Clock: clock.Now},
+	p2 := newHost(app.Config{Store: store2, Content: content, Ownership: session.OpenOptions{Takeover: true}, Clock: clock.Now},
 		map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}}, tool)
-	if _, err := p2.Presets.Register("jsonl-agent", preset); err != nil {
+	if _, err := p2.RegisterPreset("jsonl-agent", preset); err != nil {
 		panic(err)
 	}
-	recovered, err := p2.Open(ctx, sid)
+	owned, err := p2.Authority.Open(ctx, sid)
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("process 2: took over; %d executing target disposed\n", recovered)
+	fmt.Printf("process 2: took over; %d executing target disposed\n", owned.Recovered)
 
 	resp2, err := p2.Drive(ctx, turn.TurnRef{SessionID: sid, TurnID: "turn-2"})
 	if err != nil {

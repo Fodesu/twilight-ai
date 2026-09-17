@@ -1,11 +1,11 @@
-package host_test
+package app_test
 
 import (
 	"context"
 	"strings"
 	"testing"
 
-	"github.com/felinics/twilight/agent/host"
+	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -70,12 +70,12 @@ var auditModule = extension.ModuleDescriptor{
 // first-party projections skip its rows as out-of-scope (EXT-REG-1, EXT-PRJ-2).
 func TestAppModuleSharesTheSessionStream(t *testing.T) {
 	ctx := context.Background()
-	h := newHost(host.Ports{Modules: []extension.ModuleDescriptor{auditModule}}, map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}})
+	h := newHost(app.Config{Modules: []extension.ModuleDescriptor{auditModule}}, map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}})
 	const sid session.SessionID = "s-app"
 	if err := h.EnsureSession(ctx, sid); err != nil {
 		t.Fatal(err)
 	}
-	preset, err := h.Presets.Register("b1", mustPreset("m-1", nil))
+	preset, err := h.RegisterPreset("b1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +85,7 @@ func TestAppModuleSharesTheSessionStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The app module commits its own event through the shared Writer.
-	w, err := h.Writers.Writer(ctx, sid)
+	w, err := h.Authority.Writers.Writer(ctx, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestAppModuleSharesTheSessionStream(t *testing.T) {
 	if err != nil || res.Outcome != writer.CommitApplied {
 		t.Fatalf("audit commit = %+v %v", res, err)
 	}
-	if _, err := h.Coordinator.Start(ctx, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},
+	if _, err := h.Authority.Coordinator.Start(ctx, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},
 		Inputs: []run.AgentInput{in}, Preset: preset}); err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestAppModuleSharesTheSessionStream(t *testing.T) {
 	}
 
 	// Both sources coexist in one commit ledger.
-	page, err := h.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
+	page, err := h.Authority.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
 	if err != nil {
 		t.Fatal(err)
 	}

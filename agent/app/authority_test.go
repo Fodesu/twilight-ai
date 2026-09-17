@@ -1,11 +1,12 @@
-package host_test
+package app_test
 
 import (
 	"context"
 	"sync"
 	"testing"
 
-	"github.com/felinics/twilight/agent/host"
+	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/preset"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	runmod "github.com/felinics/twilight/agent/session/run"
@@ -84,15 +85,15 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 	exec := &recordingExecutor{reply: "hello from the executor"}
 	content := memoryContent()
 	frozen := runmod.FrozenValues(content)
-	h, err := host.New(host.Ports{Executor: exec, Content: content})
+	h, err := app.Build(app.Config{Executor: app.ExecutorConfig{Port: exec}, Content: content})
 	if err != nil {
 		t.Fatal(err)
 	}
-	presetRef, err := h.Presets.Register("remote", mustPreset("m-remote", nil, host.WithSystemPrompt("be brief")))
+	presetRef, err := h.RegisterPreset("remote", mustPreset("m-remote", nil, app.WithSystemPrompt("be brief")))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := h.OpenSession(ctx, "s-authority", host.SessionOptions{Preset: presetRef})
+	s, err := h.OpenSession(ctx, "s-authority", app.SessionOptions{Preset: presetRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,8 +130,8 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 
 // Older Turns keep resolving their recorded decision identity (HST-PST-2).
 func TestPresetVersionsRemainAvailable(t *testing.T) {
-	presets := host.NewPresets()
-	preset := mustPreset("m-1", nil, host.WithSystemPrompt("original"))
+	presets := preset.NewMemory()
+	preset := mustPreset("m-1", nil, app.WithSystemPrompt("original"))
 	preset.Tools = []turn.PublicTool{{Ref: "tool", Definition: run.ToolDefinition{
 		Name: "tool", Parameters: run.MustParseCanonicalJSON(`{}`), CacheControl: &run.CacheControl{Type: "ephemeral"},
 	}}}

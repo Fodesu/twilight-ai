@@ -1,11 +1,11 @@
-package host_test
+package app_test
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	"github.com/felinics/twilight/agent/host"
+	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -34,7 +34,7 @@ func (m *gateModel) Generate(_ context.Context, req sdk.Request) (sdk.ModelResul
 func crashMidModel(t *testing.T, root string, sid session.SessionID) (turn.PresetRef, turn.AgentPreset, sdk.Request, *gateModel, chan error) {
 	t.Helper()
 	ctx := context.Background()
-	preset := mustPreset("m-1", nil, host.WithSystemPrompt("be brief"))
+	preset := mustPreset("m-1", nil, app.WithSystemPrompt("be brief"))
 	store1, err := filestore.New(root)
 	if err != nil {
 		t.Fatal(err)
@@ -44,12 +44,12 @@ func crashMidModel(t *testing.T, root string, sid session.SessionID) (turn.Prese
 		t.Fatal(err)
 	}
 	gate := &gateModel{started: make(chan sdk.Request, 1), release: make(chan struct{})}
-	p1 := newHost(host.Ports{Store: store1, Content: content1}, map[run.ModelRef]loop.ModelInvoker{"m-1": gate})
-	presetRef, err := p1.Presets.Register("a1", preset)
+	p1 := newHost(app.Config{Store: store1, Content: content1}, map[run.ModelRef]loop.ModelInvoker{"m-1": gate})
+	presetRef, err := p1.RegisterPreset("a1", preset)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s1, err := p1.OpenSession(ctx, sid, host.SessionOptions{Preset: presetRef})
+	s1, err := p1.OpenSession(ctx, sid, app.SessionOptions{Preset: presetRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,11 +86,11 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 		t.Fatal(err)
 	}
 	replan := &scriptedRequests{}
-	p2 := newHost(host.Ports{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": replan})
-	if _, err := p2.Presets.Register("a1", preset); err != nil {
+	p2 := newHost(app.Config{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": replan})
+	if _, err := p2.RegisterPreset("a1", preset); err != nil {
 		t.Fatal(err)
 	}
-	s2, err := p2.OpenSession(ctx, sid, host.SessionOptions{Preset: presetRef})
+	s2, err := p2.OpenSession(ctx, sid, app.SessionOptions{Preset: presetRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 	if !ok {
 		t.Fatal("takeover lost the active turn")
 	}
-	snap, err := p2.Runtime.Load(ctx, sid, active.ActiveRun)
+	snap, err := p2.Authority.Runtime.Load(ctx, sid, active.ActiveRun)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 	if got, want := len(seen[0].Messages), len(sent.Messages); got != want {
 		t.Fatalf("replanned request has %d messages, the aborted one had %d", got, want)
 	}
-	final, err := p2.Runtime.Load(ctx, sid, active.ActiveRun)
+	final, err := p2.Authority.Runtime.Load(ctx, sid, active.ActiveRun)
 	if err != nil || final.State.ModelSteps != 1 {
 		t.Fatalf("model steps after replan = %d %v, want exactly the replanned step", final.State.ModelSteps, err)
 	}
@@ -193,16 +193,16 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	exec := &reattachingExecutor{recordingExecutor: recordingExecutor{reply: "reattached"}, reads: make(chan context.Context, 4)}
-	p2, err := host.New(host.Ports{Store: store2, Content: content2, Executor: exec, Ownership: session.OpenOptions{Takeover: true}})
+	p2, err := app.Build(app.Config{Store: store2, Content: content2, Executor: app.ExecutorConfig{Port: exec}, Ownership: session.OpenOptions{Takeover: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p2.Presets.Register("a1", preset); err != nil {
+	if _, err := p2.RegisterPreset("a1", preset); err != nil {
 		t.Fatal(err)
 	}
 	openCtx, cancelOpen := context.WithCancel(ctx)
 	defer cancelOpen()
-	s2, err := p2.OpenSession(openCtx, sid, host.SessionOptions{Preset: presetRef})
+	s2, err := p2.OpenSession(openCtx, sid, app.SessionOptions{Preset: presetRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +237,7 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	if !ok {
 		t.Fatal("takeover lost the active turn")
 	}
-	snap, err := p2.Runtime.Load(ctx, sid, active.ActiveRun)
+	snap, err := p2.Authority.Runtime.Load(ctx, sid, active.ActiveRun)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,7 +263,7 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 		case <-time.After(time.Millisecond):
 		}
 	}
-	final, err := p2.Runtime.Load(ctx, sid, active.ActiveRun)
+	final, err := p2.Authority.Runtime.Load(ctx, sid, active.ActiveRun)
 	if err != nil || final.State.ModelSteps != 1 {
 		t.Fatalf("model steps = %d %v, want the one original step", final.State.ModelSteps, err)
 	}
@@ -307,14 +307,14 @@ func TestCloseStopsPendingRecoveryRead(t *testing.T) {
 				t.Fatal(err)
 			}
 			exec := &reattachingExecutor{reads: make(chan context.Context, 4)}
-			h, err := host.New(host.Ports{Store: store, Content: content, Executor: exec, Ownership: session.OpenOptions{Takeover: true}})
+			h, err := app.Build(app.Config{Store: store, Content: content, Executor: app.ExecutorConfig{Port: exec}, Ownership: session.OpenOptions{Takeover: true}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := h.Presets.Register("a1", preset); err != nil {
+			if _, err := h.RegisterPreset("a1", preset); err != nil {
 				t.Fatal(err)
 			}
-			s, err := h.OpenSession(ctx, sid, host.SessionOptions{Preset: ref})
+			s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: ref})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -341,9 +341,9 @@ func TestCloseStopsPendingRecoveryRead(t *testing.T) {
 	}
 }
 
-func mustRecord(t *testing.T, h *host.Host, sid session.SessionID, runID run.RunID) run.RunRecord {
+func mustRecord(t *testing.T, h *app.Application, sid session.SessionID, runID run.RunID) run.RunRecord {
 	t.Helper()
-	rec, err := h.Runtime.Record(context.Background(), sid, runID)
+	rec, err := h.Authority.Runtime.Record(context.Background(), sid, runID)
 	if err != nil {
 		t.Fatal(err)
 	}

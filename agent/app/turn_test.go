@@ -1,4 +1,4 @@
-package host_test
+package app_test
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/felinics/twilight/agent/host"
+	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -18,18 +18,18 @@ import (
 
 // setup composes a Host over an in-memory store with one model and one tool,
 // registers the preset and opens a Session whose new Turns are named t2, t3, ...
-func setup(t *testing.T, model loop.ModelInvoker, tool *gateTool, opts host.SessionOptions) (*host.Host, turn.PresetRef, session.SessionID, *host.Session) {
+func setup(t *testing.T, model loop.ModelInvoker, tool *gateTool, opts app.SessionOptions) (*app.Application, turn.PresetRef, session.SessionID, *app.Session) {
 	t.Helper()
 	tools := []loop.ExecutableTool{}
 	if tool != nil {
 		tools = append(tools, tool)
 	}
-	h := newHost(host.Ports{}, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tools...)
+	h := newHost(app.Config{}, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tools...)
 	const sid session.SessionID = "s-1"
 	if err := h.CreateSession(context.Background(), sid); err != nil {
 		t.Fatal(err)
 	}
-	preset, err := h.Presets.Register("b1", mustPreset("m-1", tools, host.WithSystemPrompt("be brief")))
+	preset, err := h.RegisterPreset("b1", mustPreset("m-1", tools, app.WithSystemPrompt("be brief")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	ctx := context.Background()
 	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
-	h, preset, sid, s := setup(t, model, tool, host.SessionOptions{})
+	h, preset, sid, s := setup(t, model, tool, app.SessionOptions{})
 
 	first, err := h.SubmitInput(ctx, sid, "in-1", "what is the weather?")
 	if err != nil {
@@ -61,7 +61,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "t1"}
 	done := make(chan turn.TurnResponse, 1)
 	go func() {
-		resp, err := h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: preset})
+		resp, err := h.Authority.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: preset})
 		if err == nil {
 			// The Coordinator only commits; the host drives (HST-DRV-1).
 			resp, err = h.Drive(ctx, ref1)
@@ -95,7 +95,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 		return err == nil && len(surface.Turns["t1"].InputIDs) == 2
 	})
 	close(tool.release)
-	if resp := <-deliverDone; resp.Disposition != host.ResumeAlreadyDriving && resp.Disposition != turn.ResumeFinished {
+	if resp := <-deliverDone; resp.Disposition != app.ResumeAlreadyDriving && resp.Disposition != turn.ResumeFinished {
 		t.Fatalf("deliver disposition = %s", resp.Disposition)
 	}
 	resp := <-done
@@ -134,19 +134,19 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	ctx := context.Background()
 	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
-	h, preset, sid, s := setup(t, model, tool, host.SessionOptions{})
+	h, preset, sid, s := setup(t, model, tool, app.SessionOptions{})
 	first, _ := h.SubmitInput(ctx, sid, "in-1", "hello")
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "t1"}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if _, err := h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: preset}); err == nil {
+		if _, err := h.Authority.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: preset}); err == nil {
 			_, _ = h.Drive(ctx, ref1)
 		}
 	}()
 	<-tool.started
 
-	resp, err := h.Coordinator.Stop(ctx, turn.StopRequest{Ref: ref1, Reason: "user"})
+	resp, err := h.Authority.Coordinator.Stop(ctx, turn.StopRequest{Ref: ref1, Reason: "user"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	<-done
 
 	// The abandoned worker's settlement was rejected; the Run is terminal.
-	record, err := h.Runtime.Record(ctx, sid, resp.RunID)
+	record, err := h.Authority.Runtime.Record(ctx, sid, resp.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,14 +203,14 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 			{ToolCallID: "c2", ToolName: "lookup", Input: `{}`},
 			{ToolCallID: "c3", ToolName: "approve", Input: `{}`},
 		}}}}
-	h := newHost(host.Ports{}, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tool, approval)
-	preset, err := h.Presets.Register("sequential", mustPreset("m-1", []loop.ExecutableTool{tool, approval},
-		host.WithScheduling(run.ToolScheduling{Mode: run.ToolScheduleSequential})))
+	h := newHost(app.Config{}, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tool, approval)
+	preset, err := h.RegisterPreset("sequential", mustPreset("m-1", []loop.ExecutableTool{tool, approval},
+		app.WithScheduling(run.ToolScheduling{Mode: run.ToolScheduleSequential})))
 	if err != nil {
 		t.Fatal(err)
 	}
 	const sid session.SessionID = "s-stop-mixed"
-	s, err := h.OpenSession(ctx, sid, host.SessionOptions{Preset: preset, NewTurnID: func() turn.TurnID { return "t2" }})
+	s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: preset, NewTurnID: func() turn.TurnID { return "t2" }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := turn.TurnRef{SessionID: sid, TurnID: "t1"}
-	started, err := h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref, Inputs: []run.AgentInput{input}, Preset: preset})
+	started, err := h.Authority.Coordinator.Start(ctx, turn.StartRequest{Ref: ref, Inputs: []run.AgentInput{input}, Preset: preset})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 	}()
 	t.Cleanup(func() { close(tool.release); <-done })
 	<-tool.started
-	snapshot, err := h.Runtime.Load(ctx, sid, started.RunID)
+	snapshot, err := h.Authority.Runtime.Load(ctx, sid, started.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -238,10 +238,10 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 	if calls[0].Status != run.ToolExecuting || calls[1].Status != run.ToolPending || calls[2].Status != run.ToolWaiting {
 		t.Fatalf("calls before stop = %+v", calls)
 	}
-	if _, err := h.Coordinator.Stop(ctx, turn.StopRequest{Ref: ref}); err != nil {
+	if _, err := h.Authority.Coordinator.Stop(ctx, turn.StopRequest{Ref: ref}); err != nil {
 		t.Fatal(err)
 	}
-	record, err := h.Runtime.Record(ctx, sid, started.RunID)
+	record, err := h.Authority.Runtime.Record(ctx, sid, started.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}

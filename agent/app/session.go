@@ -1,4 +1,4 @@
-package host
+package app
 
 import (
 	"context"
@@ -6,16 +6,17 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/felinics/twilight/agent/authority"
+	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
-	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/agent/turn"
 )
 
 // SessionOptions tunes OpenSession.
 type SessionOptions struct {
-	// AgentPreset is the decision identity new Turns run under (required).
+	// Preset is the decision identity new Turns run under (required).
 	Preset turn.PresetRef
 	// NewTurnID mints TurnIDs; nil selects the random default.
 	NewTurnID func() turn.TurnID
@@ -43,25 +44,24 @@ type Result struct {
 	Reply string
 }
 
-// SessionStatus reports what a host may need to act on after opening.
+// SessionStatus reports what a caller may need to act on after opening.
 type SessionStatus struct {
 	Active turn.TurnID
 	Failed []turn.TurnID
 }
 
-// Session is the facade over one open Session (HST-SES): it submits text,
-// routes it (Deliver into the running Turn, or Start), drives the Turn,
-// drains the backlog of queued inputs after settlement, and reads replies
-// from the chatlog. Submit routes and returns at once, driving in the
-// background and reporting through Events; Send is the blocking form over
-// the same route-and-drive path. Concurrent calls are safe: writes serialize
-// in the Session Writer, and a call whose input lands in a running Turn
-// reports already_driving.
+// Session is the application's conversation over one owned Session
+// (HST-SES): the routing, driving, draining and compaction policies, run
+// against the authority's services under the ownership Handle it holds.
+// Concurrent calls are safe: writes serialize in the Session Writer, and a
+// call whose input lands in a running Turn reports already_driving.
 type Session struct {
 	// Recovered is the takeover disposition count from opening (RUN-CMT-7).
 	Recovered int
 
-	h         *Host
+	app       *Application
+	a         *authority.Authority
+	h         *authority.Handle
 	sid       session.SessionID
 	opts      SessionOptions
 	newTurnID func() turn.TurnID
@@ -75,6 +75,48 @@ type Session struct {
 	bgMu   sync.Mutex
 	bgN    int
 	bgIdle chan struct{}
+}
+
+// OpenSession ensures the stream exists, takes ownership per the
+// application's Ownership configuration, runs the takeover disposition and
+// returns the conversation (HST-SES-1).
+func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, opts SessionOptions) (*Session, error) {
+	if opts.Preset.ID == "" || opts.Preset.Digest == "" {
+		return nil, errors.New("app: open session requires a preset ref")
+	}
+	a := app.Authority
+	if _, err := a.Presets.Resolve(opts.Preset); err != nil {
+		return nil, err
+	}
+	if err := a.EnsureSession(ctx, sid); err != nil {
+		return nil, err
+	}
+	h, err := a.Open(ctx, sid)
+	if err != nil {
+		return nil, err
+	}
+	s := &Session{Recovered: h.Recovered, app: app, a: a, h: h, sid: sid, opts: opts, newTurnID: opts.NewTurnID}
+	if s.newTurnID == nil {
+		s.newTurnID = turn.NewTurnID
+	}
+	s.bg, s.cancel = context.WithCancel(context.Background())
+	if opts.ResumeActive {
+		if _, _, err := s.Resume(ctx); err != nil {
+			_ = s.Close(context.WithoutCancel(ctx))
+			return nil, err
+		}
+	}
+	return s, nil
+}
+
+// ID is the Session's identity.
+func (s *Session) ID() session.SessionID { return s.sid }
+
+// Handle is the ownership capability the conversation runs under.
+func (s *Session) Handle() *authority.Handle { return s.h }
+
+func (s *Session) ref(turnID turn.TurnID) turn.TurnRef {
+	return turn.TurnRef{SessionID: s.sid, TurnID: turnID}
 }
 
 func (s *Session) bgStart() {
@@ -96,9 +138,7 @@ func (s *Session) bgDone() {
 }
 
 // Wait blocks until every background drive Submit has started so far has
-// finished, or ctx ends. It does not cancel anything; Close does. A caller
-// that wants a synchronous view after Submit -- a test, a shutdown sequence,
-// a Send that must not race the backlog drain -- waits here first.
+// finished, or ctx ends. It does not cancel anything; Close does.
 func (s *Session) Wait(ctx context.Context) error {
 	s.bgMu.Lock()
 	idle, n := s.bgIdle, s.bgN
@@ -114,41 +154,9 @@ func (s *Session) Wait(ctx context.Context) error {
 	}
 }
 
-// OpenSession ensures the stream exists, takes ownership per the Host's
-// Ownership port, runs the takeover disposition and returns the facade
-// (HST-SES-1).
-func (h *Host) OpenSession(ctx context.Context, sid session.SessionID, opts SessionOptions) (*Session, error) {
-	if opts.Preset.ID == "" || opts.Preset.Digest == "" {
-		return nil, errors.New("host: open session requires a preset ref")
-	}
-	if _, err := h.Presets.Resolve(opts.Preset); err != nil {
-		return nil, err
-	}
-	newTurnID := opts.NewTurnID
-	if newTurnID == nil {
-		newTurnID = NewTurnID
-	}
-	if err := h.EnsureSession(ctx, sid); err != nil {
-		return nil, err
-	}
-	recovered, err := h.Open(ctx, sid)
-	if err != nil {
-		return nil, err
-	}
-	s := &Session{Recovered: recovered, h: h, sid: sid, opts: opts, newTurnID: newTurnID}
-	s.bg, s.cancel = context.WithCancel(context.Background())
-	if opts.ResumeActive {
-		if _, _, err := s.Resume(ctx); err != nil {
-			_ = s.Close(context.WithoutCancel(ctx))
-			return nil, err
-		}
-	}
-	return s, nil
-}
-
 // Status reports the active Turn and the Turns awaiting Retry or Settle.
 func (s *Session) Status(ctx context.Context) (SessionStatus, error) {
-	surface, err := s.h.TurnSurface(ctx, s.sid)
+	surface, err := turn.ReadSurface(ctx, s.a.Projections, s.sid)
 	if err != nil {
 		return SessionStatus{}, err
 	}
@@ -164,14 +172,14 @@ func (s *Session) Status(ctx context.Context) (SessionStatus, error) {
 	return out, nil
 }
 
+// Events is this Session's event stream from now on (HST-EVT-1).
+func (s *Session) Events(ctx context.Context) <-chan Event { return s.app.Events(ctx, s.sid) }
+
 // Send submits text and blocks until it is settled or absorbed: the first
 // Result is the Turn the input landed in, further Results are backlog Turns
-// this call drained after settlement (HST-SES-2). It is Submit's route
-// followed by a synchronous drive. Concurrent Sends race on routing (Deliver
-// or Start); a lost race re-routes, and an input another driver already took
-// returns as already_driving.
+// this call drained after settlement (HST-SES-2).
 func (s *Session) Send(ctx context.Context, text string) ([]Result, error) {
-	in, err := s.h.SubmitText(ctx, s.sid, text)
+	in, err := s.a.Chatlog.SubmitInput(ctx, s.sid, chatlog.NewInputID(), text)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +190,7 @@ func (s *Session) Send(ctx context.Context, text string) ([]Result, error) {
 	if absorbed != nil {
 		return []Result{*absorbed}, nil
 	}
-	resp, err := s.h.Drive(ctx, ref)
+	resp, err := s.a.Driver.Drive(ctx, ref)
 	if err != nil {
 		return nil, err
 	}
@@ -192,10 +200,10 @@ func (s *Session) Send(ctx context.Context, text string) ([]Result, error) {
 // Submit submits text, commits its route and returns the Turn it landed in
 // without waiting (HST-SES-4). The Turn is driven to settlement -- and the
 // backlog drained -- in the background; progress and the reply arrive on
-// Events, failures on Events and Ports.Warn. Close cancels the background
+// Events, failures on Events and Config.Warn. Close cancels the background
 // drive; a cancelled Turn stays active and resumes on the next open.
 func (s *Session) Submit(ctx context.Context, text string) (turn.TurnRef, error) {
-	in, err := s.h.SubmitText(ctx, s.sid, text)
+	in, err := s.a.Chatlog.SubmitInput(ctx, s.sid, chatlog.NewInputID(), text)
 	if err != nil {
 		return turn.TurnRef{}, err
 	}
@@ -205,25 +213,22 @@ func (s *Session) Submit(ctx context.Context, text string) (turn.TurnRef, error)
 	}
 	if absorbed != nil {
 		// A running driver carries the input; nothing to drive here.
-		return turn.TurnRef{SessionID: s.sid, TurnID: absorbed.TurnID}, nil
+		return s.ref(absorbed.TurnID), nil
 	}
 	s.bgStart()
 	go func() {
 		defer s.bgDone()
-		resp, err := s.h.Drive(s.bg, ref)
+		resp, err := s.a.Driver.Drive(s.bg, ref)
 		if err != nil {
-			s.h.fail(s.sid, fmt.Errorf("host: driving turn %s: %w", ref.TurnID, err))
+			s.app.fail(s.sid, fmt.Errorf("app: driving turn %s: %w", ref.TurnID, err))
 			return
 		}
 		if _, err := s.settled(s.bg, resp); err != nil {
-			s.h.fail(s.sid, fmt.Errorf("host: settling turn %s: %w", ref.TurnID, err))
+			s.app.fail(s.sid, fmt.Errorf("app: settling turn %s: %w", ref.TurnID, err))
 		}
 	}()
 	return ref, nil
 }
-
-// Events is this Session's event stream from now on (HST-EVT-1).
-func (s *Session) Events(ctx context.Context) <-chan Event { return s.h.Events(ctx, s.sid) }
 
 // routeInput commits one input's route with the conflict retry of HST-SES-3.
 // It returns the Turn to drive, or the already_driving Result when another
@@ -248,49 +253,50 @@ func (s *Session) routeInput(ctx context.Context, in run.AgentInput) (turn.TurnR
 
 // Route is HST-DRV-3: commit the inputs' route -- Deliver into the active
 // Turn, or Start a new one -- then drive the Turn to its next quiescent point.
-// A Turn awaiting Retry or Settle is a conflict: those are host decisions.
+// A Turn awaiting Retry or Settle is a conflict: those are the caller's
+// decisions.
 func (s *Session) Route(ctx context.Context, inputs []run.AgentInput) (turn.TurnResponse, error) {
 	ref, err := s.commitRoute(ctx, inputs)
 	if err != nil {
 		return turn.TurnResponse{}, err
 	}
-	return s.h.Drive(ctx, ref)
+	return s.a.Driver.Drive(ctx, ref)
 }
 
 // commitRoute is the commit half of Route: Deliver into the active Turn or
 // Start a new one, returning the Turn the inputs landed in.
 func (s *Session) commitRoute(ctx context.Context, inputs []run.AgentInput) (turn.TurnRef, error) {
-	surface, err := s.h.TurnSurface(ctx, s.sid)
+	surface, err := turn.ReadSurface(ctx, s.a.Projections, s.sid)
 	if err != nil {
 		return turn.TurnRef{}, err
 	}
 	if active, ok := surface.Active(); ok {
-		ref := turn.TurnRef{SessionID: s.sid, TurnID: active.TurnID}
-		if _, err := s.h.Coordinator.Deliver(ctx, turn.DeliverRequest{Ref: ref, Inputs: inputs}); err != nil {
+		ref := s.ref(active.TurnID)
+		if _, err := s.a.Coordinator.Deliver(ctx, turn.DeliverRequest{Ref: ref, Inputs: inputs}); err != nil {
 			return turn.TurnRef{}, err
 		}
 		return ref, nil
 	}
-	for _, v := range surface.Turns {
-		if v.Status == turn.TurnAttemptFailed {
-			return turn.TurnRef{}, fmt.Errorf("%w: turn %s awaits Retry or Settle", turn.ErrConflict, v.TurnID)
+	for _, id := range surface.Order {
+		if surface.Turns[id].Status == turn.TurnAttemptFailed {
+			return turn.TurnRef{}, fmt.Errorf("%w: turn %s awaits Retry or Settle", turn.ErrConflict, id)
 		}
 	}
-	ref := turn.TurnRef{SessionID: s.sid, TurnID: s.newTurnID()}
-	if _, err := s.h.Coordinator.Start(ctx, turn.StartRequest{Ref: ref, Inputs: inputs, Preset: s.opts.Preset}); err != nil {
+	ref := s.ref(s.newTurnID())
+	if _, err := s.a.Coordinator.Start(ctx, turn.StartRequest{Ref: ref, Inputs: inputs, Preset: s.opts.Preset}); err != nil {
 		return turn.TurnRef{}, err
 	}
 	return ref, nil
 }
 
-// Drain is HST-DRV-4: start the next Turn from the backlog of
-// submitted, undelivered inputs; ok is false when there is none.
+// Drain is HST-DRV-4: start the next Turn from the backlog of submitted,
+// undelivered inputs; ok is false when there is none.
 func (s *Session) Drain(ctx context.Context) (turn.TurnResponse, bool, error) {
-	surface, err := s.h.ChatlogSurface(ctx, s.sid)
+	chat, err := chatlog.ReadSurface(ctx, s.a.Projections, s.sid)
 	if err != nil {
 		return turn.TurnResponse{}, false, err
 	}
-	pending := surface.SubmittedInputs()
+	pending := chat.SubmittedInputs()
 	if len(pending) == 0 {
 		return turn.TurnResponse{}, false, nil
 	}
@@ -305,7 +311,7 @@ func (s *Session) Drain(ctx context.Context) (turn.TurnResponse, bool, error) {
 // absorbed reports whether another driver already delivered the input; the
 // Turn that took it settles and reports there.
 func (s *Session) absorbed(ctx context.Context, in run.AgentInput) (Result, bool) {
-	chat, err := s.h.ChatlogSurface(ctx, s.sid)
+	chat, err := chatlog.ReadSurface(ctx, s.a.Projections, s.sid)
 	if err != nil {
 		return Result{}, false
 	}
@@ -314,7 +320,7 @@ func (s *Session) absorbed(ctx context.Context, in run.AgentInput) (Result, bool
 		return Result{}, false
 	}
 	r := Result{TurnID: turn.TurnID(v.Input.TurnID), Disposition: ResumeAlreadyDriving}
-	if surface, serr := s.h.TurnSurface(ctx, s.sid); serr == nil {
+	if surface, serr := turn.ReadSurface(ctx, s.a.Projections, s.sid); serr == nil {
 		r.Status = surface.Turns[r.TurnID].Status
 	}
 	return r, true
@@ -324,13 +330,10 @@ func (s *Session) absorbed(ctx context.Context, in run.AgentInput) (Result, bool
 // false when no Turn is active.
 func (s *Session) Resume(ctx context.Context) ([]Result, bool, error) {
 	status, err := s.Status(ctx)
-	if err != nil {
+	if err != nil || status.Active == "" {
 		return nil, false, err
 	}
-	if status.Active == "" {
-		return nil, false, nil
-	}
-	resp, err := s.h.Drive(ctx, turn.TurnRef{SessionID: s.sid, TurnID: status.Active})
+	resp, err := s.a.Driver.Drive(ctx, s.ref(status.Active))
 	if err != nil {
 		return nil, false, err
 	}
@@ -341,21 +344,18 @@ func (s *Session) Resume(ctx context.Context) ([]Result, bool, error) {
 // Retry retries the first Turn awaiting Retry; ok is false when none is.
 func (s *Session) Retry(ctx context.Context) ([]Result, bool, error) {
 	status, err := s.Status(ctx)
+	if err != nil || len(status.Failed) == 0 {
+		return nil, false, err
+	}
+	ref := s.ref(status.Failed[0])
+	previous, err := s.a.Coordinator.Status(ctx, ref)
 	if err != nil {
 		return nil, false, err
 	}
-	if len(status.Failed) == 0 {
-		return nil, false, nil
-	}
-	ref := turn.TurnRef{SessionID: s.sid, TurnID: status.Failed[0]}
-	previous, err := s.h.Coordinator.Status(ctx, ref)
-	if err != nil {
+	if _, err := s.a.Coordinator.Retry(ctx, turn.RetryRequest{Ref: ref, PreviousRunID: previous.RunID, Reason: "app retry"}); err != nil {
 		return nil, false, err
 	}
-	if _, err := s.h.Coordinator.Retry(ctx, turn.RetryRequest{Ref: ref, PreviousRunID: previous.RunID, Reason: "host retry"}); err != nil {
-		return nil, false, err
-	}
-	resp, err := s.h.Drive(ctx, ref)
+	resp, err := s.a.Driver.Drive(ctx, ref)
 	if err != nil {
 		return nil, false, err
 	}
@@ -363,23 +363,10 @@ func (s *Session) Retry(ctx context.Context) ([]Result, bool, error) {
 	return out, true, err
 }
 
-// Close cancels the background drives Submit started, waits for them to
-// return, then releases this Session's Writer; other Sessions of the Host
-// stay open. A Turn a cancelled drive left active resumes on the next open.
-func (s *Session) Close(ctx context.Context) error {
-	s.h.stopRecovery(s.sid)
-	if s.cancel != nil {
-		s.cancel()
-	}
-	_ = s.Wait(context.Background()) // drives observe the cancelled bg ctx and return
-	// Closing and forgetting go together: a Writer that failed (EXT-WRT-4)
-	// does not block the close, and the next OpenSession reopens from the log.
-	return writer.CloseWriter(ctx, s.h.Writers, s.sid)
-}
-
 // settled turns a TurnResponse into Results and drains the backlog: while a
 // settlement leaves submitted, undelivered inputs, the next Turn starts from
-// them (HST-DRV-4).
+// them (HST-DRV-4). When the backlog is drained and no Turn is active, the
+// automatic compaction policy runs (HST-CKP-1).
 func (s *Session) settled(ctx context.Context, resp turn.TurnResponse) ([]Result, error) {
 	out := []Result{s.result(ctx, resp)}
 	if resp.Disposition == ResumeAlreadyDriving {
@@ -396,8 +383,6 @@ func (s *Session) settled(ctx context.Context, resp turn.TurnResponse) ([]Result
 			return out, err
 		}
 		if !ok {
-			// The backlog is drained and no Turn is active: the automatic
-			// compaction policy runs here (HST-CKP-1).
 			s.maybeCompact(ctx)
 			return out, nil
 		}
@@ -406,39 +391,79 @@ func (s *Session) settled(ctx context.Context, resp turn.TurnResponse) ([]Result
 			return out, nil
 		}
 	}
-	return out, errors.New("host: drain did not converge")
+	return out, errors.New("app: drain did not converge")
 }
 
+// result wraps a TurnResponse with the settled Turn's reply; materialization
+// failures are reported to Warn and leave Reply empty.
 func (s *Session) result(ctx context.Context, resp turn.TurnResponse) Result {
 	r := Result{TurnID: resp.Ref.TurnID, Status: resp.Status, Disposition: resp.Disposition}
 	if resp.Disposition == turn.ResumeFinished {
-		if chat, err := s.h.ChatlogSurface(ctx, s.sid); err == nil {
-			r.Reply = s.lastAssistantText(ctx, &chat, chatlog.TurnID(resp.Ref.TurnID))
+		text, err := s.a.Reply(ctx, resp.Ref)
+		if err != nil {
+			s.app.warn(fmt.Errorf("app: materialize reply of turn %s: %w", resp.Ref.TurnID, err))
 		}
+		r.Reply = text
 	}
 	return r
 }
 
-// lastAssistantText materializes the text of the Turn's last assistant
-// entry: the Surface names the frozen ModelResult by digest, the Host's
-// content store holds it (CHT-MAT-1).
-func (s *Session) lastAssistantText(ctx context.Context, chat *chatlog.Surface, turnID chatlog.TurnID) string {
-	for i := len(chat.EntryOrder) - 1; i >= 0; i-- {
-		e := chat.EntryOrder[i]
-		if e.Kind != chatlog.EntryAssistant {
-			continue
-		}
-		a, ok := chat.Assistants.Get(chatlog.AssistantID(e.ID))
-		if !ok || a.TurnID != turnID {
-			continue
-		}
-		entry := chatlog.Entry{Kind: chatlog.EntryAssistant, ID: e.ID, Digest: a.Digest, Assistant: &a}
-		m, err := chatlog.NewMaterializer(s.h.content).Entry(ctx, &entry)
-		if err != nil {
-			s.h.warn(fmt.Errorf("host: materialize reply of turn %s: %w", turnID, err))
-			return ""
-		}
-		return m.Text()
+// Compact summarizes the context with the preset's model and commits a
+// checkpoint retaining a pair-closed suffix; ok is false when the context is
+// already within the retain window (HST-CKP-1).
+func (s *Session) Compact(ctx context.Context) (chatlog.CheckpointID, bool, error) {
+	policy := compaction.Policy{AfterEntries: s.opts.CompactAfterEntries, RetainEntries: s.opts.CompactRetainEntries}
+	cctx, err := chatlog.ReadContext(ctx, s.a.Projections, s.sid)
+	if err != nil {
+		return "", false, err
 	}
-	return ""
+	retain, withinWindow := policy.Retain(cctx.Entries)
+	if withinWindow {
+		return "", false, nil
+	}
+	materialized, err := chatlog.NewMaterializer(s.a.Content).Entries(ctx, cctx.Entries)
+	if err != nil {
+		return "", false, err
+	}
+	summary, err := compaction.Summarizer{
+		ResolvePreset: s.a.Presets.Resolve, Content: s.a.Frozen, Executor: s.a.Executor,
+	}.Summarize(ctx, s.sid, s.opts.Preset, materialized)
+	if err != nil {
+		return "", false, err
+	}
+	id, err := s.a.Checkpoint(ctx, s.sid, summary, retain)
+	if err != nil {
+		return "", false, err
+	}
+	return id, true, nil
+}
+
+// maybeCompact runs the automatic policy after a settlement; failures reach
+// the caller through CompactWarn and never change the settled results.
+func (s *Session) maybeCompact(ctx context.Context) {
+	if s.opts.CompactAfterEntries <= 0 {
+		return
+	}
+	cctx, err := chatlog.ReadContext(ctx, s.a.Projections, s.sid)
+	if err == nil && len(cctx.Entries) <= s.opts.CompactAfterEntries {
+		return
+	}
+	if err == nil {
+		_, _, err = s.Compact(ctx)
+	}
+	if err != nil && s.opts.CompactWarn != nil {
+		s.opts.CompactWarn(err)
+	}
+}
+
+// Close cancels the background drives Submit started, waits for them to
+// return, then releases this Session's ownership; other Sessions of the
+// application stay open. A Turn a cancelled drive left active resumes on the
+// next open.
+func (s *Session) Close(ctx context.Context) error {
+	if s.cancel != nil {
+		s.cancel()
+	}
+	_ = s.Wait(context.Background()) // drives observe the cancelled bg ctx and return
+	return s.h.Close(ctx)
 }

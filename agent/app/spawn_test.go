@@ -1,4 +1,4 @@
-package host_test
+package app_test
 
 import (
 	"context"
@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/felinics/twilight/agent/host"
+	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
@@ -32,7 +32,7 @@ func text(s string) sdk.ModelResult {
 // spawnOutput decodes the spawn tool's result from the parent's chatlog and
 // returns it with the recorded ToolResult (whose CallID is the run fact's
 // derived call identity, not the SDK call id the model sent).
-func spawnOutput(t *testing.T, h *host.Host, sid session.SessionID) (spawn.Result, chatlog.ToolResult) {
+func spawnOutput(t *testing.T, h *app.Application, sid session.SessionID) (spawn.Result, chatlog.ToolResult) {
 	t.Helper()
 	ctx := context.Background()
 	chat, err := h.ChatlogSurface(ctx, sid)
@@ -76,13 +76,13 @@ func TestSpawnRunsChildSessionAndReturnsReply(t *testing.T) {
 		text("parent done"),
 	}}
 	store, content := session.NewMemoryStore(), memoryContent()
-	h := newHost(host.Ports{Store: store, Content: content, Spawn: &host.SpawnOptions{}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
-	preset, err := h.Presets.Register("b1", mustPreset("m-1", []loop.ExecutableTool{host.SpawnTool(host.SpawnOptions{})}))
+	h := newHost(app.Config{Store: store, Content: content, Spawn: &spawn.Options{}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+	preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{spawn.Options{}.ExecutableTool()}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	n := 0
-	parent, err := h.OpenSession(ctx, "parent", host.SessionOptions{Preset: preset, NewTurnID: func() turn.TurnID { n++; return turn.TurnID("p" + string(rune('0'+n))) }})
+	parent, err := h.OpenSession(ctx, "parent", app.SessionOptions{Preset: preset, NewTurnID: func() turn.TurnID { n++; return turn.TurnID("p" + string(rune('0'+n))) }})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,7 +165,7 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	const sid session.SessionID = "parent"
-	open := func(model loop.ModelInvoker, takeover bool) (*host.Host, *host.Session, turn.PresetRef) {
+	open := func(model loop.ModelInvoker, takeover bool) (*app.Application, *app.Session, turn.PresetRef) {
 		t.Helper()
 		store, err := filestore.New(root)
 		if err != nil {
@@ -175,13 +175,13 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		h := newHost(host.Ports{Store: store, Content: content, Spawn: &host.SpawnOptions{}, Ownership: session.OpenOptions{Takeover: takeover}},
+		h := newHost(app.Config{Store: store, Content: content, Spawn: &spawn.Options{}, Ownership: session.OpenOptions{Takeover: takeover}},
 			map[run.ModelRef]loop.ModelInvoker{"m-1": model})
-		preset, err := h.Presets.Register("b1", mustPreset("m-1", []loop.ExecutableTool{host.SpawnTool(host.SpawnOptions{})}))
+		preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{spawn.Options{}.ExecutableTool()}))
 		if err != nil {
 			t.Fatal(err)
 		}
-		s, err := h.OpenSession(ctx, sid, host.SessionOptions{Preset: preset, NewTurnID: func() turn.TurnID { return "p1" }})
+		s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: preset, NewTurnID: func() turn.TurnID { return "p1" }})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -258,9 +258,9 @@ func TestSpawnValidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			model := &scriptedRequests{answers: []sdk.ModelResult{spawnCall(tc.args), text("recovered")}}
 			store := session.NewMemoryStore()
-			opts := host.SpawnOptions{MaxDepth: tc.maxDepth}
-			h := newHost(host.Ports{Store: store, Content: memoryContent(), Spawn: &opts}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
-			preset, err := h.Presets.Register("b1", mustPreset("m-1", []loop.ExecutableTool{host.SpawnTool(opts)}))
+			opts := spawn.Options{MaxDepth: tc.maxDepth}
+			h := newHost(app.Config{Store: store, Content: memoryContent(), Spawn: &opts}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+			preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{opts.ExecutableTool()}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -276,7 +276,7 @@ func TestSpawnValidation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			s, err := h.OpenSession(ctx, sid, host.SessionOptions{Preset: preset})
+			s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: preset})
 			if err != nil {
 				t.Fatal(err)
 			}

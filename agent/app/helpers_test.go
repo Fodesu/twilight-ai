@@ -1,4 +1,4 @@
-package host_test
+package app_test
 
 import (
 	"context"
@@ -6,9 +6,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/artifact"
-	executorlocal "github.com/felinics/twilight/agent/executor/local"
-	"github.com/felinics/twilight/agent/host"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	runmod "github.com/felinics/twilight/agent/session/run"
@@ -16,28 +15,19 @@ import (
 	"github.com/felinics/twilight/sdk"
 )
 
-// newHost composes a colocated Host for tests: a LocalExecutor over the given
-// models and tools; the Runtime still writes request bodies to ports.Content
-// (RUN-WIR-4) and the executor never reads them back (RUN-EXE-7). ports.Content
-// and ports.Executor are filled in; the other ports are taken as given.
-func newHost(ports host.Ports, models map[run.ModelRef]loop.ModelInvoker, tools ...loop.ExecutableTool) *host.Host {
-	if ports.Content == nil {
-		ports.Content = memoryContent()
+// newHost builds a colocated application for tests: a LocalExecutor over the
+// given models and tools; the Runtime still writes request bodies to
+// cfg.Content (RUN-WIR-4) and the executor never reads them back (RUN-EXE-7).
+func newHost(cfg app.Config, models map[run.ModelRef]loop.ModelInvoker, tools ...loop.ExecutableTool) *app.Application {
+	if cfg.Content == nil {
+		cfg.Content = memoryContent()
 	}
-	cat, err := executorlocal.NewCatalog(models, tools...)
+	cfg.Executor = app.ExecutorConfig{Models: models, Tools: tools}
+	a, err := app.Build(cfg)
 	if err != nil {
 		panic(err)
 	}
-	exec, err := executorlocal.NewLocalExecutor(cat, nil, false)
-	if err != nil {
-		panic(err)
-	}
-	ports.Executor = exec
-	h, err := host.New(ports)
-	if err != nil {
-		panic(err)
-	}
-	return h
+	return a
 }
 
 // memoryContent is an in-process cas store under the frozen authority.
@@ -50,8 +40,8 @@ func memoryContent() artifact.ContentStore {
 }
 
 // mustPreset builds the one-model AgentPreset the tests register.
-func mustPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...host.PresetOption) turn.AgentPreset {
-	p, err := host.NewPreset(model, tools, opts...)
+func mustPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...app.PresetOption) turn.AgentPreset {
+	p, err := app.NewPreset(model, tools, opts...)
 	if err != nil {
 		panic(err)
 	}

@@ -1,4 +1,4 @@
-package host_test
+package app_test
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/felinics/twilight/agent/host"
+	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -42,15 +42,15 @@ func Example_recoverableTurn() {
 	preset := mustPreset("m-1", []loop.ExecutableTool{tool})
 
 	// ---- process 1 ----------------------------------------------------------
-	p1 := newHost(host.Ports{Store: store, Content: content, Clock: clock.Now},
+	p1 := newHost(app.Config{Store: store, Content: content, Clock: clock.Now},
 		map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedModel{}}, tool)
 	if err := p1.CreateSession(ctx, sid); err != nil {
 		panic(err)
 	}
-	if _, err := p1.Open(ctx, sid); err != nil {
+	if _, err := p1.Authority.Open(ctx, sid); err != nil {
 		panic(err)
 	}
-	profile1, err := p1.Presets.Register("weather-agent", preset)
+	profile1, err := p1.RegisterPreset("weather-agent", preset)
 	if err != nil {
 		panic(err)
 	}
@@ -61,7 +61,7 @@ func Example_recoverableTurn() {
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "turn-1"}
 	startDone := make(chan error, 1)
 	go func() {
-		_, err := p1.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
+		_, err := p1.Authority.Coordinator.Start(ctx, turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{input},
 			Preset: profile1})
 		if err == nil {
 			// The Coordinator only commits; the host drives (HST-DRV-1).
@@ -73,14 +73,14 @@ func Example_recoverableTurn() {
 	fmt.Println("process 1: tool call is Executing; process crashes")
 
 	// ---- process 2 ----------------------------------------------------------
-	p2 := newHost(host.Ports{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}, Clock: clock.Now},
+	p2 := newHost(app.Config{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}, Clock: clock.Now},
 		map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedModel{}}, tool)
 	// The preset is re-registered from the same public configuration, so the
 	// ref the Session recorded still resolves.
-	if _, err := p2.Presets.Register("weather-agent", preset); err != nil {
+	if _, err := p2.RegisterPreset("weather-agent", preset); err != nil {
 		panic(err)
 	}
-	recovered, err := p2.Open(ctx, sid)
+	owned, err := p2.Authority.Open(ctx, sid)
 	if err != nil {
 		panic(err)
 	}
@@ -88,7 +88,7 @@ func Example_recoverableTurn() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("process 2: took over; %d executing target disposed; chatlog has %d tool_result(s) with status %s\n", recovered, chat.ToolResults.Len(), toolResultStatus(&chat))
+	fmt.Printf("process 2: took over; %d executing target disposed; chatlog has %d tool_result(s) with status %s\n", owned.Recovered, chat.ToolResults.Len(), toolResultStatus(&chat))
 
 	resp, err := p2.Drive(ctx, ref1)
 	if err != nil {
@@ -96,7 +96,7 @@ func Example_recoverableTurn() {
 	}
 	fmt.Printf("process 2: turn %s, disposition %s, attempt %d\n", resp.Status, resp.Disposition, resp.Attempt)
 
-	record, err := p2.Runtime.Record(ctx, sid, runID)
+	record, err := p2.Authority.Runtime.Record(ctx, sid, runID)
 	if err != nil {
 		panic(err)
 	}
@@ -108,7 +108,7 @@ func Example_recoverableTurn() {
 	close(tool.block)
 	err = <-startDone
 	fmt.Printf("process 1: %v\n", errorsIsOwnershipLost(err))
-	after, _ := p2.Runtime.Record(ctx, sid, runID)
+	after, _ := p2.Authority.Runtime.Record(ctx, sid, runID)
 	fmt.Printf("stream unchanged by the fenced worker: %v\n", len(after.Facts) == len(record.Facts))
 
 	// Output:
@@ -129,13 +129,13 @@ func toolResultStatus(s *chatlog.Surface) string {
 	return status
 }
 
-func waitForExecutingCall(ctx context.Context, h *host.Host, sid session.SessionID, turnID turn.TurnID) run.RunID {
+func waitForExecutingCall(ctx context.Context, h *app.Application, sid session.SessionID, turnID turn.TurnID) run.RunID {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		surface, err := h.TurnSurface(ctx, sid)
 		if err == nil {
 			if v, ok := surface.Turns[turnID]; ok && v.ActiveRun != "" {
-				snap, err := h.Runtime.Load(ctx, sid, v.ActiveRun)
+				snap, err := h.Authority.Runtime.Load(ctx, sid, v.ActiveRun)
 				if err == nil && len(run.ExecutingCalls(snap.State)) == 1 {
 					return v.ActiveRun
 				}

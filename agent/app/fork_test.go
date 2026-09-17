@@ -1,10 +1,10 @@
-package host_test
+package app_test
 
 import (
 	"context"
 	"testing"
 
-	"github.com/felinics/twilight/agent/host"
+	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -27,8 +27,8 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 		{Text: "edited answer", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}},
 	}}
 	store, content := session.NewMemoryStore(), memoryContent()
-	h := newHost(host.Ports{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
-	preset, err := h.Presets.Register("b1", mustPreset("m-1", nil))
+	h := newHost(app.Config{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+	preset, err := h.RegisterPreset("b1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,8 +36,8 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 		n := 0
 		return func() turn.TurnID { n++; return turn.TurnID(prefix + string(rune('0'+n))) }
 	}
-	open := func(sid session.SessionID, prefix string) *host.Session {
-		s, err := h.OpenSession(ctx, sid, host.SessionOptions{Preset: preset, NewTurnID: names(prefix)})
+	open := func(sid session.SessionID, prefix string) *app.Session {
+		s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: preset, NewTurnID: names(prefix)})
 		if err != nil {
 			t.Fatalf("open %s: %v", sid, err)
 		}
@@ -59,7 +59,7 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parentHeader, _ := h.Store.Header(ctx, "parent")
+	parentHeader, _ := h.Authority.Store.Header(ctx, "parent")
 	if header.Parent == nil || header.Parent.Segment != session.SegmentIDOf(parentHeader) {
 		t.Fatalf("fork header = %+v, want an edge to the parent's segment", header)
 	}
@@ -134,14 +134,14 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 	if _, err := h.ForkBeforeTurn(ctx, "parent", "p9", "x"); err == nil {
 		t.Fatal("fork before an unknown turn succeeded")
 	}
-	if _, err := h.Fork(ctx, host.ForkRequest{Parent: "parent", At: 0, Child: "parent"}); err == nil {
+	if _, err := h.Fork(ctx, app.ForkRequest{Parent: "parent", At: 0, Child: "parent"}); err == nil {
 		t.Fatal("self fork succeeded")
 	}
 }
 
 // lastReply materializes the text of the last assistant entry of a Session's
 // context through the Host's content store.
-func lastReply(t *testing.T, h *host.Host, sid session.SessionID) string {
+func lastReply(t *testing.T, h *app.Application, sid session.SessionID) string {
 	t.Helper()
 	state, _, err := h.Projection(context.Background(), sid, chatlog.ContextProjectionID, chatlog.ContextProjection.Version)
 	if err != nil {

@@ -1,0 +1,314 @@
+// Package authority composes the agent core -- the fact layer (Store,
+// Writers, Runtime, Coordinator), the decision layer (preset registry and
+// prompt builder catalog) and the effect layer (an Executor port) -- into
+// one authority process (HST). Its exported fields are the core services a
+// caller drives a Session with; Open hands out the ownership capability
+// those services act under. It is deployment-neutral and carries no product
+// policy: what to send, when to drain a backlog, whether to drive in the
+// background and when to compact are the application's decisions.
+package authority
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/felinics/twilight/agent/artifact"
+	"github.com/felinics/twilight/agent/decision"
+	"github.com/felinics/twilight/agent/driver"
+	"github.com/felinics/twilight/agent/jsonstable"
+	"github.com/felinics/twilight/agent/preset"
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/effect"
+	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/chatlog"
+	"github.com/felinics/twilight/agent/session/extension"
+	runmod "github.com/felinics/twilight/agent/session/run"
+	"github.com/felinics/twilight/agent/session/writer"
+	"github.com/felinics/twilight/agent/turn"
+)
+
+// Artifacts groups the artifact ports; both may be nil while no committed
+// group references an artifact (EXT-REF-2).
+type Artifacts struct {
+	Bindings artifact.BindingStore
+	Ledger   artifact.RetentionLedger
+}
+
+// Ports are the roles an Authority is composed from (HST-PRT-1). Every field
+// is an interface or a core value; nil fields take the defaults documented
+// on each, all of them in-process.
+type Ports struct {
+	// Store is the Session kernel; nil selects an in-memory store.
+	Store session.Store
+	// Content is the cas ContentStore the frozen bodies live in under
+	// runmod.FrozenAuthority (RUN-WIR-4). The Runtime writes them; the
+	// materializer reads them for prompts, replies and transcripts. Nil
+	// selects an in-memory store.
+	Content artifact.ContentStore
+	// Artifacts are the binding store and retention ledger.
+	Artifacts Artifacts
+	// Presets is the registry of decision identities; nil selects an
+	// in-memory registry.
+	Presets preset.Registry
+	// Decisions resolve each preset's PromptBuilderRef (DEC-CAT); nil selects
+	// decision.DefaultPromptBuilders().
+	Decisions *decision.PromptBuilders
+	// Executor is the effect layer port (RUN-EXE-3): required.
+	Executor effect.Port
+	// TargetResolver supplies opaque per-Run resource targets.
+	TargetResolver loop.TargetResolver
+	// Observers are notified of every group the Writers apply (EXT-WRT-7).
+	Observers []writer.CommitObserver
+	// Modules are application modules registered after the first-party three
+	// (EXT-APP).
+	Modules []extension.ModuleDescriptor
+	// Clock stamps event times; nil selects time.Now.
+	Clock func() time.Time
+	// Cache stores folded projection states; nil asks the Store for a durable
+	// cache and falls back to an in-memory one (HST-MEM-2).
+	Cache extension.ProjectionCache
+	// CacheEvery bounds how far a cached projection may fall behind the head;
+	// zero takes extension.DefaultCacheEvery (EXT-PRJ-7).
+	CacheEvery session.CommitSeq
+	// Ownership configures how Writers open Sessions.
+	Ownership session.OpenOptions
+	// Fail receives failures of work the authority does outside any caller's
+	// call, such as settling a reattached Outcome; nil discards them.
+	Fail func(session.SessionID, error)
+}
+
+// Authority is the composed core (HST-PRT-2). Exported fields are the ports
+// and core services; none is a product facade.
+type Authority struct {
+	Store       session.Store
+	Writers     writer.Writers
+	Registry    *extension.Registry
+	Admission   writer.Admission
+	Runtime     run.Runtime
+	Coordinator turn.Service
+	Driver      *driver.Driver
+	Presets     preset.Registry
+	Executor    effect.Port
+	Frozen      run.FrozenValueStore
+	// Projections reads every projection through the Session's Writer.
+	Projections extension.ProjectionReader
+	// Content materializes the frozen bodies projections name (CHT-MAT-1).
+	Content chatlog.ContentResolver
+	// Chatlog commits the chatlog's own facts (HST-INP-1, HST-CKP-1).
+	Chatlog *chatlog.Service
+	// History answers fork-boundary questions (HST-FRK-2, HST-SPN-5).
+	History turn.History
+	Clock   func() time.Time
+}
+
+// New composes an Authority from its ports (HST-PRT-1).
+func New(p Ports) (*Authority, error) {
+	if p.Executor == nil {
+		return nil, errors.New("authority: an Executor port is required")
+	}
+	store := p.Store
+	if store == nil {
+		store = session.NewMemoryStore()
+	}
+	modules := append([]extension.ModuleDescriptor{chatlog.Module, runmod.Module, turn.Module}, p.Modules...)
+	registry, err := extension.BuildRegistry(session.ProtocolVersion1, modules...)
+	if err != nil {
+		return nil, err
+	}
+	bindings := p.Artifacts.Bindings
+	if bindings == nil {
+		bindings = artifact.NewMemoryBindingStore()
+	}
+	ledger := p.Artifacts.Ledger
+	if ledger == nil {
+		ledger = artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings})
+	}
+	// A projection cache lets a reopened Session start folding instead of
+	// refolding the whole log (EXT-PRJ-3). An adapter that can store entries
+	// durably provides its own; otherwise they live as long as the process.
+	cache := p.Cache
+	if cache == nil {
+		if provider, ok := store.(extension.ProjectionCacheProvider); ok {
+			cache = provider.ProjectionCache()
+		} else {
+			cache = extension.NewMemoryProjectionCache()
+		}
+	}
+	var frozen run.FrozenValueStore
+	if p.Content == nil {
+		frozen = runmod.FrozenValuesInMemory()
+	} else {
+		frozen = runmod.FrozenValues(p.Content)
+	}
+	now := p.Clock
+	if now == nil {
+		now = time.Now
+	}
+	admission := writer.Admission{Bindings: bindings, Ledger: ledger}
+	writers := writer.NewWriters(store, registry, admission, p.Ownership,
+		writer.WritersConfig{Cache: cache, CachePolicy: runmod.WriterCachePolicy(p.CacheEvery), Observers: p.Observers})
+	runtime, err := runmod.NewRuntime(runmod.Config{
+		Writers: writers, Registry: registry, Store: store,
+		Frozen: frozen, Bindings: bindings, Cache: cache, Now: now,
+	})
+	if err != nil {
+		return nil, err
+	}
+	presets := p.Presets
+	if presets == nil {
+		presets = preset.NewMemory()
+	}
+	decisions := p.Decisions
+	if decisions == nil {
+		decisions = decision.DefaultPromptBuilders()
+	}
+	projections := writer.Projections(writers)
+	content := runmod.NewContent(frozen)
+	a := &Authority{
+		Store: store, Writers: writers, Registry: registry, Admission: admission, Runtime: runtime,
+		Coordinator: &turn.Coordinator{Writers: writers, Runtime: runtime, Now: now},
+		Presets:     presets, Executor: p.Executor, Frozen: frozen, Projections: projections, Content: content,
+		Chatlog: &chatlog.Service{Writers: writers, Now: now},
+		History: turn.History{Store: store, Registry: registry, Projections: projections},
+		Clock:   now,
+	}
+	a.Driver = driver.New()
+	a.Driver.Runtime, a.Driver.Coordinator, a.Driver.Executor = runtime, a.Coordinator, p.Executor
+	a.Driver.Presets, a.Driver.Decisions, a.Driver.Targets = presets, decisions, p.TargetResolver
+	a.Driver.Sources = decision.Sources{Projections: projections, Content: content}
+	a.Driver.Projections, a.Driver.Fail = projections, p.Fail
+	return a, nil
+}
+
+// Close stops every recovery listener and releases every Session this
+// authority owns.
+func (a *Authority) Close(ctx context.Context) error {
+	a.Driver.Close()
+	return writer.CloseWriters(ctx, a.Writers)
+}
+
+// --- session lifecycle -------------------------------------------------------------
+
+// CreateSession creates the Session stream; meta is the segment's creation
+// metadata (zero for none).
+func (a *Authority) CreateSession(ctx context.Context, sid session.SessionID, meta jsonstable.Value) error {
+	_, err := a.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: a.Clock().UnixMilli(), Metadata: meta})
+	return err
+}
+
+// EnsureSession creates the stream when it does not exist yet. Create's
+// idempotency needs field-identical requests, so existence is probed first.
+func (a *Authority) EnsureSession(ctx context.Context, sid session.SessionID) error {
+	if _, err := a.Store.Header(ctx, sid); err == nil {
+		return nil
+	} else if !session.IsCode(err, session.ErrNotFound) {
+		return err
+	}
+	if err := a.CreateSession(ctx, sid, jsonstable.Value{}); err != nil {
+		// A concurrent creator winning the race is still "exists".
+		if _, herr := a.Store.Header(ctx, sid); herr == nil {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// ForkRequest forks a Session at one commit of its ledger (HST-FRK-1): the
+// child inherits every commit of Parent up to and including At and continues
+// from there under its own identity.
+type ForkRequest struct {
+	Parent   session.SessionID
+	At       session.CommitSeq
+	Child    session.SessionID
+	Metadata jsonstable.Value
+}
+
+// Fork creates the child Session (SES-FRK-1) and claims the artifacts its
+// inherited prefix references (EXT-WRT-8). The child is not opened.
+func (a *Authority) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
+	if req.Parent == "" || req.Child == "" {
+		return session.SegmentHeader{}, errors.New("authority: fork requires parent and child session ids")
+	}
+	if req.Parent == req.Child {
+		return session.SegmentHeader{}, errors.New("authority: a session cannot fork itself")
+	}
+	return writer.Fork(ctx, a.Store, a.Registry, a.Admission, writer.ForkRequest{
+		Parent: req.Parent, At: req.At, Child: req.Child, CreatedAtUnixMilli: a.Clock().UnixMilli(), Metadata: req.Metadata,
+	})
+}
+
+// ForkBeforeTurn forks Parent at the commit just before turnID started
+// (HST-FRK-2): the child holds the conversation as it was when that Turn's
+// inputs were still submitted and undelivered.
+func (a *Authority) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
+	seq, err := a.History.StartCommit(ctx, parent, turnID)
+	if err != nil {
+		return session.SegmentHeader{}, err
+	}
+	if seq == 0 {
+		return session.SegmentHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: child,
+			Detail: fmt.Sprintf("turn %s started in the first commit of %s; there is no prefix to fork", turnID, parent)}
+	}
+	return a.Fork(ctx, ForkRequest{Parent: parent, At: seq - 1, Child: child})
+}
+
+// DeleteSession drops a Session's root and releases its claims (HST-FRK-3,
+// SES-GC-1). A Session this authority holds open is closed first; one owned
+// by another process is ErrOwned.
+func (a *Authority) DeleteSession(ctx context.Context, sid session.SessionID) error {
+	a.Driver.Stop(sid)
+	if err := writer.CloseWriter(ctx, a.Writers, sid); err != nil {
+		return err
+	}
+	return writer.Delete(ctx, a.Store, a.Admission, sid)
+}
+
+// Collect reclaims the storage of deleted Sessions no live Session reaches
+// (SES-GC-2).
+func (a *Authority) Collect(ctx context.Context) (session.CollectReport, error) {
+	return writer.Collect(ctx, a.Store)
+}
+
+// --- commands and reads by SessionID -------------------------------------------------
+
+// The services below act on a Session by identity; a caller that mutates a
+// Session holds its Handle, and the Writer's epoch fencing refuses a stale
+// owner regardless (SES-OWN).
+
+// SubmitInput writes twilight/chatlog/input_submitted for one user text and
+// returns the AgentInput a Start or Deliver hands to the Turn (HST-INP-1).
+func (a *Authority) SubmitInput(ctx context.Context, sid session.SessionID, id run.InputID, text string) (run.AgentInput, error) {
+	return a.Chatlog.SubmitInput(ctx, sid, id, text)
+}
+
+// WithdrawInput marks a submitted, undelivered input as withdrawn
+// (CHT-EVT-2); an input that is not submitted is turn.ErrConflict.
+func (a *Authority) WithdrawInput(ctx context.Context, sid session.SessionID, id run.InputID, reason string) error {
+	err := a.Chatlog.WithdrawInput(ctx, sid, id, reason)
+	if errors.Is(err, chatlog.ErrNotSubmitted) {
+		return fmt.Errorf("%w: input %s is not a submitted input", turn.ErrConflict, id)
+	}
+	return err
+}
+
+// Checkpoint commits a summary and its checkpoint in one group (CHT-EVT-3)
+// under the turn layer's quiescence rule: no Turn may be active (HST-CKP-1).
+func (a *Authority) Checkpoint(ctx context.Context, sid session.SessionID, summaryText string, retain []chatlog.EntryDigestPair) (chatlog.CheckpointID, error) {
+	return a.Chatlog.Checkpoint(ctx, sid, summaryText, retain, turn.RequireNoActiveTurn)
+}
+
+// Projection reads any registered projection through the Session's Writer
+// (HST-MEM-1).
+func (a *Authority) Projection(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (any, session.Head, error) {
+	return a.Projections.Load(ctx, sid, id, v)
+}
+
+// Reply is the Turn's last assistant text (CHT-MAT-1); empty when the Turn
+// produced none.
+func (a *Authority) Reply(ctx context.Context, ref turn.TurnRef) (string, error) {
+	return chatlog.LastAssistantText(ctx, a.Projections, a.Content, ref.SessionID, chatlog.TurnID(ref.TurnID))
+}

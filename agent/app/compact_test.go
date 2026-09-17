@@ -1,4 +1,4 @@
-package host_test
+package app_test
 
 import (
 	"context"
@@ -8,11 +8,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/felinics/twilight/agent/executor"
-	executionstore "github.com/felinics/twilight/agent/executor/store"
-	executorlocal "github.com/felinics/twilight/agent/executor/local"
+	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/context/compaction"
-	"github.com/felinics/twilight/agent/host"
+	"github.com/felinics/twilight/agent/executor"
+	executorlocal "github.com/felinics/twilight/agent/executor/local"
+	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -58,10 +58,10 @@ func messageTexts(req sdk.Request) []string {
 
 // openCompactSession opens one process over the store and the content store:
 // a restart shares both, since the ledger names the frozen bodies by digest.
-func openCompactSession(t *testing.T, store session.Store, content artifact.ContentStore, model *compactAwareModel, opts host.SessionOptions) (*host.Host, *host.Session) {
+func openCompactSession(t *testing.T, store session.Store, content artifact.ContentStore, model *compactAwareModel, opts app.SessionOptions) (*app.Application, *app.Session) {
 	t.Helper()
-	h := newHost(host.Ports{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
-	preset, err := h.Presets.Register("b1", mustPreset("m-1", nil))
+	h := newHost(app.Config{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+	preset, err := h.RegisterPreset("b1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestCompactShrinksContextAndReplaysAcrossRestart(t *testing.T) {
 	ctx := context.Background()
 	store, content := session.NewMemoryStore(), memoryContent()
 	model := &compactAwareModel{}
-	h, s := openCompactSession(t, store, content, model, host.SessionOptions{CompactRetainEntries: 1})
+	h, s := openCompactSession(t, store, content, model, app.SessionOptions{CompactRetainEntries: 1})
 
 	for _, text := range []string{"one", "two"} {
 		if _, err := s.Send(ctx, text); err != nil {
@@ -122,7 +122,7 @@ func TestCompactShrinksContextAndReplaysAcrossRestart(t *testing.T) {
 	}
 	model2 := &compactAwareModel{}
 	model2.replies = 3 // keep reply numbering aligned for readability only
-	_, s2 := openCompactSession(t, store, content, model2, host.SessionOptions{CompactRetainEntries: 1})
+	_, s2 := openCompactSession(t, store, content, model2, app.SessionOptions{CompactRetainEntries: 1})
 	if _, err := s2.Send(ctx, "four"); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestAutoCompactAfterSettlement(t *testing.T) {
 	ctx := context.Background()
 	var warned []error
 	model := &compactAwareModel{}
-	h, s := openCompactSession(t, session.NewMemoryStore(), memoryContent(), model, host.SessionOptions{
+	h, s := openCompactSession(t, session.NewMemoryStore(), memoryContent(), model, app.SessionOptions{
 		CompactAfterEntries: 3, CompactRetainEntries: 1,
 		CompactWarn: func(err error) { warned = append(warned, err) },
 	})
@@ -175,7 +175,7 @@ func TestCompactRefusesWhileTurnActive(t *testing.T) {
 	ctx := context.Background()
 	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
-	_, _, _, s := setup(t, model, tool, host.SessionOptions{CompactRetainEntries: 1})
+	_, _, _, s := setup(t, model, tool, app.SessionOptions{CompactRetainEntries: 1})
 	done := make(chan error, 1)
 	go func() {
 		_, err := s.Send(ctx, "one")
@@ -212,16 +212,16 @@ func TestCompactDispatchServesDurableWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := host.New(host.Ports{Store: store, Content: content, Executor: worker,
+	h, err := app.Build(app.Config{Store: store, Content: content, Executor: app.ExecutorConfig{Port: worker},
 		Ownership: session.OpenOptions{Takeover: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	ref, err := h.Presets.Register("b1", mustPreset("m-1", nil))
+	ref, err := h.RegisterPreset("b1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := h.OpenSession(ctx, "s-ckpt-remote", host.SessionOptions{Preset: ref, CompactRetainEntries: 1})
+	s, err := h.OpenSession(ctx, "s-ckpt-remote", app.SessionOptions{Preset: ref, CompactRetainEntries: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

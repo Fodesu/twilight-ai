@@ -1,7 +1,9 @@
-// Package app provides the application-level composition boundary for the
-// agent runtime. It turns concrete infrastructure and effect capabilities
-// into a runnable authority without making callers assemble Host ports by
-// hand. The core packages remain independent of this package.
+// Package app is the application layer over the agent core: it composes an
+// Authority from deployment choices (Build), registers presets, and offers
+// the conversation policies a product needs on top of an owned Session --
+// Send and Submit, Deliver-or-Start routing, backlog draining, background
+// driving, automatic compaction, the event stream and the subagent effect.
+// The core packages remain independent of this package.
 package app
 
 import (
@@ -10,18 +12,24 @@ import (
 	"fmt"
 	stdhttp "net/http"
 	"sync"
+	"time"
 
 	"github.com/felinics/twilight/agent/artifact"
+	"github.com/felinics/twilight/agent/authority"
 	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/decision"
 	"github.com/felinics/twilight/agent/executor/http"
 	executorlocal "github.com/felinics/twilight/agent/executor/local"
-	"github.com/felinics/twilight/agent/host"
+	"github.com/felinics/twilight/agent/observe"
+	"github.com/felinics/twilight/agent/preset"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/extension"
 	runmod "github.com/felinics/twilight/agent/session/run"
+	"github.com/felinics/twilight/agent/session/writer"
+	"github.com/felinics/twilight/agent/spawn"
 	"github.com/felinics/twilight/agent/turn"
 )
 
@@ -63,47 +71,57 @@ type Preset struct {
 // command-line flags can be decoded into this type by an outer deployment
 // package later.
 type Config struct {
-	Store   session.Store
-	Content artifact.ContentStore
+	Store     session.Store
+	Content   artifact.ContentStore
+	Artifacts authority.Artifacts
 
 	Executor ExecutorConfig
 	Presets  []Preset
+	// Registry is the preset registry; nil selects an in-memory one.
+	Registry preset.Registry
+	// Decisions resolve each preset's PromptBuilderRef; nil selects the
+	// default catalog.
+	Decisions *decision.PromptBuilders
 
 	Ownership      session.OpenOptions
 	TargetResolver loop.TargetResolver
-	Warn           func(error)
+	// Modules are application modules registered after the first-party three
+	// (EXT-APP).
+	Modules []extension.ModuleDescriptor
+	// Observers are notified of every applied group besides the event stream.
+	Observers []writer.CommitObserver
+	Clock     func() time.Time
+	// Cache and CacheEvery configure the projection cache (HST-MEM-2).
+	Cache      extension.ProjectionCache
+	CacheEvery session.CommitSeq
+	// Warn receives failures of background work; nil discards them.
+	Warn func(error)
+	// Spawn enables the subagent tool (HST-SPN); nil leaves it unavailable.
+	Spawn *spawn.Options
 }
-
-// Session and SessionOptions are the application-facing conversation facade
-// types. Their implementation remains in the authority package.
-type Session = host.Session
-type SessionOptions = host.SessionOptions
-type Result = host.Result
-type Event = host.Event
-type ForkRequest = host.ForkRequest
-
-// ResumeAlreadyDriving is returned when another driver already owns a Run.
-const ResumeAlreadyDriving = host.ResumeAlreadyDriving
 
 // CompactorSystemPrompt is kept here for deterministic model test doubles and
 // applications that need to recognize the built-in compaction request.
 const CompactorSystemPrompt = compaction.CompactorSystemPrompt
 
-// Application is the public authority facade returned by Build. The
-// underlying authority implementation is deliberately hidden from callers;
-// the application package exposes only the operations needed at the
-// composition boundary.
+// ResumeAlreadyDriving reports that another driver already carries the
+// inputs forward; the Result names the Turn that took them.
+const ResumeAlreadyDriving = authority.ResumeAlreadyDriving
+
+// Application is the composition root: the Authority plus the application's
+// own services -- the preset table, the event stream and the spawn effect.
 type Application struct {
-	authority *host.Host
+	Authority *authority.Authority
+	bus       *observe.Bus
+	spawn     *spawn.Executor
+	warn      func(error)
 
 	mu   sync.RWMutex
 	refs map[turn.PresetID]turn.PresetRef
 }
 
-// Build assembles an authority application from typed dependencies and a
-// deployment-neutral executor profile. It is the single convenience entry
-// point for normal applications; callers only need to construct infrastructure
-// and register model/tool implementations.
+// Build assembles an application from typed dependencies and a
+// deployment-neutral executor profile.
 func Build(c Config) (*Application, error) {
 	content := c.Content
 	if content == nil {
@@ -117,101 +135,103 @@ func Build(c Config) (*Application, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	h, err := host.New(host.Ports{
-		Store:          c.Store,
-		Content:        content,
-		Executor:       port,
-		TargetResolver: c.TargetResolver,
-		Ownership:      c.Ownership,
-		Warn:           c.Warn,
+	warn := c.Warn
+	if warn == nil {
+		warn = func(error) {}
+	}
+	app := &Application{warn: warn, refs: make(map[turn.PresetID]turn.PresetRef, len(c.Presets))}
+	// The event stream is a CommitObserver on the Writers (EXT-WRT-7); it
+	// needs the Registry, which the Authority builds, so the bus is wired
+	// through a forwarding observer bound after New.
+	var bus *observe.Bus
+	observers := append([]writer.CommitObserver{forwardingObserver{&bus}}, c.Observers...)
+	// The spawn effect claims its tool's Assignments before the deployment's
+	// Executor sees them (HST-SPN-1); it drives children through the
+	// Authority, so it is bound after New as well.
+	executor := port
+	if c.Spawn != nil {
+		app.spawn = spawn.NewExecutor(*c.Spawn)
+		executor = spawn.Intercept(app.spawn, port)
+	}
+	a, err := authority.New(authority.Ports{
+		Store: c.Store, Content: content, Artifacts: c.Artifacts, Presets: c.Registry, Decisions: c.Decisions,
+		Executor: executor, TargetResolver: c.TargetResolver, Observers: observers, Modules: c.Modules,
+		Clock: c.Clock, Cache: c.Cache, CacheEvery: c.CacheEvery, Ownership: c.Ownership, Fail: app.fail,
 	})
 	if err != nil {
 		return nil, err
 	}
-	refs := make(map[turn.PresetID]turn.PresetRef, len(c.Presets))
-	for _, preset := range c.Presets {
-		if preset.ID == "" {
+	bus = observe.NewBus(a.Registry)
+	app.Authority, app.bus = a, bus
+	if app.spawn != nil {
+		app.spawn.Bind(a)
+	}
+	for _, p := range c.Presets {
+		if p.ID == "" {
 			return nil, errors.New("app: preset requires an id")
 		}
-		ref, err := h.Presets.Register(preset.ID, preset.Value)
-		if err != nil {
-			return nil, fmt.Errorf("app: register preset %q: %w", preset.ID, err)
+		if _, err := app.RegisterPreset(p.ID, p.Value); err != nil {
+			return nil, fmt.Errorf("app: register preset %q: %w", p.ID, err)
 		}
-		refs[preset.ID] = ref
 	}
-	return &Application{authority: h, refs: refs}, nil
+	return app, nil
 }
 
-// RegisterPreset adds or replaces an authority-side decision identity after
-// Build. Most applications should provide presets in Config instead.
-func (a *Application) RegisterPreset(id turn.PresetID, preset turn.AgentPreset) (turn.PresetRef, error) {
-	ref, err := a.authority.Presets.Register(id, preset)
+// forwardingObserver forwards to a Bus that is bound after the Writers are
+// built; commits before binding (none: Build binds before any Session opens)
+// are dropped.
+type forwardingObserver struct{ bus **observe.Bus }
+
+func (o forwardingObserver) Committed(ctx context.Context, sid session.SessionID, c session.Commit) {
+	if b := *o.bus; b != nil {
+		b.Committed(ctx, sid, c)
+	}
+}
+
+// fail reports a failure of background work to Warn and, as an Event, to the
+// Session's subscribers (HST-EVT-1).
+func (app *Application) fail(sid session.SessionID, err error) {
+	app.warn(err)
+	app.bus.Failed(sid, err)
+}
+
+// RegisterPreset adds or replaces a decision identity after Build.
+func (app *Application) RegisterPreset(id turn.PresetID, p turn.AgentPreset) (turn.PresetRef, error) {
+	ref, err := app.Authority.Presets.Register(id, p)
 	if err != nil {
 		return turn.PresetRef{}, err
 	}
-	a.mu.Lock()
-	a.refs[id] = ref
-	a.mu.Unlock()
+	app.mu.Lock()
+	app.refs[id] = ref
+	app.mu.Unlock()
 	return ref, nil
 }
 
-// PresetRef returns the digest-checked reference for a configured preset.
-func (a *Application) PresetRef(id turn.PresetID) (turn.PresetRef, error) {
-	a.mu.RLock()
-	ref, ok := a.refs[id]
-	a.mu.RUnlock()
+// PresetRef returns the digest-checked reference for a registered preset.
+func (app *Application) PresetRef(id turn.PresetID) (turn.PresetRef, error) {
+	app.mu.RLock()
+	ref, ok := app.refs[id]
+	app.mu.RUnlock()
 	if !ok {
 		return turn.PresetRef{}, fmt.Errorf("app: unknown preset %q", id)
 	}
 	return ref, nil
 }
 
-// OpenSession opens a session using a registered preset.
-func (a *Application) OpenSession(ctx context.Context, sid session.SessionID, opts SessionOptions) (*Session, error) {
-	return a.authority.OpenSession(ctx, sid, opts)
+// Events subscribes to one Session's event stream from this moment on
+// (HST-EVT-1): every event of every group applied by this application's
+// Writers, in commit order, plus failures of background drives.
+func (app *Application) Events(ctx context.Context, sid session.SessionID) <-chan Event {
+	return app.bus.Subscribe(ctx, sid)
 }
 
-// Fork creates a child session from a parent's ledger prefix (HST-FRK-1).
-func (a *Application) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
-	return a.authority.Fork(ctx, req)
-}
-
-// ForkBeforeTurn forks a session at the commit before the named turn started
-// (HST-FRK-2), so the turn's inputs can be regenerated or edited in the child.
-func (a *Application) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
-	return a.authority.ForkBeforeTurn(ctx, parent, turnID, child)
-}
-
-// DeleteSession drops a session's root; forks that inherit its commits keep
-// reading them until Collect reclaims what nothing reaches (SES-GC).
-func (a *Application) DeleteSession(ctx context.Context, sid session.SessionID) error {
-	return a.authority.DeleteSession(ctx, sid)
-}
-
-// Collect reclaims unreachable session segments.
-func (a *Application) Collect(ctx context.Context) (session.CollectReport, error) {
-	return a.authority.Collect(ctx)
-}
-
-// WithdrawInput marks a submitted, undelivered input as withdrawn.
-func (a *Application) WithdrawInput(ctx context.Context, sid session.SessionID, id run.InputID, reason string) error {
-	return a.authority.WithdrawInput(ctx, sid, id, reason)
-}
-
-// Close releases sessions owned by the application.
-func (a *Application) Close(ctx context.Context) error {
-	return a.authority.Close(ctx)
-}
-
-// Drive advances a turn to its next quiescent point.
-func (a *Application) Drive(ctx context.Context, ref turn.TurnRef) (turn.TurnResponse, error) {
-	return a.authority.Drive(ctx, ref)
-}
-
-// Events returns the committed/provisional observation stream for a session.
-func (a *Application) Events(ctx context.Context, sid session.SessionID) <-chan Event {
-	return a.authority.Events(ctx, sid)
+// Close cancels the spawn effect's child drives, stops recovery listeners
+// and releases every Session this application owns.
+func (app *Application) Close(ctx context.Context) error {
+	if app.spawn != nil {
+		app.spawn.Close()
+	}
+	return app.Authority.Close(ctx)
 }
 
 func buildExecutor(c ExecutorConfig) (effect.Port, error) {
@@ -224,11 +244,7 @@ func buildExecutor(c ExecutorConfig) (effect.Port, error) {
 		if err != nil {
 			return nil, err
 		}
-		port, err := executorlocal.NewLocalExecutor(catalog, nil, false)
-		if err != nil {
-			return nil, err
-		}
-		return port, nil
+		return executorlocal.NewLocalExecutor(catalog, nil, false)
 	case ExecutorRemote:
 		if c.Endpoint == "" {
 			return nil, errors.New("app: remote executor requires an endpoint")
@@ -239,87 +255,8 @@ func buildExecutor(c ExecutorConfig) (effect.Port, error) {
 	}
 }
 
-// NewPreset is the application-facing helper for constructing the common
-// preset shape. Tool implementations are used only to freeze their public
-// definitions; they are not stored in the preset.
-func NewPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...PresetOption) (turn.AgentPreset, error) {
-	if model == "" {
-		return turn.AgentPreset{}, errors.New("app: preset requires a model")
-	}
-	p := turn.AgentPreset{SchemaVersion: 1, Model: model, Prompt: decision.PromptContextV1}
-	seen := make(map[run.ToolRef]struct{}, len(tools))
-	for _, tool := range tools {
-		if tool == nil {
-			return turn.AgentPreset{}, errors.New("app: preset got a nil tool")
-		}
-		if _, ok := seen[tool.Ref()]; ok {
-			return turn.AgentPreset{}, fmt.Errorf("app: duplicate tool %q", tool.Ref())
-		}
-		seen[tool.Ref()] = struct{}{}
-		definition, err := run.FreezeToolDefinition(tool.Definition())
-		if err != nil {
-			return turn.AgentPreset{}, err
-		}
-		p.Tools = append(p.Tools, turn.PublicTool{
-			Ref: tool.Ref(), Definition: definition, Policy: tool.ResponsePolicy(),
-		})
-	}
-	for _, opt := range opts {
-		opt(&p)
-	}
-	if err := turn.ValidatePreset(&p); err != nil {
-		return turn.AgentPreset{}, err
-	}
-	return p, nil
-}
+// Event is one item of a Session's event stream (HST-EVT-1).
+type Event = observe.Event
 
-// NewPresetFromDefinitions constructs a preset for an authority that does not
-// have local tool implementations. The definitions are already frozen public
-// protocol values and can safely come from configuration.
-func NewPresetFromDefinitions(model run.ModelRef, tools []turn.PublicTool, opts ...PresetOption) (turn.AgentPreset, error) {
-	if model == "" {
-		return turn.AgentPreset{}, errors.New("app: preset requires a model")
-	}
-	p := turn.AgentPreset{
-		SchemaVersion: 1,
-		Model:         model,
-		Prompt:        decision.PromptContextV1,
-		Tools:         append([]turn.PublicTool(nil), tools...),
-	}
-	for _, opt := range opts {
-		opt(&p)
-	}
-	if err := turn.ValidatePreset(&p); err != nil {
-		return turn.AgentPreset{}, err
-	}
-	return p, nil
-}
-
-// PresetOption tunes NewPresetFromDefinitions without requiring a local tool
-// implementation.
-type PresetOption func(*turn.AgentPreset)
-
-// WithSystemPrompt sets the instruction included in the preset digest.
-func WithSystemPrompt(s string) PresetOption {
-	return func(p *turn.AgentPreset) { p.SystemPrompt = s }
-}
-
-// WithPrompt selects the decision component used by the preset.
-func WithPrompt(ref turn.PromptBuilderRef) PresetOption {
-	return func(p *turn.AgentPreset) { p.Prompt = ref }
-}
-
-// WithStreaming selects streaming model execution.
-func WithStreaming(on bool) PresetOption {
-	return func(p *turn.AgentPreset) { p.Streaming = on }
-}
-
-// WithScheduling selects tool scheduling.
-func WithScheduling(s run.ToolScheduling) PresetOption {
-	return func(p *turn.AgentPreset) { p.Scheduling = s }
-}
-
-// WithMalformedRetries sets malformed model response retries.
-func WithMalformedRetries(n uint8) PresetOption {
-	return func(p *turn.AgentPreset) { p.MalformedRetries = n }
-}
+// ForkRequest forks a Session at one commit of its ledger (HST-FRK-1).
+type ForkRequest = authority.ForkRequest

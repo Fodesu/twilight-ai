@@ -1,11 +1,11 @@
-package host_test
+package app_test
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	"github.com/felinics/twilight/agent/host"
+	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -23,12 +23,12 @@ func TestSubmitReturnsAtOnceAndEventsReportTheTurn(t *testing.T) {
 	ctx := context.Background()
 	const sid session.SessionID = "s-events"
 	gate := &gateModel{started: make(chan sdk.Request, 1), release: make(chan struct{})}
-	h := newHost(host.Ports{}, map[run.ModelRef]loop.ModelInvoker{"m-1": gate})
-	presetRef, err := h.Presets.Register("a1", mustPreset("m-1", nil))
+	h := newHost(app.Config{}, map[run.ModelRef]loop.ModelInvoker{"m-1": gate})
+	presetRef, err := h.RegisterPreset("a1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := h.OpenSession(ctx, sid, host.SessionOptions{Preset: presetRef})
+	s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: presetRef})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,17 +113,17 @@ func TestBackgroundDriveFailureIsReportedOnTheStream(t *testing.T) {
 	ctx := context.Background()
 	const sid session.SessionID = "s-events-fail"
 	warned := make(chan error, 1)
-	h := newHost(host.Ports{Warn: func(err error) {
+	h := newHost(app.Config{Warn: func(err error) {
 		select {
 		case warned <- err:
 		default:
 		}
 	}}, map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}})
-	presetRef, err := h.Presets.Register("a1", mustPreset("m-missing", nil))
+	presetRef, err := h.RegisterPreset("a1", mustPreset("m-missing", nil))
 	if err != nil {
 		t.Fatal(err)
 	}
-	s, err := h.OpenSession(ctx, sid, host.SessionOptions{Preset: presetRef})
+	s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: presetRef})
 	if err != nil {
 		t.Fatal(err)
 	}

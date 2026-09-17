@@ -9,16 +9,13 @@ import (
 	"github.com/felinics/twilight/agent/session/extension"
 )
 
-// SurfaceReader reads the turn surface projection of one Session.
-type SurfaceReader func(ctx context.Context, sid session.SessionID) (TurnSurface, error)
-
 // History answers boundary questions about a Session's ledger (HST-FRK-2,
 // HST-SPN-5): it reads the turn and chatlog event types, so callers need
 // not scan raw commits themselves.
 type History struct {
-	Store    session.Store
-	Registry *extension.Registry
-	Surfaces SurfaceReader
+	Store       session.Store
+	Registry    *extension.Registry
+	Projections extension.ProjectionReader
 }
 
 // StartCommit finds the commit of sid's ledger that carries turnID's
@@ -51,7 +48,7 @@ func (h History) PrefixCommit(ctx context.Context, sid session.SessionID, turnID
 func (h History) scanBoundary(ctx context.Context, sid session.SessionID, turnID TurnID, includeInputs bool) (session.CommitSeq, error) {
 	var inputIDs map[chatlog.InputID]struct{}
 	if includeInputs {
-		surface, err := h.Surfaces(ctx, sid)
+		surface, err := ReadSurface(ctx, h.Projections, sid)
 		if err != nil {
 			return 0, err
 		}
