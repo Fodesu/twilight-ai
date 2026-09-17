@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"github.com/felinics/twilight/agent/artifact"
+	"github.com/felinics/twilight/agent/executor"
+	executionstore "github.com/felinics/twilight/agent/executor/store"
 	. "github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
@@ -148,7 +150,11 @@ func newLoop(sink EventSink, models ModelCatalog, tools ToolCatalog, builder Pro
 	if tools == nil {
 		return nil, errors.New("agent: loop: nil tool catalog")
 	}
-	exec, err := NewLocalExecutor(models, tools, sink, streaming)
+	backend, err := NewLocalExecutor(models, tools, sink, streaming)
+	if err != nil {
+		return nil, err
+	}
+	exec, err := executor.NewWorker(context.Background(), executionstore.NewMemoryStore(), []executor.Route{executor.Default("local", backend)})
 	if err != nil {
 		return nil, err
 	}

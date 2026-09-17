@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/felinics/twilight/agent/artifact"
+	"github.com/felinics/twilight/agent/executor"
+	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -362,7 +364,11 @@ func (f *Feature) ensureLoop() {
 	for ref, tool := range f.tools {
 		tools[ref] = tool
 	}
-	exec, err := loop.NewLocalExecutor(scriptCatalog{invoker: f.invoker, err: f.resolveErr}, scriptToolCatalog{tools}, nil, false)
+	backend, err := loop.NewLocalExecutor(scriptCatalog{invoker: f.invoker, err: f.resolveErr}, scriptToolCatalog{tools}, nil, false)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	exec, err := executor.NewWorker(f.ctx, executionstore.NewMemoryStore(), []executor.Route{executor.Default("local", backend)})
 	if err != nil {
 		f.t.Fatal(err)
 	}

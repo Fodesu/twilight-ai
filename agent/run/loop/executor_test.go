@@ -454,8 +454,9 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 	}
 }
 
-// LocalExecutor exposes in-process execution through the same message-shaped
-// port; GetOutcome reads the eventual result and Cancel stops in-flight effects.
+// LocalExecutor is the colocated Backend: Start runs the effect under the
+// Ref Prepare derived, Outcome reads the eventual result and Cancel stops an
+// in-flight effect.
 func TestLocalExecutorAttachAndCancel(t *testing.T) {
 	block := make(chan struct{})
 	seenTarget := make(chan *TargetRef, 1)
@@ -477,7 +478,11 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 	target := TargetRef{Kind: "workspace", ID: "ws-1"}
 	a := Assignment{Session: testSession, RunID: "run-1", StepID: "step-1", CallID: "call-1", Claim: "claim-1", Target: &target, Schema: SchemaVersion1,
 		Kind: AssignmentTool, Tool: &ToolAssignment{ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest, Arguments: cj(`{}`), Policy: DirectExecution}}
-	if err := exec.Dispatch(context.Background(), a); err != nil {
+	ref, err := exec.Prepare(context.Background(), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := exec.Start(context.Background(), ref, a); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -488,17 +493,17 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("tool did not receive target")
 	}
-	if dup := exec.Dispatch(context.Background(), a); dup != nil {
-		t.Fatalf("idempotent duplicate dispatch = %v", dup)
+	if dup := exec.Start(context.Background(), ref, a); dup != nil {
+		t.Fatalf("idempotent duplicate start = %v", dup)
 	}
-	attached, err := exec.Attach(context.Background(), a.Key())
+	attached, err := exec.Attach(context.Background(), ref)
 	if err != nil || attached.State != AttachmentActive {
 		t.Fatalf("attach running = %+v %v", attached, err)
 	}
-	if err := exec.Cancel(context.Background(), a.Key()); err != nil {
+	if err := exec.Cancel(context.Background(), ref); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.GetOutcome(context.Background(), a.Key())
+	out, err := exec.Outcome(context.Background(), ref)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +513,7 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 	if _, unknown := out.Tool.(ToolExecutionUnknown); !unknown {
 		t.Fatalf("cancelled tool outcome = %T", out.Tool)
 	}
-	if attached, _ := exec.Attach(context.Background(), a.Key()); attached.State != AttachmentTerminal {
+	if attached, _ := exec.Attach(context.Background(), ref); attached.State != AttachmentTerminal {
 		t.Fatalf("attach after completion = %+v; want terminal", attached)
 	}
 	if exec.InFlight() != 0 {

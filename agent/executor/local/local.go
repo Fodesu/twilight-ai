@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/felinics/twilight/agent/executor"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 )
@@ -56,15 +57,24 @@ func (c *Catalog) ResolveTool(ref run.ToolRef) (loop.ExecutableTool, error) {
 	return t, nil
 }
 
-// NewLocalExecutor is the colocated Executor: effects run in goroutines of
+// Provider is the ExecutionRef provider of the colocated backend.
+const Provider = "local"
+
+// NewLocalExecutor is the colocated Backend: effects run in goroutines of
 // this process against the Catalog, and provisional observations go to sink.
 // Model assignments must carry the request inline (RUN-EXE-7); the authority
 // still writes frozen bodies to the content store (RUN-WIR-4) for the
-// Session record, and the executor never reads them back. streaming selects
-// StreamingModelInvoker when an invoker offers it.
-func NewLocalExecutor(cat *Catalog, sink loop.EventSink, streaming bool) (loop.Executor, error) {
+// Session record, and the backend never reads them back. streaming selects
+// StreamingModelInvoker when an invoker offers it. Agent Core reaches the
+// backend through an executor.Worker (RUN-EXE-8).
+func NewLocalExecutor(cat *Catalog, sink loop.EventSink, streaming bool) (executor.Backend, error) {
 	if cat == nil {
 		return nil, errors.New("local: nil catalog")
 	}
 	return loop.NewLocalExecutor(cat, cat, sink, streaming)
 }
+
+// Route is the Worker route that hands every remaining Assignment to b.
+func Route(b executor.Backend) executor.Route { return executor.Default(Provider, b) }
+
+var _ executor.Backend = (*loop.LocalExecutor)(nil)

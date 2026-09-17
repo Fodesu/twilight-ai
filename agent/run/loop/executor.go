@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -175,6 +176,12 @@ func (r reattacher) Attach(ctx context.Context, t run.RecoveryTarget) (run.Recov
 // in-process implementation of the message-shaped Executor port. Its records
 // are process-scoped: after a process restart Attach cannot find an old
 // assignment. Durable cross-worker recovery belongs to executor.Worker.
+// LocalExecutor is the colocated execution backend: model and tool effects
+// run in goroutines of this process against the catalogs. It implements the
+// executor Backend contract structurally -- Prepare derives the Ref from the
+// AssignmentKey, the other methods address that Ref -- and keeps a bounded
+// table of terminal entries for the Worker's outcome reads. It does not
+// implement effect.Port: Agent Core reaches it through executor.Worker.
 type LocalExecutor struct {
 	models    ModelCatalog
 	tools     ToolCatalog
@@ -182,10 +189,10 @@ type LocalExecutor struct {
 	streaming bool
 
 	mu       sync.Mutex
-	inflight map[AssignmentKey]*inflight
-	// terminal lists the closed records oldest first; once more than retain
+	inflight map[string]*inflight
+	// terminal lists the closed entries oldest first; once more than retain
 	// of them are held the oldest are dropped from inflight.
-	terminal []AssignmentKey
+	terminal []string
 	retain   int
 }
 
@@ -213,13 +220,27 @@ func NewLocalExecutor(models ModelCatalog, tools ToolCatalog, sink EventSink, st
 		return nil, errors.New("agent: loop: nil tool catalog")
 	}
 	return &LocalExecutor{models: models, tools: tools, sink: sink, streaming: streaming,
-		inflight: make(map[AssignmentKey]*inflight), retain: DefaultRetainedOutcomes}, nil
+		inflight: make(map[string]*inflight), retain: DefaultRetainedOutcomes}, nil
 }
 
-// SetRetainedOutcomes bounds the terminal records kept for Attach, GetStatus
-// and GetOutcome after an assignment closes; n < 1 keeps one. A dropped record
-// answers missing, so the Authority disposes it instead of reading an Outcome,
-// and a Dispatch replay of its key is a new execution (RUN-EXE-3).
+// RefOf is the Ref LocalExecutor derives for an AssignmentKey: the key
+// itself, encoded. Prepare is therefore idempotent and stateless.
+func RefOf(key AssignmentKey) string {
+	raw, err := json.Marshal(key)
+	if err != nil {
+		panic("agent: loop: assignment key does not marshal: " + err.Error())
+	}
+	return string(raw)
+}
+
+// Prepare derives the Ref of the Assignment without starting it.
+func (e *LocalExecutor) Prepare(_ context.Context, a Assignment) (string, error) {
+	return RefOf(a.Key()), nil
+}
+
+// SetRetainedOutcomes bounds the terminal entries kept for Attach, Status
+// and Outcome after an execution closes; n < 1 keeps one. A dropped entry
+// answers missing.
 func (e *LocalExecutor) SetRetainedOutcomes(n int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -296,13 +317,14 @@ func (e *LocalExecutor) resolveTool(proto run.Protocol, t *ToolAssignment) (Exec
 	return tool, nil
 }
 
-// Dispatch starts the effect in a goroutine. The effect's context is derived
-// from ctx's values but not its cancellation: the caller's request ends when
-// Dispatch returns, while the effect ends by Outcome or Cancel. The outcome
-// is retained in the execution record and is read through GetOutcome; it is
-// not delivered through a process-local callback.
-func (e *LocalExecutor) Dispatch(ctx context.Context, a Assignment) error {
-	key := a.Key()
+// Start begins the effect in a goroutine under ref. The effect's context is
+// derived from ctx's values but not its cancellation: the caller's request
+// ends when Start returns, while the effect ends by Outcome or Cancel. The
+// outcome is retained in the entry and read through Outcome; it is not
+// delivered through a process-local callback. Start of a ref already held is
+// a no-op when the Assignment is the same, a rejection otherwise.
+func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) error {
+	key := ref
 	digest, err := a.Digest()
 	if err != nil {
 		return fmt.Errorf("%w: assignment digest: %v", ErrExecutorRejected, err)
@@ -385,7 +407,7 @@ func (e *LocalExecutor) Dispatch(ctx context.Context, a Assignment) error {
 
 	go func() {
 		out := execute(effectCtx)
-		out.Key = key
+		out.Key = a.Key()
 		if effectCtx.Err() != nil {
 			out.Cancelled = true
 		}
@@ -401,11 +423,11 @@ func (e *LocalExecutor) Dispatch(ctx context.Context, a Assignment) error {
 	return nil
 }
 
-// Attach answers for attempts this process still runs or has completed. It
-// only observes an existing record and never starts a second effect.
-func (e *LocalExecutor) Attach(_ context.Context, key AssignmentKey) (effect.Attachment, error) {
+// Attach answers for refs this process still runs or has completed. It only
+// observes an existing entry and never starts a second effect.
+func (e *LocalExecutor) Attach(_ context.Context, ref string) (effect.Attachment, error) {
 	e.mu.Lock()
-	entry, ok := e.inflight[key]
+	entry, ok := e.inflight[ref]
 	if !ok {
 		e.mu.Unlock()
 		return effect.Attachment{State: effect.AttachmentMissing, Execution: effect.ExecutionNotFound}, nil
@@ -419,10 +441,10 @@ func (e *LocalExecutor) Attach(_ context.Context, key AssignmentKey) (effect.Att
 	return effect.Attachment{State: effect.AttachmentTerminal, Execution: localStatus(out), BackendAttached: true}, nil
 }
 
-// GetStatus returns the current process-scoped execution status.
-func (e *LocalExecutor) GetStatus(_ context.Context, key AssignmentKey) (ExecutionStatus, error) {
+// Status returns the current process-scoped execution status of ref.
+func (e *LocalExecutor) Status(_ context.Context, ref string) (ExecutionStatus, error) {
 	e.mu.Lock()
-	entry, ok := e.inflight[key]
+	entry, ok := e.inflight[ref]
 	if !ok {
 		e.mu.Unlock()
 		return ExecutionNotFound, ErrExecutionNotFound
@@ -452,12 +474,12 @@ func localStatus(out Outcome) ExecutionStatus {
 	return ExecutionCompleted
 }
 
-// GetOutcome waits for and returns the stable outcome of an accepted
-// assignment. A terminal record stays readable until the retention bound
-// drops it (SetRetainedOutcomes); a dropped record is ErrExecutionNotFound.
-func (e *LocalExecutor) GetOutcome(ctx context.Context, key AssignmentKey) (Outcome, error) {
+// Outcome waits for and returns the stable outcome of ref. A terminal entry
+// stays readable until the retention bound drops it (SetRetainedOutcomes); a
+// dropped entry is ErrExecutionNotFound.
+func (e *LocalExecutor) Outcome(ctx context.Context, ref string) (Outcome, error) {
 	e.mu.Lock()
-	entry, ok := e.inflight[key]
+	entry, ok := e.inflight[ref]
 	e.mu.Unlock()
 	if !ok {
 		return Outcome{}, ErrExecutionNotFound
@@ -473,11 +495,10 @@ func (e *LocalExecutor) GetOutcome(ctx context.Context, key AssignmentKey) (Outc
 	}
 }
 
-// Cancel requests cancellation of one assignment; its Outcome remains
-// observable through GetOutcome.
-func (e *LocalExecutor) Cancel(_ context.Context, key AssignmentKey) error {
+// Cancel requests cancellation of ref; its Outcome remains observable.
+func (e *LocalExecutor) Cancel(_ context.Context, ref string) error {
 	e.mu.Lock()
-	entry, ok := e.inflight[key]
+	entry, ok := e.inflight[ref]
 	e.mu.Unlock()
 	if ok {
 		entry.cancel()
@@ -602,5 +623,3 @@ func executeToolSafely(ctx context.Context, tool ExecutableTool, req *ToolExecut
 	}()
 	return tool.Execute(ctx, *req)
 }
-
-var _ Executor = (*LocalExecutor)(nil)

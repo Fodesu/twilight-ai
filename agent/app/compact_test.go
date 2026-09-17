@@ -208,7 +208,7 @@ func TestCompactDispatchServesDurableWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker, err := executor.NewWorker(ctx, executionstore.NewMemoryStore(), []executor.Route{executor.Default("local", executor.PortBackend(local))})
+	worker, err := executor.NewWorker(ctx, executionstore.NewMemoryStore(), []executor.Route{executorlocal.Route(local)})
 	if err != nil {
 		t.Fatal(err)
 	}

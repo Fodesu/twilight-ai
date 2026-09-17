@@ -18,8 +18,10 @@ import (
 	"github.com/felinics/twilight/agent/authority"
 	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/decision"
+	"github.com/felinics/twilight/agent/executor"
 	"github.com/felinics/twilight/agent/executor/http"
 	executorlocal "github.com/felinics/twilight/agent/executor/local"
+	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/observe"
 	"github.com/felinics/twilight/agent/preset"
 	"github.com/felinics/twilight/agent/run"
@@ -76,7 +78,12 @@ type Config struct {
 	Artifacts authority.Artifacts
 
 	Executor ExecutorConfig
-	Presets  []Preset
+	// Executions is the record store of the local Worker (RUN-EXE-8): nil
+	// selects an in-memory store, whose records die with the process; a
+	// deployment that must adopt executions across restarts passes a durable
+	// one. Ignored by ExecutorRemote and when Executor.Port is set.
+	Executions executionstore.Store
+	Presets    []Preset
 	// Registry is the preset registry; nil selects an in-memory one.
 	Registry preset.Registry
 	// Decisions resolve each preset's PromptBuilderRef; nil selects the
@@ -131,7 +138,7 @@ func Build(c Config) (*Application, error) {
 			return nil, fmt.Errorf("app: create default content store: %w", err)
 		}
 	}
-	port, err := buildExecutor(c.Executor)
+	port, err := buildExecutor(c.Executor, c.Executions)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +241,7 @@ func (app *Application) Close(ctx context.Context) error {
 	return app.Authority.Close(ctx)
 }
 
-func buildExecutor(c ExecutorConfig) (effect.Port, error) {
+func buildExecutor(c ExecutorConfig, records executionstore.Store) (effect.Port, error) {
 	if c.Port != nil {
 		return c.Port, nil
 	}
@@ -244,7 +251,16 @@ func buildExecutor(c ExecutorConfig) (effect.Port, error) {
 		if err != nil {
 			return nil, err
 		}
-		return executorlocal.NewLocalExecutor(catalog, nil, false)
+		backend, err := executorlocal.NewLocalExecutor(catalog, nil, false)
+		if err != nil {
+			return nil, err
+		}
+		if records == nil {
+			records = executionstore.NewMemoryStore()
+		}
+		// Colocated deployments run their effects through the same Worker
+		// and record lifecycle as remote ones (RUN-EXE-8).
+		return executor.NewWorker(context.Background(), records, []executor.Route{executorlocal.Route(backend)})
 	case ExecutorRemote:
 		if c.Endpoint == "" {
 			return nil, errors.New("app: remote executor requires an endpoint")

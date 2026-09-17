@@ -23,30 +23,33 @@ func echoExecutor(t *testing.T) (*LocalExecutor, ToolSpec) {
 	return exec, toolSpec(t, "echo", DirectExecution)
 }
 
-// A LocalExecutor keeps a bounded number of terminal records: once more than
-// the retained count have closed, the oldest is forgotten and every read of its
-// key reports a missing execution, while the newer ones stay terminal
-// (RUN-EXE-3).
+// A LocalExecutor keeps a bounded number of terminal entries: once more than
+// the retained count have closed, the oldest is forgotten and every read of
+// its ref reports a missing execution, while the newer ones stay terminal.
 func TestLocalExecutorRetainsBoundedOutcomes(t *testing.T) {
 	exec, spec := echoExecutor(t)
 	exec.SetRetainedOutcomes(2)
 	ctx := context.Background()
-	var keys []AssignmentKey
+	var keys []string
 	for _, n := range []string{"1", "2", "3"} {
 		a := Assignment{Session: testSession, RunID: "run-1", StepID: StepID("step-" + n), CallID: CallID("call-" + n),
 			Claim: ExecutionClaim("claim-" + n), Schema: SchemaVersion1, Kind: AssignmentTool,
 			Tool: &ToolAssignment{ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest, Arguments: cj(`{}`), Policy: DirectExecution}}
-		if err := exec.Dispatch(ctx, a); err != nil {
+		ref, err := exec.Prepare(ctx, a)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := exec.GetOutcome(ctx, a.Key()); err != nil {
+		if err := exec.Start(ctx, ref, a); err != nil {
 			t.Fatal(err)
 		}
-		keys = append(keys, a.Key())
+		if _, err := exec.Outcome(ctx, ref); err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, ref)
 	}
 	cases := []struct {
 		name    string
-		key     AssignmentKey
+		key     string
 		evicted bool
 	}{
 		{"oldest", keys[0], true},
@@ -55,14 +58,14 @@ func TestLocalExecutorRetainsBoundedOutcomes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := exec.GetStatus(ctx, tc.key)
+			_, err := exec.Status(ctx, tc.key)
 			if got := errors.Is(err, ErrExecutionNotFound); got != tc.evicted {
 				t.Fatalf("status error = %v; evicted = %v, want %v", err, got, tc.evicted)
 			}
 			if !tc.evicted && err != nil {
 				t.Fatal(err)
 			}
-			_, err = exec.GetOutcome(ctx, tc.key)
+			_, err = exec.Outcome(ctx, tc.key)
 			if got := errors.Is(err, ErrExecutionNotFound); got != tc.evicted {
 				t.Fatalf("outcome error = %v; evicted = %v, want %v", err, got, tc.evicted)
 			}

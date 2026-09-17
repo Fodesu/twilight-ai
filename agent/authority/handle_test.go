@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/authority"
+	"github.com/felinics/twilight/agent/executor"
 	executorlocal "github.com/felinics/twilight/agent/executor/local"
+	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
@@ -18,7 +20,11 @@ func newAuthority(t *testing.T) *authority.Authority {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exec, err := executorlocal.NewLocalExecutor(catalog, nil, false)
+	backend, err := executorlocal.NewLocalExecutor(catalog, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exec, err := executor.NewWorker(context.Background(), executionstore.NewMemoryStore(), []executor.Route{executorlocal.Route(backend)})
 	if err != nil {
 		t.Fatal(err)
 	}

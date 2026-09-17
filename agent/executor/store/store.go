@@ -78,21 +78,48 @@ type Store interface {
 
 // MemoryStore is useful for conformance tests and embedded deployments.
 type MemoryStore struct {
-	mu      sync.Mutex
-	records map[effect.AssignmentKey]Record
-	now     func() time.Time
+	mu       sync.Mutex
+	records  map[effect.AssignmentKey]Record
+	now      func() time.Time
+	terminal []effect.AssignmentKey
+	retain   int
 }
 
 type MemoryStoreOptions struct {
 	Now func() time.Time
+	// RetainTerminal bounds the terminal records kept for idempotent reads
+	// (RUN-EXE-3); zero selects DefaultRetainTerminal. Records still executing
+	// are never dropped. A dropped record reads as missing, and a Dispatch of
+	// its key is a new execution.
+	RetainTerminal int
 }
+
+// DefaultRetainTerminal is the MemoryStore's terminal-record bound.
+const DefaultRetainTerminal = 1024
 
 func NewMemoryStore(options ...MemoryStoreOptions) *MemoryStore {
 	now := time.Now
 	if len(options) > 0 && options[0].Now != nil {
 		now = options[0].Now
 	}
-	return &MemoryStore{records: make(map[effect.AssignmentKey]Record), now: now}
+	retain := DefaultRetainTerminal
+	if len(options) > 0 && options[0].RetainTerminal > 0 {
+		retain = options[0].RetainTerminal
+	}
+	return &MemoryStore{records: make(map[effect.AssignmentKey]Record), now: now, retain: retain}
+}
+
+// noteLocked records a write: a record that became terminal joins the
+// eviction order and the oldest terminal records beyond the bound are
+// dropped. s.mu must be held.
+func (s *MemoryStore) noteLocked(key effect.AssignmentKey, was, now effect.ExecutionStatus) {
+	if now.Terminal() && !was.Terminal() {
+		s.terminal = append(s.terminal, key)
+	}
+	for len(s.terminal) > s.retain {
+		delete(s.records, s.terminal[0])
+		s.terminal = s.terminal[1:]
+	}
 }
 
 func (s *MemoryStore) Create(_ context.Context, record Record) (Record, bool, error) {
@@ -123,6 +150,7 @@ func (s *MemoryStore) Put(_ context.Context, record Record) error {
 		return ErrAssignmentConflict
 	}
 	s.records[record.Assignment.Key()] = record
+	s.noteLocked(record.Assignment.Key(), old.State, record.State)
 	return nil
 }
 
@@ -140,6 +168,7 @@ func (s *MemoryStore) PutOwned(_ context.Context, record Record, owner string, e
 		return ErrLeaseLost
 	}
 	s.records[record.Assignment.Key()] = record
+	s.noteLocked(record.Assignment.Key(), old.State, record.State)
 	return nil
 }
 
