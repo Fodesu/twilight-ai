@@ -189,7 +189,7 @@ type SummaryPayload struct { Summary Summary }
 
 type CheckpointCreatedPayload struct {
     CheckpointID CheckpointID
-    CoveredThrough session.Seq
+    CoveredThrough uint64
     BaseContextDigest es.Digest
     SummaryID SummaryID
     SummaryDigest es.Digest
@@ -242,7 +242,7 @@ fold 在提交前逐条校验（EXT-WRT-1 的投影预折叠），违反者整�
 type SurfaceEntry struct {
     Kind EntryKind
     ID string
-    Seq session.Seq
+    Seq uint64
 }
 type Surface struct {
     Inputs Table[InputID, InputView]
