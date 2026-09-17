@@ -29,27 +29,31 @@ type (
 // earlier row model it replaced never left the branch.
 const ProtocolVersion1 uint16 = 1
 
-// SessionHeader is the immutable creation record of a stream.
+// SessionHeader is the immutable creation record of a commit segment
+// (agent-session.md section 8): the node of the lineage DAG the Session that
+// created it appends to. SessionID names that creating Session; HeaderDigest
+// is the segment's identity (SegmentIDOf). Readers of a Session see the
+// header of the segment its root names.
 type SessionHeader struct {
 	ProtocolVersion    uint16           `json:"protocolVersion"`
 	SessionID          SessionID        `json:"sessionId"`
 	CreatedAtUnixMilli int64            `json:"createdAtUnixMilli"`
-	ParentFork         *ForkPoint       `json:"parentFork,omitempty"` // nil for a root Session; see section 8
+	ParentFork         *ForkPoint       `json:"parentFork,omitempty"` // nil for a root segment; the edge to the parent otherwise
 	CausationID        es.CausationID   `json:"causationId,omitempty"`
 	Metadata           jsonstable.Value `json:"metadata,omitempty"`
 	HeaderDigest       es.Digest        `json:"headerDigest"`
 }
 
-// ForkPoint is a child Session's provenance anchor (agent-session.md section
-// 8): the parent Session and the last commit of it the child inherits. The
-// child's ledger holds only its own commits, numbered from Seq+1 and chained
-// from Digest; readers see the parent's prefix [0, Seq] followed by them. The
-// prefix is immutable in the parent (append-only ledger), so the anchor is a
-// stable reference, and it is covered by the child's header digest.
+// ForkPoint is the edge from a segment to its parent in the lineage DAG: the
+// parent segment and the last commit of it the child inherits. The child's
+// own commits are numbered from Seq+1 and chained from Digest; readers see
+// the inherited prefix [0, Seq] followed by them. The prefix is immutable
+// (append-only), so the edge is a stable reference, and it is covered by the
+// child's header digest.
 type ForkPoint struct {
-	ParentSessionID SessionID `json:"parentSessionId"`
-	Seq             CommitSeq `json:"seq"`
-	Digest          es.Digest `json:"digest"`
+	Parent SegmentID `json:"parent"`
+	Seq    CommitSeq `json:"seq"`
+	Digest es.Digest `json:"digest"`
 }
 
 // ErrorCode classifies kernel failures (SES 7).

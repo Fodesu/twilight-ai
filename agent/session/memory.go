@@ -7,25 +7,25 @@ import (
 )
 
 // MemoryStore is the in-process reference Store: the Ledger over an
-// in-memory SegmentStore. Ownership lasts until Close; an Open with Takeover
+// in-memory Backend. Ownership lasts until Close; an Open with Takeover
 // supersedes a live owner, which is then fenced by its stale Epoch.
 type MemoryStore struct {
 	*Ledger
-	seg *memorySegments
+	be *memoryBackend
 }
 
 // NewMemoryStore returns an empty MemoryStore.
 func NewMemoryStore() *MemoryStore {
-	seg := &memorySegments{segments: make(map[SessionID]*memorySegment)}
-	return &MemoryStore{Ledger: NewLedger(seg), seg: seg}
+	be := &memoryBackend{segments: make(map[SegmentID]*memorySegment), roots: make(map[SessionID]*memoryRoot)}
+	return &MemoryStore{Ledger: NewLedger(be), be: be}
 }
 
-// Tamper mutates one stored commit in place. It exists so conformance can
-// prove that the ledger check at Open detects corruption; production code
-// never calls it. seq names one of the Session's own commits.
+// Tamper mutates one own commit of the Session's segment in place. It exists
+// so conformance can prove that the ledger check at Open detects corruption;
+// production code never calls it.
 func (m *MemoryStore) Tamper(sid SessionID, seq CommitSeq, mutate func(*Commit)) {
-	s, err := m.seg.segment(sid, "tamper")
-	if err != nil {
+	s := m.be.tipOf(sid)
+	if s == nil {
 		return
 	}
 	s.mu.Lock()
@@ -41,9 +41,9 @@ func (m *MemoryStore) Tamper(sid SessionID, seq CommitSeq, mutate func(*Commit))
 // prove that Open recovers to the last whole commit (SES-APP-2); production
 // code never calls it.
 func (m *MemoryStore) CrashTail(sid SessionID, keep int) error {
-	s, err := m.seg.segment(sid, "crash_tail")
-	if err != nil {
-		return err
+	s := m.be.tipOf(sid)
+	if s == nil {
+		return newError(ErrNotFound, "crash_tail", sid, "session not found")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -58,14 +58,15 @@ func (m *MemoryStore) CrashTail(sid SessionID, keep int) error {
 	return nil
 }
 
-// --- segment store -----------------------------------------------------------------
+// --- backend -------------------------------------------------------------------
 
-// memorySegments is the in-memory SegmentStore: independent append-only
-// segments with per-segment ownership. It implements no fork or reachability
+// memoryBackend is the in-memory Backend: segments (nodes) and roots, with
+// writer ownership per root. It implements no fork or reachability
 // semantics; the Ledger does.
-type memorySegments struct {
-	mu       sync.RWMutex // guards the map
-	segments map[SessionID]*memorySegment
+type memoryBackend struct {
+	mu       sync.RWMutex // guards both maps
+	segments map[SegmentID]*memorySegment
+	roots    map[SessionID]*memoryRoot
 }
 
 type memorySegment struct {
@@ -73,19 +74,33 @@ type memorySegment struct {
 	header   SessionHeader
 	commits  []Commit         // own commits only, from LedgerSeed(header).Next
 	byCommit map[CommitID]int // index into commits
-	epoch    Epoch
-	owner    *memoryHandle // nil when no live owner
-	deleted  bool
 }
 
-func (m *memorySegments) segment(sid SessionID, op string) (*memorySegment, error) {
+type memoryRoot struct {
+	record SessionRecord
+	epoch  Epoch
+	owned  bool
+}
+
+func (m *memoryBackend) segment(id SegmentID) (*memorySegment, error) {
 	m.mu.RLock()
-	s, ok := m.segments[sid]
+	s, ok := m.segments[id]
 	m.mu.RUnlock()
 	if !ok {
-		return nil, newError(ErrNotFound, op, sid, "session not found")
+		return nil, &Error{Code: ErrNotFound, Operation: "segment", Detail: fmt.Sprintf("segment %s not found", id)}
 	}
 	return s, nil
+}
+
+// tipOf is the segment a live Session appends to, for the test hooks.
+func (m *memoryBackend) tipOf(sid SessionID) *memorySegment {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	r, ok := m.roots[sid]
+	if !ok {
+		return nil
+	}
+	return m.segments[r.record.Segment]
 }
 
 func (s *memorySegment) head() Head {
@@ -103,50 +118,52 @@ func (s *memorySegment) rebuildIndex() {
 	}
 }
 
-func (m *memorySegments) CreateSegment(ctx context.Context, header SessionHeader) error {
+// --- LedgerStore -----------------------------------------------------------------
+
+func (m *memoryBackend) CreateSegment(ctx context.Context, seg Segment) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, exists := m.segments[header.SessionID]; exists {
-		return newError(ErrConflict, "create", header.SessionID, "segment exists")
+	if _, exists := m.segments[seg.ID]; exists {
+		return &Error{Code: ErrConflict, Operation: "create", SessionID: seg.Header.SessionID, Detail: "segment exists"}
 	}
-	m.segments[header.SessionID] = &memorySegment{header: header, byCommit: make(map[CommitID]int)}
+	m.segments[seg.ID] = &memorySegment{header: seg.Header, byCommit: make(map[CommitID]int)}
 	return nil
 }
 
-func (m *memorySegments) SegmentHeader(ctx context.Context, sid SessionID) (SessionHeader, bool, error) {
+func (m *memoryBackend) Segment(ctx context.Context, id SegmentID) (Segment, error) {
 	if err := ctx.Err(); err != nil {
-		return SessionHeader{}, false, err
+		return Segment{}, err
 	}
-	s, err := m.segment(sid, "header")
+	s, err := m.segment(id)
 	if err != nil {
-		return SessionHeader{}, false, err
+		return Segment{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.header, s.deleted, nil
+	return Segment{ID: id, Header: s.header}, nil
 }
 
-func (m *memorySegments) ListSegments(ctx context.Context) ([]SessionID, error) {
+func (m *memoryBackend) ListSegments(ctx context.Context) ([]SegmentID, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	out := make([]SessionID, 0, len(m.segments))
-	for sid := range m.segments {
-		out = append(out, sid)
+	out := make([]SegmentID, 0, len(m.segments))
+	for id := range m.segments {
+		out = append(out, id)
 	}
 	return out, nil
 }
 
-func (m *memorySegments) ReadSegment(ctx context.Context, sid SessionID, from CommitSeq, limit uint32) ([]Commit, Head, bool, error) {
+func (m *memoryBackend) ReadSegment(ctx context.Context, id SegmentID, from CommitSeq, limit uint32) ([]Commit, Head, bool, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, Head{}, false, err
 	}
-	s, err := m.segment(sid, "read")
+	s, err := m.segment(id)
 	if err != nil {
 		return nil, Head{}, false, err
 	}
@@ -174,105 +191,76 @@ func (m *memorySegments) ReadSegment(ctx context.Context, sid SessionID, from Co
 	return out, head, more, nil
 }
 
-type memoryHandle struct {
-	s     *memorySegment
-	epoch Epoch
-}
-
-func (m *memorySegments) OpenSegment(ctx context.Context, sid SessionID, opts OpenOptions) (SegmentHandle, error) {
+func (m *memoryBackend) Contains(ctx context.Context, id SegmentID, cid CommitID) (bool, error) {
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return false, err
 	}
-	s, err := m.segment(sid, "open")
+	s, err := m.segment(id)
 	if err != nil {
-		return nil, err
+		return false, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.owner != nil && !opts.Takeover {
-		return nil, newError(ErrOwned, "open", sid, fmt.Sprintf("owned by epoch %d", s.epoch))
+	_, ok := s.byCommit[cid]
+	return ok, nil
+}
+
+func (m *memoryBackend) LookupCommit(ctx context.Context, id SegmentID, cid CommitID) (Commit, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Commit{}, false, err
 	}
-	s.epoch++
-	w := &memoryHandle{s: s, epoch: s.epoch}
-	s.owner = w
-	return w, nil
-}
-
-func (w *memoryHandle) Epoch() Epoch { return w.epoch }
-
-func (w *memoryHandle) Head() Head {
-	w.s.mu.Lock()
-	defer w.s.mu.Unlock()
-	return w.s.head()
-}
-
-func (w *memoryHandle) Own(id CommitID) bool {
-	w.s.mu.Lock()
-	defer w.s.mu.Unlock()
-	_, ok := w.s.byCommit[id]
-	return ok
-}
-
-func (w *memoryHandle) LookupOwn(id CommitID) (Commit, bool, error) {
-	w.s.mu.Lock()
-	defer w.s.mu.Unlock()
-	i, ok := w.s.byCommit[id]
+	s, err := m.segment(id)
+	if err != nil {
+		return Commit{}, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i, ok := s.byCommit[cid]
 	if !ok {
 		return Commit{}, false, nil
 	}
-	return cloneCommit(w.s.commits[i]), true, nil
+	return cloneCommit(s.commits[i]), true, nil
 }
 
-// Append persists a sealed commit under the handle's Epoch (SES-OWN-2).
-func (w *memoryHandle) Append(ctx context.Context, c Commit) error {
+// Append persists a sealed commit under the lease (SES-OWN-2): the lease
+// check and the write happen under the backend lock, so a takeover cannot
+// slip between them.
+func (m *memoryBackend) Append(ctx context.Context, lease Lease, id SegmentID, c Commit) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	w.s.mu.Lock()
-	defer w.s.mu.Unlock()
-	sid := w.s.header.SessionID
-	if w.s.owner != w || w.s.epoch != w.epoch {
-		return newError(ErrOwnershipLost, "append", sid, fmt.Sprintf("epoch %d superseded by %d", w.epoch, w.s.epoch))
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.roots[lease.Session]
+	if !ok || !r.owned || r.epoch != lease.Epoch {
+		var current Epoch
+		if ok {
+			current = r.epoch
+		}
+		return newError(ErrOwnershipLost, "append", lease.Session, fmt.Sprintf("epoch %d superseded by %d", lease.Epoch, current))
 	}
-	if head := w.s.head(); c.Seq != head.Next || c.PrevDigest != head.Digest {
-		return newError(ErrInvalid, "append", sid, "commit is not sealed against the segment head")
+	if r.record.Segment != id {
+		return newError(ErrInvalid, "append", lease.Session, "lease does not cover the segment")
 	}
-	w.s.commits = append(w.s.commits, c)
-	w.s.byCommit[c.CommitID] = len(w.s.commits) - 1
-	return nil
-}
-
-func (w *memoryHandle) Close(ctx context.Context) error {
-	w.s.mu.Lock()
-	defer w.s.mu.Unlock()
-	if w.s.owner == w {
-		w.s.owner = nil
-	}
-	return nil
-}
-
-func (m *memorySegments) MarkDeleted(ctx context.Context, sid SessionID) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	s, err := m.segment(sid, "delete")
-	if err != nil {
-		return err
+	s, ok := m.segments[id]
+	if !ok {
+		return &Error{Code: ErrNotFound, Operation: "append", SessionID: lease.Session, Detail: fmt.Sprintf("segment %s not found", id)}
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.owner != nil {
-		return newError(ErrOwned, "delete", sid, fmt.Sprintf("owned by epoch %d", s.epoch))
+	if head := s.head(); c.Seq != head.Next || c.PrevDigest != head.Digest {
+		return newError(ErrInvalid, "append", lease.Session, "commit is not sealed against the segment head")
 	}
-	s.deleted = true
+	s.commits = append(s.commits, c)
+	s.byCommit[c.CommitID] = len(s.commits) - 1
 	return nil
 }
 
-func (m *memorySegments) TruncateSegment(ctx context.Context, sid SessionID, through CommitSeq) (Head, error) {
+func (m *memoryBackend) TruncateSegment(ctx context.Context, id SegmentID, through CommitSeq) (Head, error) {
 	if err := ctx.Err(); err != nil {
 		return Head{}, err
 	}
-	s, err := m.segment(sid, "collect")
+	s, err := m.segment(id)
 	if err != nil {
 		return Head{}, err
 	}
@@ -287,15 +275,100 @@ func (m *memorySegments) TruncateSegment(ctx context.Context, sid SessionID, thr
 	return s.head(), nil
 }
 
-func (m *memorySegments) RemoveSegment(ctx context.Context, sid SessionID) error {
+func (m *memoryBackend) RemoveSegment(ctx context.Context, id SegmentID) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	delete(m.segments, sid)
+	delete(m.segments, id)
+	return nil
+}
+
+// --- SessionStore ----------------------------------------------------------------
+
+func (m *memoryBackend) CreateRecord(ctx context.Context, rec SessionRecord) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.roots[rec.ID]; exists {
+		return newError(ErrConflict, "create", rec.ID, "session exists")
+	}
+	m.roots[rec.ID] = &memoryRoot{record: rec}
+	return nil
+}
+
+func (m *memoryBackend) Record(ctx context.Context, sid SessionID) (SessionRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return SessionRecord{}, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	r, ok := m.roots[sid]
+	if !ok {
+		return SessionRecord{}, newError(ErrNotFound, "record", sid, "session not found")
+	}
+	return r.record, nil
+}
+
+func (m *memoryBackend) ListRecords(ctx context.Context) ([]SessionRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]SessionRecord, 0, len(m.roots))
+	for _, r := range m.roots {
+		out = append(out, r.record)
+	}
+	return out, nil
+}
+
+func (m *memoryBackend) Acquire(ctx context.Context, sid SessionID, opts OpenOptions) (Lease, error) {
+	if err := ctx.Err(); err != nil {
+		return Lease{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.roots[sid]
+	if !ok {
+		return Lease{}, newError(ErrNotFound, "open", sid, "session not found")
+	}
+	if r.owned && !opts.Takeover {
+		return Lease{}, newError(ErrOwned, "open", sid, fmt.Sprintf("owned by epoch %d", r.epoch))
+	}
+	r.epoch++
+	r.owned = true
+	return Lease{Session: sid, Epoch: r.epoch}, nil
+}
+
+func (m *memoryBackend) Release(ctx context.Context, lease Lease) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if r, ok := m.roots[lease.Session]; ok && r.owned && r.epoch == lease.Epoch {
+		r.owned = false
+	}
+	return nil
+}
+
+func (m *memoryBackend) DeleteRecord(ctx context.Context, sid SessionID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.roots[sid]
+	if !ok {
+		return newError(ErrNotFound, "delete", sid, "session not found")
+	}
+	if r.owned {
+		return newError(ErrOwned, "delete", sid, fmt.Sprintf("owned by epoch %d", r.epoch))
+	}
+	delete(m.roots, sid)
 	return nil
 }
 
 var _ Store = (*MemoryStore)(nil)
-var _ SegmentStore = (*memorySegments)(nil)
+var _ Backend = (*memoryBackend)(nil)

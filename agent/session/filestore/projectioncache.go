@@ -62,10 +62,12 @@ func (c projectionCache) Save(_ context.Context, sid session.SessionID, id exten
 	return writeAtomic(path, rec)
 }
 
-// projectionPath is <root>/<sid>/projections/<id>/<version>.json. A projection
-// ID contains slashes, so it is percent-encoded exactly like a Session ID.
+// projectionPath is <root>/sessions/<sid>/projections/<id>/<version>.json. A
+// projection ID contains slashes, so it is percent-encoded exactly like a
+// Session ID. The cache is the Session's, not the segment's: forks fold their
+// own view of a shared prefix.
 func projectionPath(s *Store, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) string {
-	return filepath.Join(s.dir(sid), projectionsDir, encodeID(string(id)),
+	return filepath.Join(s.sessionDir(sid), projectionsDir, encodeID(string(id)),
 		strconv.FormatUint(uint64(v), 10)+".json")
 }
 

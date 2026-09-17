@@ -9,37 +9,39 @@ import (
 	"github.com/felinics/twilight/agent/session"
 )
 
-// A session directory whose header names another Session, or whose ownership
-// record cannot be read, is corrupt to every entry point: the Store must not
-// serve it under the requested SessionID nor treat it as unowned.
+// A segment directory whose header digests to another segment, or a root
+// whose record cannot be read, is corrupt to every entry point: the Store
+// must not serve it under the requested identity nor treat it as unowned.
 func TestSessionDirectoryIntegrity(t *testing.T) {
 	ctx := context.Background()
-	create := func(t *testing.T, s *Store, sid session.SessionID) {
+	create := func(t *testing.T, s *Store, sid session.SessionID) session.SessionHeader {
 		t.Helper()
-		if _, err := s.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
+		h, err := s.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1})
+		if err != nil {
 			t.Fatal(err)
 		}
+		return h
 	}
 	cases := []struct {
 		name          string
-		damage        func(t *testing.T, s *Store)
+		damage        func(t *testing.T, s *Store, a session.SessionHeader)
 		headerCorrupt bool
 	}{
-		{"header of another session", func(t *testing.T, s *Store) {
-			create(t, s, "b")
-			raw, err := os.ReadFile(filepath.Join(s.dir("b"), headerFile))
+		{"header of another segment", func(t *testing.T, s *Store, a session.SessionHeader) {
+			b := create(t, s, "b")
+			raw, err := os.ReadFile(filepath.Join(s.segmentDir(session.SegmentIDOf(b)), headerFile))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(s.dir("a"), headerFile), raw, 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(s.segmentDir(session.SegmentIDOf(a)), headerFile), raw, 0o644); err != nil {
 				t.Fatal(err)
 			}
 		}, true},
-		{"unreadable owner record", func(t *testing.T, s *Store) {
-			if err := os.WriteFile(filepath.Join(s.dir("a"), ownerFile), []byte("{not json"), 0o644); err != nil {
+		{"unreadable root record", func(t *testing.T, s *Store, _ session.SessionHeader) {
+			if err := os.WriteFile(s.rootPath("a"), []byte("{not json"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-		}, false},
+		}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -47,8 +49,8 @@ func TestSessionDirectoryIntegrity(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			create(t, s, "a")
-			tc.damage(t, s)
+			a := create(t, s, "a")
+			tc.damage(t, s, a)
 			for _, takeover := range []bool{false, true} {
 				if _, err := s.Open(ctx, "a", session.OpenOptions{Takeover: takeover}); !session.IsCode(err, session.ErrCorrupt) {
 					t.Fatalf("Open(takeover=%v) = %v, want corrupt", takeover, err)

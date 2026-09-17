@@ -79,7 +79,7 @@ func mustRegistry(t *testing.T, c *foldCounter) *extension.Registry {
 // entryPath is the layout the adapter must keep: a projection ID contains
 // slashes, so it is percent-encoded like a Session ID.
 func entryPath(root string, sid session.SessionID, v extension.ProjectionVersion) string {
-	return filepath.Join(root, string(sid), "projections", "twilight%2Fz%2Frows", "1.json")
+	return filepath.Join(root, "sessions", string(sid), "projections", "twilight%2Fz%2Frows", "1.json")
 }
 
 func TestProjectionCacheRoundTrip(t *testing.T) {

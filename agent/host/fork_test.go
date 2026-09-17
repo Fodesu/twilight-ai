@@ -59,8 +59,9 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if header.ParentFork == nil || header.ParentFork.ParentSessionID != "parent" {
-		t.Fatalf("fork header = %+v", header)
+	parentHeader, _ := h.Store.Header(ctx, "parent")
+	if header.ParentFork == nil || header.ParentFork.Parent != session.SegmentIDOf(parentHeader) {
+		t.Fatalf("fork header = %+v, want an edge to the parent's segment", header)
 	}
 	regen := open("regen", "r")
 	chat, err := h.ChatlogSurface(ctx, "regen")

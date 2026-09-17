@@ -7,18 +7,27 @@ import (
 	"github.com/felinics/twilight/agent/jsonstable"
 )
 
-// CreateRequest establishes a Session. Field-identical repeats are
-// idempotent; a different request for the same SessionID is a Conflict.
-// ParentFork makes the Session a fork (SES-FRK-1): the parent must exist in
-// the same Store, hold the commit ParentFork names with that digest, and
-// share the protocol version; otherwise Create fails and writes nothing.
+// CreateRequest establishes a Session: a root naming a new segment.
+// Field-identical repeats are idempotent; a different request for the same
+// SessionID is a Conflict. Fork makes the new segment a child of another
+// Session's history (SES-FRK-1): that Session must be live in the same Store,
+// its ancestry must hold commit Seq, and it must share the protocol version;
+// otherwise Create fails and writes nothing.
 type CreateRequest struct {
 	ProtocolVersion    uint16
 	SessionID          SessionID
 	CreatedAtUnixMilli int64
-	ParentFork         *ForkPoint
+	Fork               *ForkOrigin
 	CausationID        es.CausationID
 	Metadata           jsonstable.Value
+}
+
+// ForkOrigin names the point a fork inherits: a Session and a CommitSeq of
+// its stitched history. The Ledger resolves it to the segment that
+// contributes that commit and records the edge as ForkPoint.
+type ForkOrigin struct {
+	Session SessionID
+	Seq     CommitSeq
 }
 
 // OpenOptions configures writer ownership (SES-OWN-1). While a Handle is
@@ -30,9 +39,9 @@ type OpenOptions struct {
 }
 
 // Head is the ledger head after the last commit: the next CommitSeq to
-// assign and that commit's Digest. The empty ledger head is LedgerSeed(header):
-// {0, HeaderDigest} for a root Session, {ParentFork.Seq+1, ParentFork.Digest}
-// for a fork.
+// assign and that commit's Digest. A segment with no commits of its own has
+// head LedgerSeed(header): {0, HeaderDigest} for a root segment,
+// {ParentFork.Seq+1, ParentFork.Digest} for a child.
 type Head struct {
 	Next   CommitSeq
 	Digest es.Digest
@@ -114,17 +123,17 @@ type StreamPage struct {
 }
 
 // CollectReport is what one Collect reclaimed (SES-GC-2): the segments it
-// removed entirely and, for deleted segments other Sessions still reach, the
-// new Head.Next after their unreachable suffix was dropped.
+// removed entirely and, for segments some root still reaches, the new
+// Head.Next after their unreachable suffix was dropped.
 type CollectReport struct {
-	Removed   []SessionID
-	Truncated map[SessionID]CommitSeq
+	Removed   []SegmentID
+	Truncated map[SegmentID]CommitSeq
 }
 
-// Store is the kernel port (SES 4 to 6, 8). A Session is a root reference
-// into a DAG of immutable commit segments: its own segment plus, through
-// ParentFork, the prefix of its parent's. Delete drops the root; Collect
-// reclaims what no root reaches.
+// Store is the kernel port (SES 4 to 6, 8, 9). A Session is a root into the
+// lineage DAG: it names the segment it appends to, and reads the stitched
+// history of that segment's ancestry. Delete drops the root; Collect
+// reclaims the nodes no root reaches.
 type Store interface {
 	Create(context.Context, CreateRequest) (SessionHeader, error)
 	Header(context.Context, SessionID) (SessionHeader, error)
@@ -132,13 +141,13 @@ type Store interface {
 	ReadCommits(context.Context, CommitReadRequest) (CommitPage, error)
 	ReadStream(context.Context, StreamReadRequest) (StreamPage, error)
 	// Delete drops the Session's root (SES-GC-1): the Session is no longer
-	// found, opened, read or forked, and its SessionID cannot be recreated
-	// until Collect has reclaimed the segment. Its commits stay for as long
-	// as a live Session inherits them. An owned Session is ErrOwned.
+	// found, opened, read or forked; its SessionID is free again at once.
+	// The segments it reached stay nodes of the DAG for as long as another
+	// root reaches them. An owned Session is ErrOwned.
 	Delete(context.Context, SessionID) error
-	// Collect reclaims every segment and suffix no live Session reaches
-	// (SES-GC-2). It is idempotent and safe while live Sessions are open:
-	// nothing they reach is touched.
+	// Collect reclaims every node and suffix no root reaches (SES-GC-2). It
+	// is idempotent and safe while Sessions are open: nothing a root reaches
+	// is touched.
 	Collect(context.Context) (CollectReport, error)
 }
 

@@ -25,22 +25,24 @@ type ForkRequest struct {
 	CreatedAtUnixMilli int64
 }
 
-// ForkOwner is the ClaimOwner of a fork's prefix claim.
+// ForkOwner is the ClaimOwner of a fork's prefix claim: the child Session
+// and the edge it was created with.
 func ForkOwner(child session.SessionID, fork session.ForkPoint) artifact.ClaimOwner {
-	return artifact.ClaimOwner{Kind: ForkOwnerKind, Authority: string(child), Identity: fmt.Sprintf("%s@%d", fork.ParentSessionID, fork.Seq)}
+	return artifact.ClaimOwner{Kind: ForkOwnerKind, Authority: string(child), Identity: fmt.Sprintf("%s@%d", fork.Parent, fork.Seq)}
 }
 
 // forkClaimCommitID names the fork claim in DeriveClaimID's CommitID slot.
 func forkClaimCommitID(fork session.ForkPoint) session.CommitID {
-	return session.CommitID(fmt.Sprintf("fork:%s@%d", fork.ParentSessionID, fork.Seq))
+	return session.CommitID(fmt.Sprintf("fork:%s@%d", fork.Parent, fork.Seq))
 }
 
-// Fork creates req.Child anchored at req.Parent's commit req.At (SES-FRK-1)
-// and, when a ledger is configured, activates one retention claim over every
-// artifact the inherited prefix references (EXT-WRT-8): the parent's own
-// commit claims keep that content today, and the fork claim keeps it should
-// the parent be retired first. Fork is idempotent: a repeat with the same
-// arguments returns the same header and leaves the claim as it is.
+// Fork creates req.Child from req.Parent's history at commit req.At
+// (SES-FRK-1) and, when a ledger is configured, activates one retention claim
+// over every artifact the inherited prefix references (EXT-WRT-8): the
+// parent's own commit claims keep that content today, and the fork claim
+// keeps it should the parent be deleted first. Fork is idempotent: a repeat
+// with the same arguments returns the same header and leaves the claim as it
+// is.
 func Fork(ctx context.Context, store session.Store, registry *extension.Registry, admission Admission, req ForkRequest) (session.SessionHeader, error) {
 	if store == nil || registry == nil {
 		return session.SessionHeader{}, errors.New("writer: nil store or registry")
@@ -48,24 +50,12 @@ func Fork(ctx context.Context, store session.Store, registry *extension.Registry
 	if req.Parent == "" || req.Child == "" {
 		return session.SessionHeader{}, errors.New("writer: fork requires parent and child session ids")
 	}
-	anchorPage, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: req.Parent, From: req.At, Limit: 1})
-	if err != nil {
-		return session.SessionHeader{}, err
-	}
-	if len(anchorPage.Commits) != 1 || anchorPage.Commits[0].Seq != req.At {
-		return session.SessionHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: req.Child,
-			Detail: fmt.Sprintf("parent %s has no commit %d", req.Parent, req.At)}
-	}
-	if anchorPage.Header.ProtocolVersion != registry.ProtocolVersion {
-		return session.SessionHeader{}, &session.Error{Code: session.ErrUnsupportedProfile, Operation: "fork", SessionID: req.Child,
-			Detail: fmt.Sprintf("parent protocol v%d, registry protocol v%d", anchorPage.Header.ProtocolVersion, registry.ProtocolVersion)}
-	}
-	fork := session.ForkPoint{ParentSessionID: req.Parent, Seq: req.At, Digest: anchorPage.Commits[0].Digest}
 	header, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: registry.ProtocolVersion, SessionID: req.Child,
-		CreatedAtUnixMilli: req.CreatedAtUnixMilli, ParentFork: &fork})
+		CreatedAtUnixMilli: req.CreatedAtUnixMilli, Fork: &session.ForkOrigin{Session: req.Parent, Seq: req.At}})
 	if err != nil {
 		return session.SessionHeader{}, err
 	}
+	fork := *header.ParentFork
 	if admission.Ledger == nil {
 		return header, nil
 	}

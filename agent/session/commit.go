@@ -189,7 +189,7 @@ func (p profileV1) ValidateHeader(h SessionHeader) error {
 	if err := validIdentity("SessionID", string(h.SessionID)); err != nil {
 		return newError(ErrInvalid, "header", h.SessionID, err.Error())
 	}
-	if err := ValidateForkPoint(h.SessionID, h.ParentFork); err != nil {
+	if err := ValidateForkPoint(h.ParentFork); err != nil {
 		return newError(ErrInvalid, "header", h.SessionID, err.Error())
 	}
 	want, err := p.HeaderDigest(h)
@@ -230,19 +230,15 @@ func SealCommit(p LedgerProfile, prev es.Digest, sid SessionID, c *Commit) error
 	return nil
 }
 
-// ValidateForkPoint checks the shape of a fork anchor: nil is a root
-// Session; otherwise the parent is another well-formed Session identity and
-// the anchor names a commit digest. Whether the parent holds that commit is
-// the Store's check at Create (SES-FRK-1).
-func ValidateForkPoint(sid SessionID, fork *ForkPoint) error {
+// ValidateForkPoint checks the shape of an edge: nil is a root segment;
+// otherwise it names a parent segment and a commit digest. Whether the
+// parent holds that commit is the Ledger's check at Create (SES-FRK-1).
+func ValidateForkPoint(fork *ForkPoint) error {
 	if fork == nil {
 		return nil
 	}
-	if err := validIdentity("ParentSessionID", string(fork.ParentSessionID)); err != nil {
+	if err := validIdentity("Parent", string(fork.Parent)); err != nil {
 		return err
-	}
-	if fork.ParentSessionID == sid {
-		return fmt.Errorf("session %s cannot fork itself", sid)
 	}
 	if fork.Digest == "" {
 		return fmt.Errorf("fork point has no digest")
@@ -250,11 +246,11 @@ func ValidateForkPoint(sid SessionID, fork *ForkPoint) error {
 	return nil
 }
 
-// LedgerSeed is the head of a Session that holds no commits of its own: the
-// chain start every own commit is sealed from (SES-FRK-2). A root Session
-// seeds at {0, HeaderDigest}; a fork continues the parent's chain at
+// LedgerSeed is the head of a segment that holds no commits of its own: the
+// chain start every own commit is sealed from (SES-FRK-2). A root segment
+// seeds at {0, HeaderDigest}; a child continues the parent's chain at
 // {ParentFork.Seq+1, ParentFork.Digest}, so its own commits are verifiable
-// from the anchor alone while their digests cover the child's SessionID.
+// from the edge alone while their digests cover the creating SessionID.
 func LedgerSeed(h SessionHeader) Head {
 	if h.ParentFork != nil {
 		return Head{Next: h.ParentFork.Seq + 1, Digest: h.ParentFork.Digest}
@@ -262,10 +258,10 @@ func LedgerSeed(h SessionHeader) Head {
 	return Head{Next: 0, Digest: h.HeaderDigest}
 }
 
-// ValidateLedger recomputes every commit digest from the Session's seed and
-// reports the first corrupt commit (SES-REP-1). commits are the Session's own
+// ValidateLedger recomputes every commit digest from the segment's seed and
+// reports the first corrupt commit (SES-REP-1). commits are the segment's own
 // commits, contiguous from LedgerSeed(header).Next; an inherited prefix is
-// validated under its own Session's header.
+// validated under its own segment's header.
 func ValidateLedger(p LedgerProfile, header SessionHeader, commits []Commit) error {
 	seed := LedgerSeed(header)
 	prev := seed.Digest

@@ -102,54 +102,6 @@ func TestForkWriterInheritsPrefix(t *testing.T) {
 	}
 }
 
-// EXT-PRJ-3 on a fork: a child with no cache entry of its own starts from
-// the parent's entry when it ends inside the inherited prefix, and never from
-// one that reaches past the anchor.
-func TestForkWriterSeedsFromParentCache(t *testing.T) {
-	f := newCacheFixture(t)
-	ctx := context.Background()
-	cache := extension.NewMemoryProjectionCache()
-	parent := f.open(t, WritersConfig{Cache: cache, CachePolicy: extension.CacheEvery(1)})
-	f.commit(t, parent, "c1", "one")
-	f.commit(t, parent, "c2", "two")
-	if err := parent.Close(ctx); err != nil { // refreshes the parent's entries at Next=2
-		t.Fatal(err)
-	}
-	if _, err := Fork(ctx, f.store, f.registry, Admission{}, ForkRequest{Parent: "s", At: 0, Child: "early"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Fork(ctx, f.store, f.registry, Admission{}, ForkRequest{Parent: "s", At: 1, Child: "late"}); err != nil {
-		t.Fatal(err)
-	}
-	notesOf := func(w Writer, sid session.SessionID) []string {
-		state, _, err := w.Projections().Load(ctx, sid, alphaID, 1)
-		if err != nil {
-			t.Fatalf("load %s: %v", sid, err)
-		}
-		return state.(noteState).Notes
-	}
-	f.counter.reset()
-	early, err := openWriter(ctx, f.store, f.registry, Admission{}, "early", session.OpenOptions{}, WritersConfig{Cache: cache})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The parent's entry ends at Next=2, past the anchor of "early" (Seq 0):
-	// not usable, so the one inherited commit is folded.
-	if got := notesOf(early, "early"); !sameNotes(got, []string{"one"}) || f.counter.get(alphaID) != 1 {
-		t.Fatalf("early = %v folds=%d", got, f.counter.get(alphaID))
-	}
-	f.counter.reset()
-	late, err := openWriter(ctx, f.store, f.registry, Admission{}, "late", session.OpenOptions{}, WritersConfig{Cache: cache})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// "late" inherits exactly the two commits the parent's entry covers: the
-	// entry seeds the projection and nothing is folded.
-	if got := notesOf(late, "late"); !sameNotes(got, []string{"one", "two"}) || f.counter.get(alphaID) != 0 {
-		t.Fatalf("late = %v folds=%d, want the cached state with no fold", got, f.counter.get(alphaID))
-	}
-}
-
 // SES-GC-1/2, EXT-WRT-9: deleting a Session drops its root and releases the
 // claims it owns; a fork that inherits its commits keeps reading them through
 // its own prefix claim, and Collect reclaims only what no root reaches.
@@ -171,6 +123,10 @@ func TestDeleteReleasesClaimsAndKeepsInheritedPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := Fork(ctx, f.store, f.registry, f.admission(), ForkRequest{Parent: "s", At: 0, Child: "child"}); err != nil {
+		t.Fatal(err)
+	}
+	parentHeader, err := f.store.Header(ctx, "s")
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := parent.Close(ctx); err != nil {
@@ -197,8 +153,8 @@ func TestDeleteReleasesClaimsAndKeepsInheritedPrefix(t *testing.T) {
 		t.Fatalf("child after deleting the parent = %+v %v", state, err)
 	}
 	report, err := Collect(ctx, f.store)
-	if err != nil || len(report.Removed) != 0 || report.Truncated["s"] != 1 {
-		t.Fatalf("collect = %+v %v, want the parent kept through commit 0", report, err)
+	if err != nil || len(report.Removed) != 0 || report.Truncated[session.SegmentIDOf(parentHeader)] != 1 {
+		t.Fatalf("collect = %+v %v, want the parent's segment kept through commit 0", report, err)
 	}
 	if _, err := child.Commit(ctx, noteGroup("c3", "three")); err != nil {
 		t.Fatal(err)

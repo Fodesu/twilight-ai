@@ -3,83 +3,34 @@ package session
 import (
 	"context"
 	"fmt"
+	"sync"
 )
 
-// SegmentStore is the adapter port beneath the Ledger (SES-SCP-4): durable
-// storage of independent, append-only commit segments, one per SessionID,
-// with writer ownership per segment. An adapter knows nothing of forks,
-// inherited prefixes or reachability; the Ledger implements those once over
-// this port. A segment's own commits are numbered from LedgerSeed(header).Next.
-type SegmentStore interface {
-	// CreateSegment persists a header the Ledger has sealed and validated.
-	// It is ErrConflict when a segment with that SessionID exists, live or
-	// deleted.
-	CreateSegment(context.Context, SessionHeader) error
-	// SegmentHeader returns a segment's header and whether its root was
-	// deleted; ErrNotFound when no segment exists.
-	SegmentHeader(context.Context, SessionID) (SessionHeader, bool, error)
-	// ListSegments returns every segment the store holds, live or deleted.
-	ListSegments(context.Context) ([]SessionID, error)
-	// ReadSegment returns the segment's own commits from CommitSeq from
-	// (absolute), at most limit (0 = unlimited), its head, and whether more
-	// own commits follow. A torn tail is never returned.
-	ReadSegment(ctx context.Context, sid SessionID, from CommitSeq, limit uint32) ([]Commit, Head, bool, error)
-	// OpenSegment takes writer ownership (SES-OWN-1/2) and repairs a torn
-	// tail. The Ledger validates the chain before calling it.
-	OpenSegment(context.Context, SessionID, OpenOptions) (SegmentHandle, error)
-	// MarkDeleted records that the segment's root was dropped; ErrOwned
-	// while a writer holds it.
-	MarkDeleted(context.Context, SessionID) error
-	// TruncateSegment drops the segment's own commits after through and
-	// returns the new head.
-	TruncateSegment(ctx context.Context, sid SessionID, through CommitSeq) (Head, error)
-	// RemoveSegment deletes the segment entirely.
-	RemoveSegment(context.Context, SessionID) error
-}
-
-// SegmentHandle is the adapter's ownership handle over one segment.
-type SegmentHandle interface {
-	Epoch() Epoch
-	// Head is the segment's head: LedgerSeed(header) while it has no own
-	// commits.
-	Head() Head
-	// Own reports whether id is one of the segment's own commits.
-	Own(CommitID) bool
-	// LookupOwn reads one own commit.
-	LookupOwn(CommitID) (Commit, bool, error)
-	// Append persists a commit the Ledger sealed against this handle's Epoch
-	// and Head; a superseded handle gets ErrOwnershipLost and writes nothing.
-	Append(context.Context, Commit) error
-	Close(context.Context) error
-}
-
-// Ledger is the kernel's Store over a SegmentStore (SES 4 to 6, 8): the
-// Session lineage DAG in code. A Session is a root reference into immutable
-// segments: its own segment plus, through ParentFork, a prefix of its
-// parent's, transitively. Fork adds a reference edge; Delete drops a root;
-// Collect reclaims what no root reaches. Every adapter gets these semantics
-// from here and implements none of them.
+// Ledger is the kernel's Store over a Backend (SES 4 to 6, 8, 9): the
+// Session lineage DAG in code. Roots (SessionRecord) name the segment they
+// append to; segments (Segment) chain to their parents through ForkPoint
+// edges; a Session's history is the stitched Ancestry of its segment. Fork
+// adds a node and an edge; Delete drops a root; Collect reclaims what no
+// root reaches. Every adapter gets these semantics from here and implements
+// none of them.
 type Ledger struct {
-	seg SegmentStore
+	be Backend
 }
 
-// NewLedger returns the Store over seg.
-func NewLedger(seg SegmentStore) *Ledger { return &Ledger{seg: seg} }
+// NewLedger returns the Store over be.
+func NewLedger(be Backend) *Ledger { return &Ledger{be: be} }
 
-func (l *Ledger) profileOf(h SessionHeader) (LedgerProfile, error) {
-	return LedgerProfileFor(h.ProtocolVersion)
-}
-
-// header resolves a live Session's header; a deleted root is not found.
-func (l *Ledger) header(ctx context.Context, sid SessionID, op string, asSegment bool) (SessionHeader, error) {
-	h, deleted, err := l.seg.SegmentHeader(ctx, sid)
+// resolve loads a live Session's root and the Ancestry of its segment.
+func (l *Ledger) resolve(ctx context.Context, sid SessionID) (SessionRecord, *Ancestry, error) {
+	root, err := l.be.Record(ctx, sid)
 	if err != nil {
-		return SessionHeader{}, err
+		return SessionRecord{}, nil, err
 	}
-	if deleted && !asSegment {
-		return SessionHeader{}, newError(ErrNotFound, op, sid, "session deleted")
+	a, err := LoadAncestry(ctx, l.be, root.Segment)
+	if err != nil {
+		return SessionRecord{}, nil, err
 	}
-	return h, nil
+	return root, a, nil
 }
 
 // --- create -----------------------------------------------------------------------
@@ -93,7 +44,37 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SessionHeader, 
 		return SessionHeader{}, &Error{Code: ErrUnsupportedProfile, Operation: "create", SessionID: req.SessionID}
 	}
 	header := SessionHeader{ProtocolVersion: req.ProtocolVersion, SessionID: req.SessionID, CreatedAtUnixMilli: req.CreatedAtUnixMilli,
-		ParentFork: cloneFork(req.ParentFork), CausationID: req.CausationID, Metadata: req.Metadata}
+		CausationID: req.CausationID, Metadata: req.Metadata}
+	if req.Fork != nil {
+		// The edge names the segment that contributes the inherited commit,
+		// wherever in the parent's ancestry it lives (SES-FRK-1).
+		if req.Fork.Session == req.SessionID {
+			return SessionHeader{}, newError(ErrInvalid, "create", req.SessionID, "a session cannot fork itself")
+		}
+		_, parent, err := l.resolve(ctx, req.Fork.Session)
+		if err != nil {
+			if IsCode(err, ErrNotFound) {
+				return SessionHeader{}, newError(ErrNotFound, "create", req.SessionID, fmt.Sprintf("parent session %s not found", req.Fork.Session))
+			}
+			return SessionHeader{}, err
+		}
+		if parent.Header().ProtocolVersion != req.ProtocolVersion {
+			return SessionHeader{}, &Error{Code: ErrUnsupportedProfile, Operation: "create", SessionID: req.SessionID,
+				Detail: fmt.Sprintf("parent %s is protocol v%d", req.Fork.Session, parent.Header().ProtocolVersion)}
+		}
+		owner, ok := parent.Owner(req.Fork.Seq)
+		if !ok {
+			return SessionHeader{}, newError(ErrInvalid, "create", req.SessionID, fmt.Sprintf("parent %s has no commit %d", req.Fork.Session, req.Fork.Seq))
+		}
+		commits, _, _, err := l.be.ReadSegment(ctx, owner.Segment.ID, req.Fork.Seq, 1)
+		if err != nil {
+			return SessionHeader{}, err
+		}
+		if len(commits) != 1 || commits[0].Seq != req.Fork.Seq {
+			return SessionHeader{}, newError(ErrInvalid, "create", req.SessionID, fmt.Sprintf("parent %s has no commit %d", req.Fork.Session, req.Fork.Seq))
+		}
+		header.ParentFork = &ForkPoint{Parent: owner.Segment.ID, Seq: req.Fork.Seq, Digest: commits[0].Digest}
+	}
 	digest, err := profile.HeaderDigest(header)
 	if err != nil {
 		return SessionHeader{}, err
@@ -102,37 +83,24 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SessionHeader, 
 	if err := profile.ValidateHeader(header); err != nil {
 		return SessionHeader{}, err
 	}
-	if fork := header.ParentFork; fork != nil {
-		// The anchor must name a commit a live parent holds (SES-FRK-1). The
-		// parent is append-only, so the commit cannot disappear before the
-		// child is registered.
-		page, err := l.readCommits(ctx, CommitReadRequest{SessionID: fork.ParentSessionID, From: fork.Seq, Limit: 1}, false)
-		if err != nil {
-			if IsCode(err, ErrNotFound) {
-				return SessionHeader{}, newError(ErrNotFound, "create", header.SessionID, fmt.Sprintf("parent session %s not found", fork.ParentSessionID))
-			}
-			return SessionHeader{}, err
-		}
-		if err := CheckForkAnchor(header, page); err != nil {
-			return SessionHeader{}, err
-		}
-	}
-	if existing, deleted, err := l.seg.SegmentHeader(ctx, req.SessionID); err == nil {
-		if deleted {
-			return SessionHeader{}, newError(ErrConflict, "create", req.SessionID, "session deleted; its segment awaits collection")
-		}
-		if existing.HeaderDigest == header.HeaderDigest {
-			return existing, nil
+	segment := Segment{ID: SegmentIDOf(header), Header: header}
+	// Idempotency: the same request yields the same segment identity.
+	if existing, err := l.be.Record(ctx, req.SessionID); err == nil {
+		if existing.Segment == segment.ID {
+			return header, nil
 		}
 		return SessionHeader{}, newError(ErrConflict, "create", req.SessionID, "session exists with a different header")
 	} else if !IsCode(err, ErrNotFound) {
 		return SessionHeader{}, err
 	}
-	if err := l.seg.CreateSegment(ctx, header); err != nil {
+	if err := l.be.CreateSegment(ctx, segment); err != nil && !IsCode(err, ErrConflict) {
+		return SessionHeader{}, err
+	}
+	if err := l.be.CreateRecord(ctx, SessionRecord{ID: req.SessionID, Segment: segment.ID}); err != nil {
 		if IsCode(err, ErrConflict) {
 			// A concurrent creator won; answer as the idempotent path would.
-			if existing, deleted, herr := l.seg.SegmentHeader(ctx, req.SessionID); herr == nil && !deleted && existing.HeaderDigest == header.HeaderDigest {
-				return existing, nil
+			if existing, rerr := l.be.Record(ctx, req.SessionID); rerr == nil && existing.Segment == segment.ID {
+				return header, nil
 			}
 		}
 		return SessionHeader{}, err
@@ -140,37 +108,19 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SessionHeader, 
 	return header, nil
 }
 
-// CheckForkAnchor is the Store-independent half of SES-FRK-1: the parent page
-// read at ParentFork.Seq (Limit 1) must hold that commit with that digest and
-// share the child's protocol version.
-func CheckForkAnchor(child SessionHeader, parent CommitPage) error {
-	fork := child.ParentFork
-	if parent.Header.ProtocolVersion != child.ProtocolVersion {
-		return &Error{Code: ErrUnsupportedProfile, Operation: "create", SessionID: child.SessionID,
-			Detail: fmt.Sprintf("parent %s is protocol v%d", fork.ParentSessionID, parent.Header.ProtocolVersion)}
-	}
-	if len(parent.Commits) == 0 || parent.Commits[0].Seq != fork.Seq {
-		return newError(ErrInvalid, "create", child.SessionID, fmt.Sprintf("parent %s has no commit %d", fork.ParentSessionID, fork.Seq))
-	}
-	if parent.Commits[0].Digest != fork.Digest {
-		return newError(ErrInvalid, "create", child.SessionID, fmt.Sprintf("parent %s commit %d digest mismatch", fork.ParentSessionID, fork.Seq))
-	}
-	return nil
-}
-
-func cloneFork(f *ForkPoint) *ForkPoint {
-	if f == nil {
-		return nil
-	}
-	c := *f
-	return &c
-}
-
 func (l *Ledger) Header(ctx context.Context, sid SessionID) (SessionHeader, error) {
 	if err := ctx.Err(); err != nil {
 		return SessionHeader{}, err
 	}
-	return l.header(ctx, sid, "header", false)
+	root, err := l.be.Record(ctx, sid)
+	if err != nil {
+		return SessionHeader{}, err
+	}
+	seg, err := l.be.Segment(ctx, root.Segment)
+	if err != nil {
+		return SessionHeader{}, err
+	}
+	return seg.Header, nil
 }
 
 // --- open -------------------------------------------------------------------------
@@ -179,156 +129,144 @@ func (l *Ledger) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Han
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	header, err := l.header(ctx, sid, "open", false)
+	root, a, err := l.resolve(ctx, sid)
 	if err != nil {
 		return nil, err
 	}
-	profile, err := l.profileOf(header)
+	tip := a.Tip()
+	profile, err := LedgerProfileFor(tip.Header.ProtocolVersion)
 	if err != nil {
 		return nil, err
 	}
 	// Corruption detection happens before ownership is established
 	// (SES-REP-1); reads trust the store.
-	own, _, _, err := l.seg.ReadSegment(ctx, sid, LedgerSeed(header).Next, 0)
+	own, _, _, err := l.be.ReadSegment(ctx, tip.ID, tip.Seed().Next, 0)
 	if err != nil {
 		return nil, err
 	}
-	if err := ValidateLedger(profile, header, own); err != nil {
+	if err := ValidateLedger(profile, tip.Header, own); err != nil {
 		return nil, err
 	}
-	var prefix map[CommitID]prefixRef
-	if header.ParentFork != nil {
-		// The inherited prefix is immutable, so its CommitID index is built
-		// once per Open (SES-FRK-3).
-		if prefix, err = l.prefixIndex(ctx, header.ParentFork); err != nil {
-			return nil, err
-		}
-	}
-	seg, err := l.seg.OpenSegment(ctx, sid, opts)
+	lease, err := l.be.Acquire(ctx, sid, opts)
 	if err != nil {
 		return nil, err
 	}
-	return &ledgerHandle{l: l, header: header, profile: profile, seg: seg, prefix: prefix}, nil
-}
-
-// prefixRef locates an inherited commit: the segment that holds it and its
-// CommitSeq there.
-type prefixRef struct {
-	sid SessionID
-	seq CommitSeq
-}
-
-func (l *Ledger) prefixIndex(ctx context.Context, fork *ForkPoint) (map[CommitID]prefixRef, error) {
-	page, err := l.readCommits(ctx, CommitReadRequest{SessionID: fork.ParentSessionID, Limit: uint32(fork.Seq) + 1}, true)
+	// Acquire repaired a torn tail, so the own commits are re-read for the
+	// handle's index (SES-REP-3); the inherited prefix is immutable.
+	own, head, _, err := l.be.ReadSegment(ctx, tip.ID, tip.Seed().Next, 0)
 	if err != nil {
+		_ = l.be.Release(ctx, lease)
 		return nil, err
 	}
-	// The ancestor chain with each segment's own range start, so every
-	// inherited commit is attributed to the segment that stores it.
-	type ancestor struct {
-		sid  SessionID
-		seed CommitSeq
+	h := &ledgerHandle{l: l, root: root, ancestry: a, profile: profile, lease: lease, head: head, own: make(map[CommitID]struct{}, len(own))}
+	for i := range own {
+		h.own[own[i].CommitID] = struct{}{}
 	}
-	var chain []ancestor
-	for sid := fork.ParentSessionID; sid != ""; {
-		h, _, err := l.seg.SegmentHeader(ctx, sid)
-		if err != nil {
-			return nil, err
-		}
-		chain = append(chain, ancestor{sid: sid, seed: LedgerSeed(h).Next})
-		if h.ParentFork == nil {
-			break
-		}
-		sid = h.ParentFork.ParentSessionID
-	}
-	owner := func(seq CommitSeq) SessionID {
-		for _, a := range chain {
-			if seq >= a.seed {
-				return a.sid
-			}
-		}
-		return chain[len(chain)-1].sid
-	}
-	out := make(map[CommitID]prefixRef, len(page.Commits))
-	for _, c := range page.Commits {
-		if c.Seq > fork.Seq {
-			break
-		}
-		out[c.CommitID] = prefixRef{sid: owner(c.Seq), seq: c.Seq}
-	}
-	return out, nil
+	return h, nil
 }
 
+// ledgerHandle is the ownership handle over one root. It answers membership
+// of the tip's own commits from the index it built at Open and extends with
+// each Append (SES-REP-3): what it knows is exactly what it wrote or read
+// under its own lease, so a superseded handle never learns of a successor's
+// commits and reaches the fence at Append. The inherited prefix is immutable
+// and is read from storage.
 type ledgerHandle struct {
-	l       *Ledger
-	header  SessionHeader
-	profile LedgerProfile
-	seg     SegmentHandle
-	prefix  map[CommitID]prefixRef
+	mu       sync.Mutex
+	l        *Ledger
+	root     SessionRecord
+	ancestry *Ancestry
+	profile  LedgerProfile
+	lease    Lease
+	head     Head
+	own      map[CommitID]struct{}
+	// failed is set once an Append's durable outcome is unknown (SES-APP-1):
+	// the handle then answers nothing about the ledger, because what reached
+	// storage is exactly what it cannot know. The caller reopens.
+	failed error
 }
 
-func (w *ledgerHandle) SessionID() SessionID { return w.header.SessionID }
-func (w *ledgerHandle) Epoch() Epoch         { return w.seg.Epoch() }
-func (w *ledgerHandle) Head() Head           { return w.seg.Head() }
+func (w *ledgerHandle) SessionID() SessionID { return w.root.ID }
+func (w *ledgerHandle) Epoch() Epoch         { return w.lease.Epoch }
 
-// Committed is SES-REP-3; the inherited prefix counts (SES-FRK-3).
+func (w *ledgerHandle) Head() Head {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.head
+}
+
+// Committed is SES-REP-3: the handle's own index plus the inherited prefix
+// (SES-FRK-3).
 func (w *ledgerHandle) Committed(id CommitID) bool {
-	if w.seg.Own(id) {
+	w.mu.Lock()
+	failed := w.failed
+	_, own := w.own[id]
+	w.mu.Unlock()
+	if failed != nil {
+		return false
+	}
+	if own {
 		return true
 	}
-	_, inherited := w.prefix[id]
-	return inherited
+	_, inherited, err := w.ancestry.LookupInherited(context.Background(), w.l.be, id)
+	return err == nil && inherited
 }
 
-// LookupCommit is SES-REP-4; an inherited commit is read from its segment.
+// LookupCommit is SES-REP-4: an own commit is read from the tip segment, an
+// inherited one from the segment that holds it.
 func (w *ledgerHandle) LookupCommit(id CommitID) (Commit, bool, error) {
-	if c, ok, err := w.seg.LookupOwn(id); err != nil || ok {
-		return c, ok, err
+	w.mu.Lock()
+	failed := w.failed
+	_, own := w.own[id]
+	w.mu.Unlock()
+	if failed != nil {
+		return Commit{}, false, failed
 	}
-	ref, inherited := w.prefix[id]
-	if !inherited {
-		return Commit{}, false, nil
+	if own {
+		c, ok, err := w.l.be.LookupCommit(context.Background(), w.root.Segment, id)
+		if err != nil || !ok {
+			return Commit{}, false, err
+		}
+		return c, true, nil
 	}
-	commits, _, _, err := w.l.seg.ReadSegment(context.Background(), ref.sid, ref.seq, 1)
-	if err != nil {
-		return Commit{}, false, err
-	}
-	if len(commits) != 1 || commits[0].CommitID != id {
-		return Commit{}, false, &Error{Code: ErrCorrupt, Operation: "lookup", SessionID: w.header.SessionID, CommitID: id,
-			Detail: fmt.Sprintf("inherited commit not at %s@%d", ref.sid, ref.seq)}
-	}
-	return commits[0], true, nil
+	return w.ancestry.LookupInherited(context.Background(), w.l.be, id)
 }
 
 func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 	if err := ctx.Err(); err != nil {
 		return Commit{}, err
 	}
-	sid := w.header.SessionID
+	sid := w.root.ID
 	if err := validIdentity("CommitID", string(p.CommitID)); err != nil {
 		return Commit{}, newError(ErrInvalid, "append", sid, err.Error())
 	}
 	if err := ValidateBatches(p.Batches); err != nil {
 		return Commit{}, newError(ErrInvalid, "append", sid, err.Error())
 	}
-	if w.seg.Own(p.CommitID) {
-		return Commit{}, &Error{Code: ErrConflict, Operation: "append", SessionID: sid, CommitID: p.CommitID, Detail: "CommitID already in stream"}
+	if w.Committed(p.CommitID) {
+		return Commit{}, &Error{Code: ErrConflict, Operation: "append", SessionID: sid, CommitID: p.CommitID, Detail: "CommitID already in the ledger"}
 	}
-	if _, dup := w.prefix[p.CommitID]; dup {
-		return Commit{}, &Error{Code: ErrConflict, Operation: "append", SessionID: sid, CommitID: p.CommitID, Detail: "CommitID already in the inherited prefix"}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.failed != nil {
+		return Commit{}, w.failed
 	}
-	head := w.seg.Head()
-	c := Commit{Seq: head.Next, CommitID: p.CommitID, Epoch: w.seg.Epoch(), Batches: cloneBatches(p.Batches)}
-	if err := SealCommit(w.profile, head.Digest, sid, &c); err != nil {
+	c := Commit{Seq: w.head.Next, CommitID: p.CommitID, Epoch: w.lease.Epoch, Batches: cloneBatches(p.Batches)}
+	if err := SealCommit(w.profile, w.head.Digest, sid, &c); err != nil {
 		return Commit{}, err
 	}
-	if err := w.seg.Append(ctx, c); err != nil {
+	if err := w.l.be.Append(ctx, w.lease, w.root.Segment, c); err != nil {
+		if IsCode(err, ErrHandleFailed) {
+			w.failed = err
+		}
 		return Commit{}, err
 	}
+	w.head = Head{Next: c.Seq + 1, Digest: c.Digest}
+	w.own[c.CommitID] = struct{}{}
 	return cloneCommit(c), nil
 }
 
-func (w *ledgerHandle) Close(ctx context.Context) error { return w.seg.Close(ctx) }
+func (w *ledgerHandle) Close(ctx context.Context) error { return w.l.be.Release(ctx, w.lease) }
 
 // --- read -------------------------------------------------------------------------
 
@@ -336,57 +274,15 @@ func (l *Ledger) ReadCommits(ctx context.Context, req CommitReadRequest) (Commit
 	if err := ctx.Err(); err != nil {
 		return CommitPage{}, err
 	}
-	return l.readCommits(ctx, req, false)
-}
-
-// readCommits stitches the inherited prefix (read through the parent, which
-// stitches its own) in front of the Session's own commits (SES-FRK-2).
-// asSegment also serves a deleted root, which is how a fork reaches its
-// prefix after the parent was deleted.
-func (l *Ledger) readCommits(ctx context.Context, req CommitReadRequest, asSegment bool) (CommitPage, error) {
-	header, err := l.header(ctx, req.SessionID, "read", asSegment)
+	_, a, err := l.resolve(ctx, req.SessionID)
 	if err != nil {
 		return CommitPage{}, err
 	}
-	seed := LedgerSeed(header)
-	page := CommitPage{Header: header}
-	if fork := header.ParentFork; fork != nil && req.From <= fork.Seq {
-		prefix, err := l.readCommits(ctx, CommitReadRequest{SessionID: fork.ParentSessionID, From: req.From, Limit: req.Limit}, true)
-		if err != nil {
-			return CommitPage{}, err
-		}
-		for _, c := range prefix.Commits {
-			if c.Seq > fork.Seq {
-				break
-			}
-			page.Commits = append(page.Commits, c)
-		}
-		if req.Limit > 0 && uint32(len(page.Commits)) >= req.Limit {
-			_, head, _, err := l.seg.ReadSegment(ctx, req.SessionID, seed.Next, 1)
-			if err != nil {
-				return CommitPage{}, err
-			}
-			page.Head = head
-			page.HasMore = page.Commits[len(page.Commits)-1].Seq < fork.Seq || head.Next > seed.Next
-			return page, nil
-		}
-	}
-	from := req.From
-	if from < seed.Next {
-		from = seed.Next
-	}
-	var limit uint32
-	if req.Limit > 0 {
-		limit = req.Limit - uint32(len(page.Commits))
-	}
-	own, head, more, err := l.seg.ReadSegment(ctx, req.SessionID, from, limit)
+	commits, head, more, err := a.Read(ctx, l.be, req.From, req.Limit)
 	if err != nil {
 		return CommitPage{}, err
 	}
-	page.Head = head
-	page.Commits = append(page.Commits, own...)
-	page.HasMore = more
-	return page, nil
+	return CommitPage{Header: a.Header(), Commits: commits, Head: head, HasMore: more}, nil
 }
 
 func (l *Ledger) ReadStream(ctx context.Context, req StreamReadRequest) (StreamPage, error) {
@@ -398,7 +294,7 @@ func (l *Ledger) ReadStream(ctx context.Context, req StreamReadRequest) (StreamP
 	}
 	// Stream positions count the stream's events from the first commit the
 	// Session sees, inherited prefix included (SES-REP-2).
-	all, err := l.readCommits(ctx, CommitReadRequest{SessionID: req.SessionID}, false)
+	all, err := l.ReadCommits(ctx, CommitReadRequest{SessionID: req.SessionID})
 	if err != nil {
 		return StreamPage{}, err
 	}
@@ -441,89 +337,60 @@ func (l *Ledger) Delete(ctx context.Context, sid SessionID) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if _, err := l.header(ctx, sid, "delete", false); err != nil {
-		return err
-	}
-	return l.seg.MarkDeleted(ctx, sid)
+	return l.be.DeleteRecord(ctx, sid)
 }
 
 func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 	if err := ctx.Err(); err != nil {
 		return CollectReport{}, err
 	}
-	ids, err := l.seg.ListSegments(ctx)
+	ids, err := l.be.ListSegments(ctx)
 	if err != nil {
 		return CollectReport{}, err
 	}
-	headers := make(map[SessionID]SessionHeader, len(ids))
-	live := make(map[SessionID]bool, len(ids))
-	for _, sid := range ids {
-		h, deleted, err := l.seg.SegmentHeader(ctx, sid)
+	nodes := make(map[SegmentID]Segment, len(ids))
+	for _, id := range ids {
+		seg, err := l.be.Segment(ctx, id)
 		if err != nil {
 			if IsCode(err, ErrNotFound) {
 				continue
 			}
 			return CollectReport{}, err
 		}
-		headers[sid], live[sid] = h, !deleted
+		nodes[id] = seg
 	}
-	need := Reachable(headers, live)
-	report := CollectReport{Truncated: map[SessionID]CommitSeq{}}
-	for sid := range headers {
-		if live[sid] {
-			continue
-		}
-		through, reached := need[sid]
+	roots, err := l.be.ListRecords(ctx)
+	if err != nil {
+		return CollectReport{}, err
+	}
+	need := Reachable(nodes, roots)
+	report := CollectReport{Truncated: map[SegmentID]CommitSeq{}}
+	for id := range nodes {
+		through, reached := need[id]
 		if !reached {
-			if err := l.seg.RemoveSegment(ctx, sid); err != nil {
+			if err := l.be.RemoveSegment(ctx, id); err != nil {
 				return report, err
 			}
-			report.Removed = append(report.Removed, sid)
+			report.Removed = append(report.Removed, id)
 			continue
 		}
-		_, head, _, err := l.seg.ReadSegment(ctx, sid, through+1, 1)
+		if through == ^CommitSeq(0) {
+			continue // a root's tip keeps everything
+		}
+		_, head, _, err := l.be.ReadSegment(ctx, id, through+1, 1)
 		if err != nil {
 			return report, err
 		}
 		if head.Next <= through+1 {
 			continue
 		}
-		newHead, err := l.seg.TruncateSegment(ctx, sid, through)
+		newHead, err := l.be.TruncateSegment(ctx, id, through)
 		if err != nil {
 			return report, err
 		}
-		report.Truncated[sid] = newHead.Next
+		report.Truncated[id] = newHead.Next
 	}
 	return report, nil
-}
-
-// Reachable computes, from the headers of every segment and which of them
-// are live roots, the last CommitSeq each segment must keep (SES-GC-2): a
-// live root keeps everything; a segment reached only through forks keeps up
-// to the largest Seq any reaching fork anchors at. Segments absent from the
-// result are unreachable. Anchors are followed transitively, so a deleted
-// segment referenced only by other deleted segments is unreachable.
-func Reachable(headers map[SessionID]SessionHeader, live map[SessionID]bool) map[SessionID]CommitSeq {
-	const all = ^CommitSeq(0)
-	need := make(map[SessionID]CommitSeq, len(headers))
-	for sid, h := range headers {
-		if !live[sid] {
-			continue
-		}
-		need[sid] = all
-		fork := h.ParentFork
-		for fork != nil {
-			if cur, ok := need[fork.ParentSessionID]; !ok || fork.Seq > cur {
-				need[fork.ParentSessionID] = fork.Seq
-			}
-			parent, ok := headers[fork.ParentSessionID]
-			if !ok {
-				break
-			}
-			fork = parent.ParentFork
-		}
-	}
-	return need
 }
 
 func cloneCommit(c Commit) Commit {

@@ -162,12 +162,9 @@ type sessionWriter struct {
 	registry  *extension.Registry
 	admission Admission
 	sid       session.SessionID
-	// fork is the Session's anchor when it is a fork; its parent's cache
-	// entries may seed a projection (EXT-PRJ-3).
-	fork   *session.ForkPoint
-	head   session.Head
-	states map[projectionKey]any
-	scopes map[projectionKey]*extension.ProjectionScope
+	head      session.Head
+	states    map[projectionKey]any
+	scopes    map[projectionKey]*extension.ProjectionScope
 	// cache, cachePolicy and cached carry EXT-PRJ-3: cached records the head each
 	// projection's cache entry already reflects, which is what a policy measures
 	// the next refresh against.
@@ -211,7 +208,7 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 	if policy == nil {
 		policy = extension.CacheEvery(extension.DefaultCacheEvery)
 	}
-	w := &sessionWriter{kernel: kernel, registry: registry, admission: admission, sid: sid, fork: header.ParentFork,
+	w := &sessionWriter{kernel: kernel, registry: registry, admission: admission, sid: sid,
 		states: make(map[projectionKey]any), scopes: make(map[projectionKey]*extension.ProjectionScope),
 		cache: cfg.Cache, cachePolicy: policy, cached: make(map[projectionKey]session.Head), observers: cfg.Observers}
 	if err := w.rebuild(ctx, store); err != nil {
@@ -271,28 +268,14 @@ func (w *sessionWriter) rebuild(ctx context.Context, store session.Store) error 
 // decodes, otherwise nothing. Anything unusable -- absent, corrupt, ahead of
 // the log, or recorded at a digest the log does not have -- falls back to a
 // full fold, so a stale or damaged cache only costs time (EXT-PRJ-3). It is
-// the Writer's counterpart of the store reader's startState. A fork with no
-// entry of its own may start from its parent's entry when that entry ends
-// inside the inherited prefix: the prefix is the same commits under the same
-// digests, so the alignment predicate judges it exactly as it would the
-// fork's own entry.
+// the Writer's counterpart of the store reader's startState. A fork folds its
+// inherited prefix on first open and caches the result under its own
+// SessionID like any Session.
 func (w *sessionWriter) startState(ctx context.Context, scope *extension.ProjectionScope, commits []session.Commit) (any, session.Head, bool) {
 	if w.cache == nil {
 		return nil, session.Head{}, false
 	}
-	if state, through, ok := w.cachedState(ctx, w.sid, scope, commits); ok {
-		return state, through, true
-	}
-	if w.fork != nil {
-		if state, through, ok := w.cachedState(ctx, w.fork.ParentSessionID, scope, commits); ok && through.Next <= w.fork.Seq+1 {
-			return state, through, true
-		}
-	}
-	return nil, session.Head{}, false
-}
-
-func (w *sessionWriter) cachedState(ctx context.Context, sid session.SessionID, scope *extension.ProjectionScope, commits []session.Commit) (any, session.Head, bool) {
-	encoded, through, ok, err := w.cache.Load(ctx, sid, scope.Def.ID, scope.Def.Version)
+	encoded, through, ok, err := w.cache.Load(ctx, w.sid, scope.Def.ID, scope.Def.Version)
 	if err != nil || !ok || !coversCommit(commits, through) {
 		return nil, session.Head{}, false
 	}

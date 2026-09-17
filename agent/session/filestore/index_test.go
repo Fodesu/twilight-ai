@@ -22,15 +22,17 @@ func TestReadIndexedMatchesFullParse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := indexed.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
+	header, err := indexed.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1})
+	if err != nil {
 		t.Fatal(err)
 	}
+	seg := session.SegmentIDOf(header)
 	w, err := indexed.Open(ctx, sid, session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	appendCommits(t, w, 0, [][]string{{"x", "y"}, {"x"}, {"x", "x", "y"}}) // commits 0..2
-	if indexed.currentIndex(sid, indexed.LogPath(sid)) == nil {
+	if indexed.currentIndex(seg, indexed.LogPath(sid)) == nil {
 		t.Fatal("append did not keep the index current")
 	}
 	fresh, err := New(root) // never opened: every read is a full parse
@@ -46,7 +48,7 @@ func TestReadIndexedMatchesFullParse(t *testing.T) {
 	// The largest CommitSeq is past the head on both paths; an int conversion
 	// of it would wrap negative.
 	samePage(t, "from=max", indexed, fresh, session.CommitReadRequest{SessionID: sid, From: math.MaxUint64})
-	if indexed.currentIndex(sid, indexed.LogPath(sid)) == nil {
+	if indexed.currentIndex(seg, indexed.LogPath(sid)) == nil {
 		t.Fatal("reads dropped the index")
 	}
 
