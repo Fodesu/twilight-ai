@@ -58,6 +58,10 @@ type Worker struct {
 	lease     time.Duration
 	now       func() time.Time
 	lifecycle context.Context
+	stop      context.CancelFunc
+	// wg counts the goroutines the Worker started: the reconcile loop and
+	// each record's heartbeat and watcher. Close cancels lifecycle and waits.
+	wg sync.WaitGroup
 
 	mu     sync.Mutex
 	notify map[effect.AssignmentKey]chan struct{}
@@ -100,15 +104,35 @@ func NewWorker(ctx context.Context, records executionstore.Store, routes []Route
 	if now == nil {
 		now = time.Now
 	}
+	lifecycle, stop := context.WithCancel(context.WithoutCancel(ctx))
 	w := &Worker{store: records, routes: routes, backends: backends, id: opts.ID, lease: opts.LeaseDuration, now: now,
-		lifecycle: context.WithoutCancel(ctx), notify: make(map[effect.AssignmentKey]chan struct{})}
+		lifecycle: lifecycle, stop: stop, notify: make(map[effect.AssignmentKey]chan struct{})}
 	if err := w.recover(ctx); err != nil {
+		stop()
 		return nil, err
 	}
 	if opts.ReconcileInterval > 0 {
-		go w.reconcileLoop(opts.ReconcileInterval)
+		w.spawn(func() { w.reconcileLoop(opts.ReconcileInterval) })
 	}
 	return w, nil
+}
+
+// spawn runs fn as a Worker goroutine counted by Close.
+func (w *Worker) spawn(fn func()) {
+	w.wg.Add(1)
+	go func() {
+		defer w.wg.Done()
+		fn()
+	}()
+}
+
+// Close stops the reconcile loop, every heartbeat and every watcher, and
+// waits for them. Records keep their leases until they expire: another
+// incarnation adopts them through Reconcile or Takeover (RUN-EXE-6). Close
+// does not cancel backend executions.
+func (w *Worker) Close() {
+	w.stop()
+	w.wg.Wait()
 }
 
 // route selects the Backend for an Assignment: the first Route whose Match
@@ -344,7 +368,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 	ref := claimed.ExecutionRef.Ref
 	if claimed.State == effect.ExecutionCancelRequested {
 		leaseDone := make(chan struct{})
-		go w.heartbeat(key, claimed.FencingEpoch, leaseDone)
+		w.spawn(func() { w.heartbeat(key, claimed.FencingEpoch, leaseDone) })
 		attachment, attachErr := backend.Attach(ctx, ref)
 		if attachErr != nil {
 			close(leaseDone)
@@ -358,7 +382,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 			return nil
 		}
 		cancelErr := backend.Cancel(ctx, ref)
-		go w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone)
+		w.spawn(func() { w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone) })
 		return cancelErr
 	}
 	if claimed.State == effect.ExecutionRunning || claimed.State == effect.ExecutionDispatching {
@@ -370,10 +394,10 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 		}
 		if attachment.State == effect.AttachmentActive || attachment.State == effect.AttachmentTerminal {
 			leaseDone := make(chan struct{})
-			go w.heartbeat(key, claimed.FencingEpoch, leaseDone)
+			w.spawn(func() { w.heartbeat(key, claimed.FencingEpoch, leaseDone) })
 			// Keep Dispatching as a conservative pre-outcome state. The watcher
 			// will terminalize it after the adopted backend produces an outcome.
-			go w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone)
+			w.spawn(func() { w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone) })
 			return nil
 		}
 		if claimed.Assignment.Kind == effect.AssignmentTool {
@@ -387,14 +411,19 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 				Error: &protocol.WireError{Code: "adopted_without_replay", Message: "tool execution adopted without a replay declaration"}}
 			return w.finishOwned(ctx, key, claimed.FencingEpoch, env, effect.ExecutionUnknown, nil)
 		}
-		// A model execution replays the same frozen request: Prepare again so
-		// an allocating backend may hand out a fresh Ref for the new physical
-		// execution; the old Ref was just confirmed missing (RUN-EXE-9).
-		fresh, err := backend.Prepare(ctx, claimed.Assignment)
+		// A model execution replays the same frozen request as a new
+		// generation: Restart allocates the Ref of the new physical execution
+		// and the old Ref, just confirmed missing, moves to the audit trail
+		// (RUN-EXE-9).
+		fresh, err := backend.Restart(ctx, ref, claimed.Assignment)
 		if err != nil {
 			return err
 		}
+		if fresh == "" {
+			return errors.New("executor: backend restarted with an empty execution ref")
+		}
 		if fresh != ref {
+			claimed.Superseded = append(claimed.Superseded, claimed.ExecutionRef)
 			claimed.ExecutionRef.Ref = fresh
 			if err := w.store.PutOwned(ctx, claimed, w.id, claimed.FencingEpoch); err != nil {
 				return err
@@ -411,10 +440,10 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 		}
 	}
 	leaseDone := make(chan struct{})
-	go w.heartbeat(key, claimed.FencingEpoch, leaseDone)
+	w.spawn(func() { w.heartbeat(key, claimed.FencingEpoch, leaseDone) })
 	if err := backend.Start(context.WithoutCancel(ctx), ref, claimed.Assignment); err != nil {
 		if errors.Is(err, effect.ErrDispatchUnknown) {
-			go w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone)
+			w.spawn(func() { w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone) })
 			return err
 		}
 		settleErr := w.finishOwned(ctx, key, claimed.FencingEpoch, protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest,
@@ -426,10 +455,10 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 		// The backend call may already have crossed its external boundary.
 		// Keep the watcher alive and report Dispatch as accepted; recovery
 		// must reconcile the Dispatching/Running record rather than replan.
-		go w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone)
+		w.spawn(func() { w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone) })
 		return nil
 	}
-	go w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone)
+	w.spawn(func() { w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone) })
 	return nil
 }
 
@@ -513,6 +542,8 @@ func (w *Worker) heartbeat(key effect.AssignmentKey, epoch uint64, done <-chan s
 	for {
 		select {
 		case <-done:
+			return
+		case <-w.lifecycle.Done():
 			return
 		case <-ticker.C:
 			if err := w.store.Renew(w.lifecycle, key, w.id, epoch, w.lease); err != nil {
@@ -754,8 +785,10 @@ func (w *Worker) recover(ctx context.Context) error {
 		}
 		if attachment.State == effect.AttachmentActive || attachment.State == effect.AttachmentTerminal {
 			done := make(chan struct{})
-			go w.heartbeat(r.Assignment.Key(), r.FencingEpoch, done)
-			go w.watch(r.Assignment.Key(), r.AssignmentDigest, r.FencingEpoch, backend, r.ExecutionRef.Ref, done)
+			w.spawn(func() { w.heartbeat(r.Assignment.Key(), r.FencingEpoch, done) })
+			w.spawn(func() {
+				w.watch(r.Assignment.Key(), r.AssignmentDigest, r.FencingEpoch, backend, r.ExecutionRef.Ref, done)
+			})
 		}
 	}
 	return nil

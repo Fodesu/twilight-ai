@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -236,6 +238,20 @@ func RefOf(key AssignmentKey) string {
 // Prepare derives the Ref of the Assignment without starting it.
 func (e *LocalExecutor) Prepare(_ context.Context, a Assignment) (string, error) {
 	return RefOf(a.Key()), nil
+}
+
+// Restart derives the Ref of the next generation of the attempt: the key's
+// Ref with a generation suffix, so a re-dispatched model step gets its own
+// entry and the previous one stays readable until retention drops it.
+func (e *LocalExecutor) Restart(_ context.Context, previous string, a Assignment) (string, error) {
+	base := RefOf(a.Key())
+	gen := 1
+	if strings.HasPrefix(previous, base+"#") {
+		if n, err := strconv.Atoi(strings.TrimPrefix(previous, base+"#")); err == nil {
+			gen = n + 1
+		}
+	}
+	return base + "#" + strconv.Itoa(gen), nil
 }
 
 // SetRetainedOutcomes bounds the terminal entries kept for Attach, Status

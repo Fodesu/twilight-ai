@@ -179,6 +179,12 @@ func (e *Executor) Prepare(_ context.Context, a effect.Assignment) (string, erro
 	return string(ChildID(a.Session, a.RunID, a.CallID)), nil
 }
 
+// Restart keeps the Ref: the child Session is the durable execution and a
+// takeover continues it rather than creating another child (SPN-4).
+func (e *Executor) Restart(_ context.Context, previous string, _ effect.Assignment) (string, error) {
+	return previous, nil
+}
+
 // Start begins driving the child ref names for the call a; a ref already
 // driven here is a no-op.
 func (e *Executor) Start(_ context.Context, ref string, a effect.Assignment) error {

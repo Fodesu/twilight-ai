@@ -54,9 +54,14 @@ type ExecutionRef struct {
 // State and Outcome move monotonically to a terminal state. Owner and
 // FencingEpoch protect takeover.
 type Record struct {
-	Assignment          effect.Assignment         `json:"assignment"`
-	AssignmentDigest    run.Digest                `json:"assignmentDigest"`
-	ExecutionRef        ExecutionRef              `json:"executionRef"`
+	Assignment       effect.Assignment `json:"assignment"`
+	AssignmentDigest run.Digest        `json:"assignmentDigest"`
+	ExecutionRef     ExecutionRef      `json:"executionRef"`
+	// Superseded lists the ExecutionRefs of earlier generations of this
+	// attempt, oldest first: a takeover that found the physical execution
+	// missing restarted it under a new Ref (RUN-EXE-9). The audit trail
+	// keeps every Ref the attempt ever bound to.
+	Superseded          []ExecutionRef            `json:"superseded,omitempty"`
 	State               effect.ExecutionStatus    `json:"state"`
 	Owner               string                    `json:"owner,omitempty"`
 	FencingEpoch        uint64                    `json:"fencingEpoch,omitempty"`

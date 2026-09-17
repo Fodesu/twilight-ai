@@ -92,6 +92,7 @@ type refBackend struct {
 	mu       sync.Mutex
 	prepared int
 	started  int
+	restarts int
 	startRef string
 }
 
@@ -110,7 +111,12 @@ func (b *refBackend) Start(ctx context.Context, ref string, a effect.Assignment)
 	return b.testBackend.Dispatch(ctx, a)
 }
 
-func (b *refBackend) keyOf(a effect.Assignment) effect.AssignmentKey { return a.Key() }
+func (b *refBackend) Restart(context.Context, string, effect.Assignment) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.restarts++
+	return fmt.Sprintf("execution-%d", b.restarts+1), nil
+}
 
 func (b *refBackend) Attach(ctx context.Context, ref string) (effect.Attachment, error) {
 	return b.testBackend.Attach(ctx, b.testBackend.lastKey())
@@ -362,6 +368,88 @@ func TestWorkerOutcomeReadFailurePreservesExecution(t *testing.T) {
 				t.Fatalf("eventual outcome = %+v, %v", out, err)
 			}
 		})
+	}
+}
+
+// holdBackend accepts a Dispatch and never produces its Outcome.
+type holdBackend struct{ *testBackend }
+
+func (b *holdBackend) Dispatch(_ context.Context, a effect.Assignment) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.outcomes[a.Key()] == nil {
+		b.outcomes[a.Key()] = make(chan effect.Outcome, 1)
+	}
+	return nil
+}
+
+// Close stops the reconcile loop and every watcher and heartbeat, and
+// returns while a backend execution is still running; the record keeps its
+// lease for another incarnation.
+func TestWorkerCloseStopsGoroutines(t *testing.T) {
+	ctx := context.Background()
+	records := store.NewMemoryStore()
+	backend := &holdBackend{newTestBackend()}
+	worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("test", executor.PortBackend(backend))},
+		executor.WorkerOptions{ID: "worker-c", LeaseDuration: time.Second, ReconcileInterval: time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := testAssignment()
+	if err := worker.Dispatch(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { worker.Close(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close did not return with a watcher in flight")
+	}
+	r, ok, err := records.Get(ctx, a.Key())
+	if err != nil || !ok || r.State.Terminal() {
+		t.Fatalf("record after close = %+v ok=%v %v, want a live non-terminal record", r, ok, err)
+	}
+}
+
+// Adopting a model record whose execution the backend no longer finds
+// restarts it as a new generation: the previous Ref moves to Superseded and
+// Start receives the new one (RUN-EXE-9).
+func TestWorkerRestartSupersedesRef(t *testing.T) {
+	ctx := context.Background()
+	records := store.NewMemoryStore()
+	a := testAssignment()
+	digest, err := a.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+		ExecutionRef: store.ExecutionRef{Provider: "ref", Ref: "execution-1"},
+		Owner:        "dead-worker", FencingEpoch: 2, LeaseUntilUnixMilli: 1}
+	if err := records.Put(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	backend := &refBackend{testBackend: newTestBackend()}
+	worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("ref", backend)}, executor.WorkerOptions{ID: "worker-b", LeaseDuration: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Close()
+	if err := worker.Takeover(ctx, a.Key()); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := records.Get(ctx, a.Key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExecutionRef.Ref != "execution-2" || len(got.Superseded) != 1 || got.Superseded[0].Ref != "execution-1" {
+		t.Fatalf("restarted record = ref %q superseded %+v, want execution-2 over [execution-1]", got.ExecutionRef.Ref, got.Superseded)
+	}
+	backend.mu.Lock()
+	prepared, restarts, startRef := backend.prepared, backend.restarts, backend.startRef
+	backend.mu.Unlock()
+	if prepared != 0 || restarts != 1 || startRef != "execution-2" {
+		t.Fatalf("backend calls = prepared:%d restarts:%d start ref:%q, want 0/1/execution-2", prepared, restarts, startRef)
 	}
 }
 

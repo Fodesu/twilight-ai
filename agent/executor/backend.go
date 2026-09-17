@@ -39,6 +39,12 @@ type Backend interface {
 	// effect.ErrDispatchUnknown. Start of a Ref that already started is a
 	// no-op.
 	Start(ctx context.Context, ref string, a effect.Assignment) error
+	// Restart allocates the Ref of a new physical execution of the same
+	// Assignment after the Backend reported the previous one missing: the
+	// next generation of the attempt (RUN-EXE-9). Unlike Prepare it is not
+	// required to return the same Ref; a Backend whose physical execution is
+	// the durable object itself (a child Session) returns the same Ref.
+	Restart(ctx context.Context, previous string, a effect.Assignment) (ref string, err error)
 	// Attach reports what the Backend finds for Ref: missing, active,
 	// orphaned or terminal.
 	Attach(ctx context.Context, ref string) (effect.Attachment, error)
@@ -93,6 +99,12 @@ func (b portBackend) key(ref string) (effect.AssignmentKey, error) {
 
 func (b portBackend) Start(ctx context.Context, _ string, a effect.Assignment) error {
 	return b.port.Dispatch(ctx, a)
+}
+
+// Restart of a Port-shaped executor re-dispatches the same key: the Ref is
+// the key, so it does not change.
+func (b portBackend) Restart(_ context.Context, previous string, _ effect.Assignment) (string, error) {
+	return previous, nil
 }
 
 func (b portBackend) Attach(ctx context.Context, ref string) (effect.Attachment, error) {
