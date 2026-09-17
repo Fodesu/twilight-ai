@@ -224,7 +224,7 @@ spawn.Bind(authority)                                            // 子经 Autho
 
 ## 12. 未决
 
-- **effect.Port 的可组合性**：`spawn.Intercept` 需要为 Port 与 BindingPort 的每个生命周期方法各转发一次，按 Assignment 内容或 key 归属判定路由。路由应只在选择执行后端时发生一次，之后的生命周期操作沿同一后端进行；这需要从 execution lifecycle 本身重新建模 effect.Port，本文不定义，见 RUN-EXE 的后续修订。
+- **effect.Port 的可组合性**：`spawn.Intercept` 需要为 Port 与 BindingPort 的每个生命周期方法各转发一次，按 Assignment 内容或 key 归属判定路由。修订方案见 [agent-run-exe-revision.md](agent-run-exe-revision.md)：backend 选择只在 execution 创建时发生一次并作为 `ExecutionRef` 持久化进 record，此后生命周期只认 record；spawn 成为一个 backend，Intercept 删除。
 - **公共读取的成本**：`extension.NewProjectionReader` 每次 Load 从最近的缓存条目起折叠尾部提交，`CacheEvery` 决定尾部长度；`Coordinator.Status`、prompt 构造之外的应用读取都走这条路。命令路径（Loop 的 `Runtime.Load`）读 Writer 内存投影，不受影响。若公共读取成为瓶颈，后续是 owner 进程内一份随 Writer 更新、按 head 校验的只读缓存，仍不经 `Writers`。
 - **重复 Open 的策略**：当前同一 authority 内一个 Session 同时只有一代所有权（`ErrSessionOpen`）；若产品需要两个门面共享一个 Session，替代方案是共享 openSession 加引用计数。
 
