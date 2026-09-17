@@ -1,6 +1,7 @@
 package writer
 
 import (
+	"github.com/felinics/twilight/agent/jsonstable"
 	"context"
 	"errors"
 	"fmt"
@@ -23,6 +24,9 @@ type ForkRequest struct {
 	At                 session.CommitSeq
 	Child              session.SessionID
 	CreatedAtUnixMilli int64
+	// Metadata is the child segment's creation metadata; it enters the
+	// segment digest.
+	Metadata jsonstable.Value
 }
 
 // ForkOwner is the ClaimOwner of a fork's prefix claim: the child Session
@@ -51,7 +55,7 @@ func Fork(ctx context.Context, store session.Store, registry *extension.Registry
 		return session.SegmentHeader{}, errors.New("writer: fork requires parent and child session ids")
 	}
 	header, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: registry.ProtocolVersion, SessionID: req.Child,
-		CreatedAtUnixMilli: req.CreatedAtUnixMilli, Fork: &session.ForkOrigin{Session: req.Parent, Seq: req.At}})
+		CreatedAtUnixMilli: req.CreatedAtUnixMilli, Fork: &session.ForkOrigin{Session: req.Parent, Seq: req.At}, Metadata: req.Metadata})
 	if err != nil {
 		return session.SegmentHeader{}, err
 	}

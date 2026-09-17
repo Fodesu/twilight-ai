@@ -84,6 +84,10 @@ type Ports struct {
 	// Warn receives failures of work the Host does outside any caller's call,
 	// such as settling a reattached Outcome; nil discards them.
 	Warn func(error)
+	// Spawn enables the subagent effect (HST-SPN): the Host intercepts the
+	// spawn tool's Assignments before Executor sees them and runs each as a
+	// child Session it drives itself. Nil leaves the tool unavailable.
+	Spawn *SpawnOptions
 }
 
 // Host is the composed authority process (HST-PRT-2). Exported fields are the
@@ -184,6 +188,9 @@ func New(p Ports) (*Host, error) {
 		recovery: make(map[session.SessionID]*recoveryLifetime),
 	}
 	h.Coordinator = &turn.Coordinator{Writers: writers, Runtime: runtime, Now: now}
+	if p.Spawn != nil {
+		h.Executor = newSpawnExecutor(h, p.Executor, *p.Spawn)
+	}
 	return h, nil
 }
 
@@ -490,7 +497,8 @@ func (h *Host) stopRecovery(sid session.SessionID) {
 	}
 }
 
-// Close stops recovery listeners and releases every Session this Host owns.
+// Close stops recovery listeners, cancels the child drives of the spawn
+// effect and releases every Session this Host owns.
 func (h *Host) Close(ctx context.Context) error {
 	h.mu.Lock()
 	for sid, lt := range h.recovery {
@@ -498,6 +506,9 @@ func (h *Host) Close(ctx context.Context) error {
 		delete(h.recovery, sid)
 	}
 	h.mu.Unlock()
+	if se, ok := h.Executor.(*spawnExecutor); ok {
+		se.close()
+	}
 	return writer.CloseWriters(ctx, h.Writers)
 }
 

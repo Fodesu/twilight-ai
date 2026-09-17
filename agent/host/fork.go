@@ -59,7 +59,47 @@ func (h *Host) ForkBeforeTurn(ctx context.Context, parent session.SessionID, tur
 // turnStartCommit finds the commit that carries twilight/turn/started for
 // turnID.
 func (h *Host) turnStartCommit(ctx context.Context, sid session.SessionID, turnID turn.TurnID) (session.CommitSeq, error) {
+	return h.scanTurnCommits(ctx, sid, turnID, false)
+}
+
+// turnPrefixCommit finds the last commit of sid's history that precedes
+// turnID *and* its inputs (HST-SPN): the fork point that gives a child the
+// conversation as it stood before the Turn opened, without the Turn's
+// submitted inputs. It errors when the Turn opens the history.
+func (h *Host) turnPrefixCommit(ctx context.Context, sid session.SessionID, turnID turn.TurnID) (session.CommitSeq, error) {
+	at, err := h.scanTurnCommits(ctx, sid, turnID, true)
+	if err != nil {
+		return 0, err
+	}
+	if at == 0 {
+		return 0, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: sid,
+			Detail: fmt.Sprintf("turn %s opens the history of %s; there is no prefix to fork", turnID, sid)}
+	}
+	return at - 1, nil
+}
+
+// scanTurnCommits finds the fork boundary for turnID. Without inputs the
+// boundary is the turn's started commit; with inputs it is the earliest
+// commit that submitted one of the Turn's inputs, which always precedes the
+// started commit.
+func (h *Host) scanTurnCommits(ctx context.Context, sid session.SessionID, turnID turn.TurnID, includeInputs bool) (session.CommitSeq, error) {
+	var inputIDs map[chatlog.InputID]struct{}
+	if includeInputs {
+		surface, err := h.TurnSurface(ctx, sid)
+		if err != nil {
+			return 0, err
+		}
+		view, ok := surface.Turns[turnID]
+		if !ok {
+			return 0, fmt.Errorf("%w: turn %s not found in %s", turn.ErrConflict, turnID, sid)
+		}
+		inputIDs = make(map[chatlog.InputID]struct{}, len(view.InputIDs))
+		for _, id := range view.InputIDs {
+			inputIDs[id] = struct{}{}
+		}
+	}
 	var from session.CommitSeq
+	var started, firstInput session.CommitSeq
 	for {
 		page, err := h.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid, From: from, Limit: 256})
 		if err != nil {
@@ -68,21 +108,44 @@ func (h *Host) turnStartCommit(ctx context.Context, sid session.SessionID, turnI
 		for _, c := range page.Commits {
 			for _, b := range c.Batches {
 				for _, e := range b.Events {
-					if e.Type != turn.TypeStarted {
-						continue
-					}
-					decoded, err := h.registry.Decode(e)
-					if err != nil || decoded.Unknown {
-						continue
-					}
-					if p, ok := decoded.Value.(turn.StartedPayload); ok && p.TurnID == turnID {
-						return c.Seq, nil
+					switch e.Type {
+					case turn.TypeStarted:
+						if started != 0 {
+							continue
+						}
+						decoded, err := h.registry.Decode(e)
+						if err != nil || decoded.Unknown {
+							continue
+						}
+						if p, ok := decoded.Value.(turn.StartedPayload); ok && p.TurnID == turnID {
+							started = c.Seq
+						}
+					case chatlog.TypeInputSubmitted:
+						if inputIDs == nil || firstInput != 0 {
+							continue
+						}
+						decoded, err := h.registry.Decode(e)
+						if err != nil || decoded.Unknown {
+							continue
+						}
+						if p, ok := decoded.Value.(chatlog.InputSubmittedPayload); ok {
+							if _, ours := inputIDs[p.InputID]; ours {
+								firstInput = c.Seq
+							}
+						}
 					}
 				}
 			}
 		}
 		if !page.HasMore || len(page.Commits) == 0 {
-			return 0, fmt.Errorf("%w: turn %s not found in %s", turn.ErrConflict, turnID, sid)
+			if started == 0 {
+				return 0, fmt.Errorf("%w: turn %s not found in %s", turn.ErrConflict, turnID, sid)
+			}
+			boundary := started
+			if firstInput != 0 && firstInput < boundary {
+				boundary = firstInput
+			}
+			return boundary, nil
 		}
 		from = page.Commits[len(page.Commits)-1].Seq + 1
 	}
