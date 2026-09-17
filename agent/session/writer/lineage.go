@@ -13,12 +13,15 @@ import (
 // fork, its prefix claim. Content the Session's commits reference stays
 // retained exactly as long as a live fork inherits those commits, through
 // that fork's own prefix claim (EXT-WRT-8). The Session must not be open in
-// this process; close its Writer first.
+// this process; close its Writer first. Delete is idempotent across the two
+// consistency domains: a root already deleted is not an error, so a call
+// that failed after the root was dropped can be repeated to release the
+// remaining claims.
 func Delete(ctx context.Context, store session.Store, admission Admission, sid session.SessionID) error {
 	if store == nil {
 		return errors.New("writer: nil store")
 	}
-	if err := store.Delete(ctx, sid); err != nil {
+	if err := store.Delete(ctx, sid); err != nil && !session.IsCode(err, session.ErrNotFound) {
 		return err
 	}
 	if admission.Ledger == nil {

@@ -172,3 +172,51 @@ func TestDeleteReleasesClaimsAndKeepsInheritedPrefix(t *testing.T) {
 		t.Fatalf("final collect = %+v %v", report, err)
 	}
 }
+
+// EXT-WRT-8: Fork activates the prefix claim before it creates the child
+// root; a definite Create failure releases the claim this call activated.
+// EXT-WRT-9: Delete of a Session whose root is already gone releases the
+// remaining claims instead of failing on the root.
+func TestForkSagaAndDeleteIdempotency(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	ref := artifact.Ref{Scheme: "cas", Authority: "local", Key: "k1", Durability: artifact.EventBound, Integrity: &artifact.Integrity{Algorithm: "sha256", Value: "x"}}
+	binding, _ := artifact.NewBinding("b1", ref)
+	if _, err := f.bindings.CreateBinding(ctx, binding); err != nil {
+		t.Fatal(err)
+	}
+	parent := f.open(t, false)
+	if _, err := parent.Commit(ctx, func(View) (*SemanticGroup, error) {
+		return &SemanticGroup{CommitID: "c1", Batches: sessionBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "one", Refs: []string{"b1"}}})}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := parent.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Create of the child fails after the claim was activated: the kernel
+	// refuses a Session as its own fork.
+	if _, err := Fork(ctx, f.store, f.registry, f.admission(), ForkRequest{Parent: "s", At: 0, Child: "s"}); !session.IsCode(err, session.ErrInvalid) {
+		t.Fatalf("self fork = %v, want ErrInvalid", err)
+	}
+	if claims, _ := artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ForkOwnerKind, Authority: "s"}); len(claims) != 0 {
+		t.Fatalf("claim survived a failed create: %+v", claims)
+	}
+	if _, err := Fork(ctx, f.store, f.registry, f.admission(), ForkRequest{Parent: "s", At: 0, Child: "child"}); err != nil {
+		t.Fatal(err)
+	}
+	if claims, _ := artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ForkOwnerKind, Authority: "child"}); len(claims) != 1 {
+		t.Fatalf("fork claims = %+v", claims)
+	}
+	// Delete twice: the second call finds no root and still succeeds with no
+	// claims left.
+	if err := Delete(ctx, f.store, f.admission(), "child"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Delete(ctx, f.store, f.admission(), "child"); err != nil {
+		t.Fatalf("repeated delete = %v, want nil", err)
+	}
+	if claims, _ := artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ForkOwnerKind, Authority: "child"}); len(claims) != 0 {
+		t.Fatalf("claims after delete = %+v", claims)
+	}
+}

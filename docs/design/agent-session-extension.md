@@ -197,9 +197,9 @@ func OpenWriter(ctx, store session.Store, registry *Registry, admission Admissio
 
 **EXT-WRT-4** Writer 在两种情况下进入失效状态，本次与之后的 `Commit` 都返回同一错误：(a) `Append` 返回 `ErrOwnershipLost`——Session 级 fencing 在进程内的表现，调用方必须放弃该 Session 的执行，Runtime 与 Loop 对它的处理见 RUN-CMT-6；(b) `Append` 返回结果未知的错误（kernel 的 `ErrHandleFailed`、IO 错误或其他非验证性错误）——Writer 以 `ErrUnknownOutcome` 失效，因为它的 head 与投影状态可能已落后于日志一组，继续提交会给临时行赋 kernel 已用过的 Seq。(b) 的失效限于该实例：宿主经 `Writers` 再次请求即得到重开的 Writer（EXT-WRT-6），`OpenWriter` 从日志重建，同一 group 的重放由 kernel 的索引回答（落盘则 `AlreadyApplied`，未落盘则 `Applied`）。只有保证未写入的错误不致失效：kernel 的验证拒绝（`ErrInvalid`、`ErrNotFound`）与写入开始前的 ctx 错误；`ErrConflict` 按 EXT-WRT-2 报告为 `Conflict`。
 
-**EXT-WRT-8（fork claim）** `writer.Fork(store, registry, admission, ForkRequest{Parent, At, Child})` 以 `Fork{Session: Parent, Seq: At}` 调用 `Store.Create`（SES-FRK-1），得到的 header 携带 kernel 解析出的边 `Parent *LedgerRef{Segment, Seq, Digest}`，然后在配置了 ledger 时对继承前缀的全部 artifact 引用建立一个 claim：按 commit 顺序解码前缀事件，经各 EventDefinition 声明的提取器收集 BindingID（无法解码的事件不携带已知引用），`ClaimOwner = {Kind:"twilight/session/fork", Authority:ChildSessionID, Identity:"<ParentSegment>@<Seq>"}`，ClaimID 按 EXT-WRT-5 以 `CommitID = "fork:<ParentSegment>@<Seq>"` 派生。owner kind 与 commit claim 不同，`OpenWriter` 对 commit claim 的核对不触及它。重复 Fork 幂等；同 ID 而 owner 或集合不同为 `ErrConflict`。父的 commit claim 与 fork claim 同时保留前缀内容；父被删除后 fork claim 仍是 GC root。
+**EXT-WRT-8（fork claim）** `writer.Fork(store, registry, admission, ForkRequest{Parent, At, Child})` 跨两个一致性域（Session store 与 artifact ledger），按安全顺序执行：配置了 ledger 时先对父前缀 `[0, At]` 的全部 artifact 引用建立一个 claim，再以 `Fork{Session: Parent, Seq: At}` 调用 `Store.Create`（SES-FRK-1）并核对得到的边 `Parent *LedgerRef{Segment, Seq, Digest}` 与已 claim 的前缀一致；`Create` 确定失败时释放本次调用激活的 claim。两步之间崩溃留下一条无子引用的 claim，它多保留内容直到 reconciliation 释放；相反顺序可能留下继承正文已被回收的子，因此不采用。claim 的构成：按 commit 顺序解码前缀事件，经各 EventDefinition 声明的提取器收集 BindingID（无法解码的事件不携带已知引用），`ClaimOwner = {Kind:"twilight/session/fork", Authority:ChildSessionID, Identity:"<ParentSegment>@<Seq>"}`，ClaimID 按 EXT-WRT-5 以 `CommitID = "fork:<ParentSegment>@<Seq>"` 派生。owner kind 与 commit claim 不同，`OpenWriter` 对 commit claim 的核对不触及它。重复 Fork 幂等；同 ID 而 owner 或集合不同为 `ErrConflict`。父的 commit claim 与 fork claim 同时保留前缀内容；父被删除后 fork claim 仍是 GC root。
 
-**EXT-WRT-9（删除）** `writer.Delete(store, admission, sid)` 调 `Store.Delete` 撤根（SES-GC-1），然后释放该 Session 拥有的全部 Active claim：`{Kind: commit, Authority: sid}` 与 `{Kind: fork, Authority: sid}` 两个 scope 下的每一条。子 fork 继承的前缀内容由子自己的 fork claim 保留（EXT-WRT-8）。宿主必须先关闭该 Session 的 Writer。`writer.Collect(store)` 直接调 `Store.Collect`（SES-GC-2），不涉及 claim。
+**EXT-WRT-9（删除）** `writer.Delete(store, admission, sid)` 调 `Store.Delete` 撤根（SES-GC-1），然后释放该 Session 拥有的全部 Active claim；根已不存在（`ErrNotFound`）不是错误，因此撤根之后失败的 Delete 可以重复调用以释放剩余 claim。释放范围：`{Kind: commit, Authority: sid}` 与 `{Kind: fork, Authority: sid}` 两个 scope 下的每一条。子 fork 继承的前缀内容由子自己的 fork claim 保留（EXT-WRT-8）。宿主必须先关闭该 Session 的 Writer。`writer.Collect(store)` 直接调 `Store.Collect`（SES-GC-2），不涉及 claim。
 
 **EXT-WRT-5** 首个 ClaimID 派生规则：`Digest("twilight/session-extension/claim", "1", ProtocolVersion, SessionID, CommitID, RefSetDigest)`；`ClaimOwner = {Kind:"twilight/session/commit", Authority:SessionID, Identity:CommitID}`。重放先完整执行 binding admission 与 BindingSet 构建，再查找该 claim。已有记录的 owner、BindingIDs 和 RefSetDigest 必须完全相同。Active claim 由 `Activate` 幂等复用；Released claim 保持终态，Writer 派生后继 `Digest("twilight/session-extension/claim-successor", "1", ReleasedClaimID)` 并重复查找，直到复用 Active claim 或建立新的 retention root。该链允许同一 CommitID 在孤儿回收后继续重试；任一记录的身份或集合冲突都拒绝本次提交。
 
@@ -278,6 +278,8 @@ func NewProjectionReader(store session.Store, registry *Registry, cache Projecti
 
 **EXT-PRJ-7** 缓存是派生数据，写入尽力而为：`Save` 失败只让下次多折，不影响 Commit 结果。刷新在 Writer 的互斥区之外执行：策略判定与状态快照在区内完成（状态按 EXT-PRJ-1 不可变，快照即引用），编码与 `Save` 在解锁后进行，因此缓存 IO 不延长事务边界，与后续提交也没有顺序约束。区间是部署参数而非常量：`CacheEvery(n)` 的 `n` 由部署给出，`n <= 0` 才取 `DefaultCacheEvery`，且必须能在不改代码的情况下调整：宿主层把它暴露为 `Ports.CacheEvery`（APP-MEM-2），换值即换代价，不必重编译。间距给出可依赖的代价上界——进程异常结束后续折不超过 `n` 行，干净 `Close` 后为零；`Close` 的刷新同样受策略约束，因此被 `Exclude` 的投影在关闭时也不会被写入。
 
+**EXT-PRJ-8（继承策略）** `ProjectionDefinition.Inherits` 声明投影从 fork 继承前缀中折叠什么。零值 `InheritSemantic`：继承 commit（`Seq <= header.Parent.Seq`）只折叠 session 流批次，其他流的批次跳过；`InheritAll`：继承 commit 的全部批次都折叠。tip 段的 commit 总是全部折叠。`Registry.FoldFrom(scope, state, commits, header)` 以 Session 的 tip header 判定继承边界，`Writer.rebuild` 与 `ProjectionReader` 都经它折叠；`Fold` 等价于无 Parent 的 `FoldFrom`，用于只含 tip commit 的折叠（provisional group）。默认值使执行状态投影（`twilight/run` 的 Machine）不把父的 Run 当作子的执行（SES-FRK-5）；chatlog 的 Surface/Context 与 turn 的 Surface 声明 `InheritAll`，因为它们的语义内容（assistant、tool_result、attempt 结算）来自 run 事实。app module 不声明时得到默认值。
+
 ## 7. errors 与 conformance
 
 ```go
@@ -298,6 +300,8 @@ v1 conformance 必须验证：
 - **EXT-WRT-7**：每个 applied group 恰通知一次、行与日志一致、顺序与 Seq 一致（含并发提交）；被拒与重放不通知；观察者 panic 不影响 Commit；
 - **EXT-WRT-1 至 5**：OpenWriter 后投影等于全量 fold 且 Writer 不保留日志（重开后常驻内存不随日志长度增长）；同 CommitID 重放 AlreadyApplied、不同内容 Conflict、两者无写入；并发调用方串行且各自看到前一次的结果；claim 先于 append，已确认写入前拒绝时释放 claim，结果未知时保持 Active 至重开核对；`ErrOwnershipLost` 后 Writer 失效；Append 在底层持久化之后返回错误时 Writer 以 `ErrUnknownOutcome` 失效、重开后同一 group 为 `AlreadyApplied`，claim 保持 Active，后续 Seq 连续、链完整；Append 在写入之前发生结果未知的错误时，重开核对释放孤儿 claim；同一提交经历多次写入前失败与重开后，通过后继 claim 成功提交且仅保留一个 Active root；owner 或 BindingSet 冲突时拒绝派生后继；
 - **EXT-PRJ-1 至 4**：pure fold、组边界、Consumes 与范围外跳过、Ignorable 与非 Ignorable 的 Unknown、缓存复用条件、Writer 内投影与 Store 读取一致；修改 `Projections().Load` 或 `View.Projection` 返回的嵌套状态后，后续读取与提交仍保持原事实流的投影。
+- **EXT-PRJ-8**：默认继承策略下继承 commit 的非 session 流批次不进入折叠、tip commit 全部折叠；`InheritAll` 折叠继承 commit 的全部批次；Writer 与 ProjectionReader 对同一 fork 折出相同状态；
+- **EXT-WRT-8/9**：`Create` 确定失败后 fork claim 不存在；重复 Delete 返回 nil 且释放全部 claim；
 - **EXT-PRJ-5 至 7**：干净 Close 后重开不折任何 event；条目只覆盖前缀时只折尾部；日志越界、digest 不符、落在组内、状态不可解码的条目一律回退为全折且不使 Open 失败；被策略排除的投影不被写入，但它已有的条目仍被复用；`CacheEvery(n)` 下条目落后不超过 n 行；未配置缓存时不写任何条目且行为不变。
 
 ## 8. Application module

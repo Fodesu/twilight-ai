@@ -1,10 +1,10 @@
 package writer
 
 import (
-	"github.com/felinics/twilight/agent/jsonstable"
 	"context"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agent/jsonstable"
 
 	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/session"
@@ -54,53 +54,73 @@ func Fork(ctx context.Context, store session.Store, registry *extension.Registry
 	if req.Parent == "" || req.Child == "" {
 		return session.SegmentHeader{}, errors.New("writer: fork requires parent and child session ids")
 	}
-	header, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: registry.ProtocolVersion, SessionID: req.Child,
-		CreatedAtUnixMilli: req.CreatedAtUnixMilli, Fork: &session.ForkOrigin{Session: req.Parent, Seq: req.At}, Metadata: req.Metadata})
-	if err != nil {
-		return session.SegmentHeader{}, err
-	}
-	fork := *header.Parent
+	create := session.CreateRequest{ProtocolVersion: registry.ProtocolVersion, SessionID: req.Child,
+		CreatedAtUnixMilli: req.CreatedAtUnixMilli, Fork: &session.ForkOrigin{Session: req.Parent, Seq: req.At}, Metadata: req.Metadata}
 	if admission.Ledger == nil {
-		return header, nil
+		return store.Create(ctx, create)
 	}
-	refs, err := prefixBindings(ctx, store, registry, req.Child, fork)
+	// The Session store and the artifact ledger are two consistency domains,
+	// so Fork is a saga ordered for safety (EXT-WRT-8): the retention claim
+	// over the inherited prefix is activated first and the child root is
+	// created second. A crash between the two leaves an unreferenced claim,
+	// which retains content until reconciliation releases it; the reverse
+	// order could leave a child whose inherited bodies are gone.
+	parentHeader, err := store.Header(ctx, req.Parent)
 	if err != nil {
 		return session.SegmentHeader{}, err
 	}
-	if len(refs) == 0 {
-		return header, nil
-	}
-	if admission.Bindings == nil {
-		return session.SegmentHeader{}, errors.New("writer: the inherited prefix references artifacts but no binding resolver is configured")
-	}
-	set, err := artifact.SetBuilder{Resolver: admission.Bindings}.Build(ctx, refs)
+	fork := session.LedgerRef{Segment: session.SegmentIDOf(parentHeader), Seq: req.At}
+	refs, err := prefixBindings(ctx, store, registry, req.Parent, fork)
 	if err != nil {
 		return session.SegmentHeader{}, err
 	}
-	id := DeriveClaimID(registry.ProtocolVersion, req.Child, forkClaimCommitID(fork), set.RefSetDigest)
-	owner := ForkOwner(req.Child, fork)
-	existing, ok, err := admission.Ledger.LookupClaim(ctx, id)
-	if err != nil {
-		return session.SegmentHeader{}, err
-	}
-	if ok {
-		if existing.Owner != owner || existing.BindingSet.RefSetDigest != set.RefSetDigest {
-			return session.SegmentHeader{}, &session.Error{Code: session.ErrConflict, Operation: "fork", SessionID: req.Child, Detail: "fork claim owner or binding set conflicts"}
+	var claim *artifact.ClaimID
+	if len(refs) > 0 {
+		if admission.Bindings == nil {
+			return session.SegmentHeader{}, errors.New("writer: the inherited prefix references artifacts but no binding resolver is configured")
 		}
-		return header, nil
+		set, err := artifact.SetBuilder{Resolver: admission.Bindings}.Build(ctx, refs)
+		if err != nil {
+			return session.SegmentHeader{}, err
+		}
+		id := DeriveClaimID(registry.ProtocolVersion, req.Child, forkClaimCommitID(fork), set.RefSetDigest)
+		owner := ForkOwner(req.Child, fork)
+		existing, ok, err := admission.Ledger.LookupClaim(ctx, id)
+		if err != nil {
+			return session.SegmentHeader{}, err
+		}
+		if ok {
+			if existing.Owner != owner || existing.BindingSet.RefSetDigest != set.RefSetDigest {
+				return session.SegmentHeader{}, &session.Error{Code: session.ErrConflict, Operation: "fork", SessionID: req.Child, Detail: "fork claim owner or binding set conflicts"}
+			}
+		} else {
+			if _, err := admission.Ledger.Activate(ctx, id, owner, set); err != nil {
+				return session.SegmentHeader{}, err
+			}
+			claim = &id
+		}
 	}
-	if _, err := admission.Ledger.Activate(ctx, id, owner, set); err != nil {
+	header, err := store.Create(ctx, create)
+	if err != nil {
+		if claim != nil {
+			// This call activated the claim and could not create the child:
+			// release it so a definite creation failure leaks nothing.
+			_ = admission.Ledger.ReleaseActive(context.WithoutCancel(ctx), *claim)
+		}
 		return session.SegmentHeader{}, err
+	}
+	if header.Parent == nil || header.Parent.Segment != fork.Segment || header.Parent.Seq != fork.Seq {
+		return session.SegmentHeader{}, &session.Error{Code: session.ErrConflict, Operation: "fork", SessionID: req.Child, Detail: "child edge does not match the claimed prefix"}
 	}
 	return header, nil
 }
 
-// prefixBindings collects, in commit order, every BindingID the events of a
-// fork's inherited prefix reference, through the extractors their event
-// definitions declare. Events the registry cannot decode carry no known
+// prefixBindings collects, in commit order, every BindingID the events of
+// the parent's prefix [0, fork.Seq] reference, through the extractors their
+// event definitions declare. Events the registry cannot decode carry no known
 // references and are skipped.
-func prefixBindings(ctx context.Context, store session.Store, registry *extension.Registry, child session.SessionID, fork session.LedgerRef) ([]artifact.BindingID, error) {
-	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: child, Limit: uint32(fork.Seq) + 1})
+func prefixBindings(ctx context.Context, store session.Store, registry *extension.Registry, parent session.SessionID, fork session.LedgerRef) ([]artifact.BindingID, error) {
+	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: parent, Limit: uint32(fork.Seq) + 1})
 	if err != nil {
 		return nil, err
 	}
