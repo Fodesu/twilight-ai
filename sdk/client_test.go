@@ -2,7 +2,6 @@ package sdk_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -14,17 +13,6 @@ import (
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
 )
-
-// mustJSON is the test-side half of the seam change: the SDK resolves a tool's
-// Parameters into JSON Schema before a provider sees it, so a test that used to
-// hand the provider a Go schema value now hands it the resolved JSON.
-func mustJSON(v any) json.RawMessage {
-	encoded, err := json.Marshal(v)
-	if err != nil {
-		panic(err)
-	}
-	return encoded
-}
 
 func TestMain(m *testing.M) {
 	testutil.LoadEnv()

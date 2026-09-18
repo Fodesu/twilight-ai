@@ -7,6 +7,7 @@
 package session
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/felinics/twilight/agent/es"
@@ -105,7 +106,8 @@ func newError(code ErrorCode, op string, sid SessionID, detail string) *Error {
 func IsCode(err error, code ErrorCode) bool {
 	var e *Error
 	for err != nil {
-		if ce, ok := err.(*Error); ok {
+		var ce *Error
+		if errors.As(err, &ce) {
 			e = ce
 			break
 		}

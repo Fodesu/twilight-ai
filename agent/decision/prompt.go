@@ -66,7 +66,11 @@ func (p *ContextPromptBuilder) Build(ctx context.Context, hint run.PromptInput) 
 	if err != nil {
 		return loop.Prompt{}, err
 	}
-	entries, err := chatlog.NewMaterializer(p.Sources.Content).Entries(ctx, state.(chatlog.Context).Entries)
+	cctx, ok := state.(chatlog.Context)
+	if !ok {
+		return loop.Prompt{}, fmt.Errorf("decision: context projection is %T", state)
+	}
+	entries, err := chatlog.NewMaterializer(p.Sources.Content).Entries(ctx, cctx.Entries)
 	if err != nil {
 		return loop.Prompt{}, err
 	}

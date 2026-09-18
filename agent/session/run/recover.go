@@ -3,6 +3,7 @@ package runmod
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/reconcile"
@@ -35,11 +36,15 @@ func (s *SessionRunStore) RecoverInterrupted(ctx context.Context, w writer.Write
 	if err != nil {
 		return 0, err
 	}
+	m, ok := state.(Machine)
+	if !ok {
+		return 0, fmt.Errorf("runmod: machine projection is %T", state)
+	}
 	store := s.Bind(w)
 	claim := run.DeriveTakeoverClaim(store.Scope(), uint64(w.Epoch()))
 	n := 0
-	for runID := range state.(Machine).Active {
-		snapshot, _ := state.(Machine).snapshot(runID)
+	for runID := range m.Active {
+		snapshot, _ := m.snapshot(runID)
 		accepted, err := rec.Reconcile(ctx, store, &snapshot, claim)
 		n += accepted
 		if err != nil {

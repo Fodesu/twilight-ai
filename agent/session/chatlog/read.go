@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
@@ -16,7 +17,11 @@ func ReadSurface(ctx context.Context, r extension.ProjectionReader, sid session.
 	if err != nil {
 		return Surface{}, err
 	}
-	return state.(Surface), nil
+	surface, ok := state.(Surface)
+	if !ok {
+		return Surface{}, fmt.Errorf("chatlog: surface projection is %T", state)
+	}
+	return surface, nil
 }
 
 // ReadContext loads the chatlog context of one Session through r.
@@ -25,7 +30,11 @@ func ReadContext(ctx context.Context, r extension.ProjectionReader, sid session.
 	if err != nil {
 		return Context{}, err
 	}
-	return state.(Context), nil
+	c, ok := state.(Context)
+	if !ok {
+		return Context{}, fmt.Errorf("chatlog: context projection is %T", state)
+	}
+	return c, nil
 }
 
 // LastAssistantText is the text of the Turn's last assistant entry: the

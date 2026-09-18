@@ -139,7 +139,10 @@ var SurfaceProjection = extension.ProjectionDefinition{
 // produced it (EXT-PRJ-1): the projection keeps no counter and a snapshot
 // restores without rescanning.
 func applySurface(state any, e extension.DecodedEvent) (any, error) {
-	s := state.(Surface)
+	s, ok := state.(Surface)
+	if !ok {
+		return nil, fmt.Errorf("chatlog surface: state is %T", state)
+	}
 	pos := e.Position
 	switch p := e.Value.(type) {
 	case InputSubmittedPayload:
@@ -425,7 +428,10 @@ var ContextProjection = extension.ProjectionDefinition{
 // event that writes it. Entry positions are the ledger Positions of the
 // events that produced them.
 func applyContext(state any, e extension.DecodedEvent) (any, error) {
-	c := state.(Context)
+	c, ok := state.(Context)
+	if !ok {
+		return nil, fmt.Errorf("chatlog context: state is %T", state)
+	}
 	pos := e.Position
 	switch p := e.Value.(type) {
 	case InputSubmittedPayload:
@@ -618,5 +624,9 @@ func ContextFold(events []extension.DecodedEvent) ([]Entry, error) {
 		}
 		state = next
 	}
-	return state.(Context).Entries, nil
+	c, ok := state.(Context)
+	if !ok {
+		return nil, fmt.Errorf("chatlog: context projection is %T", state)
+	}
+	return c.Entries, nil
 }

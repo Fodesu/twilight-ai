@@ -199,7 +199,7 @@ func (e *Executor) Start(_ context.Context, ref string, a effect.Assignment) err
 	}
 	args, err := DecodeArguments(tool.Arguments)
 	if err != nil {
-		return fmt.Errorf("%w: %v", loop.ErrExecutorRejected, err)
+		return fmt.Errorf("%w: %w", loop.ErrExecutorRejected, err)
 	}
 	e.start(ref, a.Key(), &args)
 	return nil
@@ -508,10 +508,6 @@ func (e *Executor) local(ref string) (effect.Attachment, bool) {
 		return effect.Attachment{State: effect.AttachmentActive, Execution: effect.ExecutionRunning, BackendAttached: true}, true
 	}
 	return effect.Attachment{State: effect.AttachmentTerminal, Execution: out.Status(), BackendAttached: true}, true
-}
-
-func status(out effect.Outcome) effect.ExecutionStatus {
-	return out.Status()
 }
 
 func (e *Executor) Status(_ context.Context, ref string) (effect.ExecutionStatus, error) {

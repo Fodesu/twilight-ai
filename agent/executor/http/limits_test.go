@@ -1,6 +1,7 @@
 package http_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -24,7 +25,7 @@ func TestServerRejectsBeforeWorker(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			request := httptest.NewRequest(tc.method, "/status", strings.NewReader(tc.body))
+			request := httptest.NewRequestWithContext(context.Background(), tc.method, "/status", strings.NewReader(tc.body))
 			response := httptest.NewRecorder()
 			(&executorhttp.Server{MaxBodyBytes: 32}).Handler().ServeHTTP(response, request)
 			if response.Code != tc.want {

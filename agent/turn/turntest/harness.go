@@ -115,13 +115,12 @@ func (h *harness) commit(group writer.SemanticGroup) writer.CommitResult {
 	return res
 }
 
-func (h *harness) mustApply(group writer.SemanticGroup) []session.Event {
+func (h *harness) mustApply(group writer.SemanticGroup) {
 	h.t.Helper()
 	res := h.commit(group)
 	if res.Outcome != writer.CommitApplied {
 		h.fatal(fmt.Sprintf("append %s: %s %s", group.CommitID, res.Outcome, res.Detail))
 	}
-	return flattenCommit(res.Commit)
 }
 
 // flattenCommit returns the commit's events in batch order.
@@ -251,20 +250,6 @@ func (h *harness) group(commitID session.CommitID) []session.Event {
 	return nil
 }
 
-// groupContaining returns the whole group of the first row that satisfies
-// match.
-func (h *harness) groupContaining(match func(*session.Event) bool) []session.Event {
-	h.t.Helper()
-	for _, c := range h.commits() {
-		for _, e := range flattenCommit(c) {
-			if match(&e) {
-				return flattenCommit(c)
-			}
-		}
-	}
-	return nil
-}
-
 func eventTypes(events []session.Event) []session.EventType {
 	out := make([]session.EventType, len(events))
 	for i := range events {
@@ -336,7 +321,7 @@ func (h *harness) runCommit(runID run.RunID, id run.CommandID, base run.RunPosit
 	_, err = h.writer().Commit(h.ctx, func(v writer.View) (*writer.SemanticGroup, error) {
 		c, ok, err := v.LookupCommit(session.CommitID(env.ID))
 		if err != nil || !ok {
-			return nil, fmt.Errorf("commit %s not found: %v", env.ID, err)
+			return nil, fmt.Errorf("commit %s not found: %w", env.ID, err)
 		}
 		for _, b := range c.Batches {
 			out.Events = append(out.Events, b.Events...)

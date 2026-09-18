@@ -70,7 +70,7 @@ type logIndex struct {
 // New opens the store root, creating it if needed.
 func New(root string) (*Store, error) {
 	for _, d := range []string{root, filepath.Join(root, segmentsDir), filepath.Join(root, sessionsDir)} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+		if err := os.MkdirAll(d, 0o750); err != nil {
 			return nil, err
 		}
 	}
@@ -341,7 +341,7 @@ func (s *Store) Append(ctx context.Context, lease session.Lease, id session.Segm
 	line = append(line, '\n')
 	// The whole commit goes down in one write so a crash can only tear the
 	// tail, which the next Acquire truncates.
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
@@ -478,7 +478,7 @@ func (s *Store) CreateSession(ctx context.Context, seg session.Segment, rec sess
 	} else if !os.IsNotExist(err) {
 		return segerr(session.ErrCorrupt, "create", seg.ID, err.Error())
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	raw, err := json.Marshal(seg.Header)

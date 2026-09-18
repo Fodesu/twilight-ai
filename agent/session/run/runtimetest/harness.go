@@ -127,7 +127,7 @@ func (h *harness) head() session.Head {
 }
 
 // mustApply commits a typed group through the Writer and returns its events.
-func (h *harness) mustApply(group writer.SemanticGroup) []session.Event {
+func (h *harness) mustApply(group writer.SemanticGroup) {
 	h.t.Helper()
 	res, err := h.writer().Commit(h.ctx, func(writer.View) (*writer.SemanticGroup, error) { return &group, nil })
 	if err != nil {
@@ -136,7 +136,6 @@ func (h *harness) mustApply(group writer.SemanticGroup) []session.Event {
 	if res.Outcome != writer.CommitApplied {
 		h.fatal(fmt.Sprintf("append %s: %s %s", group.CommitID, res.Outcome, res.Detail))
 	}
-	return flattenCommit(res.Commit)
 }
 
 // flattenCommit returns the commit's events in batch order.
@@ -324,7 +323,7 @@ func (h *harness) withCommit(res run.CommitResult, id session.CommitID) commitRe
 	_, err := h.writer().Commit(h.ctx, func(v writer.View) (*writer.SemanticGroup, error) {
 		c, ok, err := v.LookupCommit(id)
 		if err != nil || !ok {
-			return nil, fmt.Errorf("commit %s not found: %v", id, err)
+			return nil, fmt.Errorf("commit %s not found: %w", id, err)
 		}
 		out.Events = flattenCommit(c)
 		out.Head = session.Head{Next: c.Seq + 1, Digest: c.Digest}

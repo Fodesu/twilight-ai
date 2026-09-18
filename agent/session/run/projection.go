@@ -127,7 +127,7 @@ func (c machineCodec) Encode(value any) (jsonstable.Value, error) {
 	if err := c.Validate(value); err != nil {
 		return jsonstable.Value{}, err
 	}
-	m := value.(Machine)
+	m, _ := value.(Machine) // Validate checked the type
 	wire := machineWire{Runs: make(map[run.RunID]machineRunWire, len(m.Active))}
 	for id, state := range m.Active {
 		schema, err := run.SchemaFor(m.Schemas[id])
@@ -178,7 +178,11 @@ var MachineProjection = extension.ProjectionDefinition{
 	Consumes: AllTypes(), Authoritative: true,
 	Initial: func() (any, error) { return newMachine(), nil },
 	Apply: func(state any, e extension.DecodedEvent) (any, error) {
-		return state.(Machine).Apply(e)
+		m, ok := state.(Machine)
+		if !ok {
+			return nil, fmt.Errorf("run machine: state is %T", state)
+		}
+		return m.Apply(e)
 	},
 	StateCodec: machineCodec{},
 }

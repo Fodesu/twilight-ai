@@ -6,6 +6,7 @@ package artifacttest
 
 import (
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -45,7 +46,8 @@ func Run(t *testing.T, factory Factory) {
 func isCode(err error, code artifact.ErrorCode) bool {
 	var e *artifact.Error
 	for err != nil {
-		if ae, ok := err.(*artifact.Error); ok {
+		var ae *artifact.Error
+		if errors.As(err, &ae) {
 			e = ae
 			break
 		}

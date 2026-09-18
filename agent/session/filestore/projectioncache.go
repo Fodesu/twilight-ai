@@ -56,7 +56,7 @@ func (c projectionCache) Save(_ context.Context, sid session.SessionID, id exten
 		return err
 	}
 	path := projectionPath(c.store, sid, id, v)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
 	return writeAtomic(path, rec)

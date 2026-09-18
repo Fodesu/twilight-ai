@@ -65,7 +65,7 @@ func (c factCodec) Encode(value any) (jsonstable.Value, error) {
 	if err := c.Validate(value); err != nil {
 		return jsonstable.Value{}, err
 	}
-	ev := value.(Event)
+	ev, _ := value.(Event) // Validate checked the type
 	raw, err := es.MarshalCanonical(ev.Fact)
 	if err != nil {
 		return jsonstable.Value{}, err

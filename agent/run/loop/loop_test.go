@@ -462,12 +462,6 @@ func TestLoopMalformedModelResultDispositionFailsRun(t *testing.T) {
 	}
 }
 
-type panicBuilder struct{}
-
-func (panicBuilder) Build(context.Context, PromptInput) (Prompt, error) {
-	panic("builder should not be called")
-}
-
 // cancellingInvoker cancels the outer ctx from inside Generate, simulating a
 // shutdown arriving mid-execution.
 type cancellingInvoker struct{ cancel context.CancelFunc }

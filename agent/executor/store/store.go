@@ -273,7 +273,7 @@ func NewFileStore(root string, options ...FileStoreOptions) (*FileStore, error) 
 	if root == "" {
 		return nil, errors.New("executor/store: empty store root")
 	}
-	if err := os.MkdirAll(root, 0o755); err != nil {
+	if err := os.MkdirAll(root, 0o750); err != nil {
 		return nil, err
 	}
 	now := time.Now

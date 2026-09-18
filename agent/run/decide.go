@@ -145,7 +145,7 @@ func decideWithdrawPreparedStep(s *MachineState, cmd WithdrawPreparedStep) ([]Fa
 	if len(s.PendingInputs) == 0 {
 		return nil, rejectionf("withdraw: no pending inputs; the prepared request is still complete")
 	}
-	return []Fact{ModelStepWithdrawn{StepID: cmd.StepID}}, nil
+	return []Fact{ModelStepWithdrawn(cmd)}, nil
 }
 
 // --- rule 2: StartModelExecution / RecoverModelExecution ---
@@ -172,7 +172,7 @@ func decideStartModelExecution(s *MachineState, cmd StartModelExecution) ([]Fact
 	if cmd.Claim == "" {
 		return nil, rejectionf("start model: missing execution claim")
 	}
-	return []Fact{ModelStepStarted{StepID: cmd.StepID, Claim: cmd.Claim}}, nil
+	return []Fact{ModelStepStarted(cmd)}, nil
 }
 
 func decideRecoverModelExecution(s *MachineState, cmd RecoverModelExecution) ([]Fact, error) {
@@ -429,7 +429,7 @@ func decideStartToolCall(s *MachineState, cmd StartToolCall) ([]Fact, error) {
 	if cmd.Claim == "" {
 		return nil, rejectionf("start tool: missing execution claim")
 	}
-	return []Fact{ToolCallStarted{StepID: cmd.StepID, CallID: cmd.CallID, Claim: cmd.Claim}}, nil
+	return []Fact{ToolCallStarted(cmd)}, nil
 }
 
 func decideSubmitToolResult(s *MachineState, cmd SubmitToolResult) ([]Fact, error) {

@@ -149,7 +149,10 @@ func (h History) ActiveAt(ctx context.Context, sid session.SessionID, at session
 		}
 		from = page.Commits[len(page.Commits)-1].Seq + 1
 	}
-	surface := state.(TurnSurface)
+	surface, ok := state.(TurnSurface)
+	if !ok {
+		return "", false, fmt.Errorf("turn: surface projection is %T", state)
+	}
 	if active, ok := surface.Active(); ok {
 		return active.TurnID, true, nil
 	}

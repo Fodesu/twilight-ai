@@ -120,7 +120,11 @@ func (s *Commands) Checkpoint(ctx context.Context, w writer.Writer, summaryText 
 		if err != nil {
 			return nil, err
 		}
-		entries := cstate.(Context).Entries
+		cctx, ok := cstate.(Context)
+		if !ok {
+			return nil, fmt.Errorf("chatlog: context projection is %T", cstate)
+		}
+		entries := cctx.Entries
 		if len(entries) == 0 {
 			return nil, errors.New("chatlog: checkpoint over an empty context")
 		}
@@ -175,7 +179,7 @@ func (s *Commands) Checkpoint(ctx context.Context, w writer.Writer, summaryText 
 // CommitID and is answered as already applied instead of writing a second
 // checkpoint (APP-CKP-1).
 func checkpointIDs(sid session.SessionID, base es.Digest, summaryText string) (CheckpointID, SummaryID, error) {
-	raw, err := es.EncodeTypedPayload(uint16(session.ProtocolVersion1), "twilight/chatlog/checkpoint", struct {
+	raw, err := es.EncodeTypedPayload(session.ProtocolVersion1, "twilight/chatlog/checkpoint", struct {
 		SessionID session.SessionID `json:"sessionId"`
 		Base      es.Digest         `json:"base"`
 		Summary   string            `json:"summary"`
@@ -265,7 +269,10 @@ func (d deliverInputs) Prepare(_ context.Context, view writer.View, now int64) (
 	if err != nil {
 		return nil, err
 	}
-	surface := state.(Surface)
+	surface, ok := state.(Surface)
+	if !ok {
+		return nil, fmt.Errorf("chatlog: surface projection is %T", state)
+	}
 	events := make([]writer.TypedEvent, 0, len(d.inputs))
 	for _, in := range d.inputs {
 		v, ok := surface.Inputs.Get(InputID(in.ID))

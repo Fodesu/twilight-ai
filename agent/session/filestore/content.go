@@ -67,7 +67,7 @@ func NewContentStore(root string, authority artifact.Authority, opts ContentStor
 		return nil, &artifact.Error{Code: artifact.ErrInvalid, Operation: "content_store", Detail: "empty authority"}
 	}
 	dir := filepath.Join(root, casDir, encodeID(string(authority)))
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("filestore: content store: %w", err)
 	}
 	if opts.Now == nil {

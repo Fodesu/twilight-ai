@@ -136,7 +136,11 @@ var SurfaceProjection = extension.ProjectionDefinition{
 }
 
 func applySurface(state any, e extension.DecodedEvent) (any, error) {
-	s := state.(TurnSurface).clone()
+	prev, ok := state.(TurnSurface)
+	if !ok {
+		return nil, fmt.Errorf("turn surface: state is %T", state)
+	}
+	s := prev.clone()
 	switch p := e.Value.(type) {
 	case StartedPayload:
 		if _, dup := s.Turns[p.TurnID]; dup {

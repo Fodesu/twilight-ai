@@ -15,7 +15,11 @@ func ReadSurface(ctx context.Context, r extension.ProjectionReader, sid session.
 	if err != nil {
 		return TurnSurface{}, err
 	}
-	return state.(TurnSurface), nil
+	surface, ok := state.(TurnSurface)
+	if !ok {
+		return TurnSurface{}, fmt.Errorf("turn: surface projection is %T", state)
+	}
+	return surface, nil
 }
 
 // RequireNoActiveTurn is the turn layer's quiescence precondition for a
@@ -26,7 +30,10 @@ func RequireNoActiveTurn(v writer.View) error {
 	if err != nil {
 		return err
 	}
-	surface := state.(TurnSurface)
+	surface, ok := state.(TurnSurface)
+	if !ok {
+		return fmt.Errorf("turn: surface projection is %T", state)
+	}
 	if active, ok := surface.Active(); ok {
 		return fmt.Errorf("%w: turn %s is active", ErrConflict, active.TurnID)
 	}

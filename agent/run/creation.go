@@ -69,5 +69,3 @@ func CheckContext(ctx context.Context) error {
 	}
 	return ctx.Err()
 }
-
-func checkContext(ctx context.Context) error { return CheckContext(ctx) }
