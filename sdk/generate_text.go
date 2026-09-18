@@ -31,7 +31,7 @@ func (c *Client) GenerateText(ctx context.Context, options ...GenerateOption) (s
 // the orchestration a runtime has to own. Build an sdk.Request and call
 // Client.Generate instead.
 func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOption) (*GenerateResult, error) {
-	cfg, _, err := buildConfig(options)
+	cfg, err := buildConfig(options)
 	if err != nil {
 		return nil, err
 	}

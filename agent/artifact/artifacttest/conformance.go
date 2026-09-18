@@ -329,9 +329,9 @@ func testPaging(t *testing.T, f Fixture) {
 	}
 }
 
-func put(t *testing.T, store artifact.Store, body, media string, d artifact.Durability) artifact.Ref {
+func put(t *testing.T, store artifact.Store, body string, d artifact.Durability) artifact.Ref {
 	t.Helper()
-	ref, err := store.Put(context.Background(), artifact.PutRequest{MediaType: media, Reader: strings.NewReader(body), Durability: d})
+	ref, err := store.Put(context.Background(), artifact.PutRequest{MediaType: "text/plain", Reader: strings.NewReader(body), Durability: d})
 	if err != nil {
 		t.Fatalf("put: %v", err)
 	}
@@ -360,7 +360,7 @@ func readAll(t *testing.T, r artifact.Resolver, ref artifact.Ref) string {
 func testContent(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	store := f.NewContent(t, "a")
-	ref := put(t, store, "hello", "text/plain", artifact.EventBound)
+	ref := put(t, store, "hello", artifact.EventBound)
 	if ref.Scheme != artifact.SchemeCAS || ref.Authority != "a" || ref.Integrity == nil || ref.SizeBytes == nil || *ref.SizeBytes != 5 {
 		t.Fatalf("put ref = %+v", ref)
 	}
@@ -370,7 +370,7 @@ func testContent(t *testing.T, f Fixture) {
 	if ref.ExpiresAtUnixMilli != nil {
 		t.Fatal("event_bound ref must not expire")
 	}
-	again := put(t, store, "hello", "text/plain", artifact.EventBound)
+	again := put(t, store, "hello", artifact.EventBound)
 	if again.Key != ref.Key {
 		t.Fatal("repeated put of the same bytes must be idempotent")
 	}
@@ -424,7 +424,7 @@ func testContent(t *testing.T, f Fixture) {
 	if f.Advance == nil {
 		return
 	}
-	eph := put(t, store, "temp", "text/plain", artifact.Ephemeral)
+	eph := put(t, store, "temp", artifact.Ephemeral)
 	if eph.ExpiresAtUnixMilli == nil {
 		t.Fatal("ephemeral ref must carry its expiry when the store records one")
 	}
@@ -442,7 +442,7 @@ func testContent(t *testing.T, f Fixture) {
 func testPromote(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	store := f.NewContent(t, "a")
-	eph := put(t, store, "keep me", "text/plain", artifact.Ephemeral)
+	eph := put(t, store, "keep me", artifact.Ephemeral)
 	old := mustBinding(t, ctx, f.Bindings, "tmp", eph)
 	promoted, err := store.Promote(ctx, eph, artifact.PromoteRequest{TargetScheme: artifact.SchemeCAS, TargetAuthority: "a", Durability: artifact.EventBound})
 	if err != nil {

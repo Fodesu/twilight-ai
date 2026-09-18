@@ -223,7 +223,7 @@ func (s *Server) validate(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, stdhttp.StatusOK, struct {
+	writeJSON(w, struct {
 		Failure *run.ToolFailure `json:"failure,omitempty"`
 	}{failure})
 }
@@ -260,7 +260,7 @@ func (s *Server) attach(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, stdhttp.StatusOK, attachment)
+	writeJSON(w, attachment)
 }
 
 func (s *Server) status(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -273,7 +273,7 @@ func (s *Server) status(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, stdhttp.StatusOK, struct {
+	writeJSON(w, struct {
 		Status effect.ExecutionStatus `json:"status"`
 	}{status})
 }
@@ -288,7 +288,7 @@ func (s *Server) outcome(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, stdhttp.StatusOK, outcome)
+	writeJSON(w, outcome)
 }
 
 func (s *Server) cancel(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -321,7 +321,7 @@ func (s *Server) reconcile(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, stdhttp.StatusOK, struct {
+	writeJSON(w, struct {
 		Adopted int `json:"adopted"`
 	}{n})
 }
@@ -358,9 +358,9 @@ func (s *Server) readJSON(w stdhttp.ResponseWriter, r *stdhttp.Request, out any)
 	return true
 }
 
-func writeJSON(w stdhttp.ResponseWriter, status int, value any) {
+func writeJSON(w stdhttp.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
+	w.WriteHeader(stdhttp.StatusOK)
 	_ = json.NewEncoder(w).Encode(value)
 }
 

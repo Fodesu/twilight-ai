@@ -406,7 +406,7 @@ func StreamEvents(commits []Commit, stream StreamRef, from StreamSeq, limit uint
 					pos++
 					continue
 				}
-				if limit > 0 && uint32(len(events)) >= limit {
+				if AtLimit(len(events), limit) {
 					return events, true
 				}
 				events = append(events, e)

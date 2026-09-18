@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"math"
 
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/jsonstable"
@@ -90,6 +91,21 @@ type Handle interface {
 	// counted: a fork's run streams are its own (SES-FRK-5).
 	StreamHead(StreamRef) (StreamSeq, bool)
 	Close(context.Context) error
+}
+
+// Limit32 converts a count or sequence to the uint32 a page limit takes,
+// saturating instead of wrapping.
+func Limit32(n uint64) uint32 {
+	if n > math.MaxUint32 {
+		return math.MaxUint32
+	}
+	return uint32(n)
+}
+
+// AtLimit reports whether a page of n items has reached limit; a zero limit
+// is no limit.
+func AtLimit(n int, limit uint32) bool {
+	return limit > 0 && n >= 0 && uint64(n) >= uint64(limit)
 }
 
 // StreamSeq is the position of an event inside its logical stream: the first

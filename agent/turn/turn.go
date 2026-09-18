@@ -88,7 +88,8 @@ func digestOf(domain string, parts ...string) es.Digest {
 
 // PlanDigest is TRN-ID-2.
 func PlanDigest(turnID TurnID, preset es.Digest, inputs []chatlog.InputID) es.Digest {
-	parts := []string{string(turnID), string(preset)}
+	parts := make([]string, 0, 2+len(inputs))
+	parts = append(parts, string(turnID), string(preset))
 	for _, id := range inputs {
 		parts = append(parts, string(id))
 	}

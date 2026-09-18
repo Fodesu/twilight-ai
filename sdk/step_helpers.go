@@ -5,25 +5,25 @@ import (
 	"fmt"
 )
 
-func buildConfig(options []GenerateOption) (*generateConfig, Provider, error) {
+func buildConfig(options []GenerateOption) (*generateConfig, error) {
 	cfg := &generateConfig{}
 	for _, opt := range options {
 		opt(cfg)
 	}
 	if cfg.Params.Model == nil {
-		return nil, nil, fmt.Errorf("twilightai: model is required (use WithModel)")
+		return nil, fmt.Errorf("twilightai: model is required (use WithModel)")
 	}
 	if cfg.Params.Model.Provider == nil {
-		return nil, nil, fmt.Errorf("twilightai: model %q has no provider", cfg.Params.Model.ID)
+		return nil, fmt.Errorf("twilightai: model %q has no provider", cfg.Params.Model.ID)
 	}
 	for i := range cfg.Params.Tools {
 		schema, err := resolveSchema(cfg.Params.Tools[i].Parameters)
 		if err != nil {
-			return nil, nil, fmt.Errorf("twilightai: tool %q: %w", cfg.Params.Tools[i].Name, err)
+			return nil, fmt.Errorf("twilightai: tool %q: %w", cfg.Params.Tools[i].Name, err)
 		}
 		cfg.Params.Tools[i].Parameters = schema
 	}
-	return cfg, cfg.Params.Model.Provider, nil
+	return cfg, nil
 }
 
 func shouldContinueLoop(maxSteps, step int) bool {

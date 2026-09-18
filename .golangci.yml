@@ -36,6 +36,14 @@ linters:
         - diagnostic
         - performance
         - style
+      # The Run protocol passes MachineState, Schema, Assignment and Outcome
+      # as values on purpose: they are immutable protocol data, and a pointer
+      # would let a callee mutate the caller's copy across the Runtime
+      # boundary. hugeParam and rangeValCopy flag every such signature; the
+      # trade is documented once here instead of on each function.
+      disabled-checks:
+        - hugeParam
+        - rangeValCopy
     gocyclo:
       min-complexity: 40
     nakedret:
@@ -57,6 +65,17 @@ linters:
           - goconst
           - gocritic
           - unparam
+      # Conformance harnesses (agent/.../<pkg>test, sessiontest, artifacttest)
+      # are test code compiled into non-_test files so adapters can import
+      # them; they get the test exclusions.
+      - path: (^|/)[a-z]+test/
+        linters:
+          - errcheck
+          - gosec
+          - goconst
+          - gocritic
+          - unparam
+          - gocyclo
       # The SDK keeps its own text-generation layer building and tested while
       # callers move to the single-call seam, so a deprecation notice is not
       # actionable in the layer's own files or in the tests that pin it.

@@ -25,7 +25,7 @@ import (
 // the orchestration a runtime has to own. Build an sdk.Request and call
 // Client.Stream instead.
 func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*StreamResult, error) {
-	cfg, _, err := buildConfig(options)
+	cfg, err := buildConfig(options)
 	if err != nil {
 		return nil, err
 	}

@@ -123,7 +123,7 @@ func Fork(ctx context.Context, store session.Store, registry *extension.Registry
 // nothing here can prove it does not, so the fork is refused rather than
 // risk a child whose history names collected artifacts (EXT-WRT-8).
 func prefixBindings(ctx context.Context, store session.Store, registry *extension.Registry, parent session.SessionID, fork session.LedgerRef) ([]artifact.BindingID, error) {
-	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: parent, Limit: uint32(fork.Seq) + 1})
+	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: parent, Limit: session.Limit32(uint64(fork.Seq) + 1)})
 	if err != nil {
 		return nil, err
 	}

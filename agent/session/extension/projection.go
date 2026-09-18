@@ -120,7 +120,7 @@ func (r *Registry) FoldFrom(s *ProjectionScope, state any, commits []session.Com
 		for j := range commits[i].Batches {
 			b := &commits[i].Batches[j]
 			if inherited && !s.Def.inherits(b.Stream) {
-				index += uint32(len(b.Events))
+				index += session.Limit32(uint64(len(b.Events)))
 				continue
 			}
 			for _, e := range b.Events {

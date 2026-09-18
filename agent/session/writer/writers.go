@@ -41,7 +41,7 @@ func (ws *writerSet) Writer(ctx context.Context, sid session.SessionID) (Writer,
 		if errors.Is(lost, &extension.Error{Code: extension.ErrOwnershipLost}) {
 			return nil, lost
 		}
-		if lost != errWriterClosed {
+		if !errors.Is(lost, errWriterClosed) {
 			_ = w.Close(ctx)
 		}
 		delete(ws.open, sid)
@@ -76,7 +76,7 @@ func (ws *writerSet) CloseWriter(ctx context.Context, sid session.SessionID) err
 		return nil
 	}
 	delete(ws.open, sid)
-	if failure(w) == errWriterClosed {
+	if errors.Is(failure(w), errWriterClosed) {
 		return nil
 	}
 	return w.Close(ctx)
@@ -89,7 +89,7 @@ func (ws *writerSet) Close(ctx context.Context) error {
 	var first error
 	for sid, w := range ws.open {
 		delete(ws.open, sid)
-		if failure(w) == errWriterClosed {
+		if errors.Is(failure(w), errWriterClosed) {
 			continue
 		}
 		if err := w.Close(ctx); err != nil && first == nil {

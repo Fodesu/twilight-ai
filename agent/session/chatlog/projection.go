@@ -110,8 +110,9 @@ func sortViews(views []InputView) {
 // chatlogConsumes is what both projections fold: the module's own facts and
 // the Run facts that produce assistant and tool_result entries (CHT-SCP-1).
 var chatlogConsumes = func() []session.EventType {
-	out := []session.EventType{TypeInputSubmitted, TypeInputDelivered, TypeInputWithdrawn, TypeInputRejected,
-		TypeToolResultSuperseded, TypeSummary, TypeCheckpointCreated, TypeCheckpointInvalidated}
+	out := make([]session.EventType, 0, 8+len(consumedRunFacts))
+	out = append(out, TypeInputSubmitted, TypeInputDelivered, TypeInputWithdrawn, TypeInputRejected,
+		TypeToolResultSuperseded, TypeSummary, TypeCheckpointCreated, TypeCheckpointInvalidated)
 	for _, name := range consumedRunFacts {
 		out = append(out, runmod.Type(name))
 	}

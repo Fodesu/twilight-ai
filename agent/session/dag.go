@@ -234,12 +234,12 @@ func (a *Ancestry) Read(ctx context.Context, store LedgerStore, from CommitSeq, 
 				head, err := a.tipHead(ctx, store)
 				return out, head, true, err
 			}
-			want = uint32(remaining)
+			want = Limit32(uint64(remaining))
 			if i < tip && CommitSeq(want) > s.Through-start+1 {
-				want = uint32(s.Through - start + 1)
+				want = Limit32(uint64(s.Through - start + 1))
 			}
 		} else if i < tip {
-			want = uint32(s.Through - start + 1)
+			want = Limit32(uint64(s.Through - start + 1))
 		}
 		commits, segHead, more, err := store.ReadSegment(ctx, s.Segment.ID, start, want)
 		if err != nil {
@@ -256,7 +256,7 @@ func (a *Ancestry) Read(ctx context.Context, store LedgerStore, from CommitSeq, 
 			}
 			out = append(out, c)
 		}
-		if limit > 0 && uint32(len(out)) >= limit {
+		if AtLimit(len(out), limit) {
 			// Anything after the last returned commit exists by construction:
 			// either the rest of this segment's range or the segments below.
 			last := out[len(out)-1].Seq

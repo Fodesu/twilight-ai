@@ -129,8 +129,8 @@ func kerr(code session.ErrorCode, op string, sid session.SessionID, detail strin
 
 // segerr is kerr for a segment operation: segments name no Session, so the
 // segment id goes into the detail.
-func segerr(code session.ErrorCode, op string, id session.SegmentID, detail string) error {
-	return &session.Error{Code: code, Operation: op, Detail: fmt.Sprintf("segment %s: %s", id, detail)}
+func segerr(op string, id session.SegmentID, detail string) error {
+	return &session.Error{Code: session.ErrCorrupt, Operation: op, Detail: fmt.Sprintf("segment %s: %s", id, detail)}
 }
 
 // --- segments (LedgerStore) --------------------------------------------------------
@@ -156,12 +156,12 @@ func (s *Store) loadSegment(id session.SegmentID, op string) (session.SegmentHea
 		if os.IsNotExist(err) {
 			return session.SegmentHeader{}, "", &session.Error{Code: session.ErrNotFound, Operation: op, Detail: fmt.Sprintf("segment %s not found", id)}
 		}
-		return session.SegmentHeader{}, "", segerr(session.ErrCorrupt, op, id, err.Error())
+		return session.SegmentHeader{}, "", segerr(op, id, err.Error())
 	}
 	if session.SegmentIDOf(h) != id {
 		// A valid header of another segment under this directory (a copied or
 		// renamed directory) must not be served as id's.
-		return session.SegmentHeader{}, "", segerr(session.ErrCorrupt, op, id, fmt.Sprintf("header digests to %s", h.HeaderDigest))
+		return session.SegmentHeader{}, "", segerr(op, id, fmt.Sprintf("header digests to %s", h.HeaderDigest))
 	}
 	profile, err := session.LedgerProfileFor(h.ProtocolVersion)
 	if err != nil {
@@ -288,14 +288,14 @@ func (s *Store) LookupCommit(ctx context.Context, id session.SegmentID, cid sess
 	}
 	data, err := readRange(path, sp.start, sp.end)
 	if err != nil {
-		return session.Commit{}, false, segerr(session.ErrCorrupt, "lookup", id, err.Error())
+		return session.Commit{}, false, segerr("lookup", id, err.Error())
 	}
 	commits, _, _, torn, err := parseLog(data, "", "lookup")
 	if err != nil {
 		return session.Commit{}, false, err
 	}
 	if torn || len(commits) != 1 {
-		return session.Commit{}, false, segerr(session.ErrCorrupt, "lookup", id, "commit does not occupy a whole line")
+		return session.Commit{}, false, segerr("lookup", id, "commit does not occupy a whole line")
 	}
 	return commits[0], true, nil
 }
@@ -476,7 +476,7 @@ func (s *Store) CreateSession(ctx context.Context, seg session.Segment, rec sess
 	if _, err := readHeader(dir); err == nil {
 		return kerr(session.ErrConflict, "create", rec.ID, fmt.Sprintf("segment %s exists", seg.ID))
 	} else if !os.IsNotExist(err) {
-		return segerr(session.ErrCorrupt, "create", seg.ID, err.Error())
+		return segerr("create", seg.ID, err.Error())
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
@@ -690,7 +690,7 @@ func (s *Store) commitsFrom(id session.SegmentID, path string, header session.Se
 		slot := from - idx.base
 		data, err := readRange(path, idx.offsets[slot], idx.offsets[n])
 		if err != nil {
-			return nil, session.Head{}, segerr(session.ErrCorrupt, "read", id, err.Error())
+			return nil, session.Head{}, segerr("read", id, err.Error())
 		}
 		commits, _, _, torn, err := parseLog(data, "", "read")
 		if err != nil {
