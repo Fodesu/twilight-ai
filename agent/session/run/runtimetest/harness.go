@@ -73,7 +73,7 @@ func newHarness(t testing.TB, f Fixture) *harness {
 	h := &harness{t: t, ctx: context.Background(), fixture: f, store: f.Store, registry: registry, bindings: bindings,
 		ledger: artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings}), frozen: runmod.FrozenValuesInMemory(bindings),
 		cache: extension.NewMemoryProjectionCache(), clock: &clock{now: time.Unix(1_000_000, 0)}}
-	if _, err := f.Store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid}); err != nil {
+	if _, err := f.Store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, Metadata: extension.SchemaMetadata(extension.SchemaVersion1)}); err != nil {
 		t.Fatal(err)
 	}
 	h.open()
@@ -200,7 +200,7 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	// turn/attempt_started; it is what routes the Run's run_ended to the
 	// attempt it settles (TRN-PRJ-1).
 	sessionEvents = append(sessionEvents, writer.TypedEvent{Type: turn.TypeAttemptStarted, RecordedAtUnixMilli: 1,
-		Value: turn.AttemptStartedPayload{TurnID: turnID, RunID: runID, Attempt: attempt, SchemaVersion: newRun.SchemaVersion}})
+		Value: turn.AttemptStartedPayload{TurnID: turnID, RunID: runID, Attempt: attempt}})
 	if attempt == 1 {
 		for _, id := range ids {
 			sessionEvents = append(sessionEvents, writer.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: 1,

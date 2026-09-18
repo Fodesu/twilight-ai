@@ -514,7 +514,7 @@ func testProjection(t *testing.T, factory Factory) {
 		t.Fatalf("recreating an ended run = %v, want ErrRunExists", err)
 	}
 	// An illegal fact sequence does not fold.
-	if _, err := run.FoldRun([]run.Fact{run.InputAccepted{Input: input("x")}}); err == nil {
+	if _, err := run.FoldRun(run.SchemaVersion1, []run.Fact{run.InputAccepted{Input: input("x")}}); err == nil {
 		t.Fatal("fold without created succeeded")
 	}
 }

@@ -21,8 +21,8 @@ type countPayload struct {
 func countModule() extension.ModuleDescriptor {
 	typ := tpfx("q") + "row"
 	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "q",
-		Events: []extension.EventDefinition{{Type: typ, Current: 1, Stream: extension.SessionStream,
-			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[countPayload]{}}}},
+		Events: []extension.EventDefinition{{Type: typ, Stream: extension.SessionStream,
+			Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[countPayload]{}}}},
 		Projections: []extension.ProjectionDefinition{{
 			ID: extension.ProjectionID(string(typ) + "s"), Version: 1, Consumes: []session.EventType{typ},
 			Initial: func() (any, error) { return countState{}, nil },
@@ -65,7 +65,7 @@ func retainedOnReopen(t *testing.T, commits int) uint64 {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", Metadata: extension.SchemaMetadata(extension.SchemaVersion1)}); err != nil {
 		t.Fatal(err)
 	}
 	cache := extension.NewMemoryProjectionCache()

@@ -284,9 +284,6 @@ func guardRunCreated(s *MachineState, fact *RunCreated) error {
 	if fact.RunID == "" {
 		return errors.New("agent: evolve: run created with empty RunID")
 	}
-	if fact.SchemaVersion != SchemaVersion1 {
-		return fmt.Errorf("agent: evolve: run created with unsupported schema version %d", fact.SchemaVersion)
-	}
 	return nil
 }
 

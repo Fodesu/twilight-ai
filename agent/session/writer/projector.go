@@ -57,7 +57,7 @@ func (p *projector) rebuild(ctx context.Context, page *session.CommitPage) error
 			return err
 		}
 		p.scopes[k] = scope
-		state, through, ok := p.startState(ctx, scope, page.Commits)
+		state, through, ok := p.startState(ctx, scope, page.Commits, page.Header)
 		if !ok {
 			if state, err = scope.Def.Initial(); err != nil {
 				return err
@@ -102,19 +102,20 @@ func (p *projector) lastGood(scope *extension.ProjectionScope, state any, commit
 }
 
 // startState returns the state this projection should begin folding from: the
-// cached one when its entry covers a commit boundary of this log and still
-// decodes, otherwise nothing. Anything unusable -- absent, corrupt, ahead of
-// the log, or recorded at a digest the log does not have -- falls back to a
-// full fold, so a stale or damaged cache only costs time (EXT-PRJ-3). It is
-// the Writer's counterpart of the store reader's startState. A fork folds its
-// inherited prefix on first open and caches the result under its own
-// SessionID like any Session.
-func (p *projector) startState(ctx context.Context, scope *extension.ProjectionScope, commits []session.Commit) (any, session.Head, bool) {
+// cached one when its entry covers a commit boundary the tip segment wrote
+// itself and still decodes, otherwise nothing. Anything unusable -- absent,
+// corrupt, ahead of the log, recorded at a digest the log does not have, or
+// ending on an inherited commit -- falls back to a full fold, so a stale or
+// damaged cache only costs time (EXT-PRJ-3). It is the Writer's counterpart
+// of the store reader's startState. A fork, and a Session whose tip just
+// advanced, fold their inherited prefix on first open and cache the result
+// once they hold a commit of their own.
+func (p *projector) startState(ctx context.Context, scope *extension.ProjectionScope, commits []session.Commit, header session.SegmentHeader) (any, session.Head, bool) {
 	if p.cache == nil {
 		return nil, session.Head{}, false
 	}
 	encoded, through, ok, err := p.cache.Load(ctx, p.sid, scope.Def.ID, scope.Def.Version)
-	if err != nil || !ok || !coversCommit(commits, through) {
+	if err != nil || !ok || !coversCommit(commits, header, through) {
 		return nil, session.Head{}, false
 	}
 	state, err := scope.Def.StateCodec.Decode(encoded)
@@ -125,9 +126,10 @@ func (p *projector) startState(ctx context.Context, scope *extension.ProjectionS
 }
 
 // coversCommit reports whether through names the commit before its Next -- a
-// commit boundary of this log -- with the digest the entry recorded.
-func coversCommit(commits []session.Commit, through session.Head) bool {
-	if through.Next == 0 || through.Next > session.CommitSeq(len(commits)) {
+// commit boundary of this log that the tip header describes wrote itself --
+// with the digest the entry recorded.
+func coversCommit(commits []session.Commit, header session.SegmentHeader, through session.Head) bool {
+	if !extension.OwnBoundary(header, through) || through.Next > session.CommitSeq(len(commits)) {
 		return false
 	}
 	return extension.SealedAt(commits[through.Next-1], through)
@@ -176,6 +178,52 @@ func (p *projector) advance(f folded) {
 	for k, err := range f.failed {
 		p.unhealthy[k] = err
 	}
+}
+
+// rebase re-derives every projection for a tip about to move (EXT-WRT-10):
+// the whole log folded from the projection's initial state under the new
+// segment's inheritance boundary -- every commit so far is inherited by the
+// new tip (EXT-PRJ-8) -- followed by the bootstrap commits as the new tip's
+// own. It installs nothing. An authoritative projection that refuses the
+// result refuses the Advance; a derived one stops at its last good commit
+// and is marked unhealthy once the segment is published (EXT-PRJ-9). A
+// projection unhealthy on the old tip is folded afresh: the event it could
+// not fold may be one the new tip does not inherit.
+func (p *projector) rebase(commits []session.Commit, boundary session.SegmentHeader, bootstrap []session.Commit) (folded, error) {
+	all := make([]session.Commit, 0, len(commits)+len(bootstrap))
+	all = append(append(all, commits...), bootstrap...)
+	out := folded{next: make(map[projectionKey]any, len(p.scopes))}
+	for k, scope := range p.scopes {
+		initial, err := scope.Def.Initial()
+		if err != nil {
+			return folded{}, err
+		}
+		state, err := p.registry.FoldFrom(scope, initial, all, boundary)
+		if err != nil {
+			if scope.Def.Authoritative {
+				return folded{}, err
+			}
+			state, err = p.lastGood(scope, initial, all, boundary)
+			if out.failed == nil {
+				out.failed = make(map[projectionKey]error)
+			}
+			out.failed[k] = err
+		}
+		out.next[k] = state
+	}
+	return out, nil
+}
+
+// install replaces every projection with what rebase produced for a segment
+// that is now published: states, health and the cache bookkeeping all start
+// over on the new tip, whose entries are written from its own commits on.
+func (p *projector) install(f folded) {
+	p.states = f.next
+	p.unhealthy = make(map[projectionKey]error, len(f.failed))
+	for k, err := range f.failed {
+		p.unhealthy[k] = err
+	}
+	p.cached = make(map[projectionKey]session.Head)
 }
 
 // detached returns a copy of one projection state that the caller owns.

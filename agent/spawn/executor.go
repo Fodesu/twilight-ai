@@ -14,6 +14,7 @@ import (
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
+	"github.com/felinics/twilight/agent/session/extension"
 	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/agent/turn"
 )
@@ -294,15 +295,30 @@ func (e *Executor) drive(ctx context.Context, key effect.AssignmentKey, child se
 
 // create makes the child Session with its provenance as segment metadata:
 // empty for Empty, a fork of the parent's history before the calling Turn
-// for Fork (SPN-5).
+// for Fork (SPN-5). Either way the child is created under the parent's
+// Schema (EXT-SCH-3): the parent's Run reads the child through the same
+// registry, and a spawn is never a Schema change.
 func (e *Executor) create(ctx context.Context, key effect.AssignmentKey, child session.SessionID, args Arguments) (Provenance, error) {
-	depth, err := e.depthOf(ctx, session.SessionID(key.Session))
+	parent := session.SessionID(key.Session)
+	parentHeader, err := e.a.Store.Header(ctx, parent)
 	if err != nil {
 		return Provenance{}, err
 	}
-	prov := Provenance{ParentSession: session.SessionID(key.Session), ParentRun: key.RunID, CallID: key.CallID, Depth: depth + 1, Arguments: args}
+	prov := Provenance{ParentSession: parent, ParentRun: key.RunID, CallID: key.CallID, Depth: 1, Arguments: args}
+	if parentProv, ok, err := ProvenanceFromHeader(parentHeader); err != nil {
+		return Provenance{}, err
+	} else if ok {
+		prov.Depth = parentProv.Depth + 1
+	}
 	meta, err := Metadata(prov)
 	if err != nil {
+		return Provenance{}, err
+	}
+	schema, err := extension.SchemaOf(parentHeader)
+	if err != nil {
+		return Provenance{}, &session.Error{Code: session.ErrUnsupported, Operation: "spawn", SessionID: parent, Detail: err.Error()}
+	}
+	if meta, err = extension.DeclareSchema(meta, schema); err != nil {
 		return Provenance{}, err
 	}
 	now := e.a.Clock().UnixMilli()

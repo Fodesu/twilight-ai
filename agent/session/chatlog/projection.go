@@ -173,7 +173,7 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) { //nolint:g
 			return nil, err
 		}
 	case runmod.Event:
-		return s.applyRun(p, e.Position)
+		return s.applyRun(p, e.Position, uint16(e.Version))
 	case ToolResultSupersededPayload:
 		old, ok := s.ToolResults.Get(p.ToolResultID)
 		if !ok {
@@ -221,10 +221,10 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) { //nolint:g
 // applyRun folds one Run fact into the Surface (CHT-ENT-1, CHT-ENT-2). The
 // Run's Turn is remembered from run_created until run_ended: no fact of the
 // Run follows its end, so the table is bounded by the Runs active now.
-func (s Surface) applyRun(ev runmod.Event, pos session.Position) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
+func (s Surface) applyRun(ev runmod.Event, pos session.Position, schema uint16) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
 	switch f := ev.Fact.(type) {
 	case run.RunCreated:
-		s.Runs = s.Runs.Set(ev.RunID, RunOwner{TurnID: TurnID(f.Owner), Schema: f.SchemaVersion})
+		s.Runs = s.Runs.Set(ev.RunID, RunOwner{TurnID: TurnID(f.Owner), Schema: schema})
 	case run.RunEnded:
 		s.Runs = s.Runs.Delete(ev.RunID)
 	case run.ModelStepCompleted:
@@ -458,7 +458,7 @@ func applyContext(state any, e extension.DecodedEvent) (any, error) { //nolint:g
 		c.Pending = cow(c.Pending)
 		delete(c.Pending, p.InputID)
 	case runmod.Event:
-		return c.applyRun(p, e.Position)
+		return c.applyRun(p, e.Position, uint16(e.Version))
 	case ToolResultSupersededPayload:
 		i := c.indexOf(EntryToolResult, string(p.ToolResultID))
 		if i < 0 {
@@ -505,11 +505,11 @@ func applyContext(state any, e extension.DecodedEvent) (any, error) { //nolint:g
 
 // applyRun folds one Run fact into the Context (CHT-CTX-2). Runs is bounded
 // like the Surface's: the Turn is forgotten at run_ended.
-func (c Context) applyRun(ev runmod.Event, pos session.Position) (any, error) {
+func (c Context) applyRun(ev runmod.Event, pos session.Position, schema uint16) (any, error) {
 	switch f := ev.Fact.(type) {
 	case run.RunCreated:
 		c.Runs = cow(c.Runs)
-		c.Runs[ev.RunID] = RunOwner{TurnID: TurnID(f.Owner), Schema: f.SchemaVersion}
+		c.Runs[ev.RunID] = RunOwner{TurnID: TurnID(f.Owner), Schema: schema}
 	case run.RunEnded:
 		c.Runs = cow(c.Runs)
 		delete(c.Runs, ev.RunID)

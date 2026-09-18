@@ -326,6 +326,18 @@ func (r *storeReader) Load(ctx context.Context, sid session.SessionID, id Projec
 	if err != nil {
 		return nil, session.Head{}, err
 	}
+	if from.Next > 0 && !OwnBoundary(page.Header, from) {
+		// The tip moved between the two reads (SES-ADV-1) and the entry's
+		// boundary is inherited by the new tip: it was folded under the old
+		// tip's inheritance policy, so the whole log is folded under this
+		// read's header instead.
+		if state, err = scope.Def.Initial(); err != nil {
+			return nil, session.Head{}, err
+		}
+		if page, err = r.store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid}); err != nil {
+			return nil, session.Head{}, err
+		}
+	}
 	state, err = r.registry.FoldFrom(scope, state, page.Commits, page.Header)
 	if err != nil {
 		return nil, session.Head{}, err
@@ -352,13 +364,13 @@ func (r *storeReader) startState(ctx context.Context, sid session.SessionID, sco
 }
 
 // isPrefix checks that the commit at through.Next-1 is the commit the entry
-// recorded.
+// recorded and one the tip segment wrote itself.
 func (r *storeReader) isPrefix(ctx context.Context, sid session.SessionID, through session.Head) bool {
 	page, err := r.store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid, From: through.Next - 1, Limit: 1})
 	if err != nil || len(page.Commits) != 1 {
 		return false
 	}
-	return SealedAt(page.Commits[0], through)
+	return OwnBoundary(page.Header, through) && SealedAt(page.Commits[0], through)
 }
 
 // SealedAt reports whether c is the commit through records: the commit at
@@ -368,6 +380,19 @@ func (r *storeReader) isPrefix(ctx context.Context, sid session.SessionID, throu
 // unit of the ledger: there is no finer boundary to check.
 func SealedAt(c session.Commit, through session.Head) bool {
 	return through.Next > 0 && c.Seq == through.Next-1 && c.Digest == through.Digest
+}
+
+// OwnBoundary reports whether through is a commit boundary of the tip
+// segment itself: the commit before through.Next is one the tip wrote, not
+// one it inherits. A projection state was folded under the inheritance
+// policy of the tip that was current when it was recorded (EXT-PRJ-8); a
+// fork or an Advance (SES-ADV-1) makes every earlier commit inherited, so
+// an entry ending on an inherited boundary is not started from (EXT-PRJ-3)
+// and the fold restarts from the initial state until the tip holds a commit
+// of its own. It is the second head-alignment predicate of EXT-PRJ-3, shared
+// by the Writer and the Store reader like SealedAt.
+func OwnBoundary(header session.SegmentHeader, through session.Head) bool {
+	return through.Next > session.LedgerSeed(header).Next
 }
 
 // JSONStateCodec is a StateCodec for projection states that marshal to JSON.

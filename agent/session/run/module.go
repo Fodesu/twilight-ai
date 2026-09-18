@@ -142,11 +142,10 @@ func buildModule() extension.ModuleDescriptor {
 	m := extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: ModuleID, Projections: []extension.ProjectionDefinition{MachineProjection}}
 	for _, name := range factNames {
 		def := extension.EventDefinition{
-			Type:    Prefix + session.EventType(name),
-			Stream:  extension.RunStream("runId"),
-			Current: extension.PayloadVersion(run.SchemaVersion1),
-			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{
-				extension.PayloadVersion(run.SchemaVersion1): factCodec{local: name, wire: run.SchemaV1().Wire},
+			Type:   Prefix + session.EventType(name),
+			Stream: extension.RunStream("runId"),
+			Codecs: map[extension.SchemaVersion]extension.PayloadCodec{
+				extension.SchemaVersion(run.SchemaVersion1): factCodec{local: name, wire: run.SchemaV1().Wire},
 			},
 		}
 		if frozenBodyFacts[name] {

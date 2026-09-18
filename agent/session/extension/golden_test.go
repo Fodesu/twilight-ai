@@ -19,18 +19,17 @@ func TestEncodeWireGolden(t *testing.T) {
 		Source: "goldsrc",
 		ID:     "gold",
 		Events: []extension.EventDefinition{{
-			Type:    "goldsrc/gold/sample",
-			Current: 1,
-			Stream:  extension.SessionStream,
-			Codecs:  map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[goldenPayload]{}},
+			Type:   "goldsrc/gold/sample",
+			Stream: extension.SessionStream,
+			Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[goldenPayload]{}},
 		}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire, v, err := reg.Encode("goldsrc/gold/sample", goldenPayload{B: 1})
-	if err != nil || v != 1 {
-		t.Fatalf("encode: %v v=%d", err, v)
+	wire, err := reg.Encode("goldsrc/gold/sample", goldenPayload{B: 1}, 1)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
 	}
 	if got, want := wire.String(), `{"b":1,"v":1}`; got != want {
 		t.Fatalf("golden encoded payload drifted:\n got: %s\nwant: %s", got, want)

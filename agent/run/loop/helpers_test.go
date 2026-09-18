@@ -49,7 +49,7 @@ func newTestStack(t testing.TB, now func() time.Time) *testStack {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: testSession}); err != nil {
+	if _, err := store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: testSession, Metadata: extension.SchemaMetadata(extension.SchemaVersion1)}); err != nil {
 		t.Fatal(err)
 	}
 	s := &testStack{store: store, registry: registry, now: now}

@@ -61,10 +61,9 @@ type StartedPayload struct {
 
 // AttemptStartedPayload registers one attempt on the session stream.
 type AttemptStartedPayload struct {
-	TurnID        TurnID    `json:"turnId"`
-	RunID         run.RunID `json:"runId"`
-	Attempt       uint32    `json:"attempt"`
-	SchemaVersion uint16    `json:"schemaVersion"`
+	TurnID  TurnID    `json:"turnId"`
+	RunID   run.RunID `json:"runId"`
+	Attempt uint32    `json:"attempt"`
 }
 
 type FailedPayload struct {
@@ -121,8 +120,8 @@ func SettleCommitID(sid session.SessionID, turnID TurnID, runID run.RunID) sessi
 // --- module -----------------------------------------------------------------------
 
 func def[T any](typ session.EventType, check func(*T) error) extension.EventDefinition {
-	return extension.EventDefinition{Type: typ, Current: 1, Stream: extension.SessionStream,
-		Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[T]{Check: check}}}
+	return extension.EventDefinition{Type: typ, Stream: extension.SessionStream,
+		Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[T]{Check: check}}}
 }
 
 // Module declares the turn events, the surface projection and the Requires of
@@ -132,10 +131,10 @@ var Module = extension.ModuleDescriptor{
 	Source: extension.SourceTwilight,
 	ID:     ModuleID,
 	Requires: []extension.ModuleRequirement{
-		{Source: extension.SourceTwilight, Module: runmod.ModuleID, Events: map[session.EventType][]extension.PayloadVersion{
+		{Source: extension.SourceTwilight, Module: runmod.ModuleID, Events: map[session.EventType][]extension.SchemaVersion{
 			runmod.Prefix + "run_ended": {1},
 		}},
-		{Source: extension.SourceTwilight, Module: chatlog.ModuleID, Events: map[session.EventType][]extension.PayloadVersion{
+		{Source: extension.SourceTwilight, Module: chatlog.ModuleID, Events: map[session.EventType][]extension.SchemaVersion{
 			chatlog.TypeInputDelivered: {1},
 		}},
 	},
@@ -159,8 +158,8 @@ var Module = extension.ModuleDescriptor{
 			return nil
 		}),
 		def[AttemptStartedPayload](TypeAttemptStarted, func(p *AttemptStartedPayload) error {
-			if p.TurnID == "" || p.RunID == "" || p.Attempt == 0 || p.SchemaVersion == 0 {
-				return errors.New("attempt_started requires turnId, runId, attempt and schemaVersion")
+			if p.TurnID == "" || p.RunID == "" || p.Attempt == 0 {
+				return errors.New("attempt_started requires turnId, runId and attempt")
 			}
 			return nil
 		}),

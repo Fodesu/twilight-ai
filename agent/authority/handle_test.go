@@ -16,6 +16,14 @@ import (
 
 func newAuthority(t *testing.T) *authority.Authority {
 	t.Helper()
+	p := basePorts(t)
+	return newAuthorityFrom(t, &p)
+}
+
+// basePorts is the in-memory deployment every authority test starts from: a
+// local executor and memory stores.
+func basePorts(t *testing.T) authority.Ports {
+	t.Helper()
 	catalog, err := executorlocal.NewCatalog(nil)
 	if err != nil {
 		t.Fatal(err)
@@ -28,7 +36,12 @@ func newAuthority(t *testing.T) *authority.Authority {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := authority.New(authority.Ports{Executor: exec})
+	return authority.Ports{Executor: exec}
+}
+
+func newAuthorityFrom(t *testing.T, p *authority.Ports) *authority.Authority {
+	t.Helper()
+	a, err := authority.New(*p)
 	if err != nil {
 		t.Fatal(err)
 	}

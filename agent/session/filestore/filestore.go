@@ -485,6 +485,69 @@ func (s *Store) CreateSession(ctx context.Context, seg session.Segment, rec sess
 	return s.saveRoot(rec.ID, ownerRecord{SessionRecord: rec})
 }
 
+// AdvanceTip writes the new node completely (header, then its bootstrap log
+// in one atomic file write) and then rewrites the root with the new tip
+// (SES-ADV-2). The root write is the publication point: a crash before it
+// leaves a node no root names, which Collect reclaims, and the root still on
+// its previous tip.
+func (s *Store) AdvanceTip(ctx context.Context, lease session.Lease, seg session.Segment, bootstrap []session.Commit, from session.SegmentID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, owner, err := s.loadRoot(lease.Session, "advance")
+	if err != nil {
+		return err
+	}
+	if !owner.Owned || owner.Epoch != lease.Epoch {
+		return kerr(session.ErrOwnershipLost, "advance", lease.Session, fmt.Sprintf("epoch %d superseded by %d", lease.Epoch, owner.Epoch))
+	}
+	if owner.Failed != "" {
+		return kerr(session.ErrHandleFailed, "advance", lease.Session, owner.Failed)
+	}
+	if rec.Tip != from {
+		return kerr(session.ErrConflict, "advance", lease.Session, fmt.Sprintf("tip is %s, not %s", rec.Tip, from))
+	}
+	dir := s.segmentDir(seg.ID)
+	if _, err := readHeader(dir); err == nil {
+		return kerr(session.ErrConflict, "advance", lease.Session, fmt.Sprintf("segment %s exists", seg.ID))
+	} else if !os.IsNotExist(err) {
+		return segerr("advance", seg.ID, err.Error())
+	}
+	head := seg.Seed()
+	var log []byte
+	for i := range bootstrap {
+		if bootstrap[i].Seq != head.Next || bootstrap[i].PrevDigest != head.Digest {
+			return kerr(session.ErrInvalid, "advance", lease.Session, "bootstrap commit is not sealed against the segment head")
+		}
+		line, err := json.Marshal(bootstrap[i])
+		if err != nil {
+			return err
+		}
+		log = append(log, line...)
+		log = append(log, '\n')
+		head = session.Head{Next: bootstrap[i].Seq + 1, Digest: bootstrap[i].Digest}
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return err
+	}
+	raw, err := json.Marshal(seg.Header)
+	if err != nil {
+		return err
+	}
+	if err := writeAtomic(filepath.Join(dir, headerFile), raw); err != nil {
+		return err
+	}
+	if len(log) > 0 {
+		if err := writeAtomic(filepath.Join(dir, logFile), log); err != nil {
+			return err
+		}
+	}
+	owner.Tip = seg.ID
+	return s.saveRoot(lease.Session, owner)
+}
+
 func (s *Store) Record(ctx context.Context, sid session.SessionID) (session.SessionRecord, error) {
 	if err := ctx.Err(); err != nil {
 		return session.SessionRecord{}, err

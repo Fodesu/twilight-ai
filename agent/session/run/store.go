@@ -397,7 +397,9 @@ type createRun struct {
 }
 
 func (c createRun) Prepare(_ context.Context, view writer.View, now int64) ([]writer.TypedBatch, error) {
-	schema, err := run.SchemaFor(c.newRun.SchemaVersion)
+	// A Run is created under the schema of the segment it lands on
+	// (RUN-NEW-1); nothing in the request may select another.
+	schema, err := run.SchemaFor(uint16(view.Schema()))
 	if err != nil {
 		return nil, err
 	}
@@ -459,6 +461,7 @@ func (s *SessionRunStore) record(ctx context.Context, sid session.SessionID, run
 	}
 	var record Record
 	var position run.RunPosition
+	var schemaVersion uint16
 	for i := range page.Events {
 		e := &page.Events[i]
 		decoded, err := s.cfg.Registry.Decode(*e)
@@ -477,6 +480,7 @@ func (s *SessionRunStore) record(ctx context.Context, sid session.SessionID, run
 		}
 		if len(record.Events) == 0 {
 			record.Created = session.StreamSeq(i)
+			schemaVersion = uint16(decoded.Version)
 		}
 		record.Events = append(record.Events, *e)
 		record.Facts = append(record.Facts, ev.Fact)
@@ -485,17 +489,13 @@ func (s *SessionRunStore) record(ctx context.Context, sid session.SessionID, run
 	if len(record.Facts) == 0 {
 		return Record{}, run.ErrRunNotFound
 	}
-	state, err := run.FoldRun(record.Facts)
+	state, err := run.FoldRun(schemaVersion, record.Facts)
 	if err != nil {
 		return Record{}, fmt.Errorf("runmod: record: %w", err)
 	}
 	if expect != nil && page.Head == expectHead && !run.StatesEquivalent(&state, expect) {
 		return Record{}, errors.New("runmod: record: projection diverges from the event fold")
 	}
-	created, ok := record.Facts[0].(run.RunCreated)
-	if !ok {
-		return Record{}, fmt.Errorf("runmod: record: first fact is %T, want RunCreated", record.Facts[0])
-	}
-	record.Snapshot = run.RuntimeSnapshot{State: state, Position: position, SchemaVersion: created.SchemaVersion}
+	record.Snapshot = run.RuntimeSnapshot{State: state, Position: position, SchemaVersion: schemaVersion}
 	return record, nil
 }

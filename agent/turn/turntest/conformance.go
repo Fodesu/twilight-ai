@@ -98,7 +98,7 @@ func testStart(t *testing.T, factory Factory) {
 		}
 	}
 	view := h.surface().Turns["t1"]
-	if len(view.InputIDs) != 2 || len(view.Attempts) != 1 || view.Attempts[0].SchemaVersion != run.SchemaVersion1 || view.ActiveRun != runID {
+	if len(view.InputIDs) != 2 || len(view.Attempts) != 1 || view.Attempts[0].RunID != runID || view.ActiveRun != runID {
 		t.Fatalf("turn view = %+v", view)
 	}
 	snap := h.load(runID)

@@ -160,10 +160,11 @@ func encodeEnvelopeBody(schemaVersion uint16, typ string, body any) ([]byte, err
 
 var schemaV1 = Schema{Version: SchemaVersion1, Machine: machineV1{}, Wire: wireV1{}, Canonical: canonicalV1{}, Snapshot: snapshotV1{}, Identity: identityV1{}, Bodies: bodiesV1{}}
 
-// SchemaV1 is the SchemaVersion1 binding. New Runs are created with it; every
-// later operation on a Run binds through SchemaFor(header.SchemaVersion) or
-// RuntimeSnapshot.Schema() (RUN-CMT-7). There are no package-level functions
-// that implicitly select a version.
+// SchemaV1 is the SchemaVersion1 binding. A Run is created under the Schema
+// of the Session segment it lands on (RUN-NEW-1); every later operation on
+// it binds through SchemaFor(the version of its facts) or
+// RuntimeSnapshot.Schema() (RUN-CMT-8). There are no package-level
+// functions that implicitly select a version.
 func SchemaV1() Schema { return schemaV1 }
 
 // SchemaFor binds the schema of a persisted version.
@@ -193,9 +194,6 @@ func (machineV1) Evolve(s MachineState, f Fact) (MachineState, error) { //nolint
 }
 
 func (machineV1) CreateGroup(run NewRun, inputs []AgentInput) ([]Fact, error) {
-	if run.SchemaVersion != SchemaVersion1 {
-		return nil, fmt.Errorf("agent: create group: run schema %d does not match schema %d", run.SchemaVersion, SchemaVersion1)
-	}
 	return buildCreateGroupV1(run, inputs)
 }
 

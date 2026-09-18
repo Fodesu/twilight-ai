@@ -26,6 +26,7 @@ import (
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/migrate"
 	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/agent/turn"
@@ -102,6 +103,19 @@ type Ports struct {
 	// Modules are application modules registered after the first-party three
 	// (EXT-APP).
 	Modules []extension.ModuleDescriptor
+	// Schema is the SchemaVersion new Sessions are created under
+	// (AUTH-SCH-1); zero selects extension.SchemaVersion1. Existing Sessions
+	// keep the Schema their tip segment declares until migrated.
+	Schema extension.SchemaVersion
+	// Migrators are the Schema migrations this authority can apply
+	// (AUTH-MIG-1), at most one per (source, target) pair: MigrateSession
+	// selects by the tip's Schema and the requested target. Each target
+	// must be a Schema the registry has codecs under.
+	Migrators []migrate.Migrator
+	// Guards are the deployment's own quiescence preconditions for a
+	// migration -- effects it tracks outside the Session -- evaluated after
+	// the turn and run guards; nil adds none.
+	Guards []migrate.Guard
 	// Clock stamps event times; nil selects time.Now.
 	Clock func() time.Time
 	// Cache stores folded projection states; nil asks the Store for a durable
@@ -142,6 +156,12 @@ type Authority struct {
 	// History answers fork-boundary questions (AUTH-FRK-2, SPN-5).
 	History turn.History
 	Clock   func() time.Time
+	// Schema is the SchemaVersion CreateSession declares on new Sessions.
+	Schema extension.SchemaVersion
+	// Migrators and Guards are MigrateSession's procedures and the
+	// deployment's quiescence preconditions (AUTH-MIG-1).
+	Migrators []migrate.Migrator
+	Guards    []migrate.Guard
 
 	mu   sync.Mutex
 	open map[session.SessionID]*openSession
@@ -161,6 +181,16 @@ func New(p Ports) (*Authority, error) { //nolint:gocritic // hugeParam: Ports is
 	registry, err := extension.BuildRegistryWithExtensions(session.ProtocolVersion1,
 		[]extension.ModuleDescriptor{chatlog.Module, runmod.Module, turn.Module}, p.Modules)
 	if err != nil {
+		return nil, err
+	}
+	schema := p.Schema
+	if schema == 0 {
+		schema = extension.SchemaVersion1
+	}
+	if !registry.SupportsSchema(schema) {
+		return nil, fmt.Errorf("authority: no registered module has a codec under schema %d", schema)
+	}
+	if err := checkMigrators(registry, p.Migrators); err != nil {
 		return nil, err
 	}
 	// AUTH-PRT-3: durability is one bundle. Each port declares its own
@@ -228,10 +258,12 @@ func New(p Ports) (*Authority, error) { //nolint:gocritic // hugeParam: Ports is
 		Store: store, Writers: writers, Registry: registry, Admission: admission, Runs: runs,
 		Turns:   &turn.Coordinator{Projections: projections, Runs: runs, Now: now},
 		Presets: presets, Executor: p.Executor, Frozen: frozen, Projections: projections, Content: content,
-		Chatlog: &chatlog.Commands{Now: now},
-		History: turn.History{Store: store, Registry: registry, Projections: projections},
-		Clock:   now,
-		open:    make(map[session.SessionID]*openSession),
+		Chatlog:   &chatlog.Commands{Now: now},
+		History:   turn.History{Store: store, Registry: registry, Projections: projections},
+		Clock:     now,
+		Schema:    schema,
+		Migrators: p.Migrators, Guards: p.Guards,
+		open: make(map[session.SessionID]*openSession),
 	}
 	a.Driver = driver.New()
 	a.Driver.Runs, a.Driver.Turns, a.Driver.Executor = runs, a.Turns, p.Executor
@@ -239,6 +271,30 @@ func New(p Ports) (*Authority, error) { //nolint:gocritic // hugeParam: Ports is
 	a.Driver.Sources = decision.Sources{Projections: projections, Content: content}
 	a.Driver.Fail = p.Fail
 	return a, nil
+}
+
+// checkMigrators refuses a migrator set MigrateSession could not select
+// from unambiguously or encode for: a nil or ill-formed migrator, two
+// migrators for one (source, target) pair, or a target Schema the registry
+// has no codec under.
+func checkMigrators(registry *extension.Registry, migrators []migrate.Migrator) error {
+	for i, m := range migrators {
+		if m == nil {
+			return errors.New("authority: nil migrator")
+		}
+		if m.Source() == 0 || m.Target() == 0 || m.Source() == m.Target() || m.Profile() == "" {
+			return fmt.Errorf("authority: migrator %q must name a profile and two distinct schemas", m.Profile())
+		}
+		if !registry.SupportsSchema(m.Target()) {
+			return fmt.Errorf("authority: migrator %s targets schema %d, which no registered module has a codec under", m.Profile(), m.Target())
+		}
+		for _, other := range migrators[:i] {
+			if other != nil && other.Source() == m.Source() && other.Target() == m.Target() {
+				return fmt.Errorf("authority: migrators %s and %s both migrate schema %d to %d", other.Profile(), m.Profile(), m.Source(), m.Target())
+			}
+		}
+	}
+	return nil
 }
 
 // Close releases every generation this authority holds -- recovery
@@ -267,10 +323,15 @@ func (a *Authority) Close(ctx context.Context) error {
 
 // --- session lifecycle -------------------------------------------------------------
 
-// CreateSession creates the Session stream; meta is the segment's creation
-// metadata (zero for none).
+// CreateSession creates the Session stream under the authority's Schema
+// (AUTH-SCH-1); meta is the segment's creation metadata (zero for none), and
+// one declaring another Schema is refused.
 func (a *Authority) CreateSession(ctx context.Context, sid session.SessionID, meta jsonstable.Value) error {
-	_, err := a.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: a.Clock().UnixMilli(), Metadata: meta})
+	meta, err := extension.DeclareSchema(meta, a.Schema)
+	if err != nil {
+		return &session.Error{Code: session.ErrInvalid, Operation: "create", SessionID: sid, Detail: err.Error()}
+	}
+	_, err = a.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: a.Clock().UnixMilli(), Metadata: meta})
 	return err
 }
 
@@ -360,6 +421,95 @@ func (a *Authority) DeleteSession(ctx context.Context, sid session.SessionID) er
 		}
 	}
 	return writer.Delete(ctx, a.Store, a.Admission, sid)
+}
+
+const opMigrate = "migrate"
+
+// MigrateSession moves a Session to the target Schema (AUTH-MIG-1,
+// SES-MIG-1): the explicit management operation, never a Run's or a Turn's
+// side effect, and the one way a Session leaves the Schema it was created
+// under. It holds the Session exclusively for the duration -- one this
+// authority already holds open is ErrSessionOpen, one another process owns
+// is ErrOwned -- evaluates the quiescence guards inside the Writer's
+// critical section (no active Turn, no active Run, then Ports.Guards), and
+// publishes the migrator's bootstrap as the new tip segment in one atomic
+// root transition (SES-ADV-2). A Session already on the target is
+// AlreadyApplied: with the migration's ID when a registered migrator of the
+// same Profile created the tip, ErrConflict when one of another Profile
+// did, and without an ID when no recorded migration did. The Writer is
+// closed afterwards, so the next Open reads the new tip.
+func (a *Authority) MigrateSession(ctx context.Context, sid session.SessionID, target extension.SchemaVersion) (migrate.Result, error) {
+	if target == 0 || !a.Registry.SupportsSchema(target) {
+		return migrate.Result{}, &session.Error{Code: session.ErrUnsupported, Operation: opMigrate, SessionID: sid,
+			Detail: fmt.Sprintf("no registered module has a codec under schema %d", target)}
+	}
+	// The generation table is the exclusion: a migration is one more owner
+	// of the Session, held like an Open but never driven.
+	gen := &openSession{state: opening}
+	a.mu.Lock()
+	if _, held := a.open[sid]; held {
+		a.mu.Unlock()
+		return migrate.Result{}, fmt.Errorf("%w: %s", ErrSessionOpen, sid)
+	}
+	a.open[sid] = gen
+	a.mu.Unlock()
+	w, err := a.Writers.Writer(ctx, sid)
+	if err != nil {
+		_ = a.release(context.WithoutCancel(ctx), sid, gen, false)
+		return migrate.Result{}, err
+	}
+	gen.w = w
+	result, err := a.migrate(ctx, w, target)
+	if cerr := a.release(context.WithoutCancel(ctx), sid, gen, true); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return migrate.Result{}, err
+	}
+	return result, nil
+}
+
+// migrate selects the migrator for the tip's Schema and runs it under the
+// authority's guards.
+func (a *Authority) migrate(ctx context.Context, w writer.Writer, target extension.SchemaVersion) (migrate.Result, error) {
+	sid := w.SessionID()
+	source := w.Schema()
+	if source == target {
+		// Already on the target. A registered migrator judges the tip's
+		// record -- the same Profile is AlreadyApplied, another Profile a
+		// conflict -- and a tip no registered migration created is
+		// AlreadyApplied as it stands.
+		prov, ok, err := migrate.Record(w.Header())
+		if err != nil {
+			return migrate.Result{}, &session.Error{Code: session.ErrCorrupt, Operation: opMigrate, SessionID: sid, Detail: err.Error()}
+		}
+		if !ok {
+			return migrate.Result{Outcome: migrate.AlreadyApplied}, nil
+		}
+		if m := a.migrator(prov.Source, target); m != nil {
+			return migrate.Migrate(ctx, w, m)
+		}
+		return migrate.Result{Outcome: migrate.AlreadyApplied, ID: prov.ID}, nil
+	}
+	m := a.migrator(source, target)
+	if m == nil {
+		return migrate.Result{}, &session.Error{Code: session.ErrUnsupported, Operation: opMigrate, SessionID: sid,
+			Detail: fmt.Sprintf("no migrator from schema %d to %d", source, target)}
+	}
+	guards := make([]migrate.Guard, 0, 2+len(a.Guards))
+	guards = append(guards, turn.RequireNoActiveTurn, runmod.RequireNoActiveRun)
+	guards = append(guards, a.Guards...)
+	return migrate.Migrate(ctx, w, m, guards...)
+}
+
+// migrator returns the registered migration from source to target, or nil.
+func (a *Authority) migrator(source, target extension.SchemaVersion) migrate.Migrator {
+	for _, m := range a.Migrators {
+		if m.Source() == source && m.Target() == target {
+			return m
+		}
+	}
+	return nil
 }
 
 // Collect reclaims the storage of deleted Sessions no live Session reaches

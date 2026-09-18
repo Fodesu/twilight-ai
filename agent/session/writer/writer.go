@@ -6,8 +6,9 @@
 // pipeline, each in its own file: encoding and stream affinity (encode.go),
 // artifact admission and retention claims (admission.go), transactional
 // projection folding and the projection cache (projector.go), observer
-// fan-out (observers.go) and the replay fingerprint (fingerprint.go). A new
-// capability joins the pipeline as a stage, not as a field of the Writer.
+// fan-out (observers.go), the replay fingerprint (fingerprint.go) and the
+// segment transition that moves a Session to a new Schema (advance.go). A
+// new capability joins the pipeline as a stage, not as a field of the Writer.
 package writer
 
 import (
@@ -21,6 +22,8 @@ import (
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
 )
+
+const opOpen = "open"
 
 // TypedEvent is a module value plus its event metadata. The payload is
 // encoded and validated against the Registry at commit time.
@@ -56,6 +59,14 @@ type SemanticGroup struct {
 type View interface {
 	Head() session.Head
 	Epoch() session.Epoch
+	// Schema is the SchemaVersion the tip segment declares (EXT-SCH-1):
+	// every event this Writer encodes and every Run it creates is
+	// interpreted under it.
+	Schema() extension.SchemaVersion
+	// Header is the tip segment's header: the segment this Writer appends
+	// to, whose metadata declares the Schema and whatever else the module
+	// layer recorded when the segment was created (SES-ADV-1).
+	Header() session.SegmentHeader
 	// Committed reports whether a commit is already in the stream. It is
 	// answered from an index the kernel already keeps, without touching storage.
 	Committed(session.CommitID) bool
@@ -100,7 +111,12 @@ type CommitResult struct {
 type Writer interface {
 	SessionID() session.SessionID
 	Epoch() session.Epoch
+	Schema() extension.SchemaVersion
+	Header() session.SegmentHeader
 	Commit(context.Context, CommitFn) (CommitResult, error)
+	// Advance publishes a new tip segment of the Session under another
+	// Schema (EXT-WRT-10, SES-ADV-1); see advance.go.
+	Advance(context.Context, AdvanceFn) (AdvanceResult, error)
 	Projections() extension.ProjectionReader
 	// OwnerExists reports whether a CommitID is in this stream; artifact's
 	// reconciliation uses it through artifact.OwnerVerifier.
@@ -134,10 +150,14 @@ type WritersConfig struct {
 type sessionWriter struct {
 	mu       sync.Mutex
 	kernel   session.Handle
+	store    session.Store
 	registry *extension.Registry
 	sid      session.SessionID
-	head     session.Head
-	lost     error
+	// header and schema describe the tip segment; Advance replaces both.
+	header session.SegmentHeader
+	schema extension.SchemaVersion
+	head   session.Head
+	lost   error
 
 	projections *projector
 	admission   *admitter
@@ -163,14 +183,26 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 	// The registry encodes payloads for one protocol version; a Session
 	// created under another one must not be written through it (EXT-WRT-1).
 	if header.ProtocolVersion != registry.ProtocolVersion {
-		return nil, &session.Error{Code: session.ErrUnsupportedProfile, Operation: "open", SessionID: sid,
+		return nil, &session.Error{Code: session.ErrUnsupportedProfile, Operation: opOpen, SessionID: sid,
 			Detail: fmt.Sprintf("session protocol v%d, registry protocol v%d", header.ProtocolVersion, registry.ProtocolVersion)}
+	}
+	// The segment declares the Schema its events are written under; a
+	// segment declaring none, or one this registry has no codecs for, is
+	// not written through it, and never silently under another Schema
+	// (EXT-SCH-1/2).
+	schema, err := extension.SchemaOf(header)
+	if err != nil {
+		return nil, &session.Error{Code: session.ErrUnsupported, Operation: opOpen, SessionID: sid, Detail: err.Error()}
+	}
+	if !registry.SupportsSchema(schema) {
+		return nil, &session.Error{Code: session.ErrUnsupported, Operation: opOpen, SessionID: sid,
+			Detail: fmt.Sprintf("segment declares schema %d, which this registry has no codec for", schema)}
 	}
 	kernel, err := store.Open(ctx, sid, opts)
 	if err != nil {
 		return nil, err
 	}
-	w := &sessionWriter{kernel: kernel, registry: registry, sid: sid,
+	w := &sessionWriter{kernel: kernel, store: store, registry: registry, sid: sid, header: header, schema: schema,
 		projections: newProjector(registry, sid, cfg.Cache, cfg.CachePolicy),
 		admission:   &admitter{Admission: admission, protocol: registry.ProtocolVersion, sid: sid},
 		observers:   &observers{list: cfg.Observers}}
@@ -194,6 +226,21 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 func (w *sessionWriter) SessionID() session.SessionID { return w.sid }
 func (w *sessionWriter) Epoch() session.Epoch         { return w.kernel.Epoch() }
 
+// Schema and Header read the tip under the lock: an Advance replaces both,
+// and a caller between commits must see one segment or the other. Inside a
+// CommitFn or AdvanceFn the View answers the same without the lock.
+func (w *sessionWriter) Schema() extension.SchemaVersion {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.schema
+}
+
+func (w *sessionWriter) Header() session.SegmentHeader {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.header
+}
+
 func (w *sessionWriter) OwnerExists(_ context.Context, owner artifact.ClaimOwner) (bool, error) {
 	if owner.Kind != ClaimOwnerKind || owner.Authority != string(w.sid) {
 		return false, &artifact.Error{Code: artifact.ErrInvalid, Operation: "owner_exists", Detail: "owner is not a commit of this session"}
@@ -213,7 +260,9 @@ var errWriterClosed = &extension.Error{Code: extension.ErrInvalid, Detail: "writ
 func (w *sessionWriter) Close(ctx context.Context) error {
 	w.mu.Lock()
 	var writes []cacheWrite
-	if w.head.Next > 0 {
+	// An entry at an inherited boundary would never be started from
+	// (EXT-PRJ-3), so a tip without a commit of its own refreshes nothing.
+	if extension.OwnBoundary(w.header, w.head) {
 		writes = w.projections.planRefresh(w.head, true)
 	}
 	w.lost = errWriterClosed
@@ -227,8 +276,10 @@ func (w *sessionWriter) Close(ctx context.Context) error {
 
 type view struct{ w *sessionWriter }
 
-func (v view) Head() session.Head   { return v.w.head }
-func (v view) Epoch() session.Epoch { return v.w.kernel.Epoch() }
+func (v view) Head() session.Head              { return v.w.head }
+func (v view) Epoch() session.Epoch            { return v.w.kernel.Epoch() }
+func (v view) Schema() extension.SchemaVersion { return v.w.schema }
+func (v view) Header() session.SegmentHeader   { return v.w.header }
 
 // Committed and LookupCommit are answered by the kernel, which already holds
 // the CommitID index Append needs (SES-REP-3/4): the Writer keeps no copy of
@@ -291,7 +342,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	if group.CommitID == "" {
 		return CommitResult{Outcome: CommitInvalid, Detail: "empty CommitID"}, nil
 	}
-	batches, refs, invalid := encode(w.registry, group)
+	batches, refs, invalid := encode(w.registry, w.schema, group)
 	if invalid != "" {
 		return CommitResult{Outcome: CommitInvalid, Detail: invalid}, nil
 	}

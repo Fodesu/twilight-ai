@@ -41,11 +41,11 @@ var auditModule = extension.ModuleDescriptor{
 	ID:     auditID,
 	Requires: []extension.ModuleRequirement{{
 		Source: extension.SourceTwilight, Module: chatlog.ModuleID,
-		Events: map[session.EventType][]extension.PayloadVersion{chatlog.TypeInputSubmitted: {1}},
+		Events: map[session.EventType][]extension.SchemaVersion{chatlog.TypeInputSubmitted: {1}},
 	}},
 	Events: []extension.EventDefinition{{
-		Type: auditNoteType, Current: 1, Stream: extension.SessionStream,
-		Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[auditNote]{}},
+		Type: auditNoteType, Stream: extension.SessionStream,
+		Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[auditNote]{}},
 	}},
 	Projections: []extension.ProjectionDefinition{{
 		ID: auditTrail, Version: 1,

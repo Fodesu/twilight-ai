@@ -64,16 +64,18 @@ func (m Machine) Apply(e extension.DecodedEvent) (Machine, error) { //nolint:goc
 	out := m.clone()
 	var schema run.Schema
 	var state run.MachineState
-	if created, isCreated := ev.Fact.(run.RunCreated); isCreated {
+	if _, isCreated := ev.Fact.(run.RunCreated); isCreated {
 		if _, dup := out.Active[ev.RunID]; dup {
 			return m, fmt.Errorf("run machine: %s created twice", ev.RunID)
 		}
-		p, err := run.SchemaFor(created.SchemaVersion)
+		// The Run's schema is its segment's, recorded as the fact's payload
+		// version (RUN-CMT-8); RunCreated itself names none.
+		p, err := run.SchemaFor(uint16(e.Version))
 		if err != nil {
 			return m, err
 		}
 		schema = p
-		out.Schemas[ev.RunID] = created.SchemaVersion
+		out.Schemas[ev.RunID] = uint16(e.Version)
 	} else {
 		cur, active := out.Active[ev.RunID]
 		if !active {

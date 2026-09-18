@@ -16,8 +16,8 @@ func policyModule(stream StreamPolicy) ModuleDescriptor {
 	return ModuleDescriptor{
 		Source: "polsrc", ID: "pol",
 		Events: []EventDefinition{{
-			Type: "polsrc/pol/note", Current: 1, Stream: stream,
-			Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[policyPayload]{}},
+			Type: "polsrc/pol/note", Stream: stream,
+			Codecs: map[SchemaVersion]PayloadCodec{1: JSONCodec[policyPayload]{}},
 		}},
 	}
 }

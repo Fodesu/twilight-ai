@@ -26,9 +26,6 @@ const (
 type AttemptView struct {
 	RunID   run.RunID `json:"runId"`
 	Attempt uint32    `json:"attempt"`
-	// SchemaVersion is created.SchemaVersion: the Coordinator builds command
-	// envelopes for this attempt from it without reading the machine projection.
-	SchemaVersion uint16 `json:"schemaVersion"`
 	// End is the terminal result from twilight/run/run_ended; nil while active.
 	End *run.RunEnded `json:"end,omitempty"`
 }
@@ -179,7 +176,7 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		if v.ActiveRun != "" {
 			return nil, fmt.Errorf("turn %s already has active run %s", p.TurnID, v.ActiveRun)
 		}
-		v.Attempts = append(v.Attempts, AttemptView{RunID: p.RunID, Attempt: p.Attempt, SchemaVersion: p.SchemaVersion})
+		v.Attempts = append(v.Attempts, AttemptView{RunID: p.RunID, Attempt: p.Attempt})
 		v.ActiveRun, v.Status = p.RunID, TurnActive
 		s.Turns[p.TurnID] = v
 		s.RunOwner[p.RunID] = p.TurnID

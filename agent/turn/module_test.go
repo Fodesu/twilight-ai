@@ -3,8 +3,8 @@ package turn
 import (
 	"testing"
 
-	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/extension"
 )
 
 // EXT-COD-1: every registered event type's current codec is canonical
@@ -12,7 +12,7 @@ import (
 func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 	samples := map[session.EventType]any{
 		TypeStarted:        StartedPayload{TurnID: "t1", InputIDs: nil, Preset: PresetRef{ID: "b", Digest: "sha256:b"}},
-		TypeAttemptStarted: AttemptStartedPayload{TurnID: "t1", RunID: "run-1", Attempt: 1, SchemaVersion: run.SchemaVersion1},
+		TypeAttemptStarted: AttemptStartedPayload{TurnID: "t1", RunID: "run-1", Attempt: 1},
 		TypeFailed:         FailedPayload{TurnID: "t1", RunID: "run-1", Settlement: SettlementFailed, FailureClass: "provider"},
 		TypeSuperseded:     SupersededPayload{TurnID: "t1", ReplacementTurnID: "t2"},
 	}
@@ -21,7 +21,10 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 		if !ok {
 			t.Fatalf("no sample for %s", def.Type)
 		}
-		codec := def.Codecs[def.Current]
+		if len(def.Codecs) != 1 {
+			t.Fatalf("%s: %d codecs, want one per schema this module writes", def.Type, len(def.Codecs))
+		}
+		codec := def.Codecs[extension.SchemaVersion1]
 		first, err := codec.Encode(value)
 		if err != nil {
 			t.Fatalf("%s: encode: %v", def.Type, err)

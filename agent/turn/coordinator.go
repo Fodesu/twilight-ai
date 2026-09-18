@@ -211,7 +211,7 @@ func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req StartReque
 			}
 			return sessionBatch(now,
 				writer.TypedEvent{Type: TypeStarted, Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, Preset: req.Preset}},
-				writer.TypedEvent{Type: TypeAttemptStarted, Value: AttemptStartedPayload{TurnID: turnID, RunID: runID, Attempt: 1, SchemaVersion: newRun.SchemaVersion}},
+				writer.TypedEvent{Type: TypeAttemptStarted, Value: AttemptStartedPayload{TurnID: turnID, RunID: runID, Attempt: 1}},
 			), nil
 		}),
 		chatlog.DeliverInputs(chatlog.TurnID(turnID), req.Inputs),
@@ -244,8 +244,8 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req DeliverR
 		return TurnResponse{}, fmt.Errorf("%w: turn %s is not active", ErrConflict, req.Ref.TurnID)
 	}
 	// AcceptInput is not a hard-CAS command (RUN-CMT-4): no Base is needed, and
-	// the attempt's SchemaVersion comes from the surface, so Deliver does not
-	// read the machine projection.
+	// the Run's schema is the segment's (RUN-CMT-8), so Deliver does not read
+	// the machine projection.
 	att := view.ActiveAttempt()
 	if att == nil {
 		return TurnResponse{}, fmt.Errorf("%w: turn %s has no active attempt", ErrConflict, req.Ref.TurnID)
@@ -254,7 +254,7 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req DeliverR
 	if len(req.Inputs) == 0 {
 		return TurnResponse{}, fmt.Errorf("%w: deliver without inputs", ErrConflict)
 	}
-	schema, err := run.SchemaFor(att.SchemaVersion)
+	schema, err := run.SchemaFor(uint16(w.Schema()))
 	if err != nil {
 		return TurnResponse{}, err
 	}
@@ -340,7 +340,7 @@ func (c *Coordinator) Retry(ctx context.Context, w writer.Writer, req RetryReque
 				return nil, fmt.Errorf("%w: inputs of turn %s changed during retry", ErrConflict, turnID)
 			}
 			return sessionBatch(now, writer.TypedEvent{Type: TypeAttemptStarted,
-				Value: AttemptStartedPayload{TurnID: turnID, RunID: runID, Attempt: attempt, SchemaVersion: newRun.SchemaVersion}}), nil
+				Value: AttemptStartedPayload{TurnID: turnID, RunID: runID, Attempt: attempt}}), nil
 		}),
 		runmod.CreateRun(newRun, inputs),
 	}}
@@ -395,7 +395,7 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest
 		return TurnResponse{}, fmt.Errorf("%w: turn %s has no active attempt", ErrConflict, turnID)
 	}
 	runID := att.RunID
-	schema, err := run.SchemaFor(att.SchemaVersion)
+	schema, err := run.SchemaFor(uint16(w.Schema()))
 	if err != nil {
 		return TurnResponse{}, err
 	}

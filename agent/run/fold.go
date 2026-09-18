@@ -9,15 +9,14 @@ import (
 // FoldRun rebuilds a MachineState from the complete fact sequence of one Run
 // in stream order (RUN-NEW-2): the first fact must be RunCreated, which binds
 // the Schema for every later fact. No Decide, no effects, no replay.
-func FoldRun(facts []Fact) (MachineState, error) {
+func FoldRun(schemaVersion uint16, facts []Fact) (MachineState, error) {
 	if len(facts) == 0 {
 		return MachineState{}, errors.New("agent: fold: no facts")
 	}
-	created, ok := facts[0].(RunCreated)
-	if !ok {
+	if _, ok := facts[0].(RunCreated); !ok {
 		return MachineState{}, fmt.Errorf("agent: fold: first fact is %T, want RunCreated", facts[0])
 	}
-	schema, err := SchemaFor(created.SchemaVersion)
+	schema, err := SchemaFor(schemaVersion)
 	if err != nil {
 		return MachineState{}, err
 	}

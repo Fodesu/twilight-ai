@@ -49,7 +49,7 @@ Atomic Commit ─────────────────────┘
 
 9. **可验证历史。** 每个 Commit 的 digest 覆盖 PrevDigest、Seq、CommitID、Epoch 与全部批次 digest，`H0 → C0 → C1 → …` 成链，删除、篡改、重排都使其后全部 Commit 失效（SES-WIR-2）。校验的义务点是 `Open`，读路径信任存储（SES-REP-1）。
 
-10. **模块隔离与版本独立。** 事件按 `<source>/<module>/` 归属，`Requires` 图决定投影的消费范围：范围外事件跳过，范围内不可忽略的 Unknown 事件使折叠失败（EXT-REG-1/4、EXT-PRJ-2）。payload 版本 `v` 由模块携带，与 kernel 的 `ProtocolVersion` 分离（SES-VER-1）。application module 与 first-party 模块同构（EXT-APP）。
+10. **模块隔离与版本独立。** 事件按 `<source>/<module>/` 归属，`Requires` 图决定投影的消费范围：范围外事件跳过，范围内不可忽略的 Unknown 事件使折叠失败（EXT-REG-1/4、EXT-PRJ-2）。payload 版本 `v` 由模块携带，与 kernel 的 `ProtocolVersion` 分离（SES-VER-1）；一个段只在一个应用层 Schema 下写入，Schema 由模块层声明在段 metadata 中，kernel 不读取，Session 换 Schema 只能经 `Advance` 发布新 tip 段（SES-ADV-1、EXT-SCH-1）。application module 与 first-party 模块同构（EXT-APP）。
 
 11. **事实只 canonical 一次。** 一个模型或工具结果在 ledger 上只有一份表达：Run 事实记录 digest，正文在 `FrozenValueStore`；对话条目与 Turn 结算是这些事实的纯投影，读取时经 materializer 取回正文（RUN-WIR-4、TRN-MAP-1、Chatlog 第 1 与第 8 节）。一次语义操作仍可以在一个 Commit 内写多个 domain 的事实（Run 的 `input_accepted` 与 Chatlog 的 `input_delivered`），它们是各自 domain 的真实事实，不是同一事实的两种表示。run 流因此是 canonical history 的一部分，不能独立于 session 流回收；正文可以迁移到冷存储，不得丢弃。
 
@@ -69,7 +69,7 @@ Session lineage DAG（第 8 节）：
   根    = SessionRecord：SessionID → 它追加到的 Segment（Tip）与 Session 自己的元数据
   路径  = Ancestry：一个根到 DAG 起点的显式 Segment 序列，及每段在拼接序列中贡献的区间
 
-kernel 负责：Segment/LedgerRef/SessionRecord/Ancestry 的语义、Commit（Seq、CommitID、Epoch、批次）、原子的 Commit 追加、根级写者独占、按 Commit 的 digest 链、按 Ancestry 拼接的 CommitSeq 顺序读与流读、fork、删除、可达性回收
+kernel 负责：Segment/LedgerRef/SessionRecord/Ancestry 的语义、Commit（Seq、CommitID、Epoch、批次）、原子的 Commit 追加、根级写者独占、按 Commit 的 digest 链、按 Ancestry 拼接的 CommitSeq 顺序读与流读、fork、tip 段推进、删除、可达性回收
 adapter 负责：Backend——LedgerStore（存节点：段的创建记录与自身 commit）与 SessionStore（存根：记录与 Lease）
 modules 负责：event ontology、typed codec、payload 版本、投影、投影缓存、幂等重放、并发串行
 ```
@@ -80,15 +80,15 @@ kernel 的 `session.Ledger` 实现 `Store`，只依赖 `Backend` 端口；Memory
 
 **SES-SCP-2** 并发不在 kernel 解决。一个 Session 的全部写入者（Run 的 worker、Turn 的 Coordinator、恢复流程）在进程内经同一个 `writer.Writer` 串行（EXT-WRT），它持有 kernel 的所有权句柄 `session.Handle`。kernel 只拒绝不持有有效所有权的 `Append`。
 
-**SES-SCP-3** kernel 的范围是 Session lineage DAG：header、Open/Append/ReadCommits/ReadStream、所有权与 epoch、按 Commit 的 digest 链、fork、删除与可达性回收（第 8、9 节）。canonical import 不属于当前合同。
+**SES-SCP-3** kernel 的范围是 Session lineage DAG：header、Open/Append/ReadCommits/ReadStream、所有权与 epoch、按 Commit 的 digest 链、fork、tip 段推进（`Advance`）、删除与可达性回收（第 8、9 节）。canonical import 不属于当前合同。
 
-**SES-SCP-4** adapter 端口是 `Backend = LedgerStore + SessionStore + CreateSession`。`LedgerStore` 存节点：`Segment`、`ListSegments`、`ReadSegment`（只读该段自身的 commit）、`Contains`、`LookupCommit`、对已封印 Commit 的 `Append(lease, segment, commit)`、`TruncateSegment`、`RemoveSegment`。`SessionStore` 存根：`Record`、`ListRecords`、`Acquire`（所有权与 torn tail 修复）、`Release`、`DeleteRecord`。两者共享一个一致性域，使 `Append` 能与 Lease 检查原子进行。adapter 不知道 fork、前缀与可达性；`Ledger` 在该端口之上一次实现 SES-FRK 与 SES-GC。conformance 以 `Store` 为参数运行，因此每个 adapter 得到同一套 DAG 语义。
+**SES-SCP-4** adapter 端口是 `Backend = LedgerStore + SessionStore + CreateSession + AdvanceTip`。`LedgerStore` 存节点：`Segment`、`ListSegments`、`ReadSegment`（只读该段自身的 commit）、`Contains`、`LookupCommit`、对已封印 Commit 的 `Append(lease, segment, commit)`、`TruncateSegment`、`RemoveSegment`。`SessionStore` 存根：`Record`、`ListRecords`、`Acquire`（所有权与 torn tail 修复）、`Release`、`DeleteRecord`。`AdvanceTip(lease, segment, bootstrap, from)` 在 Lease 下一步落下新节点及其 bootstrap commit，并把该 Session 根的 tip 从 `from` 移到新节点（SES-ADV-2）。两者共享一个一致性域，使 `Append` 与 `AdvanceTip` 能与 Lease 检查原子进行。adapter 不知道 fork、前缀与可达性；`Ledger` 在该端口之上一次实现 SES-FRK 与 SES-GC。conformance 以 `Store` 为参数运行，因此每个 adapter 得到同一套 DAG 语义。
 
 ## 2. 版本
 
 `ProtocolVersion` 覆盖 kernel wire：header 字段、commit 字段、digest preimage、批次完整性规则。它不覆盖 payload。
 
-**SES-VER-1** payload 的版本由模块负责：每个 payload object 第一层携带整数字段 `v`，模块按 `(EventType, v)` 选 codec（EXT-REG-2）。kernel 不读取该字段。
+**SES-VER-1** payload 的版本由模块负责：每个 payload object 第一层携带整数字段 `v`，模块按 `(EventType, v)` 选 codec（EXT-REG-2）。kernel 不读取该字段。`v` 等于写入该事件的段所声明的应用层 Schema（EXT-SCH-1）：模块层把 Schema 写在段 metadata 的 `twilight/schema` 键下，kernel 把 metadata 作为不透明值封进 header digest，不读取其中任何键。一个段内全部事件的 `v` 相同；Session 换 Schema 只能经 `Advance` 发布新段（SES-ADV-1）。
 
 **SES-VER-2** `ProtocolVersion` 在旧 reader 无法保持 Commit 结构或 digest 语义时递增；payload、EventType、模块 codec 的变化不触发。kernel 版本变化由外部 migration tool 生成新版本日志，旧日志原样保留（adjacent migration）。
 
@@ -143,10 +143,10 @@ type Commit struct {
     PrevDigest es.Digest
     Digest es.Digest
 }
-type Head struct { Next CommitSeq; Digest es.Digest } // 空日志为 LedgerSeed(header)：根 Session {0, HeaderDigest}，fork {Parent.Seq+1, Parent.Digest}
+type Head struct { Next CommitSeq; Digest es.Digest } // 空日志为 LedgerSeed(header)：根段 {0, HeaderDigest}，子段（fork 或 Advance 产生）{Parent.Seq+1, Parent.Digest}
 ```
 
-**SES-WIR-1** identity 非空、稳定、有效 UTF-8。`CommitSeq` 从 `LedgerSeed(header).Next` 连续（根 Session 从 0，fork 从 `Parent.Seq+1`，见第 8 节）；一次 `Append` 持久化恰好一个 `Commit`，`CommitID` 在同一 ledger 内唯一。每个 batch 的流归因必须合法：session 流不带 ID，run 流的 ID 是有效 RunID；同一 Commit 内同一流至多一个 batch，每个 batch 与每个 Commit 都非空。`Payload` 必须是 canonical JSON object（RFC 8785），完整字节进入 digest。event 不携带事务元数据（无 Seq、Index、SourceSeqs、Ignorable）：事件的权威顺序由 CommitSeq 加上其在 batch 内的位置决定。
+**SES-WIR-1** identity 非空、稳定、有效 UTF-8。`CommitSeq` 从 `LedgerSeed(header).Next` 连续（根段从 0，fork 与 Advance 产生的子段从 `Parent.Seq+1`，见第 8 节）；一次 `Append` 持久化恰好一个 `Commit`，`CommitID` 在同一 ledger 内唯一。每个 batch 的流归因必须合法：session 流不带 ID，run 流的 ID 是有效 RunID；同一 Commit 内同一流至多一个 batch，每个 batch 与每个 Commit 都非空。`Payload` 必须是 canonical JSON object（RFC 8785），完整字节进入 digest。event 不携带事务元数据（无 Seq、Index、SourceSeqs、Ignorable）：事件的权威顺序由 CommitSeq 加上其在 batch 内的位置决定。
 
 **SES-WIR-4（四种身份）** `SessionID` 是根（分支）身份；`SegmentID` 是历史节点身份，由段的创建记录决定；`CommitID` 是语义操作身份，在一个 Session 的拼接历史内唯一；`Digest` 是完整性身份。段的创建记录与每个 commit 的 digest 预映像都不含 `SessionID`：段是 ledger DAG 的 canonical 对象，被根命名但不属于任何一个根。删除、重建、重命名 Session，或把段 DAG 与根集合一起迁移到另一个 Store，都不改变任何段或 commit 的身份。
 
@@ -173,7 +173,13 @@ type OpenOptions struct {
 // Handle 是 kernel 的所有权句柄，由 Store.Open 返回；进程内的写入者是 writer.Writer，它持有一个 Handle。
 type Proposal struct {
     CommitID CommitID
+    Intent es.Digest      // 可选；原样进入 Commit.Intent（SES-APP-4）
     Batches []StreamBatch // 非空；调用方按批归因流
+}
+type AdvanceRequest struct {   // 把根移到一个新 tip 段（SES-ADV-1）
+    CausationID es.CausationID
+    Metadata jsonstable.Value  // kernel 不读取任何键；模块层在此声明 Schema 与 migration 记录
+    Bootstrap []Proposal       // 新段自身的首批 commit，从段 seed 起按序封印；与段同时落下或都不落下
 }
 type Handle interface {
     SessionID() SessionID
@@ -182,6 +188,8 @@ type Handle interface {
     Append(context.Context, Proposal) (Commit, error)
     Committed(CommitID) bool
     LookupCommit(CommitID) (Commit, bool, error)
+    StreamHead(StreamRef) (StreamSeq, bool)                                    // SES-REP-3；不计继承段（SES-FRK-5）
+    Advance(context.Context, AdvanceRequest) (SegmentHeader, []Commit, error)  // SES-ADV-1/2
     Close(context.Context) error
 }
 type Store interface {
@@ -198,7 +206,7 @@ type Store interface {
 
 **SES-OWN-1** 同一 Session 同一时刻至多一个有效 Handle。`Open` 在已有有效 Handle 且未声明 `Takeover` 时返回 `ErrOwned`；声明 `Takeover` 的 Open 接管所有权。接管的安全性由 Epoch fencing（SES-OWN-2）承担；何时允许接管（进程死亡判定、租约、人工指令）是 kernel 之上的策略，kernel 不承载 TTL 或心跳。
 
-**SES-OWN-2** 每次成功的 Open 使该 Session 的 `Epoch` 加一并持久化。`Append` 携带 Handle 的 Epoch；Store 对落后于当前持久化 Epoch 的调用返回 `ErrOwnershipLost`，不写入任何内容。这是 fencing：被接管的旧 Handle 的迟到写入不可能进入日志。
+**SES-OWN-2** 每次成功的 Open 使该 Session 的 `Epoch` 加一并持久化。`Append` 与 `Advance` 携带 Handle 的 Epoch；Store 对落后于当前持久化 Epoch 的调用返回 `ErrOwnershipLost`，不写入任何内容。这是 fencing：被接管的旧 Handle 的迟到写入不可能进入日志。
 
 **SES-OWN-3** 所有权是 Session 级的，不是执行目标级的。一个进程取得 Session 的所有权即拥有其中全部执行；接管者读日志后对所有仍在执行中的目标做询问后处置（RUN-CMT-7）。kernel 不知道"执行中"是什么，这一步由 run 模块在 Writer 上完成。
 
@@ -236,7 +244,7 @@ type StreamPage struct { Header SegmentHeader; Stream StreamRef; Events []Event;
 
 **SES-REP-2** `StreamSeq` 是流内位置，由 Store 按 CommitSeq 顺序数出，是读侧的优化：`ReadStream` 只返回该流的事件，但其顺序与从 `ReadCommits` 折叠出的流内顺序完全一致。它不进 digest，也不是第二种排序。
 
-**SES-REP-3** `Committed` 报告某个 `CommitID` 是否已在 ledger 中。`Append` 必须拒绝重复 `CommitID`（SES-APP-3），kernel 因此本来就持有这个索引；`Committed` 是该索引的读侧，只做索引查找，不触碰存储。调用者（`writer.Writer`、Run 的重放判定）不必自己再维护一份同样的索引。
+**SES-REP-3** `Committed` 报告某个 `CommitID` 是否已在 ledger 中。`Append` 必须拒绝重复 `CommitID`（SES-APP-3），kernel 因此本来就持有这个索引；`Committed` 是该索引的读侧，只做索引查找，不触碰存储。调用者（`writer.Writer`、Run 的重放判定）不必自己再维护一份同样的索引。`StreamHead(stream)` 是同一索引的另一读侧：报告该 ledger 是否写过某逻辑流及其下一个 `StreamSeq`，只计 tip 段自身的 commit（SES-FRK-5）。
 
 **SES-REP-4** `LookupCommit` 返回某个已提交的 Commit，未提交时 `ok=false`。句柄不持有它时从存储读取：文件 adapter 按 `Open` 时记录的字节区间读该 Commit，代价与日志长度无关；内存 adapter 复制该 Commit。代价只落在命中，未命中是一次索引查找。这是幂等重放唯一需要的读取能力：重放不必读整条日志（EXT-WRT-2）。
 
@@ -248,7 +256,7 @@ const (
     ErrInvalid ErrorCode = "invalid"; ErrNotFound ErrorCode = "not_found"
     ErrConflict ErrorCode = "conflict"; ErrCorrupt ErrorCode = "corrupt"
     ErrOwned ErrorCode = "owned"; ErrOwnershipLost ErrorCode = "ownership_lost"
-    ErrHandleFailed ErrorCode = "handle_failed" // 前一次 Append 的持久结果未知，句柄已失效
+    ErrHandleFailed ErrorCode = "handle_failed" // 前一次 Append 的持久结果未知，或 Advance 已发布但句柄无法重新加载路径；句柄已失效
     ErrUnsupportedProfile ErrorCode = "unsupported_profile"; ErrUnsupported ErrorCode = "unsupported"
 )
 ```
@@ -261,13 +269,14 @@ conformance 以 `Store` 为参数，每个 adapter 跑同一套，必须验证�
 - **SES-REP-1/2**：顺序、From、Limit 截断、ReadStream 与折叠一致、篡改任一 Commit 后下一次 Open 报 `ErrCorrupt`；`From` 取到 `CommitSeq` 最大值仍为空页；无法 reseal 的 Commit 经 `ValidateLedger` 报带坐标的 `ErrCorrupt`；header 归属另一 Session 或所有权记录无法解析时 Open 与 Header 报 `ErrCorrupt`；
 - **SES-GC-1/2**：Delete 对持有中、未知的 Session 分别为 `ErrOwned`、`ErrNotFound`；删除后不可见、不可开、不可 fork、再次 Delete 为 `ErrNotFound`，同名 Session 立即可重建且得到新段；子仍读到已删除父的前缀；Collect 截掉最大 anchor 之后的自身 commit、整段删除不可达段、对存活 Session 无影响、幂等；
 - **SES-WIR-4**：段 header 与 commit 的 digest 预映像不含 SessionID；在另一段 header 下校验同一批 commit 为 `ErrCorrupt`；
-- **SES-FRK-1/2/3**：未知父、超出父 history 的 Seq、自身为父的 fork 被拒且不留根；相同 origin 重复 Create 幂等，不同 origin 为 `ErrConflict`；边指向贡献该 commit 的 Segment（在继承 commit 处 fork 的边直指持有它的祖先段）；空 fork 的 head 为 seed；`ReadCommits` 返回前缀加自身，`From`/`Limit` 跨越前缀边界计数；`ReadStream` 对 session 流返回前缀加自身且流内位置计入继承事件，对 run 流只返回自身段的事件、父的同名流不受影响（SES-FRK-5）；首个自身 commit 的 Seq 为 `Seq+1`、PrevDigest 为边的 digest；继承的 CommitID 对 `Committed`/`LookupCommit` 可见、对 `Append` 为 `ErrConflict`；父在 fork 之后的追加对子不可见，反之亦然；自身 commit 在子 header 下、前缀在父段 header 下各自通过 `ValidateLedger`；fork 的 fork 读穿两层前缀。
+- **SES-FRK-1/2/3**：未知父、超出父 history 的 Seq、自身为父的 fork 被拒且不留根；相同 origin 重复 Create 幂等，不同 origin 为 `ErrConflict`；边指向贡献该 commit 的 Segment（在继承 commit 处 fork 的边直指持有它的祖先段）；空 fork 的 head 为 seed；`ReadCommits` 返回前缀加自身，`From`/`Limit` 跨越前缀边界计数；`ReadStream` 对 session 流返回前缀加自身且流内位置计入继承事件，对 run 流只返回自身段的事件、父的同名流不受影响（SES-FRK-5）；首个自身 commit 的 Seq 为 `Seq+1`、PrevDigest 为边的 digest；继承的 CommitID 对 `Committed`/`LookupCommit` 可见、对 `Append` 为 `ErrConflict`；父在 fork 之后的追加对子不可见，反之亦然；自身 commit 在子 header 下、前缀在父段 header 下各自通过 `ValidateLedger`；fork 的 fork 读穿两层前缀；
+- **SES-ADV-1/2**：history 为空的 Advance 为 `ErrInvalid`；bootstrap CommitID 已在 history 中为 `ErrConflict` 且 tip 不动；成功后 header 的边指向前一 tip 的 head commit、`ProtocolVersion` 不变、`CausationID` 与 `Metadata` 原样，根与 `Header` 都指向新段；`ReadCommits` 返回前缀加 bootstrap，bootstrap 从 `Parent.Seq+1` 起链、Epoch 为 Handle 的 Epoch，返回值与日志中的封印一致；`Committed`/`LookupCommit` 覆盖前缀与 bootstrap，`StreamHead` 对 run 流只计新段、对 session 流从 bootstrap 起算；之后的 `Append` 接在 bootstrap 之后；session 流读跨边界拼接；重开落在新 tip；被接管的旧 Handle 的 Advance 为 `ErrOwnershipLost`；在继承 commit 与 bootstrap commit 处的 fork 分别把边解析到前一段与新段；`Collect` 保留两段，删除该 Session 及其 fork 后整条链回收。
 
 kernel 的 `ProtocolVersion` 覆盖 header 字段、commit 字段、digest preimage 与批次完整性规则（SES-VER-2）。
 
 ## 8. lineage DAG 与 fork
 
-Session 的历史是一个 DAG 上的路径。节点是不可变的 commit 段（`Segment`），边是段到其父段某个 commit 的引用（`SegmentHeader.Parent`，类型 `LedgerRef`），Session 是指向自身 tip 段的根（`SessionRecord`）。fork 的单位是整条 ledger 的前缀 `Session @ CommitSeq N`：session 流与全部 run 流到该 Commit 为止的事实。对话与 Turn 状态是 run 事实的投影（第 11 条），只复制 session 流得不到完整的 canonical history，因此 fork 不复制任何 commit，而是新增一个节点和一条边。
+Session 的历史是一个 DAG 上的路径。节点是不可变的 commit 段（`Segment`），边是段到其父段某个 commit 的引用（`SegmentHeader.Parent`，类型 `LedgerRef`），Session 是指向自身 tip 段的根（`SessionRecord`）。fork 的单位是整条 ledger 的前缀 `Session @ CommitSeq N`：session 流与全部 run 流到该 Commit 为止的事实。对话与 Turn 状态是 run 事实的投影（第 11 条），只复制 session 流得不到完整的 canonical history，因此 fork 不复制任何 commit，而是新增一个节点和一条边。Session 自身推进到新 tip 段（`Advance`，SES-ADV-1）是同一种图变更：新增一个节点和一条边，并把根移到新节点。
 
 ```go
 type SegmentID string                                       // = SegmentHeader.HeaderDigest
@@ -294,6 +303,10 @@ func Reachable(nodes map[SegmentID]Segment, roots []SessionRecord) map[SegmentID
 
 **SES-FRK-5（继承的是语义历史，不是执行状态）** ledger 血统与语义继承是两件事：`Ancestry` 让子读到父的完整 Commit 前缀（完整性、provenance、CommitID 身份，SES-FRK-2/3），但前缀里的各个流对子的意义不同。session 流是会话的语义历史，子继承它；`run/<id>` 等其他流是写入它们的那个段的执行历史，子不继承——`ReadStream` 对非 session 流只返回子自身段（`Seq > Parent.Seq`）的事件，流内位置从自身段起算；对 session 流仍返回前缀加自身。投影按各自声明折叠继承 commit（EXT-PRJ-8）：执行状态投影只折继承 commit 的 session 流批次，因此父在 fork 点仍处于 Executing 的 Run 在子中不存在、子的接管处置不会把它当作自己的执行来恢复；以 run 事实为语义内容的投影（chatlog 的 assistant/tool_result、turn 的 attempt 结算）声明折叠全部批次。上层据此把继承的 attempt 视为已结算：其 Run 在子中 `ErrRunNotFound`，结算只在 surface 上。fork 点必须是语义静止点——父在该 commit 没有活动中的 Turn——由 Authority 核对（AUTH-FRK-1）；kernel 的 `Create` 不核对。
 
+**SES-ADV-1（tip 段推进）** `Handle.Advance(AdvanceRequest)` 为该 Session 发布一个新的 tip 段。新段是当前 tip 在其 head 处的子段：边为 `Parent = LedgerRef{Segment: 贡献 head commit 的段, Seq: Head.Next-1, Digest: Head.Digest}`，与 fork 一样解析到持有该 commit 的段（SES-FRK-1）；`ProtocolVersion` 与当前段相同；`CausationID` 与 `Metadata` 原样进入 header 并被 header digest 覆盖；nonce 由 kernel 抽取。kernel 不读取 `Metadata` 的任何键：新段代表哪个应用层 Schema、是否为一次 migration，是模块层的声明（EXT-SCH-1、SES-MIG-3）。`Bootstrap` 是新段自身的首批 commit：从 `LedgerSeed(新段 header)` 起按序封印，校验与 `Append` 相同（SES-APP-3），CommitID 已在 history 中为 `ErrConflict`；它们与新段同时落下，或都不落下。返回新段 header 与按序封印的 bootstrap commit。发布后 Session 整体处于新段：`Head` 为 bootstrap 之后的 head，前一 tip 的自身 commit 成为继承前缀（`Committed`/`LookupCommit` 命中、`Append` 为 `ErrConflict`），run 流等非 session 流从空起算（SES-FRK-5），Handle 在新 tip 上继续。history 为空（`Head.Next == 0`）时没有可锚定的 commit，为 `ErrInvalid`。前一 tip 段经新段的边在其最后一个 commit 处被到达，`Collect` 保留它的全部 commit（SES-GC-2）。
+
+**SES-ADV-2（fenced 原子根切换）** 切换是一步 fenced、CAS 式的根移动。`Ledger` 在图锁（SES-GC-4）与 Handle 锁下封印新段与 bootstrap，然后以 `Backend.AdvanceTip(lease, segment, bootstrap, from)` 一步落下。adapter 在同一一致性域内原子核对：Lease 是该 Session 的当前 Lease（否则 `ErrOwnershipLost`，不写入）、根的 `Tip == from`（否则 `ErrConflict`）、SegmentID 未被占用（否则 `ErrConflict`）、每个 bootstrap commit 封印于段 head（否则 `ErrInvalid`）；通过后写入节点与 bootstrap，并把根的 tip 指向新节点。根的改写是发布点：发布点之前的任何失败或崩溃使 Session 仍完整地处于旧 tip，至多留下一个无根引用的节点，由 `Collect` 回收（SES-GC-2）；发布点之后 Session 完整地处于新 tip，根从不指向缺少 bootstrap 的节点。完成与否只由根判定，不由新段文件是否存在判定：重开的 `Open` 读根、加载 `Ancestry`，落在新 tip 上。发布成功但 Handle 无法重新加载路径时返回 `ErrHandleFailed` 且 header 非零：段已发布，调用方 Close 并重开。`Advance` 与 `Create`、`Delete`、`Collect` 同属图变更，在 kernel 内互斥（SES-GC-4）；`Append` 不取图锁，同一 Handle 的 `Append` 与 `Advance` 经 Handle 锁串行。
+
 ## 9. 删除与回收
 
 删除只是撤掉一个根；节点是否保留由可达性决定。
@@ -308,7 +321,7 @@ type CollectReport struct { Removed []SegmentID; Truncated map[SegmentID]CommitS
 
 **SES-GC-2（可达性回收）** `Collect` 由 kernel 以 `Reachable(nodes, roots)` 计算每个段必须保留到的 CommitSeq：某个根的 tip 段保留全部自身 commit；只经边到达的段保留到到达它的最大 `Parent.Seq`，边沿 `Parent.Segment` 传递。未被任何根到达的段整段删除；被到达但无根的段截掉边之后的自身 commit。任何根 tip 的 commit 不被触碰，因此 `Collect` 可以在有写者打开时运行，且幂等。
 
-**SES-GC-4（图变更的串行）** 改变根与节点集合的操作（`Create`、`Delete`、`Collect`）在 kernel 内互斥：`Create` 对父存活的核对与它的写入不会与回收该父或新节点的 `Collect` 交错；adapter 以 `CreateSession(Segment, SessionRecord)` 一步落下节点与根，不存在有根无段或有段无根的持久状态。`Append` 与读不取该锁：根 tip 的段从不被 `Collect` 触及。该互斥是进程内的：多个进程共享一个 Backend 时，根集合变更与可达性回收的互斥必须由该 Backend 的存储事务或 GC 权威提供，当前两个 adapter 都是单进程的。
+**SES-GC-4（图变更的串行）** 改变根与节点集合的操作（`Create`、`Advance`、`Delete`、`Collect`）在 kernel 内互斥：`Create` 对父存活的核对与它的写入不会与回收该父或新节点的 `Collect` 交错；adapter 以 `CreateSession(Segment, SessionRecord)` 一步落下节点与根，不存在有根无段或有段无根的持久状态；以 `AdvanceTip` 一步写入新节点、其 bootstrap 与根的 tip 移动（SES-ADV-2），至多留下一个无根引用的节点。`Append` 与读不取该锁：根 tip 的段从不被 `Collect` 触及。该互斥是进程内的：多个进程共享一个 Backend 时，根集合变更与可达性回收的互斥必须由该 Backend 的存储事务或 GC 权威提供，当前两个 adapter 都是单进程的。
 
 **SES-GC-3（claim 与回收的分工）** `writer.Delete` 在撤根后释放该 Session 拥有的全部 claim（commit claim 与 fork claim，EXT-WRT-9）；继承前缀所引用的内容由每个存活 fork 自己的 fork claim 保留，所以父的 claim 释放不影响子。`Collect` 只回收段的存储，不再涉及 claim。
 

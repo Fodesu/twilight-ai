@@ -31,10 +31,10 @@ func bindingIDs(refs []bindingRef) []artifact.BindingID {
 }
 
 // encode is the pure stage of the pipeline: it validates and encodes every
-// event against the Registry, checks each batch's stream attribution against
+// event against the Registry under the segment's Schema (EXT-SCH-1), checks each batch's stream attribution against
 // the event type's StreamPolicy, extracts the artifact references the events
 // declare and returns the proposal batches. It touches no store.
-func encode(registry *extension.Registry, group *SemanticGroup) ([]session.StreamBatch, []bindingRef, string) {
+func encode(registry *extension.Registry, schema extension.SchemaVersion, group *SemanticGroup) ([]session.StreamBatch, []bindingRef, string) {
 	batches := make([]session.StreamBatch, len(group.Batches))
 	var refs []bindingRef
 	for bi, tb := range group.Batches {
@@ -45,7 +45,7 @@ func encode(registry *extension.Registry, group *SemanticGroup) ([]session.Strea
 			if !ok {
 				return nil, nil, fmt.Sprintf("%s: unknown type %s", where, te.Type)
 			}
-			payload, _, err := registry.Encode(te.Type, te.Value)
+			payload, err := registry.Encode(te.Type, te.Value, schema)
 			if err != nil {
 				return nil, nil, fmt.Sprintf("%s: %v", where, err)
 			}

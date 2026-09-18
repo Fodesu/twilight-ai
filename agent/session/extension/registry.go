@@ -21,7 +21,6 @@ type (
 	ModuleID          string
 	ProjectionID      string
 	ProjectionVersion uint16
-	PayloadVersion    uint16
 )
 
 // SourceTwilight is the source reserved for this repository's first-party
@@ -45,10 +44,14 @@ type PayloadCodec interface {
 	Validate(value any) error
 }
 
+// EventDefinition declares one event type and the codec of each Schema it
+// exists under. A segment is written under exactly one SchemaVersion
+// (EXT-SCH-1), so the codec Encode selects is the segment's, never a
+// per-binary "current" one; a type absent from a Schema cannot be written to
+// a segment of that Schema.
 type EventDefinition struct {
 	Type     session.EventType
-	Current  PayloadVersion
-	Codecs   map[PayloadVersion]PayloadCodec
+	Codecs   map[SchemaVersion]PayloadCodec
 	Bindings []BindingReferenceDefinition
 	// Ignorable marks purely informational events: a fold that cannot decode
 	// the event's payload version skips it instead of failing (EXT-PRJ-2).
@@ -84,7 +87,7 @@ func RunStream(idField string) StreamPolicy {
 type ModuleRequirement struct {
 	Source SourceID
 	Module ModuleID
-	Events map[session.EventType][]PayloadVersion
+	Events map[session.EventType][]SchemaVersion
 }
 
 // Key is the identity the requirement points at.
@@ -111,7 +114,7 @@ type DecodedEvent struct {
 	Position session.Position
 	Event    session.Event
 	Module   ModuleKey
-	Version  PayloadVersion
+	Version  SchemaVersion
 	Value    any
 	Unknown  bool
 }
@@ -123,7 +126,15 @@ type Registry struct {
 	modules     map[ModuleKey]ModuleDescriptor
 	events      map[session.EventType]eventEntry
 	projections map[projectionKey]projectionEntry
+	// schemas are the SchemaVersions at least one registered event has a
+	// codec for: the Schemas a segment may declare and this registry can
+	// write to and read from (EXT-SCH-2).
+	schemas map[SchemaVersion]bool
 }
+
+// SupportsSchema reports whether a segment declaring v can be written
+// through this registry: some registered event has a codec under v.
+func (r *Registry) SupportsSchema(v SchemaVersion) bool { return r.schemas[v] }
 
 type eventEntry struct {
 	module ModuleKey
@@ -188,7 +199,7 @@ func BuildRegistryWithExtensions(protocolVersion uint16, core, extensions []Modu
 		}
 		modules = append(modules, m)
 	}
-	r := &Registry{ProtocolVersion: protocolVersion,
+	r := &Registry{ProtocolVersion: protocolVersion, schemas: map[SchemaVersion]bool{},
 		modules: make(map[ModuleKey]ModuleDescriptor), events: make(map[session.EventType]eventEntry), projections: make(map[projectionKey]projectionEntry)}
 	for _, m := range modules {
 		if err := validSegment("source", string(m.Source)); err != nil {
@@ -210,8 +221,14 @@ func BuildRegistryWithExtensions(protocolVersion uint16, core, extensions []Modu
 			if _, dup := r.events[def.Type]; dup {
 				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "duplicate event type"}
 			}
-			if def.Current == 0 || def.Codecs[def.Current] == nil {
-				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "no codec for the current payload version"}
+			if len(def.Codecs) == 0 {
+				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "no codec for any schema version"}
+			}
+			for v, codec := range def.Codecs {
+				if v == 0 || codec == nil {
+					return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "nil codec or zero schema version"}
+				}
+				r.schemas[v] = true
 			}
 			switch def.Stream.Kind {
 			case session.StreamKindSession:
@@ -288,8 +305,10 @@ func (r *Registry) checkRequirements() error {
 				if !ok || entry.module != dep.Key() {
 					return &Error{Code: ErrInvalid, Type: typ, Detail: fmt.Sprintf("module %s/%s requires event not owned by %s/%s", key.Source, key.ID, depKey.Source, depKey.ID)}
 				}
-				if !containsVersion(versions, entry.def.Current) {
-					return &Error{Code: ErrInvalid, Type: typ, Detail: fmt.Sprintf("module %s/%s handles versions %v but %s/%s currently writes v%d", key.Source, key.ID, versions, depKey.Source, depKey.ID, entry.def.Current)}
+				for v := range entry.def.Codecs {
+					if !containsVersion(versions, v) {
+						return &Error{Code: ErrInvalid, Type: typ, Detail: fmt.Sprintf("module %s/%s handles versions %v but %s/%s writes v%d under schema %d", key.Source, key.ID, versions, depKey.Source, depKey.ID, v, v)}
+					}
 				}
 			}
 			if err := visit(depKey); err != nil {
@@ -330,7 +349,7 @@ func (r *Registry) scopeOf(key ModuleKey) map[ModuleKey]struct{} {
 	return scope
 }
 
-func containsVersion(vs []PayloadVersion, v PayloadVersion) bool {
+func containsVersion(vs []SchemaVersion, v SchemaVersion) bool {
 	for _, x := range vs {
 		if x == v {
 			return true
@@ -376,27 +395,31 @@ func ModulePrefix(source SourceID, id ModuleID) session.EventType {
 	return session.EventType(fmt.Sprintf("%s/%s/", source, id))
 }
 
-// Encode validates value, encodes it with the current codec and adds `v`.
-func (r *Registry) Encode(typ session.EventType, value any) (jsonstable.Value, PayloadVersion, error) {
+// Encode validates value, encodes it with the codec of the segment's Schema
+// and records that Schema as the payload's `v` (EXT-REG-2).
+func (r *Registry) Encode(typ session.EventType, value any, schema SchemaVersion) (jsonstable.Value, error) {
 	_, def, ok := r.LookupEvent(typ)
 	if !ok {
-		return jsonstable.Value{}, 0, &Error{Code: ErrUnknownEvent, Type: typ}
+		return jsonstable.Value{}, &Error{Code: ErrUnknownEvent, Type: typ}
 	}
-	codec := def.Codecs[def.Current]
+	codec := def.Codecs[schema]
+	if codec == nil {
+		return jsonstable.Value{}, &Error{Code: ErrSchema, Type: typ, Detail: fmt.Sprintf("event has no codec under schema %d", schema)}
+	}
 	if err := codec.Validate(value); err != nil {
-		return jsonstable.Value{}, 0, &Error{Code: ErrCodec, Type: typ, Detail: err.Error()}
+		return jsonstable.Value{}, &Error{Code: ErrCodec, Type: typ, Detail: err.Error()}
 	}
 	body, err := codec.Encode(value)
 	if err != nil {
-		return jsonstable.Value{}, 0, &Error{Code: ErrCodec, Type: typ, Detail: err.Error()}
+		return jsonstable.Value{}, &Error{Code: ErrCodec, Type: typ, Detail: err.Error()}
 	}
-	wire, err := addVersion(body, def.Current)
+	wire, err := addVersion(body, schema)
 	if err != nil {
-		return jsonstable.Value{}, 0, &Error{Code: ErrCodec, Type: typ, Detail: err.Error()}
+		return jsonstable.Value{}, &Error{Code: ErrCodec, Type: typ, Detail: err.Error()}
 	}
 	// The canonical Encode/Decode/Encode round trip is a module test
 	// obligation (EXT-COD-1), not re-verified per Encode.
-	return wire, def.Current, nil
+	return wire, nil
 }
 
 // Decode selects the codec by (EventType, v). Unknown types or versions are
@@ -429,7 +452,7 @@ func (r *Registry) Decode(e session.Event) (DecodedEvent, error) {
 }
 
 // addVersion inserts the integer `v` field into the first level of body.
-func addVersion(body jsonstable.Value, v PayloadVersion) (jsonstable.Value, error) {
+func addVersion(body jsonstable.Value, v SchemaVersion) (jsonstable.Value, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body.Bytes(), &m); err != nil {
 		return jsonstable.Value{}, fmt.Errorf("payload is not an object: %w", err)
@@ -445,7 +468,7 @@ func addVersion(body jsonstable.Value, v PayloadVersion) (jsonstable.Value, erro
 }
 
 // splitVersion removes `v` and returns the codec-facing body.
-func splitVersion(payload jsonstable.Value) (jsonstable.Value, PayloadVersion, error) {
+func splitVersion(payload jsonstable.Value) (jsonstable.Value, SchemaVersion, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(payload.Bytes(), &m); err != nil {
 		return jsonstable.Value{}, 0, fmt.Errorf("payload is not an object: %w", err)
@@ -463,7 +486,7 @@ func splitVersion(payload jsonstable.Value) (jsonstable.Value, PayloadVersion, e
 	if err != nil {
 		return jsonstable.Value{}, 0, err
 	}
-	return body, PayloadVersion(v), nil
+	return body, SchemaVersion(v), nil
 }
 
 // JSONCodec is a PayloadCodec for a plain Go struct type T with json tags.
@@ -530,8 +553,11 @@ func StrictDecode(wire jsonstable.Value, dst any) error {
 type ErrorCode string
 
 const (
-	ErrInvalid       ErrorCode = "invalid"
-	ErrUnknownEvent  ErrorCode = "unknown_event"
+	ErrInvalid      ErrorCode = "invalid"
+	ErrUnknownEvent ErrorCode = "unknown_event"
+	// ErrSchema: a segment declares no Schema, one this registry does not
+	// support, or an event has no codec under the segment's Schema.
+	ErrSchema        ErrorCode = "schema"
 	ErrCodec         ErrorCode = "codec"
 	ErrBinding       ErrorCode = "binding"
 	ErrConflict      ErrorCode = "conflict"

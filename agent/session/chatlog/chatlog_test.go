@@ -32,7 +32,7 @@ func runStep(runID run.RunID, f run.Fact) step {
 }
 
 func created(runID run.RunID, owner string) step {
-	return runStep(runID, run.RunCreated{SchemaVersion: run.SchemaVersion1, RunID: runID, Owner: run.OwnerID(owner)})
+	return runStep(runID, run.RunCreated{RunID: runID, Owner: run.OwnerID(owner)})
 }
 
 func completed(runID run.RunID, stepID run.StepID, digest es.Digest) step {
@@ -57,7 +57,7 @@ func foldSteps(t *testing.T, steps []step) (Context, Surface, error) {
 	surfaceState, _ := SurfaceProjection.Initial()
 	contextState, _ := ContextProjection.Initial()
 	for i, st := range steps {
-		wire, _, err := r.Encode(st.typ, st.value)
+		wire, err := r.Encode(st.typ, st.value, extension.SchemaVersion1)
 		if err != nil {
 			t.Fatalf("step %d encode: %v", i, err)
 		}
@@ -252,7 +252,10 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 		if !ok {
 			t.Fatalf("no sample for %s", def.Type)
 		}
-		codec := def.Codecs[def.Current]
+		if len(def.Codecs) != 1 {
+			t.Fatalf("%s: %d codecs, want one per schema this module writes", def.Type, len(def.Codecs))
+		}
+		codec := def.Codecs[extension.SchemaVersion1]
 		first, err := codec.Encode(value)
 		if err != nil {
 			t.Fatalf("%s: encode: %v", def.Type, err)
@@ -273,7 +276,7 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 		"error with digest":      {ToolResultID: "x", Status: ToolError, OutputDigest: "sha256:o"},
 		"unknown status":         {ToolResultID: "x", Status: ToolUnknown},
 	} {
-		if _, _, err := r.Encode(TypeToolResultSuperseded, p); err == nil {
+		if _, err := r.Encode(TypeToolResultSuperseded, p, extension.SchemaVersion1); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}

@@ -66,9 +66,9 @@ func TestChatlogWireGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire, _, err := reg.Encode(chatlog.TypeInputSubmitted, chatlog.InputSubmittedPayload{
+	wire, err := reg.Encode(chatlog.TypeInputSubmitted, chatlog.InputSubmittedPayload{
 		InputID: "in-1", Content: jsonstable.MustParse(`{"text":"hi"}`), SubmittedAtUnixMilli: 1,
-	})
+	}, extension.SchemaVersion1)
 	if err != nil {
 		t.Fatal(err)
 	}

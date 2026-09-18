@@ -40,9 +40,9 @@ func noteModule(id extension.ModuleID, requires ...extension.ModuleRequirement) 
 	typ := tpfx(id) + "note"
 	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: id, Requires: requires,
 		Events: []extension.EventDefinition{
-			{Type: typ, Current: 1, Stream: extension.SessionStream, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
+			{Type: typ, Stream: extension.SessionStream, Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
 				Bindings: []extension.BindingReferenceDefinition{{Extractor: refsExtractor, RequiredDurability: artifact.EventBound}}},
-			{Type: tpfx(id) + "hint", Current: 1, Stream: extension.SessionStream, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}, Ignorable: true},
+			{Type: tpfx(id) + "hint", Stream: extension.SessionStream, Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}, Ignorable: true},
 		},
 		Projections: []extension.ProjectionDefinition{{
 			ID: extension.ProjectionID(string(typ) + "s"), Version: 1, Consumes: []session.EventType{typ}, Authoritative: true,
@@ -84,7 +84,7 @@ func newFixture(t *testing.T) *fixture {
 	f.registry = r
 	f.bindings = artifact.NewMemoryBindingStore()
 	f.ledger = artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: f.bindings})
-	if _, err := f.store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
+	if _, err := f.store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", Metadata: extension.SchemaMetadata(extension.SchemaVersion1)}); err != nil {
 		t.Fatal(err)
 	}
 	return f
@@ -436,7 +436,7 @@ func TestBindingAdmission(t *testing.T) {
 	typ := tpfx("r") + "ref"
 	reg, err := extension.BuildRegistry(session.ProtocolVersion1, extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "r",
 		Events: []extension.EventDefinition{{
-			Type: typ, Current: 1, Stream: extension.SessionStream, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
+			Type: typ, Stream: extension.SessionStream, Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
 			Bindings: []extension.BindingReferenceDefinition{{
 				Extractor: refsExtractor, Cardinality: extension.Cardinality{Min: 1, Max: &maxTwo},
 				AllowedSchemes:     []artifact.Scheme{"spill"},

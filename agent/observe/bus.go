@@ -24,7 +24,7 @@ type Event struct {
 	Session session.SessionID
 	Row     session.Event
 	Module  extension.ModuleKey
-	Version extension.PayloadVersion
+	Version extension.SchemaVersion
 	Value   any
 	Unknown bool
 	Err     error

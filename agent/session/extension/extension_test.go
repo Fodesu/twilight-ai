@@ -33,9 +33,9 @@ func noteModule(id ModuleID, requires ...ModuleRequirement) ModuleDescriptor {
 	typ := tpfx(id) + "note"
 	return ModuleDescriptor{Source: SourceTwilight, ID: id, Requires: requires,
 		Events: []EventDefinition{
-			{Type: typ, Current: 1, Stream: SessionStream, Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
+			{Type: typ, Stream: SessionStream, Codecs: map[SchemaVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
 				Bindings: []BindingReferenceDefinition{{Extractor: refsExtractor, RequiredDurability: artifact.EventBound}}},
-			{Type: tpfx(id) + "hint", Current: 1, Stream: SessionStream, Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}}, Ignorable: true},
+			{Type: tpfx(id) + "hint", Stream: SessionStream, Codecs: map[SchemaVersion]PayloadCodec{1: JSONCodec[notePayload]{}}, Ignorable: true},
 		},
 		Projections: []ProjectionDefinition{{
 			ID: ProjectionID(string(typ) + "s"), Version: 1, Consumes: []session.EventType{typ},
@@ -59,8 +59,8 @@ func TestBuildRegistryValidatesRequires(t *testing.T) {
 		"unregistered dependency": {noteModule("a", ModuleRequirement{Source: SourceTwilight, Module: "zzz"})},
 		"cycle":                   {noteModule("a", ModuleRequirement{Source: SourceTwilight, Module: "b"}), noteModule("b", ModuleRequirement{Source: SourceTwilight, Module: "a"})},
 		"unhandled version": {noteModule("a"), noteModule("b", ModuleRequirement{Source: SourceTwilight, Module: "a",
-			Events: map[session.EventType][]PayloadVersion{tpfx("a") + "note": {2}}})},
-		"event outside module": {{Source: SourceTwilight, ID: "a", Events: []EventDefinition{{Type: "twilight/b/x", Current: 1, Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}}}}}},
+			Events: map[session.EventType][]SchemaVersion{tpfx("a") + "note": {2}}})},
+		"event outside module": {{Source: SourceTwilight, ID: "a", Events: []EventDefinition{{Type: "twilight/b/x", Codecs: map[SchemaVersion]PayloadCodec{1: JSONCodec[notePayload]{}}}}}},
 		"projection outside scope": {noteModule("a"), {Source: SourceTwilight, ID: "b", Projections: []ProjectionDefinition{{ID: "p", Version: 1, Consumes: []session.EventType{tpfx("a") + "note"},
 			Initial: func() (any, error) { return nil, nil }, Apply: func(s any, _ DecodedEvent) (any, error) { return s, nil }, StateCodec: JSONStateCodec[noteState]{}}}}},
 	}
@@ -70,7 +70,7 @@ func TestBuildRegistryValidatesRequires(t *testing.T) {
 		}
 	}
 	if _, err := BuildRegistry(session.ProtocolVersion1, noteModule("a"), noteModule("b", ModuleRequirement{Source: SourceTwilight, Module: "a",
-		Events: map[session.EventType][]PayloadVersion{tpfx("a") + "note": {1}}})); err != nil {
+		Events: map[session.EventType][]SchemaVersion{tpfx("a") + "note": {1}}})); err != nil {
 		t.Fatalf("valid registry: %v", err)
 	}
 }
@@ -78,8 +78,8 @@ func TestBuildRegistryValidatesRequires(t *testing.T) {
 // srcModule is a minimal module under an arbitrary source.
 func srcModule(source SourceID, id ModuleID) ModuleDescriptor {
 	return ModuleDescriptor{Source: source, ID: id, Events: []EventDefinition{{
-		Type: ModulePrefix(source, id) + "note", Current: 1, Stream: SessionStream,
-		Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
+		Type: ModulePrefix(source, id) + "note", Stream: SessionStream,
+		Codecs: map[SchemaVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
 	}}}
 }
 
@@ -115,15 +115,15 @@ func TestBuildRegistryValidatesSource(t *testing.T) {
 }
 
 // Encode adds v; Decode selects the codec by v and keeps unknown versions raw.
-func TestRegistryPayloadVersion(t *testing.T) {
+func TestRegistrySchemaVersion(t *testing.T) {
 	r, err := BuildRegistry(session.ProtocolVersion1, noteModule("a"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	typ := tpfx("a") + "note"
-	wire, v, err := r.Encode(typ, notePayload{Text: "hi"})
-	if err != nil || v != 1 || wire.String() != `{"text":"hi","v":1}` {
-		t.Fatalf("encode = %s v%d %v", wire, v, err)
+	wire, err := r.Encode(typ, notePayload{Text: "hi"}, 1)
+	if err != nil || wire.String() != `{"text":"hi","v":1}` {
+		t.Fatalf("encode = %s %v", wire, err)
 	}
 	decoded, err := r.Decode(session.Event{Type: typ, Payload: wire})
 	if err != nil || decoded.Unknown || decoded.Value.(notePayload).Text != "hi" {
@@ -133,42 +133,45 @@ func TestRegistryPayloadVersion(t *testing.T) {
 	if err != nil || !future.Unknown || future.Version != 2 {
 		t.Fatalf("future version = %+v %v", future, err)
 	}
-	if _, _, err := r.Encode("twilight/a/other", notePayload{}); err == nil {
+	if _, err := r.Encode("twilight/a/other", notePayload{}, 1); err == nil {
 		t.Fatal("unknown type encoded")
 	}
 }
 
-// EXT-REG-1: advancing Current obliges the module to supply that version's
-// codec. Encode selects def.Codecs[def.Current], so a missing entry must be
-// refused when the registry is built rather than discovered on first write.
-func TestBuildRegistryRequiresCodecForCurrent(t *testing.T) {
+// EXT-SCH-2: every codec entry names a real Schema and a real codec. Encode
+// selects def.Codecs[segment schema], so an unusable entry must be refused
+// when the registry is built rather than discovered on first write.
+func TestBuildRegistryRequiresCodec(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		current PayloadVersion
+		name   string
+		codecs map[SchemaVersion]PayloadCodec
+		detail string
 	}{
-		{"current version without a codec", 2},
-		{"zero current version", 0},
+		{"no codec at all", nil, "no codec for any schema version"},
+		{"zero schema version", map[SchemaVersion]PayloadCodec{0: JSONCodec[notePayload]{}}, "nil codec or zero schema version"},
+		{"nil codec", map[SchemaVersion]PayloadCodec{1: nil}, "nil codec or zero schema version"},
 	} {
 		_, err := BuildRegistry(session.ProtocolVersion1, ModuleDescriptor{Source: SourceTwilight, ID: "a",
-			Events: []EventDefinition{{
-				Type: tpfx("a") + "note", Current: tc.current,
-				Codecs: map[PayloadVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
-			}}})
+			Events: []EventDefinition{{Type: tpfx("a") + "note", Stream: SessionStream, Codecs: tc.codecs}}})
 		if err == nil {
 			t.Fatalf("%s: registry built", tc.name)
 		}
-		if !strings.Contains(err.Error(), "no codec for the current payload version") {
+		if !strings.Contains(err.Error(), tc.detail) {
 			t.Fatalf("%s: error = %v", tc.name, err)
 		}
 	}
-	// Retaining the older codec alongside the current one is the supported
-	// shape, so it must keep building.
-	if _, err := BuildRegistry(session.ProtocolVersion1, ModuleDescriptor{Source: SourceTwilight, ID: "a",
+	// A type existing under two Schemas is the supported shape, so it must
+	// keep building, and the registry supports exactly those Schemas.
+	r, err := BuildRegistry(session.ProtocolVersion1, ModuleDescriptor{Source: SourceTwilight, ID: "a",
 		Events: []EventDefinition{{
-			Type: tpfx("a") + "note", Current: 2, Stream: SessionStream,
-			Codecs: map[PayloadVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}},
-		}}}); err != nil {
+			Type: tpfx("a") + "note", Stream: SessionStream,
+			Codecs: map[SchemaVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}},
+		}}})
+	if err != nil {
 		t.Fatalf("coexisting versions: %v", err)
+	}
+	if !r.SupportsSchema(1) || !r.SupportsSchema(2) || r.SupportsSchema(3) {
+		t.Fatalf("supported schemas: 1=%v 2=%v 3=%v", r.SupportsSchema(1), r.SupportsSchema(2), r.SupportsSchema(3))
 	}
 }
 
@@ -198,28 +201,35 @@ func (legacyCodec) Validate(v any) error {
 	return nil
 }
 
-// EXT-REG-1..4, EXT-COD-1/2: payload versions coexist. Advancing Current must
-// not orphan stored rows: an old version still selects its own codec, decodes
-// to a value and folds, while a version no codec claims stays Unknown with its
-// raw payload.
+// EXT-SCH-1/2, EXT-COD-1/2: one type exists under two Schemas. Encode writes
+// the codec of the segment's Schema and records it as `v`; a Schema the type
+// has no codec under is refused; a row of either Schema decodes through its
+// own codec, while a version no codec claims stays Unknown with its raw payload.
 func TestRegistryMultiVersionCodecsCoexist(t *testing.T) {
 	typ := tpfx("v") + "note"
 	upgraded := ModuleDescriptor{Source: SourceTwilight, ID: "v", Events: []EventDefinition{{
-		Type: typ, Current: 2, Stream: SessionStream,
-		Codecs: map[PayloadVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}},
+		Type: typ, Stream: SessionStream,
+		Codecs: map[SchemaVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}},
 	}}}
 	r, err := BuildRegistry(session.ProtocolVersion1, upgraded)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Writing uses Current.
-	wire, v, err := r.Encode(typ, notePayload{Text: "hi"})
-	if err != nil || v != 2 {
-		t.Fatalf("encode = %s v%d %v, want v2", wire, v, err)
+	// Writing uses the segment's Schema, whichever it is.
+	wire, err := r.Encode(typ, notePayload{Text: "hi"}, 2)
+	if err != nil {
+		t.Fatalf("encode under schema 2: %v", err)
 	}
 	if wire.String() != `{"text":"hi","v":2}` {
-		t.Fatalf("current wire = %s", wire)
+		t.Fatalf("schema 2 wire = %s", wire)
+	}
+	if w1, err := r.Encode(typ, notePayload{Text: "hi"}, 1); err != nil || w1.String() != `{"text":"hi","v":1}` {
+		t.Fatalf("schema 1 wire = %s %v", w1, err)
+	}
+	var e *Error
+	if _, err := r.Encode(typ, notePayload{Text: "hi"}, 3); !errors.As(err, &e) || e.Code != ErrSchema {
+		t.Fatalf("encode under an unsupported schema = %v, want ErrSchema", err)
 	}
 
 	// A row written before the upgrade still decodes, through its own codec.

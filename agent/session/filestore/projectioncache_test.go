@@ -53,8 +53,8 @@ func (c *foldCounter) reset() {
 func counterModule(c *foldCounter) extension.ModuleDescriptor {
 	const typ session.EventType = "twilight/z/row"
 	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "z",
-		Events: []extension.EventDefinition{{Type: typ, Current: 1, Stream: extension.SessionStream,
-			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[rowPayload]{}}}},
+		Events: []extension.EventDefinition{{Type: typ, Stream: extension.SessionStream,
+			Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[rowPayload]{}}}},
 		Projections: []extension.ProjectionDefinition{{
 			ID: projectID, Version: 1, Consumes: []session.EventType{typ},
 			Initial: func() (any, error) { return rowState{}, nil },
@@ -158,7 +158,7 @@ func TestProjectionCacheSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := first.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid}); err != nil {
+	if _, err := first.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, Metadata: extension.SchemaMetadata(extension.SchemaVersion1)}); err != nil {
 		t.Fatal(err)
 	}
 	writers := writer.NewWriters(first, mustRegistry(t, counter), writer.Admission{}, session.OpenOptions{},

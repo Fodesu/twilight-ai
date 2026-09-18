@@ -510,8 +510,8 @@ var supersededBinding = extension.BindingReferenceDefinition{
 }
 
 func def[T any](typ session.EventType, check func(*T) error, bindings ...extension.BindingReferenceDefinition) extension.EventDefinition {
-	return extension.EventDefinition{Type: typ, Current: 1, Stream: extension.SessionStream,
-		Codecs:   map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[T]{Check: check}},
+	return extension.EventDefinition{Type: typ, Stream: extension.SessionStream,
+		Codecs:   map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[T]{Check: check}},
 		Bindings: bindings}
 }
 
@@ -522,9 +522,9 @@ func def[T any](typ session.EventType, check func(*T) error, bindings ...extensi
 var consumedRunFacts = []string{"run_created", "model_step_completed", "tool_step_opened", "tool_call_completed", "tool_call_answered", "tool_call_failed", "run_ended"}
 
 func runRequirement() extension.ModuleRequirement {
-	events := make(map[session.EventType][]extension.PayloadVersion, len(consumedRunFacts))
+	events := make(map[session.EventType][]extension.SchemaVersion, len(consumedRunFacts))
 	for _, name := range consumedRunFacts {
-		events[runmod.Type(name)] = []extension.PayloadVersion{extension.PayloadVersion(run.SchemaVersion1)}
+		events[runmod.Type(name)] = []extension.SchemaVersion{extension.SchemaVersion(run.SchemaVersion1)}
 	}
 	return extension.ModuleRequirement{Source: extension.SourceTwilight, Module: runmod.ModuleID, Events: events}
 }

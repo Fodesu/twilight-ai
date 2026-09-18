@@ -64,7 +64,7 @@ func cacheModule(c *applyCounter) extension.ModuleDescriptor {
 		}
 	}
 	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "k",
-		Events:      []extension.EventDefinition{{Type: typ, Current: 1, Stream: extension.SessionStream, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
+		Events:      []extension.EventDefinition{{Type: typ, Stream: extension.SessionStream, Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
 		Projections: []extension.ProjectionDefinition{mk(alphaID), mk(betaID)}}
 }
 
@@ -83,7 +83,7 @@ func newCacheFixture(t testing.TB) *cacheFixture {
 		t.Fatal(err)
 	}
 	f.registry = registry
-	if _, err := f.store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
+	if _, err := f.store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", Metadata: extension.SchemaMetadata(extension.SchemaVersion1)}); err != nil {
 		t.Fatal(err)
 	}
 	return f
@@ -379,28 +379,37 @@ func TestWriterWithoutCacheFoldsEverything(t *testing.T) {
 }
 
 // TestCoversCommit pins the validation that keeps an entry recorded at a head
-// the log does not have from being started from (EXT-PRJ-3). The commit is the
-// atomic unit: every commit boundary is a fold boundary.
+// the log does not have, or at a commit the tip inherits, from being started
+// from (EXT-PRJ-3). The commit is the atomic unit: every commit boundary is a
+// fold boundary, but only the tip's own boundaries were folded under its
+// inheritance policy.
 func TestCoversCommit(t *testing.T) {
 	commits := []session.Commit{
 		{Seq: 0, Digest: "d0"},
 		{Seq: 1, Digest: "d1"},
 		{Seq: 2, Digest: "d2"},
 	}
+	root := session.SegmentHeader{HeaderDigest: "h"}
+	// A tip that inherits the first two commits and wrote the third.
+	child := session.SegmentHeader{Parent: &session.LedgerRef{Seq: 1, Digest: "d1"}}
 	cases := map[string]struct {
+		header  session.SegmentHeader
 		through session.Head
 		want    bool
 	}{
-		"first commit":            {session.Head{Next: 1, Digest: "d0"}, true},
-		"mid log":                 {session.Head{Next: 2, Digest: "d1"}, true},
-		"end of the log":          {session.Head{Next: 3, Digest: "d2"}, true},
-		"empty":                   {session.Head{}, false},
-		"past the log":            {session.Head{Next: 4, Digest: "d2"}, false},
-		"digest does not match":   {session.Head{Next: 2, Digest: "nope"}, false},
-		"seq does not match head": {session.Head{Next: 99, Digest: "d2"}, false},
+		"first commit":            {root, session.Head{Next: 1, Digest: "d0"}, true},
+		"mid log":                 {root, session.Head{Next: 2, Digest: "d1"}, true},
+		"end of the log":          {root, session.Head{Next: 3, Digest: "d2"}, true},
+		"empty":                   {root, session.Head{}, false},
+		"past the log":            {root, session.Head{Next: 4, Digest: "d2"}, false},
+		"digest does not match":   {root, session.Head{Next: 2, Digest: "nope"}, false},
+		"seq does not match head": {root, session.Head{Next: 99, Digest: "d2"}, false},
+		"inherited commit":        {child, session.Head{Next: 1, Digest: "d0"}, false},
+		"inherited boundary":      {child, session.Head{Next: 2, Digest: "d1"}, false},
+		"tip's own commit":        {child, session.Head{Next: 3, Digest: "d2"}, true},
 	}
 	for name, tc := range cases {
-		if got := coversCommit(commits, tc.through); got != tc.want {
+		if got := coversCommit(commits, tc.header, tc.through); got != tc.want {
 			t.Errorf("%s: coversCommit = %v, want %v", name, got, tc.want)
 		}
 	}
