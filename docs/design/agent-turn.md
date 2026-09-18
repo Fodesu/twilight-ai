@@ -14,7 +14,7 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 | Concern | Canonical owner | 写入者 |
 |---|---|---|
 | 回合存在、attempt 归属与结束 | `twilight/turn/` events | Coordinator |
-| Run 执行状态 | `twilight/run/` events（[agent-run.md](agent-run.md)） | `runmod.SessionRunStore`：Loop 经 `Bind(w)` 得到的 `run.RunStore` 提交命令，Coordinator 在 unit of work 里放入它的 `Command` / `CreateRun` Part |
+| Run 执行状态 | `twilight/run/` events（[agent-run.md](agent-run.md)） | `runmod.SessionRunStore`：Loop 经 `Bind(w)` 得到的 `runtime.RunStore` 提交命令，Coordinator 在 unit of work 里放入它的 `Command` / `CreateRun` Part |
 | 对话内容 | `twilight/chatlog/` events 与 `twilight/run/` 事实的投影 | Start 与 Deliver 时 delivered input；assistant 与 tool_result 是 Run 事实的投影条目（CHT-ENT-1/2），不另写事件 |
 | Application policy | Application | preset、driver、retry、context 策略、产品策略 |
 
@@ -50,7 +50,7 @@ type PresetRef struct { ID PresetID; Digest es.Digest }
 // AgentPreset 是 Turn 记录的决策身份；Session 只保存 PresetRef{ID, Digest}。
 type PromptBuilderRef string // 决策组件身份（agent-decision.md）
 type TargetRef struct { Kind string; ID string } // opaque effect target
-type PublicTool struct { Ref run.ToolRef; Definition run.ToolDefinition; Policy run.ResponsePolicy }
+type PublicTool struct { Ref run.ToolRef; Definition model.ToolDefinition; Policy run.ResponsePolicy }
 type AgentPreset struct {
     SchemaVersion uint16 // 1
     Model run.ModelRef
@@ -211,9 +211,9 @@ const (
 
 **TRN-API-1** Coordinator 经 Writer 的 `Projections()` 读取 `twilight/turn/surface` 与 `twilight/run/machine` 两个投影（EXT-PRJ-4）；命令读传入 Writer 的投影，每个方法先读投影再决定动作。Coordinator 不持有 `session.Store`。
 
-**TRN-API-2** Run 的写入只经 Run 模块自己的 Part（`runmod.Command`、`runmod.CreateRun`）与 Loop 手里的 `run.RunStore`。driver 的组装与解析在宿主（PST-2）。
+**TRN-API-2** Run 的写入只经 Run 模块自己的 Part（`runmod.Command`、`runmod.CreateRun`）与 Loop 手里的 `runtime.RunStore`。driver 的组装与解析在宿主（PST-2）。
 
-**TRN-API-3** DTO 为值语义。`Waiting` 为 `twilight/run/machine` 的 `WaitingCalls`。`NeedsRecovery` 为 true 时返回 `ResumeWaitingForRecovery`，表示仍有待结算的 Executing 目标；宿主按 RUN-CMT-7 重连或接管处置。`ResumeWaitingForRecovery` 是 Turn API 的观察 disposition，不等同于 Executor 的 `AttachmentState`；其中 `AttachmentState=orphaned` 经 `agent/run/reconcile` 映射为 `Verdict=defer`，在显式 reconcile/takeover 前保持该 disposition。可重连与 deferred 目标在处置后仍可保持 `ResumeWaitingForRecovery`，直到实际结算。
+**TRN-API-3** DTO 为值语义。`Waiting` 为对 `twilight/run/machine` 投影状态求 `plan.WaitingCalls` 的结果。`plan.NeedsRecovery` 为 true 时返回 `ResumeWaitingForRecovery`，表示仍有待结算的 Executing 目标；宿主按 RUN-CMT-7 重连或接管处置。`ResumeWaitingForRecovery` 是 Turn API 的观察 disposition，不等同于 Executor 的 `AttachmentState`；其中 `AttachmentState=orphaned` 经 `agent/run/reconcile` 映射为 `Verdict=defer`，在显式 reconcile/takeover 前保持该 disposition。可重连与 deferred 目标在处置后仍可保持 `ResumeWaitingForRecovery`，直到实际结算。
 
 **TRN-API-4** `twilight/turn/superseded` 由 Application 追加。Coordinator 的方法不写该事件。superseded 的 Turn 若仍有非终态 Run，Application 必须先 Stop。
 
@@ -272,7 +272,7 @@ InputIDs 为空时 group 为 `started`、`attempt_started` 加 `run_created`。`
 
 ## 6. 对话内容与结算：Run 事实的投影
 
-Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、工具调用与工具输出的正文在 `FrozenValueStore` 中，由 Run 的 `Command` Part 在构造时存入；对话条目（assistant、tool_result）与 Turn 的结算都是这些事实的纯投影，本模块与 chatlog 都不再写第二份表达。Run 的 Part 只写 Run facts；TRN-DLV-2、TRN-STP-1 里本模块与 chatlog 的事实由各自的 Part 写在同一个 unit 中。
+Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、工具调用与工具输出的正文在 `frozen.Store` 中，由 Run 的 `Command` Part 在构造时存入；对话条目（assistant、tool_result）与 Turn 的结算都是这些事实的纯投影，本模块与 chatlog 都不再写第二份表达。Run 的 Part 只写 Run facts；TRN-DLV-2、TRN-STP-1 里本模块与 chatlog 的事实由各自的 Part 写在同一个 unit 中。
 
 **TRN-MAP-1** 事实到投影的对应：
 
@@ -290,7 +290,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 
 **TRN-MAP-2** 条目 identity 直接取 Run identity：`AssistantID = ModelStepID`，`ToolResultID = CallID`；带外替换结果为 `<CallID>/superseded`（CHT-ENT-2）。CallID 由 Run 从 `(ModelStepID, index)` 派生，同一 Turn 内不跨 ModelStep 复用。materializer 按 `Assistant.CallIDs` 与冻结 `ModelResult.ToolCalls` 逐位配对出 `ProviderCallID`（CHT-MAT-1）。
 
-**TRN-MAP-3** assistant 条目的 `ResultDigest` 等于 `ModelStepCompleted.ResultDigest`，tool_result 条目的 `OutputDigest` 等于 `ToolCallCompleted.OutputDigest` 或 `ToolCallAnswered.ResponseDigest`；`ToolCallFailed` 产生的条目没有正文 digest。这些 digest 命名 `FrozenValueStore` 中的冻结正文，Runtime 在写入事实之前存入正文并登记其 Binding（RUN-CMT-3 第 0 步、RUN-WIR-4）。
+**TRN-MAP-3** assistant 条目的 `ResultDigest` 等于 `ModelStepCompleted.ResultDigest`，tool_result 条目的 `OutputDigest` 等于 `ToolCallCompleted.OutputDigest` 或 `ToolCallAnswered.ResponseDigest`；`ToolCallFailed` 产生的条目没有正文 digest。这些 digest 命名 `frozen.Store` 中的冻结正文，Runtime 在写入事实之前存入正文并登记其 Binding（RUN-CMT-3 第 0 步、RUN-WIR-4）。
 
 **TRN-MAP-4** Known 对应 `error`；Unknown 对应 `unknown`。`tool_result_superseded` 由 Application 写入，本模块不写。
 
@@ -348,7 +348,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 - **TRN-STA-1、TRN-API-3**：Open 的 Run 无 disposition 与 Waiting；模型 Executing 为 `waiting_for_recovery`；approval 调用为 `waiting_for_response` 且 `Waiting` 含该请求；completed 与 Application 取消的 Run 为 `finished`，`End` 分别为 completed 与 stopped；不存在的 Turn 为 conflict。
 - **TRN-PRJ-1、TRN-EVT-3、TRN-SCP-2/3**：Owner 不是本 Session Turn 的 Run 不进入 surface；第二条 `started`、未知 Turn 的结算、第二次结算在 fold 阶段被拒且不写入；已有 `End` 的 attempt 再次 `run_ended` 为 fold 错误；`run_ended(completed)` 使 Turn `completed`，其他结束写入 `AttemptView.End` 并使未结算 Turn 进入 `attempt_failed`、清空 `ActiveRun`；`Order` 按 started 顺序；结算后的 Session 没有活跃 Turn。
 - **TRN-REC-1、TRN-REC-2、TRN-SCP-3**：`started` 提交后接管，`RecoverInterrupted` 处置 0 个目标，Status 仅从投影重建为 `active`；模型 Executing 时接管，处置 1 个目标后 disposition 不再是 `waiting_for_recovery`；被替代的 Coordinator 的 Deliver 得到 `ErrOwnershipLost` 且不改变输入状态，新 owner 的 Deliver 成功。
-- **TRN-MAP-1 至 TRN-MAP-4**：Run 终结组不含 turn 事件；assistant 与 tool_result 条目的 digest 等于 Run fact 记录值且正文可从 FrozenValueStore 取回；Unknown 的条目 status=`unknown` 且无正文 digest，由 RUN-CMP-2 套件经 Runtime 的组构成与 chatlog 投影观察。
+- **TRN-MAP-1 至 TRN-MAP-4**：Run 终结组不含 turn 事件；assistant 与 tool_result 条目的 digest 等于 Run fact 记录值且正文可从 `frozen.Store` 取回；Unknown 的条目 status=`unknown` 且无正文 digest，由 RUN-CMP-2 套件经 Runtime 的组构成与 chatlog 投影观察。
 - **TRN-DLV-3** 的并发定序（输入与最后一步结果的两种先后）由 Writer 串行保证，单进程套件不构造并发，以 Deliver 对已终结 Run 的 `completed` 响应作为可观察结果。
 - **TRN-PST-1、TRN-PST-2**：SystemPrompt、Streaming、Prompt、Scheduling、MalformedRetries 任一变化改变摘要；相同 ID 注册变更后的 preset 得到新 ref，旧 ref 仍解析为原内容；修改注册输入或解析结果后，再次 Resolve 得到原注册值；缺 SchemaVersion、Model 或 Prompt、Scheduling 非法的 AgentPreset 被拒绝。
 - **TRN-DUR-1 至 TRN-DUR-4**：接管后同一 RunID 继续、`Attempt` 不变、Turn 保持 `active`；工具 Executing 时接管，该 call 记 Unknown 后，接管处置、随后的 Loop 与 Retry 的新 attempt 都不再出现该 call 的 `StartToolCall` 或 `ToolCallCompleted`；Retry 得到新 RunID 与 attempt 加 1、Turn 不变；对已 `completed` 的 Turn 以其已 delivered 的输入再次 Start 为 conflict。Unknown call 不被重跑的断言与 Loop 一起在 RUN-LOP-4/5 的套件中验证。

@@ -13,7 +13,7 @@ EventType    = twilight/chatlog/<name>
 Projections  = twilight/chatlog/surface, twilight/chatlog/context
 ```
 
-Chatlog 拥有对话自身的事实：Input 的生命周期、summary、checkpoint、带外核实后的结果替换。模型输出与工具结果不是本模块的事实：`assistant` 与 `tool_result` 是 Surface 与 Context 从 `twilight/run/` 事实折叠出的条目（`ModelStepCompleted`、`ToolStepOpened`、`ToolCallCompleted`、`ToolCallAnswered`、`ToolCallFailed`），一个模型或工具结果在 ledger 上只有一份 canonical 表达。条目只保存结构与 digest；正文经 materializer 从 FrozenValueStore 读取（第 8 节）。
+Chatlog 拥有对话自身的事实：Input 的生命周期、summary、checkpoint、带外核实后的结果替换。模型输出与工具结果不是本模块的事实：`assistant` 与 `tool_result` 是 Surface 与 Context 从 `twilight/run/` 事实折叠出的条目（`ModelStepCompleted`、`ToolStepOpened`、`ToolCallCompleted`、`ToolCallAnswered`、`ToolCallFailed`），一个模型或工具结果在 ledger 上只有一份 canonical 表达。条目只保存结构与 digest；正文经 materializer 从 `frozen.Store` 读取（第 8 节）。
 
 ```text
 twilight/run/ 事实 + twilight/chatlog/ 事实
@@ -140,7 +140,7 @@ type Entry struct {
 
 **CHT-COD-1** Parts 的 wire 是 discriminated union：Decode 先检查 object、discriminator、unknown fields 和 limits，再构造 typed value；payload 版本字段 `v` 由 Registry 处理（EXT-REG-2），本模块 codec 不读写它。有效值满足 `Encode → Decode → Encode` canonical-equivalent。
 
-**CHT-COD-2** 本模块提供 `PartsExtractor`，实现 `extension.BindingExtractor`，按 appearance order 返回 summary 中 ReferencePart 的 BindingID，随 `summary` 的 EventDefinition 声明。`tool_result_superseded` 声明另一提取器：`OutputDigest` 非空时返回 `runmod.FrozenBindingID(OutputDigest)`，替换正文由 Application 经 run 的 `FrozenValueStore` 以 `tool_output` 信封存入，与 Run 事实命名的正文走同一 Binding 派生与 claim（RUN-WIR-4）。
+**CHT-COD-2** 本模块提供 `PartsExtractor`，实现 `extension.BindingExtractor`，按 appearance order 返回 summary 中 ReferencePart 的 BindingID，随 `summary` 的 EventDefinition 声明。`tool_result_superseded` 声明另一提取器：`OutputDigest` 非空时返回 `runmod.FrozenBindingID(OutputDigest)`，替换正文由 Application 经 run 的 `frozen.Store` 以 `tool_output` 信封存入，与 Run 事实命名的正文走同一 Binding 派生与 claim（RUN-WIR-4）。
 
 **CHT-COD-3** EventType 为 `twilight/chatlog/<name>`。事件 payload 的 Digest domain 与 EventType 相同；投影条目的 Digest domain 为 `twilight/chatlog/assistant` 与 `twilight/chatlog/tool_result`，覆盖条目的全部结构字段（ID、TurnID、RunID、StepID/CallID、FinishReason/Status/Source、ResultDigest/OutputDigest、CallIDs/Failure），不覆盖 `v`：
 
@@ -243,14 +243,14 @@ func ContextFold(events []extension.DecodedEvent) ([]Entry, error)
 
 ```go
 type ContentResolver interface {
-    ModelResult(context.Context, es.Digest) (run.ModelResult, error)
+    ModelResult(context.Context, es.Digest) (model.ModelResult, error)
     ToolOutput(context.Context, es.Digest) (run.CanonicalJSON, error)
     ToolResponse(context.Context, es.Digest) (run.CanonicalJSON, error)
 }
 type Call struct { CallID CallID; ProviderCallID string; Name string; Input run.CanonicalJSON }
 type Materialized struct {
     Entry *Entry
-    Result *run.ModelResult    // assistant
+    Result *model.ModelResult    // assistant
     Calls []Call               // CallIDs 与 Result.ToolCalls 逐位配对
     Output *run.CanonicalJSON  // success 的 tool_result
 }
@@ -259,7 +259,7 @@ func (*Materializer) Entries(context.Context, []Entry) ([]Materialized, error)
 func (*Materializer) Entry(context.Context, *Entry) (Materialized, error)
 ```
 
-**CHT-MAT-1** materializer 是投影与表示之间的 IO 边界：它按 digest 读取冻结正文（`agent/session/run.Content` 为 first-party 实现），同一 Materializer 内每个 digest 至多读取一次；投影从不调用它。正文缺失返回 `run.ErrFrozenValueMissing`，投影与 ledger 不受影响。`Calls` 由 `Assistant.CallIDs` 与 `ModelResult.ToolCalls` 逐位配对，CallIDs 为空时按 `run.DeriveCallID(StepID, i)` 派生。provider capability 与发送策略由 Application 决定；PromptBuilder 组装见 [Decision](agent-decision.md)（DEC-PMT）。
+**CHT-MAT-1** materializer 是投影与表示之间的 IO 边界：它按 digest 读取冻结正文（`agent/session/run.Content` 为 first-party 实现），同一 Materializer 内每个 digest 至多读取一次；投影从不调用它。正文缺失返回 `frozen.ErrMissing`，投影与 ledger 不受影响。`Calls` 由 `Assistant.CallIDs` 与 `ModelResult.ToolCalls` 逐位配对，CallIDs 为空时按该 Run 版本的 `Schema.Identity.DeriveCallID(StepID, i)` 派生。provider capability 与发送策略由 Application 决定；PromptBuilder 组装见 [Decision](agent-decision.md)（DEC-PMT）。
 
 ## 9. conformance
 

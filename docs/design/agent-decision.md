@@ -36,7 +36,7 @@ const PromptContextV1 turn.PromptBuilderRef = "twilight/decision/prompt/context-
 
 `ContextPromptBuilder` 是 `PromptContextV1` 的实现：读 `twilight/chatlog/context` 投影，经 `chatlog.Materializer` 取回正文，构造 `loop.Prompt`（模型、`sdk.Request`、消费的 InputID、context 新鲜度 token、冻结的 ToolSpec）。
 
-**DEC-PMT-1** PromptBuilder 在每次 Build 时经 `ProjectionSource` 读取 `twilight/chatlog/context` 投影（含已应用的 checkpoint，CHT-EVT-3），再经 `Content` 物化条目命名的冻结正文；同一次 Build 内每个 digest 至多读取一次。折叠是纯函数，读正文是 IO：正文缺失使 Build 以 `run.ErrFrozenValueMissing` 失败，投影不受影响。owner 进程从 Session Writer 读，观察者从 Store 读，两者对同一 head 给出同一状态（EXT-PRJ-4）；两者共用同一 cas ContentStore。
+**DEC-PMT-1** PromptBuilder 在每次 Build 时经 `ProjectionSource` 读取 `twilight/chatlog/context` 投影（含已应用的 checkpoint，CHT-EVT-3），再经 `Content` 物化条目命名的冻结正文；同一次 Build 内每个 digest 至多读取一次。折叠是纯函数，读正文是 IO：正文缺失使 Build 以 `frozen.ErrMissing` 失败，投影不受影响。owner 进程从 Session Writer 读，观察者从 Store 读，两者对同一 head 给出同一状态（EXT-PRJ-4）；两者共用同一 cas ContentStore。
 
 **DEC-PMT-2** `sdk.Messages` 顺序：
 
@@ -45,7 +45,7 @@ const PromptContextV1 turn.PromptBuilderRef = "twilight/decision/prompt/context-
 
 回合中途投递的输入在其之前尚未结算的工具结果之后排列：这类输入的 `input_delivered` 先于 `tool_result` 进入 stream，provider 要求工具结果紧随发出调用的 assistant 消息。prompt 构造时暂存这类输入，待工具结果配对后写入。CancelRun 为全部未完成调用提交终态结果，后续 Turn 继承完整配对的上下文；构造器遇到未配对调用或结果时返回错误。
 
-**DEC-PMT-3** `PromptInput.Inputs` 与本 Turn 已 delivered 且属于本次 Prepare 的 Input 按 ID 对齐，包括回合中途经 Deliver 进入的输入。这些 Input 的 `input_delivered` 与 `input_accepted` 同 commit，Build 时一定已在 fold 中；PromptBuilder 只使用 fold。
+**DEC-PMT-3** `plan.PromptInput.Inputs` 与本 Turn 已 delivered 且属于本次 Prepare 的 Input 按 ID 对齐，包括回合中途经 Deliver 进入的输入。这些 Input 的 `input_delivered` 与 `input_accepted` 同 commit，Build 时一定已在 fold 中；PromptBuilder 只使用 fold。
 
 **DEC-PMT-4** `Prompt.Model = AgentPreset.Model`；`Request.Tools` 与 `Prompt.Tools`（ToolSpec：Ref、DefinitionDigest、Policy）都由 `AgentPreset.Tools` 派生，顺序一致；`InputIDs` 为本次消费的 PendingInput IDs；`Token` 为投影 head 的 `Next:Digest`。PresetRef 独立标识冻结的决策配置。
 

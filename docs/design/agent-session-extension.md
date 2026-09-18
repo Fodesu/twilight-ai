@@ -81,7 +81,7 @@ func (r *Registry) Decode(session.Event) (DecodedEvent, error)
 
 **EXT-REG-3** `Decode` 对未注册的 EventType 或未注册的 `v` 返回 `DecodedEvent{Unknown:true}` 并保留原始 payload。投影对 Unknown 的处置见 EXT-PRJ-2。
 
-**EXT-REG-4** 模块间依赖由 `Requires` 声明，构建时校验：被依赖模块已注册、依赖图无环、投影消费的 EventType 属于本模块或 `Requires` 中的模块、被依赖模块为该事件注册的每个 Schema 版本都在声明的版本列表内（依赖方必须能处理被依赖事件的全部 codec 版本，否则 `ErrInvalid`）。`Requires` 只表达事件消费依赖；接口实现（如 Runtime 的 FrozenValueStore）是构造参数，不进入 `Requires`。
+**EXT-REG-4** 模块间依赖由 `Requires` 声明，构建时校验：被依赖模块已注册、依赖图无环、投影消费的 EventType 属于本模块或 `Requires` 中的模块、被依赖模块为该事件注册的每个 Schema 版本都在声明的版本列表内（依赖方必须能处理被依赖事件的全部 codec 版本，否则 `ErrInvalid`）。`Requires` 只表达事件消费依赖；接口实现（如 Runtime 的 `frozen.Store`）是构造参数，不进入 `Requires`。
 
 ```go
 // Schema 声明：段 metadata 第一层 `twilight/schema` 键下的整数。kernel 不读取该键（SES-VER-1）。
