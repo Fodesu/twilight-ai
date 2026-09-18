@@ -291,10 +291,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	if group.CommitID == "" {
 		return CommitResult{Outcome: CommitInvalid, Detail: "empty CommitID"}, nil
 	}
-	batches, refs, invalid, err := encode(w.registry, group)
-	if err != nil {
-		return CommitResult{}, err
-	}
+	batches, refs, invalid := encode(w.registry, group)
 	if invalid != "" {
 		return CommitResult{Outcome: CommitInvalid, Detail: invalid}, nil
 	}

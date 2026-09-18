@@ -137,7 +137,7 @@ func DecodeFrozenToolResponse(raw []byte, want Digest) (CanonicalJSON, error) {
 	return schema.Bodies.DecodeToolResponse(raw, want)
 }
 
-func encodeFrozen(version uint16, typ string, body any, want Digest) ([]byte, error) {
+func encodeFrozen(version uint16, typ string, body any, want Digest) ([]byte, error) { //nolint:unparam // version is the caller schema's; only v1 exists today.
 	raw, err := encodeEnvelopeBody(version, typ, body)
 	if err != nil {
 		return nil, err

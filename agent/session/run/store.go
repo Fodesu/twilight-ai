@@ -77,7 +77,7 @@ func (s *SessionRunStore) nowMilli() int64 { return s.cfg.Now().UnixMilli() }
 // ownershipError maps the Writer's ownership loss onto the Run sentinel.
 func ownershipError(err error) error {
 	if errors.Is(err, &extension.Error{Code: extension.ErrOwnershipLost}) || session.IsCode(err, session.ErrOwnershipLost) {
-		return fmt.Errorf("%w: %v", run.ErrOwnershipLost, err)
+		return fmt.Errorf("%w: %w", run.ErrOwnershipLost, err)
 	}
 	return err
 }
@@ -92,7 +92,11 @@ func loadMachine(view writer.View) (Machine, error) {
 	if err != nil {
 		return Machine{}, err
 	}
-	return state.(Machine), nil
+	m, ok := state.(Machine)
+	if !ok {
+		return Machine{}, fmt.Errorf("runmod: machine projection is %T", state)
+	}
+	return m, nil
 }
 
 // --- bound port ---------------------------------------------------------------------
@@ -120,7 +124,11 @@ func (b *bound) Load(ctx context.Context, runID run.RunID) (run.RuntimeSnapshot,
 	if err != nil {
 		return run.RuntimeSnapshot{}, err
 	}
-	if snap, ok := state.(Machine).snapshot(runID); ok {
+	m, ok := state.(Machine)
+	if !ok {
+		return run.RuntimeSnapshot{}, fmt.Errorf("runmod: machine projection is %T", state)
+	}
+	if snap, ok := m.snapshot(runID); ok {
 		return snap, nil
 	}
 	record, err := b.s.record(ctx, sid, runID, nil, session.Head{})
@@ -428,7 +436,10 @@ func (s *SessionRunStore) Record(ctx context.Context, sid session.SessionID, run
 	if err != nil {
 		return Record{}, err
 	}
-	m := state.(Machine)
+	m, ok := state.(Machine)
+	if !ok {
+		return Record{}, fmt.Errorf("runmod: machine projection is %T", state)
+	}
 	var expect *run.MachineState
 	if ms, ok := m.Active[runID]; ok {
 		expect = &ms
@@ -457,7 +468,10 @@ func (s *SessionRunStore) record(ctx context.Context, sid session.SessionID, run
 		if decoded.Unknown {
 			return Record{}, fmt.Errorf("runmod: record: unknown run event %s v%d", e.Type, decoded.Version)
 		}
-		ev := decoded.Value.(Event)
+		ev, ok := decoded.Value.(Event)
+		if !ok {
+			return Record{}, fmt.Errorf("runmod: record: %s decoded to %T", e.Type, decoded.Value)
+		}
 		if ev.RunID != runID {
 			continue
 		}
@@ -478,7 +492,10 @@ func (s *SessionRunStore) record(ctx context.Context, sid session.SessionID, run
 	if expect != nil && page.Head == expectHead && !run.StatesEquivalent(&state, expect) {
 		return Record{}, errors.New("runmod: record: projection diverges from the event fold")
 	}
-	created := record.Facts[0].(run.RunCreated)
+	created, ok := record.Facts[0].(run.RunCreated)
+	if !ok {
+		return Record{}, fmt.Errorf("runmod: record: first fact is %T, want RunCreated", record.Facts[0])
+	}
 	record.Snapshot = run.RuntimeSnapshot{State: state, Position: position, SchemaVersion: created.SchemaVersion}
 	return record, nil
 }

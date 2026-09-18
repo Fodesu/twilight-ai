@@ -176,7 +176,7 @@ func (l *Loop) startModelStep(ctx context.Context, runtime run.RunStore, events 
 // decision, so a persistently unreadable store cannot spin the Run.
 func (l *Loop) modelCompletion(schema run.Schema, step *run.ModelStep, out Outcome) (run.AgentCommand, error) {
 	stepID := step.RefValue.ID
-	recover := run.RecoverModelExecution{StepID: stepID, Claim: out.Key.Claim}
+	withdraw := run.RecoverModelExecution{StepID: stepID, Claim: out.Key.Claim}
 	var result sdk.ModelResult
 	switch r := out.Result.(type) {
 	case effect.ModelSucceeded:
@@ -188,16 +188,16 @@ func (l *Loop) modelCompletion(schema run.Schema, step *run.ModelStep, out Outco
 		}
 		return run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureEffectUnknown, Message: message}}, nil
 	case effect.Cancelled:
-		return recover, nil
+		return withdraw, nil
 	case effect.ModelFailed:
 		switch r.Code {
 		case effect.FailureFrozenValueMissing:
-			return recover, fmt.Errorf("agent: loop: model dispatch: %w: %s", run.ErrFrozenValueMissing, r.Message)
+			return withdraw, fmt.Errorf("agent: loop: model dispatch: %w: %s", run.ErrFrozenValueMissing, r.Message)
 		case effect.FailureMalformedRequest:
 			failure := run.StepFailure{Class: run.FailureMalformedModel, Message: r.Message}
 			return run.RejectModelResult{StepID: stepID, Failure: failure, Disposition: l.modelRejectDisposition(*step, failure)}, nil
 		case effect.FailureDeadline:
-			return recover, nil
+			return withdraw, nil
 		default:
 			return run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: r.Message}}, nil
 		}

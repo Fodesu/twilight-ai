@@ -77,8 +77,8 @@ func (l *Loop) targetFor(ctx context.Context, scope run.Scope, runID run.RunID) 
 	if target.Kind == "" || target.ID == "" {
 		return nil, errors.New("agent: loop: target resolver returned an incomplete target")
 	}
-	copy := *target
-	return &copy, nil
+	cloned := *target
+	return &cloned, nil
 }
 
 // slotLocked returns the slot of runID, creating it; l.mu must be held.
@@ -95,7 +95,8 @@ func (l *Loop) slotLocked(runID run.RunID) *runSlot {
 // with the last one; l.mu must be held.
 func (l *Loop) releaseLocked(runID run.RunID) {
 	if s, ok := l.slots[runID]; ok {
-		if s.refs--; s.refs <= 0 {
+		s.refs--
+		if s.refs <= 0 {
 			delete(l.slots, runID)
 		}
 	}
@@ -229,7 +230,7 @@ func (l *Loop) advance(ctx context.Context, runtime run.RunStore, runID run.RunI
 				return LoopResult{}, err
 			}
 			res, err := l.commit(ctx, runtime, runID, schema.Identity.DeriveWithdrawCommandID(runID, eff.StepID), snapshot.Position,
-				run.WithdrawPreparedStep{StepID: eff.StepID}, schema)
+				run.WithdrawPreparedStep(eff), schema)
 			if err != nil && !retriable(err) {
 				return LoopResult{}, err
 			}

@@ -132,7 +132,7 @@ func (c *Coordinator) commit(ctx context.Context, w writer.Writer, op string, in
 	if err != nil {
 		switch {
 		case errors.Is(err, &extension.Error{Code: extension.ErrOwnershipLost}):
-			return fmt.Errorf("%w: %v", run.ErrOwnershipLost, err)
+			return fmt.Errorf("%w: %w", run.ErrOwnershipLost, err)
 		case errors.Is(err, chatlog.ErrNotSubmitted), errors.Is(err, runmod.ErrRunExists):
 			return fmt.Errorf("%w: %w", ErrConflict, err)
 		}
@@ -153,7 +153,11 @@ func loadSurface(view writer.View) (TurnSurface, error) {
 	if err != nil {
 		return TurnSurface{}, err
 	}
-	return state.(TurnSurface), nil
+	surface, ok := state.(TurnSurface)
+	if !ok {
+		return TurnSurface{}, fmt.Errorf("turn: surface projection is %T", state)
+	}
+	return surface, nil
 }
 
 // sessionBatch is one batch of Turn events in the session stream.
@@ -358,7 +362,10 @@ func deliveredInputs(ctx context.Context, reader extension.ProjectionReader, sid
 	if err != nil {
 		return nil, err
 	}
-	surface := state.(chatlog.Surface)
+	surface, ok := state.(chatlog.Surface)
+	if !ok {
+		return nil, fmt.Errorf("turn: chatlog surface projection is %T", state)
+	}
 	out := make([]run.AgentInput, 0, len(ids))
 	for _, id := range ids {
 		view, ok := surface.Inputs.Get(id)

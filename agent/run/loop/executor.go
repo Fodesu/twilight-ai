@@ -242,7 +242,7 @@ func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) err
 	key := ref
 	digest, err := a.Digest()
 	if err != nil {
-		return fmt.Errorf("%w: assignment digest: %v", ErrExecutorRejected, err)
+		return fmt.Errorf("%w: assignment digest: %w", ErrExecutorRejected, err)
 	}
 	// Check before resolving catalogs or fetching frozen content: an
 	// idempotent retry must not depend on transient execution dependencies.
@@ -279,7 +279,7 @@ func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) err
 		}
 		got, err := schema.Canonical.DigestRequest(frozenRequest)
 		if err != nil {
-			return fmt.Errorf("%w: request digest: %v", ErrExecutorRejected, err)
+			return fmt.Errorf("%w: request digest: %w", ErrExecutorRejected, err)
 		}
 		if got != body.RequestDigest || frozenRequest.Model != string(body.Model) {
 			return fmt.Errorf("%w: model request digest or model mismatch", ErrExecutorRejected)
@@ -521,8 +521,8 @@ func cloneTarget(target *run.TargetRef) *run.TargetRef {
 	if target == nil {
 		return nil
 	}
-	copy := *target
-	return &copy
+	cloned := *target
+	return &cloned
 }
 
 // executeToolSafely runs an application tool and converts a panic into

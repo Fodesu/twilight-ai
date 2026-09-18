@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -151,15 +152,8 @@ func errorsIsOwnershipLost(err error) string {
 	if err == nil {
 		return "no error"
 	}
-	for e := err; e != nil; {
-		if e == run.ErrOwnershipLost {
-			return "ownership lost"
-		}
-		u, ok := e.(interface{ Unwrap() error })
-		if !ok {
-			break
-		}
-		e = u.Unwrap()
+	if errors.Is(err, run.ErrOwnershipLost) {
+		return "ownership lost"
 	}
 	return err.Error()
 }

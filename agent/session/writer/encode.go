@@ -34,7 +34,7 @@ func bindingIDs(refs []bindingRef) []artifact.BindingID {
 // event against the Registry, checks each batch's stream attribution against
 // the event type's StreamPolicy, extracts the artifact references the events
 // declare and returns the proposal batches. It touches no store.
-func encode(registry *extension.Registry, group *SemanticGroup) ([]session.StreamBatch, []bindingRef, string, error) {
+func encode(registry *extension.Registry, group *SemanticGroup) ([]session.StreamBatch, []bindingRef, string) {
 	batches := make([]session.StreamBatch, len(group.Batches))
 	var refs []bindingRef
 	for bi, tb := range group.Batches {
@@ -43,23 +43,23 @@ func encode(registry *extension.Registry, group *SemanticGroup) ([]session.Strea
 			where := fmt.Sprintf("batch %d event %d", bi, i)
 			_, def, ok := registry.LookupEvent(te.Type)
 			if !ok {
-				return nil, nil, fmt.Sprintf("%s: unknown type %s", where, te.Type), nil
+				return nil, nil, fmt.Sprintf("%s: unknown type %s", where, te.Type)
 			}
 			payload, _, err := registry.Encode(te.Type, te.Value)
 			if err != nil {
-				return nil, nil, fmt.Sprintf("%s: %v", where, err), nil
+				return nil, nil, fmt.Sprintf("%s: %v", where, err)
 			}
 			if verdict := checkStreamAffinity(tb.Stream, def.Stream, payload); verdict != "" {
-				return nil, nil, fmt.Sprintf("%s: %s", where, verdict), nil
+				return nil, nil, fmt.Sprintf("%s: %s", where, verdict)
 			}
 			for d := range def.Bindings {
 				decl := &def.Bindings[d]
 				ids, err := decl.Extractor.BindingIDs(te.Value)
 				if err != nil {
-					return nil, nil, fmt.Sprintf("%s: binding extraction: %v", where, err), nil
+					return nil, nil, fmt.Sprintf("%s: binding extraction: %v", where, err)
 				}
-				if uint32(len(ids)) < decl.Cardinality.Min || (decl.Cardinality.Max != nil && uint32(len(ids)) > *decl.Cardinality.Max) {
-					return nil, nil, fmt.Sprintf("%s: binding cardinality violated", where), nil
+				if n := len(ids); n < int(decl.Cardinality.Min) || (decl.Cardinality.Max != nil && n > int(*decl.Cardinality.Max)) {
+					return nil, nil, fmt.Sprintf("%s: binding cardinality violated", where)
 				}
 				for _, id := range ids {
 					refs = append(refs, bindingRef{id: id, decl: decl, where: where})
@@ -69,7 +69,7 @@ func encode(registry *extension.Registry, group *SemanticGroup) ([]session.Strea
 		}
 		batches[bi] = session.StreamBatch{Stream: tb.Stream, Events: events}
 	}
-	return batches, refs, "", nil
+	return batches, refs, ""
 }
 
 // checkStreamAffinity verifies a batch's stream attribution against the

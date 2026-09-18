@@ -200,7 +200,8 @@ func (r *Reconciler) awaitOutcome(key effect.AssignmentKey) {
 				r.fail(key, err)
 				return
 			case readRetry:
-				if failures++; failures >= budget {
+				failures++
+				if failures >= budget {
 					r.fail(key, fmt.Errorf("reconcile: outcome read gave up after %d failures: %w", failures, err))
 					return
 				}

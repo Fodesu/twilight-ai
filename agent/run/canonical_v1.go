@@ -141,7 +141,7 @@ func buildCreateGroupV1(run NewRun, inputs []AgentInput) ([]Fact, error) {
 		return nil, err
 	}
 	facts := make([]Fact, 0, 1+len(inputs))
-	facts = append(facts, RunCreated{SchemaVersion: run.SchemaVersion, RunID: run.RunID, Owner: run.Owner, Attempt: run.Attempt, CausationID: run.CausationID})
+	facts = append(facts, RunCreated(run))
 	seen := make(map[InputID]struct{}, len(inputs))
 	for _, in := range inputs {
 		if in.ID == "" {
