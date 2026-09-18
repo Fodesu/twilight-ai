@@ -13,6 +13,7 @@ import (
 
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/run/plan"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
@@ -55,7 +56,7 @@ func NewContextPromptBuilder(preset turn.AgentPreset, sources Sources) loop.Prom
 	return &ContextPromptBuilder{Sources: sources, Preset: preset}
 }
 
-func (p *ContextPromptBuilder) Build(ctx context.Context, hint run.PromptInput) (loop.Prompt, error) {
+func (p *ContextPromptBuilder) Build(ctx context.Context, hint plan.PromptInput) (loop.Prompt, error) {
 	if p.Sources.Projections == nil || p.Preset.Model == "" {
 		return loop.Prompt{}, errors.New("decision: builder requires projections and a model")
 	}

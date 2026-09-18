@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
@@ -117,7 +118,7 @@ func (e *Executor) Close() {
 // and, for a replayed call, that the child on record was created for the
 // same arguments (RUN-EXE-3).
 func (e *Executor) Validate(ctx context.Context, a effect.Assignment) (*run.ToolFailure, error) {
-	schema, err := run.SchemaFor(a.Schema)
+	sch, err := schema.For(a.Schema)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +126,7 @@ func (e *Executor) Validate(ctx context.Context, a effect.Assignment) (*run.Tool
 	if !ok {
 		return &run.ToolFailure{Class: run.FailureInvalidArguments, Message: "spawn assignment without a tool body"}, nil
 	}
-	if failure, err := CheckDefinition(schema, e.tool, &tool); err != nil || failure != nil {
+	if failure, err := CheckDefinition(sch, e.tool, &tool); err != nil || failure != nil {
 		return failure, err
 	}
 	args, err := DecodeArguments(tool.Arguments)
@@ -314,11 +315,11 @@ func (e *Executor) create(ctx context.Context, key effect.AssignmentKey, child s
 	if err != nil {
 		return Provenance{}, err
 	}
-	schema, err := extension.SchemaOf(parentHeader)
+	sch, err := extension.SchemaOf(parentHeader)
 	if err != nil {
 		return Provenance{}, &session.Error{Code: session.ErrUnsupported, Operation: "spawn", SessionID: parent, Detail: err.Error()}
 	}
-	if meta, err = extension.DeclareSchema(meta, schema); err != nil {
+	if meta, err = extension.DeclareSchema(meta, sch); err != nil {
 		return Provenance{}, err
 	}
 	now := e.a.Clock().UnixMilli()

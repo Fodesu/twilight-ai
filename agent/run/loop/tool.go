@@ -7,6 +7,8 @@ import (
 
 	run "github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
+	"github.com/felinics/twilight/agent/run/plan"
+	"github.com/felinics/twilight/agent/run/runtime"
 )
 
 func toolCallIndex(step run.ToolStep, callID run.CallID) int {
@@ -24,7 +26,7 @@ func toolCallIndex(step run.ToolStep, callID run.CallID) int {
 // claim; a validated call is started under a fresh attempt and handed to the
 // Executor. It returns the dispatched keys; an empty list with no error means
 // nothing is executing on this Loop's behalf and the reload decides.
-func (l *Loop) startToolCalls(ctx context.Context, runtime run.RunStore, events EventSink, snapshot *run.RuntimeSnapshot, eff run.StartToolCalls) ([]AssignmentKey, error) {
+func (l *Loop) startToolCalls(ctx context.Context, rt runtime.RunStore, events EventSink, snapshot *runtime.Snapshot, eff plan.StartToolCalls) ([]AssignmentKey, error) {
 	runID := snapshot.State.RunID
 	schema, err := snapshot.Schema()
 	if err != nil {
@@ -34,7 +36,7 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime run.RunStore, events 
 	if !ok || ts.RefValue.ID != eff.StepID {
 		return nil, fmt.Errorf("agent: loop: tool step %q is not current", eff.StepID)
 	}
-	target, err := l.targetFor(ctx, runtime.Scope(), runID)
+	target, err := l.targetFor(ctx, rt.Scope(), runID)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +69,7 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime run.RunStore, events 
 			continue
 		}
 		binding := ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy}
-		probe := Assignment{Session: runtime.Scope(), RunID: runID, StepID: eff.StepID, CallID: callID, Target: target, Schema: snapshot.SchemaVersion, Body: binding}
+		probe := Assignment{Session: rt.Scope(), RunID: runID, StepID: eff.StepID, CallID: callID, Target: target, Schema: snapshot.SchemaVersion, Body: binding}
 		known, err := l.Executor.Validate(ctx, probe)
 		if err != nil {
 			return dispatched, err
@@ -76,7 +78,7 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime run.RunStore, events 
 			// Known failure of a Pending call: no start barrier, no tool call,
 			// no claim. Its identity derives from the call alone; a retry of
 			// the same rejection is idempotent.
-			res, err := l.commit(ctx, runtime, runID, schema.Identity.DeriveSettlementCommandID(runID, eff.StepID, callID, ""), snapshot.Position,
+			res, err := l.commit(ctx, rt, runID, schema.Identity.DeriveSettlementCommandID(runID, eff.StepID, callID, ""), snapshot.Position,
 				run.SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: *known, Outcome: run.ToolOutcomeKnown}, schema)
 			if err != nil {
 				if retriable(err) {
@@ -84,12 +86,12 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime run.RunStore, events 
 				}
 				return dispatched, err
 			}
-			l.emitCommitted(ctx, events, runtime.Scope(), runID, res.Facts)
+			l.emitCommitted(ctx, events, rt.Scope(), runID, res.Facts)
 			continue
 		}
 
 		a := newAttempt(schema, runID, eff.StepID, callID)
-		start, err := l.commit(ctx, runtime, runID, a.startID(), snapshot.Position,
+		start, err := l.commit(ctx, rt, runID, a.startID(), snapshot.Position,
 			run.StartToolCall{StepID: eff.StepID, CallID: callID, Claim: a.claim}, schema)
 		if err != nil {
 			if retriable(err) {
@@ -103,9 +105,9 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime run.RunStore, events 
 			// for a call this attempt does not own.
 			continue
 		}
-		l.emitCommitted(ctx, events, runtime.Scope(), runID, start.Facts)
+		l.emitCommitted(ctx, events, rt.Scope(), runID, start.Facts)
 		if events != nil {
-			_ = events.Emit(ctx, Event{Session: runtime.Scope(), RunID: runID, StepID: eff.StepID, CallID: callID,
+			_ = events.Emit(ctx, Event{Session: rt.Scope(), RunID: runID, StepID: eff.StepID, CallID: callID,
 				Kind: EventToolStarted, Durability: EventCommitted})
 		}
 		assignment := probe
@@ -120,7 +122,7 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime run.RunStore, events 
 			// The effect never started: settle the attempt as a Known execution
 			// failure so the call does not stay Executing.
 			failure := run.ToolFailure{Class: run.FailureExecution, Message: "dispatch: " + err.Error()}
-			if _, serr := l.settle(context.WithoutCancel(ctx), runtime, events, &a, start.Snapshot.Position,
+			if _, serr := l.settle(context.WithoutCancel(ctx), rt, events, &a, start.Snapshot.Position,
 				run.SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: failure, Outcome: run.ToolOutcomeKnown}, schema); serr != nil {
 				return dispatched, serr
 			}

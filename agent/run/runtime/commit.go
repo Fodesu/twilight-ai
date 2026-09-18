@@ -1,8 +1,12 @@
-package run
+package runtime
 
 import (
 	"errors"
 	"fmt"
+
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/schema"
+	"github.com/felinics/twilight/agent/run/wire"
 )
 
 type DecisionKind uint8
@@ -19,24 +23,24 @@ const (
 // ErrStaleRuntime, Terminal -> ErrRunTerminal.
 type CommitDecision struct {
 	Kind     DecisionKind
-	NewState MachineState
-	Facts    []Fact
+	NewState run.MachineState
+	Facts    []run.Fact
 	// Reject carries the precondition failure for Conflict/Stale/Terminal.
 	Reject error
 }
 
 // ValidateEnvelope is step 1 of RUN-CMT-3: identity and schema. Envelopes are
-// only built by WireSchema.Envelope (RUN-WIR-3), so there is no per-commit
+// only built by wire.Codec.Envelope (RUN-WIR-3), so there is no per-commit
 // self-verification of the command bytes.
-func ValidateEnvelope(env *CommandEnvelope, schema Schema) error {
+func ValidateEnvelope(env *wire.CommandEnvelope, sch schema.Schema) error {
 	if env.RunID == "" || env.ID == "" {
 		return errors.New("agent: commit: empty RunID or CommandID")
 	}
-	if !schema.Valid() {
+	if !sch.Valid() {
 		return errors.New("agent: commit: unbound schema")
 	}
-	if env.SchemaVersion != schema.Version {
-		return fmt.Errorf("agent: commit: command schema %d does not match run schema %d", env.SchemaVersion, schema.Version)
+	if env.SchemaVersion != sch.Version {
+		return fmt.Errorf("agent: commit: command schema %d does not match run schema %d", env.SchemaVersion, sch.Version)
 	}
 	return nil
 }
@@ -47,25 +51,25 @@ func ValidateEnvelope(env *CommandEnvelope, schema Schema) error {
 // command against a target whose state does not admit it is Stale.
 //
 //nolint:gocritic // hugeParam: public pure commit evaluator keeps state/request as value protocol inputs.
-func EvaluateCommit(cur MachineState, position RunPosition, req CommitRequest, schema Schema) (CommitDecision, error) {
+func EvaluateCommit(cur run.MachineState, position run.RunPosition, req CommitRequest, sch schema.Schema) (CommitDecision, error) {
 	env := req.Command
 	if env.RunID != cur.RunID {
 		return CommitDecision{}, fmt.Errorf("agent: commit: command run %q does not match authority run %q", env.RunID, cur.RunID)
 	}
-	if err := ValidateEnvelope(&env, schema); err != nil {
+	if err := ValidateEnvelope(&env, sch); err != nil {
 		return CommitDecision{}, err
 	}
 	// A start claim is part of the command identity (RUN-WIR-1).
 	switch cmd := env.Command.(type) {
-	case StartModelExecution:
+	case run.StartModelExecution:
 		if cmd.Claim == "" {
 			return CommitDecision{Kind: DecisionConflict, Reject: errors.New("agent: commit: model start requires an execution claim")}, nil
 		}
-	case StartToolCall:
+	case run.StartToolCall:
 		if cmd.Claim == "" {
 			return CommitDecision{Kind: DecisionConflict, Reject: errors.New("agent: commit: tool start requires an execution claim")}, nil
 		}
-	case RecoverModelExecution:
+	case run.RecoverModelExecution:
 		if cmd.Claim == "" {
 			return CommitDecision{Kind: DecisionConflict, Reject: errors.New("agent: commit: model recovery requires an execution claim")}, nil
 		}
@@ -73,29 +77,29 @@ func EvaluateCommit(cur MachineState, position RunPosition, req CommitRequest, s
 	// Derived-identity families must use their derived CommandID (RUN-WIR-3):
 	// the derivation is the idempotency index, so a caller-minted random ID
 	// cannot bypass duplicate detection.
-	if err := checkDerivedCommandID(&env, req.Base, schema.Identity); err != nil {
+	if err := checkDerivedCommandID(&env, req.Base, sch.Identity); err != nil {
 		return CommitDecision{Kind: DecisionConflict, Reject: err}, nil
 	}
 
 	// Terminal absorbs non-duplicate commands (replay was handled before).
 	if cur.Status.Terminal() {
-		return CommitDecision{Kind: DecisionTerminal, Reject: ErrRunTerminal}, nil
+		return CommitDecision{Kind: DecisionTerminal, Reject: run.ErrRunTerminal}, nil
 	}
 
 	// Base: PrepareModelRequest is the only hard-CAS command (RUN-CMT-4).
-	if _, plan := env.Command.(PrepareModelRequest); plan && req.Base != position {
-		return CommitDecision{Kind: DecisionStale, Reject: ErrStaleRuntime}, nil
+	if _, plan := env.Command.(run.PrepareModelRequest); plan && req.Base != position {
+		return CommitDecision{Kind: DecisionStale, Reject: run.ErrStaleRuntime}, nil
 	}
 
 	// Step 7: Decide once, fold with Evolve.
-	facts, err := schema.Machine.Decide(cur, env.Command)
+	facts, err := sch.Machine.Decide(cur, env.Command)
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrRunTerminal):
+		case errors.Is(err, run.ErrRunTerminal):
 			return CommitDecision{Kind: DecisionTerminal, Reject: err}, nil
-		case errors.Is(err, ErrStaleRuntime):
+		case errors.Is(err, run.ErrStaleRuntime):
 			return CommitDecision{Kind: DecisionStale, Reject: err}, nil
-		case errors.Is(err, ErrCommandConflict):
+		case errors.Is(err, run.ErrCommandConflict):
 			return CommitDecision{Kind: DecisionConflict, Reject: err}, nil
 		default:
 			// Precondition failures against the current state are stale from
@@ -103,31 +107,31 @@ func EvaluateCommit(cur MachineState, position RunPosition, req CommitRequest, s
 			return CommitDecision{Kind: DecisionStale, Reject: err}, nil
 		}
 	}
-	if cmd, ok := env.Command.(PrepareModelRequest); ok {
+	if cmd, ok := env.Command.(run.PrepareModelRequest); ok {
 		if len(facts) == 0 {
 			return CommitDecision{}, errors.New("agent: commit: prepare produced no facts")
 		}
-		prepared, ok := facts[0].(ModelStepPrepared)
+		prepared, ok := facts[0].(run.ModelStepPrepared)
 		if !ok {
 			return CommitDecision{}, errors.New("agent: commit: prepare did not produce ModelStepPrepared")
 		}
-		wantStep := schema.Identity.DeriveModelStepID(env.RunID, env.ID, prepared.BindingDigest)
+		wantStep := sch.Identity.DeriveModelStepID(env.RunID, env.ID, prepared.BindingDigest)
 		if cmd.StepID != wantStep {
 			return CommitDecision{Kind: DecisionStale, Reject: fmt.Errorf("prepare: StepID %q does not match derived StepID %q", cmd.StepID, wantStep)}, nil
 		}
 	}
 
 	state := cur
-	detached := make([]Fact, len(facts))
+	detached := make([]run.Fact, len(facts))
 	for i, f := range facts {
 		// Detach every fact before it is folded: Decide forwards fields from
 		// the caller's command and the decision must not carry caller-owned
 		// mutable objects across the Runtime boundary.
-		f, err = snapshotFact(f)
+		f, err = run.SnapshotFact(f)
 		if err != nil {
 			return CommitDecision{}, err
 		}
-		state, err = schema.Machine.Evolve(state, f)
+		state, err = sch.Machine.Evolve(state, f)
 		if err != nil {
 			return CommitDecision{}, err
 		}
@@ -137,26 +141,26 @@ func EvaluateCommit(cur MachineState, position RunPosition, req CommitRequest, s
 }
 
 // checkDerivedCommandID enforces the derived-identity rules of RUN-WIR-3.
-func checkDerivedCommandID(env *CommandEnvelope, base RunPosition, id Identity) error {
-	var want CommandID
+func checkDerivedCommandID(env *wire.CommandEnvelope, base run.RunPosition, id run.Identity) error {
+	var want run.CommandID
 	switch cmd := env.Command.(type) {
-	case PrepareModelRequest:
+	case run.PrepareModelRequest:
 		want = id.DeriveModelRequestCommandID(env.RunID, base)
-	case AcceptInput:
+	case run.AcceptInput:
 		want = id.DeriveInputCommandID(env.RunID, cmd.InputIDs()...)
-	case WithdrawPreparedStep:
+	case run.WithdrawPreparedStep:
 		want = id.DeriveWithdrawCommandID(env.RunID, cmd.StepID)
-	case ApproveToolCall:
+	case run.ApproveToolCall:
 		want = id.DeriveResponseCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.ResponseID)
-	case RejectToolCall:
+	case run.RejectToolCall:
 		want = id.DeriveResponseCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.ResponseID)
-	case SubmitToolResponse:
+	case run.SubmitToolResponse:
 		want = id.DeriveResponseCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.ResponseID)
-	case StartModelExecution:
+	case run.StartModelExecution:
 		want = id.DeriveStartCommandID(env.RunID, cmd.StepID, "", cmd.Claim)
-	case StartToolCall:
+	case run.StartToolCall:
 		want = id.DeriveStartCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.Claim)
-	case RecoverModelExecution:
+	case run.RecoverModelExecution:
 		want = id.DeriveModelRecoveryCommandID(env.RunID, cmd.StepID, cmd.Claim)
 	default:
 		return nil
@@ -168,108 +172,23 @@ func checkDerivedCommandID(env *CommandEnvelope, base RunPosition, id Identity) 
 }
 
 // IsStart reports whether c begins an execution attempt.
-func IsStart(c AgentCommand) bool {
+func IsStart(c run.AgentCommand) bool {
 	switch c.(type) {
-	case StartModelExecution, StartToolCall:
+	case run.StartModelExecution, run.StartToolCall:
 		return true
 	}
 	return false
 }
 
 // CommandClaim returns the ExecutionClaim a start or recovery command carries.
-func CommandClaim(c AgentCommand) ExecutionClaim {
+func CommandClaim(c run.AgentCommand) run.ExecutionClaim {
 	switch cmd := c.(type) {
-	case StartModelExecution:
+	case run.StartModelExecution:
 		return cmd.Claim
-	case StartToolCall:
+	case run.StartToolCall:
 		return cmd.Claim
-	case RecoverModelExecution:
+	case run.RecoverModelExecution:
 		return cmd.Claim
 	}
 	return ""
-}
-
-// Recovery is one takeover disposition command with its derived identity.
-type Recovery struct {
-	Command AgentCommand
-	ID      CommandID
-}
-
-// RecoveryTarget is one Executing target a takeover has to decide about: the
-// model step or tool call, and the Claim of the attempt that started it (from
-// the started fact). The reconciler (agent/run/reconcile) asks the executor
-// whether that attempt still exists; only if not is the recovery command
-// issued (RUN-CMT-7).
-type RecoveryTarget struct {
-	RunID  RunID
-	Schema uint16 // the Run's protocol version, for the executor's digest checks
-	StepID StepID
-	CallID CallID // empty for a model step
-	Claim  ExecutionClaim
-	Model  *ModelStep     // set for a model target
-	Call   *ToolCallState // set for a tool target
-}
-
-// RecoveryTargets lists the Executing targets of state in the order
-// RecoveryCommands disposes them.
-func RecoveryTargets(state *MachineState) []RecoveryTarget {
-	if state.Status.Terminal() {
-		return nil
-	}
-	switch cur := state.Current.(type) {
-	case ModelStep:
-		if cur.Status != ModelExecuting {
-			return nil
-		}
-		ms := cur
-		return []RecoveryTarget{{RunID: state.RunID, StepID: cur.RefValue.ID, Claim: cur.Claim, Model: &ms}}
-	case ToolStep:
-		var out []RecoveryTarget
-		for i := range cur.Calls {
-			call := cur.Calls[i]
-			if call.Status != ToolExecuting {
-				continue
-			}
-			out = append(out, RecoveryTarget{RunID: state.RunID, StepID: cur.RefValue.ID, CallID: call.CallID, Claim: call.Claim, Call: &call})
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
-// RecoveryCommand is the disposition of one target under the takeover claim:
-// an Executing model step is withdrawn to Open (the next Prepare plans again);
-// an Executing tool call settles as Unknown. schema is the Run's.
-func RecoveryCommand(id Identity, target RecoveryTarget, claim ExecutionClaim) Recovery {
-	if target.Call == nil {
-		return Recovery{
-			Command: RecoverModelExecution{StepID: target.StepID, Claim: claim},
-			ID:      id.DeriveModelRecoveryCommandID(target.RunID, target.StepID, claim),
-		}
-	}
-	return Recovery{
-		Command: SubmitToolFailure{
-			StepID:  target.StepID,
-			CallID:  target.CallID,
-			Failure: ToolFailure{Class: FailureEffectUnknown, Message: "owner process lost before settlement"},
-			Outcome: ToolOutcomeUnknown,
-		},
-		ID: id.DeriveToolRecoveryCommandID(target.RunID, target.StepID, target.CallID, claim),
-	}
-}
-
-// RecoveryCommands lists the takeover dispositions of every Executing target
-// in state (RUN-CMT-7). Pending and Waiting calls are left alone. claim is the
-// takeover claim of the new owner.
-func RecoveryCommands(id Identity, state *MachineState, claim ExecutionClaim) []Recovery {
-	targets := RecoveryTargets(state)
-	if len(targets) == 0 {
-		return nil
-	}
-	out := make([]Recovery, len(targets))
-	for i, t := range targets {
-		out[i] = RecoveryCommand(id, t, claim)
-	}
-	return out
 }

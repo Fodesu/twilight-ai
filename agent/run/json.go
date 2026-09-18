@@ -1,11 +1,8 @@
-// Package run implements the Twilight Run Machine, persisted protocol,
-// Runtime authority boundary, verified fold, and canonical identities.
-//
-// See docs/design/agent-run.md for the governing specification. The in-process
-// execution interpreter and its model/tool ports are in agent/run/loop.
 package run
 
-import "github.com/felinics/twilight/agent/jsonstable"
+import (
+	"github.com/felinics/twilight/agent/jsonstable"
+)
 
 // CanonicalJSON is an immutable, agent-owned canonical JSON value. It can only
 // be built by parsing external bytes through ParseCanonicalJSON or by

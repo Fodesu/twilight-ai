@@ -8,21 +8,23 @@ import (
 	"fmt"
 
 	run "github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/runtime"
+	"github.com/felinics/twilight/agent/run/schema"
 )
 
 // attempt is one execution attempt this Loop owns. Every command identity of
 // the attempt derives from its claim, which lives only in the worker's memory
 // (RUN-MCH-3): a crash hands the target to the next owner's takeover.
 type attempt struct {
-	schema run.Schema
+	schema schema.Schema
 	runID  run.RunID
 	stepID run.StepID
 	callID run.CallID
 	claim  run.ExecutionClaim
 }
 
-func newAttempt(schema run.Schema, runID run.RunID, stepID run.StepID, callID run.CallID) attempt {
-	return attempt{schema: schema, runID: runID, stepID: stepID, callID: callID, claim: freshExecutionClaim()}
+func newAttempt(sch schema.Schema, runID run.RunID, stepID run.StepID, callID run.CallID) attempt {
+	return attempt{schema: sch, runID: runID, stepID: stepID, callID: callID, claim: freshExecutionClaim()}
 }
 
 func (a *attempt) startID() run.CommandID {
@@ -44,19 +46,19 @@ func (a *attempt) recoveryID() run.CommandID {
 // When the accepted settlement terminates the Run, the terminal RunResult is
 // returned: the RunStore already handed back the folded state, so the Loop
 // finishes from it instead of reloading a Run the projection no longer holds.
-func (l *Loop) settle(ctx context.Context, runtime run.RunStore, events EventSink, a *attempt, base run.RunPosition, cmd run.AgentCommand, schema run.Schema) (*run.RunResult, error) {
+func (l *Loop) settle(ctx context.Context, rt runtime.RunStore, events EventSink, a *attempt, base run.RunPosition, cmd run.AgentCommand, sch schema.Schema) (*run.RunResult, error) {
 	id := a.settlementID()
 	if _, recovering := cmd.(run.RecoverModelExecution); recovering {
 		id = a.recoveryID()
 	}
-	res, err := l.commit(context.WithoutCancel(ctx), runtime, a.runID, id, base, cmd, schema)
+	res, err := l.commit(context.WithoutCancel(ctx), rt, a.runID, id, base, cmd, sch)
 	if err != nil {
 		if retriable(err) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	l.emitCommitted(ctx, events, runtime.Scope(), a.runID, res.Facts)
+	l.emitCommitted(ctx, events, rt.Scope(), a.runID, res.Facts)
 	if res.Snapshot.State.Status.Terminal() {
 		return res.Snapshot.State.Result, nil
 	}
@@ -72,4 +74,4 @@ func freshExecutionClaim() run.ExecutionClaim {
 }
 
 // ownershipLost reports the terminal ownership error (RUN-LOP-5).
-func ownershipLost(err error) bool { return errors.Is(err, run.ErrOwnershipLost) }
+func ownershipLost(err error) bool { return errors.Is(err, runtime.ErrOwnershipLost) }

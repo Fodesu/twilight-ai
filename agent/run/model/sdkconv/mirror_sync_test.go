@@ -1,4 +1,4 @@
-package run
+package sdkconv
 
 import (
 	"encoding/json"
@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/felinics/twilight/agent/jsonstable"
+	"github.com/felinics/twilight/agent/run/model"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -25,14 +27,14 @@ var mirroredTypes = []struct {
 	sdk    any
 	mirror any
 }{
-	{"Request", sdk.Request{}, ModelRequest{}},
-	{"ToolDefinition", sdk.ToolDefinition{}, ToolDefinition{}},
-	{"ResponseFormat", sdk.ResponseFormat{}, ResponseFormat{}},
-	{"ToolChoice", sdk.ToolChoice{}, ToolChoice{}},
-	{"CacheControl", sdk.CacheControl{}, CacheControl{}},
-	{"Usage", sdk.Usage{}, Usage{}},
-	{"Message", sdk.Message{}, Message{}},
-	{"ModelResult", sdk.ModelResult{}, ModelResult{}},
+	{"Request", sdk.Request{}, model.ModelRequest{}},
+	{"ToolDefinition", sdk.ToolDefinition{}, model.ToolDefinition{}},
+	{"ResponseFormat", sdk.ResponseFormat{}, model.ResponseFormat{}},
+	{"ToolChoice", sdk.ToolChoice{}, model.ToolChoice{}},
+	{"CacheControl", sdk.CacheControl{}, model.CacheControl{}},
+	{"Usage", sdk.Usage{}, model.Usage{}},
+	{"Message", sdk.Message{}, model.Message{}},
+	{"ModelResult", sdk.ModelResult{}, model.ModelResult{}},
 }
 
 // expectedDifference names the fields that are deliberately absent from the
@@ -116,7 +118,7 @@ func TestMirrorFieldSetsMatchSDK(t *testing.T) {
 // either side changes what the digest covers, so it has to be a deliberate edit
 // here as well as in the freeze function.
 func TestMirrorCanonicalFields(t *testing.T) {
-	canonical := reflect.TypeOf(CanonicalJSON{})
+	canonical := reflect.TypeOf(jsonstable.Value{})
 	cases := []struct {
 		sdk, mirror reflect.Type
 		field       string
@@ -124,14 +126,14 @@ func TestMirrorCanonicalFields(t *testing.T) {
 		wantMirror  reflect.Type
 	}{
 		{
-			sdk: reflect.TypeOf(sdk.ToolDefinition{}), mirror: reflect.TypeOf(ToolDefinition{}),
+			sdk: reflect.TypeOf(sdk.ToolDefinition{}), mirror: reflect.TypeOf(model.ToolDefinition{}),
 			field:   "Parameters",
 			wantSDK: reflect.TypeOf(json.RawMessage{}), wantMirror: canonical,
 		},
 		{
-			sdk: reflect.TypeOf(sdk.Request{}), mirror: reflect.TypeOf(ModelRequest{}),
+			sdk: reflect.TypeOf(sdk.Request{}), mirror: reflect.TypeOf(model.ModelRequest{}),
 			field:   "ProviderOptions",
-			wantSDK: reflect.TypeOf(map[string]json.RawMessage{}), wantMirror: reflect.TypeOf(map[string]CanonicalJSON{}),
+			wantSDK: reflect.TypeOf(map[string]json.RawMessage{}), wantMirror: reflect.TypeOf(map[string]jsonstable.Value{}),
 		},
 	}
 	for _, tc := range cases {
@@ -148,10 +150,10 @@ func TestMirrorCanonicalFields(t *testing.T) {
 	// sdk.ResponseFormat.JSONSchema is a *jsonschema.Schema on the SDK side and
 	// canonical JSON on the mirror side; the field is the one place the SDK
 	// hands the agent tier a builder type rather than resolved JSON.
-	if got := fieldType(reflect.TypeOf(ResponseFormat{}), "JSONSchema"); got != canonical {
+	if got := fieldType(reflect.TypeOf(model.ResponseFormat{}), "JSONSchema"); got != canonical {
 		t.Errorf("run.ResponseFormat.JSONSchema is %s, want %s", got, canonical)
 	}
-	if got := reflect.TypeOf(ProviderMetadata{}).Elem(); got != canonical {
+	if got := reflect.TypeOf(model.ProviderMetadata{}).Elem(); got != canonical {
 		t.Errorf("run.ProviderMetadata holds %s, want %s", got, canonical)
 	}
 }
@@ -180,7 +182,7 @@ func TestMirrorCoversEveryMessagePartType(t *testing.T) {
 		if got, want := string(frozen.Type), string(part.PartType()); got != want {
 			t.Errorf("FreezeMessagePart(%T) wrote type %q, but the SDK calls it %q", part, got, want)
 		}
-		back, err := frozen.SDK()
+		back, err := MessagePart(frozen)
 		if err != nil {
 			t.Errorf("MessagePart.SDK() for %T: %v", part, err)
 			continue

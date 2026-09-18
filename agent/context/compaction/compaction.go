@@ -17,6 +17,9 @@ import (
 	"github.com/felinics/twilight/agent/decision"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
+	"github.com/felinics/twilight/agent/run/frozen"
+	"github.com/felinics/twilight/agent/run/model/sdkconv"
+	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/turn"
@@ -99,7 +102,7 @@ type Summarizer struct {
 	// ResolvePreset returns the AgentPreset a PresetRef names.
 	ResolvePreset func(turn.PresetRef) (turn.AgentPreset, error)
 	// Content stores frozen request bodies.
-	Content run.FrozenValueStore
+	Content frozen.Store
 	// Executor performs the model effect.
 	Executor effect.ExecutionPort
 }
@@ -110,18 +113,18 @@ func (s Summarizer) Summarize(ctx context.Context, sid session.SessionID, preset
 	if err != nil {
 		return "", err
 	}
-	frozen, err := run.FreezeModelRequest(sdk.Request{Model: string(preset.Model), Messages: []sdk.Message{
+	store, err := sdkconv.FreezeModelRequest(sdk.Request{Model: string(preset.Model), Messages: []sdk.Message{
 		sdk.SystemMessage(CompactorSystemPrompt),
 		sdk.UserMessage(renderTranscript(entries)),
 	}})
 	if err != nil {
 		return "", err
 	}
-	digest, err := run.SchemaV1().Canonical.DigestRequest(frozen)
+	digest, err := schema.V1().Canonical.DigestRequest(store)
 	if err != nil {
 		return "", err
 	}
-	raw, err := run.SchemaV1().Bodies.EncodeRequest(&frozen, digest)
+	raw, err := schema.V1().Bodies.EncodeRequest(&store, digest)
 	if err != nil {
 		return "", err
 	}
@@ -130,7 +133,7 @@ func (s Summarizer) Summarize(ctx context.Context, sid session.SessionID, preset
 	}
 	a := effect.Assignment{Session: run.Scope(sid), RunID: run.RunID("compact-" + randomHex(8)), StepID: "summary",
 		Claim: run.ExecutionClaim(randomHex(16)), Schema: run.SchemaVersion1,
-		Body: effect.ModelAssignment{Model: preset.Model, Request: &frozen, RequestDigest: digest}}
+		Body: effect.ModelAssignment{Model: preset.Model, Request: &store, RequestDigest: digest}}
 	if err := s.Executor.Dispatch(ctx, a); err != nil {
 		return "", err
 	}

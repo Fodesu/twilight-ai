@@ -3,6 +3,8 @@ package run
 import (
 	"errors"
 	"fmt"
+
+	"github.com/felinics/twilight/agent/run/model"
 )
 
 type RunStatus uint8
@@ -41,8 +43,8 @@ type RunResult struct {
 	// UncertainCalls are tool calls settled as Unknown when the Run stopped.
 	UncertainCalls []CallID `json:"uncertainCalls,omitempty"`
 	// UncertainModel is the ModelStep left Executing when the Run stopped.
-	UncertainModel StepID `json:"uncertainModel,omitempty"`
-	Usage          Usage  `json:"usage"`
+	UncertainModel StepID      `json:"uncertainModel,omitempty"`
+	Usage          model.Usage `json:"usage"`
 }
 
 type StepFailure struct {
@@ -172,7 +174,7 @@ func (s ModelStepStatus) String() string {
 type ModelStep struct {
 	RefValue StepRef `json:"ref"`
 	// RequestDigest identifies the frozen request; its body is kept in the
-	// FrozenValueStore for the life of the step (RUN-WIR-4).
+	// frozen.Store for the life of the step (RUN-WIR-4).
 	RequestDigest Digest          `json:"requestDigest"`
 	Model         ModelRef        `json:"model"`
 	Tools         []ToolSpec      `json:"tools,omitempty"`
@@ -374,7 +376,7 @@ func (s *ToolStep) callIndex(id CallID) int {
 // MachineState is the complete semantic state of one Run (RUN-MCH-1).
 // Control metadata (owner, fence, lease, attempts, queue claims) never
 // appears here. Content bodies (model output, tool output) never appear
-// either: facts record digests and the FrozenValueStore holds the bodies.
+// either: facts record digests and the frozen.Store holds the bodies.
 type MachineState struct {
 	RunID RunID `json:"runId"`
 	// Owner is the opaque upper-level identity this Run serves; Attempt is its
@@ -388,9 +390,9 @@ type MachineState struct {
 	// LastToolStep retains the most recently closed ToolStep so the prompt builder can
 	// locate the step boundary it continues from. Its RefValue.ID is the
 	// SourceStep of the next PromptInput.
-	LastToolStep *ToolStep  `json:"lastToolStep,omitempty"`
-	Usage        Usage      `json:"usage"`
-	Result       *RunResult `json:"result,omitempty"`
+	LastToolStep *ToolStep   `json:"lastToolStep,omitempty"`
+	Usage        model.Usage `json:"usage"`
+	Result       *RunResult  `json:"result,omitempty"`
 }
 
 // ValidateMachineState checks the structural invariants required by Runtime

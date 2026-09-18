@@ -5,6 +5,9 @@ import (
 
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/run/model/sdkconv"
+	"github.com/felinics/twilight/agent/run/runtime"
+	"github.com/felinics/twilight/agent/run/schema"
 )
 
 // RequireWaiting checks Loop yielded and a call is waiting for kind.
@@ -17,7 +20,7 @@ func (f *Feature) RequireWaiting(kind run.ResponseKind) {
 	if w.Kind != kind {
 		f.t.Fatalf("waiting kind = %s, want %s", w.Kind, kind)
 	}
-	want := run.SchemaV1().Identity.DeriveResponseID(w.RunID, w.StepID, w.CallID, w.Kind)
+	want := schema.V1().Identity.DeriveResponseID(w.RunID, w.StepID, w.CallID, w.Kind)
 	if w.ID != want {
 		f.t.Fatalf("ResponseID = %q, want derived %q", w.ID, want)
 	}
@@ -51,11 +54,11 @@ func (f *Feature) RequireCompleted(text string) {
 	if !ok || last.Text != text {
 		f.t.Fatalf("last model result = %+v, want text %q", last, text)
 	}
-	frozen, err := run.FreezeModelResult(last)
+	frozen, err := sdkconv.FreezeModelResult(last)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	want, err := run.SchemaV1().Canonical.DigestModelResult(frozen)
+	want, err := schema.V1().Canonical.DigestModelResult(frozen)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -189,7 +192,7 @@ func (f *Feature) RequireBuilderSawTool(callID run.CallID, output string) {
 	if s.LastToolStep == nil || s.LastToolStep.RefValue.ID != f.builder.lastHint.SourceStep {
 		f.t.Fatalf("hint SourceStep = %s, LastToolStep = %+v", f.builder.lastHint.SourceStep, s.LastToolStep)
 	}
-	want, err := run.SchemaV1().Canonical.DigestToolOutput(run.MustParseCanonicalJSON(output))
+	want, err := schema.V1().Canonical.DigestToolOutput(run.MustParseCanonicalJSON(output))
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -296,7 +299,7 @@ func (f *Feature) RequireAbsorbsCommands() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	_, err = f.rt.Commit(f.ctx, run.CommitRequest{Base: snap.Position, Command: env})
+	_, err = f.rt.Commit(f.ctx, runtime.CommitRequest{Base: snap.Position, Command: env})
 	if !errors.Is(err, run.ErrRunTerminal) {
 		f.t.Fatalf("err = %v, want ErrRunTerminal", err)
 	}

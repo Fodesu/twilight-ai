@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/plan"
+	"github.com/felinics/twilight/agent/run/runtime"
+	"github.com/felinics/twilight/agent/run/schema"
+	"github.com/felinics/twilight/agent/run/wire"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
@@ -132,7 +136,7 @@ func (c *Coordinator) commit(ctx context.Context, w writer.Writer, op string, in
 	if err != nil {
 		switch {
 		case errors.Is(err, &extension.Error{Code: extension.ErrOwnershipLost}):
-			return fmt.Errorf("%w: %w", run.ErrOwnershipLost, err)
+			return fmt.Errorf("%w: %w", runtime.ErrOwnershipLost, err)
 		case errors.Is(err, chatlog.ErrNotSubmitted), errors.Is(err, runmod.ErrRunExists):
 			return fmt.Errorf("%w: %w", ErrConflict, err)
 		}
@@ -187,8 +191,8 @@ func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req StartReque
 		inputIDs[i] = chatlog.InputID(in.ID)
 	}
 	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
-	plan := PlanDigest(turnID, req.Preset.Digest, inputIDs)
-	commitID := session.CommitID(StartOperationDigest(sid, turnID, plan))
+	p := PlanDigest(turnID, req.Preset.Digest, inputIDs)
+	commitID := session.CommitID(StartOperationDigest(sid, turnID, p))
 	runID := DeriveRunID(sid, turnID, 1)
 	newRun, err := run.BuildNewRunFor(runID, run.OwnerID(turnID), 1, es.CausationID(commitID))
 	if err != nil {
@@ -254,7 +258,7 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req DeliverR
 	if len(req.Inputs) == 0 {
 		return TurnResponse{}, fmt.Errorf("%w: deliver without inputs", ErrConflict)
 	}
-	schema, err := run.SchemaFor(uint16(w.Schema()))
+	sch, err := schema.For(uint16(w.Schema()))
 	if err != nil {
 		return TurnResponse{}, err
 	}
@@ -265,11 +269,11 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req DeliverR
 	// the unit's View, so a withdrawal landing between this read and the
 	// commit refuses the unit.
 	cmd := run.AcceptInput{Inputs: req.Inputs}
-	env, err := schema.Wire.Envelope(runID, schema.Identity.DeriveInputCommandID(runID, cmd.InputIDs()...), cmd)
+	env, err := sch.Wire.Envelope(runID, sch.Identity.DeriveInputCommandID(runID, cmd.InputIDs()...), cmd)
 	if err != nil {
 		return TurnResponse{}, err
 	}
-	accept, err := c.Runs.Command(ctx, run.CommitRequest{Command: env})
+	accept, err := c.Runs.Command(ctx, runtime.CommitRequest{Command: env})
 	if err != nil {
 		return TurnResponse{}, err
 	}
@@ -395,17 +399,17 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest
 		return TurnResponse{}, fmt.Errorf("%w: turn %s has no active attempt", ErrConflict, turnID)
 	}
 	runID := att.RunID
-	schema, err := run.SchemaFor(uint16(w.Schema()))
+	sch, err := schema.For(uint16(w.Schema()))
 	if err != nil {
 		return TurnResponse{}, err
 	}
-	env, err := schema.Wire.Envelope(runID, CancelCommandID(sid, turnID, runID), run.CancelRun{})
+	env, err := sch.Wire.Envelope(runID, CancelCommandID(sid, turnID, runID), run.CancelRun{})
 	if err != nil {
 		return TurnResponse{}, err
 	}
 	// CancelRun rebases on the current state; no Base and no machine read.
 	// The Run's cancellation and the Turn's failed settlement are one unit.
-	cancel, err := c.Runs.Command(ctx, run.CommitRequest{Command: env})
+	cancel, err := c.Runs.Command(ctx, runtime.CommitRequest{Command: env})
 	if err != nil {
 		return TurnResponse{}, err
 	}
@@ -416,8 +420,8 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest
 		}),
 	}}
 	intent := struct {
-		Command run.CommandEnvelope `json:"command"`
-		Failed  FailedPayload       `json:"failed"`
+		Command wire.CommandEnvelope `json:"command"`
+		Failed  FailedPayload        `json:"failed"`
 	}{env, FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementStopped, FailureClass: "cancelled"}}
 	if err := c.commit(ctx, w, "stop", intent, work); err != nil && !errors.Is(err, run.ErrRunTerminal) {
 		return TurnResponse{}, err
@@ -510,7 +514,7 @@ func (c *Coordinator) responseFor(ctx context.Context, ref TurnRef, view *TurnVi
 	}
 	record, err := c.Runs.Record(ctx, ref.SessionID, att.RunID)
 	if err != nil {
-		if errors.Is(err, run.ErrRunNotFound) && att.End != nil {
+		if errors.Is(err, runtime.ErrRunNotFound) && att.End != nil {
 			// The attempt ran in a parent Session: its Run is not this
 			// Session's execution history (SES-FRK-5), but the surface holds
 			// its settlement.
@@ -523,10 +527,10 @@ func (c *Coordinator) responseFor(ctx context.Context, ref TurnRef, view *TurnVi
 	switch {
 	case snapshot.State.Status.Terminal():
 		resp.Disposition = ResumeFinished
-	case run.NeedsRecovery(snapshot.State):
+	case plan.NeedsRecovery(snapshot.State):
 		resp.Disposition = ResumeWaitingForRecovery
 	default:
-		resp.Waiting = run.WaitingCalls(snapshot.State)
+		resp.Waiting = plan.WaitingCalls(snapshot.State)
 		if len(resp.Waiting) > 0 {
 			resp.Disposition = ResumeWaitingForResponse
 		}

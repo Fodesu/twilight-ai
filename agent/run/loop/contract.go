@@ -7,6 +7,7 @@ import (
 
 	run "github.com/felinics/twilight/agent/run"
 	effect "github.com/felinics/twilight/agent/run/effect"
+	"github.com/felinics/twilight/agent/run/plan"
 
 	"github.com/felinics/twilight/sdk"
 )
@@ -22,7 +23,7 @@ var ErrRunAlreadyRunning = errors.New("agent: loop: run already running")
 // freezes the prompt into an agent-owned ModelRequest before crossing the
 // RunStore boundary.
 type PromptBuilder interface {
-	Build(context.Context, run.PromptInput) (Prompt, error)
+	Build(context.Context, plan.PromptInput) (Prompt, error)
 }
 
 // Prompt is one built model input: the model to call, the provider request

@@ -10,7 +10,10 @@ import (
 	"github.com/felinics/twilight/agent/decision"
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/frozen"
 	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/run/model"
+	"github.com/felinics/twilight/agent/run/plan"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
@@ -34,14 +37,14 @@ func (s fixedSource) Load(_ context.Context, _ session.SessionID, id extension.P
 // fixedContent is the frozen store as the prompt builder sees it: bodies by
 // digest.
 type fixedContent struct {
-	results map[es.Digest]run.ModelResult
+	results map[es.Digest]model.ModelResult
 	outputs map[es.Digest]run.CanonicalJSON
 }
 
-func (c fixedContent) ModelResult(_ context.Context, d es.Digest) (run.ModelResult, error) {
+func (c fixedContent) ModelResult(_ context.Context, d es.Digest) (model.ModelResult, error) {
 	r, ok := c.results[d]
 	if !ok {
-		return run.ModelResult{}, fmt.Errorf("%w: %s", run.ErrFrozenValueMissing, d)
+		return model.ModelResult{}, fmt.Errorf("%w: %s", frozen.ErrMissing, d)
 	}
 	return r, nil
 }
@@ -49,7 +52,7 @@ func (c fixedContent) ModelResult(_ context.Context, d es.Digest) (run.ModelResu
 func (c fixedContent) ToolOutput(_ context.Context, d es.Digest) (run.CanonicalJSON, error) {
 	o, ok := c.outputs[d]
 	if !ok {
-		return run.CanonicalJSON{}, fmt.Errorf("%w: %s", run.ErrFrozenValueMissing, d)
+		return run.CanonicalJSON{}, fmt.Errorf("%w: %s", frozen.ErrMissing, d)
 	}
 	return o, nil
 }
@@ -69,7 +72,7 @@ func preset() turn.AgentPreset {
 func entries() (chatlog.Context, fixedContent) {
 	in := chatlog.Input{ID: "in-1", TurnID: "t1", Content: decision.InputContent("hello")}
 	as := chatlog.Assistant{ID: "a-1", TurnID: "t1", StepID: "a-1", ResultDigest: "sha256:r1"}
-	content := fixedContent{results: map[es.Digest]run.ModelResult{"sha256:r1": {Text: "hi", FinishReason: run.FinishReasonStop}}}
+	content := fixedContent{results: map[es.Digest]model.ModelResult{"sha256:r1": {Text: "hi", FinishReason: model.FinishReasonStop}}}
 	return chatlog.Context{Entries: []chatlog.Entry{
 		{Kind: chatlog.EntryInput, ID: "in-1", Position: session.Position{Commit: 1}, Input: &in},
 		{Kind: chatlog.EntryAssistant, ID: "a-1", Position: session.Position{Commit: 2}, Assistant: &as},
@@ -82,7 +85,7 @@ func entries() (chatlog.Context, fixedContent) {
 func TestPromptBuildersResolveDeterministically(t *testing.T) {
 	state, content := entries()
 	src := sources(state, session.Head{Next: 3, Digest: "d3"}, content)
-	input := run.PromptInput{Scope: "s", Inputs: []run.AgentInput{{ID: "in-1", Digest: "sha256:in-1"}}}
+	input := plan.PromptInput{Scope: "s", Inputs: []run.AgentInput{{ID: "in-1", Digest: "sha256:in-1"}}}
 	var prompts []loop.Prompt
 	for i := 0; i < 2; i++ {
 		builders := decision.DefaultPromptBuilders() // a fresh process builds its own registry
@@ -114,7 +117,7 @@ func TestPromptBuildersResolveDeterministically(t *testing.T) {
 	}
 	// A body the frozen store lost fails the build; the projection itself is
 	// unaffected (CHT-MAT-1).
-	if _, err := decision.NewContextPromptBuilder(preset(), sources(state, session.Head{}, fixedContent{})).Build(context.Background(), input); !errors.Is(err, run.ErrFrozenValueMissing) {
+	if _, err := decision.NewContextPromptBuilder(preset(), sources(state, session.Head{}, fixedContent{})).Build(context.Background(), input); !errors.Is(err, frozen.ErrMissing) {
 		t.Fatalf("missing body: err = %v", err)
 	}
 }
@@ -150,9 +153,9 @@ func TestInputContentRoundTrip(t *testing.T) {
 }
 
 func TestPromptRejectsUnpairedToolHistory(t *testing.T) {
-	content := fixedContent{results: map[es.Digest]run.ModelResult{
-		"sha256:call": {FinishReason: run.FinishReasonToolCalls, ToolCalls: []run.ModelToolCall{{ToolCallID: "provider-call", ToolName: "tool", Input: run.MustParseCanonicalJSON(`{}`)}}},
-		"sha256:none": {Text: "plain", FinishReason: run.FinishReasonStop},
+	content := fixedContent{results: map[es.Digest]model.ModelResult{
+		"sha256:call": {FinishReason: model.FinishReasonToolCalls, ToolCalls: []model.ModelToolCall{{ToolCallID: "provider-call", ToolName: "tool", Input: run.MustParseCanonicalJSON(`{}`)}}},
+		"sha256:none": {Text: "plain", FinishReason: model.FinishReasonStop},
 	}}
 	call := chatlog.Entry{Kind: chatlog.EntryAssistant, ID: "s1", Assistant: &chatlog.Assistant{ID: "s1", StepID: "s1", ResultDigest: "sha256:call", CallIDs: []chatlog.CallID{"call"}}}
 	plain := chatlog.Entry{Kind: chatlog.EntryAssistant, ID: "s2", Assistant: &chatlog.Assistant{ID: "s2", StepID: "s2", ResultDigest: "sha256:none"}}
@@ -171,13 +174,13 @@ func TestPromptRejectsUnpairedToolHistory(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			builder := decision.NewContextPromptBuilder(preset(), sources(chatlog.Context{Entries: tc.entries}, session.Head{}, content))
-			if _, err := builder.Build(context.Background(), run.PromptInput{Scope: "s"}); err == nil {
+			if _, err := builder.Build(context.Background(), plan.PromptInput{Scope: "s"}); err == nil {
 				t.Fatal("unpaired history produced a provider request")
 			}
 		})
 	}
 	builder := decision.NewContextPromptBuilder(preset(), sources(chatlog.Context{Entries: []chatlog.Entry{call, input, result}}, session.Head{}, content))
-	prompt, err := builder.Build(context.Background(), run.PromptInput{Scope: "s"})
+	prompt, err := builder.Build(context.Background(), plan.PromptInput{Scope: "s"})
 	if err != nil {
 		t.Fatal(err)
 	}

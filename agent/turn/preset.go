@@ -6,6 +6,9 @@ import (
 
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/model"
+	"github.com/felinics/twilight/agent/run/model/sdkconv"
+	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -19,9 +22,9 @@ type (
 // response policy. ToolSpecs and the provider-facing tool list both derive
 // from it.
 type PublicTool struct {
-	Ref        run.ToolRef        `json:"ref"`
-	Definition run.ToolDefinition `json:"definition"`
-	Policy     run.ResponsePolicy `json:"policy"`
+	Ref        run.ToolRef          `json:"ref"`
+	Definition model.ToolDefinition `json:"definition"`
+	Policy     run.ResponsePolicy   `json:"policy"`
 }
 
 // AgentPreset is the decision identity a Turn is started under (TRN-SCP-6):
@@ -97,12 +100,12 @@ func (p *AgentPreset) ToolSpecs() ([]run.ToolSpec, []sdk.ToolDefinition, error) 
 	specs := make([]run.ToolSpec, 0, len(p.Tools))
 	defs := make([]sdk.ToolDefinition, 0, len(p.Tools))
 	for _, t := range p.Tools {
-		d, err := run.SchemaV1().Canonical.DigestToolDefinition(t.Definition)
+		d, err := schema.V1().Canonical.DigestToolDefinition(t.Definition)
 		if err != nil {
 			return nil, nil, err
 		}
 		specs = append(specs, run.ToolSpec{Ref: t.Ref, Name: t.Definition.Name, DefinitionDigest: d, Policy: t.Policy})
-		defs = append(defs, t.Definition.SDK())
+		defs = append(defs, sdkconv.ToolDefinition(t.Definition))
 	}
 	return specs, defs, nil
 }

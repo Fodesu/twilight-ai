@@ -17,7 +17,9 @@ import (
 	"github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
+	"github.com/felinics/twilight/agent/run/model"
 	"github.com/felinics/twilight/agent/run/protocol"
+	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -143,8 +145,8 @@ func (b *testBackend) lastKey() effect.AssignmentKey {
 }
 
 func testAssignment() effect.Assignment {
-	request := run.ModelRequest{Model: "m"}
-	digest, err := run.SchemaV1().Canonical.DigestRequest(request)
+	request := model.ModelRequest{Model: "m"}
+	digest, err := schema.V1().Canonical.DigestRequest(request)
 	if err != nil {
 		panic(err)
 	}
@@ -633,9 +635,9 @@ func TestWorkerReclaimsExpiredAssignment(t *testing.T) {
 	}
 	backend.mu.Lock()
 	calls := backend.calls
-	var request *run.ModelRequest
-	if model, ok := backend.last.Model(); ok {
-		request = model.Request
+	var request *model.ModelRequest
+	if modelAssignment, ok := backend.last.Model(); ok {
+		request = modelAssignment.Request
 	}
 	backend.mu.Unlock()
 	if calls != 1 || request == nil {

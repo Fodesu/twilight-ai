@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	. "github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -78,7 +79,7 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 
 	// The dead owner's worker finally returns: its settlement is fenced.
 	close(block)
-	if err := <-firstDone; !errors.Is(err, ErrOwnershipLost) {
+	if err := <-firstDone; !errors.Is(err, runtime.ErrOwnershipLost) {
 		t.Fatalf("old owner loop error = %v, want ErrOwnershipLost", err)
 	}
 	// Nothing of the old owner reached the stream after the takeover.

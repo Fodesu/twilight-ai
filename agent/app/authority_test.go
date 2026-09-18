@@ -9,7 +9,9 @@ import (
 	"github.com/felinics/twilight/agent/preset"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
+	"github.com/felinics/twilight/agent/run/frozen"
 	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/run/model"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -88,7 +90,7 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	frozen := h.Authority.Frozen
+	fz := h.Authority.Frozen
 	presetRef, err := h.RegisterPreset("remote", mustPreset("m-remote", nil, app.WithSystemPrompt("be brief")))
 	if err != nil {
 		t.Fatal(err)
@@ -110,17 +112,17 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 		t.Fatalf("assignments = %d, want 1 model assignment", len(assigned))
 	}
 	a := assigned[0]
-	model, isModel := a.Model()
-	if !isModel || model.Model != "m-remote" || a.Claim == "" || a.RunID == "" || a.StepID == "" {
+	modelAssignment, isModel := a.Model()
+	if !isModel || modelAssignment.Model != "m-remote" || a.Claim == "" || a.RunID == "" || a.StepID == "" {
 		t.Fatalf("assignment = %+v", a)
 	}
 	// The body the executor would fetch is in the shared frozen store under
 	// the digest the Assignment carries (RUN-WIR-4).
-	raw, ok, err := frozen.Get(ctx, model.RequestDigest)
+	raw, ok, err := fz.Get(ctx, modelAssignment.RequestDigest)
 	if err != nil || !ok || len(raw) == 0 {
-		t.Fatalf("frozen request %s: ok=%v err=%v", model.RequestDigest, ok, err)
+		t.Fatalf("frozen request %s: ok=%v err=%v", modelAssignment.RequestDigest, ok, err)
 	}
-	req, err := run.DecodeFrozenRequest(raw, model.RequestDigest)
+	req, err := frozen.DecodeRequest(raw, modelAssignment.RequestDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,8 +135,8 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 func TestPresetVersionsRemainAvailable(t *testing.T) {
 	presets := preset.NewMemory()
 	preset := mustPreset("m-1", nil, app.WithSystemPrompt("original"))
-	preset.Tools = []turn.PublicTool{{Ref: "tool", Definition: run.ToolDefinition{
-		Name: "tool", Parameters: run.MustParseCanonicalJSON(`{}`), CacheControl: &run.CacheControl{Type: "ephemeral"},
+	preset.Tools = []turn.PublicTool{{Ref: "tool", Definition: model.ToolDefinition{
+		Name: "tool", Parameters: run.MustParseCanonicalJSON(`{}`), CacheControl: &model.CacheControl{Type: "ephemeral"},
 	}}}
 	ref, err := presets.Register("p", preset)
 	if err != nil {

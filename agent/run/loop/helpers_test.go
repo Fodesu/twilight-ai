@@ -8,6 +8,8 @@ import (
 	"github.com/felinics/twilight/agent/executor"
 	executionstore "github.com/felinics/twilight/agent/executor/store"
 	. "github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/runtime"
+	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
 	runmod "github.com/felinics/twilight/agent/session/run"
@@ -91,13 +93,13 @@ func (s *testStack) createRun(t testing.TB, runID RunID, inputs ...AgentInput) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	facts, err := SchemaV1().Machine.CreateGroup(newRun, inputs)
+	facts, err := schema.V1().Machine.CreateGroup(newRun, inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(SchemaV1().Wire, f), Value: runmod.Event{RunID: runID, Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(schema.V1().Wire, f), Value: runmod.Event{RunID: runID, Fact: f}})
 	}
 	group := &writer.SemanticGroup{CommitID: session.CommitID("create/" + string(runID)),
 		Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: string(runID)}, Events: runEvents}}}
@@ -137,7 +139,7 @@ func recordFacts(t testing.TB, rt *runmod.SessionRunStore, runID RunID) []Fact {
 	return record.Facts
 }
 
-func loadState(t testing.TB, rt *runmod.SessionRunStore, w writer.Writer, runID RunID) RuntimeSnapshot {
+func loadState(t testing.TB, rt *runmod.SessionRunStore, w writer.Writer, runID RunID) runtime.Snapshot {
 	t.Helper()
 	snap, err := rt.Bind(w).Load(context.Background(), runID)
 	if err != nil {

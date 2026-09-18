@@ -8,7 +8,9 @@ import (
 	"time"
 
 	. "github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/frozen"
 	"github.com/felinics/twilight/agent/run/reconcile"
+	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -455,7 +457,7 @@ func TestDeliverMissingFrozenBodyWithdrawsAndReturnsTheError(t *testing.T) {
 	}
 	first := exec.last()
 	res, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: first.Key(), Result: ModelFailed{Code: FailureFrozenValueMissing, Message: "frozen value missing"}}, nil)
-	if !errors.Is(err, ErrFrozenValueMissing) || res.Disposition != LoopDelivered {
+	if !errors.Is(err, frozen.ErrMissing) || res.Disposition != LoopDelivered {
 		t.Fatalf("deliver missing body = %+v %v, want delivered plus the missing-body error", res, err)
 	}
 	if snap := loadState(t, rt, w, "run-1"); snap.State.ModelSteps != 0 {
@@ -494,9 +496,9 @@ func (e *missingBodyExecutor) Dispatch(ctx context.Context, a Assignment) error 
 func TestRunStopsAfterOneMissingBodyRecovery(t *testing.T) {
 	cases := []struct {
 		name string
-		exec func(t *testing.T, rt RunStore) Executor
+		exec func(t *testing.T, rt runtime.RunStore) Executor
 	}{
-		{"remote outcome", func(*testing.T, RunStore) Executor {
+		{"remote outcome", func(*testing.T, runtime.RunStore) Executor {
 			return &missingBodyExecutor{recordingExecutor: *newRecordingExecutor()}
 		}},
 	}
@@ -510,7 +512,7 @@ func TestRunStopsAfterOneMissingBodyRecovery(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			_, err = l.Run(ctx, rt.Bind(w), "run-1", nil)
-			if !errors.Is(err, ErrFrozenValueMissing) {
+			if !errors.Is(err, frozen.ErrMissing) {
 				t.Fatalf("Run = %v, want the missing-body error", err)
 			}
 			started, recovered := 0, 0

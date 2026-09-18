@@ -7,6 +7,9 @@ import (
 
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/runtime"
+	"github.com/felinics/twilight/agent/run/schema"
+	"github.com/felinics/twilight/agent/run/wire"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
 )
@@ -43,13 +46,13 @@ func (m Machine) clone() Machine {
 	return out
 }
 
-// snapshot returns the RuntimeSnapshot of an active Run.
-func (m Machine) snapshot(runID run.RunID) (run.RuntimeSnapshot, bool) {
+// snapshot returns the runtime.Snapshot of an active Run.
+func (m Machine) snapshot(runID run.RunID) (runtime.Snapshot, bool) {
 	ms, ok := m.Active[runID]
 	if !ok {
-		return run.RuntimeSnapshot{}, false
+		return runtime.Snapshot{}, false
 	}
-	return run.RuntimeSnapshot{State: ms, Position: m.Positions[runID], SchemaVersion: m.Schemas[runID]}, true
+	return runtime.Snapshot{State: ms, Position: m.Positions[runID], SchemaVersion: m.Schemas[runID]}, true
 }
 
 // Apply folds one decoded run event (RUN-MCH-3 via Protocol.Evolve).
@@ -62,7 +65,7 @@ func (m Machine) Apply(e extension.DecodedEvent) (Machine, error) { //nolint:goc
 		return m, fmt.Errorf("run machine: fact for %s arrived via stream %s/%s", ev.RunID, e.Stream.Kind, e.Stream.ID)
 	}
 	out := m.clone()
-	var schema run.Schema
+	var sch schema.Schema
 	var state run.MachineState
 	if _, isCreated := ev.Fact.(run.RunCreated); isCreated {
 		if _, dup := out.Active[ev.RunID]; dup {
@@ -70,24 +73,24 @@ func (m Machine) Apply(e extension.DecodedEvent) (Machine, error) { //nolint:goc
 		}
 		// The Run's schema is its segment's, recorded as the fact's payload
 		// version (RUN-CMT-8); RunCreated itself names none.
-		p, err := run.SchemaFor(uint16(e.Version))
+		p, err := schema.For(uint16(e.Version))
 		if err != nil {
 			return m, err
 		}
-		schema = p
+		sch = p
 		out.Schemas[ev.RunID] = uint16(e.Version)
 	} else {
 		cur, active := out.Active[ev.RunID]
 		if !active {
-			return m, fmt.Errorf("run machine: fact %s for unknown or terminal run %s", run.FactType(ev.Fact), ev.RunID)
+			return m, fmt.Errorf("run machine: fact %s for unknown or terminal run %s", wire.FactType(ev.Fact), ev.RunID)
 		}
-		p, err := run.SchemaFor(out.Schemas[ev.RunID])
+		p, err := schema.For(out.Schemas[ev.RunID])
 		if err != nil {
 			return m, err
 		}
-		schema, state = p, cur
+		sch, state = p, cur
 	}
-	next, err := schema.Machine.Evolve(state, ev.Fact)
+	next, err := sch.Machine.Evolve(state, ev.Fact)
 	if err != nil {
 		return m, err
 	}
@@ -130,14 +133,14 @@ func (c machineCodec) Encode(value any) (jsonstable.Value, error) {
 		return jsonstable.Value{}, err
 	}
 	m, _ := value.(Machine) // Validate checked the type
-	wire := machineWire{Runs: make(map[run.RunID]machineRunWire, len(m.Active))}
+	w := machineWire{Runs: make(map[run.RunID]machineRunWire, len(m.Active))}
 	for id := range m.Active {
 		state := m.Active[id]
-		schema, err := run.SchemaFor(m.Schemas[id])
+		sch, err := schema.For(m.Schemas[id])
 		if err != nil {
 			return jsonstable.Value{}, err
 		}
-		raw, err := schema.Snapshot.Encode(&state)
+		raw, err := sch.Snapshot.Encode(&state)
 		if err != nil {
 			return jsonstable.Value{}, err
 		}
@@ -145,26 +148,26 @@ func (c machineCodec) Encode(value any) (jsonstable.Value, error) {
 		if err != nil {
 			return jsonstable.Value{}, err
 		}
-		wire.Runs[id] = machineRunWire{Schema: m.Schemas[id], Position: m.Positions[id], State: encoded}
+		w.Runs[id] = machineRunWire{Schema: m.Schemas[id], Position: m.Positions[id], State: encoded}
 	}
-	return jsonstable.FromValue(wire)
+	return jsonstable.FromValue(w)
 }
 
-func (machineCodec) Decode(wire jsonstable.Value) (any, error) {
-	if wire.IsZero() {
+func (machineCodec) Decode(wr jsonstable.Value) (any, error) {
+	if wr.IsZero() {
 		return nil, errors.New("empty machine snapshot")
 	}
 	var w machineWire
-	if err := json.Unmarshal(wire.Bytes(), &w); err != nil {
+	if err := json.Unmarshal(wr.Bytes(), &w); err != nil {
 		return nil, err
 	}
 	m := newMachine()
 	for id, r := range w.Runs {
-		schema, err := run.SchemaFor(r.Schema)
+		sch, err := schema.For(r.Schema)
 		if err != nil {
 			return nil, err
 		}
-		state, err := schema.Snapshot.Decode(r.State.Bytes())
+		state, err := sch.Snapshot.Decode(r.State.Bytes())
 		if err != nil {
 			return nil, err
 		}

@@ -1,26 +1,29 @@
-package run
+package wire_test
 
 import (
 	"strings"
 	"testing"
+
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/wire"
 )
 
 // The snapshot codec round-trips every Current variant and the terminal
-// shape, and its bytes equal statesEquivalent's identity.
+// shape, and its bytes equal StatesEquivalent's identity.
 func TestSnapshotCodecRoundTrip(t *testing.T) {
 	def := testToolDef("t")
-	spec := makeSpec(t, def, DirectExecution)
-	check := func(name string, s MachineState) {
+	spec := makeSpec(t, def, run.DirectExecution)
+	check := func(name string, s run.MachineState) {
 		t.Helper()
-		raw, err := (snapshotV1{}).Encode(&s)
+		raw, err := (wire.SnapshotV1{}).Encode(&s)
 		if err != nil {
 			t.Fatalf("%s: encode: %v", name, err)
 		}
-		decoded, err := (snapshotV1{}).Decode(raw)
+		decoded, err := (wire.SnapshotV1{}).Decode(raw)
 		if err != nil {
 			t.Fatalf("%s: decode: %v\n%s", name, err, raw)
 		}
-		if !statesEquivalent(&s, &decoded) {
+		if !wire.StatesEquivalent(&s, &decoded) {
 			t.Fatalf("%s: round trip changed state\n%s", name, raw)
 		}
 		if (s.Current == nil) != (decoded.Current == nil) {
@@ -30,27 +33,27 @@ func TestSnapshotCodecRoundTrip(t *testing.T) {
 
 	s := newRun(t)
 	check("open", s)
-	s, stepID := advanceToExecuting(t, s, testRequest(def), []ToolSpec{spec})
+	s, stepID := advanceToExecuting(t, s, testRequest(def), []run.ToolSpec{spec})
 	check("model executing", s)
 	b := makeBinding(t, stepID, 0, "c1", spec, `{}`)
-	facts := mustDecide(t, s, SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []ToolCallBinding{b}})
+	facts := mustDecide(t, s, run.SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []run.ToolCallBinding{b}})
 	s = fold(t, s, facts)
 	check("tool step pending", s)
-	toolStep := facts[1].(ToolStepOpened).StepID
-	s = fold(t, s, mustDecide(t, s, StartToolCall{StepID: toolStep, CallID: cid(stepID, 0), Claim: "claim"}))
+	toolStep := facts[1].(run.ToolStepOpened).StepID
+	s = fold(t, s, mustDecide(t, s, run.StartToolCall{StepID: toolStep, CallID: cid(stepID, 0), Claim: "claim"}))
 	check("tool step executing", s)
-	s = fold(t, s, mustDecide(t, s, SubmitToolResult{StepID: toolStep, CallID: cid(stepID, 0), Result: ToolExecutionResult{Output: cj(`"ok"`)}}))
+	s = fold(t, s, mustDecide(t, s, run.SubmitToolResult{StepID: toolStep, CallID: cid(stepID, 0), Result: run.ToolExecutionResult{Output: cj(`"ok"`)}}))
 	check("open with last tool step", s)
-	s = fold(t, s, mustDecide(t, s, CancelRun{}))
+	s = fold(t, s, mustDecide(t, s, run.CancelRun{}))
 	check("terminal", s)
 }
 
 func TestSnapshotCodecRejectsMalformedWire(t *testing.T) {
-	initial, err := InitializeRun("run-1", "", 0)
+	initial, err := run.InitializeRun("run-1", "", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	good, err := (snapshotV1{}).Encode(&initial)
+	good, err := (wire.SnapshotV1{}).Encode(&initial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,11 +64,11 @@ func TestSnapshotCodecRejectsMalformedWire(t *testing.T) {
 		"active without current": strings.Replace(string(good), `"current":"open",`, ``, 1),
 		"trailing data":          string(good) + `{}`,
 	} {
-		if _, err := (snapshotV1{}).Decode([]byte(raw)); err == nil {
+		if _, err := (wire.SnapshotV1{}).Decode([]byte(raw)); err == nil {
 			t.Fatalf("%s: accepted\n%s", name, raw)
 		}
 	}
-	if _, err := (snapshotV1{}).Decode(good); err != nil {
+	if _, err := (wire.SnapshotV1{}).Decode(good); err != nil {
 		t.Fatalf("canonical wire rejected: %v", err)
 	}
 }

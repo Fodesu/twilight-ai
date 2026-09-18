@@ -9,6 +9,7 @@ import (
 
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/run/plan"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -122,10 +123,10 @@ type scriptBuilder struct {
 	model    run.ModelRef
 	specs    []run.ToolSpec
 	defs     map[run.ToolRef]sdk.ToolDefinition
-	lastHint run.PromptInput
+	lastHint plan.PromptInput
 }
 
-func (p *scriptBuilder) Build(_ context.Context, hint run.PromptInput) (loop.Prompt, error) {
+func (p *scriptBuilder) Build(_ context.Context, hint plan.PromptInput) (loop.Prompt, error) {
 	p.lastHint = hint
 	model := p.model
 	if model == "" {

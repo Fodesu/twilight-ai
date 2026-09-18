@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/model"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
 	runmod "github.com/felinics/twilight/agent/session/run"
@@ -18,7 +19,7 @@ func benchEvents(n int) []extension.DecodedEvent {
 	for i := range out {
 		out[i] = extension.DecodedEvent{
 			Position: session.Position{Commit: session.CommitSeq(i)},
-			Value:    runmod.Event{RunID: "r", Fact: run.ModelStepCompleted{StepID: run.StepID(fmt.Sprint(i)), FinishReason: run.FinishReasonStop, ResultDigest: "sha256:x"}},
+			Value:    runmod.Event{RunID: "r", Fact: run.ModelStepCompleted{StepID: run.StepID(fmt.Sprint(i)), FinishReason: model.FinishReasonStop, ResultDigest: "sha256:x"}},
 		}
 	}
 	return out

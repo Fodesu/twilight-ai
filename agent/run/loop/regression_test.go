@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	. "github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/model/sdkconv"
+	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -68,11 +70,11 @@ func TestRegressionRunFinishedEmitted(t *testing.T) {
 
 func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 	def := sdk.ToolDefinition{Name: "read", Parameters: json.RawMessage(`{"type":"object"}`)}
-	frozenDef, err := FreezeToolDefinition(def)
+	frozenDef, err := sdkconv.FreezeToolDefinition(def)
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := SchemaV1().Canonical.DigestToolDefinition(frozenDef)
+	d, err := schema.V1().Canonical.DigestToolDefinition(frozenDef)
 	if err != nil {
 		t.Fatal(err)
 	}

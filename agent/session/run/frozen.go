@@ -10,18 +10,22 @@ import (
 
 	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/frozen"
+	"github.com/felinics/twilight/agent/run/model"
+	"github.com/felinics/twilight/agent/run/runtime"
+	"github.com/felinics/twilight/agent/run/wire"
 )
 
 // FrozenAuthority is the cas Authority of frozen run bodies: the run layer's
-// FrozenValueStore is one Authority of the artifact ContentStore, not a
+// frozen.Store is one Authority of the artifact ContentStore, not a
 // second content-addressed store (RUN-WIR-4).
-const FrozenAuthority artifact.Authority = run.FrozenAuthority
+const FrozenAuthority artifact.Authority = frozen.Authority
 
 // FrozenMediaType is the media type frozen bodies are stored under; the cas
 // store binds it to the key, so every Put and Get of a body agrees on it.
 const FrozenMediaType = "application/vnd.twilight.frozen+json"
 
-// frozenValues realizes run.FrozenValueStore over a cas ContentStore and the
+// frozenValues realizes frozen.Store over a cas ContentStore and the
 // BindingStore the Session Writers admit against. A body's digest is the
 // SHA-256 of its bytes (run.EncodeFrozen*), which is exactly the cas Key, so
 // no index maps digests to refs: Get rebuilds the Ref from the digest alone.
@@ -36,34 +40,34 @@ type frozenValues struct {
 }
 
 // FrozenValues adapts a cas ContentStore serving FrozenAuthority and the
-// Writers' BindingStore to the run layer's FrozenValueStore port. bindings
+// Writers' BindingStore to the run layer's frozen.Store port. bindings
 // must be the store the Writers' Admission resolves against. A content store
 // of another Authority answers every Get with ErrUnauthorized, which surfaces
 // as an error rather than a miss.
-func FrozenValues(store artifact.ContentStore, bindings artifact.BindingStore) (run.FrozenValueStore, error) {
+func FrozenValues(store artifact.ContentStore, bindings artifact.BindingStore) (frozen.Store, error) {
 	if store == nil || bindings == nil {
 		return nil, errors.New("runmod: frozen values require a content store and a binding store")
 	}
 	return &frozenValues{store: store, bindings: bindings}, nil
 }
 
-// FrozenValuesInMemory is the in-process FrozenValueStore: a memory cas store
+// FrozenValuesInMemory is the in-process frozen.Store: a memory cas store
 // under FrozenAuthority behind the adapter, registering Bindings in bindings.
 // Tests that simulate a process restart share one instance across stores, as
 // a durable store would share its files.
-func FrozenValuesInMemory(bindings artifact.BindingStore) run.FrozenValueStore {
+func FrozenValuesInMemory(bindings artifact.BindingStore) frozen.Store {
 	store, err := artifact.NewMemoryContentStore(FrozenAuthority, artifact.MemoryContentStoreOptions{})
 	if err != nil {
 		panic(err) // the authority is a constant; only an empty one fails
 	}
-	frozen, err := FrozenValues(store, bindings)
+	fz, err := FrozenValues(store, bindings)
 	if err != nil {
 		panic(err)
 	}
-	return frozen
+	return fz
 }
 
-func (f *frozenValues) Put(ctx context.Context, digest run.Digest, value []byte) error {
+func (f *frozenValues) Put(ctx context.Context, digest run.Digest, val []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -71,10 +75,10 @@ func (f *frozenValues) Put(ctx context.Context, digest run.Digest, value []byte)
 	if err != nil {
 		return err
 	}
-	if key, _ := artifact.CASKey(value); key != ref.Key {
+	if key, _ := artifact.CASKey(val); key != ref.Key {
 		return fmt.Errorf("agent: frozen values: body digests to %s, not to its name %s", key, digest)
 	}
-	if _, err := f.store.Put(ctx, artifact.PutRequest{MediaType: FrozenMediaType, Reader: bytes.NewReader(value), Durability: artifact.EventBound}); err != nil {
+	if _, err := f.store.Put(ctx, artifact.PutRequest{MediaType: FrozenMediaType, Reader: bytes.NewReader(val), Durability: artifact.EventBound}); err != nil {
 		return err
 	}
 	binding, err := FrozenBinding(digest)
@@ -119,19 +123,19 @@ func (f *frozenValues) Get(ctx context.Context, digest run.Digest) (body []byte,
 // Run protocol knows only the digest; this derivation is the adapter's
 // (RUN-WIR-4).
 func FrozenRef(digest run.Digest) (artifact.Ref, error) {
-	algorithm, value, ok := strings.Cut(string(digest), ":")
-	if !ok || algorithm != artifact.IntegritySHA256 || value == "" {
+	algorithm, val, ok := strings.Cut(string(digest), ":")
+	if !ok || algorithm != artifact.IntegritySHA256 || val == "" {
 		return artifact.Ref{}, fmt.Errorf("agent: frozen values: digest %q is not sha256:<hex>", digest)
 	}
 	return artifact.Ref{Scheme: artifact.SchemeCAS, Authority: FrozenAuthority, Key: artifact.Key(digest), MediaType: FrozenMediaType,
-		Integrity: &artifact.Integrity{Algorithm: algorithm, Value: value}, Durability: artifact.EventBound}, nil
+		Integrity: &artifact.Integrity{Algorithm: algorithm, Value: val}, Durability: artifact.EventBound}, nil
 }
 
 // FrozenBindingID is the BindingID under which a frozen body's Ref is
 // registered: derived from the digest alone, so the fact that names the body
 // and the binding admission agree without an index.
 func FrozenBindingID(digest run.Digest) artifact.BindingID {
-	return artifact.BindingID(run.FrozenAuthority + "/" + string(digest))
+	return artifact.BindingID(frozen.Authority + "/" + string(digest))
 }
 
 // FrozenBinding is the Binding a fact naming digest references. Its Ref is
@@ -147,10 +151,10 @@ func FrozenBinding(digest run.Digest) (artifact.Binding, error) {
 // frozenRefs is the BindingExtractor of the fact types that name a frozen
 // body: the one BindingID the Writer admits and claims for the commit
 // (EXT-REF-2, EXT-WRT-3).
-func frozenRefs(value any) ([]artifact.BindingID, error) {
-	ev, ok := value.(Event)
+func frozenRefs(val any) ([]artifact.BindingID, error) {
+	ev, ok := val.(Event)
 	if !ok {
-		return nil, fmt.Errorf("frozen refs: unexpected %T", value)
+		return nil, fmt.Errorf("frozen refs: unexpected %T", val)
 	}
 	var digest run.Digest
 	switch f := ev.Fact.(type) {
@@ -163,10 +167,10 @@ func frozenRefs(value any) ([]artifact.BindingID, error) {
 	case run.ToolCallAnswered:
 		digest = f.ResponseDigest
 	default:
-		return nil, fmt.Errorf("frozen refs: %s names no frozen body", run.FactType(ev.Fact))
+		return nil, fmt.Errorf("frozen refs: %s names no frozen body", wire.FactType(ev.Fact))
 	}
 	if digest == "" {
-		return nil, fmt.Errorf("frozen refs: %s has an empty digest", run.FactType(ev.Fact))
+		return nil, fmt.Errorf("frozen refs: %s has an empty digest", wire.FactType(ev.Fact))
 	}
 	return []artifact.BindingID{FrozenBindingID(digest)}, nil
 }
@@ -178,14 +182,14 @@ func frozenRefs(value any) ([]artifact.BindingID, error) {
 // the materialization port: projections stay pure folds over facts and never
 // touch it.
 type Content struct {
-	Frozen run.FrozenValueStore
+	Frozen frozen.Store
 }
 
-// NewContent builds the materializer over a FrozenValueStore.
-func NewContent(frozen run.FrozenValueStore) *Content { return &Content{Frozen: frozen} }
+// NewContent builds the materializer over a frozen.Store.
+func NewContent(store frozen.Store) *Content { return &Content{Frozen: store} }
 
 func (c *Content) raw(ctx context.Context, what string, digest run.Digest) ([]byte, error) {
-	if err := run.CheckContext(ctx); err != nil {
+	if err := runtime.CheckContext(ctx); err != nil {
 		return nil, err
 	}
 	if digest == "" {
@@ -196,18 +200,18 @@ func (c *Content) raw(ctx context.Context, what string, digest run.Digest) ([]by
 		return nil, err
 	}
 	if !ok {
-		return nil, fmt.Errorf("%w: %s %s", run.ErrFrozenValueMissing, what, digest)
+		return nil, fmt.Errorf("%w: %s %s", frozen.ErrMissing, what, digest)
 	}
 	return raw, nil
 }
 
 // ModelResult returns the body ModelStepCompleted.ResultDigest names.
-func (c *Content) ModelResult(ctx context.Context, digest run.Digest) (run.ModelResult, error) {
+func (c *Content) ModelResult(ctx context.Context, digest run.Digest) (model.ModelResult, error) {
 	raw, err := c.raw(ctx, "model result", digest)
 	if err != nil {
-		return run.ModelResult{}, err
+		return model.ModelResult{}, err
 	}
-	return run.DecodeFrozenModelResult(raw, digest)
+	return frozen.DecodeModelResult(raw, digest)
 }
 
 // ToolOutput returns the body ToolCallCompleted.OutputDigest names.
@@ -216,7 +220,7 @@ func (c *Content) ToolOutput(ctx context.Context, digest run.Digest) (run.Canoni
 	if err != nil {
 		return run.CanonicalJSON{}, err
 	}
-	return run.DecodeFrozenToolOutput(raw, digest)
+	return frozen.DecodeToolOutput(raw, digest)
 }
 
 // ToolResponse returns the body ToolCallAnswered.ResponseDigest names.
@@ -225,14 +229,14 @@ func (c *Content) ToolResponse(ctx context.Context, digest run.Digest) (run.Cano
 	if err != nil {
 		return run.CanonicalJSON{}, err
 	}
-	return run.DecodeFrozenToolResponse(raw, digest)
+	return frozen.DecodeToolResponse(raw, digest)
 }
 
 // ModelRequest returns the body ModelStepPrepared.RequestDigest names.
-func (c *Content) ModelRequest(ctx context.Context, digest run.Digest) (run.ModelRequest, error) {
+func (c *Content) ModelRequest(ctx context.Context, digest run.Digest) (model.ModelRequest, error) {
 	raw, err := c.raw(ctx, "model request", digest)
 	if err != nil {
-		return run.ModelRequest{}, err
+		return model.ModelRequest{}, err
 	}
-	return run.DecodeFrozenRequest(raw, digest)
+	return frozen.DecodeRequest(raw, digest)
 }

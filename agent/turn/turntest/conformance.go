@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/runtime"
+	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	runmod "github.com/felinics/twilight/agent/session/run"
@@ -146,7 +148,7 @@ func testDeliver(t *testing.T, factory Factory) {
 	if err != nil || dresp.Status != turn.TurnActive || dresp.RunID != runID {
 		t.Fatalf("deliver = %+v %v", dresp, err)
 	}
-	group := h.group(session.CommitID(run.SchemaV1().Identity.DeriveInputCommandID(runID, "in-2")))
+	group := h.group(session.CommitID(schema.V1().Identity.DeriveInputCommandID(runID, "in-2")))
 	if !sameTypes(group, typeAccepted, chatlog.TypeInputDelivered) {
 		t.Fatalf("deliver group = %v, want input_accepted then input_delivered", eventTypes(group))
 	}
@@ -222,7 +224,7 @@ func testDeliver(t *testing.T, factory Factory) {
 	if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t2"), Inputs: batch}); err != nil {
 		t.Fatalf("batch deliver = %v", err)
 	}
-	group = h.group(session.CommitID(run.SchemaV1().Identity.DeriveInputCommandID(run2, "in-5", "in-6")))
+	group = h.group(session.CommitID(schema.V1().Identity.DeriveInputCommandID(run2, "in-5", "in-6")))
 	if !sameTypes(group, typeAccepted, typeAccepted, chatlog.TypeInputDelivered, chatlog.TypeInputDelivered) {
 		t.Fatalf("batch group = %v", eventTypes(group))
 	}
@@ -494,13 +496,13 @@ func testProjection(t *testing.T, factory Factory) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	facts, err := run.SchemaV1().Machine.CreateGroup(foreign, nil)
+	facts, err := schema.V1().Machine.CreateGroup(foreign, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(run.SchemaV1().Wire, f), RecordedAtUnixMilli: h.now, Value: runmod.Event{RunID: "r-foreign", Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(schema.V1().Wire, f), RecordedAtUnixMilli: h.now, Value: runmod.Event{RunID: "r-foreign", Fact: f}})
 	}
 	h.mustApply(writer.SemanticGroup{CommitID: "foreign-run", Batches: []writer.TypedBatch{
 		{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: "r-foreign"}, Events: runEvents},
@@ -599,7 +601,7 @@ func testRecovery(t *testing.T, factory Factory) {
 	if st.Status != turn.TurnActive || st.Disposition == turn.ResumeWaitingForRecovery {
 		t.Fatalf("status after recovery = %+v", st)
 	}
-	if _, err := old.Deliver(h.ctx, oldWriter, turn.DeliverRequest{Ref: h.ref("t1"), Inputs: late}); !errors.Is(err, run.ErrOwnershipLost) {
+	if _, err := old.Deliver(h.ctx, oldWriter, turn.DeliverRequest{Ref: h.ref("t1"), Inputs: late}); !errors.Is(err, runtime.ErrOwnershipLost) {
 		t.Fatalf("superseded coordinator deliver = %v, want ownership lost", err)
 	}
 	if v, _ := h.chat().Inputs.Get("late"); v.Status != chatlog.InputSubmitted {

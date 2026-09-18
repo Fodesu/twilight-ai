@@ -3,6 +3,8 @@ package run
 import (
 	"errors"
 	"fmt"
+
+	"github.com/felinics/twilight/agent/run/model"
 )
 
 // Evolve is the fold semantics for the pre-release SchemaVersion1 (RUN-MCH-3). It first
@@ -25,7 +27,7 @@ func (m MachineV1) Evolve(s MachineState, f Fact) (MachineState, error) {
 	case ModelStepWithdrawn:
 		return applyModelStepWithdrawn(s), nil
 	case ModelStepStarted:
-		return applyModelClaim(applyModelStatus(s, ModelExecuting, Usage{}, false), fact.Claim), nil
+		return applyModelClaim(applyModelStatus(s, ModelExecuting, model.Usage{}, false), fact.Claim), nil
 	case ModelStepRecovered:
 		return applyModelStepWithdrawn(s), nil
 	case ModelStepRejected:
@@ -91,7 +93,7 @@ func applyModelStepWithdrawn(s MachineState) MachineState { //nolint:gocritic //
 
 // applyModelStatus moves the current ModelStep to status, adding usage and
 // counting a reject when the fact was a rejection.
-func applyModelStatus(s MachineState, status ModelStepStatus, usage Usage, rejected bool) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
+func applyModelStatus(s MachineState, status ModelStepStatus, usage model.Usage, rejected bool) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
 	ms := s.Current.(ModelStep) //nolint:errcheck // guard established Current is this ModelStep
 	ms.Status = status
 	if rejected {
@@ -326,7 +328,7 @@ func (m MachineV1) guardModelStepPrepared(s *MachineState, fact *ModelStepPrepar
 		}
 	}
 	// The request body is not in the fact; its digest is checked against the
-	// body by Decide and by the FrozenValueStore on read. Tools and binding
+	// body by Decide and by the frozen.Store on read. Tools and binding
 	// digests are recomputable from the fact and must agree.
 	if d, err := m.Canonical.DigestToolSpecs(fact.Tools); err != nil || d != fact.ToolsDigest {
 		return errors.New("agent: evolve: model step prepared tools digest mismatch")

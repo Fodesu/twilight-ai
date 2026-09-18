@@ -2,6 +2,7 @@ package run
 
 import (
 	"encoding/json"
+
 	"github.com/felinics/twilight/agent/es"
 )
 
@@ -15,17 +16,9 @@ import (
 
 func cloneRaw(v CanonicalJSON) CanonicalJSON { return v }
 
-func clonePtr[T any](p *T) *T {
-	if p == nil {
-		return nil
-	}
-	v := *p
-	return &v
-}
-
 func cloneAgentInput(in AgentInput) AgentInput { return in }
 
-func cloneResponseRequest(r *ResponseRequest) *ResponseRequest {
+func CloneResponseRequest(r *ResponseRequest) *ResponseRequest {
 	if r == nil {
 		return nil
 	}
@@ -37,7 +30,7 @@ func cloneResponseRequest(r *ResponseRequest) *ResponseRequest {
 func cloneToolCallBinding(b *ToolCallBinding) ToolCallBinding {
 	out := *b
 	out.Arguments = cloneRaw(out.Arguments)
-	out.Response = cloneResponseRequest(out.Response)
+	out.Response = CloneResponseRequest(out.Response)
 	return out
 }
 
@@ -71,10 +64,10 @@ func snapshotJSONStable[T any](v T) (T, error) {
 	return out, nil
 }
 
-// snapshotFact detaches the caller-owned containers a fact may still share
+// SnapshotFact detaches the caller-owned containers a fact may still share
 // with its command (tool specs, bindings, input payloads). Digest-only facts
 // carry no such containers and are copied by value.
-func snapshotFact(f Fact) (Fact, error) {
+func SnapshotFact(f Fact) (Fact, error) {
 	switch fact := f.(type) {
 	case ModelStepPrepared:
 		return snapshotJSONStable(fact)

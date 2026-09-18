@@ -7,21 +7,26 @@ import (
 
 	run "github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
+	"github.com/felinics/twilight/agent/run/frozen"
+	"github.com/felinics/twilight/agent/run/model/sdkconv"
+	"github.com/felinics/twilight/agent/run/plan"
+	"github.com/felinics/twilight/agent/run/runtime"
+	"github.com/felinics/twilight/agent/run/schema"
 
 	"github.com/felinics/twilight/sdk"
 )
 
-func (l *Loop) planAndPrepare(ctx context.Context, runtime run.RunStore, events EventSink, snapshot *run.RuntimeSnapshot, hint run.PromptInput) error {
-	hint.Scope = runtime.Scope()
-	plan, err := l.Builder.Build(ctx, hint)
+func (l *Loop) planAndPrepare(ctx context.Context, rt runtime.RunStore, events EventSink, snapshot *runtime.Snapshot, hint plan.PromptInput) error {
+	hint.Scope = rt.Scope()
+	p, err := l.Builder.Build(ctx, hint)
 	if err != nil {
 		return err
 	}
-	frozenRequest, err := run.FreezeModelRequest(plan.Request)
+	frozenRequest, err := sdkconv.FreezeModelRequest(p.Request)
 	if err != nil {
 		return err
 	}
-	model := plan.Model
+	model := p.Model
 	if model == "" {
 		model = run.ModelRef(frozenRequest.Model)
 	}
@@ -31,39 +36,39 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime run.RunStore, events 
 	if run.ModelRef(frozenRequest.Model) != model {
 		return fmt.Errorf("agent: loop: request model %q does not match plan model %q", frozenRequest.Model, model)
 	}
-	schema, err := snapshot.Schema()
+	sch, err := snapshot.Schema()
 	if err != nil {
 		return err
 	}
-	requestDigest, err := schema.Canonical.DigestRequest(frozenRequest)
+	requestDigest, err := sch.Canonical.DigestRequest(frozenRequest)
 	if err != nil {
 		return err
 	}
-	toolsDigest, err := schema.Canonical.DigestToolSpecs(plan.Tools)
+	toolsDigest, err := sch.Canonical.DigestToolSpecs(p.Tools)
 	if err != nil {
 		return err
 	}
-	binding, err := schema.Canonical.DigestModelStepBinding(model, requestDigest, toolsDigest)
+	binding, err := sch.Canonical.DigestModelStepBinding(model, requestDigest, toolsDigest)
 	if err != nil {
 		return err
 	}
-	cmdID := schema.Identity.DeriveModelRequestCommandID(snapshot.State.RunID, snapshot.Position)
-	stepID := schema.Identity.DeriveModelStepID(snapshot.State.RunID, cmdID, binding)
-	res, err := l.commit(ctx, runtime, snapshot.State.RunID, cmdID, snapshot.Position, run.PrepareModelRequest{
+	cmdID := sch.Identity.DeriveModelRequestCommandID(snapshot.State.RunID, snapshot.Position)
+	stepID := sch.Identity.DeriveModelStepID(snapshot.State.RunID, cmdID, binding)
+	res, err := l.commit(ctx, rt, snapshot.State.RunID, cmdID, snapshot.Position, run.PrepareModelRequest{
 		StepID:        stepID,
 		Model:         model,
 		Request:       frozenRequest,
 		RequestDigest: requestDigest,
-		InputIDs:      plan.InputIDs,
-		PromptToken:   plan.Token,
-		Tools:         plan.Tools,
+		InputIDs:      p.InputIDs,
+		PromptToken:   p.Token,
+		Tools:         p.Tools,
 		ToolsDigest:   toolsDigest,
-	}, schema)
+	}, sch)
 	if err == nil {
 		// ModelStepPrepared carries the frozen request — the most informative
 		// fact of the run; observers must see it like every other accepted
 		// transition.
-		l.emitCommitted(ctx, events, runtime.Scope(), snapshot.State.RunID, res.Facts)
+		l.emitCommitted(ctx, events, rt.Scope(), snapshot.State.RunID, res.Facts)
 		return nil
 	}
 	if !retriable(err) {
@@ -72,7 +77,7 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime run.RunStore, events 
 	// A retriable rejection with no authority progress means the rejection
 	// was about THIS plan's content (InputIDs, digests), not concurrency:
 	// retrying the same prompt builder at the same revision would spin forever.
-	after, loadErr := runtime.Load(ctx, snapshot.State.RunID)
+	after, loadErr := rt.Load(ctx, snapshot.State.RunID)
 	if loadErr != nil {
 		return loadErr
 	}
@@ -89,9 +94,9 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime run.RunStore, events 
 // the reload should decide (another actor moved the step). A model catalog
 // that cannot serve the step withdraws it to Open and reports the error: no
 // model call has happened.
-func (l *Loop) startModelStep(ctx context.Context, runtime run.RunStore, events EventSink, snapshot *run.RuntimeSnapshot, stepID run.StepID) (*AssignmentKey, error) {
+func (l *Loop) startModelStep(ctx context.Context, rt runtime.RunStore, events EventSink, snapshot *runtime.Snapshot, stepID run.StepID) (*AssignmentKey, error) {
 	runID := snapshot.State.RunID
-	schema, err := snapshot.Schema()
+	sch, err := snapshot.Schema()
 	if err != nil {
 		return nil, err
 	}
@@ -99,12 +104,12 @@ func (l *Loop) startModelStep(ctx context.Context, runtime run.RunStore, events 
 	if !ok || prepared.RefValue.ID != stepID {
 		return nil, fmt.Errorf("agent: loop: model step %q is not current", stepID)
 	}
-	target, err := l.targetFor(ctx, runtime.Scope(), runID)
+	target, err := l.targetFor(ctx, rt.Scope(), runID)
 	if err != nil {
 		return nil, err
 	}
-	a := newAttempt(schema, runID, stepID, "")
-	assignment := Assignment{Session: runtime.Scope(), RunID: runID, StepID: stepID, Claim: a.claim, Target: target, Schema: snapshot.SchemaVersion,
+	a := newAttempt(sch, runID, stepID, "")
+	assignment := Assignment{Session: rt.Scope(), RunID: runID, StepID: stepID, Claim: a.claim, Target: target, Schema: snapshot.SchemaVersion,
 		Body: ModelAssignment{Model: prepared.Model, RequestDigest: prepared.RequestDigest}}
 	// Pre-start check (RUN-EXE-5): an executor that cannot serve the model
 	// fails here, with the step still Prepared and no start or recovery fact.
@@ -115,29 +120,29 @@ func (l *Loop) startModelStep(ctx context.Context, runtime run.RunStore, events 
 	if unavailable != nil {
 		return nil, fmt.Errorf("%w: %s: %s: %s", ErrModelUnavailable, prepared.Model, unavailable.Class, unavailable.Message)
 	}
-	start, err := l.commit(ctx, runtime, runID, a.startID(), snapshot.Position, run.StartModelExecution{StepID: stepID, Claim: a.claim}, schema)
+	start, err := l.commit(ctx, rt, runID, a.startID(), snapshot.Position, run.StartModelExecution{StepID: stepID, Claim: a.claim}, sch)
 	if err != nil {
 		if retriable(err) {
 			return nil, nil // another actor moved the step; reload decides
 		}
 		return nil, err
 	}
-	l.emitCommitted(ctx, events, runtime.Scope(), runID, start.Facts)
+	l.emitCommitted(ctx, events, rt.Scope(), runID, start.Facts)
 
 	modelStep, ok := start.Snapshot.State.Current.(run.ModelStep)
 	if !ok || modelStep.RefValue.ID != stepID || modelStep.Status != run.ModelExecuting {
 		// The start (or its one-shot replay) landed but the step is no longer
 		// Executing: something settled it meanwhile. Reload decides.
-		if start.Status == run.CommitAlreadyApplied {
+		if start.Status == runtime.CommitAlreadyApplied {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("agent: loop: started step %q is not current", stepID)
 	}
 
-	request, err := runtime.FrozenRequest(ctx, prepared.RequestDigest)
+	request, err := rt.FrozenRequest(ctx, prepared.RequestDigest)
 	if err != nil {
-		if _, serr := l.settle(context.WithoutCancel(ctx), runtime, events, &a, start.Snapshot.Position,
-			run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, schema); serr != nil {
+		if _, serr := l.settle(context.WithoutCancel(ctx), rt, events, &a, start.Snapshot.Position,
+			run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, sch); serr != nil {
 			return nil, serr
 		}
 		return nil, fmt.Errorf("agent: loop: load frozen model request: %w", err)
@@ -152,8 +157,8 @@ func (l *Loop) startModelStep(ctx context.Context, runtime run.RunStore, events 
 		}
 		// Nothing was called: withdraw the step to Open under this attempt's
 		// recovery identity and surface the condition (RUN-LOP-3).
-		if _, serr := l.settle(context.WithoutCancel(ctx), runtime, events, &a, start.Snapshot.Position,
-			run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, schema); serr != nil {
+		if _, serr := l.settle(context.WithoutCancel(ctx), rt, events, &a, start.Snapshot.Position,
+			run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, sch); serr != nil {
 			return nil, serr
 		}
 		return nil, fmt.Errorf("agent: loop: model dispatch: %w", err)
@@ -174,7 +179,7 @@ func (l *Loop) startModelStep(ctx context.Context, runtime run.RunStore, events 
 // lands, and the drive stops instead of prompt building, freezing and dispatching
 // again against the same missing store. Whether to try again is the host's
 // decision, so a persistently unreadable store cannot spin the Run.
-func (l *Loop) modelCompletion(schema run.Schema, step *run.ModelStep, out Outcome) (run.AgentCommand, error) {
+func (l *Loop) modelCompletion(sch schema.Schema, step *run.ModelStep, out Outcome) (run.AgentCommand, error) {
 	stepID := step.RefValue.ID
 	withdraw := run.RecoverModelExecution{StepID: stepID, Claim: out.Key.Claim}
 	var result sdk.ModelResult
@@ -192,7 +197,7 @@ func (l *Loop) modelCompletion(schema run.Schema, step *run.ModelStep, out Outco
 	case effect.ModelFailed:
 		switch r.Code {
 		case effect.FailureFrozenValueMissing:
-			return withdraw, fmt.Errorf("agent: loop: model dispatch: %w: %s", run.ErrFrozenValueMissing, r.Message)
+			return withdraw, fmt.Errorf("agent: loop: model dispatch: %w: %s", frozen.ErrMissing, r.Message)
 		case effect.FailureMalformedRequest:
 			failure := run.StepFailure{Class: run.FailureMalformedModel, Message: r.Message}
 			return run.RejectModelResult{StepID: stepID, Failure: failure, Disposition: l.modelRejectDisposition(step, failure)}, nil
@@ -206,16 +211,16 @@ func (l *Loop) modelCompletion(schema run.Schema, step *run.ModelStep, out Outco
 		// for the wrong effect. Nothing certain happened.
 		return run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: fmt.Sprintf("executor delivered %T for a model step", out.Result)}}, nil
 	}
-	bindings, bindErr := l.bindToolCalls(schema, &result, step)
+	bindings, bindErr := l.bindToolCalls(sch, &result, step)
 	if bindErr != nil {
 		failure := run.StepFailure{Class: run.FailureMalformedModel, Message: bindErr.Error()}
-		return run.RejectModelResult{StepID: stepID, Usage: run.UsageFromSDK(result.Usage), Failure: failure,
+		return run.RejectModelResult{StepID: stepID, Usage: sdkconv.FreezeUsage(result.Usage), Failure: failure,
 			Disposition: l.modelRejectDisposition(step, failure)}, nil
 	}
-	frozenResult, freezeErr := run.FreezeModelResult(result)
+	frozenResult, freezeErr := sdkconv.FreezeModelResult(result)
 	if freezeErr != nil {
 		failure := run.StepFailure{Class: run.FailureMalformedModel, Message: freezeErr.Error()}
-		return run.RejectModelResult{StepID: stepID, Usage: run.UsageFromSDK(result.Usage), Failure: failure,
+		return run.RejectModelResult{StepID: stepID, Usage: sdkconv.FreezeUsage(result.Usage), Failure: failure,
 			Disposition: l.modelRejectDisposition(step, failure)}, nil
 	}
 	return run.SubmitModelResult{StepID: stepID, Result: frozenResult, Calls: bindings, Scheduling: l.toolScheduling()}, nil
@@ -234,7 +239,7 @@ func (l *Loop) modelRejectDisposition(step *run.ModelStep, _ run.StepFailure) ru
 
 // bindToolCalls validates tool-call IDs/order/shape and produces bindings
 // from the frozen ToolSpecs (RUN-MCH-2). It never calls ExecutableTool.
-func (l *Loop) bindToolCalls(schema run.Schema, result *sdk.ModelResult, step *run.ModelStep) ([]run.ToolCallBinding, error) {
+func (l *Loop) bindToolCalls(sch schema.Schema, result *sdk.ModelResult, step *run.ModelStep) ([]run.ToolCallBinding, error) {
 	if len(result.ToolCalls) == 0 {
 		return nil, nil
 	}
@@ -244,7 +249,7 @@ func (l *Loop) bindToolCalls(schema run.Schema, result *sdk.ModelResult, step *r
 	}
 	bindings := make([]run.ToolCallBinding, len(result.ToolCalls))
 	for i, tc := range result.ToolCalls {
-		args, err := run.FreezeToolCallInput(tc.Input)
+		args, err := sdkconv.FreezeToolCallInput(tc.Input)
 		if err != nil {
 			return nil, fmt.Errorf("tool call %d (%q) input: %w", i, tc.ToolCallID, err)
 		}
@@ -252,7 +257,7 @@ func (l *Loop) bindToolCalls(schema run.Schema, result *sdk.ModelResult, step *r
 		// id is carried for the round trip only, so a provider that repeats or
 		// omits ids cannot break identity here.
 		b := run.ToolCallBinding{
-			CallID:         schema.Identity.DeriveCallID(step.RefValue.ID, i),
+			CallID:         sch.Identity.DeriveCallID(step.RefValue.ID, i),
 			ProviderCallID: tc.ToolCallID,
 			ToolRef:        run.ToolRef(tc.ToolName),
 			Arguments:      args,
@@ -266,7 +271,7 @@ func (l *Loop) bindToolCalls(schema run.Schema, result *sdk.ModelResult, step *r
 			b.DefinitionDigest = spec.DefinitionDigest
 			b.Policy = spec.Policy
 		}
-		bd, err := schema.Canonical.DigestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
+		bd, err := sch.Canonical.DigestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
 		if err != nil {
 			return nil, err
 		}

@@ -9,6 +9,7 @@ import (
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/turn"
@@ -142,7 +143,7 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 	if _, err := h.Authority.Runs.Record(ctx, "parent", p1Run); err != nil {
 		t.Fatalf("parent record of its own run: %v", err)
 	}
-	if _, err := h.Authority.Runs.Record(ctx, "regen", p1Run); !errors.Is(err, run.ErrRunNotFound) {
+	if _, err := h.Authority.Runs.Record(ctx, "regen", p1Run); !errors.Is(err, runtime.ErrRunNotFound) {
 		t.Fatalf("child record of the parent's run = %v, want ErrRunNotFound", err)
 	}
 	childTurns, err := turn.ReadSurface(ctx, h.Authority.Projections, "regen")

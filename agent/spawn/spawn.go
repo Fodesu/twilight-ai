@@ -31,6 +31,8 @@ import (
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/run/model/sdkconv"
+	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
@@ -148,12 +150,12 @@ func ProvenanceFromHeader(header session.SegmentHeader) (prov Provenance, ok boo
 // CheckDefinition verifies the assignment's recorded definition digest and
 // response policy against the tool's canonical definition (SPN-1). It
 // returns a nil failure when they match.
-func CheckDefinition(schema run.Schema, tool loop.ExecutableTool, assigned *effect.ToolAssignment) (*run.ToolFailure, error) {
-	def, err := run.FreezeToolDefinition(tool.Definition())
+func CheckDefinition(sch schema.Schema, tool loop.ExecutableTool, assigned *effect.ToolAssignment) (*run.ToolFailure, error) {
+	def, err := sdkconv.FreezeToolDefinition(tool.Definition())
 	if err != nil {
 		return &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: err.Error()}, nil
 	}
-	digest, err := schema.Canonical.DigestToolDefinition(def)
+	digest, err := sch.Canonical.DigestToolDefinition(def)
 	if err != nil {
 		return &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: err.Error()}, nil
 	}

@@ -13,6 +13,8 @@ import (
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/schema"
+	"github.com/felinics/twilight/agent/run/wire"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
 )
@@ -26,11 +28,11 @@ const (
 // factNames is the closed list of fact discriminators, from the Run core's
 // variant registry: a fact the core knows is a wire type this module
 // registers, with no second list to keep in step.
-var factNames = run.FactTypes()
+var factNames = wire.FactTypes()
 
 // EventType returns the EventType of a fact under the Run's schema.
-func EventType(wire run.WireSchema, f run.Fact) session.EventType {
-	return Prefix + session.EventType(wire.FactType(f))
+func EventType(w wire.Codec, f run.Fact) session.EventType {
+	return Prefix + session.EventType(w.FactType(f))
 }
 
 // Event is the typed value of one twilight/run/ event: the fact plus the
@@ -44,7 +46,7 @@ type Event struct {
 // canonical fact object with "runId" added; `v` is the Registry's.
 type factCodec struct {
 	local string
-	wire  run.WireSchema
+	wire  wire.Codec
 }
 
 func (c factCodec) Validate(value any) error {
@@ -88,9 +90,9 @@ func (c factCodec) Encode(value any) (jsonstable.Value, error) {
 	return jsonstable.FromValue(m)
 }
 
-func (c factCodec) Decode(wire jsonstable.Value) (any, error) {
+func (c factCodec) Decode(w jsonstable.Value) (any, error) {
 	var m map[string]json.RawMessage
-	if err := json.Unmarshal(wire.Bytes(), &m); err != nil {
+	if err := json.Unmarshal(w.Bytes(), &m); err != nil {
 		return nil, err
 	}
 	rawID, ok := m["runId"]
@@ -145,7 +147,7 @@ func buildModule() extension.ModuleDescriptor {
 			Type:   Prefix + session.EventType(name),
 			Stream: extension.RunStream("runId"),
 			Codecs: map[extension.SchemaVersion]extension.PayloadCodec{
-				extension.SchemaVersion(run.SchemaVersion1): factCodec{local: name, wire: run.SchemaV1().Wire},
+				extension.SchemaVersion(run.SchemaVersion1): factCodec{local: name, wire: schema.V1().Wire},
 			},
 		}
 		if frozenBodyFacts[name] {

@@ -15,6 +15,10 @@ import (
 	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/run/model/sdkconv"
+	"github.com/felinics/twilight/agent/run/plan"
+	"github.com/felinics/twilight/agent/run/runtime"
+	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
 	runmod "github.com/felinics/twilight/agent/session/run"
@@ -53,13 +57,13 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) (*runmod.SessionRunStore
 	if err != nil {
 		t.Fatal(err)
 	}
-	facts, err := run.SchemaV1().Machine.CreateGroup(newRun, inputs)
+	facts, err := schema.V1().Machine.CreateGroup(newRun, inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(run.SchemaV1().Wire, f), Value: runmod.Event{RunID: defaultRunID, Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(schema.V1().Wire, f), Value: runmod.Event{RunID: defaultRunID, Fact: f}})
 	}
 	group := &writer.SemanticGroup{CommitID: "create/" + defaultRunID,
 		Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: string(defaultRunID)}, Events: runEvents}}}
@@ -84,8 +88,8 @@ type Feature struct {
 	runCtx context.Context
 	runID  run.RunID
 	runs   *runmod.SessionRunStore
-	rt     run.RunStore  // runs bound to w
-	w      writer.Writer // the owner's capability over defaultSession
+	rt     runtime.RunStore // runs bound to w
+	w      writer.Writer    // the owner's capability over defaultSession
 
 	model   run.ModelRef
 	results []sdk.ModelResult
@@ -231,7 +235,7 @@ func (f *Feature) TryCommit(cmd run.AgentCommand) error {
 	if err != nil {
 		return err
 	}
-	_, err = f.rt.Commit(f.ctx, run.CommitRequest{Base: snap.Position, Command: env})
+	_, err = f.rt.Commit(f.ctx, runtime.CommitRequest{Base: snap.Position, Command: env})
 	return err
 }
 
@@ -239,7 +243,7 @@ func (f *Feature) TryCommit(cmd run.AgentCommand) error {
 func (f *Feature) Approve() *Feature {
 	f.t.Helper()
 	w := f.waiting()
-	digest, err := run.SchemaV1().Canonical.DigestToolResponseDecision(w.Kind, run.ResponseDecisionApproved, "")
+	digest, err := schema.V1().Canonical.DigestToolResponseDecision(w.Kind, run.ResponseDecisionApproved, "")
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -253,7 +257,7 @@ func (f *Feature) Approve() *Feature {
 func (f *Feature) Reject(reason string) *Feature {
 	f.t.Helper()
 	w := f.waiting()
-	digest, err := run.SchemaV1().Canonical.DigestToolResponseDecision(w.Kind, run.ResponseDecisionRejected, reason)
+	digest, err := schema.V1().Canonical.DigestToolResponseDecision(w.Kind, run.ResponseDecisionRejected, reason)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -316,13 +320,13 @@ func (f *Feature) ExecutingTool(name string, callID run.CallID) *Feature {
 	}
 	f.ExecutingModel()
 	providerID := string(callID)
-	callID = run.SchemaV1().Identity.DeriveCallID(f.modelStepID, 0)
+	callID = schema.V1().Identity.DeriveCallID(f.modelStepID, 0)
 	args := run.MustParseCanonicalJSON(`{"x":1}`)
-	binding, err := run.SchemaV1().Canonical.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
+	binding, err := schema.V1().Canonical.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	frozen, err := run.FreezeModelResult(sdk.ModelResult{
+	frozen, err := sdkconv.FreezeModelResult(sdk.ModelResult{
 		FinishReason: sdk.FinishReasonToolCalls,
 		Usage:        sdk.Usage{TotalTokens: 2},
 		ToolCalls: []sdk.ToolCall{{
@@ -381,7 +385,7 @@ func (f *Feature) ensureLoop() {
 	f.loop = l
 }
 
-func (f *Feature) load() run.RuntimeSnapshot {
+func (f *Feature) load() runtime.Snapshot {
 	f.t.Helper()
 	snap, err := f.rt.Load(f.ctx, f.runID)
 	if err != nil {
@@ -397,14 +401,14 @@ func (f *Feature) state() run.MachineState {
 
 func (f *Feature) waiting() run.ResponseRequest {
 	f.t.Helper()
-	reqs := run.WaitingCalls(f.state())
+	reqs := plan.WaitingCalls(f.state())
 	if len(reqs) == 0 {
 		f.t.Fatal("no waiting call")
 	}
 	return reqs[0]
 }
 
-func (f *Feature) commit(cmd run.AgentCommand) run.CommitResult {
+func (f *Feature) commit(cmd run.AgentCommand) runtime.CommitResult {
 	f.t.Helper()
 	snap := f.load()
 	proto, err := snap.Schema()
@@ -418,7 +422,7 @@ func (f *Feature) commit(cmd run.AgentCommand) run.CommitResult {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	res, err := f.rt.Commit(f.ctx, run.CommitRequest{
+	res, err := f.rt.Commit(f.ctx, runtime.CommitRequest{
 		Base: snap.Position, Command: env,
 	})
 	if err != nil {
@@ -427,24 +431,24 @@ func (f *Feature) commit(cmd run.AgentCommand) run.CommitResult {
 	return res
 }
 
-func (f *Feature) commandID(cmd run.AgentCommand, snap run.RuntimeSnapshot) run.CommandID {
+func (f *Feature) commandID(cmd run.AgentCommand, snap runtime.Snapshot) run.CommandID {
 	switch c := cmd.(type) {
 	case run.AcceptInput:
-		return run.SchemaV1().Identity.DeriveInputCommandID(f.runID, c.InputIDs()...)
+		return schema.V1().Identity.DeriveInputCommandID(f.runID, c.InputIDs()...)
 	case run.ApproveToolCall:
-		return run.SchemaV1().Identity.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
+		return schema.V1().Identity.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
 	case run.RejectToolCall:
-		return run.SchemaV1().Identity.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
+		return schema.V1().Identity.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
 	case run.SubmitToolResponse:
-		return run.SchemaV1().Identity.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
+		return schema.V1().Identity.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
 	case run.PrepareModelRequest:
-		return run.SchemaV1().Identity.DeriveModelRequestCommandID(f.runID, snap.Position)
+		return schema.V1().Identity.DeriveModelRequestCommandID(f.runID, snap.Position)
 	case run.RecoverModelExecution:
-		return run.SchemaV1().Identity.DeriveModelRecoveryCommandID(f.runID, c.StepID, c.Claim)
+		return schema.V1().Identity.DeriveModelRecoveryCommandID(f.runID, c.StepID, c.Claim)
 	case run.StartModelExecution:
-		return run.SchemaV1().Identity.DeriveStartCommandID(f.runID, c.StepID, "", c.Claim)
+		return schema.V1().Identity.DeriveStartCommandID(f.runID, c.StepID, "", c.Claim)
 	case run.StartToolCall:
-		return run.SchemaV1().Identity.DeriveStartCommandID(f.runID, c.StepID, c.CallID, c.Claim)
+		return schema.V1().Identity.DeriveStartCommandID(f.runID, c.StepID, c.CallID, c.Claim)
 	default:
 		f.seq++
 		return run.CommandID(fmt.Sprintf("cmd-%d", f.seq))
@@ -458,7 +462,7 @@ func (f *Feature) commitPrepare() {
 	for _, spec := range f.specs {
 		req.Tools = append(req.Tools, f.defs[spec.Ref])
 	}
-	frozen, err := run.FreezeModelRequest(req)
+	frozen, err := sdkconv.FreezeModelRequest(req)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -478,8 +482,8 @@ func (f *Feature) commitPrepare() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	cmdID := run.SchemaV1().Identity.DeriveModelRequestCommandID(f.runID, snap.Position)
-	stepID := run.SchemaV1().Identity.DeriveModelStepID(f.runID, cmdID, binding)
+	cmdID := schema.V1().Identity.DeriveModelRequestCommandID(f.runID, snap.Position)
+	stepID := schema.V1().Identity.DeriveModelStepID(f.runID, cmdID, binding)
 	ids := make([]run.InputID, len(snap.State.PendingInputs))
 	for i, in := range snap.State.PendingInputs {
 		ids[i] = in.ID
@@ -495,11 +499,11 @@ func (f *Feature) commitPrepare() {
 func (f *Feature) mustSpec(name string, policy run.ResponsePolicy) (run.ToolSpec, sdk.ToolDefinition) {
 	f.t.Helper()
 	def := sdk.ToolDefinition{Name: name, Parameters: json.RawMessage(`{"type":"object"}`)}
-	frozen, err := run.FreezeToolDefinition(def)
+	frozen, err := sdkconv.FreezeToolDefinition(def)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	d, err := run.SchemaV1().Canonical.DigestToolDefinition(frozen)
+	d, err := schema.V1().Canonical.DigestToolDefinition(frozen)
 	if err != nil {
 		f.t.Fatal(err)
 	}

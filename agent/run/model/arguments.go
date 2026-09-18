@@ -1,38 +1,42 @@
-package run
+package model
 
-import "encoding/json"
+import (
+	"encoding/json"
 
-// canonicalToolArguments renders a model-provided tool input as canonical JSON
+	"github.com/felinics/twilight/agent/jsonstable"
+)
+
+// CanonicalToolArguments renders a model-provided tool input as canonical JSON
 // for binding digests. Failure means the arguments are not valid JSON; the
 // caller binds them raw-as-JSON-string and lets validation fail as
 // invalid_arguments.
-func canonicalToolArguments(input any) (CanonicalJSON, error) {
+func CanonicalToolArguments(input any) (jsonstable.Value, error) {
 	switch x := input.(type) {
 	case nil:
-		return ParseCanonicalJSON([]byte("null"))
-	case CanonicalJSON:
+		return jsonstable.Parse([]byte("null"))
+	case jsonstable.Value:
 		return x, nil
 	case json.RawMessage:
-		return ParseCanonicalJSON(x)
+		return jsonstable.Parse(x)
 	case string:
 		// Providers deliver unparsed argument text as a string.
 		if x == "" {
-			return ParseCanonicalJSON([]byte("null"))
+			return jsonstable.Parse([]byte("null"))
 		}
-		return ParseCanonicalJSON([]byte(x))
+		return jsonstable.Parse([]byte(x))
 	default:
-		return CanonicalJSONFromValue(x)
+		return jsonstable.FromValue(x)
 	}
 }
 
-// rawToolArguments preserves unparsable argument bytes as a JSON string so the
+// RawToolArguments preserves unparsable argument bytes as a JSON string so the
 // known invalid_arguments failure keeps the original text for the model.
-func rawToolArguments(input any) CanonicalJSON {
+func RawToolArguments(input any) jsonstable.Value {
 	var raw []byte
 	switch x := input.(type) {
 	case nil:
 		raw = []byte("null")
-	case CanonicalJSON:
+	case jsonstable.Value:
 		return x
 	case json.RawMessage:
 		raw, _ = json.Marshal(string(x))
@@ -45,9 +49,9 @@ func rawToolArguments(input any) CanonicalJSON {
 			raw = []byte("null")
 		}
 	}
-	v, err := ParseCanonicalJSON(raw)
+	v, err := jsonstable.Parse(raw)
 	if err != nil {
-		return MustParseCanonicalJSON("null")
+		return jsonstable.MustParse("null")
 	}
 	return v
 }

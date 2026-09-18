@@ -3,6 +3,8 @@ package run
 import (
 	"errors"
 	"fmt"
+
+	"github.com/felinics/twilight/agent/run/model"
 )
 
 // Machine is the pure Run state machine of one schema version.
@@ -27,15 +29,15 @@ type Machine interface {
 // Canonical is the digest rules of one schema version for every body a fact
 // names or a derived identity covers.
 type Canonical interface {
-	DigestRequest(ModelRequest) (Digest, error)
-	DigestToolDefinition(ToolDefinition) (Digest, error)
+	DigestRequest(model.ModelRequest) (Digest, error)
+	DigestToolDefinition(model.ToolDefinition) (Digest, error)
 	DigestToolSpec(ToolSpec) (Digest, error)
 	DigestToolSpecs([]ToolSpec) (Digest, error)
-	DigestModelStepBinding(model ModelRef, requestDigest, toolsDigest Digest) (Digest, error)
+	DigestModelStepBinding(modelRef ModelRef, requestDigest, toolsDigest Digest) (Digest, error)
 	DigestToolResponseDecision(ResponseKind, ResponseDecision, string) (Digest, error)
 	DigestToolResponsePayload(CanonicalJSON) (Digest, error)
 	// DigestModelResult names a frozen model result (ModelStepCompleted.ResultDigest).
-	DigestModelResult(ModelResult) (Digest, error)
+	DigestModelResult(model.ModelResult) (Digest, error)
 	// DigestToolOutput names one tool output (ToolCallCompleted.OutputDigest).
 	DigestToolOutput(CanonicalJSON) (Digest, error)
 	// DigestToolCallBinding covers one binding: definition, policy and

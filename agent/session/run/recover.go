@@ -6,14 +6,16 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/canonical"
 	"github.com/felinics/twilight/agent/run/reconcile"
+	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/agent/session/writer"
 )
 
 // Reconciler decides the takeover disposition of one Run's Executing targets
 // (RUN-CMT-7); reconcile.Reconciler is the implementation.
 type Reconciler interface {
-	Reconcile(ctx context.Context, store run.RunStore, snapshot *run.RuntimeSnapshot, claim run.ExecutionClaim) (int, error)
+	Reconcile(ctx context.Context, store runtime.RunStore, snapshot *runtime.Snapshot, claim run.ExecutionClaim) (int, error)
 }
 
 // RecoverInterrupted is the Session-level takeover (RUN-CMT-7): every active
@@ -22,7 +24,7 @@ type Reconciler interface {
 // opening the Writer and before driving any Run. A nil Reconciler disposes
 // every Executing target. It returns the number of accepted recovery commands.
 func (s *SessionRunStore) RecoverInterrupted(ctx context.Context, w writer.Writer, rec Reconciler) (int, error) {
-	if err := run.CheckContext(ctx); err != nil {
+	if err := runtime.CheckContext(ctx); err != nil {
 		return 0, err
 	}
 	if w == nil {
@@ -41,7 +43,7 @@ func (s *SessionRunStore) RecoverInterrupted(ctx context.Context, w writer.Write
 		return 0, fmt.Errorf("runmod: machine projection is %T", state)
 	}
 	store := s.Bind(w)
-	claim := run.DeriveTakeoverClaim(store.Scope(), uint64(w.Epoch()))
+	claim := canonical.DeriveTakeoverClaim(store.Scope(), uint64(w.Epoch()))
 	n := 0
 	for runID := range m.Active {
 		snapshot, _ := m.snapshot(runID)

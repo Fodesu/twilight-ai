@@ -8,11 +8,14 @@ import (
 	"time"
 
 	run "github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/plan"
+	"github.com/felinics/twilight/agent/run/runtime"
+	"github.com/felinics/twilight/agent/run/schema"
 )
 
 // Loop is the decision interpreter of one Run (RUN-LOP-2). It holds no
 // authoritative state: every step starts from RunStore.Load, derives the next
-// effect with run.Next, records the protocol transition and hands the effect
+// effect with plan.Next, records the protocol transition and hands the effect
 // to the Executor as an Assignment. Outcomes are read by key through the
 // Executor port and settled under the attempt's Claim; the Loop never waits
 // on an effect inside Advance.
@@ -147,7 +150,7 @@ func (l *Loop) isDriving(runID run.RunID) bool {
 	return ok && s.driving
 }
 
-func (l *Loop) checkArgs(ctx context.Context, store run.RunStore, runID run.RunID) error {
+func (l *Loop) checkArgs(ctx context.Context, store runtime.RunStore, runID run.RunID) error {
 	if ctx == nil {
 		return errors.New("agent: loop: nil context")
 	}
@@ -175,7 +178,7 @@ func (l *Loop) wrapSink(events EventSink) EventSink {
 // blocking Run of the same Run is reported as ErrRunAlreadyRunning. store is
 // the RunStore bound to the caller's write capability: every commit of the
 // step goes through it (AUTH-OWN-2).
-func (l *Loop) Advance(ctx context.Context, store run.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
+func (l *Loop) Advance(ctx context.Context, store runtime.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
 	if err := l.checkArgs(ctx, store, runID); err != nil {
 		return LoopResult{}, err
 	}
@@ -195,12 +198,12 @@ func (l *Loop) Advance(ctx context.Context, store run.RunStore, runID run.RunID,
 // their keys; outcome retrieval is a separate message-shaped operation through
 // Executor.GetOutcome. This keeps the Executor boundary usable across process
 // boundaries.
-func (l *Loop) advance(ctx context.Context, runtime run.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
+func (l *Loop) advance(ctx context.Context, rt runtime.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return LoopResult{}, err
 		}
-		snapshot, err := runtime.Load(ctx, runID)
+		snapshot, err := rt.Load(ctx, runID)
 		if err != nil {
 			return LoopResult{}, err
 		}
@@ -208,53 +211,53 @@ func (l *Loop) advance(ctx context.Context, runtime run.RunStore, runID run.RunI
 			return LoopResult{}, fmt.Errorf("agent: loop: runtime returned RunID %q for %q", snapshot.State.RunID, runID)
 		}
 		if snapshot.State.Status.Terminal() {
-			return l.finish(ctx, events, runtime.Scope(), runID, snapshot.State.Result), nil
+			return l.finish(ctx, events, rt.Scope(), runID, snapshot.State.Result), nil
 		}
 
-		effect, err := run.Next(snapshot.State)
+		effect, err := plan.Next(snapshot.State)
 		if err != nil {
 			return LoopResult{}, err
 		}
 
 		switch eff := effect.(type) {
-		case run.NeedModelRequest:
-			if err := l.planAndPrepare(ctx, runtime, events, &snapshot, eff.Hint); err != nil {
+		case plan.NeedModelRequest:
+			if err := l.planAndPrepare(ctx, rt, events, &snapshot, eff.Hint); err != nil {
 				return LoopResult{}, err
 			}
-		case run.WithdrawPrepared:
+		case plan.WithdrawPrepared:
 			// Inputs arrived after this step was frozen: discard the unsent
 			// request and replan with them (RUN-LOP-8). A retriable rejection
 			// means another actor moved the Run; the reload decides.
-			schema, err := snapshot.Schema()
+			sch, err := snapshot.Schema()
 			if err != nil {
 				return LoopResult{}, err
 			}
-			res, err := l.commit(ctx, runtime, runID, schema.Identity.DeriveWithdrawCommandID(runID, eff.StepID), snapshot.Position,
-				run.WithdrawPreparedStep(eff), schema)
+			res, err := l.commit(ctx, rt, runID, sch.Identity.DeriveWithdrawCommandID(runID, eff.StepID), snapshot.Position,
+				run.WithdrawPreparedStep(eff), sch)
 			if err != nil && !retriable(err) {
 				return LoopResult{}, err
 			}
 			if err == nil {
-				l.emitCommitted(ctx, events, runtime.Scope(), runID, res.Facts)
+				l.emitCommitted(ctx, events, rt.Scope(), runID, res.Facts)
 			}
-		case run.StartModelCall:
-			dispatched, err := l.startModelStep(ctx, runtime, events, &snapshot, eff.StepID)
+		case plan.StartModelCall:
+			dispatched, err := l.startModelStep(ctx, rt, events, &snapshot, eff.StepID)
 			if err != nil {
 				return LoopResult{}, err
 			}
 			if dispatched != nil {
 				return LoopResult{Disposition: LoopDispatched, Dispatched: []AssignmentKey{*dispatched}}, nil
 			}
-		case run.StartToolCalls:
-			dispatched, err := l.startToolCalls(ctx, runtime, events, &snapshot, eff)
+		case plan.StartToolCalls:
+			dispatched, err := l.startToolCalls(ctx, rt, events, &snapshot, eff)
 			if err != nil {
 				return LoopResult{}, err
 			}
 			if len(dispatched) > 0 {
 				return LoopResult{Disposition: LoopDispatched, Dispatched: dispatched}, nil
 			}
-		case run.Idle:
-			recovery := run.NeedsRecovery(snapshot.State)
+		case plan.Idle:
+			recovery := plan.NeedsRecovery(snapshot.State)
 			reason := WaitReason("")
 			if recovery {
 				reason = ExecutionRecovery
@@ -282,7 +285,7 @@ func (l *Loop) finish(ctx context.Context, events EventSink, scope run.Scope, ru
 // LoopFinished when the settlement terminated the Run, LoopDelivered when the
 // host should Advance next, LoopDropped for a stale Outcome. Ownership loss
 // is returned as is (RUN-LOP-5).
-func (l *Loop) Deliver(ctx context.Context, store run.RunStore, out Outcome, events EventSink) (LoopResult, error) {
+func (l *Loop) Deliver(ctx context.Context, store runtime.RunStore, out Outcome, events EventSink) (LoopResult, error) {
 	if err := l.checkArgs(ctx, store, out.Key.RunID); err != nil {
 		return LoopResult{}, err
 	}
@@ -293,14 +296,14 @@ func (l *Loop) Deliver(ctx context.Context, store run.RunStore, out Outcome, eve
 	return l.deliver(ctx, store, out, l.wrapSink(events))
 }
 
-func (l *Loop) deliver(ctx context.Context, runtime run.RunStore, out Outcome, events EventSink) (LoopResult, error) {
-	if out.Key.Session != "" && out.Key.Session != runtime.Scope() {
+func (l *Loop) deliver(ctx context.Context, rt runtime.RunStore, out Outcome, events EventSink) (LoopResult, error) {
+	if out.Key.Session != "" && out.Key.Session != rt.Scope() {
 		return LoopResult{Disposition: LoopDropped}, nil
 	}
 	runID := out.Key.RunID
-	snapshot, err := runtime.Load(ctx, runID)
+	snapshot, err := rt.Load(ctx, runID)
 	if err != nil {
-		if errors.Is(err, run.ErrRunNotFound) {
+		if errors.Is(err, runtime.ErrRunNotFound) {
 			return LoopResult{Disposition: LoopDropped}, nil
 		}
 		return LoopResult{}, err
@@ -308,11 +311,11 @@ func (l *Loop) deliver(ctx context.Context, runtime run.RunStore, out Outcome, e
 	if snapshot.State.Status.Terminal() {
 		return LoopResult{Disposition: LoopDropped}, nil
 	}
-	schema, err := snapshot.Schema()
+	sch, err := snapshot.Schema()
 	if err != nil {
 		return LoopResult{}, err
 	}
-	a := attempt{schema: schema, runID: runID, stepID: out.Key.StepID, callID: out.Key.CallID, claim: out.Key.Claim}
+	a := attempt{schema: sch, runID: runID, stepID: out.Key.StepID, callID: out.Key.CallID, claim: out.Key.Claim}
 
 	var cmd run.AgentCommand
 	var settleErr error
@@ -321,7 +324,7 @@ func (l *Loop) deliver(ctx context.Context, runtime run.RunStore, out Outcome, e
 		if !ok || step.RefValue.ID != out.Key.StepID || step.Status != run.ModelExecuting || step.Claim != out.Key.Claim {
 			return LoopResult{Disposition: LoopDropped}, nil
 		}
-		cmd, settleErr = l.modelCompletion(schema, &step, out)
+		cmd, settleErr = l.modelCompletion(sch, &step, out)
 	} else {
 		call, ok := toolCallFromSnapshot(&snapshot.State, out.Key.StepID, out.Key.CallID)
 		if !ok || call.Status != run.ToolExecuting || call.Claim != out.Key.Claim {
@@ -332,12 +335,12 @@ func (l *Loop) deliver(ctx context.Context, runtime run.RunStore, out Outcome, e
 
 	// Settlement uses a detached control context: a cancelled host request must
 	// not discard an accepted effect's outcome (RUN-LOP-5).
-	finished, err := l.settle(context.WithoutCancel(ctx), runtime, events, &a, snapshot.Position, cmd, schema)
+	finished, err := l.settle(context.WithoutCancel(ctx), rt, events, &a, snapshot.Position, cmd, sch)
 	if err != nil {
 		return LoopResult{}, err
 	}
 	if out.Key.CallID != "" && events != nil {
-		_ = events.Emit(ctx, Event{Session: runtime.Scope(), RunID: runID, StepID: out.Key.StepID, CallID: out.Key.CallID,
+		_ = events.Emit(ctx, Event{Session: rt.Scope(), RunID: runID, StepID: out.Key.StepID, CallID: out.Key.CallID,
 			Kind: EventToolCompleted, Durability: EventCommitted})
 	}
 	if settleErr != nil {
@@ -348,7 +351,7 @@ func (l *Loop) deliver(ctx context.Context, runtime run.RunStore, out Outcome, e
 		return LoopResult{Disposition: LoopDelivered}, settleErr
 	}
 	if finished != nil {
-		return l.finish(ctx, events, runtime.Scope(), runID, finished), nil
+		return l.finish(ctx, events, rt.Scope(), runID, finished), nil
 	}
 	return LoopResult{Disposition: LoopDelivered}, nil
 }
@@ -360,8 +363,8 @@ func (l *Loop) deliver(ctx context.Context, runtime run.RunStore, out Outcome, e
 // Deliver themselves. The caller context bounds the drive: on cancellation the
 // in-flight assignments of the Run are cancelled and their Outcomes are still
 // settled (RUN-LOP-5) before ctx.Err() is returned.
-func (l *Loop) Run(ctx context.Context, runtime run.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
-	if err := l.checkArgs(ctx, runtime, runID); err != nil {
+func (l *Loop) Run(ctx context.Context, rt runtime.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
+	if err := l.checkArgs(ctx, rt, runID); err != nil {
 		return LoopResult{}, err
 	}
 	s, err := l.startDriving(runID)
@@ -399,7 +402,7 @@ func (l *Loop) Run(ctx context.Context, runtime run.RunStore, runID run.RunID, e
 				return LoopResult{}, ctx.Err()
 			}
 			s.step.Lock()
-			res, err := l.advance(ctx, runtime, runID, events)
+			res, err := l.advance(ctx, rt, runID, events)
 			s.step.Unlock()
 			if err != nil {
 				if ownershipLost(err) {
@@ -441,7 +444,7 @@ func (l *Loop) Run(ctx context.Context, runtime run.RunStore, runID run.RunID, e
 		delete(pending, read.key)
 
 		s.step.Lock()
-		res, err := l.deliver(settleCtx, runtime, read.outcome, events)
+		res, err := l.deliver(settleCtx, rt, read.outcome, events)
 		s.step.Unlock()
 		if err != nil {
 			if ownershipLost(err) {
@@ -491,18 +494,18 @@ func (l *Loop) awaitOutcome(ctx context.Context, key AssignmentKey, outcomes cha
 // (RUN-LOP-5): if the first attempt actually committed and only the response
 // was lost, the replay returns AlreadyApplied instead of re-executing an
 // expensive step. Ownership loss is never retried.
-func (l *Loop) commit(ctx context.Context, runtime run.RunStore, runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, schema run.Schema) (run.CommitResult, error) {
-	if !schema.Valid() {
-		return run.CommitResult{}, errors.New("agent: loop: unbound schema")
+func (l *Loop) commit(ctx context.Context, rt runtime.RunStore, runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, sch schema.Schema) (runtime.CommitResult, error) {
+	if !sch.Valid() {
+		return runtime.CommitResult{}, errors.New("agent: loop: unbound schema")
 	}
-	env, err := schema.Wire.Envelope(runID, id, cmd)
+	env, err := sch.Wire.Envelope(runID, id, cmd)
 	if err != nil {
-		return run.CommitResult{}, err
+		return runtime.CommitResult{}, err
 	}
-	req := run.CommitRequest{Base: base, Command: env}
-	res, err := runtime.Commit(ctx, req)
+	req := runtime.CommitRequest{Base: base, Command: env}
+	res, err := rt.Commit(ctx, req)
 	if err != nil && !retriable(err) && !ownershipLost(err) {
-		res, err = runtime.Commit(ctx, req)
+		res, err = rt.Commit(ctx, req)
 	}
 	return res, err
 }

@@ -1,23 +1,28 @@
-package run
+package runtime
 
 import (
 	"context"
 	"errors"
+
+	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/model"
+	"github.com/felinics/twilight/agent/run/schema"
+	"github.com/felinics/twilight/agent/run/wire"
 )
 
-// Scope is the opaque identity of the store one Run lives in: a Session in
-// Twilight. Run never interprets it. It only scopes what has to stay distinct
-// across stores -- execution keys handed to a shared executor, the takeover
-// claim of a new owner, the prompt builder's read of the surrounding
-// conversation -- and the adapter that realizes RunStore converts it to and
-// from its own identity type.
-type Scope string
+var (
+	// ErrRunNotFound reports an operation addressed a RunID not in the Session.
+	ErrRunNotFound = errors.New("agent: run not found")
+)
 
-// RunPosition is the index of a Run's last fact in the Run's own stream.
-// Only the Run's own facts move it; whatever else the surrounding store
-// appends leaves it untouched, which is what makes Prepare's hard CAS
-// insensitive to concurrent writes of other modules (RUN-CMT-4).
-type RunPosition uint64
+// CheckContext avoids locking when cancellation already makes an operation
+// inapplicable. Context is intentionally not retained by the Runtime.
+func CheckContext(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("agent: runtime: nil context")
+	}
+	return ctx.Err()
+}
 
 // ErrOwnershipLost reports that the write capability behind a RunStore was
 // superseded (RUN-CMT-6). It is terminal for the caller: no further command of
@@ -32,42 +37,42 @@ var ErrOwnershipLost = errors.New("agent: run store ownership lost")
 // are created by the owning module's creation commit; there is no Create.
 type RunStore interface {
 	// Scope is the store this port is bound to.
-	Scope() Scope
+	Scope() run.Scope
 	// Load is the owner's view of a Run for the next command. A port whose
 	// capability was superseded still answers from its own epoch's state and
 	// is fenced at Commit (RUN-LOP-5).
-	Load(context.Context, RunID) (RuntimeSnapshot, error)
+	Load(context.Context, run.RunID) (Snapshot, error)
 	// Commit evaluates one command (RUN-CMT-3) and appends its facts as one
 	// atomic group. Replays are answered from the store's command index
 	// without re-deciding (RUN-CMT-5).
 	Commit(context.Context, CommitRequest) (CommitResult, error)
 	// FrozenRequest returns the request body a Prepared or Executing ModelStep
-	// names by RequestDigest (RUN-WIR-4); a missing body is ErrFrozenValueMissing.
-	FrozenRequest(context.Context, Digest) (ModelRequest, error)
+	// names by RequestDigest (RUN-WIR-4); a missing body is frozen.ErrMissing.
+	FrozenRequest(context.Context, run.Digest) (model.ModelRequest, error)
 }
 
-// RuntimeSnapshot is one Run as a command sees it.
-type RuntimeSnapshot struct {
+// Snapshot is one Run as a command sees it.
+type Snapshot struct {
 	// State is a detached in-process view.
-	State MachineState
+	State run.MachineState
 	// Position is the Run's last fact position at read time.
-	Position RunPosition
+	Position run.RunPosition
 	// SchemaVersion is the Session segment's, read from the version of the
-	// Run's facts; Loop and Application select SchemaFor(SchemaVersion) once.
+	// Run's facts; Loop and Application select schema.For(SchemaVersion) once.
 	SchemaVersion uint16
 }
 
 // Schema returns the schema the Run's segment declares.
-func (s RuntimeSnapshot) Schema() (Schema, error) { //nolint:gocritic // hugeParam: RuntimeSnapshot is handed around by value; a pointer receiver would refuse the common snapshot.Schema() on a temporary
-	return SchemaFor(s.SchemaVersion)
+func (s Snapshot) Schema() (schema.Schema, error) { //nolint:gocritic // hugeParam: Snapshot is handed around by value; a pointer receiver would refuse the common snapshot.Schema() on a temporary
+	return schema.For(s.SchemaVersion)
 }
 
 type CommitRequest struct {
 	// Base is the Position the caller loaded. PrepareModelRequest treats it
 	// as a hard CAS; other commands rebase call-locally and may pass zero
 	// (RUN-CMT-4).
-	Base    RunPosition
-	Command CommandEnvelope
+	Base    run.RunPosition
+	Command wire.CommandEnvelope
 }
 
 type CommitStatus uint8
@@ -79,8 +84,8 @@ const (
 
 type CommitResult struct {
 	Status   CommitStatus
-	Snapshot RuntimeSnapshot
+	Snapshot Snapshot
 	// Facts are the Run facts the command produced, in stream order. On a
 	// replay they are the facts of the original commit.
-	Facts []Fact
+	Facts []run.Fact
 }

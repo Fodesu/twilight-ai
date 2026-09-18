@@ -11,6 +11,7 @@ import (
 
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/model"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -43,9 +44,9 @@ type AssignmentBody interface {
 }
 
 type ModelAssignment struct {
-	Model         run.ModelRef      `json:"model"`
-	Request       *run.ModelRequest `json:"request,omitempty"`
-	RequestDigest run.Digest        `json:"requestDigest"`
+	Model         run.ModelRef        `json:"model"`
+	Request       *model.ModelRequest `json:"request,omitempty"`
+	RequestDigest run.Digest          `json:"requestDigest"`
 }
 
 func (ModelAssignment) Kind() AssignmentKind { return AssignmentModel }
@@ -164,7 +165,7 @@ const (
 	// classification.
 	FailureExecutor FailureCode = "executor_error"
 	// FailureFrozenValueMissing: the executor could not read the frozen
-	// body the Assignment named (run.ErrFrozenValueMissing).
+	// body the Assignment named (frozen.ErrMissing).
 	FailureFrozenValueMissing FailureCode = "frozen_value_missing"
 	// FailureMalformedRequest: the frozen request decoded but could not be
 	// materialized into a provider request.

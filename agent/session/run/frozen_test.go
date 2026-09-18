@@ -7,6 +7,9 @@ import (
 
 	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/frozen"
+	"github.com/felinics/twilight/agent/run/model/sdkconv"
+	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/session/filestore"
 	"github.com/felinics/twilight/sdk"
 )
@@ -14,35 +17,35 @@ import (
 // frozenBody freezes one request and renders the bytes the store keeps.
 func frozenBody(t *testing.T, text string) (run.Digest, []byte) {
 	t.Helper()
-	req, err := run.FreezeModelRequest(sdk.Request{Model: "m-1", Messages: []sdk.Message{sdk.UserMessage(text)}})
+	req, err := sdkconv.FreezeModelRequest(sdk.Request{Model: "m-1", Messages: []sdk.Message{sdk.UserMessage(text)}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest, err := run.SchemaV1().Canonical.DigestRequest(req)
+	digest, err := schema.V1().Canonical.DigestRequest(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := run.SchemaV1().Bodies.EncodeRequest(&req, digest)
+	raw, err := schema.V1().Bodies.EncodeRequest(&req, digest)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return digest, raw
 }
 
-func fileFrozen(t *testing.T, root string) run.FrozenValueStore {
+func fileFrozen(t *testing.T, root string) frozen.Store {
 	t.Helper()
 	store, err := filestore.NewContentStore(root, FrozenAuthority, filestore.ContentStoreOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	frozen, err := FrozenValues(store, artifact.NewMemoryBindingStore())
+	fz, err := FrozenValues(store, artifact.NewMemoryBindingStore())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return frozen
+	return fz
 }
 
-// The FrozenValueStore adapter over both cas ContentStores (RUN-WIR-4): the
+// The frozen.Store adapter over both cas ContentStores (RUN-WIR-4): the
 // digest is the SHA-256 of the stored bytes, so Put and Get need no index; a
 // body under a name it does not digest to is refused; and, for the file
 // store, a second instance over the same root reads what the first wrote --
@@ -51,10 +54,10 @@ func TestFrozenValuesOverContentStores(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
 		name string
-		open func(t *testing.T, root string) run.FrozenValueStore
+		open func(t *testing.T, root string) frozen.Store
 		file bool
 	}{
-		{"memory", func(*testing.T, string) run.FrozenValueStore {
+		{"memory", func(*testing.T, string) frozen.Store {
 			return FrozenValuesInMemory(artifact.NewMemoryBindingStore())
 		}, false},
 		{"file", fileFrozen, true},
@@ -78,7 +81,7 @@ func TestFrozenValuesOverContentStores(t *testing.T) {
 			if err != nil || !ok || string(got) != string(raw) {
 				t.Fatalf("get = %q %v %v", got, ok, err)
 			}
-			if req, err := run.DecodeFrozenRequest(got, digest); err != nil || req.Model != "m-1" {
+			if req, err := frozen.DecodeRequest(got, digest); err != nil || req.Model != "m-1" {
 				t.Fatalf("decode = %+v %v", req, err)
 			}
 			if _, ok, err := fv.Get(ctx, other); err != nil || ok {

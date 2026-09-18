@@ -11,6 +11,10 @@ import (
 	"testing"
 
 	. "github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/model/sdkconv"
+	"github.com/felinics/twilight/agent/run/plan"
+	"github.com/felinics/twilight/agent/run/runtime"
+	"github.com/felinics/twilight/agent/run/schema"
 	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/session/writer"
 
@@ -82,7 +86,7 @@ type staticBuilder struct {
 	specs []ToolSpec
 }
 
-func (p staticBuilder) Build(_ context.Context, hint PromptInput) (Prompt, error) {
+func (p staticBuilder) Build(_ context.Context, hint plan.PromptInput) (Prompt, error) {
 	model := p.model
 	if model == "" {
 		model = testModel
@@ -106,11 +110,11 @@ func toolDef(name string) sdk.ToolDefinition {
 
 func toolSpec(t *testing.T, name string, policy ResponsePolicy) ToolSpec {
 	t.Helper()
-	frozen, err := FreezeToolDefinition(toolDef(name))
+	frozen, err := sdkconv.FreezeToolDefinition(toolDef(name))
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := SchemaV1().Canonical.DigestToolDefinition(frozen)
+	d, err := schema.V1().Canonical.DigestToolDefinition(frozen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,10 +276,10 @@ func TestLoopParallelBounded(t *testing.T) {
 	}
 }
 
-type staleCommitRuntime struct{ RunStore }
+type staleCommitRuntime struct{ runtime.RunStore }
 
-func (staleCommitRuntime) Commit(context.Context, CommitRequest) (CommitResult, error) {
-	return CommitResult{}, ErrStaleRuntime
+func (staleCommitRuntime) Commit(context.Context, runtime.CommitRequest) (runtime.CommitResult, error) {
+	return runtime.CommitResult{}, ErrStaleRuntime
 }
 
 // A stale start rejection is not an error: the Loop returns and the next
@@ -283,8 +287,8 @@ func (staleCommitRuntime) Commit(context.Context, CommitRequest) (CommitResult, 
 func TestToolStartStaleIsNotAnError(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
 	args := cj(`{}`)
-	callID := SchemaV1().Identity.DeriveCallID("model-1", 0)
-	bindingDigest, err := SchemaV1().Canonical.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
+	callID := schema.V1().Identity.DeriveCallID("model-1", 0)
+	bindingDigest, err := schema.V1().Canonical.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +302,7 @@ func TestToolStartStaleIsNotAnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	stepID := StepID("step-1")
-	snapshot := &RuntimeSnapshot{State: MachineState{
+	snapshot := &runtime.Snapshot{State: MachineState{
 		RunID: "run-1", Status: RunActive,
 		Current: ToolStep{
 			RefValue: StepRef{RunID: "run-1", ID: stepID, Digest: Digest("sha256:step")},
@@ -312,7 +316,7 @@ func TestToolStartStaleIsNotAnError(t *testing.T) {
 
 	rt, w := loopRuntime(t)
 	dispatched, err := loop.startToolCalls(context.Background(), staleCommitRuntime{RunStore: rt.Bind(w)}, nil, snapshot,
-		StartToolCalls{StepID: stepID, CallIDs: []CallID{callID}})
+		plan.StartToolCalls{StepID: stepID, CallIDs: []CallID{callID}})
 	if err != nil || len(dispatched) != 0 {
 		t.Fatalf("stale start: dispatched=%d err=%v", len(dispatched), err)
 	}
@@ -333,16 +337,16 @@ func newResponseLossRuntime(t *testing.T) (*responseLossRuntime, writer.Writer) 
 	return &responseLossRuntime{SessionRunStore: rt, count: make(map[CommandID]int)}, w
 }
 
-func (r *responseLossRuntime) Bind(w writer.Writer) RunStore {
+func (r *responseLossRuntime) Bind(w writer.Writer) runtime.RunStore {
 	return lossyStore{RunStore: r.SessionRunStore.Bind(w), r: r}
 }
 
 type lossyStore struct {
-	RunStore
+	runtime.RunStore
 	r *responseLossRuntime
 }
 
-func (s lossyStore) Commit(ctx context.Context, req CommitRequest) (CommitResult, error) {
+func (s lossyStore) Commit(ctx context.Context, req runtime.CommitRequest) (runtime.CommitResult, error) {
 	r := s.r
 	result, err := s.RunStore.Commit(ctx, req)
 	if err != nil {
@@ -358,7 +362,7 @@ func (s lossyStore) Commit(ctx context.Context, req CommitRequest) (CommitResult
 	}
 	r.mu.Unlock()
 	if lose && count <= 2 {
-		return CommitResult{}, errors.New("test: response lost")
+		return runtime.CommitResult{}, errors.New("test: response lost")
 	}
 	return result, nil
 }

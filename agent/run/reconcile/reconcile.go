@@ -16,6 +16,9 @@ import (
 
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
+	"github.com/felinics/twilight/agent/run/recovery"
+	"github.com/felinics/twilight/agent/run/runtime"
+	"github.com/felinics/twilight/agent/run/schema"
 )
 
 // Verdict is the reconciler's decision for one Executing target.
@@ -39,10 +42,10 @@ const (
 
 // Decision is one target's verdict and, for Dispose, the recovery command.
 type Decision struct {
-	Target   run.RecoveryTarget
+	Target   recovery.Target
 	Observed effect.AttachmentState
 	Verdict  Verdict
-	Recovery *run.Recovery
+	Recovery *recovery.Disposition
 }
 
 // Reconciler is the recovery control plane of one owner over a Scope.
@@ -98,7 +101,7 @@ func classifyRead(err error) readVerdict {
 // the machine state, so the executor can be asked whether that attempt still
 // runs. Only the key and the digest-level description are known here; the
 // inline request body never travels this way (RUN-EXE-7).
-func AssignmentFromTarget(scope run.Scope, t run.RecoveryTarget) effect.Assignment {
+func AssignmentFromTarget(scope run.Scope, t recovery.Target) effect.Assignment {
 	a := effect.Assignment{Session: scope, RunID: t.RunID, StepID: t.StepID, CallID: t.CallID, Claim: t.Claim, Schema: t.Schema}
 	switch {
 	case t.Call != nil:
@@ -126,12 +129,12 @@ func verdictOf(state effect.AttachmentState) (Verdict, error) {
 // Plan decides every Executing target of one Run under the owner's takeover
 // claim. It asks the executor once per target and starts the Outcome read of
 // every target it does not dispose; it writes nothing.
-func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *run.RuntimeSnapshot, claim run.ExecutionClaim) ([]Decision, error) {
-	targets := run.RecoveryTargets(&snapshot.State)
+func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtime.Snapshot, claim run.ExecutionClaim) ([]Decision, error) {
+	targets := recovery.Targets(&snapshot.State)
 	if len(targets) == 0 {
 		return nil, nil
 	}
-	schema, err := snapshot.Schema()
+	sch, err := snapshot.Schema()
 	if err != nil {
 		return nil, err
 	}
@@ -157,7 +160,7 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *run.Ru
 			}
 		}
 		if d.Verdict == Dispose {
-			rec := run.RecoveryCommand(schema.Identity, t, claim)
+			rec := recovery.Command(sch.Identity, t, claim)
 			d.Recovery = &rec
 		}
 		out = append(out, d)
@@ -229,25 +232,25 @@ func (r *Reconciler) fail(key effect.AssignmentKey, err error) {
 // Apply commits the Dispose decisions through the bound store and returns
 // how many were accepted. A decision another actor has already overtaken
 // (stale, terminal, conflict) is skipped.
-func Apply(ctx context.Context, store run.RunStore, schema run.Schema, decisions []Decision) (int, error) {
+func Apply(ctx context.Context, store runtime.RunStore, sch schema.Schema, decisions []Decision) (int, error) {
 	n := 0
 	for i := range decisions {
 		d := &decisions[i]
 		if d.Recovery == nil {
 			continue
 		}
-		env, err := schema.Wire.Envelope(d.Target.RunID, d.Recovery.ID, d.Recovery.Command)
+		env, err := sch.Wire.Envelope(d.Target.RunID, d.Recovery.ID, d.Recovery.Command)
 		if err != nil {
 			return n, err
 		}
-		res, err := store.Commit(ctx, run.CommitRequest{Command: env})
+		res, err := store.Commit(ctx, runtime.CommitRequest{Command: env})
 		if err != nil {
 			if errors.Is(err, run.ErrStaleRuntime) || errors.Is(err, run.ErrRunTerminal) || errors.Is(err, run.ErrCommandConflict) {
 				continue
 			}
 			return n, err
 		}
-		if res.Status == run.CommitAccepted {
+		if res.Status == runtime.CommitAccepted {
 			n++
 		}
 	}
@@ -257,7 +260,7 @@ func Apply(ctx context.Context, store run.RunStore, schema run.Schema, decisions
 // Reconcile is Plan then Apply for one Run: the takeover disposition of its
 // Executing targets (RUN-CMT-7). It returns the number of accepted recovery
 // commands.
-func (r *Reconciler) Reconcile(ctx context.Context, store run.RunStore, snapshot *run.RuntimeSnapshot, claim run.ExecutionClaim) (int, error) {
+func (r *Reconciler) Reconcile(ctx context.Context, store runtime.RunStore, snapshot *runtime.Snapshot, claim run.ExecutionClaim) (int, error) {
 	if r.Lifetime != nil {
 		if err := r.Lifetime.Err(); err != nil {
 			return 0, err
@@ -267,9 +270,9 @@ func (r *Reconciler) Reconcile(ctx context.Context, store run.RunStore, snapshot
 	if err != nil {
 		return 0, err
 	}
-	schema, err := snapshot.Schema()
+	sch, err := snapshot.Schema()
 	if err != nil {
 		return 0, err
 	}
-	return Apply(ctx, store, schema, decisions)
+	return Apply(ctx, store, sch, decisions)
 }

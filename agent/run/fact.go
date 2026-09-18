@@ -8,13 +8,14 @@ import (
 	"io"
 
 	"github.com/felinics/twilight/agent/es"
+	"github.com/felinics/twilight/agent/run/model"
 )
 
 // Fact is one committed outcome produced by Machine.Decide. Facts are wrapped
 // as AgentEvents; Machine.Evolve folds them mechanically (RUN-MCH-3). The
 // interface is sealed: only the variants below exist. Facts carry execution
 // state and content digests only: a digest is the canonical identity of an
-// immutable body in the FrozenValueStore, and the fact that names it is the
+// immutable body in the frozen.Store, and the fact that names it is the
 // body's retention root (RUN-WIR-4). Conversation and Turn state are
 // projections of these facts; no second copy of a body is written.
 type Fact interface{ fact() }
@@ -34,7 +35,7 @@ func (RunCreated) fact() {}
 
 // ModelStepPrepared establishes the frozen ModelStep and consumes the listed
 // pending inputs. The request body is not in the fact: RequestDigest names it
-// in the FrozenValueStore. BindingDigest (model + request + tools) is computed
+// in the frozen.Store. BindingDigest (model + request + tools) is computed
 // by Decide and carried in the fact: Evolve folds it verbatim, never
 // recomputes (fact self-containment, RUN-MCH-3).
 type ModelStepPrepared struct {
@@ -83,7 +84,7 @@ func (ModelStepRecovered) fact() {}
 // accumulated, Rejects is incremented, the step returns to Prepared.
 type ModelStepRejected struct {
 	StepID  StepID      `json:"stepId"`
-	Usage   Usage       `json:"usage"`
+	Usage   model.Usage `json:"usage"`
 	Failure StepFailure `json:"failure"`
 }
 
@@ -91,13 +92,13 @@ func (ModelStepRejected) fact() {}
 
 // ModelStepCompleted accepts one model result: usage is accumulated and
 // Current becomes Open. The result body is not in the fact; ResultDigest is
-// its canonical identity in the FrozenValueStore. The same transition may then
+// its canonical identity in the frozen.Store. The same transition may then
 // open a ToolStep or end the Run.
 type ModelStepCompleted struct {
-	StepID       StepID       `json:"stepId"`
-	Usage        Usage        `json:"usage"`
-	FinishReason FinishReason `json:"finishReason"`
-	ResultDigest Digest       `json:"resultDigest"`
+	StepID       StepID             `json:"stepId"`
+	Usage        model.Usage        `json:"usage"`
+	FinishReason model.FinishReason `json:"finishReason"`
+	ResultDigest Digest             `json:"resultDigest"`
 }
 
 func (ModelStepCompleted) fact() {}

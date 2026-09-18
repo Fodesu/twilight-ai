@@ -18,6 +18,7 @@ import (
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/model"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
 	runmod "github.com/felinics/twilight/agent/session/run"
@@ -102,12 +103,12 @@ func (ps Parts) MarshalJSON() ([]byte, error) {
 }
 
 func (ps *Parts) UnmarshalJSON(raw []byte) error {
-	value, err := jsonstable.Parse(raw)
+	val, err := jsonstable.Parse(raw)
 	if err != nil {
 		return err
 	}
 	var wires []partWire
-	if err := extension.StrictDecode(value, &wires); err != nil {
+	if err := extension.StrictDecode(val, &wires); err != nil {
 		return err
 	}
 	out := make(Parts, 0, len(wires))
@@ -214,11 +215,11 @@ type Assistant struct {
 	StepID run.StepID  `json:"stepId"`
 	// SchemaVersion is the Run's; the materializer derives CallIDs under it
 	// when the entry carries none. It is not part of the entry digest.
-	SchemaVersion uint16           `json:"schemaVersion,omitempty"`
-	FinishReason  run.FinishReason `json:"finishReason"`
-	ResultDigest  es.Digest        `json:"resultDigest"`
-	CallIDs       []CallID         `json:"callIds,omitempty"`
-	Digest        es.Digest        `json:"digest"`
+	SchemaVersion uint16             `json:"schemaVersion,omitempty"`
+	FinishReason  model.FinishReason `json:"finishReason"`
+	ResultDigest  es.Digest          `json:"resultDigest"`
+	CallIDs       []CallID           `json:"callIds,omitempty"`
+	Digest        es.Digest          `json:"digest"`
 }
 
 // ToolResult is the structural projection of one call's terminal outcome
@@ -278,13 +279,13 @@ func DigestInput(id InputID, content jsonstable.Value) (es.Digest, error) {
 
 func DigestAssistant(a *Assistant) (es.Digest, error) {
 	return digestDomain(assistantDomain, struct {
-		ID           AssistantID      `json:"id"`
-		TurnID       TurnID           `json:"turnId,omitempty"`
-		RunID        run.RunID        `json:"runId"`
-		StepID       run.StepID       `json:"stepId"`
-		FinishReason run.FinishReason `json:"finishReason"`
-		ResultDigest es.Digest        `json:"resultDigest"`
-		CallIDs      []CallID         `json:"callIds,omitempty"`
+		ID           AssistantID        `json:"id"`
+		TurnID       TurnID             `json:"turnId,omitempty"`
+		RunID        run.RunID          `json:"runId"`
+		StepID       run.StepID         `json:"stepId"`
+		FinishReason model.FinishReason `json:"finishReason"`
+		ResultDigest es.Digest          `json:"resultDigest"`
+		CallIDs      []CallID           `json:"callIds,omitempty"`
 	}{a.ID, a.TurnID, a.RunID, a.StepID, a.FinishReason, a.ResultDigest, a.CallIDs})
 }
 
@@ -373,7 +374,7 @@ type InputRejectedPayload struct {
 // ToolResultSupersededPayload substitutes a verified outcome for a call's
 // projected result (CHT-ENT-2): an unknown result the Application confirmed
 // out of band becomes success (its output frozen under OutputDigest, written
-// through the run FrozenValueStore) or error. The Run fact is untouched; the
+// through the run frozen.Store) or error. The Run fact is untouched; the
 // substitution is a conversation decision.
 type ToolResultSupersededPayload struct {
 	ToolResultID ToolResultID     `json:"toolResultId"`
@@ -469,10 +470,10 @@ func checkSummary(p *SummaryPayload) error {
 
 // PartsExtractor returns the BindingIDs of ReferenceParts in appearance
 // order (CHT-COD-2).
-var PartsExtractor extension.BindingExtractor = extension.BindingExtractorFunc(func(value any) ([]artifact.BindingID, error) {
-	p, ok := value.(SummaryPayload)
+var PartsExtractor extension.BindingExtractor = extension.BindingExtractorFunc(func(val any) ([]artifact.BindingID, error) {
+	p, ok := val.(SummaryPayload)
 	if !ok {
-		return nil, fmt.Errorf("parts extractor: unexpected %T", value)
+		return nil, fmt.Errorf("parts extractor: unexpected %T", val)
 	}
 	var out []artifact.BindingID
 	for _, part := range p.Summary.Parts {
@@ -485,10 +486,10 @@ var PartsExtractor extension.BindingExtractor = extension.BindingExtractorFunc(f
 
 // supersededExtractor names the frozen output a success supersession
 // carries, under the run module's frozen Binding derivation.
-var supersededExtractor extension.BindingExtractor = extension.BindingExtractorFunc(func(value any) ([]artifact.BindingID, error) {
-	p, ok := value.(ToolResultSupersededPayload)
+var supersededExtractor extension.BindingExtractor = extension.BindingExtractorFunc(func(val any) ([]artifact.BindingID, error) {
+	p, ok := val.(ToolResultSupersededPayload)
 	if !ok {
-		return nil, fmt.Errorf("superseded extractor: unexpected %T", value)
+		return nil, fmt.Errorf("superseded extractor: unexpected %T", val)
 	}
 	if p.OutputDigest == "" {
 		return nil, nil

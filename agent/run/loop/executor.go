@@ -11,6 +11,10 @@ import (
 
 	run "github.com/felinics/twilight/agent/run"
 	effect "github.com/felinics/twilight/agent/run/effect"
+	"github.com/felinics/twilight/agent/run/frozen"
+	"github.com/felinics/twilight/agent/run/model"
+	"github.com/felinics/twilight/agent/run/model/sdkconv"
+	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -193,18 +197,18 @@ func (e *LocalExecutor) Validate(_ context.Context, a Assignment) (*run.ToolFail
 		}
 		return nil, nil
 	case ToolAssignment:
-		schema, err := run.SchemaFor(a.Schema)
+		sch, err := schema.For(a.Schema)
 		if err != nil {
 			return nil, err
 		}
-		_, failure := e.resolveTool(schema, &body)
+		_, failure := e.resolveTool(sch, &body)
 		return failure, nil
 	default:
 		return &run.ToolFailure{Class: run.FailureProvider, Message: "assignment without body"}, nil
 	}
 }
 
-func (e *LocalExecutor) resolveTool(schema run.Schema, t *ToolAssignment) (ExecutableTool, *run.ToolFailure) {
+func (e *LocalExecutor) resolveTool(sch schema.Schema, t *ToolAssignment) (ExecutableTool, *run.ToolFailure) {
 	tool, resolveErr := e.tools.ResolveTool(t.ToolRef)
 	if resolveErr != nil {
 		return nil, &run.ToolFailure{Class: run.FailureToolLookup, Message: resolveErr.Error()}
@@ -212,11 +216,11 @@ func (e *LocalExecutor) resolveTool(schema run.Schema, t *ToolAssignment) (Execu
 	if tool == nil {
 		return nil, &run.ToolFailure{Class: run.FailureToolLookup, Message: "tool catalog returned a nil tool"}
 	}
-	toolDef, freezeErr := run.FreezeToolDefinition(tool.Definition())
+	toolDef, freezeErr := sdkconv.FreezeToolDefinition(tool.Definition())
 	if freezeErr != nil {
 		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: freezeErr.Error()}
 	}
-	defDigest, digestErr := schema.Canonical.DigestToolDefinition(toolDef)
+	defDigest, digestErr := sch.Canonical.DigestToolDefinition(toolDef)
 	if digestErr != nil {
 		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: digestErr.Error()}
 	}
@@ -273,11 +277,11 @@ func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) err
 			return fmt.Errorf("%w: model assignment without an inline request payload", ErrExecutorRejected)
 		}
 		frozenRequest := *body.Request
-		schema, err := run.SchemaFor(a.Schema)
+		sch, err := schema.For(a.Schema)
 		if err != nil {
 			return err
 		}
-		got, err := schema.Canonical.DigestRequest(frozenRequest)
+		got, err := sch.Canonical.DigestRequest(frozenRequest)
 		if err != nil {
 			return fmt.Errorf("%w: request digest: %w", ErrExecutorRejected, err)
 		}
@@ -286,11 +290,11 @@ func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) err
 		}
 		execute = func(ctx context.Context) Outcome { return e.runModel(ctx, a, &frozenRequest, invoker) }
 	case ToolAssignment:
-		schema, err := run.SchemaFor(a.Schema)
+		sch, err := schema.For(a.Schema)
 		if err != nil {
 			return err
 		}
-		tool, failure := e.resolveTool(schema, &body)
+		tool, failure := e.resolveTool(sch, &body)
 		if failure != nil {
 			return fmt.Errorf("%w: %s: %s", ErrExecutorRejected, failure.Class, failure.Message)
 		}
@@ -424,8 +428,8 @@ func (e *LocalExecutor) InFlight() int {
 	return n
 }
 
-func (e *LocalExecutor) runModel(ctx context.Context, a Assignment, frozenRequest *run.ModelRequest, invoker ModelInvoker) Outcome {
-	sdkRequest, err := frozenRequest.SDK()
+func (e *LocalExecutor) runModel(ctx context.Context, a Assignment, frozenRequest *model.ModelRequest, invoker ModelInvoker) Outcome {
+	sdkRequest, err := sdkconv.ModelRequest(*frozenRequest)
 	if err != nil {
 		return Outcome{Result: effect.ModelFailed{Code: effect.FailureMalformedRequest, Message: "frozen request cannot be materialized: " + err.Error()}}
 	}
@@ -440,7 +444,7 @@ func (e *LocalExecutor) runModel(ctx context.Context, a Assignment, frozenReques
 // failure codes.
 func modelFailure(err error) OutcomeResult {
 	switch {
-	case errors.Is(err, run.ErrFrozenValueMissing):
+	case errors.Is(err, frozen.ErrMissing):
 		return effect.ModelFailed{Code: effect.FailureFrozenValueMissing, Message: err.Error()}
 	case errors.Is(err, context.Canceled):
 		return effect.Cancelled{Message: err.Error()}

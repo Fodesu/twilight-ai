@@ -1,7 +1,6 @@
 package run
 
 import (
-	"context"
 	"errors"
 	"unicode/utf8"
 
@@ -51,18 +50,4 @@ func ValidateNewRun(run NewRun) error {
 		return errors.New("agent: new run: CausationID is not valid UTF-8")
 	}
 	return nil
-}
-
-var (
-	// ErrRunNotFound reports an operation addressed a RunID not in the Session.
-	ErrRunNotFound = errors.New("agent: run not found")
-)
-
-// CheckContext avoids locking when cancellation already makes an operation
-// inapplicable. Context is intentionally not retained by the Runtime.
-func CheckContext(ctx context.Context) error {
-	if ctx == nil {
-		return errors.New("agent: runtime: nil context")
-	}
-	return ctx.Err()
 }

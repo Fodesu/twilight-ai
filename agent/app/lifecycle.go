@@ -7,6 +7,7 @@ import (
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/run/model/sdkconv"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
@@ -108,7 +109,7 @@ func NewPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...PresetOp
 			return turn.AgentPreset{}, &duplicateToolError{tool.Ref()}
 		}
 		seen[tool.Ref()] = struct{}{}
-		definition, err := run.FreezeToolDefinition(tool.Definition())
+		definition, err := sdkconv.FreezeToolDefinition(tool.Definition())
 		if err != nil {
 			return turn.AgentPreset{}, err
 		}

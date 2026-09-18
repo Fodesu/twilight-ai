@@ -3,6 +3,8 @@ package run
 import (
 	"errors"
 	"fmt"
+
+	"github.com/felinics/twilight/agent/run/model"
 )
 
 // Machine errors. EvaluateCommit maps rejection reasons onto these; Decide
@@ -272,7 +274,7 @@ func (m MachineV1) checkToolCallBindings(ms *ModelStep, cmd *SubmitModelResult) 
 // actually named, with the arguments the model actually produced. A known
 // tool must match its frozen ToolSpec; an unknown one stays an unresolved
 // DirectExecution binding that StartToolCalls records as a lookup failure.
-func (m MachineV1) checkBindingAgainstResult(b *ToolCallBinding, rc *ModelToolCall, specByName map[string]ToolSpec) error {
+func (m MachineV1) checkBindingAgainstResult(b *ToolCallBinding, rc *model.ModelToolCall, specByName map[string]ToolSpec) error {
 	if spec, known := specByName[rc.ToolName]; known {
 		if b.ToolRef != spec.Ref {
 			return rejectionf("model result: binding %q ToolRef %q does not match frozen spec ref %q for tool %q", b.CallID, b.ToolRef, spec.Ref, rc.ToolName)
@@ -353,7 +355,7 @@ func (m MachineV1) openToolStep(runID RunID, source StepID, bindings []ToolCallB
 // cross-checking a binding. The second return is false when the command did
 // not carry a frozen JSON-stable tool input; Runtime commits reject that shape.
 func canonicalArgumentsForCompare(input any) (CanonicalJSON, bool) {
-	got, err := canonicalToolArguments(input)
+	got, err := model.CanonicalToolArguments(input)
 	if err != nil {
 		return CanonicalJSON{}, false
 	}

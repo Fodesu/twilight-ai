@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/model"
 	runmod "github.com/felinics/twilight/agent/session/run"
 	"testing"
 
@@ -76,7 +77,7 @@ func TestSurfaceFoldIsPure(t *testing.T) {
 	var seq session.CommitSeq
 	next := func() session.Position { seq++; return session.Position{Commit: seq} }
 	assistant := func(id string) extension.DecodedEvent {
-		return extension.DecodedEvent{Position: next(), Value: runmod.Event{RunID: "r", Fact: run.ModelStepCompleted{StepID: run.StepID(id), FinishReason: run.FinishReasonStop, ResultDigest: "sha256:x"}}}
+		return extension.DecodedEvent{Position: next(), Value: runmod.Event{RunID: "r", Fact: run.ModelStepCompleted{StepID: run.StepID(id), FinishReason: model.FinishReasonStop, ResultDigest: "sha256:x"}}}
 	}
 	input := func(id string) extension.DecodedEvent {
 		return extension.DecodedEvent{Position: next(), Value: InputSubmittedPayload{InputID: InputID(id), Content: jsonstable.MustParse(`{"text":"x"}`)}}

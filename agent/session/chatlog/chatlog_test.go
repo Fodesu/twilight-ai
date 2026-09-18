@@ -8,6 +8,9 @@ import (
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/frozen"
+	"github.com/felinics/twilight/agent/run/model"
+	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
 	runmod "github.com/felinics/twilight/agent/session/run"
@@ -28,7 +31,7 @@ type step struct {
 }
 
 func runStep(runID run.RunID, f run.Fact) step {
-	return step{runmod.EventType(run.SchemaV1().Wire, f), runmod.Event{RunID: runID, Fact: f}}
+	return step{runmod.EventType(schema.V1().Wire, f), runmod.Event{RunID: runID, Fact: f}}
 }
 
 func created(runID run.RunID, owner string) step {
@@ -36,7 +39,7 @@ func created(runID run.RunID, owner string) step {
 }
 
 func completed(runID run.RunID, stepID run.StepID, digest es.Digest) step {
-	return runStep(runID, run.ModelStepCompleted{StepID: stepID, FinishReason: run.FinishReasonStop, ResultDigest: digest})
+	return runStep(runID, run.ModelStepCompleted{StepID: stepID, FinishReason: model.FinishReasonStop, ResultDigest: digest})
 }
 
 func opened(runID run.RunID, source run.StepID, calls ...run.CallID) step {
@@ -248,7 +251,7 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 		TypeCheckpointInvalidated: CheckpointInvalidatedPayload{CheckpointID: "ck1", Reason: "host"},
 	}
 	for _, def := range Module.Events {
-		value, ok := samples[def.Type]
+		val, ok := samples[def.Type]
 		if !ok {
 			t.Fatalf("no sample for %s", def.Type)
 		}
@@ -256,7 +259,7 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 			t.Fatalf("%s: %d codecs, want one per schema this module writes", def.Type, len(def.Codecs))
 		}
 		codec := def.Codecs[extension.SchemaVersion1]
-		first, err := codec.Encode(value)
+		first, err := codec.Encode(val)
 		if err != nil {
 			t.Fatalf("%s: encode: %v", def.Type, err)
 		}
@@ -288,16 +291,16 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 // --- materialization (CHT-MAT-1) ---------------------------------------------
 
 type fakeContent struct {
-	results map[es.Digest]run.ModelResult
+	results map[es.Digest]model.ModelResult
 	outputs map[es.Digest]run.CanonicalJSON
 	reads   int
 }
 
-func (c *fakeContent) ModelResult(_ context.Context, d es.Digest) (run.ModelResult, error) {
+func (c *fakeContent) ModelResult(_ context.Context, d es.Digest) (model.ModelResult, error) {
 	c.reads++
 	r, ok := c.results[d]
 	if !ok {
-		return run.ModelResult{}, run.ErrFrozenValueMissing
+		return model.ModelResult{}, frozen.ErrMissing
 	}
 	return r, nil
 }
@@ -306,7 +309,7 @@ func (c *fakeContent) ToolOutput(_ context.Context, d es.Digest) (run.CanonicalJ
 	c.reads++
 	o, ok := c.outputs[d]
 	if !ok {
-		return run.CanonicalJSON{}, run.ErrFrozenValueMissing
+		return run.CanonicalJSON{}, frozen.ErrMissing
 	}
 	return o, nil
 }
@@ -331,7 +334,7 @@ func TestMaterialize(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := &fakeContent{
-		results: map[es.Digest]run.ModelResult{"sha256:res": {Text: "calling", ToolCalls: []run.ModelToolCall{
+		results: map[es.Digest]model.ModelResult{"sha256:res": {Text: "calling", ToolCalls: []model.ModelToolCall{
 			{ToolCallID: "p1", ToolName: "echo", Input: jsonstable.MustParse(`{"a":1}`)},
 			{ToolCallID: "p2", ToolName: "ask", Input: jsonstable.MustParse(`{}`)},
 		}}},
@@ -352,7 +355,7 @@ func TestMaterialize(t *testing.T) {
 	}
 	// The second assistant names the same result: one read serves both, and
 	// its CallIDs are derived when no ToolStepOpened followed it.
-	if content.reads != 3 || len(entries[3].Calls) != 2 || entries[3].Calls[0].CallID != CallID(run.SchemaV1().Identity.DeriveCallID("s2", 0)) {
+	if content.reads != 3 || len(entries[3].Calls) != 2 || entries[3].Calls[0].CallID != CallID(schema.V1().Identity.DeriveCallID("s2", 0)) {
 		t.Fatalf("reads = %d, second assistant = %+v", content.reads, entries[3])
 	}
 	failed := Entry{Kind: EntryToolResult, ToolResult: &ToolResult{ID: "c9", CallID: "c9", Status: ToolError, Failure: &run.ToolFailure{Class: "boom", Message: "x"}}}
@@ -360,7 +363,7 @@ func TestMaterialize(t *testing.T) {
 		t.Fatalf("failed result = %+v %v", m, err)
 	}
 	lost := Entry{Kind: EntryAssistant, ID: "s9", Assistant: &Assistant{ID: "s9", StepID: "s9", ResultDigest: "sha256:gone"}}
-	if _, err := NewMaterializer(content).Entry(context.Background(), &lost); !errors.Is(err, run.ErrFrozenValueMissing) {
+	if _, err := NewMaterializer(content).Entry(context.Background(), &lost); !errors.Is(err, frozen.ErrMissing) {
 		t.Fatalf("lost body: err = %v", err)
 	}
 }
@@ -381,7 +384,7 @@ func mustSummary(t *testing.T, id SummaryID, text string) Summary {
 // model_step_completed under Turn t1 in Run r1, with no tool step.
 func entryDigest(t *testing.T, stepID run.StepID, result es.Digest) es.Digest {
 	t.Helper()
-	a, err := assistantOf(RunOwner{TurnID: "t1", Schema: run.SchemaVersion1}, "r1", &run.ModelStepCompleted{StepID: stepID, FinishReason: run.FinishReasonStop, ResultDigest: result})
+	a, err := assistantOf(RunOwner{TurnID: "t1", Schema: run.SchemaVersion1}, "r1", &run.ModelStepCompleted{StepID: stepID, FinishReason: model.FinishReasonStop, ResultDigest: result})
 	if err != nil {
 		t.Fatal(err)
 	}

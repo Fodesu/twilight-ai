@@ -9,6 +9,8 @@ import (
 
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
+	"github.com/felinics/twilight/agent/run/recovery"
+	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -46,8 +48,8 @@ func (p *fakePort) GetOutcome(ctx context.Context, key effect.AssignmentKey) (ef
 }
 func (p *fakePort) Cancel(context.Context, effect.AssignmentKey) error { return nil }
 
-func executingModel(claim run.ExecutionClaim) *run.RuntimeSnapshot {
-	return &run.RuntimeSnapshot{SchemaVersion: run.SchemaVersion1, State: run.MachineState{
+func executingModel(claim run.ExecutionClaim) *runtime.Snapshot {
+	return &runtime.Snapshot{SchemaVersion: run.SchemaVersion1, State: run.MachineState{
 		RunID: "r1", Status: run.RunActive,
 		Current: run.ModelStep{RefValue: run.StepRef{RunID: "r1", ID: "s1"}, Model: "m", RequestDigest: "sha256:req", Status: run.ModelExecuting, Claim: claim},
 	}}
@@ -97,7 +99,7 @@ func TestPlanVerdicts(t *testing.T) {
 // AssignmentFromTarget carries the digest-level description of the target
 // and never an inline request body (RUN-EXE-7).
 func TestAssignmentFromTarget(t *testing.T) {
-	targets := run.RecoveryTargets(&executingModel("c1").State)
+	targets := recovery.Targets(&executingModel("c1").State)
 	if len(targets) != 1 {
 		t.Fatalf("targets = %d", len(targets))
 	}

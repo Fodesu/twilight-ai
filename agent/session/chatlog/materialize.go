@@ -6,13 +6,15 @@ import (
 
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/model"
+	"github.com/felinics/twilight/agent/run/schema"
 )
 
 // ContentResolver resolves the frozen bodies structural entries name by
 // digest (RUN-WIR-4). agent/session/run.Content is the first-party
 // implementation; the projections never call it (CHT-MAT-1).
 type ContentResolver interface {
-	ModelResult(context.Context, es.Digest) (run.ModelResult, error)
+	ModelResult(context.Context, es.Digest) (model.ModelResult, error)
 	ToolOutput(context.Context, es.Digest) (run.CanonicalJSON, error)
 	ToolResponse(context.Context, es.Digest) (run.CanonicalJSON, error)
 }
@@ -31,7 +33,7 @@ type Call struct {
 // results and summaries carry their content in the entry itself.
 type Materialized struct {
 	Entry  *Entry
-	Result *run.ModelResult
+	Result *model.ModelResult
 	Calls  []Call
 	Output *run.CanonicalJSON
 }
@@ -60,12 +62,12 @@ func (m *Materialized) Text() string {
 // digest at most once per Materializer (CHT-MAT-1).
 type Materializer struct {
 	content ContentResolver
-	results map[es.Digest]*run.ModelResult
+	results map[es.Digest]*model.ModelResult
 	outputs map[es.Digest]*run.CanonicalJSON
 }
 
 func NewMaterializer(content ContentResolver) *Materializer {
-	return &Materializer{content: content, results: map[es.Digest]*run.ModelResult{}, outputs: map[es.Digest]*run.CanonicalJSON{}}
+	return &Materializer{content: content, results: map[es.Digest]*model.ModelResult{}, outputs: map[es.Digest]*run.CanonicalJSON{}}
 }
 
 // Entries materializes every entry in order.
@@ -115,7 +117,7 @@ func (m *Materializer) Entry(ctx context.Context, e *Entry) (Materialized, error
 	return out, nil
 }
 
-func (m *Materializer) result(ctx context.Context, digest es.Digest) (*run.ModelResult, error) {
+func (m *Materializer) result(ctx context.Context, digest es.Digest) (*model.ModelResult, error) {
 	if r, ok := m.results[digest]; ok {
 		return r, nil
 	}
@@ -159,17 +161,17 @@ func (m *Materializer) output(ctx context.Context, r *ToolResult) (*run.Canonica
 // pairCalls zips the Run-assigned CallIDs with the result's ToolCalls. A
 // result issued without a ToolStepOpened in the entry (no CallIDs) derives
 // them the way the protocol does (RUN-WIR-4 identity table).
-func pairCalls(a *Assistant, result *run.ModelResult) ([]Call, error) {
+func pairCalls(a *Assistant, result *model.ModelResult) ([]Call, error) {
 	if len(result.ToolCalls) == 0 {
 		return nil, nil
 	}
 	if len(a.CallIDs) != 0 && len(a.CallIDs) != len(result.ToolCalls) {
 		return nil, fmt.Errorf("chatlog: assistant %s has %d call ids for %d tool calls", a.ID, len(a.CallIDs), len(result.ToolCalls))
 	}
-	var schema run.Schema
+	var sch schema.Schema
 	if len(a.CallIDs) == 0 {
 		var err error
-		if schema, err = run.SchemaFor(a.SchemaVersion); err != nil {
+		if sch, err = schema.For(a.SchemaVersion); err != nil {
 			return nil, fmt.Errorf("chatlog: assistant %s: %w", a.ID, err)
 		}
 	}
@@ -179,7 +181,7 @@ func pairCalls(a *Assistant, result *run.ModelResult) ([]Call, error) {
 		if len(a.CallIDs) != 0 {
 			id = a.CallIDs[i]
 		} else {
-			id = CallID(schema.Identity.DeriveCallID(a.StepID, i))
+			id = CallID(sch.Identity.DeriveCallID(a.StepID, i))
 		}
 		calls[i] = Call{CallID: id, ProviderCallID: tc.ToolCallID, Name: tc.ToolName, Input: tc.Input}
 	}

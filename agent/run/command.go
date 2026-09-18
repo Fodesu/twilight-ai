@@ -1,5 +1,9 @@
 package run
 
+import (
+	"github.com/felinics/twilight/agent/run/model"
+)
+
 // AgentCommand is the intent submitted through Runtime.Commit for an existing
 // Run. Accepting one command constitutes one transition (RUN-MCH-3). The
 // interface is sealed: only the variants below exist. Commands may carry
@@ -25,16 +29,16 @@ func NextStep(inputs ...AgentInput) AcceptInput { return AcceptInput{Inputs: inp
 // PrepareModelRequest freezes the next model request. Its CommandID is
 // derived from the loaded Revision, which is also its concurrency control.
 // Request is the transient body; the fact keeps RequestDigest and the Runtime
-// stores the body in the FrozenValueStore.
+// stores the body in the frozen.Store.
 type PrepareModelRequest struct {
-	StepID        StepID       `json:"stepId"`
-	Model         ModelRef     `json:"model"`
-	Request       ModelRequest `json:"request"`
-	RequestDigest Digest       `json:"requestDigest"`
-	InputIDs      []InputID    `json:"inputIds,omitempty"`
-	PromptToken   PromptToken  `json:"promptToken,omitempty"`
-	Tools         []ToolSpec   `json:"tools,omitempty"`
-	ToolsDigest   Digest       `json:"toolsDigest"`
+	StepID        StepID             `json:"stepId"`
+	Model         ModelRef           `json:"model"`
+	Request       model.ModelRequest `json:"request"`
+	RequestDigest Digest             `json:"requestDigest"`
+	InputIDs      []InputID          `json:"inputIds,omitempty"`
+	PromptToken   PromptToken        `json:"promptToken,omitempty"`
+	Tools         []ToolSpec         `json:"tools,omitempty"`
+	ToolsDigest   Digest             `json:"toolsDigest"`
 }
 
 func (PrepareModelRequest) agentCommand() {}
@@ -77,7 +81,7 @@ func (RecoverModelExecution) agentCommand() {}
 // bindings. Requires the model start grant.
 type SubmitModelResult struct {
 	StepID     StepID            `json:"stepId"`
-	Result     ModelResult       `json:"result"`
+	Result     model.ModelResult `json:"result"`
 	Calls      []ToolCallBinding `json:"calls,omitempty"`
 	Scheduling ToolScheduling    `json:"scheduling,omitzero"`
 }
@@ -110,7 +114,7 @@ const (
 // the model start grant.
 type RejectModelResult struct {
 	StepID      StepID                 `json:"stepId"`
-	Usage       Usage                  `json:"usage"`
+	Usage       model.Usage            `json:"usage"`
 	Failure     StepFailure            `json:"failure"`
 	Disposition ModelRejectDisposition `json:"disposition,omitempty"`
 }

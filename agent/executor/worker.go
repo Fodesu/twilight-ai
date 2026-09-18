@@ -19,6 +19,7 @@ import (
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/protocol"
+	"github.com/felinics/twilight/agent/run/schema"
 )
 
 // WorkerOptions configure one Worker incarnation.
@@ -175,11 +176,11 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 		if model.Request == nil {
 			return errors.New("executor: model assignment requires an inline request payload")
 		}
-		schema, err := run.SchemaFor(a.Schema)
+		sch, err := schema.For(a.Schema)
 		if err != nil {
 			return err
 		}
-		requestDigest, err := schema.Canonical.DigestRequest(*model.Request)
+		requestDigest, err := sch.Canonical.DigestRequest(*model.Request)
 		if err != nil {
 			return err
 		}

@@ -20,8 +20,8 @@ import (
 	"github.com/felinics/twilight/agent/driver"
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/preset"
-	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
+	"github.com/felinics/twilight/agent/run/frozen"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
@@ -146,7 +146,7 @@ type Authority struct {
 	Driver   *driver.Driver
 	Presets  preset.Registry
 	Executor effect.ExecutionPort
-	Frozen   run.FrozenValueStore
+	Frozen   frozen.Store
 	// Projections reads every projection through the Session's Writer.
 	Projections extension.ProjectionReader
 	// Content materializes the frozen bodies projections name (CHT-MAT-1).
@@ -221,11 +221,11 @@ func New(p Ports) (*Authority, error) { //nolint:gocritic // hugeParam: Ports is
 	}
 	// Frozen bodies live in the content store and are admitted through the
 	// same binding store the Writers resolve against (RUN-WIR-4).
-	var frozen run.FrozenValueStore
+	var fz frozen.Store
 	if p.Content == nil {
-		frozen = runmod.FrozenValuesInMemory(bindings)
+		fz = runmod.FrozenValuesInMemory(bindings)
 	} else {
-		frozen, err = runmod.FrozenValues(p.Content, bindings)
+		fz, err = runmod.FrozenValues(p.Content, bindings)
 		if err != nil {
 			return nil, err
 		}
@@ -237,7 +237,7 @@ func New(p Ports) (*Authority, error) { //nolint:gocritic // hugeParam: Ports is
 	admission := writer.Admission{Bindings: bindings, Ledger: ledger}
 	writers := writer.NewWriters(store, registry, admission, p.Ownership,
 		writer.WritersConfig{Cache: cache, CachePolicy: runmod.WriterCachePolicy(p.CacheEvery), Observers: p.Observers})
-	runs, err := runmod.NewSessionRunStore(runmod.Config{Registry: registry, Store: store, Frozen: frozen, Cache: cache, Now: now})
+	runs, err := runmod.NewSessionRunStore(runmod.Config{Registry: registry, Store: store, Frozen: fz, Cache: cache, Now: now})
 	if err != nil {
 		return nil, err
 	}
@@ -253,11 +253,11 @@ func New(p Ports) (*Authority, error) { //nolint:gocritic // hugeParam: Ports is
 	// takes no ownership (AUTH-OWN-2). The Writer keeps its own transactional
 	// projections for the commit critical section.
 	projections := extension.NewProjectionReader(store, registry, cache)
-	content := runmod.NewContent(frozen)
+	content := runmod.NewContent(fz)
 	a := &Authority{
 		Store: store, Writers: writers, Registry: registry, Admission: admission, Runs: runs,
 		Turns:   &turn.Coordinator{Projections: projections, Runs: runs, Now: now},
-		Presets: presets, Executor: p.Executor, Frozen: frozen, Projections: projections, Content: content,
+		Presets: presets, Executor: p.Executor, Frozen: fz, Projections: projections, Content: content,
 		Chatlog:   &chatlog.Commands{Now: now},
 		History:   turn.History{Store: store, Registry: registry, Projections: projections},
 		Clock:     now,

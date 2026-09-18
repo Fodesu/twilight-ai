@@ -1,4 +1,10 @@
-package run
+package plan
+
+import (
+	"fmt"
+
+	"github.com/felinics/twilight/agent/run"
+)
 
 // Effect is the at-most-one pending action Machine.Next derives from the
 // current state (RUN-MCH-4). Effects are never persisted; the Loop re-derives
@@ -12,7 +18,7 @@ type NeedModelRequest struct {
 func (NeedModelRequest) effect() {}
 
 type StartModelCall struct {
-	StepID StepID
+	StepID run.StepID
 }
 
 func (StartModelCall) effect() {}
@@ -21,14 +27,14 @@ func (StartModelCall) effect() {}
 // accepted after this step was Prepared, so its frozen request is incomplete
 // and the Run should replan.
 type WithdrawPrepared struct {
-	StepID StepID
+	StepID run.StepID
 }
 
 func (WithdrawPrepared) effect() {}
 
 type StartToolCalls struct {
-	StepID  StepID
-	CallIDs []CallID
+	StepID  run.StepID
+	CallIDs []run.CallID
 }
 
 func (StartToolCalls) effect() {}
@@ -42,18 +48,18 @@ func (Idle) effect() {}
 
 // WaitingCalls returns the outstanding ResponseRequests on the current ToolStep.
 // Application uses this after Loop returns LoopWaiting. The result is detached.
-func WaitingCalls(s MachineState) []ResponseRequest { //nolint:gocritic // hugeParam: read-only query over a detached state value
-	ts, ok := s.Current.(ToolStep)
+func WaitingCalls(s run.MachineState) []run.ResponseRequest { //nolint:gocritic // hugeParam: read-only query over a detached state value
+	ts, ok := s.Current.(run.ToolStep)
 	if !ok {
 		return nil
 	}
-	var out []ResponseRequest
+	var out []run.ResponseRequest
 	for i := range ts.Calls {
 		c := &ts.Calls[i]
-		if c.Status != ToolWaiting || c.Waiting == nil {
+		if c.Status != run.ToolWaiting || c.Waiting == nil {
 			continue
 		}
-		cloned := cloneResponseRequest(c.Waiting)
+		cloned := run.CloneResponseRequest(c.Waiting)
 		if cloned != nil {
 			out = append(out, *cloned)
 		}
@@ -62,15 +68,15 @@ func WaitingCalls(s MachineState) []ResponseRequest { //nolint:gocritic // hugeP
 }
 
 // ExecutingCalls returns CallIDs still Executing on the current ToolStep.
-func ExecutingCalls(s MachineState) []CallID { //nolint:gocritic // hugeParam: read-only query over a detached state value
-	ts, ok := s.Current.(ToolStep)
+func ExecutingCalls(s run.MachineState) []run.CallID { //nolint:gocritic // hugeParam: read-only query over a detached state value
+	ts, ok := s.Current.(run.ToolStep)
 	if !ok {
 		return nil
 	}
-	var out []CallID
+	var out []run.CallID
 	for i := range ts.Calls {
 		c := &ts.Calls[i]
-		if c.Status == ToolExecuting {
+		if c.Status == run.ToolExecuting {
 			out = append(out, c.CallID)
 		}
 	}
@@ -80,19 +86,19 @@ func ExecutingCalls(s MachineState) []CallID { //nolint:gocritic // hugeParam: r
 // NeedsRecovery reports that an execution is in flight and this process has
 // no Start effect for it: a ModelStep is Executing, or a ToolStep has
 // Executing calls and no Pending calls.
-func NeedsRecovery(s MachineState) bool { //nolint:gocritic // hugeParam: read-only query over a detached state value
+func NeedsRecovery(s run.MachineState) bool { //nolint:gocritic // hugeParam: read-only query over a detached state value
 	switch cur := s.Current.(type) {
-	case ModelStep:
-		return cur.Status == ModelExecuting
-	case ToolStep:
+	case run.ModelStep:
+		return cur.Status == run.ModelExecuting
+	case run.ToolStep:
 		pending := false
 		executing := false
 		for i := range cur.Calls {
 			c := &cur.Calls[i]
 			switch c.Status {
-			case ToolPending:
+			case run.ToolPending:
 				pending = true
-			case ToolExecuting:
+			case run.ToolExecuting:
 				executing = true
 			}
 		}
@@ -106,24 +112,24 @@ func NeedsRecovery(s MachineState) bool { //nolint:gocritic // hugeParam: read-o
 // boundary facts only. Conversation content (previous assistant output, tool
 // results) is read from the Session by the prompt builder itself.
 type PromptInput struct {
-	Scope      Scope // filled by the Loop; Next does not know it
-	Owner      OwnerID
-	RunID      RunID
-	SourceStep StepID
-	Inputs     []AgentInput
+	Scope      run.Scope // filled by the Loop; Next does not know it
+	Owner      run.OwnerID
+	RunID      run.RunID
+	SourceStep run.StepID
+	Inputs     []run.AgentInput
 }
 
 // Next derives the pending effect from the current state (RUN-MCH-4).
 // Terminal states return ErrRunTerminal; callers check Status first.
 //
 //nolint:gocritic // hugeParam: Next is a pure value-state interpreter and must not mutate MachineState.
-func Next(s MachineState) (Effect, error) {
+func Next(s run.MachineState) (Effect, error) {
 	if s.Status.Terminal() {
-		return nil, ErrRunTerminal
+		return nil, run.ErrRunTerminal
 	}
 	switch cur := s.Current.(type) {
-	case Open:
-		var source StepID
+	case run.Open:
+		var source run.StepID
 		if s.LastToolStep != nil {
 			source = s.LastToolStep.RefValue.ID
 		}
@@ -131,25 +137,25 @@ func Next(s MachineState) (Effect, error) {
 			Owner:      s.Owner,
 			RunID:      s.RunID,
 			SourceStep: source,
-			Inputs:     append([]AgentInput(nil), s.PendingInputs...),
+			Inputs:     append([]run.AgentInput(nil), s.PendingInputs...),
 		}}, nil
-	case ModelStep:
-		if cur.Status == ModelPrepared {
+	case run.ModelStep:
+		if cur.Status == run.ModelPrepared {
 			if len(s.PendingInputs) > 0 {
 				return WithdrawPrepared{StepID: cur.RefValue.ID}, nil
 			}
 			return StartModelCall{StepID: cur.RefValue.ID}, nil
 		}
 		return Idle{}, nil
-	case ToolStep:
-		var pending []CallID
+	case run.ToolStep:
+		var pending []run.CallID
 		live := false
 		for _, c := range cur.Calls {
 			switch c.Status {
-			case ToolPending:
+			case run.ToolPending:
 				pending = append(pending, c.CallID)
 				live = true
-			case ToolWaiting, ToolExecuting:
+			case run.ToolWaiting, run.ToolExecuting:
 				live = true
 			}
 		}
@@ -159,8 +165,8 @@ func Next(s MachineState) (Effect, error) {
 		if live {
 			return Idle{}, nil
 		}
-		return nil, rejectionf("next: tool step %q has no live calls but was not closed", cur.RefValue.ID)
+		return nil, fmt.Errorf("agent: next: tool step %q has no live calls but was not closed", cur.RefValue.ID)
 	default:
-		return nil, rejectionf("next: unknown current variant %T", s.Current)
+		return nil, fmt.Errorf("agent: next: unknown current variant %T", s.Current)
 	}
 }

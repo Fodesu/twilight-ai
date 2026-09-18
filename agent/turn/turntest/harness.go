@@ -14,6 +14,11 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/frozen"
+	"github.com/felinics/twilight/agent/run/model"
+	"github.com/felinics/twilight/agent/run/model/sdkconv"
+	"github.com/felinics/twilight/agent/run/runtime"
+	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
@@ -41,7 +46,7 @@ type harness struct {
 	ctx      context.Context
 	store    session.Store
 	registry *extension.Registry
-	frozen   run.FrozenValueStore
+	frozen   frozen.Store
 	bindings *artifact.MemoryBindingStore
 	ledger   *artifact.MemoryLedger
 	now      int64
@@ -284,7 +289,7 @@ func decode[T any](t testing.TB, registry *extension.Registry, event *session.Ev
 	return v
 }
 
-func (h *harness) load(runID run.RunID) run.RuntimeSnapshot {
+func (h *harness) load(runID run.RunID) runtime.Snapshot {
 	h.t.Helper()
 	snap, err := h.rt.Bind(h.writer()).Load(h.ctx, runID)
 	if err != nil {
@@ -303,17 +308,17 @@ func (h *harness) claim() run.ExecutionClaim {
 // commitResult is a Run command's result plus the events of the commit it
 // landed in.
 type commitResult struct {
-	run.CommitResult
+	runtime.CommitResult
 	Events []session.Event
 }
 
 func (h *harness) runCommit(runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand) (commitResult, error) {
 	h.t.Helper()
-	env, err := run.SchemaV1().Wire.Envelope(runID, id, cmd)
+	env, err := schema.V1().Wire.Envelope(runID, id, cmd)
 	if err != nil {
 		h.fatal(err)
 	}
-	res, err := h.rt.Bind(h.writer()).Commit(h.ctx, run.CommitRequest{Base: base, Command: env})
+	res, err := h.rt.Bind(h.writer()).Commit(h.ctx, runtime.CommitRequest{Base: base, Command: env})
 	if err != nil {
 		return commitResult{}, err
 	}
@@ -347,11 +352,11 @@ var toolDef = sdk.ToolDefinition{Name: "ask", Parameters: json.RawMessage(`{"typ
 
 func (h *harness) spec(policy run.ResponsePolicy) run.ToolSpec {
 	h.t.Helper()
-	frozen, err := run.FreezeToolDefinition(toolDef)
+	store, err := sdkconv.FreezeToolDefinition(toolDef)
 	if err != nil {
 		h.fatal(err)
 	}
-	d, err := run.SchemaV1().Canonical.DigestToolDefinition(frozen)
+	d, err := schema.V1().Canonical.DigestToolDefinition(store)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -367,12 +372,12 @@ func (h *harness) prepare(runID run.RunID, specs []run.ToolSpec) run.StepID {
 	if len(specs) > 0 {
 		req.Tools = []sdk.ToolDefinition{toolDef}
 	}
-	frozen, err := run.FreezeModelRequest(req)
+	store, err := sdkconv.FreezeModelRequest(req)
 	if err != nil {
 		h.fatal(err)
 	}
-	proto := run.SchemaV1().Canonical
-	reqDigest, err := proto.DigestRequest(frozen)
+	proto := schema.V1().Canonical
+	reqDigest, err := proto.DigestRequest(store)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -384,12 +389,12 @@ func (h *harness) prepare(runID run.RunID, specs []run.ToolSpec) run.StepID {
 	if err != nil {
 		h.fatal(err)
 	}
-	cmdID := run.SchemaV1().Identity.DeriveModelRequestCommandID(runID, snap.Position)
+	cmdID := schema.V1().Identity.DeriveModelRequestCommandID(runID, snap.Position)
 	ids := make([]run.InputID, len(snap.State.PendingInputs))
 	for i, in := range snap.State.PendingInputs {
 		ids[i] = in.ID
 	}
-	cmd := run.PrepareModelRequest{StepID: run.SchemaV1().Identity.DeriveModelStepID(runID, cmdID, binding), Model: "m-1", Request: frozen,
+	cmd := run.PrepareModelRequest{StepID: schema.V1().Identity.DeriveModelStepID(runID, cmdID, binding), Model: "m-1", Request: store,
 		RequestDigest: reqDigest, InputIDs: ids, Tools: specs, ToolsDigest: toolsDigest}
 	h.mustRunCommit(runID, cmdID, snap.Position, cmd)
 	return cmd.StepID
@@ -401,15 +406,15 @@ func (h *harness) executingModel(runID run.RunID) (run.StepID, run.ExecutionClai
 	h.t.Helper()
 	step := h.prepare(runID, nil)
 	claim := h.claim()
-	res := h.mustRunCommit(runID, run.SchemaV1().Identity.DeriveStartCommandID(runID, step, "", claim), 0, run.StartModelExecution{StepID: step, Claim: claim})
-	if res.Status != run.CommitAccepted {
+	res := h.mustRunCommit(runID, schema.V1().Identity.DeriveStartCommandID(runID, step, "", claim), 0, run.StartModelExecution{StepID: step, Claim: claim})
+	if res.Status != runtime.CommitAccepted {
 		h.fatal("start model was not accepted")
 	}
 	return step, claim
 }
 
-func textResult(text string) run.ModelResult {
-	r, err := run.FreezeModelResult(sdk.ModelResult{Text: text, FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}})
+func textResult(text string) model.ModelResult {
+	r, err := sdkconv.FreezeModelResult(sdk.ModelResult{Text: text, FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}})
 	if err != nil {
 		panic(err)
 	}
@@ -421,7 +426,7 @@ func textResult(text string) run.ModelResult {
 func (h *harness) complete(runID run.RunID) commitResult {
 	h.t.Helper()
 	step, claim := h.executingModel(runID)
-	return h.mustRunCommit(runID, run.SchemaV1().Identity.DeriveSettlementCommandID(runID, step, "", claim), 0, run.SubmitModelResult{StepID: step, Result: textResult("done")})
+	return h.mustRunCommit(runID, schema.V1().Identity.DeriveSettlementCommandID(runID, step, "", claim), 0, run.SubmitModelResult{StepID: step, Result: textResult("done")})
 }
 
 // waitingTool takes the Run to a ToolStep whose single call needs approval.
@@ -430,23 +435,23 @@ func (h *harness) waitingTool(runID run.RunID) {
 	spec := h.spec(run.ApprovalRequired)
 	step := h.prepare(runID, []run.ToolSpec{spec})
 	claim := h.claim()
-	if res := h.mustRunCommit(runID, run.SchemaV1().Identity.DeriveStartCommandID(runID, step, "", claim), 0, run.StartModelExecution{StepID: step, Claim: claim}); res.Status != run.CommitAccepted {
+	if res := h.mustRunCommit(runID, schema.V1().Identity.DeriveStartCommandID(runID, step, "", claim), 0, run.StartModelExecution{StepID: step, Claim: claim}); res.Status != runtime.CommitAccepted {
 		h.fatal("start model was not accepted")
 	}
 	args := run.MustParseCanonicalJSON(`{"q":1}`)
-	callID := run.SchemaV1().Identity.DeriveCallID(step, 0)
-	bd, err := run.SchemaV1().Canonical.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
+	callID := schema.V1().Identity.DeriveCallID(step, 0)
+	bd, err := schema.V1().Canonical.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
 	if err != nil {
 		h.fatal(err)
 	}
-	result, err := run.FreezeModelResult(sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 2},
+	result, err := sdkconv.FreezeModelResult(sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 2},
 		ToolCalls: []sdk.ToolCall{{ToolCallID: "c0", ToolName: "ask", Input: args.String()}}})
 	if err != nil {
 		h.fatal(err)
 	}
 	binding := run.ToolCallBinding{CallID: callID, ProviderCallID: "c0", ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
 		BindingDigest: bd, Arguments: args, Policy: spec.Policy}
-	h.mustRunCommit(runID, run.SchemaV1().Identity.DeriveSettlementCommandID(runID, step, "", claim), 0,
+	h.mustRunCommit(runID, schema.V1().Identity.DeriveSettlementCommandID(runID, step, "", claim), 0,
 		run.SubmitModelResult{StepID: step, Result: result, Calls: []run.ToolCallBinding{binding}})
 }
 

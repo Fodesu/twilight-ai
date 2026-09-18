@@ -11,6 +11,11 @@ import (
 	"fmt"
 	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/frozen"
+	"github.com/felinics/twilight/agent/run/model"
+	"github.com/felinics/twilight/agent/run/model/sdkconv"
+	"github.com/felinics/twilight/agent/run/runtime"
+	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
@@ -55,7 +60,7 @@ type harness struct {
 	registry *extension.Registry
 	bindings *artifact.MemoryBindingStore
 	ledger   *artifact.MemoryLedger
-	frozen   run.FrozenValueStore
+	frozen   frozen.Store
 	cache    *extension.MemoryProjectionCache
 	clock    *clock
 	writers  writer.Writers
@@ -182,7 +187,7 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	if err != nil {
 		h.fatal(err)
 	}
-	facts, err := run.SchemaV1().Machine.CreateGroup(newRun, inputs)
+	facts, err := schema.V1().Machine.CreateGroup(newRun, inputs)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -209,7 +214,7 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	}
 	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(run.SchemaV1().Wire, f), RecordedAtUnixMilli: 1, Value: runmod.Event{RunID: runID, Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(schema.V1().Wire, f), RecordedAtUnixMilli: 1, Value: runmod.Event{RunID: runID, Fact: f}})
 	}
 	group.Batches = []writer.TypedBatch{}
 	if len(sessionEvents) > 0 {
@@ -226,7 +231,7 @@ func (h *harness) startRun(turnID turn.TurnID, runID run.RunID, inputs ...run.Ag
 	h.mustApply(h.startGroup(turnID, runID, 1, inputs...))
 }
 
-func (h *harness) load(runID run.RunID) run.RuntimeSnapshot {
+func (h *harness) load(runID run.RunID) runtime.Snapshot {
 	h.t.Helper()
 	snap, err := h.rt.Bind(h.writer()).Load(h.ctx, runID)
 	if err != nil {
@@ -244,7 +249,7 @@ func (h *harness) record(runID run.RunID) runmod.Record {
 	return rec
 }
 
-func (h *harness) proto(runID run.RunID) run.Schema {
+func (h *harness) proto(runID run.RunID) schema.Schema {
 	h.t.Helper()
 	p, err := h.load(runID).Schema()
 	if err != nil {
@@ -273,7 +278,7 @@ func (a attachPart) Prepare(_ context.Context, _ writer.View, now int64) ([]writ
 
 // commitResult is a Run command's result plus the sealed commit it landed in.
 type commitResult struct {
-	run.CommitResult
+	runtime.CommitResult
 	Events []session.Event
 	Head   session.Head
 }
@@ -291,7 +296,7 @@ func (h *harness) commitWith(rt *runmod.SessionRunStore, w writer.Writer, runID 
 	if err != nil {
 		h.fatal(err)
 	}
-	req := run.CommitRequest{Base: base, Command: env}
+	req := runtime.CommitRequest{Base: base, Command: env}
 	if len(attach) == 0 {
 		res, err := rt.Bind(w).Commit(h.ctx, req)
 		if err != nil {
@@ -316,7 +321,7 @@ func (h *harness) commitWith(rt *runmod.SessionRunStore, w writer.Writer, runID 
 
 // withCommit looks the command's sealed commit up so a test can inspect the
 // group it produced.
-func (h *harness) withCommit(res run.CommitResult, id session.CommitID) commitResult {
+func (h *harness) withCommit(res runtime.CommitResult, id session.CommitID) commitResult {
 	h.t.Helper()
 	var out commitResult
 	out.CommitResult = res
@@ -355,11 +360,11 @@ var toolDef = sdk.ToolDefinition{Name: "echo", Parameters: json.RawMessage(`{"ty
 
 func (h *harness) spec() run.ToolSpec {
 	h.t.Helper()
-	frozen, err := run.FreezeToolDefinition(toolDef)
+	store, err := sdkconv.FreezeToolDefinition(toolDef)
 	if err != nil {
 		h.fatal(err)
 	}
-	d, err := run.SchemaV1().Canonical.DigestToolDefinition(frozen)
+	d, err := schema.V1().Canonical.DigestToolDefinition(store)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -367,7 +372,7 @@ func (h *harness) spec() run.ToolSpec {
 }
 
 // preparedCommand builds PrepareModelRequest against snap with the derived ids.
-func (h *harness) preparedCommand(snap run.RuntimeSnapshot, withTool bool) (run.PrepareModelRequest, run.CommandID) {
+func (h *harness) preparedCommand(snap runtime.Snapshot, withTool bool) (run.PrepareModelRequest, run.CommandID) {
 	h.t.Helper()
 	req := sdk.Request{Model: "m-1", Messages: []sdk.Message{sdk.UserMessage("go")}}
 	var specs []run.ToolSpec
@@ -375,12 +380,12 @@ func (h *harness) preparedCommand(snap run.RuntimeSnapshot, withTool bool) (run.
 		req.Tools = []sdk.ToolDefinition{toolDef}
 		specs = []run.ToolSpec{h.spec()}
 	}
-	frozen, err := run.FreezeModelRequest(req)
+	store, err := sdkconv.FreezeModelRequest(req)
 	if err != nil {
 		h.fatal(err)
 	}
 	proto, _ := snap.Schema()
-	reqDigest, err := proto.Canonical.DigestRequest(frozen)
+	reqDigest, err := proto.Canonical.DigestRequest(store)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -392,12 +397,12 @@ func (h *harness) preparedCommand(snap run.RuntimeSnapshot, withTool bool) (run.
 	if err != nil {
 		h.fatal(err)
 	}
-	cmdID := run.SchemaV1().Identity.DeriveModelRequestCommandID(snap.State.RunID, snap.Position)
+	cmdID := schema.V1().Identity.DeriveModelRequestCommandID(snap.State.RunID, snap.Position)
 	ids := make([]run.InputID, len(snap.State.PendingInputs))
 	for i, in := range snap.State.PendingInputs {
 		ids[i] = in.ID
 	}
-	return run.PrepareModelRequest{StepID: run.SchemaV1().Identity.DeriveModelStepID(snap.State.RunID, cmdID, binding), Model: "m-1", Request: frozen,
+	return run.PrepareModelRequest{StepID: schema.V1().Identity.DeriveModelStepID(snap.State.RunID, cmdID, binding), Model: "m-1", Request: store,
 		RequestDigest: reqDigest, InputIDs: ids, Tools: specs, ToolsDigest: toolsDigest}, cmdID
 }
 
@@ -414,8 +419,8 @@ func (h *harness) prepare(runID run.RunID, withTool bool) run.StepID {
 func (h *harness) startModel(runID run.RunID, step run.StepID) run.ExecutionClaim {
 	h.t.Helper()
 	claim := h.claim()
-	res := h.mustCommit(runID, run.SchemaV1().Identity.DeriveStartCommandID(runID, step, "", claim), 0, run.StartModelExecution{StepID: step, Claim: claim})
-	if res.Status != run.CommitAccepted {
+	res := h.mustCommit(runID, schema.V1().Identity.DeriveStartCommandID(runID, step, "", claim), 0, run.StartModelExecution{StepID: step, Claim: claim})
+	if res.Status != runtime.CommitAccepted {
 		h.fatal("start was not accepted")
 	}
 	return claim
@@ -428,8 +433,8 @@ func (h *harness) executingModel(runID run.RunID, withTool bool) (run.StepID, ru
 	return step, h.startModel(runID, step)
 }
 
-func textResult(text string) run.ModelResult {
-	r, err := run.FreezeModelResult(sdk.ModelResult{Text: text, FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}})
+func textResult(text string) model.ModelResult {
+	r, err := sdkconv.FreezeModelResult(sdk.ModelResult{Text: text, FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}})
 	if err != nil {
 		panic(err)
 	}
@@ -437,7 +442,7 @@ func textResult(text string) run.ModelResult {
 }
 
 // toolCallResult is a model result issuing n calls of the harness tool.
-func (h *harness) toolCallResult(step run.StepID, n int) (run.ModelResult, []run.ToolCallBinding) {
+func (h *harness) toolCallResult(step run.StepID, n int) (model.ModelResult, []run.ToolCallBinding) {
 	h.t.Helper()
 	spec := h.spec()
 	calls := make([]sdk.ToolCall, n)
@@ -445,15 +450,15 @@ func (h *harness) toolCallResult(step run.StepID, n int) (run.ModelResult, []run
 	for i := range calls {
 		args := run.MustParseCanonicalJSON(fmt.Sprintf(`{"i":%d}`, i))
 		calls[i] = sdk.ToolCall{ToolCallID: fmt.Sprintf("c%d", i), ToolName: "echo", Input: args.String()}
-		callID := run.SchemaV1().Identity.DeriveCallID(step, i)
-		bd, err := run.SchemaV1().Canonical.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
+		callID := schema.V1().Identity.DeriveCallID(step, i)
+		bd, err := schema.V1().Canonical.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
 		if err != nil {
 			h.fatal(err)
 		}
 		bindings[i] = run.ToolCallBinding{CallID: callID, ProviderCallID: calls[i].ToolCallID, ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
 			BindingDigest: bd, Arguments: args, Policy: spec.Policy}
 	}
-	r, err := run.FreezeModelResult(sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 2}, ToolCalls: calls})
+	r, err := sdkconv.FreezeModelResult(sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 2}, ToolCalls: calls})
 	if err != nil {
 		h.fatal(err)
 	}
@@ -465,7 +470,7 @@ func (h *harness) openToolStep(runID run.RunID, n int) (run.StepID, []run.CallID
 	h.t.Helper()
 	step, claim := h.executingModel(runID, true)
 	result, bindings := h.toolCallResult(step, n)
-	res := h.mustCommit(runID, run.SchemaV1().Identity.DeriveSettlementCommandID(runID, step, "", claim), 0,
+	res := h.mustCommit(runID, schema.V1().Identity.DeriveSettlementCommandID(runID, step, "", claim), 0,
 		run.SubmitModelResult{StepID: step, Result: result, Calls: bindings})
 	ts, ok := res.Snapshot.State.Current.(run.ToolStep)
 	if !ok {
@@ -481,8 +486,8 @@ func (h *harness) openToolStep(runID run.RunID, n int) (run.StepID, []run.CallID
 func (h *harness) startTool(runID run.RunID, step run.StepID, call run.CallID) run.ExecutionClaim {
 	h.t.Helper()
 	claim := h.claim()
-	res := h.mustCommit(runID, run.SchemaV1().Identity.DeriveStartCommandID(runID, step, call, claim), 0, run.StartToolCall{StepID: step, CallID: call, Claim: claim})
-	if res.Status != run.CommitAccepted {
+	res := h.mustCommit(runID, schema.V1().Identity.DeriveStartCommandID(runID, step, call, claim), 0, run.StartToolCall{StepID: step, CallID: call, Claim: claim})
+	if res.Status != runtime.CommitAccepted {
 		h.fatal("tool start was not accepted")
 	}
 	return claim
