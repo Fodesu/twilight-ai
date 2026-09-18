@@ -41,7 +41,7 @@ Atomic Commit ─────────────────────┘
 
 5. **Session 级 Ownership 与 Fencing。** `Handle + Epoch`：同一 Session 同一时刻至多一个有效写者；接管使 Epoch 加一并持久化，旧 Handle 的迟到写入被拒（SES-OWN-1/2）。所有权是 Session 级而非执行目标级：接管者对全部执行中的目标查询，并根据结果重连、延迟或处置（SES-OWN-3、RUN-CMT-7）。何时接管是 kernel 之上的策略，kernel 不承载 TTL 或心跳。
 
-6. **幂等语义提交。** `CommitID + semantic fingerprint`：同 ID 同内容为 `AlreadyApplied`，同 ID 不同内容为 `Conflict`，两者都不写入（EXT-WRT-2）。fingerprint 覆盖 CommitID、各 batch 的 stream 与其事件的 Type、Payload 有序序列，不含 SessionID（继承前缀经 fork 重放仍须判为已应用，SES-FRK-3）与时间。kernel 只拒绝重复 CommitID 并提供该索引的读侧（SES-APP-3、SES-REP-3/4），比对由 Writer 完成。恢复与重放因此不会重复写事实。
+6. **幂等语义提交。** `CommitID + intent`：写者把产生 commit 的操作 digest 封进 commit（`Commit.Intent`），同 ID 同 intent 为 `AlreadyApplied`，同 ID 不同 intent 为 `Conflict`，两者都不写入，也不需要重建事件（EXT-WRT-2）；未声明 intent 时退回 event fingerprint 比对，fingerprint 覆盖 CommitID、各 batch 的 stream 与其事件的 Type、Payload 有序序列，不含 SessionID（继承前缀经 fork 重放仍须判为已应用，SES-FRK-3）与时间。kernel 只拒绝重复 CommitID 并提供该索引的读侧（SES-APP-3、SES-REP-3/4），比对由 Writer 完成。恢复与重放因此不会重复写事实。
 
 7. **Projection 与 Snapshot 只是派生状态。** Projection 可重建，Snapshot（投影缓存）可丢弃；复用条件是 Commit 边界对齐（EXT-PRJ-3），篡改或过期的条目只让下次多折，绝不成为第二份 authority（EXT-PRJ-5/7）。owner 进程内的投影与观察者从 Store 折出的投影对同一 head 给出相同状态（EXT-PRJ-4）。
 
@@ -138,6 +138,7 @@ type Commit struct {
     Seq CommitSeq
     CommitID CommitID
     Epoch Epoch
+    Intent es.Digest      // 可选：产生该 commit 的操作的 digest，进入 commit digest；重放按它判定（SES-APP-4）
     Batches []StreamBatch // 非空；同一 Commit 内每个流至多一个 batch
     PrevDigest es.Digest
     Digest es.Digest
@@ -208,6 +209,8 @@ type Store interface {
 **SES-APP-1** `Append(proposal)` 原子：整个 Commit 同时可见或同时不存在。Store 为 Commit 赋 `Seq`（从当前 `Head.Next` 起连续，空 ledger 的 head 为 `LedgerSeed(header)`），以 Handle 的 Epoch 与当前 head digest 封印（SES-WIR-2），持久化，然后返回封印后的 Commit。返回即持久（文件 adapter 每次 Append 一次 `fsync`；数据库 adapter 一个事务）。写入开始之后的任何失败（write、fsync、事务提交返回错误）使该 Commit 是否落盘对句柄成为未知：句柄进入失效状态，本次与之后的 `Append` 返回 `ErrHandleFailed`，不再写入；调用方 Close 并重开，`Open` 按磁盘实况决定该 Commit 是否存在（完整则接纳进索引，残缺则按 SES-APP-2 截断），随后的重放由 `Committed`/`LookupCommit` 回答。adapter 只能在写入开始之前返回 ctx 错误；写入开始后的中断按未知结果报告。
 
 **SES-APP-2** 崩溃只可能留下一个不完整的尾 Commit：文件 adapter 打开时把末尾帧不完整且没有后续 Commit 的尾部截掉；数据库 adapter 由事务保证不会出现。截断必须发生在 `Head` 确立之前：否则 `Head.Next` 落在残 Commit 内部，下一次 `Append` 会把残 Commit 与后续 Commit 焊成一个。reader 在任何时刻都不会看到不完整的 Commit。
+
+**SES-APP-4** `Proposal.Intent` 原样进入 `Commit.Intent` 并被 `CommitDigest` 覆盖（为空时预映像省略该字段，旧 digest 不变）。kernel 不解释也不比对它；它是 Writer 判定重放的依据（EXT-WRT-2）。
 
 **SES-APP-3** kernel 拒绝：空 Commit、空 batch、同一 Commit 内重复的流、非法流归因、重复 `CommitID`、非 canonical 或非 object 的 payload、无效 identity、落后的 Epoch。拒绝不写入任何内容，返回 `ErrInvalid`（重复 CommitID 为 `ErrConflict`）。kernel 不比对重复 CommitID 的内容，不返回"已应用"：幂等重放由 `writer.Writer` 比对 fingerprint 完成（EXT-WRT-2），它为此需要的 Commit 经 `LookupCommit` 从 kernel 取（SES-REP-4）。
 
