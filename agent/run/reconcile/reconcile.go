@@ -231,7 +231,8 @@ func (r *Reconciler) fail(key effect.AssignmentKey, err error) {
 // (stale, terminal, conflict) is skipped.
 func Apply(ctx context.Context, store run.RunStore, schema run.Schema, decisions []Decision) (int, error) {
 	n := 0
-	for _, d := range decisions {
+	for i := range decisions {
+		d := &decisions[i]
 		if d.Recovery == nil {
 			continue
 		}

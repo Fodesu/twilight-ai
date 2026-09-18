@@ -179,7 +179,7 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 		_ = kernel.Close(ctx)
 		return nil, err
 	}
-	if err := w.projections.rebuild(ctx, page); err != nil {
+	if err := w.projections.rebuild(ctx, &page); err != nil {
 		_ = kernel.Close(ctx)
 		return nil, err
 	}

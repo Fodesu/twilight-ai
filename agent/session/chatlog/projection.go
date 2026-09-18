@@ -139,7 +139,7 @@ var SurfaceProjection = extension.ProjectionDefinition{
 // Every position an entry carries is the ledger Position of the event that
 // produced it (EXT-PRJ-1): the projection keeps no counter and a snapshot
 // restores without rescanning.
-func applySurface(state any, e extension.DecodedEvent) (any, error) {
+func applySurface(state any, e extension.DecodedEvent) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
 	s, ok := state.(Surface)
 	if !ok {
 		return nil, fmt.Errorf("chatlog surface: state is %T", state)
@@ -221,7 +221,7 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 // applyRun folds one Run fact into the Surface (CHT-ENT-1, CHT-ENT-2). The
 // Run's Turn is remembered from run_created until run_ended: no fact of the
 // Run follows its end, so the table is bounded by the Runs active now.
-func (s Surface) applyRun(ev runmod.Event, pos session.Position) (any, error) {
+func (s Surface) applyRun(ev runmod.Event, pos session.Position) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
 	switch f := ev.Fact.(type) {
 	case run.RunCreated:
 		s.Runs = s.Runs.Set(ev.RunID, RunOwner{TurnID: TurnID(f.Owner), Schema: f.SchemaVersion})
@@ -428,7 +428,7 @@ var ContextProjection = extension.ProjectionDefinition{
 // element the previous state still holds, and a map is copied only by the
 // event that writes it. Entry positions are the ledger Positions of the
 // events that produced them.
-func applyContext(state any, e extension.DecodedEvent) (any, error) {
+func applyContext(state any, e extension.DecodedEvent) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
 	c, ok := state.(Context)
 	if !ok {
 		return nil, fmt.Errorf("chatlog context: state is %T", state)
@@ -615,11 +615,12 @@ func selectRetained(base []Entry, pairs []EntryDigestPair) ([]Entry, error) {
 // ContextFold folds decoded chatlog and run events into entries (CHT-CTX-1).
 func ContextFold(events []extension.DecodedEvent) ([]Entry, error) {
 	state, _ := ContextProjection.Initial()
-	for _, e := range events {
+	for i := range events {
+		e := &events[i]
 		if e.Unknown || (e.Module != extension.TwilightModule(ModuleID) && e.Module != extension.TwilightModule(runmod.ModuleID)) {
 			return nil, errors.New("chatlog: context fold requires decoded chatlog or run events")
 		}
-		next, err := applyContext(state, e)
+		next, err := applyContext(state, *e)
 		if err != nil {
 			return nil, err
 		}

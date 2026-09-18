@@ -39,12 +39,12 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 
 	// MaxSteps == 0: single call, no tool auto-execution.
 	if cfg.MaxSteps == 0 {
-		result, mr, err := generateOnce(ctx, model, cfg.Params)
+		result, mr, err := generateOnce(ctx, model, &cfg.Params)
 		if err != nil {
 			return nil, err
 		}
 		stepMsgs := buildStepMessages(mr.Text, mr.TextProviderMetadata, mr.ReasoningParts, mr.ToolCalls, nil, &mr.Usage)
-		step := stepResultFromModelResult(mr, stepMsgs, nil, nil)
+		step := stepResultFromModelResult(&mr, stepMsgs, nil, nil)
 		if err := applyOnStepCommitted(ctx, cfg, 0, &step); err != nil {
 			return nil, err
 		}
@@ -76,7 +76,7 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 		params := cfg.Params
 		params.Messages = messages
 
-		result, mr, err := generateOnce(ctx, model, params)
+		result, mr, err := generateOnce(ctx, model, &params)
 		if err != nil {
 			return nil, err
 		}
@@ -86,7 +86,7 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 		// No tool calls or not a tool-calls finish → final step
 		if mr.FinishReason != FinishReasonToolCalls || len(mr.ToolCalls) == 0 || !hasExecutableTools(mr.ToolCalls, toolMap) {
 			stepMsgs := buildStepMessages(mr.Text, mr.TextProviderMetadata, mr.ReasoningParts, mr.ToolCalls, nil, &mr.Usage)
-			sr := stepResultFromModelResult(mr, stepMsgs, nil, nil)
+			sr := stepResultFromModelResult(&mr, stepMsgs, nil, nil)
 			if err := applyOnStepCommitted(ctx, cfg, step, &sr); err != nil {
 				return nil, err
 			}
@@ -102,7 +102,7 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 			var deferred *ToolApprovalDeferredError
 			if errors.As(err, &deferred) {
 				stepMsgs := buildStepMessages(mr.Text, mr.TextProviderMetadata, mr.ReasoningParts, mr.ToolCalls, nil, &mr.Usage)
-				sr := stepResultFromModelResult(mr, stepMsgs, nil, &deferred.Approval)
+				sr := stepResultFromModelResult(&mr, stepMsgs, nil, &deferred.Approval)
 				if err := applyOnStepCommitted(ctx, cfg, step, &sr); err != nil {
 					return nil, err
 				}
@@ -116,7 +116,7 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 		}
 
 		stepMsgs := buildStepMessages(mr.Text, mr.TextProviderMetadata, mr.ReasoningParts, mr.ToolCalls, toolResults, &mr.Usage)
-		sr := stepResultFromModelResult(mr, stepMsgs, toolCallResultsFromParts(toolResults), nil)
+		sr := stepResultFromModelResult(&mr, stepMsgs, toolCallResultsFromParts(toolResults), nil)
 		if err := applyOnStepCommitted(ctx, cfg, step, &sr); err != nil {
 			return nil, err
 		}
@@ -151,8 +151,8 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 // generateOnce projects one step of the legacy options into the Request
 // boundary, makes exactly one model call, and adapts the single-call result
 // back to the legacy result shape.
-func generateOnce(ctx context.Context, model *Model, params GenerateParams) (*GenerateResult, ModelResult, error) {
-	req, err := RequestFromGenerateParams(params)
+func generateOnce(ctx context.Context, model *Model, params *GenerateParams) (*GenerateResult, ModelResult, error) {
+	req, err := RequestFromGenerateParams(*params)
 	if err != nil {
 		return nil, ModelResult{}, err
 	}
@@ -166,7 +166,7 @@ func generateOnce(ctx context.Context, model *Model, params GenerateParams) (*Ge
 // stepResultFromModelResult builds a legacy step from the single-call result.
 // StepResult carries response metadata by value while the boundary type carries
 // it by pointer, so an absent metadata becomes the zero value.
-func stepResultFromModelResult(mr ModelResult, messages []Message, toolResults []ToolResult, deferred *ToolApprovalResult) StepResult {
+func stepResultFromModelResult(mr *ModelResult, messages []Message, toolResults []ToolResult, deferred *ToolApprovalResult) StepResult {
 	var response ResponseMetadata
 	if mr.Response != nil {
 		response = *mr.Response

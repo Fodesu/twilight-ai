@@ -235,7 +235,7 @@ func (s *Session) Send(ctx context.Context, text string) ([]Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	return s.settled(ctx, resp)
+	return s.settled(ctx, &resp)
 }
 
 // Submit submits text, commits its route and returns the Turn it landed in
@@ -264,7 +264,7 @@ func (s *Session) Submit(ctx context.Context, text string) (turn.TurnRef, error)
 			s.app.fail(s.sid, fmt.Errorf("app: driving turn %s: %w", ref.TurnID, err))
 			return
 		}
-		if _, err := s.settled(s.bg, resp); err != nil {
+		if _, err := s.settled(s.bg, &resp); err != nil {
 			s.app.fail(s.sid, fmt.Errorf("app: settling turn %s: %w", ref.TurnID, err))
 		}
 	}()
@@ -378,7 +378,7 @@ func (s *Session) Resume(ctx context.Context) ([]Result, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	out, err := s.settled(ctx, resp)
+	out, err := s.settled(ctx, &resp)
 	return out, true, err
 }
 
@@ -400,7 +400,7 @@ func (s *Session) Retry(ctx context.Context) ([]Result, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	out, err := s.settled(ctx, resp)
+	out, err := s.settled(ctx, &resp)
 	return out, true, err
 }
 
@@ -408,7 +408,7 @@ func (s *Session) Retry(ctx context.Context) ([]Result, bool, error) {
 // settlement leaves submitted, undelivered inputs, the next Turn starts from
 // them (APP-RTE-2). When the backlog is drained and no Turn is active, the
 // automatic compaction policy runs (APP-CKP-1).
-func (s *Session) settled(ctx context.Context, resp driver.DriveResult) ([]Result, error) {
+func (s *Session) settled(ctx context.Context, resp *driver.DriveResult) ([]Result, error) {
 	out := []Result{s.result(ctx, resp)}
 	if resp.AlreadyDriving {
 		// The running driver settles the Turn and drains in its own call.
@@ -427,7 +427,7 @@ func (s *Session) settled(ctx context.Context, resp driver.DriveResult) ([]Resul
 			s.maybeCompact(ctx)
 			return out, nil
 		}
-		out = append(out, s.result(ctx, next))
+		out = append(out, s.result(ctx, &next))
 		if next.AlreadyDriving {
 			return out, nil
 		}
@@ -437,7 +437,7 @@ func (s *Session) settled(ctx context.Context, resp driver.DriveResult) ([]Resul
 
 // result wraps a TurnResponse with the settled Turn's reply; materialization
 // failures are reported to Warn and leave Reply empty.
-func (s *Session) result(ctx context.Context, resp driver.DriveResult) Result {
+func (s *Session) result(ctx context.Context, resp *driver.DriveResult) Result {
 	r := Result{TurnID: resp.Ref.TurnID, Status: resp.Status, Disposition: resp.Disposition, AlreadyDriving: resp.AlreadyDriving}
 	if !resp.AlreadyDriving && resp.Disposition == turn.ResumeFinished {
 		text, err := s.a.Reply(ctx, resp.Ref)

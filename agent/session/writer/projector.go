@@ -49,7 +49,7 @@ func newProjector(registry *extension.Registry, sid session.SessionID, cache ext
 // cache entry that ends on a commit boundary of this log plus the commits
 // after it, which is what keeps a long session from refolding quadratically
 // (EXT-PRJ-3).
-func (p *projector) rebuild(ctx context.Context, page session.CommitPage) error {
+func (p *projector) rebuild(ctx context.Context, page *session.CommitPage) error {
 	for _, def := range p.registry.Projections() {
 		k := projectionKey{def.ID, def.Version}
 		scope, err := p.registry.ScopeFor(def.ID, def.Version)

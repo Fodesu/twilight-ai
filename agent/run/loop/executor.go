@@ -284,7 +284,7 @@ func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) err
 		if got != body.RequestDigest || frozenRequest.Model != string(body.Model) {
 			return fmt.Errorf("%w: model request digest or model mismatch", ErrExecutorRejected)
 		}
-		execute = func(ctx context.Context) Outcome { return e.runModel(ctx, a, frozenRequest, invoker) }
+		execute = func(ctx context.Context) Outcome { return e.runModel(ctx, a, &frozenRequest, invoker) }
 	case ToolAssignment:
 		schema, err := run.SchemaFor(a.Schema)
 		if err != nil {
@@ -424,7 +424,7 @@ func (e *LocalExecutor) InFlight() int {
 	return n
 }
 
-func (e *LocalExecutor) runModel(ctx context.Context, a Assignment, frozenRequest run.ModelRequest, invoker ModelInvoker) Outcome {
+func (e *LocalExecutor) runModel(ctx context.Context, a Assignment, frozenRequest *run.ModelRequest, invoker ModelInvoker) Outcome {
 	sdkRequest, err := frozenRequest.SDK()
 	if err != nil {
 		return Outcome{Result: effect.ModelFailed{Code: effect.FailureMalformedRequest, Message: "frozen request cannot be materialized: " + err.Error()}}

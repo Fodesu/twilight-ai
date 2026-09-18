@@ -13,7 +13,7 @@ type serializedEventSink struct {
 	mu   *sync.Mutex
 }
 
-func (s *serializedEventSink) Emit(ctx context.Context, event Event) error {
+func (s *serializedEventSink) Emit(ctx context.Context, event Event) error { //nolint:gocritic // hugeParam: EventSink contract takes the Event by value
 	if s == nil || s.sink == nil {
 		return nil
 	}

@@ -386,7 +386,7 @@ func (e *Executor) settle(ctx context.Context, h *authority.Handle, preset turn.
 	// newest input is it. A fork-mode child's prefix holds just the
 	// conversation before the calling Turn, so otherwise the task was never
 	// submitted and is sent now.
-	if last, found := newestInput(chat); found {
+	if last, found := newestInput(&chat); found {
 		var body struct {
 			Text string `json:"text"`
 		}
@@ -461,7 +461,7 @@ func (e *Executor) awaitRecovery(ctx context.Context, ref turn.TurnRef) error {
 }
 
 // newestInput is the most recently submitted input of the chatlog surface.
-func newestInput(chat chatlog.Surface) (chatlog.InputView, bool) {
+func newestInput(chat *chatlog.Surface) (chatlog.InputView, bool) {
 	var best chatlog.InputView
 	var found bool
 	chat.Inputs.Range(func(_ chatlog.InputID, v chatlog.InputView) bool {

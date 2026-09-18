@@ -42,13 +42,14 @@ func (Idle) effect() {}
 
 // WaitingCalls returns the outstanding ResponseRequests on the current ToolStep.
 // Application uses this after Loop returns LoopWaiting. The result is detached.
-func WaitingCalls(s MachineState) []ResponseRequest {
+func WaitingCalls(s MachineState) []ResponseRequest { //nolint:gocritic // hugeParam: read-only query over a detached state value
 	ts, ok := s.Current.(ToolStep)
 	if !ok {
 		return nil
 	}
 	var out []ResponseRequest
-	for _, c := range ts.Calls {
+	for i := range ts.Calls {
+		c := &ts.Calls[i]
 		if c.Status != ToolWaiting || c.Waiting == nil {
 			continue
 		}
@@ -61,13 +62,14 @@ func WaitingCalls(s MachineState) []ResponseRequest {
 }
 
 // ExecutingCalls returns CallIDs still Executing on the current ToolStep.
-func ExecutingCalls(s MachineState) []CallID {
+func ExecutingCalls(s MachineState) []CallID { //nolint:gocritic // hugeParam: read-only query over a detached state value
 	ts, ok := s.Current.(ToolStep)
 	if !ok {
 		return nil
 	}
 	var out []CallID
-	for _, c := range ts.Calls {
+	for i := range ts.Calls {
+		c := &ts.Calls[i]
 		if c.Status == ToolExecuting {
 			out = append(out, c.CallID)
 		}
@@ -78,14 +80,15 @@ func ExecutingCalls(s MachineState) []CallID {
 // NeedsRecovery reports that an execution is in flight and this process has
 // no Start effect for it: a ModelStep is Executing, or a ToolStep has
 // Executing calls and no Pending calls.
-func NeedsRecovery(s MachineState) bool {
+func NeedsRecovery(s MachineState) bool { //nolint:gocritic // hugeParam: read-only query over a detached state value
 	switch cur := s.Current.(type) {
 	case ModelStep:
 		return cur.Status == ModelExecuting
 	case ToolStep:
 		pending := false
 		executing := false
-		for _, c := range cur.Calls {
+		for i := range cur.Calls {
+			c := &cur.Calls[i]
 			switch c.Status {
 			case ToolPending:
 				pending = true

@@ -136,7 +136,7 @@ func (l *Loop) startModelStep(ctx context.Context, runtime run.RunStore, events 
 
 	request, err := runtime.FrozenRequest(ctx, prepared.RequestDigest)
 	if err != nil {
-		if _, serr := l.settle(context.WithoutCancel(ctx), runtime, events, a, start.Snapshot.Position,
+		if _, serr := l.settle(context.WithoutCancel(ctx), runtime, events, &a, start.Snapshot.Position,
 			run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, schema); serr != nil {
 			return nil, serr
 		}
@@ -152,7 +152,7 @@ func (l *Loop) startModelStep(ctx context.Context, runtime run.RunStore, events 
 		}
 		// Nothing was called: withdraw the step to Open under this attempt's
 		// recovery identity and surface the condition (RUN-LOP-3).
-		if _, serr := l.settle(context.WithoutCancel(ctx), runtime, events, a, start.Snapshot.Position,
+		if _, serr := l.settle(context.WithoutCancel(ctx), runtime, events, &a, start.Snapshot.Position,
 			run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, schema); serr != nil {
 			return nil, serr
 		}
@@ -195,7 +195,7 @@ func (l *Loop) modelCompletion(schema run.Schema, step *run.ModelStep, out Outco
 			return withdraw, fmt.Errorf("agent: loop: model dispatch: %w: %s", run.ErrFrozenValueMissing, r.Message)
 		case effect.FailureMalformedRequest:
 			failure := run.StepFailure{Class: run.FailureMalformedModel, Message: r.Message}
-			return run.RejectModelResult{StepID: stepID, Failure: failure, Disposition: l.modelRejectDisposition(*step, failure)}, nil
+			return run.RejectModelResult{StepID: stepID, Failure: failure, Disposition: l.modelRejectDisposition(step, failure)}, nil
 		case effect.FailureDeadline:
 			return withdraw, nil
 		default:
@@ -210,13 +210,13 @@ func (l *Loop) modelCompletion(schema run.Schema, step *run.ModelStep, out Outco
 	if bindErr != nil {
 		failure := run.StepFailure{Class: run.FailureMalformedModel, Message: bindErr.Error()}
 		return run.RejectModelResult{StepID: stepID, Usage: run.UsageFromSDK(result.Usage), Failure: failure,
-			Disposition: l.modelRejectDisposition(*step, failure)}, nil
+			Disposition: l.modelRejectDisposition(step, failure)}, nil
 	}
 	frozenResult, freezeErr := run.FreezeModelResult(result)
 	if freezeErr != nil {
 		failure := run.StepFailure{Class: run.FailureMalformedModel, Message: freezeErr.Error()}
 		return run.RejectModelResult{StepID: stepID, Usage: run.UsageFromSDK(result.Usage), Failure: failure,
-			Disposition: l.modelRejectDisposition(*step, failure)}, nil
+			Disposition: l.modelRejectDisposition(step, failure)}, nil
 	}
 	return run.SubmitModelResult{StepID: stepID, Result: frozenResult, Calls: bindings, Scheduling: l.toolScheduling()}, nil
 }
@@ -225,7 +225,7 @@ func (l *Loop) modelCompletion(schema run.Schema, step *run.ModelStep, out Outco
 // Rejects counts the malformed results already recorded, so the step is
 // retried while that count is below the bound and fails the Run otherwise.
 // Zero retries fails on the first malformed result.
-func (l *Loop) modelRejectDisposition(step run.ModelStep, _ run.StepFailure) run.ModelRejectDisposition {
+func (l *Loop) modelRejectDisposition(step *run.ModelStep, _ run.StepFailure) run.ModelRejectDisposition {
 	if step.Rejects < int(l.Settings.MalformedRetries) {
 		return run.ModelRejectRetry
 	}

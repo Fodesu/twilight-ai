@@ -58,7 +58,7 @@ type RuntimeSnapshot struct {
 }
 
 // Schema returns the schema frozen at the Run's creation.
-func (s RuntimeSnapshot) Schema() (Schema, error) {
+func (s RuntimeSnapshot) Schema() (Schema, error) { //nolint:gocritic // hugeParam: RuntimeSnapshot is handed around by value; a pointer receiver would refuse the common snapshot.Schema() on a temporary
 	return SchemaFor(s.SchemaVersion)
 }
 

@@ -118,7 +118,7 @@ func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*St
 			// No tool calls or not a tool-calls finish → done
 			if !autoExecuteTools || mr.FinishReason != FinishReasonToolCalls || len(mr.ToolCalls) == 0 || !hasExecutableTools(mr.ToolCalls, toolMap) {
 				stepMsgs := buildStepMessages(mr.Text, mr.TextProviderMetadata, mr.ReasoningParts, mr.ToolCalls, nil, &mr.Usage)
-				stepR := stepResultFromModelResult(*mr, stepMsgs, nil, nil)
+				stepR := stepResultFromModelResult(mr, stepMsgs, nil, nil)
 				if err := applyOnStepCommitted(ctx, cfg, step, &stepR); err != nil {
 					send(&ErrorPart{Error: err})
 					return
@@ -136,7 +136,7 @@ func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*St
 				var deferred *ToolApprovalDeferredError
 				if errors.As(err, &deferred) {
 					stepMsgs := buildStepMessages(mr.Text, mr.TextProviderMetadata, mr.ReasoningParts, mr.ToolCalls, nil, &mr.Usage)
-					stepR := stepResultFromModelResult(*mr, stepMsgs, nil, &deferred.Approval)
+					stepR := stepResultFromModelResult(mr, stepMsgs, nil, &deferred.Approval)
 					if err := applyOnStepCommitted(ctx, cfg, step, &stepR); err != nil {
 						send(&ErrorPart{Error: err})
 						return
@@ -151,7 +151,7 @@ func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*St
 			}
 
 			stepMsgs := buildStepMessages(mr.Text, mr.TextProviderMetadata, mr.ReasoningParts, mr.ToolCalls, toolResults, &mr.Usage)
-			stepR := stepResultFromModelResult(*mr, stepMsgs, toolCallResultsFromParts(toolResults), nil)
+			stepR := stepResultFromModelResult(mr, stepMsgs, toolCallResultsFromParts(toolResults), nil)
 			if err := applyOnStepCommitted(ctx, cfg, step, &stepR); err != nil {
 				send(&ErrorPart{Error: err})
 				return

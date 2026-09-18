@@ -97,7 +97,7 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime run.RunStore, events 
 			}
 			return dispatched, err
 		}
-		if startedCall, ok := toolCallFromSnapshot(start.Snapshot.State, eff.StepID, callID); !ok || startedCall.Status != run.ToolExecuting || startedCall.Claim != a.claim {
+		if startedCall, ok := toolCallFromSnapshot(&start.Snapshot.State, eff.StepID, callID); !ok || startedCall.Status != run.ToolExecuting || startedCall.Claim != a.claim {
 			// The one-shot replay may land after the call was settled, or the
 			// call is Executing under another attempt. Never invoke an effect
 			// for a call this attempt does not own.
@@ -120,7 +120,7 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime run.RunStore, events 
 			// The effect never started: settle the attempt as a Known execution
 			// failure so the call does not stay Executing.
 			failure := run.ToolFailure{Class: run.FailureExecution, Message: "dispatch: " + err.Error()}
-			if _, serr := l.settle(context.WithoutCancel(ctx), runtime, events, a, start.Snapshot.Position,
+			if _, serr := l.settle(context.WithoutCancel(ctx), runtime, events, &a, start.Snapshot.Position,
 				run.SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: failure, Outcome: run.ToolOutcomeKnown}, schema); serr != nil {
 				return dispatched, serr
 			}
@@ -131,14 +131,14 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime run.RunStore, events 
 	return dispatched, nil
 }
 
-func toolCallFromSnapshot(state run.MachineState, stepID run.StepID, callID run.CallID) (run.ToolCallState, bool) {
+func toolCallFromSnapshot(state *run.MachineState, stepID run.StepID, callID run.CallID) (run.ToolCallState, bool) {
 	step, ok := state.Current.(run.ToolStep)
 	if !ok || step.RefValue.ID != stepID {
 		return run.ToolCallState{}, false
 	}
-	for _, call := range step.Calls {
-		if call.CallID == callID {
-			return call, true
+	for i := range step.Calls {
+		if step.Calls[i].CallID == callID {
+			return step.Calls[i], true
 		}
 	}
 	return run.ToolCallState{}, false

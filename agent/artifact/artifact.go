@@ -164,7 +164,7 @@ func NewMemoryBindingStore() *MemoryBindingStore {
 	return &MemoryBindingStore{bindings: make(map[BindingID]Binding)}
 }
 
-func (m *MemoryBindingStore) CreateBinding(ctx context.Context, b Binding) (Binding, error) {
+func (m *MemoryBindingStore) CreateBinding(ctx context.Context, b Binding) (Binding, error) { //nolint:gocritic // hugeParam: BindingStore contract takes the Binding by value
 	if err := ctx.Err(); err != nil {
 		return Binding{}, err
 	}

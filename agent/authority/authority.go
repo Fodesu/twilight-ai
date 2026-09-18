@@ -148,7 +148,7 @@ type Authority struct {
 }
 
 // New composes an Authority from its ports (AUTH-PRT-1).
-func New(p Ports) (*Authority, error) {
+func New(p Ports) (*Authority, error) { //nolint:gocritic // hugeParam: Ports is a by-value options struct read once
 	if p.Executor == nil {
 		return nil, errors.New("authority: an Executor port is required")
 	}

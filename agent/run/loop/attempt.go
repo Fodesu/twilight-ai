@@ -25,15 +25,15 @@ func newAttempt(schema run.Schema, runID run.RunID, stepID run.StepID, callID ru
 	return attempt{schema: schema, runID: runID, stepID: stepID, callID: callID, claim: freshExecutionClaim()}
 }
 
-func (a attempt) startID() run.CommandID {
+func (a *attempt) startID() run.CommandID {
 	return a.schema.Identity.DeriveStartCommandID(a.runID, a.stepID, a.callID, a.claim)
 }
 
-func (a attempt) settlementID() run.CommandID {
+func (a *attempt) settlementID() run.CommandID {
 	return a.schema.Identity.DeriveSettlementCommandID(a.runID, a.stepID, a.callID, a.claim)
 }
 
-func (a attempt) recoveryID() run.CommandID {
+func (a *attempt) recoveryID() run.CommandID {
 	return a.schema.Identity.DeriveModelRecoveryCommandID(a.runID, a.stepID, a.claim)
 }
 
@@ -44,7 +44,7 @@ func (a attempt) recoveryID() run.CommandID {
 // When the accepted settlement terminates the Run, the terminal RunResult is
 // returned: the RunStore already handed back the folded state, so the Loop
 // finishes from it instead of reloading a Run the projection no longer holds.
-func (l *Loop) settle(ctx context.Context, runtime run.RunStore, events EventSink, a attempt, base run.RunPosition, cmd run.AgentCommand, schema run.Schema) (*run.RunResult, error) {
+func (l *Loop) settle(ctx context.Context, runtime run.RunStore, events EventSink, a *attempt, base run.RunPosition, cmd run.AgentCommand, schema run.Schema) (*run.RunResult, error) {
 	id := a.settlementID()
 	if _, recovering := cmd.(run.RecoverModelExecution); recovering {
 		id = a.recoveryID()

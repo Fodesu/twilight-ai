@@ -263,7 +263,8 @@ func (w *Worker) Reconcile(ctx context.Context) (int, error) {
 	now := w.now().UnixMilli()
 	var firstErr error
 	n := 0
-	for _, r := range records {
+	for i := range records {
+		r := &records[i]
 		if protocol.StatusTerminal(r.State) {
 			continue
 		}
@@ -380,7 +381,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 		if attachment.State != effect.AttachmentActive && attachment.State != effect.AttachmentTerminal {
 			env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest, Unknown: true,
 				Error: &protocol.WireError{Code: "cancel_reconciliation_unknown", Message: "cancelled execution is no longer attached"}}
-			_ = w.finishOwned(ctx, key, claimed.FencingEpoch, env, effect.ExecutionUnknown, nil)
+			_ = w.finishOwned(ctx, key, claimed.FencingEpoch, &env, effect.ExecutionUnknown, nil)
 			close(leaseDone)
 			return nil
 		}
@@ -412,7 +413,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 			// re-dispatched by adoption.
 			env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest, Unknown: true,
 				Error: &protocol.WireError{Code: "adopted_without_replay", Message: "tool execution adopted without a replay declaration"}}
-			return w.finishOwned(ctx, key, claimed.FencingEpoch, env, effect.ExecutionUnknown, nil)
+			return w.finishOwned(ctx, key, claimed.FencingEpoch, &env, effect.ExecutionUnknown, nil)
 		}
 		// A model execution replays the same frozen request as a new
 		// generation: Restart allocates the Ref of the new physical execution
@@ -449,7 +450,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 			w.spawn(func() { w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone) })
 			return err
 		}
-		settleErr := w.finishOwned(ctx, key, claimed.FencingEpoch, protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest,
+		settleErr := w.finishOwned(ctx, key, claimed.FencingEpoch, &protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest,
 			Error: &protocol.WireError{Code: "dispatch_failed", Message: err.Error()}}, effect.ExecutionFailed, err)
 		close(leaseDone)
 		return settleErr
@@ -492,7 +493,7 @@ func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64
 	env := protocol.EncodeOutcome(out, digest)
 	state := protocol.StatusForOutcome(out)
 	for {
-		if err := w.finishOwned(w.lifecycle, key, epoch, env, state, nil); err == nil {
+		if err := w.finishOwned(w.lifecycle, key, epoch, &env, state, nil); err == nil {
 			return
 		}
 		if !w.waitOwned(key, epoch, delay) {
@@ -561,7 +562,7 @@ func (w *Worker) heartbeat(key effect.AssignmentKey, epoch uint64, done <-chan s
 	}
 }
 
-func (w *Worker) finishOwned(ctx context.Context, key effect.AssignmentKey, epoch uint64, outcome protocol.OutcomeEnvelope, state effect.ExecutionStatus, dispatchErr error) error {
+func (w *Worker) finishOwned(ctx context.Context, key effect.AssignmentKey, epoch uint64, outcome *protocol.OutcomeEnvelope, state effect.ExecutionStatus, dispatchErr error) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	r, ok, err := w.store.Get(ctx, key)
@@ -574,7 +575,7 @@ func (w *Worker) finishOwned(ctx context.Context, key effect.AssignmentKey, epoc
 	if protocol.StatusTerminal(r.State) {
 		return dispatchErr
 	}
-	r.Outcome = &outcome
+	r.Outcome = outcome
 	r.State = state
 	if err := w.store.PutOwned(ctx, r, w.id, epoch); err != nil {
 		if errors.Is(err, executionstore.ErrLeaseLost) {
@@ -671,7 +672,7 @@ func (w *Worker) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effe
 			w.mu.Lock()
 			delete(w.notify, key)
 			w.mu.Unlock()
-			return protocol.DecodeOutcome(*r.Outcome), nil
+			return protocol.DecodeOutcome(r.Outcome), nil
 		}
 		ch := w.signal(key)
 		timer := time.NewTimer(10 * time.Millisecond)
@@ -765,7 +766,8 @@ func (w *Worker) recover(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, r := range records {
+	for i := range records {
+		r := &records[i]
 		if protocol.StatusTerminal(r.State) || r.Owner != w.id || r.FencingEpoch == 0 {
 			continue
 		}

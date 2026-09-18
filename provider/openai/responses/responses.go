@@ -16,6 +16,11 @@ import (
 )
 
 const (
+	pathResponses    = "/responses"
+	toolTypeFunction = "function"
+)
+
+const (
 	defaultBaseURL = "https://api.openai.com/v1"
 
 	// Output item types for OpenAI Responses API
@@ -131,7 +136,7 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 	status, probeErr := utils.ProbeStatus(ctx, p.httpClient, &utils.RequestOptions{
 		Method:  http.MethodPost,
 		BaseURL: p.baseURL,
-		Path:    "/responses",
+		Path:    pathResponses,
 		Headers: p.authHeaders(),
 		Prepare: p.prepareRequest,
 		Body: map[string]any{
@@ -179,7 +184,7 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 	resp, err := utils.FetchJSON[responsesResponse](ctx, p.httpClient, &utils.RequestOptions{
 		Method:  http.MethodPost,
 		BaseURL: p.baseURL,
-		Path:    "/responses",
+		Path:    pathResponses,
 		Headers: p.authHeaders(),
 		Prepare: p.prepareRequest,
 		Body:    wireReq,
@@ -268,7 +273,7 @@ func convertResponsesTools(tools []sdk.ToolDefinition) []responsesTool {
 	out := make([]responsesTool, 0, len(tools))
 	for _, t := range tools {
 		out = append(out, responsesTool{
-			Type:        "function",
+			Type:        toolTypeFunction,
 			Name:        t.Name,
 			Description: t.Description,
 			Parameters:  t.Parameters,
@@ -287,8 +292,8 @@ func convertToolChoice(choice sdk.ToolChoice) any {
 		return string(choice.Mode)
 	case sdk.ToolChoiceTool:
 		return map[string]any{
-			"type":     "function",
-			"function": map[string]any{"name": choice.Tool},
+			"type":           toolTypeFunction,
+			toolTypeFunction: map[string]any{"name": choice.Tool},
 		}
 	default:
 		return nil
@@ -637,7 +642,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		err := utils.FetchSSE(ctx, p.httpClient, &utils.RequestOptions{
 			Method:  http.MethodPost,
 			BaseURL: p.baseURL,
-			Path:    "/responses",
+			Path:    pathResponses,
 			Headers: p.authHeaders(),
 			Prepare: p.prepareRequest,
 			Body:    wireReq,

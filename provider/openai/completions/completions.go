@@ -14,6 +14,14 @@ import (
 	"github.com/felinics/twilight/sdk"
 )
 
+const (
+	pathChatCompletions = "/chat/completions"
+	thinkingDisabled    = "disabled"
+	toolTypeFunction    = "function"
+	keyType             = "type"
+	roleAssistant       = "assistant"
+)
+
 const defaultBaseURL = "https://api.openai.com/v1"
 
 type Provider struct {
@@ -185,7 +193,7 @@ func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTes
 	status, probeErr := utils.ProbeStatus(ctx, p.httpClient, &utils.RequestOptions{
 		Method:  http.MethodPost,
 		BaseURL: p.baseURL,
-		Path:    "/chat/completions",
+		Path:    pathChatCompletions,
 		Headers: p.authHeaders(),
 		Prepare: p.prepareRequest,
 		Body: map[string]any{
@@ -224,7 +232,7 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 	resp, err := utils.FetchJSON[chatResponse](ctx, p.httpClient, &utils.RequestOptions{
 		Method:  http.MethodPost,
 		BaseURL: p.baseURL,
-		Path:    "/chat/completions",
+		Path:    pathChatCompletions,
 		Headers: p.authHeaders(),
 		Prepare: p.prepareRequest,
 		Body:    chatReq,
@@ -293,9 +301,9 @@ func (p *Provider) applyChatCompletionsCompat(req *chatRequest) error {
 			return nil
 		}
 		switch strings.ToLower(effort) {
-		case "none", "disable", "disabled":
+		case "none", "disable", thinkingDisabled:
 			req.ReasoningEffort = nil
-			req.Thinking = &chatThinking{Type: "disabled"}
+			req.Thinking = &chatThinking{Type: thinkingDisabled}
 		}
 	case chatCompletionsCompatMiniMax:
 		// MiniMax does not honor reasoning_effort; it gates thinking via the
@@ -310,8 +318,8 @@ func (p *Provider) applyChatCompletionsCompat(req *chatRequest) error {
 		switch effort {
 		case "":
 			// no explicit effort: leave thinking at MiniMax's default.
-		case "none", "disable", "disabled":
-			req.Thinking = &chatThinking{Type: "disabled"}
+		case "none", "disable", thinkingDisabled:
+			req.Thinking = &chatThinking{Type: thinkingDisabled}
 		default:
 			req.Thinking = &chatThinking{Type: "adaptive"}
 		}
@@ -331,7 +339,7 @@ func convertTools(tools []sdk.ToolDefinition) []chatTool {
 	out := make([]chatTool, 0, len(tools))
 	for _, t := range tools {
 		out = append(out, chatTool{
-			Type: "function",
+			Type: toolTypeFunction,
 			Function: chatFunction{
 				Name:        t.Name,
 				Description: t.Description,
@@ -351,8 +359,8 @@ func toolChoiceForWire(choice sdk.ToolChoice) any {
 		return string(choice.Mode)
 	case sdk.ToolChoiceTool:
 		return map[string]any{
-			"type":     "function",
-			"function": map[string]any{"name": choice.Tool},
+			keyType:          toolTypeFunction,
+			toolTypeFunction: map[string]any{"name": choice.Tool},
 		}
 	default:
 		return nil
@@ -392,7 +400,7 @@ func convertMessage(msg sdk.Message) []chatMessage {
 }
 
 func convertAssistantMessage(msg sdk.Message) chatMessage {
-	cm := chatMessage{Role: "assistant"}
+	cm := chatMessage{Role: roleAssistant}
 
 	var contentParts []sdk.MessagePart
 	var toolCalls []chatToolCall
@@ -413,7 +421,7 @@ func convertAssistantMessage(msg sdk.Message) chatMessage {
 			}
 			toolCalls = append(toolCalls, chatToolCall{
 				ID:   id,
-				Type: "function",
+				Type: toolTypeFunction,
 				Function: chatFunctionCall{
 					Name:      p.ToolName,
 					Arguments: string(args),
@@ -593,7 +601,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		err := utils.FetchSSE(ctx, p.httpClient, &utils.RequestOptions{
 			Method:  http.MethodPost,
 			BaseURL: p.baseURL,
-			Path:    "/chat/completions",
+			Path:    pathChatCompletions,
 			Headers: p.authHeaders(),
 			Prepare: p.prepareRequest,
 			Body:    out,

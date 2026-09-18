@@ -127,7 +127,7 @@ func (s *MemoryStore) noteLocked(key effect.AssignmentKey, was, now effect.Execu
 	}
 }
 
-func (s *MemoryStore) Create(_ context.Context, record Record) (Record, bool, error) {
+func (s *MemoryStore) Create(_ context.Context, record Record) (Record, bool, error) { //nolint:gocritic // hugeParam: the Store contract takes the record by value; it is persisted, never shared
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if old, ok := s.records[record.Assignment.Key()]; ok {
@@ -147,7 +147,7 @@ func (s *MemoryStore) Get(_ context.Context, key effect.AssignmentKey) (Record, 
 	return r, ok, nil
 }
 
-func (s *MemoryStore) Put(_ context.Context, record Record) error {
+func (s *MemoryStore) Put(_ context.Context, record Record) error { //nolint:gocritic // hugeParam: the Store contract takes the record by value; it is persisted, never shared
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	old, ok := s.records[record.Assignment.Key()]
@@ -159,7 +159,7 @@ func (s *MemoryStore) Put(_ context.Context, record Record) error {
 	return nil
 }
 
-func (s *MemoryStore) PutOwned(_ context.Context, record Record, owner string, epoch uint64) error {
+func (s *MemoryStore) PutOwned(_ context.Context, record Record, owner string, epoch uint64) error { //nolint:gocritic // hugeParam: the Store contract takes the record by value; it is persisted, never shared
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	old, ok := s.records[record.Assignment.Key()]
@@ -249,8 +249,8 @@ func (s *MemoryStore) List(_ context.Context) ([]Record, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Record, 0, len(s.records))
-	for _, r := range s.records {
-		out = append(out, r)
+	for k := range s.records {
+		out = append(out, s.records[k])
 	}
 	return out, nil
 }
@@ -288,7 +288,7 @@ func recordFile(root string, key effect.AssignmentKey) string {
 	return filepath.Join(root, string(d)[len("sha256:"):]+".json")
 }
 
-func (s *FileStore) Create(ctx context.Context, record Record) (Record, bool, error) {
+func (s *FileStore) Create(ctx context.Context, record Record) (Record, bool, error) { //nolint:gocritic // hugeParam: the Store contract takes the record by value; it is persisted, never shared
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if old, ok, err := s.getLocked(ctx, record.Assignment.Key()); err != nil {
@@ -311,7 +311,7 @@ func (s *FileStore) Get(ctx context.Context, key effect.AssignmentKey) (Record, 
 	return s.getLocked(ctx, key)
 }
 
-func (s *FileStore) Put(ctx context.Context, record Record) error {
+func (s *FileStore) Put(ctx context.Context, record Record) error { //nolint:gocritic // hugeParam: the Store contract takes the record by value; it is persisted, never shared
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	old, ok, err := s.getLocked(ctx, record.Assignment.Key())
@@ -324,7 +324,7 @@ func (s *FileStore) Put(ctx context.Context, record Record) error {
 	return s.putLocked(ctx, record)
 }
 
-func (s *FileStore) PutOwned(ctx context.Context, record Record, owner string, epoch uint64) error {
+func (s *FileStore) PutOwned(ctx context.Context, record Record, owner string, epoch uint64) error { //nolint:gocritic // hugeParam: the Store contract takes the record by value; it is persisted, never shared
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	old, ok, err := s.getLocked(ctx, record.Assignment.Key())
@@ -465,7 +465,7 @@ func (s *FileStore) getLocked(_ context.Context, key effect.AssignmentKey) (Reco
 	return r, true, nil
 }
 
-func (s *FileStore) putLocked(_ context.Context, record Record) error {
+func (s *FileStore) putLocked(_ context.Context, record Record) error { //nolint:gocritic // hugeParam: the Store contract takes the record by value; it is persisted, never shared
 	raw, err := json.Marshal(record)
 	if err != nil {
 		return err

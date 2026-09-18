@@ -323,7 +323,7 @@ func (l *Loop) deliver(ctx context.Context, runtime run.RunStore, out Outcome, e
 		}
 		cmd, settleErr = l.modelCompletion(schema, &step, out)
 	} else {
-		call, ok := toolCallFromSnapshot(snapshot.State, out.Key.StepID, out.Key.CallID)
+		call, ok := toolCallFromSnapshot(&snapshot.State, out.Key.StepID, out.Key.CallID)
 		if !ok || call.Status != run.ToolExecuting || call.Claim != out.Key.Claim {
 			return LoopResult{Disposition: LoopDropped}, nil
 		}
@@ -332,7 +332,7 @@ func (l *Loop) deliver(ctx context.Context, runtime run.RunStore, out Outcome, e
 
 	// Settlement uses a detached control context: a cancelled host request must
 	// not discard an accepted effect's outcome (RUN-LOP-5).
-	finished, err := l.settle(context.WithoutCancel(ctx), runtime, events, a, snapshot.Position, cmd, schema)
+	finished, err := l.settle(context.WithoutCancel(ctx), runtime, events, &a, snapshot.Position, cmd, schema)
 	if err != nil {
 		return LoopResult{}, err
 	}

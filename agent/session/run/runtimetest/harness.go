@@ -307,7 +307,7 @@ func (h *harness) commitWith(rt *runmod.SessionRunStore, w writer.Writer, runID 
 	if err != nil {
 		return commitResult{}, err
 	}
-	out, err := part.Result(h.ctx, w, res)
+	out, err := part.Result(h.ctx, w, &res)
 	if err != nil {
 		return commitResult{}, err
 	}

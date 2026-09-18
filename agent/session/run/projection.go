@@ -31,8 +31,8 @@ func newMachine() Machine {
 
 func (m Machine) clone() Machine {
 	out := newMachine()
-	for k, v := range m.Active {
-		out.Active[k] = v
+	for k := range m.Active {
+		out.Active[k] = m.Active[k]
 	}
 	for k, v := range m.Positions {
 		out.Positions[k] = v
@@ -53,7 +53,7 @@ func (m Machine) snapshot(runID run.RunID) (run.RuntimeSnapshot, bool) {
 }
 
 // Apply folds one decoded run event (RUN-MCH-3 via Protocol.Evolve).
-func (m Machine) Apply(e extension.DecodedEvent) (Machine, error) {
+func (m Machine) Apply(e extension.DecodedEvent) (Machine, error) { //nolint:gocritic // hugeParam: DecodedEvent is the extension Apply shape
 	ev, ok := e.Value.(Event)
 	if !ok {
 		return m, fmt.Errorf("run machine: unexpected %T", e.Value)
@@ -129,7 +129,8 @@ func (c machineCodec) Encode(value any) (jsonstable.Value, error) {
 	}
 	m, _ := value.(Machine) // Validate checked the type
 	wire := machineWire{Runs: make(map[run.RunID]machineRunWire, len(m.Active))}
-	for id, state := range m.Active {
+	for id := range m.Active {
+		state := m.Active[id]
 		schema, err := run.SchemaFor(m.Schemas[id])
 		if err != nil {
 			return jsonstable.Value{}, err

@@ -94,7 +94,7 @@ func assembleStream(ctx context.Context, parts <-chan StreamPart) ModelStream {
 // other. Both boundary paths hand their result out through it, which also keeps
 // a streamed and a non-streamed call from disagreeing about representation: the
 // response timestamp is normalized to UTC here and nowhere else.
-func hardenResult(result ModelResult) ModelResult {
+func hardenResult(result ModelResult) ModelResult { //nolint:gocritic // hugeParam: works on its own copy and returns it
 	result.ReasoningParts = cloneReasoningParts(result.ReasoningParts)
 	result.TextProviderMetadata = cloneMetadataMap(result.TextProviderMetadata)
 	result.Sources = cloneSources(result.Sources)

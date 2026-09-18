@@ -62,7 +62,7 @@ func applyRunCreated(fact *RunCreated) MachineState {
 	return MachineState{RunID: fact.RunID, Owner: fact.Owner, Attempt: fact.Attempt, Status: RunActive, Current: Open{}}
 }
 
-func applyModelStepPrepared(s MachineState, fact *ModelStepPrepared) MachineState {
+func applyModelStepPrepared(s MachineState, fact *ModelStepPrepared) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
 	s.Current = ModelStep{
 		RefValue:      StepRef{RunID: s.RunID, ID: fact.StepID, Digest: fact.BindingDigest},
 		RequestDigest: fact.RequestDigest,
@@ -80,7 +80,7 @@ func applyModelStepPrepared(s MachineState, fact *ModelStepPrepared) MachineStat
 // never sent) and Recovered (Executing, attempt lost) both return the Run to
 // Open without counting a model step. PendingInputs are untouched, so the
 // next Prepare consumes them.
-func applyModelStepWithdrawn(s MachineState) MachineState {
+func applyModelStepWithdrawn(s MachineState) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
 	s.Current = Open{}
 	s.ModelSteps--
 	return s
@@ -88,7 +88,7 @@ func applyModelStepWithdrawn(s MachineState) MachineState {
 
 // applyModelStatus moves the current ModelStep to status, adding usage and
 // counting a reject when the fact was a rejection.
-func applyModelStatus(s MachineState, status ModelStepStatus, usage Usage, rejected bool) MachineState {
+func applyModelStatus(s MachineState, status ModelStepStatus, usage Usage, rejected bool) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
 	ms := s.Current.(ModelStep) //nolint:errcheck // guard established Current is this ModelStep
 	ms.Status = status
 	if rejected {
@@ -100,20 +100,20 @@ func applyModelStatus(s MachineState, status ModelStepStatus, usage Usage, rejec
 }
 
 // applyModelClaim records or clears the attempt that owns the current ModelStep.
-func applyModelClaim(s MachineState, claim ExecutionClaim) MachineState {
+func applyModelClaim(s MachineState, claim ExecutionClaim) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
 	ms := s.Current.(ModelStep) //nolint:errcheck // caller established Current is a ModelStep
 	ms.Claim = claim
 	s.Current = ms
 	return s
 }
 
-func applyModelStepCompleted(s MachineState, fact *ModelStepCompleted) MachineState {
+func applyModelStepCompleted(s MachineState, fact *ModelStepCompleted) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
 	s.Usage = s.Usage.Add(fact.Usage)
 	s.Current = Open{}
 	return s
 }
 
-func applyToolStepOpened(s MachineState, fact *ToolStepOpened) MachineState {
+func applyToolStepOpened(s MachineState, fact *ToolStepOpened) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
 	calls := make([]ToolCallState, len(fact.Calls))
 	for i, b := range fact.Calls {
 		calls[i] = ToolCallState{
@@ -142,7 +142,7 @@ func applyToolStepOpened(s MachineState, fact *ToolStepOpened) MachineState {
 
 // applyCall mutates one call of the current ToolStep and closes the step when
 // every call has reached Completed or Failed.
-func applyCall(s MachineState, callID CallID, mutate func(*ToolCallState)) MachineState {
+func applyCall(s MachineState, callID CallID, mutate func(*ToolCallState)) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
 	ts := s.Current.(ToolStep) //nolint:errcheck // guard established Current is this ToolStep
 	calls := append([]ToolCallState(nil), ts.Calls...)
 	mutate(&calls[ts.callIndex(callID)])
@@ -156,12 +156,12 @@ func applyCall(s MachineState, callID CallID, mutate func(*ToolCallState)) Machi
 	return s
 }
 
-func applyInputAccepted(s MachineState, fact *InputAccepted) MachineState {
+func applyInputAccepted(s MachineState, fact *InputAccepted) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
 	s.PendingInputs = append(append([]AgentInput(nil), s.PendingInputs...), fact.Input)
 	return s
 }
 
-func applyRunEnded(s MachineState, fact *RunEnded) MachineState {
+func applyRunEnded(s MachineState, fact *RunEnded) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
 	status, reason, failure := endProjection(fact.End)
 	s.Status = status
 	s.Current = nil

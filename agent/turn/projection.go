@@ -97,7 +97,8 @@ func (s *TurnSurface) OwnerOf(runID run.RunID) (TurnID, bool) {
 
 func (s TurnSurface) clone() TurnSurface {
 	out := TurnSurface{Order: append([]TurnID(nil), s.Order...), Turns: make(map[TurnID]TurnView, len(s.Turns)), RunOwner: make(map[run.RunID]TurnID, len(s.RunOwner))}
-	for k, v := range s.Turns {
+	for k := range s.Turns {
+		v := s.Turns[k]
 		v.InputIDs = append([]chatlog.InputID(nil), v.InputIDs...)
 		v.Attempts = append([]AttemptView(nil), v.Attempts...)
 		out.Turns[k] = v
@@ -134,6 +135,7 @@ var SurfaceProjection = extension.ProjectionDefinition{
 	StateCodec: extension.JSONStateCodec[TurnSurface]{},
 }
 
+//nolint:gocritic // hugeParam: DecodedEvent is the extension Apply shape
 func applySurface(state any, e extension.DecodedEvent) (any, error) {
 	prev, ok := state.(TurnSurface)
 	if !ok {

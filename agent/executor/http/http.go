@@ -79,7 +79,7 @@ func (c *Client) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effe
 	if err := c.post(ctx, "/outcome", keyRequest{Key: key}, &response); err != nil {
 		return effect.Outcome{}, err
 	}
-	return protocol.DecodeOutcome(response), nil
+	return protocol.DecodeOutcome(&response), nil
 }
 
 func (c *Client) Cancel(ctx context.Context, key effect.AssignmentKey) error {
@@ -195,7 +195,7 @@ func makeAssignmentRequest(a effect.Assignment) assignmentRequest {
 	return assignmentRequest{ProtocolVersion: protocol.ProtocolVersion, Assignment: a, AssignmentDigest: digest}
 }
 
-func validateAssignmentRequest(req assignmentRequest) error {
+func validateAssignmentRequest(req *assignmentRequest) error {
 	if req.ProtocolVersion != protocol.ProtocolVersion {
 		return fmt.Errorf("executor/http: unsupported protocol version %d", req.ProtocolVersion)
 	}
@@ -214,7 +214,7 @@ func (s *Server) validate(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	if !s.readJSON(w, r, &req) {
 		return
 	}
-	if err := validateAssignmentRequest(req); err != nil {
+	if err := validateAssignmentRequest(&req); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -233,7 +233,7 @@ func (s *Server) dispatch(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	if !s.readJSON(w, r, &req) {
 		return
 	}
-	if err := validateAssignmentRequest(req); err != nil {
+	if err := validateAssignmentRequest(&req); err != nil {
 		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
 		return
 	}

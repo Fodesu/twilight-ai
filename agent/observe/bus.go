@@ -130,9 +130,9 @@ func (s *subscriber) drain(ctx context.Context, unsubscribe func()) {
 		batch := s.queue
 		s.queue = nil
 		s.mu.Unlock()
-		for _, e := range batch {
+		for i := range batch {
 			select {
-			case s.out <- e:
+			case s.out <- batch[i]:
 			case <-ctx.Done():
 				return
 			}

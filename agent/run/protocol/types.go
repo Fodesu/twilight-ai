@@ -48,11 +48,11 @@ type OutcomeEnvelope struct {
 	Unknown          bool                 `json:"unknown,omitempty"`
 }
 
-func (a AssignmentEnvelope) Digest() (run.Digest, error) {
+func (a *AssignmentEnvelope) Digest() (run.Digest, error) {
 	return es.DigestCanonical(a.Assignment)
 }
 
-func (o OutcomeEnvelope) Digest() (run.Digest, error) {
+func (o *OutcomeEnvelope) Digest() (run.Digest, error) {
 	return es.DigestCanonical(o)
 }
 
@@ -97,7 +97,7 @@ func EncodeOutcome(out effect.Outcome, assignmentDigest run.Digest) OutcomeEnvel
 // DecodeOutcome restores the sealed Outcome. The flags win over a body:
 // an envelope marked unknown or cancelled is that, whatever else it carries;
 // an envelope with neither a body nor a flag is Unknown.
-func DecodeOutcome(w OutcomeEnvelope) effect.Outcome {
+func DecodeOutcome(w *OutcomeEnvelope) effect.Outcome {
 	out := effect.Outcome{Key: w.Key}
 	message := ""
 	if w.Error != nil {

@@ -152,7 +152,7 @@ func (b *bound) Commit(ctx context.Context, req run.CommitRequest) (run.CommitRe
 	if err != nil {
 		return run.CommitResult{}, ownershipError(err)
 	}
-	return cmd.Result(ctx, b.w, res)
+	return cmd.Result(ctx, b.w, &res)
 }
 
 func (b *bound) FrozenRequest(ctx context.Context, digest run.Digest) (run.ModelRequest, error) {
@@ -281,7 +281,7 @@ func (c *Command) Prepare(_ context.Context, view writer.View, now int64) ([]wri
 
 // Result maps the unit's outcome onto the Run's CommitResult. w is the Writer
 // the unit committed through; a replay reads the current snapshot from it.
-func (c *Command) Result(ctx context.Context, w writer.Writer, res writer.CommitResult) (run.CommitResult, error) {
+func (c *Command) Result(ctx context.Context, w writer.Writer, res *writer.CommitResult) (run.CommitResult, error) {
 	switch res.Outcome {
 	case writer.CommitApplied:
 		if !c.prepared {

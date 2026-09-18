@@ -304,7 +304,8 @@ func (r *Registry) checkRequirements() error {
 			return err
 		}
 	}
-	for k, p := range r.projections {
+	for k := range r.projections {
+		p := r.projections[k]
 		scope := r.scopeOf(p.module)
 		for _, typ := range p.def.Consumes {
 			entry, ok := r.events[typ]
@@ -364,8 +365,8 @@ func (r *Registry) LookupProjection(id ProjectionID, v ProjectionVersion) (Proje
 // Projections lists every registered projection with its owning module.
 func (r *Registry) Projections() []ProjectionDefinition {
 	out := make([]ProjectionDefinition, 0, len(r.projections))
-	for _, e := range r.projections {
-		out = append(out, e.def)
+	for k := range r.projections {
+		out = append(out, r.projections[k].def)
 	}
 	return out
 }

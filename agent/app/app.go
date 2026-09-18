@@ -130,7 +130,7 @@ type Application struct {
 
 // Build assembles an application from typed dependencies and a
 // deployment-neutral executor profile.
-func Build(c Config) (*Application, error) {
+func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Config is a by-value options struct read once
 	content := c.Content
 	if content == nil {
 		var err error
@@ -151,7 +151,7 @@ func Build(c Config) (*Application, error) {
 		app.spawn = spawn.NewExecutor(*c.Spawn)
 		routes = append(routes, spawn.Route(app.spawn))
 	}
-	port, err := buildExecutor(c, routes)
+	port, err := buildExecutor(&c, routes)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +173,8 @@ func Build(c Config) (*Application, error) {
 	if app.spawn != nil {
 		app.spawn.Bind(a)
 	}
-	for _, p := range c.Presets {
+	for i := range c.Presets {
+		p := &c.Presets[i]
 		if p.ID == "" {
 			return nil, errors.New("app: preset requires an id")
 		}
@@ -246,7 +247,7 @@ func (app *Application) Close(ctx context.Context) error {
 // the remote client is used as is unless extra routes (spawn) are configured,
 // in which case a Worker routes to them and to the Port as its default
 // Backend; the remote Worker keeps its own record of the physical execution.
-func buildExecutor(c Config, extra []executor.Route) (effect.ExecutionPort, error) {
+func buildExecutor(c *Config, extra []executor.Route) (effect.ExecutionPort, error) {
 	worker := func(routes ...executor.Route) (effect.ExecutionPort, error) {
 		records := c.Executions
 		if records == nil {
