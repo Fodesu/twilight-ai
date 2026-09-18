@@ -157,7 +157,7 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *run.Ru
 			}
 		}
 		if d.Verdict == Dispose {
-			rec := run.RecoveryCommand(schema, t, claim)
+			rec := run.RecoveryCommand(schema.Identity, t, claim)
 			d.Recovery = &rec
 		}
 		out = append(out, d)

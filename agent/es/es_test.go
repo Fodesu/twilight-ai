@@ -112,3 +112,35 @@ func TestCanonicalDigest(t *testing.T) {
 		t.Fatal("trailing data accepted")
 	}
 }
+
+// TestDecodeStrict covers the one-value contract: canonical or not, a value
+// decodes; unknown fields, trailing data and duplicate keys are rejected.
+func TestDecodeStrict(t *testing.T) {
+	type shape struct {
+		A int `json:"a"`
+	}
+	cases := map[string]struct {
+		raw  string
+		want int
+		fail bool
+	}{
+		"canonical":     {raw: `{"a":1}`, want: 1},
+		"non-canonical": {raw: "{ \"a\" : 2 }", want: 2},
+		"unknown field": {raw: `{"a":1,"b":2}`, fail: true},
+		"trailing data": {raw: `{"a":1}{}`, fail: true},
+		"duplicate key": {raw: `{"a":1,"a":2}`, fail: true},
+	}
+	for name, tc := range cases {
+		var got shape
+		err := DecodeStrict([]byte(tc.raw), &got)
+		if tc.fail {
+			if err == nil {
+				t.Errorf("%s: accepted", name)
+			}
+			continue
+		}
+		if err != nil || got.A != tc.want {
+			t.Errorf("%s: got %+v, %v; want a=%d", name, got, err, tc.want)
+		}
+	}
+}

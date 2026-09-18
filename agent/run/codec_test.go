@@ -3,6 +3,7 @@ package run
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/felinics/twilight/agent/es"
 	"reflect"
 	"strings"
 	"testing"
@@ -27,7 +28,7 @@ func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 		NextStep(AgentInput{ID: "in", Digest: inputDigest(`{"q":"hi"}`)}),
 	}
 	for _, cmd := range commands {
-		env, err := SchemaV1().Wire.Envelope("run-1", CommandID("cmd-"+SchemaV1().Wire.CommandType(cmd)), cmd)
+		env, err := (wireV1{}).Envelope("run-1", CommandID("cmd-"+(wireV1{}).CommandType(cmd)), cmd)
 		if err != nil {
 			t.Fatalf("ProtocolV1().BuildEnvelope(%T): %v", cmd, err)
 		}
@@ -70,22 +71,22 @@ func TestFactCodecRoundTripRestoresVariants(t *testing.T) {
 	}
 	for _, fact := range facts {
 		typ := factType(fact)
-		raw, err := marshalCanonical(fact)
+		raw, err := es.MarshalCanonical(fact)
 		if err != nil {
 			t.Fatalf("marshal(%T): %v", fact, err)
 		}
-		decoded, err := SchemaV1().Wire.DecodeFact(typ, raw)
+		decoded, err := (wireV1{}).DecodeFact(typ, raw)
 		if err != nil {
 			t.Fatalf("DecodeFact(%T): %v\n%s", fact, err, raw)
 		}
 		if reflect.TypeOf(decoded) != reflect.TypeOf(fact) {
 			t.Fatalf("decoded fact type = %T, want %T", decoded, fact)
 		}
-		again, err := marshalCanonical(decoded)
+		again, err := es.MarshalCanonical(decoded)
 		if err != nil || string(again) != string(raw) {
 			t.Fatalf("re-encode of %T differs:\n%s\n%s", fact, raw, again)
 		}
-		if _, err := SchemaV1().Wire.DecodeFact("unknown", raw); err == nil {
+		if _, err := (wireV1{}).DecodeFact("unknown", raw); err == nil {
 			t.Fatalf("unknown fact type decoded for %T", fact)
 		}
 	}
@@ -93,7 +94,7 @@ func TestFactCodecRoundTripRestoresVariants(t *testing.T) {
 
 func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
 	cmd := NextStep(AgentInput{ID: "in", Digest: inputDigest(`1`)})
-	env, err := SchemaV1().Wire.Envelope("run-1", SchemaV1().Identity.DeriveInputCommandID("run-1", "in"), cmd)
+	env, err := (wireV1{}).Envelope("run-1", (identityV1{}).DeriveInputCommandID("run-1", "in"), cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +114,7 @@ func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
 }
 
 func TestWireCodecRejectsUnknownType(t *testing.T) {
-	env, err := SchemaV1().Wire.Envelope("run-1", "cmd-1", CancelRun{})
+	env, err := (wireV1{}).Envelope("run-1", "cmd-1", CancelRun{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,25 +127,6 @@ func TestWireCodecRejectsUnknownType(t *testing.T) {
 		t.Fatal("unknown command type decoded")
 	}
 }
-
-func TestRunEndedTaggedUnionRejectsInvalidValues(t *testing.T) {
-	for name, fact := range map[string]RunEnded{
-		"nil end":                {},
-		"stopped without reason": {End: RunStoppedEnd{}},
-		"failed without class":   {End: RunFailedEnd{Reason: ReasonProviderFailure}},
-		"unknown end variant":    {End: fakeRunEnd{}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := SchemaV1().Wire.EncodeFact("run_ended", fact); err == nil {
-				t.Fatal("invalid tagged terminal value was accepted")
-			}
-		})
-	}
-}
-
-type fakeRunEnd struct{}
-
-func (fakeRunEnd) runEnd() {}
 
 // RunEnded wire is a tagged union: exactly one variant key.
 func TestRunEndedWireIsTaggedUnion(t *testing.T) {

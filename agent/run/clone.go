@@ -1,6 +1,9 @@
 package run
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"github.com/felinics/twilight/agent/es"
+)
 
 // Deep-copy helpers: Runtime return values must be read-only snapshots
 // (RUN-CMT-6) — a caller mutating a returned slice or map must never reach
@@ -58,7 +61,7 @@ func cloneToolSpecs(specs []ToolSpec) []ToolSpec {
 
 func snapshotJSONStable[T any](v T) (T, error) {
 	var out T
-	raw, err := marshalCanonical(v)
+	raw, err := es.MarshalCanonical(v)
 	if err != nil {
 		return out, err
 	}

@@ -11,9 +11,13 @@
 package es
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 
 	"github.com/felinics/twilight/agent/jsonstable"
 )
@@ -61,4 +65,26 @@ func EncodeTypedPayload(schemaVersion uint16, typ string, payload any) ([]byte, 
 	}
 	prefix := fmt.Sprintf("v%d:%d:%s:", schemaVersion, len(typ), typ)
 	return append([]byte(prefix), canonical...), nil
+}
+
+// DecodeStrict canonicalizes raw and decodes it into dst as one JSON value:
+// unknown fields and trailing data are rejected. Protocol codecs use it so a
+// stored or received body is accepted only in the shape they can re-encode.
+func DecodeStrict(raw []byte, dst any) error {
+	canonical, err := Canonicalize(raw)
+	if err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(canonical))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return err
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return errors.New("es: trailing data after JSON value")
+		}
+		return err
+	}
+	return nil
 }

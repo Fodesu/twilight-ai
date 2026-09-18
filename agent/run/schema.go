@@ -44,26 +44,6 @@ func (s Schema) Valid() bool {
 	return s.Version != 0 && s.Machine != nil && s.Wire != nil && s.Canonical != nil && s.Snapshot != nil && s.Identity != nil && s.Bodies != nil
 }
 
-// Identity is the identity derivation of one schema version. Everything a
-// Run persists that names a step, call, response or command is derived here,
-// so two schema versions may derive differently without either breaking the
-// other's replay. The takeover claim (DeriveTakeoverClaim) is owner-level
-// and stays outside.
-type Identity interface {
-	DeriveModelRequestCommandID(run RunID, position RunPosition) CommandID
-	DeriveModelStepID(run RunID, cmd CommandID, binding Digest) StepID
-	DeriveCallID(source StepID, index int) CallID
-	DeriveToolStepID(source StepID, bindingSet Digest) StepID
-	DeriveResponseID(run RunID, step StepID, call CallID, kind ResponseKind) ResponseID
-	DeriveResponseCommandID(run RunID, step StepID, call CallID, resp ResponseID) CommandID
-	DeriveInputCommandID(run RunID, inputs ...InputID) CommandID
-	DeriveWithdrawCommandID(run RunID, step StepID) CommandID
-	DeriveStartCommandID(run RunID, step StepID, call CallID, claim ExecutionClaim) CommandID
-	DeriveSettlementCommandID(run RunID, step StepID, call CallID, claim ExecutionClaim) CommandID
-	DeriveModelRecoveryCommandID(run RunID, step StepID, claim ExecutionClaim) CommandID
-	DeriveToolRecoveryCommandID(run RunID, step StepID, call CallID, claim ExecutionClaim) CommandID
-}
-
 // Bodies is the frozen-body codec of one schema version: each body is stored
 // as the typed envelope its digest was computed from, so sha256(bytes) ==
 // digest and the body is addressable by its own name. Decoding a stored body
@@ -78,19 +58,6 @@ type Bodies interface {
 	DecodeModelResult([]byte, Digest) (ModelResult, error)
 	DecodeToolOutput([]byte, Digest) (CanonicalJSON, error)
 	DecodeToolResponse([]byte, Digest) (CanonicalJSON, error)
-}
-
-// Machine is the pure Run state machine of one schema version.
-type Machine interface {
-	// Decide produces the facts a command yields against a state, or the
-	// rejection (RUN-MCH-1).
-	Decide(MachineState, AgentCommand) ([]Fact, error)
-	// Evolve folds one fact (RUN-MCH-3).
-	Evolve(MachineState, Fact) (MachineState, error)
-	// CreateGroup returns the RunCreated and InputAccepted facts that
-	// establish a Run (RUN-NEW-1). It is pure: the owning module places
-	// these facts in its creation commit.
-	CreateGroup(NewRun, []AgentInput) ([]Fact, error)
 }
 
 // WireSchema names and (de)codes the sealed fact and command variants of one
@@ -110,25 +77,6 @@ type WireSchema interface {
 	EncodeFact(typ string, fact Fact) ([]byte, error)
 	// Envelope is the sanctioned envelope constructor (RUN-WIR-3).
 	Envelope(run RunID, id CommandID, cmd AgentCommand) (CommandEnvelope, error)
-}
-
-// Canonical is the digest rules of one schema version for every body a fact
-// names or a derived identity covers.
-type Canonical interface {
-	DigestRequest(ModelRequest) (Digest, error)
-	DigestToolDefinition(ToolDefinition) (Digest, error)
-	DigestToolSpec(ToolSpec) (Digest, error)
-	DigestToolSpecs([]ToolSpec) (Digest, error)
-	DigestModelStepBinding(model ModelRef, requestDigest, toolsDigest Digest) (Digest, error)
-	DigestToolResponseDecision(ResponseKind, ResponseDecision, string) (Digest, error)
-	DigestToolResponsePayload(CanonicalJSON) (Digest, error)
-	// DigestModelResult names a frozen model result (ModelStepCompleted.ResultDigest).
-	DigestModelResult(ModelResult) (Digest, error)
-	// DigestToolOutput names one tool output (ToolCallCompleted.OutputDigest).
-	DigestToolOutput(CanonicalJSON) (Digest, error)
-	// DigestToolCallBinding covers one binding: definition, policy and
-	// canonical arguments plus the CallID (RUN-MCH-2).
-	DigestToolCallBinding(callID CallID, definitionDigest Digest, policy ResponsePolicy, arguments CanonicalJSON) (Digest, error)
 }
 
 // SnapshotCodec renders a MachineState to and from its canonical persisted
@@ -152,13 +100,15 @@ type CommandEnvelope struct {
 	Command       AgentCommand `json:"command"`
 }
 
-// encodeEnvelopeBody is the digest input for a command: schema version, type
-// discriminator and canonical command bytes.
-func encodeEnvelopeBody(schemaVersion uint16, typ string, body any) ([]byte, error) {
-	return es.EncodeTypedPayload(schemaVersion, typ, body)
+var schemaV1 = Schema{
+	Version:   SchemaVersion1,
+	Machine:   MachineV1{Canonical: canonicalV1{}, Identity: identityV1{}},
+	Wire:      wireV1{},
+	Canonical: canonicalV1{},
+	Snapshot:  snapshotV1{},
+	Identity:  identityV1{},
+	Bodies:    bodiesV1{},
 }
-
-var schemaV1 = Schema{Version: SchemaVersion1, Machine: machineV1{}, Wire: wireV1{}, Canonical: canonicalV1{}, Snapshot: snapshotV1{}, Identity: identityV1{}, Bodies: bodiesV1{}}
 
 // SchemaV1 is the SchemaVersion1 binding. A Run is created under the Schema
 // of the Session segment it lands on (RUN-NEW-1); every later operation on
@@ -173,28 +123,14 @@ func SchemaFor(schemaVersion uint16) (Schema, error) {
 	case SchemaVersion1:
 		return schemaV1, nil
 	default:
-		return Schema{}, unsupportedSchemaVersion(schemaVersion)
+		return Schema{}, UnsupportedSchemaVersion(schemaVersion)
 	}
 }
 
-func unsupportedSchemaVersion(schemaVersion uint16) error {
+// UnsupportedSchemaVersion is the error every version table returns for a
+// version it has no binding for.
+func UnsupportedSchemaVersion(schemaVersion uint16) error {
 	return fmt.Errorf("agent: unsupported schema version %d", schemaVersion)
-}
-
-// --- v1 machine -------------------------------------------------------------------
-
-type machineV1 struct{}
-
-func (machineV1) Decide(s MachineState, c AgentCommand) ([]Fact, error) { //nolint:gocritic // hugeParam: the machine is a pure value interpreter.
-	return decideV1(s, c)
-}
-
-func (machineV1) Evolve(s MachineState, f Fact) (MachineState, error) { //nolint:gocritic // hugeParam: the machine is a pure value interpreter.
-	return evolveV1(s, f)
-}
-
-func (machineV1) CreateGroup(run NewRun, inputs []AgentInput) ([]Fact, error) {
-	return buildCreateGroupV1(run, inputs)
 }
 
 // --- v1 wire ------------------------------------------------------------------------
@@ -216,7 +152,7 @@ func (wireV1) EncodeFact(typ string, fact Fact) ([]byte, error) {
 	if typ == "" || typ != variantsV1.factType(fact) {
 		return nil, fmt.Errorf("agent: encode: type %q does not match fact variant", typ)
 	}
-	return encodeEnvelopeBody(SchemaVersion1, typ, fact)
+	return es.EncodeTypedPayload(SchemaVersion1, typ, fact)
 }
 
 func (wireV1) Envelope(run RunID, id CommandID, cmd AgentCommand) (CommandEnvelope, error) {

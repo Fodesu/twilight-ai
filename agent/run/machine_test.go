@@ -12,6 +12,9 @@ import (
 
 const testModel ModelRef = "m-1"
 
+// isOpen reports whether the Run is at Open, the position between steps.
+func isOpen(c Current) bool { _, ok := c.(Open); return ok }
+
 func cj(raw string) CanonicalJSON { return MustParseCanonicalJSON(raw) }
 
 func newRun(t *testing.T) MachineState {
@@ -185,7 +188,7 @@ func TestInitializeRunIsMinimal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.RunID != "r" || s.Owner != "turn-1" || s.Attempt != 1 || s.Status != RunActive || !atOpen(s.Current) || len(s.PendingInputs) != 0 {
+	if s.RunID != "r" || s.Owner != "turn-1" || s.Attempt != 1 || s.Status != RunActive || !isOpen(s.Current) || len(s.PendingInputs) != 0 {
 		t.Fatalf("initial state = %+v", s)
 	}
 }
@@ -203,7 +206,7 @@ func TestRunCreatedFoldsOntoZeroState(t *testing.T) {
 		t.Fatalf("facts = %d, want [created, input_accepted]", len(facts))
 	}
 	s := fold(t, MachineState{}, facts)
-	if s.RunID != "r" || s.Owner != "turn-1" || s.Attempt != 2 || !atOpen(s.Current) || len(s.PendingInputs) != 1 {
+	if s.RunID != "r" || s.Owner != "turn-1" || s.Attempt != 2 || !isOpen(s.Current) || len(s.PendingInputs) != 1 {
 		t.Fatalf("state after create group = %+v", s)
 	}
 	if _, err := SchemaV1().Machine.Evolve(s, facts[0]); err == nil {
@@ -325,7 +328,7 @@ func TestExternalResponseRequiresPayloadDigest(t *testing.T) {
 		t.Fatalf("failed = %+v", failed)
 	}
 	s = fold(t, s, facts)
-	if s.Status != RunActive || !atOpen(s.Current) {
+	if s.Status != RunActive || !isOpen(s.Current) {
 		t.Fatal("run should continue after rejecting the external response")
 	}
 }
@@ -425,7 +428,7 @@ func TestParallelWaitingDoesNotBlockPending(t *testing.T) {
 		t.Fatalf("facts = %d, want [completed]", len(facts))
 	}
 	s = fold(t, s, facts)
-	if !atOpen(s.Current) {
+	if !isOpen(s.Current) {
 		t.Fatal("tool step should be closed")
 	}
 }
@@ -484,7 +487,7 @@ func TestUnknownToolFailureSettlesOnlyThatCall(t *testing.T) {
 	s = fold(t, s, mustDecide(t, s, SubmitToolResult{
 		StepID: opened.StepID, CallID: cid(stepID, 1), Result: ToolExecutionResult{Output: cj(`"ok"`)},
 	}))
-	if s.Status != RunActive || !atOpen(s.Current) {
+	if s.Status != RunActive || !isOpen(s.Current) {
 		t.Fatalf("after sibling complete: status=%v current=%T", s.Status, s.Current)
 	}
 	if s.LastToolStep == nil || s.LastToolStep.Calls[0].Status != ToolFailed || s.LastToolStep.Calls[1].Status != ToolCompleted {
@@ -573,7 +576,7 @@ func TestAcceptInputQueuesInAnyActiveState(t *testing.T) {
 		t.Fatalf("facts = %d, want [withdrawn]", len(facts))
 	}
 	s = fold(t, s, facts)
-	if !atOpen(s.Current) || s.ModelSteps != 0 || len(s.PendingInputs) != 1 {
+	if !isOpen(s.Current) || s.ModelSteps != 0 || len(s.PendingInputs) != 1 {
 		t.Fatalf("state after withdraw = %+v", s)
 	}
 	// Withdraw without pending inputs is rejected: the request is complete.
@@ -607,7 +610,7 @@ func TestAcceptInputQueuesInAnyActiveState(t *testing.T) {
 		t.Fatalf("completed = %+v", completed)
 	}
 	s = fold(t, s, facts)
-	if s.Status != RunActive || !atOpen(s.Current) || len(s.PendingInputs) != 1 || s.PendingInputs[0].ID != "in-4" {
+	if s.Status != RunActive || !isOpen(s.Current) || len(s.PendingInputs) != 1 || s.PendingInputs[0].ID != "in-4" {
 		t.Fatalf("state after completed with pending input = %+v", s)
 	}
 	if eff, _ := Next(s); eff == nil {

@@ -241,11 +241,11 @@ func RecoveryTargets(state *MachineState) []RecoveryTarget {
 // RecoveryCommand is the disposition of one target under the takeover claim:
 // an Executing model step is withdrawn to Open (the next Prepare plans again);
 // an Executing tool call settles as Unknown. schema is the Run's.
-func RecoveryCommand(schema Schema, target RecoveryTarget, claim ExecutionClaim) Recovery {
+func RecoveryCommand(id Identity, target RecoveryTarget, claim ExecutionClaim) Recovery {
 	if target.Call == nil {
 		return Recovery{
 			Command: RecoverModelExecution{StepID: target.StepID, Claim: claim},
-			ID:      schema.Identity.DeriveModelRecoveryCommandID(target.RunID, target.StepID, claim),
+			ID:      id.DeriveModelRecoveryCommandID(target.RunID, target.StepID, claim),
 		}
 	}
 	return Recovery{
@@ -255,21 +255,21 @@ func RecoveryCommand(schema Schema, target RecoveryTarget, claim ExecutionClaim)
 			Failure: ToolFailure{Class: FailureEffectUnknown, Message: "owner process lost before settlement"},
 			Outcome: ToolOutcomeUnknown,
 		},
-		ID: schema.Identity.DeriveToolRecoveryCommandID(target.RunID, target.StepID, target.CallID, claim),
+		ID: id.DeriveToolRecoveryCommandID(target.RunID, target.StepID, target.CallID, claim),
 	}
 }
 
 // RecoveryCommands lists the takeover dispositions of every Executing target
 // in state (RUN-CMT-7). Pending and Waiting calls are left alone. claim is the
 // takeover claim of the new owner.
-func RecoveryCommands(schema Schema, state *MachineState, claim ExecutionClaim) []Recovery {
+func RecoveryCommands(id Identity, state *MachineState, claim ExecutionClaim) []Recovery {
 	targets := RecoveryTargets(state)
 	if len(targets) == 0 {
 		return nil
 	}
 	out := make([]Recovery, len(targets))
 	for i, t := range targets {
-		out[i] = RecoveryCommand(schema, t, claim)
+		out[i] = RecoveryCommand(id, t, claim)
 	}
 	return out
 }

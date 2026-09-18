@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"reflect"
+
+	"github.com/felinics/twilight/agent/es"
 )
 
 // The sealed fact and command variants of one schema version are registered
@@ -31,7 +33,7 @@ func factOf[T Fact](name string) factVariant {
 	var zero T
 	return factVariant{name: name, goType: reflect.TypeOf(zero), decode: func(raw []byte) (Fact, error) {
 		var f T
-		err := decodeStrictJSON(raw, &f)
+		err := es.DecodeStrict(raw, &f)
 		return f, err
 	}}
 }
@@ -40,7 +42,7 @@ func commandOf[T AgentCommand](name string) commandVariant {
 	var zero T
 	return commandVariant{name: name, goType: reflect.TypeOf(zero), decode: func(raw []byte) (AgentCommand, error) {
 		var c T
-		err := decodeStrictJSON(raw, &c)
+		err := es.DecodeStrict(raw, &c)
 		return c, err
 	}}
 }

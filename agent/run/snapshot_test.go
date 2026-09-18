@@ -12,11 +12,11 @@ func TestSnapshotCodecRoundTrip(t *testing.T) {
 	spec := makeSpec(t, def, DirectExecution)
 	check := func(name string, s MachineState) {
 		t.Helper()
-		raw, err := SchemaV1().Snapshot.Encode(&s)
+		raw, err := (snapshotV1{}).Encode(&s)
 		if err != nil {
 			t.Fatalf("%s: encode: %v", name, err)
 		}
-		decoded, err := SchemaV1().Snapshot.Decode(raw)
+		decoded, err := (snapshotV1{}).Decode(raw)
 		if err != nil {
 			t.Fatalf("%s: decode: %v\n%s", name, err, raw)
 		}
@@ -50,7 +50,7 @@ func TestSnapshotCodecRejectsMalformedWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	good, err := SchemaV1().Snapshot.Encode(&initial)
+	good, err := (snapshotV1{}).Encode(&initial)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,11 +61,11 @@ func TestSnapshotCodecRejectsMalformedWire(t *testing.T) {
 		"active without current": strings.Replace(string(good), `"current":"open",`, ``, 1),
 		"trailing data":          string(good) + `{}`,
 	} {
-		if _, err := SchemaV1().Snapshot.Decode([]byte(raw)); err == nil {
+		if _, err := (snapshotV1{}).Decode([]byte(raw)); err == nil {
 			t.Fatalf("%s: accepted\n%s", name, raw)
 		}
 	}
-	if _, err := SchemaV1().Snapshot.Decode(good); err != nil {
+	if _, err := (snapshotV1{}).Decode(good); err != nil {
 		t.Fatalf("canonical wire rejected: %v", err)
 	}
 }

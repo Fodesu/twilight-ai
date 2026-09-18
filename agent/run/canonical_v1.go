@@ -3,6 +3,7 @@ package run
 import (
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agent/es"
 )
 
 // canonicalV1 is the SchemaVersion1 digest rules. Replay of a v1 Run must
@@ -10,27 +11,27 @@ import (
 type canonicalV1 struct{}
 
 func (canonicalV1) DigestRequest(req ModelRequest) (Digest, error) { //nolint:gocritic // hugeParam: digest covers the complete immutable ModelRequest value.
-	body, err := encodeEnvelopeBody(SchemaVersion1, "model_request", req)
+	body, err := es.EncodeTypedPayload(SchemaVersion1, "model_request", req)
 	if err != nil {
 		return "", err
 	}
-	return sha256Digest(body), nil
+	return es.DigestBytes(body), nil
 }
 
 func (canonicalV1) DigestToolDefinition(def ToolDefinition) (Digest, error) {
-	body, err := encodeEnvelopeBody(SchemaVersion1, "tool_definition", def)
+	body, err := es.EncodeTypedPayload(SchemaVersion1, "tool_definition", def)
 	if err != nil {
 		return "", err
 	}
-	return sha256Digest(body), nil
+	return es.DigestBytes(body), nil
 }
 
 func (canonicalV1) DigestToolSpec(spec ToolSpec) (Digest, error) { //nolint:gocritic // hugeParam: digest covers the complete immutable ToolSpec value.
-	body, err := encodeEnvelopeBody(SchemaVersion1, "tool_spec", spec)
+	body, err := es.EncodeTypedPayload(SchemaVersion1, "tool_spec", spec)
 	if err != nil {
 		return "", err
 	}
-	return sha256Digest(body), nil
+	return es.DigestBytes(body), nil
 }
 
 func (canonicalV1) DigestToolSpecs(specs []ToolSpec) (Digest, error) {
@@ -41,18 +42,18 @@ func (canonicalV1) DigestToolSpecs(specs []ToolSpec) (Digest, error) {
 	if len(specs) == 0 {
 		specs = nil
 	}
-	body, err := encodeEnvelopeBody(SchemaVersion1, "tool_specs", specs)
+	body, err := es.EncodeTypedPayload(SchemaVersion1, "tool_specs", specs)
 	if err != nil {
 		return "", err
 	}
-	return sha256Digest(body), nil
+	return es.DigestBytes(body), nil
 }
 
 func (canonicalV1) DigestModelStepBinding(model ModelRef, requestDigest, toolsDigest Digest) (Digest, error) {
 	if model == "" || requestDigest == "" || toolsDigest == "" {
 		return "", errors.New("agent: model step binding requires model, request digest and tools digest")
 	}
-	return sha256Digest([]byte(namespacedHash("twilight/model-step-binding",
+	return es.DigestBytes([]byte(namespacedHash("twilight/model-step-binding",
 		string(model), string(requestDigest), string(toolsDigest)))), nil
 }
 
@@ -77,31 +78,31 @@ func (canonicalV1) DigestToolResponseDecision(kind ResponseKind, decision Respon
 	if decision != ResponseDecisionApproved && decision != ResponseDecisionRejected {
 		return "", fmt.Errorf("agent: response decision: unsupported decision %q", decision)
 	}
-	body, err := encodeEnvelopeBody(SchemaVersion1, "tool_response_decision", toolResponseDecisionDigestBody{
+	body, err := es.EncodeTypedPayload(SchemaVersion1, "tool_response_decision", toolResponseDecisionDigestBody{
 		Kind: kind, Decision: decision, Reason: reason,
 	})
 	if err != nil {
 		return "", err
 	}
-	return sha256Digest(body), nil
+	return es.DigestBytes(body), nil
 }
 
 func (canonicalV1) DigestToolResponsePayload(payload CanonicalJSON) (Digest, error) {
-	body, err := encodeEnvelopeBody(SchemaVersion1, "tool_response_payload", toolResponsePayloadDigestBody{Payload: payload})
+	body, err := es.EncodeTypedPayload(SchemaVersion1, "tool_response_payload", toolResponsePayloadDigestBody{Payload: payload})
 	if err != nil {
 		return "", err
 	}
-	return sha256Digest(body), nil
+	return es.DigestBytes(body), nil
 }
 
 // DigestModelResult names a frozen model result; ModelStepCompleted carries
 // this digest and the FrozenValueStore holds the body (RUN-WIR-4).
 func (canonicalV1) DigestModelResult(result ModelResult) (Digest, error) { //nolint:gocritic // hugeParam: digest covers the complete immutable ModelResult value.
-	body, err := encodeEnvelopeBody(SchemaVersion1, "model_result", result)
+	body, err := es.EncodeTypedPayload(SchemaVersion1, "model_result", result)
 	if err != nil {
 		return "", err
 	}
-	return sha256Digest(body), nil
+	return es.DigestBytes(body), nil
 }
 
 // DigestToolOutput names one tool output; ToolCallCompleted carries it.
@@ -109,52 +110,27 @@ func (canonicalV1) DigestToolOutput(output CanonicalJSON) (Digest, error) {
 	if output.IsZero() {
 		return "", errors.New("agent: tool output: empty output")
 	}
-	body, err := encodeEnvelopeBody(SchemaVersion1, "tool_output", toolOutputDigestBody{Output: output})
+	body, err := es.EncodeTypedPayload(SchemaVersion1, "tool_output", toolOutputDigestBody{Output: output})
 	if err != nil {
 		return "", err
 	}
-	return sha256Digest(body), nil
+	return es.DigestBytes(body), nil
 }
 
-// digestBindingSet covers the full ordered pre-Response call set of one
-// ToolStep; it feeds DeriveToolStepID and is carried inside ToolStepOpened.
-// It is pinned to SchemaVersion1: the value is persisted in v1 facts, so a
-// future schema bump must not change how replayed v1 state folds.
-func digestBindingSet(bindings []ToolCallBinding) (Digest, error) {
-	body, err := encodeEnvelopeBody(SchemaVersion1, "tool_call_bindings", bindings)
+// DigestToolCallBindingSet covers the full ordered pre-Response call set of
+// one ToolStep; it feeds DeriveToolStepID and is carried inside
+// ToolStepOpened. It is pinned to SchemaVersion1: the value is persisted in
+// v1 facts, so a future schema bump must not change how replayed v1 state
+// folds.
+func (canonicalV1) DigestToolCallBindingSet(bindings []ToolCallBinding) (Digest, error) {
+	body, err := es.EncodeTypedPayload(SchemaVersion1, "tool_call_bindings", bindings)
 	if err != nil {
 		return "", err
 	}
-	return sha256Digest(body), nil
+	return es.DigestBytes(body), nil
 }
 
 func (canonicalV1) DigestToolCallBinding(callID CallID, definitionDigest Digest, policy ResponsePolicy, arguments CanonicalJSON) (Digest, error) {
-	return sha256Digest([]byte(namespacedHash("twilight/tool-call-binding",
+	return es.DigestBytes([]byte(namespacedHash("twilight/tool-call-binding",
 		string(callID), string(definitionDigest), fmt.Sprintf("%d", policy), arguments.String()))), nil
-}
-
-// buildCreateGroupV1 produces the facts that establish a Run and queue its
-// initial inputs (RUN-NEW-1). It is pure: the owning module places these
-// facts in its creation commit, the RunStore never sees a Create command.
-func buildCreateGroupV1(run NewRun, inputs []AgentInput) ([]Fact, error) {
-	if err := ValidateNewRun(run); err != nil {
-		return nil, err
-	}
-	facts := make([]Fact, 0, 1+len(inputs))
-	facts = append(facts, RunCreated(run))
-	seen := make(map[InputID]struct{}, len(inputs))
-	for _, in := range inputs {
-		if in.ID == "" {
-			return nil, errors.New("agent: create group: input with empty InputID")
-		}
-		if in.Digest == "" {
-			return nil, fmt.Errorf("agent: create group: input %s has no content digest", in.ID)
-		}
-		if _, dup := seen[in.ID]; dup {
-			return nil, fmt.Errorf("agent: create group: duplicate InputID %q", in.ID)
-		}
-		seen[in.ID] = struct{}{}
-		facts = append(facts, InputAccepted{Input: cloneAgentInput(in)})
-	}
-	return facts, nil
 }

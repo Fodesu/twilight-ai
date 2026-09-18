@@ -42,8 +42,6 @@ type PromptToken string
 // accidentally acquiring a second execution grant.
 type ExecutionClaim string
 
-func sha256Digest(data []byte) Digest { return es.DigestBytes(data) }
-
 // namespacedHash derives a stable identifier from a namespace and ordered
 // parts. Parts are length-prefixed so no two distinct part lists collide.
 func namespacedHash(namespace string, parts ...string) string {

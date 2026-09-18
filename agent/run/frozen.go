@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agent/es"
 )
 
 // FrozenValueStore is the run layer's port to the content-addressed side
@@ -88,61 +89,66 @@ func (bodiesV1) DecodeToolResponse(raw []byte, want Digest) (CanonicalJSON, erro
 	return body.Payload, nil
 }
 
-// frozenSchema reads the schema version a stored body was encoded under from
-// its envelope prefix and binds that version's codec, so a store holding
-// bodies of several versions decodes each with the schema that wrote it.
-func frozenSchema(raw []byte) (Schema, error) {
+// bodiesCodecFor reads the schema version a stored body was encoded under from
+// its envelope prefix and binds that version's body codec, so a store holding
+// bodies of several versions decodes each with the codec that wrote it.
+func bodiesCodecFor(raw []byte) (Bodies, error) {
 	var version uint16
 	if _, err := fmt.Sscanf(string(raw[:min(len(raw), 8)]), "v%d:", &version); err != nil {
-		return Schema{}, errors.New("agent: frozen body: not a typed envelope")
+		return nil, errors.New("agent: frozen body: not a typed envelope")
 	}
-	return SchemaFor(version)
+	switch version {
+	case SchemaVersion1:
+		return bodiesV1{}, nil
+	default:
+		return nil, UnsupportedSchemaVersion(version)
+	}
 }
 
 // DecodeFrozenRequest restores a request body and checks it still digests to
 // the name it was stored under. The version comes from the body itself.
 func DecodeFrozenRequest(raw []byte, want Digest) (ModelRequest, error) {
-	schema, err := frozenSchema(raw)
+	codec, err := bodiesCodecFor(raw)
 	if err != nil {
 		return ModelRequest{}, err
 	}
-	return schema.Bodies.DecodeRequest(raw, want)
+	return codec.DecodeRequest(raw, want)
 }
 
 // DecodeFrozenModelResult restores a model result named by ResultDigest.
 func DecodeFrozenModelResult(raw []byte, want Digest) (ModelResult, error) {
-	schema, err := frozenSchema(raw)
+	codec, err := bodiesCodecFor(raw)
 	if err != nil {
 		return ModelResult{}, err
 	}
-	return schema.Bodies.DecodeModelResult(raw, want)
+	return codec.DecodeModelResult(raw, want)
 }
 
 // DecodeFrozenToolOutput restores a tool output named by OutputDigest.
 func DecodeFrozenToolOutput(raw []byte, want Digest) (CanonicalJSON, error) {
-	schema, err := frozenSchema(raw)
+	codec, err := bodiesCodecFor(raw)
 	if err != nil {
 		return CanonicalJSON{}, err
 	}
-	return schema.Bodies.DecodeToolOutput(raw, want)
+	return codec.DecodeToolOutput(raw, want)
 }
 
 // DecodeFrozenToolResponse restores an external tool response named by
 // ResponseDigest.
 func DecodeFrozenToolResponse(raw []byte, want Digest) (CanonicalJSON, error) {
-	schema, err := frozenSchema(raw)
+	codec, err := bodiesCodecFor(raw)
 	if err != nil {
 		return CanonicalJSON{}, err
 	}
-	return schema.Bodies.DecodeToolResponse(raw, want)
+	return codec.DecodeToolResponse(raw, want)
 }
 
 func encodeFrozen(version uint16, typ string, body any, want Digest) ([]byte, error) { //nolint:unparam // version is the caller schema's; only v1 exists today.
-	raw, err := encodeEnvelopeBody(version, typ, body)
+	raw, err := es.EncodeTypedPayload(version, typ, body)
 	if err != nil {
 		return nil, err
 	}
-	if got := sha256Digest(raw); got != want {
+	if got := es.DigestBytes(raw); got != want {
 		return nil, fmt.Errorf("agent: frozen %s: body digest %s does not match %s", typ, got, want)
 	}
 	return raw, nil
@@ -150,7 +156,7 @@ func encodeFrozen(version uint16, typ string, body any, want Digest) ([]byte, er
 
 func decodeFrozen[T any](raw []byte, version uint16, typ string, want Digest) (T, error) {
 	var zero T
-	if got := sha256Digest(raw); got != want {
+	if got := es.DigestBytes(raw); got != want {
 		return zero, fmt.Errorf("agent: frozen %s: stored body digest %s does not match %s", typ, got, want)
 	}
 	prefix := envelopePrefix(version, typ)
@@ -158,7 +164,7 @@ func decodeFrozen[T any](raw []byte, version uint16, typ string, want Digest) (T
 		return zero, fmt.Errorf("agent: frozen %s: stored body is not a %s envelope", typ, typ)
 	}
 	var out T
-	if err := decodeStrictJSON(raw[len(prefix):], &out); err != nil {
+	if err := es.DecodeStrict(raw[len(prefix):], &out); err != nil {
 		return zero, fmt.Errorf("agent: frozen %s: %w", typ, err)
 	}
 	return out, nil

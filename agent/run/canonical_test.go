@@ -2,6 +2,7 @@ package run
 
 import (
 	"encoding/json"
+	"github.com/felinics/twilight/agent/es"
 	"testing"
 )
 
@@ -53,12 +54,12 @@ func TestCanonicalJSON(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := canonicalJSON([]byte(c.in))
+			got, err := es.Canonicalize([]byte(c.in))
 			if err != nil {
-				t.Fatalf("canonicalJSON(%q): %v", c.in, err)
+				t.Fatalf("es.Canonicalize(%q): %v", c.in, err)
 			}
 			if string(got) != c.want {
-				t.Fatalf("canonicalJSON(%q) = %q, want %q", c.in, got, c.want)
+				t.Fatalf("es.Canonicalize(%q) = %q, want %q", c.in, got, c.want)
 			}
 		})
 	}
@@ -72,8 +73,8 @@ func TestCanonicalJSONRejects(t *testing.T) {
 		`{"x":1}]`, `{"a":1}}}`, `[1,2]]`,
 		"{\"a\":\"\xff\"}",
 	} {
-		if _, err := canonicalJSON([]byte(in)); err == nil {
-			t.Fatalf("canonicalJSON(%q): expected error", in)
+		if _, err := es.Canonicalize([]byte(in)); err == nil {
+			t.Fatalf("es.Canonicalize(%q): expected error", in)
 		}
 	}
 }
@@ -81,12 +82,12 @@ func TestCanonicalJSONRejects(t *testing.T) {
 func TestCanonicalDeterminism(t *testing.T) {
 	// Map iteration order must not leak into canonical bytes.
 	v := map[string]any{"z": 1, "a": map[string]any{"y": []any{1, "s"}, "b": true}, "m": nil}
-	first, err := marshalCanonical(v)
+	first, err := es.MarshalCanonical(v)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 50; i++ {
-		got, err := marshalCanonical(v)
+		got, err := es.MarshalCanonical(v)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -98,11 +99,11 @@ func TestCanonicalDeterminism(t *testing.T) {
 
 func TestDigestPreimageCoversSchemaVersion(t *testing.T) {
 	cmd := StartToolCall{StepID: "s1", CallID: "c1", Claim: "claim-1"}
-	body1, err := encodeEnvelopeBody(SchemaVersion1, "start_tool_call", cmd)
+	body1, err := es.EncodeTypedPayload(SchemaVersion1, "start_tool_call", cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
-	body2, err := encodeEnvelopeBody(2, "start_tool_call", cmd)
+	body2, err := es.EncodeTypedPayload(2, "start_tool_call", cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,18 +114,18 @@ func TestDigestPreimageCoversSchemaVersion(t *testing.T) {
 
 func TestDeriveStability(t *testing.T) {
 	// Fixed inputs must produce fixed outputs across processes; freeze a few.
-	id1 := SchemaV1().Identity.DeriveModelRequestCommandID("run-1", 7)
-	id2 := SchemaV1().Identity.DeriveModelRequestCommandID("run-1", 7)
+	id1 := (identityV1{}).DeriveModelRequestCommandID("run-1", 7)
+	id2 := (identityV1{}).DeriveModelRequestCommandID("run-1", 7)
 	if id1 != id2 {
 		t.Fatal("derive is not deterministic")
 	}
-	if id1 == SchemaV1().Identity.DeriveModelRequestCommandID("run-1", 8) {
+	if id1 == (identityV1{}).DeriveModelRequestCommandID("run-1", 8) {
 		t.Fatal("revision does not separate command IDs")
 	}
-	if id1 == SchemaV1().Identity.DeriveModelRequestCommandID("run-1", 70) {
+	if id1 == (identityV1{}).DeriveModelRequestCommandID("run-1", 70) {
 		t.Fatal("index does not separate command IDs")
 	}
-	if id1 == SchemaV1().Identity.DeriveModelRequestCommandID("run-2", 7) {
+	if id1 == (identityV1{}).DeriveModelRequestCommandID("run-2", 7) {
 		t.Fatal("run does not separate command IDs")
 	}
 	// Namespaces must not collide even with aligned parts.
@@ -142,8 +143,8 @@ func TestDeriveStability(t *testing.T) {
 }
 
 func TestDeriveResponseIDPerKind(t *testing.T) {
-	a := SchemaV1().Identity.DeriveResponseID("r", "s", "c", ResponseApproval)
-	b := SchemaV1().Identity.DeriveResponseID("r", "s", "c", ResponseExternal)
+	a := (identityV1{}).DeriveResponseID("r", "s", "c", ResponseApproval)
+	b := (identityV1{}).DeriveResponseID("r", "s", "c", ResponseExternal)
 	if a == b {
 		t.Fatal("response kind does not separate response IDs")
 	}
@@ -183,7 +184,7 @@ func TestDigestBindingCanonicalizesArguments(t *testing.T) {
 // protocol changes. Once v1 is published, these become permanent fixtures.
 func TestSchemaVersion1Golden(t *testing.T) {
 	cmd := CancelRun{Reason: ReasonCancelled}
-	body, err := encodeEnvelopeBody(SchemaVersion1, "cancel_run", cmd)
+	body, err := es.EncodeTypedPayload(SchemaVersion1, "cancel_run", cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +194,7 @@ func TestSchemaVersion1Golden(t *testing.T) {
 	}
 
 	fact := InputAccepted{Input: AgentInput{ID: "in-1", Digest: "sha256:e7b995efa755c5ff3b84d2188b58cb4ae916a59470eb3761df8a814f11763500"}}
-	fbody, err := SchemaV1().Wire.EncodeFact("input_accepted", fact)
+	fbody, err := (wireV1{}).EncodeFact("input_accepted", fact)
 	if err != nil {
 		t.Fatal(err)
 	}

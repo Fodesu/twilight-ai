@@ -20,14 +20,20 @@ func rejectionf(format string, args ...any) error {
 	return fmt.Errorf("agent: reject: "+format, args...)
 }
 
+// Decide produces the facts a command yields against s, or the rejection
+// (RUN-MCH-1).
+//
 //nolint:gocritic // hugeParam: v1 Decide is value-based.
-func decideV1(s MachineState, c AgentCommand) ([]Fact, error) {
+func (m MachineV1) Decide(s MachineState, c AgentCommand) ([]Fact, error) {
+	if err := m.bound(); err != nil {
+		return nil, err
+	}
 	if s.Status.Terminal() {
 		return nil, ErrRunTerminal
 	}
 	switch cmd := c.(type) {
 	case PrepareModelRequest:
-		return decidePrepareModelRequest(&s, &cmd)
+		return m.decidePrepareModelRequest(&s, &cmd)
 	case WithdrawPreparedStep:
 		return decideWithdrawPreparedStep(&s, cmd)
 	case StartModelExecution:
@@ -35,7 +41,7 @@ func decideV1(s MachineState, c AgentCommand) ([]Fact, error) {
 	case RecoverModelExecution:
 		return decideRecoverModelExecution(&s, cmd)
 	case SubmitModelResult:
-		return decideSubmitModelResult(&s, &cmd)
+		return m.decideSubmitModelResult(&s, &cmd)
 	case SubmitModelFailure:
 		return decideSubmitModelFailure(&s, cmd)
 	case RejectModelResult:
@@ -43,15 +49,15 @@ func decideV1(s MachineState, c AgentCommand) ([]Fact, error) {
 	case StartToolCall:
 		return decideStartToolCall(&s, cmd)
 	case SubmitToolResult:
-		return decideSubmitToolResult(&s, cmd)
+		return m.decideSubmitToolResult(&s, cmd)
 	case SubmitToolFailure:
 		return decideSubmitToolFailure(&s, cmd)
 	case ApproveToolCall:
-		return decideApproveToolCall(&s, cmd)
+		return m.decideApproveToolCall(&s, cmd)
 	case RejectToolCall:
-		return decideRejectToolCall(&s, &cmd)
+		return m.decideRejectToolCall(&s, &cmd)
 	case SubmitToolResponse:
-		return decideSubmitToolResponse(&s, &cmd)
+		return m.decideSubmitToolResponse(&s, &cmd)
 	case CancelRun:
 		return decideCancelRun(&s, cmd)
 	case AcceptInput:
@@ -63,7 +69,7 @@ func decideV1(s MachineState, c AgentCommand) ([]Fact, error) {
 
 // --- rule 1: PrepareModelRequest ---
 
-func decidePrepareModelRequest(s *MachineState, cmd *PrepareModelRequest) ([]Fact, error) {
+func (m MachineV1) decidePrepareModelRequest(s *MachineState, cmd *PrepareModelRequest) ([]Fact, error) {
 	if !atOpen(s.Current) {
 		return nil, rejectionf("prepare: run is not at Open")
 	}
@@ -95,7 +101,7 @@ func decidePrepareModelRequest(s *MachineState, cmd *PrepareModelRequest) ([]Fac
 		if spec.Name == "" || spec.Name != cmd.Request.Tools[i].Name {
 			return nil, rejectionf("prepare: ToolSpec[%d] %q does not match request tool %q", i, spec.Name, cmd.Request.Tools[i].Name)
 		}
-		wantDigest, err := (canonicalV1{}).DigestToolDefinition(cmd.Request.Tools[i])
+		wantDigest, err := m.Canonical.DigestToolDefinition(cmd.Request.Tools[i])
 		if err != nil {
 			return nil, err
 		}
@@ -103,21 +109,21 @@ func decidePrepareModelRequest(s *MachineState, cmd *PrepareModelRequest) ([]Fac
 			return nil, rejectionf("prepare: ToolSpec[%d] definition digest mismatch", i)
 		}
 	}
-	wantReq, err := (canonicalV1{}).DigestRequest(cmd.Request)
+	wantReq, err := m.Canonical.DigestRequest(cmd.Request)
 	if err != nil {
 		return nil, err
 	}
 	if cmd.RequestDigest != wantReq {
 		return nil, rejectionf("prepare: request digest mismatch")
 	}
-	wantTools, err := (canonicalV1{}).DigestToolSpecs(cmd.Tools)
+	wantTools, err := m.Canonical.DigestToolSpecs(cmd.Tools)
 	if err != nil {
 		return nil, err
 	}
 	if cmd.ToolsDigest != wantTools {
 		return nil, rejectionf("prepare: tools digest mismatch")
 	}
-	binding, err := (canonicalV1{}).DigestModelStepBinding(cmd.Model, cmd.RequestDigest, cmd.ToolsDigest)
+	binding, err := m.Canonical.DigestModelStepBinding(cmd.Model, cmd.RequestDigest, cmd.ToolsDigest)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +194,7 @@ func decideRecoverModelExecution(s *MachineState, cmd RecoverModelExecution) ([]
 
 // --- rule 3: SubmitModelResult ---
 
-func decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, error) {
+func (m MachineV1) decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, error) {
 	ms, err := currentModelStep(s, cmd.StepID)
 	if err != nil {
 		return nil, err
@@ -196,7 +202,7 @@ func decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, e
 	if ms.Status != ModelExecuting {
 		return nil, rejectionf("model result: step is not Executing")
 	}
-	resultDigest, err := (canonicalV1{}).DigestModelResult(cmd.Result)
+	resultDigest, err := m.Canonical.DigestModelResult(cmd.Result)
 	if err != nil {
 		return nil, err
 	}
@@ -216,11 +222,11 @@ func decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, e
 		}
 		return []Fact{completed, RunEnded{End: RunCompletedEnd{}}}, nil
 	}
-	bindings, err := checkToolCallBindings(ms, cmd)
+	bindings, err := m.checkToolCallBindings(ms, cmd)
 	if err != nil {
 		return nil, err
 	}
-	opened, err := openToolStep(s.RunID, cmd.StepID, bindings, cmd.Scheduling)
+	opened, err := m.openToolStep(s.RunID, cmd.StepID, bindings, cmd.Scheduling)
 	if err != nil {
 		return nil, err
 	}
@@ -230,7 +236,7 @@ func decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, e
 // checkToolCallBindings validates the caller's bindings one-to-one against
 // the model result and the frozen ToolSpecs (RUN-MCH-2) and returns them with
 // Response cleared, ready for openToolStep to derive.
-func checkToolCallBindings(ms *ModelStep, cmd *SubmitModelResult) ([]ToolCallBinding, error) {
+func (m MachineV1) checkToolCallBindings(ms *ModelStep, cmd *SubmitModelResult) ([]ToolCallBinding, error) {
 	if len(cmd.Calls) != len(cmd.Result.ToolCalls) {
 		return nil, rejectionf("model result: %d bindings for %d tool calls", len(cmd.Calls), len(cmd.Result.ToolCalls))
 	}
@@ -243,7 +249,7 @@ func checkToolCallBindings(ms *ModelStep, cmd *SubmitModelResult) ([]ToolCallBin
 	for i := range cmd.Calls {
 		b := cmd.Calls[i]
 		rc := &cmd.Result.ToolCalls[i]
-		if want := (identityV1{}).DeriveCallID(cmd.StepID, i); b.CallID != want {
+		if want := m.Identity.DeriveCallID(cmd.StepID, i); b.CallID != want {
 			return nil, rejectionf("model result: binding %d CallID %q is not the derived id %q", i, b.CallID, want)
 		}
 		if b.ProviderCallID != rc.ToolCallID {
@@ -253,7 +259,7 @@ func checkToolCallBindings(ms *ModelStep, cmd *SubmitModelResult) ([]ToolCallBin
 			return nil, rejectionf("model result: duplicate CallID %q", b.CallID)
 		}
 		seen[b.CallID] = true
-		if err := checkBindingAgainstResult(&b, rc, specByName); err != nil {
+		if err := m.checkBindingAgainstResult(&b, rc, specByName); err != nil {
 			return nil, err
 		}
 		b.Response = nil // derived by openToolStep; callers leave it empty
@@ -266,7 +272,7 @@ func checkToolCallBindings(ms *ModelStep, cmd *SubmitModelResult) ([]ToolCallBin
 // actually named, with the arguments the model actually produced. A known
 // tool must match its frozen ToolSpec; an unknown one stays an unresolved
 // DirectExecution binding that StartToolCalls records as a lookup failure.
-func checkBindingAgainstResult(b *ToolCallBinding, rc *ModelToolCall, specByName map[string]ToolSpec) error {
+func (m MachineV1) checkBindingAgainstResult(b *ToolCallBinding, rc *ModelToolCall, specByName map[string]ToolSpec) error {
 	if spec, known := specByName[rc.ToolName]; known {
 		if b.ToolRef != spec.Ref {
 			return rejectionf("model result: binding %q ToolRef %q does not match frozen spec ref %q for tool %q", b.CallID, b.ToolRef, spec.Ref, rc.ToolName)
@@ -292,7 +298,7 @@ func checkBindingAgainstResult(b *ToolCallBinding, rc *ModelToolCall, specByName
 	if !b.Arguments.Equal(wantArgs) {
 		return rejectionf("model result: binding %q arguments do not match the model result", b.CallID)
 	}
-	wantBinding, err := (canonicalV1{}).DigestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
+	wantBinding, err := m.Canonical.DigestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
 	if err != nil {
 		return err
 	}
@@ -305,18 +311,18 @@ func checkBindingAgainstResult(b *ToolCallBinding, rc *ModelToolCall, specByName
 // openToolStep derives the ToolStep identity from the ordered binding set,
 // attaches a ResponseRequest to every call whose policy waits, and freezes
 // the scheduling (RUN-LOP-1).
-func openToolStep(runID RunID, source StepID, bindings []ToolCallBinding, scheduling ToolScheduling) (ToolStepOpened, error) {
-	setDigest, err := digestBindingSet(bindings)
+func (m MachineV1) openToolStep(runID RunID, source StepID, bindings []ToolCallBinding, scheduling ToolScheduling) (ToolStepOpened, error) {
+	setDigest, err := m.Canonical.DigestToolCallBindingSet(bindings)
 	if err != nil {
 		return ToolStepOpened{}, err
 	}
-	toolStepID := (identityV1{}).DeriveToolStepID(source, setDigest)
+	toolStepID := m.Identity.DeriveToolStepID(source, setDigest)
 	for i := range bindings {
 		kind, waits := responseKindForPolicy(bindings[i].Policy)
 		if !waits {
 			continue
 		}
-		reqDigest, err := (canonicalV1{}).DigestToolCallBinding(bindings[i].CallID, bindings[i].DefinitionDigest, bindings[i].Policy, bindings[i].Arguments)
+		reqDigest, err := m.Canonical.DigestToolCallBinding(bindings[i].CallID, bindings[i].DefinitionDigest, bindings[i].Policy, bindings[i].Arguments)
 		if err != nil {
 			return ToolStepOpened{}, err
 		}
@@ -324,7 +330,7 @@ func openToolStep(runID RunID, source StepID, bindings []ToolCallBinding, schedu
 			RunID:         runID,
 			StepID:        toolStepID,
 			CallID:        bindings[i].CallID,
-			ID:            (identityV1{}).DeriveResponseID(runID, toolStepID, bindings[i].CallID, kind),
+			ID:            m.Identity.DeriveResponseID(runID, toolStepID, bindings[i].CallID, kind),
 			Kind:          kind,
 			Payload:       bindings[i].Arguments,
 			RequestDigest: reqDigest,
@@ -432,7 +438,7 @@ func decideStartToolCall(s *MachineState, cmd StartToolCall) ([]Fact, error) {
 	return []Fact{ToolCallStarted(cmd)}, nil
 }
 
-func decideSubmitToolResult(s *MachineState, cmd SubmitToolResult) ([]Fact, error) {
+func (m MachineV1) decideSubmitToolResult(s *MachineState, cmd SubmitToolResult) ([]Fact, error) {
 	ts, err := currentToolStep(s, cmd.StepID)
 	if err != nil {
 		return nil, err
@@ -444,7 +450,7 @@ func decideSubmitToolResult(s *MachineState, cmd SubmitToolResult) ([]Fact, erro
 	if ts.Calls[i].Status != ToolExecuting {
 		return nil, rejectionf("tool result: call %q is not Executing", cmd.CallID)
 	}
-	outputDigest, err := (canonicalV1{}).DigestToolOutput(cmd.Result.Output)
+	outputDigest, err := m.Canonical.DigestToolOutput(cmd.Result.Output)
 	if err != nil {
 		return nil, err
 	}
@@ -518,11 +524,11 @@ func waitingCall(s *MachineState, step StepID, call CallID, kind ResponseKind, r
 	return nil
 }
 
-func decideApproveToolCall(s *MachineState, cmd ApproveToolCall) ([]Fact, error) {
+func (m MachineV1) decideApproveToolCall(s *MachineState, cmd ApproveToolCall) ([]Fact, error) {
 	if err := waitingCall(s, cmd.StepID, cmd.CallID, ResponseApproval, cmd.ResponseID); err != nil {
 		return nil, err
 	}
-	wantDigest, err := (canonicalV1{}).DigestToolResponseDecision(ResponseApproval, ResponseDecisionApproved, "")
+	wantDigest, err := m.Canonical.DigestToolResponseDecision(ResponseApproval, ResponseDecisionApproved, "")
 	if err != nil {
 		return nil, err
 	}
@@ -532,7 +538,7 @@ func decideApproveToolCall(s *MachineState, cmd ApproveToolCall) ([]Fact, error)
 	return []Fact{ToolCallApproved(cmd)}, nil
 }
 
-func decideRejectToolCall(s *MachineState, cmd *RejectToolCall) ([]Fact, error) {
+func (m MachineV1) decideRejectToolCall(s *MachineState, cmd *RejectToolCall) ([]Fact, error) {
 	// Reject closes a Waiting call of either kind as a Known failure:
 	// approval rejection and external-response abandonment ("the answer is
 	// never coming") share one exit. Waiting -> Failed(Known) is legal;
@@ -553,7 +559,7 @@ func decideRejectToolCall(s *MachineState, cmd *RejectToolCall) ([]Fact, error) 
 	if c.Waiting.ID != cmd.ResponseID {
 		return nil, rejectionf("response: call %q expects ResponseID %q, got %q", cmd.CallID, c.Waiting.ID, cmd.ResponseID)
 	}
-	wantDigest, err := (canonicalV1{}).DigestToolResponseDecision(c.Waiting.Kind, ResponseDecisionRejected, cmd.Reason)
+	wantDigest, err := m.Canonical.DigestToolResponseDecision(c.Waiting.Kind, ResponseDecisionRejected, cmd.Reason)
 	if err != nil {
 		return nil, err
 	}
@@ -573,11 +579,11 @@ func decideRejectToolCall(s *MachineState, cmd *RejectToolCall) ([]Fact, error) 
 	return facts, nil
 }
 
-func decideSubmitToolResponse(s *MachineState, cmd *SubmitToolResponse) ([]Fact, error) {
+func (m MachineV1) decideSubmitToolResponse(s *MachineState, cmd *SubmitToolResponse) ([]Fact, error) {
 	if err := waitingCall(s, cmd.StepID, cmd.CallID, ResponseExternal, cmd.ResponseID); err != nil {
 		return nil, err
 	}
-	wantDigest, err := (canonicalV1{}).DigestToolResponsePayload(cmd.Payload)
+	wantDigest, err := m.Canonical.DigestToolResponsePayload(cmd.Payload)
 	if err != nil {
 		return nil, err
 	}

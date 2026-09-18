@@ -3,6 +3,7 @@ package run
 import (
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agent/es"
 )
 
 // machineStateWireV1 is the persisted snapshot shape of MachineState for
@@ -96,7 +97,7 @@ func encodeMachineStateV1(s *MachineState) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return marshalCanonical(w)
+	return es.MarshalCanonical(w)
 }
 
 // decodeMachineStateV1 parses v1 snapshot bytes, rejecting unknown fields,
@@ -104,7 +105,7 @@ func encodeMachineStateV1(s *MachineState) ([]byte, error) {
 // structural invariants of the restored state.
 func decodeMachineStateV1(raw []byte) (MachineState, error) {
 	var w machineStateWireV1
-	if err := decodeStrictJSON(raw, &w); err != nil {
+	if err := es.DecodeStrict(raw, &w); err != nil {
 		return MachineState{}, fmt.Errorf("agent: snapshot: %w", err)
 	}
 	s, err := machineStateFromWireV1(&w)

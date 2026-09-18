@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
+	"github.com/felinics/twilight/agent/es"
 )
 
 type commandEnvelopeWire struct {
@@ -29,7 +29,7 @@ type commandEnvelopeMarshal struct {
 // rejected before it can enter a RunStore.
 func DecodeCommandEnvelope(raw []byte) (CommandEnvelope, error) {
 	var env CommandEnvelope
-	if err := decodeStrictJSON(raw, &env); err != nil {
+	if err := es.DecodeStrict(raw, &env); err != nil {
 		return CommandEnvelope{}, err
 	}
 	return env, nil
@@ -40,11 +40,11 @@ func (e CommandEnvelope) MarshalJSON() ([]byte, error) {
 	if e.Command == nil {
 		return nil, errors.New("agent: codec: command envelope has nil command")
 	}
-	schema, err := SchemaFor(e.SchemaVersion)
+	codec, err := wireCodecFor(e.SchemaVersion)
 	if err != nil {
 		return nil, err
 	}
-	typ := schema.Wire.CommandType(e.Command)
+	typ := codec.CommandType(e.Command)
 	if typ == "" {
 		return nil, fmt.Errorf("agent: codec: unknown command variant %T", e.Command)
 	}
@@ -56,14 +56,14 @@ func (e CommandEnvelope) MarshalJSON() ([]byte, error) {
 
 func (e *CommandEnvelope) UnmarshalJSON(raw []byte) error {
 	var wire commandEnvelopeWire
-	if err := decodeStrictJSON(raw, &wire); err != nil {
+	if err := es.DecodeStrict(raw, &wire); err != nil {
 		return err
 	}
-	schema, err := SchemaFor(wire.SchemaVersion)
+	codec, err := wireCodecFor(wire.SchemaVersion)
 	if err != nil {
 		return err
 	}
-	cmd, err := schema.Wire.DecodeCommand(wire.Type, wire.Command)
+	cmd, err := codec.DecodeCommand(wire.Type, wire.Command)
 	if err != nil {
 		return err
 	}
@@ -76,36 +76,29 @@ func (e *CommandEnvelope) UnmarshalJSON(raw []byte) error {
 	return nil
 }
 
+// wireCodecFor binds the wire codec of one persisted version. The envelope
+// codec keeps its own table so the wire layer does not depend on the Schema
+// binding that composes it.
+func wireCodecFor(schemaVersion uint16) (WireSchema, error) {
+	switch schemaVersion {
+	case SchemaVersion1:
+		return wireV1{}, nil
+	default:
+		return nil, UnsupportedSchemaVersion(schemaVersion)
+	}
+}
+
 func requireCanonicalEquivalent(raw []byte, canonicalShape any) error {
-	rawCanonical, err := canonicalJSON(raw)
+	rawCanonical, err := es.Canonicalize(raw)
 	if err != nil {
 		return err
 	}
-	shapeCanonical, err := marshalCanonical(canonicalShape)
+	shapeCanonical, err := es.MarshalCanonical(canonicalShape)
 	if err != nil {
 		return err
 	}
 	if !bytes.Equal(rawCanonical, shapeCanonical) {
 		return errors.New("agent: codec: JSON shape does not match canonical protocol fields")
-	}
-	return nil
-}
-
-func decodeStrictJSON(raw []byte, dst any) error {
-	canonical, err := canonicalJSON(raw)
-	if err != nil {
-		return err
-	}
-	dec := json.NewDecoder(bytes.NewReader(canonical))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(dst); err != nil {
-		return err
-	}
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		if err == nil {
-			return errors.New("agent: codec: trailing data after JSON value")
-		}
-		return err
 	}
 	return nil
 }
