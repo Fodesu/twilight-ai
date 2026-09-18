@@ -126,7 +126,8 @@ var SurfaceProjection = extension.ProjectionDefinition{
 	// Attempt settlement is folded from run_ended, so inherited Turns settle
 	// from the parent's run streams (EXT-PRJ-8); a fork point inside a Turn
 	// is refused by the authority (AUTH-FRK-1).
-	Inherits: extension.InheritAll,
+	Inherits:      extension.InheritAll,
+	Authoritative: true,
 	Initial: func() (any, error) {
 		return TurnSurface{Turns: map[TurnID]TurnView{}, RunOwner: map[run.RunID]TurnID{}}, nil
 	},

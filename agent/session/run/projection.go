@@ -175,8 +175,8 @@ func (machineCodec) Decode(wire jsonstable.Value) (any, error) {
 // MachineProjection consumes every twilight/run/ event.
 var MachineProjection = extension.ProjectionDefinition{
 	ID: MachineProjectionID, Version: 1,
-	Consumes: AllTypes(),
-	Initial:  func() (any, error) { return newMachine(), nil },
+	Consumes: AllTypes(), Authoritative: true,
+	Initial: func() (any, error) { return newMachine(), nil },
 	Apply: func(state any, e extension.DecodedEvent) (any, error) {
 		return state.(Machine).Apply(e)
 	},

@@ -18,25 +18,54 @@ type ProjectionDefinition struct {
 	Initial    func() (any, error)
 	Apply      func(any, DecodedEvent) (any, error)
 	StateCodec PayloadCodec
-	// Inherits is what the fold takes from the commits a fork inherits
-	// (EXT-PRJ-8). The zero value, InheritSemantic, folds only the session
-	// stream of ancestor segments: a child never interprets its parent's run
-	// streams as its own execution. A projection whose semantic content
-	// lives in run facts declares InheritAll.
+	// Inherits decides, per logical stream, what the fold takes from the
+	// commits a fork inherits (EXT-PRJ-8). nil is InheritSemantic: only the
+	// session stream of ancestor segments, so a child never interprets its
+	// parent's run streams as its own execution. A projection whose semantic
+	// content lives in run facts declares InheritAll. Modules that add
+	// streams decide for them with InheritStreams.
 	Inherits InheritPolicy
+	// Authoritative marks a projection commands plan against on the Writer's
+	// View and whose fold guards its stream's invariants (the run machine,
+	// the turn and chatlog surfaces): a provisional commit it cannot fold is
+	// refused. Every other projection is a derived read model: a fold
+	// failure marks it unhealthy for this Writer's lifetime and never blocks
+	// the facts (EXT-PRJ-9). Write-time invariants belong to the Parts of a
+	// unit of work, not to projections; an authoritative fold failing is a
+	// defect, not a business rejection.
+	Authoritative bool
 }
 
-// InheritPolicy is what a projection folds from a fork's inherited prefix.
-type InheritPolicy uint8
+// InheritPolicy decides whether a projection folds the batches of one
+// logical stream from a fork's inherited prefix.
+type InheritPolicy func(session.StreamRef) bool
 
-const (
-	// InheritSemantic folds only session-stream batches of inherited
-	// commits; run streams of the parent are execution history the child
-	// does not own.
-	InheritSemantic InheritPolicy = iota
-	// InheritAll folds every batch of inherited commits.
-	InheritAll
-)
+// InheritSemantic folds only session-stream batches of inherited commits;
+// run streams of the parent are execution history the child does not own.
+func InheritSemantic(stream session.StreamRef) bool { return stream.Kind == session.StreamKindSession }
+
+// InheritAll folds every batch of inherited commits.
+func InheritAll(session.StreamRef) bool { return true }
+
+// InheritStreams folds the listed stream kinds of inherited commits.
+func InheritStreams(kinds ...session.StreamKind) InheritPolicy {
+	return func(stream session.StreamRef) bool {
+		for _, k := range kinds {
+			if stream.Kind == k {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// inherits applies the definition's policy, nil meaning InheritSemantic.
+func (d *ProjectionDefinition) inherits(stream session.StreamRef) bool {
+	if d.Inherits == nil {
+		return InheritSemantic(stream)
+	}
+	return d.Inherits(stream)
+}
 
 // ProjectionScope is a definition bound to its module scope: the modules
 // whose unknown events the fold must not silently skip.
@@ -90,7 +119,7 @@ func (r *Registry) FoldFrom(s *ProjectionScope, state any, commits []session.Com
 		var index uint32
 		for j := range commits[i].Batches {
 			b := &commits[i].Batches[j]
-			if inherited && s.Def.Inherits == InheritSemantic && b.Stream.Kind != session.StreamKindSession {
+			if inherited && !s.Def.inherits(b.Stream) {
 				index += uint32(len(b.Events))
 				continue
 			}

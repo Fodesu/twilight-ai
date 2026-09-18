@@ -45,7 +45,7 @@ func noteModule(id extension.ModuleID, requires ...extension.ModuleRequirement) 
 			{Type: tpfx(id) + "hint", Current: 1, Stream: extension.SessionStream, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}, Ignorable: true},
 		},
 		Projections: []extension.ProjectionDefinition{{
-			ID: extension.ProjectionID(string(typ) + "s"), Version: 1, Consumes: []session.EventType{typ},
+			ID: extension.ProjectionID(string(typ) + "s"), Version: 1, Consumes: []session.EventType{typ}, Authoritative: true,
 			Initial: func() (any, error) { return noteState{}, nil },
 			Apply: func(state any, e extension.DecodedEvent) (any, error) {
 				s := state.(noteState)

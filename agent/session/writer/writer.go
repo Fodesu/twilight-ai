@@ -325,6 +325,8 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	// PrevDigest and Digest inside Append, and nothing a projection may read
 	// differs between the two paths.
 	provisional := session.Commit{Seq: w.head.Next, CommitID: group.CommitID, Epoch: w.kernel.Epoch(), Batches: batches}
+	// Only an authoritative projection's fold refuses the commit; a derived
+	// one that cannot fold is marked unhealthy once the commit lands.
 	next, err := w.projections.fold(provisional)
 	if err != nil {
 		return CommitResult{Outcome: CommitInvalid, Detail: err.Error()}, nil

@@ -25,6 +25,10 @@ type projector struct {
 	sid      session.SessionID
 	states   map[projectionKey]any
 	scopes   map[projectionKey]*extension.ProjectionScope
+	// unhealthy records derived projections that failed to fold an applied
+	// commit (EXT-PRJ-9): their state stays at the last good commit, reads
+	// report the failure and the cache is not refreshed for them.
+	unhealthy map[projectionKey]error
 	// cache, policy and cached carry EXT-PRJ-3: cached records the head each
 	// projection's cache entry already reflects, which is what a policy
 	// measures the next refresh against.
@@ -37,7 +41,7 @@ func newProjector(registry *extension.Registry, sid session.SessionID, cache ext
 	if policy == nil {
 		policy = extension.CacheEvery(extension.DefaultCacheEvery)
 	}
-	return &projector{registry: registry, sid: sid, states: make(map[projectionKey]any),
+	return &projector{registry: registry, sid: sid, states: make(map[projectionKey]any), unhealthy: make(map[projectionKey]error),
 		scopes: make(map[projectionKey]*extension.ProjectionScope), cache: cache, policy: policy, cached: make(map[projectionKey]session.Head)}
 }
 
@@ -106,25 +110,48 @@ func coversCommit(commits []session.Commit, through session.Head) bool {
 	return extension.SealedAt(commits[through.Next-1], through)
 }
 
-// fold pre-folds one provisional commit into every projection and returns the
-// next states without installing them: the caller installs them with advance
-// once the commit is durable.
-func (p *projector) fold(provisional session.Commit) (map[projectionKey]any, error) {
-	next := make(map[projectionKey]any, len(p.states))
-	for k, scope := range p.scopes {
-		state, err := p.registry.Fold(scope, p.states[k], []session.Commit{provisional})
-		if err != nil {
-			return nil, err
-		}
-		next[k] = state
-	}
-	return next, nil
+// folded is what fold produced: the next states and, for derived
+// projections that could not fold the commit, the failure to record once
+// the commit is durable.
+type folded struct {
+	next   map[projectionKey]any
+	failed map[projectionKey]error
 }
 
-// advance installs the states fold produced.
-func (p *projector) advance(next map[projectionKey]any) {
-	for k, s := range next {
+// fold pre-folds one provisional commit into every projection without
+// installing anything. An authoritative projection that refuses the commit
+// refuses it for the Writer; a derived one keeps its last good state and is
+// marked unhealthy once the commit lands (EXT-PRJ-9). A projection already
+// unhealthy is not folded further.
+func (p *projector) fold(provisional session.Commit) (folded, error) {
+	out := folded{next: make(map[projectionKey]any, len(p.states))}
+	for k, scope := range p.scopes {
+		if _, down := p.unhealthy[k]; down {
+			continue
+		}
+		state, err := p.registry.Fold(scope, p.states[k], []session.Commit{provisional})
+		if err != nil {
+			if scope.Def.Authoritative {
+				return folded{}, err
+			}
+			if out.failed == nil {
+				out.failed = make(map[projectionKey]error)
+			}
+			out.failed[k] = err
+			continue
+		}
+		out.next[k] = state
+	}
+	return out, nil
+}
+
+// advance installs what fold produced for a commit that is now durable.
+func (p *projector) advance(f folded) {
+	for k, s := range f.next {
 		p.states[k] = s
+	}
+	for k, err := range f.failed {
+		p.unhealthy[k] = err
 	}
 }
 
@@ -134,6 +161,9 @@ func (p *projector) detached(id extension.ProjectionID, ver extension.Projection
 	state, ok := p.states[k]
 	if !ok {
 		return nil, &extension.Error{Code: extension.ErrInvalid, Detail: fmt.Sprintf("unknown projection %q v%d", id, ver)}
+	}
+	if err, down := p.unhealthy[k]; down {
+		return nil, &extension.Error{Code: extension.ErrProjectionUnhealthy, Detail: fmt.Sprintf("projection %q v%d: %v", id, ver, err)}
 	}
 	codec := p.scopes[k].Def.StateCodec
 	encoded, err := codec.Encode(state)
@@ -163,6 +193,9 @@ func (p *projector) planRefresh(head session.Head, closing bool) []cacheWrite {
 	}
 	var writes []cacheWrite
 	for k := range p.scopes {
+		if _, down := p.unhealthy[k]; down {
+			continue // its state is behind head; a cache entry would lie
+		}
 		if !p.policy(k.id, k.version, head, p.cached[k], closing) {
 			continue
 		}

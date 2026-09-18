@@ -500,6 +500,10 @@ const (
 	ErrBinding       ErrorCode = "binding"
 	ErrConflict      ErrorCode = "conflict"
 	ErrOwnershipLost ErrorCode = "ownership_lost"
+	// ErrProjectionUnhealthy: a derived projection failed to fold a commit
+	// the Writer applied; its state is frozen at the last good commit until
+	// the Writer reopens and rebuilds it (EXT-PRJ-9).
+	ErrProjectionUnhealthy ErrorCode = "projection_unhealthy"
 	// ErrUnknownOutcome: an Append failed in a way that leaves what reached
 	// the log unknown (an IO error, or the kernel's ErrHandleFailed). The
 	// Writer's head and projections may no longer match the log, so it fails
