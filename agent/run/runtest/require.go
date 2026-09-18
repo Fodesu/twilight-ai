@@ -17,7 +17,7 @@ func (f *Feature) RequireWaiting(kind run.ResponseKind) {
 	if w.Kind != kind {
 		f.t.Fatalf("waiting kind = %s, want %s", w.Kind, kind)
 	}
-	want := run.DeriveResponseID(w.RunID, w.StepID, w.CallID, w.Kind)
+	want := run.SchemaV1().Identity.DeriveResponseID(w.RunID, w.StepID, w.CallID, w.Kind)
 	if w.ID != want {
 		f.t.Fatalf("ResponseID = %q, want derived %q", w.ID, want)
 	}

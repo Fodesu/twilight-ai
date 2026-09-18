@@ -76,7 +76,7 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime run.RunStore, events 
 			// Known failure of a Pending call: no start barrier, no tool call,
 			// no claim. Its identity derives from the call alone; a retry of
 			// the same rejection is idempotent.
-			res, err := l.commit(ctx, runtime, runID, run.DeriveSettlementCommandID(runID, eff.StepID, callID, ""), snapshot.Position,
+			res, err := l.commit(ctx, runtime, runID, schema.Identity.DeriveSettlementCommandID(runID, eff.StepID, callID, ""), snapshot.Position,
 				run.SubmitToolFailure{StepID: eff.StepID, CallID: callID, Failure: *known, Outcome: run.ToolOutcomeKnown}, schema)
 			if err != nil {
 				if retriable(err) {
@@ -88,7 +88,7 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime run.RunStore, events 
 			continue
 		}
 
-		a := newAttempt(runID, eff.StepID, callID)
+		a := newAttempt(schema, runID, eff.StepID, callID)
 		start, err := l.commit(ctx, runtime, runID, a.startID(), snapshot.Position,
 			run.StartToolCall{StepID: eff.StepID, CallID: callID, Claim: a.claim}, schema)
 		if err != nil {

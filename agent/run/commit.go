@@ -73,7 +73,7 @@ func EvaluateCommit(cur MachineState, position RunPosition, req CommitRequest, s
 	// Derived-identity families must use their derived CommandID (RUN-WIR-3):
 	// the derivation is the idempotency index, so a caller-minted random ID
 	// cannot bypass duplicate detection.
-	if err := checkDerivedCommandID(&env, req.Base); err != nil {
+	if err := checkDerivedCommandID(&env, req.Base, schema.Identity); err != nil {
 		return CommitDecision{Kind: DecisionConflict, Reject: err}, nil
 	}
 
@@ -111,7 +111,7 @@ func EvaluateCommit(cur MachineState, position RunPosition, req CommitRequest, s
 		if !ok {
 			return CommitDecision{}, errors.New("agent: commit: prepare did not produce ModelStepPrepared")
 		}
-		wantStep := DeriveModelStepID(env.RunID, env.ID, prepared.BindingDigest)
+		wantStep := schema.Identity.DeriveModelStepID(env.RunID, env.ID, prepared.BindingDigest)
 		if cmd.StepID != wantStep {
 			return CommitDecision{Kind: DecisionStale, Reject: fmt.Errorf("prepare: StepID %q does not match derived StepID %q", cmd.StepID, wantStep)}, nil
 		}
@@ -137,27 +137,27 @@ func EvaluateCommit(cur MachineState, position RunPosition, req CommitRequest, s
 }
 
 // checkDerivedCommandID enforces the derived-identity rules of RUN-WIR-3.
-func checkDerivedCommandID(env *CommandEnvelope, base RunPosition) error {
+func checkDerivedCommandID(env *CommandEnvelope, base RunPosition, id Identity) error {
 	var want CommandID
 	switch cmd := env.Command.(type) {
 	case PrepareModelRequest:
-		want = DeriveModelRequestCommandID(env.RunID, base)
+		want = id.DeriveModelRequestCommandID(env.RunID, base)
 	case AcceptInput:
-		want = DeriveInputCommandID(env.RunID, cmd.InputIDs()...)
+		want = id.DeriveInputCommandID(env.RunID, cmd.InputIDs()...)
 	case WithdrawPreparedStep:
-		want = DeriveWithdrawCommandID(env.RunID, cmd.StepID)
+		want = id.DeriveWithdrawCommandID(env.RunID, cmd.StepID)
 	case ApproveToolCall:
-		want = DeriveResponseCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.ResponseID)
+		want = id.DeriveResponseCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.ResponseID)
 	case RejectToolCall:
-		want = DeriveResponseCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.ResponseID)
+		want = id.DeriveResponseCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.ResponseID)
 	case SubmitToolResponse:
-		want = DeriveResponseCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.ResponseID)
+		want = id.DeriveResponseCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.ResponseID)
 	case StartModelExecution:
-		want = DeriveStartCommandID(env.RunID, cmd.StepID, "", cmd.Claim)
+		want = id.DeriveStartCommandID(env.RunID, cmd.StepID, "", cmd.Claim)
 	case StartToolCall:
-		want = DeriveStartCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.Claim)
+		want = id.DeriveStartCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.Claim)
 	case RecoverModelExecution:
-		want = DeriveModelRecoveryCommandID(env.RunID, cmd.StepID, cmd.Claim)
+		want = id.DeriveModelRecoveryCommandID(env.RunID, cmd.StepID, cmd.Claim)
 	default:
 		return nil
 	}
@@ -240,12 +240,12 @@ func RecoveryTargets(state *MachineState) []RecoveryTarget {
 
 // RecoveryCommand is the disposition of one target under the takeover claim:
 // an Executing model step is withdrawn to Open (the next Prepare plans again);
-// an Executing tool call settles as Unknown.
-func RecoveryCommand(target RecoveryTarget, claim ExecutionClaim) Recovery {
+// an Executing tool call settles as Unknown. schema is the Run's.
+func RecoveryCommand(schema Schema, target RecoveryTarget, claim ExecutionClaim) Recovery {
 	if target.Call == nil {
 		return Recovery{
 			Command: RecoverModelExecution{StepID: target.StepID, Claim: claim},
-			ID:      DeriveModelRecoveryCommandID(target.RunID, target.StepID, claim),
+			ID:      schema.Identity.DeriveModelRecoveryCommandID(target.RunID, target.StepID, claim),
 		}
 	}
 	return Recovery{
@@ -255,21 +255,21 @@ func RecoveryCommand(target RecoveryTarget, claim ExecutionClaim) Recovery {
 			Failure: ToolFailure{Class: FailureEffectUnknown, Message: "owner process lost before settlement"},
 			Outcome: ToolOutcomeUnknown,
 		},
-		ID: DeriveToolRecoveryCommandID(target.RunID, target.StepID, target.CallID, claim),
+		ID: schema.Identity.DeriveToolRecoveryCommandID(target.RunID, target.StepID, target.CallID, claim),
 	}
 }
 
 // RecoveryCommands lists the takeover dispositions of every Executing target
 // in state (RUN-CMT-7). Pending and Waiting calls are left alone. claim is the
 // takeover claim of the new owner.
-func RecoveryCommands(state *MachineState, claim ExecutionClaim) []Recovery {
+func RecoveryCommands(schema Schema, state *MachineState, claim ExecutionClaim) []Recovery {
 	targets := RecoveryTargets(state)
 	if len(targets) == 0 {
 		return nil
 	}
 	out := make([]Recovery, len(targets))
 	for i, t := range targets {
-		out[i] = RecoveryCommand(t, claim)
+		out[i] = RecoveryCommand(schema, t, claim)
 	}
 	return out
 }

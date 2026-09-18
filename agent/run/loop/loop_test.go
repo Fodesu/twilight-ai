@@ -283,8 +283,8 @@ func (staleCommitRuntime) Commit(context.Context, CommitRequest) (CommitResult, 
 func TestToolStartStaleIsNotAnError(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
 	args := cj(`{}`)
-	callID := DeriveCallID("model-1", 0)
-	bindingDigest, err := DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
+	callID := SchemaV1().Identity.DeriveCallID("model-1", 0)
+	bindingDigest, err := SchemaV1().Canonical.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
 	if err != nil {
 		t.Fatal(err)
 	}

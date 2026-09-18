@@ -146,7 +146,7 @@ func testDeliver(t *testing.T, factory Factory) {
 	if err != nil || dresp.Status != turn.TurnActive || dresp.RunID != runID {
 		t.Fatalf("deliver = %+v %v", dresp, err)
 	}
-	group := h.group(session.CommitID(run.DeriveInputCommandID(runID, "in-2")))
+	group := h.group(session.CommitID(run.SchemaV1().Identity.DeriveInputCommandID(runID, "in-2")))
 	if !sameTypes(group, typeAccepted, chatlog.TypeInputDelivered) {
 		t.Fatalf("deliver group = %v, want input_accepted then input_delivered", eventTypes(group))
 	}
@@ -222,7 +222,7 @@ func testDeliver(t *testing.T, factory Factory) {
 	if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t2"), Inputs: batch}); err != nil {
 		t.Fatalf("batch deliver = %v", err)
 	}
-	group = h.group(session.CommitID(run.DeriveInputCommandID(run2, "in-5", "in-6")))
+	group = h.group(session.CommitID(run.SchemaV1().Identity.DeriveInputCommandID(run2, "in-5", "in-6")))
 	if !sameTypes(group, typeAccepted, typeAccepted, chatlog.TypeInputDelivered, chatlog.TypeInputDelivered) {
 		t.Fatalf("batch group = %v", eventTypes(group))
 	}

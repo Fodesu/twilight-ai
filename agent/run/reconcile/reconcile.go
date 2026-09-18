@@ -97,6 +97,10 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *run.Ru
 	if len(targets) == 0 {
 		return nil, nil
 	}
+	schema, err := snapshot.Schema()
+	if err != nil {
+		return nil, err
+	}
 	out := make([]Decision, 0, len(targets))
 	for _, t := range targets {
 		t.Schema = snapshot.SchemaVersion
@@ -119,7 +123,7 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *run.Ru
 			}
 		}
 		if d.Verdict == Dispose {
-			rec := run.RecoveryCommand(t, claim)
+			rec := run.RecoveryCommand(schema, t, claim)
 			d.Recovery = &rec
 		}
 		out = append(out, d)

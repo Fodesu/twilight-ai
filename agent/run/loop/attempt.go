@@ -14,26 +14,27 @@ import (
 // the attempt derives from its claim, which lives only in the worker's memory
 // (RUN-MCH-3): a crash hands the target to the next owner's takeover.
 type attempt struct {
+	schema run.Schema
 	runID  run.RunID
 	stepID run.StepID
 	callID run.CallID
 	claim  run.ExecutionClaim
 }
 
-func newAttempt(runID run.RunID, stepID run.StepID, callID run.CallID) attempt {
-	return attempt{runID: runID, stepID: stepID, callID: callID, claim: freshExecutionClaim()}
+func newAttempt(schema run.Schema, runID run.RunID, stepID run.StepID, callID run.CallID) attempt {
+	return attempt{schema: schema, runID: runID, stepID: stepID, callID: callID, claim: freshExecutionClaim()}
 }
 
 func (a attempt) startID() run.CommandID {
-	return run.DeriveStartCommandID(a.runID, a.stepID, a.callID, a.claim)
+	return a.schema.Identity.DeriveStartCommandID(a.runID, a.stepID, a.callID, a.claim)
 }
 
 func (a attempt) settlementID() run.CommandID {
-	return run.DeriveSettlementCommandID(a.runID, a.stepID, a.callID, a.claim)
+	return a.schema.Identity.DeriveSettlementCommandID(a.runID, a.stepID, a.callID, a.claim)
 }
 
 func (a attempt) recoveryID() run.CommandID {
-	return run.DeriveModelRecoveryCommandID(a.runID, a.stepID, a.claim)
+	return a.schema.Identity.DeriveModelRecoveryCommandID(a.runID, a.stepID, a.claim)
 }
 
 // settle commits the owner settlement of an attempt under its derived

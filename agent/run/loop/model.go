@@ -47,8 +47,8 @@ func (l *Loop) planAndPrepare(ctx context.Context, runtime run.RunStore, events 
 	if err != nil {
 		return err
 	}
-	cmdID := run.DeriveModelRequestCommandID(snapshot.State.RunID, snapshot.Position)
-	stepID := run.DeriveModelStepID(snapshot.State.RunID, cmdID, binding)
+	cmdID := schema.Identity.DeriveModelRequestCommandID(snapshot.State.RunID, snapshot.Position)
+	stepID := schema.Identity.DeriveModelStepID(snapshot.State.RunID, cmdID, binding)
 	res, err := l.commit(ctx, runtime, snapshot.State.RunID, cmdID, snapshot.Position, run.PrepareModelRequest{
 		StepID:        stepID,
 		Model:         model,
@@ -103,7 +103,7 @@ func (l *Loop) startModelStep(ctx context.Context, runtime run.RunStore, events 
 	if err != nil {
 		return nil, err
 	}
-	a := newAttempt(runID, stepID, "")
+	a := newAttempt(schema, runID, stepID, "")
 	assignment := Assignment{Session: runtime.Scope(), RunID: runID, StepID: stepID, Claim: a.claim, Target: target, Schema: snapshot.SchemaVersion,
 		Kind: AssignmentModel, Model: &ModelAssignment{Model: prepared.Model, RequestDigest: prepared.RequestDigest}}
 	// Pre-start check (RUN-EXE-5): an executor that cannot serve the model
@@ -174,7 +174,7 @@ func (l *Loop) startModelStep(ctx context.Context, runtime run.RunStore, events 
 // lands, and the drive stops instead of prompt building, freezing and dispatching
 // again against the same missing store. Whether to try again is the host's
 // decision, so a persistently unreadable store cannot spin the Run.
-func (l *Loop) modelCompletion(step *run.ModelStep, out Outcome) (run.AgentCommand, error) {
+func (l *Loop) modelCompletion(schema run.Schema, step *run.ModelStep, out Outcome) (run.AgentCommand, error) {
 	stepID := step.RefValue.ID
 	recover := run.RecoverModelExecution{StepID: stepID, Claim: out.Key.Claim}
 	switch {
@@ -200,7 +200,7 @@ func (l *Loop) modelCompletion(step *run.ModelStep, out Outcome) (run.AgentComma
 		return run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: "executor delivered no result"}}, nil
 	}
 	result := *out.Model
-	bindings, bindErr := l.bindToolCalls(&result, step)
+	bindings, bindErr := l.bindToolCalls(schema, &result, step)
 	if bindErr != nil {
 		failure := run.StepFailure{Class: run.FailureMalformedModel, Message: bindErr.Error()}
 		return run.RejectModelResult{StepID: stepID, Usage: run.UsageFromSDK(result.Usage), Failure: failure,
@@ -228,7 +228,7 @@ func (l *Loop) modelRejectDisposition(step run.ModelStep, _ run.StepFailure) run
 
 // bindToolCalls validates tool-call IDs/order/shape and produces bindings
 // from the frozen ToolSpecs (RUN-MCH-2). It never calls ExecutableTool.
-func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *run.ModelStep) ([]run.ToolCallBinding, error) {
+func (l *Loop) bindToolCalls(schema run.Schema, result *sdk.ModelResult, step *run.ModelStep) ([]run.ToolCallBinding, error) {
 	if len(result.ToolCalls) == 0 {
 		return nil, nil
 	}
@@ -246,7 +246,7 @@ func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *run.ModelStep) ([]ru
 		// id is carried for the round trip only, so a provider that repeats or
 		// omits ids cannot break identity here.
 		b := run.ToolCallBinding{
-			CallID:         run.DeriveCallID(step.RefValue.ID, i),
+			CallID:         schema.Identity.DeriveCallID(step.RefValue.ID, i),
 			ProviderCallID: tc.ToolCallID,
 			ToolRef:        run.ToolRef(tc.ToolName),
 			Arguments:      args,
@@ -260,7 +260,7 @@ func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *run.ModelStep) ([]ru
 			b.DefinitionDigest = spec.DefinitionDigest
 			b.Policy = spec.Policy
 		}
-		bd, err := run.DigestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
+		bd, err := schema.Canonical.DigestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
 		if err != nil {
 			return nil, err
 		}

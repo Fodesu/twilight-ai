@@ -30,11 +30,54 @@ type Schema struct {
 	Canonical Canonical
 	// Snapshot encodes a MachineState for durable storage and comparison.
 	Snapshot SnapshotCodec
+	// Identity derives every RunID-scoped identity: step, call, response and
+	// command ids (RUN-WIR-3). Identity derivation is persisted semantics --
+	// a fact carries the ids it derived -- so it is versioned with the rest.
+	Identity Identity
+	// Bodies encodes the frozen bodies facts name by digest (RUN-WIR-4) as
+	// the versioned envelopes their digests are computed from.
+	Bodies Bodies
 }
 
 // Valid reports whether s is a bound schema.
 func (s Schema) Valid() bool {
-	return s.Version != 0 && s.Machine != nil && s.Wire != nil && s.Canonical != nil && s.Snapshot != nil
+	return s.Version != 0 && s.Machine != nil && s.Wire != nil && s.Canonical != nil && s.Snapshot != nil && s.Identity != nil && s.Bodies != nil
+}
+
+// Identity is the identity derivation of one schema version. Everything a
+// Run persists that names a step, call, response or command is derived here,
+// so two schema versions may derive differently without either breaking the
+// other's replay. The takeover claim (DeriveTakeoverClaim) is owner-level
+// and stays outside.
+type Identity interface {
+	DeriveModelRequestCommandID(run RunID, position RunPosition) CommandID
+	DeriveModelStepID(run RunID, cmd CommandID, binding Digest) StepID
+	DeriveCallID(source StepID, index int) CallID
+	DeriveToolStepID(source StepID, bindingSet Digest) StepID
+	DeriveResponseID(run RunID, step StepID, call CallID, kind ResponseKind) ResponseID
+	DeriveResponseCommandID(run RunID, step StepID, call CallID, resp ResponseID) CommandID
+	DeriveInputCommandID(run RunID, inputs ...InputID) CommandID
+	DeriveWithdrawCommandID(run RunID, step StepID) CommandID
+	DeriveStartCommandID(run RunID, step StepID, call CallID, claim ExecutionClaim) CommandID
+	DeriveSettlementCommandID(run RunID, step StepID, call CallID, claim ExecutionClaim) CommandID
+	DeriveModelRecoveryCommandID(run RunID, step StepID, claim ExecutionClaim) CommandID
+	DeriveToolRecoveryCommandID(run RunID, step StepID, call CallID, claim ExecutionClaim) CommandID
+}
+
+// Bodies is the frozen-body codec of one schema version: each body is stored
+// as the typed envelope its digest was computed from, so sha256(bytes) ==
+// digest and the body is addressable by its own name. Decoding a stored body
+// of any version goes through the package-level DecodeFrozen* functions,
+// which read the version from the envelope.
+type Bodies interface {
+	EncodeRequest(*ModelRequest, Digest) ([]byte, error)
+	EncodeModelResult(*ModelResult, Digest) ([]byte, error)
+	EncodeToolOutput(CanonicalJSON, Digest) ([]byte, error)
+	EncodeToolResponse(CanonicalJSON, Digest) ([]byte, error)
+	DecodeRequest([]byte, Digest) (ModelRequest, error)
+	DecodeModelResult([]byte, Digest) (ModelResult, error)
+	DecodeToolOutput([]byte, Digest) (CanonicalJSON, error)
+	DecodeToolResponse([]byte, Digest) (CanonicalJSON, error)
 }
 
 // Machine is the pure Run state machine of one schema version.
@@ -79,6 +122,9 @@ type Canonical interface {
 	DigestModelResult(ModelResult) (Digest, error)
 	// DigestToolOutput names one tool output (ToolCallCompleted.OutputDigest).
 	DigestToolOutput(CanonicalJSON) (Digest, error)
+	// DigestToolCallBinding covers one binding: definition, policy and
+	// canonical arguments plus the CallID (RUN-MCH-2).
+	DigestToolCallBinding(callID CallID, definitionDigest Digest, policy ResponsePolicy, arguments CanonicalJSON) (Digest, error)
 }
 
 // SnapshotCodec renders a MachineState to and from its canonical persisted
@@ -108,7 +154,7 @@ func encodeEnvelopeBody(schemaVersion uint16, typ string, body any) ([]byte, err
 	return es.EncodeTypedPayload(schemaVersion, typ, body)
 }
 
-var schemaV1 = Schema{Version: SchemaVersion1, Machine: machineV1{}, Wire: wireV1{}, Canonical: canonicalV1{}, Snapshot: snapshotV1{}}
+var schemaV1 = Schema{Version: SchemaVersion1, Machine: machineV1{}, Wire: wireV1{}, Canonical: canonicalV1{}, Snapshot: snapshotV1{}, Identity: identityV1{}, Bodies: bodiesV1{}}
 
 // SchemaV1 is the SchemaVersion1 binding. New Runs are created with it; every
 // later operation on a Run binds through SchemaFor(header.SchemaVersion) or

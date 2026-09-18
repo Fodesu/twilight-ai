@@ -34,7 +34,7 @@ const FrozenAuthority = "twilight/run/frozen"
 var ErrFrozenValueMissing = errors.New("agent: frozen value missing")
 
 // Frozen body envelope types. Each body is stored as the versioned envelope
-// its digest is computed from (protocol_v1.go), so sha256(bytes) == digest.
+// its digest is computed from (canonical_v1.go), so sha256(bytes) == digest.
 const (
 	frozenRequestType      = "model_request"
 	frozenModelResultType  = "model_result"
@@ -42,66 +42,103 @@ const (
 	frozenToolResponseType = "tool_response_payload"
 )
 
-// EncodeFrozenRequest renders the bytes stored for a request: the same
-// versioned envelope body the RequestDigest is computed from, so that
-// sha256(bytes) == want and the body is addressable by its own digest.
-func EncodeFrozenRequest(req *ModelRequest, want Digest) ([]byte, error) {
-	return encodeFrozen(frozenRequestType, *req, want)
+// bodiesV1 is the SchemaVersion1 frozen-body codec.
+type bodiesV1 struct{}
+
+func (bodiesV1) EncodeRequest(req *ModelRequest, want Digest) ([]byte, error) {
+	return encodeFrozen(SchemaVersion1, frozenRequestType, *req, want)
 }
 
-// DecodeFrozenRequest restores a request body and checks it still digests to
-// the name it was stored under.
-func DecodeFrozenRequest(raw []byte, want Digest) (ModelRequest, error) {
-	return decodeFrozen[ModelRequest](raw, frozenRequestType, want)
+func (bodiesV1) EncodeModelResult(result *ModelResult, want Digest) ([]byte, error) {
+	return encodeFrozen(SchemaVersion1, frozenModelResultType, *result, want)
 }
 
-// EncodeFrozenModelResult renders the bytes stored for a model result under
-// ModelStepCompleted.ResultDigest.
-func EncodeFrozenModelResult(result *ModelResult, want Digest) ([]byte, error) {
-	return encodeFrozen(frozenModelResultType, *result, want)
-}
-
-// DecodeFrozenModelResult restores a model result named by ResultDigest.
-func DecodeFrozenModelResult(raw []byte, want Digest) (ModelResult, error) {
-	return decodeFrozen[ModelResult](raw, frozenModelResultType, want)
-}
-
-// EncodeFrozenToolOutput renders the bytes stored for a tool output under
-// ToolCallCompleted.OutputDigest.
-func EncodeFrozenToolOutput(output CanonicalJSON, want Digest) ([]byte, error) {
+func (bodiesV1) EncodeToolOutput(output CanonicalJSON, want Digest) ([]byte, error) {
 	if output.IsZero() {
 		return nil, errors.New("agent: frozen tool output: empty output")
 	}
-	return encodeFrozen(frozenToolOutputType, toolOutputDigestBody{Output: output}, want)
+	return encodeFrozen(SchemaVersion1, frozenToolOutputType, toolOutputDigestBody{Output: output}, want)
 }
 
-// DecodeFrozenToolOutput restores a tool output named by OutputDigest.
-func DecodeFrozenToolOutput(raw []byte, want Digest) (CanonicalJSON, error) {
-	body, err := decodeFrozen[toolOutputDigestBody](raw, frozenToolOutputType, want)
+func (bodiesV1) EncodeToolResponse(payload CanonicalJSON, want Digest) ([]byte, error) {
+	return encodeFrozen(SchemaVersion1, frozenToolResponseType, toolResponsePayloadDigestBody{Payload: payload}, want)
+}
+
+func (bodiesV1) DecodeRequest(raw []byte, want Digest) (ModelRequest, error) {
+	return decodeFrozen[ModelRequest](raw, SchemaVersion1, frozenRequestType, want)
+}
+
+func (bodiesV1) DecodeModelResult(raw []byte, want Digest) (ModelResult, error) {
+	return decodeFrozen[ModelResult](raw, SchemaVersion1, frozenModelResultType, want)
+}
+
+func (bodiesV1) DecodeToolOutput(raw []byte, want Digest) (CanonicalJSON, error) {
+	body, err := decodeFrozen[toolOutputDigestBody](raw, SchemaVersion1, frozenToolOutputType, want)
 	if err != nil {
 		return CanonicalJSON{}, err
 	}
 	return body.Output, nil
 }
 
-// EncodeFrozenToolResponse renders the bytes stored for an external tool
-// response under ToolCallAnswered.ResponseDigest.
-func EncodeFrozenToolResponse(payload CanonicalJSON, want Digest) ([]byte, error) {
-	return encodeFrozen(frozenToolResponseType, toolResponsePayloadDigestBody{Payload: payload}, want)
-}
-
-// DecodeFrozenToolResponse restores an external tool response named by
-// ResponseDigest.
-func DecodeFrozenToolResponse(raw []byte, want Digest) (CanonicalJSON, error) {
-	body, err := decodeFrozen[toolResponsePayloadDigestBody](raw, frozenToolResponseType, want)
+func (bodiesV1) DecodeToolResponse(raw []byte, want Digest) (CanonicalJSON, error) {
+	body, err := decodeFrozen[toolResponsePayloadDigestBody](raw, SchemaVersion1, frozenToolResponseType, want)
 	if err != nil {
 		return CanonicalJSON{}, err
 	}
 	return body.Payload, nil
 }
 
-func encodeFrozen(typ string, body any, want Digest) ([]byte, error) {
-	raw, err := encodeEnvelopeBody(SchemaVersion1, typ, body)
+// frozenSchema reads the schema version a stored body was encoded under from
+// its envelope prefix and binds that version's codec, so a store holding
+// bodies of several versions decodes each with the schema that wrote it.
+func frozenSchema(raw []byte) (Schema, error) {
+	var version uint16
+	if _, err := fmt.Sscanf(string(raw[:min(len(raw), 8)]), "v%d:", &version); err != nil {
+		return Schema{}, errors.New("agent: frozen body: not a typed envelope")
+	}
+	return SchemaFor(version)
+}
+
+// DecodeFrozenRequest restores a request body and checks it still digests to
+// the name it was stored under. The version comes from the body itself.
+func DecodeFrozenRequest(raw []byte, want Digest) (ModelRequest, error) {
+	schema, err := frozenSchema(raw)
+	if err != nil {
+		return ModelRequest{}, err
+	}
+	return schema.Bodies.DecodeRequest(raw, want)
+}
+
+// DecodeFrozenModelResult restores a model result named by ResultDigest.
+func DecodeFrozenModelResult(raw []byte, want Digest) (ModelResult, error) {
+	schema, err := frozenSchema(raw)
+	if err != nil {
+		return ModelResult{}, err
+	}
+	return schema.Bodies.DecodeModelResult(raw, want)
+}
+
+// DecodeFrozenToolOutput restores a tool output named by OutputDigest.
+func DecodeFrozenToolOutput(raw []byte, want Digest) (CanonicalJSON, error) {
+	schema, err := frozenSchema(raw)
+	if err != nil {
+		return CanonicalJSON{}, err
+	}
+	return schema.Bodies.DecodeToolOutput(raw, want)
+}
+
+// DecodeFrozenToolResponse restores an external tool response named by
+// ResponseDigest.
+func DecodeFrozenToolResponse(raw []byte, want Digest) (CanonicalJSON, error) {
+	schema, err := frozenSchema(raw)
+	if err != nil {
+		return CanonicalJSON{}, err
+	}
+	return schema.Bodies.DecodeToolResponse(raw, want)
+}
+
+func encodeFrozen(version uint16, typ string, body any, want Digest) ([]byte, error) {
+	raw, err := encodeEnvelopeBody(version, typ, body)
 	if err != nil {
 		return nil, err
 	}
@@ -111,12 +148,12 @@ func encodeFrozen(typ string, body any, want Digest) ([]byte, error) {
 	return raw, nil
 }
 
-func decodeFrozen[T any](raw []byte, typ string, want Digest) (T, error) {
+func decodeFrozen[T any](raw []byte, version uint16, typ string, want Digest) (T, error) {
 	var zero T
 	if got := sha256Digest(raw); got != want {
 		return zero, fmt.Errorf("agent: frozen %s: stored body digest %s does not match %s", typ, got, want)
 	}
-	prefix := envelopePrefix(SchemaVersion1, typ)
+	prefix := envelopePrefix(version, typ)
 	if !bytes.HasPrefix(raw, prefix) {
 		return zero, fmt.Errorf("agent: frozen %s: stored body is not a %s envelope", typ, typ)
 	}

@@ -383,12 +383,12 @@ func (h *harness) preparedCommand(snap run.RuntimeSnapshot, withTool bool) (run.
 	if err != nil {
 		h.fatal(err)
 	}
-	cmdID := run.DeriveModelRequestCommandID(snap.State.RunID, snap.Position)
+	cmdID := run.SchemaV1().Identity.DeriveModelRequestCommandID(snap.State.RunID, snap.Position)
 	ids := make([]run.InputID, len(snap.State.PendingInputs))
 	for i, in := range snap.State.PendingInputs {
 		ids[i] = in.ID
 	}
-	return run.PrepareModelRequest{StepID: run.DeriveModelStepID(snap.State.RunID, cmdID, binding), Model: "m-1", Request: frozen,
+	return run.PrepareModelRequest{StepID: run.SchemaV1().Identity.DeriveModelStepID(snap.State.RunID, cmdID, binding), Model: "m-1", Request: frozen,
 		RequestDigest: reqDigest, InputIDs: ids, Tools: specs, ToolsDigest: toolsDigest}, cmdID
 }
 
@@ -405,7 +405,7 @@ func (h *harness) prepare(runID run.RunID, withTool bool) run.StepID {
 func (h *harness) startModel(runID run.RunID, step run.StepID) run.ExecutionClaim {
 	h.t.Helper()
 	claim := h.claim()
-	res := h.mustCommit(runID, run.DeriveStartCommandID(runID, step, "", claim), 0, run.StartModelExecution{StepID: step, Claim: claim})
+	res := h.mustCommit(runID, run.SchemaV1().Identity.DeriveStartCommandID(runID, step, "", claim), 0, run.StartModelExecution{StepID: step, Claim: claim})
 	if res.Status != run.CommitAccepted {
 		h.fatal("start was not accepted")
 	}
@@ -436,8 +436,8 @@ func (h *harness) toolCallResult(step run.StepID, n int) (run.ModelResult, []run
 	for i := range calls {
 		args := run.MustParseCanonicalJSON(fmt.Sprintf(`{"i":%d}`, i))
 		calls[i] = sdk.ToolCall{ToolCallID: fmt.Sprintf("c%d", i), ToolName: "echo", Input: args.String()}
-		callID := run.DeriveCallID(step, i)
-		bd, err := run.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
+		callID := run.SchemaV1().Identity.DeriveCallID(step, i)
+		bd, err := run.SchemaV1().Canonical.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
 		if err != nil {
 			h.fatal(err)
 		}
@@ -456,7 +456,7 @@ func (h *harness) openToolStep(runID run.RunID, n int) (run.StepID, []run.CallID
 	h.t.Helper()
 	step, claim := h.executingModel(runID, true)
 	result, bindings := h.toolCallResult(step, n)
-	res := h.mustCommit(runID, run.DeriveSettlementCommandID(runID, step, "", claim), 0,
+	res := h.mustCommit(runID, run.SchemaV1().Identity.DeriveSettlementCommandID(runID, step, "", claim), 0,
 		run.SubmitModelResult{StepID: step, Result: result, Calls: bindings})
 	ts, ok := res.Snapshot.State.Current.(run.ToolStep)
 	if !ok {
@@ -472,7 +472,7 @@ func (h *harness) openToolStep(runID run.RunID, n int) (run.StepID, []run.CallID
 func (h *harness) startTool(runID run.RunID, step run.StepID, call run.CallID) run.ExecutionClaim {
 	h.t.Helper()
 	claim := h.claim()
-	res := h.mustCommit(runID, run.DeriveStartCommandID(runID, step, call, claim), 0, run.StartToolCall{StepID: step, CallID: call, Claim: claim})
+	res := h.mustCommit(runID, run.SchemaV1().Identity.DeriveStartCommandID(runID, step, call, claim), 0, run.StartToolCall{StepID: step, CallID: call, Claim: claim})
 	if res.Status != run.CommitAccepted {
 		h.fatal("tool start was not accepted")
 	}

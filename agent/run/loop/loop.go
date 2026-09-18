@@ -228,7 +228,7 @@ func (l *Loop) advance(ctx context.Context, runtime run.RunStore, runID run.RunI
 			if err != nil {
 				return LoopResult{}, err
 			}
-			res, err := l.commit(ctx, runtime, runID, run.DeriveWithdrawCommandID(runID, eff.StepID), snapshot.Position,
+			res, err := l.commit(ctx, runtime, runID, schema.Identity.DeriveWithdrawCommandID(runID, eff.StepID), snapshot.Position,
 				run.WithdrawPreparedStep{StepID: eff.StepID}, schema)
 			if err != nil && !retriable(err) {
 				return LoopResult{}, err
@@ -311,7 +311,7 @@ func (l *Loop) deliver(ctx context.Context, runtime run.RunStore, out Outcome, e
 	if err != nil {
 		return LoopResult{}, err
 	}
-	a := attempt{runID: runID, stepID: out.Key.StepID, callID: out.Key.CallID, claim: out.Key.Claim}
+	a := attempt{schema: schema, runID: runID, stepID: out.Key.StepID, callID: out.Key.CallID, claim: out.Key.Claim}
 
 	var cmd run.AgentCommand
 	var settleErr error
@@ -320,7 +320,7 @@ func (l *Loop) deliver(ctx context.Context, runtime run.RunStore, out Outcome, e
 		if !ok || step.RefValue.ID != out.Key.StepID || step.Status != run.ModelExecuting || step.Claim != out.Key.Claim {
 			return LoopResult{Disposition: LoopDropped}, nil
 		}
-		cmd, settleErr = l.modelCompletion(&step, out)
+		cmd, settleErr = l.modelCompletion(schema, &step, out)
 	} else {
 		call, ok := toolCallFromSnapshot(snapshot.State, out.Key.StepID, out.Key.CallID)
 		if !ok || call.Status != run.ToolExecuting || call.Claim != out.Key.Claim {

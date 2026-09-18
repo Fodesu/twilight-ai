@@ -243,7 +243,7 @@ func checkToolCallBindings(ms *ModelStep, cmd *SubmitModelResult) ([]ToolCallBin
 	for i := range cmd.Calls {
 		b := cmd.Calls[i]
 		rc := &cmd.Result.ToolCalls[i]
-		if want := DeriveCallID(cmd.StepID, i); b.CallID != want {
+		if want := (identityV1{}).DeriveCallID(cmd.StepID, i); b.CallID != want {
 			return nil, rejectionf("model result: binding %d CallID %q is not the derived id %q", i, b.CallID, want)
 		}
 		if b.ProviderCallID != rc.ToolCallID {
@@ -292,7 +292,7 @@ func checkBindingAgainstResult(b *ToolCallBinding, rc *ModelToolCall, specByName
 	if !b.Arguments.Equal(wantArgs) {
 		return rejectionf("model result: binding %q arguments do not match the model result", b.CallID)
 	}
-	wantBinding, err := digestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
+	wantBinding, err := (canonicalV1{}).DigestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
 	if err != nil {
 		return err
 	}
@@ -310,13 +310,13 @@ func openToolStep(runID RunID, source StepID, bindings []ToolCallBinding, schedu
 	if err != nil {
 		return ToolStepOpened{}, err
 	}
-	toolStepID := DeriveToolStepID(source, setDigest)
+	toolStepID := (identityV1{}).DeriveToolStepID(source, setDigest)
 	for i := range bindings {
 		kind, waits := responseKindForPolicy(bindings[i].Policy)
 		if !waits {
 			continue
 		}
-		reqDigest, err := digestToolCallBinding(bindings[i].CallID, bindings[i].DefinitionDigest, bindings[i].Policy, bindings[i].Arguments)
+		reqDigest, err := (canonicalV1{}).DigestToolCallBinding(bindings[i].CallID, bindings[i].DefinitionDigest, bindings[i].Policy, bindings[i].Arguments)
 		if err != nil {
 			return ToolStepOpened{}, err
 		}
@@ -324,7 +324,7 @@ func openToolStep(runID RunID, source StepID, bindings []ToolCallBinding, schedu
 			RunID:         runID,
 			StepID:        toolStepID,
 			CallID:        bindings[i].CallID,
-			ID:            DeriveResponseID(runID, toolStepID, bindings[i].CallID, kind),
+			ID:            (identityV1{}).DeriveResponseID(runID, toolStepID, bindings[i].CallID, kind),
 			Kind:          kind,
 			Payload:       bindings[i].Arguments,
 			RequestDigest: reqDigest,

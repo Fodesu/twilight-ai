@@ -93,7 +93,7 @@ func TestFactCodecRoundTripRestoresVariants(t *testing.T) {
 
 func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
 	cmd := NextStep(AgentInput{ID: "in", Payload: cj(`1`)})
-	env, err := SchemaV1().Wire.Envelope("run-1", DeriveInputCommandID("run-1", "in"), cmd)
+	env, err := SchemaV1().Wire.Envelope("run-1", SchemaV1().Identity.DeriveInputCommandID("run-1", "in"), cmd)
 	if err != nil {
 		t.Fatal(err)
 	}

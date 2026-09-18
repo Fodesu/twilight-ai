@@ -316,9 +316,9 @@ func (f *Feature) ExecutingTool(name string, callID run.CallID) *Feature {
 	}
 	f.ExecutingModel()
 	providerID := string(callID)
-	callID = run.DeriveCallID(f.modelStepID, 0)
+	callID = run.SchemaV1().Identity.DeriveCallID(f.modelStepID, 0)
 	args := run.MustParseCanonicalJSON(`{"x":1}`)
-	binding, err := run.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
+	binding, err := run.SchemaV1().Canonical.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -430,21 +430,21 @@ func (f *Feature) commit(cmd run.AgentCommand) run.CommitResult {
 func (f *Feature) commandID(cmd run.AgentCommand, snap run.RuntimeSnapshot) run.CommandID {
 	switch c := cmd.(type) {
 	case run.AcceptInput:
-		return run.DeriveInputCommandID(f.runID, c.InputIDs()...)
+		return run.SchemaV1().Identity.DeriveInputCommandID(f.runID, c.InputIDs()...)
 	case run.ApproveToolCall:
-		return run.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
+		return run.SchemaV1().Identity.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
 	case run.RejectToolCall:
-		return run.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
+		return run.SchemaV1().Identity.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
 	case run.SubmitToolResponse:
-		return run.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
+		return run.SchemaV1().Identity.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
 	case run.PrepareModelRequest:
-		return run.DeriveModelRequestCommandID(f.runID, snap.Position)
+		return run.SchemaV1().Identity.DeriveModelRequestCommandID(f.runID, snap.Position)
 	case run.RecoverModelExecution:
-		return run.DeriveModelRecoveryCommandID(f.runID, c.StepID, c.Claim)
+		return run.SchemaV1().Identity.DeriveModelRecoveryCommandID(f.runID, c.StepID, c.Claim)
 	case run.StartModelExecution:
-		return run.DeriveStartCommandID(f.runID, c.StepID, "", c.Claim)
+		return run.SchemaV1().Identity.DeriveStartCommandID(f.runID, c.StepID, "", c.Claim)
 	case run.StartToolCall:
-		return run.DeriveStartCommandID(f.runID, c.StepID, c.CallID, c.Claim)
+		return run.SchemaV1().Identity.DeriveStartCommandID(f.runID, c.StepID, c.CallID, c.Claim)
 	default:
 		f.seq++
 		return run.CommandID(fmt.Sprintf("cmd-%d", f.seq))
@@ -478,8 +478,8 @@ func (f *Feature) commitPrepare() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	cmdID := run.DeriveModelRequestCommandID(f.runID, snap.Position)
-	stepID := run.DeriveModelStepID(f.runID, cmdID, binding)
+	cmdID := run.SchemaV1().Identity.DeriveModelRequestCommandID(f.runID, snap.Position)
+	stepID := run.SchemaV1().Identity.DeriveModelStepID(f.runID, cmdID, binding)
 	ids := make([]run.InputID, len(snap.State.PendingInputs))
 	for i, in := range snap.State.PendingInputs {
 		ids[i] = in.ID

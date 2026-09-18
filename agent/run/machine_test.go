@@ -75,8 +75,8 @@ func buildPrepare(t *testing.T, s MachineState, req sdk.Request, specs []ToolSpe
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmdID := DeriveModelRequestCommandID(s.RunID, 0)
-	stepID := DeriveModelStepID(s.RunID, cmdID, binding)
+	cmdID := SchemaV1().Identity.DeriveModelRequestCommandID(s.RunID, 0)
+	stepID := SchemaV1().Identity.DeriveModelStepID(s.RunID, cmdID, binding)
 	ids := make([]InputID, len(s.PendingInputs))
 	for i, in := range s.PendingInputs {
 		ids[i] = in.ID
@@ -128,8 +128,8 @@ func responsePayloadDigest(t *testing.T, payload CanonicalJSON) Digest {
 func makeBinding(t *testing.T, source StepID, index int, providerID string, spec ToolSpec, args string) ToolCallBinding {
 	t.Helper()
 	parsedArgs := cj(args)
-	callID := DeriveCallID(source, index)
-	bd, err := digestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, parsedArgs)
+	callID := SchemaV1().Identity.DeriveCallID(source, index)
+	bd, err := (canonicalV1{}).DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, parsedArgs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func makeBinding(t *testing.T, source StepID, index int, providerID string, spec
 }
 
 // cid is the derived CallID of the index-th call of a step.
-func cid(step StepID, index int) CallID { return DeriveCallID(step, index) }
+func cid(step StepID, index int) CallID { return SchemaV1().Identity.DeriveCallID(step, index) }
 
 func modelResultWithCalls(callIDs ...string) ModelResult {
 	return modelResultWithNamedCalls("t", `{}`, callIDs...)

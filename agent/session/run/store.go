@@ -196,7 +196,13 @@ func (s *SessionRunStore) Command(ctx context.Context, req run.CommitRequest) (*
 	if req.Command.RunID == "" || req.Command.ID == "" {
 		return nil, errors.New("runmod: command requires RunID and CommandID")
 	}
-	if err := s.freezeBodies(ctx, req.Command.Command); err != nil {
+	// The envelope's SchemaVersion is the Run's (Prepare refuses a mismatch),
+	// so the bodies are frozen under the Run's own schema, never a fixed one.
+	schema, err := run.SchemaFor(req.Command.SchemaVersion)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.freezeBodies(ctx, schema, req.Command.Command); err != nil {
 		return nil, err
 	}
 	return &Command{s: s, req: req}, nil
@@ -306,27 +312,28 @@ func (s *SessionRunStore) factsOf(c session.Commit, runID run.RunID) ([]run.Fact
 // freezeBodies stores the bodies a command's facts will name by digest
 // (RUN-WIR-4): the request of a Prepare, the result of a model settlement,
 // the output of a tool settlement and the payload of an external response.
-// Each body is encoded as the envelope its digest was computed from.
-func (s *SessionRunStore) freezeBodies(ctx context.Context, cmd run.AgentCommand) error {
-	canonical := run.SchemaV1().Canonical
+// Each body is encoded under the Run's schema as the envelope its digest was
+// computed from (RUN-CMT-8: digest rules and body encoding are versioned
+// together with Decide and Evolve).
+func (s *SessionRunStore) freezeBodies(ctx context.Context, schema run.Schema, cmd run.AgentCommand) error {
 	var digest run.Digest
 	var body []byte
 	var err error
 	switch c := cmd.(type) {
 	case run.PrepareModelRequest:
 		digest = c.RequestDigest
-		body, err = run.EncodeFrozenRequest(&c.Request, digest)
+		body, err = schema.Bodies.EncodeRequest(&c.Request, digest)
 	case run.SubmitModelResult:
-		if digest, err = canonical.DigestModelResult(c.Result); err == nil {
-			body, err = run.EncodeFrozenModelResult(&c.Result, digest)
+		if digest, err = schema.Canonical.DigestModelResult(c.Result); err == nil {
+			body, err = schema.Bodies.EncodeModelResult(&c.Result, digest)
 		}
 	case run.SubmitToolResult:
-		if digest, err = canonical.DigestToolOutput(c.Result.Output); err == nil {
-			body, err = run.EncodeFrozenToolOutput(c.Result.Output, digest)
+		if digest, err = schema.Canonical.DigestToolOutput(c.Result.Output); err == nil {
+			body, err = schema.Bodies.EncodeToolOutput(c.Result.Output, digest)
 		}
 	case run.SubmitToolResponse:
 		digest = c.ResponseDigest
-		body, err = run.EncodeFrozenToolResponse(c.Payload, digest)
+		body, err = schema.Bodies.EncodeToolResponse(c.Payload, digest)
 	default:
 		return nil
 	}

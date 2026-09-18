@@ -166,11 +166,20 @@ func pairCalls(a *Assistant, result *run.ModelResult) ([]Call, error) {
 	if len(a.CallIDs) != 0 && len(a.CallIDs) != len(result.ToolCalls) {
 		return nil, fmt.Errorf("chatlog: assistant %s has %d call ids for %d tool calls", a.ID, len(a.CallIDs), len(result.ToolCalls))
 	}
+	var schema run.Schema
+	if len(a.CallIDs) == 0 {
+		var err error
+		if schema, err = run.SchemaFor(a.SchemaVersion); err != nil {
+			return nil, fmt.Errorf("chatlog: assistant %s: %w", a.ID, err)
+		}
+	}
 	calls := make([]Call, len(result.ToolCalls))
 	for i, tc := range result.ToolCalls {
-		id := CallID(run.DeriveCallID(a.StepID, i))
+		var id CallID
 		if len(a.CallIDs) != 0 {
 			id = a.CallIDs[i]
+		} else {
+			id = CallID(schema.Identity.DeriveCallID(a.StepID, i))
 		}
 		calls[i] = Call{CallID: id, ProviderCallID: tc.ToolCallID, Name: tc.ToolName, Input: tc.Input}
 	}

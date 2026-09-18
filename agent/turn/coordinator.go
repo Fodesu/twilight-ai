@@ -249,7 +249,7 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req DeliverR
 	// the unit's View, so a withdrawal landing between this read and the
 	// commit refuses the unit.
 	cmd := run.AcceptInput{Inputs: req.Inputs}
-	env, err := schema.Wire.Envelope(runID, run.DeriveInputCommandID(runID, cmd.InputIDs()...), cmd)
+	env, err := schema.Wire.Envelope(runID, schema.Identity.DeriveInputCommandID(runID, cmd.InputIDs()...), cmd)
 	if err != nil {
 		return TurnResponse{}, err
 	}

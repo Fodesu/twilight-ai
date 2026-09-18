@@ -389,12 +389,12 @@ func (h *harness) prepare(runID run.RunID, specs []run.ToolSpec) run.StepID {
 	if err != nil {
 		h.fatal(err)
 	}
-	cmdID := run.DeriveModelRequestCommandID(runID, snap.Position)
+	cmdID := run.SchemaV1().Identity.DeriveModelRequestCommandID(runID, snap.Position)
 	ids := make([]run.InputID, len(snap.State.PendingInputs))
 	for i, in := range snap.State.PendingInputs {
 		ids[i] = in.ID
 	}
-	cmd := run.PrepareModelRequest{StepID: run.DeriveModelStepID(runID, cmdID, binding), Model: "m-1", Request: frozen,
+	cmd := run.PrepareModelRequest{StepID: run.SchemaV1().Identity.DeriveModelStepID(runID, cmdID, binding), Model: "m-1", Request: frozen,
 		RequestDigest: reqDigest, InputIDs: ids, Tools: specs, ToolsDigest: toolsDigest}
 	h.mustRunCommit(runID, cmdID, snap.Position, cmd)
 	return cmd.StepID
@@ -406,7 +406,7 @@ func (h *harness) executingModel(runID run.RunID) (run.StepID, run.ExecutionClai
 	h.t.Helper()
 	step := h.prepare(runID, nil)
 	claim := h.claim()
-	res := h.mustRunCommit(runID, run.DeriveStartCommandID(runID, step, "", claim), 0, run.StartModelExecution{StepID: step, Claim: claim})
+	res := h.mustRunCommit(runID, run.SchemaV1().Identity.DeriveStartCommandID(runID, step, "", claim), 0, run.StartModelExecution{StepID: step, Claim: claim})
 	if res.Status != run.CommitAccepted {
 		h.fatal("start model was not accepted")
 	}
@@ -426,7 +426,7 @@ func textResult(text string) run.ModelResult {
 func (h *harness) complete(runID run.RunID) commitResult {
 	h.t.Helper()
 	step, claim := h.executingModel(runID)
-	return h.mustRunCommit(runID, run.DeriveSettlementCommandID(runID, step, "", claim), 0, run.SubmitModelResult{StepID: step, Result: textResult("done")})
+	return h.mustRunCommit(runID, run.SchemaV1().Identity.DeriveSettlementCommandID(runID, step, "", claim), 0, run.SubmitModelResult{StepID: step, Result: textResult("done")})
 }
 
 // waitingTool takes the Run to a ToolStep whose single call needs approval.
@@ -435,12 +435,12 @@ func (h *harness) waitingTool(runID run.RunID) {
 	spec := h.spec(run.ApprovalRequired)
 	step := h.prepare(runID, []run.ToolSpec{spec})
 	claim := h.claim()
-	if res := h.mustRunCommit(runID, run.DeriveStartCommandID(runID, step, "", claim), 0, run.StartModelExecution{StepID: step, Claim: claim}); res.Status != run.CommitAccepted {
+	if res := h.mustRunCommit(runID, run.SchemaV1().Identity.DeriveStartCommandID(runID, step, "", claim), 0, run.StartModelExecution{StepID: step, Claim: claim}); res.Status != run.CommitAccepted {
 		h.fatal("start model was not accepted")
 	}
 	args := run.MustParseCanonicalJSON(`{"q":1}`)
-	callID := run.DeriveCallID(step, 0)
-	bd, err := run.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
+	callID := run.SchemaV1().Identity.DeriveCallID(step, 0)
+	bd, err := run.SchemaV1().Canonical.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -451,7 +451,7 @@ func (h *harness) waitingTool(runID run.RunID) {
 	}
 	binding := run.ToolCallBinding{CallID: callID, ProviderCallID: "c0", ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
 		BindingDigest: bd, Arguments: args, Policy: spec.Policy}
-	h.mustRunCommit(runID, run.DeriveSettlementCommandID(runID, step, "", claim), 0,
+	h.mustRunCommit(runID, run.SchemaV1().Identity.DeriveSettlementCommandID(runID, step, "", claim), 0,
 		run.SubmitModelResult{StepID: step, Result: result, Calls: []run.ToolCallBinding{binding}})
 }
 

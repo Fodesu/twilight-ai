@@ -113,18 +113,18 @@ func TestDigestPreimageCoversSchemaVersion(t *testing.T) {
 
 func TestDeriveStability(t *testing.T) {
 	// Fixed inputs must produce fixed outputs across processes; freeze a few.
-	id1 := DeriveModelRequestCommandID("run-1", 7)
-	id2 := DeriveModelRequestCommandID("run-1", 7)
+	id1 := SchemaV1().Identity.DeriveModelRequestCommandID("run-1", 7)
+	id2 := SchemaV1().Identity.DeriveModelRequestCommandID("run-1", 7)
 	if id1 != id2 {
 		t.Fatal("derive is not deterministic")
 	}
-	if id1 == DeriveModelRequestCommandID("run-1", 8) {
+	if id1 == SchemaV1().Identity.DeriveModelRequestCommandID("run-1", 8) {
 		t.Fatal("revision does not separate command IDs")
 	}
-	if id1 == DeriveModelRequestCommandID("run-1", 70) {
+	if id1 == SchemaV1().Identity.DeriveModelRequestCommandID("run-1", 70) {
 		t.Fatal("index does not separate command IDs")
 	}
-	if id1 == DeriveModelRequestCommandID("run-2", 7) {
+	if id1 == SchemaV1().Identity.DeriveModelRequestCommandID("run-2", 7) {
 		t.Fatal("run does not separate command IDs")
 	}
 	// Namespaces must not collide even with aligned parts.
@@ -142,34 +142,34 @@ func TestDeriveStability(t *testing.T) {
 }
 
 func TestDeriveResponseIDPerKind(t *testing.T) {
-	a := DeriveResponseID("r", "s", "c", ResponseApproval)
-	b := DeriveResponseID("r", "s", "c", ResponseExternal)
+	a := SchemaV1().Identity.DeriveResponseID("r", "s", "c", ResponseApproval)
+	b := SchemaV1().Identity.DeriveResponseID("r", "s", "c", ResponseExternal)
 	if a == b {
 		t.Fatal("response kind does not separate response IDs")
 	}
 }
 
 func TestDigestBindingCanonicalizesArguments(t *testing.T) {
-	d1, err := digestToolCallBinding("c1", "sha256:x", DirectExecution, cj(`{"b":1,"a":2}`))
+	d1, err := (canonicalV1{}).DigestToolCallBinding("c1", "sha256:x", DirectExecution, cj(`{"b":1,"a":2}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	d2, err := digestToolCallBinding("c1", "sha256:x", DirectExecution, cj(`{ "a" : 2, "b" : 1 }`))
+	d2, err := (canonicalV1{}).DigestToolCallBinding("c1", "sha256:x", DirectExecution, cj(`{ "a" : 2, "b" : 1 }`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if d1 != d2 {
 		t.Fatal("argument formatting leaked into binding digest")
 	}
-	d3, _ := digestToolCallBinding("c1", "sha256:x", ApprovalRequired, cj(`{"a":2,"b":1}`))
+	d3, _ := (canonicalV1{}).DigestToolCallBinding("c1", "sha256:x", ApprovalRequired, cj(`{"a":2,"b":1}`))
 	if d1 == d3 {
 		t.Fatal("policy does not affect binding digest")
 	}
-	id1, err := digestToolCallBinding("c", "", DirectExecution, cj(`{"channel_id":"9007199254740993"}`))
+	id1, err := (canonicalV1{}).DigestToolCallBinding("c", "", DirectExecution, cj(`{"channel_id":"9007199254740993"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	id2, err := digestToolCallBinding("c", "", DirectExecution, cj(`{"channel_id":"9007199254740992"}`))
+	id2, err := (canonicalV1{}).DigestToolCallBinding("c", "", DirectExecution, cj(`{"channel_id":"9007199254740992"}`))
 	if err != nil {
 		t.Fatal(err)
 	}

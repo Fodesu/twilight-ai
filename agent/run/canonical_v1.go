@@ -128,16 +128,9 @@ func digestBindingSet(bindings []ToolCallBinding) (Digest, error) {
 	return sha256Digest(body), nil
 }
 
-// DigestToolCallBinding covers one binding: definition, policy and canonical
-// arguments plus the CallID (RUN-MCH-2). Runtime conformance suites use this
-// helper to construct the same frozen binding identities as the Loop.
-func DigestToolCallBinding(callID CallID, definitionDigest Digest, policy ResponsePolicy, arguments CanonicalJSON) (Digest, error) {
+func (canonicalV1) DigestToolCallBinding(callID CallID, definitionDigest Digest, policy ResponsePolicy, arguments CanonicalJSON) (Digest, error) {
 	return sha256Digest([]byte(namespacedHash("twilight/tool-call-binding",
 		string(callID), string(definitionDigest), fmt.Sprintf("%d", policy), arguments.String()))), nil
-}
-
-func digestToolCallBinding(callID CallID, definitionDigest Digest, policy ResponsePolicy, arguments CanonicalJSON) (Digest, error) {
-	return DigestToolCallBinding(callID, definitionDigest, policy, arguments)
 }
 
 // buildCreateGroupV1 produces the facts that establish a Run and queue its

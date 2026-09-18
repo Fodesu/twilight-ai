@@ -55,17 +55,25 @@ func namespacedHash(namespace string, parts ...string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// identityV1 is the SchemaVersion1 identity derivation: every RunID-scoped
+// identity (steps, calls, responses, command ids) is a namespaced hash of its
+// preimage. A later schema that changes any derivation gets its own
+// implementation; replay of a v1 Run keeps using this one.
+type identityV1 struct{}
+
 // DeriveModelRequestCommandID derives the CommandID for PrepareModelRequest
 // from the Run and the RunPosition the prompt builder loaded (RUN-WIR-3): concurrent
 // prompt builders on the same position converge on one command identity.
-func DeriveModelRequestCommandID(run RunID, position RunPosition) CommandID {
+func (identityV1) DeriveModelRequestCommandID(run RunID, position RunPosition) CommandID {
 	return CommandID(namespacedHash("twilight/model-request", string(run), fmt.Sprintf("%d", position)))
 }
 
 // DeriveTakeoverClaim is the ExecutionClaim a new owner of a Scope uses for
 // its takeover dispositions (RUN-CMT-7): epoch is the owner's generation over
 // the store, so the same owner repeats idempotently and distinct owners issue
-// distinct commands.
+// distinct commands. It is deliberately not part of Schema.Identity: the
+// claim belongs to the owner, not to any one Run, and one takeover may span
+// Runs of different schema versions.
 func DeriveTakeoverClaim(scope Scope, epoch uint64) ExecutionClaim {
 	return ExecutionClaim(namespacedHash("twilight/run/takeover", string(scope), fmt.Sprintf("%d", epoch)))
 }
@@ -73,7 +81,7 @@ func DeriveTakeoverClaim(scope Scope, epoch uint64) ExecutionClaim {
 // DeriveModelStepID derives the frozen ModelStep identity from the Run, the
 // preparing command, and the model-step binding digest (model + request +
 // tools).
-func DeriveModelStepID(run RunID, cmd CommandID, binding Digest) StepID {
+func (identityV1) DeriveModelStepID(run RunID, cmd CommandID, binding Digest) StepID {
 	return StepID(namespacedHash("twilight/model-step", string(run), string(cmd), string(binding)))
 }
 
@@ -81,27 +89,27 @@ func DeriveModelStepID(run RunID, cmd CommandID, binding Digest) StepID {
 // ModelStep that produced it and the call's position in that step's result.
 // The provider's own tool_call_id is kept beside it as ProviderCallID for the
 // request round trip; it is not trusted to be unique or non-empty.
-func DeriveCallID(source StepID, index int) CallID {
+func (identityV1) DeriveCallID(source StepID, index int) CallID {
 	return CallID(namespacedHash("twilight/tool-call", string(source), fmt.Sprintf("%d", index)))
 }
 
 // DeriveToolStepID derives the ToolStep identity from its source ModelStep
 // and the binding-set digest over the full ordered call set.
-func DeriveToolStepID(source StepID, bindingSet Digest) StepID {
+func (identityV1) DeriveToolStepID(source StepID, bindingSet Digest) StepID {
 	return StepID(namespacedHash("twilight/tool-step", string(source), string(bindingSet)))
 }
 
 // DeriveResponseID derives the stable ResponseID the Machine assigns when it
 // creates a Waiting request. One call has at most one outstanding request, so
 // (run, step, call, kind) identifies it.
-func DeriveResponseID(run RunID, step StepID, call CallID, kind ResponseKind) ResponseID {
+func (identityV1) DeriveResponseID(run RunID, step StepID, call CallID, kind ResponseKind) ResponseID {
 	return ResponseID(namespacedHash("twilight/response", string(run), string(step), string(call), string(kind)))
 }
 
 // DeriveResponseCommandID derives the CommandID for approval/rejection/answer
 // commands: independent ingress processes converge on one command identity
 // without coordination.
-func DeriveResponseCommandID(run RunID, step StepID, call CallID, resp ResponseID) CommandID {
+func (identityV1) DeriveResponseCommandID(run RunID, step StepID, call CallID, resp ResponseID) CommandID {
 	return CommandID(namespacedHash("twilight/response-command", string(run), string(step), string(call), string(resp)))
 }
 
@@ -109,7 +117,7 @@ func DeriveResponseCommandID(run RunID, step StepID, call CallID, resp ResponseI
 // the ordered InputIDs of the batch: the same inputs in the same order replay
 // to the same command, a different batch is a different command. Queue-claim
 // references stay private to the host.
-func DeriveInputCommandID(run RunID, inputs ...InputID) CommandID {
+func (identityV1) DeriveInputCommandID(run RunID, inputs ...InputID) CommandID {
 	parts := make([]string, 0, len(inputs)+1)
 	parts = append(parts, string(run))
 	for _, in := range inputs {
@@ -120,7 +128,7 @@ func DeriveInputCommandID(run RunID, inputs ...InputID) CommandID {
 
 // DeriveWithdrawCommandID derives the CommandID of WithdrawPreparedStep: one
 // Prepared step is withdrawn at most once, so the identity needs no content.
-func DeriveWithdrawCommandID(run RunID, step StepID) CommandID {
+func (identityV1) DeriveWithdrawCommandID(run RunID, step StepID) CommandID {
 	return CommandID(namespacedHash("twilight/withdraw-command", string(run), string(step)))
 }
 
@@ -128,7 +136,7 @@ func DeriveWithdrawCommandID(run RunID, step StepID) CommandID {
 // call) or StartToolCall from the target and the attempt's ExecutionClaim.
 // Commit enforces this derivation so a caller-minted ID cannot bypass the
 // idempotency index (RUN-WIR-3).
-func DeriveStartCommandID(run RunID, step StepID, call CallID, claim ExecutionClaim) CommandID {
+func (identityV1) DeriveStartCommandID(run RunID, step StepID, call CallID, claim ExecutionClaim) CommandID {
 	return CommandID(namespacedHash("twilight/start-command", string(run), string(step), string(call), string(claim)))
 }
 
@@ -136,7 +144,7 @@ func DeriveStartCommandID(run RunID, step StepID, call CallID, claim ExecutionCl
 // of one execution attempt (model result/failure/reject, tool result/failure).
 // One attempt settles once, so the identity needs no content: a replay with
 // the same outcome is idempotent, a different outcome is a conflict.
-func DeriveSettlementCommandID(run RunID, step StepID, call CallID, claim ExecutionClaim) CommandID {
+func (identityV1) DeriveSettlementCommandID(run RunID, step StepID, call CallID, claim ExecutionClaim) CommandID {
 	return CommandID(namespacedHash("twilight/settlement-command", string(run), string(step), string(call), string(claim)))
 }
 
@@ -144,12 +152,12 @@ func DeriveSettlementCommandID(run RunID, step StepID, call CallID, claim Execut
 // recovering one model execution attempt. The claim is part of the identity:
 // a model step may be started, recovered, and started again, and each attempt
 // must have its own recovery record.
-func DeriveModelRecoveryCommandID(run RunID, step StepID, claim ExecutionClaim) CommandID {
+func (identityV1) DeriveModelRecoveryCommandID(run RunID, step StepID, claim ExecutionClaim) CommandID {
 	return CommandID(namespacedHash("twilight/model-recovery", string(run), string(step), string(claim)))
 }
 
 // DeriveToolRecoveryCommandID derives the identity of the Unknown settlement
 // a takeover commits for one abandoned tool attempt (RUN-CMT-7).
-func DeriveToolRecoveryCommandID(run RunID, step StepID, call CallID, claim ExecutionClaim) CommandID {
+func (identityV1) DeriveToolRecoveryCommandID(run RunID, step StepID, call CallID, claim ExecutionClaim) CommandID {
 	return CommandID(namespacedHash("twilight/tool-recovery", string(run), string(step), string(call), string(claim)))
 }

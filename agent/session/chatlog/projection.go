@@ -76,9 +76,10 @@ type Surface struct {
 	EntryOrder  []SurfaceEntry                      `json:"entryOrder"`
 	Superseded  Table[ToolResultID, ToolResultID]   `json:"superseded,omitzero"`
 	Checkpoints Table[CheckpointID, CheckpointView] `json:"checkpoints,omitzero"`
-	// Runs maps each Run of the Session to its Turn (RunCreated.Owner) so the
+	// Runs maps each active Run of the Session to its Turn (RunCreated.Owner)
+	// and schema version so the
 	// entries folded from Run facts carry their TurnID.
-	Runs Table[run.RunID, TurnID] `json:"runs,omitzero"`
+	Runs Table[run.RunID, RunOwner] `json:"runs,omitzero"`
 }
 
 // SubmittedInputs returns inputs still awaiting delivery, in submission order.
@@ -218,14 +219,12 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 func (s Surface) applyRun(ev runmod.Event, pos session.Position) (any, error) {
 	switch f := ev.Fact.(type) {
 	case run.RunCreated:
-		if f.Owner != "" {
-			s.Runs = s.Runs.Set(ev.RunID, TurnID(f.Owner))
-		}
+		s.Runs = s.Runs.Set(ev.RunID, RunOwner{TurnID: TurnID(f.Owner), Schema: f.SchemaVersion})
 	case run.RunEnded:
 		s.Runs = s.Runs.Delete(ev.RunID)
 	case run.ModelStepCompleted:
-		turnID, _ := s.Runs.Get(ev.RunID)
-		a, err := assistantOf(turnID, ev.RunID, &f)
+		owner, _ := s.Runs.Get(ev.RunID)
+		a, err := assistantOf(owner, ev.RunID, &f)
 		if err != nil {
 			return nil, err
 		}
@@ -244,8 +243,8 @@ func (s Surface) applyRun(ev runmod.Event, pos session.Position) (any, error) {
 		}
 		s.Assistants = s.Assistants.Set(a.ID, a)
 	case run.ToolCallCompleted, run.ToolCallAnswered, run.ToolCallFailed:
-		turnID, _ := s.Runs.Get(ev.RunID)
-		r, err := toolResultOf(turnID, ev.RunID, ev.Fact)
+		owner, _ := s.Runs.Get(ev.RunID)
+		r, err := toolResultOf(owner.TurnID, ev.RunID, ev.Fact)
 		if err != nil {
 			return nil, err
 		}
@@ -261,8 +260,8 @@ func (s Surface) applyRun(ev runmod.Event, pos session.Position) (any, error) {
 }
 
 // assistantOf projects ModelStepCompleted into a structural entry.
-func assistantOf(turnID TurnID, runID run.RunID, f *run.ModelStepCompleted) (Assistant, error) {
-	a := Assistant{ID: AssistantIDFor(f.StepID), TurnID: turnID, RunID: runID, StepID: f.StepID,
+func assistantOf(owner RunOwner, runID run.RunID, f *run.ModelStepCompleted) (Assistant, error) {
+	a := Assistant{ID: AssistantIDFor(f.StepID), TurnID: owner.TurnID, RunID: runID, StepID: f.StepID, SchemaVersion: owner.Schema,
 		FinishReason: f.FinishReason, ResultDigest: f.ResultDigest}
 	d, err := DigestAssistant(&a)
 	if err != nil {
@@ -404,7 +403,7 @@ type Context struct {
 	Pending     map[InputID]Input             `json:"pending,omitempty"`
 	Superseded  map[ToolResultID]ToolResultID `json:"superseded,omitempty"`
 	Checkpoints []AppliedCheckpoint           `json:"checkpoints,omitempty"`
-	Runs        map[run.RunID]TurnID          `json:"runs,omitempty"`
+	Runs        map[run.RunID]RunOwner        `json:"runs,omitempty"`
 }
 
 var ContextProjection = extension.ProjectionDefinition{
@@ -412,7 +411,7 @@ var ContextProjection = extension.ProjectionDefinition{
 	Consumes: chatlogConsumes,
 	Inherits: extension.InheritAll,
 	Initial: func() (any, error) {
-		return Context{Pending: map[InputID]Input{}, Superseded: map[ToolResultID]ToolResultID{}, Runs: map[run.RunID]TurnID{}}, nil
+		return Context{Pending: map[InputID]Input{}, Superseded: map[ToolResultID]ToolResultID{}, Runs: map[run.RunID]RunOwner{}}, nil
 	},
 	Apply:      applyContext,
 	StateCodec: extension.JSONStateCodec[Context]{},
@@ -500,10 +499,8 @@ func applyContext(state any, e extension.DecodedEvent) (any, error) {
 func (c Context) applyRun(ev runmod.Event, pos session.Position) (any, error) {
 	switch f := ev.Fact.(type) {
 	case run.RunCreated:
-		if f.Owner != "" {
-			c.Runs = cow(c.Runs)
-			c.Runs[ev.RunID] = TurnID(f.Owner)
-		}
+		c.Runs = cow(c.Runs)
+		c.Runs[ev.RunID] = RunOwner{TurnID: TurnID(f.Owner), Schema: f.SchemaVersion}
 	case run.RunEnded:
 		c.Runs = cow(c.Runs)
 		delete(c.Runs, ev.RunID)
@@ -526,7 +523,7 @@ func (c Context) applyRun(ev runmod.Event, pos session.Position) (any, error) {
 		entries[i].Assistant, entries[i].Digest = &a, a.Digest
 		c.Entries = entries
 	case run.ToolCallCompleted, run.ToolCallAnswered, run.ToolCallFailed:
-		r, err := toolResultOf(c.Runs[ev.RunID], ev.RunID, ev.Fact)
+		r, err := toolResultOf(c.Runs[ev.RunID].TurnID, ev.RunID, ev.Fact)
 		if err != nil {
 			return nil, err
 		}

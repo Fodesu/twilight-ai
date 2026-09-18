@@ -121,7 +121,7 @@ func (s Summarizer) Summarize(ctx context.Context, sid session.SessionID, preset
 	if err != nil {
 		return "", err
 	}
-	raw, err := run.EncodeFrozenRequest(&frozen, digest)
+	raw, err := run.SchemaV1().Bodies.EncodeRequest(&frozen, digest)
 	if err != nil {
 		return "", err
 	}
