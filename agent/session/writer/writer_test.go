@@ -36,13 +36,21 @@ func tpfx(id extension.ModuleID) session.EventType {
 	return extension.ModulePrefix(extension.SourceTwilight, id)
 }
 
+// noteDomain is the singleton stream domain every writer test module
+// declares; each registry these tests build holds one module.
+const noteDomain = "note"
+
+func noteStreams() []extension.StreamDefinition {
+	return []extension.StreamDefinition{{Domain: noteDomain, Lineage: session.LineageSession}}
+}
+
 func noteModule(id extension.ModuleID, requires ...extension.ModuleRequirement) extension.ModuleDescriptor {
 	typ := tpfx(id) + "note"
-	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: id, Requires: requires,
+	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: id, Requires: requires, Streams: noteStreams(),
 		Events: []extension.EventDefinition{
-			{Type: typ, Stream: extension.SessionStream, Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
+			{Type: typ, Stream: noteDomain, Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
 				Bindings: []extension.BindingReferenceDefinition{{Extractor: refsExtractor, RequiredDurability: artifact.EventBound}}},
-			{Type: tpfx(id) + "hint", Stream: extension.SessionStream, Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}, Ignorable: true},
+			{Type: tpfx(id) + "hint", Stream: noteDomain, Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}, Ignorable: true},
 		},
 		Projections: []extension.ProjectionDefinition{{
 			ID: extension.ProjectionID(string(typ) + "s"), Version: 1, Consumes: []session.EventType{typ}, Authoritative: true,
@@ -61,9 +69,9 @@ func noteModule(id extension.ModuleID, requires ...extension.ModuleRequirement) 
 	}
 }
 
-// sessionBatch wraps events as the single session-stream batch tests write.
-func sessionBatch(events ...TypedEvent) []TypedBatch {
-	return []TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: events}}
+// noteBatch wraps events as the single note-stream batch tests write.
+func noteBatch(events ...TypedEvent) []TypedBatch {
+	return []TypedBatch{{Stream: session.StreamRef{Domain: noteDomain}, Events: events}}
 }
 
 type fixture struct {
@@ -108,7 +116,7 @@ func noteGroup(id string, texts ...string) CommitFn {
 		for _, tx := range texts {
 			events = append(events, TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: tx}})
 		}
-		g.Batches = sessionBatch(events...)
+		g.Batches = noteBatch(events...)
 		return g, nil
 	}
 }
@@ -148,7 +156,7 @@ func TestWriterCommitReplayAndRebuild(t *testing.T) {
 		t.Fatalf("noop = %+v", noop)
 	}
 	invalid, _ := w.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c2", Batches: sessionBatch(TypedEvent{Type: "twilight/a/unknown", Value: notePayload{}})}, nil
+		return &SemanticGroup{CommitID: "c2", Batches: noteBatch(TypedEvent{Type: "twilight/a/unknown", Value: notePayload{}})}, nil
 	})
 	if invalid.Outcome != CommitInvalid {
 		t.Fatalf("invalid = %+v", invalid)
@@ -249,7 +257,7 @@ func TestProjectionUnknownEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	hint, _ := w.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c2", Batches: sessionBatch(TypedEvent{Type: tpfx("a") + "hint", Value: notePayload{Text: "h"}})}, nil
+		return &SemanticGroup{CommitID: "c2", Batches: noteBatch(TypedEvent{Type: tpfx("a") + "hint", Value: notePayload{Text: "h"}})}, nil
 	})
 	if hint.Outcome != CommitApplied {
 		t.Fatalf("ignorable event commit = %+v", hint)
@@ -258,7 +266,7 @@ func TestProjectionUnknownEvents(t *testing.T) {
 	kw, _ := f.store.Open(ctx, "s", session.OpenOptions{})
 	raw := func(id string, typ session.EventType, payload string) {
 		if _, err := kw.Append(ctx, session.Proposal{CommitID: session.CommitID(id), Batches: []session.StreamBatch{
-			{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []session.Event{{Type: typ, Payload: jsonstable.MustParse(payload)}}},
+			{Stream: session.StreamRef{Domain: noteDomain}, Events: []session.Event{{Type: typ, Payload: jsonstable.MustParse(payload)}}},
 		}}); err != nil {
 			t.Fatal(err)
 		}
@@ -319,7 +327,7 @@ func TestCommitWithoutAdmission(t *testing.T) {
 	}
 	defer withRef.Close(ctx)
 	res, err = withRef.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c2", Batches: sessionBatch(TypedEvent{
+		return &SemanticGroup{CommitID: "c2", Batches: noteBatch(TypedEvent{
 			Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}}),
 		}, nil
 	})
@@ -337,7 +345,7 @@ func TestCommitWithoutAdmission(t *testing.T) {
 	}
 	defer noLedger.Close(ctx)
 	res, err = noLedger.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c3", Batches: sessionBatch(TypedEvent{
+		return &SemanticGroup{CommitID: "c3", Batches: noteBatch(TypedEvent{
 			Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}}),
 		}, nil
 	})
@@ -434,9 +442,9 @@ func TestBindingAdmission(t *testing.T) {
 
 	maxTwo := uint32(2)
 	typ := tpfx("r") + "ref"
-	reg, err := extension.BuildRegistry(session.ProtocolVersion1, extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "r",
+	reg, err := extension.BuildRegistry(session.ProtocolVersion1, extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "r", Streams: noteStreams(),
 		Events: []extension.EventDefinition{{
-			Type: typ, Stream: extension.SessionStream, Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
+			Type: typ, Stream: noteDomain, Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
 			Bindings: []extension.BindingReferenceDefinition{{
 				Extractor: refsExtractor, Cardinality: extension.Cardinality{Min: 1, Max: &maxTwo},
 				AllowedSchemes:     []artifact.Scheme{"spill"},
@@ -455,7 +463,7 @@ func TestBindingAdmission(t *testing.T) {
 	commit := func(id string, refs ...string) CommitResult {
 		t.Helper()
 		res, err := w.Commit(ctx, func(View) (*SemanticGroup, error) {
-			return &SemanticGroup{CommitID: session.CommitID(id), Batches: sessionBatch(TypedEvent{
+			return &SemanticGroup{CommitID: session.CommitID(id), Batches: noteBatch(TypedEvent{
 				Type: typ, Value: notePayload{Text: "r", Refs: refs}}),
 			}, nil
 		})
@@ -518,19 +526,19 @@ func TestWriterClaimsAndReconcile(t *testing.T) {
 	}
 	w := f.open(t, false)
 	res, err := w.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c1", Batches: sessionBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}})}, nil
+		return &SemanticGroup{CommitID: "c1", Batches: noteBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}})}, nil
 	})
 	if err != nil || res.Outcome != CommitApplied || res.Claim == nil || res.Claim.State != artifact.ClaimActive {
 		t.Fatalf("commit with binding = %+v %v", res, err)
 	}
 	missing, _ := w.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c2", Batches: sessionBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "x", Refs: []string{"nope"}}})}, nil
+		return &SemanticGroup{CommitID: "c2", Batches: noteBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "x", Refs: []string{"nope"}}})}, nil
 	})
 	if missing.Outcome != CommitInvalid {
 		t.Fatalf("unknown binding = %+v", missing)
 	}
 	// Simulate a crash between claim and append: an Active claim whose owner
-	// commit never made it into the stream.
+	// commit never made it into the ledger.
 	set, _ := artifact.SetBuilder{Resolver: f.bindings}.Build(ctx, []artifact.BindingID{"b1"})
 	orphanID := DeriveClaimID(session.ProtocolVersion1, "s", "never", set.RefSetDigest)
 	if _, err := f.ledger.Activate(ctx, orphanID, CommitOwner("s", "never"), set); err != nil {

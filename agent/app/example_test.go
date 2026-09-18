@@ -16,8 +16,8 @@ import (
 	"github.com/felinics/twilight/sdk"
 )
 
-// Example_recoverableTurn drives one Turn through a process crash on the
-// single Session stream.
+// Example_recoverableTurn drives one Turn through a process crash on a
+// single Session.
 //
 // Process 1 owns the Session (Epoch 1), submits the user input and starts the
 // Turn. The model asks for a tool; the tool never returns and the process dies
@@ -30,7 +30,7 @@ import (
 // Active, and Drive runs the Loop: the prompt builder reads the conversation back
 // from the chatlog projection and the Turn completes. The dead process's
 // worker finally returns and its settlement is fenced by the kernel: nothing
-// of Epoch 1 reaches the stream after the takeover.
+// of Epoch 1 reaches the ledger after the takeover.
 func Example_recoverableTurn() {
 	ctx := context.Background()
 	const sid session.SessionID = "session-1"

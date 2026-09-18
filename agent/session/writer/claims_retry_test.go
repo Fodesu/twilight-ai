@@ -25,7 +25,7 @@ func claimFixture(t *testing.T) (*fixture, artifact.BindingSet, CommitFn) {
 		t.Fatal(err)
 	}
 	return f, set, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c1", Batches: sessionBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}})}, nil
+		return &SemanticGroup{CommitID: "c1", Batches: noteBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}})}, nil
 	}
 }
 

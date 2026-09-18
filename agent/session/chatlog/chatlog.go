@@ -510,8 +510,17 @@ var supersededBinding = extension.BindingReferenceDefinition{
 	RequiredDurability: artifact.EventBound,
 }
 
+// StreamDomain is the singleton stream domain of the chatlog: one stream per
+// Session, of session lineage, so a fork continues its parent's conversation.
+const StreamDomain = "chatlog"
+
+var streamDefinition = extension.StreamDefinition{Domain: StreamDomain, Lineage: session.LineageSession}
+
+// Stream is the chatlog's logical stream.
+var Stream = streamDefinition.Ref("")
+
 func def[T any](typ session.EventType, check func(*T) error, bindings ...extension.BindingReferenceDefinition) extension.EventDefinition {
-	return extension.EventDefinition{Type: typ, Stream: extension.SessionStream,
+	return extension.EventDefinition{Type: typ, Stream: StreamDomain,
 		Codecs:   map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[T]{Check: check}},
 		Bindings: bindings}
 }
@@ -534,6 +543,7 @@ func runRequirement() extension.ModuleRequirement {
 var Module = extension.ModuleDescriptor{
 	Source:   extension.SourceTwilight,
 	ID:       ModuleID,
+	Streams:  []extension.StreamDefinition{streamDefinition},
 	Requires: []extension.ModuleRequirement{runRequirement()},
 	Events: []extension.EventDefinition{
 		def[InputSubmittedPayload](TypeInputSubmitted, func(p *InputSubmittedPayload) error {

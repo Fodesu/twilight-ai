@@ -21,7 +21,7 @@ func TestProfileVersionSeparatesDigests(t *testing.T) {
 	v2 := profileV1{version: ProtocolVersion1}
 	v3 := profileV1{version: 3}
 
-	batch := StreamBatch{Stream: StreamRef{Kind: StreamKindSession}, Events: []Event{
+	batch := StreamBatch{Stream: StreamRef{Domain: "chat"}, Events: []Event{
 		{Type: "twilight/x/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"a":1}`)},
 	}}
 	prev := es.Digest("sha256:0000000000000000000000000000000000000000000000000000000000000000")

@@ -102,13 +102,14 @@ type Handle interface {
 	// ledger has written is a ledger fact, so a module that must refuse a
 	// second creation of a stream asks here instead of remembering every
 	// stream it ever closed in a projection. Inherited segments are not
-	// counted: a fork's run streams are its own (SES-FRK-5).
+	// counted whatever lineage the stream's domain declared: the index is
+	// the tip segment's own (SES-FRK-5).
 	StreamHead(StreamRef) (StreamSeq, bool)
 	// Advance publishes a new tip segment for this root (SES-ADV-1/2): the
 	// child of the current tip at its head, holding the Bootstrap commits,
 	// becomes the segment the Session appends to. Before the publication
 	// point the Session is unchanged; after it the Session is entirely on
-	// the new segment, whose own streams start empty (SES-FRK-5). It
+	// the new segment, whose own stream index starts empty (SES-FRK-5). It
 	// returns the new header and the bootstrap commits sealed in order, as
 	// Append would have. The handle continues on the new tip. A tip with no
 	// commit to anchor the edge to is ErrInvalid; a bootstrap CommitID the
@@ -171,11 +172,14 @@ type CommitPage struct {
 }
 
 // StreamReadRequest reads the events of one logical stream in CommitSeq
-// order. From counts events within the stream, starting at 0 for the first
-// event the stream ever received.
+// order. Lineage selects how the read crosses the tip segment's edges
+// (SES-FRK-5) and is the mode the stream's owning module declared for its
+// domain; a zero Lineage is ErrInvalid. From counts events within the
+// stream as the chosen lineage sees it, starting at 0 for the first event.
 type StreamReadRequest struct {
 	SessionID SessionID
 	Stream    StreamRef
+	Lineage   StreamLineage
 	From      StreamSeq
 	Limit     uint32 // 0 = unlimited
 }

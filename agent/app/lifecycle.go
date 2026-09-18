@@ -55,7 +55,7 @@ func (app *Application) Projection(ctx context.Context, sid session.SessionID, i
 // Content materializes the frozen bodies projections name (CHT-MAT-1).
 func (app *Application) Content() chatlog.ContentResolver { return app.Authority.Content }
 
-// CreateSession creates the Session stream.
+// CreateSession creates the Session.
 func (app *Application) CreateSession(ctx context.Context, sid session.SessionID) error {
 	return app.Authority.CreateSession(ctx, sid, jsonstable.Value{})
 }

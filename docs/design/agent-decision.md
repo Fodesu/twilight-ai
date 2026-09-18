@@ -2,7 +2,7 @@
 
 状态：v1 设计规范。本文定义 Agent Core 的决策层。协议边界见 [Turn](agent-turn.md)、[Run](agent-run.md) 与 [Chatlog](agent-session-chatlog.md)。
 
-本文定义 `agent/decision`：把已提交状态与 AgentPreset 变成下一条 prompt 的组件。agent core 的三层按纯性划分——事实层（Session stream、Writer、投影）、决策层（本文）、效果层（模型调用、工具执行）；决策层是三层里给定输入即确定的一层，它读投影、不做 IO，全部运行在 Session authority 一侧。文中的"必须""不得""应该"是协议约束。
+本文定义 `agent/decision`：把已提交状态与 AgentPreset 变成下一条 prompt 的组件。agent core 的三层按纯性划分——事实层（Session ledger、Writer、投影）、决策层（本文）、效果层（模型调用、工具执行）；决策层是三层里给定输入即确定的一层，它读投影、不做 IO，全部运行在 Session authority 一侧。文中的"必须""不得""应该"是协议约束。
 
 ## 1. 范围与身份
 
@@ -43,7 +43,7 @@ const PromptContextV1 turn.PromptBuilderRef = "twilight/decision/prompt/context-
 1. `AgentPreset.SystemPrompt` 非空时一条 system message；
 2. 按 fold 顺序：`input` → user；`assistant` → assistant（冻结 `ModelResult` 的 reasoning、text 与 tool calls；`Materialized.Calls[i].ProviderCallID` 写入 `sdk.ToolCallPart.ToolCallID`）；`tool_result` → tool（以同 Turn assistant 中同 CallID 的 `ProviderCallID` 配对；success 的正文为物化的输出，error 为 Failure 文本，`unknown` 渲染为标记 error 的说明文本）；`summary` → assistant text。
 
-回合中途投递的输入在其之前尚未结算的工具结果之后排列：这类输入的 `input_delivered` 先于 `tool_result` 进入 stream，provider 要求工具结果紧随发出调用的 assistant 消息。prompt 构造时暂存这类输入，待工具结果配对后写入。CancelRun 为全部未完成调用提交终态结果，后续 Turn 继承完整配对的上下文；构造器遇到未配对调用或结果时返回错误。
+回合中途投递的输入在其之前尚未结算的工具结果之后排列：这类输入的 `input_delivered` 先于 `tool_result` 进入 ledger，provider 要求工具结果紧随发出调用的 assistant 消息。prompt 构造时暂存这类输入，待工具结果配对后写入。CancelRun 为全部未完成调用提交终态结果，后续 Turn 继承完整配对的上下文；构造器遇到未配对调用或结果时返回错误。
 
 **DEC-PMT-3** `plan.PromptInput.Inputs` 与本 Turn 已 delivered 且属于本次 Prepare 的 Input 按 ID 对齐，包括回合中途经 Deliver 进入的输入。这些 Input 的 `input_delivered` 与 `input_accepted` 同 commit，Build 时一定已在 fold 中；PromptBuilder 只使用 fold。
 

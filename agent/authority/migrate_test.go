@@ -32,7 +32,8 @@ var (
 )
 
 var migModule = extension.ModuleDescriptor{Source: "example", ID: "mig",
-	Events: []extension.EventDefinition{{Type: markType, Stream: extension.SessionStream,
+	Streams: []extension.StreamDefinition{{Domain: "mig", Lineage: session.LineageSession}},
+	Events: []extension.EventDefinition{{Type: markType, Stream: "mig",
 		Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[markPayload]{}, 2: extension.JSONCodec[markPayload]{}}}},
 	Projections: []extension.ProjectionDefinition{{
 		ID: marksID, Version: 1, Consumes: []session.EventType{markType}, Inherits: extension.InheritAll,
@@ -57,7 +58,7 @@ func (m stubMigrator) Profile() migrate.Profile        { return m.profile }
 func (m stubMigrator) Source() extension.SchemaVersion { return m.source }
 func (m stubMigrator) Target() extension.SchemaVersion { return m.target }
 func (m stubMigrator) Bootstrap(context.Context, writer.View) ([]writer.SemanticGroup, error) {
-	return []writer.SemanticGroup{{Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession},
+	return []writer.SemanticGroup{{Batches: []writer.TypedBatch{{Stream: session.StreamRef{Domain: "mig"},
 		Events: []writer.TypedEvent{{Type: markType, Value: markPayload{Text: "migrated"}}}}}}}, nil
 }
 

@@ -24,8 +24,8 @@ func testFork(t *testing.T, f Fixture) {
 	store := f.Store
 	parent := create(t, store, "parent")
 	pw := open(t, store, "parent", false)
-	c0 := appendCommit(t, pw, "c0", batch(sessionStream(), "twilight/x/a", `{"n":0}`))
-	c1 := appendCommit(t, pw, "c1", batch(sessionStream(), "twilight/x/a", `{"n":1}`), batch(runStream("r1"), "twilight/x/r", `{"n":1}`))
+	c0 := appendCommit(t, pw, "c0", batch(chatStream(), "twilight/x/a", `{"n":0}`))
+	c1 := appendCommit(t, pw, "c1", batch(chatStream(), "twilight/x/a", `{"n":1}`), batch(runStream("r1"), "twilight/x/r", `{"n":1}`))
 	appendCommit(t, pw, "c2", batch(runStream("r1"), "twilight/x/r", `{"n":2}`))
 
 	// Rejections write nothing: unknown parent, a commit the parent does not
@@ -101,15 +101,15 @@ func testFork(t *testing.T, f Fixture) {
 	if err != nil || !ok || got.Digest != c1.Digest || got.Seq != c1.Seq {
 		t.Fatalf("lookup inherited = %+v %v %v", got, ok, err)
 	}
-	if _, err := cw.Append(ctx, session.Proposal{CommitID: "c0", Batches: []session.StreamBatch{batch(sessionStream(), "twilight/x/a", `{"dup":true}`)}}); !session.IsCode(err, session.ErrConflict) {
+	if _, err := cw.Append(ctx, session.Proposal{CommitID: "c0", Batches: []session.StreamBatch{batch(chatStream(), "twilight/x/a", `{"dup":true}`)}}); !session.IsCode(err, session.ErrConflict) {
 		t.Fatalf("append of an inherited CommitID = %v, want conflict", err)
 	}
-	c3 := appendCommit(t, cw, "c3", batch(sessionStream(), "twilight/x/a", `{"n":3}`), batch(runStream("r1"), "twilight/x/r", `{"n":3}`))
+	c3 := appendCommit(t, cw, "c3", batch(chatStream(), "twilight/x/a", `{"n":3}`), batch(runStream("r1"), "twilight/x/r", `{"n":3}`))
 	if c3.Seq != c1.Seq+1 || c3.PrevDigest != c1.Digest {
 		t.Fatalf("first own commit = seq %d prev %s, want %d %s", c3.Seq, c3.PrevDigest, c1.Seq+1, c1.Digest)
 	}
 	// The parent keeps appending; neither side sees the other.
-	c4 := appendCommit(t, pw, "c4", batch(sessionStream(), "twilight/x/a", `{"n":4}`))
+	c4 := appendCommit(t, pw, "c4", batch(chatStream(), "twilight/x/a", `{"n":4}`))
 	childPage, _ := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "child"})
 	if ids(childPage.Commits) != "c0,c1,c3" || childPage.Head != (session.Head{Next: c3.Seq + 1, Digest: c3.Digest}) {
 		t.Fatalf("child commits = %s head %+v", ids(childPage.Commits), childPage.Head)
@@ -142,23 +142,28 @@ func testFork(t *testing.T, f Fixture) {
 			t.Fatalf("read from %d limit %d = %s more=%v %v, want %s more=%v", tc.from, tc.limit, ids(p.Commits), p.HasMore, err, tc.want, tc.hasMore)
 		}
 	}
-	// The session stream counts the inherited events (c0, c1) before the
-	// child's own (c3); a run stream is execution history of the segment that
-	// wrote it, so the child's r1 holds only c3 and the parent's c1 event is
-	// not the child's (SES-FRK-5).
-	sp, err := store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Stream: sessionStream()})
+	// The lineage is the read's (SES-FRK-5). Read with LineageSession, the
+	// child's chat stream counts the inherited events (c0, c1) before its own
+	// (c3). Read with LineageSegment, the child's r1 holds only c3: the
+	// parent's c1 event is not the child segment's. The same r1 read with
+	// LineageSession stitches c1 before c3.
+	sp, err := store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Stream: chatStream(), Lineage: session.LineageSession})
 	if err != nil || len(sp.Events) != 3 || sp.Events[0].Payload.String() != `{"n":0}` || sp.Events[2].Payload.String() != `{"n":3}` {
-		t.Fatalf("child session stream = %+v %v", sp.Events, err)
+		t.Fatalf("child chat stream = %+v %v", sp.Events, err)
 	}
-	sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Stream: sessionStream(), From: 2})
+	sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Stream: chatStream(), Lineage: session.LineageSession, From: 2})
 	if len(sp.Events) != 1 || sp.Events[0].Payload.String() != `{"n":3}` {
-		t.Fatalf("child session stream from 2 = %+v", sp.Events)
+		t.Fatalf("child chat stream from 2 = %+v", sp.Events)
 	}
-	sp, err = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Stream: runStream("r1")})
+	sp, err = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Stream: runStream("r1"), Lineage: session.LineageSegment})
 	if err != nil || len(sp.Events) != 1 || sp.Events[0].Payload.String() != `{"n":3}` {
 		t.Fatalf("child run stream = %+v %v, want the child's own event only", sp.Events, err)
 	}
-	if sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "parent", Stream: runStream("r1")}); len(sp.Events) != 2 {
+	sp, err = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "child", Stream: runStream("r1"), Lineage: session.LineageSession})
+	if err != nil || len(sp.Events) != 2 || sp.Events[1].Payload.String() != `{"n":3}` {
+		t.Fatalf("child run stream stitched = %+v %v, want c1 then c3", sp.Events, err)
+	}
+	if sp, _ = store.ReadStream(ctx, session.StreamReadRequest{SessionID: "parent", Stream: runStream("r1"), Lineage: session.LineageSegment}); len(sp.Events) != 2 {
 		t.Fatalf("parent run stream = %+v, want c1 and c2", sp.Events)
 	}
 
@@ -184,7 +189,7 @@ func testFork(t *testing.T, f Fixture) {
 		t.Fatalf("grandchild edge = %+v, want the child's segment", grand.Parent)
 	}
 	gw := open(t, store, "grandchild", false)
-	c5 := appendCommit(t, gw, "c5", batch(sessionStream(), "twilight/x/a", `{"n":5}`))
+	c5 := appendCommit(t, gw, "c5", batch(chatStream(), "twilight/x/a", `{"n":5}`))
 	gp, _ := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "grandchild"})
 	if ids(gp.Commits) != "c0,c1,c3,c5" || c5.Seq != c3.Seq+1 || c5.PrevDigest != c3.Digest || gp.Header.HeaderDigest != grand.HeaderDigest {
 		t.Fatalf("grandchild commits = %s", ids(gp.Commits))

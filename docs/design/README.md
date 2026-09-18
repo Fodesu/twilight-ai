@@ -6,7 +6,7 @@
 ## 权威边界
 
 ```text
-agent-session.md              Session kernel：stream、ownership、append、read
+agent-session.md              Session kernel：commit ledger、逻辑流、ownership、append、read
 agent-session-extension.md    Writer、module registry、projection、claim admission、段的 Schema 声明与 tip 段推进
 agent-artifact.md             Artifact binding、content reference、retention claim
 agent-session-chatlog.md      对话内容与 context projection
@@ -47,7 +47,7 @@ Workspace 是可选的 application domain。Agent Core 只携带 opaque `TargetR
   `Unknown`。
 - Artifact 的“孤儿 claim”只表示 retention claim 没有对应 owner fact，与
   Executor 的 `orphaned` execution 无关。
-- Event stream 是唯一事实权威；projection、snapshot、HTTP view 和 CLI 输出都
+- Commit ledger 是唯一事实权威；projection、snapshot、HTTP view 和 CLI 输出都
   是派生数据。
 - `ProtocolVersion`（Session kernel 的 wire 版本，SES-VER-1）与 `SchemaVersion`（段的
   应用层 Schema，EXT-SCH-1）属于不同版本域；Run 事实的 `v` 等于所在段的 SchemaVersion

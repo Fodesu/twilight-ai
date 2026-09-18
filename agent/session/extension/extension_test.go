@@ -29,13 +29,19 @@ var refsExtractor = BindingExtractorFunc(func(value any) ([]artifact.BindingID, 
 // tpfx is the first-party prefix of a test module.
 func tpfx(id ModuleID) session.EventType { return ModulePrefix(SourceTwilight, id) }
 
+// ownStream declares one singleton, session-lineage domain: the shape of a
+// module that writes one stream per Session.
+func ownStream(domain string) []StreamDefinition {
+	return []StreamDefinition{{Domain: domain, Lineage: session.LineageSession}}
+}
+
 func noteModule(id ModuleID, requires ...ModuleRequirement) ModuleDescriptor {
 	typ := tpfx(id) + "note"
-	return ModuleDescriptor{Source: SourceTwilight, ID: id, Requires: requires,
+	return ModuleDescriptor{Source: SourceTwilight, ID: id, Requires: requires, Streams: ownStream(string(id)),
 		Events: []EventDefinition{
-			{Type: typ, Stream: SessionStream, Codecs: map[SchemaVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
+			{Type: typ, Stream: string(id), Codecs: map[SchemaVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
 				Bindings: []BindingReferenceDefinition{{Extractor: refsExtractor, RequiredDurability: artifact.EventBound}}},
-			{Type: tpfx(id) + "hint", Stream: SessionStream, Codecs: map[SchemaVersion]PayloadCodec{1: JSONCodec[notePayload]{}}, Ignorable: true},
+			{Type: tpfx(id) + "hint", Stream: string(id), Codecs: map[SchemaVersion]PayloadCodec{1: JSONCodec[notePayload]{}}, Ignorable: true},
 		},
 		Projections: []ProjectionDefinition{{
 			ID: ProjectionID(string(typ) + "s"), Version: 1, Consumes: []session.EventType{typ},
@@ -77,8 +83,9 @@ func TestBuildRegistryValidatesRequires(t *testing.T) {
 
 // srcModule is a minimal module under an arbitrary source.
 func srcModule(source SourceID, id ModuleID) ModuleDescriptor {
-	return ModuleDescriptor{Source: source, ID: id, Events: []EventDefinition{{
-		Type: ModulePrefix(source, id) + "note", Stream: SessionStream,
+	domain := string(source) + "." + string(id)
+	return ModuleDescriptor{Source: source, ID: id, Streams: ownStream(domain), Events: []EventDefinition{{
+		Type: ModulePrefix(source, id) + "note", Stream: domain,
 		Codecs: map[SchemaVersion]PayloadCodec{1: JSONCodec[notePayload]{}},
 	}}}
 }
@@ -151,8 +158,8 @@ func TestBuildRegistryRequiresCodec(t *testing.T) {
 		{"zero schema version", map[SchemaVersion]PayloadCodec{0: JSONCodec[notePayload]{}}, "nil codec or zero schema version"},
 		{"nil codec", map[SchemaVersion]PayloadCodec{1: nil}, "nil codec or zero schema version"},
 	} {
-		_, err := BuildRegistry(session.ProtocolVersion1, ModuleDescriptor{Source: SourceTwilight, ID: "a",
-			Events: []EventDefinition{{Type: tpfx("a") + "note", Stream: SessionStream, Codecs: tc.codecs}}})
+		_, err := BuildRegistry(session.ProtocolVersion1, ModuleDescriptor{Source: SourceTwilight, ID: "a", Streams: ownStream("a"),
+			Events: []EventDefinition{{Type: tpfx("a") + "note", Stream: "a", Codecs: tc.codecs}}})
 		if err == nil {
 			t.Fatalf("%s: registry built", tc.name)
 		}
@@ -162,9 +169,9 @@ func TestBuildRegistryRequiresCodec(t *testing.T) {
 	}
 	// A type existing under two Schemas is the supported shape, so it must
 	// keep building, and the registry supports exactly those Schemas.
-	r, err := BuildRegistry(session.ProtocolVersion1, ModuleDescriptor{Source: SourceTwilight, ID: "a",
+	r, err := BuildRegistry(session.ProtocolVersion1, ModuleDescriptor{Source: SourceTwilight, ID: "a", Streams: ownStream("a"),
 		Events: []EventDefinition{{
-			Type: tpfx("a") + "note", Stream: SessionStream,
+			Type: tpfx("a") + "note", Stream: "a",
 			Codecs: map[SchemaVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}},
 		}}})
 	if err != nil {
@@ -207,8 +214,8 @@ func (legacyCodec) Validate(v any) error {
 // own codec, while a version no codec claims stays Unknown with its raw payload.
 func TestRegistryMultiVersionCodecsCoexist(t *testing.T) {
 	typ := tpfx("v") + "note"
-	upgraded := ModuleDescriptor{Source: SourceTwilight, ID: "v", Events: []EventDefinition{{
-		Type: typ, Stream: SessionStream,
+	upgraded := ModuleDescriptor{Source: SourceTwilight, ID: "v", Streams: ownStream("v"), Events: []EventDefinition{{
+		Type: typ, Stream: "v",
 		Codecs: map[SchemaVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}},
 	}}}
 	r, err := BuildRegistry(session.ProtocolVersion1, upgraded)

@@ -159,7 +159,7 @@ func (h *harness) submit(ids ...string) []run.AgentInput {
 	for i, id := range ids {
 		in := input(id)
 		h.mustApply(writer.SemanticGroup{CommitID: session.CommitID("submitted/" + id),
-			Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{{
+			Batches: []writer.TypedBatch{{Stream: chatlog.Stream, Events: []writer.TypedEvent{{
 				Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: h.now,
 				Value: chatlog.InputSubmittedPayload{InputID: chatlog.InputID(id), Content: inputContent(id), SubmittedAtUnixMilli: h.now}}}}}})
 		out[i] = in

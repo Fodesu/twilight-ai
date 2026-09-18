@@ -27,7 +27,7 @@ Surface / Context（结构 + digest）
 
 流式 `text_delta` / `reasoning_delta` 由 Loop EventSink 发送，属于临时观察。Chatlog 权威是已提交的事实。
 
-**CHT-SCP-1** 本模块拥有对话自身的事实与两个投影。Application 拥有模型调用、provider transport、发送策略与审计。`turn` 拥有回合与 Run linkage。本模块的 `Requires`（EXT-REG-4）为 `run` 的 v1 事实 `run_created`、`model_step_completed`、`tool_step_opened`、`tool_call_completed`、`tool_call_answered`、`tool_call_failed`；事件中的 `TurnID` 是 opaque 字符串，不需要 turn 的 codec。
+**CHT-SCP-1** 本模块拥有对话自身的事实与两个投影，并声明单例流 domain `chatlog`（`LineageSession`，EXT-STR-1），对话事实全部写入这条流。Application 拥有模型调用、provider transport、发送策略与审计。`turn` 拥有回合与 Run linkage。本模块的 `Requires`（EXT-REG-4）为 `run` 的 v1 事实 `run_created`、`model_step_completed`、`tool_step_opened`、`tool_call_completed`、`tool_call_answered`、`tool_call_failed`；事件中的 `TurnID` 是 opaque 字符串，不需要 turn 的 codec。
 
 ## 2. stable entity 与生命周期
 
@@ -41,7 +41,7 @@ type CallID string
 type CheckpointID string
 ```
 
-`TurnID` 与 turn 模块同一 identity。InputID、AssistantID、ToolResultID、SummaryID 在 stream 内唯一；CallID 在同一 Turn 内唯一。replacement graph 无环，一个实体至多一个直接 replacement。
+`TurnID` 与 turn 模块同一 identity。InputID、AssistantID、ToolResultID、SummaryID 在 chatlog 流内唯一；CallID 在同一 Turn 内唯一。replacement graph 无环，一个实体至多一个直接 replacement。
 
 | 实体 | 来源 | 可变过程 | 终态/替换 | 不变量 |
 |---|---|---|---|---|
@@ -200,7 +200,7 @@ twilight/chatlog/checkpoint_created
 twilight/chatlog/checkpoint_invalidated
 ```
 
-**CHT-EVT-2** `input_submitted` 创建 Input。Delivered、Withdrawn、Rejected 各终结一次。`input_delivered` 要求 Input 仍为 submitted，并写入非空 TurnID；它与把该输入交给 Run 的事实同组：Start group 中与 `twilight/turn/started` 一起，回合中途与 `twilight/run/input_accepted` 一起（TRN-STR-2、TRN-DLV-2）。SummaryID 在 stream 内单次创建。
+**CHT-EVT-2** `input_submitted` 创建 Input。Delivered、Withdrawn、Rejected 各终结一次。`input_delivered` 要求 Input 仍为 submitted，并写入非空 TurnID；它与把该输入交给 Run 的事实同组：Start group 中与 `twilight/turn/started` 一起，回合中途与 `twilight/run/input_accepted` 一起（TRN-STR-2、TRN-DLV-2）。SummaryID 在 chatlog 流内单次创建。
 
 **CHT-EVT-3**（checkpoint）checkpoint 压缩 active Context：合法 checkpoint 使其变为 `[Summary] + Retained`，其后的事件照常折叠。digest 规则：`Digest` 的 domain 为 `twilight/chatlog/checkpoint_created`，覆盖除 `Digest` 外的全部字段；`BaseContextDigest` 以同一 domain 对 `{base: [(Kind, ID, Digest)]}` 计算，覆盖截至 `CoveredThrough` 的有序 active Context 序列；`Retained` 为空与省略是同一 wire 值，两个 digest 预映像都把空列表折叠为 nil。summary 应与 checkpoint 同组提交，gap 不变量因此原子成立。
 
@@ -227,7 +227,7 @@ type Surface struct {
 
 Surface 的折叠遵守 EXT-PRJ-1：Apply 不改写传入状态。内容表用 `Table` 承载，一次写入的代价为 O(√n)，因此折叠一条 N 行日志的代价随 N 线性增长；`EntryOrder` 以 append 增长。
 
-**CHT-SUR-1** SurfaceFold 消费本模块事件与 CHT-SCP-1 列出的 run 事实，跨 session 流与 run 流折叠（EXT-PRJ-1），其他事件按 EXT-PRJ-2 处理。`EntryOrder` 为 commit 顺序下的 delivered input、assistant、tool_result、summary，并带产生它的事件的 ledger Position（`extension.DecodedEvent.Position`，由 fold 盖上）：投影不维护自己的计数器，快照恢复也不需要重扫。`Surface.Runs` 与 `Context.Runs` 在 `run_ended` 时释放该 Run 的条目，大小与活动 Run 数成正比。回合列表由 turn 投影提供，按 `TurnID` 连接。checkpoint 记录于 `Surface.Checkpoints`（active / invalidated）；compaction 不改动 `EntryOrder`，也不触及输入队列。
+**CHT-SUR-1** SurfaceFold 消费本模块事件与 CHT-SCP-1 列出的 run 事实，跨 chatlog 流与 run/&lt;RunID&gt; 流折叠（EXT-PRJ-1），其他事件按 EXT-PRJ-2 处理。`EntryOrder` 为 commit 顺序下的 delivered input、assistant、tool_result、summary，并带产生它的事件的 ledger Position（`extension.DecodedEvent.Position`，由 fold 盖上）：投影不维护自己的计数器，快照恢复也不需要重扫。`Surface.Runs` 与 `Context.Runs` 在 `run_ended` 时释放该 Run 的条目，大小与活动 Run 数成正比。回合列表由 turn 投影提供，按 `TurnID` 连接。checkpoint 记录于 `Surface.Checkpoints`（active / invalidated）；compaction 不改动 `EntryOrder`，也不触及输入队列。
 
 ## 7. Context projection
 

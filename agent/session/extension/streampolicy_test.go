@@ -12,34 +12,50 @@ type policyPayload struct {
 	Note string `json:"note"`
 }
 
-func policyModule(stream StreamPolicy) ModuleDescriptor {
+// policyModule declares streams and one event that names the domain
+// eventStream.
+func policyModule(streams []StreamDefinition, eventStream string) ModuleDescriptor {
 	return ModuleDescriptor{
-		Source: "polsrc", ID: "pol",
+		Source: "polsrc", ID: "pol", Streams: streams,
 		Events: []EventDefinition{{
-			Type: "polsrc/pol/note", Stream: stream,
+			Type: "polsrc/pol/note", Stream: eventStream,
 			Codecs: map[SchemaVersion]PayloadCodec{1: JSONCodec[policyPayload]{}},
 		}},
 	}
 }
 
-// TestBuildRegistryValidatesStreamPolicy: policy declarations are assembly
-// errors, caught before any write (EXT-STR-1).
-func TestBuildRegistryValidatesStreamPolicy(t *testing.T) {
+// TestBuildRegistryValidatesStreamDeclarations: stream declarations and the
+// domains events name are assembly errors, caught before any write
+// (EXT-STR-1).
+func TestBuildRegistryValidatesStreamDeclarations(t *testing.T) {
+	singleton := StreamDefinition{Domain: "pol", Lineage: session.LineageSession}
+	keyed := StreamDefinition{Domain: "polrun", IDField: "runId", Lineage: session.LineageSegment}
+	other := ModuleDescriptor{Source: "polsrc", ID: "other", Streams: []StreamDefinition{{Domain: "other", Lineage: session.LineageSession}}}
 	cases := map[string]struct {
-		stream StreamPolicy
-		detail string
+		streams []StreamDefinition
+		event   string
+		others  []ModuleDescriptor
+		detail  string
 	}{
-		"valid session":            {stream: SessionStream},
-		"valid run":                {stream: RunStream("runId")},
-		"missing kind":             {stream: StreamPolicy{}, detail: "no stream policy"},
-		"run without field":        {stream: StreamPolicy{Kind: session.StreamKindRun}, detail: "must declare its stream ID field"},
-		"run with the version key": {stream: RunStream("v"), detail: "collides with the payload version key"},
-		"session with field": {stream: StreamPolicy{Kind: session.StreamKindSession, IDField: "runId"},
-			detail: "must not declare a stream ID field"},
+		"valid singleton":                  {streams: []StreamDefinition{singleton}, event: "pol"},
+		"valid keyed":                      {streams: []StreamDefinition{keyed}, event: "polrun"},
+		"event without a domain":           {streams: []StreamDefinition{singleton}, detail: "no stream domain"},
+		"event of an undeclared domain":    {streams: []StreamDefinition{singleton}, event: "polrun", detail: "does not declare"},
+		"event of another module's domain": {streams: []StreamDefinition{singleton}, event: "other", others: []ModuleDescriptor{other}, detail: "does not declare"},
+		"empty domain":                     {streams: []StreamDefinition{{Lineage: session.LineageSession}}, event: "pol", detail: "stream domain is empty"},
+		"domain with a separator":          {streams: []StreamDefinition{{Domain: "pol/x", Lineage: session.LineageSession}}, event: "pol", detail: `contains "/"`},
+		"duplicate domain":                 {streams: []StreamDefinition{singleton, singleton}, event: "pol", detail: "duplicate stream domain"},
+		"domain declared by two modules": {streams: []StreamDefinition{singleton}, event: "pol", detail: "duplicate stream domain",
+			others: []ModuleDescriptor{{Source: "polsrc", ID: "other", Streams: []StreamDefinition{singleton}}}},
+		"id field is the version key": {streams: []StreamDefinition{{Domain: "pol", IDField: "v", Lineage: session.LineageSegment}}, event: "pol",
+			detail: "collides with the payload version key"},
+		"missing lineage": {streams: []StreamDefinition{{Domain: "pol"}}, event: "pol", detail: "lineage is empty"},
+		"unknown lineage": {streams: []StreamDefinition{{Domain: "pol", Lineage: "branch"}}, event: "pol", detail: "unknown stream lineage"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := BuildRegistry(session.ProtocolVersion1, policyModule(tc.stream))
+			modules := append([]ModuleDescriptor{policyModule(tc.streams, tc.event)}, tc.others...)
+			_, err := BuildRegistry(session.ProtocolVersion1, modules...)
 			if tc.detail == "" {
 				if err != nil {
 					t.Fatalf("BuildRegistry = %v, want success", err)

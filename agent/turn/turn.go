@@ -16,7 +16,19 @@ import (
 	runmod "github.com/felinics/twilight/agent/session/run"
 )
 
-const ModuleID extension.ModuleID = "turn"
+const (
+	ModuleID extension.ModuleID = "turn"
+	// StreamDomain is the stream domain of Turn events: one keyed stream
+	// per Turn, bound by the payload's turnId.
+	StreamDomain = "turn"
+)
+
+// streamDefinition declares the turn domain: keyed by TurnID and of session
+// lineage, so a fork continues its parent's Turns.
+var streamDefinition = extension.StreamDefinition{Domain: StreamDomain, IDField: "turnId", Lineage: session.LineageSession}
+
+// Stream is the logical stream of one Turn's events.
+func Stream(turnID TurnID) session.StreamRef { return streamDefinition.Ref(string(turnID)) }
 
 type (
 	TurnID   string
@@ -59,7 +71,7 @@ type StartedPayload struct {
 	Preset   PresetRef         `json:"preset"`
 }
 
-// AttemptStartedPayload registers one attempt on the session stream.
+// AttemptStartedPayload registers one attempt in the Turn's stream.
 type AttemptStartedPayload struct {
 	TurnID  TurnID    `json:"turnId"`
 	RunID   run.RunID `json:"runId"`
@@ -120,7 +132,7 @@ func SettleCommitID(sid session.SessionID, turnID TurnID, runID run.RunID) sessi
 // --- module -----------------------------------------------------------------------
 
 func def[T any](typ session.EventType, check func(*T) error) extension.EventDefinition {
-	return extension.EventDefinition{Type: typ, Stream: extension.SessionStream,
+	return extension.EventDefinition{Type: typ, Stream: StreamDomain,
 		Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[T]{Check: check}}}
 }
 
@@ -128,8 +140,9 @@ func def[T any](typ session.EventType, check func(*T) error) extension.EventDefi
 // TRN-SCP-1: run (run_ended v1, which settles attempts) and chatlog
 // (input_delivered v1).
 var Module = extension.ModuleDescriptor{
-	Source: extension.SourceTwilight,
-	ID:     ModuleID,
+	Source:  extension.SourceTwilight,
+	ID:      ModuleID,
+	Streams: []extension.StreamDefinition{streamDefinition},
 	Requires: []extension.ModuleRequirement{
 		{Source: extension.SourceTwilight, Module: runmod.ModuleID, Events: map[session.EventType][]extension.SchemaVersion{
 			runmod.Prefix + "run_ended": {1},

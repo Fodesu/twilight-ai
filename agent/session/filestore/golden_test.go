@@ -41,7 +41,7 @@ func TestLogFileGolden(t *testing.T) {
 		return session.Event{Type: session.EventType(typ), Payload: jsonstable.MustParse(payload), RecordedAtUnixMilli: at}
 	}
 	if _, err := w.Append(ctx, session.Proposal{CommitID: "c1", Batches: []session.StreamBatch{
-		{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []session.Event{
+		{Stream: session.StreamRef{Domain: "chat"}, Events: []session.Event{
 			ev("twilight/x/a", `{"a":1}`, 1),
 			ev("twilight/x/b", `{"b":[1,2]}`, 2),
 		}},
@@ -49,10 +49,10 @@ func TestLogFileGolden(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := w.Append(ctx, session.Proposal{CommitID: "c2", Batches: []session.StreamBatch{
-		{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []session.Event{
+		{Stream: session.StreamRef{Domain: "chat"}, Events: []session.Event{
 			ev("twilight/x/c", `{}`, 3),
 		}},
-		{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: "r7"}, Events: []session.Event{
+		{Stream: session.StreamRef{Domain: "run", ID: "r7"}, Events: []session.Event{
 			ev("twilight/run/created", `{"runId":"r7"}`, 3),
 		}},
 	}}); err != nil {

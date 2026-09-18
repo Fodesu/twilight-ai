@@ -61,8 +61,8 @@ func (m Machine) Apply(e extension.DecodedEvent) (Machine, error) { //nolint:goc
 	if !ok {
 		return m, fmt.Errorf("run machine: unexpected %T", e.Value)
 	}
-	if want := (session.StreamRef{Kind: session.StreamKindRun, ID: string(ev.RunID)}); e.Stream != want {
-		return m, fmt.Errorf("run machine: fact for %s arrived via stream %s/%s", ev.RunID, e.Stream.Kind, e.Stream.ID)
+	if want := Stream(ev.RunID); e.Stream != want {
+		return m, fmt.Errorf("run machine: fact for %s arrived via stream %s", ev.RunID, e.Stream)
 	}
 	out := m.clone()
 	var sch schema.Schema

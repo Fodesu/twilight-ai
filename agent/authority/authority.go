@@ -323,7 +323,7 @@ func (a *Authority) Close(ctx context.Context) error {
 
 // --- session lifecycle -------------------------------------------------------------
 
-// CreateSession creates the Session stream under the authority's Schema
+// CreateSession creates the Session under the authority's Schema
 // (AUTH-SCH-1); meta is the segment's creation metadata (zero for none), and
 // one declaring another Schema is refused.
 func (a *Authority) CreateSession(ctx context.Context, sid session.SessionID, meta jsonstable.Value) error {

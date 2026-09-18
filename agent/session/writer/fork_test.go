@@ -29,7 +29,7 @@ func TestForkWriterInheritsPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	withRef := func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c2", Batches: sessionBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "two", Refs: []string{"b1"}}})}, nil
+		return &SemanticGroup{CommitID: "c2", Batches: noteBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "two", Refs: []string{"b1"}}})}, nil
 	}
 	if res, err := parent.Commit(ctx, withRef); err != nil || res.Outcome != CommitApplied {
 		t.Fatalf("c2 = %+v %v", res, err)
@@ -115,7 +115,7 @@ func TestDeleteReleasesClaimsAndKeepsInheritedPrefix(t *testing.T) {
 	}
 	parent := f.open(t, false)
 	if _, err := parent.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c1", Batches: sessionBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "one", Refs: []string{"b1"}}})}, nil
+		return &SemanticGroup{CommitID: "c1", Batches: noteBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "one", Refs: []string{"b1"}}})}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestForkSagaAndDeleteIdempotency(t *testing.T) {
 	}
 	parent := f.open(t, false)
 	if _, err := parent.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c1", Batches: sessionBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "one", Refs: []string{"b1"}}})}, nil
+		return &SemanticGroup{CommitID: "c1", Batches: noteBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "one", Refs: []string{"b1"}}})}, nil
 	}); err != nil {
 		t.Fatal(err)
 	}

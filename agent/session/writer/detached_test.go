@@ -46,7 +46,7 @@ func TestProjectionReadsAreDetached(t *testing.T) {
 	commit := func(text string) {
 		t.Helper()
 		res, err := w.Commit(ctx, func(View) (*SemanticGroup, error) {
-			return &SemanticGroup{CommitID: session.CommitID(text), Batches: sessionBatch(TypedEvent{Type: tpfx("nested") + "note", Value: notePayload{Text: text}})}, nil
+			return &SemanticGroup{CommitID: session.CommitID(text), Batches: noteBatch(TypedEvent{Type: tpfx("nested") + "note", Value: notePayload{Text: text}})}, nil
 		})
 		if err != nil || res.Outcome != CommitApplied {
 			t.Fatalf("commit = %+v, %v", res, err)

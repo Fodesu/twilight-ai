@@ -164,12 +164,12 @@ func loadSurface(view writer.View) (TurnSurface, error) {
 	return surface, nil
 }
 
-// sessionBatch is one batch of Turn events in the session stream.
-func sessionBatch(now int64, events ...writer.TypedEvent) []writer.TypedBatch {
+// turnBatch is one batch of events in the Turn's stream.
+func turnBatch(turnID TurnID, now int64, events ...writer.TypedEvent) []writer.TypedBatch {
 	for i := range events {
 		events[i].RecordedAtUnixMilli = now
 	}
-	return []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: events}}
+	return []writer.TypedBatch{{Stream: Stream(turnID), Events: events}}
 }
 
 // --- Start ------------------------------------------------------------------------
@@ -213,7 +213,7 @@ func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req StartReque
 			if _, active := surface.Active(); active {
 				return nil, fmt.Errorf("%w: session already has an active turn", ErrConflict)
 			}
-			return sessionBatch(now,
+			return turnBatch(turnID, now,
 				writer.TypedEvent{Type: TypeStarted, Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, Preset: req.Preset}},
 				writer.TypedEvent{Type: TypeAttemptStarted, Value: AttemptStartedPayload{TurnID: turnID, RunID: runID, Attempt: 1}},
 			), nil
@@ -343,7 +343,7 @@ func (c *Coordinator) Retry(ctx context.Context, w writer.Writer, req RetryReque
 			if len(cur.InputIDs) != len(inputs) {
 				return nil, fmt.Errorf("%w: inputs of turn %s changed during retry", ErrConflict, turnID)
 			}
-			return sessionBatch(now, writer.TypedEvent{Type: TypeAttemptStarted,
+			return turnBatch(turnID, now, writer.TypedEvent{Type: TypeAttemptStarted,
 				Value: AttemptStartedPayload{TurnID: turnID, RunID: runID, Attempt: attempt}}), nil
 		}),
 		runmod.CreateRun(newRun, inputs),
@@ -415,7 +415,7 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest
 	}
 	work := unit.Work{CommitID: session.CommitID(env.ID), Parts: []unit.Part{cancel,
 		unit.PartFunc(func(_ context.Context, _ writer.View, now int64) ([]writer.TypedBatch, error) {
-			return sessionBatch(now, writer.TypedEvent{Type: TypeFailed,
+			return turnBatch(turnID, now, writer.TypedEvent{Type: TypeFailed,
 				Value: FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementStopped, FailureClass: "cancelled"}}), nil
 		}),
 	}}
@@ -453,7 +453,7 @@ func (c *Coordinator) Settle(ctx context.Context, w writer.Writer, req SettleReq
 			if !ok || cur.Status != TurnAttemptFailed || cur.LastAttempt().RunID != runID {
 				return nil, fmt.Errorf("%w: turn %s is not attempt_failed", ErrConflict, turnID)
 			}
-			return sessionBatch(now, writer.TypedEvent{Type: TypeFailed,
+			return turnBatch(turnID, now, writer.TypedEvent{Type: TypeFailed,
 				Value: FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementFailed, FailureClass: req.FailureClass}}), nil
 		}),
 	}}

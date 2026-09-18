@@ -172,7 +172,7 @@ func (h *harness) submitInputs(inputs ...run.AgentInput) {
 	for _, in := range inputs {
 		h.seq++
 		h.mustApply(writer.SemanticGroup{CommitID: session.CommitID(fmt.Sprintf("submitted/%s/%d", in.ID, h.seq)),
-			Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{{
+			Batches: []writer.TypedBatch{{Stream: chatlog.Stream, Events: []writer.TypedEvent{{
 				Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: 1,
 				Value: chatlog.InputSubmittedPayload{InputID: chatlog.InputID(in.ID), Content: inputContent(in.ID), SubmittedAtUnixMilli: 1}}}}}})
 	}
@@ -196,19 +196,20 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	for i, in := range inputs {
 		ids[i] = chatlog.InputID(in.ID)
 	}
-	var sessionEvents []writer.TypedEvent
+	var turnEvents []writer.TypedEvent
 	if attempt == 1 {
-		sessionEvents = append(sessionEvents, writer.TypedEvent{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
+		turnEvents = append(turnEvents, writer.TypedEvent{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
 			Value: turn.StartedPayload{TurnID: turnID, InputIDs: ids, Preset: turn.PresetRef{ID: "b", Digest: "sha256:b"}}})
 	}
 	// The Coordinator announces every attempt, initial or retry, with
 	// turn/attempt_started; it is what routes the Run's run_ended to the
 	// attempt it settles (TRN-PRJ-1).
-	sessionEvents = append(sessionEvents, writer.TypedEvent{Type: turn.TypeAttemptStarted, RecordedAtUnixMilli: 1,
+	turnEvents = append(turnEvents, writer.TypedEvent{Type: turn.TypeAttemptStarted, RecordedAtUnixMilli: 1,
 		Value: turn.AttemptStartedPayload{TurnID: turnID, RunID: runID, Attempt: attempt}})
+	var chatEvents []writer.TypedEvent
 	if attempt == 1 {
 		for _, id := range ids {
-			sessionEvents = append(sessionEvents, writer.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: 1,
+			chatEvents = append(chatEvents, writer.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: 1,
 				Value: chatlog.InputDeliveredPayload{InputID: id, TurnID: chatlog.TurnID(turnID)}})
 		}
 	}
@@ -216,11 +217,13 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	for _, f := range facts {
 		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(schema.V1().Wire, f), RecordedAtUnixMilli: 1, Value: runmod.Event{RunID: runID, Fact: f}})
 	}
-	group.Batches = []writer.TypedBatch{}
-	if len(sessionEvents) > 0 {
-		group.Batches = append(group.Batches, writer.TypedBatch{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: sessionEvents})
+	// One batch per stream: the Turn's, the chatlog's when inputs are
+	// delivered, and the Run's.
+	group.Batches = []writer.TypedBatch{{Stream: turn.Stream(turnID), Events: turnEvents}}
+	if len(chatEvents) > 0 {
+		group.Batches = append(group.Batches, writer.TypedBatch{Stream: chatlog.Stream, Events: chatEvents})
 	}
-	group.Batches = append(group.Batches, writer.TypedBatch{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: string(runID)}, Events: runEvents})
+	group.Batches = append(group.Batches, writer.TypedBatch{Stream: runmod.Stream(runID), Events: runEvents})
 	return group
 }
 
@@ -259,13 +262,15 @@ func (h *harness) proto(runID run.RunID) schema.Schema {
 }
 
 // moduleEvent is another module's event a test commits in the same unit as
-// a Run command: the Turn or the chatlog contributing its Part.
+// a Run command: the chatlog contributing its Part.
 type moduleEvent struct {
 	Type  session.EventType
 	Value any
 }
 
-// attachPart writes moduleEvents to the session stream as one Part.
+// attachPart writes moduleEvents to the chatlog stream as one Part: the
+// harness attaches what the chatlog contributes, so an event of another
+// domain is refused by the Writer's stream check.
 type attachPart []moduleEvent
 
 func (a attachPart) Prepare(_ context.Context, _ writer.View, now int64) ([]writer.TypedBatch, error) {
@@ -273,7 +278,7 @@ func (a attachPart) Prepare(_ context.Context, _ writer.View, now int64) ([]writ
 	for i, me := range a {
 		events[i] = writer.TypedEvent{Type: me.Type, RecordedAtUnixMilli: now, Value: me.Value}
 	}
-	return []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: events}}, nil
+	return []writer.TypedBatch{{Stream: chatlog.Stream, Events: events}}, nil
 }
 
 // commitResult is a Run command's result plus the sealed commit it landed in.

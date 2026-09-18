@@ -20,8 +20,8 @@ type countPayload struct {
 
 func countModule() extension.ModuleDescriptor {
 	typ := tpfx("q") + "row"
-	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "q",
-		Events: []extension.EventDefinition{{Type: typ, Stream: extension.SessionStream,
+	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "q", Streams: noteStreams(),
+		Events: []extension.EventDefinition{{Type: typ, Stream: noteDomain,
 			Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[countPayload]{}}}},
 		Projections: []extension.ProjectionDefinition{{
 			ID: extension.ProjectionID(string(typ) + "s"), Version: 1, Consumes: []session.EventType{typ},
@@ -75,7 +75,7 @@ func retainedOnReopen(t *testing.T, commits int) uint64 {
 	}
 	for i := 0; i < commits; i++ {
 		group := &SemanticGroup{CommitID: session.CommitID(fmt.Sprintf("c%d", i)),
-			Batches: sessionBatch(TypedEvent{Type: tpfx("q") + "row", Value: countPayload{Text: fmt.Sprintf("t%d", i)}})}
+			Batches: noteBatch(TypedEvent{Type: tpfx("q") + "row", Value: countPayload{Text: fmt.Sprintf("t%d", i)}})}
 		if _, err := w.Commit(ctx, func(View) (*SemanticGroup, error) { return group, nil }); err != nil {
 			t.Fatal(err)
 		}

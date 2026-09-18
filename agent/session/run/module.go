@@ -23,7 +23,17 @@ const (
 	ModuleID extension.ModuleID = "run"
 	// Prefix is the EventType namespace of every Run fact.
 	Prefix session.EventType = "twilight/run/"
+	// StreamDomain is the stream domain of Run facts: one keyed stream per
+	// Run, bound by the payload's runId.
+	StreamDomain = "run"
 )
+
+// streamDefinition declares the run domain: keyed by RunID and of segment
+// lineage, so a fork or Advance never reads an ancestor's Runs as its own.
+var streamDefinition = extension.StreamDefinition{Domain: StreamDomain, IDField: "runId", Lineage: session.LineageSegment}
+
+// Stream is the logical stream of one Run's facts.
+func Stream(runID run.RunID) session.StreamRef { return streamDefinition.Ref(string(runID)) }
 
 // factNames is the closed list of fact discriminators, from the Run core's
 // variant registry: a fact the core knows is a wire type this module
@@ -141,11 +151,12 @@ var one uint32 = 1
 var Module = buildModule()
 
 func buildModule() extension.ModuleDescriptor {
-	m := extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: ModuleID, Projections: []extension.ProjectionDefinition{MachineProjection}}
+	m := extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: ModuleID,
+		Streams: []extension.StreamDefinition{streamDefinition}, Projections: []extension.ProjectionDefinition{MachineProjection}}
 	for _, name := range factNames {
 		def := extension.EventDefinition{
 			Type:   Prefix + session.EventType(name),
-			Stream: extension.RunStream("runId"),
+			Stream: StreamDomain,
 			Codecs: map[extension.SchemaVersion]extension.PayloadCodec{
 				extension.SchemaVersion(run.SchemaVersion1): factCodec{local: name, wire: schema.V1().Wire},
 			},

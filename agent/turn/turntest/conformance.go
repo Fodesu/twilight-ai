@@ -47,7 +47,7 @@ func testStart(t *testing.T, factory Factory) {
 	submitted := h.submit("in-1", "in-2")
 	before := h.head()
 
-	// TRN-STR-1: every rejection leaves the stream untouched.
+	// TRN-STR-1: every rejection leaves the ledger untouched.
 	altered := input("in-1")
 	altered.Digest = "sha256:changed"
 	rejects := []struct {
@@ -67,7 +67,7 @@ func testStart(t *testing.T, factory Factory) {
 		}
 	}
 	if h.head() != before {
-		t.Fatal("a rejected Start wrote to the stream")
+		t.Fatal("a rejected Start wrote to the ledger")
 	}
 
 	// TRN-STR-2/3: one atomic group in the specified order under the derived
@@ -301,7 +301,7 @@ func testRetry(t *testing.T, factory Factory) {
 	if len(view.Attempts) != 2 || view.Attempts[0].End == nil || view.Attempts[1].End != nil || view.ActiveRun != run2 || len(view.InputIDs) != 2 {
 		t.Fatalf("attempts after retry = %+v", view.Attempts)
 	}
-	// TRN-RTY-3: nothing of the failed attempt left the stream.
+	// TRN-RTY-3: nothing of the failed attempt left the ledger.
 	if len(h.rows()) != rowsBefore+len(group) {
 		t.Fatalf("retry changed earlier rows: %d -> %d", rowsBefore, len(h.rows()))
 	}
@@ -505,7 +505,7 @@ func testProjection(t *testing.T, factory Factory) {
 		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(schema.V1().Wire, f), RecordedAtUnixMilli: h.now, Value: runmod.Event{RunID: "r-foreign", Fact: f}})
 	}
 	h.mustApply(writer.SemanticGroup{CommitID: "foreign-run", Batches: []writer.TypedBatch{
-		{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: "r-foreign"}, Events: runEvents},
+		{Stream: runmod.Stream("r-foreign"), Events: runEvents},
 	}})
 	surface := h.surface()
 	if len(surface.Turns) != 1 || surface.RunOwner["r-foreign"] != "" {
@@ -520,21 +520,22 @@ func testProjection(t *testing.T, factory Factory) {
 	}
 	h.appCancel(resp.RunID)
 	h.mustApply(writer.SemanticGroup{CommitID: "settle-t1", Batches: []writer.TypedBatch{
-		{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{failed("t1", turn.SettlementFailed)}},
+		{Stream: turn.Stream("t1"), Events: []writer.TypedEvent{failed("t1", turn.SettlementFailed)}},
 	}})
 	before := h.head()
 	rejects := []struct {
-		name  string
-		event writer.TypedEvent
+		name   string
+		turnID turn.TurnID
+		event  writer.TypedEvent
 	}{
-		{"started twice", writer.TypedEvent{Type: turn.TypeStarted, RecordedAtUnixMilli: h.now,
+		{"started twice", "t1", writer.TypedEvent{Type: turn.TypeStarted, RecordedAtUnixMilli: h.now,
 			Value: turn.StartedPayload{TurnID: "t1", Preset: preset}}},
-		{"failed for an unknown turn", failed("ghost", turn.SettlementFailed)},
-		{"settled twice", failed("t1", turn.SettlementStopped)},
+		{"failed for an unknown turn", "ghost", failed("ghost", turn.SettlementFailed)},
+		{"settled twice", "t1", failed("t1", turn.SettlementStopped)},
 	}
 	for i, tc := range rejects {
 		res := h.commit(writer.SemanticGroup{CommitID: session.CommitID("reject-" + string(rune('a'+i))), Batches: []writer.TypedBatch{
-			{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{tc.event}},
+			{Stream: turn.Stream(tc.turnID), Events: []writer.TypedEvent{tc.event}},
 		}})
 		if res.Outcome != writer.CommitInvalid {
 			t.Fatalf("%s: outcome = %s, want invalid", tc.name, res.Outcome)

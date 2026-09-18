@@ -67,7 +67,7 @@ type View interface {
 	// to, whose metadata declares the Schema and whatever else the module
 	// layer recorded when the segment was created (SES-ADV-1).
 	Header() session.SegmentHeader
-	// Committed reports whether a commit is already in the stream. It is
+	// Committed reports whether a commit is already in the ledger. It is
 	// answered from an index the kernel already keeps, without touching storage.
 	Committed(session.CommitID) bool
 	// LookupCommit returns the sealed commit. It comes from storage when the
@@ -118,7 +118,7 @@ type Writer interface {
 	// Schema (EXT-WRT-10, SES-ADV-1); see advance.go.
 	Advance(context.Context, AdvanceFn) (AdvanceResult, error)
 	Projections() extension.ProjectionReader
-	// OwnerExists reports whether a CommitID is in this stream; artifact's
+	// OwnerExists reports whether a CommitID is in this ledger; artifact's
 	// reconciliation uses it through artifact.OwnerVerifier.
 	OwnerExists(context.Context, artifact.ClaimOwner) (bool, error)
 	Close(context.Context) error

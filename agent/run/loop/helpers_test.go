@@ -102,7 +102,7 @@ func (s *testStack) createRun(t testing.TB, runID RunID, inputs ...AgentInput) {
 		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(schema.V1().Wire, f), Value: runmod.Event{RunID: runID, Fact: f}})
 	}
 	group := &writer.SemanticGroup{CommitID: session.CommitID("create/" + string(runID)),
-		Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: string(runID)}, Events: runEvents}}}
+		Batches: []writer.TypedBatch{{Stream: runmod.Stream(runID), Events: runEvents}}}
 	w, err := s.writers.Writer(context.Background(), testSession)
 	if err != nil {
 		t.Fatal(err)

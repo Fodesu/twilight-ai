@@ -51,12 +51,13 @@ type EventDefinition struct {
     Bindings []BindingReferenceDefinition
     // Ignorable 为真的事件被解码不出它的投影跳过（EXT-PRJ-2）；wire 上不携带该标记。
     Ignorable bool
-    Stream StreamPolicy // 流归属（EXT-STR-1）
+    Stream string // 该事件所属的流 domain，须是本模块 Streams 中声明的一个（EXT-STR-1）
 }
 type ModuleDescriptor struct {
     Source SourceID
     ID ModuleID
     Requires []ModuleRequirement
+    Streams []StreamDefinition // 本模块拥有的流 domain（EXT-STR-1）
     Events []EventDefinition
     Projections []ProjectionDefinition
 }
@@ -113,17 +114,20 @@ type DecodedEvent struct {
     Unknown bool
 }
 
-type StreamPolicy struct {
-    Kind session.StreamKind // session | run
-    IDField string          // run only: payload 内绑定 RunID 的字段名
+type StreamDefinition struct {
+    Domain string                 // 流 domain，整个 Registry 内唯一；kernel 不命名任何 domain
+    IDField string                // 空为单例流，batch 的 stream ID 必须为空；非空为键控流，payload 内该字段的值即 batch 的 stream ID
+    Lineage session.StreamLineage // fork 与 Advance 之后子如何读该 domain 的流（SES-FRK-5）
 }
+func (StreamDefinition) Ref(id string) session.StreamRef                        // 该 domain 下的一条流坐标
+func (*Registry) LookupStream(domain string) (ModuleKey, StreamDefinition, bool) // domain 的拥有者与声明
 ```
 
 **EXT-COD-1** codec、Validate、Binding extraction 必须纯、确定、无 IO。Decode wire-first。Encode/Decode 拒绝 nil、typed nil、kind mismatch、未知 kind 与非 canonical value。有效值满足 `Encode → Decode → Encode` 的 canonical round-trip；该性质是模块的测试义务（每个注册事件类型一条往返断言），Registry 的 Encode 不在运行期重验。
 
 **EXT-COD-2** 已提交事件的 payload 保持原始 canonical bytes。`v` 由 Registry 在 Encode 后加入、Decode 前取出；payload 的其他第一层字段不得命名为 `v`。
 
-**EXT-STR-1** 每个事件类型通过 EventDefinition.Stream 声明 StreamPolicy：Kind 为 session 或 run；run 事件必须给出 IDField（payload 内绑定 stream ID 的字段名），session 事件不得带 IDField；IDField 不得为 `v`：该键由 Registry 在 Encode 后写入 payload 第一层记录 payload 版本（EXT-COD-2），同名的绑定字段读到的是版本号。Writer 在 encode 时强制校验：事件放入 Kind 不匹配的 batch 即拒绝整个 group；run 事件另校验 payload 的 IDField 非空且等于 batch 的 stream ID。kernel 保持 payload 不透明，校验只在 writer 层执行；BuildRegistry 验证声明本身（缺 Kind、run 缺 IDField、session 带 IDField、IDField 为 `v` 均为装配错误）。写侧强制后，投影按 EventType 折叠即不可能跨 stream 读到外来事件，fold 侧无需再查。
+**EXT-STR-1（流 domain 由模块声明）** 逻辑流的 domain 由模块在 `ModuleDescriptor.Streams` 中声明，每个 domain 恰由一个模块拥有，kernel 不命名任何 domain（SES-WIR-1 只校验 `StreamRef` 的形状）。`StreamDefinition` 给出 `Domain`、`IDField` 与 `Lineage`：`IDField` 为空是单例流，batch 的 stream ID 必须为空；非空是键控流，payload 内该字段的值必须等于 batch 的 stream ID；`IDField` 不得为 `v`，该键由 Registry 写入 payload 第一层记录 payload 版本。每个事件类型通过 `EventDefinition.Stream` 命名本模块声明的一个 domain。`BuildRegistry` 验证声明：domain 为空或含 `/`、同一模块内或跨模块重复声明、`IDField` 为 `v`、`Lineage` 缺失或未知、事件未命名 domain、事件命名的 domain 未由本模块声明，均为装配错误；`Registry.LookupStream(domain)` 返回 domain 的拥有者与声明。Writer 在 encode 时按声明校验每个 batch：事件的 domain 与 batch 的 domain 不同、单例流的 batch 带 ID、键控流的 batch 无 ID、payload 的 `IDField` 缺失或不等于 batch 的 stream ID，均拒绝整个 group。kernel 保持 payload 不透明，校验只在 writer 层执行。写侧强制后，投影按 EventType 折叠即不可能跨 stream 读到外来事件，fold 侧无需再查。第一方模块的声明：chatlog 为单例 domain `chatlog`（`LineageSession`）；turn 为 domain `turn`（`IDField` 为 `turnId`，`LineageSession`）；run 为 domain `run`（`IDField` 为 `runId`，`LineageSegment`）。
 
 ## 4. Binding reference declaration 与 admission
 
@@ -169,7 +173,7 @@ type View interface {
     Header() session.SegmentHeader                                // tip 段的 header
     Committed(session.CommitID) bool                              // 只问是否已提交，不读 commit
     LookupCommit(session.CommitID) (session.Commit, bool, error) // 还要该 commit 的全部 batch
-    StreamHead(session.StreamRef) (session.StreamSeq, bool)     // 本 Session 是否写过该逻辑 stream，及下一条的 StreamSeq（kernel 索引）
+    StreamHead(session.StreamRef) (session.StreamSeq, bool)     // tip 段是否写过该逻辑流，及下一条的 StreamSeq（kernel 索引，SES-FRK-5）
     Projection(ProjectionID, ProjectionVersion) (any, error)      // 折叠到当前 head 的状态
 }
 type CommitFn func(View) (*SemanticGroup, error) // nil 表示不写
@@ -217,7 +221,7 @@ func OpenWriter(ctx, store session.Store, registry *Registry, admission Admissio
 
 **EXT-WRT-2** 幂等：fn 返回的 group 若 CommitID 已提交（`View.Committed`，命中才取行，fork 的继承前缀计入），先看 intent：`SemanticGroup.Intent` 与已提交 commit 的 `Intent` 都非空时，相同返回 `AlreadyApplied` 与原 commit，不同返回 `Conflict`，不需要重建事件；任一方未声明 intent 时比对 fingerprint（CommitID、各 batch 的 stream 与其事件 Type、Payload 的有序序列，不含时间，也不含 SessionID：CommitID 索引本身按 Session 隔离，而继承前缀的 commit 由祖先 SessionID 封印，SES-FRK-3）。两者都不写入，也不做 admission 与 claim。`unit.Work.Intent` 是 unit of work 的 intent，必填：CommitID 命中时不准备任何 Part，直接按 intent 给出 already-applied 或 conflict（已提交 commit 没有 intent 时无法核对，同样为 conflict），因此 identity 有意不覆盖内容的 command 族（同一 attempt 的两次结算、同一 Turn 的两次 Settle）在内容不同时得到 conflict 而不是静默重放。跨 Schema 边界的重放：已提交 commit 在旧 Schema 下编码，重放的 group 在 tip 段的 Schema 下编码，两者的 payload 字节（含 `v`）不同，因此只靠 fingerprint 的重放为 `Conflict`；声明了 intent 的重放不受影响。
 
-**EXT-WRT-3** claim 顺序：group 含 Binding 时，Writer 在 `Append` 之前调用 `ledger.Activate(claimID, owner, set)`，让 stream 中的引用从提交开始就具有 retention root。`Append` 确认写入前拒绝时，Writer 调用 `ledger.ReleaseActive(claimID)` 尽力回收；结果未知、ownership 丢失或 CommitID 冲突时保留 Active claim。`OpenWriter` 重建日志后核对 owner commit：已提交的 claim 保持 Active，未提交的孤儿 claim 被释放（ART-RET-3）。
+**EXT-WRT-3** claim 顺序：group 含 Binding 时，Writer 在 `Append` 之前调用 `ledger.Activate(claimID, owner, set)`，让 ledger 中的引用从提交开始就具有 retention root。`Append` 确认写入前拒绝时，Writer 调用 `ledger.ReleaseActive(claimID)` 尽力回收；结果未知、ownership 丢失或 CommitID 冲突时保留 Active claim。`OpenWriter` 重建日志后核对 owner commit：已提交的 claim 保持 Active，未提交的孤儿 claim 被释放（ART-RET-3）。
 
 **EXT-WRT-4** Writer 在两种情况下进入失效状态，本次与之后的 `Commit` 与 `Advance` 都返回同一错误：(a) `Append` 或 `Advance` 返回 `ErrOwnershipLost`——Session 级 fencing 在进程内的表现，调用方必须放弃该 Session 的执行，Runtime 与 Loop 对它的处理见 RUN-CMT-6；(b) `Append` 或 `Advance` 返回结果未知的错误（kernel 的 `ErrHandleFailed`、IO 错误或其他非验证性错误）——Writer 以 `ErrUnknownOutcome` 失效，因为它的 head 与投影状态可能已落后于日志一组，继续提交会给临时行赋 kernel 已用过的 Seq。(b) 的失效限于该实例：宿主经 `Writers` 再次请求即得到重开的 Writer（EXT-WRT-6），`OpenWriter` 从日志重建，同一 group 的重放由 kernel 的索引回答（落盘则 `AlreadyApplied`，未落盘则 `Applied`）。只有保证未写入的错误不致失效：kernel 的验证拒绝（`ErrInvalid`、`ErrNotFound`）与写入开始前的 ctx 错误；`ErrConflict` 按 EXT-WRT-2 报告为 `Conflict`。`Advance` 的失效规则见 EXT-WRT-10。
 
@@ -290,11 +294,11 @@ type ProjectionDefinition struct {
     Initial func() (any, error)
     Apply func(any, DecodedEvent) (any, error)
     StateCodec PayloadCodec
-    Inherits InheritPolicy // 从继承 commit 折叠哪些流（EXT-PRJ-8）
+    Inherits InheritPolicy // 从继承 commit 折叠哪些流，nil 按各 domain 声明的 Lineage（EXT-PRJ-8）
     Authoritative bool     // 折叠失败拒绝 commit（EXT-PRJ-9）
 }
 type ProjectionReader interface {
-    // through 是该状态覆盖的 stream head：Next 为下一未折叠行的 Seq，Digest 为最后一行的 digest。
+    // through 是该状态覆盖的 ledger head：Next 为下一未折叠行的 Seq，Digest 为最后一行的 digest。
     Load(ctx, sid session.SessionID, id ProjectionID, v ProjectionVersion) (state any, through session.Head, err error)
 }
 // ProjectionCache 是可选的派生缓存，随时可删；Memory 实现由本层提供。
@@ -329,7 +333,7 @@ func NewProjectionReader(store session.Store, registry *Registry, cache Projecti
 
 **EXT-PRJ-7** 缓存是派生数据，写入尽力而为：`Save` 失败只让下次多折，不影响 Commit 结果。刷新在 Writer 的互斥区之外执行：策略判定与状态快照在区内完成（状态按 EXT-PRJ-1 不可变，快照即引用），编码与 `Save` 在解锁后进行，因此缓存 IO 不延长事务边界，与后续提交也没有顺序约束。区间是部署参数而非常量：`CacheEvery(n)` 的 `n` 由部署给出，`n <= 0` 才取 `DefaultCacheEvery`，且必须能在不改代码的情况下调整：宿主层把它暴露为 `Ports.CacheEvery`（APP-MEM-2），换值即换代价，不必重编译。间距给出可依赖的代价上界——进程异常结束后续折不超过 `n` 行，干净 `Close` 后为零；`Close` 的刷新同样受策略约束，因此被 `Exclude` 的投影在关闭时也不会被写入。
 
-**EXT-PRJ-8（继承策略）** `ProjectionDefinition.Inherits` 是按逻辑流判定的谓词 `InheritPolicy func(session.StreamRef) bool`，声明投影从 fork 继承前缀中折叠哪些流。nil 等于 `InheritSemantic`：继承 commit（`Seq <= header.Parent.Seq`，fork 与 Advance 产生的边同样判定）只折叠 session 流批次，其他流的批次跳过；`InheritAll`：继承 commit 的全部批次都折叠；`InheritStreams(kinds...)` 折叠列出的流种类，新增流种类的模块由此为自己的流声明 fork 语义，不再靠 session/run 二分特判。tip 段的 commit 总是全部折叠。`Registry.FoldFrom(scope, state, commits, header)` 以 Session 的 tip header 判定继承边界，`Writer.rebuild`、Advance 的重折（EXT-WRT-10）与 `ProjectionReader` 都经它折叠；`Fold` 等价于无 Parent 的 `FoldFrom`，用于只含 tip commit 的折叠（provisional group）。默认值使执行状态投影（`twilight/run` 的 Machine）不把父的 Run 当作子的执行（SES-FRK-5）；chatlog 的 Surface/Context 与 turn 的 Surface 声明 `InheritAll`，因为它们的语义内容（assistant、tool_result、attempt 结算）来自 run 事实。app module 不声明时得到默认值。
+**EXT-PRJ-8（继承策略）** `ProjectionDefinition.Inherits` 是按逻辑流判定的谓词 `InheritPolicy func(session.StreamRef) bool`，声明投影从 fork 继承前缀中折叠哪些流。nil 为按声明的 lineage 继承：继承 commit（`Seq <= header.Parent.Seq`，fork 与 Advance 产生的边同样判定）只折叠 domain 声明为 `LineageSession` 的流批次，`LineageSegment` domain 的批次跳过（经 `Registry.LookupStream` 查声明）；`InheritAll`：继承 commit 的全部批次都折叠；`InheritStreams(domains...)` 折叠列出的 domain。fork 语义由此随 domain 的声明进入投影，Registry 不含任何 domain 的特判。tip 段的 commit 总是全部折叠。`Registry.FoldFrom(scope, state, commits, header)` 以 Session 的 tip header 判定继承边界，`Writer.rebuild`、Advance 的重折（EXT-WRT-10）与 `ProjectionReader` 都经它折叠；`Fold` 等价于无 Parent 的 `FoldFrom`，用于只含 tip commit 的折叠（provisional group）。默认值使执行状态投影（`twilight/run` 的 Machine）不把父的 Run 当作子的执行（SES-FRK-5）；chatlog 的 Surface/Context 与 turn 的 Surface 声明 `InheritAll`，因为它们的语义内容（assistant、tool_result、attempt 结算）来自 run 事实。app module 不声明时得到默认值。
 
 **EXT-PRJ-9（authoritative 与 derived）** 投影是 `Facts -> View` 的读模型，不是写入校验器：写入时的不变量由 unit of work 的各 Part 在同一 View 上判定（SES-ATM）。`ProjectionDefinition.Authoritative` 标出命令在 Writer 的 View 上据以规划、且其 fold 守护自身流不变量的投影——`twilight/run/machine`、`twilight/turn/surface`、`twilight/chatlog/surface` 与 `context`——它们对 provisional commit 的 fold 失败使 commit 为 `invalid`，这表示 Part 与投影不一致的缺陷，而不是业务拒绝。其余投影是 derived read model：fold 失败不阻止事实落盘，该投影在本 Writer 生命周期内标记为不健康（状态停在最后一次成功的 commit，`View.Projection` / `Writers.Projections()` 读取返回 `ErrProjectionUnhealthy`，缓存不再为它刷新）。`OpenWriter` 的重建同样：derived 投影折不过 log 时折到最后一个成功的 commit 并标记不健康，Session 照常打开；只有 authoritative 投影折不过 log 才使 `OpenWriter` 失败。一个 extension 的缺陷因此既不能让 Session 不可写，也不能让它下次打不开。`Authoritative` 是能力而不是自我声明：它取决于模块如何进入 registry。`BuildRegistry(protocol, modules...)` 的模块全部由调用方担保为可信 core；`BuildRegistryWithExtensions(protocol, core, extensions)` 中的 extension 不得声明 `Authoritative`，也不得使用 `SourceTwilight`，因此 descriptor 无法为自己伪造第一方身份。Authority 以 first-party 三模块为 core、`Ports.Modules` 为 extensions 构建。chatlog 的 Context 投影保持 authoritative，因为 `chatlog.Commands.Checkpoint` 在提交临界区内读它计算 base digest。
 
@@ -356,11 +360,12 @@ v1 conformance 必须验证：
 - **EXT-WRT-7**：每个 applied group 恰通知一次、行与日志一致、顺序与 Seq 一致（含并发提交）；被拒与重放不通知；观察者 panic 不影响 Commit；
 - **EXT-WRT-1 至 5**：OpenWriter 后投影等于全量 fold 且 Writer 不保留日志（重开后常驻内存不随日志长度增长）；同 CommitID 重放 AlreadyApplied、不同内容 Conflict、两者无写入；并发调用方串行且各自看到前一次的结果；claim 先于 append，已确认写入前拒绝时释放 claim，结果未知时保持 Active 至重开核对；`ErrOwnershipLost` 后 Writer 失效；Append 在底层持久化之后返回错误时 Writer 以 `ErrUnknownOutcome` 失效、重开后同一 group 为 `AlreadyApplied`，claim 保持 Active，后续 Seq 连续、链完整；Append 在写入之前发生结果未知的错误时，重开核对释放孤儿 claim；同一提交经历多次写入前失败与重开后，通过后继 claim 成功提交且仅保留一个 Active root；owner 或 BindingSet 冲突时拒绝派生后继；
 - **EXT-PRJ-1 至 4**：pure fold、组边界、Consumes 与范围外跳过、Ignorable 与非 Ignorable 的 Unknown、缓存复用条件、Writer 内投影与 Store 读取一致；修改 `Projections().Load` 或 `View.Projection` 返回的嵌套状态后，后续读取与提交仍保持原事实流的投影。
-- **EXT-PRJ-8**：默认继承策略下继承 commit 的非 session 流批次不进入折叠、tip commit 全部折叠；`InheritAll` 折叠继承 commit 的全部批次；Writer 与 ProjectionReader 对同一 fork 折出相同状态；
+- **EXT-STR-1**：未声明的 domain、他模块的 domain、重复的 domain、`IDField` 为 `v`、缺失或未知的 `Lineage` 使 `BuildRegistry` 失败；事件放入其他 domain 的 batch、单例流的 batch 带 ID、键控流的 batch 无 ID 或 payload 绑定字段不匹配的 group 被 Writer 拒绝；
+- **EXT-PRJ-8**：默认继承策略下继承 commit 中 `LineageSegment` domain 的批次不进入折叠、tip commit 全部折叠；`InheritAll` 折叠继承 commit 的全部批次；Writer 与 ProjectionReader 对同一 fork 折出相同状态；
 - **EXT-PRJ-9**：非 authoritative 投影的 fold 失败不阻止 commit，该投影此后读到 `ErrProjectionUnhealthy`、不再写缓存，authoritative 投影不受影响；authoritative 投影的 fold 失败使 commit 为 `invalid`；
 - **EXT-WRT-8（fail closed）**：前缀含 registry 不认识的事件类型、或声明 bindings 但解不出的 payload 版本时 Fork 被拒绝（`ErrUnsupported`），不建立 claim；
 - **EXT-WRT-8/9**：`Create` 确定失败后 fork claim 不存在；重复 Delete 返回 nil 且释放全部 claim；
-- **EXT-WRT-10**：Advance 成功后 `Header`/`Schema` 指向新段、后续 commit 以新 Schema 编码、投影按继承策略重折（默认策略下旧 run 流不进入、`InheritAll` 全进入）且重开后相同；fn 返回 nil 为 Noop；Schema 0、`Metadata` 声明他值、bootstrap CommitID 为空、重复或已提交、authoritative 投影拒绝均为 `AdvanceInvalid` 且 tip 不动；目标 Schema 无 codec 为 `ErrUnsupported`；history 为空被拒；Store 的 head 与 Writer 不一致时以 `ErrOwnershipLost` 失效；bootstrap 为空时不写缓存条目，非空时条目落在新段的自身 commit 上；每个 bootstrap commit 通知观察者一次；
+- **EXT-WRT-10**：Advance 成功后 `Header`/`Schema` 指向新段、后续 commit 以新 Schema 编码、投影按继承策略重折（默认策略下前一段 `LineageSegment` domain 的流不进入、`InheritAll` 全进入）且重开后相同；fn 返回 nil 为 Noop；Schema 0、`Metadata` 声明他值、bootstrap CommitID 为空、重复或已提交、authoritative 投影拒绝均为 `AdvanceInvalid` 且 tip 不动；目标 Schema 无 codec 为 `ErrUnsupported`；history 为空被拒；Store 的 head 与 Writer 不一致时以 `ErrOwnershipLost` 失效；bootstrap 为空时不写缓存条目，非空时条目落在新段的自身 commit 上；每个 bootstrap commit 通知观察者一次；
 - **EXT-PRJ-5 至 7**：干净 Close 后重开不折任何 event；落在继承 commit 或继承边界上的条目不被复用，没有自身 commit 的 tip 在 Close 时不写条目；条目只覆盖前缀时只折尾部；日志越界、digest 不符、落在组内、状态不可解码的条目一律回退为全折且不使 Open 失败；被策略排除的投影不被写入，但它已有的条目仍被复用；`CacheEvery(n)` 下条目落后不超过 n 行；未配置缓存时不写任何条目且行为不变。
 
 ## 8. Application module
@@ -371,6 +376,6 @@ Application 在自己的代码里定义 `ModuleDescriptor`（自有 Source 下�
 
 **EXT-APP-2（隔离）** EXT-PRJ-2 的范围规则双向保护：first-party 投影对 app 模块（范围外）的事件一律跳过；app 投影对未列入其 `Requires` 的模块同样跳过。app module 未注册时，其历史事件对所有投影是范围外事件，按 EXT-REG-3 保留原始 payload、不参与折叠。
 
-**EXT-APP-3（适用判据）** 需要"持久、可重放、参与投影"的事实才建 module；工具、模型、系统提示、prompt builder、观测 sink 走既有接口扩展点（宿主层的 AgentPreset 与 Executor、EventSink、Store adapter），不进 Session 流。
+**EXT-APP-3（适用判据）** 需要"持久、可重放、参与投影"的事实才建 module；工具、模型、系统提示、prompt builder、观测 sink 走既有接口扩展点（宿主层的 AgentPreset 与 Executor、EventSink、Store adapter），不进 Session ledger。
 
 模块以 Go 值直接传入 `BuildRegistry`；把多个 Source 的 ModuleDescriptor 与 artifact SchemeDefinition 组合为只读索引的通用 `Catalog` 不在本层的职责内。

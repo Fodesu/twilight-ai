@@ -63,8 +63,8 @@ func cacheModule(c *applyCounter) extension.ModuleDescriptor {
 			StateCodec: extension.JSONStateCodec[noteState]{},
 		}
 	}
-	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "k",
-		Events:      []extension.EventDefinition{{Type: typ, Stream: extension.SessionStream, Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
+	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "k", Streams: noteStreams(),
+		Events:      []extension.EventDefinition{{Type: typ, Stream: noteDomain, Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
 		Projections: []extension.ProjectionDefinition{mk(alphaID), mk(betaID)}}
 }
 
@@ -107,7 +107,7 @@ func (f *cacheFixture) commit(t testing.TB, w Writer, id string, texts ...string
 		for _, tx := range texts {
 			events = append(events, TypedEvent{Type: tpfx("k") + "row", Value: notePayload{Text: tx}})
 		}
-		g.Batches = sessionBatch(events...)
+		g.Batches = noteBatch(events...)
 		return g, nil
 	})
 	if err != nil {

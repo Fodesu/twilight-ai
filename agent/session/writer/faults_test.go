@@ -97,7 +97,7 @@ func TestWriterReconcilesClaimsAfterAppendFailure(t *testing.T) {
 				t.Fatal(err)
 			}
 			group := func(View) (*SemanticGroup, error) {
-				return &SemanticGroup{CommitID: "c1", Batches: sessionBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}})}, nil
+				return &SemanticGroup{CommitID: "c1", Batches: noteBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "file", Refs: []string{"b1"}}})}, nil
 			}
 			assertClaim := func(want artifact.ClaimState) {
 				t.Helper()

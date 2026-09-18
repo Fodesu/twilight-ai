@@ -27,7 +27,7 @@ func testAdvance(t *testing.T, f Fixture) {
 	var a []session.Commit
 	for i := 0; i < 3; i++ {
 		a = append(a, appendCommit(t, aw, "a"+string(rune('0'+i)),
-			batch(sessionStream(), "twilight/x/a", `{"n":`+string(rune('0'+i))+`}`),
+			batch(chatStream(), "twilight/x/a", `{"n":`+string(rune('0'+i))+`}`),
 			batch(runStream("r1"), "twilight/x/r", `{"n":`+string(rune('0'+i))+`}`)))
 	}
 	if _, ok := aw.StreamHead(runStream("r1")); !ok {
@@ -36,7 +36,7 @@ func testAdvance(t *testing.T, f Fixture) {
 
 	// A bootstrap CommitID already in the history is a conflict and nothing
 	// is published.
-	_, _, err := aw.Advance(ctx, session.AdvanceRequest{Bootstrap: []session.Proposal{{CommitID: "a1", Batches: []session.StreamBatch{batch(sessionStream(), "twilight/x/b", `{"n":0}`)}}}})
+	_, _, err := aw.Advance(ctx, session.AdvanceRequest{Bootstrap: []session.Proposal{{CommitID: "a1", Batches: []session.StreamBatch{batch(chatStream(), "twilight/x/b", `{"n":0}`)}}}})
 	if !session.IsCode(err, session.ErrConflict) {
 		t.Fatalf("advance with a known CommitID = %v, want conflict", err)
 	}
@@ -46,7 +46,7 @@ func testAdvance(t *testing.T, f Fixture) {
 
 	meta := jsonstable.MustParse(`{"schema":2}`)
 	headerB, sealed, err := aw.Advance(ctx, session.AdvanceRequest{CausationID: "migrate", Metadata: meta, Bootstrap: []session.Proposal{
-		{CommitID: "b0", Intent: "sha256:intent", Batches: []session.StreamBatch{batch(sessionStream(), "twilight/x/b", `{"n":0}`)}},
+		{CommitID: "b0", Intent: "sha256:intent", Batches: []session.StreamBatch{batch(chatStream(), "twilight/x/b", `{"n":0}`)}},
 		{CommitID: "b1", Batches: []session.StreamBatch{batch(runStream("r2"), "twilight/x/r", `{"n":1}`)}},
 	}})
 	if err != nil {
@@ -94,20 +94,20 @@ func testAdvance(t *testing.T, f Fixture) {
 	if n, ok := aw.StreamHead(runStream("r2")); !ok || n != 1 {
 		t.Fatalf("bootstrap run stream head = %d %v", n, ok)
 	}
-	if n, ok := aw.StreamHead(sessionStream()); !ok || n != 1 {
-		t.Fatalf("session stream head after advance = %d %v, want the bootstrap's 1", n, ok)
+	if n, ok := aw.StreamHead(chatStream()); !ok || n != 1 {
+		t.Fatalf("chat stream head after advance = %d %v, want the bootstrap's 1", n, ok)
 	}
 	if c, ok, err := aw.LookupCommit("a2"); err != nil || !ok || c.Digest != a[2].Digest {
 		t.Fatalf("lookup inherited after advance = %+v %v %v", c, ok, err)
 	}
-	c2 := appendCommit(t, aw, "c2", batch(sessionStream(), "twilight/x/c", `{"n":2}`))
+	c2 := appendCommit(t, aw, "c2", batch(chatStream(), "twilight/x/c", `{"n":2}`))
 	if c2.Seq != b1.Seq+1 || c2.PrevDigest != b1.Digest {
 		t.Fatalf("append after advance = %+v", c2)
 	}
-	// Session stream reads stitch across the boundary.
-	sp, err := store.ReadStream(ctx, session.StreamReadRequest{SessionID: "A", Stream: sessionStream()})
+	// A LineageSession read stitches across the boundary.
+	sp, err := store.ReadStream(ctx, session.StreamReadRequest{SessionID: "A", Stream: chatStream(), Lineage: session.LineageSession})
 	if err != nil || len(sp.Events) != 5 {
-		t.Fatalf("session stream after advance = %d events %v", len(sp.Events), err)
+		t.Fatalf("chat stream after advance = %d events %v", len(sp.Events), err)
 	}
 	_ = aw.Close(ctx)
 

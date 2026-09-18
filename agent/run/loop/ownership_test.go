@@ -141,7 +141,7 @@ func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 	for _, f := range recordFacts(t, stack.runtime, "run-1") {
 		switch f := f.(type) {
 		case ToolCallCompleted:
-			t.Fatalf("fenced settlement %s reached the stream", f.CallID)
+			t.Fatalf("fenced settlement %s reached the ledger", f.CallID)
 		case ToolCallFailed:
 			if f.Outcome != ToolOutcomeUnknown {
 				t.Fatalf("unexpected failure fact %+v", f)

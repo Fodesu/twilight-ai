@@ -30,8 +30,8 @@ func healthModule() extension.ModuleDescriptor {
 			StateCodec: extension.JSONStateCodec[noteState]{},
 		}
 	}
-	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "h",
-		Events:      []extension.EventDefinition{{Type: typ, Stream: extension.SessionStream, Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
+	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "h", Streams: noteStreams(),
+		Events:      []extension.EventDefinition{{Type: typ, Stream: noteDomain, Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
 		Projections: []extension.ProjectionDefinition{mk("h/authoritative", true), mk("h/derived", false)}}
 }
 
@@ -55,7 +55,7 @@ func TestDerivedProjectionFailureDoesNotBlockCommit(t *testing.T) {
 	}
 	commit := func(id, text string, only extension.ProjectionID) (CommitResult, error) {
 		return w.Commit(ctx, func(View) (*SemanticGroup, error) {
-			return &SemanticGroup{CommitID: session.CommitID(id), Batches: sessionBatch(TypedEvent{Type: tpfx("h") + "row", Value: notePayload{Text: text}})}, nil
+			return &SemanticGroup{CommitID: session.CommitID(id), Batches: noteBatch(TypedEvent{Type: tpfx("h") + "row", Value: notePayload{Text: text}})}, nil
 		})
 	}
 	if res, err := commit("c1", "one", ""); err != nil || res.Outcome != CommitApplied {
@@ -127,7 +127,7 @@ func TestDerivedProjectionFailureDoesNotBlockReopen(t *testing.T) {
 	}
 	for i, text := range []string{"one", "boom", "three"} {
 		res, err := w.Commit(ctx, func(View) (*SemanticGroup, error) {
-			return &SemanticGroup{CommitID: session.CommitID(fmt.Sprintf("c%d", i)), Batches: sessionBatch(TypedEvent{Type: tpfx("h") + "row", Value: notePayload{Text: text}})}, nil
+			return &SemanticGroup{CommitID: session.CommitID(fmt.Sprintf("c%d", i)), Batches: noteBatch(TypedEvent{Type: tpfx("h") + "row", Value: notePayload{Text: text}})}, nil
 		})
 		if err != nil || res.Outcome != CommitApplied {
 			t.Fatalf("c%d = %+v %v", i, res, err)
@@ -154,7 +154,7 @@ func TestDerivedProjectionFailureDoesNotBlockReopen(t *testing.T) {
 	}
 	// And the Session still writes.
 	if res, err := w.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c3", Batches: sessionBatch(TypedEvent{Type: tpfx("h") + "row", Value: notePayload{Text: "four"}})}, nil
+		return &SemanticGroup{CommitID: "c3", Batches: noteBatch(TypedEvent{Type: tpfx("h") + "row", Value: notePayload{Text: "four"}})}, nil
 	}); err != nil || res.Outcome != CommitApplied {
 		t.Fatalf("commit after reopen = %+v %v", res, err)
 	}

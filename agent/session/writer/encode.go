@@ -31,9 +31,10 @@ func bindingIDs(refs []bindingRef) []artifact.BindingID {
 }
 
 // encode is the pure stage of the pipeline: it validates and encodes every
-// event against the Registry under the segment's Schema (EXT-SCH-1), checks each batch's stream attribution against
-// the event type's StreamPolicy, extracts the artifact references the events
-// declare and returns the proposal batches. It touches no store.
+// event against the Registry under the segment's Schema (EXT-SCH-1), checks
+// each batch's stream attribution against the stream domain its event types
+// declare, extracts the artifact references the events declare and returns
+// the proposal batches. It touches no store.
 func encode(registry *extension.Registry, schema extension.SchemaVersion, group *SemanticGroup) ([]session.StreamBatch, []bindingRef, string) {
 	batches := make([]session.StreamBatch, len(group.Batches))
 	var refs []bindingRef
@@ -49,7 +50,11 @@ func encode(registry *extension.Registry, schema extension.SchemaVersion, group 
 			if err != nil {
 				return nil, nil, fmt.Sprintf("%s: %v", where, err)
 			}
-			if verdict := checkStreamAffinity(tb.Stream, def.Stream, payload); verdict != "" {
+			_, stream, declared := registry.LookupStream(def.Stream)
+			if !declared {
+				return nil, nil, fmt.Sprintf("%s: event type %s names stream domain %q, which no module declares", where, te.Type, def.Stream)
+			}
+			if verdict := checkStreamAffinity(tb.Stream, stream, payload); verdict != "" {
 				return nil, nil, fmt.Sprintf("%s: %s", where, verdict)
 			}
 			for d := range def.Bindings {
@@ -73,35 +78,36 @@ func encode(registry *extension.Registry, schema extension.SchemaVersion, group 
 }
 
 // checkStreamAffinity verifies a batch's stream attribution against the
-// event type's declared StreamPolicy. It returns a human verdict for the
-// commit's detail string; policies themselves are validated at BuildRegistry.
-func checkStreamAffinity(stream session.StreamRef, pol extension.StreamPolicy, payload jsonstable.Value) string {
-	switch pol.Kind {
-	case session.StreamKindSession:
-		if stream.Kind != session.StreamKindSession {
-			return fmt.Sprintf("event is session-scoped but the batch is %s", stream.Kind)
+// declaration of the domain the event type names (EXT-STR-1). It returns a
+// human verdict for the commit's detail string; the declarations themselves
+// are validated at BuildRegistry.
+func checkStreamAffinity(stream session.StreamRef, def extension.StreamDefinition, payload jsonstable.Value) string {
+	if stream.Domain != def.Domain {
+		return fmt.Sprintf("event belongs to stream domain %q but the batch is %s", def.Domain, stream)
+	}
+	if !def.Keyed() {
+		if stream.ID != "" {
+			return fmt.Sprintf("stream domain %q is a singleton but the batch is %s", def.Domain, stream)
 		}
-	case session.StreamKindRun:
-		if stream.Kind != session.StreamKindRun {
-			return fmt.Sprintf("event is run-scoped but the batch is %s", stream.Kind)
-		}
-		decoded, err := payload.Any()
-		if err != nil {
-			return fmt.Sprintf("payload is not decodable for the stream binding: %v", err)
-		}
-		fields, ok := decoded.(map[string]any)
-		if !ok {
-			return "payload is not an object"
-		}
-		id, ok := fields[pol.IDField].(string)
-		if !ok || id == "" {
-			return fmt.Sprintf("payload lacks the stream binding field %q", pol.IDField)
-		}
-		if id != stream.ID {
-			return fmt.Sprintf("payload %s %q does not match the batch stream %q", pol.IDField, id, stream.ID)
-		}
-	default:
-		return "event type declares no stream policy"
+		return ""
+	}
+	if stream.ID == "" {
+		return fmt.Sprintf("stream domain %q is keyed but the batch names no stream ID", def.Domain)
+	}
+	decoded, err := payload.Any()
+	if err != nil {
+		return fmt.Sprintf("payload is not decodable for the stream binding: %v", err)
+	}
+	fields, ok := decoded.(map[string]any)
+	if !ok {
+		return "payload is not an object"
+	}
+	id, ok := fields[def.IDField].(string)
+	if !ok || id == "" {
+		return fmt.Sprintf("payload lacks the stream binding field %q", def.IDField)
+	}
+	if id != stream.ID {
+		return fmt.Sprintf("payload %s %q does not match the batch stream %q", def.IDField, id, stream.ID)
 	}
 	return ""
 }

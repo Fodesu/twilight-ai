@@ -53,7 +53,8 @@ func (c *foldCounter) reset() {
 func counterModule(c *foldCounter) extension.ModuleDescriptor {
 	const typ session.EventType = "twilight/z/row"
 	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "z",
-		Events: []extension.EventDefinition{{Type: typ, Stream: extension.SessionStream,
+		Streams: []extension.StreamDefinition{{Domain: "z", Lineage: session.LineageSession}},
+		Events: []extension.EventDefinition{{Type: typ, Stream: "z",
 			Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[rowPayload]{}}}},
 		Projections: []extension.ProjectionDefinition{{
 			ID: projectID, Version: 1, Consumes: []session.EventType{typ},
@@ -170,7 +171,7 @@ func TestProjectionCacheSurvivesRestart(t *testing.T) {
 	for i, text := range []string{"a", "b", "c"} {
 		res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
 			return &writer.SemanticGroup{CommitID: session.CommitID(string(rune('1' + i))),
-				Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession},
+				Batches: []writer.TypedBatch{{Stream: session.StreamRef{Domain: "z"},
 					Events: []writer.TypedEvent{{Type: "twilight/z/row", Value: rowPayload{Text: text}}}}}}, nil
 		})
 		if err != nil || res.Outcome != writer.CommitApplied {

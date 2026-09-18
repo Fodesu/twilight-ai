@@ -60,13 +60,15 @@ const (
 )
 
 // twoSchemaModule is noteModule("a") with the note under Schemas 1 and 2, the
-// hint under Schema 1 only, and a run-stream mark folded by two projections
-// that differ only in their inheritance policy.
+// hint under Schema 1 only, and a mark under a keyed, segment-lineage stream
+// domain folded by two projections that differ only in their inheritance
+// policy.
 func twoSchemaModule() extension.ModuleDescriptor {
 	m := noteModule("a")
 	m.Events[0].Codecs = map[extension.SchemaVersion]extension.PayloadCodec{1: v1NoteCodec{}, 2: extension.JSONCodec[notePayload]{}}
 	markType := tpfx("a") + "mark"
-	m.Events = append(m.Events, extension.EventDefinition{Type: markType, Stream: extension.RunStream("run"),
+	m.Streams = append(m.Streams, extension.StreamDefinition{Domain: "mark", IDField: "run", Lineage: session.LineageSegment})
+	m.Events = append(m.Events, extension.EventDefinition{Type: markType, Stream: "mark",
 		Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[markPayload]{}, 2: extension.JSONCodec[markPayload]{}}})
 	marks := func(id extension.ProjectionID, inherits extension.InheritPolicy) extension.ProjectionDefinition {
 		return extension.ProjectionDefinition{
@@ -111,7 +113,7 @@ func bootstrap(id string, texts ...string) SemanticGroup {
 	for _, tx := range texts {
 		events = append(events, TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: tx}})
 	}
-	g.Batches = sessionBatch(events...)
+	g.Batches = noteBatch(events...)
 	return g
 }
 
@@ -128,7 +130,7 @@ func markGroup(id, runID string, texts ...string) CommitFn {
 		for _, tx := range texts {
 			events = append(events, TypedEvent{Type: tpfx("a") + "mark", Value: markPayload{Run: runID, Text: tx}})
 		}
-		g.Batches = []TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: runID}, Events: events}}
+		g.Batches = []TypedBatch{{Stream: session.StreamRef{Domain: "mark", ID: runID}, Events: events}}
 		return g, nil
 	}
 }
@@ -240,8 +242,8 @@ func TestWriterAdvancePublishesTheTargetSegment(t *testing.T) {
 }
 
 // TestWriterAdvanceInheritsByPolicy: at the boundary a projection is refolded
-// under its own inheritance policy (EXT-PRJ-8): the semantic default keeps the
-// session stream only, InheritAll keeps every stream.
+// under its own inheritance policy (EXT-PRJ-8): the declared-lineage default
+// keeps the session-lineage domain only, InheritAll keeps every stream.
 func TestWriterAdvanceInheritsByPolicy(t *testing.T) {
 	ctx := context.Background()
 	f := newAdvanceFixture(t)
@@ -262,9 +264,9 @@ func TestWriterAdvanceInheritsByPolicy(t *testing.T) {
 		}
 	}
 	if got := notes(t, w); !sameNotes(got, []string{"v1:one"}) {
-		t.Errorf("notes = %v, want the inherited session stream", got)
+		t.Errorf("notes = %v, want the inherited note stream", got)
 	}
-	// The run stream the tip did not write is not the tip's: a fresh Writer
+	// The mark stream the tip did not write is not the tip's: a fresh Writer
 	// folds the same, and the old stream's head is still known to the kernel.
 	if err := w.Close(ctx); err != nil {
 		t.Fatal(err)
@@ -300,7 +302,7 @@ func TestWriterAdvanceRefusals(t *testing.T) {
 		"refused":      {fn: advanceTo(2, bootstrap("b", "reject")), outcome: AdvanceInvalid, detail: "rejected by projection"},
 		"other schema": {fn: func(View) (*AdvanceRequest, error) { return &AdvanceRequest{Target: 2, Metadata: other}, nil }, outcome: AdvanceInvalid, detail: "declares schema 1"},
 		"absent target": {fn: func(View) (*AdvanceRequest, error) {
-			return &AdvanceRequest{Target: 2, Bootstrap: []SemanticGroup{{CommitID: "b", Batches: sessionBatch(TypedEvent{Type: tpfx("a") + "hint", Value: notePayload{Text: "x"}})}}}, nil
+			return &AdvanceRequest{Target: 2, Bootstrap: []SemanticGroup{{CommitID: "b", Batches: noteBatch(TypedEvent{Type: tpfx("a") + "hint", Value: notePayload{Text: "x"}})}}}, nil
 		}, outcome: AdvanceInvalid, detail: "hint"},
 		"fn error": {fn: func(View) (*AdvanceRequest, error) { return nil, errors.New("decide failed") }},
 	}

@@ -82,10 +82,10 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 	if err := <-firstDone; !errors.Is(err, runtime.ErrOwnershipLost) {
 		t.Fatalf("old owner loop error = %v, want ErrOwnershipLost", err)
 	}
-	// Nothing of the old owner reached the stream after the takeover.
+	// Nothing of the old owner reached the ledger after the takeover.
 	for _, f := range recordFacts(t, stack.runtime, "run-1") {
 		if _, ok := f.(ToolCallCompleted); ok {
-			t.Fatal("fenced worker's result reached the stream")
+			t.Fatal("fenced worker's result reached the ledger")
 		}
 	}
 }

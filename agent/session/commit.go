@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/jsonstable"
@@ -15,29 +16,54 @@ const opRead = "read"
 // optimizations derived from the ledger, never a second ordering.
 type CommitSeq uint64
 
-// StreamKind partitions the ledger into the long-lived session semantic
-// stream and per-run execution streams.
-type StreamKind string
-
-const (
-	StreamKindSession StreamKind = "session"
-	StreamKindRun     StreamKind = "run"
-)
-
-// StreamRef names the logical stream one batch belongs to. The session
-// stream has an empty ID; a run stream's ID is the RunID, so a run's facts
-// always name the stream they belong to.
+// StreamRef names the logical stream one batch belongs to: a Domain and,
+// for a keyed stream, the ID of the aggregate within it (a singleton stream
+// has an empty ID). Domains belong to Session modules: which domains exist,
+// whether a domain is keyed and how its streams cross a segment edge are the
+// owning module's declarations (EXT-STR-1). The kernel fixes the shape here,
+// the order and atomicity of commits across streams, and offers both lineage
+// read modes (StreamLineage); it names no domain of its own.
 type StreamRef struct {
-	Kind StreamKind `json:"kind"`
-	ID   string     `json:"id,omitempty"`
+	Domain string `json:"domain"`
+	ID     string `json:"id,omitempty"`
 }
 
 // String renders the stream for diagnostics and indexes.
 func (r StreamRef) String() string {
 	if r.ID == "" {
-		return string(r.Kind)
+		return r.Domain
 	}
-	return fmt.Sprintf("%s/%s", r.Kind, r.ID)
+	return r.Domain + "/" + r.ID
+}
+
+// StreamLineage is how a stream read crosses segment edges (SES-FRK-5). A
+// fork and a new tip segment (SES-ADV-1) inherit the commits of their
+// ancestry; a stream's owning module declares which of the two histories its
+// streams are, and a read names that mode. The kernel applies the mode it is
+// given and does not know which one a domain declared.
+type StreamLineage string
+
+const (
+	// LineageSession reads the stream as the Session's semantic history: the
+	// inherited prefix stitched before the tip segment's own commits, so a
+	// fork or a new tip continues the stream where its ancestry left it.
+	LineageSession StreamLineage = "session"
+	// LineageSegment reads the stream as execution history of the segment
+	// that wrote it: the tip segment's own commits only, so a fork or a new
+	// tip starts the stream empty.
+	LineageSegment StreamLineage = "segment"
+)
+
+// ValidateStreamLineage checks that a read names one of the two modes.
+func ValidateStreamLineage(l StreamLineage) error {
+	switch l {
+	case LineageSession, LineageSegment:
+		return nil
+	case "":
+		return errors.New("stream lineage is empty")
+	default:
+		return fmt.Errorf("unknown stream lineage %q", l)
+	}
 }
 
 // Event is one committed payload. Unlike the v1 row it carries no transaction
@@ -95,19 +121,22 @@ type Commit struct {
 	Digest     es.Digest     `json:"digest"`
 }
 
-// ValidateStreamRef checks a batch's stream attribution.
+// ValidateStreamRef checks the shape of a batch's stream attribution: a
+// non-empty domain without the separator String uses, and an ID that is
+// empty or a valid identity. Which domains a module owns, whether a domain
+// is keyed and which ID an event binds to are Module Framework checks
+// (EXT-STR-1), not the kernel's.
 func ValidateStreamRef(r StreamRef) error {
-	switch r.Kind {
-	case StreamKindSession:
-		if r.ID != "" {
-			return errors.New("session stream must not carry an ID")
-		}
-		return nil
-	case StreamKindRun:
-		return validIdentity("RunID", r.ID)
-	default:
-		return fmt.Errorf("unknown stream kind %q", r.Kind)
+	if err := validIdentity("stream domain", r.Domain); err != nil {
+		return err
 	}
+	if strings.Contains(r.Domain, "/") {
+		return fmt.Errorf("stream domain %q contains %q", r.Domain, "/")
+	}
+	if r.ID == "" {
+		return nil
+	}
+	return validIdentity("stream ID", r.ID)
 }
 
 // ValidateEvent checks one event before it is sealed.

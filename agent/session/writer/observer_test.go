@@ -38,7 +38,7 @@ func TestCommitObserversSeeAppliedCommitsInOrder(t *testing.T) {
 	f.commit(t, w, "c2", "three")
 	// Replay: already applied, no notification.
 	res, err := w.Commit(context.Background(), func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c1", Batches: sessionBatch(
+		return &SemanticGroup{CommitID: "c1", Batches: noteBatch(
 			TypedEvent{Type: tpfx("k") + "row", Value: notePayload{Text: "one"}},
 			TypedEvent{Type: tpfx("k") + "row", Value: notePayload{Text: "two"}})}, nil
 	})
@@ -47,7 +47,7 @@ func TestCommitObserversSeeAppliedCommitsInOrder(t *testing.T) {
 	}
 	// Rejected: unknown event type, no notification.
 	res, err = w.Commit(context.Background(), func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c3", Batches: sessionBatch(TypedEvent{Type: "twilight/nope/x", Value: notePayload{Text: "x"}})}, nil
+		return &SemanticGroup{CommitID: "c3", Batches: noteBatch(TypedEvent{Type: "twilight/nope/x", Value: notePayload{Text: "x"}})}, nil
 	})
 	if err != nil || res.Outcome != CommitInvalid {
 		t.Fatalf("invalid = %v %v", res.Outcome, err)

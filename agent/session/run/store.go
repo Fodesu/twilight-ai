@@ -87,11 +87,6 @@ func ownershipError(err error) error {
 	return err
 }
 
-// runStream is the fixed logical stream of one Run's facts.
-func runStream(runID run.RunID) session.StreamRef {
-	return session.StreamRef{Kind: session.StreamKindRun, ID: string(runID)}
-}
-
 func loadMachine(view writer.View) (Machine, error) {
 	state, err := view.Projection(MachineProjectionID, MachineProjection.Version)
 	if err != nil {
@@ -245,7 +240,7 @@ func (c *Command) Prepare(_ context.Context, view writer.View, now int64) ([]wri
 	if !active {
 		// Terminal Runs leave the projection (RUN-CMT-2): tell terminal from
 		// unknown by the Run's own stream.
-		if _, exists := view.StreamHead(runStream(runID)); exists {
+		if _, exists := view.StreamHead(Stream(runID)); exists {
 			return nil, run.ErrRunTerminal
 		}
 		return nil, runtime.ErrRunNotFound
@@ -281,7 +276,7 @@ func (c *Command) Prepare(_ context.Context, view writer.View, now int64) ([]wri
 	c.before, c.after, c.schema = state, decision.NewState, sch
 	c.position = proj.Positions[runID] + run.RunPosition(len(decision.Facts))
 	c.facts = decision.Facts
-	return []writer.TypedBatch{{Stream: runStream(runID), Events: events}}, nil
+	return []writer.TypedBatch{{Stream: Stream(runID), Events: events}}, nil
 }
 
 // Result maps the unit's outcome onto the Run's CommitResult. w is the Writer
@@ -319,7 +314,7 @@ func (c *Command) Result(ctx context.Context, w writer.Writer, res *writer.Commi
 func (s *SessionRunStore) factsOf(c session.Commit, runID run.RunID) ([]run.Fact, error) {
 	var out []run.Fact
 	for _, b := range c.Batches {
-		if b.Stream != runStream(runID) {
+		if b.Stream != Stream(runID) {
 			continue
 		}
 		for i := range b.Events {
@@ -412,14 +407,14 @@ func (c createRun) Prepare(_ context.Context, view writer.View, now int64) ([]wr
 	if err != nil {
 		return nil, err
 	}
-	if _, exists := view.StreamHead(runStream(c.newRun.RunID)); exists {
+	if _, exists := view.StreamHead(Stream(c.newRun.RunID)); exists {
 		return nil, fmt.Errorf("%w: %s", ErrRunExists, c.newRun.RunID)
 	}
 	events := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
 		events = append(events, writer.TypedEvent{Type: EventType(sch.Wire, f), RecordedAtUnixMilli: now, Value: Event{RunID: c.newRun.RunID, Fact: f}})
 	}
-	return []writer.TypedBatch{{Stream: runStream(c.newRun.RunID), Events: events}}, nil
+	return []writer.TypedBatch{{Stream: Stream(c.newRun.RunID), Events: events}}, nil
 }
 
 // --- Record --------------------------------------------------------------------------
@@ -460,7 +455,7 @@ func (s *SessionRunStore) Record(ctx context.Context, sid session.SessionID, run
 // same head: the two reads are separate round trips, and a commit landing
 // between them makes both correct at different points, not divergent.
 func (s *SessionRunStore) record(ctx context.Context, sid session.SessionID, runID run.RunID, expect *run.MachineState, expectHead session.Head) (Record, error) {
-	page, err := s.cfg.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: sid, Stream: runStream(runID)})
+	page, err := s.cfg.Store.ReadStream(ctx, session.StreamReadRequest{SessionID: sid, Stream: Stream(runID), Lineage: streamDefinition.Lineage})
 	if err != nil {
 		return Record{}, err
 	}

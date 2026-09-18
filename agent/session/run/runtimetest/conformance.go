@@ -59,8 +59,8 @@ func testCreation(t *testing.T, factory Factory) {
 		t.Fatalf("created state = %+v", snap.State)
 	}
 	// Position is the StreamSeq of the Run's last event: the start group's run
-	// batch is created (0), accepted (1). The session-stream started and
-	// delivered events of the same commit do not move it.
+	// batch is created (0), accepted (1). The Turn's and the chatlog's events
+	// of the same commit do not move it.
 	if snap.Position != 1 {
 		t.Fatalf("position = %d, want 1 (last run event of the start group)", snap.Position)
 	}
@@ -97,7 +97,7 @@ func testCreation(t *testing.T, factory Factory) {
 	}
 	// A second created for the same RunID -- active or ended -- is refused by
 	// the Run module's creation Part from the ledger's stream index, before
-	// anything reaches the stream (RUN-NEW-1).
+	// anything reaches the ledger (RUN-NEW-1).
 	again, err := run.BuildNewRunFor("r1", "t2", 1, "")
 	if err != nil {
 		t.Fatal(err)
@@ -107,7 +107,7 @@ func testCreation(t *testing.T, factory Factory) {
 		t.Fatalf("duplicate created = %v, want ErrRunExists", err)
 	}
 	if h.head() != head {
-		t.Fatal("refused creation wrote to the stream")
+		t.Fatal("refused creation wrote to the ledger")
 	}
 }
 
@@ -360,7 +360,7 @@ func testAdmission(t *testing.T, factory Factory) {
 		t.Fatal("unregistered binding admitted")
 	}
 	if h.head() != before {
-		t.Fatal("refused commit wrote to the stream")
+		t.Fatal("refused commit wrote to the ledger")
 	}
 	if len(h.load("r1").State.PendingInputs) != 1 {
 		t.Fatal("refused commit changed the Run")
@@ -534,7 +534,7 @@ func testIsolation(t *testing.T, factory Factory) {
 	h.prepare("r2", false)
 	h.submitInputs(input("noise"))
 	h.mustApply(writer.SemanticGroup{CommitID: "turn-noise", Batches: []writer.TypedBatch{{
-		Stream: session.StreamRef{Kind: session.StreamKindSession},
+		Stream: turn.Stream("t9"),
 		Events: []writer.TypedEvent{{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
 			Value: turn.StartedPayload{TurnID: "t9", Preset: turn.PresetRef{ID: "b", Digest: "sha256:b"}}}},
 	}}})
@@ -737,10 +737,10 @@ func testOwnershipLost(t *testing.T, factory Factory) {
 		t.Fatalf("old owner commit = %v, want ErrOwnershipLost", err)
 	}
 	if h.head() != head {
-		t.Fatal("fenced commit reached the stream")
+		t.Fatal("fenced commit reached the ledger")
 	}
 	// Reading needs no ownership: the superseded process still reads the
-	// stream by SessionID and sees the state as the new owner left it
+	// ledger by SessionID and sees the state as the new owner left it
 	// (AUTH-OWN-2); only its Writer's view and commits are fenced.
 	if rec, err := old.Record(h.ctx, sid, "r1"); err != nil || rec.Snapshot.State.Current.(run.ModelStep).Status != run.ModelExecuting {
 		t.Fatalf("old owner record = %v, want the current state without an ownership error", err)

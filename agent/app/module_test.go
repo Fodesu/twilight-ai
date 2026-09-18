@@ -43,8 +43,9 @@ var auditModule = extension.ModuleDescriptor{
 		Source: extension.SourceTwilight, Module: chatlog.ModuleID,
 		Events: map[session.EventType][]extension.SchemaVersion{chatlog.TypeInputSubmitted: {1}},
 	}},
+	Streams: []extension.StreamDefinition{{Domain: "audit", Lineage: session.LineageSession}},
 	Events: []extension.EventDefinition{{
-		Type: auditNoteType, Stream: extension.SessionStream,
+		Type: auditNoteType, Stream: "audit",
 		Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[auditNote]{}},
 	}},
 	Projections: []extension.ProjectionDefinition{{
@@ -66,9 +67,10 @@ var auditModule = extension.ModuleDescriptor{
 }
 
 // An application module registered through Ports.Modules writes its own
-// events into the Session stream and folds its own projection, while the
-// first-party projections skip its rows as out-of-scope (EXT-REG-1, EXT-PRJ-2).
-func TestAppModuleSharesTheSessionStream(t *testing.T) {
+// events into the stream domain it declares and folds its own projection,
+// while the first-party projections skip its rows as out-of-scope (EXT-REG-1,
+// EXT-PRJ-2).
+func TestAppModuleWritesItsOwnStream(t *testing.T) {
 	ctx := context.Background()
 	h := newHost(app.Config{Modules: []extension.ModuleDescriptor{auditModule}}, map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}})
 	const sid session.SessionID = "s-app"
@@ -92,7 +94,7 @@ func TestAppModuleSharesTheSessionStream(t *testing.T) {
 	// The app module commits its own event through the same Writer.
 	res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
 		return &writer.SemanticGroup{CommitID: "audit/n1",
-			Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{{
+			Batches: []writer.TypedBatch{{Stream: session.StreamRef{Domain: "audit"}, Events: []writer.TypedEvent{{
 				Type: auditNoteType, RecordedAtUnixMilli: 1, Value: auditNote{InputID: "in-1", Text: "flagged"},
 			}}}}}, nil
 	})

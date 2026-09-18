@@ -20,7 +20,7 @@ func testLineage(t *testing.T, f Fixture) {
 	aw := open(t, store, "A", false)
 	var a []session.Commit
 	for i := 0; i < 4; i++ {
-		a = append(a, appendCommit(t, aw, "a"+string(rune('0'+i)), batch(sessionStream(), "twilight/x/a", `{"n":`+string(rune('0'+i))+`}`)))
+		a = append(a, appendCommit(t, aw, "a"+string(rune('0'+i)), batch(chatStream(), "twilight/x/a", `{"n":`+string(rune('0'+i))+`}`)))
 	}
 	fork := func(child, parent session.SessionID, at session.Commit) session.SegmentHeader {
 		t.Helper()
@@ -33,7 +33,7 @@ func testLineage(t *testing.T, f Fixture) {
 	headerB := fork("B", "A", a[1])
 	headerC := fork("C", "A", a[2])
 	cw := open(t, store, "C", false)
-	c3 := appendCommit(t, cw, "c3", batch(sessionStream(), "twilight/x/c", `{"n":3}`))
+	c3 := appendCommit(t, cw, "c3", batch(chatStream(), "twilight/x/c", `{"n":3}`))
 	_ = cw.Close(ctx)
 	headerD := fork("D", "C", c3)
 	segB, segC, segD := session.SegmentIDOf(headerB), session.SegmentIDOf(headerC), session.SegmentIDOf(headerD)
@@ -98,7 +98,7 @@ func testLineage(t *testing.T, f Fixture) {
 	if c, ok, _ := dw.LookupCommit("a2"); !ok || c.Digest != a[2].Digest {
 		t.Fatalf("D lookup a2 = %+v %v", c, ok)
 	}
-	d4 := appendCommit(t, dw, "d4", batch(sessionStream(), "twilight/x/d", `{"n":4}`))
+	d4 := appendCommit(t, dw, "d4", batch(chatStream(), "twilight/x/d", `{"n":4}`))
 	if d4.Seq != c3.Seq+1 || d4.PrevDigest != c3.Digest {
 		t.Fatalf("D own commit = %+v", d4)
 	}

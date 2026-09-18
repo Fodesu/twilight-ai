@@ -83,7 +83,7 @@ func TestReadIndexedMatchesFullParse(t *testing.T) {
 func appendCommits(t *testing.T, w session.Handle, firstCommit int, groups [][]string) {
 	t.Helper()
 	for i, g := range groups {
-		batch := session.StreamBatch{Stream: session.StreamRef{Kind: session.StreamKindSession}}
+		batch := session.StreamBatch{Stream: session.StreamRef{Domain: "chat"}}
 		for j, kind := range g {
 			batch.Events = append(batch.Events, session.Event{Type: session.EventType("twilight/" + kind + "/e"), RecordedAtUnixMilli: 1,
 				Payload: jsonstable.MustParse(fmt.Sprintf(`{"g":%d,"i":%d}`, firstCommit+i, j))})

@@ -32,12 +32,12 @@ func TestValidateStreamRef(t *testing.T) {
 		ref  StreamRef
 		want string // error substring; "" means valid
 	}{
-		{"session stream", StreamRef{Kind: StreamKindSession}, ""},
-		{"session stream must not carry an ID", StreamRef{Kind: StreamKindSession, ID: "r7"}, "must not carry"},
-		{"run stream", StreamRef{Kind: StreamKindRun, ID: "r7"}, ""},
-		{"run stream needs an ID", StreamRef{Kind: StreamKindRun}, "RunID"},
-		{"unknown kind", StreamRef{Kind: StreamKind("lane")}, "unknown stream kind"},
-		{"invalid UTF-8 ID", StreamRef{Kind: StreamKindRun, ID: string([]byte{0xff})}, "not valid UTF-8"},
+		{"singleton stream", StreamRef{Domain: "chat"}, ""},
+		{"keyed stream", StreamRef{Domain: "run", ID: "r7"}, ""},
+		{"empty domain", StreamRef{ID: "r7"}, "stream domain is empty"},
+		{"domain with separator", StreamRef{Domain: "run/r7"}, `contains "/"`},
+		{"invalid UTF-8 domain", StreamRef{Domain: string([]byte{0xff})}, "not valid UTF-8"},
+		{"invalid UTF-8 ID", StreamRef{Domain: "run", ID: string([]byte{0xff})}, "not valid UTF-8"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -56,32 +56,32 @@ func TestValidateStreamRef(t *testing.T) {
 }
 
 func TestValidateBatches(t *testing.T) {
-	session := StreamRef{Kind: StreamKindSession}
-	run := StreamRef{Kind: StreamKindRun, ID: "r7"}
+	chat := StreamRef{Domain: "chat"}
+	run := StreamRef{Domain: "run", ID: "r7"}
 	cases := []struct {
 		name    string
 		batches []StreamBatch
 		want    string
 	}{
-		{"one batch", []StreamBatch{oneEventBatch(session, "twilight/x/a", `{"a":1}`)}, ""},
+		{"one batch", []StreamBatch{oneEventBatch(chat, "twilight/x/a", `{"a":1}`)}, ""},
 		{"two streams in one commit", []StreamBatch{
-			oneEventBatch(session, "twilight/x/a", `{"a":1}`),
+			oneEventBatch(chat, "twilight/x/a", `{"a":1}`),
 			oneEventBatch(run, "twilight/run/created", `{"runId":"r7"}`),
 		}, ""},
 		{"no batches", nil, "without batches"},
-		{"batch without events", []StreamBatch{{Stream: session}}, "no events"},
+		{"batch without events", []StreamBatch{{Stream: chat}}, "no events"},
 		{"same stream twice in one commit", []StreamBatch{
-			oneEventBatch(session, "twilight/x/a", `{"a":1}`),
-			oneEventBatch(session, "twilight/x/b", `{"b":2}`),
+			oneEventBatch(chat, "twilight/x/a", `{"a":1}`),
+			oneEventBatch(chat, "twilight/x/b", `{"b":2}`),
 		}, "appears twice"},
-		{"run stream without ID", []StreamBatch{
-			oneEventBatch(StreamRef{Kind: StreamKindRun}, "twilight/run/created", `{"runId":"r7"}`),
-		}, "RunID"},
-		{"empty event type", []StreamBatch{{Stream: session, Events: []Event{
+		{"stream domain with separator", []StreamBatch{
+			oneEventBatch(StreamRef{Domain: "run/r7"}, "twilight/run/created", `{"runId":"r7"}`),
+		}, `contains "/"`},
+		{"empty event type", []StreamBatch{{Stream: chat, Events: []Event{
 			{RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{}`)},
 		}}}, "EventType"},
-		{"array payload", []StreamBatch{oneEventBatch(session, "twilight/x/a", `[1]`)}, "object"},
-		{"zero payload", []StreamBatch{{Stream: session, Events: []Event{
+		{"array payload", []StreamBatch{oneEventBatch(chat, "twilight/x/a", `[1]`)}, "object"},
+		{"zero payload", []StreamBatch{{Stream: chat, Events: []Event{
 			{Type: "twilight/x/a", RecordedAtUnixMilli: 1},
 		}}}, "empty payload"},
 	}
@@ -105,8 +105,8 @@ func TestSealCommit(t *testing.T) {
 	p := ProfileV1()
 	h := v2Header(t, "s")
 	c := Commit{Seq: 0, CommitID: "c1", Epoch: 3, Batches: []StreamBatch{
-		oneEventBatch(StreamRef{Kind: StreamKindSession}, "twilight/x/a", `{"a":1}`),
-		oneEventBatch(StreamRef{Kind: StreamKindRun, ID: "r7"}, "twilight/run/created", `{"runId":"r7"}`),
+		oneEventBatch(StreamRef{Domain: "chat"}, "twilight/x/a", `{"a":1}`),
+		oneEventBatch(StreamRef{Domain: "run", ID: "r7"}, "twilight/run/created", `{"runId":"r7"}`),
 	}}
 	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &c); err != nil {
 		t.Fatal(err)
@@ -140,7 +140,7 @@ func TestSealCommit(t *testing.T) {
 	// Event order inside a batch and batch order inside a commit are both
 	// canonical: swapping either changes the digest.
 	swappedEvents := Commit{Seq: 0, CommitID: "c1", Epoch: 3, Batches: []StreamBatch{
-		{Stream: StreamRef{Kind: StreamKindSession}, Events: []Event{
+		{Stream: StreamRef{Domain: "chat"}, Events: []Event{
 			{Type: "twilight/x/b", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"b":2}`)},
 			{Type: "twilight/x/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"a":1}`)},
 		}},
@@ -149,7 +149,7 @@ func TestSealCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	twoEvents := Commit{Seq: 0, CommitID: "c1", Epoch: 3, Batches: []StreamBatch{
-		{Stream: StreamRef{Kind: StreamKindSession}, Events: []Event{
+		{Stream: StreamRef{Domain: "chat"}, Events: []Event{
 			{Type: "twilight/x/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"a":1}`)},
 			{Type: "twilight/x/b", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"b":2}`)},
 		}},
@@ -161,8 +161,8 @@ func TestSealCommit(t *testing.T) {
 		t.Fatal("event order inside a batch does not reach the digest")
 	}
 	swappedBatches := Commit{Seq: 0, CommitID: "c1", Epoch: 3, Batches: []StreamBatch{
-		oneEventBatch(StreamRef{Kind: StreamKindRun, ID: "r7"}, "twilight/run/created", `{"runId":"r7"}`),
-		oneEventBatch(StreamRef{Kind: StreamKindSession}, "twilight/x/a", `{"a":1}`),
+		oneEventBatch(StreamRef{Domain: "run", ID: "r7"}, "twilight/run/created", `{"runId":"r7"}`),
+		oneEventBatch(StreamRef{Domain: "chat"}, "twilight/x/a", `{"a":1}`),
 	}}
 	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &swappedBatches); err != nil {
 		t.Fatal(err)
@@ -179,21 +179,21 @@ func TestSealCommit(t *testing.T) {
 	}
 }
 
-// sealedPair builds a two-commit sealed ledger: one session batch, then a
-// commit spanning the session stream and run stream r7.
+// sealedPair builds a two-commit sealed ledger: one chat batch, then a
+// commit spanning the chat stream and run stream r7.
 func sealedPair(t *testing.T) (LedgerProfile, SegmentHeader, []Commit) {
 	t.Helper()
 	p := ProfileV1()
 	h := v2Header(t, "s")
 	c0 := Commit{Seq: 0, CommitID: "c1", Epoch: 1, Batches: []StreamBatch{
-		oneEventBatch(StreamRef{Kind: StreamKindSession}, "twilight/x/a", `{"a":1}`),
+		oneEventBatch(StreamRef{Domain: "chat"}, "twilight/x/a", `{"a":1}`),
 	}}
 	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &c0); err != nil {
 		t.Fatal(err)
 	}
 	c1 := Commit{Seq: 1, CommitID: "c2", Epoch: 1, Batches: []StreamBatch{
-		oneEventBatch(StreamRef{Kind: StreamKindSession}, "twilight/x/b", `{"b":2}`),
-		oneEventBatch(StreamRef{Kind: StreamKindRun, ID: "r7"}, "twilight/run/created", `{"runId":"r7"}`),
+		oneEventBatch(StreamRef{Domain: "chat"}, "twilight/x/b", `{"b":2}`),
+		oneEventBatch(StreamRef{Domain: "run", ID: "r7"}, "twilight/run/created", `{"runId":"r7"}`),
 	}}
 	if err := SealCommit(p, c0.Digest, SegmentIDOf(h), &c1); err != nil {
 		t.Fatal(err)

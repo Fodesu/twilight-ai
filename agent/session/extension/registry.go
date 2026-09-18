@@ -56,29 +56,36 @@ type EventDefinition struct {
 	// Ignorable marks purely informational events: a fold that cannot decode
 	// the event's payload version skips it instead of failing (EXT-PRJ-2).
 	Ignorable bool
-	// Stream declares which logical stream kind the event may be appended to
-	// and how a run-stream event binds to its stream ID (EXT-STR-1).
-	Stream StreamPolicy
+	// Stream names the stream domain the event may be appended to: one the
+	// same module declares in ModuleDescriptor.Streams (EXT-STR-1). The
+	// Writer rejects an event placed in a batch of another domain.
+	Stream string
 }
 
-// StreamPolicy declares which logical stream kind an event type may be
-// appended to (EXT-STR-1). The Writer rejects an event placed in a batch
-// whose stream does not match; a run-bound event must also carry its stream
-// ID under IDField in the encoded payload.
-type StreamPolicy struct {
-	Kind session.StreamKind
-	// IDField is the payload key holding the stream ID; StreamKindRun only
-	// (the session stream carries no ID).
+// StreamDefinition declares one logical stream domain a module owns
+// (EXT-STR-1): the boundary of the invariants its events keep. The kernel
+// names no domain; every domain a Session writes is declared here by
+// exactly one module, which is the only module allowed to append to it.
+type StreamDefinition struct {
+	// Domain is the StreamRef.Domain of every stream of the definition.
+	Domain string
+	// IDField is the encoded-payload key that binds an event to its stream
+	// ID. Empty declares a singleton domain: one stream, no ID. Non-empty
+	// declares a keyed domain whose streams are domain/<id>; the Writer
+	// requires the payload's IDField to equal the batch's stream ID.
 	IDField string
+	// Lineage is how a fork or Advance reads the domain (SES-FRK-5):
+	// LineageSession for state the child Session continues, LineageSegment
+	// for history that stays with the segment that wrote it.
+	Lineage session.StreamLineage
 }
 
-// SessionStream marks an event as belonging to the session stream.
-var SessionStream = StreamPolicy{Kind: session.StreamKindSession}
+// Keyed reports whether the domain's streams carry an ID.
+func (d StreamDefinition) Keyed() bool { return d.IDField != "" }
 
-// RunStream marks an event as belonging to a run stream and names the payload
-// key that binds it to the stream ID.
-func RunStream(idField string) StreamPolicy {
-	return StreamPolicy{Kind: session.StreamKindRun, IDField: idField}
+// Ref names one stream of the domain; id is empty for a singleton.
+func (d StreamDefinition) Ref(id string) session.StreamRef {
+	return session.StreamRef{Domain: d.Domain, ID: id}
 }
 
 // ModuleRequirement declares that a module consumes another module's events
@@ -94,15 +101,18 @@ type ModuleRequirement struct {
 func (r ModuleRequirement) Key() ModuleKey { return ModuleKey{Source: r.Source, ID: r.Module} }
 
 type ModuleDescriptor struct {
-	Source      SourceID
-	ID          ModuleID
-	Requires    []ModuleRequirement
+	Source   SourceID
+	ID       ModuleID
+	Requires []ModuleRequirement
+	// Streams are the stream domains the module owns (EXT-STR-1). Every
+	// event the module declares names one of them.
+	Streams     []StreamDefinition
 	Events      []EventDefinition
 	Projections []ProjectionDefinition
 }
 
 // Key is the module's registry identity.
-func (m ModuleDescriptor) Key() ModuleKey { return ModuleKey{Source: m.Source, ID: m.ID} }
+func (m *ModuleDescriptor) Key() ModuleKey { return ModuleKey{Source: m.Source, ID: m.ID} }
 
 // DecodedEvent is one ledger event decoded against the registry. Stream is
 // the logical stream the fold read the event from; Decode alone cannot know
@@ -124,6 +134,7 @@ type Registry struct {
 	ProtocolVersion uint16
 
 	modules     map[ModuleKey]ModuleDescriptor
+	streams     map[string]streamEntry
 	events      map[session.EventType]eventEntry
 	projections map[projectionKey]projectionEntry
 	// schemas are the SchemaVersions at least one registered event has a
@@ -135,6 +146,11 @@ type Registry struct {
 // SupportsSchema reports whether a segment declaring v can be written
 // through this registry: some registered event has a codec under v.
 func (r *Registry) SupportsSchema(v SchemaVersion) bool { return r.schemas[v] }
+
+type streamEntry struct {
+	module ModuleKey
+	def    StreamDefinition
+}
 
 type eventEntry struct {
 	module ModuleKey
@@ -184,11 +200,12 @@ func BuildRegistryWithExtensions(protocolVersion uint16, core, extensions []Modu
 	}
 	modules := make([]ModuleDescriptor, 0, len(core)+len(extensions))
 	trusted := make(map[ModuleKey]bool, len(core))
-	for _, m := range core {
-		modules = append(modules, m)
-		trusted[m.Key()] = true
+	for i := range core {
+		modules = append(modules, core[i])
+		trusted[core[i].Key()] = true
 	}
-	for _, m := range extensions {
+	for i := range extensions {
+		m := &extensions[i]
 		if m.Source == SourceTwilight {
 			return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("extension module %q claims the %s source", m.ID, SourceTwilight)}
 		}
@@ -197,11 +214,13 @@ func BuildRegistryWithExtensions(protocolVersion uint16, core, extensions []Modu
 				return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("projection %q of extension %s/%s declares Authoritative; only trusted core modules may", p.ID, m.Source, m.ID)}
 			}
 		}
-		modules = append(modules, m)
+		modules = append(modules, *m)
 	}
 	r := &Registry{ProtocolVersion: protocolVersion, schemas: map[SchemaVersion]bool{},
-		modules: make(map[ModuleKey]ModuleDescriptor), events: make(map[session.EventType]eventEntry), projections: make(map[projectionKey]projectionEntry)}
-	for _, m := range modules {
+		modules: make(map[ModuleKey]ModuleDescriptor), streams: make(map[string]streamEntry),
+		events: make(map[session.EventType]eventEntry), projections: make(map[projectionKey]projectionEntry)}
+	for i := range modules {
+		m := &modules[i]
 		if err := validSegment("source", string(m.Source)); err != nil {
 			return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("module %q: %v", m.ID, err)}
 		}
@@ -212,7 +231,26 @@ func BuildRegistryWithExtensions(protocolVersion uint16, core, extensions []Modu
 		if _, dup := r.modules[key]; dup {
 			return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("duplicate module %s/%s", key.Source, key.ID)}
 		}
-		r.modules[key] = m
+		r.modules[key] = *m
+		for _, sd := range m.Streams {
+			if err := session.ValidateStreamRef(session.StreamRef{Domain: sd.Domain}); err != nil {
+				return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("module %s/%s: %v", key.Source, key.ID, err)}
+			}
+			if prev, dup := r.streams[sd.Domain]; dup {
+				return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("duplicate stream domain %q: declared by %s/%s and %s/%s",
+					sd.Domain, prev.module.Source, prev.module.ID, key.Source, key.ID)}
+			}
+			// "v" is written into every encoded payload as its version key
+			// (addVersion); a binding field of that name would read the
+			// version number in place of the stream ID.
+			if sd.IDField == "v" {
+				return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("stream domain %q: stream ID field \"v\" collides with the payload version key", sd.Domain)}
+			}
+			if err := session.ValidateStreamLineage(sd.Lineage); err != nil {
+				return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("stream domain %q: %v", sd.Domain, err)}
+			}
+			r.streams[sd.Domain] = streamEntry{module: key, def: sd}
+		}
 		prefix := ModulePrefix(m.Source, m.ID)
 		for _, def := range m.Events {
 			if !strings.HasPrefix(string(def.Type), string(prefix)) || len(def.Type) == len(prefix) {
@@ -230,23 +268,12 @@ func BuildRegistryWithExtensions(protocolVersion uint16, core, extensions []Modu
 				}
 				r.schemas[v] = true
 			}
-			switch def.Stream.Kind {
-			case session.StreamKindSession:
-				if def.Stream.IDField != "" {
-					return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "session-scoped event must not declare a stream ID field"}
-				}
-			case session.StreamKindRun:
-				if def.Stream.IDField == "" {
-					return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "run-scoped event must declare its stream ID field"}
-				}
-				// "v" is written into every encoded payload as its version key
-				// (addVersion); a binding field of that name would read the
-				// version number in place of the stream ID.
-				if def.Stream.IDField == "v" {
-					return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "stream ID field \"v\" collides with the payload version key"}
-				}
-			default:
-				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "event declares no stream policy"}
+			if def.Stream == "" {
+				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "event declares no stream domain"}
+			}
+			if se, declared := r.streams[def.Stream]; !declared || se.module != key {
+				return nil, &Error{Code: ErrInvalid, Type: def.Type,
+					Detail: fmt.Sprintf("event names stream domain %q, which module %s/%s does not declare", def.Stream, key.Source, key.ID)}
 			}
 			for _, b := range def.Bindings {
 				if err := b.validate(); err != nil {
@@ -360,6 +387,13 @@ func containsVersion(vs []SchemaVersion, v SchemaVersion) bool {
 
 func (r *Registry) LookupEvent(typ session.EventType) (ModuleKey, EventDefinition, bool) {
 	e, ok := r.events[typ]
+	return e.module, e.def, ok
+}
+
+// LookupStream resolves a stream domain to the module that declared it and
+// the declaration.
+func (r *Registry) LookupStream(domain string) (ModuleKey, StreamDefinition, bool) {
+	e, ok := r.streams[domain]
 	return e.module, e.def, ok
 }
 

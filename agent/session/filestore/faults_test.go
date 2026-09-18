@@ -12,7 +12,7 @@ import (
 )
 
 func proposal(commit string, n int) session.Proposal {
-	batch := session.StreamBatch{Stream: session.StreamRef{Kind: session.StreamKindSession}}
+	batch := session.StreamBatch{Stream: session.StreamRef{Domain: "chat"}}
 	for i := 0; i < n; i++ {
 		batch.Events = append(batch.Events, session.Event{Type: "twilight/x/e", RecordedAtUnixMilli: 1,
 			Payload: jsonstable.MustParse(fmt.Sprintf(`{"c":%q,"i":%d}`, commit, i))})

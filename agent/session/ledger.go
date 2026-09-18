@@ -467,16 +467,20 @@ func (l *Ledger) ReadStream(ctx context.Context, req StreamReadRequest) (StreamP
 	if err := ValidateStreamRef(req.Stream); err != nil {
 		return StreamPage{}, newError(ErrInvalid, "read_stream", req.SessionID, err.Error())
 	}
+	if err := ValidateStreamLineage(req.Lineage); err != nil {
+		return StreamPage{}, newError(ErrInvalid, "read_stream", req.SessionID, err.Error())
+	}
 	// Stream positions count the stream's events from the first commit the
-	// Session sees (SES-REP-2). The session stream includes the inherited
-	// prefix; every other stream kind is execution history of the segment
-	// that wrote it, so a fork reads its own run streams only (SES-FRK-5).
+	// read sees (SES-REP-2): the stitched history under LineageSession, the
+	// tip segment's own commits under LineageSegment (SES-FRK-5). The kernel
+	// applies the mode the read names; the stream's owning module declared
+	// which one its domain is.
 	all, err := l.ReadCommits(ctx, CommitReadRequest{SessionID: req.SessionID})
 	if err != nil {
 		return StreamPage{}, err
 	}
 	commits := all.Commits
-	if req.Stream.Kind != StreamKindSession && all.Header.Parent != nil {
+	if req.Lineage == LineageSegment && all.Header.Parent != nil {
 		own := commits[:0:0]
 		for _, c := range commits {
 			if c.Seq > all.Header.Parent.Seq {

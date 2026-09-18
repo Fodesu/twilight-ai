@@ -171,17 +171,17 @@ func (s *Session) Handle() *authority.Handle
 func (s *Session) Close(ctx) error
 ```
 
-**APP-SES-1** `OpenSession` 依次：解析 Preset（PST-2）、确保 stream 存在（先 `Header` 探测再 `Create`——Create 的幂等要求字段全同，重启后 `CreatedAtUnixMilli` 必然不同）、`Authority.Open`（取得 Handle：Writer 与接管处置，AUTH-OWN-1、DRV-3）；处置数暴露为 `Session.Recovered`。`ResumeActive` 为真时同步 Resume 仍在 `active` 的 Turn。此后 Session 的每个命令都经 `Handle.Writer()` 提交。
+**APP-SES-1** `OpenSession` 依次：解析 Preset（PST-2）、确保 Session 存在（先 `Header` 探测再 `Create`——Create 的幂等要求字段全同，重启后 `CreatedAtUnixMilli` 必然不同）、`Authority.Open`（取得 Handle：Writer 与接管处置，AUTH-OWN-1、DRV-3）；处置数暴露为 `Session.Recovered`。`ResumeActive` 为真时同步 Resume 仍在 `active` 的 Turn。此后 Session 的每个命令都经 `Handle.Writer()` 提交。
 
 **APP-SES-2** `Send` 提交文本（`chatlog.Commands.Submit`）、Route 并阻塞到结算：首个 `Result` 是输入落入的 Turn，其后是本次调用在结算后从积压开启并结算的 Turn（Drain 的循环内化在 Session 里）。`Disposition` 为 `already_driving` 时该输入由运行中的驱动者推进，本次调用不再排空。`Reply` 为该 Turn 最后一条 assistant 的文本（`chatlog.LastAssistantText`），仅在 `finished` 时读取——回复是对话层概念，turn 层只报协议结果。
 
 **APP-SES-3** 并发 `Send` 安全：写入由该 Session 的 Writer 串行化。路由竞态（两个 Send 同时判定 Start，或投递瞬间结算）表现为 `turn.ErrConflict`，Session 重试路由；重试次数由 `SessionOptions.RouteRetries` 限定（默认 `DefaultRouteRetries`=4），耗尽后把最后一次 conflict 返回调用方，输入保持 submitted；重试前发现输入已被其他驱动者投递时，返回 `AlreadyDriving` 的 `Result`。结算后的排空由 `SessionOptions.DrainBudget`（默认 `DefaultDrainBudget`=64）限定，耗尽时返回已得到的 Results 与 `ErrDrainBudget`，剩余积压留给下一次调用。
 
-**APP-SES-4** `Submit` 提交文本并提交其路由（Deliver 或 Start，同 APP-RTE-1 的提交半段），返回输入落入的 `TurnRef` 后立即返回；驱动、结算后排空与自动 compaction 在 Session 拥有的后台 goroutine 里进行，其 ctx 由 `Session` 持有、`Close` 取消并等待。进展与回复经 Events 观察；驱动失败经 `Config.Warn` 与事件流上的一条 `Event{Err}` 报告，不进 stream。输入被运行中的驱动者接走（already_driving）时 Submit 直接返回该 Turn，不起驱动。`Send` 与 `Submit` 共用路由与结算逻辑，差别只在驱动是同步还是后台。`Wait` 阻塞到已启动的后台驱动全部结束而不取消它们。
+**APP-SES-4** `Submit` 提交文本并提交其路由（Deliver 或 Start，同 APP-RTE-1 的提交半段），返回输入落入的 `TurnRef` 后立即返回；驱动、结算后排空与自动 compaction 在 Session 拥有的后台 goroutine 里进行，其 ctx 由 `Session` 持有、`Close` 取消并等待。进展与回复经 Events 观察；驱动失败经 `Config.Warn` 与事件流上的一条 `Event{Err}` 报告，不进 ledger。输入被运行中的驱动者接走（already_driving）时 Submit 直接返回该 Turn，不起驱动。`Send` 与 `Submit` 共用路由与结算逻辑，差别只在驱动是同步还是后台。`Wait` 阻塞到已启动的后台驱动全部结束而不取消它们。
 
 **APP-RTE-1** 路由是 app 的策略：`app.Session.Route(ctx, inputs)` 先读 turn surface——存在 `active` 的 Turn 时 `Deliver`（输入进入该 Run 的下一步）；否则以新 TurnID 与 Session 的 AgentPreset `Start`；`attempt_failed` 的 Turn 使 Route 返回 conflict，不自动 Retry 或 Settle，那是调用方的决定。提交成功后进入 `driver.Drive`。输入在两种情形下都已先写入 `input_submitted`。
 
-**APP-RTE-2** 排空是 app 的策略：`app.Session.Drain(ctx)` 读 chatlog surface，若存在 `submitted` 且未 delivered 的输入，按 stream 顺序取全部，经 Route 开新 Turn；否则返回 false。已提交而未投递的输入就是 inbox 的 next-turn 列表，不需要另一份持久结构。
+**APP-RTE-2** 排空是 app 的策略：`app.Session.Drain(ctx)` 读 chatlog surface，若存在 `submitted` 且未 delivered 的输入，按 CommitSeq 顺序取全部，经 Route 开新 Turn；否则返回 false。已提交而未投递的输入就是 inbox 的 next-turn 列表，不需要另一份持久结构。
 
 **APP-INP-1** `chatlog.Commands.Submit(ctx, w, id, text)` 提交用户正文（构造器为 `chatlog.TextContent`，DEC-INP-1）；`app.Session` 以 `chatlog.NewInputID` 铸造随机、跨重启无碰撞的 InputID，需要外部幂等键的调用方自带 ID。`StartRequest.Inputs[i].ID` 等于已 submitted 的 InputID，`Payload` 等于其 Content。
 
@@ -255,7 +255,7 @@ spawn.Bind(authority)                                            // 子经 Autho
 - **AUTH-SCP-3 / AUTH-PRT-2**：以只记录 Assignment 的 Executor 组装 authority，注册 AgentPreset、Send 一条输入：模型 Assignment 被 Dispatch 且携带冻结请求的 digest，该 digest 在 Frozen 中可取回，Outcome 回送后 Turn `completed`、`Reply` 等于 Outcome 文本。
 - **PST-1/2**：同 ID 注册不同 SystemPrompt 得到不同摘要，两版均可解析；修改注册入参或 Resolve 返回值中的嵌套字段保持注册版本不变；未知 ID 或摘要返回 `ErrUnavailable`；未注册的 PromptBuilderRef 使 Loop 组合失败。
 - **AUTH-OWN-1**：同一 Session 第二次 Open 为 `ErrSessionOpen`，一代处于 opening 或 closing 时同样如此；关闭后重新 Open，旧 Handle 的 Close 不影响新一代（其 Writer 仍可提交）；按 SessionID 的读取在 Handle 关闭前后都可用且不重新打开 Session。
-- **AUTH-OWN-2/3**：命令以另一 Session 的 Writer 调用返回 conflict；接管后被替代进程的 Writer 上的 Commit/Deliver 得到 ownership lost 且不改变流（runtimetest、turntest）；被替代进程按 SessionID 的 `Record` 仍读到新 owner 留下的状态；失去所有权的 Loop 在下一次提交返回 ownership lost 并停止结算（loop ownership/takeover 测试）；接管只在新进程打开 Writer 时发生，读取不触发；app module 经同一 Writer 提交的事件与 chatlog 输入出现在同一 ledger。
+- **AUTH-OWN-2/3**：命令以另一 Session 的 Writer 调用返回 conflict；接管后被替代进程的 Writer 上的 Commit/Deliver 得到 ownership lost 且不改变 ledger（runtimetest、turntest）；被替代进程按 SessionID 的 `Record` 仍读到新 owner 留下的状态；失去所有权的 Loop 在下一次提交返回 ownership lost 并停止结算（loop ownership/takeover 测试）；接管只在新进程打开 Writer 时发生，读取不触发；app module 经同一 Writer 提交的事件与 chatlog 输入出现在同一 ledger。
 - **DRV-1/2**：同一 Run 的第二个本地驱动者得到 `AlreadyDriving` 的成功响应；ctx 取消后 Turn 保持 active、重开后驱动完成。
 - **APP-RTE-1/2**：active Turn 时 Route 走 Deliver，输入在下一次模型请求里紧随工具结果之后；无 active Turn 时 Route 开新 Turn；Drain 取全部积压开一个 Turn；`attempt_failed` 时 Route 为 conflict。
 - **DRV-3**：`missing` execution record 的工具记 Unknown 且同一 RunID 继续；缺失记录的模型步被撤回，Resume 时重新规划（`ModelSteps` 只计重规划的那一步）；`active`/`terminal` attempt 以实际 Outcome 完成原步骤，`orphaned` 映射为 `deferred` 并保持 Executing；Open 请求取消后恢复监听继续，Session/Authority 关闭后监听退出；旧进程的迟到结算被围栏。

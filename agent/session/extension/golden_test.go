@@ -16,11 +16,12 @@ type goldenPayload struct {
 // agent-session-extension.md only for the former.
 func TestEncodeWireGolden(t *testing.T) {
 	reg, err := extension.BuildRegistry(session.ProtocolVersion1, extension.ModuleDescriptor{
-		Source: "goldsrc",
-		ID:     "gold",
+		Source:  "goldsrc",
+		ID:      "gold",
+		Streams: []extension.StreamDefinition{{Domain: "gold", Lineage: session.LineageSession}},
 		Events: []extension.EventDefinition{{
 			Type:   "goldsrc/gold/sample",
-			Stream: extension.SessionStream,
+			Stream: "gold",
 			Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[goldenPayload]{}},
 		}},
 	})

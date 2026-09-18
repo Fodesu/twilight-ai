@@ -19,11 +19,13 @@ type ProjectionDefinition struct {
 	Apply      func(any, DecodedEvent) (any, error)
 	StateCodec PayloadCodec
 	// Inherits decides, per logical stream, what the fold takes from the
-	// commits a fork inherits (EXT-PRJ-8). nil is InheritSemantic: only the
-	// session stream of ancestor segments, so a child never interprets its
-	// parent's run streams as its own execution. A projection whose semantic
-	// content lives in run facts declares InheritAll. Modules that add
-	// streams decide for them with InheritStreams.
+	// commits a fork inherits (EXT-PRJ-8). nil follows the lineage each
+	// stream's domain declared: inherited batches of LineageSession domains
+	// are folded and those of LineageSegment domains are skipped, so a
+	// child never interprets its parent's execution history as its own. A
+	// projection whose content lives in another module's segment-lineage
+	// facts declares InheritAll, or names the domains it takes with
+	// InheritStreams.
 	Inherits InheritPolicy
 	// Authoritative marks a projection commands plan against on the Writer's
 	// View and whose fold guards its stream's invariants (the run machine,
@@ -40,18 +42,14 @@ type ProjectionDefinition struct {
 // logical stream from a fork's inherited prefix.
 type InheritPolicy func(session.StreamRef) bool
 
-// InheritSemantic folds only session-stream batches of inherited commits;
-// run streams of the parent are execution history the child does not own.
-func InheritSemantic(stream session.StreamRef) bool { return stream.Kind == session.StreamKindSession }
-
 // InheritAll folds every batch of inherited commits.
 func InheritAll(session.StreamRef) bool { return true }
 
-// InheritStreams folds the listed stream kinds of inherited commits.
-func InheritStreams(kinds ...session.StreamKind) InheritPolicy {
+// InheritStreams folds the listed stream domains of inherited commits.
+func InheritStreams(domains ...string) InheritPolicy {
 	return func(stream session.StreamRef) bool {
-		for _, k := range kinds {
-			if stream.Kind == k {
+		for _, d := range domains {
+			if stream.Domain == d {
 				return true
 			}
 		}
@@ -59,12 +57,15 @@ func InheritStreams(kinds ...session.StreamKind) InheritPolicy {
 	}
 }
 
-// inherits applies the definition's policy, nil meaning InheritSemantic.
-func (d *ProjectionDefinition) inherits(stream session.StreamRef) bool {
-	if d.Inherits == nil {
-		return InheritSemantic(stream)
+// inherits applies the definition's policy; nil follows the lineage the
+// stream's domain declared, and a domain no module declared is not
+// inherited.
+func (r *Registry) inherits(d *ProjectionDefinition, stream session.StreamRef) bool {
+	if d.Inherits != nil {
+		return d.Inherits(stream)
 	}
-	return d.Inherits(stream)
+	_, def, ok := r.LookupStream(stream.Domain)
+	return ok && def.Lineage == session.LineageSession
 }
 
 // ProjectionScope is a definition bound to its module scope: the modules
@@ -106,10 +107,10 @@ func (r *Registry) Fold(s *ProjectionScope, state any, commits []session.Commit)
 
 // FoldFrom folds commits under the inheritance policy of the projection
 // (EXT-PRJ-8): header is the Session's tip header, whose Parent edge marks
-// the inherited prefix; commits at or below Parent.Seq contribute only their
-// session-stream batches unless the projection declares InheritAll. A header
-// without a Parent (a root Session, or a caller folding tip commits only)
-// inherits nothing and folds everything.
+// the inherited prefix; commits at or below Parent.Seq contribute only the
+// batches the policy admits, by default those of LineageSession domains. A
+// header without a Parent (a root Session, or a caller folding tip commits
+// only) inherits nothing and folds everything.
 func (r *Registry) FoldFrom(s *ProjectionScope, state any, commits []session.Commit, header session.SegmentHeader) (any, error) {
 	for i := range commits {
 		inherited := header.Parent != nil && commits[i].Seq <= header.Parent.Seq
@@ -119,7 +120,7 @@ func (r *Registry) FoldFrom(s *ProjectionScope, state any, commits []session.Com
 		var index uint32
 		for j := range commits[i].Batches {
 			b := &commits[i].Batches[j]
-			if inherited && !s.Def.inherits(b.Stream) {
+			if inherited && !r.inherits(&s.Def, b.Stream) {
 				index += session.Limit32(uint64(len(b.Events)))
 				continue
 			}

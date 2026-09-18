@@ -33,7 +33,8 @@ var (
 func noteModule() extension.ModuleDescriptor {
 	codec := extension.JSONCodec[notePayload]{}
 	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "n",
-		Events: []extension.EventDefinition{{Type: noteType, Stream: extension.SessionStream,
+		Streams: []extension.StreamDefinition{{Domain: "n", Lineage: session.LineageSession}},
+		Events: []extension.EventDefinition{{Type: noteType, Stream: "n",
 			Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: codec, 2: codec}}},
 		Projections: []extension.ProjectionDefinition{{
 			ID: notesID, Version: 1, Consumes: []session.EventType{noteType}, Authoritative: true,
@@ -103,7 +104,7 @@ func (f *fixture) commit(t *testing.T, w writer.Writer, id string, texts ...stri
 		for _, tx := range texts {
 			events = append(events, writer.TypedEvent{Type: noteType, Value: notePayload{Text: tx}})
 		}
-		g.Batches = []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: events}}
+		g.Batches = []writer.TypedBatch{{Stream: session.StreamRef{Domain: "n"}, Events: events}}
 		return g, nil
 	})
 	if err != nil || res.Outcome != writer.CommitApplied {
@@ -151,7 +152,7 @@ func (m stubMigrator) Bootstrap(_ context.Context, view writer.View) ([]writer.S
 		return nil, err
 	}
 	summary := notePayload{Text: strings.Join(state.(noteState).Notes, "+")}
-	return []writer.SemanticGroup{{Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession},
+	return []writer.SemanticGroup{{Batches: []writer.TypedBatch{{Stream: session.StreamRef{Domain: "n"},
 		Events: []writer.TypedEvent{{Type: noteType, Value: summary}}}}}}, nil
 }
 
@@ -223,7 +224,7 @@ func TestMigrateVerdicts(t *testing.T) {
 	boom := errors.New("bootstrap failed")
 	pending := errors.New("effect pending")
 	reject := func(writer.View) ([]writer.SemanticGroup, error) {
-		return []writer.SemanticGroup{{Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession},
+		return []writer.SemanticGroup{{Batches: []writer.TypedBatch{{Stream: session.StreamRef{Domain: "n"},
 			Events: []writer.TypedEvent{{Type: noteType, Value: notePayload{Text: "reject"}}}}}}}, nil
 	}
 	cases := map[string]struct {
