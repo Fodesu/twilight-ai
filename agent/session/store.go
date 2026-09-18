@@ -56,7 +56,10 @@ type Head struct {
 // or none (SES-APP-1).
 type Proposal struct {
 	CommitID CommitID
-	Batches  []StreamBatch
+	// Intent is the operation digest sealed into the commit (Commit.Intent);
+	// empty declares none.
+	Intent  es.Digest
+	Batches []StreamBatch
 }
 
 // Handle is the kernel's ownership handle returned by Store.Open. Append

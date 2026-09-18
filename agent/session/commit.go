@@ -78,9 +78,16 @@ type StreamBatch struct {
 // every batch or none (SES-APP-1). Digest chains Commit to Commit; the empty
 // ledger head is {Next: 0, Digest: HeaderDigest}.
 type Commit struct {
-	Seq        CommitSeq     `json:"seq"`
-	CommitID   CommitID      `json:"commitId"`
-	Epoch      Epoch         `json:"epoch"`
+	Seq      CommitSeq `json:"seq"`
+	CommitID CommitID  `json:"commitId"`
+	Epoch    Epoch     `json:"epoch"`
+	// Intent is the digest of the operation that produced the commit, as the
+	// writer declared it (SES-APP-4). A replay of the CommitID compares its
+	// own intent with it: equal is the same operation, different is a
+	// conflict, even when the events cannot be rebuilt from the current
+	// state. Empty means the writer declared none; it is sealed into the
+	// commit digest.
+	Intent     es.Digest     `json:"intent,omitempty"`
 	Batches    []StreamBatch `json:"batches"`
 	PrevDigest es.Digest     `json:"prevDigest"`
 	Digest     es.Digest     `json:"digest"`
@@ -143,7 +150,7 @@ type LedgerProfile interface {
 	Version() uint16
 	HeaderDigest(SegmentHeader) (es.Digest, error)
 	BatchDigest(segment SegmentID, batch StreamBatch) (es.Digest, error)
-	CommitDigest(prev es.Digest, segment SegmentID, seq CommitSeq, commitID CommitID, epoch Epoch, batches []es.Digest) (es.Digest, error)
+	CommitDigest(prev es.Digest, segment SegmentID, seq CommitSeq, commitID CommitID, epoch Epoch, intent es.Digest, batches []es.Digest) (es.Digest, error)
 	ValidateHeader(SegmentHeader) error
 }
 
@@ -182,6 +189,7 @@ type commitDigestBody struct {
 	Seq      CommitSeq
 	CommitID CommitID
 	Epoch    Epoch
+	Intent   es.Digest `json:",omitempty"`
 	Batches  []es.Digest
 }
 
@@ -198,8 +206,8 @@ func (p profileV1) BatchDigest(segment SegmentID, batch StreamBatch) (es.Digest,
 	return digestDomain(p.version, "twilight/session/batch", body)
 }
 
-func (p profileV1) CommitDigest(prev es.Digest, segment SegmentID, seq CommitSeq, commitID CommitID, epoch Epoch, batches []es.Digest) (es.Digest, error) {
-	return digestDomain(p.version, "twilight/session/commit", commitDigestBody{prev, segment, seq, commitID, epoch, batches})
+func (p profileV1) CommitDigest(prev es.Digest, segment SegmentID, seq CommitSeq, commitID CommitID, epoch Epoch, intent es.Digest, batches []es.Digest) (es.Digest, error) {
+	return digestDomain(p.version, "twilight/session/commit", commitDigestBody{prev, segment, seq, commitID, epoch, intent, batches})
 }
 
 func (p profileV1) ValidateHeader(h SegmentHeader) error {
@@ -241,7 +249,7 @@ func SealCommit(p LedgerProfile, prev es.Digest, segment SegmentID, c *Commit) e
 		}
 		batchDigests[i] = d
 	}
-	d, err := p.CommitDigest(prev, segment, c.Seq, c.CommitID, c.Epoch, batchDigests)
+	d, err := p.CommitDigest(prev, segment, c.Seq, c.CommitID, c.Epoch, c.Intent, batchDigests)
 	if err != nil {
 		return err
 	}

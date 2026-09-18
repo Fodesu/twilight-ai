@@ -31,24 +31,27 @@ import (
 	"github.com/felinics/twilight/agent/turn"
 )
 
-// Artifacts groups the artifact ports. Both default to in-memory stores,
-// but only for an all-memory deployment: when the Session Store or the
-// Content Store is durable, a binding index and a retention ledger that
-// vanish with the process would leave the three lifetimes disagreeing after
-// a restart, so New refuses that mix unless Ephemeral says it is intended.
+// Artifacts groups the artifact ports. Durability is one bundle
+// (AUTH-PRT-3): a durable Session Store needs a durable Content Store for
+// the frozen bodies its facts name, a durable binding index and a durable
+// retention ledger, or the facts outlive the bodies and the claims after a
+// restart. Every port defaults to memory, but only an all-memory deployment
+// may take those defaults; New refuses a mix unless Ephemeral says it is
+// intended.
 type Artifacts struct {
 	Bindings artifact.BindingStore
 	Ledger   artifact.RetentionLedger
-	// Ephemeral accepts in-memory Bindings and Ledger next to a durable
-	// Store or Content Store: the binding index and the retention claims are
-	// rebuilt from nothing on every start, so retention is not enforced
-	// across restarts. Meant for tests and local runs, not production.
+	// Ephemeral accepts memory-only content, bindings or ledger next to a
+	// durable Session Store: frozen bodies, the binding index and the
+	// retention claims are lost with the process while the facts naming them
+	// survive. Meant for tests and local runs, not production.
 	Ephemeral bool
 }
 
-// ErrEphemeralArtifacts reports a durable Store or Content Store configured
-// with in-memory artifact stores and no Ephemeral opt-in.
-var ErrEphemeralArtifacts = errors.New("authority: durable store with in-memory binding store or retention ledger; provide durable Artifacts or set Artifacts.Ephemeral")
+// ErrEphemeralArtifacts reports a durable Store mixed with a memory-only
+// Content Store, binding store or retention ledger without the Ephemeral
+// opt-in.
+var ErrEphemeralArtifacts = errors.New("authority: durable session store with memory-only content store, binding store or retention ledger; provide the durable bundle or set Artifacts.Ephemeral")
 
 // Ports are the roles an Authority is composed from (AUTH-PRT-1). Every field
 // is an interface or a core value; nil fields take the defaults documented
@@ -140,7 +143,8 @@ func New(p Ports) (*Authority, error) {
 	_, memoryStore := store.(*session.MemoryStore)
 	_, memoryContent := p.Content.(*artifact.MemoryContentStore)
 	durable := !memoryStore || (p.Content != nil && !memoryContent)
-	if durable && (p.Artifacts.Bindings == nil || p.Artifacts.Ledger == nil) && !p.Artifacts.Ephemeral {
+	ephemeralPart := p.Content == nil || memoryContent || p.Artifacts.Bindings == nil || p.Artifacts.Ledger == nil
+	if durable && ephemeralPart && !p.Artifacts.Ephemeral {
 		return nil, ErrEphemeralArtifacts
 	}
 	bindings := p.Artifacts.Bindings

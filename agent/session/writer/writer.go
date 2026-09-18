@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/felinics/twilight/agent/artifact"
+	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
 )
@@ -41,7 +42,13 @@ type TypedBatch struct {
 // per-stream batches it carries.
 type SemanticGroup struct {
 	CommitID session.CommitID
-	Batches  []TypedBatch
+	// Intent is the digest of the operation the group realizes, sealed into
+	// the commit (session.Commit.Intent). When set, a replay of the CommitID
+	// is judged by intent: the same intent is already applied, a different
+	// one is a conflict, whether or not the events could be rebuilt. Empty
+	// falls back to the event fingerprint (EXT-WRT-2).
+	Intent  es.Digest
+	Batches []TypedBatch
 }
 
 // View is what a CommitFn may read: head, idempotency index and projections
@@ -301,24 +308,10 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 			return CommitResult{Outcome: CommitInvalid, Detail: fmt.Sprintf("%s: %s", ref.where, invalid)}, nil
 		}
 	}
-	fp, err := fingerprintCommit(group.CommitID, batches)
-	if err != nil {
-		return CommitResult{}, err
-	}
 	if existing, committed, err := w.kernel.LookupCommit(group.CommitID); err != nil {
 		return CommitResult{}, err
 	} else if committed {
-		// The kernel holds the commit, not a fingerprint, so a replay recomputes
-		// the old commit's fingerprint to tell a replay from a conflict
-		// (EXT-WRT-2). Only a hit pays for this.
-		old, err := fingerprintCommit(existing.CommitID, existing.Batches)
-		if err != nil {
-			return CommitResult{}, err
-		}
-		if old == fp {
-			return CommitResult{Outcome: CommitAlreadyApplied, Commit: existing}, nil
-		}
-		return CommitResult{Outcome: CommitConflict}, nil
+		return replayVerdict(existing, group.Intent, batches)
 	}
 	// Projections must accept the commit before anything is persisted. The
 	// provisional commit is what a reader folds too: the kernel assigns
@@ -338,7 +331,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	if invalid != "" {
 		return CommitResult{Outcome: CommitInvalid, Detail: invalid}, nil
 	}
-	sealed, err := w.kernel.Append(ctx, session.Proposal{CommitID: group.CommitID, Batches: batches})
+	sealed, err := w.kernel.Append(ctx, session.Proposal{CommitID: group.CommitID, Intent: group.Intent, Batches: batches})
 	if err != nil {
 		if claim != nil && appendOutcomeKnown(err) {
 			w.admission.release(ctx, claim) // best effort; OpenWriter reconciles any orphan
@@ -367,6 +360,32 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	writes = w.projections.planRefresh(w.head, false)
 	applied = &sealed
 	return CommitResult{Outcome: CommitApplied, Commit: sealed, Claim: claim}, nil
+}
+
+// replayVerdict tells a replay of a committed CommitID from a conflict
+// (EXT-WRT-2). When both the commit and the retry declare an intent, the
+// intents decide; otherwise the kernel holds the commit, not a fingerprint,
+// so the old commit's event fingerprint is recomputed and compared. Only a
+// CommitID hit pays for either.
+func replayVerdict(existing session.Commit, intent es.Digest, batches []session.StreamBatch) (CommitResult, error) {
+	if existing.Intent != "" && intent != "" {
+		if existing.Intent == intent {
+			return CommitResult{Outcome: CommitAlreadyApplied, Commit: existing}, nil
+		}
+		return CommitResult{Outcome: CommitConflict, Detail: "same CommitID, different intent"}, nil
+	}
+	fp, err := fingerprintCommit(existing.CommitID, batches)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	old, err := fingerprintCommit(existing.CommitID, existing.Batches)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	if old == fp {
+		return CommitResult{Outcome: CommitAlreadyApplied, Commit: existing}, nil
+	}
+	return CommitResult{Outcome: CommitConflict}, nil
 }
 
 // appendOutcomeKnown reports the Append errors that guarantee nothing was

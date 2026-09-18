@@ -118,9 +118,16 @@ func owned(w writer.Writer, ref TurnRef) error {
 	return nil
 }
 
-// commit appends one unit of work and maps the outcome (TRN-STR-3). A
-// chatlog refusal (an input no longer submitted) is the Turn's conflict.
-func (c *Coordinator) commit(ctx context.Context, w writer.Writer, op string, work unit.Work) error {
+// commit appends one unit of work and maps the outcome (TRN-STR-3). intent
+// is the operation's content; a replay of the CommitID with another intent
+// is the Turn's conflict (EXT-WRT-2). A chatlog refusal (an input no longer
+// submitted) is the Turn's conflict too.
+func (c *Coordinator) commit(ctx context.Context, w writer.Writer, op string, intent any, work unit.Work) error {
+	digest, err := unit.Intent(intent)
+	if err != nil {
+		return fmt.Errorf("turn: %s intent: %w", op, err)
+	}
+	work.Intent = digest
 	res, err := unit.Commit(ctx, w, c.now(), work)
 	if err != nil {
 		switch {
@@ -206,7 +213,12 @@ func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req StartReque
 		chatlog.DeliverInputs(chatlog.TurnID(turnID), req.Inputs),
 		runmod.CreateRun(newRun, req.Inputs),
 	}}
-	if err := c.commit(ctx, w, "start", work); err != nil {
+	intent := struct {
+		TurnID TurnID           `json:"turnId"`
+		Preset PresetRef        `json:"preset"`
+		Inputs []run.AgentInput `json:"inputs"`
+	}{turnID, req.Preset, req.Inputs}
+	if err := c.commit(ctx, w, "start", intent, work); err != nil {
 		return TurnResponse{}, err
 	}
 	return c.respond(ctx, req.Ref, runID)
@@ -258,7 +270,7 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req DeliverR
 		return TurnResponse{}, err
 	}
 	work := unit.Work{CommitID: session.CommitID(env.ID), Parts: []unit.Part{accept, chatlog.DeliverInputs(chatlog.TurnID(req.Ref.TurnID), req.Inputs)}}
-	if err := c.commit(ctx, w, "deliver", work); err != nil {
+	if err := c.commit(ctx, w, "deliver", env, work); err != nil {
 		if errors.Is(err, run.ErrRunTerminal) {
 			// The last step settled first (TRN-DLV-3): the inputs stay submitted.
 			return c.respond(ctx, req.Ref, runID)
@@ -328,7 +340,12 @@ func (c *Coordinator) Retry(ctx context.Context, w writer.Writer, req RetryReque
 		}),
 		runmod.CreateRun(newRun, inputs),
 	}}
-	if err := c.commit(ctx, w, "retry", work); err != nil {
+	intent := struct {
+		TurnID  TurnID           `json:"turnId"`
+		Attempt uint32           `json:"attempt"`
+		Inputs  []run.AgentInput `json:"inputs"`
+	}{turnID, attempt, inputs}
+	if err := c.commit(ctx, w, "retry", intent, work); err != nil {
 		return TurnResponse{}, err
 	}
 	return c.respond(ctx, req.Ref, runID)
@@ -391,7 +408,11 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest
 				Value: FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementStopped, FailureClass: "cancelled"}}), nil
 		}),
 	}}
-	if err := c.commit(ctx, w, "stop", work); err != nil && !errors.Is(err, run.ErrRunTerminal) {
+	intent := struct {
+		Command run.CommandEnvelope `json:"command"`
+		Failed  FailedPayload       `json:"failed"`
+	}{env, FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementStopped, FailureClass: "cancelled"}}
+	if err := c.commit(ctx, w, "stop", intent, work); err != nil && !errors.Is(err, run.ErrRunTerminal) {
 		return TurnResponse{}, err
 	}
 	return c.respond(ctx, req.Ref, runID)
@@ -425,7 +446,8 @@ func (c *Coordinator) Settle(ctx context.Context, w writer.Writer, req SettleReq
 				Value: FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementFailed, FailureClass: req.FailureClass}}), nil
 		}),
 	}}
-	if err := c.commit(ctx, w, "settle", work); err != nil {
+	intent := FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementFailed, FailureClass: req.FailureClass}
+	if err := c.commit(ctx, w, "settle", intent, work); err != nil {
 		return TurnResponse{}, err
 	}
 	return c.respond(ctx, req.Ref, runID)

@@ -6,11 +6,14 @@ import (
 	"reflect"
 )
 
-// The sealed fact and command variants are registered once, here. The wire
-// discriminator, the decoder and the Go type of a variant come from the same
-// entry, so adding a variant is one line: a discriminator that decodes cannot
-// lack a name, and a named variant cannot lack a decoder. FactTypes and
-// CommandTypes expose the closed lists to modules that register wire types.
+// The sealed fact and command variants of one schema version are registered
+// once, in that version's variantRegistry. The wire discriminator, the
+// decoder and the Go type of a variant come from the same entry, so adding a
+// variant is one line: a discriminator that decodes cannot lack a name, and a
+// named variant cannot lack a decoder. Each WireSchema holds its own
+// registry, so a later version may rename or reshape a variant without
+// touching how v1 decodes. FactTypes exposes the closed union of names to
+// modules that register wire types.
 
 type factVariant struct {
 	name   string
@@ -42,8 +45,8 @@ func commandOf[T AgentCommand](name string) commandVariant {
 	}}
 }
 
-// factVariants is the closed list of facts in wire-registration order.
-var factVariants = []factVariant{
+// factVariantsV1 is the closed list of v1 facts in wire-registration order.
+var factVariantsV1 = []factVariant{
 	factOf[RunCreated]("run_created"),
 	factOf[ModelStepPrepared]("model_step_prepared"),
 	factOf[ModelStepWithdrawn]("model_step_withdrawn"),
@@ -61,8 +64,8 @@ var factVariants = []factVariant{
 	factOf[RunEnded]("run_ended"),
 }
 
-// commandVariants is the closed list of commands.
-var commandVariants = []commandVariant{
+// commandVariantsV1 is the closed list of v1 commands.
+var commandVariantsV1 = []commandVariant{
 	commandOf[PrepareModelRequest]("prepare_model_request"),
 	commandOf[WithdrawPreparedStep]("withdraw_prepared_step"),
 	commandOf[StartModelExecution]("start_model_execution"),
@@ -80,84 +83,100 @@ var commandVariants = []commandVariant{
 	commandOf[AcceptInput]("accept_input"),
 }
 
-var (
-	factByName    = map[string]factVariant{}
-	factByType    = map[reflect.Type]string{}
-	commandByName = map[string]commandVariant{}
-	commandByType = map[reflect.Type]string{}
-)
-
-func init() {
-	for _, v := range factVariants {
-		if _, dup := factByName[v.name]; dup {
-			panic("agent: duplicate fact variant " + v.name)
-		}
-		factByName[v.name] = v
-		factByType[v.goType] = v.name
-	}
-	for _, v := range commandVariants {
-		if _, dup := commandByName[v.name]; dup {
-			panic("agent: duplicate command variant " + v.name)
-		}
-		commandByName[v.name] = v
-		commandByType[v.goType] = v.name
-	}
+// variantRegistry is one schema version's closed variant table.
+type variantRegistry struct {
+	facts         []factVariant
+	factByName    map[string]factVariant
+	factByType    map[reflect.Type]string
+	commandByName map[string]commandVariant
+	commandByType map[reflect.Type]string
 }
 
-// factType returns the wire discriminator of a sealed fact variant, or "".
-func factType(f Fact) string {
+func newVariantRegistry(facts []factVariant, commands []commandVariant) *variantRegistry {
+	r := &variantRegistry{facts: facts, factByName: map[string]factVariant{}, factByType: map[reflect.Type]string{},
+		commandByName: map[string]commandVariant{}, commandByType: map[reflect.Type]string{}}
+	for _, v := range facts {
+		if _, dup := r.factByName[v.name]; dup {
+			panic("agent: duplicate fact variant " + v.name)
+		}
+		r.factByName[v.name] = v
+		r.factByType[v.goType] = v.name
+	}
+	for _, v := range commands {
+		if _, dup := r.commandByName[v.name]; dup {
+			panic("agent: duplicate command variant " + v.name)
+		}
+		r.commandByName[v.name] = v
+		r.commandByType[v.goType] = v.name
+	}
+	return r
+}
+
+// variantsV1 is SchemaVersion1's registry; wireV1 speaks through it.
+var variantsV1 = newVariantRegistry(factVariantsV1, commandVariantsV1)
+
+func (r *variantRegistry) factType(f Fact) string {
 	if f == nil {
 		return ""
 	}
-	return factByType[reflect.TypeOf(f)]
+	return r.factByType[reflect.TypeOf(f)]
 }
 
-// FactType returns the local event name of a fact (the part of the EventType
-// after twilight/run/).
-func FactType(f Fact) string { return factType(f) }
+func (r *variantRegistry) commandType(c AgentCommand) string {
+	if c == nil {
+		return ""
+	}
+	return r.commandByType[reflect.TypeOf(c)]
+}
 
-// FactTypes lists every fact discriminator in registration order.
-func FactTypes() []string {
-	out := make([]string, len(factVariants))
-	for i, v := range factVariants {
+func (r *variantRegistry) factTypes() []string {
+	out := make([]string, len(r.facts))
+	for i, v := range r.facts {
 		out[i] = v.name
 	}
 	return out
 }
 
-// commandType returns the wire discriminator of a sealed command variant, or "".
-func commandType(c AgentCommand) string {
-	if c == nil {
-		return ""
-	}
-	return commandByType[reflect.TypeOf(c)]
-}
-
-// CommandType returns the wire discriminator of a command.
-func CommandType(c AgentCommand) string { return commandType(c) }
-
 func emptyBody(raw []byte) bool {
 	return len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
-func decodeFactVariant(typ string, raw []byte) (Fact, error) {
+func (r *variantRegistry) decodeFact(typ string, raw []byte) (Fact, error) {
 	if emptyBody(raw) {
 		return nil, fmt.Errorf("agent: codec: fact %q has empty body", typ)
 	}
-	v, ok := factByName[typ]
+	v, ok := r.factByName[typ]
 	if !ok {
 		return nil, fmt.Errorf("agent: codec: unknown fact type %q", typ)
 	}
 	return v.decode(raw)
 }
 
-func decodeCommandVariant(typ string, raw []byte) (AgentCommand, error) {
+func (r *variantRegistry) decodeCommand(typ string, raw []byte) (AgentCommand, error) {
 	if emptyBody(raw) {
 		return nil, fmt.Errorf("agent: codec: command %q has empty body", typ)
 	}
-	v, ok := commandByName[typ]
+	v, ok := r.commandByName[typ]
 	if !ok {
 		return nil, fmt.Errorf("agent: codec: unknown command type %q", typ)
 	}
 	return v.decode(raw)
 }
+
+// FactTypes lists every fact discriminator any schema version registers, in
+// registration order and without duplicates: the closed set of
+// twilight/run/ wire names a Session module registers. Today it is v1's.
+func FactTypes() []string { return variantsV1.factTypes() }
+
+// factType is the discriminator of a fact under the current schema; the
+// generic helpers (snapshotFact, fold error text) use it where no schema is
+// in hand. Variant names are stable across versions unless a version
+// renames one, which registers a new wire name.
+func factType(f Fact) string { return variantsV1.factType(f) }
+
+// FactType returns the local event name of a fact (the part of the EventType
+// after twilight/run/) under the current schema.
+func FactType(f Fact) string { return factType(f) }
+
+// commandType is the current schema's command discriminator.
+func commandType(c AgentCommand) string { return variantsV1.commandType(c) }

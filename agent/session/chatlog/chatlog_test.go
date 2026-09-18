@@ -28,7 +28,7 @@ type step struct {
 }
 
 func runStep(runID run.RunID, f run.Fact) step {
-	return step{runmod.EventType(f), runmod.Event{RunID: runID, Fact: f}}
+	return step{runmod.EventType(run.SchemaV1().Wire, f), runmod.Event{RunID: runID, Fact: f}}
 }
 
 func created(runID run.RunID, owner string) step {

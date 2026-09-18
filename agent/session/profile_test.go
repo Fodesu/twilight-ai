@@ -45,11 +45,11 @@ func TestProfileVersionSeparatesDigests(t *testing.T) {
 		t.Fatal("batch digests ignore the ProtocolVersion: a new version would reuse v2 digests")
 	}
 
-	c2, err := v2.CommitDigest(prev, "s", 0, "c1", 1, []es.Digest{got2})
+	c2, err := v2.CommitDigest(prev, "s", 0, "c1", 1, "", []es.Digest{got2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	c3, err := v3.CommitDigest(prev, "s", 0, "c1", 1, []es.Digest{got3})
+	c3, err := v3.CommitDigest(prev, "s", 0, "c1", 1, "", []es.Digest{got3})
 	if err != nil {
 		t.Fatal(err)
 	}

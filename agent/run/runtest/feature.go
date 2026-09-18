@@ -59,7 +59,7 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) (*runmod.SessionRunStore
 	}
 	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), Value: runmod.Event{RunID: defaultRunID, Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(run.SchemaV1().Wire, f), Value: runmod.Event{RunID: defaultRunID, Fact: f}})
 	}
 	group := &writer.SemanticGroup{CommitID: "create/" + defaultRunID,
 		Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: string(defaultRunID)}, Events: runEvents}}}

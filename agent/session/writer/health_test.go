@@ -3,6 +3,7 @@ package writer
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/felinics/twilight/agent/session"
@@ -99,5 +100,72 @@ func TestDerivedProjectionFailureDoesNotBlockCommit(t *testing.T) {
 	}
 	if _, through, ok, _ := cache.Load(ctx, "s", "h/authoritative", 1); !ok || through.Next != 3 {
 		t.Fatalf("healthy projection cache = ok=%v %+v, want head 3", ok, through)
+	}
+}
+
+// EXT-PRJ-9 across a reopen: a derived projection that cannot fold the log
+// does not keep the Session from opening; it stops at its last good commit
+// and is unhealthy, the authoritative projections fold to head.
+func TestDerivedProjectionFailureDoesNotBlockReopen(t *testing.T) {
+	ctx := context.Background()
+	store := session.NewMemoryStore()
+	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
+		t.Fatal(err)
+	}
+	// Write "one", "boom", "three" with a registry whose derived projection
+	// accepts everything, then reopen with the one that fails on boom.
+	permissive := healthModule()
+	permissive.Projections[1].Apply = func(state any, e extension.DecodedEvent) (any, error) { return state, nil }
+	permissive.Projections[0].Apply = permissive.Projections[1].Apply
+	reg1, err := extension.BuildRegistry(session.ProtocolVersion1, permissive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err := openWriter(ctx, store, reg1, Admission{}, "s", session.OpenOptions{}, WritersConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, text := range []string{"one", "boom", "three"} {
+		res, err := w.Commit(ctx, func(View) (*SemanticGroup, error) {
+			return &SemanticGroup{CommitID: session.CommitID(fmt.Sprintf("c%d", i)), Batches: sessionBatch(TypedEvent{Type: tpfx("h") + "row", Value: notePayload{Text: text}})}, nil
+		})
+		if err != nil || res.Outcome != CommitApplied {
+			t.Fatalf("c%d = %+v %v", i, res, err)
+		}
+	}
+	if err := w.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	strict := healthModule()
+	strict.Projections[0].Apply = permissive.Projections[0].Apply // authoritative one keeps folding
+	reg2, err := extension.BuildRegistry(session.ProtocolVersion1, strict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w, err = openWriter(ctx, store, reg2, Admission{}, "s", session.OpenOptions{Takeover: true}, WritersConfig{})
+	if err != nil {
+		t.Fatalf("reopen with a failing derived projection: %v", err)
+	}
+	if _, _, err := w.Projections().Load(ctx, "s", "h/derived", 1); !errors.Is(err, &extension.Error{Code: extension.ErrProjectionUnhealthy}) {
+		t.Fatalf("derived after reopen = %v, want unhealthy", err)
+	}
+	if _, head, err := w.Projections().Load(ctx, "s", "h/authoritative", 1); err != nil || head.Next != 3 {
+		t.Fatalf("authoritative after reopen = %+v %v", head, err)
+	}
+	// And the Session still writes.
+	if res, err := w.Commit(ctx, func(View) (*SemanticGroup, error) {
+		return &SemanticGroup{CommitID: "c3", Batches: sessionBatch(TypedEvent{Type: tpfx("h") + "row", Value: notePayload{Text: "four"}})}, nil
+	}); err != nil || res.Outcome != CommitApplied {
+		t.Fatalf("commit after reopen = %+v %v", res, err)
+	}
+	// An authoritative projection that cannot fold the log refuses the open.
+	failingAuth := healthModule()
+	reg3, err := extension.BuildRegistry(session.ProtocolVersion1, failingAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = w.Close(ctx)
+	if _, err := openWriter(ctx, store, reg3, Admission{}, "s", session.OpenOptions{Takeover: true}, WritersConfig{}); err == nil {
+		t.Fatal("reopen with a failing authoritative projection succeeded")
 	}
 }

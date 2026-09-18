@@ -213,6 +213,11 @@ func BuildRegistry(protocolVersion uint16, modules ...ModuleDescriptor) (*Regist
 			if p.ID == "" || p.Version == 0 || p.Initial == nil || p.Apply == nil || p.StateCodec == nil {
 				return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("projection %q is incomplete", p.ID)}
 			}
+			// Refusing commits is a capability of the first-party modules,
+			// not something a module declares for itself (EXT-PRJ-9).
+			if p.Authoritative && m.Source != SourceTwilight {
+				return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("projection %q of module %s/%s declares Authoritative; only %s modules may", p.ID, m.Source, m.ID, SourceTwilight)}
+			}
 			k := projectionKey{p.ID, p.Version}
 			if _, dup := r.projections[k]; dup {
 				return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("duplicate projection %q v%d", p.ID, p.Version)}

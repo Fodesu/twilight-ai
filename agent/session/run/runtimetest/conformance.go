@@ -33,6 +33,7 @@ func Run(t *testing.T, factory Factory) {
 		"SettlementSnapshot": testSettlementSnapshot,
 		"PrepareCAS":         testPrepareCASIgnoresOtherModules,
 		"Projection":         testProjection,
+		"SettlementIntent":   testSettlementIntent,
 		"Isolation":          testIsolation,
 		"Takeover":           testTakeover,
 		"Reattach":           testReattach,
@@ -424,6 +425,29 @@ func testPrepareCASIgnoresOtherModules(t *testing.T, factory Factory) {
 	}
 	if _, err := h.commit("r1", id, snap.Position, cmd); err != nil {
 		t.Fatalf("prepare against a moved session head: %v", err)
+	}
+}
+
+// RUN-CMT-5: a settlement CommandID names the attempt, not the outcome, so a
+// second settlement of the same attempt with another result is a conflict,
+// never a silent replay; the same result replays.
+func testSettlementIntent(t *testing.T, factory Factory) {
+	h := newHarness(t, factory(t))
+	h.startRun("t1", "r1", input("in-1"))
+	step, claim := h.executingModel("r1", false)
+	id := run.SchemaV1().Identity.DeriveSettlementCommandID("r1", step, "", claim)
+	first := h.mustCommit("r1", id, 0, run.SubmitModelResult{StepID: step, Result: textResult("one")})
+	if !first.Snapshot.State.Status.Terminal() {
+		t.Fatalf("settlement = %+v", first.Snapshot.State.Status)
+	}
+	if again, err := h.commit("r1", id, 0, run.SubmitModelResult{StepID: step, Result: textResult("one")}); err != nil || again.Status != run.CommitAlreadyApplied {
+		t.Fatalf("same result replay = %v %v", again.Status, err)
+	}
+	if _, err := h.commit("r1", id, 0, run.SubmitModelResult{StepID: step, Result: textResult("two")}); !errors.Is(err, run.ErrCommandConflict) {
+		t.Fatalf("different result under the same attempt = %v, want ErrCommandConflict", err)
+	}
+	if _, err := h.commit("r1", id, 0, run.SubmitModelFailure{StepID: step, Failure: run.StepFailure{Class: run.FailureProvider, Message: "x"}}); !errors.Is(err, run.ErrCommandConflict) {
+		t.Fatalf("failure under a settled attempt = %v, want ErrCommandConflict", err)
 	}
 }
 

@@ -28,8 +28,10 @@ const (
 // registers, with no second list to keep in step.
 var factNames = run.FactTypes()
 
-// EventType returns the EventType of a fact.
-func EventType(f run.Fact) session.EventType { return Prefix + session.EventType(run.FactType(f)) }
+// EventType returns the EventType of a fact under the Run's schema.
+func EventType(wire run.WireSchema, f run.Fact) session.EventType {
+	return Prefix + session.EventType(wire.FactType(f))
+}
 
 // Event is the typed value of one twilight/run/ event: the fact plus the
 // RunID that every payload carries at its first level (RUN-WIR-2).

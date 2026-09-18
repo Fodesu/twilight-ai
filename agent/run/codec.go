@@ -40,7 +40,11 @@ func (e CommandEnvelope) MarshalJSON() ([]byte, error) {
 	if e.Command == nil {
 		return nil, errors.New("agent: codec: command envelope has nil command")
 	}
-	typ := commandType(e.Command)
+	schema, err := SchemaFor(e.SchemaVersion)
+	if err != nil {
+		return nil, err
+	}
+	typ := schema.Wire.CommandType(e.Command)
 	if typ == "" {
 		return nil, fmt.Errorf("agent: codec: unknown command variant %T", e.Command)
 	}

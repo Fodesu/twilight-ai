@@ -95,3 +95,31 @@ func TestCommitMergesRefusesAndReplays(t *testing.T) {
 		t.Fatal("unit without events accepted")
 	}
 }
+
+// A unit's Intent is sealed into the commit; a later unit with the same
+// CommitID is judged by it without preparing a Part: same intent is already
+// applied, a different intent is a conflict (EXT-WRT-2), and a unit that
+// declares no intent can only be a replay.
+func TestCommitJudgesReplayByIntent(t *testing.T) {
+	ctx := context.Background()
+	w := newWriter(t)
+	intentA, _ := unit.Intent(map[string]string{"op": "a"})
+	intentB, _ := unit.Intent(map[string]string{"op": "b"})
+	res, err := unit.Commit(ctx, w, 1, unit.Work{CommitID: "u1", Intent: intentA, Parts: []unit.Part{submitted("a")}})
+	if err != nil || res.Outcome != writer.CommitApplied || res.Commit.Intent != intentA {
+		t.Fatalf("commit = %+v %v", res, err)
+	}
+	boom := unit.PartFunc(func(context.Context, writer.View, int64) ([]writer.TypedBatch, error) {
+		t.Fatal("replay prepared a part")
+		return nil, nil
+	})
+	if again, err := unit.Commit(ctx, w, 2, unit.Work{CommitID: "u1", Intent: intentA, Parts: []unit.Part{boom}}); err != nil || again.Outcome != writer.CommitAlreadyApplied {
+		t.Fatalf("same intent = %+v %v", again, err)
+	}
+	if other, err := unit.Commit(ctx, w, 2, unit.Work{CommitID: "u1", Intent: intentB, Parts: []unit.Part{boom}}); err != nil || other.Outcome != writer.CommitConflict {
+		t.Fatalf("different intent = %+v %v, want conflict", other, err)
+	}
+	if none, err := unit.Commit(ctx, w, 2, unit.Work{CommitID: "u1", Parts: []unit.Part{boom}}); err != nil || none.Outcome != writer.CommitAlreadyApplied {
+		t.Fatalf("no intent = %+v %v, want already applied", none, err)
+	}
+}

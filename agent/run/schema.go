@@ -97,6 +97,10 @@ type Machine interface {
 // schema version. Encoding is canonical JSON of the variant under the typed
 // payload envelope (schema version, type discriminator, body).
 type WireSchema interface {
+	// FactType is the wire discriminator of a fact variant, "" if unknown.
+	FactType(Fact) string
+	// CommandType is the wire discriminator of a command variant, "" if unknown.
+	CommandType(AgentCommand) string
 	// DecodeFact restores the sealed fact variant named by typ.
 	DecodeFact(typ string, raw []byte) (Fact, error)
 	// DecodeCommand restores the sealed command variant named by typ.
@@ -197,23 +201,28 @@ func (machineV1) CreateGroup(run NewRun, inputs []AgentInput) ([]Fact, error) {
 
 // --- v1 wire ------------------------------------------------------------------------
 
+// wireV1 speaks through variantsV1, its own frozen variant table.
 type wireV1 struct{}
 
-func (wireV1) DecodeFact(typ string, raw []byte) (Fact, error) { return decodeFactVariant(typ, raw) }
+func (wireV1) FactType(f Fact) string            { return variantsV1.factType(f) }
+func (wireV1) CommandType(c AgentCommand) string { return variantsV1.commandType(c) }
+func (wireV1) DecodeFact(typ string, raw []byte) (Fact, error) {
+	return variantsV1.decodeFact(typ, raw)
+}
 
 func (wireV1) DecodeCommand(typ string, raw []byte) (AgentCommand, error) {
-	return decodeCommandVariant(typ, raw)
+	return variantsV1.decodeCommand(typ, raw)
 }
 
 func (wireV1) EncodeFact(typ string, fact Fact) ([]byte, error) {
-	if typ == "" || typ != factType(fact) {
+	if typ == "" || typ != variantsV1.factType(fact) {
 		return nil, fmt.Errorf("agent: encode: type %q does not match fact variant", typ)
 	}
 	return encodeEnvelopeBody(SchemaVersion1, typ, fact)
 }
 
 func (wireV1) Envelope(run RunID, id CommandID, cmd AgentCommand) (CommandEnvelope, error) {
-	typ := commandType(cmd)
+	typ := variantsV1.commandType(cmd)
 	if typ == "" {
 		return CommandEnvelope{}, fmt.Errorf("agent: envelope: unknown command variant %T", cmd)
 	}

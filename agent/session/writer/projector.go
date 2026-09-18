@@ -69,13 +69,36 @@ func (p *projector) rebuild(ctx context.Context, page session.CommitPage) error 
 			from = through.Next
 		}
 		if from < session.CommitSeq(len(page.Commits)) {
-			if state, err = p.registry.FoldFrom(scope, state, page.Commits[from:], page.Header); err != nil {
-				return err
+			folded, err := p.registry.FoldFrom(scope, state, page.Commits[from:], page.Header)
+			if err != nil {
+				if scope.Def.Authoritative {
+					return err
+				}
+				// A derived projection that cannot fold the log does not keep
+				// the Session from opening (EXT-PRJ-9): it stops at its last
+				// good commit and stays unhealthy until a registry that folds
+				// it reopens the Session.
+				folded, err = p.lastGood(scope, state, page.Commits[from:], page.Header)
+				p.unhealthy[k] = err
 			}
+			state = folded
 		}
 		p.states[k] = state
 	}
 	return nil
+}
+
+// lastGood folds commits one at a time and returns the state before the
+// first commit the projection cannot fold, with that failure.
+func (p *projector) lastGood(scope *extension.ProjectionScope, state any, commits []session.Commit, header session.SegmentHeader) (any, error) {
+	for i := range commits {
+		next, err := p.registry.FoldFrom(scope, state, commits[i:i+1], header)
+		if err != nil {
+			return state, err
+		}
+		state = next
+	}
+	return state, nil
 }
 
 // startState returns the state this projection should begin folding from: the

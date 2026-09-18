@@ -500,7 +500,7 @@ func testProjection(t *testing.T, factory Factory) {
 	}
 	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: h.now, Value: runmod.Event{RunID: "r-foreign", Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(run.SchemaV1().Wire, f), RecordedAtUnixMilli: h.now, Value: runmod.Event{RunID: "r-foreign", Fact: f}})
 	}
 	h.mustApply(writer.SemanticGroup{CommitID: "foreign-run", Batches: []writer.TypedBatch{
 		{Stream: session.StreamRef{Kind: session.StreamKindRun, ID: "r-foreign"}, Events: runEvents},

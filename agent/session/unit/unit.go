@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/writer"
 )
@@ -35,17 +36,27 @@ func (f PartFunc) Prepare(ctx context.Context, view writer.View, now int64) ([]w
 // in the order their batches are laid out.
 type Work struct {
 	CommitID session.CommitID
-	Parts    []Part
+	// Intent is the digest of the operation this unit realizes: the command
+	// envelope, the request, whatever decides the events. It is sealed into
+	// the commit, and a later unit with the same CommitID is judged by it: the
+	// same intent is already applied, a different one is a conflict, even
+	// after the state moved so far that the Parts could not rebuild the
+	// group (EXT-WRT-2). Intent() computes it from any canonical value.
+	Intent es.Digest
+	Parts  []Part
 }
 
-// Commit appends the unit through w. A CommitID the log already holds is a
-// replay: no Part prepares and the sealed commit comes back as
-// CommitAlreadyApplied (every unit's CommitID is content-derived, so a hit is
-// the same operation). Otherwise every Part prepares against one View and
-// their batches are merged by stream in Part order, so the commit holds at
-// most one batch per stream. A Part error is returned as is with nothing
-// written; the Writer's own verdicts (CommitConflict, CommitInvalid) come
-// back in the result.
+// Intent digests the canonical JSON of v as a unit's Intent.
+func Intent(v any) (es.Digest, error) { return es.DigestCanonical(v) }
+
+// Commit appends the unit through w. A CommitID the log already holds is
+// judged without preparing any Part: the same Intent is CommitAlreadyApplied
+// with the sealed commit, a different Intent is CommitConflict (a commit or
+// a unit that declared no Intent can only be taken as a replay). Otherwise
+// every Part prepares against one View and their batches are merged by
+// stream in Part order, so the commit holds at most one batch per stream. A
+// Part error is returned as is with nothing written; the Writer's own
+// verdicts (CommitConflict, CommitInvalid) come back in the result.
 func Commit(ctx context.Context, w writer.Writer, now int64, work Work) (writer.CommitResult, error) {
 	if w == nil {
 		return writer.CommitResult{}, errors.New("unit: nil writer")
@@ -61,7 +72,7 @@ func Commit(ctx context.Context, w writer.Writer, now int64, work Work) (writer.
 			replay = &existing
 			return nil, nil
 		}
-		group := &writer.SemanticGroup{CommitID: work.CommitID}
+		group := &writer.SemanticGroup{CommitID: work.CommitID, Intent: work.Intent}
 		index := map[session.StreamRef]int{}
 		for _, p := range work.Parts {
 			batches, err := p.Prepare(ctx, view, now)
@@ -89,6 +100,9 @@ func Commit(ctx context.Context, w writer.Writer, now int64, work Work) (writer.
 		return writer.CommitResult{}, err
 	}
 	if replay != nil {
+		if replay.Intent != "" && work.Intent != "" && replay.Intent != work.Intent {
+			return writer.CommitResult{Outcome: writer.CommitConflict, Detail: "same CommitID, different intent"}, nil
+		}
 		return writer.CommitResult{Outcome: writer.CommitAlreadyApplied, Commit: *replay}, nil
 	}
 	return res, nil
