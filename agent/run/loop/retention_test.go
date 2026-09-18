@@ -33,8 +33,8 @@ func TestLocalExecutorRetainsBoundedOutcomes(t *testing.T) {
 	var keys []string
 	for _, n := range []string{"1", "2", "3"} {
 		a := Assignment{Session: testScope, RunID: "run-1", StepID: StepID("step-" + n), CallID: CallID("call-" + n),
-			Claim: ExecutionClaim("claim-" + n), Schema: SchemaVersion1, Kind: AssignmentTool,
-			Tool: &ToolAssignment{ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest, Arguments: cj(`{}`), Policy: DirectExecution}}
+			Claim: ExecutionClaim("claim-" + n), Schema: SchemaVersion1,
+			Body: ToolAssignment{ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest, Arguments: cj(`{}`), Policy: DirectExecution}}
 		ref, err := exec.Prepare(ctx, a)
 		if err != nil {
 			t.Fatal(err)
@@ -118,7 +118,7 @@ func TestLoopReleasesSlots(t *testing.T) {
 				t.Fatal(err)
 			}
 			result := textResult("done")
-			if _, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: exec.last().Key(), Model: &result}, nil); err != nil {
+			if _, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: exec.last().Key(), Result: ModelSucceeded{Result: result}}, nil); err != nil {
 				t.Fatal(err)
 			}
 			return l

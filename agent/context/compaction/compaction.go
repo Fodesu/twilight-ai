@@ -129,8 +129,8 @@ func (s Summarizer) Summarize(ctx context.Context, sid session.SessionID, preset
 		return "", err
 	}
 	a := effect.Assignment{Session: run.Scope(sid), RunID: run.RunID("compact-" + randomHex(8)), StepID: "summary",
-		Claim: run.ExecutionClaim(randomHex(16)), Schema: run.SchemaVersion1, Kind: effect.AssignmentModel,
-		Model: &effect.ModelAssignment{Model: preset.Model, Request: &frozen, RequestDigest: digest}}
+		Claim: run.ExecutionClaim(randomHex(16)), Schema: run.SchemaVersion1,
+		Body: effect.ModelAssignment{Model: preset.Model, Request: &frozen, RequestDigest: digest}}
 	if err := s.Executor.Dispatch(ctx, a); err != nil {
 		return "", err
 	}
@@ -141,15 +141,19 @@ func (s Summarizer) Summarize(ctx context.Context, sid session.SessionID, preset
 		}
 		return "", err
 	}
-	switch {
-	case out.Err != nil:
-		return "", out.Err
-	case out.Cancelled:
+	switch r := out.Result.(type) {
+	case effect.ModelSucceeded:
+		if strings.TrimSpace(r.Result.Text) == "" {
+			return "", errors.New("compaction: compactor returned an empty summary")
+		}
+		return r.Result.Text, nil
+	case effect.ModelFailed:
+		return "", fmt.Errorf("compaction: compactor failed: %s: %s", r.Code, r.Message)
+	case effect.Cancelled:
 		return "", errors.New("compaction: compactor call was cancelled")
-	case out.Model == nil || strings.TrimSpace(out.Model.Text) == "":
-		return "", errors.New("compaction: compactor returned an empty summary")
+	default:
+		return "", fmt.Errorf("compaction: compactor delivered %T", out.Result)
 	}
-	return out.Model.Text, nil
 }
 
 // renderTranscript flattens materialized entries into the compactor's input.

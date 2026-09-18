@@ -103,7 +103,7 @@ func TestAssignmentFromTarget(t *testing.T) {
 	}
 	targets[0].Schema = run.SchemaVersion1
 	a := AssignmentFromTarget("s", targets[0])
-	if a.Kind != effect.AssignmentModel || a.Model == nil || a.Model.Request != nil || a.Model.RequestDigest != "sha256:req" || a.Schema != run.SchemaVersion1 {
+	if model, ok := a.Model(); !ok || model.Request != nil || model.RequestDigest != "sha256:req" || a.Schema != run.SchemaVersion1 {
 		t.Fatalf("assignment = %+v", a)
 	}
 	if a.Key() != (effect.AssignmentKey{Session: "s", RunID: "r1", StepID: "s1", Claim: "c1"}) {
@@ -123,7 +123,7 @@ func TestKeptOutcomeReadRetries(t *testing.T) {
 	port := &fakePort{state: effect.AttachmentActive, outcome: func(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
 		select {
 		case <-ready:
-			return effect.Outcome{Key: key, Model: &result}, nil
+			return effect.Outcome{Key: key, Result: effect.ModelSucceeded{Result: result}}, nil
 		default:
 			once.Do(func() { close(failed) })
 			return effect.Outcome{}, errors.New("temporary transport error")
@@ -143,7 +143,7 @@ func TestKeptOutcomeReadRetries(t *testing.T) {
 	close(ready)
 	select {
 	case out := <-delivered:
-		if out.Model == nil || out.Model.Text != "eventual" {
+		if r, ok := out.ModelResult(); !ok || r.Text != "eventual" {
 			t.Fatalf("delivered = %+v", out)
 		}
 	case <-ctx.Done():

@@ -91,7 +91,8 @@ func (e *Executor) Bind(a *authority.Authority) { e.a = a }
 
 // Match reports the Assignments this Backend serves: the spawn tool's.
 func (e *Executor) Match(a effect.Assignment) bool {
-	return a.Kind == effect.AssignmentTool && a.Tool != nil && a.Tool.ToolRef == e.tool.Ref()
+	tool, ok := a.Tool()
+	return ok && tool.ToolRef == e.tool.Ref()
 }
 
 // Route is the Worker route that hands the spawn tool's Assignments to e
@@ -119,10 +120,14 @@ func (e *Executor) Validate(ctx context.Context, a effect.Assignment) (*run.Tool
 	if err != nil {
 		return nil, err
 	}
-	if failure, err := CheckDefinition(schema, e.tool, a.Tool); err != nil || failure != nil {
+	tool, ok := a.Tool()
+	if !ok {
+		return &run.ToolFailure{Class: run.FailureInvalidArguments, Message: "spawn assignment without a tool body"}, nil
+	}
+	if failure, err := CheckDefinition(schema, e.tool, &tool); err != nil || failure != nil {
 		return failure, err
 	}
-	args, err := DecodeArguments(a.Tool.Arguments)
+	args, err := DecodeArguments(tool.Arguments)
 	if err != nil {
 		return &run.ToolFailure{Class: run.FailureInvalidArguments, Message: err.Error()}, nil
 	}
@@ -188,7 +193,11 @@ func (e *Executor) Restart(_ context.Context, previous string, _ effect.Assignme
 // Start begins driving the child ref names for the call a; a ref already
 // driven here is a no-op.
 func (e *Executor) Start(_ context.Context, ref string, a effect.Assignment) error {
-	args, err := DecodeArguments(a.Tool.Arguments)
+	tool, ok := a.Tool()
+	if !ok {
+		return fmt.Errorf("%w: spawn assignment without a tool body", loop.ErrExecutorRejected)
+	}
+	args, err := DecodeArguments(tool.Arguments)
 	if err != nil {
 		return fmt.Errorf("%w: %v", loop.ErrExecutorRejected, err)
 	}
@@ -213,7 +222,9 @@ func (e *Executor) start(ref string, key effect.AssignmentKey, args *Arguments) 
 		out := e.drive(ctx, key, session.SessionID(ref), args)
 		out.Key = key
 		if ctx.Err() != nil {
-			out.Cancelled = true
+			if _, done := out.Result.(effect.ToolExecutionSucceeded); !done {
+				out.Result = effect.Cancelled{Message: ctx.Err().Error()}
+			}
 		}
 		e.mu.Lock()
 		r.outcome = out
@@ -230,7 +241,7 @@ func (e *Executor) start(ref string, key effect.AssignmentKey, args *Arguments) 
 // anywhere in the sequence is continued, not repeated.
 func (e *Executor) drive(ctx context.Context, key effect.AssignmentKey, child session.SessionID, args *Arguments) effect.Outcome {
 	fail := func(class, msg string) effect.Outcome {
-		return effect.Outcome{Tool: effect.ToolExecutionFailed{Failure: run.ToolFailure{Class: class, Message: msg}}}
+		return effect.Outcome{Result: effect.ToolExecutionFailed{Failure: run.ToolFailure{Class: class, Message: msg}}}
 	}
 	prov, exists, err := e.provenance(ctx, child)
 	if err != nil {
@@ -278,7 +289,7 @@ func (e *Executor) drive(ctx context.Context, key effect.AssignmentKey, child se
 	if err != nil {
 		return fail(run.FailureExecution, err.Error())
 	}
-	return effect.Outcome{Tool: effect.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: body}}}
+	return effect.Outcome{Result: effect.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: body}}}
 }
 
 // create makes the child Session with its provenance as segment metadata:
@@ -496,23 +507,11 @@ func (e *Executor) local(ref string) (effect.Attachment, bool) {
 	if !closed {
 		return effect.Attachment{State: effect.AttachmentActive, Execution: effect.ExecutionRunning, BackendAttached: true}, true
 	}
-	return effect.Attachment{State: effect.AttachmentTerminal, Execution: status(out), BackendAttached: true}, true
+	return effect.Attachment{State: effect.AttachmentTerminal, Execution: out.Status(), BackendAttached: true}, true
 }
 
 func status(out effect.Outcome) effect.ExecutionStatus {
-	switch {
-	case out.Cancelled:
-		return effect.ExecutionCancelled
-	case out.Unknown:
-		return effect.ExecutionUnknown
-	}
-	switch out.Tool.(type) {
-	case effect.ToolExecutionUnknown:
-		return effect.ExecutionUnknown
-	case effect.ToolExecutionFailed:
-		return effect.ExecutionFailed
-	}
-	return effect.ExecutionCompleted
+	return out.Status()
 }
 
 func (e *Executor) Status(_ context.Context, ref string) (effect.ExecutionStatus, error) {

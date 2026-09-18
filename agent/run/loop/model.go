@@ -105,7 +105,7 @@ func (l *Loop) startModelStep(ctx context.Context, runtime run.RunStore, events 
 	}
 	a := newAttempt(schema, runID, stepID, "")
 	assignment := Assignment{Session: runtime.Scope(), RunID: runID, StepID: stepID, Claim: a.claim, Target: target, Schema: snapshot.SchemaVersion,
-		Kind: AssignmentModel, Model: &ModelAssignment{Model: prepared.Model, RequestDigest: prepared.RequestDigest}}
+		Body: ModelAssignment{Model: prepared.Model, RequestDigest: prepared.RequestDigest}}
 	// Pre-start check (RUN-EXE-5): an executor that cannot serve the model
 	// fails here, with the step still Prepared and no start or recovery fact.
 	unavailable, err := l.Executor.Validate(ctx, assignment)
@@ -142,7 +142,7 @@ func (l *Loop) startModelStep(ctx context.Context, runtime run.RunStore, events 
 		}
 		return nil, fmt.Errorf("agent: loop: load frozen model request: %w", err)
 	}
-	assignment.Model.Request = &request
+	assignment.Body = ModelAssignment{Model: prepared.Model, RequestDigest: prepared.RequestDigest, Request: &request}
 
 	if err := l.Executor.Dispatch(ctx, assignment); err != nil {
 		if errors.Is(err, effect.ErrDispatchUnknown) {
@@ -177,29 +177,35 @@ func (l *Loop) startModelStep(ctx context.Context, runtime run.RunStore, events 
 func (l *Loop) modelCompletion(schema run.Schema, step *run.ModelStep, out Outcome) (run.AgentCommand, error) {
 	stepID := step.RefValue.ID
 	recover := run.RecoverModelExecution{StepID: stepID, Claim: out.Key.Claim}
-	switch {
-	case out.Unknown:
+	var result sdk.ModelResult
+	switch r := out.Result.(type) {
+	case effect.ModelSucceeded:
+		result = r.Result
+	case effect.Unknown:
 		message := "model execution outcome is unknown"
-		if out.Err != nil {
-			message = out.Err.Error()
+		if r.Message != "" {
+			message = r.Message
 		}
 		return run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureEffectUnknown, Message: message}}, nil
-	case out.Err != nil && errors.Is(out.Err, run.ErrFrozenValueMissing):
-		return recover, fmt.Errorf("agent: loop: model dispatch: %w", out.Err)
-	case out.Err != nil && errors.Is(out.Err, errMalformedFrozenRequest):
-		failure := run.StepFailure{Class: run.FailureMalformedModel, Message: out.Err.Error()}
-		return run.RejectModelResult{StepID: stepID, Failure: failure, Disposition: l.modelRejectDisposition(*step, failure)}, nil
-	case out.Err != nil && (out.Cancelled || errors.Is(out.Err, context.Canceled) || errors.Is(out.Err, context.DeadlineExceeded)):
+	case effect.Cancelled:
 		return recover, nil
-	case out.Err != nil:
-		return run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: out.Err.Error()}}, nil
-	case out.Model == nil:
-		if out.Cancelled {
+	case effect.ModelFailed:
+		switch r.Code {
+		case effect.FailureFrozenValueMissing:
+			return recover, fmt.Errorf("agent: loop: model dispatch: %w: %s", run.ErrFrozenValueMissing, r.Message)
+		case effect.FailureMalformedRequest:
+			failure := run.StepFailure{Class: run.FailureMalformedModel, Message: r.Message}
+			return run.RejectModelResult{StepID: stepID, Failure: failure, Disposition: l.modelRejectDisposition(*step, failure)}, nil
+		case effect.FailureDeadline:
 			return recover, nil
+		default:
+			return run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: r.Message}}, nil
 		}
-		return run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: "executor delivered no result"}}, nil
+	default:
+		// A tool result or no result for a model step: the executor answered
+		// for the wrong effect. Nothing certain happened.
+		return run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: fmt.Sprintf("executor delivered %T for a model step", out.Result)}}, nil
 	}
-	result := *out.Model
 	bindings, bindErr := l.bindToolCalls(schema, &result, step)
 	if bindErr != nil {
 		failure := run.StepFailure{Class: run.FailureMalformedModel, Message: bindErr.Error()}

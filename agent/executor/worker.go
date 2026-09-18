@@ -168,19 +168,22 @@ func (w *Worker) Validate(ctx context.Context, a effect.Assignment) (*run.ToolFa
 // the execution. A replay of the same Assignment acknowledges the persisted
 // acceptance; recovery of an existing record goes through Takeover.
 func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
-	if a.Kind == effect.AssignmentModel {
-		if a.Model == nil || a.Model.Request == nil {
+	if a.Body == nil {
+		return errors.New("executor: assignment without body")
+	}
+	if model, ok := a.Model(); ok {
+		if model.Request == nil {
 			return errors.New("executor: model assignment requires an inline request payload")
 		}
 		schema, err := run.SchemaFor(a.Schema)
 		if err != nil {
 			return err
 		}
-		requestDigest, err := schema.Canonical.DigestRequest(*a.Model.Request)
+		requestDigest, err := schema.Canonical.DigestRequest(*model.Request)
 		if err != nil {
 			return err
 		}
-		if requestDigest != a.Model.RequestDigest || a.Model.Request.Model != string(a.Model.Model) {
+		if requestDigest != model.RequestDigest || model.Request.Model != string(model.Model) {
 			return errors.New("executor: model request digest or model mismatch")
 		}
 	}
@@ -400,7 +403,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 			w.spawn(func() { w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone) })
 			return nil
 		}
-		if claimed.Assignment.Kind == effect.AssignmentTool {
+		if claimed.Assignment.Kind() == effect.AssignmentTool {
 			// A tool execution the backend no longer finds may have crossed
 			// the effect boundary before its worker died. Re-dispatch may
 			// repeat side effects, so adoption settles Unknown (TRN-DUR-4)

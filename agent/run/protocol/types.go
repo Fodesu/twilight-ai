@@ -4,8 +4,6 @@
 package protocol
 
 import (
-	"context"
-	"errors"
 	"fmt"
 
 	"github.com/felinics/twilight/agent/es"
@@ -58,73 +56,87 @@ func (o OutcomeEnvelope) Digest() (run.Digest, error) {
 	return es.DigestCanonical(o)
 }
 
+// EncodeOutcome renders a sealed Outcome as the wire envelope: a model
+// success in Model, a tool result in Tool, a failure in Error with its code,
+// a cancellation or an unknown end as the flags.
 func EncodeOutcome(out effect.Outcome, assignmentDigest run.Digest) OutcomeEnvelope {
-	w := OutcomeEnvelope{ProtocolVersion: ProtocolVersion, Key: out.Key, AssignmentDigest: assignmentDigest,
-		Model: out.Model, Cancelled: out.Cancelled, Unknown: out.Unknown}
-	if out.Err != nil {
-		code := "executor_error"
-		switch {
-		case errors.Is(out.Err, run.ErrFrozenValueMissing):
-			code = "frozen_value_missing"
-		case errors.Is(out.Err, context.Canceled):
-			code = "cancelled"
-		case errors.Is(out.Err, context.DeadlineExceeded):
-			code = "deadline_exceeded"
+	w := OutcomeEnvelope{ProtocolVersion: ProtocolVersion, Key: out.Key, AssignmentDigest: assignmentDigest}
+	switch r := out.Result.(type) {
+	case effect.ModelSucceeded:
+		res := r.Result
+		w.Model = &res
+	case effect.ModelFailed:
+		code := string(r.Code)
+		if code == "" {
+			code = string(effect.FailureExecutor)
 		}
-		w.Error = &WireError{Code: code, Message: out.Err.Error()}
-	}
-	switch t := out.Tool.(type) {
+		w.Error = &WireError{Code: code, Message: r.Message}
 	case effect.ToolExecutionSucceeded:
-		r := t.Result
-		w.Tool = &ToolOutcomeEnvelope{Kind: "succeeded", Result: &r}
+		res := r.Result
+		w.Tool = &ToolOutcomeEnvelope{Kind: "succeeded", Result: &res}
 	case effect.ToolExecutionFailed:
-		f := t.Failure
+		f := r.Failure
 		w.Tool = &ToolOutcomeEnvelope{Kind: "failed", Failure: &f}
 	case effect.ToolExecutionUnknown:
-		f := t.Failure
+		f := r.Failure
 		w.Tool = &ToolOutcomeEnvelope{Kind: "unknown", Failure: &f}
+	case effect.Cancelled:
+		w.Cancelled = true
+		if r.Message != "" {
+			w.Error = &WireError{Code: "cancelled", Message: r.Message}
+		}
+	case effect.Unknown:
+		w.Unknown = true
+		if r.Message != "" {
+			w.Error = &WireError{Code: string(effect.FailureExecutor), Message: r.Message}
+		}
 	}
 	return w
 }
 
+// DecodeOutcome restores the sealed Outcome. The flags win over a body:
+// an envelope marked unknown or cancelled is that, whatever else it carries;
+// an envelope with neither a body nor a flag is Unknown.
 func DecodeOutcome(w OutcomeEnvelope) effect.Outcome {
-	out := effect.Outcome{Key: w.Key, Model: w.Model, Cancelled: w.Cancelled, Unknown: w.Unknown}
+	out := effect.Outcome{Key: w.Key}
+	message := ""
 	if w.Error != nil {
-		switch w.Error.Code {
-		case "frozen_value_missing":
-			out.Err = fmt.Errorf("%w: %s", run.ErrFrozenValueMissing, w.Error.Message)
-		case "cancelled":
-			out.Err = context.Canceled
-			out.Cancelled = true
-		case "deadline_exceeded":
-			out.Err = context.DeadlineExceeded
-		default:
-			out.Err = errors.New(w.Error.Message)
-		}
+		message = w.Error.Message
 	}
-	if w.Tool != nil {
+	switch {
+	case w.Unknown:
+		out.Result = effect.Unknown{Message: message}
+	case w.Cancelled:
+		out.Result = effect.Cancelled{Message: message}
+	case w.Tool != nil:
 		switch w.Tool.Kind {
 		case "succeeded":
 			var r run.ToolExecutionResult
 			if w.Tool.Result != nil {
 				r = *w.Tool.Result
 			}
-			out.Tool = effect.ToolExecutionSucceeded{Result: r}
+			out.Result = effect.ToolExecutionSucceeded{Result: r}
 		case "failed":
 			var f run.ToolFailure
 			if w.Tool.Failure != nil {
 				f = *w.Tool.Failure
 			}
-			out.Tool = effect.ToolExecutionFailed{Failure: f}
+			out.Result = effect.ToolExecutionFailed{Failure: f}
 		case "unknown":
 			var f run.ToolFailure
 			if w.Tool.Failure != nil {
 				f = *w.Tool.Failure
 			}
-			out.Tool = effect.ToolExecutionUnknown{Failure: f}
+			out.Result = effect.ToolExecutionUnknown{Failure: f}
 		default:
-			out.Err = fmt.Errorf("run/protocol: unknown tool outcome %q", w.Tool.Kind)
+			out.Result = effect.Unknown{Message: fmt.Sprintf("run/protocol: unknown tool outcome %q", w.Tool.Kind)}
 		}
+	case w.Error != nil:
+		out.Result = effect.ModelFailed{Code: effect.FailureCode(w.Error.Code), Message: w.Error.Message}
+	case w.Model != nil:
+		out.Result = effect.ModelSucceeded{Result: *w.Model}
+	default:
+		out.Result = effect.Unknown{Message: "run/protocol: outcome envelope carries no result"}
 	}
 	return out
 }
@@ -138,18 +150,5 @@ func StatusTerminal(s effect.ExecutionStatus) bool {
 	}
 }
 
-func StatusForOutcome(out effect.Outcome) effect.ExecutionStatus {
-	if out.Unknown {
-		return effect.ExecutionUnknown
-	}
-	if out.Cancelled {
-		return effect.ExecutionCancelled
-	}
-	if _, ok := out.Tool.(effect.ToolExecutionUnknown); ok {
-		return effect.ExecutionUnknown
-	}
-	if out.Err != nil {
-		return effect.ExecutionFailed
-	}
-	return effect.ExecutionCompleted
-}
+// StatusForOutcome is the ExecutionStatus a terminal Outcome corresponds to.
+func StatusForOutcome(out effect.Outcome) effect.ExecutionStatus { return out.Status() }

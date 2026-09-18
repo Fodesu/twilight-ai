@@ -5,7 +5,9 @@ package effect
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
@@ -32,11 +34,22 @@ type AssignmentKey struct {
 	Claim   run.ExecutionClaim
 }
 
+// AssignmentBody is the sealed effect an Assignment asks for: a model call
+// or a tool call. Kind is derived from the variant, never stored beside it,
+// so an Assignment cannot claim one kind and carry another.
+type AssignmentBody interface {
+	Kind() AssignmentKind
+	assignmentBody()
+}
+
 type ModelAssignment struct {
 	Model         run.ModelRef      `json:"model"`
 	Request       *run.ModelRequest `json:"request,omitempty"`
 	RequestDigest run.Digest        `json:"requestDigest"`
 }
+
+func (ModelAssignment) Kind() AssignmentKind { return AssignmentModel }
+func (ModelAssignment) assignmentBody()      {}
 
 type ToolAssignment struct {
 	ToolRef          run.ToolRef
@@ -45,8 +58,54 @@ type ToolAssignment struct {
 	Policy           run.ResponsePolicy
 }
 
+func (ToolAssignment) Kind() AssignmentKind { return AssignmentTool }
+func (ToolAssignment) assignmentBody()      {}
+
 // Assignment is the complete immutable description of one external effect.
 type Assignment struct {
+	Session run.Scope
+	RunID   run.RunID
+	StepID  run.StepID
+	CallID  run.CallID
+	Claim   run.ExecutionClaim
+	Target  *run.TargetRef
+	Schema  uint16
+	// Body is the effect: exactly one of ModelAssignment or ToolAssignment.
+	Body AssignmentBody
+}
+
+func (a Assignment) Key() AssignmentKey {
+	return AssignmentKey{Session: a.Session, RunID: a.RunID, StepID: a.StepID, CallID: a.CallID, Claim: a.Claim}
+}
+
+// Kind is the body's kind; empty for an Assignment without a body.
+func (a Assignment) Kind() AssignmentKind {
+	if a.Body == nil {
+		return ""
+	}
+	return a.Body.Kind()
+}
+
+// Model returns the model body, if the Assignment is a model call.
+func (a Assignment) Model() (ModelAssignment, bool) {
+	m, ok := a.Body.(ModelAssignment)
+	return m, ok
+}
+
+// Tool returns the tool body, if the Assignment is a tool call.
+func (a Assignment) Tool() (ToolAssignment, bool) {
+	t, ok := a.Body.(ToolAssignment)
+	return t, ok
+}
+
+func (a Assignment) Digest() (run.Digest, error) {
+	return es.DigestCanonical(a)
+}
+
+// assignmentWire is the JSON shape: the kind discriminator with one body
+// object. It is what the execution store persists and the HTTP protocol
+// carries; decoding refuses a shape that names one kind and carries another.
+type assignmentWire struct {
 	Session run.Scope
 	RunID   run.RunID
 	StepID  run.StepID
@@ -59,42 +118,132 @@ type Assignment struct {
 	Tool    *ToolAssignment
 }
 
-func (a Assignment) Key() AssignmentKey {
-	return AssignmentKey{Session: a.Session, RunID: a.RunID, StepID: a.StepID, CallID: a.CallID, Claim: a.Claim}
+func (a Assignment) MarshalJSON() ([]byte, error) {
+	w := assignmentWire{Session: a.Session, RunID: a.RunID, StepID: a.StepID, CallID: a.CallID, Claim: a.Claim, Target: a.Target, Schema: a.Schema, Kind: a.Kind()}
+	switch b := a.Body.(type) {
+	case ModelAssignment:
+		w.Model = &b
+	case ToolAssignment:
+		w.Tool = &b
+	case nil:
+	default:
+		return nil, fmt.Errorf("agent: effect: unknown assignment body %T", a.Body)
+	}
+	return json.Marshal(w)
 }
 
-func (a Assignment) Digest() (run.Digest, error) {
-	return es.DigestCanonical(a)
+func (a *Assignment) UnmarshalJSON(raw []byte) error {
+	var w assignmentWire
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return err
+	}
+	out := Assignment{Session: w.Session, RunID: w.RunID, StepID: w.StepID, CallID: w.CallID, Claim: w.Claim, Target: w.Target, Schema: w.Schema}
+	switch {
+	case w.Kind == AssignmentModel && w.Model != nil && w.Tool == nil:
+		out.Body = *w.Model
+	case w.Kind == AssignmentTool && w.Tool != nil && w.Model == nil:
+		out.Body = *w.Tool
+	case w.Kind == "" && w.Model == nil && w.Tool == nil:
+	default:
+		return fmt.Errorf("agent: effect: assignment kind %q does not match its body", w.Kind)
+	}
+	*a = out
+	return nil
 }
 
-// Outcome is the process-independent result after an Assignment has been
-// accepted. The wire protocol encodes Err and the sealed Tool value separately.
-type Outcome struct {
-	Key       AssignmentKey
-	Model     *sdk.ModelResult
-	Tool      ToolExecutionOutcome
-	Err       error
-	Cancelled bool
-	// Unknown means the assignment crossed the effect boundary but the
-	// executor could not establish a terminal provider outcome. It must not
-	// be interpreted as a dispatch rejection or an ordinary provider failure.
-	Unknown bool
+// OutcomeResult is the sealed result of an accepted Assignment: exactly one
+// of the variants below. Illegal combinations (a result and an error, a
+// cancellation that is also unknown) cannot be expressed.
+type OutcomeResult interface{ outcomeResult() }
+
+// FailureCode classifies a ModelFailed; it is wire-stable (protocol).
+type FailureCode string
+
+const (
+	// FailureExecutor: the provider or executor failed with no more specific
+	// classification.
+	FailureExecutor FailureCode = "executor_error"
+	// FailureFrozenValueMissing: the executor could not read the frozen
+	// body the Assignment named (run.ErrFrozenValueMissing).
+	FailureFrozenValueMissing FailureCode = "frozen_value_missing"
+	// FailureMalformedRequest: the frozen request decoded but could not be
+	// materialized into a provider request.
+	FailureMalformedRequest FailureCode = "malformed_frozen_request"
+	// FailureDeadline: the effect's own deadline elapsed.
+	FailureDeadline FailureCode = "deadline_exceeded"
+)
+
+// ModelSucceeded carries the provider's complete result.
+type ModelSucceeded struct{ Result sdk.ModelResult }
+
+// ModelFailed is a provider or executor failure with a wire-stable code.
+type ModelFailed struct {
+	Code    FailureCode
+	Message string
 }
 
-// ToolExecutionOutcome is sealed: succeeded, failed-known, or unknown.
-type ToolExecutionOutcome interface{ toolExecutionOutcome() }
+// ToolExecutionOutcome is the sealed result a tool implementation returns:
+// succeeded, failed-known, or unknown. Each is also an OutcomeResult.
+type ToolExecutionOutcome interface {
+	OutcomeResult
+	toolExecutionOutcome()
+}
 
 type ToolExecutionSucceeded struct{ Result run.ToolExecutionResult }
 
-func (ToolExecutionSucceeded) toolExecutionOutcome() {}
-
 type ToolExecutionFailed struct{ Failure run.ToolFailure }
-
-func (ToolExecutionFailed) toolExecutionOutcome() {}
 
 type ToolExecutionUnknown struct{ Failure run.ToolFailure }
 
-func (ToolExecutionUnknown) toolExecutionOutcome() {}
+// Cancelled: the executor stopped the effect as requested; Message says why.
+type Cancelled struct{ Message string }
+
+// Unknown: the assignment crossed the effect boundary but the executor
+// closed its recovery without a terminal provider outcome. It must not be
+// read as a dispatch rejection or an ordinary provider failure.
+type Unknown struct{ Message string }
+
+func (ModelSucceeded) outcomeResult()         {}
+func (ModelFailed) outcomeResult()            {}
+func (ToolExecutionSucceeded) outcomeResult() {}
+func (ToolExecutionFailed) outcomeResult()    {}
+func (ToolExecutionUnknown) outcomeResult()   {}
+func (Cancelled) outcomeResult()              {}
+func (Unknown) outcomeResult()                {}
+
+func (ToolExecutionSucceeded) toolExecutionOutcome() {}
+func (ToolExecutionFailed) toolExecutionOutcome()    {}
+func (ToolExecutionUnknown) toolExecutionOutcome()   {}
+
+// Outcome is the process-independent result after an Assignment has been
+// accepted. The wire protocol (agent/run/protocol) encodes Result as a tagged
+// envelope; there is no Go error in it.
+type Outcome struct {
+	Key    AssignmentKey
+	Result OutcomeResult
+}
+
+// ModelResult returns the provider result of a ModelSucceeded outcome.
+func (o Outcome) ModelResult() (sdk.ModelResult, bool) {
+	r, ok := o.Result.(ModelSucceeded)
+	return r.Result, ok
+}
+
+// Status is the ExecutionStatus a terminal Outcome corresponds to.
+func (o Outcome) Status() ExecutionStatus {
+	switch o.Result.(type) {
+	case ModelSucceeded, ToolExecutionSucceeded:
+		return ExecutionCompleted
+	case ModelFailed, ToolExecutionFailed:
+		return ExecutionFailed
+	case Cancelled:
+		return ExecutionCancelled
+	case Unknown, ToolExecutionUnknown:
+		return ExecutionUnknown
+	default:
+		return ExecutionUnknown
+	}
+}
 
 // ExecutionStatus is the lifecycle state of an accepted effect, independent
 // of the Run state machine.

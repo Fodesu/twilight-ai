@@ -28,6 +28,12 @@ type ToolAssignment = effect.ToolAssignment
 type Assignment = effect.Assignment
 
 type Outcome = effect.Outcome
+type OutcomeResult = effect.OutcomeResult
+type ModelSucceeded = effect.ModelSucceeded
+type ModelFailed = effect.ModelFailed
+type Cancelled = effect.Cancelled
+type Unknown = effect.Unknown
+type FailureCode = effect.FailureCode
 
 type ExecutionStatus = effect.ExecutionStatus
 type AttachmentState = effect.AttachmentState
@@ -46,6 +52,11 @@ const (
 	ExecutionFailed          = effect.ExecutionFailed
 	ExecutionCancelled       = effect.ExecutionCancelled
 	ExecutionUnknown         = effect.ExecutionUnknown
+
+	FailureExecutor           = effect.FailureExecutor
+	FailureFrozenValueMissing = effect.FailureFrozenValueMissing
+	FailureMalformedRequest   = effect.FailureMalformedRequest
+	FailureDeadline           = effect.FailureDeadline
 
 	AttachmentMissing  = effect.AttachmentMissing
 	AttachmentActive   = effect.AttachmentActive
@@ -171,12 +182,9 @@ func (e *LocalExecutor) evictLocked() {
 // by resolving the ModelRef in the catalog so a missing model fails before
 // any start fact is written (RUN-LOP-3).
 func (e *LocalExecutor) Validate(_ context.Context, a Assignment) (*run.ToolFailure, error) {
-	switch a.Kind {
-	case AssignmentModel:
-		if a.Model == nil {
-			return &run.ToolFailure{Class: run.FailureProvider, Message: "model assignment without body"}, nil
-		}
-		invoker, err := e.models.ResolveModel(a.Model.Model)
+	switch body := a.Body.(type) {
+	case ModelAssignment:
+		invoker, err := e.models.ResolveModel(body.Model)
 		if err != nil {
 			return &run.ToolFailure{Class: run.FailureProvider, Message: err.Error()}, nil
 		}
@@ -184,18 +192,15 @@ func (e *LocalExecutor) Validate(_ context.Context, a Assignment) (*run.ToolFail
 			return &run.ToolFailure{Class: run.FailureProvider, Message: "model catalog returned a nil invoker"}, nil
 		}
 		return nil, nil
-	case AssignmentTool:
-		if a.Tool == nil {
-			return nil, nil
-		}
+	case ToolAssignment:
 		schema, err := run.SchemaFor(a.Schema)
 		if err != nil {
 			return nil, err
 		}
-		_, failure := e.resolveTool(schema, a.Tool)
+		_, failure := e.resolveTool(schema, &body)
 		return failure, nil
 	default:
-		return nil, nil
+		return &run.ToolFailure{Class: run.FailureProvider, Message: "assignment without body"}, nil
 	}
 }
 
@@ -252,12 +257,9 @@ func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) err
 	e.mu.Unlock()
 
 	var execute func(context.Context) Outcome
-	switch a.Kind {
-	case AssignmentModel:
-		if a.Model == nil {
-			return fmt.Errorf("%w: model assignment without body", ErrExecutorRejected)
-		}
-		invoker, err := e.models.ResolveModel(a.Model.Model)
+	switch body := a.Body.(type) {
+	case ModelAssignment:
+		invoker, err := e.models.ResolveModel(body.Model)
 		if err != nil {
 			return fmt.Errorf("%w: %w", ErrExecutorRejected, err)
 		}
@@ -267,10 +269,10 @@ func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) err
 		// Dispatch MUST carry the inline request payload (RUN-EXE-7): the
 		// digest-only reconstruction of AssignmentFromTarget never enters
 		// Dispatch, so a missing body is a definite rejection here.
-		if a.Model.Request == nil {
+		if body.Request == nil {
 			return fmt.Errorf("%w: model assignment without an inline request payload", ErrExecutorRejected)
 		}
-		frozenRequest := *a.Model.Request
+		frozenRequest := *body.Request
 		schema, err := run.SchemaFor(a.Schema)
 		if err != nil {
 			return err
@@ -279,26 +281,23 @@ func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) err
 		if err != nil {
 			return fmt.Errorf("%w: request digest: %v", ErrExecutorRejected, err)
 		}
-		if got != a.Model.RequestDigest || frozenRequest.Model != string(a.Model.Model) {
+		if got != body.RequestDigest || frozenRequest.Model != string(body.Model) {
 			return fmt.Errorf("%w: model request digest or model mismatch", ErrExecutorRejected)
 		}
 		execute = func(ctx context.Context) Outcome { return e.runModel(ctx, a, frozenRequest, invoker) }
-	case AssignmentTool:
-		if a.Tool == nil {
-			return fmt.Errorf("%w: tool assignment without binding", ErrExecutorRejected)
-		}
+	case ToolAssignment:
 		schema, err := run.SchemaFor(a.Schema)
 		if err != nil {
 			return err
 		}
-		tool, failure := e.resolveTool(schema, a.Tool)
+		tool, failure := e.resolveTool(schema, &body)
 		if failure != nil {
 			return fmt.Errorf("%w: %s: %s", ErrExecutorRejected, failure.Class, failure.Message)
 		}
-		binding := *a.Tool
+		binding := body
 		execute = func(ctx context.Context) Outcome { return e.runTool(ctx, a, binding, tool) }
 	default:
-		return fmt.Errorf("%w: unknown assignment kind %q", ErrExecutorRejected, a.Kind)
+		return fmt.Errorf("%w: assignment without body", ErrExecutorRejected)
 	}
 
 	effectCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -319,7 +318,7 @@ func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) err
 		out := execute(effectCtx)
 		out.Key = a.Key()
 		if effectCtx.Err() != nil {
-			out.Cancelled = true
+			out.Result = cancelled(out.Result, effectCtx.Err())
 		}
 		e.mu.Lock()
 		entry.outcome = out
@@ -348,7 +347,7 @@ func (e *LocalExecutor) Attach(_ context.Context, ref string) (effect.Attachment
 	if !closed {
 		return effect.Attachment{State: effect.AttachmentActive, Execution: effect.ExecutionRunning, BackendAttached: true}, nil
 	}
-	return effect.Attachment{State: effect.AttachmentTerminal, Execution: localStatus(out), BackendAttached: true}, nil
+	return effect.Attachment{State: effect.AttachmentTerminal, Execution: out.Status(), BackendAttached: true}, nil
 }
 
 // Status returns the current process-scoped execution status of ref.
@@ -365,23 +364,19 @@ func (e *LocalExecutor) Status(_ context.Context, ref string) (ExecutionStatus, 
 	if !closed {
 		return ExecutionRunning, nil
 	}
-	return localStatus(out), nil
+	return out.Status(), nil
 }
 
-func localStatus(out Outcome) ExecutionStatus {
-	if out.Unknown {
-		return ExecutionUnknown
+// cancelled is what a result becomes when the effect's context ended before
+// it settled: a success is kept -- the effect happened -- anything else is
+// the cancellation.
+func cancelled(result OutcomeResult, cause error) OutcomeResult {
+	switch result.(type) {
+	case effect.ModelSucceeded, effect.ToolExecutionSucceeded:
+		return result
+	default:
+		return effect.Cancelled{Message: cause.Error()}
 	}
-	if out.Cancelled {
-		return ExecutionCancelled
-	}
-	if _, unknown := out.Tool.(ToolExecutionUnknown); unknown {
-		return ExecutionUnknown
-	}
-	if out.Err != nil {
-		return ExecutionFailed
-	}
-	return ExecutionCompleted
 }
 
 // Outcome waits for and returns the stable outcome of ref. A terminal entry
@@ -432,18 +427,29 @@ func (e *LocalExecutor) InFlight() int {
 func (e *LocalExecutor) runModel(ctx context.Context, a Assignment, frozenRequest run.ModelRequest, invoker ModelInvoker) Outcome {
 	sdkRequest, err := frozenRequest.SDK()
 	if err != nil {
-		return Outcome{Err: fmt.Errorf("%w: %v", errMalformedFrozenRequest, err)}
+		return Outcome{Result: effect.ModelFailed{Code: effect.FailureMalformedRequest, Message: "frozen request cannot be materialized: " + err.Error()}}
 	}
 	result, err := e.invokeModel(ctx, invoker, &sdkRequest, a)
 	if err != nil {
-		return Outcome{Err: err}
+		return Outcome{Result: modelFailure(err)}
 	}
-	return Outcome{Model: &result}
+	return Outcome{Result: effect.ModelSucceeded{Result: result}}
 }
 
-// errMalformedFrozenRequest marks a frozen body that decodes but cannot be
-// materialized; the Loop settles it as a malformed-model rejection.
-var errMalformedFrozenRequest = errors.New("agent: loop: frozen request cannot be materialized")
+// modelFailure classifies a model invocation error into the wire-stable
+// failure codes.
+func modelFailure(err error) OutcomeResult {
+	switch {
+	case errors.Is(err, run.ErrFrozenValueMissing):
+		return effect.ModelFailed{Code: effect.FailureFrozenValueMissing, Message: err.Error()}
+	case errors.Is(err, context.Canceled):
+		return effect.Cancelled{Message: err.Error()}
+	case errors.Is(err, context.DeadlineExceeded):
+		return effect.ModelFailed{Code: effect.FailureDeadline, Message: err.Error()}
+	default:
+		return effect.ModelFailed{Code: effect.FailureExecutor, Message: err.Error()}
+	}
+}
 
 func (e *LocalExecutor) invokeModel(ctx context.Context, invoker ModelInvoker, req *sdk.Request, a Assignment) (sdk.ModelResult, error) {
 	if e.streaming {
@@ -508,7 +514,7 @@ func (e *LocalExecutor) runTool(ctx context.Context, a Assignment, t ToolAssignm
 		Target:           cloneTarget(a.Target),
 		Progress:         &progressSink{events: e.sink, run: a.RunID, step: a.StepID, call: a.CallID},
 	}
-	return Outcome{Tool: executeToolSafely(ctx, tool, &req)}
+	return Outcome{Result: executeToolSafely(ctx, tool, &req)}
 }
 
 func cloneTarget(target *run.TargetRef) *run.TargetRef {

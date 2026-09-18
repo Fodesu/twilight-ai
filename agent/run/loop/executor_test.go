@@ -138,7 +138,7 @@ func TestAdvanceDispatchesAndDeliverSettles(t *testing.T) {
 		t.Fatalf("advance = %+v %v", res, err)
 	}
 	a := exec.last()
-	if a.Kind != AssignmentModel || a.Model == nil || a.Model.RequestDigest == "" || a.Claim == "" || a.Key() != res.Dispatched[0] {
+	if model, ok := a.Model(); !ok || model.RequestDigest == "" || a.Claim == "" || a.Key() != res.Dispatched[0] {
 		t.Fatalf("model assignment = %+v", a)
 	}
 	step := loadState(t, rt, w, "run-1").State.Current.(ModelStep)
@@ -153,7 +153,7 @@ func TestAdvanceDispatchesAndDeliverSettles(t *testing.T) {
 	}
 
 	result := textResult("done")
-	delivered, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: a.Key(), Model: &result}, nil)
+	delivered, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: a.Key(), Result: ModelSucceeded{Result: result}}, nil)
 	if err != nil || delivered.Disposition != LoopFinished || delivered.Result == nil || delivered.Result.Status != RunCompleted {
 		t.Fatalf("deliver = %+v %v", delivered, err)
 	}
@@ -193,7 +193,7 @@ func TestRunOutcomeReadErrorPreservesExecutingStep(t *testing.T) {
 		t.Fatalf("read error changed Run: %+v", snapshot.State)
 	}
 	result := textResult("eventual result")
-	if _, err := l.Deliver(context.Background(), rt.Bind(w), Outcome{Key: exec.last().Key(), Model: &result}, nil); err != nil {
+	if _, err := l.Deliver(context.Background(), rt.Bind(w), Outcome{Key: exec.last().Key(), Result: ModelSucceeded{Result: result}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := loadState(t, rt, w, "run-1").State.Status; got != RunCompleted {
@@ -221,7 +221,7 @@ func TestDeliverDropsStaleOutcome(t *testing.T) {
 	}
 	before := len(recordFacts(t, rt, "run-1"))
 	result := textResult("late")
-	res, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: key, Model: &result}, nil)
+	res, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: key, Result: ModelSucceeded{Result: result}}, nil)
 	if err != nil || res.Disposition != LoopDropped {
 		t.Fatalf("late deliver = %+v %v", res, err)
 	}
@@ -234,7 +234,7 @@ func TestDeliverDropsStaleOutcome(t *testing.T) {
 	}
 	forged := exec.last().Key()
 	forged.Claim = "someone-else"
-	res, err = l.Deliver(ctx, rt.Bind(w), Outcome{Key: forged, Model: &result}, nil)
+	res, err = l.Deliver(ctx, rt.Bind(w), Outcome{Key: forged, Result: ModelSucceeded{Result: result}}, nil)
 	if err != nil || res.Disposition != LoopDropped {
 		t.Fatalf("forged deliver = %+v %v", res, err)
 	}
@@ -289,7 +289,7 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 
 	// The attempt finishes on the executor; its Outcome reaches the new owner.
 	result := textResult("done")
-	exec.deliver(t, a.Key(), Outcome{Model: &result})
+	exec.deliver(t, a.Key(), Outcome{Result: ModelSucceeded{Result: result}})
 	deadline := time.After(2 * time.Second)
 	for {
 		mu.Lock()
@@ -344,7 +344,7 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 	if err != nil || res.Disposition != LoopDispatched || len(res.Dispatched) != 1 {
 		t.Fatalf("advance after disposition = %+v %v, want a fresh dispatch", res, err)
 	}
-	if replanned := exec.last(); replanned.Key() == a.Key() || replanned.Model.RequestDigest == "" {
+	if replanned := exec.last(); replanned.Key() == a.Key() || mustModel(t, replanned).RequestDigest == "" {
 		t.Fatalf("replan reused the disposed attempt: %+v", replanned)
 	}
 }
@@ -372,7 +372,7 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
 	target := TargetRef{Kind: "workspace", ID: "ws-1"}
 	a := Assignment{Session: testScope, RunID: "run-1", StepID: "step-1", CallID: "call-1", Claim: "claim-1", Target: &target, Schema: SchemaVersion1,
-		Kind: AssignmentTool, Tool: &ToolAssignment{ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest, Arguments: cj(`{}`), Policy: DirectExecution}}
+		Body: ToolAssignment{ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest, Arguments: cj(`{}`), Policy: DirectExecution}}
 	ref, err := exec.Prepare(context.Background(), a)
 	if err != nil {
 		t.Fatal(err)
@@ -402,11 +402,8 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !out.Cancelled || out.Key != a.Key() {
+	if _, cancelled := out.Result.(Cancelled); !cancelled || out.Key != a.Key() {
 		t.Fatalf("cancelled outcome = %+v", out)
-	}
-	if _, unknown := out.Tool.(ToolExecutionUnknown); !unknown {
-		t.Fatalf("cancelled tool outcome = %T", out.Tool)
 	}
 	if attached, _ := exec.Attach(context.Background(), ref); attached.State != AttachmentTerminal {
 		t.Fatalf("attach after completion = %+v; want terminal", attached)
@@ -430,7 +427,7 @@ func TestDeliverCancelledModelRecovers(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := exec.last().Key()
-	res, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: key, Err: context.Canceled, Cancelled: true}, nil)
+	res, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: key, Result: Cancelled{Message: "cancelled"}}, nil)
 	if err != nil || res.Disposition != LoopDelivered {
 		t.Fatalf("deliver cancelled = %+v %v", res, err)
 	}
@@ -457,7 +454,7 @@ func TestDeliverMissingFrozenBodyWithdrawsAndReturnsTheError(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := exec.last()
-	res, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: first.Key(), Err: ErrFrozenValueMissing}, nil)
+	res, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: first.Key(), Result: ModelFailed{Code: FailureFrozenValueMissing, Message: "frozen value missing"}}, nil)
 	if !errors.Is(err, ErrFrozenValueMissing) || res.Disposition != LoopDelivered {
 		t.Fatalf("deliver missing body = %+v %v, want delivered plus the missing-body error", res, err)
 	}
@@ -484,7 +481,9 @@ func (e *missingBodyExecutor) Dispatch(ctx context.Context, a Assignment) error 
 	e.mu.Lock()
 	ch := e.outcomes[a.Key()]
 	e.mu.Unlock()
-	go func() { ch <- Outcome{Key: a.Key(), Err: ErrFrozenValueMissing} }()
+	go func() {
+		ch <- Outcome{Key: a.Key(), Result: ModelFailed{Code: FailureFrozenValueMissing, Message: "frozen value missing"}}
+	}()
 	return nil
 }
 
@@ -531,4 +530,14 @@ func TestRunStopsAfterOneMissingBodyRecovery(t *testing.T) {
 			}
 		})
 	}
+}
+
+// mustModel is the model body of an Assignment.
+func mustModel(t testing.TB, a Assignment) ModelAssignment {
+	t.Helper()
+	m, ok := a.Model()
+	if !ok {
+		t.Fatalf("assignment %+v has no model body", a)
+	}
+	return m
 }

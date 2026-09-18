@@ -8,6 +8,7 @@ import (
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/authority"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/filestore"
@@ -248,7 +249,7 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	}
 
 	// The executor finishes the original attempt; its Outcome reaches process 2.
-	exec.complete(exec.attached[0], loop.Outcome{Model: &sdk.ModelResult{Text: "reattached", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}})
+	exec.complete(exec.attached[0], loop.Outcome{Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: "reattached", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}}})
 	deadline := time.After(2 * time.Second)
 	for {
 		tsurf, err = p2.TurnSurface(ctx, sid)

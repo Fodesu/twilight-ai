@@ -8,6 +8,7 @@ import (
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/preset"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
@@ -38,7 +39,7 @@ func (e *recordingExecutor) Dispatch(_ context.Context, a loop.Assignment) error
 	reply := e.reply
 	e.mu.Unlock()
 	go func() {
-		ch <- loop.Outcome{Key: a.Key(), Model: &sdk.ModelResult{Text: reply, FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}}
+		ch <- loop.Outcome{Key: a.Key(), Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: reply, FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}}}
 	}()
 	return nil
 }
@@ -109,16 +110,17 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 		t.Fatalf("assignments = %d, want 1 model assignment", len(assigned))
 	}
 	a := assigned[0]
-	if a.Kind != loop.AssignmentModel || a.Model == nil || a.Model.Model != "m-remote" || a.Claim == "" || a.RunID == "" || a.StepID == "" {
+	model, isModel := a.Model()
+	if !isModel || model.Model != "m-remote" || a.Claim == "" || a.RunID == "" || a.StepID == "" {
 		t.Fatalf("assignment = %+v", a)
 	}
 	// The body the executor would fetch is in the shared frozen store under
 	// the digest the Assignment carries (RUN-WIR-4).
-	raw, ok, err := frozen.Get(ctx, a.Model.RequestDigest)
+	raw, ok, err := frozen.Get(ctx, model.RequestDigest)
 	if err != nil || !ok || len(raw) == 0 {
-		t.Fatalf("frozen request %s: ok=%v err=%v", a.Model.RequestDigest, ok, err)
+		t.Fatalf("frozen request %s: ok=%v err=%v", model.RequestDigest, ok, err)
 	}
-	req, err := run.DecodeFrozenRequest(raw, a.Model.RequestDigest)
+	req, err := run.DecodeFrozenRequest(raw, model.RequestDigest)
 	if err != nil {
 		t.Fatal(err)
 	}

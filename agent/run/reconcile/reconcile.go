@@ -102,11 +102,9 @@ func AssignmentFromTarget(scope run.Scope, t run.RecoveryTarget) effect.Assignme
 	a := effect.Assignment{Session: scope, RunID: t.RunID, StepID: t.StepID, CallID: t.CallID, Claim: t.Claim, Schema: t.Schema}
 	switch {
 	case t.Call != nil:
-		a.Kind = effect.AssignmentTool
-		a.Tool = &effect.ToolAssignment{ToolRef: t.Call.ToolRef, DefinitionDigest: t.Call.DefinitionDigest, Arguments: t.Call.Arguments, Policy: t.Call.Policy}
+		a.Body = effect.ToolAssignment{ToolRef: t.Call.ToolRef, DefinitionDigest: t.Call.DefinitionDigest, Arguments: t.Call.Arguments, Policy: t.Call.Policy}
 	case t.Model != nil:
-		a.Kind = effect.AssignmentModel
-		a.Model = &effect.ModelAssignment{Model: t.Model.Model, RequestDigest: t.Model.RequestDigest}
+		a.Body = effect.ModelAssignment{Model: t.Model.Model, RequestDigest: t.Model.RequestDigest}
 	}
 	return a
 }

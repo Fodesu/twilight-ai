@@ -66,8 +66,8 @@ func (l *Loop) startToolCalls(ctx context.Context, runtime run.RunStore, events 
 			// owner's takeover disposition; never re-run (TRN-DUR-4).
 			continue
 		}
-		binding := &ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy}
-		probe := Assignment{Session: runtime.Scope(), RunID: runID, StepID: eff.StepID, CallID: callID, Target: target, Schema: snapshot.SchemaVersion, Kind: AssignmentTool, Tool: binding}
+		binding := ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy}
+		probe := Assignment{Session: runtime.Scope(), RunID: runID, StepID: eff.StepID, CallID: callID, Target: target, Schema: snapshot.SchemaVersion, Body: binding}
 		known, err := l.Executor.Validate(ctx, probe)
 		if err != nil {
 			return dispatched, err
@@ -148,7 +148,7 @@ func toolCallFromSnapshot(state run.MachineState, stepID run.StepID, callID run.
 // sealed outcome maps directly; a missing outcome or a transport error is
 // Unknown, because the effect may have happened (RUN-LOP-5).
 func toolCompletion(key AssignmentKey, out Outcome) run.AgentCommand {
-	switch o := out.Tool.(type) {
+	switch o := out.Result.(type) {
 	case ToolExecutionSucceeded:
 		return run.SubmitToolResult{StepID: key.StepID, CallID: key.CallID, Result: o.Result}
 	case ToolExecutionFailed:
@@ -164,11 +164,19 @@ func toolCompletion(key AssignmentKey, out Outcome) run.AgentCommand {
 		}
 		failure.Class = run.FailureEffectUnknown
 		return run.SubmitToolFailure{StepID: key.StepID, CallID: key.CallID, Failure: failure, Outcome: run.ToolOutcomeUnknown}
+	case effect.Cancelled:
+		return run.SubmitToolFailure{StepID: key.StepID, CallID: key.CallID,
+			Failure: run.ToolFailure{Class: run.FailureEffectUnknown, Message: "cancelled: " + o.Message}, Outcome: run.ToolOutcomeUnknown}
+	case effect.Unknown:
+		msg := "tool returned no outcome"
+		if o.Message != "" {
+			msg = "executor: " + o.Message
+		}
+		return run.SubmitToolFailure{StepID: key.StepID, CallID: key.CallID,
+			Failure: run.ToolFailure{Class: run.FailureEffectUnknown, Message: msg}, Outcome: run.ToolOutcomeUnknown}
 	}
-	msg := "tool returned no outcome"
-	if out.Err != nil {
-		msg = "executor: " + out.Err.Error()
-	}
+	// A model result or no result for a tool call: the effect may have
+	// happened, so it is Unknown (RUN-LOP-5).
 	return run.SubmitToolFailure{StepID: key.StepID, CallID: key.CallID,
-		Failure: run.ToolFailure{Class: run.FailureEffectUnknown, Message: msg}, Outcome: run.ToolOutcomeUnknown}
+		Failure: run.ToolFailure{Class: run.FailureEffectUnknown, Message: fmt.Sprintf("executor delivered %T for a tool call", out.Result)}, Outcome: run.ToolOutcomeUnknown}
 }

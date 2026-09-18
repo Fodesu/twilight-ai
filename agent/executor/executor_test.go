@@ -44,7 +44,9 @@ func (b *testBackend) Dispatch(_ context.Context, a effect.Assignment) error {
 	}
 	ch := b.outcomes[a.Key()]
 	b.mu.Unlock()
-	go func() { ch <- effect.Outcome{Key: a.Key(), Model: &sdk.ModelResult{Text: "ok"}} }()
+	go func() {
+		ch <- effect.Outcome{Key: a.Key(), Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: "ok"}}}
+	}()
 	return nil
 }
 func (b *testBackend) Attach(_ context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
@@ -147,7 +149,7 @@ func testAssignment() effect.Assignment {
 		panic(err)
 	}
 	return effect.Assignment{Session: "s", RunID: "r", StepID: "step", Claim: "claim", Schema: 1,
-		Kind: effect.AssignmentModel, Model: &effect.ModelAssignment{Model: "m", Request: &request, RequestDigest: digest}}
+		Body: effect.ModelAssignment{Model: "m", Request: &request, RequestDigest: digest}}
 }
 
 func TestWorkerIdempotentAndOutcome(t *testing.T) {
@@ -171,11 +173,11 @@ func TestWorkerIdempotentAndOutcome(t *testing.T) {
 		t.Fatalf("backend calls = %d, want 1", calls)
 	}
 	out, err := worker.GetOutcome(ctx, a.Key())
-	if err != nil || out.Model == nil || out.Model.Text != "ok" {
+	if err != nil || modelText(out) != "ok" {
 		t.Fatalf("outcome = %+v, %v", out, err)
 	}
 	out2, err := worker.GetOutcome(ctx, a.Key())
-	if err != nil || out2.Model == nil || out2.Model.Text != "ok" {
+	if err != nil || modelText(out2) != "ok" {
 		t.Fatalf("replayed outcome = %+v, %v", out2, err)
 	}
 }
@@ -233,7 +235,7 @@ func (b *uncertainDispatchBackend) Dispatch(_ context.Context, a effect.Assignme
 func (b *uncertainDispatchBackend) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
 	select {
 	case <-b.ready:
-		return effect.Outcome{Key: key, Model: &sdk.ModelResult{Text: "accepted before response was lost"}}, nil
+		return effect.Outcome{Key: key, Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: "accepted before response was lost"}}}, nil
 	case <-ctx.Done():
 		return effect.Outcome{}, ctx.Err()
 	}
@@ -288,7 +290,7 @@ func TestWorkerUncertainDispatchPreservesExecution(t *testing.T) {
 				t.Fatal(ctx.Err())
 			}
 			out, err := port.GetOutcome(ctx, a.Key())
-			if err != nil || out.Unknown || out.Err != nil || out.Model == nil || out.Model.Text != "accepted before response was lost" {
+			if err != nil || modelText(out) != "accepted before response was lost" {
 				t.Fatalf("eventual outcome = %+v, %v", out, err)
 			}
 		})
@@ -329,7 +331,7 @@ func (b *temporarilyUnreadableBackend) GetOutcome(ctx context.Context, key effec
 	select {
 	case <-b.ready:
 		if b.unknown {
-			return effect.Outcome{Key: key, Unknown: true, Err: errors.New("execution explicitly abandoned")}, nil
+			return effect.Outcome{Key: key, Result: effect.Unknown{Message: "execution explicitly abandoned"}}, nil
 		}
 		return b.testBackend.GetOutcome(ctx, key)
 	default:
@@ -364,7 +366,7 @@ func TestWorkerOutcomeReadFailurePreservesExecution(t *testing.T) {
 			}
 			close(backend.ready)
 			out, err := worker.GetOutcome(ctx, a.Key())
-			if err != nil || out.Unknown != unknown || (!unknown && (out.Model == nil || out.Model.Text != "ok")) {
+			if _, isUnknown := out.Result.(effect.Unknown); err != nil || isUnknown != unknown || (!unknown && modelText(out) != "ok") {
 				t.Fatalf("eventual outcome = %+v, %v", out, err)
 			}
 		})
@@ -626,14 +628,14 @@ func TestWorkerReclaimsExpiredAssignment(t *testing.T) {
 	readCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	out, err := worker.GetOutcome(readCtx, a.Key())
-	if err != nil || out.Model == nil || out.Model.Text != "ok" {
+	if err != nil || modelText(out) != "ok" {
 		t.Fatalf("recovered outcome = %+v, %v", out, err)
 	}
 	backend.mu.Lock()
 	calls := backend.calls
 	var request *run.ModelRequest
-	if backend.last.Model != nil {
-		request = backend.last.Model.Request
+	if model, ok := backend.last.Model(); ok {
+		request = model.Request
 	}
 	backend.mu.Unlock()
 	if calls != 1 || request == nil {
@@ -672,7 +674,7 @@ func TestWorkerReconcileAdoptsExpiredLease(t *testing.T) {
 	readCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	out, err := worker.GetOutcome(readCtx, a.Key())
-	if err != nil || out.Model == nil || out.Model.Text != "ok" {
+	if err != nil || modelText(out) != "ok" {
 		t.Fatalf("adopted outcome = %+v, %v", out, err)
 	}
 	got, _, err := records.Get(ctx, a.Key())
@@ -744,7 +746,7 @@ func TestWorkerReconcileLoopAdoptsOrphanedRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, err := worker.GetOutcome(ctx, a.Key())
-	if err != nil || out.Model == nil || out.Model.Text != "ok" {
+	if err != nil || modelText(out) != "ok" {
 		t.Fatalf("reconciled outcome = %+v, %v", out, err)
 	}
 	backend.mu.Lock()
@@ -777,7 +779,7 @@ func TestFileStoreSurvivesWorkerRecreation(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, err := second.GetOutcome(ctx, a.Key())
-	if err != nil || out.Model == nil {
+	if _, ok := out.ModelResult(); err != nil || !ok {
 		t.Fatalf("recreated worker outcome = %+v, %v", out, err)
 	}
 }
@@ -801,15 +803,14 @@ func TestHTTPClientAndServer(t *testing.T) {
 		t.Fatalf("status = %s, %v", status, err)
 	}
 	out, err := client.GetOutcome(ctx, a.Key())
-	if err != nil || out.Model == nil || out.Model.Text != "ok" {
+	if err != nil || modelText(out) != "ok" {
 		t.Fatalf("HTTP outcome = %+v, %v", out, err)
 	}
 }
 
 func testToolAssignment() effect.Assignment {
 	return effect.Assignment{Session: "s", RunID: "r", StepID: "step", CallID: "call-1", Claim: "claim", Schema: 1,
-		Kind: effect.AssignmentTool,
-		Tool: &effect.ToolAssignment{ToolRef: "gate", DefinitionDigest: "d", Arguments: run.MustParseCanonicalJSON(`{}`), Policy: run.DirectExecution}}
+		Body: effect.ToolAssignment{ToolRef: "gate", DefinitionDigest: "d", Arguments: run.MustParseCanonicalJSON(`{}`), Policy: run.DirectExecution}}
 }
 
 // Dispose is the control plane's give-up path: the record settles Unknown
@@ -1023,7 +1024,7 @@ func TestHTTPControlEndpoints(t *testing.T) {
 		t.Fatalf("dispose = %v", err)
 	}
 	out, err := client.GetOutcome(ctx, b.Key())
-	if err != nil || !out.Unknown {
+	if _, isUnknown := out.Result.(effect.Unknown); err != nil || !isUnknown {
 		t.Fatalf("disposed outcome = %+v, %v", out, err)
 	}
 }
@@ -1057,4 +1058,13 @@ func mustDigest(a effect.Assignment) run.Digest {
 		panic(err)
 	}
 	return d
+}
+
+// modelText is the text of a ModelSucceeded outcome, "" for anything else.
+func modelText(out effect.Outcome) string {
+	r, ok := out.ModelResult()
+	if !ok {
+		return ""
+	}
+	return r.Text
 }
