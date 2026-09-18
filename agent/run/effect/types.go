@@ -217,7 +217,7 @@ func (ToolExecutionFailed) toolExecutionOutcome()    {}
 func (ToolExecutionUnknown) toolExecutionOutcome()   {}
 
 // Outcome is the process-independent result after an Assignment has been
-// accepted. The wire protocol (agent/run/protocol) encodes Result as a tagged
+// accepted. The wire protocol (agent/executor/protocol) encodes Result as a tagged
 // envelope; there is no Go error in it.
 type Outcome struct {
 	Key    AssignmentKey

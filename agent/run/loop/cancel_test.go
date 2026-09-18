@@ -1,14 +1,13 @@
-package runtest_test
+package loop_test
 
 import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/run"
-	"github.com/felinics/twilight/agent/run/runtest"
 )
 
 func TestCancelStopsIdleRun(t *testing.T) {
-	f := runtest.New(t)
+	f := newFeature(t)
 	f.Cancel()
 	f.RequireStopped()
 	f.RequireNoUncertain()
@@ -17,7 +16,7 @@ func TestCancelStopsIdleRun(t *testing.T) {
 }
 
 func TestCancelProjectsExecutingTool(t *testing.T) {
-	f := runtest.New(t)
+	f := newFeature(t)
 	f.Tool("echo", run.DirectExecution)
 	f.ExecutingTool("echo", "c1")
 	f.Cancel()
@@ -26,7 +25,7 @@ func TestCancelProjectsExecutingTool(t *testing.T) {
 }
 
 func TestCancelProjectsExecutingModel(t *testing.T) {
-	f := runtest.New(t)
+	f := newFeature(t)
 	f.ExecutingModel()
 	f.Cancel()
 	f.RequireStopped()

@@ -1,16 +1,15 @@
-package runtest_test
+package loop_test
 
 import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/run"
-	"github.com/felinics/twilight/agent/run/runtest"
 )
 
 func TestApprovalWaitsThenResumes(t *testing.T) {
-	f := runtest.New(t)
+	f := newFeature(t)
 	f.Tool("echo", run.ApprovalRequired)
-	f.Model(runtest.ToolCalls("echo", "c1"), runtest.Text("after"))
+	f.Model(ToolCalls("echo", "c1"), Text("after"))
 	f.Run()
 	f.RequireWaiting(run.ResponseApproval)
 	f.RequireNotRan("echo")
@@ -28,9 +27,9 @@ func TestApprovalWaitsThenResumes(t *testing.T) {
 }
 
 func TestApprovalRejectIsPermissionDenied(t *testing.T) {
-	f := runtest.New(t)
+	f := newFeature(t)
 	f.Tool("echo", run.ApprovalRequired)
-	f.Model(runtest.ToolCalls("echo", "c1"))
+	f.Model(ToolCalls("echo", "c1"))
 	f.Run()
 	f.RequireWaiting(run.ResponseApproval)
 	f.Reject("no")
@@ -41,10 +40,10 @@ func TestApprovalRejectIsPermissionDenied(t *testing.T) {
 }
 
 func TestApprovalYieldsAfterDirectExecution(t *testing.T) {
-	f := runtest.New(t)
+	f := newFeature(t)
 	f.Tool("ask", run.ApprovalRequired)
 	f.Tool("work", run.DirectExecution)
-	f.Model(runtest.Calls(runtest.Call("ask", "cA"), runtest.Call("work", "cB")), runtest.Text("after"))
+	f.Model(Calls(Call("ask", "cA"), Call("work", "cB")), Text("after"))
 	f.Run()
 	f.RequireWaiting(run.ResponseApproval)
 	f.RequireWaitingProvider("cA")

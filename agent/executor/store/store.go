@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/es"
+	"github.com/felinics/twilight/agent/executor/protocol"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
-	"github.com/felinics/twilight/agent/run/protocol"
 )
 
 var (

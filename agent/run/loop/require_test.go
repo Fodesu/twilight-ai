@@ -1,12 +1,9 @@
-package runtest
+package loop_test
 
 import (
-	"errors"
-
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/run/model/sdkconv"
-	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/agent/run/schema"
 )
 
@@ -70,15 +67,6 @@ func (f *Feature) RequireCompleted(text string) {
 	}
 	if got != want {
 		f.t.Fatalf("last ModelStepCompleted.ResultDigest = %s, want digest of %q (%s)", got, text, want)
-	}
-}
-
-// RequireFailed checks the Run failed with reason.
-func (f *Feature) RequireFailed(reason run.RunReason) {
-	f.t.Helper()
-	s := f.state()
-	if s.Status != run.RunFailed || s.Result == nil || s.Result.Reason != reason {
-		f.t.Fatalf("state = %+v, want failed %s", s, reason)
 	}
 }
 
@@ -229,16 +217,6 @@ func (f *Feature) RequireFailureClass(class string) {
 	f.t.Fatalf("no ToolCallFailed with class %s", class)
 }
 
-// RequireFailureCall checks the failed RunResult names this call.
-func (f *Feature) RequireFailureCall(id run.CallID) {
-	f.t.Helper()
-	id = f.callByProvider(string(id))
-	s := f.state()
-	if s.Result == nil || s.Result.Failure == nil || s.Result.Failure.CallID != id {
-		f.t.Fatalf("failure = %+v, want call %s", s.Result, id)
-	}
-}
-
 // RequireFactOpened checks ToolStepOpened was committed.
 func (f *Feature) RequireFactOpened() {
 	f.t.Helper()
@@ -284,23 +262,5 @@ func (f *Feature) RequireUncertainModel() {
 	s := f.state()
 	if s.Result == nil || s.Result.UncertainModel == "" {
 		f.t.Fatalf("result = %+v, want UncertainModel", s.Result)
-	}
-}
-
-// RequireAbsorbsCommands checks a further Cancel is rejected as terminal.
-func (f *Feature) RequireAbsorbsCommands() {
-	f.t.Helper()
-	snap := f.load()
-	proto, err := snap.Schema()
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	env, err := proto.Wire.Envelope(f.runID, "after-terminal", run.CancelRun{})
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	_, err = f.rt.Commit(f.ctx, runtime.CommitRequest{Base: snap.Position, Command: env})
-	if !errors.Is(err, run.ErrRunTerminal) {
-		f.t.Fatalf("err = %v, want ErrRunTerminal", err)
 	}
 }

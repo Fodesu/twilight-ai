@@ -1,4 +1,4 @@
-package runtest_test
+package loop_test
 
 import (
 	"context"
@@ -6,12 +6,11 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/run/loop"
-	"github.com/felinics/twilight/agent/run/runtest"
 )
 
 func TestCatalogResolveErrorLeavesRunActive(t *testing.T) {
 	missing := errors.New("missing provider")
-	f := runtest.New(t)
+	f := newFeature(t)
 	f.ModelResolveError(missing)
 	// Validate finds the missing model before the start barrier: no start or
 	// recovery fact, the step stays Prepared for a later drive (RUN-EXE-5).
@@ -23,8 +22,8 @@ func TestCatalogResolveErrorLeavesRunActive(t *testing.T) {
 func TestContextCancelBeforeRunLeavesRunActive(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	f := runtest.New(t)
-	f.Model(runtest.Text("resumed"))
+	f := newFeature(t)
+	f.Model(Text("resumed"))
 	f.Context(ctx)
 	f.RunError(context.Canceled)
 	f.RequireActive()

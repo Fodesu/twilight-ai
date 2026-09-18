@@ -14,11 +14,11 @@ import (
 
 	"github.com/felinics/twilight/agent/executor"
 	executorhttp "github.com/felinics/twilight/agent/executor/http"
+	"github.com/felinics/twilight/agent/executor/protocol"
 	"github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/model"
-	"github.com/felinics/twilight/agent/run/protocol"
 	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/sdk"
 )

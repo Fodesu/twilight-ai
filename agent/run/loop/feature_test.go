@@ -1,9 +1,11 @@
-// Package runtest drives agent Run features for tests.
+// The feature tests drive the Loop end to end against the reference RunStore.
 //
-// A Feature owns one in-process Runtime and, when Run is called, one Loop.
-// Tests name protocol features and speak in Tool/Model/Run/RunError/Approve/Require*.
+// A Feature owns one in-process Runtime (a Memory Session with the run module
+// and its SessionRunStore) and, when Run is called, one Loop. Tests name
+// protocol features and speak in Tool/Model/Run/RunError/Approve/Require*.
 // Digest, envelope, revision, and default claims stay inside the driver.
-package runtest
+
+package loop_test
 
 import (
 	"context"
@@ -106,9 +108,9 @@ type Feature struct {
 	resolveErr  error
 }
 
-// New creates a Runtime, a Run, and the seed input. Configure tools and
+// newFeature creates a Runtime, a Run, and the seed input. Configure tools and
 // model results before Run or Executing*.
-func New(t testing.TB) *Feature {
+func newFeature(t testing.TB) *Feature {
 	t.Helper()
 	runs, w := newRuntime(t, run.AgentInput{ID: "seed", Digest: "sha256:seed"})
 	f := &Feature{
@@ -520,7 +522,7 @@ func (f *Feature) facts() []run.Fact {
 }
 
 func withClaim(id run.CommandID, cmd run.AgentCommand) run.AgentCommand {
-	claim := run.ExecutionClaim("runtest/" + string(id))
+	claim := run.ExecutionClaim("feature/" + string(id))
 	switch c := cmd.(type) {
 	case run.StartModelExecution:
 		if c.Claim == "" {

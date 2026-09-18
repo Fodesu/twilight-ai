@@ -16,7 +16,7 @@ import (
 
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
-	"github.com/felinics/twilight/agent/run/recovery"
+	"github.com/felinics/twilight/agent/run/plan"
 	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/agent/run/schema"
 )
@@ -42,10 +42,10 @@ const (
 
 // Decision is one target's verdict and, for Dispose, the recovery command.
 type Decision struct {
-	Target   recovery.Target
+	Target   plan.RecoveryTarget
 	Observed effect.AttachmentState
 	Verdict  Verdict
-	Recovery *recovery.Disposition
+	Recovery *plan.RecoveryDisposition
 }
 
 // Reconciler is the recovery control plane of one owner over a Scope.
@@ -101,7 +101,7 @@ func classifyRead(err error) readVerdict {
 // the machine state, so the executor can be asked whether that attempt still
 // runs. Only the key and the digest-level description are known here; the
 // inline request body never travels this way (RUN-EXE-7).
-func AssignmentFromTarget(scope run.Scope, t recovery.Target) effect.Assignment {
+func AssignmentFromTarget(scope run.Scope, t plan.RecoveryTarget) effect.Assignment {
 	a := effect.Assignment{Session: scope, RunID: t.RunID, StepID: t.StepID, CallID: t.CallID, Claim: t.Claim, Schema: t.Schema}
 	switch {
 	case t.Call != nil:
@@ -130,7 +130,7 @@ func verdictOf(state effect.AttachmentState) (Verdict, error) {
 // claim. It asks the executor once per target and starts the Outcome read of
 // every target it does not dispose; it writes nothing.
 func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtime.Snapshot, claim run.ExecutionClaim) ([]Decision, error) {
-	targets := recovery.Targets(&snapshot.State)
+	targets := plan.RecoveryTargets(&snapshot.State)
 	if len(targets) == 0 {
 		return nil, nil
 	}
@@ -160,7 +160,7 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtim
 			}
 		}
 		if d.Verdict == Dispose {
-			rec := recovery.Command(sch.Identity, t, claim)
+			rec := plan.RecoveryCommand(sch.Identity, t, claim)
 			d.Recovery = &rec
 		}
 		out = append(out, d)

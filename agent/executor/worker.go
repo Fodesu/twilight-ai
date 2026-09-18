@@ -15,10 +15,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/felinics/twilight/agent/executor/protocol"
 	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
-	"github.com/felinics/twilight/agent/run/protocol"
 	"github.com/felinics/twilight/agent/run/schema"
 )
 

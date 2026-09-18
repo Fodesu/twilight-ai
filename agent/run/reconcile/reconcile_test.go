@@ -9,7 +9,7 @@ import (
 
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
-	"github.com/felinics/twilight/agent/run/recovery"
+	"github.com/felinics/twilight/agent/run/plan"
 	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/sdk"
 )
@@ -99,7 +99,7 @@ func TestPlanVerdicts(t *testing.T) {
 // AssignmentFromTarget carries the digest-level description of the target
 // and never an inline request body (RUN-EXE-7).
 func TestAssignmentFromTarget(t *testing.T) {
-	targets := recovery.Targets(&executingModel("c1").State)
+	targets := plan.RecoveryTargets(&executingModel("c1").State)
 	if len(targets) != 1 {
 		t.Fatalf("targets = %d", len(targets))
 	}

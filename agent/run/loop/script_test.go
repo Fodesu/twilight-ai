@@ -1,4 +1,4 @@
-package runtest
+package loop_test
 
 import (
 	"context"
@@ -50,7 +50,7 @@ func (s *scriptInvoker) Generate(ctx context.Context, _ sdk.Request) (sdk.ModelR
 	}
 	n := int(s.calls.Add(1)) - 1
 	if n >= len(s.results) {
-		return sdk.ModelResult{}, errors.New("runtest: no scripted model result")
+		return sdk.ModelResult{}, errors.New("feature: no scripted model result")
 	}
 	res := s.results[n]
 	s.mu.Lock()

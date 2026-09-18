@@ -11,10 +11,10 @@ import (
 	"strings"
 
 	"github.com/felinics/twilight/agent/executor"
+	"github.com/felinics/twilight/agent/executor/protocol"
 	"github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
-	"github.com/felinics/twilight/agent/run/protocol"
 )
 
 // Client is a message-oriented Executor over HTTP. It contains no callback

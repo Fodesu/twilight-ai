@@ -129,14 +129,14 @@ func DecodeOutcome(w *OutcomeEnvelope) effect.Outcome {
 			}
 			out.Result = effect.ToolExecutionUnknown{Failure: f}
 		default:
-			out.Result = effect.Unknown{Message: fmt.Sprintf("run/protocol: unknown tool outcome %q", w.Tool.Kind)}
+			out.Result = effect.Unknown{Message: fmt.Sprintf("executor/protocol: unknown tool outcome %q", w.Tool.Kind)}
 		}
 	case w.Error != nil:
 		out.Result = effect.ModelFailed{Code: effect.FailureCode(w.Error.Code), Message: w.Error.Message}
 	case w.Model != nil:
 		out.Result = effect.ModelSucceeded{Result: *w.Model}
 	default:
-		out.Result = effect.Unknown{Message: "run/protocol: outcome envelope carries no result"}
+		out.Result = effect.Unknown{Message: "executor/protocol: outcome envelope carries no result"}
 	}
 	return out
 }

@@ -1,23 +1,22 @@
-package runtest_test
+package loop_test
 
 import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/run"
-	"github.com/felinics/twilight/agent/run/runtest"
 )
 
 func TestModelCallCompletes(t *testing.T) {
-	f := runtest.New(t)
-	f.Model(runtest.Text("hello"))
+	f := newFeature(t)
+	f.Model(Text("hello"))
 	f.Run()
 	f.RequireCompleted("hello")
 }
 
 func TestToolRoundTripCompletes(t *testing.T) {
-	f := runtest.New(t)
+	f := newFeature(t)
 	f.Tool("echo", run.DirectExecution)
-	f.Model(runtest.ToolCalls("echo", "c1"), runtest.Text("done"))
+	f.Model(ToolCalls("echo", "c1"), Text("done"))
 	f.Run()
 	f.RequireCompleted("done")
 	f.RequireRan("echo")
@@ -28,17 +27,17 @@ func TestToolRoundTripCompletes(t *testing.T) {
 }
 
 func TestKnownToolFailureContinues(t *testing.T) {
-	f := runtest.New(t)
+	f := newFeature(t)
 	f.KnownFailure("echo", run.FailureExecution)
-	f.Model(runtest.ToolCalls("echo", "c1"), runtest.Text("recovered"))
+	f.Model(ToolCalls("echo", "c1"), Text("recovered"))
 	f.Run()
 	f.RequireCompleted("recovered")
 	f.RequireFailureClass(run.FailureExecution)
 }
 
 func TestUnknownToolRefContinues(t *testing.T) {
-	f := runtest.New(t)
-	f.Model(runtest.ToolCalls("ghost", "c1"), runtest.Text("moved on"))
+	f := newFeature(t)
+	f.Model(ToolCalls("ghost", "c1"), Text("moved on"))
 	f.Run()
 	f.RequireCompleted("moved on")
 	f.RequireFailureClass(run.FailureToolLookup)

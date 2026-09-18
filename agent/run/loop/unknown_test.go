@@ -1,16 +1,15 @@
-package runtest_test
+package loop_test
 
 import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/run"
-	"github.com/felinics/twilight/agent/run/runtest"
 )
 
 func TestUnknownToolOutcomeContinues(t *testing.T) {
-	f := runtest.New(t)
+	f := newFeature(t)
 	f.Unknown("echo")
-	f.Model(runtest.ToolCalls("echo", "c1"), runtest.Text("recovered"))
+	f.Model(ToolCalls("echo", "c1"), Text("recovered"))
 	f.Run()
 	f.RequireCompleted("recovered")
 	f.RequireCallFailed("c1", run.ToolOutcomeUnknown)
@@ -18,10 +17,10 @@ func TestUnknownToolOutcomeContinues(t *testing.T) {
 }
 
 func TestUnknownToolOutcomeLeavesSiblingRunning(t *testing.T) {
-	f := runtest.New(t)
+	f := newFeature(t)
 	f.Unknown("lost")
 	f.Tool("echo", run.DirectExecution)
-	f.Model(runtest.Calls(runtest.Call("lost", "c1"), runtest.Call("echo", "c2")), runtest.Text("done"))
+	f.Model(Calls(Call("lost", "c1"), Call("echo", "c2")), Text("done"))
 	f.Run()
 	f.RequireCompleted("done")
 	f.RequireRan("lost")
