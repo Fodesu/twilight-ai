@@ -55,7 +55,11 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
-		return run.AgentInput{ID: run.InputID(id), Payload: content}
+		d, err := chatlog.DigestInput(id, content)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return run.AgentInput{ID: run.InputID(id), Digest: d}
 	}
 
 	ref := TurnRef{SessionID: sid, TurnID: "t1"}

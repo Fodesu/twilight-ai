@@ -15,7 +15,7 @@ import (
 // ErrOwnershipLost (RUN-CMT-6/7, RUN-LOP-5).
 func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 	stack := newTestStack(t, nil)
-	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{}`)})
+	stack.createRun(t, "run-1", AgentInput{ID: "seed", Digest: inputDigest(`{}`)})
 	oldRuntime := stack.runtime
 	oldWriter := stack.writer(t) // the superseded owner's capability
 

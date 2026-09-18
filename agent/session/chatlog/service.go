@@ -47,6 +47,10 @@ func TextContent(text string) run.CanonicalJSON {
 // rides on the CommitID, so a retried submission replays.
 func (s *Commands) Submit(ctx context.Context, w writer.Writer, id run.InputID, text string) (run.AgentInput, error) {
 	content := TextContent(text)
+	digest, err := DigestInput(InputID(id), content)
+	if err != nil {
+		return run.AgentInput{}, err
+	}
 	res, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
 		return &writer.SemanticGroup{CommitID: session.CommitID("input-submitted/" + string(id)),
 			Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{{
@@ -59,7 +63,7 @@ func (s *Commands) Submit(ctx context.Context, w writer.Writer, id run.InputID, 
 	}
 	switch res.Outcome {
 	case writer.CommitApplied, writer.CommitAlreadyApplied:
-		return run.AgentInput{ID: id, Payload: content}, nil
+		return run.AgentInput{ID: id, Digest: digest}, nil
 	default:
 		return run.AgentInput{}, fmt.Errorf("chatlog: submit input: %s: %s", res.Outcome, res.Detail)
 	}
@@ -239,8 +243,9 @@ func CheckRetainClosure(entries []Entry, retain []EntryDigestPair) error {
 
 // DeliverInputs is the chatlog's Part of a Turn's start or delivery unit
 // (CHT-EVT, TRN-DLV-1): it checks, on the unit's own View, that every input
-// is a submitted chatlog Input whose content equals the payload the Run
-// accepts, and writes one input_delivered per input. A failed check is
+// is a submitted chatlog Input whose content digest is the one the Run
+// accepts, and writes one input_delivered per input. The body stays here;
+// the Run carries only the digest. A failed check is
 // ErrNotSubmitted and refuses the whole unit, so an input withdrawn between
 // the caller's read and the commit is caught inside the critical section.
 func DeliverInputs(turnID TurnID, inputs []run.AgentInput) unit.Part {
@@ -267,8 +272,8 @@ func (d deliverInputs) Prepare(_ context.Context, view writer.View, now int64) (
 		if !ok || v.Status != InputSubmitted {
 			return nil, fmt.Errorf("%w: input %s is not a submitted input", ErrNotSubmitted, in.ID)
 		}
-		if !v.Input.Content.Equal(in.Payload) {
-			return nil, fmt.Errorf("%w: input %s payload differs from its submitted content", ErrNotSubmitted, in.ID)
+		if v.Input.Digest != in.Digest {
+			return nil, fmt.Errorf("%w: input %s digest differs from its submitted content", ErrNotSubmitted, in.ID)
 		}
 		events = append(events, writer.TypedEvent{Type: TypeInputDelivered, RecordedAtUnixMilli: now,
 			Value: InputDeliveredPayload{InputID: InputID(in.ID), TurnID: d.turnID}})

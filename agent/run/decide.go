@@ -655,6 +655,9 @@ func decideAcceptInput(s *MachineState, cmd AcceptInput) ([]Fact, error) {
 		if in.ID == "" {
 			return nil, rejectionf("accept input: empty InputID")
 		}
+		if in.Digest == "" {
+			return nil, rejectionf("accept input: %s has no content digest", in.ID)
+		}
 		if _, dup := seen[in.ID]; dup {
 			return nil, ErrCommandConflict
 		}

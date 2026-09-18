@@ -348,7 +348,7 @@ func deliveredInputs(ctx context.Context, reader extension.ProjectionReader, sid
 		if !ok {
 			return nil, fmt.Errorf("turn: retry: delivered input %s missing from chatlog", id)
 		}
-		out = append(out, run.AgentInput{ID: run.InputID(id), Payload: view.Input.Content})
+		out = append(out, run.AgentInput{ID: run.InputID(id), Digest: view.Input.Digest})
 	}
 	return out, nil
 }

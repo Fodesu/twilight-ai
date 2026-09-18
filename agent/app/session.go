@@ -303,7 +303,7 @@ func (s *Session) Drain(ctx context.Context) (turn.TurnResponse, bool, error) {
 	}
 	inputs := make([]run.AgentInput, len(pending))
 	for i, in := range pending {
-		inputs[i] = run.AgentInput{ID: run.InputID(in.ID), Payload: in.Content}
+		inputs[i] = run.AgentInput{ID: run.InputID(in.ID), Digest: in.Digest}
 	}
 	resp, err := s.Route(ctx, inputs)
 	return resp, err == nil, err

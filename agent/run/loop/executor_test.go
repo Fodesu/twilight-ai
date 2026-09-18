@@ -245,7 +245,7 @@ func TestDeliverDropsStaleOutcome(t *testing.T) {
 // with its original Claim and the attempt's Outcome settles it (RUN-CMT-7).
 func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 	stack := newTestStack(t, nil)
-	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{}`)})
+	stack.createRun(t, "run-1", AgentInput{ID: "seed", Digest: inputDigest(`{}`)})
 	exec := newRecordingExecutor()
 	l, err := New(exec, staticBuilder{}, Settings{})
 	if err != nil {
@@ -318,7 +318,7 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 // Takeover without a reachable executor keeps today's disposition.
 func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 	stack := newTestStack(t, nil)
-	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{}`)})
+	stack.createRun(t, "run-1", AgentInput{ID: "seed", Digest: inputDigest(`{}`)})
 	exec := newRecordingExecutor()
 	l, err := New(exec, staticBuilder{}, Settings{})
 	if err != nil {

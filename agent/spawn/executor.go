@@ -367,7 +367,7 @@ func (e *Executor) settle(ctx context.Context, h *authority.Handle, preset turn.
 	if pending := chat.SubmittedInputs(); len(pending) > 0 {
 		inputs := make([]run.AgentInput, len(pending))
 		for i, in := range pending {
-			inputs[i] = run.AgentInput{ID: run.InputID(in.ID), Payload: in.Content}
+			inputs[i] = run.AgentInput{ID: run.InputID(in.ID), Digest: in.Digest}
 		}
 		return e.startAndDrive(ctx, h, preset, inputs)
 	}

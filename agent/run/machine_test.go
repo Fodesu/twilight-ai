@@ -20,7 +20,7 @@ func newRun(t *testing.T) MachineState {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return fold(t, s, mustDecide(t, s, NextStep(AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)})))
+	return fold(t, s, mustDecide(t, s, NextStep(AgentInput{ID: "seed", Digest: inputDigest(`{"q":"hi"}`)})))
 }
 
 func mustDecide(t *testing.T, s MachineState, c AgentCommand) []Fact {
@@ -195,7 +195,7 @@ func TestRunCreatedFoldsOntoZeroState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	facts, err := SchemaV1().Machine.CreateGroup(newRun, []AgentInput{{ID: "in-1", Payload: cj(`1`)}})
+	facts, err := SchemaV1().Machine.CreateGroup(newRun, []AgentInput{{ID: "in-1", Digest: inputDigest(`1`)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -534,7 +534,7 @@ func TestRejectModelResultDispositionRetriesThenFails(t *testing.T) {
 
 func TestAcceptInputDuplicateIsGuarded(t *testing.T) {
 	s := newRun(t)
-	facts := mustDecide(t, s, NextStep(AgentInput{ID: "in-2", Payload: cj(`1`)}))
+	facts := mustDecide(t, s, NextStep(AgentInput{ID: "in-2", Digest: inputDigest(`1`)}))
 	s = fold(t, s, facts)
 	if len(s.PendingInputs) != 2 {
 		t.Fatalf("pending = %d", len(s.PendingInputs))
@@ -556,7 +556,7 @@ func TestAcceptInputQueuesInAnyActiveState(t *testing.T) {
 	s = fold(t, s, mustDecide(t, s, prep))
 
 	// Prepared: input queues, Next withdraws, withdraw reopens with the input.
-	s = fold(t, s, mustDecide(t, s, NextStep(AgentInput{ID: "in-3", Payload: cj(`3`)})))
+	s = fold(t, s, mustDecide(t, s, NextStep(AgentInput{ID: "in-3", Digest: inputDigest(`3`)})))
 	if len(s.PendingInputs) != 1 || s.PendingInputs[0].ID != "in-3" {
 		t.Fatalf("pending after accept while Prepared = %+v", s.PendingInputs)
 	}
@@ -586,7 +586,7 @@ func TestAcceptInputQueuesInAnyActiveState(t *testing.T) {
 	// Executing: input queues, Next stays Idle, no tool calls + pending input
 	// returns to Open instead of ending the Run.
 	s = fold(t, s, mustDecide(t, s, StartModelExecution{StepID: prep2.StepID, Claim: "attempt-1"}))
-	s = fold(t, s, mustDecide(t, s, NextStep(AgentInput{ID: "in-4", Payload: cj(`4`)})))
+	s = fold(t, s, mustDecide(t, s, NextStep(AgentInput{ID: "in-4", Digest: inputDigest(`4`)})))
 	if eff, _ := Next(s); eff != (Idle{}) {
 		t.Fatalf("effect while Executing with pending input = %#v, want Idle", eff)
 	}
@@ -619,7 +619,7 @@ func TestAcceptInputQueuesInAnyActiveState(t *testing.T) {
 
 func TestAcceptInputRejectsSeedDuplicateID(t *testing.T) {
 	s := newRun(t)
-	_, err := SchemaV1().Machine.Decide(s, NextStep(AgentInput{ID: "seed", Payload: cj(`{"q":"other"}`)}))
+	_, err := SchemaV1().Machine.Decide(s, NextStep(AgentInput{ID: "seed", Digest: inputDigest(`{"q":"other"}`)}))
 	if !errors.Is(err, ErrCommandConflict) {
 		t.Fatalf("duplicate seed input err = %v, want ErrCommandConflict", err)
 	}
@@ -635,7 +635,7 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 		s := minimal
 		for _, id := range ids {
 			var foldErr error
-			s, foldErr = SchemaV1().Machine.Evolve(s, InputAccepted{Input: AgentInput{ID: id, Payload: cj(`null`)}})
+			s, foldErr = SchemaV1().Machine.Evolve(s, InputAccepted{Input: AgentInput{ID: id, Digest: inputDigest(`null`)}})
 			if foldErr != nil {
 				t.Fatal(foldErr)
 			}

@@ -192,12 +192,14 @@ func TestSchemaVersion1Golden(t *testing.T) {
 		t.Fatalf("golden body changed:\n got %q\nwant %q", body, wantBody)
 	}
 
-	fact := InputAccepted{Input: AgentInput{ID: "in-1", Payload: cj(`{"text":"hi"}`)}}
+	fact := InputAccepted{Input: AgentInput{ID: "in-1", Digest: "sha256:e7b995efa755c5ff3b84d2188b58cb4ae916a59470eb3761df8a814f11763500"}}
 	fbody, err := SchemaV1().Wire.EncodeFact("input_accepted", fact)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantFact := `v1:14:input_accepted:{"input":{"id":"in-1","payload":{"text":"hi"}}}`
+	// The input body is not in the fact (RUN-WIR-4): the Run records the
+	// input's identity and content digest, the chatlog holds the body.
+	wantFact := `v1:14:input_accepted:{"input":{"digest":"sha256:e7b995efa755c5ff3b84d2188b58cb4ae916a59470eb3761df8a814f11763500","id":"in-1"}}`
 	if string(fbody) != wantFact {
 		t.Fatalf("golden fact body changed:\n got %q\nwant %q", fbody, wantFact)
 	}

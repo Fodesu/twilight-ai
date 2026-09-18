@@ -106,7 +106,7 @@ type Feature struct {
 // model results before Run or Executing*.
 func New(t testing.TB) *Feature {
 	t.Helper()
-	runs, w := newRuntime(t, run.AgentInput{ID: "seed", Payload: run.MustParseCanonicalJSON(`{"q":"hi"}`)})
+	runs, w := newRuntime(t, run.AgentInput{ID: "seed", Digest: "sha256:seed"})
 	f := &Feature{
 		t:      t,
 		ctx:    context.Background(),

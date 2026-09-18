@@ -39,10 +39,7 @@ func cloneCacheControl(c *CacheControl) *CacheControl {
 	return &cc
 }
 
-func cloneAgentInput(in AgentInput) AgentInput {
-	in.Payload = cloneRaw(in.Payload)
-	return in
-}
+func cloneAgentInput(in AgentInput) AgentInput { return in }
 
 func cloneAgentInputs(ins []AgentInput) []AgentInput {
 	if ins == nil {

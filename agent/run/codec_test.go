@@ -24,7 +24,7 @@ func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 		RejectToolCall{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp", Reason: "no"},
 		SubmitToolResponse{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp", Payload: cj(`{"answer":1}`)},
 		CancelRun{},
-		NextStep(AgentInput{ID: "in", Payload: cj(`{"q":"hi"}`)}),
+		NextStep(AgentInput{ID: "in", Digest: inputDigest(`{"q":"hi"}`)}),
 	}
 	for _, cmd := range commands {
 		env, err := SchemaV1().Wire.Envelope("run-1", CommandID("cmd-"+commandType(cmd)), cmd)
@@ -65,7 +65,7 @@ func TestFactCodecRoundTripRestoresVariants(t *testing.T) {
 		ToolCallCompleted{StepID: "ts", CallID: "c", OutputDigest: "sha256:output"},
 		ToolCallAnswered{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp"},
 		ToolCallFailed{StepID: "ts", CallID: "c", Failure: ToolFailure{Class: FailureExecution}, Outcome: ToolOutcomeKnown},
-		InputAccepted{Input: AgentInput{ID: "in", Payload: cj(`{"q":"hi"}`)}},
+		InputAccepted{Input: AgentInput{ID: "in", Digest: inputDigest(`{"q":"hi"}`)}},
 		RunEnded{End: RunCompletedEnd{}},
 	}
 	for _, fact := range facts {
@@ -92,7 +92,7 @@ func TestFactCodecRoundTripRestoresVariants(t *testing.T) {
 }
 
 func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
-	cmd := NextStep(AgentInput{ID: "in", Payload: cj(`1`)})
+	cmd := NextStep(AgentInput{ID: "in", Digest: inputDigest(`1`)})
 	env, err := SchemaV1().Wire.Envelope("run-1", SchemaV1().Identity.DeriveInputCommandID("run-1", "in"), cmd)
 	if err != nil {
 		t.Fatal(err)

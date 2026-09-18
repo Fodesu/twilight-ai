@@ -133,8 +133,18 @@ func flattenCommit(c session.Commit) []session.Event {
 	return out
 }
 
+// inputContent is the body the harness submits for id; the AgentInput the
+// Run sees carries only its digest.
+func inputContent(id string) run.CanonicalJSON {
+	return run.MustParseCanonicalJSON(fmt.Sprintf(`{"text":%q}`, id))
+}
+
 func input(id string) run.AgentInput {
-	return run.AgentInput{ID: run.InputID(id), Payload: run.MustParseCanonicalJSON(fmt.Sprintf(`{"text":%q}`, id))}
+	d, err := chatlog.DigestInput(chatlog.InputID(id), inputContent(id))
+	if err != nil {
+		panic(err)
+	}
+	return run.AgentInput{ID: run.InputID(id), Digest: d}
 }
 
 // submit writes twilight/chatlog/input_submitted for each id and returns the
@@ -147,7 +157,7 @@ func (h *harness) submit(ids ...string) []run.AgentInput {
 		h.mustApply(writer.SemanticGroup{CommitID: session.CommitID("submitted/" + id),
 			Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{{
 				Type: chatlog.TypeInputSubmitted, RecordedAtUnixMilli: h.now,
-				Value: chatlog.InputSubmittedPayload{InputID: chatlog.InputID(id), Content: in.Payload, SubmittedAtUnixMilli: h.now}}}}}})
+				Value: chatlog.InputSubmittedPayload{InputID: chatlog.InputID(id), Content: inputContent(id), SubmittedAtUnixMilli: h.now}}}}}})
 		out[i] = in
 	}
 	return out

@@ -147,6 +147,9 @@ func buildCreateGroupV1(run NewRun, inputs []AgentInput) ([]Fact, error) {
 		if in.ID == "" {
 			return nil, errors.New("agent: create group: input with empty InputID")
 		}
+		if in.Digest == "" {
+			return nil, fmt.Errorf("agent: create group: input %s has no content digest", in.ID)
+		}
 		if _, dup := seen[in.ID]; dup {
 			return nil, fmt.Errorf("agent: create group: duplicate InputID %q", in.ID)
 		}

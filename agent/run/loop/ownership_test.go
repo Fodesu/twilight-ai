@@ -54,7 +54,7 @@ func (c *commitLog) settlementsFor(callID CallID) int {
 // waiting for the blocked worker to be released on its own.
 func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 	stack := newTestStack(t, nil)
-	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{}`)})
+	stack.createRun(t, "run-1", AgentInput{ID: "seed", Digest: inputDigest(`{}`)})
 	oldWriter := stack.writer(t) // the superseded owner's capability
 	oldRuntime := &commitLog{RunStore: stack.runtime.Bind(oldWriter)}
 
@@ -154,7 +154,7 @@ func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 // non-sentinel commit error would get (RUN-LOP-5).
 func TestOwnershipLossOnModelSettlementIsNotRetried(t *testing.T) {
 	stack := newTestStack(t, nil)
-	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{}`)})
+	stack.createRun(t, "run-1", AgentInput{ID: "seed", Digest: inputDigest(`{}`)})
 	oldWriter := stack.writer(t) // the superseded owner's capability
 	oldRuntime := &commitLog{RunStore: stack.runtime.Bind(oldWriter)}
 

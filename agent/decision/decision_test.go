@@ -82,7 +82,7 @@ func entries() (chatlog.Context, fixedContent) {
 func TestPromptBuildersResolveDeterministically(t *testing.T) {
 	state, content := entries()
 	src := sources(state, session.Head{Next: 3, Digest: "d3"}, content)
-	input := run.PromptInput{Scope: "s", Inputs: []run.AgentInput{{ID: "in-1", Payload: decision.InputContent("hello")}}}
+	input := run.PromptInput{Scope: "s", Inputs: []run.AgentInput{{ID: "in-1", Digest: "sha256:in-1"}}}
 	var prompts []loop.Prompt
 	for i := 0; i < 2; i++ {
 		builders := decision.DefaultPromptBuilders() // a fresh process builds its own registry

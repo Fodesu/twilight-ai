@@ -47,7 +47,7 @@ func testStart(t *testing.T, factory Factory) {
 
 	// TRN-STR-1: every rejection leaves the stream untouched.
 	altered := input("in-1")
-	altered.Payload = run.MustParseCanonicalJSON(`{"text":"changed"}`)
+	altered.Digest = "sha256:changed"
 	rejects := []struct {
 		name     string
 		req      turn.StartRequest
@@ -195,7 +195,7 @@ func testDeliver(t *testing.T, factory Factory) {
 		inputs []run.AgentInput
 	}{
 		{"unsubmitted second input", []run.AgentInput{in5[0], input("never-submitted")}},
-		{"payload differs", []run.AgentInput{{ID: in5[0].ID, Payload: run.MustParseCanonicalJSON(`{"text":"other"}`)}}},
+		{"digest differs", []run.AgentInput{{ID: in5[0].ID, Digest: "sha256:other"}}},
 	}
 	for _, tc := range rejects {
 		if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t2"), Inputs: tc.inputs}); !errors.Is(err, turn.ErrConflict) {
@@ -292,7 +292,7 @@ func testRetry(t *testing.T, factory Factory) {
 		t.Fatalf("retry created = %+v", c)
 	}
 	pending := h.load(run2).State.PendingInputs
-	if len(pending) != 2 || pending[0].ID != "in-1" || pending[1].ID != "in-2" || !pending[1].Payload.Equal(in2[0].Payload) {
+	if len(pending) != 2 || pending[0].ID != "in-1" || pending[1].ID != "in-2" || pending[1].Digest != in2[0].Digest {
 		t.Fatalf("retry replayed inputs = %+v", pending)
 	}
 	view := h.surface().Turns["t1"]

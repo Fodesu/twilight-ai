@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/felinics/twilight/agent/artifact"
+	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/executor"
 	executionstore "github.com/felinics/twilight/agent/executor/store"
 	. "github.com/felinics/twilight/agent/run"
@@ -22,6 +23,9 @@ const (
 )
 
 func cj(raw string) CanonicalJSON { return MustParseCanonicalJSON(raw) }
+
+// inputDigest names an input body: the Run stores only the digest.
+func inputDigest(raw string) Digest { return es.DigestBytes([]byte(raw)) }
 
 // testStack is the minimal Session stack a Loop test drives: kernel Memory
 // Store, the run module, one owner process (Writers) and a Runtime.
@@ -114,7 +118,7 @@ func (s *testStack) createRun(t testing.TB, runID RunID, inputs ...AgentInput) {
 func newTestRuntime(t testing.TB) (*runmod.SessionRunStore, writer.Writer) {
 	t.Helper()
 	stack := newTestStack(t, nil)
-	stack.createRun(t, "run-1", AgentInput{ID: "seed", Payload: cj(`{"q":"hi"}`)})
+	stack.createRun(t, "run-1", AgentInput{ID: "seed", Digest: inputDigest(`{"q":"hi"}`)})
 	return stack.runtime, stack.writer(t)
 }
 

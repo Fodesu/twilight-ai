@@ -9,9 +9,14 @@ type AgentCommand interface{ agentCommand() }
 
 // AgentInput is a queue-safe input: a stable ID plus an immutable payload.
 // Queue item references, priority, order, claims and leases stay in the host.
+// AgentInput is one input as the Run knows it: its identity and the digest of
+// its content. The content itself lives with the module that owns inputs
+// (the chatlog's input_submitted); the Run only records that this input
+// entered this logical run (RUN-WIR-4), so an input has one body in the
+// ledger and editing or forking it never touches a second copy.
 type AgentInput struct {
-	ID      InputID       `json:"id"`
-	Payload CanonicalJSON `json:"payload"`
+	ID     InputID `json:"id"`
+	Digest Digest  `json:"digest"`
 }
 
 // NextStep creates the AcceptInput command for one or more inputs.
