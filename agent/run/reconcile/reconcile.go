@@ -54,8 +54,44 @@ type Reconciler struct {
 	// the caller settles it through the Loop. Nil means kept targets stay
 	// Executing until something else delivers their Outcome.
 	Deliver func(effect.Outcome)
+	// Fail receives a kept target whose Outcome can no longer be read: the
+	// executor holds no record for it (effect.ErrExecutionNotFound), or reads
+	// kept failing past ReadRetries. The target stays Executing; the next
+	// RecoverInterrupted plans it again, and a record that is gone by then is
+	// disposed. Nil discards the report.
+	Fail func(effect.AssignmentKey, error)
+	// ReadRetries bounds consecutive failed Outcome reads that are neither
+	// ErrOutcomeNotReady (the execution is still running: waited for without
+	// limit) nor definitive (stopped at once). Zero selects DefaultReadRetries.
+	ReadRetries int
 	// Lifetime bounds the background Outcome reads of kept targets.
 	Lifetime context.Context
+}
+
+// DefaultReadRetries is about a minute of failed reads at the 1s backoff cap.
+const DefaultReadRetries = 60
+
+// readVerdict classifies one failed Outcome read.
+type readVerdict uint8
+
+const (
+	readWait       readVerdict = iota // the execution is still running
+	readRetry                         // a read failed; the execution may still finish
+	readDefinitive                    // nothing will ever be read for this key
+)
+
+// classifyRead is the error taxonomy of Outcome reads: what the executor
+// says will never answer is definitive; a not-ready answer is the normal
+// wait; anything else is a read failure to retry within the budget.
+func classifyRead(err error) readVerdict {
+	switch {
+	case errors.Is(err, effect.ErrOutcomeNotReady):
+		return readWait
+	case errors.Is(err, effect.ErrExecutionNotFound), errors.Is(err, effect.ErrOutcomeUnavailable):
+		return readDefinitive
+	default:
+		return readRetry
+	}
 }
 
 // AssignmentFromTarget rebuilds the Assignment of an Executing target from
@@ -132,13 +168,22 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *run.Ru
 }
 
 // awaitOutcome reads the Outcome of a kept attempt in the background and
-// hands it to Deliver; the read backs off and stops with Lifetime.
+// hands it to Deliver. A not-ready answer is waited for as long as Lifetime
+// lasts; a read failure is retried with backoff up to ReadRetries times; a
+// definitive answer (the executor holds nothing for the key) or an exhausted
+// budget is reported through Fail and the watcher stops, so a target the
+// executor will never answer for does not poll forever behind a stuck Turn.
 func (r *Reconciler) awaitOutcome(key effect.AssignmentKey) {
 	if r.Deliver == nil || r.Lifetime == nil {
 		return
 	}
+	budget := r.ReadRetries
+	if budget <= 0 {
+		budget = DefaultReadRetries
+	}
 	go func() {
 		delay := 10 * time.Millisecond
+		failures := 0
 		for {
 			out, err := r.Executions.GetOutcome(r.Lifetime, key)
 			if err == nil {
@@ -146,6 +191,21 @@ func (r *Reconciler) awaitOutcome(key effect.AssignmentKey) {
 					r.Deliver(out)
 				}
 				return
+			}
+			if r.Lifetime.Err() != nil {
+				return
+			}
+			switch classifyRead(err) {
+			case readWait:
+				failures = 0
+			case readDefinitive:
+				r.fail(key, err)
+				return
+			case readRetry:
+				if failures++; failures >= budget {
+					r.fail(key, fmt.Errorf("reconcile: outcome read gave up after %d failures: %w", failures, err))
+					return
+				}
 			}
 			timer := time.NewTimer(delay)
 			select {
@@ -159,6 +219,12 @@ func (r *Reconciler) awaitOutcome(key effect.AssignmentKey) {
 			}
 		}
 	}()
+}
+
+func (r *Reconciler) fail(key effect.AssignmentKey, err error) {
+	if r.Fail != nil {
+		r.Fail(key, err)
+	}
 }
 
 // Apply commits the Dispose decisions through the bound store and returns

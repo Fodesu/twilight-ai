@@ -3,7 +3,6 @@ package executor
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	executionstore "github.com/felinics/twilight/agent/executor/store"
@@ -18,8 +17,10 @@ import (
 type ExecutionRef = executionstore.ExecutionRef
 
 // ErrUnknownProvider reports a record whose ExecutionRef names a provider
-// this Worker has no Backend for (RUN-EXE-10).
-var ErrUnknownProvider = errors.New("executor: unknown execution provider")
+// this Worker has no Backend for (RUN-EXE-10). It is a definitive answer for
+// Outcome reads (effect.ErrOutcomeUnavailable): this process cannot reach the
+// execution and retrying will not change that.
+var ErrUnknownProvider = fmt.Errorf("executor: unknown execution provider: %w", effect.ErrOutcomeUnavailable)
 
 // ExecutionBackend performs one provider's effects. It is addressed by Ref:
 // the Worker persists the Ref Prepare returns before Start, and every later

@@ -182,3 +182,51 @@ func TestLifetimeStopsOutcomeWatcher(t *testing.T) {
 	case <-time.After(20 * time.Millisecond):
 	}
 }
+
+// A read the executor answers definitively (no record for the key) stops the
+// watcher and reports through Fail; a read that keeps failing stops after
+// ReadRetries; neither fabricates an Outcome.
+func TestOutcomeReadErrorTaxonomy(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cases := []struct {
+		name    string
+		err     error
+		retries int
+		wantErr error
+	}{
+		{"execution not found is definitive", effect.ErrExecutionNotFound, 0, effect.ErrExecutionNotFound},
+		{"outcome unavailable is definitive", effect.ErrOutcomeUnavailable, 0, effect.ErrOutcomeUnavailable},
+		{"transport failures exhaust the budget", errors.New("boom"), 3, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var reads int
+			port := &fakePort{state: effect.AttachmentActive, outcome: func(context.Context, effect.AssignmentKey) (effect.Outcome, error) {
+				reads++
+				return effect.Outcome{}, tc.err
+			}}
+			failed := make(chan error, 1)
+			r := &Reconciler{Executions: port, Lifetime: ctx, ReadRetries: tc.retries,
+				Deliver: func(out effect.Outcome) { t.Errorf("delivered %+v", out) },
+				Fail:    func(_ effect.AssignmentKey, err error) { failed <- err }}
+			if _, err := r.Plan(ctx, "s", executingModel("c1"), "t"); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-failed:
+				if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+					t.Fatalf("fail = %v, want %v", err, tc.wantErr)
+				}
+				if tc.wantErr == nil && (!errors.Is(err, tc.err) || reads != tc.retries) {
+					t.Fatalf("fail = %v after %d reads, want %d", err, reads, tc.retries)
+				}
+				if tc.wantErr != nil && reads != 1 {
+					t.Fatalf("definitive error read %d times", reads)
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+		})
+	}
+}

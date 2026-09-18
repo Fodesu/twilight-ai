@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/authority"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -50,7 +51,7 @@ func Example_jsonlPrototype() {
 		panic(err)
 	}
 	model1 := &scriptedRequests{answers: []sdk.ModelResult{protoToolCall("call-1"), protoText("done"), protoToolCall("call-2")}}
-	p1 := newHost(app.Config{Store: store1, Content: content, Clock: clock.Now}, map[run.ModelRef]loop.ModelInvoker{"m-1": model1}, tool)
+	p1 := newHost(app.Config{Store: store1, Content: content, Clock: clock.Now, Artifacts: authority.Artifacts{Ephemeral: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model1}, tool)
 	profile1, err := p1.RegisterPreset("jsonl-agent", preset)
 	if err != nil {
 		panic(err)
@@ -74,7 +75,7 @@ func Example_jsonlPrototype() {
 		if err != nil {
 			panic(err)
 		}
-		turn1Done <- resp
+		turn1Done <- resp.TurnResponse
 	}()
 	<-stage1.started
 
@@ -130,7 +131,7 @@ func Example_jsonlPrototype() {
 	if err != nil {
 		panic(err)
 	}
-	p2 := newHost(app.Config{Store: store2, Content: content, Ownership: session.OpenOptions{Takeover: true}, Clock: clock.Now},
+	p2 := newHost(app.Config{Store: store2, Content: content, Ownership: session.OpenOptions{Takeover: true}, Clock: clock.Now, Artifacts: authority.Artifacts{Ephemeral: true}},
 		map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}}, tool)
 	if _, err := p2.RegisterPreset("jsonl-agent", preset); err != nil {
 		panic(err)

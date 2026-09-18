@@ -412,9 +412,10 @@ func (e *Executor) driveTurn(ctx context.Context, h *authority.Handle, turnID tu
 		if err != nil {
 			return "", err
 		}
-		switch resp.Disposition {
-		case authority.ResumeAlreadyDriving:
+		if resp.AlreadyDriving {
 			return "", fmt.Errorf("subagent %s is driven elsewhere", h.ID())
+		}
+		switch resp.Disposition {
 		case turn.ResumeWaitingForRecovery:
 			if err := e.awaitRecovery(ctx, ref); err != nil {
 				return "", err

@@ -8,6 +8,7 @@ import (
 
 	"github.com/felinics/twilight/agent/authority"
 	"github.com/felinics/twilight/agent/context/compaction"
+	"github.com/felinics/twilight/agent/driver"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
@@ -32,6 +33,41 @@ type SessionOptions struct {
 	// CompactWarn receives automatic-compaction failures; they never change
 	// the settled results. Nil discards them.
 	CompactWarn func(error)
+	// RouteRetries bounds how many times one input's route is re-committed
+	// after a conflict with a concurrent route (APP-SES-3) before the last
+	// conflict is returned to the caller; the input stays submitted and the
+	// next Send, Drain or Resume routes it. Zero selects DefaultRouteRetries.
+	RouteRetries int
+	// DrainBudget bounds how many Turns one settlement drains from the
+	// backlog before returning ErrDrainBudget with the Results so far; the
+	// remaining backlog stays submitted for the next call (APP-RTE-2). Zero
+	// selects DefaultDrainBudget.
+	DrainBudget int
+}
+
+// DefaultRouteRetries and DefaultDrainBudget are the liveness bounds a
+// SessionOptions with zero values takes.
+const (
+	DefaultRouteRetries = 4
+	DefaultDrainBudget  = 64
+)
+
+// ErrDrainBudget reports a settlement that stopped draining the backlog at
+// the DrainBudget with inputs still submitted.
+var ErrDrainBudget = errors.New("app: drain budget exhausted with inputs still submitted")
+
+func (o SessionOptions) routeRetries() int {
+	if o.RouteRetries <= 0 {
+		return DefaultRouteRetries
+	}
+	return o.RouteRetries
+}
+
+func (o SessionOptions) drainBudget() int {
+	if o.DrainBudget <= 0 {
+		return DefaultDrainBudget
+	}
+	return o.DrainBudget
 }
 
 // Result is the conversation-level outcome of one settled (or steered) Turn.
@@ -39,8 +75,12 @@ type Result struct {
 	TurnID      turn.TurnID
 	Status      turn.TurnStatus
 	Disposition turn.ResumeDisposition
+	// AlreadyDriving reports that another driver in this process carries the
+	// Turn: the input is committed, its settlement and reply are reported by
+	// that driver. It is a fact about this process, not a Turn disposition.
+	AlreadyDriving bool
 	// Reply is the settled Turn's last assistant text; empty while the Turn
-	// still runs (already_driving) or when the attempt produced no text.
+	// still runs or when the attempt produced no text.
 	Reply string
 }
 
@@ -231,12 +271,12 @@ func (s *Session) Submit(ctx context.Context, text string) (turn.TurnRef, error)
 	return ref, nil
 }
 
-// routeInput commits one input's route with the conflict retry of APP-SES-3.
-// It returns the Turn to drive, or the already_driving Result when another
-// driver took the input first.
+// routeInput commits one input's route with the conflict retry of APP-SES-3,
+// bounded by SessionOptions.RouteRetries. It returns the Turn to drive, or
+// the AlreadyDriving Result when another driver took the input first.
 func (s *Session) routeInput(ctx context.Context, in run.AgentInput) (turn.TurnRef, *Result, error) {
 	var lastErr error
-	for attempt := 0; attempt < 4; attempt++ {
+	for attempt := 0; attempt < s.opts.routeRetries(); attempt++ {
 		ref, err := s.commitRoute(ctx, []run.AgentInput{in})
 		if err == nil {
 			return ref, nil, nil
@@ -256,10 +296,10 @@ func (s *Session) routeInput(ctx context.Context, in run.AgentInput) (turn.TurnR
 // Turn, or Start a new one -- then drive the Turn to its next quiescent point.
 // A Turn awaiting Retry or Settle is a conflict: those are the caller's
 // decisions.
-func (s *Session) Route(ctx context.Context, inputs []run.AgentInput) (turn.TurnResponse, error) {
+func (s *Session) Route(ctx context.Context, inputs []run.AgentInput) (driver.DriveResult, error) {
 	ref, err := s.commitRoute(ctx, inputs)
 	if err != nil {
-		return turn.TurnResponse{}, err
+		return driver.DriveResult{}, err
 	}
 	return s.a.Driver.Drive(ctx, s.h.Writer(), ref.TurnID)
 }
@@ -292,14 +332,14 @@ func (s *Session) commitRoute(ctx context.Context, inputs []run.AgentInput) (tur
 
 // Drain is APP-RTE-2: start the next Turn from the backlog of submitted,
 // undelivered inputs; ok is false when there is none.
-func (s *Session) Drain(ctx context.Context) (turn.TurnResponse, bool, error) {
+func (s *Session) Drain(ctx context.Context) (driver.DriveResult, bool, error) {
 	chat, err := chatlog.ReadSurface(ctx, s.a.Projections, s.sid)
 	if err != nil {
-		return turn.TurnResponse{}, false, err
+		return driver.DriveResult{}, false, err
 	}
 	pending := chat.SubmittedInputs()
 	if len(pending) == 0 {
-		return turn.TurnResponse{}, false, nil
+		return driver.DriveResult{}, false, nil
 	}
 	inputs := make([]run.AgentInput, len(pending))
 	for i, in := range pending {
@@ -320,7 +360,7 @@ func (s *Session) absorbed(ctx context.Context, in run.AgentInput) (Result, bool
 	if !ok || v.Status == chatlog.InputSubmitted {
 		return Result{}, false
 	}
-	r := Result{TurnID: turn.TurnID(v.Input.TurnID), Disposition: ResumeAlreadyDriving}
+	r := Result{TurnID: turn.TurnID(v.Input.TurnID), AlreadyDriving: true}
 	if surface, serr := turn.ReadSurface(ctx, s.a.Projections, s.sid); serr == nil {
 		r.Status = surface.Turns[r.TurnID].Status
 	}
@@ -368,13 +408,13 @@ func (s *Session) Retry(ctx context.Context) ([]Result, bool, error) {
 // settlement leaves submitted, undelivered inputs, the next Turn starts from
 // them (APP-RTE-2). When the backlog is drained and no Turn is active, the
 // automatic compaction policy runs (APP-CKP-1).
-func (s *Session) settled(ctx context.Context, resp turn.TurnResponse) ([]Result, error) {
+func (s *Session) settled(ctx context.Context, resp driver.DriveResult) ([]Result, error) {
 	out := []Result{s.result(ctx, resp)}
-	if resp.Disposition == ResumeAlreadyDriving {
+	if resp.AlreadyDriving {
 		// The running driver settles the Turn and drains in its own call.
 		return out, nil
 	}
-	for range [64]struct{}{} {
+	for range s.opts.drainBudget() {
 		next, ok, err := s.Drain(ctx)
 		if err != nil {
 			if errors.Is(err, turn.ErrConflict) {
@@ -388,18 +428,18 @@ func (s *Session) settled(ctx context.Context, resp turn.TurnResponse) ([]Result
 			return out, nil
 		}
 		out = append(out, s.result(ctx, next))
-		if next.Disposition == ResumeAlreadyDriving {
+		if next.AlreadyDriving {
 			return out, nil
 		}
 	}
-	return out, errors.New("app: drain did not converge")
+	return out, ErrDrainBudget
 }
 
 // result wraps a TurnResponse with the settled Turn's reply; materialization
 // failures are reported to Warn and leave Reply empty.
-func (s *Session) result(ctx context.Context, resp turn.TurnResponse) Result {
-	r := Result{TurnID: resp.Ref.TurnID, Status: resp.Status, Disposition: resp.Disposition}
-	if resp.Disposition == turn.ResumeFinished {
+func (s *Session) result(ctx context.Context, resp driver.DriveResult) Result {
+	r := Result{TurnID: resp.Ref.TurnID, Status: resp.Status, Disposition: resp.Disposition, AlreadyDriving: resp.AlreadyDriving}
+	if !resp.AlreadyDriving && resp.Disposition == turn.ResumeFinished {
 		text, err := s.a.Reply(ctx, resp.Ref)
 		if err != nil {
 			s.app.warn(fmt.Errorf("app: materialize reply of turn %s: %w", resp.Ref.TurnID, err))

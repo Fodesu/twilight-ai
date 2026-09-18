@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/driver"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -64,7 +65,9 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 		resp, err := h.Authority.Turns.Start(ctx, s.Handle().Writer(), turn.StartRequest{Ref: ref1, Inputs: []run.AgentInput{first}, Preset: preset})
 		if err == nil {
 			// The Coordinator only commits; the host drives (DRV-1).
-			resp, err = h.Authority.Driver.Drive(ctx, s.Handle().Writer(), ref1.TurnID)
+			var driven driver.DriveResult
+			driven, err = h.Authority.Driver.Drive(ctx, s.Handle().Writer(), ref1.TurnID)
+			resp = driven.TurnResponse
 		}
 		if err != nil {
 			t.Error(err)
@@ -80,7 +83,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	// Deliver commits AcceptInput + input_delivered without waiting for the
 	// tool; the Run is already driven here, so the response reports
 	// already_driving (or finished when the running driver settles first).
-	deliverDone := make(chan turn.TurnResponse, 1)
+	deliverDone := make(chan driver.DriveResult, 1)
 	go func() {
 		resp, err := s.Route(ctx, []run.AgentInput{second})
 		if err != nil {
@@ -95,8 +98,8 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 		return err == nil && len(surface.Turns["t1"].InputIDs) == 2
 	})
 	close(tool.release)
-	if resp := <-deliverDone; resp.Disposition != app.ResumeAlreadyDriving && resp.Disposition != turn.ResumeFinished {
-		t.Fatalf("deliver disposition = %s", resp.Disposition)
+	if resp := <-deliverDone; !resp.AlreadyDriving && resp.Disposition != turn.ResumeFinished {
+		t.Fatalf("deliver = %+v, want already driving or finished", resp)
 	}
 	resp := <-done
 	if resp.Status != turn.TurnCompleted {

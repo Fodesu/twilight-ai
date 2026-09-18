@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/authority"
 	"github.com/felinics/twilight/agent/executor"
 	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/jsonstable"
@@ -183,7 +184,7 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cfg := app.Config{Store: store, Content: content, Spawn: &spawn.Options{}, Ownership: session.OpenOptions{Takeover: takeover}}
+		cfg := app.Config{Store: store, Content: content, Spawn: &spawn.Options{}, Ownership: session.OpenOptions{Takeover: takeover}, Artifacts: authority.Artifacts{Ephemeral: true}}
 		var clock func() time.Time
 		if takeover {
 			clock = func() time.Time { return time.Now().Add(time.Hour) }

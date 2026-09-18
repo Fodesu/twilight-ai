@@ -23,10 +23,16 @@ import (
 	"github.com/felinics/twilight/agent/turn"
 )
 
-// ResumeAlreadyDriving extends the turn disposition vocabulary: the inputs
-// (if any) are committed and another local driver of the same Run carries
-// them forward. The Coordinator itself never produces it.
-const ResumeAlreadyDriving turn.ResumeDisposition = "already_driving"
+// DriveResult is what one drive of a Turn reports: the Turn's committed
+// response, and whether another local driver of the same Run was already
+// carrying it, in which case this call drove nothing and Response is the
+// status as read. AlreadyDriving is a fact about this process, not about the
+// Turn, so it is not a TurnResponse disposition: the Turn's durable
+// vocabulary stays the Coordinator's.
+type DriveResult struct {
+	turn.TurnResponse
+	AlreadyDriving bool
+}
 
 // Presets resolves a PresetRef to its immutable AgentPreset (PST-2).
 type Presets interface {
@@ -102,33 +108,32 @@ func (d *Driver) loopFor(ref turn.PresetRef) (*loop.Loop, error) {
 // view and is fenced at commit instead of adopting the new owner's state
 // (AUTH-OWN-2, RUN-LOP-5). The caller's ctx bounds the drive, so
 // cancellation is the caller's decision. A concurrent local driver of the
-// same Run yields ResumeAlreadyDriving.
-func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID) (turn.TurnResponse, error) {
+// same Run yields AlreadyDriving with the Turn's status as read.
+func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID) (DriveResult, error) {
 	ref := turn.TurnRef{SessionID: w.SessionID(), TurnID: turnID}
 	surface, err := turn.ReadSurface(ctx, w.Projections(), ref.SessionID)
 	if err != nil {
-		return turn.TurnResponse{}, err
+		return DriveResult{}, err
 	}
 	view, ok := surface.Turns[ref.TurnID]
 	if !ok {
-		return turn.TurnResponse{}, fmt.Errorf("%w: unknown turn %s", turn.ErrConflict, ref.TurnID)
+		return DriveResult{}, fmt.Errorf("%w: unknown turn %s", turn.ErrConflict, ref.TurnID)
 	}
 	if view.Status == turn.TurnActive {
 		l, err := d.loopFor(view.Preset)
 		if err != nil {
-			return turn.TurnResponse{}, err
+			return DriveResult{}, err
 		}
 		res, err := l.Run(ctx, d.Runs.Bind(w), view.ActiveRun, nil)
 		if err != nil {
 			if errors.Is(err, loop.ErrRunAlreadyRunning) {
 				resp, rerr := d.Turns.Status(ctx, ref)
 				if rerr != nil {
-					return turn.TurnResponse{}, rerr
+					return DriveResult{}, rerr
 				}
-				resp.Disposition = ResumeAlreadyDriving
-				return resp, nil
+				return DriveResult{TurnResponse: resp, AlreadyDriving: true}, nil
 			}
-			return turn.TurnResponse{}, err
+			return DriveResult{}, err
 		}
 		if res.ExecutionRecovery {
 			// The drive quiesced with executions in flight and no local
@@ -140,7 +145,8 @@ func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID)
 			}
 		}
 	}
-	return d.Turns.Status(ctx, ref)
+	resp, err := d.Turns.Status(ctx, ref)
+	return DriveResult{TurnResponse: resp}, err
 }
 
 // reattachDeliver is what the reconciler hands a kept attempt's Outcome to
@@ -227,7 +233,11 @@ func (d *Driver) ensureRecoveryLifetime(w writer.Writer) *recoveryLifetime {
 // settlement.
 func (d *Driver) recoverInterrupted(ctx context.Context, w writer.Writer) (int, error) {
 	lt := d.ensureRecoveryLifetime(w)
-	rec := &reconcile.Reconciler{Executions: d.Executor, Lifetime: lt.ctx, Deliver: d.reattachDeliver(lt.ctx, lt.w)}
+	sid := w.SessionID()
+	rec := &reconcile.Reconciler{Executions: d.Executor, Lifetime: lt.ctx, Deliver: d.reattachDeliver(lt.ctx, lt.w),
+		Fail: func(key effect.AssignmentKey, err error) {
+			d.fail(sid, fmt.Errorf("driver: outcome of run %s step %s call %q cannot be read; the target stays executing until the next takeover: %w", key.RunID, key.StepID, key.CallID, err))
+		}}
 	return d.Runs.RecoverInterrupted(ctx, w, rec)
 }
 

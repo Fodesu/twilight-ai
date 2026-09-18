@@ -125,6 +125,11 @@ func (s ExecutionStatus) Terminal() bool {
 var (
 	ErrExecutionNotFound = errors.New("agent: effect: execution not found")
 	ErrOutcomeNotReady   = errors.New("agent: effect: outcome not ready")
+	// ErrOutcomeUnavailable means the executor holds a record for the key but
+	// will never produce a readable Outcome for it (a provider this process
+	// has no backend for, a record it cannot decode): a definitive answer, as
+	// opposed to a transport failure that a later read may not see.
+	ErrOutcomeUnavailable = errors.New("agent: effect: outcome unavailable")
 	// ErrDispatchUnknown means the dispatch response was lost after the
 	// request may have crossed the effect boundary. It must not trigger a
 	// compensating re-dispatch or a RecoverModelExecution automatically.

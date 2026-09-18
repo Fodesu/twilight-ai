@@ -5,14 +5,9 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agent/driver"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/writer"
 )
-
-// ResumeAlreadyDriving is the Drive disposition when another local driver of
-// the same Run carries the Turn forward (DRV-1).
-const ResumeAlreadyDriving = driver.ResumeAlreadyDriving
 
 // ErrSessionOpen reports an Open of a Session this authority already holds
 // open, or is still opening or closing: one generation of ownership at a

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	"github.com/felinics/twilight/agent/authority"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -44,7 +45,7 @@ func crashMidModel(t *testing.T, root string, sid session.SessionID) (turn.Prese
 		t.Fatal(err)
 	}
 	gate := &gateModel{started: make(chan sdk.Request, 1), release: make(chan struct{})}
-	p1 := newHost(app.Config{Store: store1, Content: content1}, map[run.ModelRef]loop.ModelInvoker{"m-1": gate})
+	p1 := newHost(app.Config{Store: store1, Content: content1, Artifacts: authority.Artifacts{Ephemeral: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": gate})
 	presetRef, err := p1.RegisterPreset("a1", preset)
 	if err != nil {
 		t.Fatal(err)
@@ -86,7 +87,7 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 		t.Fatal(err)
 	}
 	replan := &scriptedRequests{}
-	p2 := newHost(app.Config{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": replan})
+	p2 := newHost(app.Config{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}, Artifacts: authority.Artifacts{Ephemeral: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": replan})
 	if _, err := p2.RegisterPreset("a1", preset); err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +194,7 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	exec := &reattachingExecutor{recordingExecutor: recordingExecutor{reply: "reattached"}, reads: make(chan context.Context, 4)}
-	p2, err := app.Build(app.Config{Store: store2, Content: content2, Executor: app.ExecutorConfig{Port: exec}, Ownership: session.OpenOptions{Takeover: true}})
+	p2, err := app.Build(app.Config{Store: store2, Content: content2, Executor: app.ExecutorConfig{Port: exec}, Ownership: session.OpenOptions{Takeover: true}, Artifacts: authority.Artifacts{Ephemeral: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +308,7 @@ func TestCloseStopsPendingRecoveryRead(t *testing.T) {
 				t.Fatal(err)
 			}
 			exec := &reattachingExecutor{reads: make(chan context.Context, 4)}
-			h, err := app.Build(app.Config{Store: store, Content: content, Executor: app.ExecutorConfig{Port: exec}, Ownership: session.OpenOptions{Takeover: true}})
+			h, err := app.Build(app.Config{Store: store, Content: content, Executor: app.ExecutorConfig{Port: exec}, Ownership: session.OpenOptions{Takeover: true}, Artifacts: authority.Artifacts{Ephemeral: true}})
 			if err != nil {
 				t.Fatal(err)
 			}

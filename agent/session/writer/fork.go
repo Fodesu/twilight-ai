@@ -117,8 +117,11 @@ func Fork(ctx context.Context, store session.Store, registry *extension.Registry
 
 // prefixBindings collects, in commit order, every BindingID the events of
 // the parent's prefix [0, fork.Seq] reference, through the extractors their
-// event definitions declare. Events the registry cannot decode carry no known
-// references and are skipped.
+// event definitions declare. It fails closed: an event type this registry
+// does not know, or a payload version it cannot decode of a type that
+// declares bindings, may reference content the child must keep alive, and
+// nothing here can prove it does not, so the fork is refused rather than
+// risk a child whose history names collected artifacts (EXT-WRT-8).
 func prefixBindings(ctx context.Context, store session.Store, registry *extension.Registry, parent session.SessionID, fork session.LedgerRef) ([]artifact.BindingID, error) {
 	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: parent, Limit: uint32(fork.Seq) + 1})
 	if err != nil {
@@ -133,12 +136,20 @@ func prefixBindings(ctx context.Context, store session.Store, registry *extensio
 		for _, b := range c.Batches {
 			for _, e := range b.Events {
 				_, def, ok := registry.LookupEvent(e.Type)
-				if !ok || len(def.Bindings) == 0 {
+				if !ok {
+					return nil, &session.Error{Code: session.ErrUnsupported, Operation: "fork", SessionID: parent,
+						Detail: fmt.Sprintf("commit %s: event type %s is unknown to this registry; cannot prove the prefix references no artifact", c.CommitID, e.Type)}
+				}
+				if len(def.Bindings) == 0 {
 					continue
 				}
 				decoded, err := registry.Decode(e)
-				if err != nil || decoded.Unknown {
-					continue
+				if err != nil {
+					return nil, fmt.Errorf("writer: fork: commit %s: decode %s: %w", c.CommitID, e.Type, err)
+				}
+				if decoded.Unknown {
+					return nil, &session.Error{Code: session.ErrUnsupported, Operation: "fork", SessionID: parent,
+						Detail: fmt.Sprintf("commit %s: %s v%d is not decodable by this registry; cannot extract its artifact references", c.CommitID, e.Type, decoded.Version)}
 				}
 				for _, decl := range def.Bindings {
 					ids, err := decl.Extractor.BindingIDs(decoded.Value)

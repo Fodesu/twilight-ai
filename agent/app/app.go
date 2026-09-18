@@ -116,10 +116,6 @@ type Config struct {
 // applications that need to recognize the built-in compaction request.
 const CompactorSystemPrompt = compaction.CompactorSystemPrompt
 
-// ResumeAlreadyDriving reports that another driver already carries the
-// inputs forward; the Result names the Turn that took them.
-const ResumeAlreadyDriving = authority.ResumeAlreadyDriving
-
 // Application is the composition root: the Authority plus the application's
 // own services -- the preset table, the event stream and the spawn effect.
 type Application struct {
