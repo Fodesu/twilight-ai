@@ -31,7 +31,7 @@ type (
 const ProtocolVersion1 uint16 = 1
 
 // SegmentHeader is the immutable creation record of a commit segment
-// (agent-session.md section 8): a node of the lineage DAG. It names no
+// (agent-session.md section 8): a node of the lineage tree. It names no
 // Session: which roots append to or inherit from the segment is the roots'
 // business (SessionRecord), and a segment outlives every Session that named
 // it for as long as some root reaches it. HeaderDigest is the segment's

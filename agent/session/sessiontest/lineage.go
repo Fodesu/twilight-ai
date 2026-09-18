@@ -7,7 +7,7 @@ import (
 	"github.com/felinics/twilight/agent/session"
 )
 
-// SES-GC-1/2: Sessions are roots into a DAG of immutable segments. Delete
+// SES-GC-1/2: Sessions are roots into a forest of immutable segments. Delete
 // drops a root and nothing else; Collect keeps every commit a root still
 // reaches through fork edges and reclaims the rest, transitively.
 //

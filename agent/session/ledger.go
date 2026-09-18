@@ -7,7 +7,7 @@ import (
 )
 
 // Ledger is the kernel's Store over a Backend (SES 4 to 6, 8, 9): the
-// Session lineage DAG in code. Roots (SessionRecord) name the segment they
+// Session lineage tree in code. Roots (SessionRecord) name the segment they
 // append to as their tip; segments (Segment) chain to their parents through
 // LedgerRef edges; a Session's history is the stitched Ancestry of its segment. Fork
 // adds a node and an edge; Delete drops a root; Collect reclaims what no

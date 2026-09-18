@@ -9,18 +9,20 @@ import (
 	"github.com/felinics/twilight/agent/es"
 )
 
-// The Session lineage is a DAG (agent-session.md section 8): immutable
-// commit segments are its nodes, a segment's parent anchor is an edge, and a
-// Session is a root that names the segment it appends to. These are the
-// domain types; the Ledger implements every operation over them and the
-// adapters store them.
+// The Session lineage is a tree (agent-session.md section 8, SES-LIN-1):
+// immutable commit segments are its nodes, a segment's single parent anchor
+// is an edge, and a Session is a root that names the segment it appends to.
+// A segment has at most one parent, so the segments under one root segment
+// form a tree and all of them a forest; no operation gives an existing
+// segment a second parent. These are the domain types; the Ledger implements
+// every operation over them and the adapters store them.
 
 // SegmentID identifies one commit segment independently of any Session. It
 // is the digest of the segment's creation record, so a segment recreated
 // with a different record is a different node.
 type SegmentID string
 
-// LedgerRef names one position in the DAG: a commit of a segment, by its
+// LedgerRef names one position in the lineage tree: a commit of a segment, by its
 // place in the stitched sequence and by its digest. As SessionHeader.Parent
 // it is the edge from a child segment to the last commit it inherits: the
 // child's own commits are numbered from Seq+1 and chained from Digest, and
@@ -67,7 +69,7 @@ func (s Segment) Seed() Head { return LedgerSeed(s.Header) }
 
 // SessionRecord is a root: a Session's identity, the segment it appends to
 // (its tip) and the Session's own metadata. Dropping the record is deleting
-// the Session; the tip stays a node of the DAG for as long as any root
+// the Session; the tip stays a lineage node for as long as any root
 // reaches it. Two roots never share a tip (SES-FRK-4): a fork gets a new
 // child segment, so writers of different Sessions never append to one node.
 type SessionRecord struct {
@@ -150,10 +152,10 @@ type Backend interface {
 	AdvanceTip(ctx context.Context, lease Lease, seg Segment, bootstrap []Commit, from SegmentID) error
 }
 
-// Ancestry is the explicit path of a Session through the DAG: its segments
-// from the root down to the tip, each with the range of the stitched
-// sequence it contributes. Every read, lookup and reachability question is
-// answered on this value; nothing walks the store recursively.
+// Ancestry is the unique path of a Session through the lineage tree: its
+// segments from the root down to the tip, each with the range of the
+// stitched sequence it contributes. Every read, lookup and reachability
+// question is answered on this value; nothing walks the store recursively.
 type Ancestry struct {
 	// Segments are ordered root first; the last is the tip a Session
 	// appends to.

@@ -199,7 +199,7 @@ type CollectReport struct {
 }
 
 // Store is the kernel port (SES 4 to 6, 8, 9). A Session is a root into the
-// lineage DAG: it names the segment it appends to, and reads the stitched
+// lineage tree: it names the segment it appends to, and reads the stitched
 // history of that segment's ancestry. Delete drops the root; Collect
 // reclaims the nodes no root reaches.
 type Store interface {
@@ -215,7 +215,7 @@ type Store interface {
 	ReadStream(context.Context, StreamReadRequest) (StreamPage, error)
 	// Delete drops the Session's root (SES-GC-1): the Session is no longer
 	// found, opened, read or forked; its SessionID is free again at once.
-	// The segments it reached stay nodes of the DAG for as long as another
+	// The segments it reached stay lineage nodes for as long as another
 	// root reaches them. An owned Session is ErrOwned.
 	Delete(context.Context, SessionID) error
 	// Collect reclaims every node and suffix no root reaches (SES-GC-2). It

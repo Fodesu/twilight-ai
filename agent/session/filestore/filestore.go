@@ -1,5 +1,5 @@
 // Package filestore is the JSONL-backed session.Store: the kernel Ledger over
-// a file Backend. Segments (the nodes of the lineage DAG) live under
+// a file Backend. Segments (the nodes of the lineage tree) live under
 // segments/<id>/ as header.json plus log.jsonl, one committed line per own
 // Commit; Session roots live under sessions/<sid>.json with their writer
 // ownership. The log is plain JSONL so a stream can be inspected and diffed

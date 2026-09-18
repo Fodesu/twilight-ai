@@ -63,26 +63,26 @@ Atomic Commit ─────────────────────┘
 Events = 一条 Session 的 commit ledger：有序的原子 Commit 日志，一个 Commit 内含若干按逻辑流分组的 batch
 State  = Fold(Events)
 
-Session lineage DAG（第 8 节）：
+Session lineage 树（第 8 节；每个根段下的节点为一棵树，全部根段为森林）：
   节点  = Segment：不可变的创建记录（SegmentHeader，不含任何 Session 身份）加它自己的只追加 commit，身份为 SegmentID = HeaderDigest
-  边    = LedgerRef：子 Segment 到父 Segment 某个 commit 的引用（SegmentHeader.Parent）
+  边    = LedgerRef：子 Segment 到父 Segment 某个 commit 的引用（SegmentHeader.Parent，每段至多一条）
   根    = SessionRecord：SessionID → 它追加到的 Segment（Tip）与 Session 自己的元数据
-  路径  = Ancestry：一个根到 DAG 起点的显式 Segment 序列，及每段在拼接序列中贡献的区间
+  路径  = Ancestry：从根段到该 Session tip 段的唯一 Segment 序列，及每段在拼接序列中贡献的区间
 
 kernel 负责：Segment/LedgerRef/SessionRecord/Ancestry 的语义、Commit（Seq、CommitID、Epoch、批次）、原子的 Commit 追加、根级写者独占、按 Commit 的 digest 链、按 Ancestry 拼接的 CommitSeq 顺序读与流读、fork、tip 段推进、删除、可达性回收
 adapter 负责：Backend——LedgerStore（存节点：段的创建记录与自身 commit）与 SessionStore（存根：记录与 Lease）
 modules 负责：event ontology、typed codec、payload 版本、投影、投影缓存、幂等重放、并发串行
 ```
 
-kernel 的 `session.Ledger` 实现 `Store`，只依赖 `Backend` 端口；Memory 与文件 adapter 只实现该端口。DAG 由 Go 领域类型定义，存储持久化它，而不是从存储布局里产生。
+kernel 的 `session.Ledger` 实现 `Store`，只依赖 `Backend` 端口；Memory 与文件 adapter 只实现该端口。lineage 树由 Go 领域类型定义并由存储持久化；存储布局不定义它。
 
 **SES-SCP-1** kernel 不解释 payload，不校验 payload 的 schema，不知道模块、commit 的语义、投影或 lease。它保证四件事：日志只能追加；同一时刻一个 Session 至多一个有效写者；一次 `Append` 的整 Commit event 同时可见或同时不存在；每个 Commit 携带覆盖前一 Commit 的 digest。
 
 **SES-SCP-2** 并发不在 kernel 解决。一个 Session 的全部写入者（Run 的 worker、Turn 的 Coordinator、恢复流程）在进程内经同一个 `writer.Writer` 串行（EXT-WRT），它持有 kernel 的所有权句柄 `session.Handle`。kernel 只拒绝不持有有效所有权的 `Append`。
 
-**SES-SCP-3** kernel 的范围是 Session lineage DAG：header、Open/Append/ReadCommits/ReadStream、所有权与 epoch、按 Commit 的 digest 链、fork、tip 段推进（`Advance`）、删除与可达性回收（第 8、9 节）。canonical import 不属于当前合同。
+**SES-SCP-3** kernel 的范围是 Session lineage 树：header、Open/Append/ReadCommits/ReadStream、所有权与 epoch、按 Commit 的 digest 链、fork、tip 段推进（`Advance`）、删除与可达性回收（第 8、9 节）。lineage 的单父不变量见 SES-LIN-1：多父 merge 被排除在模型之外；canonical import 不属于当前合同，若日后加入，它与 fork 一样只能新建根段或子段，不得为已有 Session 增加第二个父节点。
 
-**SES-SCP-4** adapter 端口是 `Backend = LedgerStore + SessionStore + CreateSession + AdvanceTip`。`LedgerStore` 存节点：`Segment`、`ListSegments`、`ReadSegment`（只读该段自身的 commit）、`Contains`、`LookupCommit`、对已封印 Commit 的 `Append(lease, segment, commit)`、`TruncateSegment`、`RemoveSegment`。`SessionStore` 存根：`Record`、`ListRecords`、`Acquire`（所有权与 torn tail 修复）、`Release`、`DeleteRecord`。`AdvanceTip(lease, segment, bootstrap, from)` 在 Lease 下一步落下新节点及其 bootstrap commit，并把该 Session 根的 tip 从 `from` 移到新节点（SES-ADV-2）。两者共享一个一致性域，使 `Append` 与 `AdvanceTip` 能与 Lease 检查原子进行。adapter 不知道 fork、前缀与可达性；`Ledger` 在该端口之上一次实现 SES-FRK 与 SES-GC。conformance 以 `Store` 为参数运行，因此每个 adapter 得到同一套 DAG 语义。
+**SES-SCP-4** adapter 端口是 `Backend = LedgerStore + SessionStore + CreateSession + AdvanceTip`。`LedgerStore` 存节点：`Segment`、`ListSegments`、`ReadSegment`（只读该段自身的 commit）、`Contains`、`LookupCommit`、对已封印 Commit 的 `Append(lease, segment, commit)`、`TruncateSegment`、`RemoveSegment`。`SessionStore` 存根：`Record`、`ListRecords`、`Acquire`（所有权与 torn tail 修复）、`Release`、`DeleteRecord`。`AdvanceTip(lease, segment, bootstrap, from)` 在 Lease 下一步落下新节点及其 bootstrap commit，并把该 Session 根的 tip 从 `from` 移到新节点（SES-ADV-2）。两者共享一个一致性域，使 `Append` 与 `AdvanceTip` 能与 Lease 检查原子进行。adapter 不知道 fork、前缀与可达性；`Ledger` 在该端口之上一次实现 SES-FRK 与 SES-GC。conformance 以 `Store` 为参数运行，因此每个 adapter 得到同一套 lineage 语义。
 
 ## 2. 版本
 
@@ -109,9 +109,9 @@ const (
 )
 type StreamRef struct { Kind StreamKind; ID string }
 
-type SegmentHeader struct {          // 段的创建记录：ledger DAG 的节点，不含 Session 身份
+type SegmentHeader struct {          // 段的创建记录：lineage 树的节点，不含 Session 身份
     ProtocolVersion uint16
-    Parent *LedgerRef                 // nil 为 root segment；非 nil 见第 8 节
+    Parent *LedgerRef                 // nil 为 root segment；非 nil 为该段唯一的父边，见第 8 节
     Nonce string                      // 128 位随机数的 hex；使两条字段相同的创建记录成为两个段
     CausationID es.CausationID
     Metadata jsonstable.Value
@@ -148,7 +148,7 @@ type Head struct { Next CommitSeq; Digest es.Digest } // 空日志为 LedgerSeed
 
 **SES-WIR-1** identity 非空、稳定、有效 UTF-8。`CommitSeq` 从 `LedgerSeed(header).Next` 连续（根段从 0，fork 与 Advance 产生的子段从 `Parent.Seq+1`，见第 8 节）；一次 `Append` 持久化恰好一个 `Commit`，`CommitID` 在同一 ledger 内唯一。每个 batch 的流归因必须合法：session 流不带 ID，run 流的 ID 是有效 RunID；同一 Commit 内同一流至多一个 batch，每个 batch 与每个 Commit 都非空。`Payload` 必须是 canonical JSON object（RFC 8785），完整字节进入 digest。event 不携带事务元数据（无 Seq、Index、SourceSeqs、Ignorable）：事件的权威顺序由 CommitSeq 加上其在 batch 内的位置决定。
 
-**SES-WIR-4（四种身份）** `SessionID` 是根（分支）身份；`SegmentID` 是历史节点身份，由段的创建记录决定；`CommitID` 是语义操作身份，在一个 Session 的拼接历史内唯一；`Digest` 是完整性身份。段的创建记录与每个 commit 的 digest 预映像都不含 `SessionID`：段是 ledger DAG 的 canonical 对象，被根命名但不属于任何一个根。删除、重建、重命名 Session，或把段 DAG 与根集合一起迁移到另一个 Store，都不改变任何段或 commit 的身份。
+**SES-WIR-4（四种身份）** `SessionID` 是根（分支）身份；`SegmentID` 是历史节点身份，由段的创建记录决定；`CommitID` 是语义操作身份，在一个 Session 的拼接历史内唯一；`Digest` 是完整性身份。段的创建记录与每个 commit 的 digest 预映像都不含 `SessionID`：段是 lineage 树的 canonical 对象，被根命名但不属于任何一个根。删除、重建、重命名 Session，或把段集合与根集合一起迁移到另一个 Store，都不改变任何段或 commit 的身份。
 
 **SES-WIR-2** digest preimage：
 
@@ -274,9 +274,9 @@ conformance 以 `Store` 为参数，每个 adapter 跑同一套，必须验证�
 
 kernel 的 `ProtocolVersion` 覆盖 header 字段、commit 字段、digest preimage 与批次完整性规则（SES-VER-2）。
 
-## 8. lineage DAG 与 fork
+## 8. lineage 树与 fork
 
-Session 的历史是一个 DAG 上的路径。节点是不可变的 commit 段（`Segment`），边是段到其父段某个 commit 的引用（`SegmentHeader.Parent`，类型 `LedgerRef`），Session 是指向自身 tip 段的根（`SessionRecord`）。fork 的单位是整条 ledger 的前缀 `Session @ CommitSeq N`：session 流与全部 run 流到该 Commit 为止的事实。对话与 Turn 状态是 run 事实的投影（第 11 条），只复制 session 流得不到完整的 canonical history，因此 fork 不复制任何 commit，而是新增一个节点和一条边。Session 自身推进到新 tip 段（`Advance`，SES-ADV-1）是同一种图变更：新增一个节点和一条边，并把根移到新节点。
+Session 的历史是 lineage 树上从根段到 tip 段的一条路径。节点是不可变的 commit 段（`Segment`），边是段到其父段某个 commit 的引用（`SegmentHeader.Parent`，类型 `LedgerRef`）；每个段至多一条父边（SES-LIN-1），因此每个根段下的节点构成一棵树，全部根段构成森林。Session 是指向自身 tip 段的根（`SessionRecord`）。fork 的单位是整条 ledger 的前缀 `Session @ CommitSeq N`：session 流与全部 run 流到该 Commit 为止的事实。对话与 Turn 状态是 run 事实的投影（第 11 条），只复制 session 流得不到完整的 canonical history，因此 fork 不复制任何 commit，而是新增一个节点和一条边。Session 自身推进到新 tip 段（`Advance`，SES-ADV-1）是同一种图变更：新增一个节点和一条边，并把根移到新节点。
 
 ```go
 type SegmentID string                                       // = SegmentHeader.HeaderDigest
@@ -292,6 +292,8 @@ func (*Ancestry) Read / Lookup / Contains / Owner(seq)
 func LedgerSeed(SegmentHeader) Head        // 根段 {0, HeaderDigest}；子段 {Seq+1, Digest}
 func Reachable(nodes map[SegmentID]Segment, roots []SessionRecord) map[SegmentID]CommitSeq
 ```
+
+**SES-LIN-1（单父不变量）** 一个段至多一条父边：`SegmentHeader.Parent` 是单个可空引用，进入 header digest 预映像（SES-WIR-2）。一个 Session 的 `Ancestry` 是从根段到其 tip 段的唯一路径。建立边的操作只有 fork（SES-FRK-1）与 `Advance`（SES-ADV-1），两者都只为新建的段设置父边：fork 新建子段并使其成为新根的 tip，`Advance` 新建子段并把已有根的 tip 移到该段。已有段的父边不可修改，任何操作都不得为已有 Session 增加第二个父节点；多父 merge 被排除在模型之外，canonical import 若进入合同也只能新建根段或子段。因此 lineage 是森林，读路径只拼接一个父前缀（SES-FRK-2）、`Reachable` 沿唯一的 `Parent.Segment` 传递保留点（SES-GC-2）都依赖该不变量。Session 之间的其他关系不进入 lineage：spawn 子代理的派生来源记录在子段创建 `Metadata` 的 `twilight/spawn` 键下（SPN-2/3），以 fork 模式 spawn 的子 Session 只有 fork 点这一条父边，其 spawn 来源与 lineage 分开建模。
 
 **SES-FRK-1（创建）** `Create` 携带 `Fork{Session, Seq}` 时建立 fork。`Ledger` 解析父 Session 的 `Ancestry`，找到贡献 commit `Seq` 的段（`Owner`），把边记为 `Parent = LedgerRef{Segment: 该段, Seq, Digest: 该 commit 的 digest}`，然后以 `Backend.CreateSession` 一步落下新段与新根（SES-GC-4）。必须核对：父 Session 存活（否则 `ErrNotFound`）、父与子同一 ProtocolVersion、`Seq` 在父的 history 内（否则 `ErrInvalid`）、父不是子自身。任一不满足则不写根也不写段。边进入 header digest 预映像（SES-WIR-2），因此 `SegmentID` 由创建记录决定，相同 origin 的重复 Create 幂等、不同 origin 为 `ErrConflict`。段只追加，边一经建立永久有效；在继承 commit 处 fork，边直指持有该 commit 的祖先段，路径不会随 fork 层数增长。
 

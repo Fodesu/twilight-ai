@@ -12,7 +12,7 @@ import (
 
 // headerDigestBody is the preimage of the SegmentHeader digest: every header
 // field except the digest itself. No Session identity enters it: the segment
-// is a canonical object of the ledger DAG, named by roots but not by any one
+// is a canonical object of the lineage tree, named by roots but not by any one
 // of them (SES-WIR-2).
 type headerDigestBody struct {
 	ProtocolVersion uint16
