@@ -65,6 +65,8 @@ linters:
           - goconst
           - gocritic
           - unparam
+          - prealloc
+          - gocyclo
       # Conformance harnesses (agent/.../<pkg>test, sessiontest, artifacttest)
       # are test code compiled into non-_test files so adapters can import
       # them; they get the test exclusions.
@@ -76,6 +78,12 @@ linters:
           - gocritic
           - unparam
           - gocyclo
+          - prealloc
+      # Provider adapters and the SDK build wire JSON by hand; a repeated
+      # field name there is the wire format, not a constant to extract.
+      - path: ^(provider|sdk)/
+        linters:
+          - goconst
       # The SDK keeps its own text-generation layer building and tested while
       # callers move to the single-call seam, so a deprecation notice is not
       # actionable in the layer's own files or in the tests that pin it.

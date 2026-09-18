@@ -78,7 +78,11 @@ func (s *Commands) Withdraw(ctx context.Context, w writer.Writer, id run.InputID
 		if err != nil {
 			return nil, err
 		}
-		view, ok := state.(Surface).Inputs.Get(InputID(id))
+		surface, ok := state.(Surface)
+		if !ok {
+			return nil, fmt.Errorf("chatlog: surface projection is %T", state)
+		}
+		view, ok := surface.Inputs.Get(InputID(id))
 		if !ok || view.Status != InputSubmitted {
 			return nil, fmt.Errorf("%w: input %s is not a submitted input", ErrNotSubmitted, id)
 		}

@@ -14,6 +14,17 @@ import (
 	"github.com/felinics/twilight/agent/es"
 )
 
+// Operation names and shared details of artifact errors.
+const (
+	opRef                   = "ref"
+	opActivate              = "activate"
+	opPut                   = "put"
+	opPromote               = "promote"
+	opRegistry              = "registry"
+	opVerify                = "verify"
+	detailUnknownDurability = "unknown durability"
+)
+
 type (
 	WireVersion   uint16
 	Scheme        string
@@ -69,16 +80,16 @@ type Ref struct {
 // Validate applies ART-ID-1 and ART-REF-2.
 func (r Ref) Validate() error {
 	if r.Scheme == "" || r.Authority == "" || r.Key == "" {
-		return &Error{Code: ErrInvalid, Operation: "ref", Detail: "empty locator component"}
+		return &Error{Code: ErrInvalid, Operation: opRef, Detail: "empty locator component"}
 	}
 	if r.Durability.Rank() < 0 {
-		return &Error{Code: ErrInvalid, Operation: "ref", Detail: "unknown durability"}
+		return &Error{Code: ErrInvalid, Operation: opRef, Detail: detailUnknownDurability}
 	}
 	if r.Scheme == "cas" && r.Integrity == nil {
-		return &Error{Code: ErrInvalid, Operation: "ref", Detail: "cas ref requires integrity"}
+		return &Error{Code: ErrInvalid, Operation: opRef, Detail: "cas ref requires integrity"}
 	}
 	if r.ExpiresAtUnixMilli != nil && r.Durability != Ephemeral {
-		return &Error{Code: ErrInvalid, Operation: "ref", Detail: "only ephemeral refs may expire"}
+		return &Error{Code: ErrInvalid, Operation: opRef, Detail: "only ephemeral refs may expire"}
 	}
 	return nil
 }
@@ -393,10 +404,10 @@ func (l *MemoryLedger) Activate(ctx context.Context, id ClaimID, owner ClaimOwne
 		return RetentionClaim{}, err
 	}
 	if id == "" || owner.Kind == "" || owner.Identity == "" {
-		return RetentionClaim{}, &Error{Code: ErrInvalid, Operation: "activate", Identity: string(id), Detail: "empty claim identity or owner"}
+		return RetentionClaim{}, &Error{Code: ErrInvalid, Operation: opActivate, Identity: string(id), Detail: "empty claim identity or owner"}
 	}
 	if len(set.BindingIDs) == 0 || set.RefSetDigest == "" {
-		return RetentionClaim{}, &Error{Code: ErrInvalid, Operation: "activate", Identity: string(id), Detail: "empty binding set"}
+		return RetentionClaim{}, &Error{Code: ErrInvalid, Operation: opActivate, Identity: string(id), Detail: "empty binding set"}
 	}
 	if l.Builder != nil {
 		rebuilt, err := l.Builder.Build(ctx, set.BindingIDs)
@@ -404,14 +415,14 @@ func (l *MemoryLedger) Activate(ctx context.Context, id ClaimID, owner ClaimOwne
 			return RetentionClaim{}, err
 		}
 		if !sameSet(rebuilt, set) {
-			return RetentionClaim{}, &Error{Code: ErrInvalid, Operation: "activate", Identity: string(id), Detail: "binding set does not verify"}
+			return RetentionClaim{}, &Error{Code: ErrInvalid, Operation: opActivate, Identity: string(id), Detail: "binding set does not verify"}
 		}
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if existing, ok := l.claims[id]; ok {
 		if existing.State != ClaimActive || existing.Owner != owner || !sameSet(existing.BindingSet, set) {
-			return RetentionClaim{}, &Error{Code: ErrConflict, Operation: "activate", Identity: string(id)}
+			return RetentionClaim{}, &Error{Code: ErrConflict, Operation: opActivate, Identity: string(id)}
 		}
 		return existing, nil
 	}

@@ -38,9 +38,6 @@ const (
 // Store is the JSONL session.Store: the Ledger's methods are promoted from
 // the embedded kernel; the Backend operations below are what the file layout
 // implements.
-// Durable reports true: the ledger is on disk.
-func (*Store) Durable() bool { return true }
-
 type Store struct {
 	*session.Ledger
 	root string
@@ -236,10 +233,7 @@ func (s *Store) ReadSegment(ctx context.Context, id session.SegmentID, from sess
 	// with one, commits begin at from already.
 	start := 0
 	if len(commits) > 0 && from > commits[0].Seq {
-		start = int(from - commits[0].Seq)
-		if start > len(commits) {
-			start = len(commits)
-		}
+		start = session.IndexWithin(from-commits[0].Seq, len(commits))
 	}
 	end := len(commits)
 	more := false
@@ -358,11 +352,11 @@ func (s *Store) Append(ctx context.Context, lease session.Lease, id session.Segm
 		f.Close()
 		return s.fail(lease, owner, "write", err)
 	}
-	sync := s.sync
-	if sync == nil {
-		sync = (*os.File).Sync
+	syncFile := s.sync
+	if syncFile == nil {
+		syncFile = (*os.File).Sync
 	}
-	if err := sync(f); err != nil {
+	if err := syncFile(f); err != nil {
 		f.Close()
 		return s.fail(lease, owner, "sync", err)
 	}
@@ -659,7 +653,7 @@ func (s *Store) extendIndex(id session.SegmentID, header session.SegmentHeader, 
 		}
 		idx = &logIndex{base: base, offsets: []int64{0}} // the first commit of a new log
 	}
-	if idx.size != start || idx.base+session.CommitSeq(len(idx.offsets)-1) != c.Seq {
+	if idx.size != start || len(idx.offsets) == 0 || idx.base+session.CommitSeq(len(idx.offsets))-1 != c.Seq {
 		delete(s.index, id)
 		return
 	}
@@ -696,7 +690,7 @@ func (s *Store) commitsFrom(id session.SegmentID, path string, header session.Se
 		if err != nil {
 			return nil, session.Head{}, err
 		}
-		if !torn && len(commits) == n-int(slot) && commits[0].Seq == from {
+		if !torn && uint64(slot) <= uint64(n) && len(commits) == n-session.IndexWithin(slot, n) && commits[0].Seq == from {
 			return commits, idx.head, nil
 		}
 		s.dropIndex(id) // the file no longer matches the index; fall back
@@ -821,7 +815,7 @@ func (s *Store) Tamper(sid session.SessionID, seq session.CommitSeq, mutate func
 	path := filepath.Join(dir, logFile)
 	commits, _, _, _, err := readLog(path, sid, "tamper")
 	seed := session.LedgerSeed(header)
-	if err != nil || seq < seed.Next || int(seq-seed.Next) >= len(commits) {
+	if err != nil || seq < seed.Next || seq-seed.Next >= session.CommitSeq(len(commits)) {
 		return
 	}
 	mutate(&commits[seq-seed.Next])
@@ -881,3 +875,6 @@ func writeAtomic(path string, data []byte) error {
 
 var _ session.Store = (*Store)(nil)
 var _ session.Backend = (*Store)(nil)
+
+// Durable reports true: the ledger is on disk.
+func (*Store) Durable() bool { return true }

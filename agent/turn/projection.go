@@ -34,12 +34,11 @@ type AttemptView struct {
 }
 
 // Ended returns the RunEnd variant, or nil for a non-terminal attempt.
-func (a *AttemptView) Ended() *run.RunEnd {
+func (a *AttemptView) Ended() run.RunEnd {
 	if a == nil || a.End == nil {
 		return nil
 	}
-	end := a.End.End
-	return &end
+	return a.End.End
 }
 
 type TurnView struct {

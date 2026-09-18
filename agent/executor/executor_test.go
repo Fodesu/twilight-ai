@@ -110,7 +110,7 @@ func (b *refBackend) Start(ctx context.Context, ref string, a effect.Assignment)
 	b.started++
 	b.startRef = ref
 	b.mu.Unlock()
-	return b.testBackend.Dispatch(ctx, a)
+	return b.Dispatch(ctx, a)
 }
 
 func (b *refBackend) Restart(context.Context, string, effect.Assignment) (string, error) {
@@ -121,19 +121,19 @@ func (b *refBackend) Restart(context.Context, string, effect.Assignment) (string
 }
 
 func (b *refBackend) Attach(ctx context.Context, ref string) (effect.Attachment, error) {
-	return b.testBackend.Attach(ctx, b.testBackend.lastKey())
+	return b.testBackend.Attach(ctx, b.lastKey())
 }
 
 func (b *refBackend) Status(ctx context.Context, ref string) (effect.ExecutionStatus, error) {
-	return b.testBackend.GetStatus(ctx, b.testBackend.lastKey())
+	return b.GetStatus(ctx, b.lastKey())
 }
 
 func (b *refBackend) Outcome(ctx context.Context, ref string) (effect.Outcome, error) {
-	return b.testBackend.GetOutcome(ctx, b.testBackend.lastKey())
+	return b.GetOutcome(ctx, b.lastKey())
 }
 
 func (b *refBackend) Cancel(ctx context.Context, ref string) error {
-	return b.testBackend.Cancel(ctx, b.testBackend.lastKey())
+	return b.testBackend.Cancel(ctx, b.lastKey())
 }
 
 func (b *testBackend) lastKey() effect.AssignmentKey {

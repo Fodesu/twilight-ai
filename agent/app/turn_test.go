@@ -156,8 +156,8 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	if resp.Status != turn.TurnStopped || resp.Disposition != turn.ResumeFinished || resp.End == nil {
 		t.Fatalf("stop response = %+v", resp)
 	}
-	if _, stopped := (*resp.End).(run.RunStoppedEnd); !stopped {
-		t.Fatalf("end = %#v, want RunStoppedEnd", *resp.End)
+	if _, stopped := resp.End.(run.RunStoppedEnd); !stopped {
+		t.Fatalf("end = %#v, want RunStoppedEnd", resp.End)
 	}
 	close(tool.release)
 	<-done

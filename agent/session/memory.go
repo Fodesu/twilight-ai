@@ -34,7 +34,7 @@ func (m *MemoryStore) Tamper(sid SessionID, seq CommitSeq, mutate func(*Commit))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	seed := LedgerSeed(s.header)
-	if seq >= seed.Next && int(seq-seed.Next) < len(s.commits) {
+	if seq >= seed.Next && seq-seed.Next < CommitSeq(len(s.commits)) {
 		mutate(&s.commits[seq-seed.Next])
 	}
 }
@@ -166,7 +166,7 @@ func (m *memoryBackend) ReadSegment(ctx context.Context, id SegmentID, from Comm
 	}
 	start := 0
 	if from > seed.Next {
-		start = int(from - seed.Next)
+		start = IndexWithin(from-seed.Next, len(s.commits))
 	}
 	end := len(s.commits)
 	more := false

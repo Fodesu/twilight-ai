@@ -8,6 +8,8 @@ import (
 	"github.com/felinics/twilight/agent/jsonstable"
 )
 
+const opRead = "read"
+
 // CommitSeq is the position of one Commit in the ledger and the canonical
 // total order of the authority. Per-stream local positions are read
 // optimizations derived from the ledger, never a second ordering.
@@ -297,17 +299,17 @@ func ValidateLedger(p LedgerProfile, header SegmentHeader, commits []Commit) err
 	for i := range commits {
 		c := &commits[i]
 		if c.Seq != seed.Next+CommitSeq(i) {
-			return &Error{Code: ErrCorrupt, Operation: "read", Detail: fmt.Sprintf("segment %s: seq gap at %d", segment, i)}
+			return &Error{Code: ErrCorrupt, Operation: opRead, Detail: fmt.Sprintf("segment %s: seq gap at %d", segment, i)}
 		}
 		resealed := *c
 		resealed.PrevDigest = ""
 		resealed.Digest = ""
 		if err := SealCommit(p, prev, segment, &resealed); err != nil {
 			// A stored commit the profile cannot reseal is corrupt to a reader, whatever the seal rejected.
-			return &Error{Code: ErrCorrupt, Operation: "read", CommitID: c.CommitID, Detail: fmt.Sprintf("segment %s: commit %d cannot be resealed: %v", segment, i, err)}
+			return &Error{Code: ErrCorrupt, Operation: opRead, CommitID: c.CommitID, Detail: fmt.Sprintf("segment %s: commit %d cannot be resealed: %v", segment, i, err)}
 		}
 		if c.PrevDigest != prev || c.Digest != resealed.Digest {
-			return &Error{Code: ErrCorrupt, Operation: "read", CommitID: c.CommitID, Detail: fmt.Sprintf("segment %s: digest mismatch at commit %d", segment, i)}
+			return &Error{Code: ErrCorrupt, Operation: opRead, CommitID: c.CommitID, Detail: fmt.Sprintf("segment %s: digest mismatch at commit %d", segment, i)}
 		}
 		prev = c.Digest
 	}

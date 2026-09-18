@@ -53,31 +53,31 @@ func BuildRegistry(schemes []SchemeDefinition, bindings []ProviderBinding) (*Reg
 	r := &Registry{schemes: make(map[Scheme]SchemeDefinition, len(schemes)), providers: make(map[providerKey]ProviderBinding, len(bindings))}
 	for _, def := range schemes {
 		if def.Scheme == "" {
-			return nil, &Error{Code: ErrInvalid, Operation: "registry", Detail: "empty scheme"}
+			return nil, &Error{Code: ErrInvalid, Operation: opRegistry, Detail: "empty scheme"}
 		}
 		if _, dup := r.schemes[def.Scheme]; dup {
-			return nil, &Error{Code: ErrConflict, Operation: "registry", Identity: string(def.Scheme), Detail: "scheme defined twice"}
+			return nil, &Error{Code: ErrConflict, Operation: opRegistry, Identity: string(def.Scheme), Detail: "scheme defined twice"}
 		}
 		if len(def.SupportedDurabilities) == 0 {
-			return nil, &Error{Code: ErrInvalid, Operation: "registry", Identity: string(def.Scheme), Detail: "no supported durability"}
+			return nil, &Error{Code: ErrInvalid, Operation: opRegistry, Identity: string(def.Scheme), Detail: "no supported durability"}
 		}
 		for _, d := range def.SupportedDurabilities {
 			if d.Rank() < 0 {
-				return nil, &Error{Code: ErrInvalid, Operation: "registry", Identity: string(def.Scheme), Detail: "unknown durability"}
+				return nil, &Error{Code: ErrInvalid, Operation: opRegistry, Identity: string(def.Scheme), Detail: detailUnknownDurability}
 			}
 		}
 		r.schemes[def.Scheme] = def
 	}
 	for _, b := range bindings {
 		if b.Authority == "" || b.InstanceID == "" {
-			return nil, &Error{Code: ErrInvalid, Operation: "registry", Identity: string(b.Scheme), Detail: "provider binding with empty authority or instance"}
+			return nil, &Error{Code: ErrInvalid, Operation: opRegistry, Identity: string(b.Scheme), Detail: "provider binding with empty authority or instance"}
 		}
 		if _, ok := r.schemes[b.Scheme]; !ok {
-			return nil, &Error{Code: ErrInvalid, Operation: "registry", Identity: string(b.Scheme), Detail: "provider binding for an unregistered scheme"}
+			return nil, &Error{Code: ErrInvalid, Operation: opRegistry, Identity: string(b.Scheme), Detail: "provider binding for an unregistered scheme"}
 		}
 		k := providerKey{b.Scheme, b.Authority}
 		if _, dup := r.providers[k]; dup {
-			return nil, &Error{Code: ErrConflict, Operation: "registry", Identity: fmt.Sprintf("%s/%s", b.Scheme, b.Authority), Detail: "authority bound twice"}
+			return nil, &Error{Code: ErrConflict, Operation: opRegistry, Identity: fmt.Sprintf("%s/%s", b.Scheme, b.Authority), Detail: "authority bound twice"}
 		}
 		r.providers[k] = b
 	}
@@ -106,7 +106,7 @@ func (r *Registry) Verify(ref Ref) error {
 	}
 	def, ok := r.schemes[ref.Scheme]
 	if !ok {
-		return &Error{Code: ErrUnsupported, Operation: "verify", Identity: string(ref.Key), Detail: fmt.Sprintf("unknown scheme %s", ref.Scheme)}
+		return &Error{Code: ErrUnsupported, Operation: opVerify, Identity: string(ref.Key), Detail: fmt.Sprintf("unknown scheme %s", ref.Scheme)}
 	}
 	supported := false
 	for _, d := range def.SupportedDurabilities {
@@ -115,7 +115,7 @@ func (r *Registry) Verify(ref Ref) error {
 		}
 	}
 	if !supported {
-		return &Error{Code: ErrInvalid, Operation: "verify", Identity: string(ref.Key), Detail: fmt.Sprintf("scheme %s does not support durability %s", ref.Scheme, ref.Durability)}
+		return &Error{Code: ErrInvalid, Operation: opVerify, Identity: string(ref.Key), Detail: fmt.Sprintf("scheme %s does not support durability %s", ref.Scheme, ref.Durability)}
 	}
 	if def.ValidateRef != nil {
 		if err := def.ValidateRef(ref); err != nil {
@@ -123,7 +123,7 @@ func (r *Registry) Verify(ref Ref) error {
 		}
 	}
 	if _, bound := r.providers[providerKey{ref.Scheme, ref.Authority}]; !bound {
-		return &Error{Code: ErrUnavailable, Operation: "verify", Identity: string(ref.Key), Detail: fmt.Sprintf("no provider bound for %s/%s", ref.Scheme, ref.Authority)}
+		return &Error{Code: ErrUnavailable, Operation: opVerify, Identity: string(ref.Key), Detail: fmt.Sprintf("no provider bound for %s/%s", ref.Scheme, ref.Authority)}
 	}
 	return nil
 }
@@ -136,10 +136,10 @@ func CASScheme() SchemeDefinition {
 		SupportedDurabilities: []Durability{Ephemeral, EventBound, Pinned},
 		ValidateRef: func(ref Ref) error {
 			if ref.Integrity == nil {
-				return &Error{Code: ErrInvalid, Operation: "ref", Identity: string(ref.Key), Detail: "cas ref requires integrity"}
+				return &Error{Code: ErrInvalid, Operation: opRef, Identity: string(ref.Key), Detail: "cas ref requires integrity"}
 			}
 			if want := Key(ref.Integrity.Algorithm + ":" + ref.Integrity.Value); ref.Key != want {
-				return &Error{Code: ErrInvalid, Operation: "ref", Identity: string(ref.Key), Detail: "cas key must equal <algorithm>:<value> of the integrity"}
+				return &Error{Code: ErrInvalid, Operation: opRef, Identity: string(ref.Key), Detail: "cas key must equal <algorithm>:<value> of the integrity"}
 			}
 			return nil
 		},

@@ -56,7 +56,7 @@ type TurnResponse struct {
 	Attempt     uint32
 	Status      TurnStatus
 	Disposition ResumeDisposition
-	End         *run.RunEnd
+	End         run.RunEnd
 	Waiting     []run.ResponseRequest
 }
 

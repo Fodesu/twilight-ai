@@ -76,8 +76,8 @@ func clone(p turn.AgentPreset) turn.AgentPreset {
 	p.Tools = slices.Clone(p.Tools)
 	for i := range p.Tools {
 		if cache := p.Tools[i].Definition.CacheControl; cache != nil {
-			copy := *cache
-			p.Tools[i].Definition.CacheControl = &copy
+			cloned := *cache
+			p.Tools[i].Definition.CacheControl = &cloned
 		}
 	}
 	return p

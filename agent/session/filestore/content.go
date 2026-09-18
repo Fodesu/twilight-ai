@@ -42,8 +42,11 @@ type ContentStoreOptions struct {
 // completes. Two instances over one root see each other's content, which is
 // what lets a restarted process read the frozen request of an interrupted
 // ModelStep (RUN-WIR-4).
-// Durable reports true: the content is on disk.
-func (*ContentStore) Durable() bool { return true }
+// Operation names of the content store's errors.
+const (
+	opPut     = "put"
+	opPromote = "promote"
+)
 
 type ContentStore struct {
 	dir       string
@@ -88,7 +91,7 @@ func (s *ContentStore) paths(key artifact.Key) (data, meta string) {
 }
 
 // read returns the entry for key; absent when either file is missing.
-func (s *ContentStore) read(key artifact.Key) ([]byte, contentMeta, bool, error) {
+func (s *ContentStore) read(key artifact.Key) ([]byte, contentMeta, bool, error) { //nolint:gocritic // unnamedResult: the four results are documented above
 	dataPath, metaPath := s.paths(key)
 	rawMeta, err := os.ReadFile(metaPath)
 	if errors.Is(err, os.ErrNotExist) {
@@ -125,19 +128,19 @@ func (s *ContentStore) Put(ctx context.Context, req artifact.PutRequest) (artifa
 		return artifact.Ref{}, err
 	}
 	if req.Reader == nil {
-		return artifact.Ref{}, &artifact.Error{Code: artifact.ErrInvalid, Operation: "put", Detail: "nil reader"}
+		return artifact.Ref{}, &artifact.Error{Code: artifact.ErrInvalid, Operation: opPut, Detail: "nil reader"}
 	}
 	if req.Durability.Rank() < 0 {
-		return artifact.Ref{}, &artifact.Error{Code: artifact.ErrInvalid, Operation: "put", Detail: "unknown durability"}
+		return artifact.Ref{}, &artifact.Error{Code: artifact.ErrInvalid, Operation: opPut, Detail: "unknown durability"}
 	}
 	// One byte past the cap tells an oversized body from one at the cap; the
 	// min keeps that byte representable when MaxBytes is MaxInt64.
 	data, err := io.ReadAll(io.LimitReader(req.Reader, min(s.opts.MaxBytes, math.MaxInt64-1)+1))
 	if err != nil {
-		return artifact.Ref{}, &artifact.Error{Code: artifact.ErrUnavailable, Operation: "put", Detail: err.Error()}
+		return artifact.Ref{}, &artifact.Error{Code: artifact.ErrUnavailable, Operation: opPut, Detail: err.Error()}
 	}
 	if int64(len(data)) > s.opts.MaxBytes {
-		return artifact.Ref{}, &artifact.Error{Code: artifact.ErrInvalid, Operation: "put", Detail: fmt.Sprintf("content exceeds %d bytes", s.opts.MaxBytes)}
+		return artifact.Ref{}, &artifact.Error{Code: artifact.ErrInvalid, Operation: opPut, Detail: fmt.Sprintf("content exceeds %d bytes", s.opts.MaxBytes)}
 	}
 	key, _ := artifact.CASKey(data)
 	s.mu.Lock()
@@ -148,10 +151,10 @@ func (s *ContentStore) Put(ctx context.Context, req artifact.PutRequest) (artifa
 	}
 	if ok {
 		if !bytes.Equal(existing, data) {
-			return artifact.Ref{}, &artifact.Error{Code: artifact.ErrCorrupt, Operation: "put", Identity: string(key), Detail: "stored content differs from the new bytes under the same digest"}
+			return artifact.Ref{}, &artifact.Error{Code: artifact.ErrCorrupt, Operation: opPut, Identity: string(key), Detail: "stored content differs from the new bytes under the same digest"}
 		}
 		if meta.MediaType != req.MediaType {
-			return artifact.Ref{}, &artifact.Error{Code: artifact.ErrConflict, Operation: "put", Identity: string(key), Detail: "same content declared with another media type"}
+			return artifact.Ref{}, &artifact.Error{Code: artifact.ErrConflict, Operation: opPut, Identity: string(key), Detail: "same content declared with another media type"}
 		}
 		if req.Durability.Rank() > meta.Durability.Rank() {
 			meta.Durability = req.Durability
@@ -255,18 +258,18 @@ func (s *ContentStore) Promote(ctx context.Context, ref artifact.Ref, req artifa
 		return artifact.Ref{}, err
 	}
 	if req.TargetScheme != artifact.SchemeCAS {
-		return artifact.Ref{}, &artifact.Error{Code: artifact.ErrUnsupported, Operation: "promote", Identity: string(ref.Key), Detail: fmt.Sprintf("target scheme %s", req.TargetScheme)}
+		return artifact.Ref{}, &artifact.Error{Code: artifact.ErrUnsupported, Operation: opPromote, Identity: string(ref.Key), Detail: fmt.Sprintf("target scheme %s", req.TargetScheme)}
 	}
 	if req.TargetAuthority != s.authority {
-		return artifact.Ref{}, &artifact.Error{Code: artifact.ErrUnauthorized, Operation: "promote", Identity: string(ref.Key), Detail: fmt.Sprintf("target authority %s is not %s", req.TargetAuthority, s.authority)}
+		return artifact.Ref{}, &artifact.Error{Code: artifact.ErrUnauthorized, Operation: opPromote, Identity: string(ref.Key), Detail: fmt.Sprintf("target authority %s is not %s", req.TargetAuthority, s.authority)}
 	}
 	if req.Durability.Rank() < 0 {
-		return artifact.Ref{}, &artifact.Error{Code: artifact.ErrInvalid, Operation: "promote", Identity: string(ref.Key), Detail: "unknown durability"}
+		return artifact.Ref{}, &artifact.Error{Code: artifact.ErrInvalid, Operation: opPromote, Identity: string(ref.Key), Detail: "unknown durability"}
 	}
 	if req.Durability.Rank() < ref.Durability.Rank() {
-		return artifact.Ref{}, &artifact.Error{Code: artifact.ErrInvalid, Operation: "promote", Identity: string(ref.Key), Detail: fmt.Sprintf("cannot lower durability from %s to %s", ref.Durability, req.Durability)}
+		return artifact.Ref{}, &artifact.Error{Code: artifact.ErrInvalid, Operation: opPromote, Identity: string(ref.Key), Detail: fmt.Sprintf("cannot lower durability from %s to %s", ref.Durability, req.Durability)}
 	}
-	data, meta, err := s.locate("promote", ref)
+	data, meta, err := s.locate(opPromote, ref)
 	if err != nil {
 		return artifact.Ref{}, err
 	}
@@ -282,3 +285,6 @@ func (s *ContentStore) Promote(ctx context.Context, ref artifact.Ref, req artifa
 }
 
 var _ artifact.ContentStore = (*ContentStore)(nil)
+
+// Durable reports true: the content is on disk.
+func (*ContentStore) Durable() bool { return true }

@@ -137,19 +137,19 @@ func (s *MemoryContentStore) Put(ctx context.Context, req PutRequest) (Ref, erro
 		return Ref{}, err
 	}
 	if req.Reader == nil {
-		return Ref{}, &Error{Code: ErrInvalid, Operation: "put", Detail: "nil reader"}
+		return Ref{}, &Error{Code: ErrInvalid, Operation: opPut, Detail: "nil reader"}
 	}
 	if req.Durability.Rank() < 0 {
-		return Ref{}, &Error{Code: ErrInvalid, Operation: "put", Detail: "unknown durability"}
+		return Ref{}, &Error{Code: ErrInvalid, Operation: opPut, Detail: detailUnknownDurability}
 	}
 	// One byte past the cap tells an oversized body from one at the cap; the
 	// min keeps that byte representable when MaxBytes is MaxInt64.
 	data, err := io.ReadAll(io.LimitReader(req.Reader, min(s.opts.MaxBytes, math.MaxInt64-1)+1))
 	if err != nil {
-		return Ref{}, &Error{Code: ErrUnavailable, Operation: "put", Detail: err.Error()}
+		return Ref{}, &Error{Code: ErrUnavailable, Operation: opPut, Detail: err.Error()}
 	}
 	if int64(len(data)) > s.opts.MaxBytes {
-		return Ref{}, &Error{Code: ErrInvalid, Operation: "put", Detail: fmt.Sprintf("content exceeds %d bytes", s.opts.MaxBytes)}
+		return Ref{}, &Error{Code: ErrInvalid, Operation: opPut, Detail: fmt.Sprintf("content exceeds %d bytes", s.opts.MaxBytes)}
 	}
 	key, _ := CASKey(data)
 	s.mu.Lock()
@@ -157,10 +157,10 @@ func (s *MemoryContentStore) Put(ctx context.Context, req PutRequest) (Ref, erro
 	e, ok := s.entries[key]
 	if ok {
 		if !bytes.Equal(e.bytes, data) {
-			return Ref{}, &Error{Code: ErrCorrupt, Operation: "put", Identity: string(key), Detail: "stored content differs from the new bytes under the same digest"}
+			return Ref{}, &Error{Code: ErrCorrupt, Operation: opPut, Identity: string(key), Detail: "stored content differs from the new bytes under the same digest"}
 		}
 		if e.mediaType != req.MediaType {
-			return Ref{}, &Error{Code: ErrConflict, Operation: "put", Identity: string(key), Detail: "same content declared with another media type"}
+			return Ref{}, &Error{Code: ErrConflict, Operation: opPut, Identity: string(key), Detail: "same content declared with another media type"}
 		}
 		if req.Durability.Rank() > e.durability.Rank() {
 			e.durability = req.Durability
@@ -257,18 +257,18 @@ func (s *MemoryContentStore) Promote(ctx context.Context, ref Ref, req PromoteRe
 		return Ref{}, err
 	}
 	if req.TargetScheme != SchemeCAS {
-		return Ref{}, &Error{Code: ErrUnsupported, Operation: "promote", Identity: string(ref.Key), Detail: fmt.Sprintf("target scheme %s", req.TargetScheme)}
+		return Ref{}, &Error{Code: ErrUnsupported, Operation: opPromote, Identity: string(ref.Key), Detail: fmt.Sprintf("target scheme %s", req.TargetScheme)}
 	}
 	if req.TargetAuthority != s.authority {
-		return Ref{}, &Error{Code: ErrUnauthorized, Operation: "promote", Identity: string(ref.Key), Detail: fmt.Sprintf("target authority %s is not %s", req.TargetAuthority, s.authority)}
+		return Ref{}, &Error{Code: ErrUnauthorized, Operation: opPromote, Identity: string(ref.Key), Detail: fmt.Sprintf("target authority %s is not %s", req.TargetAuthority, s.authority)}
 	}
 	if req.Durability.Rank() < 0 {
-		return Ref{}, &Error{Code: ErrInvalid, Operation: "promote", Identity: string(ref.Key), Detail: "unknown durability"}
+		return Ref{}, &Error{Code: ErrInvalid, Operation: opPromote, Identity: string(ref.Key), Detail: detailUnknownDurability}
 	}
 	if req.Durability.Rank() < ref.Durability.Rank() {
-		return Ref{}, &Error{Code: ErrInvalid, Operation: "promote", Identity: string(ref.Key), Detail: fmt.Sprintf("cannot lower durability from %s to %s", ref.Durability, req.Durability)}
+		return Ref{}, &Error{Code: ErrInvalid, Operation: opPromote, Identity: string(ref.Key), Detail: fmt.Sprintf("cannot lower durability from %s to %s", ref.Durability, req.Durability)}
 	}
-	e, err := s.locate("promote", ref)
+	e, err := s.locate(opPromote, ref)
 	if err != nil {
 		return Ref{}, err
 	}
@@ -293,7 +293,7 @@ func (p CopyPromoter) Promote(ctx context.Context, ref Ref, req PromoteRequest) 
 		return Ref{}, errors.New("artifact: copy promoter: nil source or target")
 	}
 	if req.Durability.Rank() < ref.Durability.Rank() {
-		return Ref{}, &Error{Code: ErrInvalid, Operation: "promote", Identity: string(ref.Key), Detail: fmt.Sprintf("cannot lower durability from %s to %s", ref.Durability, req.Durability)}
+		return Ref{}, &Error{Code: ErrInvalid, Operation: opPromote, Identity: string(ref.Key), Detail: fmt.Sprintf("cannot lower durability from %s to %s", ref.Durability, req.Durability)}
 	}
 	rc, info, err := p.Source.Open(ctx, ref)
 	if err != nil {
@@ -305,10 +305,10 @@ func (p CopyPromoter) Promote(ctx context.Context, ref Ref, req PromoteRequest) 
 		return Ref{}, err
 	}
 	if out.Scheme != req.TargetScheme || out.Authority != req.TargetAuthority {
-		return Ref{}, &Error{Code: ErrUnsupported, Operation: "promote", Identity: string(ref.Key), Detail: "target store does not serve the requested scheme and authority"}
+		return Ref{}, &Error{Code: ErrUnsupported, Operation: opPromote, Identity: string(ref.Key), Detail: "target store does not serve the requested scheme and authority"}
 	}
 	if ref.Integrity != nil && out.Integrity != nil && *ref.Integrity != *out.Integrity {
-		return Ref{}, &Error{Code: ErrCorrupt, Operation: "promote", Identity: string(ref.Key), Detail: "target content integrity differs from the source"}
+		return Ref{}, &Error{Code: ErrCorrupt, Operation: opPromote, Identity: string(ref.Key), Detail: "target content integrity differs from the source"}
 	}
 	return out, nil
 }

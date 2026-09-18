@@ -11,6 +11,8 @@ import (
 	"github.com/felinics/twilight/agent/session/extension"
 )
 
+const opFork = "fork"
+
 // ForkOwnerKind is the ClaimOwner.Kind of the retention claim a fork holds
 // over the artifacts its inherited prefix references (EXT-WRT-8). It is not
 // a commit owner: OpenWriter's reconciliation of commit claims never touches
@@ -91,7 +93,7 @@ func Fork(ctx context.Context, store session.Store, registry *extension.Registry
 		}
 		if ok {
 			if existing.Owner != owner || existing.BindingSet.RefSetDigest != set.RefSetDigest {
-				return session.SegmentHeader{}, &session.Error{Code: session.ErrConflict, Operation: "fork", SessionID: req.Child, Detail: "fork claim owner or binding set conflicts"}
+				return session.SegmentHeader{}, &session.Error{Code: session.ErrConflict, Operation: opFork, SessionID: req.Child, Detail: "fork claim owner or binding set conflicts"}
 			}
 		} else {
 			if _, err := admission.Ledger.Activate(ctx, id, owner, set); err != nil {
@@ -110,7 +112,7 @@ func Fork(ctx context.Context, store session.Store, registry *extension.Registry
 		return session.SegmentHeader{}, err
 	}
 	if header.Parent == nil || header.Parent.Segment != fork.Segment || header.Parent.Seq != fork.Seq {
-		return session.SegmentHeader{}, &session.Error{Code: session.ErrConflict, Operation: "fork", SessionID: req.Child, Detail: "child edge does not match the claimed prefix"}
+		return session.SegmentHeader{}, &session.Error{Code: session.ErrConflict, Operation: opFork, SessionID: req.Child, Detail: "child edge does not match the claimed prefix"}
 	}
 	return header, nil
 }
@@ -137,7 +139,7 @@ func prefixBindings(ctx context.Context, store session.Store, registry *extensio
 			for _, e := range b.Events {
 				_, def, ok := registry.LookupEvent(e.Type)
 				if !ok {
-					return nil, &session.Error{Code: session.ErrUnsupported, Operation: "fork", SessionID: parent,
+					return nil, &session.Error{Code: session.ErrUnsupported, Operation: opFork, SessionID: parent,
 						Detail: fmt.Sprintf("commit %s: event type %s is unknown to this registry; cannot prove the prefix references no artifact", c.CommitID, e.Type)}
 				}
 				if len(def.Bindings) == 0 {
@@ -148,7 +150,7 @@ func prefixBindings(ctx context.Context, store session.Store, registry *extensio
 					return nil, fmt.Errorf("writer: fork: commit %s: decode %s: %w", c.CommitID, e.Type, err)
 				}
 				if decoded.Unknown {
-					return nil, &session.Error{Code: session.ErrUnsupported, Operation: "fork", SessionID: parent,
+					return nil, &session.Error{Code: session.ErrUnsupported, Operation: opFork, SessionID: parent,
 						Detail: fmt.Sprintf("commit %s: %s v%d is not decodable by this registry; cannot extract its artifact references", c.CommitID, e.Type, decoded.Version)}
 				}
 				for _, decl := range def.Bindings {

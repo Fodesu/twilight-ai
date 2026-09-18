@@ -39,7 +39,7 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 
 	// MaxSteps == 0: single call, no tool auto-execution.
 	if cfg.MaxSteps == 0 {
-		result, mr, err := generateOnce(ctx, cfg, model, cfg.Params)
+		result, mr, err := generateOnce(ctx, model, cfg.Params)
 		if err != nil {
 			return nil, err
 		}
@@ -76,7 +76,7 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 		params := cfg.Params
 		params.Messages = messages
 
-		result, mr, err := generateOnce(ctx, cfg, model, params)
+		result, mr, err := generateOnce(ctx, model, params)
 		if err != nil {
 			return nil, err
 		}
@@ -151,7 +151,7 @@ func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOpti
 // generateOnce projects one step of the legacy options into the Request
 // boundary, makes exactly one model call, and adapts the single-call result
 // back to the legacy result shape.
-func generateOnce(ctx context.Context, cfg *generateConfig, model *Model, params GenerateParams) (*GenerateResult, ModelResult, error) {
+func generateOnce(ctx context.Context, model *Model, params GenerateParams) (*GenerateResult, ModelResult, error) {
 	req, err := RequestFromGenerateParams(params)
 	if err != nil {
 		return nil, ModelResult{}, err

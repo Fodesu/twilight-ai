@@ -262,8 +262,8 @@ func testRetry(t *testing.T, factory Factory) {
 	if st.Status != turn.TurnAttemptFailed || st.Disposition != turn.ResumeFinished || st.End == nil {
 		t.Fatalf("status after app cancel = %+v", st)
 	}
-	if _, stopped := (*st.End).(run.RunStoppedEnd); !stopped {
-		t.Fatalf("end = %T, want RunStoppedEnd", *st.End)
+	if _, stopped := st.End.(run.RunStoppedEnd); !stopped {
+		t.Fatalf("end = %T, want RunStoppedEnd", st.End)
 	}
 	rowsBefore := len(h.rows())
 	for _, previous := range []run.RunID{"", "unrelated-run"} {
@@ -426,8 +426,8 @@ func testStopAndSettle(t *testing.T, factory Factory) {
 	if st.Status != turn.TurnCompleted || st.Disposition != turn.ResumeFinished || st.End == nil {
 		t.Fatalf("completed status = %+v", st)
 	}
-	if _, ok := (*st.End).(run.RunCompletedEnd); !ok {
-		t.Fatalf("end = %T", *st.End)
+	if _, ok := (st.End).(run.RunCompletedEnd); !ok {
+		t.Fatalf("end = %T", st.End)
 	}
 	for name, call := range map[string]func() error{
 		"stop": func() error { _, err := h.c.Stop(h.ctx, h.writer(), turn.StopRequest{Ref: h.ref("t3")}); return err },

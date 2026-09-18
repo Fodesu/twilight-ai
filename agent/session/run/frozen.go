@@ -87,7 +87,7 @@ func (f *frozenValues) Put(ctx context.Context, digest run.Digest, value []byte)
 	return err
 }
 
-func (f *frozenValues) Get(ctx context.Context, digest run.Digest) ([]byte, bool, error) {
+func (f *frozenValues) Get(ctx context.Context, digest run.Digest) (body []byte, found bool, err error) {
 	if err := ctx.Err(); err != nil {
 		return nil, false, err
 	}
