@@ -72,7 +72,7 @@ command 不持久化。`CommandEnvelope.ID` 就是该 command 产生的 event �
 
 **RUN-WIR-3** 一个 command 恰产生一组事件（一次 `Append`，同一 CommitID）；其 `twilight/run/` 事件在 Run 自己的 stream 内 Index 从 0 连续递增。同一语义操作里其他模块的事实（input_delivered、turn/failed）不由 Run 附带：它们是同一个 unit of work（`agent/session/unit`）里那个模块自己的 Part，与 Run 的 Part 在同一 View 上准备、同一 commit 落盘。事件没有独立 EventID，`Seq` 即身份（SES-WIR-1）。RunStore 提交的组其 CommitID 等于 CommandID，Coordinator 写入的 Start 与 Retry 组使用该组自己的 CommitID。`RecordedAtUnixMilli` 由写入方的时钟填入，是 metadata，不参与 Run 的任何派生，也不进入 Writer 的幂等 fingerprint（EXT-WRT-2）。构造 command 必须使用该 Run 版本的 `Schema.Wire.Envelope`（Loop 通过 `RuntimeSnapshot.Schema()` 取得）。`agent/run` 不提供隐式选择版本的包级 `Envelope`、`Decide`、`Evolve` 或 `Digest*` 函数；新 Run 与测试显式使用 `SchemaV1()`。
 
-**RUN-WIR-4** 内容与执行状态分离。fact 只保存执行状态与内容 digest；digest 是不可变正文在 `FrozenValueStore` 中的 canonical 身份，命名它的 fact 是正文的 retention root。fact 不携带 `artifact.Ref`：Scheme、Authority、MediaType、Durability 属于存储层，由 `agent/session/run` 的适配器从 digest 确定性派生（`FrozenRef`、`FrozenBinding`），Run 协议只知道 digest。
+**RUN-WIR-4** 内容与执行状态分离。fact 只保存执行状态与内容 digest；用户输入也不例外：`AgentInput{ID, Digest}`，`input_accepted` 与 `PendingInputs` 只记录输入身份与其内容 digest，正文只在 chatlog 的 `input_submitted` 里存在一份，chatlog 的 `DeliverInputs` Part 在同一 unit 里核对 digest；digest 是不可变正文在 `FrozenValueStore` 中的 canonical 身份，命名它的 fact 是正文的 retention root。fact 不携带 `artifact.Ref`：Scheme、Authority、MediaType、Durability 属于存储层，由 `agent/session/run` 的适配器从 digest 确定性派生（`FrozenRef`、`FrozenBinding`），Run 协议只知道 digest。
 
 | 内容 | fact 中的字段 | 正文信封 |
 |---|---|---|
@@ -452,16 +452,20 @@ type ExecutableTool interface {
 ```go
 // 效果层端口（RUN-EXE）
 type AssignmentKind string // model | tool
-type AssignmentKey struct { Session session.SessionID; RunID run.RunID; StepID run.StepID; CallID run.CallID; Claim run.ExecutionClaim }
+type AssignmentKey struct { Session run.Scope; RunID run.RunID; StepID run.StepID; CallID run.CallID; Claim run.ExecutionClaim }
 type ModelAssignment struct { Model run.ModelRef; Request *run.ModelRequest; RequestDigest run.Digest } // Dispatch payload；digest 仍绑定 frozen request
 type ToolAssignment struct { ToolRef run.ToolRef; DefinitionDigest run.Digest; Arguments run.CanonicalJSON; Policy run.ResponsePolicy }
 type Assignment struct {
-    Session session.SessionID; RunID run.RunID; StepID run.StepID; CallID run.CallID; Claim run.ExecutionClaim
+    Session run.Scope; RunID run.RunID; StepID run.StepID; CallID run.CallID; Claim run.ExecutionClaim
     Target *run.TargetRef
     Schema uint16 // Run 的协议版本
-    Kind AssignmentKind; Model *ModelAssignment; Tool *ToolAssignment
+    Body AssignmentBody // sealed：ModelAssignment | ToolAssignment；Kind 由变体派生，wire 上仍是 {Kind, Model, Tool}，解码拒绝 Kind 与 body 不一致
 }
-type Outcome struct { Key AssignmentKey; Model *sdk.ModelResult; Tool ToolExecutionOutcome; Err error; Cancelled bool; Unknown bool }
+// Outcome.Result 是封闭变体，没有 Go error，也没有可以互相矛盾的标志位：
+//   ModelSucceeded{Result} | ModelFailed{Code, Message} | ToolExecutionSucceeded | ToolExecutionFailed | ToolExecutionUnknown | Cancelled{Message} | Unknown{Message}
+// FailureCode 是 wire 稳定的：executor_error | frozen_value_missing | malformed_frozen_request | deadline_exceeded
+type Outcome struct { Key AssignmentKey; Result OutcomeResult }
+func (Outcome) Status() ExecutionStatus // 终态 Outcome 对应的 ExecutionStatus，唯一的派生点
 type Attachment struct {
     State AttachmentState // missing | active | orphaned | terminal
     Execution ExecutionStatus

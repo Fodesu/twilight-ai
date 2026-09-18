@@ -209,7 +209,7 @@ const (
 )
 ```
 
-driver 在该词汇表上扩展 `already_driving`（`driver.ResumeAlreadyDriving`，DRV-1）：输入已提交、同 Run 的另一个本地驱动者继续推进。Coordinator 本身不产生该值。
+"同 Run 的另一个本地驱动者正在推进"不是 Turn 的持久状态，不进入该词汇表：driver 以 `DriveResult.AlreadyDriving` 单独报告（DRV-1）。
 
 **TRN-API-1** Coordinator 经 Writer 的 `Projections()` 读取 `twilight/turn/surface` 与 `twilight/run/machine` 两个投影（EXT-PRJ-4）；命令读传入 Writer 的投影，每个方法先读投影再决定动作。Coordinator 不持有 `session.Store`。
 
@@ -343,7 +343,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 
 套件以 `session.Store` 为参数（`agent/turn/turntest`），Memory 与每个 durable adapter 跑同一组断言。Coordinator 只做提交与读取，因此套件不含 Loop、driver、模型或工具桩：Run 的推进由 `SessionRunStore.Bind(w)` 的 command 提交完成，Application 的 `CancelRun` 制造 `attempt_failed`，`SubmitModelResult` 制造 completed 与 approval 等待。
 
-- **TRN-STR-1 至 TRN-STR-4、TRN-ID-2/3/4、TRN-EVT-2**：缺 preset、重复 InputID、未 submitted 的输入、Payload 与 Content 不符各自被拒且不写入；Start 的 group 为 `started`、每输入一条 `input_delivered`、`run_created{Owner:TurnID, Attempt:1}`、每输入一条 `input_accepted`，CommitID 为 StartOperationDigest，RunID 为 `twilight/turn/run` 派生值；响应为 `active`、attempt 1、无 disposition；不同时间戳的重放为 already-applied 且不写入；同 TurnID 的另一 plan 与第二个活跃 Turn 为 conflict，被拒输入保持 `submitted`。
+- **TRN-STR-1 至 TRN-STR-4、TRN-ID-2/3/4、TRN-EVT-2**：缺 preset、重复 InputID、未 submitted 的输入、Digest 与已提交 Content 的 digest 不符各自被拒且不写入；Start 的 group 为 `started`、每输入一条 `input_delivered`、`run_created{Owner:TurnID, Attempt:1}`、每输入一条 `input_accepted`，CommitID 为 StartOperationDigest，RunID 为 `twilight/turn/run` 派生值；响应为 `active`、attempt 1、无 disposition；不同时间戳的重放为 already-applied 且不写入；同 TurnID 的另一 plan 与第二个活跃 Turn 为 conflict，被拒输入保持 `submitted`。
 - **TRN-DLV-1、TRN-DLV-2**：一个批次的全部 `input_accepted` 与 `input_delivered` 在以批次 CommandID 为 CommitID 的同一 commit；Run 的 `PendingInputs` 与 surface 的 `InputIDs` 追加全部输入；同一批次重放不写入；不存在或非 `active` 的 Turn 为 conflict 且输入保持 `submitted`；未提交的输入或内容不一致的输入使整批 conflict，批内其他输入也不写入、Run 的 `PendingInputs` 不变。
 - **TRN-RTY-1、TRN-RTY-2、TRN-RTY-3**：新 Retry 对缺失、错误或非最新失败的 `PreviousRunID`、非 `attempt_failed` Turn、已有其他 `active` Turn 的 Session 返回 conflict；合法请求得到 attempt n+1、`twilight/turn/retry` 派生的 CommitID、`run_created` 加全部已 delivered 输入按 `InputIDs` 顺序的 `input_accepted`（payload 同首次）；surface 的 `InputIDs` 唯一，失败 attempt 的记录保留。相同 RetryRequest 在后继 active、后继失败、另一 Turn active、更晚 Retry 和接管后均返回原 RunID 与 Attempt，stream 长度保持不变；后续新 Retry 以新的失败 RunID 为 PreviousRunID。
 - **TRN-STP-1、TRN-STP-2、TRN-STL-1、TRN-EVT-3**：Stop 的 `CancelRun` 与 `failed{stopped, cancelled}` 在以 Cancel CommandID 为 CommitID 的同一 commit，其中含 `run_ended`；Settle 需要 `attempt_failed`，写 `failed{failed, FailureClass}`，CommitID 为 `twilight/turn/settle` 派生值；已结算（stopped、failed、completed）的 Turn 上 Stop、新 Retry、Settle、Deliver 返回 conflict，历史 Retry 仍按 TRN-RTY-2 确认原提交；completed 由 Run 终结组内的 `run_ended` 折叠得到，该组不含任何 turn 事件。
