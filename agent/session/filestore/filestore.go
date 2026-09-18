@@ -38,6 +38,9 @@ const (
 // Store is the JSONL session.Store: the Ledger's methods are promoted from
 // the embedded kernel; the Backend operations below are what the file layout
 // implements.
+// Durable reports true: the ledger is on disk.
+func (*Store) Durable() bool { return true }
+
 type Store struct {
 	*session.Ledger
 	root string

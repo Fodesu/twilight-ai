@@ -48,6 +48,27 @@ type Artifacts struct {
 	Ephemeral bool
 }
 
+// Durability is the capability a store declares about surviving the
+// process. New consults it on the Session Store, the Content Store, the
+// BindingStore and the RetentionLedger instead of guessing from concrete
+// types: a store that does not declare is taken as durable, so a memory
+// implementation that stays silent cannot slip into a durable bundle, and
+// an explicitly passed memory store says so itself.
+type Durability interface {
+	Durable() bool
+}
+
+// durable reports a port's declared durability; nil is not a store.
+func durable(port any) bool {
+	if port == nil {
+		return false
+	}
+	if d, ok := port.(Durability); ok {
+		return d.Durable()
+	}
+	return true
+}
+
 // ErrEphemeralArtifacts reports a durable Store mixed with a memory-only
 // Content Store, binding store or retention ledger without the Ephemeral
 // opt-in.
@@ -135,16 +156,18 @@ func New(p Ports) (*Authority, error) {
 	if store == nil {
 		store = session.NewMemoryStore()
 	}
-	modules := append([]extension.ModuleDescriptor{chatlog.Module, runmod.Module, turn.Module}, p.Modules...)
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, modules...)
+	// The first-party three are trusted core; Ports.Modules are extensions
+	// and cannot declare authoritative projections (EXT-PRJ-9).
+	registry, err := extension.BuildRegistryWithExtensions(session.ProtocolVersion1,
+		[]extension.ModuleDescriptor{chatlog.Module, runmod.Module, turn.Module}, p.Modules)
 	if err != nil {
 		return nil, err
 	}
-	_, memoryStore := store.(*session.MemoryStore)
-	_, memoryContent := p.Content.(*artifact.MemoryContentStore)
-	durable := !memoryStore || (p.Content != nil && !memoryContent)
-	ephemeralPart := p.Content == nil || memoryContent || p.Artifacts.Bindings == nil || p.Artifacts.Ledger == nil
-	if durable && ephemeralPart && !p.Artifacts.Ephemeral {
+	// AUTH-PRT-3: durability is one bundle. Each port declares its own
+	// durability (Durability); nil ports are the memory defaults below.
+	anyDurable := durable(store) || durable(p.Content) || durable(p.Artifacts.Bindings) || durable(p.Artifacts.Ledger)
+	allDurable := durable(store) && durable(p.Content) && durable(p.Artifacts.Bindings) && durable(p.Artifacts.Ledger)
+	if anyDurable && !allDurable && !p.Artifacts.Ephemeral {
 		return nil, ErrEphemeralArtifacts
 	}
 	bindings := p.Artifacts.Bindings

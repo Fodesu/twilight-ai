@@ -42,6 +42,9 @@ type ContentStoreOptions struct {
 // completes. Two instances over one root see each other's content, which is
 // what lets a restarted process read the frozen request of an interrupted
 // ModelStep (RUN-WIR-4).
+// Durable reports true: the content is on disk.
+func (*ContentStore) Durable() bool { return true }
+
 type ContentStore struct {
 	dir       string
 	authority artifact.Authority

@@ -58,7 +58,8 @@ func TestCommitMergesRefusesAndReplays(t *testing.T) {
 		prepared++
 		return submitted("b").Prepare(ctx, v, now)
 	})
-	work := unit.Work{CommitID: "u1", Parts: []unit.Part{submitted("a"), runmod.CreateRun(newRun, nil), counting}}
+	intent, _ := unit.Intent("u1")
+	work := unit.Work{CommitID: "u1", Intent: intent, Parts: []unit.Part{submitted("a"), runmod.CreateRun(newRun, nil), counting}}
 	res, err := unit.Commit(ctx, w, 7, work)
 	if err != nil || res.Outcome != writer.CommitApplied {
 		t.Fatalf("commit = %+v %v", res, err)
@@ -75,7 +76,7 @@ func TestCommitMergesRefusesAndReplays(t *testing.T) {
 		t.Fatalf("replay = %+v %v prepared=%d", again, err, prepared)
 	}
 	boom := errors.New("boom")
-	refused := unit.Work{CommitID: "u2", Parts: []unit.Part{submitted("c"), unit.PartFunc(func(context.Context, writer.View, int64) ([]writer.TypedBatch, error) { return nil, boom })}}
+	refused := unit.Work{CommitID: "u2", Intent: intent, Parts: []unit.Part{submitted("c"), unit.PartFunc(func(context.Context, writer.View, int64) ([]writer.TypedBatch, error) { return nil, boom })}}
 	if _, err := unit.Commit(ctx, w, 9, refused); !errors.Is(err, boom) {
 		t.Fatalf("refused unit = %v", err)
 	}
@@ -91,8 +92,11 @@ func TestCommitMergesRefusesAndReplays(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := unit.Commit(ctx, w, 1, unit.Work{CommitID: "u3"}); err == nil {
+	if _, err := unit.Commit(ctx, w, 1, unit.Work{CommitID: "u3", Intent: intent}); err == nil {
 		t.Fatal("unit without events accepted")
+	}
+	if _, err := unit.Commit(ctx, w, 1, unit.Work{CommitID: "u4", Parts: []unit.Part{submitted("d")}}); err == nil {
+		t.Fatal("unit without intent accepted")
 	}
 }
 
@@ -119,7 +123,15 @@ func TestCommitJudgesReplayByIntent(t *testing.T) {
 	if other, err := unit.Commit(ctx, w, 2, unit.Work{CommitID: "u1", Intent: intentB, Parts: []unit.Part{boom}}); err != nil || other.Outcome != writer.CommitConflict {
 		t.Fatalf("different intent = %+v %v, want conflict", other, err)
 	}
-	if none, err := unit.Commit(ctx, w, 2, unit.Work{CommitID: "u1", Parts: []unit.Part{boom}}); err != nil || none.Outcome != writer.CommitAlreadyApplied {
-		t.Fatalf("no intent = %+v %v, want already applied", none, err)
+	// A CommitID sealed without an intent (a plain writer.Commit) cannot be
+	// verified by a unit: conflict, not a silent replay.
+	if _, err := w.Commit(ctx, func(writer.View) (*writer.SemanticGroup, error) {
+		return &writer.SemanticGroup{CommitID: "plain", Batches: []writer.TypedBatch{{Stream: session.StreamRef{Kind: session.StreamKindSession}, Events: []writer.TypedEvent{{
+			Type: chatlog.TypeInputSubmitted, Value: chatlog.InputSubmittedPayload{InputID: "p", Content: run.MustParseCanonicalJSON(`{"text":"x"}`)}}}}}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if none, err := unit.Commit(ctx, w, 2, unit.Work{CommitID: "plain", Intent: intentA, Parts: []unit.Part{boom}}); err != nil || none.Outcome != writer.CommitConflict {
+		t.Fatalf("replay of an intent-less commit = %+v %v, want conflict", none, err)
 	}
 }

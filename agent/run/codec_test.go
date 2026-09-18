@@ -27,7 +27,7 @@ func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 		NextStep(AgentInput{ID: "in", Digest: inputDigest(`{"q":"hi"}`)}),
 	}
 	for _, cmd := range commands {
-		env, err := SchemaV1().Wire.Envelope("run-1", CommandID("cmd-"+commandType(cmd)), cmd)
+		env, err := SchemaV1().Wire.Envelope("run-1", CommandID("cmd-"+SchemaV1().Wire.CommandType(cmd)), cmd)
 		if err != nil {
 			t.Fatalf("ProtocolV1().BuildEnvelope(%T): %v", cmd, err)
 		}

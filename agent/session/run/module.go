@@ -55,8 +55,8 @@ func (c factCodec) Validate(value any) error {
 	if ev.RunID == "" || ev.Fact == nil {
 		return errors.New("event requires runId and fact")
 	}
-	if run.FactType(ev.Fact) != c.local {
-		return fmt.Errorf("fact is %s, codec is %s", run.FactType(ev.Fact), c.local)
+	if got := c.wire.FactType(ev.Fact); got != c.local {
+		return fmt.Errorf("fact is %s, codec is %s", got, c.local)
 	}
 	return nil
 }

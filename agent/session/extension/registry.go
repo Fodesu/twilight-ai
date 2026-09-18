@@ -154,10 +154,39 @@ func validSegment(kind, v string) error {
 	return nil
 }
 
-// BuildRegistry validates the module set and freezes the indexes.
+// BuildRegistry validates the module set and freezes the indexes. Every
+// module passed here is trusted: the caller vouches for it, so it may
+// declare authoritative projections (EXT-PRJ-9). Modules from outside the
+// deployment's trust boundary go through BuildRegistryWithExtensions.
 func BuildRegistry(protocolVersion uint16, modules ...ModuleDescriptor) (*Registry, error) {
+	return BuildRegistryWithExtensions(protocolVersion, modules, nil)
+}
+
+// BuildRegistryWithExtensions builds a registry from trusted core modules
+// and untrusted extensions. Trust is a property of how a module reached the
+// registry, not of what its descriptor says: an extension may not declare an
+// authoritative projection and may not use the SourceTwilight source, so no
+// descriptor can claim the first-party capability for itself.
+func BuildRegistryWithExtensions(protocolVersion uint16, core, extensions []ModuleDescriptor) (*Registry, error) {
 	if protocolVersion == 0 {
 		return nil, errors.New("extension: registry: zero protocol version")
+	}
+	modules := make([]ModuleDescriptor, 0, len(core)+len(extensions))
+	trusted := make(map[ModuleKey]bool, len(core))
+	for _, m := range core {
+		modules = append(modules, m)
+		trusted[m.Key()] = true
+	}
+	for _, m := range extensions {
+		if m.Source == SourceTwilight {
+			return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("extension module %q claims the %s source", m.ID, SourceTwilight)}
+		}
+		for _, p := range m.Projections {
+			if p.Authoritative {
+				return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("projection %q of extension %s/%s declares Authoritative; only trusted core modules may", p.ID, m.Source, m.ID)}
+			}
+		}
+		modules = append(modules, m)
 	}
 	r := &Registry{ProtocolVersion: protocolVersion,
 		modules: make(map[ModuleKey]ModuleDescriptor), events: make(map[session.EventType]eventEntry), projections: make(map[projectionKey]projectionEntry)}
@@ -213,10 +242,11 @@ func BuildRegistry(protocolVersion uint16, modules ...ModuleDescriptor) (*Regist
 			if p.ID == "" || p.Version == 0 || p.Initial == nil || p.Apply == nil || p.StateCodec == nil {
 				return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("projection %q is incomplete", p.ID)}
 			}
-			// Refusing commits is a capability of the first-party modules,
-			// not something a module declares for itself (EXT-PRJ-9).
-			if p.Authoritative && m.Source != SourceTwilight {
-				return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("projection %q of module %s/%s declares Authoritative; only %s modules may", p.ID, m.Source, m.ID, SourceTwilight)}
+			// Refusing commits is a capability of trusted core modules, not
+			// something a descriptor declares for itself (EXT-PRJ-9); the
+			// extension path above already refused it, this guards the map.
+			if p.Authoritative && !trusted[key] {
+				return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("projection %q of module %s/%s declares Authoritative without trust", p.ID, m.Source, m.ID)}
 			}
 			k := projectionKey{p.ID, p.Version}
 			if _, dup := r.projections[k]; dup {

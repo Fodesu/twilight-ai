@@ -106,6 +106,9 @@ type contentEntry struct {
 }
 
 // NewMemoryContentStore builds the store for authority.
+// Durable reports false: the store lives as long as the process.
+func (*MemoryContentStore) Durable() bool { return false }
+
 func NewMemoryContentStore(authority Authority, opts MemoryContentStoreOptions) (*MemoryContentStore, error) {
 	if authority == "" {
 		return nil, &Error{Code: ErrInvalid, Operation: "content_store", Detail: "empty authority"}

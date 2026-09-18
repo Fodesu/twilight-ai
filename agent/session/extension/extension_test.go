@@ -247,3 +247,31 @@ func TestRegistryMultiVersionCodecsCoexist(t *testing.T) {
 		t.Fatalf("unknown-version payload was not preserved: %s", future.Event.Payload)
 	}
 }
+
+// EXT-PRJ-9: Authoritative is a capability of trusted core modules. An
+// extension cannot declare it, nor claim the first-party source to get it.
+func TestExtensionsCannotBeAuthoritative(t *testing.T) {
+	core := ModuleDescriptor{Source: SourceTwilight, ID: "core", Projections: []ProjectionDefinition{{
+		ID: "twilight/core/p", Version: 1, Authoritative: true,
+		Initial: func() (any, error) { return struct{}{}, nil }, Apply: func(s any, _ DecodedEvent) (any, error) { return s, nil }, StateCodec: JSONStateCodec[struct{}]{}}}}
+	ext := ModuleDescriptor{Source: "acme", ID: "plugin", Projections: []ProjectionDefinition{{
+		ID: "acme/plugin/p", Version: 1, Authoritative: true,
+		Initial: func() (any, error) { return struct{}{}, nil }, Apply: func(s any, _ DecodedEvent) (any, error) { return s, nil }, StateCodec: JSONStateCodec[struct{}]{}}}}
+	if _, err := BuildRegistryWithExtensions(1, []ModuleDescriptor{core}, []ModuleDescriptor{ext}); err == nil {
+		t.Fatal("extension declared an authoritative projection")
+	}
+	impostor := ext
+	impostor.Source = SourceTwilight
+	impostor.Projections[0].Authoritative = false
+	if _, err := BuildRegistryWithExtensions(1, []ModuleDescriptor{core}, []ModuleDescriptor{impostor}); err == nil {
+		t.Fatal("extension claimed the twilight source")
+	}
+	ext.Projections[0].Authoritative = false
+	if _, err := BuildRegistryWithExtensions(1, []ModuleDescriptor{core}, []ModuleDescriptor{ext}); err != nil {
+		t.Fatalf("derived extension refused: %v", err)
+	}
+	// The same descriptor is fine when the caller vouches for it as core.
+	if _, err := BuildRegistry(1, core); err != nil {
+		t.Fatalf("trusted core refused: %v", err)
+	}
+}

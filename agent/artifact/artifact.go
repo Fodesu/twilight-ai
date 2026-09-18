@@ -146,6 +146,9 @@ type MemoryBindingStore struct {
 	bindings map[BindingID]Binding
 }
 
+// Durable reports false: the index lives as long as the process.
+func (*MemoryBindingStore) Durable() bool { return false }
+
 func NewMemoryBindingStore() *MemoryBindingStore {
 	return &MemoryBindingStore{bindings: make(map[BindingID]Binding)}
 }
@@ -377,6 +380,9 @@ type MemoryLedger struct {
 	mu      sync.Mutex
 	claims  map[ClaimID]RetentionClaim
 }
+
+// Durable reports false: the claims live as long as the process.
+func (*MemoryLedger) Durable() bool { return false }
 
 func NewMemoryLedger(builder BindingSetBuilder) *MemoryLedger {
 	return &MemoryLedger{Builder: builder, claims: make(map[ClaimID]RetentionClaim)}

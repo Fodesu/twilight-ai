@@ -98,7 +98,7 @@ func testCreation(t *testing.T, factory Factory) {
 		t.Fatal(err)
 	}
 	head := h.head()
-	if _, err := unit.Commit(h.ctx, h.writer(), 1, unit.Work{CommitID: "start/t2/1", Parts: []unit.Part{runmod.CreateRun(again, nil)}}); !errors.Is(err, runmod.ErrRunExists) {
+	if _, err := unit.Commit(h.ctx, h.writer(), 1, unit.Work{CommitID: "start/t2/1", Intent: intentOf(t, again), Parts: []unit.Part{runmod.CreateRun(again, nil)}}); !errors.Is(err, runmod.ErrRunExists) {
 		t.Fatalf("duplicate created = %v, want ErrRunExists", err)
 	}
 	if h.head() != head {
@@ -510,7 +510,7 @@ func testProjection(t *testing.T, factory Factory) {
 	}
 	if again, err := run.BuildNewRunFor("r1", "t1", 1, ""); err != nil {
 		t.Fatal(err)
-	} else if _, err := unit.Commit(h.ctx, h.writer(), 1, unit.Work{CommitID: "recreate/r1", Parts: []unit.Part{runmod.CreateRun(again, nil)}}); !errors.Is(err, runmod.ErrRunExists) {
+	} else if _, err := unit.Commit(h.ctx, h.writer(), 1, unit.Work{CommitID: "recreate/r1", Intent: intentOf(t, again), Parts: []unit.Part{runmod.CreateRun(again, nil)}}); !errors.Is(err, runmod.ErrRunExists) {
 		t.Fatalf("recreating an ended run = %v, want ErrRunExists", err)
 	}
 	// An illegal fact sequence does not fold.
@@ -769,4 +769,14 @@ func testFrozenValues(t *testing.T, factory Factory) {
 	if _, err := h.rt.Record(h.ctx, sid, "r1"); err != nil {
 		t.Fatalf("record after settlement: %v", err)
 	}
+}
+
+// intentOf is a test unit's intent over any canonical value.
+func intentOf(t *testing.T, v any) es.Digest {
+	t.Helper()
+	d, err := unit.Intent(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
 }

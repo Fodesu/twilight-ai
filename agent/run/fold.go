@@ -29,7 +29,7 @@ func FoldRun(facts []Fact) (MachineState, error) {
 		}
 		state, err = schema.Machine.Evolve(state, f)
 		if err != nil {
-			return MachineState{}, fmt.Errorf("agent: fold: fact %d (%s): %w", i, factType(f), err)
+			return MachineState{}, fmt.Errorf("agent: fold: fact %d (%s): %w", i, schema.Wire.FactType(f), err)
 		}
 	}
 	return state, nil

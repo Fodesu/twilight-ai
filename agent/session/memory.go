@@ -15,6 +15,9 @@ type MemoryStore struct {
 }
 
 // NewMemoryStore returns an empty MemoryStore.
+// Durable reports false: the store lives as long as the process.
+func (*MemoryStore) Durable() bool { return false }
+
 func NewMemoryStore() *MemoryStore {
 	be := &memoryBackend{segments: make(map[SegmentID]*memorySegment), roots: make(map[SessionID]*memoryRoot)}
 	return &MemoryStore{Ledger: NewLedger(be), be: be}

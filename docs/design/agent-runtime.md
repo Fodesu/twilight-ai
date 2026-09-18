@@ -74,7 +74,7 @@ func (h *Handle) Writer() writer.Writer
 func (h *Handle) Close(ctx) error
 ```
 
-**AUTH-PRT-3（durability 一致）** durability 是一个 bundle：Session Store、frozen 正文的 Content Store、BindingStore、RetentionLedger 要么全部 durable，要么全部内存。Session Store 或 Content Store 为 durable（非 `session.MemoryStore` / `artifact.MemoryContentStore`）而 Content 为 nil 或内存、或 Bindings / Ledger 为 nil 时，`New` 返回 `ErrEphemeralArtifacts`，除非 `Artifacts.Ephemeral` 显式声明接受"事实持久而正文、binding 索引与 retention claim 随进程消失"——它只用于测试与本地运行。投影缓存是可丢弃的派生数据，允许内存回退。
+**AUTH-PRT-3（durability 一致）** durability 是一个 bundle：Session Store、frozen 正文的 Content Store、BindingStore、RetentionLedger 要么全部 durable，要么全部内存。durability 由每个 port 自己声明（`authority.Durability`：`Durable() bool`，内存实现返回 false，filestore 返回 true，不声明视为 durable），`New` 不按具体类型猜测，显式传入的内存实现也无法绕过：四者中任一 durable 而另一为 nil 或声明非 durable 时，`New` 返回 `ErrEphemeralArtifacts`，除非 `Artifacts.Ephemeral` 显式声明接受"事实持久而正文、binding 索引与 retention claim 随进程消失"——它只用于测试与本地运行。投影缓存是可丢弃的派生数据，允许内存回退。
 
 **AUTH-OWN-1** `Authority.Open(sid)` 发放对一个 Session 的执行能力，不是读取能力。Open 取得该 Session 的 Writer（本进程 epoch 下）、运行接管处置（DRV-3）并安装恢复监听；返回的 `Handle` 只承载这份能力与其生命周期：`ID`、`Writer`、`Close`。所有权按代（generation）记录，一代的状态为 opening / open / closing：同一 authority 内一个 Session 同时只有一代，处于任一状态时 Open 都返回 `ErrSessionOpen`，因此一代的释放（停止恢复监听、关闭 Writer）完成之前新的一代不会取得 Writer；`Handle.Close` 只释放自己那一代——先在锁内把该代置为 closing，释放资源后再从表中删除——已释放或正在释放的 Handle 再 Close 为无操作，不会关闭替代它的一代；Close、DeleteSession、Authority.Close 与失败的 Open 都经同一条释放路径，接管处置失败时 Open 释放已取得的 Writer，失败的 Open 不留下所有权。SessionID 是持久身份；Handle 表示"本进程当前拥有它"。Handle 不带任何业务操作：Send、排空、fork、compaction、spawn 分别属于 app、domain 命令或效果层。
 

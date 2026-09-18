@@ -163,20 +163,38 @@ func (r *variantRegistry) decodeCommand(typ string, raw []byte) (AgentCommand, e
 	return v.decode(raw)
 }
 
+// allVariants lists every schema version's registry, oldest first. FactTypes
+// is their union; a later version appends its own registry here.
+var allVariants = []*variantRegistry{variantsV1}
+
 // FactTypes lists every fact discriminator any schema version registers, in
 // registration order and without duplicates: the closed set of
-// twilight/run/ wire names a Session module registers. Today it is v1's.
-func FactTypes() []string { return variantsV1.factTypes() }
-
-// factType is the discriminator of a fact under the current schema; the
-// generic helpers (snapshotFact, fold error text) use it where no schema is
-// in hand. Variant names are stable across versions unless a version
-// renames one, which registers a new wire name.
-func factType(f Fact) string { return variantsV1.factType(f) }
+// twilight/run/ wire names a Session module registers.
+func FactTypes() []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, r := range allVariants {
+		for _, name := range r.factTypes() {
+			if !seen[name] {
+				seen[name] = true
+				out = append(out, name)
+			}
+		}
+	}
+	return out
+}
 
 // FactType returns the local event name of a fact (the part of the EventType
-// after twilight/run/) under the current schema.
-func FactType(f Fact) string { return factType(f) }
+// after twilight/run/): the first schema version that knows the variant
+// names it. Callers with a Run's schema in hand use Schema.Wire.FactType.
+func FactType(f Fact) string {
+	for _, r := range allVariants {
+		if name := r.factType(f); name != "" {
+			return name
+		}
+	}
+	return ""
+}
 
-// commandType is the current schema's command discriminator.
-func commandType(c AgentCommand) string { return variantsV1.commandType(c) }
+// factType is FactType for the package's own generic helpers.
+func factType(f Fact) string { return FactType(f) }
