@@ -113,7 +113,7 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 	}
 	a := assigned[0]
 	modelAssignment, isModel := a.Model()
-	if !isModel || modelAssignment.Model != "m-remote" || a.Claim == "" || a.RunID == "" || a.StepID == "" {
+	if !isModel || modelAssignment.Model != "m-remote" || a.Effect == "" || a.RunID == "" || a.StepID == "" {
 		t.Fatalf("assignment = %+v", a)
 	}
 	// The body the executor would fetch is in the shared frozen store under

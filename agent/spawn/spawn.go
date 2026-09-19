@@ -79,11 +79,14 @@ type Result struct {
 }
 
 // Provenance is the child segment's creation metadata under MetadataKey: who
-// spawned it, with what, and how deep it sits.
+// spawned it, with what, and how deep it sits. Effect is the tool effect the
+// parent's call was started under: the key a takeover adopts the child's
+// Outcome by (RUN-CMT-7), since the Run knows the call by its effect alone.
 type Provenance struct {
 	ParentSession session.SessionID `json:"parentSession"`
 	ParentRun     run.RunID         `json:"parentRun"`
 	CallID        run.CallID        `json:"callId"`
+	Effect        run.EffectID      `json:"effect"`
 	Depth         int               `json:"depth"`
 	Arguments     Arguments         `json:"arguments"`
 }

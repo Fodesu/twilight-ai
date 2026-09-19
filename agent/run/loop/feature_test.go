@@ -3,7 +3,7 @@
 // A Feature owns one in-process Runtime (a Memory Session with the run module
 // and its SessionRunStore) and, when Run is called, one Loop. Tests name
 // protocol features and speak in Tool/Model/Run/RunError/Approve/Require*.
-// Digest, envelope, revision, and default claims stay inside the driver.
+// Digest, envelope, revision, and derived effects stay inside the driver.
 
 package loop_test
 
@@ -230,8 +230,7 @@ func (f *Feature) TryCommit(cmd run.AgentCommand) error {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	f.seq++
-	cmd = withClaim(run.CommandID(fmt.Sprintf("attempt-%d", f.seq)), cmd)
+	cmd = f.withEffect(cmd, snap)
 	id := f.commandID(cmd, snap)
 	env, err := proto.Wire.Envelope(f.runID, id, cmd)
 	if err != nil {
@@ -281,7 +280,7 @@ func (f *Feature) Cancel() *Feature {
 func (f *Feature) ExecutingModel() *Feature {
 	f.t.Helper()
 	f.commitPrepare()
-	f.commit(run.StartModelExecution{StepID: f.modelStepID, Claim: "feature-attempt"})
+	f.commit(run.StartModelExecution{StepID: f.modelStepID})
 	return f
 }
 
@@ -350,7 +349,7 @@ func (f *Feature) ExecutingTool(name string, callID run.CallID) *Feature {
 	if !ok {
 		f.t.Fatalf("after model result: %T", res.Snapshot.State.Current)
 	}
-	f.commit(run.StartToolCall{StepID: ts.Ref().ID, CallID: callID, Claim: "feature-attempt"})
+	f.commit(run.StartToolCall{StepID: ts.Ref().ID, CallID: callID})
 	return f
 }
 
@@ -417,8 +416,7 @@ func (f *Feature) commit(cmd run.AgentCommand) runtime.CommitResult {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	f.seq++
-	cmd = withClaim(run.CommandID(fmt.Sprintf("attempt-%d", f.seq)), cmd)
+	cmd = f.withEffect(cmd, snap)
 	id := f.commandID(cmd, snap)
 	env, err := proto.Wire.Envelope(f.runID, id, cmd)
 	if err != nil {
@@ -446,11 +444,11 @@ func (f *Feature) commandID(cmd run.AgentCommand, snap runtime.Snapshot) run.Com
 	case run.PrepareModelRequest:
 		return schema.V1().Identity.DeriveModelRequestCommandID(f.runID, snap.Position)
 	case run.RecoverModelExecution:
-		return schema.V1().Identity.DeriveModelRecoveryCommandID(f.runID, c.StepID, c.Claim)
+		return schema.V1().Identity.DeriveRecoveryCommandID(c.Effect)
 	case run.StartModelExecution:
-		return schema.V1().Identity.DeriveStartCommandID(f.runID, c.StepID, "", c.Claim)
+		return schema.V1().Identity.DeriveStartCommandID(c.Effect)
 	case run.StartToolCall:
-		return schema.V1().Identity.DeriveStartCommandID(f.runID, c.StepID, c.CallID, c.Claim)
+		return schema.V1().Identity.DeriveStartCommandID(c.Effect)
 	default:
 		f.seq++
 		return run.CommandID(fmt.Sprintf("cmd-%d", f.seq))
@@ -521,17 +519,26 @@ func (f *Feature) facts() []run.Fact {
 	return record.Facts
 }
 
-func withClaim(id run.CommandID, cmd run.AgentCommand) run.AgentCommand {
-	claim := run.ExecutionClaim("feature/" + string(id))
+// withEffect fills the derived effect identity of a start or recovery that
+// names none (RUN-WIR-1): the model effect from the current step's rejected
+// count, the tool effect from the call, the recovered effect from the step.
+func (f *Feature) withEffect(cmd run.AgentCommand, snap runtime.Snapshot) run.AgentCommand {
 	switch c := cmd.(type) {
 	case run.StartModelExecution:
-		if c.Claim == "" {
-			c.Claim = claim
+		if c.Effect == "" {
+			ms, _ := snap.State.Current.(run.ModelStep)
+			c.Effect = schema.V1().Identity.DeriveEffectID(f.runID, c.StepID, "", ms.Rejects)
 		}
 		return c
 	case run.StartToolCall:
-		if c.Claim == "" {
-			c.Claim = claim
+		if c.Effect == "" {
+			c.Effect = schema.V1().Identity.DeriveEffectID(f.runID, c.StepID, c.CallID, 0)
+		}
+		return c
+	case run.RecoverModelExecution:
+		if c.Effect == "" {
+			ms, _ := snap.State.Current.(run.ModelStep)
+			c.Effect = ms.Effect
 		}
 		return c
 	default:

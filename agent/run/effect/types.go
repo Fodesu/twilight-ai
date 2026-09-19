@@ -23,16 +23,16 @@ const (
 	AssignmentTool  AssignmentKind = "tool"
 )
 
-// AssignmentKey identifies one execution attempt of one target. Session is
-// the Run's Scope (its Session, in Twilight) and part of the identity, so a
-// shared executor cannot collide two stores that happen to use the same
-// Run/Step/Call identifiers.
+// AssignmentKey identifies one effect as the execution plane addresses it.
+// Session is the Run's Scope (its Session, in Twilight) and part of the
+// identity, so a shared executor cannot collide two stores that happen to use
+// the same Run and effect identifiers. Effect is the Run's own name for the
+// effect (RUN-WIR-1) and the only handle the two planes share; which step or
+// call requested it travels in the Assignment for the backend's use.
 type AssignmentKey struct {
 	Session run.Scope
 	RunID   run.RunID
-	StepID  run.StepID
-	CallID  run.CallID
-	Claim   run.ExecutionClaim
+	Effect  run.EffectID
 }
 
 // AssignmentBody is the sealed effect an Assignment asks for: a model call
@@ -68,7 +68,7 @@ type Assignment struct {
 	RunID   run.RunID
 	StepID  run.StepID
 	CallID  run.CallID
-	Claim   run.ExecutionClaim
+	Effect  run.EffectID
 	Target  *run.TargetRef
 	Schema  uint16
 	// Body is the effect: exactly one of ModelAssignment or ToolAssignment.
@@ -76,7 +76,7 @@ type Assignment struct {
 }
 
 func (a Assignment) Key() AssignmentKey {
-	return AssignmentKey{Session: a.Session, RunID: a.RunID, StepID: a.StepID, CallID: a.CallID, Claim: a.Claim}
+	return AssignmentKey{Session: a.Session, RunID: a.RunID, Effect: a.Effect}
 }
 
 // Kind is the body's kind; empty for an Assignment without a body.
@@ -111,7 +111,7 @@ type assignmentWire struct {
 	RunID   run.RunID
 	StepID  run.StepID
 	CallID  run.CallID
-	Claim   run.ExecutionClaim
+	Effect  run.EffectID
 	Target  *run.TargetRef
 	Schema  uint16
 	Kind    AssignmentKind
@@ -120,7 +120,7 @@ type assignmentWire struct {
 }
 
 func (a Assignment) MarshalJSON() ([]byte, error) {
-	w := assignmentWire{Session: a.Session, RunID: a.RunID, StepID: a.StepID, CallID: a.CallID, Claim: a.Claim, Target: a.Target, Schema: a.Schema, Kind: a.Kind()}
+	w := assignmentWire{Session: a.Session, RunID: a.RunID, StepID: a.StepID, CallID: a.CallID, Effect: a.Effect, Target: a.Target, Schema: a.Schema, Kind: a.Kind()}
 	switch b := a.Body.(type) {
 	case ModelAssignment:
 		w.Model = &b
@@ -138,7 +138,7 @@ func (a *Assignment) UnmarshalJSON(raw []byte) error {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return err
 	}
-	out := Assignment{Session: w.Session, RunID: w.RunID, StepID: w.StepID, CallID: w.CallID, Claim: w.Claim, Target: w.Target, Schema: w.Schema}
+	out := Assignment{Session: w.Session, RunID: w.RunID, StepID: w.StepID, CallID: w.CallID, Effect: w.Effect, Target: w.Target, Schema: w.Schema}
 	switch {
 	case w.Kind == AssignmentModel && w.Model != nil && w.Tool == nil:
 		out.Body = *w.Model

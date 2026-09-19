@@ -7,8 +7,8 @@ import (
 	"github.com/felinics/twilight/agent/run/wire"
 )
 
-// Schema is everything that is frozen at a Run's creation, as four separate
-// contracts bound to one version number (RUN-CMT-7). Each contract can change
+// Schema is everything that is frozen at a Run's creation, as six separate
+// contracts bound to one version number (RUN-CMT-8). Each contract can change
 // independently in a later version; the aggregate exists so a caller selects
 // a version once (For at the Run header, the envelope or the event
 // boundary) and does not thread the number through digest, Decide or Evolve.

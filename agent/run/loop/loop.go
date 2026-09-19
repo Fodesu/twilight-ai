@@ -15,10 +15,12 @@ import (
 
 // Loop is the decision interpreter of one Run (RUN-LOP-2). It holds no
 // authoritative state: every step starts from RunStore.Load, derives the next
-// effect with plan.Next, records the protocol transition and hands the effect
-// to the Executor as an Assignment. Outcomes are read by key through the
-// Executor port and settled under the attempt's Claim; the Loop never waits
-// on an effect inside Advance.
+// action with plan.Next, records the protocol transition and, for a start,
+// hands the requested effect to the Executor as an Assignment keyed by its
+// EffectID. Outcomes are read by that key through the Executor port and
+// settled under the effect's derived CommandIDs; the Loop never waits on an
+// effect inside Advance and never learns which attempt the Executor made
+// for it.
 type Loop struct {
 	Executor Executor
 	Builder  PromptBuilder
@@ -214,14 +216,14 @@ func (l *Loop) advance(ctx context.Context, rt runtime.RunStore, runID run.RunID
 			return l.finish(ctx, events, rt.Scope(), runID, snapshot.State.Result), nil
 		}
 
-		effect, err := plan.Next(snapshot.State)
+		action, err := plan.Next(snapshot.State)
 		if err != nil {
 			return LoopResult{}, err
 		}
 
-		switch eff := effect.(type) {
+		switch act := action.(type) {
 		case plan.NeedModelRequest:
-			if err := l.planAndPrepare(ctx, rt, events, &snapshot, eff.Hint); err != nil {
+			if err := l.planAndPrepare(ctx, rt, events, &snapshot, act.Hint); err != nil {
 				return LoopResult{}, err
 			}
 		case plan.WithdrawPrepared:
@@ -232,8 +234,8 @@ func (l *Loop) advance(ctx context.Context, rt runtime.RunStore, runID run.RunID
 			if err != nil {
 				return LoopResult{}, err
 			}
-			res, err := l.commit(ctx, rt, runID, sch.Identity.DeriveWithdrawCommandID(runID, eff.StepID), snapshot.Position,
-				run.WithdrawPreparedStep(eff), sch)
+			res, err := l.commit(ctx, rt, runID, sch.Identity.DeriveWithdrawCommandID(runID, act.StepID), snapshot.Position,
+				run.WithdrawPreparedStep(act), sch)
 			if err != nil && !retriable(err) {
 				return LoopResult{}, err
 			}
@@ -241,7 +243,7 @@ func (l *Loop) advance(ctx context.Context, rt runtime.RunStore, runID run.RunID
 				l.emitCommitted(ctx, events, rt.Scope(), runID, res.Facts)
 			}
 		case plan.StartModelCall:
-			dispatched, err := l.startModelStep(ctx, rt, events, &snapshot, eff.StepID)
+			dispatched, err := l.startModelStep(ctx, rt, events, &snapshot, act.StepID)
 			if err != nil {
 				return LoopResult{}, err
 			}
@@ -249,7 +251,7 @@ func (l *Loop) advance(ctx context.Context, rt runtime.RunStore, runID run.RunID
 				return LoopResult{Disposition: LoopDispatched, Dispatched: []AssignmentKey{*dispatched}}, nil
 			}
 		case plan.StartToolCalls:
-			dispatched, err := l.startToolCalls(ctx, rt, events, &snapshot, eff)
+			dispatched, err := l.startToolCalls(ctx, rt, events, &snapshot, act)
 			if err != nil {
 				return LoopResult{}, err
 			}
@@ -264,7 +266,7 @@ func (l *Loop) advance(ctx context.Context, rt runtime.RunStore, runID run.RunID
 			}
 			return LoopResult{Disposition: LoopWaiting, Reason: reason, ExecutionRecovery: recovery}, nil
 		default:
-			return LoopResult{}, fmt.Errorf("agent: loop: unknown effect %T", effect)
+			return LoopResult{}, fmt.Errorf("agent: loop: unknown action %T", action)
 		}
 	}
 }
@@ -278,10 +280,10 @@ func (l *Loop) finish(ctx context.Context, events EventSink, scope run.Scope, ru
 	return LoopResult{Disposition: LoopFinished, Result: result}
 }
 
-// Deliver settles one Outcome (RUN-EXE-4). It finds the Executing target the
-// Outcome's key names -- same step or call, same Claim -- and commits the
-// attempt's settlement under the Claim-derived CommandID; an Outcome whose
-// attempt is no longer Executing is dropped and nothing is written. It returns
+// Deliver settles one Outcome (RUN-EXE-4). It finds the model step or tool
+// call Executing under the effect the Outcome's key names and commits the
+// settlement under the effect's derived CommandID; an Outcome whose effect
+// is no longer Executing is dropped and nothing is written. It returns
 // LoopFinished when the settlement terminated the Run, LoopDelivered when the
 // host should Advance next, LoopDropped for a stale Outcome. Ownership loss
 // is returned as is (RUN-LOP-5).
@@ -315,32 +317,40 @@ func (l *Loop) deliver(ctx context.Context, rt runtime.RunStore, out Outcome, ev
 	if err != nil {
 		return LoopResult{}, err
 	}
-	a := attempt{schema: sch, runID: runID, stepID: out.Key.StepID, callID: out.Key.CallID, claim: out.Key.Claim}
+	ref := effectRef{schema: sch, runID: runID, id: out.Key.Effect}
 
+	// The key names an effect; the machine state says which step or call is
+	// Executing under it. An effect nothing is Executing under is stale.
 	var cmd run.AgentCommand
 	var settleErr error
-	if out.Key.CallID == "" {
-		step, ok := snapshot.State.Current.(run.ModelStep)
-		if !ok || step.RefValue.ID != out.Key.StepID || step.Status != run.ModelExecuting || step.Claim != out.Key.Claim {
+	var stepID run.StepID
+	var callID run.CallID
+	switch cur := snapshot.State.Current.(type) {
+	case run.ModelStep:
+		if cur.Status != run.ModelExecuting || out.Key.Effect == "" || cur.Effect != out.Key.Effect {
 			return LoopResult{Disposition: LoopDropped}, nil
 		}
-		cmd, settleErr = l.modelCompletion(sch, &step, out)
-	} else {
-		call, ok := toolCallFromSnapshot(&snapshot.State, out.Key.StepID, out.Key.CallID)
-		if !ok || call.Status != run.ToolExecuting || call.Claim != out.Key.Claim {
+		stepID = cur.RefValue.ID
+		cmd, settleErr = l.modelCompletion(sch, &cur, out)
+	case run.ToolStep:
+		call, ok := executingCall(&cur, out.Key.Effect)
+		if !ok {
 			return LoopResult{Disposition: LoopDropped}, nil
 		}
-		cmd = toolCompletion(out.Key, out)
+		stepID, callID = cur.RefValue.ID, call.CallID
+		cmd = toolCompletion(stepID, callID, out)
+	default:
+		return LoopResult{Disposition: LoopDropped}, nil
 	}
 
 	// Settlement uses a detached control context: a cancelled host request must
 	// not discard an accepted effect's outcome (RUN-LOP-5).
-	finished, err := l.settle(context.WithoutCancel(ctx), rt, events, &a, snapshot.Position, cmd, sch)
+	finished, err := l.settle(context.WithoutCancel(ctx), rt, events, &ref, snapshot.Position, cmd, sch)
 	if err != nil {
 		return LoopResult{}, err
 	}
-	if out.Key.CallID != "" && events != nil {
-		_ = events.Emit(ctx, Event{Session: rt.Scope(), RunID: runID, StepID: out.Key.StepID, CallID: out.Key.CallID,
+	if callID != "" && events != nil {
+		_ = events.Emit(ctx, Event{Session: rt.Scope(), RunID: runID, StepID: stepID, CallID: callID,
 			Kind: EventToolCompleted, Durability: EventCommitted})
 	}
 	if settleErr != nil {
@@ -356,7 +366,7 @@ func (l *Loop) deliver(ctx context.Context, rt runtime.RunStore, out Outcome, ev
 	return LoopResult{Disposition: LoopDelivered}, nil
 }
 
-// Run drives the Run until it finishes, has no executable effect, or the
+// Run drives the Run until it finishes, has no executable action, or the
 // context is cancelled (RUN-LOP-2): Advance, wait for the Outcomes of what it
 // dispatched, GetOutcome, Deliver, repeat. It is the blocking form every
 // host uses; hosts that receive Outcomes from elsewhere call Advance and

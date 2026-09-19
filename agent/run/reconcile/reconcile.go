@@ -1,11 +1,12 @@
-// Package reconcile compares what the Run machine believes about an execution
+// Package reconcile compares what the Run machine believes about an effect
 // with what the execution store actually holds, and turns the difference into
 // Run commands (RUN-CMT-7). It is the one place that reads both sides: the
-// machine says which targets are Executing and under which Claim, the
-// executor says whether that attempt still exists, and the Reconciler decides
-// per target whether the Run keeps waiting for the attempt's Outcome or
-// disposes it. Neither the Loop nor the store adapter interprets executor
-// observations.
+// machine says which effects are outstanding (an Executing model step or tool
+// call and the EffectID it requested), the executor says whether it still
+// holds an attempt for that effect, and the Reconciler decides per effect
+// whether the Run keeps waiting for the attempt's Outcome or disposes the
+// effect. Neither the Loop nor the store adapter interprets executor
+// observations, and the Run never learns which attempt the executor made.
 package reconcile
 
 import (
@@ -25,18 +26,18 @@ import (
 type Verdict string
 
 const (
-	// Keep: the executor still holds the attempt (active, or terminal with an
-	// Outcome to read), so the target stays Executing and its Outcome settles
-	// under the original Claim.
+	// Keep: the executor still holds an attempt for the effect (active, or
+	// terminal with an Outcome to read), so the target stays Executing and
+	// its Outcome settles under the effect's settlement identity.
 	Keep Verdict = "keep"
 	// Defer: the executor holds a durable record it cannot reach (orphaned).
 	// The target stays Executing and its Outcome is still awaited: the
 	// control plane may take the record over and finish it, and nothing
 	// proves the effect was absent. Only an explicit disposal ends it.
 	Defer Verdict = "defer"
-	// Dispose: the executor knows nothing of the attempt, so the Run recovers
-	// the target itself: an Executing model step is withdrawn to Open, an
-	// Executing tool call settles as Unknown.
+	// Dispose: the executor holds no attempt for the effect, so the Run
+	// recovers the target itself: an Executing model step is withdrawn to
+	// Open, an Executing tool call settles as Unknown.
 	Dispose Verdict = "dispose"
 )
 
@@ -98,11 +99,11 @@ func classifyRead(err error) readVerdict {
 }
 
 // AssignmentFromTarget rebuilds the Assignment of an Executing target from
-// the machine state, so the executor can be asked whether that attempt still
-// runs. Only the key and the digest-level description are known here; the
-// inline request body never travels this way (RUN-EXE-7).
+// the machine state, so the executor can be asked whether it still holds an
+// attempt for the effect. Only the key and the digest-level description are
+// known here; the inline request body never travels this way (RUN-EXE-7).
 func AssignmentFromTarget(scope run.Scope, t plan.RecoveryTarget) effect.Assignment {
-	a := effect.Assignment{Session: scope, RunID: t.RunID, StepID: t.StepID, CallID: t.CallID, Claim: t.Claim, Schema: t.Schema}
+	a := effect.Assignment{Session: scope, RunID: t.RunID, StepID: t.StepID, CallID: t.CallID, Effect: t.Effect, Schema: t.Schema}
 	switch {
 	case t.Call != nil:
 		a.Body = effect.ToolAssignment{ToolRef: t.Call.ToolRef, DefinitionDigest: t.Call.DefinitionDigest, Arguments: t.Call.Arguments, Policy: t.Call.Policy}
@@ -126,10 +127,12 @@ func verdictOf(state effect.AttachmentState) (Verdict, error) {
 	}
 }
 
-// Plan decides every Executing target of one Run under the owner's takeover
-// claim. It asks the executor once per target and starts the Outcome read of
-// every target it does not dispose; it writes nothing.
-func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtime.Snapshot, claim run.ExecutionClaim) ([]Decision, error) {
+// Plan decides every Executing target of one Run. It asks the executor once
+// per effect and starts the Outcome read of every effect it does not dispose;
+// it writes nothing. The recovery command of a disposed effect is identified
+// by the effect (RUN-WIR-1), so any owner that plans the same state issues
+// the same command.
+func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtime.Snapshot) ([]Decision, error) {
 	targets := plan.RecoveryTargets(&snapshot.State)
 	if len(targets) == 0 {
 		return nil, nil
@@ -142,7 +145,7 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtim
 	for _, t := range targets {
 		t.Schema = snapshot.SchemaVersion
 		d := Decision{Target: t, Observed: effect.AttachmentMissing, Verdict: Dispose}
-		if r.Executions != nil && t.Claim != "" {
+		if r.Executions != nil && t.Effect != "" {
 			assignment := AssignmentFromTarget(scope, t)
 			attachment, err := r.Executions.Attach(ctx, assignment.Key())
 			if err != nil {
@@ -160,7 +163,7 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtim
 			}
 		}
 		if d.Verdict == Dispose {
-			rec := plan.RecoveryCommand(sch.Identity, t, claim)
+			rec := plan.RecoveryCommand(sch.Identity, t)
 			d.Recovery = &rec
 		}
 		out = append(out, d)
@@ -168,7 +171,7 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtim
 	return out, nil
 }
 
-// awaitOutcome reads the Outcome of a kept attempt in the background and
+// awaitOutcome reads the Outcome of a kept effect in the background and
 // hands it to Deliver. A not-ready answer is waited for as long as Lifetime
 // lasts; a read failure is retried with backoff up to ReadRetries times; a
 // definitive answer (the executor holds nothing for the key) or an exhausted
@@ -260,13 +263,13 @@ func Apply(ctx context.Context, store runtime.RunStore, sch schema.Schema, decis
 // Reconcile is Plan then Apply for one Run: the takeover disposition of its
 // Executing targets (RUN-CMT-7). It returns the number of accepted recovery
 // commands.
-func (r *Reconciler) Reconcile(ctx context.Context, store runtime.RunStore, snapshot *runtime.Snapshot, claim run.ExecutionClaim) (int, error) {
+func (r *Reconciler) Reconcile(ctx context.Context, store runtime.RunStore, snapshot *runtime.Snapshot) (int, error) {
 	if r.Lifetime != nil {
 		if err := r.Lifetime.Err(); err != nil {
 			return 0, err
 		}
 	}
-	decisions, err := r.Plan(ctx, store.Scope(), snapshot, claim)
+	decisions, err := r.Plan(ctx, store.Scope(), snapshot)
 	if err != nil {
 		return 0, err
 	}

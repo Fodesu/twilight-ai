@@ -354,9 +354,20 @@ func (h *harness) mustCommit(runID run.RunID, id run.CommandID, base run.RunPosi
 	return res
 }
 
-func (h *harness) claim() run.ExecutionClaim {
-	h.seq++
-	return run.ExecutionClaim(fmt.Sprintf("claim-%d", h.seq))
+// modelEffect derives the next model effect of the Prepared step (RUN-WIR-1):
+// the step's rejected-result count is the effect's sequence.
+func (h *harness) modelEffect(runID run.RunID, step run.StepID) run.EffectID {
+	h.t.Helper()
+	ms, ok := h.load(runID).State.Current.(run.ModelStep)
+	if !ok || ms.RefValue.ID != step {
+		h.fatal(fmt.Sprintf("model effect of %s: current is not the step", step))
+	}
+	return schema.V1().Identity.DeriveEffectID(runID, step, "", ms.Rejects)
+}
+
+// toolEffect derives the one tool effect of a call: a call starts at most once.
+func toolEffect(runID run.RunID, step run.StepID, call run.CallID) run.EffectID {
+	return schema.V1().Identity.DeriveEffectID(runID, step, call, 0)
 }
 
 // --- run building blocks ---------------------------------------------------------
@@ -420,19 +431,20 @@ func (h *harness) prepare(runID run.RunID, withTool bool) run.StepID {
 	return cmd.StepID
 }
 
-// startModel commits StartModelExecution with a fresh claim.
-func (h *harness) startModel(runID run.RunID, step run.StepID) run.ExecutionClaim {
+// startModel commits StartModelExecution for the step's next model effect
+// and returns that effect.
+func (h *harness) startModel(runID run.RunID, step run.StepID) run.EffectID {
 	h.t.Helper()
-	claim := h.claim()
-	res := h.mustCommit(runID, schema.V1().Identity.DeriveStartCommandID(runID, step, "", claim), 0, run.StartModelExecution{StepID: step, Claim: claim})
+	eff := h.modelEffect(runID, step)
+	res := h.mustCommit(runID, schema.V1().Identity.DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff})
 	if res.Status != runtime.CommitAccepted {
 		h.fatal("start was not accepted")
 	}
-	return claim
+	return eff
 }
 
 // executingModel drives a fresh Run to Model Executing.
-func (h *harness) executingModel(runID run.RunID, withTool bool) (run.StepID, run.ExecutionClaim) {
+func (h *harness) executingModel(runID run.RunID, withTool bool) (run.StepID, run.EffectID) {
 	h.t.Helper()
 	step := h.prepare(runID, withTool)
 	return step, h.startModel(runID, step)
@@ -473,9 +485,9 @@ func (h *harness) toolCallResult(step run.StepID, n int) (model.ModelResult, []r
 // openToolStep drives a fresh Run to a ToolStep with n Pending calls.
 func (h *harness) openToolStep(runID run.RunID, n int) (run.StepID, []run.CallID) {
 	h.t.Helper()
-	step, claim := h.executingModel(runID, true)
+	step, eff := h.executingModel(runID, true)
 	result, bindings := h.toolCallResult(step, n)
-	res := h.mustCommit(runID, schema.V1().Identity.DeriveSettlementCommandID(runID, step, "", claim), 0,
+	res := h.mustCommit(runID, schema.V1().Identity.DeriveSettlementCommandID(eff), 0,
 		run.SubmitModelResult{StepID: step, Result: result, Calls: bindings})
 	ts, ok := res.Snapshot.State.Current.(run.ToolStep)
 	if !ok {
@@ -488,14 +500,15 @@ func (h *harness) openToolStep(runID run.RunID, n int) (run.StepID, []run.CallID
 	return ts.RefValue.ID, ids
 }
 
-func (h *harness) startTool(runID run.RunID, step run.StepID, call run.CallID) run.ExecutionClaim {
+// startTool commits StartToolCall for the call's tool effect and returns it.
+func (h *harness) startTool(runID run.RunID, step run.StepID, call run.CallID) run.EffectID {
 	h.t.Helper()
-	claim := h.claim()
-	res := h.mustCommit(runID, schema.V1().Identity.DeriveStartCommandID(runID, step, call, claim), 0, run.StartToolCall{StepID: step, CallID: call, Claim: claim})
+	eff := toolEffect(runID, step, call)
+	res := h.mustCommit(runID, schema.V1().Identity.DeriveStartCommandID(eff), 0, run.StartToolCall{StepID: step, CallID: call, Effect: eff})
 	if res.Status != runtime.CommitAccepted {
 		h.fatal("tool start was not accepted")
 	}
-	return claim
+	return eff
 }
 
 func (h *harness) machine() runmod.Machine {

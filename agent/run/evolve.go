@@ -27,7 +27,7 @@ func (m MachineV1) Evolve(s MachineState, f Fact) (MachineState, error) {
 	case ModelStepWithdrawn:
 		return applyModelStepWithdrawn(s), nil
 	case ModelStepStarted:
-		return applyModelClaim(applyModelStatus(s, ModelExecuting, model.Usage{}, false), fact.Claim), nil
+		return applyModelEffect(applyModelStatus(s, ModelExecuting, model.Usage{}, false), fact.Effect), nil
 	case ModelStepRecovered:
 		return applyModelStepWithdrawn(s), nil
 	case ModelStepRejected:
@@ -37,7 +37,7 @@ func (m MachineV1) Evolve(s MachineState, f Fact) (MachineState, error) {
 	case ToolStepOpened:
 		return applyToolStepOpened(s, &fact), nil
 	case ToolCallStarted:
-		return applyCall(s, fact.CallID, func(c *ToolCallState) { c.Status, c.Claim = ToolExecuting, fact.Claim }), nil
+		return applyCall(s, fact.CallID, func(c *ToolCallState) { c.Status, c.Effect = ToolExecuting, fact.Effect }), nil
 	case ToolCallApproved:
 		return applyCall(s, fact.CallID, func(c *ToolCallState) { c.Status, c.Waiting = ToolPending, nil }), nil
 	case ToolCallCompleted:
@@ -104,10 +104,10 @@ func applyModelStatus(s MachineState, status ModelStepStatus, usage model.Usage,
 	return s
 }
 
-// applyModelClaim records or clears the attempt that owns the current ModelStep.
-func applyModelClaim(s MachineState, claim ExecutionClaim) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
+// applyModelEffect records the effect the current ModelStep requested.
+func applyModelEffect(s MachineState, effect EffectID) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
 	ms := s.Current.(ModelStep) //nolint:errcheck // caller established Current is a ModelStep
-	ms.Claim = claim
+	ms.Effect = effect
 	s.Current = ms
 	return s
 }
@@ -204,8 +204,8 @@ func (m MachineV1) guardFactV1(s *MachineState, f Fact) error {
 		}
 		return nil
 	case ModelStepStarted:
-		if fact.Claim == "" {
-			return errors.New("agent: evolve: model step started without a claim")
+		if fact.Effect == "" {
+			return errors.New("agent: evolve: model step started without an effect")
 		}
 		return requireModelStep(s, fact.StepID, ModelPrepared)
 	case ModelStepRecovered:
@@ -220,8 +220,8 @@ func (m MachineV1) guardFactV1(s *MachineState, f Fact) error {
 	case ToolStepOpened:
 		return m.guardToolStepOpened(s, &fact)
 	case ToolCallStarted:
-		if fact.Claim == "" {
-			return errors.New("agent: evolve: tool call started without a claim")
+		if fact.Effect == "" {
+			return errors.New("agent: evolve: tool call started without an effect")
 		}
 		_, err := requireCall(s, fact.StepID, fact.CallID, ToolPending)
 		return err

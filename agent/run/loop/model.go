@@ -89,8 +89,8 @@ func (l *Loop) planAndPrepare(ctx context.Context, rt runtime.RunStore, events E
 
 // --- StartModelCall ---
 
-// startModelStep commits the start barrier of one model attempt and hands the
-// call to the Executor (RUN-LOP-3). It returns the dispatched key, or nil when
+// startModelStep commits the start barrier of the step's next model effect
+// and hands the call to the Executor (RUN-LOP-3). It returns the dispatched key, or nil when
 // the reload should decide (another actor moved the step). A model catalog
 // that cannot serve the step withdraws it to Open and reports the error: no
 // model call has happened.
@@ -108,8 +108,8 @@ func (l *Loop) startModelStep(ctx context.Context, rt runtime.RunStore, events E
 	if err != nil {
 		return nil, err
 	}
-	a := newAttempt(sch, runID, stepID, "")
-	assignment := Assignment{Session: rt.Scope(), RunID: runID, StepID: stepID, Claim: a.claim, Target: target, Schema: snapshot.SchemaVersion,
+	ref := modelEffect(sch, runID, &prepared)
+	assignment := Assignment{Session: rt.Scope(), RunID: runID, StepID: stepID, Effect: ref.id, Target: target, Schema: snapshot.SchemaVersion,
 		Body: ModelAssignment{Model: prepared.Model, RequestDigest: prepared.RequestDigest}}
 	// Pre-start check (RUN-EXE-5): an executor that cannot serve the model
 	// fails here, with the step still Prepared and no start or recovery fact.
@@ -120,7 +120,7 @@ func (l *Loop) startModelStep(ctx context.Context, rt runtime.RunStore, events E
 	if unavailable != nil {
 		return nil, fmt.Errorf("%w: %s: %s: %s", ErrModelUnavailable, prepared.Model, unavailable.Class, unavailable.Message)
 	}
-	start, err := l.commit(ctx, rt, runID, a.startID(), snapshot.Position, run.StartModelExecution{StepID: stepID, Claim: a.claim}, sch)
+	start, err := l.commit(ctx, rt, runID, ref.startID(), snapshot.Position, run.StartModelExecution{StepID: stepID, Effect: ref.id}, sch)
 	if err != nil {
 		if retriable(err) {
 			return nil, nil // another actor moved the step; reload decides
@@ -130,7 +130,7 @@ func (l *Loop) startModelStep(ctx context.Context, rt runtime.RunStore, events E
 	l.emitCommitted(ctx, events, rt.Scope(), runID, start.Facts)
 
 	modelStep, ok := start.Snapshot.State.Current.(run.ModelStep)
-	if !ok || modelStep.RefValue.ID != stepID || modelStep.Status != run.ModelExecuting {
+	if !ok || modelStep.RefValue.ID != stepID || modelStep.Status != run.ModelExecuting || modelStep.Effect != ref.id {
 		// The start (or its one-shot replay) landed but the step is no longer
 		// Executing: something settled it meanwhile. Reload decides.
 		if start.Status == runtime.CommitAlreadyApplied {
@@ -141,8 +141,8 @@ func (l *Loop) startModelStep(ctx context.Context, rt runtime.RunStore, events E
 
 	request, err := rt.FrozenRequest(ctx, prepared.RequestDigest)
 	if err != nil {
-		if _, serr := l.settle(context.WithoutCancel(ctx), rt, events, &a, start.Snapshot.Position,
-			run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, sch); serr != nil {
+		if _, serr := l.settle(context.WithoutCancel(ctx), rt, events, &ref, start.Snapshot.Position,
+			run.RecoverModelExecution{StepID: stepID, Effect: ref.id}, sch); serr != nil {
 			return nil, serr
 		}
 		return nil, fmt.Errorf("agent: loop: load frozen model request: %w", err)
@@ -155,10 +155,10 @@ func (l *Loop) startModelStep(ctx context.Context, rt runtime.RunStore, events E
 			// model Executing so recovery can Attach/Reconcile/Takeover it.
 			return nil, fmt.Errorf("agent: loop: model dispatch outcome: %w", err)
 		}
-		// Nothing was called: withdraw the step to Open under this attempt's
+		// Nothing was called: withdraw the step to Open under this effect's
 		// recovery identity and surface the condition (RUN-LOP-3).
-		if _, serr := l.settle(context.WithoutCancel(ctx), rt, events, &a, start.Snapshot.Position,
-			run.RecoverModelExecution{StepID: stepID, Claim: a.claim}, sch); serr != nil {
+		if _, serr := l.settle(context.WithoutCancel(ctx), rt, events, &ref, start.Snapshot.Position,
+			run.RecoverModelExecution{StepID: stepID, Effect: ref.id}, sch); serr != nil {
 			return nil, serr
 		}
 		return nil, fmt.Errorf("agent: loop: model dispatch: %w", err)
@@ -167,7 +167,7 @@ func (l *Loop) startModelStep(ctx context.Context, rt runtime.RunStore, events E
 	return &key, nil
 }
 
-// modelCompletion maps a model Outcome to the attempt's settlement command
+// modelCompletion maps a model Outcome to the effect's settlement command
 // (RUN-LOP-3): a cancelled call withdraws the step to Open (the next Advance
 // plans again from the current state); a provider failure is
 // SubmitModelFailure; a result that cannot be bound or frozen is
@@ -181,7 +181,7 @@ func (l *Loop) startModelStep(ctx context.Context, rt runtime.RunStore, events E
 // decision, so a persistently unreadable store cannot spin the Run.
 func (l *Loop) modelCompletion(sch schema.Schema, step *run.ModelStep, out Outcome) (run.AgentCommand, error) {
 	stepID := step.RefValue.ID
-	withdraw := run.RecoverModelExecution{StepID: stepID, Claim: out.Key.Claim}
+	withdraw := run.RecoverModelExecution{StepID: stepID, Effect: step.Effect}
 	var result sdk.ModelResult
 	switch r := out.Result.(type) {
 	case effect.ModelSucceeded:

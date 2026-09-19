@@ -65,7 +65,7 @@ func TestRegressionEvolveRejectsIllegalCallState(t *testing.T) {
 	facts := mustDecide(t, s, run.SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []run.ToolCallBinding{b}})
 	opened := facts[1].(run.ToolStepOpened)
 	s = fold(t, s, facts)
-	s = fold(t, s, mustDecide(t, s, run.StartToolCall{StepID: opened.StepID, CallID: cid(stepID, 0), Claim: "attempt-1"}))
+	s = fold(t, s, mustDecide(t, s, startTool(s, opened.StepID, cid(stepID, 0))))
 
 	_, err := schema.V1().Machine.Evolve(s, run.ToolCallFailed{
 		StepID:  opened.StepID,
@@ -120,7 +120,7 @@ func TestCancelSettlesEveryUnfinishedToolCall(t *testing.T) {
 			stepID := current.Current.(run.ToolStep).RefValue.ID
 			// Retain one executing call, one completed result and one known failure.
 			for _, i := range []int{0, 3} {
-				current = fold(t, current, mustDecide(t, current, run.StartToolCall{StepID: stepID, CallID: bindings[i].CallID, Claim: "attempt"}))
+				current = fold(t, current, mustDecide(t, current, startTool(current, stepID, bindings[i].CallID)))
 			}
 			current = fold(t, current, mustDecide(t, current, run.SubmitToolResult{StepID: stepID, CallID: bindings[3].CallID,
 				Result: run.ToolExecutionResult{Output: cj(`"done"`)}}))

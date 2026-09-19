@@ -13,12 +13,24 @@ import (
 	"github.com/felinics/twilight/sdk"
 )
 
+// startModel is the start of the current Prepared step's next model effect
+// (RUN-WIR-1): the step's rejected count is the effect's sequence.
+func startModel(s run.MachineState, stepID run.StepID) run.StartModelExecution {
+	ms, _ := s.Current.(run.ModelStep)
+	return run.StartModelExecution{StepID: stepID, Effect: schema.V1().Identity.DeriveEffectID(s.RunID, stepID, "", ms.Rejects)}
+}
+
+// startTool is the start of a call's one tool effect.
+func startTool(s run.MachineState, stepID run.StepID, callID run.CallID) run.StartToolCall {
+	return run.StartToolCall{StepID: stepID, CallID: callID, Effect: schema.V1().Identity.DeriveEffectID(s.RunID, stepID, callID, 0)}
+}
+
 // advance runs prepare+start and returns the state in Executing plus stepID.
 func advanceToExecuting(t *testing.T, s run.MachineState, req sdk.Request, specs []run.ToolSpec) (run.MachineState, run.StepID) {
 	t.Helper()
 	prep, _ := buildPrepare(t, s, req, specs)
 	s = fold(t, s, mustDecide(t, s, prep))
-	s = fold(t, s, mustDecide(t, s, run.StartModelExecution{StepID: prep.StepID, Claim: "attempt-1"}))
+	s = fold(t, s, mustDecide(t, s, startModel(s, prep.StepID)))
 	return s, prep.StepID
 }
 

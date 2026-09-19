@@ -78,9 +78,9 @@ type ToolExecutionRequest struct {
 	RunID  run.RunID
 	StepID run.StepID
 	CallID run.CallID
-	// Claim is the execution attempt the call runs under; it identifies the
+	// Effect is the tool effect the call was started under; it identifies the
 	// Outcome the Executor returns through its message-shaped port (RUN-EXE-2).
-	Claim            run.ExecutionClaim
+	Effect           run.EffectID
 	ToolRef          run.ToolRef
 	DefinitionDigest run.Digest
 	Arguments        run.CanonicalJSON
@@ -161,8 +161,8 @@ type Event struct {
 type LoopDisposition uint8
 
 const (
-	// LoopWaiting: no executable effect; the Run waits for a response, a
-	// recovery, or an Outcome of an attempt this Loop did not dispatch.
+	// LoopWaiting: no executable action; the Run waits for a response, a
+	// recovery, or an Outcome of an effect this Loop did not dispatch.
 	LoopWaiting LoopDisposition = iota
 	// LoopFinished: the Run is terminal; Result is set.
 	LoopFinished
@@ -184,7 +184,7 @@ type LoopResult struct {
 	// Reason is execution_recovery when ExecutionRecovery is true; otherwise empty.
 	Reason WaitReason
 	// ExecutionRecovery is true when NeedsRecovery(state) is true after this
-	// Loop has no further executable effect: a ModelStep is Executing, or a
+	// Loop has no further executable action: a ModelStep is Executing, or a
 	// ToolStep has Executing calls and no Pending calls, and none of them was
 	// dispatched by this Loop. Under Session-level ownership this only happens
 	// before the owner's takeover disposition.

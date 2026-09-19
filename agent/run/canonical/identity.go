@@ -32,16 +32,6 @@ func (IdentityV1) DeriveModelRequestCommandID(runID run.RunID, position run.RunP
 	return run.CommandID(namespacedHash("twilight/model-request", string(runID), fmt.Sprintf("%d", position)))
 }
 
-// DeriveTakeoverClaim is the ExecutionClaim a new owner of a Scope uses for
-// its takeover dispositions (RUN-CMT-7): epoch is the owner's generation over
-// the store, so the same owner repeats idempotently and distinct owners issue
-// distinct commands. It is deliberately not part of Schema.Identity: the
-// claim belongs to the owner, not to any one Run, and one takeover may span
-// Runs of different schema versions.
-func DeriveTakeoverClaim(scope run.Scope, epoch uint64) run.ExecutionClaim {
-	return run.ExecutionClaim(namespacedHash("twilight/run/takeover", string(scope), fmt.Sprintf("%d", epoch)))
-}
-
 // DeriveModelStepID derives the frozen ModelStep identity from the Run, the
 // preparing command, and the model-step binding digest (model + request +
 // tools).
@@ -96,32 +86,38 @@ func (IdentityV1) DeriveWithdrawCommandID(runID run.RunID, step run.StepID) run.
 	return run.CommandID(namespacedHash("twilight/withdraw-command", string(runID), string(step)))
 }
 
-// DeriveStartCommandID derives the CommandID of StartModelExecution (empty
-// call) or StartToolCall from the target and the attempt's ExecutionClaim.
-// Commit enforces this derivation so a caller-minted ID cannot bypass the
-// idempotency index (RUN-WIR-3).
-func (IdentityV1) DeriveStartCommandID(runID run.RunID, step run.StepID, call run.CallID, claim run.ExecutionClaim) run.CommandID {
-	return run.CommandID(namespacedHash("twilight/start-command", string(runID), string(step), string(call), string(claim)))
+// DeriveEffectID derives the identity of one request for an external effect
+// (RUN-WIR-1): the model call of a ModelStep (empty call) or one tool call of
+// a ToolStep. sequence distinguishes the requests one step makes: a ModelStep
+// whose result was rejected requests its model call again, so its sequence
+// is the count of rejections before the request; a tool call starts at most
+// once, so its sequence is 0. The EffectID is the one handle the Run and the
+// execution plane share: the start, settlement and recovery commands of the
+// effect derive from it, and the executor keys its attempts by it.
+func (IdentityV1) DeriveEffectID(runID run.RunID, step run.StepID, call run.CallID, sequence int) run.EffectID {
+	return run.EffectID(namespacedHash("twilight/effect", string(runID), string(step), string(call), fmt.Sprintf("%d", sequence)))
 }
 
-// DeriveSettlementCommandID derives the CommandID of the owner's settlement
-// of one execution attempt (model result/failure/reject, tool result/failure).
-// One attempt settles once, so the identity needs no content: a replay with
-// the same outcome is idempotent, a different outcome is a conflict.
-func (IdentityV1) DeriveSettlementCommandID(runID run.RunID, step run.StepID, call run.CallID, claim run.ExecutionClaim) run.CommandID {
-	return run.CommandID(namespacedHash("twilight/settlement-command", string(runID), string(step), string(call), string(claim)))
+// DeriveStartCommandID derives the CommandID of StartModelExecution or
+// StartToolCall from the effect it requests. Commit enforces this derivation
+// so a caller-minted ID cannot bypass the idempotency index (RUN-WIR-3).
+func (IdentityV1) DeriveStartCommandID(effect run.EffectID) run.CommandID {
+	return run.CommandID(namespacedHash("twilight/start-command", string(effect)))
 }
 
-// DeriveModelRecoveryCommandID derives the stable command identity for
-// recovering one model execution attempt. The claim is part of the identity:
-// a model step may be started, recovered, and started again, and each attempt
-// must have its own recovery record.
-func (IdentityV1) DeriveModelRecoveryCommandID(runID run.RunID, step run.StepID, claim run.ExecutionClaim) run.CommandID {
-	return run.CommandID(namespacedHash("twilight/model-recovery", string(runID), string(step), string(claim)))
+// DeriveSettlementCommandID derives the CommandID of the settlement of one
+// effect (model result/failure/reject, tool result/failure). One effect
+// settles once, so the identity needs no content: a replay with the same
+// outcome is idempotent, a different outcome is a conflict.
+func (IdentityV1) DeriveSettlementCommandID(effect run.EffectID) run.CommandID {
+	return run.CommandID(namespacedHash("twilight/settlement-command", string(effect)))
 }
 
-// DeriveToolRecoveryCommandID derives the identity of the Unknown settlement
-// a takeover commits for one abandoned tool attempt (RUN-CMT-7).
-func (IdentityV1) DeriveToolRecoveryCommandID(runID run.RunID, step run.StepID, call run.CallID, claim run.ExecutionClaim) run.CommandID {
-	return run.CommandID(namespacedHash("twilight/tool-recovery", string(runID), string(step), string(call), string(claim)))
+// DeriveRecoveryCommandID derives the CommandID of the recovery of one effect
+// whose outcome cannot be reached (RUN-CMT-7): RecoverModelExecution for a
+// model effect, the Unknown SubmitToolFailure for a tool effect. The identity
+// is a function of the effect alone, so whichever owner repeats the recovery
+// replays the same command.
+func (IdentityV1) DeriveRecoveryCommandID(effect run.EffectID) run.CommandID {
+	return run.CommandID(namespacedHash("twilight/recovery-command", string(effect)))
 }

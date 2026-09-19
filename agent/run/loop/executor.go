@@ -511,7 +511,7 @@ func (e *LocalExecutor) runTool(ctx context.Context, a Assignment, t ToolAssignm
 		RunID:            a.RunID,
 		StepID:           a.StepID,
 		CallID:           a.CallID,
-		Claim:            a.Claim,
+		Effect:           a.Effect,
 		ToolRef:          t.ToolRef,
 		DefinitionDigest: t.DefinitionDigest,
 		Arguments:        t.Arguments,

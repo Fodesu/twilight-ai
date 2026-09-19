@@ -140,11 +140,11 @@ func TestAdvanceDispatchesAndDeliverSettles(t *testing.T) {
 		t.Fatalf("advance = %+v %v", res, err)
 	}
 	a := exec.last()
-	if model, ok := a.Model(); !ok || model.RequestDigest == "" || a.Claim == "" || a.Key() != res.Dispatched[0] {
+	if model, ok := a.Model(); !ok || model.RequestDigest == "" || a.Effect == "" || a.Key() != res.Dispatched[0] {
 		t.Fatalf("model assignment = %+v", a)
 	}
 	step := loadState(t, rt, w, "run-1").State.Current.(ModelStep)
-	if step.Status != ModelExecuting || step.Claim != a.Claim {
+	if step.Status != ModelExecuting || step.Effect != a.Effect {
 		t.Fatalf("started step = %+v", step)
 	}
 
@@ -230,12 +230,12 @@ func TestDeliverDropsStaleOutcome(t *testing.T) {
 	if after := len(recordFacts(t, rt, "run-1")); after != before {
 		t.Fatalf("stale outcome wrote %d fact(s)", after-before)
 	}
-	// A key with the wrong claim is stale too.
+	// A key naming another effect is stale too.
 	if _, err := l.Advance(ctx, rt.Bind(w), "run-1", nil); err != nil {
 		t.Fatal(err)
 	}
 	forged := exec.last().Key()
-	forged.Claim = "someone-else"
+	forged.Effect = "someone-else"
 	res, err = l.Deliver(ctx, rt.Bind(w), Outcome{Key: forged, Result: ModelSucceeded{Result: result}}, nil)
 	if err != nil || res.Disposition != LoopDropped {
 		t.Fatalf("forged deliver = %+v %v", res, err)
@@ -243,8 +243,8 @@ func TestDeliverDropsStaleOutcome(t *testing.T) {
 }
 
 // Takeover with a reachable executor: the new owner's RecoverInterrupted asks
-// the executor, which still holds the attempt, so the step stays Executing
-// with its original Claim and the attempt's Outcome settles it (RUN-CMT-7).
+// the executor, which still holds an attempt for the effect, so the step stays
+// Executing under its original effect and that Outcome settles it (RUN-CMT-7).
 func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 	stack := newTestStack(t, nil)
 	stack.createRun(t, "run-1", AgentInput{ID: "seed", Digest: inputDigest(`{}`)})
@@ -285,8 +285,8 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 		t.Fatalf("attach asked about %+v, want %+v", exec.attached, a.Key())
 	}
 	step := loadState(t, stack.runtime, stack.writer(t), "run-1").State.Current.(ModelStep)
-	if step.Status != ModelExecuting || step.Claim != a.Claim {
-		t.Fatalf("step after reattach = %+v, want Executing under the original claim", step)
+	if step.Status != ModelExecuting || step.Effect != a.Effect {
+		t.Fatalf("step after reattach = %+v, want Executing under the original effect", step)
 	}
 
 	// The attempt finishes on the executor; its Outcome reaches the new owner.
@@ -373,7 +373,7 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 	}
 	spec := toolSpec(t, "echo", DirectExecution)
 	target := TargetRef{Kind: "workspace", ID: "ws-1"}
-	a := Assignment{Session: testScope, RunID: "run-1", StepID: "step-1", CallID: "call-1", Claim: "claim-1", Target: &target, Schema: SchemaVersion1,
+	a := Assignment{Session: testScope, RunID: "run-1", StepID: "step-1", CallID: "call-1", Effect: "effect-1", Target: &target, Schema: SchemaVersion1,
 		Body: ToolAssignment{ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest, Arguments: cj(`{}`), Policy: DirectExecution}}
 	ref, err := exec.Prepare(context.Background(), a)
 	if err != nil {

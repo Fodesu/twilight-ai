@@ -48,10 +48,10 @@ func (p *fakePort) GetOutcome(ctx context.Context, key effect.AssignmentKey) (ef
 }
 func (p *fakePort) Cancel(context.Context, effect.AssignmentKey) error { return nil }
 
-func executingModel(claim run.ExecutionClaim) *runtime.Snapshot {
+func executingModel(eff run.EffectID) *runtime.Snapshot {
 	return &runtime.Snapshot{SchemaVersion: run.SchemaVersion1, State: run.MachineState{
 		RunID: "r1", Status: run.RunActive,
-		Current: run.ModelStep{RefValue: run.StepRef{RunID: "r1", ID: "s1"}, Model: "m", RequestDigest: "sha256:req", Status: run.ModelExecuting, Claim: claim},
+		Current: run.ModelStep{RefValue: run.StepRef{RunID: "r1", ID: "s1"}, Model: "m", RequestDigest: "sha256:req", Status: run.ModelExecuting, Effect: eff},
 	}}
 }
 
@@ -70,7 +70,7 @@ func TestPlanVerdicts(t *testing.T) {
 	} {
 		port := &fakePort{state: tc.state}
 		r := &Reconciler{Executions: port}
-		decisions, err := r.Plan(context.Background(), "s", executingModel("c1"), "takeover")
+		decisions, err := r.Plan(context.Background(), "s", executingModel("c1"))
 		if err != nil || len(decisions) != 1 {
 			t.Fatalf("%s: plan = %+v %v", tc.state, decisions, err)
 		}
@@ -78,16 +78,16 @@ func TestPlanVerdicts(t *testing.T) {
 		if d.Verdict != tc.want || (d.Recovery != nil) != tc.disposes || d.Observed != tc.state {
 			t.Fatalf("%s: decision = %+v, want %s disposes=%v", tc.state, d, tc.want, tc.disposes)
 		}
-		if len(port.asked) != 1 || port.asked[0] != (effect.AssignmentKey{Session: "s", RunID: "r1", StepID: "s1", Claim: "c1"}) {
+		if len(port.asked) != 1 || port.asked[0] != (effect.AssignmentKey{Session: "s", RunID: "r1", Effect: "c1"}) {
 			t.Fatalf("%s: asked = %+v", tc.state, port.asked)
 		}
 	}
-	if _, err := (&Reconciler{Executions: &fakePort{state: "weird"}}).Plan(context.Background(), "s", executingModel("c1"), "t"); err == nil {
+	if _, err := (&Reconciler{Executions: &fakePort{state: "weird"}}).Plan(context.Background(), "s", executingModel("c1")); err == nil {
 		t.Fatal("unknown attachment state accepted")
 	}
-	// No executor: every target is missing and disposed; a target without a
-	// Claim is disposed without asking.
-	decisions, err := (&Reconciler{}).Plan(context.Background(), "s", executingModel("c1"), "t")
+	// No executor: every target is missing and disposed; a target without an
+	// effect is disposed without asking.
+	decisions, err := (&Reconciler{}).Plan(context.Background(), "s", executingModel("c1"))
 	if err != nil || len(decisions) != 1 || decisions[0].Verdict != Dispose || decisions[0].Recovery == nil {
 		t.Fatalf("plan without executor = %+v %v", decisions, err)
 	}
@@ -108,7 +108,7 @@ func TestAssignmentFromTarget(t *testing.T) {
 	if model, ok := a.Model(); !ok || model.Request != nil || model.RequestDigest != "sha256:req" || a.Schema != run.SchemaVersion1 {
 		t.Fatalf("assignment = %+v", a)
 	}
-	if a.Key() != (effect.AssignmentKey{Session: "s", RunID: "r1", StepID: "s1", Claim: "c1"}) {
+	if a.Key() != (effect.AssignmentKey{Session: "s", RunID: "r1", Effect: "c1"}) {
 		t.Fatalf("key = %+v", a.Key())
 	}
 }
@@ -133,7 +133,7 @@ func TestKeptOutcomeReadRetries(t *testing.T) {
 	}}
 	delivered := make(chan effect.Outcome, 1)
 	r := &Reconciler{Executions: port, Lifetime: ctx, Deliver: func(out effect.Outcome) { delivered <- out }}
-	if _, err := r.Plan(ctx, "s", executingModel("c1"), "t"); err != nil {
+	if _, err := r.Plan(ctx, "s", executingModel("c1")); err != nil {
 		t.Fatal(err)
 	}
 	<-failed
@@ -167,7 +167,7 @@ func TestLifetimeStopsOutcomeWatcher(t *testing.T) {
 	}}
 	delivered := make(chan effect.Outcome, 1)
 	r := &Reconciler{Executions: port, Lifetime: lifetime, Deliver: func(out effect.Outcome) { delivered <- out }}
-	decisions, err := r.Plan(ctx, "s", executingModel("c1"), "t")
+	decisions, err := r.Plan(ctx, "s", executingModel("c1"))
 	if err != nil || decisions[0].Verdict != Defer {
 		t.Fatalf("plan = %+v %v", decisions, err)
 	}
@@ -212,7 +212,7 @@ func TestOutcomeReadErrorTaxonomy(t *testing.T) {
 			r := &Reconciler{Executions: port, Lifetime: ctx, ReadRetries: tc.retries,
 				Deliver: func(out effect.Outcome) { t.Errorf("delivered %+v", out) },
 				Fail:    func(_ effect.AssignmentKey, err error) { failed <- err }}
-			if _, err := r.Plan(ctx, "s", executingModel("c1"), "t"); err != nil {
+			if _, err := r.Plan(ctx, "s", executingModel("c1")); err != nil {
 				t.Fatal(err)
 			}
 			select {

@@ -36,6 +36,10 @@ type RunFailure struct {
 	CallID  CallID `json:"callId,omitempty"`
 }
 
+// RunResult is the read-side restatement of how a Run ended: the RunEnded
+// fact's End as status, reason and failure, with the Usage accumulated up to
+// it. Evolve folds it for readers (the Loop's LoopResult, the host); Decide
+// never reads it. The authority for the end is the RunEnded fact.
 type RunResult struct {
 	Status  RunStatus   `json:"status"`
 	Reason  RunReason   `json:"reason,omitempty"`
@@ -87,7 +91,13 @@ const (
 	ResponseDecisionRejected ResponseDecision = "rejected"
 )
 
-// ResponseRequest is the stable, routable identity of one waiting call.
+// ResponseRequest is the Wait of one tool call: the external input the call
+// lacks, named so the application can route it. Kind says which input --
+// the approval a call needs before its tool effect may be requested, or the
+// external response that settles the call in place of a tool effect. ID is
+// the derived ResponseID the resolving command must name, RequestDigest the
+// digest of the payload shown to whoever answers. A Wait is not an effect:
+// nothing is dispatched for a Waiting call and no attempt exists for it.
 type ResponseRequest struct {
 	RunID         RunID         `json:"runId"`
 	StepID        StepID        `json:"stepId"`
@@ -180,10 +190,14 @@ type ModelStep struct {
 	Tools         []ToolSpec      `json:"tools,omitempty"`
 	ToolsDigest   Digest          `json:"toolsDigest"`
 	Status        ModelStepStatus `json:"status"`
-	// Claim is the execution attempt that owns the step while it is Executing
-	// (from ModelStepStarted); empty otherwise. A takeover derives the
-	// attempt's settlement CommandID from it (RUN-CMT-7).
-	Claim ExecutionClaim `json:"claim,omitempty"`
+	// Effect is the model effect the step most recently requested (from
+	// ModelStepStarted); empty before the first start. The step fixes the
+	// effect's kind (a model call) and binding (RequestDigest), so the Run
+	// keeps no effect record beside the step. A rejected result returns the
+	// step to Prepared without clearing it, and the next start requests a new
+	// effect. A new owner recovers an Executing step under a CommandID derived
+	// from it (RUN-CMT-7).
+	Effect EffectID `json:"effect,omitempty"`
 	// Rejects counts accepted ModelStepRejected facts; progress, not part of
 	// RefValue.Digest.
 	Rejects int `json:"rejects,omitempty"`
@@ -263,11 +277,15 @@ type ToolCallState struct {
 	Arguments        CanonicalJSON  `json:"arguments"`
 	Policy           ResponsePolicy `json:"policy"`
 	Status           ToolCallStatus `json:"status"`
-	// Claim is the execution attempt that owns the call while it is Executing
-	// (from ToolCallStarted); empty otherwise.
-	Claim   ExecutionClaim   `json:"claim,omitempty"`
+	// Effect is the tool effect the call requested (from ToolCallStarted);
+	// empty before the start and for a call an external response settles
+	// without one. The call fixes the effect's kind (a tool call) and binding
+	// (BindingDigest). A call starts at most once.
+	Effect  EffectID         `json:"effect,omitempty"`
 	Result  *ToolCallResult  `json:"result,omitempty"`
 	Failure *ToolCallFailure `json:"failure,omitempty"`
+	// Waiting is the call's Wait while Status is ToolWaiting: the approval or
+	// external response it lacks (RUN-MCH-2). Nil in every other status.
 	Waiting *ResponseRequest `json:"waiting,omitempty"`
 }
 
@@ -373,9 +391,16 @@ func (s *ToolStep) callIndex(id CallID) int {
 	return -1
 }
 
-// MachineState is the complete semantic state of one Run (RUN-MCH-1).
-// Control metadata (owner, fence, lease, attempts, queue claims) never
-// appears here. Content bodies (model output, tool output) never appear
+// MachineState is the complete semantic state of one Run (RUN-MCH-1): the
+// fold of its facts along four dimensions. Progress is which Step the Run
+// is in and what it has frozen (Current, ModelSteps, LastToolStep). Inbox is
+// the input accepted and not yet consumed by a prepare (PendingInputs).
+// Effects are the EffectID an Executing ModelStep or tool call requested and
+// the Wait a ToolWaiting call holds (inside Current). End is Status and
+// Result. Control metadata never appears here: which worker executes an
+// effect, under what lease, epoch or backend handle, is the execution
+// plane's attempt record; the Session's owner fence and queue claims are
+// the host's. Content bodies (model output, tool output) never appear
 // either: facts record digests and the frozen.Store holds the bodies.
 type MachineState struct {
 	RunID RunID `json:"runId"`
@@ -390,9 +415,12 @@ type MachineState struct {
 	// LastToolStep retains the most recently closed ToolStep so the prompt builder can
 	// locate the step boundary it continues from. Its RefValue.ID is the
 	// SourceStep of the next PromptInput.
-	LastToolStep *ToolStep   `json:"lastToolStep,omitempty"`
-	Usage        model.Usage `json:"usage"`
-	Result       *RunResult  `json:"result,omitempty"`
+	LastToolStep *ToolStep `json:"lastToolStep,omitempty"`
+	// Usage and Result are projections folded from facts for readers, not
+	// inputs to Decide: Usage accumulates the usage every model fact
+	// reports, Result restates RunEnded with that Usage.
+	Usage  model.Usage `json:"usage"`
+	Result *RunResult  `json:"result,omitempty"`
 }
 
 // ValidateMachineState checks the structural invariants required by Runtime

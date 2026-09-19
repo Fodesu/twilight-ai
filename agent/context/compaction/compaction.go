@@ -132,7 +132,7 @@ func (s Summarizer) Summarize(ctx context.Context, sid session.SessionID, preset
 		return "", err
 	}
 	a := effect.Assignment{Session: run.Scope(sid), RunID: run.RunID("compact-" + randomHex(8)), StepID: "summary",
-		Claim: run.ExecutionClaim(randomHex(16)), Schema: run.SchemaVersion1,
+		Effect: run.EffectID(randomHex(16)), Schema: run.SchemaVersion1,
 		Body: effect.ModelAssignment{Model: preset.Model, Request: &store, RequestDigest: digest}}
 	if err := s.Executor.Dispatch(ctx, a); err != nil {
 		return "", err

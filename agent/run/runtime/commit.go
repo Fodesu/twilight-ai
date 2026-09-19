@@ -59,19 +59,20 @@ func EvaluateCommit(cur run.MachineState, position run.RunPosition, req CommitRe
 	if err := ValidateEnvelope(&env, sch); err != nil {
 		return CommitDecision{}, err
 	}
-	// A start claim is part of the command identity (RUN-WIR-1).
+	// The effect a start or recovery names is part of the command identity
+	// (RUN-WIR-1).
 	switch cmd := env.Command.(type) {
 	case run.StartModelExecution:
-		if cmd.Claim == "" {
-			return CommitDecision{Kind: DecisionConflict, Reject: errors.New("agent: commit: model start requires an execution claim")}, nil
+		if cmd.Effect == "" {
+			return CommitDecision{Kind: DecisionConflict, Reject: errors.New("agent: commit: model start requires its effect identity")}, nil
 		}
 	case run.StartToolCall:
-		if cmd.Claim == "" {
-			return CommitDecision{Kind: DecisionConflict, Reject: errors.New("agent: commit: tool start requires an execution claim")}, nil
+		if cmd.Effect == "" {
+			return CommitDecision{Kind: DecisionConflict, Reject: errors.New("agent: commit: tool start requires its effect identity")}, nil
 		}
 	case run.RecoverModelExecution:
-		if cmd.Claim == "" {
-			return CommitDecision{Kind: DecisionConflict, Reject: errors.New("agent: commit: model recovery requires an execution claim")}, nil
+		if cmd.Effect == "" {
+			return CommitDecision{Kind: DecisionConflict, Reject: errors.New("agent: commit: model recovery requires its effect identity")}, nil
 		}
 	}
 	// Derived-identity families must use their derived CommandID (RUN-WIR-3):
@@ -157,11 +158,11 @@ func checkDerivedCommandID(env *wire.CommandEnvelope, base run.RunPosition, id r
 	case run.SubmitToolResponse:
 		want = id.DeriveResponseCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.ResponseID)
 	case run.StartModelExecution:
-		want = id.DeriveStartCommandID(env.RunID, cmd.StepID, "", cmd.Claim)
+		want = id.DeriveStartCommandID(cmd.Effect)
 	case run.StartToolCall:
-		want = id.DeriveStartCommandID(env.RunID, cmd.StepID, cmd.CallID, cmd.Claim)
+		want = id.DeriveStartCommandID(cmd.Effect)
 	case run.RecoverModelExecution:
-		want = id.DeriveModelRecoveryCommandID(env.RunID, cmd.StepID, cmd.Claim)
+		want = id.DeriveRecoveryCommandID(cmd.Effect)
 	default:
 		return nil
 	}
@@ -169,26 +170,4 @@ func checkDerivedCommandID(env *wire.CommandEnvelope, base run.RunPosition, id r
 		return fmt.Errorf("agent: commit: %s requires its derived CommandID", env.Type)
 	}
 	return nil
-}
-
-// IsStart reports whether c begins an execution attempt.
-func IsStart(c run.AgentCommand) bool {
-	switch c.(type) {
-	case run.StartModelExecution, run.StartToolCall:
-		return true
-	}
-	return false
-}
-
-// CommandClaim returns the ExecutionClaim a start or recovery command carries.
-func CommandClaim(c run.AgentCommand) run.ExecutionClaim {
-	switch cmd := c.(type) {
-	case run.StartModelExecution:
-		return cmd.Claim
-	case run.StartToolCall:
-		return cmd.Claim
-	case run.RecoverModelExecution:
-		return cmd.Claim
-	}
-	return ""
 }

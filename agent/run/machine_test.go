@@ -180,12 +180,24 @@ func modelResultWithNamedCalls(toolName, args string, callIDs ...string) model.M
 	return frozen
 }
 
+// startModel is the start of the current Prepared step's next model effect
+// (RUN-WIR-1): the step's rejected count is the effect's sequence.
+func startModel(s run.MachineState, stepID run.StepID) run.StartModelExecution {
+	ms, _ := s.Current.(run.ModelStep)
+	return run.StartModelExecution{StepID: stepID, Effect: schema.V1().Identity.DeriveEffectID(s.RunID, stepID, "", ms.Rejects)}
+}
+
+// startTool is the start of a call's one tool effect.
+func startTool(s run.MachineState, stepID run.StepID, callID run.CallID) run.StartToolCall {
+	return run.StartToolCall{StepID: stepID, CallID: callID, Effect: schema.V1().Identity.DeriveEffectID(s.RunID, stepID, callID, 0)}
+}
+
 // advance runs prepare+start and returns the state in Executing plus stepID.
 func advanceToExecuting(t *testing.T, s run.MachineState, req sdk.Request, specs []run.ToolSpec) (run.MachineState, run.StepID) {
 	t.Helper()
 	prep, _ := buildPrepare(t, s, req, specs)
 	s = fold(t, s, mustDecide(t, s, prep))
-	s = fold(t, s, mustDecide(t, s, run.StartModelExecution{StepID: prep.StepID, Claim: "attempt-1"}))
+	s = fold(t, s, mustDecide(t, s, startModel(s, prep.StepID)))
 	return s, prep.StepID
 }
 
@@ -233,7 +245,7 @@ func TestNextOnFreshRunNeedsModelRequest(t *testing.T) {
 	}
 	need, ok := eff.(plan.NeedModelRequest)
 	if !ok {
-		t.Fatalf("effect = %T, want NeedModelRequest", eff)
+		t.Fatalf("action = %T, want NeedModelRequest", eff)
 	}
 	if len(need.Hint.Inputs) != 1 || need.Hint.Inputs[0].ID != "seed" {
 		t.Fatalf("hint inputs = %+v", need.Hint.Inputs)
@@ -403,11 +415,11 @@ func TestParallelWaitingDoesNotBlockPending(t *testing.T) {
 	}
 	start, ok := eff.(plan.StartToolCalls)
 	if !ok || len(start.CallIDs) != 1 || start.CallIDs[0] != cid(stepID, 1) {
-		t.Fatalf("effect = %#v, want StartToolCalls[cB]", eff)
+		t.Fatalf("action = %#v, want StartToolCalls[cB]", eff)
 	}
 
 	// Complete B; step must stay open because A is Waiting.
-	s = fold(t, s, mustDecide(t, s, run.StartToolCall{StepID: opened.StepID, CallID: cid(stepID, 1), Claim: "attempt-1"}))
+	s = fold(t, s, mustDecide(t, s, startTool(s, opened.StepID, cid(stepID, 1))))
 	facts = mustDecide(t, s, run.SubmitToolResult{StepID: opened.StepID, CallID: cid(stepID, 1), Result: run.ToolExecutionResult{Output: cj(`"ok"`)}})
 	if len(facts) != 1 {
 		t.Fatalf("facts = %d, step must not close with A waiting", len(facts))
@@ -419,7 +431,7 @@ func TestParallelWaitingDoesNotBlockPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, ok := eff.(plan.Idle); !ok {
-		t.Fatalf("effect after B completed = %#v, want Idle", eff)
+		t.Fatalf("action after B completed = %#v, want Idle", eff)
 	}
 	if reqs := plan.WaitingCalls(s); len(reqs) != 1 || reqs[0].CallID != cid(stepID, 0) {
 		t.Fatalf("WaitingCalls = %#v", plan.WaitingCalls(s))
@@ -430,7 +442,7 @@ func TestParallelWaitingDoesNotBlockPending(t *testing.T) {
 	respID := opened.Calls[0].Response.ID
 	s = fold(t, s, mustDecide(t, s, run.ApproveToolCall{StepID: opened.StepID, CallID: cid(stepID, 0), ResponseID: respID,
 		ResponseDigest: responseDecisionDigest(t, run.ResponseApproval, run.ResponseDecisionApproved, "")}))
-	s = fold(t, s, mustDecide(t, s, run.StartToolCall{StepID: opened.StepID, CallID: cid(stepID, 0), Claim: "attempt-1"}))
+	s = fold(t, s, mustDecide(t, s, startTool(s, opened.StepID, cid(stepID, 0))))
 	facts = mustDecide(t, s, run.SubmitToolResult{StepID: opened.StepID, CallID: cid(stepID, 0), Result: run.ToolExecutionResult{Output: cj(`"done"`)}})
 	if len(facts) != 1 {
 		t.Fatalf("facts = %d, want [completed]", len(facts))
@@ -464,8 +476,8 @@ func TestUnknownToolFailureSettlesOnlyThatCall(t *testing.T) {
 	facts := mustDecide(t, s, run.SubmitModelResult{StepID: stepID, Result: r, Calls: []run.ToolCallBinding{bA, bB}})
 	opened := facts[1].(run.ToolStepOpened)
 	s = fold(t, s, facts)
-	s = fold(t, s, mustDecide(t, s, run.StartToolCall{StepID: opened.StepID, CallID: cid(stepID, 0), Claim: "attempt-1"}))
-	s = fold(t, s, mustDecide(t, s, run.StartToolCall{StepID: opened.StepID, CallID: cid(stepID, 1), Claim: "attempt-1"}))
+	s = fold(t, s, mustDecide(t, s, startTool(s, opened.StepID, cid(stepID, 0))))
+	s = fold(t, s, mustDecide(t, s, startTool(s, opened.StepID, cid(stepID, 1))))
 
 	facts = mustDecide(t, s, run.SubmitToolFailure{
 		StepID:  opened.StepID,
@@ -522,14 +534,14 @@ func TestRejectModelResultDispositionRetriesThenFails(t *testing.T) {
 	}
 
 	// Start again, reject 2: host policy still chooses retry.
-	s = fold(t, s, mustDecide(t, s, run.StartModelExecution{StepID: stepID, Claim: "attempt-1"}))
+	s = fold(t, s, mustDecide(t, s, startModel(s, stepID)))
 	s = fold(t, s, mustDecide(t, s, run.RejectModelResult{StepID: stepID, Usage: usage, Failure: run.StepFailure{Class: run.FailureMalformedModel}}))
 	if ms := s.Current.(run.ModelStep); ms.Rejects != 2 {
 		t.Fatalf("rejects = %d", ms.Rejects)
 	}
 
 	// Third reject: host policy chooses fail-run disposition.
-	s = fold(t, s, mustDecide(t, s, run.StartModelExecution{StepID: stepID, Claim: "attempt-1"}))
+	s = fold(t, s, mustDecide(t, s, startModel(s, stepID)))
 	facts = mustDecide(t, s, run.RejectModelResult{StepID: stepID, Usage: usage, Failure: run.StepFailure{Class: run.FailureMalformedModel}, Disposition: run.ModelRejectFailRun})
 	if len(facts) != 2 {
 		t.Fatalf("facts = %d, want [rejected, ended]", len(facts))
@@ -577,7 +589,7 @@ func TestAcceptInputQueuesInAnyActiveState(t *testing.T) {
 	}
 	withdraw, ok := eff.(plan.WithdrawPrepared)
 	if !ok || withdraw.StepID != prep.StepID {
-		t.Fatalf("effect = %#v, want WithdrawPrepared", eff)
+		t.Fatalf("action = %#v, want WithdrawPrepared", eff)
 	}
 	facts := mustDecide(t, s, run.WithdrawPreparedStep{StepID: prep.StepID})
 	if len(facts) != 1 {
@@ -596,10 +608,10 @@ func TestAcceptInputQueuesInAnyActiveState(t *testing.T) {
 
 	// Executing: input queues, Next stays Idle, no tool calls + pending input
 	// returns to Open instead of ending the Run.
-	s = fold(t, s, mustDecide(t, s, run.StartModelExecution{StepID: prep2.StepID, Claim: "attempt-1"}))
+	s = fold(t, s, mustDecide(t, s, startModel(s, prep2.StepID)))
 	s = fold(t, s, mustDecide(t, s, run.NextStep(run.AgentInput{ID: "in-4", Digest: inputDigest(`4`)})))
 	if eff, _ := plan.Next(s); eff != (plan.Idle{}) {
-		t.Fatalf("effect while Executing with pending input = %#v, want Idle", eff)
+		t.Fatalf("action while Executing with pending input = %#v, want Idle", eff)
 	}
 	result, err := sdkconv.FreezeModelResult(sdk.ModelResult{Text: "answer", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}})
 	if err != nil {
@@ -624,7 +636,7 @@ func TestAcceptInputQueuesInAnyActiveState(t *testing.T) {
 	if eff, _ := plan.Next(s); eff == nil {
 		t.Fatal("no effect at Open")
 	} else if _, ok := eff.(plan.NeedModelRequest); !ok {
-		t.Fatalf("effect = %#v, want NeedModelRequest", eff)
+		t.Fatalf("action = %#v, want NeedModelRequest", eff)
 	}
 }
 

@@ -383,8 +383,8 @@ func TestLoopReplaysStartAfterTwoLostResponses(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The first Loop reaches the start barrier; both start responses are lost,
-	// so the authority remains Executing while the worker's claim is gone with
-	// the aborted attempt. A second Run has nothing to execute (RUN-LOP-4).
+	// so the authority remains Executing while the worker's attempt is gone
+	// with the aborted process. A second Run has nothing to execute (RUN-LOP-4).
 	if current, ok := snapshot.State.Current.(ModelStep); !ok || current.Status != ModelExecuting {
 		t.Fatalf("current = %#v, want Executing ModelStep", snapshot.State.Current)
 	}

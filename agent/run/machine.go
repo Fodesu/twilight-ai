@@ -50,10 +50,9 @@ type Canonical interface {
 }
 
 // Identity is the identity derivation of one schema version. Everything a
-// Run persists that names a step, call, response or command is derived here,
-// so two schema versions may derive differently without either breaking the
-// other's replay. The takeover claim (DeriveTakeoverClaim) is owner-level
-// and stays outside.
+// Run persists that names a step, call, response, effect or command is
+// derived here, so two schema versions may derive differently without either
+// breaking the other's replay.
 type Identity interface {
 	DeriveModelRequestCommandID(run RunID, position RunPosition) CommandID
 	DeriveModelStepID(run RunID, cmd CommandID, binding Digest) StepID
@@ -63,10 +62,16 @@ type Identity interface {
 	DeriveResponseCommandID(run RunID, step StepID, call CallID, resp ResponseID) CommandID
 	DeriveInputCommandID(run RunID, inputs ...InputID) CommandID
 	DeriveWithdrawCommandID(run RunID, step StepID) CommandID
-	DeriveStartCommandID(run RunID, step StepID, call CallID, claim ExecutionClaim) CommandID
-	DeriveSettlementCommandID(run RunID, step StepID, call CallID, claim ExecutionClaim) CommandID
-	DeriveModelRecoveryCommandID(run RunID, step StepID, claim ExecutionClaim) CommandID
-	DeriveToolRecoveryCommandID(run RunID, step StepID, call CallID, claim ExecutionClaim) CommandID
+	// DeriveEffectID names one request for an external effect: the model
+	// call of a ModelStep (empty call; sequence counts the results the step
+	// rejected before this request) or one tool call of a ToolStep
+	// (sequence 0: a call starts at most once).
+	DeriveEffectID(run RunID, step StepID, call CallID, sequence int) EffectID
+	// The start, settlement and recovery of an effect are identified by the
+	// effect alone: each happens at most once per effect.
+	DeriveStartCommandID(effect EffectID) CommandID
+	DeriveSettlementCommandID(effect EffectID) CommandID
+	DeriveRecoveryCommandID(effect EffectID) CommandID
 }
 
 // MachineV1 is the SchemaVersion1 state machine: the Decide (decide.go) and

@@ -203,14 +203,15 @@ func (e *Executor) Start(_ context.Context, ref string, a effect.Assignment) err
 	if err != nil {
 		return fmt.Errorf("%w: %w", loop.ErrExecutorRejected, err)
 	}
-	e.start(ref, a.Key(), &args)
+	e.start(ref, a.Key(), a.CallID, &args)
 	return nil
 }
 
 // start registers the drive of ref and begins it; a ref already in flight is
-// an idempotent replay. args is nil when an adoption continues the call from
-// the child's provenance.
-func (e *Executor) start(ref string, key effect.AssignmentKey, args *Arguments) {
+// an idempotent replay. callID is the parent's call, named for messages and
+// the child's provenance; the key alone identifies the Outcome. args is nil
+// when an adoption continues the call from the child's provenance.
+func (e *Executor) start(ref string, key effect.AssignmentKey, callID run.CallID, args *Arguments) {
 	e.mu.Lock()
 	if _, dup := e.inflight[ref]; dup || e.closed {
 		e.mu.Unlock()
@@ -221,7 +222,7 @@ func (e *Executor) start(ref string, key effect.AssignmentKey, args *Arguments) 
 	e.inflight[ref] = r
 	e.mu.Unlock()
 	go func() {
-		out := e.drive(ctx, key, session.SessionID(ref), args)
+		out := e.drive(ctx, key, callID, session.SessionID(ref), args)
 		out.Key = key
 		if ctx.Err() != nil {
 			if _, done := out.Result.(effect.ToolExecutionSucceeded); !done {
@@ -241,7 +242,7 @@ func (e *Executor) start(ref string, key effect.AssignmentKey, args *Arguments) 
 // opens it, brings its Turn to settlement and reads the reply. Every step is
 // idempotent against the child's durable state, so a process that died
 // anywhere in the sequence is continued, not repeated.
-func (e *Executor) drive(ctx context.Context, key effect.AssignmentKey, child session.SessionID, args *Arguments) effect.Outcome {
+func (e *Executor) drive(ctx context.Context, key effect.AssignmentKey, callID run.CallID, child session.SessionID, args *Arguments) effect.Outcome {
 	fail := func(class, msg string) effect.Outcome {
 		return effect.Outcome{Result: effect.ToolExecutionFailed{Failure: run.ToolFailure{Class: class, Message: msg}}}
 	}
@@ -251,13 +252,13 @@ func (e *Executor) drive(ctx context.Context, key effect.AssignmentKey, child se
 	}
 	if !exists {
 		if args == nil {
-			return fail(run.FailureExecution, fmt.Sprintf("child %s of call %s does not exist", child, key.CallID))
+			return fail(run.FailureExecution, fmt.Sprintf("child %s of call %s does not exist", child, callID))
 		}
-		if prov, err = e.create(ctx, key, child, *args); err != nil {
+		if prov, err = e.create(ctx, key, callID, child, *args); err != nil {
 			return fail(run.FailureExecution, fmt.Sprintf("create subagent: %v", err))
 		}
 	} else if args != nil && ArgumentsConflict(prov, *args) {
-		return fail(run.FailureExecution, fmt.Sprintf("call %s already spawned %s with different arguments", key.CallID, child))
+		return fail(run.FailureExecution, fmt.Sprintf("call %s already spawned %s with different arguments", callID, child))
 	}
 	preset, err := e.childPreset(ctx, key, prov.Arguments)
 	if err != nil {
@@ -299,13 +300,13 @@ func (e *Executor) drive(ctx context.Context, key effect.AssignmentKey, child se
 // for Fork (SPN-5). Either way the child is created under the parent's
 // Schema (EXT-SCH-3): the parent's Run reads the child through the same
 // registry, and a spawn is never a Schema change.
-func (e *Executor) create(ctx context.Context, key effect.AssignmentKey, child session.SessionID, args Arguments) (Provenance, error) {
+func (e *Executor) create(ctx context.Context, key effect.AssignmentKey, callID run.CallID, child session.SessionID, args Arguments) (Provenance, error) {
 	parent := session.SessionID(key.Session)
 	parentHeader, err := e.a.Store.Header(ctx, parent)
 	if err != nil {
 		return Provenance{}, err
 	}
-	prov := Provenance{ParentSession: parent, ParentRun: key.RunID, CallID: key.CallID, Depth: 1, Arguments: args}
+	prov := Provenance{ParentSession: parent, ParentRun: key.RunID, CallID: callID, Effect: key.Effect, Depth: 1, Arguments: args}
 	if parentProv, ok, err := ProvenanceFromHeader(parentHeader); err != nil {
 		return Provenance{}, err
 	} else if ok {
@@ -505,7 +506,7 @@ func (e *Executor) Attach(ctx context.Context, ref string) (effect.Attachment, e
 	if !exists {
 		return effect.Attachment{State: effect.AttachmentMissing, Execution: effect.ExecutionNotFound}, nil
 	}
-	e.start(ref, effect.AssignmentKey{Session: run.Scope(prov.ParentSession), RunID: prov.ParentRun, CallID: prov.CallID}, nil)
+	e.start(ref, effect.AssignmentKey{Session: run.Scope(prov.ParentSession), RunID: prov.ParentRun, Effect: prov.Effect}, prov.CallID, nil)
 	if att, ok := e.local(ref); ok {
 		return att, nil
 	}

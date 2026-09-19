@@ -236,7 +236,7 @@ func (d *Driver) recoverInterrupted(ctx context.Context, w writer.Writer) (int, 
 	sid := w.SessionID()
 	rec := &reconcile.Reconciler{Executions: d.Executor, Lifetime: lt.ctx, Deliver: d.reattachDeliver(lt.ctx, lt.w),
 		Fail: func(key effect.AssignmentKey, err error) {
-			d.fail(sid, fmt.Errorf("driver: outcome of run %s step %s call %q cannot be read; the target stays executing until the next takeover: %w", key.RunID, key.StepID, key.CallID, err))
+			d.fail(sid, fmt.Errorf("driver: outcome of run %s effect %s cannot be read; the target stays executing until the next takeover: %w", key.RunID, key.Effect, err))
 		}}
 	return d.Runs.RecoverInterrupted(ctx, w, rec)
 }

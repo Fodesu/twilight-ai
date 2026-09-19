@@ -58,18 +58,19 @@ type ModelStepWithdrawn struct {
 
 func (ModelStepWithdrawn) fact() {}
 
-// ModelStepStarted: Prepared -> Executing. Claim identifies the execution
-// attempt that owns the step; a takeover uses it to accept a late Outcome of
-// the same attempt instead of recovering the step (RUN-WIR-1, RUN-CMT-7).
+// ModelStepStarted: Prepared -> Executing. Effect identifies the model effect
+// the step requested: a late Outcome is accepted only under it, and a new
+// owner recovers the step under a CommandID derived from it (RUN-WIR-1,
+// RUN-CMT-7).
 type ModelStepStarted struct {
-	StepID StepID         `json:"stepId"`
-	Claim  ExecutionClaim `json:"claim"`
+	StepID StepID   `json:"stepId"`
+	Effect EffectID `json:"effect"`
 }
 
 func (ModelStepStarted) fact() {}
 
-// ModelStepRecovered: Executing -> Open. The attempt that owned the step is
-// gone and its result cannot be reached (RUN-CMT-7), so the step is withdrawn
+// ModelStepRecovered: Executing -> Open. The model effect the step requested
+// is lost and its result cannot be reached (RUN-CMT-7), so the step is withdrawn
 // like a Prepared step whose request went stale: the frozen request is not
 // resent. Recovery is a decision point -- the next Prepare plans again from
 // the state at recovery time, including inputs delivered meanwhile -- and the
@@ -118,12 +119,12 @@ type ToolStepOpened struct {
 
 func (ToolStepOpened) fact() {}
 
-// ToolCallStarted: Pending -> Executing. Claim identifies the execution
-// attempt that owns the call (see ModelStepStarted).
+// ToolCallStarted: Pending -> Executing. Effect identifies the tool effect
+// the call requested (see ModelStepStarted).
 type ToolCallStarted struct {
-	StepID StepID         `json:"stepId"`
-	CallID CallID         `json:"callId"`
-	Claim  ExecutionClaim `json:"claim"`
+	StepID StepID   `json:"stepId"`
+	CallID CallID   `json:"callId"`
+	Effect EffectID `json:"effect"`
 }
 
 func (ToolCallStarted) fact() {}

@@ -150,7 +150,7 @@ func testAssignment() effect.Assignment {
 	if err != nil {
 		panic(err)
 	}
-	return effect.Assignment{Session: "s", RunID: "r", StepID: "step", Claim: "claim", Schema: 1,
+	return effect.Assignment{Session: "s", RunID: "r", StepID: "step", Effect: "effect", Schema: 1,
 		Body: effect.ModelAssignment{Model: "m", Request: &request, RequestDigest: digest}}
 }
 
@@ -811,7 +811,7 @@ func TestHTTPClientAndServer(t *testing.T) {
 }
 
 func testToolAssignment() effect.Assignment {
-	return effect.Assignment{Session: "s", RunID: "r", StepID: "step", CallID: "call-1", Claim: "claim", Schema: 1,
+	return effect.Assignment{Session: "s", RunID: "r", StepID: "step", CallID: "call-1", Effect: "effect", Schema: 1,
 		Body: effect.ToolAssignment{ToolRef: "gate", DefinitionDigest: "d", Arguments: run.MustParseCanonicalJSON(`{}`), Policy: run.DirectExecution}}
 }
 
@@ -1018,7 +1018,7 @@ func TestHTTPControlEndpoints(t *testing.T) {
 		t.Fatalf("reconcile = %d, %v; want no candidates", n, err)
 	}
 	b := testAssignment()
-	b.CallID = "call-2"
+	b.Effect = "effect-2"
 	if err := client.Dispatch(ctx, b); err != nil {
 		t.Fatal(err)
 	}

@@ -55,24 +55,26 @@ func (WithdrawPreparedStep) agentCommand() {}
 // StartModelExecution takes execution ownership of a Prepared ModelStep.
 type StartModelExecution struct {
 	StepID StepID `json:"stepId"`
-	// Claim binds this start command to the Loop execution attempt. It is
-	// included in the command digest and must be retained for transport retry.
-	Claim ExecutionClaim `json:"claim"`
+	// Effect is the model effect this start requests: the step's next model
+	// effect as Identity.DeriveEffectID derives it. It is part of the command
+	// digest and the preimage of the command's identity, so a transport retry
+	// must retain it.
+	Effect EffectID `json:"effect"`
 }
 
 func (StartModelExecution) agentCommand() {}
 
-// RecoverModelExecution withdraws an Executing ModelStep whose attempt is
-// lost: no provider result was accepted and none can be reattached. The Run
+// RecoverModelExecution withdraws an Executing ModelStep whose model effect
+// is lost: no provider result was accepted and none can be reached. The Run
 // returns to Open and the next Prepare plans from the current state (the
 // frozen request is a transfer copy for the Executor, not a replay target).
-// Sources: the Loop when a dispatched attempt ends without a result, or the
-// takeover disposition under TakeoverClaim (RUN-CMT-7).
+// Sources: the Loop when a dispatched effect ends without a result, or the
+// recovery disposition of a new owner (RUN-CMT-7).
 type RecoverModelExecution struct {
 	StepID StepID `json:"stepId"`
-	// Claim identifies the execution attempt being recovered. Durable recovery
-	// records use the same claim that was accepted by StartModelExecution.
-	Claim ExecutionClaim `json:"claim"`
+	// Effect is the model effect being recovered: the one the step's
+	// ModelStepStarted recorded. A recovery naming any other effect is stale.
+	Effect EffectID `json:"effect"`
 }
 
 func (RecoverModelExecution) agentCommand() {}
@@ -125,8 +127,8 @@ func (RejectModelResult) agentCommand() {}
 type StartToolCall struct {
 	StepID StepID `json:"stepId"`
 	CallID CallID `json:"callId"`
-	// Claim binds this start command to the Loop execution attempt.
-	Claim ExecutionClaim `json:"claim"`
+	// Effect is the tool effect this start requests (see StartModelExecution).
+	Effect EffectID `json:"effect"`
 }
 
 func (StartToolCall) agentCommand() {}

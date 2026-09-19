@@ -102,7 +102,7 @@ func TestCanonicalDeterminism(t *testing.T) {
 }
 
 func TestDigestPreimageCoversSchemaVersion(t *testing.T) {
-	cmd := run.StartToolCall{StepID: "s1", CallID: "c1", Claim: "claim-1"}
+	cmd := run.StartToolCall{StepID: "s1", CallID: "c1", Effect: "effect-1"}
 	body1, err := es.EncodeTypedPayload(run.SchemaVersion1, "start_tool_call", cmd)
 	if err != nil {
 		t.Fatal(err)

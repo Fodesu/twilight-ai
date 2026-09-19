@@ -39,28 +39,30 @@ func legalTransition(from, to effect.ExecutionStatus) bool {
 	}
 }
 
-// ExecutionRef is the Executor's physical binding of one attempt
-// (RUN-EXE-9): the provider (backend) the record was handed to and that
-// backend's opaque handle. It is persisted before the execution starts and
-// never leaves the Executor: Agent Core addresses executions by
-// AssignmentKey.
+// ExecutionRef is the Executor's physical binding of the current attempt it
+// makes for one effect (RUN-EXE-9): the provider (backend) the record was
+// handed to and that backend's opaque handle. It is persisted before the
+// execution starts and never leaves the Executor: Agent Core addresses
+// executions by AssignmentKey, the effect under its Session and Run, and the
+// Run itself records the EffectID alone.
 type ExecutionRef struct {
 	Provider string `json:"provider"`
 	Ref      string `json:"ref"`
 }
 
-// Record is the worker's durable execution record. Assignment is immutable
-// and carries the execution payload; ExecutionRef is set before Start;
-// State and Outcome move monotonically to a terminal state. Owner and
-// FencingEpoch protect takeover.
+// Record is the worker's durable record of the attempts made for one effect:
+// the execution plane's side of the effect, which the Run never reads.
+// Assignment is immutable and carries the execution payload; ExecutionRef is
+// set before Start; State and Outcome move monotonically to a terminal state.
+// Owner and FencingEpoch protect takeover.
 type Record struct {
 	Assignment       effect.Assignment `json:"assignment"`
 	AssignmentDigest run.Digest        `json:"assignmentDigest"`
 	ExecutionRef     ExecutionRef      `json:"executionRef"`
-	// Superseded lists the ExecutionRefs of earlier generations of this
-	// attempt, oldest first: a takeover that found the physical execution
+	// Superseded lists the ExecutionRefs of the earlier attempts made for
+	// this effect, oldest first: a takeover that found the physical execution
 	// missing restarted it under a new Ref (RUN-EXE-9). The audit trail
-	// keeps every Ref the attempt ever bound to.
+	// keeps every Ref the effect was ever bound to.
 	Superseded          []ExecutionRef            `json:"superseded,omitempty"`
 	State               effect.ExecutionStatus    `json:"state"`
 	Owner               string                    `json:"owner,omitempty"`

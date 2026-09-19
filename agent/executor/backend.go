@@ -10,10 +10,10 @@ import (
 	"github.com/felinics/twilight/agent/run/effect"
 )
 
-// ExecutionRef is the Executor's physical binding of one attempt: the
-// provider (backend) it was handed to and that backend's opaque handle
-// (RUN-EXE-9). It lives in the Execution Record and in the Backend contract;
-// Agent Core addresses executions by AssignmentKey only.
+// ExecutionRef is the Executor's physical binding of the current attempt for
+// one effect: the provider (backend) it was handed to and that backend's
+// opaque handle (RUN-EXE-9). It lives in the Execution Record and in the
+// Backend contract; Agent Core addresses executions by AssignmentKey only.
 type ExecutionRef = executionstore.ExecutionRef
 
 // ErrUnknownProvider reports a record whose ExecutionRef names a provider
@@ -42,7 +42,7 @@ type ExecutionBackend interface {
 	Start(ctx context.Context, ref string, a effect.Assignment) error
 	// Restart allocates the Ref of a new physical execution of the same
 	// Assignment after the Backend reported the previous one missing: the
-	// next generation of the attempt (RUN-EXE-9). Unlike Prepare it is not
+	// next attempt for the effect (RUN-EXE-9). Unlike Prepare it is not
 	// required to return the same Ref; a Backend whose physical execution is
 	// the durable object itself (a child Session) returns the same Ref.
 	Restart(ctx context.Context, previous string, a effect.Assignment) (ref string, err error)

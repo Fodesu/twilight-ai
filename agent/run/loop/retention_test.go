@@ -33,7 +33,7 @@ func TestLocalExecutorRetainsBoundedOutcomes(t *testing.T) {
 	var keys []string
 	for _, n := range []string{"1", "2", "3"} {
 		a := Assignment{Session: testScope, RunID: "run-1", StepID: StepID("step-" + n), CallID: CallID("call-" + n),
-			Claim: ExecutionClaim("claim-" + n), Schema: SchemaVersion1,
+			Effect: EffectID("effect-" + n), Schema: SchemaVersion1,
 			Body: ToolAssignment{ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest, Arguments: cj(`{}`), Policy: DirectExecution}}
 		ref, err := exec.Prepare(ctx, a)
 		if err != nil {

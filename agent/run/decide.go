@@ -39,9 +39,9 @@ func (m MachineV1) Decide(s MachineState, c AgentCommand) ([]Fact, error) {
 	case WithdrawPreparedStep:
 		return decideWithdrawPreparedStep(&s, cmd)
 	case StartModelExecution:
-		return decideStartModelExecution(&s, cmd)
+		return m.decideStartModelExecution(&s, cmd)
 	case RecoverModelExecution:
-		return decideRecoverModelExecution(&s, cmd)
+		return m.decideRecoverModelExecution(&s, cmd)
 	case SubmitModelResult:
 		return m.decideSubmitModelResult(&s, &cmd)
 	case SubmitModelFailure:
@@ -49,7 +49,7 @@ func (m MachineV1) Decide(s MachineState, c AgentCommand) ([]Fact, error) {
 	case RejectModelResult:
 		return decideRejectModelResult(&s, &cmd)
 	case StartToolCall:
-		return decideStartToolCall(&s, cmd)
+		return m.decideStartToolCall(&s, cmd)
 	case SubmitToolResult:
 		return m.decideSubmitToolResult(&s, cmd)
 	case SubmitToolFailure:
@@ -169,7 +169,11 @@ func currentModelStep(s *MachineState, step StepID) (*ModelStep, error) {
 	return &ms, nil
 }
 
-func decideStartModelExecution(s *MachineState, cmd StartModelExecution) ([]Fact, error) {
+// decideStartModelExecution admits the start of the step's next model
+// effect. The effect identity is derived, so a start that names any other
+// effect -- one derived against a different rejection count, or minted by
+// the caller -- is stale rather than a new grant (RUN-WIR-1).
+func (m MachineV1) decideStartModelExecution(s *MachineState, cmd StartModelExecution) ([]Fact, error) {
 	ms, err := currentModelStep(s, cmd.StepID)
 	if err != nil {
 		return nil, err
@@ -177,19 +181,28 @@ func decideStartModelExecution(s *MachineState, cmd StartModelExecution) ([]Fact
 	if ms.Status != ModelPrepared {
 		return nil, rejectionf("start model: step is not Prepared")
 	}
-	if cmd.Claim == "" {
-		return nil, rejectionf("start model: missing execution claim")
+	if cmd.Effect == "" {
+		return nil, rejectionf("start model: missing effect identity")
+	}
+	if want := m.Identity.DeriveEffectID(s.RunID, cmd.StepID, "", ms.Rejects); cmd.Effect != want {
+		return nil, rejectionf("start model: effect %q is not the step's next model effect", cmd.Effect)
 	}
 	return []Fact{ModelStepStarted(cmd)}, nil
 }
 
-func decideRecoverModelExecution(s *MachineState, cmd RecoverModelExecution) ([]Fact, error) {
+// decideRecoverModelExecution withdraws the Executing step when the recovery
+// names the effect it is executing; a recovery of an earlier effect of the
+// same step is stale.
+func (m MachineV1) decideRecoverModelExecution(s *MachineState, cmd RecoverModelExecution) ([]Fact, error) {
 	ms, err := currentModelStep(s, cmd.StepID)
 	if err != nil {
 		return nil, err
 	}
 	if ms.Status != ModelExecuting {
 		return nil, rejectionf("recover model: step is not Executing")
+	}
+	if cmd.Effect != ms.Effect {
+		return nil, rejectionf("recover model: effect %q is not the step's executing effect", cmd.Effect)
 	}
 	return []Fact{ModelStepRecovered{StepID: cmd.StepID}}, nil
 }
@@ -422,7 +435,9 @@ func currentToolStep(s *MachineState, step StepID) (*ToolStep, error) {
 	return &ts, nil
 }
 
-func decideStartToolCall(s *MachineState, cmd StartToolCall) ([]Fact, error) {
+// decideStartToolCall admits the start of one Pending call's tool effect; a
+// call starts at most once, so its effect is the call's only one.
+func (m MachineV1) decideStartToolCall(s *MachineState, cmd StartToolCall) ([]Fact, error) {
 	ts, err := currentToolStep(s, cmd.StepID)
 	if err != nil {
 		return nil, err
@@ -434,8 +449,11 @@ func decideStartToolCall(s *MachineState, cmd StartToolCall) ([]Fact, error) {
 	if ts.Calls[i].Status != ToolPending {
 		return nil, rejectionf("start tool: call %q is not Pending", cmd.CallID)
 	}
-	if cmd.Claim == "" {
-		return nil, rejectionf("start tool: missing execution claim")
+	if cmd.Effect == "" {
+		return nil, rejectionf("start tool: missing effect identity")
+	}
+	if want := m.Identity.DeriveEffectID(s.RunID, cmd.StepID, cmd.CallID, 0); cmd.Effect != want {
+		return nil, rejectionf("start tool: effect %q is not the call's tool effect", cmd.Effect)
 	}
 	return []Fact{ToolCallStarted(cmd)}, nil
 }

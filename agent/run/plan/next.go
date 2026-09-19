@@ -6,22 +6,24 @@ import (
 	"github.com/felinics/twilight/agent/run"
 )
 
-// Effect is the at-most-one pending action Machine.Next derives from the
-// current state (RUN-MCH-4). Effects are never persisted; the Loop re-derives
-// them after every Load.
-type Effect interface{ effect() }
+// Action is the at-most-one pending action Next derives from the current
+// state (RUN-MCH-4): what the Loop does next to move the Run. Actions are
+// never persisted; the Loop re-derives them after every Load. An action is
+// not an effect: a start action requests an effect (run.EffectID) only once
+// its start fact is committed, and the other actions request none.
+type Action interface{ action() }
 
 type NeedModelRequest struct {
 	Hint PromptInput
 }
 
-func (NeedModelRequest) effect() {}
+func (NeedModelRequest) action() {}
 
 type StartModelCall struct {
 	StepID run.StepID
 }
 
-func (StartModelCall) effect() {}
+func (StartModelCall) action() {}
 
 // WithdrawPrepared asks the Loop to commit WithdrawPreparedStep: inputs were
 // accepted after this step was Prepared, so its frozen request is incomplete
@@ -30,24 +32,25 @@ type WithdrawPrepared struct {
 	StepID run.StepID
 }
 
-func (WithdrawPrepared) effect() {}
+func (WithdrawPrepared) action() {}
 
 type StartToolCalls struct {
 	StepID  run.StepID
 	CallIDs []run.CallID
 }
 
-func (StartToolCalls) effect() {}
+func (StartToolCalls) action() {}
 
-// Idle means the Run is still active and Next has no executable effect.
+// Idle means the Run is still active and Next has no executable action.
 // Application inspects MachineState with WaitingCalls, ExecutingCalls, and
 // NeedsRecovery. Loop does not interpret those queries.
 type Idle struct{}
 
-func (Idle) effect() {}
+func (Idle) action() {}
 
-// WaitingCalls returns the outstanding ResponseRequests on the current ToolStep.
-// Application uses this after Loop returns LoopWaiting. The result is detached.
+// WaitingCalls returns the Waits of the current ToolStep: the ResponseRequest
+// of every ToolWaiting call. Application uses this after Loop returns
+// LoopWaiting. The result is detached.
 func WaitingCalls(s run.MachineState) []run.ResponseRequest { //nolint:gocritic // hugeParam: read-only query over a detached state value
 	ts, ok := s.Current.(run.ToolStep)
 	if !ok {
@@ -119,11 +122,11 @@ type PromptInput struct {
 	Inputs     []run.AgentInput
 }
 
-// Next derives the pending effect from the current state (RUN-MCH-4).
+// Next derives the pending action from the current state (RUN-MCH-4).
 // Terminal states return ErrRunTerminal; callers check Status first.
 //
 //nolint:gocritic // hugeParam: Next is a pure value-state interpreter and must not mutate MachineState.
-func Next(s run.MachineState) (Effect, error) {
+func Next(s run.MachineState) (Action, error) {
 	if s.Status.Terminal() {
 		return nil, run.ErrRunTerminal
 	}

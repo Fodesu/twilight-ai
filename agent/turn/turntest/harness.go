@@ -300,9 +300,14 @@ func (h *harness) load(runID run.RunID) runtime.Snapshot {
 
 // --- driving a Run without a Loop ----------------------------------------------------
 
-func (h *harness) claim() run.ExecutionClaim {
-	h.seq++
-	return run.ExecutionClaim(fmt.Sprintf("claim-%d", h.seq))
+// modelEffect derives the next model effect of the Prepared step (RUN-WIR-1).
+func (h *harness) modelEffect(runID run.RunID, step run.StepID) run.EffectID {
+	h.t.Helper()
+	ms, ok := h.load(runID).State.Current.(run.ModelStep)
+	if !ok || ms.RefValue.ID != step {
+		h.fatal(fmt.Sprintf("model effect of %s: current is not the step", step))
+	}
+	return schema.V1().Identity.DeriveEffectID(runID, step, "", ms.Rejects)
 }
 
 // commitResult is a Run command's result plus the events of the commit it
@@ -402,15 +407,15 @@ func (h *harness) prepare(runID run.RunID, specs []run.ToolSpec) run.StepID {
 
 // executingModel takes the Run to a model step that is Executing with no
 // worker in this process: the state RecoverInterrupted acts on.
-func (h *harness) executingModel(runID run.RunID) (run.StepID, run.ExecutionClaim) {
+func (h *harness) executingModel(runID run.RunID) (run.StepID, run.EffectID) {
 	h.t.Helper()
 	step := h.prepare(runID, nil)
-	claim := h.claim()
-	res := h.mustRunCommit(runID, schema.V1().Identity.DeriveStartCommandID(runID, step, "", claim), 0, run.StartModelExecution{StepID: step, Claim: claim})
+	eff := h.modelEffect(runID, step)
+	res := h.mustRunCommit(runID, schema.V1().Identity.DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff})
 	if res.Status != runtime.CommitAccepted {
 		h.fatal("start model was not accepted")
 	}
-	return step, claim
+	return step, eff
 }
 
 func textResult(text string) model.ModelResult {
@@ -425,8 +430,8 @@ func textResult(text string) model.ModelResult {
 // completed from the run_ended of the same group.
 func (h *harness) complete(runID run.RunID) commitResult {
 	h.t.Helper()
-	step, claim := h.executingModel(runID)
-	return h.mustRunCommit(runID, schema.V1().Identity.DeriveSettlementCommandID(runID, step, "", claim), 0, run.SubmitModelResult{StepID: step, Result: textResult("done")})
+	step, eff := h.executingModel(runID)
+	return h.mustRunCommit(runID, schema.V1().Identity.DeriveSettlementCommandID(eff), 0, run.SubmitModelResult{StepID: step, Result: textResult("done")})
 }
 
 // waitingTool takes the Run to a ToolStep whose single call needs approval.
@@ -434,8 +439,8 @@ func (h *harness) waitingTool(runID run.RunID) {
 	h.t.Helper()
 	spec := h.spec(run.ApprovalRequired)
 	step := h.prepare(runID, []run.ToolSpec{spec})
-	claim := h.claim()
-	if res := h.mustRunCommit(runID, schema.V1().Identity.DeriveStartCommandID(runID, step, "", claim), 0, run.StartModelExecution{StepID: step, Claim: claim}); res.Status != runtime.CommitAccepted {
+	eff := h.modelEffect(runID, step)
+	if res := h.mustRunCommit(runID, schema.V1().Identity.DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff}); res.Status != runtime.CommitAccepted {
 		h.fatal("start model was not accepted")
 	}
 	args := run.MustParseCanonicalJSON(`{"q":1}`)
@@ -451,7 +456,7 @@ func (h *harness) waitingTool(runID run.RunID) {
 	}
 	binding := run.ToolCallBinding{CallID: callID, ProviderCallID: "c0", ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
 		BindingDigest: bd, Arguments: args, Policy: spec.Policy}
-	h.mustRunCommit(runID, schema.V1().Identity.DeriveSettlementCommandID(runID, step, "", claim), 0,
+	h.mustRunCommit(runID, schema.V1().Identity.DeriveSettlementCommandID(eff), 0,
 		run.SubmitModelResult{StepID: step, Result: result, Calls: []run.ToolCallBinding{binding}})
 }
 

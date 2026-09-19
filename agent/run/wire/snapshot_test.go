@@ -40,7 +40,7 @@ func TestSnapshotCodecRoundTrip(t *testing.T) {
 	s = fold(t, s, facts)
 	check("tool step pending", s)
 	toolStep := facts[1].(run.ToolStepOpened).StepID
-	s = fold(t, s, mustDecide(t, s, run.StartToolCall{StepID: toolStep, CallID: cid(stepID, 0), Claim: "claim"}))
+	s = fold(t, s, mustDecide(t, s, startTool(s, toolStep, cid(stepID, 0))))
 	check("tool step executing", s)
 	s = fold(t, s, mustDecide(t, s, run.SubmitToolResult{StepID: toolStep, CallID: cid(stepID, 0), Result: run.ToolExecutionResult{Output: cj(`"ok"`)}}))
 	check("open with last tool step", s)

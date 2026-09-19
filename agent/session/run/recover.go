@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agent/run"
-	"github.com/felinics/twilight/agent/run/canonical"
 	"github.com/felinics/twilight/agent/run/reconcile"
 	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/agent/session/writer"
@@ -15,14 +13,16 @@ import (
 // Reconciler decides the takeover disposition of one Run's Executing targets
 // (RUN-CMT-7); reconcile.Reconciler is the implementation.
 type Reconciler interface {
-	Reconcile(ctx context.Context, store runtime.RunStore, snapshot *runtime.Snapshot, claim run.ExecutionClaim) (int, error)
+	Reconcile(ctx context.Context, store runtime.RunStore, snapshot *runtime.Snapshot) (int, error)
 }
 
 // RecoverInterrupted is the Session-level takeover (RUN-CMT-7): every active
-// Run of the Session is reconciled under the takeover claim of the Writer's
-// Epoch, so the same owner repeats idempotently. The host calls it once after
-// opening the Writer and before driving any Run. A nil Reconciler disposes
-// every Executing target. It returns the number of accepted recovery commands.
+// Run of the Session is reconciled. Each recovery command is identified by
+// the effect it disposes (RUN-WIR-1), so an owner that repeats the takeover,
+// or a later owner, replays the same commands idempotently. The host calls it
+// once after opening the Writer and before driving any Run. A nil Reconciler
+// disposes every Executing target. It returns the number of accepted recovery
+// commands.
 func (s *SessionRunStore) RecoverInterrupted(ctx context.Context, w writer.Writer, rec Reconciler) (int, error) {
 	if err := runtime.CheckContext(ctx); err != nil {
 		return 0, err
@@ -43,11 +43,10 @@ func (s *SessionRunStore) RecoverInterrupted(ctx context.Context, w writer.Write
 		return 0, fmt.Errorf("runmod: machine projection is %T", state)
 	}
 	store := s.Bind(w)
-	claim := canonical.DeriveTakeoverClaim(store.Scope(), uint64(w.Epoch()))
 	n := 0
 	for runID := range m.Active {
 		snapshot, _ := m.snapshot(runID)
-		accepted, err := rec.Reconcile(ctx, store, &snapshot, claim)
+		accepted, err := rec.Reconcile(ctx, store, &snapshot)
 		n += accepted
 		if err != nil {
 			return n, err
