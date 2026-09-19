@@ -24,6 +24,17 @@ in a destination described by `Spec`. The destination may retain the Workspace
 identity for recovery or use a new identity for a fork. Checkpoint production
 and durable-state retention are owned by the provider/application adapter.
 
+Session fork (SES section 8, AUTH-FRK-2) does not call Restore. A fork copies
+the Session's committed facts only: the child Session inherits the
+conversation history and Turn settlements, not the workspace state the parent
+had at the fork point, and the parent's later tool calls keep their effects on
+the parent's workspace. The child's Runs execute against whatever its target
+binding resolves to. Regenerate and edit (TRN-DUR-3) are therefore
+history-only operations. Resolving the fork point to a Turn-boundary
+workspace checkpoint and restoring it into a new workspace bound to the child
+Session is future design; it needs a checkpoint reference recorded at Turn
+boundaries and a Session-level workspace binding.
+
 Agent Core carries an opaque `run.TargetRef{Kind, ID}` on an Assignment. An
 application-provided `loop.TargetResolver` supplies the target per effect
 (RUN-LOP-9): the Loop asks it once for every model or tool effect it is about
@@ -34,7 +45,7 @@ targets. The mapping must be durable if a Run can outlive the process that
 started it; the target itself is not a Run fact.
 
 The default resolver is the first-party `target` module (APP-TGT-1): the
-Session-level workspace binding, kept as a Session fact. An
+Session-level workspace binding named above, kept as a Session fact. An
 application binds the current target between Turns (`Session.BindTarget`);
 the module's `Resolver` answers every tool effect with the target current
 when the effect starts and gives model effects none. A fork child inherits

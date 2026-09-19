@@ -27,8 +27,8 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 | resume | 继续一个非终态 Run（进程重启、接管、Waiting 响应后） | 不变 |
 | retry | 前一 Run 已终结且未 completed，同一 Turn 再开一个 attempt | 新 RunID，`Attempt` 加 1 |
 | replace | 输入内容被替换，`twilight/turn/superseded` 指向新 Turn | 新 Turn、新 RunID |
-| regenerate | 已 completed 的回答需要重新生成：在该 Turn 之前 fork（AUTH-FRK-2），子 Session 里以同一输入开新 Turn；同一 Session 内也可提交新 Input 开新 Turn 并以 `superseded` 关联 | 新 Session 或新 Turn、新 RunID |
-| edit | 已投递的输入需要修改：在该 Turn 之前 fork，撤回原输入（`input_withdrawn`）后提交新输入 | 新 Session、新 Turn、新 RunID |
+| regenerate | 已 completed 的回答需要重新生成：在该 Turn 之前 fork（AUTH-FRK-2），子 Session 里以同一输入开新 Turn；同一 Session 内也可提交新 Input 开新 Turn 并以 `superseded` 关联。fork 只分叉对话历史，不恢复 workspace 状态（TRN-DUR-3） | 新 Session 或新 Turn、新 RunID |
+| edit | 已投递的输入需要修改：在该 Turn 之前 fork，撤回原输入（`input_withdrawn`）后提交新输入。fork 只分叉对话历史，不恢复 workspace 状态（TRN-DUR-3） | 新 Session、新 Turn、新 RunID |
 
 四种动作的持久性语义在第 7 节 TRN-DUR-1 至 4 逐条区分。subagent 使用独立 Session 与独立 Turn。
 
@@ -311,7 +311,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 
 **TRN-DUR-2（语义重试是新 Run、同一 Turn）** Application 显式指定 `PreviousRunID` 发起新 Retry，按 TRN-RTY-1 创建 attempt n+1、新 RunID，并重新接受该 Turn 已 delivered 的全部输入。历史 Retry 按 TRN-RTY-2 确认原提交；崩溃恢复按 TRN-DUR-1 继续原 Run。失败 attempt 的 Run 事实及其投影条目保留在 ledger 中，是否进入新 attempt 的模型请求由 PromptBuilder 决定（TRN-RTY-3）。
 
-**TRN-DUR-3（重新生成与编辑不改写历史）** 已 completed 的 Turn 及其回答是不可变事实：不存在"修改回答"、"重开同一 Turn"或"对 completed Turn 再开 attempt"。`Start` 要求输入处于 `submitted`（TRN-STR-1），已 delivered 的输入不能再次开 Turn。重新生成有两种形态：在该 Turn 之前 fork（SES 第 8 节、AUTH-FRK-2），子 Session 继承到该 Turn 开始之前的全部事实，其输入仍为 `submitted`，投递它即为新 Turn；或在同一 Session 内提交新 Input（内容可与原输入相同）并 Start，以 `twilight/turn/superseded` 关联原 Turn（TRN-API-4）。编辑只有 fork 形态：撤回原输入后提交新输入。两种形态都不改写已有历史；原回答是否进入上下文由 PromptBuilder 决定。
+**TRN-DUR-3（重新生成与编辑不改写历史）** 已 completed 的 Turn 及其回答是不可变事实：不存在"修改回答"、"重开同一 Turn"或"对 completed Turn 再开 attempt"。`Start` 要求输入处于 `submitted`（TRN-STR-1），已 delivered 的输入不能再次开 Turn。重新生成有两种形态：在该 Turn 之前 fork（SES 第 8 节、AUTH-FRK-2），子 Session 继承到该 Turn 开始之前的全部事实，其输入仍为 `submitted`，投递它即为新 Turn；或在同一 Session 内提交新 Input（内容可与原输入相同）并 Start，以 `twilight/turn/superseded` 关联原 Turn（TRN-API-4）。编辑只有 fork 形态：撤回原输入后提交新输入。两种形态都不改写已有历史；原回答是否进入上下文由 PromptBuilder 决定。fork 的范围是 Session 的已提交事实（SES 第 8 节）：子 Session 继承对话历史与 Turn 结算，不继承也不恢复任何 workspace 状态。原 Turn 及其后续 Turn 的工具调用已经作用于父 Session 绑定的 workspace，fork 不撤销这些效果，子 Session 的 Run 在其 target 绑定所解析到的 workspace 上执行（agent-workspace.md）。因此 regenerate 与 edit 在当前协议下只是对话历史层面的分叉；让 fork 点 `k-1` 解析到一个 Turn 边界的 workspace checkpoint、并恢复为绑定到子 Session 的新 workspace，属于后续设计，需要 Turn 边界的 checkpoint 引用与 Session 级 workspace 绑定两项前置条件。
 
 **TRN-DUR-4（外部效果未知不等于重试）** owner 丢失时处于 Executing 的工具 call 有两种去向，由 Executor 是否仍持有该 attempt 决定（RUN-CMT-7）：仍持有则等待同一次执行的 Outcome，这是重连，不是重试；不再持有则由接管处置记为 Unknown，对话投影得到 status=`unknown` 的 tool_result 条目。Unknown 是该 call 的终态事实，协议在任何路径上都不重新执行它：接管处置不执行（它只记录）；下一次 Loop 不执行（start barrier 只启动 Pending call，Executing 与终态 call 永不重跑，RUN-LOP-4）；Retry 不执行（新 attempt 从上下文重新规划步骤，Unknown 结果作为对话内容可见）。外部效果是否已经发生、是否需要重做，由模型依据上下文判断，或由 Application 在带外核实后以 `tool_result_superseded` 换成 `success`/`error`（CHT-ENT-2）；两者都是决定，不是协议的自动行为。`CancelRun` 留下的 `UncertainCalls` 同理。
 

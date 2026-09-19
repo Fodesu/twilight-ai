@@ -95,7 +95,7 @@ func (h *Handle) Close(ctx) error
 
 **AUTH-FRK-1** `Fork` 先以 `turn.History.ActiveAt(parent, At)` 核对 fork 点是语义静止点：父在该 commit 有活动中的 Turn 时拒绝（`ErrInvalid`），不建子——子会继承一个执行属于父的 Turn（SES-FRK-5）。通过后以 `writer.Fork` 建立子 Session（SES-FRK-1、EXT-WRT-8），不打开它；调用方随后以 `OpenSession` 打开。子的执行状态投影不含父的 Run（EXT-PRJ-8），因此接管处置没有前缀遗留的 Executing 目标；继承的 Turn 在子的 surface 上已结算，其 Run 对子为 `ErrRunNotFound`。父不受影响，可以继续被驱动。
 
-**AUTH-FRK-2** `ForkBeforeTurn(parent, turnID, child)` 以 `turn.History.StartCommit` 找到携带该 Turn `twilight/turn/started` 的 Commit `k`，在 `k-1` 处 fork：子的对话止于该 Turn 的输入仍为 `submitted` 的状态。`Drain` 或 `Route` 把这些输入投递给新 Turn 即重新生成；`chatlog.Commands.Withdraw`（经子的 Handle）写 `input_withdrawn`（CHT-EVT-2，要求输入为 `submitted`）后再 `Send` 即编辑。`k = 0` 时没有可 fork 的前缀，返回 `ErrInvalid`；未知 Turn 返回 conflict。edit / retry / regenerate 三种动作因此都归到同一个 fork 原语加输入投递上（TRN 第 1 节）。
+**AUTH-FRK-2** `ForkBeforeTurn(parent, turnID, child)` 以 `turn.History.StartCommit` 找到携带该 Turn `twilight/turn/started` 的 Commit `k`，在 `k-1` 处 fork：子的对话止于该 Turn 的输入仍为 `submitted` 的状态。`Drain` 或 `Route` 把这些输入投递给新 Turn 即重新生成；`chatlog.Commands.Withdraw`（经子的 Handle）写 `input_withdrawn`（CHT-EVT-2，要求输入为 `submitted`）后再 `Send` 即编辑。`k = 0` 时没有可 fork 的前缀，返回 `ErrInvalid`；未知 Turn 返回 conflict。edit / retry / regenerate 三种动作因此都归到同一个 fork 原语加输入投递上（TRN 第 1 节）。fork 只复制 Session 的已提交事实：子 Session 不恢复父在 `k-1` 时刻的 workspace 状态，父 Session 在 `k` 之后的工具调用对 workspace 的效果不会被撤销（TRN-DUR-3、agent-workspace.md）。
 
 **AUTH-FRK-3** `DeleteSession` 先停止该 Session 的恢复监听并关闭其 Writer，再以 `writer.Delete` 撤根并释放 claim（EXT-WRT-9）；被另一进程持有的 Session 为 `ErrOwned`。以它为前缀的 fork 不受影响。`Collect` 调 `writer.Collect` 回收无根可达的段（SES-GC-2）。
 
