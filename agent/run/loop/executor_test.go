@@ -102,9 +102,75 @@ func (e *recordingExecutor) deliver(t *testing.T, key AssignmentKey, out Outcome
 
 type fixedTargetResolver struct{ target TargetRef }
 
-func (r fixedTargetResolver) ResolveTarget(context.Context, Scope, RunID) (*TargetRef, error) {
+func (r fixedTargetResolver) ResolveTarget(context.Context, EffectContext) (*TargetRef, error) {
 	target := r.target
 	return &target, nil
+}
+
+// recordingTargetResolver keeps every effect it was asked about and answers
+// per effect: a workspace named after the call for a tool effect, no target
+// for a model effect.
+type recordingTargetResolver struct {
+	mu   sync.Mutex
+	seen []EffectContext
+}
+
+func (r *recordingTargetResolver) ResolveTarget(_ context.Context, ec EffectContext) (*TargetRef, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.seen = append(r.seen, ec)
+	if ec.Kind != AssignmentTool {
+		return nil, nil
+	}
+	return &TargetRef{Kind: "workspace", ID: "ws-" + string(ec.CallID)}, nil
+}
+
+// The resolver is asked once per effect, before the effect starts, with the
+// effect's own coordinates, and its answer lands on that effect's Assignment
+// only (RUN-LOP-9).
+func TestTargetResolvedPerEffect(t *testing.T) {
+	rt, w := loopRuntime(t)
+	exec := newRecordingExecutor()
+	resolver := &recordingTargetResolver{}
+	spec := toolSpec(t, "echo", DirectExecution)
+	l, err := New(exec, staticBuilder{specs: []ToolSpec{spec}}, Settings{TargetResolver: resolver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := l.Advance(ctx, rt.Bind(w), "run-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Deliver(ctx, rt.Bind(w), Outcome{Key: exec.last().Key(), Result: ModelSucceeded{Result: toolCallResult("c1", "c2")}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	res, err := l.Advance(ctx, rt.Bind(w), "run-1", nil)
+	if err != nil || res.Disposition != LoopDispatched || len(res.Dispatched) != 2 {
+		t.Fatalf("advance = %+v %v", res, err)
+	}
+	exec.mu.Lock()
+	dispatched := append([]Assignment(nil), exec.dispatched...)
+	exec.mu.Unlock()
+	if len(dispatched) != 3 || len(resolver.seen) != len(dispatched) {
+		t.Fatalf("dispatched %d assignments, resolver asked %d times", len(dispatched), len(resolver.seen))
+	}
+	if dispatched[1].CallID == dispatched[2].CallID || dispatched[1].Effect == dispatched[2].Effect {
+		t.Fatalf("tool effects share coordinates: %+v %+v", dispatched[1], dispatched[2])
+	}
+	for i, a := range dispatched {
+		want := EffectContext{Session: a.Session, RunID: a.RunID, StepID: a.StepID, CallID: a.CallID, Effect: a.Effect, Kind: a.Kind()}
+		var wantTarget *TargetRef
+		if tool, ok := a.Tool(); ok {
+			want.Tool = tool.ToolRef
+			wantTarget = &TargetRef{Kind: "workspace", ID: "ws-" + string(a.CallID)}
+		}
+		if resolver.seen[i] != want {
+			t.Fatalf("effect %d resolved with %+v, want %+v", i, resolver.seen[i], want)
+		}
+		if (a.Target == nil) != (wantTarget == nil) || (a.Target != nil && *a.Target != *wantTarget) {
+			t.Fatalf("effect %d target = %+v, want %+v", i, a.Target, wantTarget)
+		}
+	}
 }
 
 func TestAdvanceCopiesOpaqueTargetIntoAssignment(t *testing.T) {

@@ -77,7 +77,7 @@ client 只负责提交稳定的 InputID、查询 view、读取事件和显示结
 TargetRef{Kind: "workspace", ID: "fixture"}
 ```
 
-authority 的 `TargetResolver` 在每次恢复时返回相同逻辑 target。v1 fixture 可以把
+authority 的 `TargetResolver` 对每个 tool effect 返回相同逻辑 target，恢复后亦然（RUN-LOP-9）。v1 fixture 可以把
 它解析到 worker 上的固定只读目录，但这个路径只是 provider adapter 的实现细节；
 Core 不保存路径，也不把 Workspace 放入 AgentPreset。
 

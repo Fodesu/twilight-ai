@@ -68,11 +68,14 @@ func (l *Loop) toolScheduling() run.ToolScheduling {
 	return s
 }
 
-func (l *Loop) targetFor(ctx context.Context, scope run.Scope, runID run.RunID) (*run.TargetRef, error) {
+// targetFor resolves the opaque target of the effect ec describes
+// (RUN-LOP-9). A nil resolver or a nil answer leaves the Assignment without a
+// target; an incomplete answer is an error and the effect does not start.
+func (l *Loop) targetFor(ctx context.Context, ec EffectContext) (*run.TargetRef, error) {
 	if l.Settings.TargetResolver == nil {
 		return nil, nil
 	}
-	target, err := l.Settings.TargetResolver.ResolveTarget(ctx, scope, runID)
+	target, err := l.Settings.TargetResolver.ResolveTarget(ctx, ec)
 	if err != nil {
 		return nil, err
 	}

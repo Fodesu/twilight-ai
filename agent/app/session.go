@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
+	"github.com/felinics/twilight/agent/session/target"
 	"github.com/felinics/twilight/agent/turn"
 )
 
@@ -477,6 +478,23 @@ func (s *Session) Compact(ctx context.Context) (chatlog.CheckpointID, bool, erro
 		return "", false, err
 	}
 	return id, true, nil
+}
+
+// BindTarget makes ref the Session's current target: every tool effect
+// started afterwards executes against it (APP-TGT-1, RUN-LOP-9). The
+// binding changes between Turns only; an active Turn refuses it with
+// turn.ErrConflict.
+func (s *Session) BindTarget(ctx context.Context, ref run.TargetRef) error {
+	return s.a.Targets.Bind(ctx, s.h.Writer(), ref, turn.RequireNoActiveTurn)
+}
+
+// Target reads the Session's current target; nil while unbound.
+func (s *Session) Target(ctx context.Context) (*run.TargetRef, error) {
+	cur, err := target.Read(ctx, s.a.Projections, s.sid)
+	if err != nil {
+		return nil, err
+	}
+	return cur.Target, nil
 }
 
 // maybeCompact runs the automatic policy after a settlement; failures reach

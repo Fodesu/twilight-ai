@@ -22,7 +22,7 @@
 | Authority | `authority.Authority`：事实层 + 决策层 + driver，发放 `Handle` |
 | Executor | `effect.Port`；实现是进程内 `LocalExecutor` 或远端客户端，效果实现只在这一侧 |
 | Read Models / 观察者 | `extension.ProjectionReader` 按 SessionID 读取；`observe.Bus` 是 owner 侧的实时流，两者对同一 head 一致（EXT-PRJ-4） |
-| Workspace | 运行时只接收 opaque `TargetRef`/resolver；Workspace 与 Runtime 服务在 core 之外 |
+| Workspace | 运行时只接收 opaque `TargetRef`，由 `TargetResolver` 按 effect 解析（RUN-LOP-9），默认解析器读 Session 级绑定（APP-TGT-1）；Workspace 与 Runtime 服务在 core 之外 |
 | 存活判定 / 何时 Takeover | 不在 core 也不在运行时；由部署决定 |
 | Agent Server（API、Auth、路由） | core 之外 |
 
@@ -36,7 +36,7 @@ type Ports struct {
     Presets        preset.Registry             // nil → 内存注册表；只存决策身份
     Decisions      *decision.PromptBuilders    // nil → decision.DefaultPromptBuilders()
     Executor       effect.Port                 // 必填：效果层端口（RUN-EXE-3）
-    TargetResolver loop.TargetResolver
+    TargetResolver loop.TargetResolver         // 按 effect 解析 opaque target（RUN-LOP-9）；nil 选 target.Resolver（APP-TGT-1）
     Observers      []writer.CommitObserver     // 提交观察（EXT-WRT-7）
     Modules        []extension.ModuleDescriptor
     Schema         extension.SchemaVersion     // 新 Session 声明的 Schema；零值为 SchemaVersion1（AUTH-SCH-1）
@@ -167,6 +167,8 @@ func (s *Session) Resume(ctx) ([]Result, bool, error)
 func (s *Session) Retry(ctx) ([]Result, bool, error)
 func (s *Session) Status(ctx) (SessionStatus, error)
 func (s *Session) Compact(ctx) (chatlog.CheckpointID, bool, error)
+func (s *Session) BindTarget(ctx, run.TargetRef) error                  // APP-TGT-1
+func (s *Session) Target(ctx) (*run.TargetRef, error)
 func (s *Session) Handle() *authority.Handle
 func (s *Session) Close(ctx) error
 ```
@@ -197,6 +199,10 @@ func (s *Session) Close(ctx) error
 
 **APP-MEM-2（投影缓存归属）** 缓存解析一次并同时交给两处，各自只写自己有权写的投影（EXT-PRJ-6）：Store 实现 `extension.ProjectionCacheProvider` 时取它，否则进程内缓存。`Writers` 用 `runmod.WriterCachePolicy(CacheEvery)` 刷新全部投影、唯独不碰 machine projection；machine projection 由 Runtime 经 `SnapshotPolicy` 写入（RUN-CMT-2）。`CacheEvery` 是部署可调的区间。
 
+### 7.3 资源 target
+
+**APP-TGT-1（Session 级 target 绑定）** first-party 模块 `agent/session/target` 把 RUN-LOP-9 的解析映射持久化为 Session 事实：单例流 `target`（session lineage）上的事件 `twilight/target/bound{target}`，后一条覆盖前一条；投影 `twilight/target/current` 折叠出当前 target（authoritative，EXT-PRJ-9）。`target.Commands.Bind(ctx, w, ref, guard)` 在该 Session Writer 的 Commit 临界区内先执行 `guard`，再读该投影：ref 已是当前 target 时不写入（Writer 回答 `Noop`，重试幂等）；否则以 CommitID `target-bound/<SessionID>/<Head().Next>` 提交一条 bound。`app.Session.BindTarget` 以 `turn.RequireNoActiveTurn` 为 guard：绑定只在 Turn 之间变更，已启动的 effect 保持其 Assignment 中的 target。`target.Resolver{Projections, Required}` 是默认的 `loop.TargetResolver`（`Ports.TargetResolver` 为 nil 时由 `authority.New` 装配）：tool effect 在启动时刻解析为该 Session 的当前 target，model effect 无 target；Session 未绑定时 tool effect 无 target，`Required` 为真时返回 `ErrUnbound`，该 effect 不启动（RUN-LOP-9）。流为 session lineage：fork 子继承父在分叉点的绑定，子的 Bind 只写入子段（SES-FRK-5）。target 不是 Run 事实；其含义由 Workspace domain 定义（agent-workspace.md）。
+
 ## 8. 子代理（spawn）
 
 **SPN-1** 子代理是一个由 ToolCall 启动的普通 Session。模型调用 spawn 工具（默认 `agent_spawn`，经 `Config.Spawn` 配置 Tool、命名 Preset 解析与最大深度）；`spawn.Executor` 是 Worker 的一个 Backend（provider `twilight/session`），`app.Build` 以 `spawn.Route` 把该工具的 Assignment 路由给它，其余 Assignment 走默认 backend（RUN-EXE-10）。工具定义、参数与结果形状、派生身份、定义摘要核对、深度与重放冲突判定在 `agent/spawn` 协议部分；Backend 部分只做子 Session 的创建与结算状态机：`Authority.Open(child)` 取得子的 Handle，经 `turn.Commands.Start`、`driver.Drive` 与 `chatlog.Commands.Submit` 推进，不经 app 门面；子 Turn 静止于 `waiting_for_recovery` 时等待控制面收养其执行后继续驱动。Run 事实本体不新增子代理生命周期：父只看到一个以子代理回复完成的工具调用。
@@ -217,7 +223,7 @@ func (s *Session) Close(ctx) error
 
 ```text
 // authority.New
-registry    = extension.BuildRegistry(v1, chatlog.Module, runmod.Module, turn.Module, Ports.Modules...)
+registry    = extension.BuildRegistry(v1, chatlog.Module, runmod.Module, turn.Module, target.Module, Ports.Modules...)
 schema      = Ports.Schema | extension.SchemaVersion1               // registry 须在其下有 codec（AUTH-SCH-1）；checkMigrators(Ports.Migrators)（AUTH-MIG-1）
 frozen      = runmod.FrozenValues(Content)
 content     = runmod.NewContent(frozen)                          // materializer：prompt、Reply、transcript
@@ -226,7 +232,8 @@ runtime     = runmod.NewRuntime{Writers, registry, Store, Frozen: frozen, Bindin
 projections = writer.Projections(writers)
 turns       = turn.Coordinator{Writers, runtime}                 // 纯协议：命令经传入的 Writer 提交 + Status 读取
 chatlog     = chatlog.Commands{Clock}
-driver      = driver.New{runtime, turns, Executor, Presets, Decisions, Sources{projections, content}, Targets, Fail}   // 规划读经传入 Writer 的投影
+targets     = target.Commands{Clock}
+driver      = driver.New{runtime, turns, Executor, Presets, Decisions, Sources{projections, content}, Targets: Ports.TargetResolver | target.Resolver{projections}, Fail}   // 规划读经传入 Writer 的投影
                                                                   // Loop 按 PresetRef 在 driver 内组合并缓存
 // app.Build
 routes      = [spawn.Route(spawn.Executor)]? + Default(local | port | remote)          // backend 选择一次，持久化为 ExecutionRef.Provider

@@ -37,11 +37,6 @@ func (l *Loop) startToolCalls(ctx context.Context, rt runtime.RunStore, events E
 	if !ok || ts.RefValue.ID != act.StepID {
 		return nil, fmt.Errorf("agent: loop: tool step %q is not current", act.StepID)
 	}
-	target, err := l.targetFor(ctx, rt.Scope(), runID)
-	if err != nil {
-		return nil, err
-	}
-
 	limit := len(act.CallIDs)
 	if ts.Scheduling.Mode == run.ToolScheduleSequential {
 		limit = 1
@@ -70,13 +65,21 @@ func (l *Loop) startToolCalls(ctx context.Context, rt runtime.RunStore, events E
 			// (TRN-DUR-4).
 			continue
 		}
+		ref := toolEffect(schema, runID, act.StepID, callID)
+		// The target is resolved per tool effect (RUN-LOP-9) before the
+		// pre-start check, so the Validate probe carries what the Assignment
+		// will carry.
+		target, err := l.targetFor(ctx, EffectContext{Session: rt.Scope(), RunID: runID, StepID: act.StepID, CallID: callID,
+			Effect: ref.id, Kind: AssignmentTool, Tool: call.ToolRef})
+		if err != nil {
+			return dispatched, err
+		}
 		binding := ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy}
 		probe := Assignment{Session: rt.Scope(), RunID: runID, StepID: act.StepID, CallID: callID, Target: target, Schema: snapshot.SchemaVersion, Body: binding}
 		known, err := l.Executor.Validate(ctx, probe)
 		if err != nil {
 			return dispatched, err
 		}
-		ref := toolEffect(schema, runID, act.StepID, callID)
 		if known != nil {
 			// The call fails before its effect is requested: no start
 			// barrier, no effect, no attempt. A call is declined at most

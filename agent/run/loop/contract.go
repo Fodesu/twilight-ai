@@ -37,11 +37,28 @@ type Prompt struct {
 	Tools    []run.ToolSpec
 }
 
-// TargetResolver supplies an opaque target for a Run. It belongs to the
-// application/resource layer; Loop only copies the reference into an
-// Assignment and never interprets it.
+// EffectContext identifies the effect a target is resolved for: the Run's
+// Scope and identity, the Step, the call of a tool effect, the EffectID the
+// effect is about to be started under, the kind of the effect and, for a tool
+// effect, the tool's ref.
+type EffectContext struct {
+	Session run.Scope
+	RunID   run.RunID
+	StepID  run.StepID
+	CallID  run.CallID
+	Effect  run.EffectID
+	Kind    AssignmentKind
+	Tool    run.ToolRef
+}
+
+// TargetResolver supplies an opaque target for one effect (RUN-LOP-9). It
+// belongs to the application/resource layer: the Loop asks it once for every
+// effect it is about to start, before the start barrier, and only copies the
+// returned reference into that effect's Assignment. A nil target means the
+// effect has no resource target. The mapping must be durable when a Run can
+// outlive the process that started it.
 type TargetResolver interface {
-	ResolveTarget(context.Context, run.Scope, run.RunID) (*run.TargetRef, error)
+	ResolveTarget(context.Context, EffectContext) (*run.TargetRef, error)
 }
 
 // Settings are the execution parameters the Loop takes from the AgentPreset

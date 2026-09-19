@@ -25,8 +25,21 @@ identity for recovery or use a new identity for a fork. Checkpoint production
 and durable-state retention are owned by the provider/application adapter.
 
 Agent Core carries an opaque `run.TargetRef{Kind, ID}` on an Assignment. An
-application-provided `loop.TargetResolver` supplies the target for a Run; its
-mapping must be durable if a Run can outlive the process that started it.
+application-provided `loop.TargetResolver` supplies the target per effect
+(RUN-LOP-9): the Loop asks it once for every model or tool effect it is about
+to start, with the effect's coordinates (Session, RunID, StepID, CallID,
+EffectID, kind and tool ref), and copies the answer into that effect's
+Assignment only. Different effects of one Run may resolve to different
+targets. The mapping must be durable if a Run can outlive the process that
+started it; the target itself is not a Run fact.
+
+The default resolver is the first-party `target` module (APP-TGT-1): the
+Session-level workspace binding, kept as a Session fact. An
+application binds the current target between Turns (`Session.BindTarget`);
+the module's `Resolver` answers every tool effect with the target current
+when the effect starts and gives model effects none. A fork child inherits
+its parent's binding at the fork point. An application that supplies its
+own `loop.TargetResolver` guarantees the durability of its own mapping.
 
 The provider adapter is a Backend of the Worker: it resolves the target to a
 RuntimeBinding and, in Prepare, allocates or derives the ExecutionRef the

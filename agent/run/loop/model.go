@@ -104,11 +104,11 @@ func (l *Loop) startModelStep(ctx context.Context, rt runtime.RunStore, events E
 	if !ok || prepared.RefValue.ID != stepID {
 		return nil, fmt.Errorf("agent: loop: model step %q is not current", stepID)
 	}
-	target, err := l.targetFor(ctx, rt.Scope(), runID)
+	ref := modelEffect(sch, runID, &prepared)
+	target, err := l.targetFor(ctx, EffectContext{Session: rt.Scope(), RunID: runID, StepID: stepID, Effect: ref.id, Kind: AssignmentModel})
 	if err != nil {
 		return nil, err
 	}
-	ref := modelEffect(sch, runID, &prepared)
 	assignment := Assignment{Session: rt.Scope(), RunID: runID, StepID: stepID, Effect: ref.id, Target: target, Schema: snapshot.SchemaVersion,
 		Body: ModelAssignment{Model: prepared.Model, RequestDigest: prepared.RequestDigest}}
 	// Pre-start check (RUN-EXE-5): an executor that cannot serve the model

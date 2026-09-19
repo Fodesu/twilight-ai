@@ -50,7 +50,9 @@ type Driver struct {
 	Presets   Presets
 	Decisions *decision.PromptBuilders
 	Sources   decision.Sources
-	Targets   loop.TargetResolver
+	// Targets resolves the opaque target of each effect (RUN-LOP-9); every
+	// Loop shares it.
+	Targets loop.TargetResolver
 	// Fail receives failures of work the Driver does outside any caller's
 	// call, such as settling a reattached Outcome; nil discards them.
 	Fail func(session.SessionID, error)

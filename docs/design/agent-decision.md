@@ -12,7 +12,7 @@ Facts → Decision → Assignment → Effect → Outcome → Facts
         决策层：Machine.Next（run 模块）、PromptBuilder
 ```
 
-决策层的 PromptBuilder 以 ref 命名并经目录解析。工具调度（`Scheduling`）、畸形结果重试上限（`MalformedRetries`）、模型与工具身份、SystemPrompt 是 AgentPreset 上的数据。每次执行的外部资源目标由宿主的 TargetResolver 提供。
+决策层的 PromptBuilder 以 ref 命名并经目录解析。工具调度（`Scheduling`）、畸形结果重试上限（`MalformedRetries`）、模型与工具身份、SystemPrompt 是 AgentPreset 上的数据。每个 effect 的外部资源目标由宿主的 TargetResolver 按 effect 解析（RUN-LOP-9）；决策层不读取它。
 
 **DEC-SCP-1** 决策层的每个组件是投影状态与 AgentPreset 的确定性函数，不做外部 IO：同一 AgentPreset、同一投影状态，任何进程得到同一结果。这是接管后新进程续跑同一 Turn 的前提。
 

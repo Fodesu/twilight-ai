@@ -450,7 +450,7 @@ type ExecutableTool interface {
 }
 ```
 
-`ToolExecutionOutcome` 是 sealed interface：`ToolExecutionSucceeded`、`ToolExecutionFailed`（明确未完成）或 `ToolExecutionUnknown`（可能已发生）。`ValidateArguments` 在 start barrier 前运行，并保持无外部 effect。`ToolExecutionRequest` 携带 RunID、StepID、CallID、该 call 的 `Effect`、冻结 binding 与可选 opaque `TargetRef`（Loop 不解释）。
+`ToolExecutionOutcome` 是 sealed interface：`ToolExecutionSucceeded`、`ToolExecutionFailed`（明确未完成）或 `ToolExecutionUnknown`（可能已发生）。`ValidateArguments` 在 start barrier 前运行，并保持无外部 effect。`ToolExecutionRequest` 携带 RunID、StepID、CallID、该 call 的 `Effect`、冻结 binding 与可选 opaque `TargetRef`（Loop 不解释）。`TargetRef` 由 `TargetResolver` 按 effect 解析（RUN-LOP-9）。
 
 ```go
 // 效果层端口（RUN-EXE）
@@ -534,10 +534,12 @@ func (*Reconciler) Reconcile(ctx, store runtime.RunStore, snapshot *runtime.Snap
 **RUN-EXE-10（Backend 选择与 record 的权威性）** backend 选择是 execution 创建的一部分：Worker 在 Dispatch 时按 `Route` 表评估一次（第一个 `Match` 为真的 provider，`Match` 为 nil 的 route 接受全部），结果作为 `ExecutionRef.Provider` 持久化；此后 Attach、GetStatus、GetOutcome、Cancel、Takeover、Dispose 只查 record 并按 Provider 找 backend，不再评估 Assignment 内容，也不询问任何 backend 是否认识某个 key；record 的 Provider 在本 Worker 没有对应 backend 时为 `ErrUnknownProvider`，record 不被改动。record 是 execution identity 的唯一来源：record 缺失即 execution 不存在（`missing`）。record 的持久性由部署决定——内存 store 随进程消失，此时崩溃后的接管处置按 `missing` 进行（RUN-CMT-7）；需要跨进程收养执行的部署使用文件或共享 record store，收养是控制面对 orphaned record 的 Takeover（RUN-EXE-6）。`Validate` 按同一 route 表选择 backend 但不持久化选择。
 
 ```go
+type EffectContext struct { Session run.Scope; RunID run.RunID; StepID run.StepID; CallID run.CallID; Effect run.EffectID; Kind AssignmentKind; Tool run.ToolRef } // 待解析 target 的 effect 坐标
+type TargetResolver interface { ResolveTarget(context.Context, EffectContext) (*run.TargetRef, error) } // 每个 effect 调用一次（RUN-LOP-9）
 type Settings struct {
     Scheduling       run.ToolScheduling // 来自 AgentPreset：工具调用并行/串行与并发上限
     MalformedRetries uint8              // 来自 AgentPreset：畸形模型结果的重试上限
-    TargetResolver   TargetResolver     // application 提供的 opaque target 解析器
+    TargetResolver   TargetResolver     // application 提供的 opaque target 解析器，按 effect 调用（RUN-LOP-9）
 }
 type LoopResult struct {
     Disposition LoopDisposition // LoopWaiting | LoopFinished | LoopDispatched | LoopDelivered | LoopDropped
@@ -555,6 +557,8 @@ func (*Loop) Run(context.Context, runtime.RunStore, run.RunID, EventSink) (LoopR
 **RUN-LOP-1** `Settings` 是 Loop 从 AgentPreset 取得的执行参数（TRN-PST-1），不是独立的可插拔组件。`Scheduling` 在 `SubmitModelResult` 时写入 `ToolStepOpened.Scheduling` 并冻结在该 ToolStep 上；后续 Loop 必须按冻结值调度，不得改用当时进程的 Settings。未指定 Mode 时冻结为 `parallel`，`MaxParallel` 零值表示当前 Start 批次全部 Pending call 可并行。空 Mode 按 parallel 解释，不得在 normalize 时填入默认字符串。畸形模型结果的处置由 `MalformedRetries` 决定：该 ModelStep 已记录的 `Rejects` 少于该值时选择 `ModelRejectRetry`，否则 `ModelRejectFailRun`；零即首次失败。`streaming` 表示是否请求可用的流式模型端口；两种模式都产生同一完整 `sdk.ModelResult`。Loop 不管理 Executor lease 或 Worker heartbeat；这些属于 Executor/control plane。Loop 只以 Run 记录的 Effect 定位与结算执行，并通过 Session Writer 完成语义 settlement（RUN-CMT-6）。
 
 **RUN-LOP-7** `ModelRef` 是冻结请求中的执行身份。`ModelCatalog.ResolveModel` 在同一 Run 生命周期内必须把同一 `ModelRef` 解析为等价的执行语义。provider 绑定不进入 frozen request，因此 Catalog 不得把同一 ref 改绑到不同实现。
+
+**RUN-LOP-9（target 解析）** `TargetResolver` 按 effect 调用：Loop 在每个 model effect 与每个 tool call 的 effect 进入 start barrier 之前调用一次 `ResolveTarget`，传入该 effect 的坐标 `EffectContext{Session, RunID, StepID, CallID, Effect, Kind, Tool}`，其中 `Effect` 是该 effect 启动时使用的 EffectID。返回值复制进该 effect 的 Assignment（tool effect 的 Validate probe 携带同一 target），Loop 不解释它。nil 返回值表示该 effect 没有资源 target；`Kind` 或 `ID` 为空的返回值是错误。解析器返回错误时该 effect 不启动，Run 不写入任何事实：ModelStep 保持 Prepared，tool call 保持 Pending。同一 Run 内的不同 effect 可以解析到不同 target。target 不进入 Run 事实，只存在于 Assignment 与 Execution Record 中，默认解析器由 first-party 模块 `agent/session/target` 把映射持久化为 Session 事实（APP-TGT-1），application 自带解析器时由其自行保证映射的持久性（agent-workspace.md）。
 
 `LoopResult` 的语义固定为：`LoopWaiting` 时 `Result` 为 nil，表示没有可执行 action、Run 仍为 active。`ExecutionRecovery` 等于 `plan.NeedsRecovery(state)`。该值为 true 表示存在本进程未派发其 effect 的 Executing 目标（只在崩溃后、接管处置之前出现），`Reason` 为 `execution_recovery`；否则 `Reason` 为空。Waiting call 不进入 `LoopResult`；Application 通过投影状态上的 `plan.WaitingCalls` 读取。`LoopFinished` 时 `Result` 非 nil，并等于 terminal Run 的 `RunResult`。
 
