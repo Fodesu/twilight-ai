@@ -121,3 +121,12 @@ func (IdentityV1) DeriveSettlementCommandID(effect run.EffectID) run.CommandID {
 func (IdentityV1) DeriveRecoveryCommandID(effect run.EffectID) run.CommandID {
 	return run.CommandID(namespacedHash("twilight/recovery-command", string(effect)))
 }
+
+// DeriveDeclineCommandID derives the CommandID of DeclineToolCall: the
+// pre-start failure of one Pending call. The call has no effect yet and is
+// declined at most once, so the identity is the call's coordinates alone; a
+// replay of the same decline is idempotent, a different failure is a
+// conflict.
+func (IdentityV1) DeriveDeclineCommandID(runID run.RunID, step run.StepID, call run.CallID) run.CommandID {
+	return run.CommandID(namespacedHash("twilight/decline-command", string(runID), string(step), string(call)))
+}

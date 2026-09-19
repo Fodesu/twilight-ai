@@ -97,11 +97,64 @@ func modelResultWithCalls(callIDs ...string) model.ModelResult {
 
 func mustDecide(t *testing.T, s run.MachineState, c run.AgentCommand) []run.Fact {
 	t.Helper()
-	facts, err := schema.V1().Machine.Decide(s, c)
+	facts, err := schema.V1().Machine.Decide(s, settling(s, c))
 	if err != nil {
 		t.Fatalf("schema.V1().Machine.Decide(%T): %v", c, err)
 	}
 	return facts
+}
+
+// settling fills the Effect of a settlement command from the state it
+// settles: the executing model effect, or the executing effect of the named
+// call. Tests that probe the effect check pass it explicitly.
+func settling(s run.MachineState, c run.AgentCommand) run.AgentCommand {
+	switch cmd := c.(type) {
+	case run.SubmitModelResult:
+		if cmd.Effect == "" {
+			cmd.Effect = modelEffectOf(s)
+		}
+		return cmd
+	case run.SubmitModelFailure:
+		if cmd.Effect == "" {
+			cmd.Effect = modelEffectOf(s)
+		}
+		return cmd
+	case run.RejectModelResult:
+		if cmd.Effect == "" {
+			cmd.Effect = modelEffectOf(s)
+		}
+		return cmd
+	case run.SubmitToolResult:
+		if cmd.Effect == "" {
+			cmd.Effect = toolEffectOf(s, cmd.CallID)
+		}
+		return cmd
+	case run.SubmitToolFailure:
+		if cmd.Effect == "" {
+			cmd.Effect = toolEffectOf(s, cmd.CallID)
+		}
+		return cmd
+	default:
+		return c
+	}
+}
+
+// modelEffectOf is the effect the current ModelStep is executing.
+func modelEffectOf(s run.MachineState) run.EffectID {
+	ms, _ := s.Current.(run.ModelStep)
+	return ms.Effect
+}
+
+// toolEffectOf is the effect the named call of the current ToolStep is
+// executing.
+func toolEffectOf(s run.MachineState, callID run.CallID) run.EffectID {
+	ts, _ := s.Current.(run.ToolStep)
+	for _, call := range ts.Calls {
+		if call.CallID == callID {
+			return call.Effect
+		}
+	}
+	return ""
 }
 
 func newRun(t *testing.T) run.MachineState {

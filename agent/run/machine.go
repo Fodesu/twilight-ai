@@ -72,6 +72,10 @@ type Identity interface {
 	DeriveStartCommandID(effect EffectID) CommandID
 	DeriveSettlementCommandID(effect EffectID) CommandID
 	DeriveRecoveryCommandID(effect EffectID) CommandID
+	// DeriveDeclineCommandID identifies the decline of one Pending call
+	// (DeclineToolCall). The call has no effect yet and is declined at most
+	// once, so the identity is the call's coordinates.
+	DeriveDeclineCommandID(run RunID, step StepID, call CallID) CommandID
 }
 
 // MachineV1 is the SchemaVersion1 state machine: the Decide (decide.go) and

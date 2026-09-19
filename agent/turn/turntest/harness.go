@@ -431,7 +431,7 @@ func textResult(text string) model.ModelResult {
 func (h *harness) complete(runID run.RunID) commitResult {
 	h.t.Helper()
 	step, eff := h.executingModel(runID)
-	return h.mustRunCommit(runID, schema.V1().Identity.DeriveSettlementCommandID(eff), 0, run.SubmitModelResult{StepID: step, Result: textResult("done")})
+	return h.mustRunCommit(runID, schema.V1().Identity.DeriveSettlementCommandID(eff), 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("done")})
 }
 
 // waitingTool takes the Run to a ToolStep whose single call needs approval.
@@ -457,7 +457,7 @@ func (h *harness) waitingTool(runID run.RunID) {
 	binding := run.ToolCallBinding{CallID: callID, ProviderCallID: "c0", ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
 		BindingDigest: bd, Arguments: args, Policy: spec.Policy}
 	h.mustRunCommit(runID, schema.V1().Identity.DeriveSettlementCommandID(eff), 0,
-		run.SubmitModelResult{StepID: step, Result: result, Calls: []run.ToolCallBinding{binding}})
+		run.SubmitModelResult{StepID: step, Effect: eff, Result: result, Calls: []run.ToolCallBinding{binding}})
 }
 
 // appCancel is the Application's own CancelRun: no settlement is attached, so

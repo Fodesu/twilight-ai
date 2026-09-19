@@ -449,6 +449,18 @@ func (f *Feature) commandID(cmd run.AgentCommand, snap runtime.Snapshot) run.Com
 		return schema.V1().Identity.DeriveStartCommandID(c.Effect)
 	case run.StartToolCall:
 		return schema.V1().Identity.DeriveStartCommandID(c.Effect)
+	case run.SubmitModelResult:
+		return schema.V1().Identity.DeriveSettlementCommandID(c.Effect)
+	case run.SubmitModelFailure:
+		return schema.V1().Identity.DeriveSettlementCommandID(c.Effect)
+	case run.RejectModelResult:
+		return schema.V1().Identity.DeriveSettlementCommandID(c.Effect)
+	case run.SubmitToolResult:
+		return schema.V1().Identity.DeriveSettlementCommandID(c.Effect)
+	case run.SubmitToolFailure:
+		return schema.V1().Identity.DeriveSettlementCommandID(c.Effect)
+	case run.DeclineToolCall:
+		return schema.V1().Identity.DeriveDeclineCommandID(f.runID, c.StepID, c.CallID)
 	default:
 		f.seq++
 		return run.CommandID(fmt.Sprintf("cmd-%d", f.seq))
@@ -537,11 +549,53 @@ func (f *Feature) withEffect(cmd run.AgentCommand, snap runtime.Snapshot) run.Ag
 		return c
 	case run.RecoverModelExecution:
 		if c.Effect == "" {
-			ms, _ := snap.State.Current.(run.ModelStep)
-			c.Effect = ms.Effect
+			c.Effect = executingModelEffect(snap)
+		}
+		return c
+	case run.SubmitModelResult:
+		if c.Effect == "" {
+			c.Effect = executingModelEffect(snap)
+		}
+		return c
+	case run.SubmitModelFailure:
+		if c.Effect == "" {
+			c.Effect = executingModelEffect(snap)
+		}
+		return c
+	case run.RejectModelResult:
+		if c.Effect == "" {
+			c.Effect = executingModelEffect(snap)
+		}
+		return c
+	case run.SubmitToolResult:
+		if c.Effect == "" {
+			c.Effect = executingToolEffect(snap, c.CallID)
+		}
+		return c
+	case run.SubmitToolFailure:
+		if c.Effect == "" {
+			c.Effect = executingToolEffect(snap, c.CallID)
 		}
 		return c
 	default:
 		return cmd
 	}
+}
+
+// executingModelEffect is the effect the current ModelStep is executing.
+func executingModelEffect(snap runtime.Snapshot) run.EffectID {
+	ms, _ := snap.State.Current.(run.ModelStep)
+	return ms.Effect
+}
+
+// executingToolEffect is the effect the named call of the current ToolStep
+// is executing.
+func executingToolEffect(snap runtime.Snapshot, callID run.CallID) run.EffectID {
+	ts, _ := snap.State.Current.(run.ToolStep)
+	for _, call := range ts.Calls {
+		if call.CallID == callID {
+			return call.Effect
+		}
+	}
+	return ""
 }

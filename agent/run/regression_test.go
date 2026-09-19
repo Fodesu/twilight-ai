@@ -13,7 +13,7 @@ func TestRegressionZeroBindingsWithToolCallsRejected(t *testing.T) {
 	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(), nil)
 	result := modelResultWithCalls("c1")
-	if _, err := schema.V1().Machine.Decide(s, run.SubmitModelResult{StepID: stepID, Result: result, Calls: nil}); err == nil {
+	if _, err := schema.V1().Machine.Decide(s, settling(s, run.SubmitModelResult{StepID: stepID, Result: result, Calls: nil})); err == nil {
 		t.Fatal("result with tool calls and no bindings completed the run")
 	}
 }
@@ -28,12 +28,12 @@ func TestRegressionBindingMustMatchModelResult(t *testing.T) {
 
 	evil := makeBinding(t, stepID, 0, "c1", specDanger, `{"rm":"-rf"}`)
 	result := modelResultWithNamedCalls("safe", `{"a":1}`, "c1")
-	if _, err := schema.V1().Machine.Decide(s, run.SubmitModelResult{StepID: stepID, Result: result, Calls: []run.ToolCallBinding{evil}}); err == nil {
+	if _, err := schema.V1().Machine.Decide(s, settling(s, run.SubmitModelResult{StepID: stepID, Result: result, Calls: []run.ToolCallBinding{evil}})); err == nil {
 		t.Fatal("binding for a tool the model never called was accepted")
 	}
 
 	tampered := makeBinding(t, stepID, 0, "c1", specSafe, `{"a":999}`)
-	if _, err := schema.V1().Machine.Decide(s, run.SubmitModelResult{StepID: stepID, Result: result, Calls: []run.ToolCallBinding{tampered}}); err == nil {
+	if _, err := schema.V1().Machine.Decide(s, settling(s, run.SubmitModelResult{StepID: stepID, Result: result, Calls: []run.ToolCallBinding{tampered}})); err == nil {
 		t.Fatal("binding with tampered arguments was accepted")
 	}
 }
@@ -124,8 +124,8 @@ func TestCancelSettlesEveryUnfinishedToolCall(t *testing.T) {
 			}
 			current = fold(t, current, mustDecide(t, current, run.SubmitToolResult{StepID: stepID, CallID: bindings[3].CallID,
 				Result: run.ToolExecutionResult{Output: cj(`"done"`)}}))
-			current = fold(t, current, mustDecide(t, current, run.SubmitToolFailure{StepID: stepID, CallID: bindings[4].CallID,
-				Failure: run.ToolFailure{Class: run.FailureExecution, Message: "failed"}, Outcome: run.ToolOutcomeKnown}))
+			current = fold(t, current, mustDecide(t, current, run.DeclineToolCall{StepID: stepID, CallID: bindings[4].CallID,
+				Failure: run.ToolFailure{Class: run.FailureExecution, Message: "failed"}}))
 			facts := mustDecide(t, current, run.CancelRun{})
 			if len(facts) != 4 {
 				t.Fatalf("cancel facts = %d, want three failures and RunEnded", len(facts))

@@ -338,7 +338,7 @@ func (l *Loop) deliver(ctx context.Context, rt runtime.RunStore, out Outcome, ev
 			return LoopResult{Disposition: LoopDropped}, nil
 		}
 		stepID, callID = cur.RefValue.ID, call.CallID
-		cmd = toolCompletion(stepID, callID, out)
+		cmd = toolCompletion(stepID, callID, call.Effect, out)
 	default:
 		return LoopResult{Disposition: LoopDropped}, nil
 	}

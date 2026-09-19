@@ -54,6 +54,8 @@ func (m MachineV1) Decide(s MachineState, c AgentCommand) ([]Fact, error) {
 		return m.decideSubmitToolResult(&s, cmd)
 	case SubmitToolFailure:
 		return decideSubmitToolFailure(&s, cmd)
+	case DeclineToolCall:
+		return decideDeclineToolCall(&s, cmd)
 	case ApproveToolCall:
 		return m.decideApproveToolCall(&s, cmd)
 	case RejectToolCall:
@@ -207,6 +209,19 @@ func (m MachineV1) decideRecoverModelExecution(s *MachineState, cmd RecoverModel
 	return []Fact{ModelStepRecovered{StepID: cmd.StepID}}, nil
 }
 
+// settlesModelEffect checks that a settlement names the effect the step is
+// executing (RUN-WIR-1): a settlement of an earlier effect of the same step
+// is stale.
+func settlesModelEffect(ms *ModelStep, effect EffectID, op string) error {
+	if effect == "" {
+		return rejectionf("%s: missing effect identity", op)
+	}
+	if effect != ms.Effect {
+		return rejectionf("%s: effect %q is not the step's executing effect", op, effect)
+	}
+	return nil
+}
+
 // --- rule 3: SubmitModelResult ---
 
 func (m MachineV1) decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, error) {
@@ -216,6 +231,9 @@ func (m MachineV1) decideSubmitModelResult(s *MachineState, cmd *SubmitModelResu
 	}
 	if ms.Status != ModelExecuting {
 		return nil, rejectionf("model result: step is not Executing")
+	}
+	if err := settlesModelEffect(ms, cmd.Effect, "model result"); err != nil {
+		return nil, err
 	}
 	resultDigest, err := m.Canonical.DigestModelResult(cmd.Result)
 	if err != nil {
@@ -385,6 +403,9 @@ func decideSubmitModelFailure(s *MachineState, cmd SubmitModelFailure) ([]Fact, 
 	if ms.Status != ModelExecuting {
 		return nil, rejectionf("model failure: step is not Executing")
 	}
+	if err := settlesModelEffect(ms, cmd.Effect, "model failure"); err != nil {
+		return nil, err
+	}
 	if cmd.Failure.Class == "" {
 		return nil, rejectionf("model failure: empty failure class")
 	}
@@ -407,6 +428,9 @@ func decideRejectModelResult(s *MachineState, cmd *RejectModelResult) ([]Fact, e
 	}
 	if ms.Status != ModelExecuting {
 		return nil, rejectionf("reject model result: step is not Executing")
+	}
+	if err := settlesModelEffect(ms, cmd.Effect, "reject model result"); err != nil {
+		return nil, err
 	}
 	rejected := ModelStepRejected{StepID: cmd.StepID, Usage: cmd.Usage, Failure: cmd.Failure}
 	switch cmd.Disposition {
@@ -470,6 +494,9 @@ func (m MachineV1) decideSubmitToolResult(s *MachineState, cmd SubmitToolResult)
 	if ts.Calls[i].Status != ToolExecuting {
 		return nil, rejectionf("tool result: call %q is not Executing", cmd.CallID)
 	}
+	if err := settlesToolEffect(&ts.Calls[i], cmd.Effect, "tool result"); err != nil {
+		return nil, err
+	}
 	outputDigest, err := m.Canonical.DigestToolOutput(cmd.Result.Output)
 	if err != nil {
 		return nil, err
@@ -487,6 +514,12 @@ func decideSubmitToolFailure(s *MachineState, cmd SubmitToolFailure) ([]Fact, er
 		return nil, rejectionf("tool failure: unknown call %q", cmd.CallID)
 	}
 	call := ts.Calls[i]
+	if call.Status != ToolExecuting {
+		return nil, rejectionf("tool failure: call %q is not Executing", cmd.CallID)
+	}
+	if err := settlesToolEffect(&call, cmd.Effect, "tool failure"); err != nil {
+		return nil, err
+	}
 	if cmd.Failure.Class == "" {
 		if cmd.Outcome == ToolOutcomeUnknown {
 			cmd.Failure.Class = FailureEffectUnknown
@@ -496,15 +529,8 @@ func decideSubmitToolFailure(s *MachineState, cmd SubmitToolFailure) ([]Fact, er
 	}
 	switch cmd.Outcome {
 	case ToolOutcomeKnown:
-		if call.Status != ToolPending && call.Status != ToolExecuting {
-			return nil, rejectionf("tool failure: call %q is not Pending or Executing", cmd.CallID)
-		}
-		facts := []Fact{ToolCallFailed{StepID: cmd.StepID, CallID: cmd.CallID, Failure: cmd.Failure, Outcome: ToolOutcomeKnown}}
-		return facts, nil
+		return []Fact{ToolCallFailed{StepID: cmd.StepID, CallID: cmd.CallID, Failure: cmd.Failure, Outcome: ToolOutcomeKnown}}, nil
 	case ToolOutcomeUnknown:
-		if call.Status != ToolExecuting {
-			return nil, rejectionf("tool failure: unknown outcome requires Executing call")
-		}
 		failure := cmd.Failure
 		if failure.Class == "" {
 			failure.Class = FailureEffectUnknown
@@ -516,6 +542,39 @@ func decideSubmitToolFailure(s *MachineState, cmd SubmitToolFailure) ([]Fact, er
 	default:
 		return nil, rejectionf("tool failure: unknown outcome value %d", cmd.Outcome)
 	}
+}
+
+// settlesToolEffect checks that a settlement names the effect the call is
+// executing (RUN-WIR-1): the call's one tool effect, recorded by its
+// ToolCallStarted.
+func settlesToolEffect(call *ToolCallState, effect EffectID, op string) error {
+	if effect == "" {
+		return rejectionf("%s: missing effect identity", op)
+	}
+	if effect != call.Effect {
+		return rejectionf("%s: effect %q is not the executing effect of call %q", op, effect, call.CallID)
+	}
+	return nil
+}
+
+// decideDeclineToolCall fails a Pending call before its tool effect is
+// requested (RUN-EXE-5): no ToolCallStarted, no effect, no start barrier.
+func decideDeclineToolCall(s *MachineState, cmd DeclineToolCall) ([]Fact, error) {
+	ts, err := currentToolStep(s, cmd.StepID)
+	if err != nil {
+		return nil, err
+	}
+	i := ts.callIndex(cmd.CallID)
+	if i < 0 {
+		return nil, rejectionf("decline tool: unknown call %q", cmd.CallID)
+	}
+	if ts.Calls[i].Status != ToolPending {
+		return nil, rejectionf("decline tool: call %q is not Pending", cmd.CallID)
+	}
+	if cmd.Failure.Class == "" {
+		return nil, rejectionf("decline tool: empty failure class")
+	}
+	return []Fact{ToolCallFailed{StepID: cmd.StepID, CallID: cmd.CallID, Failure: cmd.Failure, Outcome: ToolOutcomeKnown}}, nil
 }
 
 // --- rules 9-10: responses ---

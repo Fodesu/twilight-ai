@@ -35,6 +35,7 @@ func TestDerivedIdentityGolden(t *testing.T) {
 		{"start command", string((IdentityV1{}).DeriveStartCommandID(effect)), "5fbd4523f88a2e24369724c7829e378883a83851f4164b78d0cd5d07c790fd3b"},
 		{"settlement command", string((IdentityV1{}).DeriveSettlementCommandID(effect)), "6e05abc3045f404dfe76216a9bd84ec8b6ca0294177d60e9695ebd354446a01d"},
 		{"recovery command", string((IdentityV1{}).DeriveRecoveryCommandID(effect)), "3059f690e0e819d6f1f08bdfe09f22c4012d1d284ee90c02c3e50175102d6735"},
+		{"decline command", string((IdentityV1{}).DeriveDeclineCommandID(runID, step, call)), "c5eab65b0a9a2b828d18aed6ecc3655eff37cf55b275eb5fd15f26367637d49a"},
 	}
 	for _, c := range cases {
 		if c.got == c.want {

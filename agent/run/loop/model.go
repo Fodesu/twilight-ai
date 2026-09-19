@@ -191,7 +191,7 @@ func (l *Loop) modelCompletion(sch schema.Schema, step *run.ModelStep, out Outco
 		if r.Message != "" {
 			message = r.Message
 		}
-		return run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureEffectUnknown, Message: message}}, nil
+		return run.SubmitModelFailure{StepID: stepID, Effect: step.Effect, Failure: run.StepFailure{Class: run.FailureEffectUnknown, Message: message}}, nil
 	case effect.Cancelled:
 		return withdraw, nil
 	case effect.ModelFailed:
@@ -200,30 +200,30 @@ func (l *Loop) modelCompletion(sch schema.Schema, step *run.ModelStep, out Outco
 			return withdraw, fmt.Errorf("agent: loop: model dispatch: %w: %s", frozen.ErrMissing, r.Message)
 		case effect.FailureMalformedRequest:
 			failure := run.StepFailure{Class: run.FailureMalformedModel, Message: r.Message}
-			return run.RejectModelResult{StepID: stepID, Failure: failure, Disposition: l.modelRejectDisposition(step, failure)}, nil
+			return run.RejectModelResult{StepID: stepID, Effect: step.Effect, Failure: failure, Disposition: l.modelRejectDisposition(step, failure)}, nil
 		case effect.FailureDeadline:
 			return withdraw, nil
 		default:
-			return run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: r.Message}}, nil
+			return run.SubmitModelFailure{StepID: stepID, Effect: step.Effect, Failure: run.StepFailure{Class: run.FailureProvider, Message: r.Message}}, nil
 		}
 	default:
 		// A tool result or no result for a model step: the executor answered
 		// for the wrong effect. Nothing certain happened.
-		return run.SubmitModelFailure{StepID: stepID, Failure: run.StepFailure{Class: run.FailureProvider, Message: fmt.Sprintf("executor delivered %T for a model step", out.Result)}}, nil
+		return run.SubmitModelFailure{StepID: stepID, Effect: step.Effect, Failure: run.StepFailure{Class: run.FailureProvider, Message: fmt.Sprintf("executor delivered %T for a model step", out.Result)}}, nil
 	}
 	bindings, bindErr := l.bindToolCalls(sch, &result, step)
 	if bindErr != nil {
 		failure := run.StepFailure{Class: run.FailureMalformedModel, Message: bindErr.Error()}
-		return run.RejectModelResult{StepID: stepID, Usage: sdkconv.FreezeUsage(result.Usage), Failure: failure,
+		return run.RejectModelResult{StepID: stepID, Effect: step.Effect, Usage: sdkconv.FreezeUsage(result.Usage), Failure: failure,
 			Disposition: l.modelRejectDisposition(step, failure)}, nil
 	}
 	frozenResult, freezeErr := sdkconv.FreezeModelResult(result)
 	if freezeErr != nil {
 		failure := run.StepFailure{Class: run.FailureMalformedModel, Message: freezeErr.Error()}
-		return run.RejectModelResult{StepID: stepID, Usage: sdkconv.FreezeUsage(result.Usage), Failure: failure,
+		return run.RejectModelResult{StepID: stepID, Effect: step.Effect, Usage: sdkconv.FreezeUsage(result.Usage), Failure: failure,
 			Disposition: l.modelRejectDisposition(step, failure)}, nil
 	}
-	return run.SubmitModelResult{StepID: stepID, Result: frozenResult, Calls: bindings, Scheduling: l.toolScheduling()}, nil
+	return run.SubmitModelResult{StepID: stepID, Effect: step.Effect, Result: frozenResult, Calls: bindings, Scheduling: l.toolScheduling()}, nil
 }
 
 // modelRejectDisposition applies Settings.MalformedRetries: the step's

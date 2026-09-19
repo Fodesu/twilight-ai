@@ -488,7 +488,7 @@ func (h *harness) openToolStep(runID run.RunID, n int) (run.StepID, []run.CallID
 	step, eff := h.executingModel(runID, true)
 	result, bindings := h.toolCallResult(step, n)
 	res := h.mustCommit(runID, schema.V1().Identity.DeriveSettlementCommandID(eff), 0,
-		run.SubmitModelResult{StepID: step, Result: result, Calls: bindings})
+		run.SubmitModelResult{StepID: step, Effect: eff, Result: result, Calls: bindings})
 	ts, ok := res.Snapshot.State.Current.(run.ToolStep)
 	if !ok {
 		h.fatal(fmt.Sprintf("after model result current = %T", res.Snapshot.State.Current))

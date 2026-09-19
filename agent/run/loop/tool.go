@@ -22,10 +22,11 @@ func toolCallIndex(step run.ToolStep, callID run.CallID) int {
 
 // startToolCalls validates, starts and dispatches the Pending calls the
 // frozen Scheduling allows (RUN-LOP-4). Validation happens before the start
-// barrier through the Executor and settles as a Known failure without a
-// start; a validated call is started under its tool effect and handed to the
-// Executor. It returns the dispatched keys; an empty list with no error means
-// nothing is executing on this Loop's behalf and the reload decides.
+// barrier through the Executor and a failed call is declined without a start
+// (DeclineToolCall, RUN-EXE-5); a validated call is started under its tool
+// effect and handed to the Executor. It returns the dispatched keys; an empty
+// list with no error means nothing is executing on this Loop's behalf and the
+// reload decides.
 func (l *Loop) startToolCalls(ctx context.Context, rt runtime.RunStore, events EventSink, snapshot *runtime.Snapshot, act plan.StartToolCalls) ([]AssignmentKey, error) {
 	runID := snapshot.State.RunID
 	schema, err := snapshot.Schema()
@@ -77,12 +78,12 @@ func (l *Loop) startToolCalls(ctx context.Context, rt runtime.RunStore, events E
 		}
 		ref := toolEffect(schema, runID, act.StepID, callID)
 		if known != nil {
-			// Known failure of a Pending call: no start barrier, no tool call.
-			// The call settles once whether or not it was started, so the
-			// settlement is identified by its one tool effect; a retry of the
-			// same rejection is idempotent.
-			res, err := l.commit(ctx, rt, runID, ref.settlementID(), snapshot.Position,
-				run.SubmitToolFailure{StepID: act.StepID, CallID: callID, Failure: *known, Outcome: run.ToolOutcomeKnown}, schema)
+			// The call fails before its effect is requested: no start
+			// barrier, no effect, no attempt. A call is declined at most
+			// once, so the decline is identified by the call alone and a
+			// retry of the same rejection is idempotent (RUN-EXE-5).
+			res, err := l.commit(ctx, rt, runID, schema.Identity.DeriveDeclineCommandID(runID, act.StepID, callID), snapshot.Position,
+				run.DeclineToolCall{StepID: act.StepID, CallID: callID, Failure: *known}, schema)
 			if err != nil {
 				if retriable(err) {
 					return dispatched, nil // another actor moved the call; reload decides
@@ -125,7 +126,7 @@ func (l *Loop) startToolCalls(ctx context.Context, rt runtime.RunStore, events E
 			// failure so the call does not stay Executing.
 			failure := run.ToolFailure{Class: run.FailureExecution, Message: "dispatch: " + err.Error()}
 			if _, serr := l.settle(context.WithoutCancel(ctx), rt, events, &ref, start.Snapshot.Position,
-				run.SubmitToolFailure{StepID: act.StepID, CallID: callID, Failure: failure, Outcome: run.ToolOutcomeKnown}, schema); serr != nil {
+				run.SubmitToolFailure{StepID: act.StepID, CallID: callID, Effect: ref.id, Failure: failure, Outcome: run.ToolOutcomeKnown}, schema); serr != nil {
 				return dispatched, serr
 			}
 			continue
@@ -161,39 +162,39 @@ func executingCall(step *run.ToolStep, id run.EffectID) (run.ToolCallState, bool
 	return run.ToolCallState{}, false
 }
 
-// toolCompletion maps a tool Outcome to the call's settlement command. A
-// sealed outcome maps directly; a missing outcome or a transport error is
-// Unknown, because the effect may have happened (RUN-LOP-5).
-func toolCompletion(stepID run.StepID, callID run.CallID, out Outcome) run.AgentCommand {
+// toolCompletion maps a tool Outcome to the settlement of the call's tool
+// effect. A sealed outcome maps directly; a missing outcome or a transport
+// error is Unknown, because the effect may have happened (RUN-LOP-5).
+func toolCompletion(stepID run.StepID, callID run.CallID, eff run.EffectID, out Outcome) run.AgentCommand {
 	switch o := out.Result.(type) {
 	case ToolExecutionSucceeded:
-		return run.SubmitToolResult{StepID: stepID, CallID: callID, Result: o.Result}
+		return run.SubmitToolResult{StepID: stepID, CallID: callID, Effect: eff, Result: o.Result}
 	case ToolExecutionFailed:
 		failure := o.Failure
 		if failure.Class == "" || failure.Class == run.FailureEffectUnknown {
 			failure.Class = run.FailureExecution
 		}
-		return run.SubmitToolFailure{StepID: stepID, CallID: callID, Failure: failure, Outcome: run.ToolOutcomeKnown}
+		return run.SubmitToolFailure{StepID: stepID, CallID: callID, Effect: eff, Failure: failure, Outcome: run.ToolOutcomeKnown}
 	case ToolExecutionUnknown:
 		failure := o.Failure
 		if failure.Class != "" && failure.Class != run.FailureEffectUnknown && failure.Message == "" {
 			failure.Message = "tool reported " + failure.Class
 		}
 		failure.Class = run.FailureEffectUnknown
-		return run.SubmitToolFailure{StepID: stepID, CallID: callID, Failure: failure, Outcome: run.ToolOutcomeUnknown}
+		return run.SubmitToolFailure{StepID: stepID, CallID: callID, Effect: eff, Failure: failure, Outcome: run.ToolOutcomeUnknown}
 	case effect.Cancelled:
-		return run.SubmitToolFailure{StepID: stepID, CallID: callID,
+		return run.SubmitToolFailure{StepID: stepID, CallID: callID, Effect: eff,
 			Failure: run.ToolFailure{Class: run.FailureEffectUnknown, Message: "cancelled: " + o.Message}, Outcome: run.ToolOutcomeUnknown}
 	case effect.Unknown:
 		msg := "tool returned no outcome"
 		if o.Message != "" {
 			msg = "executor: " + o.Message
 		}
-		return run.SubmitToolFailure{StepID: stepID, CallID: callID,
+		return run.SubmitToolFailure{StepID: stepID, CallID: callID, Effect: eff,
 			Failure: run.ToolFailure{Class: run.FailureEffectUnknown, Message: msg}, Outcome: run.ToolOutcomeUnknown}
 	}
 	// A model result or no result for a tool call: the effect may have
 	// happened, so it is Unknown (RUN-LOP-5).
-	return run.SubmitToolFailure{StepID: stepID, CallID: callID,
+	return run.SubmitToolFailure{StepID: stepID, CallID: callID, Effect: eff,
 		Failure: run.ToolFailure{Class: run.FailureEffectUnknown, Message: fmt.Sprintf("executor delivered %T for a tool call", out.Result)}, Outcome: run.ToolOutcomeUnknown}
 }

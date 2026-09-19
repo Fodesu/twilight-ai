@@ -69,6 +69,7 @@ func RecoveryCommand(id run.Identity, target RecoveryTarget) RecoveryDisposition
 		Command: run.SubmitToolFailure{
 			StepID:  target.StepID,
 			CallID:  target.CallID,
+			Effect:  target.Effect,
 			Failure: run.ToolFailure{Class: run.FailureEffectUnknown, Message: "owner process lost before settlement"},
 			Outcome: run.ToolOutcomeUnknown,
 		},

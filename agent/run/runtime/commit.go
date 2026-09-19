@@ -59,21 +59,10 @@ func EvaluateCommit(cur run.MachineState, position run.RunPosition, req CommitRe
 	if err := ValidateEnvelope(&env, sch); err != nil {
 		return CommitDecision{}, err
 	}
-	// The effect a start or recovery names is part of the command identity
-	// (RUN-WIR-1).
-	switch cmd := env.Command.(type) {
-	case run.StartModelExecution:
-		if cmd.Effect == "" {
-			return CommitDecision{Kind: DecisionConflict, Reject: errors.New("agent: commit: model start requires its effect identity")}, nil
-		}
-	case run.StartToolCall:
-		if cmd.Effect == "" {
-			return CommitDecision{Kind: DecisionConflict, Reject: errors.New("agent: commit: tool start requires its effect identity")}, nil
-		}
-	case run.RecoverModelExecution:
-		if cmd.Effect == "" {
-			return CommitDecision{Kind: DecisionConflict, Reject: errors.New("agent: commit: model recovery requires its effect identity")}, nil
-		}
+	// The effect a start, settlement or recovery names is part of the
+	// command identity (RUN-WIR-1): without it no CommandID derives.
+	if op, effect, named := namedEffect(env.Command); named && effect == "" {
+		return CommitDecision{Kind: DecisionConflict, Reject: fmt.Errorf("agent: commit: %s requires its effect identity", op)}, nil
 	}
 	// Derived-identity families must use their derived CommandID (RUN-WIR-3):
 	// the derivation is the idempotency index, so a caller-minted random ID
@@ -141,6 +130,32 @@ func EvaluateCommit(cur run.MachineState, position run.RunPosition, req CommitRe
 	return CommitDecision{Kind: DecisionApply, NewState: state, Facts: detached}, nil
 }
 
+// namedEffect reports the effect a command names and the operation a
+// rejection reports it under; named is false for commands whose identity
+// does not derive from an effect.
+func namedEffect(cmd run.AgentCommand) (op string, effect run.EffectID, named bool) {
+	switch c := cmd.(type) {
+	case run.StartModelExecution:
+		return "model start", c.Effect, true
+	case run.StartToolCall:
+		return "tool start", c.Effect, true
+	case run.RecoverModelExecution:
+		return "model recovery", c.Effect, true
+	case run.SubmitModelResult:
+		return "model result", c.Effect, true
+	case run.SubmitModelFailure:
+		return "model failure", c.Effect, true
+	case run.RejectModelResult:
+		return "model reject", c.Effect, true
+	case run.SubmitToolResult:
+		return "tool result", c.Effect, true
+	case run.SubmitToolFailure:
+		return "tool failure", c.Effect, true
+	default:
+		return "", "", false
+	}
+}
+
 // checkDerivedCommandID enforces the derived-identity rules of RUN-WIR-3.
 func checkDerivedCommandID(env *wire.CommandEnvelope, base run.RunPosition, id run.Identity) error {
 	var want run.CommandID
@@ -163,6 +178,25 @@ func checkDerivedCommandID(env *wire.CommandEnvelope, base run.RunPosition, id r
 		want = id.DeriveStartCommandID(cmd.Effect)
 	case run.RecoverModelExecution:
 		want = id.DeriveRecoveryCommandID(cmd.Effect)
+	case run.SubmitModelResult:
+		want = id.DeriveSettlementCommandID(cmd.Effect)
+	case run.SubmitModelFailure:
+		want = id.DeriveSettlementCommandID(cmd.Effect)
+	case run.RejectModelResult:
+		want = id.DeriveSettlementCommandID(cmd.Effect)
+	case run.SubmitToolResult:
+		want = id.DeriveSettlementCommandID(cmd.Effect)
+	case run.SubmitToolFailure:
+		// An Unknown tool failure is either the owner's settlement of a
+		// delivered Outcome or a takeover disposition (RUN-CMT-7). The two
+		// are distinct operations with their own identities; either closes
+		// the effect once.
+		if cmd.Outcome == run.ToolOutcomeUnknown && env.ID == id.DeriveRecoveryCommandID(cmd.Effect) {
+			return nil
+		}
+		want = id.DeriveSettlementCommandID(cmd.Effect)
+	case run.DeclineToolCall:
+		want = id.DeriveDeclineCommandID(env.RunID, cmd.StepID, cmd.CallID)
 	default:
 		return nil
 	}

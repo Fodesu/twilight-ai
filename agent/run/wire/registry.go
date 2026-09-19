@@ -79,6 +79,7 @@ var commandVariantsV1 = []commandVariant{
 	commandOf[run.StartToolCall]("start_tool_call"),
 	commandOf[run.SubmitToolResult]("submit_tool_result"),
 	commandOf[run.SubmitToolFailure]("submit_tool_failure"),
+	commandOf[run.DeclineToolCall]("decline_tool_call"),
 	commandOf[run.ApproveToolCall]("approve_tool_call"),
 	commandOf[run.RejectToolCall]("reject_tool_call"),
 	commandOf[run.SubmitToolResponse]("submit_tool_response"),

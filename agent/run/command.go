@@ -80,9 +80,14 @@ type RecoverModelExecution struct {
 func (RecoverModelExecution) agentCommand() {}
 
 // SubmitModelResult submits one complete model result with its tool-call
-// bindings. Requires the model start grant.
+// bindings. It settles the step's executing model effect.
 type SubmitModelResult struct {
-	StepID     StepID            `json:"stepId"`
+	StepID StepID `json:"stepId"`
+	// Effect is the model effect this settlement closes: the one the step's
+	// ModelStepStarted recorded. A settlement naming any other effect is
+	// stale. It is part of the command digest and the preimage of the
+	// command's identity, so a transport retry must retain it.
+	Effect     EffectID          `json:"effect"`
 	Result     model.ModelResult `json:"result"`
 	Calls      []ToolCallBinding `json:"calls,omitempty"`
 	Scheduling ToolScheduling    `json:"scheduling,omitzero"`
@@ -90,10 +95,12 @@ type SubmitModelResult struct {
 
 func (SubmitModelResult) agentCommand() {}
 
-// SubmitModelFailure submits the final failure of one model call. Requires
-// the model start grant.
+// SubmitModelFailure submits the final failure of one model call. It
+// settles the step's executing model effect.
 type SubmitModelFailure struct {
-	StepID  StepID      `json:"stepId"`
+	StepID StepID `json:"stepId"`
+	// Effect is the model effect this settlement closes (see SubmitModelResult).
+	Effect  EffectID    `json:"effect"`
 	Failure StepFailure `json:"failure"`
 }
 
@@ -112,10 +119,12 @@ const (
 
 // RejectModelResult records a structurally malformed model result: usage is
 // accumulated, the step's reject counter is incremented, and Disposition
-// decides whether the same frozen request retries or the Run fails. Requires
-// the model start grant.
+// decides whether the same frozen request retries or the Run fails. It
+// settles the step's executing model effect.
 type RejectModelResult struct {
-	StepID      StepID                 `json:"stepId"`
+	StepID StepID `json:"stepId"`
+	// Effect is the model effect this settlement closes (see SubmitModelResult).
+	Effect      EffectID               `json:"effect"`
 	Usage       model.Usage            `json:"usage"`
 	Failure     StepFailure            `json:"failure"`
 	Disposition ModelRejectDisposition `json:"disposition,omitempty"`
@@ -133,28 +142,48 @@ type StartToolCall struct {
 
 func (StartToolCall) agentCommand() {}
 
-// SubmitToolResult submits one successful tool execution. Requires that
-// call's start grant.
+// SubmitToolResult submits one successful tool execution. It settles the
+// call's executing tool effect.
 type SubmitToolResult struct {
-	StepID StepID              `json:"stepId"`
-	CallID CallID              `json:"callId"`
+	StepID StepID `json:"stepId"`
+	CallID CallID `json:"callId"`
+	// Effect is the tool effect this settlement closes: the one the call's
+	// ToolCallStarted recorded (see SubmitModelResult).
+	Effect EffectID            `json:"effect"`
 	Result ToolExecutionResult `json:"result"`
 }
 
 func (SubmitToolResult) agentCommand() {}
 
-// SubmitToolFailure submits a known or unknown tool failure. A known failure
-// on a Pending call uses an empty grant; a failure on an Executing call
-// requires that call's grant. Unknown outcome records ToolCallFailed for
-// that Executing call and leaves the Run active.
+// SubmitToolFailure submits the known or unknown failure of one Executing
+// call's tool effect. Known outcome records the failure the execution
+// reported; Unknown outcome records ToolCallFailed(Unknown) for the call and
+// leaves the Run active. A call that fails before its effect is requested is
+// declined instead (DeclineToolCall).
 type SubmitToolFailure struct {
-	StepID  StepID             `json:"stepId"`
-	CallID  CallID             `json:"callId"`
+	StepID StepID `json:"stepId"`
+	CallID CallID `json:"callId"`
+	// Effect is the tool effect this settlement closes (see SubmitToolResult).
+	Effect  EffectID           `json:"effect"`
 	Failure ToolFailure        `json:"failure"`
 	Outcome ToolFailureOutcome `json:"outcome"`
 }
 
 func (SubmitToolFailure) agentCommand() {}
+
+// DeclineToolCall fails one Pending call before its tool effect is
+// requested: the pre-start validation found the call cannot be dispatched
+// (RUN-EXE-5). It records ToolCallFailed(Known) with no ToolCallStarted, so
+// the call has no effect and no start barrier is crossed. A call is declined
+// at most once, so the command's identity is the call's coordinates
+// (DeriveDeclineCommandID) and needs no content.
+type DeclineToolCall struct {
+	StepID  StepID      `json:"stepId"`
+	CallID  CallID      `json:"callId"`
+	Failure ToolFailure `json:"failure"`
+}
+
+func (DeclineToolCall) agentCommand() {}
 
 // ApproveToolCall approves a Waiting(Approval) call. ResponseDigest must be
 // DigestToolResponseDecision(ResponseApproval, ResponseDecisionApproved, "").
