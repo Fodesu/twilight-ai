@@ -2,14 +2,13 @@ package app_test
 
 import (
 	"context"
-	"errors"
+	"sync"
 	"testing"
 
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
-	"github.com/felinics/twilight/agent/session/target"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -35,94 +34,125 @@ func (t *targetTool) Execute(_ context.Context, req loop.ToolExecutionRequest) l
 	return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}
 }
 
-// The bound target is a Session fact the default resolver hands to every tool
-// effect (APP-TGT-1, RUN-LOP-9); binding the current target again writes
-// nothing.
-func TestBindTargetReachesToolEffects(t *testing.T) {
-	ctx := context.Background()
-	tool := &targetTool{seen: make(chan *run.TargetRef, 1)}
-	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
-	store := session.NewMemoryStore()
-	h := newHost(app.Config{Store: store}, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tool)
-	preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{tool}))
-	if err != nil {
-		t.Fatal(err)
+// appResolver stands for the application's resource layer: it owns the
+// Session → workspace binding and answers the core's TargetResolver seam
+// (APP-TGT-1). Tool effects get the Session's binding, model effects none.
+type appResolver struct {
+	mu       sync.Mutex
+	bindings map[session.SessionID]run.TargetRef
+	seen     []loop.EffectContext
+}
+
+func (r *appResolver) bind(sid session.SessionID, ref run.TargetRef) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.bindings == nil {
+		r.bindings = make(map[session.SessionID]run.TargetRef)
 	}
+	r.bindings[sid] = ref
+}
+
+func (r *appResolver) ResolveTarget(_ context.Context, ec loop.EffectContext) (*run.TargetRef, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.seen = append(r.seen, ec)
+	if ec.Kind != loop.AssignmentTool {
+		return nil, nil
+	}
+	ref, ok := r.bindings[session.SessionID(ec.Session)]
+	if !ok {
+		return nil, nil
+	}
+	return &ref, nil
+}
+
+func (r *appResolver) contexts() []loop.EffectContext {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]loop.EffectContext(nil), r.seen...)
+}
+
+// The core has no target fact of its own: with no resolver every effect has
+// no target; with the application's resolver each tool effect is resolved
+// once, by its own coordinates, and the answer reaches the tool (APP-TGT-1,
+// RUN-LOP-9).
+func TestTargetResolverSeam(t *testing.T) {
+	ctx := context.Background()
 	const sid session.SessionID = "s-1"
-	s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: preset})
-	if err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name     string
+		resolver *appResolver
+		want     *run.TargetRef
+	}{
+		{name: "no resolver", want: nil},
+		{name: "application resolver", resolver: &appResolver{}, want: &ws1},
 	}
-	if got, err := s.Target(ctx); err != nil || got != nil {
-		t.Fatalf("unbound target = %v %v", got, err)
-	}
-	if err := s.BindTarget(ctx, run.TargetRef{Kind: "workspace"}); err == nil {
-		t.Fatal("an incomplete target was bound")
-	}
-	if err := s.BindTarget(ctx, ws1); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := s.Target(ctx); err != nil || got == nil || *got != ws1 {
-		t.Fatalf("target = %v %v, want %v", got, err, ws1)
-	}
-	commits := func() int {
-		page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return len(page.Commits)
-	}
-	before := commits()
-	if err := s.BindTarget(ctx, ws1); err != nil {
-		t.Fatal(err)
-	}
-	if after := commits(); after != before {
-		t.Fatalf("rebinding the current target wrote %d commits", after-before)
-	}
-
-	results, err := s.Send(ctx, "what is the weather?")
-	if err != nil || len(results) != 1 || results[0].Status != turn.TurnCompleted {
-		t.Fatalf("send = %+v %v", results, err)
-	}
-	if seen := <-tool.seen; seen == nil || *seen != ws1 {
-		t.Fatalf("tool effect target = %v, want %v", seen, ws1)
-	}
-	if err := s.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// The binding changes between Turns only (APP-TGT-1).
-func TestBindTargetRefusesWhileTurnActive(t *testing.T) {
-	ctx := context.Background()
-	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
-	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
-	_, _, _, s := setup(t, model, tool, app.SessionOptions{})
-	done := make(chan error, 1)
-	go func() {
-		_, err := s.Send(ctx, "one")
-		done <- err
-	}()
-	<-tool.started
-	if err := s.BindTarget(ctx, ws1); !errors.Is(err, turn.ErrConflict) {
-		t.Fatalf("bind mid-turn = %v, want conflict", err)
-	}
-	close(tool.release)
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	if err := s.BindTarget(ctx, ws1); err != nil {
-		t.Fatalf("bind after settlement = %v", err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tool := &targetTool{seen: make(chan *run.TargetRef, 1)}
+			model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
+			cfg := app.Config{Store: session.NewMemoryStore()}
+			if tc.resolver != nil {
+				tc.resolver.bind(sid, ws1)
+				cfg.TargetResolver = tc.resolver
+			}
+			h := newHost(cfg, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tool)
+			preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{tool}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: preset})
+			if err != nil {
+				t.Fatal(err)
+			}
+			results, err := s.Send(ctx, "what is the weather?")
+			if err != nil || len(results) != 1 || results[0].Status != turn.TurnCompleted {
+				t.Fatalf("send = %+v %v", results, err)
+			}
+			seen := <-tool.seen
+			if (seen == nil) != (tc.want == nil) || (seen != nil && *seen != *tc.want) {
+				t.Fatalf("tool effect target = %v, want %v", seen, tc.want)
+			}
+			if err := s.Close(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if tc.resolver == nil {
+				return
+			}
+			var tools, models int
+			for _, ec := range tc.resolver.contexts() {
+				if session.SessionID(ec.Session) != sid || ec.Effect == "" {
+					t.Fatalf("effect context %+v lacks its coordinates", ec)
+				}
+				switch ec.Kind {
+				case loop.AssignmentTool:
+					tools++
+					if ec.Tool != "lookup" || ec.CallID == "" {
+						t.Fatalf("tool effect context %+v", ec)
+					}
+				case loop.AssignmentModel:
+					models++
+				}
+			}
+			if tools != 1 || models != 2 {
+				t.Fatalf("resolved %d tool and %d model effects, want 1 and 2", tools, models)
+			}
+		})
 	}
 }
 
-// The binding is of session lineage: a fork child starts with its parent's
-// target and rebinding the child leaves the parent unchanged (SES-FRK-5).
-func TestForkChildInheritsTarget(t *testing.T) {
+// A conversation fork carries no resource binding: the child's target is
+// whatever the application's fork policy binds for it, never the parent's
+// binding by lineage (APP-TGT-1, TRN-DUR-3).
+func TestForkChildTargetIsApplicationPolicy(t *testing.T) {
 	ctx := context.Background()
-	model := &scriptedRequests{}
-	h := newHost(app.Config{Store: session.NewMemoryStore()}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
-	preset, err := h.RegisterPreset("b1", mustPreset("m-1", nil))
+	resolver := &appResolver{}
+	tool := &targetTool{seen: make(chan *run.TargetRef, 1)}
+	done := sdk.ModelResult{Text: "done", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}
+	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer(), done, toolCallAnswer(), done, toolCallAnswer(), done}}
+	h := newHost(app.Config{Store: session.NewMemoryStore(), TargetResolver: resolver},
+		map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tool)
+	preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{tool}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,33 +165,34 @@ func TestForkChildInheritsTarget(t *testing.T) {
 		}
 		return s
 	}
-	parent := open("parent", "p")
-	if err := parent.BindTarget(ctx, ws1); err != nil {
-		t.Fatal(err)
-	}
-	for _, text := range []string{"hello", "again"} {
-		if _, err := parent.Send(ctx, text); err != nil {
-			t.Fatal(err)
+	drive := func(name string, run func() error) *run.TargetRef {
+		if err := run(); err != nil {
+			t.Fatalf("%s: %v", name, err)
 		}
+		return <-tool.seen
+	}
+	resolver.bind("parent", ws1)
+	parent := open("parent", "p")
+	if got := drive("parent send", func() error { _, err := parent.Send(ctx, "hello"); return err }); got == nil || *got != ws1 {
+		t.Fatalf("parent target = %v, want %v", got, ws1)
 	}
 	if err := parent.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.ForkBeforeTurn(ctx, "parent", "p2", "child"); err != nil {
+	// Regenerate: fork before the parent's Turn and drain its input again.
+	if _, err := h.ForkBeforeTurn(ctx, "parent", "p1", "child"); err != nil {
 		t.Fatal(err)
 	}
 	child := open("child", "c")
-	if got, err := child.Target(ctx); err != nil || got == nil || *got != ws1 {
-		t.Fatalf("inherited target = %v %v, want %v", got, err, ws1)
+	// Until the application binds a workspace for the child, its tool
+	// effects have no target: nothing is inherited from the parent.
+	if got := drive("child drain", func() error { _, _, err := child.Drain(ctx); return err }); got != nil {
+		t.Fatalf("unbound child target = %v, want none", got)
 	}
-	if err := child.BindTarget(ctx, ws2); err != nil {
-		t.Fatal(err)
-	}
-	if got, err := child.Target(ctx); err != nil || got == nil || *got != ws2 {
-		t.Fatalf("child target = %v %v, want %v", got, err, ws2)
-	}
-	if cur, err := target.Read(ctx, h.Authority.Projections, "parent"); err != nil || cur.Target == nil || *cur.Target != ws1 {
-		t.Fatalf("parent target = %+v %v, want %v", cur, err, ws1)
+	// The application's fork policy allocates a fresh workspace for the child.
+	resolver.bind("child", ws2)
+	if got := drive("child send", func() error { _, err := child.Send(ctx, "again"); return err }); got == nil || *got != ws2 {
+		t.Fatalf("child target = %v, want %v", got, ws2)
 	}
 	if err := child.Close(ctx); err != nil {
 		t.Fatal(err)

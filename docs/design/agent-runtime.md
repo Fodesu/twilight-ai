@@ -22,7 +22,7 @@
 | Authority | `authority.Authority`：事实层 + 决策层 + driver，发放 `Handle` |
 | Executor | `effect.Port`；实现是进程内 `LocalExecutor` 或远端客户端，效果实现只在这一侧 |
 | Read Models / 观察者 | `extension.ProjectionReader` 按 SessionID 读取；`observe.Bus` 是 owner 侧的实时流，两者对同一 head 一致（EXT-PRJ-4） |
-| Workspace | 运行时只接收 opaque `TargetRef`，由 `TargetResolver` 按 effect 解析（RUN-LOP-9），默认解析器读 Session 级绑定（APP-TGT-1）；Workspace 与 Runtime 服务在 core 之外 |
+| Workspace | 运行时只接收 opaque `TargetRef`，由 `TargetResolver` 按 effect 解析（RUN-LOP-9）；解析器实现、资源注册与 Workspace 管理在 core 之外（APP-TGT-1） |
 | 存活判定 / 何时 Takeover | 不在 core 也不在运行时；由部署决定 |
 | Agent Server（API、Auth、路由） | core 之外 |
 
@@ -36,7 +36,7 @@ type Ports struct {
     Presets        preset.Registry             // nil → 内存注册表；只存决策身份
     Decisions      *decision.PromptBuilders    // nil → decision.DefaultPromptBuilders()
     Executor       effect.Port                 // 必填：效果层端口（RUN-EXE-3）
-    TargetResolver loop.TargetResolver         // 按 effect 解析 opaque target（RUN-LOP-9）；nil 选 target.Resolver（APP-TGT-1）
+    TargetResolver loop.TargetResolver         // application 的资源层按 effect 解析 opaque target（RUN-LOP-9）；nil 时每个 effect 无 target（APP-TGT-1）
     Observers      []writer.CommitObserver     // 提交观察（EXT-WRT-7）
     Modules        []extension.ModuleDescriptor
     Schema         extension.SchemaVersion     // 新 Session 声明的 Schema；零值为 SchemaVersion1（AUTH-SCH-1）
@@ -167,8 +167,6 @@ func (s *Session) Resume(ctx) ([]Result, bool, error)
 func (s *Session) Retry(ctx) ([]Result, bool, error)
 func (s *Session) Status(ctx) (SessionStatus, error)
 func (s *Session) Compact(ctx) (chatlog.CheckpointID, bool, error)
-func (s *Session) BindTarget(ctx, run.TargetRef) error                  // APP-TGT-1
-func (s *Session) Target(ctx) (*run.TargetRef, error)
 func (s *Session) Handle() *authority.Handle
 func (s *Session) Close(ctx) error
 ```
@@ -201,7 +199,7 @@ func (s *Session) Close(ctx) error
 
 ### 7.3 资源 target
 
-**APP-TGT-1（Session 级 target 绑定）** first-party 模块 `agent/session/target` 把 RUN-LOP-9 的解析映射持久化为 Session 事实：单例流 `target`（session lineage）上的事件 `twilight/target/bound{target}`，后一条覆盖前一条；投影 `twilight/target/current` 折叠出当前 target（authoritative，EXT-PRJ-9）。`target.Commands.Bind(ctx, w, ref, guard)` 在该 Session Writer 的 Commit 临界区内先执行 `guard`，再读该投影：ref 已是当前 target 时不写入（Writer 回答 `Noop`，重试幂等）；否则以 CommitID `target-bound/<SessionID>/<Head().Next>` 提交一条 bound。`app.Session.BindTarget` 以 `turn.RequireNoActiveTurn` 为 guard：绑定只在 Turn 之间变更，已启动的 effect 保持其 Assignment 中的 target。`target.Resolver{Projections, Required}` 是默认的 `loop.TargetResolver`（`Ports.TargetResolver` 为 nil 时由 `authority.New` 装配）：tool effect 在启动时刻解析为该 Session 的当前 target，model effect 无 target；Session 未绑定时 tool effect 无 target，`Required` 为真时返回 `ErrUnbound`，该 effect 不启动（RUN-LOP-9）。流为 session lineage：fork 子继承父在分叉点的绑定，子的 Bind 只写入子段（SES-FRK-5）。target 不是 Run 事实；其含义由 Workspace domain 定义（agent-workspace.md）。
+**APP-TGT-1（target 解析归 application）** core 对资源 target 只提供 RUN-LOP-9 的 seam：`loop.EffectContext`、`run.TargetRef` 与 `loop.TargetResolver` 接口。core 没有 target 事实，不持久化 Session 到资源的映射，也不提供默认解析器：`Ports.TargetResolver` 为 nil 时每个 effect 无 target。资源注册、Workspace 生命周期管理与 `TargetResolver` 实现属于 application（cloud agent / Memoh），映射的持久性由 application 保证。对话 lineage 与资源 lineage 是两套 lineage：Session fork（AUTH-FRK-2）只复制已提交事实，子 Session 不继承父的资源绑定；子的绑定由 application 的 fork policy 决定（共享父的 workspace、克隆 workspace、从 checkpoint 恢复、分配新 workspace），并由 application 为子建立新的 resource binding（agent-workspace.md）。application 绑定之前，子的 tool effect 无 target。target 的含义由 Workspace domain 定义。
 
 ## 8. 子代理（spawn）
 
@@ -223,7 +221,7 @@ func (s *Session) Close(ctx) error
 
 ```text
 // authority.New
-registry    = extension.BuildRegistry(v1, chatlog.Module, runmod.Module, turn.Module, target.Module, Ports.Modules...)
+registry    = extension.BuildRegistry(v1, chatlog.Module, runmod.Module, turn.Module, Ports.Modules...)
 schema      = Ports.Schema | extension.SchemaVersion1               // registry 须在其下有 codec（AUTH-SCH-1）；checkMigrators(Ports.Migrators)（AUTH-MIG-1）
 frozen      = runmod.FrozenValues(Content)
 content     = runmod.NewContent(frozen)                          // materializer：prompt、Reply、transcript
@@ -232,8 +230,7 @@ runtime     = runmod.NewRuntime{Writers, registry, Store, Frozen: frozen, Bindin
 projections = writer.Projections(writers)
 turns       = turn.Coordinator{Writers, runtime}                 // 纯协议：命令经传入的 Writer 提交 + Status 读取
 chatlog     = chatlog.Commands{Clock}
-targets     = target.Commands{Clock}
-driver      = driver.New{runtime, turns, Executor, Presets, Decisions, Sources{projections, content}, Targets: Ports.TargetResolver | target.Resolver{projections}, Fail}   // 规划读经传入 Writer 的投影
+driver      = driver.New{runtime, turns, Executor, Presets, Decisions, Sources{projections, content}, Targets: Ports.TargetResolver, Fail}   // 规划读经传入 Writer 的投影；Targets 为 nil 时 effect 无 target（APP-TGT-1）
                                                                   // Loop 按 PresetRef 在 driver 内组合并缓存
 // app.Build
 routes      = [spawn.Route(spawn.Executor)]? + Default(local | port | remote)          // backend 选择一次，持久化为 ExecutionRef.Provider

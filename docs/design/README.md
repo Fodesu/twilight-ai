@@ -23,9 +23,9 @@ agent-workspace.md            可选 Workspace/Runtime/TargetRef domain
 agent/session (kernel)       agent/artifact (independent core)
           \                  /
            agent/session/extension（含 writer）
-               ↓                               ↓
-   chatlog / session-run / turn / target   agent/session/migrate
-               ↓                               ↓
+               ↓                      ↓
+   chatlog / session-run / turn   agent/session/migrate
+               ↓                      ↓
              decision / host（authority 组合 migrate 与 turn / run 的静止点守卫）
                     ↓
        application / transport / provider adapter

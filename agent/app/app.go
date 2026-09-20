@@ -92,10 +92,10 @@ type Config struct {
 
 	Ownership session.OpenOptions
 	// TargetResolver resolves the opaque resource target of each effect
-	// (RUN-LOP-9); nil selects the target module's Resolver over the
-	// Session's bound target (APP-TGT-1).
+	// (RUN-LOP-9). The application's resource layer owns it; nil gives every
+	// effect no target (APP-TGT-1).
 	TargetResolver loop.TargetResolver
-	// Modules are application modules registered after the first-party four
+	// Modules are application modules registered after the first-party three
 	// (EXT-APP).
 	Modules []extension.ModuleDescriptor
 	// Observers are notified of every applied group besides the event stream.

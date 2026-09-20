@@ -28,7 +28,6 @@ import (
 	"github.com/felinics/twilight/agent/session/extension"
 	"github.com/felinics/twilight/agent/session/migrate"
 	runmod "github.com/felinics/twilight/agent/session/run"
-	targetmod "github.com/felinics/twilight/agent/session/target"
 	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/agent/turn"
 )
@@ -98,12 +97,12 @@ type Ports struct {
 	// Executor is the effect layer port (RUN-EXE-3): required.
 	Executor effect.ExecutionPort
 	// TargetResolver supplies the opaque resource target of each effect
-	// (RUN-LOP-9); nil selects the target module's Resolver over the
-	// Session's bound target (APP-TGT-1).
+	// (RUN-LOP-9). It belongs to the application's resource layer; nil
+	// gives every effect no target (APP-TGT-1).
 	TargetResolver loop.TargetResolver
 	// Observers are notified of every group the Writers apply (EXT-WRT-7).
 	Observers []writer.CommitObserver
-	// Modules are application modules registered after the first-party four
+	// Modules are application modules registered after the first-party three
 	// (EXT-APP).
 	Modules []extension.ModuleDescriptor
 	// Schema is the SchemaVersion new Sessions are created under
@@ -156,8 +155,6 @@ type Authority struct {
 	Content chatlog.ContentResolver
 	// Chatlog commits the chatlog's own facts (APP-INP-1, APP-CKP-1).
 	Chatlog *chatlog.Commands
-	// Targets commits the Session's target binding (APP-TGT-1).
-	Targets *targetmod.Commands
 	// History answers fork-boundary questions (AUTH-FRK-2, SPN-5).
 	History turn.History
 	Clock   func() time.Time
@@ -181,10 +178,10 @@ func New(p Ports) (*Authority, error) { //nolint:gocritic // hugeParam: Ports is
 	if store == nil {
 		store = session.NewMemoryStore()
 	}
-	// The first-party four are trusted core; Ports.Modules are extensions
+	// The first-party three are trusted core; Ports.Modules are extensions
 	// and cannot declare authoritative projections (EXT-PRJ-9).
 	registry, err := extension.BuildRegistryWithExtensions(session.ProtocolVersion1,
-		[]extension.ModuleDescriptor{chatlog.Module, runmod.Module, turn.Module, targetmod.Module}, p.Modules)
+		[]extension.ModuleDescriptor{chatlog.Module, runmod.Module, turn.Module}, p.Modules)
 	if err != nil {
 		return nil, err
 	}
@@ -264,7 +261,6 @@ func New(p Ports) (*Authority, error) { //nolint:gocritic // hugeParam: Ports is
 		Turns:   &turn.Coordinator{Projections: projections, Runs: runs, Now: now},
 		Presets: presets, Executor: p.Executor, Frozen: fz, Projections: projections, Content: content,
 		Chatlog:   &chatlog.Commands{Now: now},
-		Targets:   &targetmod.Commands{Now: now},
 		History:   turn.History{Store: store, Registry: registry, Projections: projections},
 		Clock:     now,
 		Schema:    schema,
@@ -273,12 +269,8 @@ func New(p Ports) (*Authority, error) { //nolint:gocritic // hugeParam: Ports is
 	}
 	a.Driver = driver.New()
 	a.Driver.Runs, a.Driver.Turns, a.Driver.Executor = runs, a.Turns, p.Executor
-	// The default resolver reads the Session's bound target (APP-TGT-1).
-	targets := p.TargetResolver
-	if targets == nil {
-		targets = &targetmod.Resolver{Projections: projections}
-	}
-	a.Driver.Presets, a.Driver.Decisions, a.Driver.Targets = presets, decisions, targets
+	// A nil resolver gives every effect no target (APP-TGT-1).
+	a.Driver.Presets, a.Driver.Decisions, a.Driver.Targets = presets, decisions, p.TargetResolver
 	a.Driver.Sources = decision.Sources{Projections: projections, Content: content}
 	a.Driver.Fail = p.Fail
 	return a, nil

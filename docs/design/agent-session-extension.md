@@ -372,7 +372,7 @@ v1 conformance 必须验证：
 
 Application 在自己的代码里定义 `ModuleDescriptor`（自有 Source 下的事件类型、codec、投影），经装配开口（`authority.Ports.Modules`，经 `app.Config.Modules` 传入）与 first-party 模块一起传入 `BuildRegistry`。app module 与 first-party 模块同构、同权：同一 Registry、同一 `Writer.Commit` 提交路径、同一投影框架。
 
-**EXT-APP-1（承诺面）** app module 的 `Requires` 可依赖 first-party 模块的事件；四个 first-party 模块各事件在每个已发布 Schema 下的 codec 即稳定消费面。first-party 为新 Schema 增加 codec 时，未声明该 Schema 的 app module 在 `BuildRegistry` 即失败（EXT-REG-4 的握手校验），不会在运行期静默错读；app module 自己的事件同样按段的 Schema 编码（EXT-REG-2），一个只在 Schema 1 下注册 codec 的 app module 使 `SupportsSchema(2)` 为真的 Registry 在 Schema 2 的段上拒绝它的事件（`ErrSchema`）。
+**EXT-APP-1（承诺面）** app module 的 `Requires` 可依赖 first-party 模块的事件；三个 first-party 模块各事件在每个已发布 Schema 下的 codec 即稳定消费面。first-party 为新 Schema 增加 codec 时，未声明该 Schema 的 app module 在 `BuildRegistry` 即失败（EXT-REG-4 的握手校验），不会在运行期静默错读；app module 自己的事件同样按段的 Schema 编码（EXT-REG-2），一个只在 Schema 1 下注册 codec 的 app module 使 `SupportsSchema(2)` 为真的 Registry 在 Schema 2 的段上拒绝它的事件（`ErrSchema`）。
 
 **EXT-APP-2（隔离）** EXT-PRJ-2 的范围规则双向保护：first-party 投影对 app 模块（范围外）的事件一律跳过；app 投影对未列入其 `Requires` 的模块同样跳过。app module 未注册时，其历史事件对所有投影是范围外事件，按 EXT-REG-3 保留原始 payload、不参与折叠。
 

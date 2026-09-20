@@ -33,7 +33,7 @@ binding resolves to. Regenerate and edit (TRN-DUR-3) are therefore
 history-only operations. Resolving the fork point to a Turn-boundary
 workspace checkpoint and restoring it into a new workspace bound to the child
 Session is future design; it needs a checkpoint reference recorded at Turn
-boundaries and a Session-level workspace binding.
+boundaries and is carried out by the application's fork policy (below).
 
 Agent Core carries an opaque `run.TargetRef{Kind, ID}` on an Assignment. An
 application-provided `loop.TargetResolver` supplies the target per effect
@@ -44,13 +44,25 @@ Assignment only. Different effects of one Run may resolve to different
 targets. The mapping must be durable if a Run can outlive the process that
 started it; the target itself is not a Run fact.
 
-The default resolver is the first-party `target` module (APP-TGT-1): the
-Session-level workspace binding named above, kept as a Session fact. An
-application binds the current target between Turns (`Session.BindTarget`);
-the module's `Resolver` answers every tool effect with the target current
-when the effect starts and gives model effects none. A fork child inherits
-its parent's binding at the fork point. An application that supplies its
-own `loop.TargetResolver` guarantees the durability of its own mapping.
+The seam and its implementation live in different layers (APP-TGT-1).
+Agent Core owns `loop.EffectContext`, `run.TargetRef` and the
+`loop.TargetResolver` interface only; it keeps no target fact and has no
+default resolver: a nil resolver gives every effect no target. The
+application (cloud agent / Memoh) owns the resource registry, the workspace
+manager and the `TargetResolver` implementation, and guarantees the
+durability of its Session → workspace mapping.
+
+Conversation lineage and resource lineage are separate lineages. A Session
+fork (AUTH-FRK-2) copies committed facts and carries no resource binding to
+the child; the application's fork policy decides the child's binding and
+establishes a new resource binding for it:
+
+- share the parent's existing workspace;
+- clone the workspace;
+- restore a checkpoint into a new workspace;
+- allocate a fresh workspace.
+
+Until the application binds one, the child's tool effects have no target.
 
 The provider adapter is a Backend of the Worker: it resolves the target to a
 RuntimeBinding and, in Prepare, allocates or derives the ExecutionRef the
