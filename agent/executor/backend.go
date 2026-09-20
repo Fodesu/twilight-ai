@@ -24,7 +24,8 @@ type ExecutionRef = executionstore.ExecutionRef
 var ErrUnknownProvider = fmt.Errorf("executor: unknown execution provider: %w", effect.ErrOutcomeUnavailable)
 
 // ErrNotReplayable is effect.ErrNotReplayable: a Backend's Restart answer for
-// a tool Assignment whose tool does not declare replay (RUN-EXE-9).
+// a tool Assignment whose tool's Replay policy is not ReplayAllowed
+// (RUN-EXE-9); the Backend wraps it with the declared policy.
 var ErrNotReplayable = effect.ErrNotReplayable
 
 // ErrOrphanDisposed wraps the Warn a Worker emits when Reconcile disposes a
@@ -54,9 +55,10 @@ type ExecutionBackend interface {
 	// next attempt for the effect (RUN-EXE-9). Unlike Prepare it is not
 	// required to return the same Ref; a Backend whose physical execution is
 	// the durable object itself (a child Session) returns the same Ref. For
-	// a tool Assignment the Backend answers ErrNotReplayable unless the tool
-	// declares replay (loop.ReplayableTool): the Worker then settles the
-	// record Unknown instead of re-dispatching (TRN-DUR-4).
+	// a tool Assignment the Backend answers ErrNotReplayable unless the
+	// tool's Replay policy is ReplayAllowed (loop.ExecutableTool.Replay): the
+	// Worker then settles the record Unknown instead of re-dispatching,
+	// recording the wrapped answer (TRN-DUR-4).
 	Restart(ctx context.Context, previous string, a effect.Assignment) (ref string, err error)
 	// Attach reports what the Backend finds for Ref: missing, active,
 	// orphaned or terminal.
@@ -116,10 +118,10 @@ func (b portBackend) Start(ctx context.Context, _ string, a effect.Assignment) e
 
 // Restart of a Port-shaped executor re-dispatches the same key: the Ref is
 // the key, so it does not change. The adapter cannot see the remote tool's
-// replay declaration, so a tool Assignment is not replayed through it.
+// Replay policy, so a tool Assignment is not replayed through it.
 func (b portBackend) Restart(_ context.Context, previous string, a effect.Assignment) (string, error) {
 	if a.Kind() == effect.AssignmentTool {
-		return "", ErrNotReplayable
+		return "", fmt.Errorf("%w: replay policy of a remote tool is not visible through a Port", ErrNotReplayable)
 	}
 	return previous, nil
 }

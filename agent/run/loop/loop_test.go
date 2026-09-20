@@ -60,11 +60,13 @@ type fakeTool struct {
 	policy  ResponsePolicy
 	execute func(context.Context, ToolExecutionRequest) ToolExecutionOutcome
 	valErr  error
+	replay  ReplayPolicy
 }
 
 func (f *fakeTool) Ref() ToolRef                          { return f.ref }
 func (f *fakeTool) Definition() sdk.ToolDefinition        { return f.def }
 func (f *fakeTool) ResponsePolicy() ResponsePolicy        { return f.policy }
+func (f *fakeTool) Replay() ReplayPolicy                  { return f.replay }
 func (f *fakeTool) ValidateArguments(CanonicalJSON) error { return f.valErr }
 func (f *fakeTool) Execute(ctx context.Context, req ToolExecutionRequest) ToolExecutionOutcome {
 	return f.execute(ctx, req)

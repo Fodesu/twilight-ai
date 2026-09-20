@@ -1086,7 +1086,7 @@ func TestWorkerAdoptsToolByReplayDeclaration(t *testing.T) {
 		replayed   bool
 	}{
 		{"declared replayable", nil, true},
-		{"not replayable", executor.ErrNotReplayable, false},
+		{"not replayable", fmt.Errorf("%w: tool \"gate\" declares replay forbidden", executor.ErrNotReplayable), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1125,7 +1125,8 @@ func TestWorkerAdoptsToolByReplayDeclaration(t *testing.T) {
 				}
 				return
 			}
-			if got.State != effect.ExecutionUnknown || got.Outcome == nil || !got.Outcome.Unknown || got.Outcome.Error == nil || got.Outcome.Error.Code != "adopted_without_replay" {
+			if got.State != effect.ExecutionUnknown || got.Outcome == nil || !got.Outcome.Unknown || got.Outcome.Error == nil ||
+				got.Outcome.Error.Code != "adopted_without_replay" || got.Outcome.Error.Message != tc.restartErr.Error() {
 				t.Fatalf("unreplayable tool: state %s outcome %+v", got.State, got.Outcome)
 			}
 			if started != 0 || got.ExecutionRef.Ref != "execution-1" || len(got.Superseded) != 0 {

@@ -123,6 +123,7 @@ func (t *gateTool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}
 }
 func (t *gateTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
+func (t *gateTool) Replay() loop.ReplayPolicy                 { return loop.ReplayUnknown }
 func (t *gateTool) ValidateArguments(run.CanonicalJSON) error { return nil }
 func (t *gateTool) Execute(_ context.Context, req loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	t.started <- struct{}{}

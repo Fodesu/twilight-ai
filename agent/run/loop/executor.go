@@ -153,16 +153,17 @@ func (e *LocalExecutor) Prepare(_ context.Context, a Assignment) (string, error)
 // Restart derives the Ref of the next generation of the attempt: the key's
 // Ref with a generation suffix, so a re-dispatched step gets its own entry
 // and the previous one stays readable until retention drops it. A tool is
-// re-dispatched only when it declares replay (ReplayableTool); otherwise the
-// answer is effect.ErrNotReplayable and the Worker settles Unknown.
+// re-dispatched only when its Replay policy is ReplayAllowed; otherwise the
+// answer is ErrNotReplayable naming the declared policy, and the Worker
+// settles Unknown with it.
 func (e *LocalExecutor) Restart(_ context.Context, previous string, a Assignment) (string, error) {
 	if tool, ok := a.Tool(); ok {
 		impl, err := e.tools.ResolveTool(tool.ToolRef)
 		if err != nil {
 			return "", err
 		}
-		if rt, ok := impl.(ReplayableTool); !ok || !rt.Replayable() {
-			return "", ErrNotReplayable
+		if policy := impl.Replay(); policy != ReplayAllowed {
+			return "", fmt.Errorf("%w: tool %q declares replay %s", ErrNotReplayable, tool.ToolRef, policy)
 		}
 	}
 	base := RefOf(a.Key())

@@ -206,6 +206,10 @@ func (t tool) Definition() sdk.ToolDefinition {
 
 func (tool) ResponsePolicy() run.ResponsePolicy { return run.DirectExecution }
 
+// Replay is allowed: the child Session's identity derives from the call and
+// starting an existing child is a no-op (RUN-EXE-9).
+func (tool) Replay() loop.ReplayPolicy { return loop.ReplayAllowed }
+
 func (tool) ValidateArguments(args run.CanonicalJSON) error {
 	_, err := DecodeArguments(args)
 	return err

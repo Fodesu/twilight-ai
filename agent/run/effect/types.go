@@ -285,9 +285,10 @@ var (
 	// compensating re-dispatch or a RecoverModelExecution automatically.
 	ErrDispatchUnknown = errors.New("agent: effect: dispatch outcome unknown")
 	// ErrNotReplayable is a Backend's Restart answer for a tool Assignment
-	// whose tool does not declare replay: the lost execution may have crossed
-	// the effect boundary, so the Worker settles it Unknown instead of
-	// re-dispatching it (TRN-DUR-4, RUN-EXE-9).
+	// whose tool's Replay policy is not ReplayAllowed (forbidden or unknown):
+	// the lost execution may have crossed the effect boundary, so the Worker
+	// settles it Unknown instead of re-dispatching it (TRN-DUR-4, RUN-EXE-9).
+	// A Backend wraps it with the declared policy.
 	ErrNotReplayable = errors.New("agent: effect: tool execution is not declared replayable")
 )
 

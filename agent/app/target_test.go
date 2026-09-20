@@ -28,6 +28,7 @@ func (t *targetTool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}
 }
 func (t *targetTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
+func (t *targetTool) Replay() loop.ReplayPolicy                 { return loop.ReplayUnknown }
 func (t *targetTool) ValidateArguments(run.CanonicalJSON) error { return nil }
 func (t *targetTool) Execute(_ context.Context, req loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	t.seen <- req.Target

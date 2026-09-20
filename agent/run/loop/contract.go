@@ -116,17 +116,40 @@ type ExecutableTool interface {
 	// external effects.
 	ValidateArguments(run.CanonicalJSON) error
 	Execute(context.Context, ToolExecutionRequest) ToolExecutionOutcome
+	// Replay declares whether Execute may run again for the same call after
+	// an earlier execution was lost (RUN-EXE-9, TRN-DUR-4). Every tool
+	// answers; the zero value ReplayUnknown is the answer of a tool whose
+	// author has not judged it.
+	Replay() ReplayPolicy
 }
 
-// ReplayableTool is the optional declaration that Execute may run again for
-// the same call after an earlier execution was lost, without a second effect
-// on the world: the tool is read-only or idempotent by CallID. A Worker that
-// adopts an orphaned execution of such a tool re-dispatches it under the same
-// effect (RUN-EXE-9); a tool without the declaration, or answering false, is
-// settled Unknown instead (TRN-DUR-4).
-type ReplayableTool interface {
-	ExecutableTool
-	Replayable() bool
+// ReplayPolicy is a tool's judgment of its own side effects: whether the
+// Worker that adopts a lost execution of the tool may run Execute again for
+// the same call. Only ReplayAllowed is re-dispatched. ReplayForbidden and
+// ReplayUnknown are both settled Unknown (TRN-DUR-4); they differ in what
+// the settlement records, so an unjudged tool is visible as such.
+type ReplayPolicy uint8
+
+const (
+	// ReplayUnknown: the tool has not been judged. It is the zero value, so a
+	// forgotten declaration never replays.
+	ReplayUnknown ReplayPolicy = iota
+	// ReplayAllowed: Execute is read-only or idempotent by CallID; running
+	// it again for the same call has no second effect on the world.
+	ReplayAllowed
+	// ReplayForbidden: Execute has side effects a second run would repeat.
+	ReplayForbidden
+)
+
+func (p ReplayPolicy) String() string {
+	switch p {
+	case ReplayAllowed:
+		return "allowed"
+	case ReplayForbidden:
+		return "forbidden"
+	default:
+		return "unknown"
+	}
 }
 
 // Tool outcomes belong to the process-independent effect protocol. Aliases

@@ -420,7 +420,7 @@ func (w *Worker) wake(key effect.AssignmentKey) {
 // acquireAndStart takes the record's lease and brings its execution to
 // Running: a record with an attachable execution is observed, one whose
 // execution the backend no longer finds is re-started (a model, or a tool
-// that declares replay) or settled Unknown (a tool without the declaration,
+// whose Replay policy allows it) or settled Unknown (any other tool,
 // TRN-DUR-4), one never started is started.
 func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) error {
 	claimed, acquired, err := w.store.Acquire(ctx, key, w.id, w.lease)
@@ -491,14 +491,15 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 		// same Assignment as a new generation: it allocates the Ref of the
 		// new physical execution and the old Ref, just confirmed missing,
 		// moves to the audit trail (RUN-EXE-9). A model is always replayed;
-		// a tool only when it declares replay, because its lost execution
-		// may have crossed the effect boundary before its worker died
-		// (TRN-DUR-4). The Backend answers ErrNotReplayable otherwise and
-		// adoption settles the record Unknown instead of retrying.
+		// a tool only when its Replay policy allows it, because its lost
+		// execution may have crossed the effect boundary before its worker
+		// died (TRN-DUR-4). The Backend answers ErrNotReplayable otherwise,
+		// naming the declared policy, and adoption settles the record
+		// Unknown with that answer instead of retrying.
 		fresh, err := backend.Restart(ctx, ref, claimed.Assignment)
 		if errors.Is(err, ErrNotReplayable) {
 			env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest, Unknown: true,
-				Error: &protocol.WireError{Code: "adopted_without_replay", Message: "tool execution adopted without a replay declaration"}}
+				Error: &protocol.WireError{Code: "adopted_without_replay", Message: err.Error()}}
 			return w.finishOwned(ctx, key, claimed.FencingEpoch, &env, effect.ExecutionUnknown, nil)
 		}
 		if err != nil {
