@@ -9,6 +9,7 @@ import (
 
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/artifact"
+	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/run/runtime"
@@ -22,8 +23,16 @@ import (
 // given models and tools; the Runtime still writes request bodies to
 // cfg.Content (RUN-WIR-4) and the executor never reads them back (RUN-EXE-7).
 func newHost(cfg app.Config, models map[run.ModelRef]loop.ModelInvoker, tools ...loop.ExecutableTool) *app.Application {
+	if cfg.Store == nil {
+		cfg.Store = session.NewMemoryStore()
+	}
 	if cfg.Content == nil {
 		cfg.Content = memoryContent()
+	}
+	if cfg.Executions == nil {
+		// The test double is named here; Build itself never falls back to
+		// a memory record store.
+		cfg.Executions = executionstore.NewMemoryStore()
 	}
 	cfg.Executor = app.ExecutorConfig{Models: models, Tools: tools}
 	a, err := app.Build(cfg)

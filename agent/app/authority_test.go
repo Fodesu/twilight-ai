@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agent/run/frozen"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/run/model"
+	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -86,7 +87,7 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 	ctx := context.Background()
 	exec := &recordingExecutor{reply: "hello from the executor"}
 	content := memoryContent()
-	h, err := app.Build(app.Config{Executor: app.ExecutorConfig{Port: exec}, Content: content})
+	h, err := app.Build(app.Config{Store: session.NewMemoryStore(), Executor: app.ExecutorConfig{Port: exec}, Content: content})
 	if err != nil {
 		t.Fatal(err)
 	}

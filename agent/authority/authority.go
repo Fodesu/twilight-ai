@@ -76,10 +76,12 @@ func durable(port any) bool {
 var ErrEphemeralArtifacts = errors.New("authority: durable session store with memory-only content store, binding store or retention ledger; provide the durable bundle or set Artifacts.Ephemeral")
 
 // Ports are the roles an Authority is composed from (AUTH-PRT-1). Every field
-// is an interface or a core value; nil fields take the defaults documented
-// on each, all of them in-process.
+// is an interface or a core value; the Store and the Executor are required,
+// the other nil fields take the defaults documented on each, all of them
+// in-process. A memory Store is a test double and is passed by name
+// (session.NewMemoryStore); no production path falls back to one.
 type Ports struct {
-	// Store is the Session kernel; nil selects an in-memory store.
+	// Store is the Session kernel (required).
 	Store session.Store
 	// Content is the cas ContentStore the frozen bodies live in under
 	// runmod.FrozenAuthority (RUN-WIR-4). The run store writes them; the
@@ -174,10 +176,10 @@ func New(p Ports) (*Authority, error) { //nolint:gocritic // hugeParam: Ports is
 	if p.Executor == nil {
 		return nil, errors.New("authority: an Executor port is required")
 	}
-	store := p.Store
-	if store == nil {
-		store = session.NewMemoryStore()
+	if p.Store == nil {
+		return nil, errors.New("authority: a session Store is required")
 	}
+	store := p.Store
 	// The first-party three are trusted core; Ports.Modules are extensions
 	// and cannot declare authoritative projections (EXT-PRJ-9).
 	registry, err := extension.BuildRegistryWithExtensions(session.ProtocolVersion1,

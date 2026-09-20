@@ -73,15 +73,19 @@ type Preset struct {
 // command-line flags can be decoded into this type by an outer deployment
 // package later.
 type Config struct {
+	// Store is the Session kernel (required). A memory Store is a test
+	// double, passed by name; Build never falls back to one.
 	Store     session.Store
 	Content   artifact.ContentStore
 	Artifacts authority.Artifacts
 
 	Executor ExecutorConfig
-	// Executions is the record store of the local Worker (RUN-EXE-8): nil
-	// selects an in-memory store, whose records die with the process; a
-	// deployment that must adopt executions across restarts passes a durable
-	// one. Ignored by ExecutorRemote and when Executor.Port is set.
+	// Executions is the record store of the Worker Build composes
+	// (RUN-EXE-8): required whenever a Worker is composed (the local mode
+	// always; a supplied Port or the remote mode when Spawn is set), unused
+	// otherwise. It belongs to the durability bundle (AUTH-PRT-3): a durable
+	// Store with a memory record store manufactures missing executions after
+	// a restart, so Build refuses the mix unless Artifacts.Ephemeral opts in.
 	Executions executionstore.Store
 	Presets    []Preset
 	// Registry is the preset registry; nil selects an in-memory one.
@@ -115,6 +119,24 @@ type Config struct {
 	Worker executor.WorkerOptions
 }
 
+// ErrEphemeralExecutions reports a durable session Store mixed with a
+// memory-only execution record store, or the reverse, without the Ephemeral
+// opt-in (AUTH-PRT-3): the Worker's records would not survive the restart the
+// Session facts survive, and every Executing target would come back missing.
+var ErrEphemeralExecutions = errors.New("app: durable session store with memory-only execution record store (or the reverse); provide the durable bundle or set Artifacts.Ephemeral")
+
+// durable reports a port's declared durability (authority.Durability); nil is
+// not a store, and a port that does not declare is taken as durable.
+func durable(port any) bool {
+	if port == nil {
+		return false
+	}
+	if d, ok := port.(authority.Durability); ok {
+		return d.Durable()
+	}
+	return true
+}
+
 // CompactorSystemPrompt is kept here for deterministic model test doubles and
 // applications that need to recognize the built-in compaction request.
 const CompactorSystemPrompt = compaction.CompactorSystemPrompt
@@ -134,6 +156,9 @@ type Application struct {
 // Build assembles an application from typed dependencies and a
 // deployment-neutral executor profile.
 func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Config is a by-value options struct read once
+	if c.Store == nil {
+		return nil, errors.New("app: a session Store is required")
+	}
 	content := c.Content
 	if content == nil {
 		var err error
@@ -252,11 +277,13 @@ func (app *Application) Close(ctx context.Context) error {
 // Backend; the remote Worker keeps its own record of the physical execution.
 func buildExecutor(c *Config, extra []executor.Route) (effect.ExecutionPort, error) {
 	worker := func(routes ...executor.Route) (effect.ExecutionPort, error) {
-		records := c.Executions
-		if records == nil {
-			records = executionstore.NewMemoryStore()
+		if c.Executions == nil {
+			return nil, errors.New("app: an execution record store (Config.Executions) is required when Build composes a Worker")
 		}
-		return executor.NewWorker(context.Background(), records, append(extra, routes...), c.Worker)
+		if durable(c.Store) != durable(c.Executions) && !c.Artifacts.Ephemeral {
+			return nil, ErrEphemeralExecutions
+		}
+		return executor.NewWorker(context.Background(), c.Executions, append(extra, routes...), c.Worker)
 	}
 	if c.Executor.Port != nil {
 		if len(extra) == 0 {

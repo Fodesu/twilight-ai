@@ -6,6 +6,7 @@ import (
 
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/turn"
 )
 
@@ -15,6 +16,7 @@ func TestBuildRemoteApplication(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, err := app.Build(app.Config{
+		Store:    session.NewMemoryStore(),
 		Executor: app.ExecutorConfig{Mode: app.ExecutorRemote, Endpoint: "http://executor"},
 		Presets:  []app.Preset{{ID: "default", Value: p}},
 	})

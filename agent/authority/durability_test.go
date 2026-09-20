@@ -38,7 +38,7 @@ func TestNewRefusesMixedDurability(t *testing.T) {
 			Ports{Store: store, Content: content, Artifacts: Artifacts{Bindings: memoryBindings, Ledger: artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: memoryBindings})}, Executor: nopPort{}}, false},
 		{"durable content over a memory store", Ports{Store: session.NewMemoryStore(), Content: content, Executor: nopPort{}}, false},
 		{"ephemeral opt-in", Ports{Store: store, Content: content, Artifacts: Artifacts{Ephemeral: true}, Executor: nopPort{}}, true},
-		{"all memory", Ports{Executor: nopPort{}}, true},
+		{"all memory", Ports{Store: session.NewMemoryStore(), Executor: nopPort{}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

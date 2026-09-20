@@ -104,6 +104,10 @@ type MemoryStoreOptions struct {
 // DefaultRetainTerminal is the MemoryStore's terminal-record bound.
 const DefaultRetainTerminal = 1024
 
+// Durable reports that records die with the process: a Worker over this
+// store cannot adopt executions across a restart (RUN-EXE-8).
+func (*MemoryStore) Durable() bool { return false }
+
 func NewMemoryStore(options ...MemoryStoreOptions) *MemoryStore {
 	now := time.Now
 	if len(options) > 0 && options[0].Now != nil {
@@ -270,6 +274,9 @@ type FileStore struct {
 type FileStoreOptions struct {
 	Now func() time.Time
 }
+
+// Durable reports that records survive the process (RUN-EXE-8).
+func (*FileStore) Durable() bool { return true }
 
 func NewFileStore(root string, options ...FileStoreOptions) (*FileStore, error) {
 	if root == "" {

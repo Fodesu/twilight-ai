@@ -36,7 +36,7 @@ func basePorts(t *testing.T) authority.Ports {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return authority.Ports{Executor: exec}
+	return authority.Ports{Store: session.NewMemoryStore(), Executor: exec}
 }
 
 func newAuthorityFrom(t *testing.T, p *authority.Ports) *authority.Authority {
