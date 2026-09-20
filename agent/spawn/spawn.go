@@ -167,6 +167,8 @@ func CheckDefinition(sch schema.Schema, tool loop.ExecutableTool, assigned *effe
 		return &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "tool definition digest mismatch"}, nil
 	case assigned.Policy != tool.ResponsePolicy():
 		return &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "response policy mismatch"}, nil
+	case assigned.Replay != tool.Replay():
+		return &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "replay policy mismatch"}, nil
 	}
 	return nil, nil
 }
@@ -208,7 +210,7 @@ func (tool) ResponsePolicy() run.ResponsePolicy { return run.DirectExecution }
 
 // Replay is allowed: the child Session's identity derives from the call and
 // starting an existing child is a no-op (RUN-EXE-9).
-func (tool) Replay() loop.ReplayPolicy { return loop.ReplayAllowed }
+func (tool) Replay() run.ReplayPolicy { return run.ReplayAllowed }
 
 func (tool) ValidateArguments(args run.CanonicalJSON) error {
 	_, err := DecodeArguments(args)

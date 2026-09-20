@@ -176,7 +176,9 @@ type ToolSpec struct {
     Ref ToolRef
     DefinitionDigest Digest // 本体在请求内
     Policy ResponsePolicy
+    Replay ReplayPolicy     // 工具实现的 replay 声明，随 PublicTool 进入 preset 摘要；复制到 ToolCallBinding / ToolCallState / ToolAssignment（RUN-EXE-9）
 }
+type ReplayPolicy uint8 // ReplayUnknown（零值，未判断，wire 上省略）| ReplayAllowed（只读或按 CallID 幂等）| ReplayForbidden（有不可重复的副作用）
 type ToolScheduleMode string // "parallel" | "sequential"；空值按 parallel 解释
 type ToolScheduling struct {
     Mode ToolScheduleMode
@@ -447,9 +449,8 @@ type ExecutableTool interface {
     ResponsePolicy() run.ResponsePolicy
     ValidateArguments(run.CanonicalJSON) error
     Execute(context.Context, ToolExecutionRequest) ToolExecutionOutcome
-    Replay() ReplayPolicy // 必填声明：前次执行丢失后同一 call 的 Execute 能否重跑
+    Replay() run.ReplayPolicy // 必填声明：前次执行丢失后同一 call 的 Execute 能否重跑；经 PublicTool → ToolSpec → Assignment 到达 Worker
 }
-type ReplayPolicy uint8 // ReplayUnknown（零值，未判断）| ReplayAllowed（只读或按 CallID 幂等）| ReplayForbidden（有不可重复的副作用）；只有 Allowed 重派
 ```
 
 `ToolExecutionOutcome` 是 sealed interface：`ToolExecutionSucceeded`、`ToolExecutionFailed`（明确未完成）或 `ToolExecutionUnknown`（可能已发生）。`ValidateArguments` 在 start barrier 前运行，并保持无外部 effect。`ToolExecutionRequest` 携带 RunID、StepID、CallID、该 call 的 `Effect`、冻结 binding 与可选 opaque `TargetRef`（Loop 不解释）。`TargetRef` 由 `TargetResolver` 按 effect 解析（RUN-LOP-9）。
@@ -459,7 +460,7 @@ type ReplayPolicy uint8 // ReplayUnknown（零值，未判断）| ReplayAllowed�
 type AssignmentKind string // model | tool
 type AssignmentKey struct { Session run.Scope; RunID run.RunID; Effect run.EffectID }
 type ModelAssignment struct { Model run.ModelRef; Request *model.ModelRequest; RequestDigest run.Digest } // Dispatch payload；digest 仍绑定 frozen request
-type ToolAssignment struct { ToolRef run.ToolRef; DefinitionDigest run.Digest; Arguments run.CanonicalJSON; Policy run.ResponsePolicy }
+type ToolAssignment struct { ToolRef run.ToolRef; DefinitionDigest run.Digest; Arguments run.CanonicalJSON; Policy run.ResponsePolicy; Replay run.ReplayPolicy }
 type Assignment struct {
     Session run.Scope; RunID run.RunID; StepID run.StepID; CallID run.CallID; Effect run.EffectID
     Target *run.TargetRef
@@ -483,7 +484,7 @@ type ExecutionBackend interface {
     Validate(context.Context, Assignment) (*run.ToolFailure, error)
     Prepare(context.Context, Assignment) (ref string, err error)     // 分配或派生 Ref，不启动；按 AssignmentKey 幂等
     Start(context.Context, ref string, Assignment) error             // 启动 Ref；ErrDispatchUnknown 语义同 Dispatch
-    Restart(context.Context, previous string, Assignment) (ref string, err error) // 上一代 missing 后分配下一代执行的 Ref；工具未声明 replay 时返回 ErrNotReplayable
+    Restart(context.Context, previous string, Assignment) (ref string, err error) // 上一代 missing 后分配下一代执行的 Ref；工具能否重派由 Worker 先按 Assignment.Replay 裁决
     Attach(context.Context, ref string) (Attachment, error)
     Status(context.Context, ref string) (ExecutionStatus, error)
     Outcome(context.Context, ref string) (Outcome, error)            // 阻塞到终态 Outcome
@@ -531,7 +532,7 @@ func (*Reconciler) Reconcile(ctx, store runtime.RunStore, snapshot *runtime.Snap
 
 **RUN-EXE-8（部署说明）** v1 假设 worker 池同构：池内全部节点服务同一 Catalog（同一 ModelRef、ToolRef 集合与定义 digest），Assignment 的 definition digest 校验在同构池上恒通过，异构池上转为确定性拒绝；跨异构池的放置由 application 路由，协议不规定。数据面与控制面只面向 loopback 同机信任域：协议层的线上身份只有 AssignmentKey 的 EffectID（RUN-EXE-1）与 Execution Store 的 owner/fencing epoch，无认证机制；跨机器部署由 application 在信任域边界提供传输保护，协议不规定。v1 不规定推送通道：authority 侧统一经 GetOutcome 长轮询读取结果，deployment 层的通知只作为唤醒读取方的优化（RUN-EXE-2），不改变读取语义。colocated 部署同样经 Worker 与 record store 运行效果：`app.Build` 的本地模式组装 `executor.NewWorker(ctx, records, routes)`，record store 由 `Config.Executions` 显式提供（文件或共享实现；内存实现只作测试替身），其 durability 须与 Session Store 一致（AUTH-PRT-3）；`LocalExecutor` 是 local provider 的 Backend 实现，不实现 `effect.Port`。Worker 的 goroutine（reconcile 循环、每条 record 的 heartbeat 与 watch）由 `Worker.Close` 统一停止并等待，`Application.Close` 关闭 `Build` 组装的 Worker；`effect.Port` 不带 Close，Worker 的所有权在组装它的一方。本地与远端部署之间没有分叉的生命周期代码，差别只在 record store 与 backend 表。
 
-**RUN-EXE-9（ExecutionRef）** `ExecutionRef{Provider, Ref}` 是 Executor 为一个 effect 的 attempt 建立的物理绑定。Provider 命名 backend（`local`、`twilight/session`，部署自定的 provider 名），Ref 是该 backend 内的不透明句柄。它在 `Backend.Prepare` 时确定，在 Start 之前随 record 持久化。Prepare 与 Restart 是两个契约：`Prepare(a)` 按 AssignmentKey 幂等且确定——同一 key 重复 Prepare 返回同一 Ref，进程死在 Prepare 与 record 写入之间也恢复同一物理绑定（派生式 backend 直接计算：local 以编码后的 AssignmentKey 为 Ref，spawn 以 ChildID 为 Ref；分配式 backend 以 key 为幂等键记录分配结果）；`Restart(previous, a)` 在接管发现 backend 对 previous 报 `missing` 后分配同一 effect 下一代 attempt 的 Ref，不要求与 previous 相同（local 以 `#<generation>` 后缀派生新 Ref；以子 Session 为执行本体的 spawn 返回同一 Ref）。Worker 对模型与工具 Assignment 都调用 Restart：模型总是重放；工具由 Backend 依据其 `Replay()` 声明裁决——`ReplayAllowed` 时按模型同样重派，`ReplayForbidden` 与零值 `ReplayUnknown` 都不重派，Backend 以包裹了声明值的 `ErrNotReplayable` 作答，Worker 把该答案写进 Unknown 结算的 message，未判断的工具因此在审计中可辨（local backend 经 ToolCatalog 解析实现后读取声明；spawn 的子 Session 身份由 call 派生、Start 已存在的子为 no-op，因此按构造可重放，返回同一 Ref；PortBackend 看不到远端工具的声明，一律不重放）。不重派时 Worker 结算 Unknown（`adopted_without_replay`，TRN-DUR-4）。重派时把被替代的 `ExecutionRef` 追加到 record 的 `Superseded`（最旧在前）再写入新 Ref，审计保留该 effect 绑定过的每一代 attempt。`ExecutionRef` 不进入 Session 事实、`effect.Port`、Loop 或 Driver：Agent Core 只认 AssignmentKey；backend 只认 Ref，Worker 在结算时以 record 的 key 作为 Outcome 的 key。经 HTTP 传输时它是 Worker 侧 record 的字段，不出现在 Assignment 与 Outcome 的 wire 形状上。
+**RUN-EXE-9（ExecutionRef）** `ExecutionRef{Provider, Ref}` 是 Executor 为一个 effect 的 attempt 建立的物理绑定。Provider 命名 backend（`local`、`twilight/session`，部署自定的 provider 名），Ref 是该 backend 内的不透明句柄。它在 `Backend.Prepare` 时确定，在 Start 之前随 record 持久化。Prepare 与 Restart 是两个契约：`Prepare(a)` 按 AssignmentKey 幂等且确定——同一 key 重复 Prepare 返回同一 Ref，进程死在 Prepare 与 record 写入之间也恢复同一物理绑定（派生式 backend 直接计算：local 以编码后的 AssignmentKey 为 Ref，spawn 以 ChildID 为 Ref；分配式 backend 以 key 为幂等键记录分配结果）；`Restart(previous, a)` 在接管发现 backend 对 previous 报 `missing` 后分配同一 effect 下一代 attempt 的 Ref，不要求与 previous 相同（local 以 `#<generation>` 后缀派生新 Ref；以子 Session 为执行本体的 spawn 返回同一 Ref）。Worker 对模型与工具 Assignment 都调用 Restart：模型总是重放；工具由 Worker 依据 Assignment 携带的 `Replay` 裁决，不询问 Backend：该值源于工具实现的 `Replay()` 声明，经 `PublicTool`（进 preset 摘要）→ `ToolSpec` → `ToolCallBinding` / `ToolCallState`（Run 事实）→ `ToolAssignment`（wire 与 record）到达每个 Worker，本地与远端 Worker 因此对同一 record 得到同一裁决；`ReplayAllowed` 按模型同样重派，`ReplayForbidden` 与零值 `ReplayUnknown` 结算 Unknown（`adopted_without_replay`，TRN-DUR-4），message 记录声明值，未判断的工具因此在审计中可辨。`Replay` 不进入 BindingDigest 与 DefinitionDigest（它是执行提示，不是 call 身份）；Backend 的 `Validate` 核对 Assignment 的 `Replay` 与实现声明一致，不一致为 definition mismatch（与 response policy 同样处理）。spawn 声明 `ReplayAllowed`：子 Session 身份由 call 派生、Start 已存在的子为 no-op。重派时把被替代的 `ExecutionRef` 追加到 record 的 `Superseded`（最旧在前）再写入新 Ref，审计保留该 effect 绑定过的每一代 attempt。`ExecutionRef` 不进入 Session 事实、`effect.Port`、Loop 或 Driver：Agent Core 只认 AssignmentKey；backend 只认 Ref，Worker 在结算时以 record 的 key 作为 Outcome 的 key。经 HTTP 传输时它是 Worker 侧 record 的字段，不出现在 Assignment 与 Outcome 的 wire 形状上。
 
 **RUN-EXE-10（Backend 选择与 record 的权威性）** backend 选择是 execution 创建的一部分：Worker 在 Dispatch 时按 `Route` 表评估一次（第一个 `Match` 为真的 provider，`Match` 为 nil 的 route 接受全部），结果作为 `ExecutionRef.Provider` 持久化；此后 Attach、GetStatus、GetOutcome、Cancel、Takeover、Dispose 只查 record 并按 Provider 找 backend，不再评估 Assignment 内容，也不询问任何 backend 是否认识某个 key；record 的 Provider 在本 Worker 没有对应 backend 时为 `ErrUnknownProvider`，record 不被改动。record 是 execution identity 的唯一来源：record 缺失即 execution 不存在（`missing`）。record 的持久性由部署决定——内存 store 随进程消失，此时崩溃后的接管处置按 `missing` 进行（RUN-CMT-7）；需要跨进程收养执行的部署使用文件或共享 record store，收养是控制面对 orphaned record 的 Takeover（RUN-EXE-6）。`Validate` 按同一 route 表选择 backend 但不持久化选择。
 

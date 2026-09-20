@@ -270,6 +270,7 @@ func (l *Loop) bindToolCalls(sch schema.Schema, result *sdk.ModelResult, step *r
 			b.ToolRef = spec.Ref
 			b.DefinitionDigest = spec.DefinitionDigest
 			b.Policy = spec.Policy
+			b.Replay = spec.Replay
 		}
 		bd, err := sch.Canonical.DigestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
 		if err != nil {

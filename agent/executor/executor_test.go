@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -93,12 +94,11 @@ func routes(p effect.ExecutionPort) []executor.Route {
 // lifecycle calls; the Ref it prepares is fixed.
 type refBackend struct {
 	*testBackend
-	mu         sync.Mutex
-	prepared   int
-	started    int
-	restarts   int
-	startRef   string
-	restartErr error
+	mu       sync.Mutex
+	prepared int
+	started  int
+	restarts int
+	startRef string
 }
 
 func (b *refBackend) Prepare(context.Context, effect.Assignment) (string, error) {
@@ -119,9 +119,6 @@ func (b *refBackend) Start(ctx context.Context, ref string, a effect.Assignment)
 func (b *refBackend) Restart(context.Context, string, effect.Assignment) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if b.restartErr != nil {
-		return "", b.restartErr
-	}
 	b.restarts++
 	return fmt.Sprintf("execution-%d", b.restarts+1), nil
 }
@@ -1075,24 +1072,28 @@ func modelText(out effect.Outcome) string {
 	return r.Text
 }
 
-// A lost tool execution is re-dispatched by adoption only when the Backend's
-// Restart accepts it, which it does for a tool that declares replay; a tool
-// without the declaration is settled Unknown and never started again
-// (RUN-EXE-9, TRN-DUR-4).
+// A lost tool execution is re-dispatched by adoption only when the Replay
+// policy its Assignment carries is allowed; a forbidden or unjudged tool is
+// settled Unknown, the message naming the declaration, and never started
+// again (RUN-EXE-9, TRN-DUR-4).
 func TestWorkerAdoptsToolByReplayDeclaration(t *testing.T) {
 	cases := []struct {
-		name       string
-		restartErr error
-		replayed   bool
+		name     string
+		policy   run.ReplayPolicy
+		replayed bool
 	}{
-		{"declared replayable", nil, true},
-		{"not replayable", fmt.Errorf("%w: tool \"gate\" declares replay forbidden", executor.ErrNotReplayable), false},
+		{"allowed", run.ReplayAllowed, true},
+		{"forbidden", run.ReplayForbidden, false},
+		{"unknown", run.ReplayUnknown, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			records := store.NewMemoryStore()
 			a := testToolAssignment()
+			body, _ := a.Tool()
+			body.Replay = tc.policy
+			a.Body = body
 			digest, err := a.Digest()
 			if err != nil {
 				t.Fatal(err)
@@ -1103,7 +1104,7 @@ func TestWorkerAdoptsToolByReplayDeclaration(t *testing.T) {
 			if err := records.Put(ctx, r); err != nil {
 				t.Fatal(err)
 			}
-			backend := &refBackend{testBackend: newTestBackend(), restartErr: tc.restartErr}
+			backend := &refBackend{testBackend: newTestBackend()}
 			worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("ref", backend)}, executor.WorkerOptions{ID: "worker-b", LeaseDuration: time.Second})
 			if err != nil {
 				t.Fatal(err)
@@ -1126,7 +1127,7 @@ func TestWorkerAdoptsToolByReplayDeclaration(t *testing.T) {
 				return
 			}
 			if got.State != effect.ExecutionUnknown || got.Outcome == nil || !got.Outcome.Unknown || got.Outcome.Error == nil ||
-				got.Outcome.Error.Code != "adopted_without_replay" || got.Outcome.Error.Message != tc.restartErr.Error() {
+				got.Outcome.Error.Code != "adopted_without_replay" || !strings.Contains(got.Outcome.Error.Message, "declares replay "+tc.policy.String()) {
 				t.Fatalf("unreplayable tool: state %s outcome %+v", got.State, got.Outcome)
 			}
 			if started != 0 || got.ExecutionRef.Ref != "execution-1" || len(got.Superseded) != 0 {

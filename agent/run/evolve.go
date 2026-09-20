@@ -129,6 +129,7 @@ func applyToolStepOpened(s MachineState, fact *ToolStepOpened) MachineState { //
 			BindingDigest:    b.BindingDigest,
 			Arguments:        b.Arguments,
 			Policy:           b.Policy,
+			Replay:           b.Replay,
 			Status:           ToolPending,
 		}
 		if b.Response != nil {

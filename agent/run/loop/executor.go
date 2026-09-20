@@ -72,7 +72,6 @@ var (
 	ErrExecutionNotFound = effect.ErrExecutionNotFound
 	ErrOutcomeNotReady   = effect.ErrOutcomeNotReady
 	ErrDispatchUnknown   = effect.ErrDispatchUnknown
-	ErrNotReplayable     = effect.ErrNotReplayable
 )
 
 // ErrExecutorRejected reports an assignment the executor would not start.
@@ -152,20 +151,10 @@ func (e *LocalExecutor) Prepare(_ context.Context, a Assignment) (string, error)
 
 // Restart derives the Ref of the next generation of the attempt: the key's
 // Ref with a generation suffix, so a re-dispatched step gets its own entry
-// and the previous one stays readable until retention drops it. A tool is
-// re-dispatched only when its Replay policy is ReplayAllowed; otherwise the
-// answer is ErrNotReplayable naming the declared policy, and the Worker
-// settles Unknown with it.
+// and the previous one stays readable until retention drops it. Whether a
+// tool may be re-dispatched is the Worker's decision from the Assignment's
+// Replay policy (RUN-EXE-9); Restart only derives the Ref.
 func (e *LocalExecutor) Restart(_ context.Context, previous string, a Assignment) (string, error) {
-	if tool, ok := a.Tool(); ok {
-		impl, err := e.tools.ResolveTool(tool.ToolRef)
-		if err != nil {
-			return "", err
-		}
-		if policy := impl.Replay(); policy != ReplayAllowed {
-			return "", fmt.Errorf("%w: tool %q declares replay %s", ErrNotReplayable, tool.ToolRef, policy)
-		}
-	}
 	base := RefOf(a.Key())
 	gen := 1
 	if strings.HasPrefix(previous, base+"#") {
@@ -242,6 +231,8 @@ func (e *LocalExecutor) resolveTool(sch schema.Schema, t *ToolAssignment) (Execu
 		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "tool definition digest mismatch"}
 	case tool.ResponsePolicy() != t.Policy:
 		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "response policy mismatch"}
+	case tool.Replay() != t.Replay:
+		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "replay policy mismatch"}
 	}
 	if argErr := tool.ValidateArguments(t.Arguments); argErr != nil {
 		return nil, &run.ToolFailure{Class: run.FailureInvalidArguments, Message: argErr.Error()}

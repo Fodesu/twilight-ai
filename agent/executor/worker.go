@@ -487,21 +487,22 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 			w.spawn(func() { w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone) })
 			return nil
 		}
-		// The backend no longer finds the execution. Restart replays the
-		// same Assignment as a new generation: it allocates the Ref of the
-		// new physical execution and the old Ref, just confirmed missing,
-		// moves to the audit trail (RUN-EXE-9). A model is always replayed;
-		// a tool only when its Replay policy allows it, because its lost
-		// execution may have crossed the effect boundary before its worker
-		// died (TRN-DUR-4). The Backend answers ErrNotReplayable otherwise,
-		// naming the declared policy, and adoption settles the record
-		// Unknown with that answer instead of retrying.
-		fresh, err := backend.Restart(ctx, ref, claimed.Assignment)
-		if errors.Is(err, ErrNotReplayable) {
+		// The backend no longer finds the execution. A model is always
+		// replayed; a tool only when the Replay policy its Assignment
+		// carries allows it, because its lost execution may have crossed
+		// the effect boundary before its worker died (TRN-DUR-4). The
+		// policy travels with the Assignment, so a local and a remote
+		// Worker decide alike from the record; a forbidden or unjudged tool
+		// settles Unknown, the message naming the declaration.
+		if tool, ok := claimed.Assignment.Tool(); ok && tool.Replay != run.ReplayAllowed {
 			env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest, Unknown: true,
-				Error: &protocol.WireError{Code: "adopted_without_replay", Message: err.Error()}}
+				Error: &protocol.WireError{Code: "adopted_without_replay", Message: fmt.Sprintf("tool %q declares replay %s; the lost execution is not re-dispatched", tool.ToolRef, tool.Replay)}}
 			return w.finishOwned(ctx, key, claimed.FencingEpoch, &env, effect.ExecutionUnknown, nil)
 		}
+		// Restart replays the same Assignment as a new generation: it
+		// allocates the Ref of the new physical execution and the old Ref,
+		// just confirmed missing, moves to the audit trail (RUN-EXE-9).
+		fresh, err := backend.Restart(ctx, ref, claimed.Assignment)
 		if err != nil {
 			return err
 		}

@@ -77,6 +77,37 @@ const (
 	ExternalResponse
 )
 
+// ReplayPolicy is a tool's judgment of its own side effects: whether the
+// Worker that adopts a lost execution of the tool may run it again for the
+// same call (RUN-EXE-9, TRN-DUR-4). It is declared by the tool
+// implementation, frozen into the ToolSpec and copied onto each call and its
+// Assignment, so every Worker that reads the execution record decides alike.
+// Only ReplayAllowed is re-dispatched; ReplayForbidden and the zero value
+// ReplayUnknown are settled Unknown, told apart in the settlement's message.
+type ReplayPolicy uint8
+
+const (
+	// ReplayUnknown: the tool has not been judged. Zero value, so a missing
+	// declaration never replays; omitted on the wire.
+	ReplayUnknown ReplayPolicy = iota
+	// ReplayAllowed: read-only or idempotent by CallID; a second run has no
+	// second effect on the world.
+	ReplayAllowed
+	// ReplayForbidden: side effects a second run would repeat.
+	ReplayForbidden
+)
+
+func (p ReplayPolicy) String() string {
+	switch p {
+	case ReplayAllowed:
+		return "allowed"
+	case ReplayForbidden:
+		return "forbidden"
+	default:
+		return "unknown"
+	}
+}
+
 type ResponseKind string
 
 const (
@@ -118,6 +149,7 @@ type ToolSpec struct {
 	Name             string         `json:"name"`
 	DefinitionDigest Digest         `json:"definitionDigest"`
 	Policy           ResponsePolicy `json:"policy"`
+	Replay           ReplayPolicy   `json:"replay,omitempty"`
 }
 
 // ToolCallBinding is one frozen call inside ToolStepOpened.
@@ -131,6 +163,7 @@ type ToolCallBinding struct {
 	BindingDigest    Digest         `json:"bindingDigest"` // definition, policy and canonical arguments
 	Arguments        CanonicalJSON  `json:"arguments"`
 	Policy           ResponsePolicy `json:"policy"` // unresolved ToolRef uses DirectExecution
+	Replay           ReplayPolicy   `json:"replay,omitempty"`
 	// Response is derived and filled by Decide inside ToolStepOpened; callers
 	// leave it empty when submitting.
 	Response *ResponseRequest `json:"response,omitempty"`
@@ -276,6 +309,7 @@ type ToolCallState struct {
 	BindingDigest    Digest         `json:"bindingDigest"`
 	Arguments        CanonicalJSON  `json:"arguments"`
 	Policy           ResponsePolicy `json:"policy"`
+	Replay           ReplayPolicy   `json:"replay,omitempty"`
 	Status           ToolCallStatus `json:"status"`
 	// Effect is the tool effect the call requested (from ToolCallStarted);
 	// empty before the start and for a call an external response settles

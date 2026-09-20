@@ -176,7 +176,7 @@ func (t *lookupTool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{Name: "lookup", Parameters: []byte(`{"type":"object","properties":{"q":{"type":"string"}}}`)}
 }
 func (t *lookupTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
-func (t *lookupTool) Replay() loop.ReplayPolicy                 { return loop.ReplayUnknown }
+func (t *lookupTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }
 func (t *lookupTool) ValidateArguments(run.CanonicalJSON) error { return nil }
 func (t *lookupTool) Execute(_ context.Context, req loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	if t.ran.CompareAndSwap(false, true) {

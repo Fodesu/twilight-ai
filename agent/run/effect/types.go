@@ -57,6 +57,10 @@ type ToolAssignment struct {
 	DefinitionDigest run.Digest
 	Arguments        run.CanonicalJSON
 	Policy           run.ResponsePolicy
+	// Replay is the tool's declared replay policy, copied from the frozen
+	// call: the Worker that adopts a lost execution decides from it alone
+	// (RUN-EXE-9). Omitted on the wire when unknown.
+	Replay run.ReplayPolicy `json:",omitempty"`
 }
 
 func (ToolAssignment) Kind() AssignmentKind { return AssignmentTool }
@@ -284,12 +288,6 @@ var (
 	// request may have crossed the effect boundary. It must not trigger a
 	// compensating re-dispatch or a RecoverModelExecution automatically.
 	ErrDispatchUnknown = errors.New("agent: effect: dispatch outcome unknown")
-	// ErrNotReplayable is a Backend's Restart answer for a tool Assignment
-	// whose tool's Replay policy is not ReplayAllowed (forbidden or unknown):
-	// the lost execution may have crossed the effect boundary, so the Worker
-	// settles it Unknown instead of re-dispatching it (TRN-DUR-4, RUN-EXE-9).
-	// A Backend wraps it with the declared policy.
-	ErrNotReplayable = errors.New("agent: effect: tool execution is not declared replayable")
 )
 
 // AttachmentState describes what an executor found for an AssignmentKey.

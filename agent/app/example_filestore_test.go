@@ -216,7 +216,7 @@ func (t *stagedTool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{Name: "lookup", Parameters: []byte(`{"type":"object","properties":{"q":{"type":"string"}}}`)}
 }
 func (t *stagedTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
-func (t *stagedTool) Replay() loop.ReplayPolicy                 { return loop.ReplayUnknown }
+func (t *stagedTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }
 func (t *stagedTool) ValidateArguments(run.CanonicalJSON) error { return nil }
 func (t *stagedTool) Execute(_ context.Context, req loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	t.mu.Lock()
