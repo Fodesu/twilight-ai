@@ -675,9 +675,14 @@ func (w *Worker) finishOwned(ctx context.Context, key effect.AssignmentKey, epoc
 	return dispatchErr
 }
 
-// Attach reports the record's observation state (RUN-EXE-3): missing without
-// a record, terminal once settled, orphaned when no live incarnation owns it,
-// and otherwise what this incarnation's Backend finds for the Ref.
+// Attach reports the record's observation state (RUN-EXE-3). The record in
+// the shared store is the authority: missing without a record, terminal once
+// settled, orphaned when no incarnation holds a live lease on it, active
+// while one does. Which Worker answers does not matter: a live lease held by
+// another incarnation is proof of its heartbeat, and its watcher settles the
+// Outcome into the same store GetOutcome reads. Only for its own live lease
+// does this Worker also ask the Backend, and a Backend that no longer finds
+// the Ref makes the record orphaned until Reconcile restarts or disposes it.
 func (w *Worker) Attach(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
 	r, ok, err := w.store.Get(ctx, key)
 	if err != nil {
@@ -692,8 +697,12 @@ func (w *Worker) Attach(ctx context.Context, key effect.AssignmentKey) (effect.A
 		attachment.BackendAttached = false
 		return attachment, nil
 	}
-	if r.Owner != w.id || r.FencingEpoch == 0 {
+	if r.FencingEpoch == 0 || r.LeaseUntilUnixMilli <= w.now().UnixMilli() {
 		attachment.State = effect.AttachmentOrphaned
+		return attachment, nil
+	}
+	if r.Owner != w.id {
+		attachment.State = effect.AttachmentActive
 		return attachment, nil
 	}
 	owned, err := w.store.LeaseOwned(ctx, key, w.id, r.FencingEpoch)

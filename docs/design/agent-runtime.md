@@ -136,7 +136,7 @@ func NewPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...PresetOp
 
 **DRV-3** `Authority.Open(sid)` 经 `Writers` 取得 Writer，随后 `driver.Open(ctx, w)` 以该 Writer 安装恢复监听并调用 `SessionRunStore.RecoverInterrupted(ctx, w, reconciler)`（RUN-CMT-7），其中 `reconciler = &reconcile.Reconciler{Executions: executor, Lifetime: lifetime, Deliver: deliver, Fail: fail}`；恢复监听持有 w，重连的 Outcome 经它结算。Outcome 读取按错误分类：`ErrOutcomeNotReady` 无限等待（执行仍在进行）；`ErrExecutionNotFound` 与 `effect.ErrOutcomeUnavailable`（`executor.ErrUnknownProvider` 包装它）是确定答案，监听立即停止并经 `Fail` 上报；其他读取失败按 `ReadRetries`（默认 60 次，约一分钟）退避重试后同样上报。目标保持 Executing，下一次 `RecoverInterrupted` 重新规划，记录已不存在则处置。Attach 握手受 Open 请求的 context 约束；后台 Outcome 读取与交付使用该 Session 的 recovery lifetime。Open 返回后请求取消仍允许恢复继续；再次 Open 会替换旧监听，`Handle.Close` 与 `Authority.Close` 取消各自拥有的监听。
 
-Attach 的 `active` / `terminal` 为 `keep`：保留 Executing 并等待实际 Outcome；`orphaned` 表示 Executor 找到 durable record 但无法关联 live backend，为 `defer`：保留 Executing 并同样等待 Outcome，供 control plane reconcile/takeover；`missing` 为 `dispose`，才进入接管处置。进程内 Executor 重启后旧记录为 `missing`，持久 Executor 按其 Execution Store 返回状态。`deliver` 按 Outcome 的 RunID 查找 Turn，使用其 preset 的 Loop 结算并继续驱动；后台失败经 `Ports.Fail` 上报。
+Attach 的 `active` / `terminal` 为 `keep`：保留 Executing 并等待实际 Outcome；`orphaned` 表示 record 存在但没有未过期的租约（持有者已死或从未持有；持有者活着时无论是哪个 Worker 都为 `active`），为 `defer`：保留 Executing 并同样等待 Outcome，供 control plane reconcile/takeover；`missing` 为 `dispose`，才进入接管处置。进程内 Executor 重启后旧记录为 `missing`，持久 Executor 按其 Execution Store 返回状态。`deliver` 按 Outcome 的 RunID 查找 Turn，使用其 preset 的 Loop 结算并继续驱动；后台失败经 `Ports.Fail` 上报。
 
 | Executor observation (`AttachmentState`) | Recovery disposition | authority 行为 | API 观察 |
 |---|---|---|---|

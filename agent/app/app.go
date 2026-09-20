@@ -147,7 +147,10 @@ type Application struct {
 	Authority *authority.Authority
 	bus       *observe.Bus
 	spawn     *spawn.Executor
-	warn      func(error)
+	// worker is the Worker Build composed, if any; Close stops it after the
+	// Authority (RUN-EXE-8).
+	worker *executor.Worker
+	warn   func(error)
 
 	mu   sync.RWMutex
 	refs map[turn.PresetID]turn.PresetRef
@@ -182,10 +185,11 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		app.spawn = spawn.NewExecutor(*c.Spawn)
 		routes = append(routes, spawn.Route(app.spawn))
 	}
-	port, err := buildExecutor(&c, routes)
+	port, worker, err := buildExecutor(&c, routes)
 	if err != nil {
 		return nil, err
 	}
+	app.worker = worker
 	// The event stream is a CommitObserver on the Writers (EXT-WRT-7); it
 	// needs the Registry, which the Authority builds, so the bus is wired
 	// through a forwarding observer bound after New.
@@ -270,7 +274,14 @@ func (app *Application) Close(ctx context.Context) error {
 	if app.spawn != nil {
 		app.spawn.Close()
 	}
-	return app.Authority.Close(ctx)
+	err := app.Authority.Close(ctx)
+	// The Worker goes last: the Authority's drives may still be settling
+	// outcomes through it. Records keep their leases until they expire and
+	// the next incarnation adopts them (RUN-EXE-8, SPN-4).
+	if app.worker != nil {
+		app.worker.Close()
+	}
+	return err
 }
 
 // buildExecutor is the effect Port the Authority drives against. The local
@@ -278,19 +289,23 @@ func (app *Application) Close(ctx context.Context) error {
 // the remote client is used as is unless extra routes (spawn) are configured,
 // in which case a Worker routes to them and to the Port as its default
 // Backend; the remote Worker keeps its own record of the physical execution.
-func buildExecutor(c *Config, extra []executor.Route) (effect.ExecutionPort, error) {
-	worker := func(routes ...executor.Route) (effect.ExecutionPort, error) {
+func buildExecutor(c *Config, extra []executor.Route) (effect.ExecutionPort, *executor.Worker, error) {
+	worker := func(routes ...executor.Route) (effect.ExecutionPort, *executor.Worker, error) {
 		if c.Executions == nil {
-			return nil, errors.New("app: an execution record store (Config.Executions) is required when Build composes a Worker")
+			return nil, nil, errors.New("app: an execution record store (Config.Executions) is required when Build composes a Worker")
 		}
 		if durable(c.Store) != durable(c.Executions) && !c.Artifacts.Ephemeral {
-			return nil, ErrEphemeralExecutions
+			return nil, nil, ErrEphemeralExecutions
 		}
-		return executor.NewWorker(context.Background(), c.Executions, append(extra, routes...), c.Worker)
+		w, err := executor.NewWorker(context.Background(), c.Executions, append(extra, routes...), c.Worker)
+		if err != nil {
+			return nil, nil, err
+		}
+		return w, w, nil
 	}
 	if c.Executor.Port != nil {
 		if len(extra) == 0 {
-			return c.Executor.Port, nil
+			return c.Executor.Port, nil, nil
 		}
 		return worker(executor.Default("port", executor.PortBackend(c.Executor.Port)))
 	}
@@ -298,24 +313,24 @@ func buildExecutor(c *Config, extra []executor.Route) (effect.ExecutionPort, err
 	case "", ExecutorLocal:
 		catalog, err := executorlocal.NewCatalog(c.Executor.Models, c.Executor.Tools...)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		backend, err := executorlocal.NewLocalExecutor(catalog, nil, false)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		return worker(executorlocal.Route(backend))
 	case ExecutorRemote:
 		if c.Executor.Endpoint == "" {
-			return nil, errors.New("app: remote executor requires an endpoint")
+			return nil, nil, errors.New("app: remote executor requires an endpoint")
 		}
 		client := &http.Client{BaseURL: c.Executor.Endpoint, HTTP: c.Executor.HTTP}
 		if len(extra) == 0 {
-			return client, nil
+			return client, nil, nil
 		}
 		return worker(executor.Default("remote", executor.PortBackend(client)))
 	default:
-		return nil, fmt.Errorf("app: unknown executor mode %q", c.Executor.Mode)
+		return nil, nil, fmt.Errorf("app: unknown executor mode %q", c.Executor.Mode)
 	}
 }
 

@@ -1202,3 +1202,46 @@ func TestWorkerReconcileDisposesUnadoptableOrphans(t *testing.T) {
 		t.Fatalf("reconcile after disposal = %v", err)
 	}
 }
+
+// Attach classifies by the record's lease in the shared store, not by which
+// Worker answers: a live lease held by another incarnation is active, an
+// expired one orphaned (RUN-EXE-3).
+func TestWorkerAttachClassifiesByLease(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(2_000_000, 0)
+	cases := []struct {
+		name  string
+		owner string
+		epoch uint64
+		lease int64
+		want  effect.AttachmentState
+	}{
+		{"another incarnation, live lease", "other-worker", 3, now.Add(time.Minute).UnixMilli(), effect.AttachmentActive},
+		{"another incarnation, expired lease", "other-worker", 3, now.Add(-time.Minute).UnixMilli(), effect.AttachmentOrphaned},
+		{"never acquired", "", 0, 0, effect.AttachmentOrphaned},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			records := store.NewMemoryStore(store.MemoryStoreOptions{Now: func() time.Time { return now }})
+			a := testAssignment()
+			digest, err := a.Digest()
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+				ExecutionRef: store.ExecutionRef{Provider: "elsewhere", Ref: "job"}, Owner: tc.owner, FencingEpoch: tc.epoch, LeaseUntilUnixMilli: tc.lease}
+			if err := records.Put(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+			worker, err := executor.NewWorker(ctx, records, routes(newTestBackend()), executor.WorkerOptions{ID: "this-worker", Clock: func() time.Time { return now }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer worker.Close()
+			got, err := worker.Attach(ctx, a.Key())
+			if err != nil || got.State != tc.want {
+				t.Fatalf("attach = %+v, %v, want %s", got, err, tc.want)
+			}
+		})
+	}
+}

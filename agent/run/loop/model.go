@@ -187,11 +187,12 @@ func (l *Loop) modelCompletion(sch schema.Schema, step *run.ModelStep, out Outco
 	case effect.ModelSucceeded:
 		result = r.Result
 	case effect.Unknown:
-		message := "model execution outcome is unknown"
-		if r.Message != "" {
-			message = r.Message
-		}
-		return run.SubmitModelFailure{StepID: stepID, Effect: step.Effect, Failure: run.StepFailure{Class: run.FailureEffectUnknown, Message: message}}, nil
+		// No outcome exists: the executor closed its recovery without a
+		// provider answer (Dispose, an adoption that could not restart).
+		// A model effect has no world side effect, so the step is withdrawn
+		// to Open and the next Advance replans, the same disposition the
+		// recovery path gives a missing execution (RUN-CMT-7, RUN-EXE-6).
+		return withdraw, nil
 	case effect.Cancelled:
 		return withdraw, nil
 	case effect.ModelFailed:
