@@ -93,11 +93,12 @@ func routes(p effect.ExecutionPort) []executor.Route {
 // lifecycle calls; the Ref it prepares is fixed.
 type refBackend struct {
 	*testBackend
-	mu       sync.Mutex
-	prepared int
-	started  int
-	restarts int
-	startRef string
+	mu         sync.Mutex
+	prepared   int
+	started    int
+	restarts   int
+	startRef   string
+	restartErr error
 }
 
 func (b *refBackend) Prepare(context.Context, effect.Assignment) (string, error) {
@@ -118,6 +119,9 @@ func (b *refBackend) Start(ctx context.Context, ref string, a effect.Assignment)
 func (b *refBackend) Restart(context.Context, string, effect.Assignment) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.restartErr != nil {
+		return "", b.restartErr
+	}
 	b.restarts++
 	return fmt.Sprintf("execution-%d", b.restarts+1), nil
 }
@@ -1069,4 +1073,130 @@ func modelText(out effect.Outcome) string {
 		return ""
 	}
 	return r.Text
+}
+
+// A lost tool execution is re-dispatched by adoption only when the Backend's
+// Restart accepts it, which it does for a tool that declares replay; a tool
+// without the declaration is settled Unknown and never started again
+// (RUN-EXE-9, TRN-DUR-4).
+func TestWorkerAdoptsToolByReplayDeclaration(t *testing.T) {
+	cases := []struct {
+		name       string
+		restartErr error
+		replayed   bool
+	}{
+		{"declared replayable", nil, true},
+		{"not replayable", executor.ErrNotReplayable, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			records := store.NewMemoryStore()
+			a := testToolAssignment()
+			digest, err := a.Digest()
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+				ExecutionRef: store.ExecutionRef{Provider: "ref", Ref: "execution-1"},
+				Owner:        "dead-worker", FencingEpoch: 2, LeaseUntilUnixMilli: 1}
+			if err := records.Put(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+			backend := &refBackend{testBackend: newTestBackend(), restartErr: tc.restartErr}
+			worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("ref", backend)}, executor.WorkerOptions{ID: "worker-b", LeaseDuration: time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer worker.Close()
+			if err := worker.Takeover(ctx, a.Key()); err != nil {
+				t.Fatal(err)
+			}
+			got, _, err := records.Get(ctx, a.Key())
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend.mu.Lock()
+			started, startRef := backend.started, backend.startRef
+			backend.mu.Unlock()
+			if tc.replayed {
+				if got.ExecutionRef.Ref != "execution-2" || len(got.Superseded) != 1 || started != 1 || startRef != "execution-2" {
+					t.Fatalf("replayed tool: record ref %q superseded %d started %d at %q", got.ExecutionRef.Ref, len(got.Superseded), started, startRef)
+				}
+				return
+			}
+			if got.State != effect.ExecutionUnknown || got.Outcome == nil || !got.Outcome.Unknown || got.Outcome.Error == nil || got.Outcome.Error.Code != "adopted_without_replay" {
+				t.Fatalf("unreplayable tool: state %s outcome %+v", got.State, got.Outcome)
+			}
+			if started != 0 || got.ExecutionRef.Ref != "execution-1" || len(got.Superseded) != 0 {
+				t.Fatalf("unreplayable tool was re-dispatched: started %d ref %q superseded %d", started, got.ExecutionRef.Ref, len(got.Superseded))
+			}
+		})
+	}
+}
+
+// Reconcile bounds deferred: a record this Worker keeps failing to take over
+// is disposed once DisposeAfter has elapsed since the first failure, and the
+// disposal is reported through Warn; before that the takeover error is
+// returned and the record is untouched (RUN-EXE-6).
+func TestWorkerReconcileDisposesUnadoptableOrphans(t *testing.T) {
+	ctx := context.Background()
+	records := store.NewMemoryStore()
+	a := testAssignment()
+	digest, err := a.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+		ExecutionRef: store.ExecutionRef{Provider: "elsewhere", Ref: "existing-job"},
+		Owner:        "expired-worker", FencingEpoch: 3, LeaseUntilUnixMilli: 1}
+	if err := records.Put(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	now := time.Unix(1_000_000, 0)
+	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+	var warned []error
+	warn := func(err error) { mu.Lock(); defer mu.Unlock(); warned = append(warned, err) }
+	worker, err := executor.NewWorker(ctx, records, routes(newTestBackend()),
+		executor.WorkerOptions{ID: "new-worker", Clock: clock, DisposeAfter: 10 * time.Second, Warn: warn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Close()
+	for _, step := range []struct {
+		advance  time.Duration
+		disposed bool
+	}{{0, false}, {5 * time.Second, false}, {5 * time.Second, true}} {
+		mu.Lock()
+		now = now.Add(step.advance)
+		mu.Unlock()
+		_, err := worker.Reconcile(ctx)
+		got, _, gerr := records.Get(ctx, a.Key())
+		if gerr != nil {
+			t.Fatal(gerr)
+		}
+		if !step.disposed {
+			if !errors.Is(err, executor.ErrUnknownProvider) || got.State != effect.ExecutionRunning || got.Owner != r.Owner {
+				t.Fatalf("before the bound: reconcile = %v, record %s/%s", err, got.State, got.Owner)
+			}
+			continue
+		}
+		if err != nil || got.State != effect.ExecutionUnknown || got.Outcome == nil || got.Outcome.Error == nil || got.Outcome.Error.Code != "disposed" {
+			t.Fatalf("at the bound: reconcile = %v, record %s outcome %+v", err, got.State, got.Outcome)
+		}
+		mu.Lock()
+		n := len(warned)
+		var last error
+		if n > 0 {
+			last = warned[n-1]
+		}
+		mu.Unlock()
+		if n != 1 || !errors.Is(last, executor.ErrOrphanDisposed) || !errors.Is(last, executor.ErrUnknownProvider) {
+			t.Fatalf("warn = %v (%d), want one ErrOrphanDisposed wrapping the takeover error", last, n)
+		}
+	}
+	if _, err := worker.Reconcile(ctx); err != nil {
+		t.Fatalf("reconcile after disposal = %v", err)
+	}
 }

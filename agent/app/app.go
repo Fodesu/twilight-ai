@@ -172,6 +172,9 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		warn = func(error) {}
 	}
 	app := &Application{warn: warn, refs: make(map[turn.PresetID]turn.PresetRef, len(c.Presets))}
+	if c.Worker.Warn == nil {
+		c.Worker.Warn = warn
+	}
 	// The spawn Backend is one Route of the Worker (SPN-1, RUN-EXE-10); it
 	// drives children through the Authority, so it is bound after New.
 	var routes []executor.Route

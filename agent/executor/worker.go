@@ -37,6 +37,16 @@ type WorkerOptions struct {
 	// Clock reads the lease clock. It must agree with the Store's clock; the
 	// Store remains the fencing authority. Defaults to time.Now.
 	Clock func() time.Time
+	// DisposeAfter bounds how long an orphaned record waits for a Worker
+	// able to adopt it: once this Worker's takeovers of a record have been
+	// failing for that long, Reconcile disposes the record (RUN-EXE-6) and
+	// reports it through Warn. Zero leaves deferred unbounded, the protocol
+	// default. The clock is this incarnation's: a restarted Worker starts
+	// counting again.
+	DisposeAfter time.Duration
+	// Warn receives control-plane events no caller waits for, such as a
+	// record disposed after DisposeAfter (ErrOrphanDisposed). nil discards.
+	Warn func(error)
 }
 
 const defaultLeaseDuration = 30 * time.Second
@@ -64,8 +74,14 @@ type Worker struct {
 	// each record's heartbeat and watcher. Close cancels lifecycle and waits.
 	wg sync.WaitGroup
 
+	disposeAfter time.Duration
+	warn         func(error)
+
 	mu     sync.Mutex
 	notify map[effect.AssignmentKey]chan struct{}
+	// orphans records when this incarnation first failed to take over each
+	// expired record; DisposeAfter is measured from there.
+	orphans map[effect.AssignmentKey]time.Time
 }
 
 // NewWorker builds a Worker over records with the given routes; the last
@@ -106,8 +122,14 @@ func NewWorker(ctx context.Context, records executionstore.Store, routes []Route
 		now = time.Now
 	}
 	lifecycle, stop := context.WithCancel(context.WithoutCancel(ctx))
+	warn := opts.Warn
+	if warn == nil {
+		warn = func(error) {}
+	}
 	w := &Worker{store: records, routes: routes, backends: backends, id: opts.ID, lease: opts.LeaseDuration, now: now,
-		lifecycle: lifecycle, stop: stop, notify: make(map[effect.AssignmentKey]chan struct{})}
+		disposeAfter: opts.DisposeAfter, warn: warn,
+		lifecycle: lifecycle, stop: stop, notify: make(map[effect.AssignmentKey]chan struct{}),
+		orphans: make(map[effect.AssignmentKey]time.Time)}
 	if err := w.recover(ctx); err != nil {
 		stop()
 		return nil, err
@@ -255,29 +277,88 @@ func (w *Worker) Takeover(ctx context.Context, key effect.AssignmentKey) error {
 // only re-dispatching after the backend reports it unattachable. Records
 // under a live lease, this Worker's or another's, are skipped; the store
 // remains the fencing authority. One record's failure does not stop the
-// others. It returns the number of records handed to Takeover.
+// others. A record this Worker has been failing to take over for
+// DisposeAfter is disposed instead (RUN-EXE-6). It returns the number of
+// records handed to Takeover.
 func (w *Worker) Reconcile(ctx context.Context) (int, error) {
 	records, err := w.store.List(ctx)
 	if err != nil {
 		return 0, err
 	}
-	now := w.now().UnixMilli()
+	now := w.now()
 	var firstErr error
 	n := 0
 	for i := range records {
 		r := &records[i]
+		key := r.Assignment.Key()
 		if protocol.StatusTerminal(r.State) {
+			w.forgetOrphan(key)
 			continue
 		}
-		if r.FencingEpoch != 0 && r.LeaseUntilUnixMilli > now {
+		if r.FencingEpoch != 0 && r.LeaseUntilUnixMilli > now.UnixMilli() {
 			continue
-		}
-		if err := w.Takeover(ctx, r.Assignment.Key()); err != nil && firstErr == nil {
-			firstErr = err
 		}
 		n++
+		err := w.Takeover(ctx, key)
+		if err == nil {
+			w.forgetOrphan(key)
+			continue
+		}
+		if w.expireOrphan(ctx, key, now, err) {
+			continue
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
 	}
 	return n, firstErr
+}
+
+// expireOrphan disposes a record this Worker has failed to take over for
+// DisposeAfter, measured from the first failure this incarnation saw. It
+// re-reads the record first: an execution the failed takeover nonetheless
+// started under this Worker's live lease is adopted, not disposed.
+func (w *Worker) expireOrphan(ctx context.Context, key effect.AssignmentKey, now time.Time, cause error) bool {
+	if w.disposeAfter <= 0 {
+		return false
+	}
+	w.mu.Lock()
+	since, seen := w.orphans[key]
+	if !seen {
+		since = now
+		w.orphans[key] = since
+	}
+	w.mu.Unlock()
+	age := now.Sub(since)
+	if age < w.disposeAfter {
+		return false
+	}
+	r, ok, err := w.store.Get(ctx, key)
+	if err != nil || !ok || protocol.StatusTerminal(r.State) {
+		return false
+	}
+	if r.FencingEpoch != 0 {
+		owned, err := w.store.LeaseOwned(ctx, key, w.id, r.FencingEpoch)
+		if err != nil {
+			return false
+		}
+		if owned {
+			w.forgetOrphan(key)
+			return false
+		}
+	}
+	if err := w.Dispose(ctx, key); err != nil {
+		return false
+	}
+	w.forgetOrphan(key)
+	w.warn(fmt.Errorf("%w: run %s effect %s, unadoptable for %s: %w", ErrOrphanDisposed, key.RunID, key.Effect, age.Round(time.Millisecond), cause))
+	return true
+}
+
+func (w *Worker) forgetOrphan(key effect.AssignmentKey) {
+	w.mu.Lock()
+	delete(w.orphans, key)
+	w.mu.Unlock()
 }
 
 func (w *Worker) reconcileLoop(interval time.Duration) {
@@ -338,8 +419,9 @@ func (w *Worker) wake(key effect.AssignmentKey) {
 
 // acquireAndStart takes the record's lease and brings its execution to
 // Running: a record with an attachable execution is observed, one whose
-// execution the backend no longer finds is re-started (model) or settled
-// Unknown (tool, TRN-DUR-4), one never started is started.
+// execution the backend no longer finds is re-started (a model, or a tool
+// that declares replay) or settled Unknown (a tool without the declaration,
+// TRN-DUR-4), one never started is started.
 func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) error {
 	claimed, acquired, err := w.store.Acquire(ctx, key, w.id, w.lease)
 	if err != nil {
@@ -405,22 +487,20 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 			w.spawn(func() { w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone) })
 			return nil
 		}
-		if claimed.Assignment.Kind() == effect.AssignmentTool {
-			// A tool execution the backend no longer finds may have crossed
-			// the effect boundary before its worker died. Re-dispatch may
-			// repeat side effects, so adoption settles Unknown (TRN-DUR-4)
-			// instead of retrying. A replayable tool declares that on its
-			// definition; until the declaration exists, no tool is
-			// re-dispatched by adoption.
+		// The backend no longer finds the execution. Restart replays the
+		// same Assignment as a new generation: it allocates the Ref of the
+		// new physical execution and the old Ref, just confirmed missing,
+		// moves to the audit trail (RUN-EXE-9). A model is always replayed;
+		// a tool only when it declares replay, because its lost execution
+		// may have crossed the effect boundary before its worker died
+		// (TRN-DUR-4). The Backend answers ErrNotReplayable otherwise and
+		// adoption settles the record Unknown instead of retrying.
+		fresh, err := backend.Restart(ctx, ref, claimed.Assignment)
+		if errors.Is(err, ErrNotReplayable) {
 			env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest, Unknown: true,
 				Error: &protocol.WireError{Code: "adopted_without_replay", Message: "tool execution adopted without a replay declaration"}}
 			return w.finishOwned(ctx, key, claimed.FencingEpoch, &env, effect.ExecutionUnknown, nil)
 		}
-		// A model execution replays the same frozen request as a new
-		// generation: Restart allocates the Ref of the new physical execution
-		// and the old Ref, just confirmed missing, moves to the audit trail
-		// (RUN-EXE-9).
-		fresh, err := backend.Restart(ctx, ref, claimed.Assignment)
 		if err != nil {
 			return err
 		}

@@ -284,6 +284,11 @@ var (
 	// request may have crossed the effect boundary. It must not trigger a
 	// compensating re-dispatch or a RecoverModelExecution automatically.
 	ErrDispatchUnknown = errors.New("agent: effect: dispatch outcome unknown")
+	// ErrNotReplayable is a Backend's Restart answer for a tool Assignment
+	// whose tool does not declare replay: the lost execution may have crossed
+	// the effect boundary, so the Worker settles it Unknown instead of
+	// re-dispatching it (TRN-DUR-4, RUN-EXE-9).
+	ErrNotReplayable = errors.New("agent: effect: tool execution is not declared replayable")
 )
 
 // AttachmentState describes what an executor found for an AssignmentKey.

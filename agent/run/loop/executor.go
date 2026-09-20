@@ -72,6 +72,7 @@ var (
 	ErrExecutionNotFound = effect.ErrExecutionNotFound
 	ErrOutcomeNotReady   = effect.ErrOutcomeNotReady
 	ErrDispatchUnknown   = effect.ErrDispatchUnknown
+	ErrNotReplayable     = effect.ErrNotReplayable
 )
 
 // ErrExecutorRejected reports an assignment the executor would not start.
@@ -150,9 +151,20 @@ func (e *LocalExecutor) Prepare(_ context.Context, a Assignment) (string, error)
 }
 
 // Restart derives the Ref of the next generation of the attempt: the key's
-// Ref with a generation suffix, so a re-dispatched model step gets its own
-// entry and the previous one stays readable until retention drops it.
+// Ref with a generation suffix, so a re-dispatched step gets its own entry
+// and the previous one stays readable until retention drops it. A tool is
+// re-dispatched only when it declares replay (ReplayableTool); otherwise the
+// answer is effect.ErrNotReplayable and the Worker settles Unknown.
 func (e *LocalExecutor) Restart(_ context.Context, previous string, a Assignment) (string, error) {
+	if tool, ok := a.Tool(); ok {
+		impl, err := e.tools.ResolveTool(tool.ToolRef)
+		if err != nil {
+			return "", err
+		}
+		if rt, ok := impl.(ReplayableTool); !ok || !rt.Replayable() {
+			return "", ErrNotReplayable
+		}
+	}
 	base := RefOf(a.Key())
 	gen := 1
 	if strings.HasPrefix(previous, base+"#") {

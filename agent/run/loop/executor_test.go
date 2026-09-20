@@ -609,3 +609,43 @@ func mustModel(t testing.TB, a Assignment) ModelAssignment {
 	}
 	return m
 }
+
+type replayableFakeTool struct {
+	*fakeTool
+	replay bool
+}
+
+func (t replayableFakeTool) Replayable() bool { return t.replay }
+
+// Restart of a tool Assignment derives the next generation only for a tool
+// that declares replay; any other tool answers effect.ErrNotReplayable
+// (RUN-EXE-9, TRN-DUR-4).
+func TestLocalExecutorRestartRespectsReplayDeclaration(t *testing.T) {
+	base := &fakeTool{ref: "echo", def: sdk.ToolDefinition{Name: "echo"}, policy: DirectExecution}
+	cases := []struct {
+		name string
+		tool ExecutableTool
+		ok   bool
+	}{
+		{"no declaration", base, false},
+		{"declared false", replayableFakeTool{base, false}, false},
+		{"declared true", replayableFakeTool{base, true}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			exec, err := NewLocalExecutor(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": tc.tool}}, nil, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			a := Assignment{Session: "s", RunID: "r", StepID: "step", CallID: "c1", Effect: "e", Schema: 1,
+				Body: ToolAssignment{ToolRef: "echo", Arguments: cj(`{}`), Policy: DirectExecution}}
+			ref, err := exec.Restart(context.Background(), RefOf(a.Key()), a)
+			if tc.ok && (err != nil || ref != RefOf(a.Key())+"#1") {
+				t.Fatalf("restart = %q, %v", ref, err)
+			}
+			if !tc.ok && !errors.Is(err, ErrNotReplayable) {
+				t.Fatalf("restart = %q, %v, want ErrNotReplayable", ref, err)
+			}
+		})
+	}
+}

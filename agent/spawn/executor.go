@@ -188,6 +188,9 @@ func (e *Executor) Prepare(_ context.Context, a effect.Assignment) (string, erro
 
 // Restart keeps the Ref: the child Session is the durable execution and a
 // takeover continues it rather than creating another child (SPN-4).
+// Restart returns the same Ref: the child Session is the execution itself,
+// its identity derives from the call, and Start of an existing child is a
+// no-op, so the spawn tool is replayable by construction (RUN-EXE-9).
 func (e *Executor) Restart(_ context.Context, previous string, _ effect.Assignment) (string, error) {
 	return previous, nil
 }
