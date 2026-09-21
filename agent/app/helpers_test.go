@@ -124,6 +124,7 @@ func (t *gateTool) Definition() sdk.ToolDefinition {
 }
 func (t *gateTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
 func (t *gateTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }
+func (t *gateTool) Retry() run.RetryPolicy                    { return run.RetryUnknown }
 func (t *gateTool) ValidateArguments(run.CanonicalJSON) error { return nil }
 func (t *gateTool) Execute(_ context.Context, req loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	t.started <- struct{}{}

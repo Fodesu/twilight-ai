@@ -231,8 +231,8 @@ func (e *LocalExecutor) resolveTool(sch schema.Schema, t *ToolAssignment) (Execu
 		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "tool definition digest mismatch"}
 	case tool.ResponsePolicy() != t.Policy:
 		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "response policy mismatch"}
-	case tool.Replay() != t.Replay:
-		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "replay policy mismatch"}
+	case tool.Replay() != t.Replay, tool.Retry() != t.Retry:
+		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "execution policy mismatch"}
 	}
 	if argErr := tool.ValidateArguments(t.Arguments); argErr != nil {
 		return nil, &run.ToolFailure{Class: run.FailureInvalidArguments, Message: argErr.Error()}
@@ -445,7 +445,8 @@ func (e *LocalExecutor) runModel(ctx context.Context, a Assignment, frozenReques
 }
 
 // modelFailure classifies a model invocation error into the wire-stable
-// failure codes.
+// failure codes (RUN-EXE-11): the executor's own conditions first, then the
+// provider's HTTP status or the transport through effect.ClassifyModelError.
 func modelFailure(err error) OutcomeResult {
 	switch {
 	case errors.Is(err, frozen.ErrMissing):
@@ -455,7 +456,7 @@ func modelFailure(err error) OutcomeResult {
 	case errors.Is(err, context.DeadlineExceeded):
 		return effect.ModelFailed{Code: effect.FailureDeadline, Message: err.Error()}
 	default:
-		return effect.ModelFailed{Code: effect.FailureExecutor, Message: err.Error()}
+		return effect.ModelFailed{Code: effect.ClassifyModelError(err), Message: err.Error()}
 	}
 }
 

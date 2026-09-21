@@ -1245,3 +1245,116 @@ func TestWorkerAttachClassifiesByLease(t *testing.T) {
 		})
 	}
 }
+
+// transientBackend fails the first executions of an effect with a transient
+// provider failure and succeeds afterwards; each Restart is a new Ref.
+type transientBackend struct {
+	*testBackend
+	mu       sync.Mutex
+	failures int
+	starts   []string
+	code     effect.FailureCode
+}
+
+func (b *transientBackend) Prepare(context.Context, effect.Assignment) (string, error) {
+	return "exec-1", nil
+}
+func (b *transientBackend) Restart(_ context.Context, previous string, _ effect.Assignment) (string, error) {
+	return previous + "'", nil
+}
+func (b *transientBackend) Start(_ context.Context, ref string, a effect.Assignment) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.last = a
+	b.starts = append(b.starts, ref)
+	var result effect.OutcomeResult = effect.ModelSucceeded{Result: sdk.ModelResult{Text: "ok"}}
+	if len(b.starts) <= b.failures {
+		result = effect.ModelFailed{Code: b.code, Message: "try again"}
+	}
+	if b.outcomes[a.Key()] == nil {
+		b.outcomes[a.Key()] = make(chan effect.Outcome, 8)
+	}
+	b.outcomes[a.Key()] <- effect.Outcome{Key: a.Key(), Result: result}
+	return nil
+}
+func (b *transientBackend) Attach(ctx context.Context, _ string) (effect.Attachment, error) {
+	return b.testBackend.Attach(ctx, b.lastKey())
+}
+func (b *transientBackend) Status(ctx context.Context, _ string) (effect.ExecutionStatus, error) {
+	return b.GetStatus(ctx, b.lastKey())
+}
+func (b *transientBackend) Outcome(ctx context.Context, _ string) (effect.Outcome, error) {
+	return b.GetOutcome(ctx, b.lastKey())
+}
+func (b *transientBackend) Cancel(ctx context.Context, _ string) error {
+	return b.testBackend.Cancel(ctx, b.lastKey())
+}
+
+// A Known transient failure of an effect whose policy allows it is
+// re-dispatched through Restart within the Worker's budget, the earlier Refs
+// kept in Superseded; a non-transient failure, an effect without the policy
+// or an exhausted budget settle the failure (RUN-EXE-11).
+func TestWorkerRetriesTransientFailures(t *testing.T) {
+	toolWith := func(policy run.RetryPolicy) effect.Assignment {
+		a := testToolAssignment()
+		body, _ := a.Tool()
+		body.Retry = policy
+		a.Body = body
+		return a
+	}
+	cases := []struct {
+		name       string
+		assignment effect.Assignment
+		failures   int
+		code       effect.FailureCode
+		budget     int
+		wantStarts int
+		wantOK     bool
+	}{
+		{"model retried until success", testAssignment(), 2, effect.FailureRateLimited, 3, 3, true},
+		{"model budget exhausted", testAssignment(), 5, effect.FailureProviderUnavailable, 2, 2, false},
+		{"model non-transient failure", testAssignment(), 1, effect.FailureAuthentication, 3, 1, false},
+		{"model retries disabled", testAssignment(), 1, effect.FailureConnection, 0, 1, false},
+		{"tool without retry policy", toolWith(run.RetryUnknown), 1, effect.FailureRateLimited, 3, 1, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			records := store.NewMemoryStore()
+			backend := &transientBackend{testBackend: newTestBackend(), failures: tc.failures, code: tc.code}
+			worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("t", backend)},
+				executor.WorkerOptions{ID: "w", Retry: executor.RetryBudget{MaxAttempts: tc.budget, Backoff: time.Millisecond}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer worker.Close()
+			if err := worker.Dispatch(ctx, tc.assignment); err != nil {
+				t.Fatal(err)
+			}
+			waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			defer cancel()
+			var out effect.Outcome
+			for {
+				out, err = worker.GetOutcome(waitCtx, tc.assignment.Key())
+				if err == nil {
+					break
+				}
+				if waitCtx.Err() != nil {
+					t.Fatalf("outcome: %v", err)
+				}
+				time.Sleep(time.Millisecond)
+			}
+			_, ok := out.Result.(effect.ModelSucceeded)
+			if ok != tc.wantOK {
+				t.Fatalf("outcome = %#v, want success=%v", out.Result, tc.wantOK)
+			}
+			backend.mu.Lock()
+			starts := len(backend.starts)
+			backend.mu.Unlock()
+			got, _, _ := records.Get(ctx, tc.assignment.Key())
+			if starts != tc.wantStarts || len(got.Superseded) != tc.wantStarts-1 {
+				t.Fatalf("starts = %d superseded = %d, want %d executions", starts, len(got.Superseded), tc.wantStarts)
+			}
+		})
+	}
+}

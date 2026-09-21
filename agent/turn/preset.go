@@ -25,9 +25,11 @@ type PublicTool struct {
 	Ref        run.ToolRef          `json:"ref"`
 	Definition model.ToolDefinition `json:"definition"`
 	Policy     run.ResponsePolicy   `json:"policy"`
-	// Replay is the tool's declared replay policy (RUN-EXE-9); it enters
-	// the preset digest and the frozen ToolSpec. Omitted when unknown.
+	// Replay and Retry are the tool's declared execution policy (RUN-EXE-9,
+	// RUN-EXE-11); they enter the preset digest and the frozen ToolSpec.
+	// Omitted when unknown.
 	Replay run.ReplayPolicy `json:"replay,omitempty"`
+	Retry  run.RetryPolicy  `json:"retry,omitempty"`
 }
 
 // AgentPreset is the decision identity a Turn is started under (TRN-SCP-6):
@@ -107,7 +109,7 @@ func (p *AgentPreset) ToolSpecs() ([]run.ToolSpec, []sdk.ToolDefinition, error) 
 		if err != nil {
 			return nil, nil, err
 		}
-		specs = append(specs, run.ToolSpec{Ref: t.Ref, Name: t.Definition.Name, DefinitionDigest: d, Policy: t.Policy, Replay: t.Replay})
+		specs = append(specs, run.ToolSpec{Ref: t.Ref, Name: t.Definition.Name, DefinitionDigest: d, Policy: t.Policy, Replay: t.Replay, Retry: t.Retry})
 		defs = append(defs, sdkconv.ToolDefinition(t.Definition))
 	}
 	return specs, defs, nil

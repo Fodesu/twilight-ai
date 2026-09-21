@@ -613,7 +613,7 @@ func mustModel(t testing.TB, a Assignment) ModelAssignment {
 	return m
 }
 
-// Validate refuses a tool Assignment whose Replay policy differs from the
+// Validate refuses a tool Assignment whose Replay or Retry policy differs from the
 // tool's own declaration, the same definition-mismatch answer as a response
 // policy that differs (RUN-EXE-9); Restart itself only derives the Ref.
 func TestLocalExecutorValidateChecksReplayDeclaration(t *testing.T) {
@@ -649,7 +649,7 @@ func TestLocalExecutorValidateChecksReplayDeclaration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if (failure != nil) != tc.mismatch || (failure != nil && !strings.Contains(failure.Message, "replay policy mismatch")) {
+			if (failure != nil) != tc.mismatch || (failure != nil && !strings.Contains(failure.Message, "execution policy mismatch")) {
 				t.Fatalf("validate = %+v, want mismatch=%v", failure, tc.mismatch)
 			}
 			if ref, err := exec.Restart(context.Background(), RefOf(a.Key()), a); err != nil || ref != RefOf(a.Key())+"#1" {

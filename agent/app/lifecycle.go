@@ -113,7 +113,7 @@ func NewPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...PresetOp
 		if err != nil {
 			return turn.AgentPreset{}, err
 		}
-		defs = append(defs, turn.PublicTool{Ref: tool.Ref(), Definition: definition, Policy: tool.ResponsePolicy(), Replay: tool.Replay()})
+		defs = append(defs, turn.PublicTool{Ref: tool.Ref(), Definition: definition, Policy: tool.ResponsePolicy(), Replay: tool.Replay(), Retry: tool.Retry()})
 	}
 	return NewPresetFromDefinitions(model, defs, opts...)
 }

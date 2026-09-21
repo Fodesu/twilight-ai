@@ -177,8 +177,12 @@ type ToolSpec struct {
     DefinitionDigest Digest // 本体在请求内
     Policy ResponsePolicy
     Replay ReplayPolicy     // 工具实现的 replay 声明，随 PublicTool 进入 preset 摘要；复制到 ToolCallBinding / ToolCallState / ToolAssignment（RUN-EXE-9）
+    Retry  RetryPolicy      // 工具实现的 retry 声明，同一路径（RUN-EXE-11）
 }
 type ReplayPolicy uint8 // ReplayUnknown（零值，未判断，wire 上省略）| ReplayAllowed（只读或按 CallID 幂等）| ReplayForbidden（有不可重复的副作用）
+type RetryPolicy uint8  // RetryUnknown（零值，不重试）| RetryTransient（瞬时 Known 失败无部分效果，可重发）| RetryNever
+type ExecutionPolicy struct { Replay ReplayPolicy; Retry RetryPolicy } // 同一 Assignment 能否再派发一次：Replay 的触发是执行丢失，Retry 的触发是瞬时 Known 失败
+var ModelExecutionPolicy = ExecutionPolicy{ReplayAllowed, RetryTransient}   // 模型 effect 的策略由协议固定，不逐个声明
 type ToolScheduleMode string // "parallel" | "sequential"；空值按 parallel 解释
 type ToolScheduling struct {
     Mode ToolScheduleMode
@@ -450,6 +454,7 @@ type ExecutableTool interface {
     ValidateArguments(run.CanonicalJSON) error
     Execute(context.Context, ToolExecutionRequest) ToolExecutionOutcome
     Replay() run.ReplayPolicy // 必填声明：前次执行丢失后同一 call 的 Execute 能否重跑；经 PublicTool → ToolSpec → Assignment 到达 Worker
+    Retry() run.RetryPolicy   // 必填声明：class 为 transient 的 Known 失败后能否再执行一次（RUN-EXE-11）
 }
 ```
 
@@ -460,16 +465,17 @@ type ExecutableTool interface {
 type AssignmentKind string // model | tool
 type AssignmentKey struct { Session run.Scope; RunID run.RunID; Effect run.EffectID }
 type ModelAssignment struct { Model run.ModelRef; Request *model.ModelRequest; RequestDigest run.Digest } // Dispatch payload；digest 仍绑定 frozen request
-type ToolAssignment struct { ToolRef run.ToolRef; DefinitionDigest run.Digest; Arguments run.CanonicalJSON; Policy run.ResponsePolicy; Replay run.ReplayPolicy }
+type ToolAssignment struct { ToolRef run.ToolRef; DefinitionDigest run.Digest; Arguments run.CanonicalJSON; Policy run.ResponsePolicy; Replay run.ReplayPolicy; Retry run.RetryPolicy }
 type Assignment struct {
     Session run.Scope; RunID run.RunID; StepID run.StepID; CallID run.CallID; Effect run.EffectID
     Target *run.TargetRef
     Schema uint16 // Run 的协议版本
     Body AssignmentBody // sealed：ModelAssignment | ToolAssignment；Kind 由变体派生，wire 上仍是 {Kind, Model, Tool}，解码拒绝 Kind 与 body 不一致
 }
+func (Assignment) Policy() run.ExecutionPolicy // 模型为 run.ModelExecutionPolicy；工具为 body 携带的 {Replay, Retry}（RUN-EXE-11）
 // Outcome.Result 是封闭变体，没有 Go error，也没有可以互相矛盾的标志位：
 //   ModelSucceeded{Result} | ModelFailed{Code, Message} | ToolExecutionSucceeded | ToolExecutionFailed | ToolExecutionUnknown | Cancelled{Message} | Unknown{Message}
-// FailureCode 是 wire 稳定的：executor_error | frozen_value_missing | malformed_frozen_request | deadline_exceeded
+// FailureCode 是 wire 稳定的：executor_error | frozen_value_missing | malformed_frozen_request | deadline_exceeded | rate_limited | provider_unavailable | connection_failed | authentication_failed | billing | bad_request；Transient() 对前三个新类为真（RUN-EXE-11）
 type Outcome struct { Key AssignmentKey; Result OutcomeResult }
 func (Outcome) Status() ExecutionStatus // 终态 Outcome 对应的 ExecutionStatus，唯一的派生点
 type Attachment struct {
@@ -499,7 +505,8 @@ type ExecutionPort interface { // effect.ExecutionPort；loop.Executor 是它的
     GetOutcome(context.Context, AssignmentKey) (Outcome, error)
     Cancel(context.Context, AssignmentKey) error
 }
-type WorkerOptions struct { ID string; LeaseDuration time.Duration; ReconcileInterval time.Duration; Clock func() time.Time; DisposeAfter time.Duration; Warn func(error) }
+type WorkerOptions struct { ID string; LeaseDuration time.Duration; ReconcileInterval time.Duration; Clock func() time.Time; DisposeAfter time.Duration; Warn func(error); Retry RetryBudget }
+type RetryBudget struct { MaxAttempts int; Backoff time.Duration } // 部署级重发预算（RUN-EXE-11）；零值关闭
 func NewWorker(ctx context.Context, records executionstore.Store, routes []Route, options ...WorkerOptions) (*Worker, error)
 func (*Worker) Close() // 停止 reconcile、heartbeat、watch 并等待；不取消 backend 执行
 func (*Worker) Takeover(context.Context, AssignmentKey) error // control plane 在确认可接管后调用
@@ -532,7 +539,9 @@ func (*Reconciler) Reconcile(ctx, store runtime.RunStore, snapshot *runtime.Snap
 
 **RUN-EXE-8（部署说明）** v1 假设 worker 池同构：池内全部节点服务同一 Catalog（同一 ModelRef、ToolRef 集合与定义 digest），Assignment 的 definition digest 校验在同构池上恒通过，异构池上转为确定性拒绝；跨异构池的放置由 application 路由，协议不规定。数据面与控制面只面向 loopback 同机信任域：协议层的线上身份只有 AssignmentKey 的 EffectID（RUN-EXE-1）与 Execution Store 的 owner/fencing epoch，无认证机制；跨机器部署由 application 在信任域边界提供传输保护，协议不规定。v1 不规定推送通道：authority 侧统一经 GetOutcome 长轮询读取结果，deployment 层的通知只作为唤醒读取方的优化（RUN-EXE-2），不改变读取语义。colocated 部署同样经 Worker 与 record store 运行效果：`app.Build` 的本地模式组装 `executor.NewWorker(ctx, records, routes)`，record store 由 `Config.Executions` 显式提供（文件或共享实现；内存实现只作测试替身），其 durability 须与 Session Store 一致（AUTH-PRT-3）；`LocalExecutor` 是 local provider 的 Backend 实现，不实现 `effect.Port`。Worker 的 goroutine（reconcile 循环、每条 record 的 heartbeat 与 watch）由 `Worker.Close` 统一停止并等待，`Application.Close` 关闭 `Build` 组装的 Worker；`effect.Port` 不带 Close，Worker 的所有权在组装它的一方。本地与远端部署之间没有分叉的生命周期代码，差别只在 record store 与 backend 表。
 
-**RUN-EXE-9（ExecutionRef）** `ExecutionRef{Provider, Ref}` 是 Executor 为一个 effect 的 attempt 建立的物理绑定。Provider 命名 backend（`local`、`twilight/session`，部署自定的 provider 名），Ref 是该 backend 内的不透明句柄。它在 `Backend.Prepare` 时确定，在 Start 之前随 record 持久化。Prepare 与 Restart 是两个契约：`Prepare(a)` 按 AssignmentKey 幂等且确定——同一 key 重复 Prepare 返回同一 Ref，进程死在 Prepare 与 record 写入之间也恢复同一物理绑定（派生式 backend 直接计算：local 以编码后的 AssignmentKey 为 Ref，spawn 以 ChildID 为 Ref；分配式 backend 以 key 为幂等键记录分配结果）；`Restart(previous, a)` 在接管发现 backend 对 previous 报 `missing` 后分配同一 effect 下一代 attempt 的 Ref，不要求与 previous 相同（local 以 `#<generation>` 后缀派生新 Ref；以子 Session 为执行本体的 spawn 返回同一 Ref）。Worker 对模型与工具 Assignment 都调用 Restart：模型总是重放；工具由 Worker 依据 Assignment 携带的 `Replay` 裁决，不询问 Backend：该值源于工具实现的 `Replay()` 声明，经 `PublicTool`（进 preset 摘要）→ `ToolSpec` → `ToolCallBinding` / `ToolCallState`（Run 事实）→ `ToolAssignment`（wire 与 record）到达每个 Worker，本地与远端 Worker 因此对同一 record 得到同一裁决；`ReplayAllowed` 按模型同样重派，`ReplayForbidden` 与零值 `ReplayUnknown` 结算 Unknown（`adopted_without_replay`，TRN-DUR-4），message 记录声明值，未判断的工具因此在审计中可辨。`Replay` 不进入 BindingDigest 与 DefinitionDigest（它是执行提示，不是 call 身份）；Backend 的 `Validate` 核对 Assignment 的 `Replay` 与实现声明一致，不一致为 definition mismatch（与 response policy 同样处理）。spawn 声明 `ReplayAllowed`：子 Session 身份由 call 派生、Start 已存在的子为 no-op。重派时把被替代的 `ExecutionRef` 追加到 record 的 `Superseded`（最旧在前）再写入新 Ref，审计保留该 effect 绑定过的每一代 attempt。`ExecutionRef` 不进入 Session 事实、`effect.Port`、Loop 或 Driver：Agent Core 只认 AssignmentKey；backend 只认 Ref，Worker 在结算时以 record 的 key 作为 Outcome 的 key。经 HTTP 传输时它是 Worker 侧 record 的字段，不出现在 Assignment 与 Outcome 的 wire 形状上。
+**RUN-EXE-9（ExecutionRef）** `ExecutionRef{Provider, Ref}` 是 Executor 为一个 effect 的 attempt 建立的物理绑定。Provider 命名 backend（`local`、`twilight/session`，部署自定的 provider 名），Ref 是该 backend 内的不透明句柄。它在 `Backend.Prepare` 时确定，在 Start 之前随 record 持久化。Prepare 与 Restart 是两个契约：`Prepare(a)` 按 AssignmentKey 幂等且确定——同一 key 重复 Prepare 返回同一 Ref，进程死在 Prepare 与 record 写入之间也恢复同一物理绑定（派生式 backend 直接计算：local 以编码后的 AssignmentKey 为 Ref，spawn 以 ChildID 为 Ref；分配式 backend 以 key 为幂等键记录分配结果）；`Restart(previous, a)` 在接管发现 backend 对 previous 报 `missing` 后分配同一 effect 下一代 attempt 的 Ref，不要求与 previous 相同（local 以 `#<generation>` 后缀派生新 Ref；以子 Session 为执行本体的 spawn 返回同一 Ref）。Worker 对模型与工具 Assignment 都调用 Restart：模型总是重放；工具由 Worker 依据 Assignment 携带的 `Replay` 裁决，不询问 Backend：该值源于工具实现的 `Replay()` 声明，经 `PublicTool`（进 preset 摘要）→ `ToolSpec` → `ToolCallBinding` / `ToolCallState`（Run 事实）→ `ToolAssignment`（wire 与 record）到达每个 Worker，本地与远端 Worker 因此对同一 record 得到同一裁决；`ReplayAllowed` 按模型同样重派，`ReplayForbidden` 与零值 `ReplayUnknown` 结算 Unknown（`adopted_without_replay`，TRN-DUR-4），message 记录声明值，未判断的工具因此在审计中可辨。`Replay` 不进入 BindingDigest 与 DefinitionDigest（它是执行提示，不是 call 身份）；Backend 的 `Validate` 核对 Assignment 的 `Replay` 与实现声明一致，不一致为 definition mismatch（与 response policy 同样处理）。spawn 声明 `ReplayAllowed`：子 Session 身份由 call 派生、Start 已存在的子为 no-op。重派时把被替代的 `ExecutionRef` 追加到 record 的 `Superseded`（最旧在前）再写入新 Ref，审计保留该 effect 绑定过的每一代 attempt；RUN-EXE-11 的 retry 走同一 Restart 与同一审计。
+
+**RUN-EXE-11（执行策略与重试）** 一个 effect 在首次执行之外还能做什么，由 `ExecutionPolicy{Replay, Retry}` 回答，两者都是"同一 Assignment 能否再派发一次"，区别只在触发条件：Replay 的触发是执行丢失（RUN-EXE-9），Retry 的触发是 Known 且类别为瞬时的失败。策略来源：模型 effect 为协议常量 `run.ModelExecutionPolicy`（Replay allowed、Retry transient），模型调用对外部世界没有副作用；工具 effect 为实现的 `Replay()` 与 `Retry()` 声明，经 `PublicTool`（进 preset 摘要）→ `ToolSpec` → `ToolCallBinding`/`ToolCallState` → `ToolAssignment` 到达 Worker，`Assignment.Policy()` 统一读取；Backend 的 `Validate` 核对 Assignment 携带的声明与实现一致。失败分类是 effect 层的职责：模型侧 `effect.ClassifyModelError` 把 provider 错误按 HTTP 状态（`sdk.HTTPStatusError`）与传输错误映射为 `FailureCode`，其中 `rate_limited`、`provider_unavailable`、`connection_failed` 为瞬时（`FailureCode.Transient()`），`authentication_failed`、`billing`、`bad_request`、`executor_error` 不是；未分类的错误落在 `executor_error`，因此不会被重试；工具侧只有工具自己标注为 `run.FailureTransient` 的 Known 失败是瞬时，其他类别一律不重试（协议层不猜测工具失败有没有部分效果）。执行位置在 Worker：读到瞬时 Known 失败且 record 的 `Assignment.Policy().Retry == RetryTransient` 且尝试次数（`len(Superseded)+1`）未达 `WorkerOptions.Retry.MaxAttempts` 时，按 `Backoff × 已尝试次数` 等待（等待期间持续核对租约），经 `Backend.Restart` 取下一代 Ref、旧 Ref 进 `Superseded`、`Start` 后继续观察同一 record；Restart 返回同一 Ref 的 Backend（PortBackend）不能重发，按原失败结算。预算是部署配置，零值关闭重试；Run 只看到该 effect 的最终 Outcome，重试不进入 Run 事实。工具执行中的失败（`ToolExecutionFailed`）在协议层没有其他重试路径：结果进入对话，由模型决定下一步（TRN-DUR-4）。`ExecutionRef` 不进入 Session 事实、`effect.Port`、Loop 或 Driver：Agent Core 只认 AssignmentKey；backend 只认 Ref，Worker 在结算时以 record 的 key 作为 Outcome 的 key。经 HTTP 传输时它是 Worker 侧 record 的字段，不出现在 Assignment 与 Outcome 的 wire 形状上。
 
 **RUN-EXE-10（Backend 选择与 record 的权威性）** backend 选择是 execution 创建的一部分：Worker 在 Dispatch 时按 `Route` 表评估一次（第一个 `Match` 为真的 provider，`Match` 为 nil 的 route 接受全部），结果作为 `ExecutionRef.Provider` 持久化；此后 Attach、GetStatus、GetOutcome、Cancel、Takeover、Dispose 只查 record 并按 Provider 找 backend，不再评估 Assignment 内容，也不询问任何 backend 是否认识某个 key；record 的 Provider 在本 Worker 没有对应 backend 时为 `ErrUnknownProvider`，record 不被改动。record 是 execution identity 的唯一来源：record 缺失即 execution 不存在（`missing`）。record 的持久性由部署决定——内存 store 随进程消失，此时崩溃后的接管处置按 `missing` 进行（RUN-CMT-7）；需要跨进程收养执行的部署使用文件或共享 record store，收养是控制面对 orphaned record 的 Takeover（RUN-EXE-6）。`Validate` 按同一 route 表选择 backend 但不持久化选择。
 

@@ -217,6 +217,7 @@ func (t *stagedTool) Definition() sdk.ToolDefinition {
 }
 func (t *stagedTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
 func (t *stagedTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }
+func (t *stagedTool) Retry() run.RetryPolicy                    { return run.RetryUnknown }
 func (t *stagedTool) ValidateArguments(run.CanonicalJSON) error { return nil }
 func (t *stagedTool) Execute(_ context.Context, req loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	t.mu.Lock()

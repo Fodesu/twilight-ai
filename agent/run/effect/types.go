@@ -57,10 +57,12 @@ type ToolAssignment struct {
 	DefinitionDigest run.Digest
 	Arguments        run.CanonicalJSON
 	Policy           run.ResponsePolicy
-	// Replay is the tool's declared replay policy, copied from the frozen
-	// call: the Worker that adopts a lost execution decides from it alone
-	// (RUN-EXE-9). Omitted on the wire when unknown.
+	// Replay and Retry are the tool's declared execution policy, copied from
+	// the frozen call: the Worker that adopts a lost execution or reads a
+	// transient failure decides from them alone (RUN-EXE-9, RUN-EXE-11).
+	// Omitted on the wire when unknown.
 	Replay run.ReplayPolicy `json:",omitempty"`
+	Retry  run.RetryPolicy  `json:",omitempty"`
 }
 
 func (ToolAssignment) Kind() AssignmentKind { return AssignmentTool }
@@ -89,6 +91,21 @@ func (a Assignment) Kind() AssignmentKind {
 		return ""
 	}
 	return a.Body.Kind()
+}
+
+// Policy is what a Worker may do with the effect beyond its first execution
+// (RUN-EXE-11): the protocol's fixed policy for a model call, the tool's
+// declaration carried on a tool call, nothing for an Assignment without a
+// body.
+func (a Assignment) Policy() run.ExecutionPolicy {
+	switch b := a.Body.(type) {
+	case ModelAssignment:
+		return run.ModelExecutionPolicy
+	case ToolAssignment:
+		return run.ExecutionPolicy{Replay: b.Replay, Retry: b.Retry}
+	default:
+		return run.ExecutionPolicy{}
+	}
 }
 
 // Model returns the model body, if the Assignment is a model call.
@@ -176,7 +193,38 @@ const (
 	FailureMalformedRequest FailureCode = "malformed_frozen_request"
 	// FailureDeadline: the effect's own deadline elapsed.
 	FailureDeadline FailureCode = "deadline_exceeded"
+	// FailureRateLimited: the provider refused the call for rate or quota
+	// reasons that pass (HTTP 429). Transient.
+	FailureRateLimited FailureCode = "rate_limited"
+	// FailureProviderUnavailable: the provider answered with a server-side
+	// failure (HTTP 5xx). Transient.
+	FailureProviderUnavailable FailureCode = "provider_unavailable"
+	// FailureConnection: the request or its response did not complete at
+	// the transport (connection refused or reset, unexpected EOF, a stream
+	// cut short). Transient.
+	FailureConnection FailureCode = "connection_failed"
+	// FailureAuthentication: the provider refused the credentials (HTTP
+	// 401, 403). Not transient.
+	FailureAuthentication FailureCode = "authentication_failed"
+	// FailureBilling: the provider refused for payment or quota exhaustion
+	// (HTTP 402). Not transient.
+	FailureBilling FailureCode = "billing"
+	// FailureBadRequest: the provider rejected the request itself (HTTP
+	// 400, 404, 413, 422). Not transient.
+	FailureBadRequest FailureCode = "bad_request"
 )
+
+// Transient reports whether a failure of this code may pass if the same
+// request is made again (RUN-EXE-11): the classes a Worker retries for an
+// effect whose policy allows it.
+func (c FailureCode) Transient() bool {
+	switch c {
+	case FailureRateLimited, FailureProviderUnavailable, FailureConnection:
+		return true
+	default:
+		return false
+	}
+}
 
 // ModelSucceeded carries the provider's complete result.
 type ModelSucceeded struct{ Result sdk.ModelResult }

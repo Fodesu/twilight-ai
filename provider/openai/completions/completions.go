@@ -240,7 +240,9 @@ func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelRe
 	if err != nil {
 		var apiErr *utils.APIError
 		if errors.As(err, &apiErr) {
-			return sdk.ModelResult{}, fmt.Errorf("openai: chat completions request failed: %s", apiErr.Detail())
+			// Keep the structured error in the chain: the executor classifies
+			// the failure by its HTTP status (sdk.HTTPStatusError).
+			return sdk.ModelResult{}, fmt.Errorf("openai: chat completions request failed: %s: %w", apiErr.Detail(), apiErr)
 		}
 		return sdk.ModelResult{}, fmt.Errorf("openai: chat completions request failed: %w", err)
 	}
@@ -622,7 +624,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		if err != nil {
 			var apiErr *utils.APIError
 			if errors.As(err, &apiErr) {
-				sp.send(&sdk.ErrorPart{Error: fmt.Errorf("openai: stream failed: %s", apiErr.Detail())})
+				sp.send(&sdk.ErrorPart{Error: fmt.Errorf("openai: stream failed: %s: %w", apiErr.Detail(), apiErr)})
 			} else {
 				sp.send(&sdk.ErrorPart{Error: fmt.Errorf("openai: stream failed: %w", err)})
 			}

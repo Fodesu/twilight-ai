@@ -47,6 +47,18 @@ type WorkerOptions struct {
 	// Warn receives control-plane events no caller waits for, such as a
 	// record disposed after DisposeAfter (ErrOrphanDisposed). nil discards.
 	Warn func(error)
+	// Retry is the deployment's budget for re-dispatching an effect after a
+	// Known transient failure (RUN-EXE-11): at most MaxAttempts executions
+	// in total, Backoff multiplied by the attempts so far between them. The
+	// zero value disables retries; whether an effect may be retried at all
+	// is its own policy (Assignment.Policy).
+	Retry RetryBudget
+}
+
+// RetryBudget bounds the Worker's retries of one effect.
+type RetryBudget struct {
+	MaxAttempts int
+	Backoff     time.Duration
 }
 
 const defaultLeaseDuration = 30 * time.Second
@@ -76,6 +88,7 @@ type Worker struct {
 
 	disposeAfter time.Duration
 	warn         func(error)
+	retry        RetryBudget
 
 	mu     sync.Mutex
 	notify map[effect.AssignmentKey]chan struct{}
@@ -127,7 +140,7 @@ func NewWorker(ctx context.Context, records executionstore.Store, routes []Route
 		warn = func(error) {}
 	}
 	w := &Worker{store: records, routes: routes, backends: backends, id: opts.ID, lease: opts.LeaseDuration, now: now,
-		disposeAfter: opts.DisposeAfter, warn: warn,
+		disposeAfter: opts.DisposeAfter, warn: warn, retry: opts.Retry,
 		lifecycle: lifecycle, stop: stop, notify: make(map[effect.AssignmentKey]chan struct{}),
 		orphans: make(map[effect.AssignmentKey]time.Time)}
 	if err := w.recover(ctx); err != nil {
@@ -553,6 +566,17 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 // this incarnation's lease.
 func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64, backend ExecutionBackend, ref string, done chan struct{}) {
 	defer close(done)
+	for {
+		if !w.observe(key, digest, epoch, backend, &ref) {
+			return
+		}
+	}
+}
+
+// observe reads the Outcome of ref and settles it, or restarts the effect
+// after a retryable failure and reports true with ref moved to the new
+// execution; false ends the watch.
+func (w *Worker) observe(key effect.AssignmentKey, digest run.Digest, epoch uint64, backend ExecutionBackend, ref *string) bool {
 	delay := 10 * time.Millisecond
 	var out effect.Outcome
 	for {
@@ -560,15 +584,22 @@ func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64
 		// eventually yields to the ownership check before the next poll.
 		readCtx, cancelRead := context.WithTimeout(w.lifecycle, w.lease)
 		var err error
-		out, err = backend.Outcome(readCtx, ref)
+		out, err = backend.Outcome(readCtx, *ref)
 		cancelRead()
 		if err == nil {
 			break
 		}
 		if !w.waitOwned(key, epoch, delay) {
-			return
+			return false
 		}
 		delay = min(delay*2, time.Second)
+	}
+	// A Known transient failure of an effect whose policy allows it is
+	// re-dispatched under the same record within the budget (RUN-EXE-11):
+	// the old Ref joins Superseded and the watch continues on the new one.
+	if next, ok := w.retryAfter(key, epoch, backend, *ref, out); ok {
+		*ref = next
+		return true
 	}
 	// The backend knows the Ref, not the attempt: the record's key is the
 	// Outcome's key (RUN-EXE-9).
@@ -577,12 +608,67 @@ func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64
 	state := protocol.StatusForOutcome(out)
 	for {
 		if err := w.finishOwned(w.lifecycle, key, epoch, &env, state, nil); err == nil {
-			return
+			return false
 		}
 		if !w.waitOwned(key, epoch, delay) {
-			return
+			return false
 		}
 		delay = min(delay*2, time.Second)
+	}
+}
+
+// retryAfter decides whether out, the Outcome of ref, is a Known transient
+// failure the record's policy and the Worker's budget allow to be retried,
+// and if so restarts the effect: Backoff scaled by the attempts so far, then
+// Backend.Restart and Start under the same lease, the old Ref appended to
+// Superseded. It returns the new Ref. A backend whose Restart returns the
+// same Ref cannot re-execute (a Port-shaped adapter), so nothing is retried.
+func (w *Worker) retryAfter(key effect.AssignmentKey, epoch uint64, backend ExecutionBackend, ref string, out effect.Outcome) (string, bool) {
+	if w.retry.MaxAttempts <= 0 || !transientFailure(out.Result) {
+		return "", false
+	}
+	ctx := w.lifecycle
+	r, ok, err := w.store.Get(ctx, key)
+	if err != nil || !ok || r.Owner != w.id || r.FencingEpoch != epoch {
+		return "", false
+	}
+	if r.Assignment.Policy().Retry != run.RetryTransient {
+		return "", false
+	}
+	attempts := len(r.Superseded) + 1
+	if attempts >= w.retry.MaxAttempts {
+		return "", false
+	}
+	if delay := w.retry.Backoff * time.Duration(attempts); delay > 0 && !w.waitOwned(key, epoch, delay) {
+		return "", false
+	}
+	fresh, err := backend.Restart(ctx, ref, r.Assignment)
+	if err != nil || fresh == "" || fresh == ref {
+		return "", false
+	}
+	r.Superseded = append(r.Superseded, r.ExecutionRef)
+	r.ExecutionRef.Ref = fresh
+	if err := w.store.PutOwned(ctx, r, w.id, epoch); err != nil {
+		return "", false
+	}
+	if err := backend.Start(context.WithoutCancel(ctx), fresh, r.Assignment); err != nil && !errors.Is(err, effect.ErrDispatchUnknown) {
+		// The retry itself was refused before starting: settle the original
+		// failure rather than loop on the refusal.
+		return "", false
+	}
+	return fresh, true
+}
+
+// transientFailure reports whether a Known outcome is one the effect layer
+// classifies as transient (RUN-EXE-11).
+func transientFailure(result effect.OutcomeResult) bool {
+	switch r := result.(type) {
+	case effect.ModelFailed:
+		return r.Code.Transient()
+	case effect.ToolExecutionFailed:
+		return r.Failure.Class == run.FailureTransient
+	default:
+		return false
 	}
 }
 
