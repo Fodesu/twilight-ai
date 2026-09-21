@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/felinics/twilight/internal/messagecompat"
 	"github.com/felinics/twilight/internal/utils"
@@ -451,10 +450,10 @@ func convertResponsesToolResults(msg sdk.Message) []json.RawMessage {
 
 func (p *Provider) parseResponse(resp *responsesResponse) (sdk.ModelResult, error) {
 	result := sdk.ModelResult{
-		Response: &sdk.ResponseMetadata{
+		Response: sdk.ResponseMetadata{
 			ID:        resp.ID,
 			ModelID:   resp.Model,
-			Timestamp: time.Unix(resp.CreatedAt, 0).UTC(),
+			Timestamp: sdk.TimestampFromUnix(resp.CreatedAt),
 		},
 	}
 
@@ -808,7 +807,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 					Response: sdk.ResponseMetadata{
 						ID:        responseID,
 						ModelID:   responseModel,
-						Timestamp: time.Unix(responseCreated, 0).UTC(),
+						Timestamp: sdk.TimestampFromUnix(responseCreated),
 					},
 				})
 

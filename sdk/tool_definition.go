@@ -98,18 +98,3 @@ func cloneToolCalls(calls []ToolCall) []ToolCall {
 	}
 	return out
 }
-
-func cloneResponseMetadataPtr(meta *ResponseMetadata) *ResponseMetadata {
-	if meta == nil {
-		return nil
-	}
-	out := *meta
-	if responseMetadataZero(out) {
-		return nil
-	}
-	return &out
-}
-
-func responseMetadataZero(meta ResponseMetadata) bool {
-	return meta.ID == "" && meta.ModelID == "" && meta.Timestamp.IsZero() && len(meta.Headers) == 0
-}

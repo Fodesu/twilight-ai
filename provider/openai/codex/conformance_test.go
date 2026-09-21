@@ -128,7 +128,7 @@ func textFixture(t *testing.T) providertest.Fixture {
 			Text:         "conformance text",
 			FinishReason: sdk.FinishReasonStop,
 			TotalTokens:  7,
-			Response: &sdk.ResponseMetadata{
+			Response: sdk.ResponseMetadata{
 				ID:        "resp_conf_text",
 				ModelID:   conformanceModelID,
 				Timestamp: time.Unix(conformanceCreatedAt, 0).UTC(),
@@ -170,7 +170,7 @@ func toolCallFixture(t *testing.T) providertest.Fixture {
 				ToolName:   "providertest_tool_marker_2d91",
 				Input:      sdk.ParseToolArguments(`{"city":"Paris"}`),
 			}},
-			Response: &sdk.ResponseMetadata{
+			Response: sdk.ResponseMetadata{
 				ID:        "resp_conf_tool",
 				ModelID:   conformanceModelID,
 				Timestamp: time.Unix(conformanceCreatedAt, 0).UTC(),

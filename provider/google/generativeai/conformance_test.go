@@ -155,10 +155,9 @@ func toolCallFixture(t *testing.T) providertest.Fixture {
 
 // Caps is the zero value for both fixtures: the Google wire carries
 // finishReason and usageMetadata on both paths, and neither path carries
-// response metadata (parseResponse never fills Response beyond an empty
-// ModelID, generativeai.go:497-502, and the stream's FinishStepPart sends an
-// empty sdk.ResponseMetadata, generativeai.go:789), so Want.Response stays nil
-// and the suite's default of not comparing response metadata already holds.
+// response metadata (parseResponse never fills Response, and the stream's
+// FinishStepPart sends an empty sdk.ResponseMetadata), so Want.Response stays
+// zero and the suite compares only that both paths leave it zero.
 func TestSeamConformance(t *testing.T) {
 	t.Run("text", func(t *testing.T) { providertest.Run(t, textFixture) })
 	t.Run("tool-call", func(t *testing.T) { providertest.Run(t, toolCallFixture) })
