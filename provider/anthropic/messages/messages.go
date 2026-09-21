@@ -803,15 +803,7 @@ func (p *Provider) parseResponse(resp *messagesResponse) (sdk.ModelResult, error
 		FinishReason:    mapFinishReason(resp.StopReason),
 		RawFinishReason: resp.StopReason,
 	}
-	// Response is pointer-typed at the boundary so an absent value actually
-	// omits. Leave it nil when the wire carried no metadata, matching what the
-	// streaming assembler does with a zero FinishStepPart.Response.
-	if resp.ID != "" || resp.Model != "" {
-		result.Response = &sdk.ResponseMetadata{
-			ID:      resp.ID,
-			ModelID: resp.Model,
-		}
-	}
+	result.Response = sdk.ResponseMetadata{ID: resp.ID, ModelID: resp.Model}
 
 	for i := range resp.Content {
 		block := &resp.Content[i]

@@ -63,11 +63,9 @@ type Want struct {
 	FinishReason sdk.FinishReason
 	// TotalTokens is the reply's total token count; 0 skips the usage check.
 	TotalTokens int
-	// Response is the reply's response metadata. When it is set, both paths
-	// must produce it: a stream that silently drops what the generated call
-	// carries is a divergence, not a detail. Leave it nil when the wire format
-	// does not repeat the metadata on the stream.
-	Response *sdk.ResponseMetadata
+	// Response is the reply's response metadata; zero skips the check. The
+	// paths-agree case compares the two paths' metadata regardless.
+	Response sdk.ResponseMetadata
 }
 
 // Caps records behavior a provider legitimately does not have, so that a case
@@ -88,6 +86,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("request", func(t *testing.T) { testRequest(t, factory(t)) })
 	t.Run("generate", func(t *testing.T) { testGenerate(t, factory(t)) })
 	t.Run("stream", func(t *testing.T) { testStream(t, factory(t)) })
+	t.Run("paths agree", func(t *testing.T) { testPathsAgree(t, factory(t)) })
 	t.Run("error", func(t *testing.T) { testError(t, factory(t)) })
 }
 
@@ -360,9 +359,65 @@ func wantResult(t *testing.T, op string, f Fixture, got sdk.ModelResult) {
 			t.Errorf("%s: tool call %d input = %s, want %s", op, i, a, b)
 		}
 	}
-	if f.Want.Response != nil {
+	if !f.Want.Response.IsZero() {
 		if jsonOf(got.Response) != jsonOf(f.Want.Response) {
 			t.Errorf("%s: response metadata = %s, want %s", op, jsonOf(got.Response), jsonOf(f.Want.Response))
+		}
+	}
+}
+
+// testPathsAgree covers the fields wantResult does not pin to a fixture value:
+// the same logical reply, generated and streamed, must carry the same response
+// metadata, text metadata, raw finish reason, sources and reasoning tokens.
+// The agent runtime digests whichever path an executor picked, so a field one
+// path fills and the other leaves empty changes the digest with the transport.
+func testPathsAgree(t *testing.T, f Fixture) {
+	ctx := context.Background()
+	if f.ReplyStream == nil {
+		t.Skip("provider does not stream")
+	}
+	pg, _ := serve(t, f, f.Reply)
+	req := f.withOptions(pg, request())
+	req.Model = f.ModelID
+	generated, err := sdk.Generate(ctx, f.model(pg), req)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	ps, _ := serve(t, f, f.ReplyStream)
+	stream, err := sdk.Stream(ctx, f.model(ps), req)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	for range stream.Parts {
+	}
+	streamed, err := stream.Result()
+	if err != nil {
+		t.Fatalf("stream result: %v", err)
+	}
+	type reasoningShape struct {
+		Format   sdk.ReasoningFormat
+		Metadata sdk.ProviderMetadata
+	}
+	shapes := func(parts []sdk.ReasoningPart) []reasoningShape {
+		out := make([]reasoningShape, len(parts))
+		for i, p := range parts {
+			out[i] = reasoningShape{Format: p.Format, Metadata: p.ProviderMetadata}
+		}
+		return out
+	}
+	checks := []struct {
+		field    string
+		got, exp any
+	}{
+		{"response metadata", streamed.Response, generated.Response},
+		{"text provider metadata", streamed.TextProviderMetadata, generated.TextProviderMetadata},
+		{"raw finish reason", streamed.RawFinishReason, generated.RawFinishReason},
+		{"sources", streamed.Sources, generated.Sources},
+		{"reasoning parts", shapes(streamed.ReasoningParts), shapes(generated.ReasoningParts)},
+	}
+	for _, c := range checks {
+		if a, b := jsonOf(c.got), jsonOf(c.exp); a != b {
+			t.Errorf("%s differs between paths:\n stream:   %s\n generate: %s", c.field, a, b)
 		}
 	}
 }

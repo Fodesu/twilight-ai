@@ -88,7 +88,7 @@ func TestModelGenerateAndStreamEquivalent(t *testing.T) {
 		Sources:              []Source{{SourceType: "url", ID: "src-1", URL: "https://example.test", ProviderMetadata: ProviderMetadata{"p": {"k": "v"}}}},
 		Files:                []GeneratedFile{{Data: "abc", MediaType: "text/plain"}},
 		ToolCalls:            []ToolCall{{ToolCallID: "c1", ToolName: "lookup", Input: ParseToolArguments(`{"q":"go"}`), ProviderMetadata: ProviderMetadata{"tool": {"k": "meta"}}}},
-		Response:             &ResponseMetadata{ID: "resp-1"},
+		Response:             ResponseMetadata{ID: "resp-1"},
 	}
 	provider := boundaryProvider{
 		generate: func(Request) (ModelResult, error) { return generated, nil },
@@ -175,7 +175,7 @@ func TestModelStreamAssemblesSingleModelResult(t *testing.T) {
 	if len(result.ToolCalls) != 1 || result.ToolCalls[0].ToolName != "lookup" {
 		t.Fatalf("tool calls = %+v", result.ToolCalls)
 	}
-	if result.Response == nil || result.Response.ID != "resp-1" {
+	if result.Response.ID != "resp-1" {
 		t.Fatalf("response = %+v", result.Response)
 	}
 }

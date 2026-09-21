@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"time"
 
 	"github.com/felinics/twilight/internal/messagecompat"
 	"github.com/felinics/twilight/internal/utils"
@@ -355,7 +354,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 					Response: sdk.ResponseMetadata{
 						ID:        responseID,
 						ModelID:   responseModel,
-						Timestamp: time.Unix(responseCreated, 0).UTC(),
+						Timestamp: sdk.TimestampFromUnix(responseCreated),
 					},
 				})
 				return utils.ErrStreamDone

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/felinics/twilight/internal/messagecompat"
 	"github.com/felinics/twilight/internal/utils"
@@ -506,10 +505,10 @@ func convertContent(parts []sdk.MessagePart) any {
 func (p *Provider) parseResponse(resp *chatResponse) (sdk.ModelResult, error) {
 	result := sdk.ModelResult{
 		Usage: convertUsage(&resp.Usage),
-		Response: &sdk.ResponseMetadata{
+		Response: sdk.ResponseMetadata{
 			ID:        resp.ID,
 			ModelID:   resp.Model,
-			Timestamp: time.Unix(resp.Created, 0),
+			Timestamp: sdk.TimestampFromUnix(resp.Created),
 		},
 	}
 

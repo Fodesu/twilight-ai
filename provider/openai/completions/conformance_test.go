@@ -50,10 +50,10 @@ func textFixture(t *testing.T) providertest.Fixture {
 		},
 		ReplyStream: func(w http.ResponseWriter, r *http.Request) {
 			sse(w,
-				`{"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"conformance"}}]}`,
-				`{"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":" text"}}]}`,
-				`{"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
-				`{"id":"chatcmpl-1","object":"chat.completion.chunk","choices":[],`+conformanceUsage+`}`,
+				`{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant","content":"conformance"}}]}`,
+				`{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"content":" text"}}]}`,
+				`{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+				`{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o-mini","choices":[],`+conformanceUsage+`}`,
 			)
 		},
 		ReplyError: func(w http.ResponseWriter, r *http.Request) {
@@ -84,11 +84,11 @@ func toolCallFixture(t *testing.T) providertest.Fixture {
 		},
 		ReplyStream: func(w http.ResponseWriter, r *http.Request) {
 			sse(w,
-				`{"id":"chatcmpl-2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"providertest_tool_marker_2d91","arguments":""}}]}}]}`,
-				`{"id":"chatcmpl-2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":"}}]}}]}`,
-				`{"id":"chatcmpl-2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"Paris\"}"}}]}}]}`,
-				`{"id":"chatcmpl-2","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
-				`{"id":"chatcmpl-2","object":"chat.completion.chunk","choices":[],`+conformanceUsage+`}`,
+				`{"id":"chatcmpl-2","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"providertest_tool_marker_2d91","arguments":""}}]}}]}`,
+				`{"id":"chatcmpl-2","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":"}}]}}]}`,
+				`{"id":"chatcmpl-2","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"Paris\"}"}}]}}]}`,
+				`{"id":"chatcmpl-2","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o-mini","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`,
+				`{"id":"chatcmpl-2","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o-mini","choices":[],`+conformanceUsage+`}`,
 			)
 		},
 		Want: providertest.Want{
