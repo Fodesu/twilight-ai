@@ -674,7 +674,7 @@ func (w *Worker) retryAfter(key effect.AssignmentKey, epoch uint64, backend Exec
 func retryableFailure(result effect.OutcomeResult) bool {
 	switch r := result.(type) {
 	case effect.ModelFailed:
-		return r.Retry == run.RetryAllowed
+		return r.Retry() == run.RetryAllowed
 	case effect.ToolExecutionFailed:
 		return r.Retry == run.RetryAllowed
 	default:

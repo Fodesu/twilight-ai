@@ -1276,7 +1276,7 @@ func (b *transientBackend) Start(_ context.Context, ref string, a effect.Assignm
 		if a.Kind() == effect.AssignmentTool {
 			result = effect.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureUnavailable, Message: "try again"}, Retry: b.toolRetry}
 		} else {
-			result = effect.NewModelFailed(b.code, "try again")
+			result = effect.ModelFailed{Code: b.code, Message: "try again"}
 		}
 	}
 	if b.outcomes[a.Key()] == nil {

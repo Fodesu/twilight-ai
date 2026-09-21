@@ -106,12 +106,12 @@ func StartOperationDigest(sid session.SessionID, turnID TurnID, plan es.Digest) 
 }
 
 // DeriveRunID is TRN-ID-4.
-func DeriveRunID(sid session.SessionID, turnID TurnID, attempt uint32) run.RunID {
-	return run.RunID(digestOf("twilight/turn/run", string(sid), string(turnID), fmt.Sprintf("%d", attempt)))
+func DeriveRunID(sid session.SessionID, turnID TurnID, ordinal uint32) run.RunID {
+	return run.RunID(digestOf("twilight/turn/run", string(sid), string(turnID), fmt.Sprintf("%d", ordinal)))
 }
 
-func RetryCommitID(sid session.SessionID, turnID TurnID, attempt uint32) session.CommitID {
-	return session.CommitID(digestOf("twilight/turn/retry", string(sid), string(turnID), fmt.Sprintf("%d", attempt)))
+func RetryCommitID(sid session.SessionID, turnID TurnID, ordinal uint32) session.CommitID {
+	return session.CommitID(digestOf("twilight/turn/retry", string(sid), string(turnID), fmt.Sprintf("%d", ordinal)))
 }
 
 func CancelCommandID(sid session.SessionID, turnID TurnID, runID run.RunID) run.CommandID {

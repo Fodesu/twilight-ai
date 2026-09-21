@@ -198,11 +198,13 @@ const (
 )
 
 // Retry is the disposition the effect layer derives for a model failure of
-// this code (RUN-EXE-11): a rate limit, a provider outage or a lost
-// connection may pass if the same request is made again; every other code
-// is a definite answer. The model call is the template every effect
-// follows: classify the failure first, then read the disposition off the
-// class.
+// this code (RUN-EXE-11). A model call has no effect on the world, so a
+// Known failure never leaves anything that a second call could repeat; the
+// only question is whether the failure may pass, and a rate limit, a
+// provider outage or a lost connection may, every other code is a definite
+// answer. The model call is the template every effect follows: classify the
+// failure first, then read the disposition off the class; the disposition
+// is never stored beside the code.
 func (c FailureCode) Retry() run.RetryDisposition {
 	switch c {
 	case FailureRateLimited, FailureProviderUnavailable, FailureConnection:
@@ -215,18 +217,17 @@ func (c FailureCode) Retry() run.RetryDisposition {
 // ModelSucceeded carries the provider's complete result.
 type ModelSucceeded struct{ Result sdk.ModelResult }
 
-// ModelFailed is a provider or executor failure with a wire-stable code and
-// the retry disposition the effect layer derived from it (Code.Retry()).
+// ModelFailed is a provider or executor failure with a wire-stable code.
+// Its retry disposition is not stored: it is derived from the code
+// (Code.Retry()) wherever it is needed, so the wire cannot carry a
+// disposition that disagrees with the code.
 type ModelFailed struct {
 	Code    FailureCode
 	Message string
-	Retry   run.RetryDisposition
 }
 
-// NewModelFailed classifies err into a ModelFailed carrying its disposition.
-func NewModelFailed(code FailureCode, message string) ModelFailed {
-	return ModelFailed{Code: code, Message: message, Retry: code.Retry()}
-}
+// Retry is the disposition of this failure, derived from its code.
+func (f ModelFailed) Retry() run.RetryDisposition { return f.Code.Retry() }
 
 // ToolExecutionOutcome is the sealed result a tool implementation returns:
 // succeeded, failed-known, or unknown. Each is also an OutcomeResult.
@@ -239,9 +240,13 @@ type ToolExecutionSucceeded struct{ Result run.ToolExecutionResult }
 
 // ToolExecutionFailed is a Known failure the tool reports: the effect did
 // not complete. Failure.Class says what went wrong; Retry is the tool's
-// answer for this failure alone, whether a second execution is worth it
-// (RUN-EXE-11). A tool that does not judge leaves RetryUnknown, which is
-// never retried.
+// answer for this failure alone (RUN-EXE-11). RetryAllowed asserts more
+// than "this looks transient": that this Known failure suffices to confirm
+// the attempt produced no external effect that cannot safely be repeated,
+// so the next attempt of the same Assignment may run. A failure that cannot
+// confirm that (a payment call that timed out) is not a ToolExecutionFailed
+// at all but a ToolExecutionUnknown, which enters replay and reconciliation
+// (TRN-DUR-4). A tool that does not judge leaves RetryUnknown, never retried.
 type ToolExecutionFailed struct {
 	Failure run.ToolFailure
 	Retry   run.RetryDisposition

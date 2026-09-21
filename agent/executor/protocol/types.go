@@ -32,9 +32,8 @@ type ToolOutcomeEnvelope struct {
 }
 
 type WireError struct {
-	Code    string               `json:"code"`
-	Message string               `json:"message,omitempty"`
-	Retry   run.RetryDisposition `json:"retry,omitempty"`
+	Code    string `json:"code"`
+	Message string `json:"message,omitempty"`
 }
 
 // OutcomeEnvelope is stable and JSON-safe. In particular it does not contain
@@ -72,7 +71,7 @@ func EncodeOutcome(out effect.Outcome, assignmentDigest run.Digest) OutcomeEnvel
 		if code == "" {
 			code = string(effect.FailureExecutor)
 		}
-		w.Error = &WireError{Code: code, Message: r.Message, Retry: r.Retry}
+		w.Error = &WireError{Code: code, Message: r.Message}
 	case effect.ToolExecutionSucceeded:
 		res := r.Result
 		w.Tool = &ToolOutcomeEnvelope{Kind: "succeeded", Result: &res}
@@ -134,7 +133,7 @@ func DecodeOutcome(w *OutcomeEnvelope) effect.Outcome {
 			out.Result = effect.Unknown{Message: fmt.Sprintf("executor/protocol: unknown tool outcome %q", w.Tool.Kind)}
 		}
 	case w.Error != nil:
-		out.Result = effect.ModelFailed{Code: effect.FailureCode(w.Error.Code), Message: w.Error.Message, Retry: w.Error.Retry}
+		out.Result = effect.ModelFailed{Code: effect.FailureCode(w.Error.Code), Message: w.Error.Message}
 	case w.Model != nil:
 		out.Result = effect.ModelSucceeded{Result: *w.Model}
 	default:

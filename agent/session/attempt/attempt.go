@@ -122,10 +122,10 @@ func applyIndex(state any, e extension.DecodedEvent) (any, error) {
 	if have, dup := x.ByRun[p.RunID]; dup {
 		return nil, fmt.Errorf("attempt index: run %s is already attempt %d of turn %s", p.RunID, have.Attempt, have.TurnID)
 	}
-	if next := uint32(len(x.ByTurn[p.TurnID])) + 1; p.Attempt != next {
+	if next := len(x.ByTurn[p.TurnID]) + 1; int64(p.Attempt) != int64(next) {
 		return nil, fmt.Errorf("attempt index: turn %s attempt %d out of order, want %d", p.TurnID, p.Attempt, next)
 	}
-	rec := Record{TurnID: p.TurnID, RunID: p.RunID, Attempt: p.Attempt}
+	rec := Record(p)
 	x.ByRun[p.RunID] = rec
 	x.ByTurn[p.TurnID] = append(x.ByTurn[p.TurnID], rec)
 	return x, nil

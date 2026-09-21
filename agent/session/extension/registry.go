@@ -252,41 +252,10 @@ func BuildRegistryWithExtensions(protocolVersion uint16, core, extensions []Modu
 			}
 			r.streams[sd.Domain] = streamEntry{module: key, def: sd}
 		}
-		prefix := ModulePrefix(m.Source, m.ID)
 		for _, def := range m.Events {
-			if !strings.HasPrefix(string(def.Type), string(prefix)) || len(def.Type) == len(prefix) {
-				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: fmt.Sprintf("event type is not under module %s/%s", key.Source, key.ID)}
+			if err := r.registerEvent(m, key, def); err != nil {
+				return nil, err
 			}
-			if _, dup := r.events[def.Type]; dup {
-				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "duplicate event type"}
-			}
-			if len(def.Codecs) == 0 {
-				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "no codec for any payload version"}
-			}
-			for v, codec := range def.Codecs {
-				if v == 0 || codec == nil {
-					return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "nil codec or zero payload version"}
-				}
-				if def.Version == 0 || v > def.Version && !explicitVersion(m.Events, def.Type) {
-					def.Version = max(def.Version, v)
-				}
-			}
-			if def.Codecs[def.Version] == nil {
-				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: fmt.Sprintf("write version %d has no codec", def.Version)}
-			}
-			if def.Stream == "" {
-				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "event declares no stream domain"}
-			}
-			if se, declared := r.streams[def.Stream]; !declared || se.module != key {
-				return nil, &Error{Code: ErrInvalid, Type: def.Type,
-					Detail: fmt.Sprintf("event names stream domain %q, which module %s/%s does not declare", def.Stream, key.Source, key.ID)}
-			}
-			for _, b := range def.Bindings {
-				if err := b.validate(); err != nil {
-					return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: err.Error()}
-				}
-			}
-			r.events[def.Type] = eventEntry{module: key, def: def}
 		}
 		for _, p := range m.Projections {
 			if p.ID == "" || p.Version == 0 || p.Initial == nil || p.Apply == nil || p.StateCodec == nil {
@@ -375,6 +344,48 @@ func (r *Registry) scopeOf(key ModuleKey) map[ModuleKey]struct{} {
 		scope[req.Key()] = struct{}{}
 	}
 	return scope
+}
+
+// registerEvent validates one event definition of module m and indexes it:
+// the type under the module's prefix and unique, at least one codec with a
+// non-zero version, a write Version that names one of them (defaulting to
+// the highest), a stream domain the module declares, and valid bindings.
+func (r *Registry) registerEvent(m *ModuleDescriptor, key ModuleKey, def EventDefinition) error {
+	prefix := ModulePrefix(m.Source, m.ID)
+	if !strings.HasPrefix(string(def.Type), string(prefix)) || len(def.Type) == len(prefix) {
+		return &Error{Code: ErrInvalid, Type: def.Type, Detail: fmt.Sprintf("event type is not under module %s/%s", key.Source, key.ID)}
+	}
+	if _, dup := r.events[def.Type]; dup {
+		return &Error{Code: ErrInvalid, Type: def.Type, Detail: "duplicate event type"}
+	}
+	if len(def.Codecs) == 0 {
+		return &Error{Code: ErrInvalid, Type: def.Type, Detail: "no codec for any payload version"}
+	}
+	for v, codec := range def.Codecs {
+		if v == 0 || codec == nil {
+			return &Error{Code: ErrInvalid, Type: def.Type, Detail: "nil codec or zero payload version"}
+		}
+		if def.Version == 0 || v > def.Version && !explicitVersion(m.Events, def.Type) {
+			def.Version = max(def.Version, v)
+		}
+	}
+	if def.Codecs[def.Version] == nil {
+		return &Error{Code: ErrInvalid, Type: def.Type, Detail: fmt.Sprintf("write version %d has no codec", def.Version)}
+	}
+	if def.Stream == "" {
+		return &Error{Code: ErrInvalid, Type: def.Type, Detail: "event declares no stream domain"}
+	}
+	if se, declared := r.streams[def.Stream]; !declared || se.module != key {
+		return &Error{Code: ErrInvalid, Type: def.Type,
+			Detail: fmt.Sprintf("event names stream domain %q, which module %s/%s does not declare", def.Stream, key.Source, key.ID)}
+	}
+	for _, b := range def.Bindings {
+		if err := b.validate(); err != nil {
+			return &Error{Code: ErrInvalid, Type: def.Type, Detail: err.Error()}
+		}
+	}
+	r.events[def.Type] = eventEntry{module: key, def: def}
+	return nil
 }
 
 // explicitVersion reports whether the module declared a write Version for

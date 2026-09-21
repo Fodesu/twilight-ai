@@ -129,6 +129,7 @@ func (f *Feature) RequireNotRan(name string) {
 	tool := f.tools[run.ToolRef(name)]
 	if tool == nil {
 		f.t.Fatalf("tool %q not registered", name)
+		return
 	}
 	if tool.ran.Load() != 0 {
 		f.t.Fatalf("tool %q ran %d times", name, tool.ran.Load())
@@ -141,6 +142,7 @@ func (f *Feature) RequireRan(name string) {
 	tool := f.tools[run.ToolRef(name)]
 	if tool == nil {
 		f.t.Fatalf("tool %q not registered", name)
+		return
 	}
 	if tool.ran.Load() == 0 {
 		f.t.Fatalf("tool %q never ran", name)

@@ -450,13 +450,13 @@ func (e *LocalExecutor) runModel(ctx context.Context, a Assignment, frozenReques
 func modelFailure(err error) OutcomeResult {
 	switch {
 	case errors.Is(err, frozen.ErrMissing):
-		return effect.NewModelFailed(effect.FailureFrozenValueMissing, err.Error())
+		return effect.ModelFailed{Code: effect.FailureFrozenValueMissing, Message: err.Error()}
 	case errors.Is(err, context.Canceled):
 		return effect.Cancelled{Message: err.Error()}
 	case errors.Is(err, context.DeadlineExceeded):
-		return effect.NewModelFailed(effect.FailureDeadline, err.Error())
+		return effect.ModelFailed{Code: effect.FailureDeadline, Message: err.Error()}
 	default:
-		return effect.NewModelFailed(effect.ClassifyModelError(err), err.Error())
+		return effect.ModelFailed{Code: effect.ClassifyModelError(err), Message: err.Error()}
 	}
 }
 

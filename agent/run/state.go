@@ -123,13 +123,16 @@ func (p ReplayPolicy) String() string {
 	}
 }
 
-// RetryDisposition is a failure's own answer to "is this specific failure
-// worth a second execution of the same call" (RUN-EXE-11). It is a property
-// of the failure, never of the tool: a read-only tool's "file not found" is
-// RetryNever while its "temporary I/O error" is RetryAllowed. The effect
-// layer derives it for model failures from their FailureCode; a tool
-// declares it on each ToolExecutionFailed. The zero value RetryUnknown is
-// never retried.
+// RetryDisposition is a Known failure's own answer to whether the next
+// attempt of the same Assignment may run (RUN-EXE-11). RetryAllowed means
+// this failure suffices to confirm the attempt produced no external effect
+// that cannot safely be repeated; RetryNever means the failure is definite
+// or a second attempt is not safe to assert. It is a property of the
+// failure, never of the tool: a read-only tool's "file not found" is
+// RetryNever while its "storage unavailable" is RetryAllowed. The effect
+// layer derives it for model failures from their FailureCode and stores
+// nothing; a tool declares it on each ToolExecutionFailed. The zero value
+// RetryUnknown is never retried.
 type RetryDisposition uint8
 
 const (

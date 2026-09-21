@@ -428,7 +428,7 @@ func (l *Loop) Run(ctx context.Context, rt runtime.RunStore, runID run.RunID, ev
 	// to write any more (RUN-LOP-5). The cancelled effects still report, so the
 	// pending Outcomes are drained -- never settled -- before returning; a tool
 	// that ignores its context blocks here as it always would.
-	onOwnershipLost := func(err error) (LoopResult, error) {
+	onOwnershipLost := func(err error) error {
 		for key := range pending {
 			_ = l.Executor.Cancel(settleCtx, key)
 		}
@@ -436,7 +436,7 @@ func (l *Loop) Run(ctx context.Context, rt runtime.RunStore, runID run.RunID, ev
 			read := <-outcomes
 			delete(pending, read.key)
 		}
-		return LoopResult{}, err
+		return err
 	}
 
 	for {
@@ -449,7 +449,7 @@ func (l *Loop) Run(ctx context.Context, rt runtime.RunStore, runID run.RunID, ev
 			s.step.Unlock()
 			if err != nil {
 				if ownershipLost(err) {
-					return onOwnershipLost(err)
+					return LoopResult{}, onOwnershipLost(err)
 				}
 				return LoopResult{}, err
 			}
@@ -491,7 +491,7 @@ func (l *Loop) Run(ctx context.Context, rt runtime.RunStore, runID run.RunID, ev
 		s.step.Unlock()
 		if err != nil {
 			if ownershipLost(err) {
-				return onOwnershipLost(err)
+				return LoopResult{}, onOwnershipLost(err)
 			}
 			return res, err
 		}

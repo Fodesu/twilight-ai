@@ -206,7 +206,7 @@ type recoveryLifetime struct {
 // one derived from parent, stopping the previous listeners. Callers hold d.mu.
 func (d *Driver) installRecoveryLifetimeLocked(w writer.Writer, parent context.Context) *recoveryLifetime {
 	sid := w.SessionID()
-	ctx, cancel := context.WithCancel(context.WithoutCancel(parent))
+	ctx, cancel := context.WithCancel(context.WithoutCancel(parent)) //nolint:gosec // G118: the lifetime owns cancel; Stop and Close call it
 	if previous := d.recovery[sid]; previous != nil {
 		previous.cancel()
 	}

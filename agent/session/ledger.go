@@ -342,15 +342,6 @@ func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 
 func (w *ledgerHandle) Close(ctx context.Context) error { return w.l.be.Release(ctx, w.lease) }
 
-// committedLocked is Committed with w.mu held.
-func (w *ledgerHandle) committedLocked(id CommitID) bool {
-	if _, own := w.own[id]; own {
-		return true
-	}
-	_, inherited, err := w.ancestry.LookupInherited(context.Background(), w.l.be, id)
-	return err == nil && inherited
-}
-
 // --- read -------------------------------------------------------------------------
 
 func (l *Ledger) ReadCommits(ctx context.Context, req CommitReadRequest) (CommitPage, error) {
