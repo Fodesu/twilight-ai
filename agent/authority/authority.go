@@ -326,7 +326,7 @@ func (a *Authority) Fork(ctx context.Context, req ForkRequest) (session.SegmentH
 		return session.SegmentHeader{}, &session.Error{Code: session.ErrInvalid, Operation: "fork", SessionID: req.Child,
 			Detail: fmt.Sprintf("turn %s of %s is active at commit %d; fork at a quiescent point", active, req.Parent, req.At)}
 	}
-	return writer.Fork(ctx, a.Store, a.Registry, a.Admission, writer.ForkRequest{
+	return writer.Fork(ctx, a.Store, a.Registry, writer.ForkRequest{
 		Parent: req.Parent, At: req.At, Child: req.Child, CreatedAtUnixMilli: a.Clock().UnixMilli(), Metadata: req.Metadata,
 	})
 }
@@ -346,9 +346,9 @@ func (a *Authority) ForkBeforeTurn(ctx context.Context, parent session.SessionID
 	return a.Fork(ctx, ForkRequest{Parent: parent, At: seq - 1, Child: child})
 }
 
-// DeleteSession drops a Session's root and releases its claims (AUTH-FRK-3,
-// SES-GC-1). A Session this authority holds open is closed first; one owned
-// by another process is ErrOwned.
+// DeleteSession drops a Session's root (AUTH-FRK-3, SES-GC-1); the claims of
+// its commits go with their segments at Collect. A Session this authority
+// holds open is closed first; one owned by another process is ErrOwned.
 func (a *Authority) DeleteSession(ctx context.Context, sid session.SessionID) error {
 	if gen := a.beginClose(sid, nil); gen != nil {
 		if err := a.release(ctx, sid, gen, true); err != nil {
@@ -365,13 +365,13 @@ func (a *Authority) DeleteSession(ctx context.Context, sid session.SessionID) er
 			return err
 		}
 	}
-	return writer.Delete(ctx, a.Store, a.Admission, sid)
+	return writer.Delete(ctx, a.Store, sid)
 }
 
 // Collect reclaims the storage of deleted Sessions no live Session reaches
-// (SES-GC-2).
+// (SES-GC-2) and releases the claims of the commits it reclaimed (SES-GC-3).
 func (a *Authority) Collect(ctx context.Context) (session.CollectReport, error) {
-	return writer.Collect(ctx, a.Store)
+	return writer.Collect(ctx, a.Store, a.Admission)
 }
 
 // --- reads by SessionID ----------------------------------------------------------------

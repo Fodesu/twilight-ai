@@ -11,8 +11,9 @@ import (
 
 // SES-FRK-2/3, EXT-WRT-8: a Writer over a fork folds its projections from
 // the inherited prefix, answers a replay of an inherited CommitID as already
-// applied, continues the ledger from the anchor, and Fork claims every
-// artifact the prefix references under the fork's own owner.
+// applied and continues the ledger from the anchor; Fork itself holds no
+// claim, the prefix's content stays under the parent segment's commit
+// claims.
 func TestForkWriterInheritsPrefix(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -37,24 +38,22 @@ func TestForkWriterInheritsPrefix(t *testing.T) {
 	if _, err := parent.Commit(ctx, noteGroup("c3", "three")); err != nil {
 		t.Fatal(err)
 	}
+	parentSeg := tipSegment(t, f.store, "s")
 
-	header, err := Fork(ctx, f.store, f.registry, f.admission(), ForkRequest{Parent: "s", At: 1, Child: "child", CreatedAtUnixMilli: 5})
+	header, err := Fork(ctx, f.store, f.registry, ForkRequest{Parent: "s", At: 1, Child: "child", CreatedAtUnixMilli: 5})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if header.Parent == nil || header.Parent.Seq != 1 {
 		t.Fatalf("header = %+v", header)
 	}
-	// The fork claim covers b1 under the fork owner and is idempotent.
-	claims, err := artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ForkOwnerKind, Authority: "child"})
-	if err != nil || len(claims) != 1 || len(claims[0].BindingSet.BindingIDs) != 1 || claims[0].BindingSet.BindingIDs[0] != "b1" {
-		t.Fatalf("fork claims = %+v %v", claims, err)
-	}
-	if _, err := Fork(ctx, f.store, f.registry, f.admission(), ForkRequest{Parent: "s", At: 1, Child: "child", CreatedAtUnixMilli: 5}); err != nil {
+	if _, err := Fork(ctx, f.store, f.registry, ForkRequest{Parent: "s", At: 1, Child: "child", CreatedAtUnixMilli: 5}); err != nil {
 		t.Fatalf("repeat fork: %v", err)
 	}
-	if claims, _ = artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ForkOwnerKind, Authority: "child"}); len(claims) != 1 {
-		t.Fatalf("repeat fork changed claims: %+v", claims)
+	// The only claim over b1 is the parent segment's commit claim.
+	claims, err := artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ClaimOwnerKind, Authority: string(parentSeg)})
+	if err != nil || len(claims) != 1 || claims[0].Owner.Identity != "c2" {
+		t.Fatalf("claims after fork = %+v %v, want the parent's c2 claim only", claims, err)
 	}
 
 	child, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "child", session.OpenOptions{})
@@ -71,12 +70,11 @@ func TestForkWriterInheritsPrefix(t *testing.T) {
 	if got := load(child, "child"); len(got) != 2 || got[0] != "one" || got[1] != "two" {
 		t.Fatalf("child projection = %v, want the prefix [one two]", got)
 	}
-	// Reconciliation of the child's commit claims left the fork claim alone.
-	if claims, _ = artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ForkOwnerKind, Authority: "child"}); len(claims) != 1 {
-		t.Fatal("opening the fork released its prefix claim")
+	// Opening the child reconciles the child tip's scope only: the parent
+	// segment's claim is untouched.
+	if claims, _ = artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ClaimOwnerKind, Authority: string(parentSeg)}); len(claims) != 1 {
+		t.Fatal("opening the fork released the parent segment's claim")
 	}
-	// An inherited CommitID replays as already applied; a differing group
-	// under it conflicts.
 	replay, err := child.Commit(ctx, noteGroup("c1", "one"))
 	if err != nil || replay.Outcome != CommitAlreadyApplied || replay.Commit.Seq != 0 {
 		t.Fatalf("replay of inherited c1 = %+v %v", replay, err)
@@ -84,7 +82,6 @@ func TestForkWriterInheritsPrefix(t *testing.T) {
 	if conflict, _ := child.Commit(ctx, noteGroup("c1", "other")); conflict.Outcome != CommitConflict {
 		t.Fatalf("conflicting replay = %+v", conflict)
 	}
-	// Own commits continue from the anchor and only the child sees them.
 	res, err := child.Commit(ctx, noteGroup("c4", "four"))
 	if err != nil || res.Outcome != CommitApplied || res.Commit.Seq != 2 {
 		t.Fatalf("own commit = %+v %v", res, err)
@@ -95,17 +92,21 @@ func TestForkWriterInheritsPrefix(t *testing.T) {
 	if got := load(parent, "s"); len(got) != 3 || got[2] != "three" {
 		t.Fatalf("parent projection = %v, want [one two three]", got)
 	}
-	// An observer reading the child from the Store folds the same state.
 	state, head, err := extension.NewProjectionReader(f.store, f.registry, nil).Load(ctx, "child", extension.ProjectionID(string(tpfx("a"))+"notes"), 1)
 	if err != nil || len(state.(noteState).Notes) != 3 || head.Next != 3 {
 		t.Fatalf("observer = %+v %+v %v", state, head, err)
 	}
+	// A Session cannot fork itself; nothing is created.
+	if _, err := Fork(ctx, f.store, f.registry, ForkRequest{Parent: "s", At: 0, Child: "s"}); !session.IsCode(err, session.ErrInvalid) {
+		t.Fatalf("self fork = %v, want ErrInvalid", err)
+	}
 }
 
-// SES-GC-1/2, EXT-WRT-9: deleting a Session drops its root and releases the
-// claims it owns; a fork that inherits its commits keeps reading them through
-// its own prefix claim, and Collect reclaims only what no root reaches.
-func TestDeleteReleasesClaimsAndKeepsInheritedPrefix(t *testing.T) {
+// SES-GC-1/2/3, EXT-WRT-9: Delete drops the root and leaves claims alone; a
+// fork keeps reading the inherited commits, whose claims stay Active with
+// their segment; Collect releases a claim exactly when it reclaims the
+// commit, and a repeated Delete is a no-op.
+func TestClaimsFollowSegmentsThroughCollect(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
 	ref := artifact.Ref{Scheme: "cas", Authority: "local", Key: "k1", Durability: artifact.EventBound, Integrity: &artifact.Integrity{Algorithm: "sha256", Value: "x"}}
@@ -113,33 +114,40 @@ func TestDeleteReleasesClaimsAndKeepsInheritedPrefix(t *testing.T) {
 	if _, err := f.bindings.CreateBinding(ctx, binding); err != nil {
 		t.Fatal(err)
 	}
+	withRef := func(id string) CommitFn {
+		return func(View) (*SemanticGroup, error) {
+			return &SemanticGroup{CommitID: session.CommitID(id), Batches: noteBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: id, Refs: []string{"b1"}}})}, nil
+		}
+	}
 	parent := f.open(t, false)
-	if _, err := parent.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c1", Batches: noteBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "one", Refs: []string{"b1"}}})}, nil
-	}); err != nil {
-		t.Fatal(err)
+	for _, id := range []string{"c1", "c2"} {
+		if _, err := parent.Commit(ctx, withRef(id)); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if _, err := parent.Commit(ctx, noteGroup("c2", "two")); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Fork(ctx, f.store, f.registry, f.admission(), ForkRequest{Parent: "s", At: 0, Child: "child"}); err != nil {
-		t.Fatal(err)
-	}
-	parentHeader, err := f.store.Header(ctx, "s")
-	if err != nil {
+	parentSeg := tipSegment(t, f.store, "s")
+	if _, err := Fork(ctx, f.store, f.registry, ForkRequest{Parent: "s", At: 0, Child: "child"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := parent.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := Delete(ctx, f.store, f.admission(), "s"); err != nil {
+	active := func() []string {
+		claims, err := artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ClaimOwnerKind, Authority: string(parentSeg)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, c := range claims {
+			ids = append(ids, c.Owner.Identity)
+		}
+		return ids
+	}
+	if err := Delete(ctx, f.store, "s"); err != nil {
 		t.Fatal(err)
 	}
-	if claims, _ := artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ClaimOwnerKind, Authority: "s"}); len(claims) != 0 {
-		t.Fatalf("parent commit claims after delete = %+v", claims)
-	}
-	if claims, _ := artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ForkOwnerKind, Authority: "child"}); len(claims) != 1 {
-		t.Fatalf("child fork claim after deleting the parent = %+v", claims)
+	if got := active(); len(got) != 2 {
+		t.Fatalf("claims after deleting the parent = %v, want both kept (the segment is still reached by the fork)", got)
 	}
 	if _, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !session.IsCode(err, session.ErrNotFound) {
 		t.Fatalf("open deleted = %v", err)
@@ -149,74 +157,31 @@ func TestDeleteReleasesClaimsAndKeepsInheritedPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	state, _, err := child.Projections().Load(ctx, "child", extension.ProjectionID(string(tpfx("a"))+"notes"), 1)
-	if err != nil || len(state.(noteState).Notes) != 1 || state.(noteState).Notes[0] != "one" {
+	if err != nil || len(state.(noteState).Notes) != 1 || state.(noteState).Notes[0] != "c1" {
 		t.Fatalf("child after deleting the parent = %+v %v", state, err)
 	}
-	report, err := Collect(ctx, f.store)
-	if err != nil || len(report.Removed) != 0 || report.Truncated[session.SegmentIDOf(parentHeader)] != 1 {
-		t.Fatalf("collect = %+v %v, want the parent's segment kept through commit 0", report, err)
+	// Collect truncates the parent's segment after commit 0: c2 is dropped
+	// and its claim released; c1 stays with the retained prefix.
+	report, err := Collect(ctx, f.store, f.admission())
+	if err != nil || len(report.Removed) != 0 || report.Truncated[parentSeg] != 1 || len(report.Dropped[parentSeg]) != 1 || report.Dropped[parentSeg][0] != "c2" {
+		t.Fatalf("collect = %+v %v, want the parent's segment kept through commit 0 with c2 dropped", report, err)
 	}
-	if _, err := child.Commit(ctx, noteGroup("c3", "three")); err != nil {
-		t.Fatal(err)
+	if got := active(); len(got) != 1 || got[0] != "c1" {
+		t.Fatalf("claims after truncation = %v, want c1 only", got)
 	}
 	if err := child.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := Delete(ctx, f.store, f.admission(), "child"); err != nil {
+	if err := Delete(ctx, f.store, "child"); err != nil {
 		t.Fatal(err)
 	}
-	if claims, _ := artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ForkOwnerKind, Authority: "child"}); len(claims) != 0 {
-		t.Fatalf("fork claim after deleting the child = %+v", claims)
-	}
-	if report, err := Collect(ctx, f.store); err != nil || len(report.Removed) != 2 {
-		t.Fatalf("final collect = %+v %v", report, err)
-	}
-}
-
-// EXT-WRT-8: Fork activates the prefix claim before it creates the child
-// root; a definite Create failure releases the claim this call activated.
-// EXT-WRT-9: Delete of a Session whose root is already gone releases the
-// remaining claims instead of failing on the root.
-func TestForkSagaAndDeleteIdempotency(t *testing.T) {
-	f := newFixture(t)
-	ctx := context.Background()
-	ref := artifact.Ref{Scheme: "cas", Authority: "local", Key: "k1", Durability: artifact.EventBound, Integrity: &artifact.Integrity{Algorithm: "sha256", Value: "x"}}
-	binding, _ := artifact.NewBinding("b1", ref)
-	if _, err := f.bindings.CreateBinding(ctx, binding); err != nil {
-		t.Fatal(err)
-	}
-	parent := f.open(t, false)
-	if _, err := parent.Commit(ctx, func(View) (*SemanticGroup, error) {
-		return &SemanticGroup{CommitID: "c1", Batches: noteBatch(TypedEvent{Type: tpfx("a") + "note", Value: notePayload{Text: "one", Refs: []string{"b1"}}})}, nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if err := parent.Close(ctx); err != nil {
-		t.Fatal(err)
-	}
-	// Create of the child fails after the claim was activated: the kernel
-	// refuses a Session as its own fork.
-	if _, err := Fork(ctx, f.store, f.registry, f.admission(), ForkRequest{Parent: "s", At: 0, Child: "s"}); !session.IsCode(err, session.ErrInvalid) {
-		t.Fatalf("self fork = %v, want ErrInvalid", err)
-	}
-	if claims, _ := artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ForkOwnerKind, Authority: "s"}); len(claims) != 0 {
-		t.Fatalf("claim survived a failed create: %+v", claims)
-	}
-	if _, err := Fork(ctx, f.store, f.registry, f.admission(), ForkRequest{Parent: "s", At: 0, Child: "child"}); err != nil {
-		t.Fatal(err)
-	}
-	if claims, _ := artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ForkOwnerKind, Authority: "child"}); len(claims) != 1 {
-		t.Fatalf("fork claims = %+v", claims)
-	}
-	// Delete twice: the second call finds no root and still succeeds with no
-	// claims left.
-	if err := Delete(ctx, f.store, f.admission(), "child"); err != nil {
-		t.Fatal(err)
-	}
-	if err := Delete(ctx, f.store, f.admission(), "child"); err != nil {
+	if err := Delete(ctx, f.store, "child"); err != nil {
 		t.Fatalf("repeated delete = %v, want nil", err)
 	}
-	if claims, _ := artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ForkOwnerKind, Authority: "child"}); len(claims) != 0 {
-		t.Fatalf("claims after delete = %+v", claims)
+	if report, err := Collect(ctx, f.store, f.admission()); err != nil || len(report.Removed) != 2 {
+		t.Fatalf("final collect = %+v %v", report, err)
+	}
+	if got := active(); len(got) != 0 {
+		t.Fatalf("claims after the segment is removed = %v, want none", got)
 	}
 }

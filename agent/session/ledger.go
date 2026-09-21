@@ -628,7 +628,7 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 		return CollectReport{}, err
 	}
 	need := Reachable(nodes, roots)
-	report := CollectReport{Truncated: map[SegmentID]CommitSeq{}}
+	report := CollectReport{Truncated: map[SegmentID]CommitSeq{}, Dropped: map[SegmentID][]CommitID{}}
 	for id := range nodes {
 		through, reached := need[id]
 		if !reached {
@@ -648,9 +648,23 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 		if head.Next <= through+1 {
 			continue
 		}
+		// The dropped commits are named before they go, from the index.
+		idx, _, err := l.be.Index(ctx, id)
+		if err != nil {
+			return report, err
+		}
+		var dropped []CommitID
+		for i := range idx.Entries {
+			if idx.Entries[i].Seq > through {
+				dropped = append(dropped, idx.Entries[i].CommitID)
+			}
+		}
 		newHead, err := l.be.TruncateSegment(ctx, id, through)
 		if err != nil {
 			return report, err
+		}
+		if len(dropped) > 0 {
+			report.Dropped[id] = dropped
 		}
 		// A mark past the new head no longer names a commit; the retained
 		// prefix was verified, so the mark moves back to it.

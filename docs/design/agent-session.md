@@ -311,7 +311,7 @@ func Reachable(nodes map[SegmentID]Segment, roots []SessionRecord) map[SegmentID
 
 **SES-FRK-3（身份）** `Ancestry` 内的每个 CommitID 都是该 Session 的 CommitID：`Committed` 与 `LookupCommit` 对继承 commit 返回命中，`Append` 对它们返回 `ErrConflict`。Writer 的幂等 fingerprint 因此不覆盖 SessionID（EXT-WRT-2）：前缀 commit 由祖先的 SessionID 封印，经子重放仍须判为 `AlreadyApplied`。Session 级派生身份（RunID、Start/Retry/Settle 的 CommitID）在子中以子的 SessionID 派生，与父此后可能派生的同名身份不冲突。
 
-**SES-FRK-4（所有权与恢复）** 所有权是根级的（`Lease{Session, Epoch}`），段不属于任何 Session：多个根可以经边共享同一历史段，但每个根有自己的 tip 段，两个根从不共用一个 tip，因此不同 Session 的写者从不向同一节点追加。`Append(lease, segment, commit)` 由 adapter 原子核对三件事：Lease 是该 Session 的当前 Lease、该 Session 的 `Tip == segment`、commit 封印于该段的 head。子有独立的 Lease，打开子不需要父的所有权，父的写者也不受子影响。前缀中处于 Executing 的目标属于父的执行：子的接管处置以子的 AssignmentKey 询问 Executor，得到 `missing` 后按 RUN-CMT-7 处置（模型步撤回重规划、工具 call 记 Unknown），不接管父的 attempt。子引用的冻结正文与 artifact 由 fork claim 保留（EXT-WRT-8）。
+**SES-FRK-4（所有权与恢复）** 所有权是根级的（`Lease{Session, Epoch}`），段不属于任何 Session：多个根可以经边共享同一历史段，但每个根有自己的 tip 段，两个根从不共用一个 tip，因此不同 Session 的写者从不向同一节点追加。`Append(lease, segment, commit)` 由 adapter 原子核对三件事：Lease 是该 Session 的当前 Lease、该 Session 的 `Tip == segment`、commit 封印于该段的 head。子有独立的 Lease，打开子不需要父的所有权，父的写者也不受子影响。前缀中处于 Executing 的目标属于父的执行：子的接管处置以子的 AssignmentKey 询问 Executor，得到 `missing` 后按 RUN-CMT-7 处置（模型步撤回重规划、工具 call 记 Unknown），不接管父的 attempt。子引用的冻结正文与 artifact 由前缀段的 commit claim 保留，与段同寿（SES-GC-3）。
 
 **SES-FRK-5（流的 lineage）** ledger 的 `Ancestry` 与流的语义继承分开定义：`Ancestry` 让子读到父的完整 Commit 前缀（完整性、provenance、CommitID 身份，SES-FRK-2/3），前缀中各个流对子的意义由拥有该流 domain 的模块声明（`StreamDefinition.Lineage`，EXT-STR-1），kernel 不为任何 domain 预设答案。`ReadStream` 按请求携带的 `Lineage` 读取：`LineageSession` 返回前缀加自身，流内位置计入继承事件；`LineageSegment` 只返回子自身段（`Seq > Parent.Seq`）的事件，流内位置从自身段起算；未指定为 `ErrInvalid`。`StreamHead` 与 lineage 无关，只计 tip 段自身。第一方模块的声明：`chatlog` 与 `turn/<TurnID>` 为 `LineageSession`，即会话与 Turn 的语义历史，子继承；`run/<RunID>` 为 `LineageSegment`，即写入它的那个段的执行历史，子不继承。投影按各自声明折叠继承 commit（EXT-PRJ-8）：默认只折叠 `LineageSession` domain 的批次，因此父在 fork 点仍处于 Executing 的 Run 在子的 `twilight/run` Machine 投影中不存在、子的接管处置不会把它当作自己的执行来恢复；以 run 事实为语义内容的投影（chatlog 的 assistant/tool_result、turn 的 attempt 结算）声明折叠全部批次。上层据此把继承的 attempt 视为已结算：其 Run 在子中 `ErrRunNotFound`，结算只在 surface 上。fork 点必须是语义静止点（父在该 commit 没有活动中的 Turn），由 Authority 核对（AUTH-FRK-1）；kernel 的 `Create` 不核对。
 
@@ -322,7 +322,7 @@ func Reachable(nodes map[SegmentID]Segment, roots []SessionRecord) map[SegmentID
 ```go
 func (Store) Delete(ctx, SessionID) error
 func (Store) Collect(ctx) (CollectReport, error)
-type CollectReport struct { Removed []SegmentID; Truncated map[SegmentID]CommitSeq }
+type CollectReport struct { Removed []SegmentID; Truncated map[SegmentID]CommitSeq; Dropped map[SegmentID][]CommitID }
 ```
 
 **SES-GC-1（删除撤根）** `Delete(sid)` 删除 `SessionRecord`：此后 `Header`、`Open`、`ReadCommits`、`ReadStream`、以它为 origin 的 `Create` 都返回 `ErrNotFound`，第二次 `Delete` 为 `ErrNotFound`，被写者持有的 Session 为 `ErrOwned`。SessionID 立即可以重建，重建得到的是新根与新段，与旧段无关。段本身不动，也没有"已删除"状态：仍以它为前缀的 fork 继续经 `Ancestry` 读到它。
@@ -331,5 +331,5 @@ type CollectReport struct { Removed []SegmentID; Truncated map[SegmentID]CommitS
 
 **SES-GC-4（图变更的串行）** 改变根与节点集合的操作（`Create`、`Delete`、`Collect`）在 kernel 内互斥：`Create` 对父存活的核对与它的写入不会与回收该父或新节点的 `Collect` 交错；adapter 以 `CreateSession(Segment, SessionRecord)` 一步落下节点与根，不存在有根无段或有段无根的持久状态。`Append` 与读不取该锁：根 tip 的段从不被 `Collect` 触及。该互斥是进程内的：多个进程共享一个 Backend 时，根集合变更与可达性回收的互斥必须由该 Backend 的存储事务或 GC 权威提供，当前两个 adapter 都是单进程的。
 
-**SES-GC-3（claim 与回收的分工）** `writer.Delete` 在撤根后释放该 Session 拥有的全部 claim（commit claim 与 fork claim，EXT-WRT-9）；继承前缀所引用的内容由每个存活 fork 自己的 fork claim 保留，所以父的 claim 释放不影响子。`Collect` 只回收段的存储，不再涉及 claim。
+**SES-GC-3（claim 与回收的分工）** 内容保留与 ledger 可达性同源：一个 commit 的 retention claim 以持有它的段为 owner（EXT-WRT-5），与该 commit 同生死。`Delete` 只撤根；`Collect` 计算可达性后删段或截段，并在 `CollectReport` 中报告整段删除的段（`Removed`）与截断时丢弃的 CommitID（`Dropped`），`writer.Collect` 据此释放对应 claim（EXT-WRT-9）。fork 不需要自己的 claim：子作为一个到达前缀段的根即保留了前缀（EXT-WRT-8）。
 

@@ -200,6 +200,11 @@ type StreamPage struct {
 type CollectReport struct {
 	Removed   []SegmentID
 	Truncated map[SegmentID]CommitSeq
+	// Dropped lists, per truncated segment, the CommitIDs of the commits the
+	// truncation removed, so the layer that owns their retention claims can
+	// release them (SES-GC-3); a removed segment's claims are released by
+	// segment.
+	Dropped map[SegmentID][]CommitID
 }
 
 // Store is the kernel port (SES 4 to 6, 8, 9). A Session is a root into the

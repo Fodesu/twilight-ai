@@ -328,7 +328,7 @@ func (e *Executor) create(ctx context.Context, key effect.AssignmentKey, callID 
 		if err != nil {
 			return Provenance{}, err
 		}
-		_, err = writer.Fork(ctx, e.a.Store, e.a.Registry, e.a.Admission, writer.ForkRequest{
+		_, err = writer.Fork(ctx, e.a.Store, e.a.Registry, writer.ForkRequest{
 			Parent: session.SessionID(key.Session), At: at, Child: child, CreatedAtUnixMilli: now, Metadata: meta})
 		return prov, err
 	default:
