@@ -540,8 +540,9 @@ func TestWriterClaimsAndReconcile(t *testing.T) {
 	// Simulate a crash between claim and append: an Active claim whose owner
 	// commit never made it into the ledger.
 	set, _ := artifact.SetBuilder{Resolver: f.bindings}.Build(ctx, []artifact.BindingID{"b1"})
-	orphanID := DeriveClaimID(session.ProtocolVersion1, "s", "never", set.RefSetDigest)
-	if _, err := f.ledger.Activate(ctx, orphanID, CommitOwner("s", "never"), set); err != nil {
+	seg := tipSegment(t, f.store, "s")
+	orphanID := DeriveClaimID(seg, "never", set.RefSetDigest)
+	if _, err := f.ledger.Activate(ctx, orphanID, CommitOwner(seg, "never"), set); err != nil {
 		t.Fatal(err)
 	}
 	_ = w.Close(ctx)
@@ -587,4 +588,15 @@ func TestProjectionCache(t *testing.T) {
 	if len(got.(noteState).Notes) != len(mem.(noteState).Notes) {
 		t.Fatal("store reader and writer reader disagree")
 	}
+}
+
+// tipSegment is the segment sid's root currently appends to: the owner
+// authority of the claims its Writer activates.
+func tipSegment(t *testing.T, store session.Store, sid session.SessionID) session.SegmentID {
+	t.Helper()
+	h, err := store.Header(context.Background(), sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return session.SegmentIDOf(h)
 }

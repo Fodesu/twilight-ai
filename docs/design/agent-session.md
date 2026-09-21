@@ -90,7 +90,9 @@ kernel 的 `session.Ledger` 实现 `Store`，只依赖 `Backend` 端口；Memory
 
 **SES-VER-1** payload 的版本属于事件类型，由模块负责：每个 payload object 第一层携带整数字段 `v`，即写入时该事件类型 codec 的版本；读侧按 `(EventType, v)` 选 codec，模块为它发布过的每个版本永久保留 codec，并在 codec 内 upcast 到当前内存类型（EXT-REG-2）。kernel 不读取该字段。同一段、同一 Commit 内不同事件类型的 `v` 可以不同；段不携带任何模块层版本，kernel 把 metadata 作为不透明值封进 header digest，不读取其中任何键。
 
-**SES-VER-2** `ProtocolVersion` 在旧 reader 无法保持 Commit 结构或 digest 语义时递增；payload、EventType、模块 codec 的变化不触发。kernel 版本变化由外部 migration tool 生成新版本日志，旧日志原样保留（adjacent migration）。
+**SES-VER-2** `ProtocolVersion` 在旧 reader 无法保持 Commit 结构或 digest 语义时递增；payload、EventType、模块 codec 的变化不触发；新增可选的 kernel 字段走 `Ext` 扩展对象（SES-WIR-5），不触发。kernel 版本变化由外部 migration tool 生成新版本日志，旧日志原样保留（adjacent migration）。
+
+**SES-VER-3（派生身份不嵌版本）** 凡是生命周期长于一个段的派生身份（ClaimID、CommitID、SessionID、模块的 command 与 fact identity），其预映像都不得包含 kernel 的 `ProtocolVersion`：版本进入 digest 的域分隔（SES-WIR-2），不进入身份。各层自己的预映像版本由该层的常量给出，与 kernel 版本无关（EXT-WRT-5）。
 
 ## 3. wire types
 
@@ -114,7 +116,8 @@ type SegmentHeader struct {          // 段的创建记录：lineage 树的节�
     Parent *LedgerRef                 // nil 为 root segment；非 nil 为该段唯一的父边，见第 8 节
     Nonce string                      // 128 位随机数的 hex；使两条字段相同的创建记录成为两个段
     CausationID es.CausationID
-    Metadata jsonstable.Value
+    Metadata jsonstable.Value         // 调用方的元数据，kernel 不读取
+    Ext jsonstable.Value              // kernel 自己的扩展对象，缺省为空（SES-WIR-5）
     HeaderDigest es.Digest            // = SegmentID
 }
 type SessionRecord struct {           // 根：Session 身份与它追加到的段
@@ -140,6 +143,7 @@ type Commit struct {
     Epoch Epoch
     Intent es.Digest      // 可选：产生该 commit 的操作的 digest，进入 commit digest；重放按它判定（SES-APP-4）
     Batches []StreamBatch // 非空；同一 Commit 内每个流至多一个 batch
+    Ext jsonstable.Value  // kernel 自己的扩展对象，缺省为空（SES-WIR-5）
     PrevDigest es.Digest
     Digest es.Digest
 }
@@ -153,14 +157,16 @@ type Head struct { Next CommitSeq; Digest es.Digest } // 空日志为 LedgerSeed
 **SES-WIR-2** digest preimage：
 
 ```text
-HeaderDigest = Digest("twilight/session/header", ProtocolVersion, [Parent], Nonce, CausationID, Metadata)  // Parent 为 nil 时不进入预映像；SegmentID = HeaderDigest
+HeaderDigest = Digest("twilight/session/header", ProtocolVersion, [Parent], Nonce, CausationID, Metadata, [Ext])  // Parent 为 nil、Ext 为空时不进入预映像；SegmentID = HeaderDigest
 BatchDigest  = Digest("twilight/session/batch", SegmentID, Stream, [{Type, RecordedAtUnixMilli, Payload}, ...])
-CommitDigest = Digest("twilight/session/commit", PrevDigest, SegmentID, Seq, CommitID, Epoch, [BatchDigest, ...])
+CommitDigest = Digest("twilight/session/commit", PrevDigest, SegmentID, Seq, CommitID, Epoch, [Intent], [BatchDigest, ...], [Ext])
 ```
 
 digest 依 `agent/es` 的 versioned domain separator。链条按 Commit 连接，batch digest 又把 batch 内的事件按序绑定；任何 Commit 被改写、删除或重排都使其后所有 Commit 的 digest 失效。封印（`SealCommit`）以 Handle 的 Epoch 与当前 head digest 计算，验证时重算比对。
 
 **SES-WIR-3** 同一 Session 的 header 与每个 Commit 使用同一 `ProtocolVersion`；Store 从 header 派生 profile（`LedgerProfileFor`），调用方不传版本。
+
+**SES-WIR-5（kernel 扩展对象）** `SegmentHeader.Ext` 与 `Commit.Ext` 是 kernel 自己的扩展槽：缺省为空；非空时必须是 canonical JSON object，完整字节进入对应的 digest 预映像（SES-WIR-2），为空时不进入，因此没有 Ext 的记录与该槽存在之前封印结果相同。当前 kernel 不写任何键；后续版本的 kernel 可以在其中定义可选字段而不递增 `ProtocolVersion`，不认识这些键的 reader 仍按字节校验并原样保留（`json.Unmarshal` 不丢弃它）。`Ext` 与 `Metadata` 分工固定：`Metadata` 属于调用方，`Ext` 属于 kernel。非 object 的 Ext 为 `ErrInvalid`。
 
 ## 4. 所有权
 
@@ -175,6 +181,7 @@ type Proposal struct {
     CommitID CommitID
     Intent es.Digest      // 可选；原样进入 Commit.Intent（SES-APP-4）
     Batches []StreamBatch // 非空；调用方按批归因流
+    Ext jsonstable.Value  // 可选；原样进入 Commit.Ext（SES-WIR-5）
 }
 type Handle interface {
     SessionID() SessionID
@@ -264,6 +271,7 @@ conformance 以 `Store` 为参数，每个 adapter 跑同一套，必须验证�
 - **SES-REP-1/2**：顺序、From、Limit 截断、ReadStream 与折叠一致、篡改任一 Commit 后下一次 Open 报 `ErrCorrupt`；`From` 取到 `CommitSeq` 最大值仍为空页；无法 reseal 的 Commit 经 `ValidateLedger` 报带坐标的 `ErrCorrupt`；header 归属另一 Session 或所有权记录无法解析时 Open 与 Header 报 `ErrCorrupt`；
 - **SES-GC-1/2**：Delete 对持有中、未知的 Session 分别为 `ErrOwned`、`ErrNotFound`；删除后不可见、不可开、不可 fork、再次 Delete 为 `ErrNotFound`，同名 Session 立即可重建且得到新段；子仍读到已删除父的前缀；Collect 截掉最大 anchor 之后的自身 commit、整段删除不可达段、对存活 Session 无影响、幂等；
 - **SES-WIR-4**：段 header 与 commit 的 digest 预映像不含 SessionID；在另一段 header 下校验同一批 commit 为 `ErrCorrupt`；
+- **SES-WIR-5**：空 Ext 的 header 与 commit 的 digest 与无该槽时相同；非空 Ext 进入 digest 且经 Store 往返后字节不变；非 object 的 Ext 为 `ErrInvalid`；
 - **SES-FRK-1/2/3**：未知父、超出父 history 的 Seq、自身为父的 fork 被拒且不留根；相同 origin 重复 Create 幂等，不同 origin 为 `ErrConflict`；边指向贡献该 commit 的 Segment（在继承 commit 处 fork 的边直指持有它的祖先段）；空 fork 的 head 为 seed；`ReadCommits` 返回前缀加自身，`From`/`Limit` 跨越前缀边界计数；`ReadStream` 以 `LineageSession` 读取时返回前缀加自身且流内位置计入继承事件，以 `LineageSegment` 读取时只返回自身段的事件、父的同名流不受影响，未指定 lineage 为 `ErrInvalid`（SES-FRK-5）；首个自身 commit 的 Seq 为 `Seq+1`、PrevDigest 为边的 digest；继承的 CommitID 对 `Committed`/`LookupCommit` 可见、对 `Append` 为 `ErrConflict`；父在 fork 之后的追加对子不可见，反之亦然；自身 commit 在子 header 下、前缀在父段 header 下各自通过 `ValidateLedger`；fork 的 fork 读穿两层前缀；
 
 kernel 的 `ProtocolVersion` 覆盖 header 字段、commit 字段、digest preimage 与批次完整性规则（SES-VER-2）。
@@ -279,7 +287,7 @@ type Segment struct { ID SegmentID; Header SegmentHeader }  // Header.Parent *Le
 type SessionRecord struct { ID SessionID; Tip SegmentID; CreatedAtUnixMilli int64 }
 type Lease struct { Session SessionID; Epoch Epoch }
 type ForkOrigin struct { Session SessionID; Seq CommitSeq }  // CreateRequest.Fork
-type CreateRequest struct { ProtocolVersion; SessionID; CreatedAtUnixMilli; Fork *ForkOrigin; CausationID; Metadata }  // 段 nonce 由 kernel 抽取，调用方不能命名节点
+type CreateRequest struct { ProtocolVersion; SessionID; CreatedAtUnixMilli; Fork *ForkOrigin; CausationID; Metadata; Ext }  // 段 nonce 由 kernel 抽取，调用方不能命名节点
 type Ancestry struct { Segments []AncestrySegment }          // 根段在前，tip 在后；每段带 From/Through
 func LoadAncestry(ctx, LedgerStore, tip SegmentID) (*Ancestry, error)
 func (*Ancestry) Read / Lookup / Contains / Owner(seq)

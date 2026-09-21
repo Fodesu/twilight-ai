@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/felinics/twilight/agent/jsonstable"
 
 	"github.com/felinics/twilight/agent/artifact"
+	"github.com/felinics/twilight/agent/es"
+	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
 )
@@ -37,9 +38,11 @@ func ForkOwner(child session.SessionID, edge session.LedgerRef) artifact.ClaimOw
 	return artifact.ClaimOwner{Kind: ForkOwnerKind, Authority: string(child), Identity: fmt.Sprintf("%s@%d", edge.Segment, edge.Seq)}
 }
 
-// forkClaimCommitID names the fork claim in DeriveClaimID's CommitID slot.
-func forkClaimCommitID(edge session.LedgerRef) session.CommitID {
-	return session.CommitID(fmt.Sprintf("fork:%s@%d", edge.Segment, edge.Seq))
+// deriveForkClaimID names the fork claim by the child and the edge it
+// inherits through; like DeriveClaimID it embeds no protocol version.
+func deriveForkClaimID(child session.SessionID, edge session.LedgerRef, refSet artifact.RefSetDigest) artifact.ClaimID {
+	raw, _ := es.EncodeTypedPayload(claimDerivationVersion, "twilight/session-extension/fork-claim", []string{string(child), string(edge.Segment), fmt.Sprintf("%d", edge.Seq), string(refSet)})
+	return artifact.ClaimID(es.DigestBytes(raw))
 }
 
 // Fork creates req.Child from req.Parent's history at commit req.At
@@ -87,7 +90,7 @@ func Fork(ctx context.Context, store session.Store, registry *extension.Registry
 		if err != nil {
 			return session.SegmentHeader{}, err
 		}
-		id := DeriveClaimID(registry.ProtocolVersion, req.Child, forkClaimCommitID(fork), set.RefSetDigest)
+		id := deriveForkClaimID(req.Child, fork, set.RefSetDigest)
 		owner := ForkOwner(req.Child, fork)
 		existing, ok, err := admission.Ledger.LookupClaim(ctx, id)
 		if err != nil {

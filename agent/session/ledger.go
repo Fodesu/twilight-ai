@@ -73,7 +73,7 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 	if err := validIdentity("SessionID", string(req.SessionID)); err != nil {
 		return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, err.Error())
 	}
-	header := SegmentHeader{ProtocolVersion: req.ProtocolVersion, CausationID: req.CausationID, Metadata: req.Metadata}
+	header := SegmentHeader{ProtocolVersion: req.ProtocolVersion, CausationID: req.CausationID, Metadata: req.Metadata, Ext: req.Ext}
 	if req.Fork != nil {
 		// The edge names the segment that contributes the inherited commit,
 		// wherever in the parent's ancestry it lives (SES-FRK-1).
@@ -324,7 +324,7 @@ func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 	if w.failed != nil {
 		return Commit{}, w.failed
 	}
-	c := Commit{Seq: w.head.Next, CommitID: p.CommitID, Epoch: w.lease.Epoch, Intent: p.Intent, Batches: cloneBatches(p.Batches)}
+	c := Commit{Seq: w.head.Next, CommitID: p.CommitID, Epoch: w.lease.Epoch, Intent: p.Intent, Batches: cloneBatches(p.Batches), Ext: p.Ext}
 	if err := SealCommit(w.profile, w.head.Digest, w.root.Tip, &c); err != nil {
 		return Commit{}, err
 	}

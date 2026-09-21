@@ -39,10 +39,13 @@ linters:
       settings:
         hugeParam:
           # Identity-carrying protocol values (AssignmentKey, Schema,
-          # Assignment, artifact.Ref) are 80-120 bytes of string headers and
-          # are passed by value on purpose so a callee cannot mutate the
-          # caller's copy. Only genuinely large values are worth a pointer.
-          sizeThreshold: 128
+          # Assignment, artifact.Ref, session.Commit with its Ext slot) are
+          # 80-128 bytes of string headers and are passed by value on purpose
+          # so a callee cannot mutate the caller's copy. Only genuinely large
+          # values are worth a pointer.
+          sizeThreshold: 136
+        rangeValCopy:
+          sizeThreshold: 136
     gocyclo:
       min-complexity: 40
     nakedret:

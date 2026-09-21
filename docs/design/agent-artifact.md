@@ -143,8 +143,8 @@ type RetentionLedger interface {
     ClaimsByOwner(context.Context, ClaimOwnerQuery, ClaimCursor) (ClaimPage, error)
 }
 // OwnerVerifier 由 owner 的宿主提供：owner fact 是否已持久存在。
-// Session 部署中 owner 为 {Kind:"twilight/session/commit", Authority:SessionID, Identity:CommitID}，
-// 实现为对该 Session 查找该 CommitID 的行。
+// Session 部署中 owner 为 {Kind:"twilight/session/commit", Authority:SegmentID, Identity:CommitID}，
+// 实现为对该段查找该 CommitID 的 commit（EXT-WRT-5）。
 type OwnerVerifier interface {
     OwnerExists(context.Context, ClaimOwner) (bool, error)
 }

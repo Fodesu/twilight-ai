@@ -33,7 +33,7 @@ func fingerprintCommit(commitID session.CommitID, batches []session.StreamBatch)
 		}
 		body.Batches[i] = fb
 	}
-	raw, err := es.EncodeTypedPayload(session.ProtocolVersion1, "twilight/session-extension/fingerprint", body)
+	raw, err := es.EncodeTypedPayload(claimDerivationVersion, "twilight/session-extension/fingerprint", body)
 	if err != nil {
 		return "", err
 	}

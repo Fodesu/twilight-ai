@@ -173,9 +173,9 @@ func (a *Ancestry) Header() SegmentHeader { return a.Tip().Header }
 
 // Owner returns the segment that contributes the commit at seq.
 func (a *Ancestry) Owner(seq CommitSeq) (AncestrySegment, bool) {
-	for _, s := range a.Segments {
-		if seq >= s.From && seq <= s.Through {
-			return s, true
+	for i := range a.Segments {
+		if s := &a.Segments[i]; seq >= s.From && seq <= s.Through {
+			return *s, true
 		}
 	}
 	return AncestrySegment{}, false
@@ -221,7 +221,8 @@ func (a *Ancestry) Read(ctx context.Context, store LedgerStore, from CommitSeq, 
 	var out []Commit
 	var head Head
 	tip := len(a.Segments) - 1
-	for i, s := range a.Segments {
+	for i := range a.Segments {
+		s := &a.Segments[i]
 		start := from
 		if start < s.From {
 			start = s.From

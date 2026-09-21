@@ -44,7 +44,13 @@ type SegmentHeader struct {
 	Nonce           string           `json:"nonce"`
 	CausationID     es.CausationID   `json:"causationId,omitempty"`
 	Metadata        jsonstable.Value `json:"metadata,omitempty"`
-	HeaderDigest    es.Digest        `json:"headerDigest"`
+	// Ext is the kernel's own extension object: optional kernel fields a later
+	// binary may define without a new ProtocolVersion. It is a canonical JSON
+	// object when present and enters HeaderDigest byte for byte; a reader
+	// that knows none of its keys still verifies the header (SES-WIR-5).
+	// Metadata is the caller's; Ext is the kernel's.
+	Ext          jsonstable.Value `json:"ext,omitzero"`
+	HeaderDigest es.Digest        `json:"headerDigest"`
 }
 
 // ErrorCode classifies kernel failures (SES 7).

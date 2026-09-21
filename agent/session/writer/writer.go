@@ -183,7 +183,7 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 	}
 	w := &sessionWriter{kernel: kernel, store: store, registry: registry, sid: sid, header: header,
 		projections: newProjector(registry, sid, cfg.Cache, cfg.CachePolicy),
-		admission:   &admitter{Admission: admission, protocol: registry.ProtocolVersion, sid: sid},
+		admission:   &admitter{Admission: admission, segment: session.SegmentIDOf(header)},
 		observers:   &observers{list: cfg.Observers}}
 	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
 	if err != nil {
@@ -214,8 +214,8 @@ func (w *sessionWriter) Header() session.SegmentHeader {
 }
 
 func (w *sessionWriter) OwnerExists(_ context.Context, owner artifact.ClaimOwner) (bool, error) {
-	if owner.Kind != ClaimOwnerKind || owner.Authority != string(w.sid) {
-		return false, &artifact.Error{Code: artifact.ErrInvalid, Operation: "owner_exists", Detail: "owner is not a commit of this session"}
+	if owner.Kind != ClaimOwnerKind || owner.Authority != string(session.SegmentIDOf(w.header)) {
+		return false, &artifact.Error{Code: artifact.ErrInvalid, Operation: "owner_exists", Detail: "owner is not a commit of this writer's tip segment"}
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()

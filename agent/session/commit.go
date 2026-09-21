@@ -115,10 +115,15 @@ type Commit struct {
 	// conflict, even when the events cannot be rebuilt from the current
 	// state. Empty means the writer declared none; it is sealed into the
 	// commit digest.
-	Intent     es.Digest     `json:"intent,omitempty"`
-	Batches    []StreamBatch `json:"batches"`
-	PrevDigest es.Digest     `json:"prevDigest"`
-	Digest     es.Digest     `json:"digest"`
+	Intent  es.Digest     `json:"intent,omitempty"`
+	Batches []StreamBatch `json:"batches"`
+	// Ext is the kernel's extension object on a commit, the counterpart of
+	// SegmentHeader.Ext: a canonical JSON object when present, sealed into
+	// Digest byte for byte and opaque to a reader that knows none of its keys
+	// (SES-WIR-5).
+	Ext        jsonstable.Value `json:"ext,omitzero"`
+	PrevDigest es.Digest        `json:"prevDigest"`
+	Digest     es.Digest        `json:"digest"`
 }
 
 // ValidateStreamRef checks the shape of a batch's stream attribution: a
@@ -181,7 +186,7 @@ type LedgerProfile interface {
 	Version() uint16
 	HeaderDigest(SegmentHeader) (es.Digest, error)
 	BatchDigest(segment SegmentID, batch StreamBatch) (es.Digest, error)
-	CommitDigest(prev es.Digest, segment SegmentID, seq CommitSeq, commitID CommitID, epoch Epoch, intent es.Digest, batches []es.Digest) (es.Digest, error)
+	CommitDigest(prev es.Digest, segment SegmentID, seq CommitSeq, commitID CommitID, epoch Epoch, intent es.Digest, batches []es.Digest, ext jsonstable.Value) (es.Digest, error)
 	ValidateHeader(SegmentHeader) error
 }
 
@@ -222,10 +227,13 @@ type commitDigestBody struct {
 	Epoch    Epoch
 	Intent   es.Digest `json:",omitempty"`
 	Batches  []es.Digest
+	// Ext is omitted when absent, so a commit without one seals exactly as
+	// before the slot existed.
+	Ext jsonstable.Value `json:",omitzero"`
 }
 
 func (p profileV1) HeaderDigest(h SegmentHeader) (es.Digest, error) {
-	return digestDomain(p.version, "twilight/session/header", headerDigestBody{h.ProtocolVersion, h.Parent, h.Nonce, h.CausationID, h.Metadata})
+	return digestDomain(p.version, "twilight/session/header", headerDigestBody{h.ProtocolVersion, h.Parent, h.Nonce, h.CausationID, h.Metadata, h.Ext})
 }
 
 func (p profileV1) BatchDigest(segment SegmentID, batch StreamBatch) (es.Digest, error) {
@@ -237,8 +245,8 @@ func (p profileV1) BatchDigest(segment SegmentID, batch StreamBatch) (es.Digest,
 	return digestDomain(p.version, "twilight/session/batch", body)
 }
 
-func (p profileV1) CommitDigest(prev es.Digest, segment SegmentID, seq CommitSeq, commitID CommitID, epoch Epoch, intent es.Digest, batches []es.Digest) (es.Digest, error) {
-	return digestDomain(p.version, "twilight/session/commit", commitDigestBody{prev, segment, seq, commitID, epoch, intent, batches})
+func (p profileV1) CommitDigest(prev es.Digest, segment SegmentID, seq CommitSeq, commitID CommitID, epoch Epoch, intent es.Digest, batches []es.Digest, ext jsonstable.Value) (es.Digest, error) {
+	return digestDomain(p.version, "twilight/session/commit", commitDigestBody{prev, segment, seq, commitID, epoch, intent, batches, ext})
 }
 
 func (p profileV1) ValidateHeader(h SegmentHeader) error {
@@ -249,6 +257,9 @@ func (p profileV1) ValidateHeader(h SegmentHeader) error {
 		return newError(ErrInvalid, "header", "", err.Error())
 	}
 	if err := ValidateEdge(h.Parent); err != nil {
+		return newError(ErrInvalid, "header", "", err.Error())
+	}
+	if err := ValidateExt(h.Ext); err != nil {
 		return newError(ErrInvalid, "header", "", err.Error())
 	}
 	want, err := p.HeaderDigest(h)
@@ -272,6 +283,9 @@ func SealCommit(p LedgerProfile, prev es.Digest, segment SegmentID, c *Commit) e
 	if err := ValidateBatches(c.Batches); err != nil {
 		return err
 	}
+	if err := ValidateExt(c.Ext); err != nil {
+		return err
+	}
 	batchDigests := make([]es.Digest, len(c.Batches))
 	for i := range c.Batches {
 		d, err := p.BatchDigest(segment, c.Batches[i])
@@ -280,12 +294,25 @@ func SealCommit(p LedgerProfile, prev es.Digest, segment SegmentID, c *Commit) e
 		}
 		batchDigests[i] = d
 	}
-	d, err := p.CommitDigest(prev, segment, c.Seq, c.CommitID, c.Epoch, c.Intent, batchDigests)
+	d, err := p.CommitDigest(prev, segment, c.Seq, c.CommitID, c.Epoch, c.Intent, batchDigests, c.Ext)
 	if err != nil {
 		return err
 	}
 	c.PrevDigest = prev
 	c.Digest = d
+	return nil
+}
+
+// ValidateExt checks a kernel extension object (SegmentHeader.Ext,
+// Commit.Ext): absent, or a canonical JSON object. Its keys are not
+// interpreted here; a reader that knows none of them verifies it by bytes.
+func ValidateExt(ext jsonstable.Value) error {
+	if ext.IsZero() {
+		return nil
+	}
+	if err := validateEventShape("ext", ext); err != nil {
+		return fmt.Errorf("ext: %w", err)
+	}
 	return nil
 }
 

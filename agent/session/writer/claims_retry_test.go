@@ -43,7 +43,7 @@ func TestWriterRetriesReleasedClaims(t *testing.T) {
 	}
 	w := open()
 	defer func() { _ = w.Close(ctx) }()
-	id := DeriveClaimID(session.ProtocolVersion1, "s", "c1", set.RefSetDigest)
+	id := DeriveClaimID(tipSegment(t, f.store, "s"), "c1", set.RefSetDigest)
 	for _, mode := range []string{"invalid", "invalid", "before", "before"} {
 		fs.arm(mode)
 		if _, err := w.Commit(ctx, group); err == nil {
@@ -68,7 +68,7 @@ func TestWriterRetriesReleasedClaims(t *testing.T) {
 	if err != nil || res.Outcome != CommitAlreadyApplied {
 		t.Fatalf("replay after claim retries = %+v, %v", res, err)
 	}
-	active, err := artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ClaimOwnerKind, Authority: "s"})
+	active, err := artifact.ActiveClaims(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ClaimOwnerKind, Authority: string(tipSegment(t, f.store, "s"))})
 	if err != nil || len(active) != 1 || active[0].ID != id {
 		t.Fatalf("retention roots = %+v, %v", active, err)
 	}
@@ -83,8 +83,9 @@ func TestWriterRejectsMismatchedReleasedClaim(t *testing.T) {
 			f.ledger = artifact.NewMemoryLedger(nil)
 			w := f.open(t, false)
 			defer w.Close(ctx)
-			id := DeriveClaimID(session.ProtocolVersion1, "s", "c1", set.RefSetDigest)
-			owner := CommitOwner("s", "c1")
+			seg := tipSegment(t, f.store, "s")
+			id := DeriveClaimID(seg, "c1", set.RefSetDigest)
+			owner := CommitOwner(seg, "c1")
 			switch field {
 			case "owner":
 				owner.Identity = "other"

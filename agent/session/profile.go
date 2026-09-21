@@ -22,6 +22,9 @@ type headerDigestBody struct {
 	Nonce       string
 	CausationID es.CausationID
 	Metadata    jsonstable.Value
+	// Ext is omitted when absent, so a header without one seals exactly as
+	// before the slot existed (SES-WIR-5).
+	Ext jsonstable.Value `json:",omitzero"`
 }
 
 // validateEventShape checks the event invariants every protocol version

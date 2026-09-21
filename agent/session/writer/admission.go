@@ -24,20 +24,29 @@ type Admission struct {
 // ClaimOwnerKind is the ClaimOwner.Kind of Session commits (EXT-WRT-5).
 const ClaimOwnerKind = "twilight/session/commit"
 
-// DeriveClaimID is EXT-WRT-5.
-func DeriveClaimID(protocolVersion uint16, sid session.SessionID, commitID session.CommitID, refSet artifact.RefSetDigest) artifact.ClaimID {
-	raw, _ := es.EncodeTypedPayload(session.ProtocolVersion1, "twilight/session-extension/claim", []string{"1", fmt.Sprintf("%d", protocolVersion), string(sid), string(commitID), string(refSet)})
+// claimDerivationVersion versions the claim identity preimages of this
+// package. It is the writer's own, not the kernel's ProtocolVersion: a claim
+// outlives the segment version that wrote its commit (SES-VER-3).
+const claimDerivationVersion uint16 = 1
+
+// DeriveClaimID is EXT-WRT-5: the retention root of one commit's references,
+// named by the segment that holds the commit. No Session and no protocol
+// version enter it: the segment is the canonical owner of the commit, and a
+// Session that forks or advances keeps reading the same claim.
+func DeriveClaimID(segment session.SegmentID, commitID session.CommitID, refSet artifact.RefSetDigest) artifact.ClaimID {
+	raw, _ := es.EncodeTypedPayload(claimDerivationVersion, "twilight/session-extension/claim", []string{string(segment), string(commitID), string(refSet)})
 	return artifact.ClaimID(es.DigestBytes(raw))
 }
 
 func nextClaimID(released artifact.ClaimID) artifact.ClaimID {
-	raw, _ := es.EncodeTypedPayload(session.ProtocolVersion1, "twilight/session-extension/claim-successor", []string{"1", string(released)})
+	raw, _ := es.EncodeTypedPayload(claimDerivationVersion, "twilight/session-extension/claim-successor", []string{string(released)})
 	return artifact.ClaimID(es.DigestBytes(raw))
 }
 
-// CommitOwner is the ClaimOwner of a Session commit.
-func CommitOwner(sid session.SessionID, id session.CommitID) artifact.ClaimOwner {
-	return artifact.ClaimOwner{Kind: ClaimOwnerKind, Authority: string(sid), Identity: string(id)}
+// CommitOwner is the ClaimOwner of a commit: the segment that holds it and
+// the CommitID within it.
+func CommitOwner(segment session.SegmentID, id session.CommitID) artifact.ClaimOwner {
+	return artifact.ClaimOwner{Kind: ClaimOwnerKind, Authority: string(segment), Identity: string(id)}
 }
 
 // admitter is the artifact stage of the commit pipeline: it admits the
@@ -47,17 +56,20 @@ func CommitOwner(sid session.SessionID, id session.CommitID) artifact.ClaimOwner
 // knows nothing of projections or ownership.
 type admitter struct {
 	Admission
-	protocol uint16
-	sid      session.SessionID
+	// segment is the tip segment this Writer appends to: the owner authority
+	// of every claim it activates.
+	segment session.SegmentID
 }
 
-// reconcile settles this Session's claims against the log at open; w answers
-// which owner commits exist.
+// reconcile settles the tip segment's claims against the log at open; w
+// answers which owner commits exist. Only the tip can hold an orphan of this
+// Writer's making: an inherited segment's commits were all sealed before it
+// became inherited.
 func (a *admitter) reconcile(ctx context.Context, w artifact.OwnerVerifier) error {
 	if a.Ledger == nil {
 		return nil
 	}
-	_, err := artifact.Reconcile(ctx, a.Ledger, artifact.ClaimOwnerScope{Kind: ClaimOwnerKind, Authority: string(a.sid)}, w)
+	_, err := artifact.Reconcile(ctx, a.Ledger, artifact.ClaimOwnerScope{Kind: ClaimOwnerKind, Authority: string(a.segment)}, w)
 	return err
 }
 
@@ -110,8 +122,8 @@ func (a *admitter) claim(ctx context.Context, commitID session.CommitID, refs []
 		}
 		return nil, "", err
 	}
-	id := DeriveClaimID(a.protocol, a.sid, commitID, set.RefSetDigest)
-	owner := CommitOwner(a.sid, commitID)
+	id := DeriveClaimID(a.segment, commitID, set.RefSetDigest)
+	owner := CommitOwner(a.segment, commitID)
 	for {
 		existing, ok, err := a.Ledger.LookupClaim(ctx, id)
 		if err != nil {

@@ -438,9 +438,14 @@ func testAdmission(t *testing.T, factory Factory) {
 	cmdID := schema.V1().Identity.DeriveInputCommandID("r1", "in-2")
 	h.mustCommit("r1", cmdID, 0, run.NextStep(input("in-2")), attach("b1"))
 	commitID := session.CommitID(cmdID)
-	claimID := writer.DeriveClaimID(session.ProtocolVersion1, sid, commitID, mustSet(t, h, "b1").RefSetDigest)
+	header, err := h.store.Header(h.ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seg := session.SegmentIDOf(header)
+	claimID := writer.DeriveClaimID(seg, commitID, mustSet(t, h, "b1").RefSetDigest)
 	claim, ok, err := h.ledger.LookupClaim(h.ctx, claimID)
-	if err != nil || !ok || claim.State != artifact.ClaimActive || claim.Owner != writer.CommitOwner(sid, commitID) {
+	if err != nil || !ok || claim.State != artifact.ClaimActive || claim.Owner != writer.CommitOwner(seg, commitID) {
 		t.Fatalf("claim = %+v ok=%v err=%v", claim, ok, err)
 	}
 }

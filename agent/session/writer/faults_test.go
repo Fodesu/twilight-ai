@@ -90,7 +90,8 @@ func TestWriterReconcilesClaimsAfterAppendFailure(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			claimID := DeriveClaimID(session.ProtocolVersion1, "s", "c1", set.RefSetDigest)
+			seg := tipSegment(t, f.store, "s")
+			claimID := DeriveClaimID(seg, "c1", set.RefSetDigest)
 			fs := &faultStore{Store: f.store}
 			w, err := OpenWriter(ctx, fs, f.registry, f.admission(), "s", session.OpenOptions{})
 			if err != nil {
@@ -112,7 +113,7 @@ func TestWriterReconcilesClaimsAfterAppendFailure(t *testing.T) {
 			}
 			assertClaim(tc.beforeOpen)
 			if tc.mode != "invalid" {
-				if _, err := artifact.Reconcile(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ClaimOwnerKind, Authority: "s"}, w); !errors.Is(err, &extension.Error{Code: extension.ErrUnknownOutcome}) {
+				if _, err := artifact.Reconcile(ctx, f.ledger, artifact.ClaimOwnerScope{Kind: ClaimOwnerKind, Authority: string(tipSegment(t, f.store, "s"))}, w); !errors.Is(err, &extension.Error{Code: extension.ErrUnknownOutcome}) {
 					t.Fatalf("reconcile against failed writer = %v, want unknown_outcome", err)
 				}
 				assertClaim(artifact.ClaimActive)
@@ -126,7 +127,7 @@ func TestWriterReconcilesClaimsAfterAppendFailure(t *testing.T) {
 			}
 			defer w.Close(ctx)
 			assertClaim(tc.afterOpen)
-			if exists, err := w.OwnerExists(ctx, CommitOwner("s", "c1")); err != nil || exists != tc.committed {
+			if exists, err := w.OwnerExists(ctx, CommitOwner(seg, "c1")); err != nil || exists != tc.committed {
 				t.Fatalf("owner exists = %v, %v; want %v", exists, err, tc.committed)
 			}
 			if tc.committed {

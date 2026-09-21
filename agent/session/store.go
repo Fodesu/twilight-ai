@@ -25,6 +25,9 @@ type CreateRequest struct {
 	Fork               *ForkOrigin
 	CausationID        es.CausationID
 	Metadata           jsonstable.Value
+	// Ext is the kernel extension object sealed into SegmentHeader.Ext
+	// (SES-WIR-5); absent for every header the current kernel writes.
+	Ext jsonstable.Value
 }
 
 // ForkOrigin names the point a fork inherits: a Session and a CommitSeq of
@@ -61,6 +64,9 @@ type Proposal struct {
 	// empty declares none.
 	Intent  es.Digest
 	Batches []StreamBatch
+	// Ext is the kernel extension object sealed into Commit.Ext (SES-WIR-5);
+	// absent for every commit the current kernel writes.
+	Ext jsonstable.Value
 }
 
 // Handle is the kernel's ownership handle returned by Store.Open. Append

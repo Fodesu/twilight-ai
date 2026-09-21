@@ -182,8 +182,12 @@ func (s *Commands) Checkpoint(ctx context.Context, w writer.Writer, summaryText 
 // text. A Checkpoint retried over the same base therefore carries the same
 // CommitID and is answered as already applied instead of writing a second
 // checkpoint (APP-CKP-1).
+// checkpointDerivationVersion versions this preimage; it is chatlog's own,
+// not the kernel's ProtocolVersion.
+const checkpointDerivationVersion uint16 = 1
+
 func checkpointIDs(sid session.SessionID, base es.Digest, summaryText string) (CheckpointID, SummaryID, error) {
-	raw, err := es.EncodeTypedPayload(session.ProtocolVersion1, "twilight/chatlog/checkpoint", struct {
+	raw, err := es.EncodeTypedPayload(checkpointDerivationVersion, "twilight/chatlog/checkpoint", struct {
 		SessionID session.SessionID `json:"sessionId"`
 		Base      es.Digest         `json:"base"`
 		Summary   string            `json:"summary"`
