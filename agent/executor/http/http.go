@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -90,6 +91,56 @@ func (c *Client) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effe
 		return effect.Outcome{}, err
 	}
 	return protocol.DecodeOutcome(&response), nil
+}
+
+// Progress is effect.ProgressPort over the server's event stream
+// (RUN-EXE-12). The request is cancelled when fn stops or ctx ends.
+func (c *Client) Progress(ctx context.Context, key effect.AssignmentKey, after uint64, fn func(effect.ProgressFrame) bool) error {
+	if strings.TrimSpace(c.BaseURL) == "" {
+		return errors.New("executor/http: empty executor URL")
+	}
+	body, err := json.Marshal(progressRequest{Key: key, After: after})
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodPost, strings.TrimRight(c.BaseURL, "/")+"/progress", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.client().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		message, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode == stdhttp.StatusNotFound {
+			return effect.ErrExecutionNotFound
+		}
+		return &responseError{status: resp.Status, statusCode: resp.StatusCode, body: strings.TrimSpace(string(message))}
+	}
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64<<10), 16<<20)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if !bytes.HasPrefix(line, []byte("data: ")) {
+			continue
+		}
+		var f effect.ProgressFrame
+		if err := json.Unmarshal(bytes.TrimPrefix(line, []byte("data: ")), &f); err != nil {
+			continue
+		}
+		if !fn(f) {
+			return nil
+		}
+	}
+	if err := scanner.Err(); err != nil && ctx.Err() == nil {
+		return err
+	}
+	return ctx.Err()
 }
 
 func (c *Client) Cancel(ctx context.Context, key effect.AssignmentKey) error {
@@ -186,6 +237,12 @@ type keyRequest struct {
 	Key effect.AssignmentKey `json:"key"`
 }
 
+// progressRequest subscribes to an execution's frames after a sequence.
+type progressRequest struct {
+	Key   effect.AssignmentKey `json:"key"`
+	After uint64               `json:"after"`
+}
+
 func (s *Server) Handler() stdhttp.Handler {
 	mux := stdhttp.NewServeMux()
 	mux.HandleFunc("POST /validate", s.validate)
@@ -197,7 +254,38 @@ func (s *Server) Handler() stdhttp.Handler {
 	mux.HandleFunc("POST /takeover", s.takeover)
 	mux.HandleFunc("POST /reconcile", s.reconcile)
 	mux.HandleFunc("POST /dispose", s.dispose)
+	mux.HandleFunc("POST /progress", s.progress)
 	return mux
+}
+
+// progress streams an execution's frames as server-sent events
+// (RUN-EXE-12): one `data:` line per frame, flushed as it arrives, until the
+// Worker ends the stream or the client goes away.
+func (s *Server) progress(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	var req progressRequest
+	if !s.readJSON(w, r, &req) {
+		return
+	}
+	flusher, _ := w.(stdhttp.Flusher)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(stdhttp.StatusOK)
+	if flusher != nil {
+		flusher.Flush()
+	}
+	_ = s.Worker.Progress(r.Context(), req.Key, req.After, func(f effect.ProgressFrame) bool {
+		line, err := json.Marshal(f)
+		if err != nil {
+			return true
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", line); err != nil {
+			return false
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+		return true
+	})
 }
 
 func makeAssignmentRequest(a effect.Assignment) assignmentRequest {

@@ -157,11 +157,12 @@ func newLoop(sink EventSink, models ModelCatalog, tools ToolCatalog, builder Pro
 	if tools == nil {
 		return nil, errors.New("agent: loop: nil tool catalog")
 	}
-	backend, err := NewLocalExecutor(models, tools, sink, streaming)
+	hub := executor.NewProgressHub(0)
+	backend, err := NewLocalExecutor(models, tools, hub, streaming)
 	if err != nil {
 		return nil, err
 	}
-	exec, err := executor.NewWorker(context.Background(), executionstore.NewMemoryStore(), []executor.Route{executor.Default("local", backend)})
+	exec, err := executor.NewWorker(context.Background(), executionstore.NewMemoryStore(), []executor.Route{executor.Default("local", backend)}, executor.WorkerOptions{Progress: hub})
 	if err != nil {
 		return nil, err
 	}

@@ -114,7 +114,7 @@ func NewPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...PresetOp
 
 **DRV-1** `driver.Drive(ctx, w, turnID)`：读 `twilight/turn/surface`，Turn 为 `active` 时解析其 AgentPreset、取该 AgentPreset 的 Loop、驱动 `ActiveRun` 到下一个静止点（阻塞式 `Loop.Run`，即 Advance/Deliver 之上的封装，RUN-LOP），随后（或 Turn 非 active 时直接）调用 `Coordinator.Status` 组装响应（TRN-STA-1）。Drive 返回 `driver.DriveResult{TurnResponse, AlreadyDriving}`：Loop 报告同一 Run 已有本地驱动者时，Drive 转为成功响应并置 `AlreadyDriving`，`TurnResponse` 是读到的 Turn 状态；提交的输入由运行中的驱动者继续推进，调用方不经错误通道分辨这一情形。`AlreadyDriving` 是本进程的事实，不进入 Turn 的 `ResumeDisposition` 词汇表。驱动受调用方 ctx 约束：取消是调用方的决定，被取消的驱动使 Turn 保持 `active`，下次 Open 后再驱动即恢复。
 
-**DRV-2** Loop 按 PresetRef 组合并缓存在 Driver 内：`Decisions.Resolve(preset)` 得到 prompt builder，与 preset 上的 Scheduling、MalformedRetries 及共享的 Executor 一起构成 `loop.New(executor, builder, loop.Settings{Scheduling, MalformedRetries, BeforePrepare})`；`Driver.Planner` 非空时 `BeforePrepare` 把 Loop 绑定的 Writer 交给它（RUN-LOP-10，APP-CKP-1）。一个 Run 属于一个 Turn、一个 Turn 只有一个 AgentPreset，因此同一 Run 的全部驱动落在同一个 Loop 上，Loop 的 already-driving 守卫成立（RUN-CMT-6）。
+**DRV-2** Loop 按 PresetRef 组合并缓存在 Driver 内：`Decisions.Resolve(preset)` 得到 prompt builder，与 preset 上的 Scheduling、MalformedRetries 及共享的 Executor 一起构成 `loop.New(executor, builder, loop.Settings{Scheduling, MalformedRetries, BeforePrepare})`；`Driver.Planner` 非空时 `BeforePrepare` 把 Loop 绑定的 Writer 交给它（RUN-LOP-10，APP-CKP-1）。每次驱动以 `Driver.Sink` 为 Loop 的 EventSink，进度帧由此到达 Bus（OBS-1）。一个 Run 属于一个 Turn、一个 Turn 只有一个 AgentPreset，因此同一 Run 的全部驱动落在同一个 Loop 上，Loop 的 already-driving 守卫成立（RUN-CMT-6）。
 
 **DRV-3** `Authority.Open(sid)` 经 `Writers` 取得 Writer，随后 `driver.Open(ctx, w)` 以该 Writer 安装恢复监听并调用 `SessionRunStore.RecoverInterrupted(ctx, w, reconciler)`（RUN-CMT-7），其中 `reconciler = &reconcile.Reconciler{Executions: executor, Lifetime: lifetime, Deliver: deliver, Fail: fail}`；恢复监听持有 w，重连的 Outcome 经它结算。Outcome 读取按错误分类：`ErrOutcomeNotReady` 无限等待（执行仍在进行）；`ErrExecutionNotFound` 与 `effect.ErrOutcomeUnavailable`（`executor.ErrUnknownProvider` 包装它）是确定答案，监听立即停止并经 `Fail` 上报；其他读取失败按 `ReadRetries`（默认 60 次，约一分钟）退避重试后同样上报。目标保持 Executing，下一次 `RecoverInterrupted` 重新规划，记录已不存在则处置。Attach 握手受 Open 请求的 context 约束；后台 Outcome 读取与交付使用该 Session 的 recovery lifetime。Open 返回后请求取消仍允许恢复继续；再次 Open 会替换旧监听，`Handle.Close` 与 `Authority.Close` 取消各自拥有的监听。
 
@@ -197,7 +197,7 @@ func (s *Session) Close(ctx) error
 
 ## 9. 事件流（observe）
 
-**OBS-1** `Application.Events(ctx, sid)` 是该 Session 从订阅时刻起的事件流：`observe.Bus` 以 `writer.CommitObserver` 接在 Writers 上（EXT-WRT-7），每个已应用组的每一行经 Registry 解码为 `Event{Row, Module, Version, Value, Unknown}`，按提交顺序交付；无 codec 的类型或版本以 `Unknown` 交付原行。订阅者之间互不阻塞，慢读者只延迟自己的交付，从不阻塞 Commit。历史不在此流上：从 Store 或投影读取。UI、SSE 与 CLI 的观察都从这一个源头派生，Loop 的 `EventSink` 只保留给 executor 侧的流式增量。
+**OBS-1** `Application.Events(ctx, sid)` 是该 Session 从订阅时刻起的事件流：`observe.Bus` 以 `writer.CommitObserver` 接在 Writers 上（EXT-WRT-7），每个已应用组的每一行经 Registry 解码为 `Event{Row, Module, Version, Value, Unknown}`，按提交顺序交付；无 codec 的类型或版本以 `Unknown` 交付原行。同一条流还承载临时的进度观察：`Event.Progress{RunID, Effect, Generation, Sequence, Kind, Payload}`，来自 Executor 的进度帧（RUN-EXE-12）经 Loop 的 sink 与 `Driver.Sink`（`app.Build` 接为 Bus）发布，`Row` 为零；它不是事实，可丢失，`progress_reset` 作废同一 effect 此前的帧，随后落下的已提交结果取代它。UI 的渲染规则由此确定：按 delta 累积，收到 reset 时丢弃该 effect 已累积的内容，收到该步的已提交事实后以冻结正文替换。订阅者之间互不阻塞，慢读者只延迟自己的交付，从不阻塞 Commit。历史不在此流上：从 Store 或投影读取。UI、SSE 与 CLI 的观察都从这一个源头派生；Loop 的 `EventSink` 只是 Loop 到 Bus 的适配器，不是第二条观察通道。
 
 ## 10. 组成
 
@@ -216,6 +216,7 @@ driver      = driver.New{runtime, turns, Executor, Presets, Decisions, Sources{p
 // app.Build
 routes      = [spawn.Route(spawn.Executor)]? + Default(local | port | remote)          // backend 选择一次，持久化为 ExecutionRef.Provider
 executor    = executor.NewWorker(ctx, Config.Executions, routes, Config.Worker)  // 本地模式恒经 Worker；Port/远端仅在配置 spawn 时经 Worker；Executions 必填且与 Store 同 durability（AUTH-PRT-3）
+                                                                  // Config.Worker.Progress 为 Worker 与本地 backend 共用的 ProgressHub（RUN-EXE-12）；本地 backend 以 streaming 打开
 authority   = authority.New(Ports{..., Executor: executor, Observers: [observe.Bus, Config.Observers...], Fail: warn+bus.Failed})
 spawn.Bind(authority)                                            // 子经 Authority.Open + turn/chatlog/driver 命令驱动
 ```

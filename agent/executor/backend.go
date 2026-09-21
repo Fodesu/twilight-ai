@@ -89,6 +89,15 @@ func (b portBackend) Validate(ctx context.Context, a effect.Assignment) (*run.To
 	return b.port.Validate(ctx, a)
 }
 
+// Progress relays the frames of the port behind this backend when it offers
+// them (RUN-EXE-12); a port without progress ends the stream at once.
+func (b portBackend) Progress(ctx context.Context, key effect.AssignmentKey, after uint64, fn func(effect.ProgressFrame) bool) error {
+	if p, ok := b.port.(effect.ProgressPort); ok {
+		return p.Progress(ctx, key, after, fn)
+	}
+	return nil
+}
+
 func (b portBackend) Prepare(_ context.Context, a effect.Assignment) (string, error) {
 	raw, err := json.Marshal(a.Key())
 	if err != nil {

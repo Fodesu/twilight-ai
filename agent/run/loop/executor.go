@@ -96,7 +96,7 @@ var ErrModelUnavailable = errors.New("agent: loop: executor cannot serve the mod
 type LocalExecutor struct {
 	models    ModelCatalog
 	tools     ToolCatalog
-	sink      EventSink
+	sink      effect.ProgressSink
 	streaming bool
 
 	mu       sync.Mutex
@@ -120,10 +120,11 @@ type inflight struct {
 	closed  bool
 }
 
-// NewLocalExecutor builds the in-process executor. sink receives provisional
-// observations (model deltas, tool progress); nil discards them. streaming
-// selects StreamingModelInvoker when the invoker offers it.
-func NewLocalExecutor(models ModelCatalog, tools ToolCatalog, sink EventSink, streaming bool) (*LocalExecutor, error) {
+// NewLocalExecutor builds the in-process executor. sink receives progress
+// frames (model deltas, tool progress; RUN-EXE-12), normally the Worker's
+// ProgressHub; nil discards them. streaming selects StreamingModelInvoker
+// when the invoker offers it.
+func NewLocalExecutor(models ModelCatalog, tools ToolCatalog, sink effect.ProgressSink, streaming bool) (*LocalExecutor, error) {
 	if models == nil {
 		return nil, errors.New("agent: loop: nil model catalog")
 	}
@@ -471,15 +472,11 @@ func (e *LocalExecutor) invokeModel(ctx context.Context, invoker ModelInvoker, r
 			// sending without closing Parts must not block cancellation. The
 			// assembler behind Parts tolerates abandonment: it stops forwarding
 			// once ctx is done and drains the provider.
-			var sequence uint64
-			emitDelta := func(kind EventKind, payload any) {
+			emitDelta := func(kind effect.ProgressKind, payload any) {
 				if e.sink == nil {
 					return
 				}
-				sequence++
-				_ = e.sink.Emit(ctx, Event{Session: a.Session, RunID: a.RunID, StepID: a.StepID,
-					Sequence: sequence, Kind: kind, Durability: EventProvisional,
-					Payload: mustJSON(payload)})
+				e.sink.Publish(ctx, effect.ProgressFrame{Key: a.Key(), Kind: kind, Payload: mustJSON(payload)})
 			}
 		consume:
 			for {
@@ -490,9 +487,9 @@ func (e *LocalExecutor) invokeModel(ctx context.Context, invoker ModelInvoker, r
 					}
 					switch p := part.(type) {
 					case *sdk.TextDeltaPart:
-						emitDelta(EventModelTextDelta, p.Text)
+						emitDelta(effect.ProgressTextDelta, p.Text)
 					case *sdk.ReasoningDeltaPart:
-						emitDelta(EventModelReasoningDelta, p.Text)
+						emitDelta(effect.ProgressReasoningDelta, p.Text)
 					}
 				case <-ctx.Done():
 					return sdk.ModelResult{}, ctx.Err()
@@ -521,7 +518,7 @@ func (e *LocalExecutor) runTool(ctx context.Context, a Assignment, t ToolAssignm
 		DefinitionDigest: t.DefinitionDigest,
 		Arguments:        t.Arguments,
 		Target:           cloneTarget(a.Target),
-		Progress:         &progressSink{events: e.sink, run: a.RunID, step: a.StepID, call: a.CallID},
+		Progress:         &progressSink{sink: e.sink, key: a.Key()},
 	}
 	return Outcome{Result: executeToolSafely(ctx, tool, &req)}
 }

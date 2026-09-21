@@ -219,6 +219,11 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		app.spawn = spawn.NewExecutor(*c.Spawn)
 		routes = append(routes, spawn.Route(app.spawn))
 	}
+	// One progress hub serves the Worker and every local backend it routes
+	// to (RUN-EXE-12); the driver's sink relays its frames onto the Bus.
+	if c.Worker.Progress == nil {
+		c.Worker.Progress = executor.NewProgressHub(0)
+	}
 	port, worker, err := buildExecutor(&c, routes)
 	if err != nil {
 		return nil, err
@@ -242,6 +247,9 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	// The Sessions' compaction policy runs between the steps of a Turn
 	// through the driver's planner seam (APP-CKP-1, RUN-LOP-10).
 	a.Driver.Planner = app
+	// Provisional observations of effects in flight reach the same stream
+	// as the committed facts (OBS-1, RUN-LOP-6).
+	a.Driver.Sink = busSink{bus}
 	if app.spawn != nil {
 		app.spawn.Bind(a)
 	}
@@ -255,6 +263,20 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		}
 	}
 	return app, nil
+}
+
+// busSink is the drive's loop.EventSink: provisional observations become
+// transient Bus events; committed observations are already on the Bus from
+// the Writer, so they are dropped here.
+type busSink struct{ bus *observe.Bus }
+
+func (s busSink) Emit(_ context.Context, e loop.Event) error { //nolint:gocritic // hugeParam: EventSink contract takes the Event by value
+	if s.bus == nil || e.Durability != loop.EventProvisional {
+		return nil
+	}
+	s.bus.Publish(session.SessionID(e.Session), observe.Progress{RunID: e.RunID, Effect: e.Effect, Generation: e.Generation,
+		Sequence: e.Sequence, Kind: string(e.Kind), Payload: e.Payload})
+	return nil
 }
 
 // forwardingObserver forwards to a Bus that is bound after the Writers are
@@ -352,7 +374,7 @@ func buildExecutor(c *Config, extra []executor.Route) (effect.ExecutionPort, *ex
 		if err != nil {
 			return nil, nil, err
 		}
-		backend, err := executorlocal.NewLocalExecutor(catalog, nil, false)
+		backend, err := executorlocal.NewLocalExecutor(catalog, c.Worker.Progress, true)
 		if err != nil {
 			return nil, nil, err
 		}

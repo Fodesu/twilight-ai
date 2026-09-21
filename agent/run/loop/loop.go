@@ -467,6 +467,9 @@ func (l *Loop) Run(ctx context.Context, rt runtime.RunStore, runID run.RunID, ev
 			for _, k := range res.Dispatched {
 				pending[k] = struct{}{}
 				go l.awaitOutcome(readCtx, k, outcomes)
+				if port, ok := l.Executor.(effect.ProgressPort); ok && events != nil {
+					go l.forwardProgress(readCtx, port, k, events)
+				}
 			}
 		}
 

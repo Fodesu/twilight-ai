@@ -7,7 +7,10 @@ package observe
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
+
+	"github.com/felinics/twilight/agent/run"
 
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
@@ -28,6 +31,23 @@ type Event struct {
 	Value   any
 	Unknown bool
 	Err     error
+	// Progress is set for a transient observation of an effect in flight
+	// (RUN-EXE-12, OBS-1): a model or tool delta relayed from the executor,
+	// or a reset that voids the deltas received so far. Such an Event has a
+	// zero Row: it is not a fact, may be lost, and is replaced by the
+	// committed result that follows.
+	Progress *Progress
+}
+
+// Progress is the transient part of an Event: what the executor reported of
+// an effect while it ran.
+type Progress struct {
+	RunID      run.RunID
+	Effect     run.EffectID
+	Generation int
+	Sequence   uint64
+	Kind       string
+	Payload    json.RawMessage
 }
 
 // Bus decodes applied commits and fans them out per Session.
@@ -64,6 +84,12 @@ func (b *Bus) Committed(_ context.Context, sid session.SessionID, commit session
 // Failed reports a background failure to the Session's subscribers.
 func (b *Bus) Failed(sid session.SessionID, err error) {
 	b.publish(sid, Event{Session: sid, Err: err})
+}
+
+// Publish delivers a transient progress observation to the Session's
+// subscribers (RUN-EXE-12).
+func (b *Bus) Publish(sid session.SessionID, p Progress) {
+	b.publish(sid, Event{Session: sid, Progress: &p})
 }
 
 func (b *Bus) publish(sid session.SessionID, events ...Event) {

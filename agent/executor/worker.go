@@ -53,6 +53,10 @@ type WorkerOptions struct {
 	// far between them. The zero value disables retries; whether a given
 	// failure is worth retrying is the failure's own disposition.
 	Retry RetryBudget
+	// Progress is the hub the Worker's backends publish progress into and
+	// the Worker serves through Progress (RUN-EXE-12); nil builds one with
+	// the default window. The composer hands the same hub to its backends.
+	Progress *ProgressHub
 }
 
 // RetryBudget bounds the Worker's retries of one effect.
@@ -89,6 +93,7 @@ type Worker struct {
 	disposeAfter time.Duration
 	warn         func(error)
 	retry        RetryBudget
+	progress     *ProgressHub
 
 	mu     sync.Mutex
 	notify map[effect.AssignmentKey]chan struct{}
@@ -139,8 +144,12 @@ func NewWorker(ctx context.Context, records executionstore.Store, routes []Route
 	if warn == nil {
 		warn = func(error) {}
 	}
+	progress := opts.Progress
+	if progress == nil {
+		progress = NewProgressHub(0)
+	}
 	w := &Worker{store: records, routes: routes, backends: backends, id: opts.ID, lease: opts.LeaseDuration, now: now,
-		disposeAfter: opts.DisposeAfter, warn: warn, retry: opts.Retry,
+		disposeAfter: opts.DisposeAfter, warn: warn, retry: opts.Retry, progress: progress,
 		lifecycle: lifecycle, stop: stop, notify: make(map[effect.AssignmentKey]chan struct{}),
 		orphans: make(map[effect.AssignmentKey]time.Time)}
 	if err := w.recover(ctx); err != nil {
@@ -541,6 +550,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 				return err
 			}
 			ref = fresh
+			w.progress.Reset(key)
 		}
 	}
 	if claimed.State != effect.ExecutionDispatching {
@@ -660,6 +670,9 @@ func (w *Worker) retryAfter(key effect.AssignmentKey, epoch uint64, backend Exec
 	if err := w.store.PutOwned(ctx, r, w.id, epoch); err != nil {
 		return "", false
 	}
+	// The next generation of frames starts here; what the receiver saw of
+	// the failed attempt is void (RUN-EXE-12).
+	w.progress.Reset(key)
 	if err := backend.Start(context.WithoutCancel(ctx), fresh, r.Assignment); err != nil && !errors.Is(err, effect.ErrDispatchUnknown) {
 		// The retry itself was refused before starting: settle the original
 		// failure rather than loop on the refusal.
@@ -762,6 +775,7 @@ func (w *Worker) finishOwned(ctx context.Context, key effect.AssignmentKey, epoc
 		}
 		return err
 	}
+	w.progress.End(key)
 	if ch := w.notify[key]; ch != nil {
 		select {
 		case ch <- struct{}{}:
@@ -769,6 +783,35 @@ func (w *Worker) finishOwned(ctx context.Context, key effect.AssignmentKey, epoc
 		}
 	}
 	return dispatchErr
+}
+
+// Progress is effect.ProgressPort (RUN-EXE-12): the frames of an execution
+// this Worker's backends published, from the hub. A record this Worker
+// holds but whose Backend is itself a port (a remote Worker behind
+// PortBackend) is served from that port, so a chain of Workers relays the
+// frames of the one that runs the effect. A key without a record is
+// ErrExecutionNotFound; a terminal record the hub no longer holds ends the
+// stream at once.
+func (w *Worker) Progress(ctx context.Context, key effect.AssignmentKey, after uint64, fn func(effect.ProgressFrame) bool) error {
+	if w.progress.Known(key) {
+		return w.progress.Progress(ctx, key, after, fn)
+	}
+	r, ok, err := w.store.Get(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return effect.ErrExecutionNotFound
+	}
+	if backend, err := w.backend(r.ExecutionRef); err == nil {
+		if relay, ok := backend.(effect.ProgressPort); ok {
+			return relay.Progress(ctx, key, after, fn)
+		}
+	}
+	if protocol.StatusTerminal(r.State) {
+		return nil
+	}
+	return w.progress.Progress(ctx, key, after, fn)
 }
 
 // Attach reports the record's observation state (RUN-EXE-3). The record in

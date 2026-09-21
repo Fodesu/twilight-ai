@@ -175,6 +175,10 @@ const (
 	EventToolStarted         EventKind = "tool_started"
 	EventToolCompleted       EventKind = "tool_completed"
 	EventRunFinished         EventKind = "run_finished"
+	// EventProgressReset voids the provisional observations of an effect
+	// received so far: the Worker re-dispatched it and a new Generation of
+	// deltas begins (RUN-EXE-12).
+	EventProgressReset EventKind = "progress_reset"
 )
 
 type Event struct {
@@ -183,6 +187,11 @@ type Event struct {
 	RunID   run.RunID
 	StepID  run.StepID
 	CallID  run.CallID
+	// Effect names the effect a provisional observation belongs to and
+	// Generation its attempt under the Worker; both are zero for committed
+	// observations.
+	Effect     run.EffectID
+	Generation int
 	// Sequence orders provisional observations within one stream. Committed
 	// observations never set it: the commit order is the authority.
 	Sequence   uint64

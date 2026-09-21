@@ -10,6 +10,7 @@ import (
 
 	"github.com/felinics/twilight/agent/executor"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/loop"
 )
 
@@ -61,13 +62,14 @@ func (c *Catalog) ResolveTool(ref run.ToolRef) (loop.ExecutableTool, error) {
 const Provider = "local"
 
 // NewLocalExecutor is the colocated Backend: effects run in goroutines of
-// this process against the Catalog, and provisional observations go to sink.
+// this process against the Catalog, and progress frames go to sink, normally
+// the Worker's ProgressHub (RUN-EXE-12).
 // Model assignments must carry the request inline (RUN-EXE-7); the authority
 // still writes frozen bodies to the content store (RUN-WIR-4) for the
 // Session record, and the backend never reads them back. streaming selects
 // StreamingModelInvoker when an invoker offers it. Agent Core reaches the
 // backend through an executor.Worker (RUN-EXE-8).
-func NewLocalExecutor(cat *Catalog, sink loop.EventSink, streaming bool) (executor.ExecutionBackend, error) {
+func NewLocalExecutor(cat *Catalog, sink effect.ProgressSink, streaming bool) (executor.ExecutionBackend, error) {
 	if cat == nil {
 		return nil, errors.New("local: nil catalog")
 	}

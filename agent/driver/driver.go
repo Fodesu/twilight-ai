@@ -62,6 +62,9 @@ type Driver struct {
 	// (RUN-LOP-10, DRV-2): the application's between-steps context policy,
 	// given the Writer the drive commits through.
 	Planner Planner
+	// Sink receives the drives' provisional observations (RUN-LOP-6): the
+	// executor's progress frames relayed by the Loop. nil discards them.
+	Sink loop.EventSink
 
 	mu       sync.Mutex
 	loops    map[turn.PresetRef]*loop.Loop
@@ -154,7 +157,7 @@ func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID)
 		if err != nil {
 			return DriveResult{}, err
 		}
-		res, err := l.Run(ctx, d.Runs.Bind(w), view.ActiveRun, nil)
+		res, err := l.Run(ctx, d.Runs.Bind(w), view.ActiveRun, d.Sink)
 		if err != nil {
 			if errors.Is(err, loop.ErrRunAlreadyRunning) {
 				resp, rerr := d.Turns.Status(ctx, ref)
@@ -204,7 +207,7 @@ func (d *Driver) reattachDeliver(ctx context.Context, w writer.Writer) func(effe
 			d.fail(sid, fmt.Errorf("driver: reattached outcome for run %s: %w", out.Key.RunID, err))
 			return
 		}
-		res, err := l.Deliver(ctx, d.Runs.Bind(w), out, nil)
+		res, err := l.Deliver(ctx, d.Runs.Bind(w), out, d.Sink)
 		if err != nil {
 			d.fail(sid, fmt.Errorf("driver: settling reattached outcome for run %s: %w", out.Key.RunID, err))
 			return
@@ -212,7 +215,7 @@ func (d *Driver) reattachDeliver(ctx context.Context, w writer.Writer) func(effe
 		if res.Disposition != loop.LoopDelivered {
 			return
 		}
-		if _, err := l.Run(ctx, d.Runs.Bind(w), out.Key.RunID, nil); err != nil && !errors.Is(err, loop.ErrRunAlreadyRunning) {
+		if _, err := l.Run(ctx, d.Runs.Bind(w), out.Key.RunID, d.Sink); err != nil && !errors.Is(err, loop.ErrRunAlreadyRunning) {
 			d.fail(sid, fmt.Errorf("driver: driving run %s after a reattached outcome: %w", out.Key.RunID, err))
 		}
 	}
