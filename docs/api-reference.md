@@ -286,8 +286,8 @@ One assembler turns parts into the `ModelResult`, so the streamed and the non-st
 #### Step assembly
 
 ```go
-func BuildStepMessages(text string, textMeta ProviderMetadata, reasoning []ReasoningPart,
-    calls []ToolCall, results []ToolResultPart, usage *Usage) []Message
+func BuildStepMessages(text string, textMeta ProviderMetadata, reasoningParts []ReasoningPart,
+    toolCalls []ToolCall, toolResults []ToolResultPart, usage *Usage) []Message
 ```
 
 Builds the messages one step produced: an assistant message carrying the reasoning parts, the text and the tool calls (with `usage` attached), followed by a tool message when `results` is not empty. Appending them to the request's `Messages` is how a caller continues a conversation after running tool calls.

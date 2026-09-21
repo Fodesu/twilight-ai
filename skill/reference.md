@@ -189,7 +189,7 @@ Notes:
 
 - `UserMessage` accepts a text string plus optional extra parts such as `ImagePart`.
 - `Message` supports JSON marshal and unmarshal with type discrimination.
-- `WithSystem` sets the stable root instruction; use `SystemMessage`
+- `Request.System` is the stable root instruction; use `SystemMessage`
   for an instruction at a specific point in the message timeline.
 - Unsupported developer messages fall back to user messages. Unsupported
   mid-conversation system messages fall back to XML-escaped `<system>` user messages.
@@ -263,8 +263,8 @@ func (m ProviderMetadata) Get(namespace, key string) string
 func (m ProviderMetadata) Merge(other ProviderMetadata) ProviderMetadata
 func (m ProviderMetadata) Clone() ProviderMetadata
 
-func BuildStepMessages(text string, textMeta ProviderMetadata, reasoning []ReasoningPart,
-    calls []ToolCall, results []ToolResultPart, usage *Usage) []Message
+func BuildStepMessages(text string, textMeta ProviderMetadata, reasoningParts []ReasoningPart,
+    toolCalls []ToolCall, toolResults []ToolResultPart, usage *Usage) []Message
 ```
 
 Behavior notes:
