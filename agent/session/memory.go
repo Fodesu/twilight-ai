@@ -23,6 +23,20 @@ func NewMemoryStore(opts ...LedgerOption) *MemoryStore {
 	return &MemoryStore{Ledger: NewLedger(be, opts...), be: be}
 }
 
+// DropVerifiedMark forgets the tip segment's verified mark, so conformance
+// can prove that Open then verifies from the seed (SES-REP-1); production
+// code never calls it.
+func (m *MemoryStore) DropVerifiedMark(sid SessionID) error {
+	s := m.be.tipOf(sid)
+	if s == nil {
+		return newError(ErrNotFound, "drop_verified_mark", sid, "session not found")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.verified, s.hasVerified = Head{}, false
+	return nil
+}
+
 // CutIndex keeps only the first keep entries of the tip segment's
 // CommitIndex while its commits stay, so conformance can prove that Open
 // detects a lagging or absent index and rebuilds it (SES-REP-5); production
@@ -108,6 +122,10 @@ type memorySegment struct {
 	// Append and cut with each Truncate; byCommit is its lookup map.
 	index    CommitIndex
 	byCommit map[CommitID]int // index into commits
+	// verified is the head through which the segment was last verified
+	// (SES-REP-1); hasVerified reports whether one is recorded.
+	verified    Head
+	hasVerified bool
 }
 
 type memoryRoot struct {
@@ -241,6 +259,33 @@ func (m *memoryBackend) Index(ctx context.Context, id SegmentID) (CommitIndex, H
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.index.Clone(), s.head(), nil
+}
+
+func (m *memoryBackend) VerifiedMark(ctx context.Context, id SegmentID) (Head, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Head{}, false, err
+	}
+	s, err := m.segment(id)
+	if err != nil {
+		return Head{}, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.verified, s.hasVerified, nil
+}
+
+func (m *memoryBackend) PutVerifiedMark(ctx context.Context, id SegmentID, mark Head) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s, err := m.segment(id)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.verified, s.hasVerified = mark, true
+	return nil
 }
 
 func (m *memoryBackend) PutIndex(ctx context.Context, id SegmentID, idx CommitIndex) error {

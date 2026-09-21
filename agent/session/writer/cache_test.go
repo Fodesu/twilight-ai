@@ -408,8 +408,16 @@ func TestCoversCommit(t *testing.T) {
 		"inherited boundary":      {child, session.Head{Next: 2, Digest: "d1"}, false},
 		"tip's own commit":        {child, session.Head{Next: 3, Digest: "d2"}, true},
 	}
+	at := func(seq session.CommitSeq) (session.Commit, bool) {
+		for _, c := range commits {
+			if c.Seq == seq {
+				return c, true
+			}
+		}
+		return session.Commit{}, false
+	}
 	for name, tc := range cases {
-		if got := coversCommit(commits, tc.header, tc.through); got != tc.want {
+		if got := coversCommit(tc.header, tc.through, at); got != tc.want {
 			t.Errorf("%s: coversCommit = %v, want %v", name, got, tc.want)
 		}
 	}

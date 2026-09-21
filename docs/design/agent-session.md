@@ -82,7 +82,7 @@ kernel 的 `session.Ledger` 实现 `Store`，只依赖 `Backend` 端口；Memory
 
 **SES-SCP-3** kernel 的范围是 Session lineage 树：header、Open/Append/ReadCommits/ReadStream、所有权与 epoch、按 Commit 的 digest 链、fork、删除与可达性回收（第 8、9 节）。lineage 的单父不变量见 SES-LIN-1：多父 merge 被排除在模型之外；canonical import 不属于当前合同，若日后加入，它与 fork 一样只能新建根段或子段，不得为已有 Session 增加第二个父节点。
 
-**SES-SCP-4** adapter 端口是 `Backend = LedgerStore + SessionStore + CreateSession + AdvanceTip`。`LedgerStore` 存节点：`Segment`、`ListSegments`、`ReadSegment`（只读该段自身的 commit）、`Locate`、`LookupCommit`、`Index`、`PutIndex`（段的 CommitIndex，SES-REP-5）、对已封印 Commit 的 `Append(lease, segment, commit)`、`TruncateSegment`、`RemoveSegment`。`SessionStore` 存根：`Record`、`ListRecords`、`Acquire`（所有权与 torn tail 修复）、`Release`、`DeleteRecord`。两者共享一个一致性域，使 `Append` 能与 Lease 检查原子进行。adapter 不知道 fork、前缀与可达性；`Ledger` 在该端口之上一次实现 SES-FRK 与 SES-GC。conformance 以 `Store` 为参数运行，因此每个 adapter 得到同一套 lineage 语义。
+**SES-SCP-4** adapter 端口是 `Backend = LedgerStore + SessionStore + CreateSession + AdvanceTip`。`LedgerStore` 存节点：`Segment`、`ListSegments`、`ReadSegment`（只读该段自身的 commit）、`Locate`、`LookupCommit`、`Index`、`PutIndex`（段的 CommitIndex，SES-REP-5）、`VerifiedMark`、`PutVerifiedMark`（段的 verified mark，SES-REP-1）、对已封印 Commit 的 `Append(lease, segment, commit)`、`TruncateSegment`、`RemoveSegment`。`SessionStore` 存根：`Record`、`ListRecords`、`Acquire`（所有权与 torn tail 修复）、`Release`、`DeleteRecord`。两者共享一个一致性域，使 `Append` 能与 Lease 检查原子进行。adapter 不知道 fork、前缀与可达性；`Ledger` 在该端口之上一次实现 SES-FRK 与 SES-GC。conformance 以 `Store` 为参数运行，因此每个 adapter 得到同一套 lineage 语义。
 
 ## 2. 版本
 
@@ -246,7 +246,7 @@ type StreamReadRequest struct {
 type StreamPage struct { Header SegmentHeader; Stream StreamRef; Events []Event; Head Head; HasMore bool }
 ```
 
-**SES-REP-1** `ReadCommits` 按 `CommitSeq` 递增返回 `From` 起的完整 Commit；fork 的序列是继承前缀加自身 commit（SES-FRK-2）。`From` 大于等于 `Head.Next` 时返回空页且 `HasMore` 为假，这对 `CommitSeq` 的全部值域成立：实现必须以 `CommitSeq` 比较起点，不得先把它转换为 `int` 再索引日志。损坏检测的义务点在 `Open`：Open 在建立所有权前用 `ValidateLedger` 重算整条 digest 链，损坏必须 fail loudly（`ErrCorrupt`）；`ValidateLedger` 同时作为显式校验入口导出，对任何无法重算的 Commit（包括 profile 拒绝 reseal 的形状错误）返回带该 Commit 坐标的 `ErrCorrupt`，不暴露底层封装错误。Open 读取的 Session 元数据同属校验范围：header 归属另一 Session 或所有权记录无法解析时报 `ErrCorrupt`，不得报告为不存在。读路径信任存储，不逐次重算链。
+**SES-REP-1** `ReadCommits` 按 `CommitSeq` 递增返回 `From` 起的完整 Commit；fork 的序列是继承前缀加自身 commit（SES-FRK-2）。`From` 大于等于 `Head.Next` 时返回空页且 `HasMore` 为假，这对 `CommitSeq` 的全部值域成立：实现必须以 `CommitSeq` 比较起点，不得先把它转换为 `int` 再索引日志。损坏检测的义务点在 `Open`：Open 在建立所有权前重算 tip 段自 **verified mark** 之后的 digest 链，损坏必须 fail loudly（`ErrCorrupt`）。verified mark 是每段一条的派生记录 `{Next, Digest}`（`Backend.VerifiedMark` / `PutVerifiedMark`）：Open 校验通过后与句柄 Close 时（Append 结果未知的句柄除外）都把它推进到 head；Open 采信它的条件是 CommitIndex 在该位置的条目与它一致、且该位置的 commit 本身在 profile 下重封通过，否则从 seed 起重算。非 tip 段不再变化，所以标记一经写下永远有效；tip 段只重算上次标记之后的尾部，干净 Close 后为零。标记之前的 commit 不在 Open 重算，这是信任模型的选择：`ValidateLedger` 作为显式的全量校验入口导出，对任何无法重算的 Commit（包括 profile 拒绝 reseal 的形状错误）返回带该 Commit 坐标的 `ErrCorrupt`，不暴露底层封装错误；`ValidateLedgerFrom` 是它从某个已验证 head 起的形式。`Collect` 截断段后把越过新 head 的标记退回新 head。Open 读取的 Session 元数据同属校验范围：header 归属另一 Session 或所有权记录无法解析时报 `ErrCorrupt`，不得报告为不存在。读路径信任存储，不逐次重算链。
 
 **SES-REP-2** `StreamSeq` 是流内位置，由 Store 按 CommitSeq 顺序在 `ReadStream` 请求的 lineage 所见的序列上数出，是读侧的优化：`ReadStream` 只返回该流的事件，但其顺序与从 `ReadCommits` 折叠出的流内顺序完全一致。它不进 digest，也不是第二种排序。
 
@@ -276,7 +276,7 @@ conformance 以 `Store` 为参数，每个 adapter 跑同一套，必须验证�
 - **SES-APP-1/2/3**：整 Commit 可见性；在 Commit 中途注入崩溃后打开，尾 Commit 不出现；拒绝项无写入；注入持久化失败后句柄返回 `ErrHandleFailed`，重开后已落盘的完整 Commit 在索引中、链完整、同 CommitID 的 Append 为 `ErrConflict`；
 - **SES-ADV-1**：同版本或未知版本的 Advance 被拒且 tip 不动；推进后 header 为新版本、边指向旧 tip 的 head commit、根的 Tip 改指新段；句柄 head 为 seed、继承 CommitID 可见、旧 tip 的流不计入；下一条 commit 从旧 head 续链并只在新版本 profile 下通过校验；跨版本读 `ReadCommits`/`ReadStream` 拼接完整；重开成功；被接管的句柄 Advance 为 `ErrOwnershipLost`；两个方向的跨版本 fork 都成立且可写可重开；空 tip 的推进沿用原边且旧空段被 Collect 回收；
 - **SES-REP-5**：索引与 commit 一致、落后一个、落后全部、缺失四种情形下 Open 成功且 Head、Committed、StreamHead、LookupCommit、重复 CommitID 的拒绝与 ReadCommits 都与从 commit 得到的答案相同；fork 子对继承 CommitID 的 Committed 经父段索引回答；
-- **SES-REP-1/2**：顺序、From、Limit 截断、ReadStream 与折叠一致、篡改任一 Commit 后下一次 Open 报 `ErrCorrupt`；`From` 取到 `CommitSeq` 最大值仍为空页；无法 reseal 的 Commit 经 `ValidateLedger` 报带坐标的 `ErrCorrupt`；header 归属另一 Session 或所有权记录无法解析时 Open 与 Header 报 `ErrCorrupt`；
+- **SES-REP-1/2**：顺序、From、Limit 截断、ReadStream 与折叠一致；Close 后篡改标记之前的 Commit，Open 成功而 `ValidateLedger` 报 `ErrCorrupt`；篡改标记所指的 Commit，Open 报 `ErrCorrupt`；丢弃标记后 Open 对此前的篡改报 `ErrCorrupt`；`From` 取到 `CommitSeq` 最大值仍为空页；无法 reseal 的 Commit 经 `ValidateLedger` 报带坐标的 `ErrCorrupt`；header 归属另一 Session 或所有权记录无法解析时 Open 与 Header 报 `ErrCorrupt`；
 - **SES-GC-1/2**：Delete 对持有中、未知的 Session 分别为 `ErrOwned`、`ErrNotFound`；删除后不可见、不可开、不可 fork、再次 Delete 为 `ErrNotFound`，同名 Session 立即可重建且得到新段；子仍读到已删除父的前缀；Collect 截掉最大 anchor 之后的自身 commit、整段删除不可达段、对存活 Session 无影响、幂等；
 - **SES-WIR-4**：段 header 与 commit 的 digest 预映像不含 SessionID；在另一段 header 下校验同一批 commit 为 `ErrCorrupt`；
 - **SES-WIR-5**：空 Ext 的 header 与 commit 的 digest 与无该槽时相同；非空 Ext 进入 digest 且经 Store 往返后字节不变；非 object 的 Ext 为 `ErrInvalid`；

@@ -285,7 +285,7 @@ func NewProjectionReader(store session.Store, registry *Registry, cache Projecti
 
 **EXT-PRJ-4** `Writer.Projections()` 返回的 reader 从 Writer 内存状态生成独立副本；`View.Projection` 同样通过该投影的 `StateCodec` encode/decode 交付调用方拥有的副本，包括嵌套 map、slice 与指针。独立进程的观察者用 `NewProjectionReader` 从 Store 读，两者对同一 head 给出相同状态。Writer 在 `Append` 之前折叠一个临时 commit（Seq 为当前 head 的 Next，带 CommitID、Epoch 与全部 batch，PrevDigest 与 Digest 为空），reader 折叠 kernel 封装后的 commit；Apply 只见到 `DecodedEvent`（stream、事件与解码值），不见 commit 的 digest，因此两条路径向 Apply 交付相同输入。
 
-**EXT-PRJ-5** `rebuild` 读一次日志：缓存条目未覆盖的投影需要它的行来折叠，而每个条目都要靠它校验组对齐（EXT-PRJ-3）。日志是 O(N)，投影折叠随状态大小增长（Apply 为保持纯性复制它写入的部分），所以可省的只有折叠：条目通过 EXT-PRJ-3 校验的投影从该处续折，跳过它已覆盖的组；其余投影从 `Initial` 全折。篡改或过期的条目只让该投影多折一次，绝不影响正确性，也绝不让 `OpenWriter` 失败。这次读取只服务于投影，不服务于提交历史——Writer 不保留日志，也不建 CommitID 索引（EXT-WRT-1）；它对"必须读多少行"的代价上限取决于 adapter 的读取粒度。
+**EXT-PRJ-5** `OpenWriter` 的重建分两步：先为每个投影判定缓存条目（EXT-PRJ-3），判定只读条目所指的那一个 commit（经 CommitIndex 的字节区间，SES-REP-5），得到每个投影的续折起点；再从全部起点中最小的那个开始读日志一次，各投影从各自起点续折，没有可用条目的投影从 `Initial` 全折。干净 Close 后每个条目都在 head，读取为空；崩溃后读取量不超过 `CacheEvery(n)` 的 n 个 commit。篡改或过期的条目只让该投影多折一次，绝不影响正确性，也绝不让 `OpenWriter` 失败。这次读取只服务于投影，不服务于提交历史——Writer 不保留日志，也不建 CommitID 索引（EXT-WRT-1）。
 
 **EXT-PRJ-6** 写入与读取的权限不对称：`WritersConfig.CachePolicy` 只决定 Writer 写哪个投影的条目；读取一律尝试缓存中的条目，不论谁写的。某个投影的条目由它的宿主在语义检查点上写入时（run 的 machine projection 经 `SnapshotPolicy`，见 RUN-CMT-2），组装层用 `CachePolicy.Exclude` 把它排除，Writer 便只读不写，绝不会把条目落在检查点之间。
 

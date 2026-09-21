@@ -208,12 +208,21 @@ func (l *Ledger) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Han
 		return nil, err
 	}
 	// Corruption detection happens before ownership is established
-	// (SES-REP-1); reads trust the store.
-	own, _, _, err := l.be.ReadSegment(ctx, tip.ID, tip.Seed().Next, 0)
+	// (SES-REP-1), from the verified mark when the index confirms it and the
+	// marked commit reseals, from the seed otherwise; reads trust the store.
+	idx, _, err := l.loadIndex(ctx, tip)
 	if err != nil {
 		return nil, err
 	}
-	if err := ValidateLedger(profile, tip.Header, own); err != nil {
+	start, err := l.verifiedStart(ctx, tip, profile, &idx)
+	if err != nil {
+		return nil, err
+	}
+	own, _, _, err := l.be.ReadSegment(ctx, tip.ID, start.Next, 0)
+	if err != nil {
+		return nil, err
+	}
+	if err := ValidateLedgerFrom(profile, tip.Header, start, own); err != nil {
 		return nil, err
 	}
 	lease, err := l.be.Acquire(ctx, sid, opts)
@@ -228,6 +237,9 @@ func (l *Ledger) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Han
 		_ = l.be.Release(ctx, lease)
 		return nil, err
 	}
+	// Everything up to head is now verified; the mark is derived data, so a
+	// failure to record it costs the next Open time, not correctness.
+	_ = l.be.PutVerifiedMark(ctx, tip.ID, head)
 	h := &ledgerHandle{l: l, root: root, ancestry: a, profile: profile, lease: lease, head: head,
 		own: make(map[CommitID]struct{}, len(idx.Entries)), streams: make(map[StreamRef]StreamSeq)}
 	for i := range idx.Entries {
@@ -238,6 +250,42 @@ func (l *Ledger) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Han
 		}
 	}
 	return h, nil
+}
+
+// verifiedStart returns the head Open verifies the tip's own commits from:
+// the recorded mark when the index has the marked commit at that position
+// with that digest and the commit itself reseals under the profile, else
+// the seed (SES-REP-1). Commits before a trusted mark are not resealed at
+// Open; ValidateLedger over a read remains the full check.
+func (l *Ledger) verifiedStart(ctx context.Context, seg Segment, profile LedgerProfile, idx *CommitIndex) (Head, error) {
+	seed := seg.Seed()
+	mark, ok, err := l.be.VerifiedMark(ctx, seg.ID)
+	if err != nil {
+		return Head{}, err
+	}
+	if !ok || mark.Next <= seed.Next || mark.Next > idx.Through.Next {
+		return seed, nil
+	}
+	n := int(mark.Next - seed.Next) //nolint:gosec // bounded by len(idx.Entries) through idx.Through
+	if n > len(idx.Entries) {
+		return seed, nil
+	}
+	last := &idx.Entries[n-1]
+	if last.Seq+1 != mark.Next || last.Digest != mark.Digest {
+		return seed, nil
+	}
+	c, ok, err := l.be.LookupCommit(ctx, seg.ID, last.CommitID)
+	if err != nil {
+		return Head{}, err
+	}
+	prev := seed
+	if n >= 2 {
+		prev = Head{Next: idx.Entries[n-2].Seq + 1, Digest: idx.Entries[n-2].Digest}
+	}
+	if !ok || ValidateLedgerFrom(profile, seg.Header, prev, []Commit{c}) != nil {
+		return seed, nil
+	}
+	return mark, nil
 }
 
 // loadIndex returns the segment's CommitIndex and head. An index that fails
@@ -385,7 +433,18 @@ func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 	return cloneCommit(c), nil
 }
 
-func (w *ledgerHandle) Close(ctx context.Context) error { return w.l.be.Release(ctx, w.lease) }
+// Close records the head as verified (every commit up to it was verified at
+// Open or sealed by this handle) unless an Append's outcome is unknown, then
+// releases the lease.
+func (w *ledgerHandle) Close(ctx context.Context) error {
+	w.mu.Lock()
+	failed, head, tip := w.failed, w.head, w.root.Tip
+	w.mu.Unlock()
+	if failed == nil {
+		_ = w.l.be.PutVerifiedMark(ctx, tip, head)
+	}
+	return w.l.be.Release(ctx, w.lease)
+}
 
 // Advance is SES-ADV-1: it seals an empty segment under req.ProtocolVersion,
 // anchored at the tip's head (or carrying the tip's own edge when the tip
@@ -592,6 +651,11 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 		newHead, err := l.be.TruncateSegment(ctx, id, through)
 		if err != nil {
 			return report, err
+		}
+		// A mark past the new head no longer names a commit; the retained
+		// prefix was verified, so the mark moves back to it.
+		if mark, ok, err := l.be.VerifiedMark(ctx, id); err == nil && ok && mark.Next > newHead.Next {
+			_ = l.be.PutVerifiedMark(ctx, id, newHead)
 		}
 		report.Truncated[id] = newHead.Next
 	}

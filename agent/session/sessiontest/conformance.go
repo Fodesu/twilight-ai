@@ -426,11 +426,44 @@ func testRead(t *testing.T, f Fixture) {
 		if err := w.Close(ctx); err != nil {
 			t.Fatal(err)
 		}
+		// Close recorded the head as verified (SES-REP-1). A commit behind the
+		// mark is not resealed at Open; the explicit full check still finds it.
 		tamper.Tamper("s", 1, func(c *session.Commit) { c.Batches[0].Events[0].Payload = jsonstable.MustParse(`{"x":1}`) })
+		h, err := f.Store.Open(ctx, "s", session.OpenOptions{})
+		if err != nil {
+			t.Fatalf("open over a commit tampered behind the verified mark = %v, want success (Open trusts the mark)", err)
+		}
+		_ = h.Close(ctx)
+		page, err := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := session.ValidateLedger(session.ProfileV1(), page.Header, page.Commits); !session.IsCode(err, session.ErrCorrupt) {
+			t.Fatalf("full validation over a tampered ledger = %v, want corrupt", err)
+		}
+		// The marked commit itself is resealed at Open.
+		tamper.Tamper("s", 2, func(c *session.Commit) { c.Batches[0].Events[0].Payload = jsonstable.MustParse(`{"y":1}`) })
 		if _, err := f.Store.Open(ctx, "s", session.OpenOptions{}); !session.IsCode(err, session.ErrCorrupt) {
-			t.Fatalf("open over a tampered ledger = %v, want corrupt", err)
+			t.Fatalf("open over a tampered marked commit = %v, want corrupt", err)
+		}
+		// Without a mark, Open verifies from the seed and finds the earlier one.
+		if dropper, ok := f.Store.(VerifiedMarkDropper); ok {
+			tamper.Tamper("s", 2, func(c *session.Commit) { c.Batches[0].Events[0].Payload = jsonstable.MustParse(`{"c":3}`) })
+			if err := dropper.DropVerifiedMark("s"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.Store.Open(ctx, "s", session.OpenOptions{}); !session.IsCode(err, session.ErrCorrupt) {
+				t.Fatalf("open without a verified mark over a tampered ledger = %v, want corrupt", err)
+			}
 		}
 	}
+}
+
+// VerifiedMarkDropper is the optional adapter capability that forgets the
+// tip segment's verified mark (SES-REP-1), so the suite can prove that Open
+// then verifies from the seed.
+type VerifiedMarkDropper interface {
+	DropVerifiedMark(session.SessionID) error
 }
 
 // SES-REP-3/4: the kernel answers which CommitIDs it holds and what commit

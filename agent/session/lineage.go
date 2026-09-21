@@ -110,6 +110,12 @@ type LedgerStore interface {
 	// PutIndex replaces the segment's CommitIndex with one the kernel rebuilt
 	// from the commits.
 	PutIndex(context.Context, SegmentID, CommitIndex) error
+	// VerifiedMark returns the head through which the segment's own commits
+	// were last verified (SES-REP-1), or ok=false when none is recorded;
+	// PutVerifiedMark records one. The mark is derived data: an absent or
+	// disagreeing mark only makes the next Open verify from the seed.
+	VerifiedMark(context.Context, SegmentID) (Head, bool, error)
+	PutVerifiedMark(context.Context, SegmentID, Head) error
 	// Append persists a commit the Ledger sealed against the segment head,
 	// under a Lease the adapter checks atomically with the write: the Lease
 	// must be current for its Session and that Session's Tip must be the

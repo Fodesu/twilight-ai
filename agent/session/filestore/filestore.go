@@ -1,8 +1,9 @@
 // Package filestore is the JSONL-backed session.Store: the kernel Ledger over
 // a file Backend. Segments (the nodes of the lineage tree) live under
 // segments/<id>/ as header.json plus log.jsonl, one committed line per own
-// Commit, and index.jsonl, the segment's persisted CommitIndex (SES-REP-5)
-// with the byte range of each commit's line; Session roots live under
+// Commit, index.jsonl, the segment's persisted CommitIndex (SES-REP-5) with
+// the byte range of each commit's line, and verified.json, the head through
+// which the segment was last verified (SES-REP-1); Session roots live under
 // sessions/<sid>.json with their writer ownership. The log is plain JSONL so a stream can be inspected and diffed
 // with standard tools. Fork, inherited prefixes and reachability are the
 // Ledger's; this package stores nodes and roots.
@@ -26,6 +27,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/session"
 )
 
@@ -34,6 +36,9 @@ const (
 	sessionsDir = "sessions"
 	headerFile  = "header.json"
 	logFile     = "log.jsonl"
+	// verifiedFile is the segment's verified mark (SES-REP-1): the head
+	// through which its own commits were last verified, as {next, digest}.
+	verifiedFile = "verified.json"
 )
 
 // Store is the JSONL session.Store: the Ledger's methods are promoted from
@@ -440,6 +445,63 @@ func (s *Store) CreateSession(ctx context.Context, seg session.Segment, rec sess
 		return err
 	}
 	return s.saveRoot(rec.ID, ownerRecord{SessionRecord: rec})
+}
+
+type verifiedMark struct {
+	Next   session.CommitSeq `json:"next"`
+	Digest string            `json:"digest"`
+}
+
+func (s *Store) VerifiedMark(ctx context.Context, id session.SegmentID) (session.Head, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return session.Head{}, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	raw, err := os.ReadFile(filepath.Join(s.segmentDir(id), verifiedFile))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return session.Head{}, false, nil
+		}
+		return session.Head{}, false, segerr("verified_mark", id, err.Error())
+	}
+	var m verifiedMark
+	if err := json.Unmarshal(raw, &m); err != nil || m.Digest == "" {
+		return session.Head{}, false, nil // an unreadable mark is no mark
+	}
+	return session.Head{Next: m.Next, Digest: es.Digest(m.Digest)}, true, nil
+}
+
+func (s *Store) PutVerifiedMark(ctx context.Context, id session.SegmentID, mark session.Head) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := readHeader(s.segmentDir(id)); err != nil {
+		if os.IsNotExist(err) {
+			return &session.Error{Code: session.ErrNotFound, Operation: "verified_mark", Detail: fmt.Sprintf("segment %s not found", id)}
+		}
+		return segerr("verified_mark", id, err.Error())
+	}
+	raw, err := json.Marshal(verifiedMark{Next: mark.Next, Digest: string(mark.Digest)})
+	if err != nil {
+		return err
+	}
+	return writeAtomic(filepath.Join(s.segmentDir(id), verifiedFile), raw)
+}
+
+// DropVerifiedMark removes the tip segment's verified.json, so conformance
+// can prove that Open then verifies from the seed (SES-REP-1); production
+// code never calls it.
+func (s *Store) DropVerifiedMark(sid session.SessionID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, dir, err := s.tip(sid, "drop_verified_mark")
+	if err != nil {
+		return err
+	}
+	return os.RemoveAll(filepath.Join(dir, verifiedFile))
 }
 
 // AdvanceTip lands the new empty node, then moves the root to it under the

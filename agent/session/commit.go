@@ -357,7 +357,15 @@ func LedgerSeed(h SegmentHeader) Head {
 // commits, contiguous from LedgerSeed(header).Next; an inherited prefix is
 // validated under its own segment's header.
 func ValidateLedger(p LedgerProfile, header SegmentHeader, commits []Commit) error {
-	seed := LedgerSeed(header)
+	return ValidateLedgerFrom(p, header, LedgerSeed(header), commits)
+}
+
+// ValidateLedgerFrom is ValidateLedger for the commits after a head already
+// verified: from is that head (the seed for the whole segment, the verified
+// mark at Open, SES-REP-1) and commits are the segment's own commits from
+// from.Next onward.
+func ValidateLedgerFrom(p LedgerProfile, header SegmentHeader, from Head, commits []Commit) error {
+	seed := from
 	segment := SegmentIDOf(header)
 	prev := seed.Digest
 	for i := range commits {

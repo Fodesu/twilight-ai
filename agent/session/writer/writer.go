@@ -186,12 +186,27 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 		projections: newProjector(registry, sid, cfg.Cache, cfg.CachePolicy),
 		admission:   &admitter{Admission: admission, segment: session.SegmentIDOf(header)},
 		observers:   &observers{list: cfg.Observers}}
-	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
+	// The log is read from the earliest cache entry any projection resumes
+	// from (EXT-PRJ-5): judging an entry costs one commit read, and a clean
+	// Close leaves every entry at the head.
+	at := func(seq session.CommitSeq) (session.Commit, bool) {
+		one, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid, From: seq, Limit: 1})
+		if err != nil || len(one.Commits) != 1 {
+			return session.Commit{}, false
+		}
+		return one.Commits[0], true
+	}
+	from, err := w.projections.prepare(ctx, header, at)
 	if err != nil {
 		_ = kernel.Close(ctx)
 		return nil, err
 	}
-	if err := w.projections.rebuild(ctx, &page); err != nil {
+	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid, From: from})
+	if err != nil {
+		_ = kernel.Close(ctx)
+		return nil, err
+	}
+	if err := w.projections.resume(&page, from); err != nil {
 		_ = kernel.Close(ctx)
 		return nil, err
 	}

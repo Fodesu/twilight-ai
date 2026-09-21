@@ -35,6 +35,9 @@ type projector struct {
 	cache  extension.ProjectionCache
 	policy extension.CachePolicy
 	cached map[projectionKey]session.Head
+	// starts is the CommitSeq each projection resumes folding from after
+	// prepare: its cache entry's Next, or 0 for a full fold.
+	starts map[projectionKey]session.CommitSeq
 }
 
 func newProjector(registry *extension.Registry, sid session.SessionID, cache extension.ProjectionCache, policy extension.CachePolicy) *projector {
@@ -42,48 +45,71 @@ func newProjector(registry *extension.Registry, sid session.SessionID, cache ext
 		policy = extension.CacheEvery(extension.DefaultCacheEvery)
 	}
 	return &projector{registry: registry, sid: sid, states: make(map[projectionKey]any), unhealthy: make(map[projectionKey]error),
-		scopes: make(map[projectionKey]*extension.ProjectionScope), cache: cache, policy: policy, cached: make(map[projectionKey]session.Head)}
+		scopes: make(map[projectionKey]*extension.ProjectionScope), cache: cache, policy: policy, cached: make(map[projectionKey]session.Head),
+		starts: make(map[projectionKey]session.CommitSeq)}
 }
 
-// rebuild restores every registered projection from the whole log, or from a
-// cache entry that ends on a commit boundary of this log plus the commits
-// after it, which is what keeps a long session from refolding quadratically
-// (EXT-PRJ-3).
-func (p *projector) rebuild(ctx context.Context, page *session.CommitPage) error {
+// commitAt reads the commit at one stitched position of the Session, for
+// judging a cache entry's boundary (EXT-PRJ-3); ok=false when there is none.
+type commitAt func(session.CommitSeq) (session.Commit, bool)
+
+// prepare chooses each registered projection's starting state: its cache
+// entry when the entry ends on a commit boundary the tip segment wrote
+// itself and still decodes, the initial state otherwise (EXT-PRJ-3). It
+// returns the earliest stitched CommitSeq any projection must fold from,
+// which is how much of the log the Writer reads: a clean Close leaves every
+// entry at the head and the read is empty (EXT-PRJ-5).
+func (p *projector) prepare(ctx context.Context, header session.SegmentHeader, at commitAt) (session.CommitSeq, error) {
+	from := ^session.CommitSeq(0)
 	for _, def := range p.registry.Projections() {
 		k := projectionKey{def.ID, def.Version}
 		scope, err := p.registry.ScopeFor(def.ID, def.Version)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		p.scopes[k] = scope
-		state, through, ok := p.startState(ctx, scope, page.Commits, page.Header)
-		if !ok {
-			if state, err = scope.Def.Initial(); err != nil {
-				return err
-			}
-		}
-		from := session.CommitSeq(0)
+		state, through, ok := p.startState(ctx, scope, header, at)
+		start := session.CommitSeq(0)
 		if ok {
 			p.cached[k] = through
-			from = through.Next
-		}
-		if from < session.CommitSeq(len(page.Commits)) {
-			folded, err := p.registry.FoldFrom(scope, state, page.Commits[from:], page.Header)
-			if err != nil {
-				if scope.Def.Authoritative {
-					return err
-				}
-				// A derived projection that cannot fold the log does not keep
-				// the Session from opening (EXT-PRJ-9): it stops at its last
-				// good commit and stays unhealthy until a registry that folds
-				// it reopens the Session.
-				folded, err = p.lastGood(scope, state, page.Commits[from:], page.Header)
-				p.unhealthy[k] = err
-			}
-			state = folded
+			start = through.Next
+		} else if state, err = scope.Def.Initial(); err != nil {
+			return 0, err
 		}
 		p.states[k] = state
+		p.starts[k] = start
+		if start < from {
+			from = start
+		}
+	}
+	return from, nil
+}
+
+// resume folds the commits read from from into every projection, each from
+// its own start (EXT-PRJ-3, EXT-PRJ-9).
+func (p *projector) resume(page *session.CommitPage, from session.CommitSeq) error {
+	for k, scope := range p.scopes {
+		start := p.starts[k]
+		if start < from {
+			start = from
+		}
+		off := session.IndexWithin(start-from, len(page.Commits))
+		if off >= len(page.Commits) {
+			continue
+		}
+		folded, err := p.registry.FoldFrom(scope, p.states[k], page.Commits[off:], page.Header)
+		if err != nil {
+			if scope.Def.Authoritative {
+				return err
+			}
+			// A derived projection that cannot fold the log does not keep
+			// the Session from opening (EXT-PRJ-9): it stops at its last
+			// good commit and stays unhealthy until a registry that folds
+			// it reopens the Session.
+			folded, err = p.lastGood(scope, p.states[k], page.Commits[off:], page.Header)
+			p.unhealthy[k] = err
+		}
+		p.states[k] = folded
 	}
 	return nil
 }
@@ -110,12 +136,12 @@ func (p *projector) lastGood(scope *extension.ProjectionScope, state any, commit
 // of the store reader's startState. A fork, and a Session whose tip just
 // advanced, fold their inherited prefix on first open and cache the result
 // once they hold a commit of their own.
-func (p *projector) startState(ctx context.Context, scope *extension.ProjectionScope, commits []session.Commit, header session.SegmentHeader) (any, session.Head, bool) {
+func (p *projector) startState(ctx context.Context, scope *extension.ProjectionScope, header session.SegmentHeader, at commitAt) (any, session.Head, bool) {
 	if p.cache == nil {
 		return nil, session.Head{}, false
 	}
 	encoded, through, ok, err := p.cache.Load(ctx, p.sid, scope.Def.ID, scope.Def.Version)
-	if err != nil || !ok || !coversCommit(commits, header, through) {
+	if err != nil || !ok || !coversCommit(header, through, at) {
 		return nil, session.Head{}, false
 	}
 	state, err := scope.Def.StateCodec.Decode(encoded)
@@ -127,12 +153,13 @@ func (p *projector) startState(ctx context.Context, scope *extension.ProjectionS
 
 // coversCommit reports whether through names the commit before its Next -- a
 // commit boundary of this log that the tip header describes wrote itself --
-// with the digest the entry recorded.
-func coversCommit(commits []session.Commit, header session.SegmentHeader, through session.Head) bool {
-	if !extension.OwnBoundary(header, through) || through.Next > session.CommitSeq(len(commits)) {
+// with the digest the entry recorded. It reads that one commit.
+func coversCommit(header session.SegmentHeader, through session.Head, at commitAt) bool {
+	if through.Next == 0 || !extension.OwnBoundary(header, through) {
 		return false
 	}
-	return extension.SealedAt(commits[through.Next-1], through)
+	c, ok := at(through.Next - 1)
+	return ok && extension.SealedAt(c, through)
 }
 
 // folded is what fold produced: the next states and, for derived
