@@ -222,11 +222,19 @@ type ModelToolCall struct {
 	ProviderMetadata ProviderMetadata `json:"providerMetadata,omitempty"`
 }
 
+// ResponseMetadata mirrors sdk.ResponseMetadata with the timestamp as an
+// RFC 3339 UTC string. It is always present on a ModelResult; a field the
+// provider did not report stays empty, and an all-empty value is omitted.
 type ResponseMetadata struct {
 	ID        string            `json:"id,omitempty"`
 	ModelID   string            `json:"modelId,omitempty"`
 	Timestamp string            `json:"timestamp,omitempty"`
 	Headers   map[string]string `json:"headers,omitempty"`
+}
+
+// IsZero reports metadata with no field set; encoding/json's omitzero uses it.
+func (m ResponseMetadata) IsZero() bool {
+	return m.ID == "" && m.ModelID == "" && m.Timestamp == "" && len(m.Headers) == 0
 }
 
 // ModelResult is the persisted output of one model call. It mirrors
@@ -245,5 +253,5 @@ type ModelResult struct {
 	Files     []GeneratedFile `json:"files,omitempty"`
 	ToolCalls []ModelToolCall `json:"toolCalls,omitempty"`
 
-	Response *ResponseMetadata `json:"response,omitempty"`
+	Response ResponseMetadata `json:"response,omitzero"`
 }

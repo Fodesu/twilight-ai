@@ -470,11 +470,9 @@ func ModelToolCall(c model.ModelToolCall) sdk.ToolCall {
 	return sdk.ToolCall{ToolCallID: c.ToolCallID, ToolName: c.ToolName, Input: ToolArguments(c.Input), ProviderMetadata: ProviderMetadata(c.ProviderMetadata)}
 }
 
-func FreezeResponseMetadata(r *sdk.ResponseMetadata) *model.ResponseMetadata {
-	if r == nil {
-		return nil
-	}
-	out := &model.ResponseMetadata{ID: r.ID, ModelID: r.ModelID}
+//nolint:gocritic // hugeParam: ResponseMetadata is copied into the persisted mirror value.
+func FreezeResponseMetadata(r sdk.ResponseMetadata) model.ResponseMetadata {
+	out := model.ResponseMetadata{ID: r.ID, ModelID: r.ModelID}
 	if !r.Timestamp.IsZero() {
 		out.Timestamp = r.Timestamp.UTC().Format(time.RFC3339Nano)
 	}
@@ -487,10 +485,8 @@ func FreezeResponseMetadata(r *sdk.ResponseMetadata) *model.ResponseMetadata {
 	return out
 }
 
-func ResponseMetadata(r *model.ResponseMetadata) (sdk.ResponseMetadata, error) {
-	if r == nil {
-		return sdk.ResponseMetadata{}, nil
-	}
+//nolint:gocritic // hugeParam: the persisted mirror value is converted into a detached SDK value.
+func ResponseMetadata(r model.ResponseMetadata) (sdk.ResponseMetadata, error) {
 	out := sdk.ResponseMetadata{ID: r.ID, ModelID: r.ModelID}
 	if r.Timestamp != "" {
 		t, err := time.Parse(time.RFC3339Nano, r.Timestamp)
@@ -567,10 +563,6 @@ func ModelResult(r model.ModelResult) (sdk.ModelResult, error) {
 	if err != nil {
 		return sdk.ModelResult{}, fmt.Errorf("response metadata: %w", err)
 	}
-	var responsePtr *sdk.ResponseMetadata
-	if r.Response != nil {
-		responsePtr = &response
-	}
 	return sdk.ModelResult{
 		Text:                 r.Text,
 		Reasoning:            r.Reasoning,
@@ -582,6 +574,6 @@ func ModelResult(r model.ModelResult) (sdk.ModelResult, error) {
 		Sources:              sources,
 		Files:                files,
 		ToolCalls:            calls,
-		Response:             responsePtr,
+		Response:             response,
 	}, nil
 }
