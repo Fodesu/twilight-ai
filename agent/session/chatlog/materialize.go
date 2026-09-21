@@ -183,7 +183,7 @@ func pairCalls(a *Assistant, result *model.ModelResult) ([]Call, error) {
 		} else {
 			id = CallID(sch.Identity.DeriveCallID(a.StepID, i))
 		}
-		calls[i] = Call{CallID: id, ProviderCallID: tc.ToolCallID, Name: tc.ToolName, Input: tc.Input}
+		calls[i] = Call{CallID: id, ProviderCallID: tc.ToolCallID, Name: tc.ToolName, Input: tc.Input.Canonical()}
 	}
 	return calls, nil
 }

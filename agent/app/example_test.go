@@ -15,6 +15,7 @@ import (
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // Example_recoverableTurn drives one Turn through a process crash on a
@@ -168,7 +169,7 @@ func (scriptedModel) Generate(_ context.Context, req sdk.Request) (sdk.ModelResu
 	return sdk.ModelResult{
 		FinishReason: sdk.FinishReasonToolCalls,
 		Usage:        sdk.Usage{TotalTokens: 1},
-		ToolCalls:    []sdk.ToolCall{{ToolCallID: "c1", ToolName: "lookup", Input: `{"q":"weather"}`}},
+		ToolCalls:    []sdk.ToolCall{{ToolCallID: "c1", ToolName: "lookup", Input: sdk.ParseToolArguments(`{"q":"weather"}`)}},
 	}, nil
 }
 
@@ -180,7 +181,7 @@ type lookupTool struct {
 
 func (t *lookupTool) Ref() run.ToolRef { return "lookup" }
 func (t *lookupTool) Definition() sdk.ToolDefinition {
-	return sdk.ToolDefinition{Name: "lookup", Parameters: []byte(`{"type":"object","properties":{"q":{"type":"string"}}}`)}
+	return sdk.ToolDefinition{Name: "lookup", Parameters: &jsonschema.Schema{Type: "object", Properties: map[string]*jsonschema.Schema{"q": {Type: "string"}}}}
 }
 func (t *lookupTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
 func (t *lookupTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }

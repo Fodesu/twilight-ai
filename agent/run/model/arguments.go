@@ -6,52 +6,38 @@ import (
 	"github.com/felinics/twilight/agent/jsonstable"
 )
 
-// CanonicalToolArguments renders a model-provided tool input as canonical JSON
-// for binding digests. Failure means the arguments are not valid JSON; the
-// caller binds them raw-as-JSON-string and lets validation fail as
-// invalid_arguments.
-func CanonicalToolArguments(input any) (jsonstable.Value, error) {
-	switch x := input.(type) {
-	case nil:
-		return jsonstable.Parse([]byte("null"))
-	case jsonstable.Value:
-		return x, nil
-	case json.RawMessage:
-		return jsonstable.Parse(x)
-	case string:
-		// Providers deliver unparsed argument text as a string.
-		if x == "" {
-			return jsonstable.Parse([]byte("null"))
-		}
-		return jsonstable.Parse([]byte(x))
-	default:
-		return jsonstable.FromValue(x)
-	}
+// ToolArguments mirrors sdk.ToolArguments: the arguments a model supplied for
+// a tool call. JSON holds the canonical document when the model produced one;
+// Text holds the verbatim text when it did not, so the invalid_arguments
+// result the model receives quotes what it wrote. Exactly one field is set;
+// the zero value stands for the empty object.
+type ToolArguments struct {
+	JSON jsonstable.Value `json:"json,omitzero"`
+	Text string           `json:"text,omitempty"`
 }
 
-// RawToolArguments preserves unparsable argument bytes as a JSON string so the
-// known invalid_arguments failure keeps the original text for the model.
-func RawToolArguments(input any) jsonstable.Value {
-	var raw []byte
-	switch x := input.(type) {
-	case nil:
-		raw = []byte("null")
-	case jsonstable.Value:
-		return x
-	case json.RawMessage:
-		raw, _ = json.Marshal(string(x))
-	case string:
-		raw, _ = json.Marshal(x)
-	default:
-		var err error
-		raw, err = json.Marshal(x)
-		if err != nil {
-			raw = []byte("null")
-		}
+// Valid reports whether the arguments are a JSON document a tool can decode.
+func (a ToolArguments) Valid() bool { return a.Text == "" }
+
+// Canonical is the binding form of the arguments (RUN-MCH-2): the document
+// itself, the empty object for the zero value, or the invalid text as a JSON
+// string so the binding digest still covers what the model wrote and
+// validation fails as invalid_arguments.
+func (a ToolArguments) Canonical() jsonstable.Value {
+	if !a.Valid() {
+		raw, _ := json.Marshal(a.Text) //nolint:errchkjson // a string always marshals
+		return jsonstable.MustParse(string(raw))
 	}
-	v, err := jsonstable.Parse(raw)
-	if err != nil {
-		return jsonstable.MustParse("null")
+	if a.JSON.IsZero() {
+		return jsonstable.MustParse("{}")
 	}
-	return v
+	return a.JSON
+}
+
+// ToolOutput mirrors sdk.ToolOutput: what a tool returned, as text or as a
+// canonical JSON document. Exactly one field is set; the zero value is an
+// empty text output.
+type ToolOutput struct {
+	Text string           `json:"text,omitempty"`
+	JSON jsonstable.Value `json:"json,omitzero"`
 }

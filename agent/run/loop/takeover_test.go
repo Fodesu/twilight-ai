@@ -31,7 +31,7 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: req.Arguments}}
 		}}
 	call := sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 2},
-		ToolCalls: []sdk.ToolCall{{ToolCallID: "c1", ToolName: "slow", Input: `{"x":1}`}}}
+		ToolCalls: []sdk.ToolCall{{ToolCallID: "c1", ToolName: "slow", Input: sdk.ParseToolArguments(`{"x":1}`)}}}
 	first, err := newLoop(t, nil, fakeCatalog{&fakeInvoker{results: []sdk.ModelResult{call}}}, fakeToolCatalog{map[ToolRef]ExecutableTool{"slow": slow}},
 		staticBuilder{specs: []ToolSpec{spec}}, Settings{}, false)
 	if err != nil {

@@ -110,7 +110,7 @@ func TestCancelSettlesEveryUnfinishedToolCall(t *testing.T) {
 				}
 				providerID := "c" + string(rune('1'+i))
 				bindings[i] = makeBinding(t, modelStep, i, providerID, callSpec, `{}`)
-				result.ToolCalls = append(result.ToolCalls, sdk.ToolCall{ToolCallID: providerID, ToolName: callSpec.Name, Input: `{}`})
+				result.ToolCalls = append(result.ToolCalls, sdk.ToolCall{ToolCallID: providerID, ToolName: callSpec.Name, Input: sdk.ParseToolArguments(`{}`)})
 			}
 			frozen, err := sdkconv.FreezeModelResult(result)
 			if err != nil {

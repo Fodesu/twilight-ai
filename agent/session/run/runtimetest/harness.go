@@ -7,7 +7,6 @@ package runtimetest
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/run"
@@ -27,6 +26,7 @@ import (
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
+	"github.com/google/jsonschema-go/jsonschema"
 	"sync"
 	"testing"
 	"time"
@@ -375,7 +375,7 @@ func toolEffect(runID run.RunID, step run.StepID, call run.CallID) run.EffectID 
 
 // --- run building blocks ---------------------------------------------------------
 
-var toolDef = sdk.ToolDefinition{Name: "echo", Parameters: json.RawMessage(`{"type":"object"}`)}
+var toolDef = sdk.ToolDefinition{Name: "echo", Parameters: &jsonschema.Schema{Type: "object"}}
 
 func (h *harness) spec() run.ToolSpec {
 	h.t.Helper()
@@ -469,7 +469,7 @@ func (h *harness) toolCallResult(step run.StepID, n int) (model.ModelResult, []r
 	bindings := make([]run.ToolCallBinding, n)
 	for i := range calls {
 		args := run.MustParseCanonicalJSON(fmt.Sprintf(`{"i":%d}`, i))
-		calls[i] = sdk.ToolCall{ToolCallID: fmt.Sprintf("c%d", i), ToolName: "echo", Input: args.String()}
+		calls[i] = sdk.ToolCall{ToolCallID: fmt.Sprintf("c%d", i), ToolName: "echo", Input: sdk.ParseToolArguments(args.String())}
 		callID := schema.V1().Identity.DeriveCallID(step, i)
 		bd, err := schema.V1().Canonical.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
 		if err != nil {

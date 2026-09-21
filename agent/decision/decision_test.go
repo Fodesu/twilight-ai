@@ -154,7 +154,7 @@ func TestInputContentRoundTrip(t *testing.T) {
 
 func TestPromptRejectsUnpairedToolHistory(t *testing.T) {
 	content := fixedContent{results: map[es.Digest]model.ModelResult{
-		"sha256:call": {FinishReason: model.FinishReasonToolCalls, ToolCalls: []model.ModelToolCall{{ToolCallID: "provider-call", ToolName: "tool", Input: run.MustParseCanonicalJSON(`{}`)}}},
+		"sha256:call": {FinishReason: model.FinishReasonToolCalls, ToolCalls: []model.ModelToolCall{{ToolCallID: "provider-call", ToolName: "tool", Input: model.ToolArguments{JSON: run.MustParseCanonicalJSON(`{}`)}}}},
 		"sha256:none": {Text: "plain", FinishReason: model.FinishReasonStop},
 	}}
 	call := chatlog.Entry{Kind: chatlog.EntryAssistant, ID: "s1", Assistant: &chatlog.Assistant{ID: "s1", StepID: "s1", ResultDigest: "sha256:call", CallIDs: []chatlog.CallID{"call"}}}

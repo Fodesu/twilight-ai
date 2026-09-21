@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agent/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 var (
@@ -26,7 +27,7 @@ type targetTool struct {
 
 func (t *targetTool) Ref() run.ToolRef { return "lookup" }
 func (t *targetTool) Definition() sdk.ToolDefinition {
-	return sdk.ToolDefinition{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}
+	return sdk.ToolDefinition{Name: "lookup", Parameters: &jsonschema.Schema{Type: "object"}}
 }
 func (t *targetTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
 func (t *targetTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }

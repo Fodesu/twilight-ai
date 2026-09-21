@@ -19,6 +19,15 @@ import (
 // mustJSON is the test-side half of the seam change: the SDK resolves a tool's
 // Parameters into JSON Schema before a provider sees it, so a test that used to
 // hand the provider a Go schema value now hands it the resolved JSON.
+// mustSchema builds a schema from its JSON shape, for fixtures written as maps.
+func mustSchema(v any) *jsonschema.Schema {
+	var s jsonschema.Schema
+	if err := json.Unmarshal(mustJSON(v), &s); err != nil {
+		panic(err)
+	}
+	return &s
+}
+
 func mustJSON(v any) json.RawMessage {
 	encoded, err := json.Marshal(v)
 	if err != nil {
@@ -539,13 +548,13 @@ func TestDoGenerate_ToolCall(t *testing.T) {
 		Tools: []sdk.ToolDefinition{{
 			Name:        "get_weather",
 			Description: "Get the weather for a location",
-			Parameters: mustJSON(&jsonschema.Schema{
+			Parameters: &jsonschema.Schema{
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
 					"location": {Type: "string"},
 				},
 				Required: []string{"location"},
-			}),
+			},
 		}},
 		ToolChoice: sdk.ToolChoice{Mode: sdk.ToolChoiceAuto},
 	})
@@ -566,9 +575,9 @@ func TestDoGenerate_ToolCall(t *testing.T) {
 	if tc.ToolName != "get_weather" {
 		t.Errorf("tool name: got %q", tc.ToolName)
 	}
-	input, ok := tc.Input.(map[string]any)
-	if !ok {
-		t.Fatalf("input type: got %T", tc.Input)
+	var input map[string]any
+	if err := tc.Input.Unmarshal(&input); err != nil {
+		t.Fatalf("decode input: %v", err)
 	}
 	if input["location"] != "Beijing" {
 		t.Errorf("location: got %v", input["location"])
@@ -645,7 +654,7 @@ func TestDoGenerate_ToolCallMultiTurn(t *testing.T) {
 				Content: []sdk.MessagePart{sdk.ToolCallPart{
 					ToolCallID: "call_abc",
 					ToolName:   "get_weather",
-					Input:      map[string]any{"location": "Beijing"},
+					Input:      sdk.ParseToolArguments(`{"location":"Beijing"}`),
 				}},
 			},
 			{
@@ -653,7 +662,7 @@ func TestDoGenerate_ToolCallMultiTurn(t *testing.T) {
 				Content: []sdk.MessagePart{sdk.ToolResultPart{
 					ToolCallID: "call_abc",
 					ToolName:   "get_weather",
-					Result:     map[string]any{"temp": 25, "condition": "sunny"},
+					Result:     sdk.RawJSONOutput(json.RawMessage(`{"condition":"sunny","temp":25}`)),
 				}},
 			},
 		},
@@ -699,7 +708,7 @@ func TestDoStream_ToolCall(t *testing.T) {
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "Weather in Tokyo?"}},
 		}},
-		Tools: []sdk.ToolDefinition{{Name: "get_weather", Parameters: mustJSON(&jsonschema.Schema{Type: "object"})}},
+		Tools: []sdk.ToolDefinition{{Name: "get_weather", Parameters: &jsonschema.Schema{Type: "object"}}},
 	})
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
@@ -753,8 +762,8 @@ func TestDoStream_ToolCall(t *testing.T) {
 	} else if gotToolCall.ToolCallID != "call_xyz" || gotToolCall.ToolName != "get_weather" {
 		t.Errorf("tool call: %+v", gotToolCall)
 	}
-	input, ok := gotToolCall.Input.(map[string]any)
-	if !ok || input["location"] != "Tokyo" {
+	var input map[string]any
+	if err := gotToolCall.Input.Unmarshal(&input); err != nil || input["location"] != "Tokyo" {
 		t.Errorf("tool call input: %+v", gotToolCall.Input)
 	}
 	if !gotFinishStep {
@@ -1437,13 +1446,13 @@ func TestIntegration_Reasoning_ToolCall(t *testing.T) {
 		Tools: []sdk.ToolDefinition{{
 			Name:        "get_weather",
 			Description: "Get the current weather for a city",
-			Parameters: mustJSON(&jsonschema.Schema{
+			Parameters: &jsonschema.Schema{
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
 					"city": {Type: "string", Description: "City name"},
 				},
 				Required: []string{"city"},
-			}),
+			},
 		}},
 		ToolChoice: sdk.ToolChoice{Mode: sdk.ToolChoiceAuto},
 	})
@@ -1537,9 +1546,7 @@ func TestProviderTest_OK(t *testing.T) {
 func TestProviderTest_Unhealthy(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{"message": "invalid api key"},
-		})
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "invalid api key"}})
 	}))
 	defer srv.Close()
 
@@ -1595,9 +1602,7 @@ func TestTestModel_Supported(t *testing.T) {
 func TestTestModel_NotSupported(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{"message": "model not found"},
-		})
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "model not found"}})
 	}))
 	defer srv.Close()
 
@@ -1715,7 +1720,7 @@ func TestDoGenerate_MiniMaxCompatMapsReasoningEffortToAdaptiveThinking(t *testin
 	}
 }
 
-func TestGenerateTextResult_MiniMaxReasoningDetailsPreserved(t *testing.T) {
+func TestGenerate_MiniMaxReasoningDetailsPreserved(t *testing.T) {
 	var call int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		call++
@@ -1775,29 +1780,21 @@ func TestGenerateTextResult_MiniMaxReasoningDetailsPreserved(t *testing.T) {
 		completions.WithMiniMaxChatCompletionsCompat(),
 	)
 	model := p.ChatModel("MiniMax-M3")
-
-	result, err := sdk.GenerateTextResult(
-		context.Background(),
-		sdk.WithModel(model),
-		sdk.WithMessages([]sdk.Message{sdk.UserMessage("hi")}),
-	)
+	result, err := sdk.Generate(context.Background(), model, sdk.Request{Messages: []sdk.Message{sdk.UserMessage("hi")}})
 	if err != nil {
-		t.Fatalf("GenerateTextResult: %v", err)
+		t.Fatalf("Generate: %v", err)
 	}
 	if result.Reasoning != "Let me think" {
 		t.Fatalf("reasoning: got %q", result.Reasoning)
 	}
-
-	history := make([]sdk.Message, 0, 1+len(result.Messages)+1)
+	// The caller assembles the step's messages and replays them: the reasoning
+	// details must come back on the assistant message of the second request.
+	history := make([]sdk.Message, 0, 4)
 	history = append(history, sdk.UserMessage("hi"))
-	history = append(history, result.Messages...)
+	history = append(history, sdk.BuildStepMessages(result.Text, result.TextProviderMetadata, result.ReasoningParts, result.ToolCalls, nil, &result.Usage)...)
 	history = append(history, sdk.UserMessage("continue"))
-	if _, err := sdk.GenerateTextResult(
-		context.Background(),
-		sdk.WithModel(model),
-		sdk.WithMessages(history),
-	); err != nil {
-		t.Fatalf("second GenerateTextResult: %v", err)
+	if _, err := sdk.Generate(context.Background(), model, sdk.Request{Messages: history}); err != nil {
+		t.Fatalf("second Generate: %v", err)
 	}
 }
 
@@ -1843,7 +1840,7 @@ func TestDoStream_MiniMaxReasoningDetails(t *testing.T) {
 	}
 
 	var reasoning, text string
-	var reasoningMeta map[string]any
+	var reasoningMeta sdk.ProviderMetadata
 	for part := range sr {
 		switch p := part.(type) {
 		case *sdk.ReasoningDeltaPart:
@@ -1871,18 +1868,14 @@ func TestDoStream_MiniMaxReasoningDetails(t *testing.T) {
 	}
 }
 
-func minimaxReasoningDetailsFromTestMetadata(t *testing.T, meta map[string]any) []map[string]any {
+func minimaxReasoningDetailsFromTestMetadata(t *testing.T, meta sdk.ProviderMetadata) []map[string]any {
 	t.Helper()
-	minimax, ok := meta["minimax"].(map[string]any)
-	if !ok {
+	raw := meta.Get("minimax", "reasoning_details")
+	if raw == "" {
 		t.Fatalf("expected minimax metadata, got %#v", meta)
 	}
-	raw, err := json.Marshal(minimax["reasoning_details"])
-	if err != nil {
-		t.Fatalf("marshal reasoning_details metadata: %v", err)
-	}
 	var details []map[string]any
-	if err := json.Unmarshal(raw, &details); err != nil {
+	if err := json.Unmarshal([]byte(raw), &details); err != nil {
 		t.Fatalf("unmarshal reasoning_details metadata: %v", err)
 	}
 	return details
@@ -1900,7 +1893,7 @@ func kimiAnyOfTool() sdk.ToolDefinition {
 	return sdk.ToolDefinition{
 		Name:        "attach_file",
 		Description: "Attach a file",
-		Parameters: mustJSON(&jsonschema.Schema{
+		Parameters: &jsonschema.Schema{
 			Type: "object",
 			Properties: map[string]*jsonschema.Schema{
 				"attachments": {
@@ -1915,7 +1908,7 @@ func kimiAnyOfTool() sdk.ToolDefinition {
 				},
 			},
 			Required: []string{"attachments"},
-		}),
+		},
 	}
 }
 
@@ -1923,7 +1916,7 @@ func kimiMemohAttachmentTool() sdk.ToolDefinition {
 	return sdk.ToolDefinition{
 		Name:        "send_message",
 		Description: "Send attachments",
-		Parameters: mustJSON(map[string]any{
+		Parameters: mustSchema(map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"attachments": map[string]any{

@@ -2,7 +2,6 @@ package loop
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"sync/atomic"
@@ -12,6 +11,7 @@ import (
 	"github.com/felinics/twilight/agent/run/model/sdkconv"
 	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/sdk"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 func TestRegressionToolPanicBecomesUnknown(t *testing.T) {
@@ -69,7 +69,7 @@ func TestRegressionRunFinishedEmitted(t *testing.T) {
 }
 
 func TestRegressionAliasedToolRefExecutes(t *testing.T) {
-	def := sdk.ToolDefinition{Name: "read", Parameters: json.RawMessage(`{"type":"object"}`)}
+	def := sdk.ToolDefinition{Name: "read", Parameters: &jsonschema.Schema{Type: "object"}}
 	frozenDef, err := sdkconv.FreezeToolDefinition(def)
 	if err != nil {
 		t.Fatal(err)
@@ -88,7 +88,7 @@ func TestRegressionAliasedToolRefExecutes(t *testing.T) {
 	invoker := &fakeInvoker{results: []sdk.ModelResult{
 		func() sdk.ModelResult {
 			r := sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls}
-			r.ToolCalls = []sdk.ToolCall{{ToolCallID: "c1", ToolName: "read", Input: `{}`}}
+			r.ToolCalls = []sdk.ToolCall{{ToolCallID: "c1", ToolName: "read", Input: sdk.ParseToolArguments(`{}`)}}
 			return r
 		}(),
 		textResult("done"),

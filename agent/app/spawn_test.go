@@ -26,7 +26,7 @@ import (
 
 func spawnCall(args string) sdk.ModelResult {
 	return sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 1},
-		ToolCalls: []sdk.ToolCall{{ToolCallID: "c1", ToolName: string(spawn.DefaultTool), Input: args}}}
+		ToolCalls: []sdk.ToolCall{{ToolCallID: "c1", ToolName: string(spawn.DefaultTool), Input: sdk.ParseToolArguments(args)}}}
 }
 
 func text(s string) sdk.ModelResult {

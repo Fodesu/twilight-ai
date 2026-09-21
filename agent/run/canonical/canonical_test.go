@@ -1,30 +1,42 @@
 package canonical
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/model/sdkconv"
 	"github.com/felinics/twilight/agent/run/wire"
+	"github.com/felinics/twilight/sdk"
 )
 
-func TestFreezeToolCallInputPreservesMalformedJSONText(t *testing.T) {
-	for _, input := range []any{`{"x":`, json.RawMessage(`{"x":`)} {
-		got, err := sdkconv.FreezeToolCallInput(input)
-		if err != nil {
-			t.Fatalf("FreezeToolCallInput(%T): %v", input, err)
-		}
-		if got.String() != `"{\"x\":"` {
-			t.Fatalf("FreezeToolCallInput(%T) = %s", input, got.String())
-		}
+func TestFreezeToolArgumentsBindingForm(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+		want string // Canonical() of the frozen arguments; "" rejects
+	}{
+		{"document", `{ "x" : 1 }`, `{"x":1}`},
+		{"empty is the empty object", "", `{}`},
+		{"malformed text is quoted", `{"x":`, `"{\"x\":"`},
+		{"invalid utf-8 is rejected", string([]byte{0xff}), ""},
 	}
-
-	for _, input := range []any{string([]byte{0xff}), json.RawMessage{0xff}} {
-		if _, err := sdkconv.FreezeToolCallInput(input); err == nil {
-			t.Fatalf("FreezeToolCallInput(%T) accepted invalid UTF-8", input)
-		}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := sdkconv.FreezeToolArguments(sdk.ParseToolArguments(tc.text))
+			if tc.want == "" {
+				if err == nil {
+					t.Fatalf("FreezeToolArguments accepted %q", tc.text)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Canonical().String() != tc.want {
+				t.Fatalf("Canonical() = %s, want %s", got.Canonical().String(), tc.want)
+			}
+		})
 	}
 }
 

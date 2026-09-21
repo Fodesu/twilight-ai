@@ -16,7 +16,7 @@ type VideoProvider interface {
 type VideoModel struct {
 	ID               string
 	Provider         VideoProvider
-	ProviderMetadata map[string]any
+	ProviderMetadata ProviderMetadata
 }
 
 // MediaInput represents an input media asset for video generation.
@@ -81,7 +81,7 @@ type VideoJob struct {
 	Progress         *float64
 	Outputs          []VideoOutput
 	Error            *VideoError
-	ProviderMetadata map[string]any
+	ProviderMetadata ProviderMetadata
 }
 
 // VideoOutput describes a generated video or related downloadable asset.
@@ -92,7 +92,7 @@ type VideoOutput struct {
 	Height           int
 	DurationSeconds  float64
 	HasAudio         bool
-	ProviderMetadata map[string]any
+	ProviderMetadata ProviderMetadata
 }
 
 // VideoError is a provider-normalized error payload for failed jobs.

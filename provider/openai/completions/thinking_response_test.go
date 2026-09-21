@@ -119,7 +119,7 @@ func TestDoStream_ReasoningContentMarkers(t *testing.T) {
 // "reasoning_content": "" (thinking mode, no reasoning produced); step 2
 // answers with text and no key at all. The empty key must be recorded as a
 // ReasoningPart and replayed on the second request, the absent key must not.
-func TestGenerateTextResult_EmptyReasoningStepReplaysKey(t *testing.T) {
+func TestGenerate_EmptyReasoningStepReplaysKey(t *testing.T) {
 	var call int
 	var secondRequest []map[string]json.RawMessage
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -149,40 +149,50 @@ func TestGenerateTextResult_EmptyReasoningStepReplaysKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// This test drives the legacy options API, which is the one place tool
-	// execution belongs: the closure never crosses the provider seam.
+	// Two single calls on the seam: the caller executes the tool between
+	// them and assembles the step's messages for the replay.
 	tool := sdk.Tool{
 		Name:        "get_weather",
 		Description: "Get weather",
-		Parameters: map[string]any{
+		Parameters: mustSchema(map[string]any{
 			"type":       "object",
 			"properties": map[string]any{"city": map[string]any{"type": "string"}},
+		}),
+		Execute: func(ctx *sdk.ToolExecContext, input sdk.ToolArguments) (sdk.ToolOutput, error) {
+			return sdk.TextOutput("18C"), nil
 		},
-		Execute: func(ctx *sdk.ToolExecContext, input any) (any, error) { return "18C", nil },
 	}
-
-	p := completions.New(completions.WithAPIKey("k"), completions.WithBaseURL(srv.URL))
-	result, err := sdk.GenerateTextResult(
-		context.Background(),
-		sdk.WithModel(p.ChatModel("deepseek-v4-flash")),
-		sdk.WithMessages([]sdk.Message{sdk.UserMessage("Weather in Paris?")}),
-		sdk.WithTools([]sdk.Tool{tool}),
-		sdk.WithMaxSteps(3),
-	)
+	defs, err := sdk.ToolDefinitionsFromTools([]sdk.Tool{tool})
 	if err != nil {
-		t.Fatalf("GenerateTextResult: %v", err)
+		t.Fatal(err)
 	}
-	if result.Text != "Paris is 18C." || call != 2 || len(result.Steps) != 2 {
-		t.Fatalf("text %q after %d calls, %d steps", result.Text, call, len(result.Steps))
+	p := completions.New(completions.WithAPIKey("k"), completions.WithBaseURL(srv.URL))
+	model := p.ChatModel("deepseek-v4-flash")
+	ctx := context.Background()
+	messages := make([]sdk.Message, 0, 4)
+	messages = append(messages, sdk.UserMessage("Weather in Paris?"))
+	step1, err := sdk.Generate(ctx, model, sdk.Request{Messages: messages, Tools: defs})
+	if err != nil {
+		t.Fatalf("Generate step 1: %v", err)
 	}
-
-	if parts := result.Steps[0].ReasoningParts; len(parts) != 1 || parts[0].Text != "" || parts[0].Format != sdk.ReasoningFormatOpenAIChat {
+	if parts := step1.ReasoningParts; len(parts) != 1 || parts[0].Text != "" || parts[0].Format != sdk.ReasoningFormatOpenAIChat {
 		t.Fatalf("step 1 reasoning parts: got %#v, want one empty openai-chat-v1 part", parts)
 	}
-	if parts := result.Steps[1].ReasoningParts; len(parts) != 0 {
+	outcome, err := sdk.ExecuteTools(ctx, step1.ToolCalls, sdk.ToolExecOptions{Tools: []sdk.Tool{tool}})
+	if err != nil {
+		t.Fatalf("ExecuteTools: %v", err)
+	}
+	messages = append(messages, sdk.BuildStepMessages(step1.Text, step1.TextProviderMetadata, step1.ReasoningParts, step1.ToolCalls, outcome.Results, &step1.Usage)...)
+	step2, err := sdk.Generate(ctx, model, sdk.Request{Messages: messages, Tools: defs})
+	if err != nil {
+		t.Fatalf("Generate step 2: %v", err)
+	}
+	if step2.Text != "Paris is 18C." || call != 2 {
+		t.Fatalf("text %q after %d calls", step2.Text, call)
+	}
+	if parts := step2.ReasoningParts; len(parts) != 0 {
 		t.Fatalf("step 2 reasoning parts: got %#v, want none when the key is absent", parts)
 	}
-
 	if len(secondRequest) != 3 {
 		t.Fatalf("second request: expected user, assistant, tool messages, got %d", len(secondRequest))
 	}

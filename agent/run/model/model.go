@@ -4,10 +4,10 @@ import (
 	"github.com/felinics/twilight/agent/jsonstable"
 )
 
-// ProviderMetadata is the agent's persisted representation of provider-owned
-// opaque metadata. Each namespace value is immutable canonical JSON: callers
-// may keep mutating their sdk map, but runtime events/state own these values.
-type ProviderMetadata map[string]jsonstable.Value
+// ProviderMetadata is the agent's persisted copy of provider-owned opaque
+// tokens: namespace, then token name, then the token as a string. It has the
+// shape of sdk.ProviderMetadata; runtime events and state own their copy.
+type ProviderMetadata map[string]map[string]string
 
 type CacheControl struct {
 	Type string `json:"type"`
@@ -66,11 +66,11 @@ type MessagePart struct {
 	Filename  string `json:"filename,omitempty"`
 
 	// Tool call / result.
-	ToolCallID string           `json:"toolCallId,omitempty"`
-	ToolName   string           `json:"toolName,omitempty"`
-	Input      jsonstable.Value `json:"input,omitzero"`
-	Result     jsonstable.Value `json:"result,omitzero"`
-	IsError    bool             `json:"isError,omitempty"`
+	ToolCallID string        `json:"toolCallId,omitempty"`
+	ToolName   string        `json:"toolName,omitempty"`
+	Input      ToolArguments `json:"input,omitzero"`
+	Result     ToolOutput    `json:"result,omitzero"`
+	IsError    bool          `json:"isError,omitempty"`
 
 	CacheControl     *CacheControl    `json:"cacheControl,omitempty"`
 	ProviderMetadata ProviderMetadata `json:"providerMetadata,omitempty"`
@@ -218,7 +218,7 @@ type GeneratedFile struct {
 type ModelToolCall struct {
 	ToolCallID       string           `json:"toolCallId"`
 	ToolName         string           `json:"toolName"`
-	Input            jsonstable.Value `json:"input"`
+	Input            ToolArguments    `json:"input"`
 	ProviderMetadata ProviderMetadata `json:"providerMetadata,omitempty"`
 }
 

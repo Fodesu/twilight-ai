@@ -71,7 +71,7 @@ func (m *Model) Generate(ctx context.Context, req Request) (ModelResult, error) 
 	}
 	// A streamed call returns through the same hardening, so both paths answer
 	// with the same representation.
-	return hardenResult(result), nil
+	return hardenResult(&result), nil
 }
 
 // Stream performs exactly one provider streaming model call. Result must be

@@ -86,11 +86,11 @@ func TestInstructionCannotInterruptToolExchange(t *testing.T) {
 				Content: []sdk.MessagePart{sdk.ToolCallPart{
 					ToolCallID: "call-1",
 					ToolName:   "lookup",
-					Input:      map[string]any{"q": "value"},
+					Input:      sdk.ParseToolArguments(`{"q":"value"}`),
 				}},
 			},
 			sdk.DeveloperMessage("new policy"),
-			sdk.ToolMessage(sdk.ToolResultPart{ToolCallID: "call-1", ToolName: "lookup", Result: "ok"}),
+			sdk.ToolMessage(sdk.ToolResultPart{ToolCallID: "call-1", ToolName: "lookup", Result: sdk.TextOutput("ok")}),
 		},
 	}
 

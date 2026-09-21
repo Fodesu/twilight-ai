@@ -324,11 +324,7 @@ func (m MachineV1) checkBindingAgainstResult(b *ToolCallBinding, rc *model.Model
 			return rejectionf("model result: unresolved binding %q must be DirectExecution with empty digest", b.CallID)
 		}
 	}
-	wantArgs, argsCanonical := canonicalArgumentsForCompare(rc.Input)
-	if !argsCanonical {
-		return rejectionf("model result: call %q input is not frozen canonical JSON", b.CallID)
-	}
-	if !b.Arguments.Equal(wantArgs) {
+	if !b.Arguments.Equal(rc.Input.Canonical()) {
 		return rejectionf("model result: binding %q arguments do not match the model result", b.CallID)
 	}
 	wantBinding, err := m.Canonical.DigestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
@@ -380,17 +376,6 @@ func (m MachineV1) openToolStep(runID RunID, source StepID, bindings []ToolCallB
 		Calls:            bindings,
 		Scheduling:       normalized,
 	}, nil
-}
-
-// canonicalArgumentsForCompare canonicalizes a model result's tool input for
-// cross-checking a binding. The second return is false when the command did
-// not carry a frozen JSON-stable tool input; Runtime commits reject that shape.
-func canonicalArgumentsForCompare(input any) (CanonicalJSON, bool) {
-	got, err := model.CanonicalToolArguments(input)
-	if err != nil {
-		return CanonicalJSON{}, false
-	}
-	return got, true
 }
 
 // --- rule 4: SubmitModelFailure ---

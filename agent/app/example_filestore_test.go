@@ -15,6 +15,7 @@ import (
 	"github.com/felinics/twilight/agent/session/filestore"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // Example_jsonlPrototype is the full prototype on the JSONL file store: one
@@ -181,7 +182,7 @@ func Example_jsonlPrototype() {
 
 func protoToolCall(id string) sdk.ModelResult {
 	return sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 1},
-		ToolCalls: []sdk.ToolCall{{ToolCallID: id, ToolName: "lookup", Input: `{"q":"weather"}`}}}
+		ToolCalls: []sdk.ToolCall{{ToolCallID: id, ToolName: "lookup", Input: sdk.ParseToolArguments(`{"q":"weather"}`)}}}
 }
 
 func protoText(text string) sdk.ModelResult {
@@ -210,7 +211,7 @@ func (t *stagedTool) stage() *toolStage {
 
 func (t *stagedTool) Ref() run.ToolRef { return "lookup" }
 func (t *stagedTool) Definition() sdk.ToolDefinition {
-	return sdk.ToolDefinition{Name: "lookup", Parameters: []byte(`{"type":"object","properties":{"q":{"type":"string"}}}`)}
+	return sdk.ToolDefinition{Name: "lookup", Parameters: &jsonschema.Schema{Type: "object", Properties: map[string]*jsonschema.Schema{"q": {Type: "string"}}}}
 }
 func (t *stagedTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
 func (t *stagedTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }

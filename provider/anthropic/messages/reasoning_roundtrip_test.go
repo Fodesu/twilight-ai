@@ -15,14 +15,9 @@ import (
 // partially dropped, and that includes redacted_thinking. Each block must
 // therefore survive parsing with its own signature attached.
 
-func anthropicMeta(t *testing.T, meta map[string]any, key string) string {
+func anthropicMeta(t *testing.T, meta sdk.ProviderMetadata, key string) string {
 	t.Helper()
-	am, ok := meta["anthropic"].(map[string]any)
-	if !ok {
-		return ""
-	}
-	value, _ := am[key].(string)
-	return value
+	return meta.Get("anthropic", key)
 }
 
 func TestParseResponseKeepsEveryThinkingBlockSignature(t *testing.T) {
@@ -93,11 +88,11 @@ func TestConvertAssistantMessageReplaysThinkingAndRedactedBlocks(t *testing.T) {
 			sdk.ReasoningPart{
 				Text:             "AAA",
 				Format:           sdk.ReasoningFormatAnthropic,
-				ProviderMetadata: map[string]any{"anthropic": map[string]any{"signature": "SIG_A"}},
+				ProviderMetadata: sdk.ProviderMetadata{"anthropic": {"signature": "SIG_A"}},
 			},
 			sdk.ReasoningPart{
 				Format:           sdk.ReasoningFormatAnthropic,
-				ProviderMetadata: map[string]any{"anthropic": map[string]any{"redactedData": "ENCRYPTED_BLOB"}},
+				ProviderMetadata: sdk.ProviderMetadata{"anthropic": {"redactedData": "ENCRYPTED_BLOB"}},
 			},
 			sdk.TextPart{Text: "answer"},
 		},
@@ -152,7 +147,7 @@ func TestConvertAssistantMessageDropsForeignReasoning(t *testing.T) {
 			sdk.ReasoningPart{
 				Text:             "reasoning from another provider",
 				Format:           sdk.ReasoningFormatOpenAIResponses,
-				ProviderMetadata: map[string]any{"openai": map[string]any{"itemId": "rs_1"}},
+				ProviderMetadata: sdk.ProviderMetadata{"openai": {"itemId": "rs_1"}},
 			},
 			sdk.TextPart{Text: "answer"},
 		},
@@ -244,7 +239,7 @@ func TestConvertAssistantMessageDropsUnmarkedReasoning(t *testing.T) {
 		Content: []sdk.MessagePart{
 			sdk.ReasoningPart{
 				Text:             "legacy reasoning",
-				ProviderMetadata: map[string]any{"anthropic": map[string]any{"signature": "SIG_OLD"}},
+				ProviderMetadata: sdk.ProviderMetadata{"anthropic": {"signature": "SIG_OLD"}},
 			},
 			sdk.TextPart{Text: "answer"},
 		},
@@ -359,7 +354,7 @@ func TestConvertAssistantMessageDropsBlocksFromAnotherModel(t *testing.T) {
 				Text:             "signed by sonnet 5",
 				Format:           sdk.ReasoningFormatAnthropic,
 				Model:            "anthropic/claude-sonnet-5",
-				ProviderMetadata: map[string]any{"anthropic": map[string]any{"signature": "SIG_S5"}},
+				ProviderMetadata: sdk.ProviderMetadata{"anthropic": {"signature": "SIG_S5"}},
 			},
 			sdk.TextPart{Text: "answer"},
 		},
@@ -382,7 +377,7 @@ func TestConvertAssistantMessageKeepsBlocksAcrossSpellings(t *testing.T) {
 				Text:             "signed by sonnet 5",
 				Format:           sdk.ReasoningFormatAnthropic,
 				Model:            "anthropic/claude-sonnet-5",
-				ProviderMetadata: map[string]any{"anthropic": map[string]any{"signature": "SIG_S5"}},
+				ProviderMetadata: sdk.ProviderMetadata{"anthropic": {"signature": "SIG_S5"}},
 			},
 			sdk.TextPart{Text: "answer"},
 		},
@@ -404,7 +399,7 @@ func TestConvertAssistantMessageKeepsLegacyBlocksWithoutModel(t *testing.T) {
 			sdk.ReasoningPart{
 				Text:             "pre-field block",
 				Format:           sdk.ReasoningFormatAnthropic,
-				ProviderMetadata: map[string]any{"anthropic": map[string]any{"signature": "SIG"}},
+				ProviderMetadata: sdk.ProviderMetadata{"anthropic": {"signature": "SIG"}},
 			},
 			sdk.TextPart{Text: "answer"},
 		},
@@ -428,7 +423,7 @@ func TestConvertAssistantMessageKeepsEmptyThinkingKeyOnWire(t *testing.T) {
 				Text:             "",
 				Format:           sdk.ReasoningFormatAnthropic,
 				Model:            "claude-sonnet-5",
-				ProviderMetadata: map[string]any{"anthropic": map[string]any{"signature": "SIG"}},
+				ProviderMetadata: sdk.ProviderMetadata{"anthropic": {"signature": "SIG"}},
 			},
 			sdk.TextPart{Text: "answer"},
 		},

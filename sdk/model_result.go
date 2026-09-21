@@ -13,7 +13,7 @@ type ModelResult struct {
 	// (e.g. a Google thought signature on a no-tool-call response). The
 	// caller-side result type drops this field when it serializes; ModelResult
 	// keeps it, because it is persisted inside AgentEvents and must round-trip.
-	TextProviderMetadata map[string]any `json:"textProviderMetadata,omitempty"`
+	TextProviderMetadata ProviderMetadata `json:"textProviderMetadata,omitempty"`
 
 	FinishReason    FinishReason `json:"finishReason"`
 	RawFinishReason string       `json:"rawFinishReason,omitempty"`

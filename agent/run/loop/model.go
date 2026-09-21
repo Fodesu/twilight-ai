@@ -250,10 +250,11 @@ func (l *Loop) bindToolCalls(sch schema.Schema, result *sdk.ModelResult, step *r
 	}
 	bindings := make([]run.ToolCallBinding, len(result.ToolCalls))
 	for i, tc := range result.ToolCalls {
-		args, err := sdkconv.FreezeToolCallInput(tc.Input)
+		input, err := sdkconv.FreezeToolArguments(tc.Input)
 		if err != nil {
 			return nil, fmt.Errorf("tool call %d (%q) input: %w", i, tc.ToolCallID, err)
 		}
+		args := input.Canonical()
 		// The Run's CallID derives from the step and position; the provider's
 		// id is carried for the round trip only, so a provider that repeats or
 		// omits ids cannot break identity here.

@@ -33,6 +33,7 @@ import (
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // DefaultTool is the ToolRef the model calls to start a subagent.
@@ -170,11 +171,16 @@ func (t tool) Definition() sdk.ToolDefinition {
 	return sdk.ToolDefinition{
 		Name:        string(t.ref),
 		Description: "Delegate a task to a subagent that runs in its own session and returns its final reply. mode \"fork\" starts it from this conversation's history before the current turn; \"spawn\" (default) starts it empty.",
-		Parameters: json.RawMessage(`{"type":"object","properties":{` +
-			`"task":{"type":"string","description":"What the subagent should do."},` +
-			`"mode":{"type":"string","enum":["spawn","fork"]},` +
-			`"preset":{"type":"string","description":"Optional named preset the subagent runs under."}},` +
-			`"required":["task"],"additionalProperties":false}`),
+		Parameters: &jsonschema.Schema{
+			Type: "object",
+			Properties: map[string]*jsonschema.Schema{
+				"task":   {Type: "string", Description: "What the subagent should do."},
+				"mode":   {Type: "string", Enum: []any{"spawn", "fork"}},
+				"preset": {Type: "string", Description: "Optional named preset the subagent runs under."},
+			},
+			Required:             []string{"task"},
+			AdditionalProperties: &jsonschema.Schema{Not: &jsonschema.Schema{}},
+		},
 	}
 }
 

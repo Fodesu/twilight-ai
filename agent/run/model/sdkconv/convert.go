@@ -16,42 +16,66 @@ func freezeRawJSON(raw json.RawMessage) (jsonstable.Value, error) {
 	return jsonstable.Parse(raw)
 }
 
-func freezeJSONValue(v any) (jsonstable.Value, error) {
-	return jsonstable.FromValue(v)
+// FreezeProviderMetadata copies the SDK's string tokens into the persisted
+// map; nil stays nil.
+func FreezeProviderMetadata(meta sdk.ProviderMetadata) model.ProviderMetadata {
+	return model.ProviderMetadata(meta.Clone())
 }
 
-func decodeJSONValue(raw jsonstable.Value) (any, error) {
-	return raw.Any()
+// ProviderMetadata copies the persisted tokens back into an SDK map; nil
+// stays nil.
+func ProviderMetadata(m model.ProviderMetadata) sdk.ProviderMetadata {
+	return sdk.ProviderMetadata(m).Clone()
 }
 
-func FreezeProviderMetadata(meta map[string]any) (model.ProviderMetadata, error) {
-	if meta == nil {
-		return nil, nil
-	}
-	out := make(model.ProviderMetadata, len(meta))
-	for k, v := range meta {
-		raw, err := freezeJSONValue(v)
-		if err != nil {
-			return nil, fmt.Errorf("provider metadata %q: %w", k, err)
+// FreezeToolArguments freezes the arguments of a tool call. A JSON document
+// is canonicalized; invalid argument text is kept verbatim, except that text
+// which is not valid UTF-8 cannot be persisted as the model wrote it (JSON
+// would rewrite it) and is rejected.
+func FreezeToolArguments(a sdk.ToolArguments) (model.ToolArguments, error) {
+	if !a.Valid() {
+		if !utf8.ValidString(a.Text) {
+			return model.ToolArguments{}, fmt.Errorf("tool arguments are not valid UTF-8")
 		}
-		out[k] = raw
+		return model.ToolArguments{Text: a.Text}, nil
 	}
-	return out, nil
+	doc, err := freezeRawJSON(a.Object())
+	if err != nil {
+		return model.ToolArguments{}, err
+	}
+	return model.ToolArguments{JSON: doc}, nil
 }
 
-func ProviderMetadata(m model.ProviderMetadata) (map[string]any, error) {
-	if m == nil {
-		return nil, nil
+// ToolArguments converts persisted arguments back to the SDK value.
+func ToolArguments(a model.ToolArguments) sdk.ToolArguments {
+	if !a.Valid() {
+		return sdk.ToolArguments{Text: a.Text}
 	}
-	out := make(map[string]any, len(m))
-	for k, raw := range m {
-		v, err := decodeJSONValue(raw)
+	return sdk.ToolArguments{JSON: a.Canonical().RawMessage()}
+}
+
+// FreezeToolOutput freezes what a tool returned: a JSON document is
+// canonicalized, text is kept verbatim and must be valid UTF-8.
+func FreezeToolOutput(o sdk.ToolOutput) (model.ToolOutput, error) {
+	if o.IsJSON() {
+		doc, err := freezeRawJSON(o.JSON)
 		if err != nil {
-			return nil, fmt.Errorf("provider metadata %q: %w", k, err)
+			return model.ToolOutput{}, err
 		}
-		out[k] = v
+		return model.ToolOutput{JSON: doc}, nil
 	}
-	return out, nil
+	if !utf8.ValidString(o.Text) {
+		return model.ToolOutput{}, fmt.Errorf("tool output is not valid UTF-8")
+	}
+	return model.ToolOutput{Text: o.Text}, nil
+}
+
+// ToolOutput converts a persisted tool output back to the SDK value.
+func ToolOutput(o model.ToolOutput) sdk.ToolOutput {
+	if !o.JSON.IsZero() {
+		return sdk.RawJSONOutput(o.JSON.RawMessage())
+	}
+	return sdk.TextOutput(o.Text)
 }
 
 func FreezeCacheControl(c *sdk.CacheControl) *model.CacheControl {
@@ -68,10 +92,19 @@ func CacheControl(c *model.CacheControl) *sdk.CacheControl {
 	return &sdk.CacheControl{Type: c.Type, TTL: c.TTL}
 }
 
+// FreezeToolDefinition renders the definition's schema as canonical JSON; a
+// definition without a schema freezes with zero Parameters.
 func FreezeToolDefinition(def sdk.ToolDefinition) (model.ToolDefinition, error) {
-	params, err := freezeRawJSON(def.Parameters)
-	if err != nil {
-		return model.ToolDefinition{}, fmt.Errorf("tool definition parameters: %w", err)
+	var params jsonstable.Value
+	if def.Parameters != nil {
+		raw, err := json.Marshal(def.Parameters)
+		if err != nil {
+			return model.ToolDefinition{}, fmt.Errorf("tool definition parameters: %w", err)
+		}
+		params, err = freezeRawJSON(raw)
+		if err != nil {
+			return model.ToolDefinition{}, fmt.Errorf("tool definition parameters: %w", err)
+		}
 	}
 	return model.ToolDefinition{
 		Name:         def.Name,
@@ -81,13 +114,22 @@ func FreezeToolDefinition(def sdk.ToolDefinition) (model.ToolDefinition, error) 
 	}, nil
 }
 
-func ToolDefinition(d model.ToolDefinition) sdk.ToolDefinition {
+// ToolDefinition decodes the persisted schema back into the SDK's schema
+// type; a persisted schema always decodes, since it was encoded from one.
+func ToolDefinition(d model.ToolDefinition) (sdk.ToolDefinition, error) {
+	var schema *jsonschema.Schema
+	if !d.Parameters.IsZero() {
+		schema = new(jsonschema.Schema)
+		if err := json.Unmarshal(d.Parameters.Bytes(), schema); err != nil {
+			return sdk.ToolDefinition{}, fmt.Errorf("tool definition %q parameters: %w", d.Name, err)
+		}
+	}
 	return sdk.ToolDefinition{
 		Name:         d.Name,
 		Description:  d.Description,
-		Parameters:   d.Parameters.RawMessage(),
+		Parameters:   schema,
 		CacheControl: CacheControl(d.CacheControl),
-	}
+	}, nil
 }
 
 func FreezeResponseFormat(f *sdk.ResponseFormat) (*model.ResponseFormat, error) {
@@ -134,22 +176,14 @@ func ToolChoice(c model.ToolChoice) sdk.ToolChoice {
 func FreezeMessagePart(p sdk.MessagePart) (model.MessagePart, error) {
 	switch part := p.(type) {
 	case sdk.TextPart:
-		meta, err := FreezeProviderMetadata(part.ProviderMetadata)
-		if err != nil {
-			return model.MessagePart{}, err
-		}
-		return model.MessagePart{Type: model.MessagePartTypeText, Text: part.Text, CacheControl: FreezeCacheControl(part.CacheControl), ProviderMetadata: meta}, nil
+		return model.MessagePart{Type: model.MessagePartTypeText, Text: part.Text, CacheControl: FreezeCacheControl(part.CacheControl), ProviderMetadata: FreezeProviderMetadata(part.ProviderMetadata)}, nil
 	case *sdk.TextPart:
 		if part == nil {
 			return model.MessagePart{}, fmt.Errorf("nil *sdk.TextPart")
 		}
 		return FreezeMessagePart(*part)
 	case sdk.ReasoningPart:
-		meta, err := FreezeProviderMetadata(part.ProviderMetadata)
-		if err != nil {
-			return model.MessagePart{}, err
-		}
-		return model.MessagePart{Type: model.MessagePartTypeReasoning, ID: part.ID, Text: part.Text, Format: model.ReasoningFormat(part.Format), Model: part.Model, ProviderMetadata: meta}, nil
+		return model.MessagePart{Type: model.MessagePartTypeReasoning, ID: part.ID, Text: part.Text, Format: model.ReasoningFormat(part.Format), Model: part.Model, ProviderMetadata: FreezeProviderMetadata(part.ProviderMetadata)}, nil
 	case *sdk.ReasoningPart:
 		if part == nil {
 			return model.MessagePart{}, fmt.Errorf("nil *sdk.ReasoningPart")
@@ -170,22 +204,18 @@ func FreezeMessagePart(p sdk.MessagePart) (model.MessagePart, error) {
 		}
 		return FreezeMessagePart(*part)
 	case sdk.ToolCallPart:
-		input, err := FreezeToolCallInput(part.Input)
+		input, err := FreezeToolArguments(part.Input)
 		if err != nil {
 			return model.MessagePart{}, err
 		}
-		meta, err := FreezeProviderMetadata(part.ProviderMetadata)
-		if err != nil {
-			return model.MessagePart{}, err
-		}
-		return model.MessagePart{Type: model.MessagePartTypeToolCall, ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: input, CacheControl: FreezeCacheControl(part.CacheControl), ProviderMetadata: meta}, nil
+		return model.MessagePart{Type: model.MessagePartTypeToolCall, ToolCallID: part.ToolCallID, ToolName: part.ToolName, Input: input, CacheControl: FreezeCacheControl(part.CacheControl), ProviderMetadata: FreezeProviderMetadata(part.ProviderMetadata)}, nil
 	case *sdk.ToolCallPart:
 		if part == nil {
 			return model.MessagePart{}, fmt.Errorf("nil *sdk.ToolCallPart")
 		}
 		return FreezeMessagePart(*part)
 	case sdk.ToolResultPart:
-		result, err := freezeJSONValue(part.Result)
+		result, err := FreezeToolOutput(part.Result)
 		if err != nil {
 			return model.MessagePart{}, err
 		}
@@ -204,29 +234,17 @@ func FreezeMessagePart(p sdk.MessagePart) (model.MessagePart, error) {
 func MessagePart(p model.MessagePart) (sdk.MessagePart, error) {
 	switch p.Type {
 	case model.MessagePartTypeText:
-		meta, err := ProviderMetadata(p.ProviderMetadata)
-		if err != nil {
-			return nil, err
-		}
-		return sdk.TextPart{Text: p.Text, CacheControl: CacheControl(p.CacheControl), ProviderMetadata: meta}, nil
+		return sdk.TextPart{Text: p.Text, CacheControl: CacheControl(p.CacheControl), ProviderMetadata: ProviderMetadata(p.ProviderMetadata)}, nil
 	case model.MessagePartTypeReasoning:
-		meta, err := ProviderMetadata(p.ProviderMetadata)
-		if err != nil {
-			return nil, err
-		}
-		return sdk.ReasoningPart{ID: p.ID, Text: p.Text, Format: sdk.ReasoningFormat(p.Format), Model: p.Model, ProviderMetadata: meta}, nil
+		return sdk.ReasoningPart{ID: p.ID, Text: p.Text, Format: sdk.ReasoningFormat(p.Format), Model: p.Model, ProviderMetadata: ProviderMetadata(p.ProviderMetadata)}, nil
 	case model.MessagePartTypeImage:
 		return sdk.ImagePart{Image: p.Image, MediaType: p.MediaType, CacheControl: CacheControl(p.CacheControl)}, nil
 	case model.MessagePartTypeFile:
 		return sdk.FilePart{Data: p.Data, MediaType: p.MediaType, Filename: p.Filename, CacheControl: CacheControl(p.CacheControl)}, nil
 	case model.MessagePartTypeToolCall:
-		meta, err := ProviderMetadata(p.ProviderMetadata)
-		if err != nil {
-			return nil, err
-		}
-		return sdk.ToolCallPart{ToolCallID: p.ToolCallID, ToolName: p.ToolName, Input: p.Input.RawMessage(), CacheControl: CacheControl(p.CacheControl), ProviderMetadata: meta}, nil
+		return sdk.ToolCallPart{ToolCallID: p.ToolCallID, ToolName: p.ToolName, Input: ToolArguments(p.Input), CacheControl: CacheControl(p.CacheControl), ProviderMetadata: ProviderMetadata(p.ProviderMetadata)}, nil
 	case model.MessagePartTypeToolResult:
-		return sdk.ToolResultPart{ToolCallID: p.ToolCallID, ToolName: p.ToolName, Result: p.Result.RawMessage(), IsError: p.IsError, CacheControl: CacheControl(p.CacheControl)}, nil
+		return sdk.ToolResultPart{ToolCallID: p.ToolCallID, ToolName: p.ToolName, Result: ToolOutput(p.Result), IsError: p.IsError, CacheControl: CacheControl(p.CacheControl)}, nil
 	default:
 		return nil, fmt.Errorf("unknown message part type %q", p.Type)
 	}
@@ -333,7 +351,11 @@ func ModelRequest(r model.ModelRequest) (sdk.Request, error) {
 	}
 	tools := make([]sdk.ToolDefinition, len(r.Tools))
 	for i, t := range r.Tools {
-		tools[i] = ToolDefinition(t)
+		tool, err := ToolDefinition(t)
+		if err != nil {
+			return sdk.Request{}, fmt.Errorf("tool %d: %w", i, err)
+		}
+		tools[i] = tool
 	}
 	format, err := ResponseFormat(r.ResponseFormat)
 	if err != nil {
@@ -412,36 +434,20 @@ func Usage(u model.Usage) sdk.Usage {
 	}
 }
 
-func FreezeReasoningPart(p sdk.ReasoningPart) (model.ReasoningPart, error) {
-	meta, err := FreezeProviderMetadata(p.ProviderMetadata)
-	if err != nil {
-		return model.ReasoningPart{}, err
-	}
-	return model.ReasoningPart{ID: p.ID, Text: p.Text, Format: model.ReasoningFormat(p.Format), Model: p.Model, ProviderMetadata: meta}, nil
+func FreezeReasoningPart(p sdk.ReasoningPart) model.ReasoningPart {
+	return model.ReasoningPart{ID: p.ID, Text: p.Text, Format: model.ReasoningFormat(p.Format), Model: p.Model, ProviderMetadata: FreezeProviderMetadata(p.ProviderMetadata)}
 }
 
-func ReasoningPart(p model.ReasoningPart) (sdk.ReasoningPart, error) {
-	meta, err := ProviderMetadata(p.ProviderMetadata)
-	if err != nil {
-		return sdk.ReasoningPart{}, err
-	}
-	return sdk.ReasoningPart{ID: p.ID, Text: p.Text, Format: sdk.ReasoningFormat(p.Format), Model: p.Model, ProviderMetadata: meta}, nil
+func ReasoningPart(p model.ReasoningPart) sdk.ReasoningPart {
+	return sdk.ReasoningPart{ID: p.ID, Text: p.Text, Format: sdk.ReasoningFormat(p.Format), Model: p.Model, ProviderMetadata: ProviderMetadata(p.ProviderMetadata)}
 }
 
-func FreezeSource(s sdk.Source) (model.Source, error) {
-	meta, err := FreezeProviderMetadata(s.ProviderMetadata)
-	if err != nil {
-		return model.Source{}, err
-	}
-	return model.Source{SourceType: s.SourceType, ID: s.ID, URL: s.URL, Title: s.Title, ProviderMetadata: meta}, nil
+func FreezeSource(s sdk.Source) model.Source {
+	return model.Source{SourceType: s.SourceType, ID: s.ID, URL: s.URL, Title: s.Title, ProviderMetadata: FreezeProviderMetadata(s.ProviderMetadata)}
 }
 
-func Source(s model.Source) (sdk.Source, error) {
-	meta, err := ProviderMetadata(s.ProviderMetadata)
-	if err != nil {
-		return sdk.Source{}, err
-	}
-	return sdk.Source{SourceType: s.SourceType, ID: s.ID, URL: s.URL, Title: s.Title, ProviderMetadata: meta}, nil
+func Source(s model.Source) sdk.Source {
+	return sdk.Source{SourceType: s.SourceType, ID: s.ID, URL: s.URL, Title: s.Title, ProviderMetadata: ProviderMetadata(s.ProviderMetadata)}
 }
 
 func FreezeGeneratedFile(f sdk.GeneratedFile) model.GeneratedFile {
@@ -452,50 +458,16 @@ func GeneratedFile(f model.GeneratedFile) sdk.GeneratedFile {
 	return sdk.GeneratedFile{Data: f.Data, MediaType: f.MediaType}
 }
 
-// FreezeToolCallInput converts an SDK/model-provided tool input into the
-// persisted canonical value used by ModelToolCall and ToolCallBinding.
-// Syntactically invalid JSON text with valid UTF-8 is preserved as a JSON
-// string so Loop can settle it as a known invalid_arguments result without
-// losing the text; invalid UTF-8 is rejected.
-func FreezeToolCallInput(input any) (jsonstable.Value, error) {
-	args, err := model.CanonicalToolArguments(input)
-	if err == nil {
-		return args, nil
-	}
-	switch x := input.(type) {
-	case string:
-		if !utf8.ValidString(x) {
-			return jsonstable.Value{}, fmt.Errorf("tool call input is not valid UTF-8")
-		}
-		return model.RawToolArguments(x), nil
-	case json.RawMessage:
-		if !utf8.Valid(x) {
-			return jsonstable.Value{}, fmt.Errorf("tool call input is not valid UTF-8")
-		}
-		return model.RawToolArguments(x), nil
-	default:
-		return jsonstable.Value{}, err
-	}
-}
-
 func FreezeModelToolCall(c sdk.ToolCall) (model.ModelToolCall, error) {
-	input, err := FreezeToolCallInput(c.Input)
+	input, err := FreezeToolArguments(c.Input)
 	if err != nil {
 		return model.ModelToolCall{}, fmt.Errorf("tool call input: %w", err)
 	}
-	meta, err := FreezeProviderMetadata(c.ProviderMetadata)
-	if err != nil {
-		return model.ModelToolCall{}, err
-	}
-	return model.ModelToolCall{ToolCallID: c.ToolCallID, ToolName: c.ToolName, Input: input, ProviderMetadata: meta}, nil
+	return model.ModelToolCall{ToolCallID: c.ToolCallID, ToolName: c.ToolName, Input: input, ProviderMetadata: FreezeProviderMetadata(c.ProviderMetadata)}, nil
 }
 
-func ModelToolCall(c model.ModelToolCall) (sdk.ToolCall, error) {
-	meta, err := ProviderMetadata(c.ProviderMetadata)
-	if err != nil {
-		return sdk.ToolCall{}, err
-	}
-	return sdk.ToolCall{ToolCallID: c.ToolCallID, ToolName: c.ToolName, Input: c.Input.RawMessage(), ProviderMetadata: meta}, nil
+func ModelToolCall(c model.ModelToolCall) sdk.ToolCall {
+	return sdk.ToolCall{ToolCallID: c.ToolCallID, ToolName: c.ToolName, Input: ToolArguments(c.Input), ProviderMetadata: ProviderMetadata(c.ProviderMetadata)}
 }
 
 func FreezeResponseMetadata(r *sdk.ResponseMetadata) *model.ResponseMetadata {
@@ -540,23 +512,11 @@ func ResponseMetadata(r *model.ResponseMetadata) (sdk.ResponseMetadata, error) {
 func FreezeModelResult(r sdk.ModelResult) (model.ModelResult, error) {
 	reasoning := make([]model.ReasoningPart, len(r.ReasoningParts))
 	for i, p := range r.ReasoningParts {
-		part, err := FreezeReasoningPart(p)
-		if err != nil {
-			return model.ModelResult{}, fmt.Errorf("reasoning part %d: %w", i, err)
-		}
-		reasoning[i] = part
-	}
-	textMeta, err := FreezeProviderMetadata(r.TextProviderMetadata)
-	if err != nil {
-		return model.ModelResult{}, fmt.Errorf("text provider metadata: %w", err)
+		reasoning[i] = FreezeReasoningPart(p)
 	}
 	sources := make([]model.Source, len(r.Sources))
 	for i, s := range r.Sources {
-		source, err := FreezeSource(s)
-		if err != nil {
-			return model.ModelResult{}, fmt.Errorf("source %d: %w", i, err)
-		}
-		sources[i] = source
+		sources[i] = FreezeSource(s)
 	}
 	files := make([]model.GeneratedFile, len(r.Files))
 	for i, f := range r.Files {
@@ -574,7 +534,7 @@ func FreezeModelResult(r sdk.ModelResult) (model.ModelResult, error) {
 		Text:                 r.Text,
 		Reasoning:            r.Reasoning,
 		ReasoningParts:       reasoning,
-		TextProviderMetadata: textMeta,
+		TextProviderMetadata: FreezeProviderMetadata(r.TextProviderMetadata),
 		FinishReason:         model.FinishReason(r.FinishReason),
 		RawFinishReason:      r.RawFinishReason,
 		Usage:                FreezeUsage(r.Usage),
@@ -589,23 +549,11 @@ func FreezeModelResult(r sdk.ModelResult) (model.ModelResult, error) {
 func ModelResult(r model.ModelResult) (sdk.ModelResult, error) {
 	reasoning := make([]sdk.ReasoningPart, len(r.ReasoningParts))
 	for i, p := range r.ReasoningParts {
-		part, err := ReasoningPart(p)
-		if err != nil {
-			return sdk.ModelResult{}, fmt.Errorf("reasoning part %d: %w", i, err)
-		}
-		reasoning[i] = part
-	}
-	textMeta, err := ProviderMetadata(r.TextProviderMetadata)
-	if err != nil {
-		return sdk.ModelResult{}, fmt.Errorf("text provider metadata: %w", err)
+		reasoning[i] = ReasoningPart(p)
 	}
 	sources := make([]sdk.Source, len(r.Sources))
 	for i, s := range r.Sources {
-		source, err := Source(s)
-		if err != nil {
-			return sdk.ModelResult{}, fmt.Errorf("source %d: %w", i, err)
-		}
-		sources[i] = source
+		sources[i] = Source(s)
 	}
 	files := make([]sdk.GeneratedFile, len(r.Files))
 	for i, f := range r.Files {
@@ -613,11 +561,7 @@ func ModelResult(r model.ModelResult) (sdk.ModelResult, error) {
 	}
 	calls := make([]sdk.ToolCall, len(r.ToolCalls))
 	for i, c := range r.ToolCalls {
-		call, err := ModelToolCall(c)
-		if err != nil {
-			return sdk.ModelResult{}, fmt.Errorf("tool call %d: %w", i, err)
-		}
-		calls[i] = call
+		calls[i] = ModelToolCall(c)
 	}
 	response, err := ResponseMetadata(r.Response)
 	if err != nil {
@@ -631,7 +575,7 @@ func ModelResult(r model.ModelResult) (sdk.ModelResult, error) {
 		Text:                 r.Text,
 		Reasoning:            r.Reasoning,
 		ReasoningParts:       reasoning,
-		TextProviderMetadata: textMeta,
+		TextProviderMetadata: ProviderMetadata(r.TextProviderMetadata),
 		FinishReason:         sdk.FinishReason(r.FinishReason),
 		RawFinishReason:      r.RawFinishReason,
 		Usage:                Usage(r.Usage),

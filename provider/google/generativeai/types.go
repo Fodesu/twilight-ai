@@ -39,8 +39,8 @@ type fileData struct {
 }
 
 type functionCall struct {
-	Name string `json:"name"`
-	Args any    `json:"args"`
+	Name string          `json:"name"`
+	Args json.RawMessage `json:"args"`
 }
 
 type functionResponse struct {

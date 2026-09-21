@@ -18,6 +18,15 @@ import (
 // mustJSON is the test-side half of the seam change: the SDK resolves a tool's
 // Parameters into JSON Schema before a provider sees it, so a test that used to
 // hand the provider a Go schema value now hands it the resolved JSON.
+// mustSchema builds a schema from its JSON shape, for fixtures written as maps.
+func mustSchema(v any) *jsonschema.Schema {
+	var s jsonschema.Schema
+	if err := json.Unmarshal(mustJSON(v), &s); err != nil {
+		panic(err)
+	}
+	return &s
+}
+
 func mustJSON(v any) json.RawMessage {
 	encoded, err := json.Marshal(v)
 	if err != nil {
@@ -385,13 +394,13 @@ func TestDoGenerate_ToolCall(t *testing.T) {
 		Tools: []sdk.ToolDefinition{{
 			Name:        "get_weather",
 			Description: "Get the weather for a location",
-			Parameters: mustJSON(&jsonschema.Schema{
+			Parameters: &jsonschema.Schema{
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
 					"location": {Type: "string"},
 				},
 				Required: []string{"location"},
-			}),
+			},
 		}},
 		ToolChoice: sdk.ToolChoice{Mode: sdk.ToolChoiceAuto},
 	})
@@ -412,9 +421,9 @@ func TestDoGenerate_ToolCall(t *testing.T) {
 	if tc.ToolName != "get_weather" {
 		t.Errorf("tool name: got %q", tc.ToolName)
 	}
-	input, ok := tc.Input.(map[string]any)
-	if !ok {
-		t.Fatalf("input type: got %T", tc.Input)
+	var input map[string]any
+	if err := tc.Input.Unmarshal(&input); err != nil {
+		t.Fatalf("decode input: %v", err)
 	}
 	if input["location"] != "Beijing" {
 		t.Errorf("location: got %v", input["location"])
@@ -497,7 +506,7 @@ func TestDoGenerate_ToolCallMultiTurn(t *testing.T) {
 				Content: []sdk.MessagePart{sdk.ToolCallPart{
 					ToolCallID: "toolu_abc",
 					ToolName:   "get_weather",
-					Input:      map[string]any{"location": "Beijing"},
+					Input:      sdk.ParseToolArguments(`{"location":"Beijing"}`),
 				}},
 			},
 			{
@@ -505,7 +514,7 @@ func TestDoGenerate_ToolCallMultiTurn(t *testing.T) {
 				Content: []sdk.MessagePart{sdk.ToolResultPart{
 					ToolCallID: "toolu_abc",
 					ToolName:   "get_weather",
-					Result:     map[string]any{"temp": 25, "condition": "sunny"},
+					Result:     sdk.RawJSONOutput(json.RawMessage(`{"condition":"sunny","temp":25}`)),
 				}},
 			},
 		},
@@ -565,7 +574,7 @@ func TestDoGenerate_ToolCallEmptyInput(t *testing.T) {
 				Content: []sdk.MessagePart{sdk.ToolCallPart{
 					ToolCallID: "toolu_empty",
 					ToolName:   "list_schedule",
-					Input:      nil,
+					Input:      sdk.ToolArguments{},
 				}},
 			},
 			{
@@ -573,7 +582,7 @@ func TestDoGenerate_ToolCallEmptyInput(t *testing.T) {
 				Content: []sdk.MessagePart{sdk.ToolResultPart{
 					ToolCallID: "toolu_empty",
 					ToolName:   "list_schedule",
-					Result:     map[string]any{"count": 0},
+					Result:     sdk.RawJSONOutput(json.RawMessage(`{"count":0}`)),
 				}},
 			},
 		},
@@ -740,7 +749,7 @@ func TestDoStream_ToolCall(t *testing.T) {
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "Weather in Tokyo?"}},
 		}},
-		Tools: []sdk.ToolDefinition{{Name: "get_weather", Parameters: mustJSON(&jsonschema.Schema{Type: "object"})}},
+		Tools: []sdk.ToolDefinition{{Name: "get_weather", Parameters: &jsonschema.Schema{Type: "object"}}},
 	})
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
@@ -797,8 +806,8 @@ func TestDoStream_ToolCall(t *testing.T) {
 	} else if gotToolCall.ToolCallID != "toolu_xyz" || gotToolCall.ToolName != "get_weather" {
 		t.Errorf("tool call: %+v", gotToolCall)
 	}
-	input, ok := gotToolCall.Input.(map[string]any)
-	if !ok || input["location"] != "Tokyo" {
+	var input map[string]any
+	if err := gotToolCall.Input.Unmarshal(&input); err != nil || input["location"] != "Tokyo" {
 		t.Errorf("tool call input: %+v", gotToolCall.Input)
 	}
 	if !gotFinishStep {
@@ -928,7 +937,7 @@ func TestDoGenerate_ReasoningFromOtherProvider(t *testing.T) {
 				Content: []sdk.MessagePart{
 					sdk.ReasoningPart{
 						Text:             "thinking from gemini",
-						ProviderMetadata: map[string]any{"google": map[string]any{"thoughtSignature": "abc123"}},
+						ProviderMetadata: sdk.ProviderMetadata{"google": {"thoughtSignature": "abc123"}},
 					},
 					sdk.TextPart{Text: "The answer"},
 				},
@@ -1183,11 +1192,11 @@ func TestDoGenerate_CacheControl_Tools(t *testing.T) {
 		Model:    "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{sdk.UserMessage("Hi")},
 		Tools: []sdk.ToolDefinition{
-			{Name: "search", Description: "Search the web", Parameters: mustJSON(map[string]any{"type": "object"})},
+			{Name: "search", Description: "Search the web", Parameters: mustSchema(map[string]any{"type": "object"})},
 			{
 				Name:         "calculator",
 				Description:  "Do math",
-				Parameters:   mustJSON(map[string]any{"type": "object"}),
+				Parameters:   mustSchema(map[string]any{"type": "object"}),
 				CacheControl: &sdk.CacheControl{Type: "ephemeral"},
 			},
 		},
@@ -1264,7 +1273,7 @@ func TestDoGenerate_CacheControl_ToolResultBlock(t *testing.T) {
 			{
 				Role: sdk.MessageRoleAssistant,
 				Content: []sdk.MessagePart{
-					sdk.ToolCallPart{ToolCallID: "toolu_1", ToolName: "search", Input: map[string]any{"q": "cats"}},
+					sdk.ToolCallPart{ToolCallID: "toolu_1", ToolName: "search", Input: sdk.ParseToolArguments(`{"q":"cats"}`)},
 				},
 			},
 			{
@@ -1273,7 +1282,7 @@ func TestDoGenerate_CacheControl_ToolResultBlock(t *testing.T) {
 					sdk.ToolResultPart{
 						ToolCallID:   "toolu_1",
 						ToolName:     "search",
-						Result:       "found 10 results",
+						Result:       sdk.TextOutput("found 10 results"),
 						CacheControl: &sdk.CacheControl{Type: "ephemeral"},
 					},
 				},
@@ -1359,7 +1368,7 @@ func TestDoGenerate_CacheControl_AssistantToolUse(t *testing.T) {
 					sdk.ToolCallPart{
 						ToolCallID:   "toolu_9",
 						ToolName:     "search",
-						Input:        map[string]any{"q": "x"},
+						Input:        sdk.ParseToolArguments(`{"q":"x"}`),
 						CacheControl: &sdk.CacheControl{Type: "ephemeral"},
 					},
 				},
@@ -1817,9 +1826,7 @@ func TestProviderTest_OK(t *testing.T) {
 func TestProviderTest_Unhealthy(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{"message": "invalid x-api-key"},
-		})
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "invalid x-api-key"}})
 	}))
 	defer srv.Close()
 
@@ -1875,9 +1882,7 @@ func TestTestModel_Supported(t *testing.T) {
 func TestTestModel_NotSupported(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{"message": "model not found"},
-		})
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "model not found"}})
 	}))
 	defer srv.Close()
 

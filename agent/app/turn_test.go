@@ -15,6 +15,7 @@ import (
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // setup composes a Host over an in-memory store with one model and one tool,
@@ -192,7 +193,7 @@ type approvalGateTool struct{ *gateTool }
 
 func (*approvalGateTool) Ref() run.ToolRef { return "approve" }
 func (*approvalGateTool) Definition() sdk.ToolDefinition {
-	return sdk.ToolDefinition{Name: "approve", Parameters: []byte(`{"type":"object"}`)}
+	return sdk.ToolDefinition{Name: "approve", Parameters: &jsonschema.Schema{Type: "object"}}
 }
 func (*approvalGateTool) ResponsePolicy() run.ResponsePolicy { return run.ApprovalRequired }
 func (*approvalGateTool) Replay() run.ReplayPolicy           { return run.ReplayUnknown }
@@ -203,9 +204,9 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 	approval := &approvalGateTool{gateTool: tool}
 	model := &scriptedRequests{answers: []sdk.ModelResult{{FinishReason: sdk.FinishReasonToolCalls,
 		ToolCalls: []sdk.ToolCall{
-			{ToolCallID: "c1", ToolName: "lookup", Input: `{}`},
-			{ToolCallID: "c2", ToolName: "lookup", Input: `{}`},
-			{ToolCallID: "c3", ToolName: "approve", Input: `{}`},
+			{ToolCallID: "c1", ToolName: "lookup", Input: sdk.ParseToolArguments(`{}`)},
+			{ToolCallID: "c2", ToolName: "lookup", Input: sdk.ParseToolArguments(`{}`)},
+			{ToolCallID: "c3", ToolName: "approve", Input: sdk.ParseToolArguments(`{}`)},
 		}}}}
 	h := newHost(t, app.Config{}, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tool, approval)
 	preset, err := h.RegisterPreset("sequential", mustPreset("m-1", []loop.ExecutableTool{tool, approval},

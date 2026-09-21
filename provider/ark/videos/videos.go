@@ -233,18 +233,16 @@ func toVideoJob(raw map[string]any, fallbackModelID string) *sdk.VideoJob {
 		ModelID:          modelID,
 		Status:           mapStatus(status),
 		Progress:         progress,
-		ProviderMetadata: raw,
+		ProviderMetadata: sdk.NewProviderMetadata("ark", sdk.StringValues(raw)),
 	}
 	if errMsg := extractError(inner); errMsg != "" {
 		job.Error = &sdk.VideoError{Message: errMsg}
 	}
 	for _, url := range extractVideoURLs(inner) {
 		job.Outputs = append(job.Outputs, sdk.VideoOutput{
-			URL:         url,
-			ContentType: "video/mp4",
-			ProviderMetadata: map[string]any{
-				"task_id": id,
-			},
+			URL:              url,
+			ContentType:      "video/mp4",
+			ProviderMetadata: sdk.NewProviderMetadata("ark", map[string]string{"task_id": id}),
 		})
 	}
 	return job

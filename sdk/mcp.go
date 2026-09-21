@@ -199,22 +199,22 @@ func convertMCPTool(session *mcp.ClientSession, mt *mcp.Tool) (Tool, error) {
 		Name:        toolName,
 		Description: mt.Description,
 		Parameters:  schema,
-		Execute: func(ctx *ToolExecContext, input any) (any, error) {
-			args, err := toJSONObject(input)
-			if err != nil {
-				return nil, fmt.Errorf("twilightai/mcp: marshal args for %q: %w", toolName, err)
+		Execute: func(ctx *ToolExecContext, input ToolArguments) (ToolOutput, error) {
+			var args map[string]any
+			if err := input.Unmarshal(&args); err != nil {
+				return ToolOutput{}, fmt.Errorf("twilightai/mcp: decode args for %q: %w", toolName, err)
 			}
 			result, err := session.CallTool(ctx.Context, &mcp.CallToolParams{
 				Name:      toolName,
 				Arguments: args,
 			})
 			if err != nil {
-				return nil, err
+				return ToolOutput{}, err
 			}
 			if result.IsError {
-				return nil, fmt.Errorf("mcp tool %q returned error: %s", toolName, extractText(result))
+				return ToolOutput{}, fmt.Errorf("mcp tool %q returned error: %s", toolName, extractText(result))
 			}
-			return extractText(result), nil
+			return TextOutput(extractText(result)), nil
 		},
 	}, nil
 }
@@ -241,22 +241,6 @@ func convertInputSchema(v any) (*jsonschema.Schema, error) {
 
 // toJSONObject ensures the value is suitable as mcp.CallToolParams.Arguments
 // (must marshal to a JSON object). It round-trips through JSON when needed.
-func toJSONObject(v any) (map[string]any, error) {
-	if m, ok := v.(map[string]any); ok {
-		return m, nil
-	}
-	data, err := json.Marshal(v)
-	if err != nil {
-		return nil, err
-	}
-	var m map[string]any
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, err
-	}
-	return m, nil
-}
-
-// extractText concatenates TextContent from a CallToolResult.
 func extractText(r *mcp.CallToolResult) string {
 	var b strings.Builder
 	for i, c := range r.Content {

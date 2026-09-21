@@ -335,8 +335,8 @@ func TestMaterialize(t *testing.T) {
 	}
 	content := &fakeContent{
 		results: map[es.Digest]model.ModelResult{"sha256:res": {Text: "calling", ToolCalls: []model.ModelToolCall{
-			{ToolCallID: "p1", ToolName: "echo", Input: jsonstable.MustParse(`{"a":1}`)},
-			{ToolCallID: "p2", ToolName: "ask", Input: jsonstable.MustParse(`{}`)},
+			{ToolCallID: "p1", ToolName: "echo", Input: model.ToolArguments{JSON: jsonstable.MustParse(`{"a":1}`)}},
+			{ToolCallID: "p2", ToolName: "ask", Input: model.ToolArguments{JSON: jsonstable.MustParse(`{}`)}},
 		}}},
 		outputs: map[es.Digest]run.CanonicalJSON{"sha256:out": jsonstable.MustParse(`{"ok":true}`), "sha256:ans": jsonstable.MustParse(`"yes"`)},
 	}

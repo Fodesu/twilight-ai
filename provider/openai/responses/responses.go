@@ -405,10 +405,6 @@ func convertResponsesAssistantMessage(msg sdk.Message) []json.RawMessage {
 			}
 
 		case sdk.ToolCallPart:
-			args, err := json.Marshal(p.Input)
-			if err != nil {
-				continue
-			}
 			id := p.ToolCallID
 			if id == "" {
 				id = generateID()
@@ -417,7 +413,7 @@ func convertResponsesAssistantMessage(msg sdk.Message) []json.RawMessage {
 				Type:      "function_call",
 				CallID:    id,
 				Name:      p.ToolName,
-				Arguments: string(args),
+				Arguments: p.Input.String(),
 			})
 		}
 	}
@@ -446,11 +442,10 @@ func convertResponsesToolResults(msg sdk.Message) []json.RawMessage {
 	var items []json.RawMessage
 	for _, part := range msg.Content {
 		if trp, ok := part.(sdk.ToolResultPart); ok {
-			output, _ := json.Marshal(trp.Result)
 			items = appendRaw(items, responsesFunctionCallOutput{
 				Type:   "function_call_output",
 				CallID: trp.ToolCallID,
-				Output: string(output),
+				Output: trp.Result.String(),
 			})
 		}
 	}
@@ -464,7 +459,7 @@ func (p *Provider) parseResponse(resp *responsesResponse) (sdk.ModelResult, erro
 		Response: &sdk.ResponseMetadata{
 			ID:        resp.ID,
 			ModelID:   resp.Model,
-			Timestamp: time.Unix(resp.CreatedAt, 0),
+			Timestamp: time.Unix(resp.CreatedAt, 0).UTC(),
 		},
 	}
 
@@ -528,10 +523,7 @@ func (p *Provider) parseResponse(resp *responsesResponse) (sdk.ModelResult, erro
 
 		case outputTypeFunctionCall:
 			hasFunctionCall = true
-			var input any
-			if err := json.Unmarshal([]byte(item.Arguments), &input); err != nil {
-				return result, fmt.Errorf("openai-responses: unmarshal tool call arguments for %q: %w", item.Name, err)
-			}
+			input := sdk.ParseToolArguments(item.Arguments)
 			callID := item.CallID
 			if callID == "" {
 				callID = generateID()
@@ -599,7 +591,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 		// block's final metadata: encrypted_content is populated only on
 		// response.output_item.done, so the closing part is the only chance to
 		// deliver it. Every other close path passes nil.
-		endReasoning := func(meta map[string]any) {
+		endReasoning := func(meta sdk.ProviderMetadata) {
 			if activeReasoningID == "" {
 				return
 			}
@@ -611,7 +603,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 			activeReasoningID = ""
 		}
 
-		startReasoning := func(id string, meta map[string]any) {
+		startReasoning := func(id string, meta sdk.ProviderMetadata) {
 			if activeReasoningID == id {
 				return
 			}
@@ -774,21 +766,10 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 						if args == "" {
 							args = stc.args.String()
 						}
-						var input any
-						// A call whose arguments cannot be parsed must not
-						// become a call: nil input would hand the tool empty
-						// arguments and run it anyway.
-						if args != "" {
-							if err := json.Unmarshal([]byte(args), &input); err != nil {
-								send(&sdk.ErrorPart{Error: fmt.Errorf("openai-responses: unmarshal tool call arguments for %q: %w", stc.name, err)})
-								stc.finished = true
-								break
-							}
-						}
 						send(&sdk.StreamToolCallPart{
 							ToolCallID: stc.id,
 							ToolName:   stc.name,
-							Input:      input,
+							Input:      sdk.ParseToolArguments(args),
 						})
 						stc.finished = true
 					}
@@ -832,7 +813,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 					Response: sdk.ResponseMetadata{
 						ID:        responseID,
 						ModelID:   responseModel,
-						Timestamp: time.Unix(responseCreated, 0),
+						Timestamp: time.Unix(responseCreated, 0).UTC(),
 					},
 				})
 

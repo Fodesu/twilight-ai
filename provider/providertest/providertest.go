@@ -26,6 +26,7 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/sdk"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // Fixture is one chat provider under test.
@@ -112,7 +113,7 @@ func request() sdk.Request {
 		Tools: []sdk.ToolDefinition{{
 			Name:        toolMarker,
 			Description: toolDescMarker,
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}`),
+			Parameters:  &jsonschema.Schema{Type: "object", Properties: map[string]*jsonschema.Schema{"city": {Type: "string"}}, Required: []string{"city"}},
 		}},
 		ToolChoice: sdk.ToolChoice{Mode: sdk.ToolChoiceAuto},
 	}

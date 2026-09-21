@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // Request is the complete, frozen input of one model call.
@@ -41,10 +43,8 @@ type Request struct {
 	// namespace, which is Provider.Name(). Each value is an object whose
 	// members are request-body members of that provider's wire request:
 	// ApplyProviderOptions merges them in, so a caller can reach a wire feature
-	// the SDK does not model, or override one it does. The values stay open
-	// JSON here, so the agent runtime freezes the whole request into its own
-	// canonical run.ModelRequest before digesting it; the digest covers these
-	// values there, not here.
+	// the SDK does not model, or override one it does. Values are JSON and
+	// participate in the digest.
 	ProviderOptions map[string]json.RawMessage `json:"providerOptions,omitempty"`
 }
 
@@ -78,11 +78,10 @@ func ApplyProviderOptions(namespace string, options map[string]json.RawMessage, 
 // Parameters is a resolved JSON Schema document: schema inference from Go
 // structs happens before freezing, never after.
 type ToolDefinition struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters"`
-	// CacheControl is carried into the frozen request, whose digest covers it
-	// like every other field.
+	Name        string             `json:"name"`
+	Description string             `json:"description,omitempty"`
+	Parameters  *jsonschema.Schema `json:"parameters"`
+	// CacheControl participates in the digest like every other field.
 	CacheControl *CacheControl `json:"cacheControl,omitempty"`
 }
 
@@ -95,7 +94,7 @@ const (
 	ToolChoiceTool     ToolChoiceMode = "tool"
 )
 
-// ToolChoice is the closed replacement for the legacy `any` field.
+// ToolChoice is the closed form of the request's tool-choice field.
 type ToolChoice struct {
 	Mode ToolChoiceMode `json:"mode,omitempty"`
 	// Tool names the target tool when Mode == ToolChoiceTool.

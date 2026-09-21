@@ -19,14 +19,6 @@ import (
 // mustJSON is the test-side half of the seam change: the SDK resolves a tool's
 // Parameters into JSON Schema before a provider sees it, so a test that used to
 // hand the provider a Go schema value now hands it the resolved JSON.
-func mustJSON(v any) json.RawMessage {
-	encoded, err := json.Marshal(v)
-	if err != nil {
-		panic(err)
-	}
-	return encoded
-}
-
 // ---------- unit tests (mock server) ----------
 
 func TestResponsesDoGenerate(t *testing.T) {
@@ -401,13 +393,13 @@ func TestResponsesDoGenerate_ToolCall(t *testing.T) {
 		Tools: []sdk.ToolDefinition{{
 			Name:        "get_weather",
 			Description: "Get the weather for a location",
-			Parameters: mustJSON(&jsonschema.Schema{
+			Parameters: &jsonschema.Schema{
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
 					"location": {Type: "string"},
 				},
 				Required: []string{"location"},
-			}),
+			},
 		}},
 		ToolChoice: sdk.ToolChoice{Mode: sdk.ToolChoiceAuto},
 	})
@@ -428,7 +420,10 @@ func TestResponsesDoGenerate_ToolCall(t *testing.T) {
 	if tc.ToolName != "get_weather" {
 		t.Errorf("tool name: got %q", tc.ToolName)
 	}
-	input := tc.Input.(map[string]any)
+	var input map[string]any
+	if err := tc.Input.Unmarshal(&input); err != nil {
+		t.Fatalf("decode input: %v", err)
+	}
 	if input["location"] != "Beijing" {
 		t.Errorf("location: got %v", input["location"])
 	}
@@ -498,7 +493,7 @@ func TestResponsesDoGenerate_ToolCallMultiTurn(t *testing.T) {
 				Content: []sdk.MessagePart{sdk.ToolCallPart{
 					ToolCallID: "call_abc",
 					ToolName:   "get_weather",
-					Input:      map[string]any{"location": "Beijing"},
+					Input:      sdk.ParseToolArguments(`{"location":"Beijing"}`),
 				}},
 			},
 			{
@@ -506,7 +501,7 @@ func TestResponsesDoGenerate_ToolCallMultiTurn(t *testing.T) {
 				Content: []sdk.MessagePart{sdk.ToolResultPart{
 					ToolCallID: "call_abc",
 					ToolName:   "get_weather",
-					Result:     map[string]any{"temp": 25, "condition": "sunny"},
+					Result:     sdk.RawJSONOutput(json.RawMessage(`{"condition":"sunny","temp":25}`)),
 				}},
 			},
 		},
@@ -797,7 +792,7 @@ func TestResponsesDoStream_ToolCall(t *testing.T) {
 	sr, err := p.DoStream(context.Background(), sdk.Request{
 		Model:    "gpt-4o-mini",
 		Messages: []sdk.Message{sdk.UserMessage("Weather in Tokyo?")},
-		Tools:    []sdk.ToolDefinition{{Name: "get_weather", Parameters: mustJSON(&jsonschema.Schema{Type: "object"})}},
+		Tools:    []sdk.ToolDefinition{{Name: "get_weather", Parameters: &jsonschema.Schema{Type: "object"}}},
 	})
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
@@ -848,8 +843,8 @@ func TestResponsesDoStream_ToolCall(t *testing.T) {
 	} else if gotToolCall.ToolCallID != "call_xyz" || gotToolCall.ToolName != "get_weather" {
 		t.Errorf("tool call: %+v", gotToolCall)
 	}
-	input := gotToolCall.Input.(map[string]any)
-	if input["location"] != "Tokyo" {
+	var input map[string]any
+	if err := gotToolCall.Input.Unmarshal(&input); err != nil || input["location"] != "Tokyo" {
 		t.Errorf("tool call input: %+v", gotToolCall.Input)
 	}
 	if !gotFinish {
@@ -1754,13 +1749,13 @@ func TestIntegration_ResponsesDoGenerate_ToolCall(t *testing.T) {
 		Tools: []sdk.ToolDefinition{{
 			Name:        "get_weather",
 			Description: "Get current weather for a city",
-			Parameters: mustJSON(&jsonschema.Schema{
+			Parameters: &jsonschema.Schema{
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
 					"city": {Type: "string", Description: "City name"},
 				},
 				Required: []string{"city"},
-			}),
+			},
 		}},
 		ToolChoice: sdk.ToolChoice{Mode: sdk.ToolChoiceAuto},
 	})
@@ -1790,13 +1785,13 @@ func TestIntegration_ResponsesDoStream_ToolCall(t *testing.T) {
 		Tools: []sdk.ToolDefinition{{
 			Name:        "get_weather",
 			Description: "Get current weather for a city",
-			Parameters: mustJSON(&jsonschema.Schema{
+			Parameters: &jsonschema.Schema{
 				Type: "object",
 				Properties: map[string]*jsonschema.Schema{
 					"city": {Type: "string", Description: "City name"},
 				},
 				Required: []string{"city"},
-			}),
+			},
 		}},
 		ToolChoice: sdk.ToolChoice{Mode: sdk.ToolChoiceAuto},
 	})
@@ -1888,9 +1883,7 @@ func TestProviderTest_OK(t *testing.T) {
 func TestProviderTest_Unhealthy(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{"message": "invalid api key"},
-		})
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "invalid api key"}})
 	}))
 	defer srv.Close()
 
@@ -1946,9 +1939,7 @@ func TestTestModel_Supported(t *testing.T) {
 func TestTestModel_NotSupported(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{"message": "model not found"},
-		})
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "model not found"}})
 	}))
 	defer srv.Close()
 

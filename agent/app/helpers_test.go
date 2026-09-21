@@ -22,6 +22,7 @@ import (
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
+	"github.com/google/jsonschema-go/jsonschema"
 	"path/filepath"
 )
 
@@ -163,7 +164,7 @@ func (m *scriptedRequests) requests() []sdk.Request {
 
 func toolCallAnswer() sdk.ModelResult {
 	return sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 1},
-		ToolCalls: []sdk.ToolCall{{ToolCallID: "c1", ToolName: "lookup", Input: `{"q":"weather"}`}}}
+		ToolCalls: []sdk.ToolCall{{ToolCallID: "c1", ToolName: "lookup", Input: sdk.ParseToolArguments(`{"q":"weather"}`)}}}
 }
 
 // gateTool blocks each execution until released, so tests can act mid-step.
@@ -174,7 +175,7 @@ type gateTool struct {
 
 func (t *gateTool) Ref() run.ToolRef { return "lookup" }
 func (t *gateTool) Definition() sdk.ToolDefinition {
-	return sdk.ToolDefinition{Name: "lookup", Parameters: []byte(`{"type":"object"}`)}
+	return sdk.ToolDefinition{Name: "lookup", Parameters: &jsonschema.Schema{Type: "object"}}
 }
 func (t *gateTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
 func (t *gateTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }

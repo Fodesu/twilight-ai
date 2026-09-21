@@ -9,7 +9,6 @@ package loop_test
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/felinics/twilight/agent/executor"
@@ -28,6 +27,7 @@ import (
 	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/sdk"
+	"github.com/google/jsonschema-go/jsonschema"
 	"testing"
 )
 
@@ -335,7 +335,7 @@ func (f *Feature) ExecutingTool(name string, callID run.CallID) *Feature {
 		FinishReason: sdk.FinishReasonToolCalls,
 		Usage:        sdk.Usage{TotalTokens: 2},
 		ToolCalls: []sdk.ToolCall{{
-			ToolCallID: providerID, ToolName: string(spec.Ref), Input: `{"x":1}`,
+			ToolCallID: providerID, ToolName: string(spec.Ref), Input: sdk.ParseToolArguments(`{"x":1}`),
 		}},
 	})
 	if err != nil {
@@ -518,7 +518,7 @@ func (f *Feature) commitPrepare() {
 // mustSpec returns the agent-side spec and the provider definition it digests.
 func (f *Feature) mustSpec(name string, policy run.ResponsePolicy) (run.ToolSpec, sdk.ToolDefinition) {
 	f.t.Helper()
-	def := sdk.ToolDefinition{Name: name, Parameters: json.RawMessage(`{"type":"object"}`)}
+	def := sdk.ToolDefinition{Name: name, Parameters: &jsonschema.Schema{Type: "object"}}
 	frozen, err := sdkconv.FreezeToolDefinition(def)
 	if err != nil {
 		f.t.Fatal(err)

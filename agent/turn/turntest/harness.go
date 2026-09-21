@@ -7,7 +7,6 @@ package turntest
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"github.com/felinics/twilight/agent/artifact"
 	"testing"
@@ -29,6 +28,7 @@ import (
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // Fixture is one adapter under test.
@@ -356,7 +356,7 @@ func (h *harness) mustRunCommit(runID run.RunID, id run.CommandID, base run.RunP
 	return res
 }
 
-var toolDef = sdk.ToolDefinition{Name: "ask", Parameters: json.RawMessage(`{"type":"object"}`)}
+var toolDef = sdk.ToolDefinition{Name: "ask", Parameters: &jsonschema.Schema{Type: "object"}}
 
 func (h *harness) spec(policy run.ResponsePolicy) run.ToolSpec {
 	h.t.Helper()
@@ -453,7 +453,7 @@ func (h *harness) waitingTool(runID run.RunID) {
 		h.fatal(err)
 	}
 	result, err := sdkconv.FreezeModelResult(sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 2},
-		ToolCalls: []sdk.ToolCall{{ToolCallID: "c0", ToolName: "ask", Input: args.String()}}})
+		ToolCalls: []sdk.ToolCall{{ToolCallID: "c0", ToolName: "ask", Input: sdk.ParseToolArguments(args.String())}}})
 	if err != nil {
 		h.fatal(err)
 	}

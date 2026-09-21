@@ -155,11 +155,7 @@ func (p *ContextPromptBuilder) messages(entries []chatlog.Materialized) ([]sdk.M
 			for _, call := range m.Calls {
 				calls[call.CallID] = callInfo{provider: call.ProviderCallID, name: call.Name}
 				open[call.CallID] = struct{}{}
-				input, err := call.Input.Any()
-				if err != nil {
-					return nil, err
-				}
-				parts = append(parts, sdk.ToolCallPart{ToolCallID: call.ProviderCallID, ToolName: call.Name, Input: input})
+				parts = append(parts, sdk.ToolCallPart{ToolCallID: call.ProviderCallID, ToolName: call.Name, Input: sdk.ToolArguments{JSON: call.Input.RawMessage()}})
 			}
 			if len(parts) > 0 {
 				msgs = append(msgs, sdk.Message{Role: sdk.MessageRoleAssistant, Content: parts})
@@ -174,11 +170,11 @@ func (p *ContextPromptBuilder) messages(entries []chatlog.Materialized) ([]sdk.M
 			text := m.Text()
 			switch r.Status {
 			case chatlog.ToolSuccess:
-				part.Result = text
+				part.Result = sdk.TextOutput(text)
 			case chatlog.ToolError:
-				part.Result, part.IsError = text, true
+				part.Result, part.IsError = sdk.TextOutput(text), true
 			case chatlog.ToolUnknown:
-				part.Result, part.IsError = "tool outcome unknown: "+text, true
+				part.Result, part.IsError = sdk.TextOutput("tool outcome unknown: "+text), true
 			}
 			msgs = append(msgs, sdk.ToolMessage(part))
 			delete(open, r.CallID)

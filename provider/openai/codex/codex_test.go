@@ -195,7 +195,7 @@ func TestCodexDoStream_CapturesEncryptedContentFromItemDone(t *testing.T) {
 	if part.Text != "thinking" {
 		t.Errorf("text: got %q, want %q", part.Text, "thinking")
 	}
-	meta, _ := part.ProviderMetadata["openai"].(map[string]any)
+	meta := part.ProviderMetadata["openai"]
 	if meta["reasoningEncryptedContent"] != "ENC_PAYLOAD" {
 		t.Errorf("encrypted content lost in streaming: metadata = %+v", part.ProviderMetadata)
 	}

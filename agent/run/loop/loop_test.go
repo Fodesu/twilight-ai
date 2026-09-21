@@ -2,7 +2,6 @@ package loop
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -20,6 +19,7 @@ import (
 	"github.com/felinics/twilight/agent/session/writer"
 
 	"github.com/felinics/twilight/sdk"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // --- fakes ---
@@ -108,7 +108,7 @@ func (p staticBuilder) Build(_ context.Context, hint plan.PromptInput) (Prompt, 
 // toolDef is the provider definition every test tool shares; ToolSpec keeps
 // only its digest, so tests rebuild the body from the name.
 func toolDef(name string) sdk.ToolDefinition {
-	return sdk.ToolDefinition{Name: name, Parameters: json.RawMessage(`{"type":"object"}`)}
+	return sdk.ToolDefinition{Name: name, Parameters: &jsonschema.Schema{Type: "object"}}
 }
 
 func toolSpec(t *testing.T, name string, policy ResponsePolicy) ToolSpec {
@@ -131,7 +131,7 @@ func textResult(text string) sdk.ModelResult {
 func toolCallResult(ids ...string) sdk.ModelResult {
 	r := sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 2}}
 	for _, id := range ids {
-		r.ToolCalls = append(r.ToolCalls, sdk.ToolCall{ToolCallID: id, ToolName: "echo", Input: `{"x":1}`})
+		r.ToolCalls = append(r.ToolCalls, sdk.ToolCall{ToolCallID: id, ToolName: "echo", Input: sdk.ParseToolArguments(`{"x":1}`)})
 	}
 	return r
 }
@@ -449,7 +449,7 @@ func TestLoopMalformedModelResultDispositionFailsRun(t *testing.T) {
 	// result is structurally malformed and goes through RejectModelResult.
 	bad := sdk.ModelResult{
 		FinishReason: sdk.FinishReasonToolCalls,
-		ToolCalls:    []sdk.ToolCall{{ToolCallID: "c1", ToolName: "echo", Input: "\xff\xfe"}},
+		ToolCalls:    []sdk.ToolCall{{ToolCallID: "c1", ToolName: "echo", Input: sdk.ParseToolArguments("\xff\xfe")}},
 		Usage:        sdk.Usage{TotalTokens: 1},
 	}
 	invoker := &fakeInvoker{results: []sdk.ModelResult{bad, bad, bad}}

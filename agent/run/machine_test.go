@@ -1,7 +1,6 @@
 package run_test
 
 import (
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -13,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agent/run/plan"
 	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/sdk"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // --- helpers ---
@@ -63,7 +63,7 @@ func testRequest(tools ...sdk.ToolDefinition) sdk.Request {
 }
 
 func testToolDef(name string) sdk.ToolDefinition {
-	return sdk.ToolDefinition{Name: name, Parameters: json.RawMessage(`{"type":"object"}`)}
+	return sdk.ToolDefinition{Name: name, Parameters: &jsonschema.Schema{Type: "object"}}
 }
 
 func buildPrepare(t *testing.T, s run.MachineState, req sdk.Request, specs []run.ToolSpec) (run.PrepareModelRequest, run.CommandID) {
@@ -172,7 +172,7 @@ func modelResultWithNamedCalls(toolName, args string, callIDs ...string) model.M
 		Usage:        sdk.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
 	}
 	for _, id := range callIDs {
-		r.ToolCalls = append(r.ToolCalls, sdk.ToolCall{ToolCallID: id, ToolName: toolName, Input: args})
+		r.ToolCalls = append(r.ToolCalls, sdk.ToolCall{ToolCallID: id, ToolName: toolName, Input: sdk.ParseToolArguments(args)})
 	}
 	frozen, err := sdkconv.FreezeModelResult(r)
 	if err != nil {
@@ -452,8 +452,8 @@ func TestParallelWaitingDoesNotBlockPending(t *testing.T) {
 		FinishReason: sdk.FinishReasonToolCalls,
 		Usage:        sdk.Usage{TotalTokens: 15},
 		ToolCalls: []sdk.ToolCall{
-			{ToolCallID: "cA", ToolName: "a", Input: `{}`},
-			{ToolCallID: "cB", ToolName: "b", Input: `{}`},
+			{ToolCallID: "cA", ToolName: "a", Input: sdk.ParseToolArguments(`{}`)},
+			{ToolCallID: "cB", ToolName: "b", Input: sdk.ParseToolArguments(`{}`)},
 		},
 	})
 	if err != nil {
@@ -520,8 +520,8 @@ func TestUnknownToolFailureSettlesOnlyThatCall(t *testing.T) {
 		FinishReason: sdk.FinishReasonToolCalls,
 		Usage:        sdk.Usage{TotalTokens: 2},
 		ToolCalls: []sdk.ToolCall{
-			{ToolCallID: "cA", ToolName: "a", Input: `{}`},
-			{ToolCallID: "cB", ToolName: "b", Input: `{}`},
+			{ToolCallID: "cA", ToolName: "a", Input: sdk.ParseToolArguments(`{}`)},
+			{ToolCallID: "cB", ToolName: "b", Input: sdk.ParseToolArguments(`{}`)},
 		},
 	})
 	if err != nil {
@@ -832,7 +832,7 @@ func TestSettlementNamesExecutingEffect(t *testing.T) {
 
 	bA, bB := makeBinding(t, modelStep, 0, "cA", specA, `{}`), makeBinding(t, modelStep, 1, "cB", specB, `{}`)
 	calls, err := sdkconv.FreezeModelResult(sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls,
-		ToolCalls: []sdk.ToolCall{{ToolCallID: "cA", ToolName: "a", Input: `{}`}, {ToolCallID: "cB", ToolName: "b", Input: `{}`}}})
+		ToolCalls: []sdk.ToolCall{{ToolCallID: "cA", ToolName: "a", Input: sdk.ParseToolArguments(`{}`)}, {ToolCallID: "cB", ToolName: "b", Input: sdk.ParseToolArguments(`{}`)}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -896,7 +896,7 @@ func TestDeclineToolCallFailsPendingCallWithoutStart(t *testing.T) {
 	s, modelStep := advanceToExecuting(t, s, testRequest(defA, defB), []run.ToolSpec{specA, specB})
 	bA, bB := makeBinding(t, modelStep, 0, "cA", specA, `{}`), makeBinding(t, modelStep, 1, "cB", specB, `{}`)
 	r, err := sdkconv.FreezeModelResult(sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls,
-		ToolCalls: []sdk.ToolCall{{ToolCallID: "cA", ToolName: "a", Input: `{}`}, {ToolCallID: "cB", ToolName: "b", Input: `{}`}}})
+		ToolCalls: []sdk.ToolCall{{ToolCallID: "cA", ToolName: "a", Input: sdk.ParseToolArguments(`{}`)}, {ToolCallID: "cB", ToolName: "b", Input: sdk.ParseToolArguments(`{}`)}}})
 	if err != nil {
 		t.Fatal(err)
 	}

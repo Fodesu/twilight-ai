@@ -925,6 +925,9 @@ func TestWorkerAdoptionOfUnattachableToolSettlesUnknown(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// The accepted row dispatches to the backend on a goroutine; the
+			// worker is closed before the database and its directory are.
+			defer worker.Close()
 			if err := worker.Takeover(ctx, a.Key()); err != nil {
 				t.Fatal(err)
 			}

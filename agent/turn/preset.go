@@ -108,7 +108,11 @@ func (p *AgentPreset) ToolSpecs() ([]run.ToolSpec, []sdk.ToolDefinition, error) 
 			return nil, nil, err
 		}
 		specs = append(specs, run.ToolSpec{Ref: t.Ref, Name: t.Definition.Name, DefinitionDigest: d, Policy: t.Policy, Replay: t.Replay})
-		defs = append(defs, sdkconv.ToolDefinition(t.Definition))
+		def_, err := sdkconv.ToolDefinition(t.Definition)
+		if err != nil {
+			return nil, nil, err
+		}
+		defs = append(defs, def_)
 	}
 	return specs, defs, nil
 }

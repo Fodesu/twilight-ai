@@ -9,6 +9,7 @@ import (
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/run/model"
 	"github.com/felinics/twilight/sdk"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // The agent tier persists its own mirror of the SDK's model-call input, and the
@@ -35,6 +36,9 @@ var mirroredTypes = []struct {
 	{"Usage", sdk.Usage{}, model.Usage{}},
 	{"Message", sdk.Message{}, model.Message{}},
 	{"ModelResult", sdk.ModelResult{}, model.ModelResult{}},
+	{"ToolCall", sdk.ToolCall{}, model.ModelToolCall{}},
+	{"ToolArguments", sdk.ToolArguments{}, model.ToolArguments{}},
+	{"ToolOutput", sdk.ToolOutput{}, model.ToolOutput{}},
 }
 
 // expectedDifference names the fields that are deliberately absent from the
@@ -128,6 +132,16 @@ func TestMirrorCanonicalFields(t *testing.T) {
 		{
 			sdk: reflect.TypeOf(sdk.ToolDefinition{}), mirror: reflect.TypeOf(model.ToolDefinition{}),
 			field:   "Parameters",
+			wantSDK: reflect.TypeOf(&jsonschema.Schema{}), wantMirror: canonical,
+		},
+		{
+			sdk: reflect.TypeOf(sdk.ToolArguments{}), mirror: reflect.TypeOf(model.ToolArguments{}),
+			field:   "JSON",
+			wantSDK: reflect.TypeOf(json.RawMessage{}), wantMirror: canonical,
+		},
+		{
+			sdk: reflect.TypeOf(sdk.ToolOutput{}), mirror: reflect.TypeOf(model.ToolOutput{}),
+			field:   "JSON",
 			wantSDK: reflect.TypeOf(json.RawMessage{}), wantMirror: canonical,
 		},
 		{
@@ -153,8 +167,10 @@ func TestMirrorCanonicalFields(t *testing.T) {
 	if got := fieldType(reflect.TypeOf(model.ResponseFormat{}), "JSONSchema"); got != canonical {
 		t.Errorf("run.ResponseFormat.JSONSchema is %s, want %s", got, canonical)
 	}
-	if got := reflect.TypeOf(model.ProviderMetadata{}).Elem(); got != canonical {
-		t.Errorf("run.ProviderMetadata holds %s, want %s", got, canonical)
+	// Provider metadata is string tokens on both sides: the mirror carries
+	// the SDK shape unchanged, so nothing is canonicalized on the way in.
+	if got, want := reflect.TypeOf(model.ProviderMetadata{}).Elem(), reflect.TypeOf(sdk.ProviderMetadata{}).Elem(); got != want {
+		t.Errorf("run.ProviderMetadata holds %s, sdk.ProviderMetadata holds %s", got, want)
 	}
 }
 
@@ -169,8 +185,8 @@ func TestMirrorCoversEveryMessagePartType(t *testing.T) {
 		sdk.ImagePart{Image: "aGk=", MediaType: "image/png"},
 		sdk.FilePart{Data: "aGk=", MediaType: "text/plain", Filename: "a.txt"},
 		sdk.ReasoningPart{ID: "rs_1", Text: "why", Model: "m"},
-		sdk.ToolCallPart{ToolCallID: "call_1", ToolName: "f", Input: map[string]any{"a": float64(1)}},
-		sdk.ToolResultPart{ToolCallID: "call_1", ToolName: "f", Result: map[string]any{"ok": true}},
+		sdk.ToolCallPart{ToolCallID: "call_1", ToolName: "f", Input: sdk.ParseToolArguments(`{"a":1}`)},
+		sdk.ToolResultPart{ToolCallID: "call_1", ToolName: "f", Result: sdk.TextOutput("ok")},
 	}
 
 	for _, part := range parts {

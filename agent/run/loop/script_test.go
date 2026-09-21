@@ -20,7 +20,7 @@ func Text(text string) sdk.ModelResult {
 
 // Call is one scripted tool call with the default arguments.
 func Call(name, id string) sdk.ToolCall {
-	return sdk.ToolCall{ToolCallID: id, ToolName: name, Input: `{"x":1}`}
+	return sdk.ToolCall{ToolCallID: id, ToolName: name, Input: sdk.ParseToolArguments(`{"x":1}`)}
 }
 
 // Calls is a model result that opens the given tool calls.

@@ -1,7 +1,6 @@
 package wire_test
 
 import (
-	"encoding/json"
 	"testing"
 
 	"github.com/felinics/twilight/agent/es"
@@ -11,6 +10,7 @@ import (
 	"github.com/felinics/twilight/agent/run/model/sdkconv"
 	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/sdk"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // startModel is the start of the current Prepared step's next model effect
@@ -175,7 +175,7 @@ func testRequest(tools ...sdk.ToolDefinition) sdk.Request {
 }
 
 func testToolDef(name string) sdk.ToolDefinition {
-	return sdk.ToolDefinition{Name: name, Parameters: json.RawMessage(`{"type":"object"}`)}
+	return sdk.ToolDefinition{Name: name, Parameters: &jsonschema.Schema{Type: "object"}}
 }
 
 func buildPrepare(t *testing.T, s run.MachineState, req sdk.Request, specs []run.ToolSpec) (run.PrepareModelRequest, run.CommandID) {
@@ -223,7 +223,7 @@ func modelResultWithNamedCalls(toolName, args string, callIDs ...string) model.M
 		Usage:        sdk.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
 	}
 	for _, id := range callIDs {
-		r.ToolCalls = append(r.ToolCalls, sdk.ToolCall{ToolCallID: id, ToolName: toolName, Input: args})
+		r.ToolCalls = append(r.ToolCalls, sdk.ToolCall{ToolCallID: id, ToolName: toolName, Input: sdk.ParseToolArguments(args)})
 	}
 	frozen, err := sdkconv.FreezeModelResult(r)
 	if err != nil {
