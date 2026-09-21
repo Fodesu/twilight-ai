@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
-	"time"
 
 	"github.com/felinics/twilight/sdk"
 )
@@ -258,7 +257,7 @@ func (sp *streamProcessor) emitFinishStep() {
 		Response: sdk.ResponseMetadata{
 			ID:        sp.chunkID,
 			ModelID:   sp.chunkModel,
-			Timestamp: time.Unix(sp.chunkCreated, 0),
+			Timestamp: sdk.TimestampFromUnix(sp.chunkCreated),
 		},
 	})
 }

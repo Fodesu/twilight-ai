@@ -3,7 +3,6 @@ package copilot
 import (
 	"context"
 	"encoding/json"
-	"time"
 
 	"github.com/felinics/twilight/sdk"
 )
@@ -208,7 +207,7 @@ func (sp *streamProcessor) processFinishReason(choice *chatChunkChoice) {
 		Response: sdk.ResponseMetadata{
 			ID:        sp.chunkID,
 			ModelID:   sp.chunkModel,
-			Timestamp: time.Unix(sp.chunkCreated, 0),
+			Timestamp: sdk.TimestampFromUnix(sp.chunkCreated),
 		},
 	})
 }

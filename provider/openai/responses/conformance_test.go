@@ -35,8 +35,8 @@ func conformanceProvider(baseURL string) sdk.Provider {
 // conformanceResponse is the response metadata both canned replies carry; the
 // streamed response.created event repeats it, so generate and stream must agree
 // on it.
-func conformanceResponse(id string) *sdk.ResponseMetadata {
-	return &sdk.ResponseMetadata{
+func conformanceResponse(id string) sdk.ResponseMetadata {
+	return sdk.ResponseMetadata{
 		ID:        id,
 		ModelID:   conformanceModel,
 		Timestamp: time.Unix(conformanceCreatedAt, 0).UTC(),

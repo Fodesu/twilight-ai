@@ -103,7 +103,7 @@ func hardenResult(result *ModelResult) ModelResult {
 		out.Files = append([]GeneratedFile(nil), result.Files...)
 	}
 	out.ToolCalls = cloneToolCalls(result.ToolCalls)
-	out.Response = cloneResponseMetadataPtr(result.Response)
+	out.Response = result.Response.clone()
 	return out
 }
 
@@ -161,15 +161,7 @@ func accumulateStreamPart(result *ModelResult, reasoning *reasoningAccumulator, 
 		result.FinishReason = p.FinishReason
 		result.RawFinishReason = p.RawFinishReason
 		result.Usage = p.Usage
-		// An absent metadata stays nil so that streamed and generated results
-		// serialize identically: the agent runtime digests persisted results,
-		// and a non-nil pointer to a zero value would make the digest depend on
-		// which mode produced the result.
-		if responseMetadataZero(p.Response) {
-			result.Response = nil
-		} else {
-			result.Response = cloneResponseMetadataPtr(&p.Response)
-		}
+		result.Response = p.Response.clone()
 	case *FinishPart:
 		result.FinishReason = p.FinishReason
 		result.RawFinishReason = p.RawFinishReason

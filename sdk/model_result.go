@@ -23,9 +23,7 @@ type ModelResult struct {
 	Files     []GeneratedFile `json:"files,omitempty"`
 	ToolCalls []ToolCall      `json:"toolCalls,omitempty"`
 
-	// Response is pointer-typed so an absent value actually omits: a
-	// struct-typed field with omitempty never omits, which would freeze a
-	// zero timestamp and provider wall-clock headers into every canonical
-	// fact digest.
-	Response *ResponseMetadata `json:"response,omitempty"`
+	// Response is always present; fields the wire did not carry stay zero and
+	// the object is omitted from JSON when every field is zero.
+	Response ResponseMetadata `json:"response,omitzero"`
 }
