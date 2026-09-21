@@ -5,14 +5,15 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/filestore/filestoretest"
 	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/session/unit"
 	"github.com/felinics/twilight/agent/session/writer"
+	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 )
 
 func newWriter(t *testing.T) writer.Writer {
@@ -22,12 +23,12 @@ func newWriter(t *testing.T) writer.Writer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := session.NewMemoryStore()
+	store := filestoretest.Store(t)
 	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
-	bindings := artifact.NewMemoryBindingStore()
-	w, err := writer.OpenWriter(ctx, store, registry, writer.Admission{Bindings: bindings, Ledger: artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings})}, "s", session.OpenOptions{})
+	bindings, ledger := sqlitetest.Artifacts(t)
+	w, err := writer.OpenWriter(ctx, store, registry, writer.Admission{Bindings: bindings, Ledger: ledger}, "s", session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}

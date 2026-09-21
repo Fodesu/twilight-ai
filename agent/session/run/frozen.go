@@ -51,22 +51,6 @@ func FrozenValues(store artifact.ContentStore, bindings artifact.BindingStore) (
 	return &frozenValues{store: store, bindings: bindings}, nil
 }
 
-// FrozenValuesInMemory is the in-process frozen.Store: a memory cas store
-// under FrozenAuthority behind the adapter, registering Bindings in bindings.
-// Tests that simulate a process restart share one instance across stores, as
-// a durable store would share its files.
-func FrozenValuesInMemory(bindings artifact.BindingStore) frozen.Store {
-	store, err := artifact.NewMemoryContentStore(FrozenAuthority, artifact.MemoryContentStoreOptions{})
-	if err != nil {
-		panic(err) // the Owner is a constant; only an empty one fails
-	}
-	fz, err := FrozenValues(store, bindings)
-	if err != nil {
-		panic(err)
-	}
-	return fz
-}
-
 func (f *frozenValues) Put(ctx context.Context, digest run.Digest, val []byte) error {
 	if err := ctx.Err(); err != nil {
 		return err

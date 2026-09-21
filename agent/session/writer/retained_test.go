@@ -8,6 +8,7 @@ import (
 
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/filestore/filestoretest"
 )
 
 // countState is O(1) on purpose: a projection whose state grows with the log
@@ -41,15 +42,16 @@ var sinkWriter Writer
 // how long the log is. It used to: every entry of the Writer's own index held
 // the group's rows, each a subslice of the one slice the rebuild read, so the
 // whole parsed log stayed alive for the lifetime of the Writer -- measured at
-// 2.2 MB for 6400 rows, and identical with or without a cache entry.
+// 2.2 MB for 6400 rows, and identical with or without a cache entry. The
+// sizes are kept small because every commit is an fsync'd file write.
 func TestWriterRetainsNoHistory(t *testing.T) {
-	small := retainedOnReopen(t, 1600)
-	large := retainedOnReopen(t, 12800)
-	t.Logf("retained on reopen: 1600 commits = %.3f MB, 12800 commits = %.3f MB", mib(small), mib(large))
+	small := retainedOnReopen(t, 200)
+	large := retainedOnReopen(t, 1600)
+	t.Logf("retained on reopen: 200 commits = %.3f MB, 1600 commits = %.3f MB", mib(small), mib(large))
 	// Eight times the commits must not cost a linear amount: a returning index
-	// would put the larger session in the megabytes.
-	if large > 512<<10 {
-		t.Fatalf("reopening a 12800-commit session retained %.3f MB; the Writer holds no per-commit state", mib(large))
+	// would put the larger session past half a megabyte.
+	if large > 256<<10 {
+		t.Fatalf("reopening a 1600-commit session retained %.3f MB; the Writer holds no per-commit state", mib(large))
 	}
 }
 
@@ -60,7 +62,7 @@ func mib(n uint64) float64 { return float64(n) / (1 << 20) }
 func retainedOnReopen(t *testing.T, commits int) uint64 {
 	t.Helper()
 	ctx := context.Background()
-	store := session.NewMemoryStore()
+	store := filestoretest.Store(t)
 	reg, err := extension.BuildRegistry(session.ProtocolVersion1, countModule())
 	if err != nil {
 		t.Fatal(err)

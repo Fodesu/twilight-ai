@@ -856,6 +856,3 @@ func writeAtomic(path string, data []byte) error {
 
 var _ session.Store = (*Store)(nil)
 var _ session.Backend = (*Store)(nil)
-
-// Durable reports true: the ledger is on disk.
-func (*Store) Durable() bool { return true }

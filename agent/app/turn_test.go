@@ -25,7 +25,7 @@ func setup(t *testing.T, model loop.ModelInvoker, tool *gateTool, opts app.Sessi
 	if tool != nil {
 		tools = append(tools, tool)
 	}
-	h := newHost(app.Config{}, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tools...)
+	h := newHost(t, app.Config{}, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tools...)
 	const sid session.SessionID = "s-1"
 	if err := h.CreateSession(context.Background(), sid); err != nil {
 		t.Fatal(err)
@@ -207,7 +207,7 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 			{ToolCallID: "c2", ToolName: "lookup", Input: `{}`},
 			{ToolCallID: "c3", ToolName: "approve", Input: `{}`},
 		}}}}
-	h := newHost(app.Config{}, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tool, approval)
+	h := newHost(t, app.Config{}, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tool, approval)
 	preset, err := h.RegisterPreset("sequential", mustPreset("m-1", []loop.ExecutableTool{tool, approval},
 		app.WithScheduling(run.ToolScheduling{Mode: run.ToolScheduleSequential})))
 	if err != nil {

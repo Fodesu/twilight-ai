@@ -6,6 +6,7 @@ import (
 
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/filestore/filestoretest"
 )
 
 // EXT-WRT-1, SES-ADV-1: a registry that writes a later kernel version
@@ -14,7 +15,7 @@ import (
 func TestOpenWriterAdvancesTipToRegistryVersion(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
-	f.store = session.NewMemoryStore(session.WithProfile(session.ProfileVariant(2)))
+	f.store = filestoretest.Store(t, session.WithProfile(session.ProfileVariant(2)))
 	if _, err := f.store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}

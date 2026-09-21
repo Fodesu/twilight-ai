@@ -12,11 +12,12 @@ import (
 	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/executor"
 	executorlocal "github.com/felinics/twilight/agent/executor/local"
-	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
+	"github.com/felinics/twilight/agent/session/filestore/filestoretest"
+	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -60,7 +61,7 @@ func messageTexts(req sdk.Request) []string {
 // a restart shares both, since the ledger names the frozen bodies by digest.
 func openCompactSession(t *testing.T, store session.Store, content artifact.ContentStore, model *compactAwareModel, opts app.SessionOptions) (*app.Application, *app.Session) {
 	t.Helper()
-	h := newHost(app.Config{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+	h := newHost(t, app.Config{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
 	preset, err := h.RegisterPreset("b1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +79,7 @@ func openCompactSession(t *testing.T, store session.Store, content artifact.Cont
 // from the checkpointed log (CHT-EVT-3, APP-CKP-1).
 func TestCompactShrinksContextAndReplaysAcrossRestart(t *testing.T) {
 	ctx := context.Background()
-	store, content := session.NewMemoryStore(), memoryContent()
+	store, content := filestoretest.Store(t), durableContent(t)
 	model := &compactAwareModel{}
 	h, s := openCompactSession(t, store, content, model, app.SessionOptions{CompactRetainEntries: 1})
 
@@ -140,7 +141,7 @@ func TestAutoCompactAfterSettlement(t *testing.T) {
 	ctx := context.Background()
 	var warned []error
 	model := &compactAwareModel{}
-	h, s := openCompactSession(t, session.NewMemoryStore(), memoryContent(), model, app.SessionOptions{
+	h, s := openCompactSession(t, filestoretest.Store(t), durableContent(t), model, app.SessionOptions{
 		CompactAfterEntries: 3, CompactRetainEntries: 1,
 		CompactWarn: func(err error) { warned = append(warned, err) },
 	})
@@ -197,8 +198,8 @@ func TestCompactRefusesWhileTurnActive(t *testing.T) {
 // RUN-EXE-1, RUN-EXE-3).
 func TestCompactDispatchServesDurableWorker(t *testing.T) {
 	ctx := context.Background()
-	store := session.NewMemoryStore()
-	content := memoryContent()
+	store := filestoretest.Store(t)
+	content := durableContent(t)
 	model := &compactAwareModel{}
 	cat, err := executorlocal.NewCatalog(map[run.ModelRef]loop.ModelInvoker{"m-1": model})
 	if err != nil {
@@ -208,12 +209,12 @@ func TestCompactDispatchServesDurableWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker, err := executor.NewWorker(ctx, executionstore.NewMemoryStore(), []executor.Route{executorlocal.Route(local)})
+	worker, err := executor.NewWorker(ctx, sqlitetest.Open(t).Executions(), []executor.Route{executorlocal.Route(local)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h, err := app.Build(app.Config{Store: store, Content: content, Executor: app.ExecutorConfig{Port: worker},
-		Ownership: session.OpenOptions{Takeover: true}})
+	h, err := app.Build(durablePorts(t, app.Config{Store: store, Content: content, Executor: app.ExecutorConfig{Port: worker},
+		Ownership: session.OpenOptions{Takeover: true}}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,9 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/executor"
-	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/loop"
@@ -24,8 +22,11 @@ import (
 	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/filestore/filestoretest"
 	runmod "github.com/felinics/twilight/agent/session/run"
+	"github.com/felinics/twilight/agent/session/run/runmodtest"
 	"github.com/felinics/twilight/agent/session/writer"
+	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/sdk"
 	"testing"
 )
@@ -40,7 +41,7 @@ const (
 // creates the Run with its seed input through a Start-like group.
 func newRuntime(t testing.TB, inputs ...run.AgentInput) (*runmod.SessionRunStore, writer.Writer) {
 	t.Helper()
-	store := session.NewMemoryStore()
+	store := filestoretest.Store(t)
 	registry, err := extension.BuildRegistry(session.ProtocolVersion1, runmod.Module)
 	if err != nil {
 		t.Fatal(err)
@@ -49,10 +50,9 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) (*runmod.SessionRunStore
 	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: defaultSession}); err != nil {
 		t.Fatal(err)
 	}
-	bindings := artifact.NewMemoryBindingStore()
-	ledger := artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings})
+	bindings, ledger := sqlitetest.Artifacts(t)
 	writers := writer.NewWriters(store, registry, writer.Admission{Bindings: bindings, Ledger: ledger}, session.OpenOptions{}, writer.WritersConfig{})
-	rt, err := runmod.NewSessionRunStore(runmod.Config{Registry: registry, Store: store, Frozen: runmod.FrozenValuesInMemory(bindings)})
+	rt, err := runmod.NewSessionRunStore(runmod.Config{Registry: registry, Store: store, Frozen: runmodtest.Frozen(t, bindings)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -379,7 +379,7 @@ func (f *Feature) ensureLoop() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	exec, err := executor.NewWorker(f.ctx, executionstore.NewMemoryStore(), []executor.Route{executor.Default("local", backend)})
+	exec, err := executor.NewWorker(f.ctx, sqlitetest.Open(f.t).Executions(), []executor.Route{executor.Default("local", backend)})
 	if err != nil {
 		f.t.Fatal(err)
 	}

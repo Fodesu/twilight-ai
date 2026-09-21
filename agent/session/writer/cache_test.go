@@ -8,6 +8,7 @@ import (
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/filestore/filestoretest"
 )
 
 // This file covers EXT-PRJ-3: a projection's folded state living in the
@@ -69,7 +70,7 @@ func cacheModule(c *applyCounter) extension.ModuleDescriptor {
 }
 
 type cacheFixture struct {
-	store    *session.MemoryStore
+	store    session.Store
 	registry *extension.Registry
 	cache    *extension.MemoryProjectionCache
 	counter  *applyCounter
@@ -77,7 +78,7 @@ type cacheFixture struct {
 
 func newCacheFixture(t testing.TB) *cacheFixture {
 	t.Helper()
-	f := &cacheFixture{store: session.NewMemoryStore(), cache: extension.NewMemoryProjectionCache(), counter: newApplyCounter()}
+	f := &cacheFixture{store: filestoretest.Store(t), cache: extension.NewMemoryProjectionCache(), counter: newApplyCounter()}
 	registry, err := extension.BuildRegistry(session.ProtocolVersion1, cacheModule(f.counter))
 	if err != nil {
 		t.Fatal(err)

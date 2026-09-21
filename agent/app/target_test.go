@@ -9,6 +9,7 @@ import (
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/filestore/filestoretest"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -92,12 +93,12 @@ func TestTargetResolverSeam(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			tool := &targetTool{seen: make(chan *run.TargetRef, 1)}
 			model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
-			cfg := app.Config{Store: session.NewMemoryStore()}
+			cfg := app.Config{}
 			if tc.resolver != nil {
 				tc.resolver.bind(sid, ws1)
 				cfg.TargetResolver = tc.resolver
 			}
-			h := newHost(cfg, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tool)
+			h := newHost(t, cfg, map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tool)
 			preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{tool}))
 			if err != nil {
 				t.Fatal(err)
@@ -151,7 +152,7 @@ func TestForkChildTargetIsApplicationPolicy(t *testing.T) {
 	tool := &targetTool{seen: make(chan *run.TargetRef, 1)}
 	done := sdk.ModelResult{Text: "done", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer(), done, toolCallAnswer(), done, toolCallAnswer(), done}}
-	h := newHost(app.Config{Store: session.NewMemoryStore(), TargetResolver: resolver},
+	h := newHost(t, app.Config{Store: filestoretest.Store(t), TargetResolver: resolver},
 		map[run.ModelRef]loop.ModelInvoker{"m-1": model}, tool)
 	preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{tool}))
 	if err != nil {

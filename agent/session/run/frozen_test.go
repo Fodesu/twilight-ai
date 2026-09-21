@@ -11,6 +11,7 @@ import (
 	"github.com/felinics/twilight/agent/run/model/sdkconv"
 	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/session/filestore"
+	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -38,18 +39,18 @@ func fileFrozen(t *testing.T, root string) frozen.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fz, err := FrozenValues(store, artifact.NewMemoryBindingStore())
+	fz, err := FrozenValues(store, sqlitetest.Open(t).Bindings())
 	if err != nil {
 		t.Fatal(err)
 	}
 	return fz
 }
 
-// The frozen.Store adapter over both cas ContentStores (RUN-WIR-4): the
+// The frozen.Store adapter over the cas ContentStore (RUN-WIR-4): the
 // digest is the SHA-256 of the stored bytes, so Put and Get need no index; a
-// body under a name it does not digest to is refused; and, for the file
-// store, a second instance over the same root reads what the first wrote --
-// the path a restarted process takes to replay an interrupted ModelStep.
+// body under a name it does not digest to is refused; and a second instance
+// over the same root reads what the first wrote -- the path a restarted
+// process takes to replay an interrupted ModelStep.
 func TestFrozenValuesOverContentStores(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
@@ -57,9 +58,6 @@ func TestFrozenValuesOverContentStores(t *testing.T) {
 		open func(t *testing.T, root string) frozen.Store
 		file bool
 	}{
-		{"memory", func(*testing.T, string) frozen.Store {
-			return FrozenValuesInMemory(artifact.NewMemoryBindingStore())
-		}, false},
 		{"file", fileFrozen, true},
 	}
 	for _, tc := range cases {
@@ -104,11 +102,11 @@ func TestFrozenValuesOverContentStores(t *testing.T) {
 // surfaces it as an error rather than a miss.
 func TestFrozenValuesRejectsForeignAuthority(t *testing.T) {
 	ctx := context.Background()
-	store, err := artifact.NewMemoryContentStore("someone-else", artifact.MemoryContentStoreOptions{})
+	store, err := filestore.NewContentStore(t.TempDir(), "someone-else", filestore.ContentStoreOptions{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fv, err := FrozenValues(store, artifact.NewMemoryBindingStore())
+	fv, err := FrozenValues(store, sqlitetest.Open(t).Bindings())
 	if err != nil {
 		t.Fatal(err)
 	}

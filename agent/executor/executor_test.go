@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +19,8 @@ import (
 	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/model"
 	"github.com/felinics/twilight/agent/run/schema"
+	"github.com/felinics/twilight/agent/store/sqlite"
+	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -99,13 +99,9 @@ type refBackend struct {
 	started  int
 	restarts int
 	startRef string
-	// colocated is the executor.Colocated declaration under test.
-	colocated bool
 	// attach, when set, scripts Attach's answer instead of the Port's.
 	attach effect.AttachmentState
 }
-
-func (b *refBackend) Colocated() bool { return b.colocated }
 
 func (b *refBackend) setAttach(state effect.AttachmentState) {
 	b.mu.Lock()
@@ -176,7 +172,7 @@ func testAssignment() effect.Assignment {
 func TestWorkerIdempotentAndOutcome(t *testing.T) {
 	ctx := context.Background()
 	backend := newTestBackend()
-	worker, err := executor.NewWorker(ctx, store.NewMemoryStore(), routes(backend))
+	worker, err := executor.NewWorker(ctx, sqlitetest.Open(t).Executions(), routes(backend))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +203,7 @@ func TestWorkerDispatchReplayPreservesExistingExecution(t *testing.T) {
 	for _, state := range []effect.ExecutionStatus{effect.ExecutionAccepted, effect.ExecutionDispatching, effect.ExecutionRunning, effect.ExecutionCancelRequested} {
 		t.Run(string(state), func(t *testing.T) {
 			ctx := context.Background()
-			records := store.NewMemoryStore()
+			records := sqlitetest.Open(t).Executions()
 			a := testAssignment()
 			digest, err := a.Digest()
 			if err != nil {
@@ -275,7 +271,7 @@ func TestWorkerUncertainDispatchPreservesExecution(t *testing.T) {
 		t.Run(fmt.Sprint("http=", overHTTP), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			records := store.NewMemoryStore()
+			records := sqlitetest.Open(t).Executions()
 			backend := &uncertainDispatchBackend{testBackend: newTestBackend(), ready: make(chan struct{})}
 			defer close(backend.ready)
 			worker, err := executor.NewWorker(ctx, records, routes(backend))
@@ -321,7 +317,7 @@ func TestWorkerUncertainDispatchPreservesExecution(t *testing.T) {
 func TestHTTPDispatchAssignmentConflictIsDefinite(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	worker, err := executor.NewWorker(ctx, store.NewMemoryStore(), routes(newTestBackend()))
+	worker, err := executor.NewWorker(ctx, sqlitetest.Open(t).Executions(), routes(newTestBackend()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +362,7 @@ func TestWorkerOutcomeReadFailurePreservesExecution(t *testing.T) {
 		t.Run(fmt.Sprint("explicit_unknown=", unknown), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			records := store.NewMemoryStore()
+			records := sqlitetest.Open(t).Executions()
 			backend := &temporarilyUnreadableBackend{testBackend: newTestBackend(), failed: make(chan struct{}), ready: make(chan struct{}), unknown: unknown}
 			worker, err := executor.NewWorker(ctx, records, routes(backend))
 			if err != nil {
@@ -411,7 +407,7 @@ func (b *holdBackend) Dispatch(_ context.Context, a effect.Assignment) error {
 // lease for another incarnation.
 func TestWorkerCloseStopsGoroutines(t *testing.T) {
 	ctx := context.Background()
-	records := store.NewMemoryStore()
+	records := sqlitetest.Open(t).Executions()
 	backend := &holdBackend{newTestBackend()}
 	worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("test", executor.PortBackend(backend))},
 		executor.WorkerOptions{ID: "worker-c", LeaseDuration: time.Second, ReconcileInterval: time.Millisecond})
@@ -440,7 +436,7 @@ func TestWorkerCloseStopsGoroutines(t *testing.T) {
 // Start receives the new one (RUN-EXE-9).
 func TestWorkerRestartSupersedesRef(t *testing.T) {
 	ctx := context.Background()
-	records := store.NewMemoryStore()
+	records := sqlitetest.Open(t).Executions()
 	a := testAssignment()
 	digest, err := a.Digest()
 	if err != nil {
@@ -481,7 +477,7 @@ func TestWorkerRestartSupersedesRef(t *testing.T) {
 // no backend is called (RUN-EXE-10).
 func TestWorkerTakeoverRefusesUnknownProvider(t *testing.T) {
 	ctx := context.Background()
-	records := store.NewMemoryStore()
+	records := sqlitetest.Open(t).Executions()
 	a := testAssignment()
 	digest, err := a.Digest()
 	if err != nil {
@@ -520,7 +516,7 @@ func TestWorkerTakeoverRefusesUnknownProvider(t *testing.T) {
 // record before Start; Start receives the persisted Ref (RUN-EXE-9/10).
 func TestWorkerPersistsExecutionRefBeforeStart(t *testing.T) {
 	ctx := context.Background()
-	records := store.NewMemoryStore()
+	records := sqlitetest.Open(t).Executions()
 	backend := &refBackend{testBackend: newTestBackend()}
 	worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("ref", backend)},
 		executor.WorkerOptions{ID: "worker-a", LeaseDuration: time.Second})
@@ -559,7 +555,7 @@ func TestExecutionStoreFencesTakeover(t *testing.T) {
 	ctx := context.Background()
 	base := time.Unix(100, 0)
 	now := base
-	records := store.NewMemoryStore(store.MemoryStoreOptions{Now: func() time.Time { return now }})
+	records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 	a := testAssignment()
 	digest, err := a.Digest()
 	if err != nil {
@@ -590,7 +586,7 @@ func TestExecutionStoreRequiresDispatchingBarrier(t *testing.T) {
 	ctx := context.Background()
 	base := time.Unix(100, 0)
 	now := base
-	records := store.NewMemoryStore(store.MemoryStoreOptions{Now: func() time.Time { return now }})
+	records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 	a := testAssignment()
 	digest, err := a.Digest()
 	if err != nil {
@@ -619,7 +615,7 @@ func TestWorkerReclaimsExpiredAssignment(t *testing.T) {
 	ctx := context.Background()
 	base := time.Unix(100, 0)
 	now := base
-	records := store.NewMemoryStore(store.MemoryStoreOptions{Now: func() time.Time { return now }})
+	records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 	a := testAssignment()
 	digest, err := a.Digest()
 	if err != nil {
@@ -668,7 +664,7 @@ func TestWorkerReconcileAdoptsExpiredLease(t *testing.T) {
 	ctx := context.Background()
 	base := time.Unix(100, 0)
 	now := base.Add(2 * time.Second)
-	records := store.NewMemoryStore(store.MemoryStoreOptions{Now: func() time.Time { return now }})
+	records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 	a := testAssignment()
 	digest, err := a.Digest()
 	if err != nil {
@@ -714,7 +710,7 @@ func TestWorkerReconcileLeavesLiveLease(t *testing.T) {
 	ctx := context.Background()
 	base := time.Unix(100, 0)
 	now := base
-	records := store.NewMemoryStore(store.MemoryStoreOptions{Now: func() time.Time { return now }})
+	records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 	a := testAssignment()
 	digest, err := a.Digest()
 	if err != nil {
@@ -749,7 +745,7 @@ func TestWorkerReconcileLeavesLiveLease(t *testing.T) {
 func TestWorkerReconcileLoopAdoptsOrphanedRecord(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	records := store.NewMemoryStore()
+	records := sqlitetest.Open(t).Executions()
 	a := testAssignment()
 	digest, err := a.Digest()
 	if err != nil {
@@ -778,12 +774,9 @@ func TestWorkerReconcileLoopAdoptsOrphanedRecord(t *testing.T) {
 	}
 }
 
-func TestFileStoreSurvivesWorkerRecreation(t *testing.T) {
+func TestRecordStoreSurvivesWorkerRecreation(t *testing.T) {
 	ctx := context.Background()
-	fs, err := store.NewFileStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
+	fs := sqlitetest.Open(t).Executions()
 	a := testAssignment()
 	first, err := executor.NewWorker(ctx, fs, routes(newTestBackend()))
 	if err != nil {
@@ -808,7 +801,7 @@ func TestFileStoreSurvivesWorkerRecreation(t *testing.T) {
 func TestHTTPClientAndServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	worker, err := executor.NewWorker(ctx, store.NewMemoryStore(), routes(newTestBackend()))
+	worker, err := executor.NewWorker(ctx, sqlitetest.Open(t).Executions(), routes(newTestBackend()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -836,9 +829,8 @@ func testToolAssignment() effect.Assignment {
 
 // Dispose is the control plane's give-up path: the record settles Unknown
 // regardless of owner or lease, so the Owner's next read disposes the Run
-// target; a terminal record is left alone and a key with no record gets a
-// terminal Unknown record, so the disposal is readable and a later Dispatch
-// of the key starts nothing (RUN-EXE-3).
+// target; a terminal record is left alone and a key with no record is not
+// found.
 func TestWorkerDisposeSettlesUnknown(t *testing.T) {
 	completedEnv := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Unknown: false}
 	rows := []struct {
@@ -850,12 +842,12 @@ func TestWorkerDisposeSettlesUnknown(t *testing.T) {
 		{"live foreign owner", &store.Record{State: effect.ExecutionDispatching, Owner: "live-worker", FencingEpoch: 3,
 			LeaseUntilUnixMilli: time.Now().Add(time.Hour).UnixMilli()}, nil},
 		{"already terminal", &store.Record{State: effect.ExecutionCompleted, Owner: "dead-worker", FencingEpoch: 3, LeaseUntilUnixMilli: 1, Outcome: &completedEnv}, nil},
-		{"missing record", nil, nil},
+		{"missing record", nil, effect.ErrExecutionNotFound},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := context.Background()
-			records := store.NewMemoryStore()
+			records := sqlitetest.Open(t).Executions()
 			a := testAssignment()
 			key := a.Key()
 			if row.record != nil {
@@ -877,21 +869,12 @@ func TestWorkerDisposeSettlesUnknown(t *testing.T) {
 			if !errors.Is(err, row.wantErr) {
 				t.Fatalf("dispose = %v, want %v", err, row.wantErr)
 			}
-			got, ok, err := records.Get(ctx, key)
-			if err != nil || !ok {
-				t.Fatalf("record after dispose: ok=%v err=%v", ok, err)
-			}
 			if row.record == nil {
-				if got.State != effect.ExecutionUnknown || got.Outcome == nil || !got.Outcome.Unknown || got.Assignment.Key() != key {
-					t.Fatalf("tombstone = %+v", got)
-				}
-				if out, err := worker.GetOutcome(ctx, key); err != nil || out.Key != key {
-					t.Fatalf("tombstone outcome = %+v %v", out, err)
-				}
-				if err := worker.Dispatch(ctx, a); !errors.Is(err, store.ErrAssignmentConflict) {
-					t.Fatalf("dispatch over tombstone = %v, want assignment conflict", err)
-				}
 				return
+			}
+			got, _, err := records.Get(ctx, key)
+			if err != nil {
+				t.Fatal(err)
 			}
 			if row.record.State == effect.ExecutionCompleted {
 				if got.State != effect.ExecutionCompleted || got.Outcome == nil || got.Outcome.Unknown {
@@ -925,7 +908,7 @@ func TestWorkerAdoptionOfUnattachableToolSettlesUnknown(t *testing.T) {
 	for _, row := range rows {
 		t.Run(string(row.state), func(t *testing.T) {
 			ctx := context.Background()
-			records := store.NewMemoryStore(store.MemoryStoreOptions{Now: func() time.Time { return now }})
+			records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 			a := testToolAssignment()
 			digest, err := a.Digest()
 			if err != nil {
@@ -988,7 +971,7 @@ func (s *flakyRenewStore) Renew(ctx context.Context, key effect.AssignmentKey, o
 // retries and the record stays owned. Without the retry the heartbeat exited
 // on the first error and the lease stayed lost once the failure outlasted it.
 func TestWorkerHeartbeatRetriesTransientRenewErrors(t *testing.T) {
-	records := &flakyRenewStore{Store: store.NewMemoryStore(), deadline: time.Now().Add(1100 * time.Millisecond)}
+	records := &flakyRenewStore{Store: sqlitetest.Open(t).Executions(), deadline: time.Now().Add(1100 * time.Millisecond)}
 	backend := &uncertainDispatchBackend{testBackend: newTestBackend(), ready: make(chan struct{})}
 	defer close(backend.ready)
 	worker, err := executor.NewWorker(context.Background(), records, routes(backend), executor.WorkerOptions{ID: "worker-a", LeaseDuration: 800 * time.Millisecond})
@@ -1031,7 +1014,7 @@ func TestHTTPControlEndpoints(t *testing.T) {
 	// The backend never answers, so Dispose races no watcher settlement.
 	backend := &uncertainDispatchBackend{testBackend: newTestBackend(), ready: make(chan struct{})}
 	defer close(backend.ready)
-	worker, err := executor.NewWorker(ctx, store.NewMemoryStore(), routes(backend))
+	worker, err := executor.NewWorker(ctx, sqlitetest.Open(t).Executions(), routes(backend))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1080,69 +1063,6 @@ func TestHTTPControlEndpoints(t *testing.T) {
 	}
 }
 
-func TestFileStoreListSkipsCorruptRecords(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	fs, err := store.NewFileStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := testAssignment()
-	if err := fs.Put(ctx, store.Record{Assignment: a, AssignmentDigest: mustDigest(a), State: effect.ExecutionRunning}); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "corrupt.json"), []byte("{not json"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	records, err := fs.List(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(records) != 1 {
-		t.Fatalf("list = %d records, want 1 (corrupt skipped)", len(records))
-	}
-}
-
-// A key with no record is missing only when its absence proves that no
-// execution exists: the store is durable (the record precedes every Start)
-// or every Backend dies with the process. A memory store in front of a
-// Backend that may outlive the process answers orphaned (RUN-EXE-3).
-func TestWorkerAttachWithoutRecord(t *testing.T) {
-	ctx := context.Background()
-	rows := []struct {
-		name      string
-		durable   bool
-		colocated bool
-		want      effect.AttachmentState
-	}{
-		{"memory store, colocated backend", false, true, effect.AttachmentMissing},
-		{"memory store, remote backend", false, false, effect.AttachmentOrphaned},
-		{"durable store, remote backend", true, false, effect.AttachmentMissing},
-	}
-	for _, row := range rows {
-		t.Run(row.name, func(t *testing.T) {
-			var records store.Store = store.NewMemoryStore()
-			if row.durable {
-				fs, err := store.NewFileStore(t.TempDir())
-				if err != nil {
-					t.Fatal(err)
-				}
-				records = fs
-			}
-			backend := &refBackend{testBackend: newTestBackend(), colocated: row.colocated}
-			worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("ref", backend)}, executor.WorkerOptions{ID: "worker-a"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer worker.Close()
-			got, err := worker.Attach(ctx, testAssignment().Key())
-			if err != nil || got.State != row.want || got.Execution != effect.ExecutionNotFound {
-				t.Fatalf("attach without record = %+v %v, want %s", got, err, row.want)
-			}
-		})
-	}
-}
-
 // The Port adapter proves nothing about a Ref it cannot read as a key: that
 // is an error, not a missing execution.
 func TestPortBackendAttachRejectsForeignRef(t *testing.T) {
@@ -1171,7 +1091,7 @@ func TestWorkerTakeoverWaitsForUnconfirmedBackend(t *testing.T) {
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := context.Background()
-			records := store.NewMemoryStore()
+			records := sqlitetest.Open(t).Executions()
 			a := row.assignment
 			digest, err := a.Digest()
 			if err != nil {
@@ -1258,7 +1178,7 @@ func TestWorkerAcknowledgeAndCollect(t *testing.T) {
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
-			records := store.NewMemoryStore(store.MemoryStoreOptions{Now: func() time.Time { return now }})
+			records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 			a := testAssignment()
 			digest, err := a.Digest()
 			if err != nil {
@@ -1327,7 +1247,7 @@ func TestWorkerAcknowledgeAndCollect(t *testing.T) {
 		})
 	}
 	// Acknowledging what is not settled, or not known, is refused.
-	records := store.NewMemoryStore()
+	records := sqlitetest.Open(t).Executions()
 	a := testAssignment()
 	if err := records.Put(ctx, store.Record{Assignment: a, AssignmentDigest: mustDigest(a), State: effect.ExecutionRunning}); err != nil {
 		t.Fatal(err)
@@ -1344,31 +1264,6 @@ func TestWorkerAcknowledgeAndCollect(t *testing.T) {
 	other.Effect = "elsewhere"
 	if err := worker.Acknowledge(ctx, other.Key()); !errors.Is(err, effect.ErrExecutionNotFound) {
 		t.Fatalf("acknowledge of an unknown key = %v, want not found", err)
-	}
-}
-
-// The memory store's bound drops only collected records, oldest first; a
-// terminal record nobody collected stays, however many there are.
-func TestMemoryStoreEvictsOnlyCollected(t *testing.T) {
-	ctx := context.Background()
-	records := store.NewMemoryStore(store.MemoryStoreOptions{RetainTerminal: 1})
-	put := func(effectID run.EffectID, collected bool) effect.AssignmentKey {
-		a := testAssignment()
-		a.Effect = effectID
-		if err := records.Put(ctx, store.Record{Assignment: a, AssignmentDigest: mustDigest(a), State: effect.ExecutionCompleted, Collected: collected}); err != nil {
-			t.Fatal(err)
-		}
-		return a.Key()
-	}
-	kept1, kept2 := put("kept-1", false), put("kept-2", false)
-	dropped, retained := put("collected-1", true), put("collected-2", true)
-	for _, tc := range []struct {
-		key  effect.AssignmentKey
-		want bool
-	}{{kept1, true}, {kept2, true}, {dropped, false}, {retained, true}} {
-		if _, ok, err := records.Get(ctx, tc.key); err != nil || ok != tc.want {
-			t.Fatalf("%s present=%v err=%v, want %v", tc.key.Effect, ok, err, tc.want)
-		}
 	}
 }
 
@@ -1406,7 +1301,7 @@ func TestWorkerAdoptsToolByReplayDeclaration(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			records := store.NewMemoryStore()
+			records := sqlitetest.Open(t).Executions()
 			a := testToolAssignment()
 			body, _ := a.Tool()
 			body.Replay = tc.policy
@@ -1460,7 +1355,7 @@ func TestWorkerAdoptsToolByReplayDeclaration(t *testing.T) {
 // returned and the record is untouched (RUN-EXE-6).
 func TestWorkerReconcileDisposesUnadoptableOrphans(t *testing.T) {
 	ctx := context.Background()
-	records := store.NewMemoryStore()
+	records := sqlitetest.Open(t).Executions()
 	a := testAssignment()
 	digest, err := a.Digest()
 	if err != nil {
@@ -1539,7 +1434,7 @@ func TestWorkerAttachClassifiesByLease(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			records := store.NewMemoryStore(store.MemoryStoreOptions{Now: func() time.Time { return now }})
+			records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 			a := testAssignment()
 			digest, err := a.Digest()
 			if err != nil {
@@ -1642,7 +1537,7 @@ func TestWorkerRetriesRetryableFailures(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			records := store.NewMemoryStore()
+			records := sqlitetest.Open(t).Executions()
 			backend := &transientBackend{testBackend: newTestBackend(), failures: tc.failures, code: tc.code, toolRetry: tc.toolRetry}
 			worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("t", backend)},
 				executor.WorkerOptions{ID: "w", Retry: executor.RetryBudget{MaxAttempts: tc.budget, Backoff: time.Millisecond}})
@@ -1703,8 +1598,8 @@ func TestDispatchRefusalClassification(t *testing.T) {
 		assignment effect.Assignment
 		retryable  bool
 	}{
-		{"record store unavailable", failingCreateStore{store.NewMemoryStore()}, testAssignment(), true},
-		{"assignment without body", store.NewMemoryStore(), effect.Assignment{Session: "s", RunID: "r", Effect: "e", Schema: 1}, false},
+		{"record store unavailable", failingCreateStore{sqlitetest.Open(t).Executions()}, testAssignment(), true},
+		{"assignment without body", sqlitetest.Open(t).Executions(), effect.Assignment{Session: "s", RunID: "r", Effect: "e", Schema: 1}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

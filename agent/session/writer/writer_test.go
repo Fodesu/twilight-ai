@@ -12,6 +12,8 @@ import (
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/filestore/filestoretest"
+	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 )
 
 type notePayload struct {
@@ -75,23 +77,22 @@ func noteBatch(events ...TypedEvent) []TypedBatch {
 }
 
 type fixture struct {
-	store    *session.MemoryStore
+	store    session.Store
 	registry *extension.Registry
-	bindings *artifact.MemoryBindingStore
-	ledger   *artifact.MemoryLedger
+	bindings artifact.BindingStore
+	ledger   artifact.RetentionLedger
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{}
-	f.store = session.NewMemoryStore()
+	f.store = filestoretest.Store(t)
 	r, err := extension.BuildRegistry(session.ProtocolVersion1, noteModule("a"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.registry = r
-	f.bindings = artifact.NewMemoryBindingStore()
-	f.ledger = artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: f.bindings})
+	f.bindings, f.ledger = sqlitetest.Artifacts(t)
 	if _, err := f.store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}

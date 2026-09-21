@@ -285,6 +285,3 @@ func (s *ContentStore) Promote(ctx context.Context, ref artifact.Ref, req artifa
 }
 
 var _ artifact.ContentStore = (*ContentStore)(nil)
-
-// Durable reports true: the content is on disk.
-func (*ContentStore) Durable() bool { return true }

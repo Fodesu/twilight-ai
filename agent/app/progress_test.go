@@ -11,6 +11,7 @@ import (
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/filestore/filestoretest"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -40,7 +41,7 @@ func (m streamingModel) Stream(context.Context, sdk.Request) (sdk.ModelStream, e
 // step lands on the same stream.
 func TestModelDeltasReachTheEventStream(t *testing.T) {
 	ctx := context.Background()
-	h := newHost(app.Config{Store: session.NewMemoryStore(), Content: memoryContent(), Ownership: session.OpenOptions{Takeover: true}},
+	h := newHost(t, app.Config{Store: filestoretest.Store(t), Content: durableContent(t), Ownership: session.OpenOptions{Takeover: true}},
 		map[run.ModelRef]loop.ModelInvoker{"m-1": streamingModel{deltas: []string{"hel", "lo"}}})
 	preset, err := h.RegisterPreset("b1", mustPreset("m-1", nil))
 	if err != nil {

@@ -68,17 +68,6 @@ type ExecutionBackend interface {
 	Cancel(ctx context.Context, ref string) error
 }
 
-// Colocated is the optional declaration of a Backend whose executions live
-// and die with the process running the Worker (the in-process LocalExecutor).
-// A Worker over a memory record store proves the absence of an execution
-// only when every Backend declares it: a record the store lost with the
-// process then cannot name an execution that survived it (RUN-EXE-3). A
-// Backend that does not implement it, or answers false, reaches executions
-// the process does not own.
-type Colocated interface {
-	Colocated() bool
-}
-
 // Route hands the Assignments Match accepts to one provider's Backend. The
 // Worker evaluates routes once, at Dispatch, and persists the chosen
 // provider in the record (RUN-EXE-10); a nil Match accepts every Assignment.

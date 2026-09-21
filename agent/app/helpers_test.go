@@ -5,41 +5,59 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"testing"
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/artifact"
-	executionstore "github.com/felinics/twilight/agent/executor/store"
+	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/filestore"
+	"github.com/felinics/twilight/agent/session/filestore/filestoretest"
 	runmod "github.com/felinics/twilight/agent/session/run"
+	"github.com/felinics/twilight/agent/store/sqlite"
+	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
+	"path/filepath"
 )
 
 // newHost builds a colocated application for tests: a LocalExecutor over the
 // given models and tools; the Runtime still writes request bodies to
 // cfg.Content (RUN-WIR-4) and the executor never reads them back (RUN-EXE-7).
-func newHost(cfg app.Config, models map[run.ModelRef]loop.ModelInvoker, tools ...loop.ExecutableTool) *app.Application {
-	if cfg.Store == nil {
-		cfg.Store = session.NewMemoryStore()
-	}
-	if cfg.Content == nil {
-		cfg.Content = memoryContent()
-	}
-	if cfg.Executions == nil {
-		// The test double is named here; Build itself never falls back to
-		// a memory record store.
-		cfg.Executions = executionstore.NewMemoryStore()
-	}
+func newHost(t testing.TB, cfg app.Config, models map[run.ModelRef]loop.ModelInvoker, tools ...loop.ExecutableTool) *app.Application {
+	t.Helper()
+	cfg = durablePorts(t, cfg)
 	cfg.Executor = app.ExecutorConfig{Models: models, Tools: tools}
 	a, err := app.Build(cfg)
 	if err != nil {
-		panic(err)
+		t.Fatal(err)
 	}
 	return a
+}
+
+// durablePorts fills every store the Config leaves nil with a fresh durable
+// one under t.TempDir(): the JSONL Session ledger, the file cas store for
+// frozen bodies, and one SQLite file for the binding index, the retention
+// ledger and the Worker's execution records. Build itself has no defaults.
+func durablePorts(t testing.TB, cfg app.Config) app.Config {
+	t.Helper()
+	if cfg.Store == nil {
+		cfg.Store = filestoretest.Store(t)
+	}
+	if cfg.Content == nil {
+		cfg.Content = durableContent(t)
+	}
+	if cfg.Artifacts.Bindings == nil {
+		cfg.Artifacts.Bindings, cfg.Artifacts.Ledger = sqlitetest.Artifacts(t)
+	}
+	if cfg.Executions == nil {
+		cfg.Executions = sqlitetest.Open(t).Executions()
+	}
+	return cfg
 }
 
 // runState reads a Run's committed state by SessionID: the lease-free read
@@ -52,13 +70,49 @@ func runState(a *app.Application, sid session.SessionID, runID run.RunID) (runti
 	return record.Snapshot, nil
 }
 
-// memoryContent is an in-process cas store under the frozen authority.
-func memoryContent() artifact.ContentStore {
-	store, err := artifact.NewMemoryContentStore(runmod.FrozenAuthority, artifact.MemoryContentStoreOptions{})
+// exampleStores builds the durable ports of one process under root for the
+// Example functions, which have no testing.TB: the JSONL ledger and the cas
+// content store are shared by every process over the root, the binding index
+// and retention ledger live in one SQLite file, and each process keeps its
+// own execution record file so that a process the example abandons without
+// closing does not keep the next one's Worker waiting on its live lease.
+func exampleStores(root, worker string) app.Config {
+	store, err := filestore.New(filepath.Join(root, "ledger"))
 	if err != nil {
 		panic(err)
 	}
-	return store
+	content, err := filestore.NewContentStore(filepath.Join(root, "content"), runmod.FrozenAuthority, filestore.ContentStoreOptions{})
+	if err != nil {
+		panic(err)
+	}
+	artifacts, err := sqlite.Open(filepath.Join(root, "artifacts.db"))
+	if err != nil {
+		panic(err)
+	}
+	records, err := sqlite.Open(filepath.Join(root, worker+"-records.db"))
+	if err != nil {
+		panic(err)
+	}
+	bindings := artifacts.Bindings()
+	return app.Config{Store: store, Content: content, Executions: records.Executions(),
+		Artifacts: owner.Artifacts{Bindings: bindings, Ledger: artifacts.Ledger(artifact.SetBuilder{Resolver: bindings})}}
+}
+
+// buildHost is newHost for the Example functions: cfg is complete and a
+// failure is a panic.
+func buildHost(cfg app.Config, models map[run.ModelRef]loop.ModelInvoker, tools ...loop.ExecutableTool) *app.Application {
+	cfg.Executor = app.ExecutorConfig{Models: models, Tools: tools}
+	a, err := app.Build(cfg)
+	if err != nil {
+		panic(err)
+	}
+	return a
+}
+
+// durableContent is a fresh file cas store under the frozen authority.
+func durableContent(t testing.TB) artifact.ContentStore {
+	t.Helper()
+	return filestoretest.Content(t, runmod.FrozenAuthority)
 }
 
 // mustPreset builds the one-model AgentPreset the tests register.

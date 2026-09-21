@@ -6,7 +6,6 @@ import (
 
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/run"
-	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/turn"
 )
 
@@ -15,11 +14,10 @@ func TestBuildRemoteApplication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := app.Build(app.Config{
-		Store:    session.NewMemoryStore(),
+	a, err := app.Build(durablePorts(t, app.Config{
 		Executor: app.ExecutorConfig{Mode: app.ExecutorRemote, Endpoint: "http://executor"},
 		Presets:  []app.Preset{{ID: "default", Value: p}},
-	})
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}

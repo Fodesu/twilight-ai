@@ -2,14 +2,16 @@ package turn
 
 import (
 	"context"
-	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/attempt"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/filestore/filestoretest"
 	runmod "github.com/felinics/twilight/agent/session/run"
+	"github.com/felinics/twilight/agent/session/run/runmodtest"
 	"github.com/felinics/twilight/agent/session/writer"
+	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"testing"
 )
 
@@ -23,14 +25,13 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store := session.NewMemoryStore()
+	store := filestoretest.Store(t)
 	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
 	}
-	bindings := artifact.NewMemoryBindingStore()
-	ledger := artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings})
+	bindings, ledger := sqlitetest.Artifacts(t)
 	writers := writer.NewWriters(store, registry, writer.Admission{Bindings: bindings, Ledger: ledger}, session.OpenOptions{}, writer.WritersConfig{})
-	runs, err := runmod.NewSessionRunStore(runmod.Config{Registry: registry, Store: store, Frozen: runmod.FrozenValuesInMemory(bindings)})
+	runs, err := runmod.NewSessionRunStore(runmod.Config{Registry: registry, Store: store, Frozen: runmodtest.Frozen(t, bindings)})
 	if err != nil {
 		t.Fatal(err)
 	}

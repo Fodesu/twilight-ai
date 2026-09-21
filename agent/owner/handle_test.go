@@ -7,11 +7,13 @@ import (
 
 	"github.com/felinics/twilight/agent/executor"
 	executorlocal "github.com/felinics/twilight/agent/executor/local"
-	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
+	"github.com/felinics/twilight/agent/session/filestore/filestoretest"
+	runmod "github.com/felinics/twilight/agent/session/run"
+	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 )
 
 func newAuthority(t *testing.T) *owner.Owner {
@@ -20,8 +22,8 @@ func newAuthority(t *testing.T) *owner.Owner {
 	return newAuthorityFrom(t, &p)
 }
 
-// basePorts is the in-memory deployment every authority test starts from: a
-// local executor and memory stores.
+// basePorts is the deployment every owner test starts from: a local
+// executor and fresh durable stores under t.TempDir().
 func basePorts(t *testing.T) owner.Ports {
 	t.Helper()
 	catalog, err := executorlocal.NewCatalog(nil)
@@ -32,11 +34,13 @@ func basePorts(t *testing.T) owner.Ports {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exec, err := executor.NewWorker(context.Background(), executionstore.NewMemoryStore(), []executor.Route{executorlocal.Route(backend)})
+	exec, err := executor.NewWorker(context.Background(), sqlitetest.Open(t).Executions(), []executor.Route{executorlocal.Route(backend)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return owner.Ports{Store: session.NewMemoryStore(), Executor: exec}
+	bindings, ledger := sqlitetest.Artifacts(t)
+	return owner.Ports{Store: filestoretest.Store(t), Content: filestoretest.Content(t, runmod.FrozenAuthority),
+		Artifacts: owner.Artifacts{Bindings: bindings, Ledger: ledger}, Executor: exec}
 }
 
 func newAuthorityFrom(t *testing.T, p *owner.Ports) *owner.Owner {

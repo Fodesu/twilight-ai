@@ -174,6 +174,11 @@ const (
 	// FailureMalformedRequest: the frozen request decoded but could not be
 	// materialized into a provider request.
 	FailureMalformedRequest FailureCode = "malformed_frozen_request"
+	// FailureMalformedResult: the provider answered, but the result cannot
+	// be frozen (invalid UTF-8 in text or tool input, an unrepresentable
+	// part), so it cannot cross the record or the wire unchanged and is not
+	// delivered as a success. The Loop rejects it like a malformed request.
+	FailureMalformedResult FailureCode = "malformed_result"
 	// FailureDeadline: the effect's own deadline elapsed.
 	FailureDeadline FailureCode = "deadline_exceeded"
 	// FailureRateLimited: the provider refused the call for rate or quota

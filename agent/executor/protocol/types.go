@@ -9,6 +9,7 @@ import (
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
+	"github.com/felinics/twilight/agent/run/model/sdkconv"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -60,10 +61,19 @@ func (o *OutcomeEnvelope) Digest() (run.Digest, error) {
 // EncodeOutcome renders a sealed Outcome as the wire envelope: a model
 // success in Model, a tool result in Tool, a failure in Error with its code,
 // a cancellation or an unknown end as the flags.
+//
+// A model result is encoded only if it freezes (sdkconv.FreezeModelResult):
+// JSON would silently rewrite invalid UTF-8 in it, so the record and the
+// wire would carry a result the provider never produced. Such a result is
+// delivered as a FailureMalformedResult failure instead (RUN-EXE-2).
 func EncodeOutcome(out effect.Outcome, assignmentDigest run.Digest) OutcomeEnvelope {
 	w := OutcomeEnvelope{ProtocolVersion: ProtocolVersion, Key: out.Key, AssignmentDigest: assignmentDigest}
 	switch r := out.Result.(type) {
 	case effect.ModelSucceeded:
+		if _, err := sdkconv.FreezeModelResult(r.Result); err != nil {
+			w.Error = &WireError{Code: string(effect.FailureMalformedResult), Message: "model result cannot be frozen: " + err.Error()}
+			break
+		}
 		res := r.Result
 		w.Model = &res
 	case effect.ModelFailed:

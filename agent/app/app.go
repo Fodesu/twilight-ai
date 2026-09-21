@@ -31,7 +31,6 @@ import (
 	"github.com/felinics/twilight/agent/run/plan"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
-	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/agent/spawn"
 	"github.com/felinics/twilight/agent/turn"
@@ -75,19 +74,20 @@ type Preset struct {
 // command-line flags can be decoded into this type by an outer deployment
 // package later.
 type Config struct {
-	// Store is the Session kernel (required). A memory Store is a test
-	// double, passed by name; Build never falls back to one.
-	Store     session.Store
-	Content   artifact.ContentStore
+	// Store is the Session kernel (required).
+	Store session.Store
+	// Content is the cas ContentStore of the frozen bodies (required).
+	Content artifact.ContentStore
+	// Artifacts are the binding store and retention ledger (required).
 	Artifacts owner.Artifacts
 
 	Executor ExecutorConfig
 	// Executions is the record store of the Worker Build composes
 	// (RUN-EXE-8): required whenever a Worker is composed (the local mode
 	// always; a supplied Port or the remote mode when Spawn is set), unused
-	// otherwise. It belongs to the durability bundle (OWN-PRT-3): a durable
-	// Store with a memory record store manufactures missing executions after
-	// a restart, so Build refuses the mix unless Artifacts.Ephemeral opts in.
+	// otherwise. Like every store it is durable (OWN-PRT-3); a record that
+	// did not survive a restart would let the Owner dispose an execution
+	// that is still running.
 	Executions executionstore.Store
 	Presets    []Preset
 	// Registry is the preset registry; nil selects an in-memory one.
@@ -119,24 +119,6 @@ type Config struct {
 	// the local mode always does; a supplied Port or the remote mode do when
 	// Spawn is set, so the spawn Backend can be routed beside them.
 	Worker executor.WorkerOptions
-}
-
-// ErrEphemeralExecutions reports a durable session Store mixed with a
-// memory-only execution record store, or the reverse, without the Ephemeral
-// opt-in (OWN-PRT-3): the Worker's records would not survive the restart the
-// Session facts survive, and every Executing target would come back missing.
-var ErrEphemeralExecutions = errors.New("app: durable session store with memory-only execution record store (or the reverse); provide the durable bundle or set Artifacts.Ephemeral")
-
-// durable reports a port's declared durability (owner.Durability); nil is
-// not a store, and a port that does not declare is taken as durable.
-func durable(port any) bool {
-	if port == nil {
-		return false
-	}
-	if d, ok := port.(owner.Durability); ok {
-		return d.Durable()
-	}
-	return true
 }
 
 // CompactorSystemPrompt is kept here for deterministic model test doubles and
@@ -197,14 +179,10 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	if c.Store == nil {
 		return nil, errors.New("app: a session Store is required")
 	}
-	content := c.Content
-	if content == nil {
-		var err error
-		content, err = artifact.NewMemoryContentStore(runmod.FrozenAuthority, artifact.MemoryContentStoreOptions{})
-		if err != nil {
-			return nil, fmt.Errorf("app: create default content store: %w", err)
-		}
+	if c.Content == nil {
+		return nil, errors.New("app: a content Store is required (OWN-PRT-3)")
 	}
+	content := c.Content
 	warn := c.Warn
 	if warn == nil {
 		warn = func(error) {}
@@ -356,9 +334,6 @@ func buildExecutor(c *Config, extra []executor.Route) (effect.ExecutionPort, *ex
 	worker := func(routes ...executor.Route) (effect.ExecutionPort, *executor.Worker, error) {
 		if c.Executions == nil {
 			return nil, nil, errors.New("app: an execution record store (Config.Executions) is required when Build composes a Worker")
-		}
-		if durable(c.Store) != durable(c.Executions) && !c.Artifacts.Ephemeral {
-			return nil, nil, ErrEphemeralExecutions
 		}
 		w, err := executor.NewWorker(context.Background(), c.Executions, append(extra, routes...), c.Worker)
 		if err != nil {

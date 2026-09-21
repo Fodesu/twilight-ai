@@ -101,11 +101,6 @@ type Worker struct {
 	warn         func(error)
 	retry        RetryBudget
 	progress     *ProgressHub
-	// provesAbsence is whether a key without a record proves that no
-	// execution exists for it (RUN-EXE-3): the store is durable, so a record
-	// is on disk before any Start, or every Backend is Colocated, so an
-	// execution cannot outlive the records kept in this process.
-	provesAbsence bool
 
 	mu     sync.Mutex
 	notify map[effect.AssignmentKey]chan struct{}
@@ -162,8 +157,7 @@ func NewWorker(ctx context.Context, records executionstore.Store, routes []Route
 	}
 	w := &Worker{store: records, routes: routes, backends: backends, id: opts.ID, lease: opts.LeaseDuration, now: now,
 		disposeAfter: opts.DisposeAfter, collectAfter: opts.CollectAfter, warn: warn, retry: opts.Retry, progress: progress,
-		provesAbsence: provesAbsence(records, routes),
-		lifecycle:     lifecycle, stop: stop, notify: make(map[effect.AssignmentKey]chan struct{}),
+		lifecycle: lifecycle, stop: stop, notify: make(map[effect.AssignmentKey]chan struct{}),
 		orphans: make(map[effect.AssignmentKey]time.Time)}
 	if err := w.recover(ctx); err != nil {
 		stop()
@@ -173,24 +167,6 @@ func NewWorker(ctx context.Context, records executionstore.Store, routes []Route
 		w.spawn(func() { w.reconcileLoop(opts.ReconcileInterval) })
 	}
 	return w, nil
-}
-
-// provesAbsence decides whether a missing record proves a missing execution
-// (RUN-EXE-3). Dispatch persists the record before Start, so under a durable
-// store a key without a record never started; under a memory store the
-// record may have died with a previous process while its execution lives
-// on, unless every Backend is Colocated and died with it too.
-func provesAbsence(records executionstore.Store, routes []Route) bool {
-	if d, ok := records.(interface{ Durable() bool }); ok && d.Durable() {
-		return true
-	}
-	for _, r := range routes {
-		c, ok := r.Backend.(Colocated)
-		if !ok || !c.Colocated() {
-			return false
-		}
-	}
-	return true
 }
 
 // spawn runs fn as a Worker goroutine counted by Close.
@@ -506,22 +482,16 @@ func (w *Worker) Collect(ctx context.Context) (int, error) {
 // Unlike Takeover, Dispose is unconditional — it also applies to records whose
 // owner is dead or absent — and unlike Cancel it does not require backend
 // reachability: the backend is cancelled best-effort after the settle.
-//
-// A key with no record is disposed too, by writing a terminal Unknown record
-// for it: the store did not prove the execution absent (Attach answered
-// orphaned, RUN-EXE-3), so only the control plane can end the wait, and the
-// record it leaves makes the disposal readable and idempotent. A Dispatch of
-// that key afterwards meets the record and starts nothing.
 func (w *Worker) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 	r, ok, err := w.store.Get(ctx, key)
 	if err != nil {
 		return err
 	}
-	if ok && protocol.StatusTerminal(r.State) {
-		return nil
-	}
 	if !ok {
-		r = executionstore.Record{Assignment: effect.Assignment{Session: key.Session, RunID: key.RunID, Effect: key.Effect}}
+		return effect.ErrExecutionNotFound
+	}
+	if protocol.StatusTerminal(r.State) {
+		return nil
 	}
 	env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: r.AssignmentDigest, Unknown: true,
 		Error: &protocol.WireError{Code: "disposed", Message: "execution record disposed by the control plane"}}
@@ -530,10 +500,6 @@ func (w *Worker) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 	r.SettledAtUnixMilli = w.now().UnixMilli()
 	if err := w.store.Put(ctx, r); err != nil {
 		return err
-	}
-	if !ok {
-		w.wake(key)
-		return nil
 	}
 	if b, err := w.backend(r.ExecutionRef); err == nil {
 		_ = b.Cancel(context.WithoutCancel(ctx), r.ExecutionRef.Ref)
@@ -978,10 +944,9 @@ func (w *Worker) Progress(ctx context.Context, key effect.AssignmentKey, after u
 }
 
 // Attach reports the record's observation state (RUN-EXE-3). The record in
-// the shared store is the authority: missing without a record when its
-// absence proves the execution absent (provesAbsence), orphaned without a
-// record otherwise, terminal once settled, orphaned when no incarnation
-// holds a live lease on it, active while one does. Which Worker answers does not matter: a live lease held by
+// the durable store is the authority: missing without a record, terminal
+// once settled, orphaned when no incarnation holds a live lease on it,
+// active while one does. Which Worker answers does not matter: a live lease held by
 // another incarnation is proof of its heartbeat, and its watcher settles the
 // Outcome into the same store GetOutcome reads. Only for its own live lease
 // does this Worker also ask the Backend, and a Backend that no longer finds
@@ -992,13 +957,10 @@ func (w *Worker) Attach(ctx context.Context, key effect.AssignmentKey) (effect.A
 		return effect.Attachment{}, err
 	}
 	if !ok {
-		// No record proves no execution only when the store could not have
-		// lost one (RUN-EXE-3); otherwise the answer is orphaned and the
-		// control plane disposes the key explicitly.
-		if w.provesAbsence {
-			return effect.Attachment{State: effect.AttachmentMissing, Execution: effect.ExecutionNotFound}, nil
-		}
-		return effect.Attachment{State: effect.AttachmentOrphaned, Execution: effect.ExecutionNotFound}, nil
+		// Dispatch persists the record before any Start and the store is
+		// durable, so a key without a record never started: missing is a
+		// proof (RUN-EXE-3).
+		return effect.Attachment{State: effect.AttachmentMissing, Execution: effect.ExecutionNotFound}, nil
 	}
 	attachment := effect.Attachment{Execution: r.State, Owner: r.Owner, FencingEpoch: r.FencingEpoch, LeaseUntilUnixMilli: r.LeaseUntilUnixMilli}
 	if protocol.StatusTerminal(r.State) {

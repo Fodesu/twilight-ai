@@ -125,7 +125,7 @@ func TestLoopReleasesSlots(t *testing.T) {
 		}},
 		{"run", func(t *testing.T) *Loop {
 			invoker := &fakeInvoker{results: []sdk.ModelResult{textResult("done")}}
-			l, err := newLoop(nil, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
+			l, err := newLoop(t, nil, fakeCatalog{invoker}, fakeToolCatalog{}, staticBuilder{}, Settings{}, false)
 			if err != nil {
 				t.Fatal(err)
 			}

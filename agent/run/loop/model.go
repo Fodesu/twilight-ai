@@ -199,7 +199,7 @@ func (l *Loop) modelCompletion(sch schema.Schema, step *run.ModelStep, out Outco
 		switch r.Code {
 		case effect.FailureFrozenValueMissing:
 			return withdraw, fmt.Errorf("agent: loop: model dispatch: %w: %s", frozen.ErrMissing, r.Message)
-		case effect.FailureMalformedRequest:
+		case effect.FailureMalformedRequest, effect.FailureMalformedResult:
 			failure := run.StepFailure{Class: run.FailureMalformedModel, Message: r.Message}
 			return run.RejectModelResult{StepID: stepID, Effect: step.Effect, Failure: failure, Disposition: l.modelRejectDisposition(step, failure)}, nil
 		case effect.FailureDeadline:

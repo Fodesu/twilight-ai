@@ -10,16 +10,16 @@ import (
 
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/executor"
-	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/jsonstable"
-	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/filestore"
+	"github.com/felinics/twilight/agent/session/filestore/filestoretest"
 	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/spawn"
+	"github.com/felinics/twilight/agent/store/sqlite"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -79,8 +79,8 @@ func TestSpawnRunsChildSessionAndReturnsReply(t *testing.T) {
 		text("child reply"),
 		text("parent done"),
 	}}
-	store, content := session.NewMemoryStore(), memoryContent()
-	h := newHost(app.Config{Store: store, Content: content, Spawn: &spawn.Options{}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+	store, content := filestoretest.Store(t), durableContent(t)
+	h := newHost(t, app.Config{Store: store, Content: content, Spawn: &spawn.Options{}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
 	preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{spawn.Options{}.ExecutableTool()}))
 	if err != nil {
 		t.Fatal(err)
@@ -182,7 +182,7 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cfg := app.Config{Store: store, Content: content, Spawn: &spawn.Options{}, Ownership: session.OpenOptions{Takeover: takeover}, Artifacts: owner.Artifacts{Ephemeral: true}}
+		cfg := durablePorts(t, app.Config{Store: store, Content: content, Spawn: &spawn.Options{}, Ownership: session.OpenOptions{Takeover: takeover}})
 		// The child's own model execution belongs to process 1's Worker; process
 		// 2's clock runs an hour ahead so that record reads as orphaned and its
 		// reconcile loop adopts and restarts it (RUN-EXE-6).
@@ -191,11 +191,13 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 			clock = func() time.Time { return time.Now().Add(time.Hour) }
 			cfg.Worker = executor.WorkerOptions{Clock: clock, ReconcileInterval: 5 * time.Millisecond}
 		}
-		cfg.Executions, err = executionstore.NewFileStore(filepath.Join(root, "executions"), executionstore.FileStoreOptions{Now: clock})
+		records, err := sqlite.Open(filepath.Join(root, "executions.db"), sqlite.Options{Now: clock})
 		if err != nil {
 			t.Fatal(err)
 		}
-		h := newHost(cfg, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+		t.Cleanup(func() { _ = records.Close() })
+		cfg.Executions = records.Executions()
+		h := newHost(t, cfg, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
 		preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{spawn.Options{}.ExecutableTool()}))
 		if err != nil {
 			t.Fatal(err)
@@ -277,9 +279,9 @@ func TestSpawnValidation(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			model := &scriptedRequests{answers: []sdk.ModelResult{spawnCall(tc.args), text("recovered")}}
-			store := session.NewMemoryStore()
+			store := filestoretest.Store(t)
 			opts := spawn.Options{MaxDepth: tc.maxDepth}
-			h := newHost(app.Config{Store: store, Content: memoryContent(), Spawn: &opts}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
+			h := newHost(t, app.Config{Store: store, Content: durableContent(t), Spawn: &opts}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
 			preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{opts.ExecutableTool()}))
 			if err != nil {
 				t.Fatal(err)

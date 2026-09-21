@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
-	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -42,16 +41,13 @@ func Example_jsonlPrototype() {
 	defer os.RemoveAll(root)
 
 	tool := &stagedTool{}
-	content := memoryContent()
 	preset := mustPreset("m-1", []loop.ExecutableTool{tool})
 
 	// ---- process 1 ----------------------------------------------------------
-	store1, err := filestore.New(root)
-	if err != nil {
-		panic(err)
-	}
 	model1 := &scriptedRequests{answers: []sdk.ModelResult{protoToolCall("call-1"), protoText("done"), protoToolCall("call-2")}}
-	p1 := newHost(app.Config{Store: store1, Content: content, Clock: clock.Now, Artifacts: owner.Artifacts{Ephemeral: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model1}, tool)
+	cfg1 := exampleStores(root, "process-1")
+	cfg1.Clock = clock.Now
+	p1 := buildHost(cfg1, map[run.ModelRef]loop.ModelInvoker{"m-1": model1}, tool)
 	profile1, err := p1.RegisterPreset("jsonl-agent", preset)
 	if err != nil {
 		panic(err)
@@ -126,13 +122,14 @@ func Example_jsonlPrototype() {
 	<-stage2.started
 	fmt.Println("turn-2: started from the queued input; tool call is Executing; process 1 crashes")
 
-	// ---- process 2: a new Store instance over the same directory -------------
-	store2, err := filestore.New(root)
-	if err != nil {
-		panic(err)
+	// ---- process 2: new store instances over the same directory --------------
+	cfg2 := exampleStores(root, "process-2")
+	cfg2.Ownership, cfg2.Clock = session.OpenOptions{Takeover: true}, clock.Now
+	store2, ok := cfg2.Store.(*filestore.Store)
+	if !ok {
+		panic("example stores are file-backed")
 	}
-	p2 := newHost(app.Config{Store: store2, Content: content, Ownership: session.OpenOptions{Takeover: true}, Clock: clock.Now, Artifacts: owner.Artifacts{Ephemeral: true}},
-		map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}}, tool)
+	p2 := buildHost(cfg2, map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}}, tool)
 	if _, err := p2.RegisterPreset("jsonl-agent", preset); err != nil {
 		panic(err)
 	}

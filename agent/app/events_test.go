@@ -24,7 +24,7 @@ func TestSubmitReturnsAtOnceAndEventsReportTheTurn(t *testing.T) {
 	ctx := context.Background()
 	const sid session.SessionID = "s-events"
 	gate := &gateModel{started: make(chan sdk.Request, 1), release: make(chan struct{})}
-	h := newHost(app.Config{}, map[run.ModelRef]loop.ModelInvoker{"m-1": gate})
+	h := newHost(t, app.Config{}, map[run.ModelRef]loop.ModelInvoker{"m-1": gate})
 	presetRef, err := h.RegisterPreset("a1", mustPreset("m-1", nil))
 	if err != nil {
 		t.Fatal(err)
@@ -114,7 +114,7 @@ func TestBackgroundDriveFailureIsReportedOnTheStream(t *testing.T) {
 	ctx := context.Background()
 	const sid session.SessionID = "s-events-fail"
 	warned := make(chan error, 1)
-	h := newHost(app.Config{Warn: func(err error) {
+	h := newHost(t, app.Config{Warn: func(err error) {
 		select {
 		case warned <- err:
 		default:

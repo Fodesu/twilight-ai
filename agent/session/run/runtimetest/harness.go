@@ -21,8 +21,10 @@ import (
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
 	runmod "github.com/felinics/twilight/agent/session/run"
+	"github.com/felinics/twilight/agent/session/run/runmodtest"
 	"github.com/felinics/twilight/agent/session/unit"
 	"github.com/felinics/twilight/agent/session/writer"
+	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
 	"sync"
@@ -59,8 +61,8 @@ type harness struct {
 	fixture  Fixture
 	store    session.Store
 	registry *extension.Registry
-	bindings *artifact.MemoryBindingStore
-	ledger   *artifact.MemoryLedger
+	bindings artifact.BindingStore
+	ledger   artifact.RetentionLedger
 	frozen   frozen.Store
 	cache    *extension.MemoryProjectionCache
 	clock    *clock
@@ -75,9 +77,9 @@ func newHarness(t testing.TB, f Fixture) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bindings := artifact.NewMemoryBindingStore()
+	bindings, ledger := sqlitetest.Artifacts(t)
 	h := &harness{t: t, ctx: context.Background(), fixture: f, store: f.Store, registry: registry, bindings: bindings,
-		ledger: artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings}), frozen: runmod.FrozenValuesInMemory(bindings),
+		ledger: ledger, frozen: runmodtest.Frozen(t, bindings),
 		cache: extension.NewMemoryProjectionCache(), clock: &clock{now: time.Unix(1_000_000, 0)}}
 	if _, err := f.Store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid}); err != nil {
 		t.Fatal(err)

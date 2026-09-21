@@ -30,8 +30,8 @@
 
 ```go
 type Ports struct {
-    Store          session.Store               // 必填；内存实现只作测试替身，按名传入
-    Content        artifact.ContentStore       // nil → 内存；冻结正文的 cas 存储（RUN-WIR-4）
+    Store          session.Store               // 必填；只有 durable 实现（JSONL filestore）
+    Content        artifact.ContentStore       // 必填；冻结正文的 cas 存储（RUN-WIR-4），文件实现
     Artifacts      Artifacts                   // 可为零值
     Presets        preset.Registry             // nil → 内存注册表；只存决策身份
     Decisions      *decision.PromptBuilders    // nil → decision.DefaultPromptBuilders()
@@ -75,7 +75,7 @@ func (h *Handle) Writer() writer.Writer
 func (h *Handle) Close(ctx) error
 ```
 
-**OWN-PRT-3（durability 一致）** durability 是一个 bundle：Session Store、frozen 正文的 Content Store、BindingStore、RetentionLedger 要么全部 durable，要么全部内存。durability 由每个 port 自己声明（`owner.Durability`：`Durable() bool`，内存实现返回 false，filestore 返回 true，不声明视为 durable），`New` 不按具体类型猜测，显式传入的内存实现也无法绕过：四者中任一 durable 而另一为 nil 或声明非 durable 时，`New` 返回 `ErrEphemeralArtifacts`，除非 `Artifacts.Ephemeral` 显式声明接受"事实持久而正文、binding 索引与 retention claim 随进程消失"——它只用于测试与本地运行。`app.Build` 把 Worker 的 Execution Record store（`Config.Executions`）纳入同一 bundle：持久 Session Store 配内存 record store（或反之）在未声明 Ephemeral 时返回 `ErrEphemeralExecutions`，因为崩溃重启后 Session 事实仍在而 record 全部缺失，每个 Executing 目标都会按 `missing` 处置（RUN-CMT-7）。Session Store 与（组装 Worker 时的）Execution Record store 均为必填，没有落到内存实现的默认值；内存实现只作测试替身按名传入。投影缓存是可丢弃的派生数据，允许内存回退。
+**OWN-PRT-3（全部 port 为 durable）** Session Store、frozen 正文的 Content Store、BindingStore、RetentionLedger 与（组装 Worker 时的）Execution Record store 均为必填且均为 durable：core 不提供任何随进程消失的 store 实现，`owner.New` 与 `app.Build` 对 nil port 返回错误而不回退。一方实现为：Session ledger 与 cas 正文在文件系统（`agent/session/filestore`，JSONL 段与 cas 文件），Binding、retention claim 与 execution record 在同一个 SQLite 文件（`agent/store/sqlite`）。这样崩溃重启后事实、正文、索引、claim 与 record 同时存在，Executing 目标的接管处置只依据 record（RUN-CMT-7）。投影缓存是可丢弃的派生数据，允许内存实现；preset 注册表在 Build 时重建，同样允许内存实现。测试使用 `t.TempDir()` 下的同一组实现（`filestoretest`、`sqlitetest`）。
 
 **OWN-HDL-1** `Owner.Open(sid)` 发放对一个 Session 的执行能力，不是读取能力。Open 取得该 Session 的 Writer（本进程 epoch 下）、运行接管处置（DRV-3）并安装恢复监听；返回的 `Handle` 只承载这份能力与其生命周期：`ID`、`Writer`、`Close`。所有权按代（generation）记录，一代的状态为 opening / open / closing：同一 Owner 内一个 Session 同时只有一代，处于任一状态时 Open 都返回 `ErrSessionOpen`，因此一代的释放（停止恢复监听、关闭 Writer）完成之前新的一代不会取得 Writer；`Handle.Close` 只释放自己那一代——先在锁内把该代置为 closing，释放资源后再从表中删除——已释放或正在释放的 Handle 再 Close 为无操作，不会关闭替代它的一代；Close、DeleteSession、Owner.Close 与失败的 Open 都经同一条释放路径，接管处置失败时 Open 释放已取得的 Writer，失败的 Open 不留下所有权。SessionID 是持久身份；Handle 表示"本进程当前拥有它"。Handle 不带任何业务操作：Send、排空、fork、compaction、spawn 分别属于 app、domain 命令或效果层。
 
@@ -120,7 +120,7 @@ func NewPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...PresetOp
 
 **DRV-3** `Owner.Open(sid)` 经 `Writers` 取得 Writer，随后 `driver.Open(ctx, w)` 以该 Writer 安装恢复监听并调用 `SessionRunStore.RecoverInterrupted(ctx, w, reconciler)`（RUN-CMT-7），其中 `reconciler = &reconcile.Reconciler{Executions: executor, Lifetime: lifetime, Deliver: deliver, Fail: fail}`；恢复监听持有 w，重连的 Outcome 经它结算。Outcome 读取按错误分类：`ErrOutcomeNotReady` 无限等待（执行仍在进行）；`ErrExecutionNotFound` 与 `effect.ErrOutcomeUnavailable`（`executor.ErrUnknownProvider` 与 `effect.ErrOutcomeCollected` 包装它，HTTP 以 410 承载）是确定答案，监听立即停止并经 `Fail` 上报；其他读取失败按 `ReadRetries`（默认 60 次，约一分钟）退避重试后同样上报。目标保持 Executing，下一次 `RecoverInterrupted` 重新规划，记录已不存在则处置。Attach 握手受 Open 请求的 context 约束；后台 Outcome 读取与交付使用该 Session 的 recovery lifetime。Open 返回后请求取消仍允许恢复继续；再次 Open 会替换旧监听，`Handle.Close` 与 `Owner.Close` 取消各自拥有的监听。
 
-Attach 的 `active` / `terminal` 为 `keep`：保留 Executing 并等待实际 Outcome；`orphaned` 表示 record 存在但没有未过期的租约（持有者已死或从未持有；持有者活着时无论是哪个 Worker 都为 `active`），为 `defer`：保留 Executing 并同样等待 Outcome，供 control plane reconcile/takeover；`missing` 为 `dispose`，才进入接管处置。进程内（`Colocated`）Executor 重启后旧记录为 `missing`；内存 record store 前置远端 backend 时为 `orphaned`，须由控制面 `Dispose` 显式处置；持久 Executor 按其 Execution Store 返回状态。`deliver` 按 Outcome 的 RunID 查找 Turn，使用其 preset 的 Loop 结算并继续驱动；后台失败经 `Ports.Fail` 上报。
+Attach 的 `active` / `terminal` 为 `keep`：保留 Executing 并等待实际 Outcome；`orphaned` 表示 record 存在但没有未过期的租约（持有者已死或从未持有；持有者活着时无论是哪个 Worker 都为 `active`），为 `defer`：保留 Executing 并同样等待 Outcome，供 control plane reconcile/takeover；`missing` 为 `dispose`，才进入接管处置。Executor 重启后旧记录仍在其 Execution Store 中，按 record 返回状态。`deliver` 按 Outcome 的 RunID 查找 Turn，使用其 preset 的 Loop 结算并继续驱动；后台失败经 `Ports.Fail` 上报。
 
 | Executor observation (`AttachmentState`) | Recovery disposition | Owner 行为 | API 观察 |
 |---|---|---|---|
@@ -217,7 +217,7 @@ driver      = driver.New{runtime, turns, Executor, Presets, Decisions, Sources{p
                                                                   // Loop 按 PresetRef 在 driver 内组合并缓存
 // app.Build
 routes      = Default(local | port | remote)                                          // backend 选择一次，持久化为 ExecutionRef.Provider
-executor    = executor.NewWorker(ctx, Config.Executions, routes, Config.Worker)  // 本地模式恒经 Worker；Port/远端仅在配置 spawn 时经 Worker；Executions 必填且与 Store 同 durability（OWN-PRT-3）
+executor    = executor.NewWorker(ctx, Config.Executions, routes, Config.Worker)  // 本地模式恒经 Worker；Port/远端仅在配置 spawn 时经 Worker；Executions 必填（OWN-PRT-3）
                                                                   // Config.Worker.Progress 为 Worker 与本地 backend 共用的 ProgressHub（RUN-EXE-12）；本地 backend 以 streaming 打开
 owner       = owner.New(Ports{..., Executor: executor, Observers: [observe.Bus, Config.Observers...], Fail: warn+bus.Failed})
 spawn.Bind(owner); driver.Responders[agent_spawn] = spawn      // 子代理为 Responder（SPN-1、DRV-4），经 Owner.Open + turn/chatlog/driver 命令驱动

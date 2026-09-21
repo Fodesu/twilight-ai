@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync/atomic"
 	"time"
 
@@ -36,15 +37,20 @@ func Example_recoverableTurn() {
 	const sid session.SessionID = "session-1"
 	clock := &fakeClock{now: time.Unix(1_000_000, 0)}
 
-	// Shared "durable" state: the Session store and the content store of frozen request bodies.
-	store := session.NewMemoryStore()
-	content := memoryContent()
+	// Shared durable state under one root: the Session ledger and the content
+	// store of frozen request bodies; each process opens its own instances.
+	root, err := os.MkdirTemp("", "twilight-example-*")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(root)
 	tool := &lookupTool{block: make(chan struct{})}
 	preset := mustPreset("m-1", []loop.ExecutableTool{tool})
 
 	// ---- process 1 ----------------------------------------------------------
-	p1 := newHost(app.Config{Store: store, Content: content, Clock: clock.Now},
-		map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedModel{}}, tool)
+	cfg1 := exampleStores(root, "process-1")
+	cfg1.Clock = clock.Now
+	p1 := buildHost(cfg1, map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedModel{}}, tool)
 	if err := p1.CreateSession(ctx, sid); err != nil {
 		panic(err)
 	}
@@ -75,8 +81,9 @@ func Example_recoverableTurn() {
 	fmt.Println("process 1: tool call is Executing; process crashes")
 
 	// ---- process 2 ----------------------------------------------------------
-	p2 := newHost(app.Config{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}, Clock: clock.Now},
-		map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedModel{}}, tool)
+	cfg2 := exampleStores(root, "process-2")
+	cfg2.Ownership, cfg2.Clock = session.OpenOptions{Takeover: true}, clock.Now
+	p2 := buildHost(cfg2, map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedModel{}}, tool)
 	// The preset is re-registered from the same public configuration, so the
 	// ref the Session recorded still resolves.
 	if _, err := p2.RegisterPreset("weather-agent", preset); err != nil {

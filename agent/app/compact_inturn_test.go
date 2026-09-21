@@ -11,6 +11,7 @@ import (
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
+	"github.com/felinics/twilight/agent/session/filestore/filestoretest"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -64,7 +65,7 @@ func (echoTool) Execute(_ context.Context, req loop.ToolExecutionRequest) loop.T
 func TestCompactionRunsBetweenStepsOfATurn(t *testing.T) {
 	ctx := context.Background()
 	model := &stepModel{answers: []sdk.ModelResult{toolCallAnswer(), toolCallAnswer()}}
-	h := newHost(app.Config{Store: session.NewMemoryStore(), Content: memoryContent(), Ownership: session.OpenOptions{Takeover: true}},
+	h := newHost(t, app.Config{Store: filestoretest.Store(t), Content: durableContent(t), Ownership: session.OpenOptions{Takeover: true}},
 		map[run.ModelRef]loop.ModelInvoker{"m-1": model}, echoTool{})
 	preset, err := h.RegisterPreset("b1", mustPreset("m-1", []loop.ExecutableTool{echoTool{}}))
 	if err != nil {

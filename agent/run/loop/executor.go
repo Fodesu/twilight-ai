@@ -345,15 +345,10 @@ func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) err
 	return nil
 }
 
-// Colocated declares that every execution of this backend lives in the
-// process running it: a Ref this process does not hold names no execution
-// anywhere, so its Attach answer missing is a proof (executor.Colocated).
-func (*LocalExecutor) Colocated() bool { return true }
-
 // Attach answers for refs this process still runs or has completed. It only
 // observes an existing entry and never starts a second effect; an unknown
-// Ref is missing, which is a proof here because executions die with the
-// process (Colocated).
+// Ref is missing, a proof because executions die with the process while
+// their records do not.
 func (e *LocalExecutor) Attach(_ context.Context, ref string) (effect.Attachment, error) {
 	e.mu.Lock()
 	entry, ok := e.inflight[ref]

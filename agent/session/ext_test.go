@@ -6,6 +6,7 @@ import (
 
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/filestore/filestoretest"
 )
 
 // TestKernelExtSlots covers SES-WIR-5: the kernel extension object on a
@@ -79,7 +80,7 @@ func TestKernelExtSlots(t *testing.T) {
 // sees the slot.
 func TestKernelExtRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	store := session.NewMemoryStore()
+	store := filestoretest.Store(t)
 	ext := jsonstable.MustParse(`{"kernel":"later"}`)
 	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", Ext: ext}); err != nil {
 		t.Fatal(err)

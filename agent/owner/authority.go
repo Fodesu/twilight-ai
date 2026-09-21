@@ -32,63 +32,29 @@ import (
 	"github.com/felinics/twilight/agent/turn"
 )
 
-// Artifacts groups the artifact ports. Durability is one bundle
-// (OWN-PRT-3): a durable Session Store needs a durable Content Store for
-// the frozen bodies its facts name, a durable binding index and a durable
-// retention ledger, or the facts outlive the bodies and the claims after a
-// restart. Every port defaults to memory, but only an all-memory deployment
-// may take those defaults; New refuses a mix unless Ephemeral says it is
-// intended.
+// Artifacts groups the artifact ports (OWN-PRT-3): the binding index the
+// Writers resolve against and the retention ledger their claims live in.
+// Both are required and durable; the facts of a Session name frozen bodies
+// through them, so they must survive every restart the facts survive. There
+// is no memory implementation of either.
 type Artifacts struct {
 	Bindings artifact.BindingStore
 	Ledger   artifact.RetentionLedger
-	// Ephemeral accepts memory-only content, bindings or ledger next to a
-	// durable Session Store: frozen bodies, the binding index and the
-	// retention claims are lost with the process while the facts naming them
-	// survive. Meant for tests and local runs, not production.
-	Ephemeral bool
 }
-
-// Durability is the capability a store declares about surviving the
-// process. New consults it on the Session Store, the Content Store, the
-// BindingStore and the RetentionLedger instead of guessing from concrete
-// types: a store that does not declare is taken as durable, so a memory
-// implementation that stays silent cannot slip into a durable bundle, and
-// an explicitly passed memory store says so itself.
-type Durability interface {
-	Durable() bool
-}
-
-// durable reports a port's declared durability; nil is not a store.
-func durable(port any) bool {
-	if port == nil {
-		return false
-	}
-	if d, ok := port.(Durability); ok {
-		return d.Durable()
-	}
-	return true
-}
-
-// ErrEphemeralArtifacts reports a durable Store mixed with a memory-only
-// Content Store, binding store or retention ledger without the Ephemeral
-// opt-in.
-var ErrEphemeralArtifacts = errors.New("owner: durable session store with memory-only content store, binding store or retention ledger; provide the durable bundle or set Artifacts.Ephemeral")
 
 // Ports are the roles an Owner is composed from (OWN-PRT-1). Every field
-// is an interface or a core value; the Store and the Executor are required,
-// the other nil fields take the defaults documented on each, all of them
-// in-process. A memory Store is a test double and is passed by name
-// (session.NewMemoryStore); no production path falls back to one.
+// is an interface or a core value. The Store, the Executor, the Content
+// store and both Artifacts are required and durable (OWN-PRT-3); the other
+// nil fields take the in-process defaults documented on each.
 type Ports struct {
 	// Store is the Session kernel (required).
 	Store session.Store
 	// Content is the cas ContentStore the frozen bodies live in under
 	// runmod.FrozenAuthority (RUN-WIR-4). The run store writes them; the
-	// materializer reads them for prompts, replies and transcripts. Nil
-	// selects an in-memory store.
+	// materializer reads them for prompts, replies and transcripts.
+	// Required.
 	Content artifact.ContentStore
-	// Artifacts are the binding store and retention ledger.
+	// Artifacts are the binding store and retention ledger (required).
 	Artifacts Artifacts
 	// Presets is the registry of decision identities; nil selects an
 	// in-memory registry.
@@ -160,6 +126,12 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	if p.Store == nil {
 		return nil, errors.New("owner: a session Store is required")
 	}
+	if p.Content == nil {
+		return nil, errors.New("owner: a content Store is required (OWN-PRT-3)")
+	}
+	if p.Artifacts.Bindings == nil || p.Artifacts.Ledger == nil {
+		return nil, errors.New("owner: a binding store and a retention ledger are required (OWN-PRT-3)")
+	}
 	store := p.Store
 	// The first-party four are trusted core; Ports.Modules are extensions
 	// and cannot declare authoritative projections (EXT-PRJ-9).
@@ -168,21 +140,7 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	if err != nil {
 		return nil, err
 	}
-	// OWN-PRT-3: durability is one bundle. Each port declares its own
-	// durability (Durability); nil ports are the memory defaults below.
-	anyDurable := durable(store) || durable(p.Content) || durable(p.Artifacts.Bindings) || durable(p.Artifacts.Ledger)
-	allDurable := durable(store) && durable(p.Content) && durable(p.Artifacts.Bindings) && durable(p.Artifacts.Ledger)
-	if anyDurable && !allDurable && !p.Artifacts.Ephemeral {
-		return nil, ErrEphemeralArtifacts
-	}
-	bindings := p.Artifacts.Bindings
-	if bindings == nil {
-		bindings = artifact.NewMemoryBindingStore()
-	}
-	ledger := p.Artifacts.Ledger
-	if ledger == nil {
-		ledger = artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings})
-	}
+	bindings, ledger := p.Artifacts.Bindings, p.Artifacts.Ledger
 	// A projection cache lets a reopened Session start folding instead of
 	// refolding the whole log (EXT-PRJ-3). An adapter that can store entries
 	// durably provides its own; otherwise they live as long as the process.
@@ -196,14 +154,9 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	}
 	// Frozen bodies live in the content store and are admitted through the
 	// same binding store the Writers resolve against (RUN-WIR-4).
-	var fz frozen.Store
-	if p.Content == nil {
-		fz = runmod.FrozenValuesInMemory(bindings)
-	} else {
-		fz, err = runmod.FrozenValues(p.Content, bindings)
-		if err != nil {
-			return nil, err
-		}
+	fz, err := runmod.FrozenValues(p.Content, bindings)
+	if err != nil {
+		return nil, err
 	}
 	now := p.Clock
 	if now == nil {

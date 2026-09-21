@@ -8,6 +8,7 @@ import (
 
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/filestore/filestoretest"
 )
 
 // healthModule has one event type and two projections over it: an
@@ -40,7 +41,7 @@ func healthModule() extension.ModuleDescriptor {
 // An authoritative projection that cannot fold refuses the commit.
 func TestDerivedProjectionFailureDoesNotBlockCommit(t *testing.T) {
 	ctx := context.Background()
-	store := session.NewMemoryStore()
+	store := filestoretest.Store(t)
 	registry, err := extension.BuildRegistry(session.ProtocolVersion1, healthModule())
 	if err != nil {
 		t.Fatal(err)
@@ -108,7 +109,7 @@ func TestDerivedProjectionFailureDoesNotBlockCommit(t *testing.T) {
 // and is unhealthy, the authoritative projections fold to head.
 func TestDerivedProjectionFailureDoesNotBlockReopen(t *testing.T) {
 	ctx := context.Background()
-	store := session.NewMemoryStore()
+	store := filestoretest.Store(t)
 	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}

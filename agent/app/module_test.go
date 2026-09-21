@@ -72,7 +72,7 @@ var auditModule = extension.ModuleDescriptor{
 // EXT-PRJ-2).
 func TestAppModuleWritesItsOwnStream(t *testing.T) {
 	ctx := context.Background()
-	h := newHost(app.Config{Modules: []extension.ModuleDescriptor{auditModule}}, map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}})
+	h := newHost(t, app.Config{Modules: []extension.ModuleDescriptor{auditModule}}, map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}})
 	const sid session.SessionID = "s-app"
 	if err := h.EnsureSession(ctx, sid); err != nil {
 		t.Fatal(err)

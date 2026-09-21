@@ -6,14 +6,16 @@ import (
 	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/executor"
-	executionstore "github.com/felinics/twilight/agent/executor/store"
 	. "github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agent/session/filestore/filestoretest"
 	runmod "github.com/felinics/twilight/agent/session/run"
+	"github.com/felinics/twilight/agent/session/run/runmodtest"
 	"github.com/felinics/twilight/agent/session/writer"
+	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"testing"
 	"time"
 )
@@ -32,10 +34,10 @@ func inputDigest(raw string) Digest { return es.DigestBytes([]byte(raw)) }
 // testStack is the minimal Session stack a Loop test drives: kernel Memory
 // Store, the run module, one owner process (Writers) and a Runtime.
 type testStack struct {
-	store    *session.MemoryStore
+	store    session.Store
 	registry *extension.Registry
-	bindings *artifact.MemoryBindingStore
-	ledger   *artifact.MemoryLedger
+	bindings artifact.BindingStore
+	ledger   artifact.RetentionLedger
 	writers  writer.Writers
 	runtime  *runmod.SessionRunStore
 	now      func() time.Time
@@ -46,7 +48,7 @@ func newTestStack(t testing.TB, now func() time.Time) *testStack {
 	if now == nil {
 		now = time.Now
 	}
-	store := session.NewMemoryStore()
+	store := filestoretest.Store(t)
 	registry, err := extension.BuildRegistry(session.ProtocolVersion1, runmod.Module)
 	if err != nil {
 		t.Fatal(err)
@@ -64,11 +66,10 @@ func newTestStack(t testing.TB, now func() time.Time) *testStack {
 func (s *testStack) open(t testing.TB) {
 	t.Helper()
 	if s.bindings == nil {
-		s.bindings = artifact.NewMemoryBindingStore()
-		s.ledger = artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: s.bindings})
+		s.bindings, s.ledger = sqlitetest.Artifacts(t)
 	}
 	s.writers = writer.NewWriters(s.store, s.registry, writer.Admission{Bindings: s.bindings, Ledger: s.ledger}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
-	rt, err := runmod.NewSessionRunStore(runmod.Config{Registry: s.registry, Store: s.store, Frozen: runmod.FrozenValuesInMemory(s.bindings), Now: s.now})
+	rt, err := runmod.NewSessionRunStore(runmod.Config{Registry: s.registry, Store: s.store, Frozen: runmodtest.Frozen(t, s.bindings), Now: s.now})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +151,7 @@ func loadState(t testing.TB, rt *runmod.SessionRunStore, w writer.Writer, runID 
 
 // newLoop builds a Loop over a LocalExecutor for tests; the executor no
 // longer reads frozen bodies (RUN-EXE-7), so the runtime is not wired in.
-func newLoop(sink EventSink, models ModelCatalog, tools ToolCatalog, builder PromptBuilder, settings Settings, streaming bool) (*Loop, error) {
+func newLoop(t testing.TB, sink EventSink, models ModelCatalog, tools ToolCatalog, builder PromptBuilder, settings Settings, streaming bool) (*Loop, error) {
 	if models == nil {
 		return nil, errors.New("agent: loop: nil model catalog")
 	}
@@ -162,7 +163,7 @@ func newLoop(sink EventSink, models ModelCatalog, tools ToolCatalog, builder Pro
 	if err != nil {
 		return nil, err
 	}
-	exec, err := executor.NewWorker(context.Background(), executionstore.NewMemoryStore(), []executor.Route{executor.Default("local", backend)}, executor.WorkerOptions{Progress: hub})
+	exec, err := executor.NewWorker(context.Background(), sqlitetest.Open(t).Executions(), []executor.Route{executor.Default("local", backend)}, executor.WorkerOptions{Progress: hub})
 	if err != nil {
 		return nil, err
 	}
