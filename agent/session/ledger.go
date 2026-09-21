@@ -201,20 +201,46 @@ func (l *Ledger) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Han
 	if err != nil {
 		return nil, err
 	}
-	// Acquire repaired a torn tail, so the own commits are re-read for the
-	// handle's index (SES-REP-3); the inherited prefix is immutable.
-	own, head, _, err := l.be.ReadSegment(ctx, tip.ID, tip.Seed().Next, 0)
+	// Acquire repaired a torn tail; the handle's index is the segment's
+	// CommitIndex (SES-REP-5), rebuilt from the commits only when its checks
+	// against the head fail. The inherited prefix is immutable.
+	idx, head, err := l.loadIndex(ctx, tip)
 	if err != nil {
 		_ = l.be.Release(ctx, lease)
 		return nil, err
 	}
 	h := &ledgerHandle{l: l, root: root, ancestry: a, profile: profile, lease: lease, head: head,
-		own: make(map[CommitID]struct{}, len(own)), streams: make(map[StreamRef]StreamSeq)}
-	for i := range own {
-		h.own[own[i].CommitID] = struct{}{}
-		h.countStreams(&own[i])
+		own: make(map[CommitID]struct{}, len(idx.Entries)), streams: make(map[StreamRef]StreamSeq)}
+	for i := range idx.Entries {
+		e := &idx.Entries[i]
+		h.own[e.CommitID] = struct{}{}
+		for _, sc := range e.Streams {
+			h.streams[sc.Stream] += StreamSeq(sc.Events)
+		}
 	}
 	return h, nil
+}
+
+// loadIndex returns the segment's CommitIndex and head. An index that fails
+// Valid against the head (absent, lagging after a crash, or cut) is rebuilt
+// from the segment's own commits and written back (SES-REP-5).
+func (l *Ledger) loadIndex(ctx context.Context, seg Segment) (CommitIndex, Head, error) {
+	idx, head, err := l.be.Index(ctx, seg.ID)
+	if err != nil {
+		return CommitIndex{}, Head{}, err
+	}
+	if idx.Valid(seg.Seed(), head) {
+		return idx, head, nil
+	}
+	commits, head, _, err := l.be.ReadSegment(ctx, seg.ID, seg.Seed().Next, 0)
+	if err != nil {
+		return CommitIndex{}, Head{}, err
+	}
+	idx = BuildCommitIndex(seg.Header, commits)
+	if err := l.be.PutIndex(ctx, seg.ID, idx); err != nil {
+		return CommitIndex{}, Head{}, err
+	}
+	return idx, head, nil
 }
 
 // ledgerHandle is the ownership handle over one root. It answers membership
@@ -263,7 +289,7 @@ func (w *ledgerHandle) Committed(id CommitID) bool {
 	if own {
 		return true
 	}
-	_, inherited, err := w.ancestry.LookupInherited(context.Background(), w.l.be, id)
+	inherited, err := w.ancestry.ContainsInherited(context.Background(), w.l.be, id)
 	return err == nil && inherited
 }
 

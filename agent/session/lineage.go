@@ -96,10 +96,20 @@ type LedgerStore interface {
 	// (absolute), at most limit (0 = unlimited), its head, and whether more
 	// own commits follow. A torn tail is never returned.
 	ReadSegment(ctx context.Context, id SegmentID, from CommitSeq, limit uint32) ([]Commit, Head, bool, error)
-	// Contains reports whether the segment holds CommitID as its own commit
-	// (SES-REP-3); LookupCommit reads it (SES-REP-4).
-	Contains(context.Context, SegmentID, CommitID) (bool, error)
+	// Locate reports whether the segment holds CommitID as its own commit,
+	// and at which Seq, from the segment's CommitIndex alone (SES-REP-3/5);
+	// LookupCommit reads the commit (SES-REP-4).
+	Locate(context.Context, SegmentID, CommitID) (CommitSeq, bool, error)
 	LookupCommit(context.Context, SegmentID, CommitID) (Commit, bool, error)
+	// Index returns the segment's CommitIndex as the adapter keeps it, and
+	// the segment's current head (SES-REP-5). The adapter extends the index
+	// with every Append and cuts it with every Truncate; after a crash it may
+	// lag the commits, which the kernel detects with CommitIndex.Valid and
+	// repairs through PutIndex.
+	Index(context.Context, SegmentID) (CommitIndex, Head, error)
+	// PutIndex replaces the segment's CommitIndex with one the kernel rebuilt
+	// from the commits.
+	PutIndex(context.Context, SegmentID, CommitIndex) error
 	// Append persists a commit the Ledger sealed against the segment head,
 	// under a Lease the adapter checks atomically with the write: the Lease
 	// must be current for its Session and that Session's Tip must be the
@@ -277,10 +287,15 @@ func (a *Ancestry) tipHead(ctx context.Context, store LedgerStore) (Head, error)
 }
 
 // Contains reports whether id is a commit of the Ancestry: one of the tip's
-// own commits or an inherited one within its anchor range (SES-FRK-3).
+// own commits or an inherited one within its anchor range (SES-FRK-3). It
+// consults the segments' indexes only (SES-REP-5).
 func (a *Ancestry) Contains(ctx context.Context, store LedgerStore, id CommitID) (bool, error) {
-	_, ok, err := a.Lookup(ctx, store, id)
-	return ok, err
+	return locateIn(ctx, store, a.Segments, id)
+}
+
+// ContainsInherited is Contains over the Ancestry without its tip.
+func (a *Ancestry) ContainsInherited(ctx context.Context, store LedgerStore, id CommitID) (bool, error) {
+	return locateIn(ctx, store, a.Segments[:len(a.Segments)-1], id)
 }
 
 // Lookup reads a commit of the Ancestry by CommitID.
@@ -307,6 +322,22 @@ func lookupIn(ctx context.Context, store LedgerStore, segments []AncestrySegment
 		}
 	}
 	return Commit{}, false, nil
+}
+
+// locateIn reports whether id is a commit of segments within their anchor
+// ranges, from the segments' indexes alone.
+func locateIn(ctx context.Context, store LedgerStore, segments []AncestrySegment, id CommitID) (bool, error) {
+	for i := len(segments) - 1; i >= 0; i-- {
+		s := &segments[i]
+		seq, ok, err := store.Locate(ctx, s.Segment.ID, id)
+		if err != nil {
+			return false, err
+		}
+		if ok && seq >= s.From && seq <= s.Through {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Reachable computes, from every node and the roots that are live, the last

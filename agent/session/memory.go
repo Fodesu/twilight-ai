@@ -23,6 +23,34 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{Ledger: NewLedger(be), be: be}
 }
 
+// CutIndex keeps only the first keep entries of the tip segment's
+// CommitIndex while its commits stay, so conformance can prove that Open
+// detects a lagging or absent index and rebuilds it (SES-REP-5); production
+// code never calls it. A negative keep drops the index entirely.
+func (m *MemoryStore) CutIndex(sid SessionID, keep int) error {
+	s := m.be.tipOf(sid)
+	if s == nil {
+		return newError(ErrNotFound, "cut_index", sid, "session not found")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if keep < 0 {
+		s.index = CommitIndex{}
+		return nil
+	}
+	if keep > len(s.index.Entries) {
+		keep = len(s.index.Entries)
+	}
+	s.index.Entries = s.index.Entries[:keep]
+	if keep == 0 {
+		s.index.Through = LedgerSeed(s.header)
+	} else {
+		last := &s.index.Entries[keep-1]
+		s.index.Through = Head{Next: last.Seq + 1, Digest: last.Digest}
+	}
+	return nil
+}
+
 // Tamper mutates one own commit of the Session's segment in place. It exists
 // so conformance can prove that the ledger check at Open detects corruption;
 // production code never calls it.
@@ -73,9 +101,12 @@ type memoryBackend struct {
 }
 
 type memorySegment struct {
-	mu       sync.Mutex
-	header   SegmentHeader
-	commits  []Commit         // own commits only, from LedgerSeed(header).Next
+	mu      sync.Mutex
+	header  SegmentHeader
+	commits []Commit // own commits only, from LedgerSeed(header).Next
+	// index is the segment's CommitIndex (SES-REP-5), extended with each
+	// Append and cut with each Truncate; byCommit is its lookup map.
+	index    CommitIndex
 	byCommit map[CommitID]int // index into commits
 }
 
@@ -115,6 +146,7 @@ func (s *memorySegment) head() Head {
 }
 
 func (s *memorySegment) rebuildIndex() {
+	s.index = BuildCommitIndex(s.header, s.commits)
 	s.byCommit = make(map[CommitID]int, len(s.commits))
 	for i := range s.commits {
 		s.byCommit[s.commits[i].CommitID] = i
@@ -181,18 +213,48 @@ func (m *memoryBackend) ReadSegment(ctx context.Context, id SegmentID, from Comm
 	return out, head, more, nil
 }
 
-func (m *memoryBackend) Contains(ctx context.Context, id SegmentID, cid CommitID) (bool, error) {
+func (m *memoryBackend) Locate(ctx context.Context, id SegmentID, cid CommitID) (CommitSeq, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return false, err
+		return 0, false, err
 	}
 	s, err := m.segment(id)
 	if err != nil {
-		return false, err
+		return 0, false, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	_, ok := s.byCommit[cid]
-	return ok, nil
+	i, ok := s.byCommit[cid]
+	if !ok {
+		return 0, false, nil
+	}
+	return s.commits[i].Seq, true, nil
+}
+
+func (m *memoryBackend) Index(ctx context.Context, id SegmentID) (CommitIndex, Head, error) {
+	if err := ctx.Err(); err != nil {
+		return CommitIndex{}, Head{}, err
+	}
+	s, err := m.segment(id)
+	if err != nil {
+		return CommitIndex{}, Head{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.index.Clone(), s.head(), nil
+}
+
+func (m *memoryBackend) PutIndex(ctx context.Context, id SegmentID, idx CommitIndex) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s, err := m.segment(id)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.index = idx.Clone()
+	return nil
 }
 
 func (m *memoryBackend) LookupCommit(ctx context.Context, id SegmentID, cid CommitID) (Commit, bool, error) {
@@ -243,6 +305,7 @@ func (m *memoryBackend) Append(ctx context.Context, lease Lease, id SegmentID, c
 	}
 	s.commits = append(s.commits, c)
 	s.byCommit[c.CommitID] = len(s.commits) - 1
+	s.index.Extend(&c)
 	return nil
 }
 
@@ -290,7 +353,7 @@ func (m *memoryBackend) CreateSession(ctx context.Context, seg Segment, rec Sess
 	if _, exists := m.segments[seg.ID]; exists {
 		return newError(ErrConflict, "create", rec.ID, fmt.Sprintf("segment %s exists", seg.ID))
 	}
-	m.segments[seg.ID] = &memorySegment{header: seg.Header, byCommit: make(map[CommitID]int)}
+	m.segments[seg.ID] = &memorySegment{header: seg.Header, byCommit: make(map[CommitID]int), index: CommitIndex{Through: LedgerSeed(seg.Header)}}
 	m.roots[rec.ID] = &memoryRoot{record: rec}
 	return nil
 }

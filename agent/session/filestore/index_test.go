@@ -32,7 +32,7 @@ func TestReadIndexedMatchesFullParse(t *testing.T) {
 		t.Fatal(err)
 	}
 	appendCommits(t, w, 0, [][]string{{"x", "y"}, {"x"}, {"x", "x", "y"}}) // commits 0..2
-	if indexed.currentIndex(seg, indexed.LogPath(sid)) == nil {
+	if indexed.index[seg] == nil {
 		t.Fatal("append did not keep the index current")
 	}
 	fresh, err := New(root) // never opened: every read is a full parse
@@ -48,7 +48,7 @@ func TestReadIndexedMatchesFullParse(t *testing.T) {
 	// The largest CommitSeq is past the head on both paths; an int conversion
 	// of it would wrap negative.
 	samePage(t, "from=max", indexed, fresh, session.CommitReadRequest{SessionID: sid, From: math.MaxUint64})
-	if indexed.currentIndex(seg, indexed.LogPath(sid)) == nil {
+	if indexed.index[seg] == nil {
 		t.Fatal("reads dropped the index")
 	}
 
