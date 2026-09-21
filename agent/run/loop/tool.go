@@ -74,7 +74,7 @@ func (l *Loop) startToolCalls(ctx context.Context, rt runtime.RunStore, events E
 		if err != nil {
 			return dispatched, err
 		}
-		binding := ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy, Replay: call.Replay, Retry: call.Retry}
+		binding := ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy, Replay: call.Replay}
 		probe := Assignment{Session: rt.Scope(), RunID: runID, StepID: act.StepID, CallID: callID, Target: target, Schema: snapshot.SchemaVersion, Body: binding}
 		known, err := l.Executor.Validate(ctx, probe)
 		if err != nil {

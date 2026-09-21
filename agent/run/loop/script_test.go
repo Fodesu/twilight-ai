@@ -93,7 +93,6 @@ func (s *scriptTool) Ref() run.ToolRef                   { return s.ref }
 func (s *scriptTool) Definition() sdk.ToolDefinition     { return s.def }
 func (s *scriptTool) ResponsePolicy() run.ResponsePolicy { return s.policy }
 func (s *scriptTool) Replay() run.ReplayPolicy           { return run.ReplayUnknown }
-func (s *scriptTool) Retry() run.RetryPolicy             { return run.RetryUnknown }
 func (s *scriptTool) ValidateArguments(run.CanonicalJSON) error {
 	return nil
 }

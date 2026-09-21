@@ -58,7 +58,7 @@ type PresetRef struct { ID PresetID; Digest es.Digest }
 // AgentPreset 是 Turn 记录的决策身份；Session 只保存 PresetRef{ID, Digest}。
 type PromptBuilderRef string // 决策组件身份（agent-decision.md）
 type TargetRef struct { Kind string; ID string } // opaque effect target
-type PublicTool struct { Ref run.ToolRef; Definition model.ToolDefinition; Policy run.ResponsePolicy; Replay run.ReplayPolicy; Retry run.RetryPolicy }
+type PublicTool struct { Ref run.ToolRef; Definition model.ToolDefinition; Policy run.ResponsePolicy; Replay run.ReplayPolicy }
 type AgentPreset struct {
     SchemaVersion uint16 // 1
     Model run.ModelRef

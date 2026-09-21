@@ -122,10 +122,6 @@ type ExecutableTool interface {
 	// author has not judged it. The declaration is frozen into the ToolSpec
 	// and carried on every call and Assignment.
 	Replay() run.ReplayPolicy
-	// Retry declares whether a Known failure of class run.FailureTransient
-	// may be followed by a second execution of the same call (RUN-EXE-11).
-	// The zero value RetryUnknown never retries.
-	Retry() run.RetryPolicy
 }
 
 // Tool outcomes belong to the process-independent effect protocol. Aliases

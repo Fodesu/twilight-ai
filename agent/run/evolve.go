@@ -130,7 +130,6 @@ func applyToolStepOpened(s MachineState, fact *ToolStepOpened) MachineState { //
 			Arguments:        b.Arguments,
 			Policy:           b.Policy,
 			Replay:           b.Replay,
-			Retry:            b.Retry,
 			Status:           ToolPending,
 		}
 		if b.Response != nil {

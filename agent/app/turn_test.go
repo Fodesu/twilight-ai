@@ -196,7 +196,6 @@ func (*approvalGateTool) Definition() sdk.ToolDefinition {
 }
 func (*approvalGateTool) ResponsePolicy() run.ResponsePolicy { return run.ApprovalRequired }
 func (*approvalGateTool) Replay() run.ReplayPolicy           { return run.ReplayUnknown }
-func (*approvalGateTool) Retry() run.RetryPolicy             { return run.RetryUnknown }
 
 func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 	ctx := context.Background()

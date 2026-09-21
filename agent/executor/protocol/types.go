@@ -28,11 +28,13 @@ type ToolOutcomeEnvelope struct {
 	Kind    string                   `json:"kind"`
 	Result  *run.ToolExecutionResult `json:"result,omitempty"`
 	Failure *run.ToolFailure         `json:"failure,omitempty"`
+	Retry   run.RetryDisposition     `json:"retry,omitempty"`
 }
 
 type WireError struct {
-	Code    string `json:"code"`
-	Message string `json:"message,omitempty"`
+	Code    string               `json:"code"`
+	Message string               `json:"message,omitempty"`
+	Retry   run.RetryDisposition `json:"retry,omitempty"`
 }
 
 // OutcomeEnvelope is stable and JSON-safe. In particular it does not contain
@@ -70,13 +72,13 @@ func EncodeOutcome(out effect.Outcome, assignmentDigest run.Digest) OutcomeEnvel
 		if code == "" {
 			code = string(effect.FailureExecutor)
 		}
-		w.Error = &WireError{Code: code, Message: r.Message}
+		w.Error = &WireError{Code: code, Message: r.Message, Retry: r.Retry}
 	case effect.ToolExecutionSucceeded:
 		res := r.Result
 		w.Tool = &ToolOutcomeEnvelope{Kind: "succeeded", Result: &res}
 	case effect.ToolExecutionFailed:
 		f := r.Failure
-		w.Tool = &ToolOutcomeEnvelope{Kind: "failed", Failure: &f}
+		w.Tool = &ToolOutcomeEnvelope{Kind: "failed", Failure: &f, Retry: r.Retry}
 	case effect.ToolExecutionUnknown:
 		f := r.Failure
 		w.Tool = &ToolOutcomeEnvelope{Kind: "unknown", Failure: &f}
@@ -121,7 +123,7 @@ func DecodeOutcome(w *OutcomeEnvelope) effect.Outcome {
 			if w.Tool.Failure != nil {
 				f = *w.Tool.Failure
 			}
-			out.Result = effect.ToolExecutionFailed{Failure: f}
+			out.Result = effect.ToolExecutionFailed{Failure: f, Retry: w.Tool.Retry}
 		case "unknown":
 			var f run.ToolFailure
 			if w.Tool.Failure != nil {
@@ -132,7 +134,7 @@ func DecodeOutcome(w *OutcomeEnvelope) effect.Outcome {
 			out.Result = effect.Unknown{Message: fmt.Sprintf("executor/protocol: unknown tool outcome %q", w.Tool.Kind)}
 		}
 	case w.Error != nil:
-		out.Result = effect.ModelFailed{Code: effect.FailureCode(w.Error.Code), Message: w.Error.Message}
+		out.Result = effect.ModelFailed{Code: effect.FailureCode(w.Error.Code), Message: w.Error.Message, Retry: w.Error.Retry}
 	case w.Model != nil:
 		out.Result = effect.ModelSucceeded{Result: *w.Model}
 	default:

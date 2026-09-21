@@ -48,10 +48,10 @@ type WorkerOptions struct {
 	// record disposed after DisposeAfter (ErrOrphanDisposed). nil discards.
 	Warn func(error)
 	// Retry is the deployment's budget for re-dispatching an effect after a
-	// Known transient failure (RUN-EXE-11): at most MaxAttempts executions
-	// in total, Backoff multiplied by the attempts so far between them. The
-	// zero value disables retries; whether an effect may be retried at all
-	// is its own policy (Assignment.Policy).
+	// Known failure that declares itself retryable (RUN-EXE-11): at most
+	// MaxAttempts executions in total, Backoff multiplied by the attempts so
+	// far between them. The zero value disables retries; whether a given
+	// failure is worth retrying is the failure's own disposition.
 	Retry RetryBudget
 }
 
@@ -629,22 +629,19 @@ func (w *Worker) observe(key effect.AssignmentKey, digest run.Digest, epoch uint
 	}
 }
 
-// retryAfter decides whether out, the Outcome of ref, is a Known transient
-// failure the record's policy and the Worker's budget allow to be retried,
+// retryAfter decides whether out, the Outcome of ref, is a Known failure
+// that declares itself retryable and the Worker's budget still allows,
 // and if so restarts the effect: Backoff scaled by the attempts so far, then
 // Backend.Restart and Start under the same lease, the old Ref appended to
 // Superseded. It returns the new Ref. A backend whose Restart returns the
 // same Ref cannot re-execute (a Port-shaped adapter), so nothing is retried.
 func (w *Worker) retryAfter(key effect.AssignmentKey, epoch uint64, backend ExecutionBackend, ref string, out effect.Outcome) (string, bool) {
-	if w.retry.MaxAttempts <= 0 || !transientFailure(out.Result) {
+	if w.retry.MaxAttempts <= 0 || !retryableFailure(out.Result) {
 		return "", false
 	}
 	ctx := w.lifecycle
 	r, ok, err := w.store.Get(ctx, key)
 	if err != nil || !ok || r.Owner != w.id || r.FencingEpoch != epoch {
-		return "", false
-	}
-	if r.Assignment.Policy().Retry != run.RetryTransient {
 		return "", false
 	}
 	attempts := len(r.Superseded) + 1
@@ -671,14 +668,15 @@ func (w *Worker) retryAfter(key effect.AssignmentKey, epoch uint64, backend Exec
 	return fresh, true
 }
 
-// transientFailure reports whether a Known outcome is one the effect layer
-// classifies as transient (RUN-EXE-11).
-func transientFailure(result effect.OutcomeResult) bool {
+// retryableFailure reports whether a Known outcome declares itself worth a
+// second execution (RUN-EXE-11): the disposition the effect layer derived
+// for a model failure, or the one the tool gave its failure.
+func retryableFailure(result effect.OutcomeResult) bool {
 	switch r := result.(type) {
 	case effect.ModelFailed:
-		return r.Code.Transient()
+		return r.Retry == run.RetryAllowed
 	case effect.ToolExecutionFailed:
-		return r.Failure.Class == run.FailureTransient
+		return r.Retry == run.RetryAllowed
 	default:
 		return false
 	}

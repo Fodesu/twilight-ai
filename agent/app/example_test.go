@@ -177,7 +177,6 @@ func (t *lookupTool) Definition() sdk.ToolDefinition {
 }
 func (t *lookupTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
 func (t *lookupTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }
-func (t *lookupTool) Retry() run.RetryPolicy                    { return run.RetryUnknown }
 func (t *lookupTool) ValidateArguments(run.CanonicalJSON) error { return nil }
 func (t *lookupTool) Execute(_ context.Context, req loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	if t.ran.CompareAndSwap(false, true) {

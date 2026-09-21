@@ -1250,10 +1250,11 @@ func TestWorkerAttachClassifiesByLease(t *testing.T) {
 // provider failure and succeeds afterwards; each Restart is a new Ref.
 type transientBackend struct {
 	*testBackend
-	mu       sync.Mutex
-	failures int
-	starts   []string
-	code     effect.FailureCode
+	mu        sync.Mutex
+	failures  int
+	starts    []string
+	code      effect.FailureCode
+	toolRetry run.RetryDisposition
 }
 
 func (b *transientBackend) Prepare(context.Context, effect.Assignment) (string, error) {
@@ -1268,8 +1269,15 @@ func (b *transientBackend) Start(_ context.Context, ref string, a effect.Assignm
 	b.last = a
 	b.starts = append(b.starts, ref)
 	var result effect.OutcomeResult = effect.ModelSucceeded{Result: sdk.ModelResult{Text: "ok"}}
+	if a.Kind() == effect.AssignmentTool {
+		result = effect.ToolExecutionSucceeded{}
+	}
 	if len(b.starts) <= b.failures {
-		result = effect.ModelFailed{Code: b.code, Message: "try again"}
+		if a.Kind() == effect.AssignmentTool {
+			result = effect.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureUnavailable, Message: "try again"}, Retry: b.toolRetry}
+		} else {
+			result = effect.NewModelFailed(b.code, "try again")
+		}
 	}
 	if b.outcomes[a.Key()] == nil {
 		b.outcomes[a.Key()] = make(chan effect.Outcome, 8)
@@ -1290,38 +1298,35 @@ func (b *transientBackend) Cancel(ctx context.Context, _ string) error {
 	return b.testBackend.Cancel(ctx, b.lastKey())
 }
 
-// A Known transient failure of an effect whose policy allows it is
-// re-dispatched through Restart within the Worker's budget, the earlier Refs
-// kept in Superseded; a non-transient failure, an effect without the policy
-// or an exhausted budget settle the failure (RUN-EXE-11).
-func TestWorkerRetriesTransientFailures(t *testing.T) {
-	toolWith := func(policy run.RetryPolicy) effect.Assignment {
-		a := testToolAssignment()
-		body, _ := a.Tool()
-		body.Retry = policy
-		a.Body = body
-		return a
-	}
+// A Known failure that declares itself retryable is re-dispatched through
+// Restart within the Worker's budget, the earlier Refs kept in Superseded:
+// a model failure by the disposition the effect layer derived from its
+// code, a tool failure by the disposition the tool gave it. A failure that
+// does not, or an exhausted budget, settles the failure (RUN-EXE-11).
+func TestWorkerRetriesRetryableFailures(t *testing.T) {
 	cases := []struct {
 		name       string
 		assignment effect.Assignment
 		failures   int
 		code       effect.FailureCode
+		toolRetry  run.RetryDisposition
 		budget     int
 		wantStarts int
 		wantOK     bool
 	}{
-		{"model retried until success", testAssignment(), 2, effect.FailureRateLimited, 3, 3, true},
-		{"model budget exhausted", testAssignment(), 5, effect.FailureProviderUnavailable, 2, 2, false},
-		{"model non-transient failure", testAssignment(), 1, effect.FailureAuthentication, 3, 1, false},
-		{"model retries disabled", testAssignment(), 1, effect.FailureConnection, 0, 1, false},
-		{"tool without retry policy", toolWith(run.RetryUnknown), 1, effect.FailureRateLimited, 3, 1, false},
+		{"model retried until success", testAssignment(), 2, effect.FailureRateLimited, 0, 3, 3, true},
+		{"model budget exhausted", testAssignment(), 5, effect.FailureProviderUnavailable, 0, 2, 2, false},
+		{"model definite failure", testAssignment(), 1, effect.FailureAuthentication, 0, 3, 1, false},
+		{"model retries disabled", testAssignment(), 1, effect.FailureConnection, 0, 0, 1, false},
+		{"tool failure declared retryable", testToolAssignment(), 1, "", run.RetryAllowed, 3, 2, true},
+		{"tool failure declared never", testToolAssignment(), 1, "", run.RetryNever, 3, 1, false},
+		{"tool failure unjudged", testToolAssignment(), 1, "", run.RetryUnknown, 3, 1, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			records := store.NewMemoryStore()
-			backend := &transientBackend{testBackend: newTestBackend(), failures: tc.failures, code: tc.code}
+			backend := &transientBackend{testBackend: newTestBackend(), failures: tc.failures, code: tc.code, toolRetry: tc.toolRetry}
 			worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("t", backend)},
 				executor.WorkerOptions{ID: "w", Retry: executor.RetryBudget{MaxAttempts: tc.budget, Backoff: time.Millisecond}})
 			if err != nil {
@@ -1344,7 +1349,11 @@ func TestWorkerRetriesTransientFailures(t *testing.T) {
 				}
 				time.Sleep(time.Millisecond)
 			}
-			_, ok := out.Result.(effect.ModelSucceeded)
+			var ok bool
+			switch out.Result.(type) {
+			case effect.ModelSucceeded, effect.ToolExecutionSucceeded:
+				ok = true
+			}
 			if ok != tc.wantOK {
 				t.Fatalf("outcome = %#v, want success=%v", out.Result, tc.wantOK)
 			}

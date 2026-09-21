@@ -167,8 +167,8 @@ func CheckDefinition(sch schema.Schema, tool loop.ExecutableTool, assigned *effe
 		return &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "tool definition digest mismatch"}, nil
 	case assigned.Policy != tool.ResponsePolicy():
 		return &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "response policy mismatch"}, nil
-	case assigned.Replay != tool.Replay(), assigned.Retry != tool.Retry():
-		return &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "execution policy mismatch"}, nil
+	case assigned.Replay != tool.Replay():
+		return &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "replay policy mismatch"}, nil
 	}
 	return nil, nil
 }
@@ -211,10 +211,6 @@ func (tool) ResponsePolicy() run.ResponsePolicy { return run.DirectExecution }
 // Replay is allowed: the child Session's identity derives from the call and
 // starting an existing child is a no-op (RUN-EXE-9).
 func (tool) Replay() run.ReplayPolicy { return run.ReplayAllowed }
-
-// Retry is never: a child Session that failed to start is a Known failure
-// the parent's model sees; the spawn tool does not retry it.
-func (tool) Retry() run.RetryPolicy { return run.RetryNever }
 
 func (tool) ValidateArguments(args run.CanonicalJSON) error {
 	_, err := DecodeArguments(args)

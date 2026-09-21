@@ -231,8 +231,8 @@ func (e *LocalExecutor) resolveTool(sch schema.Schema, t *ToolAssignment) (Execu
 		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "tool definition digest mismatch"}
 	case tool.ResponsePolicy() != t.Policy:
 		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "response policy mismatch"}
-	case tool.Replay() != t.Replay, tool.Retry() != t.Retry:
-		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "execution policy mismatch"}
+	case tool.Replay() != t.Replay:
+		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "replay policy mismatch"}
 	}
 	if argErr := tool.ValidateArguments(t.Arguments); argErr != nil {
 		return nil, &run.ToolFailure{Class: run.FailureInvalidArguments, Message: argErr.Error()}
@@ -450,13 +450,13 @@ func (e *LocalExecutor) runModel(ctx context.Context, a Assignment, frozenReques
 func modelFailure(err error) OutcomeResult {
 	switch {
 	case errors.Is(err, frozen.ErrMissing):
-		return effect.ModelFailed{Code: effect.FailureFrozenValueMissing, Message: err.Error()}
+		return effect.NewModelFailed(effect.FailureFrozenValueMissing, err.Error())
 	case errors.Is(err, context.Canceled):
 		return effect.Cancelled{Message: err.Error()}
 	case errors.Is(err, context.DeadlineExceeded):
-		return effect.ModelFailed{Code: effect.FailureDeadline, Message: err.Error()}
+		return effect.NewModelFailed(effect.FailureDeadline, err.Error())
 	default:
-		return effect.ModelFailed{Code: effect.ClassifyModelError(err), Message: err.Error()}
+		return effect.NewModelFailed(effect.ClassifyModelError(err), err.Error())
 	}
 }
 

@@ -29,7 +29,6 @@ func (t *targetTool) Definition() sdk.ToolDefinition {
 }
 func (t *targetTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
 func (t *targetTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }
-func (t *targetTool) Retry() run.RetryPolicy                    { return run.RetryUnknown }
 func (t *targetTool) ValidateArguments(run.CanonicalJSON) error { return nil }
 func (t *targetTool) Execute(_ context.Context, req loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	t.seen <- req.Target

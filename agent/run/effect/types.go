@@ -57,12 +57,10 @@ type ToolAssignment struct {
 	DefinitionDigest run.Digest
 	Arguments        run.CanonicalJSON
 	Policy           run.ResponsePolicy
-	// Replay and Retry are the tool's declared execution policy, copied from
-	// the frozen call: the Worker that adopts a lost execution or reads a
-	// transient failure decides from them alone (RUN-EXE-9, RUN-EXE-11).
-	// Omitted on the wire when unknown.
+	// Replay is the tool's declared replay policy, copied from the frozen
+	// call: the Worker that adopts a lost execution decides from it alone
+	// (RUN-EXE-9). Omitted on the wire when unknown.
 	Replay run.ReplayPolicy `json:",omitempty"`
-	Retry  run.RetryPolicy  `json:",omitempty"`
 }
 
 func (ToolAssignment) Kind() AssignmentKind { return AssignmentTool }
@@ -91,21 +89,6 @@ func (a Assignment) Kind() AssignmentKind {
 		return ""
 	}
 	return a.Body.Kind()
-}
-
-// Policy is what a Worker may do with the effect beyond its first execution
-// (RUN-EXE-11): the protocol's fixed policy for a model call, the tool's
-// declaration carried on a tool call, nothing for an Assignment without a
-// body.
-func (a Assignment) Policy() run.ExecutionPolicy {
-	switch b := a.Body.(type) {
-	case ModelAssignment:
-		return run.ModelExecutionPolicy
-	case ToolAssignment:
-		return run.ExecutionPolicy{Replay: b.Replay, Retry: b.Retry}
-	default:
-		return run.ExecutionPolicy{}
-	}
 }
 
 // Model returns the model body, if the Assignment is a model call.
@@ -214,25 +197,35 @@ const (
 	FailureBadRequest FailureCode = "bad_request"
 )
 
-// Transient reports whether a failure of this code may pass if the same
-// request is made again (RUN-EXE-11): the classes a Worker retries for an
-// effect whose policy allows it.
-func (c FailureCode) Transient() bool {
+// Retry is the disposition the effect layer derives for a model failure of
+// this code (RUN-EXE-11): a rate limit, a provider outage or a lost
+// connection may pass if the same request is made again; every other code
+// is a definite answer. The model call is the template every effect
+// follows: classify the failure first, then read the disposition off the
+// class.
+func (c FailureCode) Retry() run.RetryDisposition {
 	switch c {
 	case FailureRateLimited, FailureProviderUnavailable, FailureConnection:
-		return true
+		return run.RetryAllowed
 	default:
-		return false
+		return run.RetryNever
 	}
 }
 
 // ModelSucceeded carries the provider's complete result.
 type ModelSucceeded struct{ Result sdk.ModelResult }
 
-// ModelFailed is a provider or executor failure with a wire-stable code.
+// ModelFailed is a provider or executor failure with a wire-stable code and
+// the retry disposition the effect layer derived from it (Code.Retry()).
 type ModelFailed struct {
 	Code    FailureCode
 	Message string
+	Retry   run.RetryDisposition
+}
+
+// NewModelFailed classifies err into a ModelFailed carrying its disposition.
+func NewModelFailed(code FailureCode, message string) ModelFailed {
+	return ModelFailed{Code: code, Message: message, Retry: code.Retry()}
 }
 
 // ToolExecutionOutcome is the sealed result a tool implementation returns:
@@ -244,7 +237,15 @@ type ToolExecutionOutcome interface {
 
 type ToolExecutionSucceeded struct{ Result run.ToolExecutionResult }
 
-type ToolExecutionFailed struct{ Failure run.ToolFailure }
+// ToolExecutionFailed is a Known failure the tool reports: the effect did
+// not complete. Failure.Class says what went wrong; Retry is the tool's
+// answer for this failure alone, whether a second execution is worth it
+// (RUN-EXE-11). A tool that does not judge leaves RetryUnknown, which is
+// never retried.
+type ToolExecutionFailed struct {
+	Failure run.ToolFailure
+	Retry   run.RetryDisposition
+}
 
 type ToolExecutionUnknown struct{ Failure run.ToolFailure }
 

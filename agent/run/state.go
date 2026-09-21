@@ -67,11 +67,21 @@ const (
 	FailureEffectUnknown      = "effect_unknown"
 	FailureCancelled          = "cancelled"
 	FailureProvider           = "provider_failure"
-	// FailureTransient is the class a tool gives a Known failure that left
-	// no partial effect and may succeed if run again (RUN-EXE-11): the only
-	// tool failure class a Worker retries, and only for a tool declaring
-	// RetryTransient.
-	FailureTransient = "transient"
+)
+
+// Tool execution failure classes (RUN-EXE-11): what went wrong inside a
+// tool's Execute, as the tool reports it in ToolFailure.Class. The class
+// describes the error; whether it is worth retrying is the failure's own
+// RetryDisposition (effect.ToolExecutionFailed.Retry), the two are not
+// derived from each other. FailureExecution remains the unclassified class.
+const (
+	FailureNotFound     = "not_found"     // the named resource does not exist
+	FailureInvalidInput = "invalid_input" // the arguments were understood and refused
+	FailureTimeout      = "timeout"       // the tool's own deadline elapsed
+	FailureUnavailable  = "unavailable"   // a dependency of the tool was unreachable or temporarily failing
+	FailureRateLimited  = "rate_limited"  // a dependency refused for rate or quota reasons
+	FailureConflict     = "conflict"      // the world changed under the tool (version, lock, uniqueness)
+	FailureInternal     = "internal"      // the tool itself broke
 )
 
 type ResponsePolicy uint8
@@ -113,50 +123,31 @@ func (p ReplayPolicy) String() string {
 	}
 }
 
-// RetryPolicy is a tool's judgment of whether a Known, transient failure of
-// its execution may be followed by a second execution of the same call
-// (RUN-EXE-11). A Known failure means the effect did not complete; whether
-// it left partial effects only the tool knows, so only RetryTransient lets
-// the Worker re-dispatch, and only for failures the effect layer classifies
-// as transient. The zero value RetryUnknown never retries.
-type RetryPolicy uint8
+// RetryDisposition is a failure's own answer to "is this specific failure
+// worth a second execution of the same call" (RUN-EXE-11). It is a property
+// of the failure, never of the tool: a read-only tool's "file not found" is
+// RetryNever while its "temporary I/O error" is RetryAllowed. The effect
+// layer derives it for model failures from their FailureCode; a tool
+// declares it on each ToolExecutionFailed. The zero value RetryUnknown is
+// never retried.
+type RetryDisposition uint8
 
 const (
-	// RetryUnknown: the tool has not been judged. Zero value, omitted on the
-	// wire, never retried.
-	RetryUnknown RetryPolicy = iota
-	// RetryTransient: a transient failure (rate limit, provider outage,
-	// connection loss) leaves no partial effect; the Worker may re-dispatch
-	// within its budget.
-	RetryTransient
-	// RetryNever: no failure is followed by a second execution.
+	RetryUnknown RetryDisposition = iota
 	RetryNever
+	RetryAllowed
 )
 
-func (p RetryPolicy) String() string {
-	switch p {
-	case RetryTransient:
-		return "transient"
+func (d RetryDisposition) String() string {
+	switch d {
+	case RetryAllowed:
+		return "allowed"
 	case RetryNever:
 		return "never"
 	default:
 		return "unknown"
 	}
 }
-
-// ExecutionPolicy is what a Worker may do with one effect beyond its first
-// execution (RUN-EXE-11): Replay after a lost execution, Retry after a Known
-// transient failure. Both answer "may the same Assignment be dispatched
-// again"; they differ only in the trigger.
-type ExecutionPolicy struct {
-	Replay ReplayPolicy
-	Retry  RetryPolicy
-}
-
-// ModelExecutionPolicy is the policy of every model effect, fixed by the
-// protocol rather than declared per model: a model call has no effect on
-// the world, so a lost execution is replayed and a transient failure retried.
-var ModelExecutionPolicy = ExecutionPolicy{Replay: ReplayAllowed, Retry: RetryTransient}
 
 type ResponseKind string
 
@@ -200,7 +191,6 @@ type ToolSpec struct {
 	DefinitionDigest Digest         `json:"definitionDigest"`
 	Policy           ResponsePolicy `json:"policy"`
 	Replay           ReplayPolicy   `json:"replay,omitempty"`
-	Retry            RetryPolicy    `json:"retry,omitempty"`
 }
 
 // ToolCallBinding is one frozen call inside ToolStepOpened.
@@ -215,7 +205,6 @@ type ToolCallBinding struct {
 	Arguments        CanonicalJSON  `json:"arguments"`
 	Policy           ResponsePolicy `json:"policy"` // unresolved ToolRef uses DirectExecution
 	Replay           ReplayPolicy   `json:"replay,omitempty"`
-	Retry            RetryPolicy    `json:"retry,omitempty"`
 	// Response is derived and filled by Decide inside ToolStepOpened; callers
 	// leave it empty when submitting.
 	Response *ResponseRequest `json:"response,omitempty"`
@@ -362,7 +351,6 @@ type ToolCallState struct {
 	Arguments        CanonicalJSON  `json:"arguments"`
 	Policy           ResponsePolicy `json:"policy"`
 	Replay           ReplayPolicy   `json:"replay,omitempty"`
-	Retry            RetryPolicy    `json:"retry,omitempty"`
 	Status           ToolCallStatus `json:"status"`
 	// Effect is the tool effect the call requested (from ToolCallStarted);
 	// empty before the start and for a call an external response settles
