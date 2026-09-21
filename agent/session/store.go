@@ -69,6 +69,17 @@ type Proposal struct {
 	Ext jsonstable.Value
 }
 
+// AdvanceRequest moves a Session onto a new tip segment sealed under a
+// later kernel ProtocolVersion (SES-ADV-1). The new segment's edge is the
+// current head when the tip holds own commits, or the tip's own edge when it
+// holds none; either way no existing segment or commit is rewritten.
+type AdvanceRequest struct {
+	ProtocolVersion uint16
+	CausationID     es.CausationID
+	Metadata        jsonstable.Value
+	Ext             jsonstable.Value
+}
+
 // Handle is the kernel's ownership handle returned by Store.Open. Append
 // carries its Epoch; a Handle whose Epoch has been superseded gets
 // ErrOwnershipLost and writes nothing (SES-OWN-2).
@@ -97,6 +108,16 @@ type Handle interface {
 	// counted whatever lineage the stream's domain declared: the index is
 	// the tip segment's own (SES-FRK-5).
 	StreamHead(StreamRef) (StreamSeq, bool)
+	// Advance publishes a new tip segment for this root under a later
+	// ProtocolVersion (SES-ADV-1) and moves the handle onto it: the Session
+	// keeps its identity and stitched history, its earlier segments stay
+	// exactly as sealed, and every later Append is sealed by the new
+	// version's profile. A version the Ledger does not know is
+	// ErrUnsupportedProfile; one not later than the tip's is ErrInvalid; a
+	// stale Epoch is ErrOwnershipLost. An ErrHandleFailed returned with a
+	// non-zero header means the segment is published but this handle can no
+	// longer answer for the ledger: the caller reopens.
+	Advance(context.Context, AdvanceRequest) (SegmentHeader, error)
 	Close(context.Context) error
 }
 

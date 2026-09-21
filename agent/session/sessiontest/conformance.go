@@ -34,6 +34,7 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("fork", func(t *testing.T) { testFork(t, factory(t)) })
 	t.Run("lineage", func(t *testing.T) { testLineage(t, factory(t)) })
 	t.Run("index", func(t *testing.T) { testIndex(t, factory(t)) })
+	t.Run("versions", func(t *testing.T) { testVersions(t, factory(t)) })
 }
 
 func create(t *testing.T, store session.Store, sid session.SessionID) session.SegmentHeader {

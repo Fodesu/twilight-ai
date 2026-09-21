@@ -171,11 +171,12 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 	if err != nil {
 		return nil, err
 	}
-	// The registry encodes payloads for one protocol version; a Session
-	// created under another one must not be written through it (EXT-WRT-1).
-	if header.ProtocolVersion != registry.ProtocolVersion {
+	// The registry writes one kernel protocol version. A tip already past it
+	// belongs to a newer binary and is refused; a tip behind it is advanced
+	// to it below, once ownership is held (EXT-WRT-1, SES-ADV-1).
+	if header.ProtocolVersion > registry.ProtocolVersion {
 		return nil, &session.Error{Code: session.ErrUnsupportedProfile, Operation: opOpen, SessionID: sid,
-			Detail: fmt.Sprintf("session protocol v%d, registry protocol v%d", header.ProtocolVersion, registry.ProtocolVersion)}
+			Detail: fmt.Sprintf("session tip is protocol v%d, this registry writes v%d", header.ProtocolVersion, registry.ProtocolVersion)}
 	}
 	kernel, err := store.Open(ctx, sid, opts)
 	if err != nil {
@@ -198,6 +199,19 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 	if err := w.admission.reconcile(ctx, w); err != nil {
 		_ = kernel.Close(ctx)
 		return nil, err
+	}
+	if header.ProtocolVersion < registry.ProtocolVersion {
+		// The upgrade is a new, empty tip under the registry's version; the
+		// commits already folded are now inherited prefix and the claims of
+		// the old tip were just reconciled under its own scope.
+		advanced, err := kernel.Advance(ctx, session.AdvanceRequest{ProtocolVersion: registry.ProtocolVersion})
+		if err != nil {
+			_ = kernel.Close(ctx)
+			return nil, err
+		}
+		w.header = advanced
+		w.head = kernel.Head()
+		w.admission.segment = session.SegmentIDOf(advanced)
 	}
 	return w, nil
 }

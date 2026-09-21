@@ -193,7 +193,15 @@ type LedgerProfile interface {
 // ProfileV1 returns the ProtocolVersion1 commit-ledger profile.
 func ProfileV1() LedgerProfile { return profileV1{version: ProtocolVersion1} }
 
-// LedgerProfileFor returns the commit-ledger profile bound to version.
+// ProfileVariant returns the ProtocolVersion1 rules sealed under another
+// version number: every digest domain separator carries version, so its
+// headers and commits are distinct from v1's. No such version is published;
+// it exists so a second kernel version can be exercised (SES-ADV-1) before
+// one is, through Ledger's WithProfile.
+func ProfileVariant(version uint16) LedgerProfile { return profileV1{version: version} }
+
+// LedgerProfileFor returns the published commit-ledger profile bound to
+// version. A Ledger consults its own table first (WithProfile).
 func LedgerProfileFor(version uint16) (LedgerProfile, error) {
 	if version == ProtocolVersion1 {
 		return profileV1{version: version}, nil

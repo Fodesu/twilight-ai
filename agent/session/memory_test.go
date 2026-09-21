@@ -9,6 +9,6 @@ import (
 
 func TestMemoryStoreConformance(t *testing.T) {
 	sessiontest.Run(t, func(t *testing.T) sessiontest.Fixture {
-		return sessiontest.Fixture{Store: session.NewMemoryStore()}
+		return sessiontest.Fixture{Store: session.NewMemoryStore(session.WithProfile(session.ProfileVariant(2)))}
 	})
 }

@@ -16,6 +16,11 @@ import (
 type Ledger struct {
 	be    Backend
 	nonce func() (string, error)
+	// profiles is the kernel wire this Ledger can seal and verify, by
+	// ProtocolVersion: the published profiles plus any added by WithProfile.
+	// Segments of one Session may be under different versions (SES-ADV-1),
+	// each verified by its own.
+	profiles map[uint16]LedgerProfile
 	// graph serializes the operations that change the set of roots and
 	// nodes (Create, Delete, Collect) against each other (SES-GC-4): a
 	// Create's check that its parent is live, and its write, cannot
@@ -36,13 +41,29 @@ func WithNonceSource(src func() (string, error)) LedgerOption {
 	return func(l *Ledger) { l.nonce = src }
 }
 
+// WithProfile adds a kernel profile the Ledger seals and verifies under its
+// version, alongside the published ones. Fixtures use it with
+// ProfileVariant to exercise a second kernel version (SES-ADV-1).
+func WithProfile(p LedgerProfile) LedgerOption {
+	return func(l *Ledger) { l.profiles[p.Version()] = p }
+}
+
 // NewLedger returns the Store over be.
 func NewLedger(be Backend, opts ...LedgerOption) *Ledger {
-	l := &Ledger{be: be, nonce: NewNonce}
+	l := &Ledger{be: be, nonce: NewNonce, profiles: map[uint16]LedgerProfile{ProtocolVersion1: ProfileV1()}}
 	for _, o := range opts {
 		o(l)
 	}
 	return l
+}
+
+// Profile returns the kernel profile of version, or ErrUnsupportedProfile.
+// Adapters verify each segment's header under its own version through it.
+func (l *Ledger) Profile(version uint16) (LedgerProfile, error) {
+	if p, ok := l.profiles[version]; ok {
+		return p, nil
+	}
+	return LedgerProfileFor(version)
 }
 
 // resolve loads a live Session's root and the Ancestry of its segment.
@@ -66,7 +87,7 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 	}
 	l.graph.Lock()
 	defer l.graph.Unlock()
-	profile, err := LedgerProfileFor(req.ProtocolVersion)
+	profile, err := l.Profile(req.ProtocolVersion)
 	if err != nil {
 		return SegmentHeader{}, &Error{Code: ErrUnsupportedProfile, Operation: "create", SessionID: req.SessionID}
 	}
@@ -87,10 +108,8 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 			}
 			return SegmentHeader{}, err
 		}
-		if parent.Header().ProtocolVersion != req.ProtocolVersion {
-			return SegmentHeader{}, &Error{Code: ErrUnsupportedProfile, Operation: "create", SessionID: req.SessionID,
-				Detail: fmt.Sprintf("parent %s is protocol v%d", req.Fork.Session, parent.Header().ProtocolVersion)}
-		}
+		// The parent may be under another ProtocolVersion: the edge carries
+		// its commit digest as opaque bytes (SES-ADV-1, SES-FRK-1).
 		owner, ok := parent.Owner(req.Fork.Seq)
 		if !ok {
 			return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, fmt.Sprintf("parent %s has no commit %d", req.Fork.Session, req.Fork.Seq))
@@ -184,7 +203,7 @@ func (l *Ledger) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Han
 		return nil, err
 	}
 	tip := a.Tip()
-	profile, err := LedgerProfileFor(tip.Header.ProtocolVersion)
+	profile, err := l.Profile(tip.Header.ProtocolVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -367,6 +386,72 @@ func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 }
 
 func (w *ledgerHandle) Close(ctx context.Context) error { return w.l.be.Release(ctx, w.lease) }
+
+// Advance is SES-ADV-1: it seals an empty segment under req.ProtocolVersion,
+// anchored at the tip's head (or carrying the tip's own edge when the tip
+// holds no commit), publishes it as the root's tip through one Backend step
+// and moves the handle onto it. It takes the Ledger's graph lock like
+// Create: the new node must not be seen by a Collect before the root names
+// it.
+func (w *ledgerHandle) Advance(ctx context.Context, req AdvanceRequest) (SegmentHeader, error) {
+	if err := ctx.Err(); err != nil {
+		return SegmentHeader{}, err
+	}
+	sid := w.root.ID
+	profile, err := w.l.Profile(req.ProtocolVersion)
+	if err != nil {
+		return SegmentHeader{}, &Error{Code: ErrUnsupportedProfile, Operation: "advance", SessionID: sid, Detail: fmt.Sprintf("protocol version %d", req.ProtocolVersion)}
+	}
+	w.l.graph.Lock()
+	defer w.l.graph.Unlock()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.failed != nil {
+		return SegmentHeader{}, w.failed
+	}
+	tip := w.ancestry.Tip()
+	if req.ProtocolVersion <= tip.Header.ProtocolVersion {
+		return SegmentHeader{}, newError(ErrInvalid, "advance", sid, fmt.Sprintf("tip is protocol v%d, advance needs a later version than %d", tip.Header.ProtocolVersion, req.ProtocolVersion))
+	}
+	header := SegmentHeader{ProtocolVersion: req.ProtocolVersion, CausationID: req.CausationID, Metadata: req.Metadata, Ext: req.Ext}
+	if w.head.Next > tip.Seed().Next {
+		// The tip holds commits: the edge is its head.
+		header.Parent = &LedgerRef{Segment: tip.ID, Seq: w.head.Next - 1, Digest: w.head.Digest}
+	} else {
+		// An empty tip is replaced: the new segment carries the same edge
+		// (or is a root like it) and the old node becomes unreachable.
+		header.Parent = tip.Parent()
+	}
+	if header.Nonce, err = w.l.nonce(); err != nil {
+		return SegmentHeader{}, err
+	}
+	digest, err := profile.HeaderDigest(header)
+	if err != nil {
+		return SegmentHeader{}, err
+	}
+	header.HeaderDigest = digest
+	if err := profile.ValidateHeader(header); err != nil {
+		return SegmentHeader{}, err
+	}
+	segment := Segment{ID: SegmentIDOf(header), Header: header}
+	if err := w.l.be.AdvanceTip(ctx, w.lease, segment, w.root.Tip); err != nil {
+		return SegmentHeader{}, err
+	}
+	// Published: the handle now owns the new, empty tip; everything before
+	// is inherited prefix, verified under its own segments' versions.
+	w.root.Tip = segment.ID
+	a, err := LoadAncestry(ctx, w.l.be, segment.ID)
+	if err != nil {
+		w.failed = &Error{Code: ErrHandleFailed, Operation: "advance", SessionID: sid, Detail: err.Error()}
+		return header, w.failed
+	}
+	w.ancestry = a
+	w.profile = profile
+	w.head = segment.Seed()
+	w.own = make(map[CommitID]struct{})
+	w.streams = make(map[StreamRef]StreamSeq)
+	return header, nil
+}
 
 // --- read -------------------------------------------------------------------------
 

@@ -18,9 +18,9 @@ type MemoryStore struct {
 // Durable reports false: the store lives as long as the process.
 func (*MemoryStore) Durable() bool { return false }
 
-func NewMemoryStore() *MemoryStore {
+func NewMemoryStore(opts ...LedgerOption) *MemoryStore {
 	be := &memoryBackend{segments: make(map[SegmentID]*memorySegment), roots: make(map[SessionID]*memoryRoot)}
-	return &MemoryStore{Ledger: NewLedger(be), be: be}
+	return &MemoryStore{Ledger: NewLedger(be, opts...), be: be}
 }
 
 // CutIndex keeps only the first keep entries of the tip segment's
@@ -355,6 +355,33 @@ func (m *memoryBackend) CreateSession(ctx context.Context, seg Segment, rec Sess
 	}
 	m.segments[seg.ID] = &memorySegment{header: seg.Header, byCommit: make(map[CommitID]int), index: CommitIndex{Through: LedgerSeed(seg.Header)}}
 	m.roots[rec.ID] = &memoryRoot{record: rec}
+	return nil
+}
+
+// AdvanceTip lands the new empty node and moves the root under one lock
+// (SES-ADV-1), fenced by the lease.
+func (m *memoryBackend) AdvanceTip(ctx context.Context, lease Lease, seg Segment, from SegmentID) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.roots[lease.Session]
+	if !ok || !r.owned || r.epoch != lease.Epoch {
+		var current Epoch
+		if ok {
+			current = r.epoch
+		}
+		return newError(ErrOwnershipLost, "advance", lease.Session, fmt.Sprintf("epoch %d superseded by %d", lease.Epoch, current))
+	}
+	if r.record.Tip != from {
+		return newError(ErrConflict, "advance", lease.Session, fmt.Sprintf("tip is %s, not %s", r.record.Tip, from))
+	}
+	if _, exists := m.segments[seg.ID]; exists {
+		return newError(ErrConflict, "advance", lease.Session, fmt.Sprintf("segment %s exists", seg.ID))
+	}
+	m.segments[seg.ID] = &memorySegment{header: seg.Header, byCommit: make(map[CommitID]int), index: CommitIndex{Through: LedgerSeed(seg.Header)}}
+	r.record.Tip = seg.ID
 	return nil
 }
 

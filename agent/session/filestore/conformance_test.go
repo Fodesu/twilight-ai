@@ -3,6 +3,7 @@ package filestore_test
 import (
 	"testing"
 
+	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/filestore"
 	"github.com/felinics/twilight/agent/session/run/runtimetest"
 	"github.com/felinics/twilight/agent/session/sessiontest"
@@ -10,7 +11,7 @@ import (
 
 func newStore(t testing.TB) *filestore.Store {
 	t.Helper()
-	store, err := filestore.New(t.TempDir())
+	store, err := filestore.New(t.TempDir(), session.WithProfile(session.ProfileVariant(2)))
 	if err != nil {
 		t.Fatal(err)
 	}
