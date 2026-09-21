@@ -15,7 +15,6 @@ import (
 	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
-	"github.com/felinics/twilight/agent/session/extension"
 	"github.com/felinics/twilight/agent/session/writer"
 	"github.com/felinics/twilight/agent/turn"
 )
@@ -300,9 +299,8 @@ func (e *Executor) drive(ctx context.Context, key effect.AssignmentKey, callID r
 
 // create makes the child Session with its provenance as segment metadata:
 // empty for Empty, a fork of the parent's history before the calling Turn
-// for Fork (SPN-5). Either way the child is created under the parent's
-// Schema (EXT-SCH-3): the parent's Run reads the child through the same
-// registry, and a spawn is never a Schema change.
+// for Fork (SPN-5). The parent's Run reads the child through the same
+// registry.
 func (e *Executor) create(ctx context.Context, key effect.AssignmentKey, callID run.CallID, child session.SessionID, args Arguments) (Provenance, error) {
 	parent := session.SessionID(key.Session)
 	parentHeader, err := e.a.Store.Header(ctx, parent)
@@ -317,13 +315,6 @@ func (e *Executor) create(ctx context.Context, key effect.AssignmentKey, callID 
 	}
 	meta, err := Metadata(prov)
 	if err != nil {
-		return Provenance{}, err
-	}
-	sch, err := extension.SchemaOf(parentHeader)
-	if err != nil {
-		return Provenance{}, &session.Error{Code: session.ErrUnsupported, Operation: "spawn", SessionID: parent, Detail: err.Error()}
-	}
-	if meta, err = extension.DeclareSchema(meta, sch); err != nil {
 		return Provenance{}, err
 	}
 	now := e.a.Clock().UnixMilli()

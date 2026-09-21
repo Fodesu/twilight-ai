@@ -31,7 +31,7 @@ func healthModule() extension.ModuleDescriptor {
 		}
 	}
 	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "h", Streams: noteStreams(),
-		Events:      []extension.EventDefinition{{Type: typ, Stream: noteDomain, Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
+		Events:      []extension.EventDefinition{{Type: typ, Stream: noteDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
 		Projections: []extension.ProjectionDefinition{mk("h/authoritative", true), mk("h/derived", false)}}
 }
 
@@ -45,7 +45,7 @@ func TestDerivedProjectionFailureDoesNotBlockCommit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", Metadata: extension.SchemaMetadata(extension.SchemaVersion1)}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	cache := extension.NewMemoryProjectionCache()
@@ -109,7 +109,7 @@ func TestDerivedProjectionFailureDoesNotBlockCommit(t *testing.T) {
 func TestDerivedProjectionFailureDoesNotBlockReopen(t *testing.T) {
 	ctx := context.Background()
 	store := session.NewMemoryStore()
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", Metadata: extension.SchemaMetadata(extension.SchemaVersion1)}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	// Write "one", "boom", "three" with a registry whose derived projection

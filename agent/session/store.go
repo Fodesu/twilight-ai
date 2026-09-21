@@ -63,20 +63,6 @@ type Proposal struct {
 	Batches []StreamBatch
 }
 
-// AdvanceRequest moves a Session's root to a new tip segment (SES-ADV-1):
-// a child of the current tip whose edge is the current head, created with
-// its first commits (Bootstrap) and published as the root's tip in one
-// durable step. The kernel reads none of Metadata: which application
-// schema or migration a new segment stands for is the module layer's
-// declaration, carried opaquely and sealed by the header digest.
-type AdvanceRequest struct {
-	CausationID es.CausationID
-	Metadata    jsonstable.Value
-	// Bootstrap are the new segment's own first commits, sealed in order
-	// from the segment's seed. They land with the segment or not at all.
-	Bootstrap []Proposal
-}
-
 // Handle is the kernel's ownership handle returned by Store.Open. Append
 // carries its Epoch; a Handle whose Epoch has been superseded gets
 // ErrOwnershipLost and writes nothing (SES-OWN-2).
@@ -105,19 +91,6 @@ type Handle interface {
 	// counted whatever lineage the stream's domain declared: the index is
 	// the tip segment's own (SES-FRK-5).
 	StreamHead(StreamRef) (StreamSeq, bool)
-	// Advance publishes a new tip segment for this root (SES-ADV-1/2): the
-	// child of the current tip at its head, holding the Bootstrap commits,
-	// becomes the segment the Session appends to. Before the publication
-	// point the Session is unchanged; after it the Session is entirely on
-	// the new segment, whose own stream index starts empty (SES-FRK-5). It
-	// returns the new header and the bootstrap commits sealed in order, as
-	// Append would have. The handle continues on the new tip. A tip with no
-	// commit to anchor the edge to is ErrInvalid; a bootstrap CommitID the
-	// history already holds is ErrConflict; a stale Epoch is
-	// ErrOwnershipLost. An ErrHandleFailed returned with a non-zero header
-	// means the segment is published but this handle can no longer answer
-	// for the ledger: the caller reopens.
-	Advance(context.Context, AdvanceRequest) (SegmentHeader, []Commit, error)
 	Close(context.Context) error
 }
 

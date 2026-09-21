@@ -328,7 +328,7 @@ func (r *storeReader) Load(ctx context.Context, sid session.SessionID, id Projec
 		return nil, session.Head{}, err
 	}
 	if from.Next > 0 && !OwnBoundary(page.Header, from) {
-		// The tip moved between the two reads (SES-ADV-1) and the entry's
+		// The tip moved between the two reads and the entry's
 		// boundary is inherited by the new tip: it was folded under the old
 		// tip's inheritance policy, so the whole log is folded under this
 		// read's header instead.
@@ -387,7 +387,7 @@ func SealedAt(c session.Commit, through session.Head) bool {
 // segment itself: the commit before through.Next is one the tip wrote, not
 // one it inherits. A projection state was folded under the inheritance
 // policy of the tip that was current when it was recorded (EXT-PRJ-8); a
-// fork or an Advance (SES-ADV-1) makes every earlier commit inherited, so
+// fork makes every earlier commit inherited, so
 // an entry ending on an inherited boundary is not started from (EXT-PRJ-3)
 // and the fold restarts from the initial state until the tip holds a commit
 // of its own. It is the second head-alignment predicate of EXT-PRJ-3, shared

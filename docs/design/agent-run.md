@@ -56,11 +56,11 @@ type Digest = es.Digest
 
 Run 持久化协议保存 run-owned frozen values。模型请求、模型结果、消息、工具定义、usage、provider metadata 与所有动态 JSON 在进入 command 前，分别经 `FreezeModelRequest`、`FreezeModelResult`、`FreezeToolDefinition`、`FreezeToolCallInput` 等入口转为纯数据和 immutable `CanonicalJSON`。RunStore 接收 agent-owned value；调用方负责在边界前完成冻结。
 
-**RUN-WIR-2** Run 事实是 Session event：EventType 为 `twilight/run/<name>`，payload 为 canonical JSON object，第一层携带 `runId` 与 payload 版本字段 `v`（SES-VER-1、EXT-REG-2）。`v` 等于写入该事实的段所声明的 Schema（EXT-SCH-1）：一个 Run 的全部事实位于同一段内，因此使用同一值；`agent/session/run` 以段的 Schema 选择 `schema.For(schemaVersion)`，Run 事实本身不记录版本字段之外的版本信息。Registry 永久保留每个已发布版本的 codec、Decide 与 Evolve。行字段（Seq、CommitID、Index、Last、digest）由 Session kernel 提供，Run 不另设 envelope。fact codec 必须拒绝 unknown type、duplicate key、unknown field、trailing data、非法 UTF-8、非 canonical-equivalent wire。精确 identity 和 digest 使用 JSON string，整数字段使用 Session preset 的整数 wire shape。
+**RUN-WIR-2** Run 事实是 Session event：EventType 为 `twilight/run/<name>`，payload 为 canonical JSON object，第一层携带 `runId` 与 payload 版本字段 `v`（SES-VER-1、EXT-REG-2）。`v` 是该 Run 的协议版本：run 模块的六个契约（RUN-CMT-8）是一个整体，模块以一个版本（`runmod.Version`）写它的全部事实，一个 Run 的全部事实使用同一值；`agent/session/run` 以该值选择 `schema.For(schemaVersion)`，Run 事实本身不记录版本字段之外的版本信息。Registry 永久保留每个已发布版本的 codec、Decide 与 Evolve。行字段（Seq、CommitID、Index、Last、digest）由 Session kernel 提供，Run 不另设 envelope。fact codec 必须拒绝 unknown type、duplicate key、unknown field、trailing data、非法 UTF-8、非 canonical-equivalent wire。精确 identity 和 digest 使用 JSON string，整数字段使用 Session preset 的整数 wire shape。
 
 ```go
 type CommandEnvelope struct {
-    SchemaVersion uint16 // 必须等于该 Run 的 SchemaVersion，即创建它的段所声明的 Schema
+    SchemaVersion uint16 // 必须等于该 Run 的协议版本（machine 投影记录的事实 v）
     Type string
     RunID RunID          // envelope 不命名 store：command 到达哪个 Session 由绑定的 RunStore 决定
     ID CommandID
@@ -127,9 +127,9 @@ type RunRecord struct {
 }
 ```
 
-**RUN-NEW-1** `twilight/run/run_created` 是 Run 的第一个事实。v1 初始状态恰为：相同 RunID、Owner、Attempt、`RunActive`、`Current=Open`、无 pending input、零 model step、零 usage、无 result。初始输入随后以 `twilight/run/input_accepted` 进入同一组（TRN-STR-2）。`NewRun` 不携带 SchemaVersion：`agent/session/run` 的 `CreateRun` Part 在 Writer 互斥区内以 `view.Schema()` 取该 Run 落地的段所声明的 Schema（EXT-SCH-1），经 `schema.For` 绑定后由 `Schema.Machine.CreateGroup(NewRun, []AgentInput)` 返回 `created` 与 `input_accepted` 的 facts，编码为 Session event 由 `agent/session/run` 完成，Coordinator 不自行编码；请求中没有字段可以选择另一个版本。同一 RunID 第二条 `created` 为 Evolve 错误。
+**RUN-NEW-1** `twilight/run/run_created` 是 Run 的第一个事实。v1 初始状态恰为：相同 RunID、Owner、Attempt、`RunActive`、`Current=Open`、无 pending input、零 model step、零 usage、无 result。初始输入随后以 `twilight/run/input_accepted` 进入同一组（TRN-STR-2）。`NewRun` 不携带 SchemaVersion：`agent/session/run` 的 `CreateRun` Part 以 run 模块的当前协议版本 `runmod.Version`（RUN-CMT-8）经 `schema.For` 绑定后由 `Schema.Machine.CreateGroup(NewRun, []AgentInput)` 返回 `created` 与 `input_accepted` 的 facts，编码为 Session event 由 `agent/session/run` 完成，Coordinator 不自行编码；请求中没有字段可以选择另一个版本。同一 RunID 第二条 `created` 为 Evolve 错误。
 
-**RUN-NEW-2** `runtime.FoldRun(schemaVersion, facts)` 按 Seq 顺序折叠该 RunID 的完整事实序列，第一条必须是 `created`；`schemaVersion` 取自这些事实的 `v`，即它们所在段的 Schema，据此绑定 `Schema`。Fold 过程执行纯状态重建。import、诊断与 `SessionRunStore.Record` integrity verification 都经 FoldRun；投影缓存通过 FoldRun 结果校验。
+**RUN-NEW-2** `runtime.FoldRun(schemaVersion, facts)` 按 Seq 顺序折叠该 RunID 的完整事实序列，第一条必须是 `created`；`schemaVersion` 取自这些事实的 `v`，据此绑定 `Schema`。Fold 过程执行纯状态重建。import、诊断与 `SessionRunStore.Record` integrity verification 都经 FoldRun；投影缓存通过 FoldRun 结果校验。
 
 ## 4. Machine
 
@@ -330,7 +330,7 @@ type RunStore interface {
 type Snapshot struct {
     State run.MachineState // detached in-process view
     Position run.RunPosition
-    SchemaVersion uint16 // 该 Run 所在段的 Schema，读自其事实的 v
+    SchemaVersion uint16 // 该 Run 的协议版本，读自其事实的 v
 }
 func (Snapshot) Schema() (schema.Schema, error)
 type CommitRequest struct {
@@ -411,7 +411,7 @@ unit.Commit(view):
 
 **RUN-CMT-7** 接管处置。处置只恢复同一 Run：不创建 attempt、不结束 Run；对工具 call 的 Unknown 结算是该 call 的终态事实，协议在任何路径上都不据此自动重新执行（TRN-DUR-1、TRN-DUR-4）。新 owner 取得 Writer 后，在驱动任何 Run 之前以该 Writer 调用一次 `SessionRunStore.RecoverInterrupted(ctx, w, reconciler)`。三方的分工固定：Run 机器说哪些目标是 Executing、请求了哪个 effect（`plan.RecoveryTargets`）；execution store 说该 effect 的 attempt 是否还存在（`ExecutionPort.Attach`）；`agent/run/reconcile` 的 `Reconciler` 是比较两侧的唯一位置，对每个目标给出 Verdict：`keep`（`active` / `terminal`，保持 Executing，后台读取 Outcome 并交付）、`defer`（`orphaned`：记录存在但当前没有可关联 backend，不按 `missing` 处理，保持 Executing 并同样等待 Outcome，直到 control plane 显式 takeover/reconcile/dispose）、`dispose`（`missing`，产生 Run 的恢复 command）。处置命令由 `plan.RecoveryCommand` 按目标派生，Run 只验证该处置是否合法并记录事实；Loop、Driver 与 store 适配器都不解释 executor 的观察。若同一 effect 的 attempt 仍存在，Run 保持 Executing，结果以原 Effect 结算，属于重连同一次执行。只有执行记录不存在或 control plane 明确放弃时，才处置：Executing ModelStep 提交 `RecoverModelExecution{Effect}`，回到 `Open` 并按恢复时刻重新规划；Executing tool call 提交 `SubmitToolFailure{Outcome: Unknown}`。Pending call 不处置，Waiting call 不处置。每个处置是一次普通 Commit，Run 保持 Active，同一 RunID 继续。处置的 CommandID 由 `DeriveRecoveryCommandID(Effect)` 派生，与 owner 和 Epoch 无关，任何 owner 的重复处置得到 AlreadyApplied。
 
-**RUN-CMT-8** 每个 Run 的协议版本是创建它的段所声明的 Schema（EXT-SCH-1），创建时冻结，记录为其全部事实的 `v`。`runtime.Snapshot.SchemaVersion` 等于该值；`schema.For(schemaVersion)` 返回绑定该版本 Machine / Wire / Canonical / Snapshot / Identity / Bodies 六个契约的 `Schema`。`runtime.EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Run 的版本。新 Run 不能自选版本：同一段内的全部 Run 使用同一版本，Session 的 Schema 只经显式迁移变更（AUTH-MIG-1）；迁移要求没有活动中的 Run，已终结 Run 的事实留在源段，其 Record 与 replay 继续使用源版本的 `Schema`；v1 Run 的 replay 必须继续使用 `schema.V1()`。pre-release 期间 v1 的 Evolve 语义可以修订，早期二进制写下的流不保证在修订后的 v1 下可折叠；发布冻结后，任何 Evolve 变化必须以新的 SchemaVersion 发布，已发布版本的 Decide、Evolve 与 codec 永久保留。Run 的版本与 Session kernel 的 `ProtocolVersion` 无关（SES-VER-1）。
+**RUN-CMT-8** 每个 Run 的协议版本是创建它时 run 模块的当前版本 `runmod.Version`，创建时冻结，记录为其全部事实的 `v`（SES-VER-1、EXT-REG-2）。`runtime.Snapshot.SchemaVersion` 等于该值，machine 投影为每个活动 Run 记录它（`Schemas`）；`schema.For(schemaVersion)` 返回绑定该版本 Machine / Wire / Canonical / Snapshot / Identity / Bodies 六个契约的 `Schema`。`runtime.EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Run 的版本；向已有 Run 发命令的一方以 `runmod.SchemaOf(reader, sid, runID)` 从 machine 投影取该版本构造 envelope，不假定它等于二进制的当前版本。新 Run 不能自选版本。二进制升级 `runmod.Version` 后，新 Run 以新版本创建，仍活动的旧 Run 继续以其自身版本接受命令直到终结；已终结 Run 的 Record 与 replay 继续使用其版本的 `Schema`；v1 Run 的 replay 必须继续使用 `schema.V1()`。pre-release 期间 v1 的 Evolve 语义可以修订，早期二进制写下的流不保证在修订后的 v1 下可折叠；发布冻结后，任何 Evolve 变化必须以新的 SchemaVersion 发布，已发布版本的 Decide、Evolve 与 codec 永久保留。Run 的版本与 Session kernel 的 `ProtocolVersion` 无关（SES-VER-2），也与同一 Session 内其他模块的 payload 版本无关（SES-VER-1）。
 
 ### 5.1 不进入 ledger 的数据
 
@@ -638,7 +638,7 @@ type Event struct {
 
 ## 9. compatibility 与 conformance
 
-**RUN-CMP-1** command/fact discriminator、wire fields、canonical digest、derived ID 与 `schema.V1().Machine.Evolve` 的任何修改必须进入新 `SchemaVersion`；Registry 继续 decode/fold 全部已发布版本；一个段只写一个版本，同一 Run 的事实因此只有一个版本，已有 Session 经迁移进入新版本（AUTH-MIG-1）。Run 版本演进不触发 Session kernel 版本变化。
+**RUN-CMP-1** command/fact discriminator、wire fields、canonical digest、derived ID 与 `schema.V1().Machine.Evolve` 的任何修改必须进入新 `SchemaVersion`；Registry 继续 decode/fold 全部已发布版本；同一 Run 的事实只有一个版本（RUN-CMT-8），同一 Session 内可以并存不同版本的 Run，不需要迁移。Run 版本演进不触发 Session kernel 版本变化。
 
 **RUN-CMP-2** SessionRunStore conformance 只断言 Run 模块自己的语义；组原子性、digest chain、所有权与 Epoch fencing、幂等索引、投影缓存复用由 Session kernel 与 Module Framework 的 conformance 覆盖（SES 第 7 节、EXT 第 7 节），本清单以引用代替重复。conformance 以 `session.Store` 为参数（`agent/session/run/runtimetest`），Memory 与文件 adapter 跑同一套。必须覆盖：
 
@@ -651,7 +651,7 @@ type Event struct {
 - 结算返回值：`CommitResult.Snapshot` 是 Evolve 后状态；终结 Run 的结算其 `Snapshot.Status` 为终态且 `Result` 非空，与 Record 一致；
 - Prepare hard CAS 只对该 Run 自己的事件敏感：同一 Session 内 chatlog、turn 或其他 Run 的写入不改变该 Run 的 Position，也不使 Prepare 失效；
 - 投影：`SnapshotPolicy` 在 Run 回到 Open 或终结时写入投影缓存；终态 Run 不出现在 `Active`，投影不保留它；Record 对活动 Run 的 fold 与投影一致；非法 fact 序列使 FoldRun 报错（篡改与缺口的检测属于 SES-REP-1）；
-- 隔离：同一 Session 内多 Run 互不影响 Position 与 Record；chatlog 与 turn 事件不影响 Run fold；同一 Session 内的 Run 都使用其所在段的 Schema，跨版本的情形在第二个 SchemaVersion 发布后经迁移（AUTH-MIG-1）覆盖；
+- 隔离：同一 Session 内多 Run 互不影响 Position 与 Record；chatlog 与 turn 事件不影响 Run fold；每个 Run 使用创建时的协议版本，同一 Session 内不同版本的 Run 并存的情形在第二个 SchemaVersion 发布后覆盖；
 - 接管处置：关闭 Writer 后以新 Writer 打开（Epoch 加一）并调用 `RecoverInterrupted`：Executing model 被撤回，Run 回到 `Open`、`ModelSteps` 不计入该步、Executing 期间投递的输入仍在 `PendingInputs`；随后的 Prepare 产生新的 StepID 并消费这些输入，不重发原 RequestDigest；Executing tool 记 Unknown 且 chatlog Context 中该 call 的条目 status=`unknown`、无正文 digest，同 step 的 Pending 与 Waiting call 不受影响；Run 保持 Active；同一 Epoch 重复调用返回 0 且无新写入；没有 Executing 目标时返回 0；
 - 接管重连：`RecoverInterrupted` 对每个 Executing 目标经 `Reconciler` 向 `ExecutionPort.Attach` 询问，AssignmentKey 携带 Scope、RunID 与 start 事实记录的 Effect；`active`、`terminal` 保持 Executing 与 Effect，随后以原 Effect 结算；`orphaned` 保持原状态并等待 Outcome；`missing` 按接管处置；Reconciler 为 nil 时全部处置。
 - 效果层：`Advance` 提交 start barrier 后把 Assignment 交给 Executor 并返回 `LoopDispatched`，不等待效果；`Deliver` 以 Key 定位 Executing 目标并结算，Run 终结时返回 `LoopFinished`；effect 已结算或处置、Effect 不符的迟到 Outcome 返回 `LoopDropped` 且不写入；`Cancelled` 的模型 Outcome 使 step 撤回到 Open；`LocalExecutor.Attach(ref)` 对执行中的 Ref 返回 `active`，完成后返回 `terminal`，无该 Ref 时返回 `missing`；超出保留上限的最早终态条目对 `Status` 返回 `ErrExecutionNotFound`、对 `Attach` 返回 `missing`，仍在上限内的条目返回 `terminal`；`Advance`、`Deliver`、`Run` 返回后 Loop 的 slot 表为空；HTTP Server 对非 POST 返回 405、对超过 `MaxBodyBytes` 的请求体返回 413、对非 JSON 请求体返回 400；GetOutcome 读取失败保持执行状态，真实结果稍后仍可结算；Dispatch 重放保持已有记录，显式 Takeover 处理恢复；record 的 Provider 在本 Worker 无对应 backend 时返回 `ErrUnknownProvider` 且 record 不变。

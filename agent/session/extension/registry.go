@@ -44,14 +44,22 @@ type PayloadCodec interface {
 	Validate(value any) error
 }
 
-// EventDefinition declares one event type and the codec of each Schema it
-// exists under. A segment is written under exactly one SchemaVersion
-// (EXT-SCH-1), so the codec Encode selects is the segment's, never a
-// per-binary "current" one; a type absent from a Schema cannot be written to
-// a segment of that Schema.
+// PayloadVersion is the version of one event type's payload codec
+// (SES-VER-1, EXT-REG-2). It belongs to the event type, not to the segment:
+// every payload carries the version it was written under as `v`, the module
+// keeps a codec for every version it ever published, and every codec of one
+// type decodes to the module's current in-memory value (upcasting inside the
+// codec), so consumers never see a version. The kernel reads none of this.
+type PayloadVersion uint16
+
+// EventDefinition declares one event type, the codec of every version it was
+// ever written under, and the version new payloads are written with.
 type EventDefinition struct {
-	Type     session.EventType
-	Codecs   map[SchemaVersion]PayloadCodec
+	Type   session.EventType
+	Codecs map[PayloadVersion]PayloadCodec
+	// Version is the PayloadVersion Encode writes; zero selects the highest
+	// key of Codecs. It must name one of them.
+	Version  PayloadVersion
 	Bindings []BindingReferenceDefinition
 	// Ignorable marks purely informational events: a fold that cannot decode
 	// the event's payload version skips it instead of failing (EXT-PRJ-2).
@@ -74,7 +82,7 @@ type StreamDefinition struct {
 	// declares a keyed domain whose streams are domain/<id>; the Writer
 	// requires the payload's IDField to equal the batch's stream ID.
 	IDField string
-	// Lineage is how a fork or Advance reads the domain (SES-FRK-5):
+	// Lineage is how a fork reads the domain (SES-FRK-5):
 	// LineageSession for state the child Session continues, LineageSegment
 	// for history that stays with the segment that wrote it.
 	Lineage session.StreamLineage
@@ -89,12 +97,13 @@ func (d StreamDefinition) Ref(id string) session.StreamRef {
 }
 
 // ModuleRequirement declares that a module consumes another module's events
-// and which payload versions it can handle (EXT-REG-4). Source is required:
-// module identity is the (Source, ID) pair.
+// (EXT-REG-4). Source is required: module identity is the (Source, ID)
+// pair. Versions are not part of the handshake: the producer's codecs
+// upcast every version to its current value, which is all a consumer sees.
 type ModuleRequirement struct {
 	Source SourceID
 	Module ModuleID
-	Events map[session.EventType][]SchemaVersion
+	Events []session.EventType
 }
 
 // Key is the identity the requirement points at.
@@ -124,7 +133,7 @@ type DecodedEvent struct {
 	Position session.Position
 	Event    session.Event
 	Module   ModuleKey
-	Version  SchemaVersion
+	Version  PayloadVersion
 	Value    any
 	Unknown  bool
 }
@@ -137,15 +146,7 @@ type Registry struct {
 	streams     map[string]streamEntry
 	events      map[session.EventType]eventEntry
 	projections map[projectionKey]projectionEntry
-	// schemas are the SchemaVersions at least one registered event has a
-	// codec for: the Schemas a segment may declare and this registry can
-	// write to and read from (EXT-SCH-2).
-	schemas map[SchemaVersion]bool
 }
-
-// SupportsSchema reports whether a segment declaring v can be written
-// through this registry: some registered event has a codec under v.
-func (r *Registry) SupportsSchema(v SchemaVersion) bool { return r.schemas[v] }
 
 type streamEntry struct {
 	module ModuleKey
@@ -216,7 +217,7 @@ func BuildRegistryWithExtensions(protocolVersion uint16, core, extensions []Modu
 		}
 		modules = append(modules, *m)
 	}
-	r := &Registry{ProtocolVersion: protocolVersion, schemas: map[SchemaVersion]bool{},
+	r := &Registry{ProtocolVersion: protocolVersion,
 		modules: make(map[ModuleKey]ModuleDescriptor), streams: make(map[string]streamEntry),
 		events: make(map[session.EventType]eventEntry), projections: make(map[projectionKey]projectionEntry)}
 	for i := range modules {
@@ -260,13 +261,18 @@ func BuildRegistryWithExtensions(protocolVersion uint16, core, extensions []Modu
 				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "duplicate event type"}
 			}
 			if len(def.Codecs) == 0 {
-				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "no codec for any schema version"}
+				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "no codec for any payload version"}
 			}
 			for v, codec := range def.Codecs {
 				if v == 0 || codec == nil {
-					return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "nil codec or zero schema version"}
+					return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "nil codec or zero payload version"}
 				}
-				r.schemas[v] = true
+				if def.Version == 0 || v > def.Version && !explicitVersion(m.Events, def.Type) {
+					def.Version = max(def.Version, v)
+				}
+			}
+			if def.Codecs[def.Version] == nil {
+				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: fmt.Sprintf("write version %d has no codec", def.Version)}
 			}
 			if def.Stream == "" {
 				return nil, &Error{Code: ErrInvalid, Type: def.Type, Detail: "event declares no stream domain"}
@@ -327,15 +333,10 @@ func (r *Registry) checkRequirements() error {
 			if !ok {
 				return &Error{Code: ErrInvalid, Detail: fmt.Sprintf("module %s/%s requires unregistered module %s/%s", key.Source, key.ID, depKey.Source, depKey.ID)}
 			}
-			for typ, versions := range req.Events {
+			for _, typ := range req.Events {
 				entry, ok := r.events[typ]
 				if !ok || entry.module != dep.Key() {
 					return &Error{Code: ErrInvalid, Type: typ, Detail: fmt.Sprintf("module %s/%s requires event not owned by %s/%s", key.Source, key.ID, depKey.Source, depKey.ID)}
-				}
-				for v := range entry.def.Codecs {
-					if !containsVersion(versions, v) {
-						return &Error{Code: ErrInvalid, Type: typ, Detail: fmt.Sprintf("module %s/%s handles versions %v but %s/%s writes v%d under schema %d", key.Source, key.ID, versions, depKey.Source, depKey.ID, v, v)}
-					}
 				}
 			}
 			if err := visit(depKey); err != nil {
@@ -376,10 +377,12 @@ func (r *Registry) scopeOf(key ModuleKey) map[ModuleKey]struct{} {
 	return scope
 }
 
-func containsVersion(vs []SchemaVersion, v SchemaVersion) bool {
-	for _, x := range vs {
-		if x == v {
-			return true
+// explicitVersion reports whether the module declared a write Version for
+// typ, in which case Build leaves it alone.
+func explicitVersion(events []EventDefinition, typ session.EventType) bool {
+	for i := range events {
+		if events[i].Type == typ {
+			return events[i].Version != 0
 		}
 	}
 	return false
@@ -429,17 +432,14 @@ func ModulePrefix(source SourceID, id ModuleID) session.EventType {
 	return session.EventType(fmt.Sprintf("%s/%s/", source, id))
 }
 
-// Encode validates value, encodes it with the codec of the segment's Schema
-// and records that Schema as the payload's `v` (EXT-REG-2).
-func (r *Registry) Encode(typ session.EventType, value any, schema SchemaVersion) (jsonstable.Value, error) {
+// Encode validates value, encodes it with the codec of the event type's
+// write Version and records that Version as the payload's `v` (EXT-REG-2).
+func (r *Registry) Encode(typ session.EventType, value any) (jsonstable.Value, error) {
 	_, def, ok := r.LookupEvent(typ)
 	if !ok {
 		return jsonstable.Value{}, &Error{Code: ErrUnknownEvent, Type: typ}
 	}
-	codec := def.Codecs[schema]
-	if codec == nil {
-		return jsonstable.Value{}, &Error{Code: ErrSchema, Type: typ, Detail: fmt.Sprintf("event has no codec under schema %d", schema)}
-	}
+	codec := def.Codecs[def.Version]
 	if err := codec.Validate(value); err != nil {
 		return jsonstable.Value{}, &Error{Code: ErrCodec, Type: typ, Detail: err.Error()}
 	}
@@ -447,7 +447,7 @@ func (r *Registry) Encode(typ session.EventType, value any, schema SchemaVersion
 	if err != nil {
 		return jsonstable.Value{}, &Error{Code: ErrCodec, Type: typ, Detail: err.Error()}
 	}
-	wire, err := addVersion(body, schema)
+	wire, err := addVersion(body, def.Version)
 	if err != nil {
 		return jsonstable.Value{}, &Error{Code: ErrCodec, Type: typ, Detail: err.Error()}
 	}
@@ -486,7 +486,7 @@ func (r *Registry) Decode(e session.Event) (DecodedEvent, error) {
 }
 
 // addVersion inserts the integer `v` field into the first level of body.
-func addVersion(body jsonstable.Value, v SchemaVersion) (jsonstable.Value, error) {
+func addVersion(body jsonstable.Value, v PayloadVersion) (jsonstable.Value, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body.Bytes(), &m); err != nil {
 		return jsonstable.Value{}, fmt.Errorf("payload is not an object: %w", err)
@@ -502,7 +502,7 @@ func addVersion(body jsonstable.Value, v SchemaVersion) (jsonstable.Value, error
 }
 
 // splitVersion removes `v` and returns the codec-facing body.
-func splitVersion(payload jsonstable.Value) (jsonstable.Value, SchemaVersion, error) {
+func splitVersion(payload jsonstable.Value) (jsonstable.Value, PayloadVersion, error) {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(payload.Bytes(), &m); err != nil {
 		return jsonstable.Value{}, 0, fmt.Errorf("payload is not an object: %w", err)
@@ -520,7 +520,7 @@ func splitVersion(payload jsonstable.Value) (jsonstable.Value, SchemaVersion, er
 	if err != nil {
 		return jsonstable.Value{}, 0, err
 	}
-	return body, SchemaVersion(v), nil
+	return body, PayloadVersion(v), nil
 }
 
 // JSONCodec is a PayloadCodec for a plain Go struct type T with json tags.
@@ -587,11 +587,8 @@ func StrictDecode(wire jsonstable.Value, dst any) error {
 type ErrorCode string
 
 const (
-	ErrInvalid      ErrorCode = "invalid"
-	ErrUnknownEvent ErrorCode = "unknown_event"
-	// ErrSchema: a segment declares no Schema, one this registry does not
-	// support, or an event has no codec under the segment's Schema.
-	ErrSchema        ErrorCode = "schema"
+	ErrInvalid       ErrorCode = "invalid"
+	ErrUnknownEvent  ErrorCode = "unknown_event"
 	ErrCodec         ErrorCode = "codec"
 	ErrBinding       ErrorCode = "binding"
 	ErrConflict      ErrorCode = "conflict"

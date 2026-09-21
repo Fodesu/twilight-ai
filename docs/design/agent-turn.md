@@ -256,7 +256,7 @@ InputIDs 为空时 group 为 `started`、`attempt_started` 加 `run_created`。`
 
 **TRN-DLV-1** Deliver 在回合中途追加输入，要求 Turn 为 `active`；`attempt_failed`、已结算或不存在的 Turn 返回 conflict，输入保持 `submitted`，由 Application 决定开新 Turn。输入的校验与 TRN-STR-1 第 2 条相同：每个输入必须是 chatlog 中状态为 `submitted` 的 Input 且内容一致，任一不满足即 conflict，整批不写入。该校验读 chatlog surface，在 `Runtime.Commit` 之前、Writer 互斥区之外进行；校验与提交之间输入被 withdraw 的竞态由 chatlog 投影的预折叠兜底——`input_delivered` 对非 `submitted` 的输入折叠失败，整组被拒（EXT-PRJ-1），结果仍是全有或全无。
 
-**TRN-DLV-2** `Inputs` 作为一个批次以一次 `Runtime.Commit` 提交：命令为 `AcceptInput{Inputs}`（有序列表，RUN-MCH-4），`Attach` 为每个输入一条 `twilight/chatlog/input_delivered{InputID, TurnID}`。Run 接受全部输入与 chatlog 把全部输入挂到 Turn 在同一组可见；任一输入被拒则一条都不写。envelope 的 SchemaVersion 取自 Writer 的 tip 段所声明的 Schema（`Writer.Schema()`，EXT-SCH-1）；它与该 attempt 的 Run 创建时的版本相同，因为 Schema 迁移要求没有活动中的 Turn（SES-MIG-1）；`Base` 为零值（`AcceptInput` 不做 hard CAS，RUN-CMT-4）；Deliver 不读取 `twilight/run/machine` 投影。`AcceptInput` 在 Run 的任意非终态都被接受，Deliver 不关心 Run 当前处于哪一步。CommandID 由 RunID 与有序 InputID 列表派生（RUN-WIR-4），同一批次重放幂等；不同批次（含子集或另一顺序）是不同命令，其中已接受过的输入使该批次整体被 Decide 以 conflict 拒绝。
+**TRN-DLV-2** `Inputs` 作为一个批次以一次 `Runtime.Commit` 提交：命令为 `AcceptInput{Inputs}`（有序列表，RUN-MCH-4），`Attach` 为每个输入一条 `twilight/chatlog/input_delivered{InputID, TurnID}`。Run 接受全部输入与 chatlog 把全部输入挂到 Turn 在同一组可见；任一输入被拒则一条都不写。envelope 的 SchemaVersion 是该 attempt 的 Run 自己的协议版本，经 `runmod.SchemaOf(w.Projections(), sid, runID)` 从 machine 投影读取（RUN-CMT-8）；`Base` 为零值（`AcceptInput` 不做 hard CAS，RUN-CMT-4）；Deliver 不读取 `twilight/run/machine` 投影。`AcceptInput` 在 Run 的任意非终态都被接受，Deliver 不关心 Run 当前处于哪一步。CommandID 由 RunID 与有序 InputID 列表派生（RUN-WIR-4），同一批次重放幂等；不同批次（含子集或另一顺序）是不同命令，其中已接受过的输入使该批次整体被 Decide 以 conflict 拒绝。
 
 **TRN-DLV-3** Deliver 不取消正在进行的模型调用或工具调用；要打断用 Stop。提交后 Deliver 返回；是否驱动由宿主决定（DRV-1），已在驱动时运行中的 Loop 在下一次 Load 看到 `PendingInputs`。Deliver 与该 Run 的最后一步 `SubmitModelResult` 并发时由 Writer 串行定序：输入先提交，Run 回到 `Open` 继续；结果先提交，Run 已终结，Deliver 得到 `ErrRunTerminal` 并返回 `completed`，该输入未被 delivered。
 
@@ -264,7 +264,7 @@ InputIDs 为空时 group 为 `started`、`attempt_started` 加 `run_created`。`
 
 **TRN-STA-2** EventSink 的 `text_delta` / `reasoning_delta` 为临时观察。Waiting 由 Application 提交 `ApproveToolCall` / `RejectToolCall` / `SubmitToolResponse` 后再次驱动（DRV-1）。
 
-**TRN-STP-1** Stop 要求 Turn 为 `active`。Coordinator 的 unit 由 Run 的 `Command` Part（`CancelRun{Reason:ReasonCancelled}`）与 Turn 自己的 Part（`twilight/turn/failed{Settlement:stopped, FailureClass:"cancelled"}`）组成；两者在同一 commit 可见。envelope 的 SchemaVersion 与 Deliver 同样取自 `Writer.Schema()`，`Base` 为零值。Stop 结算 Turn，已 delivered 的 PendingInputs 保留归属。Application 单独提交 `CancelRun` 时，Turn 进入 `attempt_failed`；此时 Retry 为新 attempt 重放全部 delivered 输入，Settle 则结束该 Turn。
+**TRN-STP-1** Stop 要求 Turn 为 `active`。Coordinator 的 unit 由 Run 的 `Command` Part（`CancelRun{Reason:ReasonCancelled}`）与 Turn 自己的 Part（`twilight/turn/failed{Settlement:stopped, FailureClass:"cancelled"}`）组成；两者在同一 commit 可见。envelope 的 SchemaVersion 与 Deliver 同样取自该 Run 的 machine 投影记录，`Base` 为零值。Stop 结算 Turn，已 delivered 的 PendingInputs 保留归属。Application 单独提交 `CancelRun` 时，Turn 进入 `attempt_failed`；此时 Retry 为新 attempt 重放全部 delivered 输入，Settle 则结束该 Turn。
 
 **TRN-STP-2** Cancel CommandID = `Digest("twilight/turn/cancel-run", SessionID, TurnID, RunID, ReasonCancelled)`。StopRequest.Reason 供审计。
 

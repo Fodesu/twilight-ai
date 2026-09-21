@@ -131,9 +131,13 @@ func SettleCommitID(sid session.SessionID, turnID TurnID, runID run.RunID) sessi
 
 // --- module -----------------------------------------------------------------------
 
+// Version is the payload version the turn module writes every event with
+// (EXT-REG-2).
+const Version extension.PayloadVersion = 1
+
 func def[T any](typ session.EventType, check func(*T) error) extension.EventDefinition {
 	return extension.EventDefinition{Type: typ, Stream: StreamDomain,
-		Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[T]{Check: check}}}
+		Codecs: map[extension.PayloadVersion]extension.PayloadCodec{Version: extension.JSONCodec[T]{Check: check}}}
 }
 
 // Module declares the turn events, the surface projection and the Requires of
@@ -144,12 +148,8 @@ var Module = extension.ModuleDescriptor{
 	ID:      ModuleID,
 	Streams: []extension.StreamDefinition{streamDefinition},
 	Requires: []extension.ModuleRequirement{
-		{Source: extension.SourceTwilight, Module: runmod.ModuleID, Events: map[session.EventType][]extension.SchemaVersion{
-			runmod.Prefix + "run_ended": {1},
-		}},
-		{Source: extension.SourceTwilight, Module: chatlog.ModuleID, Events: map[session.EventType][]extension.SchemaVersion{
-			chatlog.TypeInputDelivered: {1},
-		}},
+		{Source: extension.SourceTwilight, Module: runmod.ModuleID, Events: []session.EventType{runmod.Prefix + "run_ended"}},
+		{Source: extension.SourceTwilight, Module: chatlog.ModuleID, Events: []session.EventType{chatlog.TypeInputDelivered}},
 	},
 	Events: []extension.EventDefinition{
 		def[StartedPayload](TypeStarted, func(p *StartedPayload) error {

@@ -37,7 +37,7 @@ func (r StreamRef) String() string {
 }
 
 // StreamLineage is how a stream read crosses segment edges (SES-FRK-5). A
-// fork and a new tip segment (SES-ADV-1) inherit the commits of their
+// fork inherits the commits of its
 // ancestry; a stream's owning module declares which of the two histories its
 // streams are, and a read names that mode. The kernel applies the mode it is
 // given and does not know which one a domain declared.

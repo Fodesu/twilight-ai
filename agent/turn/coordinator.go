@@ -8,7 +8,6 @@ import (
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/plan"
 	"github.com/felinics/twilight/agent/run/runtime"
-	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/run/wire"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
@@ -247,9 +246,9 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req DeliverR
 	if !ok || view.Status != TurnActive {
 		return TurnResponse{}, fmt.Errorf("%w: turn %s is not active", ErrConflict, req.Ref.TurnID)
 	}
-	// AcceptInput is not a hard-CAS command (RUN-CMT-4): no Base is needed, and
-	// the Run's schema is the segment's (RUN-CMT-8), so Deliver does not read
-	// the machine projection.
+	// AcceptInput is not a hard-CAS command (RUN-CMT-4): no Base is needed;
+	// the machine projection is read only for the Run's protocol version
+	// (RUN-CMT-8).
 	att := view.ActiveAttempt()
 	if att == nil {
 		return TurnResponse{}, fmt.Errorf("%w: turn %s has no active attempt", ErrConflict, req.Ref.TurnID)
@@ -258,7 +257,7 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req DeliverR
 	if len(req.Inputs) == 0 {
 		return TurnResponse{}, fmt.Errorf("%w: deliver without inputs", ErrConflict)
 	}
-	sch, err := schema.For(uint16(w.Schema()))
+	sch, err := runmod.SchemaOf(ctx, w.Projections(), sid, runID)
 	if err != nil {
 		return TurnResponse{}, err
 	}
@@ -399,7 +398,7 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest
 		return TurnResponse{}, fmt.Errorf("%w: turn %s has no active attempt", ErrConflict, turnID)
 	}
 	runID := att.RunID
-	sch, err := schema.For(uint16(w.Schema()))
+	sch, err := runmod.SchemaOf(ctx, w.Projections(), sid, runID)
 	if err != nil {
 		return TurnResponse{}, err
 	}

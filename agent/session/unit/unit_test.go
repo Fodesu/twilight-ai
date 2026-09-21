@@ -23,7 +23,7 @@ func newWriter(t *testing.T) writer.Writer {
 		t.Fatal(err)
 	}
 	store := session.NewMemoryStore()
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", Metadata: extension.SchemaMetadata(extension.SchemaVersion1)}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	bindings := artifact.NewMemoryBindingStore()

@@ -7,13 +7,13 @@
 
 ```text
 agent-session.md              Session kernel：commit ledger、逻辑流、ownership、append、read
-agent-session-extension.md    Writer、module registry、projection、claim admission、段的 Schema 声明与 tip 段推进
+agent-session-extension.md    Writer、module registry、按事件类型的 payload 版本、projection、claim admission
 agent-artifact.md             Artifact binding、content reference、retention claim
 agent-session-chatlog.md      对话内容与 context projection
 agent-run.md                  Run machine、Runtime、Loop、Executor contract
 agent-turn.md                 Turn、attempt、input routing、结算投影
 agent-decision.md             PromptBuilder 与决策组件目录
-agent-runtime.md              authority 组装与 Session 所有权、Schema 迁移、driver、spawn、app 策略
+agent-runtime.md              authority 组装与 Session 所有权、driver、spawn、app 策略
 agent-workspace.md            可选 Workspace/Runtime/TargetRef domain
 ```
 
@@ -23,10 +23,10 @@ agent-workspace.md            可选 Workspace/Runtime/TargetRef domain
 agent/session (kernel)       agent/artifact (independent core)
           \                  /
            agent/session/extension（含 writer）
-               ↓                      ↓
-   chatlog / session-run / turn   agent/session/migrate
-               ↓                      ↓
-             decision / host（authority 组合 migrate 与 turn / run 的静止点守卫）
+               ↓
+   chatlog / session-run / turn
+               ↓
+             decision / host（authority 组合 turn / run）
                     ↓
        application / transport / provider adapter
 ```
@@ -49,9 +49,9 @@ Workspace 是可选的 application domain。Agent Core 只携带 opaque `TargetR
   Executor 的 `orphaned` execution 无关。
 - Commit ledger 是唯一事实权威；projection、snapshot、HTTP view 和 CLI 输出都
   是派生数据。
-- `ProtocolVersion`（Session kernel 的 wire 版本，SES-VER-1）与 `SchemaVersion`（段的
-  应用层 Schema，EXT-SCH-1）属于不同版本域；Run 事实的 `v` 等于所在段的 SchemaVersion
-  （RUN-WIR-2），Session 只经显式迁移换 Schema（SES-MIG-1）。
+- `ProtocolVersion`（Session kernel 的 wire 版本，SES-VER-2）与 payload 版本 `v`（每个事件类型
+  自己的 codec 版本，SES-VER-1、EXT-REG-2）属于不同版本域；Run 的协议版本是 run 模块的 codec
+  版本，记在其每条事实的 `v`（RUN-WIR-2、RUN-CMT-8）。段不携带任何模块层版本。
 
 ## 阅读与维护规则
 

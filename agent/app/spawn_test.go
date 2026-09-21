@@ -17,7 +17,6 @@ import (
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
-	"github.com/felinics/twilight/agent/session/extension"
 	"github.com/felinics/twilight/agent/session/filestore"
 	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/spawn"
@@ -114,9 +113,6 @@ func TestSpawnRunsChildSessionAndReturnsReply(t *testing.T) {
 	prov, ok, err := spawn.ProvenanceFromHeader(header)
 	if err != nil || !ok {
 		t.Fatalf("provenance = %v %v", ok, err)
-	}
-	if schema, err := extension.SchemaOf(header); err != nil || schema != extension.SchemaVersion1 {
-		t.Fatalf("child schema = %d %v, want the parent's", schema, err)
 	}
 	if prov.ParentSession != "parent" || prov.ParentRun != runID || prov.CallID != run.CallID(tr.CallID) || prov.Depth != 1 || prov.Arguments.Mode != spawn.Fork || prov.Arguments.Task != "summarize the conversation" {
 		t.Fatalf("provenance = %+v", prov)
@@ -291,9 +287,6 @@ func TestSpawnValidation(t *testing.T) {
 				meta, err := jsonstable.FromValue(map[string]spawn.Provenance{spawn.MetadataKey: {
 					ParentSession: "root", ParentRun: "r1", CallID: "c0", Depth: 1, Arguments: spawn.Arguments{Task: "t", Mode: spawn.Empty}}})
 				if err != nil {
-					t.Fatal(err)
-				}
-				if meta, err = extension.DeclareSchema(meta, extension.SchemaVersion1); err != nil {
 					t.Fatal(err)
 				}
 				if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1, Metadata: meta}); err != nil {

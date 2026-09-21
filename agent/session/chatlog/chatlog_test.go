@@ -60,7 +60,7 @@ func foldSteps(t *testing.T, steps []step) (Context, Surface, error) {
 	surfaceState, _ := SurfaceProjection.Initial()
 	contextState, _ := ContextProjection.Initial()
 	for i, st := range steps {
-		wire, err := r.Encode(st.typ, st.value, extension.SchemaVersion1)
+		wire, err := r.Encode(st.typ, st.value)
 		if err != nil {
 			t.Fatalf("step %d encode: %v", i, err)
 		}
@@ -258,7 +258,7 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 		if len(def.Codecs) != 1 {
 			t.Fatalf("%s: %d codecs, want one per schema this module writes", def.Type, len(def.Codecs))
 		}
-		codec := def.Codecs[extension.SchemaVersion1]
+		codec := def.Codecs[Version]
 		first, err := codec.Encode(val)
 		if err != nil {
 			t.Fatalf("%s: encode: %v", def.Type, err)
@@ -279,7 +279,7 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 		"error with digest":      {ToolResultID: "x", Status: ToolError, OutputDigest: "sha256:o"},
 		"unknown status":         {ToolResultID: "x", Status: ToolUnknown},
 	} {
-		if _, err := r.Encode(TypeToolResultSuperseded, p, extension.SchemaVersion1); err == nil {
+		if _, err := r.Encode(TypeToolResultSuperseded, p); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}

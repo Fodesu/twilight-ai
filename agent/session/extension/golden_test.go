@@ -22,13 +22,13 @@ func TestEncodeWireGolden(t *testing.T) {
 		Events: []extension.EventDefinition{{
 			Type:   "goldsrc/gold/sample",
 			Stream: "gold",
-			Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[goldenPayload]{}},
+			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[goldenPayload]{}},
 		}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire, err := reg.Encode("goldsrc/gold/sample", goldenPayload{B: 1}, 1)
+	wire, err := reg.Encode("goldsrc/gold/sample", goldenPayload{B: 1})
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}

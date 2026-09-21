@@ -39,9 +39,6 @@ type Ports struct {
     TargetResolver loop.TargetResolver         // application 的资源层按 effect 解析 opaque target（RUN-LOP-9）；nil 时每个 effect 无 target（APP-TGT-1）
     Observers      []writer.CommitObserver     // 提交观察（EXT-WRT-7）
     Modules        []extension.ModuleDescriptor
-    Schema         extension.SchemaVersion     // 新 Session 声明的 Schema；零值为 SchemaVersion1（AUTH-SCH-1）
-    Migrators      []migrate.Migrator          // Schema 迁移过程，每个 (Source, Target) 至多一个（AUTH-MIG-1）
-    Guards         []migrate.Guard             // 部署自己的静止点前置条件，在 turn / run 守卫之后求值
     Clock          func() time.Time
     Cache          extension.ProjectionCache   // nil → Store 能力或内存
     CacheEvery     session.CommitSeq
@@ -57,13 +54,10 @@ type Authority struct {
     Content     chatlog.ContentResolver    // materializer（CHT-MAT-1）
     Chatlog     *chatlog.Commands
     History     turn.History
-    Schema      extension.SchemaVersion    // CreateSession 声明的 Schema（AUTH-SCH-1）
-    Migrators   []migrate.Migrator; Guards []migrate.Guard // MigrateSession 的过程与静止点前置条件（AUTH-MIG-1）
 }
 func New(Ports) (*Authority, error)
 func (a *Authority) Open(ctx, sid) (*Handle, error)
 func (a *Authority) CreateSession(ctx, sid, meta jsonstable.Value) error
-func (a *Authority) MigrateSession(ctx, sid, target extension.SchemaVersion) (migrate.Result, error)
 ```
 
 **AUTH-PRT-1** 端口按角色分组，每个字段是接口或 core 值类型；Authority 不知道拿到的是哪个实现，导出的字段是 core 服务与端口。缺省实现只在 nil 时选用，且都是进程内的。
@@ -98,18 +92,6 @@ func (h *Handle) Close(ctx) error
 **AUTH-FRK-2** `ForkBeforeTurn(parent, turnID, child)` 以 `turn.History.StartCommit` 找到携带该 Turn `twilight/turn/started` 的 Commit `k`，在 `k-1` 处 fork：子的对话止于该 Turn 的输入仍为 `submitted` 的状态。`Drain` 或 `Route` 把这些输入投递给新 Turn 即重新生成；`chatlog.Commands.Withdraw`（经子的 Handle）写 `input_withdrawn`（CHT-EVT-2，要求输入为 `submitted`）后再 `Send` 即编辑。`k = 0` 时没有可 fork 的前缀，返回 `ErrInvalid`；未知 Turn 返回 conflict。edit / retry / regenerate 三种动作因此都归到同一个 fork 原语加输入投递上（TRN 第 1 节）。fork 只复制 Session 的已提交事实：子 Session 不恢复父在 `k-1` 时刻的 workspace 状态，父 Session 在 `k` 之后的工具调用对 workspace 的效果不会被撤销（TRN-DUR-3、agent-workspace.md）。
 
 **AUTH-FRK-3** `DeleteSession` 先停止该 Session 的恢复监听并关闭其 Writer，再以 `writer.Delete` 撤根并释放 claim（EXT-WRT-9）；被另一进程持有的 Session 为 `ErrOwned`。以它为前缀的 fork 不受影响。`Collect` 调 `writer.Collect` 回收无根可达的段（SES-GC-2）。
-
-### 4.1 Schema 与迁移
-
-**AUTH-SCH-1（新 Session 的 Schema）** `CreateSession(ctx, sid, meta)` 以 `extension.DeclareSchema(meta, Ports.Schema)` 把 authority 的 Schema 写进根段的创建元数据（键 `twilight/schema`，EXT-SCH-1）后以 `ProtocolVersion1` 建流；`meta` 已声明另一 Schema 时为 `ErrInvalid`。`EnsureSession` 经同一入口建流，已存在的流原样保留。`Ports.Schema` 零值为 `SchemaVersion1`；`New` 在没有任何已注册模块在该 Schema 下有 codec 时组装失败。已存在的 Session 保持其 tip 段声明的 Schema，二进制缺省 Schema 的变化不改变它们（EXT-SCH-2）；同一 authority 内可以同时存在不同 Schema 的 Session，每个 Writer 以自己 tip 段的 Schema 编码事件（EXT-WRT-1）。fork 与 spawn 建立的子 Session 声明父的 Schema（EXT-SCH-3、SPN-5）。
-
-**SES-MIG-1（迁移的触发与静止点）** Session 的 Schema 属于段，段不改 Schema（EXT-SCH-1）；一个 Session 换 Schema 的唯一途径是 `MigrateSession(ctx, sid, target)`，即 Session authority 的显式管理操作（`agent/session/migrate`）。Loop、Run、Turn 与投影都不触发迁移：新 Run 使用其所在段的 Schema（RUN-CMT-8），tip 段声明的 Schema 与二进制缺省不同时 Writer 仍以段的 Schema 编码（EXT-SCH-2）。迁移只在语义静止点发生，前置条件在 Writer 互斥区内对 tip 求值：没有活动中的 Turn（`turn.RequireNoActiveTurn`）；没有活动中的 Run（`runmod.RequireNoActiveRun`：终结的 Run 已离开 machine 投影，`Active` 为空即没有执行中、等待效果或结果未知的目标）；`Ports.Guards` 中部署对 Session 之外效果的前置条件。任一不满足即 `migrate.ErrNotQuiescent`（包裹守卫自己的错误），tip 不变。仍为 `submitted` 的输入为持久稳定状态，不阻止迁移；它们经继承策略在新段的投影上继续可读（EXT-PRJ-8），Migrator 也可以把它们决定性地转换进 bootstrap。
-
-**SES-MIG-2（迁移身份与幂等）** `MigrationID = Digest(sessionID, sourceSegment, sourceHead, sourceSchema, targetSchema)`（`migrate.IDOf`，经 `es.EncodeTypedPayload(1, "twilight/session/migration", …)` 后取 digest）命名该 Session 在该源 head 上的一个迁移槽位；Profile 不参与身份，同一槽位由另一 Profile 填充为 Conflict。bootstrap 组未命名 CommitID 时取 `migration:<MigrationID>:<i>`，决定性的 Bootstrap 重放因此得到相同的 CommitID。再次 `MigrateSession` 到同一 target 时 tip 已在 target 上，由 tip 的迁移记录裁决：记录的 Profile 与已注册 Migrator 相同为 `AlreadyApplied` 并返回原 `ID`；已注册 Migrator 的 Profile 或源 Schema 与记录不同为 `ErrConflict`；记录的 (source, target) 没有已注册 Migrator 时按记录返回 `AlreadyApplied` 与其 ID；tip 没有迁移记录（Session 在该 Schema 下创建）为不带 ID 的 `AlreadyApplied`。tip 在源与 target 之外的 Schema 上为 `ErrInvalid`。
-
-**SES-MIG-3（原子切换与记录）** 迁移的步骤：取得 Session 的独占所有权 → 在 Writer 互斥区内核对静止点 → 以源 Schema 折叠权威状态（`Migrator.Bootstrap` 经 View 读投影）→ 决定性地构造目标段的 bootstrap → 经 `Writer.Advance`（EXT-WRT-10）在 tip 的 head 处发布目标段并把 Session 根切换到它（SES-ADV-2，fenced 原子根切换）→ 释放所有权。目标段的创建元数据在 `twilight/schema` 之外携带键 `twilight/migration` 的 `Provenance{ID, PreviousSegment, PreviousSeq, PreviousDigest, Source, Target, Profile}`，段的 `CausationID` 为 MigrationID；`migrate.Record(header)` 读回记录，记录的源 head 与段的 `Parent` 边不一致或记录不能严格解码为 `ErrCorrupt`。状态转换为 `EventsV1 → V1 fold → StateV1 → 决定性迁移 → StateV2 → V2 段`：目标段的初始状态来自源 Schema 下折叠得到的权威状态经 Migrator 的确定性转换，源事件不经目标 Schema 的 projector 折叠；同一源 head 在同一 Profile 下得到相同的 bootstrap。发布点之前的任何失败（守卫、Bootstrap、编码、投影拒绝、kernel 拒绝）使 Session 完整地留在源 Schema，同一 MigrationID 可以重跑；发布点之后崩溃，重新打开读到根指向目标段，重跑得到 `AlreadyApplied`。迁移是否完成以权威根与目标段的迁移记录为准。Profile 命名一个确定性过程（如 `twilight/session-migration/v1-to-v2@1`），过程变更即新 Profile。kernel 类型（`SegmentHeader`、`LedgerRef`、`SessionRecord`）只把 Schema 声明与迁移记录当作不透明的 `Metadata` 携带（SES-ADV-1），两者的语义留在 `extension` 与 `migrate` 两个包。
-
-**AUTH-MIG-1（MigrateSession）** `MigrateSession(ctx, sid, target)` 的拒绝与顺序：`target` 为零或没有任何已注册模块在其下有 codec 为 `ErrUnsupported`；该 Session 在本 authority 内已被打开（含 opening / closing 的一代）为 `ErrSessionOpen`：迁移在 generation 表中占用一代，与 `Open` 使用同一互斥，但不驱动该 Session，因此与 `Open`、`DeleteSession` 互斥；随后以 `Writers.Writer` 打开 Session，被另一进程持有为 `ErrOwned`。按 tip 的 Schema 与 `target` 在 `Ports.Migrators` 中选择 Migrator，没有为 `ErrUnsupported`；守卫顺序为 `turn.RequireNoActiveTurn`、`runmod.RequireNoActiveRun`、`Ports.Guards`。tip 已在 `target` 上时按 SES-MIG-2 裁决，不求值守卫。返回前关闭 Writer 并释放该代，下一次 `Open` 读到新 tip。`New` 核对 `Ports.Migrators`：nil、Source 或 Target 为零、Source 等于 Target、空 Profile、Target 无 codec、同一 (Source, Target) 出现两次都使组装失败。
 
 ## 5. AgentPreset 注册（preset）
 
@@ -222,7 +204,6 @@ func (s *Session) Close(ctx) error
 ```text
 // authority.New
 registry    = extension.BuildRegistry(v1, chatlog.Module, runmod.Module, turn.Module, Ports.Modules...)
-schema      = Ports.Schema | extension.SchemaVersion1               // registry 须在其下有 codec（AUTH-SCH-1）；checkMigrators(Ports.Migrators)（AUTH-MIG-1）
 frozen      = runmod.FrozenValues(Content)
 content     = runmod.NewContent(frozen)                          // materializer：prompt、Reply、transcript
 writers     = writer.NewWriters(Store, registry, Admission{Artifacts}, Ownership, {Cache, CachePolicy: runmod.WriterCachePolicy(CacheEvery), Observers})
@@ -269,5 +250,3 @@ spawn.Bind(authority)                                            // 子经 Autho
 - **SPN-1..5**：spawn 调用以派生身份建子 Session 并以子回复完成父的工具调用；fork 模式拿到当前 Turn 之前的对话且收到 task；参数错误、未知命名 Preset 与深度超限在开始前被拒且不建子；共享文件 record store 下所有者进程在子模型调用中途退出后（对接管方而言租约已过期），新进程的 reconcile 循环收养同一调用并完成父 Turn，收养后子的 Turn 数与输入数不变；spawn 工具的 Assignment 落到 `twilight/session` provider。
 - **APP-MEM-2**：`CacheEvery` 到达 Writer；machine projection 从不被 Writer 写入。
 - **AUTH-FRK-1/2**：父的 Turn 活动中时以该 commit 为点的 fork 被拒且不留根，Turn 结算后同一点可 fork；子对父 Run 的 `Record` 为 `ErrRunNotFound`，继承的 Turn 在子的 surface 上为 completed；在某 Turn 之前 fork 得到的子 Session 只含该 Turn 之前的回答且其输入仍待投递；`Drain` 以同一输入重新生成，`Withdraw` 后 `Send` 以新输入替代；两个子都读到共享前缀的冻结正文；父的 head 不变；每个子的首个自身 Commit 从 anchor 续链；未知 Turn 与自身为父被拒。
-- **AUTH-SCH-1**：新 Session 的根段声明 `Ports.Schema`，缺省为 1；spawn 子的根段声明父的 Schema；`New` 对没有 codec 的 `Ports.Schema` 组装失败。
-- **AUTH-MIG-1 / SES-MIG-1..3**：迁移后 Store 的 tip 段声明 target，其 header 与返回的 `Header` 相同，迁移记录的 ID 与 Profile 与返回值一致；同一 target 重跑为 `AlreadyApplied` 且 ID 相同；迁移后 Session 可重新 Open，Writer 在 target 上，继承的 chatlog 与 bootstrap 建立的投影可读；每项拒绝都不动 tip 且释放 Session：已打开为 `ErrSessionOpen`，target 为零、无 codec 或无 Migrator 为 `ErrUnsupported`，活动中的 Turn 为 `ErrNotQuiescent`，另一进程持有为 `ErrOwned`；`New` 拒绝 nil、零 Schema、同 Schema、空 Profile、无 codec 的 target 与重复 (Source, Target) 的 Migrator。`migrate` 包：守卫拒绝以 `ErrNotQuiescent` 包裹守卫的错误；tip 在其他 Schema 为 `ErrInvalid`；Bootstrap 出错或被投影拒绝时不发布；另一 Profile 迁移后再迁移为 `ErrConflict`；tip 在 target 上且无记录为不带 ID 的 `AlreadyApplied`；两个 Session 在相同内容上迁移得到不同 ID 与相同 bootstrap；`IDOf` 随 Session、段、Seq、digest 与两个 Schema 中任一变化；`Record` 拒绝根段上的记录、与 `Parent` 不一致的源 head、畸形记录与未知字段。

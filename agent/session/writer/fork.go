@@ -60,20 +60,10 @@ func Fork(ctx context.Context, store session.Store, registry *extension.Registry
 	if err != nil {
 		return session.SegmentHeader{}, err
 	}
-	// A fork continues its parent's history and is read under the same
-	// Schema (EXT-SCH-3): the child declares the parent's Schema, and a
-	// request declaring another is refused. Moving a Session to a new
-	// Schema is a migration, never a fork.
-	schema, err := extension.SchemaOf(parentHeader)
-	if err != nil {
-		return session.SegmentHeader{}, &session.Error{Code: session.ErrUnsupported, Operation: opFork, SessionID: req.Parent, Detail: err.Error()}
-	}
-	meta, err := extension.DeclareSchema(req.Metadata, schema)
-	if err != nil {
-		return session.SegmentHeader{}, &session.Error{Code: session.ErrInvalid, Operation: opFork, SessionID: req.Child, Detail: err.Error()}
-	}
+	// A fork continues its parent's history; its metadata is whatever the
+	// caller recorded for the child.
 	create := session.CreateRequest{ProtocolVersion: registry.ProtocolVersion, SessionID: req.Child,
-		CreatedAtUnixMilli: req.CreatedAtUnixMilli, Fork: &session.ForkOrigin{Session: req.Parent, Seq: req.At}, Metadata: meta}
+		CreatedAtUnixMilli: req.CreatedAtUnixMilli, Fork: &session.ForkOrigin{Session: req.Parent, Seq: req.At}, Metadata: req.Metadata}
 	if admission.Ledger == nil {
 		return store.Create(ctx, create)
 	}

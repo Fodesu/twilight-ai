@@ -78,7 +78,7 @@ func newHarness(t testing.TB, f Fixture) *harness {
 	h := &harness{t: t, ctx: context.Background(), fixture: f, store: f.Store, registry: registry, bindings: bindings,
 		ledger: artifact.NewMemoryLedger(artifact.SetBuilder{Resolver: bindings}), frozen: runmod.FrozenValuesInMemory(bindings),
 		cache: extension.NewMemoryProjectionCache(), clock: &clock{now: time.Unix(1_000_000, 0)}}
-	if _, err := f.Store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, Metadata: extension.SchemaMetadata(extension.SchemaVersion1)}); err != nil {
+	if _, err := f.Store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid}); err != nil {
 		t.Fatal(err)
 	}
 	h.open()

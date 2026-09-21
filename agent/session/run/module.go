@@ -29,7 +29,7 @@ const (
 )
 
 // streamDefinition declares the run domain: keyed by RunID and of segment
-// lineage, so a fork or Advance never reads an ancestor's Runs as its own.
+// lineage, so a fork never reads an ancestor's Runs as its own.
 var streamDefinition = extension.StreamDefinition{Domain: StreamDomain, IDField: "runId", Lineage: session.LineageSegment}
 
 // Stream is the logical stream of one Run's facts.
@@ -150,6 +150,12 @@ var one uint32 = 1
 // and Turn projections consume its facts; nothing of theirs is written here.
 var Module = buildModule()
 
+// Version is the Run protocol version new Runs are created under and the
+// payload version every run fact is written with (RUN-CMT-8): the run
+// module's six contracts (schema.For) are one bundle, so all of its events
+// share the version.
+const Version uint16 = run.SchemaVersion1
+
 func buildModule() extension.ModuleDescriptor {
 	m := extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: ModuleID,
 		Streams: []extension.StreamDefinition{streamDefinition}, Projections: []extension.ProjectionDefinition{MachineProjection}}
@@ -157,8 +163,8 @@ func buildModule() extension.ModuleDescriptor {
 		def := extension.EventDefinition{
 			Type:   Prefix + session.EventType(name),
 			Stream: StreamDomain,
-			Codecs: map[extension.SchemaVersion]extension.PayloadCodec{
-				extension.SchemaVersion(run.SchemaVersion1): factCodec{local: name, wire: schema.V1().Wire},
+			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{
+				extension.PayloadVersion(Version): factCodec{local: name, wire: schema.V1().Wire},
 			},
 		}
 		if frozenBodyFacts[name] {

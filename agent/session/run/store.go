@@ -397,9 +397,9 @@ type createRun struct {
 }
 
 func (c createRun) Prepare(_ context.Context, view writer.View, now int64) ([]writer.TypedBatch, error) {
-	// A Run is created under the schema of the segment it lands on
-	// (RUN-NEW-1); nothing in the request may select another.
-	sch, err := schema.For(uint16(view.Schema()))
+	// A Run is created under the run module's current protocol version
+	// (RUN-CMT-8, RUN-NEW-1); nothing in the request may select another.
+	sch, err := schema.For(Version)
 	if err != nil {
 		return nil, err
 	}

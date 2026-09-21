@@ -64,7 +64,7 @@ func cacheModule(c *applyCounter) extension.ModuleDescriptor {
 		}
 	}
 	return extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "k", Streams: noteStreams(),
-		Events:      []extension.EventDefinition{{Type: typ, Stream: noteDomain, Codecs: map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
+		Events:      []extension.EventDefinition{{Type: typ, Stream: noteDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
 		Projections: []extension.ProjectionDefinition{mk(alphaID), mk(betaID)}}
 }
 
@@ -83,7 +83,7 @@ func newCacheFixture(t testing.TB) *cacheFixture {
 		t.Fatal(err)
 	}
 	f.registry = registry
-	if _, err := f.store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", Metadata: extension.SchemaMetadata(extension.SchemaVersion1)}); err != nil {
+	if _, err := f.store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	return f

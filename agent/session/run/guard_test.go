@@ -18,7 +18,7 @@ type guardView struct {
 
 func (guardView) Head() session.Head                                     { return session.Head{} }
 func (guardView) Epoch() session.Epoch                                   { return 0 }
-func (guardView) Schema() extension.SchemaVersion                        { return 1 }
+func (guardView) Schema() extension.PayloadVersion                       { return 1 }
 func (guardView) Header() session.SegmentHeader                          { return session.SegmentHeader{} }
 func (guardView) Committed(session.CommitID) bool                        { return false }
 func (guardView) StreamHead(session.StreamRef) (session.StreamSeq, bool) { return 0, false }

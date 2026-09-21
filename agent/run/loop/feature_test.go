@@ -45,7 +45,7 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) (*runmod.SessionRunStore
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: defaultSession, Metadata: extension.SchemaMetadata(extension.SchemaVersion1)}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: defaultSession}); err != nil {
 		t.Fatal(err)
 	}
 	bindings := artifact.NewMemoryBindingStore()

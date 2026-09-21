@@ -514,6 +514,10 @@ var supersededBinding = extension.BindingReferenceDefinition{
 // Session, of session lineage, so a fork continues its parent's conversation.
 const StreamDomain = "chatlog"
 
+// Version is the payload version the chatlog writes every event with
+// (EXT-REG-2); older versions keep their codecs beside it.
+const Version extension.PayloadVersion = 1
+
 var streamDefinition = extension.StreamDefinition{Domain: StreamDomain, Lineage: session.LineageSession}
 
 // Stream is the chatlog's logical stream.
@@ -521,7 +525,7 @@ var Stream = streamDefinition.Ref("")
 
 func def[T any](typ session.EventType, check func(*T) error, bindings ...extension.BindingReferenceDefinition) extension.EventDefinition {
 	return extension.EventDefinition{Type: typ, Stream: StreamDomain,
-		Codecs:   map[extension.SchemaVersion]extension.PayloadCodec{1: extension.JSONCodec[T]{Check: check}},
+		Codecs:   map[extension.PayloadVersion]extension.PayloadCodec{Version: extension.JSONCodec[T]{Check: check}},
 		Bindings: bindings}
 }
 
@@ -532,9 +536,9 @@ func def[T any](typ session.EventType, check func(*T) error, bindings ...extensi
 var consumedRunFacts = []string{"run_created", "model_step_completed", "tool_step_opened", "tool_call_completed", "tool_call_answered", "tool_call_failed", "run_ended"}
 
 func runRequirement() extension.ModuleRequirement {
-	events := make(map[session.EventType][]extension.SchemaVersion, len(consumedRunFacts))
+	events := make([]session.EventType, 0, len(consumedRunFacts))
 	for _, name := range consumedRunFacts {
-		events[runmod.Type(name)] = []extension.SchemaVersion{extension.SchemaVersion(run.SchemaVersion1)}
+		events = append(events, runmod.Type(name))
 	}
 	return extension.ModuleRequirement{Source: extension.SourceTwilight, Module: runmod.ModuleID, Events: events}
 }

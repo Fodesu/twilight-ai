@@ -295,41 +295,6 @@ func (m *memoryBackend) CreateSession(ctx context.Context, seg Segment, rec Sess
 	return nil
 }
 
-// AdvanceTip lands the node with its bootstrap and repoints the root under
-// one lock (SES-ADV-2).
-func (m *memoryBackend) AdvanceTip(ctx context.Context, lease Lease, seg Segment, bootstrap []Commit, from SegmentID) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	r, ok := m.roots[lease.Session]
-	if !ok || !r.owned || r.epoch != lease.Epoch {
-		var current Epoch
-		if ok {
-			current = r.epoch
-		}
-		return newError(ErrOwnershipLost, "advance", lease.Session, fmt.Sprintf("epoch %d superseded by %d", lease.Epoch, current))
-	}
-	if r.record.Tip != from {
-		return newError(ErrConflict, "advance", lease.Session, fmt.Sprintf("tip is %s, not %s", r.record.Tip, from))
-	}
-	if _, exists := m.segments[seg.ID]; exists {
-		return newError(ErrConflict, "advance", lease.Session, fmt.Sprintf("segment %s exists", seg.ID))
-	}
-	node := &memorySegment{header: seg.Header, byCommit: make(map[CommitID]int, len(bootstrap))}
-	for i := range bootstrap {
-		if head := node.head(); bootstrap[i].Seq != head.Next || bootstrap[i].PrevDigest != head.Digest {
-			return newError(ErrInvalid, "advance", lease.Session, "bootstrap commit is not sealed against the segment head")
-		}
-		node.commits = append(node.commits, bootstrap[i])
-		node.byCommit[bootstrap[i].CommitID] = i
-	}
-	m.segments[seg.ID] = node
-	r.record.Tip = seg.ID
-	return nil
-}
-
 // --- SessionStore ----------------------------------------------------------------
 
 func (m *memoryBackend) Record(ctx context.Context, sid SessionID) (SessionRecord, error) {

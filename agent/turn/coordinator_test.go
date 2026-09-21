@@ -23,7 +23,7 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := session.NewMemoryStore()
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1, Metadata: extension.SchemaMetadata(extension.SchemaVersion1)}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
 	}
 	bindings := artifact.NewMemoryBindingStore()

@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/session"
-	"github.com/felinics/twilight/agent/session/extension"
 )
 
 // EXT-COD-1: every registered event type's current codec is canonical
@@ -24,7 +23,7 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 		if len(def.Codecs) != 1 {
 			t.Fatalf("%s: %d codecs, want one per schema this module writes", def.Type, len(def.Codecs))
 		}
-		codec := def.Codecs[extension.SchemaVersion1]
+		codec := def.Codecs[Version]
 		first, err := codec.Encode(value)
 		if err != nil {
 			t.Fatalf("%s: encode: %v", def.Type, err)
