@@ -25,15 +25,11 @@ type Client struct{}
 
 func NewClient() *Client
 
-func (c *Client) Generate(ctx context.Context, model *Model, req Request) (ModelResult, error)
-func (c *Client) Stream(ctx context.Context, model *Model, req Request) (ModelStream, error)
 func (c *Client) Embed(ctx context.Context, value string, options ...EmbedOption) ([]float64, error)
 func (c *Client) EmbedMany(ctx context.Context, values []string, options ...EmbedOption) (*EmbedResult, error)
 func (c *Client) GenerateImage(ctx context.Context, options ...ImageGenerateOption) (*ImageResult, error)
 func (c *Client) EditImage(ctx context.Context, options ...ImageEditOption) (*ImageResult, error)
 
-func Generate(ctx context.Context, model *Model, req Request) (ModelResult, error)
-func Stream(ctx context.Context, model *Model, req Request) (ModelStream, error)
 func (m *Model) Generate(ctx context.Context, req Request) (ModelResult, error)
 func (m *Model) Stream(ctx context.Context, req Request) (ModelStream, error)
 func CollectStream(ctx context.Context, parts <-chan StreamPart) (ModelResult, error)

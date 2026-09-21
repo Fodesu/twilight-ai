@@ -100,14 +100,3 @@ type ToolChoice struct {
 	// Tool names the target tool when Mode == ToolChoiceTool.
 	Tool string `json:"tool,omitempty"`
 }
-
-// BlobRef is a stable, content-addressed reference to binary content inside a
-// frozen request. Byte resolution is the responsibility of whoever assembles
-// the ModelInvoker; unstable references (expiring URLs) must not enter a
-// frozen request.
-type BlobRef struct {
-	// Digest is "sha256:<64 lowercase hex>" over the raw bytes.
-	Digest    string `json:"digest"`
-	MediaType string `json:"mediaType"`
-	ByteSize  int64  `json:"byteSize"`
-}

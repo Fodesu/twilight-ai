@@ -1780,7 +1780,7 @@ func TestGenerate_MiniMaxReasoningDetailsPreserved(t *testing.T) {
 		completions.WithMiniMaxChatCompletionsCompat(),
 	)
 	model := p.ChatModel("MiniMax-M3")
-	result, err := sdk.Generate(context.Background(), model, sdk.Request{Messages: []sdk.Message{sdk.UserMessage("hi")}})
+	result, err := model.Generate(context.Background(), sdk.Request{Messages: []sdk.Message{sdk.UserMessage("hi")}})
 	if err != nil {
 		t.Fatalf("Generate: %v", err)
 	}
@@ -1793,7 +1793,7 @@ func TestGenerate_MiniMaxReasoningDetailsPreserved(t *testing.T) {
 	history = append(history, sdk.UserMessage("hi"))
 	history = append(history, sdk.BuildStepMessages(result.Text, result.TextProviderMetadata, result.ReasoningParts, result.ToolCalls, nil, &result.Usage)...)
 	history = append(history, sdk.UserMessage("continue"))
-	if _, err := sdk.Generate(context.Background(), model, sdk.Request{Messages: history}); err != nil {
+	if _, err := model.Generate(context.Background(), sdk.Request{Messages: history}); err != nil {
 		t.Fatalf("second Generate: %v", err)
 	}
 }

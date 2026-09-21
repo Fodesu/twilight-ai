@@ -171,7 +171,7 @@ func TestGenerate_EmptyReasoningStepReplaysKey(t *testing.T) {
 	ctx := context.Background()
 	messages := make([]sdk.Message, 0, 4)
 	messages = append(messages, sdk.UserMessage("Weather in Paris?"))
-	step1, err := sdk.Generate(ctx, model, sdk.Request{Messages: messages, Tools: defs})
+	step1, err := model.Generate(ctx, sdk.Request{Messages: messages, Tools: defs})
 	if err != nil {
 		t.Fatalf("Generate step 1: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestGenerate_EmptyReasoningStepReplaysKey(t *testing.T) {
 		t.Fatalf("ExecuteTools: %v", err)
 	}
 	messages = append(messages, sdk.BuildStepMessages(step1.Text, step1.TextProviderMetadata, step1.ReasoningParts, step1.ToolCalls, outcome.Results, &step1.Usage)...)
-	step2, err := sdk.Generate(ctx, model, sdk.Request{Messages: messages, Tools: defs})
+	step2, err := model.Generate(ctx, sdk.Request{Messages: messages, Tools: defs})
 	if err != nil {
 		t.Fatalf("Generate step 2: %v", err)
 	}

@@ -2,9 +2,9 @@ package sdk
 
 import "context"
 
-// Client is the entry point of the single-call seam: Generate and Stream take
-// an sdk.Request and return a ModelResult or a ModelStream (model_call.go),
-// next to the embedding, speech, transcription, image and video surfaces.
+// Client carries the embedding, speech, transcription, image and video calls
+// as methods; each also exists as a package-level function. Chat calls are
+// Model.Generate and Model.Stream (model_call.go) and have no Client form.
 type Client struct{}
 
 func NewClient() *Client {

@@ -4,27 +4,24 @@ Complete reference for all exported types and functions in the Twilight AI SDK.
 
 ## Package `sdk`
 
+### Model Calls
+
+```go
+func (m *Model) Generate(ctx context.Context, req Request) (ModelResult, error)
+func (m *Model) Stream(ctx context.Context, req Request) (ModelStream, error)
+```
+
+`Generate` and `Stream` are one model call each: the `Request` is the complete input, the `ModelResult` (or the assembled result of the `ModelStream`) is the complete output. Nothing is retried, looped or executed on the caller's behalf. They are the only chat entry points.
+
 ### Client
 
 ```go
 type Client struct{}
 
 func NewClient() *Client
-
-func (c *Client) Generate(ctx context.Context, model *Model, req Request) (ModelResult, error)
-func (c *Client) Stream(ctx context.Context, model *Model, req Request) (ModelStream, error)
 ```
 
-`Generate` and `Stream` are one model call each: the `Request` is the complete input, the `ModelResult` (or the assembled result of the `ModelStream`) is the complete output. Nothing is retried, looped or executed on the caller's behalf. The same calls exist as methods of `Model` and as package-level functions:
-
-```go
-func Generate(ctx context.Context, model *Model, req Request) (ModelResult, error)
-func Stream(ctx context.Context, model *Model, req Request) (ModelStream, error)
-func (m *Model) Generate(ctx context.Context, req Request) (ModelResult, error)
-func (m *Model) Stream(ctx context.Context, req Request) (ModelStream, error)
-```
-
-The `Client` also carries the embedding, image, speech, transcription and video calls documented below.
+The `Client` carries the embedding, image, speech, transcription and video calls documented below; each also exists as a package-level function.
 
 ---
 

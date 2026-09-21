@@ -1,10 +1,5 @@
 # Providers
 
-> **Deprecated:** the `sdk.GenerateText` and `sdk.GenerateTextResult` examples
-> below run the SDK's own step loop. The provider contract is unaffected: drive
-> `DoGenerate` and `DoStream` through `sdk.Client.Generate` or
-> `sdk.Client.Stream`, which take a `sdk.Request`.
-
 A **Provider** is the abstraction that connects the SDK to an AI backend. It handles HTTP communication, request/response mapping, and streaming protocol details.
 
 ## The Provider Interface
@@ -40,7 +35,7 @@ methods cannot disagree.
 report a mid-stream failure as an `ErrorPart` rather than a truncated
 success.
 
-The SDK never calls a provider directly — it goes through the `Client` which adds orchestration (tool loop, callbacks, multi-step). The `Model` struct carries a reference to its provider:
+Callers never invoke a provider directly: `Model.Generate` and `Model.Stream` bind the request to the model, hand it to the provider and harden the result. The `Model` struct carries a reference to its provider:
 
 ```go
 type Model struct {

@@ -10,16 +10,15 @@ A lightweight, idiomatic AI SDK for Go — inspired by [Vercel AI SDK](https://s
 - **One call, one result** — `Model.Generate` and `Model.Stream` take an `sdk.Request` and return a `ModelResult` or a stream of typed parts; `ExecuteTools` and `BuildStepMessages` are the primitives a caller composes its own loop from. `Embed`, `EmbedMany`, `GenerateImage`, `EditImage`, `GenerateVideo`, `GenerateSpeech` and `StreamSpeech` cover the other modalities
 - **Provider-agnostic** — swap between OpenAI, Anthropic, Google, GitHub Copilot, Edge TTS, or any OpenAI-compatible endpoint
 - **Model discovery** — `ListModels` fetches available models, `Test` checks provider connectivity and model support
-- **Tool calling** — define tools with Go structs, SDK infers JSON Schema and handles multi-step execution
+- **Tool calling** — define tools with Go structs; `NewTool` infers the JSON Schema and `ExecuteTools` runs the calls a reply asked for
 - **MCP support** — connect to MCP servers and expose remote MCP tools as Twilight AI `sdk.Tool` values
 - **Streaming** — first-class channel-based streaming with fine-grained `StreamPart` types
-- **Multi-step execution** — automatic tool-call loop with configurable `MaxSteps`
 - **Rich message types** — text, images, files, reasoning content, tool calls/results
 - **Embeddings** — generate embeddings with `Embed` / `EmbedMany`, supports OpenAI and Google providers
 - **Image generation** — generate and edit images with `GenerateImage` / `EditImage`, supports OpenAI (dall-e, gpt-image) and Alibaba Cloud DashScope (Qwen-Image, Wan) models
 - **Video generation** — create, poll, and download video jobs with OpenRouter and Ark/ModelArk providers
 - **Speech synthesis** — generate speech with `GenerateSpeech` / `StreamSpeech`, supports Edge TTS with an open provider model
-- **Approval flow** — optional human-in-the-loop approval for sensitive tool calls
+- **Approval flow** — `ExecuteTools` consults `ToolExecOptions.Approve` for tools that require approval and can park the batch on a deferred decision
 
 ## Installation
 

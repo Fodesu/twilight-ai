@@ -1,10 +1,5 @@
 # Getting Started
 
-> **Deprecated:** the text-generation walkthrough below uses `sdk.GenerateText`,
-> `sdk.GenerateTextResult` and `sdk.StreamText`, which run an SDK-owned tool loop.
-> Build a `sdk.Request` and call `sdk.Client.Generate` or `sdk.Client.Stream`
-> instead. The embedding and image sections are unaffected.
-
 This guide walks you through installing Twilight AI and making your first LLM request.
 
 ## Prerequisites
@@ -240,14 +235,13 @@ vec, err := sdk.Embed(ctx, "search query here",
 )
 ```
 
-## Using a Client Instance
+## Other Modalities
 
-`model.Generate` and `sdk.Generate(ctx, model, req)` are the same call. A `sdk.Client` offers it as a method next to the embedding, image, speech and video calls:
+`Model.Generate` and `Model.Stream` are the only chat entry points. Embedding, image, speech, transcription and video calls are package-level functions (`sdk.Embed`, `sdk.GenerateImage`, ...) and, equivalently, methods of a `sdk.Client`:
 
 ```go
 client := sdk.NewClient()
-result, err := client.Generate(ctx, model, sdk.Request{Messages: msgs})
-stream, err := client.Stream(ctx, model, sdk.Request{Messages: msgs})
+vec, err := client.Embed(ctx, "search query here", sdk.WithEmbeddingModel(embModel))
 ```
 
 ## Environment Variables

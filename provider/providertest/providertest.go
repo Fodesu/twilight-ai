@@ -243,7 +243,7 @@ func testRequest(t *testing.T, f Fixture) {
 	p, rec := serve(t, f, f.Reply)
 	req := f.withOptions(p, request())
 	req.Model = f.ModelID
-	if _, err := sdk.Generate(ctx, f.model(p), req); err != nil {
+	if _, err := f.model(p).Generate(ctx, req); err != nil {
 		t.Fatalf("generate: %v", err)
 	}
 	wantSentOnWire(t, rec, f.ModelID, "request")
@@ -257,7 +257,7 @@ func testGenerate(t *testing.T, f Fixture) {
 	p, rec := serve(t, f, f.Reply)
 	req := f.withOptions(p, request())
 	req.Model = f.ModelID
-	got, err := sdk.Generate(ctx, f.model(p), req)
+	got, err := f.model(p).Generate(ctx, req)
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
@@ -277,7 +277,7 @@ func testStream(t *testing.T, f Fixture) {
 	p, rec := serve(t, f, f.ReplyStream)
 	req := f.withOptions(p, request())
 	req.Model = f.ModelID
-	stream, err := sdk.Stream(ctx, f.model(p), req)
+	stream, err := f.model(p).Stream(ctx, req)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -315,7 +315,7 @@ func testError(t *testing.T, f Fixture) {
 	p, _ := serve(t, f, f.ReplyError)
 	req := f.withOptions(p, request())
 	req.Model = f.ModelID
-	if result, err := sdk.Generate(ctx, f.model(p), req); err == nil {
+	if result, err := f.model(p).Generate(ctx, req); err == nil {
 		t.Fatalf("an error reply mapped to a success: %+v", result)
 	}
 }
@@ -379,12 +379,12 @@ func testPathsAgree(t *testing.T, f Fixture) {
 	pg, _ := serve(t, f, f.Reply)
 	req := f.withOptions(pg, request())
 	req.Model = f.ModelID
-	generated, err := sdk.Generate(ctx, f.model(pg), req)
+	generated, err := f.model(pg).Generate(ctx, req)
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
 	ps, _ := serve(t, f, f.ReplyStream)
-	stream, err := sdk.Stream(ctx, f.model(ps), req)
+	stream, err := f.model(ps).Stream(ctx, req)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}

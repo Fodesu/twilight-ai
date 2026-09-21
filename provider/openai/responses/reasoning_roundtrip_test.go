@@ -215,7 +215,7 @@ func TestDoStreamCapturesEncryptedContentFromItemDone(t *testing.T) {
 	defer srv.Close()
 
 	p := responses.New(responses.WithAPIKey("k"), responses.WithBaseURL(srv.URL))
-	stream, err := sdk.Stream(context.Background(), p.ChatModel("gpt-5.6"), sdk.Request{
+	stream, err := p.ChatModel("gpt-5.6").Stream(context.Background(), sdk.Request{
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
 	})
 	if err != nil {
@@ -275,7 +275,7 @@ func TestDoStreamKeepsEncryptedContentWhenToolCallClosesBlockFirst(t *testing.T)
 	defer srv.Close()
 
 	p := responses.New(responses.WithAPIKey("k"), responses.WithBaseURL(srv.URL))
-	stream, err := sdk.Stream(context.Background(), p.ChatModel("gpt-5.6"), sdk.Request{
+	stream, err := p.ChatModel("gpt-5.6").Stream(context.Background(), sdk.Request{
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
 	})
 	if err != nil {

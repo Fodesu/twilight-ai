@@ -270,5 +270,5 @@ text := result.Text
 ## Next Steps
 
 - [Providers](providers.md) — learn about chat providers (OpenAI, Anthropic, Google)
-- [Tool Calling](tools.md) — define tools and enable multi-step execution
+- [Tool Calling](tools.md) — define tools and execute the calls a reply asks for
 - [API Reference](api-reference.md) — complete type and function reference

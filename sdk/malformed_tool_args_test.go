@@ -45,7 +45,7 @@ data: {"type":"message_stop"}`,
 		anthropicmessages.WithAPIKey("k"),
 		anthropicmessages.WithBaseURL(srv.URL),
 	)
-	stream, err := sdk.Stream(context.Background(), provider.ChatModel("claude-opus-5"), sdk.Request{
+	stream, err := provider.ChatModel("claude-opus-5").Stream(context.Background(), sdk.Request{
 		Messages: []sdk.Message{sdk.UserMessage("delete something")},
 		Tools:    []sdk.ToolDefinition{{Name: "delete_file", Description: "deletes a file", Parameters: &jsonschema.Schema{Type: "object"}}},
 	})
