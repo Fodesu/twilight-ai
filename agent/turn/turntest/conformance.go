@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/reconcile"
 	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/session"
@@ -577,7 +578,7 @@ func testRecovery(t *testing.T, factory Factory) {
 	// nothing to dispose and the Turn is still active from the projections
 	// alone (TRN-SCP-3).
 	h.takeover()
-	if n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), nil); err != nil || n != 0 {
+	if n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), &reconcile.Reconciler{Abandon: true}); err != nil || n != 0 {
 		t.Fatalf("recover after start = %d %v", n, err)
 	}
 	if st := h.status("t1"); st.Status != turn.TurnActive || st.RunID != resp.RunID || st.Disposition != "" {
@@ -596,7 +597,7 @@ func testRecovery(t *testing.T, factory Factory) {
 	// its own pre-fold instead and never learns of the ownership loss.)
 	late := h.submit("late")
 	old, oldWriter := h.takeover()
-	if n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), nil); err != nil || n != 1 {
+	if n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), &reconcile.Reconciler{Abandon: true}); err != nil || n != 1 {
 		t.Fatalf("recover executing model = %d %v", n, err)
 	}
 	st := h.status("t1")

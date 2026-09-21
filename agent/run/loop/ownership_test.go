@@ -9,6 +9,7 @@ import (
 	"time"
 
 	. "github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/reconcile"
 	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/sdk"
 )
@@ -112,7 +113,7 @@ func TestOwnershipLossCancelsWorkersAndStopsSettling(t *testing.T) {
 	// A new owner takes the Session over: opening its Writer bumps the Epoch
 	// and its takeover disposition records both Executing calls as Unknown.
 	stack.open(t)
-	if n, err := stack.runtime.RecoverInterrupted(context.Background(), stack.writer(t), nil); err != nil || n != 2 {
+	if n, err := stack.runtime.RecoverInterrupted(context.Background(), stack.writer(t), &reconcile.Reconciler{Abandon: true}); err != nil || n != 2 {
 		t.Fatalf("RecoverInterrupted = %d %v, want 2", n, err)
 	}
 	close(takenOver)
@@ -172,7 +173,7 @@ func TestOwnershipLossOnModelSettlementIsNotRetried(t *testing.T) {
 	<-invoker.started
 
 	stack.open(t)
-	if n, err := stack.runtime.RecoverInterrupted(context.Background(), stack.writer(t), nil); err != nil || n != 1 {
+	if n, err := stack.runtime.RecoverInterrupted(context.Background(), stack.writer(t), &reconcile.Reconciler{Abandon: true}); err != nil || n != 1 {
 		t.Fatalf("RecoverInterrupted = %d %v, want 1", n, err)
 	}
 	close(invoker.release)

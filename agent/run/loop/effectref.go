@@ -61,6 +61,12 @@ func (l *Loop) settle(ctx context.Context, rt runtime.RunStore, events EventSink
 		return nil, err
 	}
 	l.emitCommitted(ctx, events, rt.Scope(), e.runID, res.Facts)
+	// The settlement is a Session fact: the executor may collect the
+	// effect's record (RUN-EXE-13). A refused or failed acknowledgement
+	// changes nothing here; the executor's time-based collection covers it.
+	if a, ok := l.Executor.(Acknowledger); ok {
+		_ = a.Acknowledge(ctx, AssignmentKey{Session: rt.Scope(), RunID: e.runID, Effect: e.id})
+	}
 	if res.Snapshot.State.Status.Terminal() {
 		return res.Snapshot.State.Result, nil
 	}

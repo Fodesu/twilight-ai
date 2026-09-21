@@ -642,7 +642,7 @@ func testTakeover(t *testing.T, factory Factory) {
 	h.startTool("r2", toolStep, ids[0])
 
 	h.takeover()
-	n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), nil)
+	n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), &reconcile.Reconciler{Abandon: true})
 	if err != nil || n != 2 {
 		t.Fatalf("RecoverInterrupted = %d %v, want 2", n, err)
 	}
@@ -699,12 +699,12 @@ func testTakeover(t *testing.T, factory Factory) {
 	}
 	// Same owner repeats: idempotent, nothing new.
 	head := h.head()
-	if n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), nil); err != nil || n != 0 || h.head() != head {
+	if n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), &reconcile.Reconciler{Abandon: true}); err != nil || n != 0 || h.head() != head {
 		t.Fatalf("second RecoverInterrupted = %d %v", n, err)
 	}
 	// Another takeover with nothing Executing does nothing.
 	h.takeover()
-	if n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), nil); err != nil || n != 0 {
+	if n, err := h.rt.RecoverInterrupted(h.ctx, h.writer(), &reconcile.Reconciler{Abandon: true}); err != nil || n != 0 {
 		t.Fatalf("RecoverInterrupted with no executing target = %d %v", n, err)
 	}
 }

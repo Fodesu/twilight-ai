@@ -173,6 +173,23 @@ func (c *Client) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 	return c.post(ctx, "/dispose", keyRequest{Key: key}, nil)
 }
 
+// Acknowledge is effect.Acknowledger over HTTP (RUN-EXE-13).
+func (c *Client) Acknowledge(ctx context.Context, key effect.AssignmentKey) error {
+	return c.post(ctx, "/acknowledge", keyRequest{Key: key}, nil)
+}
+
+// Collect asks the Worker to collect the acknowledged or expired terminal
+// records (RUN-EXE-13), returning how many it collected. Control plane.
+func (c *Client) Collect(ctx context.Context) (int, error) {
+	var response struct {
+		Collected int `json:"collected"`
+	}
+	if err := c.post(ctx, "/collect", struct{}{}, &response); err != nil {
+		return 0, err
+	}
+	return response.Collected, nil
+}
+
 func (c *Client) post(ctx context.Context, path string, in, out any) error {
 	if strings.TrimSpace(c.BaseURL) == "" {
 		return errors.New("executor/http: empty executor URL")
@@ -193,7 +210,7 @@ func (c *Client) post(ctx context.Context, path string, in, out any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		message, _ := io.ReadAll(resp.Body)
-		return &responseError{status: resp.Status, statusCode: resp.StatusCode, body: strings.TrimSpace(string(message))}
+		return &responseError{status: resp.Status, statusCode: resp.StatusCode, body: strings.TrimSpace(string(message)), cause: causeOf(resp.StatusCode)}
 	}
 	if out == nil {
 		return nil
@@ -218,7 +235,26 @@ type responseError struct {
 	status     string
 	statusCode int
 	body       string
+	// cause is the effect-level error the status carries, so errors.Is on
+	// the client side classifies a remote answer like a local one.
+	cause error
 }
+
+// causeOf maps the statuses the Server writes for definitive answers back to
+// their errors: 404 is effect.ErrExecutionNotFound, 410 is
+// effect.ErrOutcomeUnavailable (RUN-EXE-13). Other statuses carry none.
+func causeOf(status int) error {
+	switch status {
+	case stdhttp.StatusNotFound:
+		return effect.ErrExecutionNotFound
+	case stdhttp.StatusGone:
+		return effect.ErrOutcomeUnavailable
+	default:
+		return nil
+	}
+}
+
+func (e *responseError) Unwrap() error { return e.cause }
 
 func (e *responseError) Error() string {
 	if e.body == "" {
@@ -254,6 +290,8 @@ func (s *Server) Handler() stdhttp.Handler {
 	mux.HandleFunc("POST /takeover", s.takeover)
 	mux.HandleFunc("POST /reconcile", s.reconcile)
 	mux.HandleFunc("POST /dispose", s.dispose)
+	mux.HandleFunc("POST /acknowledge", s.acknowledge)
+	mux.HandleFunc("POST /collect", s.collect)
 	mux.HandleFunc("POST /progress", s.progress)
 	return mux
 }
@@ -443,6 +481,29 @@ func (s *Server) dispose(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	w.WriteHeader(stdhttp.StatusAccepted)
 }
 
+func (s *Server) acknowledge(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	var req keyRequest
+	if !s.readJSON(w, r, &req) {
+		return
+	}
+	if err := s.Worker.Acknowledge(r.Context(), req.Key); err != nil {
+		writeError(w, err)
+		return
+	}
+	w.WriteHeader(stdhttp.StatusAccepted)
+}
+
+func (s *Server) collect(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	n, err := s.Worker.Collect(r.Context())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, struct {
+		Collected int `json:"collected"`
+	}{n})
+}
+
 // readJSON decodes the request body within the Server's size bound: a body
 // past it is 413, any other decoding failure 400.
 func (s *Server) readJSON(w stdhttp.ResponseWriter, r *stdhttp.Request, out any) bool {
@@ -474,7 +535,11 @@ func writeError(w stdhttp.ResponseWriter, err error) {
 	if errors.Is(err, effect.ErrExecutionNotFound) {
 		status = stdhttp.StatusNotFound
 	}
-	if errors.Is(err, store.ErrAssignmentConflict) || errors.Is(err, store.ErrLeaseLost) {
+	if errors.Is(err, effect.ErrOutcomeUnavailable) {
+		// A definitive answer: nothing will ever be read for the key.
+		status = stdhttp.StatusGone
+	}
+	if errors.Is(err, store.ErrAssignmentConflict) || errors.Is(err, store.ErrLeaseLost) || errors.Is(err, store.ErrStateConflict) {
 		status = stdhttp.StatusConflict
 	}
 	if errors.Is(err, effect.ErrOutcomeNotReady) {
@@ -485,4 +550,7 @@ func writeError(w stdhttp.ResponseWriter, err error) {
 	stdhttp.Error(w, err.Error(), status)
 }
 
-var _ effect.ExecutionPort = (*Client)(nil)
+var (
+	_ effect.ExecutionPort = (*Client)(nil)
+	_ effect.Acknowledger  = (*Client)(nil)
+)

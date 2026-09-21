@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agent/run/reconcile"
 	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/agent/session/writer"
 )
@@ -20,9 +19,11 @@ type Reconciler interface {
 // Run of the Session is reconciled. Each recovery command is identified by
 // the effect it disposes (RUN-WIR-1), so an owner that repeats the takeover,
 // or a later owner, replays the same commands idempotently. The host calls it
-// once after opening the Writer and before driving any Run. A nil Reconciler
-// disposes every Executing target. It returns the number of accepted recovery
-// commands.
+// once after opening the Writer and before driving any Run. The Reconciler is
+// required: a caller that holds no executor and wants every Executing target
+// disposed says so with reconcile.Reconciler{Abandon: true}; nothing is
+// disposed for want of an executor to ask (RUN-CMT-7). It returns the number
+// of accepted recovery commands.
 func (s *SessionRunStore) RecoverInterrupted(ctx context.Context, w writer.Writer, rec Reconciler) (int, error) {
 	if err := runtime.CheckContext(ctx); err != nil {
 		return 0, err
@@ -31,7 +32,7 @@ func (s *SessionRunStore) RecoverInterrupted(ctx context.Context, w writer.Write
 		return 0, errors.New("runmod: recovery requires the session's writer")
 	}
 	if rec == nil {
-		rec = &reconcile.Reconciler{}
+		return 0, errors.New("runmod: recovery requires a reconciler; reconcile.Reconciler{Abandon: true} disposes without an executor")
 	}
 	sid := w.SessionID()
 	state, _, err := w.Projections().Load(ctx, sid, MachineProjectionID, MachineProjection.Version)

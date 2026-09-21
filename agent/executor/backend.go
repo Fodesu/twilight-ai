@@ -53,14 +53,30 @@ type ExecutionBackend interface {
 	// Whether a tool may be restarted at all is decided before the call,
 	// by the Worker, from the Assignment's Replay policy (RUN-EXE-9).
 	Restart(ctx context.Context, previous string, a effect.Assignment) (ref string, err error)
-	// Attach reports what the Backend finds for Ref: missing, active,
-	// orphaned or terminal.
+	// Attach reports what the Backend finds for Ref. Missing is a proof: the
+	// execution Ref names does not exist and will not start, so the Worker
+	// may replay or settle it. A Backend that cannot confirm either way
+	// answers orphaned, never missing; the Worker then keeps the lease and
+	// asks again (RUN-EXE-3). Active and terminal are observations of a
+	// live or finished execution. A Ref the Backend cannot interpret is an
+	// error, not an observation.
 	Attach(ctx context.Context, ref string) (effect.Attachment, error)
 	Status(ctx context.Context, ref string) (effect.ExecutionStatus, error)
 	// Outcome blocks until Ref has a terminal Outcome or ctx ends; its error
 	// describes the read only.
 	Outcome(ctx context.Context, ref string) (effect.Outcome, error)
 	Cancel(ctx context.Context, ref string) error
+}
+
+// Colocated is the optional declaration of a Backend whose executions live
+// and die with the process running the Worker (the in-process LocalExecutor).
+// A Worker over a memory record store proves the absence of an execution
+// only when every Backend declares it: a record the store lost with the
+// process then cannot name an execution that survived it (RUN-EXE-3). A
+// Backend that does not implement it, or answers false, reaches executions
+// the process does not own.
+type Colocated interface {
+	Colocated() bool
 }
 
 // Route hands the Assignments Match accepts to one provider's Backend. The
@@ -124,10 +140,12 @@ func (b portBackend) Restart(_ context.Context, previous string, _ effect.Assign
 	return previous, nil
 }
 
+// Attach forwards to the Port by key. A Ref that is not a key is an error:
+// the adapter cannot prove anything about an execution it cannot name.
 func (b portBackend) Attach(ctx context.Context, ref string) (effect.Attachment, error) {
 	key, err := b.key(ref)
 	if err != nil {
-		return effect.Attachment{State: effect.AttachmentMissing, Execution: effect.ExecutionNotFound}, nil
+		return effect.Attachment{}, err
 	}
 	return b.port.Attach(ctx, key)
 }

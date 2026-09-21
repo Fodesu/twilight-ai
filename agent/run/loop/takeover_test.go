@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	. "github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/reconcile"
 	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/sdk"
 )
@@ -45,11 +46,11 @@ func TestTakeoverDisposesExecutingCallAndFencesOldOwner(t *testing.T) {
 
 	// The old owner is presumed dead; a new owner opens with Takeover.
 	stack.open(t)
-	n, err := stack.runtime.RecoverInterrupted(context.Background(), stack.writer(t), nil)
+	n, err := stack.runtime.RecoverInterrupted(context.Background(), stack.writer(t), &reconcile.Reconciler{Abandon: true})
 	if err != nil || n != 1 {
 		t.Fatalf("RecoverInterrupted = %d %v, want 1", n, err)
 	}
-	again, err := stack.runtime.RecoverInterrupted(context.Background(), stack.writer(t), nil)
+	again, err := stack.runtime.RecoverInterrupted(context.Background(), stack.writer(t), &reconcile.Reconciler{Abandon: true})
 	if err != nil || again != 0 {
 		t.Fatalf("second RecoverInterrupted = %d %v, want 0", again, err)
 	}

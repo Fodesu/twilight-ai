@@ -20,12 +20,13 @@ import (
 // recordingExecutor captures Assignments instead of executing them, so a test
 // can observe the Loop's dispatch and hand Outcomes back at will.
 type recordingExecutor struct {
-	mu          sync.Mutex
-	dispatched  []Assignment
-	outcomes    map[AssignmentKey]chan Outcome
-	attached    []Assignment
-	attachReply bool
-	cancelled   []AssignmentKey
+	mu           sync.Mutex
+	dispatched   []Assignment
+	outcomes     map[AssignmentKey]chan Outcome
+	attached     []Assignment
+	attachReply  bool
+	cancelled    []AssignmentKey
+	acknowledged []AssignmentKey
 }
 
 func newRecordingExecutor() *recordingExecutor {
@@ -81,6 +82,13 @@ func (e *recordingExecutor) GetOutcome(ctx context.Context, key AssignmentKey) (
 func (e *recordingExecutor) Cancel(_ context.Context, key AssignmentKey) error {
 	e.mu.Lock()
 	e.cancelled = append(e.cancelled, key)
+	e.mu.Unlock()
+	return nil
+}
+
+func (e *recordingExecutor) Acknowledge(_ context.Context, key AssignmentKey) error {
+	e.mu.Lock()
+	e.acknowledged = append(e.acknowledged, key)
 	e.mu.Unlock()
 	return nil
 }
@@ -228,6 +236,14 @@ func TestAdvanceDispatchesAndDeliverSettles(t *testing.T) {
 	if err != nil || delivered.Disposition != LoopFinished || delivered.Result == nil || delivered.Result.Status != RunCompleted {
 		t.Fatalf("deliver = %+v %v", delivered, err)
 	}
+	// The settlement is a fact: the executor is told it may collect the
+	// effect's record (RUN-EXE-13).
+	exec.mu.Lock()
+	acked := append([]AssignmentKey(nil), exec.acknowledged...)
+	exec.mu.Unlock()
+	if len(acked) != 1 || acked[0] != a.Key() {
+		t.Fatalf("acknowledged = %+v, want %+v", acked, a.Key())
+	}
 }
 
 type failingOutcomeReader struct {
@@ -287,7 +303,7 @@ func TestDeliverDropsStaleOutcome(t *testing.T) {
 	}
 	key := exec.last().Key()
 	// The new owner disposes the attempt (no executor to reattach).
-	if n, err := rt.RecoverInterrupted(ctx, w, nil); err != nil || n != 1 {
+	if n, err := rt.RecoverInterrupted(ctx, w, &reconcile.Reconciler{Abandon: true}); err != nil || n != 1 {
 		t.Fatalf("RecoverInterrupted = %d %v", n, err)
 	}
 	before := len(recordFacts(t, rt, "run-1"))

@@ -13,6 +13,7 @@ import (
 	. "github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/model/sdkconv"
 	"github.com/felinics/twilight/agent/run/plan"
+	"github.com/felinics/twilight/agent/run/reconcile"
 	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/agent/run/schema"
 	runmod "github.com/felinics/twilight/agent/session/run"
@@ -396,7 +397,7 @@ func TestLoopReplaysStartAfterTwoLostResponses(t *testing.T) {
 	}
 	// The owner's takeover disposition withdraws the orphaned step; the next
 	// Run plans again and calls the model exactly once (RUN-CMT-7).
-	if n, err := rt.RecoverInterrupted(context.Background(), w, nil); err != nil || n != 1 {
+	if n, err := rt.RecoverInterrupted(context.Background(), w, &reconcile.Reconciler{Abandon: true}); err != nil || n != 1 {
 		t.Fatalf("RecoverInterrupted = %d %v", n, err)
 	}
 	rt.loseModelStart = false // the transport is healthy again

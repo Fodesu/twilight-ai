@@ -69,6 +69,16 @@ type Record struct {
 	FencingEpoch        uint64                    `json:"fencingEpoch,omitempty"`
 	LeaseUntilUnixMilli int64                     `json:"leaseUntilUnixMilli,omitempty"`
 	Outcome             *protocol.OutcomeEnvelope `json:"outcome,omitempty"`
+	// SettledAtUnixMilli is when the record became terminal; the Worker's
+	// time-based collection counts from it (RUN-EXE-13).
+	SettledAtUnixMilli int64 `json:"settledAtUnixMilli,omitempty"`
+	// AcknowledgedAtUnixMilli is when the Owner reported the settlement of
+	// this Outcome as a Session fact (effect.Acknowledger); zero until then.
+	AcknowledgedAtUnixMilli int64 `json:"acknowledgedAtUnixMilli,omitempty"`
+	// Collected marks a terminal record whose payload and Outcome were
+	// collected: the key, digest, state and ExecutionRef remain, so the
+	// acceptance of the key is never forgotten while the record exists.
+	Collected bool `json:"collected,omitempty"`
 }
 
 type Store interface {
@@ -94,14 +104,17 @@ type MemoryStore struct {
 
 type MemoryStoreOptions struct {
 	Now func() time.Time
-	// RetainTerminal bounds the terminal records kept for idempotent reads
-	// (RUN-EXE-3); zero selects DefaultRetainTerminal. Records still executing
-	// are never dropped. A dropped record reads as missing, and a Dispatch of
-	// its key is a new execution.
+	// RetainTerminal bounds the collected records (RUN-EXE-13) kept as
+	// tombstones; zero selects DefaultRetainTerminal. Records still executing
+	// or not yet collected are never dropped: an Outcome nobody has
+	// acknowledged stays readable, and a key whose acceptance is still
+	// needed stays known. Dropping the oldest tombstones is this test
+	// double's concession to memory; a dropped one reads as missing under a
+	// Colocated Worker (RUN-EXE-3). A durable store never drops.
 	RetainTerminal int
 }
 
-// DefaultRetainTerminal is the MemoryStore's terminal-record bound.
+// DefaultRetainTerminal is the MemoryStore's tombstone bound.
 const DefaultRetainTerminal = 1024
 
 // Durable reports that records die with the process: a Worker over this
@@ -120,11 +133,11 @@ func NewMemoryStore(options ...MemoryStoreOptions) *MemoryStore {
 	return &MemoryStore{records: make(map[effect.AssignmentKey]Record), now: now, retain: retain}
 }
 
-// noteLocked records a write: a record that became terminal joins the
-// eviction order and the oldest terminal records beyond the bound are
+// noteLocked records a write: a record that became collected joins the
+// eviction order and the oldest collected records beyond the bound are
 // dropped. s.mu must be held.
-func (s *MemoryStore) noteLocked(key effect.AssignmentKey, was, now effect.ExecutionStatus) {
-	if now.Terminal() && !was.Terminal() {
+func (s *MemoryStore) noteLocked(key effect.AssignmentKey, wasCollected, nowCollected bool) {
+	if nowCollected && !wasCollected {
 		s.terminal = append(s.terminal, key)
 	}
 	for len(s.terminal) > s.retain {
@@ -161,7 +174,7 @@ func (s *MemoryStore) Put(_ context.Context, record Record) error { //nolint:goc
 		return ErrAssignmentConflict
 	}
 	s.records[record.Assignment.Key()] = record
-	s.noteLocked(record.Assignment.Key(), old.State, record.State)
+	s.noteLocked(record.Assignment.Key(), old.Collected, record.Collected)
 	return nil
 }
 
@@ -179,7 +192,7 @@ func (s *MemoryStore) PutOwned(_ context.Context, record Record, owner string, e
 		return ErrLeaseLost
 	}
 	s.records[record.Assignment.Key()] = record
-	s.noteLocked(record.Assignment.Key(), old.State, record.State)
+	s.noteLocked(record.Assignment.Key(), old.Collected, record.Collected)
 	return nil
 }
 

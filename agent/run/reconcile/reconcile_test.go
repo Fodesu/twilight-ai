@@ -85,14 +85,23 @@ func TestPlanVerdicts(t *testing.T) {
 	if _, err := (&Reconciler{Executions: &fakePort{state: "weird"}}).Plan(context.Background(), "s", executingModel("c1")); err == nil {
 		t.Fatal("unknown attachment state accepted")
 	}
-	// No executor: every target is missing and disposed; a target without an
-	// effect is disposed without asking.
-	decisions, err := (&Reconciler{}).Plan(context.Background(), "s", executingModel("c1"))
-	if err != nil || len(decisions) != 1 || decisions[0].Verdict != Dispose || decisions[0].Recovery == nil {
-		t.Fatalf("plan without executor = %+v %v", decisions, err)
+	// No executor to ask proves nothing: an error, not a disposal. Only an
+	// explicit Abandon disposes without asking, and it does so even with an
+	// executor present.
+	if _, err := (&Reconciler{}).Plan(context.Background(), "s", executingModel("c1")); !errors.Is(err, ErrNoExecutionPort) {
+		t.Fatalf("plan without executor = %v, want ErrNoExecutionPort", err)
+	}
+	port := &fakePort{state: effect.AttachmentActive}
+	decisions, err := (&Reconciler{Abandon: true, Executions: port}).Plan(context.Background(), "s", executingModel("c1"))
+	if err != nil || len(decisions) != 1 || decisions[0].Verdict != Dispose || decisions[0].Recovery == nil || len(port.asked) != 0 {
+		t.Fatalf("plan with Abandon = %+v %v asked=%d", decisions, err, len(port.asked))
 	}
 	if _, ok := decisions[0].Recovery.Command.(run.RecoverModelExecution); !ok {
 		t.Fatalf("model disposal = %T", decisions[0].Recovery.Command)
+	}
+	// A target whose start fact recorded no effect cannot be asked about.
+	if _, err := (&Reconciler{Executions: port}).Plan(context.Background(), "s", executingModel("")); !errors.Is(err, ErrTargetWithoutEffect) {
+		t.Fatalf("plan of a target without effect = %v, want ErrTargetWithoutEffect", err)
 	}
 }
 

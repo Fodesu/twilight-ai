@@ -49,11 +49,29 @@ type Decision struct {
 	Recovery *plan.RecoveryDisposition
 }
 
+// ErrNoExecutionPort reports a Plan over Executing targets with no executor
+// to ask and no Abandon: an executor that cannot be reached proves nothing
+// about the executions it may hold, so the targets cannot be disposed.
+var ErrNoExecutionPort = errors.New("reconcile: executing targets but no execution port to ask; set Abandon to dispose without proof")
+
+// ErrTargetWithoutEffect reports an Executing target whose start fact
+// recorded no EffectID: the executor cannot be asked about it and the
+// machine state is inconsistent (RUN-WIR-1).
+var ErrTargetWithoutEffect = errors.New("reconcile: executing target records no effect")
+
 // Reconciler is the recovery control plane of one owner over a Scope.
 type Reconciler struct {
-	// Executions is the execution store's port. Nil means no executor is
-	// reachable: every target is missing and disposed.
+	// Executions is the execution store's port, asked once per Executing
+	// target. Nil with Abandon unset is an error whenever a target exists:
+	// "no executor to ask" is not "no execution" (RUN-CMT-7).
 	Executions effect.ExecutionPort
+	// Abandon disposes every Executing target without asking an executor. It
+	// is the caller's explicit statement that no executor holds anything for
+	// this Scope (the executions died with the process that ran them, or the
+	// deployment has decided to give them up); it is never inferred from an
+	// unreachable or absent Executions. Abandon takes precedence over
+	// Executions.
+	Abandon bool
 	// Deliver receives the Outcome of every kept target once it can be read;
 	// the caller settles it through the Loop. Nil means kept targets stay
 	// Executing until something else delivers their Outcome.
@@ -144,8 +162,14 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtim
 	out := make([]Decision, 0, len(targets))
 	for _, t := range targets {
 		t.Schema = snapshot.SchemaVersion
+		if t.Effect == "" {
+			return nil, fmt.Errorf("%w: run %s step %s call %q", ErrTargetWithoutEffect, t.RunID, t.StepID, t.CallID)
+		}
 		d := Decision{Target: t, Observed: effect.AttachmentMissing, Verdict: Dispose}
-		if r.Executions != nil && t.Effect != "" {
+		if !r.Abandon {
+			if r.Executions == nil {
+				return nil, ErrNoExecutionPort
+			}
 			assignment := AssignmentFromTarget(scope, t)
 			attachment, err := r.Executions.Attach(ctx, assignment.Key())
 			if err != nil {

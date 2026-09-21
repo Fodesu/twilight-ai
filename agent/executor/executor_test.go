@@ -99,6 +99,18 @@ type refBackend struct {
 	started  int
 	restarts int
 	startRef string
+	// colocated is the executor.Colocated declaration under test.
+	colocated bool
+	// attach, when set, scripts Attach's answer instead of the Port's.
+	attach effect.AttachmentState
+}
+
+func (b *refBackend) Colocated() bool { return b.colocated }
+
+func (b *refBackend) setAttach(state effect.AttachmentState) {
+	b.mu.Lock()
+	b.attach = state
+	b.mu.Unlock()
 }
 
 func (b *refBackend) Prepare(context.Context, effect.Assignment) (string, error) {
@@ -124,6 +136,12 @@ func (b *refBackend) Restart(context.Context, string, effect.Assignment) (string
 }
 
 func (b *refBackend) Attach(ctx context.Context, ref string) (effect.Attachment, error) {
+	b.mu.Lock()
+	scripted := b.attach
+	b.mu.Unlock()
+	if scripted != "" {
+		return effect.Attachment{State: scripted}, nil
+	}
 	return b.testBackend.Attach(ctx, b.lastKey())
 }
 
@@ -818,7 +836,9 @@ func testToolAssignment() effect.Assignment {
 
 // Dispose is the control plane's give-up path: the record settles Unknown
 // regardless of owner or lease, so the Owner's next read disposes the Run
-// target; terminal records and missing keys are not errors.
+// target; a terminal record is left alone and a key with no record gets a
+// terminal Unknown record, so the disposal is readable and a later Dispatch
+// of the key starts nothing (RUN-EXE-3).
 func TestWorkerDisposeSettlesUnknown(t *testing.T) {
 	completedEnv := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Unknown: false}
 	rows := []struct {
@@ -830,7 +850,7 @@ func TestWorkerDisposeSettlesUnknown(t *testing.T) {
 		{"live foreign owner", &store.Record{State: effect.ExecutionDispatching, Owner: "live-worker", FencingEpoch: 3,
 			LeaseUntilUnixMilli: time.Now().Add(time.Hour).UnixMilli()}, nil},
 		{"already terminal", &store.Record{State: effect.ExecutionCompleted, Owner: "dead-worker", FencingEpoch: 3, LeaseUntilUnixMilli: 1, Outcome: &completedEnv}, nil},
-		{"missing record", nil, effect.ErrExecutionNotFound},
+		{"missing record", nil, nil},
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
@@ -857,12 +877,21 @@ func TestWorkerDisposeSettlesUnknown(t *testing.T) {
 			if !errors.Is(err, row.wantErr) {
 				t.Fatalf("dispose = %v, want %v", err, row.wantErr)
 			}
-			if row.record == nil {
-				return
+			got, ok, err := records.Get(ctx, key)
+			if err != nil || !ok {
+				t.Fatalf("record after dispose: ok=%v err=%v", ok, err)
 			}
-			got, _, err := records.Get(ctx, key)
-			if err != nil {
-				t.Fatal(err)
+			if row.record == nil {
+				if got.State != effect.ExecutionUnknown || got.Outcome == nil || !got.Outcome.Unknown || got.Assignment.Key() != key {
+					t.Fatalf("tombstone = %+v", got)
+				}
+				if out, err := worker.GetOutcome(ctx, key); err != nil || out.Key != key {
+					t.Fatalf("tombstone outcome = %+v %v", out, err)
+				}
+				if err := worker.Dispatch(ctx, a); !errors.Is(err, store.ErrAssignmentConflict) {
+					t.Fatalf("dispatch over tombstone = %v, want assignment conflict", err)
+				}
+				return
 			}
 			if row.record.State == effect.ExecutionCompleted {
 				if got.State != effect.ExecutionCompleted || got.Outcome == nil || got.Outcome.Unknown {
@@ -1030,6 +1059,25 @@ func TestHTTPControlEndpoints(t *testing.T) {
 	if _, isUnknown := out.Result.(effect.Unknown); err != nil || !isUnknown {
 		t.Fatalf("disposed outcome = %+v, %v", out, err)
 	}
+	// The settled record is acknowledged and collected over the wire; the
+	// collected Outcome reads as a definitive, classifiable error.
+	if err := client.Acknowledge(ctx, a.Key()); err == nil || !strings.Contains(err.Error(), "409") {
+		t.Fatalf("acknowledge of an executing record = %v, want 409", err)
+	}
+	if err := client.Acknowledge(ctx, b.Key()); err != nil {
+		t.Fatalf("acknowledge = %v", err)
+	}
+	if n, err := client.Collect(ctx); err != nil || n != 1 {
+		t.Fatalf("collect = %d %v, want 1", n, err)
+	}
+	if _, err := client.GetOutcome(ctx, b.Key()); !errors.Is(err, effect.ErrOutcomeUnavailable) {
+		t.Fatalf("collected outcome over http = %v, want ErrOutcomeUnavailable", err)
+	}
+	c := testAssignment()
+	c.Effect = "effect-3"
+	if _, err := client.GetOutcome(ctx, c.Key()); !errors.Is(err, effect.ErrExecutionNotFound) {
+		t.Fatalf("unknown key over http = %v, want ErrExecutionNotFound", err)
+	}
 }
 
 func TestFileStoreListSkipsCorruptRecords(t *testing.T) {
@@ -1052,6 +1100,275 @@ func TestFileStoreListSkipsCorruptRecords(t *testing.T) {
 	}
 	if len(records) != 1 {
 		t.Fatalf("list = %d records, want 1 (corrupt skipped)", len(records))
+	}
+}
+
+// A key with no record is missing only when its absence proves that no
+// execution exists: the store is durable (the record precedes every Start)
+// or every Backend dies with the process. A memory store in front of a
+// Backend that may outlive the process answers orphaned (RUN-EXE-3).
+func TestWorkerAttachWithoutRecord(t *testing.T) {
+	ctx := context.Background()
+	rows := []struct {
+		name      string
+		durable   bool
+		colocated bool
+		want      effect.AttachmentState
+	}{
+		{"memory store, colocated backend", false, true, effect.AttachmentMissing},
+		{"memory store, remote backend", false, false, effect.AttachmentOrphaned},
+		{"durable store, remote backend", true, false, effect.AttachmentMissing},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			var records store.Store = store.NewMemoryStore()
+			if row.durable {
+				fs, err := store.NewFileStore(t.TempDir())
+				if err != nil {
+					t.Fatal(err)
+				}
+				records = fs
+			}
+			backend := &refBackend{testBackend: newTestBackend(), colocated: row.colocated}
+			worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("ref", backend)}, executor.WorkerOptions{ID: "worker-a"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer worker.Close()
+			got, err := worker.Attach(ctx, testAssignment().Key())
+			if err != nil || got.State != row.want || got.Execution != effect.ExecutionNotFound {
+				t.Fatalf("attach without record = %+v %v, want %s", got, err, row.want)
+			}
+		})
+	}
+}
+
+// The Port adapter proves nothing about a Ref it cannot read as a key: that
+// is an error, not a missing execution.
+func TestPortBackendAttachRejectsForeignRef(t *testing.T) {
+	_, err := executor.PortBackend(newTestBackend()).Attach(context.Background(), "not-a-key")
+	if err == nil {
+		t.Fatal("foreign ref answered instead of failing")
+	}
+}
+
+// A takeover whose backend cannot confirm the execution (orphaned) holds the
+// lease and asks again instead of restarting: nothing is re-dispatched until
+// the backend proves the execution missing, and a backend that then observes
+// it hands the Worker the original Outcome (RUN-EXE-3, TRN-DUR-4).
+func TestWorkerTakeoverWaitsForUnconfirmedBackend(t *testing.T) {
+	rows := []struct {
+		name         string
+		assignment   effect.Assignment
+		resolve      effect.AttachmentState
+		wantRestarts int
+		wantState    effect.ExecutionStatus
+	}{
+		{"model, backend later proves missing", testAssignment(), effect.AttachmentMissing, 1, effect.ExecutionCompleted},
+		{"tool, backend later proves missing", testToolAssignment(), effect.AttachmentMissing, 0, effect.ExecutionUnknown},
+		{"model, backend later observes it", testAssignment(), effect.AttachmentActive, 0, effect.ExecutionRunning},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			ctx := context.Background()
+			records := store.NewMemoryStore()
+			a := row.assignment
+			digest, err := a.Digest()
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+				ExecutionRef: store.ExecutionRef{Provider: "ref", Ref: "execution-1"},
+				Owner:        "dead-worker", FencingEpoch: 2, LeaseUntilUnixMilli: 1}
+			if err := records.Put(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+			backend := &refBackend{testBackend: newTestBackend(), attach: effect.AttachmentOrphaned}
+			worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("ref", backend)}, executor.WorkerOptions{ID: "worker-b", LeaseDuration: time.Second})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer worker.Close()
+			if err := worker.Takeover(ctx, a.Key()); err != nil {
+				t.Fatal(err)
+			}
+			// Undecided: the record is held under this Worker's lease, still
+			// Running, and the backend has been neither restarted nor started.
+			held, _, err := records.Get(ctx, a.Key())
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend.mu.Lock()
+			restarts, started := backend.restarts, backend.started
+			backend.mu.Unlock()
+			if held.Owner != "worker-b" || held.State != effect.ExecutionRunning || restarts != 0 || started != 0 {
+				t.Fatalf("held record = %+v, backend restarts=%d started=%d; want the lease held and nothing dispatched", held, restarts, started)
+			}
+			// The holder itself reports what its backend can confirm: nothing
+			// yet, so orphaned; the Reconciler defers and awaits the Outcome.
+			if att, err := worker.Attach(ctx, a.Key()); err != nil || att.State != effect.AttachmentOrphaned || att.Owner != "worker-b" {
+				t.Fatalf("attach while undecided = %+v %v, want orphaned under this Worker's lease", att, err)
+			}
+			backend.setAttach(row.resolve)
+			deadline := time.Now().Add(5 * time.Second)
+			for {
+				got, _, err := records.Get(ctx, a.Key())
+				if err != nil {
+					t.Fatal(err)
+				}
+				backend.mu.Lock()
+				restarts = backend.restarts
+				backend.mu.Unlock()
+				if got.State == row.wantState && restarts == row.wantRestarts && (row.resolve != effect.AttachmentActive || got.Owner == "worker-b") {
+					if row.wantRestarts == 1 && (got.ExecutionRef.Ref != "execution-2" || len(got.Superseded) != 1) {
+						t.Fatalf("restarted record = %+v", got)
+					}
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("record after the backend answered %s = %+v, restarts=%d; want %s/%d", row.resolve, got, restarts, row.wantState, row.wantRestarts)
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		})
+	}
+}
+
+// Acknowledge marks a settled record; Collect strips the payload and Outcome
+// of acknowledged records, and of unacknowledged ones only past CollectAfter,
+// and never touches an execution in flight. A collected record still answers
+// for its key: Attach says terminal, GetOutcome says collected, and a
+// Dispatch of the same key starts nothing (RUN-EXE-13).
+func TestWorkerAcknowledgeAndCollect(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(3_000_000, 0)
+	rows := []struct {
+		name          string
+		state         effect.ExecutionStatus
+		acknowledge   bool
+		collectAfter  time.Duration
+		settledAgo    time.Duration
+		wantCollected bool
+	}{
+		{"acknowledged", effect.ExecutionCompleted, true, 0, time.Minute, true},
+		{"unacknowledged, no fallback", effect.ExecutionCompleted, false, 0, 48 * time.Hour, false},
+		{"unacknowledged within CollectAfter", effect.ExecutionCompleted, false, time.Hour, time.Minute, false},
+		{"unacknowledged past CollectAfter", effect.ExecutionFailed, false, time.Hour, 2 * time.Hour, true},
+		{"executing", effect.ExecutionRunning, false, time.Hour, 2 * time.Hour, false},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			records := store.NewMemoryStore(store.MemoryStoreOptions{Now: func() time.Time { return now }})
+			a := testAssignment()
+			digest, err := a.Digest()
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := store.Record{Assignment: a, AssignmentDigest: digest, State: row.state, ExecutionRef: store.ExecutionRef{Provider: "test", Ref: "job"},
+				Owner: "worker-a", FencingEpoch: 1, LeaseUntilUnixMilli: now.Add(time.Hour).UnixMilli(), SettledAtUnixMilli: now.Add(-row.settledAgo).UnixMilli()}
+			if row.state.Terminal() {
+				env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: a.Key(), AssignmentDigest: digest}
+				r.Outcome = &env
+			}
+			if err := records.Put(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+			backend := newTestBackend()
+			worker, err := executor.NewWorker(ctx, records, routes(backend), executor.WorkerOptions{ID: "worker-a", Clock: func() time.Time { return now }, CollectAfter: row.collectAfter})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer worker.Close()
+			if row.acknowledge {
+				if err := worker.Acknowledge(ctx, a.Key()); err != nil {
+					t.Fatal(err)
+				}
+				if err := worker.Acknowledge(ctx, a.Key()); err != nil {
+					t.Fatalf("repeated acknowledge = %v", err)
+				}
+			}
+			n, err := worker.Collect(ctx)
+			if err != nil || (n == 1) != row.wantCollected {
+				t.Fatalf("collect = %d %v, want collected=%v", n, err, row.wantCollected)
+			}
+			got, _, err := records.Get(ctx, a.Key())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !row.wantCollected {
+				if got.Collected || got.Assignment.Body == nil || (row.state.Terminal() && got.Outcome == nil) {
+					t.Fatalf("record was collected: %+v", got)
+				}
+				return
+			}
+			if !got.Collected || got.Assignment.Body != nil || got.Outcome != nil || got.Assignment.Key() != a.Key() || got.AssignmentDigest != digest || got.State != row.state {
+				t.Fatalf("collected record = %+v", got)
+			}
+			if att, err := worker.Attach(ctx, a.Key()); err != nil || att.State != effect.AttachmentTerminal {
+				t.Fatalf("attach of collected = %+v %v", att, err)
+			}
+			if _, err := worker.GetOutcome(ctx, a.Key()); !errors.Is(err, effect.ErrOutcomeCollected) || !errors.Is(err, effect.ErrOutcomeUnavailable) {
+				t.Fatalf("outcome of collected = %v", err)
+			}
+			if err := worker.Dispatch(ctx, a); err != nil {
+				t.Fatalf("dispatch of collected key = %v", err)
+			}
+			backend.mu.Lock()
+			calls := backend.calls
+			backend.mu.Unlock()
+			if calls != 0 {
+				t.Fatalf("dispatch of a collected key executed %d times", calls)
+			}
+			b := a
+			b.StepID = "another-step"
+			if err := worker.Dispatch(ctx, b); !errors.Is(err, store.ErrAssignmentConflict) {
+				t.Fatalf("dispatch of another assignment under a collected key = %v, want conflict", err)
+			}
+		})
+	}
+	// Acknowledging what is not settled, or not known, is refused.
+	records := store.NewMemoryStore()
+	a := testAssignment()
+	if err := records.Put(ctx, store.Record{Assignment: a, AssignmentDigest: mustDigest(a), State: effect.ExecutionRunning}); err != nil {
+		t.Fatal(err)
+	}
+	worker, err := executor.NewWorker(ctx, records, routes(newTestBackend()), executor.WorkerOptions{ID: "worker-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Close()
+	if err := worker.Acknowledge(ctx, a.Key()); !errors.Is(err, store.ErrStateConflict) {
+		t.Fatalf("acknowledge of a running record = %v, want state conflict", err)
+	}
+	other := a
+	other.Effect = "elsewhere"
+	if err := worker.Acknowledge(ctx, other.Key()); !errors.Is(err, effect.ErrExecutionNotFound) {
+		t.Fatalf("acknowledge of an unknown key = %v, want not found", err)
+	}
+}
+
+// The memory store's bound drops only collected records, oldest first; a
+// terminal record nobody collected stays, however many there are.
+func TestMemoryStoreEvictsOnlyCollected(t *testing.T) {
+	ctx := context.Background()
+	records := store.NewMemoryStore(store.MemoryStoreOptions{RetainTerminal: 1})
+	put := func(effectID run.EffectID, collected bool) effect.AssignmentKey {
+		a := testAssignment()
+		a.Effect = effectID
+		if err := records.Put(ctx, store.Record{Assignment: a, AssignmentDigest: mustDigest(a), State: effect.ExecutionCompleted, Collected: collected}); err != nil {
+			t.Fatal(err)
+		}
+		return a.Key()
+	}
+	kept1, kept2 := put("kept-1", false), put("kept-2", false)
+	dropped, retained := put("collected-1", true), put("collected-2", true)
+	for _, tc := range []struct {
+		key  effect.AssignmentKey
+		want bool
+	}{{kept1, true}, {kept2, true}, {dropped, false}, {retained, true}} {
+		if _, ok, err := records.Get(ctx, tc.key); err != nil || ok != tc.want {
+			t.Fatalf("%s present=%v err=%v, want %v", tc.key.Effect, ok, err, tc.want)
+		}
 	}
 }
 

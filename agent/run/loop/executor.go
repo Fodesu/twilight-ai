@@ -45,6 +45,10 @@ type Attachment = effect.Attachment
 
 type Executor = effect.ExecutionPort
 
+// Acknowledger is effect.Acknowledger: the optional retention hint an
+// Executor may implement (RUN-EXE-13).
+type Acknowledger = effect.Acknowledger
+
 const (
 	AssignmentModel          = effect.AssignmentModel
 	AssignmentTool           = effect.AssignmentTool
@@ -341,8 +345,15 @@ func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) err
 	return nil
 }
 
+// Colocated declares that every execution of this backend lives in the
+// process running it: a Ref this process does not hold names no execution
+// anywhere, so its Attach answer missing is a proof (executor.Colocated).
+func (*LocalExecutor) Colocated() bool { return true }
+
 // Attach answers for refs this process still runs or has completed. It only
-// observes an existing entry and never starts a second effect.
+// observes an existing entry and never starts a second effect; an unknown
+// Ref is missing, which is a proof here because executions die with the
+// process (Colocated).
 func (e *LocalExecutor) Attach(_ context.Context, ref string) (effect.Attachment, error) {
 	e.mu.Lock()
 	entry, ok := e.inflight[ref]

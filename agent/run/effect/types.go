@@ -338,6 +338,11 @@ var (
 	// has no backend for, a record it cannot decode): a definitive answer, as
 	// opposed to a transport failure that a later read may not see.
 	ErrOutcomeUnavailable = errors.New("agent: effect: outcome unavailable")
+	// ErrOutcomeCollected means the executor still holds the key as an
+	// accepted, settled execution but has collected its Outcome after the
+	// Owner acknowledged the settlement (RUN-EXE-13): definitive, like
+	// ErrOutcomeUnavailable, which it wraps.
+	ErrOutcomeCollected = fmt.Errorf("agent: effect: outcome collected after acknowledgement: %w", ErrOutcomeUnavailable)
 	// ErrDispatchUnknown means the dispatch response was lost after the
 	// request may have crossed the effect boundary. It must not trigger a
 	// compensating re-dispatch or a RecoverModelExecution automatically.
@@ -375,10 +380,14 @@ func (s AttachmentState) Valid() bool {
 // ExecutionStatus.Terminal for the latter.
 func (s AttachmentState) Terminal() bool { return s == AttachmentTerminal }
 
-// Attachment is the result of an attach/inspection request. Orphaned means a
-// durable execution record exists, but this Worker does not currently own a
-// live backend execution. The control plane must decide whether to reconcile,
-// take over, or dispose it; it must not treat it as proof of no effect.
+// Attachment is the result of an attach/inspection request. Missing is a
+// proof: the executor knows that no execution exists for the key and none
+// will start, so the Run may dispose the effect. Orphaned is the absence of
+// that proof: a record exists without a live owner, or the executor cannot
+// tell whether an execution survived (a record store that may have lost the
+// record, a backend that cannot confirm). The control plane must decide
+// whether to reconcile, take over, or dispose it; it must not be treated as
+// proof of no effect, because the effect may still happen or have happened.
 type Attachment struct {
 	State               AttachmentState `json:"state"`
 	Execution           ExecutionStatus `json:"execution"`
@@ -386,6 +395,16 @@ type Attachment struct {
 	FencingEpoch        uint64          `json:"fencingEpoch,omitempty"`
 	LeaseUntilUnixMilli int64           `json:"leaseUntilUnixMilli,omitempty"`
 	BackendAttached     bool            `json:"backendAttached,omitempty"`
+}
+
+// Acknowledger is the optional retention hint of an ExecutionPort
+// (RUN-EXE-13): the Owner reports that the Outcome of key is settled as a
+// Session fact and will not be read again. The executor may then collect
+// the record's payload and Outcome, but it keeps the key as accepted: a
+// late Dispatch of the same key starts nothing. A port without it relies on
+// the executor's time-based collection.
+type Acknowledger interface {
+	Acknowledge(context.Context, AssignmentKey) error
 }
 
 // ExecutionPort is the Agent Core effect port: the process-independent
