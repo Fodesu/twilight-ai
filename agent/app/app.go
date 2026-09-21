@@ -99,7 +99,7 @@ type Config struct {
 	// (RUN-LOP-9). The application's resource layer owns it; nil gives every
 	// effect no target (APP-TGT-1).
 	TargetResolver loop.TargetResolver
-	// Modules are application modules registered after the first-party three
+	// Modules are application modules registered after the first-party four
 	// (EXT-APP).
 	Modules []extension.ModuleDescriptor
 	// Observers are notified of every applied group besides the event stream.

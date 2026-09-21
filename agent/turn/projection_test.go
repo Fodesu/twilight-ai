@@ -1,6 +1,7 @@
 package turn
 
 import (
+	attemptmod "github.com/felinics/twilight/agent/session/attempt"
 	"strings"
 	"testing"
 
@@ -9,13 +10,13 @@ import (
 	runmod "github.com/felinics/twilight/agent/session/run"
 )
 
-// TRN-PRJ-1: run_ended settles the attempt attempt_started registered. A
+// TRN-PRJ-1: run_ended settles the attempt attempt/started registered. A
 // completed Run completes the Turn, any other end leaves it attempt_failed; a
 // Run no Turn of the Session owns is ignored; a second end of one attempt is
 // a fold error rather than a silent no-op.
 func TestSurfaceSettlementNamesAnAttempt(t *testing.T) {
 	started := StartedPayload{TurnID: "t1"}
-	attempt := AttemptStartedPayload{TurnID: "t1", RunID: "r1", Attempt: 1}
+	attempt := attemptmod.StartedPayload{TurnID: "t1", RunID: "r1", Attempt: 1}
 	ended := func(runID run.RunID, end run.RunEnd) runmod.Event {
 		return runmod.Event{RunID: runID, Fact: run.RunEnded{End: end}}
 	}

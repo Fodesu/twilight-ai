@@ -12,21 +12,22 @@ agent/artifact  ←  Session Module Framework  →  agent/session
                           first-party modules: chatlog、turn、run
 ```
 
-Framework 负责：typed event codec 与按事件类型的 payload 版本；Binding admission；进程内的写入串行、幂等重放与 claim 顺序（`Writer`）；pure projection 与投影缓存。first-party Source 为 `twilight`，Module 为 `chatlog`、`turn`、`run`。
+Framework 负责：typed event codec 与按事件类型的 payload 版本；Binding admission；进程内的写入串行、幂等重放与 claim 顺序（`Writer`）；pure projection 与投影缓存。first-party Source 为 `twilight`，Module 为 `chatlog`、`run`、`attempt`、`turn`。
 
 **EXT-SCP-1** 一个 Session 在一个进程内恰有一个 `Writer`，它持有 kernel 的 `session.Handle`（所有权句柄）。全部写入经 `Writer.Commit`：Run 的 Runtime、Turn 的 Coordinator、接管恢复都是它的调用方。模块读取投影经 `ProjectionReader`。
 
-**EXT-SCP-2** 模块集合由组装代码在启动时传入 `BuildRegistry`，运行期不变；本层不 import 任何模块包。first-party 恰为三个 module；application module 与它们同构、经装配开口注册，见第 8 节。
+**EXT-SCP-2** 模块集合由组装代码在启动时传入 `BuildRegistry`，运行期不变；本层不 import 任何模块包。first-party 恰为四个 module（`chatlog`、`run`、`attempt`、`turn`）；application module 与它们同构、经装配开口注册，见第 8 节。
 
 **EXT-SCP-4** 本层的两个包平级：`agent/session/writer` 依赖 `agent/session/extension`，反向不得。依赖由 import 表达，不由目录嵌套表达——一个 import `extension` 的包是它的兄弟而不是子包，first-party module（`agent/session/chatlog`、`agent/session/run`）与 adapter（`agent/session/filestore`）同理。声明（event、module、projection）与 `Registry` 同居前者所依赖的那一层，是因为 `ModuleDescriptor` 声明 `ProjectionDefinition`、而 `ProjectionDefinition.Apply` 消费带模块身份的 `DecodedEvent`——两者互相引用，只有同包才不成环。
 
-**EXT-SCP-3** 模块间依赖单向、固定，以 `Requires` 声明并由 Registry 校验（EXT-REG-4）。v1 三个模块的声明：
+**EXT-SCP-3** 模块间依赖单向、固定，以 `Requires` 声明并由 Registry 校验（EXT-REG-4）。v1 四个模块的声明：
 
 | 模块 | Requires |
 |---|---|
 | `chatlog` | `run`（`run_created`、`model_step_completed`、`tool_step_opened`、`tool_call_completed`、`tool_call_answered`、`tool_call_failed` v1）：assistant 与 tool_result 条目由这些事实折叠 |
 | `run` | 无 |
-| `turn` | `run`（`twilight/run/run_ended` v1）、`chatlog`（`input_delivered` v1） |
+| `attempt` | 无 |
+| `turn` | `attempt`（`twilight/attempt/started`）、`run`（`twilight/run/run_ended`）、`chatlog`（`input_delivered`） |
 
 ## 2. Registry 与版本
 
@@ -326,7 +327,7 @@ v1 conformance 必须验证：
 
 Application 在自己的代码里定义 `ModuleDescriptor`（自有 Source 下的事件类型、codec、投影），经装配开口（`authority.Ports.Modules`，经 `app.Config.Modules` 传入）与 first-party 模块一起传入 `BuildRegistry`。app module 与 first-party 模块同构、同权：同一 Registry、同一 `Writer.Commit` 提交路径、同一投影框架。
 
-**EXT-APP-1（承诺面）** app module 的 `Requires` 可依赖 first-party 模块的事件；三个 first-party 模块各事件解码后的当前类型即稳定消费面：first-party 为某事件发布新版本时，其 codec 把新旧版本都 upcast 到该类型，app module 不需要重新注册任何东西（EXT-REG-2）；app module 自己的事件同样按自己声明的版本编码，与 first-party 的版本无关。
+**EXT-APP-1（承诺面）** app module 的 `Requires` 可依赖 first-party 模块的事件；四个 first-party 模块各事件解码后的当前类型即稳定消费面：first-party 为某事件发布新版本时，其 codec 把新旧版本都 upcast 到该类型，app module 不需要重新注册任何东西（EXT-REG-2）；app module 自己的事件同样按自己声明的版本编码，与 first-party 的版本无关。
 
 **EXT-APP-2（隔离）** EXT-PRJ-2 的范围规则双向保护：first-party 投影对 app 模块（范围外）的事件一律跳过；app 投影对未列入其 `Requires` 的模块同样跳过。app module 未注册时，其历史事件对所有投影是范围外事件，按 EXT-REG-3 保留原始 payload、不参与折叠。
 

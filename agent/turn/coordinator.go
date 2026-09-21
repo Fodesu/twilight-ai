@@ -10,6 +10,7 @@ import (
 	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/agent/run/wire"
 	"github.com/felinics/twilight/agent/session"
+	attemptmod "github.com/felinics/twilight/agent/session/attempt"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
 	runmod "github.com/felinics/twilight/agent/session/run"
@@ -212,10 +213,11 @@ func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req StartReque
 			if _, active := surface.Active(); active {
 				return nil, fmt.Errorf("%w: session already has an active turn", ErrConflict)
 			}
-			return turnBatch(turnID, now,
-				writer.TypedEvent{Type: TypeStarted, Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, Preset: req.Preset}},
-				writer.TypedEvent{Type: TypeAttemptStarted, Value: AttemptStartedPayload{TurnID: turnID, RunID: runID, Attempt: 1}},
-			), nil
+			// The Turn's own fact and the attempt module's binding of this
+			// Turn to its first Run land in one commit (ATT-2).
+			return append(turnBatch(turnID, now,
+				writer.TypedEvent{Type: TypeStarted, Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, Preset: req.Preset}}),
+				attemptmod.Started(attemptmod.TurnID(turnID), runID, 1, now)), nil
 		}),
 		chatlog.DeliverInputs(chatlog.TurnID(turnID), req.Inputs),
 		runmod.CreateRun(newRun, req.Inputs),
@@ -342,8 +344,7 @@ func (c *Coordinator) Retry(ctx context.Context, w writer.Writer, req RetryReque
 			if len(cur.InputIDs) != len(inputs) {
 				return nil, fmt.Errorf("%w: inputs of turn %s changed during retry", ErrConflict, turnID)
 			}
-			return turnBatch(turnID, now, writer.TypedEvent{Type: TypeAttemptStarted,
-				Value: AttemptStartedPayload{TurnID: turnID, RunID: runID, Attempt: attempt}}), nil
+			return []writer.TypedBatch{attemptmod.Started(attemptmod.TurnID(turnID), runID, attempt, now)}, nil
 		}),
 		runmod.CreateRun(newRun, inputs),
 	}}

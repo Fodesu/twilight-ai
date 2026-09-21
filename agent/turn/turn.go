@@ -1,7 +1,8 @@
 // Package turn is the first-party Turn module (docs/design/agent-turn.md):
-// the logical turn, its Run attempts, mid-turn input delivery and
-// settlement. Attempt outcomes are projected from the Run's own run_ended
-// fact; the module writes no derived copy of them.
+// the logical turn, mid-turn input delivery and settlement. Which Run
+// executes which attempt of a Turn is the attempt module's fact
+// (agent/session/attempt); attempt outcomes are the Run's own run_ended
+// fact. The surface joins the three and writes no derived copy of them.
 package turn
 
 import (
@@ -11,6 +12,7 @@ import (
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/attempt"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
 	runmod "github.com/felinics/twilight/agent/session/run"
@@ -53,29 +55,20 @@ const (
 	SettlementStopped   Settlement = "stopped"
 )
 
-// EventTypes (TRN-EVT-1): the Turn domain's own decisions. An attempt's end
-// is not among them: the surface folds it from twilight/run/run_ended.
+// EventTypes (TRN-EVT-1): the Turn domain's own decisions. Neither the
+// binding of an attempt to its Run (twilight/attempt/started) nor an
+// attempt's end (twilight/run/run_ended) is among them: the surface folds
+// both from the modules that own them.
 const (
 	TypeStarted    session.EventType = "twilight/turn/started"
 	TypeFailed     session.EventType = "twilight/turn/failed"
 	TypeSuperseded session.EventType = "twilight/turn/superseded"
-	// TypeAttemptStarted registers one Run attempt of a Turn on the session
-	// stream: the Turn's decision to run, carrying the identities the
-	// Coordinator needs without the machine projection (TRN-SCP-1).
-	TypeAttemptStarted session.EventType = "twilight/turn/attempt_started"
 )
 
 type StartedPayload struct {
 	TurnID   TurnID            `json:"turnId"`
 	InputIDs []chatlog.InputID `json:"inputIds,omitempty"`
 	Preset   PresetRef         `json:"preset"`
-}
-
-// AttemptStartedPayload registers one attempt in the Turn's stream.
-type AttemptStartedPayload struct {
-	TurnID  TurnID    `json:"turnId"`
-	RunID   run.RunID `json:"runId"`
-	Attempt uint32    `json:"attempt"`
 }
 
 type FailedPayload struct {
@@ -141,13 +134,14 @@ func def[T any](typ session.EventType, check func(*T) error) extension.EventDefi
 }
 
 // Module declares the turn events, the surface projection and the Requires of
-// TRN-SCP-1: run (run_ended v1, which settles attempts) and chatlog
-// (input_delivered v1).
+// TRN-SCP-1: attempt (started, which binds a Run to a Turn), run (run_ended,
+// which settles the attempt) and chatlog (input_delivered).
 var Module = extension.ModuleDescriptor{
 	Source:  extension.SourceTwilight,
 	ID:      ModuleID,
 	Streams: []extension.StreamDefinition{streamDefinition},
 	Requires: []extension.ModuleRequirement{
+		{Source: extension.SourceTwilight, Module: attempt.ModuleID, Events: []session.EventType{attempt.TypeStarted}},
 		{Source: extension.SourceTwilight, Module: runmod.ModuleID, Events: []session.EventType{runmod.Prefix + "run_ended"}},
 		{Source: extension.SourceTwilight, Module: chatlog.ModuleID, Events: []session.EventType{chatlog.TypeInputDelivered}},
 	},
@@ -167,12 +161,6 @@ var Module = extension.ModuleDescriptor{
 		def[SupersededPayload](TypeSuperseded, func(p *SupersededPayload) error {
 			if p.TurnID == "" || p.ReplacementTurnID == "" {
 				return errors.New("superseded requires turnId and replacementTurnId")
-			}
-			return nil
-		}),
-		def[AttemptStartedPayload](TypeAttemptStarted, func(p *AttemptStartedPayload) error {
-			if p.TurnID == "" || p.RunID == "" || p.Attempt == 0 {
-				return errors.New("attempt_started requires turnId, runId and attempt")
 			}
 			return nil
 		}),

@@ -8,6 +8,7 @@ import (
 	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/attempt"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/session/writer"
@@ -82,7 +83,7 @@ func testStart(t *testing.T, factory Factory) {
 	}
 	plan := turn.PlanDigest("t1", preset.Digest, []chatlog.InputID{"in-1", "in-2"})
 	group := h.group(session.CommitID(turn.StartOperationDigest(sid, "t1", plan)))
-	if !sameTypes(group, turn.TypeStarted, turn.TypeAttemptStarted, chatlog.TypeInputDelivered, chatlog.TypeInputDelivered, typeCreated, typeAccepted, typeAccepted) {
+	if !sameTypes(group, turn.TypeStarted, attempt.TypeStarted, chatlog.TypeInputDelivered, chatlog.TypeInputDelivered, typeCreated, typeAccepted, typeAccepted) {
 		t.Fatalf("start group = %v", eventTypes(group))
 	}
 	started := decode[turn.StartedPayload](t, h.registry, &group[0])
@@ -286,7 +287,7 @@ func testRetry(t *testing.T, factory Factory) {
 		t.Fatalf("retry response = %+v", rresp)
 	}
 	group := h.group(turn.RetryCommitID(sid, "t1", 2))
-	if !sameTypes(group, turn.TypeAttemptStarted, typeCreated, typeAccepted, typeAccepted) {
+	if !sameTypes(group, attempt.TypeStarted, typeCreated, typeAccepted, typeAccepted) {
 		t.Fatalf("retry group = %v", eventTypes(group))
 	}
 	created := decode[runmod.Event](t, h.registry, &group[1])

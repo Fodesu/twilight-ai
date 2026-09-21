@@ -20,6 +20,7 @@ import (
 	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/attempt"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
 	runmod "github.com/felinics/twilight/agent/session/run"
@@ -58,7 +59,7 @@ type harness struct {
 
 func newHarness(t testing.TB, f Fixture) *harness {
 	t.Helper()
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module, runmod.Module, turn.Module)
+	registry, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module, runmod.Module, attempt.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}

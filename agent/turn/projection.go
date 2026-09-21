@@ -5,6 +5,7 @@ import (
 
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/attempt"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
 	runmod "github.com/felinics/twilight/agent/session/run"
@@ -69,7 +70,7 @@ func (v *TurnView) ActiveAttempt() *AttemptView {
 type TurnSurface struct {
 	Order []TurnID            `json:"order"`
 	Turns map[TurnID]TurnView `json:"turns"`
-	// RunOwner maps each active Run to its Turn, from attempt_started until
+	// RunOwner maps each active Run to its Turn, from attempt/started until
 	// run_ended, so a settlement is routed to the attempt it ends
 	// (TRN-PRJ-1). An ended Run leaves it: its attempt keeps the result, and
 	// OwnerOf still answers for it from the attempts.
@@ -118,8 +119,8 @@ func (s *TurnSurface) Active() (TurnView, bool) {
 
 var SurfaceProjection = extension.ProjectionDefinition{
 	ID: SurfaceProjectionID, Version: 1,
-	Consumes: []session.EventType{TypeStarted, TypeAttemptStarted, TypeFailed, TypeSuperseded,
-		chatlog.TypeInputDelivered, runmod.Prefix + "run_ended"},
+	Consumes: []session.EventType{TypeStarted, TypeFailed, TypeSuperseded,
+		attempt.TypeStarted, chatlog.TypeInputDelivered, runmod.Prefix + "run_ended"},
 	// Attempt settlement is folded from run_ended, so inherited Turns settle
 	// from the parent's run streams, whose domain is of segment lineage and
 	// would otherwise be skipped (EXT-PRJ-8); a fork point inside a Turn is
@@ -169,18 +170,19 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		}
 		v.Status, v.ActiveRun, v.ReplacementTurnID = TurnSuperseded, "", p.ReplacementTurnID
 		s.Turns[p.TurnID] = v
-	case AttemptStartedPayload:
-		v, ok := s.Turns[p.TurnID]
+	case attempt.StartedPayload:
+		turnID := TurnID(p.TurnID)
+		v, ok := s.Turns[turnID]
 		if !ok {
-			return nil, fmt.Errorf("turn %s attempt before started", p.TurnID)
+			return nil, fmt.Errorf("turn %s attempt before started", turnID)
 		}
 		if v.ActiveRun != "" {
-			return nil, fmt.Errorf("turn %s already has active run %s", p.TurnID, v.ActiveRun)
+			return nil, fmt.Errorf("turn %s already has active run %s", turnID, v.ActiveRun)
 		}
 		v.Attempts = append(v.Attempts, AttemptView{RunID: p.RunID, Attempt: p.Attempt})
 		v.ActiveRun, v.Status = p.RunID, TurnActive
-		s.Turns[p.TurnID] = v
-		s.RunOwner[p.RunID] = p.TurnID
+		s.Turns[turnID] = v
+		s.RunOwner[p.RunID] = turnID
 	case chatlog.InputDeliveredPayload:
 		v, ok := s.Turns[TurnID(p.TurnID)]
 		if !ok {

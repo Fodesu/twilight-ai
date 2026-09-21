@@ -5,6 +5,7 @@ import (
 	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/attempt"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
 	runmod "github.com/felinics/twilight/agent/session/run"
@@ -18,7 +19,7 @@ import (
 func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	ctx := context.Background()
 	const sid session.SessionID = "s-protocol"
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module, runmod.Module, Module)
+	registry, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module, runmod.Module, attempt.Module, Module)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -24,7 +24,7 @@ agent/session (kernel)       agent/artifact (independent core)
           \                  /
            agent/session/extension（含 writer）
                ↓
-   chatlog / session-run / turn
+   chatlog / session-run / attempt / turn
                ↓
              decision / host（authority 组合 turn / run）
                     ↓

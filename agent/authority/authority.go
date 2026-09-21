@@ -24,6 +24,7 @@ import (
 	"github.com/felinics/twilight/agent/run/frozen"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
+	"github.com/felinics/twilight/agent/session/attempt"
 	"github.com/felinics/twilight/agent/session/chatlog"
 	"github.com/felinics/twilight/agent/session/extension"
 	runmod "github.com/felinics/twilight/agent/session/run"
@@ -103,7 +104,7 @@ type Ports struct {
 	TargetResolver loop.TargetResolver
 	// Observers are notified of every group the Writers apply (EXT-WRT-7).
 	Observers []writer.CommitObserver
-	// Modules are application modules registered after the first-party three
+	// Modules are application modules registered after the first-party four
 	// (EXT-APP).
 	Modules []extension.ModuleDescriptor
 	// Clock stamps event times; nil selects time.Now.
@@ -160,10 +161,10 @@ func New(p Ports) (*Authority, error) { //nolint:gocritic // hugeParam: Ports is
 		return nil, errors.New("authority: a session Store is required")
 	}
 	store := p.Store
-	// The first-party three are trusted core; Ports.Modules are extensions
+	// The first-party four are trusted core; Ports.Modules are extensions
 	// and cannot declare authoritative projections (EXT-PRJ-9).
 	registry, err := extension.BuildRegistryWithExtensions(session.ProtocolVersion1,
-		[]extension.ModuleDescriptor{chatlog.Module, runmod.Module, turn.Module}, p.Modules)
+		[]extension.ModuleDescriptor{chatlog.Module, runmod.Module, attempt.Module, turn.Module}, p.Modules)
 	if err != nil {
 		return nil, err
 	}
