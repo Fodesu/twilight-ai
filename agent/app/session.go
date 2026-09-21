@@ -141,6 +141,7 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 		s.newTurnID = turn.NewTurnID
 	}
 	s.bg, s.cancel = context.WithCancel(context.Background())
+	app.track(s)
 	if opts.ResumeActive {
 		if _, _, err := s.Resume(ctx); err != nil {
 			_ = s.Close(context.WithoutCancel(ctx))
@@ -451,10 +452,11 @@ func (s *Session) result(ctx context.Context, resp *driver.DriveResult) Result {
 
 // Compact summarizes the context with the preset's model and commits a
 // checkpoint retaining a pair-closed suffix; ok is false when the context is
-// already within the retain window (APP-CKP-1).
+// already within the retain window (APP-CKP-1). It runs between Turns and,
+// under the quiescent-Run guard, between the steps of a Turn.
 func (s *Session) Compact(ctx context.Context) (chatlog.CheckpointID, bool, error) {
 	policy := compaction.Policy{AfterEntries: s.opts.CompactAfterEntries, RetainEntries: s.opts.CompactRetainEntries}
-	cctx, err := chatlog.ReadContext(ctx, s.a.Projections, s.sid)
+	cctx, err := chatlog.ReadContext(ctx, s.h.Writer().Projections(), s.sid)
 	if err != nil {
 		return "", false, err
 	}
@@ -472,20 +474,21 @@ func (s *Session) Compact(ctx context.Context) (chatlog.CheckpointID, bool, erro
 	if err != nil {
 		return "", false, err
 	}
-	id, err := s.a.Chatlog.Checkpoint(ctx, s.h.Writer(), summary, retain, turn.RequireNoActiveTurn)
+	id, err := s.a.Chatlog.Checkpoint(ctx, s.h.Writer(), summary, retain, turn.RequireQuiescentRun)
 	if err != nil {
 		return "", false, err
 	}
 	return id, true, nil
 }
 
-// maybeCompact runs the automatic policy after a settlement; failures reach
-// the caller through CompactWarn and never change the settled results.
+// maybeCompact runs the automatic policy after a settlement and between the
+// steps of a Turn (APP-CKP-1); failures reach the caller through
+// CompactWarn and never change the settled results or stop the drive.
 func (s *Session) maybeCompact(ctx context.Context) {
 	if s.opts.CompactAfterEntries <= 0 {
 		return
 	}
-	cctx, err := chatlog.ReadContext(ctx, s.a.Projections, s.sid)
+	cctx, err := chatlog.ReadContext(ctx, s.h.Writer().Projections(), s.sid)
 	if err == nil && len(cctx.Entries) <= s.opts.CompactAfterEntries {
 		return
 	}
@@ -502,6 +505,7 @@ func (s *Session) maybeCompact(ctx context.Context) {
 // application stay open. A Turn a cancelled drive left active resumes on the
 // next open.
 func (s *Session) Close(ctx context.Context) error {
+	s.app.untrack(s)
 	if s.cancel != nil {
 		s.cancel()
 	}

@@ -208,8 +208,10 @@ func checkpointIDs(sid session.SessionID, base es.Digest, summaryText string) (C
 }
 
 // CheckRetainClosure requires retained tool results and their issuing
-// assistants to travel together, so the compacted context stays valid
-// provider input (APP-CKP-2). Subset and order are the fold's job.
+// assistants to travel together, and an assistant with a call whose result
+// is not yet in the context to be retained, so the compacted context stays
+// valid provider input now and when that result lands (APP-CKP-2). Subset
+// and order are the fold's job.
 func CheckRetainClosure(entries []Entry, retain []EntryDigestPair) error {
 	kept := make(map[EntryDigestPair]bool, len(retain))
 	for _, p := range retain {
@@ -234,6 +236,13 @@ func CheckRetainClosure(entries []Entry, retain []EntryDigestPair) error {
 	}
 	for i := range entries {
 		e := &entries[i]
+		if e.Kind == EntryAssistant && e.Assistant != nil && !kept[e.Pair()] {
+			for _, call := range e.Assistant.CallIDs {
+				if results[call] == nil {
+					return fmt.Errorf("chatlog: assistant %s has the unsettled call %s and must be retained", e.ID, call)
+				}
+			}
+		}
 		if !kept[e.Pair()] {
 			continue
 		}

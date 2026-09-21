@@ -5,14 +5,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
+	runmod "github.com/felinics/twilight/agent/session/run"
 )
 
-// guardView is a writer.View whose only answer is the surface projection.
+// guardView is a writer.View that answers the surface projection with state
+// and, when set, the machine projection with machine.
 type guardView struct {
-	state any
-	err   error
+	state   any
+	err     error
+	machine any
 }
 
 func (guardView) Head() session.Head                                     { return session.Head{} }
@@ -24,8 +28,48 @@ func (guardView) StreamHead(session.StreamRef) (session.StreamSeq, bool) { retur
 func (guardView) LookupCommit(session.CommitID) (session.Commit, bool, error) {
 	return session.Commit{}, false, nil
 }
-func (v guardView) Projection(extension.ProjectionID, extension.ProjectionVersion) (any, error) {
+func (v guardView) Projection(id extension.ProjectionID, _ extension.ProjectionVersion) (any, error) {
+	if id == runmod.MachineProjectionID {
+		return v.machine, v.err
+	}
 	return v.state, v.err
+}
+
+func activeSurface(runID run.RunID) TurnSurface {
+	return TurnSurface{Order: []TurnID{"t1"}, Turns: map[TurnID]TurnView{"t1": {TurnID: "t1", Status: TurnActive, ActiveRun: runID}}}
+}
+
+func machineWith(current run.Current) runmod.Machine {
+	return runmod.Machine{Active: map[run.RunID]run.MachineState{"r1": {RunID: "r1", Status: run.RunActive, Current: current}}}
+}
+
+// APP-CKP-1: the quiescent guard admits a Session between Turns and a Turn
+// between steps, and refuses one inside a step.
+func TestRequireQuiescentRun(t *testing.T) {
+	executing := run.ToolStep{Calls: []run.ToolCallState{{CallID: "c1", Status: run.ToolExecuting}}}
+	pending := run.ToolStep{Calls: []run.ToolCallState{{CallID: "c1", Status: run.ToolPending}, {CallID: "c2", Status: run.ToolWaiting}}}
+	cases := map[string]struct {
+		view guardView
+		ok   bool
+	}{
+		"no turns":                          {view: guardView{state: TurnSurface{}}, ok: true},
+		"completed turn":                    {view: guardView{state: surfaceWith(TurnCompleted)}, ok: true},
+		"active turn, run open":             {view: guardView{state: activeSurface("r1"), machine: machineWith(run.Open{})}, ok: true},
+		"active turn, no live run":          {view: guardView{state: activeSurface("r1"), machine: runmod.Machine{}}, ok: true},
+		"tool step without executing calls": {view: guardView{state: activeSurface("r1"), machine: machineWith(pending)}, ok: true},
+		"tool step with an executing call":  {view: guardView{state: activeSurface("r1"), machine: machineWith(executing)}},
+		"model step prepared":               {view: guardView{state: activeSurface("r1"), machine: machineWith(run.ModelStep{Status: run.ModelPrepared})}},
+		"model step executing":              {view: guardView{state: activeSurface("r1"), machine: machineWith(run.ModelStep{Status: run.ModelExecuting})}},
+	}
+	for name, tc := range cases {
+		err := RequireQuiescentRun(tc.view)
+		if tc.ok && err != nil {
+			t.Errorf("%s: err = %v, want nil", name, err)
+		}
+		if !tc.ok && !errors.Is(err, ErrConflict) {
+			t.Errorf("%s: err = %v, want conflict", name, err)
+		}
+	}
 }
 
 func surfaceWith(status TurnStatus) TurnSurface {

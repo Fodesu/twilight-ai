@@ -113,6 +113,10 @@ type bound struct {
 
 func (b *bound) Scope() run.Scope { return run.Scope(b.w.SessionID()) }
 
+// Writer is the ownership capability the store is bound to (AUTH-OWN-2);
+// a Loop hook that must commit through the same Writer takes it from here.
+func (b *bound) Writer() writer.Writer { return b.w }
+
 // Load reads the Writer's transactional projection (RUN-CMT-2); a Run the
 // projection no longer holds is folded from its own stream (RUN-CMT-1).
 func (b *bound) Load(ctx context.Context, runID run.RunID) (runtime.Snapshot, error) {

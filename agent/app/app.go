@@ -27,6 +27,7 @@ import (
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/run/plan"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/extension"
 	runmod "github.com/felinics/twilight/agent/session/run"
@@ -154,6 +155,39 @@ type Application struct {
 
 	mu   sync.RWMutex
 	refs map[turn.PresetID]turn.PresetRef
+	// sessions are the Sessions this process has open, by id: the Planner
+	// finds a Session's compaction policy here while its Run is driven
+	// (APP-CKP-1).
+	sessions map[session.SessionID]*Session
+}
+
+// BeforePrepare is driver.Planner (RUN-LOP-10, APP-CKP-1): between two steps
+// of a Run, while it is Open, the Session's automatic compaction policy runs
+// against the context the next model request will read. Failures reach
+// CompactWarn and never stop the drive.
+func (app *Application) BeforePrepare(ctx context.Context, w writer.Writer, _ plan.PromptInput) error {
+	app.mu.RLock()
+	s := app.sessions[w.SessionID()]
+	app.mu.RUnlock()
+	if s == nil || s.opts.CompactAfterEntries <= 0 {
+		return nil
+	}
+	s.maybeCompact(ctx)
+	return nil
+}
+
+func (app *Application) track(s *Session) {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	app.sessions[s.sid] = s
+}
+
+func (app *Application) untrack(s *Session) {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+	if app.sessions[s.sid] == s {
+		delete(app.sessions, s.sid)
+	}
 }
 
 // Build assembles an application from typed dependencies and a
@@ -174,7 +208,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	if warn == nil {
 		warn = func(error) {}
 	}
-	app := &Application{warn: warn, refs: make(map[turn.PresetID]turn.PresetRef, len(c.Presets))}
+	app := &Application{warn: warn, refs: make(map[turn.PresetID]turn.PresetRef, len(c.Presets)), sessions: make(map[session.SessionID]*Session)}
 	if c.Worker.Warn == nil {
 		c.Worker.Warn = warn
 	}
@@ -205,6 +239,9 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	}
 	bus = observe.NewBus(a.Registry)
 	app.Authority, app.bus = a, bus
+	// The Sessions' compaction policy runs between the steps of a Turn
+	// through the driver's planner seam (APP-CKP-1, RUN-LOP-10).
+	a.Driver.Planner = app
 	if app.spawn != nil {
 		app.spawn.Bind(a)
 	}

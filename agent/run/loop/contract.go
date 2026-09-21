@@ -8,6 +8,7 @@ import (
 	run "github.com/felinics/twilight/agent/run"
 	effect "github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/plan"
+	"github.com/felinics/twilight/agent/run/runtime"
 
 	"github.com/felinics/twilight/sdk"
 )
@@ -68,7 +69,19 @@ type Settings struct {
 	Scheduling       run.ToolScheduling
 	MalformedRetries uint8
 	TargetResolver   TargetResolver
+	// BeforePrepare runs each time the Run is Open and about to plan a model
+	// request, before the PromptBuilder reads the context (RUN-LOP-10). It
+	// is the application's seam for reshaping that context between steps,
+	// such as an in-turn checkpoint (APP-CKP-1); it commits through the
+	// Writer the store is bound to. An error stops the drive with no fact
+	// written; nil is no hook.
+	BeforePrepare PrepareHook
 }
+
+// PrepareHook is Settings.BeforePrepare: the store is the Loop's own bound
+// RunStore and input the PromptInput the plan is about to hand the
+// PromptBuilder.
+type PrepareHook func(ctx context.Context, store runtime.RunStore, input plan.PromptInput) error
 
 // ModelCatalog resolves a frozen run.ModelRef into an invoker at execution time;
 // provider binding never enters the frozen request. The same ModelRef must

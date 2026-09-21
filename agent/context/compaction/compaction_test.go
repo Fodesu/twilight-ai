@@ -48,4 +48,33 @@ func TestRetainLastPairClosure(t *testing.T) {
 			}
 		})
 	}
+	// An assistant with an unsettled call is kept even outside the window
+	// (APP-CKP-2): a2 issues c2 and no result has landed; in2 arrived after.
+	open := pairEntries()
+	a2 := *open[3].Assistant
+	a2.CallIDs = []chatlog.CallID{"c2"}
+	open[3].Assistant = &a2
+	in2 := chatlog.Input{ID: "in2", Digest: "sha256:in2"}
+	open = append(open, chatlog.Entry{Kind: chatlog.EntryInput, ID: "in2", Digest: in2.Digest, Position: session.Position{Commit: 5}, Input: &in2})
+	openCases := []struct {
+		name string
+		n    int
+		want []string
+	}{
+		{"window after the open assistant pulls it in", 1, []string{"a2", "in2"}},
+		{"window covering it stays as asked", 2, []string{"a2", "in2"}},
+	}
+	for _, tc := range openCases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := compaction.RetainLast(open, tc.n)
+			if len(got) != len(tc.want) {
+				t.Fatalf("retain = %+v, want ids %v", got, tc.want)
+			}
+			for i := range got {
+				if got[i].ID != tc.want[i] {
+					t.Fatalf("retain[%d] = %s, want %s", i, got[i].ID, tc.want[i])
+				}
+			}
+		})
+	}
 }

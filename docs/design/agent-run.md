@@ -548,7 +548,9 @@ type Settings struct {
     Scheduling       run.ToolScheduling // 来自 AgentPreset：工具调用并行/串行与并发上限
     MalformedRetries uint8              // 来自 AgentPreset：畸形模型结果的重试上限
     TargetResolver   TargetResolver     // application 提供的 opaque target 解析器，按 effect 调用（RUN-LOP-9）
+    BeforePrepare    PrepareHook        // Run 处于 Open、Prepare 之前的应用钩子（RUN-LOP-10）
 }
+type PrepareHook func(ctx context.Context, store runtime.RunStore, input plan.PromptInput) error
 type LoopResult struct {
     Disposition LoopDisposition // LoopWaiting | LoopFinished | LoopDispatched | LoopDelivered | LoopDropped
     Reason WaitReason           // 仅 ExecutionRecovery 时为 execution_recovery；否则为空
@@ -565,6 +567,8 @@ func (*Loop) Run(context.Context, runtime.RunStore, run.RunID, EventSink) (LoopR
 **RUN-LOP-1** `Settings` 是 Loop 从 AgentPreset 取得的执行参数（TRN-PST-1），不是独立的可插拔组件。`Scheduling` 在 `SubmitModelResult` 时写入 `ToolStepOpened.Scheduling` 并冻结在该 ToolStep 上；后续 Loop 必须按冻结值调度，不得改用当时进程的 Settings。未指定 Mode 时冻结为 `parallel`，`MaxParallel` 零值表示当前 Start 批次全部 Pending call 可并行。空 Mode 按 parallel 解释，不得在 normalize 时填入默认字符串。畸形模型结果的处置由 `MalformedRetries` 决定：该 ModelStep 已记录的 `Rejects` 少于该值时选择 `ModelRejectRetry`，否则 `ModelRejectFailRun`；零即首次失败。`streaming` 表示是否请求可用的流式模型端口；两种模式都产生同一完整 `sdk.ModelResult`。Loop 不管理 Executor lease 或 Worker heartbeat；这些属于 Executor/control plane。Loop 只以 Run 记录的 Effect 定位与结算执行，并通过 Session Writer 完成语义 settlement（RUN-CMT-6）。
 
 **RUN-LOP-7** `ModelRef` 是冻结请求中的执行身份。`ModelCatalog.ResolveModel` 在同一 Run 生命周期内必须把同一 `ModelRef` 解析为等价的执行语义。provider 绑定不进入 frozen request，因此 Catalog 不得把同一 ref 改绑到不同实现。
+
+**RUN-LOP-10（Prepare 之前的钩子）** `Settings.BeforePrepare` 在每次 `Next` 返回 `NeedModelRequest` 时、PromptBuilder 读取上下文之前调用一次，传入 Loop 绑定的 `RunStore` 与将交给 PromptBuilder 的 `PromptInput`。它是应用在两步之间改写上下文的位置（Turn 内 checkpoint，APP-CKP-1）：钩子经同一 Writer 提交的事实是随后 Build 读到的状态；它不写 Run 事实，因此 snapshot 的 Position 对随后的 Prepare 仍然有效。钩子返回错误时驱动停止，不写入任何事实；nil 为无钩子。Loop 不解释钩子做了什么。
 
 **RUN-LOP-9（target 解析）** `TargetResolver` 按 effect 调用：Loop 在每个 model effect 与每个 tool call 的 effect 进入 start barrier 之前调用一次 `ResolveTarget`，传入该 effect 的坐标 `EffectContext{Session, RunID, StepID, CallID, Effect, Kind, Tool}`，其中 `Effect` 是该 effect 启动时使用的 EffectID。返回值复制进该 effect 的 Assignment（tool effect 的 Validate probe 携带同一 target），Loop 不解释它。nil 返回值表示该 effect 没有资源 target；`Kind` 或 `ID` 为空的返回值是错误。解析器返回错误时该 effect 不启动，Run 不写入任何事实：ModelStep 保持 Prepared，tool call 保持 Pending。同一 Run 内的不同 effect 可以解析到不同 target。target 不进入 Run 事实，只存在于 Assignment 与 Execution Record 中；core 没有 target 事实也没有默认解析器，解析器及其 Session 到资源的映射属于 application 的资源层，映射的持久性由 application 保证（APP-TGT-1、agent-workspace.md）。
 

@@ -256,6 +256,14 @@ func (l *Loop) advance(ctx context.Context, rt runtime.RunStore, runID run.RunID
 
 		switch act := action.(type) {
 		case plan.NeedModelRequest:
+			// The hook runs while the Run is Open, before the plan reads
+			// the context (RUN-LOP-10); what it commits moves no Run fact,
+			// so the snapshot's Position stays valid for the Prepare.
+			if hook := l.Settings.BeforePrepare; hook != nil {
+				if err := hook(ctx, rt, act.Hint); err != nil {
+					return LoopResult{}, err
+				}
+			}
 			if err := l.planAndPrepare(ctx, rt, events, &snapshot, act.Hint); err != nil {
 				return LoopResult{}, err
 			}

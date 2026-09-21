@@ -46,4 +46,35 @@ func TestCheckRetainClosure(t *testing.T) {
 			}
 		})
 	}
+	// An assistant whose call has no result yet must be retained, whatever
+	// else is (APP-CKP-2): the result will land after the checkpoint.
+	open := openEntries()
+	openPair := func(i int) chatlog.EntryDigestPair { return open[i].Pair() }
+	openCases := []struct {
+		name    string
+		retain  []chatlog.EntryDigestPair
+		wantErr bool
+	}{
+		{"open assistant retained", []chatlog.EntryDigestPair{openPair(3)}, false},
+		{"open assistant dropped", nil, true},
+		{"open assistant dropped, others kept", []chatlog.EntryDigestPair{openPair(1), openPair(2)}, true},
+	}
+	for _, tc := range openCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := chatlog.CheckRetainClosure(open, tc.retain)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// openEntries is pairEntries with the last assistant holding a call whose
+// result is not in the context yet.
+func openEntries() []chatlog.Entry {
+	entries := pairEntries()
+	a2 := *entries[3].Assistant
+	a2.CallIDs = []chatlog.CallID{"c2"}
+	entries[3].Assistant = &a2
+	return entries
 }

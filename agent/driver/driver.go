@@ -16,7 +16,9 @@ import (
 	"github.com/felinics/twilight/agent/decision"
 	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/loop"
+	"github.com/felinics/twilight/agent/run/plan"
 	"github.com/felinics/twilight/agent/run/reconcile"
+	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/agent/session"
 	runmod "github.com/felinics/twilight/agent/session/run"
 	"github.com/felinics/twilight/agent/session/writer"
@@ -56,10 +58,22 @@ type Driver struct {
 	// Fail receives failures of work the Driver does outside any caller's
 	// call, such as settling a reattached Outcome; nil discards them.
 	Fail func(session.SessionID, error)
+	// Planner, when set, is consulted through every Loop's BeforePrepare
+	// (RUN-LOP-10, DRV-2): the application's between-steps context policy,
+	// given the Writer the drive commits through.
+	Planner Planner
 
 	mu       sync.Mutex
 	loops    map[turn.PresetRef]*loop.Loop
 	recovery map[session.SessionID]*recoveryLifetime
+}
+
+// Planner is the application's between-steps hook: it runs while a Run is
+// Open and about to plan a model request, with the Writer of the Session
+// being driven, so what it commits (an in-turn checkpoint, APP-CKP-1) is
+// what the PromptBuilder reads next. Errors stop the drive.
+type Planner interface {
+	BeforePrepare(ctx context.Context, w writer.Writer, input plan.PromptInput) error
 }
 
 // New returns a Driver with no Loops built and no Sessions open.
@@ -90,16 +104,30 @@ func (d *Driver) loopFor(ref turn.PresetRef) (*loop.Loop, error) {
 	if err != nil {
 		return nil, err
 	}
-	l, err := loop.New(d.Executor, builder, loop.Settings{
+	settings := loop.Settings{
 		Scheduling:       preset.Scheduling,
 		MalformedRetries: preset.MalformedRetries,
 		TargetResolver:   d.Targets,
-	})
+	}
+	if d.Planner != nil {
+		settings.BeforePrepare = d.beforePrepare
+	}
+	l, err := loop.New(d.Executor, builder, settings)
 	if err != nil {
 		return nil, err
 	}
 	d.loops[ref] = l
 	return l, nil
+}
+
+// beforePrepare hands the Loop's hook to the Planner with the Writer the
+// bound store commits through.
+func (d *Driver) beforePrepare(ctx context.Context, store runtime.RunStore, input plan.PromptInput) error {
+	owned, ok := store.(interface{ Writer() writer.Writer })
+	if !ok {
+		return fmt.Errorf("driver: run store %T exposes no writer for the planner", store)
+	}
+	return d.Planner.BeforePrepare(ctx, owned.Writer(), input)
 }
 
 // Drive is DRV-1: while the Turn is active, resolve its recorded preset

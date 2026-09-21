@@ -54,24 +54,34 @@ func (p Policy) Retain(entries []chatlog.Entry) (retain []chatlog.EntryDigestPai
 }
 
 // RetainLast selects a pair-closed suffix of at most n entries: a retained
-// tool result pulls in the assistant that issued its call, so the retained
-// set stays valid provider input (APP-CKP-2).
+// tool result pulls in the assistant that issued its call, and an assistant
+// with a call whose result is not in the context yet is always kept, so the
+// retained set stays valid provider input now and when that result lands
+// (APP-CKP-2). The suffix may exceed n by what those rules pull in.
 func RetainLast(entries []chatlog.Entry, n int) []chatlog.EntryDigestPair {
 	if n <= 0 || len(entries) == 0 {
 		return nil
 	}
 	owner := map[chatlog.CallID]int{} // CallID -> index of the issuing assistant
+	settled := map[chatlog.CallID]bool{}
 	for i, e := range entries {
-		if e.Kind != chatlog.EntryAssistant || e.Assistant == nil {
-			continue
-		}
-		for _, call := range e.Assistant.CallIDs {
-			owner[call] = i
+		switch {
+		case e.Kind == chatlog.EntryAssistant && e.Assistant != nil:
+			for _, call := range e.Assistant.CallIDs {
+				owner[call] = i
+			}
+		case e.Kind == chatlog.EntryToolResult && e.ToolResult != nil:
+			settled[e.ToolResult.CallID] = true
 		}
 	}
 	start := len(entries) - n
 	if start < 0 {
 		start = 0
+	}
+	for call, at := range owner {
+		if !settled[call] && at < start {
+			start = at
+		}
 	}
 	for changed := true; changed; {
 		changed = false
