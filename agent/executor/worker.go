@@ -243,7 +243,9 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 		ExecutionRef: ExecutionRef{Provider: route.Provider, Ref: ref}}
 	old, created, err := w.store.Create(ctx, record)
 	if err != nil {
-		return err
+		// The record store, not the Assignment, refused: nothing started,
+		// and the same Dispatch may succeed later (RUN-EXE-3).
+		return fmt.Errorf("%w: %w", effect.ErrDispatchRetryable, err)
 	}
 	if !created && old.AssignmentDigest != digest {
 		return executionstore.ErrAssignmentConflict
@@ -251,7 +253,17 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 	if !created {
 		return nil
 	}
-	return w.acquireAndStart(ctx, key)
+	if err := w.acquireAndStart(ctx, key); err != nil {
+		if errors.Is(err, effect.ErrDispatchUnknown) {
+			return err
+		}
+		// Between the record and Backend.Start only this Worker's own store
+		// operations can fail; a Start failure settles the record instead of
+		// returning. The record exists and is Accepted, so the caller may
+		// dispatch again and the replay resumes it.
+		return fmt.Errorf("%w: %w", effect.ErrDispatchRetryable, err)
+	}
+	return nil
 }
 
 // Takeover explicitly asks this Worker to acquire an expired Assignment. The

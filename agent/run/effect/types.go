@@ -336,6 +336,12 @@ var (
 	// request may have crossed the effect boundary. It must not trigger a
 	// compensating re-dispatch or a RecoverModelExecution automatically.
 	ErrDispatchUnknown = errors.New("agent: effect: dispatch outcome unknown")
+	// ErrDispatchRetryable means the executor refused the Assignment before
+	// anything started, for a reason of its own that may pass (its record
+	// store was unavailable). Nothing crossed the effect boundary, so the
+	// same Assignment may be dispatched again; it is neither a definite
+	// rejection of the Assignment nor an unknown outcome (RUN-EXE-3).
+	ErrDispatchRetryable = errors.New("agent: effect: dispatch refused before the effect started; retry later")
 )
 
 // AttachmentState describes what an executor found for an AssignmentKey.

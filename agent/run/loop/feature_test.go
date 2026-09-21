@@ -16,6 +16,7 @@ import (
 	"github.com/felinics/twilight/agent/executor"
 	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/run/model/sdkconv"
 	"github.com/felinics/twilight/agent/run/plan"
@@ -99,9 +100,12 @@ type Feature struct {
 	defs    map[run.ToolRef]sdk.ToolDefinition // provider bodies behind specs; ToolSpec keeps only the digest
 	tools   map[run.ToolRef]*scriptTool
 	invoker *scriptInvoker
-	builder *scriptBuilder
-	loop    *loop.Loop
-	seq     int
+	// wrapPort decorates the ExecutionPort the Loop drives, for tests that
+	// inject dispatch answers between the Loop and the Worker.
+	wrapPort func(effect.ExecutionPort) effect.ExecutionPort
+	builder  *scriptBuilder
+	loop     *loop.Loop
+	seq      int
 
 	modelStepID run.StepID
 	last        loop.LoopResult
@@ -379,7 +383,11 @@ func (f *Feature) ensureLoop() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	l, err := loop.New(exec, f.builder, loop.Settings{})
+	var port effect.ExecutionPort = exec
+	if f.wrapPort != nil {
+		port = f.wrapPort(port)
+	}
+	l, err := loop.New(port, f.builder, loop.Settings{})
 	if err != nil {
 		f.t.Fatal(err)
 	}

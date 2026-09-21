@@ -1358,3 +1358,44 @@ func TestWorkerRetriesTransientFailures(t *testing.T) {
 		})
 	}
 }
+
+// failingCreateStore refuses every Create: the record store is unavailable.
+type failingCreateStore struct{ store.Store }
+
+func (failingCreateStore) Create(context.Context, store.Record) (store.Record, bool, error) {
+	return store.Record{}, false, errors.New("store unavailable")
+}
+
+// A Dispatch the Worker cannot record is a retryable refusal and, over HTTP,
+// a 503; a definite rejection of the Assignment is a plain error and a 400;
+// neither is an unknown outcome (RUN-EXE-3).
+func TestDispatchRefusalClassification(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name       string
+		records    store.Store
+		assignment effect.Assignment
+		retryable  bool
+	}{
+		{"record store unavailable", failingCreateStore{store.NewMemoryStore()}, testAssignment(), true},
+		{"assignment without body", store.NewMemoryStore(), effect.Assignment{Session: "s", RunID: "r", Effect: "e", Schema: 1}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			worker, err := executor.NewWorker(ctx, tc.records, routes(newTestBackend()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer worker.Close()
+			direct := worker.Dispatch(ctx, tc.assignment)
+			client := &executorhttp.Client{BaseURL: "http://executor.invalid",
+				HTTP: &http.Client{Transport: handlerTransport{handler: (&executorhttp.Server{Worker: worker}).Handler()}}}
+			overHTTP := client.Dispatch(ctx, tc.assignment)
+			for name, err := range map[string]error{"direct": direct, "http": overHTTP} {
+				if err == nil || errors.Is(err, effect.ErrDispatchUnknown) || errors.Is(err, effect.ErrDispatchRetryable) != tc.retryable {
+					t.Fatalf("%s dispatch = %v, want retryable=%v and not unknown", name, err, tc.retryable)
+				}
+			}
+		})
+	}
+}

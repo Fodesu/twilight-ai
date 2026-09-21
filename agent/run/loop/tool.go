@@ -118,7 +118,7 @@ func (l *Loop) startToolCalls(ctx context.Context, rt runtime.RunStore, events E
 		}
 		assignment := probe
 		assignment.Effect = ref.id
-		if err := l.Executor.Dispatch(ctx, assignment); err != nil {
+		if err := l.dispatch(ctx, assignment); err != nil {
 			if errors.Is(err, effect.ErrDispatchUnknown) {
 				// The request may have crossed the external boundary. Keep the
 				// call Executing for explicit recovery rather than claiming a

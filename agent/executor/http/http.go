@@ -48,11 +48,21 @@ func (c *Client) Dispatch(ctx context.Context, a effect.Assignment) error {
 	}
 	err := c.post(ctx, "/dispatch", makeAssignmentRequest(a), nil)
 	var responseErr *responseError
-	if err == nil || errors.As(err, &responseErr) && responseErr.statusCode < stdhttp.StatusInternalServerError {
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &responseErr) && responseErr.statusCode < stdhttp.StatusInternalServerError:
+		// 4xx: the server answered and refused the Assignment; nothing
+		// started (RUN-EXE-3).
 		return err
+	case errors.As(err, &responseErr) && responseErr.statusCode == stdhttp.StatusServiceUnavailable:
+		// 503 is the server's own "not now": the Worker refused before the
+		// barrier for a reason that may pass. An intermediary that did not
+		// forward the request answers the same way for the same reason.
+		return fmt.Errorf("%w: %w", effect.ErrDispatchRetryable, err)
 	}
-	// A transport failure or server/gateway 5xx can follow acceptance.
-	// Preserve the executing target for outcome observation and recovery.
+	// A transport failure or a gateway 5xx can follow acceptance. Preserve
+	// the executing target for outcome observation and recovery.
 	return fmt.Errorf("%w: %w", effect.ErrDispatchUnknown, err)
 }
 
@@ -238,11 +248,18 @@ func (s *Server) dispatch(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		return
 	}
 	// The Worker has persisted acceptance and observes the backend even
-	// when the backend's dispatch acknowledgement is uncertain.
+	// when the backend's dispatch acknowledgement is uncertain. Every other
+	// Dispatch error is a Known answer the client must be able to tell apart
+	// from a lost response (RUN-EXE-3): a definite rejection of the
+	// Assignment is 400 (a conflicting replay 409), a refusal the Worker
+	// itself may lift later is 503. 5xx other than 503 never come from here.
 	if err := s.Worker.Dispatch(r.Context(), req.Assignment); err != nil && !errors.Is(err, effect.ErrDispatchUnknown) {
-		status := stdhttp.StatusInternalServerError
-		if errors.Is(err, store.ErrAssignmentConflict) {
+		status := stdhttp.StatusBadRequest
+		switch {
+		case errors.Is(err, store.ErrAssignmentConflict):
 			status = stdhttp.StatusConflict
+		case errors.Is(err, effect.ErrDispatchRetryable):
+			status = stdhttp.StatusServiceUnavailable
 		}
 		stdhttp.Error(w, err.Error(), status)
 		return

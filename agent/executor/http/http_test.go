@@ -41,12 +41,16 @@ func (t responseTransport) RoundTrip(*http.Request) (*http.Response, error) {
 	}, nil
 }
 
+// RUN-EXE-3: a 4xx is a Known refusal, 503 is the server's own retryable
+// refusal, any other 5xx or a lost response is an unknown outcome.
 func TestDispatchResponseClassification(t *testing.T) {
-	for _, status := range []int{http.StatusBadRequest, http.StatusConflict, http.StatusInternalServerError, http.StatusBadGateway, http.StatusGatewayTimeout} {
+	for _, status := range []int{http.StatusBadRequest, http.StatusConflict, http.StatusServiceUnavailable, http.StatusInternalServerError, http.StatusBadGateway, http.StatusGatewayTimeout} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			client := &executorhttp.Client{BaseURL: "http://executor.invalid", HTTP: &http.Client{Transport: responseTransport{status: status}}}
 			err := client.Dispatch(context.Background(), effect.Assignment{})
-			if err == nil || errors.Is(err, effect.ErrDispatchUnknown) != (status >= http.StatusInternalServerError) {
+			wantRetryable := status == http.StatusServiceUnavailable
+			wantUnknown := status >= http.StatusInternalServerError && !wantRetryable
+			if err == nil || errors.Is(err, effect.ErrDispatchUnknown) != wantUnknown || errors.Is(err, effect.ErrDispatchRetryable) != wantRetryable {
 				t.Fatalf("dispatch status %d = %v", status, err)
 			}
 		})

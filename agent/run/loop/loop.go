@@ -8,6 +8,7 @@ import (
 	"time"
 
 	run "github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/plan"
 	"github.com/felinics/twilight/agent/run/runtime"
 	"github.com/felinics/twilight/agent/run/schema"
@@ -71,6 +72,35 @@ func (l *Loop) toolScheduling() run.ToolScheduling {
 // targetFor resolves the opaque target of the effect ec describes
 // (RUN-LOP-9). A nil resolver or a nil answer leaves the Assignment without a
 // target; an incomplete answer is an error and the effect does not start.
+// dispatchRetries and dispatchBackoff bound the Loop's answer to
+// effect.ErrDispatchRetryable (RUN-EXE-3): the executor refused before
+// anything started, so the same Assignment is offered again a few times
+// inside this Advance before the refusal is treated like any other Known
+// dispatch failure.
+const (
+	dispatchRetries = 3
+	dispatchBackoff = 50 * time.Millisecond
+)
+
+// dispatch hands an Assignment to the Executor, repeating a retryable refusal
+// within dispatchRetries; every other answer is returned as is.
+func (l *Loop) dispatch(ctx context.Context, a Assignment) error {
+	var err error
+	for attempt := 1; ; attempt++ {
+		err = l.Executor.Dispatch(ctx, a)
+		if err == nil || !errors.Is(err, effect.ErrDispatchRetryable) || attempt >= dispatchRetries {
+			return err
+		}
+		timer := time.NewTimer(dispatchBackoff * time.Duration(attempt))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return err
+		case <-timer.C:
+		}
+	}
+}
+
 func (l *Loop) targetFor(ctx context.Context, ec EffectContext) (*run.TargetRef, error) {
 	if l.Settings.TargetResolver == nil {
 		return nil, nil

@@ -149,7 +149,7 @@ func (l *Loop) startModelStep(ctx context.Context, rt runtime.RunStore, events E
 	}
 	assignment.Body = ModelAssignment{Model: prepared.Model, RequestDigest: prepared.RequestDigest, Request: &request}
 
-	if err := l.Executor.Dispatch(ctx, assignment); err != nil {
+	if err := l.dispatch(ctx, assignment); err != nil {
 		if errors.Is(err, effect.ErrDispatchUnknown) {
 			// The request may have crossed the external boundary. Leave the
 			// model Executing so recovery can Attach/Reconcile/Takeover it.
