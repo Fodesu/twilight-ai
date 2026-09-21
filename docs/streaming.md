@@ -1,25 +1,22 @@
 # Streaming
 
-> **Deprecated:** `sdk.StreamText` and `sdk.StreamResult` run an SDK-owned step
-> loop. `sdk.Client.Stream` returns a `sdk.ModelStream` of `sdk.StreamPart`
-> values, which the caller assembles and accumulates itself.
-
 Twilight AI uses Go channels for streaming, giving you type-safe, idiomatic control over real-time LLM output.
 
 ## Basic Streaming
 
+`Model.Stream` takes the same `sdk.Request` as `Model.Generate` and returns a `sdk.ModelStream`:
+
 ```go
-sr, err := sdk.StreamText(ctx,
-    sdk.WithModel(model),
-    sdk.WithMessages([]sdk.Message{
+stream, err := model.Stream(ctx, sdk.Request{
+    Messages: []sdk.Message{
         sdk.UserMessage("Count from 1 to 10."),
-    }),
-)
+    },
+})
 if err != nil {
     log.Fatal(err)
 }
 
-for part := range sr.Stream {
+for part := range stream.Parts {
     switch p := part.(type) {
     case *sdk.TextDeltaPart:
         fmt.Print(p.Text)
@@ -29,36 +26,20 @@ for part := range sr.Stream {
 }
 ```
 
-## StreamResult
-
-`StreamText` returns a `*StreamResult`:
+## ModelStream
 
 ```go
-type StreamResult struct {
-    Stream   <-chan StreamPart  // channel that yields stream parts
-    Steps    []StepResult       // populated after stream is consumed
-    Messages []Message          // populated after stream is consumed
+type ModelStream struct {
+    Parts  <-chan StreamPart          // closed when the stream ends
+    Result func() (*ModelResult, error) // valid once Parts is drained
 }
 ```
 
-`Steps` and `Messages` are filled as you consume the stream and are safe to read after the `for range` loop exits.
+`Parts` yields the provider's parts as they arrive. `Result` assembles them into the same `ModelResult` that `Generate` returns: the streamed and the non-streamed path cannot disagree about a response, because both go through one assembler. Call it only after the `for range` loop exits.
 
-### Convenience Methods
+`sdk.CollectStream(ctx, parts)` drains a channel of parts and returns the `ModelResult` in one call, for callers that do not need the parts themselves.
 
-**`Text()`** — consumes the stream and returns concatenated text:
-
-```go
-sr, _ := sdk.StreamText(ctx, ...)
-text, err := sr.Text()
-```
-
-**`ToResult()`** — consumes the stream and assembles a full `GenerateResult`:
-
-```go
-sr, _ := sdk.StreamText(ctx, ...)
-result, err := sr.ToResult()
-fmt.Println(result.Text, result.Usage.TotalTokens)
-```
+A stream is one model call. When the model answers with tool calls, the result carries them in `ToolCalls`; running them and building the next request is the caller's loop (see [Tool Calling](tools.md)).
 
 ## StreamPart Types
 
@@ -100,18 +81,18 @@ Streamed as the LLM constructs tool call arguments:
 | `*ToolInputDeltaPart` | `ID`, `Delta` | A chunk of tool argument JSON |
 | `*ToolInputEndPart` | `ID` | Tool argument construction complete |
 
-### Tool Execution Parts
+### Tool Call Parts
 
-Emitted during the tool execution phase (multi-step mode):
+`*StreamToolCallPart` is emitted by the model stream once a call's arguments are complete. The others are emitted by `sdk.ExecuteTools` through its `OnPart` callback while the caller runs the calls:
 
 | Type | Fields | Description |
 |------|--------|-------------|
-| `*StreamToolCallPart` | `ToolCallID`, `ToolName`, `Input` | Complete tool call (parsed input) |
-| `*StreamToolResultPart` | `ToolCallID`, `ToolName`, `Input`, `Output` | Tool execution result |
+| `*StreamToolCallPart` | `ToolCallID`, `ToolName`, `Input ToolArguments` | Complete tool call; `Input.Valid()` is false when the model's arguments were not a JSON document |
+| `*StreamToolResultPart` | `ToolCallID`, `ToolName`, `Input`, `Output ToolOutput` | Tool execution result |
 | `*StreamToolErrorPart` | `ToolCallID`, `ToolName`, `Error` | Tool execution failed |
-| `*ToolOutputDeniedPart` | `ToolCallID`, `ToolName` | Tool call denied by approval handler |
-| `*ToolApprovalRequestPart` | `ApprovalID`, `ToolCallID`, `ToolName`, `Input` | Approval requested |
-| `*ToolProgressPart` | `ToolCallID`, `ToolName`, `Content` | Progress update from tool execution |
+| `*ToolOutputDeniedPart` | `ToolCallID`, `ToolName` | Tool call denied by the approval handler |
+| `*ToolApprovalRequestPart` | `ApprovalID`, `ToolCallID`, `ToolName`, `Input`, `Metadata` | Approval requested or deferred |
+| `*ToolProgressPart` | `ToolCallID`, `ToolName`, `Content ToolOutput` | Progress update from tool execution |
 
 ### Source & File Parts
 
@@ -130,11 +111,11 @@ Emitted during the tool execution phase (multi-step mode):
 | `*FinishStepPart` | `FinishReason`, `RawFinishReason`, `Usage`, `Response` | Step finished |
 | `*ErrorPart` | `Error` | An error occurred |
 | `*AbortPart` | `Reason` | Stream was aborted |
-| `*RawPart` | `RawValue` | Raw provider-specific data |
+| `*RawPart` | `RawValue json.RawMessage` | A provider event the SDK does not model |
 
 ## Stream Lifecycle
 
-A typical single-step stream produces parts in this order:
+One model call produces parts in this order:
 
 ```
 StartPart
@@ -146,31 +127,27 @@ StartPart
 FinishPart
 ```
 
-A multi-step stream with tool calls:
+A call the model answers with a tool call ends with the call instead of text:
 
 ```
 StartPart
-  StartStepPart                 ← Step 1
+  StartStepPart
     ToolInputStartPart
     ToolInputDeltaPart (repeated)
     ToolInputEndPart
     StreamToolCallPart
   FinishStepPart
-  StreamToolResultPart          ← Tool execution
-  StartStepPart                 ← Step 2
-    TextStartPart
-    TextDeltaPart (repeated)
-    TextEndPart
-  FinishStepPart
 FinishPart
 ```
+
+The tool then runs on the caller's side, and the next model call is a new stream.
 
 ## Handling Reasoning Content
 
 Models like o1 or DeepSeek-R1 emit reasoning before the final answer:
 
 ```go
-for part := range sr.Stream {
+for part := range stream.Parts {
     switch p := part.(type) {
     case *sdk.ReasoningDeltaPart:
         fmt.Fprintf(os.Stderr, "[thinking] %s", p.Text)
@@ -180,57 +157,54 @@ for part := range sr.Stream {
 }
 ```
 
-## Full Example: Rich Stream Handler
+## Full Example: Stream, Then Run the Calls
 
 ```go
-sr, err := sdk.StreamText(ctx,
-    sdk.WithModel(model),
-    sdk.WithMessages(msgs),
-    sdk.WithTools(tools),
-    sdk.WithMaxSteps(10),
-)
+stream, err := model.Stream(ctx, sdk.Request{Messages: msgs, Tools: defs})
 if err != nil {
     log.Fatal(err)
 }
 
-for part := range sr.Stream {
+for part := range stream.Parts {
     switch p := part.(type) {
     case *sdk.StartPart:
         fmt.Println("--- Stream started ---")
-
     case *sdk.TextDeltaPart:
         fmt.Print(p.Text)
-
     case *sdk.ReasoningDeltaPart:
-        // optionally display reasoning
         fmt.Fprintf(os.Stderr, "%s", p.Text)
-
     case *sdk.StreamToolCallPart:
-        fmt.Printf("\n🔧 Calling %s\n", p.ToolName)
-
-    case *sdk.StreamToolResultPart:
-        fmt.Printf("✅ %s returned: %v\n", p.ToolName, p.Output)
-
-    case *sdk.StreamToolErrorPart:
-        fmt.Printf("❌ %s error: %v\n", p.ToolName, p.Error)
-
-    case *sdk.ToolProgressPart:
-        fmt.Printf("⏳ %s: %v\n", p.ToolName, p.Content)
-
+        fmt.Printf("\n🔧 %s(%s)\n", p.ToolName, p.Input.String())
     case *sdk.FinishPart:
         fmt.Printf("\n--- Done (reason: %s, tokens: %d) ---\n",
             p.FinishReason, p.TotalUsage.TotalTokens)
-
     case *sdk.ErrorPart:
         log.Printf("Error: %v", p.Error)
     }
 }
 
-// Safe to access after stream is consumed
-fmt.Printf("Total steps: %d\n", len(sr.Steps))
+result, err := stream.Result()
+if err != nil {
+    log.Fatal(err)
+}
+
+// ExecuteTools reports its own events through OnPart, in the same part types.
+outcome, err := sdk.ExecuteTools(ctx, result.ToolCalls, sdk.ToolExecOptions{
+    Tools: tools,
+    OnPart: func(part sdk.StreamPart) {
+        switch p := part.(type) {
+        case *sdk.StreamToolResultPart:
+            fmt.Printf("✅ %s returned: %s\n", p.ToolName, p.Output.String())
+        case *sdk.StreamToolErrorPart:
+            fmt.Printf("❌ %s error: %v\n", p.ToolName, p.Error)
+        case *sdk.ToolProgressPart:
+            fmt.Printf("⏳ %s: %s\n", p.ToolName, p.Content.String())
+        }
+    },
+})
 ```
 
 ## Next Steps
 
-- [Tool Calling](tools.md) — tool definitions and multi-step execution
+- [Tool Calling](tools.md) — tool definitions, ExecuteTools and BuildStepMessages
 - [API Reference](api-reference.md) — complete type and function reference

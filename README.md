@@ -7,7 +7,7 @@ A lightweight, idiomatic AI SDK for Go — inspired by [Vercel AI SDK](https://s
 
 ## Features
 
-- **Simple API** — `GenerateText`, `StreamText`, `Embed`, `EmbedMany`, `GenerateImage`, `EditImage`, `GenerateVideo`, `GenerateSpeech`, and `StreamSpeech` cover most use cases
+- **One call, one result** — `Model.Generate` and `Model.Stream` take an `sdk.Request` and return a `ModelResult` or a stream of typed parts; `ExecuteTools` and `BuildStepMessages` are the primitives a caller composes its own loop from. `Embed`, `EmbedMany`, `GenerateImage`, `EditImage`, `GenerateVideo`, `GenerateSpeech` and `StreamSpeech` cover the other modalities
 - **Provider-agnostic** — swap between OpenAI, Anthropic, Google, GitHub Copilot, Edge TTS, or any OpenAI-compatible endpoint
 - **Model discovery** — `ListModels` fetches available models, `Test` checks provider connectivity and model support
 - **Tool calling** — define tools with Go structs, SDK infers JSON Schema and handles multi-step execution
@@ -51,16 +51,15 @@ func main() {
     )
     model := provider.ChatModel("gpt-4o-mini")
 
-    text, err := sdk.GenerateText(context.Background(),
-        sdk.WithModel(model),
-        sdk.WithMessages([]sdk.Message{
+    result, err := model.Generate(context.Background(), sdk.Request{
+        Messages: []sdk.Message{
             sdk.UserMessage("Explain Go channels in 3 sentences."),
-        }),
-    )
+        },
+    })
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Println(text)
+    fmt.Println(result.Text)
 }
 ```
 
@@ -74,12 +73,12 @@ provider := responses.New(
 )
 model := provider.ChatModel("gpt-4o-mini")
 
-text, err := sdk.GenerateText(context.Background(),
-    sdk.WithModel(model),
-    sdk.WithMessages([]sdk.Message{
+result, err := model.Generate(context.Background(), sdk.Request{
+    Messages: []sdk.Message{
         sdk.UserMessage("Explain Go channels in 3 sentences."),
-    }),
-)
+    },
+})
+fmt.Println(result.Text)
 ```
 
 The Responses API is OpenAI's newer API with first-class support for reasoning models (o3, o4-mini), URL citation annotations, and a flat input format. See [Providers](docs/providers.md) for details.
@@ -95,13 +94,13 @@ provider := messages.New(
 model := provider.ChatModel("claude-sonnet-4-20250514")
 
 maxTokens := 1024
-text, err := sdk.GenerateText(context.Background(),
-    sdk.WithModel(model),
-    sdk.WithMaxTokens(maxTokens),
-    sdk.WithMessages([]sdk.Message{
+result, err := model.Generate(context.Background(), sdk.Request{
+    MaxTokens: &maxTokens,
+    Messages: []sdk.Message{
         sdk.UserMessage("Explain Go channels in 3 sentences."),
-    }),
-)
+    },
+})
+fmt.Println(result.Text)
 ```
 
 For extended thinking (reasoning), configure the provider with `WithThinking`:
@@ -126,12 +125,12 @@ provider := generativeai.New(
 )
 model := provider.ChatModel("gemini-2.5-flash")
 
-text, err := sdk.GenerateText(context.Background(),
-    sdk.WithModel(model),
-    sdk.WithMessages([]sdk.Message{
+result, err := model.Generate(context.Background(), sdk.Request{
+    Messages: []sdk.Message{
         sdk.UserMessage("Explain Go channels in 3 sentences."),
-    }),
-)
+    },
+})
+fmt.Println(result.Text)
 ```
 
 ### GitHub Copilot Agent
@@ -145,12 +144,12 @@ provider := copilot.New(
 )
 model := provider.ChatModel(copilot.AutoModel)
 
-text, err := sdk.GenerateText(context.Background(),
-    sdk.WithModel(model),
-    sdk.WithMessages([]sdk.Message{
+result, err := model.Generate(context.Background(), sdk.Request{
+    Messages: []sdk.Message{
         sdk.UserMessage("Explain Go channels in 3 sentences."),
-    }),
-)
+    },
+})
+fmt.Println(result.Text)
 ```
 
 This provider targets GitHub Copilot agent / extension runtimes that can call `api.githubcopilot.com/chat/completions`. GitHub currently does not expose a public Copilot models discovery endpoint, so `copilot.AutoModel` tells the provider to let GitHub choose the backing model instead of inventing an undocumented model ID.
@@ -158,17 +157,16 @@ This provider targets GitHub Copilot agent / extension runtimes that can call `a
 ### Stream Text
 
 ```go
-sr, err := sdk.StreamText(ctx,
-    sdk.WithModel(model),
-    sdk.WithMessages([]sdk.Message{
+stream, err := model.Stream(ctx, sdk.Request{
+    Messages: []sdk.Message{
         sdk.UserMessage("Write a haiku about concurrency."),
-    }),
-)
+    },
+})
 if err != nil {
     log.Fatal(err)
 }
 
-for part := range sr.Stream {
+for part := range stream.Parts {
     switch p := part.(type) {
     case *sdk.TextDeltaPart:
         fmt.Print(p.Text)
@@ -176,11 +174,15 @@ for part := range sr.Stream {
         log.Fatal(p.Error)
     }
 }
+
+// Once Parts is drained, the assembled result is available: text, usage,
+// finish reason and any tool calls, identical to what Generate returns.
+result, err := stream.Result()
 ```
 
 ### Tool Calling
 
-Define a struct for your tool's parameters — the SDK infers the JSON Schema automatically:
+Define a struct for your tool's parameters — the SDK infers the JSON Schema automatically. The model asks for the call; you run it and hand the result back:
 
 ```go
 type WeatherParams struct {
@@ -188,20 +190,36 @@ type WeatherParams struct {
 }
 
 weatherTool := sdk.NewTool("get_weather", "Get current weather for a city",
-    func(ctx *sdk.ToolExecContext, input WeatherParams) (any, error) {
-        return map[string]any{"city": input.City, "temp": "22°C"}, nil
+    func(ctx *sdk.ToolExecContext, input WeatherParams) (sdk.ToolOutput, error) {
+        return sdk.JSONOutput(map[string]any{"city": input.City, "temp": "22°C"})
     },
 )
+tools := []sdk.Tool{weatherTool}
+defs, err := sdk.ToolDefinitionsFromTools(tools)
+if err != nil {
+    log.Fatal(err)
+}
 
-result, err := sdk.GenerateTextResult(ctx,
-    sdk.WithModel(model),
-    sdk.WithMessages([]sdk.Message{
-        sdk.UserMessage("What's the weather in Tokyo?"),
-    }),
-    sdk.WithTools([]sdk.Tool{weatherTool}),
-    sdk.WithMaxSteps(5),
-)
+messages := []sdk.Message{sdk.UserMessage("What's the weather in Tokyo?")}
+for {
+    result, err := model.Generate(ctx, sdk.Request{Messages: messages, Tools: defs})
+    if err != nil {
+        log.Fatal(err)
+    }
+    if len(result.ToolCalls) == 0 {
+        fmt.Println(result.Text)
+        break
+    }
+    outcome, err := sdk.ExecuteTools(ctx, result.ToolCalls, sdk.ToolExecOptions{Tools: tools})
+    if err != nil {
+        log.Fatal(err)
+    }
+    messages = append(messages, sdk.BuildStepMessages(result.Text, result.TextProviderMetadata,
+        result.ReasoningParts, result.ToolCalls, outcome.Results, &result.Usage)...)
+}
 ```
+
+Each iteration is one model call; the loop, its step limit and its persistence are yours. See [Tool Calling](docs/tools.md).
 
 ### MCP Tool Calling
 
@@ -239,19 +257,28 @@ if err != nil {
 provider := completions.New(completions.WithAPIKey("sk-..."))
 model := provider.ChatModel("gpt-4o-mini")
 
-result, err := sdk.GenerateTextResult(context.Background(),
-    sdk.WithModel(model),
-    sdk.WithMessages([]sdk.Message{
-        sdk.UserMessage("Use the available MCP tools to answer this request."),
-    }),
-    sdk.WithTools(tools),
-    sdk.WithMaxSteps(5),
-)
+// MCP tools are ordinary sdk.Tool values: describe them on the Request and
+// run the calls the model makes with ExecuteTools, as in Tool Calling above.
+defs, err := sdk.ToolDefinitionsFromTools(tools)
 if err != nil {
     log.Fatal(err)
 }
-
-log.Println(result.Text)
+result, err := model.Generate(context.Background(), sdk.Request{
+    Messages: []sdk.Message{
+        sdk.UserMessage("Use the available MCP tools to answer this request."),
+    },
+    Tools: defs,
+})
+if err != nil {
+    log.Fatal(err)
+}
+outcome, err := sdk.ExecuteTools(context.Background(), result.ToolCalls, sdk.ToolExecOptions{Tools: tools})
+if err != nil {
+    log.Fatal(err)
+}
+for _, r := range outcome.Results {
+    log.Println(r.ToolName, r.Result.String())
+}
 ```
 
 For stdio, create the MCP transport yourself with the official MCP Go SDK and pass it in:
@@ -438,8 +465,8 @@ if testResult.Supported {
 | [Images](docs/images.md) | Generate and edit images with OpenAI and Alibaba Cloud DashScope image models |
 | [Embeddings](docs/embeddings.md) | Generate vector embeddings with OpenAI and Google |
 | [Speech](docs/speech.md) | Speech synthesis with Edge TTS and custom providers |
-| [Tool Calling](docs/tools.md) | Defining local tools, MCP tools, multi-step execution, approval flow |
-| [Streaming](docs/streaming.md) | Channel-based streaming and StreamPart types |
+| [Tool Calling](docs/tools.md) | Defining local tools, MCP tools, running calls with `ExecuteTools`, approval |
+| [Streaming](docs/streaming.md) | `Model.Stream`, the `ModelStream` and its StreamPart types |
 | [API Reference](docs/api-reference.md) | Complete type and function reference |
 
 ## Supported Providers

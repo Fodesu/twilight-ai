@@ -1,10 +1,5 @@
 # Providers
 
-> **Deprecated:** the `sdk.GenerateText` and `sdk.GenerateTextResult` examples
-> below run the SDK's own step loop. The provider contract is unaffected: drive
-> `DoGenerate` and `DoStream` through `sdk.Client.Generate` or
-> `sdk.Client.Stream`, which take a `sdk.Request`.
-
 A **Provider** is the abstraction that connects the SDK to an AI backend. It handles HTTP communication, request/response mapping, and streaming protocol details.
 
 ## The Provider Interface
@@ -177,7 +172,7 @@ DeepSeek returns `"reasoning_content": ""` for a thinking-mode step that
 produced no reasoning (the first streamed delta carries it too) and omits the
 key entirely when thinking is disabled, so key presence is the signal. The
 step's assistant message therefore keeps a record that it was a thinking-mode
-step, and `GenerateResult.ReasoningParts` may contain a part whose `Text` is
+step, and `ModelResult.ReasoningParts` may contain a part whose `Text` is
 empty.
 
 On the request side, an `openai-chat-v1` `ReasoningPart` is always sent as
@@ -345,15 +340,14 @@ model := provider.ChatModel("openai/o4-mini")
 Reasoning models (o3, o4-mini) return both reasoning summaries and the final answer:
 
 ```go
-effort := "medium"
-result, _ := sdk.GenerateTextResult(ctx,
-    sdk.WithModel(provider.ChatModel("openai/o4-mini")),
-    sdk.WithMessages([]sdk.Message{
+effort, summary := "medium", "auto"
+result, _ := provider.ChatModel("openai/o4-mini").Generate(ctx, sdk.Request{
+    Messages: []sdk.Message{
         sdk.UserMessage("What is 15 * 37? Think step by step."),
-    }),
-    sdk.WithReasoningEffort(effort),
-    sdk.WithReasoningSummary("auto"),
-)
+    },
+    ReasoningEffort:  &effort,
+    ReasoningSummary: &summary,
+})
 fmt.Println(result.Reasoning)  // model's reasoning summary
 fmt.Println(result.Text)       // final answer: "555"
 ```
@@ -438,18 +432,17 @@ Codex models support reasoning with encrypted content preservation. When the mod
 
 ```go
 effort := "high"
-result, _ := sdk.GenerateTextResult(ctx,
-    sdk.WithModel(provider.ChatModel("gpt-5.2-codex")),
-    sdk.WithMessages([]sdk.Message{
+result, _ := provider.ChatModel("gpt-5.2-codex").Generate(ctx, sdk.Request{
+    Messages: []sdk.Message{
         sdk.UserMessage("Refactor this function to use generics."),
-    }),
-    sdk.WithReasoningEffort(&effort),
-)
+    },
+    ReasoningEffort: &effort,
+})
 fmt.Println(result.Reasoning) // reasoning summary
 fmt.Println(result.Text)      // final answer
 ```
 
-In streaming mode, reasoning arrives as `ReasoningStartPart` / `ReasoningDeltaPart` / `ReasoningEndPart` with encrypted content in `ProviderMetadata["openai"]["reasoningEncryptedContent"]`.
+In streaming mode, reasoning arrives as `ReasoningStartPart` / `ReasoningDeltaPart` / `ReasoningEndPart` with the encrypted content in `ProviderMetadata.Get("openai", "reasoningEncryptedContent")`.
 
 ### Message Mapping
 
@@ -733,12 +726,11 @@ Gemini 2.5+ models support thinking (reasoning). The model returns parts with `t
 provider := generativeai.New(generativeai.WithAPIKey("AIza..."))
 model := provider.ChatModel("gemini-2.5-flash")
 
-result, _ := sdk.GenerateTextResult(ctx,
-    sdk.WithModel(model),
-    sdk.WithMessages([]sdk.Message{
+result, _ := model.Generate(ctx, sdk.Request{
+    Messages: []sdk.Message{
         sdk.UserMessage("What is 15 * 37? Think step by step."),
-    }),
-)
+    },
+})
 fmt.Println(result.Reasoning) // model's thinking process
 fmt.Println(result.Text)      // final answer
 ```
@@ -1522,10 +1514,9 @@ Then use it exactly like the built-in provider:
 provider := myprovider.New("my-key")
 model := provider.ChatModel("my-model-v1")
 
-text, err := sdk.GenerateText(ctx,
-    sdk.WithModel(model),
-    sdk.WithMessages([]sdk.Message{sdk.UserMessage("Hello")}),
-)
+result, err := model.Generate(ctx, sdk.Request{
+    Messages: []sdk.Message{sdk.UserMessage("Hello")},
+})
 ```
 
 ## Next Steps
@@ -1533,6 +1524,6 @@ text, err := sdk.GenerateText(ctx,
 - [Images](images.md) — generate and edit images with OpenAI and Alibaba Cloud DashScope image models
 - [Embeddings](embeddings.md) — generate vector embeddings with OpenAI and Google
 - [Speech](speech.md) — speech synthesis with Edge TTS and custom providers
-- [Tool Calling](tools.md) — define tools and enable multi-step execution
+- [Tool Calling](tools.md) — define tools and run the calls the model makes
 - [Streaming](streaming.md) — understand StreamPart types
 - [API Reference](api-reference.md) — complete type and function reference
