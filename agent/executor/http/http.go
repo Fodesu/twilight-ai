@@ -167,7 +167,7 @@ func (c *Client) Reconcile(ctx context.Context) (int, error) {
 }
 
 // Dispose settles an execution record as Unknown without re-dispatching it,
-// so the authority disposes the Run target on its next read. This is a
+// so the Owner disposes the Run target on its next read. This is a
 // control-plane operation and is intentionally not part of effect.ExecutionPort.
 func (c *Client) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 	return c.post(ctx, "/dispose", keyRequest{Key: key}, nil)

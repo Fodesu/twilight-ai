@@ -58,7 +58,7 @@ func FrozenValues(store artifact.ContentStore, bindings artifact.BindingStore) (
 func FrozenValuesInMemory(bindings artifact.BindingStore) frozen.Store {
 	store, err := artifact.NewMemoryContentStore(FrozenAuthority, artifact.MemoryContentStoreOptions{})
 	if err != nil {
-		panic(err) // the authority is a constant; only an empty one fails
+		panic(err) // the Owner is a constant; only an empty one fails
 	}
 	fz, err := FrozenValues(store, bindings)
 	if err != nil {

@@ -212,7 +212,7 @@ func (l *Loop) wrapSink(events EventSink) EventSink {
 // Executor.GetOutcome and passes it to Deliver. A concurrent Advance or a
 // blocking Run of the same Run is reported as ErrRunAlreadyRunning. store is
 // the RunStore bound to the caller's write capability: every commit of the
-// step goes through it (AUTH-OWN-2).
+// step goes through it (OWN-HDL-2).
 func (l *Loop) Advance(ctx context.Context, store runtime.RunStore, runID run.RunID, events EventSink) (LoopResult, error) {
 	if err := l.checkArgs(ctx, store, runID); err != nil {
 		return LoopResult{}, err

@@ -1,11 +1,11 @@
-package authority_test
+package owner_test
 
 import (
 	"context"
 	"errors"
 	"testing"
 
-	"github.com/felinics/twilight/agent/authority"
+	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/executor"
 	executorlocal "github.com/felinics/twilight/agent/executor/local"
 	executionstore "github.com/felinics/twilight/agent/executor/store"
@@ -14,7 +14,7 @@ import (
 	"github.com/felinics/twilight/agent/session/chatlog"
 )
 
-func newAuthority(t *testing.T) *authority.Authority {
+func newAuthority(t *testing.T) *owner.Owner {
 	t.Helper()
 	p := basePorts(t)
 	return newAuthorityFrom(t, &p)
@@ -22,7 +22,7 @@ func newAuthority(t *testing.T) *authority.Authority {
 
 // basePorts is the in-memory deployment every authority test starts from: a
 // local executor and memory stores.
-func basePorts(t *testing.T) authority.Ports {
+func basePorts(t *testing.T) owner.Ports {
 	t.Helper()
 	catalog, err := executorlocal.NewCatalog(nil)
 	if err != nil {
@@ -36,12 +36,12 @@ func basePorts(t *testing.T) authority.Ports {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return authority.Ports{Store: session.NewMemoryStore(), Executor: exec}
+	return owner.Ports{Store: session.NewMemoryStore(), Executor: exec}
 }
 
-func newAuthorityFrom(t *testing.T, p *authority.Ports) *authority.Authority {
+func newAuthorityFrom(t *testing.T, p *owner.Ports) *owner.Owner {
 	t.Helper()
-	a, err := authority.New(*p)
+	a, err := owner.New(*p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func newAuthorityFrom(t *testing.T, p *authority.Ports) *authority.Authority {
 	return a
 }
 
-// AUTH-OWN-1: one generation of ownership at a time. A second Open of an
+// OWN-HDL-1: one generation of ownership at a time. A second Open of an
 // open Session is refused; a Handle whose generation was released does not
 // close the generation that replaced it; reads need no Handle.
 func TestHandleGenerations(t *testing.T) {
@@ -63,7 +63,7 @@ func TestHandleGenerations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Open(ctx, sid); !errors.Is(err, authority.ErrSessionOpen) {
+	if _, err := a.Open(ctx, sid); !errors.Is(err, owner.ErrSessionOpen) {
 		t.Fatalf("second open = %v, want ErrSessionOpen", err)
 	}
 	if err := first.Close(ctx); err != nil {

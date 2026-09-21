@@ -13,7 +13,7 @@ const DefaultProgressWindow = 256
 
 // ProgressHub is the Worker's in-memory progress buffer (RUN-EXE-12): the
 // effect.ProgressSink its backends publish into and the effect.ProgressPort
-// the authority reads from. Each key keeps a bounded ring of frames stamped
+// the Owner reads from. Each key keeps a bounded ring of frames stamped
 // with the key's generation and a running sequence; a Reset opens the next
 // generation and an End closes the key. Nothing here is persisted: a
 // subscriber that misses frames sees a gap, a Worker restart starts over.
@@ -119,7 +119,7 @@ func (h *ProgressHub) append(f effect.ProgressFrame) {
 }
 
 // Progress is effect.ProgressPort. A key the hub has not seen yet is waited
-// for as long as ctx allows, because the authority subscribes right after
+// for as long as ctx allows, because the Owner subscribes right after
 // Dispatch and the backend's first frame may still be on its way; the
 // Worker resolves a key it knows to be absent or terminal before calling.
 func (h *ProgressHub) Progress(ctx context.Context, key effect.AssignmentKey, after uint64, fn func(effect.ProgressFrame) bool) error {

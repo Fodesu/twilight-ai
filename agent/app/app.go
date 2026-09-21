@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/artifact"
-	"github.com/felinics/twilight/agent/authority"
+	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/decision"
 	"github.com/felinics/twilight/agent/driver"
@@ -79,13 +79,13 @@ type Config struct {
 	// double, passed by name; Build never falls back to one.
 	Store     session.Store
 	Content   artifact.ContentStore
-	Artifacts authority.Artifacts
+	Artifacts owner.Artifacts
 
 	Executor ExecutorConfig
 	// Executions is the record store of the Worker Build composes
 	// (RUN-EXE-8): required whenever a Worker is composed (the local mode
 	// always; a supplied Port or the remote mode when Spawn is set), unused
-	// otherwise. It belongs to the durability bundle (AUTH-PRT-3): a durable
+	// otherwise. It belongs to the durability bundle (OWN-PRT-3): a durable
 	// Store with a memory record store manufactures missing executions after
 	// a restart, so Build refuses the mix unless Artifacts.Ephemeral opts in.
 	Executions executionstore.Store
@@ -123,17 +123,17 @@ type Config struct {
 
 // ErrEphemeralExecutions reports a durable session Store mixed with a
 // memory-only execution record store, or the reverse, without the Ephemeral
-// opt-in (AUTH-PRT-3): the Worker's records would not survive the restart the
+// opt-in (OWN-PRT-3): the Worker's records would not survive the restart the
 // Session facts survive, and every Executing target would come back missing.
 var ErrEphemeralExecutions = errors.New("app: durable session store with memory-only execution record store (or the reverse); provide the durable bundle or set Artifacts.Ephemeral")
 
-// durable reports a port's declared durability (authority.Durability); nil is
+// durable reports a port's declared durability (owner.Durability); nil is
 // not a store, and a port that does not declare is taken as durable.
 func durable(port any) bool {
 	if port == nil {
 		return false
 	}
-	if d, ok := port.(authority.Durability); ok {
+	if d, ok := port.(owner.Durability); ok {
 		return d.Durable()
 	}
 	return true
@@ -146,7 +146,7 @@ const CompactorSystemPrompt = compaction.CompactorSystemPrompt
 // Application is the composition root: the Authority plus the application's
 // own services -- the preset table, the event stream and the spawn effect.
 type Application struct {
-	Authority *authority.Authority
+	Owner *owner.Owner
 	bus       *observe.Bus
 	spawn     *spawn.Responder
 	// worker is the Worker Build composed, if any; Close stops it after the
@@ -235,7 +235,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	// through a forwarding observer bound after New.
 	var bus *observe.Bus
 	observers := append([]writer.CommitObserver{forwardingObserver{&bus}}, c.Observers...)
-	a, err := authority.New(authority.Ports{
+	a, err := owner.New(owner.Ports{
 		Store: c.Store, Content: content, Artifacts: c.Artifacts, Presets: c.Registry, Decisions: c.Decisions,
 		Executor: port, TargetResolver: c.TargetResolver, Observers: observers, Modules: c.Modules,
 		Clock: c.Clock, Cache: c.Cache, CacheEvery: c.CacheEvery, Ownership: c.Ownership, Fail: app.fail,
@@ -244,7 +244,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		return nil, err
 	}
 	bus = observe.NewBus(a.Registry)
-	app.Authority, app.bus = a, bus
+	app.Owner, app.bus = a, bus
 	// The Sessions' compaction policy runs between the steps of a Turn
 	// through the driver's planner seam (APP-CKP-1, RUN-LOP-10).
 	a.Driver.Planner = app
@@ -303,7 +303,7 @@ func (app *Application) fail(sid session.SessionID, err error) {
 
 // RegisterPreset adds or replaces a decision identity after Build.
 func (app *Application) RegisterPreset(id turn.PresetID, p turn.AgentPreset) (turn.PresetRef, error) {
-	ref, err := app.Authority.Presets.Register(id, p)
+	ref, err := app.Owner.Presets.Register(id, p)
 	if err != nil {
 		return turn.PresetRef{}, err
 	}
@@ -337,7 +337,7 @@ func (app *Application) Close(ctx context.Context) error {
 	if app.spawn != nil {
 		app.spawn.Close()
 	}
-	err := app.Authority.Close(ctx)
+	err := app.Owner.Close(ctx)
 	// The Worker goes last: the Authority's drives may still be settling
 	// outcomes through it. Records keep their leases until they expire and
 	// the next incarnation adopts them (RUN-EXE-8, SPN-4).
@@ -400,5 +400,5 @@ func buildExecutor(c *Config, extra []executor.Route) (effect.ExecutionPort, *ex
 // Event is one item of a Session's event stream (OBS-1).
 type Event = observe.Event
 
-// ForkRequest forks a Session at one commit of its ledger (AUTH-FRK-1).
-type ForkRequest = authority.ForkRequest
+// ForkRequest forks a Session at one commit of its ledger (OWN-FRK-1).
+type ForkRequest = owner.ForkRequest

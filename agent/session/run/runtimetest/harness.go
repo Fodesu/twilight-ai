@@ -107,7 +107,7 @@ func (h *harness) takeover() (*runmod.SessionRunStore, writer.Writer) {
 	old, oldWriter := h.rt, h.writer()
 	h.open()
 	// Ownership changes hands when the new process opens its Writer, not
-	// when it reads: reads take no lease (AUTH-OWN-2).
+	// when it reads: reads take no lease (OWN-HDL-2).
 	h.writer()
 	return old, oldWriter
 }

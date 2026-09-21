@@ -410,7 +410,7 @@ func (w *Worker) reconcileLoop(interval time.Duration) {
 
 // Dispose settles a non-terminal record as Unknown without re-dispatching it.
 // The caller is the control plane: it has decided that the execution cannot be
-// recovered and that the authority should dispose the Run target (RUN-CMT-7).
+// recovered and that the Owner should dispose the Run target (RUN-CMT-7).
 // Unlike Takeover, Dispose is unconditional — it also applies to records whose
 // owner is dead or absent — and unlike Cancel it does not require backend
 // reachability: the backend is cancelled best-effort after the settle.

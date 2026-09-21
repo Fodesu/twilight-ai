@@ -106,7 +106,7 @@ func RetainLast(entries []chatlog.Entry, n int) []chatlog.EntryDigestPair {
 // Summarizer asks a preset's model for the checkpoint summary. The call is
 // an effect like any other and goes through the effect port (APP-CKP-1):
 // the request is frozen and dispatched as a model Assignment outside any
-// Run, so the authority holds no model client and a remote executor serves
+// Run, so the Owner holds no model client and a remote executor serves
 // it the same way. A crash while it generates writes nothing.
 type Summarizer struct {
 	// ResolvePreset returns the AgentPreset a PresetRef names.

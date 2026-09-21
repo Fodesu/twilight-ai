@@ -52,7 +52,7 @@ const (
 	// Empty starts the child from an empty Session.
 	Empty Mode = "spawn"
 	// Fork starts the child from the parent's history before the Turn that
-	// made the call (AUTH-FRK-2): the conversation so far, without the Turn
+	// made the call (OWN-FRK-2): the conversation so far, without the Turn
 	// that is still executing.
 	Fork Mode = "fork"
 )

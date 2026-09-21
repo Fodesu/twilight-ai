@@ -1,4 +1,4 @@
-package authority
+package owner
 
 import (
 	"errors"
@@ -14,7 +14,7 @@ import (
 
 type nopPort struct{ effect.ExecutionPort }
 
-// AUTH-PRT-3: durability is one declared bundle. A durable Session Store
+// OWN-PRT-3: durability is one declared bundle. A durable Session Store
 // with a memory content store, or with explicitly passed memory binding and
 // ledger stores, is refused until Artifacts.Ephemeral accepts it.
 func TestNewRefusesMixedDurability(t *testing.T) {

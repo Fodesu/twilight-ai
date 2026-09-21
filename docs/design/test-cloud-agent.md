@@ -2,28 +2,28 @@
 
 状态：Agent Core 的 reference application / E2E 验证规范。
 
-本文只定义一个最小的 authority/worker/recovery 场景及其验证方法，不重新定义
+本文只定义一个最小的 Owner/worker/recovery 场景及其验证方法，不重新定义
 Session、Run、Turn、Executor 或 Workspace 协议。协议权威分别是：
 
 - [Session](agent-session.md) 与 [Session Module Framework](agent-session-extension.md)：事实流、Writer、所有权、幂等与投影；
 - [Run](agent-run.md)：执行状态机、Assignment、Outcome 与 recovery；
 - [Turn](agent-turn.md)：回合、attempt、输入投递与结算；
-- [Runtime](agent-runtime.md)：authority 组装、Session 所有权与 app 策略；
+- [Runtime](agent-runtime.md)：Owner 组装、Session 所有权与 app 策略；
 - [Workspace](agent-workspace.md)：逻辑工作空间、RuntimeBinding 与 TargetRef。
 
 如果本文与上述协议冲突，以上述协议为准。进程级验证 harness 与演示入口已于
-2026-09-17 移除（原 `agent/host/cloudtest`、`cmd/twilight-agent`），待 authority / app
+2026-09-17 移除（原 `agent/host/cloudtest`、`cmd/twilight-agent`），待 Owner / app
 分层稳定后在 app 层重建；两者都不是本规范的 API 合同。
 
 ## 1. 目标
 
 构造一个最小的远程目录问答 Agent：
 
-1. authority 接收一个输入并创建 Turn/Run；
+1. Owner 接收一个输入并创建 Turn/Run；
 2. worker 执行模型与只读目录工具；
-3. authority 只持有 Session、PromptBuilder 和决策身份，不持有模型或工具实现；
-4. worker 只持有 Executor、模型/工具实现与 Execution Store，不读取 authority 的 Session；
-5. authority 或 worker 退出后，新的 authority 能根据持久事实恢复、重连或明确处置；
+3. Owner 只持有 Session、PromptBuilder 和决策身份，不持有模型或工具实现；
+4. worker 只持有 Executor、模型/工具实现与 Execution Store，不读取 Owner 的 Session；
+5. Owner 或 worker 退出后，新的 Owner 能根据持久事实恢复、重连或明确处置；
 6. 测试通过 Session event、Execution Record、provider 调用次数和最终回复验证结果。
 
 首个 fixture 固定为一个 Session、一个 AgentPreset、一个 worker 和一个只读
@@ -32,7 +32,7 @@ workspace。这个限制属于 reference application 的 admission policy，不�
 ## 2. 组装与边界
 
 ```text
-authority                         worker                         client
+Owner                         worker                         client
 Session Store                     Execution Store               HTTP/CLI
 Frozen Content Store              LocalExecutor                 submit/status
 Host + Loop                       ModelCatalog + ToolCatalog    observe only
@@ -41,9 +41,9 @@ Remote Executor client            HTTP Executor server
         +---------- Assignment/Outcome ----+
 ```
 
-### authority
+### Owner
 
-authority 的组装只允许包含：
+Owner 的组装只允许包含：
 
 - `session.Store`、`artifact.ContentStore`；
 - immutable `AgentPreset` 与 `PromptBuilder` 目录；
@@ -51,7 +51,7 @@ authority 的组装只允许包含：
 - 远端 `loop.Executor` client；
 - 应用层的 input admission、scheduler、查询 view 和生命周期。
 
-authority 不包含模型 client、工具实现或 provider SDK。
+Owner 不包含模型 client、工具实现或 provider SDK。
 
 ### worker
 
@@ -62,7 +62,7 @@ worker 的组装只允许包含：
 - worker 自己的 `Execution Store` 与 payload store；
 - HTTP executor transport。
 
-worker 不打开 authority 的 Session Store，也不执行 `Turn`、`Run` 或 `Loop`。
+worker 不打开 Owner 的 Session Store，也不执行 `Turn`、`Run` 或 `Loop`。
 
 ### client
 
@@ -77,7 +77,7 @@ client 只负责提交稳定的 InputID、查询 view、读取事件和显示结
 TargetRef{Kind: "workspace", ID: "fixture"}
 ```
 
-authority 的 `TargetResolver` 对每个 tool effect 返回相同逻辑 target，恢复后亦然（RUN-LOP-9）。v1 fixture 可以把
+Owner 的 `TargetResolver` 对每个 tool effect 返回相同逻辑 target，恢复后亦然（RUN-LOP-9）。v1 fixture 可以把
 它解析到 worker 上的固定只读目录，但这个路径只是 provider adapter 的实现细节；
 Core 不保存路径，也不把 Workspace 放入 AgentPreset。
 
@@ -128,15 +128,15 @@ execution: observed | unavailable | recovery_required
 
 | 故障窗口 | 必须保持 | 允许的新事实 | 禁止行为 | 主要 oracle |
 |---|---|---|---|---|
-| authority 写入 Start 后、Dispatch 前退出 | Turn、Run、Attempt | 重新规划或继续驱动 | 重复旧 Assignment | Run facts、Assignment 数量 |
+| Owner 写入 Start 后、Dispatch 前退出 | Turn、Run、Attempt | 重新规划或继续驱动 | 重复旧 Assignment | Run facts、Assignment 数量 |
 | worker 接受 Assignment 前退出 | AssignmentKey；若已有 binding 则保持 binding | 明确 missing/orphaned 观察 | 无依据地重发 provider job | Execution Record |
 | worker 已持久化 accepted 后退出 | Assignment、Claim、Execution Record | takeover/attach | 创建第二个 execution | binding、provider 调用次数 |
 | provider invocation 中 worker 退出 | AssignmentKey、已知 binding | active、terminal 或 orphaned | 自动把不确定执行当作未执行 | backend 状态、最终 facts |
-| Outcome 已持久化、通知未送达 | Outcome、AssignmentKey | authority 重新读取并结算 | 重复执行 provider | GetOutcome、event 数量 |
-| authority 读 Outcome 临时失败 | Run、Step、Claim | retry read | 写入 Unknown 或取消 Run | Run 仍为 Executing |
+| Outcome 已持久化、通知未送达 | Outcome、AssignmentKey | Owner 重新读取并结算 | 重复执行 provider | GetOutcome、event 数量 |
+| Owner 读 Outcome 临时失败 | Run、Step、Claim | retry read | 写入 Unknown 或取消 Run | Run 仍为 Executing |
 | settlement append 前失败 | CommitID、Claim | 同一 command replay | 生成第二个 commit | commit fingerprint |
 | settlement append 结果未知 | CommitID、Claim | reopen 后 AlreadyApplied/Applied | 继续使用失效 Writer | ledger、claim state |
-| authority 失去 Epoch 后迟到结算 | 新 owner 的事实 | 无旧 owner 新事实 | 旧 owner 修改 Session | Epoch、ledger head |
+| Owner 失去 Epoch 后迟到结算 | 新 owner 的事实 | 无旧 owner 新事实 | 旧 owner 修改 Session | Epoch、ledger head |
 | client 断开 | InputID、已接受事实 | 后台继续处理 | 取消服务端执行 | 重连后的 reply |
 
 矩阵中的“保持”是 identity 断言，不是内存对象断言。测试必须从重新打开的
@@ -181,16 +181,16 @@ Executor contract，至少验证：
 
 进程级 harness（待重建）通过真实子进程验证：
 
-- authority crash/restart；
+- Owner crash/restart；
 - worker crash/restart；
 - SIGSTOP/SIGCONT 造成的 takeover race；
-- authority 断连后的 attach 与迟到结果；
+- Owner 断连后的 attach 与迟到结果；
 - client disconnect；
 - observer 从无 ownership 的 Store 折出的 projection 与 owner 一致。
 
-authority、worker 的 Session/Execution 数据目录必须分离。若测试共享 fixture
+Owner、worker 的 Session/Execution 数据目录必须分离。若测试共享 fixture
 文件，必须明确它是只读 workspace 或独立 payload store，不能把共享目录误当作
-共享 Session authority。
+共享 Session Owner。
 
 ### 6.4 Provider smoke
 
@@ -214,7 +214,7 @@ Result：最终回复、Failure/Unknown/Recovery disposition
 ## 8. 实施顺序
 
 1. 在 app 层重建唯一的 executable harness，先补齐故障窗口矩阵；
-2. 抽取 authority/worker 的最小组装函数，保证没有重复的 Host/Loop/Executor 组装；
+2. 抽取 Owner/worker 的最小组装函数，保证没有重复的 Host/Loop/Executor 组装；
 3. 为测试应用接入稳定 `TargetRef` 和 `TargetResolver`；
 4. 增加 orphaned/deferred 的 control-plane 测试；
 5. 最后再实现正式的 client/API 和真实 provider smoke；

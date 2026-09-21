@@ -24,7 +24,7 @@ in a destination described by `Spec`. The destination may retain the Workspace
 identity for recovery or use a new identity for a fork. Checkpoint production
 and durable-state retention are owned by the provider/application adapter.
 
-Session fork (SES section 8, AUTH-FRK-2) does not call Restore. A fork copies
+Session fork (SES section 8, OWN-FRK-2) does not call Restore. A fork copies
 the Session's committed facts only: the child Session inherits the
 conversation history and Turn settlements, not the workspace state the parent
 had at the fork point, and the parent's later tool calls keep their effects on
@@ -53,7 +53,7 @@ manager and the `TargetResolver` implementation, and guarantees the
 durability of its Session → workspace mapping.
 
 Conversation lineage and resource lineage are separate lineages. A Session
-fork (AUTH-FRK-2) copies committed facts and carries no resource binding to
+fork (OWN-FRK-2) copies committed facts and carries no resource binding to
 the child; the application's fork policy decides the child's binding and
 establishes a new resource binding for it:
 

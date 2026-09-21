@@ -91,7 +91,7 @@ type Reader interface {
 // events and never drives a Run: it commits protocol transitions and computes
 // dispositions.
 type Coordinator struct {
-	// Projections is the lease-free read side for Status (AUTH-OWN-2).
+	// Projections is the lease-free read side for Status (OWN-HDL-2).
 	Projections extension.ProjectionReader
 	// Runs is the Run module's Session adapter: it reads Runs for Status and
 	// contributes the Run Parts of every Turn unit.

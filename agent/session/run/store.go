@@ -37,7 +37,7 @@ type Config struct {
 	Registry *extension.Registry
 	// Store is the read side: Record folds from it (through Cache) without
 	// taking ownership; commands write through the Writer a port is bound
-	// to (AUTH-OWN-2).
+	// to (OWN-HDL-2).
 	Store session.Store
 	// Frozen holds the bodies facts name by digest (RUN-WIR-4). It is
 	// required, and it must register each body's Binding for the Writers'
@@ -103,7 +103,7 @@ func loadMachine(view writer.View) (Machine, error) {
 
 // Bind returns the runtime.RunStore over one Session Writer: the caller's
 // ownership capability, so every command of a drive lands on the same Writer,
-// epoch and projection view (AUTH-OWN-2).
+// epoch and projection view (OWN-HDL-2).
 func (s *SessionRunStore) Bind(w writer.Writer) runtime.RunStore { return &bound{s: s, w: w} }
 
 type bound struct {
@@ -113,7 +113,7 @@ type bound struct {
 
 func (b *bound) Scope() run.Scope { return run.Scope(b.w.SessionID()) }
 
-// Writer is the ownership capability the store is bound to (AUTH-OWN-2);
+// Writer is the ownership capability the store is bound to (OWN-HDL-2);
 // a Loop hook that must commit through the same Writer takes it from here.
 func (b *bound) Writer() writer.Writer { return b.w }
 
@@ -433,7 +433,7 @@ type Record struct {
 }
 
 // Record folds a Run from the Store by SessionID; it needs no ownership
-// (AUTH-OWN-2).
+// (OWN-HDL-2).
 func (s *SessionRunStore) Record(ctx context.Context, sid session.SessionID, runID run.RunID) (Record, error) {
 	if err := runtime.CheckContext(ctx); err != nil {
 		return Record{}, err

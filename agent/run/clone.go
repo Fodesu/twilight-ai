@@ -10,7 +10,7 @@ import (
 // (RUN-CMT-6) — a caller mutating a returned slice or map must never reach
 // authoritative storage or committed event bytes.
 //
-// The agent Runtime is an authority boundary. All persisted request/result
+// The agent Runtime is an Owner boundary. All persisted request/result
 // shapes are agent-owned JSON-stable values, so cloning is mechanical: copy
 // structs and copy slice/map containers. CanonicalJSON values are immutable.
 

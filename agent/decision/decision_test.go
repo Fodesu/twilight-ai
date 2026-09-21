@@ -20,7 +20,7 @@ import (
 	"github.com/felinics/twilight/agent/turn"
 )
 
-// fixedSource serves one Context state at one head, the way an authority or
+// fixedSource serves one Context state at one head, the way an Owner or
 // an observer would for the same stream position.
 type fixedSource struct {
 	state chatlog.Context

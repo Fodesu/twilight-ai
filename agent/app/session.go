@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/felinics/twilight/agent/authority"
+	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/driver"
 	"github.com/felinics/twilight/agent/run"
@@ -101,8 +101,8 @@ type Session struct {
 	Recovered int
 
 	app       *Application
-	a         *authority.Authority
-	h         *authority.Handle
+	a         *owner.Owner
+	h         *owner.Handle
 	sid       session.SessionID
 	opts      SessionOptions
 	newTurnID func() turn.TurnID
@@ -125,7 +125,7 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 	if opts.Preset.ID == "" || opts.Preset.Digest == "" {
 		return nil, errors.New("app: open session requires a preset ref")
 	}
-	a := app.Authority
+	a := app.Owner
 	if _, err := a.Presets.Resolve(opts.Preset); err != nil {
 		return nil, err
 	}
@@ -155,7 +155,7 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 func (s *Session) ID() session.SessionID { return s.sid }
 
 // Handle is the ownership capability the conversation runs under.
-func (s *Session) Handle() *authority.Handle { return s.h }
+func (s *Session) Handle() *owner.Handle { return s.h }
 
 func (s *Session) ref(turnID turn.TurnID) turn.TurnRef {
 	return turn.TurnRef{SessionID: s.sid, TurnID: turnID}

@@ -817,7 +817,7 @@ func testToolAssignment() effect.Assignment {
 }
 
 // Dispose is the control plane's give-up path: the record settles Unknown
-// regardless of owner or lease, so the authority's next read disposes the Run
+// regardless of owner or lease, so the Owner's next read disposes the Run
 // target; terminal records and missing keys are not errors.
 func TestWorkerDisposeSettlesUnknown(t *testing.T) {
 	completedEnv := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Unknown: false}

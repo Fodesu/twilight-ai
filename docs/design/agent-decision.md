@@ -2,7 +2,7 @@
 
 状态：v1 设计规范。本文定义 Agent Core 的决策层。协议边界见 [Turn](agent-turn.md)、[Run](agent-run.md) 与 [Chatlog](agent-session-chatlog.md)。
 
-本文定义 `agent/decision`：把已提交状态与 AgentPreset 变成下一条 prompt 的组件。agent core 的三层按纯性划分——事实层（Session ledger、Writer、投影）、决策层（本文）、效果层（模型调用、工具执行）；决策层是三层里给定输入即确定的一层，它读投影、不做 IO，全部运行在 Session authority 一侧。文中的"必须""不得""应该"是协议约束。
+本文定义 `agent/decision`：把已提交状态与 AgentPreset 变成下一条 prompt 的组件。agent core 的三层按纯性划分——事实层（Session ledger、Writer、投影）、决策层（本文）、效果层（模型调用、工具执行）；决策层是三层里给定输入即确定的一层，它读投影、不做 IO，全部运行在 Session Owner 一侧。文中的"必须""不得""应该"是协议约束。
 
 ## 1. 范围与身份
 
@@ -63,7 +63,7 @@ func (*PromptBuilders) Resolve(turn.AgentPreset, Sources) (loop.PromptBuilder, e
 func DefaultPromptBuilders() *PromptBuilders // 含 PromptContextV1
 ```
 
-**DEC-CAT-1** 目录在装配期构建、运行期只读：空 ref、nil factory、重复 ref 被拒绝。目录是 authority 侧的组件，不需要效果实现即可构建。
+**DEC-CAT-1** 目录在装配期构建、运行期只读：空 ref、nil factory、重复 ref 被拒绝。目录是 Owner 侧的组件，不需要效果实现即可构建。
 
 **DEC-CAT-2** `PromptBuilders.Resolve(preset, source)` 按 `preset.Prompt` 解析；未注册返回 `ErrUnknownPromptBuilder`，该 AgentPreset 不得被注册或驱动（PST-2 的 `preset_unavailable`）。接管进程以同一 AgentPreset 解析得到同一决策函数。
 

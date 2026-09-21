@@ -2,7 +2,7 @@
 // (docs/design/agent-decision.md): the components that turn committed state
 // and an AgentPreset into the next effect request. Everything here is a
 // deterministic function of projection state and the AgentPreset, runs on the
-// authority side, and is named by a ref the AgentPreset digest covers, so the
+// Owner side, and is named by a ref the AgentPreset digest covers, so the
 // process that takes a Turn over rebuilds the same decision function.
 package decision
 

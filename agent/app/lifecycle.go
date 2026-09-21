@@ -16,53 +16,53 @@ import (
 
 // --- session lifecycle, forwarded from the Authority ---------------------------------
 
-// Fork creates a child session from a parent's ledger prefix (AUTH-FRK-1).
+// Fork creates a child session from a parent's ledger prefix (OWN-FRK-1).
 func (app *Application) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
-	return app.Authority.Fork(ctx, req)
+	return app.Owner.Fork(ctx, req)
 }
 
 // ForkBeforeTurn forks a session at the commit before the named turn started
-// (AUTH-FRK-2), so the turn's inputs can be regenerated or edited in the child.
+// (OWN-FRK-2), so the turn's inputs can be regenerated or edited in the child.
 func (app *Application) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
-	return app.Authority.ForkBeforeTurn(ctx, parent, turnID, child)
+	return app.Owner.ForkBeforeTurn(ctx, parent, turnID, child)
 }
 
-// DeleteSession drops a session's root (AUTH-FRK-3).
+// DeleteSession drops a session's root (OWN-FRK-3).
 func (app *Application) DeleteSession(ctx context.Context, sid session.SessionID) error {
-	return app.Authority.DeleteSession(ctx, sid)
+	return app.Owner.DeleteSession(ctx, sid)
 }
 
 // Collect reclaims unreachable session segments (SES-GC-2).
 func (app *Application) Collect(ctx context.Context) (session.CollectReport, error) {
-	return app.Authority.Collect(ctx)
+	return app.Owner.Collect(ctx)
 }
 
 // ChatlogSurface reads the chatlog surface of a Session.
 func (app *Application) ChatlogSurface(ctx context.Context, sid session.SessionID) (chatlog.Surface, error) {
-	return chatlog.ReadSurface(ctx, app.Authority.Projections, sid)
+	return chatlog.ReadSurface(ctx, app.Owner.Projections, sid)
 }
 
 // TurnSurface reads the turn surface of a Session.
 func (app *Application) TurnSurface(ctx context.Context, sid session.SessionID) (turn.TurnSurface, error) {
-	return turn.ReadSurface(ctx, app.Authority.Projections, sid)
+	return turn.ReadSurface(ctx, app.Owner.Projections, sid)
 }
 
 // Projection reads any registered projection of a Session (APP-MEM-1).
 func (app *Application) Projection(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (any, session.Head, error) {
-	return app.Authority.Projection(ctx, sid, id, v)
+	return app.Owner.Projection(ctx, sid, id, v)
 }
 
 // Content materializes the frozen bodies projections name (CHT-MAT-1).
-func (app *Application) Content() chatlog.ContentResolver { return app.Authority.Content }
+func (app *Application) Content() chatlog.ContentResolver { return app.Owner.Content }
 
 // CreateSession creates the Session.
 func (app *Application) CreateSession(ctx context.Context, sid session.SessionID) error {
-	return app.Authority.CreateSession(ctx, sid, jsonstable.Value{})
+	return app.Owner.CreateSession(ctx, sid, jsonstable.Value{})
 }
 
 // EnsureSession creates the stream when it does not exist yet.
 func (app *Application) EnsureSession(ctx context.Context, sid session.SessionID) error {
-	return app.Authority.EnsureSession(ctx, sid)
+	return app.Owner.EnsureSession(ctx, sid)
 }
 
 // --- presets ------------------------------------------------------------------------
@@ -119,7 +119,7 @@ func NewPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...PresetOp
 }
 
 // NewPresetFromDefinitions constructs a preset from already frozen public
-// tool definitions, for an authority without local tool implementations.
+// tool definitions, for an Owner without local tool implementations.
 func NewPresetFromDefinitions(model run.ModelRef, tools []turn.PublicTool, opts ...PresetOption) (turn.AgentPreset, error) {
 	if model == "" {
 		return turn.AgentPreset{}, errNoModel

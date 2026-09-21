@@ -815,7 +815,7 @@ func testOwnershipLost(t *testing.T, factory Factory) {
 	}
 	// Reading needs no ownership: the superseded process still reads the
 	// ledger by SessionID and sees the state as the new owner left it
-	// (AUTH-OWN-2); only its Writer's view and commits are fenced.
+	// (OWN-HDL-2); only its Writer's view and commits are fenced.
 	if rec, err := old.Record(h.ctx, sid, "r1"); err != nil || rec.Snapshot.State.Current.(run.ModelStep).Status != run.ModelExecuting {
 		t.Fatalf("old owner record = %v, want the current state without an ownership error", err)
 	}

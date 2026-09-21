@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
-	"github.com/felinics/twilight/agent/authority"
+	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/executor"
 	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/jsonstable"
@@ -182,7 +182,7 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cfg := app.Config{Store: store, Content: content, Spawn: &spawn.Options{}, Ownership: session.OpenOptions{Takeover: takeover}, Artifacts: authority.Artifacts{Ephemeral: true}}
+		cfg := app.Config{Store: store, Content: content, Spawn: &spawn.Options{}, Ownership: session.OpenOptions{Takeover: takeover}, Artifacts: owner.Artifacts{Ephemeral: true}}
 		// The child's own model execution belongs to process 1's Worker; process
 		// 2's clock runs an hour ahead so that record reads as orphaned and its
 		// reconcile loop adopts and restarts it (RUN-EXE-6).

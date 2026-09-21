@@ -9,7 +9,7 @@ import (
 	"github.com/felinics/twilight/agent/session/extension"
 )
 
-// History answers boundary questions about a Session's ledger (AUTH-FRK-2,
+// History answers boundary questions about a Session's ledger (OWN-FRK-2,
 // SPN-5): it reads the turn and chatlog event types, so callers need
 // not scan raw commits themselves.
 type History struct {
@@ -118,7 +118,7 @@ func (h History) scanBoundary(ctx context.Context, sid session.SessionID, turnID
 // ActiveAt reports the Turn that is active in sid's history as of commit at
 // (inclusive): the turn surface folded over commits [0, at]. A fork at such
 // a point would hand the child a Turn whose execution belongs to the parent
-// (AUTH-FRK-1), so callers refuse it.
+// (OWN-FRK-1), so callers refuse it.
 func (h History) ActiveAt(ctx context.Context, sid session.SessionID, at session.CommitSeq) (TurnID, bool, error) {
 	scope, err := h.Registry.ScopeFor(SurfaceProjectionID, SurfaceProjection.Version)
 	if err != nil {

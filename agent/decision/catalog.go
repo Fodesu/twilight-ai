@@ -12,7 +12,7 @@ import (
 // reads state only through the Sources (DEC-CAT-1).
 type PromptBuilderFactory func(turn.AgentPreset, Sources) loop.PromptBuilder
 
-// PromptBuilders resolves PromptBuilderRefs on the authority side (DEC-CAT-1).
+// PromptBuilders resolves PromptBuilderRefs on the Owner side (DEC-CAT-1).
 // It is the decision layer's only registry: every other decision input is
 // data on the AgentPreset itself.
 type PromptBuilders struct {

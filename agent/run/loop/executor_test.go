@@ -560,7 +560,7 @@ func (e *missingBodyExecutor) Dispatch(ctx context.Context, a Assignment) error 
 
 // A persistently missing body reported by a remote executor must not spin the
 // Run: the blocking Run returns the error after one withdrawal. The executor
-// owns the execution payload after Dispatch; the authority does not rebuild it
+// owns the execution payload after Dispatch; the Owner does not rebuild it
 // from Session state during this path.
 func TestRunStopsAfterOneMissingBodyRecovery(t *testing.T) {
 	cases := []struct {

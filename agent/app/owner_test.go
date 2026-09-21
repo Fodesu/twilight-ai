@@ -78,7 +78,7 @@ func (e *recordingExecutor) assignments() []loop.Assignment {
 	return append([]loop.Assignment(nil), e.assigned...)
 }
 
-// The authority side needs no effect implementation (AUTH-PRT-2): a Host built
+// The Owner side needs no effect implementation (OWN-PRT-2): a Host built
 // over an Executor that is only a recorder registers an AgentPreset, starts a Turn,
 // dispatches the model Assignment with the frozen request's digest, and
 // settles the Outcome the executor sends back. Every model client and tool
@@ -91,7 +91,7 @@ func TestAuthorityRunsWithoutEffectImplementations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fz := h.Authority.Frozen
+	fz := h.Owner.Frozen
 	presetRef, err := h.RegisterPreset("remote", mustPreset("m-remote", nil, app.WithSystemPrompt("be brief")))
 	if err != nil {
 		t.Fatal(err)

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
-	"github.com/felinics/twilight/agent/authority"
+	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"
@@ -51,7 +51,7 @@ func Example_jsonlPrototype() {
 		panic(err)
 	}
 	model1 := &scriptedRequests{answers: []sdk.ModelResult{protoToolCall("call-1"), protoText("done"), protoToolCall("call-2")}}
-	p1 := newHost(app.Config{Store: store1, Content: content, Clock: clock.Now, Artifacts: authority.Artifacts{Ephemeral: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model1}, tool)
+	p1 := newHost(app.Config{Store: store1, Content: content, Clock: clock.Now, Artifacts: owner.Artifacts{Ephemeral: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model1}, tool)
 	profile1, err := p1.RegisterPreset("jsonl-agent", preset)
 	if err != nil {
 		panic(err)
@@ -65,7 +65,7 @@ func Example_jsonlPrototype() {
 
 	// Turn 1: Route starts the Turn; the model asks for the tool, which blocks.
 	stage1 := tool.stage()
-	in1, err := p1.Authority.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-1", "what is the weather?")
+	in1, err := p1.Owner.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-1", "what is the weather?")
 	if err != nil {
 		panic(err)
 	}
@@ -80,7 +80,7 @@ func Example_jsonlPrototype() {
 	<-stage1.started
 
 	// Steer: a second Route while turn-1 runs goes to Deliver (APP-RTE-1).
-	in2, err := p1.Authority.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-2", "and tomorrow?")
+	in2, err := p1.Owner.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-2", "and tomorrow?")
 	if err != nil {
 		panic(err)
 	}
@@ -105,7 +105,7 @@ func Example_jsonlPrototype() {
 	fmt.Printf("steer: in-2 %s to turn-1 while its tool call executes\n", steered.Status)
 
 	// Queue: in-3 is only submitted; nothing delivers it into the running Turn.
-	if _, err := p1.Authority.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-3", "book a table"); err != nil {
+	if _, err := p1.Owner.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-3", "book a table"); err != nil {
 		panic(err)
 	}
 	chat, _ = p1.ChatlogSurface(ctx, sid)
@@ -131,18 +131,18 @@ func Example_jsonlPrototype() {
 	if err != nil {
 		panic(err)
 	}
-	p2 := newHost(app.Config{Store: store2, Content: content, Ownership: session.OpenOptions{Takeover: true}, Clock: clock.Now, Artifacts: authority.Artifacts{Ephemeral: true}},
+	p2 := newHost(app.Config{Store: store2, Content: content, Ownership: session.OpenOptions{Takeover: true}, Clock: clock.Now, Artifacts: owner.Artifacts{Ephemeral: true}},
 		map[run.ModelRef]loop.ModelInvoker{"m-1": &scriptedRequests{}}, tool)
 	if _, err := p2.RegisterPreset("jsonl-agent", preset); err != nil {
 		panic(err)
 	}
-	owned, err := p2.Authority.Open(ctx, sid)
+	owned, err := p2.Owner.Open(ctx, sid)
 	if err != nil {
 		panic(err)
 	}
 	fmt.Printf("process 2: took over; %d executing target disposed\n", owned.Recovered)
 
-	resp2, err := p2.Authority.Driver.Drive(ctx, owned.Writer(), "turn-2")
+	resp2, err := p2.Owner.Driver.Drive(ctx, owned.Writer(), "turn-2")
 	if err != nil {
 		panic(err)
 	}

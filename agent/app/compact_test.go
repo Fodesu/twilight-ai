@@ -192,7 +192,7 @@ func TestCompactRefusesWhileTurnActive(t *testing.T) {
 }
 
 // The compactor's model Assignment must carry the frozen request inline: the
-// durable Worker (the remote executor shape) cannot read the authority's
+// durable Worker (the remote executor shape) cannot read the Owner's
 // frozen store and rejects digest-only model assignments (APP-CKP-1,
 // RUN-EXE-1, RUN-EXE-3).
 func TestCompactDispatchServesDurableWorker(t *testing.T) {

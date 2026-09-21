@@ -16,7 +16,7 @@ import (
 
 // Commands are the chatlog's canonical commands -- submitting and
 // withdrawing inputs, committing checkpoints -- each through the Writer the
-// caller owns (CHT-EVT, AUTH-OWN-2). They are the only writer of chatlog
+// caller owns (CHT-EVT, OWN-HDL-2). They are the only writer of chatlog
 // facts: callers go through these methods instead of building chatlog
 // TypedEvents by hand.
 type Commands struct {
@@ -71,7 +71,7 @@ func (s *Commands) Submit(ctx context.Context, w writer.Writer, id run.InputID, 
 
 // Withdraw marks a submitted, undelivered input as withdrawn
 // (CHT-EVT-2), for example the original input of a Turn the caller forked
-// before in order to edit it (AUTH-FRK-2).
+// before in order to edit it (OWN-FRK-2).
 func (s *Commands) Withdraw(ctx context.Context, w writer.Writer, id run.InputID, reason string) error {
 	res, err := w.Commit(ctx, func(v writer.View) (*writer.SemanticGroup, error) {
 		state, err := v.Projection(SurfaceProjectionID, SurfaceProjection.Version)

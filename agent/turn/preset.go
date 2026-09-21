@@ -39,7 +39,7 @@ type AgentPreset struct {
 	Model         run.ModelRef `json:"model"`
 	Tools         []PublicTool `json:"tools,omitempty"`
 	Streaming     bool         `json:"streaming,omitempty"`
-	// Prompt names the decision component resolved on the authority side.
+	// Prompt names the decision component resolved on the Owner side.
 	Prompt PromptBuilderRef `json:"prompt"`
 	// Scheduling is how the tool calls of one step run: parallel (default) or
 	// sequential, with an optional bound on concurrent workers. It is frozen

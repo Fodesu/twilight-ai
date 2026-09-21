@@ -82,12 +82,12 @@ func TestAppModuleWritesItsOwnStream(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	owned, err := h.Authority.Open(ctx, sid)
+	owned, err := h.Owner.Open(ctx, sid)
 	if err != nil {
 		t.Fatal(err)
 	}
 	w := owned.Writer()
-	in, err := h.Authority.Chatlog.Submit(ctx, w, "in-1", "hello")
+	in, err := h.Owner.Chatlog.Submit(ctx, w, "in-1", "hello")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,11 +101,11 @@ func TestAppModuleWritesItsOwnStream(t *testing.T) {
 	if err != nil || res.Outcome != writer.CommitApplied {
 		t.Fatalf("audit commit = %+v %v", res, err)
 	}
-	if _, err := h.Authority.Turns.Start(ctx, w, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},
+	if _, err := h.Owner.Turns.Start(ctx, w, turn.StartRequest{Ref: turn.TurnRef{SessionID: sid, TurnID: "t1"},
 		Inputs: []run.AgentInput{in}, Preset: preset}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Authority.Driver.Drive(ctx, w, "t1"); err != nil {
+	if _, err := h.Owner.Driver.Drive(ctx, w, "t1"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -136,7 +136,7 @@ func TestAppModuleWritesItsOwnStream(t *testing.T) {
 	}
 
 	// Both sources coexist in one commit ledger.
-	page, err := h.Authority.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
+	page, err := h.Owner.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
 	if err != nil {
 		t.Fatal(err)
 	}

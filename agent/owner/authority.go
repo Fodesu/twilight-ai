@@ -1,12 +1,12 @@
 // Package authority composes the agent core -- the fact layer (Store,
 // Writers, SessionRunStore, Coordinator), the decision layer (preset registry and
 // prompt builder catalog) and the effect layer (an Executor port) -- into
-// one authority process (AUTH). Its exported fields are the core services a
+// one Owner process (AUTH). Its exported fields are the core services a
 // caller drives a Session with; Open hands out the ownership capability
 // those services act under. It is deployment-neutral and carries no product
 // policy: what to send, when to drain a backlog, whether to drive in the
 // background and when to compact are the application's decisions.
-package authority
+package owner
 
 import (
 	"context"
@@ -33,7 +33,7 @@ import (
 )
 
 // Artifacts groups the artifact ports. Durability is one bundle
-// (AUTH-PRT-3): a durable Session Store needs a durable Content Store for
+// (OWN-PRT-3): a durable Session Store needs a durable Content Store for
 // the frozen bodies its facts name, a durable binding index and a durable
 // retention ledger, or the facts outlive the bodies and the claims after a
 // restart. Every port defaults to memory, but only an all-memory deployment
@@ -73,9 +73,9 @@ func durable(port any) bool {
 // ErrEphemeralArtifacts reports a durable Store mixed with a memory-only
 // Content Store, binding store or retention ledger without the Ephemeral
 // opt-in.
-var ErrEphemeralArtifacts = errors.New("authority: durable session store with memory-only content store, binding store or retention ledger; provide the durable bundle or set Artifacts.Ephemeral")
+var ErrEphemeralArtifacts = errors.New("owner: durable session store with memory-only content store, binding store or retention ledger; provide the durable bundle or set Artifacts.Ephemeral")
 
-// Ports are the roles an Authority is composed from (AUTH-PRT-1). Every field
+// Ports are the roles an Owner is composed from (OWN-PRT-1). Every field
 // is an interface or a core value; the Store and the Executor are required,
 // the other nil fields take the defaults documented on each, all of them
 // in-process. A memory Store is a test double and is passed by name
@@ -117,14 +117,14 @@ type Ports struct {
 	CacheEvery session.CommitSeq
 	// Ownership configures how Writers open Sessions.
 	Ownership session.OpenOptions
-	// Fail receives failures of work the authority does outside any caller's
+	// Fail receives failures of work the Owner does outside any caller's
 	// call, such as settling a reattached Outcome; nil discards them.
 	Fail func(session.SessionID, error)
 }
 
-// Authority is the composed core (AUTH-PRT-2). Exported fields are the ports
+// Owner is the composed core (OWN-PRT-2). Exported fields are the ports
 // and core services; none is a product facade.
-type Authority struct {
+type Owner struct {
 	Store     session.Store
 	Writers   writer.Writers
 	Registry  *extension.Registry
@@ -144,7 +144,7 @@ type Authority struct {
 	Content chatlog.ContentResolver
 	// Chatlog commits the chatlog's own facts (APP-INP-1, APP-CKP-1).
 	Chatlog *chatlog.Commands
-	// History answers fork-boundary questions (AUTH-FRK-2, SPN-5).
+	// History answers fork-boundary questions (OWN-FRK-2, SPN-5).
 	History turn.History
 	Clock   func() time.Time
 
@@ -152,13 +152,13 @@ type Authority struct {
 	open map[session.SessionID]*openSession
 }
 
-// New composes an Authority from its ports (AUTH-PRT-1).
-func New(p Ports) (*Authority, error) { //nolint:gocritic // hugeParam: Ports is a by-value options struct read once
+// New composes an Owner from its ports (OWN-PRT-1).
+func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a by-value options struct read once
 	if p.Executor == nil {
-		return nil, errors.New("authority: an Executor port is required")
+		return nil, errors.New("owner: an Executor port is required")
 	}
 	if p.Store == nil {
-		return nil, errors.New("authority: a session Store is required")
+		return nil, errors.New("owner: a session Store is required")
 	}
 	store := p.Store
 	// The first-party four are trusted core; Ports.Modules are extensions
@@ -168,7 +168,7 @@ func New(p Ports) (*Authority, error) { //nolint:gocritic // hugeParam: Ports is
 	if err != nil {
 		return nil, err
 	}
-	// AUTH-PRT-3: durability is one bundle. Each port declares its own
+	// OWN-PRT-3: durability is one bundle. Each port declares its own
 	// durability (Durability); nil ports are the memory defaults below.
 	anyDurable := durable(store) || durable(p.Content) || durable(p.Artifacts.Bindings) || durable(p.Artifacts.Ledger)
 	allDurable := durable(store) && durable(p.Content) && durable(p.Artifacts.Bindings) && durable(p.Artifacts.Ledger)
@@ -225,11 +225,11 @@ func New(p Ports) (*Authority, error) { //nolint:gocritic // hugeParam: Ports is
 		decisions = decision.DefaultPromptBuilders()
 	}
 	// The read model folds from the Store through the cache: reading a Session
-	// takes no ownership (AUTH-OWN-2). The Writer keeps its own transactional
+	// takes no ownership (OWN-HDL-2). The Writer keeps its own transactional
 	// projections for the commit critical section.
 	projections := extension.NewProjectionReader(store, registry, cache)
 	content := runmod.NewContent(fz)
-	a := &Authority{
+	a := &Owner{
 		Store: store, Writers: writers, Registry: registry, Admission: admission, Runs: runs,
 		Turns:   &turn.Coordinator{Projections: projections, Runs: runs, Now: now},
 		Presets: presets, Executor: p.Executor, Frozen: fz, Projections: projections, Content: content,
@@ -247,11 +247,11 @@ func New(p Ports) (*Authority, error) { //nolint:gocritic // hugeParam: Ports is
 	return a, nil
 }
 
-// Close releases every generation this authority holds -- recovery
+// Close releases every generation this Owner holds -- recovery
 // listeners, then Writers -- and every outstanding Handle is stale
 // afterwards. Generations still opening or closing on another goroutine
 // finish their own release.
-func (a *Authority) Close(ctx context.Context) error {
+func (a *Owner) Close(ctx context.Context) error {
 	a.mu.Lock()
 	var owned []session.SessionID
 	for sid, gen := range a.open {
@@ -275,14 +275,14 @@ func (a *Authority) Close(ctx context.Context) error {
 
 // CreateSession creates the Session; meta is the segment's creation
 // metadata (zero for none), carried opaquely by the kernel.
-func (a *Authority) CreateSession(ctx context.Context, sid session.SessionID, meta jsonstable.Value) error {
+func (a *Owner) CreateSession(ctx context.Context, sid session.SessionID, meta jsonstable.Value) error {
 	_, err := a.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: a.Clock().UnixMilli(), Metadata: meta})
 	return err
 }
 
 // EnsureSession creates the stream when it does not exist yet. Create's
 // idempotency needs field-identical requests, so existence is probed first.
-func (a *Authority) EnsureSession(ctx context.Context, sid session.SessionID) error {
+func (a *Owner) EnsureSession(ctx context.Context, sid session.SessionID) error {
 	if _, err := a.Store.Header(ctx, sid); err == nil {
 		return nil
 	} else if !session.IsCode(err, session.ErrNotFound) {
@@ -298,7 +298,7 @@ func (a *Authority) EnsureSession(ctx context.Context, sid session.SessionID) er
 	return nil
 }
 
-// ForkRequest forks a Session at one commit of its ledger (AUTH-FRK-1): the
+// ForkRequest forks a Session at one commit of its ledger (OWN-FRK-1): the
 // child inherits every commit of Parent up to and including At and continues
 // from there under its own identity.
 type ForkRequest struct {
@@ -310,16 +310,16 @@ type ForkRequest struct {
 
 // Fork creates the child Session (SES-FRK-1) and claims the artifacts its
 // inherited prefix references (EXT-WRT-8). The child is not opened.
-func (a *Authority) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
+func (a *Owner) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeader, error) {
 	if req.Parent == "" || req.Child == "" {
-		return session.SegmentHeader{}, errors.New("authority: fork requires parent and child session ids")
+		return session.SegmentHeader{}, errors.New("owner: fork requires parent and child session ids")
 	}
 	if req.Parent == req.Child {
-		return session.SegmentHeader{}, errors.New("authority: a session cannot fork itself")
+		return session.SegmentHeader{}, errors.New("owner: a session cannot fork itself")
 	}
 	// A fork point inside a Turn would hand the child a Turn whose Run is
 	// the parent's execution (SES-FRK-5): semantic history branches only at
-	// quiescent points (AUTH-FRK-1).
+	// quiescent points (OWN-FRK-1).
 	if active, ok, err := a.History.ActiveAt(ctx, req.Parent, req.At); err != nil {
 		return session.SegmentHeader{}, err
 	} else if ok {
@@ -332,9 +332,9 @@ func (a *Authority) Fork(ctx context.Context, req ForkRequest) (session.SegmentH
 }
 
 // ForkBeforeTurn forks Parent at the commit just before turnID started
-// (AUTH-FRK-2): the child holds the conversation as it was when that Turn's
+// (OWN-FRK-2): the child holds the conversation as it was when that Turn's
 // inputs were still submitted and undelivered.
-func (a *Authority) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
+func (a *Owner) ForkBeforeTurn(ctx context.Context, parent session.SessionID, turnID turn.TurnID, child session.SessionID) (session.SegmentHeader, error) {
 	seq, err := a.History.StartCommit(ctx, parent, turnID)
 	if err != nil {
 		return session.SegmentHeader{}, err
@@ -346,10 +346,10 @@ func (a *Authority) ForkBeforeTurn(ctx context.Context, parent session.SessionID
 	return a.Fork(ctx, ForkRequest{Parent: parent, At: seq - 1, Child: child})
 }
 
-// DeleteSession drops a Session's root (AUTH-FRK-3, SES-GC-1); the claims of
-// its commits go with their segments at Collect. A Session this authority
+// DeleteSession drops a Session's root (OWN-FRK-3, SES-GC-1); the claims of
+// its commits go with their segments at Collect. A Session this Owner
 // holds open is closed first; one owned by another process is ErrOwned.
-func (a *Authority) DeleteSession(ctx context.Context, sid session.SessionID) error {
+func (a *Owner) DeleteSession(ctx context.Context, sid session.SessionID) error {
 	if gen := a.beginClose(sid, nil); gen != nil {
 		if err := a.release(ctx, sid, gen, true); err != nil {
 			return err
@@ -370,7 +370,7 @@ func (a *Authority) DeleteSession(ctx context.Context, sid session.SessionID) er
 
 // Collect reclaims the storage of deleted Sessions no live Session reaches
 // (SES-GC-2) and releases the claims of the commits it reclaimed (SES-GC-3).
-func (a *Authority) Collect(ctx context.Context) (session.CollectReport, error) {
+func (a *Owner) Collect(ctx context.Context) (session.CollectReport, error) {
 	return writer.Collect(ctx, a.Store, a.Admission)
 }
 
@@ -381,12 +381,12 @@ func (a *Authority) Collect(ctx context.Context) (session.CollectReport, error) 
 
 // Projection reads any registered projection through the Session's Writer
 // (APP-MEM-1).
-func (a *Authority) Projection(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (any, session.Head, error) {
+func (a *Owner) Projection(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (any, session.Head, error) {
 	return a.Projections.Load(ctx, sid, id, v)
 }
 
 // Reply is the Turn's last assistant text (CHT-MAT-1); empty when the Turn
 // produced none.
-func (a *Authority) Reply(ctx context.Context, ref turn.TurnRef) (string, error) {
+func (a *Owner) Reply(ctx context.Context, ref turn.TurnRef) (string, error) {
 	return chatlog.LastAssistantText(ctx, a.Projections, a.Content, ref.SessionID, chatlog.TurnID(ref.TurnID))
 }

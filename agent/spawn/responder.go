@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/felinics/twilight/agent/authority"
+	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/driver"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
@@ -60,10 +60,10 @@ func (o Options) depth() int {
 // lives in an execution record: the child Session is the durable state.
 type Responder struct {
 	opts Options
-	// a is the authority children are created in and driven through: Open
+	// a is the Owner children are created in and driven through: Open
 	// yields the child's ownership Handle and its Turns, Driver and Chatlog
 	// commands run through that Handle's Writer.
-	a *authority.Authority
+	a *owner.Owner
 
 	mu       sync.Mutex
 	inflight map[session.SessionID]context.CancelFunc
@@ -77,7 +77,7 @@ func NewResponder(opts Options) *Responder {
 }
 
 // Bind supplies the authority. It must precede the first Respond.
-func (r *Responder) Bind(a *authority.Authority) { r.a = a }
+func (r *Responder) Bind(a *owner.Owner) { r.a = a }
 
 // Close cancels every child drive; their Turns stay active and resume on
 // the next open of the parent, when the Driver asks for the answer again.
@@ -265,7 +265,7 @@ func (r *Responder) childPreset(ctx context.Context, parent session.SessionID, r
 // an input awaiting delivery, an active Turn, or a Turn that settled before
 // the parent learned of it. A child runs exactly one Turn per task: the
 // submitted backlog is the task itself, so there is no draining loop.
-func (r *Responder) settle(ctx context.Context, h *authority.Handle, preset turn.PresetRef, task string) (turn.TurnID, error) {
+func (r *Responder) settle(ctx context.Context, h *owner.Handle, preset turn.PresetRef, task string) (turn.TurnID, error) {
 	turns, err := turn.ReadSurface(ctx, r.a.Projections, h.ID())
 	if err != nil {
 		return "", err
@@ -299,7 +299,7 @@ func (r *Responder) settle(ctx context.Context, h *authority.Handle, preset turn
 	return r.startAndDrive(ctx, h, preset, []run.AgentInput{in})
 }
 
-func (r *Responder) startAndDrive(ctx context.Context, h *authority.Handle, preset turn.PresetRef, inputs []run.AgentInput) (turn.TurnID, error) {
+func (r *Responder) startAndDrive(ctx context.Context, h *owner.Handle, preset turn.PresetRef, inputs []run.AgentInput) (turn.TurnID, error) {
 	ref := turn.TurnRef{SessionID: h.ID(), TurnID: turn.NewTurnID()}
 	if _, err := r.a.Turns.Start(ctx, h.Writer(), turn.StartRequest{Ref: ref, Inputs: inputs, Preset: preset}); err != nil {
 		return "", err
@@ -311,7 +311,7 @@ func (r *Responder) startAndDrive(ctx context.Context, h *authority.Handle, pres
 // for recovery (the child's own execution records belong to a dead owner
 // and await the control plane, RUN-EXE-6) is not the end of the Turn: this
 // waits for the Turn to move and drives again.
-func (r *Responder) driveTurn(ctx context.Context, h *authority.Handle, turnID turn.TurnID) (turn.TurnID, error) {
+func (r *Responder) driveTurn(ctx context.Context, h *owner.Handle, turnID turn.TurnID) (turn.TurnID, error) {
 	ref := turn.TurnRef{SessionID: h.ID(), TurnID: turnID}
 	for {
 		resp, err := r.a.Driver.Drive(ctx, h.Writer(), turnID)

@@ -13,7 +13,7 @@ agent-session-chatlog.md      对话内容与 context projection
 agent-run.md                  Run machine、Runtime、Loop、Executor contract
 agent-turn.md                 Turn、attempt、input routing、结算投影
 agent-decision.md             PromptBuilder 与决策组件目录
-agent-runtime.md              authority 组装与 Session 所有权、driver、spawn、app 策略
+agent-runtime.md              Owner 组装与 Session 所有权、driver、spawn、app 策略
 agent-workspace.md            可选 Workspace/Runtime/TargetRef domain
 ```
 
@@ -26,7 +26,7 @@ agent/session (kernel)       agent/artifact (independent core)
                ↓
    chatlog / session-run / attempt / turn
                ↓
-             decision / host（authority 组合 turn / run）
+             decision / owner（Owner 组合 turn / run）
                     ↓
        application / transport / provider adapter
 ```
@@ -49,6 +49,10 @@ Workspace 是可选的 application domain。Agent Core 只携带 opaque `TargetR
   Executor 的 `orphaned` execution 无关。
 - Commit ledger 是唯一事实权威；projection、snapshot、HTTP view 和 CLI 输出都
   是派生数据。
+- 角色名按进程与某个 Session 的关系取：`Owner` 持有该 Session 的 lease 并在其 Epoch
+  下写入；`Observer` 不持 lease、按 SessionID 读 Store；`Worker` 执行 Assignment、不接触
+  Store；`Node` 是宿主进程，可同时是若干 Session 的 Owner 与另一些的 Observer。"authority"
+  一词只用于持久的权威：ledger、Execution Store 与 artifact 的 `Authority`（逻辑 store 实例）。
 - `ProtocolVersion`（Session kernel 的 wire 版本，SES-VER-2）与 payload 版本 `v`（每个事件类型
   自己的 codec 版本，SES-VER-1、EXT-REG-2）属于不同版本域；Run 的协议版本是 run 模块的 codec
   版本，记在其每条事实的 `v`（RUN-WIR-2、RUN-CMT-8）。段不携带任何模块层版本。
@@ -65,5 +69,5 @@ Workspace 是可选的 application domain。Agent Core 只携带 opaque `TargetR
    或 adapter 的实施计划中。
 
 `test-cloud-agent.md` 是 reference application 的 E2E 规范。进程级 harness 与演示
-入口已于 2026-09-17 移除，待 authority / app 分层稳定后在 app 层重建；harness 验证上述
+入口已于 2026-09-17 移除，待 owner / app 分层稳定后在 app 层重建；harness 验证上述
 合同，但不重新定义合同。

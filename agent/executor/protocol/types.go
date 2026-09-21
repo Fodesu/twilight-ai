@@ -1,6 +1,6 @@
 // Package protocol defines the wire/application protocol for the process-
 // independent effect port in agent/run/effect. It owns message encoding, but
-// never mutates a Session or Run; settlement remains the authority's Loop concern.
+// never mutates a Session or Run; settlement remains the Owner's Loop concern.
 package protocol
 
 import (

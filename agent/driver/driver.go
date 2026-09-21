@@ -46,7 +46,7 @@ type Presets interface {
 // (DRV).
 type Driver struct {
 	// Runs is the Run module's Session adapter; every drive binds it to the
-	// caller's Writer (AUTH-OWN-2).
+	// caller's Writer (OWN-HDL-2).
 	Runs      *runmod.SessionRunStore
 	Turns     turn.Reader
 	Executor  effect.ExecutionPort
@@ -146,7 +146,7 @@ func (d *Driver) beforePrepare(ctx context.Context, store runtime.RunStore, inpu
 // the decision whether to drive reads w's own projections, and the Loop
 // commits through w, so a superseded owner plans against its own epoch's
 // view and is fenced at commit instead of adopting the new owner's state
-// (AUTH-OWN-2, RUN-LOP-5). The caller's ctx bounds the drive, so
+// (OWN-HDL-2, RUN-LOP-5). The caller's ctx bounds the drive, so
 // cancellation is the caller's decision. A concurrent local driver of the
 // same Run yields AlreadyDriving with the Turn's status as read.
 func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID) (DriveResult, error) {
@@ -250,7 +250,7 @@ type recoveryLifetime struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	// w is the Writer the Session was opened with; reattached Outcomes settle
-	// through it (AUTH-OWN-2).
+	// through it (OWN-HDL-2).
 	w writer.Writer
 }
 
