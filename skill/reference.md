@@ -25,22 +25,25 @@ type Client struct{}
 
 func NewClient() *Client
 
-func (c *Client) GenerateText(ctx context.Context, options ...GenerateOption) (string, error)
-func (c *Client) GenerateTextResult(ctx context.Context, options ...GenerateOption) (*GenerateResult, error)
-func (c *Client) StreamText(ctx context.Context, options ...GenerateOption) (*StreamResult, error)
 func (c *Client) Embed(ctx context.Context, value string, options ...EmbedOption) ([]float64, error)
 func (c *Client) EmbedMany(ctx context.Context, values []string, options ...EmbedOption) (*EmbedResult, error)
 func (c *Client) GenerateImage(ctx context.Context, options ...ImageGenerateOption) (*ImageResult, error)
 func (c *Client) EditImage(ctx context.Context, options ...ImageEditOption) (*ImageResult, error)
 
-func GenerateText(ctx context.Context, options ...GenerateOption) (string, error)
-func GenerateTextResult(ctx context.Context, options ...GenerateOption) (*GenerateResult, error)
-func StreamText(ctx context.Context, options ...GenerateOption) (*StreamResult, error)
+func (m *Model) Generate(ctx context.Context, req Request) (ModelResult, error)
+func (m *Model) Stream(ctx context.Context, req Request) (ModelStream, error)
+func CollectStream(ctx context.Context, parts <-chan StreamPart) (ModelResult, error)
 func Embed(ctx context.Context, value string, options ...EmbedOption) ([]float64, error)
 func EmbedMany(ctx context.Context, values []string, options ...EmbedOption) (*EmbedResult, error)
 func GenerateImage(ctx context.Context, options ...ImageGenerateOption) (*ImageResult, error)
 func EditImage(ctx context.Context, options ...ImageEditOption) (*ImageResult, error)
 ```
+
+Behavior notes:
+
+- `Generate` and `Stream` are one model call each; the SDK runs no loop. A
+  runtime executes the returned `ToolCalls` with `ExecuteTools` and appends
+  `BuildStepMessages(...)` to the next `Request`.
 
 ### Provider Contracts
 
@@ -50,8 +53,8 @@ type Provider interface {
     ListModels(ctx context.Context) ([]Model, error)
     Test(ctx context.Context) *ProviderTestResult
     TestModel(ctx context.Context, modelID string) (*ModelTestResult, error)
-    DoGenerate(ctx context.Context, params GenerateParams) (*GenerateResult, error)
-    DoStream(ctx context.Context, params GenerateParams) (*StreamResult, error)
+    DoGenerate(ctx context.Context, req Request) (ModelResult, error)
+    DoStream(ctx context.Context, req Request) (<-chan StreamPart, error)
 }
 
 type ProviderStatus string
@@ -152,14 +155,14 @@ type FilePart struct {
 type ToolCallPart struct {
     ToolCallID   string
     ToolName     string
-    Input        any
+    Input        ToolArguments
     CacheControl *CacheControl  // optional, Anthropic only
 }
 
 type ToolResultPart struct {
     ToolCallID   string
     ToolName     string
-    Result       any
+    Result       ToolOutput
     IsError      bool
     CacheControl *CacheControl  // optional, Anthropic only
 }
@@ -186,7 +189,7 @@ Notes:
 
 - `UserMessage` accepts a text string plus optional extra parts such as `ImagePart`.
 - `Message` supports JSON marshal and unmarshal with type discrimination.
-- `GenerateParams.System` is the stable root instruction; use `SystemMessage`
+- `WithSystem` sets the stable root instruction; use `SystemMessage`
   for an instruction at a specific point in the message timeline.
 - Unsupported developer messages fall back to user messages. Unsupported
   mid-conversation system messages fall back to XML-escaped `<system>` user messages.
@@ -216,15 +219,15 @@ const (
 
 type ResponseFormat struct {
     Type       ResponseFormatType
-    JSONSchema any
+    JSONSchema *jsonschema.Schema
 }
 
-type GenerateParams struct {
-    Model            *Model
+type Request struct {
+    Model            string
     System           string
     Messages         []Message
-    Tools            []Tool
-    ToolChoice       any
+    Tools            []ToolDefinition
+    ToolChoice       ToolChoice
     ResponseFormat   *ResponseFormat
     Temperature      *float64
     TopP             *float64
@@ -234,88 +237,84 @@ type GenerateParams struct {
     PresencePenalty  *float64
     Seed             *int
     ReasoningEffort  *string
+    ReasoningSummary *string
+    PromptCacheKey   *string
+    ProviderOptions  map[string]json.RawMessage
 }
 
-type StepResult struct {
-    Text            string
-    Reasoning       string
-    FinishReason    FinishReason
-    RawFinishReason string
-    Usage           Usage
-    ToolCalls       []ToolCall
-    ToolResults     []ToolResult
-    Response        ResponseMetadata
-    Messages        []Message
+type ModelResult struct {
+    Text                 string
+    Reasoning            string
+    ReasoningParts       []ReasoningPart
+    TextProviderMetadata ProviderMetadata
+    FinishReason         FinishReason
+    RawFinishReason      string
+    Usage                Usage
+    Sources              []Source
+    Files                []GeneratedFile
+    ToolCalls            []ToolCall
+    Response             *ResponseMetadata
 }
 
-type GenerateResult struct {
-    Text            string
-    Reasoning       string
-    FinishReason    FinishReason
-    RawFinishReason string
-    Usage           Usage
-    Sources         []Source
-    Files           []GeneratedFile
-    ToolCalls       []ToolCall
-    ToolResults     []ToolResult
-    Response        ResponseMetadata
-    Steps           []StepResult
-    Messages        []Message
-}
-```
+type ProviderMetadata map[string]map[string]string
 
-### Generate Options
+func NewProviderMetadata(namespace string, values map[string]string) ProviderMetadata
+func (m ProviderMetadata) Get(namespace, key string) string
+func (m ProviderMetadata) Merge(other ProviderMetadata) ProviderMetadata
+func (m ProviderMetadata) Clone() ProviderMetadata
 
-```go
-type GenerateOption func(*generateConfig)
-
-func WithModel(model *Model) GenerateOption
-func WithMessages(messages []Message) GenerateOption
-func WithSystem(text string) GenerateOption
-func WithTools(tools []Tool) GenerateOption
-func WithToolChoice(choice any) GenerateOption
-func WithResponseFormat(rf ResponseFormat) GenerateOption
-func WithTemperature(t float64) GenerateOption
-func WithTopP(topP float64) GenerateOption
-func WithMaxTokens(n int) GenerateOption
-func WithStopSequences(s []string) GenerateOption
-func WithFrequencyPenalty(penalty float64) GenerateOption
-func WithPresencePenalty(penalty float64) GenerateOption
-func WithSeed(s int) GenerateOption
-func WithReasoningEffort(effort string) GenerateOption
-
-func WithMaxSteps(n int) GenerateOption
-func WithOnFinish(fn func(*GenerateResult)) GenerateOption
-func WithOnStep(fn func(*StepResult) *GenerateParams) GenerateOption
-func WithOnStepCommitted(fn func(ctx context.Context, stepIndex int, step *StepResult) error) GenerateOption
-func WithPrepareStep(fn func(*GenerateParams) *GenerateParams) GenerateOption
-func WithApprovalHandler(fn func(ctx context.Context, call ToolCall) (bool, error)) GenerateOption
+func BuildStepMessages(text string, textMeta ProviderMetadata, reasoning []ReasoningPart,
+    calls []ToolCall, results []ToolResultPart, usage *Usage) []Message
 ```
 
 Behavior notes:
 
-- `WithMaxSteps(0)` is the default single-call mode.
-- `WithMaxSteps(N)` enables automatic tool execution for up to `N` LLM calls.
-- `WithMaxSteps(-1)` means unlimited loop until the model stops requesting tools.
-- `WithOnStepCommitted` runs after a complete step is assembled and before it is accepted into accumulated history or the next model call begins. Returning an error stops generation.
-- `WithToolChoice` accepts `"auto"`, `"none"`, or `"required"`.
+- `ProviderMetadata` holds the opaque tokens a provider needs back on replay
+  (signatures, encrypted reasoning, thought signatures, item ids) as strings
+  under the provider's namespace. Providers read only their own namespace.
+- `BuildStepMessages` assembles the assistant message (reasoning parts, text,
+  tool calls, usage) and the tool message of one step; a caller appends them
+  to the next request's `Messages`.
 
 ### Tools
 
 ```go
-type ToolExecuteFunc func(ctx *ToolExecContext, input any) (any, error)
+type ToolArguments struct {
+    JSON json.RawMessage
+    Text string
+}
+
+func ParseToolArguments(text string) ToolArguments
+func ToolArgumentsJSON(v any) (ToolArguments, error)
+func (a ToolArguments) Valid() bool
+func (a ToolArguments) Unmarshal(v any) error
+func (a ToolArguments) String() string
+func (a ToolArguments) Object() json.RawMessage
+
+type ToolOutput struct {
+    Text string
+    JSON json.RawMessage
+}
+
+func TextOutput(text string) ToolOutput
+func JSONOutput(v any) (ToolOutput, error)
+func RawJSONOutput(raw json.RawMessage) ToolOutput
+func (o ToolOutput) String() string
+func (o ToolOutput) IsJSON() bool
+
+type ToolExecuteFunc func(ctx *ToolExecContext, input ToolArguments) (ToolOutput, error)
 
 type ToolExecContext struct {
     context.Context
     ToolCallID   string
     ToolName     string
-    SendProgress func(content any)
+    SendProgress func(content ToolOutput)
 }
 
 type Tool struct {
     Name            string
     Description     string
-    Parameters      any
+    Parameters      *jsonschema.Schema
     Execute         ToolExecuteFunc
     RequireApproval bool
     CacheControl    *CacheControl  // optional, Anthropic only
@@ -323,23 +322,82 @@ type Tool struct {
 
 func NewTool[T any](
     name, description string,
-    execute func(ctx *ToolExecContext, input T) (any, error),
+    execute func(ctx *ToolExecContext, input T) (ToolOutput, error),
 ) Tool
 
 type ToolCall struct {
-    ToolCallID string
-    ToolName   string
-    Input      any
+    ToolCallID       string
+    ToolName         string
+    Input            ToolArguments
+    ProviderMetadata ProviderMetadata
 }
 
 type ToolResult struct {
     ToolCallID string
     ToolName   string
-    Input      any
-    Output     any
-    IsError    bool
+    Input      ToolArguments
+    Output     ToolOutput
+}
+
+type ToolDefinition struct {
+    Name         string
+    Description  string
+    Parameters   *jsonschema.Schema
+    CacheControl *CacheControl
+}
+
+func ToolDefinitionFromTool(tool Tool) (ToolDefinition, error)
+func ToolDefinitionsFromTools(tools []Tool) ([]ToolDefinition, error)
+
+type ToolChoiceMode string
+
+const (
+    ToolChoiceAuto     ToolChoiceMode = "auto"
+    ToolChoiceNone     ToolChoiceMode = "none"
+    ToolChoiceRequired ToolChoiceMode = "required"
+    ToolChoiceTool     ToolChoiceMode = "tool"
+)
+
+type ToolChoice struct {
+    Mode ToolChoiceMode
+    Tool string
+}
+
+type ToolExecOptions struct {
+    Tools   []Tool
+    Approve func(context.Context, ToolCall) (ToolApprovalResult, error)
+    OnPart  func(StreamPart)
+}
+
+type ToolExecOutcome struct {
+    Results       []ToolResultPart
+    Deferred      *ToolApprovalResult
+    DeferredIndex int
+}
+
+func ExecuteTools(ctx context.Context, calls []ToolCall, opts ToolExecOptions) (ToolExecOutcome, error)
+func ToolCallResults(calls []ToolCall, parts []ToolResultPart) []ToolResult
+
+type ToolApprovalResult struct {
+    Decision   ToolApprovalDecision
+    ApprovalID string
+    Reason     string
+    Metadata   map[string]string
+}
+
+type CacheControl struct {
+    Type string  // "ephemeral"
+    TTL  string  // "" (5 min, default) | "1h"
 }
 ```
+
+Behavior notes:
+
+- A tool call whose arguments are not a JSON document is still reported, with
+  the text in `ToolArguments.Text`; `ExecuteTools` answers it with an error
+  result and never runs the tool on it.
+- `ExecuteTools` runs several calls in parallel, asks `Approve` for tools with
+  `RequireApproval`, and stops at a deferred approval with the results so far.
 
 ### MCP
 
@@ -373,7 +431,7 @@ Usage notes:
 - `MCPTransportHTTP` is the default built-in transport and uses the official MCP Go SDK's streamable HTTP client transport.
 - `MCPTransportSSE` uses the official MCP Go SDK's SSE client transport.
 - For stdio or other custom transports, create the transport with `github.com/modelcontextprotocol/go-sdk/mcp` and pass it through `Transport`.
-- `Tools(ctx)` converts remote MCP tools into ordinary `sdk.Tool` values suitable for `WithTools(...)`.
+- `Tools(ctx)` converts remote MCP tools into ordinary `sdk.Tool` values for `ToolDefinitionsFromTools` and `ExecuteTools`.
 - MCP tool schemas are converted from MCP `InputSchema` into `*jsonschema.Schema`.
 - MCP execution wrappers call `tools/call` and return concatenated text content to the model.
 
@@ -415,64 +473,64 @@ type StreamPart interface {
 
 type TextStartPart struct {
     ID               string
-    ProviderMetadata map[string]any
+    ProviderMetadata ProviderMetadata
 }
 
 type TextDeltaPart struct {
     ID               string
     Text             string
-    ProviderMetadata map[string]any
+    ProviderMetadata ProviderMetadata
 }
 
 type TextEndPart struct {
     ID               string
-    ProviderMetadata map[string]any
+    ProviderMetadata ProviderMetadata
 }
 
 type ReasoningStartPart struct {
     ID               string
-    ProviderMetadata map[string]any
+    ProviderMetadata ProviderMetadata
 }
 
 type ReasoningDeltaPart struct {
     ID               string
     Text             string
-    ProviderMetadata map[string]any
+    ProviderMetadata ProviderMetadata
 }
 
 type ReasoningEndPart struct {
     ID               string
-    ProviderMetadata map[string]any
+    ProviderMetadata ProviderMetadata
 }
 
 type ToolInputStartPart struct {
     ID               string
     ToolName         string
-    ProviderMetadata map[string]any
+    ProviderMetadata ProviderMetadata
 }
 
 type ToolInputDeltaPart struct {
     ID               string
     Delta            string
-    ProviderMetadata map[string]any
+    ProviderMetadata ProviderMetadata
 }
 
 type ToolInputEndPart struct {
     ID               string
-    ProviderMetadata map[string]any
+    ProviderMetadata ProviderMetadata
 }
 
 type StreamToolCallPart struct {
     ToolCallID string
     ToolName   string
-    Input      any
+    Input      ToolArguments
 }
 
 type StreamToolResultPart struct {
     ToolCallID string
     ToolName   string
-    Input      any
-    Output     any
+    Input      ToolArguments
+    Output     ToolOutput
 }
 
 type StreamToolErrorPart struct {
@@ -490,13 +548,13 @@ type ToolApprovalRequestPart struct {
     ApprovalID string
     ToolCallID string
     ToolName   string
-    Input      any
+    Input      ToolArguments
 }
 
 type ToolProgressPart struct {
     ToolCallID string
     ToolName   string
-    Content    any
+    Content    ToolOutput
 }
 
 type StreamSourcePart struct {
@@ -522,7 +580,7 @@ type FinishStepPart struct {
     RawFinishReason  string
     Usage            Usage
     Response         ResponseMetadata
-    ProviderMetadata map[string]any
+    ProviderMetadata ProviderMetadata
 }
 
 type ErrorPart struct {
@@ -534,18 +592,19 @@ type AbortPart struct {
 }
 
 type RawPart struct {
-    RawValue any
+    RawValue json.RawMessage
 }
 
-type StreamResult struct {
-    Stream   <-chan StreamPart
-    Steps    []StepResult
-    Messages []Message
+type ModelStream struct {
+    Parts  <-chan StreamPart
+    Result func() (*ModelResult, error)
 }
-
-func (sr *StreamResult) Text() (string, error)
-func (sr *StreamResult) ToResult() (*GenerateResult, error)
 ```
+
+Behavior notes:
+
+- `Model.Stream` returns a `ModelStream`: consume `Parts`, then call `Result()`
+  for the assembled `ModelResult`. `CollectStream` does both.
 
 ### Usage, Sources, Files, Response Metadata
 
@@ -579,7 +638,7 @@ type Source struct {
     ID               string
     URL              string
     Title            string
-    ProviderMetadata map[string]any
+    ProviderMetadata ProviderMetadata
 }
 
 type GeneratedFile struct {
@@ -768,8 +827,8 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
 func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
-func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*sdk.GenerateResult, error)
-func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sdk.StreamResult, error)
+func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
+func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)
 ```
 
 Default option values:
@@ -805,8 +864,8 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
 func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
-func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*sdk.GenerateResult, error)
-func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sdk.StreamResult, error)
+func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
+func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)
 ```
 
 Default option values:
@@ -822,10 +881,10 @@ Discovery endpoints:
 
 Responses-specific behavior:
 
-- `GenerateParams.System` maps to top-level `instructions`
+- `Request.System` maps to top-level `instructions`
 - system and developer message roles are preserved natively
-- assistant reasoning maps to `GenerateResult.Reasoning`
-- URL citation annotations map to `GenerateResult.Sources`
+- assistant reasoning maps to `ModelResult.Reasoning`
+- URL citation annotations map to `ModelResult.Sources`
 - function-call outputs map to tool-call and tool-result structures
 
 ## Package `provider/openai/codex`
@@ -860,8 +919,8 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
 func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
-func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*sdk.GenerateResult, error)
-func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sdk.StreamResult, error)
+func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
+func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)
 ```
 
 Default option values:
@@ -914,8 +973,8 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
 func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
-func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*sdk.GenerateResult, error)
-func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sdk.StreamResult, error)
+func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
+func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)
 ```
 
 Default option values:
@@ -956,8 +1015,8 @@ func (p *Provider) ListModels(ctx context.Context) ([]sdk.Model, error)
 func (p *Provider) Test(ctx context.Context) *sdk.ProviderTestResult
 func (p *Provider) TestModel(ctx context.Context, modelID string) (*sdk.ModelTestResult, error)
 func (p *Provider) ChatModel(id string) *sdk.Model
-func (p *Provider) DoGenerate(ctx context.Context, params sdk.GenerateParams) (*sdk.GenerateResult, error)
-func (p *Provider) DoStream(ctx context.Context, params sdk.GenerateParams) (*sdk.StreamResult, error)
+func (p *Provider) DoGenerate(ctx context.Context, req sdk.Request) (sdk.ModelResult, error)
+func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.StreamPart, error)
 ```
 
 Default option values:

@@ -65,32 +65,30 @@ The model carries a reference to its provider, so the SDK knows which backend to
 
 ### 3. Generate Text
 
-The simplest way to get a response:
+One model call takes a `sdk.Request` and returns a `sdk.ModelResult`:
 
 ```go
 import "github.com/felinics/twilight/sdk"
 
-text, err := sdk.GenerateText(ctx,
-    sdk.WithModel(model),
-    sdk.WithMessages([]sdk.Message{
+result, err := model.Generate(ctx, sdk.Request{
+    Messages: []sdk.Message{
         sdk.UserMessage("What is the capital of France?"),
-    }),
-)
-// text == "The capital of France is Paris."
+    },
+})
+// result.Text == "The capital of France is Paris."
 ```
 
-### 4. Get the Full Result
+### 4. Read the Full Result
 
-If you need token usage, finish reason, or other metadata:
+The result carries the usage, the finish reason and the response metadata next to the text:
 
 ```go
-result, err := sdk.GenerateTextResult(ctx,
-    sdk.WithModel(model),
-    sdk.WithSystem("You are a helpful assistant."),
-    sdk.WithMessages([]sdk.Message{
+result, err := model.Generate(ctx, sdk.Request{
+    System: "You are a helpful assistant.",
+    Messages: []sdk.Message{
         sdk.UserMessage("What is the capital of France?"),
-    }),
-)
+    },
+})
 
 fmt.Println(result.Text)                      // response text
 fmt.Println(result.Usage.TotalTokens)         // token count
@@ -98,22 +96,23 @@ fmt.Println(result.FinishReason)              // "stop"
 fmt.Println(result.Response.ModelID)          // "gpt-4o-mini"
 ```
 
+Every sampling parameter is a field of the `Request`: `Temperature`, `MaxTokens`, `Tools`, `ToolChoice`, `ResponseFormat` and the rest. See the [API Reference](api-reference.md#request).
+
 ### 5. Stream the Response
 
-For real-time output, use `StreamText`:
+For real-time output, `Model.Stream` returns a `sdk.ModelStream`: a channel of typed parts, and the assembled result once the channel is drained.
 
 ```go
-sr, err := sdk.StreamText(ctx,
-    sdk.WithModel(model),
-    sdk.WithMessages([]sdk.Message{
+stream, err := model.Stream(ctx, sdk.Request{
+    Messages: []sdk.Message{
         sdk.UserMessage("Tell me a short story."),
-    }),
-)
+    },
+})
 if err != nil {
     log.Fatal(err)
 }
 
-for part := range sr.Stream {
+for part := range stream.Parts {
     switch p := part.(type) {
     case *sdk.TextDeltaPart:
         fmt.Print(p.Text)
@@ -122,14 +121,11 @@ for part := range sr.Stream {
     }
 }
 fmt.Println() // newline after streaming
+
+result, err := stream.Result() // the same ModelResult Generate would have returned
 ```
 
-Or use the convenience helper to collect all text at once:
-
-```go
-sr, err := sdk.StreamText(ctx, sdk.WithModel(model), ...)
-text, err := sr.Text()
-```
+To collect the whole stream without handling parts, `sdk.CollectStream(ctx, stream.Parts)` returns the `ModelResult` directly.
 
 ### 6. Test Provider Connectivity
 
@@ -239,16 +235,14 @@ vec, err := sdk.Embed(ctx, "search query here",
 )
 ```
 
-## Using a Client Instance
+## Other Modalities
 
-The package-level functions (`sdk.GenerateText`, `sdk.StreamText`) use a default client. You can also create your own:
+`Model.Generate` and `Model.Stream` are the only chat entry points. Embedding, image, speech, transcription and video calls are package-level functions (`sdk.Embed`, `sdk.GenerateImage`, ...) and, equivalently, methods of a `sdk.Client`:
 
 ```go
 client := sdk.NewClient()
-text, err := client.GenerateText(ctx, sdk.WithModel(model), ...)
+vec, err := client.Embed(ctx, "search query here", sdk.WithEmbeddingModel(embModel))
 ```
-
-This is useful when you need multiple clients with different configurations.
 
 ## Environment Variables
 
@@ -265,6 +259,6 @@ OPENAI_MODEL=gpt-4o-mini
 - [Providers](providers.md) — learn about the Provider interface and OpenAI options
 - [Embeddings](embeddings.md) — generate vector embeddings with OpenAI and Google
 - [Speech](speech.md) — speech synthesis with Edge TTS and custom providers
-- [Tool Calling](tools.md) — define tools and enable multi-step execution
+- [Tool Calling](tools.md) — define tools, run the calls the model makes, build the next request
 - [Streaming](streaming.md) — understand StreamPart types and advanced patterns
 - [API Reference](api-reference.md) — complete type and function reference
