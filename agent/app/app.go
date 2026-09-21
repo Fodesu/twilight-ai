@@ -18,6 +18,7 @@ import (
 	"github.com/felinics/twilight/agent/authority"
 	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/decision"
+	"github.com/felinics/twilight/agent/driver"
 	"github.com/felinics/twilight/agent/executor"
 	"github.com/felinics/twilight/agent/executor/http"
 	executorlocal "github.com/felinics/twilight/agent/executor/local"
@@ -147,7 +148,7 @@ const CompactorSystemPrompt = compaction.CompactorSystemPrompt
 type Application struct {
 	Authority *authority.Authority
 	bus       *observe.Bus
-	spawn     *spawn.Executor
+	spawn     *spawn.Responder
 	// worker is the Worker Build composed, if any; Close stops it after the
 	// Authority (RUN-EXE-8).
 	worker *executor.Worker
@@ -212,12 +213,12 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	if c.Worker.Warn == nil {
 		c.Worker.Warn = warn
 	}
-	// The spawn Backend is one Route of the Worker (SPN-1, RUN-EXE-10); it
-	// drives children through the Authority, so it is bound after New.
+	// The subagent tool is answered by a Responder on the Driver (SPN-1,
+	// DRV-4), not executed: it drives children through the Authority, so it
+	// is bound after New. No Worker route is involved.
 	var routes []executor.Route
 	if c.Spawn != nil {
-		app.spawn = spawn.NewExecutor(*c.Spawn)
-		routes = append(routes, spawn.Route(app.spawn))
+		app.spawn = spawn.NewResponder(*c.Spawn)
 	}
 	// One progress hub serves the Worker and every local backend it routes
 	// to (RUN-EXE-12); the driver's sink relays its frames onto the Bus.
@@ -251,7 +252,10 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	// as the committed facts (OBS-1, RUN-LOP-6).
 	a.Driver.Sink = busSink{bus}
 	if app.spawn != nil {
+		// The subagent tool waits for an external response the Responder
+		// gives (SPN-1, DRV-4).
 		app.spawn.Bind(a)
+		a.Driver.Responders = map[run.ToolRef]driver.Responder{c.Spawn.ToolRef(): app.spawn}
 	}
 	for i := range c.Presets {
 		p := &c.Presets[i]

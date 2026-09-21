@@ -168,11 +168,10 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	const sid session.SessionID = "parent"
-	// Both processes share the Session store and the execution record store
-	// on disk. The second process's clocks run an hour ahead, so the first
-	// process's execution lease reads as expired: that is what a dead owner
-	// looks like to a takeover, and its Worker's reconcile loop adopts the
-	// orphaned spawn record (RUN-EXE-6, SPN-4).
+	// Both processes share the Session store on disk. The second process
+	// takes the parent over, finds its spawn call waiting for the
+	// Responder's answer, and continues the same child from its durable
+	// state (SPN-4); no execution record is involved.
 	open := func(model loop.ModelInvoker, takeover bool) (*app.Application, *app.Session, turn.PresetRef) {
 		t.Helper()
 		store, err := filestore.New(root)
@@ -184,6 +183,9 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 			t.Fatal(err)
 		}
 		cfg := app.Config{Store: store, Content: content, Spawn: &spawn.Options{}, Ownership: session.OpenOptions{Takeover: takeover}, Artifacts: authority.Artifacts{Ephemeral: true}}
+		// The child's own model execution belongs to process 1's Worker; process
+		// 2's clock runs an hour ahead so that record reads as orphaned and its
+		// reconcile loop adopts and restarts it (RUN-EXE-6).
 		var clock func() time.Time
 		if takeover {
 			clock = func() time.Time { return time.Now().Add(time.Hour) }
@@ -220,8 +222,9 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 		t.Fatal("child never reached its model call")
 	}
 
-	// Process 2 takes over. The parent's spawn call is Executing; the child
-	// exists with an active Turn whose model step process 1 was running.
+	// Process 2 takes over. The parent's spawn call is Waiting for the
+	// Responder; the child exists with an active Turn whose model step
+	// process 1 was running, and process 2's records know nothing of it.
 	model2 := &scriptedRequests{answers: []sdk.ModelResult{text("child reply"), text("parent done")}}
 	h2, _, _ := open(model2, true)
 	waitUntil(func() bool {
@@ -254,9 +257,9 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 	}
 }
 
-// Validation rejects malformed arguments, unknown named presets and calls
-// from a Session at the depth limit before the call starts: the parent
-// records a Known failure and no child Session is created.
+// The Responder rejects malformed arguments, unknown named presets and calls
+// from a Session at the depth limit before any child exists: the parent
+// records a Known response_rejected failure and no child Session is created.
 func TestSpawnValidation(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
@@ -266,10 +269,10 @@ func TestSpawnValidation(t *testing.T) {
 		spawned  bool // the calling Session itself was spawned (depth 1)
 		want     string
 	}{
-		{"missing task", `{"mode":"spawn"}`, 0, false, run.FailureInvalidArguments},
-		{"unknown mode", `{"task":"x","mode":"clone"}`, 0, false, run.FailureInvalidArguments},
-		{"unknown preset", `{"task":"x","preset":"ghost"}`, 0, false, run.FailureInvalidArguments},
-		{"depth limit", `{"task":"x"}`, 1, true, run.FailureExecution},
+		{"missing task", `{"mode":"spawn"}`, 0, false, run.FailureResponseRejected},
+		{"unknown mode", `{"task":"x","mode":"clone"}`, 0, false, run.FailureResponseRejected},
+		{"unknown preset", `{"task":"x","preset":"ghost"}`, 0, false, run.FailureResponseRejected},
+		{"depth limit", `{"task":"x"}`, 1, true, run.FailureResponseRejected},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

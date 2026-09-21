@@ -116,6 +116,8 @@ func NewPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...PresetOp
 
 **DRV-2** Loop 按 PresetRef 组合并缓存在 Driver 内：`Decisions.Resolve(preset)` 得到 prompt builder，与 preset 上的 Scheduling、MalformedRetries 及共享的 Executor 一起构成 `loop.New(executor, builder, loop.Settings{Scheduling, MalformedRetries, BeforePrepare})`；`Driver.Planner` 非空时 `BeforePrepare` 把 Loop 绑定的 Writer 交给它（RUN-LOP-10，APP-CKP-1）。每次驱动以 `Driver.Sink` 为 Loop 的 EventSink，进度帧由此到达 Bus（OBS-1）。一个 Run 属于一个 Turn、一个 Turn 只有一个 AgentPreset，因此同一 Run 的全部驱动落在同一个 Loop 上，Loop 的 already-driving 守卫成立（RUN-CMT-6）。
 
+**DRV-4（Responder）** `Driver.Responders` 按 ToolRef 登记系统应答器：`Responder.Respond(ctx, w, WaitingCall{Request, ToolRef, Arguments})` 返回结算该 call 的 payload，或以错误拒绝。Driver 在两处询问：一次 Drive 以 `LoopWaiting` 结束时，对该 Run 每个 `Waiting(ExternalResponse)` 且有 Responder 的 call；Open 完成接管处置后，对该 Session 每个活动 Run 的这类 call。应答在 Session 的 recovery lifetime 下运行、经同一 Writer 以派生的 response CommandID 提交 `SubmitToolResponse` 或 `RejectToolCall`（重放为 already-applied），随后 Drive 所属 Turn；同一 ResponseID 同时只有一个应答在途，Owner 关闭时在途应答取消而 Wait 保留。没有 Responder 的 ExternalResponse call 留给应用层按 TRN-STA-2 应答。
+
 **DRV-3** `Authority.Open(sid)` 经 `Writers` 取得 Writer，随后 `driver.Open(ctx, w)` 以该 Writer 安装恢复监听并调用 `SessionRunStore.RecoverInterrupted(ctx, w, reconciler)`（RUN-CMT-7），其中 `reconciler = &reconcile.Reconciler{Executions: executor, Lifetime: lifetime, Deliver: deliver, Fail: fail}`；恢复监听持有 w，重连的 Outcome 经它结算。Outcome 读取按错误分类：`ErrOutcomeNotReady` 无限等待（执行仍在进行）；`ErrExecutionNotFound` 与 `effect.ErrOutcomeUnavailable`（`executor.ErrUnknownProvider` 包装它）是确定答案，监听立即停止并经 `Fail` 上报；其他读取失败按 `ReadRetries`（默认 60 次，约一分钟）退避重试后同样上报。目标保持 Executing，下一次 `RecoverInterrupted` 重新规划，记录已不存在则处置。Attach 握手受 Open 请求的 context 约束；后台 Outcome 读取与交付使用该 Session 的 recovery lifetime。Open 返回后请求取消仍允许恢复继续；再次 Open 会替换旧监听，`Handle.Close` 与 `Authority.Close` 取消各自拥有的监听。
 
 Attach 的 `active` / `terminal` 为 `keep`：保留 Executing 并等待实际 Outcome；`orphaned` 表示 record 存在但没有未过期的租约（持有者已死或从未持有；持有者活着时无论是哪个 Worker 都为 `active`），为 `defer`：保留 Executing 并同样等待 Outcome，供 control plane reconcile/takeover；`missing` 为 `dispose`，才进入接管处置。进程内 Executor 重启后旧记录为 `missing`，持久 Executor 按其 Execution Store 返回状态。`deliver` 按 Outcome 的 RunID 查找 Turn，使用其 preset 的 Loop 结算并继续驱动；后台失败经 `Ports.Fail` 上报。
@@ -185,15 +187,15 @@ func (s *Session) Close(ctx) error
 
 ## 8. 子代理（spawn）
 
-**SPN-1** 子代理是一个由 ToolCall 启动的普通 Session。模型调用 spawn 工具（默认 `agent_spawn`，经 `Config.Spawn` 配置 Tool、命名 Preset 解析与最大深度）；`spawn.Executor` 是 Worker 的一个 Backend（provider `twilight/session`），`app.Build` 以 `spawn.Route` 把该工具的 Assignment 路由给它，其余 Assignment 走默认 backend（RUN-EXE-10）。工具定义、参数与结果形状、派生身份、定义摘要核对、深度与重放冲突判定在 `agent/spawn` 协议部分；Backend 部分只做子 Session 的创建与结算状态机：`Authority.Open(child)` 取得子的 Handle，经 `turn.Commands.Start`、`driver.Drive` 与 `chatlog.Commands.Submit` 推进，不经 app 门面；子 Turn 静止于 `waiting_for_recovery` 时等待控制面收养其执行后继续驱动。Run 事实本体不新增子代理生命周期：父只看到一个以子代理回复完成的工具调用。
+**SPN-1** 子代理是一个由 ToolCall 触发的普通 Session。模型调用 spawn 工具（默认 `agent_spawn`，经 `Config.Spawn` 配置 Tool、命名 Preset 解析与最大深度）；该工具的 `ResponsePolicy` 为 `ExternalResponse`（RUN-MCH），call 进入 Waiting，不经 Executor，也没有 Execution Record。应答者是 Owner 侧的 `spawn.Responder`，经 `Driver.Responders` 按 ToolRef 注册（DRV-4）：它创建或延续子 Session、驱动到结算并把子的回复作为 `SubmitToolResponse` 的 payload 提交；参数、命名 Preset 或深度错误在任何子 Session 建立之前返回，call 以 `RejectToolCall` 记 `ToolCallFailed(Known/response_rejected)`。子 Session 经 `Authority.Open(child)` 取得 Handle，经 `turn.Commands.Start`、`driver.Drive` 与 `chatlog.Commands.Submit` 推进，不经 app 门面；子 Turn 静止于 `waiting_for_recovery` 时等待其自身执行被控制面收养后继续驱动。Run 事实本体不新增子代理生命周期：父只看到一个以子代理回复应答的工具调用。approval 是另一种 Wait：由人应答，效果仍在效果层；两者只共享 Run 的 Wait 状态与提交入口。
 
-**SPN-2** 调用到子 Session 的绑定是派生的：`ChildSessionID = spawn.ChildID(parent, runID, callID)`（preimage `twilight/spawn/child`），它就是该执行的 Ref，`Prepare` 直接计算，Worker 把 `ExecutionRef{twilight/session, child}` 随 record 持久化（RUN-EXE-9）；子段创建元数据在 `twilight/spawn` 键下记录完整 provenance（父 Session、父 Run、CallID、深度、全量参数），收养据此重建同一调用。同一 CallID 以不同参数重放在 Validate 与 drive 两侧都被拒绝（RUN-EXE-3）。
+**SPN-2** 调用到子 Session 的绑定是派生的：`ChildSessionID = spawn.ChildID(parent, runID, callID)`（preimage `twilight/spawn/child`）。子段创建元数据在 `twilight/spawn` 键下记录完整 provenance（父 Session、父 Run、CallID、深度、全量参数），Responder 据此在任何进程中续接同一调用；同一 CallID 以不同参数再次应答为冲突。
 
-**SPN-3** 嵌套深度从 provenance 链得出：未由 spawn 创建的 Session 深度为 0，子的深度为父深度加一。深度达到 `Options.MaxDepth`（默认 3）的 Session 发起 spawn 调用在开始前被拒（FailureExecution），不创建子 Session。
+**SPN-3** 嵌套深度从 provenance 链得出：未由 spawn 创建的 Session 深度为 0，子的深度为父深度加一。深度达到 `Options.MaxDepth`（默认 3）的 Session 发起 spawn 调用在开始前被拒（response_rejected），不创建子 Session。
 
-**SPN-4** 崩溃接管沿 RUN-CMT-7 与 RUN-EXE-10：新进程对 Executing 的 spawn 调用执行 Attach 时查 Worker 的 record——record 缺失即 `missing`，按 RUN-CMT-7 处置，子 Session 保留在 Session store 中但不再被自动继续；record 存在而 owner 已死时为 `orphaned`，由控制面（Worker 的 reconcile 循环或显式 Takeover）在租约过期后收养，spawn Backend 的 `Attach(ref)` 对本地无 drive 的已存在子 Session 以其 provenance 重建调用并继续驱动。因此跨进程收养要求持久 record store（`Config.Executions` 为文件或共享实现）；内存 record store 下崩溃后的 spawn 调用按 `missing` 处置。`Application.Close` 取消本进程的全部 drive、关闭 Authority，然后关闭 `Build` 组装的 Worker（`Worker.Close` 停止 reconcile 循环、全部 heartbeat 与 watch 并等待它们退出，不取消 backend 执行；record 保留租约直到过期，由下一个实例经 Reconcile/Takeover 收养），子的 Turn 保持 active 等待收养。
+**SPN-4** 崩溃接管不需要执行记录：父的 call 停留在 Waiting(ExternalResponse)，是父 ledger 里的事实；子 Session 的进度是子自己的 ledger。新 Owner 打开父 Session 时 Driver 的 Open-time 扫描（DRV-4）对每个有 Responder 的 Waiting call 再次调用 Responder，Responder 重新派生 ChildID、打开子（对子的接管由 `Ports.Ownership` 决定）、按子的持久状态继续：Turn 仍 active 则驱动，已完成则直接读结果提交。子的模型步若属于死去 Owner 的执行，由子自己的接管处置（RUN-CMT-7）撤回重规划。`Application.Close` 取消本进程全部 Responder 的子驱动，子的 Turn 保持 active 等待下一个 Owner。
 
-**SPN-5** 模式 `spawn`（默认）从空 Session 起；`fork` 以 `turn.History.PrefixCommit` 为根，即父在调用 Turn 及其输入之前的全部历史，子拿到的是当前 Turn 开始之前的对话。结算依子的持久状态推进：有 active Turn 则驱动至结算；有 submitted 输入则以其开新 Turn 并驱动；否则比较最新输入与 task——相同且已有 Turn 则读取已结算结果，不同则提交 task 开新 Turn（fork 子的前缀只含已交付对话的情形）。一个子每个 task 只运行一个 Turn，不排空积压。子 Turn 非 `completed` 时调用失败。
+**SPN-5** 模式 `spawn`（默认）从空 Session 起；`fork` 以 `turn.History.PrefixCommit` 为根，即父在调用 Turn 及其输入之前的全部历史。结算依子的持久状态推进：有 active Turn 则驱动至结算；有 submitted 输入则以其开新 Turn 并驱动；否则比较最新输入与 task——相同且已有 Turn 则读取已结算结果，不同则提交 task 开新 Turn。一个子每个 task 只运行一个 Turn，不排空积压。子 Turn 非 `completed` 时调用被拒绝。
 
 ## 9. 事件流（observe）
 
@@ -214,11 +216,11 @@ chatlog     = chatlog.Commands{Clock}
 driver      = driver.New{runtime, turns, Executor, Presets, Decisions, Sources{projections, content}, Targets: Ports.TargetResolver, Fail}   // 规划读经传入 Writer 的投影；Targets 为 nil 时 effect 无 target（APP-TGT-1）
                                                                   // Loop 按 PresetRef 在 driver 内组合并缓存
 // app.Build
-routes      = [spawn.Route(spawn.Executor)]? + Default(local | port | remote)          // backend 选择一次，持久化为 ExecutionRef.Provider
+routes      = Default(local | port | remote)                                          // backend 选择一次，持久化为 ExecutionRef.Provider
 executor    = executor.NewWorker(ctx, Config.Executions, routes, Config.Worker)  // 本地模式恒经 Worker；Port/远端仅在配置 spawn 时经 Worker；Executions 必填且与 Store 同 durability（AUTH-PRT-3）
                                                                   // Config.Worker.Progress 为 Worker 与本地 backend 共用的 ProgressHub（RUN-EXE-12）；本地 backend 以 streaming 打开
 authority   = authority.New(Ports{..., Executor: executor, Observers: [observe.Bus, Config.Observers...], Fail: warn+bus.Failed})
-spawn.Bind(authority)                                            // 子经 Authority.Open + turn/chatlog/driver 命令驱动
+spawn.Bind(authority); driver.Responders[agent_spawn] = spawn      // 子代理为 Responder（SPN-1、DRV-4），经 Authority.Open + turn/chatlog/driver 命令驱动
 ```
 
 ## 11. 部署形态
@@ -248,6 +250,6 @@ spawn.Bind(authority)                                            // 子经 Autho
 - **APP-SES-1/2/3**：OpenSession 顺序；Send 的首个 Result 与排空 Result；并发 Send 的 `AlreadyDriving` 收敛。
 - **APP-SES-4、OBS-1**：Submit 在模型仍阻塞时已返回且 Turn 为 active；事件流按 Seq 顺序交付该 Turn 的 `started`、attempt 模块的 `started` 与其 Run 的 `run_ended`；后台驱动失败以 `Event{Err}` 与 `Config.Warn` 报告；同一 Session 上 Send 仍阻塞到 Result。
 - **APP-CKP-1/2**：Compact 的模型请求经 Executor 到达模型；压缩后下一请求以 summary 开头且只含 retained 后缀；重启进程组装同一上下文；active Turn 时 Compact 为 conflict；封闭校验的四类边界。
-- **SPN-1..5**：spawn 调用以派生身份建子 Session 并以子回复完成父的工具调用；fork 模式拿到当前 Turn 之前的对话且收到 task；参数错误、未知命名 Preset 与深度超限在开始前被拒且不建子；共享文件 record store 下所有者进程在子模型调用中途退出后（对接管方而言租约已过期），新进程的 reconcile 循环收养同一调用并完成父 Turn，收养后子的 Turn 数与输入数不变；spawn 工具的 Assignment 落到 `twilight/session` provider。
+- **SPN-1..5、DRV-4**：spawn 调用以派生身份建子 Session 并以子回复应答父的工具调用（chatlog 条目 Source 为 tool_response）；fork 模式拿到当前 Turn 之前的对话且收到 task；参数错误、未知命名 Preset 与深度超限在建子之前被拒为 response_rejected 且不建子；所有者进程在子模型调用中途退出后，新进程打开父 Session 时 Responder 续接同一子并完成父 Turn，续接后子的 Turn 数与输入数不变。
 - **APP-MEM-2**：`CacheEvery` 到达 Writer；machine projection 从不被 Writer 写入。
 - **AUTH-FRK-1/2**：父的 Turn 活动中时以该 commit 为点的 fork 被拒且不留根，Turn 结算后同一点可 fork；子对父 Run 的 `Record` 为 `ErrRunNotFound`，继承的 Turn 在子的 surface 上为 completed；在某 Turn 之前 fork 得到的子 Session 只含该 Turn 之前的回答且其输入仍待投递；`Drain` 以同一输入重新生成，`Withdraw` 后 `Send` 以新输入替代；两个子都读到共享前缀的冻结正文；父的 head 不变；每个子的首个自身 Commit 从 anchor 续链；未知 Turn 与自身为父被拒。

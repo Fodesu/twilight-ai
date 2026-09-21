@@ -29,10 +29,7 @@ import (
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/jsonstable"
 	"github.com/felinics/twilight/agent/run"
-	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/loop"
-	"github.com/felinics/twilight/agent/run/model/sdkconv"
-	"github.com/felinics/twilight/agent/run/schema"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/turn"
 	"github.com/felinics/twilight/sdk"
@@ -43,9 +40,6 @@ const DefaultTool run.ToolRef = "agent_spawn"
 
 // DefaultDepth bounds how deep subagents may nest.
 const DefaultDepth = 3
-
-// Provider is the ExecutionRef provider of the subagent Backend.
-const Provider = "twilight/session"
 
 // MetadataKey is the metadata key the provenance lives under in the child
 // segment's creation record.
@@ -79,9 +73,9 @@ type Result struct {
 }
 
 // Provenance is the child segment's creation metadata under MetadataKey: who
-// spawned it, with what, and how deep it sits. Effect is the tool effect the
-// parent's call was started under: the key a takeover adopts the child's
-// Outcome by (RUN-CMT-7), since the Run knows the call by its effect alone.
+// spawned it, with what, and how deep it sits. Effect is unused since the
+// call waits for an external response instead of starting an effect
+// (SPN-1); it stays in the wire shape for records written before.
 type Provenance struct {
 	ParentSession session.SessionID `json:"parentSession"`
 	ParentRun     run.RunID         `json:"parentRun"`
@@ -150,29 +144,6 @@ func ProvenanceFromHeader(header session.SegmentHeader) (prov Provenance, ok boo
 	return prov, true, nil
 }
 
-// CheckDefinition verifies the assignment's recorded definition digest and
-// response policy against the tool's canonical definition (SPN-1). It
-// returns a nil failure when they match.
-func CheckDefinition(sch schema.Schema, tool loop.ExecutableTool, assigned *effect.ToolAssignment) (*run.ToolFailure, error) {
-	def, err := sdkconv.FreezeToolDefinition(tool.Definition())
-	if err != nil {
-		return &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: err.Error()}, nil
-	}
-	digest, err := sch.Canonical.DigestToolDefinition(def)
-	if err != nil {
-		return &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: err.Error()}, nil
-	}
-	switch {
-	case digest != assigned.DefinitionDigest:
-		return &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "tool definition digest mismatch"}, nil
-	case assigned.Policy != tool.ResponsePolicy():
-		return &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "response policy mismatch"}, nil
-	case assigned.Replay != tool.Replay():
-		return &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "replay policy mismatch"}, nil
-	}
-	return nil, nil
-}
-
 // DepthExceeded reports whether a Session at depth has reached the nesting
 // limit and may no longer spawn (SPN-3).
 func DepthExceeded(depth, limit int) bool {
@@ -186,8 +157,9 @@ func ArgumentsConflict(prov Provenance, args Arguments) bool {
 }
 
 // Tool is the model-facing definition of the spawn tool for preset
-// catalogs. Its Execute never runs: the Host intercepts the tool's
-// Assignments (Ports.Spawn). A catalog need not hold it.
+// catalogs. Its ResponsePolicy is ExternalResponse: a call waits, and the
+// Responder the Driver holds for the tool answers it (SPN-1, DRV-4). Execute
+// never runs.
 func Tool(ref run.ToolRef) loop.ExecutableTool { return tool{ref: ref} }
 
 type tool struct{ ref run.ToolRef }
@@ -206,10 +178,10 @@ func (t tool) Definition() sdk.ToolDefinition {
 	}
 }
 
-func (tool) ResponsePolicy() run.ResponsePolicy { return run.DirectExecution }
+func (tool) ResponsePolicy() run.ResponsePolicy { return run.ExternalResponse }
 
 // Replay is allowed: the child Session's identity derives from the call and
-// starting an existing child is a no-op (RUN-EXE-9).
+// answering an existing child again continues it.
 func (tool) Replay() run.ReplayPolicy { return run.ReplayAllowed }
 
 func (tool) ValidateArguments(args run.CanonicalJSON) error {
@@ -219,5 +191,5 @@ func (tool) ValidateArguments(args run.CanonicalJSON) error {
 
 func (t tool) Execute(context.Context, loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	return loop.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureExecution,
-		Message: fmt.Sprintf("%s executes on the authority through the spawn effect (app.Config.Spawn)", t.ref)}}
+		Message: fmt.Sprintf("%s is answered by the spawn Responder (app.Config.Spawn), never executed", t.ref)}}
 }

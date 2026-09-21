@@ -14,6 +14,7 @@ import (
 	"sync"
 
 	"github.com/felinics/twilight/agent/decision"
+	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/run/plan"
@@ -65,10 +66,16 @@ type Driver struct {
 	// Sink receives the drives' provisional observations (RUN-LOP-6): the
 	// executor's progress frames relayed by the Loop. nil discards them.
 	Sink loop.EventSink
+	// Responders answer ExternalResponse waits by ToolRef (DRV-4): after a
+	// drive leaves such a call waiting, and when a Session opens, the
+	// Driver asks the tool's Responder and commits its answer.
+	Responders map[run.ToolRef]Responder
 
 	mu       sync.Mutex
 	loops    map[turn.PresetRef]*loop.Loop
 	recovery map[session.SessionID]*recoveryLifetime
+	// answering are the ResponseIDs a Responder is working on.
+	answering map[run.ResponseID]struct{}
 }
 
 // Planner is the application's between-steps hook: it runs while a Run is
@@ -81,7 +88,7 @@ type Planner interface {
 
 // New returns a Driver with no Loops built and no Sessions open.
 func New() *Driver {
-	return &Driver{loops: make(map[turn.PresetRef]*loop.Loop), recovery: make(map[session.SessionID]*recoveryLifetime)}
+	return &Driver{loops: make(map[turn.PresetRef]*loop.Loop), recovery: make(map[session.SessionID]*recoveryLifetime), answering: make(map[run.ResponseID]struct{})}
 }
 
 func (d *Driver) fail(sid session.SessionID, err error) {
@@ -157,25 +164,39 @@ func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID)
 		if err != nil {
 			return DriveResult{}, err
 		}
-		res, err := l.Run(ctx, d.Runs.Bind(w), view.ActiveRun, d.Sink)
-		if err != nil {
-			if errors.Is(err, loop.ErrRunAlreadyRunning) {
-				resp, rerr := d.Turns.Status(ctx, ref)
-				if rerr != nil {
-					return DriveResult{}, rerr
+		for {
+			res, err := l.Run(ctx, d.Runs.Bind(w), view.ActiveRun, d.Sink)
+			if err != nil {
+				if errors.Is(err, loop.ErrRunAlreadyRunning) {
+					resp, rerr := d.Turns.Status(ctx, ref)
+					if rerr != nil {
+						return DriveResult{}, rerr
+					}
+					return DriveResult{TurnResponse: resp, AlreadyDriving: true}, nil
 				}
-				return DriveResult{TurnResponse: resp, AlreadyDriving: true}, nil
+				return DriveResult{}, err
 			}
-			return DriveResult{}, err
-		}
-		if res.ExecutionRecovery {
-			// The drive quiesced with executions in flight and no local
-			// waiter. Offer every Executing target reattachment and dispose
-			// what no executor answers, instead of leaving the Turn to a
-			// driver that already returned (RUN-CMT-7).
-			if _, err := d.recoverInterrupted(context.WithoutCancel(ctx), w); err != nil {
-				d.fail(ref.SessionID, fmt.Errorf("driver: recovering a quiesced drive: %w", err))
+			if res.ExecutionRecovery {
+				// The drive quiesced with executions in flight and no local
+				// waiter. Offer every Executing target reattachment and dispose
+				// what no executor answers, instead of leaving the Turn to a
+				// driver that already returned (RUN-CMT-7).
+				if _, err := d.recoverInterrupted(context.WithoutCancel(ctx), w); err != nil {
+					d.fail(ref.SessionID, fmt.Errorf("driver: recovering a quiesced drive: %w", err))
+				}
 			}
+			// A wait a Responder can answer is not a quiescent point (DRV-4): the
+			// answer is committed here and the drive continues from it.
+			if res.Disposition == loop.LoopWaiting {
+				settled, err := d.answerWaiting(ctx, w, view.ActiveRun)
+				if err != nil {
+					return DriveResult{}, err
+				}
+				if settled {
+					continue
+				}
+			}
+			break
 		}
 	}
 	resp, err := d.Turns.Status(ctx, ref)
@@ -284,8 +305,12 @@ func (d *Driver) Open(ctx context.Context, w writer.Writer) (int, error) {
 	n, err := d.recoverInterrupted(ctx, w)
 	if err != nil {
 		d.Stop(w.SessionID())
+		return n, err
 	}
-	return n, err
+	// Waits a previous owner left with a Responder are answered by this one
+	// (DRV-4, SPN-4): the Responder continues from its durable state.
+	d.answerAllWaiting(ctx, w)
+	return n, nil
 }
 
 // Stop cancels the Session's recovery listeners.
