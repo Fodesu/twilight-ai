@@ -43,8 +43,8 @@ func TestDoGenerate_FilePartOmittedNotice(t *testing.T) {
 		copilot.WithBaseURL(srv.URL),
 	)
 
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "gpt-4o"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "gpt-4o",
 		Messages: []sdk.Message{{
 			Role: sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{

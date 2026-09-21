@@ -75,11 +75,11 @@ func TestMessage_JSON_AllPartTypes(t *testing.T) {
 		Role: sdk.MessageRoleAssistant,
 		Content: []sdk.MessagePart{
 			sdk.TextPart{Text: "answer"},
-			sdk.ReasoningPart{Text: "thinking", ProviderMetadata: map[string]any{"anthropic": map[string]any{"signature": "sig123"}}},
+			sdk.ReasoningPart{Text: "thinking", ProviderMetadata: sdk.ProviderMetadata{"anthropic": {"signature": "sig123"}}},
 			sdk.ImagePart{Image: "data:image/png;base64,abc", MediaType: "image/png"},
 			sdk.FilePart{Data: "base64data", MediaType: "application/pdf", Filename: "doc.pdf"},
-			sdk.ToolCallPart{ToolCallID: "tc1", ToolName: "search", Input: map[string]any{"q": "go"}},
-			sdk.ToolResultPart{ToolCallID: "tc1", ToolName: "search", Result: "found", IsError: false},
+			sdk.ToolCallPart{ToolCallID: "tc1", ToolName: "search", Input: sdk.ParseToolArguments(`{"q":"go"}`)},
+			sdk.ToolResultPart{ToolCallID: "tc1", ToolName: "search", Result: sdk.TextOutput("found"), IsError: false},
 		},
 	}
 
@@ -119,11 +119,7 @@ func TestMessage_JSON_AllPartTypes(t *testing.T) {
 	if rp.ProviderMetadata == nil {
 		t.Fatal("reasoning: expected providerMetadata to be non-nil")
 	}
-	am, ok := rp.ProviderMetadata["anthropic"].(map[string]any)
-	if !ok {
-		t.Fatalf("reasoning: expected providerMetadata[\"anthropic\"] to be map, got %T", rp.ProviderMetadata["anthropic"])
-	}
-	if sig, _ := am["signature"].(string); sig != "sig123" {
+	if sig := rp.ProviderMetadata.Get("anthropic", "signature"); sig != "sig123" {
 		t.Errorf("reasoning signature: got %q, want %q", sig, "sig123")
 	}
 
@@ -138,7 +134,7 @@ func TestMessage_JSON_AllPartTypes(t *testing.T) {
 	}
 
 	trp := got.Content[5].(sdk.ToolResultPart)
-	if trp.ToolCallID != "tc1" || trp.Result != "found" {
+	if trp.ToolCallID != "tc1" || trp.Result.Text != "found" {
 		t.Errorf("tool result: got %+v", trp)
 	}
 }
@@ -252,7 +248,7 @@ func TestMessage_JSON_TextPartWithMetadata_MarshalAsArray(t *testing.T) {
 	msg := sdk.Message{
 		Role: sdk.MessageRoleAssistant,
 		Content: []sdk.MessagePart{
-			sdk.TextPart{Text: "answer", ProviderMetadata: map[string]any{"key": "val"}},
+			sdk.TextPart{Text: "answer", ProviderMetadata: sdk.ProviderMetadata{"key": {"k": "val"}}},
 		},
 	}
 
@@ -308,8 +304,8 @@ func TestUsage_JSON(t *testing.T) {
 	}
 }
 
-func TestGenerateResult_JSON(t *testing.T) {
-	r := sdk.GenerateResult{
+func TestModelResult_JSON(t *testing.T) {
+	r := sdk.ModelResult{
 		Text:         "Hello world",
 		FinishReason: sdk.FinishReasonStop,
 		Usage: sdk.Usage{
@@ -320,7 +316,7 @@ func TestGenerateResult_JSON(t *testing.T) {
 		ToolCalls: []sdk.ToolCall{{
 			ToolCallID: "tc1",
 			ToolName:   "search",
-			Input:      map[string]any{"query": "go"},
+			Input:      sdk.ParseToolArguments(`{"query":"go"}`),
 		}},
 	}
 
@@ -330,7 +326,7 @@ func TestGenerateResult_JSON(t *testing.T) {
 	}
 	t.Logf("json: %s", data)
 
-	var got sdk.GenerateResult
+	var got sdk.ModelResult
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

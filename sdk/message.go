@@ -69,9 +69,9 @@ type CacheControl struct {
 // --- Text ---
 
 type TextPart struct {
-	Text             string         `json:"text"`
-	CacheControl     *CacheControl  `json:"cacheControl,omitempty"`
-	ProviderMetadata map[string]any `json:"providerMetadata,omitempty"`
+	Text             string           `json:"text"`
+	CacheControl     *CacheControl    `json:"cacheControl,omitempty"`
+	ProviderMetadata ProviderMetadata `json:"providerMetadata,omitempty"`
 }
 
 func (p TextPart) PartType() MessagePartType { return MessagePartTypeText }
@@ -151,7 +151,7 @@ type ReasoningPart struct {
 	// across those endpoints.
 	Model string `json:"model,omitempty"`
 
-	ProviderMetadata map[string]any `json:"providerMetadata,omitempty"`
+	ProviderMetadata ProviderMetadata `json:"providerMetadata,omitempty"`
 }
 
 func (p ReasoningPart) PartType() MessagePartType { return MessagePartTypeReasoning }
@@ -207,35 +207,6 @@ func claudeFamilyVersion(id string) (string, bool) {
 	return match[1] + "-" + match[2] + "." + minor, true
 }
 
-// ReasoningMetadata builds a provider-namespaced metadata bag, skipping empty
-// values. It returns nil when nothing is left, so callers can tell "no token"
-// from "empty token".
-func ReasoningMetadata(namespace string, kv map[string]string) map[string]any {
-	inner := make(map[string]any, len(kv))
-	for key, value := range kv {
-		if value != "" {
-			inner[key] = value
-		}
-	}
-	if len(inner) == 0 {
-		return nil
-	}
-	return map[string]any{namespace: inner}
-}
-
-// ReasoningMetadataString reads one string value out of a provider's namespace.
-func ReasoningMetadataString(meta map[string]any, namespace, key string) string {
-	if meta == nil {
-		return ""
-	}
-	inner, ok := meta[namespace].(map[string]any)
-	if !ok {
-		return ""
-	}
-	value, _ := inner[key].(string)
-	return value
-}
-
 // reasoningAccumulator folds a reasoning part stream into ordered parts.
 //
 // Providers delimit blocks with ReasoningStartPart/ReasoningEndPart and carry
@@ -251,7 +222,7 @@ type reasoningAccumulator struct {
 
 // openBlock starts a block, or returns the existing one when a provider
 // re-announces the same ID.
-func (a *reasoningAccumulator) openBlock(id string, format ReasoningFormat, model string, meta map[string]any) int {
+func (a *reasoningAccumulator) openBlock(id string, format ReasoningFormat, model string, meta ProviderMetadata) int {
 	if idx, ok := a.index(id); ok {
 		a.merge(idx, format, model, meta)
 		return idx
@@ -280,25 +251,17 @@ func (a *reasoningAccumulator) index(id string) (int, bool) {
 	return len(a.parts) - 1, true
 }
 
-func (a *reasoningAccumulator) merge(idx int, format ReasoningFormat, model string, meta map[string]any) {
+func (a *reasoningAccumulator) merge(idx int, format ReasoningFormat, model string, meta ProviderMetadata) {
 	if format != ReasoningFormatUnknown {
 		a.parts[idx].Format = format
 	}
 	if model != "" {
 		a.parts[idx].Model = model
 	}
-	if len(meta) == 0 {
-		return
-	}
-	if a.parts[idx].ProviderMetadata == nil {
-		a.parts[idx].ProviderMetadata = make(map[string]any, len(meta))
-	}
-	for key, value := range meta {
-		a.parts[idx].ProviderMetadata[key] = value
-	}
+	a.parts[idx].ProviderMetadata = a.parts[idx].ProviderMetadata.Merge(meta)
 }
 
-func (a *reasoningAccumulator) appendDelta(id, text string, format ReasoningFormat, model string, meta map[string]any) {
+func (a *reasoningAccumulator) appendDelta(id, text string, format ReasoningFormat, model string, meta ProviderMetadata) {
 	idx, ok := a.index(id)
 	if !ok {
 		idx = a.openBlock(id, format, model, nil)
@@ -309,7 +272,7 @@ func (a *reasoningAccumulator) appendDelta(id, text string, format ReasoningForm
 
 // closeBlock attaches the block's final metadata, which is where providers
 // deliver the opaque token.
-func (a *reasoningAccumulator) closeBlock(id string, format ReasoningFormat, model string, meta map[string]any) {
+func (a *reasoningAccumulator) closeBlock(id string, format ReasoningFormat, model string, meta ProviderMetadata) {
 	idx, ok := a.index(id)
 	if !ok {
 		idx = a.openBlock(id, format, model, nil)
@@ -345,26 +308,26 @@ func (p FilePart) PartType() MessagePartType { return MessagePartTypeFile }
 // --- Tool Call (in assistant messages) ---
 
 type ToolCallPart struct {
-	ToolCallID       string         `json:"toolCallId"`
-	ToolName         string         `json:"toolName"`
-	Input            any            `json:"input"`
-	CacheControl     *CacheControl  `json:"cacheControl,omitempty"`
-	ProviderMetadata map[string]any `json:"providerMetadata,omitempty"`
+	ToolCallID       string           `json:"toolCallId"`
+	ToolName         string           `json:"toolName"`
+	Input            ToolArguments    `json:"input"`
+	CacheControl     *CacheControl    `json:"cacheControl,omitempty"`
+	ProviderMetadata ProviderMetadata `json:"providerMetadata,omitempty"`
 }
 
-func (p ToolCallPart) PartType() MessagePartType { return MessagePartTypeToolCall }
+func (p ToolCallPart) PartType() MessagePartType { return MessagePartTypeToolCall } //nolint:gocritic // hugeParam: MessagePart is implemented by value types
 
 // --- Tool Result (in tool messages) ---
 
 type ToolResultPart struct {
 	ToolCallID   string        `json:"toolCallId"`
 	ToolName     string        `json:"toolName"`
-	Result       any           `json:"result"`
+	Result       ToolOutput    `json:"result"`
 	IsError      bool          `json:"isError,omitempty"`
 	CacheControl *CacheControl `json:"cacheControl,omitempty"`
 }
 
-func (p ToolResultPart) PartType() MessagePartType { return MessagePartTypeToolResult }
+func (p ToolResultPart) PartType() MessagePartType { return MessagePartTypeToolResult } //nolint:gocritic // hugeParam: MessagePart is implemented by value types
 
 // --- Message ---
 

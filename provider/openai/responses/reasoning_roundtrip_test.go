@@ -31,8 +31,8 @@ func captureInput(t *testing.T, messages []sdk.Message) []map[string]any {
 	defer srv.Close()
 
 	p := responses.New(responses.WithAPIKey("k"), responses.WithBaseURL(srv.URL))
-	if _, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("gpt-5.6"),
+	if _, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "gpt-5.6",
 		Messages: messages,
 	}); err != nil {
 		t.Fatalf("DoGenerate: %v", err)
@@ -50,7 +50,7 @@ func captureInput(t *testing.T, messages []sdk.Message) []map[string]any {
 }
 
 func TestReplayRegroupsPartsSharingAnItemID(t *testing.T) {
-	meta := map[string]any{"openai": map[string]any{
+	meta := sdk.ProviderMetadata{"openai": {
 		"itemId":                    "rs_1",
 		"reasoningEncryptedContent": "EC",
 	}}
@@ -90,9 +90,9 @@ func TestReplayKeepsDistinctItemsSeparate(t *testing.T) {
 		Role: sdk.MessageRoleAssistant,
 		Content: []sdk.MessagePart{
 			sdk.ReasoningPart{Text: "a", Format: sdk.ReasoningFormatOpenAIResponses,
-				ProviderMetadata: map[string]any{"openai": map[string]any{"itemId": "rs_1"}}},
+				ProviderMetadata: sdk.ProviderMetadata{"openai": {"itemId": "rs_1"}}},
 			sdk.ReasoningPart{Text: "b", Format: sdk.ReasoningFormatOpenAIResponses,
-				ProviderMetadata: map[string]any{"openai": map[string]any{"itemId": "rs_2"}}},
+				ProviderMetadata: sdk.ProviderMetadata{"openai": {"itemId": "rs_2"}}},
 			sdk.TextPart{Text: "answer"},
 		},
 	}})
@@ -116,7 +116,7 @@ func TestReplayKeepsEncryptedOnlyItem(t *testing.T) {
 		Role: sdk.MessageRoleAssistant,
 		Content: []sdk.MessagePart{
 			sdk.ReasoningPart{Format: sdk.ReasoningFormatOpenAIResponses,
-				ProviderMetadata: map[string]any{"openai": map[string]any{
+				ProviderMetadata: sdk.ProviderMetadata{"openai": {
 					"itemId":                    "rs_opaque",
 					"reasoningEncryptedContent": "ENCRYPTED_ONLY",
 				}}},
@@ -139,7 +139,7 @@ func TestReplayDropsForeignReasoning(t *testing.T) {
 		Role: sdk.MessageRoleAssistant,
 		Content: []sdk.MessagePart{
 			sdk.ReasoningPart{Text: "anthropic thinking", Format: sdk.ReasoningFormatAnthropic,
-				ProviderMetadata: map[string]any{"anthropic": map[string]any{"signature": "SIG"}}},
+				ProviderMetadata: sdk.ProviderMetadata{"anthropic": {"signature": "SIG"}}},
 			sdk.TextPart{Text: "answer"},
 		},
 	}})
@@ -165,8 +165,8 @@ func TestRequestAsksForEncryptedReasoning(t *testing.T) {
 	defer srv.Close()
 
 	p := responses.New(responses.WithAPIKey("k"), responses.WithBaseURL(srv.URL))
-	if _, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("gpt-5.6"),
+	if _, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "gpt-5.6",
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
 	}); err != nil {
 		t.Fatalf("DoGenerate: %v", err)
@@ -215,17 +215,18 @@ func TestDoStreamCapturesEncryptedContentFromItemDone(t *testing.T) {
 	defer srv.Close()
 
 	p := responses.New(responses.WithAPIKey("k"), responses.WithBaseURL(srv.URL))
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("gpt-5.6"),
+	stream, err := p.ChatModel("gpt-5.6").Stream(context.Background(), sdk.Request{
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
 	})
 	if err != nil {
-		t.Fatalf("DoStream: %v", err)
+		t.Fatalf("Stream: %v", err)
 	}
 
-	result, err := sr.ToResult()
+	for range stream.Parts {
+	}
+	result, err := stream.Result()
 	if err != nil {
-		t.Fatalf("ToResult: %v", err)
+		t.Fatalf("stream result: %v", err)
 	}
 	if len(result.ReasoningParts) != 1 {
 		t.Fatalf("ReasoningParts: got %d, want 1 (%+v)", len(result.ReasoningParts), result.ReasoningParts)
@@ -234,7 +235,7 @@ func TestDoStreamCapturesEncryptedContentFromItemDone(t *testing.T) {
 	if part.Text != "thinking" {
 		t.Errorf("text: got %q, want %q", part.Text, "thinking")
 	}
-	meta, _ := part.ProviderMetadata["openai"].(map[string]any)
+	meta := part.ProviderMetadata["openai"]
 	if meta["reasoningEncryptedContent"] != "ENC_PAYLOAD" {
 		t.Errorf("encrypted content lost in streaming: metadata = %+v", part.ProviderMetadata)
 	}
@@ -274,22 +275,23 @@ func TestDoStreamKeepsEncryptedContentWhenToolCallClosesBlockFirst(t *testing.T)
 	defer srv.Close()
 
 	p := responses.New(responses.WithAPIKey("k"), responses.WithBaseURL(srv.URL))
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("gpt-5.6"),
+	stream, err := p.ChatModel("gpt-5.6").Stream(context.Background(), sdk.Request{
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
 	})
 	if err != nil {
-		t.Fatalf("DoStream: %v", err)
+		t.Fatalf("Stream: %v", err)
 	}
 
-	result, err := sr.ToResult()
+	for range stream.Parts {
+	}
+	result, err := stream.Result()
 	if err != nil {
-		t.Fatalf("ToResult: %v", err)
+		t.Fatalf("stream result: %v", err)
 	}
 	if len(result.ReasoningParts) != 1 {
 		t.Fatalf("ReasoningParts: got %d, want 1 (%+v)", len(result.ReasoningParts), result.ReasoningParts)
 	}
-	meta, _ := result.ReasoningParts[0].ProviderMetadata["openai"].(map[string]any)
+	meta := result.ReasoningParts[0].ProviderMetadata["openai"]
 	if meta["reasoningEncryptedContent"] != "ENC_LATE" {
 		t.Errorf("late encrypted content lost: metadata = %+v", result.ReasoningParts[0].ProviderMetadata)
 	}

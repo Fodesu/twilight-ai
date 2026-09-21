@@ -236,11 +236,9 @@ func TestDoEmbed_NilModel(t *testing.T) {
 func TestDoEmbed_APIError(t *testing.T) {
 	_, p := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusForbidden)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"message": "API key not valid",
-			},
-		})
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+			"message": "API key not valid",
+		}})
 	})
 
 	model := p.EmbeddingModel("gemini-embedding-001")

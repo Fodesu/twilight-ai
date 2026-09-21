@@ -65,8 +65,8 @@ func TestInstructionRolesMapToSystemInstructionAndUserFallbacks(t *testing.T) {
 	defer srv.Close()
 
 	p := generativeai.New(generativeai.WithAPIKey("k"), generativeai.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:  p.ChatModel("gemini-test"),
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:  "gemini-test",
 		System: "root policy",
 		Messages: []sdk.Message{
 			sdk.SystemMessage("leading system"),

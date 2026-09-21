@@ -150,14 +150,11 @@ func TestMCPToolExecute(t *testing.T) {
 			ToolCallID: "call-1",
 			ToolName:   "echo",
 		}
-		result, err := echoTool.Execute(execCtx, map[string]any{"message": "hello"})
+		result, err := echoTool.Execute(execCtx, ParseToolArguments(`{"message":"hello"}`))
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
-		text, ok := result.(string)
-		if !ok {
-			t.Fatalf("expected string result, got %T", result)
-		}
+		text := result.Text
 		if text != "echo: hello" {
 			t.Errorf("result = %q, want %q", text, "echo: hello")
 		}
@@ -170,14 +167,11 @@ func TestMCPToolExecute(t *testing.T) {
 			ToolCallID: "call-2",
 			ToolName:   "add",
 		}
-		result, err := addTool.Execute(execCtx, map[string]any{"a": 3.0, "b": 4.0})
+		result, err := addTool.Execute(execCtx, ParseToolArguments(`{"a":3,"b":4}`))
 		if err != nil {
 			t.Fatalf("Execute: %v", err)
 		}
-		text, ok := result.(string)
-		if !ok {
-			t.Fatalf("expected string result, got %T", result)
-		}
+		text := result.Text
 		if text == "" {
 			t.Fatal("empty result")
 		}
@@ -209,12 +203,10 @@ func TestConvertInputSchema(t *testing.T) {
 	t.Run("map to schema", func(t *testing.T) {
 		m := map[string]any{
 			"type": "object",
-			"properties": map[string]any{
-				"name": map[string]any{
-					"type":        "string",
-					"description": "A name",
-				},
-			},
+			"properties": map[string]any{"name": map[string]any{
+				"type":        "string",
+				"description": "A name",
+			}},
 			"required": []any{"name"},
 		}
 		s, err := convertInputSchema(m)
@@ -225,32 +217,6 @@ func TestConvertInputSchema(t *testing.T) {
 			t.Fatal("expected non-nil schema")
 		} else if s.Type != "object" {
 			t.Errorf("type = %q, want %q", s.Type, "object")
-		}
-	})
-}
-
-func TestToJSONObject(t *testing.T) {
-	t.Run("map passthrough", func(t *testing.T) {
-		m := map[string]any{"a": 1}
-		out, err := toJSONObject(m)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if out["a"] != 1 {
-			t.Errorf("unexpected value: %v", out)
-		}
-	})
-
-	t.Run("struct conversion", func(t *testing.T) {
-		type S struct {
-			X int `json:"x"`
-		}
-		out, err := toJSONObject(S{X: 42})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if out["x"] != float64(42) {
-			t.Errorf("unexpected value: %v", out)
 		}
 	})
 }

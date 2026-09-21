@@ -46,19 +46,19 @@ func toolCallMessage(id string, reasoning ...sdk.ReasoningPart) sdk.Message {
 	parts = append(parts, sdk.ToolCallPart{
 		ToolCallID: id,
 		ToolName:   "get_weather",
-		Input:      map[string]any{"city": "Paris"},
+		Input:      sdk.ParseToolArguments(`{"city":"Paris"}`),
 	})
 	return sdk.Message{Role: sdk.MessageRoleAssistant, Content: parts}
 }
 
-func weatherTool() sdk.Tool {
-	return sdk.Tool{
+func weatherTool() sdk.ToolDefinition {
+	return sdk.ToolDefinition{
 		Name:        "get_weather",
 		Description: "Get weather",
-		Parameters: map[string]any{
+		Parameters: mustSchema(map[string]any{
 			"type":       "object",
 			"properties": map[string]any{"city": map[string]any{"type": "string"}},
-		},
+		}),
 	}
 }
 
@@ -129,16 +129,16 @@ func TestDoGenerate_ThinkingReplayPadding(t *testing.T) {
 			history := []sdk.Message{
 				sdk.UserMessage("Weather in Paris, then Tokyo."),
 				toolCallMessage("c1", tc.step1...),
-				sdk.ToolMessage(sdk.ToolResultPart{ToolCallID: "c1", ToolName: "get_weather", Result: "18C"}),
+				sdk.ToolMessage(sdk.ToolResultPart{ToolCallID: "c1", ToolName: "get_weather", Result: sdk.TextOutput("18C")}),
 				toolCallMessage("c2"),
-				sdk.ToolMessage(sdk.ToolResultPart{ToolCallID: "c2", ToolName: "get_weather", Result: "25C"}),
+				sdk.ToolMessage(sdk.ToolResultPart{ToolCallID: "c2", ToolName: "get_weather", Result: sdk.TextOutput("25C")}),
 				sdk.AssistantMessage("Paris 18C, Tokyo 25C."),
 				sdk.UserMessage("Thanks."),
 			}
-			_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-				Model:    &sdk.Model{ID: "m"},
+			_, err := p.DoGenerate(context.Background(), sdk.Request{
+				Model:    "m",
 				Messages: history,
-				Tools:    []sdk.Tool{weatherTool()},
+				Tools:    []sdk.ToolDefinition{weatherTool()},
 			})
 			if err != nil {
 				t.Fatalf("DoGenerate: %v", err)

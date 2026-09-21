@@ -38,8 +38,8 @@ func TestDoGenerate_FilePartDocumentBlock(t *testing.T) {
 		messages.WithBaseURL(srv.URL),
 	)
 
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{{
 			Role: sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{
@@ -96,8 +96,8 @@ func TestDoGenerate_FilePartDataURLTolerated(t *testing.T) {
 		messages.WithBaseURL(srv.URL),
 	)
 
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "claude-sonnet-4-20250514"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "claude-sonnet-4-20250514",
 		Messages: []sdk.Message{{
 			Role: sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{

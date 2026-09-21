@@ -29,11 +29,9 @@ func fakeSSEBody(chunks []string) string {
 		evt := map[string]any{
 			"choices": []map[string]any{
 				{
-					"delta": map[string]any{
-						"audio": map[string]any{
-							"data": chunk,
-						},
-					},
+					"delta": map[string]any{"audio": map[string]any{
+						"data": chunk,
+					}},
 				},
 			},
 		}

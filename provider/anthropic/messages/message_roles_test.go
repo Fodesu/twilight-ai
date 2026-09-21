@@ -51,8 +51,8 @@ func TestUnsupportedInstructionRolesFallbackToUser(t *testing.T) {
 	defer srv.Close()
 
 	p := messages.New(messages.WithAPIKey("k"), messages.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:  p.ChatModel("claude-test"),
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:  "claude-test",
 		System: "root policy",
 		Messages: []sdk.Message{
 			sdk.SystemMessage("leading system"),
@@ -89,8 +89,8 @@ func TestMidConversationSystemCanBeEnabledForSupportedModels(t *testing.T) {
 		messages.WithBaseURL(srv.URL),
 		messages.WithMidConversationSystemMessages(true),
 	)
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: p.ChatModel("claude-supported"),
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "claude-supported",
 		Messages: []sdk.Message{
 			sdk.UserMessage("question"),
 			sdk.SystemMessage("runtime changed"),

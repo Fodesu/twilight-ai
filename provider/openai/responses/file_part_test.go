@@ -47,8 +47,8 @@ func TestResponsesDoGenerate_FilePartInputFile(t *testing.T) {
 		responses.WithBaseURL(srv.URL),
 	)
 
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "gpt-4o-mini"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "gpt-4o-mini",
 		Messages: []sdk.Message{{
 			Role: sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{

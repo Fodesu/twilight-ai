@@ -5,16 +5,19 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	anthropicmessages "github.com/felinics/twilight/provider/anthropic/messages"
 	sdk "github.com/felinics/twilight/sdk"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
-// A tool call whose streamed arguments fail to parse must not run. Emitting it
-// with nil input hands the tool empty arguments and executes it anyway — with
-// whatever side effects that implies — and then commits the step as if nothing
-// were wrong, leaving an error event and a completed call for the same block.
+// A tool call whose streamed arguments are not a JSON document is still
+// reported -- the model has to hear that it got the call wrong -- but it
+// carries the text in ToolArguments.Text and no document, and ExecuteTools
+// answers it with an error result instead of running the tool on empty or
+// guessed arguments.
 func TestMalformedToolArgsDoNotExecute(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -38,56 +41,53 @@ data: {"type":"message_stop"}`,
 	}))
 	defer srv.Close()
 
-	executed := false
-	committed := 0
 	provider := anthropicmessages.New(
 		anthropicmessages.WithAPIKey("k"),
 		anthropicmessages.WithBaseURL(srv.URL),
 	)
-	client := sdk.NewClient()
-
-	result, err := client.StreamText(context.Background(),
-		sdk.WithModel(provider.ChatModel("claude-opus-5")),
-		sdk.WithMessages([]sdk.Message{sdk.UserMessage("delete something")}),
-		sdk.WithTools([]sdk.Tool{{
-			Name:        "delete_file",
-			Description: "deletes a file",
-			Parameters:  map[string]any{"type": "object"},
-			Execute: func(ctx *sdk.ToolExecContext, input any) (any, error) {
-				executed = true
-				return "deleted", nil
-			},
-		}}),
-		sdk.WithOnStepCommitted(func(ctx context.Context, stepIndex int, step *sdk.StepResult) error {
-			committed++
-			return nil
-		}),
-	)
+	stream, err := provider.ChatModel("claude-opus-5").Stream(context.Background(), sdk.Request{
+		Messages: []sdk.Message{sdk.UserMessage("delete something")},
+		Tools:    []sdk.ToolDefinition{{Name: "delete_file", Description: "deletes a file", Parameters: &jsonschema.Schema{Type: "object"}}},
+	})
 	if err != nil {
-		t.Fatalf("StreamText: %v", err)
+		t.Fatalf("Stream: %v", err)
 	}
-
-	var sawError bool
-	var calls int
-	for part := range result.Stream {
-		switch part.(type) {
+	var calls []sdk.ToolCall
+	for part := range stream.Parts {
+		switch p := part.(type) {
 		case *sdk.ErrorPart:
-			sawError = true
+			t.Fatalf("malformed arguments surfaced as a stream error: %v", p.Error)
 		case *sdk.StreamToolCallPart:
-			calls++
+			calls = append(calls, sdk.ToolCall{ToolCallID: p.ToolCallID, ToolName: p.ToolName, Input: p.Input})
 		}
 	}
-
-	if !sawError {
-		t.Error("no ErrorPart for malformed tool arguments")
+	result, err := stream.Result()
+	if err != nil || result == nil {
+		t.Fatalf("Result: %+v %v", result, err)
 	}
-	if calls != 0 {
-		t.Errorf("StreamToolCallPart emitted %d time(s) for a call that could not be parsed", calls)
+	if len(calls) != 1 || len(result.ToolCalls) != 1 {
+		t.Fatalf("tool calls: streamed %d, assembled %d, want 1 and 1", len(calls), len(result.ToolCalls))
+	}
+	in := result.ToolCalls[0].Input
+	if in.Valid() || in.Text != `{"path": "/etc` {
+		t.Fatalf("arguments = %+v, want the invalid text kept verbatim and no document", in)
+	}
+	executed := false
+	outcome, err := sdk.ExecuteTools(context.Background(), result.ToolCalls, sdk.ToolExecOptions{Tools: []sdk.Tool{{
+		Name:       "delete_file",
+		Parameters: &jsonschema.Schema{Type: "object"},
+		Execute: func(*sdk.ToolExecContext, sdk.ToolArguments) (sdk.ToolOutput, error) {
+			executed = true
+			return sdk.TextOutput("deleted"), nil
+		},
+	}}})
+	if err != nil {
+		t.Fatalf("ExecuteTools: %v", err)
 	}
 	if executed {
-		t.Error("the tool ran on nil input")
+		t.Fatal("the tool ran on arguments that were not a JSON document")
 	}
-	if committed != 0 {
-		t.Errorf("OnStepCommitted fired %d time(s) for a failed step", committed)
+	if len(outcome.Results) != 1 || !outcome.Results[0].IsError || !strings.Contains(outcome.Results[0].Result.Text, "invalid tool arguments") {
+		t.Fatalf("results = %+v, want one error result naming the invalid arguments", outcome.Results)
 	}
 }

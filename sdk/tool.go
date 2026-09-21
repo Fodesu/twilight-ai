@@ -4,12 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // ToolExecuteFunc is the signature for a tool's execution handler.
 // input is the parsed arguments from the LLM. The return value becomes the
 // tool result output sent back to the model.
-type ToolExecuteFunc func(ctx *ToolExecContext, input any) (any, error)
+type ToolExecuteFunc func(ctx *ToolExecContext, input ToolArguments) (ToolOutput, error)
 
 // ToolExecContext is passed to ToolExecuteFunc and carries the parent context,
 // call metadata, and a mechanism for streaming progress updates.
@@ -17,7 +18,7 @@ type ToolExecContext struct {
 	context.Context
 	ToolCallID   string
 	ToolName     string
-	SendProgress func(content any) // nil when not in streaming mode
+	SendProgress func(content ToolOutput) // nil when not in streaming mode
 }
 
 type ToolApprovalDecision string
@@ -32,7 +33,7 @@ type ToolApprovalResult struct {
 	Decision   ToolApprovalDecision `json:"decision"`
 	ApprovalID string               `json:"approvalId,omitempty"`
 	Reason     string               `json:"reason,omitempty"`
-	Metadata   map[string]any       `json:"metadata,omitempty"`
+	Metadata   map[string]string    `json:"metadata,omitempty"`
 }
 
 var ErrToolApprovalDeferred = errors.New("tool approval deferred")
@@ -56,11 +57,11 @@ func (e *ToolApprovalDeferredError) Is(target error) bool {
 }
 
 type Tool struct {
-	Name            string          `json:"name"`
-	Description     string          `json:"description,omitempty"`
-	Parameters      any             `json:"parameters"` // *jsonschema.Schema, or a Go struct for automatic inference
-	Execute         ToolExecuteFunc `json:"-"`
-	RequireApproval bool            `json:"-"`
+	Name            string             `json:"name"`
+	Description     string             `json:"description,omitempty"`
+	Parameters      *jsonschema.Schema `json:"parameters"`
+	Execute         ToolExecuteFunc    `json:"-"`
+	RequireApproval bool               `json:"-"`
 	// CacheControl enables prompt caching for this tool's definition.
 	// Only supported by Anthropic; other providers ignore this field.
 	CacheControl *CacheControl `json:"-"`

@@ -3,10 +3,10 @@ package embedding
 // --- Request types ---
 
 type embedContentRequest struct {
-	Model                string   `json:"model"`
-	Content              content  `json:"content"`
-	OutputDimensionality *int     `json:"outputDimensionality,omitempty"`
-	TaskType             string   `json:"taskType,omitempty"`
+	Model                string  `json:"model"`
+	Content              content `json:"content"`
+	OutputDimensionality *int    `json:"outputDimensionality,omitempty"`
+	TaskType             string  `json:"taskType,omitempty"`
 }
 
 type batchEmbedContentsRequest struct {

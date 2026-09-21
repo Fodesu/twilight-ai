@@ -119,7 +119,7 @@ func TestListModelsMapsCapabilities(t *testing.T) {
 	if len(models) != 1 || models[0].ID != "google/veo-3.1" {
 		t.Fatalf("unexpected models: %#v", models)
 	}
-	if models[0].ProviderMetadata["name"] != "Veo 3.1" {
+	if models[0].ProviderMetadata.Get("openrouter", "name") != "Veo 3.1" {
 		t.Fatalf("metadata missing: %#v", models[0].ProviderMetadata)
 	}
 }
