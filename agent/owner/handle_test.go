@@ -5,11 +5,11 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/executor"
 	executorlocal "github.com/felinics/twilight/agent/executor/local"
 	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/jsonstable"
+	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"
 )

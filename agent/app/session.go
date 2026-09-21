@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/driver"
+	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/chatlog"

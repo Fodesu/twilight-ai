@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/app"
-	"github.com/felinics/twilight/agent/owner"
 	executionstore "github.com/felinics/twilight/agent/executor/store"
+	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/session"
 	"github.com/felinics/twilight/agent/session/filestore"
 )

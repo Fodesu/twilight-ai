@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/driver"
+	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/loop"
 	"github.com/felinics/twilight/agent/session"

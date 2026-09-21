@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/artifact"
-	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/decision"
 	"github.com/felinics/twilight/agent/driver"
@@ -24,6 +23,7 @@ import (
 	executorlocal "github.com/felinics/twilight/agent/executor/local"
 	executionstore "github.com/felinics/twilight/agent/executor/store"
 	"github.com/felinics/twilight/agent/observe"
+	"github.com/felinics/twilight/agent/owner"
 	"github.com/felinics/twilight/agent/preset"
 	"github.com/felinics/twilight/agent/run"
 	"github.com/felinics/twilight/agent/run/effect"
@@ -147,8 +147,8 @@ const CompactorSystemPrompt = compaction.CompactorSystemPrompt
 // own services -- the preset table, the event stream and the spawn effect.
 type Application struct {
 	Owner *owner.Owner
-	bus       *observe.Bus
-	spawn     *spawn.Responder
+	bus   *observe.Bus
+	spawn *spawn.Responder
 	// worker is the Worker Build composed, if any; Close stops it after the
 	// Authority (RUN-EXE-8).
 	worker *executor.Worker
