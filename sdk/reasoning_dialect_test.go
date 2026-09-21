@@ -161,7 +161,7 @@ func TestReasoningFormatSurvivesJSONRoundTrip(t *testing.T) {
 				ID:               "rs_1",
 				Text:             "t",
 				Format:           sdk.ReasoningFormatOpenAIResponses,
-				ProviderMetadata: map[string]any{"openai": map[string]any{"itemId": "rs_1"}},
+				ProviderMetadata: sdk.ProviderMetadata{"openai": {"itemId": "rs_1"}},
 			},
 		},
 	}

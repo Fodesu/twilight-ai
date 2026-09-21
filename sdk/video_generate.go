@@ -237,16 +237,12 @@ func videoProviderFromModel(model *VideoModel) (VideoProvider, error) {
 	return model.Provider, nil
 }
 
+// mergeVideoOutputMetadata records the request's config on the output under
+// the "request" namespace, without overriding what the provider set.
 func mergeVideoOutputMetadata(output *VideoOutput, config map[string]any) {
 	if output == nil || len(config) == 0 {
 		return
 	}
-	if output.ProviderMetadata == nil {
-		output.ProviderMetadata = map[string]any{}
-	}
-	for k, v := range config {
-		if _, exists := output.ProviderMetadata[k]; !exists {
-			output.ProviderMetadata[k] = v
-		}
-	}
+	requested := NewProviderMetadata("request", StringValues(config))
+	output.ProviderMetadata = requested.Merge(output.ProviderMetadata)
 }

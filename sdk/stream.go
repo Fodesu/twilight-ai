@@ -1,6 +1,6 @@
 package sdk
 
-import "context"
+import "encoding/json"
 
 type StreamPartType string
 
@@ -41,7 +41,7 @@ type StreamPart interface {
 
 type TextStartPart struct {
 	ID               string
-	ProviderMetadata map[string]any
+	ProviderMetadata ProviderMetadata
 }
 
 func (p *TextStartPart) Type() StreamPartType { return StreamPartTypeTextStart }
@@ -49,14 +49,14 @@ func (p *TextStartPart) Type() StreamPartType { return StreamPartTypeTextStart }
 type TextDeltaPart struct {
 	ID               string
 	Text             string
-	ProviderMetadata map[string]any
+	ProviderMetadata ProviderMetadata
 }
 
 func (p *TextDeltaPart) Type() StreamPartType { return StreamPartTypeTextDelta }
 
 type TextEndPart struct {
 	ID               string
-	ProviderMetadata map[string]any
+	ProviderMetadata ProviderMetadata
 }
 
 func (p *TextEndPart) Type() StreamPartType { return StreamPartTypeTextEnd }
@@ -67,7 +67,7 @@ type ReasoningStartPart struct {
 	ID               string
 	Model            string
 	Format           ReasoningFormat
-	ProviderMetadata map[string]any
+	ProviderMetadata ProviderMetadata
 }
 
 func (p *ReasoningStartPart) Type() StreamPartType { return StreamPartTypeReasoningStart }
@@ -77,7 +77,7 @@ type ReasoningDeltaPart struct {
 	Model            string
 	Text             string
 	Format           ReasoningFormat
-	ProviderMetadata map[string]any
+	ProviderMetadata ProviderMetadata
 }
 
 func (p *ReasoningDeltaPart) Type() StreamPartType { return StreamPartTypeReasoningDelta }
@@ -86,7 +86,7 @@ type ReasoningEndPart struct {
 	ID               string
 	Model            string
 	Format           ReasoningFormat
-	ProviderMetadata map[string]any
+	ProviderMetadata ProviderMetadata
 }
 
 func (p *ReasoningEndPart) Type() StreamPartType { return StreamPartTypeReasoningEnd }
@@ -96,7 +96,7 @@ func (p *ReasoningEndPart) Type() StreamPartType { return StreamPartTypeReasonin
 type ToolInputStartPart struct {
 	ID               string
 	ToolName         string
-	ProviderMetadata map[string]any
+	ProviderMetadata ProviderMetadata
 }
 
 func (p *ToolInputStartPart) Type() StreamPartType { return StreamPartTypeToolInputStart }
@@ -104,14 +104,14 @@ func (p *ToolInputStartPart) Type() StreamPartType { return StreamPartTypeToolIn
 type ToolInputDeltaPart struct {
 	ID               string
 	Delta            string
-	ProviderMetadata map[string]any
+	ProviderMetadata ProviderMetadata
 }
 
 func (p *ToolInputDeltaPart) Type() StreamPartType { return StreamPartTypeToolInputDelta }
 
 type ToolInputEndPart struct {
 	ID               string
-	ProviderMetadata map[string]any
+	ProviderMetadata ProviderMetadata
 }
 
 func (p *ToolInputEndPart) Type() StreamPartType { return StreamPartTypeToolInputEnd }
@@ -121,8 +121,8 @@ func (p *ToolInputEndPart) Type() StreamPartType { return StreamPartTypeToolInpu
 type StreamToolCallPart struct {
 	ToolCallID       string
 	ToolName         string
-	Input            any
-	ProviderMetadata map[string]any
+	Input            ToolArguments
+	ProviderMetadata ProviderMetadata
 }
 
 func (p *StreamToolCallPart) Type() StreamPartType { return StreamPartTypeToolCall }
@@ -130,8 +130,8 @@ func (p *StreamToolCallPart) Type() StreamPartType { return StreamPartTypeToolCa
 type StreamToolResultPart struct {
 	ToolCallID string
 	ToolName   string
-	Input      any
-	Output     any
+	Input      ToolArguments
+	Output     ToolOutput
 }
 
 func (p *StreamToolResultPart) Type() StreamPartType { return StreamPartTypeToolResult }
@@ -155,8 +155,8 @@ type ToolApprovalRequestPart struct {
 	ApprovalID string
 	ToolCallID string
 	ToolName   string
-	Input      any
-	Metadata   map[string]any
+	Input      ToolArguments
+	Metadata   map[string]string
 }
 
 func (p *ToolApprovalRequestPart) Type() StreamPartType { return StreamPartTypeToolApprovalRequest }
@@ -166,7 +166,7 @@ func (p *ToolApprovalRequestPart) Type() StreamPartType { return StreamPartTypeT
 type ToolProgressPart struct {
 	ToolCallID string
 	ToolName   string
-	Content    any
+	Content    ToolOutput
 }
 
 func (p *ToolProgressPart) Type() StreamPartType { return StreamPartTypeToolProgress }
@@ -208,7 +208,7 @@ type FinishStepPart struct {
 	RawFinishReason  string
 	Usage            Usage
 	Response         ResponseMetadata
-	ProviderMetadata map[string]any
+	ProviderMetadata ProviderMetadata
 }
 
 func (p *FinishStepPart) Type() StreamPartType { return StreamPartTypeFinishStep }
@@ -225,76 +225,10 @@ type AbortPart struct {
 
 func (p *AbortPart) Type() StreamPartType { return StreamPartTypeAbort }
 
+// RawPart carries a provider event the SDK does not model, as the JSON the
+// provider sent.
 type RawPart struct {
-	RawValue any
+	RawValue json.RawMessage
 }
 
 func (p *RawPart) Type() StreamPartType { return StreamPartTypeRaw }
-
-// StreamResult holds a channel that yields StreamPart chunks.
-// The channel is closed when the stream ends.
-//
-// Steps and Messages are populated during stream consumption and are safe to
-// read after Stream is fully consumed (i.e., after a for-range loop exits).
-//
-// Deprecated: Client.Stream returns an sdk.ModelStream, and the caller assembles and
-// accumulates its own steps.
-type StreamResult struct {
-	Stream <-chan StreamPart
-	// Steps holds the result of each step. Populated as the stream is consumed.
-	Steps []StepResult
-	// Messages holds all output messages across all steps (assistant + tool),
-	// excluding the original input messages. Populated as the stream is consumed.
-	Messages             []Message
-	DeferredToolApproval *ToolApprovalResult
-}
-
-// Text consumes the entire stream and returns the concatenated text content.
-//
-// Deprecated: consume sdk.ModelStream and read the assembled sdk.ModelResult.
-func (sr *StreamResult) Text() (string, error) {
-	var text string
-	for part := range sr.Stream {
-		switch p := part.(type) {
-		case *TextDeltaPart:
-			text += p.Text
-		case *ErrorPart:
-			return text, p.Error
-		}
-	}
-	return text, nil
-}
-
-// ToResult consumes the entire stream and assembles a GenerateResult.
-//
-// It routes the channel through the same assembler the boundary uses, so a
-// caller here and a caller at the boundary cannot disagree about the same
-// parts. Tool results are the one thing the assembler does not carry: they are
-// orchestration, so this wrapper collects them on the way through.
-//
-// Deprecated: Client.Stream returns an sdk.ModelStream whose Result function yields
-// the assembled sdk.ModelResult.
-func (sr *StreamResult) ToResult() (*GenerateResult, error) {
-	stream := assembleStream(context.Background(), sr.Stream)
-	var toolResults []ToolResult
-	for part := range stream.Parts {
-		if p, ok := part.(*StreamToolResultPart); ok {
-			toolResults = append(toolResults, ToolResult{
-				ToolCallID: p.ToolCallID,
-				ToolName:   p.ToolName,
-				Input:      p.Input,
-				Output:     p.Output,
-			})
-		}
-	}
-	model, err := stream.Result()
-	if model == nil {
-		return nil, err
-	}
-	result := GenerateResultFromModelResult(*model)
-	result.ToolResults = toolResults
-	result.Steps = sr.Steps
-	result.Messages = sr.Messages
-	result.DeferredToolApproval = sr.DeferredToolApproval
-	return result, err
-}

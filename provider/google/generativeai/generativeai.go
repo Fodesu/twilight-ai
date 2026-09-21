@@ -12,6 +12,7 @@ import (
 	"github.com/felinics/twilight/internal/messagecompat"
 	"github.com/felinics/twilight/internal/utils"
 	"github.com/felinics/twilight/sdk"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 const defaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"
@@ -436,7 +437,7 @@ func convertAssistantMessage(msg sdk.Message) content {
 			cp := contentPart{
 				FunctionCall: &functionCall{
 					Name: p.ToolName,
-					Args: p.Input,
+					Args: p.Input.Object(),
 				},
 			}
 			if sig := extractGoogleThoughtSignature(p.ProviderMetadata); sig != "" {
@@ -457,7 +458,7 @@ func convertToolResultMessage(msg sdk.Message) content {
 					Name: trp.ToolName,
 					Response: functionResponseVal{
 						Name:    trp.ToolName,
-						Content: trp.Result,
+						Content: functionResponseContent(trp.Result),
 					},
 				},
 			})
@@ -474,7 +475,7 @@ func convertTools(tools []sdk.ToolDefinition, choice sdk.ToolChoice) ([]toolGrou
 		decls = append(decls, functionDeclaration{
 			Name:                 t.Name,
 			Description:          t.Description,
-			ParametersJSONSchema: t.Parameters,
+			ParametersJSONSchema: schemaJSON(t.Parameters),
 		})
 	}
 
@@ -530,18 +531,10 @@ func (p *Provider) parseResponse(resp *generateResponse) (sdk.ModelResult, error
 			case part.FunctionCall != nil:
 				hasToolCalls = true
 				id := generateID()
-				argsJSON, err := json.Marshal(part.FunctionCall.Args)
-				if err != nil {
-					return result, fmt.Errorf("google: marshal function call args for %q: %w", part.FunctionCall.Name, err)
-				}
-				var input any
-				if err := json.Unmarshal(argsJSON, &input); err != nil {
-					return result, fmt.Errorf("google: unmarshal function call args for %q: %w", part.FunctionCall.Name, err)
-				}
 				result.ToolCalls = append(result.ToolCalls, sdk.ToolCall{
 					ToolCallID:       id,
 					ToolName:         part.FunctionCall.Name,
-					Input:            input,
+					Input:            sdk.ParseToolArguments(string(part.FunctionCall.Args)),
 					ProviderMetadata: googleThoughtSignatureMetadata(part.ThoughtSignature),
 				})
 			case part.Text != "":
@@ -626,16 +619,11 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 			}
 		}
 
-		reasoningEndMeta := func() map[string]any {
-			if lastThoughtSig == "" {
-				return nil
-			}
-			return map[string]any{
-				"google": map[string]any{"thoughtSignature": lastThoughtSig},
-			}
+		reasoningEndMeta := func() sdk.ProviderMetadata {
+			return googleThoughtSignatureMetadata(lastThoughtSig)
 		}
 
-		textEndMeta := func() map[string]any {
+		textEndMeta := func() sdk.ProviderMetadata {
 			if lastTextSig == "" {
 				return nil
 			}
@@ -707,8 +695,7 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 
 						hasToolCalls = true
 						toolCallID := generateID()
-						argsJSON, _ := json.Marshal(part.FunctionCall.Args)
-						argsStr := string(argsJSON)
+						argsStr := string(part.FunctionCall.Args)
 
 						send(&sdk.ToolInputStartPart{
 							ID:       toolCallID,
@@ -720,15 +707,10 @@ func (p *Provider) DoStream(ctx context.Context, req sdk.Request) (<-chan sdk.St
 						})
 						send(&sdk.ToolInputEndPart{ID: toolCallID})
 
-						var input any
-						if err := json.Unmarshal(argsJSON, &input); err != nil {
-							_ = err // unmarshal failed, input remains nil
-						}
-
 						send(&sdk.StreamToolCallPart{
 							ToolCallID:       toolCallID,
 							ToolName:         part.FunctionCall.Name,
-							Input:            input,
+							Input:            sdk.ParseToolArguments(argsStr),
 							ProviderMetadata: googleThoughtSignatureMetadata(part.ThoughtSignature),
 						})
 					case part.Text != "":
@@ -887,25 +869,39 @@ func mapFinishReason(reason string, hasToolCalls bool) sdk.FinishReason {
 	}
 }
 
-func extractGoogleThoughtSignature(meta map[string]any) string {
-	if meta == nil {
-		return ""
-	}
-	gm, ok := meta["google"].(map[string]any)
-	if !ok {
-		return ""
-	}
-	sig, _ := gm["thoughtSignature"].(string)
-	return sig
+const (
+	metadataNamespace           = "google"
+	metadataKeyThoughtSignature = "thoughtSignature"
+)
+
+func extractGoogleThoughtSignature(meta sdk.ProviderMetadata) string {
+	return meta.Get(metadataNamespace, metadataKeyThoughtSignature)
 }
 
-func googleThoughtSignatureMetadata(sig string) map[string]any {
-	if sig == "" {
+func googleThoughtSignatureMetadata(sig string) sdk.ProviderMetadata {
+	return sdk.NewProviderMetadata(metadataNamespace, map[string]string{metadataKeyThoughtSignature: sig})
+}
+
+// schemaJSON encodes a tool schema for the parametersJsonSchema field; a tool
+// without parameters sends none.
+func schemaJSON(s *jsonschema.Schema) json.RawMessage {
+	if s == nil {
 		return nil
 	}
-	return map[string]any{
-		"google": map[string]any{"thoughtSignature": sig},
+	raw, err := json.Marshal(s)
+	if err != nil {
+		return nil
 	}
+	return raw
+}
+
+// functionResponseContent is the tool output as the functionResponse value:
+// a JSON document as itself, text as a string.
+func functionResponseContent(out sdk.ToolOutput) any {
+	if out.IsJSON() {
+		return out.JSON
+	}
+	return out.Text
 }
 
 func classifyError(err error) *sdk.ProviderTestResult {

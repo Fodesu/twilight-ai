@@ -15,11 +15,11 @@ func echoTool(name string, executed *bool) sdk.Tool {
 	return sdk.Tool{
 		Name:       name,
 		Parameters: objSchema(),
-		Execute: func(ctx *sdk.ToolExecContext, input any) (any, error) {
+		Execute: func(ctx *sdk.ToolExecContext, input sdk.ToolArguments) (sdk.ToolOutput, error) {
 			if executed != nil {
 				*executed = true
 			}
-			return "output-" + name, nil
+			return sdk.TextOutput("output-" + name), nil
 		},
 	}
 }
@@ -32,8 +32,8 @@ func TestExecuteTools_DeferralPartialResults(t *testing.T) {
 	toolB.RequireApproval = true
 
 	calls := []sdk.ToolCall{
-		{ToolCallID: "c1", ToolName: "tool-a", Input: map[string]any{"n": 1}},
-		{ToolCallID: "c2", ToolName: "tool-b", Input: map[string]any{"n": 2}},
+		{ToolCallID: "c1", ToolName: "tool-a", Input: sdk.ParseToolArguments(`{"n":1}`)},
+		{ToolCallID: "c2", ToolName: "tool-b", Input: sdk.ParseToolArguments(`{"n":2}`)},
 	}
 
 	outcome, err := sdk.ExecuteTools(context.Background(), calls, sdk.ToolExecOptions{
@@ -96,7 +96,7 @@ func TestExecuteTools_DeferralKeepsApprovedResults(t *testing.T) {
 	if outcome.DeferredIndex != 1 || outcome.Deferred == nil {
 		t.Fatalf("deferral marker: index=%d deferred=%#v", outcome.DeferredIndex, outcome.Deferred)
 	}
-	if len(outcome.Results) != 1 || outcome.Results[0].Result != "output-tool-a" || outcome.Results[0].IsError {
+	if len(outcome.Results) != 1 || outcome.Results[0].Result.Text != "output-tool-a" || outcome.Results[0].IsError {
 		t.Fatalf("Results: got %#v, want tool-a output", outcome.Results)
 	}
 }
@@ -120,7 +120,7 @@ func TestExecuteTools_ParallelExecution(t *testing.T) {
 		t.Fatalf("Results: got %d entries, want 3", len(outcome.Results))
 	}
 	for i, want := range []string{"output-t1", "output-t2", "output-t3"} {
-		if outcome.Results[i].Result != want || outcome.Results[i].IsError {
+		if outcome.Results[i].Result.Text != want || outcome.Results[i].IsError {
 			t.Fatalf("Results[%d]: got %#v, want %q", i, outcome.Results[i], want)
 		}
 	}
@@ -138,16 +138,20 @@ func TestExecuteTools_SingleExecution(t *testing.T) {
 	if !executed {
 		t.Fatal("tool did not execute")
 	}
-	if len(outcome.Results) != 1 || outcome.Results[0].Result != "output-only" {
+	if len(outcome.Results) != 1 || outcome.Results[0].Result.Text != "output-only" {
 		t.Fatalf("Results: got %#v", outcome.Results)
 	}
 }
 
 func TestExecuteTools_NilOnPart(t *testing.T) {
 	denied := sdk.Tool{Name: "denied", Parameters: objSchema(), RequireApproval: true,
-		Execute: func(ctx *sdk.ToolExecContext, input any) (any, error) { return "x", nil }}
+		Execute: func(ctx *sdk.ToolExecContext, input sdk.ToolArguments) (sdk.ToolOutput, error) {
+			return sdk.TextOutput("x"), nil
+		}}
 	rejected := sdk.Tool{Name: "rejected", Parameters: objSchema(), RequireApproval: true,
-		Execute: func(ctx *sdk.ToolExecContext, input any) (any, error) { return "y", nil }}
+		Execute: func(ctx *sdk.ToolExecContext, input sdk.ToolArguments) (sdk.ToolOutput, error) {
+			return sdk.TextOutput("y"), nil
+		}}
 
 	// Approve nil + RequireApproval: denied, no panic with nil OnPart.
 	outcome, err := sdk.ExecuteTools(context.Background(),
@@ -181,7 +185,9 @@ func TestExecuteTools_NilOnPart(t *testing.T) {
 
 func TestExecuteTools_OnPartObservesEvents(t *testing.T) {
 	rejected := sdk.Tool{Name: "rejected", Parameters: objSchema(), RequireApproval: true,
-		Execute: func(ctx *sdk.ToolExecContext, input any) (any, error) { return "never", nil }}
+		Execute: func(ctx *sdk.ToolExecContext, input sdk.ToolArguments) (sdk.ToolOutput, error) {
+			return sdk.TextOutput("never"), nil
+		}}
 	approved := echoTool("approved", nil)
 	approved.RequireApproval = true
 
@@ -190,7 +196,7 @@ func TestExecuteTools_OnPartObservesEvents(t *testing.T) {
 
 	outcome, err := sdk.ExecuteTools(context.Background(),
 		[]sdk.ToolCall{
-			{ToolCallID: "c1", ToolName: "rejected", Input: map[string]any{"k": "v"}},
+			{ToolCallID: "c1", ToolName: "rejected", Input: sdk.ParseToolArguments(`{"k":"v"}`)},
 			{ToolCallID: "c2", ToolName: "approved"},
 		},
 		sdk.ToolExecOptions{
@@ -227,7 +233,7 @@ func TestExecuteTools_OnPartObservesEvents(t *testing.T) {
 				sawDenied = true
 			}
 		case *sdk.StreamToolResultPart:
-			if part.ToolCallID == "c2" && part.Output == "output-approved" {
+			if part.ToolCallID == "c2" && part.Output.Text == "output-approved" {
 				sawResult = true
 			}
 		}
@@ -240,26 +246,26 @@ func TestExecuteTools_OnPartObservesEvents(t *testing.T) {
 
 func TestToolCallResults_FillsInput(t *testing.T) {
 	calls := []sdk.ToolCall{
-		{ToolCallID: "c1", ToolName: "t1", Input: map[string]any{"path": "/tmp/a"}},
-		{ToolCallID: "c2", ToolName: "t2", Input: "raw-input"},
+		{ToolCallID: "c1", ToolName: "t1", Input: sdk.ParseToolArguments(`{"path":"/tmp/a"}`)},
+		{ToolCallID: "c2", ToolName: "t2", Input: sdk.ToolArguments{Text: "raw-input"}},
 	}
 	parts := []sdk.ToolResultPart{
-		{ToolCallID: "c1", ToolName: "t1", Result: "r1"},
-		{ToolCallID: "c2", ToolName: "t2", Result: "r2", IsError: true},
+		{ToolCallID: "c1", ToolName: "t1", Result: sdk.TextOutput("r1")},
+		{ToolCallID: "c2", ToolName: "t2", Result: sdk.TextOutput("r2"), IsError: true},
 	}
 
 	results := sdk.ToolCallResults(calls, parts)
 	if len(results) != 2 {
 		t.Fatalf("got %d results", len(results))
 	}
-	in, ok := results[0].Input.(map[string]any)
-	if !ok || in["path"] != "/tmp/a" {
+	var in map[string]any
+	if err := results[0].Input.Unmarshal(&in); err != nil || in["path"] != "/tmp/a" {
 		t.Fatalf("Results[0].Input: got %#v", results[0].Input)
 	}
-	if results[0].Output != "r1" {
+	if results[0].Output.Text != "r1" {
 		t.Fatalf("Results[0].Output: got %#v", results[0].Output)
 	}
-	if results[1].Input != "raw-input" || results[1].Output != "r2" {
+	if results[1].Input.Text != "raw-input" || results[1].Output.Text != "r2" {
 		t.Fatalf("Results[1]: got %#v", results[1])
 	}
 }
@@ -268,10 +274,10 @@ func TestBuildStepMessages_AssemblesAssistantAndToolMessages(t *testing.T) {
 	usage := &sdk.Usage{InputTokens: 3, OutputTokens: 5}
 	msgs := sdk.BuildStepMessages(
 		"hello",
-		map[string]any{"k": "v"},
+		sdk.ProviderMetadata{"k": {"v": "v"}},
 		[]sdk.ReasoningPart{{Text: "thinking"}},
-		[]sdk.ToolCall{{ToolCallID: "c1", ToolName: "t1", Input: "in"}},
-		[]sdk.ToolResultPart{{ToolCallID: "c1", ToolName: "t1", Result: "out"}},
+		[]sdk.ToolCall{{ToolCallID: "c1", ToolName: "t1", Input: sdk.ToolArguments{Text: "in"}}},
+		[]sdk.ToolResultPart{{ToolCallID: "c1", ToolName: "t1", Result: sdk.TextOutput("out")}},
 		usage,
 	)
 	if len(msgs) != 2 {

@@ -67,7 +67,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.VideoModel, error) {
 		models = append(models, &sdk.VideoModel{
 			ID:       item.ID,
 			Provider: p,
-			ProviderMetadata: map[string]any{
+			ProviderMetadata: sdk.NewProviderMetadata("openrouter", sdk.StringValues(map[string]any{
 				"canonical_slug":                 item.CanonicalSlug,
 				"name":                           item.Name,
 				"description":                    item.Description,
@@ -80,7 +80,7 @@ func (p *Provider) ListModels(ctx context.Context) ([]*sdk.VideoModel, error) {
 				"supported_resolutions":          item.SupportedResolutions,
 				"supported_sizes":                item.SupportedSizes,
 				"pricing_skus":                   item.PricingSKUs,
-			},
+			})),
 		})
 	}
 	return models, nil
@@ -200,11 +200,11 @@ func toVideoJob(resp *videoResponse, modelID string) *sdk.VideoJob {
 		ID:      resp.ID,
 		ModelID: modelID,
 		Status:  mapStatus(resp.Status),
-		ProviderMetadata: map[string]any{
+		ProviderMetadata: sdk.NewProviderMetadata("openrouter", sdk.StringValues(map[string]any{
 			"polling_url":   resp.PollingURL,
 			"generation_id": resp.GenerationID,
 			"usage":         resp.Usage,
-		},
+		})),
 	}
 	if resp.Error != "" {
 		job.Error = &sdk.VideoError{Message: resp.Error}
@@ -216,9 +216,9 @@ func toVideoJob(resp *videoResponse, modelID string) *sdk.VideoJob {
 		job.Outputs = append(job.Outputs, sdk.VideoOutput{
 			URL:         url,
 			ContentType: "video/mp4",
-			ProviderMetadata: map[string]any{
+			ProviderMetadata: sdk.NewProviderMetadata("openrouter", sdk.StringValues(map[string]any{
 				"generation_id": resp.GenerationID,
-			},
+			})),
 		})
 	}
 	return job

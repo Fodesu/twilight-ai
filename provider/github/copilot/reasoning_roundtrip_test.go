@@ -117,7 +117,7 @@ func TestConvertAssistantMessageDropsForeignReasoning(t *testing.T) {
 			sdk.ReasoningPart{
 				Text:             "anthropic thinking",
 				Format:           sdk.ReasoningFormatAnthropic,
-				ProviderMetadata: map[string]any{"anthropic": map[string]any{"signature": "SIG"}},
+				ProviderMetadata: sdk.ProviderMetadata{"anthropic": {"signature": "SIG"}},
 			},
 			sdk.TextPart{Text: "answer"},
 		},

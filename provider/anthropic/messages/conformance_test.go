@@ -111,7 +111,7 @@ func toolCallFixture(t *testing.T) providertest.Fixture {
 			ToolCalls: []sdk.ToolCall{{
 				ToolCallID: "toolu_conf_1",
 				ToolName:   "providertest_tool_marker_2d91",
-				Input:      map[string]any{"city": "Paris"},
+				Input:      sdk.ParseToolArguments(`{"city":"Paris"}`),
 			}},
 		},
 	}

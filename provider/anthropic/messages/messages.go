@@ -752,18 +752,14 @@ func convertAssistantMessage(msg sdk.Message, targetModel string) anthropicMessa
 			if id == "" {
 				id = generateID()
 			}
-			// The API requires tool_use blocks to always carry an input object.
-			// A no-argument tool call arrives with a nil Input, which the
-			// omitempty tag would drop entirely, so default it to an empty object.
-			input := p.Input
-			if input == nil {
-				input = map[string]any{}
-			}
+			// The API requires tool_use blocks to always carry an input
+			// object; Object substitutes the empty object for arguments the
+			// model got wrong.
 			block := contentBlock{
 				Type:  blockTypeToolUse,
 				ID:    id,
 				Name:  p.ToolName,
-				Input: input,
+				Input: p.Input.Object(),
 			}
 			if p.CacheControl != nil {
 				block.CacheControl = &cacheControl{Type: p.CacheControl.Type, TTL: p.CacheControl.TTL}
@@ -779,11 +775,10 @@ func convertToolResults(parts []sdk.MessagePart) []contentBlock {
 	var blocks []contentBlock
 	for _, part := range parts {
 		if trp, ok := part.(sdk.ToolResultPart); ok {
-			content, _ := json.Marshal(trp.Result)
 			block := contentBlock{
 				Type:      "tool_result",
 				ToolUseID: trp.ToolCallID,
-				Content:   string(content),
+				Content:   trp.Result.String(),
 				IsError:   trp.IsError,
 			}
 			if trp.CacheControl != nil {
@@ -837,7 +832,7 @@ func (p *Provider) parseResponse(resp *messagesResponse) (sdk.ModelResult, error
 			result.ToolCalls = append(result.ToolCalls, sdk.ToolCall{
 				ToolCallID: block.ID,
 				ToolName:   block.Name,
-				Input:      block.Input,
+				Input:      sdk.ParseToolArguments(string(block.Input)),
 			})
 		}
 	}
@@ -1061,20 +1056,13 @@ func (h *streamHandler) onBlockStop(event *streamEvent) {
 		})
 	case blockTypeToolUse:
 		h.send(&sdk.ToolInputEndPart{ID: sb.toolID})
-		var input any
-		if sb.args.Len() > 0 {
-			if err := json.Unmarshal([]byte(sb.args.String()), &input); err != nil {
-				// A call whose arguments cannot be parsed must not become a
-				// call: emitting it with nil input would hand the tool empty
-				// arguments and run it anyway.
-				h.send(&sdk.ErrorPart{Error: fmt.Errorf("anthropic: unmarshal tool args for %q: %w", sb.toolName, err)})
-				return
-			}
-		}
+		// An empty buffer is a no-argument call; text that is not a JSON
+		// document is kept as the call's Text, so the caller can answer the
+		// model instead of running the tool on it (sdk.ToolArguments).
 		h.send(&sdk.StreamToolCallPart{
 			ToolCallID: sb.toolID,
 			ToolName:   sb.toolName,
-			Input:      input,
+			Input:      sdk.ParseToolArguments(sb.args.String()),
 		})
 	}
 }
@@ -1172,21 +1160,21 @@ func mapFinishReason(reason string) sdk.FinishReason {
 	}
 }
 
-func signatureMetadata(signature string) map[string]any {
-	return sdk.ReasoningMetadata(metadataNamespace, map[string]string{metadataKeySignature: signature})
+func signatureMetadata(signature string) sdk.ProviderMetadata {
+	return sdk.NewProviderMetadata(metadataNamespace, map[string]string{metadataKeySignature: signature})
 }
 
-func redactedMetadata(data string) map[string]any {
-	return sdk.ReasoningMetadata(metadataNamespace, map[string]string{metadataKeyRedactedData: data})
+func redactedMetadata(data string) sdk.ProviderMetadata {
+	return sdk.NewProviderMetadata(metadataNamespace, map[string]string{metadataKeyRedactedData: data})
 }
 
-func signatureOf(meta map[string]any) string {
-	return sdk.ReasoningMetadataString(meta, metadataNamespace, metadataKeySignature)
+func signatureOf(meta sdk.ProviderMetadata) string {
+	return meta.Get(metadataNamespace, metadataKeySignature)
 }
 
 // redactedDataOf returns the encrypted payload of a redacted thinking block.
-func redactedDataOf(meta map[string]any) string {
-	return sdk.ReasoningMetadataString(meta, metadataNamespace, metadataKeyRedactedData)
+func redactedDataOf(meta sdk.ProviderMetadata) string {
+	return meta.Get(metadataNamespace, metadataKeyRedactedData)
 }
 
 func classifyError(err error) *sdk.ProviderTestResult {

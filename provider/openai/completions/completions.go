@@ -403,10 +403,6 @@ func convertAssistantMessage(msg sdk.Message) chatMessage {
 	for _, part := range msg.Content {
 		switch p := part.(type) {
 		case sdk.ToolCallPart:
-			args, err := json.Marshal(p.Input)
-			if err != nil {
-				continue
-			}
 			id := p.ToolCallID
 			if id == "" {
 				id = generateID()
@@ -416,7 +412,7 @@ func convertAssistantMessage(msg sdk.Message) chatMessage {
 				Type: "function",
 				Function: chatFunctionCall{
 					Name:      p.ToolName,
-					Arguments: string(args),
+					Arguments: p.Input.String(),
 				},
 			})
 		case sdk.ReasoningPart:
@@ -454,11 +450,10 @@ func convertToolResultMessages(msg sdk.Message) []chatMessage {
 	var out []chatMessage
 	for _, part := range msg.Content {
 		if trp, ok := part.(sdk.ToolResultPart); ok {
-			content, _ := json.Marshal(trp.Result)
 			out = append(out, chatMessage{
 				Role:       "tool",
 				ToolCallID: trp.ToolCallID,
-				Content:    string(content),
+				Content:    trp.Result.String(),
 			})
 		}
 	}
@@ -527,10 +522,7 @@ func (p *Provider) parseResponse(resp *chatResponse) (sdk.ModelResult, error) {
 		result.RawFinishReason = choice.FinishReason
 
 		for _, tc := range choice.Message.ToolCalls {
-			var input any
-			if err := json.Unmarshal([]byte(tc.Function.Arguments), &input); err != nil {
-				return result, fmt.Errorf("openai: unmarshal tool call arguments for %q: %w", tc.Function.Name, err)
-			}
+			input := sdk.ParseToolArguments(tc.Function.Arguments)
 			id := tc.ID
 			if id == "" {
 				id = generateID()
@@ -688,50 +680,35 @@ func reasoningTextFromDetails(details []chatReasoningDetail) string {
 	return ""
 }
 
-func minimaxReasoningMetadata(details []chatReasoningDetail) map[string]any {
+// minimaxReasoningMetadata carries MiniMax's reasoning_details on the part as
+// their JSON encoding, the opaque token the replay puts back on the wire.
+func minimaxReasoningMetadata(details []chatReasoningDetail) sdk.ProviderMetadata {
 	if len(details) == 0 {
 		return nil
 	}
-	return map[string]any{
-		"minimax": map[string]any{
-			"reasoning_details": copyReasoningDetails(details),
-		},
+	raw, err := json.Marshal(details)
+	if err != nil {
+		return nil
 	}
+	return sdk.NewProviderMetadata(minimaxNamespace, map[string]string{minimaxKeyReasoningDetails: string(raw)})
 }
 
-func extractMiniMaxReasoningDetails(meta map[string]any) []chatReasoningDetail {
-	if meta == nil {
+func extractMiniMaxReasoningDetails(meta sdk.ProviderMetadata) []chatReasoningDetail {
+	raw := meta.Get(minimaxNamespace, minimaxKeyReasoningDetails)
+	if raw == "" {
 		return nil
 	}
-	minimax, ok := meta["minimax"].(map[string]any)
-	if !ok {
+	var details []chatReasoningDetail
+	if err := json.Unmarshal([]byte(raw), &details); err != nil {
 		return nil
 	}
-	return coerceReasoningDetails(minimax["reasoning_details"])
+	return details
 }
 
-func coerceReasoningDetails(raw any) []chatReasoningDetail {
-	switch v := raw.(type) {
-	case []chatReasoningDetail:
-		return copyReasoningDetails(v)
-	case []map[string]any:
-		out := make([]chatReasoningDetail, 0, len(v))
-		for _, detail := range v {
-			out = append(out, copyReasoningDetail(detail))
-		}
-		return out
-	case []any:
-		out := make([]chatReasoningDetail, 0, len(v))
-		for _, item := range v {
-			if detail, ok := item.(map[string]any); ok {
-				out = append(out, copyReasoningDetail(detail))
-			}
-		}
-		return out
-	default:
-		return nil
-	}
-}
+const (
+	minimaxNamespace           = "minimax"
+	minimaxKeyReasoningDetails = "reasoning_details"
+)
 
 func copyReasoningDetails(details []chatReasoningDetail) []chatReasoningDetail {
 	out := make([]chatReasoningDetail, 0, len(details))

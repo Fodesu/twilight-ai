@@ -147,7 +147,7 @@ func toolCallFixture(t *testing.T) providertest.Fixture {
 			TotalTokens:  30,
 			ToolCalls: []sdk.ToolCall{{
 				ToolName: conformanceToolName,
-				Input:    map[string]any{"city": "Paris"},
+				Input:    sdk.ParseToolArguments(`{"city":"Paris"}`),
 			}},
 		},
 	}

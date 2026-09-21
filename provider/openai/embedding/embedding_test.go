@@ -175,12 +175,10 @@ func TestDoEmbed_NilModel(t *testing.T) {
 func TestDoEmbed_APIError(t *testing.T) {
 	_, p := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"message": "Incorrect API key provided",
-				"type":    "invalid_request_error",
-			},
-		})
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+			"message": "Incorrect API key provided",
+			"type":    "invalid_request_error",
+		}})
 	})
 
 	model := p.EmbeddingModel("text-embedding-3-small")

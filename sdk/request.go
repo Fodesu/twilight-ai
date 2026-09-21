@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
 // Request is the complete, frozen input of one model call.
@@ -76,9 +78,9 @@ func ApplyProviderOptions(namespace string, options map[string]json.RawMessage, 
 // Parameters is a resolved JSON Schema document: schema inference from Go
 // structs happens before freezing, never after.
 type ToolDefinition struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Parameters  json.RawMessage `json:"parameters"`
+	Name        string             `json:"name"`
+	Description string             `json:"description,omitempty"`
+	Parameters  *jsonschema.Schema `json:"parameters"`
 	// CacheControl participates in the digest like every other field.
 	CacheControl *CacheControl `json:"cacheControl,omitempty"`
 }

@@ -2,7 +2,7 @@ package sdk
 
 import (
 	"context"
-	"encoding/json"
+	"github.com/google/jsonschema-go/jsonschema"
 	"reflect"
 	"testing"
 )
@@ -38,7 +38,7 @@ func TestModelGenerateUsesRequestBoundary(t *testing.T) {
 			ToolCalls: []ToolCall{{
 				ToolCallID: "c1",
 				ToolName:   "lookup",
-				Input:      map[string]any{"q": "go"},
+				Input:      ParseToolArguments(`{"q":"go"}`),
 			}},
 		}, nil
 	}}
@@ -48,7 +48,7 @@ func TestModelGenerateUsesRequestBoundary(t *testing.T) {
 		Messages: []Message{UserMessage("hi")},
 		Tools: []ToolDefinition{{
 			Name:       "lookup",
-			Parameters: json.RawMessage(`{"type":"object"}`),
+			Parameters: &jsonschema.Schema{Type: "object"},
 		}},
 		ToolChoice: ToolChoice{Mode: ToolChoiceTool, Tool: "lookup"},
 	})
@@ -61,7 +61,7 @@ func TestModelGenerateUsesRequestBoundary(t *testing.T) {
 	if captured.Model != "m-1" || len(captured.Messages) != 1 {
 		t.Fatalf("captured request = %+v", captured)
 	}
-	if len(captured.Tools) != 1 || captured.Tools[0].Name != "lookup" || len(captured.Tools[0].Parameters) == 0 {
+	if len(captured.Tools) != 1 || captured.Tools[0].Name != "lookup" || captured.Tools[0].Parameters == nil {
 		t.Fatalf("captured tools = %+v", captured.Tools)
 	}
 	if captured.ToolChoice.Mode != ToolChoiceTool || captured.ToolChoice.Tool != "lookup" {
@@ -80,14 +80,14 @@ func TestModelGenerateAndStreamEquivalent(t *testing.T) {
 	generated := ModelResult{
 		Text:                 "hello",
 		Reasoning:            "why",
-		ReasoningParts:       []ReasoningPart{{ID: "r1", Text: "why", Format: ReasoningFormatOpenAIResponses, Model: "m-1", ProviderMetadata: map[string]any{"openai": map[string]any{"itemId": "rs_1"}}}},
-		TextProviderMetadata: map[string]any{"google": map[string]any{"thoughtSignature": "txt-sig"}},
+		ReasoningParts:       []ReasoningPart{{ID: "r1", Text: "why", Format: ReasoningFormatOpenAIResponses, Model: "m-1", ProviderMetadata: ProviderMetadata{"openai": {"itemId": "rs_1"}}}},
+		TextProviderMetadata: ProviderMetadata{"google": {"thoughtSignature": "txt-sig"}},
 		FinishReason:         FinishReasonToolCalls,
 		RawFinishReason:      "tool_calls",
 		Usage:                Usage{TotalTokens: 5},
-		Sources:              []Source{{SourceType: "url", ID: "src-1", URL: "https://example.test", ProviderMetadata: map[string]any{"p": "v"}}},
+		Sources:              []Source{{SourceType: "url", ID: "src-1", URL: "https://example.test", ProviderMetadata: ProviderMetadata{"p": {"k": "v"}}}},
 		Files:                []GeneratedFile{{Data: "abc", MediaType: "text/plain"}},
-		ToolCalls:            []ToolCall{{ToolCallID: "c1", ToolName: "lookup", Input: map[string]any{"q": "go"}, ProviderMetadata: map[string]any{"tool": "meta"}}},
+		ToolCalls:            []ToolCall{{ToolCallID: "c1", ToolName: "lookup", Input: ParseToolArguments(`{"q":"go"}`), ProviderMetadata: ProviderMetadata{"tool": {"k": "meta"}}}},
 		Response:             &ResponseMetadata{ID: "resp-1"},
 	}
 	provider := boundaryProvider{
@@ -98,12 +98,12 @@ func TestModelGenerateAndStreamEquivalent(t *testing.T) {
 				defer close(ch)
 				ch <- &ReasoningStartPart{ID: "r1", Format: ReasoningFormatOpenAIResponses, Model: "m-1"}
 				ch <- &ReasoningDeltaPart{ID: "r1", Text: "why"}
-				ch <- &ReasoningEndPart{ID: "r1", ProviderMetadata: map[string]any{"openai": map[string]any{"itemId": "rs_1"}}}
+				ch <- &ReasoningEndPart{ID: "r1", ProviderMetadata: ProviderMetadata{"openai": {"itemId": "rs_1"}}}
 				ch <- &TextDeltaPart{ID: "txt", Text: "hello"}
-				ch <- &TextEndPart{ID: "txt", ProviderMetadata: map[string]any{"google": map[string]any{"thoughtSignature": "txt-sig"}}}
-				ch <- &StreamSourcePart{Source: Source{SourceType: "url", ID: "src-1", URL: "https://example.test", ProviderMetadata: map[string]any{"p": "v"}}}
+				ch <- &TextEndPart{ID: "txt", ProviderMetadata: ProviderMetadata{"google": {"thoughtSignature": "txt-sig"}}}
+				ch <- &StreamSourcePart{Source: Source{SourceType: "url", ID: "src-1", URL: "https://example.test", ProviderMetadata: ProviderMetadata{"p": {"k": "v"}}}}
 				ch <- &StreamFilePart{File: GeneratedFile{Data: "abc", MediaType: "text/plain"}}
-				ch <- &StreamToolCallPart{ToolCallID: "c1", ToolName: "lookup", Input: map[string]any{"q": "go"}, ProviderMetadata: map[string]any{"tool": "meta"}}
+				ch <- &StreamToolCallPart{ToolCallID: "c1", ToolName: "lookup", Input: ParseToolArguments(`{"q":"go"}`), ProviderMetadata: ProviderMetadata{"tool": {"k": "meta"}}}
 				ch <- &FinishStepPart{FinishReason: FinishReasonToolCalls, RawFinishReason: "tool_calls", Usage: Usage{TotalTokens: 5}, Response: ResponseMetadata{ID: "resp-1"}}
 				ch <- &FinishPart{FinishReason: FinishReasonToolCalls, RawFinishReason: "tool_calls", TotalUsage: Usage{TotalTokens: 5}}
 			}()
@@ -142,9 +142,9 @@ func TestModelStreamAssemblesSingleModelResult(t *testing.T) {
 			ch <- &StartStepPart{}
 			ch <- &ReasoningStartPart{ID: "r1", Format: ReasoningFormatOpenAIResponses, Model: "m-1"}
 			ch <- &ReasoningDeltaPart{ID: "r1", Text: "why"}
-			ch <- &ReasoningEndPart{ID: "r1", ProviderMetadata: map[string]any{"openai": map[string]any{"itemId": "rs_1"}}}
+			ch <- &ReasoningEndPart{ID: "r1", ProviderMetadata: ProviderMetadata{"openai": {"itemId": "rs_1"}}}
 			ch <- &TextDeltaPart{ID: "txt", Text: "hello"}
-			ch <- &StreamToolCallPart{ToolCallID: "c1", ToolName: "lookup", Input: map[string]any{"q": "go"}}
+			ch <- &StreamToolCallPart{ToolCallID: "c1", ToolName: "lookup", Input: ParseToolArguments(`{"q":"go"}`)}
 			ch <- &FinishStepPart{FinishReason: FinishReasonToolCalls, Usage: Usage{TotalTokens: 5}, Response: ResponseMetadata{ID: "resp-1"}}
 			ch <- &FinishPart{FinishReason: FinishReasonToolCalls, TotalUsage: Usage{TotalTokens: 5}}
 		}()

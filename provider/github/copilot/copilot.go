@@ -266,10 +266,6 @@ func convertAssistantMessage(msg sdk.Message) chatMessage {
 	for _, part := range msg.Content {
 		switch p := part.(type) {
 		case sdk.ToolCallPart:
-			args, err := json.Marshal(p.Input)
-			if err != nil {
-				continue
-			}
 			id := p.ToolCallID
 			if id == "" {
 				id = generateID()
@@ -279,7 +275,7 @@ func convertAssistantMessage(msg sdk.Message) chatMessage {
 				Type: "function",
 				Function: chatFunctionCall{
 					Name:      p.ToolName,
-					Arguments: string(args),
+					Arguments: p.Input.String(),
 				},
 			})
 		case sdk.ReasoningPart:
@@ -314,11 +310,10 @@ func convertToolResultMessages(msg sdk.Message) []chatMessage {
 	var out []chatMessage
 	for _, part := range msg.Content {
 		if trp, ok := part.(sdk.ToolResultPart); ok {
-			content, _ := json.Marshal(trp.Result)
 			out = append(out, chatMessage{
 				Role:       "tool",
 				ToolCallID: trp.ToolCallID,
-				Content:    string(content),
+				Content:    trp.Result.String(),
 			})
 		}
 	}
@@ -384,10 +379,7 @@ func (p *Provider) parseResponse(resp *chatResponse) (sdk.ModelResult, error) {
 		result.RawFinishReason = choice.FinishReason
 
 		for _, tc := range choice.Message.ToolCalls {
-			var input any
-			if err := json.Unmarshal([]byte(tc.Function.Arguments), &input); err != nil {
-				return result, fmt.Errorf("github-copilot: unmarshal tool call arguments for %q: %w", tc.Function.Name, err)
-			}
+			input := sdk.ParseToolArguments(tc.Function.Arguments)
 			id := tc.ID
 			if id == "" {
 				id = generateID()
@@ -525,12 +517,12 @@ const (
 	metadataKeyOpaque = "reasoningOpaque"
 )
 
-func reasoningOpaqueMetadata(opaque string) map[string]any {
-	return sdk.ReasoningMetadata(metadataNamespace, map[string]string{metadataKeyOpaque: opaque})
+func reasoningOpaqueMetadata(opaque string) sdk.ProviderMetadata {
+	return sdk.NewProviderMetadata(metadataNamespace, map[string]string{metadataKeyOpaque: opaque})
 }
 
-func reasoningOpaqueOf(meta map[string]any) string {
-	return sdk.ReasoningMetadataString(meta, metadataNamespace, metadataKeyOpaque)
+func reasoningOpaqueOf(meta sdk.ProviderMetadata) string {
+	return meta.Get(metadataNamespace, metadataKeyOpaque)
 }
 
 func convertUsage(u *chatUsage) sdk.Usage {

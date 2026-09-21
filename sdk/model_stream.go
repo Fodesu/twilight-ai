@@ -83,7 +83,7 @@ func assembleStream(ctx context.Context, parts <-chan StreamPart) ModelStream {
 				// final here. A partial result would look like a success.
 				return nil, streamErr
 			}
-			res := hardenResult(result)
+			res := hardenResult(&result)
 			return &res, streamErr
 		},
 	}
@@ -94,16 +94,17 @@ func assembleStream(ctx context.Context, parts <-chan StreamPart) ModelStream {
 // other. Both boundary paths hand their result out through it, which also keeps
 // a streamed and a non-streamed call from disagreeing about representation: the
 // response timestamp is normalized to UTC here and nowhere else.
-func hardenResult(result ModelResult) ModelResult {
-	result.ReasoningParts = cloneReasoningParts(result.ReasoningParts)
-	result.TextProviderMetadata = cloneMetadataMap(result.TextProviderMetadata)
-	result.Sources = cloneSources(result.Sources)
+func hardenResult(result *ModelResult) ModelResult {
+	out := *result
+	out.ReasoningParts = cloneReasoningParts(result.ReasoningParts)
+	out.TextProviderMetadata = result.TextProviderMetadata.Clone()
+	out.Sources = cloneSources(result.Sources)
 	if len(result.Files) > 0 {
-		result.Files = append([]GeneratedFile(nil), result.Files...)
+		out.Files = append([]GeneratedFile(nil), result.Files...)
 	}
-	result.ToolCalls = cloneToolCalls(result.ToolCalls)
-	result.Response = cloneResponseMetadataPtr(result.Response)
-	return result
+	out.ToolCalls = cloneToolCalls(result.ToolCalls)
+	out.Response = cloneResponseMetadataPtr(result.Response)
+	return out
 }
 
 // CollectStream drains parts and returns the single ModelResult they describe.
@@ -135,24 +136,24 @@ func accumulateStreamPart(result *ModelResult, reasoning *reasoningAccumulator, 
 		result.Text += p.Text
 	case *TextEndPart:
 		if p.ProviderMetadata != nil {
-			result.TextProviderMetadata = cloneMetadataMap(p.ProviderMetadata)
+			result.TextProviderMetadata = p.ProviderMetadata.Clone()
 		}
 	case *ReasoningStartPart:
-		reasoning.openBlock(p.ID, p.Format, p.Model, cloneMetadataMap(p.ProviderMetadata))
+		reasoning.openBlock(p.ID, p.Format, p.Model, p.ProviderMetadata.Clone())
 	case *ReasoningDeltaPart:
-		reasoning.appendDelta(p.ID, p.Text, p.Format, p.Model, cloneMetadataMap(p.ProviderMetadata))
+		reasoning.appendDelta(p.ID, p.Text, p.Format, p.Model, p.ProviderMetadata.Clone())
 	case *ReasoningEndPart:
-		reasoning.closeBlock(p.ID, p.Format, p.Model, cloneMetadataMap(p.ProviderMetadata))
+		reasoning.closeBlock(p.ID, p.Format, p.Model, p.ProviderMetadata.Clone())
 	case *StreamToolCallPart:
 		result.ToolCalls = append(result.ToolCalls, ToolCall{
 			ToolCallID:       p.ToolCallID,
 			ToolName:         p.ToolName,
-			Input:            cloneJSONLike(p.Input),
-			ProviderMetadata: cloneMetadataMap(p.ProviderMetadata),
+			Input:            p.Input.clone(),
+			ProviderMetadata: p.ProviderMetadata.Clone(),
 		})
 	case *StreamSourcePart:
 		source := p.Source
-		source.ProviderMetadata = cloneMetadataMap(source.ProviderMetadata)
+		source.ProviderMetadata = source.ProviderMetadata.Clone()
 		result.Sources = append(result.Sources, source)
 	case *StreamFilePart:
 		result.Files = append(result.Files, p.File)

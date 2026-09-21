@@ -50,7 +50,7 @@ func captureInput(t *testing.T, messages []sdk.Message) []map[string]any {
 }
 
 func TestReplayRegroupsPartsSharingAnItemID(t *testing.T) {
-	meta := map[string]any{"openai": map[string]any{
+	meta := sdk.ProviderMetadata{"openai": {
 		"itemId":                    "rs_1",
 		"reasoningEncryptedContent": "EC",
 	}}
@@ -90,9 +90,9 @@ func TestReplayKeepsDistinctItemsSeparate(t *testing.T) {
 		Role: sdk.MessageRoleAssistant,
 		Content: []sdk.MessagePart{
 			sdk.ReasoningPart{Text: "a", Format: sdk.ReasoningFormatOpenAIResponses,
-				ProviderMetadata: map[string]any{"openai": map[string]any{"itemId": "rs_1"}}},
+				ProviderMetadata: sdk.ProviderMetadata{"openai": {"itemId": "rs_1"}}},
 			sdk.ReasoningPart{Text: "b", Format: sdk.ReasoningFormatOpenAIResponses,
-				ProviderMetadata: map[string]any{"openai": map[string]any{"itemId": "rs_2"}}},
+				ProviderMetadata: sdk.ProviderMetadata{"openai": {"itemId": "rs_2"}}},
 			sdk.TextPart{Text: "answer"},
 		},
 	}})
@@ -116,7 +116,7 @@ func TestReplayKeepsEncryptedOnlyItem(t *testing.T) {
 		Role: sdk.MessageRoleAssistant,
 		Content: []sdk.MessagePart{
 			sdk.ReasoningPart{Format: sdk.ReasoningFormatOpenAIResponses,
-				ProviderMetadata: map[string]any{"openai": map[string]any{
+				ProviderMetadata: sdk.ProviderMetadata{"openai": {
 					"itemId":                    "rs_opaque",
 					"reasoningEncryptedContent": "ENCRYPTED_ONLY",
 				}}},
@@ -139,7 +139,7 @@ func TestReplayDropsForeignReasoning(t *testing.T) {
 		Role: sdk.MessageRoleAssistant,
 		Content: []sdk.MessagePart{
 			sdk.ReasoningPart{Text: "anthropic thinking", Format: sdk.ReasoningFormatAnthropic,
-				ProviderMetadata: map[string]any{"anthropic": map[string]any{"signature": "SIG"}}},
+				ProviderMetadata: sdk.ProviderMetadata{"anthropic": {"signature": "SIG"}}},
 			sdk.TextPart{Text: "answer"},
 		},
 	}})
@@ -235,7 +235,7 @@ func TestDoStreamCapturesEncryptedContentFromItemDone(t *testing.T) {
 	if part.Text != "thinking" {
 		t.Errorf("text: got %q, want %q", part.Text, "thinking")
 	}
-	meta, _ := part.ProviderMetadata["openai"].(map[string]any)
+	meta := part.ProviderMetadata["openai"]
 	if meta["reasoningEncryptedContent"] != "ENC_PAYLOAD" {
 		t.Errorf("encrypted content lost in streaming: metadata = %+v", part.ProviderMetadata)
 	}
@@ -291,7 +291,7 @@ func TestDoStreamKeepsEncryptedContentWhenToolCallClosesBlockFirst(t *testing.T)
 	if len(result.ReasoningParts) != 1 {
 		t.Fatalf("ReasoningParts: got %d, want 1 (%+v)", len(result.ReasoningParts), result.ReasoningParts)
 	}
-	meta, _ := result.ReasoningParts[0].ProviderMetadata["openai"].(map[string]any)
+	meta := result.ReasoningParts[0].ProviderMetadata["openai"]
 	if meta["reasoningEncryptedContent"] != "ENC_LATE" {
 		t.Errorf("late encrypted content lost: metadata = %+v", result.ReasoningParts[0].ProviderMetadata)
 	}

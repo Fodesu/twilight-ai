@@ -2,42 +2,13 @@ package sdk
 
 import "context"
 
-// Client provides text generation methods.
-// The provider is resolved from the Model passed via WithModel.
+// Client is the entry point of the single-call seam: Generate and Stream take
+// an sdk.Request and return a ModelResult or a ModelStream (model_call.go),
+// next to the embedding, speech, transcription, image and video surfaces.
 type Client struct{}
 
 func NewClient() *Client {
 	return &Client{}
-}
-
-// --- Package-level convenience functions ---
-
-// GenerateText runs the SDK text-generation loop and returns the final text.
-//
-// Deprecated: this wrapper runs the SDK's own multi-step tool loop, which duplicates
-// the orchestration a runtime has to own. Build an sdk.Request and call
-// Client.Generate instead.
-func GenerateText(ctx context.Context, options ...GenerateOption) (string, error) {
-	return defaultClient.GenerateText(ctx, options...)
-}
-
-// GenerateTextResult runs the SDK text-generation loop and returns the
-// accumulated result.
-//
-// Deprecated: this wrapper runs the SDK's own multi-step tool loop, which duplicates
-// the orchestration a runtime has to own. Build an sdk.Request and call
-// Client.Generate instead.
-func GenerateTextResult(ctx context.Context, options ...GenerateOption) (*GenerateResult, error) {
-	return defaultClient.GenerateTextResult(ctx, options...)
-}
-
-// StreamText runs the SDK text-generation loop and returns its live stream.
-//
-// Deprecated: this wrapper runs the SDK's own multi-step tool loop, which duplicates
-// the orchestration a runtime has to own. Build an sdk.Request and call
-// Client.Stream instead.
-func StreamText(ctx context.Context, options ...GenerateOption) (*StreamResult, error) {
-	return defaultClient.StreamText(ctx, options...)
 }
 
 // --- Embedding convenience functions ---

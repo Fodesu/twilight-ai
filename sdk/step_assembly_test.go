@@ -18,7 +18,7 @@ func TestAddUsageAccumulatesCacheWriteTTLDetails(t *testing.T) {
 		},
 	}
 
-	got := addUsage(&total, &step)
+	got := total.Add(step)
 
 	if got.InputTokenDetails.CacheWriteTokens != 300 {
 		t.Fatalf("CacheWriteTokens = %d, want 300", got.InputTokenDetails.CacheWriteTokens)
@@ -32,11 +32,11 @@ func TestAddUsageAccumulatesCacheWriteTTLDetails(t *testing.T) {
 }
 
 func TestBuildStepMessagesPreservesToolCallProviderMetadata(t *testing.T) {
-	meta := map[string]any{"google": map[string]any{"thoughtSignature": "sig-1"}}
-	msgs := buildStepMessages("", nil, nil, []ToolCall{{
+	meta := ProviderMetadata{"google": {"thoughtSignature": "sig-1"}}
+	msgs := BuildStepMessages("", nil, nil, []ToolCall{{
 		ToolCallID:       "call-1",
 		ToolName:         "lookup",
-		Input:            map[string]any{"q": "memoh"},
+		Input:            ParseToolArguments(`{"q":"memoh"}`),
 		ProviderMetadata: meta,
 	}}, nil, nil)
 
@@ -47,11 +47,7 @@ func TestBuildStepMessagesPreservesToolCallProviderMetadata(t *testing.T) {
 	if !ok {
 		t.Fatalf("content part = %T, want ToolCallPart", msgs[0].Content[0])
 	}
-	gotGoogle, ok := part.ProviderMetadata["google"].(map[string]any)
-	if !ok {
-		t.Fatalf("provider metadata = %#v, want google map", part.ProviderMetadata)
-	}
-	if gotGoogle["thoughtSignature"] != "sig-1" {
-		t.Fatalf("thoughtSignature = %#v, want sig-1", gotGoogle["thoughtSignature"])
+	if got := part.ProviderMetadata.Get("google", "thoughtSignature"); got != "sig-1" {
+		t.Fatalf("thoughtSignature = %q, want sig-1", got)
 	}
 }

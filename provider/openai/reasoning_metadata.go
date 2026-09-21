@@ -23,19 +23,19 @@ const (
 // The encrypted payload is scoped to the account and endpoint that issued it.
 // Replaying it elsewhere fails verification even though the wire shape matches,
 // so this metadata travels with the part rather than being reconstructed.
-func ReasoningItemMetadata(itemID, encryptedContent string) map[string]any {
-	return sdk.ReasoningMetadata(metadataNamespace, map[string]string{
+func ReasoningItemMetadata(itemID, encryptedContent string) sdk.ProviderMetadata {
+	return sdk.NewProviderMetadata(metadataNamespace, map[string]string{
 		metadataKeyItemID:           itemID,
 		metadataKeyEncryptedContent: encryptedContent,
 	})
 }
 
 // ReasoningItemID returns the reasoning item id a part must be replayed under.
-func ReasoningItemID(meta map[string]any) string {
-	return sdk.ReasoningMetadataString(meta, metadataNamespace, metadataKeyItemID)
+func ReasoningItemID(meta sdk.ProviderMetadata) string {
+	return meta.Get(metadataNamespace, metadataKeyItemID)
 }
 
 // ReasoningEncryptedContent returns the encrypted reasoning payload.
-func ReasoningEncryptedContent(meta map[string]any) string {
-	return sdk.ReasoningMetadataString(meta, metadataNamespace, metadataKeyEncryptedContent)
+func ReasoningEncryptedContent(meta sdk.ProviderMetadata) string {
+	return meta.Get(metadataNamespace, metadataKeyEncryptedContent)
 }

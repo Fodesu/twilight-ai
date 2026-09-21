@@ -57,17 +57,15 @@ linters:
           - goconst
           - gocritic
           - unparam
-      # The SDK keeps its own text-generation layer building and tested while
-      # callers move to the single-call seam, so a deprecation notice is not
-      # actionable in the layer's own files or in the tests that pin it.
-      - path: _test\.go
-        text: SA1019
+          - prealloc
+      # providertest is test infrastructure shared by the provider packages.
+      - path: ^provider/providertest/
         linters:
-          - staticcheck
-      - path: ^sdk/(client|generate|generate_text|options|request_adapter|step_helpers|stream|stream_text)\.go$
-        text: SA1019
-        linters:
-          - staticcheck
+          - errcheck
+          - gosec
+          - goconst
+          - gocritic
+          - unparam
 
 run:
   timeout: 5m
