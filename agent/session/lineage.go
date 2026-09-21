@@ -79,10 +79,14 @@ type SessionRecord struct {
 }
 
 // Lease is writer ownership of one Session root (SES-OWN-1/2): the adapter
-// fences every append with it.
+// fences every append with its Epoch. Owner names the holder; UntilUnixMilli
+// is when the lease stops being live (zero: never), after which another
+// Open may supersede it without Takeover.
 type Lease struct {
-	Session SessionID
-	Epoch   Epoch
+	Session        SessionID
+	Epoch          Epoch
+	Owner          string
+	UntilUnixMilli int64
 }
 
 // LedgerStore is the adapter port for nodes: independent, append-only
@@ -139,6 +143,10 @@ type SessionStore interface {
 	// Lease is live unless Takeover, which supersedes it with the next Epoch.
 	// Repair of a torn tail in the root's segment happens here.
 	Acquire(context.Context, SessionID, OpenOptions) (Lease, error)
+	// Renew moves the Lease's expiry to untilUnixMilli when the Lease is
+	// still the root's current one (SES-OWN-1); a superseded Lease is
+	// ErrOwnershipLost and nothing changes.
+	Renew(context.Context, Lease, int64) error
 	// Release ends a Lease; a superseded Lease is a no-op.
 	Release(context.Context, Lease) error
 	// DeleteRecord drops a root (SES-GC-1); ErrOwned while a Lease is live.

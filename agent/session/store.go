@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"math"
+	"time"
 
 	"github.com/felinics/twilight/agent/es"
 	"github.com/felinics/twilight/agent/jsonstable"
@@ -38,12 +39,42 @@ type ForkOrigin struct {
 	Seq     CommitSeq
 }
 
-// OpenOptions configures writer ownership (SES-OWN-1). While a Handle is
-// live, an Open without Takeover fails with ErrOwned; an Open with Takeover
-// supersedes it — safety rests on Epoch fencing (SES-OWN-2), and when to take
-// over is the caller's policy, above the kernel.
+// OpenOptions configures writer ownership (SES-OWN-1). A Handle holds a
+// lease: while the lease is live, an Open without Takeover fails with
+// ErrOwned; once it has expired (LeaseDuration elapsed since the last Renew)
+// an Open supersedes it without Takeover, and an Open with Takeover
+// supersedes a live lease as well. Safety rests on Epoch fencing
+// (SES-OWN-2) in every case; the lease only decides when a supersession is
+// allowed without an operator's say. A zero LeaseDuration never expires,
+// which is the setting of a process that cannot crash without releasing.
 type OpenOptions struct {
 	Takeover bool
+	// Owner identifies the opening process in the lease, for diagnostics; it
+	// is not an authorization.
+	Owner string
+	// LeaseDuration is how long the lease is live after Acquire and after
+	// each Renew; zero means the lease lives until Release.
+	LeaseDuration time.Duration
+	// Clock supplies the time the lease is measured against; nil is
+	// time.Now. Fixtures inject one to age a lease.
+	Clock func() time.Time
+}
+
+// Now returns the time by the configured clock.
+func (o OpenOptions) Now() time.Time {
+	if o.Clock != nil {
+		return o.Clock()
+	}
+	return time.Now()
+}
+
+// LeaseUntil is the expiry of a lease taken or renewed at now: zero when
+// the lease never expires.
+func (o OpenOptions) LeaseUntil(now time.Time) int64 {
+	if o.LeaseDuration <= 0 {
+		return 0
+	}
+	return now.Add(o.LeaseDuration).UnixMilli()
 }
 
 // Head is the ledger head after the last commit: the next CommitSeq to
@@ -86,6 +117,12 @@ type AdvanceRequest struct {
 type Handle interface {
 	SessionID() SessionID
 	Epoch() Epoch
+	// Lease is the ownership this handle holds: its Epoch, Owner and expiry.
+	Lease() Lease
+	// Renew extends the lease by LeaseDuration from now (SES-OWN-1); a
+	// superseded handle gets ErrOwnershipLost. A handle whose lease never
+	// expires renews to no effect.
+	Renew(context.Context) error
 	Head() Head
 	// Append persists one commit atomically and returns it sealed (SES-APP-1).
 	// It rejects malformed CommitIDs, duplicate CommitIDs, malformed stream

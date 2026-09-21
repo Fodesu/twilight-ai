@@ -208,6 +208,8 @@ func OpenWriter(ctx, store session.Store, registry *Registry, admission Admissio
 
 **EXT-WRT-4** Writer 在两种情况下进入失效状态，本次与之后的 `Commit` 都返回同一错误：(a) `Append` 返回 `ErrOwnershipLost`——Session 级 fencing 在进程内的表现，调用方必须放弃该 Session 的执行，Runtime 与 Loop 对它的处理见 RUN-CMT-6；(b) `Append` 返回结果未知的错误（kernel 的 `ErrHandleFailed`、IO 错误或其他非验证性错误）——Writer 以 `ErrUnknownOutcome` 失效，因为它的 head 与投影状态可能已落后于日志一组，继续提交会给临时行赋 kernel 已用过的 Seq。(b) 的失效限于该实例：宿主经 `Writers` 再次请求即得到重开的 Writer（EXT-WRT-6），`OpenWriter` 从日志重建，同一 group 的重放由 kernel 的索引回答（落盘则 `AlreadyApplied`，未落盘则 `Applied`）。只有保证未写入的错误不致失效：kernel 的验证拒绝（`ErrInvalid`、`ErrNotFound`）与写入开始前的 ctx 错误；`ErrConflict` 按 EXT-WRT-2 报告为 `Conflict`。
 
+**EXT-WRT-11（心跳）** `OpenWriter` 在 `OpenOptions.LeaseDuration` 非零时启动心跳：每 `LeaseDuration/3` 调一次 `Handle.Renew`（SES-OWN-1），`Close` 停止并等待它退出。Renew 返回 `ErrOwnershipLost` 时 Writer 进入失效状态，与被围栏的 Append 同样处理（EXT-WRT-4 (a)）；其他 Renew 失败在下一拍重试，因为租约在过期或被接管之前一直有效。心跳属于 Writer 而不是宿主：持有 Writer 的进程就是租约的持有者，不需要第二处生命周期。
+
 **EXT-WRT-8（fork 不持有 claim）** `writer.Fork(store, registry, ForkRequest{Parent, At, Child})` 只是以 `Fork{Session: Parent, Seq: At}` 调用 `Store.Create`（SES-FRK-1），不建立任何 claim，也不解码父前缀。继承前缀引用的内容由持有这些 commit 的段的 commit claim 保留（EXT-WRT-5）：段活多久，claim 就活多久，而段的存活由 lineage 可达性决定（SES-GC-2），子 Session 作为一个到达它的根即足以保留它。fork 因此是 O(1)，与前缀长度和 registry 是否认识前缀中的事件类型无关。
 
 **EXT-WRT-9（删除与回收）** `writer.Delete(store, sid)` 只调 `Store.Delete` 撤根（SES-GC-1），不触碰 claim；根已不存在不是错误。`writer.Collect(store, admission)` 先调 `Store.Collect` 回收存储（SES-GC-2），再按 `CollectReport` 释放 claim（SES-GC-3）：整段删除的段，释放 `{Kind: commit, Authority: 该段}` scope 下的全部 Active claim；被截断的段，释放 `Dropped` 列出的那些 CommitID 的 claim。先存储后 claim：两步之间失败只泄漏 claim，不会释放仍被 commit 引用的内容；泄漏的 claim 按该段的 scope 手工释放。宿主必须先关闭该 Session 的 Writer。

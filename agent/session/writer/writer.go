@@ -153,6 +153,9 @@ type sessionWriter struct {
 	projections *projector
 	admission   *admitter
 	observers   *observers
+	// heartbeat renews the kernel lease while the Writer is open
+	// (EXT-WRT-11); nil when the lease never expires.
+	heartbeat *heartbeat
 }
 
 // OpenWriter takes ownership of sid and rebuilds the idempotency index and
@@ -186,6 +189,9 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 		projections: newProjector(registry, sid, cfg.Cache, cfg.CachePolicy),
 		admission:   &admitter{Admission: admission, segment: session.SegmentIDOf(header)},
 		observers:   &observers{list: cfg.Observers}}
+	if opts.LeaseDuration > 0 {
+		w.heartbeat = startHeartbeat(kernel, opts.LeaseDuration, w.onLeaseLost)
+	}
 	// The log is read from the earliest cache entry any projection resumes
 	// from (EXT-PRJ-5): judging an entry costs one commit read, and a clean
 	// Close leaves every entry at the head.
@@ -196,23 +202,29 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 		}
 		return one.Commits[0], true
 	}
+	abandon := func() {
+		if w.heartbeat != nil {
+			w.heartbeat.stop()
+		}
+		_ = kernel.Close(ctx)
+	}
 	from, err := w.projections.prepare(ctx, header, at)
 	if err != nil {
-		_ = kernel.Close(ctx)
+		abandon()
 		return nil, err
 	}
 	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid, From: from})
 	if err != nil {
-		_ = kernel.Close(ctx)
+		abandon()
 		return nil, err
 	}
 	if err := w.projections.resume(&page, from); err != nil {
-		_ = kernel.Close(ctx)
+		abandon()
 		return nil, err
 	}
 	w.head = page.Head
 	if err := w.admission.reconcile(ctx, w); err != nil {
-		_ = kernel.Close(ctx)
+		abandon()
 		return nil, err
 	}
 	if header.ProtocolVersion < registry.ProtocolVersion {
@@ -221,7 +233,7 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 		// the old tip were just reconciled under its own scope.
 		advanced, err := kernel.Advance(ctx, session.AdvanceRequest{ProtocolVersion: registry.ProtocolVersion})
 		if err != nil {
-			_ = kernel.Close(ctx)
+			abandon()
 			return nil, err
 		}
 		w.header = advanced
@@ -258,7 +270,20 @@ func (w *sessionWriter) OwnerExists(_ context.Context, owner artifact.ClaimOwner
 // recognizes it so a forgotten Writer is not closed a second time.
 var errWriterClosed = &extension.Error{Code: extension.ErrInvalid, Detail: "writer closed"}
 
+// onLeaseLost is the heartbeat's report that Renew was fenced: the Writer
+// is lost exactly as it would be by a fenced Append (EXT-WRT-4).
+func (w *sessionWriter) onLeaseLost(err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.lost == nil {
+		w.lost = &extension.Error{Code: extension.ErrOwnershipLost, Detail: err.Error()}
+	}
+}
+
 func (w *sessionWriter) Close(ctx context.Context) error {
+	if w.heartbeat != nil {
+		w.heartbeat.stop()
+	}
 	w.mu.Lock()
 	var writes []cacheWrite
 	// An entry at an inherited boundary would never be started from

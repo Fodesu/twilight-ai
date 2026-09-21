@@ -132,6 +132,13 @@ type memoryRoot struct {
 	record SessionRecord
 	epoch  Epoch
 	owned  bool
+	owner  string
+	until  int64 // lease expiry in unix millis; zero never expires
+}
+
+// live reports whether the root's lease is held and unexpired at now.
+func (r *memoryRoot) live(now int64) bool {
+	return r.owned && (r.until == 0 || r.until > now)
 }
 
 func (m *memoryBackend) segment(id SegmentID) (*memorySegment, error) {
@@ -468,12 +475,33 @@ func (m *memoryBackend) Acquire(ctx context.Context, sid SessionID, opts OpenOpt
 	if !ok {
 		return Lease{}, newError(ErrNotFound, "open", sid, "session not found")
 	}
-	if r.owned && !opts.Takeover {
-		return Lease{}, newError(ErrOwned, "open", sid, fmt.Sprintf("owned by epoch %d", r.epoch))
+	now := opts.Now()
+	if r.live(now.UnixMilli()) && !opts.Takeover {
+		return Lease{}, newError(ErrOwned, "open", sid, fmt.Sprintf("owned by epoch %d (%s) until %d", r.epoch, r.owner, r.until))
 	}
 	r.epoch++
 	r.owned = true
-	return Lease{Session: sid, Epoch: r.epoch}, nil
+	r.owner = opts.Owner
+	r.until = opts.LeaseUntil(now)
+	return Lease{Session: sid, Epoch: r.epoch, Owner: r.owner, UntilUnixMilli: r.until}, nil
+}
+
+func (m *memoryBackend) Renew(ctx context.Context, lease Lease, until int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.roots[lease.Session]
+	if !ok || !r.owned || r.epoch != lease.Epoch {
+		var current Epoch
+		if ok {
+			current = r.epoch
+		}
+		return newError(ErrOwnershipLost, "renew", lease.Session, fmt.Sprintf("epoch %d superseded by %d", lease.Epoch, current))
+	}
+	r.until = until
+	return nil
 }
 
 func (m *memoryBackend) Release(ctx context.Context, lease Lease) error {

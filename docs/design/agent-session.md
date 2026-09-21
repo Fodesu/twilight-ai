@@ -39,7 +39,7 @@ Atomic Commit ─────────────────────┘
 
 4. **原子 Commit。** 一个领域动作产生的多个 event 要么全部出现，要么全部不存在（SES-APP-1）；底层事务或 fsync 只是它的物理实现。崩溃只可能留下一个不完整的尾 Commit，`Open` 在确立 head 之前把它截掉，reader 在任何时刻都看不到不完整的 Commit（SES-APP-2）。
 
-5. **Session 级 Ownership 与 Fencing。** `Handle + Epoch`：同一 Session 同一时刻至多一个有效写者；接管使 Epoch 加一并持久化，旧 Handle 的迟到写入被拒（SES-OWN-1/2）。所有权是 Session 级而非执行目标级：接管者对全部执行中的目标查询，并根据结果重连、延迟或处置（SES-OWN-3、RUN-CMT-7）。何时接管是 kernel 之上的策略，kernel 不承载 TTL 或心跳。
+5. **Session 级 Ownership 与 Fencing。** `Handle + Epoch + Lease`：同一 Session 同一时刻至多一个有效写者；接管使 Epoch 加一并持久化，旧 Handle 的迟到写入被拒（SES-OWN-1/2）。所有权是 Session 级而非执行目标级：接管者对全部执行中的目标查询，并根据结果重连、延迟或处置（SES-OWN-3、RUN-CMT-7）。何时允许接管由租约回答：持有者按 `LeaseDuration` 续租（Writer 心跳，EXT-WRT-11），租约过期后另一个 Open 无需 `Takeover` 即可接管；对仍存活的租约强制接管是 kernel 之上的运维决定。安全性在任何情况下都由 Epoch 承担。
 
 6. **幂等语义提交。** `CommitID + intent`：写者把产生 commit 的操作 digest 封进 commit（`Commit.Intent`），同 ID 同 intent 为 `AlreadyApplied`，同 ID 不同 intent 为 `Conflict`，两者都不写入，也不需要重建事件（EXT-WRT-2）；未声明 intent 时退回 event fingerprint 比对，fingerprint 覆盖 CommitID、各 batch 的 stream 与其事件的 Type、Payload 有序序列，不含 SessionID（继承前缀经 fork 重放仍须判为已应用，SES-FRK-3）与时间。kernel 只拒绝重复 CommitID 并提供该索引的读侧（SES-APP-3、SES-REP-3/4），比对由 Writer 完成。恢复与重放因此不会重复写事实。
 
@@ -82,7 +82,7 @@ kernel 的 `session.Ledger` 实现 `Store`，只依赖 `Backend` 端口；Memory
 
 **SES-SCP-3** kernel 的范围是 Session lineage 树：header、Open/Append/ReadCommits/ReadStream、所有权与 epoch、按 Commit 的 digest 链、fork、删除与可达性回收（第 8、9 节）。lineage 的单父不变量见 SES-LIN-1：多父 merge 被排除在模型之外；canonical import 不属于当前合同，若日后加入，它与 fork 一样只能新建根段或子段，不得为已有 Session 增加第二个父节点。
 
-**SES-SCP-4** adapter 端口是 `Backend = LedgerStore + SessionStore + CreateSession + AdvanceTip`。`LedgerStore` 存节点：`Segment`、`ListSegments`、`ReadSegment`（只读该段自身的 commit）、`Locate`、`LookupCommit`、`Index`、`PutIndex`（段的 CommitIndex，SES-REP-5）、`VerifiedMark`、`PutVerifiedMark`（段的 verified mark，SES-REP-1）、对已封印 Commit 的 `Append(lease, segment, commit)`、`TruncateSegment`、`RemoveSegment`。`SessionStore` 存根：`Record`、`ListRecords`、`Acquire`（所有权与 torn tail 修复）、`Release`、`DeleteRecord`。两者共享一个一致性域，使 `Append` 能与 Lease 检查原子进行。adapter 不知道 fork、前缀与可达性；`Ledger` 在该端口之上一次实现 SES-FRK 与 SES-GC。conformance 以 `Store` 为参数运行，因此每个 adapter 得到同一套 lineage 语义。
+**SES-SCP-4** adapter 端口是 `Backend = LedgerStore + SessionStore + CreateSession + AdvanceTip`。`LedgerStore` 存节点：`Segment`、`ListSegments`、`ReadSegment`（只读该段自身的 commit）、`Locate`、`LookupCommit`、`Index`、`PutIndex`（段的 CommitIndex，SES-REP-5）、`VerifiedMark`、`PutVerifiedMark`（段的 verified mark，SES-REP-1）、对已封印 Commit 的 `Append(lease, segment, commit)`、`TruncateSegment`、`RemoveSegment`。`SessionStore` 存根：`Record`、`ListRecords`、`Acquire`（所有权、租约与 torn tail 修复）、`Renew`、`Release`、`DeleteRecord`。两者共享一个一致性域，使 `Append` 能与 Lease 检查原子进行。adapter 不知道 fork、前缀与可达性；`Ledger` 在该端口之上一次实现 SES-FRK 与 SES-GC。conformance 以 `Store` 为参数运行，因此每个 adapter 得到同一套 lineage 语义。
 
 ## 2. 版本
 
@@ -172,9 +172,12 @@ digest 依 `agent/es` 的 versioned domain separator。链条按 Commit 连接�
 
 ```go
 type OpenOptions struct {
-    // Takeover 为假时，已有有效 Handle 的 Open 返回 ErrOwned；为真时接管：Epoch 加一，
-    // 旧持有者被 fencing。何时允许接管是 kernel 之上的策略。
+    // Takeover 为假时，租约仍存活的 Session 的 Open 返回 ErrOwned；为真时接管存活的租约：Epoch 加一，
+    // 旧持有者被 fencing。租约已过期时无需 Takeover。
     Takeover bool
+    Owner string                // 持有者标识，进入 Lease，只供诊断
+    LeaseDuration time.Duration // Acquire 与每次 Renew 之后租约存活的时长；0 为直到 Release 才失效
+    Clock func() time.Time      // 租约计时的时钟；nil 为 time.Now，夹具注入以推进时间
 }
 // Handle 是 kernel 的所有权句柄，由 Store.Open 返回；进程内的写入者是 writer.Writer，它持有一个 Handle。
 type Proposal struct {
@@ -186,6 +189,8 @@ type Proposal struct {
 type Handle interface {
     SessionID() SessionID
     Epoch() Epoch
+    Lease() Lease                  // 本句柄的租约：Epoch、Owner、到期时刻
+    Renew(context.Context) error   // 把到期时刻推到 now + LeaseDuration；被接管的句柄得到 ErrOwnershipLost
     Head() Head
     Append(context.Context, Proposal) (Commit, error)
     Committed(CommitID) bool
@@ -207,7 +212,7 @@ type Store interface {
 
 **SES-CRT-1** `Create` 建立一个根与它的 tip 段：kernel 解析 `Fork`（SES-FRK-1）、抽取 128 位随机 nonce、封印 `SegmentHeader`，以 `Backend.CreateSession` 一步落下段与根。nonce 只由 kernel 抽取，调用方不能指定：可写节点的身份不对外开放，因此两个根不可能被构造成共用一个 tip（SES-FRK-4）；`CreateSession` 对已存在的 SegmentID 也返回 `ErrConflict`。对已存在的 SessionID，请求所决定的每个字段（ProtocolVersion、解析后的边、CausationID、Metadata、CreatedAtUnixMilli）都与现有 Session 相同则幂等返回现有 tip 的 header，否则 `ErrConflict`；幂等判定不比较 SegmentID，因为 nonce 每次不同。wire 夹具以 `NewLedger(be, WithNonceSource(...))` 注入确定性 nonce。
 
-**SES-OWN-1** 同一 Session 同一时刻至多一个有效 Handle。`Open` 在已有有效 Handle 且未声明 `Takeover` 时返回 `ErrOwned`；声明 `Takeover` 的 Open 接管所有权。接管的安全性由 Epoch fencing（SES-OWN-2）承担；何时允许接管（进程死亡判定、租约、人工指令）是 kernel 之上的策略，kernel 不承载 TTL 或心跳。
+**SES-OWN-1** 同一 Session 同一时刻至多一个有效 Handle，有效性由租约定义：`Acquire` 记录 `Lease{Session, Epoch, Owner, UntilUnixMilli}`，`Until = now + LeaseDuration`（`LeaseDuration` 为 0 时 `Until` 为 0，表示直到 Release 才失效）；`Renew` 把 `Until` 推到 `now + LeaseDuration`，只对当前 Lease 生效，被接管的 Lease 得到 `ErrOwnershipLost`。`Open` 在租约存活（已持有且 `Until` 为 0 或晚于 now）且未声明 `Takeover` 时返回 `ErrOwned`；租约已过期时 Open 直接接管；声明 `Takeover` 的 Open 接管存活的租约。三种接管都使 Epoch 加一，安全性一律由 Epoch fencing（SES-OWN-2）承担：过期本身不终止所有权，未被接管的过期持有者仍可写入，被接管的持有者在下一次 `Append` 或 `Renew` 被围栏。时钟由 `OpenOptions.Clock` 给出，adapter 不自带时钟；这与 Execution Store 的 record 租约（RUN-EXE-6）形状相同。
 
 **SES-OWN-2** 每次成功的 Open 使该 Session 的 `Epoch` 加一并持久化。`Append` 携带 Handle 的 Epoch；Store 对落后于当前持久化 Epoch 的调用返回 `ErrOwnershipLost`，不写入任何内容。这是 fencing：被接管的旧 Handle 的迟到写入不可能进入日志。
 
@@ -272,7 +277,7 @@ const (
 conformance 以 `Store` 为参数，每个 adapter 跑同一套，必须验证：
 
 - **SES-WIR-1/2/3**：CommitSeq 连续、批次非空、同 Commit 内流唯一且归因合法、CommitID 唯一、payload canonical、header/batch/commit digest 链、版本一致；
-- **SES-OWN-1/2**：第二个 Open 返回 `ErrOwned`；Close 后可再 Open 且 Epoch 加一；声明 `Takeover` 的 Open 在所有权存续期间接管且 Epoch 加一；旧 Handle 的 Append 返回 `ErrOwnershipLost` 且不写入；
+- **SES-OWN-1/2**：第二个 Open 返回 `ErrOwned`；Close 后可再 Open 且 Epoch 加一；声明 `Takeover` 的 Open 在所有权存续期间接管且 Epoch 加一；旧 Handle 的 Append 返回 `ErrOwnershipLost` 且不写入；带 `LeaseDuration` 的租约在存活期内拒绝无 Takeover 的 Open，Renew 延长存活期，过期后无 Takeover 的 Open 接管且 Epoch 加一，过期持有者的 Renew 与 Append 为 `ErrOwnershipLost`、其 Close 不释放新持有者；`LeaseDuration` 为 0 的租约不过期；
 - **SES-APP-1/2/3**：整 Commit 可见性；在 Commit 中途注入崩溃后打开，尾 Commit 不出现；拒绝项无写入；注入持久化失败后句柄返回 `ErrHandleFailed`，重开后已落盘的完整 Commit 在索引中、链完整、同 CommitID 的 Append 为 `ErrConflict`；
 - **SES-ADV-1**：同版本或未知版本的 Advance 被拒且 tip 不动；推进后 header 为新版本、边指向旧 tip 的 head commit、根的 Tip 改指新段；句柄 head 为 seed、继承 CommitID 可见、旧 tip 的流不计入；下一条 commit 从旧 head 续链并只在新版本 profile 下通过校验；跨版本读 `ReadCommits`/`ReadStream` 拼接完整；重开成功；被接管的句柄 Advance 为 `ErrOwnershipLost`；两个方向的跨版本 fork 都成立且可写可重开；空 tip 的推进沿用原边且旧空段被 Collect 回收；
 - **SES-REP-5**：索引与 commit 一致、落后一个、落后全部、缺失四种情形下 Open 成功且 Head、Committed、StreamHead、LookupCommit、重复 CommitID 的拒绝与 ReadCommits 都与从 commit 得到的答案相同；fork 子对继承 CommitID 的 Committed 经父段索引回答；
@@ -293,7 +298,7 @@ type SegmentID string                                       // = SegmentHeader.H
 type LedgerRef struct { Segment SegmentID; Seq CommitSeq; Digest es.Digest }
 type Segment struct { ID SegmentID; Header SegmentHeader }  // Header.Parent *LedgerRef 是边
 type SessionRecord struct { ID SessionID; Tip SegmentID; CreatedAtUnixMilli int64 }
-type Lease struct { Session SessionID; Epoch Epoch }
+type Lease struct { Session SessionID; Epoch Epoch; Owner string; UntilUnixMilli int64 }
 type ForkOrigin struct { Session SessionID; Seq CommitSeq }  // CreateRequest.Fork
 type CreateRequest struct { ProtocolVersion; SessionID; CreatedAtUnixMilli; Fork *ForkOrigin; CausationID; Metadata; Ext }  // 段 nonce 由 kernel 抽取，调用方不能命名节点
 type Ancestry struct { Segments []AncestrySegment }          // 根段在前，tip 在后；每段带 From/Through

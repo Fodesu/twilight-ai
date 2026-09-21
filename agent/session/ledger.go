@@ -240,7 +240,7 @@ func (l *Ledger) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Han
 	// Everything up to head is now verified; the mark is derived data, so a
 	// failure to record it costs the next Open time, not correctness.
 	_ = l.be.PutVerifiedMark(ctx, tip.ID, head)
-	h := &ledgerHandle{l: l, root: root, ancestry: a, profile: profile, lease: lease, head: head,
+	h := &ledgerHandle{l: l, root: root, ancestry: a, profile: profile, lease: lease, opts: opts, head: head,
 		own: make(map[CommitID]struct{}, len(idx.Entries)), streams: make(map[StreamRef]StreamSeq)}
 	for i := range idx.Entries {
 		e := &idx.Entries[i]
@@ -323,6 +323,7 @@ type ledgerHandle struct {
 	ancestry *Ancestry
 	profile  LedgerProfile
 	lease    Lease
+	opts     OpenOptions
 	head     Head
 	own      map[CommitID]struct{}
 	// streams counts the events of each logical stream the tip segment
@@ -336,6 +337,32 @@ type ledgerHandle struct {
 
 func (w *ledgerHandle) SessionID() SessionID { return w.root.ID }
 func (w *ledgerHandle) Epoch() Epoch         { return w.lease.Epoch }
+
+func (w *ledgerHandle) Lease() Lease {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.lease
+}
+
+// Renew is SES-OWN-1: the adapter moves the expiry only for the current
+// lease, so a superseded handle learns of the supersession here as well as
+// at Append.
+func (w *ledgerHandle) Renew(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.failed != nil {
+		return w.failed
+	}
+	until := w.opts.LeaseUntil(w.opts.Now())
+	if err := w.l.be.Renew(ctx, w.lease, until); err != nil {
+		return err
+	}
+	w.lease.UntilUnixMilli = until
+	return nil
+}
 
 func (w *ledgerHandle) Head() Head {
 	w.mu.Lock()

@@ -23,7 +23,7 @@
 | Executor | `effect.Port`；实现是进程内 `LocalExecutor` 或远端客户端，效果实现只在这一侧 |
 | Read Models / 观察者 | `extension.ProjectionReader` 按 SessionID 读取；`observe.Bus` 是 owner 侧的实时流，两者对同一 head 一致（EXT-PRJ-4） |
 | Workspace | 运行时只接收 opaque `TargetRef`，由 `TargetResolver` 按 effect 解析（RUN-LOP-9）；解析器实现、资源注册与 Workspace 管理在 core 之外（APP-TGT-1） |
-| 存活判定 / 何时 Takeover | 不在 core 也不在运行时；由部署决定 |
+| 存活判定 / 何时 Takeover | Session 租约（SES-OWN-1）：`Ports.Ownership.LeaseDuration` 给出租期，Writer 心跳续租（EXT-WRT-11），过期即可被下一个 Open 接管；对存活租约的强制 Takeover 仍由部署决定 |
 | Agent Server（API、Auth、路由） | core 之外 |
 
 ## 2. Authority 与端口

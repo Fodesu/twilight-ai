@@ -382,6 +382,10 @@ type ownerRecord struct {
 	session.SessionRecord
 	Epoch session.Epoch `json:"epoch"`
 	Owned bool          `json:"owned"`
+	// Owner and LeaseUntilUnixMilli are the lease's holder and expiry
+	// (SES-OWN-1); a zero expiry never expires.
+	Owner               string `json:"owner,omitempty"`
+	LeaseUntilUnixMilli int64  `json:"leaseUntilUnixMilli,omitempty"`
 	// Failed records a lease whose last Append had an unknown outcome; it is
 	// cleared by the next Acquire, which reads the log as it is.
 	Failed string `json:"failed,omitempty"`
@@ -596,8 +600,9 @@ func (s *Store) Acquire(ctx context.Context, sid session.SessionID, opts session
 	if err != nil {
 		return session.Lease{}, err
 	}
-	if owner.Owned && !opts.Takeover {
-		return session.Lease{}, kerr(session.ErrOwned, "open", sid, fmt.Sprintf("owned by epoch %d", owner.Epoch))
+	now := opts.Now()
+	if owner.Owned && (owner.LeaseUntilUnixMilli == 0 || owner.LeaseUntilUnixMilli > now.UnixMilli()) && !opts.Takeover {
+		return session.Lease{}, kerr(session.ErrOwned, "open", sid, fmt.Sprintf("owned by epoch %d (%s) until %d", owner.Epoch, owner.Owner, owner.LeaseUntilUnixMilli))
 	}
 	_, dir, err := s.loadSegment(rec.Tip, "open")
 	if err != nil {
@@ -619,13 +624,32 @@ func (s *Store) Acquire(ctx context.Context, sid session.SessionID, opts session
 	owner.Epoch++
 	owner.Owned = true
 	owner.Failed = ""
+	owner.Owner = opts.Owner
+	owner.LeaseUntilUnixMilli = opts.LeaseUntil(now)
 	if err := s.saveRoot(sid, owner); err != nil {
 		return session.Lease{}, err
 	}
 	// The truncation, if any, shortened the log under the index; the next use
 	// reconciles index.jsonl with it (SES-REP-5).
 	s.dropIndex(rec.Tip)
-	return session.Lease{Session: sid, Epoch: owner.Epoch}, nil
+	return session.Lease{Session: sid, Epoch: owner.Epoch, Owner: owner.Owner, UntilUnixMilli: owner.LeaseUntilUnixMilli}, nil
+}
+
+func (s *Store) Renew(ctx context.Context, lease session.Lease, until int64) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, owner, err := s.loadRoot(lease.Session, "renew")
+	if err != nil {
+		return err
+	}
+	if !owner.Owned || owner.Epoch != lease.Epoch {
+		return kerr(session.ErrOwnershipLost, "renew", lease.Session, fmt.Sprintf("epoch %d superseded by %d", lease.Epoch, owner.Epoch))
+	}
+	owner.LeaseUntilUnixMilli = until
+	return s.saveRoot(lease.Session, owner)
 }
 
 func (s *Store) Release(ctx context.Context, lease session.Lease) error {
