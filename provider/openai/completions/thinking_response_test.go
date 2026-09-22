@@ -149,23 +149,16 @@ func TestGenerate_EmptyReasoningStepReplaysKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Two single calls on the seam: the caller executes the tool between
-	// them and assembles the step's messages for the replay.
-	tool := sdk.Tool{
+	// Two single calls on the seam: the caller runs the tool between them
+	// and assembles the step's messages for the replay.
+	defs := []sdk.ToolDefinition{{
 		Name:        "get_weather",
 		Description: "Get weather",
 		Parameters: mustSchema(map[string]any{
 			"type":       "object",
 			"properties": map[string]any{"city": map[string]any{"type": "string"}},
 		}),
-		Execute: func(ctx *sdk.ToolExecContext, input sdk.ToolArguments) (sdk.ToolOutput, error) {
-			return sdk.TextOutput("18C"), nil
-		},
-	}
-	defs, err := sdk.ToolDefinitionsFromTools([]sdk.Tool{tool})
-	if err != nil {
-		t.Fatal(err)
-	}
+	}}
 	p := completions.New(completions.WithAPIKey("k"), completions.WithBaseURL(srv.URL))
 	model := p.ChatModel("deepseek-v4-flash")
 	ctx := context.Background()
@@ -178,11 +171,11 @@ func TestGenerate_EmptyReasoningStepReplaysKey(t *testing.T) {
 	if parts := step1.ReasoningParts; len(parts) != 1 || parts[0].Text != "" || parts[0].Format != sdk.ReasoningFormatOpenAIChat {
 		t.Fatalf("step 1 reasoning parts: got %#v, want one empty openai-chat-v1 part", parts)
 	}
-	outcome, err := sdk.ExecuteTools(ctx, step1.ToolCalls, sdk.ToolExecOptions{Tools: []sdk.Tool{tool}})
-	if err != nil {
-		t.Fatalf("ExecuteTools: %v", err)
+	results := make([]sdk.ToolResultPart, 0, len(step1.ToolCalls))
+	for _, tc := range step1.ToolCalls {
+		results = append(results, sdk.ToolResultPart{ToolCallID: tc.ToolCallID, ToolName: tc.ToolName, Result: sdk.TextOutput("18C")})
 	}
-	messages = append(messages, sdk.BuildStepMessages(step1.Text, step1.TextProviderMetadata, step1.ReasoningParts, step1.ToolCalls, outcome.Results, &step1.Usage)...)
+	messages = append(messages, assistantStep(&step1), sdk.ToolMessage(results...))
 	step2, err := model.Generate(ctx, sdk.Request{Messages: messages, Tools: defs})
 	if err != nil {
 		t.Fatalf("Generate step 2: %v", err)

@@ -121,39 +121,3 @@ func TestToResultReplacesRatherThanConcatenatesBlockMetadata(t *testing.T) {
 		t.Errorf("signature: got %q, want %q (metadata replaces)", got, "FINAL")
 	}
 }
-
-// Every reasoning block must reach the assistant message that gets replayed,
-// each keeping its own opaque token.
-func TestBuildStepMessagesEmitsOnePartPerReasoningBlock(t *testing.T) {
-	blocks := []ReasoningPart{
-		{Text: "AAA", ProviderMetadata: reasoningMeta("SIG_A")},
-		{Text: "", ProviderMetadata: ProviderMetadata{"anthropic": {"redactedData": "BLOB"}}},
-		{Text: "BBB", ProviderMetadata: reasoningMeta("SIG_B")},
-	}
-
-	msgs := BuildStepMessages("answer", nil, blocks, nil, nil, nil)
-	if len(msgs) == 0 {
-		t.Fatal("no messages produced")
-	}
-
-	var got []ReasoningPart
-	for _, part := range msgs[0].Content {
-		if rp, ok := part.(ReasoningPart); ok {
-			got = append(got, rp)
-		}
-	}
-	if len(got) != 3 {
-		t.Fatalf("reasoning parts: got %d, want 3 (empty-text block must survive)", len(got))
-	}
-	if s := anthropicSignature(t, got[0].ProviderMetadata); s != "SIG_A" {
-		t.Errorf("part 0 signature: got %q, want SIG_A", s)
-	}
-	if s := anthropicSignature(t, got[2].ProviderMetadata); s != "SIG_B" {
-		t.Errorf("part 2 signature: got %q, want SIG_B", s)
-	}
-	// Reasoning must precede the answer text: Anthropic enforces thinking-first,
-	// and OpenAI 400s on an orphaned trailing reasoning item.
-	if _, ok := msgs[0].Content[0].(ReasoningPart); !ok {
-		t.Errorf("content[0] = %T, want ReasoningPart to lead the message", msgs[0].Content[0])
-	}
-}

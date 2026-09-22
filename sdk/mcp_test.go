@@ -3,6 +3,7 @@ package sdk
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -95,7 +96,7 @@ func TestMCPClientTools(t *testing.T) {
 		t.Fatalf("expected 2 tools, got %d", len(tools))
 	}
 
-	toolMap := make(map[string]Tool)
+	toolMap := make(map[string]ToolDefinition)
 	for _, tool := range tools {
 		toolMap[tool.Name] = tool
 	}
@@ -110,9 +111,6 @@ func TestMCPClientTools(t *testing.T) {
 	if echo.Parameters == nil {
 		t.Fatal("echo.Parameters is nil")
 	}
-	if echo.Execute == nil {
-		t.Fatal("echo.Execute is nil")
-	}
 
 	add, ok := toolMap["add"]
 	if !ok {
@@ -123,7 +121,7 @@ func TestMCPClientTools(t *testing.T) {
 	}
 }
 
-func TestMCPToolExecute(t *testing.T) {
+func TestMCPClientCallTool(t *testing.T) {
 	ctx := context.Background()
 	transport := startTestServer(t)
 
@@ -133,49 +131,31 @@ func TestMCPToolExecute(t *testing.T) {
 	}
 	defer mc.Close()
 
-	tools, err := mc.Tools(ctx)
-	if err != nil {
-		t.Fatalf("Tools: %v", err)
+	cases := []struct {
+		name, tool, args, want string
+		wantErr                bool
+	}{
+		{"echo", "echo", `{"message":"hello"}`, "echo: hello", false},
+		{"add", "add", `{"a":3,"b":4}`, "", false},
+		{"invalid arguments are not sent", "echo", `{"message":`, "", true},
 	}
-
-	toolMap := make(map[string]Tool)
-	for _, tool := range tools {
-		toolMap[tool.Name] = tool
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := mc.CallTool(ctx, tc.tool, ParseToolArguments(tc.args))
+			if tc.wantErr {
+				if !errors.Is(err, ErrInvalidToolArguments) {
+					t.Fatalf("CallTool = %v, want ErrInvalidToolArguments", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("CallTool: %v", err)
+			}
+			if out.Text == "" || (tc.want != "" && out.Text != tc.want) {
+				t.Fatalf("output = %q, want %q", out.Text, tc.want)
+			}
+		})
 	}
-
-	t.Run("echo", func(t *testing.T) {
-		echoTool := toolMap["echo"]
-		execCtx := &ToolExecContext{
-			Context:    ctx,
-			ToolCallID: "call-1",
-			ToolName:   "echo",
-		}
-		result, err := echoTool.Execute(execCtx, ParseToolArguments(`{"message":"hello"}`))
-		if err != nil {
-			t.Fatalf("Execute: %v", err)
-		}
-		text := result.Text
-		if text != "echo: hello" {
-			t.Errorf("result = %q, want %q", text, "echo: hello")
-		}
-	})
-
-	t.Run("add", func(t *testing.T) {
-		addTool := toolMap["add"]
-		execCtx := &ToolExecContext{
-			Context:    ctx,
-			ToolCallID: "call-2",
-			ToolName:   "add",
-		}
-		result, err := addTool.Execute(execCtx, ParseToolArguments(`{"a":3,"b":4}`))
-		if err != nil {
-			t.Fatalf("Execute: %v", err)
-		}
-		text := result.Text
-		if text == "" {
-			t.Fatal("empty result")
-		}
-	})
 }
 
 func TestConvertInputSchema(t *testing.T) {
@@ -313,7 +293,7 @@ func TestMCPClientConfigDefaults(t *testing.T) {
 }
 
 func TestConvertMCPToolsEmpty(t *testing.T) {
-	tools, err := convertMCPTools(nil, nil)
+	tools, err := convertMCPTools(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +317,7 @@ func TestMCPToolSchemaProperties(t *testing.T) {
 		t.Fatalf("Tools: %v", err)
 	}
 
-	toolMap := make(map[string]Tool)
+	toolMap := make(map[string]ToolDefinition)
 	for _, tool := range tools {
 		toolMap[tool.Name] = tool
 	}
