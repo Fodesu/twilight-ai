@@ -11,7 +11,7 @@ func (m *Model) Generate(ctx context.Context, req Request) (ModelResult, error)
 func (m *Model) Stream(ctx context.Context, req Request) (ModelStream, error)
 ```
 
-`Generate` and `Stream` are one model call each: the `Request` is the complete input, the `ModelResult` (or the assembled result of the `ModelStream`) is the complete output. Nothing is retried, looped or executed on the caller's behalf. They are the only chat entry points.
+`Generate` and `Stream` are one model call each: the `Request` is the complete input, the `ModelResult` (or the assembled result of the `ModelStream`) is the complete output. They are the chat entry points.
 
 ### Client
 
@@ -333,7 +333,7 @@ Every value a model or a provider produces has a closed type here: arguments and
 
 #### ToolDefinition & ToolChoice
 
-What the model sees of a tool. The SDK stops here: running a call, approving it and retrying it are the caller's.
+What the model sees of a tool.
 
 ```go
 type ToolDefinition struct {

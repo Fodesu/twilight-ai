@@ -51,13 +51,9 @@ func ClassifyProbeStatus(statusCode int) (*ModelTestResult, error) {
 // Provider is the interface that AI backends must implement.
 //
 // DoGenerate and DoStream are the seam between the SDK and a backend, and they
-// speak only the single-call boundary: a Request goes in, and a ModelResult or a
-// channel of StreamParts comes out. Nothing else crosses it. In particular a
-// provider never sees orchestration state — multi-step history, tool execution,
-// approval decisions, or callbacks — because those belong to whoever drives the
-// model, and a provider that knows about them cannot be reused by a different
-// driver. Tool schemas arrive in Request.Tools already resolved to JSON Schema,
-// and tool execution never happens here.
+// speak the single-call boundary: a Request goes in, and a ModelResult or a
+// channel of StreamParts comes out. Tool schemas arrive in Request.Tools as
+// JSON Schema.
 //
 // DoStream must close the returned channel, must respect ctx while producing and
 // while sending, and reports a mid-stream failure as an ErrorPart rather than by

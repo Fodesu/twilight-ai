@@ -22,7 +22,7 @@ Twilight AI is a lightweight Go AI SDK with a provider-agnostic core API.
 - Text generation: build an `sdk.Request` and call `Model.Generate` or `Model.Stream`; one call, one `ModelResult`
 - Image generation: `sdk.GenerateImage`, `sdk.EditImage`
 - Embeddings: `sdk.Embed`, `sdk.EmbedMany`
-- Tool calling: `sdk.ToolDefinition` (or `sdk.NewToolDefinition[T]`), typed `sdk.ToolCall` / `sdk.ToolArguments` / `sdk.ToolOutput`; running calls and looping are the caller's
+- Tool calling: `sdk.ToolDefinition` (or `sdk.NewToolDefinition[T]`), typed `sdk.ToolCall` / `sdk.ToolArguments` / `sdk.ToolOutput`
 - Streaming: typed `StreamPart` events over Go channels
 - Current providers:
   - `provider/openai/completions`
@@ -42,7 +42,7 @@ Prefer the high-level SDK API first, then drop to provider details only when nee
 - `sdk.EmbeddingModel` binds an embedding model to an `sdk.EmbeddingProvider`
 - `sdk.ImageGenerationModel` binds an image generation model to an `sdk.ImageGenerationProvider`
 - `sdk.ImageEditModel` binds an image edit model to an `sdk.ImageEditProvider`
-- The SDK has no loop and no tool executor: a runtime drives `Model.Generate` or `Model.Stream` with an `sdk.Request`, runs the returned `ToolCalls` itself, and appends the assistant and tool messages of the step to the next request
+- A runtime drives `Model.Generate` or `Model.Stream` with an `sdk.Request`, runs the returned `ToolCalls`, and appends the assistant and tool messages of the step to the next request
 - Providers handle backend-specific HTTP, request mapping, response parsing, and SSE translation
 
 ## Core API Guidance
@@ -124,9 +124,8 @@ Use these defaults unless the task requires something else:
 - one `Generate` per step; the caller runs the returned `ToolCalls` and decides how many steps to take
 - a call's arguments are `sdk.ToolArguments`; decode with `Unmarshal`, never assume a `map[string]any`; `Valid()` false means answer the model with an error result instead of running the tool
 - a tool's result is a `sdk.ToolResultPart` whose `Result` is `sdk.TextOutput` or `sdk.JSONOutput`; the replayed assistant message keeps the reasoning parts and each part's `ProviderMetadata`
-- approval, sandboxing, timeouts and retries are the caller's; the SDK defines none of them
 
-When streaming with tools, the stream emits tool input construction parts and one `StreamToolCallPart` per completed call; there are no execution events.
+When streaming with tools, the stream emits tool input construction parts and one `StreamToolCallPart` per completed call.
 
 ### Streaming
 
@@ -215,7 +214,7 @@ Before finishing work in this repo, verify:
 - chat, embedding, and image concerns are not mixed accidentally
 - public examples use top-level `sdk` APIs unless lower-level behavior is the point
 - streaming logic uses typed `StreamPart` handling
-- tool-calling examples never put a tool executor or an approval flow into the SDK
+- tool-calling examples build the replayed assistant and tool messages by hand
 - provider work includes health checks or model discovery behavior if the backend supports them
 
 ## Additional Resources

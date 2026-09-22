@@ -1,6 +1,6 @@
 # Tool Calling
 
-Twilight AI covers the model side of tool calling: you describe tools on the `sdk.Request`, the model answers with typed `ToolCall`s, and you put the results back into the next request. The SDK does not run tools, ask for approval, connect to tool servers, or loop. Those belong to whoever drives the model — an agent runtime, a service, a script — and every one of them decides differently how a tool is found, sandboxed, approved and retried. A tool that lives behind another protocol, such as an MCP server, is described to the model the same way: turn its input schema into a `*jsonschema.Schema` and put the definition on the request; calling it is the caller's.
+Tool calling in Twilight AI: you describe tools on the `sdk.Request`, the model answers with typed `ToolCall`s, and you put the results back into the next request. A tool that lives behind another protocol, such as an MCP server, is described to the model the same way: turn its input schema into a `*jsonschema.Schema` and put the definition on the request.
 
 ## Defining a Tool
 
@@ -115,7 +115,7 @@ for step := 0; step < 8; step++ {
     if len(result.ToolCalls) == 0 {
         return handle(result.Text)
     }
-    results := runTools(ctx, result.ToolCalls) // yours: lookup, approval, sandbox, timeouts
+    results := runTools(ctx, result.ToolCalls)
     messages = append(messages, stepMessages(result, results)...)
 }
 ```

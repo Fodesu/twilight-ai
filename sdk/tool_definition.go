@@ -7,9 +7,7 @@ import (
 )
 
 // NewToolDefinition describes a tool whose arguments decode into T: the JSON
-// Schema of T becomes Parameters. The SDK stops at the definition; running the
-// call the model makes, and decoding its ToolArguments into T, is the
-// caller's.
+// Schema of T becomes Parameters.
 func NewToolDefinition[T any](name, description string) (ToolDefinition, error) {
 	if name == "" {
 		return ToolDefinition{}, fmt.Errorf("twilightai: tool definition requires a name")

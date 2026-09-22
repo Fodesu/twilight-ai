@@ -39,7 +39,7 @@ type ModelStream struct {
 
 `sdk.CollectStream(ctx, parts)` drains a channel of parts and returns the `ModelResult` in one call, for callers that do not need the parts themselves.
 
-A stream is one model call. When the model answers with tool calls, the result carries them in `ToolCalls`; running them and building the next request is the caller's loop (see [Tool Calling](tools.md)).
+A stream is one model call. When the model answers with tool calls, the result carries them in `ToolCalls` (see [Tool Calling](tools.md)).
 
 ## StreamPart Types
 
@@ -83,7 +83,7 @@ Streamed as the LLM constructs tool call arguments:
 
 ### Tool Call Parts
 
-`*StreamToolCallPart` is emitted once a call's arguments are complete. A stream is one model call, so it carries no tool execution events: running the call is the caller's, after the stream.
+`*StreamToolCallPart` is emitted once a call's arguments are complete.
 
 | Type | Fields | Description |
 |------|--------|-------------|
@@ -133,7 +133,7 @@ StartPart
 FinishPart
 ```
 
-The tool then runs on the caller's side, and the next model call is a new stream.
+The next model call is a new stream.
 
 ## Handling Reasoning Content
 
@@ -181,8 +181,7 @@ if err != nil {
     log.Fatal(err)
 }
 
-// The assembled result carries the same ToolCalls Generate would return;
-// running them, and replaying the step, is the caller's (see Tool Calling).
+// The assembled result carries the same ToolCalls Generate would return.
 for _, call := range result.ToolCalls {
     fmt.Printf("🔧 %s(%s)\n", call.ToolName, call.Input.String())
 }
