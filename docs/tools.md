@@ -1,6 +1,6 @@
 # Tool Calling
 
-Twilight AI covers the model side of tool calling: you describe tools on the `sdk.Request`, the model answers with typed `ToolCall`s, and you put the results back into the next request. The SDK does not run tools, ask for approval, or loop. Those belong to whoever drives the model — an agent runtime, a service, a script — and every one of them decides differently how a tool is found, sandboxed, approved and retried.
+Twilight AI covers the model side of tool calling: you describe tools on the `sdk.Request`, the model answers with typed `ToolCall`s, and you put the results back into the next request. The SDK does not run tools, ask for approval, connect to tool servers, or loop. Those belong to whoever drives the model — an agent runtime, a service, a script — and every one of them decides differently how a tool is found, sandboxed, approved and retried. A tool that lives behind another protocol, such as an MCP server, is described to the model the same way: turn its input schema into a `*jsonschema.Schema` and put the definition on the request; calling it is the caller's.
 
 ## Defining a Tool
 
@@ -134,54 +134,6 @@ sdk.ToolChoice{Mode: sdk.ToolChoiceTool, Tool: "get_weather"}  // this tool
 ## Streaming with Tools
 
 `Model.Stream` reports a call as a `*StreamToolCallPart` once its arguments are complete, after the `ToolInputStart` / `ToolInputDelta` / `ToolInputEnd` parts that carried the argument text. The assembled `ModelResult` from `stream.Result()` carries the same `ToolCalls` as `Generate` would. See [Streaming](streaming.md).
-
-## Using MCP Tools
-
-An MCP server's tools become `ToolDefinition`s through `MCPClient.Tools`, and `MCPClient.CallTool` runs a call the model makes on the server:
-
-```go
-mcpClient, err := sdk.CreateMCPClient(ctx, &sdk.MCPClientConfig{
-    Type: sdk.MCPTransportHTTP,
-    URL:  "https://example.com/mcp",
-    Headers: map[string]string{"Authorization": "Bearer <token>"},
-})
-if err != nil {
-    log.Fatal(err)
-}
-defer mcpClient.Close()
-
-tools, err := mcpClient.Tools(ctx)
-if err != nil {
-    log.Fatal(err)
-}
-
-result, err := model.Generate(ctx, sdk.Request{Messages: messages, Tools: tools})
-if err != nil {
-    log.Fatal(err)
-}
-for _, call := range result.ToolCalls {
-    out, err := mcpClient.CallTool(ctx, call.ToolName, call.Input)
-    // out is the server's text content; err carries a tool-side error or
-    // ErrInvalidToolArguments when the model's arguments were not a JSON document.
-}
-```
-
-### Transports
-
-- `MCPTransportHTTP` (default): streamable HTTP, the official MCP Go SDK's client transport.
-- `MCPTransportSSE`: the legacy SSE transport.
-- Any other transport, including stdio: build it with `github.com/modelcontextprotocol/go-sdk/mcp` and pass it as `Transport`:
-
-```go
-transport := &mcp.CommandTransport{Command: exec.Command("my-mcp-server")}
-mcpClient, err := sdk.CreateMCPClient(ctx, &sdk.MCPClientConfig{Transport: transport})
-```
-
-`Headers` and `HTTPClient` apply to the built-in HTTP transports; `Name` and `Version` identify this client to the server.
-
-### What gets converted
-
-MCP `InputSchema` becomes `*jsonschema.Schema`; `CallTool` sends the decoded arguments as `tools/call` and returns the concatenated text content. Deciding which MCP tools to expose, and whether a call needs approval, is the caller's.
 
 ## Next Steps
 

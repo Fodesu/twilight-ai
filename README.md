@@ -11,7 +11,6 @@ A lightweight, idiomatic AI SDK for Go — inspired by [Vercel AI SDK](https://s
 - **Provider-agnostic** — swap between OpenAI, Anthropic, Google, GitHub Copilot, Edge TTS, or any OpenAI-compatible endpoint
 - **Model discovery** — `ListModels` fetches available models, `Test` checks provider connectivity and model support
 - **Tool calling** — describe tools with `ToolDefinition` (or infer the schema from a Go struct with `NewToolDefinition[T]`); the model's calls come back typed as `ToolArguments`, and running them is yours
-- **MCP support** — connect to MCP servers, list their tools as `sdk.ToolDefinition`s and run calls with `CallTool`
 - **Streaming** — first-class channel-based streaming with fine-grained `StreamPart` types
 - **Rich message types** — text, images, files, reasoning content, tool calls/results
 - **Embeddings** — generate embeddings with `Embed` / `EmbedMany`, supports OpenAI and Google providers
@@ -226,80 +225,6 @@ for {
 
 Each iteration is one model call. The loop, tool execution, approval, step limits and persistence are the caller's; the SDK stops at the definitions and the typed calls. See [Tool Calling](docs/tools.md).
 
-### MCP Tool Calling
-
-You can also load tools from an MCP server and use them like normal Twilight AI tools:
-
-```go
-import (
-    "context"
-    "log"
-    "os/exec"
-
-    "github.com/felinics/twilight/provider/openai/completions"
-    "github.com/felinics/twilight/sdk"
-    "github.com/modelcontextprotocol/go-sdk/mcp"
-)
-
-// HTTP / streamable MCP
-mcpClient, err := sdk.CreateMCPClient(context.Background(), &sdk.MCPClientConfig{
-    Type: sdk.MCPTransportHTTP, // default; may be omitted
-    URL:  "https://example.com/mcp",
-    Headers: map[string]string{
-        "Authorization": "Bearer <token>",
-    },
-})
-if err != nil {
-    log.Fatal(err)
-}
-defer mcpClient.Close()
-
-tools, err := mcpClient.Tools(context.Background())
-if err != nil {
-    log.Fatal(err)
-}
-
-provider := completions.New(completions.WithAPIKey("sk-..."))
-model := provider.ChatModel("gpt-4o-mini")
-
-// Tools returns ToolDefinitions for the Request; CallTool runs a call the
-// model makes on the remote server.
-result, err := model.Generate(context.Background(), sdk.Request{
-    Messages: []sdk.Message{
-        sdk.UserMessage("Use the available MCP tools to answer this request."),
-    },
-    Tools: tools,
-})
-if err != nil {
-    log.Fatal(err)
-}
-for _, call := range result.ToolCalls {
-    out, err := mcpClient.CallTool(context.Background(), call.ToolName, call.Input)
-    if err != nil {
-        log.Fatal(err)
-    }
-    log.Println(call.ToolName, out.String())
-}
-```
-
-For stdio, create the MCP transport yourself with the official MCP Go SDK and pass it in:
-
-```go
-transport := &mcp.CommandTransport{
-    Command: exec.Command("my-mcp-server"),
-}
-
-mcpClient, err := sdk.CreateMCPClient(context.Background(), &sdk.MCPClientConfig{
-    Transport: transport,
-})
-```
-
-Twilight AI converts `mcp.Tool` definitions into `sdk.ToolDefinition` automatically:
-
-- `InputSchema` is converted into `*jsonschema.Schema`
-- `CallTool` sends `tools/call` and returns the server's text content as a `sdk.ToolOutput`
-- MCP text content is returned as the tool output passed back into the model
-
 ### Image Generation
 
 Generate images from text prompts using OpenAI's image models:
@@ -466,7 +391,7 @@ if testResult.Supported {
 | [Images](docs/images.md) | Generate and edit images with OpenAI and Alibaba Cloud DashScope image models |
 | [Embeddings](docs/embeddings.md) | Generate vector embeddings with OpenAI and Google |
 | [Speech](docs/speech.md) | Speech synthesis with Edge TTS and custom providers |
-| [Tool Calling](docs/tools.md) | Tool definitions, typed arguments and outputs, replaying a step, MCP tools |
+| [Tool Calling](docs/tools.md) | Tool definitions, typed arguments and outputs, replaying a step |
 | [Streaming](docs/streaming.md) | `Model.Stream`, the `ModelStream` and its StreamPart types |
 | [API Reference](docs/api-reference.md) | Complete type and function reference |
 

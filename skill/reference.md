@@ -356,43 +356,6 @@ Notes:
 - Unsupported developer messages fall back to user messages. Unsupported
   mid-conversation system messages fall back to XML-escaped `<system>` user messages.
 
-### MCP
-
-```go
-type MCPTransportType string
-
-const (
-    MCPTransportHTTP MCPTransportType = "http"
-    MCPTransportSSE  MCPTransportType = "sse"
-)
-
-type MCPClientConfig struct {
-    Type       MCPTransportType
-    URL        string
-    Headers    map[string]string
-    Transport  mcp.Transport
-    HTTPClient *http.Client
-    Name       string
-    Version    string
-}
-
-type MCPClient struct { /* unexported fields */ }
-
-func CreateMCPClient(ctx context.Context, config *MCPClientConfig) (*MCPClient, error)
-func (c *MCPClient) Tools(ctx context.Context) ([]ToolDefinition, error)
-func (c *MCPClient) CallTool(ctx context.Context, name string, args ToolArguments) (ToolOutput, error)
-func (c *MCPClient) Close() error
-```
-
-Usage notes:
-
-- `MCPTransportHTTP` is the default built-in transport and uses the official MCP Go SDK's streamable HTTP client transport.
-- `MCPTransportSSE` uses the official MCP Go SDK's SSE client transport.
-- For stdio or other custom transports, create the transport with `github.com/modelcontextprotocol/go-sdk/mcp` and pass it through `Transport`.
-- `Tools(ctx)` lists remote MCP tools as `sdk.ToolDefinition` values for `Request.Tools`; `CallTool` runs one.
-- MCP tool schemas are converted from MCP `InputSchema` into `*jsonschema.Schema`.
-- `CallTool` sends `tools/call` and returns the concatenated text content as a `ToolOutput`; arguments that are not a JSON document are refused with `ErrInvalidToolArguments`.
-
 ### Streaming
 
 ```go

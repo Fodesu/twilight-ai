@@ -23,7 +23,6 @@ Twilight AI is a lightweight Go AI SDK with a provider-agnostic core API.
 - Image generation: `sdk.GenerateImage`, `sdk.EditImage`
 - Embeddings: `sdk.Embed`, `sdk.EmbedMany`
 - Tool calling: `sdk.ToolDefinition` (or `sdk.NewToolDefinition[T]`), typed `sdk.ToolCall` / `sdk.ToolArguments` / `sdk.ToolOutput`; running calls and looping are the caller's
-- MCP tool integration: `sdk.CreateMCPClient`, `sdk.MCPClient`, `sdk.MCPClientConfig`
 - Streaming: typed `StreamPart` events over Go channels
 - Current providers:
   - `provider/openai/completions`
@@ -44,7 +43,6 @@ Prefer the high-level SDK API first, then drop to provider details only when nee
 - `sdk.ImageGenerationModel` binds an image generation model to an `sdk.ImageGenerationProvider`
 - `sdk.ImageEditModel` binds an image edit model to an `sdk.ImageEditProvider`
 - The SDK has no loop and no tool executor: a runtime drives `Model.Generate` or `Model.Stream` with an `sdk.Request`, runs the returned `ToolCalls` itself, and appends the assistant and tool messages of the step to the next request
-- MCP clients list remote tools as `sdk.ToolDefinition`s and run a call with `CallTool`
 - Providers handle backend-specific HTTP, request mapping, response parsing, and SSE translation
 
 ## Core API Guidance
@@ -129,25 +127,6 @@ Use these defaults unless the task requires something else:
 - approval, sandboxing, timeouts and retries are the caller's; the SDK defines none of them
 
 When streaming with tools, the stream emits tool input construction parts and one `StreamToolCallPart` per completed call; there are no execution events.
-
-### MCP Tool Calling
-
-Use MCP when the task needs remote tools exposed by an MCP server rather than tools the caller implements itself.
-
-Default guidance:
-
-- use `sdk.CreateMCPClient(ctx, &sdk.MCPClientConfig{...})`
-- use `sdk.MCPTransportHTTP` for streamable HTTP MCP servers
-- use `sdk.MCPTransportSSE` only when the server exposes legacy SSE transport
-- for stdio, build the transport with the official MCP Go SDK and pass `Transport: ...`
-- call `mcpClient.Tools(ctx)` for the `Request.Tools` definitions and `mcpClient.CallTool(ctx, name, args)` to run a call the model makes
-- call `defer mcpClient.Close()` after successful creation
-
-Important behavior:
-
-- MCP tools are ordinary `sdk.ToolDefinition` values from the caller's perspective
-- Twilight AI converts MCP `InputSchema` into `*jsonschema.Schema`
-- `CallTool` sends `tools/call` and returns the server's text content as a `sdk.ToolOutput`; invalid arguments are refused before anything is sent
 
 ### Streaming
 
@@ -237,7 +216,6 @@ Before finishing work in this repo, verify:
 - public examples use top-level `sdk` APIs unless lower-level behavior is the point
 - streaming logic uses typed `StreamPart` handling
 - tool-calling examples never put a tool executor or an approval flow into the SDK
-- MCP examples show transport setup, `Tools` and `CallTool`
 - provider work includes health checks or model discovery behavior if the backend supports them
 
 ## Additional Resources
