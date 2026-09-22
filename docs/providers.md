@@ -618,7 +618,7 @@ msgs := []sdk.Message{
     sdk.UserMessage("..."),
 }
 
-tools := []sdk.Tool{
+tools := []sdk.ToolDefinition{
     {Name: "search", Parameters: searchSchema},
     // Breakpoint on the last tool caches all tool definitions above it.
     {Name: "calc", Parameters: calcSchema, CacheControl: &sdk.CacheControl{Type: "ephemeral"}},

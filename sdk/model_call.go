@@ -6,8 +6,8 @@ import (
 )
 
 // Generate performs exactly one provider model call: the Request is the
-// complete input, the ModelResult the complete output. Tool execution and
-// approval live outside this call (ExecuteTools, BuildStepMessages).
+// complete input, the ModelResult the complete output. Running the tool
+// calls it returns, and building the next Request, are the caller's.
 //
 //nolint:gocritic // hugeParam: public single-call API keeps Request as a value DTO for compatibility and copy semantics.
 func (m *Model) Generate(ctx context.Context, req Request) (ModelResult, error) {

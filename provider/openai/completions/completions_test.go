@@ -1791,7 +1791,7 @@ func TestGenerate_MiniMaxReasoningDetailsPreserved(t *testing.T) {
 	// details must come back on the assistant message of the second request.
 	history := make([]sdk.Message, 0, 4)
 	history = append(history, sdk.UserMessage("hi"))
-	history = append(history, sdk.BuildStepMessages(result.Text, result.TextProviderMetadata, result.ReasoningParts, result.ToolCalls, nil, &result.Usage)...)
+	history = append(history, assistantStep(&result))
 	history = append(history, sdk.UserMessage("continue"))
 	if _, err := model.Generate(context.Background(), sdk.Request{Messages: history}); err != nil {
 		t.Fatalf("second Generate: %v", err)

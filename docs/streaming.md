@@ -83,16 +83,11 @@ Streamed as the LLM constructs tool call arguments:
 
 ### Tool Call Parts
 
-`*StreamToolCallPart` is emitted by the model stream once a call's arguments are complete. The others are emitted by `sdk.ExecuteTools` through its `OnPart` callback while the caller runs the calls:
+`*StreamToolCallPart` is emitted once a call's arguments are complete. A stream is one model call, so it carries no tool execution events: running the call is the caller's, after the stream.
 
 | Type | Fields | Description |
 |------|--------|-------------|
-| `*StreamToolCallPart` | `ToolCallID`, `ToolName`, `Input ToolArguments` | Complete tool call; `Input.Valid()` is false when the model's arguments were not a JSON document |
-| `*StreamToolResultPart` | `ToolCallID`, `ToolName`, `Input`, `Output ToolOutput` | Tool execution result |
-| `*StreamToolErrorPart` | `ToolCallID`, `ToolName`, `Error` | Tool execution failed |
-| `*ToolOutputDeniedPart` | `ToolCallID`, `ToolName` | Tool call denied by the approval handler |
-| `*ToolApprovalRequestPart` | `ApprovalID`, `ToolCallID`, `ToolName`, `Input`, `Metadata` | Approval requested or deferred |
-| `*ToolProgressPart` | `ToolCallID`, `ToolName`, `Content ToolOutput` | Progress update from tool execution |
+| `*StreamToolCallPart` | `ToolCallID`, `ToolName`, `Input ToolArguments`, `ProviderMetadata` | Complete tool call; `Input.Valid()` is false when the model's arguments were not a JSON document |
 
 ### Source & File Parts
 
@@ -188,23 +183,14 @@ if err != nil {
     log.Fatal(err)
 }
 
-// ExecuteTools reports its own events through OnPart, in the same part types.
-outcome, err := sdk.ExecuteTools(ctx, result.ToolCalls, sdk.ToolExecOptions{
-    Tools: tools,
-    OnPart: func(part sdk.StreamPart) {
-        switch p := part.(type) {
-        case *sdk.StreamToolResultPart:
-            fmt.Printf("✅ %s returned: %s\n", p.ToolName, p.Output.String())
-        case *sdk.StreamToolErrorPart:
-            fmt.Printf("❌ %s error: %v\n", p.ToolName, p.Error)
-        case *sdk.ToolProgressPart:
-            fmt.Printf("⏳ %s: %s\n", p.ToolName, p.Content.String())
-        }
-    },
-})
+// The assembled result carries the same ToolCalls Generate would return;
+// running them, and replaying the step, is the caller's (see Tool Calling).
+for _, call := range result.ToolCalls {
+    fmt.Printf("🔧 %s(%s)\n", call.ToolName, call.Input.String())
+}
 ```
 
 ## Next Steps
 
-- [Tool Calling](tools.md) — tool definitions, ExecuteTools and BuildStepMessages
+- [Tool Calling](tools.md) — tool definitions, typed arguments and replaying a step
 - [API Reference](api-reference.md) — complete type and function reference

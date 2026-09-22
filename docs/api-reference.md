@@ -283,15 +283,6 @@ func CollectStream(ctx context.Context, parts <-chan StreamPart) (ModelResult, e
 
 One assembler turns parts into the `ModelResult`, so the streamed and the non-streamed path agree about a response.
 
-#### Step assembly
-
-```go
-func BuildStepMessages(text string, textMeta ProviderMetadata, reasoningParts []ReasoningPart,
-    toolCalls []ToolCall, toolResults []ToolResultPart, usage *Usage) []Message
-```
-
-Builds the messages one step produced: an assistant message carrying the reasoning parts, the text and the tool calls (with `usage` attached), followed by a tool message when `results` is not empty. Appending them to the request's `Messages` is how a caller continues a conversation after running tool calls.
-
 #### ToolArguments, ToolOutput, ProviderMetadata
 
 ```go
@@ -340,62 +331,19 @@ Every value a model or a provider produces has a closed type here: arguments and
 | `FinishReasonOther` | `"other"` | Provider-specific reason |
 | `FinishReasonUnknown` | `"unknown"` | Unknown reason |
 
-#### ResponseFormat
-
-```go
-type ResponseFormat struct {
-    Type       ResponseFormatType
-    JSONSchema any                 // required when Type is json_schema
-}
-
-type ResponseFormatType string
-const (
-    ResponseFormatText       ResponseFormatType = "text"
-    ResponseFormatJSONObject ResponseFormatType = "json_object"
-    ResponseFormatJSONSchema ResponseFormatType = "json_schema"
-)
-```
-
----
-
-### Tools
-
-```go
-type Tool struct {
-    Name            string
-    Description     string
-    Parameters      *jsonschema.Schema
-    Execute         ToolExecuteFunc
-    RequireApproval bool
-    CacheControl    *CacheControl    // optional, Anthropic only — caches tool definitions
-}
-
-type ToolExecuteFunc func(ctx *ToolExecContext, input ToolArguments) (ToolOutput, error)
-
-type ToolExecContext struct {
-    context.Context
-    ToolCallID   string
-    ToolName     string
-    SendProgress func(content ToolOutput) // nil when ExecuteTools has no OnPart
-}
-
-func NewTool[T any](name, description string, execute func(ctx *ToolExecContext, input T) (ToolOutput, error)) Tool
-```
-
 #### ToolDefinition & ToolChoice
 
-What a provider sees of a tool: the definition without the handler.
+What the model sees of a tool. The SDK stops here: running a call, approving it and retrying it are the caller's.
 
 ```go
 type ToolDefinition struct {
     Name         string
     Description  string
     Parameters   *jsonschema.Schema
-    CacheControl *CacheControl
+    CacheControl *CacheControl // optional, Anthropic only — caches tool definitions
 }
 
-func ToolDefinitionFromTool(tool Tool) (ToolDefinition, error)
-func ToolDefinitionsFromTools(tools []Tool) ([]ToolDefinition, error)
+func NewToolDefinition[T any](name, description string) (ToolDefinition, error) // Parameters inferred from T
 
 type ToolChoiceMode string
 
@@ -412,7 +360,7 @@ type ToolChoice struct {
 }
 ```
 
-#### ToolCall & ToolResult
+#### ToolCall
 
 ```go
 type ToolCall struct {
@@ -421,90 +369,9 @@ type ToolCall struct {
     Input            ToolArguments
     ProviderMetadata ProviderMetadata
 }
-
-type ToolResult struct {
-    ToolCallID string
-    ToolName   string
-    Input      ToolArguments
-    Output     ToolOutput
-}
-
-func ToolCallResults(calls []ToolCall, parts []ToolResultPart) []ToolResult
 ```
 
-#### ExecuteTools
-
-```go
-type ToolExecOptions struct {
-    Tools   []Tool
-    Approve func(context.Context, ToolCall) (ToolApprovalResult, error)
-    OnPart  func(StreamPart)
-}
-
-type ToolExecOutcome struct {
-    Results       []ToolResultPart
-    Deferred      *ToolApprovalResult
-    DeferredIndex int
-}
-
-func ExecuteTools(ctx context.Context, calls []ToolCall, opts ToolExecOptions) (ToolExecOutcome, error)
-
-type ToolApprovalDecision string
-
-const (
-    ToolApprovalDecisionApproved ToolApprovalDecision = "approved"
-    ToolApprovalDecisionRejected ToolApprovalDecision = "rejected"
-    ToolApprovalDecisionDeferred ToolApprovalDecision = "deferred"
-)
-
-type ToolApprovalResult struct {
-    Decision   ToolApprovalDecision
-    ApprovalID string
-    Reason     string
-    Metadata   map[string]string
-}
-```
-
-Runs the calls against `Tools`, in parallel when there are several. A call whose `Input` is not valid, a call naming an unknown tool, a call the approval rejected, and a call whose handler returned an error each become an error `ToolResultPart`; nothing is executed twice. A deferred approval stops the run at that call.
-
-### MCP
-
-```go
-type MCPTransportType string
-
-const (
-    MCPTransportHTTP MCPTransportType = "http"
-    MCPTransportSSE  MCPTransportType = "sse"
-)
-
-type MCPClientConfig struct {
-    Type       MCPTransportType
-    URL        string
-    Headers    map[string]string
-    Transport  mcp.Transport
-    HTTPClient *http.Client
-    Name       string
-    Version    string
-}
-
-type MCPClient struct { /* unexported fields */ }
-
-func CreateMCPClient(ctx context.Context, config *MCPClientConfig) (*MCPClient, error)
-func (c *MCPClient) Tools(ctx context.Context) ([]Tool, error)
-func (c *MCPClient) Close() error
-```
-
-Behavior notes:
-
-- `CreateMCPClient` performs the MCP handshake and returns a ready-to-use client.
-- When `Transport` is non-nil, `Type`, `URL`, and `Headers` are ignored.
-- `MCPTransportHTTP` uses the official MCP Go SDK's streamable HTTP client transport.
-- `MCPTransportSSE` uses the official MCP Go SDK's SSE client transport.
-- For stdio, callers should create an MCP transport themselves, such as `mcp.CommandTransport`, and pass it via `Transport`.
-- `Tools(ctx)` converts remote `mcp.Tool` definitions into `sdk.Tool` values.
-- Converted tools use the MCP server's `InputSchema` as `Parameters` and call `tools/call` inside `Execute`.
-
----
+A caller answers each call with a `ToolResultPart` of the same `ToolCallID` in a tool message, after an assistant message that carries the step's reasoning parts, text and `ToolCallPart`s with their `ProviderMetadata`.
 
 ### Streaming
 
@@ -542,16 +409,11 @@ type StreamPart interface {
 | `*ToolInputDeltaPart` | `ID`, `Delta` |
 | `*ToolInputEndPart` | `ID` |
 
-**Tool Execution:**
+**Tool Calls:**
 
 | Type | Key Fields |
 |------|-----------|
 | `*StreamToolCallPart` | `ToolCallID`, `ToolName`, `Input ToolArguments`, `ProviderMetadata` |
-| `*StreamToolResultPart` | `ToolCallID`, `ToolName`, `Input ToolArguments`, `Output ToolOutput` |
-| `*StreamToolErrorPart` | `ToolCallID`, `ToolName`, `Error` |
-| `*ToolOutputDeniedPart` | `ToolCallID`, `ToolName` |
-| `*ToolApprovalRequestPart` | `ApprovalID`, `ToolCallID`, `ToolName`, `Input ToolArguments`, `Metadata map[string]string` |
-| `*ToolProgressPart` | `ToolCallID`, `ToolName`, `Content ToolOutput` |
 
 **Sources & Files:**
 

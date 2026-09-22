@@ -7,11 +7,3 @@ type ToolCall struct {
 	Input            ToolArguments    `json:"input"`
 	ProviderMetadata ProviderMetadata `json:"providerMetadata,omitempty"`
 }
-
-// ToolResult pairs a tool call with what the tool returned.
-type ToolResult struct {
-	ToolCallID string        `json:"toolCallId"`
-	ToolName   string        `json:"toolName"`
-	Input      ToolArguments `json:"input"`
-	Output     ToolOutput    `json:"output"`
-}
