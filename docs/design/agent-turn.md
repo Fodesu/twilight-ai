@@ -2,7 +2,7 @@
 
 状态：v1 设计规范。本文定义 Turn 协议。Coordinator 只做协议提交与状态读取（Start / Deliver / Retry / Stop / Settle / Status），驱动属宿主；写入经 `writer.Writer`、以 `Seq` 定位、恢复走接管处置。Run 事实与 Turn、Chatlog 事件同在一条 Session Commit Ledger。
 
-本文定义 `agent/turn`：回合生命周期、Run attempt 的创建与结算。attempt 的终态由 Run 自己的 `run_ended` 事实投影得到，本模块不写它的第二份表达：事实按发生的域只写一次，投影可以跨流折叠；判定一个事件是否该存在的标准是它是否记录了本域的独立决定（Retry、Stop、Settle、Superseded 是；`run_ended` 的确定性镜像不是），而不是某个投影希望只读哪条流。"必须""应该"为协议约束。Run Machine 与 Runtime 的 authority 是 [agent-run.md](agent-run.md)；对话内容的 authority 是 [agent-session-chatlog.md](agent-session-chatlog.md)；ledger、commit 与 projection 机制的 authority 是 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md)。
+本文定义 `agentcore/turn`：回合生命周期、Run attempt 的创建与结算。attempt 的终态由 Run 自己的 `run_ended` 事实投影得到，本模块不写它的第二份表达：事实按发生的域只写一次，投影可以跨流折叠；判定一个事件是否该存在的标准是它是否记录了本域的独立决定（Retry、Stop、Settle、Superseded 是；`run_ended` 的确定性镜像不是），而不是某个投影希望只读哪条流。"必须""应该"为协议约束。Run Machine 与 Runtime 的 authority 是 [agent-run.md](agent-run.md)；对话内容的 authority 是 [agent-session-chatlog.md](agent-session-chatlog.md)；ledger、commit 与 projection 机制的 authority 是 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md)。
 
 ## 1. 模型与范围
 
@@ -22,7 +22,7 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 
 ### 1.1 attempt 模块
 
-**ATT-1（绑定事实）** first-party 模块 `agent/session/attempt`（Source `twilight`，ModuleID `attempt`）拥有流 domain `attempt`（`IDField` 为 `turnId`，`LineageSession`，每个 Turn 一条流）与唯一事实 `twilight/attempt/started{turnId, runId, attempt}`：Turn 的第 N 次 attempt 由该 Run 执行。`attempt` 从 1 起连续；同一 Run 只能绑定一次。投影 `twilight/attempt/index`（authoritative）按 Run 与按 Turn 索引全部绑定，对重复绑定的 Run 与不连续的 ordinal 在 fold 阶段拒绝。attempt 是否终结、如何终结不是本模块的事实，它是该 Run 的 `run_ended`。本模块不 `Requires` 任何模块，run 模块也不知道它的存在。
+**ATT-1（绑定事实）** first-party 模块 `agentcore/session/attempt`（Source `twilight`，ModuleID `attempt`）拥有流 domain `attempt`（`IDField` 为 `turnId`，`LineageSession`，每个 Turn 一条流）与唯一事实 `twilight/attempt/started{turnId, runId, attempt}`：Turn 的第 N 次 attempt 由该 Run 执行。`attempt` 从 1 起连续；同一 Run 只能绑定一次。投影 `twilight/attempt/index`（authoritative）按 Run 与按 Turn 索引全部绑定，对重复绑定的 Run 与不连续的 ordinal 在 fold 阶段拒绝。attempt 是否终结、如何终结不是本模块的事实，它是该 Run 的 `run_ended`。本模块不 `Requires` 任何模块，run 模块也不知道它的存在。
 
 **ATT-2（写入点）** 绑定只在为 Turn 创建 Run 的 unit 里写入：Turn 的 `Start` 与 `Retry` 把 `attempt.Started(turnID, runID, n, now)` 作为一个 batch 放进同一 `unit.Work`，与 `twilight/turn/started`（首次）、chatlog 的 `input_delivered` 与 run 模块的 `run_created`/`input_accepted` 同 commit 可见（TRN-STR-2、TRN-RTY-1）。除 Coordinator 之外没有写入方。
 
@@ -42,7 +42,7 @@ Run    完成一个 Turn 的一次 attempt。同一 Turn 至多一个非终态 R
 
 **TRN-SCP-3** Coordinator 没有隐藏状态。它从 `twilight/turn/surface` 投影与 `twilight/run/machine` 投影重建。
 
-**TRN-SCP-4** 每个 Turn 命令是一个 unit of work（`agent/session/unit`）：Turn 自己的 Part、chatlog 的 `DeliverInputs` Part 与 Run 模块的 `CreateRun` / `Command` Part 在同一 View 上准备，经同一个 Writer 一次落盘（EXT-SCP-1）。Coordinator 不编码任何其他模块的事件。命令以调用方持有的 Writer 为参数（所有权能力，OWN-HDL-2）；Status 经 `extension.ProjectionReader` 与 `SessionRunStore.Record` 按 SessionID 读取，不取得 Writer。Artifact 由其 owner 管理。
+**TRN-SCP-4** 每个 Turn 命令是一个 unit of work（`agentcore/session/unit`）：Turn 自己的 Part、chatlog 的 `DeliverInputs` Part 与 Run 模块的 `CreateRun` / `Command` Part 在同一 View 上准备，经同一个 Writer 一次落盘（EXT-SCP-1）。Coordinator 不编码任何其他模块的事件。命令以调用方持有的 Writer 为参数（所有权能力，OWN-HDL-2）；Status 经 `extension.ProjectionReader` 与 `SessionRunStore.Record` 按 SessionID 读取，不取得 Writer。Artifact 由其 owner 管理。
 
 **TRN-SCP-5** Application 管理 model、provider、tool、prompt、token、approval、queue、retry 决策与并发。宿主按 persisted preset 解析 driver 并驱动（DRV-1）。PromptBuilder 按 AgentPreset 的 `Prompt` ref 解析（DEC-CAT-2），每次 Build 使用 AgentPreset 的 `ModelRef`；Scheduling 与 MalformedRetries 是 AgentPreset 上的数据，Loop 直接读取。
 
@@ -220,7 +220,7 @@ const (
 
 **TRN-API-2** Run 的写入只经 Run 模块自己的 Part（`runmod.Command`、`runmod.CreateRun`）与 Loop 手里的 `runtime.RunStore`。driver 的组装与解析在宿主（PST-2）。
 
-**TRN-API-3** DTO 为值语义。`Waiting` 为对 `twilight/run/machine` 投影状态求 `plan.WaitingCalls` 的结果。`plan.NeedsRecovery` 为 true 时返回 `ResumeWaitingForRecovery`，表示仍有待结算的 Executing 目标；宿主按 RUN-CMT-7 重连或接管处置。`ResumeWaitingForRecovery` 是 Turn API 的观察 disposition，不等同于 Executor 的 `AttachmentState`；其中 `AttachmentState=orphaned` 经 `agent/run/reconcile` 映射为 `Verdict=defer`，在显式 reconcile/takeover 前保持该 disposition。可重连与 deferred 目标在处置后仍可保持 `ResumeWaitingForRecovery`，直到实际结算。
+**TRN-API-3** DTO 为值语义。`Waiting` 为对 `twilight/run/machine` 投影状态求 `plan.WaitingCalls` 的结果。`plan.NeedsRecovery` 为 true 时返回 `ResumeWaitingForRecovery`，表示仍有待结算的 Executing 目标；宿主按 RUN-CMT-7 重连或接管处置。`ResumeWaitingForRecovery` 是 Turn API 的观察 disposition，不等同于 Executor 的 `AttachmentState`；其中 `AttachmentState=orphaned` 经 `agentcore/run/reconcile` 映射为 `Verdict=defer`，在显式 reconcile/takeover 前保持该 disposition。可重连与 deferred 目标在处置后仍可保持 `ResumeWaitingForRecovery`，直到实际结算。
 
 **TRN-API-4** `twilight/turn/superseded` 由 Application 追加。Coordinator 的方法不写该事件。superseded 的 Turn 若仍有非终态 Run，Application 必须先 Stop。
 
@@ -346,7 +346,7 @@ Run 事实只保存执行状态与内容 digest（RUN-WIR-4）。模型文本、
 
 ## 8. conformance
 
-套件以 `session.Store` 为参数（`agent/turn/turntest`），Memory 与每个 durable adapter 跑同一组断言。Coordinator 只做提交与读取，因此套件不含 Loop、driver、模型或工具桩：Run 的推进由 `SessionRunStore.Bind(w)` 的 command 提交完成，Application 的 `CancelRun` 制造 `attempt_failed`，`SubmitModelResult` 制造 completed 与 approval 等待。
+套件以 `session.Store` 为参数（`agentcore/turn/turntest`），Memory 与每个 durable adapter 跑同一组断言。Coordinator 只做提交与读取，因此套件不含 Loop、driver、模型或工具桩：Run 的推进由 `SessionRunStore.Bind(w)` 的 command 提交完成，Application 的 `CancelRun` 制造 `attempt_failed`，`SubmitModelResult` 制造 completed 与 approval 等待。
 
 - **TRN-STR-1 至 TRN-STR-4、TRN-ID-2/3/4、TRN-EVT-2**：缺 preset、重复 InputID、未 submitted 的输入、Digest 与已提交 Content 的 digest 不符各自被拒且不写入；Start 的 group 为 `started`、每输入一条 `input_delivered`、`run_created{Owner:TurnID, Attempt:1}`、每输入一条 `input_accepted`，CommitID 为 StartOperationDigest，RunID 为 `twilight/turn/run` 派生值；响应为 `active`、attempt 1、无 disposition；不同时间戳的重放为 already-applied 且不写入；同 TurnID 的另一 plan 与第二个活跃 Turn 为 conflict，被拒输入保持 `submitted`。
 - **TRN-DLV-1、TRN-DLV-2**：一个批次的全部 `input_accepted` 与 `input_delivered` 在以批次 CommandID 为 CommitID 的同一 commit；Run 的 `PendingInputs` 与 surface 的 `InputIDs` 追加全部输入；同一批次重放不写入；不存在或非 `active` 的 Turn 为 conflict 且输入保持 `submitted`；未提交的输入或内容不一致的输入使整批 conflict，批内其他输入也不写入、Run 的 `PendingInputs` 不变。

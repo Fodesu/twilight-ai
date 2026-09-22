@@ -2,12 +2,12 @@
 
 状态：v1 设计规范。本文定义 Session Module Framework。写入串行与幂等重放由进程内的 `Writer` 承担，kernel 只提供追加日志（[agent-session.md](agent-session.md)）。
 
-本文定义建立在 `agent/session` 与 `agent/artifact` 之上的 Session Module Framework。实现分两个包：`agent/session/extension` 承载声明的词汇、`Registry` 与投影引擎，`agent/session/writer` 承载写入路径；文中的"必须""不得""应该"是协议约束；JSON canonicalization 与 digest 遵循 `agent/jsonstable`、`agent/es`。
+本文定义建立在 `agentcore/session` 与 `agentcore/artifact` 之上的 Session Module Framework。实现分两个包：`agentcore/session/extension` 承载声明的词汇、`Registry` 与投影引擎，`agentcore/session/writer` 承载写入路径；文中的"必须""不得""应该"是协议约束；JSON canonicalization 与 digest 遵循 `agentcore/jsonstable`、`agentcore/es`。
 
 ## 1. 范围与依赖
 
 ```text
-agent/artifact  ←  Session Module Framework  →  agent/session
+agentcore/artifact  ←  Session Module Framework  →  agentcore/session
                                       ↑
                           first-party modules: chatlog、turn、run
 ```
@@ -18,7 +18,7 @@ Framework 负责：typed event codec 与按事件类型的 payload 版本；Bind
 
 **EXT-SCP-2** 模块集合由组装代码在启动时传入 `BuildRegistry`，运行期不变；本层不 import 任何模块包。first-party 恰为四个 module（`chatlog`、`run`、`attempt`、`turn`）；application module 与它们同构、经装配开口注册，见第 8 节。
 
-**EXT-SCP-4** 本层的两个包平级：`agent/session/writer` 依赖 `agent/session/extension`，反向不得。依赖由 import 表达，不由目录嵌套表达——一个 import `extension` 的包是它的兄弟而不是子包，first-party module（`agent/session/chatlog`、`agent/session/run`）与 adapter（`agent/session/filestore`）同理。声明（event、module、projection）与 `Registry` 同居前者所依赖的那一层，是因为 `ModuleDescriptor` 声明 `ProjectionDefinition`、而 `ProjectionDefinition.Apply` 消费带模块身份的 `DecodedEvent`——两者互相引用，只有同包才不成环。
+**EXT-SCP-4** 本层的两个包平级：`agentcore/session/writer` 依赖 `agentcore/session/extension`，反向不得。依赖由 import 表达，不由目录嵌套表达——一个 import `extension` 的包是它的兄弟而不是子包，first-party module（`agentcore/session/chatlog`、`agentcore/session/run`）与 adapter（`agentcore/session/filestore`）同理。声明（event、module、projection）与 `Registry` 同居前者所依赖的那一层，是因为 `ModuleDescriptor` 声明 `ProjectionDefinition`、而 `ProjectionDefinition.Apply` 消费带模块身份的 `DecodedEvent`——两者互相引用，只有同包才不成环。
 
 **EXT-SCP-3** 模块间依赖单向、固定，以 `Requires` 声明并由 Registry 校验（EXT-REG-4）。v1 四个模块的声明：
 

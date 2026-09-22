@@ -3,6 +3,24 @@
 这些文档共同描述 Twilight Agent Core 的 v1 架构。它们不是产品 API 文档，也不把
 某个具体部署（CLI、HTTP、数据库或 provider）提升为 Core 协议。
 
+## 目录边界
+
+仓库把 kernel 与建立在它之上的第一个具体 agent 分开放：
+
+```text
+agentcore/     Agent Core：session、artifact、run、turn、decision（目录与 seam）、
+               executor、owner、driver、preset、observe、store、environment、workspace
+agent/         参考 agent：app（组装、Send/Submit/Drain、后台驱动）、prompt（context-v1
+               PromptBuilder 与默认目录）、spawn（子代理 Responder 与工具）、
+               context/compaction（checkpoint 策略与 compactor prompt）
+```
+
+Core 不携带任何默认的上下文策略、默认工具或默认组装：`owner.New` 要求调用方传入
+PromptBuilder 目录；子代理只以 `Waiting(ExternalResponse)` 加 `Driver.Responders` 的
+扩展点存在；checkpoint 只有机制与命令（chatlog），何时 compact、保留多少、用什么
+prompt 属于 `agent/`。Memoh 这类 cloud agent 与参考 agent 并列建立在 `agentcore/`
+上，不覆盖参考 agent 的任何决定。
+
 ## 权威边界
 
 ```text
@@ -12,26 +30,26 @@ agent-artifact.md             Artifact binding、content reference、retention c
 agent-session-chatlog.md      对话内容与 context projection
 agent-run.md                  Run machine、Runtime、Loop、Executor contract
 agent-turn.md                 Turn、attempt、input routing、结算投影
-agent-decision.md             PromptBuilder 与决策组件目录
-agent-runtime.md              Owner 组装与 Session 所有权、driver、spawn、app 策略
+agent-decision.md             PromptBuilder seam、决策组件目录与参考实现
+agent-runtime.md              Owner 组装与 Session 所有权、driver；参考 agent 的 spawn 与 app 策略
 agent-workspace.md            可选 Workspace/Runtime/TargetRef domain
 ```
 
 依赖方向是：
 
 ```text
-agent/session (kernel)       agent/artifact (independent core)
+agentcore/session (kernel)       agentcore/artifact (independent core)
           \                  /
-           agent/session/extension（含 writer）
+           agentcore/session/extension（含 writer）
                ↓
    chatlog / session-run / attempt / turn
                ↓
              decision / owner（Owner 组合 turn / run）
                     ↓
-       application / transport / provider adapter
+   agent/（参考 agent：app、prompt、spawn、compaction）/ transport / provider adapter
 ```
 
-`agent/run` 与 `agent/turn` 的协议核心保持独立；它们的 Session adapter 才依赖
+`agentcore/run` 与 `agentcore/turn` 的协议核心保持独立；它们的 Session adapter 才依赖
 Module Framework。Workspace 同样是可选 application domain，不是 Core 的依赖。
 
 Workspace 是可选的 application domain。Agent Core 只携带 opaque `TargetRef`，不
@@ -41,7 +59,7 @@ Workspace 是可选的 application domain。Agent Core 只携带 opaque `TargetR
 
 - `RunStatus`、`TurnStatus`、`ExecutionStatus`、`AttachmentState` 属于不同状态域，
   不互换枚举。
-- `AttachmentState=orphaned` 是 Executor 的观察结果；它在 `agent/run/reconcile`
+- `AttachmentState=orphaned` 是 Executor 的观察结果；它在 `agentcore/run/reconcile`
   中映射为 `Verdict=defer`，并触发一次 `RecoverExecution` 请求。
 - `recovery_required` 是应用/API view，表示恢复尚未完成，不表示执行结果为
   `Unknown`。

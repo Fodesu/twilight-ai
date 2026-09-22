@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/app"
-	"github.com/felinics/twilight/agent/run"
-	"github.com/felinics/twilight/agent/turn"
+	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/turn"
 )
 
 func TestBuildRemoteApplication(t *testing.T) {

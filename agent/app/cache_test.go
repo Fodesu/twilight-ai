@@ -6,9 +6,9 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/app"
-	"github.com/felinics/twilight/agent/jsonstable"
-	"github.com/felinics/twilight/agent/session"
-	"github.com/felinics/twilight/agent/session/extension"
+	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // countingCache wraps the in-memory cache to count writes, so a test can see

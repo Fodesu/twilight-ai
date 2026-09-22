@@ -2,7 +2,7 @@
 
 状态：v1 设计规范。本文定义 Artifact binding、content reference 与 retention claim。claim 在 `Active` 与 `Released` 两态之间迁移。
 
-本文定义 `agent/artifact`。文中的"必须""不得""应该"是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agent/jsonstable` 和 `agent/es` 的通则。
+本文定义 `agentcore/artifact`。文中的"必须""不得""应该"是协议约束；canonical JSON、JCS 与 domain-separated digest 使用 `agentcore/jsonstable` 和 `agentcore/es` 的通则。
 
 ## 1. 模型与范围
 
@@ -235,7 +235,7 @@ func (Error) Error() string
 
 实现必须以可判别 `ErrorCode` 返回预期失败；`Detail` 不得承载 provider secret。
 
-conformance suite 为 `agent/artifact/artifacttest`，以 `BindingStore`、`RetentionLedger`（经 `BindingSetBuilder` 验证 set）与按 Authority 构造 `ContentStore` 的工厂为参数；每个 adapter 以自己的工厂运行同一套断言。它必须验证：
+conformance suite 为 `agentcore/artifact/artifacttest`，以 `BindingStore`、`RetentionLedger`（经 `BindingSetBuilder` 验证 set）与按 Authority 构造 `ContentStore` 的工厂为参数；每个 adapter 以自己的工厂运行同一套断言。它必须验证：
 
 - **ART-ID-1、ART-REF-1、ART-REF-2、ART-WIR-1**：canonical round-trip、拒绝歧义 wire、identity-bound/untrusted MediaType、locator/integrity 和 durability；
 - **ART-BND-1、ART-BND-2、ART-CAP-1、ART-CAP-2**：Binding conflict 与 digest 校验、cas Key 等于 Integrity、Put 幂等与 MediaType conflict、resolver 对 size/integrity/MediaType 的校验、`missing`/`expired`/`unauthorized`/`corrupt`/`unsupported` 分类、Put 字节上限（恰为上限存入、超出一字节为 `invalid`、最大上限不溢出）、同 store 与跨 store 的 promotion（不降级、清除过期、不重写旧 Binding）；

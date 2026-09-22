@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agent/run"
+	"github.com/felinics/twilight/agentcore/run"
 )
 
 var (

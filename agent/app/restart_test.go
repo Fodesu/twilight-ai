@@ -6,13 +6,13 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
-	"github.com/felinics/twilight/agent/run"
-	"github.com/felinics/twilight/agent/run/effect"
-	"github.com/felinics/twilight/agent/run/loop"
-	"github.com/felinics/twilight/agent/session"
-	"github.com/felinics/twilight/agent/session/filestore"
-	runmod "github.com/felinics/twilight/agent/session/run"
-	"github.com/felinics/twilight/agent/turn"
+	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/filestore"
+	runmod "github.com/felinics/twilight/agentcore/session/run"
+	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
 

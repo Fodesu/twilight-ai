@@ -2,7 +2,7 @@
 
 状态：v1 设计规范。本文定义 chatlog first-party Module。
 
-本文定义 `agent/session/chatlog` first-party Module，依赖 [Session](agent-session.md)、[Session Module Framework](agent-session-extension.md) 与 [Run](agent-run.md) 的事实。回合生命周期由 [Turn](agent-turn.md) 拥有。文中的“必须”“不得”“应该”是协议约束；canonical JSON 与 digest 遵循 `agent/jsonstable`、`agent/es`。
+本文定义 `agentcore/session/chatlog` first-party Module，依赖 [Session](agent-session.md)、[Session Module Framework](agent-session-extension.md) 与 [Run](agent-run.md) 的事实。回合生命周期由 [Turn](agent-turn.md) 拥有。文中的“必须”“不得”“应该”是协议约束；canonical JSON 与 digest 遵循 `agentcore/jsonstable`、`agentcore/es`。
 
 ## 1. module 与 ontology
 
@@ -259,7 +259,7 @@ func (*Materializer) Entries(context.Context, []Entry) ([]Materialized, error)
 func (*Materializer) Entry(context.Context, *Entry) (Materialized, error)
 ```
 
-**CHT-MAT-1** materializer 是投影与表示之间的 IO 边界：它按 digest 读取冻结正文（`agent/session/run.Content` 为 first-party 实现），同一 Materializer 内每个 digest 至多读取一次；投影从不调用它。正文缺失返回 `frozen.ErrMissing`，投影与 ledger 不受影响。`Calls` 由 `Assistant.CallIDs` 与 `ModelResult.ToolCalls` 逐位配对，CallIDs 为空时按该 Run 版本的 `Schema.Identity.DeriveCallID(StepID, i)` 派生。provider capability 与发送策略由 Application 决定；PromptBuilder 组装见 [Decision](agent-decision.md)（DEC-PMT）。
+**CHT-MAT-1** materializer 是投影与表示之间的 IO 边界：它按 digest 读取冻结正文（`agentcore/session/run.Content` 为 first-party 实现），同一 Materializer 内每个 digest 至多读取一次；投影从不调用它。正文缺失返回 `frozen.ErrMissing`，投影与 ledger 不受影响。`Calls` 由 `Assistant.CallIDs` 与 `ModelResult.ToolCalls` 逐位配对，CallIDs 为空时按该 Run 版本的 `Schema.Identity.DeriveCallID(StepID, i)` 派生。provider capability 与发送策略由 Application 决定；PromptBuilder 组装见 [Decision](agent-decision.md)（DEC-PMT）。
 
 ## 9. conformance
 

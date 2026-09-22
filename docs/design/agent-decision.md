@@ -2,7 +2,7 @@
 
 状态：v1 设计规范。本文定义 Agent Core 的决策层。协议边界见 [Turn](agent-turn.md)、[Run](agent-run.md) 与 [Chatlog](agent-session-chatlog.md)。
 
-本文定义 `agent/decision`：把已提交状态与 AgentPreset 变成下一条 prompt 的组件。agent core 的三层按纯性划分——事实层（Session ledger、Writer、投影）、决策层（本文）、效果层（模型调用、工具执行）；决策层是三层里给定输入即确定的一层，它读投影、不做 IO，全部运行在 Session Owner 一侧。文中的"必须""不得""应该"是协议约束。
+本文定义 `agentcore/decision`（PromptBuilder seam：目录、`Sources`、v1 输入内容编解码）与参考 agent 的实现 `agent/prompt`（`ContextPromptBuilder` 与默认目录）：把已提交状态与 AgentPreset 变成下一条 prompt 的组件。Core 只规定 seam 与目录，不携带任何一种上下文策略。agent core 的三层按纯性划分——事实层（Session ledger、Writer、投影）、决策层（本文）、效果层（模型调用、工具执行）；决策层是三层里给定输入即确定的一层，它读投影、不做 IO，全部运行在 Session Owner 一侧。文中的"必须""不得""应该"是协议约束。
 
 ## 1. 范围与身份
 
@@ -34,7 +34,7 @@ type PromptBuilderFactory func(turn.AgentPreset, Sources) loop.PromptBuilder
 const PromptContextV1 turn.PromptBuilderRef = "twilight/decision/prompt/context-v1"
 ```
 
-`ContextPromptBuilder` 是 `PromptContextV1` 的实现：读 `twilight/chatlog/context` 投影，经 `chatlog.Materializer` 取回正文，构造 `loop.Prompt`（模型、`sdk.Request`、消费的 InputID、context 新鲜度 token、冻结的 ToolSpec）。
+`ContextPromptBuilder`（`agent/prompt`，参考 agent）是 `PromptContextV1` 的实现：读 `twilight/chatlog/context` 投影，经 `chatlog.Materializer` 取回正文，构造 `loop.Prompt`（模型、`sdk.Request`、消费的 InputID、context 新鲜度 token、冻结的 ToolSpec）。
 
 **DEC-PMT-1** PromptBuilder 在每次 Build 时经 `ProjectionSource` 读取 `twilight/chatlog/context` 投影（含已应用的 checkpoint，CHT-EVT-3），再经 `Content` 物化条目命名的冻结正文；同一次 Build 内每个 digest 至多读取一次。折叠是纯函数，读正文是 IO：正文缺失使 Build 以 `frozen.ErrMissing` 失败，投影不受影响。owner 进程从 Session Writer 读，观察者从 Store 读，两者对同一 head 给出同一状态（EXT-PRJ-4）；两者共用同一 cas ContentStore。
 
@@ -60,10 +60,12 @@ type PromptBuilders struct{ /* PromptBuilderRef → PromptBuilderFactory */ }
 func NewPromptBuilders(map[turn.PromptBuilderRef]PromptBuilderFactory) (*PromptBuilders, error)
 func (*PromptBuilders) Register(turn.PromptBuilderRef, PromptBuilderFactory) error
 func (*PromptBuilders) Resolve(turn.AgentPreset, Sources) (loop.PromptBuilder, error)
-func DefaultPromptBuilders() *PromptBuilders // 含 PromptContextV1
+
+// agent/prompt（参考 agent）
+func DefaultPromptBuilders() *decision.PromptBuilders // 含 PromptContextV1
 ```
 
-**DEC-CAT-1** 目录在装配期构建、运行期只读：空 ref、nil factory、重复 ref 被拒绝。目录是 Owner 侧的组件，不需要效果实现即可构建。
+**DEC-CAT-1** 目录在装配期构建、运行期只读：空 ref、nil factory、重复 ref 被拒绝。目录是 Owner 侧的组件，不需要效果实现即可构建。Core 不提供默认目录：`owner.Ports.Decisions` 必填，参考 agent 传 `prompt.DefaultPromptBuilders()`，其他 agent 传自己的目录。
 
 **DEC-CAT-2** `PromptBuilders.Resolve(preset, source)` 按 `preset.Prompt` 解析；未注册返回 `ErrUnknownPromptBuilder`，该 AgentPreset 不得被注册或驱动（PST-2 的 `preset_unavailable`）。接管进程以同一 AgentPreset 解析得到同一决策函数。
 

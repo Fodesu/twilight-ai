@@ -1,6 +1,6 @@
 # Twilight Agent Runtime
 
-状态：v1 设计规范。本文定义 core 之上的运行时分层：`agent/owner`（Owner：组装与 Session 所有权；角色名见 README 术语规则）、`agent/driver`（Turn 驱动与恢复）、`agent/spawn`（子代理效果）、`agent/preset`、`agent/observe` 与 `agent/app`（产品策略）。协议细节分别见 [Run](agent-run.md)、[Turn](agent-turn.md)、[Decision](agent-decision.md)、[Chatlog](agent-session-chatlog.md) 与 [Session](agent-session.md)。
+状态：v1 设计规范。本文定义 core 之上的运行时分层：`agentcore/owner`（Owner：组装与 Session 所有权；角色名见 README 术语规则）、`agentcore/driver`（Turn 驱动与恢复）、`agentcore/preset`、`agentcore/observe` 属于 Core；`agent/app`（组装与对话策略）、`agent/spawn`（子代理 Responder）、`agent/prompt` 与 `agent/context/compaction` 属于参考 agent，是建立在 Core 上的第一个具体 agent，不是 Core 协议（README 目录边界）。协议细节分别见 [Run](agent-run.md)、[Turn](agent-turn.md)、[Decision](agent-decision.md)、[Chatlog](agent-session-chatlog.md) 与 [Session](agent-session.md)。
 
 运行时把 core 的三层——事实层（Store、Writer、Runtime、Coordinator）、决策层（AgentPreset 与 PromptBuilder 目录）、效果层（Executor 端口）——按角色端口组合成一个 Owner 进程；应用层在其上实现对话策略。两者都是部署中立的：Store 是内存、文件还是数据库，Executor 在本进程执行效果还是转发给远端 worker，驱动阻塞还是异步，都由端口的实现决定，运行时本身不含任何模型客户端、工具实现或执行环境。
 
@@ -34,7 +34,7 @@ type Ports struct {
     Content        artifact.ContentStore       // 必填；冻结正文的 cas 存储（RUN-WIR-4），文件实现
     Artifacts      Artifacts                   // 可为零值
     Presets        preset.Registry             // nil → 内存注册表；只存决策身份
-    Decisions      *decision.PromptBuilders    // nil → decision.DefaultPromptBuilders()
+    Decisions      *decision.PromptBuilders    // 必填；Core 无默认目录，参考 agent 传 prompt.DefaultPromptBuilders()
     Executor       effect.Port                 // 必填：效果层端口（RUN-EXE-3）
     TargetResolver loop.TargetResolver         // application 的资源层按 effect 解析 opaque target（RUN-LOP-9）；nil 时每个 effect 无 target（APP-TGT-1）
     Observers      []writer.CommitObserver     // 提交观察（EXT-WRT-7）
@@ -75,7 +75,7 @@ func (h *Handle) Writer() writer.Writer
 func (h *Handle) Close(ctx) error
 ```
 
-**OWN-PRT-3（全部 port 为 durable）** Session Store、frozen 正文的 Content Store、BindingStore、RetentionLedger 与（组装 Worker 时的）Execution Record store 均为必填且均为 durable：core 不提供任何随进程消失的 store 实现，`owner.New` 与 `app.Build` 对 nil port 返回错误而不回退。一方实现为：Session ledger 与 cas 正文在文件系统（`agent/session/filestore`，JSONL 段与 cas 文件），Binding、retention claim 与 execution record 在同一个 SQLite 文件（`agent/store/sqlite`）。这样崩溃重启后事实、正文、索引、claim 与 record 同时存在，Executing 目标的接管处置只依据 record（RUN-CMT-7）。投影缓存是可丢弃的派生数据，允许内存实现；preset 注册表在 Build 时重建，同样允许内存实现。测试使用 `t.TempDir()` 下的同一组实现（`filestoretest`、`sqlitetest`）。
+**OWN-PRT-3（全部 port 为 durable）** Session Store、frozen 正文的 Content Store、BindingStore、RetentionLedger 与（组装 Worker 时的）Execution Record store 均为必填且均为 durable：core 不提供任何随进程消失的 store 实现，`owner.New` 与 `app.Build` 对 nil port 返回错误而不回退。一方实现为：Session ledger 与 cas 正文在文件系统（`agentcore/session/filestore`，JSONL 段与 cas 文件），Binding、retention claim 与 execution record 在同一个 SQLite 文件（`agentcore/store/sqlite`）。这样崩溃重启后事实、正文、索引、claim 与 record 同时存在，Executing 目标的接管处置只依据 record（RUN-CMT-7）。投影缓存是可丢弃的派生数据，允许内存实现；preset 注册表在 Build 时重建，同样允许内存实现。测试使用 `t.TempDir()` 下的同一组实现（`filestoretest`、`sqlitetest`）。
 
 **OWN-HDL-1** `Owner.Open(sid)` 发放对一个 Session 的执行能力，不是读取能力。Open 取得该 Session 的 Writer（本进程 epoch 下）、运行接管处置（DRV-3）并安装恢复监听；返回的 `Handle` 只承载这份能力与其生命周期：`ID`、`Writer`、`Close`。所有权按代（generation）记录，一代的状态为 opening / open / closing：同一 Owner 内一个 Session 同时只有一代，处于任一状态时 Open 都返回 `ErrSessionOpen`，因此一代的释放（停止恢复监听、关闭 Writer）完成之前新的一代不会取得 Writer；`Handle.Close` 只释放自己那一代——先在锁内把该代置为 closing，释放资源后再从表中删除——已释放或正在释放的 Handle 再 Close 为无操作，不会关闭替代它的一代；Close、DeleteSession、Owner.Close 与失败的 Open 都经同一条释放路径，接管处置失败时 Open 释放已取得的 Writer，失败的 Open 不留下所有权。SessionID 是持久身份；Handle 表示"本进程当前拥有它"。Handle 不带任何业务操作：Send、排空、fork、compaction、spawn 分别属于 app、domain 命令或效果层。
 
@@ -96,7 +96,7 @@ func (h *Handle) Close(ctx) error
 ## 5. AgentPreset 注册（preset）
 
 ```go
-// agent/preset
+// agentcore/preset
 type Registry interface {
     Register(turn.PresetID, turn.AgentPreset) (turn.PresetRef, error)
     Resolve(turn.PresetRef) (turn.AgentPreset, error)

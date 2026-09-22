@@ -3,15 +3,15 @@ package app
 import (
 	"context"
 
-	"github.com/felinics/twilight/agent/decision"
-	"github.com/felinics/twilight/agent/jsonstable"
-	"github.com/felinics/twilight/agent/run"
-	"github.com/felinics/twilight/agent/run/loop"
-	"github.com/felinics/twilight/agent/run/model/sdkconv"
-	"github.com/felinics/twilight/agent/session"
-	"github.com/felinics/twilight/agent/session/chatlog"
-	"github.com/felinics/twilight/agent/session/extension"
-	"github.com/felinics/twilight/agent/turn"
+	"github.com/felinics/twilight/agent/prompt"
+	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
+	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/chatlog"
+	"github.com/felinics/twilight/agentcore/session/extension"
+	"github.com/felinics/twilight/agentcore/turn"
 )
 
 // --- session lifecycle, forwarded from the Authority ---------------------------------
@@ -124,7 +124,7 @@ func NewPresetFromDefinitions(model run.ModelRef, tools []turn.PublicTool, opts 
 	if model == "" {
 		return turn.AgentPreset{}, errNoModel
 	}
-	p := turn.AgentPreset{SchemaVersion: 1, Model: model, Prompt: decision.PromptContextV1, Tools: append([]turn.PublicTool(nil), tools...)}
+	p := turn.AgentPreset{SchemaVersion: 1, Model: model, Prompt: prompt.PromptContextV1, Tools: append([]turn.PublicTool(nil), tools...)}
 	for _, opt := range opts {
 		opt(&p)
 	}

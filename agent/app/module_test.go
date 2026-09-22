@@ -6,13 +6,13 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/app"
-	"github.com/felinics/twilight/agent/run"
-	"github.com/felinics/twilight/agent/run/loop"
-	"github.com/felinics/twilight/agent/session"
-	"github.com/felinics/twilight/agent/session/chatlog"
-	"github.com/felinics/twilight/agent/session/extension"
-	"github.com/felinics/twilight/agent/session/writer"
-	"github.com/felinics/twilight/agent/turn"
+	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/chatlog"
+	"github.com/felinics/twilight/agentcore/session/extension"
+	"github.com/felinics/twilight/agentcore/session/writer"
+	"github.com/felinics/twilight/agentcore/turn"
 )
 
 // The example application module: source "example", module "audit". It records

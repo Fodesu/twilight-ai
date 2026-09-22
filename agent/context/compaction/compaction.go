@@ -1,4 +1,4 @@
-// Package compaction is the context policy of a conversation: it decides
+// Package compaction is the reference agent's context policy: it decides
 // when the context is too long (Policy), selects the pair-closed suffix a
 // checkpoint keeps (RetainLast), renders the transcript a summary replaces,
 // and asks the preset's model for that summary through an effect port
@@ -14,15 +14,15 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/felinics/twilight/agent/decision"
-	"github.com/felinics/twilight/agent/run"
-	"github.com/felinics/twilight/agent/run/effect"
-	"github.com/felinics/twilight/agent/run/frozen"
-	"github.com/felinics/twilight/agent/run/model/sdkconv"
-	"github.com/felinics/twilight/agent/run/schema"
-	"github.com/felinics/twilight/agent/session"
-	"github.com/felinics/twilight/agent/session/chatlog"
-	"github.com/felinics/twilight/agent/turn"
+	"github.com/felinics/twilight/agentcore/decision"
+	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/frozen"
+	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
+	"github.com/felinics/twilight/agentcore/run/schema"
+	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/chatlog"
+	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
 

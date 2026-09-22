@@ -4,8 +4,8 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/context/compaction"
-	"github.com/felinics/twilight/agent/session"
-	"github.com/felinics/twilight/agent/session/chatlog"
+	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/chatlog"
 )
 
 func pairEntries() []chatlog.Entry {

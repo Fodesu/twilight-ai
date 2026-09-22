@@ -162,7 +162,7 @@ BatchDigest  = Digest("twilight/session/batch", SegmentID, Stream, [{Type, Recor
 CommitDigest = Digest("twilight/session/commit", PrevDigest, SegmentID, Seq, CommitID, Epoch, [Intent], [BatchDigest, ...], [Ext])
 ```
 
-digest 依 `agent/es` 的 versioned domain separator。链条按 Commit 连接，batch digest 又把 batch 内的事件按序绑定；任何 Commit 被改写、删除或重排都使其后所有 Commit 的 digest 失效。封印（`SealCommit`）以 Handle 的 Epoch 与当前 head digest 计算，验证时重算比对。
+digest 依 `agentcore/es` 的 versioned domain separator。链条按 Commit 连接，batch digest 又把 batch 内的事件按序绑定；任何 Commit 被改写、删除或重排都使其后所有 Commit 的 digest 失效。封印（`SealCommit`）以 Handle 的 Epoch 与当前 head digest 计算，验证时重算比对。
 
 **SES-WIR-3** 同一段的 header 与它的每个 Commit 使用同一 `ProtocolVersion`；一个 Session 的 Ancestry 内各段版本可以不同（SES-ADV-1）。Store 按每段 header 派生 profile（`Ledger.Profile`，表中有已发布的 profile 与 `WithProfile` 加入的 profile；`ProfileVariant` 是 v1 规则换版本号，只供在第二个版本发布前演练），调用方不传版本。
 

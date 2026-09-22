@@ -1,4 +1,5 @@
-// Package spawn defines the subagent protocol primitives (SPN): the tool
+// Package spawn is the reference agent's subagent capability (SPN), built on
+// the core's Waiting(ExternalResponse) and Driver.Responders seam: the tool
 // a model calls to delegate a task, the argument and result shapes, the
 // deterministic child Session identity, and the provenance record that makes
 // a spawn call recoverable after a crash.
@@ -26,12 +27,12 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agent/es"
-	"github.com/felinics/twilight/agent/jsonstable"
-	"github.com/felinics/twilight/agent/run"
-	"github.com/felinics/twilight/agent/run/loop"
-	"github.com/felinics/twilight/agent/session"
-	"github.com/felinics/twilight/agent/turn"
+	"github.com/felinics/twilight/agentcore/es"
+	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
 )

@@ -1,4 +1,4 @@
-// Package app is the application layer over the agent core: it composes an
+// Package app is the reference agent's application layer over agentcore: it composes an
 // Authority from deployment choices (Build), registers presets, and offers
 // the conversation policies a product needs on top of an owned Session --
 // Send and Submit, Deliver-or-Start routing, backlog draining, background
@@ -14,26 +14,27 @@ import (
 	"sync"
 	"time"
 
-	"github.com/felinics/twilight/agent/artifact"
 	"github.com/felinics/twilight/agent/context/compaction"
-	"github.com/felinics/twilight/agent/decision"
-	"github.com/felinics/twilight/agent/driver"
-	"github.com/felinics/twilight/agent/executor"
-	"github.com/felinics/twilight/agent/executor/http"
-	executorlocal "github.com/felinics/twilight/agent/executor/local"
-	executionstore "github.com/felinics/twilight/agent/executor/store"
-	"github.com/felinics/twilight/agent/observe"
-	"github.com/felinics/twilight/agent/owner"
-	"github.com/felinics/twilight/agent/preset"
-	"github.com/felinics/twilight/agent/run"
-	"github.com/felinics/twilight/agent/run/effect"
-	"github.com/felinics/twilight/agent/run/loop"
-	"github.com/felinics/twilight/agent/run/plan"
-	"github.com/felinics/twilight/agent/session"
-	"github.com/felinics/twilight/agent/session/extension"
-	"github.com/felinics/twilight/agent/session/writer"
+	"github.com/felinics/twilight/agent/prompt"
 	"github.com/felinics/twilight/agent/spawn"
-	"github.com/felinics/twilight/agent/turn"
+	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/decision"
+	"github.com/felinics/twilight/agentcore/driver"
+	"github.com/felinics/twilight/agentcore/executor"
+	"github.com/felinics/twilight/agentcore/executor/http"
+	executorlocal "github.com/felinics/twilight/agentcore/executor/local"
+	executionstore "github.com/felinics/twilight/agentcore/executor/store"
+	"github.com/felinics/twilight/agentcore/observe"
+	"github.com/felinics/twilight/agentcore/owner"
+	"github.com/felinics/twilight/agentcore/preset"
+	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
+	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/run/plan"
+	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/extension"
+	"github.com/felinics/twilight/agentcore/session/writer"
+	"github.com/felinics/twilight/agentcore/turn"
 )
 
 // ExecutorMode selects the effect implementation built by Build.
@@ -92,8 +93,8 @@ type Config struct {
 	Presets    []Preset
 	// Registry is the preset registry; nil selects an in-memory one.
 	Registry preset.Registry
-	// Decisions resolve each preset's PromptBuilderRef; nil selects the
-	// default catalog.
+	// Decisions resolve each preset's PromptBuilderRef; nil selects this
+	// agent's catalog, prompt.DefaultPromptBuilders().
 	Decisions *decision.PromptBuilders
 
 	Ownership session.OpenOptions
@@ -210,8 +211,12 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	// through a forwarding observer bound after New.
 	var bus *observe.Bus
 	observers := append([]writer.CommitObserver{forwardingObserver{&bus}}, c.Observers...)
+	decisions := c.Decisions
+	if decisions == nil {
+		decisions = prompt.DefaultPromptBuilders()
+	}
 	a, err := owner.New(owner.Ports{
-		Store: c.Store, Content: content, Artifacts: c.Artifacts, Presets: c.Registry, Decisions: c.Decisions,
+		Store: c.Store, Content: content, Artifacts: c.Artifacts, Presets: c.Registry, Decisions: decisions,
 		Executor: port, TargetResolver: c.TargetResolver, Observers: observers, Modules: c.Modules,
 		Clock: c.Clock, Cache: c.Cache, CacheEvery: c.CacheEvery, Ownership: c.Ownership, Fail: app.fail,
 	})
