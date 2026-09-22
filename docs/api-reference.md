@@ -431,8 +431,6 @@ type StreamPart interface {
 | `*StartStepPart` | — |
 | `*FinishStepPart` | `FinishReason`, `RawFinishReason`, `Usage`, `Response` |
 | `*ErrorPart` | `Error` |
-| `*AbortPart` | `Reason` |
-| `*RawPart` | `RawValue json.RawMessage` |
 
 ---
 
