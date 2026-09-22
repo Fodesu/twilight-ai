@@ -11,7 +11,7 @@ Use this skill when the task involves `twilight-ai`, especially:
 
 - implementing or refactoring SDK APIs in `sdk/`
 - adding or updating providers under `provider/`
-- working on `Model.Generate`, `Model.Stream`, `ExecuteTools`, `BuildStepMessages`, `Embed`, `EmbedMany`, `GenerateImage`, or `EditImage`
+- working on `Model.Generate`, `Model.Stream`, `Embed`, `EmbedMany`, `GenerateImage`, or `EditImage`
 - adding tool-calling, streaming, reasoning, embedding, or image generation support
 - writing examples, docs, or usage guidance for this library
 
@@ -22,7 +22,7 @@ Twilight AI is a lightweight Go AI SDK with a provider-agnostic core API.
 - Text generation: build an `sdk.Request` and call `Model.Generate` or `Model.Stream` (also `sdk.Generate`, `sdk.Stream`, `Client.Generate`, `Client.Stream`); one call, one `ModelResult`
 - Image generation: `sdk.GenerateImage`, `sdk.EditImage`
 - Embeddings: `sdk.Embed`, `sdk.EmbedMany`
-- Tool calling: `sdk.Tool`, `sdk.NewTool[T]`, `sdk.ToolDefinitionsFromTools`, `sdk.ExecuteTools`, `sdk.BuildStepMessages`; the caller owns the loop
+- Tool calling: `sdk.ToolDefinition` (or `sdk.NewToolDefinition[T]`), typed `sdk.ToolCall` / `sdk.ToolArguments` / `sdk.ToolOutput`; running calls and looping are the caller's
 - MCP tool integration: `sdk.CreateMCPClient`, `sdk.MCPClient`, `sdk.MCPClientConfig`
 - Streaming: typed `StreamPart` events over Go channels
 - Current providers:
@@ -43,8 +43,8 @@ Prefer the high-level SDK API first, then drop to provider details only when nee
 - `sdk.EmbeddingModel` binds an embedding model to an `sdk.EmbeddingProvider`
 - `sdk.ImageGenerationModel` binds an image generation model to an `sdk.ImageGenerationProvider`
 - `sdk.ImageEditModel` binds an image edit model to an `sdk.ImageEditProvider`
-- The SDK has no loop of its own: a runtime drives `Model.Generate` or `Model.Stream` with an `sdk.Request`, runs the calls with `sdk.ExecuteTools`, and appends `sdk.BuildStepMessages` to the next request
-- MCP clients can load remote MCP tools and turn them into ordinary `sdk.Tool` values
+- The SDK has no loop and no tool executor: a runtime drives `Model.Generate` or `Model.Stream` with an `sdk.Request`, runs the returned `ToolCalls` itself, and appends the assistant and tool messages of the step to the next request
+- MCP clients list remote tools as `sdk.ToolDefinition`s and run a call with `CallTool`
 - Providers handle backend-specific HTTP, request mapping, response parsing, and SSE translation
 
 ## Core API Guidance
@@ -52,7 +52,6 @@ Prefer the high-level SDK API first, then drop to provider details only when nee
 Choose the narrowest API that matches the task:
 
 - Need one model call and its result: use `Model.Generate` or `Model.Stream` with an `sdk.Request`
-- Need the model's tool calls run: use `sdk.ExecuteTools` with `sdk.ToolExecOptions`, then `sdk.BuildStepMessages` for the next request
 - Need one vector: use `sdk.Embed`
 - Need multiple vectors or embedding token usage: use `sdk.EmbedMany`
 - Need image generation from a text prompt: use `sdk.GenerateImage`
@@ -119,26 +118,21 @@ When updating image providers:
 
 ### Tool Calling
 
-Prefer `sdk.NewTool[T]` for new tool examples and integrations. It gives typed input and inferred JSON Schema.
+Prefer `sdk.NewToolDefinition[T]` for new tool examples: typed arguments and an inferred JSON Schema.
 
 Use these defaults unless the task requires something else:
 
 - `Request.ToolChoice` left zero (auto) for normal use; `sdk.ToolChoice{Mode: sdk.ToolChoiceRequired}` or `{Mode: sdk.ToolChoiceTool, Tool: name}` to force a call
-- one `Generate` per step; the caller decides how many steps to take
-- `RequireApproval: true` only for sensitive side effects, answered through `ToolExecOptions.Approve`
-- a tool's arguments are `sdk.ToolArguments`; decode with `Unmarshal`, never assume a `map[string]any`
-- a tool's result is `sdk.ToolOutput`: `sdk.TextOutput` or `sdk.JSONOutput`
+- one `Generate` per step; the caller runs the returned `ToolCalls` and decides how many steps to take
+- a call's arguments are `sdk.ToolArguments`; decode with `Unmarshal`, never assume a `map[string]any`; `Valid()` false means answer the model with an error result instead of running the tool
+- a tool's result is a `sdk.ToolResultPart` whose `Result` is `sdk.TextOutput` or `sdk.JSONOutput`; the replayed assistant message keeps the reasoning parts and each part's `ProviderMetadata`
+- approval, sandboxing, timeouts and retries are the caller's; the SDK defines none of them
 
-When streaming with tools, ensure the implementation can emit:
-
-- tool input construction parts
-- tool execution parts
-- progress updates
-- denial/error events when applicable
+When streaming with tools, the stream emits tool input construction parts and one `StreamToolCallPart` per completed call; there are no execution events.
 
 ### MCP Tool Calling
 
-Use MCP when the task needs remote tools exposed by an MCP server rather than locally implemented `Execute` handlers.
+Use MCP when the task needs remote tools exposed by an MCP server rather than tools the caller implements itself.
 
 Default guidance:
 
@@ -146,15 +140,14 @@ Default guidance:
 - use `sdk.MCPTransportHTTP` for streamable HTTP MCP servers
 - use `sdk.MCPTransportSSE` only when the server exposes legacy SSE transport
 - for stdio, build the transport with the official MCP Go SDK and pass `Transport: ...`
-- call `mcpClient.Tools(ctx)`, describe them with `sdk.ToolDefinitionsFromTools` on the `Request`, run them with `sdk.ExecuteTools`
+- call `mcpClient.Tools(ctx)` for the `Request.Tools` definitions and `mcpClient.CallTool(ctx, name, args)` to run a call the model makes
 - call `defer mcpClient.Close()` after successful creation
 
 Important behavior:
 
-- MCP tools become ordinary `sdk.Tool` values from the caller's perspective
+- MCP tools are ordinary `sdk.ToolDefinition` values from the caller's perspective
 - Twilight AI converts MCP `InputSchema` into `*jsonschema.Schema`
-- MCP tool execution is delegated to `tools/call` on the remote server
-- remote MCP text output becomes the tool result visible to the model
+- `CallTool` sends `tools/call` and returns the server's text content as a `sdk.ToolOutput`; invalid arguments are refused before anything is sent
 
 ### Streaming
 
@@ -164,7 +157,7 @@ Important expectations:
 
 - `Model.Stream` returns an `sdk.ModelStream`: `Parts` is the channel of `sdk.StreamPart` values, `Result()` is valid once `Parts` is drained
 - `sdk.CollectStream` is the convenience path when callers do not want manual event handling
-- a stream is one model call; tool execution events come from `ExecuteTools` through `OnPart`
+- a stream is one model call; it carries no tool execution events
 
 ### Messages And Results
 
@@ -232,7 +225,7 @@ Use these terms consistently:
 - Image generation model: provider-bound image generation model
 - Image edit model: provider-bound image edit model
 - Tool calling: model requests a tool invocation
-- Step: one model call plus the tool calls it made, assembled into messages by `sdk.BuildStepMessages`
+- Step: one model call plus the tool calls it made; the caller assembles the assistant and tool messages
 - Stream part: a typed event from the model seam (`sdk.StreamPart`), delivered by `Model.Stream`
 
 ## Quick Checklist
@@ -243,8 +236,8 @@ Before finishing work in this repo, verify:
 - chat, embedding, and image concerns are not mixed accidentally
 - public examples use top-level `sdk` APIs unless lower-level behavior is the point
 - streaming logic uses typed `StreamPart` handling
-- tool-calling changes cover `ExecuteTools` and `BuildStepMessages` when relevant
-- MCP examples show both transport setup and `ToolDefinitionsFromTools` usage when relevant
+- tool-calling examples never put a tool executor or an approval flow into the SDK
+- MCP examples show transport setup, `Tools` and `CallTool`
 - provider work includes health checks or model discovery behavior if the backend supports them
 
 ## Additional Resources

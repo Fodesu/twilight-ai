@@ -50,7 +50,7 @@ type MCPClientConfig struct {
 }
 
 // MCPClient wraps an MCP client session and converts MCP tools into
-// twilight-ai sdk.Tool values that can be passed directly to WithTools.
+// ToolDefinitions for Request.Tools; CallTool runs the calls the model makes.
 type MCPClient struct {
 	client  *mcp.Client
 	session *mcp.ClientSession
@@ -86,14 +86,33 @@ func CreateMCPClient(ctx context.Context, config *MCPClientConfig) (*MCPClient, 
 	return &MCPClient{client: client, session: session}, nil
 }
 
-// Tools lists the tools offered by the MCP server and converts them into
-// sdk.Tool values whose Execute functions delegate to session.CallTool.
-func (c *MCPClient) Tools(ctx context.Context) ([]Tool, error) {
+// Tools lists the tools the MCP server offers as ToolDefinitions, ready for
+// Request.Tools. Running a call the model makes is CallTool.
+func (c *MCPClient) Tools(ctx context.Context) ([]ToolDefinition, error) {
 	result, err := c.session.ListTools(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("twilightai/mcp: list tools: %w", err)
 	}
-	return convertMCPTools(c.session, result.Tools)
+	return convertMCPTools(result.Tools)
+}
+
+// CallTool invokes one remote tool through tools/call and returns its text
+// content as the tool's output. Arguments that are not a JSON document are
+// ErrInvalidToolArguments and nothing is sent; a tool-side error is returned
+// as an error carrying the server's text.
+func (c *MCPClient) CallTool(ctx context.Context, name string, args ToolArguments) (ToolOutput, error) {
+	var arguments map[string]any
+	if err := args.Unmarshal(&arguments); err != nil {
+		return ToolOutput{}, fmt.Errorf("twilightai/mcp: arguments for %q: %w", name, err)
+	}
+	result, err := c.session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: arguments})
+	if err != nil {
+		return ToolOutput{}, err
+	}
+	if result.IsError {
+		return ToolOutput{}, fmt.Errorf("mcp tool %q returned error: %s", name, extractText(result))
+	}
+	return TextOutput(extractText(result)), nil
 }
 
 // Close gracefully shuts down the MCP session.
@@ -172,51 +191,19 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // ---------------------------------------------------------------------------
-// MCP tool -> sdk.Tool conversion
+// MCP tool -> sdk.ToolDefinition conversion
 // ---------------------------------------------------------------------------
 
-func convertMCPTools(session *mcp.ClientSession, mcpTools []*mcp.Tool) ([]Tool, error) {
-	tools := make([]Tool, 0, len(mcpTools))
+func convertMCPTools(mcpTools []*mcp.Tool) ([]ToolDefinition, error) {
+	tools := make([]ToolDefinition, 0, len(mcpTools))
 	for _, mt := range mcpTools {
-		t, err := convertMCPTool(session, mt)
+		schema, err := convertInputSchema(mt.InputSchema)
 		if err != nil {
 			return nil, fmt.Errorf("twilightai/mcp: convert tool %q: %w", mt.Name, err)
 		}
-		tools = append(tools, t)
+		tools = append(tools, ToolDefinition{Name: mt.Name, Description: mt.Description, Parameters: schema})
 	}
 	return tools, nil
-}
-
-func convertMCPTool(session *mcp.ClientSession, mt *mcp.Tool) (Tool, error) {
-	schema, err := convertInputSchema(mt.InputSchema)
-	if err != nil {
-		return Tool{}, err
-	}
-
-	toolName := mt.Name
-
-	return Tool{
-		Name:        toolName,
-		Description: mt.Description,
-		Parameters:  schema,
-		Execute: func(ctx *ToolExecContext, input ToolArguments) (ToolOutput, error) {
-			var args map[string]any
-			if err := input.Unmarshal(&args); err != nil {
-				return ToolOutput{}, fmt.Errorf("twilightai/mcp: decode args for %q: %w", toolName, err)
-			}
-			result, err := session.CallTool(ctx.Context, &mcp.CallToolParams{
-				Name:      toolName,
-				Arguments: args,
-			})
-			if err != nil {
-				return ToolOutput{}, err
-			}
-			if result.IsError {
-				return ToolOutput{}, fmt.Errorf("mcp tool %q returned error: %s", toolName, extractText(result))
-			}
-			return TextOutput(extractText(result)), nil
-		},
-	}, nil
 }
 
 // convertInputSchema turns an MCP tool's InputSchema (typically map[string]any

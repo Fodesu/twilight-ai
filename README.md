@@ -7,18 +7,17 @@ A lightweight, idiomatic AI SDK for Go — inspired by [Vercel AI SDK](https://s
 
 ## Features
 
-- **One call, one result** — `Model.Generate` and `Model.Stream` take an `sdk.Request` and return a `ModelResult` or a stream of typed parts; `ExecuteTools` and `BuildStepMessages` are the primitives a caller composes its own loop from. `Embed`, `EmbedMany`, `GenerateImage`, `EditImage`, `GenerateVideo`, `GenerateSpeech` and `StreamSpeech` cover the other modalities
+- **One call, one result** — `Model.Generate` and `Model.Stream` take an `sdk.Request` and return a `ModelResult` or a stream of typed parts; the loop, tool execution and approval are the caller's. `Embed`, `EmbedMany`, `GenerateImage`, `EditImage`, `GenerateVideo`, `GenerateSpeech` and `StreamSpeech` cover the other modalities
 - **Provider-agnostic** — swap between OpenAI, Anthropic, Google, GitHub Copilot, Edge TTS, or any OpenAI-compatible endpoint
 - **Model discovery** — `ListModels` fetches available models, `Test` checks provider connectivity and model support
-- **Tool calling** — define tools with Go structs; `NewTool` infers the JSON Schema and `ExecuteTools` runs the calls a reply asked for
-- **MCP support** — connect to MCP servers and expose remote MCP tools as Twilight AI `sdk.Tool` values
+- **Tool calling** — describe tools with `ToolDefinition` (or infer the schema from a Go struct with `NewToolDefinition[T]`); the model's calls come back typed as `ToolArguments`, and running them is yours
+- **MCP support** — connect to MCP servers, list their tools as `sdk.ToolDefinition`s and run calls with `CallTool`
 - **Streaming** — first-class channel-based streaming with fine-grained `StreamPart` types
 - **Rich message types** — text, images, files, reasoning content, tool calls/results
 - **Embeddings** — generate embeddings with `Embed` / `EmbedMany`, supports OpenAI and Google providers
 - **Image generation** — generate and edit images with `GenerateImage` / `EditImage`, supports OpenAI (dall-e, gpt-image) and Alibaba Cloud DashScope (Qwen-Image, Wan) models
 - **Video generation** — create, poll, and download video jobs with OpenRouter and Ark/ModelArk providers
 - **Speech synthesis** — generate speech with `GenerateSpeech` / `StreamSpeech`, supports Edge TTS with an open provider model
-- **Approval flow** — `ExecuteTools` consults `ToolExecOptions.Approve` for tools that require approval and can park the batch on a deferred decision
 
 ## Installation
 
@@ -181,27 +180,21 @@ result, err := stream.Result()
 
 ### Tool Calling
 
-Define a struct for your tool's parameters — the SDK infers the JSON Schema automatically. The model asks for the call; you run it and hand the result back:
+Describe the tool with a Go struct — the SDK infers the JSON Schema. The model asks for the call; running it, and replaying the step, is yours:
 
 ```go
 type WeatherParams struct {
     City string `json:"city" jsonschema:"City name"`
 }
 
-weatherTool := sdk.NewTool("get_weather", "Get current weather for a city",
-    func(ctx *sdk.ToolExecContext, input WeatherParams) (sdk.ToolOutput, error) {
-        return sdk.JSONOutput(map[string]any{"city": input.City, "temp": "22°C"})
-    },
-)
-tools := []sdk.Tool{weatherTool}
-defs, err := sdk.ToolDefinitionsFromTools(tools)
+weather, err := sdk.NewToolDefinition[WeatherParams]("get_weather", "Get current weather for a city")
 if err != nil {
     log.Fatal(err)
 }
 
 messages := []sdk.Message{sdk.UserMessage("What's the weather in Tokyo?")}
 for {
-    result, err := model.Generate(ctx, sdk.Request{Messages: messages, Tools: defs})
+    result, err := model.Generate(ctx, sdk.Request{Messages: messages, Tools: []sdk.ToolDefinition{weather}})
     if err != nil {
         log.Fatal(err)
     }
@@ -209,16 +202,29 @@ for {
         fmt.Println(result.Text)
         break
     }
-    outcome, err := sdk.ExecuteTools(ctx, result.ToolCalls, sdk.ToolExecOptions{Tools: tools})
-    if err != nil {
-        log.Fatal(err)
+    var assistant []sdk.MessagePart
+    for _, rp := range result.ReasoningParts {
+        assistant = append(assistant, rp) // reasoning first, with the provider's tokens
     }
-    messages = append(messages, sdk.BuildStepMessages(result.Text, result.TextProviderMetadata,
-        result.ReasoningParts, result.ToolCalls, outcome.Results, &result.Usage)...)
+    if result.Text != "" {
+        assistant = append(assistant, sdk.TextPart{Text: result.Text, ProviderMetadata: result.TextProviderMetadata})
+    }
+    var results []sdk.ToolResultPart
+    for _, call := range result.ToolCalls {
+        assistant = append(assistant, sdk.ToolCallPart{ToolCallID: call.ToolCallID, ToolName: call.ToolName, Input: call.Input, ProviderMetadata: call.ProviderMetadata})
+        var params WeatherParams
+        if err := call.Input.Unmarshal(&params); err != nil { // not a JSON document: tell the model
+            results = append(results, sdk.ToolResultPart{ToolCallID: call.ToolCallID, ToolName: call.ToolName, Result: sdk.TextOutput(err.Error()), IsError: true})
+            continue
+        }
+        out, _ := sdk.JSONOutput(map[string]any{"city": params.City, "temp": "22°C"})
+        results = append(results, sdk.ToolResultPart{ToolCallID: call.ToolCallID, ToolName: call.ToolName, Result: out})
+    }
+    messages = append(messages, sdk.Message{Role: sdk.MessageRoleAssistant, Content: assistant}, sdk.ToolMessage(results...))
 }
 ```
 
-Each iteration is one model call; the loop, its step limit and its persistence are yours. See [Tool Calling](docs/tools.md).
+Each iteration is one model call. The loop, tool execution, approval, step limits and persistence are the caller's; the SDK stops at the definitions and the typed calls. See [Tool Calling](docs/tools.md).
 
 ### MCP Tool Calling
 
@@ -256,27 +262,23 @@ if err != nil {
 provider := completions.New(completions.WithAPIKey("sk-..."))
 model := provider.ChatModel("gpt-4o-mini")
 
-// MCP tools are ordinary sdk.Tool values: describe them on the Request and
-// run the calls the model makes with ExecuteTools, as in Tool Calling above.
-defs, err := sdk.ToolDefinitionsFromTools(tools)
-if err != nil {
-    log.Fatal(err)
-}
+// Tools returns ToolDefinitions for the Request; CallTool runs a call the
+// model makes on the remote server.
 result, err := model.Generate(context.Background(), sdk.Request{
     Messages: []sdk.Message{
         sdk.UserMessage("Use the available MCP tools to answer this request."),
     },
-    Tools: defs,
+    Tools: tools,
 })
 if err != nil {
     log.Fatal(err)
 }
-outcome, err := sdk.ExecuteTools(context.Background(), result.ToolCalls, sdk.ToolExecOptions{Tools: tools})
-if err != nil {
-    log.Fatal(err)
-}
-for _, r := range outcome.Results {
-    log.Println(r.ToolName, r.Result.String())
+for _, call := range result.ToolCalls {
+    out, err := mcpClient.CallTool(context.Background(), call.ToolName, call.Input)
+    if err != nil {
+        log.Fatal(err)
+    }
+    log.Println(call.ToolName, out.String())
 }
 ```
 
@@ -292,10 +294,10 @@ mcpClient, err := sdk.CreateMCPClient(context.Background(), &sdk.MCPClientConfig
 })
 ```
 
-Twilight AI converts `mcp.Tool` definitions into `sdk.Tool` automatically:
+Twilight AI converts `mcp.Tool` definitions into `sdk.ToolDefinition` automatically:
 
 - `InputSchema` is converted into `*jsonschema.Schema`
-- tool execution calls `session.CallTool(...)` under the hood
+- `CallTool` sends `tools/call` and returns the server's text content as a `sdk.ToolOutput`
 - MCP text content is returned as the tool output passed back into the model
 
 ### Image Generation
@@ -464,7 +466,7 @@ if testResult.Supported {
 | [Images](docs/images.md) | Generate and edit images with OpenAI and Alibaba Cloud DashScope image models |
 | [Embeddings](docs/embeddings.md) | Generate vector embeddings with OpenAI and Google |
 | [Speech](docs/speech.md) | Speech synthesis with Edge TTS and custom providers |
-| [Tool Calling](docs/tools.md) | Defining local tools, MCP tools, running calls with `ExecuteTools`, approval |
+| [Tool Calling](docs/tools.md) | Tool definitions, typed arguments and outputs, replaying a step, MCP tools |
 | [Streaming](docs/streaming.md) | `Model.Stream`, the `ModelStream` and its StreamPart types |
 | [API Reference](docs/api-reference.md) | Complete type and function reference |
 

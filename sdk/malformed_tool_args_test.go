@@ -2,10 +2,10 @@ package sdk_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	anthropicmessages "github.com/felinics/twilight/provider/anthropic/messages"
@@ -15,10 +15,9 @@ import (
 
 // A tool call whose streamed arguments are not a JSON document is still
 // reported -- the model has to hear that it got the call wrong -- but it
-// carries the text in ToolArguments.Text and no document, and ExecuteTools
-// answers it with an error result instead of running the tool on empty or
-// guessed arguments.
-func TestMalformedToolArgsDoNotExecute(t *testing.T) {
+// carries the text in ToolArguments.Text and no document, so whoever runs
+// the calls can refuse it (Valid is false) instead of guessing arguments.
+func TestMalformedToolArgsAreReportedInvalid(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		for _, chunk := range []string{
@@ -72,22 +71,7 @@ data: {"type":"message_stop"}`,
 	if in.Valid() || in.Text != `{"path": "/etc` {
 		t.Fatalf("arguments = %+v, want the invalid text kept verbatim and no document", in)
 	}
-	executed := false
-	outcome, err := sdk.ExecuteTools(context.Background(), result.ToolCalls, sdk.ToolExecOptions{Tools: []sdk.Tool{{
-		Name:       "delete_file",
-		Parameters: &jsonschema.Schema{Type: "object"},
-		Execute: func(*sdk.ToolExecContext, sdk.ToolArguments) (sdk.ToolOutput, error) {
-			executed = true
-			return sdk.TextOutput("deleted"), nil
-		},
-	}}})
-	if err != nil {
-		t.Fatalf("ExecuteTools: %v", err)
-	}
-	if executed {
-		t.Fatal("the tool ran on arguments that were not a JSON document")
-	}
-	if len(outcome.Results) != 1 || !outcome.Results[0].IsError || !strings.Contains(outcome.Results[0].Result.Text, "invalid tool arguments") {
-		t.Fatalf("results = %+v, want one error result naming the invalid arguments", outcome.Results)
+	if err := in.Unmarshal(&struct{}{}); !errors.Is(err, sdk.ErrInvalidToolArguments) {
+		t.Fatalf("Unmarshal of invalid arguments = %v, want ErrInvalidToolArguments", err)
 	}
 }

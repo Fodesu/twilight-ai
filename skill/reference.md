@@ -41,9 +41,9 @@ func EditImage(ctx context.Context, options ...ImageEditOption) (*ImageResult, e
 
 Behavior notes:
 
-- `Generate` and `Stream` are one model call each; the SDK runs no loop. A
-  runtime executes the returned `ToolCalls` with `ExecuteTools` and appends
-  `BuildStepMessages(...)` to the next `Request`.
+- `Generate` and `Stream` are one model call each; the SDK runs no loop and no
+  tool executor. A runtime runs the returned `ToolCalls` itself and appends the
+  step's assistant and tool messages to the next `Request`.
 
 ### Provider Contracts
 
@@ -263,8 +263,6 @@ func (m ProviderMetadata) Get(namespace, key string) string
 func (m ProviderMetadata) Merge(other ProviderMetadata) ProviderMetadata
 func (m ProviderMetadata) Clone() ProviderMetadata
 
-func BuildStepMessages(text string, textMeta ProviderMetadata, reasoningParts []ReasoningPart,
-    toolCalls []ToolCall, toolResults []ToolResultPart, usage *Usage) []Message
 ```
 
 Behavior notes:
@@ -272,9 +270,9 @@ Behavior notes:
 - `ProviderMetadata` holds the opaque tokens a provider needs back on replay
   (signatures, encrypted reasoning, thought signatures, item ids) as strings
   under the provider's namespace. Providers read only their own namespace.
-- `BuildStepMessages` assembles the assistant message (reasoning parts, text,
-  tool calls, usage) and the tool message of one step; a caller appends them
-  to the next request's `Messages`.
+- Replaying a step means an assistant message with the reasoning parts (in
+  order, empty-text blocks included), the text and the `ToolCallPart`s, each
+  with its `ProviderMetadata`, followed by a tool message of `ToolResultPart`s.
 
 ### Tools
 
@@ -302,41 +300,11 @@ func RawJSONOutput(raw json.RawMessage) ToolOutput
 func (o ToolOutput) String() string
 func (o ToolOutput) IsJSON() bool
 
-type ToolExecuteFunc func(ctx *ToolExecContext, input ToolArguments) (ToolOutput, error)
-
-type ToolExecContext struct {
-    context.Context
-    ToolCallID   string
-    ToolName     string
-    SendProgress func(content ToolOutput)
-}
-
-type Tool struct {
-    Name            string
-    Description     string
-    Parameters      *jsonschema.Schema
-    Execute         ToolExecuteFunc
-    RequireApproval bool
-    CacheControl    *CacheControl  // optional, Anthropic only
-}
-
-func NewTool[T any](
-    name, description string,
-    execute func(ctx *ToolExecContext, input T) (ToolOutput, error),
-) Tool
-
 type ToolCall struct {
     ToolCallID       string
     ToolName         string
     Input            ToolArguments
     ProviderMetadata ProviderMetadata
-}
-
-type ToolResult struct {
-    ToolCallID string
-    ToolName   string
-    Input      ToolArguments
-    Output     ToolOutput
 }
 
 type ToolDefinition struct {
@@ -346,8 +314,7 @@ type ToolDefinition struct {
     CacheControl *CacheControl
 }
 
-func ToolDefinitionFromTool(tool Tool) (ToolDefinition, error)
-func ToolDefinitionsFromTools(tools []Tool) ([]ToolDefinition, error)
+func NewToolDefinition[T any](name, description string) (ToolDefinition, error)
 
 type ToolChoiceMode string
 
@@ -363,41 +330,31 @@ type ToolChoice struct {
     Tool string
 }
 
-type ToolExecOptions struct {
-    Tools   []Tool
-    Approve func(context.Context, ToolCall) (ToolApprovalResult, error)
-    OnPart  func(StreamPart)
-}
-
-type ToolExecOutcome struct {
-    Results       []ToolResultPart
-    Deferred      *ToolApprovalResult
-    DeferredIndex int
-}
-
-func ExecuteTools(ctx context.Context, calls []ToolCall, opts ToolExecOptions) (ToolExecOutcome, error)
-func ToolCallResults(calls []ToolCall, parts []ToolResultPart) []ToolResult
-
-type ToolApprovalResult struct {
-    Decision   ToolApprovalDecision
-    ApprovalID string
-    Reason     string
-    Metadata   map[string]string
-}
-
 type CacheControl struct {
     Type string  // "ephemeral"
-    TTL  string  // "" (5 min, default) | "1h"
+    TTL  string  // "" (5-minute default) | "1h"
 }
+
+type Message struct {
+    Role    MessageRole
+    Content []MessagePart
+}
+
+func UserMessage(text string, extra ...MessagePart) Message
+func SystemMessage(text string) Message
+func DeveloperMessage(text string) Message
+func AssistantMessage(text string) Message
+func ToolMessage(results ...ToolResultPart) Message
 ```
 
-Behavior notes:
+Notes:
 
-- A tool call whose arguments are not a JSON document is still reported, with
-  the text in `ToolArguments.Text`; `ExecuteTools` answers it with an error
-  result and never runs the tool on it.
-- `ExecuteTools` runs several calls in parallel, asks `Approve` for tools with
-  `RequireApproval`, and stops at a deferred approval with the results so far.
+- `UserMessage` accepts a text string plus optional extra parts such as `ImagePart`.
+- `Message` supports JSON marshal and unmarshal with type discrimination.
+- `Request.System` is the stable root instruction; use `SystemMessage`
+  for an instruction at a specific point in the message timeline.
+- Unsupported developer messages fall back to user messages. Unsupported
+  mid-conversation system messages fall back to XML-escaped `<system>` user messages.
 
 ### MCP
 
@@ -422,7 +379,8 @@ type MCPClientConfig struct {
 type MCPClient struct { /* unexported fields */ }
 
 func CreateMCPClient(ctx context.Context, config *MCPClientConfig) (*MCPClient, error)
-func (c *MCPClient) Tools(ctx context.Context) ([]Tool, error)
+func (c *MCPClient) Tools(ctx context.Context) ([]ToolDefinition, error)
+func (c *MCPClient) CallTool(ctx context.Context, name string, args ToolArguments) (ToolOutput, error)
 func (c *MCPClient) Close() error
 ```
 
@@ -431,9 +389,9 @@ Usage notes:
 - `MCPTransportHTTP` is the default built-in transport and uses the official MCP Go SDK's streamable HTTP client transport.
 - `MCPTransportSSE` uses the official MCP Go SDK's SSE client transport.
 - For stdio or other custom transports, create the transport with `github.com/modelcontextprotocol/go-sdk/mcp` and pass it through `Transport`.
-- `Tools(ctx)` converts remote MCP tools into ordinary `sdk.Tool` values for `ToolDefinitionsFromTools` and `ExecuteTools`.
+- `Tools(ctx)` lists remote MCP tools as `sdk.ToolDefinition` values for `Request.Tools`; `CallTool` runs one.
 - MCP tool schemas are converted from MCP `InputSchema` into `*jsonschema.Schema`.
-- MCP execution wrappers call `tools/call` and return concatenated text content to the model.
+- `CallTool` sends `tools/call` and returns the concatenated text content as a `ToolOutput`; arguments that are not a JSON document are refused with `ErrInvalidToolArguments`.
 
 ### Streaming
 
@@ -451,11 +409,6 @@ const (
     StreamPartTypeToolInputDelta      StreamPartType = "tool-input-delta"
     StreamPartTypeToolInputEnd        StreamPartType = "tool-input-end"
     StreamPartTypeToolCall            StreamPartType = "tool-call"
-    StreamPartTypeToolResult          StreamPartType = "tool-result"
-    StreamPartTypeToolError           StreamPartType = "tool-error"
-    StreamPartTypeToolOutputDenied    StreamPartType = "tool-output-denied"
-    StreamPartTypeToolApprovalRequest StreamPartType = "tool-approval-request"
-    StreamPartTypeToolProgress        StreamPartType = "tool-progress"
     StreamPartTypeSource              StreamPartType = "source"
     StreamPartTypeFile                StreamPartType = "file"
     StreamPartTypeStart               StreamPartType = "start"
@@ -524,37 +477,6 @@ type StreamToolCallPart struct {
     ToolCallID string
     ToolName   string
     Input      ToolArguments
-}
-
-type StreamToolResultPart struct {
-    ToolCallID string
-    ToolName   string
-    Input      ToolArguments
-    Output     ToolOutput
-}
-
-type StreamToolErrorPart struct {
-    ToolCallID string
-    ToolName   string
-    Error      error
-}
-
-type ToolOutputDeniedPart struct {
-    ToolCallID string
-    ToolName   string
-}
-
-type ToolApprovalRequestPart struct {
-    ApprovalID string
-    ToolCallID string
-    ToolName   string
-    Input      ToolArguments
-}
-
-type ToolProgressPart struct {
-    ToolCallID string
-    ToolName   string
-    Content    ToolOutput
 }
 
 type StreamSourcePart struct {

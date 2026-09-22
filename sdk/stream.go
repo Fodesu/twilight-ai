@@ -5,30 +5,25 @@ import "encoding/json"
 type StreamPartType string
 
 const (
-	StreamPartTypeTextStart           StreamPartType = "text-start"
-	StreamPartTypeTextDelta           StreamPartType = "text-delta"
-	StreamPartTypeTextEnd             StreamPartType = "text-end"
-	StreamPartTypeReasoningStart      StreamPartType = "reasoning-start"
-	StreamPartTypeReasoningDelta      StreamPartType = "reasoning-delta"
-	StreamPartTypeReasoningEnd        StreamPartType = "reasoning-end"
-	StreamPartTypeToolInputStart      StreamPartType = "tool-input-start"
-	StreamPartTypeToolInputDelta      StreamPartType = "tool-input-delta"
-	StreamPartTypeToolInputEnd        StreamPartType = "tool-input-end"
-	StreamPartTypeToolCall            StreamPartType = "tool-call"
-	StreamPartTypeToolResult          StreamPartType = "tool-result"
-	StreamPartTypeToolError           StreamPartType = "tool-error"
-	StreamPartTypeToolOutputDenied    StreamPartType = "tool-output-denied"
-	StreamPartTypeToolApprovalRequest StreamPartType = "tool-approval-request"
-	StreamPartTypeToolProgress        StreamPartType = "tool-progress"
-	StreamPartTypeSource              StreamPartType = "source"
-	StreamPartTypeFile                StreamPartType = "file"
-	StreamPartTypeStart               StreamPartType = "start"
-	StreamPartTypeFinish              StreamPartType = "finish"
-	StreamPartTypeStartStep           StreamPartType = "start-step"
-	StreamPartTypeFinishStep          StreamPartType = "finish-step"
-	StreamPartTypeError               StreamPartType = "error"
-	StreamPartTypeAbort               StreamPartType = "abort"
-	StreamPartTypeRaw                 StreamPartType = "raw"
+	StreamPartTypeTextStart      StreamPartType = "text-start"
+	StreamPartTypeTextDelta      StreamPartType = "text-delta"
+	StreamPartTypeTextEnd        StreamPartType = "text-end"
+	StreamPartTypeReasoningStart StreamPartType = "reasoning-start"
+	StreamPartTypeReasoningDelta StreamPartType = "reasoning-delta"
+	StreamPartTypeReasoningEnd   StreamPartType = "reasoning-end"
+	StreamPartTypeToolInputStart StreamPartType = "tool-input-start"
+	StreamPartTypeToolInputDelta StreamPartType = "tool-input-delta"
+	StreamPartTypeToolInputEnd   StreamPartType = "tool-input-end"
+	StreamPartTypeToolCall       StreamPartType = "tool-call"
+	StreamPartTypeSource         StreamPartType = "source"
+	StreamPartTypeFile           StreamPartType = "file"
+	StreamPartTypeStart          StreamPartType = "start"
+	StreamPartTypeFinish         StreamPartType = "finish"
+	StreamPartTypeStartStep      StreamPartType = "start-step"
+	StreamPartTypeFinishStep     StreamPartType = "finish-step"
+	StreamPartTypeError          StreamPartType = "error"
+	StreamPartTypeAbort          StreamPartType = "abort"
+	StreamPartTypeRaw            StreamPartType = "raw"
 )
 
 // StreamPart is the interface implemented by all stream chunk types.
@@ -116,7 +111,7 @@ type ToolInputEndPart struct {
 
 func (p *ToolInputEndPart) Type() StreamPartType { return StreamPartTypeToolInputEnd }
 
-// --- Tool Execution ---
+// --- Tool Call ---
 
 type StreamToolCallPart struct {
 	ToolCallID       string
@@ -126,50 +121,6 @@ type StreamToolCallPart struct {
 }
 
 func (p *StreamToolCallPart) Type() StreamPartType { return StreamPartTypeToolCall }
-
-type StreamToolResultPart struct {
-	ToolCallID string
-	ToolName   string
-	Input      ToolArguments
-	Output     ToolOutput
-}
-
-func (p *StreamToolResultPart) Type() StreamPartType { return StreamPartTypeToolResult }
-
-type StreamToolErrorPart struct {
-	ToolCallID string
-	ToolName   string
-	Error      error
-}
-
-func (p *StreamToolErrorPart) Type() StreamPartType { return StreamPartTypeToolError }
-
-type ToolOutputDeniedPart struct {
-	ToolCallID string
-	ToolName   string
-}
-
-func (p *ToolOutputDeniedPart) Type() StreamPartType { return StreamPartTypeToolOutputDenied }
-
-type ToolApprovalRequestPart struct {
-	ApprovalID string
-	ToolCallID string
-	ToolName   string
-	Input      ToolArguments
-	Metadata   map[string]string
-}
-
-func (p *ToolApprovalRequestPart) Type() StreamPartType { return StreamPartTypeToolApprovalRequest }
-
-// --- Tool Progress (UX streaming during execution) ---
-
-type ToolProgressPart struct {
-	ToolCallID string
-	ToolName   string
-	Content    ToolOutput
-}
-
-func (p *ToolProgressPart) Type() StreamPartType { return StreamPartTypeToolProgress }
 
 // --- Source & File ---
 

@@ -14,7 +14,7 @@ import (
 // malformed call, which chat-completions style APIs deliver as a plain string --
 // the text is kept verbatim in Text and JSON is nil: the call is still
 // reported, so the caller can answer the model with an invalid-arguments
-// result and let it correct itself, but ExecuteTools never runs a tool on it.
+// result and let it correct itself; Valid tells the caller not to run it.
 // Exactly one of the two fields is set.
 type ToolArguments struct {
 	JSON json.RawMessage `json:"json,omitempty"`
