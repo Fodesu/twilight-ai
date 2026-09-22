@@ -379,8 +379,6 @@ const (
     StreamPartTypeStartStep           StreamPartType = "start-step"
     StreamPartTypeFinishStep          StreamPartType = "finish-step"
     StreamPartTypeError               StreamPartType = "error"
-    StreamPartTypeAbort               StreamPartType = "abort"
-    StreamPartTypeRaw                 StreamPartType = "raw"
 )
 
 type StreamPart interface {
@@ -470,14 +468,6 @@ type FinishStepPart struct {
 
 type ErrorPart struct {
     Error error
-}
-
-type AbortPart struct {
-    Reason string
-}
-
-type RawPart struct {
-    RawValue json.RawMessage
 }
 
 type ModelStream struct {

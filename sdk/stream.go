@@ -1,7 +1,5 @@
 package sdk
 
-import "encoding/json"
-
 type StreamPartType string
 
 const (
@@ -22,8 +20,6 @@ const (
 	StreamPartTypeStartStep      StreamPartType = "start-step"
 	StreamPartTypeFinishStep     StreamPartType = "finish-step"
 	StreamPartTypeError          StreamPartType = "error"
-	StreamPartTypeAbort          StreamPartType = "abort"
-	StreamPartTypeRaw            StreamPartType = "raw"
 )
 
 // StreamPart is the interface implemented by all stream chunk types.
@@ -169,17 +165,3 @@ type ErrorPart struct {
 }
 
 func (p *ErrorPart) Type() StreamPartType { return StreamPartTypeError }
-
-type AbortPart struct {
-	Reason string
-}
-
-func (p *AbortPart) Type() StreamPartType { return StreamPartTypeAbort }
-
-// RawPart carries a provider event the SDK does not model, as the JSON the
-// provider sent.
-type RawPart struct {
-	RawValue json.RawMessage
-}
-
-func (p *RawPart) Type() StreamPartType { return StreamPartTypeRaw }

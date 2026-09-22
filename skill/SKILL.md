@@ -19,7 +19,7 @@ Use this skill when the task involves `twilight-ai`, especially:
 
 Twilight AI is a lightweight Go AI SDK with a provider-agnostic core API.
 
-- Text generation: build an `sdk.Request` and call `Model.Generate` or `Model.Stream` (also `sdk.Generate`, `sdk.Stream`, `Client.Generate`, `Client.Stream`); one call, one `ModelResult`
+- Text generation: build an `sdk.Request` and call `Model.Generate` or `Model.Stream`; one call, one `ModelResult`
 - Image generation: `sdk.GenerateImage`, `sdk.EditImage`
 - Embeddings: `sdk.Embed`, `sdk.EmbedMany`
 - Tool calling: `sdk.ToolDefinition` (or `sdk.NewToolDefinition[T]`), typed `sdk.ToolCall` / `sdk.ToolArguments` / `sdk.ToolOutput`; running calls and looping are the caller's

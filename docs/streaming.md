@@ -109,8 +109,6 @@ Streamed as the LLM constructs tool call arguments:
 | `*StartStepPart` | — | A new step started |
 | `*FinishStepPart` | `FinishReason`, `RawFinishReason`, `Usage`, `Response` | Step finished |
 | `*ErrorPart` | `Error` | An error occurred |
-| `*AbortPart` | `Reason` | Stream was aborted |
-| `*RawPart` | `RawValue json.RawMessage` | A provider event the SDK does not model |
 
 ## Stream Lifecycle
 
