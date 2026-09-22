@@ -218,8 +218,24 @@ func (s *ExecutionStore) LeaseOwned(ctx context.Context, key effect.AssignmentKe
 	return !protocol.StatusTerminal(r.State) && r.Owner == owner && r.FencingEpoch == epoch && r.LeaseUntilUnixMilli > s.now().UnixMilli(), nil
 }
 
-// List returns every record. A row that no longer decodes is skipped, so one
-// corrupt record does not hide the adoptable ones from Reconcile.
+// ListOwned returns the records owned by the given Worker id (executionstore.Store).
+func (s *ExecutionStore) ListOwned(ctx context.Context, owner string) ([]executionstore.Record, error) {
+	all, err := s.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var out []executionstore.Record
+	for i := range all {
+		if all[i].Owner == owner {
+			out = append(out, all[i])
+		}
+	}
+	return out, nil
+}
+
+// List returns every record, for operators and tests; it is not part of
+// executionstore.Store. A row that no longer decodes is skipped, so one
+// corrupt record does not hide the others.
 func (s *ExecutionStore) List(ctx context.Context) ([]executionstore.Record, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT record FROM execution_records ORDER BY key`)
 	if err != nil {

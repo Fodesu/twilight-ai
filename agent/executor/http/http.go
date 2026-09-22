@@ -147,47 +147,24 @@ func (c *Client) Cancel(ctx context.Context, key effect.AssignmentKey) error {
 	return c.post(ctx, "/cancel", keyRequest{Key: key}, nil)
 }
 
-// Takeover asks the Worker to acquire an expired execution record. This is a
-// control-plane operation and is intentionally not part of effect.ExecutionPort.
-func (c *Client) Takeover(ctx context.Context, key effect.AssignmentKey) error {
-	return c.post(ctx, "/takeover", keyRequest{Key: key}, nil)
-}
-
-// Reconcile asks the Worker to adopt every execution record whose lease
-// expired, returning the number of records handed to Takeover. This is a
-// control-plane operation and is intentionally not part of effect.ExecutionPort.
-func (c *Client) Reconcile(ctx context.Context) (int, error) {
-	var response struct {
-		Adopted int `json:"adopted"`
-	}
-	if err := c.post(ctx, "/reconcile", struct{}{}, &response); err != nil {
-		return 0, err
-	}
-	return response.Adopted, nil
+// RecoverExecution is effect.Recoverer over HTTP: the Worker takes the
+// orphaned record of key back and continues it (RUN-EXE-6). Not part of
+// effect.ExecutionPort.
+func (c *Client) RecoverExecution(ctx context.Context, key effect.AssignmentKey) error {
+	return c.post(ctx, "/recover", keyRequest{Key: key}, nil)
 }
 
 // Dispose settles an execution record as Unknown without re-dispatching it,
-// so the Owner disposes the Run target on its next read. This is a
-// control-plane operation and is intentionally not part of effect.ExecutionPort.
+// so the Owner disposes the Run target on its next read. The caller has
+// given the execution up; not part of effect.ExecutionPort.
 func (c *Client) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 	return c.post(ctx, "/dispose", keyRequest{Key: key}, nil)
 }
 
-// Acknowledge is effect.Acknowledger over HTTP (RUN-EXE-13).
+// Acknowledge is effect.Acknowledger over HTTP (RUN-EXE-13); the Worker
+// collects the record on acknowledgement.
 func (c *Client) Acknowledge(ctx context.Context, key effect.AssignmentKey) error {
 	return c.post(ctx, "/acknowledge", keyRequest{Key: key}, nil)
-}
-
-// Collect asks the Worker to collect the acknowledged or expired terminal
-// records (RUN-EXE-13), returning how many it collected. Control plane.
-func (c *Client) Collect(ctx context.Context) (int, error) {
-	var response struct {
-		Collected int `json:"collected"`
-	}
-	if err := c.post(ctx, "/collect", struct{}{}, &response); err != nil {
-		return 0, err
-	}
-	return response.Collected, nil
 }
 
 func (c *Client) post(ctx context.Context, path string, in, out any) error {
@@ -287,11 +264,9 @@ func (s *Server) Handler() stdhttp.Handler {
 	mux.HandleFunc("POST /status", s.status)
 	mux.HandleFunc("POST /outcome", s.outcome)
 	mux.HandleFunc("POST /cancel", s.cancel)
-	mux.HandleFunc("POST /takeover", s.takeover)
-	mux.HandleFunc("POST /reconcile", s.reconcile)
+	mux.HandleFunc("POST /recover", s.recover)
 	mux.HandleFunc("POST /dispose", s.dispose)
 	mux.HandleFunc("POST /acknowledge", s.acknowledge)
-	mux.HandleFunc("POST /collect", s.collect)
 	mux.HandleFunc("POST /progress", s.progress)
 	return mux
 }
@@ -446,27 +421,16 @@ func (s *Server) cancel(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	w.WriteHeader(stdhttp.StatusAccepted)
 }
 
-func (s *Server) takeover(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+func (s *Server) recover(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	var req keyRequest
 	if !s.readJSON(w, r, &req) {
 		return
 	}
-	if err := s.Worker.Takeover(r.Context(), req.Key); err != nil {
+	if err := s.Worker.RecoverExecution(r.Context(), req.Key); err != nil {
 		writeError(w, err)
 		return
 	}
 	w.WriteHeader(stdhttp.StatusAccepted)
-}
-
-func (s *Server) reconcile(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	n, err := s.Worker.Reconcile(r.Context())
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, struct {
-		Adopted int `json:"adopted"`
-	}{n})
 }
 
 func (s *Server) dispose(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -491,17 +455,6 @@ func (s *Server) acknowledge(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		return
 	}
 	w.WriteHeader(stdhttp.StatusAccepted)
-}
-
-func (s *Server) collect(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	n, err := s.Worker.Collect(r.Context())
-	if err != nil {
-		writeError(w, err)
-		return
-	}
-	writeJSON(w, struct {
-		Collected int `json:"collected"`
-	}{n})
 }
 
 // readJSON decodes the request body within the Server's size bound: a body

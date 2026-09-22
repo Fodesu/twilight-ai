@@ -412,6 +412,20 @@ type Acknowledger interface {
 	Acknowledge(context.Context, AssignmentKey) error
 }
 
+// Recoverer is the optional recovery capability of an execution port
+// (RUN-EXE-6). RecoverExecution asks the executor to take the orphaned record
+// of key back under a live lease and continue it from its persisted payload
+// and ExecutionRef: attach the previous physical execution, restart it once
+// the backend proves it missing, or settle it as Unknown when the tool's
+// replay declaration forbids a restart. How to recover is the executor's;
+// the caller has observed the record as orphaned and decides when to ask.
+// Giving up is a separate, explicit act (the executor's Dispose). A record
+// under a live lease is left alone. A port without this capability leaves
+// orphaned records to an external controller.
+type Recoverer interface {
+	RecoverExecution(context.Context, AssignmentKey) error
+}
+
 // ExecutionPort is the Agent Core effect port: the process-independent
 // contract through which the Loop hands effects to whatever executes them.
 // It is intentionally message-shaped: none of its methods accepts a

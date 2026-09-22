@@ -402,15 +402,15 @@ func (b *holdBackend) Dispatch(_ context.Context, a effect.Assignment) error {
 	return nil
 }
 
-// Close stops the reconcile loop and every watcher and heartbeat, and
-// returns while a backend execution is still running; the record keeps its
-// lease for another incarnation.
+// Close stops every watcher and heartbeat, and returns while a backend
+// execution is still running; the record keeps its lease for another
+// incarnation.
 func TestWorkerCloseStopsGoroutines(t *testing.T) {
 	ctx := context.Background()
 	records := sqlitetest.Open(t).Executions()
 	backend := &holdBackend{newTestBackend()}
 	worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("test", executor.PortBackend(backend))},
-		executor.WorkerOptions{ID: "worker-c", LeaseDuration: time.Second, ReconcileInterval: time.Millisecond})
+		executor.WorkerOptions{ID: "worker-c", LeaseDuration: time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +454,7 @@ func TestWorkerRestartSupersedesRef(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer worker.Close()
-	if err := worker.Takeover(ctx, a.Key()); err != nil {
+	if err := worker.RecoverExecution(ctx, a.Key()); err != nil {
 		t.Fatal(err)
 	}
 	got, _, err := records.Get(ctx, a.Key())
@@ -473,9 +473,9 @@ func TestWorkerRestartSupersedesRef(t *testing.T) {
 }
 
 // A record whose ExecutionRef names a provider this Worker has no Backend
-// for is left untouched: Takeover and GetStatus report ErrUnknownProvider and
+// for is left untouched: RecoverExecution and GetStatus report ErrUnknownProvider and
 // no backend is called (RUN-EXE-10).
-func TestWorkerTakeoverRefusesUnknownProvider(t *testing.T) {
+func TestWorkerRecoverExecutionRefusesUnknownProvider(t *testing.T) {
 	ctx := context.Background()
 	records := sqlitetest.Open(t).Executions()
 	a := testAssignment()
@@ -494,7 +494,7 @@ func TestWorkerTakeoverRefusesUnknownProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := worker.Takeover(ctx, a.Key()); !errors.Is(err, executor.ErrUnknownProvider) {
+	if err := worker.RecoverExecution(ctx, a.Key()); !errors.Is(err, executor.ErrUnknownProvider) {
 		t.Fatalf("takeover = %v, want ErrUnknownProvider", err)
 	}
 	if _, err := worker.GetStatus(ctx, a.Key()); !errors.Is(err, executor.ErrUnknownProvider) {
@@ -551,7 +551,7 @@ func TestWorkerPersistsExecutionRefBeforeStart(t *testing.T) {
 	}
 }
 
-func TestExecutionStoreFencesTakeover(t *testing.T) {
+func TestExecutionStoreFencesRecoverExecution(t *testing.T) {
 	ctx := context.Background()
 	base := time.Unix(100, 0)
 	now := base
@@ -639,7 +639,7 @@ func TestWorkerReclaimsExpiredAssignment(t *testing.T) {
 		t.Fatal(err)
 	}
 	now = base.Add(2 * time.Second)
-	if err := worker.Takeover(ctx, a.Key()); err != nil {
+	if err := worker.RecoverExecution(ctx, a.Key()); err != nil {
 		t.Fatal(err)
 	}
 	readCtx, cancel := context.WithTimeout(ctx, time.Second)
@@ -660,7 +660,7 @@ func TestWorkerReclaimsExpiredAssignment(t *testing.T) {
 	}
 }
 
-func TestWorkerReconcileAdoptsExpiredLease(t *testing.T) {
+func TestWorkerRecoverExecutionAdoptsExpiredLease(t *testing.T) {
 	ctx := context.Background()
 	base := time.Unix(100, 0)
 	now := base.Add(2 * time.Second)
@@ -681,12 +681,8 @@ func TestWorkerReconcileAdoptsExpiredLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	n, err := worker.Reconcile(ctx)
-	if err != nil {
+	if err := worker.RecoverExecution(ctx, a.Key()); err != nil {
 		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Fatalf("reconcile offered = %d, want 1", n)
 	}
 	readCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
@@ -706,7 +702,9 @@ func TestWorkerReconcileAdoptsExpiredLease(t *testing.T) {
 	}
 }
 
-func TestWorkerReconcileLeavesLiveLease(t *testing.T) {
+// A record under another Worker's live lease is not this Worker's to
+// recover: RecoverExecution leaves it untouched and dispatches nothing.
+func TestWorkerRecoverExecutionLeavesLiveLease(t *testing.T) {
 	ctx := context.Background()
 	base := time.Unix(100, 0)
 	now := base
@@ -727,8 +725,8 @@ func TestWorkerReconcileLeavesLiveLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n, err := worker.Reconcile(ctx); err != nil || n != 0 {
-		t.Fatalf("reconcile = %d, %v; want no candidates", n, err)
+	if err := worker.RecoverExecution(ctx, a.Key()); err != nil {
+		t.Fatalf("recover of a live lease = %v, want a no-op", err)
 	}
 	got, _, err := records.Get(ctx, a.Key())
 	if err != nil || got.Owner != "worker-a" || got.FencingEpoch != 4 {
@@ -738,39 +736,7 @@ func TestWorkerReconcileLeavesLiveLease(t *testing.T) {
 	calls := backend.calls
 	backend.mu.Unlock()
 	if calls != 0 {
-		t.Fatalf("reconcile dispatched %d backend calls", calls)
-	}
-}
-
-func TestWorkerReconcileLoopAdoptsOrphanedRecord(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	records := sqlitetest.Open(t).Executions()
-	a := testAssignment()
-	digest, err := a.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionDispatching,
-		Owner: "dead-worker", FencingEpoch: 2, LeaseUntilUnixMilli: time.Now().Add(-time.Second).UnixMilli()}
-	if err := records.Put(ctx, r); err != nil {
-		t.Fatal(err)
-	}
-	backend := newTestBackend()
-	worker, err := executor.NewWorker(ctx, records, routes(backend), executor.WorkerOptions{
-		ID: "worker-b", LeaseDuration: time.Second, ReconcileInterval: 50 * time.Millisecond})
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, err := worker.GetOutcome(ctx, a.Key())
-	if err != nil || modelText(out) != "ok" {
-		t.Fatalf("reconciled outcome = %+v, %v", out, err)
-	}
-	backend.mu.Lock()
-	calls := backend.calls
-	backend.mu.Unlock()
-	if calls != 1 {
-		t.Fatalf("backend calls = %d, want 1", calls)
+		t.Fatalf("recovery dispatched %d backend calls", calls)
 	}
 }
 
@@ -928,7 +894,7 @@ func TestWorkerAdoptionOfUnattachableToolSettlesUnknown(t *testing.T) {
 			// The accepted row dispatches to the backend on a goroutine; the
 			// worker is closed before the database and its directory are.
 			defer worker.Close()
-			if err := worker.Takeover(ctx, a.Key()); err != nil {
+			if err := worker.RecoverExecution(ctx, a.Key()); err != nil {
 				t.Fatal(err)
 			}
 			got, _, err := records.Get(ctx, a.Key())
@@ -1027,11 +993,8 @@ func TestHTTPControlEndpoints(t *testing.T) {
 	if err := client.Dispatch(ctx, a); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Takeover(ctx, a.Key()); err != nil {
-		t.Fatalf("takeover = %v", err)
-	}
-	if n, err := client.Reconcile(ctx); err != nil || n != 0 {
-		t.Fatalf("reconcile = %d, %v; want no candidates", n, err)
+	if err := client.RecoverExecution(ctx, a.Key()); err != nil {
+		t.Fatalf("recover = %v", err)
 	}
 	b := testAssignment()
 	b.Effect = "effect-2"
@@ -1052,9 +1015,6 @@ func TestHTTPControlEndpoints(t *testing.T) {
 	}
 	if err := client.Acknowledge(ctx, b.Key()); err != nil {
 		t.Fatalf("acknowledge = %v", err)
-	}
-	if n, err := client.Collect(ctx); err != nil || n != 1 {
-		t.Fatalf("collect = %d %v, want 1", n, err)
 	}
 	if _, err := client.GetOutcome(ctx, b.Key()); !errors.Is(err, effect.ErrOutcomeUnavailable) {
 		t.Fatalf("collected outcome over http = %v, want ErrOutcomeUnavailable", err)
@@ -1079,7 +1039,7 @@ func TestPortBackendAttachRejectsForeignRef(t *testing.T) {
 // lease and asks again instead of restarting: nothing is re-dispatched until
 // the backend proves the execution missing, and a backend that then observes
 // it hands the Worker the original Outcome (RUN-EXE-3, TRN-DUR-4).
-func TestWorkerTakeoverWaitsForUnconfirmedBackend(t *testing.T) {
+func TestWorkerRecoverExecutionWaitsForUnconfirmedBackend(t *testing.T) {
 	rows := []struct {
 		name         string
 		assignment   effect.Assignment
@@ -1112,7 +1072,7 @@ func TestWorkerTakeoverWaitsForUnconfirmedBackend(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer worker.Close()
-			if err := worker.Takeover(ctx, a.Key()); err != nil {
+			if err := worker.RecoverExecution(ctx, a.Key()); err != nil {
 				t.Fatal(err)
 			}
 			// Undecided: the record is held under this Worker's lease, still
@@ -1155,127 +1115,6 @@ func TestWorkerTakeoverWaitsForUnconfirmedBackend(t *testing.T) {
 			}
 		})
 	}
-}
-
-// Acknowledge marks a settled record; Collect strips the payload and Outcome
-// of acknowledged records, and of unacknowledged ones only past CollectAfter,
-// and never touches an execution in flight. A collected record still answers
-// for its key: Attach says terminal, GetOutcome says collected, and a
-// Dispatch of the same key starts nothing (RUN-EXE-13).
-func TestWorkerAcknowledgeAndCollect(t *testing.T) {
-	ctx := context.Background()
-	now := time.Unix(3_000_000, 0)
-	rows := []struct {
-		name          string
-		state         effect.ExecutionStatus
-		acknowledge   bool
-		collectAfter  time.Duration
-		settledAgo    time.Duration
-		wantCollected bool
-	}{
-		{"acknowledged", effect.ExecutionCompleted, true, 0, time.Minute, true},
-		{"unacknowledged, no fallback", effect.ExecutionCompleted, false, 0, 48 * time.Hour, false},
-		{"unacknowledged within CollectAfter", effect.ExecutionCompleted, false, time.Hour, time.Minute, false},
-		{"unacknowledged past CollectAfter", effect.ExecutionFailed, false, time.Hour, 2 * time.Hour, true},
-		{"executing", effect.ExecutionRunning, false, time.Hour, 2 * time.Hour, false},
-	}
-	for _, row := range rows {
-		t.Run(row.name, func(t *testing.T) {
-			records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
-			a := testAssignment()
-			digest, err := a.Digest()
-			if err != nil {
-				t.Fatal(err)
-			}
-			r := store.Record{Assignment: a, AssignmentDigest: digest, State: row.state, ExecutionRef: store.ExecutionRef{Provider: "test", Ref: "job"},
-				Owner: "worker-a", FencingEpoch: 1, LeaseUntilUnixMilli: now.Add(time.Hour).UnixMilli(), SettledAtUnixMilli: now.Add(-row.settledAgo).UnixMilli()}
-			if row.state.Terminal() {
-				env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: a.Key(), AssignmentDigest: digest}
-				r.Outcome = &env
-			}
-			if err := records.Put(ctx, r); err != nil {
-				t.Fatal(err)
-			}
-			backend := newTestBackend()
-			worker, err := executor.NewWorker(ctx, records, routes(backend), executor.WorkerOptions{ID: "worker-a", Clock: func() time.Time { return now }, CollectAfter: row.collectAfter})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer worker.Close()
-			if row.acknowledge {
-				if err := worker.Acknowledge(ctx, a.Key()); err != nil {
-					t.Fatal(err)
-				}
-				if err := worker.Acknowledge(ctx, a.Key()); err != nil {
-					t.Fatalf("repeated acknowledge = %v", err)
-				}
-			}
-			n, err := worker.Collect(ctx)
-			if err != nil || (n == 1) != row.wantCollected {
-				t.Fatalf("collect = %d %v, want collected=%v", n, err, row.wantCollected)
-			}
-			got, _, err := records.Get(ctx, a.Key())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !row.wantCollected {
-				if got.Collected || got.Assignment.Body == nil || (row.state.Terminal() && got.Outcome == nil) {
-					t.Fatalf("record was collected: %+v", got)
-				}
-				return
-			}
-			if !got.Collected || got.Assignment.Body != nil || got.Outcome != nil || got.Assignment.Key() != a.Key() || got.AssignmentDigest != digest || got.State != row.state {
-				t.Fatalf("collected record = %+v", got)
-			}
-			if att, err := worker.Attach(ctx, a.Key()); err != nil || att.State != effect.AttachmentTerminal {
-				t.Fatalf("attach of collected = %+v %v", att, err)
-			}
-			if _, err := worker.GetOutcome(ctx, a.Key()); !errors.Is(err, effect.ErrOutcomeCollected) || !errors.Is(err, effect.ErrOutcomeUnavailable) {
-				t.Fatalf("outcome of collected = %v", err)
-			}
-			if err := worker.Dispatch(ctx, a); err != nil {
-				t.Fatalf("dispatch of collected key = %v", err)
-			}
-			backend.mu.Lock()
-			calls := backend.calls
-			backend.mu.Unlock()
-			if calls != 0 {
-				t.Fatalf("dispatch of a collected key executed %d times", calls)
-			}
-			b := a
-			b.StepID = "another-step"
-			if err := worker.Dispatch(ctx, b); !errors.Is(err, store.ErrAssignmentConflict) {
-				t.Fatalf("dispatch of another assignment under a collected key = %v, want conflict", err)
-			}
-		})
-	}
-	// Acknowledging what is not settled, or not known, is refused.
-	records := sqlitetest.Open(t).Executions()
-	a := testAssignment()
-	if err := records.Put(ctx, store.Record{Assignment: a, AssignmentDigest: mustDigest(a), State: effect.ExecutionRunning}); err != nil {
-		t.Fatal(err)
-	}
-	worker, err := executor.NewWorker(ctx, records, routes(newTestBackend()), executor.WorkerOptions{ID: "worker-a"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer worker.Close()
-	if err := worker.Acknowledge(ctx, a.Key()); !errors.Is(err, store.ErrStateConflict) {
-		t.Fatalf("acknowledge of a running record = %v, want state conflict", err)
-	}
-	other := a
-	other.Effect = "elsewhere"
-	if err := worker.Acknowledge(ctx, other.Key()); !errors.Is(err, effect.ErrExecutionNotFound) {
-		t.Fatalf("acknowledge of an unknown key = %v, want not found", err)
-	}
-}
-
-func mustDigest(a effect.Assignment) run.Digest {
-	d, err := a.Digest()
-	if err != nil {
-		panic(err)
-	}
-	return d
 }
 
 // modelText is the text of a ModelSucceeded outcome, "" for anything else.
@@ -1325,7 +1164,7 @@ func TestWorkerAdoptsToolByReplayDeclaration(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer worker.Close()
-			if err := worker.Takeover(ctx, a.Key()); err != nil {
+			if err := worker.RecoverExecution(ctx, a.Key()); err != nil {
 				t.Fatal(err)
 			}
 			got, _, err := records.Get(ctx, a.Key())
@@ -1349,72 +1188,6 @@ func TestWorkerAdoptsToolByReplayDeclaration(t *testing.T) {
 				t.Fatalf("unreplayable tool was re-dispatched: started %d ref %q superseded %d", started, got.ExecutionRef.Ref, len(got.Superseded))
 			}
 		})
-	}
-}
-
-// Reconcile bounds deferred: a record this Worker keeps failing to take over
-// is disposed once DisposeAfter has elapsed since the first failure, and the
-// disposal is reported through Warn; before that the takeover error is
-// returned and the record is untouched (RUN-EXE-6).
-func TestWorkerReconcileDisposesUnadoptableOrphans(t *testing.T) {
-	ctx := context.Background()
-	records := sqlitetest.Open(t).Executions()
-	a := testAssignment()
-	digest, err := a.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
-		ExecutionRef: store.ExecutionRef{Provider: "elsewhere", Ref: "existing-job"},
-		Owner:        "expired-worker", FencingEpoch: 3, LeaseUntilUnixMilli: 1}
-	if err := records.Put(ctx, r); err != nil {
-		t.Fatal(err)
-	}
-	var mu sync.Mutex
-	now := time.Unix(1_000_000, 0)
-	clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
-	var warned []error
-	warn := func(err error) { mu.Lock(); defer mu.Unlock(); warned = append(warned, err) }
-	worker, err := executor.NewWorker(ctx, records, routes(newTestBackend()),
-		executor.WorkerOptions{ID: "new-worker", Clock: clock, DisposeAfter: 10 * time.Second, Warn: warn})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer worker.Close()
-	for _, step := range []struct {
-		advance  time.Duration
-		disposed bool
-	}{{0, false}, {5 * time.Second, false}, {5 * time.Second, true}} {
-		mu.Lock()
-		now = now.Add(step.advance)
-		mu.Unlock()
-		_, err := worker.Reconcile(ctx)
-		got, _, gerr := records.Get(ctx, a.Key())
-		if gerr != nil {
-			t.Fatal(gerr)
-		}
-		if !step.disposed {
-			if !errors.Is(err, executor.ErrUnknownProvider) || got.State != effect.ExecutionRunning || got.Owner != r.Owner {
-				t.Fatalf("before the bound: reconcile = %v, record %s/%s", err, got.State, got.Owner)
-			}
-			continue
-		}
-		if err != nil || got.State != effect.ExecutionUnknown || got.Outcome == nil || got.Outcome.Error == nil || got.Outcome.Error.Code != "disposed" {
-			t.Fatalf("at the bound: reconcile = %v, record %s outcome %+v", err, got.State, got.Outcome)
-		}
-		mu.Lock()
-		n := len(warned)
-		var last error
-		if n > 0 {
-			last = warned[n-1]
-		}
-		mu.Unlock()
-		if n != 1 || !errors.Is(last, executor.ErrOrphanDisposed) || !errors.Is(last, executor.ErrUnknownProvider) {
-			t.Fatalf("warn = %v (%d), want one ErrOrphanDisposed wrapping the takeover error", last, n)
-		}
-	}
-	if _, err := worker.Reconcile(ctx); err != nil {
-		t.Fatalf("reconcile after disposal = %v", err)
 	}
 }
 
@@ -1619,6 +1392,92 @@ func TestDispatchRefusalClassification(t *testing.T) {
 				if err == nil || errors.Is(err, effect.ErrDispatchUnknown) || errors.Is(err, effect.ErrDispatchRetryable) != tc.retryable {
 					t.Fatalf("%s dispatch = %v, want retryable=%v and not unknown", name, err, tc.retryable)
 				}
+			}
+		})
+	}
+}
+
+// Acknowledge marks a settled record and collects it at once: the payload
+// and Outcome go, the key, digest, state and ExecutionRef stay, so the record
+// still answers Attach with terminal, GetOutcome with collected, and a
+// Dispatch of the same key starts nothing. An unacknowledged record keeps
+// its Outcome readable, and an execution in flight cannot be acknowledged
+// (RUN-EXE-13).
+func TestWorkerAcknowledgeCollects(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(3_000_000, 0)
+	rows := []struct {
+		name          string
+		state         effect.ExecutionStatus
+		acknowledge   bool
+		wantAckErr    error
+		wantCollected bool
+	}{
+		{"acknowledged", effect.ExecutionCompleted, true, nil, true},
+		{"unacknowledged", effect.ExecutionCompleted, false, nil, false},
+		{"executing", effect.ExecutionRunning, true, store.ErrStateConflict, false},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
+			a := testAssignment()
+			digest, err := a.Digest()
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := store.Record{Assignment: a, AssignmentDigest: digest, State: row.state, ExecutionRef: store.ExecutionRef{Provider: "test", Ref: "job"},
+				Owner: "worker-a", FencingEpoch: 1, LeaseUntilUnixMilli: now.Add(time.Hour).UnixMilli(), SettledAtUnixMilli: now.Add(-time.Minute).UnixMilli()}
+			if row.state.Terminal() {
+				env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: a.Key(), AssignmentDigest: digest}
+				r.Outcome = &env
+			}
+			if err := records.Put(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+			backend := newTestBackend()
+			worker, err := executor.NewWorker(ctx, records, routes(backend), executor.WorkerOptions{ID: "worker-a", Clock: func() time.Time { return now }})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer worker.Close()
+			if row.acknowledge {
+				err := worker.Acknowledge(ctx, a.Key())
+				if !errors.Is(err, row.wantAckErr) {
+					t.Fatalf("acknowledge = %v, want %v", err, row.wantAckErr)
+				}
+				if err == nil {
+					if err := worker.Acknowledge(ctx, a.Key()); err != nil {
+						t.Fatalf("repeated acknowledge = %v", err)
+					}
+				}
+			}
+			got, _, err := records.Get(ctx, a.Key())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !row.wantCollected {
+				if got.Collected || got.Assignment.Body == nil || (row.state.Terminal() && got.Outcome == nil) {
+					t.Fatalf("record was collected: %+v", got)
+				}
+				return
+			}
+			if !got.Collected || got.Assignment.Body != nil || got.Outcome != nil || got.Assignment.Key() != a.Key() || got.AssignmentDigest != digest || got.State != row.state {
+				t.Fatalf("collected record = %+v", got)
+			}
+			if att, err := worker.Attach(ctx, a.Key()); err != nil || att.State != effect.AttachmentTerminal {
+				t.Fatalf("attach of collected = %+v %v", att, err)
+			}
+			if _, err := worker.GetOutcome(ctx, a.Key()); !errors.Is(err, effect.ErrOutcomeCollected) || !errors.Is(err, effect.ErrOutcomeUnavailable) {
+				t.Fatalf("outcome of collected = %v", err)
+			}
+			if err := worker.Dispatch(ctx, a); err != nil {
+				t.Fatalf("dispatch replay of a collected key = %v", err)
+			}
+			backend.mu.Lock()
+			calls := backend.calls
+			backend.mu.Unlock()
+			if calls != 0 {
+				t.Fatalf("dispatch replay of a collected key executed %d times", calls)
 			}
 		})
 	}

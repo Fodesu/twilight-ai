@@ -241,3 +241,101 @@ func TestOutcomeReadErrorTaxonomy(t *testing.T) {
 		})
 	}
 }
+
+// recoveringPort is a fakePort that can also take records back.
+type recoveringPort struct {
+	*fakePort
+	recovered []effect.AssignmentKey
+}
+
+func (p *recoveringPort) RecoverExecution(_ context.Context, key effect.AssignmentKey) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.recovered = append(p.recovered, key)
+	return nil
+}
+
+// An orphaned target is deferred, and a port that can recover is asked to
+// take the record back once, at Plan time; a port that cannot is only
+// observed. Keep and Dispose never ask (RUN-CMT-7, RUN-EXE-6).
+func TestPlanAsksRecovererForOrphans(t *testing.T) {
+	for _, tc := range []struct {
+		state         effect.AttachmentState
+		wantRecovered int
+	}{
+		{effect.AttachmentOrphaned, 1},
+		{effect.AttachmentActive, 0},
+		{effect.AttachmentMissing, 0},
+	} {
+		port := &recoveringPort{fakePort: &fakePort{state: tc.state}}
+		if _, err := (&Reconciler{Executions: port}).Plan(context.Background(), "s", executingModel("c1")); err != nil {
+			t.Fatalf("%s: plan: %v", tc.state, err)
+		}
+		if len(port.recovered) != tc.wantRecovered {
+			t.Fatalf("%s: recovered = %v, want %d", tc.state, port.recovered, tc.wantRecovered)
+		}
+	}
+	plain := &fakePort{state: effect.AttachmentOrphaned}
+	if _, err := (&Reconciler{Executions: plain}).Plan(context.Background(), "s", executingModel("c1")); err != nil {
+		t.Fatalf("plain port: %v", err)
+	}
+}
+
+// A kept target whose Outcome stays not-ready is probed once the backoff has
+// settled: a record that has become orphaned is recovered once per episode,
+// and the Outcome the recovery produces is delivered.
+func TestKeptOutcomeProbeRecoversOrphan(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var mu sync.Mutex
+	ready := false
+	port := &recoveringPort{fakePort: &fakePort{state: effect.AttachmentActive}}
+	port.outcome = func(context.Context, effect.AssignmentKey) (effect.Outcome, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !ready {
+			return effect.Outcome{}, effect.ErrOutcomeNotReady
+		}
+		return effect.Outcome{Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: "recovered"}}}, nil
+	}
+	delivered := make(chan effect.Outcome, 1)
+	r := &Reconciler{Executions: port, Lifetime: ctx, Deliver: func(out effect.Outcome) { delivered <- out }}
+	if _, err := r.Plan(ctx, "s", executingModel("c1")); err != nil {
+		t.Fatal(err)
+	}
+	// The Worker dies: the record reads as orphaned from now on.
+	port.mu.Lock()
+	port.state = effect.AttachmentOrphaned
+	port.mu.Unlock()
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		port.mu.Lock()
+		n := len(port.recovered)
+		port.mu.Unlock()
+		if n == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("recovery requests = %d, want 1", n)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// Recovery took the record back and finished it.
+	mu.Lock()
+	ready = true
+	mu.Unlock()
+	select {
+	case out := <-delivered:
+		if m, ok := out.Result.(effect.ModelSucceeded); !ok || m.Result.Text != "recovered" {
+			t.Fatalf("delivered %+v", out)
+		}
+	case <-ctx.Done():
+		t.Fatal("outcome was not delivered after recovery")
+	}
+	port.mu.Lock()
+	n := len(port.recovered)
+	port.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("recovery requests = %d, want exactly 1", n)
+	}
+}

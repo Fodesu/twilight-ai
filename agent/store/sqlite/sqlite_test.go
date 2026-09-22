@@ -151,4 +151,10 @@ func TestExecutionStoreAcrossHandles(t *testing.T) {
 	if err != nil || len(list) != 2 {
 		t.Fatalf("list = %d %v, want 2", len(list), err)
 	}
+	if owned, err := a.ListOwned(ctx, "nobody"); err != nil || len(owned) != 0 {
+		t.Fatalf("ListOwned(nobody) = %d %v, want none", len(owned), err)
+	}
+	if owned, err := a.ListOwned(ctx, got.Owner); err != nil || len(owned) != 1 || owned[0].Assignment.Key() != key {
+		t.Fatalf("ListOwned(%q) = %+v %v, want the leased record", got.Owner, owned, err)
+	}
 }

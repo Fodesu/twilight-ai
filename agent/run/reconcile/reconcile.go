@@ -30,10 +30,11 @@ const (
 	// terminal with an Outcome to read), so the target stays Executing and
 	// its Outcome settles under the effect's settlement identity.
 	Keep Verdict = "keep"
-	// Defer: the executor holds a durable record it cannot reach (orphaned).
-	// The target stays Executing and its Outcome is still awaited: the
-	// control plane may take the record over and finish it, and nothing
-	// proves the effect was absent. Only an explicit disposal ends it.
+	// Defer: the executor holds a durable record nobody is running (orphaned).
+	// The target stays Executing and its Outcome is still awaited: nothing
+	// proves the effect was absent. The Reconciler asks a port that can
+	// (effect.Recoverer) to take the record back once; only an explicit
+	// disposal ends the wait otherwise.
 	Defer Verdict = "defer"
 	// Dispose: the executor holds no attempt for the effect, so the Run
 	// recovers the target itself: an Executing model step is withdrawn to
@@ -59,11 +60,14 @@ var ErrNoExecutionPort = errors.New("reconcile: executing targets but no executi
 // machine state is inconsistent (RUN-WIR-1).
 var ErrTargetWithoutEffect = errors.New("reconcile: executing target records no effect")
 
-// Reconciler is the recovery control plane of one owner over a Scope.
+// Reconciler is the recovery decision of one owner over a Scope.
 type Reconciler struct {
 	// Executions is the execution store's port, asked once per Executing
 	// target. Nil with Abandon unset is an error whenever a target exists:
-	// "no executor to ask" is not "no execution" (RUN-CMT-7).
+	// "no executor to ask" is not "no execution" (RUN-CMT-7). A port that
+	// also implements effect.Recoverer is asked to take an orphaned record
+	// back; one that does not leaves orphaned records to an external
+	// controller.
 	Executions effect.ExecutionPort
 	// Abandon disposes every Executing target without asking an executor. It
 	// is the caller's explicit statement that no executor holds anything for
@@ -182,6 +186,9 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtim
 			if d.Verdict, err = verdictOf(attachment.State); err != nil {
 				return nil, err
 			}
+			if d.Verdict == Defer {
+				r.recoverOrphan(ctx, assignment.Key())
+			}
 			if d.Verdict != Dispose {
 				r.awaitOutcome(assignment.Key())
 			}
@@ -212,6 +219,7 @@ func (r *Reconciler) awaitOutcome(key effect.AssignmentKey) {
 	go func() {
 		delay := 10 * time.Millisecond
 		failures := 0
+		asked := false
 		for {
 			out, err := r.Executions.GetOutcome(r.Lifetime, key)
 			if err == nil {
@@ -226,6 +234,12 @@ func (r *Reconciler) awaitOutcome(key effect.AssignmentKey) {
 			switch classifyRead(err) {
 			case readWait:
 				failures = 0
+				// An execution that stays not-ready may have lost its Worker
+				// meanwhile. Once the backoff has settled, look at the record
+				// and ask for recovery once per orphaned episode.
+				if delay >= time.Second {
+					r.probeOrphan(key, &asked)
+				}
 			case readDefinitive:
 				r.fail(key, err)
 				return
@@ -253,6 +267,40 @@ func (r *Reconciler) awaitOutcome(key effect.AssignmentKey) {
 func (r *Reconciler) fail(key effect.AssignmentKey, err error) {
 	if r.Fail != nil {
 		r.Fail(key, err)
+	}
+}
+
+// recoverOrphan asks the executor to take an orphaned record back, when the
+// port can (effect.Recoverer). It is the Owner acting on its own Run's
+// effect: the record was just observed orphaned, so this is the moment to
+// ask. A failed or impossible recovery leaves the target deferred; giving
+// the execution up is a separate decision, made through Dispose.
+func (r *Reconciler) recoverOrphan(ctx context.Context, key effect.AssignmentKey) {
+	if rec, ok := r.Executions.(effect.Recoverer); ok {
+		_ = rec.RecoverExecution(ctx, key)
+	}
+}
+
+// probeOrphan re-reads the record of a kept target that keeps answering
+// not-ready and asks for recovery when it has become orphaned. asked keeps
+// the request to once per orphaned episode; a record under a live lease
+// again resets it.
+func (r *Reconciler) probeOrphan(key effect.AssignmentKey, asked *bool) {
+	if _, ok := r.Executions.(effect.Recoverer); !ok {
+		return
+	}
+	attachment, err := r.Executions.Attach(r.Lifetime, key)
+	if err != nil {
+		return
+	}
+	switch attachment.State {
+	case effect.AttachmentOrphaned:
+		if !*asked {
+			*asked = true
+			r.recoverOrphan(r.Lifetime, key)
+		}
+	case effect.AttachmentActive:
+		*asked = false
 	}
 }
 

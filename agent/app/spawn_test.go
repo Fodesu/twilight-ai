@@ -184,12 +184,13 @@ func TestSpawnSurvivesOwnerRestart(t *testing.T) {
 		}
 		cfg := durablePorts(t, app.Config{Store: store, Content: content, Spawn: &spawn.Options{}, Ownership: session.OpenOptions{Takeover: takeover}})
 		// The child's own model execution belongs to process 1's Worker; process
-		// 2's clock runs an hour ahead so that record reads as orphaned and its
-		// reconcile loop adopts and restarts it (RUN-EXE-6).
+		// 2's clock runs an hour ahead so that record reads as orphaned, and
+		// RecoverInterrupted asks process 2's Worker (effect.Recoverer) to
+		// take it back and restart it (RUN-CMT-7, RUN-EXE-6).
 		var clock func() time.Time
 		if takeover {
 			clock = func() time.Time { return time.Now().Add(time.Hour) }
-			cfg.Worker = executor.WorkerOptions{Clock: clock, ReconcileInterval: 5 * time.Millisecond}
+			cfg.Worker = executor.WorkerOptions{Clock: clock}
 		}
 		records, err := sqlite.Open(filepath.Join(root, "executions.db"), sqlite.Options{Now: clock})
 		if err != nil {

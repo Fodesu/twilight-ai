@@ -3,7 +3,6 @@ package executor
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	executionstore "github.com/felinics/twilight/agent/executor/store"
@@ -22,10 +21,6 @@ type ExecutionRef = executionstore.ExecutionRef
 // Outcome reads (effect.ErrOutcomeUnavailable): this process cannot reach the
 // execution and retrying will not change that.
 var ErrUnknownProvider = fmt.Errorf("executor: unknown execution provider: %w", effect.ErrOutcomeUnavailable)
-
-// ErrOrphanDisposed wraps the Warn a Worker emits when Reconcile disposes a
-// record no Worker could adopt within WorkerOptions.DisposeAfter (RUN-EXE-6).
-var ErrOrphanDisposed = errors.New("executor: orphaned execution disposed after DisposeAfter")
 
 // ExecutionBackend performs one provider's effects. It is addressed by Ref:
 // the Worker persists the Ref Prepare returns before Start, and every later

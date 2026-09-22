@@ -28,31 +28,9 @@ type WorkerOptions struct {
 	// restarted process while an older incarnation could still be alive.
 	ID            string
 	LeaseDuration time.Duration
-	// ReconcileInterval starts a background control-plane loop that adopts
-	// execution records whose lease expired — orphaned assignments left by a
-	// dead incarnation, including ones this Worker's own heartbeat lost. Zero
-	// disables the loop; deployments with an external control plane call
-	// Takeover explicitly instead.
-	ReconcileInterval time.Duration
 	// Clock reads the lease clock. It must agree with the Store's clock; the
 	// Store remains the fencing authority. Defaults to time.Now.
 	Clock func() time.Time
-	// DisposeAfter bounds how long an orphaned record waits for a Worker
-	// able to adopt it: once this Worker's takeovers of a record have been
-	// failing for that long, Reconcile disposes the record (RUN-EXE-6) and
-	// reports it through Warn. Zero leaves deferred unbounded, the protocol
-	// default. The clock is this incarnation's: a restarted Worker starts
-	// counting again.
-	DisposeAfter time.Duration
-	// Warn receives control-plane events no caller waits for, such as a
-	// record disposed after DisposeAfter (ErrOrphanDisposed). nil discards.
-	Warn func(error)
-	// CollectAfter is the time-based fallback of record collection
-	// (RUN-EXE-13): a terminal record the Owner never acknowledged is
-	// collected once its settlement is this old. Zero collects only
-	// acknowledged records; the protocol default keeps every unacknowledged
-	// Outcome readable.
-	CollectAfter time.Duration
 	// Retry is the deployment's budget for re-dispatching an effect after a
 	// Known failure that declares itself retryable (RUN-EXE-11): at most
 	// MaxAttempts executions in total, Backoff multiplied by the attempts so
@@ -75,14 +53,17 @@ const defaultLeaseDuration = 30 * time.Second
 
 // Worker owns execution leases, not Session ownership. It selects a Backend
 // for an Assignment once, persists the resulting ExecutionRef, and from then
-// on resolves record -> provider -> Backend for every lifecycle operation. A
-// Worker can acquire an expired record from a shared Store and continue it
-// from the persisted payload and Ref. Takeover is explicit: failure detection
-// and the decision to retry an effect belong to the control plane; Reconcile
-// is the built-in loop form of that decision, while deployments with an
-// external control plane drive Takeover directly. Dispose settles a record
-// the control plane has given up on. None of the three is part of
-// effect.ExecutionPort, which stays the per-assignment data plane.
+// on resolves record -> provider -> Backend for every lifecycle operation.
+//
+// The Worker knows how to recover one execution and nothing about when:
+// RecoverExecution (effect.Recoverer) takes an expired record back under a
+// live lease and continues it from the persisted payload and Ref, and
+// Dispose settles a record its caller has given up on. Which records to
+// recover, when to ask and when to give up are decisions of whoever observes
+// the record as orphaned — the Owner reconciling its own Run (RUN-CMT-7) or
+// an external controller — and the Worker runs no loop of its own
+// (RUN-EXE-6). Neither operation is part of effect.ExecutionPort, which
+// stays the per-assignment data plane.
 type Worker struct {
 	store     executionstore.Store
 	routes    []Route
@@ -92,21 +73,15 @@ type Worker struct {
 	now       func() time.Time
 	lifecycle context.Context
 	stop      context.CancelFunc
-	// wg counts the goroutines the Worker started: the reconcile loop and
-	// each record's heartbeat and watcher. Close cancels lifecycle and waits.
+	// wg counts the goroutines the Worker started: each record's heartbeat
+	// and watcher. Close cancels lifecycle and waits.
 	wg sync.WaitGroup
 
-	disposeAfter time.Duration
-	collectAfter time.Duration
-	warn         func(error)
-	retry        RetryBudget
-	progress     *ProgressHub
+	retry    RetryBudget
+	progress *ProgressHub
 
 	mu     sync.Mutex
 	notify map[effect.AssignmentKey]chan struct{}
-	// orphans records when this incarnation first failed to take over each
-	// expired record; DisposeAfter is measured from there.
-	orphans map[effect.AssignmentKey]time.Time
 }
 
 // NewWorker builds a Worker over records with the given routes; the last
@@ -147,24 +122,16 @@ func NewWorker(ctx context.Context, records executionstore.Store, routes []Route
 		now = time.Now
 	}
 	lifecycle, stop := context.WithCancel(context.WithoutCancel(ctx))
-	warn := opts.Warn
-	if warn == nil {
-		warn = func(error) {}
-	}
 	progress := opts.Progress
 	if progress == nil {
 		progress = NewProgressHub(0)
 	}
 	w := &Worker{store: records, routes: routes, backends: backends, id: opts.ID, lease: opts.LeaseDuration, now: now,
-		disposeAfter: opts.DisposeAfter, collectAfter: opts.CollectAfter, warn: warn, retry: opts.Retry, progress: progress,
-		lifecycle: lifecycle, stop: stop, notify: make(map[effect.AssignmentKey]chan struct{}),
-		orphans: make(map[effect.AssignmentKey]time.Time)}
+		retry: opts.Retry, progress: progress,
+		lifecycle: lifecycle, stop: stop, notify: make(map[effect.AssignmentKey]chan struct{})}
 	if err := w.recover(ctx); err != nil {
 		stop()
 		return nil, err
-	}
-	if opts.ReconcileInterval > 0 {
-		w.spawn(func() { w.reconcileLoop(opts.ReconcileInterval) })
 	}
 	return w, nil
 }
@@ -178,9 +145,9 @@ func (w *Worker) spawn(fn func()) {
 	}()
 }
 
-// Close stops the reconcile loop, every heartbeat and every watcher, and
+// Close stops every heartbeat and every watcher, and
 // waits for them. Records keep their leases until they expire: another
-// incarnation adopts them through Reconcile or Takeover (RUN-EXE-6). Close
+// incarnation adopts them through RecoverExecution (RUN-EXE-6). Close
 // does not cancel backend executions.
 func (w *Worker) Close() {
 	w.stop()
@@ -218,7 +185,7 @@ func (w *Worker) Validate(ctx context.Context, a effect.Assignment) (*run.ToolFa
 // Dispatch accepts an Assignment (RUN-EXE-3): it selects the Backend,
 // prepares the Ref, persists the record with its ExecutionRef, then starts
 // the execution. A replay of the same Assignment acknowledges the persisted
-// acceptance; recovery of an existing record goes through Takeover.
+// acceptance; recovery of an existing record goes through RecoverExecution.
 func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 	if a.Body == nil {
 		return errors.New("executor: assignment without body")
@@ -282,10 +249,16 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 	return nil
 }
 
-// Takeover explicitly asks this Worker to acquire an expired Assignment. The
-// caller is the control plane: it must have decided that retrying this effect
-// is safe or that provider reconciliation has already been attempted.
-func (w *Worker) Takeover(ctx context.Context, key effect.AssignmentKey) error {
+// RecoverExecution is effect.Recoverer: it takes the record of key back under
+// this Worker's lease when the previous lease expired or was never held, and
+// continues the execution from the persisted payload and Ref — attaching the
+// previous backend execution, restarting it once the backend proves it
+// missing, or settling it as Unknown when the tool's replay declaration
+// forbids a restart (RUN-EXE-3, RUN-EXE-9). A terminal record, a record
+// already under this Worker's lease and a record under another live lease
+// are left as they are. The caller has observed the record as orphaned; how
+// often to ask again, and when to give up through Dispose, is the caller's.
+func (w *Worker) RecoverExecution(ctx context.Context, key effect.AssignmentKey) error {
 	r, ok, err := w.store.Get(ctx, key)
 	if err != nil {
 		return err
@@ -311,116 +284,15 @@ func (w *Worker) Takeover(ctx context.Context, key effect.AssignmentKey) error {
 	return w.acquireAndStart(ctx, key)
 }
 
-// Reconcile offers every non-terminal execution record whose lease expired —
-// or that was never acquired — to Takeover. It is the control-plane step for
-// orphaned executions: a restarted Worker resumes them from the persisted
-// payload and Ref, first trying to attach the previous backend execution and
-// only re-dispatching after the backend reports it unattachable. Records
-// under a live lease, this Worker's or another's, are skipped; the store
-// remains the fencing authority. One record's failure does not stop the
-// others. A record this Worker has been failing to take over for
-// DisposeAfter is disposed instead (RUN-EXE-6). It returns the number of
-// records handed to Takeover.
-func (w *Worker) Reconcile(ctx context.Context) (int, error) {
-	records, err := w.store.List(ctx)
-	if err != nil {
-		return 0, err
-	}
-	now := w.now()
-	var firstErr error
-	n := 0
-	for i := range records {
-		r := &records[i]
-		key := r.Assignment.Key()
-		if protocol.StatusTerminal(r.State) {
-			w.forgetOrphan(key)
-			continue
-		}
-		if r.FencingEpoch != 0 && r.LeaseUntilUnixMilli > now.UnixMilli() {
-			continue
-		}
-		n++
-		err := w.Takeover(ctx, key)
-		if err == nil {
-			w.forgetOrphan(key)
-			continue
-		}
-		if w.expireOrphan(ctx, key, now, err) {
-			continue
-		}
-		if firstErr == nil {
-			firstErr = err
-		}
-	}
-	return n, firstErr
-}
-
-// expireOrphan disposes a record this Worker has failed to take over for
-// DisposeAfter, measured from the first failure this incarnation saw. It
-// re-reads the record first: an execution the failed takeover nonetheless
-// started under this Worker's live lease is adopted, not disposed.
-func (w *Worker) expireOrphan(ctx context.Context, key effect.AssignmentKey, now time.Time, cause error) bool {
-	if w.disposeAfter <= 0 {
-		return false
-	}
-	w.mu.Lock()
-	since, seen := w.orphans[key]
-	if !seen {
-		since = now
-		w.orphans[key] = since
-	}
-	w.mu.Unlock()
-	age := now.Sub(since)
-	if age < w.disposeAfter {
-		return false
-	}
-	r, ok, err := w.store.Get(ctx, key)
-	if err != nil || !ok || protocol.StatusTerminal(r.State) {
-		return false
-	}
-	if r.FencingEpoch != 0 {
-		owned, err := w.store.LeaseOwned(ctx, key, w.id, r.FencingEpoch)
-		if err != nil {
-			return false
-		}
-		if owned {
-			w.forgetOrphan(key)
-			return false
-		}
-	}
-	if err := w.Dispose(ctx, key); err != nil {
-		return false
-	}
-	w.forgetOrphan(key)
-	w.warn(fmt.Errorf("%w: run %s effect %s, unadoptable for %s: %w", ErrOrphanDisposed, key.RunID, key.Effect, age.Round(time.Millisecond), cause))
-	return true
-}
-
-func (w *Worker) forgetOrphan(key effect.AssignmentKey) {
-	w.mu.Lock()
-	delete(w.orphans, key)
-	w.mu.Unlock()
-}
-
-func (w *Worker) reconcileLoop(interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-w.lifecycle.Done():
-			return
-		case <-ticker.C:
-			_, _ = w.Reconcile(w.lifecycle)
-			_, _ = w.Collect(w.lifecycle)
-		}
-	}
-}
-
 // Acknowledge is effect.Acknowledger (RUN-EXE-13): the Owner reports that
-// the Outcome of key is settled as a Session fact. The record must be
-// terminal; acknowledging an execution still in flight is a caller error
-// (ErrStateConflict), and a key without a record is ErrExecutionNotFound.
-// Repeating it changes nothing.
+// the Outcome of key is settled as a Session fact, and the Worker collects
+// the record at once — its payload, Outcome and Superseded refs are dropped,
+// while the key, its digest, state and ExecutionRef remain, so the record
+// still answers Attach with terminal, refuses a Dispatch that would execute
+// the key again, and answers GetOutcome with ErrOutcomeCollected. The record
+// must be terminal; acknowledging an execution still in flight is a caller
+// error (ErrStateConflict), and a key without a record is
+// ErrExecutionNotFound. Repeating it changes nothing.
 func (w *Worker) Acknowledge(ctx context.Context, key effect.AssignmentKey) error {
 	r, ok, err := w.store.Get(ctx, key)
 	if err != nil {
@@ -436,52 +308,16 @@ func (w *Worker) Acknowledge(ctx context.Context, key effect.AssignmentKey) erro
 		return nil
 	}
 	r.AcknowledgedAtUnixMilli = w.now().UnixMilli()
+	r.Assignment.Body, r.Assignment.Target, r.Outcome, r.Superseded, r.Collected = nil, nil, nil, nil, true
 	return w.store.Put(ctx, r)
 }
 
-// Collect strips the payload and Outcome of every terminal record whose
-// settlement the Owner acknowledged, or that has been terminal for
-// CollectAfter when that is set (RUN-EXE-13). What remains is the key, its
-// digest, state and ExecutionRef: the record still answers Attach with
-// terminal and refuses a Dispatch that would execute the key again, while
-// GetOutcome answers ErrOutcomeCollected. Nothing in flight is touched. It
-// returns the number of records collected; one record's failure does not
-// stop the others.
-func (w *Worker) Collect(ctx context.Context) (int, error) {
-	records, err := w.store.List(ctx)
-	if err != nil {
-		return 0, err
-	}
-	now := w.now().UnixMilli()
-	n := 0
-	var firstErr error
-	for i := range records {
-		r := &records[i]
-		if !protocol.StatusTerminal(r.State) || r.Collected {
-			continue
-		}
-		expired := w.collectAfter > 0 && r.SettledAtUnixMilli != 0 && now-r.SettledAtUnixMilli >= w.collectAfter.Milliseconds()
-		if r.AcknowledgedAtUnixMilli == 0 && !expired {
-			continue
-		}
-		r.Assignment.Body, r.Assignment.Target, r.Outcome, r.Superseded, r.Collected = nil, nil, nil, nil, true
-		if err := w.store.Put(ctx, *r); err != nil {
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		n++
-	}
-	return n, firstErr
-}
-
 // Dispose settles a non-terminal record as Unknown without re-dispatching it.
-// The caller is the control plane: it has decided that the execution cannot be
-// recovered and that the Owner should dispose the Run target (RUN-CMT-7).
-// Unlike Takeover, Dispose is unconditional — it also applies to records whose
-// owner is dead or absent — and unlike Cancel it does not require backend
-// reachability: the backend is cancelled best-effort after the settle.
+// The caller has given the execution up: it will not be recovered, and the
+// Owner disposes the Run target on its next read (RUN-CMT-7). Unlike
+// RecoverExecution, Dispose is unconditional — it also applies to records
+// whose owner is dead or absent — and unlike Cancel it does not require
+// backend reachability: the backend is cancelled best-effort after the settle.
 func (w *Worker) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 	r, ok, err := w.store.Get(ctx, key)
 	if err != nil {
@@ -494,7 +330,7 @@ func (w *Worker) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 		return nil
 	}
 	env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: r.AssignmentDigest, Unknown: true,
-		Error: &protocol.WireError{Code: "disposed", Message: "execution record disposed by the control plane"}}
+		Error: &protocol.WireError{Code: "disposed", Message: "execution record disposed by its controller"}}
 	r.Outcome = &env
 	r.State = effect.ExecutionUnknown
 	r.SettledAtUnixMilli = w.now().UnixMilli()
@@ -580,7 +416,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 	leaseDone := make(chan struct{})
 	w.spawn(func() { w.heartbeat(key, claimed.FencingEpoch, leaseDone) })
 	if claimed.State == effect.ExecutionRunning || claimed.State == effect.ExecutionDispatching {
-		// Prefer adoption over retry. Takeover is allowed to retry only after
+		// Prefer adoption over retry. Recovery is allowed to retry only after
 		// the backend proves that the old execution is missing; an answer it
 		// cannot give yet (orphaned) keeps the lease and the question open.
 		attachment, attachErr := backend.Attach(ctx, ref)
@@ -629,9 +465,10 @@ func (w *Worker) awaitBackend(key effect.AssignmentKey, claimed *executionstore.
 			w.watch(key, claimed.AssignmentDigest, claimed.FencingEpoch, backend, ref, leaseDone)
 			return
 		case effect.AttachmentMissing:
-			if err := w.replay(w.lifecycle, key, claimed, backend, ref, leaseDone); err != nil {
-				w.warn(fmt.Errorf("executor: replaying run %s effect %s after its backend proved the execution missing: %w", key.RunID, key.Effect, err))
-			}
+			// A failed replay has released the lease (replay closes leaseDone
+			// on every error path), so the record reads as orphaned again and
+			// the Owner's next recovery request retries it.
+			_ = w.replay(w.lifecycle, key, claimed, backend, ref, leaseDone)
 			return
 		}
 	}
@@ -876,7 +713,7 @@ func (w *Worker) heartbeat(key effect.AssignmentKey, epoch uint64, done <-chan s
 				}
 				// Transient store errors must not silently stop lease
 				// maintenance; the next tick retries. If the lease nonetheless
-				// expires, Reconcile re-adopts the record.
+				// expires, the next RecoverExecution re-adopts the record.
 			}
 		}
 	}
@@ -950,7 +787,8 @@ func (w *Worker) Progress(ctx context.Context, key effect.AssignmentKey, after u
 // another incarnation is proof of its heartbeat, and its watcher settles the
 // Outcome into the same store GetOutcome reads. Only for its own live lease
 // does this Worker also ask the Backend, and a Backend that no longer finds
-// the Ref makes the record orphaned until Reconcile restarts or disposes it.
+// the Ref makes the record orphaned until RecoverExecution restarts it or
+// Dispose settles it.
 func (w *Worker) Attach(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
 	r, ok, err := w.store.Get(ctx, key)
 	if err != nil {
@@ -1126,15 +964,16 @@ func (w *Worker) requestCancelOwned(ctx context.Context, key effect.AssignmentKe
 }
 
 // recover resumes observation of the records this incarnation still owns
-// after a restart with the same ID.
+// after a restart with the same ID. It is the lease holder's own duty and
+// reads only its own records; it adopts nothing.
 func (w *Worker) recover(ctx context.Context) error {
-	records, err := w.store.List(ctx)
+	records, err := w.store.ListOwned(ctx, w.id)
 	if err != nil {
 		return err
 	}
 	for i := range records {
 		r := &records[i]
-		if protocol.StatusTerminal(r.State) || r.Owner != w.id || r.FencingEpoch == 0 {
+		if protocol.StatusTerminal(r.State) || r.FencingEpoch == 0 {
 			continue
 		}
 		owned, err := w.store.LeaseOwned(ctx, r.Assignment.Key(), w.id, r.FencingEpoch)
@@ -1151,7 +990,7 @@ func (w *Worker) recover(ctx context.Context) error {
 		attachment, attachErr := backend.Attach(ctx, r.ExecutionRef.Ref)
 		if attachErr != nil {
 			// One broken backend read must not block recovery of the other
-			// records; a later Reconcile or explicit Takeover retries this one.
+			// records; a later RecoverExecution retries this one.
 			continue
 		}
 		if attachment.State == effect.AttachmentActive || attachment.State == effect.AttachmentTerminal {
@@ -1165,4 +1004,8 @@ func (w *Worker) recover(ctx context.Context) error {
 	return nil
 }
 
-var _ effect.ExecutionPort = (*Worker)(nil)
+var (
+	_ effect.ExecutionPort = (*Worker)(nil)
+	_ effect.Acknowledger  = (*Worker)(nil)
+	_ effect.Recoverer     = (*Worker)(nil)
+)

@@ -41,9 +41,9 @@ Workspace 是可选的 application domain。Agent Core 只携带 opaque `TargetR
 
 - `RunStatus`、`TurnStatus`、`ExecutionStatus`、`AttachmentState` 属于不同状态域，
   不互换枚举。
-- `AttachmentState=orphaned` 是 Executor 的观察结果；它在 recovery control
-  plane（`agent/run/reconcile`）中映射为 `Verdict=defer`。
-- `recovery_required` 是应用/API view，表示仍需控制面动作，不表示执行结果为
+- `AttachmentState=orphaned` 是 Executor 的观察结果；它在 `agent/run/reconcile`
+  中映射为 `Verdict=defer`，并触发一次 `RecoverExecution` 请求。
+- `recovery_required` 是应用/API view，表示恢复尚未完成，不表示执行结果为
   `Unknown`。
 - Artifact 的“孤儿 claim”只表示 retention claim 没有对应 owner fact，与
   Executor 的 `orphaned` execution 无关。

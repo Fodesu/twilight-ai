@@ -152,7 +152,7 @@ Recovery 的状态域和跨层映射以 [Runtime](agent-runtime.md) 的 DRV-3 �
 - `missing`：才允许 Run recovery disposition；
 - `recovery_required`：只是应用 view，不表示 Outcome 为 Unknown。
 
-测试必须区分同一次执行的 attach/读取、显式 takeover/reconcile/dispose、语义
+测试必须区分同一次执行的 attach/读取、显式 RecoverExecution/Dispose、语义
 retry 和工具 Unknown。任何恢复路径都不得自动再次执行 Unknown tool call。
 
 ## 6. 测试分层

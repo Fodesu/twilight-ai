@@ -188,9 +188,6 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		warn = func(error) {}
 	}
 	app := &Application{warn: warn, refs: make(map[turn.PresetID]turn.PresetRef, len(c.Presets)), sessions: make(map[session.SessionID]*Session)}
-	if c.Worker.Warn == nil {
-		c.Worker.Warn = warn
-	}
 	// The subagent tool is answered by a Responder on the Driver (SPN-1,
 	// DRV-4), not executed: it drives children through the Authority, so it
 	// is bound after New. No Worker route is involved.

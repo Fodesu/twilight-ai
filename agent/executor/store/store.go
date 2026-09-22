@@ -66,15 +66,15 @@ type Record struct {
 	FencingEpoch        uint64                    `json:"fencingEpoch,omitempty"`
 	LeaseUntilUnixMilli int64                     `json:"leaseUntilUnixMilli,omitempty"`
 	Outcome             *protocol.OutcomeEnvelope `json:"outcome,omitempty"`
-	// SettledAtUnixMilli is when the record became terminal; the Worker's
-	// time-based collection counts from it (RUN-EXE-13).
+	// SettledAtUnixMilli is when the record became terminal.
 	SettledAtUnixMilli int64 `json:"settledAtUnixMilli,omitempty"`
 	// AcknowledgedAtUnixMilli is when the Owner reported the settlement of
 	// this Outcome as a Session fact (effect.Acknowledger); zero until then.
 	AcknowledgedAtUnixMilli int64 `json:"acknowledgedAtUnixMilli,omitempty"`
 	// Collected marks a terminal record whose payload and Outcome were
-	// collected: the key, digest, state and ExecutionRef remain, so the
-	// acceptance of the key is never forgotten while the record exists.
+	// collected on acknowledgement (RUN-EXE-13): the key, digest, state and
+	// ExecutionRef remain, so the acceptance of the key is never forgotten
+	// while the record exists.
 	Collected bool `json:"collected,omitempty"`
 }
 
@@ -87,5 +87,9 @@ type Store interface {
 	Acquire(context.Context, effect.AssignmentKey, string, time.Duration) (Record, bool, error)
 	Renew(context.Context, effect.AssignmentKey, string, uint64, time.Duration) error
 	LeaseOwned(context.Context, effect.AssignmentKey, string, uint64) (bool, error)
-	List(context.Context) ([]Record, error)
+	// ListOwned returns the records whose Owner is the given Worker id: what
+	// a restarted incarnation resumes. No other listing is part of the data
+	// plane; which orphaned records to recover is decided by whoever observes
+	// them (RUN-EXE-6).
+	ListOwned(context.Context, string) ([]Record, error)
 }
