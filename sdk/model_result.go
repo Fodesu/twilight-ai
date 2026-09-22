@@ -1,8 +1,6 @@
 package sdk
 
-// ModelResult is one complete model response, carrying what a single call
-// produced: no auto tool loop, approval, or multi-step accumulation. Steps and
-// messages live in the run loop or application.
+// ModelResult is one complete model response: what a single call produced.
 type ModelResult struct {
 	Text string `json:"text"`
 	// Reasoning is the parts' text joined for display. Rebuild requests from

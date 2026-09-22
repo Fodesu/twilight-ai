@@ -7,10 +7,10 @@ A lightweight, idiomatic AI SDK for Go — inspired by [Vercel AI SDK](https://s
 
 ## Features
 
-- **One call, one result** — `Model.Generate` and `Model.Stream` take an `sdk.Request` and return a `ModelResult` or a stream of typed parts; the loop, tool execution and approval are the caller's. `Embed`, `EmbedMany`, `GenerateImage`, `EditImage`, `GenerateVideo`, `GenerateSpeech` and `StreamSpeech` cover the other modalities
+- **One call, one result** — `Model.Generate` and `Model.Stream` take an `sdk.Request` and return a `ModelResult` or a stream of typed parts. `Embed`, `EmbedMany`, `GenerateImage`, `EditImage`, `GenerateVideo`, `GenerateSpeech` and `StreamSpeech` cover the other modalities
 - **Provider-agnostic** — swap between OpenAI, Anthropic, Google, GitHub Copilot, Edge TTS, or any OpenAI-compatible endpoint
 - **Model discovery** — `ListModels` fetches available models, `Test` checks provider connectivity and model support
-- **Tool calling** — describe tools with `ToolDefinition` (or infer the schema from a Go struct with `NewToolDefinition[T]`); the model's calls come back typed as `ToolArguments`, and running them is yours
+- **Tool calling** — describe tools with `ToolDefinition` (or infer the schema from a Go struct with `NewToolDefinition[T]`); the model's calls come back as typed `ToolCall`s with `ToolArguments`
 - **Streaming** — first-class channel-based streaming with fine-grained `StreamPart` types
 - **Rich message types** — text, images, files, reasoning content, tool calls/results
 - **Embeddings** — generate embeddings with `Embed` / `EmbedMany`, supports OpenAI and Google providers
@@ -179,7 +179,7 @@ result, err := stream.Result()
 
 ### Tool Calling
 
-Describe the tool with a Go struct — the SDK infers the JSON Schema. The model asks for the call; running it, and replaying the step, is yours:
+Describe the tool with a Go struct — the SDK infers the JSON Schema. The model asks for the call; the caller runs it and replays the step:
 
 ```go
 type WeatherParams struct {
@@ -223,7 +223,7 @@ for {
 }
 ```
 
-Each iteration is one model call. The loop, tool execution, approval, step limits and persistence are the caller's; the SDK stops at the definitions and the typed calls. See [Tool Calling](docs/tools.md).
+Each iteration is one model call. See [Tool Calling](docs/tools.md).
 
 ### Image Generation
 

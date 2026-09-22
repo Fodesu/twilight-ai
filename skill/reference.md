@@ -41,9 +41,9 @@ func EditImage(ctx context.Context, options ...ImageEditOption) (*ImageResult, e
 
 Behavior notes:
 
-- `Generate` and `Stream` are one model call each; the SDK runs no loop and no
-  tool executor. A runtime runs the returned `ToolCalls` itself and appends the
-  step's assistant and tool messages to the next `Request`.
+- `Generate` and `Stream` are one model call each. A runtime runs the returned
+  `ToolCalls` and appends the step's assistant and tool messages to the next
+  `Request`.
 
 ### Provider Contracts
 
