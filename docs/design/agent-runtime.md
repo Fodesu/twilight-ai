@@ -156,7 +156,7 @@ func (s *Session) Handle() *owner.Handle
 func (s *Session) Close(ctx) error
 ```
 
-**APP-SES-1** `OpenSession` 依次：解析 Preset（PST-2）、确保 Session 存在（先 `Header` 探测再 `Create`——Create 的幂等要求字段全同，重启后 `CreatedAtUnixMilli` 必然不同）、`Owner.Open`（取得 Handle：Writer 与接管处置，OWN-HDL-1、DRV-3）；处置数暴露为 `Session.Recovered`。`ResumeActive` 为真时同步 Resume 仍在 `active` 的 Turn。此后 Session 的每个命令都经 `Handle.Writer()` 提交。
+**APP-SES-1** `OpenSession` 依次：解析 Preset（PST-2）、确保 Session 存在（`Create` 对已存在的 Session 幂等，不比较 `CreatedAtUnixMilli`，SES-CRT-1）、`Owner.Open`（取得 Handle：Writer 与接管处置，OWN-HDL-1、DRV-3）；处置数暴露为 `Session.Recovered`。`ResumeActive` 为真时同步 Resume 仍在 `active` 的 Turn。此后 Session 的每个命令都经 `Handle.Writer()` 提交。
 
 **APP-SES-2** `Send` 提交文本（`chatlog.Commands.Submit`）、Route 并阻塞到结算：首个 `Result` 是输入落入的 Turn，其后是本次调用在结算后从积压开启并结算的 Turn（Drain 的循环内化在 Session 里）。`Disposition` 为 `already_driving` 时该输入由运行中的驱动者推进，本次调用不再排空。`Reply` 为该 Turn 最后一条 assistant 的文本（`chatlog.LastAssistantText`），仅在 `finished` 时读取——回复是对话层概念，turn 层只报协议结果。
 

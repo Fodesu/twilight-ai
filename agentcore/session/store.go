@@ -9,9 +9,10 @@ import (
 )
 
 // CreateRequest establishes a Session: a root naming a new segment. A
-// repeat for an existing SessionID whose resolved parent edge, CausationID,
-// Ext and CreatedAtUnixMilli match the existing Session is idempotent; any
-// difference is a Conflict. Fork makes the new segment a child of another
+// repeat for an existing SessionID whose resolved parent edge, CausationID
+// and Ext match the existing Session is idempotent and returns the existing
+// header; any difference is a Conflict. CreatedAtUnixMilli is recorded from
+// the first successful Create and does not take part in that judgement. Fork makes the new segment a child of another
 // Session's history (SES-FRK-1): that Session must be live in the same
 // Store and its ancestry must hold commit Seq; otherwise Create fails and
 // writes nothing. The segment's ID is always the kernel's to draw: a caller never
@@ -87,8 +88,6 @@ type Head struct {
 type Proposal struct {
 	CommitID CommitID
 	Batches  []StreamBatch
-	// Ext are the module extension slots stored as Commit.Ext (SES-WIR-5).
-	Ext Extensions
 }
 
 // Handle is the kernel's ownership handle returned by Store.Open. Append

@@ -17,7 +17,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 )
 
@@ -36,6 +35,8 @@ var (
 type CommitSeq uint64
 
 // CommitID names the operation a commit records; replaying it is recognised.
+// How an operation is named is the writing domain's rule, never the
+// ledger's: it only enforces that one CommitID lands once.
 type CommitID string
 
 // Epoch is a writer's fencing epoch, judged at Append.
@@ -76,19 +77,4 @@ type Commit struct {
 // Head is a ledger's tip: the next Seq to assign.
 type Head struct {
 	Next CommitSeq `json:"next"`
-}
-
-// DeriveCommitID names a command on one scope. Commands that happen once
-// per ledger take no discriminator; those that recur take one, so their
-// identity is the command and the occasion, never the wall clock.
-func DeriveCommitID(scope any, command, discriminator string) CommitID {
-	d, err := es.DigestCanonical(struct {
-		Scope         any    `json:"scope"`
-		Command       string `json:"command"`
-		Discriminator string `json:"discriminator,omitempty"`
-	}{scope, command, discriminator})
-	if err != nil {
-		panic(err) // scopes are closed value types; canonical encoding cannot fail
-	}
-	return CommitID(d)
 }

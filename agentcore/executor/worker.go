@@ -286,7 +286,7 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 	}
 	key := a.Key()
 	c := executionstore.Commit{Seq: 0, CommitID: executionstore.AcceptCommitID(key), Events: []executionstore.Event{
-		w.event(executionstore.EventExecutionAccepted, executionstore.Accepted{Assignment: a, AssignmentDigest: digest}),
+		w.event(executionstore.EventExecutionAccepted, executionstore.Accepted{Assignment: a}),
 		w.event(executionstore.EventExecutionBound, executionstore.Bound{Ref: ExecutionRef{Provider: route.Provider, Ref: ref}}),
 	}}
 	err = w.store.Append(ctx, executionstore.Lease{}, key, c)
@@ -301,8 +301,17 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 		if loadErr != nil {
 			return fmt.Errorf("%w: %w", effect.ErrDispatchRetryable, loadErr)
 		}
-		if ok && state.AssignmentDigest != digest {
-			return executionstore.ErrAssignmentConflict
+		// A collected ledger no longer holds the Assignment body (RUN-EXE-13);
+		// its key names the effect and the writer derives one Assignment
+		// per effect, so the acceptance stands as it is.
+		if ok && !state.Collected {
+			accepted, err := state.Assignment.Digest()
+			if err != nil {
+				return err
+			}
+			if accepted != digest {
+				return executionstore.ErrAssignmentConflict
+			}
 		}
 		return nil
 	default:
@@ -391,7 +400,7 @@ func (w *Worker) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 		if state.Terminal() {
 			return nil, nil
 		}
-		env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: state.AssignmentDigest, Unknown: true,
+		env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, Unknown: true,
 			Error: &protocol.WireError{Code: "disposed", Message: "execution disposed by its controller"}}
 		return w.settlement(key, &env, effect.ExecutionUnknown), nil
 	})
@@ -447,7 +456,6 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 	if !ok {
 		return effect.ErrExecutionNotFound
 	}
-	digest := claimed.AssignmentDigest
 	// A ledger opened without its binding (an older store, a test fixture)
 	// is routed and prepared here, before any backend call, and the Ref is
 	// committed first (RUN-EXE-9).
@@ -487,14 +495,14 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 			return attachErr
 		}
 		if attachment.State != effect.AttachmentActive && attachment.State != effect.AttachmentTerminal {
-			env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest, Unknown: true,
+			env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, Unknown: true,
 				Error: &protocol.WireError{Code: "cancel_reconciliation_unknown", Message: "cancelled execution is no longer attached"}}
 			_ = w.finishOwned(ctx, lease, &env, effect.ExecutionUnknown, nil)
 			close(leaseDone)
 			return nil
 		}
 		cancelErr := backend.Cancel(ctx, ref)
-		w.spawn(func() { w.watch(lease, digest, backend, ref, leaseDone) })
+		w.spawn(func() { w.watch(lease, backend, ref, leaseDone) })
 		return cancelErr
 	}
 	leaseDone := make(chan struct{})
@@ -512,7 +520,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 		case effect.AttachmentActive, effect.AttachmentTerminal:
 			// Keep Dispatching as a conservative pre-outcome state. The watcher
 			// will terminalize it after the adopted backend produces an outcome.
-			w.spawn(func() { w.watch(lease, digest, backend, ref, leaseDone) })
+			w.spawn(func() { w.watch(lease, backend, ref, leaseDone) })
 			return nil
 		case effect.AttachmentOrphaned:
 			held := claimed
@@ -546,7 +554,7 @@ func (w *Worker) awaitBackend(lease executionstore.Lease, claimed *executionstor
 		}
 		switch attachment.State {
 		case effect.AttachmentActive, effect.AttachmentTerminal:
-			w.watch(lease, claimed.AssignmentDigest, backend, ref, leaseDone)
+			w.watch(lease, backend, ref, leaseDone)
 			return
 		case effect.AttachmentMissing:
 			// A failed replay has released the lease (replay closes leaseDone
@@ -571,7 +579,7 @@ func (w *Worker) awaitBackend(lease executionstore.Lease, claimed *executionstor
 // watch.
 func (w *Worker) replay(ctx context.Context, lease executionstore.Lease, claimed *executionstore.ExecutionState, backend ExecutionBackend, ref string, leaseDone chan struct{}) error {
 	if tool, ok := claimed.Assignment.Tool(); ok && tool.Replay != run.ReplayAllowed {
-		env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: lease.Key, AssignmentDigest: claimed.AssignmentDigest, Unknown: true,
+		env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: lease.Key, Unknown: true,
 			Error: &protocol.WireError{Code: "adopted_without_replay", Message: fmt.Sprintf("tool %q declares replay %s; the lost execution is not re-dispatched", tool.ToolRef, tool.Replay)}}
 		err := w.finishOwned(ctx, lease, &env, effect.ExecutionUnknown, nil)
 		close(leaseDone)
@@ -617,7 +625,7 @@ func (w *Worker) restarted(ctx context.Context, lease executionstore.Lease, from
 // Backend.Start and hands it to a watcher; the heartbeat leaseDone ends is
 // already running.
 func (w *Worker) start(ctx context.Context, lease executionstore.Lease, claimed *executionstore.ExecutionState, backend ExecutionBackend, ref string, leaseDone chan struct{}) error {
-	key, digest := lease.Key, claimed.AssignmentDigest
+	key := lease.Key
 	if claimed.State != effect.ExecutionDispatching {
 		if err := w.commit(ctx, lease, key, w.transition(lease, executionstore.EventExecutionStarted, effect.ExecutionDispatching, "start")); err != nil {
 			close(leaseDone)
@@ -629,10 +637,10 @@ func (w *Worker) start(ctx context.Context, lease executionstore.Lease, claimed 
 	}
 	if err := backend.Start(context.WithoutCancel(ctx), ref, claimed.Assignment); err != nil {
 		if errors.Is(err, effect.ErrDispatchUnknown) {
-			w.spawn(func() { w.watch(lease, digest, backend, ref, leaseDone) })
+			w.spawn(func() { w.watch(lease, backend, ref, leaseDone) })
 			return err
 		}
-		settleErr := w.finishOwned(ctx, lease, &protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest,
+		settleErr := w.finishOwned(ctx, lease, &protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key,
 			Error: &protocol.WireError{Code: "dispatch_failed", Message: err.Error()}}, effect.ExecutionFailed, err)
 		close(leaseDone)
 		return settleErr
@@ -641,19 +649,19 @@ func (w *Worker) start(ctx context.Context, lease executionstore.Lease, claimed 
 		// The backend call may already have crossed its external boundary.
 		// Keep the watcher alive and report Dispatch as accepted; recovery
 		// must reconcile the Dispatching/Running execution rather than replan.
-		w.spawn(func() { w.watch(lease, digest, backend, ref, leaseDone) })
+		w.spawn(func() { w.watch(lease, backend, ref, leaseDone) })
 		return nil
 	}
-	w.spawn(func() { w.watch(lease, digest, backend, ref, leaseDone) })
+	w.spawn(func() { w.watch(lease, backend, ref, leaseDone) })
 	return nil
 }
 
 // watch reads the backend's Outcome for ref and settles the execution under
 // this incarnation's lease.
-func (w *Worker) watch(lease executionstore.Lease, digest run.Digest, backend ExecutionBackend, ref string, done chan struct{}) {
+func (w *Worker) watch(lease executionstore.Lease, backend ExecutionBackend, ref string, done chan struct{}) {
 	defer close(done)
 	for {
-		if !w.observe(lease, digest, backend, &ref) {
+		if !w.observe(lease, backend, &ref) {
 			return
 		}
 	}
@@ -662,7 +670,7 @@ func (w *Worker) watch(lease executionstore.Lease, digest run.Digest, backend Ex
 // observe reads the Outcome of ref and settles it, or restarts the effect
 // after a retryable failure and reports true with ref moved to the new
 // execution; false ends the watch.
-func (w *Worker) observe(lease executionstore.Lease, digest run.Digest, backend ExecutionBackend, ref *string) bool {
+func (w *Worker) observe(lease executionstore.Lease, backend ExecutionBackend, ref *string) bool {
 	delay := 10 * time.Millisecond
 	var out effect.Outcome
 	for {
@@ -690,7 +698,7 @@ func (w *Worker) observe(lease executionstore.Lease, digest run.Digest, backend 
 	// The backend knows the Ref, not the attempt: the ledger's key is the
 	// Outcome's key (RUN-EXE-9).
 	out.Key = lease.Key
-	env := protocol.EncodeOutcome(out, digest)
+	env := protocol.EncodeOutcome(out)
 	state := protocol.StatusForOutcome(out)
 	for {
 		if err := w.finishOwned(w.lifecycle, lease, &env, state, nil); err == nil {
@@ -1068,7 +1076,7 @@ func (w *Worker) recover(ctx context.Context) error {
 			lease := executionstore.Lease{Key: key, Owner: state.Owner, Epoch: state.FencingEpoch, UntilUnixMilli: state.LeaseUntilUnixMilli}
 			done := make(chan struct{})
 			w.spawn(func() { w.heartbeat(lease, done) })
-			w.spawn(func() { w.watch(lease, state.AssignmentDigest, backend, state.ExecutionRef.Ref, done) })
+			w.spawn(func() { w.watch(lease, backend, state.ExecutionRef.Ref, done) })
 		}
 	}
 	return nil

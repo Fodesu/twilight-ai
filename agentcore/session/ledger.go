@@ -97,15 +97,15 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 		}
 		header.Parent = &LedgerRef{Segment: owner.Segment.ID, Seq: req.Fork.Seq}
 	}
-	// Idempotency is judged on what the request determines, not on the
-	// segment identity: the ID is drawn fresh each time, so a repeat is
-	// recognized by matching every requested field (SES-CRT-1).
+	// Idempotency is judged on what the request determines about the
+	// segment, not on its identity or clock: the ID is drawn fresh each time
+	// and the creation time is the first writer's (SES-CRT-1).
 	if existing, err := l.be.Record(ctx, req.SessionID); err == nil {
 		seg, err := l.be.Segment(ctx, existing.Tip)
 		if err != nil {
 			return SegmentHeader{}, err
 		}
-		if sameCreation(req, header, existing, seg.Header) {
+		if sameCreation(header, seg.Header) {
 			return seg.Header, nil
 		}
 		return SegmentHeader{}, newError(ErrConflict, "create", req.SessionID, "session exists with a different creation record")
@@ -128,13 +128,11 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 	return header, nil
 }
 
-// sameCreation reports whether req would create exactly the Session that
-// exists: same resolved edge, same causation, same extensions, same
-// creation time.
-func sameCreation(req CreateRequest, want SegmentHeader, root SessionRecord, have SegmentHeader) bool {
-	if root.CreatedAtUnixMilli != req.CreatedAtUnixMilli {
-		return false
-	}
+// sameCreation reports whether req would create the Session that exists:
+// same resolved edge, same causation, same extensions. The creation time
+// is the first writer's and does not decide it, so a retried Create with a
+// fresh clock is a replay (SES-CRT-1).
+func sameCreation(want, have SegmentHeader) bool {
 	if (have.Parent == nil) != (want.Parent == nil) || (have.Parent != nil && *have.Parent != *want.Parent) {
 		return false
 	}
@@ -339,7 +337,7 @@ func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 		return Commit{}, err
 	}
 	sid := w.root.ID
-	c := Commit{CommitID: p.CommitID, Batches: cloneBatches(p.Batches), Ext: p.Ext.Clone()}
+	c := Commit{CommitID: p.CommitID, Batches: cloneBatches(p.Batches)}
 	if err := ValidateCommit(&c); err != nil {
 		return Commit{}, newError(ErrInvalid, "append", sid, err.Error())
 	}

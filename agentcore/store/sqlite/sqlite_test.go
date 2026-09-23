@@ -56,7 +56,7 @@ func accept(t *testing.T, s executionstore.Store, a effect.Assignment) run.Diges
 	if err != nil {
 		t.Fatal(err)
 	}
-	ev, err := executionstore.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: a, AssignmentDigest: digest})
+	ev, err := executionstore.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: a})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,14 +94,14 @@ func TestExecutionStoreAcrossHandles(t *testing.T) {
 	a, b := open().Executions(), open().Executions()
 	asg := assignment("e1")
 	key := asg.Key()
-	digest := accept(t, a, asg)
+	accept(t, a, asg)
 	// A replayed acceptance is recognised by its identity and not written
 	// again; the Worker tells two Assignments apart by reading the ledger.
-	ev, _ := executionstore.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: asg, AssignmentDigest: digest})
+	ev, _ := executionstore.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: asg})
 	if err := b.Append(ctx, executionstore.Lease{}, key, executionstore.Commit{CommitID: executionstore.AcceptCommitID(key), Events: []executionstore.Event{ev}}); !errors.Is(err, executionstore.ErrAlreadyApplied) {
 		t.Fatalf("replayed acceptance through the other handle = %v, want already applied", err)
 	}
-	if state, _, ok, err := b.Load(ctx, key); err != nil || !ok || state.AssignmentDigest != digest {
+	if state, _, ok, err := b.Load(ctx, key); err != nil || !ok || state.Assignment.Key() != key {
 		t.Fatalf("load after replay = %+v ok:%v %v", state, ok, err)
 	}
 	// worker-a acquires through handle a; worker-b cannot while the lease
@@ -153,7 +153,7 @@ func TestExecutionStoreAcrossHandles(t *testing.T) {
 	}
 	// Settlement ends the execution: leases are refused, and only the
 	// acknowledgement may follow.
-	out := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest}
+	out := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key}
 	if err := step(b, taken, 5, executionstore.EventExecutionSettled, executionstore.Settled{State: effect.ExecutionCompleted, Outcome: out}); err != nil {
 		t.Fatal(err)
 	}

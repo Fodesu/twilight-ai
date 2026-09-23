@@ -254,8 +254,10 @@ func (a *Owner) CreateSession(ctx context.Context, sid session.SessionID, ext se
 	return err
 }
 
-// EnsureSession creates the stream when it does not exist yet. Create's
-// idempotency needs field-identical requests, so existence is probed first.
+// EnsureSession makes sure the Session exists, whatever record created it:
+// a root made here, a fork or a spawned child all count. Create alone would
+// refuse a Session whose segment fields differ (SES-CRT-1), so existence is
+// probed first.
 func (a *Owner) EnsureSession(ctx context.Context, sid session.SessionID) error {
 	if _, err := a.Store.Header(ctx, sid); err == nil {
 		return nil

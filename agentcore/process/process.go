@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -106,23 +107,36 @@ type GivenUp struct {
 
 // Command identities: once per process for request, dispatched, delivered,
 // acknowledged and given_up; a dispatch failure is named by its attempt.
+// The naming rule is this domain's; the ledger only enforces uniqueness.
+func deriveCommitID(key effect.AssignmentKey, command, discriminator string) CommitID {
+	d, err := es.DigestCanonical(struct {
+		Key           effect.AssignmentKey `json:"scope"`
+		Command       string               `json:"command"`
+		Discriminator string               `json:"discriminator,omitempty"`
+	}{key, command, discriminator})
+	if err != nil {
+		panic(err) // AssignmentKey is three strings; canonical encoding cannot fail
+	}
+	return CommitID(d)
+}
+
 func RequestCommitID(key effect.AssignmentKey) CommitID {
-	return ledger.DeriveCommitID(key, "process/request", "")
+	return deriveCommitID(key, "process/request", "")
 }
 func DispatchedCommitID(key effect.AssignmentKey) CommitID {
-	return ledger.DeriveCommitID(key, "process/dispatched", "")
+	return deriveCommitID(key, "process/dispatched", "")
 }
 func DeliveredCommitID(key effect.AssignmentKey) CommitID {
-	return ledger.DeriveCommitID(key, "process/delivered", "")
+	return deriveCommitID(key, "process/delivered", "")
 }
 func AcknowledgedCommitID(key effect.AssignmentKey) CommitID {
-	return ledger.DeriveCommitID(key, "process/acknowledged", "")
+	return deriveCommitID(key, "process/acknowledged", "")
 }
 func GivenUpCommitID(key effect.AssignmentKey) CommitID {
-	return ledger.DeriveCommitID(key, "process/given_up", "")
+	return deriveCommitID(key, "process/given_up", "")
 }
 func FailedCommitID(key effect.AssignmentKey, attempt int) CommitID {
-	return ledger.DeriveCommitID(key, "process/dispatch_failed", fmt.Sprint(attempt))
+	return deriveCommitID(key, "process/dispatch_failed", fmt.Sprint(attempt))
 }
 
 // --- fold ---

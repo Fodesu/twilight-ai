@@ -241,9 +241,8 @@ func (e *responseError) Error() string {
 }
 
 type assignmentRequest struct {
-	ProtocolVersion  uint16            `json:"protocolVersion"`
-	Assignment       effect.Assignment `json:"assignment"`
-	AssignmentDigest run.Digest        `json:"assignmentDigest"`
+	ProtocolVersion uint16            `json:"protocolVersion"`
+	Assignment      effect.Assignment `json:"assignment"`
 }
 
 type keyRequest struct {
@@ -302,20 +301,12 @@ func (s *Server) progress(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 }
 
 func makeAssignmentRequest(a effect.Assignment) assignmentRequest {
-	digest, _ := a.Digest()
-	return assignmentRequest{ProtocolVersion: protocol.ProtocolVersion, Assignment: a, AssignmentDigest: digest}
+	return assignmentRequest{ProtocolVersion: protocol.ProtocolVersion, Assignment: a}
 }
 
 func validateAssignmentRequest(req *assignmentRequest) error {
 	if req.ProtocolVersion != protocol.ProtocolVersion {
 		return fmt.Errorf("executor/http: unsupported protocol version %d", req.ProtocolVersion)
-	}
-	digest, err := req.Assignment.Digest()
-	if err != nil {
-		return err
-	}
-	if req.AssignmentDigest != digest {
-		return fmt.Errorf("executor/http: assignment digest mismatch")
 	}
 	return nil
 }

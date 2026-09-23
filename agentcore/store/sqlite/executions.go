@@ -404,13 +404,7 @@ func (s *ExecutionStore) Seed(ctx context.Context, state executionstore.Executio
 		events = append(events, []executionstore.Event{ev})
 		return nil
 	}
-	digest := state.AssignmentDigest
-	if digest == "" {
-		if digest, err = state.Assignment.Digest(); err != nil {
-			return err
-		}
-	}
-	if err := add(executionstore.EventExecutionAccepted, executionstore.Accepted{Assignment: state.Assignment, AssignmentDigest: digest}); err != nil {
+	if err := add(executionstore.EventExecutionAccepted, executionstore.Accepted{Assignment: state.Assignment}); err != nil {
 		return err
 	}
 	refs := append(append([]executionstore.ExecutionRef(nil), state.Superseded...), state.ExecutionRef)
@@ -462,7 +456,7 @@ func (s *ExecutionStore) Seed(ctx context.Context, state executionstore.Executio
 		if err := add(executionstore.EventExecutionRunning, nil); err != nil {
 			return err
 		}
-		out := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest}
+		out := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key}
 		if state.Outcome != nil {
 			out = *state.Outcome
 		}

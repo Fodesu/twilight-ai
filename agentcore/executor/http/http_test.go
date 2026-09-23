@@ -58,7 +58,7 @@ func TestDispatchResponseClassification(t *testing.T) {
 }
 
 func TestDispatchInvalidEnvelopeIsRejectedBeforeWorker(t *testing.T) {
-	for _, body := range []string{"invalid json", `{"protocolVersion":0}`, `{"protocolVersion":1,"assignmentDigest":"wrong"}`} {
+	for _, body := range []string{"invalid json", `{"protocolVersion":0}`} {
 		t.Run(body, func(t *testing.T) {
 			request := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/dispatch", strings.NewReader(body))
 			response := httptest.NewRecorder()

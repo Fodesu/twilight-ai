@@ -146,7 +146,6 @@ type Commit struct {
     Seq CommitSeq         // 在段内的位置；(SegmentID, Seq) 永久指向这一个 Commit（SES-APP-5）
     CommitID CommitID     // 产生该 commit 的操作的身份；重放按它判定（SES-APP-4）
     Batches []StreamBatch // 非空；同一 Commit 内每个流至多一个 batch
-    Ext Extensions        // 按模块分槽的扩展值，缺省为空（SES-WIR-5）
 }
 type Head struct { Next CommitSeq } // 空日志为 LedgerSeed(header)：根段 0，fork 产生的子段 Parent.Seq+1
 ```
@@ -157,7 +156,7 @@ type Head struct { Next CommitSeq } // 空日志为 LedgerSeed(header)：根段 
 
 **SES-WIR-2（不含内容 hash）** header 与 commit 都不携带内容 digest，也不链接前一个 Commit：Commit 由 `(SegmentID, Seq)` 定位、由 `CommitID` 命名。历史不可变由 Store 的写入契约保证（SES-APP-5），不由协议层重算 hash 发现；存储损坏的检测与恢复属于存储层（事务、校验和、备份）。写者是谁由 `Append` 的 Lease 在 adapter 处核对（SES-OWN-2），不进入 Commit；出处在需要时是模块自己的事实。内容寻址只用于 artifact 与冻结正文（ART、RUN-WIR-4），不参与 ledger 的身份。
 
-**SES-WIR-5（模块扩展槽）** `SegmentHeader.Ext` 与 `Commit.Ext` 是按模块分槽的扩展值：`Extensions = map[ModuleKey]RawValue`，键是模块身份（EXT-REG-1，wire 上为 `"source/id"`），值是该模块自己的 JSON。kernel 只校验键的形状与值为合法 JSON，不解释任何值，不认识某个模块的 reader 原样保留其条目（`RawValue` 逐字节往返）。每个模块只读写自己的键：spawn 在子段 header 的 `twilight/spawn` 槽记录 provenance（SPN-2）；kernel 自身若需要可选字段，使用 `twilight/session` 槽。header 没有其他调用方字段。缺省为空；空值、非法 JSON 或非法键为 `ErrInvalid`。`Create` 的幂等判定比较 Ext（SES-CRT-1）。
+**SES-WIR-5（模块扩展槽）** `SegmentHeader.Ext` 是按模块分槽的扩展值：`Extensions = map[ModuleKey]RawValue`，键是模块身份（EXT-REG-1，wire 上为 `"source/id"`），值是该模块自己的 JSON。kernel 只校验键的形状与值为合法 JSON，不解释任何值，不认识某个模块的 reader 原样保留其条目（`RawValue` 逐字节往返）。每个模块只读写自己的键：spawn 在子段 header 的 `twilight/spawn` 槽记录 provenance（SPN-2）；kernel 自身若需要可选字段，使用 `twilight/session` 槽。header 没有其他调用方字段。缺省为空；空值、非法 JSON 或非法键为 `ErrInvalid`。`Create` 的幂等判定比较 Ext（SES-CRT-1）。commit 没有扩展槽：模块写入 commit 的一切都是事件。
 
 ## 4. 所有权
 
@@ -174,7 +173,6 @@ type OpenOptions struct {
 type Proposal struct {
     CommitID CommitID     // 操作的身份，由写者派生（SES-APP-4）
     Batches []StreamBatch // 非空；调用方按批归因流
-    Ext Extensions        // 可选；原样进入 Commit.Ext（SES-WIR-5）
 }
 type Handle interface {
     SessionID() SessionID
@@ -198,7 +196,7 @@ type Store interface {
 }
 ```
 
-**SES-CRT-1** `Create` 建立一个根与它的 tip 段：kernel 解析 `Fork`（SES-FRK-1）、抽取 128 位随机 `SegmentID`、写入 `SegmentHeader`，以 `Backend.CreateSession` 一步落下段与根。SegmentID 只由 kernel 抽取，调用方不能指定：可写节点的身份不对外开放，因此两个根不可能被构造成共用一个 tip（SES-FRK-4）；`CreateSession` 对已存在的 SegmentID 也返回 `ErrConflict`。对已存在的 SessionID，请求所决定的每个字段（解析后的边、CausationID、Ext、CreatedAtUnixMilli）都与现有 Session 相同则幂等返回现有 tip 的 header，否则 `ErrConflict`；幂等判定不比较 SegmentID，因为 ID 每次不同。wire 夹具以 `NewLedger(be, WithSegmentIDSource(...))` 注入确定性 ID。
+**SES-CRT-1** `Create` 建立一个根与它的 tip 段：kernel 解析 `Fork`（SES-FRK-1）、抽取 128 位随机 `SegmentID`、写入 `SegmentHeader`，以 `Backend.CreateSession` 一步落下段与根。SegmentID 只由 kernel 抽取，调用方不能指定：可写节点的身份不对外开放，因此两个根不可能被构造成共用一个 tip（SES-FRK-4）；`CreateSession` 对已存在的 SegmentID 也返回 `ErrConflict`。对已存在的 SessionID，请求所决定的段字段（解析后的边、CausationID、Ext）都与现有 Session 相同则幂等返回现有 tip 的 header，否则 `ErrConflict`；幂等判定不比较 SegmentID，因为 ID 每次不同，也不比较 `CreatedAtUnixMilli`：它记录首次成功创建时调用方给出的时刻，超时后带新时钟重试的 Create 是重放，不是冲突。wire 夹具以 `NewLedger(be, WithSegmentIDSource(...))` 注入确定性 ID。
 
 **SES-OWN-1** 同一 Session 同一时刻至多一个有效 Handle，有效性由租约定义：`Acquire` 记录 `Lease{Session, Epoch, Owner, UntilUnixMilli}`，`Until = now + LeaseDuration`（`LeaseDuration` 为 0 时 `Until` 为 0，表示直到 Release 才失效）；`Renew` 把 `Until` 推到 `now + LeaseDuration`，只对当前 Lease 生效，被接管的 Lease 得到 `ErrOwnershipLost`。`Open` 在租约存活（已持有且 `Until` 为 0 或晚于 now）且未声明 `Takeover` 时返回 `ErrOwned`；租约已过期时 Open 直接接管；声明 `Takeover` 的 Open 接管存活的租约。三种接管都使 Epoch 加一，安全性一律由 Epoch fencing（SES-OWN-2）承担：过期本身不终止所有权，未被接管的过期持有者仍可写入，被接管的持有者在下一次 `Append` 或 `Renew` 被围栏。时钟由 `OpenOptions.Clock` 给出，adapter 不自带时钟；这与 Execution Store 的 record 租约（RUN-EXE-6）形状相同。
 

@@ -105,10 +105,6 @@ type Commit struct {
 	Seq      CommitSeq     `json:"seq"`
 	CommitID CommitID      `json:"commitId"`
 	Batches  []StreamBatch `json:"batches"`
-	// Ext holds the module extension slots of the commit, the counterpart
-	// of SegmentHeader.Ext: one raw value per module, opaque to the kernel
-	// (SES-WIR-5).
-	Ext Extensions `json:"ext,omitempty"`
 }
 
 // ValidateStreamRef checks the shape of a batch's stream attribution: a
@@ -180,16 +176,13 @@ func ValidateHeader(h SegmentHeader) error {
 }
 
 // ValidateCommit checks the shape of a commit before it is stored: a valid
-// CommitID, well-formed batches and a well-formed Ext. Seq and duplicate
-// CommitIDs are the store's checks (SES-APP-3).
+// CommitID and well-formed batches. Seq and duplicate CommitIDs are the
+// store's checks (SES-APP-3).
 func ValidateCommit(c *Commit) error {
 	if err := validIdentity("CommitID", string(c.CommitID)); err != nil {
 		return err
 	}
-	if err := ValidateBatches(c.Batches); err != nil {
-		return err
-	}
-	return ValidateExtensions(c.Ext)
+	return ValidateBatches(c.Batches)
 }
 
 // ValidateEdge checks the shape of a parent edge: nil is a root segment;

@@ -15,9 +15,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/executor/protocol"
 	"github.com/felinics/twilight/agentcore/ledger"
-	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
@@ -104,8 +104,7 @@ type ExecutionRef struct {
 
 // Accepted is the payload of execution_accepted.
 type Accepted struct {
-	Assignment       effect.Assignment `json:"assignment"`
-	AssignmentDigest run.Digest        `json:"assignmentDigest"`
+	Assignment effect.Assignment `json:"assignment"`
 }
 
 // Bound is the payload of execution_bound.
@@ -139,7 +138,15 @@ type Settled struct {
 // those that recur (a claim per Epoch, a restart per generation) take one,
 // so their identity is the command and the occasion, never the wall clock.
 func DeriveCommitID(key effect.AssignmentKey, command, discriminator string) CommitID {
-	return ledger.DeriveCommitID(key, command, discriminator)
+	d, err := es.DigestCanonical(struct {
+		Key           effect.AssignmentKey `json:"scope"`
+		Command       string               `json:"command"`
+		Discriminator string               `json:"discriminator,omitempty"`
+	}{key, command, discriminator})
+	if err != nil {
+		panic(err) // AssignmentKey is three strings; canonical encoding cannot fail
+	}
+	return CommitID(d)
 }
 
 // AcceptCommitID, SettleCommitID and AcknowledgeCommitID name the three
@@ -159,9 +166,8 @@ func AcknowledgeCommitID(key effect.AssignmentKey) CommitID {
 // lease: the execution plane's side of the effect. Assignment and Outcome
 // are absent once collected.
 type ExecutionState struct {
-	Assignment       effect.Assignment `json:"assignment"`
-	AssignmentDigest run.Digest        `json:"assignmentDigest"`
-	ExecutionRef     ExecutionRef      `json:"executionRef"`
+	Assignment   effect.Assignment `json:"assignment"`
+	ExecutionRef ExecutionRef      `json:"executionRef"`
 	// Superseded lists the ExecutionRefs of the earlier attempts made for
 	// this effect, oldest first (RUN-EXE-9).
 	Superseded []ExecutionRef            `json:"superseded,omitempty"`
@@ -243,7 +249,7 @@ func apply(s ExecutionState, e *Event) (ExecutionState, error) { //nolint:gocrit
 		if err := e.Decode(&p); err != nil {
 			return s, err
 		}
-		s.Assignment, s.AssignmentDigest, s.State = p.Assignment, p.AssignmentDigest, effect.ExecutionAccepted
+		s.Assignment, s.State = p.Assignment, effect.ExecutionAccepted
 	case EventExecutionBound:
 		if s.State == "" || s.Terminal() {
 			return s, errors.New("bound outside an accepted, unsettled execution")

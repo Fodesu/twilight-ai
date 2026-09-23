@@ -86,10 +86,15 @@ func testWire(t *testing.T, f Fixture) {
 	if h.ID == "" {
 		t.Fatalf("header = %+v", h)
 	}
-	if again, err := f.Store.Create(ctx, session.CreateRequest{SessionID: "s", CreatedAtUnixMilli: 1}); err != nil || again.ID != h.ID {
-		t.Fatalf("identical create is not idempotent: %+v %v", again, err)
+	// A retried Create is a replay whatever clock it carries; a request
+	// that describes another segment is a conflict (SES-CRT-1).
+	if again, err := f.Store.Create(ctx, session.CreateRequest{SessionID: "s", CreatedAtUnixMilli: 2}); err != nil || again.ID != h.ID {
+		t.Fatalf("retried create is not idempotent: %+v %v", again, err)
 	}
-	if _, err := f.Store.Create(ctx, session.CreateRequest{SessionID: "s", CreatedAtUnixMilli: 2}); !session.IsCode(err, session.ErrConflict) {
+	if rec, err := f.Store.Record(ctx, "s"); err != nil || rec.CreatedAtUnixMilli != 1 {
+		t.Fatalf("record after retry = %+v %v, want the first creation time", rec, err)
+	}
+	if _, err := f.Store.Create(ctx, session.CreateRequest{SessionID: "s", CreatedAtUnixMilli: 1, CausationID: "other"}); !session.IsCode(err, session.ErrConflict) {
 		t.Fatalf("different create = %v, want conflict", err)
 	}
 	w := open(t, f.Store, "s", false)

@@ -104,10 +104,8 @@ func TestValidateCommit(t *testing.T) {
 		want string // error substring; "" means valid
 	}{
 		{"well formed", Commit{CommitID: "c1", Batches: batches}, ""},
-		{"with extension", Commit{CommitID: "c1", Batches: batches, Ext: Extensions{{Source: "twilight", ID: "run"}: RawValue(`{"k":1}`)}}, ""},
 		{"empty CommitID", Commit{Batches: batches}, "CommitID is empty"},
 		{"no batches", Commit{CommitID: "c2"}, "commit without batches"},
-		{"extension is not JSON", Commit{CommitID: "c1", Batches: batches, Ext: Extensions{{Source: "twilight", ID: "run"}: RawValue(`{`)}}, "not valid JSON"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -136,6 +134,7 @@ func TestValidateHeader(t *testing.T) {
 		{"missing id", SegmentHeader{}, false},
 		{"edge without segment", SegmentHeader{ID: "child", Parent: &LedgerRef{Seq: 3}}, false},
 		{"extension key without ID", SegmentHeader{ID: "seg", Ext: Extensions{{Source: "twilight"}: RawValue(`1`)}}, false},
+		{"extension is not JSON", SegmentHeader{ID: "seg", Ext: Extensions{{Source: "twilight", ID: "run"}: RawValue(`{`)}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

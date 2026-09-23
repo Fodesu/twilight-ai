@@ -15,13 +15,11 @@ import (
 
 const ProtocolVersion uint16 = 1
 
-// AssignmentEnvelope is the serializable dispatch message. AssignmentDigest
-// binds the complete effect payload to AssignmentKey.
+// AssignmentEnvelope is the serializable dispatch message.
 type AssignmentEnvelope struct {
-	ProtocolVersion  uint16            `json:"protocolVersion"`
-	Session          run.Scope         `json:"session"`
-	Assignment       effect.Assignment `json:"assignment"`
-	AssignmentDigest run.Digest        `json:"assignmentDigest"`
+	ProtocolVersion uint16            `json:"protocolVersion"`
+	Session         run.Scope         `json:"session"`
+	Assignment      effect.Assignment `json:"assignment"`
 }
 
 // ToolOutcomeEnvelope is the wire representation of loop's sealed outcome.
@@ -40,18 +38,13 @@ type WireError struct {
 // OutcomeEnvelope is stable and JSON-safe. In particular it does not contain
 // a Go error or a sealed interface.
 type OutcomeEnvelope struct {
-	ProtocolVersion  uint16               `json:"protocolVersion"`
-	Key              effect.AssignmentKey `json:"key"`
-	AssignmentDigest run.Digest           `json:"assignmentDigest,omitempty"`
-	Model            *sdk.ModelResult     `json:"model,omitempty"`
-	Tool             *ToolOutcomeEnvelope `json:"tool,omitempty"`
-	Error            *WireError           `json:"error,omitempty"`
-	Cancelled        bool                 `json:"cancelled,omitempty"`
-	Unknown          bool                 `json:"unknown,omitempty"`
-}
-
-func (a *AssignmentEnvelope) Digest() (run.Digest, error) {
-	return es.DigestCanonical(a.Assignment)
+	ProtocolVersion uint16               `json:"protocolVersion"`
+	Key             effect.AssignmentKey `json:"key"`
+	Model           *sdk.ModelResult     `json:"model,omitempty"`
+	Tool            *ToolOutcomeEnvelope `json:"tool,omitempty"`
+	Error           *WireError           `json:"error,omitempty"`
+	Cancelled       bool                 `json:"cancelled,omitempty"`
+	Unknown         bool                 `json:"unknown,omitempty"`
 }
 
 func (o *OutcomeEnvelope) Digest() (run.Digest, error) {
@@ -66,8 +59,8 @@ func (o *OutcomeEnvelope) Digest() (run.Digest, error) {
 // JSON would silently rewrite invalid UTF-8 in it, so the record and the
 // wire would carry a result the provider never produced. Such a result is
 // delivered as a FailureMalformedResult failure instead (RUN-EXE-2).
-func EncodeOutcome(out effect.Outcome, assignmentDigest run.Digest) OutcomeEnvelope {
-	w := OutcomeEnvelope{ProtocolVersion: ProtocolVersion, Key: out.Key, AssignmentDigest: assignmentDigest}
+func EncodeOutcome(out effect.Outcome) OutcomeEnvelope {
+	w := OutcomeEnvelope{ProtocolVersion: ProtocolVersion, Key: out.Key}
 	switch r := out.Result.(type) {
 	case effect.ModelSucceeded:
 		if _, err := sdkconv.FreezeModelResult(r.Result); err != nil {

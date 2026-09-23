@@ -205,11 +205,7 @@ func TestWorkerDispatchReplayPreservesExistingExecution(t *testing.T) {
 			ctx := context.Background()
 			records := sqlitetest.Open(t).Executions()
 			a := testAssignment()
-			digest, err := a.Digest()
-			if err != nil {
-				t.Fatal(err)
-			}
-			r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: state,
+			r := store.ExecutionState{Assignment: a, State: state,
 				Owner: "expired-worker", FencingEpoch: 4, LeaseUntilUnixMilli: 1}
 			if err := records.Seed(ctx, r); err != nil {
 				t.Fatal(err)
@@ -438,11 +434,7 @@ func TestWorkerRestartSupersedesRef(t *testing.T) {
 	ctx := context.Background()
 	records := sqlitetest.Open(t).Executions()
 	a := testAssignment()
-	digest, err := a.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+	r := store.ExecutionState{Assignment: a, State: effect.ExecutionRunning,
 		ExecutionRef: store.ExecutionRef{Provider: "ref", Ref: "execution-1"},
 		Owner:        "dead-worker", FencingEpoch: 2, LeaseUntilUnixMilli: 1}
 	if err := records.Seed(ctx, r); err != nil {
@@ -479,11 +471,7 @@ func TestWorkerRecoverExecutionRefusesUnknownProvider(t *testing.T) {
 	ctx := context.Background()
 	records := sqlitetest.Open(t).Executions()
 	a := testAssignment()
-	digest, err := a.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+	r := store.ExecutionState{Assignment: a, State: effect.ExecutionRunning,
 		ExecutionRef: store.ExecutionRef{Provider: "elsewhere", Ref: "existing-job"},
 		Owner:        "expired-worker", FencingEpoch: 3, LeaseUntilUnixMilli: 1}
 	if err := records.Seed(ctx, r); err != nil {
@@ -557,11 +545,7 @@ func TestExecutionStoreFencesRecoverExecution(t *testing.T) {
 	now := base
 	records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 	a := testAssignment()
-	digest, err := a.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	openLedger(t, records, a, digest)
+	openLedger(t, records, a)
 	first, acquired, err := records.Acquire(ctx, a.Key(), "worker-a", time.Second)
 	if err != nil || !acquired || first.Epoch != 1 {
 		t.Fatalf("first acquire = %+v, acquired=%v, err=%v", first, acquired, err)
@@ -591,9 +575,9 @@ func TestExecutionStoreFencesRecoverExecution(t *testing.T) {
 }
 
 // openLedger writes the acceptance commit a Dispatch would.
-func openLedger(t *testing.T, records store.Store, a effect.Assignment, digest run.Digest) {
+func openLedger(t *testing.T, records store.Store, a effect.Assignment) {
 	t.Helper()
-	ev, err := store.NewEvent(store.EventExecutionAccepted, 0, store.Accepted{Assignment: a, AssignmentDigest: digest})
+	ev, err := store.NewEvent(store.EventExecutionAccepted, 0, store.Accepted{Assignment: a})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -617,11 +601,7 @@ func TestExecutionStoreRequiresDispatchingBarrier(t *testing.T) {
 	now := base
 	records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 	a := testAssignment()
-	digest, err := a.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	openLedger(t, records, a, digest)
+	openLedger(t, records, a)
 	claimed, acquired, err := records.Acquire(ctx, a.Key(), "worker-a", time.Second)
 	if err != nil || !acquired {
 		t.Fatalf("acquire = %+v, acquired=%v, err=%v", claimed, acquired, err)
@@ -654,11 +634,7 @@ func TestWorkerReclaimsExpiredAssignment(t *testing.T) {
 	now := base
 	records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 	a := testAssignment()
-	digest, err := a.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	openLedger(t, records, a, digest)
+	openLedger(t, records, a)
 	claimed, acquired, err := records.Acquire(ctx, a.Key(), "worker-a", time.Second)
 	if err != nil || !acquired {
 		t.Fatalf("initial acquire = %+v, acquired=%v", claimed, acquired)
@@ -701,11 +677,7 @@ func TestWorkerRecoverExecutionAdoptsExpiredLease(t *testing.T) {
 	now := base.Add(2 * time.Second)
 	records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 	a := testAssignment()
-	digest, err := a.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+	r := store.ExecutionState{Assignment: a, State: effect.ExecutionRunning,
 		Owner: "dead-worker", FencingEpoch: 4, LeaseUntilUnixMilli: base.Add(time.Second).UnixMilli()}
 	if err := records.Seed(ctx, r); err != nil {
 		t.Fatal(err)
@@ -745,11 +717,7 @@ func TestWorkerRecoverExecutionLeavesLiveLease(t *testing.T) {
 	now := base
 	records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 	a := testAssignment()
-	digest, err := a.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+	r := store.ExecutionState{Assignment: a, State: effect.ExecutionRunning,
 		Owner: "worker-a", FencingEpoch: 4, LeaseUntilUnixMilli: base.Add(time.Second).UnixMilli()}
 	if err := records.Seed(ctx, r); err != nil {
 		t.Fatal(err)
@@ -852,12 +820,8 @@ func TestWorkerDisposeSettlesUnknown(t *testing.T) {
 			a := testAssignment()
 			key := a.Key()
 			if row.record != nil {
-				digest, err := a.Digest()
-				if err != nil {
-					t.Fatal(err)
-				}
 				r := *row.record
-				r.Assignment, r.AssignmentDigest = a, digest
+				r.Assignment = a
 				if err := records.Seed(ctx, r); err != nil {
 					t.Fatal(err)
 				}
@@ -911,11 +875,7 @@ func TestWorkerAdoptionOfUnattachableToolSettlesUnknown(t *testing.T) {
 			ctx := context.Background()
 			records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 			a := testToolAssignment()
-			digest, err := a.Digest()
-			if err != nil {
-				t.Fatal(err)
-			}
-			r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: row.state,
+			r := store.ExecutionState{Assignment: a, State: row.state,
 				Owner: "dead-worker", FencingEpoch: 2, LeaseUntilUnixMilli: base.Add(time.Second).UnixMilli()}
 			if err := records.Seed(ctx, r); err != nil {
 				t.Fatal(err)
@@ -1090,11 +1050,7 @@ func TestWorkerRecoverExecutionWaitsForUnconfirmedBackend(t *testing.T) {
 			ctx := context.Background()
 			records := sqlitetest.Open(t).Executions()
 			a := row.assignment
-			digest, err := a.Digest()
-			if err != nil {
-				t.Fatal(err)
-			}
-			r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+			r := store.ExecutionState{Assignment: a, State: effect.ExecutionRunning,
 				ExecutionRef: store.ExecutionRef{Provider: "ref", Ref: "execution-1"},
 				Owner:        "dead-worker", FencingEpoch: 2, LeaseUntilUnixMilli: 1}
 			if err := records.Seed(ctx, r); err != nil {
@@ -1182,11 +1138,7 @@ func TestWorkerAdoptsToolByReplayDeclaration(t *testing.T) {
 			body, _ := a.Tool()
 			body.Replay = tc.policy
 			a.Body = body
-			digest, err := a.Digest()
-			if err != nil {
-				t.Fatal(err)
-			}
-			r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+			r := store.ExecutionState{Assignment: a, State: effect.ExecutionRunning,
 				ExecutionRef: store.ExecutionRef{Provider: "ref", Ref: "execution-1"},
 				Owner:        "dead-worker", FencingEpoch: 2, LeaseUntilUnixMilli: 1}
 			if err := records.Seed(ctx, r); err != nil {
@@ -1246,11 +1198,7 @@ func TestWorkerAttachClassifiesByLease(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 			a := testAssignment()
-			digest, err := a.Digest()
-			if err != nil {
-				t.Fatal(err)
-			}
-			r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+			r := store.ExecutionState{Assignment: a, State: effect.ExecutionRunning,
 				ExecutionRef: store.ExecutionRef{Provider: "elsewhere", Ref: "job"}, Owner: tc.owner, FencingEpoch: tc.epoch, LeaseUntilUnixMilli: tc.lease}
 			if err := records.Seed(ctx, r); err != nil {
 				t.Fatal(err)
@@ -1455,14 +1403,10 @@ func TestWorkerAcknowledgeCollects(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 			a := testAssignment()
-			digest, err := a.Digest()
-			if err != nil {
-				t.Fatal(err)
-			}
-			r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: row.state, ExecutionRef: store.ExecutionRef{Provider: "test", Ref: "job"},
+			r := store.ExecutionState{Assignment: a, State: row.state, ExecutionRef: store.ExecutionRef{Provider: "test", Ref: "job"},
 				Owner: "worker-a", FencingEpoch: 1, LeaseUntilUnixMilli: now.Add(time.Hour).UnixMilli(), SettledAtUnixMilli: now.Add(-time.Minute).UnixMilli()}
 			if row.state.Terminal() {
-				env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: a.Key(), AssignmentDigest: digest}
+				env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: a.Key()}
 				r.Outcome = &env
 			}
 			if err := records.Seed(ctx, r); err != nil {
@@ -1495,7 +1439,7 @@ func TestWorkerAcknowledgeCollects(t *testing.T) {
 				}
 				return
 			}
-			if !got.Collected || got.Assignment.Body != nil || got.Outcome != nil || got.Assignment.Key() != a.Key() || got.AssignmentDigest != digest || got.State != row.state {
+			if !got.Collected || got.Assignment.Body != nil || got.Outcome != nil || got.Assignment.Key() != a.Key() || got.State != row.state {
 				t.Fatalf("collected record = %+v", got)
 			}
 			if att, err := worker.Attach(ctx, a.Key()); err != nil || att.State != effect.AttachmentTerminal {
