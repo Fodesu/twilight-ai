@@ -104,7 +104,7 @@ func TestValidateBatches(t *testing.T) {
 func TestSealCommit(t *testing.T) {
 	p := ProfileV1()
 	h := v2Header(t, "s")
-	c := Commit{Seq: 0, CommitID: "c1", Epoch: 3, Batches: []StreamBatch{
+	c := Commit{Seq: 0, CommitID: "c1", Batches: []StreamBatch{
 		oneEventBatch(StreamRef{Domain: "chat"}, "twilight/x/a", `{"a":1}`),
 		oneEventBatch(StreamRef{Domain: "run", ID: "r7"}, "twilight/run/created", `{"runId":"r7"}`),
 	}}
@@ -126,20 +126,9 @@ func TestSealCommit(t *testing.T) {
 		t.Fatal("SealCommit is not deterministic")
 	}
 
-	// The epoch reaches the commit preimage.
-	otherEpoch := c
-	otherEpoch.Epoch = 4
-	otherEpoch.PrevDigest, otherEpoch.Digest = "", ""
-	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &otherEpoch); err != nil {
-		t.Fatal(err)
-	}
-	if otherEpoch.Digest == c.Digest {
-		t.Fatal("epoch does not reach the commit digest")
-	}
-
 	// Event order inside a batch and batch order inside a commit are both
 	// canonical: swapping either changes the digest.
-	swappedEvents := Commit{Seq: 0, CommitID: "c1", Epoch: 3, Batches: []StreamBatch{
+	swappedEvents := Commit{Seq: 0, CommitID: "c1", Batches: []StreamBatch{
 		{Stream: StreamRef{Domain: "chat"}, Events: []Event{
 			{Type: "twilight/x/b", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"b":2}`)},
 			{Type: "twilight/x/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"a":1}`)},
@@ -148,7 +137,7 @@ func TestSealCommit(t *testing.T) {
 	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &swappedEvents); err != nil {
 		t.Fatal(err)
 	}
-	twoEvents := Commit{Seq: 0, CommitID: "c1", Epoch: 3, Batches: []StreamBatch{
+	twoEvents := Commit{Seq: 0, CommitID: "c1", Batches: []StreamBatch{
 		{Stream: StreamRef{Domain: "chat"}, Events: []Event{
 			{Type: "twilight/x/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"a":1}`)},
 			{Type: "twilight/x/b", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"b":2}`)},
@@ -160,7 +149,7 @@ func TestSealCommit(t *testing.T) {
 	if swappedEvents.Digest == twoEvents.Digest {
 		t.Fatal("event order inside a batch does not reach the digest")
 	}
-	swappedBatches := Commit{Seq: 0, CommitID: "c1", Epoch: 3, Batches: []StreamBatch{
+	swappedBatches := Commit{Seq: 0, CommitID: "c1", Batches: []StreamBatch{
 		oneEventBatch(StreamRef{Domain: "run", ID: "r7"}, "twilight/run/created", `{"runId":"r7"}`),
 		oneEventBatch(StreamRef{Domain: "chat"}, "twilight/x/a", `{"a":1}`),
 	}}
@@ -185,13 +174,13 @@ func sealedPair(t *testing.T) (LedgerProfile, SegmentHeader, []Commit) {
 	t.Helper()
 	p := ProfileV1()
 	h := v2Header(t, "s")
-	c0 := Commit{Seq: 0, CommitID: "c1", Epoch: 1, Batches: []StreamBatch{
+	c0 := Commit{Seq: 0, CommitID: "c1", Batches: []StreamBatch{
 		oneEventBatch(StreamRef{Domain: "chat"}, "twilight/x/a", `{"a":1}`),
 	}}
 	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &c0); err != nil {
 		t.Fatal(err)
 	}
-	c1 := Commit{Seq: 1, CommitID: "c2", Epoch: 1, Batches: []StreamBatch{
+	c1 := Commit{Seq: 1, CommitID: "c2", Batches: []StreamBatch{
 		oneEventBatch(StreamRef{Domain: "chat"}, "twilight/x/b", `{"b":2}`),
 		oneEventBatch(StreamRef{Domain: "run", ID: "r7"}, "twilight/run/created", `{"runId":"r7"}`),
 	}}

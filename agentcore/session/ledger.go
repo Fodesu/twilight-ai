@@ -444,7 +444,7 @@ func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 	if w.failed != nil {
 		return Commit{}, w.failed
 	}
-	c := Commit{Seq: w.head.Next, CommitID: p.CommitID, Epoch: w.lease.Epoch, Intent: p.Intent, Batches: cloneBatches(p.Batches), Ext: p.Ext}
+	c := Commit{Seq: w.head.Next, CommitID: p.CommitID, Intent: p.Intent, Batches: cloneBatches(p.Batches), Ext: p.Ext}
 	if err := SealCommit(w.profile, w.head.Digest, w.root.Tip, &c); err != nil {
 		return Commit{}, err
 	}

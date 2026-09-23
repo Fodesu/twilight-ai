@@ -47,7 +47,7 @@ Atomic Commit ─────────────────────┘
 
 8. **最小化、payload-opaque 的 kernel。** kernel 只懂 Open/ownership、Append、Read、Seq、CommitID 索引、digest 链（SES-SCP-1/3、第 4 至 6 节）。它不解释 payload，不知道 Turn、Run、Tool、Checkpoint 是什么；领域语义全部在 Module、Writer 与 Projection 层。
 
-9. **可验证历史。** 每个 Commit 的 digest 覆盖 PrevDigest、Seq、CommitID、Epoch 与全部批次 digest，`H0 → C0 → C1 → …` 成链，删除、篡改、重排都使其后全部 Commit 失效（SES-WIR-2）。校验的义务点是 `Open`，读路径信任存储（SES-REP-1）。
+9. **可验证历史。** 每个 Commit 的 digest 覆盖 PrevDigest、Seq、CommitID、Intent 与全部批次 digest，`H0 → C0 → C1 → …` 成链，删除、篡改、重排都使其后全部 Commit 失效（SES-WIR-2）。校验的义务点是 `Open`，读路径信任存储（SES-REP-1）。
 
 10. **模块隔离与版本独立。** 事件按 `<source>/<module>/` 归属，`Requires` 图决定投影的消费范围：范围外事件跳过，范围内不可忽略的 Unknown 事件使折叠失败（EXT-REG-1/4、EXT-PRJ-2）。payload 版本 `v` 属于事件类型、由模块携带，与 kernel 的 `ProtocolVersion` 分离（SES-VER-1）；段不携带任何模块层版本，kernel 不读取 metadata 的任何键。application module 与 first-party 模块同构（EXT-APP）。
 
@@ -69,7 +69,7 @@ Session lineage 树（第 8 节；每个根段下的节点为一棵树，全部�
   根    = SessionRecord：SessionID → 它追加到的 Segment（Tip）与 Session 自己的元数据
   路径  = Ancestry：从根段到该 Session tip 段的唯一 Segment 序列，及每段在拼接序列中贡献的区间
 
-kernel 负责：Segment/LedgerRef/SessionRecord/Ancestry 的语义、Commit（Seq、CommitID、Epoch、批次）、原子的 Commit 追加、根级写者独占、按 Commit 的 digest 链、按 Ancestry 拼接的 CommitSeq 顺序读与流读、fork、tip 段推进、删除、可达性回收
+kernel 负责：Segment/LedgerRef/SessionRecord/Ancestry 的语义、Commit（Seq、CommitID、Intent、批次）、原子的 Commit 追加、根级写者独占、按 Commit 的 digest 链、按 Ancestry 拼接的 CommitSeq 顺序读与流读、fork、tip 段推进、删除、可达性回收
 adapter 负责：Backend——LedgerStore（存节点：段的创建记录与自身 commit）与 SessionStore（存根：记录与 Lease）
 modules 负责：event ontology、typed codec、payload 版本、投影、投影缓存、幂等重放、并发串行
 ```
@@ -159,10 +159,10 @@ type Head struct { Next CommitSeq; Digest es.Digest } // 空日志为 LedgerSeed
 ```text
 HeaderDigest = Digest("twilight/session/header", ProtocolVersion, [Parent], Nonce, CausationID, Metadata, [Ext])  // Parent 为 nil、Ext 为空时不进入预映像；SegmentID = HeaderDigest
 BatchDigest  = Digest("twilight/session/batch", SegmentID, Stream, [{Type, RecordedAtUnixMilli, Payload}, ...])
-CommitDigest = Digest("twilight/session/commit", PrevDigest, SegmentID, Seq, CommitID, Epoch, [Intent], [BatchDigest, ...], [Ext])
+CommitDigest = Digest("twilight/session/commit", PrevDigest, SegmentID, Seq, CommitID, [Intent], [BatchDigest, ...], [Ext])
 ```
 
-digest 依 `agentcore/es` 的 versioned domain separator。链条按 Commit 连接，batch digest 又把 batch 内的事件按序绑定；任何 Commit 被改写、删除或重排都使其后所有 Commit 的 digest 失效。封印（`SealCommit`）以 Handle 的 Epoch 与当前 head digest 计算，验证时重算比对。
+digest 依 `agentcore/es` 的 versioned domain separator。链条按 Commit 连接，batch digest 又把 batch 内的事件按序绑定；任何 Commit 被改写、删除或重排都使其后所有 Commit 的 digest 失效。封印（`SealCommit`）以当前 head digest 计算，验证时重算比对。写者是谁由 `Append` 的 Lease 在 adapter 处核对（SES-OWN-2），不进入 Commit：出处在需要时是模块自己的事实。
 
 **SES-WIR-3** 同一段的 header 与它的每个 Commit 使用同一 `ProtocolVersion`；一个 Session 的 Ancestry 内各段版本可以不同（SES-ADV-1）。Store 按每段 header 派生 profile（`Ledger.Profile`，表中有已发布的 profile 与 `WithProfile` 加入的 profile；`ProfileVariant` 是 v1 规则换版本号，只供在第二个版本发布前演练），调用方不传版本。
 
@@ -224,7 +224,7 @@ type Store interface {
 
 ## 5. append
 
-**SES-APP-1** `Append(proposal)` 原子：整个 Commit 同时可见或同时不存在。Store 为 Commit 赋 `Seq`（从当前 `Head.Next` 起连续，空 ledger 的 head 为 `LedgerSeed(header)`），以 Handle 的 Epoch 与当前 head digest 封印（SES-WIR-2），持久化，然后返回封印后的 Commit。返回即持久（文件 adapter 每次 Append 一次 `fsync`；数据库 adapter 一个事务）。写入开始之后的任何失败（write、fsync、事务提交返回错误）使该 Commit 是否落盘对句柄成为未知：句柄进入失效状态，本次与之后的 `Append` 返回 `ErrHandleFailed`，不再写入；调用方 Close 并重开，`Open` 按磁盘实况决定该 Commit 是否存在（完整则接纳进索引，残缺则按 SES-APP-2 截断），随后的重放由 `Committed`/`LookupCommit` 回答。adapter 只能在写入开始之前返回 ctx 错误；写入开始后的中断按未知结果报告。
+**SES-APP-1** `Append(proposal)` 原子：整个 Commit 同时可见或同时不存在。Store 为 Commit 赋 `Seq`（从当前 `Head.Next` 起连续，空 ledger 的 head 为 `LedgerSeed(header)`），以当前 head digest 封印（SES-WIR-2），持久化，然后返回封印后的 Commit。返回即持久（文件 adapter 每次 Append 一次 `fsync`；数据库 adapter 一个事务）。写入开始之后的任何失败（write、fsync、事务提交返回错误）使该 Commit 是否落盘对句柄成为未知：句柄进入失效状态，本次与之后的 `Append` 返回 `ErrHandleFailed`，不再写入；调用方 Close 并重开，`Open` 按磁盘实况决定该 Commit 是否存在（完整则接纳进索引，残缺则按 SES-APP-2 截断），随后的重放由 `Committed`/`LookupCommit` 回答。adapter 只能在写入开始之前返回 ctx 错误；写入开始后的中断按未知结果报告。
 
 **SES-APP-2** 崩溃只可能留下一个不完整的尾 Commit：文件 adapter 打开时把末尾帧不完整且没有后续 Commit 的尾部截掉；数据库 adapter 由事务保证不会出现。截断必须发生在 `Head` 确立之前：否则 `Head.Next` 落在残 Commit 内部，下一次 `Append` 会把残 Commit 与后续 Commit 焊成一个。reader 在任何时刻都不会看到不完整的 Commit。
 

@@ -42,14 +42,13 @@ type querier interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-func readCommits(ctx context.Context, q querier, k string, from executionstore.CommitSeq) ([]executionstore.Commit, executionstore.Head, error) {
+func readCommits(ctx context.Context, q querier, k string, from executionstore.CommitSeq) (commits []executionstore.Commit, head executionstore.Head, err error) {
 	rows, err := q.QueryContext(ctx, `SELECT seq, digest, body FROM execution_commits WHERE key = ? AND seq >= ? ORDER BY seq`, k, uint64(from))
 	if err != nil {
 		return nil, executionstore.Head{}, err
 	}
 	defer rows.Close()
 	var out []executionstore.Commit
-	var head executionstore.Head
 	for rows.Next() {
 		var seq uint64
 		var digest, body string
@@ -107,7 +106,7 @@ func readLease(ctx context.Context, q querier, k string, key effect.AssignmentKe
 	return executionstore.Lease{Key: key, Owner: owner, Epoch: executionstore.Epoch(epoch), UntilUnixMilli: until}, true, nil
 }
 
-func (s *ExecutionStore) loadIn(ctx context.Context, q querier, k string, key effect.AssignmentKey) (executionstore.ExecutionState, executionstore.Head, bool, error) {
+func (s *ExecutionStore) loadIn(ctx context.Context, q querier, k string, key effect.AssignmentKey) (state executionstore.ExecutionState, head executionstore.Head, ok bool, err error) {
 	commits, head, err := readCommits(ctx, q, k, 0)
 	if err != nil {
 		return executionstore.ExecutionState{}, executionstore.Head{}, false, err
@@ -115,7 +114,7 @@ func (s *ExecutionStore) loadIn(ctx context.Context, q querier, k string, key ef
 	if len(commits) == 0 {
 		return executionstore.ExecutionState{}, executionstore.Head{}, false, nil
 	}
-	state, err := fold(commits)
+	state, err = fold(commits)
 	if err != nil {
 		return executionstore.ExecutionState{}, executionstore.Head{}, false, err
 	}
@@ -130,7 +129,7 @@ func (s *ExecutionStore) loadIn(ctx context.Context, q querier, k string, key ef
 }
 
 // Load folds the key's ledger and joins its lease (executionstore.Store).
-func (s *ExecutionStore) Load(ctx context.Context, key effect.AssignmentKey) (executionstore.ExecutionState, executionstore.Head, bool, error) {
+func (s *ExecutionStore) Load(ctx context.Context, key effect.AssignmentKey) (state executionstore.ExecutionState, head executionstore.Head, ok bool, err error) {
 	k, err := ledgerKey(key)
 	if err != nil {
 		return executionstore.ExecutionState{}, executionstore.Head{}, false, err
@@ -139,7 +138,7 @@ func (s *ExecutionStore) Load(ctx context.Context, key effect.AssignmentKey) (ex
 }
 
 // Read returns the key's commits from Seq from (executionstore.Store).
-func (s *ExecutionStore) Read(ctx context.Context, key effect.AssignmentKey, from executionstore.CommitSeq) ([]executionstore.Commit, executionstore.Head, error) {
+func (s *ExecutionStore) Read(ctx context.Context, key effect.AssignmentKey, from executionstore.CommitSeq) (commits []executionstore.Commit, head executionstore.Head, err error) {
 	k, err := ledgerKey(key)
 	if err != nil {
 		return nil, executionstore.Head{}, err
@@ -165,8 +164,8 @@ func appendCommit(ctx context.Context, t *sql.Tx, k string, key effect.Assignmen
 			return head, err
 		}
 	}
-	_, err = t.ExecContext(ctx, `INSERT INTO execution_commits (key, seq, commit_id, intent, epoch, digest, body) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		k, uint64(c.Seq), string(c.CommitID), string(c.Intent), uint64(c.Epoch), string(digest), string(body))
+	_, err = t.ExecContext(ctx, `INSERT INTO execution_commits (key, seq, commit_id, intent, digest, body) VALUES (?, ?, ?, ?, ?, ?)`,
+		k, uint64(c.Seq), string(c.CommitID), string(c.Intent), string(digest), string(body))
 	if err != nil {
 		return head, err
 	}
@@ -219,7 +218,7 @@ func (s *ExecutionStore) Append(ctx context.Context, lease executionstore.Lease,
 			if err != nil {
 				return err
 			}
-			if !ok || current.Owner != lease.Owner || current.Epoch != lease.Epoch || c.Epoch != lease.Epoch || current.UntilUnixMilli <= s.now().UnixMilli() {
+			if !ok || current.Owner != lease.Owner || current.Epoch != lease.Epoch || current.UntilUnixMilli <= s.now().UnixMilli() {
 				return executionstore.ErrLeaseLost
 			}
 		}
@@ -281,7 +280,7 @@ func (s *ExecutionStore) Acquire(ctx context.Context, key effect.AssignmentKey, 
 		if err != nil {
 			return err
 		}
-		c := executionstore.Commit{Seq: head.Next, CommitID: executionstore.DeriveCommitID(key, "claim", fmt.Sprint(uint64(epoch))), Epoch: epoch, Events: []executionstore.Event{ev}}
+		c := executionstore.Commit{Seq: head.Next, CommitID: executionstore.DeriveCommitID(key, "claim", fmt.Sprint(uint64(epoch))), Events: []executionstore.Event{ev}}
 		if _, err := executionstore.Fold(state, &c); err != nil {
 			return err
 		}
@@ -498,7 +497,7 @@ func (s *ExecutionStore) Seed(ctx context.Context, state executionstore.Executio
 		var folded executionstore.ExecutionState
 		head := executionstore.Head{}
 		for i, evs := range events {
-			c := executionstore.Commit{Seq: head.Next, CommitID: executionstore.DeriveCommitID(key, "seed", fmt.Sprint(i)), Epoch: state.FencingEpoch, Events: evs}
+			c := executionstore.Commit{Seq: head.Next, CommitID: executionstore.DeriveCommitID(key, "seed", fmt.Sprint(i)), Events: evs}
 			if evs[0].Type == executionstore.EventExecutionAccepted {
 				c.CommitID, c.Intent = executionstore.AcceptCommitID(key), digest
 			}

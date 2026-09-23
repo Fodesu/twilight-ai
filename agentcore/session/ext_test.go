@@ -23,7 +23,7 @@ func TestKernelExtSlots(t *testing.T) {
 	batch := []session.StreamBatch{{Stream: session.StreamRef{Domain: "chat"}, Events: []session.Event{
 		{Type: "twilight/x/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{}`)}}}}
 	sealed := func(ext jsonstable.Value) (session.Commit, error) {
-		c := session.Commit{Seq: 0, CommitID: "c1", Epoch: 1, Batches: batch, Ext: ext}
+		c := session.Commit{Seq: 0, CommitID: "c1", Batches: batch, Ext: ext}
 		err := session.SealCommit(profile, baseDigest, session.SegmentID(baseDigest), &c)
 		return c, err
 	}

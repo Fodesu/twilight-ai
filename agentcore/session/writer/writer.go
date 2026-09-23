@@ -390,7 +390,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	// provisional commit is what a reader folds too: the kernel assigns
 	// PrevDigest and Digest inside Append, and nothing a projection may read
 	// differs between the two paths.
-	provisional := session.Commit{Seq: w.head.Next, CommitID: group.CommitID, Epoch: w.kernel.Epoch(), Batches: batches}
+	provisional := session.Commit{Seq: w.head.Next, CommitID: group.CommitID, Batches: batches}
 	// Only an authoritative projection's fold refuses the commit; a derived
 	// one that cannot fold is marked unhealthy once the commit lands.
 	next, err := w.projections.fold(provisional)

@@ -71,7 +71,7 @@ func step(s executionstore.Store, lease executionstore.Lease, seq executionstore
 	if err != nil {
 		return err
 	}
-	return s.Append(context.Background(), lease, lease.Key, executionstore.Commit{Seq: seq, CommitID: executionstore.DeriveCommitID(lease.Key, "test", string(typ)+"/"+strconv.FormatUint(uint64(seq), 10)), Epoch: lease.Epoch, Events: []executionstore.Event{ev}})
+	return s.Append(context.Background(), lease, lease.Key, executionstore.Commit{Seq: seq, CommitID: executionstore.DeriveCommitID(lease.Key, "test", string(typ)+"/"+strconv.FormatUint(uint64(seq), 10)), Events: []executionstore.Event{ev}})
 }
 
 // One execution ledger, two database handles: the second handle stands for a

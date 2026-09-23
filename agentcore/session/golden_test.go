@@ -44,7 +44,7 @@ func TestKernelWireGolden(t *testing.T) {
 
 	sess := session.StreamRef{Domain: "chat"}
 	run := session.StreamRef{Domain: "run", ID: "r7"}
-	c0 := session.Commit{Seq: 0, CommitID: "c1", Epoch: 1, Batches: []session.StreamBatch{
+	c0 := session.Commit{Seq: 0, CommitID: "c1", Batches: []session.StreamBatch{
 		{Stream: sess, Events: []session.Event{
 			{Type: "twilight/x/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"a":1}`)},
 			{Type: "twilight/x/b", RecordedAtUnixMilli: 2, Payload: jsonstable.MustParse(`{}`)},
@@ -53,7 +53,7 @@ func TestKernelWireGolden(t *testing.T) {
 	if err := session.SealCommit(profile, hd, segment, &c0); err != nil {
 		t.Fatal(err)
 	}
-	c1 := session.Commit{Seq: 1, CommitID: "c2", Epoch: 1, Batches: []session.StreamBatch{
+	c1 := session.Commit{Seq: 1, CommitID: "c2", Batches: []session.StreamBatch{
 		{Stream: sess, Events: []session.Event{
 			{Type: "twilight/x/c", RecordedAtUnixMilli: 3, Payload: jsonstable.MustParse(`{"c":3}`)},
 		}},
@@ -64,19 +64,19 @@ func TestKernelWireGolden(t *testing.T) {
 	if err := session.SealCommit(profile, c0.Digest, segment, &c1); err != nil {
 		t.Fatal(err)
 	}
-	freezeKernel(t, "commit 0 digest", string(c0.Digest), "sha256:cfd211456c9b6f329e500394c2780a237ceffc575b6e5e4bf31e6f0aa6c0938a")
-	freezeKernel(t, "commit 1 digest", string(c1.Digest), "sha256:7cf8a013be115e2901f4028daf95bbacdfcb54296631bd339d6806969e4f766f")
+	freezeKernel(t, "commit 0 digest", string(c0.Digest), "sha256:ed1acc24f509f9509991841285b9f34b577564333a87a715be1341e5ee347bf4")
+	freezeKernel(t, "commit 1 digest", string(c1.Digest), "sha256:4fb1eb3a07bca88354254579d9ead94e24a401116a52a8d90b951edb0d18a737")
 
 	line0, err := json.Marshal(c0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	freezeKernel(t, "commit 0 json", string(line0), `{"seq":0,"commitId":"c1","epoch":1,"batches":[{"stream":{"domain":"chat"},"events":[{"type":"twilight/x/a","recordedAtUnixMilli":1,"payload":{"a":1}},{"type":"twilight/x/b","recordedAtUnixMilli":2,"payload":{}}]}],"prevDigest":"sha256:1eb09b1cf1e2d020e3892b04e9dad1f4b2db377f7b3bb7731a27a081b2dab258","digest":"sha256:cfd211456c9b6f329e500394c2780a237ceffc575b6e5e4bf31e6f0aa6c0938a"}`)
+	freezeKernel(t, "commit 0 json", string(line0), `{"seq":0,"commitId":"c1","batches":[{"stream":{"domain":"chat"},"events":[{"type":"twilight/x/a","recordedAtUnixMilli":1,"payload":{"a":1}},{"type":"twilight/x/b","recordedAtUnixMilli":2,"payload":{}}]}],"prevDigest":"sha256:1eb09b1cf1e2d020e3892b04e9dad1f4b2db377f7b3bb7731a27a081b2dab258","digest":"sha256:ed1acc24f509f9509991841285b9f34b577564333a87a715be1341e5ee347bf4"}`)
 	line1, err := json.Marshal(c1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	freezeKernel(t, "commit 1 json", string(line1), `{"seq":1,"commitId":"c2","epoch":1,"batches":[{"stream":{"domain":"chat"},"events":[{"type":"twilight/x/c","recordedAtUnixMilli":3,"payload":{"c":3}}]},{"stream":{"domain":"run","id":"r7"},"events":[{"type":"twilight/run/created","recordedAtUnixMilli":3,"payload":{"runId":"r7"}}]}],"prevDigest":"sha256:cfd211456c9b6f329e500394c2780a237ceffc575b6e5e4bf31e6f0aa6c0938a","digest":"sha256:7cf8a013be115e2901f4028daf95bbacdfcb54296631bd339d6806969e4f766f"}`)
+	freezeKernel(t, "commit 1 json", string(line1), `{"seq":1,"commitId":"c2","batches":[{"stream":{"domain":"chat"},"events":[{"type":"twilight/x/c","recordedAtUnixMilli":3,"payload":{"c":3}}]},{"stream":{"domain":"run","id":"r7"},"events":[{"type":"twilight/run/created","recordedAtUnixMilli":3,"payload":{"runId":"r7"}}]}],"prevDigest":"sha256:ed1acc24f509f9509991841285b9f34b577564333a87a715be1341e5ee347bf4","digest":"sha256:4fb1eb3a07bca88354254579d9ead94e24a401116a52a8d90b951edb0d18a737"}`)
 
 	header.HeaderDigest = hd
 	if err := session.ValidateLedger(profile, header, []session.Commit{c0, c1}); err != nil {

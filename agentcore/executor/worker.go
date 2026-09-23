@@ -235,8 +235,7 @@ func (w *Worker) transition(lease executionstore.Lease, typ executionstore.Event
 		if state.State == to || !executionstore.LegalTransition(state.State, to) {
 			return nil, nil
 		}
-		return &executionstore.Commit{CommitID: executionstore.DeriveCommitID(lease.Key, command, fmt.Sprintf("%d/%s", uint64(lease.Epoch), state.State)),
-			Epoch: lease.Epoch, Events: []executionstore.Event{w.event(typ, nil)}}, nil
+		return &executionstore.Commit{CommitID: executionstore.DeriveCommitID(lease.Key, command, fmt.Sprintf("%d/%s", uint64(lease.Epoch), state.State)), Events: []executionstore.Event{w.event(typ, nil)}}, nil
 	}
 }
 
@@ -375,7 +374,7 @@ func (w *Worker) Acknowledge(ctx context.Context, key effect.AssignmentKey) erro
 		if state.Collected {
 			return nil, nil
 		}
-		return &executionstore.Commit{CommitID: executionstore.AcknowledgeCommitID(key), Epoch: state.FencingEpoch,
+		return &executionstore.Commit{CommitID: executionstore.AcknowledgeCommitID(key),
 			Events: []executionstore.Event{w.event(executionstore.EventOutcomeAcknowledged, nil)}}, nil
 	})
 }
@@ -396,7 +395,7 @@ func (w *Worker) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 		}
 		env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: state.AssignmentDigest, Unknown: true,
 			Error: &protocol.WireError{Code: "disposed", Message: "execution disposed by its controller"}}
-		return w.settlement(key, state.FencingEpoch, &env, effect.ExecutionUnknown), nil
+		return w.settlement(key, &env, effect.ExecutionUnknown), nil
 	})
 	if errors.Is(err, executionstore.ErrCommitConflict) {
 		// The lease holder settled it first; the execution is terminal.
@@ -415,8 +414,8 @@ func (w *Worker) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 // settlement is the commit that ends an execution: execution_settled under
 // the settle CommitID, so the watcher's settle and a controller's Dispose
 // race for one identity and the loser reads the winner's Outcome.
-func (w *Worker) settlement(key effect.AssignmentKey, epoch executionstore.Epoch, outcome *protocol.OutcomeEnvelope, state effect.ExecutionStatus) *executionstore.Commit {
-	return &executionstore.Commit{CommitID: executionstore.SettleCommitID(key), Epoch: epoch,
+func (w *Worker) settlement(key effect.AssignmentKey, outcome *protocol.OutcomeEnvelope, state effect.ExecutionStatus) *executionstore.Commit {
+	return &executionstore.Commit{CommitID: executionstore.SettleCommitID(key),
 		Events: []executionstore.Event{w.event(executionstore.EventExecutionSettled, executionstore.Settled{State: state, Outcome: *outcome})}}
 }
 
@@ -472,7 +471,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 			if state.ExecutionRef.Provider != "" {
 				return nil, nil
 			}
-			return &executionstore.Commit{CommitID: executionstore.DeriveCommitID(key, "bind", fmt.Sprint(uint64(lease.Epoch))), Epoch: lease.Epoch,
+			return &executionstore.Commit{CommitID: executionstore.DeriveCommitID(key, "bind", fmt.Sprint(uint64(lease.Epoch))),
 				Events: []executionstore.Event{w.event(executionstore.EventExecutionBound, executionstore.Bound{Ref: bound})}}, nil
 		})
 		if err != nil {
@@ -615,7 +614,7 @@ func (w *Worker) restarted(ctx context.Context, lease executionstore.Lease, from
 		if state.ExecutionRef != from {
 			return nil, fmt.Errorf("%w: restart of %+v, ledger holds %+v", executionstore.ErrStateConflict, from, state.ExecutionRef)
 		}
-		return &executionstore.Commit{CommitID: executionstore.DeriveCommitID(lease.Key, "restart", from.Ref), Epoch: lease.Epoch,
+		return &executionstore.Commit{CommitID: executionstore.DeriveCommitID(lease.Key, "restart", from.Ref),
 			Events: []executionstore.Event{w.event(executionstore.EventExecutionRestarted, executionstore.Restarted{Superseded: from, Ref: fresh})}}, nil
 	})
 }
@@ -835,7 +834,7 @@ func (w *Worker) finishOwned(ctx context.Context, lease executionstore.Lease, ou
 		if current.Terminal() {
 			return nil, nil
 		}
-		return w.settlement(lease.Key, lease.Epoch, outcome, state), nil
+		return w.settlement(lease.Key, outcome, state), nil
 	})
 	switch {
 	case err == nil:

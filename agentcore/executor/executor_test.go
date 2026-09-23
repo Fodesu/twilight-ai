@@ -584,8 +584,8 @@ func TestExecutionStoreFencesRecoverExecution(t *testing.T) {
 		t.Fatalf("ledger = %d commits head %+v %v, want accept + two claims", len(commits), head, err)
 	}
 	for i, want := range []store.EventType{store.EventExecutionAccepted, store.EventExecutionClaimed, store.EventExecutionClaimed} {
-		if commits[i].Events[0].Type != want || commits[i].Epoch != store.Epoch(i) {
-			t.Fatalf("commit %d = %s epoch %d, want %s epoch %d", i, commits[i].Events[0].Type, commits[i].Epoch, want, i)
+		if commits[i].Events[0].Type != want {
+			t.Fatalf("commit %d = %s, want %s", i, commits[i].Events[0].Type, want)
 		}
 	}
 }
@@ -608,7 +608,7 @@ func appendStep(records store.Store, lease store.Lease, seq store.CommitSeq, typ
 	if err != nil {
 		return err
 	}
-	return records.Append(context.Background(), lease, lease.Key, store.Commit{Seq: seq, CommitID: store.DeriveCommitID(lease.Key, "test", fmt.Sprintf("%s/%d", typ, seq)), Epoch: lease.Epoch, Events: []store.Event{ev}})
+	return records.Append(context.Background(), lease, lease.Key, store.Commit{Seq: seq, CommitID: store.DeriveCommitID(lease.Key, "test", fmt.Sprintf("%s/%d", typ, seq)), Events: []store.Event{ev}})
 }
 
 func TestExecutionStoreRequiresDispatchingBarrier(t *testing.T) {

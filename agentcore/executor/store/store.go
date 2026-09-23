@@ -15,9 +15,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/executor/protocol"
-	"github.com/felinics/twilight/agentcore/jsonstable"
+	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
@@ -29,32 +28,28 @@ var (
 	// ErrLeaseLost: the lease the commit was made under is no longer the
 	// key's lease — another Worker holds a later Epoch, or it expired.
 	ErrLeaseLost = errors.New("executor/store: execution lease lost")
-	// ErrStateConflict: the commit's events are not legal from the ledger's
-	// current state (the execution state machine).
-	ErrStateConflict = errors.New("executor/store: state conflict")
-	// ErrConflict: the commit's Seq is not the ledger's Head.Next; the
-	// writer reloads and decides again.
-	ErrConflict = errors.New("executor/store: commit sequence conflict")
-	// ErrCommitConflict: a commit with the same CommitID exists with a
-	// different Intent — the same command identity for another operation.
-	ErrCommitConflict = errors.New("executor/store: commit intent conflict")
-	// ErrAlreadyApplied: a commit with the same CommitID and Intent exists;
-	// the operation was applied before and nothing was written.
-	ErrAlreadyApplied = errors.New("executor/store: commit already applied")
+	// The commit rules are the kernel's (agentcore/ledger).
+	ErrStateConflict  = ledger.ErrStateConflict
+	ErrConflict       = ledger.ErrConflict
+	ErrCommitConflict = ledger.ErrCommitConflict
+	ErrAlreadyApplied = ledger.ErrAlreadyApplied
 )
 
-// CommitSeq is the position of a commit in one execution's ledger.
-type CommitSeq uint64
+// The commit vocabulary is the kernel's (agentcore/ledger).
+type (
+	CommitSeq = ledger.CommitSeq
+	CommitID  = ledger.CommitID
+	Epoch     = ledger.Epoch
+	EventType = ledger.EventType
+	Event     = ledger.Event
+	Commit    = ledger.Commit
+	Head      = ledger.Head
+)
 
-// CommitID names the operation a commit records; replaying it is recognised.
-type CommitID string
-
-// Epoch is the fencing epoch of the Worker that held the key when the commit
-// was made. Acquire raises it; a commit under an older Epoch is refused.
-type Epoch uint64
-
-// EventType names an execution fact.
-type EventType string
+// NewEvent renders payload as the event's canonical JSON.
+func NewEvent(typ EventType, recordedAtUnixMilli int64, payload any) (Event, error) {
+	return ledger.NewEvent(typ, recordedAtUnixMilli, payload)
+}
 
 const (
 	// EventExecutionAccepted: the Assignment was accepted into this ledger,
@@ -82,54 +77,6 @@ const (
 	// Session fact; the payload and Outcome are collected (RUN-EXE-13).
 	EventOutcomeAcknowledged EventType = "outcome_acknowledged"
 )
-
-// Event is one execution fact, the shape of a Session event.
-type Event struct {
-	Type                EventType        `json:"type"`
-	RecordedAtUnixMilli int64            `json:"recordedAtUnixMilli"`
-	Payload             jsonstable.Value `json:"payload"`
-}
-
-// NewEvent renders payload as the event's canonical JSON.
-func NewEvent(typ EventType, recordedAtUnixMilli int64, payload any) (Event, error) {
-	if payload == nil {
-		payload = struct{}{}
-	}
-	v, err := jsonstable.FromValue(payload)
-	if err != nil {
-		return Event{}, fmt.Errorf("executor/store: %s payload: %w", typ, err)
-	}
-	return Event{Type: typ, RecordedAtUnixMilli: recordedAtUnixMilli, Payload: v}, nil
-}
-
-// Decode decodes the payload into dst.
-func (e *Event) Decode(dst any) error { return e.Payload.Decode(dst) }
-
-// Commit is one atomic step of an execution's ledger.
-type Commit struct {
-	Seq      CommitSeq `json:"seq"`
-	CommitID CommitID  `json:"commitId"`
-	Epoch    Epoch     `json:"epoch"`
-	// Intent is the digest of the operation, as the writer declared it: a
-	// replay of the CommitID with the same Intent is the same operation,
-	// with another Intent a conflict.
-	Intent es.Digest `json:"intent,omitempty"`
-	Events []Event   `json:"events"`
-}
-
-// Digest is the commit's content digest, chained into Head.
-func (c *Commit) Digest(prev es.Digest) (es.Digest, error) {
-	return es.DigestCanonical(struct {
-		Prev   es.Digest `json:"prev"`
-		Commit *Commit   `json:"commit"`
-	}{prev, c})
-}
-
-// Head is the ledger's tip: the next Seq and the digest of the last commit.
-type Head struct {
-	Next   CommitSeq `json:"next"`
-	Digest es.Digest `json:"digest,omitempty"`
-}
 
 // Lease is a Worker's fenced hold on one execution (RUN-EXE-6). The store
 // is its authority: Acquire creates it under a new Epoch, Renew extends it,
@@ -193,16 +140,7 @@ type Settled struct {
 // those that recur (a claim per Epoch, a restart per generation) take one,
 // so their identity is the command and the occasion, never the wall clock.
 func DeriveCommitID(key effect.AssignmentKey, command, discriminator string) CommitID {
-	d, err := es.DigestCanonical(struct {
-		Key           effect.AssignmentKey `json:"key"`
-		Command       string               `json:"command"`
-		Discriminator string               `json:"discriminator,omitempty"`
-	}{key, command, discriminator})
-	if err != nil {
-		// AssignmentKey is three strings; canonical encoding cannot fail.
-		panic(err)
-	}
-	return CommitID(d)
+	return ledger.DeriveCommitID(key, command, discriminator)
 }
 
 // AcceptCommitID, SettleCommitID and AcknowledgeCommitID name the three
@@ -401,8 +339,8 @@ type Store interface {
 	// ErrAlreadyApplied with the same Intent and ErrCommitConflict
 	// otherwise; nothing is written in either case. A zero lease is an
 	// unfenced append and may carry only events Fenced reports false for;
-	// otherwise the lease must be the key's current, unexpired lease and
-	// c.Epoch its Epoch (ErrLeaseLost). The commit is folded before it is
+	// otherwise the lease must be the key's current, unexpired lease
+	// (ErrLeaseLost). The commit is folded before it is
 	// written (ErrStateConflict). The first commit's Intent is the
 	// AssignmentDigest; a first commit with another Intent is
 	// ErrAssignmentConflict.

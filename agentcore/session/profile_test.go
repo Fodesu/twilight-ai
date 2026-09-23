@@ -10,7 +10,7 @@ import (
 // TestProfileVersionSeparatesDigests pins SES-VER-2 at the one place it can
 // silently break. A batch digest preimage carries SegmentID, Stream and the
 // events; a commit digest preimage carries prev, SegmentID, Seq, CommitID,
-// Epoch and the batch digests — but neither carries the ProtocolVersion as a
+// Intent and the batch digests — but neither carries the ProtocolVersion as a
 // field. The version therefore reaches a digest only through the digest
 // domain separator, so a profile whose separator ignored the version would
 // let a later ProtocolVersion reproduce v2 digests byte for byte.
@@ -45,11 +45,11 @@ func TestProfileVersionSeparatesDigests(t *testing.T) {
 		t.Fatal("batch digests ignore the ProtocolVersion: a new version would reuse v2 digests")
 	}
 
-	c2, err := v2.CommitDigest(prev, "s", 0, "c1", 1, "", []es.Digest{got2}, jsonstable.Value{})
+	c2, err := v2.CommitDigest(prev, "s", 0, "c1", "", []es.Digest{got2}, jsonstable.Value{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	c3, err := v3.CommitDigest(prev, "s", 0, "c1", 1, "", []es.Digest{got3}, jsonstable.Value{})
+	c3, err := v3.CommitDigest(prev, "s", 0, "c1", "", []es.Digest{got3}, jsonstable.Value{})
 	if err != nil {
 		t.Fatal(err)
 	}

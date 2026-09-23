@@ -110,7 +110,7 @@ func testWire(t *testing.T, f Fixture) {
 	if c1.Seq != 0 || c2.Seq != 1 {
 		t.Fatalf("seq not contiguous: %v %v", c1.Seq, c2.Seq)
 	}
-	if c1.CommitID != "c1" || c2.CommitID != "c2" || c1.Epoch != 1 {
+	if c1.CommitID != "c1" || c2.CommitID != "c2" {
 		t.Fatalf("commit identity = %+v %+v", c1, c2)
 	}
 	if c1.Digest == "" || c1.PrevDigest != h.HeaderDigest || c2.PrevDigest != c1.Digest {

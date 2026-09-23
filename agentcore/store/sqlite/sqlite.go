@@ -55,7 +55,6 @@ CREATE TABLE IF NOT EXISTS execution_commits (
 	seq       INTEGER NOT NULL,
 	commit_id TEXT NOT NULL,
 	intent    TEXT NOT NULL,
-	epoch     INTEGER NOT NULL,
 	digest    TEXT NOT NULL,
 	body      TEXT NOT NULL,
 	PRIMARY KEY (key, seq),
