@@ -100,9 +100,10 @@ type DecodedEvent struct {
     Unknown bool
 }
 
+type StreamKey func(value any) (string, error) // 从模块的 typed 事件值提取它所属流的 ID
 type StreamDefinition struct {
     Domain string                 // 流 domain，整个 Registry 内唯一；kernel 不命名任何 domain
-    IDField string                // 空为单例流，batch 的 stream ID 必须为空；非空为键控流，payload 内该字段的值即 batch 的 stream ID
+    Key StreamKey                 // nil 为单例流，batch 的 stream ID 必须为空；非 nil 为键控流，Key(value) 即 batch 的 stream ID
     Lineage session.StreamLineage // fork 之后子如何读该 domain 的流（SES-FRK-5）
 }
 func (StreamDefinition) Ref(id string) session.StreamRef                        // 该 domain 下的一条流坐标
@@ -113,7 +114,7 @@ func (*Registry) LookupStream(domain string) (ModuleKey, StreamDefinition, bool)
 
 **EXT-COD-2** 已提交事件的 payload 保持原始 canonical bytes。`v` 由 Registry 在 Encode 后加入、Decode 前取出；payload 的其他第一层字段不得命名为 `v`。
 
-**EXT-STR-1（流 domain 由模块声明）** 逻辑流的 domain 由模块在 `ModuleDescriptor.Streams` 中声明，每个 domain 恰由一个模块拥有，kernel 不命名任何 domain（SES-WIR-1 只校验 `StreamRef` 的形状）。`StreamDefinition` 给出 `Domain`、`IDField` 与 `Lineage`：`IDField` 为空是单例流，batch 的 stream ID 必须为空；非空是键控流，payload 内该字段的值必须等于 batch 的 stream ID；`IDField` 不得为 `v`，该键由 Registry 写入 payload 第一层记录 payload 版本。每个事件类型通过 `EventDefinition.Stream` 命名本模块声明的一个 domain。`BuildRegistry` 验证声明：domain 为空或含 `/`、同一模块内或跨模块重复声明、`IDField` 为 `v`、`Lineage` 缺失或未知、事件未命名 domain、事件命名的 domain 未由本模块声明，均为装配错误；`Registry.LookupStream(domain)` 返回 domain 的拥有者与声明。Writer 在 encode 时按声明校验每个 batch：事件的 domain 与 batch 的 domain 不同、单例流的 batch 带 ID、键控流的 batch 无 ID、payload 的 `IDField` 缺失或不等于 batch 的 stream ID，均拒绝整个 group。kernel 保持 payload 不透明，校验只在 writer 层执行。写侧强制后，投影按 EventType 折叠即不可能跨 stream 读到外来事件，fold 侧无需再查。第一方模块的声明：chatlog 为单例 domain `chatlog`（`LineageSession`）；turn 为 domain `turn`（`IDField` 为 `turnId`，`LineageSession`）；run 为 domain `run`（`IDField` 为 `runId`，`LineageSegment`）。
+**EXT-STR-1（流 domain 由模块声明）** 逻辑流的 domain 由模块在 `ModuleDescriptor.Streams` 中声明，每个 domain 恰由一个模块拥有，kernel 不命名任何 domain（SES-WIR-1 只校验 `StreamRef` 的形状）。`StreamDefinition` 给出 `Domain`、`Key` 与 `Lineage`：`Key` 为 nil 是单例流，batch 的 stream ID 必须为空；非 nil 是键控流，`Key(value)` 以模块的 typed 事件值算出该事件所属流的 ID，必须等于 batch 的 stream ID。流的归属因此是模块 Go 值的属性，不与 payload 的字段名耦合，payload 的编码形状可以独立于流拓扑变化。每个事件类型通过 `EventDefinition.Stream` 命名本模块声明的一个 domain。`BuildRegistry` 验证声明：domain 为空或含 `/`、同一模块内或跨模块重复声明、`Lineage` 缺失或未知、事件未命名 domain、事件命名的 domain 未由本模块声明，均为装配错误；`Registry.LookupStream(domain)` 返回 domain 的拥有者与声明。Writer 在 encode 时按声明校验每个 batch：事件的 domain 与 batch 的 domain 不同、单例流的 batch 带 ID、键控流的 batch 无 ID、`Key(value)` 出错、为空或不等于 batch 的 stream ID，均拒绝整个 group。kernel 保持 payload 不透明，校验只在 writer 层执行。写侧强制后，投影按 EventType 折叠即不可能跨 stream 读到外来事件，fold 侧无需再查。第一方模块的声明：chatlog 为单例 domain `chatlog`（`LineageSession`）；turn 为 domain `turn`（Key 为 payload 的 TurnID，`LineageSession`）；attempt 为 domain `attempt`（Key 为 TurnID，`LineageSession`）；run 为 domain `run`（Key 为 `runmod.Event.RunID`，`LineageSegment`）。
 
 ## 4. Binding reference declaration 与 admission
 
@@ -317,7 +318,7 @@ v1 conformance 必须验证：
 - **EXT-WRT-7**：每个 applied group 恰通知一次、行与日志一致、顺序与 Seq 一致（含并发提交）；被拒与重放不通知；观察者 panic 不影响 Commit；
 - **EXT-WRT-1 至 5**：OpenWriter 后投影等于全量 fold 且 Writer 不保留日志（重开后常驻内存不随日志长度增长）；同 CommitID 重放 AlreadyApplied、不同内容 Conflict、两者无写入；并发调用方串行且各自看到前一次的结果；claim 先于 append，已确认写入前拒绝时释放 claim，结果未知时保持 Active 至重开核对；`ErrOwnershipLost` 后 Writer 失效；Append 在底层持久化之后返回错误时 Writer 以 `ErrUnknownOutcome` 失效、重开后同一 group 为 `AlreadyApplied`，claim 保持 Active，后续 Seq 连续、链完整；Append 在写入之前发生结果未知的错误时，重开核对释放孤儿 claim；同一提交经历多次写入前失败与重开后，通过后继 claim 成功提交且仅保留一个 Active root；owner 或 BindingSet 冲突时拒绝派生后继；
 - **EXT-PRJ-1 至 4**：pure fold、组边界、Consumes 与范围外跳过、Ignorable 与非 Ignorable 的 Unknown、缓存复用条件、Writer 内投影与 Store 读取一致；修改 `Projections().Load` 或 `View.Projection` 返回的嵌套状态后，后续读取与提交仍保持原事实流的投影。
-- **EXT-STR-1**：未声明的 domain、他模块的 domain、重复的 domain、`IDField` 为 `v`、缺失或未知的 `Lineage` 使 `BuildRegistry` 失败；事件放入其他 domain 的 batch、单例流的 batch 带 ID、键控流的 batch 无 ID 或 payload 绑定字段不匹配的 group 被 Writer 拒绝；
+- **EXT-STR-1**：未声明的 domain、他模块的 domain、重复的 domain、缺失或未知的 `Lineage` 使 `BuildRegistry` 失败；事件放入其他 domain 的 batch、单例流的 batch 带 ID、键控流的 batch 无 ID 或 `Key(value)` 与 batch 不符的 group 被 Writer 拒绝；
 - **EXT-PRJ-8**：默认继承策略下继承 commit 中 `LineageSegment` domain 的批次不进入折叠、tip commit 全部折叠；`InheritAll` 折叠继承 commit 的全部批次；Writer 与 ProjectionReader 对同一 fork 折出相同状态；
 - **EXT-PRJ-9**：非 authoritative 投影的 fold 失败不阻止 commit，该投影此后读到 `ErrProjectionUnhealthy`、不再写缓存，authoritative 投影不受影响；authoritative 投影的 fold 失败使 commit 为 `invalid`；
 - **EXT-WRT-8/9**：Fork 之后唯一覆盖前缀内容的 claim 是父段的 commit claim，打开子不释放它；删除父后该 claim 仍 Active、子仍读到前缀；Collect 截断父段时只释放被截 commit 的 claim；删除全部到达者并 Collect 后 claim 释放；重复 Delete 返回 nil；

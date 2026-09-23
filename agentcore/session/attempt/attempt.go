@@ -37,7 +37,16 @@ const (
 // identity only; turn.TurnID converts to and from it.
 type TurnID string
 
-var streamDefinition = extension.StreamDefinition{Domain: StreamDomain, IDField: "turnId", Lineage: session.LineageSession}
+var streamDefinition = extension.StreamDefinition{Domain: StreamDomain, Key: streamKey, Lineage: session.LineageSession}
+
+// streamKey binds the started fact to its Turn's stream (EXT-STR-1).
+func streamKey(value any) (string, error) {
+	p, ok := value.(StartedPayload)
+	if !ok {
+		return "", fmt.Errorf("value is %T, want attempt.StartedPayload", value)
+	}
+	return string(p.TurnID), nil
+}
 
 // Stream is the logical stream of one Turn's attempts.
 func Stream(turnID TurnID) session.StreamRef { return streamDefinition.Ref(string(turnID)) }

@@ -362,7 +362,7 @@ func V1() Schema
 // wire.FactTypes() 是 Session 模块注册 wire 类型的来源，没有第二份清单。
 ```
 
-Session 侧的适配器是 `agentcore/session/run` 的 `SessionRunStore`：`Bind(w writer.Writer) runtime.RunStore` 把端口绑定到调用方的 Writer（所有权能力，OWN-HDL-2）；`Record(ctx, sid, runID)` 按 SessionID 从 Store 折叠，不取得所有权；`Command(ctx, req)` 与 `CreateRun(newRun, inputs)` 是 Run 模块在跨模块 unit of work 里的 Part。`agentcore/session/run` 声明流 domain `run`（`IDField` 为 `runId`，`LineageSegment`，EXT-STR-1）：每个 Run 一条流 `run/<RunID>`，Run 事实全部写入它。它以 `extension.Registry`、`session.Store`、`frozen.Store`（`FrozenValues(content, bindings)`：Put 同时登记 FrozenBinding，调用方不再协调两个 store）、`SnapshotPolicy` 与投影缓存构造。`frozen.Store` 保存 Authority 生成的 immutable 正文；Executor 接受 Assignment 后必须把请求转存为 executor-owned payload。
+Session 侧的适配器是 `agentcore/session/run` 的 `SessionRunStore`：`Bind(w writer.Writer) runtime.RunStore` 把端口绑定到调用方的 Writer（所有权能力，OWN-HDL-2）；`Record(ctx, sid, runID)` 按 SessionID 从 Store 折叠，不取得所有权；`Command(ctx, req)` 与 `CreateRun(newRun, inputs)` 是 Run 模块在跨模块 unit of work 里的 Part。`agentcore/session/run` 声明流 domain `run`（Key 为 `runmod.Event.RunID`，`LineageSegment`，EXT-STR-1）：每个 Run 一条流 `run/<RunID>`，Run 事实全部写入它。它以 `extension.Registry`、`session.Store`、`frozen.Store`（`FrozenValues(content, bindings)`：Put 同时登记 FrozenBinding，调用方不再协调两个 store）、`SnapshotPolicy` 与投影缓存构造。`frozen.Store` 保存 Authority 生成的 immutable 正文；Executor 接受 Assignment 后必须把请求转存为 executor-owned payload。
 
 **跨模块提交** 只有一个协调者：`unit.Commit(ctx, w, now, unit.Work{CommitID, Parts})`。每个 Part 在同一 View 上 `Prepare` 出自己模块的 batch，按 Part 顺序合并为每 stream 至多一个 batch，一次 Append 或什么都不写；任一 Part 拒绝即整组拒绝；CommitID 已在 log 中时不准备任何 Part，直接返回 already-applied。Turn 不再拼 Run 的 wire 事件，Run 不再携带 chatlog 事件（TRN-STR-2、TRN-DLV-2、TRN-STP-1 都是三个模块各出一个 Part）。`RunStore.Commit` 本身就是只含 Run Part 的 unit。
 

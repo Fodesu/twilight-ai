@@ -4,7 +4,6 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/artifact"
-	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/extension"
 )
@@ -54,7 +53,7 @@ func encode(registry *extension.Registry, group *SemanticGroup) ([]session.Strea
 			if !declared {
 				return nil, nil, fmt.Sprintf("%s: event type %s names stream domain %q, which no module declares", where, te.Type, def.Stream)
 			}
-			if verdict := checkStreamAffinity(tb.Stream, stream, payload); verdict != "" {
+			if verdict := checkStreamAffinity(tb.Stream, stream, te.Value); verdict != "" {
 				return nil, nil, fmt.Sprintf("%s: %s", where, verdict)
 			}
 			for d := range def.Bindings {
@@ -81,7 +80,7 @@ func encode(registry *extension.Registry, group *SemanticGroup) ([]session.Strea
 // declaration of the domain the event type names (EXT-STR-1). It returns a
 // human verdict for the commit's detail string; the declarations themselves
 // are validated at BuildRegistry.
-func checkStreamAffinity(stream session.StreamRef, def extension.StreamDefinition, payload jsonstable.Value) string {
+func checkStreamAffinity(stream session.StreamRef, def extension.StreamDefinition, value any) string {
 	if stream.Domain != def.Domain {
 		return fmt.Sprintf("event belongs to stream domain %q but the batch is %s", def.Domain, stream)
 	}
@@ -94,20 +93,15 @@ func checkStreamAffinity(stream session.StreamRef, def extension.StreamDefinitio
 	if stream.ID == "" {
 		return fmt.Sprintf("stream domain %q is keyed but the batch names no stream ID", def.Domain)
 	}
-	decoded, err := payload.Any()
+	id, err := def.Key(value)
 	if err != nil {
-		return fmt.Sprintf("payload is not decodable for the stream binding: %v", err)
+		return fmt.Sprintf("stream key of domain %q: %v", def.Domain, err)
 	}
-	fields, ok := decoded.(map[string]any)
-	if !ok {
-		return "payload is not an object"
-	}
-	id, ok := fields[def.IDField].(string)
-	if !ok || id == "" {
-		return fmt.Sprintf("payload lacks the stream binding field %q", def.IDField)
+	if id == "" {
+		return fmt.Sprintf("event names no stream of domain %q", def.Domain)
 	}
 	if id != stream.ID {
-		return fmt.Sprintf("payload %s %q does not match the batch stream %q", def.IDField, id, stream.ID)
+		return fmt.Sprintf("event belongs to stream %s/%s but the batch is %s", def.Domain, id, stream)
 	}
 	return ""
 }

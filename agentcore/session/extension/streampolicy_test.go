@@ -29,7 +29,7 @@ func policyModule(streams []StreamDefinition, eventStream string) ModuleDescript
 // (EXT-STR-1).
 func TestBuildRegistryValidatesStreamDeclarations(t *testing.T) {
 	singleton := StreamDefinition{Domain: "pol", Lineage: session.LineageSession}
-	keyed := StreamDefinition{Domain: "polrun", IDField: "runId", Lineage: session.LineageSegment}
+	keyed := StreamDefinition{Domain: "polrun", Key: func(any) (string, error) { return "r1", nil }, Lineage: session.LineageSegment}
 	other := ModuleDescriptor{Source: "polsrc", ID: "other", Streams: []StreamDefinition{{Domain: "other", Lineage: session.LineageSession}}}
 	cases := map[string]struct {
 		streams []StreamDefinition
@@ -47,8 +47,6 @@ func TestBuildRegistryValidatesStreamDeclarations(t *testing.T) {
 		"duplicate domain":                 {streams: []StreamDefinition{singleton, singleton}, event: "pol", detail: "duplicate stream domain"},
 		"domain declared by two modules": {streams: []StreamDefinition{singleton}, event: "pol", detail: "duplicate stream domain",
 			others: []ModuleDescriptor{{Source: "polsrc", ID: "other", Streams: []StreamDefinition{singleton}}}},
-		"id field is the version key": {streams: []StreamDefinition{{Domain: "pol", IDField: "v", Lineage: session.LineageSegment}}, event: "pol",
-			detail: "collides with the payload version key"},
 		"missing lineage": {streams: []StreamDefinition{{Domain: "pol"}}, event: "pol", detail: "lineage is empty"},
 		"unknown lineage": {streams: []StreamDefinition{{Domain: "pol", Lineage: "branch"}}, event: "pol", detail: "unknown stream lineage"},
 	}

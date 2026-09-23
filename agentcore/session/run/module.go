@@ -30,7 +30,16 @@ const (
 
 // streamDefinition declares the run domain: keyed by RunID and of segment
 // lineage, so a fork never reads an ancestor's Runs as its own.
-var streamDefinition = extension.StreamDefinition{Domain: StreamDomain, IDField: "runId", Lineage: session.LineageSegment}
+var streamDefinition = extension.StreamDefinition{Domain: StreamDomain, Key: streamKey, Lineage: session.LineageSegment}
+
+// streamKey binds a run event to its Run's stream (EXT-STR-1).
+func streamKey(value any) (string, error) {
+	ev, ok := value.(Event)
+	if !ok {
+		return "", fmt.Errorf("value is %T, want runmod.Event", value)
+	}
+	return string(ev.RunID), nil
+}
 
 // Stream is the logical stream of one Run's facts.
 func Stream(runID run.RunID) session.StreamRef { return streamDefinition.Ref(string(runID)) }

@@ -75,19 +75,25 @@ type EventDefinition struct {
 type StreamDefinition struct {
 	// Domain is the StreamRef.Domain of every stream of the definition.
 	Domain string
-	// IDField is the encoded-payload key that binds an event to its stream
-	// ID. Empty declares a singleton domain: one stream, no ID. Non-empty
-	// declares a keyed domain whose streams are domain/<id>; the Writer
-	// requires the payload's IDField to equal the batch's stream ID.
-	IDField string
+	// Key extracts, from a typed event value of this domain, the ID of the
+	// stream it belongs to. Nil declares a singleton domain: one stream, no
+	// ID. Non-nil declares a keyed domain whose streams are domain/<id>; the
+	// Writer requires Key(value) to equal the batch's stream ID
+	// (EXT-STR-1). The binding is a property of the module's Go values, not
+	// of a payload field name.
+	Key StreamKey
 	// Lineage is how a fork reads the domain (SES-FRK-5):
 	// LineageSession for state the child Session continues, LineageSegment
 	// for history that stays with the segment that wrote it.
 	Lineage session.StreamLineage
 }
 
+// StreamKey names the stream a typed event value belongs to; it fails for a
+// value that is not one of the domain's event types.
+type StreamKey func(value any) (string, error)
+
 // Keyed reports whether the domain's streams carry an ID.
-func (d StreamDefinition) Keyed() bool { return d.IDField != "" }
+func (d StreamDefinition) Keyed() bool { return d.Key != nil }
 
 // Ref names one stream of the domain; id is empty for a singleton.
 func (d StreamDefinition) Ref(id string) session.StreamRef {
@@ -233,12 +239,6 @@ func BuildRegistryWithExtensions(core, extensions []ModuleDescriptor) (*Registry
 			if prev, dup := r.streams[sd.Domain]; dup {
 				return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("duplicate stream domain %q: declared by %s/%s and %s/%s",
 					sd.Domain, prev.module.Source, prev.module.ID, key.Source, key.ID)}
-			}
-			// "v" is written into every encoded payload as its version key
-			// (addVersion); a binding field of that name would read the
-			// version number in place of the stream ID.
-			if sd.IDField == "v" {
-				return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("stream domain %q: stream ID field \"v\" collides with the payload version key", sd.Domain)}
 			}
 			if err := session.ValidateStreamLineage(sd.Lineage); err != nil {
 				return nil, &Error{Code: ErrInvalid, Detail: fmt.Sprintf("stream domain %q: %v", sd.Domain, err)}

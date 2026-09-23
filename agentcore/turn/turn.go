@@ -27,7 +27,20 @@ const (
 
 // streamDefinition declares the turn domain: keyed by TurnID and of session
 // lineage, so a fork continues its parent's Turns.
-var streamDefinition = extension.StreamDefinition{Domain: StreamDomain, IDField: "turnId", Lineage: session.LineageSession}
+var streamDefinition = extension.StreamDefinition{Domain: StreamDomain, Key: streamKey, Lineage: session.LineageSession}
+
+// streamKey binds a turn event to its Turn's stream (EXT-STR-1).
+func streamKey(value any) (string, error) {
+	switch p := value.(type) {
+	case StartedPayload:
+		return string(p.TurnID), nil
+	case FailedPayload:
+		return string(p.TurnID), nil
+	case SupersededPayload:
+		return string(p.TurnID), nil
+	}
+	return "", fmt.Errorf("value is %T, not a turn event", value)
+}
 
 // Stream is the logical stream of one Turn's events.
 func Stream(turnID TurnID) session.StreamRef { return streamDefinition.Ref(string(turnID)) }
