@@ -75,7 +75,7 @@ func (h *Handle) Writer() writer.Writer
 func (h *Handle) Close(ctx) error
 ```
 
-**OWN-PRT-3（全部 port 为 durable）** Session Store、frozen 正文的 Content Store、BindingStore、RetentionLedger 与（组装 Worker 时的）Execution Ledger store 均为必填且均为 durable：core 不提供任何随进程消失的 store 实现，`owner.New` 与 `app.Build` 对 nil port 返回错误而不回退。一方实现为：Session ledger 与 cas 正文在文件系统（`agentcore/session/filestore`，JSONL 段与 cas 文件），Binding、retention claim 与 execution record 在同一个 SQLite 文件（`agentcore/store/sqlite`）。这样崩溃重启后事实、正文、索引、claim 与 record 同时存在，Executing 目标的接管处置只依据 record（RUN-CMT-7）。投影缓存是可丢弃的派生数据，允许内存实现；preset 注册表在 Build 时重建，同样允许内存实现。测试使用 `t.TempDir()` 下的同一组实现（`filestoretest`、`sqlitetest`）。
+**OWN-PRT-3（全部 port 为 durable）** Session Store、frozen 正文的 Content Store、BindingStore、RetentionLedger 与（组装 Worker 时的）Execution Ledger store、checkpoint store 均为必填且均为 durable：core 不提供任何随进程消失的 store 实现，`owner.New` 与 `app.Build` 对 nil port 返回错误而不回退。一方实现为：Session ledger 与 cas 正文在文件系统（`agentcore/session/filestore`，JSONL 段与 cas 文件），Binding、retention claim 与 execution record 在同一个 SQLite 文件（`agentcore/store/sqlite`）。这样崩溃重启后事实、正文、索引、claim 与 record 同时存在，Executing 目标的接管处置只依据 record（RUN-CMT-7）。投影缓存是可丢弃的派生数据，允许内存实现；preset 注册表在 Build 时重建，同样允许内存实现。测试使用 `t.TempDir()` 下的同一组实现（`filestoretest`、`sqlitetest`）。
 
 **OWN-HDL-1** `Owner.Open(sid)` 发放对一个 Session 的执行能力，不是读取能力。Open 取得该 Session 的 Writer（本进程 epoch 下）、运行接管处置（DRV-3）并安装恢复监听；返回的 `Handle` 只承载这份能力与其生命周期：`ID`、`Writer`、`Close`。所有权按代（generation）记录，一代的状态为 opening / open / closing：同一 Owner 内一个 Session 同时只有一代，处于任一状态时 Open 都返回 `ErrSessionOpen`，因此一代的释放（停止恢复监听、关闭 Writer）完成之前新的一代不会取得 Writer；`Handle.Close` 只释放自己那一代——先在锁内把该代置为 closing，释放资源后再从表中删除——已释放或正在释放的 Handle 再 Close 为无操作，不会关闭替代它的一代；Close、DeleteSession、Owner.Close 与失败的 Open 都经同一条释放路径，接管处置失败时 Open 释放已取得的 Writer，失败的 Open 不留下所有权。SessionID 是持久身份；Handle 表示"本进程当前拥有它"。Handle 不带任何业务操作：Send、排空、fork、compaction、spawn 分别属于 app、domain 命令或效果层。
 
@@ -142,6 +142,7 @@ func (app *Application) ForkBeforeTurn(ctx, parent, turnID, child) (session.Segm
 func (app *Application) DeleteSession(ctx, sid) error                                                 // OWN-FRK-3
 func (app *Application) Collect(ctx) (session.CollectReport, error)
 func (app *Application) Events(ctx, sid) <-chan Event                                                 // OBS-1
+func (app *Application) EventsFrom(ctx, sid, from session.CommitSeq) (<-chan Event, error)          // OBS-2
 type Result struct { TurnID; Status; Disposition; Reply string }
 func (s *Session) Send(ctx, text string) ([]Result, error)                  // 提交 + 路由 + 同步驱动 + 结算后排空
 func (s *Session) Submit(ctx, text string) (turn.TurnRef, error)            // 提交 + 路由，后台驱动，立即返回
@@ -199,7 +200,9 @@ func (s *Session) Close(ctx) error
 
 ## 9. 事件流（observe）
 
-**OBS-1** `Application.Events(ctx, sid)` 是该 Session 从订阅时刻起的事件流：`observe.Bus` 以 `writer.CommitObserver` 接在 Writers 上（EXT-WRT-7），每个已应用组的每一行经 Registry 解码为 `Event{Row, Module, Version, Value, Unknown}`，按提交顺序交付；无 codec 的类型或版本以 `Unknown` 交付原行。同一条流还承载临时的进度观察：`Event.Progress{RunID, Effect, Generation, Sequence, Kind, Payload}`，来自 Executor 的进度帧（RUN-EXE-12）经 Loop 的 sink 与 `Driver.Sink`（`app.Build` 接为 Bus）发布，`Row` 为零；它不是事实，可丢失，`progress_reset` 作废同一 effect 此前的帧，随后落下的已提交结果取代它。UI 的渲染规则由此确定：按 delta 累积，收到 reset 时丢弃该 effect 已累积的内容，收到该步的已提交事实后以冻结正文替换。订阅者之间互不阻塞，慢读者只延迟自己的交付，从不阻塞 Commit。历史不在此流上：从 Store 或投影读取。UI、SSE 与 CLI 的观察都从这一个源头派生；Loop 的 `EventSink` 只是 Loop 到 Bus 的适配器，不是第二条观察通道。
+**OBS-1** `Application.Events(ctx, sid)` 是该 Session 从订阅时刻起的事件流：`observe.Bus` 以 `writer.CommitObserver` 接在 Writers 上（EXT-WRT-7），每个已应用组的每一行经 Registry 解码为 `Event{Position, Row, Module, Version, Value, Unknown}`，按提交顺序交付，`Position{Commit, Index}` 是该行在 ledger 中的位置；无 codec 的类型或版本以 `Unknown` 交付原行。同一条流还承载临时的进度观察：`Event.Progress{RunID, Effect, Generation, Sequence, Kind, Payload}`，来自 Executor 的进度帧（RUN-EXE-12）经 Loop 的 sink 与 `Driver.Sink`（`app.Build` 接为 Bus）发布，`Row` 为零；它不是事实，可丢失，`progress_reset` 作废同一 effect 此前的帧，随后落下的已提交结果取代它。UI 的渲染规则由此确定：按 delta 累积，收到 reset 时丢弃该 effect 已累积的内容，收到该步的已提交事实后以冻结正文替换。订阅者之间互不阻塞，慢读者只延迟自己的交付，从不阻塞 Commit。UI、SSE 与 CLI 的观察都从这一个源头派生；Loop 的 `EventSink` 只是 Loop 到 Bus 的适配器，不是第二条观察通道。
+
+**OBS-2（catch-up 订阅与 checkpoint）** `Application.EventsFrom(ctx, sid, from)` 是从 `CommitSeq` `from` 起的订阅：Bus 先注册 live 订阅者，再经 `Store.ReadCommits` 读出 `from` 到 head 的历史并按 `Position` 交付，随后交付 live 事件，其中 `Position.Commit` 低于读取时 head 的 live 事件已由历史覆盖、不再交付；因此订阅期间的提交不丢，历史覆盖的提交不重复。失败与进度事件没有 Position，按到达交付。消费者保存自己处理到的位置（`agentcore/checkpoint.Store`：按 consumer 与 ledger 名保存 `Next`，只能前移，SQLite 实现与 execution ledger 同库），崩溃后以该位置调用 `EventsFrom` 续接，每个提交至少交付一次；消费者状态与 checkpoint 在同一事务写入时恰好一次，否则消费者须幂等。这是 Session 侧的 catch-up 读取原语，Execution 侧的对应物是 `executionstore.Store.Read(key, from)`（RUN-EXE-14）；两者是跨 authority 过程（Effect Process）的输入。
 
 ## 10. 组成
 

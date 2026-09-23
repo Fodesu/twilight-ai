@@ -68,6 +68,12 @@ CREATE TABLE IF NOT EXISTS execution_leases (
 	lease_until INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS execution_leases_by_owner ON execution_leases (owner, key);
+CREATE TABLE IF NOT EXISTS checkpoints (
+	consumer TEXT NOT NULL,
+	ledger   TEXT NOT NULL,
+	next     INTEGER NOT NULL,
+	PRIMARY KEY (consumer, ledger)
+);
 CREATE TABLE IF NOT EXISTS bindings (
 	id      TEXT PRIMARY KEY,
 	digest  TEXT NOT NULL,

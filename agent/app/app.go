@@ -223,7 +223,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	if err != nil {
 		return nil, err
 	}
-	bus = observe.NewBus(a.Registry)
+	bus = observe.NewBus(a.Registry, c.Store)
 	app.Owner, app.bus = a, bus
 	// The Sessions' compaction policy runs between the steps of a Turn
 	// through the driver's planner seam (APP-CKP-1, RUN-LOP-10).
@@ -309,6 +309,13 @@ func (app *Application) PresetRef(id turn.PresetID) (turn.PresetRef, error) {
 // Writers, in commit order, plus failures of background drives.
 func (app *Application) Events(ctx context.Context, sid session.SessionID) <-chan Event {
 	return app.bus.Subscribe(ctx, sid)
+}
+
+// EventsFrom is the catch-up form of Events: the Session's committed events
+// from CommitSeq from, then the live stream. A client that keeps the last
+// Position it handled resumes here after a disconnect without a gap.
+func (app *Application) EventsFrom(ctx context.Context, sid session.SessionID, from session.CommitSeq) (<-chan Event, error) {
+	return app.bus.SubscribeFrom(ctx, sid, from)
 }
 
 // Close cancels the spawn effect's child drives, stops recovery listeners
