@@ -205,8 +205,7 @@ func TestWorkerDispatchReplayPreservesExistingExecution(t *testing.T) {
 			ctx := context.Background()
 			records := sqlitetest.Open(t).Executions()
 			a := testAssignment()
-			r := store.ExecutionState{Assignment: a, State: state,
-				Owner: "expired-worker", FencingEpoch: 4, LeaseUntilUnixMilli: 1}
+			r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: state}, Lease: store.Lease{Owner: "expired-worker", Epoch: 4, UntilUnixMilli: 1}}
 			if err := records.Seed(ctx, r); err != nil {
 				t.Fatal(err)
 			}
@@ -219,7 +218,7 @@ func TestWorkerDispatchReplayPreservesExistingExecution(t *testing.T) {
 				t.Fatal(err)
 			}
 			got, _, _, err := records.Load(ctx, a.Key())
-			if err != nil || got.State != r.State || got.Owner != r.Owner || got.FencingEpoch != r.FencingEpoch {
+			if err != nil || got.State != r.State || got.Lease.Owner != r.Lease.Owner || got.Lease.Epoch != r.Lease.Epoch {
 				t.Fatalf("replay changed execution: %+v, %v", got, err)
 			}
 			backend.mu.Lock()
@@ -434,9 +433,7 @@ func TestWorkerRestartSupersedesRef(t *testing.T) {
 	ctx := context.Background()
 	records := sqlitetest.Open(t).Executions()
 	a := testAssignment()
-	r := store.ExecutionState{Assignment: a, State: effect.ExecutionRunning,
-		ExecutionRef: store.ExecutionRef{Provider: "ref", Ref: "execution-1"},
-		Owner:        "dead-worker", FencingEpoch: 2, LeaseUntilUnixMilli: 1}
+	r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: effect.ExecutionRunning, ExecutionRef: store.ExecutionRef{Provider: "ref", Ref: "execution-1"}}, Lease: store.Lease{Owner: "dead-worker", Epoch: 2, UntilUnixMilli: 1}}
 	if err := records.Seed(ctx, r); err != nil {
 		t.Fatal(err)
 	}
@@ -471,9 +468,7 @@ func TestWorkerRecoverExecutionRefusesUnknownProvider(t *testing.T) {
 	ctx := context.Background()
 	records := sqlitetest.Open(t).Executions()
 	a := testAssignment()
-	r := store.ExecutionState{Assignment: a, State: effect.ExecutionRunning,
-		ExecutionRef: store.ExecutionRef{Provider: "elsewhere", Ref: "existing-job"},
-		Owner:        "expired-worker", FencingEpoch: 3, LeaseUntilUnixMilli: 1}
+	r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: effect.ExecutionRunning, ExecutionRef: store.ExecutionRef{Provider: "elsewhere", Ref: "existing-job"}}, Lease: store.Lease{Owner: "expired-worker", Epoch: 3, UntilUnixMilli: 1}}
 	if err := records.Seed(ctx, r); err != nil {
 		t.Fatal(err)
 	}
@@ -489,7 +484,7 @@ func TestWorkerRecoverExecutionRefusesUnknownProvider(t *testing.T) {
 		t.Fatalf("status = %v, want ErrUnknownProvider", err)
 	}
 	got, _, _, err := records.Load(ctx, a.Key())
-	if err != nil || got.Owner != r.Owner || got.FencingEpoch != r.FencingEpoch || got.ExecutionRef != r.ExecutionRef {
+	if err != nil || got.Lease.Owner != r.Lease.Owner || got.Lease.Epoch != r.Lease.Epoch || got.ExecutionRef != r.ExecutionRef {
 		t.Fatalf("unknown-provider takeover changed the record: %+v, %v", got, err)
 	}
 	backend.mu.Lock()
@@ -677,8 +672,7 @@ func TestWorkerRecoverExecutionAdoptsExpiredLease(t *testing.T) {
 	now := base.Add(2 * time.Second)
 	records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 	a := testAssignment()
-	r := store.ExecutionState{Assignment: a, State: effect.ExecutionRunning,
-		Owner: "dead-worker", FencingEpoch: 4, LeaseUntilUnixMilli: base.Add(time.Second).UnixMilli()}
+	r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: effect.ExecutionRunning}, Lease: store.Lease{Owner: "dead-worker", Epoch: 4, UntilUnixMilli: base.Add(time.Second).UnixMilli()}}
 	if err := records.Seed(ctx, r); err != nil {
 		t.Fatal(err)
 	}
@@ -698,7 +692,7 @@ func TestWorkerRecoverExecutionAdoptsExpiredLease(t *testing.T) {
 		t.Fatalf("adopted outcome = %+v, %v", out, err)
 	}
 	got, _, _, err := records.Load(ctx, a.Key())
-	if err != nil || got.Owner != "worker-b" {
+	if err != nil || got.Lease.Owner != "worker-b" {
 		t.Fatalf("adopted record = %+v, %v", got, err)
 	}
 	backend.mu.Lock()
@@ -717,8 +711,7 @@ func TestWorkerRecoverExecutionLeavesLiveLease(t *testing.T) {
 	now := base
 	records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 	a := testAssignment()
-	r := store.ExecutionState{Assignment: a, State: effect.ExecutionRunning,
-		Owner: "worker-a", FencingEpoch: 4, LeaseUntilUnixMilli: base.Add(time.Second).UnixMilli()}
+	r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: effect.ExecutionRunning}, Lease: store.Lease{Owner: "worker-a", Epoch: 4, UntilUnixMilli: base.Add(time.Second).UnixMilli()}}
 	if err := records.Seed(ctx, r); err != nil {
 		t.Fatal(err)
 	}
@@ -732,7 +725,7 @@ func TestWorkerRecoverExecutionLeavesLiveLease(t *testing.T) {
 		t.Fatalf("recover of a live lease = %v, want a no-op", err)
 	}
 	got, _, _, err := records.Load(ctx, a.Key())
-	if err != nil || got.Owner != "worker-a" || got.FencingEpoch != 4 {
+	if err != nil || got.Lease.Owner != "worker-a" || got.Lease.Epoch != 4 {
 		t.Fatalf("live record changed: %+v, %v", got, err)
 	}
 	backend.mu.Lock()
@@ -804,13 +797,12 @@ func TestWorkerDisposeSettlesUnknown(t *testing.T) {
 	completedEnv := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Unknown: false}
 	rows := []struct {
 		name    string
-		record  *store.ExecutionState // nil means the key was never written
+		record  *store.Execution // nil means the key was never written
 		wantErr error
 	}{
-		{"expired foreign owner", &store.ExecutionState{State: effect.ExecutionRunning, Owner: "dead-worker", FencingEpoch: 3, LeaseUntilUnixMilli: 1}, nil},
-		{"live foreign owner", &store.ExecutionState{State: effect.ExecutionDispatching, Owner: "live-worker", FencingEpoch: 3,
-			LeaseUntilUnixMilli: time.Now().Add(time.Hour).UnixMilli()}, nil},
-		{"already terminal", &store.ExecutionState{State: effect.ExecutionCompleted, Owner: "dead-worker", FencingEpoch: 3, LeaseUntilUnixMilli: 1, Outcome: &completedEnv}, nil},
+		{"expired foreign owner", &store.Execution{ExecutionState: store.ExecutionState{State: effect.ExecutionRunning}, Lease: store.Lease{Owner: "dead-worker", Epoch: 3, UntilUnixMilli: 1}}, nil},
+		{"live foreign owner", &store.Execution{ExecutionState: store.ExecutionState{State: effect.ExecutionDispatching}, Lease: store.Lease{Owner: "live-worker", Epoch: 3, UntilUnixMilli: time.Now().Add(time.Hour).UnixMilli()}}, nil},
+		{"already terminal", &store.Execution{ExecutionState: store.ExecutionState{State: effect.ExecutionCompleted, Outcome: &completedEnv}, Lease: store.Lease{Owner: "dead-worker", Epoch: 3, UntilUnixMilli: 1}}, nil},
 		{"missing record", nil, effect.ErrExecutionNotFound},
 	}
 	for _, row := range rows {
@@ -875,8 +867,7 @@ func TestWorkerAdoptionOfUnattachableToolSettlesUnknown(t *testing.T) {
 			ctx := context.Background()
 			records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 			a := testToolAssignment()
-			r := store.ExecutionState{Assignment: a, State: row.state,
-				Owner: "dead-worker", FencingEpoch: 2, LeaseUntilUnixMilli: base.Add(time.Second).UnixMilli()}
+			r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: row.state}, Lease: store.Lease{Owner: "dead-worker", Epoch: 2, UntilUnixMilli: base.Add(time.Second).UnixMilli()}}
 			if err := records.Seed(ctx, r); err != nil {
 				t.Fatal(err)
 			}
@@ -900,8 +891,8 @@ func TestWorkerAdoptionOfUnattachableToolSettlesUnknown(t *testing.T) {
 				if got.State != effect.ExecutionUnknown || got.Outcome == nil || !got.Outcome.Unknown {
 					t.Fatalf("adopted record = %+v, want Unknown settle", got)
 				}
-			} else if got.Owner != "worker-b" {
-				t.Fatalf("adopted record owner = %q, want worker-b", got.Owner)
+			} else if got.Lease.Owner != "worker-b" {
+				t.Fatalf("adopted record owner = %q, want worker-b", got.Lease.Owner)
 			}
 			backend.mu.Lock()
 			calls := backend.calls
@@ -955,7 +946,7 @@ func TestWorkerHeartbeatRetriesTransientRenewErrors(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatalf("record = %+v ok=%v err=%v", r, ok, err)
 		}
-		if r.Owner == "worker-a" && r.LeaseUntilUnixMilli > time.Now().UnixMilli() {
+		if r.Lease.Owner == "worker-a" && r.Lease.UntilUnixMilli > time.Now().UnixMilli() {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -1050,9 +1041,7 @@ func TestWorkerRecoverExecutionWaitsForUnconfirmedBackend(t *testing.T) {
 			ctx := context.Background()
 			records := sqlitetest.Open(t).Executions()
 			a := row.assignment
-			r := store.ExecutionState{Assignment: a, State: effect.ExecutionRunning,
-				ExecutionRef: store.ExecutionRef{Provider: "ref", Ref: "execution-1"},
-				Owner:        "dead-worker", FencingEpoch: 2, LeaseUntilUnixMilli: 1}
+			r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: effect.ExecutionRunning, ExecutionRef: store.ExecutionRef{Provider: "ref", Ref: "execution-1"}}, Lease: store.Lease{Owner: "dead-worker", Epoch: 2, UntilUnixMilli: 1}}
 			if err := records.Seed(ctx, r); err != nil {
 				t.Fatal(err)
 			}
@@ -1074,7 +1063,7 @@ func TestWorkerRecoverExecutionWaitsForUnconfirmedBackend(t *testing.T) {
 			backend.mu.Lock()
 			restarts, started := backend.restarts, backend.started
 			backend.mu.Unlock()
-			if held.Owner != "worker-b" || held.State != effect.ExecutionRunning || restarts != 0 || started != 0 {
+			if held.Lease.Owner != "worker-b" || held.State != effect.ExecutionRunning || restarts != 0 || started != 0 {
 				t.Fatalf("held record = %+v, backend restarts=%d started=%d; want the lease held and nothing dispatched", held, restarts, started)
 			}
 			// The holder itself reports what its backend can confirm: nothing
@@ -1092,7 +1081,7 @@ func TestWorkerRecoverExecutionWaitsForUnconfirmedBackend(t *testing.T) {
 				backend.mu.Lock()
 				restarts = backend.restarts
 				backend.mu.Unlock()
-				if got.State == row.wantState && restarts == row.wantRestarts && (row.resolve != effect.AttachmentActive || got.Owner == "worker-b") {
+				if got.State == row.wantState && restarts == row.wantRestarts && (row.resolve != effect.AttachmentActive || got.Lease.Owner == "worker-b") {
 					if row.wantRestarts == 1 && (got.ExecutionRef.Ref != "execution-2" || len(got.Superseded) != 1) {
 						t.Fatalf("restarted record = %+v", got)
 					}
@@ -1138,9 +1127,7 @@ func TestWorkerAdoptsToolByReplayDeclaration(t *testing.T) {
 			body, _ := a.Tool()
 			body.Replay = tc.policy
 			a.Body = body
-			r := store.ExecutionState{Assignment: a, State: effect.ExecutionRunning,
-				ExecutionRef: store.ExecutionRef{Provider: "ref", Ref: "execution-1"},
-				Owner:        "dead-worker", FencingEpoch: 2, LeaseUntilUnixMilli: 1}
+			r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: effect.ExecutionRunning, ExecutionRef: store.ExecutionRef{Provider: "ref", Ref: "execution-1"}}, Lease: store.Lease{Owner: "dead-worker", Epoch: 2, UntilUnixMilli: 1}}
 			if err := records.Seed(ctx, r); err != nil {
 				t.Fatal(err)
 			}
@@ -1198,8 +1185,7 @@ func TestWorkerAttachClassifiesByLease(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 			a := testAssignment()
-			r := store.ExecutionState{Assignment: a, State: effect.ExecutionRunning,
-				ExecutionRef: store.ExecutionRef{Provider: "elsewhere", Ref: "job"}, Owner: tc.owner, FencingEpoch: tc.epoch, LeaseUntilUnixMilli: tc.lease}
+			r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: effect.ExecutionRunning, ExecutionRef: store.ExecutionRef{Provider: "elsewhere", Ref: "job"}}, Lease: store.Lease{Owner: tc.owner, Epoch: tc.epoch, UntilUnixMilli: tc.lease}}
 			if err := records.Seed(ctx, r); err != nil {
 				t.Fatal(err)
 			}
@@ -1403,8 +1389,7 @@ func TestWorkerAcknowledgeCollects(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
 			a := testAssignment()
-			r := store.ExecutionState{Assignment: a, State: row.state, ExecutionRef: store.ExecutionRef{Provider: "test", Ref: "job"},
-				Owner: "worker-a", FencingEpoch: 1, LeaseUntilUnixMilli: now.Add(time.Hour).UnixMilli(), SettledAtUnixMilli: now.Add(-time.Minute).UnixMilli()}
+			r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: row.state, ExecutionRef: store.ExecutionRef{Provider: "test", Ref: "job"}}, Lease: store.Lease{Owner: "worker-a", Epoch: 1, UntilUnixMilli: now.Add(time.Hour).UnixMilli()}}
 			if row.state.Terminal() {
 				env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: a.Key()}
 				r.Outcome = &env
@@ -1434,13 +1419,14 @@ func TestWorkerAcknowledgeCollects(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !row.wantCollected {
-				if got.Collected || got.Assignment.Body == nil || (row.state.Terminal() && got.Outcome == nil) {
-					t.Fatalf("record was collected: %+v", got)
+				if got.Acknowledged || got.Assignment.Body == nil || (row.state.Terminal() && got.Outcome == nil) {
+					t.Fatalf("record was acknowledged: %+v", got)
 				}
 				return
 			}
-			if !got.Collected || got.Assignment.Body != nil || got.Outcome != nil || got.Assignment.Key() != a.Key() || got.State != row.state {
-				t.Fatalf("collected record = %+v", got)
+			// The fold keeps its facts; acknowledgement is one more of them.
+			if !got.Acknowledged || got.Assignment.Body == nil || got.Outcome == nil || got.Assignment.Key() != a.Key() || got.State != row.state {
+				t.Fatalf("acknowledged record = %+v", got)
 			}
 			if att, err := worker.Attach(ctx, a.Key()); err != nil || att.State != effect.AttachmentTerminal {
 				t.Fatalf("attach of collected = %+v %v", att, err)

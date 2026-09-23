@@ -148,7 +148,7 @@ func TestExecutionStoreAcrossHandles(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, head, ok, err := a.Load(ctx, key)
-	if err != nil || !ok || got.State != effect.ExecutionRunning || got.Owner != "worker-b" || got.FencingEpoch != 2 || head.Next != 5 {
+	if err != nil || !ok || got.State != effect.ExecutionRunning || got.Lease.Owner != "worker-b" || got.Lease.Epoch != 2 || head.Next != 5 {
 		t.Fatalf("fold through the first handle = %+v head %+v ok:%v %v", got, head, ok, err)
 	}
 	// Settlement ends the execution: leases are refused, and only the
@@ -167,7 +167,7 @@ func TestExecutionStoreAcrossHandles(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _, _, err = b.Load(ctx, key)
-	if err != nil || !got.Collected || got.Outcome != nil || got.Assignment.Body != nil || got.State != effect.ExecutionCompleted {
+	if err != nil || !got.Acknowledged || got.Outcome == nil || got.Assignment.Body == nil || got.State != effect.ExecutionCompleted {
 		t.Fatalf("acknowledged fold = %+v %v", got, err)
 	}
 	// Read serves a catch-up from any position with the ledger's head.

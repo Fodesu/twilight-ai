@@ -344,8 +344,8 @@ var (
 	// opposed to a transport failure that a later read may not see.
 	ErrOutcomeUnavailable = errors.New("agent: effect: outcome unavailable")
 	// ErrOutcomeCollected means the executor still holds the key as an
-	// accepted, settled execution but has collected its Outcome after the
-	// Owner acknowledged the settlement (RUN-EXE-13): definitive, like
+	// accepted, settled execution but no longer serves its Outcome: the
+	// Owner acknowledged the settlement (RUN-EXE-13). Definitive, like
 	// ErrOutcomeUnavailable, which it wraps.
 	ErrOutcomeCollected = fmt.Errorf("agent: effect: outcome collected after acknowledgement: %w", ErrOutcomeUnavailable)
 	// ErrDispatchUnknown means the dispatch response was lost after the

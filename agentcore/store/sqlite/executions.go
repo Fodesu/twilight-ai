@@ -104,33 +104,32 @@ func readLease(ctx context.Context, q querier, k string, key effect.AssignmentKe
 	return executionstore.Lease{Key: key, Owner: owner, Epoch: executionstore.Epoch(epoch), UntilUnixMilli: until}, true, nil
 }
 
-func (s *ExecutionStore) loadIn(ctx context.Context, q querier, k string, key effect.AssignmentKey) (state executionstore.ExecutionState, head executionstore.Head, ok bool, err error) {
+func (s *ExecutionStore) loadIn(ctx context.Context, q querier, k string, key effect.AssignmentKey) (exec executionstore.Execution, head executionstore.Head, ok bool, err error) {
 	commits, head, err := readCommits(ctx, q, k, 0)
 	if err != nil {
-		return executionstore.ExecutionState{}, executionstore.Head{}, false, err
+		return executionstore.Execution{}, executionstore.Head{}, false, err
 	}
 	if len(commits) == 0 {
-		return executionstore.ExecutionState{}, executionstore.Head{}, false, nil
+		return executionstore.Execution{}, executionstore.Head{}, false, nil
 	}
-	state, err = fold(commits)
+	folded, err := fold(commits)
 	if err != nil {
-		return executionstore.ExecutionState{}, executionstore.Head{}, false, err
+		return executionstore.Execution{}, executionstore.Head{}, false, err
 	}
-	lease, ok, err := readLease(ctx, q, k, key)
-	if err != nil {
-		return executionstore.ExecutionState{}, executionstore.Head{}, false, err
+	exec = executionstore.Execution{ExecutionState: folded}
+	if lease, ok, err := readLease(ctx, q, k, key); err != nil {
+		return executionstore.Execution{}, executionstore.Head{}, false, err
+	} else if ok {
+		exec.Lease = lease
 	}
-	if ok {
-		state.Owner, state.FencingEpoch, state.LeaseUntilUnixMilli = lease.Owner, lease.Epoch, lease.UntilUnixMilli
-	}
-	return state, head, true, nil
+	return exec, head, true, nil
 }
 
 // Load folds the key's ledger and joins its lease (executionstore.Store).
-func (s *ExecutionStore) Load(ctx context.Context, key effect.AssignmentKey) (state executionstore.ExecutionState, head executionstore.Head, ok bool, err error) {
+func (s *ExecutionStore) Load(ctx context.Context, key effect.AssignmentKey) (exec executionstore.Execution, head executionstore.Head, ok bool, err error) {
 	k, err := ledgerKey(key)
 	if err != nil {
-		return executionstore.ExecutionState{}, executionstore.Head{}, false, err
+		return executionstore.Execution{}, executionstore.Head{}, false, err
 	}
 	return s.loadIn(ctx, s.db, k, key)
 }
@@ -295,7 +294,7 @@ func (s *ExecutionStore) Renew(ctx context.Context, lease executionstore.Lease, 
 		if !ok {
 			return effect.ErrExecutionNotFound
 		}
-		if state.Terminal() || state.Owner != lease.Owner || state.FencingEpoch != lease.Epoch {
+		if state.Terminal() || state.Lease.Owner != lease.Owner || state.Lease.Epoch != lease.Epoch {
 			return executionstore.ErrLeaseLost
 		}
 		_, err = t.ExecContext(ctx, `UPDATE execution_leases SET lease_until = ? WHERE key = ?`, now.Add(ttl).UnixMilli(), k)
@@ -344,7 +343,7 @@ func (s *ExecutionStore) ListOwned(ctx context.Context, owner string) ([]effect.
 // List folds every ledger, for operators and tests; it is not part of
 // executionstore.Store. A ledger that no longer folds is skipped, so one
 // corrupt ledger does not hide the others.
-func (s *ExecutionStore) List(ctx context.Context) ([]executionstore.ExecutionState, error) {
+func (s *ExecutionStore) List(ctx context.Context) ([]executionstore.Execution, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT key, assignment_key FROM executions ORDER BY key`)
 	if err != nil {
 		return nil, err
@@ -373,7 +372,7 @@ func (s *ExecutionStore) List(ctx context.Context) ([]executionstore.ExecutionSt
 		return nil, err
 	}
 	rows.Close()
-	var out []executionstore.ExecutionState
+	var out []executionstore.Execution
 	for _, e := range keys {
 		state, _, ok, err := s.loadIn(ctx, s.db, e.k, e.key)
 		if err != nil || !ok {
@@ -388,7 +387,7 @@ func (s *ExecutionStore) List(ctx context.Context) ([]executionstore.ExecutionSt
 // and operators: the commits an execution would have gone through to reach
 // state, recorded at the store's clock. It is not part of
 // executionstore.Store and refuses a key that already has a ledger.
-func (s *ExecutionStore) Seed(ctx context.Context, state executionstore.ExecutionState) error { //nolint:gocritic,gocyclo // hugeParam: seeds the value; gocyclo: one branch per reachable state
+func (s *ExecutionStore) Seed(ctx context.Context, state executionstore.Execution) error { //nolint:gocritic,gocyclo // hugeParam: seeds the value; gocyclo: one branch per reachable state
 	key := state.Assignment.Key()
 	k, err := ledgerKey(key)
 	if err != nil {
@@ -413,8 +412,8 @@ func (s *ExecutionStore) Seed(ctx context.Context, state executionstore.Executio
 			return err
 		}
 	}
-	if state.Owner != "" && state.FencingEpoch > 0 {
-		if err := add(executionstore.EventExecutionClaimed, executionstore.Claimed{Owner: state.Owner, Epoch: state.FencingEpoch}); err != nil {
+	if state.Lease.Owner != "" && state.Lease.Epoch > 0 {
+		if err := add(executionstore.EventExecutionClaimed, executionstore.Claimed{Owner: state.Lease.Owner, Epoch: state.Lease.Epoch}); err != nil {
 			return err
 		}
 	}
@@ -463,7 +462,7 @@ func (s *ExecutionStore) Seed(ctx context.Context, state executionstore.Executio
 		if err := add(executionstore.EventExecutionSettled, executionstore.Settled{State: state.State, Outcome: out}); err != nil {
 			return err
 		}
-		if state.Collected {
+		if state.Acknowledged {
 			if err := add(executionstore.EventOutcomeAcknowledged, nil); err != nil {
 				return err
 			}
@@ -489,10 +488,10 @@ func (s *ExecutionStore) Seed(ctx context.Context, state executionstore.Executio
 				return err
 			}
 		}
-		if state.Owner == "" {
+		if state.Lease.Owner == "" {
 			return nil
 		}
-		_, err := t.ExecContext(ctx, `INSERT INTO execution_leases (key, owner, epoch, lease_until) VALUES (?, ?, ?, ?)`, k, state.Owner, uint64(state.FencingEpoch), state.LeaseUntilUnixMilli)
+		_, err := t.ExecContext(ctx, `INSERT INTO execution_leases (key, owner, epoch, lease_until) VALUES (?, ?, ?, ?)`, k, state.Lease.Owner, uint64(state.Lease.Epoch), state.Lease.UntilUnixMilli)
 		return err
 	})
 }

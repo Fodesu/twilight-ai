@@ -73,7 +73,7 @@ const (
 	// EventExecutionSettled: the terminal state and the Outcome.
 	EventExecutionSettled EventType = "execution_settled"
 	// EventOutcomeAcknowledged: the Owner reported the Outcome settled as a
-	// Session fact; the payload and Outcome are collected (RUN-EXE-13).
+	// Session fact; the Executor no longer serves it (RUN-EXE-13).
 	EventOutcomeAcknowledged EventType = "outcome_acknowledged"
 )
 
@@ -162,9 +162,9 @@ func AcknowledgeCommitID(key effect.AssignmentKey) CommitID {
 
 // --- fold ---
 
-// ExecutionState is the fold of one execution's ledger, joined with its
-// lease: the execution plane's side of the effect. Assignment and Outcome
-// are absent once collected.
+// ExecutionState is the fold of one execution's ledger: the facts alone,
+// the execution plane's side of the effect. Who holds the key's lease is
+// not a fact of the execution and lives in the lease row (Execution.Lease).
 type ExecutionState struct {
 	Assignment   effect.Assignment `json:"assignment"`
 	ExecutionRef ExecutionRef      `json:"executionRef"`
@@ -173,24 +173,22 @@ type ExecutionState struct {
 	Superseded []ExecutionRef            `json:"superseded,omitempty"`
 	State      effect.ExecutionStatus    `json:"state"`
 	Outcome    *protocol.OutcomeEnvelope `json:"outcome,omitempty"`
-	// SettledAtUnixMilli is when the execution became terminal.
-	SettledAtUnixMilli int64 `json:"settledAtUnixMilli,omitempty"`
-	// AcknowledgedAtUnixMilli is when the Owner acknowledged the Outcome.
-	AcknowledgedAtUnixMilli int64 `json:"acknowledgedAtUnixMilli,omitempty"`
-	// Collected marks an acknowledged execution whose payload and Outcome
-	// the fold no longer carries (RUN-EXE-13); the key, digest, state and
-	// ExecutionRef remain, so the acceptance of the key is never forgotten.
-	Collected bool `json:"collected,omitempty"`
-
-	// Lease view, joined by Load from the lease row: the current holder and
-	// its Epoch, and the lease's expiry. Zero when never claimed.
-	Owner               string `json:"owner,omitempty"`
-	FencingEpoch        Epoch  `json:"fencingEpoch,omitempty"`
-	LeaseUntilUnixMilli int64  `json:"leaseUntilUnixMilli,omitempty"`
+	// Acknowledged records that the Owner settled the Outcome into its
+	// Session (RUN-EXE-13): the Outcome is no longer served and the record
+	// may be reclaimed by retention.
+	Acknowledged bool `json:"acknowledged,omitempty"`
 }
 
 // Terminal reports whether the execution has settled.
 func (s *ExecutionState) Terminal() bool { return protocol.StatusTerminal(s.State) }
+
+// Execution is what Load returns: the fold of the ledger and the key's
+// current lease, read from their two sources in one transaction. Lease is
+// zero when the key was never claimed.
+type Execution struct {
+	ExecutionState
+	Lease Lease
+}
 
 // LegalTransition is the execution state machine (RUN-EXE-3).
 func LegalTransition(from, to effect.ExecutionStatus) bool {
@@ -263,17 +261,12 @@ func apply(s ExecutionState, e *Event) (ExecutionState, error) { //nolint:gocrit
 		}
 		s.ExecutionRef = p.Ref
 	case EventExecutionClaimed:
+		// The claim is provenance: who took the key and under which Epoch.
+		// The fence itself is the lease row, which Acquire advances in the
+		// same transaction that records this fact.
 		if s.State == "" || s.Terminal() {
 			return s, errors.New("claimed outside an accepted, unsettled execution")
 		}
-		var p Claimed
-		if err := e.Decode(&p); err != nil {
-			return s, err
-		}
-		if p.Epoch <= s.FencingEpoch {
-			return s, fmt.Errorf("claim epoch %d does not advance %d", p.Epoch, s.FencingEpoch)
-		}
-		s.Owner, s.FencingEpoch = p.Owner, p.Epoch
 	case EventExecutionStarted:
 		if !LegalTransition(s.State, effect.ExecutionDispatching) {
 			return s, fmt.Errorf("start from %s", s.State)
@@ -314,16 +307,15 @@ func apply(s ExecutionState, e *Event) (ExecutionState, error) { //nolint:gocrit
 			return s, fmt.Errorf("settled to non-terminal %s", p.State)
 		}
 		out := p.Outcome
-		s.State, s.Outcome, s.SettledAtUnixMilli = p.State, &out, e.RecordedAtUnixMilli
+		s.State, s.Outcome = p.State, &out
 	case EventOutcomeAcknowledged:
 		if !s.Terminal() {
 			return s, fmt.Errorf("acknowledged in state %s", s.State)
 		}
-		if s.Collected {
+		if s.Acknowledged {
 			return s, errors.New("acknowledged twice")
 		}
-		s.AcknowledgedAtUnixMilli, s.Collected = e.RecordedAtUnixMilli, true
-		s.Assignment.Body, s.Assignment.Target, s.Outcome, s.Superseded = nil, nil, nil, nil
+		s.Acknowledged = true
 	default:
 		return s, fmt.Errorf("unknown event type %q", e.Type)
 	}
@@ -334,9 +326,10 @@ func apply(s ExecutionState, e *Event) (ExecutionState, error) { //nolint:gocrit
 // AssignmentKey. Every write is one transaction; the store is the fence for
 // any number of Workers over the same file (RUN-EXE-6).
 type Store interface {
-	// Load folds the key's ledger and joins its lease; ok is false for a key
-	// with no ledger, which is a proven absence (RUN-EXE-3).
-	Load(context.Context, effect.AssignmentKey) (ExecutionState, Head, bool, error)
+	// Load folds the key's ledger and reads its lease row in one
+	// transaction; ok is false for a key with no ledger, which is a proven
+	// absence (RUN-EXE-3).
+	Load(context.Context, effect.AssignmentKey) (Execution, Head, bool, error)
 	// Read returns the key's commits from Seq from, in order, and the Head.
 	Read(context.Context, effect.AssignmentKey, CommitSeq) ([]Commit, Head, error)
 	// Append commits c to the key's ledger. c.Seq must be Head.Next
