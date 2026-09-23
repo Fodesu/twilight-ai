@@ -19,7 +19,6 @@ import (
 	"github.com/felinics/twilight/agentcore/checkpoint"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/driver"
-	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/preset"
 	"github.com/felinics/twilight/agentcore/process"
 	"github.com/felinics/twilight/agentcore/process/relay"
@@ -146,7 +145,7 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	store := p.Store
 	// The first-party four are trusted core; Ports.Modules are extensions
 	// and cannot declare authoritative projections (EXT-PRJ-9).
-	registry, err := extension.BuildRegistryWithExtensions(session.ProtocolVersion1,
+	registry, err := extension.BuildRegistryWithExtensions(
 		[]extension.ModuleDescriptor{chatlog.Module, runmod.Module, attempt.Module, turn.Module}, p.Modules)
 	if err != nil {
 		return nil, err
@@ -248,10 +247,10 @@ func (a *Owner) Close(ctx context.Context) error {
 
 // --- session lifecycle -------------------------------------------------------------
 
-// CreateSession creates the Session; meta is the segment's creation
-// metadata (zero for none), carried opaquely by the kernel.
-func (a *Owner) CreateSession(ctx context.Context, sid session.SessionID, meta jsonstable.Value) error {
-	_, err := a.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: a.Clock().UnixMilli(), Metadata: meta})
+// CreateSession creates the Session; ext are the segment's module extension
+// slots (nil for none), carried opaquely by the kernel (SES-WIR-5).
+func (a *Owner) CreateSession(ctx context.Context, sid session.SessionID, ext session.Extensions) error {
+	_, err := a.Store.Create(ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: a.Clock().UnixMilli(), Ext: ext})
 	return err
 }
 
@@ -263,7 +262,7 @@ func (a *Owner) EnsureSession(ctx context.Context, sid session.SessionID) error 
 	} else if !session.IsCode(err, session.ErrNotFound) {
 		return err
 	}
-	if err := a.CreateSession(ctx, sid, jsonstable.Value{}); err != nil {
+	if err := a.CreateSession(ctx, sid, nil); err != nil {
 		// A concurrent creator winning the race is still "exists".
 		if _, herr := a.Store.Header(ctx, sid); herr == nil {
 			return nil
@@ -277,10 +276,11 @@ func (a *Owner) EnsureSession(ctx context.Context, sid session.SessionID) error 
 // child inherits every commit of Parent up to and including At and continues
 // from there under its own identity.
 type ForkRequest struct {
-	Parent   session.SessionID
-	At       session.CommitSeq
-	Child    session.SessionID
-	Metadata jsonstable.Value
+	Parent session.SessionID
+	At     session.CommitSeq
+	Child  session.SessionID
+	// Ext are the child segment's module extension slots (SES-WIR-5).
+	Ext session.Extensions
 }
 
 // Fork creates the child Session (SES-FRK-1) and claims the artifacts its
@@ -302,7 +302,7 @@ func (a *Owner) Fork(ctx context.Context, req ForkRequest) (session.SegmentHeade
 			Detail: fmt.Sprintf("turn %s of %s is active at commit %d; fork at a quiescent point", active, req.Parent, req.At)}
 	}
 	return writer.Fork(ctx, a.Store, a.Registry, writer.ForkRequest{
-		Parent: req.Parent, At: req.At, Child: req.Child, CreatedAtUnixMilli: a.Clock().UnixMilli(), Metadata: req.Metadata,
+		Parent: req.Parent, At: req.At, Child: req.Child, CreatedAtUnixMilli: a.Clock().UnixMilli(), Ext: req.Ext,
 	})
 }
 

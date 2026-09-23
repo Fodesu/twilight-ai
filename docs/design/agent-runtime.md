@@ -190,7 +190,7 @@ func (s *Session) Close(ctx) error
 
 **SPN-1** 子代理是一个由 ToolCall 触发的普通 Session。模型调用 spawn 工具（默认 `agent_spawn`，经 `Config.Spawn` 配置 Tool、命名 Preset 解析与最大深度）；该工具的 `ResponsePolicy` 为 `ExternalResponse`（RUN-MCH），call 进入 Waiting，不经 Executor，也没有 Execution Record。应答者是 Owner 侧的 `spawn.Responder`，经 `Driver.Responders` 按 ToolRef 注册（DRV-4）：它创建或延续子 Session、驱动到结算并把子的回复作为 `SubmitToolResponse` 的 payload 提交；参数、命名 Preset 或深度错误在任何子 Session 建立之前返回，call 以 `RejectToolCall` 记 `ToolCallFailed(Known/response_rejected)`。子 Session 经 `Owner.Open(child)` 取得 Handle，经 `turn.Commands.Start`、`driver.Drive` 与 `chatlog.Commands.Submit` 推进，不经 app 门面；子 Turn 静止于 `waiting_for_recovery` 时等待其自身执行被控制面收养后继续驱动。Run 事实本体不新增子代理生命周期：父只看到一个以子代理回复应答的工具调用。approval 是另一种 Wait：由人应答，效果仍在效果层；两者只共享 Run 的 Wait 状态与提交入口。
 
-**SPN-2** 调用到子 Session 的绑定是派生的：`ChildSessionID = spawn.ChildID(parent, runID, callID)`（preimage `twilight/spawn/child`）。子段创建元数据在 `twilight/spawn` 键下记录完整 provenance（父 Session、父 Run、CallID、深度、全量参数），Responder 据此在任何进程中续接同一调用；同一 CallID 以不同参数再次应答为冲突。
+**SPN-2** 调用到子 Session 的绑定是派生的：`ChildSessionID = spawn.ChildID(parent, runID, callID)`（preimage `twilight/spawn/child`）。子段 header 的 `twilight/spawn` 扩展槽（`SegmentHeader.Ext`，SES-WIR-5）记录完整 provenance（父 Session、父 Run、CallID、深度、全量参数），Responder 据此在任何进程中续接同一调用；同一 CallID 以不同参数再次应答为冲突。
 
 **SPN-3** 嵌套深度从 provenance 链得出：未由 spawn 创建的 Session 深度为 0，子的深度为父深度加一。深度达到 `Options.MaxDepth`（默认 3）的 Session 发起 spawn 调用在开始前被拒（response_rejected），不创建子 Session。
 

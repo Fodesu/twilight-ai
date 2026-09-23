@@ -70,7 +70,7 @@ func counterModule(c *foldCounter) extension.ModuleDescriptor {
 
 func mustRegistry(t *testing.T, c *foldCounter) *extension.Registry {
 	t.Helper()
-	r, err := extension.BuildRegistry(session.ProtocolVersion1, counterModule(c))
+	r, err := extension.BuildRegistry(counterModule(c))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +159,7 @@ func TestProjectionCacheSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := first.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid}); err != nil {
+	if _, err := first.Create(ctx, session.CreateRequest{SessionID: sid}); err != nil {
 		t.Fatal(err)
 	}
 	writers := writer.NewWriters(first, mustRegistry(t, counter), writer.Admission{}, session.OpenOptions{},

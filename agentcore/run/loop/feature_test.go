@@ -42,12 +42,12 @@ const (
 func newRuntime(t testing.TB, inputs ...run.AgentInput) (*runmod.SessionRunStore, writer.Writer) {
 	t.Helper()
 	store := filestoretest.Store(t)
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, runmod.Module)
+	registry, err := extension.BuildRegistry(runmod.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: defaultSession}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{SessionID: defaultSession}); err != nil {
 		t.Fatal(err)
 	}
 	bindings, ledger := sqlitetest.Artifacts(t)

@@ -82,7 +82,7 @@ type fixture struct {
 
 func newFixture(t *testing.T, maxAttempts int) *fixture {
 	t.Helper()
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, runmod.Module)
+	registry, err := extension.BuildRegistry(runmod.Module)
 	if err != nil {
 		t.Fatal(err)
 	}

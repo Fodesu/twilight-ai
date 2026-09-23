@@ -656,7 +656,7 @@ type Event struct {
 
 ## 9. compatibility 与 conformance
 
-**RUN-CMP-1** command/fact discriminator、wire fields、canonical digest、derived ID 与 `schema.V1().Machine.Evolve` 的任何修改必须进入新 `SchemaVersion`；Registry 继续 decode/fold 全部已发布版本；同一 Run 的事实只有一个版本（RUN-CMT-8），同一 Session 内可以并存不同版本的 Run，不需要迁移。Run 版本演进不触发 Session kernel 版本变化。
+**RUN-CMP-1** command/fact discriminator、wire fields、canonical digest、derived ID 与 `schema.V1().Machine.Evolve` 的任何修改必须进入新 `SchemaVersion`；Registry 继续 decode/fold 全部已发布版本；同一 Run 的事实只有一个版本（RUN-CMT-8），同一 Session 内可以并存不同版本的 Run，不需要迁移。Session kernel 没有版本号（SES-VER-2），Run 版本演进只改 payload 的 `v`。
 
 **RUN-CMP-2** SessionRunStore conformance 只断言 Run 模块自己的语义；组原子性、所有权与 Epoch fencing、幂等索引、投影缓存复用由 Session kernel 与 Module Framework 的 conformance 覆盖（SES 第 7 节、EXT 第 7 节），本清单以引用代替重复。conformance 以 `session.Store` 为参数（`agentcore/session/run/runtimetest`），Memory 与文件 adapter 跑同一套。必须覆盖：
 

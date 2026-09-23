@@ -63,11 +63,11 @@ func retainedOnReopen(t *testing.T, commits int) uint64 {
 	t.Helper()
 	ctx := context.Background()
 	store := filestoretest.Store(t)
-	reg, err := extension.BuildRegistry(session.ProtocolVersion1, countModule())
+	reg, err := extension.BuildRegistry(countModule())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	cache := extension.NewMemoryProjectionCache()

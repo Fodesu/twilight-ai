@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"github.com/felinics/twilight/agent/prompt"
-	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
@@ -57,7 +56,7 @@ func (app *Application) Content() chatlog.ContentResolver { return app.Owner.Con
 
 // CreateSession creates the Session.
 func (app *Application) CreateSession(ctx context.Context, sid session.SessionID) error {
-	return app.Owner.CreateSession(ctx, sid, jsonstable.Value{})
+	return app.Owner.CreateSession(ctx, sid, nil)
 }
 
 // EnsureSession creates the stream when it does not exist yet.

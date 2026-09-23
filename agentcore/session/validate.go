@@ -9,7 +9,7 @@ import (
 	"github.com/felinics/twilight/agentcore/jsonstable"
 )
 
-// validateEventShape checks the event invariants of every protocol version:
+// validateEventShape checks the event invariants:
 // a non-empty valid-UTF-8 type and a canonical JSON object payload.
 func validateEventShape(typ EventType, payload jsonstable.Value) error {
 	if err := validIdentity("EventType", string(typ)); err != nil {

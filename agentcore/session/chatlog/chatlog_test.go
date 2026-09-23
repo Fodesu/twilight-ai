@@ -18,7 +18,7 @@ import (
 
 func registry(t *testing.T) *extension.Registry {
 	t.Helper()
-	r, err := extension.BuildRegistry(session.ProtocolVersion1, runmod.Module, Module)
+	r, err := extension.BuildRegistry(runmod.Module, Module)
 	if err != nil {
 		t.Fatal(err)
 	}

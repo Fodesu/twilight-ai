@@ -201,12 +201,13 @@ func (r *Responder) provenance(ctx context.Context, sid session.SessionID) (Prov
 	return prov, true, nil
 }
 
-// create makes the child Session with its provenance as segment metadata:
+// create makes the child Session with its provenance in the segment's spawn
+// extension slot:
 // empty for Empty, a fork of the parent's history before the calling Turn
 // for Fork (SPN-5).
 func (r *Responder) create(ctx context.Context, parent session.SessionID, runID run.RunID, callID run.CallID, child session.SessionID, args Arguments, depth int) (Provenance, error) {
 	prov := Provenance{ParentSession: parent, ParentRun: runID, CallID: callID, Depth: depth, Arguments: args}
-	meta, err := Metadata(prov)
+	ext, err := Extension(prov)
 	if err != nil {
 		return Provenance{}, err
 	}
@@ -221,10 +222,10 @@ func (r *Responder) create(ctx context.Context, parent session.SessionID, runID 
 		if err != nil {
 			return Provenance{}, err
 		}
-		_, err = writer.Fork(ctx, r.a.Store, r.a.Registry, writer.ForkRequest{Parent: parent, At: at, Child: child, CreatedAtUnixMilli: now, Metadata: meta})
+		_, err = writer.Fork(ctx, r.a.Store, r.a.Registry, writer.ForkRequest{Parent: parent, At: at, Child: child, CreatedAtUnixMilli: now, Ext: ext})
 		return prov, err
 	default:
-		_, err := r.a.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: child, CreatedAtUnixMilli: now, Metadata: meta})
+		_, err := r.a.Store.Create(ctx, session.CreateRequest{SessionID: child, CreatedAtUnixMilli: now, Ext: ext})
 		return prov, err
 	}
 }

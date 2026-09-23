@@ -31,7 +31,7 @@ func TestKernelExtSlots(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			herr := session.ValidateHeader(session.SegmentHeader{ID: "seg", ProtocolVersion: session.ProtocolVersion1, Ext: tc.ext})
+			herr := session.ValidateHeader(session.SegmentHeader{ID: "seg", Ext: tc.ext})
 			cerr := session.ValidateCommit(&session.Commit{CommitID: "c1", Batches: batch, Ext: tc.ext})
 			if tc.invalid {
 				if !session.IsCode(herr, session.ErrInvalid) || cerr == nil {
@@ -54,7 +54,7 @@ func TestKernelExtRoundTrip(t *testing.T) {
 	key := session.ModuleKey{Source: "acme", ID: "audit"}
 	ext := session.Extensions{key: session.RawValue(`{"by":"later"}`)}
 	same := func(got session.Extensions) bool { return len(got) == 1 && string(got[key]) == string(ext[key]) }
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", Ext: ext}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{SessionID: "s", Ext: ext}); err != nil {
 		t.Fatal(err)
 	}
 	h, err := store.Open(ctx, "s", session.OpenOptions{})

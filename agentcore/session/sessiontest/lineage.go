@@ -109,7 +109,7 @@ func testLineage(t *testing.T, f Fixture) {
 	}
 	// The freed identity can be recreated meanwhile; the new A is unrelated
 	// to the old segment.
-	newA, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "A", CreatedAtUnixMilli: 9})
+	newA, err := store.Create(ctx, session.CreateRequest{SessionID: "A", CreatedAtUnixMilli: 9})
 	if err != nil {
 		t.Fatalf("recreate after delete: %v", err)
 	}

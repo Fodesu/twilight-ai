@@ -71,9 +71,9 @@ Workspace 是可选的 application domain。Agent Core 只携带 opaque `TargetR
   下写入；`Observer` 不持 lease、按 SessionID 读 Store；`Worker` 执行 Assignment、不接触
   Store；`Node` 是宿主进程，可同时是若干 Session 的 Owner 与另一些的 Observer。"authority"
   一词只用于持久的权威：ledger、Execution Store 与 artifact 的 `Authority`（逻辑 store 实例）。
-- `ProtocolVersion`（Session kernel 的 wire 版本，SES-VER-2）与 payload 版本 `v`（每个事件类型
-  自己的 codec 版本，SES-VER-1、EXT-REG-2）属于不同版本域；Run 的协议版本是 run 模块的 codec
-  版本，记在其每条事实的 `v`（RUN-WIR-2、RUN-CMT-8）。段不携带任何模块层版本。
+- Session kernel 没有 wire 版本号（SES-VER-2）；版本只存在于 payload 的 `v`（每个事件类型
+  自己的 codec 版本，SES-VER-1、EXT-REG-2）。Run 的协议版本是 run 模块的 codec 版本，记在其
+  每条事实的 `v`（RUN-WIR-2、RUN-CMT-8）。段不携带任何模块层版本。
 
 ## 阅读与维护规则
 

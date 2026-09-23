@@ -42,11 +42,11 @@ func healthModule() extension.ModuleDescriptor {
 func TestDerivedProjectionFailureDoesNotBlockCommit(t *testing.T) {
 	ctx := context.Background()
 	store := filestoretest.Store(t)
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, healthModule())
+	registry, err := extension.BuildRegistry(healthModule())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	cache := extension.NewMemoryProjectionCache()
@@ -68,7 +68,7 @@ func TestDerivedProjectionFailureDoesNotBlockCommit(t *testing.T) {
 	}
 	// Reopen with only the derived projection failing: rebuild the registry
 	// with an authoritative projection that accepts everything.
-	registry2, err := extension.BuildRegistry(session.ProtocolVersion1, func() extension.ModuleDescriptor {
+	registry2, err := extension.BuildRegistry(func() extension.ModuleDescriptor {
 		m := healthModule()
 		m.Projections[0].Apply = func(state any, e extension.DecodedEvent) (any, error) { return state, nil }
 		return m
@@ -110,7 +110,7 @@ func TestDerivedProjectionFailureDoesNotBlockCommit(t *testing.T) {
 func TestDerivedProjectionFailureDoesNotBlockReopen(t *testing.T) {
 	ctx := context.Background()
 	store := filestoretest.Store(t)
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	// Write "one", "boom", "three" with a registry whose derived projection
@@ -118,7 +118,7 @@ func TestDerivedProjectionFailureDoesNotBlockReopen(t *testing.T) {
 	permissive := healthModule()
 	permissive.Projections[1].Apply = func(state any, e extension.DecodedEvent) (any, error) { return state, nil }
 	permissive.Projections[0].Apply = permissive.Projections[1].Apply
-	reg1, err := extension.BuildRegistry(session.ProtocolVersion1, permissive)
+	reg1, err := extension.BuildRegistry(permissive)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestDerivedProjectionFailureDoesNotBlockReopen(t *testing.T) {
 	}
 	strict := healthModule()
 	strict.Projections[0].Apply = permissive.Projections[0].Apply // authoritative one keeps folding
-	reg2, err := extension.BuildRegistry(session.ProtocolVersion1, strict)
+	reg2, err := extension.BuildRegistry(strict)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +161,7 @@ func TestDerivedProjectionFailureDoesNotBlockReopen(t *testing.T) {
 	}
 	// An authoritative projection that cannot fold the log refuses the open.
 	failingAuth := healthModule()
-	reg3, err := extension.BuildRegistry(session.ProtocolVersion1, failingAuth)
+	reg3, err := extension.BuildRegistry(failingAuth)
 	if err != nil {
 		t.Fatal(err)
 	}

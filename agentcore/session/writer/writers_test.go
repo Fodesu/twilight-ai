@@ -85,36 +85,3 @@ func TestWritersReopenAfterFailure(t *testing.T) {
 		})
 	}
 }
-
-// EXT-WRT-1: a Writer serves one protocol version; the registry's version
-// must be the one the Session header names.
-func TestOpenWriterChecksProtocolVersion(t *testing.T) {
-	cases := []struct {
-		name     string
-		registry uint16
-		wantCode session.ErrorCode
-	}{
-		{"same version", session.ProtocolVersion1, ""},
-		{"other version", session.ProtocolVersion1 + 1, session.ErrUnsupportedVersion},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newFixture(t)
-			registry, err := extension.BuildRegistry(tc.registry, noteModule("a"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			w, err := OpenWriter(context.Background(), f.store, registry, f.admission(), "s", session.OpenOptions{})
-			if tc.wantCode == "" {
-				if err != nil {
-					t.Fatalf("OpenWriter = %v", err)
-				}
-				_ = w.Close(context.Background())
-				return
-			}
-			if !session.IsCode(err, tc.wantCode) {
-				t.Fatalf("OpenWriter with a v%d registry = %v, want %s", tc.registry, err, tc.wantCode)
-			}
-		})
-	}
-}

@@ -55,8 +55,7 @@ type Store struct {
 }
 
 // New opens the store root, creating it if needed. opts configure the
-// kernel Ledger (for example an extra version through
-// session.WithProtocolVersion).
+// kernel Ledger (for example a deterministic segment ID source).
 func New(root string, opts ...session.LedgerOption) (*Store, error) {
 	for _, d := range []string{root, filepath.Join(root, segmentsDir), filepath.Join(root, sessionsDir)} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
@@ -442,48 +441,6 @@ func (s *Store) CreateSession(ctx context.Context, seg session.Segment, rec sess
 		return err
 	}
 	return s.saveRoot(rec.ID, ownerRecord{SessionRecord: rec})
-}
-
-// AdvanceTip lands the new empty node, then moves the root to it under the
-// lease (SES-ADV-1). The root file is the last atomic write, so a crash in
-// between leaves a node no root names, which Collect reclaims.
-func (s *Store) AdvanceTip(ctx context.Context, lease session.Lease, seg session.Segment, from session.SegmentID) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	rec, owner, err := s.loadRoot(lease.Session, "advance")
-	if err != nil {
-		return err
-	}
-	if !owner.Owned || owner.Epoch != lease.Epoch {
-		return kerr(session.ErrOwnershipLost, "advance", lease.Session, fmt.Sprintf("epoch %d superseded by %d", lease.Epoch, owner.Epoch))
-	}
-	if owner.Failed != "" {
-		return kerr(session.ErrHandleFailed, "advance", lease.Session, owner.Failed)
-	}
-	if rec.Tip != from {
-		return kerr(session.ErrConflict, "advance", lease.Session, fmt.Sprintf("tip is %s, not %s", rec.Tip, from))
-	}
-	dir := s.segmentDir(seg.ID)
-	if _, err := readHeader(dir); err == nil {
-		return kerr(session.ErrConflict, "advance", lease.Session, fmt.Sprintf("segment %s exists", seg.ID))
-	} else if !os.IsNotExist(err) {
-		return segerr("advance", seg.ID, err.Error())
-	}
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return err
-	}
-	raw, err := json.Marshal(seg.Header)
-	if err != nil {
-		return err
-	}
-	if err := writeAtomic(filepath.Join(dir, headerFile), raw); err != nil {
-		return err
-	}
-	owner.Tip = seg.ID
-	return s.saveRoot(lease.Session, owner)
 }
 
 func (s *Store) Record(ctx context.Context, sid session.SessionID) (session.SessionRecord, error) {

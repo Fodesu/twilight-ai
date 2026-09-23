@@ -25,7 +25,7 @@ type Admission struct {
 const ClaimOwnerKind = "twilight/session/commit"
 
 // claimDerivationVersion versions the claim identity preimages of this
-// package. It is the writer's own, not the kernel's ProtocolVersion: a claim
+// package. It is the writer's own; the kernel has no version (SES-VER-2): a claim
 // outlives the segment version that wrote its commit (SES-VER-3).
 const claimDerivationVersion uint16 = 1
 

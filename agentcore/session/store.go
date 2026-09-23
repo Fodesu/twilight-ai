@@ -6,28 +6,25 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agentcore/es"
-	"github.com/felinics/twilight/agentcore/jsonstable"
 )
 
 // CreateRequest establishes a Session: a root naming a new segment. A
-// repeat for an existing SessionID whose ProtocolVersion, resolved parent
-// edge, CausationID, Metadata and CreatedAtUnixMilli match the existing
-// Session is idempotent; any difference is a Conflict. Fork makes the new
-// segment a child of another Session's history (SES-FRK-1): that Session
-// must be live in the same Store, its ancestry must hold commit Seq, and it
-// must share the protocol version; otherwise Create fails and writes
-// nothing. The segment's ID is always the kernel's to draw: a caller never
+// repeat for an existing SessionID whose resolved parent edge, CausationID,
+// Ext and CreatedAtUnixMilli match the existing Session is idempotent; any
+// difference is a Conflict. Fork makes the new segment a child of another
+// Session's history (SES-FRK-1): that Session must be live in the same
+// Store and its ancestry must hold commit Seq; otherwise Create fails and
+// writes nothing. The segment's ID is always the kernel's to draw: a caller never
 // names a writable node, so no two roots can be made to share one
 // (SES-FRK-4).
 type CreateRequest struct {
-	ProtocolVersion    uint16
 	SessionID          SessionID
 	CreatedAtUnixMilli int64
 	Fork               *ForkOrigin
 	CausationID        es.CausationID
-	Metadata           jsonstable.Value
 	// Ext are the module extension slots stored as SegmentHeader.Ext
-	// (SES-WIR-5).
+	// (SES-WIR-5): a module records what it needs about the segment's
+	// creation under its own key.
 	Ext Extensions
 }
 
@@ -94,17 +91,6 @@ type Proposal struct {
 	Ext Extensions
 }
 
-// AdvanceRequest moves a Session onto a new tip segment under a later
-// kernel ProtocolVersion (SES-ADV-1). The new segment's edge is the
-// current head when the tip holds own commits, or the tip's own edge when it
-// holds none; either way no existing segment or commit is rewritten.
-type AdvanceRequest struct {
-	ProtocolVersion uint16
-	CausationID     es.CausationID
-	Metadata        jsonstable.Value
-	Ext             Extensions
-}
-
 // Handle is the kernel's ownership handle returned by Store.Open. Append
 // carries its Epoch; a Handle whose Epoch has been superseded gets
 // ErrOwnershipLost and writes nothing (SES-OWN-2).
@@ -139,16 +125,6 @@ type Handle interface {
 	// counted whatever lineage the stream's domain declared: the index is
 	// the tip segment's own (SES-FRK-5).
 	StreamHead(StreamRef) (StreamSeq, bool)
-	// Advance publishes a new tip segment for this root under a later
-	// ProtocolVersion (SES-ADV-1) and moves the handle onto it: the Session
-	// keeps its identity and stitched history, its earlier segments stay
-	// exactly as stored, and every later Append lands on the new segment. A
-	// version the Ledger does not serve is ErrUnsupportedVersion; one not
-	// later than the tip's is ErrInvalid; a
-	// stale Epoch is ErrOwnershipLost. An ErrHandleFailed returned with a
-	// non-zero header means the segment is published but this handle can no
-	// longer answer for the ledger: the caller reopens.
-	Advance(context.Context, AdvanceRequest) (SegmentHeader, error)
 	Close(context.Context) error
 }
 

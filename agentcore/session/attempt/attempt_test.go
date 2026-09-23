@@ -12,7 +12,7 @@ import (
 // EXT-COD-1: the module's one event is canonical round-trip stable, and the
 // index refuses a Run bound twice or an attempt out of order (ATT-1).
 func TestAttemptModule(t *testing.T) {
-	reg, err := extension.BuildRegistry(session.ProtocolVersion1, attempt.Module)
+	reg, err := extension.BuildRegistry(attempt.Module)
 	if err != nil {
 		t.Fatal(err)
 	}

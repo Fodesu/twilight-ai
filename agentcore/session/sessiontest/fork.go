@@ -10,7 +10,7 @@ import (
 // forkAt creates child from the history of parent at commit seq.
 func forkAt(t *testing.T, store session.Store, child, parent session.SessionID, seq session.CommitSeq) (session.SegmentHeader, error) {
 	t.Helper()
-	return store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: child, CreatedAtUnixMilli: 2,
+	return store.Create(context.Background(), session.CreateRequest{SessionID: child, CreatedAtUnixMilli: 2,
 		Fork: &session.ForkOrigin{Session: parent, Seq: seq}})
 }
 

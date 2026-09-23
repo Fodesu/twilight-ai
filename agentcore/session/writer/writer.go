@@ -6,8 +6,8 @@
 // pipeline, each in its own file: encoding and stream affinity (encode.go),
 // artifact admission and retention claims (admission.go), transactional
 // projection folding and the projection cache (projector.go), observer
-// fan-out (observers.go) and the segment transition that moves a Session to a new Schema (advance.go). A
-// new capability joins the pipeline as a stage, not as a field of the Writer.
+// fan-out (observers.go). A new capability joins the pipeline as a stage,
+// not as a field of the Writer.
 package writer
 
 import (
@@ -20,8 +20,6 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/extension"
 )
-
-const opOpen = "open"
 
 // TypedEvent is a module value plus its event metadata. The payload is
 // encoded and validated against the Registry at commit time.
@@ -52,7 +50,7 @@ type View interface {
 	Head() session.Head
 	Epoch() session.Epoch
 	// Header is the tip segment's header: the segment this Writer appends
-	// to, with whatever metadata the module layer recorded when the segment
+	// to, with whatever extension slots the module layer recorded when the segment
 	// was created.
 	Header() session.SegmentHeader
 	// Committed reports whether a commit is already in the ledger. It is
@@ -166,13 +164,6 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 	if err != nil {
 		return nil, err
 	}
-	// The registry writes one kernel protocol version. A tip already past it
-	// belongs to a newer binary and is refused; a tip behind it is advanced
-	// to it below, once ownership is held (EXT-WRT-1, SES-ADV-1).
-	if header.ProtocolVersion > registry.ProtocolVersion {
-		return nil, &session.Error{Code: session.ErrUnsupportedVersion, Operation: opOpen, SessionID: sid,
-			Detail: fmt.Sprintf("session tip is protocol v%d, this registry writes v%d", header.ProtocolVersion, registry.ProtocolVersion)}
-	}
 	kernel, err := store.Open(ctx, sid, opts)
 	if err != nil {
 		return nil, err
@@ -218,19 +209,6 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 	if err := w.admission.reconcile(ctx, w); err != nil {
 		abandon()
 		return nil, err
-	}
-	if header.ProtocolVersion < registry.ProtocolVersion {
-		// The upgrade is a new, empty tip under the registry's version; the
-		// commits already folded are now inherited prefix and the claims of
-		// the old tip were just reconciled under its own scope.
-		advanced, err := kernel.Advance(ctx, session.AdvanceRequest{ProtocolVersion: registry.ProtocolVersion})
-		if err != nil {
-			abandon()
-			return nil, err
-		}
-		w.header = advanced
-		w.head = kernel.Head()
-		w.admission.segment = advanced.ID
 	}
 	return w, nil
 }

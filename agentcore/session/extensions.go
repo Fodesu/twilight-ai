@@ -89,6 +89,19 @@ func ValidateExtensions(ext Extensions) error {
 	return nil
 }
 
+// Equal reports whether e and other hold the same keys with the same bytes.
+func (e Extensions) Equal(other Extensions) bool {
+	if len(e) != len(other) {
+		return false
+	}
+	for k, v := range e {
+		if w, ok := other[k]; !ok || string(v) != string(w) {
+			return false
+		}
+	}
+	return true
+}
+
 // Clone returns an independent copy.
 func (e Extensions) Clone() Extensions {
 	if e == nil {

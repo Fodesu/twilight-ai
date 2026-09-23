@@ -61,14 +61,14 @@ type harness struct {
 
 func newHarness(t testing.TB, f Fixture) *harness {
 	t.Helper()
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module, runmod.Module, attempt.Module, turn.Module)
+	registry, err := extension.BuildRegistry(chatlog.Module, runmod.Module, attempt.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
 	bindings, ledger := sqlitetest.Artifacts(t)
 	h := &harness{t: t, ctx: context.Background(), store: f.Store, registry: registry, frozen: runmodtest.Frozen(t, bindings), now: 1_000,
 		bindings: bindings, ledger: ledger}
-	if _, err := f.Store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
+	if _, err := f.Store.Create(h.ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
 	}
 	h.open()

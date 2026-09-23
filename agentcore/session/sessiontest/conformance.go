@@ -34,13 +34,12 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("fork", func(t *testing.T) { testFork(t, factory(t)) })
 	t.Run("lineage", func(t *testing.T) { testLineage(t, factory(t)) })
 	t.Run("index", func(t *testing.T) { testIndex(t, factory(t)) })
-	t.Run("versions", func(t *testing.T) { testVersions(t, factory(t)) })
 	t.Run("lease", func(t *testing.T) { testLease(t, factory(t)) })
 }
 
 func create(t *testing.T, store session.Store, sid session.SessionID) session.SegmentHeader {
 	t.Helper()
-	h, err := store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1})
+	h, err := store.Create(context.Background(), session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: 1})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -80,21 +79,18 @@ func appendCommit(t *testing.T, w session.Handle, id string, batches ...session.
 }
 
 // SES-WIR-1/3: contiguous CommitSeq, one CommitID per commit, unique
-// CommitID, canonical payload, one protocol version per segment.
+// CommitID, canonical payload.
 func testWire(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	h := create(t, f.Store, "s")
-	if h.ProtocolVersion != session.ProtocolVersion1 || h.ID == "" {
+	if h.ID == "" {
 		t.Fatalf("header = %+v", h)
 	}
-	if again, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", CreatedAtUnixMilli: 1}); err != nil || again.ID != h.ID {
+	if again, err := f.Store.Create(ctx, session.CreateRequest{SessionID: "s", CreatedAtUnixMilli: 1}); err != nil || again.ID != h.ID {
 		t.Fatalf("identical create is not idempotent: %+v %v", again, err)
 	}
-	if _, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", CreatedAtUnixMilli: 2}); !session.IsCode(err, session.ErrConflict) {
+	if _, err := f.Store.Create(ctx, session.CreateRequest{SessionID: "s", CreatedAtUnixMilli: 2}); !session.IsCode(err, session.ErrConflict) {
 		t.Fatalf("different create = %v, want conflict", err)
-	}
-	if _, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: 9, SessionID: "v9"}); !session.IsCode(err, session.ErrUnsupportedVersion) {
-		t.Fatalf("unsupported version = %v", err)
 	}
 	w := open(t, f.Store, "s", false)
 	if head := w.Head(); head.Next != 0 {

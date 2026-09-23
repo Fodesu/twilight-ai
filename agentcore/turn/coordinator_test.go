@@ -21,12 +21,12 @@ import (
 func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	ctx := context.Background()
 	const sid session.SessionID = "s-protocol"
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module, runmod.Module, attempt.Module, Module)
+	registry, err := extension.BuildRegistry(chatlog.Module, runmod.Module, attempt.Module, Module)
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := filestoretest.Store(t)
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
 	}
 	bindings, ledger := sqlitetest.Artifacts(t)

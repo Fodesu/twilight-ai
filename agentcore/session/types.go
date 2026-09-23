@@ -11,7 +11,6 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/es"
-	"github.com/felinics/twilight/agentcore/jsonstable"
 )
 
 type (
@@ -21,13 +20,6 @@ type (
 	// Epoch is the writer ownership generation of a stream, from 1.
 	Epoch uint64
 )
-
-// ProtocolVersion1 is the kernel wire version of the commit ledger: events
-// carry no transaction metadata and the Commit is the atomic unit that may
-// span logical streams. It covers header fields and the
-// commit fields only; payload versions are carried by modules (SES-VER-1). It ships with the feat/agent-runtime branch; the
-// earlier row model it replaced never left the branch.
-const ProtocolVersion1 uint16 = 1
 
 // SegmentHeader is the immutable creation record of a commit segment
 // (agent-session.md section 8): a node of the lineage tree. It names no
@@ -39,16 +31,14 @@ const ProtocolVersion1 uint16 = 1
 // tip.
 type SegmentHeader struct {
 	// ID is the segment's identity: 128 random bits the kernel draws at
-	// Create or Advance, hex encoded. Nothing derives it, so two segments
+	// Create, hex encoded. Nothing derives it, so two segments
 	// with otherwise equal records are two nodes (SES-WIR-4).
-	ID              SegmentID        `json:"id"`
-	ProtocolVersion uint16           `json:"protocolVersion"`
-	Parent          *LedgerRef       `json:"parent,omitempty"` // nil for a root segment; the edge to the parent otherwise
-	CausationID     es.CausationID   `json:"causationId,omitempty"`
-	Metadata        jsonstable.Value `json:"metadata,omitempty"`
+	ID          SegmentID      `json:"id"`
+	Parent      *LedgerRef     `json:"parent,omitempty"` // nil for a root segment; the edge to the parent otherwise
+	CausationID es.CausationID `json:"causationId,omitempty"`
 	// Ext holds the module extension slots of the creation record, one raw
 	// value per module (SES-WIR-5); a reader that knows none of the modules
-	// keeps them. Metadata is the caller's single opaque value.
+	// keeps them.
 	Ext Extensions `json:"ext,omitempty"`
 }
 
@@ -66,9 +56,8 @@ const (
 	// or persisting, so what reached storage is unknown. The Handle refuses
 	// further Appends; the caller reopens and Open reads the log as it is
 	// (SES-APP-1).
-	ErrHandleFailed       ErrorCode = "handle_failed"
-	ErrUnsupportedVersion ErrorCode = "unsupported_version"
-	ErrUnsupported        ErrorCode = "unsupported"
+	ErrHandleFailed ErrorCode = "handle_failed"
+	ErrUnsupported  ErrorCode = "unsupported"
 )
 
 // Error is the kernel's discriminable error value.

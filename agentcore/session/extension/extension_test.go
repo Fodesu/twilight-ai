@@ -71,11 +71,11 @@ func TestBuildRegistryValidatesRequires(t *testing.T) {
 			Initial: func() (any, error) { return nil, nil }, Apply: func(s any, _ DecodedEvent) (any, error) { return s, nil }, StateCodec: JSONStateCodec[noteState]{}}}}},
 	}
 	for name, modules := range cases {
-		if _, err := BuildRegistry(session.ProtocolVersion1, modules...); err == nil {
+		if _, err := BuildRegistry(modules...); err == nil {
 			t.Errorf("%s: registry built", name)
 		}
 	}
-	if _, err := BuildRegistry(session.ProtocolVersion1, noteModule("a"), noteModule("b", ModuleRequirement{Source: SourceTwilight, Module: "a",
+	if _, err := BuildRegistry(noteModule("a"), noteModule("b", ModuleRequirement{Source: SourceTwilight, Module: "a",
 		Events: []session.EventType{tpfx("a") + "note"}})); err != nil {
 		t.Fatalf("valid registry: %v", err)
 	}
@@ -101,12 +101,12 @@ func TestBuildRegistryValidatesSource(t *testing.T) {
 		"requirement without source":                  {noteModule("a"), {Source: "app", ID: "b", Requires: []ModuleRequirement{{Module: "a"}}}},
 	}
 	for name, modules := range rejects {
-		if _, err := BuildRegistry(session.ProtocolVersion1, modules...); err == nil {
+		if _, err := BuildRegistry(modules...); err == nil {
 			t.Errorf("%s: registry built", name)
 		}
 	}
 	// The same ID under two sources coexists and both prefixes resolve.
-	r, err := BuildRegistry(session.ProtocolVersion1, noteModule("a"), srcModule("app", "a"))
+	r, err := BuildRegistry(noteModule("a"), srcModule("app", "a"))
 	if err != nil {
 		t.Fatalf("two sources, one id: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestBuildRegistryValidatesSource(t *testing.T) {
 
 // Encode adds v; Decode selects the codec by v and keeps unknown versions raw.
 func TestRegistrySchemaVersion(t *testing.T) {
-	r, err := BuildRegistry(session.ProtocolVersion1, noteModule("a"))
+	r, err := BuildRegistry(noteModule("a"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestBuildRegistryRequiresCodec(t *testing.T) {
 		{"zero payload version", map[PayloadVersion]PayloadCodec{0: JSONCodec[notePayload]{}}, "nil codec or zero payload version"},
 		{"nil codec", map[PayloadVersion]PayloadCodec{1: nil}, "nil codec or zero payload version"},
 	} {
-		_, err := BuildRegistry(session.ProtocolVersion1, ModuleDescriptor{Source: SourceTwilight, ID: "a", Streams: ownStream("a"),
+		_, err := BuildRegistry(ModuleDescriptor{Source: SourceTwilight, ID: "a", Streams: ownStream("a"),
 			Events: []EventDefinition{{Type: tpfx("a") + "note", Stream: "a", Codecs: tc.codecs}}})
 		if err == nil {
 			t.Fatalf("%s: registry built", tc.name)
@@ -170,7 +170,7 @@ func TestBuildRegistryRequiresCodec(t *testing.T) {
 	// A type with codecs for two versions is the supported shape: it keeps
 	// building, and the write Version defaults to the highest codec. A
 	// declared write Version without a codec is refused.
-	r, err := BuildRegistry(session.ProtocolVersion1, ModuleDescriptor{Source: SourceTwilight, ID: "a", Streams: ownStream("a"),
+	r, err := BuildRegistry(ModuleDescriptor{Source: SourceTwilight, ID: "a", Streams: ownStream("a"),
 		Events: []EventDefinition{{
 			Type: tpfx("a") + "note", Stream: "a",
 			Codecs: map[PayloadVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}},
@@ -181,7 +181,7 @@ func TestBuildRegistryRequiresCodec(t *testing.T) {
 	if _, def, _ := r.LookupEvent(tpfx("a") + "note"); def.Version != 2 {
 		t.Fatalf("default write version = %d, want the highest codec, 2", def.Version)
 	}
-	if _, err := BuildRegistry(session.ProtocolVersion1, ModuleDescriptor{Source: SourceTwilight, ID: "a", Streams: ownStream("a"),
+	if _, err := BuildRegistry(ModuleDescriptor{Source: SourceTwilight, ID: "a", Streams: ownStream("a"),
 		Events: []EventDefinition{{Type: tpfx("a") + "note", Stream: "a", Version: 3,
 			Codecs: map[PayloadVersion]PayloadCodec{1: legacyCodec{}, 2: JSONCodec[notePayload]{}}}}}); err == nil || !strings.Contains(err.Error(), "write version 3 has no codec") {
 		t.Fatalf("write version without codec: %v", err)
@@ -225,7 +225,7 @@ func TestRegistryMultiVersionCodecsCoexist(t *testing.T) {
 	upgraded := ModuleDescriptor{Source: SourceTwilight, ID: "v", Streams: ownStream("v"), Events: []EventDefinition{{
 		Type: typ, Stream: "v", Codecs: codecs,
 	}}}
-	r, err := BuildRegistry(session.ProtocolVersion1, upgraded)
+	r, err := BuildRegistry(upgraded)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestRegistryMultiVersionCodecsCoexist(t *testing.T) {
 	// A module still writing the older version declares it.
 	pinned := upgraded
 	pinned.Events = []EventDefinition{{Type: typ, Stream: "v", Codecs: codecs, Version: 1}}
-	r1, err := BuildRegistry(session.ProtocolVersion1, pinned)
+	r1, err := BuildRegistry(pinned)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,21 +284,21 @@ func TestExtensionsCannotBeAuthoritative(t *testing.T) {
 	ext := ModuleDescriptor{Source: "acme", ID: "plugin", Projections: []ProjectionDefinition{{
 		ID: "acme/plugin/p", Version: 1, Authoritative: true,
 		Initial: func() (any, error) { return struct{}{}, nil }, Apply: func(s any, _ DecodedEvent) (any, error) { return s, nil }, StateCodec: JSONStateCodec[struct{}]{}}}}
-	if _, err := BuildRegistryWithExtensions(1, []ModuleDescriptor{core}, []ModuleDescriptor{ext}); err == nil {
+	if _, err := BuildRegistryWithExtensions([]ModuleDescriptor{core}, []ModuleDescriptor{ext}); err == nil {
 		t.Fatal("extension declared an authoritative projection")
 	}
 	impostor := ext
 	impostor.Source = SourceTwilight
 	impostor.Projections[0].Authoritative = false
-	if _, err := BuildRegistryWithExtensions(1, []ModuleDescriptor{core}, []ModuleDescriptor{impostor}); err == nil {
+	if _, err := BuildRegistryWithExtensions([]ModuleDescriptor{core}, []ModuleDescriptor{impostor}); err == nil {
 		t.Fatal("extension claimed the twilight source")
 	}
 	ext.Projections[0].Authoritative = false
-	if _, err := BuildRegistryWithExtensions(1, []ModuleDescriptor{core}, []ModuleDescriptor{ext}); err != nil {
+	if _, err := BuildRegistryWithExtensions([]ModuleDescriptor{core}, []ModuleDescriptor{ext}); err != nil {
 		t.Fatalf("derived extension refused: %v", err)
 	}
 	// The same descriptor is fine when the caller vouches for it as core.
-	if _, err := BuildRegistry(1, core); err != nil {
+	if _, err := BuildRegistry(core); err != nil {
 		t.Fatalf("trusted core refused: %v", err)
 	}
 }

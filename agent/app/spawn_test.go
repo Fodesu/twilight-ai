@@ -11,7 +11,6 @@ import (
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/spawn"
 	"github.com/felinics/twilight/agentcore/executor"
-	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
@@ -290,12 +289,12 @@ func TestSpawnValidation(t *testing.T) {
 			sid := session.SessionID("s")
 			if tc.spawned {
 				sid = spawn.ChildID("root", "r1", "c0")
-				meta, err := jsonstable.FromValue(map[string]spawn.Provenance{spawn.MetadataKey: {
-					ParentSession: "root", ParentRun: "r1", CallID: "c0", Depth: 1, Arguments: spawn.Arguments{Task: "t", Mode: spawn.Empty}}})
+				ext, err := spawn.Extension(spawn.Provenance{
+					ParentSession: "root", ParentRun: "r1", CallID: "c0", Depth: 1, Arguments: spawn.Arguments{Task: "t", Mode: spawn.Empty}})
 				if err != nil {
 					t.Fatal(err)
 				}
-				if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1, Metadata: meta}); err != nil {
+				if _, err := store.Create(ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: 1, Ext: ext}); err != nil {
 					t.Fatal(err)
 				}
 			}

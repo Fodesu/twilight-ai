@@ -21,7 +21,7 @@ const rowType session.EventType = "twilight/z/row"
 
 func registry(t *testing.T) *extension.Registry {
 	t.Helper()
-	r, err := extension.BuildRegistry(session.ProtocolVersion1, extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "z",
+	r, err := extension.BuildRegistry(extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "z",
 		Streams: []extension.StreamDefinition{{Domain: "z", Lineage: session.LineageSession}},
 		Events: []extension.EventDefinition{{Type: rowType, Stream: "z",
 			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[rowPayload]{}}}}})
@@ -75,7 +75,7 @@ func TestSubscribeFromCatchesUpThenGoesLive(t *testing.T) {
 	reg := registry(t)
 	bus := observe.NewBus(reg, store)
 	const sid session.SessionID = "s1"
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{SessionID: sid}); err != nil {
 		t.Fatal(err)
 	}
 	w, err := writer.NewWriters(store, reg, writer.Admission{}, session.OpenOptions{}, writer.WritersConfig{Observers: []writer.CommitObserver{bus}}).Writer(ctx, sid)

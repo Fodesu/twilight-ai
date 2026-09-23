@@ -9,7 +9,7 @@ import (
 
 // rootHeader builds a root segment header with identity id.
 func rootHeader(id string) SegmentHeader {
-	return SegmentHeader{ID: SegmentID(id), ProtocolVersion: ProtocolVersion1}
+	return SegmentHeader{ID: SegmentID(id)}
 }
 
 func oneEventBatch(stream StreamRef, typ, payload string) StreamBatch {
@@ -132,10 +132,10 @@ func TestValidateHeader(t *testing.T) {
 		ok   bool
 	}{
 		{"root", rootHeader("seg"), true},
-		{"child", SegmentHeader{ID: "child", ProtocolVersion: ProtocolVersion1, Parent: &LedgerRef{Segment: "seg", Seq: 3}}, true},
-		{"missing id", SegmentHeader{ProtocolVersion: ProtocolVersion1}, false},
-		{"edge without segment", SegmentHeader{ID: "child", ProtocolVersion: ProtocolVersion1, Parent: &LedgerRef{Seq: 3}}, false},
-		{"extension key without ID", SegmentHeader{ID: "seg", ProtocolVersion: ProtocolVersion1, Ext: Extensions{{Source: "twilight"}: RawValue(`1`)}}, false},
+		{"child", SegmentHeader{ID: "child", Parent: &LedgerRef{Segment: "seg", Seq: 3}}, true},
+		{"missing id", SegmentHeader{}, false},
+		{"edge without segment", SegmentHeader{ID: "child", Parent: &LedgerRef{Seq: 3}}, false},
+		{"extension key without ID", SegmentHeader{ID: "seg", Ext: Extensions{{Source: "twilight"}: RawValue(`1`)}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

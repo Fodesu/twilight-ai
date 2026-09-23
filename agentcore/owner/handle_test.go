@@ -8,7 +8,6 @@ import (
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/executor"
 	executorlocal "github.com/felinics/twilight/agentcore/executor/local"
-	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
@@ -65,7 +64,7 @@ func TestHandleGenerations(t *testing.T) {
 	ctx := context.Background()
 	a := newAuthority(t)
 	const sid session.SessionID = "s-gen"
-	if err := a.CreateSession(ctx, sid, jsonstable.Value{}); err != nil {
+	if err := a.CreateSession(ctx, sid, nil); err != nil {
 		t.Fatal(err)
 	}
 	first, err := a.Open(ctx, sid)

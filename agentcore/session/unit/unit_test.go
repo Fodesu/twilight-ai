@@ -19,12 +19,12 @@ import (
 func newWriter(t *testing.T) writer.Writer {
 	t.Helper()
 	ctx := context.Background()
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module, runmod.Module)
+	registry, err := extension.BuildRegistry(chatlog.Module, runmod.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := filestoretest.Store(t)
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	bindings, ledger := sqlitetest.Artifacts(t)

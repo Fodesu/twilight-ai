@@ -138,8 +138,6 @@ type DecodedEvent struct {
 
 // Registry is the immutable index built once at startup (EXT-REG-1).
 type Registry struct {
-	ProtocolVersion uint16
-
 	modules     map[ModuleKey]ModuleDescriptor
 	streams     map[string]streamEntry
 	events      map[session.EventType]eventEntry
@@ -184,8 +182,8 @@ func validSegment(kind, v string) error {
 // module passed here is trusted: the caller vouches for it, so it may
 // declare authoritative projections (EXT-PRJ-9). Modules from outside the
 // deployment's trust boundary go through BuildRegistryWithExtensions.
-func BuildRegistry(protocolVersion uint16, modules ...ModuleDescriptor) (*Registry, error) {
-	return BuildRegistryWithExtensions(protocolVersion, modules, nil)
+func BuildRegistry(modules ...ModuleDescriptor) (*Registry, error) {
+	return BuildRegistryWithExtensions(modules, nil)
 }
 
 // BuildRegistryWithExtensions builds a registry from trusted core modules
@@ -193,10 +191,7 @@ func BuildRegistry(protocolVersion uint16, modules ...ModuleDescriptor) (*Regist
 // registry, not of what its descriptor says: an extension may not declare an
 // authoritative projection and may not use the SourceTwilight source, so no
 // descriptor can claim the first-party capability for itself.
-func BuildRegistryWithExtensions(protocolVersion uint16, core, extensions []ModuleDescriptor) (*Registry, error) {
-	if protocolVersion == 0 {
-		return nil, errors.New("extension: registry: zero protocol version")
-	}
+func BuildRegistryWithExtensions(core, extensions []ModuleDescriptor) (*Registry, error) {
 	modules := make([]ModuleDescriptor, 0, len(core)+len(extensions))
 	trusted := make(map[ModuleKey]bool, len(core))
 	for i := range core {
@@ -215,7 +210,7 @@ func BuildRegistryWithExtensions(protocolVersion uint16, core, extensions []Modu
 		}
 		modules = append(modules, *m)
 	}
-	r := &Registry{ProtocolVersion: protocolVersion,
+	r := &Registry{
 		modules: make(map[ModuleKey]ModuleDescriptor), streams: make(map[string]streamEntry),
 		events: make(map[session.EventType]eventEntry), projections: make(map[projectionKey]projectionEntry)}
 	for i := range modules {

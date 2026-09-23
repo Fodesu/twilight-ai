@@ -73,7 +73,7 @@ type harness struct {
 
 func newHarness(t testing.TB, f Fixture) *harness {
 	t.Helper()
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, chatlog.Module, runmod.Module, attemptmod.Module, turn.Module)
+	registry, err := extension.BuildRegistry(chatlog.Module, runmod.Module, attemptmod.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func newHarness(t testing.TB, f Fixture) *harness {
 	h := &harness{t: t, ctx: context.Background(), fixture: f, store: f.Store, registry: registry, bindings: bindings,
 		ledger: ledger, frozen: runmodtest.Frozen(t, bindings),
 		cache: extension.NewMemoryProjectionCache(), clock: &clock{now: time.Unix(1_000_000, 0)}}
-	if _, err := f.Store.Create(h.ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid}); err != nil {
+	if _, err := f.Store.Create(h.ctx, session.CreateRequest{SessionID: sid}); err != nil {
 		t.Fatal(err)
 	}
 	h.open()

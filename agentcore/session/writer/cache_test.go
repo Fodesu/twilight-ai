@@ -79,12 +79,12 @@ type cacheFixture struct {
 func newCacheFixture(t testing.TB) *cacheFixture {
 	t.Helper()
 	f := &cacheFixture{store: filestoretest.Store(t), cache: extension.NewMemoryProjectionCache(), counter: newApplyCounter()}
-	registry, err := extension.BuildRegistry(session.ProtocolVersion1, cacheModule(f.counter))
+	registry, err := extension.BuildRegistry(cacheModule(f.counter))
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.registry = registry
-	if _, err := f.store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
+	if _, err := f.store.Create(context.Background(), session.CreateRequest{SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	return f

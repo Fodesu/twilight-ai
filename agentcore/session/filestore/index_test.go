@@ -22,7 +22,7 @@ func TestReadIndexedMatchesFullParse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	header, err := indexed.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1})
+	header, err := indexed.Create(ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: 1})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -82,7 +82,7 @@ func testIndex(t *testing.T, f Fixture) {
 		})
 	}
 	// A fork's inherited membership is answered from the parent's index.
-	if _, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "child", CreatedAtUnixMilli: 2,
+	if _, err := f.Store.Create(ctx, session.CreateRequest{SessionID: "child", CreatedAtUnixMilli: 2,
 		Fork: &session.ForkOrigin{Session: "s", Seq: 1}}); err != nil {
 		t.Fatal(err)
 	}

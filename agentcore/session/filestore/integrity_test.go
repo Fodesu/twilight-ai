@@ -16,7 +16,7 @@ func TestSessionDirectoryIntegrity(t *testing.T) {
 	ctx := context.Background()
 	create := func(t *testing.T, s *Store, sid session.SessionID) session.SegmentHeader {
 		t.Helper()
-		h, err := s.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1})
+		h, err := s.Create(ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: 1})
 		if err != nil {
 			t.Fatal(err)
 		}

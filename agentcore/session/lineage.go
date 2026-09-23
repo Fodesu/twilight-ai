@@ -152,13 +152,6 @@ type Backend interface {
 	// ErrConflict when the SessionID or the SegmentID exists, so no two
 	// roots ever name one writable tip (SES-FRK-4).
 	CreateSession(context.Context, Segment, SessionRecord) error
-	// AdvanceTip persists a new, empty node and moves the root of the
-	// Lease's Session from tip from to it, as one durable step under the
-	// Lease (SES-ADV-1): the Lease must be current, the root's Tip must
-	// still be from (ErrConflict otherwise) and the node must be new. A
-	// crash before the publication point leaves at most a node no root
-	// names, which Collect reclaims.
-	AdvanceTip(ctx context.Context, lease Lease, seg Segment, from SegmentID) error
 }
 
 // Ancestry is the unique path of a Session through the lineage tree: its

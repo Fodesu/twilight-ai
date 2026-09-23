@@ -62,7 +62,7 @@ func TestChatlogWireGolden(t *testing.T) {
 	}
 	freezeChatlog(t, "checkpoint digest", string(cpd), "sha256:4da92a8e99605b0d4e08a47d79ef1963d6047de7639682015cfbe91e6e3cdd02")
 
-	reg, err := extension.BuildRegistry(session.ProtocolVersion1, runmod.Module, chatlog.Module)
+	reg, err := extension.BuildRegistry(runmod.Module, chatlog.Module)
 	if err != nil {
 		t.Fatal(err)
 	}

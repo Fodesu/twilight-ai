@@ -183,7 +183,7 @@ func (s *Commands) Checkpoint(ctx context.Context, w writer.Writer, summaryText 
 // CommitID and is answered as already applied instead of writing a second
 // checkpoint (APP-CKP-1).
 // checkpointDerivationVersion versions this preimage; it is chatlog's own,
-// not the kernel's ProtocolVersion.
+// not a kernel version: the kernel has none (SES-VER-2).
 const checkpointDerivationVersion uint16 = 1
 
 func checkpointIDs(sid session.SessionID, base es.Digest, summaryText string) (CheckpointID, SummaryID, error) {

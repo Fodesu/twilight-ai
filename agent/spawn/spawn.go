@@ -12,7 +12,7 @@
 //
 // The binding from the call to the child is derived, not stored: the child's
 // SessionID is a digest of (parent Session, parent Run, CallID), and the
-// child segment's creation metadata records the provenance and the full
+// child segment's creation record records the provenance and the full
 // arguments. That record is what a takeover needs to continue the same
 // invocation after a crash; when the effect runs through a durable Worker,
 // the Worker persists it as ExecutionRef{twilight/session, child} (RUN-EXE-9).
@@ -28,10 +28,10 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/es"
-	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
@@ -43,9 +43,9 @@ const DefaultTool run.ToolRef = "agent_spawn"
 // DefaultDepth bounds how deep subagents may nest.
 const DefaultDepth = 3
 
-// MetadataKey is the metadata key the provenance lives under in the child
-// segment's creation record.
-const MetadataKey = "twilight/spawn"
+// Module is the extension slot the provenance lives under in the child
+// segment's creation record (SES-WIR-5).
+var Module = session.ModuleKey{Source: extension.SourceTwilight, ID: "spawn"}
 
 // Mode selects where the child's history starts.
 type Mode string
@@ -74,7 +74,7 @@ type Result struct {
 	Reply        string            `json:"reply"`
 }
 
-// Provenance is the child segment's creation metadata under MetadataKey: who
+// Provenance is the child segment's creation record under Module: who
 // spawned it, with what, and how deep it sits. Effect is unused since the
 // call waits for an external response instead of starting an effect
 // (SPN-1); it stays in the wire shape for records written before.
@@ -121,22 +121,19 @@ func DecodeArguments(args run.CanonicalJSON) (Arguments, error) {
 	return a, nil
 }
 
-// Metadata builds the segment creation metadata that records prov.
-func Metadata(prov Provenance) (jsonstable.Value, error) {
-	return jsonstable.FromValue(map[string]Provenance{MetadataKey: prov})
+// Extension builds the segment extension slot that records prov.
+func Extension(prov Provenance) (session.Extensions, error) {
+	raw, err := json.Marshal(prov)
+	if err != nil {
+		return nil, err
+	}
+	return session.Extensions{Module: session.RawValue(raw)}, nil
 }
 
 // ProvenanceFromHeader decodes the spawn record from a segment's creation
-// metadata; ok is false when the segment carries none.
+// record; ok is false when the segment carries none.
 func ProvenanceFromHeader(header session.SegmentHeader) (prov Provenance, ok bool, err error) {
-	if header.Metadata.IsZero() {
-		return Provenance{}, false, nil
-	}
-	var meta map[string]json.RawMessage
-	if err := header.Metadata.Decode(&meta); err != nil {
-		return Provenance{}, false, nil
-	}
-	raw, ok := meta[MetadataKey]
+	raw, ok := header.Ext[Module]
 	if !ok {
 		return Provenance{}, false, nil
 	}

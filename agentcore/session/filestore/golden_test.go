@@ -30,7 +30,7 @@ func TestLogFileGolden(t *testing.T) {
 	// frozen bytes are reproducible.
 	store.Ledger = session.NewLedger(store, session.WithSegmentIDSource(func() (session.SegmentID, error) { return "golden", nil }))
 	const sid session.SessionID = "golden"
-	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
+	if _, err := store.Create(ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
 	}
 	w, err := store.Open(ctx, sid, session.OpenOptions{})

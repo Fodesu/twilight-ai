@@ -55,7 +55,7 @@ func TestBuildRegistryValidatesStreamDeclarations(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			modules := append([]ModuleDescriptor{policyModule(tc.streams, tc.event)}, tc.others...)
-			_, err := BuildRegistry(session.ProtocolVersion1, modules...)
+			_, err := BuildRegistry(modules...)
 			if tc.detail == "" {
 				if err != nil {
 					t.Fatalf("BuildRegistry = %v, want success", err)

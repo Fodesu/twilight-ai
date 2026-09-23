@@ -87,13 +87,13 @@ func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := &fixture{}
 	f.store = filestoretest.Store(t)
-	r, err := extension.BuildRegistry(session.ProtocolVersion1, noteModule("a"))
+	r, err := extension.BuildRegistry(noteModule("a"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	f.registry = r
 	f.bindings, f.ledger = sqlitetest.Artifacts(t)
-	if _, err := f.store.Create(context.Background(), session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
+	if _, err := f.store.Create(context.Background(), session.CreateRequest{SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
 	return f
@@ -444,7 +444,7 @@ func TestBindingAdmission(t *testing.T) {
 
 	maxTwo := uint32(2)
 	typ := tpfx("r") + "ref"
-	reg, err := extension.BuildRegistry(session.ProtocolVersion1, extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "r", Streams: noteStreams(),
+	reg, err := extension.BuildRegistry(extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "r", Streams: noteStreams(),
 		Events: []extension.EventDefinition{{
 			Type: typ, Stream: noteDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}},
 			Bindings: []extension.BindingReferenceDefinition{{
