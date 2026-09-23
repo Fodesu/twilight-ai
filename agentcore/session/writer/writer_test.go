@@ -145,12 +145,13 @@ func TestWriterCommitReplayAndRebuild(t *testing.T) {
 		t.Fatalf("projection after commit = %v", got)
 	}
 	replay, _ := w.Commit(ctx, noteGroup("c1", "one", "two"))
-	if replay.Outcome != CommitAlreadyApplied || replay.Commit.Digest != res.Commit.Digest || len(replay.Commit.Batches[0].Events) != 2 {
+	if replay.Outcome != CommitAlreadyApplied || replay.Commit.Seq != res.Commit.Seq || len(replay.Commit.Batches[0].Events) != 2 {
 		t.Fatalf("replay = %+v", replay)
 	}
-	conflict, _ := w.Commit(ctx, noteGroup("c1", "changed"))
-	if conflict.Outcome != CommitConflict {
-		t.Fatalf("conflict = %+v", conflict)
+	// The CommitID names the operation: a second group under it is the
+	// same operation whatever it carries (EXT-WRT-2).
+	if again, _ := w.Commit(ctx, noteGroup("c1", "changed")); again.Outcome != CommitAlreadyApplied || again.Commit.Seq != res.Commit.Seq {
+		t.Fatalf("replay with other content = %+v, want already applied", again)
 	}
 	noop, _ := w.Commit(ctx, func(View) (*SemanticGroup, error) { return nil, nil })
 	if noop.Outcome != CommitNoop {
@@ -578,7 +579,7 @@ func TestProjectionCache(t *testing.T) {
 		t.Fatalf("cache+tail = %+v %+v %v", got, head, err)
 	}
 	// A cache entry claiming a head the stream does not have is ignored.
-	_ = cache.Save(ctx, "s", id, 1, jsonstable.MustParse(`{"notes":["bogus"]}`), session.Head{Next: 1, Digest: "sha256:wrong"})
+	_ = cache.Save(ctx, "s", id, 1, jsonstable.MustParse(`{"notes":["bogus"]}`), session.Head{Next: 9})
 	got, _, err = reader.Load(ctx, "s", id, 1)
 	if err != nil || got.(noteState).Notes[0] != "one" {
 		t.Fatalf("stale cache used: %+v %v", got, err)
@@ -599,5 +600,5 @@ func tipSegment(t *testing.T, store session.Store, sid session.SessionID) sessio
 	if err != nil {
 		t.Fatal(err)
 	}
-	return session.SegmentIDOf(h)
+	return h.ID
 }

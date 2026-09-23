@@ -76,7 +76,7 @@ func (p *ContextPromptBuilder) Build(ctx context.Context, hint plan.PromptInput)
 		Model:    p.Preset.Model,
 		Request:  sdk.Request{Model: string(p.Preset.Model), Messages: msgs, Tools: defs},
 		InputIDs: ids,
-		Token:    run.PromptToken(fmt.Sprintf("%d:%s", head.Next, head.Digest)),
+		Token:    run.PromptToken(fmt.Sprintf("%d", head.Next)),
 		Tools:    specs,
 	}, nil
 }

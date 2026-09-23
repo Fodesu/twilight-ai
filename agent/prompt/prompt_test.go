@@ -85,7 +85,7 @@ func entries() (chatlog.Context, fixedContent) {
 // the registry refuses refs it does not hold.
 func TestPromptBuildersResolveDeterministically(t *testing.T) {
 	state, content := entries()
-	src := sources(state, session.Head{Next: 3, Digest: "d3"}, content)
+	src := sources(state, session.Head{Next: 3}, content)
 	input := plan.PromptInput{Scope: "s", Inputs: []run.AgentInput{{ID: "in-1", Digest: "sha256:in-1"}}}
 	var prompts []loop.Prompt
 	for i := 0; i < 2; i++ {
@@ -103,7 +103,7 @@ func TestPromptBuildersResolveDeterministically(t *testing.T) {
 	if !reflect.DeepEqual(prompts[0], prompts[1]) {
 		t.Fatalf("prompts differ across processes:\n%+v\n%+v", prompts[0], prompts[1])
 	}
-	if prompts[0].Token != "3:d3" || len(prompts[0].Request.Messages) != 3 || prompts[0].Model != "m-1" {
+	if prompts[0].Token != "3" || len(prompts[0].Request.Messages) != 3 || prompts[0].Model != "m-1" {
 		t.Fatalf("prompt = %+v", prompts[0])
 	}
 

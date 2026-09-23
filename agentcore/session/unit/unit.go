@@ -11,7 +11,6 @@ import (
 	"context"
 	"errors"
 
-	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/writer"
 )
@@ -35,37 +34,25 @@ func (f PartFunc) Prepare(ctx context.Context, view writer.View, now int64) ([]w
 // Work is one atomic commit: its identity and the Parts that write under it,
 // in the order their batches are laid out.
 type Work struct {
+	// CommitID names the operation: the writer derives it so that one
+	// identity means one operation, and a second unit under it is the same
+	// operation replayed (EXT-WRT-2).
 	CommitID session.CommitID
-	// Intent is the digest of the operation this unit realizes: the command
-	// envelope, the request, whatever decides the events. It is required and
-	// sealed into the commit; a later unit with the same CommitID is judged by
-	// it: the same intent is already applied, a different one is a conflict,
-	// even after the state moved so far that the Parts could not rebuild the
-	// group (EXT-WRT-2). Intent() computes it from any canonical value.
-	Intent es.Digest
-	Parts  []Part
+	Parts    []Part
 }
 
-// Intent digests the canonical JSON of v as a unit's Intent.
-func Intent(v any) (es.Digest, error) { return es.DigestCanonical(v) }
-
 // Commit appends the unit through w. A CommitID the log already holds is
-// judged without preparing any Part: the same Intent is CommitAlreadyApplied
-// with the sealed commit; a different Intent, or a commit that was sealed
-// without one and so cannot be compared, is CommitConflict. Otherwise
-// every Part prepares against one View and their batches are merged by
-// stream in Part order, so the commit holds at most one batch per stream. A
-// Part error is returned as is with nothing written; the Writer's own
-// verdicts (CommitConflict, CommitInvalid) come back in the result.
+// CommitAlreadyApplied with the stored commit, without preparing any Part.
+// Otherwise every Part prepares against one View and their batches are
+// merged by stream in Part order, so the commit holds at most one batch per
+// stream. A Part error is returned as is with nothing written; the Writer's
+// own verdicts (CommitConflict, CommitInvalid) come back in the result.
 func Commit(ctx context.Context, w writer.Writer, now int64, work Work) (writer.CommitResult, error) {
 	if w == nil {
 		return writer.CommitResult{}, errors.New("unit: nil writer")
 	}
 	if work.CommitID == "" {
 		return writer.CommitResult{}, errors.New("unit: empty CommitID")
-	}
-	if work.Intent == "" {
-		return writer.CommitResult{}, errors.New("unit: a unit of work declares its Intent")
 	}
 	var replay *session.Commit
 	res, err := w.Commit(ctx, func(view writer.View) (*writer.SemanticGroup, error) {
@@ -75,7 +62,7 @@ func Commit(ctx context.Context, w writer.Writer, now int64, work Work) (writer.
 			replay = &existing
 			return nil, nil
 		}
-		group := &writer.SemanticGroup{CommitID: work.CommitID, Intent: work.Intent}
+		group := &writer.SemanticGroup{CommitID: work.CommitID}
 		index := map[session.StreamRef]int{}
 		for _, p := range work.Parts {
 			batches, err := p.Prepare(ctx, view, now)
@@ -103,12 +90,6 @@ func Commit(ctx context.Context, w writer.Writer, now int64, work Work) (writer.
 		return writer.CommitResult{}, err
 	}
 	if replay != nil {
-		switch {
-		case replay.Intent == "":
-			return writer.CommitResult{Outcome: writer.CommitConflict, Detail: "CommitID was committed without an intent; the replay cannot be verified"}, nil
-		case replay.Intent != work.Intent:
-			return writer.CommitResult{Outcome: writer.CommitConflict, Detail: "same CommitID, different intent"}, nil
-		}
 		return writer.CommitResult{Outcome: writer.CommitAlreadyApplied, Commit: *replay}, nil
 	}
 	return res, nil

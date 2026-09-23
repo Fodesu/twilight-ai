@@ -9,7 +9,6 @@ import (
 	"fmt"
 
 	"github.com/felinics/twilight/agentcore/checkpoint"
-	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/process"
 	"github.com/felinics/twilight/agentcore/run"
@@ -197,11 +196,7 @@ func (r *Relay) requested(ctx context.Context, sid session.SessionID, epoch ledg
 		return err
 	}
 	if !ok {
-		intent, err := es.DigestCanonical(req)
-		if err != nil {
-			return err
-		}
-		if err := r.append(ctx, epoch, key, head, process.RequestCommitID(key), intent, process.EventDispatchRequested, req); err != nil {
+		if err := r.append(ctx, epoch, key, head, process.RequestCommitID(key), process.EventDispatchRequested, req); err != nil {
 			return err
 		}
 		rep.Requested++
@@ -224,7 +219,7 @@ func (r *Relay) ensureDispatched(ctx context.Context, sid session.SessionID, epo
 		return err
 	}
 	if attachment.State != effect.AttachmentMissing {
-		if err := r.append(ctx, epoch, key, head, process.DispatchedCommitID(key), "", process.EventDispatched, nil); err != nil {
+		if err := r.append(ctx, epoch, key, head, process.DispatchedCommitID(key), process.EventDispatched, nil); err != nil {
 			return err
 		}
 		rep.Dispatched++
@@ -233,7 +228,7 @@ func (r *Relay) ensureDispatched(ctx context.Context, sid session.SessionID, epo
 	err = r.Redispatch(ctx, sid, key)
 	switch {
 	case err == nil:
-		if err := r.append(ctx, epoch, key, head, process.DispatchedCommitID(key), "", process.EventDispatched, nil); err != nil {
+		if err := r.append(ctx, epoch, key, head, process.DispatchedCommitID(key), process.EventDispatched, nil); err != nil {
 			return err
 		}
 		rep.Dispatched++
@@ -243,20 +238,20 @@ func (r *Relay) ensureDispatched(ctx context.Context, sid session.SessionID, epo
 	case errors.Is(err, effect.ErrDispatchRetryable):
 		attempt := state.Attempts + 1
 		if attempt >= r.MaxAttempts {
-			if err := r.append(ctx, epoch, key, head, process.GivenUpCommitID(key), "", process.EventGivenUp, process.GivenUp{Reason: fmt.Sprintf("dispatch refused %d times: %v", attempt, err)}); err != nil {
+			if err := r.append(ctx, epoch, key, head, process.GivenUpCommitID(key), process.EventGivenUp, process.GivenUp{Reason: fmt.Sprintf("dispatch refused %d times: %v", attempt, err)}); err != nil {
 				return err
 			}
 			rep.GivenUp++
 			return nil
 		}
-		if err := r.append(ctx, epoch, key, head, process.FailedCommitID(key, attempt), "", process.EventDispatchFailed, process.Failed{Attempt: attempt, Reason: err.Error()}); err != nil {
+		if err := r.append(ctx, epoch, key, head, process.FailedCommitID(key, attempt), process.EventDispatchFailed, process.Failed{Attempt: attempt, Reason: err.Error()}); err != nil {
 			return err
 		}
 		rep.Failed++
 	default:
 		// A definite rejection, or an effect the Run no longer executes
 		// (the Loop settled it): the process ends with the reason.
-		if err := r.append(ctx, epoch, key, head, process.GivenUpCommitID(key), "", process.EventGivenUp, process.GivenUp{Reason: err.Error()}); err != nil {
+		if err := r.append(ctx, epoch, key, head, process.GivenUpCommitID(key), process.EventGivenUp, process.GivenUp{Reason: err.Error()}); err != nil {
 			return err
 		}
 		rep.GivenUp++
@@ -281,7 +276,7 @@ func (r *Relay) settled(ctx context.Context, sid session.SessionID, epoch ledger
 			continue
 		}
 		if state.Phase == process.PhaseRequested || state.Phase == process.PhaseDispatched {
-			if err := r.append(ctx, epoch, key, head, process.DeliveredCommitID(key), "", process.EventOutcomeDelivered, nil); err != nil {
+			if err := r.append(ctx, epoch, key, head, process.DeliveredCommitID(key), process.EventOutcomeDelivered, nil); err != nil {
 				return err
 			}
 			head.Next++
@@ -290,7 +285,7 @@ func (r *Relay) settled(ctx context.Context, sid session.SessionID, epoch ledger
 		if state.Phase == process.PhaseDelivered {
 			// The Loop acknowledged the Executor when it settled (RUN-EXE-13);
 			// the process records that the settlement is a Session fact.
-			if err := r.append(ctx, epoch, key, head, process.AcknowledgedCommitID(key), "", process.EventAcknowledged, nil); err != nil {
+			if err := r.append(ctx, epoch, key, head, process.AcknowledgedCommitID(key), process.EventAcknowledged, nil); err != nil {
 				return err
 			}
 			rep.Settled++
@@ -301,12 +296,12 @@ func (r *Relay) settled(ctx context.Context, sid session.SessionID, epoch ledger
 
 // append commits one event at head under the owner's epoch; a commit the
 // ledger already holds is success.
-func (r *Relay) append(ctx context.Context, epoch ledger.Epoch, key effect.AssignmentKey, head process.Head, id process.CommitID, intent es.Digest, typ process.EventType, payload any) error {
+func (r *Relay) append(ctx context.Context, epoch ledger.Epoch, key effect.AssignmentKey, head process.Head, id process.CommitID, typ process.EventType, payload any) error {
 	ev, err := ledger.NewEvent(typ, r.now(), payload)
 	if err != nil {
 		return err
 	}
-	err = r.Ledger.Append(ctx, epoch, key, process.Commit{Seq: head.Next, CommitID: id, Intent: intent, Events: []process.Event{ev}})
+	err = r.Ledger.Append(ctx, epoch, key, process.Commit{Seq: head.Next, CommitID: id, Events: []process.Event{ev}})
 	if err == nil || errors.Is(err, ledger.ErrAlreadyApplied) {
 		return nil
 	}

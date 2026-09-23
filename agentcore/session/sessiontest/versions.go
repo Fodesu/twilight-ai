@@ -8,29 +8,25 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 )
 
-// Profiler is what a Store exposes when its Ledger can seal more than the
-// published kernel version (session.WithProfile). The versions case needs a
-// second version to advance to and skips without one.
-type Profiler interface {
-	Profile(uint16) (session.LedgerProfile, error)
+// Versioned is what a Store exposes when its Ledger serves more than the
+// published kernel version (session.WithProtocolVersion). The versions case
+// needs a second version to advance to and skips without one.
+type Versioned interface {
+	Supports(uint16) bool
 }
 
 // SES-ADV-1, SES-VER-2, SES-FRK-1: a Session moves to a later kernel version
-// by advancing onto a new tip segment; its earlier segments stay as sealed,
-// each verified under its own version, and forks cross versions in either
-// direction. Nothing is rewritten.
+// by advancing onto a new tip segment; its earlier segments stay as stored
+// and forks cross versions in either direction. Nothing is rewritten.
 func testVersions(t *testing.T, f Fixture) {
 	store := f.Store
-	prof, ok := store.(Profiler)
-	if !ok {
-		t.Skip("store exposes no profile table")
-	}
-	if _, err := prof.Profile(2); err != nil {
+	versioned, ok := store.(Versioned)
+	if !ok || !versioned.Supports(2) {
 		t.Skip("store has no second kernel version to advance to")
 	}
 	ctx := context.Background()
 	headerA := create(t, store, "A")
-	segA := session.SegmentIDOf(headerA)
+	segA := headerA.ID
 	aw := open(t, store, "A", false)
 
 	// Not later than the tip, or unknown to the Ledger: refused, tip unmoved.
@@ -38,12 +34,12 @@ func testVersions(t *testing.T, f Fixture) {
 		name    string
 		version uint16
 		code    session.ErrorCode
-	}{{"same version", 1, session.ErrInvalid}, {"unknown version", 9, session.ErrUnsupportedProfile}} {
+	}{{"same version", 1, session.ErrInvalid}, {"unknown version", 9, session.ErrUnsupportedVersion}} {
 		if _, err := aw.Advance(ctx, session.AdvanceRequest{ProtocolVersion: tc.version}); !session.IsCode(err, tc.code) {
 			t.Fatalf("%s: advance = %v, want %s", tc.name, err, tc.code)
 		}
 	}
-	if h, _ := store.Header(ctx, "A"); session.SegmentIDOf(h) != segA {
+	if h, _ := store.Header(ctx, "A"); h.ID != segA {
 		t.Fatal("a refused advance moved the tip")
 	}
 
@@ -58,8 +54,8 @@ func testVersions(t *testing.T, f Fixture) {
 	if err != nil {
 		t.Fatalf("advance: %v", err)
 	}
-	segB := session.SegmentIDOf(headerB)
-	if headerB.ProtocolVersion != 2 || headerB.Parent == nil || headerB.Parent.Segment != segA || headerB.Parent.Seq != a[1].Seq || headerB.Parent.Digest != a[1].Digest {
+	segB := headerB.ID
+	if headerB.ProtocolVersion != 2 || headerB.Parent == nil || headerB.Parent.Segment != segA || headerB.Parent.Seq != a[1].Seq {
 		t.Fatalf("advanced header = %+v, want v2 with edge to %s@%d", headerB, segA, a[1].Seq)
 	}
 	if !headerB.Metadata.Equal(meta) || headerB.CausationID != "upgrade" {
@@ -69,25 +65,17 @@ func testVersions(t *testing.T, f Fixture) {
 		t.Fatalf("record after advance = %+v %v", rec, err)
 	}
 	// The handle continues on the empty v2 tip: history is inherited, own
-	// streams start empty (SES-FRK-5), the next commit is sealed by v2 and
-	// chains from the v1 head as opaque bytes.
-	if aw.Head() != (session.Head{Next: a[1].Seq + 1, Digest: a[1].Digest}) || !aw.Committed("a0") || aw.Committed("b0") {
+	// streams start empty (SES-FRK-5), the next commit continues the v1
+	// numbering.
+	if aw.Head() != (session.Head{Next: a[1].Seq + 1}) || !aw.Committed("a0") || aw.Committed("b0") {
 		t.Fatalf("handle after advance: head %+v", aw.Head())
 	}
 	if _, ok := aw.StreamHead(runStream("r1")); ok {
 		t.Fatal("previous tip's run stream counted as the new tip's")
 	}
 	b0 := appendCommit(t, aw, "b0", batch(chatStream(), "twilight/x/b", `{"n":0}`))
-	if b0.Seq != a[1].Seq+1 || b0.PrevDigest != a[1].Digest {
+	if b0.Seq != a[1].Seq+1 {
 		t.Fatalf("append after advance = %+v", b0)
-	}
-	v1, _ := prof.Profile(1)
-	v2, _ := prof.Profile(2)
-	if err := session.ValidateLedger(v2, headerB, []session.Commit{b0}); err != nil {
-		t.Fatalf("v2 segment under v2 profile: %v", err)
-	}
-	if err := session.ValidateLedger(v1, headerB, []session.Commit{b0}); err == nil {
-		t.Fatal("v2 commit verified under the v1 profile: the versions do not separate")
 	}
 	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "A"})
 	if err != nil || ids(page.Commits) != "a0,a1,b0" || page.Header.ProtocolVersion != 2 {
@@ -99,20 +87,20 @@ func testVersions(t *testing.T, f Fixture) {
 	}
 	_ = aw.Close(ctx)
 
-	// A fresh Open verifies the v1 prefix under v1 and the v2 tip under v2.
+	// A fresh Open reads the v1 prefix and the v2 tip.
 	aw2 := open(t, store, "A", false)
-	if aw2.Head() != (session.Head{Next: b0.Seq + 1, Digest: b0.Digest}) || !aw2.Committed("a1") || !aw2.Committed("b0") {
+	if aw2.Head() != (session.Head{Next: b0.Seq + 1}) || !aw2.Committed("a1") || !aw2.Committed("b0") {
 		t.Fatalf("reopen across versions: head %+v", aw2.Head())
 	}
 	// A superseded handle cannot advance.
 	aw3 := open(t, store, "A", true)
-	if _, err := aw2.Advance(ctx, session.AdvanceRequest{ProtocolVersion: 3}); !session.IsCode(err, session.ErrOwnershipLost) && !session.IsCode(err, session.ErrUnsupportedProfile) {
+	if _, err := aw2.Advance(ctx, session.AdvanceRequest{ProtocolVersion: 3}); !session.IsCode(err, session.ErrOwnershipLost) && !session.IsCode(err, session.ErrUnsupportedVersion) {
 		t.Fatalf("superseded advance = %v", err)
 	}
 	_ = aw3.Close(ctx)
 
 	// Forks cross versions both ways: a v2 child of a v1 commit, a v1 child
-	// of a v2 commit. Each verifies its own commits under its own version.
+	// of a v2 commit.
 	hf, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: 2, SessionID: "F", CreatedAtUnixMilli: 3, Fork: &session.ForkOrigin{Session: "A", Seq: a[0].Seq}})
 	if err != nil || hf.Parent.Segment != segA || hf.ProtocolVersion != 2 {
 		t.Fatalf("v2 fork of a v1 commit = %+v %v", hf, err)
@@ -133,7 +121,7 @@ func testVersions(t *testing.T, f Fixture) {
 		}
 	}
 
-	// An empty tip is replaced, not chained: the new segment carries the
+	// An empty tip is replaced, not extended: the new segment carries the
 	// tip's own edge and the old node is reclaimed.
 	create(t, store, "E")
 	ew := open(t, store, "E", false)
@@ -142,7 +130,7 @@ func testVersions(t *testing.T, f Fixture) {
 		t.Fatalf("advance of an empty root tip = %+v %v", he, err)
 	}
 	e0 := appendCommit(t, ew, "e0", batch(chatStream(), "twilight/x/e", `{}`))
-	if e0.Seq != 0 || e0.PrevDigest != he.HeaderDigest {
+	if e0.Seq != 0 || he.ID == "" {
 		t.Fatalf("first commit after replacing an empty tip = %+v", e0)
 	}
 	_ = ew.Close(ctx)

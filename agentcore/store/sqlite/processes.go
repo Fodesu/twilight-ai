@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/process"
 	"github.com/felinics/twilight/agentcore/run"
@@ -25,15 +24,15 @@ var _ process.Store = (*ProcessStore)(nil)
 func (d *DB) Processes() *ProcessStore { return &ProcessStore{db: d.db} }
 
 func readProcessCommits(ctx context.Context, q querier, k string, from ledger.CommitSeq) (commits []ledger.Commit, head ledger.Head, err error) {
-	rows, err := q.QueryContext(ctx, `SELECT seq, digest, body FROM process_commits WHERE key = ? AND seq >= ? ORDER BY seq`, k, uint64(from))
+	rows, err := q.QueryContext(ctx, `SELECT seq, body FROM process_commits WHERE key = ? AND seq >= ? ORDER BY seq`, k, uint64(from))
 	if err != nil {
 		return nil, ledger.Head{}, err
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var seq uint64
-		var digest, body string
-		if err := rows.Scan(&seq, &digest, &body); err != nil {
+		var body string
+		if err := rows.Scan(&seq, &body); err != nil {
 			return nil, ledger.Head{}, err
 		}
 		var c ledger.Commit
@@ -41,19 +40,18 @@ func readProcessCommits(ctx context.Context, q querier, k string, from ledger.Co
 			return nil, ledger.Head{}, fmt.Errorf("sqlite: process commit %d: %w", seq, err)
 		}
 		commits = append(commits, c)
-		head = ledger.Head{Next: ledger.CommitSeq(seq) + 1, Digest: es.Digest(digest)}
+		head = ledger.Head{Next: ledger.CommitSeq(seq) + 1}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, ledger.Head{}, err
 	}
 	if from > 0 {
 		var n sql.NullInt64
-		var digest sql.NullString
-		if err := q.QueryRowContext(ctx, `SELECT MAX(seq), (SELECT digest FROM process_commits WHERE key = ? ORDER BY seq DESC LIMIT 1) FROM process_commits WHERE key = ?`, k, k).Scan(&n, &digest); err != nil {
+		if err := q.QueryRowContext(ctx, `SELECT MAX(seq) FROM process_commits WHERE key = ?`, k).Scan(&n); err != nil {
 			return nil, ledger.Head{}, err
 		}
 		if n.Valid && n.Int64 >= 0 {
-			head = ledger.Head{Next: ledger.CommitSeq(n.Int64) + 1, Digest: es.Digest(digest.String)} //nolint:gosec // G115: seq is stored from a uint64 and checked non-negative
+			head = ledger.Head{Next: ledger.CommitSeq(n.Int64) + 1} //nolint:gosec // G115: seq is stored from a uint64 and checked non-negative
 		}
 	}
 	return commits, head, nil
@@ -106,14 +104,11 @@ func (s *ProcessStore) Append(ctx context.Context, epoch ledger.Epoch, key effec
 		return err
 	}
 	return tx(ctx, s.db, func(t *sql.Tx) error {
-		var existingIntent string
-		err := t.QueryRowContext(ctx, `SELECT intent FROM process_commits WHERE key = ? AND commit_id = ?`, k, string(c.CommitID)).Scan(&existingIntent)
+		var existingSeq uint64
+		err := t.QueryRowContext(ctx, `SELECT seq FROM process_commits WHERE key = ? AND commit_id = ?`, k, string(c.CommitID)).Scan(&existingSeq)
 		switch {
 		case err == nil:
-			if es.Digest(existingIntent) == c.Intent {
-				return ledger.ErrAlreadyApplied
-			}
-			return ledger.ErrCommitConflict
+			return ledger.ErrAlreadyApplied
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
@@ -139,10 +134,6 @@ func (s *ProcessStore) Append(ctx context.Context, epoch ledger.Epoch, key effec
 		if err != nil {
 			return err
 		}
-		digest, err := c.Digest(head.Digest)
-		if err != nil {
-			return err
-		}
 		body, err := json.Marshal(c)
 		if err != nil {
 			return err
@@ -163,8 +154,8 @@ func (s *ProcessStore) Append(ctx context.Context, epoch ledger.Epoch, key effec
 		if _, err := t.ExecContext(ctx, `UPDATE processes SET terminal = ?, epoch = MAX(epoch, ?) WHERE key = ?`, terminal, uint64(epoch), k); err != nil {
 			return err
 		}
-		_, err = t.ExecContext(ctx, `INSERT INTO process_commits (key, seq, commit_id, intent, digest, body) VALUES (?, ?, ?, ?, ?, ?)`,
-			k, uint64(c.Seq), string(c.CommitID), string(c.Intent), string(digest), string(body))
+		_, err = t.ExecContext(ctx, `INSERT INTO process_commits (key, seq, commit_id, body) VALUES (?, ?, ?, ?)`,
+			k, uint64(c.Seq), string(c.CommitID), string(body))
 		return err
 	})
 }

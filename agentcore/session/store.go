@@ -16,8 +16,8 @@ import (
 // segment a child of another Session's history (SES-FRK-1): that Session
 // must be live in the same Store, its ancestry must hold commit Seq, and it
 // must share the protocol version; otherwise Create fails and writes
-// nothing. The segment's nonce is always the kernel's to draw: a caller
-// never names a writable node, so no two roots can be made to share one
+// nothing. The segment's ID is always the kernel's to draw: a caller never
+// names a writable node, so no two roots can be made to share one
 // (SES-FRK-4).
 type CreateRequest struct {
 	ProtocolVersion    uint16
@@ -26,7 +26,7 @@ type CreateRequest struct {
 	Fork               *ForkOrigin
 	CausationID        es.CausationID
 	Metadata           jsonstable.Value
-	// Ext is the kernel extension object sealed into SegmentHeader.Ext
+	// Ext is the kernel extension object stored as SegmentHeader.Ext
 	// (SES-WIR-5); absent for every header the current kernel writes.
 	Ext jsonstable.Value
 }
@@ -78,12 +78,10 @@ func (o OpenOptions) LeaseUntil(now time.Time) int64 {
 }
 
 // Head is the ledger head after the last commit: the next CommitSeq to
-// assign and that commit's Digest. A segment with no commits of its own has
-// head LedgerSeed(header): {0, HeaderDigest} for a root segment,
-// {Parent.Seq+1, Parent.Digest} for a child.
+// assign. A segment with no commits of its own has head LedgerSeed(header):
+// 0 for a root segment, Parent.Seq+1 for a child.
 type Head struct {
-	Next   CommitSeq
-	Digest es.Digest
+	Next CommitSeq
 }
 
 // Proposal is one atomic append: the batches of a single commit under one
@@ -91,17 +89,14 @@ type Head struct {
 // or none (SES-APP-1).
 type Proposal struct {
 	CommitID CommitID
-	// Intent is the operation digest sealed into the commit (Commit.Intent);
-	// empty declares none.
-	Intent  es.Digest
-	Batches []StreamBatch
-	// Ext is the kernel extension object sealed into Commit.Ext (SES-WIR-5);
+	Batches  []StreamBatch
+	// Ext is the kernel extension object stored as Commit.Ext (SES-WIR-5);
 	// absent for every commit the current kernel writes.
 	Ext jsonstable.Value
 }
 
-// AdvanceRequest moves a Session onto a new tip segment sealed under a
-// later kernel ProtocolVersion (SES-ADV-1). The new segment's edge is the
+// AdvanceRequest moves a Session onto a new tip segment under a later
+// kernel ProtocolVersion (SES-ADV-1). The new segment's edge is the
 // current head when the tip holds own commits, or the tip's own edge when it
 // holds none; either way no existing segment or commit is rewritten.
 type AdvanceRequest struct {
@@ -124,7 +119,7 @@ type Handle interface {
 	// expires renews to no effect.
 	Renew(context.Context) error
 	Head() Head
-	// Append persists one commit atomically and returns it sealed (SES-APP-1).
+	// Append persists one commit atomically and returns it as stored (SES-APP-1).
 	// It rejects malformed CommitIDs, duplicate CommitIDs, malformed stream
 	// refs and events, and a stale Epoch (SES-APP-3).
 	Append(context.Context, Proposal) (Commit, error)
@@ -148,9 +143,9 @@ type Handle interface {
 	// Advance publishes a new tip segment for this root under a later
 	// ProtocolVersion (SES-ADV-1) and moves the handle onto it: the Session
 	// keeps its identity and stitched history, its earlier segments stay
-	// exactly as sealed, and every later Append is sealed by the new
-	// version's profile. A version the Ledger does not know is
-	// ErrUnsupportedProfile; one not later than the tip's is ErrInvalid; a
+	// exactly as stored, and every later Append lands on the new segment. A
+	// version the Ledger does not serve is ErrUnsupportedVersion; one not
+	// later than the tip's is ErrInvalid; a
 	// stale Epoch is ErrOwnershipLost. An ErrHandleFailed returned with a
 	// non-zero header means the segment is published but this handle can no
 	// longer answer for the ledger: the caller reopens.

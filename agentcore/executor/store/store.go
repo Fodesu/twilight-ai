@@ -1,8 +1,8 @@
 // Package store is the Executor's authority over one execution: the commit
 // ledger of an effect's attempts (RUN-EXE-3, RUN-EXE-9) and the lease that
 // fences its Worker. It speaks the vocabulary of the Session kernel — a
-// ledger of commits, each with a Seq, a CommitID, an Epoch and an Intent,
-// carrying events with a type and a canonical payload — so that what is true
+// ledger of commits, each with a Seq and a CommitID, carrying events with a
+// type and a canonical payload — so that what is true
 // of a Session ledger is true here: the ledger is the only fact authority,
 // ExecutionState is its fold, a replayed command is recognised by its
 // CommitID, and a fenced writer's commit is refused by its Epoch. The Run
@@ -31,7 +31,6 @@ var (
 	// The commit rules are the kernel's (agentcore/ledger).
 	ErrStateConflict  = ledger.ErrStateConflict
 	ErrConflict       = ledger.ErrConflict
-	ErrCommitConflict = ledger.ErrCommitConflict
 	ErrAlreadyApplied = ledger.ErrAlreadyApplied
 )
 
@@ -336,14 +335,12 @@ type Store interface {
 	Read(context.Context, effect.AssignmentKey, CommitSeq) ([]Commit, Head, error)
 	// Append commits c to the key's ledger. c.Seq must be Head.Next
 	// (ErrConflict). A commit whose CommitID already exists is
-	// ErrAlreadyApplied with the same Intent and ErrCommitConflict
-	// otherwise; nothing is written in either case. A zero lease is an
-	// unfenced append and may carry only events Fenced reports false for;
-	// otherwise the lease must be the key's current, unexpired lease
-	// (ErrLeaseLost). The commit is folded before it is
-	// written (ErrStateConflict). The first commit's Intent is the
-	// AssignmentDigest; a first commit with another Intent is
-	// ErrAssignmentConflict.
+	// ErrAlreadyApplied and nothing is written: the CommitID names the
+	// operation, so the Worker that must tell two Assignments apart reads
+	// the ledger back (ErrAssignmentConflict). A zero lease is an unfenced
+	// append and may carry only events Fenced reports false for; otherwise
+	// the lease must be the key's current, unexpired lease (ErrLeaseLost).
+	// The commit is folded before it is written (ErrStateConflict).
 	Append(context.Context, Lease, effect.AssignmentKey, Commit) error
 	// Acquire takes the key's lease for owner under a new Epoch and records
 	// execution_claimed in the same transaction. ok is false while another

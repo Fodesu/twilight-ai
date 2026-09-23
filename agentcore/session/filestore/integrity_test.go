@@ -9,7 +9,7 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 )
 
-// A segment directory whose header digests to another segment, or a root
+// A segment directory whose header names another segment, or a root
 // whose record cannot be read, is corrupt to every entry point: the Store
 // must not serve it under the requested identity nor treat it as unowned.
 func TestSessionDirectoryIntegrity(t *testing.T) {
@@ -29,11 +29,11 @@ func TestSessionDirectoryIntegrity(t *testing.T) {
 	}{
 		{"header of another segment", func(t *testing.T, s *Store, a session.SegmentHeader) {
 			b := create(t, s, "b")
-			raw, err := os.ReadFile(filepath.Join(s.segmentDir(session.SegmentIDOf(b)), headerFile))
+			raw, err := os.ReadFile(filepath.Join(s.segmentDir(b.ID), headerFile))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(filepath.Join(s.segmentDir(session.SegmentIDOf(a)), headerFile), raw, 0o644); err != nil {
+			if err := os.WriteFile(filepath.Join(s.segmentDir(a.ID), headerFile), raw, 0o644); err != nil {
 				t.Fatal(err)
 			}
 		}, true},

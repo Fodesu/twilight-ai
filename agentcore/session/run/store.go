@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
@@ -152,7 +151,7 @@ func (b *bound) Commit(ctx context.Context, req runtime.CommitRequest) (runtime.
 	if err != nil {
 		return runtime.CommitResult{}, err
 	}
-	res, err := unit.Commit(ctx, b.w, b.s.nowMilli(), unit.Work{CommitID: session.CommitID(req.Command.ID), Intent: cmd.Intent(), Parts: []unit.Part{cmd}})
+	res, err := unit.Commit(ctx, b.w, b.s.nowMilli(), unit.Work{CommitID: session.CommitID(req.Command.ID), Parts: []unit.Part{cmd}})
 	if err != nil {
 		return runtime.CommitResult{}, ownershipError(err)
 	}
@@ -209,9 +208,6 @@ func (s *SessionRunStore) Command(ctx context.Context, req runtime.CommitRequest
 	if req.Command.RunID == "" || req.Command.ID == "" {
 		return nil, errors.New("runmod: command requires RunID and CommandID")
 	}
-	if _, err := unit.Intent(req.Command); err != nil {
-		return nil, fmt.Errorf("runmod: command intent: %w", err)
-	}
 	// The envelope's SchemaVersion is the Run's (Prepare refuses a mismatch),
 	// so the bodies are frozen under the Run's own schema, never a fixed one.
 	sch, err := schema.For(req.Command.SchemaVersion)
@@ -222,15 +218,6 @@ func (s *SessionRunStore) Command(ctx context.Context, req runtime.CommitRequest
 		return nil, err
 	}
 	return &Command{s: s, req: req}, nil
-}
-
-// Intent is the digest of the canonical command envelope: the unit carrying
-// this Part seals it, so a later command with the same CommandID (the same
-// settlement attempt with a different result, say) is a conflict, not a
-// silent replay (RUN-CMT-5).
-func (c *Command) Intent() es.Digest {
-	d, _ := unit.Intent(c.req.Command) // validated when the Part was built
-	return d
 }
 
 func (c *Command) Prepare(_ context.Context, view writer.View, now int64) ([]writer.TypedBatch, error) {
@@ -314,7 +301,7 @@ func (c *Command) Result(ctx context.Context, w writer.Writer, res *writer.Commi
 	}
 }
 
-// factsOf decodes the Run facts of runID a sealed commit holds.
+// factsOf decodes the Run facts of runID a stored commit holds.
 func (s *SessionRunStore) factsOf(c session.Commit, runID run.RunID) ([]run.Fact, error) {
 	var out []run.Fact
 	for _, b := range c.Batches {

@@ -134,7 +134,7 @@ execution: observed | unavailable | recovery_required
 | provider invocation 中 worker 退出 | AssignmentKey、已知 binding | active、terminal 或 orphaned | 自动把不确定执行当作未执行 | backend 状态、最终 facts |
 | Outcome 已持久化、通知未送达 | Outcome、AssignmentKey | Owner 重新读取并结算 | 重复执行 provider | GetOutcome、event 数量 |
 | Owner 读 Outcome 临时失败 | Run、Step、Claim | retry read | 写入 Unknown 或取消 Run | Run 仍为 Executing |
-| settlement append 前失败 | CommitID、Claim | 同一 command replay | 生成第二个 commit | commit fingerprint |
+| settlement append 前失败 | CommitID、Claim | 同一 command replay | 生成第二个 commit | CommitID 索引 |
 | settlement append 结果未知 | CommitID、Claim | reopen 后 AlreadyApplied/Applied | 继续使用失效 Writer | ledger、claim state |
 | Owner 失去 Epoch 后迟到结算 | 新 owner 的事实 | 无旧 owner 新事实 | 旧 owner 修改 Session | Epoch、ledger head |
 | client 断开 | InputID、已接受事实 | 后台继续处理 | 取消服务端执行 | 重连后的 reply |

@@ -15,7 +15,7 @@ import (
 func TestOpenWriterAdvancesTipToRegistryVersion(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t)
-	f.store = filestoretest.Store(t, session.WithProfile(session.ProfileVariant(2)))
+	f.store = filestoretest.Store(t, session.WithProtocolVersion(2))
 	if _, err := f.store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
@@ -52,14 +52,14 @@ func TestOpenWriterAdvancesTipToRegistryVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	page, err := f.store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
-	if err != nil || len(page.Commits) != 2 || page.Commits[0].Digest != page.Commits[1].PrevDigest {
+	if err != nil || len(page.Commits) != 2 || page.Commits[1].Seq != page.Commits[0].Seq+1 {
 		t.Fatalf("history after upgrade = %+v %v", page.Commits, err)
 	}
 	// The v1 registry now meets a v2 tip: refused before ownership is taken.
-	if _, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !session.IsCode(err, session.ErrUnsupportedProfile) {
-		t.Fatalf("v1 registry over a v2 tip = %v, want unsupported profile", err)
+	if _, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !session.IsCode(err, session.ErrUnsupportedVersion) {
+		t.Fatalf("v1 registry over a v2 tip = %v, want unsupported version", err)
 	}
-	if again, err := OpenWriter(ctx, f.store, r2, f.admission(), "s", session.OpenOptions{}); err != nil || again.Header().HeaderDigest != header.HeaderDigest {
+	if again, err := OpenWriter(ctx, f.store, r2, f.admission(), "s", session.OpenOptions{}); err != nil || again.Header().ID != header.ID {
 		t.Fatalf("reopen at the same version must not advance again: %v", err)
 	}
 }

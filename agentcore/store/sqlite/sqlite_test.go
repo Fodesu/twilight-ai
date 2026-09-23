@@ -60,7 +60,7 @@ func accept(t *testing.T, s executionstore.Store, a effect.Assignment) run.Diges
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Append(context.Background(), executionstore.Lease{}, a.Key(), executionstore.Commit{CommitID: executionstore.AcceptCommitID(a.Key()), Intent: digest, Events: []executionstore.Event{ev}}); err != nil {
+	if err := s.Append(context.Background(), executionstore.Lease{}, a.Key(), executionstore.Commit{CommitID: executionstore.AcceptCommitID(a.Key()), Events: []executionstore.Event{ev}}); err != nil {
 		t.Fatal(err)
 	}
 	return digest
@@ -95,14 +95,14 @@ func TestExecutionStoreAcrossHandles(t *testing.T) {
 	asg := assignment("e1")
 	key := asg.Key()
 	digest := accept(t, a, asg)
-	// A replayed acceptance is recognised by its identity; another
-	// Assignment under the same key is a conflict.
+	// A replayed acceptance is recognised by its identity and not written
+	// again; the Worker tells two Assignments apart by reading the ledger.
 	ev, _ := executionstore.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: asg, AssignmentDigest: digest})
-	if err := b.Append(ctx, executionstore.Lease{}, key, executionstore.Commit{CommitID: executionstore.AcceptCommitID(key), Intent: digest, Events: []executionstore.Event{ev}}); !errors.Is(err, executionstore.ErrAlreadyApplied) {
+	if err := b.Append(ctx, executionstore.Lease{}, key, executionstore.Commit{CommitID: executionstore.AcceptCommitID(key), Events: []executionstore.Event{ev}}); !errors.Is(err, executionstore.ErrAlreadyApplied) {
 		t.Fatalf("replayed acceptance through the other handle = %v, want already applied", err)
 	}
-	if err := b.Append(ctx, executionstore.Lease{}, key, executionstore.Commit{CommitID: executionstore.AcceptCommitID(key), Intent: "sha256:other", Events: []executionstore.Event{ev}}); !errors.Is(err, executionstore.ErrAssignmentConflict) {
-		t.Fatalf("acceptance with another digest = %v, want conflict", err)
+	if state, _, ok, err := b.Load(ctx, key); err != nil || !ok || state.AssignmentDigest != digest {
+		t.Fatalf("load after replay = %+v ok:%v %v", state, ok, err)
 	}
 	// worker-a acquires through handle a; worker-b cannot while the lease
 	// lives, and a's fenced commits go through.

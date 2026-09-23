@@ -211,8 +211,8 @@ type Store interface {
 	// Read returns the key's commits from Seq from, in order, and the Head.
 	Read(ctx context.Context, key effect.AssignmentKey, from CommitSeq) ([]Commit, Head, error)
 	// Append commits c under the kernel's rules (agentcore/ledger): Seq is
-	// Head.Next or ErrConflict; a known CommitID is ErrAlreadyApplied or
-	// ErrCommitConflict by Intent; the commit is folded before it is
+	// Head.Next or ErrConflict; a known CommitID is ErrAlreadyApplied and
+	// nothing is written; the commit is folded before it is
 	// written (ErrStateConflict). epoch is the Session Epoch of the owner
 	// whose relay writes: one below the highest the ledger has seen is
 	// ErrFenced, so a superseded owner's relay writes nothing.

@@ -4,20 +4,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 )
 
-// v2Header builds a sealed root segment header whose nonce is nonce.
-func v2Header(t *testing.T, nonce string) SegmentHeader {
-	t.Helper()
-	h := SegmentHeader{ProtocolVersion: ProtocolVersion1, Nonce: nonce}
-	d, err := ProfileV1().HeaderDigest(h)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h.HeaderDigest = d
-	return h
+// rootHeader builds a root segment header with identity id.
+func rootHeader(id string) SegmentHeader {
+	return SegmentHeader{ID: SegmentID(id), ProtocolVersion: ProtocolVersion1}
 }
 
 func oneEventBatch(stream StreamRef, typ, payload string) StreamBatch {
@@ -101,138 +93,65 @@ func TestValidateBatches(t *testing.T) {
 	}
 }
 
-func TestSealCommit(t *testing.T) {
-	p := ProfileV1()
-	h := v2Header(t, "s")
-	c := Commit{Seq: 0, CommitID: "c1", Batches: []StreamBatch{
+func TestValidateCommit(t *testing.T) {
+	batches := []StreamBatch{
 		oneEventBatch(StreamRef{Domain: "chat"}, "twilight/x/a", `{"a":1}`),
 		oneEventBatch(StreamRef{Domain: "run", ID: "r7"}, "twilight/run/created", `{"runId":"r7"}`),
-	}}
-	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &c); err != nil {
-		t.Fatal(err)
 	}
-	if c.PrevDigest != h.HeaderDigest {
-		t.Fatal("PrevDigest not stamped")
-	}
-	if c.Digest == "" {
-		t.Fatal("Digest not stamped")
-	}
-	resealed := c
-	resealed.PrevDigest, resealed.Digest = "", ""
-	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &resealed); err != nil {
-		t.Fatal(err)
-	}
-	if resealed.Digest != c.Digest {
-		t.Fatal("SealCommit is not deterministic")
-	}
-
-	// Event order inside a batch and batch order inside a commit are both
-	// canonical: swapping either changes the digest.
-	swappedEvents := Commit{Seq: 0, CommitID: "c1", Batches: []StreamBatch{
-		{Stream: StreamRef{Domain: "chat"}, Events: []Event{
-			{Type: "twilight/x/b", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"b":2}`)},
-			{Type: "twilight/x/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"a":1}`)},
-		}},
-	}}
-	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &swappedEvents); err != nil {
-		t.Fatal(err)
-	}
-	twoEvents := Commit{Seq: 0, CommitID: "c1", Batches: []StreamBatch{
-		{Stream: StreamRef{Domain: "chat"}, Events: []Event{
-			{Type: "twilight/x/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"a":1}`)},
-			{Type: "twilight/x/b", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{"b":2}`)},
-		}},
-	}}
-	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &twoEvents); err != nil {
-		t.Fatal(err)
-	}
-	if swappedEvents.Digest == twoEvents.Digest {
-		t.Fatal("event order inside a batch does not reach the digest")
-	}
-	swappedBatches := Commit{Seq: 0, CommitID: "c1", Batches: []StreamBatch{
-		oneEventBatch(StreamRef{Domain: "run", ID: "r7"}, "twilight/run/created", `{"runId":"r7"}`),
-		oneEventBatch(StreamRef{Domain: "chat"}, "twilight/x/a", `{"a":1}`),
-	}}
-	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &swappedBatches); err != nil {
-		t.Fatal(err)
-	}
-	if swappedBatches.Digest == c.Digest {
-		t.Fatal("batch order inside a commit does not reach the digest")
-	}
-
-	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &Commit{Seq: 0, Batches: c.Batches}); err == nil {
-		t.Fatal("empty CommitID accepted")
-	}
-	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &Commit{Seq: 0, CommitID: "c2"}); err == nil {
-		t.Fatal("commit without batches accepted")
-	}
-}
-
-// sealedPair builds a two-commit sealed ledger: one chat batch, then a
-// commit spanning the chat stream and run stream r7.
-func sealedPair(t *testing.T) (LedgerProfile, SegmentHeader, []Commit) {
-	t.Helper()
-	p := ProfileV1()
-	h := v2Header(t, "s")
-	c0 := Commit{Seq: 0, CommitID: "c1", Batches: []StreamBatch{
-		oneEventBatch(StreamRef{Domain: "chat"}, "twilight/x/a", `{"a":1}`),
-	}}
-	if err := SealCommit(p, h.HeaderDigest, SegmentIDOf(h), &c0); err != nil {
-		t.Fatal(err)
-	}
-	c1 := Commit{Seq: 1, CommitID: "c2", Batches: []StreamBatch{
-		oneEventBatch(StreamRef{Domain: "chat"}, "twilight/x/b", `{"b":2}`),
-		oneEventBatch(StreamRef{Domain: "run", ID: "r7"}, "twilight/run/created", `{"runId":"r7"}`),
-	}}
-	if err := SealCommit(p, c0.Digest, SegmentIDOf(h), &c1); err != nil {
-		t.Fatal(err)
-	}
-	return p, h, []Commit{c0, c1}
-}
-
-func TestValidateLedgerDetects(t *testing.T) {
-	zero := es.Digest("sha256:0000000000000000000000000000000000000000000000000000000000000000")
 	cases := []struct {
-		name   string
-		mutate func(*[]Commit)
+		name string
+		c    Commit
+		want string // error substring; "" means valid
 	}{
-		{"valid chain", nil},
-		{"empty ledger", func(cs *[]Commit) { *cs = nil }},
-		{"seq gap", func(cs *[]Commit) { (*cs)[1].Seq = 9 }},
-		{"payload tamper", func(cs *[]Commit) {
-			(*cs)[0].Batches[0].Events[0].Payload = jsonstable.MustParse(`{"a":2}`)
-		}},
-		{"commit id tamper", func(cs *[]Commit) { (*cs)[0].CommitID = "other" }},
-		{"batch stream tamper", func(cs *[]Commit) { (*cs)[1].Batches[1].Stream.ID = "r8" }},
-		{"stored digest tamper", func(cs *[]Commit) { (*cs)[1].Digest = zero }},
-		{"stored prev tamper", func(cs *[]Commit) { (*cs)[1].PrevDigest = zero }},
-		// Commits the profile refuses to reseal are corrupt too, not raw seal errors.
-		{"empty commit id", func(cs *[]Commit) { (*cs)[1].CommitID = "" }},
-		{"batch without events", func(cs *[]Commit) { (*cs)[1].Batches[0].Events = nil }},
+		{"well formed", Commit{CommitID: "c1", Batches: batches}, ""},
+		{"with ext object", Commit{CommitID: "c1", Batches: batches, Ext: jsonstable.MustParse(`{"k":1}`)}, ""},
+		{"empty CommitID", Commit{Batches: batches}, "CommitID is empty"},
+		{"no batches", Commit{CommitID: "c2"}, "commit without batches"},
+		{"ext is not an object", Commit{CommitID: "c1", Batches: batches, Ext: jsonstable.MustParse(`[1]`)}, "ext"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p, h, commits := sealedPair(t)
-			if tc.mutate != nil {
-				tc.mutate(&commits)
-			}
-			err := ValidateLedger(p, h, commits)
-			if tc.mutate == nil || tc.name == "empty ledger" {
+			err := ValidateCommit(&tc.c)
+			if tc.want == "" {
 				if err != nil {
 					t.Fatal(err)
 				}
 				return
 			}
-			if !IsCode(err, ErrCorrupt) {
-				t.Fatalf("ValidateLedger = %v, want code corrupt", err)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ValidateCommit = %v, want %q", err, tc.want)
 			}
 		})
 	}
+}
 
-	// A ledger validated under another segment's header must fail at commit 0:
-	// the seed digest and the segment the commits are bound to both differ.
-	p, _, commits := sealedPair(t)
-	if err := ValidateLedger(p, v2Header(t, "other"), commits); !IsCode(err, ErrCorrupt) {
-		t.Fatalf("ValidateLedger under foreign header = %v, want code corrupt", err)
+func TestValidateHeader(t *testing.T) {
+	cases := []struct {
+		name string
+		h    SegmentHeader
+		ok   bool
+	}{
+		{"root", rootHeader("seg"), true},
+		{"child", SegmentHeader{ID: "child", ProtocolVersion: ProtocolVersion1, Parent: &LedgerRef{Segment: "seg", Seq: 3}}, true},
+		{"missing id", SegmentHeader{ProtocolVersion: ProtocolVersion1}, false},
+		{"edge without segment", SegmentHeader{ID: "child", ProtocolVersion: ProtocolVersion1, Parent: &LedgerRef{Seq: 3}}, false},
+		{"ext is not an object", SegmentHeader{ID: "seg", ProtocolVersion: ProtocolVersion1, Ext: jsonstable.MustParse(`1`)}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateHeader(tc.h)
+			if (err == nil) != tc.ok {
+				t.Fatalf("ValidateHeader = %v, want ok=%v", err, tc.ok)
+			}
+			if err != nil && !IsCode(err, ErrInvalid) {
+				t.Fatalf("ValidateHeader = %v, want code invalid", err)
+			}
+		})
+	}
+	if seed := LedgerSeed(rootHeader("seg")); seed != (Head{}) {
+		t.Fatalf("root seed = %+v", seed)
+	}
+	if seed := LedgerSeed(SegmentHeader{ID: "c", Parent: &LedgerRef{Segment: "seg", Seq: 3}}); seed != (Head{Next: 4}) {
+		t.Fatalf("child seed = %+v", seed)
 	}
 }

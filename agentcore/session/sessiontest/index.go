@@ -69,7 +69,7 @@ func testIndex(t *testing.T, f Fixture) {
 			if n, ok := w.StreamHead(runStream("r7")); !ok || n != 2 {
 				t.Fatalf("run stream head = %d, %v; want 2", n, ok)
 			}
-			if c, ok, err := w.LookupCommit("c3"); err != nil || !ok || c.Digest != c3.Digest {
+			if c, ok, err := w.LookupCommit("c3"); err != nil || !ok || c.Seq != c3.Seq {
 				t.Fatalf("lookup c3 = %+v, %v, %v", c, ok, err)
 			}
 			if _, err := w.Append(ctx, session.Proposal{CommitID: "c2", Batches: []session.StreamBatch{batch(chatStream(), "twilight/x/z", `{}`)}}); !session.IsCode(err, session.ErrConflict) {

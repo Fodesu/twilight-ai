@@ -11,7 +11,7 @@ import (
 
 func newStore(t testing.TB) *filestore.Store {
 	t.Helper()
-	store, err := filestore.New(t.TempDir(), session.WithProfile(session.ProfileVariant(2)))
+	store, err := filestore.New(t.TempDir(), session.WithProtocolVersion(2))
 	if err != nil {
 		t.Fatal(err)
 	}

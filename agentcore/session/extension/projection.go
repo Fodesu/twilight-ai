@@ -97,10 +97,9 @@ func (r *Registry) ScopeFor(id ProjectionID, v ProjectionVersion) (*ProjectionSc
 // the commits carry their own stream attribution, and a projection whose
 // Consumes spans modules sees their events wherever the commits placed them.
 // It is pure with respect to the Registry: the same Scope and commits always
-// fold the same. A Commit's Digest is assigned by SealCommit inside the
-// Store, so fold input never carries one: nothing a projection can read
-// differs between the Writer's pre-seal fold and a reader's post-seal fold
-// (the EXT-PRJ-4 concern of the row model does not arise).
+// fold the same. The Store assigns only Seq inside Append, so nothing a
+// projection can read differs between the Writer's fold of the proposal and
+// a reader's fold of the stored commit.
 func (r *Registry) Fold(s *ProjectionScope, state any, commits []session.Commit) (any, error) {
 	return r.FoldFrom(s, state, commits, session.SegmentHeader{})
 }
@@ -371,16 +370,17 @@ func (r *storeReader) isPrefix(ctx context.Context, sid session.SessionID, throu
 	if err != nil || len(page.Commits) != 1 {
 		return false
 	}
-	return OwnBoundary(page.Header, through) && SealedAt(page.Commits[0], through)
+	return OwnBoundary(page.Header, through) && CommitAt(page.Commits[0], through)
 }
 
-// SealedAt reports whether c is the commit through records: the commit at
-// through.Next-1 carrying through.Digest. It is the one head-alignment
-// predicate of EXT-PRJ-3, shared by the Writer and the Store reader so a
-// cache entry is judged the same way on both paths. The commit is the atomic
-// unit of the ledger: there is no finer boundary to check.
-func SealedAt(c session.Commit, through session.Head) bool {
-	return through.Next > 0 && c.Seq == through.Next-1 && c.Digest == through.Digest
+// CommitAt reports whether c is the commit through records: the commit at
+// through.Next-1. History is append-only, so the position names the commit;
+// it is the one head-alignment predicate of EXT-PRJ-3, shared by the Writer
+// and the Store reader so a cache entry is judged the same way on both
+// paths. The commit is the atomic unit of the ledger: there is no finer
+// boundary to check.
+func CommitAt(c session.Commit, through session.Head) bool {
+	return through.Next > 0 && c.Seq == through.Next-1
 }
 
 // OwnBoundary reports whether through is a commit boundary of the tip
@@ -391,7 +391,7 @@ func SealedAt(c session.Commit, through session.Head) bool {
 // an entry ending on an inherited boundary is not started from (EXT-PRJ-3)
 // and the fold restarts from the initial state until the tip holds a commit
 // of its own. It is the second head-alignment predicate of EXT-PRJ-3, shared
-// by the Writer and the Store reader like SealedAt.
+// by the Writer and the Store reader like CommitAt.
 func OwnBoundary(header session.SegmentHeader, through session.Head) bool {
 	return through.Next > session.LedgerSeed(header).Next
 }

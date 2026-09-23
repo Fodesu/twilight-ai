@@ -27,7 +27,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/session"
 )
 
@@ -36,9 +35,6 @@ const (
 	sessionsDir = "sessions"
 	headerFile  = "header.json"
 	logFile     = "log.jsonl"
-	// verifiedFile is the segment's verified mark (SES-REP-1): the head
-	// through which its own commits were last verified, as {next, digest}.
-	verifiedFile = "verified.json"
 )
 
 // Store is the JSONL session.Store: the Ledger's methods are promoted from
@@ -59,7 +55,8 @@ type Store struct {
 }
 
 // New opens the store root, creating it if needed. opts configure the
-// kernel Ledger (for example an extra profile through session.WithProfile).
+// kernel Ledger (for example an extra version through
+// session.WithProtocolVersion).
 func New(root string, opts ...session.LedgerOption) (*Store, error) {
 	for _, d := range []string{root, filepath.Join(root, segmentsDir), filepath.Join(root, sessionsDir)} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
@@ -150,16 +147,12 @@ func (s *Store) loadSegment(id session.SegmentID, op string) (session.SegmentHea
 		}
 		return session.SegmentHeader{}, "", segerr(op, id, err.Error())
 	}
-	if session.SegmentIDOf(h) != id {
+	if h.ID != id {
 		// A valid header of another segment under this directory (a copied or
 		// renamed directory) must not be served as id's.
-		return session.SegmentHeader{}, "", segerr(op, id, fmt.Sprintf("header digests to %s", h.HeaderDigest))
+		return session.SegmentHeader{}, "", segerr(op, id, fmt.Sprintf("header names segment %s", h.ID))
 	}
-	profile, err := s.Profile(h.ProtocolVersion)
-	if err != nil {
-		return session.SegmentHeader{}, "", err
-	}
-	if err := profile.ValidateHeader(h); err != nil {
+	if err := session.ValidateHeader(h); err != nil {
 		return session.SegmentHeader{}, "", err
 	}
 	return h, dir, nil
@@ -197,7 +190,7 @@ func (s *Store) ListSegments(ctx context.Context) ([]session.SegmentID, error) {
 		if err != nil {
 			continue // not a segment directory
 		}
-		out = append(out, session.SegmentIDOf(h))
+		out = append(out, h.ID)
 	}
 	return out, nil
 }
@@ -234,9 +227,9 @@ func (s *Store) ReadSegment(ctx context.Context, id session.SegmentID, from sess
 	return append([]session.Commit(nil), commits[start:end]...), head, more, nil
 }
 
-// Append persists a commit the Ledger sealed against the segment head under
-// the lease: the root file is the ownership authority, re-read here so a
-// takeover through another instance fences this writer (SES-OWN-2).
+// Append persists a commit at the segment head under the lease: the root
+// file is the ownership authority, re-read here so a takeover through
+// another instance fences this writer (SES-OWN-2).
 func (s *Store) Append(ctx context.Context, lease session.Lease, id session.SegmentID, c session.Commit) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -265,8 +258,8 @@ func (s *Store) Append(ctx context.Context, lease session.Lease, id session.Segm
 	if err != nil {
 		return err
 	}
-	if c.Seq != head.Next || c.PrevDigest != head.Digest {
-		return kerr(session.ErrInvalid, "append", lease.Session, "commit is not sealed against the segment head")
+	if c.Seq != head.Next {
+		return kerr(session.ErrInvalid, "append", lease.Session, "commit is not at the segment head")
 	}
 	line, err := json.Marshal(c)
 	if err != nil {
@@ -449,63 +442,6 @@ func (s *Store) CreateSession(ctx context.Context, seg session.Segment, rec sess
 		return err
 	}
 	return s.saveRoot(rec.ID, ownerRecord{SessionRecord: rec})
-}
-
-type verifiedMark struct {
-	Next   session.CommitSeq `json:"next"`
-	Digest string            `json:"digest"`
-}
-
-func (s *Store) VerifiedMark(ctx context.Context, id session.SegmentID) (session.Head, bool, error) {
-	if err := ctx.Err(); err != nil {
-		return session.Head{}, false, err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	raw, err := os.ReadFile(filepath.Join(s.segmentDir(id), verifiedFile))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return session.Head{}, false, nil
-		}
-		return session.Head{}, false, segerr("verified_mark", id, err.Error())
-	}
-	var m verifiedMark
-	if err := json.Unmarshal(raw, &m); err != nil || m.Digest == "" {
-		return session.Head{}, false, nil // an unreadable mark is no mark
-	}
-	return session.Head{Next: m.Next, Digest: es.Digest(m.Digest)}, true, nil
-}
-
-func (s *Store) PutVerifiedMark(ctx context.Context, id session.SegmentID, mark session.Head) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if _, err := readHeader(s.segmentDir(id)); err != nil {
-		if os.IsNotExist(err) {
-			return &session.Error{Code: session.ErrNotFound, Operation: "verified_mark", Detail: fmt.Sprintf("segment %s not found", id)}
-		}
-		return segerr("verified_mark", id, err.Error())
-	}
-	raw, err := json.Marshal(verifiedMark{Next: mark.Next, Digest: string(mark.Digest)})
-	if err != nil {
-		return err
-	}
-	return writeAtomic(filepath.Join(s.segmentDir(id), verifiedFile), raw)
-}
-
-// DropVerifiedMark removes the tip segment's verified.json, so conformance
-// can prove that Open then verifies from the seed (SES-REP-1); production
-// code never calls it.
-func (s *Store) DropVerifiedMark(sid session.SessionID) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, dir, err := s.tip(sid, "drop_verified_mark")
-	if err != nil {
-		return err
-	}
-	return os.RemoveAll(filepath.Join(dir, verifiedFile))
 }
 
 // AdvanceTip lands the new empty node, then moves the root to it under the
@@ -694,8 +630,7 @@ func headOf(h session.SegmentHeader, commits []session.Commit) session.Head {
 	if len(commits) == 0 {
 		return session.LedgerSeed(h)
 	}
-	last := &commits[len(commits)-1]
-	return session.Head{Next: last.Seq + 1, Digest: last.Digest}
+	return session.Head{Next: commits[len(commits)-1].Seq + 1}
 }
 
 // --- log file ---------------------------------------------------------------------
@@ -784,26 +719,6 @@ func (s *Store) tip(sid session.SessionID, op string) (session.SegmentHeader, st
 	return s.loadSegment(rec.Tip, op)
 }
 
-// Tamper rewrites one own commit on disk so conformance can prove the ledger
-// check at Open detects corruption; production code never calls it.
-func (s *Store) Tamper(sid session.SessionID, seq session.CommitSeq, mutate func(*session.Commit)) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	header, dir, err := s.tip(sid, "tamper")
-	if err != nil {
-		return
-	}
-	path := filepath.Join(dir, logFile)
-	commits, _, _, _, err := readLog(path, sid, "tamper")
-	seed := session.LedgerSeed(header)
-	if err != nil || seq < seed.Next || seq-seed.Next >= session.CommitSeq(len(commits)) {
-		return
-	}
-	mutate(&commits[seq-seed.Next])
-	s.dropIndex(session.SegmentIDOf(header))
-	_ = rewriteLog(path, commits)
-}
-
 // CrashTail rewrites log.jsonl keeping only the first keep commits, so every
 // commit after them never became durable. It exists so conformance can prove
 // that Open recovers to the last whole commit (SES-APP-2); production code
@@ -826,7 +741,7 @@ func (s *Store) CrashTail(sid session.SessionID, keep int) error {
 	if keep > len(commits) {
 		keep = len(commits)
 	}
-	s.dropIndex(session.SegmentIDOf(header))
+	s.dropIndex(header.ID)
 	return rewriteLog(path, commits[:keep])
 }
 

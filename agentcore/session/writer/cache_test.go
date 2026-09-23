@@ -212,7 +212,7 @@ func TestWriterResumesOnlyTheUncoveredTail(t *testing.T) {
 		t.Fatalf("log has %d commits, want 3", len(commits))
 	}
 	// Rewind alpha's entry to cover the first two commits only.
-	if err := f.cache.Save(ctx, "s", alphaID, 1, f.encodeState(t, "n1", "n2"), session.Head{Next: 2, Digest: commits[1].Digest}); err != nil {
+	if err := f.cache.Save(ctx, "s", alphaID, 1, f.encodeState(t, "n1", "n2"), session.Head{Next: 2}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -253,10 +253,9 @@ func TestWriterRejectsUnusableCacheEntries(t *testing.T) {
 		through session.Head
 		state   jsonstable.Value
 	}{
-		"ahead of the log":  {through: session.Head{Next: 9, Digest: commits[1].Digest}},
+		"ahead of the log":  {through: session.Head{Next: 9}},
 		"empty head":        {through: session.Head{}},
-		"unknown digest":    {through: session.Head{Next: 2, Digest: "sha256:0000"}},
-		"undecodable state": {through: session.Head{Next: 2, Digest: commits[1].Digest}, state: garbage},
+		"undecodable state": {through: session.Head{Next: 2}, state: garbage},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -313,8 +312,7 @@ func TestWriterCachePolicyGovernsWritingButNotReading(t *testing.T) {
 	}
 
 	// An entry alpha's owner wrote is still used, policy or not.
-	commits := f.commits(t)
-	if err := f.cache.Save(ctx, "s", alphaID, 1, f.encodeState(t, "n1", "n2"), session.Head{Next: 2, Digest: commits[1].Digest}); err != nil {
+	if err := f.cache.Save(ctx, "s", alphaID, 1, f.encodeState(t, "n1", "n2"), session.Head{Next: 2}); err != nil {
 		t.Fatal(err)
 	}
 	f.counter.reset()
@@ -385,29 +383,24 @@ func TestWriterWithoutCacheFoldsEverything(t *testing.T) {
 // fold boundary, but only the tip's own boundaries were folded under its
 // inheritance policy.
 func TestCoversCommit(t *testing.T) {
-	commits := []session.Commit{
-		{Seq: 0, Digest: "d0"},
-		{Seq: 1, Digest: "d1"},
-		{Seq: 2, Digest: "d2"},
-	}
-	root := session.SegmentHeader{HeaderDigest: "h"}
+	commits := []session.Commit{{Seq: 0}, {Seq: 1}, {Seq: 2}}
+	root := session.SegmentHeader{ID: "h"}
 	// A tip that inherits the first two commits and wrote the third.
-	child := session.SegmentHeader{Parent: &session.LedgerRef{Seq: 1, Digest: "d1"}}
+	child := session.SegmentHeader{ID: "c", Parent: &session.LedgerRef{Segment: "h", Seq: 1}}
 	cases := map[string]struct {
 		header  session.SegmentHeader
 		through session.Head
 		want    bool
 	}{
-		"first commit":            {root, session.Head{Next: 1, Digest: "d0"}, true},
-		"mid log":                 {root, session.Head{Next: 2, Digest: "d1"}, true},
-		"end of the log":          {root, session.Head{Next: 3, Digest: "d2"}, true},
+		"first commit":            {root, session.Head{Next: 1}, true},
+		"mid log":                 {root, session.Head{Next: 2}, true},
+		"end of the log":          {root, session.Head{Next: 3}, true},
 		"empty":                   {root, session.Head{}, false},
-		"past the log":            {root, session.Head{Next: 4, Digest: "d2"}, false},
-		"digest does not match":   {root, session.Head{Next: 2, Digest: "nope"}, false},
-		"seq does not match head": {root, session.Head{Next: 99, Digest: "d2"}, false},
-		"inherited commit":        {child, session.Head{Next: 1, Digest: "d0"}, false},
-		"inherited boundary":      {child, session.Head{Next: 2, Digest: "d1"}, false},
-		"tip's own commit":        {child, session.Head{Next: 3, Digest: "d2"}, true},
+		"past the log":            {root, session.Head{Next: 4}, false},
+		"seq does not match head": {root, session.Head{Next: 99}, false},
+		"inherited commit":        {child, session.Head{Next: 1}, false},
+		"inherited boundary":      {child, session.Head{Next: 2}, false},
+		"tip's own commit":        {child, session.Head{Next: 3}, true},
 	}
 	at := func(seq session.CommitSeq) (session.Commit, bool) {
 		for _, c := range commits {

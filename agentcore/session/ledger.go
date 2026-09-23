@@ -8,19 +8,18 @@ import (
 
 // Ledger is the kernel's Store over a Backend (SES 4 to 6, 8, 9): the
 // Session lineage tree in code. Roots (SessionRecord) name the segment they
-// append to as their tip; segments (Segment) chain to their parents through
+// append to as their tip; segments (Segment) point to their parents through
 // LedgerRef edges; a Session's history is the stitched Ancestry of its segment. Fork
 // adds a node and an edge; Delete drops a root; Collect reclaims what no
 // root reaches. Every adapter gets these semantics from here and implements
 // none of them.
 type Ledger struct {
-	be    Backend
-	nonce func() (string, error)
-	// profiles is the kernel wire this Ledger can seal and verify, by
-	// ProtocolVersion: the published profiles plus any added by WithProfile.
-	// Segments of one Session may be under different versions (SES-ADV-1),
-	// each verified by its own.
-	profiles map[uint16]LedgerProfile
+	be        Backend
+	segmentID func() (SegmentID, error)
+	// versions are the kernel ProtocolVersions this Ledger serves: the
+	// published ones plus any added by WithProtocolVersion. Segments of one
+	// Session may be under different versions (SES-ADV-1).
+	versions map[uint16]struct{}
 	// graph serializes the operations that change the set of roots and
 	// nodes (Create, Delete, Collect) against each other (SES-GC-4): a
 	// Create's check that its parent is live, and its write, cannot
@@ -34,36 +33,41 @@ type Ledger struct {
 // LedgerOption configures a Ledger.
 type LedgerOption func(*Ledger)
 
-// WithNonceSource replaces the segment nonce generator. Production uses
-// NewNonce; wire fixtures inject a deterministic source so the bytes they
-// freeze are reproducible.
-func WithNonceSource(src func() (string, error)) LedgerOption {
-	return func(l *Ledger) { l.nonce = src }
+// WithSegmentIDSource replaces the segment identity generator. Production
+// uses NewSegmentID; wire fixtures inject a deterministic source so the
+// bytes they freeze are reproducible.
+func WithSegmentIDSource(src func() (SegmentID, error)) LedgerOption {
+	return func(l *Ledger) { l.segmentID = src }
 }
 
-// WithProfile adds a kernel profile the Ledger seals and verifies under its
-// version, alongside the published ones. Fixtures use it with
-// ProfileVariant to exercise a second kernel version (SES-ADV-1).
-func WithProfile(p LedgerProfile) LedgerOption {
-	return func(l *Ledger) { l.profiles[p.Version()] = p }
+// WithProtocolVersion adds a kernel version the Ledger serves alongside the
+// published ones. Fixtures use it to exercise a second kernel version
+// (SES-ADV-1) before one is published.
+func WithProtocolVersion(version uint16) LedgerOption {
+	return func(l *Ledger) { l.versions[version] = struct{}{} }
 }
 
 // NewLedger returns the Store over be.
 func NewLedger(be Backend, opts ...LedgerOption) *Ledger {
-	l := &Ledger{be: be, nonce: NewNonce, profiles: map[uint16]LedgerProfile{ProtocolVersion1: ProfileV1()}}
+	l := &Ledger{be: be, segmentID: NewSegmentID, versions: map[uint16]struct{}{ProtocolVersion1: {}}}
 	for _, o := range opts {
 		o(l)
 	}
 	return l
 }
 
-// Profile returns the kernel profile of version, or ErrUnsupportedProfile.
-// Adapters verify each segment's header under its own version through it.
-func (l *Ledger) Profile(version uint16) (LedgerProfile, error) {
-	if p, ok := l.profiles[version]; ok {
-		return p, nil
+// Supports reports whether the Ledger serves segments of version.
+func (l *Ledger) Supports(version uint16) bool {
+	_, ok := l.versions[version]
+	return ok
+}
+
+// checkVersion is ErrUnsupportedVersion for a version the Ledger does not serve.
+func (l *Ledger) checkVersion(version uint16, op string, sid SessionID) error {
+	if l.Supports(version) {
+		return nil
 	}
-	return LedgerProfileFor(version)
+	return &Error{Code: ErrUnsupportedVersion, Operation: op, SessionID: sid, Detail: fmt.Sprintf("protocol version %d", version)}
 }
 
 // resolve loads a live Session's root and the Ancestry of its segment.
@@ -87,9 +91,8 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 	}
 	l.graph.Lock()
 	defer l.graph.Unlock()
-	profile, err := l.Profile(req.ProtocolVersion)
-	if err != nil {
-		return SegmentHeader{}, &Error{Code: ErrUnsupportedProfile, Operation: "create", SessionID: req.SessionID}
+	if err := l.checkVersion(req.ProtocolVersion, "create", req.SessionID); err != nil {
+		return SegmentHeader{}, err
 	}
 	if err := validIdentity("SessionID", string(req.SessionID)); err != nil {
 		return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, err.Error())
@@ -108,8 +111,8 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 			}
 			return SegmentHeader{}, err
 		}
-		// The parent may be under another ProtocolVersion: the edge carries
-		// its commit digest as opaque bytes (SES-ADV-1, SES-FRK-1).
+		// The parent may be under another ProtocolVersion; the edge names a
+		// position, which every version shares (SES-ADV-1, SES-FRK-1).
 		owner, ok := parent.Owner(req.Fork.Seq)
 		if !ok {
 			return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, fmt.Sprintf("parent %s has no commit %d", req.Fork.Session, req.Fork.Seq))
@@ -121,10 +124,10 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 		if len(commits) != 1 || commits[0].Seq != req.Fork.Seq {
 			return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, fmt.Sprintf("parent %s has no commit %d", req.Fork.Session, req.Fork.Seq))
 		}
-		header.Parent = &LedgerRef{Segment: owner.Segment.ID, Seq: req.Fork.Seq, Digest: commits[0].Digest}
+		header.Parent = &LedgerRef{Segment: owner.Segment.ID, Seq: req.Fork.Seq}
 	}
 	// Idempotency is judged on what the request determines, not on the
-	// segment identity: the nonce is drawn fresh each time, so a repeat is
+	// segment identity: the ID is drawn fresh each time, so a repeat is
 	// recognized by matching every requested field (SES-CRT-1).
 	if existing, err := l.be.Record(ctx, req.SessionID); err == nil {
 		seg, err := l.be.Segment(ctx, existing.Tip)
@@ -138,18 +141,15 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 	} else if !IsCode(err, ErrNotFound) {
 		return SegmentHeader{}, err
 	}
-	if header.Nonce, err = l.nonce(); err != nil {
-		return SegmentHeader{}, err
-	}
-	digest, err := profile.HeaderDigest(header)
+	id, err := l.segmentID()
 	if err != nil {
 		return SegmentHeader{}, err
 	}
-	header.HeaderDigest = digest
-	if err := profile.ValidateHeader(header); err != nil {
+	header.ID = id
+	if err := ValidateHeader(header); err != nil {
 		return SegmentHeader{}, err
 	}
-	segment := Segment{ID: SegmentIDOf(header), Header: header}
+	segment := Segment{ID: header.ID, Header: header}
 	root := SessionRecord{ID: req.SessionID, Tip: segment.ID, CreatedAtUnixMilli: req.CreatedAtUnixMilli}
 	if err := l.be.CreateSession(ctx, segment, root); err != nil {
 		return SegmentHeader{}, err
@@ -203,26 +203,7 @@ func (l *Ledger) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Han
 		return nil, err
 	}
 	tip := a.Tip()
-	profile, err := l.Profile(tip.Header.ProtocolVersion)
-	if err != nil {
-		return nil, err
-	}
-	// Corruption detection happens before ownership is established
-	// (SES-REP-1), from the verified mark when the index confirms it and the
-	// marked commit reseals, from the seed otherwise; reads trust the store.
-	idx, _, err := l.loadIndex(ctx, tip)
-	if err != nil {
-		return nil, err
-	}
-	start, err := l.verifiedStart(ctx, tip, profile, &idx)
-	if err != nil {
-		return nil, err
-	}
-	own, _, _, err := l.be.ReadSegment(ctx, tip.ID, start.Next, 0)
-	if err != nil {
-		return nil, err
-	}
-	if err := ValidateLedgerFrom(profile, tip.Header, start, own); err != nil {
+	if err := l.checkVersion(tip.Header.ProtocolVersion, "open", sid); err != nil {
 		return nil, err
 	}
 	lease, err := l.be.Acquire(ctx, sid, opts)
@@ -237,10 +218,7 @@ func (l *Ledger) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Han
 		_ = l.be.Release(ctx, lease)
 		return nil, err
 	}
-	// Everything up to head is now verified; the mark is derived data, so a
-	// failure to record it costs the next Open time, not correctness.
-	_ = l.be.PutVerifiedMark(ctx, tip.ID, head)
-	h := &ledgerHandle{l: l, root: root, ancestry: a, profile: profile, lease: lease, opts: opts, head: head,
+	h := &ledgerHandle{l: l, root: root, ancestry: a, lease: lease, opts: opts, head: head,
 		own: make(map[CommitID]struct{}, len(idx.Entries)), streams: make(map[StreamRef]StreamSeq)}
 	for i := range idx.Entries {
 		e := &idx.Entries[i]
@@ -250,42 +228,6 @@ func (l *Ledger) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Han
 		}
 	}
 	return h, nil
-}
-
-// verifiedStart returns the head Open verifies the tip's own commits from:
-// the recorded mark when the index has the marked commit at that position
-// with that digest and the commit itself reseals under the profile, else
-// the seed (SES-REP-1). Commits before a trusted mark are not resealed at
-// Open; ValidateLedger over a read remains the full check.
-func (l *Ledger) verifiedStart(ctx context.Context, seg Segment, profile LedgerProfile, idx *CommitIndex) (Head, error) {
-	seed := seg.Seed()
-	mark, ok, err := l.be.VerifiedMark(ctx, seg.ID)
-	if err != nil {
-		return Head{}, err
-	}
-	if !ok || mark.Next <= seed.Next || mark.Next > idx.Through.Next {
-		return seed, nil
-	}
-	n := int(mark.Next - seed.Next) //nolint:gosec // bounded by len(idx.Entries) through idx.Through
-	if n > len(idx.Entries) {
-		return seed, nil
-	}
-	last := &idx.Entries[n-1]
-	if last.Seq+1 != mark.Next || last.Digest != mark.Digest {
-		return seed, nil
-	}
-	c, ok, err := l.be.LookupCommit(ctx, seg.ID, last.CommitID)
-	if err != nil {
-		return Head{}, err
-	}
-	prev := seed
-	if n >= 2 {
-		prev = Head{Next: idx.Entries[n-2].Seq + 1, Digest: idx.Entries[n-2].Digest}
-	}
-	if !ok || ValidateLedgerFrom(profile, seg.Header, prev, []Commit{c}) != nil {
-		return seed, nil
-	}
-	return mark, nil
 }
 
 // loadIndex returns the segment's CommitIndex and head. An index that fails
@@ -321,7 +263,6 @@ type ledgerHandle struct {
 	l        *Ledger
 	root     SessionRecord
 	ancestry *Ancestry
-	profile  LedgerProfile
 	lease    Lease
 	opts     OpenOptions
 	head     Head
@@ -430,10 +371,8 @@ func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 		return Commit{}, err
 	}
 	sid := w.root.ID
-	if err := validIdentity("CommitID", string(p.CommitID)); err != nil {
-		return Commit{}, newError(ErrInvalid, "append", sid, err.Error())
-	}
-	if err := ValidateBatches(p.Batches); err != nil {
+	c := Commit{CommitID: p.CommitID, Batches: cloneBatches(p.Batches), Ext: p.Ext}
+	if err := ValidateCommit(&c); err != nil {
 		return Commit{}, newError(ErrInvalid, "append", sid, err.Error())
 	}
 	if w.Committed(p.CommitID) {
@@ -444,36 +383,25 @@ func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 	if w.failed != nil {
 		return Commit{}, w.failed
 	}
-	c := Commit{Seq: w.head.Next, CommitID: p.CommitID, Intent: p.Intent, Batches: cloneBatches(p.Batches), Ext: p.Ext}
-	if err := SealCommit(w.profile, w.head.Digest, w.root.Tip, &c); err != nil {
-		return Commit{}, err
-	}
+	c.Seq = w.head.Next
 	if err := w.l.be.Append(ctx, w.lease, w.root.Tip, c); err != nil {
 		if IsCode(err, ErrHandleFailed) {
 			w.failed = err
 		}
 		return Commit{}, err
 	}
-	w.head = Head{Next: c.Seq + 1, Digest: c.Digest}
+	w.head = Head{Next: c.Seq + 1}
 	w.own[c.CommitID] = struct{}{}
 	w.countStreams(&c)
 	return cloneCommit(c), nil
 }
 
-// Close records the head as verified (every commit up to it was verified at
-// Open or sealed by this handle) unless an Append's outcome is unknown, then
-// releases the lease.
+// Close releases the lease.
 func (w *ledgerHandle) Close(ctx context.Context) error {
-	w.mu.Lock()
-	failed, head, tip := w.failed, w.head, w.root.Tip
-	w.mu.Unlock()
-	if failed == nil {
-		_ = w.l.be.PutVerifiedMark(ctx, tip, head)
-	}
 	return w.l.be.Release(ctx, w.lease)
 }
 
-// Advance is SES-ADV-1: it seals an empty segment under req.ProtocolVersion,
+// Advance is SES-ADV-1: it creates an empty segment under req.ProtocolVersion,
 // anchored at the tip's head (or carrying the tip's own edge when the tip
 // holds no commit), publishes it as the root's tip through one Backend step
 // and moves the handle onto it. It takes the Ledger's graph lock like
@@ -484,9 +412,8 @@ func (w *ledgerHandle) Advance(ctx context.Context, req AdvanceRequest) (Segment
 		return SegmentHeader{}, err
 	}
 	sid := w.root.ID
-	profile, err := w.l.Profile(req.ProtocolVersion)
-	if err != nil {
-		return SegmentHeader{}, &Error{Code: ErrUnsupportedProfile, Operation: "advance", SessionID: sid, Detail: fmt.Sprintf("protocol version %d", req.ProtocolVersion)}
+	if err := w.l.checkVersion(req.ProtocolVersion, "advance", sid); err != nil {
+		return SegmentHeader{}, err
 	}
 	w.l.graph.Lock()
 	defer w.l.graph.Unlock()
@@ -502,29 +429,25 @@ func (w *ledgerHandle) Advance(ctx context.Context, req AdvanceRequest) (Segment
 	header := SegmentHeader{ProtocolVersion: req.ProtocolVersion, CausationID: req.CausationID, Metadata: req.Metadata, Ext: req.Ext}
 	if w.head.Next > tip.Seed().Next {
 		// The tip holds commits: the edge is its head.
-		header.Parent = &LedgerRef{Segment: tip.ID, Seq: w.head.Next - 1, Digest: w.head.Digest}
+		header.Parent = &LedgerRef{Segment: tip.ID, Seq: w.head.Next - 1}
 	} else {
 		// An empty tip is replaced: the new segment carries the same edge
 		// (or is a root like it) and the old node becomes unreachable.
 		header.Parent = tip.Parent()
 	}
-	if header.Nonce, err = w.l.nonce(); err != nil {
+	var err error
+	if header.ID, err = w.l.segmentID(); err != nil {
 		return SegmentHeader{}, err
 	}
-	digest, err := profile.HeaderDigest(header)
-	if err != nil {
+	if err := ValidateHeader(header); err != nil {
 		return SegmentHeader{}, err
 	}
-	header.HeaderDigest = digest
-	if err := profile.ValidateHeader(header); err != nil {
-		return SegmentHeader{}, err
-	}
-	segment := Segment{ID: SegmentIDOf(header), Header: header}
+	segment := Segment{ID: header.ID, Header: header}
 	if err := w.l.be.AdvanceTip(ctx, w.lease, segment, w.root.Tip); err != nil {
 		return SegmentHeader{}, err
 	}
 	// Published: the handle now owns the new, empty tip; everything before
-	// is inherited prefix, verified under its own segments' versions.
+	// is inherited prefix.
 	w.root.Tip = segment.ID
 	a, err := LoadAncestry(ctx, w.l.be, segment.ID)
 	if err != nil {
@@ -532,7 +455,6 @@ func (w *ledgerHandle) Advance(ctx context.Context, req AdvanceRequest) (Segment
 		return header, w.failed
 	}
 	w.ancestry = a
-	w.profile = profile
 	w.head = segment.Seed()
 	w.own = make(map[CommitID]struct{})
 	w.streams = make(map[StreamRef]StreamSeq)
@@ -692,11 +614,6 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 		}
 		if len(dropped) > 0 {
 			report.Dropped[id] = dropped
-		}
-		// A mark past the new head no longer names a commit; the retained
-		// prefix was verified, so the mark moves back to it.
-		if mark, ok, err := l.be.VerifiedMark(ctx, id); err == nil && ok && mark.Next > newHead.Next {
-			_ = l.be.PutVerifiedMark(ctx, id, newHead)
 		}
 		report.Truncated[id] = newHead.Next
 	}

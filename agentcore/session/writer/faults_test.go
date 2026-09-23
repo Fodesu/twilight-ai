@@ -229,7 +229,4 @@ func TestWriterFailsClosedWhenAppendOutcomeUnknown(t *testing.T) {
 			t.Fatalf("seq at position %d is %d", i, page.Commits[i].Seq)
 		}
 	}
-	if err := session.ValidateLedger(session.ProfileV1(), page.Header, page.Commits); err != nil {
-		t.Fatalf("ledger after faults: %v", err)
-	}
 }

@@ -5,7 +5,7 @@
 // once. A consumer whose own state lives in the same store as its
 // checkpoint may save both in one transaction and see each commit exactly
 // once; every other consumer must be idempotent, which the ledgers' CommitID
-// and Intent rules give it for free.
+// rule gives it for free.
 package checkpoint
 
 import "context"

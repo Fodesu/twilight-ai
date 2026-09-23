@@ -124,7 +124,7 @@ func (s *Store) readIndexFile(header session.SegmentHeader, dir string) *segInde
 			return nil // not a contiguous index of this log
 		}
 		x.idx.Entries = append(x.idx.Entries, line.IndexEntry)
-		x.idx.Through = session.Head{Next: line.Seq + 1, Digest: line.Digest}
+		x.idx.Through = session.Head{Next: line.Seq + 1}
 		x.spans = append(x.spans, commitSpan{line.Start, line.End})
 		x.byID[line.CommitID] = len(x.spans) - 1
 		off += nl + 1
@@ -149,7 +149,7 @@ func (s *Store) tailMatches(x *segIndex, logPath string) bool {
 	}
 	last := &x.idx.Entries[n-1]
 	c := &commits[0]
-	return c.CommitID == last.CommitID && c.Seq == last.Seq && c.Digest == last.Digest
+	return c.CommitID == last.CommitID && c.Seq == last.Seq
 }
 
 // repairIndexTail parses the log past the index's end and appends the whole
@@ -179,7 +179,7 @@ func (s *Store) repairIndexTail(x *segIndex, logPath string) (bool, error) {
 	var lines []byte
 	for i := range commits {
 		c := &commits[i]
-		if c.Seq != x.idx.Through.Next || c.PrevDigest != x.idx.Through.Digest {
+		if c.Seq != x.idx.Through.Next {
 			return false, nil
 		}
 		start, end := base+offsets[i], base+offsets[i+1]
@@ -380,7 +380,7 @@ func (s *Store) CutIndex(sid session.SessionID, keep int) error {
 	if err != nil {
 		return err
 	}
-	s.dropIndex(session.SegmentIDOf(header))
+	s.dropIndex(header.ID)
 	path := filepath.Join(dir, indexFile)
 	if keep < 0 {
 		return os.RemoveAll(path)

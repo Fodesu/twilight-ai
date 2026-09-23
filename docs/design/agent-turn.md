@@ -123,7 +123,7 @@ twilight/turn/superseded
 
 四种事件都是 Turn 域自己的决定。attempt 的终态与 Turn 的 `completed` 不是事件：它们由 `twilight/run/run_ended` 折叠得到（TRN-PRJ-1）。unsettled Turn 是尚未 completed、failed 或 superseded 的 `started`。
 
-**TRN-EVT-2** 本模块产生的事件（含 Attach 产生的）没有独立 EventID，`Seq` 即身份（SES-WIR-1）；同一次写入的事件共用 CommitID。Start 的 CommitID 由 StartOperationDigest 派生；Retry、Settle、Stop 的 CommitID 见各自条目。每个命令把自己的 intent（Start：TurnID、preset、inputs；Deliver：AcceptInput envelope；Retry：TurnID、attempt、inputs；Stop：CancelRun envelope 与 failed payload；Settle：failed payload 含 FailureClass）封进 commit：同 CommitID 相同 intent 为 already-applied；差异为 conflict（EXT-WRT-2），例如同一 Turn 以不同 FailureClass 再次 Settle。事件时间戳不参与幂等判定。
+**TRN-EVT-2** 本模块产生的事件（含 Attach 产生的）没有独立 EventID，`Seq` 即身份（SES-WIR-1）；同一次写入的事件共用 CommitID。Start 的 CommitID 由 StartOperationDigest 派生；Retry、Settle、Stop 的 CommitID 见各自条目。重放只按 CommitID 判定（EXT-WRT-2）：同 CommitID 为 already-applied，以先提交的为准，例如同一 Turn 以不同 FailureClass 再次 Settle 得到第一次的结算。事件时间戳不参与幂等判定。
 
 **TRN-EVT-3** 每个 Turn 的流 turn/&lt;TurnID&gt; 内至多一条 `started`，至多一条 `failed` / `superseded`；一个 Turn 至多有一个 attempt 以 `run_ended(completed)` 终结。
 

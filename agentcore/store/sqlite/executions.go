@@ -43,7 +43,7 @@ type querier interface {
 }
 
 func readCommits(ctx context.Context, q querier, k string, from executionstore.CommitSeq) (commits []executionstore.Commit, head executionstore.Head, err error) {
-	rows, err := q.QueryContext(ctx, `SELECT seq, digest, body FROM execution_commits WHERE key = ? AND seq >= ? ORDER BY seq`, k, uint64(from))
+	rows, err := q.QueryContext(ctx, `SELECT seq, body FROM execution_commits WHERE key = ? AND seq >= ? ORDER BY seq`, k, uint64(from))
 	if err != nil {
 		return nil, executionstore.Head{}, err
 	}
@@ -51,8 +51,8 @@ func readCommits(ctx context.Context, q querier, k string, from executionstore.C
 	var out []executionstore.Commit
 	for rows.Next() {
 		var seq uint64
-		var digest, body string
-		if err := rows.Scan(&seq, &digest, &body); err != nil {
+		var body string
+		if err := rows.Scan(&seq, &body); err != nil {
 			return nil, executionstore.Head{}, err
 		}
 		var c executionstore.Commit
@@ -60,7 +60,7 @@ func readCommits(ctx context.Context, q querier, k string, from executionstore.C
 			return nil, executionstore.Head{}, fmt.Errorf("sqlite: execution commit %d: %w", seq, err)
 		}
 		out = append(out, c)
-		head = executionstore.Head{Next: executionstore.CommitSeq(seq) + 1, Digest: es.Digest(digest)}
+		head = executionstore.Head{Next: executionstore.CommitSeq(seq) + 1}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, executionstore.Head{}, err
@@ -68,13 +68,11 @@ func readCommits(ctx context.Context, q querier, k string, from executionstore.C
 	if from > 0 {
 		// The head is the ledger's, not the slice's.
 		var n sql.NullInt64
-		var digest sql.NullString
-		err := q.QueryRowContext(ctx, `SELECT MAX(seq), (SELECT digest FROM execution_commits WHERE key = ? ORDER BY seq DESC LIMIT 1) FROM execution_commits WHERE key = ?`, k, k).Scan(&n, &digest)
-		if err != nil {
+		if err := q.QueryRowContext(ctx, `SELECT MAX(seq) FROM execution_commits WHERE key = ?`, k).Scan(&n); err != nil {
 			return nil, executionstore.Head{}, err
 		}
 		if n.Valid && n.Int64 >= 0 {
-			head = executionstore.Head{Next: executionstore.CommitSeq(n.Int64) + 1, Digest: es.Digest(digest.String)} //nolint:gosec // G115: seq is stored from a uint64 and checked non-negative
+			head = executionstore.Head{Next: executionstore.CommitSeq(n.Int64) + 1} //nolint:gosec // G115: seq is stored from a uint64 and checked non-negative
 		}
 	}
 	return out, head, nil
@@ -147,10 +145,6 @@ func (s *ExecutionStore) Read(ctx context.Context, key effect.AssignmentKey, fro
 }
 
 func appendCommit(ctx context.Context, t *sql.Tx, k string, key effect.AssignmentKey, head executionstore.Head, c *executionstore.Commit) (executionstore.Head, error) {
-	digest, err := c.Digest(head.Digest)
-	if err != nil {
-		return head, err
-	}
 	body, err := json.Marshal(c)
 	if err != nil {
 		return head, err
@@ -164,12 +158,12 @@ func appendCommit(ctx context.Context, t *sql.Tx, k string, key effect.Assignmen
 			return head, err
 		}
 	}
-	_, err = t.ExecContext(ctx, `INSERT INTO execution_commits (key, seq, commit_id, intent, digest, body) VALUES (?, ?, ?, ?, ?, ?)`,
-		k, uint64(c.Seq), string(c.CommitID), string(c.Intent), string(digest), string(body))
+	_, err = t.ExecContext(ctx, `INSERT INTO execution_commits (key, seq, commit_id, body) VALUES (?, ?, ?, ?)`,
+		k, uint64(c.Seq), string(c.CommitID), string(body))
 	if err != nil {
 		return head, err
 	}
-	return executionstore.Head{Next: c.Seq + 1, Digest: digest}, nil
+	return executionstore.Head{Next: c.Seq + 1}, nil
 }
 
 // Append commits c to the key's ledger (executionstore.Store).
@@ -182,17 +176,10 @@ func (s *ExecutionStore) Append(ctx context.Context, lease executionstore.Lease,
 		// Identity first: a replayed command is answered from the ledger
 		// whatever its Seq says.
 		var existingSeq uint64
-		var existingIntent string
-		err := t.QueryRowContext(ctx, `SELECT seq, intent FROM execution_commits WHERE key = ? AND commit_id = ?`, k, string(c.CommitID)).Scan(&existingSeq, &existingIntent)
+		err := t.QueryRowContext(ctx, `SELECT seq FROM execution_commits WHERE key = ? AND commit_id = ?`, k, string(c.CommitID)).Scan(&existingSeq)
 		switch {
 		case err == nil:
-			if es.Digest(existingIntent) == c.Intent {
-				return executionstore.ErrAlreadyApplied
-			}
-			if existingSeq == 0 {
-				return executionstore.ErrAssignmentConflict
-			}
-			return executionstore.ErrCommitConflict
+			return executionstore.ErrAlreadyApplied
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
@@ -499,7 +486,7 @@ func (s *ExecutionStore) Seed(ctx context.Context, state executionstore.Executio
 		for i, evs := range events {
 			c := executionstore.Commit{Seq: head.Next, CommitID: executionstore.DeriveCommitID(key, "seed", fmt.Sprint(i)), Events: evs}
 			if evs[0].Type == executionstore.EventExecutionAccepted {
-				c.CommitID, c.Intent = executionstore.AcceptCommitID(key), digest
+				c.CommitID = executionstore.AcceptCommitID(key)
 			}
 			if folded, err = executionstore.Fold(folded, &c); err != nil {
 				return err

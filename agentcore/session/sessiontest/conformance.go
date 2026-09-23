@@ -69,7 +69,7 @@ func batch(stream session.StreamRef, typ, payload string) session.StreamBatch {
 	}}
 }
 
-// appendCommit appends one commit and returns it sealed.
+// appendCommit appends one commit and returns it as stored.
 func appendCommit(t *testing.T, w session.Handle, id string, batches ...session.StreamBatch) session.Commit {
 	t.Helper()
 	c, err := w.Append(context.Background(), session.Proposal{CommitID: session.CommitID(id), Batches: batches})
@@ -79,26 +79,25 @@ func appendCommit(t *testing.T, w session.Handle, id string, batches ...session.
 	return c
 }
 
-// SES-WIR-1/2/3: contiguous CommitSeq, one CommitID per commit, unique
-// CommitID, canonical payload, the digest chain rooted at the header, one
-// protocol version per stream.
+// SES-WIR-1/3: contiguous CommitSeq, one CommitID per commit, unique
+// CommitID, canonical payload, one protocol version per segment.
 func testWire(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	h := create(t, f.Store, "s")
-	if h.ProtocolVersion != session.ProtocolVersion1 || h.HeaderDigest == "" {
+	if h.ProtocolVersion != session.ProtocolVersion1 || h.ID == "" {
 		t.Fatalf("header = %+v", h)
 	}
-	if again, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", CreatedAtUnixMilli: 1}); err != nil || again.HeaderDigest != h.HeaderDigest {
+	if again, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", CreatedAtUnixMilli: 1}); err != nil || again.ID != h.ID {
 		t.Fatalf("identical create is not idempotent: %+v %v", again, err)
 	}
 	if _, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", CreatedAtUnixMilli: 2}); !session.IsCode(err, session.ErrConflict) {
 		t.Fatalf("different create = %v, want conflict", err)
 	}
-	if _, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: 9, SessionID: "v9"}); !session.IsCode(err, session.ErrUnsupportedProfile) {
+	if _, err := f.Store.Create(ctx, session.CreateRequest{ProtocolVersion: 9, SessionID: "v9"}); !session.IsCode(err, session.ErrUnsupportedVersion) {
 		t.Fatalf("unsupported version = %v", err)
 	}
 	w := open(t, f.Store, "s", false)
-	if head := w.Head(); head.Next != 0 || head.Digest != h.HeaderDigest {
+	if head := w.Head(); head.Next != 0 {
 		t.Fatalf("empty head = %+v", head)
 	}
 	c1 := appendCommit(t, w, "c1",
@@ -113,23 +112,17 @@ func testWire(t *testing.T, f Fixture) {
 	if c1.CommitID != "c1" || c2.CommitID != "c2" {
 		t.Fatalf("commit identity = %+v %+v", c1, c2)
 	}
-	if c1.Digest == "" || c1.PrevDigest != h.HeaderDigest || c2.PrevDigest != c1.Digest {
-		t.Fatalf("chain stamps = %+v %+v", c1, c2)
-	}
 	if _, err := w.Append(ctx, session.Proposal{CommitID: "c1", Batches: []session.StreamBatch{batch(chatStream(), "twilight/x/a", `{}`)}}); !session.IsCode(err, session.ErrConflict) {
 		t.Fatalf("duplicate CommitID = %v, want conflict", err)
 	}
-	if head := w.Head(); head.Next != 2 || head.Digest != c2.Digest {
+	if head := w.Head(); head.Next != 2 {
 		t.Fatalf("head = %+v", head)
 	}
 	page, err := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
 	if err != nil || len(page.Commits) != 2 {
 		t.Fatalf("read = %+v %v", page, err)
 	}
-	if err := session.ValidateLedger(session.ProfileV1(), page.Header, page.Commits); err != nil {
-		t.Fatalf("ledger: %v", err)
-	}
-	if page.Header.HeaderDigest != h.HeaderDigest || page.Head.Next != 2 {
+	if page.Header.ID != h.ID || page.Head.Next != 2 {
 		t.Fatalf("page header/head = %+v", page)
 	}
 }
@@ -255,7 +248,7 @@ func testOwnership(t *testing.T, f Fixture) {
 // SES-APP-1/3: whole-commit visibility and the rejection list, none writing.
 func testAppend(t *testing.T, f Fixture) {
 	ctx := context.Background()
-	h := create(t, f.Store, "s")
+	create(t, f.Store, "s")
 	w := open(t, f.Store, "s", false)
 	rejects := []struct {
 		name string
@@ -277,7 +270,7 @@ func testAppend(t *testing.T, f Fixture) {
 			t.Fatalf("%s: err = %v, want %s", tc.name, err, tc.code)
 		}
 	}
-	if head := w.Head(); head.Next != 0 || head.Digest != h.HeaderDigest {
+	if head := w.Head(); head.Next != 0 {
 		t.Fatalf("rejections wrote commits: head %+v", head)
 	}
 	c1 := appendCommit(t, w, "c1",
@@ -287,7 +280,7 @@ func testAppend(t *testing.T, f Fixture) {
 			{Type: "twilight/x/a", Payload: jsonstable.MustParse(`{"i":2}`), RecordedAtUnixMilli: 1},
 		}})
 	page, _ := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
-	if len(page.Commits) != 1 || len(page.Commits[0].Batches) != 1 || len(page.Commits[0].Batches[0].Events) != 3 || page.Commits[0].Digest != c1.Digest {
+	if len(page.Commits) != 1 || len(page.Commits[0].Batches) != 1 || len(page.Commits[0].Batches[0].Events) != 3 || page.Commits[0].CommitID != c1.CommitID {
 		t.Fatalf("commit not visible as a whole: %+v", page.Commits)
 	}
 	// A spanning commit lands every batch or none: both sides are visible.
@@ -338,30 +331,24 @@ func testCrashTail(t *testing.T, f Fixture) {
 	}
 
 	w2 := open(t, f.Store, "s", false)
-	if got, want := w2.Head(), (session.Head{Next: 1, Digest: c1.Digest}); got != want {
+	if got, want := w2.Head(), (session.Head{Next: 1}); got != want {
 		t.Fatalf("head after a torn tail = %+v, want %+v (the torn commit must be dropped, not continued)", got, want)
 	}
 
 	page, err := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
-	if err != nil || len(page.Commits) != 1 {
+	if err != nil || len(page.Commits) != 1 || page.Commits[0].CommitID != c1.CommitID {
 		t.Fatalf("commits after a torn tail = %+v, err %v; want the 1 whole commit", page.Commits, err)
-	}
-	if err := session.ValidateLedger(session.ProfileV1(), header, page.Commits); err != nil {
-		t.Fatalf("ledger after recovery: %v", err)
 	}
 
 	// The commit that never became durable must be admissible again, and it
-	// must chain from the recovered head rather than from the torn bytes.
+	// must follow the recovered head rather than the torn bytes.
 	re := appendCommit(t, w2, "c2", batch(chatStream(), "twilight/x/c", `{"c":3}`))
-	if re.Seq != 1 || re.PrevDigest != c1.Digest {
-		t.Fatalf("re-appended commit = seq %d prev %s, want seq 1 after %s", re.Seq, re.PrevDigest, c1.Digest)
+	if re.Seq != 1 {
+		t.Fatalf("re-appended commit = seq %d, want seq 1", re.Seq)
 	}
 	page, err = f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
-	if err != nil || len(page.Commits) != 2 {
+	if err != nil || len(page.Commits) != 2 || page.Header.ID != header.ID {
 		t.Fatalf("commits after re-append = %d, err %v; want 2", len(page.Commits), err)
-	}
-	if err := session.ValidateLedger(session.ProfileV1(), header, page.Commits); err != nil {
-		t.Fatalf("ledger after re-append: %v", err)
 	}
 	for i := range page.Commits {
 		if page.Commits[i].Seq != session.CommitSeq(i) {
@@ -370,8 +357,7 @@ func testCrashTail(t *testing.T, f Fixture) {
 	}
 }
 
-// SES-REP-1/2: order, From, Limit at commit boundaries, tamper detection at
-// Open.
+// SES-REP-1/2: order, From, Limit at commit boundaries.
 func testRead(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	create(t, f.Store, "s")
@@ -421,50 +407,6 @@ func testRead(t *testing.T, f Fixture) {
 	if _, err := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "nope"}); !session.IsCode(err, session.ErrNotFound) {
 		t.Fatalf("unknown session = %v", err)
 	}
-	if tamper, ok := f.Store.(interface {
-		Tamper(session.SessionID, session.CommitSeq, func(*session.Commit))
-	}); ok {
-		if err := w.Close(ctx); err != nil {
-			t.Fatal(err)
-		}
-		// Close recorded the head as verified (SES-REP-1). A commit behind the
-		// mark is not resealed at Open; the explicit full check still finds it.
-		tamper.Tamper("s", 1, func(c *session.Commit) { c.Batches[0].Events[0].Payload = jsonstable.MustParse(`{"x":1}`) })
-		h, err := f.Store.Open(ctx, "s", session.OpenOptions{})
-		if err != nil {
-			t.Fatalf("open over a commit tampered behind the verified mark = %v, want success (Open trusts the mark)", err)
-		}
-		_ = h.Close(ctx)
-		page, err := f.Store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := session.ValidateLedger(session.ProfileV1(), page.Header, page.Commits); !session.IsCode(err, session.ErrCorrupt) {
-			t.Fatalf("full validation over a tampered ledger = %v, want corrupt", err)
-		}
-		// The marked commit itself is resealed at Open.
-		tamper.Tamper("s", 2, func(c *session.Commit) { c.Batches[0].Events[0].Payload = jsonstable.MustParse(`{"y":1}`) })
-		if _, err := f.Store.Open(ctx, "s", session.OpenOptions{}); !session.IsCode(err, session.ErrCorrupt) {
-			t.Fatalf("open over a tampered marked commit = %v, want corrupt", err)
-		}
-		// Without a mark, Open verifies from the seed and finds the earlier one.
-		if dropper, ok := f.Store.(VerifiedMarkDropper); ok {
-			tamper.Tamper("s", 2, func(c *session.Commit) { c.Batches[0].Events[0].Payload = jsonstable.MustParse(`{"c":3}`) })
-			if err := dropper.DropVerifiedMark("s"); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := f.Store.Open(ctx, "s", session.OpenOptions{}); !session.IsCode(err, session.ErrCorrupt) {
-				t.Fatalf("open without a verified mark over a tampered ledger = %v, want corrupt", err)
-			}
-		}
-	}
-}
-
-// VerifiedMarkDropper is the optional adapter capability that forgets the
-// tip segment's verified mark (SES-REP-1), so the suite can prove that Open
-// then verifies from the seed.
-type VerifiedMarkDropper interface {
-	DropVerifiedMark(session.SessionID) error
 }
 
 // SES-REP-3/4: the kernel answers which CommitIDs it holds and what commit
@@ -494,7 +436,7 @@ func testQuery(t *testing.T, f Fixture) {
 	if err != nil || !ok || len(got.Batches) != len(first.Batches) {
 		t.Fatalf("lookup c1 = %+v, ok=%v, err=%v", got, ok, err)
 	}
-	if got.Seq != first.Seq || got.Digest != first.Digest || got.CommitID != "c1" {
+	if got.Seq != first.Seq || got.CommitID != "c1" {
 		t.Fatalf("lookup c1 = %+v, want %+v", got, first)
 	}
 	if got.Batches[0].Events[0].Type != first.Batches[0].Events[0].Type {
@@ -519,7 +461,7 @@ func testQuery(t *testing.T, f Fixture) {
 		t.Fatalf("reopened lookup c2 = %+v, ok=%v, err=%v", got, ok, err)
 	}
 	last := appendCommit(t, w, "c3", batch(chatStream(), "twilight/run/d", `{"n":4}`))
-	if got, ok, err := w.LookupCommit("c3"); err != nil || !ok || got.Digest != last.Digest {
+	if got, ok, err := w.LookupCommit("c3"); err != nil || !ok || got.Seq != last.Seq {
 		t.Fatalf("lookup after append = %+v, ok=%v, err=%v", got, ok, err)
 	}
 	if err := w.Close(ctx); err != nil {

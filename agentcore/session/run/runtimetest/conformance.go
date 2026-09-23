@@ -39,7 +39,7 @@ func Run(t *testing.T, factory Factory) {
 		"SettlementSnapshot": testSettlementSnapshot,
 		"PrepareCAS":         testPrepareCASIgnoresOtherModules,
 		"Projection":         testProjection,
-		"SettlementIntent":   testSettlementIntent,
+		"SettlementReplay":   testSettlementReplay,
 		"Isolation":          testIsolation,
 		"Takeover":           testTakeover,
 		"Reattach":           testReattach,
@@ -104,7 +104,7 @@ func testCreation(t *testing.T, factory Factory) {
 		t.Fatal(err)
 	}
 	head := h.head()
-	if _, err := unit.Commit(h.ctx, h.writer(), 1, unit.Work{CommitID: "start/t2/1", Intent: intentOf(t, again), Parts: []unit.Part{runmod.CreateRun(again, nil)}}); !errors.Is(err, runmod.ErrRunExists) {
+	if _, err := unit.Commit(h.ctx, h.writer(), 1, unit.Work{CommitID: "start/t2/1", Parts: []unit.Part{runmod.CreateRun(again, nil)}}); !errors.Is(err, runmod.ErrRunExists) {
 		t.Fatalf("duplicate created = %v, want ErrRunExists", err)
 	}
 	if h.head() != head {
@@ -275,15 +275,16 @@ func testDeclineToolCall(t *testing.T, factory Factory) {
 	if ts.Calls[0].Status != run.ToolFailed || ts.Calls[0].Effect != "" {
 		t.Fatalf("declined call = %+v, want Failed with no effect", ts.Calls[0])
 	}
-	// Replay is AlreadyApplied; another failure under the same identity is
-	// a conflict.
+	// The CommandID names the decline of this call: a replay, with the same
+	// or another reason, is AlreadyApplied and the first decline stands
+	// (RUN-CMT-5).
 	if again := h.mustCommit("r1", id, 0, decline); again.Status != runtime.CommitAlreadyApplied {
 		t.Fatalf("decline replay = %v", again.Status)
 	}
 	different := decline
 	different.Failure.Message = "another reason"
-	if _, err := h.commit("r1", id, 0, different); !errors.Is(err, run.ErrCommandConflict) {
-		t.Fatalf("decline with other content = %v", err)
+	if again := h.mustCommit("r1", id, 0, different); again.Status != runtime.CommitAlreadyApplied {
+		t.Fatalf("decline with other content = %v, want already applied", again.Status)
 	}
 	// A Pending call has no effect to settle: a Known failure naming the
 	// effect it would start under finds the call not Executing.
@@ -442,7 +443,7 @@ func testAdmission(t *testing.T, factory Factory) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seg := session.SegmentIDOf(header)
+	seg := header.ID
 	claimID := writer.DeriveClaimID(seg, commitID, mustSet(t, h, "b1").RefSetDigest)
 	claim, ok, err := h.ledger.LookupClaim(h.ctx, claimID)
 	if err != nil || !ok || claim.State != artifact.ClaimActive || claim.Owner != writer.CommitOwner(seg, commitID) {
@@ -507,10 +508,11 @@ func testPrepareCASIgnoresOtherModules(t *testing.T, factory Factory) {
 	}
 }
 
-// RUN-CMT-5: a settlement CommandID names the effect rather than the outcome,
-// so a second settlement of the same effect with another result is a
-// conflict, never a silent replay; the same result replays.
-func testSettlementIntent(t *testing.T, factory Factory) {
+// RUN-CMT-5: a settlement CommandID names the effect rather than the
+// outcome, so every settlement of the same effect is the same operation: the
+// first one stands and later ones, whatever they carry, are AlreadyApplied
+// without a second Decide.
+func testSettlementReplay(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	step, eff := h.executingModel("r1", false)
@@ -522,11 +524,14 @@ func testSettlementIntent(t *testing.T, factory Factory) {
 	if again, err := h.commit("r1", id, 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("one")}); err != nil || again.Status != runtime.CommitAlreadyApplied {
 		t.Fatalf("same result replay = %v %v", again.Status, err)
 	}
-	if _, err := h.commit("r1", id, 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("two")}); !errors.Is(err, run.ErrCommandConflict) {
-		t.Fatalf("different result under the same effect = %v, want ErrCommandConflict", err)
+	if again, err := h.commit("r1", id, 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("two")}); err != nil || again.Status != runtime.CommitAlreadyApplied {
+		t.Fatalf("different result under the same effect = %v %v, want already applied", again.Status, err)
 	}
-	if _, err := h.commit("r1", id, 0, run.SubmitModelFailure{StepID: step, Effect: eff, Failure: run.StepFailure{Class: run.FailureProvider, Message: "x"}}); !errors.Is(err, run.ErrCommandConflict) {
-		t.Fatalf("failure under a settled effect = %v, want ErrCommandConflict", err)
+	if again, err := h.commit("r1", id, 0, run.SubmitModelFailure{StepID: step, Effect: eff, Failure: run.StepFailure{Class: run.FailureProvider, Message: "x"}}); err != nil || again.Status != runtime.CommitAlreadyApplied {
+		t.Fatalf("failure under a settled effect = %v %v, want already applied", again.Status, err)
+	}
+	if after := h.load("r1"); after.Position != first.Snapshot.Position || !after.State.Status.Terminal() {
+		t.Fatalf("replays moved the run: %+v", after)
 	}
 }
 
@@ -589,7 +594,7 @@ func testProjection(t *testing.T, factory Factory) {
 	}
 	if again, err := run.BuildNewRunFor("r1", "t1", 1, ""); err != nil {
 		t.Fatal(err)
-	} else if _, err := unit.Commit(h.ctx, h.writer(), 1, unit.Work{CommitID: "recreate/r1", Intent: intentOf(t, again), Parts: []unit.Part{runmod.CreateRun(again, nil)}}); !errors.Is(err, runmod.ErrRunExists) {
+	} else if _, err := unit.Commit(h.ctx, h.writer(), 1, unit.Work{CommitID: "recreate/r1", Parts: []unit.Part{runmod.CreateRun(again, nil)}}); !errors.Is(err, runmod.ErrRunExists) {
 		t.Fatalf("recreating an ended run = %v, want ErrRunExists", err)
 	}
 	// An illegal fact sequence does not fold.
@@ -848,14 +853,4 @@ func testFrozenValues(t *testing.T, factory Factory) {
 	if _, err := h.rt.Record(h.ctx, sid, "r1"); err != nil {
 		t.Fatalf("record after settlement: %v", err)
 	}
-}
-
-// intentOf is a test unit's intent over any canonical value.
-func intentOf(t *testing.T, v any) es.Digest {
-	t.Helper()
-	d, err := unit.Intent(v)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return d
 }

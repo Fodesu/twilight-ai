@@ -159,7 +159,7 @@ func coversCommit(header session.SegmentHeader, through session.Head, at commitA
 		return false
 	}
 	c, ok := at(through.Next - 1)
-	return ok && extension.SealedAt(c, through)
+	return ok && extension.CommitAt(c, through)
 }
 
 // folded is what fold produced: the next states and, for derived

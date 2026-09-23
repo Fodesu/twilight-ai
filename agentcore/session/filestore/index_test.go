@@ -26,7 +26,7 @@ func TestReadIndexedMatchesFullParse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	seg := session.SegmentIDOf(header)
+	seg := header.ID
 	w, err := indexed.Open(ctx, sid, session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +116,7 @@ func samePage(t *testing.T, name string, indexed, _ *Store, req session.CommitRe
 			name, a.Head, a.HasMore, len(a.Commits), b.Head, b.HasMore, len(b.Commits))
 	}
 	for i := range a.Commits {
-		if a.Commits[i].Seq != b.Commits[i].Seq || a.Commits[i].Digest != b.Commits[i].Digest || a.Commits[i].CommitID != b.Commits[i].CommitID {
+		if a.Commits[i].Seq != b.Commits[i].Seq || a.Commits[i].CommitID != b.Commits[i].CommitID {
 			t.Fatalf("%s: commit %d differs: %+v vs %+v", name, i, a.Commits[i], b.Commits[i])
 		}
 	}

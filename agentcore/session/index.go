@@ -1,10 +1,6 @@
 package session
 
-import (
-	"fmt"
-
-	"github.com/felinics/twilight/agentcore/es"
-)
+import "fmt"
 
 // CommitIndex is the index of one segment's own commits by CommitID
 // (SES-REP-5): a component of the segment, persisted next to its commits and
@@ -22,13 +18,12 @@ type CommitIndex struct {
 	Entries []IndexEntry `json:"entries"`
 }
 
-// IndexEntry is one indexed commit: its identity, position, digest and the
-// event count of each logical stream it wrote, so StreamHead is a sum over
-// entries (SES-REP-3).
+// IndexEntry is one indexed commit: its identity, position and the event
+// count of each logical stream it wrote, so StreamHead is a sum over entries
+// (SES-REP-3).
 type IndexEntry struct {
 	CommitID CommitID      `json:"commitId"`
 	Seq      CommitSeq     `json:"seq"`
-	Digest   es.Digest     `json:"digest"`
 	Streams  []StreamCount `json:"streams,omitempty"`
 }
 
@@ -38,9 +33,9 @@ type StreamCount struct {
 	Events uint32    `json:"events"`
 }
 
-// IndexEntryOf derives the entry of a sealed commit.
+// IndexEntryOf derives the entry of a commit.
 func IndexEntryOf(c *Commit) IndexEntry {
-	e := IndexEntry{CommitID: c.CommitID, Seq: c.Seq, Digest: c.Digest}
+	e := IndexEntry{CommitID: c.CommitID, Seq: c.Seq}
 	if len(c.Batches) > 0 {
 		e.Streams = make([]StreamCount, len(c.Batches))
 		for i := range c.Batches {
@@ -63,10 +58,10 @@ func BuildCommitIndex(header SegmentHeader, commits []Commit) CommitIndex {
 	return idx
 }
 
-// Extend appends one sealed commit that continues the index at Through.
+// Extend appends one commit that continues the index at Through.
 func (x *CommitIndex) Extend(c *Commit) {
 	x.Entries = append(x.Entries, IndexEntryOf(c))
-	x.Through = Head{Next: c.Seq + 1, Digest: c.Digest}
+	x.Through = Head{Next: c.Seq + 1}
 }
 
 // Truncate drops the entries after through and moves Through back to the
@@ -81,8 +76,7 @@ func (x *CommitIndex) Truncate(seed Head, through CommitSeq) {
 		x.Through = seed
 		return
 	}
-	last := &x.Entries[keep-1]
-	x.Through = Head{Next: last.Seq + 1, Digest: last.Digest}
+	x.Through = Head{Next: x.Entries[keep-1].Seq + 1}
 }
 
 // Valid reports whether the index covers exactly the segment's commits from
@@ -98,7 +92,7 @@ func (x *CommitIndex) Valid(seed, head Head) bool {
 	}
 	if n := len(x.Entries); n > 0 {
 		last := &x.Entries[n-1]
-		if last.Seq+1 != head.Next || last.Digest != head.Digest || x.Entries[0].Seq != seed.Next {
+		if last.Seq+1 != head.Next || x.Entries[0].Seq != seed.Next {
 			return false
 		}
 	}

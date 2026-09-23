@@ -285,20 +285,18 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 		return errors.New("executor: backend prepared an empty execution ref")
 	}
 	key := a.Key()
-	c := executionstore.Commit{Seq: 0, CommitID: executionstore.AcceptCommitID(key), Intent: digest, Events: []executionstore.Event{
+	c := executionstore.Commit{Seq: 0, CommitID: executionstore.AcceptCommitID(key), Events: []executionstore.Event{
 		w.event(executionstore.EventExecutionAccepted, executionstore.Accepted{Assignment: a, AssignmentDigest: digest}),
 		w.event(executionstore.EventExecutionBound, executionstore.Bound{Ref: ExecutionRef{Provider: route.Provider, Ref: ref}}),
 	}}
 	err = w.store.Append(ctx, executionstore.Lease{}, key, c)
 	switch {
 	case err == nil:
-	case errors.Is(err, executionstore.ErrAlreadyApplied):
-		return nil
-	case errors.Is(err, executionstore.ErrAssignmentConflict):
-		return err
-	case errors.Is(err, executionstore.ErrConflict):
-		// The ledger was opened by another writer (or seeded): the same
-		// Assignment acknowledges the acceptance, another is a conflict.
+	case errors.Is(err, executionstore.ErrAlreadyApplied), errors.Is(err, executionstore.ErrConflict):
+		// The ledger was opened before (a replayed Dispatch, another writer,
+		// a seed): the same Assignment acknowledges the acceptance, another
+		// is a conflict. The ledger holds one acceptance per key; telling the
+		// two apart is the Worker's reading, not the store's (RUN-EXE-14).
 		state, _, ok, loadErr := w.store.Load(ctx, key)
 		if loadErr != nil {
 			return fmt.Errorf("%w: %w", effect.ErrDispatchRetryable, loadErr)
@@ -397,10 +395,6 @@ func (w *Worker) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 			Error: &protocol.WireError{Code: "disposed", Message: "execution disposed by its controller"}}
 		return w.settlement(key, &env, effect.ExecutionUnknown), nil
 	})
-	if errors.Is(err, executionstore.ErrCommitConflict) {
-		// The lease holder settled it first; the execution is terminal.
-		err = nil
-	}
 	if err != nil {
 		return err
 	}
@@ -838,7 +832,7 @@ func (w *Worker) finishOwned(ctx context.Context, lease executionstore.Lease, ou
 	})
 	switch {
 	case err == nil:
-	case errors.Is(err, executionstore.ErrLeaseLost), errors.Is(err, executionstore.ErrCommitConflict):
+	case errors.Is(err, executionstore.ErrLeaseLost):
 		return dispatchErr
 	default:
 		return err

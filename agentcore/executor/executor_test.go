@@ -597,7 +597,7 @@ func openLedger(t *testing.T, records store.Store, a effect.Assignment, digest r
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := records.Append(context.Background(), store.Lease{}, a.Key(), store.Commit{CommitID: store.AcceptCommitID(a.Key()), Intent: digest, Events: []store.Event{ev}}); err != nil {
+	if err := records.Append(context.Background(), store.Lease{}, a.Key(), store.Commit{CommitID: store.AcceptCommitID(a.Key()), Events: []store.Event{ev}}); err != nil {
 		t.Fatal(err)
 	}
 }

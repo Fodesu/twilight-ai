@@ -5,8 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-
-	"github.com/felinics/twilight/agentcore/es"
 )
 
 // The Session lineage is a tree (agent-session.md section 8, SES-LIN-1):
@@ -17,42 +15,36 @@ import (
 // segment a second parent. These are the domain types; the Ledger implements
 // every operation over them and the adapters store them.
 
-// SegmentID identifies one commit segment independently of any Session. It
-// is the digest of the segment's creation record, so a segment recreated
-// with a different record is a different node.
+// SegmentID identifies one commit segment independently of any Session: 128
+// random bits the kernel draws when the segment is created (SES-WIR-4).
 type SegmentID string
 
-// LedgerRef names one position in the lineage tree: a commit of a segment, by its
-// place in the stitched sequence and by its digest. As SessionHeader.Parent
-// it is the edge from a child segment to the last commit it inherits: the
-// child's own commits are numbered from Seq+1 and chained from Digest, and
-// readers see the prefix [0, Seq] followed by them. The prefix is immutable,
-// so the edge is a stable reference, and it is covered by the child's header
-// digest.
+// LedgerRef names one position in the lineage tree: a commit of a segment, by
+// its place in the stitched sequence. As SegmentHeader.Parent it is the edge
+// from a child segment to the last commit it inherits: the child's own
+// commits are numbered from Seq+1 and readers see the prefix [0, Seq]
+// followed by them. History is append-only, so (Segment, Seq) names one
+// commit for good and the edge is a stable reference (SES-FRK-1).
 type LedgerRef struct {
 	Segment SegmentID `json:"segment"`
 	Seq     CommitSeq `json:"seq"`
-	Digest  es.Digest `json:"digest"`
 }
 
-// Segment is a node: an immutable creation record whose commits chain from
-// LedgerSeed(Header). Header.Parent is the edge to the parent segment; a
-// root segment has none.
+// Segment is a node: an immutable creation record whose own commits start
+// at LedgerSeed(Header). Header.Parent is the edge to the parent segment; a
+// root segment has none. ID equals Header.ID.
 type Segment struct {
 	ID     SegmentID
 	Header SegmentHeader
 }
 
-// SegmentIDOf derives a segment's identity from its sealed creation record.
-func SegmentIDOf(h SegmentHeader) SegmentID { return SegmentID(h.HeaderDigest) }
-
-// NewNonce returns a fresh segment nonce: 128 random bits, hex encoded.
-func NewNonce() (string, error) {
+// NewSegmentID returns a fresh segment identity: 128 random bits, hex encoded.
+func NewSegmentID() (SegmentID, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("session: nonce: %w", err)
+		return "", fmt.Errorf("session: segment id: %w", err)
 	}
-	return hex.EncodeToString(b[:]), nil
+	return SegmentID(hex.EncodeToString(b[:])), nil
 }
 
 // Parent returns the edge to the parent segment, or nil for a root.
@@ -114,17 +106,12 @@ type LedgerStore interface {
 	// PutIndex replaces the segment's CommitIndex with one the kernel rebuilt
 	// from the commits.
 	PutIndex(context.Context, SegmentID, CommitIndex) error
-	// VerifiedMark returns the head through which the segment's own commits
-	// were last verified (SES-REP-1), or ok=false when none is recorded;
-	// PutVerifiedMark records one. The mark is derived data: an absent or
-	// disagreeing mark only makes the next Open verify from the seed.
-	VerifiedMark(context.Context, SegmentID) (Head, bool, error)
-	PutVerifiedMark(context.Context, SegmentID, Head) error
-	// Append persists a commit the Ledger sealed against the segment head,
-	// under a Lease the adapter checks atomically with the write: the Lease
-	// must be current for its Session and that Session's Tip must be the
-	// segment (SES-OWN-2). A superseded Lease gets ErrOwnershipLost and
-	// writes nothing.
+	// Append persists a commit whose Seq is the segment head, under a Lease
+	// the adapter checks atomically with the write: the Lease must be
+	// current for its Session and that Session's Tip must be the segment
+	// (SES-OWN-2). A superseded Lease gets ErrOwnershipLost and writes
+	// nothing. The adapter only ever inserts: no operation of this port
+	// rewrites or removes a commit a root still reaches (SES-APP-5).
 	Append(context.Context, Lease, SegmentID, Commit) error
 	// TruncateSegment drops the segment's own commits after through and
 	// returns the new head; RemoveSegment deletes the node.

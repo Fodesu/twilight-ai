@@ -16,7 +16,7 @@ func testLineage(t *testing.T, f Fixture) {
 	ctx := context.Background()
 	store := f.Store
 	headerA := create(t, store, "A")
-	segA := session.SegmentIDOf(headerA)
+	segA := headerA.ID
 	aw := open(t, store, "A", false)
 	var a []session.Commit
 	for i := 0; i < 4; i++ {
@@ -36,7 +36,7 @@ func testLineage(t *testing.T, f Fixture) {
 	c3 := appendCommit(t, cw, "c3", batch(chatStream(), "twilight/x/c", `{"n":3}`))
 	_ = cw.Close(ctx)
 	headerD := fork("D", "C", c3)
-	segB, segC, segD := session.SegmentIDOf(headerB), session.SegmentIDOf(headerC), session.SegmentIDOf(headerD)
+	segB, segC, segD := headerB.ID, headerC.ID, headerD.ID
 
 	// Delete refuses an owned Session and an unknown one.
 	if err := store.Delete(ctx, "A"); !session.IsCode(err, session.ErrOwned) {
@@ -95,11 +95,11 @@ func testLineage(t *testing.T, f Fixture) {
 	if !dw.Committed("a0") || dw.Committed("a3") {
 		t.Fatal("D prefix membership wrong after collect")
 	}
-	if c, ok, _ := dw.LookupCommit("a2"); !ok || c.Digest != a[2].Digest {
+	if c, ok, _ := dw.LookupCommit("a2"); !ok || c.Seq != a[2].Seq {
 		t.Fatalf("D lookup a2 = %+v %v", c, ok)
 	}
 	d4 := appendCommit(t, dw, "d4", batch(chatStream(), "twilight/x/d", `{"n":4}`))
-	if d4.Seq != c3.Seq+1 || d4.PrevDigest != c3.Digest {
+	if d4.Seq != c3.Seq+1 {
 		t.Fatalf("D own commit = %+v", d4)
 	}
 	_ = dw.Close(ctx)
@@ -113,7 +113,7 @@ func testLineage(t *testing.T, f Fixture) {
 	if err != nil {
 		t.Fatalf("recreate after delete: %v", err)
 	}
-	if session.SegmentIDOf(newA) == segA {
+	if newA.ID == segA {
 		t.Fatal("recreated A reused the old segment")
 	}
 	if page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "A"}); err != nil || len(page.Commits) != 0 {
@@ -136,7 +136,7 @@ func testLineage(t *testing.T, f Fixture) {
 	for _, id := range report.Removed {
 		removed[id] = true
 	}
-	if len(removed) != 2 || !removed[segB] || !removed[session.SegmentIDOf(newA)] || len(report.Truncated) != 0 {
+	if len(removed) != 2 || !removed[segB] || !removed[newA.ID] || len(report.Truncated) != 0 {
 		t.Fatalf("collect after deleting B and C = %+v, want B's and the new A's segments removed", report)
 	}
 	if page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "D"}); err != nil || ids(page.Commits) != "a0,a1,a2,c3,d4" {

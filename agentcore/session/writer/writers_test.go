@@ -95,7 +95,7 @@ func TestOpenWriterChecksProtocolVersion(t *testing.T) {
 		wantCode session.ErrorCode
 	}{
 		{"same version", session.ProtocolVersion1, ""},
-		{"other version", session.ProtocolVersion1 + 1, session.ErrUnsupportedProfile},
+		{"other version", session.ProtocolVersion1 + 1, session.ErrUnsupportedVersion},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

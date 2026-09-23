@@ -47,7 +47,7 @@ const PromptContextV1 turn.PromptBuilderRef = "twilight/decision/prompt/context-
 
 **DEC-PMT-3** `plan.PromptInput.Inputs` 与本 Turn 已 delivered 且属于本次 Prepare 的 Input 按 ID 对齐，包括回合中途经 Deliver 进入的输入。这些 Input 的 `input_delivered` 与 `input_accepted` 同 commit，Build 时一定已在 fold 中；PromptBuilder 只使用 fold。
 
-**DEC-PMT-4** `Prompt.Model = AgentPreset.Model`；`Request.Tools` 与 `Prompt.Tools`（ToolSpec：Ref、DefinitionDigest、Policy）都由 `AgentPreset.Tools` 派生，顺序一致；`InputIDs` 为本次消费的 PendingInput IDs；`Token` 为投影 head 的 `Next:Digest`。PresetRef 独立标识冻结的决策配置。
+**DEC-PMT-4** `Prompt.Model = AgentPreset.Model`；`Request.Tools` 与 `Prompt.Tools`（ToolSpec：Ref、DefinitionDigest、Policy）都由 `AgentPreset.Tools` 派生，顺序一致；`InputIDs` 为本次消费的 PendingInput IDs；`Token` 为投影 head 的 `Next`。PresetRef 独立标识冻结的决策配置。
 
 **DEC-PMT-5** summary 的 TextPart 直接写入 sdk.Message；ReferencePart 在 context-v1 中以名字呈现，不物化。assistant 与 tool_result 的正文来自冻结值，不是 parts。
 

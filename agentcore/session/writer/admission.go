@@ -63,7 +63,7 @@ type admitter struct {
 
 // reconcile settles the tip segment's claims against the log at open; w
 // answers which owner commits exist. Only the tip can hold an orphan of this
-// Writer's making: an inherited segment's commits were all sealed before it
+// Writer's making: an inherited segment's commits were all stored before it
 // became inherited.
 func (a *admitter) reconcile(ctx context.Context, w artifact.OwnerVerifier) error {
 	if a.Ledger == nil {

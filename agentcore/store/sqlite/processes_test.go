@@ -38,7 +38,6 @@ func TestProcessStore(t *testing.T) {
 	}{
 		{"request opens the process", 1, k1, processCommit(t, 0, process.RequestCommitID(k1), process.EventDispatchRequested, req), nil},
 		{"replayed request is already applied", 1, k1, processCommit(t, 0, process.RequestCommitID(k1), process.EventDispatchRequested, req), ledger.ErrAlreadyApplied},
-		{"same identity with another intent conflicts", 1, k1, process.Commit{Seq: 1, CommitID: process.RequestCommitID(k1), Intent: "sha256:other"}, ledger.ErrCommitConflict},
 		{"stale seq conflicts", 1, k1, processCommit(t, 0, process.DispatchedCommitID(k1), process.EventDispatched, nil), ledger.ErrConflict},
 		{"illegal step is a state conflict", 1, k1, processCommit(t, 1, process.AcknowledgedCommitID(k1), process.EventAcknowledged, nil), ledger.ErrStateConflict},
 		{"a later epoch commits", 2, k1, processCommit(t, 1, process.DispatchedCommitID(k1), process.EventDispatched, nil), nil},

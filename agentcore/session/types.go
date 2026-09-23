@@ -1,8 +1,8 @@
 // Package session is the commit-ledger kernel of a Twilight Session
 // (docs/design/agent-session.md). It owns the header, the Commit as the
 // atomic unit of append, logical streams within commits, Session-level
-// writer ownership with epoch fencing, the commit digest chain and ordered
-// reads. Payloads are opaque canonical JSON that Session modules encode and
+// writer ownership with epoch fencing, and ordered reads over an append-only
+// store. Payloads are opaque canonical JSON that Session modules encode and
 // interpret.
 package session
 
@@ -23,10 +23,9 @@ type (
 )
 
 // ProtocolVersion1 is the kernel wire version of the commit ledger: events
-// carry no transaction metadata and the Commit is the atomic, chained unit
-// that may span logical streams. It covers header fields and the
-// commit/batch digest preimages only; payload versions are carried by
-// modules (SES-VER-1). It ships with the feat/agent-runtime branch; the
+// carry no transaction metadata and the Commit is the atomic unit that may
+// span logical streams. It covers header fields and the
+// commit fields only; payload versions are carried by modules (SES-VER-1). It ships with the feat/agent-runtime branch; the
 // earlier row model it replaced never left the branch.
 const ProtocolVersion1 uint16 = 1
 
@@ -34,23 +33,24 @@ const ProtocolVersion1 uint16 = 1
 // (agent-session.md section 8): a node of the lineage tree. It names no
 // Session: which roots append to or inherit from the segment is the roots'
 // business (SessionRecord), and a segment outlives every Session that named
-// it for as long as some root reaches it. HeaderDigest is the segment's
-// identity (SegmentIDOf); Nonce makes two otherwise identical records two
-// segments. Readers of a Session see the header of the segment its root
-// names as its tip.
+// it for as long as some root reaches it. ID is the segment's identity,
+// drawn at random, so two otherwise identical records are two segments.
+// Readers of a Session see the header of the segment its root names as its
+// tip.
 type SegmentHeader struct {
+	// ID is the segment's identity: 128 random bits the kernel draws at
+	// Create or Advance, hex encoded. Nothing derives it, so two segments
+	// with otherwise equal records are two nodes (SES-WIR-4).
+	ID              SegmentID        `json:"id"`
 	ProtocolVersion uint16           `json:"protocolVersion"`
 	Parent          *LedgerRef       `json:"parent,omitempty"` // nil for a root segment; the edge to the parent otherwise
-	Nonce           string           `json:"nonce"`
 	CausationID     es.CausationID   `json:"causationId,omitempty"`
 	Metadata        jsonstable.Value `json:"metadata,omitempty"`
 	// Ext is the kernel's own extension object: optional kernel fields a later
 	// binary may define without a new ProtocolVersion. It is a canonical JSON
-	// object when present and enters HeaderDigest byte for byte; a reader
-	// that knows none of its keys still verifies the header (SES-WIR-5).
-	// Metadata is the caller's; Ext is the kernel's.
-	Ext          jsonstable.Value `json:"ext,omitzero"`
-	HeaderDigest es.Digest        `json:"headerDigest"`
+	// object when present; a reader that knows none of its keys keeps it
+	// (SES-WIR-5). Metadata is the caller's; Ext is the kernel's.
+	Ext jsonstable.Value `json:"ext,omitzero"`
 }
 
 // ErrorCode classifies kernel failures (SES 7).
@@ -68,7 +68,7 @@ const (
 	// further Appends; the caller reopens and Open reads the log as it is
 	// (SES-APP-1).
 	ErrHandleFailed       ErrorCode = "handle_failed"
-	ErrUnsupportedProfile ErrorCode = "unsupported_profile"
+	ErrUnsupportedVersion ErrorCode = "unsupported_version"
 	ErrUnsupported        ErrorCode = "unsupported"
 )
 

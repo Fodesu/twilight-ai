@@ -3,14 +3,14 @@
 // (agentcore/executor/store) and an effect process's ledger
 // (agentcore/process) are built from it, in the Session's own terms. A
 // ledger is a sequence of commits; a commit has a Seq, a CommitID naming the
-// operation, an Intent the operation declared, and events with a type and a
-// canonical payload. Who may write is the store's concern, judged from the
-// writer's lease or epoch at Append and never recorded on the commit:
-// provenance, where a domain needs it, is a fact of its own. Three rules
-// follow the Session kernel (SES-APP-4): a commit's Seq is the ledger's
-// Head.Next or the append conflicts; a CommitID seen before is the same
-// operation when the Intent matches and a conflict otherwise; a commit is
-// folded before it is written, so a ledger never holds an illegal step.
+// operation, and events with a type and a canonical payload. Who may write
+// is the store's concern, judged from the writer's lease or epoch at Append
+// and never recorded on the commit: provenance, where a domain needs it, is
+// a fact of its own. Three rules follow the Session kernel (SES-APP-4): a
+// commit's Seq is the ledger's Head.Next or the append conflicts; a CommitID
+// seen before is the same operation and is not written again; a commit is
+// folded before it is written, so a ledger never holds an illegal step. The
+// store only inserts: a commit is never rewritten or removed.
 package ledger
 
 import (
@@ -24,9 +24,7 @@ import (
 var (
 	// ErrConflict: the commit's Seq is not the ledger's Head.Next.
 	ErrConflict = errors.New("ledger: commit sequence conflict")
-	// ErrCommitConflict: a commit with the same CommitID exists with another Intent.
-	ErrCommitConflict = errors.New("ledger: commit intent conflict")
-	// ErrAlreadyApplied: a commit with the same CommitID and Intent exists.
+	// ErrAlreadyApplied: a commit with the same CommitID exists.
 	ErrAlreadyApplied = errors.New("ledger: commit already applied")
 	// ErrStateConflict: the commit's events are not legal from the fold.
 	ErrStateConflict = errors.New("ledger: state conflict")
@@ -72,22 +70,12 @@ func (e *Event) Decode(dst any) error { return e.Payload.Decode(dst) }
 type Commit struct {
 	Seq      CommitSeq `json:"seq"`
 	CommitID CommitID  `json:"commitId"`
-	Intent   es.Digest `json:"intent,omitempty"`
 	Events   []Event   `json:"events"`
 }
 
-// Digest is the commit's content digest chained onto the previous one.
-func (c *Commit) Digest(prev es.Digest) (es.Digest, error) {
-	return es.DigestCanonical(struct {
-		Prev   es.Digest `json:"prev"`
-		Commit *Commit   `json:"commit"`
-	}{prev, c})
-}
-
-// Head is a ledger's tip: the next Seq and the digest of the last commit.
+// Head is a ledger's tip: the next Seq to assign.
 type Head struct {
-	Next   CommitSeq `json:"next"`
-	Digest es.Digest `json:"digest,omitempty"`
+	Next CommitSeq `json:"next"`
 }
 
 // DeriveCommitID names a command on one scope. Commands that happen once

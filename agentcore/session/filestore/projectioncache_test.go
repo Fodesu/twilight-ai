@@ -99,7 +99,7 @@ func TestProjectionCacheRoundTrip(t *testing.T) {
 	if _, _, ok, err := cache.Load(ctx, "s", projectID, 1); ok || err != nil {
 		t.Fatalf("absent entry: ok=%v err=%v, want a miss with no error", ok, err)
 	}
-	want := session.Head{Next: 4, Digest: "sha256:abcd"}
+	want := session.Head{Next: 4}
 	if err := cache.Save(ctx, "s", projectID, 1, state, want); err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +127,7 @@ func TestProjectionCacheIgnoresCorruption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cache.Save(ctx, "s", projectID, 1, state, session.Head{Next: 1, Digest: "d"}); err != nil {
+	if err := cache.Save(ctx, "s", projectID, 1, state, session.Head{Next: 1}); err != nil {
 		t.Fatal(err)
 	}
 	path := entryPath(root, "s", 1)

@@ -148,7 +148,6 @@ type TypedBatch struct {
 }
 type SemanticGroup struct {
     CommitID session.CommitID
-    Intent es.Digest // 可选；封入 Commit.Intent，CommitID 命中时先按 intent 判定重放（EXT-WRT-2）
     Batches []TypedBatch
 }
 // View 是 Commit 回调内可读的一致视图：head、tip 段、提交历史、投影状态。
@@ -166,8 +165,8 @@ type CommitFn func(View) (*SemanticGroup, error) // nil 表示不写
 type CommitOutcome string
 const (
     CommitApplied CommitOutcome = "applied"
-    CommitAlreadyApplied CommitOutcome = "already_applied" // 同 CommitID、同 fingerprint
-    CommitConflict CommitOutcome = "conflict"             // 同 CommitID、不同 fingerprint
+    CommitAlreadyApplied CommitOutcome = "already_applied" // CommitID 已在 ledger 中（EXT-WRT-2）
+    CommitConflict CommitOutcome = "conflict"             // kernel 以 ErrConflict 拒绝了 Append
     CommitInvalid CommitOutcome = "invalid"
     CommitNoop CommitOutcome = "noop"
 )
@@ -200,9 +199,9 @@ type Writer interface {
 func OpenWriter(ctx, store session.Store, registry *Registry, admission Admission, sid session.SessionID, opts session.OpenOptions) (Writer, error)
 ```
 
-**EXT-WRT-1** `OpenWriter` 先读 Session tip 段的 header：其 ProtocolVersion 高于 Registry 的 ProtocolVersion 则返回 `ErrUnsupportedProfile`，不取所有权，因为该 tip 属于更新的 binary；随后调 `store.Open` 取得所有权，重建每个已注册投影的当前状态与 head，核对 tip 段的 claim；若 tip 段版本低于 Registry 版本，再经 `Handle.Advance` 把 Session 推进到 Registry 版本的空 tip 段（SES-ADV-1），已折叠的 commit 成为继承前缀，此后的提交写入新段。升级因此是每个 Session 在下次打开时一次 O(1) 的推进，不重写历史。投影的起始状态按 EXT-PRJ-3/5 取自缓存条目或 `Initial`；缓存条目未覆盖的部分（没有可用条目时即整条日志）被读出来 fold，读完即释放。Writer 不保留日志，也不保留提交历史索引——CommitID 的索引是 kernel 的（SES-REP-3/4），命中时才取该组的行；因此 Writer 的常驻内存只随已注册投影数增长，与日志长度无关。之后 `Commit` 在 Writer 的互斥区内执行：调 fn 得到 group，以每个事件类型的写入版本做 codec（EXT-REG-2），做 admission、claim，`session.Handle.Append`，再把新行折进投影，并按缓存策略刷新条目（EXT-PRJ-6/7）。fn 只能通过 `View` 读，且必须是纯函数：不做外部 IO（模型调用、网络、读远端存储），需要外部数据的调用方在 `Commit` 之前取得并作为闭包值带入。互斥区是全 Session 的串行点，fn 内的 IO 会把它的延迟施加给该 Session 的全部提交方，其失败也无法与"决策失败"区分。admission 与 claim 是互斥区内唯一的 IO，它们是边界的组成部分（EXT-REF-2、EXT-WRT-3）。fn 返回 nil 记 `Noop`。Writer 是并发的唯一入口：Run 的 worker、Coordinator、恢复流程都经它串行，kernel 不再需要临界区回调。
+**EXT-WRT-1** `OpenWriter` 先读 Session tip 段的 header：其 ProtocolVersion 高于 Registry 的 ProtocolVersion 则返回 `ErrUnsupportedVersion`，不取所有权，因为该 tip 属于更新的 binary；随后调 `store.Open` 取得所有权，重建每个已注册投影的当前状态与 head，核对 tip 段的 claim；若 tip 段版本低于 Registry 版本，再经 `Handle.Advance` 把 Session 推进到 Registry 版本的空 tip 段（SES-ADV-1），已折叠的 commit 成为继承前缀，此后的提交写入新段。升级因此是每个 Session 在下次打开时一次 O(1) 的推进，不重写历史。投影的起始状态按 EXT-PRJ-3/5 取自缓存条目或 `Initial`；缓存条目未覆盖的部分（没有可用条目时即整条日志）被读出来 fold，读完即释放。Writer 不保留日志，也不保留提交历史索引——CommitID 的索引是 kernel 的（SES-REP-3/4），命中时才取该组的行；因此 Writer 的常驻内存只随已注册投影数增长，与日志长度无关。之后 `Commit` 在 Writer 的互斥区内执行：调 fn 得到 group，以每个事件类型的写入版本做 codec（EXT-REG-2），做 admission、claim，`session.Handle.Append`，再把新行折进投影，并按缓存策略刷新条目（EXT-PRJ-6/7）。fn 只能通过 `View` 读，且必须是纯函数：不做外部 IO（模型调用、网络、读远端存储），需要外部数据的调用方在 `Commit` 之前取得并作为闭包值带入。互斥区是全 Session 的串行点，fn 内的 IO 会把它的延迟施加给该 Session 的全部提交方，其失败也无法与"决策失败"区分。admission 与 claim 是互斥区内唯一的 IO，它们是边界的组成部分（EXT-REF-2、EXT-WRT-3）。fn 返回 nil 记 `Noop`。Writer 是并发的唯一入口：Run 的 worker、Coordinator、恢复流程都经它串行，kernel 不再需要临界区回调。
 
-**EXT-WRT-2** 幂等：fn 返回的 group 若 CommitID 已提交（`View.Committed`，命中才取行，fork 的继承前缀计入），先看 intent：`SemanticGroup.Intent` 与已提交 commit 的 `Intent` 都非空时，相同返回 `AlreadyApplied` 与原 commit，不同返回 `Conflict`，不需要重建事件；任一方未声明 intent 时比对 fingerprint（CommitID、各 batch 的 stream 与其事件 Type、Payload 的有序序列，不含时间，也不含 SessionID：CommitID 索引本身按 Session 隔离，而继承前缀的 commit 由祖先 SessionID 封印，SES-FRK-3）。两者都不写入，也不做 admission 与 claim。`unit.Work.Intent` 是 unit of work 的 intent，必填：CommitID 命中时不准备任何 Part，直接按 intent 给出 already-applied 或 conflict（已提交 commit 没有 intent 时无法核对，同样为 conflict），因此 identity 有意不覆盖内容的 command 族（同一 effect 的两次结算、同一 Turn 的两次 Settle）在内容不同时得到 conflict 而不是静默重放。跨 Schema 边界的重放：已提交 commit 在旧 Schema 下编码，重放的 group 在 tip 段的 Schema 下编码，两者的 payload 字节（含 `v`）不同，因此只靠 fingerprint 的重放为 `Conflict`；声明了 intent 的重放不受影响。
+**EXT-WRT-2** 幂等：fn 返回的 group 若 CommitID 已提交（`View.Committed`，命中才取行，fork 的继承前缀计入），返回 `AlreadyApplied` 与原 commit，不重建事件、不写入、不做 admission 与 claim。Writer 不比对两次提交的内容：CommitID 由写者派生，一个 ID 对应一个操作（SES-APP-4）；identity 有意不覆盖内容的 command 族（同一 effect 的两次结算、同一 Turn 的两次 Settle）在内容不同时同样得到 `AlreadyApplied`，以先落下的 commit 为准，调用方从投影读取实际生效的结果。`unit.Work` 只携带 CommitID 与 Parts：CommitID 命中时不准备任何 Part。跨 Schema 边界的重放同样只看 CommitID，与 payload 字节无关。
 
 **EXT-WRT-3** claim 顺序：group 含 Binding 时，Writer 在 `Append` 之前调用 `ledger.Activate(claimID, owner, set)`，让 ledger 中的引用从提交开始就具有 retention root。`Append` 确认写入前拒绝时，Writer 调用 `ledger.ReleaseActive(claimID)` 尽力回收；结果未知、ownership 丢失或 CommitID 冲突时保留 Active claim。`OpenWriter` 重建日志后核对 owner commit：已提交的 claim 保持 Active，未提交的孤儿 claim 被释放（ART-RET-3）。
 
@@ -258,7 +257,7 @@ type ProjectionDefinition struct {
     Authoritative bool     // 折叠失败拒绝 commit（EXT-PRJ-9）
 }
 type ProjectionReader interface {
-    // through 是该状态覆盖的 ledger head：Next 为下一未折叠行的 Seq，Digest 为最后一行的 digest。
+    // through 是该状态覆盖的 ledger head：Next 为下一未折叠 commit 的 Seq。
     Load(ctx, sid session.SessionID, id ProjectionID, v ProjectionVersion) (state any, through session.Head, err error)
 }
 // ProjectionCache 是可选的派生缓存，随时可删；Memory 实现由本层提供。
@@ -283,9 +282,9 @@ func NewProjectionReader(store session.Store, registry *Registry, cache Projecti
 
 **EXT-PRJ-2** 投影只处理 `Consumes` 中的 EventType。其他 EventType 按归属处理：属于本模块或 `Requires` 模块（EXT-REG-4 的范围）且 `Decode` 为 Unknown 的事件，`Ignorable` 为真则跳过，否则 Fold 失败；范围之外的模块的事件一律跳过。写入者对纯信息性事件声明 `Ignorable`（EXT-REG），默认不可忽略：忘记声明只会导致多拒绝，不会导致静默丢失。读取时以范围内模块的前缀作为 `Types` 过滤。
 
-**EXT-PRJ-3** 缓存条目记录 `through`（`session.Head`）：`Next` 为下一个未折叠 commit 的 CommitSeq，`Digest` 为最后一个已折叠 commit 的 digest。复用条件是 **commit 对齐**：`through.Next-1` 必须是日志中一个 commit 的 Seq，该 commit 的 Digest 等于 `through.Digest`，且 `StateCodec.Decode` 成功；否则从 `Initial` 重折。commit 对齐是 EXT-PRJ-1 的直接后果：状态只在 commit 边界上发布，不存在半应用的 commit。该判定只有一个实现（`SealedAt(commit, through)`），Writer 与 Store reader 共用，因此同一条目在两条路径上的判定相同。第二个谓词 `OwnBoundary(header, through)` 判定 `through` 是否越过 tip 段的 seed（`through.Next > LedgerSeed(header).Next`）：条目记录的状态是在记录时 tip 的继承策略下折出的，fork 与 Advance 都使此前的全部 commit 变为继承 commit，因此落在继承 commit 或继承边界上的条目不被复用，折叠从 `Initial` 重来，直到 tip 持有自己的 commit；Writer 与 reader 同样共用该谓词。相应地，没有自身 commit 的 tip（空 fork、bootstrap 为空的 Advance）在 `Close` 与 Advance 时不写任何条目。缓存是派生数据：条目缺失、无法解码、超出日志长度或 digest 不符都只导致重折，不产生错误。缓存按 SessionID 归属：fork 首次打开时折叠继承前缀，此后以自己的条目续折；Advance 之后自新段的首个自身 commit 起续折。
+**EXT-PRJ-3** 缓存条目记录 `through`（`session.Head`）：`Next` 为下一个未折叠 commit 的 CommitSeq。复用条件是 **commit 对齐**：`through.Next-1` 必须是日志中一个 commit 的 Seq，且 `StateCodec.Decode` 成功；否则从 `Initial` 重折。历史不可变（SES-APP-5），位置因此足以指认该 commit。commit 对齐是 EXT-PRJ-1 的直接后果：状态只在 commit 边界上发布，不存在半应用的 commit。该判定只有一个实现（`CommitAt(commit, through)`），Writer 与 Store reader 共用，因此同一条目在两条路径上的判定相同。第二个谓词 `OwnBoundary(header, through)` 判定 `through` 是否越过 tip 段的 seed（`through.Next > LedgerSeed(header).Next`）：条目记录的状态是在记录时 tip 的继承策略下折出的，fork 与 Advance 都使此前的全部 commit 变为继承 commit，因此落在继承 commit 或继承边界上的条目不被复用，折叠从 `Initial` 重来，直到 tip 持有自己的 commit；Writer 与 reader 同样共用该谓词。相应地，没有自身 commit 的 tip（空 fork、bootstrap 为空的 Advance）在 `Close` 与 Advance 时不写任何条目。缓存是派生数据：条目缺失、无法解码或超出日志长度都只导致重折，不产生错误。缓存按 SessionID 归属：fork 首次打开时折叠继承前缀，此后以自己的条目续折；Advance 之后自新段的首个自身 commit 起续折。
 
-**EXT-PRJ-4** `Writer.Projections()` 返回的 reader 从 Writer 内存状态生成独立副本；`View.Projection` 同样通过该投影的 `StateCodec` encode/decode 交付调用方拥有的副本，包括嵌套 map、slice 与指针。独立进程的观察者用 `NewProjectionReader` 从 Store 读，两者对同一 head 给出相同状态。Writer 在 `Append` 之前折叠一个临时 commit（Seq 为当前 head 的 Next，带 CommitID、Epoch 与全部 batch，PrevDigest 与 Digest 为空），reader 折叠 kernel 封装后的 commit；Apply 只见到 `DecodedEvent`（stream、事件与解码值），不见 commit 的 digest，因此两条路径向 Apply 交付相同输入。
+**EXT-PRJ-4** `Writer.Projections()` 返回的 reader 从 Writer 内存状态生成独立副本；`View.Projection` 同样通过该投影的 `StateCodec` encode/decode 交付调用方拥有的副本，包括嵌套 map、slice 与指针。独立进程的观察者用 `NewProjectionReader` 从 Store 读，两者对同一 head 给出相同状态。Writer 在 `Append` 之前折叠一个临时 commit（Seq 为当前 head 的 Next，带 CommitID 与全部 batch），reader 折叠 kernel 存储的 commit；kernel 在 Append 内只赋 Seq，Apply 只见到 `DecodedEvent`（stream、事件与解码值），因此两条路径向 Apply 交付相同输入。
 
 **EXT-PRJ-5** `OpenWriter` 的重建分两步：先为每个投影判定缓存条目（EXT-PRJ-3），判定只读条目所指的那一个 commit（经 CommitIndex 的字节区间，SES-REP-5），得到每个投影的续折起点；再从全部起点中最小的那个开始读日志一次，各投影从各自起点续折，没有可用条目的投影从 `Initial` 全折。干净 Close 后每个条目都在 head，读取为空；崩溃后读取量不超过 `CacheEvery(n)` 的 n 个 commit。篡改或过期的条目只让该投影多折一次，绝不影响正确性，也绝不让 `OpenWriter` 失败。这次读取只服务于投影，不服务于提交历史——Writer 不保留日志，也不建 CommitID 索引（EXT-WRT-1）。
 
@@ -322,7 +321,7 @@ v1 conformance 必须验证：
 - **EXT-PRJ-8**：默认继承策略下继承 commit 中 `LineageSegment` domain 的批次不进入折叠、tip commit 全部折叠；`InheritAll` 折叠继承 commit 的全部批次；Writer 与 ProjectionReader 对同一 fork 折出相同状态；
 - **EXT-PRJ-9**：非 authoritative 投影的 fold 失败不阻止 commit，该投影此后读到 `ErrProjectionUnhealthy`、不再写缓存，authoritative 投影不受影响；authoritative 投影的 fold 失败使 commit 为 `invalid`；
 - **EXT-WRT-8/9**：Fork 之后唯一覆盖前缀内容的 claim 是父段的 commit claim，打开子不释放它；删除父后该 claim 仍 Active、子仍读到前缀；Collect 截断父段时只释放被截 commit 的 claim；删除全部到达者并 Collect 后 claim 释放；重复 Delete 返回 nil；
-- **EXT-PRJ-5 至 7**：干净 Close 后重开不折任何 event；落在继承 commit 或继承边界上的条目不被复用，没有自身 commit 的 tip 在 Close 时不写条目；条目只覆盖前缀时只折尾部；日志越界、digest 不符、落在组内、状态不可解码的条目一律回退为全折且不使 Open 失败；被策略排除的投影不被写入，但它已有的条目仍被复用；`CacheEvery(n)` 下条目落后不超过 n 行；未配置缓存时不写任何条目且行为不变。
+- **EXT-PRJ-5 至 7**：干净 Close 后重开不折任何 event；落在继承 commit 或继承边界上的条目不被复用，没有自身 commit 的 tip 在 Close 时不写条目；条目只覆盖前缀时只折尾部；日志越界、落在组内、状态不可解码的条目一律回退为全折且不使 Open 失败；被策略排除的投影不被写入，但它已有的条目仍被复用；`CacheEvery(n)` 下条目落后不超过 n 行；未配置缓存时不写任何条目且行为不变。
 
 ## 8. Application module
 

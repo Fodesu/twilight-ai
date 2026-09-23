@@ -1,7 +1,7 @@
 // Package runtimetest is the RUN-CMP-2 Runtime conformance suite. It takes a
 // session.Store factory so the Memory store and every durable adapter run the
 // same assertions; it asserts Run semantics only and leaves group atomicity,
-// digest chains, ownership fencing and cache equivalence to the kernel and
+// ownership fencing and cache equivalence to the kernel and
 // Module Framework suites.
 package runtimetest
 
@@ -284,7 +284,7 @@ func (a attachPart) Prepare(_ context.Context, _ writer.View, now int64) ([]writ
 	return []writer.TypedBatch{{Stream: chatlog.Stream, Events: events}}, nil
 }
 
-// commitResult is a Run command's result plus the sealed commit it landed in.
+// commitResult is a Run command's result plus the stored commit it landed in.
 type commitResult struct {
 	runtime.CommitResult
 	Events []session.Event
@@ -316,7 +316,7 @@ func (h *harness) commitWith(rt *runmod.SessionRunStore, w writer.Writer, runID 
 	if err != nil {
 		return commitResult{}, err
 	}
-	res, err := unit.Commit(h.ctx, w, h.clock.Now().UnixMilli(), unit.Work{CommitID: session.CommitID(env.ID), Intent: part.Intent(), Parts: []unit.Part{part, attachPart(attach)}})
+	res, err := unit.Commit(h.ctx, w, h.clock.Now().UnixMilli(), unit.Work{CommitID: session.CommitID(env.ID), Parts: []unit.Part{part, attachPart(attach)}})
 	if err != nil {
 		return commitResult{}, err
 	}
@@ -324,10 +324,10 @@ func (h *harness) commitWith(rt *runmod.SessionRunStore, w writer.Writer, runID 
 	if err != nil {
 		return commitResult{}, err
 	}
-	return commitResult{CommitResult: out, Events: flattenCommit(res.Commit), Head: session.Head{Next: res.Commit.Seq + 1, Digest: res.Commit.Digest}}, nil
+	return commitResult{CommitResult: out, Events: flattenCommit(res.Commit), Head: session.Head{Next: res.Commit.Seq + 1}}, nil
 }
 
-// withCommit looks the command's sealed commit up so a test can inspect the
+// withCommit looks the command's stored commit up so a test can inspect the
 // group it produced.
 func (h *harness) withCommit(res runtime.CommitResult, id session.CommitID) commitResult {
 	h.t.Helper()
@@ -339,7 +339,7 @@ func (h *harness) withCommit(res runtime.CommitResult, id session.CommitID) comm
 			return nil, fmt.Errorf("commit %s not found: %w", id, err)
 		}
 		out.Events = flattenCommit(c)
-		out.Head = session.Head{Next: c.Seq + 1, Digest: c.Digest}
+		out.Head = session.Head{Next: c.Seq + 1}
 		return nil, nil
 	})
 	if err != nil {

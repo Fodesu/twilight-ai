@@ -6,8 +6,7 @@
 // pipeline, each in its own file: encoding and stream affinity (encode.go),
 // artifact admission and retention claims (admission.go), transactional
 // projection folding and the projection cache (projector.go), observer
-// fan-out (observers.go), the replay fingerprint (fingerprint.go) and the
-// segment transition that moves a Session to a new Schema (advance.go). A
+// fan-out (observers.go) and the segment transition that moves a Session to a new Schema (advance.go). A
 // new capability joins the pipeline as a stage, not as a field of the Writer.
 package writer
 
@@ -18,7 +17,6 @@ import (
 	"sync"
 
 	"github.com/felinics/twilight/agentcore/artifact"
-	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/extension"
 )
@@ -45,13 +43,7 @@ type TypedBatch struct {
 // per-stream batches it carries.
 type SemanticGroup struct {
 	CommitID session.CommitID
-	// Intent is the digest of the operation the group realizes, sealed into
-	// the commit (session.Commit.Intent). When set, a replay of the CommitID
-	// is judged by intent: the same intent is already applied, a different
-	// one is a conflict, whether or not the events could be rebuilt. Empty
-	// falls back to the event fingerprint (EXT-WRT-2).
-	Intent  es.Digest
-	Batches []TypedBatch
+	Batches  []TypedBatch
 }
 
 // View is what a CommitFn may read: head, idempotency index and projections
@@ -66,7 +58,7 @@ type View interface {
 	// Committed reports whether a commit is already in the ledger. It is
 	// answered from an index the kernel already keeps, without touching storage.
 	Committed(session.CommitID) bool
-	// LookupCommit returns the sealed commit. It comes from storage when the
+	// LookupCommit returns the stored commit. It comes from storage when the
 	// kernel handle does not hold it, so a caller that only needs the answer
 	// uses Committed.
 	LookupCommit(session.CommitID) (session.Commit, bool, error)
@@ -84,8 +76,8 @@ type CommitOutcome string
 
 const (
 	CommitApplied        CommitOutcome = "applied"
-	CommitAlreadyApplied CommitOutcome = "already_applied" // same CommitID, same fingerprint
-	CommitConflict       CommitOutcome = "conflict"        // same CommitID, different fingerprint
+	CommitAlreadyApplied CommitOutcome = "already_applied" // the CommitID is in the ledger (EXT-WRT-2)
+	CommitConflict       CommitOutcome = "conflict"        // the kernel refused the commit as a conflict
 	CommitInvalid        CommitOutcome = "invalid"
 	CommitNoop           CommitOutcome = "noop"
 )
@@ -95,7 +87,7 @@ const (
 // branch on Outcome: CommitInvalid and CommitConflict are reported with a nil
 // error because they are answers, not failures. A configuration that cannot
 // serve the registry is not an answer -- OpenWriter rejects it up front.
-// Commit is the sealed commit for applied and already_applied, zero otherwise.
+// Commit is the stored commit for applied and already_applied, zero otherwise.
 type CommitResult struct {
 	Outcome CommitOutcome
 	Commit  session.Commit
@@ -178,7 +170,7 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 	// belongs to a newer binary and is refused; a tip behind it is advanced
 	// to it below, once ownership is held (EXT-WRT-1, SES-ADV-1).
 	if header.ProtocolVersion > registry.ProtocolVersion {
-		return nil, &session.Error{Code: session.ErrUnsupportedProfile, Operation: opOpen, SessionID: sid,
+		return nil, &session.Error{Code: session.ErrUnsupportedVersion, Operation: opOpen, SessionID: sid,
 			Detail: fmt.Sprintf("session tip is protocol v%d, this registry writes v%d", header.ProtocolVersion, registry.ProtocolVersion)}
 	}
 	kernel, err := store.Open(ctx, sid, opts)
@@ -187,7 +179,7 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 	}
 	w := &sessionWriter{kernel: kernel, store: store, registry: registry, sid: sid, header: header,
 		projections: newProjector(registry, sid, cfg.Cache, cfg.CachePolicy),
-		admission:   &admitter{Admission: admission, segment: session.SegmentIDOf(header)},
+		admission:   &admitter{Admission: admission, segment: header.ID},
 		observers:   &observers{list: cfg.Observers}}
 	if opts.LeaseDuration > 0 {
 		w.heartbeat = startHeartbeat(kernel, opts.LeaseDuration, w.onLeaseLost)
@@ -238,7 +230,7 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 		}
 		w.header = advanced
 		w.head = kernel.Head()
-		w.admission.segment = session.SegmentIDOf(advanced)
+		w.admission.segment = advanced.ID
 	}
 	return w, nil
 }
@@ -255,7 +247,7 @@ func (w *sessionWriter) Header() session.SegmentHeader {
 }
 
 func (w *sessionWriter) OwnerExists(_ context.Context, owner artifact.ClaimOwner) (bool, error) {
-	if owner.Kind != ClaimOwnerKind || owner.Authority != string(session.SegmentIDOf(w.header)) {
+	if owner.Kind != ClaimOwnerKind || owner.Authority != string(w.header.ID) {
 		return false, &artifact.Error{Code: artifact.ErrInvalid, Operation: "owner_exists", Detail: "owner is not a commit of this writer's tip segment"}
 	}
 	w.mu.Lock()
@@ -327,7 +319,7 @@ func (w *sessionWriter) Projections() extension.ProjectionReader { return memory
 
 // --- commit --------------------------------------------------------------------------
 
-// Commit is the pipeline: read (View) -> decide (fn) -> encode -> fingerprint
+// Commit is the pipeline: read (View) -> decide (fn) -> encode -> CommitID
 // replay check -> projection pre-fold -> retention claim -> Append -> advance
 // projections -> refresh cache / notify observers (EXT-WRT-1). The critical
 // section ends after Append and the state advance; cache writes and observer
@@ -384,12 +376,14 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	if existing, committed, err := w.kernel.LookupCommit(group.CommitID); err != nil {
 		return CommitResult{}, err
 	} else if committed {
-		return replayVerdict(existing, group.Intent, batches)
+		// The CommitID names the operation: a second commit under it is the
+		// same operation and is not written again (EXT-WRT-2).
+		return CommitResult{Outcome: CommitAlreadyApplied, Commit: existing}, nil
 	}
 	// Projections must accept the commit before anything is persisted. The
 	// provisional commit is what a reader folds too: the kernel assigns
-	// PrevDigest and Digest inside Append, and nothing a projection may read
-	// differs between the two paths.
+	// only Seq inside Append, and nothing a projection may read differs
+	// between the two paths.
 	provisional := session.Commit{Seq: w.head.Next, CommitID: group.CommitID, Batches: batches}
 	// Only an authoritative projection's fold refuses the commit; a derived
 	// one that cannot fold is marked unhealthy once the commit lands.
@@ -404,7 +398,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	if invalid != "" {
 		return CommitResult{Outcome: CommitInvalid, Detail: invalid}, nil
 	}
-	sealed, err := w.kernel.Append(ctx, session.Proposal{CommitID: group.CommitID, Intent: group.Intent, Batches: batches})
+	stored, err := w.kernel.Append(ctx, session.Proposal{CommitID: group.CommitID, Batches: batches})
 	if err != nil {
 		if claim != nil && appendOutcomeKnown(err) {
 			w.admission.release(ctx, claim) // best effort; OpenWriter reconciles any orphan
@@ -431,34 +425,8 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	w.projections.advance(next)
 	w.head = w.kernel.Head()
 	writes = w.projections.planRefresh(w.head, false)
-	applied = &sealed
-	return CommitResult{Outcome: CommitApplied, Commit: sealed, Claim: claim}, nil
-}
-
-// replayVerdict tells a replay of a committed CommitID from a conflict
-// (EXT-WRT-2). When both the commit and the retry declare an intent, the
-// intents decide; otherwise the kernel holds the commit, not a fingerprint,
-// so the old commit's event fingerprint is recomputed and compared. Only a
-// CommitID hit pays for either.
-func replayVerdict(existing session.Commit, intent es.Digest, batches []session.StreamBatch) (CommitResult, error) {
-	if existing.Intent != "" && intent != "" {
-		if existing.Intent == intent {
-			return CommitResult{Outcome: CommitAlreadyApplied, Commit: existing}, nil
-		}
-		return CommitResult{Outcome: CommitConflict, Detail: "same CommitID, different intent"}, nil
-	}
-	fp, err := fingerprintCommit(existing.CommitID, batches)
-	if err != nil {
-		return CommitResult{}, err
-	}
-	old, err := fingerprintCommit(existing.CommitID, existing.Batches)
-	if err != nil {
-		return CommitResult{}, err
-	}
-	if old == fp {
-		return CommitResult{Outcome: CommitAlreadyApplied, Commit: existing}, nil
-	}
-	return CommitResult{Outcome: CommitConflict}, nil
+	applied = &stored
+	return CommitResult{Outcome: CommitApplied, Commit: stored, Claim: claim}, nil
 }
 
 // appendOutcomeKnown reports the Append errors that guarantee nothing was

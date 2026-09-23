@@ -16,7 +16,7 @@ func forkAt(t *testing.T, store session.Store, child, parent session.SessionID, 
 
 // SES-FRK-1/2/3: a fork is a new segment whose edge names the commit of its
 // parent's history it inherits; it reads the inherited prefix followed by its
-// own commits, chains its own commits from the edge, and treats inherited
+// own commits, numbers its own commits from the edge, and treats inherited
 // CommitIDs as its own for lookup and duplicate rejection. The parent is
 // unaffected.
 func testFork(t *testing.T, f Fixture) {
@@ -54,14 +54,14 @@ func testFork(t *testing.T, f Fixture) {
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
-	// The edge names the parent's segment, not the parent Session, and
-	// carries the anchor commit's digest.
-	wantEdge := session.LedgerRef{Segment: session.SegmentIDOf(parent), Seq: c1.Seq, Digest: c1.Digest}
-	if child.Parent == nil || *child.Parent != wantEdge || child.HeaderDigest == parent.HeaderDigest {
+	// The edge names the parent's segment, not the parent Session, and the
+	// anchor commit's position.
+	wantEdge := session.LedgerRef{Segment: parent.ID, Seq: c1.Seq}
+	if child.Parent == nil || *child.Parent != wantEdge || child.ID == parent.ID {
 		t.Fatalf("child header = %+v, want edge %+v", child, wantEdge)
 	}
 	// Idempotent repeat; a different origin for the same SessionID conflicts.
-	if again, err := forkAt(t, store, "child", "parent", c1.Seq); err != nil || again.HeaderDigest != child.HeaderDigest {
+	if again, err := forkAt(t, store, "child", "parent", c1.Seq); err != nil || again.ID != child.ID {
 		t.Fatalf("repeat fork = %+v %v", again, err)
 	}
 	if _, err := forkAt(t, store, "child", "parent", c0.Seq); !session.IsCode(err, session.ErrConflict) {
@@ -70,7 +70,7 @@ func testFork(t *testing.T, f Fixture) {
 
 	// The empty child seeds at the edge and reads the inherited prefix.
 	seed := session.LedgerSeed(child)
-	if seed != (session.Head{Next: c1.Seq + 1, Digest: c1.Digest}) {
+	if seed != (session.Head{Next: c1.Seq + 1}) {
 		t.Fatalf("seed = %+v", seed)
 	}
 	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "child"})
@@ -80,16 +80,11 @@ func testFork(t *testing.T, f Fixture) {
 	if page.Head != seed || len(page.Commits) != 2 || page.Commits[0].CommitID != "c0" || page.Commits[1].CommitID != "c1" || page.HasMore {
 		t.Fatalf("empty child page = %+v", page)
 	}
-	if page.Header.HeaderDigest != child.HeaderDigest {
-		t.Fatalf("child page carries header %s, want the child's tip", page.Header.HeaderDigest)
-	}
-	// The prefix is validated under the parent segment's header; the child's
-	// own commits (none yet) under the child's.
-	if err := session.ValidateLedger(session.ProfileV1(), parent, page.Commits); err != nil {
-		t.Fatalf("prefix under parent header: %v", err)
+	if page.Header.ID != child.ID {
+		t.Fatalf("child page carries header %s, want the child's tip", page.Header.ID)
 	}
 
-	// Own commits continue the chain from the edge.
+	// Own commits continue the numbering from the edge.
 	cw := open(t, store, "child", false)
 	if cw.Head() != seed {
 		t.Fatalf("child head = %+v, want %+v", cw.Head(), seed)
@@ -98,33 +93,30 @@ func testFork(t *testing.T, f Fixture) {
 		t.Fatal("inherited CommitIDs are not visible as committed, or the excluded tail is")
 	}
 	got, ok, err := cw.LookupCommit("c1")
-	if err != nil || !ok || got.Digest != c1.Digest || got.Seq != c1.Seq {
+	if err != nil || !ok || got.CommitID != c1.CommitID || got.Seq != c1.Seq {
 		t.Fatalf("lookup inherited = %+v %v %v", got, ok, err)
 	}
 	if _, err := cw.Append(ctx, session.Proposal{CommitID: "c0", Batches: []session.StreamBatch{batch(chatStream(), "twilight/x/a", `{"dup":true}`)}}); !session.IsCode(err, session.ErrConflict) {
 		t.Fatalf("append of an inherited CommitID = %v, want conflict", err)
 	}
 	c3 := appendCommit(t, cw, "c3", batch(chatStream(), "twilight/x/a", `{"n":3}`), batch(runStream("r1"), "twilight/x/r", `{"n":3}`))
-	if c3.Seq != c1.Seq+1 || c3.PrevDigest != c1.Digest {
-		t.Fatalf("first own commit = seq %d prev %s, want %d %s", c3.Seq, c3.PrevDigest, c1.Seq+1, c1.Digest)
+	if c3.Seq != c1.Seq+1 {
+		t.Fatalf("first own commit = seq %d, want %d", c3.Seq, c1.Seq+1)
 	}
 	// The parent keeps appending; neither side sees the other.
 	c4 := appendCommit(t, pw, "c4", batch(chatStream(), "twilight/x/a", `{"n":4}`))
 	childPage, _ := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "child"})
-	if ids(childPage.Commits) != "c0,c1,c3" || childPage.Head != (session.Head{Next: c3.Seq + 1, Digest: c3.Digest}) {
+	if ids(childPage.Commits) != "c0,c1,c3" || childPage.Head != (session.Head{Next: c3.Seq + 1}) {
 		t.Fatalf("child commits = %s head %+v", ids(childPage.Commits), childPage.Head)
 	}
 	parentPage, _ := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "parent"})
 	if ids(parentPage.Commits) != "c0,c1,c2,c4" || parentPage.Head.Next != c4.Seq+1 {
 		t.Fatalf("parent commits = %s", ids(parentPage.Commits))
 	}
-	// Own commits validate under the child's header from the edge.
+	// Reading from the seed returns the child's own commits only.
 	own, _ := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "child", From: seed.Next})
 	if ids(own.Commits) != "c3" {
 		t.Fatalf("own commits = %s", ids(own.Commits))
-	}
-	if err := session.ValidateLedger(session.ProfileV1(), child, own.Commits); err != nil {
-		t.Fatalf("own commits under child header: %v", err)
 	}
 
 	// Paging crosses the prefix boundary: From and Limit count the stitched
@@ -167,8 +159,7 @@ func testFork(t *testing.T, f Fixture) {
 		t.Fatalf("parent run stream = %+v, want c1 and c2", sp.Events)
 	}
 
-	// Reopen validates the own chain from the edge and keeps the prefix
-	// visible.
+	// Reopen continues from the edge and keeps the prefix visible.
 	if err := cw.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -185,19 +176,19 @@ func testFork(t *testing.T, f Fixture) {
 	if err != nil {
 		t.Fatalf("fork of fork: %v", err)
 	}
-	if grand.Parent.Segment != session.SegmentIDOf(child) {
+	if grand.Parent.Segment != child.ID {
 		t.Fatalf("grandchild edge = %+v, want the child's segment", grand.Parent)
 	}
 	gw := open(t, store, "grandchild", false)
 	c5 := appendCommit(t, gw, "c5", batch(chatStream(), "twilight/x/a", `{"n":5}`))
 	gp, _ := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "grandchild"})
-	if ids(gp.Commits) != "c0,c1,c3,c5" || c5.Seq != c3.Seq+1 || c5.PrevDigest != c3.Digest || gp.Header.HeaderDigest != grand.HeaderDigest {
+	if ids(gp.Commits) != "c0,c1,c3,c5" || c5.Seq != c3.Seq+1 || gp.Header.ID != grand.ID {
 		t.Fatalf("grandchild commits = %s", ids(gp.Commits))
 	}
 	if !gw.Committed("c0") || gw.Committed("c2") {
 		t.Fatal("grandchild prefix membership wrong")
 	}
-	if c, ok, _ := gw.LookupCommit("c0"); !ok || c.Digest != c0.Digest {
+	if c, ok, _ := gw.LookupCommit("c0"); !ok || c.Seq != c0.Seq {
 		t.Fatalf("grandchild lookup c0 = %+v %v", c, ok)
 	}
 	_ = gw.Close(ctx)
@@ -205,7 +196,7 @@ func testFork(t *testing.T, f Fixture) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if flat.Parent.Segment != session.SegmentIDOf(parent) {
+	if flat.Parent.Segment != parent.ID {
 		t.Fatalf("fork at an inherited commit edge = %+v, want the root segment", flat.Parent)
 	}
 	_ = pw.Close(ctx)

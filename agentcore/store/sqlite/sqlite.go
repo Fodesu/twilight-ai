@@ -54,8 +54,6 @@ CREATE TABLE IF NOT EXISTS execution_commits (
 	key       TEXT NOT NULL,
 	seq       INTEGER NOT NULL,
 	commit_id TEXT NOT NULL,
-	intent    TEXT NOT NULL,
-	digest    TEXT NOT NULL,
 	body      TEXT NOT NULL,
 	PRIMARY KEY (key, seq),
 	UNIQUE (key, commit_id)
@@ -79,8 +77,6 @@ CREATE TABLE IF NOT EXISTS process_commits (
 	key       TEXT NOT NULL,
 	seq       INTEGER NOT NULL,
 	commit_id TEXT NOT NULL,
-	intent    TEXT NOT NULL,
-	digest    TEXT NOT NULL,
 	body      TEXT NOT NULL,
 	PRIMARY KEY (key, seq),
 	UNIQUE (key, commit_id)

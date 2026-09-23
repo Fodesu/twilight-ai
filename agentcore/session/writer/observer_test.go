@@ -60,7 +60,7 @@ func TestCommitObserversSeeAppliedCommitsInOrder(t *testing.T) {
 	}
 	commits := f.commits(t)
 	for i, c := range rec.commits {
-		if c.Seq != commits[i].Seq || c.Digest != commits[i].Digest || c.CommitID != commits[i].CommitID {
+		if c.Seq != commits[i].Seq || c.CommitID != commits[i].CommitID {
 			t.Fatalf("notification %d = %+v, want log commit %+v", i, c, commits[i])
 		}
 	}

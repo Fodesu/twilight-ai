@@ -79,8 +79,8 @@ func TestForkWriterInheritsPrefix(t *testing.T) {
 	if err != nil || replay.Outcome != CommitAlreadyApplied || replay.Commit.Seq != 0 {
 		t.Fatalf("replay of inherited c1 = %+v %v", replay, err)
 	}
-	if conflict, _ := child.Commit(ctx, noteGroup("c1", "other")); conflict.Outcome != CommitConflict {
-		t.Fatalf("conflicting replay = %+v", conflict)
+	if again, _ := child.Commit(ctx, noteGroup("c1", "other")); again.Outcome != CommitAlreadyApplied {
+		t.Fatalf("replay of inherited c1 with other content = %+v, want already applied", again)
 	}
 	res, err := child.Commit(ctx, noteGroup("c4", "four"))
 	if err != nil || res.Outcome != CommitApplied || res.Commit.Seq != 2 {
