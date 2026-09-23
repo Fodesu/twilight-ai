@@ -67,6 +67,24 @@ CREATE TABLE IF NOT EXISTS execution_leases (
 	lease_until INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS execution_leases_by_owner ON execution_leases (owner, key);
+CREATE TABLE IF NOT EXISTS processes (
+	key            TEXT PRIMARY KEY,
+	assignment_key TEXT NOT NULL,
+	scope          TEXT NOT NULL,
+	terminal       INTEGER NOT NULL DEFAULT 0,
+	epoch          INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS processes_open_by_scope ON processes (scope, terminal);
+CREATE TABLE IF NOT EXISTS process_commits (
+	key       TEXT NOT NULL,
+	seq       INTEGER NOT NULL,
+	commit_id TEXT NOT NULL,
+	intent    TEXT NOT NULL,
+	digest    TEXT NOT NULL,
+	body      TEXT NOT NULL,
+	PRIMARY KEY (key, seq),
+	UNIQUE (key, commit_id)
+);
 CREATE TABLE IF NOT EXISTS checkpoints (
 	consumer TEXT NOT NULL,
 	ledger   TEXT NOT NULL,

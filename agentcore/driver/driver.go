@@ -14,6 +14,8 @@ import (
 	"sync"
 
 	"github.com/felinics/twilight/agentcore/decision"
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/process/relay"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -70,6 +72,10 @@ type Driver struct {
 	// drive leaves such a call waiting, and when a Session opens, the
 	// Driver asks the tool's Responder and commits its answer.
 	Responders map[run.ToolRef]Responder
+	// Relay is the effect process's relay (RUN-EXE-15). When set, Open and
+	// every Drive bring the Session's effect processes up to date from the
+	// ledger; nil leaves the Session without a process ledger.
+	Relay *relay.Relay
 
 	mu       sync.Mutex
 	loops    map[turn.PresetRef]*loop.Loop
@@ -199,8 +205,47 @@ func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID)
 			break
 		}
 	}
+	d.syncProcesses(context.WithoutCancel(ctx), w)
 	resp, err := d.Turns.Status(ctx, ref)
 	return DriveResult{TurnResponse: resp}, err
+}
+
+// syncProcesses brings the Session's effect processes up to date with its
+// ledger (RUN-EXE-15). A failure is reported, never fatal to the drive: the
+// next Sync resumes from the same checkpoint.
+func (d *Driver) syncProcesses(ctx context.Context, w writer.Writer) {
+	if d.Relay == nil {
+		return
+	}
+	if _, err := d.Relay.Sync(ctx, w.SessionID(), ledger.Epoch(w.Epoch())); err != nil {
+		d.fail(w.SessionID(), fmt.Errorf("driver: syncing effect processes: %w", err))
+	}
+}
+
+// Redispatch is process.Ports.Redispatch: the Assignment of an Executing
+// effect is rebuilt on the Session's Writer and handed to the Executor
+// again. The Session must be open in this Driver.
+func (d *Driver) Redispatch(ctx context.Context, sid session.SessionID, key effect.AssignmentKey) error {
+	d.mu.Lock()
+	lt := d.recovery[sid]
+	d.mu.Unlock()
+	if lt == nil {
+		return fmt.Errorf("driver: redispatch for %s: session is not open here", sid)
+	}
+	w := lt.w
+	surface, err := turn.ReadSurface(ctx, w.Projections(), sid)
+	if err != nil {
+		return err
+	}
+	turnID, ok := surface.OwnerOf(key.RunID)
+	if !ok {
+		return fmt.Errorf("driver: redispatch for run %s: no owning turn", key.RunID)
+	}
+	l, err := d.loopFor(surface.Turns[turnID].Preset)
+	if err != nil {
+		return err
+	}
+	return l.Redispatch(ctx, d.Runs.Bind(w), key)
 }
 
 // reattachDeliver is what the reconciler hands a kept attempt's Outcome to
@@ -307,6 +352,10 @@ func (d *Driver) Open(ctx context.Context, w writer.Writer) (int, error) {
 		d.Stop(w.SessionID())
 		return n, err
 	}
+	// The processes of every effect the previous owner started are brought
+	// up to date before this owner drives: an effect the Executor never
+	// received is dispatched now (RUN-EXE-15).
+	d.syncProcesses(ctx, w)
 	// Waits a previous owner left with a Responder are answered by this one
 	// (DRV-4, SPN-4): the Responder continues from its durable state.
 	d.answerAllWaiting(ctx, w)

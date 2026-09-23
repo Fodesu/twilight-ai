@@ -220,14 +220,22 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	if s2.Recovered != 0 {
 		t.Fatalf("recovered = %d, want 0 (the attempt was reattached, not disposed)", s2.Recovered)
 	}
+	// The reconciler attaches to read the Outcome and the effect process
+	// relay asks whether the Executor holds the effect (RUN-EXE-15): every
+	// Attach names the one running attempt.
 	exec.mu.Lock()
 	var key loop.AssignmentKey
 	if len(exec.attached) > 0 {
 		key = exec.attached[0]
 	}
 	attached, hasOutcome := len(exec.attached), exec.outcomes[key] != nil
+	for _, k := range exec.attached {
+		if k != key {
+			attached = -1
+		}
+	}
 	exec.mu.Unlock()
-	if attached != 1 || !hasOutcome {
+	if attached < 1 || !hasOutcome {
 		t.Fatalf("attach calls = %d, outcome record = %v", attached, hasOutcome)
 	}
 	tsurf, err := p2.TurnSurface(ctx, sid)

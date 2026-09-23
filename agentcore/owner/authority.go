@@ -16,10 +16,13 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/checkpoint"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/preset"
+	"github.com/felinics/twilight/agentcore/process"
+	"github.com/felinics/twilight/agentcore/process/relay"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -63,6 +66,13 @@ type Ports struct {
 	// The core ships no builder; the agent built on it supplies its catalog
 	// (agent/prompt.DefaultPromptBuilders for the reference agent).
 	Decisions *decision.PromptBuilders
+	// Processes and Checkpoints are the effect process ledger and the
+	// relay's cursor (RUN-EXE-15). Both or neither: with both, the Driver
+	// runs the process relay on Open and after every drive; with neither,
+	// effects have no process ledger. Like every store they are durable
+	// (OWN-PRT-3).
+	Processes   process.Store
+	Checkpoints checkpoint.Store
 	// Executor is the effect layer port (RUN-EXE-3): required.
 	Executor effect.ExecutionPort
 	// TargetResolver supplies the opaque resource target of each effect
@@ -198,6 +208,17 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	a.Driver.Presets, a.Driver.Decisions, a.Driver.Targets = presets, decisions, p.TargetResolver
 	a.Driver.Sources = decision.Sources{Projections: projections, Content: content}
 	a.Driver.Fail = p.Fail
+	if (p.Processes == nil) != (p.Checkpoints == nil) {
+		return nil, errors.New("owner: Processes and Checkpoints come together: the effect process relay needs its ledger and its cursor")
+	}
+	if p.Processes != nil {
+		r, err := relay.New(relay.Ports{History: p.Store, Registry: a.Registry, Ledger: p.Processes, Checkpoints: p.Checkpoints,
+			Executions: p.Executor, Redispatch: a.Driver.Redispatch})
+		if err != nil {
+			return nil, err
+		}
+		a.Driver.Relay = r
+	}
 	return a, nil
 }
 
