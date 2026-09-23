@@ -46,10 +46,28 @@ type DB struct {
 }
 
 const schema = `
-CREATE TABLE IF NOT EXISTS execution_records (
-	key    TEXT PRIMARY KEY,
-	record TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS executions (
+	key            TEXT PRIMARY KEY,
+	assignment_key TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS execution_commits (
+	key       TEXT NOT NULL,
+	seq       INTEGER NOT NULL,
+	commit_id TEXT NOT NULL,
+	intent    TEXT NOT NULL,
+	epoch     INTEGER NOT NULL,
+	digest    TEXT NOT NULL,
+	body      TEXT NOT NULL,
+	PRIMARY KEY (key, seq),
+	UNIQUE (key, commit_id)
+);
+CREATE TABLE IF NOT EXISTS execution_leases (
+	key         TEXT PRIMARY KEY,
+	owner       TEXT NOT NULL,
+	epoch       INTEGER NOT NULL,
+	lease_until INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS execution_leases_by_owner ON execution_leases (owner, key);
 CREATE TABLE IF NOT EXISTS bindings (
 	id      TEXT PRIMARY KEY,
 	digest  TEXT NOT NULL,

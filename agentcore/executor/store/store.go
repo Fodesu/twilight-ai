@@ -1,23 +1,255 @@
+// Package store is the Executor's authority over one execution: the commit
+// ledger of an effect's attempts (RUN-EXE-3, RUN-EXE-9) and the lease that
+// fences its Worker. It speaks the vocabulary of the Session kernel — a
+// ledger of commits, each with a Seq, a CommitID, an Epoch and an Intent,
+// carrying events with a type and a canonical payload — so that what is true
+// of a Session ledger is true here: the ledger is the only fact authority,
+// ExecutionState is its fold, a replayed command is recognised by its
+// CommitID, and a fenced writer's commit is refused by its Epoch. The Run
+// never reads this ledger; the two authorities meet only at AssignmentKey.
 package store
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
+	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/executor/protocol"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
 var (
+	// ErrAssignmentConflict: the ledger was accepted for a different
+	// Assignment of the same key (RUN-EXE-3).
 	ErrAssignmentConflict = errors.New("executor/store: assignment conflict")
-	ErrLeaseLost          = errors.New("executor/store: execution lease lost")
-	ErrStateConflict      = errors.New("executor/store: state conflict")
+	// ErrLeaseLost: the lease the commit was made under is no longer the
+	// key's lease — another Worker holds a later Epoch, or it expired.
+	ErrLeaseLost = errors.New("executor/store: execution lease lost")
+	// ErrStateConflict: the commit's events are not legal from the ledger's
+	// current state (the execution state machine).
+	ErrStateConflict = errors.New("executor/store: state conflict")
+	// ErrConflict: the commit's Seq is not the ledger's Head.Next; the
+	// writer reloads and decides again.
+	ErrConflict = errors.New("executor/store: commit sequence conflict")
+	// ErrCommitConflict: a commit with the same CommitID exists with a
+	// different Intent — the same command identity for another operation.
+	ErrCommitConflict = errors.New("executor/store: commit intent conflict")
+	// ErrAlreadyApplied: a commit with the same CommitID and Intent exists;
+	// the operation was applied before and nothing was written.
+	ErrAlreadyApplied = errors.New("executor/store: commit already applied")
 )
 
-// LegalTransition is the record state machine every Store enforces in
-// TransitionOwned (RUN-EXE-3).
+// CommitSeq is the position of a commit in one execution's ledger.
+type CommitSeq uint64
+
+// CommitID names the operation a commit records; replaying it is recognised.
+type CommitID string
+
+// Epoch is the fencing epoch of the Worker that held the key when the commit
+// was made. Acquire raises it; a commit under an older Epoch is refused.
+type Epoch uint64
+
+// EventType names an execution fact.
+type EventType string
+
+const (
+	// EventExecutionAccepted: the Assignment was accepted into this ledger,
+	// before anything started (RUN-EXE-3). Always the first event.
+	EventExecutionAccepted EventType = "execution_accepted"
+	// EventExecutionBound: the attempt's physical binding, Provider and Ref,
+	// was chosen (RUN-EXE-9, RUN-EXE-10).
+	EventExecutionBound EventType = "execution_bound"
+	// EventExecutionClaimed: a Worker took the key under a new Epoch. Lease
+	// renewals are not events; the lease row is the fence's authority.
+	EventExecutionClaimed EventType = "execution_claimed"
+	// EventExecutionStarted: Backend.Start is about to be called; the state
+	// is Dispatching, which may already have crossed the effect boundary.
+	EventExecutionStarted EventType = "execution_started"
+	// EventExecutionRunning: the backend accepted the start.
+	EventExecutionRunning EventType = "execution_running"
+	// EventCancelRequested: cancellation was asked of the backend.
+	EventCancelRequested EventType = "cancel_requested"
+	// EventExecutionRestarted: the attempt moved to a new Ref, the previous
+	// one joining the audit trail (RUN-EXE-9, RUN-EXE-11).
+	EventExecutionRestarted EventType = "execution_restarted"
+	// EventExecutionSettled: the terminal state and the Outcome.
+	EventExecutionSettled EventType = "execution_settled"
+	// EventOutcomeAcknowledged: the Owner reported the Outcome settled as a
+	// Session fact; the payload and Outcome are collected (RUN-EXE-13).
+	EventOutcomeAcknowledged EventType = "outcome_acknowledged"
+)
+
+// Event is one execution fact, the shape of a Session event.
+type Event struct {
+	Type                EventType        `json:"type"`
+	RecordedAtUnixMilli int64            `json:"recordedAtUnixMilli"`
+	Payload             jsonstable.Value `json:"payload"`
+}
+
+// NewEvent renders payload as the event's canonical JSON.
+func NewEvent(typ EventType, recordedAtUnixMilli int64, payload any) (Event, error) {
+	if payload == nil {
+		payload = struct{}{}
+	}
+	v, err := jsonstable.FromValue(payload)
+	if err != nil {
+		return Event{}, fmt.Errorf("executor/store: %s payload: %w", typ, err)
+	}
+	return Event{Type: typ, RecordedAtUnixMilli: recordedAtUnixMilli, Payload: v}, nil
+}
+
+// Decode decodes the payload into dst.
+func (e *Event) Decode(dst any) error { return e.Payload.Decode(dst) }
+
+// Commit is one atomic step of an execution's ledger.
+type Commit struct {
+	Seq      CommitSeq `json:"seq"`
+	CommitID CommitID  `json:"commitId"`
+	Epoch    Epoch     `json:"epoch"`
+	// Intent is the digest of the operation, as the writer declared it: a
+	// replay of the CommitID with the same Intent is the same operation,
+	// with another Intent a conflict.
+	Intent es.Digest `json:"intent,omitempty"`
+	Events []Event   `json:"events"`
+}
+
+// Digest is the commit's content digest, chained into Head.
+func (c *Commit) Digest(prev es.Digest) (es.Digest, error) {
+	return es.DigestCanonical(struct {
+		Prev   es.Digest `json:"prev"`
+		Commit *Commit   `json:"commit"`
+	}{prev, c})
+}
+
+// Head is the ledger's tip: the next Seq and the digest of the last commit.
+type Head struct {
+	Next   CommitSeq `json:"next"`
+	Digest es.Digest `json:"digest,omitempty"`
+}
+
+// Lease is a Worker's fenced hold on one execution (RUN-EXE-6). The store
+// is its authority: Acquire creates it under a new Epoch, Renew extends it,
+// and Append under it is refused once the key has a later Epoch.
+type Lease struct {
+	Key            effect.AssignmentKey
+	Owner          string
+	Epoch          Epoch
+	UntilUnixMilli int64
+}
+
+// IsZero reports the absence of a lease: an unfenced Append.
+func (l Lease) IsZero() bool { return l.Owner == "" && l.Epoch == 0 }
+
+// ExecutionRef is the Executor's physical binding of the current attempt it
+// makes for one effect (RUN-EXE-9): the provider (backend) the execution was
+// handed to and that backend's opaque handle. It never leaves the Executor:
+// Agent Core addresses executions by AssignmentKey, and the Run records the
+// EffectID alone.
+type ExecutionRef struct {
+	Provider string `json:"provider"`
+	Ref      string `json:"ref"`
+}
+
+// --- payloads ---
+
+// Accepted is the payload of execution_accepted.
+type Accepted struct {
+	Assignment       effect.Assignment `json:"assignment"`
+	AssignmentDigest run.Digest        `json:"assignmentDigest"`
+}
+
+// Bound is the payload of execution_bound.
+type Bound struct {
+	Ref ExecutionRef `json:"ref"`
+}
+
+// Claimed is the payload of execution_claimed.
+type Claimed struct {
+	Owner string `json:"owner"`
+	Epoch Epoch  `json:"epoch"`
+}
+
+// Restarted is the payload of execution_restarted: the Ref the attempt
+// leaves and the one it continues under, on the same Provider.
+type Restarted struct {
+	Superseded ExecutionRef `json:"superseded"`
+	Ref        string       `json:"ref"`
+}
+
+// Settled is the payload of execution_settled.
+type Settled struct {
+	State   effect.ExecutionStatus   `json:"state"`
+	Outcome protocol.OutcomeEnvelope `json:"outcome"`
+}
+
+// --- identity ---
+
+// DeriveCommitID names a command on one key. Commands that happen once per
+// ledger (acceptance, settlement, acknowledgement) take no discriminator;
+// those that recur (a claim per Epoch, a restart per generation) take one,
+// so their identity is the command and the occasion, never the wall clock.
+func DeriveCommitID(key effect.AssignmentKey, command, discriminator string) CommitID {
+	d, err := es.DigestCanonical(struct {
+		Key           effect.AssignmentKey `json:"key"`
+		Command       string               `json:"command"`
+		Discriminator string               `json:"discriminator,omitempty"`
+	}{key, command, discriminator})
+	if err != nil {
+		// AssignmentKey is three strings; canonical encoding cannot fail.
+		panic(err)
+	}
+	return CommitID(d)
+}
+
+// AcceptCommitID, SettleCommitID and AcknowledgeCommitID name the three
+// commands that happen once per ledger: opening it, ending the execution,
+// and the Owner's acknowledgement. A settlement by the lease holder and one
+// by a controller's Dispose share SettleCommitID, so the second reads the
+// first's Outcome instead of writing a second ending.
+func AcceptCommitID(key effect.AssignmentKey) CommitID { return DeriveCommitID(key, "accept", "") }
+func SettleCommitID(key effect.AssignmentKey) CommitID { return DeriveCommitID(key, "settle", "") }
+func AcknowledgeCommitID(key effect.AssignmentKey) CommitID {
+	return DeriveCommitID(key, "acknowledge", "")
+}
+
+// --- fold ---
+
+// ExecutionState is the fold of one execution's ledger, joined with its
+// lease: the execution plane's side of the effect. Assignment and Outcome
+// are absent once collected.
+type ExecutionState struct {
+	Assignment       effect.Assignment `json:"assignment"`
+	AssignmentDigest run.Digest        `json:"assignmentDigest"`
+	ExecutionRef     ExecutionRef      `json:"executionRef"`
+	// Superseded lists the ExecutionRefs of the earlier attempts made for
+	// this effect, oldest first (RUN-EXE-9).
+	Superseded []ExecutionRef            `json:"superseded,omitempty"`
+	State      effect.ExecutionStatus    `json:"state"`
+	Outcome    *protocol.OutcomeEnvelope `json:"outcome,omitempty"`
+	// SettledAtUnixMilli is when the execution became terminal.
+	SettledAtUnixMilli int64 `json:"settledAtUnixMilli,omitempty"`
+	// AcknowledgedAtUnixMilli is when the Owner acknowledged the Outcome.
+	AcknowledgedAtUnixMilli int64 `json:"acknowledgedAtUnixMilli,omitempty"`
+	// Collected marks an acknowledged execution whose payload and Outcome
+	// the fold no longer carries (RUN-EXE-13); the key, digest, state and
+	// ExecutionRef remain, so the acceptance of the key is never forgotten.
+	Collected bool `json:"collected,omitempty"`
+
+	// Lease view, joined by Load from the lease row: the current holder and
+	// its Epoch, and the lease's expiry. Zero when never claimed.
+	Owner               string `json:"owner,omitempty"`
+	FencingEpoch        Epoch  `json:"fencingEpoch,omitempty"`
+	LeaseUntilUnixMilli int64  `json:"leaseUntilUnixMilli,omitempty"`
+}
+
+// Terminal reports whether the execution has settled.
+func (s *ExecutionState) Terminal() bool { return protocol.StatusTerminal(s.State) }
+
+// LegalTransition is the execution state machine (RUN-EXE-3).
 func LegalTransition(from, to effect.ExecutionStatus) bool {
 	if to == effect.ExecutionCancelRequested {
 		return from == effect.ExecutionAccepted || from == effect.ExecutionDispatching || from == effect.ExecutionRunning
@@ -28,68 +260,167 @@ func LegalTransition(from, to effect.ExecutionStatus) bool {
 	case effect.ExecutionDispatching:
 		return to == effect.ExecutionRunning
 	case effect.ExecutionRunning:
-		// This transition is only used by explicit control-plane retry after
-		// backend reconciliation found no attachable execution.
+		// A restart after the backend proved the execution missing, or after
+		// a retryable failure (RUN-EXE-9, RUN-EXE-11).
 		return to == effect.ExecutionDispatching
 	default:
 		return false
 	}
 }
 
-// ExecutionRef is the Executor's physical binding of the current attempt it
-// makes for one effect (RUN-EXE-9): the provider (backend) the record was
-// handed to and that backend's opaque handle. It is persisted before the
-// execution starts and never leaves the Executor: Agent Core addresses
-// executions by AssignmentKey, the effect under its Session and Run, and the
-// Run itself records the EffectID alone.
-type ExecutionRef struct {
-	Provider string `json:"provider"`
-	Ref      string `json:"ref"`
+// Fenced reports whether an event may only be committed under the key's
+// lease. Acceptance precedes any lease; settlement by Dispose and the
+// Owner's acknowledgement come from outside the Worker (RUN-EXE-6,
+// RUN-EXE-13). Everything else is the lease holder's.
+func Fenced(typ EventType) bool {
+	switch typ {
+	case EventExecutionAccepted, EventExecutionBound, EventExecutionSettled, EventOutcomeAcknowledged:
+		return false
+	default:
+		return true
+	}
 }
 
-// Record is the worker's durable record of the attempts made for one effect:
-// the execution plane's side of the effect, which the Run never reads.
-// Assignment is immutable and carries the execution payload; ExecutionRef is
-// set before Start; State and Outcome move monotonically to a terminal state.
-// Owner and FencingEpoch protect takeover.
-type Record struct {
-	Assignment       effect.Assignment `json:"assignment"`
-	AssignmentDigest run.Digest        `json:"assignmentDigest"`
-	ExecutionRef     ExecutionRef      `json:"executionRef"`
-	// Superseded lists the ExecutionRefs of the earlier attempts made for
-	// this effect, oldest first: a takeover that found the physical execution
-	// missing restarted it under a new Ref (RUN-EXE-9). The audit trail
-	// keeps every Ref the effect was ever bound to.
-	Superseded          []ExecutionRef            `json:"superseded,omitempty"`
-	State               effect.ExecutionStatus    `json:"state"`
-	Owner               string                    `json:"owner,omitempty"`
-	FencingEpoch        uint64                    `json:"fencingEpoch,omitempty"`
-	LeaseUntilUnixMilli int64                     `json:"leaseUntilUnixMilli,omitempty"`
-	Outcome             *protocol.OutcomeEnvelope `json:"outcome,omitempty"`
-	// SettledAtUnixMilli is when the record became terminal.
-	SettledAtUnixMilli int64 `json:"settledAtUnixMilli,omitempty"`
-	// AcknowledgedAtUnixMilli is when the Owner reported the settlement of
-	// this Outcome as a Session fact (effect.Acknowledger); zero until then.
-	AcknowledgedAtUnixMilli int64 `json:"acknowledgedAtUnixMilli,omitempty"`
-	// Collected marks a terminal record whose payload and Outcome were
-	// collected on acknowledgement (RUN-EXE-13): the key, digest, state and
-	// ExecutionRef remain, so the acceptance of the key is never forgotten
-	// while the record exists.
-	Collected bool `json:"collected,omitempty"`
+// Fold applies one commit to the state; an event that is not legal from the
+// current state is ErrStateConflict. The store folds every commit before it
+// is appended, so the ledger never holds an illegal step.
+func Fold(state ExecutionState, c *Commit) (ExecutionState, error) { //nolint:gocritic // hugeParam: a fold takes and returns the state by value
+	for i := range c.Events {
+		e := &c.Events[i]
+		var err error
+		state, err = apply(state, e)
+		if err != nil {
+			return ExecutionState{}, fmt.Errorf("%w: commit %d event %d (%s): %w", ErrStateConflict, c.Seq, i, e.Type, err)
+		}
+	}
+	return state, nil
 }
 
+func apply(s ExecutionState, e *Event) (ExecutionState, error) { //nolint:gocritic,gocyclo // hugeParam: value fold; gocyclo: one case per event type
+	switch e.Type {
+	case EventExecutionAccepted:
+		if s.State != "" {
+			return s, errors.New("accepted twice")
+		}
+		var p Accepted
+		if err := e.Decode(&p); err != nil {
+			return s, err
+		}
+		s.Assignment, s.AssignmentDigest, s.State = p.Assignment, p.AssignmentDigest, effect.ExecutionAccepted
+	case EventExecutionBound:
+		if s.State == "" || s.Terminal() {
+			return s, errors.New("bound outside an accepted, unsettled execution")
+		}
+		if s.ExecutionRef.Provider != "" {
+			return s, errors.New("bound twice; a new attempt is a restart")
+		}
+		var p Bound
+		if err := e.Decode(&p); err != nil {
+			return s, err
+		}
+		s.ExecutionRef = p.Ref
+	case EventExecutionClaimed:
+		if s.State == "" || s.Terminal() {
+			return s, errors.New("claimed outside an accepted, unsettled execution")
+		}
+		var p Claimed
+		if err := e.Decode(&p); err != nil {
+			return s, err
+		}
+		if p.Epoch <= s.FencingEpoch {
+			return s, fmt.Errorf("claim epoch %d does not advance %d", p.Epoch, s.FencingEpoch)
+		}
+		s.Owner, s.FencingEpoch = p.Owner, p.Epoch
+	case EventExecutionStarted:
+		if !LegalTransition(s.State, effect.ExecutionDispatching) {
+			return s, fmt.Errorf("start from %s", s.State)
+		}
+		s.State = effect.ExecutionDispatching
+	case EventExecutionRunning:
+		if !LegalTransition(s.State, effect.ExecutionRunning) {
+			return s, fmt.Errorf("running from %s", s.State)
+		}
+		s.State = effect.ExecutionRunning
+	case EventCancelRequested:
+		if !LegalTransition(s.State, effect.ExecutionCancelRequested) {
+			return s, fmt.Errorf("cancel from %s", s.State)
+		}
+		s.State = effect.ExecutionCancelRequested
+	case EventExecutionRestarted:
+		if s.State == "" || s.Terminal() {
+			return s, errors.New("restart outside an unsettled execution")
+		}
+		var p Restarted
+		if err := e.Decode(&p); err != nil {
+			return s, err
+		}
+		if p.Superseded != s.ExecutionRef {
+			return s, fmt.Errorf("restart supersedes %+v, current is %+v", p.Superseded, s.ExecutionRef)
+		}
+		s.Superseded = append(append([]ExecutionRef(nil), s.Superseded...), s.ExecutionRef)
+		s.ExecutionRef = ExecutionRef{Provider: s.ExecutionRef.Provider, Ref: p.Ref}
+	case EventExecutionSettled:
+		if s.State == "" || s.Terminal() {
+			return s, errors.New("settled outside an unsettled execution")
+		}
+		var p Settled
+		if err := e.Decode(&p); err != nil {
+			return s, err
+		}
+		if !protocol.StatusTerminal(p.State) {
+			return s, fmt.Errorf("settled to non-terminal %s", p.State)
+		}
+		out := p.Outcome
+		s.State, s.Outcome, s.SettledAtUnixMilli = p.State, &out, e.RecordedAtUnixMilli
+	case EventOutcomeAcknowledged:
+		if !s.Terminal() {
+			return s, fmt.Errorf("acknowledged in state %s", s.State)
+		}
+		if s.Collected {
+			return s, errors.New("acknowledged twice")
+		}
+		s.AcknowledgedAtUnixMilli, s.Collected = e.RecordedAtUnixMilli, true
+		s.Assignment.Body, s.Assignment.Target, s.Outcome, s.Superseded = nil, nil, nil, nil
+	default:
+		return s, fmt.Errorf("unknown event type %q", e.Type)
+	}
+	return s, nil
+}
+
+// Store is the ledger and lease authority of executions, keyed by
+// AssignmentKey. Every write is one transaction; the store is the fence for
+// any number of Workers over the same file (RUN-EXE-6).
 type Store interface {
-	Create(context.Context, Record) (Record, bool, error)
-	Get(context.Context, effect.AssignmentKey) (Record, bool, error)
-	Put(context.Context, Record) error
-	PutOwned(context.Context, Record, string, uint64) error
-	TransitionOwned(context.Context, effect.AssignmentKey, string, uint64, effect.ExecutionStatus, effect.ExecutionStatus) error
-	Acquire(context.Context, effect.AssignmentKey, string, time.Duration) (Record, bool, error)
-	Renew(context.Context, effect.AssignmentKey, string, uint64, time.Duration) error
-	LeaseOwned(context.Context, effect.AssignmentKey, string, uint64) (bool, error)
-	// ListOwned returns the records whose Owner is the given Worker id: what
-	// a restarted incarnation resumes. No other listing is part of the data
-	// plane; which orphaned records to recover is decided by whoever observes
-	// them (RUN-EXE-6).
-	ListOwned(context.Context, string) ([]Record, error)
+	// Load folds the key's ledger and joins its lease; ok is false for a key
+	// with no ledger, which is a proven absence (RUN-EXE-3).
+	Load(context.Context, effect.AssignmentKey) (ExecutionState, Head, bool, error)
+	// Read returns the key's commits from Seq from, in order, and the Head.
+	Read(context.Context, effect.AssignmentKey, CommitSeq) ([]Commit, Head, error)
+	// Append commits c to the key's ledger. c.Seq must be Head.Next
+	// (ErrConflict). A commit whose CommitID already exists is
+	// ErrAlreadyApplied with the same Intent and ErrCommitConflict
+	// otherwise; nothing is written in either case. A zero lease is an
+	// unfenced append and may carry only events Fenced reports false for;
+	// otherwise the lease must be the key's current, unexpired lease and
+	// c.Epoch its Epoch (ErrLeaseLost). The commit is folded before it is
+	// written (ErrStateConflict). The first commit's Intent is the
+	// AssignmentDigest; a first commit with another Intent is
+	// ErrAssignmentConflict.
+	Append(context.Context, Lease, effect.AssignmentKey, Commit) error
+	// Acquire takes the key's lease for owner under a new Epoch and records
+	// execution_claimed in the same transaction. ok is false while another
+	// owner's lease is live or the execution is terminal; a key without a
+	// ledger is effect.ErrExecutionNotFound.
+	Acquire(context.Context, effect.AssignmentKey, string, time.Duration) (Lease, bool, error)
+	// Renew moves the lease's expiry when it is still the key's current
+	// lease (same owner and Epoch, execution unsettled); otherwise
+	// ErrLeaseLost. Expiry alone does not end ownership.
+	Renew(context.Context, Lease, time.Duration) error
+	// LeaseOf returns the key's current lease row; ok is false when the key
+	// was never claimed. A key without a ledger is effect.ErrExecutionNotFound.
+	LeaseOf(context.Context, effect.AssignmentKey) (Lease, bool, error)
+	// ListOwned returns the keys whose lease row names owner: what a
+	// restarted incarnation resumes. No other listing is part of the data
+	// plane (RUN-EXE-6).
+	ListOwned(context.Context, string) ([]effect.AssignmentKey, error)
 }

@@ -209,9 +209,9 @@ func TestWorkerDispatchReplayPreservesExistingExecution(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			r := store.Record{Assignment: a, AssignmentDigest: digest, State: state,
+			r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: state,
 				Owner: "expired-worker", FencingEpoch: 4, LeaseUntilUnixMilli: 1}
-			if err := records.Put(ctx, r); err != nil {
+			if err := records.Seed(ctx, r); err != nil {
 				t.Fatal(err)
 			}
 			backend := newTestBackend()
@@ -222,7 +222,7 @@ func TestWorkerDispatchReplayPreservesExistingExecution(t *testing.T) {
 			if err := worker.Dispatch(ctx, a); err != nil {
 				t.Fatal(err)
 			}
-			got, _, err := records.Get(ctx, a.Key())
+			got, _, _, err := records.Load(ctx, a.Key())
 			if err != nil || got.State != r.State || got.Owner != r.Owner || got.FencingEpoch != r.FencingEpoch {
 				t.Fatalf("replay changed execution: %+v, %v", got, err)
 			}
@@ -288,7 +288,7 @@ func TestWorkerUncertainDispatchPreservesExecution(t *testing.T) {
 			if overHTTP && err != nil || !overHTTP && !errors.Is(err, effect.ErrDispatchUnknown) {
 				t.Fatalf("dispatch error = %v", err)
 			}
-			r, _, err := records.Get(ctx, a.Key())
+			r, _, _, err := records.Load(ctx, a.Key())
 			if err != nil || r.State != effect.ExecutionDispatching || r.Outcome != nil {
 				t.Fatalf("uncertain dispatch changed execution: %+v, %v", r, err)
 			}
@@ -377,7 +377,7 @@ func TestWorkerOutcomeReadFailurePreservesExecution(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			r, _, err := records.Get(ctx, a.Key())
+			r, _, _, err := records.Load(ctx, a.Key())
 			if err != nil || r.State != effect.ExecutionRunning || r.Outcome != nil {
 				t.Fatalf("read error changed execution: %+v, %v", r, err)
 			}
@@ -425,7 +425,7 @@ func TestWorkerCloseStopsGoroutines(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Close did not return with a watcher in flight")
 	}
-	r, ok, err := records.Get(ctx, a.Key())
+	r, _, ok, err := records.Load(ctx, a.Key())
 	if err != nil || !ok || r.State.Terminal() {
 		t.Fatalf("record after close = %+v ok=%v %v, want a live non-terminal record", r, ok, err)
 	}
@@ -442,10 +442,10 @@ func TestWorkerRestartSupersedesRef(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+	r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
 		ExecutionRef: store.ExecutionRef{Provider: "ref", Ref: "execution-1"},
 		Owner:        "dead-worker", FencingEpoch: 2, LeaseUntilUnixMilli: 1}
-	if err := records.Put(ctx, r); err != nil {
+	if err := records.Seed(ctx, r); err != nil {
 		t.Fatal(err)
 	}
 	backend := &refBackend{testBackend: newTestBackend()}
@@ -457,7 +457,7 @@ func TestWorkerRestartSupersedesRef(t *testing.T) {
 	if err := worker.RecoverExecution(ctx, a.Key()); err != nil {
 		t.Fatal(err)
 	}
-	got, _, err := records.Get(ctx, a.Key())
+	got, _, _, err := records.Load(ctx, a.Key())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -483,10 +483,10 @@ func TestWorkerRecoverExecutionRefusesUnknownProvider(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+	r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
 		ExecutionRef: store.ExecutionRef{Provider: "elsewhere", Ref: "existing-job"},
 		Owner:        "expired-worker", FencingEpoch: 3, LeaseUntilUnixMilli: 1}
-	if err := records.Put(ctx, r); err != nil {
+	if err := records.Seed(ctx, r); err != nil {
 		t.Fatal(err)
 	}
 	backend := newTestBackend()
@@ -500,7 +500,7 @@ func TestWorkerRecoverExecutionRefusesUnknownProvider(t *testing.T) {
 	if _, err := worker.GetStatus(ctx, a.Key()); !errors.Is(err, executor.ErrUnknownProvider) {
 		t.Fatalf("status = %v, want ErrUnknownProvider", err)
 	}
-	got, _, err := records.Get(ctx, a.Key())
+	got, _, _, err := records.Load(ctx, a.Key())
 	if err != nil || got.Owner != r.Owner || got.FencingEpoch != r.FencingEpoch || got.ExecutionRef != r.ExecutionRef {
 		t.Fatalf("unknown-provider takeover changed the record: %+v, %v", got, err)
 	}
@@ -527,7 +527,7 @@ func TestWorkerPersistsExecutionRefBeforeStart(t *testing.T) {
 	if err := worker.Dispatch(ctx, a); err != nil {
 		t.Fatal(err)
 	}
-	record, ok, err := records.Get(ctx, a.Key())
+	record, _, ok, err := records.Load(ctx, a.Key())
 	if err != nil || !ok {
 		t.Fatalf("record = %+v, ok=%v, err=%v", record, ok, err)
 	}
@@ -561,11 +561,9 @@ func TestExecutionStoreFencesRecoverExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, created, err := records.Create(ctx, store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionAccepted}); err != nil || !created {
-		t.Fatalf("create = %v, created=%v", err, created)
-	}
+	openLedger(t, records, a, digest)
 	first, acquired, err := records.Acquire(ctx, a.Key(), "worker-a", time.Second)
-	if err != nil || !acquired || first.FencingEpoch != 1 {
+	if err != nil || !acquired || first.Epoch != 1 {
 		t.Fatalf("first acquire = %+v, acquired=%v, err=%v", first, acquired, err)
 	}
 	now = base.Add(500 * time.Millisecond)
@@ -574,12 +572,43 @@ func TestExecutionStoreFencesRecoverExecution(t *testing.T) {
 	}
 	now = base.Add(2 * time.Second)
 	second, acquired, err := records.Acquire(ctx, a.Key(), "worker-b", time.Second)
-	if err != nil || !acquired || second.FencingEpoch != 2 {
+	if err != nil || !acquired || second.Epoch != 2 {
 		t.Fatalf("takeover = %+v, acquired=%v, err=%v", second, acquired, err)
 	}
-	if err := records.PutOwned(ctx, first, "worker-a", first.FencingEpoch); !errors.Is(err, store.ErrLeaseLost) {
-		t.Fatalf("stale put = %v, want ErrLeaseLost", err)
+	if err := appendStep(records, first, 3, store.EventExecutionStarted); !errors.Is(err, store.ErrLeaseLost) {
+		t.Fatalf("stale commit = %v, want ErrLeaseLost", err)
 	}
+	// The ledger recorded both claims, in order, under their epochs.
+	commits, head, err := records.Read(ctx, a.Key(), 0)
+	if err != nil || head.Next != 3 || len(commits) != 3 {
+		t.Fatalf("ledger = %d commits head %+v %v, want accept + two claims", len(commits), head, err)
+	}
+	for i, want := range []store.EventType{store.EventExecutionAccepted, store.EventExecutionClaimed, store.EventExecutionClaimed} {
+		if commits[i].Events[0].Type != want || commits[i].Epoch != store.Epoch(i) {
+			t.Fatalf("commit %d = %s epoch %d, want %s epoch %d", i, commits[i].Events[0].Type, commits[i].Epoch, want, i)
+		}
+	}
+}
+
+// openLedger writes the acceptance commit a Dispatch would.
+func openLedger(t *testing.T, records store.Store, a effect.Assignment, digest run.Digest) {
+	t.Helper()
+	ev, err := store.NewEvent(store.EventExecutionAccepted, 0, store.Accepted{Assignment: a, AssignmentDigest: digest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := records.Append(context.Background(), store.Lease{}, a.Key(), store.Commit{CommitID: store.AcceptCommitID(a.Key()), Intent: digest, Events: []store.Event{ev}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// appendStep commits one state-machine event at seq under lease.
+func appendStep(records store.Store, lease store.Lease, seq store.CommitSeq, typ store.EventType) error {
+	ev, err := store.NewEvent(typ, 0, nil)
+	if err != nil {
+		return err
+	}
+	return records.Append(context.Background(), lease, lease.Key, store.Commit{Seq: seq, CommitID: store.DeriveCommitID(lease.Key, "test", fmt.Sprintf("%s/%d", typ, seq)), Epoch: lease.Epoch, Events: []store.Event{ev}})
 }
 
 func TestExecutionStoreRequiresDispatchingBarrier(t *testing.T) {
@@ -592,22 +621,30 @@ func TestExecutionStoreRequiresDispatchingBarrier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := records.Create(ctx, store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionAccepted}); err != nil {
-		t.Fatal(err)
-	}
+	openLedger(t, records, a, digest)
 	claimed, acquired, err := records.Acquire(ctx, a.Key(), "worker-a", time.Second)
 	if err != nil || !acquired {
 		t.Fatalf("acquire = %+v, acquired=%v, err=%v", claimed, acquired, err)
 	}
-	if err := records.TransitionOwned(ctx, a.Key(), "worker-a", claimed.FencingEpoch, effect.ExecutionAccepted, effect.ExecutionRunning); !errors.Is(err, store.ErrStateConflict) {
+	if err := appendStep(records, claimed, 2, store.EventExecutionRunning); !errors.Is(err, store.ErrStateConflict) {
 		t.Fatalf("accepted to running = %v, want ErrStateConflict", err)
 	}
-	if err := records.TransitionOwned(ctx, a.Key(), "worker-a", claimed.FencingEpoch, effect.ExecutionAccepted, effect.ExecutionDispatching); err != nil {
+	if err := appendStep(records, claimed, 2, store.EventExecutionStarted); err != nil {
 		t.Fatalf("accepted to dispatching = %v", err)
 	}
+	if err := appendStep(records, claimed, 2, store.EventExecutionStarted); !errors.Is(err, store.ErrAlreadyApplied) {
+		t.Fatalf("replayed commit = %v, want ErrAlreadyApplied", err)
+	}
+	if err := appendStep(records, claimed, 2, store.EventCancelRequested); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("another commit at a taken seq = %v, want ErrConflict", err)
+	}
 	now = base.Add(2 * time.Second)
-	if err := records.TransitionOwned(ctx, a.Key(), "worker-a", claimed.FencingEpoch, effect.ExecutionDispatching, effect.ExecutionRunning); !errors.Is(err, store.ErrLeaseLost) {
+	if err := appendStep(records, claimed, 3, store.EventExecutionRunning); !errors.Is(err, store.ErrLeaseLost) {
 		t.Fatalf("expired transition = %v, want ErrLeaseLost", err)
+	}
+	// An unfenced append may not carry a fenced event.
+	if err := appendStep(records, store.Lease{Key: a.Key()}, 3, store.EventExecutionRunning); !errors.Is(err, store.ErrLeaseLost) {
+		t.Fatalf("unfenced fenced event = %v, want ErrLeaseLost", err)
 	}
 }
 
@@ -621,14 +658,12 @@ func TestWorkerReclaimsExpiredAssignment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, created, err := records.Create(ctx, store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionAccepted}); err != nil || !created {
-		t.Fatalf("create = %v, created=%v", err, created)
-	}
+	openLedger(t, records, a, digest)
 	claimed, acquired, err := records.Acquire(ctx, a.Key(), "worker-a", time.Second)
 	if err != nil || !acquired {
 		t.Fatalf("initial acquire = %+v, acquired=%v", claimed, acquired)
 	}
-	if err := records.TransitionOwned(ctx, a.Key(), "worker-a", claimed.FencingEpoch, effect.ExecutionAccepted, effect.ExecutionDispatching); err != nil {
+	if err := appendStep(records, claimed, 2, store.EventExecutionStarted); err != nil {
 		t.Fatalf("mark dispatching = %v", err)
 	}
 	backend := newTestBackend()
@@ -670,9 +705,9 @@ func TestWorkerRecoverExecutionAdoptsExpiredLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+	r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
 		Owner: "dead-worker", FencingEpoch: 4, LeaseUntilUnixMilli: base.Add(time.Second).UnixMilli()}
-	if err := records.Put(ctx, r); err != nil {
+	if err := records.Seed(ctx, r); err != nil {
 		t.Fatal(err)
 	}
 	backend := newTestBackend()
@@ -690,7 +725,7 @@ func TestWorkerRecoverExecutionAdoptsExpiredLease(t *testing.T) {
 	if err != nil || modelText(out) != "ok" {
 		t.Fatalf("adopted outcome = %+v, %v", out, err)
 	}
-	got, _, err := records.Get(ctx, a.Key())
+	got, _, _, err := records.Load(ctx, a.Key())
 	if err != nil || got.Owner != "worker-b" {
 		t.Fatalf("adopted record = %+v, %v", got, err)
 	}
@@ -714,9 +749,9 @@ func TestWorkerRecoverExecutionLeavesLiveLease(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+	r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
 		Owner: "worker-a", FencingEpoch: 4, LeaseUntilUnixMilli: base.Add(time.Second).UnixMilli()}
-	if err := records.Put(ctx, r); err != nil {
+	if err := records.Seed(ctx, r); err != nil {
 		t.Fatal(err)
 	}
 	backend := newTestBackend()
@@ -728,7 +763,7 @@ func TestWorkerRecoverExecutionLeavesLiveLease(t *testing.T) {
 	if err := worker.RecoverExecution(ctx, a.Key()); err != nil {
 		t.Fatalf("recover of a live lease = %v, want a no-op", err)
 	}
-	got, _, err := records.Get(ctx, a.Key())
+	got, _, _, err := records.Load(ctx, a.Key())
 	if err != nil || got.Owner != "worker-a" || got.FencingEpoch != 4 {
 		t.Fatalf("live record changed: %+v, %v", got, err)
 	}
@@ -801,13 +836,13 @@ func TestWorkerDisposeSettlesUnknown(t *testing.T) {
 	completedEnv := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Unknown: false}
 	rows := []struct {
 		name    string
-		record  *store.Record // nil means the key was never written
+		record  *store.ExecutionState // nil means the key was never written
 		wantErr error
 	}{
-		{"expired foreign owner", &store.Record{State: effect.ExecutionRunning, Owner: "dead-worker", FencingEpoch: 3, LeaseUntilUnixMilli: 1}, nil},
-		{"live foreign owner", &store.Record{State: effect.ExecutionDispatching, Owner: "live-worker", FencingEpoch: 3,
+		{"expired foreign owner", &store.ExecutionState{State: effect.ExecutionRunning, Owner: "dead-worker", FencingEpoch: 3, LeaseUntilUnixMilli: 1}, nil},
+		{"live foreign owner", &store.ExecutionState{State: effect.ExecutionDispatching, Owner: "live-worker", FencingEpoch: 3,
 			LeaseUntilUnixMilli: time.Now().Add(time.Hour).UnixMilli()}, nil},
-		{"already terminal", &store.Record{State: effect.ExecutionCompleted, Owner: "dead-worker", FencingEpoch: 3, LeaseUntilUnixMilli: 1, Outcome: &completedEnv}, nil},
+		{"already terminal", &store.ExecutionState{State: effect.ExecutionCompleted, Owner: "dead-worker", FencingEpoch: 3, LeaseUntilUnixMilli: 1, Outcome: &completedEnv}, nil},
 		{"missing record", nil, effect.ErrExecutionNotFound},
 	}
 	for _, row := range rows {
@@ -823,7 +858,7 @@ func TestWorkerDisposeSettlesUnknown(t *testing.T) {
 				}
 				r := *row.record
 				r.Assignment, r.AssignmentDigest = a, digest
-				if err := records.Put(ctx, r); err != nil {
+				if err := records.Seed(ctx, r); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -838,7 +873,7 @@ func TestWorkerDisposeSettlesUnknown(t *testing.T) {
 			if row.record == nil {
 				return
 			}
-			got, _, err := records.Get(ctx, key)
+			got, _, _, err := records.Load(ctx, key)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -880,9 +915,9 @@ func TestWorkerAdoptionOfUnattachableToolSettlesUnknown(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			r := store.Record{Assignment: a, AssignmentDigest: digest, State: row.state,
+			r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: row.state,
 				Owner: "dead-worker", FencingEpoch: 2, LeaseUntilUnixMilli: base.Add(time.Second).UnixMilli()}
-			if err := records.Put(ctx, r); err != nil {
+			if err := records.Seed(ctx, r); err != nil {
 				t.Fatal(err)
 			}
 			backend := newTestBackend()
@@ -897,7 +932,7 @@ func TestWorkerAdoptionOfUnattachableToolSettlesUnknown(t *testing.T) {
 			if err := worker.RecoverExecution(ctx, a.Key()); err != nil {
 				t.Fatal(err)
 			}
-			got, _, err := records.Get(ctx, a.Key())
+			got, _, _, err := records.Load(ctx, a.Key())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -925,7 +960,7 @@ type flakyRenewStore struct {
 	renewals int
 }
 
-func (s *flakyRenewStore) Renew(ctx context.Context, key effect.AssignmentKey, owner string, epoch uint64, ttl time.Duration) error {
+func (s *flakyRenewStore) Renew(ctx context.Context, lease store.Lease, ttl time.Duration) error {
 	s.mu.Lock()
 	s.renewals++
 	failing := time.Now().Before(s.deadline)
@@ -933,7 +968,7 @@ func (s *flakyRenewStore) Renew(ctx context.Context, key effect.AssignmentKey, o
 	if failing {
 		return errors.New("store temporarily unavailable")
 	}
-	return s.Store.Renew(ctx, key, owner, epoch, ttl)
+	return s.Store.Renew(ctx, lease, ttl)
 }
 
 // A transient Renew failure must not stop lease maintenance; the heartbeat
@@ -956,12 +991,11 @@ func TestWorkerHeartbeatRetriesTransientRenewErrors(t *testing.T) {
 	time.Sleep(time.Until(records.deadline) + 400*time.Millisecond)
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		r, ok, err := records.Get(context.Background(), a.Key())
+		r, _, ok, err := records.Load(context.Background(), a.Key())
 		if err != nil || !ok {
 			t.Fatalf("record = %+v ok=%v err=%v", r, ok, err)
 		}
-		owned, err := records.LeaseOwned(context.Background(), a.Key(), "worker-a", r.FencingEpoch)
-		if err == nil && owned {
+		if r.Owner == "worker-a" && r.LeaseUntilUnixMilli > time.Now().UnixMilli() {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -1060,10 +1094,10 @@ func TestWorkerRecoverExecutionWaitsForUnconfirmedBackend(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+			r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
 				ExecutionRef: store.ExecutionRef{Provider: "ref", Ref: "execution-1"},
 				Owner:        "dead-worker", FencingEpoch: 2, LeaseUntilUnixMilli: 1}
-			if err := records.Put(ctx, r); err != nil {
+			if err := records.Seed(ctx, r); err != nil {
 				t.Fatal(err)
 			}
 			backend := &refBackend{testBackend: newTestBackend(), attach: effect.AttachmentOrphaned}
@@ -1077,7 +1111,7 @@ func TestWorkerRecoverExecutionWaitsForUnconfirmedBackend(t *testing.T) {
 			}
 			// Undecided: the record is held under this Worker's lease, still
 			// Running, and the backend has been neither restarted nor started.
-			held, _, err := records.Get(ctx, a.Key())
+			held, _, _, err := records.Load(ctx, a.Key())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1095,7 +1129,7 @@ func TestWorkerRecoverExecutionWaitsForUnconfirmedBackend(t *testing.T) {
 			backend.setAttach(row.resolve)
 			deadline := time.Now().Add(5 * time.Second)
 			for {
-				got, _, err := records.Get(ctx, a.Key())
+				got, _, _, err := records.Load(ctx, a.Key())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -1152,10 +1186,10 @@ func TestWorkerAdoptsToolByReplayDeclaration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+			r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
 				ExecutionRef: store.ExecutionRef{Provider: "ref", Ref: "execution-1"},
 				Owner:        "dead-worker", FencingEpoch: 2, LeaseUntilUnixMilli: 1}
-			if err := records.Put(ctx, r); err != nil {
+			if err := records.Seed(ctx, r); err != nil {
 				t.Fatal(err)
 			}
 			backend := &refBackend{testBackend: newTestBackend()}
@@ -1167,7 +1201,7 @@ func TestWorkerAdoptsToolByReplayDeclaration(t *testing.T) {
 			if err := worker.RecoverExecution(ctx, a.Key()); err != nil {
 				t.Fatal(err)
 			}
-			got, _, err := records.Get(ctx, a.Key())
+			got, _, _, err := records.Load(ctx, a.Key())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1200,7 +1234,7 @@ func TestWorkerAttachClassifiesByLease(t *testing.T) {
 	cases := []struct {
 		name  string
 		owner string
-		epoch uint64
+		epoch store.Epoch
 		lease int64
 		want  effect.AttachmentState
 	}{
@@ -1216,9 +1250,9 @@ func TestWorkerAttachClassifiesByLease(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			r := store.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
+			r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionRunning,
 				ExecutionRef: store.ExecutionRef{Provider: "elsewhere", Ref: "job"}, Owner: tc.owner, FencingEpoch: tc.epoch, LeaseUntilUnixMilli: tc.lease}
-			if err := records.Put(ctx, r); err != nil {
+			if err := records.Seed(ctx, r); err != nil {
 				t.Fatal(err)
 			}
 			worker, err := executor.NewWorker(ctx, records, routes(newTestBackend()), executor.WorkerOptions{ID: "this-worker", Clock: func() time.Time { return now }})
@@ -1348,7 +1382,7 @@ func TestWorkerRetriesRetryableFailures(t *testing.T) {
 			backend.mu.Lock()
 			starts := len(backend.starts)
 			backend.mu.Unlock()
-			got, _, _ := records.Get(ctx, tc.assignment.Key())
+			got, _, _, _ := records.Load(ctx, tc.assignment.Key())
 			if starts != tc.wantStarts || len(got.Superseded) != tc.wantStarts-1 {
 				t.Fatalf("starts = %d superseded = %d, want %d executions", starts, len(got.Superseded), tc.wantStarts)
 			}
@@ -1356,11 +1390,11 @@ func TestWorkerRetriesRetryableFailures(t *testing.T) {
 	}
 }
 
-// failingCreateStore refuses every Create: the record store is unavailable.
+// failingCreateStore refuses every Append: the ledger store is unavailable.
 type failingCreateStore struct{ store.Store }
 
-func (failingCreateStore) Create(context.Context, store.Record) (store.Record, bool, error) {
-	return store.Record{}, false, errors.New("store unavailable")
+func (failingCreateStore) Append(context.Context, store.Lease, effect.AssignmentKey, store.Commit) error {
+	return errors.New("store unavailable")
 }
 
 // A Dispatch the Worker cannot record is a retryable refusal and, over HTTP,
@@ -1425,13 +1459,13 @@ func TestWorkerAcknowledgeCollects(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			r := store.Record{Assignment: a, AssignmentDigest: digest, State: row.state, ExecutionRef: store.ExecutionRef{Provider: "test", Ref: "job"},
+			r := store.ExecutionState{Assignment: a, AssignmentDigest: digest, State: row.state, ExecutionRef: store.ExecutionRef{Provider: "test", Ref: "job"},
 				Owner: "worker-a", FencingEpoch: 1, LeaseUntilUnixMilli: now.Add(time.Hour).UnixMilli(), SettledAtUnixMilli: now.Add(-time.Minute).UnixMilli()}
 			if row.state.Terminal() {
 				env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: a.Key(), AssignmentDigest: digest}
 				r.Outcome = &env
 			}
-			if err := records.Put(ctx, r); err != nil {
+			if err := records.Seed(ctx, r); err != nil {
 				t.Fatal(err)
 			}
 			backend := newTestBackend()
@@ -1451,7 +1485,7 @@ func TestWorkerAcknowledgeCollects(t *testing.T) {
 					}
 				}
 			}
-			got, _, err := records.Get(ctx, a.Key())
+			got, _, _, err := records.Load(ctx, a.Key())
 			if err != nil {
 				t.Fatal(err)
 			}

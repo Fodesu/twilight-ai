@@ -76,7 +76,7 @@ command 不持久化。`CommandEnvelope.ID` 就是该 command 产生的 event �
 
 | 内容 | fact 中的字段 | 正文信封 |
 |---|---|---|
-| 冻结模型请求 `ModelRequest`（含工具定义） | `ModelStepPrepared.RequestDigest` | `model_request`；Dispatch 后由 Execution Record 另持有 payload |
+| 冻结模型请求 `ModelRequest`（含工具定义） | `ModelStepPrepared.RequestDigest` | `model_request`；Dispatch 后由 Execution Ledger 的 `execution_accepted` 另持有 payload |
 | 工具定义 `ToolDefinition` | `ToolSpec.DefinitionDigest`，只用于执行前校验 | 请求本体内；不另设存储 |
 | 模型结果 `ModelResult`（文本、reasoning、tool call 列表、usage、provider metadata） | `ModelStepCompleted.ResultDigest` | `model_result` |
 | 工具输出 | `ToolCallCompleted.OutputDigest` | `tool_output` |
@@ -165,7 +165,7 @@ type RunResult struct {
 type ModelStepStatus uint8 // Prepared | Executing
 type ModelStep struct {
     RefValue StepRef
-    RequestDigest Digest // Owner 侧 frozen payload；Dispatch 后由 Execution Record 持有
+    RequestDigest Digest // Owner 侧 frozen payload；Dispatch 后由 Execution Ledger 持有
     Model ModelRef
     Tools []ToolSpec
     ToolsDigest Digest
@@ -417,7 +417,7 @@ unit.Commit(view):
 
 ### 5.1 不进入 ledger 的数据
 
-Executor 的 in-flight 表可以只是进程内缓存；跨 Worker 恢复所需的是 durable Execution Record。投影缓存是可丢弃的派生数据（EXT-PRJ-3）；`frozen.Store` 是 Owner 侧的内容寻址旁存。Worker crash 后，观察到该 record 为 `orphaned` 的一方（持有该 Run 的 Owner，或外部控制器）调用 `RecoverExecution(key)`，接管的 Worker 从共享 Execution Store 获取同一 AssignmentKey 的 payload，并按 backend 的 Attach 结果决定继续观察、Restart 或 Unknown（RUN-EXE-6）。Execution Record 还持久化 `ExecutionRef{Provider, Ref}`（RUN-EXE-9）：backend 只按 Ref 寻址，Attach、Status、Outcome、Cancel 都经 record 的 Ref 到达它；目标到 Workspace/Runtime 的解析由 backend（provider adapter）在 `Prepare` 与 `Start` 中完成。Session 所有权与 Worker execution ownership 是两层不同的 ownership。
+Executor 的 in-flight 表可以只是进程内缓存；跨 Worker 恢复所需的是 durable Execution Ledger（RUN-EXE-14）。投影缓存是可丢弃的派生数据（EXT-PRJ-3）；`frozen.Store` 是 Owner 侧的内容寻址旁存。Worker crash 后，观察到该 record 为 `orphaned` 的一方（持有该 Run 的 Owner，或外部控制器）调用 `RecoverExecution(key)`，接管的 Worker 从共享 Execution Store 获取同一 AssignmentKey 的 payload，并按 backend 的 Attach 结果决定继续观察、Restart 或 Unknown（RUN-EXE-6）。Execution Record 还持久化 `ExecutionRef{Provider, Ref}`（RUN-EXE-9）：backend 只按 Ref 寻址，Attach、Status、Outcome、Cancel 都经 record 的 Ref 到达它；目标到 Workspace/Runtime 的解析由 backend（provider adapter）在 `Prepare` 与 `Start` 中完成。Session 所有权与 Worker execution ownership 是两层不同的 ownership。
 
 ## 6. Loop ports 与 policy
 
@@ -481,7 +481,7 @@ type Attachment struct {
     BackendAttached bool
 }
 // agentcore/executor —— Worker 之下的 backend 契约（RUN-EXE-9/10）
-type ExecutionRef struct { Provider string; Ref string }            // 只在 Execution Record 与 Backend 契约中出现
+type ExecutionRef struct { Provider string; Ref string }            // 只在 Execution Ledger 与 Backend 契约中出现
 type ExecutionBackend interface {
     Validate(context.Context, Assignment) (*run.ToolFailure, error)
     Prepare(context.Context, Assignment) (ref string, err error)     // 分配或派生 Ref，不启动；按 AssignmentKey 幂等
@@ -542,9 +542,11 @@ func (*Reconciler) Reconcile(ctx, store runtime.RunStore, snapshot *runtime.Snap
 
 **RUN-EXE-12（进度帧）** 效果执行中的临时观察经 effect 端口的进度侧到达 Owner：`ProgressPort.Progress(ctx, key, after, fn)` 按 AssignmentKey 与起始 Sequence 顺序交付 `ProgressFrame{Key, Generation, Sequence, Kind, Payload}`，直到 fn 停止、ctx 结束或 `end` 帧关闭该流；未见过的 key 为 `ErrExecutionNotFound`。Kind 有 `model_text_delta`、`model_reasoning_delta`、`tool_progress`、`reset`、`end`。帧不是事实：Worker 只在内存环形缓冲中保留每个 key 最近的一段（`ProgressHub`，默认 256 帧），被淘汰的帧丢失，订阅者由 Sequence 的空洞得知；Worker 重启后从头开始。backend 经 `ProgressSink.Publish` 发出帧（LocalExecutor 的模型 delta 与工具 progress），hub 盖上该 key 的 Generation 与 Sequence。Worker 每次为同一 effect 起下一代执行（接管重派或 RUN-EXE-11 的重试）先发一帧 `reset` 并使 Generation 加一：接收方丢弃此前该 effect 的全部帧并重新开始；record 进入终态时发 `end`。Outcome 不变：它仍是每个 Assignment 至多一个的原子终态回答，进度流只提示读取方去 GetOutcome。HTTP 以 `POST /progress` 暴露为 server-sent events，每帧一行 `data: <json>`；PortBackend 把内层 port 的进度原样中继，因此一条 Worker 链交付的是真正运行该效果的 Worker 的帧。`ProgressPort` 是可选能力，不实现它的 port 没有进度。
 
-**RUN-EXE-13（执行记录回收）** 终态 record 分两部分：接受事实（AssignmentKey、AssignmentDigest、终态 State、`ExecutionRef`）与可回收内容（Assignment 正文、Outcome、`Superseded`）。回收由 Owner 的确认驱动：Loop 每次结算 commit 成功后，对实现 `effect.Acknowledger` 的 Executor 调用 `Acknowledge(key)`（Worker 直接实现；HTTP Client 经 `/acknowledge`），Worker 记录 `AcknowledgedAt`；对非终态 record 的确认为 `ErrStateConflict`（HTTP 409），无 record 为 `ErrExecutionNotFound`，确认失败不影响结算。`Acknowledge` 随即把该 record 改写为只含接受事实的 record（`Collected`）；没有按时间回收的兜底，未确认的 record 保持 Outcome 可读，按龄回收属于部署的运维操作。已回收 record 对 `Attach` 为 `terminal`、对 `GetStatus` 为其终态、对 `GetOutcome` 为 `ErrOutcomeCollected`（包装 `ErrOutcomeUnavailable`，Reconciler 视为确定答案；HTTP 为 410，Client 还原为 `ErrOutcomeUnavailable`）；同一 key 的 Dispatch 重放确认已有 acceptance 且不启动任何执行，digest 不同为 `ErrAssignmentConflict`。执行中的 record 不能确认，未确认的 record 不回收。record 本身不删除：已回收 record 永久保留其接受事实。frozen 正文的回收不在本条范围内。
+**RUN-EXE-13（执行记录回收）** 已结算执行的折叠分两部分：接受事实（AssignmentKey、AssignmentDigest、终态 State、`ExecutionRef`）与可回收内容（Assignment 正文、Outcome、`Superseded`）。回收由 Owner 的确认驱动：Loop 每次结算 commit 成功后，对实现 `effect.Acknowledger` 的 Executor 调用 `Acknowledge(key)`（Worker 直接实现；HTTP Client 经 `/acknowledge`），Worker 记录 `AcknowledgedAt`；对非终态 record 的确认为 `ErrStateConflict`（HTTP 409），无 record 为 `ErrExecutionNotFound`，确认失败不影响结算。`Acknowledge` 提交 `outcome_acknowledged`，折叠随即只含接受事实（`Collected`）；ledger 中的事实本身不删除，正文的物理回收待正文进入 cas 后经 retention claim 完成（RUN-EXE-14 待定项）；没有按时间回收的兜底，未确认的 record 保持 Outcome 可读，按龄回收属于部署的运维操作。已回收 record 对 `Attach` 为 `terminal`、对 `GetStatus` 为其终态、对 `GetOutcome` 为 `ErrOutcomeCollected`（包装 `ErrOutcomeUnavailable`，Reconciler 视为确定答案；HTTP 为 410，Client 还原为 `ErrOutcomeUnavailable`）；同一 key 的 Dispatch 重放确认已有 acceptance 且不启动任何执行，digest 不同为 `ErrAssignmentConflict`。执行中的 record 不能确认，未确认的 record 不回收。record 本身不删除：已回收 record 永久保留其接受事实。frozen 正文的回收不在本条范围内。
 
-**RUN-EXE-10（Backend 选择与 record 的权威性）** backend 选择是 execution 创建的一部分：Worker 在 Dispatch 时按 `Route` 表评估一次（第一个 `Match` 为真的 provider，`Match` 为 nil 的 route 接受全部），结果作为 `ExecutionRef.Provider` 持久化；此后 Attach、GetStatus、GetOutcome、Cancel、RecoverExecution、Dispose 只查 record 并按 Provider 找 backend，不再评估 Assignment 内容，也不询问任何 backend 是否认识某个 key；record 的 Provider 在本 Worker 没有对应 backend 时为 `ErrUnknownProvider`，record 不被改动。record 是 execution identity 的唯一来源：record 缺失即 execution 不存在（`missing`，RUN-EXE-3）。record store 是 durable 的（`agentcore/store/sqlite`，一个 SQLite 文件同时承载 execution record、artifact Binding 与 retention claim，事务提供跨进程互斥），没有内存实现；崩溃重启后 record 仍在，跨进程收养经 `RecoverExecution` 完成（RUN-EXE-6）。`Validate` 按同一 route 表选择 backend 但不持久化选择。
+**RUN-EXE-14（Execution Ledger）** Executor 是与 Session 并列的第二个 event-sourced authority，两者只以 AssignmentKey 互相指认（RUN-EXE-1）。每个 effect 一条 ledger（`agentcore/executor/store`），词汇与 Session kernel 一致：commit 携带 `Seq`、`CommitID`、`Epoch`、`Intent` 与事件列表，事件为 `Type`、`RecordedAtUnixMilli`、canonical `Payload`；`Head{Next, Digest}` 为 ledger 的尖端，commit digest 链式计算。事实类型：`execution_accepted`（Assignment 与 AssignmentDigest，必为首个事实）、`execution_bound`（`ExecutionRef`）、`execution_claimed`（Owner 与新 Epoch）、`execution_started`（进入 Dispatching）、`execution_running`、`cancel_requested`、`execution_restarted`（被替代的 Ref 与新 Ref）、`execution_settled`（终态与 Outcome）、`outcome_acknowledged`。`ExecutionState` 是事实的折叠，与租约行联接得到 Owner、Epoch、到期时刻；`Attach`、`GetStatus`、`GetOutcome` 读折叠。三条规则与 Session 相同：`Append` 的 `Seq` 必须等于 `Head.Next`（`ErrConflict`，写者重读再决定）；同一 `CommitID` 重放时比较 `Intent`，相同为 `ErrAlreadyApplied`（视为成功），不同为 `ErrCommitConflict`，首个 commit 的 `Intent` 为 AssignmentDigest、不同即 `ErrAssignmentConflict`；每个 commit 在写入前折叠，不合法的状态迁移为 `ErrStateConflict`，ledger 因此不含非法步骤。命令 identity 由 key 与命令名派生：接受、结算、确认各一次（`AcceptCommitID`、`SettleCommitID`、`AcknowledgeCommitID`），结算共用一个 identity，因此租约持有者的结算与控制器的 `Dispose` 争同一身份、后者读到前者的 Outcome；按 Epoch 或代际重复的命令（claim、bind、start、restart）以 Epoch 或被替代的 Ref 为判别项。fence：`execution_bound`、`execution_accepted`、`execution_settled`、`outcome_acknowledged` 之外的事件只能在 key 的当前租约下提交（`Append` 携带 `Lease`，store 校验 owner、Epoch 与未过期，`ErrLeaseLost`）；租约本身是单独一行（owner、Epoch、到期），是 fence 的 authority，`Acquire` 在同一事务里写租约行并追加 `execution_claimed`，续期只改租约行不产生事实，与 Session 的 SES-OWN-1 同一处理。`Read(key, from)` 按 Seq 返回 commit 与 Head，是恢复、审计与后续跨 authority 订阅的读取原语。待定项：Assignment 正文与 Outcome 目前内联于事实，进入 cas 并按 digest 引用后，`outcome_acknowledged` 释放 retention claim 即完成 RUN-EXE-13 的物理回收。
+
+**RUN-EXE-10（Backend 选择与 ledger 的权威性）** backend 选择是 execution 创建的一部分：Worker 在 Dispatch 时按 `Route` 表评估一次（第一个 `Match` 为真的 provider，`Match` 为 nil 的 route 接受全部），结果以 `execution_bound` 事实持久化；此后 Attach、GetStatus、GetOutcome、Cancel、RecoverExecution、Dispose 只读折叠并按 Provider 找 backend，不再评估 Assignment 内容，也不询问任何 backend 是否认识某个 key；record 的 Provider 在本 Worker 没有对应 backend 时为 `ErrUnknownProvider`，record 不被改动。ledger 是 execution identity 的唯一来源：ledger 缺失即 execution 不存在（`missing`，RUN-EXE-3）。ledger store 是 durable 的（`agentcore/store/sqlite`，一个 SQLite 文件同时承载 execution ledger 与租约、artifact Binding 与 retention claim，事务提供跨进程互斥），没有内存实现；崩溃重启后 ledger 仍在，跨进程收养经 `RecoverExecution` 完成（RUN-EXE-6）。`Validate` 按同一 route 表选择 backend 但不持久化选择。
 
 ```go
 type EffectContext struct { Session run.Scope; RunID run.RunID; StepID run.StepID; CallID run.CallID; Effect run.EffectID; Kind AssignmentKind; Tool run.ToolRef } // 待解析 target 的 effect 坐标

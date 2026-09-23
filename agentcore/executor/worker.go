@@ -182,10 +182,74 @@ func (w *Worker) Validate(ctx context.Context, a effect.Assignment) (*run.ToolFa
 	return r.Backend.Validate(ctx, a)
 }
 
+// --- ledger helpers ---
+
+// commitFn decides the commit to append from the current fold of a ledger;
+// a nil commit means there is nothing to do. The Seq is the caller's.
+type commitFn func(state *executionstore.ExecutionState, head executionstore.Head) (*executionstore.Commit, error)
+
+// commit loads the key's fold, lets fn decide, and appends under lease (a
+// zero lease is an unfenced append). A commit the ledger already holds is
+// success; a Seq conflict reloads and decides again, so a Worker never
+// writes from a fold another writer has moved past.
+func (w *Worker) commit(ctx context.Context, lease executionstore.Lease, key effect.AssignmentKey, fn commitFn) error {
+	for attempt := 0; ; attempt++ {
+		state, head, ok, err := w.store.Load(ctx, key)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return effect.ErrExecutionNotFound
+		}
+		c, err := fn(&state, head)
+		if err != nil || c == nil {
+			return err
+		}
+		c.Seq = head.Next
+		err = w.store.Append(ctx, lease, key, *c)
+		switch {
+		case err == nil, errors.Is(err, executionstore.ErrAlreadyApplied):
+			return nil
+		case errors.Is(err, executionstore.ErrConflict) && attempt < 8:
+			continue
+		default:
+			return err
+		}
+	}
+}
+
+func (w *Worker) event(typ executionstore.EventType, payload any) executionstore.Event {
+	ev, err := executionstore.NewEvent(typ, w.now().UnixMilli(), payload)
+	if err != nil {
+		// The payloads are the store's own closed types; encoding cannot fail.
+		panic(err)
+	}
+	return ev
+}
+
+// transition is the commitFn of one state-machine step under lease: it
+// appends typ when the fold allows it and does nothing when the fold has
+// moved on (another writer, or a replay).
+func (w *Worker) transition(lease executionstore.Lease, typ executionstore.EventType, to effect.ExecutionStatus, command string) commitFn {
+	return func(state *executionstore.ExecutionState, _ executionstore.Head) (*executionstore.Commit, error) {
+		if state.State == to || !executionstore.LegalTransition(state.State, to) {
+			return nil, nil
+		}
+		return &executionstore.Commit{CommitID: executionstore.DeriveCommitID(lease.Key, command, fmt.Sprintf("%d/%s", uint64(lease.Epoch), state.State)),
+			Epoch: lease.Epoch, Events: []executionstore.Event{w.event(typ, nil)}}, nil
+	}
+}
+
+// holdsLease reports whether this Worker's lease on the fold is live.
+func (w *Worker) holdsLease(s *executionstore.ExecutionState) bool {
+	return !s.Terminal() && s.Owner == w.id && s.FencingEpoch > 0 && s.LeaseUntilUnixMilli > w.now().UnixMilli()
+}
+
 // Dispatch accepts an Assignment (RUN-EXE-3): it selects the Backend,
-// prepares the Ref, persists the record with its ExecutionRef, then starts
-// the execution. A replay of the same Assignment acknowledges the persisted
-// acceptance; recovery of an existing record goes through RecoverExecution.
+// prepares the Ref, opens the execution's ledger with the acceptance and
+// the binding in one commit, then starts the execution. A replay of the
+// same Assignment is answered from the ledger; recovery of an existing
+// execution goes through RecoverExecution.
 func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 	if a.Body == nil {
 		return errors.New("executor: assignment without body")
@@ -222,126 +286,138 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 		return errors.New("executor: backend prepared an empty execution ref")
 	}
 	key := a.Key()
-	record := executionstore.Record{Assignment: a, AssignmentDigest: digest, State: effect.ExecutionAccepted,
-		ExecutionRef: ExecutionRef{Provider: route.Provider, Ref: ref}}
-	old, created, err := w.store.Create(ctx, record)
-	if err != nil {
-		// The record store, not the Assignment, refused: nothing started,
+	c := executionstore.Commit{Seq: 0, CommitID: executionstore.AcceptCommitID(key), Intent: digest, Events: []executionstore.Event{
+		w.event(executionstore.EventExecutionAccepted, executionstore.Accepted{Assignment: a, AssignmentDigest: digest}),
+		w.event(executionstore.EventExecutionBound, executionstore.Bound{Ref: ExecutionRef{Provider: route.Provider, Ref: ref}}),
+	}}
+	err = w.store.Append(ctx, executionstore.Lease{}, key, c)
+	switch {
+	case err == nil:
+	case errors.Is(err, executionstore.ErrAlreadyApplied):
+		return nil
+	case errors.Is(err, executionstore.ErrAssignmentConflict):
+		return err
+	case errors.Is(err, executionstore.ErrConflict):
+		// The ledger was opened by another writer (or seeded): the same
+		// Assignment acknowledges the acceptance, another is a conflict.
+		state, _, ok, loadErr := w.store.Load(ctx, key)
+		if loadErr != nil {
+			return fmt.Errorf("%w: %w", effect.ErrDispatchRetryable, loadErr)
+		}
+		if ok && state.AssignmentDigest != digest {
+			return executionstore.ErrAssignmentConflict
+		}
+		return nil
+	default:
+		// The ledger store, not the Assignment, refused: nothing started,
 		// and the same Dispatch may succeed later (RUN-EXE-3).
 		return fmt.Errorf("%w: %w", effect.ErrDispatchRetryable, err)
-	}
-	if !created && old.AssignmentDigest != digest {
-		return executionstore.ErrAssignmentConflict
-	}
-	if !created {
-		return nil
 	}
 	if err := w.acquireAndStart(ctx, key); err != nil {
 		if errors.Is(err, effect.ErrDispatchUnknown) {
 			return err
 		}
-		// Between the record and Backend.Start only this Worker's own store
-		// operations can fail; a Start failure settles the record instead of
-		// returning. The record exists and is Accepted, so the caller may
+		// Between acceptance and Backend.Start only this Worker's own store
+		// operations can fail; a Start failure settles the execution instead
+		// of returning. The ledger is open and Accepted, so the caller may
 		// dispatch again and the replay resumes it.
 		return fmt.Errorf("%w: %w", effect.ErrDispatchRetryable, err)
 	}
 	return nil
 }
 
-// RecoverExecution is effect.Recoverer: it takes the record of key back under
-// this Worker's lease when the previous lease expired or was never held, and
-// continues the execution from the persisted payload and Ref — attaching the
+// RecoverExecution is effect.Recoverer: it takes the execution of key back
+// under this Worker's lease when the previous lease expired or was never
+// held, and continues it from the persisted payload and Ref — attaching the
 // previous backend execution, restarting it once the backend proves it
 // missing, or settling it as Unknown when the tool's replay declaration
-// forbids a restart (RUN-EXE-3, RUN-EXE-9). A terminal record, a record
-// already under this Worker's lease and a record under another live lease
-// are left as they are. The caller has observed the record as orphaned; how
-// often to ask again, and when to give up through Dispose, is the caller's.
+// forbids a restart (RUN-EXE-3, RUN-EXE-9). A settled execution, one already
+// under this Worker's lease and one under another live lease are left as
+// they are. The caller has observed the execution as orphaned; how often to
+// ask again, and when to give up through Dispose, is the caller's.
 func (w *Worker) RecoverExecution(ctx context.Context, key effect.AssignmentKey) error {
-	r, ok, err := w.store.Get(ctx, key)
+	state, _, ok, err := w.store.Load(ctx, key)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return effect.ErrExecutionNotFound
 	}
-	if protocol.StatusTerminal(r.State) {
+	if state.Terminal() {
 		return nil
 	}
-	if r.ExecutionRef.Provider != "" {
-		if _, err := w.backend(r.ExecutionRef); err != nil {
+	if state.ExecutionRef.Provider != "" {
+		if _, err := w.backend(state.ExecutionRef); err != nil {
 			return err
 		}
 	}
-	owned, err := w.store.LeaseOwned(ctx, key, w.id, r.FencingEpoch)
-	if err != nil {
-		return err
-	}
-	if owned {
+	if w.holdsLease(&state) {
 		return nil
 	}
 	return w.acquireAndStart(ctx, key)
 }
 
 // Acknowledge is effect.Acknowledger (RUN-EXE-13): the Owner reports that
-// the Outcome of key is settled as a Session fact, and the Worker collects
-// the record at once — its payload, Outcome and Superseded refs are dropped,
-// while the key, its digest, state and ExecutionRef remain, so the record
-// still answers Attach with terminal, refuses a Dispatch that would execute
-// the key again, and answers GetOutcome with ErrOutcomeCollected. The record
-// must be terminal; acknowledging an execution still in flight is a caller
-// error (ErrStateConflict), and a key without a record is
-// ErrExecutionNotFound. Repeating it changes nothing.
+// the Outcome of key is settled as a Session fact. The ledger records
+// outcome_acknowledged and its fold collects the execution: the payload,
+// Outcome and Superseded refs leave the fold, while the key, its digest,
+// state and ExecutionRef remain, so the execution still answers Attach with
+// terminal, refuses a Dispatch that would execute the key again, and answers
+// GetOutcome with ErrOutcomeCollected. The execution must be settled;
+// acknowledging one still in flight is a caller error (ErrStateConflict),
+// and a key without a ledger is ErrExecutionNotFound. Repeating it changes
+// nothing.
 func (w *Worker) Acknowledge(ctx context.Context, key effect.AssignmentKey) error {
-	r, ok, err := w.store.Get(ctx, key)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return effect.ErrExecutionNotFound
-	}
-	if !protocol.StatusTerminal(r.State) {
-		return fmt.Errorf("%w: acknowledging an execution in state %s", executionstore.ErrStateConflict, r.State)
-	}
-	if r.AcknowledgedAtUnixMilli != 0 {
-		return nil
-	}
-	r.AcknowledgedAtUnixMilli = w.now().UnixMilli()
-	r.Assignment.Body, r.Assignment.Target, r.Outcome, r.Superseded, r.Collected = nil, nil, nil, nil, true
-	return w.store.Put(ctx, r)
+	return w.commit(ctx, executionstore.Lease{}, key, func(state *executionstore.ExecutionState, _ executionstore.Head) (*executionstore.Commit, error) {
+		if !state.Terminal() {
+			return nil, fmt.Errorf("%w: acknowledging an execution in state %s", executionstore.ErrStateConflict, state.State)
+		}
+		if state.Collected {
+			return nil, nil
+		}
+		return &executionstore.Commit{CommitID: executionstore.AcknowledgeCommitID(key), Epoch: state.FencingEpoch,
+			Events: []executionstore.Event{w.event(executionstore.EventOutcomeAcknowledged, nil)}}, nil
+	})
 }
 
-// Dispose settles a non-terminal record as Unknown without re-dispatching it.
-// The caller has given the execution up: it will not be recovered, and the
-// Owner disposes the Run target on its next read (RUN-CMT-7). Unlike
-// RecoverExecution, Dispose is unconditional — it also applies to records
-// whose owner is dead or absent — and unlike Cancel it does not require
-// backend reachability: the backend is cancelled best-effort after the settle.
+// Dispose settles an unsettled execution as Unknown without re-dispatching
+// it. The caller has given the execution up: it will not be recovered, and
+// the Owner disposes the Run target on its next read (RUN-CMT-7). Unlike
+// RecoverExecution, Dispose is unconditional — it also applies to executions
+// whose lease holder is dead or absent — and unlike Cancel it does not
+// require backend reachability: the backend is cancelled best-effort after
+// the settle.
 func (w *Worker) Dispose(ctx context.Context, key effect.AssignmentKey) error {
-	r, ok, err := w.store.Get(ctx, key)
+	var ref ExecutionRef
+	err := w.commit(ctx, executionstore.Lease{}, key, func(state *executionstore.ExecutionState, _ executionstore.Head) (*executionstore.Commit, error) {
+		ref = state.ExecutionRef
+		if state.Terminal() {
+			return nil, nil
+		}
+		env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: state.AssignmentDigest, Unknown: true,
+			Error: &protocol.WireError{Code: "disposed", Message: "execution disposed by its controller"}}
+		return w.settlement(key, state.FencingEpoch, &env, effect.ExecutionUnknown), nil
+	})
+	if errors.Is(err, executionstore.ErrCommitConflict) {
+		// The lease holder settled it first; the execution is terminal.
+		err = nil
+	}
 	if err != nil {
 		return err
 	}
-	if !ok {
-		return effect.ErrExecutionNotFound
-	}
-	if protocol.StatusTerminal(r.State) {
-		return nil
-	}
-	env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: r.AssignmentDigest, Unknown: true,
-		Error: &protocol.WireError{Code: "disposed", Message: "execution record disposed by its controller"}}
-	r.Outcome = &env
-	r.State = effect.ExecutionUnknown
-	r.SettledAtUnixMilli = w.now().UnixMilli()
-	if err := w.store.Put(ctx, r); err != nil {
-		return err
-	}
-	if b, err := w.backend(r.ExecutionRef); err == nil {
-		_ = b.Cancel(context.WithoutCancel(ctx), r.ExecutionRef.Ref)
+	if b, err := w.backend(ref); err == nil {
+		_ = b.Cancel(context.WithoutCancel(ctx), ref.Ref)
 	}
 	w.wake(key)
 	return nil
+}
+
+// settlement is the commit that ends an execution: execution_settled under
+// the settle CommitID, so the watcher's settle and a controller's Dispose
+// race for one identity and the loser reads the winner's Outcome.
+func (w *Worker) settlement(key effect.AssignmentKey, epoch executionstore.Epoch, outcome *protocol.OutcomeEnvelope, state effect.ExecutionStatus) *executionstore.Commit {
+	return &executionstore.Commit{CommitID: executionstore.SettleCommitID(key), Epoch: epoch,
+		Events: []executionstore.Event{w.event(executionstore.EventExecutionSettled, executionstore.Settled{State: state, Outcome: *outcome})}}
 }
 
 // wake notifies one blocked GetOutcome waiter, if any.
@@ -356,25 +432,32 @@ func (w *Worker) wake(key effect.AssignmentKey) {
 	}
 }
 
-// acquireAndStart takes the record's lease and brings its execution to
-// Running: a record with an attachable execution is observed, one whose
-// execution the backend proves missing is re-started (a model, or a tool
-// whose Replay policy allows it) or settled Unknown (any other tool,
-// TRN-DUR-4), one whose execution the backend cannot confirm (orphaned) is
-// held under the lease and asked about again until the backend can, and one
-// never started is started.
+// acquireAndStart takes the key's lease and continues the execution from its
+// fold (RUN-EXE-3, RUN-EXE-9): an execution with an attachable backend
+// execution is observed, one whose execution the backend proves missing is
+// re-started (a model, or a tool whose Replay policy allows it) or settled
+// Unknown (any other tool, TRN-DUR-4), one whose execution the backend
+// cannot confirm (orphaned) is held under the lease and asked about again
+// until the backend can, and one never started is started.
 func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) error {
-	claimed, acquired, err := w.store.Acquire(ctx, key, w.id, w.lease)
+	lease, acquired, err := w.store.Acquire(ctx, key, w.id, w.lease)
 	if err != nil {
 		return err
 	}
 	if !acquired {
 		return nil
 	}
+	claimed, _, ok, err := w.store.Load(ctx, key)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return effect.ErrExecutionNotFound
+	}
 	digest := claimed.AssignmentDigest
-	// A record written outside Dispatch (an older store, a test fixture) may
-	// lack its ExecutionRef; it is routed and prepared here, before any
-	// backend call, and the Ref is persisted first (RUN-EXE-9).
+	// A ledger opened without its binding (an older store, a test fixture)
+	// is routed and prepared here, before any backend call, and the Ref is
+	// committed first (RUN-EXE-9).
 	if claimed.ExecutionRef.Provider == "" && claimed.State != effect.ExecutionCancelRequested {
 		route, err := w.route(claimed.Assignment)
 		if err != nil {
@@ -384,10 +467,18 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 		if err != nil {
 			return err
 		}
-		claimed.ExecutionRef = ExecutionRef{Provider: route.Provider, Ref: ref}
-		if err := w.store.PutOwned(ctx, claimed, w.id, claimed.FencingEpoch); err != nil {
+		bound := ExecutionRef{Provider: route.Provider, Ref: ref}
+		err = w.commit(ctx, lease, key, func(state *executionstore.ExecutionState, _ executionstore.Head) (*executionstore.Commit, error) {
+			if state.ExecutionRef.Provider != "" {
+				return nil, nil
+			}
+			return &executionstore.Commit{CommitID: executionstore.DeriveCommitID(key, "bind", fmt.Sprint(uint64(lease.Epoch))), Epoch: lease.Epoch,
+				Events: []executionstore.Event{w.event(executionstore.EventExecutionBound, executionstore.Bound{Ref: bound})}}, nil
+		})
+		if err != nil {
 			return err
 		}
+		claimed.ExecutionRef = bound
 	}
 	backend, err := w.backend(claimed.ExecutionRef)
 	if err != nil {
@@ -396,7 +487,7 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 	ref := claimed.ExecutionRef.Ref
 	if claimed.State == effect.ExecutionCancelRequested {
 		leaseDone := make(chan struct{})
-		w.spawn(func() { w.heartbeat(key, claimed.FencingEpoch, leaseDone) })
+		w.spawn(func() { w.heartbeat(lease, leaseDone) })
 		attachment, attachErr := backend.Attach(ctx, ref)
 		if attachErr != nil {
 			close(leaseDone)
@@ -405,16 +496,16 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 		if attachment.State != effect.AttachmentActive && attachment.State != effect.AttachmentTerminal {
 			env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest, Unknown: true,
 				Error: &protocol.WireError{Code: "cancel_reconciliation_unknown", Message: "cancelled execution is no longer attached"}}
-			_ = w.finishOwned(ctx, key, claimed.FencingEpoch, &env, effect.ExecutionUnknown, nil)
+			_ = w.finishOwned(ctx, lease, &env, effect.ExecutionUnknown, nil)
 			close(leaseDone)
 			return nil
 		}
 		cancelErr := backend.Cancel(ctx, ref)
-		w.spawn(func() { w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone) })
+		w.spawn(func() { w.watch(lease, digest, backend, ref, leaseDone) })
 		return cancelErr
 	}
 	leaseDone := make(chan struct{})
-	w.spawn(func() { w.heartbeat(key, claimed.FencingEpoch, leaseDone) })
+	w.spawn(func() { w.heartbeat(lease, leaseDone) })
 	if claimed.State == effect.ExecutionRunning || claimed.State == effect.ExecutionDispatching {
 		// Prefer adoption over retry. Recovery is allowed to retry only after
 		// the backend proves that the old execution is missing; an answer it
@@ -428,28 +519,28 @@ func (w *Worker) acquireAndStart(ctx context.Context, key effect.AssignmentKey) 
 		case effect.AttachmentActive, effect.AttachmentTerminal:
 			// Keep Dispatching as a conservative pre-outcome state. The watcher
 			// will terminalize it after the adopted backend produces an outcome.
-			w.spawn(func() { w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone) })
+			w.spawn(func() { w.watch(lease, digest, backend, ref, leaseDone) })
 			return nil
 		case effect.AttachmentOrphaned:
 			held := claimed
-			w.spawn(func() { w.awaitBackend(key, &held, backend, ref, leaseDone) })
+			w.spawn(func() { w.awaitBackend(lease, &held, backend, ref, leaseDone) })
 			return nil
 		}
-		return w.replay(ctx, key, &claimed, backend, ref, leaseDone)
+		return w.replay(ctx, lease, &claimed, backend, ref, leaseDone)
 	}
-	return w.start(ctx, key, &claimed, backend, ref, leaseDone)
+	return w.start(ctx, lease, &claimed, backend, ref, leaseDone)
 }
 
-// awaitBackend holds a taken-over record whose backend could not confirm its
-// execution (orphaned): it asks the backend again with backoff, under the
+// awaitBackend holds a taken-over execution whose backend could not confirm
+// it (orphaned): it asks the backend again with backoff, under the
 // heartbeat leaseDone ends, until the backend observes the execution (then
 // it is watched), proves it missing (then it is replayed or settled as a
-// missing one would be), or this incarnation loses the record. Nothing is
+// missing one would be), or this incarnation loses the lease. Nothing is
 // re-dispatched while the backend is undecided (RUN-EXE-3, TRN-DUR-4).
-func (w *Worker) awaitBackend(key effect.AssignmentKey, claimed *executionstore.Record, backend ExecutionBackend, ref string, leaseDone chan struct{}) {
+func (w *Worker) awaitBackend(lease executionstore.Lease, claimed *executionstore.ExecutionState, backend ExecutionBackend, ref string, leaseDone chan struct{}) {
 	delay := 10 * time.Millisecond
 	for {
-		if !w.waitOwned(key, claimed.FencingEpoch, delay) {
+		if !w.waitOwned(lease, delay) {
 			close(leaseDone)
 			return
 		}
@@ -462,13 +553,13 @@ func (w *Worker) awaitBackend(key effect.AssignmentKey, claimed *executionstore.
 		}
 		switch attachment.State {
 		case effect.AttachmentActive, effect.AttachmentTerminal:
-			w.watch(key, claimed.AssignmentDigest, claimed.FencingEpoch, backend, ref, leaseDone)
+			w.watch(lease, claimed.AssignmentDigest, backend, ref, leaseDone)
 			return
 		case effect.AttachmentMissing:
 			// A failed replay has released the lease (replay closes leaseDone
-			// on every error path), so the record reads as orphaned again and
-			// the Owner's next recovery request retries it.
-			_ = w.replay(w.lifecycle, key, claimed, backend, ref, leaseDone)
+			// on every error path), so the execution reads as orphaned again
+			// and the Owner's next recovery request retries it.
+			_ = w.replay(w.lifecycle, lease, claimed, backend, ref, leaseDone)
 			return
 		}
 	}
@@ -479,16 +570,17 @@ func (w *Worker) awaitBackend(key effect.AssignmentKey, claimed *executionstore.
 // its Assignment carries allows it, because its lost execution may have
 // crossed the effect boundary before its worker died (TRN-DUR-4). The policy
 // travels with the Assignment, so a local and a remote Worker decide alike
-// from the record; a forbidden or unjudged tool settles Unknown, the message
+// from the ledger; a forbidden or unjudged tool settles Unknown, the message
 // naming the declaration. Restart replays the same Assignment as a new
 // generation: it allocates the Ref of the new physical execution and the old
-// Ref, just proved missing, moves to the audit trail (RUN-EXE-9). leaseDone
-// ends the running heartbeat when nothing is left to watch.
-func (w *Worker) replay(ctx context.Context, key effect.AssignmentKey, claimed *executionstore.Record, backend ExecutionBackend, ref string, leaseDone chan struct{}) error {
+// Ref, just proved missing, moves to the audit trail as execution_restarted
+// (RUN-EXE-9). leaseDone ends the running heartbeat when nothing is left to
+// watch.
+func (w *Worker) replay(ctx context.Context, lease executionstore.Lease, claimed *executionstore.ExecutionState, backend ExecutionBackend, ref string, leaseDone chan struct{}) error {
 	if tool, ok := claimed.Assignment.Tool(); ok && tool.Replay != run.ReplayAllowed {
-		env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: claimed.AssignmentDigest, Unknown: true,
+		env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: lease.Key, AssignmentDigest: claimed.AssignmentDigest, Unknown: true,
 			Error: &protocol.WireError{Code: "adopted_without_replay", Message: fmt.Sprintf("tool %q declares replay %s; the lost execution is not re-dispatched", tool.ToolRef, tool.Replay)}}
-		err := w.finishOwned(ctx, key, claimed.FencingEpoch, &env, effect.ExecutionUnknown, nil)
+		err := w.finishOwned(ctx, lease, &env, effect.ExecutionUnknown, nil)
 		close(leaseDone)
 		return err
 	}
@@ -502,25 +594,39 @@ func (w *Worker) replay(ctx context.Context, key effect.AssignmentKey, claimed *
 		return errors.New("executor: backend restarted with an empty execution ref")
 	}
 	if fresh != ref {
-		claimed.Superseded = append(claimed.Superseded, claimed.ExecutionRef)
-		claimed.ExecutionRef.Ref = fresh
-		if err := w.store.PutOwned(ctx, *claimed, w.id, claimed.FencingEpoch); err != nil {
+		if err := w.restarted(ctx, lease, claimed.ExecutionRef, fresh); err != nil {
 			close(leaseDone)
 			return err
 		}
+		claimed.Superseded = append(claimed.Superseded, claimed.ExecutionRef)
+		claimed.ExecutionRef.Ref = fresh
 		ref = fresh
-		w.progress.Reset(key)
+		w.progress.Reset(lease.Key)
 	}
-	return w.start(ctx, key, claimed, backend, ref, leaseDone)
+	return w.start(ctx, lease, claimed, backend, ref, leaseDone)
 }
 
-// start moves the claimed record through Dispatching to Running around
-// Backend.Start and hands the execution to a watcher; the heartbeat
-// leaseDone ends is already running.
-func (w *Worker) start(ctx context.Context, key effect.AssignmentKey, claimed *executionstore.Record, backend ExecutionBackend, ref string, leaseDone chan struct{}) error {
-	digest := claimed.AssignmentDigest
+// restarted commits execution_restarted: from leaves, fresh continues.
+func (w *Worker) restarted(ctx context.Context, lease executionstore.Lease, from ExecutionRef, fresh string) error {
+	return w.commit(ctx, lease, lease.Key, func(state *executionstore.ExecutionState, _ executionstore.Head) (*executionstore.Commit, error) {
+		if state.ExecutionRef.Ref == fresh {
+			return nil, nil
+		}
+		if state.ExecutionRef != from {
+			return nil, fmt.Errorf("%w: restart of %+v, ledger holds %+v", executionstore.ErrStateConflict, from, state.ExecutionRef)
+		}
+		return &executionstore.Commit{CommitID: executionstore.DeriveCommitID(lease.Key, "restart", from.Ref), Epoch: lease.Epoch,
+			Events: []executionstore.Event{w.event(executionstore.EventExecutionRestarted, executionstore.Restarted{Superseded: from, Ref: fresh})}}, nil
+	})
+}
+
+// start moves the execution through Dispatching to Running around
+// Backend.Start and hands it to a watcher; the heartbeat leaseDone ends is
+// already running.
+func (w *Worker) start(ctx context.Context, lease executionstore.Lease, claimed *executionstore.ExecutionState, backend ExecutionBackend, ref string, leaseDone chan struct{}) error {
+	key, digest := lease.Key, claimed.AssignmentDigest
 	if claimed.State != effect.ExecutionDispatching {
-		if err := w.store.TransitionOwned(ctx, key, w.id, claimed.FencingEpoch, claimed.State, effect.ExecutionDispatching); err != nil {
+		if err := w.commit(ctx, lease, key, w.transition(lease, executionstore.EventExecutionStarted, effect.ExecutionDispatching, "start")); err != nil {
 			close(leaseDone)
 			if errors.Is(err, executionstore.ErrLeaseLost) || errors.Is(err, executionstore.ErrStateConflict) {
 				return nil
@@ -530,31 +636,31 @@ func (w *Worker) start(ctx context.Context, key effect.AssignmentKey, claimed *e
 	}
 	if err := backend.Start(context.WithoutCancel(ctx), ref, claimed.Assignment); err != nil {
 		if errors.Is(err, effect.ErrDispatchUnknown) {
-			w.spawn(func() { w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone) })
+			w.spawn(func() { w.watch(lease, digest, backend, ref, leaseDone) })
 			return err
 		}
-		settleErr := w.finishOwned(ctx, key, claimed.FencingEpoch, &protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest,
+		settleErr := w.finishOwned(ctx, lease, &protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest,
 			Error: &protocol.WireError{Code: "dispatch_failed", Message: err.Error()}}, effect.ExecutionFailed, err)
 		close(leaseDone)
 		return settleErr
 	}
-	if err := w.store.TransitionOwned(ctx, key, w.id, claimed.FencingEpoch, effect.ExecutionDispatching, effect.ExecutionRunning); err != nil {
+	if err := w.commit(ctx, lease, key, w.transition(lease, executionstore.EventExecutionRunning, effect.ExecutionRunning, "run")); err != nil {
 		// The backend call may already have crossed its external boundary.
 		// Keep the watcher alive and report Dispatch as accepted; recovery
-		// must reconcile the Dispatching/Running record rather than replan.
-		w.spawn(func() { w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone) })
+		// must reconcile the Dispatching/Running execution rather than replan.
+		w.spawn(func() { w.watch(lease, digest, backend, ref, leaseDone) })
 		return nil
 	}
-	w.spawn(func() { w.watch(key, digest, claimed.FencingEpoch, backend, ref, leaseDone) })
+	w.spawn(func() { w.watch(lease, digest, backend, ref, leaseDone) })
 	return nil
 }
 
-// watch reads the backend's Outcome for ref and settles the record under
+// watch reads the backend's Outcome for ref and settles the execution under
 // this incarnation's lease.
-func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64, backend ExecutionBackend, ref string, done chan struct{}) {
+func (w *Worker) watch(lease executionstore.Lease, digest run.Digest, backend ExecutionBackend, ref string, done chan struct{}) {
 	defer close(done)
 	for {
-		if !w.observe(key, digest, epoch, backend, &ref) {
+		if !w.observe(lease, digest, backend, &ref) {
 			return
 		}
 	}
@@ -563,7 +669,7 @@ func (w *Worker) watch(key effect.AssignmentKey, digest run.Digest, epoch uint64
 // observe reads the Outcome of ref and settles it, or restarts the effect
 // after a retryable failure and reports true with ref moved to the new
 // execution; false ends the watch.
-func (w *Worker) observe(key effect.AssignmentKey, digest run.Digest, epoch uint64, backend ExecutionBackend, ref *string) bool {
+func (w *Worker) observe(lease executionstore.Lease, digest run.Digest, backend ExecutionBackend, ref *string) bool {
 	delay := 10 * time.Millisecond
 	var out effect.Outcome
 	for {
@@ -576,28 +682,28 @@ func (w *Worker) observe(key effect.AssignmentKey, digest run.Digest, epoch uint
 		if err == nil {
 			break
 		}
-		if !w.waitOwned(key, epoch, delay) {
+		if !w.waitOwned(lease, delay) {
 			return false
 		}
 		delay = min(delay*2, time.Second)
 	}
 	// A Known transient failure of an effect whose policy allows it is
-	// re-dispatched under the same record within the budget (RUN-EXE-11):
-	// the old Ref joins Superseded and the watch continues on the new one.
-	if next, ok := w.retryAfter(key, epoch, backend, *ref, out); ok {
+	// re-dispatched under the same ledger within the budget (RUN-EXE-11):
+	// the old Ref joins the audit trail and the watch continues on the new one.
+	if next, ok := w.retryAfter(lease, backend, *ref, out); ok {
 		*ref = next
 		return true
 	}
-	// The backend knows the Ref, not the attempt: the record's key is the
+	// The backend knows the Ref, not the attempt: the ledger's key is the
 	// Outcome's key (RUN-EXE-9).
-	out.Key = key
+	out.Key = lease.Key
 	env := protocol.EncodeOutcome(out, digest)
 	state := protocol.StatusForOutcome(out)
 	for {
-		if err := w.finishOwned(w.lifecycle, key, epoch, &env, state, nil); err == nil {
+		if err := w.finishOwned(w.lifecycle, lease, &env, state, nil); err == nil {
 			return false
 		}
-		if !w.waitOwned(key, epoch, delay) {
+		if !w.waitOwned(lease, delay) {
 			return false
 		}
 		delay = min(delay*2, time.Second)
@@ -607,38 +713,36 @@ func (w *Worker) observe(key effect.AssignmentKey, digest run.Digest, epoch uint
 // retryAfter decides whether out, the Outcome of ref, is a Known failure
 // that declares itself retryable and the Worker's budget still allows,
 // and if so restarts the effect: Backoff scaled by the attempts so far, then
-// Backend.Restart and Start under the same lease, the old Ref appended to
-// Superseded. It returns the new Ref. A backend whose Restart returns the
+// Backend.Restart and Start under the same lease, the old Ref recorded as
+// superseded. It returns the new Ref. A backend whose Restart returns the
 // same Ref cannot re-execute (a Port-shaped adapter), so nothing is retried.
-func (w *Worker) retryAfter(key effect.AssignmentKey, epoch uint64, backend ExecutionBackend, ref string, out effect.Outcome) (string, bool) {
+func (w *Worker) retryAfter(lease executionstore.Lease, backend ExecutionBackend, ref string, out effect.Outcome) (string, bool) {
 	if w.retry.MaxAttempts <= 0 || !retryableFailure(out.Result) {
 		return "", false
 	}
 	ctx := w.lifecycle
-	r, ok, err := w.store.Get(ctx, key)
-	if err != nil || !ok || r.Owner != w.id || r.FencingEpoch != epoch {
+	state, _, ok, err := w.store.Load(ctx, lease.Key)
+	if err != nil || !ok || state.Owner != w.id || state.FencingEpoch != lease.Epoch {
 		return "", false
 	}
-	attempts := len(r.Superseded) + 1
+	attempts := len(state.Superseded) + 1
 	if attempts >= w.retry.MaxAttempts {
 		return "", false
 	}
-	if delay := w.retry.Backoff * time.Duration(attempts); delay > 0 && !w.waitOwned(key, epoch, delay) {
+	if delay := w.retry.Backoff * time.Duration(attempts); delay > 0 && !w.waitOwned(lease, delay) {
 		return "", false
 	}
-	fresh, err := backend.Restart(ctx, ref, r.Assignment)
+	fresh, err := backend.Restart(ctx, ref, state.Assignment)
 	if err != nil || fresh == "" || fresh == ref {
 		return "", false
 	}
-	r.Superseded = append(r.Superseded, r.ExecutionRef)
-	r.ExecutionRef.Ref = fresh
-	if err := w.store.PutOwned(ctx, r, w.id, epoch); err != nil {
+	if err := w.restarted(ctx, lease, state.ExecutionRef, fresh); err != nil {
 		return "", false
 	}
 	// The next generation of frames starts here; what the receiver saw of
 	// the failed attempt is void (RUN-EXE-12).
-	w.progress.Reset(key)
-	if err := backend.Start(context.WithoutCancel(ctx), fresh, r.Assignment); err != nil && !errors.Is(err, effect.ErrDispatchUnknown) {
+	w.progress.Reset(lease.Key)
+	if err := backend.Start(context.WithoutCancel(ctx), fresh, state.Assignment); err != nil && !errors.Is(err, effect.ErrDispatchUnknown) {
 		// The retry itself was refused before starting: settle the original
 		// failure rather than loop on the refusal.
 		return "", false
@@ -660,8 +764,8 @@ func retryableFailure(result effect.OutcomeResult) bool {
 	}
 }
 
-func (w *Worker) waitOwned(key effect.AssignmentKey, epoch uint64, delay time.Duration) bool {
-	if !w.ownershipIntact(key, epoch) {
+func (w *Worker) waitOwned(lease executionstore.Lease, delay time.Duration) bool {
+	if !w.ownershipIntact(lease) {
 		return false
 	}
 	timer := time.NewTimer(delay)
@@ -670,18 +774,19 @@ func (w *Worker) waitOwned(key effect.AssignmentKey, epoch uint64, delay time.Du
 	case <-w.lifecycle.Done():
 		return false
 	case <-timer.C:
-		return w.ownershipIntact(key, epoch)
+		return w.ownershipIntact(lease)
 	}
 }
 
 // ownershipIntact reports whether this Worker incarnation still owns the
-// record: same owner, same fencing epoch, non-terminal. A lapsed lease does
-// not end ownership — Renew re-establishes it once transient store errors
-// stop — so watchers keep polling through outages shorter than adoption.
-// Missing, terminal, or re-acquired records (a higher epoch) end ownership;
-// the heartbeat then exits too, because Renew reports ErrLeaseLost for them.
-func (w *Worker) ownershipIntact(key effect.AssignmentKey, epoch uint64) bool {
-	r, ok, err := w.store.Get(w.lifecycle, key)
+// execution: same owner, same Epoch, unsettled. A lapsed lease does not end
+// ownership — Renew re-establishes it once transient store errors stop — so
+// watchers keep polling through outages shorter than adoption. A missing
+// ledger, a settled execution, or a re-acquired one (a higher Epoch) end
+// ownership; the heartbeat then exits too, because Renew reports
+// ErrLeaseLost for them.
+func (w *Worker) ownershipIntact(lease executionstore.Lease) bool {
+	state, _, ok, err := w.store.Load(w.lifecycle, lease.Key)
 	if err != nil {
 		// A transient read error must not stop the watcher; the caller's
 		// backoff retries the ownership check.
@@ -690,10 +795,10 @@ func (w *Worker) ownershipIntact(key effect.AssignmentKey, epoch uint64) bool {
 	if !ok {
 		return false
 	}
-	return !protocol.StatusTerminal(r.State) && r.Owner == w.id && r.FencingEpoch == epoch
+	return !state.Terminal() && state.Owner == w.id && state.FencingEpoch == lease.Epoch
 }
 
-func (w *Worker) heartbeat(key effect.AssignmentKey, epoch uint64, done <-chan struct{}) {
+func (w *Worker) heartbeat(lease executionstore.Lease, done <-chan struct{}) {
 	interval := w.lease / 3
 	if interval < 10*time.Millisecond {
 		interval = 10 * time.Millisecond
@@ -707,42 +812,40 @@ func (w *Worker) heartbeat(key effect.AssignmentKey, epoch uint64, done <-chan s
 		case <-w.lifecycle.Done():
 			return
 		case <-ticker.C:
-			if err := w.store.Renew(w.lifecycle, key, w.id, epoch, w.lease); err != nil {
+			if err := w.store.Renew(w.lifecycle, lease, w.lease); err != nil {
 				if errors.Is(err, executionstore.ErrLeaseLost) || errors.Is(err, effect.ErrExecutionNotFound) {
 					return
 				}
 				// Transient store errors must not silently stop lease
 				// maintenance; the next tick retries. If the lease nonetheless
-				// expires, the next RecoverExecution re-adopts the record.
+				// expires, the next RecoverExecution re-adopts the execution.
 			}
 		}
 	}
 }
 
-func (w *Worker) finishOwned(ctx context.Context, key effect.AssignmentKey, epoch uint64, outcome *protocol.OutcomeEnvelope, state effect.ExecutionStatus, dispatchErr error) error {
+// finishOwned settles the execution under lease. A settlement another writer
+// made first (a Dispose, or a watcher of a later Epoch) is the execution's;
+// this one is dropped and dispatchErr, the error the caller was going to
+// report, is returned as it was.
+func (w *Worker) finishOwned(ctx context.Context, lease executionstore.Lease, outcome *protocol.OutcomeEnvelope, state effect.ExecutionStatus, dispatchErr error) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	r, ok, err := w.store.Get(ctx, key)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return effect.ErrExecutionNotFound
-	}
-	if protocol.StatusTerminal(r.State) {
-		return dispatchErr
-	}
-	r.Outcome = outcome
-	r.State = state
-	r.SettledAtUnixMilli = w.now().UnixMilli()
-	if err := w.store.PutOwned(ctx, r, w.id, epoch); err != nil {
-		if errors.Is(err, executionstore.ErrLeaseLost) {
-			return dispatchErr
+	err := w.commit(ctx, lease, lease.Key, func(current *executionstore.ExecutionState, _ executionstore.Head) (*executionstore.Commit, error) {
+		if current.Terminal() {
+			return nil, nil
 		}
+		return w.settlement(lease.Key, lease.Epoch, outcome, state), nil
+	})
+	switch {
+	case err == nil:
+	case errors.Is(err, executionstore.ErrLeaseLost), errors.Is(err, executionstore.ErrCommitConflict):
+		return dispatchErr
+	default:
 		return err
 	}
-	w.progress.End(key)
-	if ch := w.notify[key]; ch != nil {
+	w.progress.End(lease.Key)
+	if ch := w.notify[lease.Key]; ch != nil {
 		select {
 		case ch <- struct{}{}:
 		default:
@@ -752,81 +855,73 @@ func (w *Worker) finishOwned(ctx context.Context, key effect.AssignmentKey, epoc
 }
 
 // Progress is effect.ProgressPort (RUN-EXE-12): the frames of an execution
-// this Worker's backends published, from the hub. A record this Worker
+// this Worker's backends published, from the hub. An execution this Worker
 // holds but whose Backend is itself a port (a remote Worker behind
 // PortBackend) is served from that port, so a chain of Workers relays the
-// frames of the one that runs the effect. A key without a record is
-// ErrExecutionNotFound; a terminal record the hub no longer holds ends the
+// frames of the one that runs the effect. A key without a ledger is
+// ErrExecutionNotFound; a settled execution the hub no longer holds ends the
 // stream at once.
 func (w *Worker) Progress(ctx context.Context, key effect.AssignmentKey, after uint64, fn func(effect.ProgressFrame) bool) error {
 	if w.progress.Known(key) {
 		return w.progress.Progress(ctx, key, after, fn)
 	}
-	r, ok, err := w.store.Get(ctx, key)
+	state, _, ok, err := w.store.Load(ctx, key)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return effect.ErrExecutionNotFound
 	}
-	if backend, err := w.backend(r.ExecutionRef); err == nil {
+	if backend, err := w.backend(state.ExecutionRef); err == nil {
 		if relay, ok := backend.(effect.ProgressPort); ok {
 			return relay.Progress(ctx, key, after, fn)
 		}
 	}
-	if protocol.StatusTerminal(r.State) {
+	if state.Terminal() {
 		return nil
 	}
 	return w.progress.Progress(ctx, key, after, fn)
 }
 
-// Attach reports the record's observation state (RUN-EXE-3). The record in
-// the durable store is the authority: missing without a record, terminal
-// once settled, orphaned when no incarnation holds a live lease on it,
-// active while one does. Which Worker answers does not matter: a live lease held by
-// another incarnation is proof of its heartbeat, and its watcher settles the
-// Outcome into the same store GetOutcome reads. Only for its own live lease
-// does this Worker also ask the Backend, and a Backend that no longer finds
-// the Ref makes the record orphaned until RecoverExecution restarts it or
+// Attach reports the execution's observation state (RUN-EXE-3). The ledger
+// is the authority: missing without a ledger, terminal once settled,
+// orphaned when no incarnation holds a live lease on it, active while one
+// does. Which Worker answers does not matter: a live lease held by another
+// incarnation is proof of its heartbeat, and its watcher settles the Outcome
+// into the same store GetOutcome reads. Only for its own live lease does
+// this Worker also ask the Backend, and a Backend that no longer finds the
+// Ref makes the execution orphaned until RecoverExecution restarts it or
 // Dispose settles it.
 func (w *Worker) Attach(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
-	r, ok, err := w.store.Get(ctx, key)
+	state, _, ok, err := w.store.Load(ctx, key)
 	if err != nil {
 		return effect.Attachment{}, err
 	}
 	if !ok {
-		// Dispatch persists the record before any Start and the store is
-		// durable, so a key without a record never started: missing is a
+		// Dispatch opens the ledger before any Start and the store is
+		// durable, so a key without a ledger never started: missing is a
 		// proof (RUN-EXE-3).
 		return effect.Attachment{State: effect.AttachmentMissing, Execution: effect.ExecutionNotFound}, nil
 	}
-	attachment := effect.Attachment{Execution: r.State, Owner: r.Owner, FencingEpoch: r.FencingEpoch, LeaseUntilUnixMilli: r.LeaseUntilUnixMilli}
-	if protocol.StatusTerminal(r.State) {
+	attachment := effect.Attachment{Execution: state.State, Owner: state.Owner, FencingEpoch: uint64(state.FencingEpoch), LeaseUntilUnixMilli: state.LeaseUntilUnixMilli}
+	if state.Terminal() {
 		attachment.State = effect.AttachmentTerminal
 		attachment.BackendAttached = false
 		return attachment, nil
 	}
-	if r.FencingEpoch == 0 || r.LeaseUntilUnixMilli <= w.now().UnixMilli() {
+	if state.FencingEpoch == 0 || state.LeaseUntilUnixMilli <= w.now().UnixMilli() {
 		attachment.State = effect.AttachmentOrphaned
 		return attachment, nil
 	}
-	if r.Owner != w.id {
+	if state.Owner != w.id {
 		attachment.State = effect.AttachmentActive
 		return attachment, nil
 	}
-	owned, err := w.store.LeaseOwned(ctx, key, w.id, r.FencingEpoch)
+	backend, err := w.backend(state.ExecutionRef)
 	if err != nil {
 		return effect.Attachment{}, err
 	}
-	if !owned {
-		attachment.State = effect.AttachmentOrphaned
-		return attachment, nil
-	}
-	backend, err := w.backend(r.ExecutionRef)
-	if err != nil {
-		return effect.Attachment{}, err
-	}
-	backendAttachment, err := backend.Attach(ctx, r.ExecutionRef.Ref)
+	backendAttachment, err := backend.Attach(ctx, state.ExecutionRef.Ref)
 	if err != nil {
 		return effect.Attachment{}, err
 	}
@@ -839,44 +934,44 @@ func (w *Worker) Attach(ctx context.Context, key effect.AssignmentKey) (effect.A
 	return attachment, nil
 }
 
-// GetStatus is the record's state; while the execution is with the backend
+// GetStatus is the execution's state; while it is with the backend
 // (Dispatching, Running, CancelRequested) it is the backend's view of the Ref.
 func (w *Worker) GetStatus(ctx context.Context, key effect.AssignmentKey) (effect.ExecutionStatus, error) {
-	r, ok, err := w.store.Get(ctx, key)
+	state, _, ok, err := w.store.Load(ctx, key)
 	if err != nil {
 		return effect.ExecutionNotFound, err
 	}
 	if !ok {
 		return effect.ExecutionNotFound, effect.ErrExecutionNotFound
 	}
-	switch r.State {
+	switch state.State {
 	case effect.ExecutionDispatching, effect.ExecutionRunning, effect.ExecutionCancelRequested:
-		backend, err := w.backend(r.ExecutionRef)
+		backend, err := w.backend(state.ExecutionRef)
 		if err != nil {
-			return r.State, err
+			return state.State, err
 		}
-		return backend.Status(ctx, r.ExecutionRef.Ref)
+		return backend.Status(ctx, state.ExecutionRef.Ref)
 	}
-	return r.State, nil
+	return state.State, nil
 }
 
 func (w *Worker) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
 	for {
-		r, ok, err := w.store.Get(ctx, key)
+		state, _, ok, err := w.store.Load(ctx, key)
 		if err != nil {
 			return effect.Outcome{}, err
 		}
 		if !ok {
 			return effect.Outcome{}, effect.ErrExecutionNotFound
 		}
-		if r.Collected {
+		if state.Collected {
 			return effect.Outcome{}, effect.ErrOutcomeCollected
 		}
-		if r.Outcome != nil {
+		if state.Outcome != nil {
 			w.mu.Lock()
 			delete(w.notify, key)
 			w.mu.Unlock()
-			return protocol.DecodeOutcome(r.Outcome), nil
+			return protocol.DecodeOutcome(state.Outcome), nil
 		}
 		ch := w.signal(key)
 		timer := time.NewTimer(10 * time.Millisecond)
@@ -901,14 +996,14 @@ func (w *Worker) GetOutcomeEnvelope(ctx context.Context, key effect.AssignmentKe
 	if _, err := w.GetOutcome(ctx, key); err != nil {
 		return protocol.OutcomeEnvelope{}, err
 	}
-	r, ok, err := w.store.Get(ctx, key)
+	state, _, ok, err := w.store.Load(ctx, key)
 	if err != nil {
 		return protocol.OutcomeEnvelope{}, err
 	}
-	if !ok || r.Outcome == nil {
+	if !ok || state.Outcome == nil {
 		return protocol.OutcomeEnvelope{}, effect.ErrOutcomeNotReady
 	}
-	return *r.Outcome, nil
+	return *state.Outcome, nil
 }
 
 func (w *Worker) signal(key effect.AssignmentKey) chan struct{} {
@@ -923,82 +1018,64 @@ func (w *Worker) signal(key effect.AssignmentKey) chan struct{} {
 }
 
 func (w *Worker) Cancel(ctx context.Context, key effect.AssignmentKey) error {
-	r, ok, err := w.store.Get(ctx, key)
+	state, _, ok, err := w.store.Load(ctx, key)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return effect.ErrExecutionNotFound
 	}
-	if protocol.StatusTerminal(r.State) {
+	if state.Terminal() {
 		return nil
 	}
-	backend, err := w.backend(r.ExecutionRef)
+	backend, err := w.backend(state.ExecutionRef)
 	if err != nil {
 		return err
 	}
-	if err := w.requestCancelOwned(ctx, key, r.FencingEpoch); err != nil {
+	lease := executionstore.Lease{Key: key, Owner: state.Owner, Epoch: state.FencingEpoch, UntilUnixMilli: state.LeaseUntilUnixMilli}
+	if err := w.requestCancelOwned(ctx, lease); err != nil {
 		return err
 	}
-	return backend.Cancel(ctx, r.ExecutionRef.Ref)
+	return backend.Cancel(ctx, state.ExecutionRef.Ref)
 }
 
-func (w *Worker) requestCancelOwned(ctx context.Context, key effect.AssignmentKey, epoch uint64) error {
-	for {
-		r, ok, err := w.store.Get(ctx, key)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return effect.ErrExecutionNotFound
-		}
-		if protocol.StatusTerminal(r.State) || r.State == effect.ExecutionCancelRequested {
-			return nil
-		}
-		err = w.store.TransitionOwned(ctx, key, w.id, epoch, r.State, effect.ExecutionCancelRequested)
-		if errors.Is(err, executionstore.ErrStateConflict) {
-			continue
-		}
-		return err
-	}
+// requestCancelOwned commits cancel_requested under the current lease; an
+// execution already cancelling or settled is left as it is.
+func (w *Worker) requestCancelOwned(ctx context.Context, lease executionstore.Lease) error {
+	return w.commit(ctx, lease, lease.Key, w.transition(lease, executionstore.EventCancelRequested, effect.ExecutionCancelRequested, "cancel"))
 }
 
-// recover resumes observation of the records this incarnation still owns
-// after a restart with the same ID. It is the lease holder's own duty and
-// reads only its own records; it adopts nothing.
+// recover resumes observation of the executions this incarnation still
+// holds after a restart with the same ID. It is the lease holder's own duty
+// and reads only its own leases; it adopts nothing.
 func (w *Worker) recover(ctx context.Context) error {
-	records, err := w.store.ListOwned(ctx, w.id)
+	keys, err := w.store.ListOwned(ctx, w.id)
 	if err != nil {
 		return err
 	}
-	for i := range records {
-		r := &records[i]
-		if protocol.StatusTerminal(r.State) || r.FencingEpoch == 0 {
-			continue
-		}
-		owned, err := w.store.LeaseOwned(ctx, r.Assignment.Key(), w.id, r.FencingEpoch)
+	for _, key := range keys {
+		state, _, ok, err := w.store.Load(ctx, key)
 		if err != nil {
 			return err
 		}
-		if !owned {
+		if !ok || !w.holdsLease(&state) {
 			continue
 		}
-		backend, err := w.backend(r.ExecutionRef)
+		backend, err := w.backend(state.ExecutionRef)
 		if err != nil {
 			continue
 		}
-		attachment, attachErr := backend.Attach(ctx, r.ExecutionRef.Ref)
+		attachment, attachErr := backend.Attach(ctx, state.ExecutionRef.Ref)
 		if attachErr != nil {
 			// One broken backend read must not block recovery of the other
-			// records; a later RecoverExecution retries this one.
+			// executions; a later RecoverExecution retries this one.
 			continue
 		}
 		if attachment.State == effect.AttachmentActive || attachment.State == effect.AttachmentTerminal {
+			lease := executionstore.Lease{Key: key, Owner: state.Owner, Epoch: state.FencingEpoch, UntilUnixMilli: state.LeaseUntilUnixMilli}
 			done := make(chan struct{})
-			w.spawn(func() { w.heartbeat(r.Assignment.Key(), r.FencingEpoch, done) })
-			w.spawn(func() {
-				w.watch(r.Assignment.Key(), r.AssignmentDigest, r.FencingEpoch, backend, r.ExecutionRef.Ref, done)
-			})
+			w.spawn(func() { w.heartbeat(lease, done) })
+			w.spawn(func() { w.watch(lease, state.AssignmentDigest, backend, state.ExecutionRef.Ref, done) })
 		}
 	}
 	return nil

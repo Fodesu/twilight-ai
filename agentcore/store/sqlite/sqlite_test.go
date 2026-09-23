@@ -3,7 +3,9 @@ package sqlite_test
 import (
 	"context"
 	"errors"
+	"github.com/felinics/twilight/agentcore/executor/protocol"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -48,21 +50,33 @@ func assignment(id run.EffectID) effect.Assignment {
 		Body: effect.ModelAssignment{Model: "m", RequestDigest: "sha256:req"}}
 }
 
-func mustPut(t *testing.T, s executionstore.Store, r executionstore.Record) {
+func accept(t *testing.T, s executionstore.Store, a effect.Assignment) run.Digest {
 	t.Helper()
-	digest, err := r.Assignment.Digest()
+	digest, err := a.Digest()
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.AssignmentDigest = digest
-	if err := s.Put(context.Background(), r); err != nil {
+	ev, err := executionstore.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: a, AssignmentDigest: digest})
+	if err != nil {
 		t.Fatal(err)
 	}
+	if err := s.Append(context.Background(), executionstore.Lease{}, a.Key(), executionstore.Commit{CommitID: executionstore.AcceptCommitID(a.Key()), Intent: digest, Events: []executionstore.Event{ev}}); err != nil {
+		t.Fatal(err)
+	}
+	return digest
 }
 
-// One record store, two database handles: the second handle stands for a
-// second process. Records written through one are read through the other,
-// leases fence across them, and the state machine, digest and lease checks
+func step(s executionstore.Store, lease executionstore.Lease, seq executionstore.CommitSeq, typ executionstore.EventType, payload any) error {
+	ev, err := executionstore.NewEvent(typ, 0, payload)
+	if err != nil {
+		return err
+	}
+	return s.Append(context.Background(), lease, lease.Key, executionstore.Commit{Seq: seq, CommitID: executionstore.DeriveCommitID(lease.Key, "test", string(typ)+"/"+strconv.FormatUint(uint64(seq), 10)), Epoch: lease.Epoch, Events: []executionstore.Event{ev}})
+}
+
+// One execution ledger, two database handles: the second handle stands for a
+// second process. Commits appended through one are read through the other,
+// leases fence across them, and the state machine, identity and lease checks
 // answer with the store's sentinel errors (RUN-EXE-3, RUN-EXE-6).
 func TestExecutionStoreAcrossHandles(t *testing.T) {
 	ctx := context.Background()
@@ -78,75 +92,90 @@ func TestExecutionStoreAcrossHandles(t *testing.T) {
 		return db
 	}
 	a, b := open().Executions(), open().Executions()
-	rec := executionstore.Record{Assignment: assignment("e1"), State: effect.ExecutionAccepted}
-	digest, err := rec.Assignment.Digest()
-	if err != nil {
-		t.Fatal(err)
+	asg := assignment("e1")
+	key := asg.Key()
+	digest := accept(t, a, asg)
+	// A replayed acceptance is recognised by its identity; another
+	// Assignment under the same key is a conflict.
+	ev, _ := executionstore.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: asg, AssignmentDigest: digest})
+	if err := b.Append(ctx, executionstore.Lease{}, key, executionstore.Commit{CommitID: executionstore.AcceptCommitID(key), Intent: digest, Events: []executionstore.Event{ev}}); !errors.Is(err, executionstore.ErrAlreadyApplied) {
+		t.Fatalf("replayed acceptance through the other handle = %v, want already applied", err)
 	}
-	rec.AssignmentDigest = digest
-	key := rec.Assignment.Key()
-	if _, created, err := a.Create(ctx, rec); err != nil || !created {
-		t.Fatalf("create = created:%v %v", created, err)
-	}
-	if again, created, err := b.Create(ctx, rec); err != nil || created || again.State != effect.ExecutionAccepted {
-		t.Fatalf("replayed create through the other handle = %+v created:%v %v", again, created, err)
-	}
-	other := rec
-	other.AssignmentDigest = "sha256:other"
-	if _, _, err := b.Create(ctx, other); !errors.Is(err, executionstore.ErrAssignmentConflict) {
-		t.Fatalf("create with another digest = %v, want conflict", err)
+	if err := b.Append(ctx, executionstore.Lease{}, key, executionstore.Commit{CommitID: executionstore.AcceptCommitID(key), Intent: "sha256:other", Events: []executionstore.Event{ev}}); !errors.Is(err, executionstore.ErrAssignmentConflict) {
+		t.Fatalf("acceptance with another digest = %v, want conflict", err)
 	}
 	// worker-a acquires through handle a; worker-b cannot while the lease
-	// lives, and a's owned writes go through.
+	// lives, and a's fenced commits go through.
 	held, ok, err := a.Acquire(ctx, key, "worker-a", time.Minute)
-	if err != nil || !ok || held.FencingEpoch != 1 {
+	if err != nil || !ok || held.Epoch != 1 {
 		t.Fatalf("acquire = %+v ok:%v %v", held, ok, err)
 	}
 	if _, ok, err := b.Acquire(ctx, key, "worker-b", time.Minute); err != nil || ok {
 		t.Fatalf("acquire under a live foreign lease = ok:%v %v", ok, err)
 	}
-	if err := a.TransitionOwned(ctx, key, "worker-a", 1, effect.ExecutionAccepted, effect.ExecutionDispatching); err != nil {
+	if err := step(a, held, 2, executionstore.EventExecutionStarted, nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.TransitionOwned(ctx, key, "worker-a", 1, effect.ExecutionAccepted, effect.ExecutionDispatching); !errors.Is(err, executionstore.ErrStateConflict) {
-		t.Fatalf("repeated transition = %v, want state conflict", err)
+	if err := step(a, held, 2, executionstore.EventExecutionStarted, nil); !errors.Is(err, executionstore.ErrAlreadyApplied) {
+		t.Fatalf("replayed commit = %v, want already applied", err)
 	}
-	if err := b.TransitionOwned(ctx, key, "worker-b", 1, effect.ExecutionDispatching, effect.ExecutionRunning); !errors.Is(err, executionstore.ErrLeaseLost) {
-		t.Fatalf("transition by a non-owner = %v, want lease lost", err)
+	if err := step(a, held, 2, executionstore.EventCancelRequested, nil); !errors.Is(err, executionstore.ErrConflict) {
+		t.Fatalf("another commit at a taken seq = %v, want sequence conflict", err)
 	}
-	if owned, err := b.LeaseOwned(ctx, key, "worker-a", 1); err != nil || !owned {
-		t.Fatalf("lease read through the other handle = %v %v", owned, err)
+	if err := step(a, held, 3, executionstore.EventExecutionStarted, nil); !errors.Is(err, executionstore.ErrStateConflict) {
+		t.Fatalf("illegal step = %v, want state conflict", err)
 	}
-	// The lease expires: worker-b takes over with a higher epoch, fencing a.
+	foreign := executionstore.Lease{Key: key, Owner: "worker-b", Epoch: 1}
+	if err := step(b, foreign, 3, executionstore.EventExecutionRunning, nil); !errors.Is(err, executionstore.ErrLeaseLost) {
+		t.Fatalf("commit by a non-owner = %v, want lease lost", err)
+	}
+	if lease, ok, err := b.LeaseOf(ctx, key); err != nil || !ok || lease.Owner != "worker-a" || lease.Epoch != 1 {
+		t.Fatalf("lease read through the other handle = %+v %v %v", lease, ok, err)
+	}
+	// The lease expires: worker-b takes over with a higher Epoch, fencing a.
 	now = now.Add(2 * time.Minute)
 	taken, ok, err := b.Acquire(ctx, key, "worker-b", time.Minute)
-	if err != nil || !ok || taken.FencingEpoch != 2 || taken.Owner != "worker-b" {
+	if err != nil || !ok || taken.Epoch != 2 || taken.Owner != "worker-b" {
 		t.Fatalf("takeover = %+v ok:%v %v", taken, ok, err)
 	}
-	if err := a.Renew(ctx, key, "worker-a", 1, time.Minute); !errors.Is(err, executionstore.ErrLeaseLost) {
+	if err := a.Renew(ctx, held, time.Minute); !errors.Is(err, executionstore.ErrLeaseLost) {
 		t.Fatalf("renew by the fenced owner = %v, want lease lost", err)
 	}
-	taken.State = effect.ExecutionRunning
-	if err := a.PutOwned(ctx, taken, "worker-a", 1); !errors.Is(err, executionstore.ErrLeaseLost) {
-		t.Fatalf("owned put by the fenced owner = %v, want lease lost", err)
+	if err := step(a, held, 4, executionstore.EventExecutionRunning, nil); !errors.Is(err, executionstore.ErrLeaseLost) {
+		t.Fatalf("fenced commit = %v, want lease lost", err)
 	}
-	if err := b.PutOwned(ctx, taken, "worker-b", 2); err != nil {
+	if err := step(b, taken, 4, executionstore.EventExecutionRunning, nil); err != nil {
 		t.Fatal(err)
 	}
-	got, ok, err := a.Get(ctx, key)
-	if err != nil || !ok || got.State != effect.ExecutionRunning || got.Owner != "worker-b" {
-		t.Fatalf("record through the first handle = %+v ok:%v %v", got, ok, err)
+	got, head, ok, err := a.Load(ctx, key)
+	if err != nil || !ok || got.State != effect.ExecutionRunning || got.Owner != "worker-b" || got.FencingEpoch != 2 || head.Next != 5 {
+		t.Fatalf("fold through the first handle = %+v head %+v ok:%v %v", got, head, ok, err)
 	}
-	// Terminal records refuse leases; the missing key is not found.
-	got.State = effect.ExecutionCompleted
-	mustPut(t, a, got)
+	// Settlement ends the execution: leases are refused, and only the
+	// acknowledgement may follow.
+	out := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest}
+	if err := step(b, taken, 5, executionstore.EventExecutionSettled, executionstore.Settled{State: effect.ExecutionCompleted, Outcome: out}); err != nil {
+		t.Fatal(err)
+	}
 	if _, ok, err := b.Acquire(ctx, key, "worker-b", time.Minute); err != nil || ok {
-		t.Fatalf("acquire of a terminal record = ok:%v %v", ok, err)
+		t.Fatalf("acquire of a settled execution = ok:%v %v", ok, err)
 	}
 	if _, _, err := b.Acquire(ctx, assignment("nope").Key(), "worker-b", time.Minute); !errors.Is(err, effect.ErrExecutionNotFound) {
 		t.Fatalf("acquire of an unknown key = %v, want not found", err)
 	}
-	mustPut(t, b, executionstore.Record{Assignment: assignment("e2"), State: effect.ExecutionAccepted})
+	if err := step(a, executionstore.Lease{Key: key}, 6, executionstore.EventOutcomeAcknowledged, nil); err != nil {
+		t.Fatal(err)
+	}
+	got, _, _, err = b.Load(ctx, key)
+	if err != nil || !got.Collected || got.Outcome != nil || got.Assignment.Body != nil || got.State != effect.ExecutionCompleted {
+		t.Fatalf("acknowledged fold = %+v %v", got, err)
+	}
+	// Read serves a catch-up from any position with the ledger's head.
+	tail, head, err := a.Read(ctx, key, 4)
+	if err != nil || len(tail) != 3 || tail[0].Seq != 4 || head.Next != 7 {
+		t.Fatalf("read from 4 = %d commits head %+v %v", len(tail), head, err)
+	}
+	accept(t, b, assignment("e2"))
 	list, err := a.List(ctx)
 	if err != nil || len(list) != 2 {
 		t.Fatalf("list = %d %v, want 2", len(list), err)
@@ -154,7 +183,7 @@ func TestExecutionStoreAcrossHandles(t *testing.T) {
 	if owned, err := a.ListOwned(ctx, "nobody"); err != nil || len(owned) != 0 {
 		t.Fatalf("ListOwned(nobody) = %d %v, want none", len(owned), err)
 	}
-	if owned, err := a.ListOwned(ctx, got.Owner); err != nil || len(owned) != 1 || owned[0].Assignment.Key() != key {
-		t.Fatalf("ListOwned(%q) = %+v %v, want the leased record", got.Owner, owned, err)
+	if owned, err := a.ListOwned(ctx, "worker-b"); err != nil || len(owned) != 1 || owned[0] != key {
+		t.Fatalf("ListOwned(worker-b) = %+v %v, want the leased key", owned, err)
 	}
 }

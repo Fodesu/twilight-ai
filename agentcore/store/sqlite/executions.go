@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/felinics/twilight/agentcore/es"
@@ -13,12 +14,14 @@ import (
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
-// ExecutionStore is executor/store.Store over the execution_records table.
-// A record is one JSON document keyed by the digest of its AssignmentKey;
-// every lease operation reads, judges and writes it in one immediate
-// transaction, so the store is the fencing authority for any number of
-// Workers over the same file (RUN-EXE-6). Nothing is ever evicted: a
-// collected record keeps answering for its key (RUN-EXE-13).
+// ExecutionStore is executor/store.Store over three tables: executions
+// names each ledger by the digest of its AssignmentKey, execution_commits
+// holds the commits in Seq order, execution_leases holds the one lease row
+// per key. Every write is one immediate transaction that reads the ledger,
+// folds it, judges the commit and appends, so the store is the fence and
+// the state machine's guard for any number of Workers over the same file
+// (RUN-EXE-6). Nothing is ever deleted: an acknowledged ledger keeps
+// answering for its key (RUN-EXE-13).
 type ExecutionStore struct {
 	db  *sql.DB
 	now func() time.Time
@@ -26,7 +29,7 @@ type ExecutionStore struct {
 
 var _ executionstore.Store = (*ExecutionStore)(nil)
 
-func recordKey(key effect.AssignmentKey) (string, error) {
+func ledgerKey(key effect.AssignmentKey) (string, error) {
 	d, err := es.DigestCanonical(key)
 	if err != nil {
 		return "", err
@@ -35,224 +38,481 @@ func recordKey(key effect.AssignmentKey) (string, error) {
 }
 
 type querier interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-func getRecord(ctx context.Context, q querier, key effect.AssignmentKey) (executionstore.Record, bool, error) {
-	k, err := recordKey(key)
+func readCommits(ctx context.Context, q querier, k string, from executionstore.CommitSeq) ([]executionstore.Commit, executionstore.Head, error) {
+	rows, err := q.QueryContext(ctx, `SELECT seq, digest, body FROM execution_commits WHERE key = ? AND seq >= ? ORDER BY seq`, k, uint64(from))
 	if err != nil {
-		return executionstore.Record{}, false, err
+		return nil, executionstore.Head{}, err
 	}
-	var raw string
-	err = q.QueryRowContext(ctx, `SELECT record FROM execution_records WHERE key = ?`, k).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
-		return executionstore.Record{}, false, nil
-	}
-	if err != nil {
-		return executionstore.Record{}, false, err
-	}
-	var r executionstore.Record
-	if err := json.Unmarshal([]byte(raw), &r); err != nil {
-		return executionstore.Record{}, false, err
-	}
-	return r, true, nil
-}
-
-func putRecord(ctx context.Context, t *sql.Tx, record *executionstore.Record) error {
-	k, err := recordKey(record.Assignment.Key())
-	if err != nil {
-		return err
-	}
-	raw, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
-	_, err = t.ExecContext(ctx, `INSERT INTO execution_records (key, record) VALUES (?, ?)
-		ON CONFLICT(key) DO UPDATE SET record = excluded.record`, k, string(raw))
-	return err
-}
-
-func (s *ExecutionStore) Create(ctx context.Context, record executionstore.Record) (executionstore.Record, bool, error) { //nolint:gocritic // hugeParam: the Store contract takes the record by value; it is persisted, never shared
-	var out executionstore.Record
-	created := false
-	err := tx(ctx, s.db, func(t *sql.Tx) error {
-		old, ok, err := getRecord(ctx, t, record.Assignment.Key())
-		if err != nil {
-			return err
+	defer rows.Close()
+	var out []executionstore.Commit
+	var head executionstore.Head
+	for rows.Next() {
+		var seq uint64
+		var digest, body string
+		if err := rows.Scan(&seq, &digest, &body); err != nil {
+			return nil, executionstore.Head{}, err
 		}
-		if ok {
-			out = old
-			if old.AssignmentDigest != record.AssignmentDigest {
+		var c executionstore.Commit
+		if err := json.Unmarshal([]byte(body), &c); err != nil {
+			return nil, executionstore.Head{}, fmt.Errorf("sqlite: execution commit %d: %w", seq, err)
+		}
+		out = append(out, c)
+		head = executionstore.Head{Next: executionstore.CommitSeq(seq) + 1, Digest: es.Digest(digest)}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, executionstore.Head{}, err
+	}
+	if from > 0 {
+		// The head is the ledger's, not the slice's.
+		var n sql.NullInt64
+		var digest sql.NullString
+		err := q.QueryRowContext(ctx, `SELECT MAX(seq), (SELECT digest FROM execution_commits WHERE key = ? ORDER BY seq DESC LIMIT 1) FROM execution_commits WHERE key = ?`, k, k).Scan(&n, &digest)
+		if err != nil {
+			return nil, executionstore.Head{}, err
+		}
+		if n.Valid && n.Int64 >= 0 {
+			head = executionstore.Head{Next: executionstore.CommitSeq(n.Int64) + 1, Digest: es.Digest(digest.String)} //nolint:gosec // G115: seq is stored from a uint64 and checked non-negative
+		}
+	}
+	return out, head, nil
+}
+
+func fold(commits []executionstore.Commit) (executionstore.ExecutionState, error) {
+	var state executionstore.ExecutionState
+	for i := range commits {
+		var err error
+		state, err = executionstore.Fold(state, &commits[i])
+		if err != nil {
+			return executionstore.ExecutionState{}, err
+		}
+	}
+	return state, nil
+}
+
+func readLease(ctx context.Context, q querier, k string, key effect.AssignmentKey) (executionstore.Lease, bool, error) {
+	var owner string
+	var epoch uint64
+	var until int64
+	err := q.QueryRowContext(ctx, `SELECT owner, epoch, lease_until FROM execution_leases WHERE key = ?`, k).Scan(&owner, &epoch, &until)
+	if errors.Is(err, sql.ErrNoRows) {
+		return executionstore.Lease{}, false, nil
+	}
+	if err != nil {
+		return executionstore.Lease{}, false, err
+	}
+	return executionstore.Lease{Key: key, Owner: owner, Epoch: executionstore.Epoch(epoch), UntilUnixMilli: until}, true, nil
+}
+
+func (s *ExecutionStore) loadIn(ctx context.Context, q querier, k string, key effect.AssignmentKey) (executionstore.ExecutionState, executionstore.Head, bool, error) {
+	commits, head, err := readCommits(ctx, q, k, 0)
+	if err != nil {
+		return executionstore.ExecutionState{}, executionstore.Head{}, false, err
+	}
+	if len(commits) == 0 {
+		return executionstore.ExecutionState{}, executionstore.Head{}, false, nil
+	}
+	state, err := fold(commits)
+	if err != nil {
+		return executionstore.ExecutionState{}, executionstore.Head{}, false, err
+	}
+	lease, ok, err := readLease(ctx, q, k, key)
+	if err != nil {
+		return executionstore.ExecutionState{}, executionstore.Head{}, false, err
+	}
+	if ok {
+		state.Owner, state.FencingEpoch, state.LeaseUntilUnixMilli = lease.Owner, lease.Epoch, lease.UntilUnixMilli
+	}
+	return state, head, true, nil
+}
+
+// Load folds the key's ledger and joins its lease (executionstore.Store).
+func (s *ExecutionStore) Load(ctx context.Context, key effect.AssignmentKey) (executionstore.ExecutionState, executionstore.Head, bool, error) {
+	k, err := ledgerKey(key)
+	if err != nil {
+		return executionstore.ExecutionState{}, executionstore.Head{}, false, err
+	}
+	return s.loadIn(ctx, s.db, k, key)
+}
+
+// Read returns the key's commits from Seq from (executionstore.Store).
+func (s *ExecutionStore) Read(ctx context.Context, key effect.AssignmentKey, from executionstore.CommitSeq) ([]executionstore.Commit, executionstore.Head, error) {
+	k, err := ledgerKey(key)
+	if err != nil {
+		return nil, executionstore.Head{}, err
+	}
+	return readCommits(ctx, s.db, k, from)
+}
+
+func appendCommit(ctx context.Context, t *sql.Tx, k string, key effect.AssignmentKey, head executionstore.Head, c *executionstore.Commit) (executionstore.Head, error) {
+	digest, err := c.Digest(head.Digest)
+	if err != nil {
+		return head, err
+	}
+	body, err := json.Marshal(c)
+	if err != nil {
+		return head, err
+	}
+	if head.Next == 0 {
+		keyJSON, err := json.Marshal(key)
+		if err != nil {
+			return head, err
+		}
+		if _, err := t.ExecContext(ctx, `INSERT INTO executions (key, assignment_key) VALUES (?, ?)`, k, string(keyJSON)); err != nil {
+			return head, err
+		}
+	}
+	_, err = t.ExecContext(ctx, `INSERT INTO execution_commits (key, seq, commit_id, intent, epoch, digest, body) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		k, uint64(c.Seq), string(c.CommitID), string(c.Intent), uint64(c.Epoch), string(digest), string(body))
+	if err != nil {
+		return head, err
+	}
+	return executionstore.Head{Next: c.Seq + 1, Digest: digest}, nil
+}
+
+// Append commits c to the key's ledger (executionstore.Store).
+func (s *ExecutionStore) Append(ctx context.Context, lease executionstore.Lease, key effect.AssignmentKey, c executionstore.Commit) error { //nolint:gocritic // hugeParam: the Store contract takes the commit by value; it is persisted, never shared
+	k, err := ledgerKey(key)
+	if err != nil {
+		return err
+	}
+	return tx(ctx, s.db, func(t *sql.Tx) error {
+		// Identity first: a replayed command is answered from the ledger
+		// whatever its Seq says.
+		var existingSeq uint64
+		var existingIntent string
+		err := t.QueryRowContext(ctx, `SELECT seq, intent FROM execution_commits WHERE key = ? AND commit_id = ?`, k, string(c.CommitID)).Scan(&existingSeq, &existingIntent)
+		switch {
+		case err == nil:
+			if es.Digest(existingIntent) == c.Intent {
+				return executionstore.ErrAlreadyApplied
+			}
+			if existingSeq == 0 {
 				return executionstore.ErrAssignmentConflict
 			}
-			return nil
+			return executionstore.ErrCommitConflict
+		case !errors.Is(err, sql.ErrNoRows):
+			return err
 		}
-		out, created = record, true
-		return putRecord(ctx, t, &record)
+		commits, head, err := readCommits(ctx, t, k, 0)
+		if err != nil {
+			return err
+		}
+		if c.Seq != head.Next {
+			return executionstore.ErrConflict
+		}
+		state, err := fold(commits)
+		if err != nil {
+			return err
+		}
+		if lease.IsZero() {
+			for i := range c.Events {
+				if executionstore.Fenced(c.Events[i].Type) {
+					return fmt.Errorf("%w: %s requires the key's lease", executionstore.ErrLeaseLost, c.Events[i].Type)
+				}
+			}
+		} else {
+			current, ok, err := readLease(ctx, t, k, key)
+			if err != nil {
+				return err
+			}
+			if !ok || current.Owner != lease.Owner || current.Epoch != lease.Epoch || c.Epoch != lease.Epoch || current.UntilUnixMilli <= s.now().UnixMilli() {
+				return executionstore.ErrLeaseLost
+			}
+		}
+		if _, err := executionstore.Fold(state, &c); err != nil {
+			return err
+		}
+		_, err = appendCommit(ctx, t, k, key, head, &c)
+		return err
 	})
-	if errors.Is(err, executionstore.ErrAssignmentConflict) {
-		return out, false, err
-	}
+}
+
+// Acquire takes the key's lease under a new Epoch (executionstore.Store).
+func (s *ExecutionStore) Acquire(ctx context.Context, key effect.AssignmentKey, owner string, ttl time.Duration) (executionstore.Lease, bool, error) {
+	k, err := ledgerKey(key)
 	if err != nil {
-		return executionstore.Record{}, false, err
+		return executionstore.Lease{}, false, err
 	}
-	return out, created, nil
-}
-
-func (s *ExecutionStore) Get(ctx context.Context, key effect.AssignmentKey) (executionstore.Record, bool, error) {
-	return getRecord(ctx, s.db, key)
-}
-
-func (s *ExecutionStore) Put(ctx context.Context, record executionstore.Record) error { //nolint:gocritic // hugeParam: the Store contract takes the record by value; it is persisted, never shared
-	return tx(ctx, s.db, func(t *sql.Tx) error {
-		old, ok, err := getRecord(ctx, t, record.Assignment.Key())
-		if err != nil {
-			return err
-		}
-		if ok && old.AssignmentDigest != record.AssignmentDigest {
-			return executionstore.ErrAssignmentConflict
-		}
-		return putRecord(ctx, t, &record)
-	})
-}
-
-func (s *ExecutionStore) PutOwned(ctx context.Context, record executionstore.Record, owner string, epoch uint64) error { //nolint:gocritic // hugeParam: the Store contract takes the record by value; it is persisted, never shared
-	return tx(ctx, s.db, func(t *sql.Tx) error {
-		old, ok, err := getRecord(ctx, t, record.Assignment.Key())
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return effect.ErrExecutionNotFound
-		}
-		if old.AssignmentDigest != record.AssignmentDigest {
-			return executionstore.ErrAssignmentConflict
-		}
-		if old.Owner != owner || old.FencingEpoch != epoch || old.LeaseUntilUnixMilli <= s.now().UnixMilli() {
-			return executionstore.ErrLeaseLost
-		}
-		return putRecord(ctx, t, &record)
-	})
-}
-
-func (s *ExecutionStore) TransitionOwned(ctx context.Context, key effect.AssignmentKey, owner string, epoch uint64, from, to effect.ExecutionStatus) error {
-	return tx(ctx, s.db, func(t *sql.Tx) error {
-		r, ok, err := getRecord(ctx, t, key)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return effect.ErrExecutionNotFound
-		}
-		if r.Owner != owner || r.FencingEpoch != epoch || r.LeaseUntilUnixMilli <= s.now().UnixMilli() {
-			return executionstore.ErrLeaseLost
-		}
-		if r.State != from || !executionstore.LegalTransition(from, to) {
-			return executionstore.ErrStateConflict
-		}
-		r.State = to
-		return putRecord(ctx, t, &r)
-	})
-}
-
-func (s *ExecutionStore) Acquire(ctx context.Context, key effect.AssignmentKey, owner string, ttl time.Duration) (executionstore.Record, bool, error) {
 	now := s.now()
-	var out executionstore.Record
+	var out executionstore.Lease
 	acquired := false
-	err := tx(ctx, s.db, func(t *sql.Tx) error {
-		r, ok, err := getRecord(ctx, t, key)
+	err = tx(ctx, s.db, func(t *sql.Tx) error {
+		commits, head, err := readCommits(ctx, t, k, 0)
 		if err != nil {
 			return err
 		}
-		if !ok {
+		if len(commits) == 0 {
 			return effect.ErrExecutionNotFound
 		}
-		out = r
-		if protocol.StatusTerminal(r.State) {
+		state, err := fold(commits)
+		if err != nil {
+			return err
+		}
+		if state.Terminal() {
 			return nil
 		}
-		expired := r.LeaseUntilUnixMilli <= now.UnixMilli()
-		if r.Owner != "" && r.Owner != owner && !expired {
+		current, held, err := readLease(ctx, t, k, key)
+		if err != nil {
+			return err
+		}
+		expired := !held || current.UntilUnixMilli <= now.UnixMilli()
+		if held && current.Owner != owner && !expired {
 			return nil
 		}
-		if r.Owner != owner || r.FencingEpoch == 0 || expired {
-			r.FencingEpoch++
+		epoch := current.Epoch
+		if !held || current.Owner != owner || expired {
+			epoch++
 		}
-		r.Owner = owner
-		r.LeaseUntilUnixMilli = now.Add(ttl).UnixMilli()
-		out, acquired = r, true
-		return putRecord(ctx, t, &r)
+		out = executionstore.Lease{Key: key, Owner: owner, Epoch: epoch, UntilUnixMilli: now.Add(ttl).UnixMilli()}
+		if _, err := t.ExecContext(ctx, `INSERT INTO execution_leases (key, owner, epoch, lease_until) VALUES (?, ?, ?, ?)
+			ON CONFLICT(key) DO UPDATE SET owner = excluded.owner, epoch = excluded.epoch, lease_until = excluded.lease_until`,
+			k, owner, uint64(epoch), out.UntilUnixMilli); err != nil {
+			return err
+		}
+		acquired = true
+		if epoch == current.Epoch {
+			return nil
+		}
+		ev, err := executionstore.NewEvent(executionstore.EventExecutionClaimed, now.UnixMilli(), executionstore.Claimed{Owner: owner, Epoch: epoch})
+		if err != nil {
+			return err
+		}
+		c := executionstore.Commit{Seq: head.Next, CommitID: executionstore.DeriveCommitID(key, "claim", fmt.Sprint(uint64(epoch))), Epoch: epoch, Events: []executionstore.Event{ev}}
+		if _, err := executionstore.Fold(state, &c); err != nil {
+			return err
+		}
+		_, err = appendCommit(ctx, t, k, key, head, &c)
+		return err
 	})
 	if err != nil {
-		return executionstore.Record{}, false, err
+		return executionstore.Lease{}, false, err
 	}
 	return out, acquired, nil
 }
 
-func (s *ExecutionStore) Renew(ctx context.Context, key effect.AssignmentKey, owner string, epoch uint64, ttl time.Duration) error {
+// Renew extends the lease when it is still the key's (executionstore.Store).
+func (s *ExecutionStore) Renew(ctx context.Context, lease executionstore.Lease, ttl time.Duration) error {
+	k, err := ledgerKey(lease.Key)
+	if err != nil {
+		return err
+	}
 	now := s.now()
 	return tx(ctx, s.db, func(t *sql.Tx) error {
-		r, ok, err := getRecord(ctx, t, key)
+		state, _, ok, err := s.loadIn(ctx, t, k, lease.Key)
 		if err != nil {
 			return err
 		}
 		if !ok {
 			return effect.ErrExecutionNotFound
 		}
-		if protocol.StatusTerminal(r.State) || r.Owner != owner || r.FencingEpoch != epoch {
+		if state.Terminal() || state.Owner != lease.Owner || state.FencingEpoch != lease.Epoch {
 			return executionstore.ErrLeaseLost
 		}
-		r.LeaseUntilUnixMilli = now.Add(ttl).UnixMilli()
-		return putRecord(ctx, t, &r)
+		_, err = t.ExecContext(ctx, `UPDATE execution_leases SET lease_until = ? WHERE key = ?`, now.Add(ttl).UnixMilli(), k)
+		return err
 	})
 }
 
-func (s *ExecutionStore) LeaseOwned(ctx context.Context, key effect.AssignmentKey, owner string, epoch uint64) (bool, error) {
-	r, ok, err := getRecord(ctx, s.db, key)
+// LeaseOf returns the key's lease row (executionstore.Store).
+func (s *ExecutionStore) LeaseOf(ctx context.Context, key effect.AssignmentKey) (executionstore.Lease, bool, error) {
+	k, err := ledgerKey(key)
 	if err != nil {
-		return false, err
+		return executionstore.Lease{}, false, err
 	}
-	if !ok {
-		return false, effect.ErrExecutionNotFound
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM executions WHERE key = ?`, k).Scan(&exists); err != nil {
+		return executionstore.Lease{}, false, err
 	}
-	return !protocol.StatusTerminal(r.State) && r.Owner == owner && r.FencingEpoch == epoch && r.LeaseUntilUnixMilli > s.now().UnixMilli(), nil
+	if exists == 0 {
+		return executionstore.Lease{}, false, effect.ErrExecutionNotFound
+	}
+	return readLease(ctx, s.db, k, key)
 }
 
-// ListOwned returns the records owned by the given Worker id (executionstore.Store).
-func (s *ExecutionStore) ListOwned(ctx context.Context, owner string) ([]executionstore.Record, error) {
-	all, err := s.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var out []executionstore.Record
-	for i := range all {
-		if all[i].Owner == owner {
-			out = append(out, all[i])
-		}
-	}
-	return out, nil
-}
-
-// List returns every record, for operators and tests; it is not part of
-// executionstore.Store. A row that no longer decodes is skipped, so one
-// corrupt record does not hide the others.
-func (s *ExecutionStore) List(ctx context.Context) ([]executionstore.Record, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT record FROM execution_records ORDER BY key`)
+// ListOwned returns the keys whose lease row names owner (executionstore.Store).
+func (s *ExecutionStore) ListOwned(ctx context.Context, owner string) ([]effect.AssignmentKey, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT e.assignment_key FROM execution_leases l JOIN executions e ON e.key = l.key WHERE l.owner = ? ORDER BY l.key`, owner)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []executionstore.Record
+	var out []effect.AssignmentKey
 	for rows.Next() {
 		var raw string
 		if err := rows.Scan(&raw); err != nil {
 			return nil, err
 		}
-		var r executionstore.Record
-		if err := json.Unmarshal([]byte(raw), &r); err != nil {
-			continue
+		var key effect.AssignmentKey
+		if err := json.Unmarshal([]byte(raw), &key); err != nil {
+			return nil, err
 		}
-		out = append(out, r)
+		out = append(out, key)
 	}
 	return out, rows.Err()
+}
+
+// List folds every ledger, for operators and tests; it is not part of
+// executionstore.Store. A ledger that no longer folds is skipped, so one
+// corrupt ledger does not hide the others.
+func (s *ExecutionStore) List(ctx context.Context) ([]executionstore.ExecutionState, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT key, assignment_key FROM executions ORDER BY key`)
+	if err != nil {
+		return nil, err
+	}
+	var keys []struct {
+		k   string
+		key effect.AssignmentKey
+	}
+	for rows.Next() {
+		var k, raw string
+		if err := rows.Scan(&k, &raw); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		var key effect.AssignmentKey
+		if err := json.Unmarshal([]byte(raw), &key); err != nil {
+			continue
+		}
+		keys = append(keys, struct {
+			k   string
+			key effect.AssignmentKey
+		}{k, key})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	var out []executionstore.ExecutionState
+	for _, e := range keys {
+		state, _, ok, err := s.loadIn(ctx, s.db, e.k, e.key)
+		if err != nil || !ok {
+			continue
+		}
+		out = append(out, state)
+	}
+	return out, nil
+}
+
+// Seed writes a ledger that folds to state, with its lease row, for tests
+// and operators: the commits an execution would have gone through to reach
+// state, recorded at the store's clock. It is not part of
+// executionstore.Store and refuses a key that already has a ledger.
+func (s *ExecutionStore) Seed(ctx context.Context, state executionstore.ExecutionState) error { //nolint:gocritic,gocyclo // hugeParam: seeds the value; gocyclo: one branch per reachable state
+	key := state.Assignment.Key()
+	k, err := ledgerKey(key)
+	if err != nil {
+		return err
+	}
+	at := s.now().UnixMilli()
+	var events [][]executionstore.Event
+	add := func(typ executionstore.EventType, payload any) error {
+		ev, err := executionstore.NewEvent(typ, at, payload)
+		if err != nil {
+			return err
+		}
+		events = append(events, []executionstore.Event{ev})
+		return nil
+	}
+	digest := state.AssignmentDigest
+	if digest == "" {
+		if digest, err = state.Assignment.Digest(); err != nil {
+			return err
+		}
+	}
+	if err := add(executionstore.EventExecutionAccepted, executionstore.Accepted{Assignment: state.Assignment, AssignmentDigest: digest}); err != nil {
+		return err
+	}
+	refs := append(append([]executionstore.ExecutionRef(nil), state.Superseded...), state.ExecutionRef)
+	if refs[0].Provider != "" {
+		if err := add(executionstore.EventExecutionBound, executionstore.Bound{Ref: refs[0]}); err != nil {
+			return err
+		}
+	}
+	if state.Owner != "" && state.FencingEpoch > 0 {
+		if err := add(executionstore.EventExecutionClaimed, executionstore.Claimed{Owner: state.Owner, Epoch: state.FencingEpoch}); err != nil {
+			return err
+		}
+	}
+	for i := 1; i < len(refs); i++ {
+		if err := add(executionstore.EventExecutionStarted, nil); err != nil {
+			return err
+		}
+		if err := add(executionstore.EventExecutionRunning, nil); err != nil {
+			return err
+		}
+		if err := add(executionstore.EventExecutionRestarted, executionstore.Restarted{Superseded: refs[i-1], Ref: refs[i].Ref}); err != nil {
+			return err
+		}
+	}
+	switch state.State {
+	case effect.ExecutionAccepted:
+	case effect.ExecutionDispatching:
+		if err := add(executionstore.EventExecutionStarted, nil); err != nil {
+			return err
+		}
+	case effect.ExecutionRunning:
+		if err := add(executionstore.EventExecutionStarted, nil); err != nil {
+			return err
+		}
+		if err := add(executionstore.EventExecutionRunning, nil); err != nil {
+			return err
+		}
+	case effect.ExecutionCancelRequested:
+		if err := add(executionstore.EventCancelRequested, nil); err != nil {
+			return err
+		}
+	default:
+		if !protocol.StatusTerminal(state.State) {
+			return fmt.Errorf("sqlite: seed: unknown state %q", state.State)
+		}
+		if err := add(executionstore.EventExecutionStarted, nil); err != nil {
+			return err
+		}
+		if err := add(executionstore.EventExecutionRunning, nil); err != nil {
+			return err
+		}
+		out := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key, AssignmentDigest: digest}
+		if state.Outcome != nil {
+			out = *state.Outcome
+		}
+		if err := add(executionstore.EventExecutionSettled, executionstore.Settled{State: state.State, Outcome: out}); err != nil {
+			return err
+		}
+		if state.Collected {
+			if err := add(executionstore.EventOutcomeAcknowledged, nil); err != nil {
+				return err
+			}
+		}
+	}
+	return tx(ctx, s.db, func(t *sql.Tx) error {
+		if _, head, err := readCommits(ctx, t, k, 0); err != nil {
+			return err
+		} else if head.Next != 0 {
+			return fmt.Errorf("sqlite: seed: %v already has a ledger", key)
+		}
+		var folded executionstore.ExecutionState
+		head := executionstore.Head{}
+		for i, evs := range events {
+			c := executionstore.Commit{Seq: head.Next, CommitID: executionstore.DeriveCommitID(key, "seed", fmt.Sprint(i)), Epoch: state.FencingEpoch, Events: evs}
+			if evs[0].Type == executionstore.EventExecutionAccepted {
+				c.CommitID, c.Intent = executionstore.AcceptCommitID(key), digest
+			}
+			if folded, err = executionstore.Fold(folded, &c); err != nil {
+				return err
+			}
+			if head, err = appendCommit(ctx, t, k, key, head, &c); err != nil {
+				return err
+			}
+		}
+		if state.Owner == "" {
+			return nil
+		}
+		_, err := t.ExecContext(ctx, `INSERT INTO execution_leases (key, owner, epoch, lease_until) VALUES (?, ?, ?, ?)`, k, state.Owner, uint64(state.FencingEpoch), state.LeaseUntilUnixMilli)
+		return err
+	})
 }
