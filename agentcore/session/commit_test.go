@@ -104,10 +104,10 @@ func TestValidateCommit(t *testing.T) {
 		want string // error substring; "" means valid
 	}{
 		{"well formed", Commit{CommitID: "c1", Batches: batches}, ""},
-		{"with ext object", Commit{CommitID: "c1", Batches: batches, Ext: jsonstable.MustParse(`{"k":1}`)}, ""},
+		{"with extension", Commit{CommitID: "c1", Batches: batches, Ext: Extensions{{Source: "twilight", ID: "run"}: RawValue(`{"k":1}`)}}, ""},
 		{"empty CommitID", Commit{Batches: batches}, "CommitID is empty"},
 		{"no batches", Commit{CommitID: "c2"}, "commit without batches"},
-		{"ext is not an object", Commit{CommitID: "c1", Batches: batches, Ext: jsonstable.MustParse(`[1]`)}, "ext"},
+		{"extension is not JSON", Commit{CommitID: "c1", Batches: batches, Ext: Extensions{{Source: "twilight", ID: "run"}: RawValue(`{`)}}, "not valid JSON"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -135,7 +135,7 @@ func TestValidateHeader(t *testing.T) {
 		{"child", SegmentHeader{ID: "child", ProtocolVersion: ProtocolVersion1, Parent: &LedgerRef{Segment: "seg", Seq: 3}}, true},
 		{"missing id", SegmentHeader{ProtocolVersion: ProtocolVersion1}, false},
 		{"edge without segment", SegmentHeader{ID: "child", ProtocolVersion: ProtocolVersion1, Parent: &LedgerRef{Seq: 3}}, false},
-		{"ext is not an object", SegmentHeader{ID: "seg", ProtocolVersion: ProtocolVersion1, Ext: jsonstable.MustParse(`1`)}, false},
+		{"extension key without ID", SegmentHeader{ID: "seg", ProtocolVersion: ProtocolVersion1, Ext: Extensions{{Source: "twilight"}: RawValue(`1`)}}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

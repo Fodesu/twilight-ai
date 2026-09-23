@@ -26,9 +26,9 @@ type CreateRequest struct {
 	Fork               *ForkOrigin
 	CausationID        es.CausationID
 	Metadata           jsonstable.Value
-	// Ext is the kernel extension object stored as SegmentHeader.Ext
-	// (SES-WIR-5); absent for every header the current kernel writes.
-	Ext jsonstable.Value
+	// Ext are the module extension slots stored as SegmentHeader.Ext
+	// (SES-WIR-5).
+	Ext Extensions
 }
 
 // ForkOrigin names the point a fork inherits: a Session and a CommitSeq of
@@ -90,9 +90,8 @@ type Head struct {
 type Proposal struct {
 	CommitID CommitID
 	Batches  []StreamBatch
-	// Ext is the kernel extension object stored as Commit.Ext (SES-WIR-5);
-	// absent for every commit the current kernel writes.
-	Ext jsonstable.Value
+	// Ext are the module extension slots stored as Commit.Ext (SES-WIR-5).
+	Ext Extensions
 }
 
 // AdvanceRequest moves a Session onto a new tip segment under a later
@@ -103,7 +102,7 @@ type AdvanceRequest struct {
 	ProtocolVersion uint16
 	CausationID     es.CausationID
 	Metadata        jsonstable.Value
-	Ext             jsonstable.Value
+	Ext             Extensions
 }
 
 // Handle is the kernel's ownership handle returned by Store.Open. Append

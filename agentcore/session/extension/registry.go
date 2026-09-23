@@ -16,9 +16,13 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 )
 
+// SourceID, ModuleID and ModuleKey are the kernel's module identity types
+// (session.ModuleKey), so extension slots on headers and commits can be
+// keyed by module (SES-WIR-5).
 type (
-	SourceID          string
-	ModuleID          string
+	SourceID          = session.SourceID
+	ModuleID          = session.ModuleID
+	ModuleKey         = session.ModuleKey
 	ProjectionID      string
 	ProjectionVersion uint16
 )
@@ -26,12 +30,6 @@ type (
 // SourceTwilight is the source reserved for this repository's first-party
 // modules; application modules register under their own SourceID (EXT-REG-1).
 const SourceTwilight SourceID = "twilight"
-
-// ModuleKey is the registry identity of one module: (Source, ID).
-type ModuleKey struct {
-	Source SourceID
-	ID     ModuleID
-}
 
 // TwilightModule is the ModuleKey of a first-party module.
 func TwilightModule(id ModuleID) ModuleKey { return ModuleKey{Source: SourceTwilight, ID: id} }

@@ -371,7 +371,7 @@ func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 		return Commit{}, err
 	}
 	sid := w.root.ID
-	c := Commit{CommitID: p.CommitID, Batches: cloneBatches(p.Batches), Ext: p.Ext}
+	c := Commit{CommitID: p.CommitID, Batches: cloneBatches(p.Batches), Ext: p.Ext.Clone()}
 	if err := ValidateCommit(&c); err != nil {
 		return Commit{}, newError(ErrInvalid, "append", sid, err.Error())
 	}

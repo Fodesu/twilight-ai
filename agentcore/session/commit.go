@@ -105,10 +105,10 @@ type Commit struct {
 	Seq      CommitSeq     `json:"seq"`
 	CommitID CommitID      `json:"commitId"`
 	Batches  []StreamBatch `json:"batches"`
-	// Ext is the kernel's extension object on a commit, the counterpart of
-	// SegmentHeader.Ext: a canonical JSON object when present and opaque to
-	// a reader that knows none of its keys (SES-WIR-5).
-	Ext jsonstable.Value `json:"ext,omitzero"`
+	// Ext holds the module extension slots of the commit, the counterpart
+	// of SegmentHeader.Ext: one raw value per module, opaque to the kernel
+	// (SES-WIR-5).
+	Ext Extensions `json:"ext,omitempty"`
 }
 
 // ValidateStreamRef checks the shape of a batch's stream attribution: a
@@ -173,7 +173,7 @@ func ValidateHeader(h SegmentHeader) error {
 	if err := ValidateEdge(h.Parent); err != nil {
 		return newError(ErrInvalid, "header", "", err.Error())
 	}
-	if err := ValidateExt(h.Ext); err != nil {
+	if err := ValidateExtensions(h.Ext); err != nil {
 		return newError(ErrInvalid, "header", "", err.Error())
 	}
 	return nil
@@ -189,20 +189,7 @@ func ValidateCommit(c *Commit) error {
 	if err := ValidateBatches(c.Batches); err != nil {
 		return err
 	}
-	return ValidateExt(c.Ext)
-}
-
-// ValidateExt checks a kernel extension object (SegmentHeader.Ext,
-// Commit.Ext): absent, or a canonical JSON object. Its keys are not
-// interpreted here; a reader that knows none of them verifies it by bytes.
-func ValidateExt(ext jsonstable.Value) error {
-	if ext.IsZero() {
-		return nil
-	}
-	if err := validateEventShape("ext", ext); err != nil {
-		return fmt.Errorf("ext: %w", err)
-	}
-	return nil
+	return ValidateExtensions(c.Ext)
 }
 
 // ValidateEdge checks the shape of a parent edge: nil is a root segment;

@@ -32,8 +32,8 @@ Framework 负责：typed event codec 与按事件类型的 payload 版本；Bind
 ## 2. Registry 与版本
 
 ```go
-type SourceID string
-type ModuleID string
+type SourceID = session.SourceID   // 模块身份类型在 kernel 声明，供 Extensions 按模块分槽（SES-WIR-5）
+type ModuleID = session.ModuleID
 type ProjectionID string
 type ProjectionVersion uint16
 // PayloadVersion 是一个事件类型 codec 的版本，也是该类型每个 payload 携带的 `v`（SES-VER-1、EXT-REG-2）。
@@ -42,7 +42,7 @@ type PayloadVersion uint16
 const SourceTwilight SourceID = "twilight"
 
 // ModuleKey 是模块在 Registry 中的身份：(Source, ID) 二元组。
-type ModuleKey struct { Source SourceID; ID ModuleID }
+type ModuleKey = session.ModuleKey // { Source SourceID; ID ModuleID }，wire 上为 "source/id"
 
 type EventDefinition struct {
     Type session.EventType

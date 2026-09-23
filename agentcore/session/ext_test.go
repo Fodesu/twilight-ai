@@ -9,20 +9,25 @@ import (
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 )
 
-// TestKernelExtSlots covers SES-WIR-5: the kernel extension object on a
-// header and on a commit is absent or a canonical JSON object.
+// TestKernelExtSlots covers SES-WIR-5: extension slots are keyed by module
+// and hold JSON the kernel does not interpret; a malformed key or value is
+// ErrInvalid.
 func TestKernelExtSlots(t *testing.T) {
 	batch := []session.StreamBatch{{Stream: session.StreamRef{Domain: "chat"}, Events: []session.Event{
 		{Type: "twilight/x/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{}`)}}}}
+	run := session.ModuleKey{Source: "twilight", ID: "run"}
 	cases := []struct {
 		name    string
-		ext     jsonstable.Value
+		ext     session.Extensions
 		invalid bool
 	}{
 		{name: "absent"},
-		{name: "object", ext: jsonstable.MustParse(`{"k":1}`)},
-		{name: "array", ext: jsonstable.MustParse(`[1]`), invalid: true},
-		{name: "scalar", ext: jsonstable.MustParse(`1`), invalid: true},
+		{name: "object", ext: session.Extensions{run: session.RawValue(`{"k":1}`)}},
+		{name: "scalar", ext: session.Extensions{run: session.RawValue(`1`)}},
+		{name: "two modules", ext: session.Extensions{run: session.RawValue(`{}`), {Source: "acme", ID: "audit"}: session.RawValue(`[1]`)}},
+		{name: "empty value", ext: session.Extensions{run: nil}, invalid: true},
+		{name: "not JSON", ext: session.Extensions{run: session.RawValue(`{`)}, invalid: true},
+		{name: "source with separator", ext: session.Extensions{{Source: "a/b", ID: "x"}: session.RawValue(`1`)}, invalid: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -42,11 +47,13 @@ func TestKernelExtSlots(t *testing.T) {
 }
 
 // TestKernelExtRoundTrip appends a commit carrying Ext through a Store, reads
-// it back byte for byte and reopens the Session.
+// it back byte for byte under its module key and reopens the Session.
 func TestKernelExtRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	store := filestoretest.Store(t)
-	ext := jsonstable.MustParse(`{"kernel":"later"}`)
+	key := session.ModuleKey{Source: "acme", ID: "audit"}
+	ext := session.Extensions{key: session.RawValue(`{"by":"later"}`)}
+	same := func(got session.Extensions) bool { return len(got) == 1 && string(got[key]) == string(ext[key]) }
 	if _, err := store.Create(ctx, session.CreateRequest{ProtocolVersion: session.ProtocolVersion1, SessionID: "s", Ext: ext}); err != nil {
 		t.Fatal(err)
 	}
@@ -56,18 +63,18 @@ func TestKernelExtRoundTrip(t *testing.T) {
 	}
 	c, err := h.Append(ctx, session.Proposal{CommitID: "c1", Ext: ext, Batches: []session.StreamBatch{{Stream: session.StreamRef{Domain: "chat"},
 		Events: []session.Event{{Type: "twilight/x/a", RecordedAtUnixMilli: 1, Payload: jsonstable.MustParse(`{}`)}}}}})
-	if err != nil || c.Ext.String() != ext.String() {
+	if err != nil || !same(c.Ext) {
 		t.Fatalf("append = %+v, %v", c, err)
 	}
 	if err := h.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
 	header, err := store.Header(ctx, "s")
-	if err != nil || header.Ext.String() != ext.String() {
+	if err != nil || !same(header.Ext) {
 		t.Fatalf("header = %+v, %v", header, err)
 	}
 	page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "s"})
-	if err != nil || len(page.Commits) != 1 || page.Commits[0].Ext.String() != ext.String() {
+	if err != nil || len(page.Commits) != 1 || !same(page.Commits[0].Ext) {
 		t.Fatalf("read = %+v, %v", page, err)
 	}
 	if h, err = store.Open(ctx, "s", session.OpenOptions{}); err != nil {

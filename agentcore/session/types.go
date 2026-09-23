@@ -46,11 +46,10 @@ type SegmentHeader struct {
 	Parent          *LedgerRef       `json:"parent,omitempty"` // nil for a root segment; the edge to the parent otherwise
 	CausationID     es.CausationID   `json:"causationId,omitempty"`
 	Metadata        jsonstable.Value `json:"metadata,omitempty"`
-	// Ext is the kernel's own extension object: optional kernel fields a later
-	// binary may define without a new ProtocolVersion. It is a canonical JSON
-	// object when present; a reader that knows none of its keys keeps it
-	// (SES-WIR-5). Metadata is the caller's; Ext is the kernel's.
-	Ext jsonstable.Value `json:"ext,omitzero"`
+	// Ext holds the module extension slots of the creation record, one raw
+	// value per module (SES-WIR-5); a reader that knows none of the modules
+	// keeps them. Metadata is the caller's single opaque value.
+	Ext Extensions `json:"ext,omitempty"`
 }
 
 // ErrorCode classifies kernel failures (SES 7).

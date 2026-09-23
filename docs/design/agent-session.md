@@ -90,7 +90,7 @@ kernel 的 `session.Ledger` 实现 `Store`，只依赖 `Backend` 端口；Memory
 
 **SES-VER-1** payload 的版本属于事件类型，由模块负责：每个 payload object 第一层携带整数字段 `v`，即写入时该事件类型 codec 的版本；读侧按 `(EventType, v)` 选 codec，模块为它发布过的每个版本永久保留 codec，并在 codec 内 upcast 到当前内存类型（EXT-REG-2）。kernel 不读取该字段。同一段、同一 Commit 内不同事件类型的 `v` 可以不同；段不携带任何模块层版本，kernel 把 metadata 作为不透明值原样保存，不读取其中任何键。
 
-**SES-VER-2** `ProtocolVersion` 在旧 reader 无法保持 Commit 结构时递增；payload、EventType、模块 codec 的变化不触发；新增可选的 kernel 字段走 `Ext` 扩展对象（SES-WIR-5），不触发。版本属于段，不属于 Session：升级不重写任何已有段，而是为 Session 推进一个新版本的 tip 段（SES-ADV-1），此后一个 Session 的 Ancestry 内各段版本可以不同，每段按自己 header 的版本解读。reader 永久保留每个已发布版本的解读；writer 只要求 tip 段等于自己的版本（EXT-WRT-1）。
+**SES-VER-2** `ProtocolVersion` 在旧 reader 无法保持 Commit 结构时递增；payload、EventType、模块 codec 的变化不触发；新增可选的 kernel 字段走 `Ext` 的 `twilight/session` 槽（SES-WIR-5），不触发。版本属于段，不属于 Session：升级不重写任何已有段，而是为 Session 推进一个新版本的 tip 段（SES-ADV-1），此后一个 Session 的 Ancestry 内各段版本可以不同，每段按自己 header 的版本解读。reader 永久保留每个已发布版本的解读；writer 只要求 tip 段等于自己的版本（EXT-WRT-1）。
 
 **SES-VER-3（派生身份不嵌版本）** 凡是生命周期长于一个段的派生身份（ClaimID、CommitID、SessionID、模块的 command 与 fact identity），其预映像都不得包含 kernel 的 `ProtocolVersion`：版本只出现在 header 的 `ProtocolVersion` 字段，不进入任何身份。各层自己的预映像版本由该层的常量给出，与 kernel 版本无关（EXT-WRT-5）。
 
@@ -114,13 +114,18 @@ const (
 type SegmentID string                 // 段身份：kernel 创建段时抽取的 128 位随机数的 hex
 type LedgerRef struct { Segment SegmentID; Seq CommitSeq } // lineage 树中的一个位置：某段的某个 Commit
 
+type SourceID string; type ModuleID string
+type ModuleKey struct { Source SourceID; ID ModuleID } // 模块身份，wire 上为 "source/id"（EXT-REG-1）
+type RawValue []byte                                    // 一个模块的扩展值：kernel 原样保存、不解释的 JSON
+type Extensions map[ModuleKey]RawValue                  // header 与 commit 的模块扩展槽（SES-WIR-5）
+
 type SegmentHeader struct {          // 段的创建记录：lineage 树的节点，不含 Session 身份
     ID SegmentID
     ProtocolVersion uint16
     Parent *LedgerRef                 // nil 为 root segment；非 nil 为该段唯一的父边，见第 8 节
     CausationID es.CausationID
     Metadata jsonstable.Value         // 调用方的元数据，kernel 不读取
-    Ext jsonstable.Value              // kernel 自己的扩展对象，缺省为空（SES-WIR-5）
+    Ext Extensions                    // 按模块分槽的扩展值，缺省为空（SES-WIR-5）
 }
 type SessionRecord struct {           // 根：Session 身份与它追加到的段
     ID SessionID
@@ -143,7 +148,7 @@ type Commit struct {
     Seq CommitSeq         // 在段内的位置；(SegmentID, Seq) 永久指向这一个 Commit（SES-APP-5）
     CommitID CommitID     // 产生该 commit 的操作的身份；重放按它判定（SES-APP-4）
     Batches []StreamBatch // 非空；同一 Commit 内每个流至多一个 batch
-    Ext jsonstable.Value  // kernel 自己的扩展对象，缺省为空（SES-WIR-5）
+    Ext Extensions        // 按模块分槽的扩展值，缺省为空（SES-WIR-5）
 }
 type Head struct { Next CommitSeq } // 空日志为 LedgerSeed(header)：根段 0，fork 产生的子段 Parent.Seq+1
 ```
@@ -156,7 +161,7 @@ type Head struct { Next CommitSeq } // 空日志为 LedgerSeed(header)：根段 
 
 **SES-WIR-3** 同一段的 header 与它的每个 Commit 使用同一 `ProtocolVersion`；一个 Session 的 Ancestry 内各段版本可以不同（SES-ADV-1）。`Ledger` 只服务它认识的版本：已发布的版本与 `WithProtocolVersion` 加入的版本（后者只供在第二个版本发布前演练 SES-ADV-1）；Create、Open 与 Advance 对其他版本返回 `ErrUnsupportedVersion`。调用方不传版本。
 
-**SES-WIR-5（kernel 扩展对象）** `SegmentHeader.Ext` 与 `Commit.Ext` 是 kernel 自己的扩展槽：缺省为空；非空时必须是 canonical JSON object。当前 kernel 不写任何键；后续版本的 kernel 可以在其中定义可选字段而不递增 `ProtocolVersion`，不认识这些键的 reader 原样保留（`json.Unmarshal` 不丢弃它）。`Ext` 与 `Metadata` 分工固定：`Metadata` 属于调用方，`Ext` 属于 kernel。非 object 的 Ext 为 `ErrInvalid`。
+**SES-WIR-5（模块扩展槽）** `SegmentHeader.Ext` 与 `Commit.Ext` 是按模块分槽的扩展值：`Extensions = map[ModuleKey]RawValue`，键是模块身份（EXT-REG-1，wire 上为 `"source/id"`），值是该模块自己的 JSON。kernel 只校验键的形状与值为合法 JSON，不解释任何值，不认识某个模块的 reader 原样保留其条目（`RawValue` 逐字节往返）。每个模块只读写自己的键；kernel 自身若需要可选字段，使用 `twilight/session` 键，不递增 `ProtocolVersion`。`Ext` 与 `Metadata` 分工：`Metadata` 是调用方在创建段时给出的单个不透明值；`Ext` 按模块归属。缺省为空；空值、非法 JSON 或非法键为 `ErrInvalid`。
 
 ## 4. 所有权
 
@@ -173,7 +178,7 @@ type OpenOptions struct {
 type Proposal struct {
     CommitID CommitID     // 操作的身份，由写者派生（SES-APP-4）
     Batches []StreamBatch // 非空；调用方按批归因流
-    Ext jsonstable.Value  // 可选；原样进入 Commit.Ext（SES-WIR-5）
+    Ext Extensions        // 可选；原样进入 Commit.Ext（SES-WIR-5）
 }
 type Handle interface {
     SessionID() SessionID
@@ -188,7 +193,7 @@ type Handle interface {
     Advance(context.Context, AdvanceRequest) (SegmentHeader, error)            // SES-ADV-1
     Close(context.Context) error
 }
-type AdvanceRequest struct { ProtocolVersion uint16; CausationID es.CausationID; Metadata jsonstable.Value; Ext jsonstable.Value }
+type AdvanceRequest struct { ProtocolVersion uint16; CausationID es.CausationID; Metadata jsonstable.Value; Ext Extensions }
 type Store interface {
     Create(context.Context, CreateRequest) (SegmentHeader, error)   // 返回 tip 段的 header
     Header(context.Context, SessionID) (SegmentHeader, error)       // tip 段的 header
@@ -275,7 +280,7 @@ conformance 以 `Store` 为参数，每个 adapter 跑同一套，必须验证�
 - **SES-REP-1/2**：顺序、From、Limit 截断、ReadStream 与折叠一致；`From` 取到 `CommitSeq` 最大值仍为空页；header 归属另一段或所有权记录无法解析时 Open 与 Header 报 `ErrCorrupt`；
 - **SES-GC-1/2**：Delete 对持有中、未知的 Session 分别为 `ErrOwned`、`ErrNotFound`；删除后不可见、不可开、不可 fork、再次 Delete 为 `ErrNotFound`，同名 Session 立即可重建且得到新段；子仍读到已删除父的前缀；Collect 截掉最大 anchor 之后的自身 commit、整段删除不可达段、对存活 Session 无影响、幂等；
 - **SES-WIR-4**：段 header 与 commit 不含 SessionID；删除后重建同名 Session 得到新的 SegmentID；
-- **SES-WIR-5**：非空 Ext 经 Store 往返后字节不变；非 object 的 Ext 为 `ErrInvalid`；
+- **SES-WIR-5**：Ext 条目经 Store 往返后键与字节不变；空值、非法 JSON 或非法模块键为 `ErrInvalid`；
 - **SES-FRK-1/2/3**：未知父、超出父 history 的 Seq、自身为父的 fork 被拒且不留根；相同 origin 重复 Create 幂等，不同 origin 为 `ErrConflict`；边指向贡献该 commit 的 Segment（在继承 commit 处 fork 的边直指持有它的祖先段）；空 fork 的 head 为 seed；`ReadCommits` 返回前缀加自身，`From`/`Limit` 跨越前缀边界计数；`ReadStream` 以 `LineageSession` 读取时返回前缀加自身且流内位置计入继承事件，以 `LineageSegment` 读取时只返回自身段的事件、父的同名流不受影响，未指定 lineage 为 `ErrInvalid`（SES-FRK-5）；首个自身 commit 的 Seq 为 `Seq+1`；继承的 CommitID 对 `Committed`/`LookupCommit` 可见、对 `Append` 为 `ErrConflict`；父在 fork 之后的追加对子不可见，反之亦然；fork 的 fork 读穿两层前缀；
 
 kernel 的 `ProtocolVersion` 覆盖 header 字段、commit 字段与批次完整性规则（SES-VER-2）。
