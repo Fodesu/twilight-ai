@@ -31,7 +31,7 @@ type step struct {
 }
 
 func runStep(runID run.RunID, f run.Fact) step {
-	return step{runmod.EventType(schema.Wire, f), runmod.Event{RunID: runID, Fact: f}}
+	return step{runmod.EventType(f), runmod.Event{RunID: runID, Fact: f}}
 }
 
 func created(runID run.RunID, owner string) step {
@@ -355,7 +355,7 @@ func TestMaterialize(t *testing.T) {
 	}
 	// The second assistant names the same result: one read serves both, and
 	// its CallIDs are derived when no ToolStepOpened followed it.
-	if content.reads != 3 || len(entries[3].Calls) != 2 || entries[3].Calls[0].CallID != CallID(schema.Identity.DeriveCallID("s2", 0)) {
+	if content.reads != 3 || len(entries[3].Calls) != 2 || entries[3].Calls[0].CallID != CallID(schema.Identity().DeriveCallID("s2", 0)) {
 		t.Fatalf("reads = %d, second assistant = %+v", content.reads, entries[3])
 	}
 	failed := Entry{Kind: EntryToolResult, ToolResult: &ToolResult{ID: "c9", CallID: "c9", Status: ToolError, Failure: &run.ToolFailure{Class: "boom", Message: "x"}}}

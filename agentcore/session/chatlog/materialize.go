@@ -174,7 +174,7 @@ func pairCalls(a *Assistant, result *model.ModelResult) ([]Call, error) {
 		if len(a.CallIDs) != 0 {
 			id = a.CallIDs[i]
 		} else {
-			id = CallID(schema.Identity.DeriveCallID(a.StepID, i))
+			id = CallID(schema.Identity().DeriveCallID(a.StepID, i))
 		}
 		calls[i] = Call{CallID: id, ProviderCallID: tc.ToolCallID, Name: tc.ToolName, Input: tc.Input.Canonical()}
 	}

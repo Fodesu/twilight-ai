@@ -61,7 +61,7 @@ func EvaluateCommit(cur run.MachineState, position run.RunPosition, req CommitRe
 	// Derived-identity families must use their derived CommandID (RUN-WIR-3):
 	// the derivation is the idempotency index, so a caller-minted random ID
 	// cannot bypass duplicate detection.
-	if err := checkDerivedCommandID(&env, req.Base, schema.Identity); err != nil {
+	if err := checkDerivedCommandID(&env, req.Base, schema.Identity()); err != nil {
 		return CommitDecision{Kind: DecisionConflict, Reject: err}, nil
 	}
 
@@ -76,7 +76,7 @@ func EvaluateCommit(cur run.MachineState, position run.RunPosition, req CommitRe
 	}
 
 	// Step 7: Decide once, fold with Evolve.
-	facts, err := schema.Machine.Decide(cur, env.Command)
+	facts, err := schema.Machine().Decide(cur, env.Command)
 	if err != nil {
 		switch {
 		case errors.Is(err, run.ErrRunTerminal):
@@ -99,7 +99,7 @@ func EvaluateCommit(cur run.MachineState, position run.RunPosition, req CommitRe
 		if !ok {
 			return CommitDecision{}, errors.New("agent: commit: prepare did not produce ModelStepPrepared")
 		}
-		wantStep := schema.Identity.DeriveModelStepID(env.RunID, env.ID, prepared.BindingDigest)
+		wantStep := schema.Identity().DeriveModelStepID(env.RunID, env.ID, prepared.BindingDigest)
 		if cmd.StepID != wantStep {
 			return CommitDecision{Kind: DecisionStale, Reject: fmt.Errorf("prepare: StepID %q does not match derived StepID %q", cmd.StepID, wantStep)}, nil
 		}
@@ -115,7 +115,7 @@ func EvaluateCommit(cur run.MachineState, position run.RunPosition, req CommitRe
 		if err != nil {
 			return CommitDecision{}, err
 		}
-		state, err = schema.Machine.Evolve(state, f)
+		state, err = schema.Machine().Evolve(state, f)
 		if err != nil {
 			return CommitDecision{}, err
 		}

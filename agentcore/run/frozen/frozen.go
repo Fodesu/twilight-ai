@@ -90,55 +90,54 @@ func (Bodies) DecodeToolResponse(raw []byte, want run.Digest) (run.CanonicalJSON
 	return body.Payload, nil
 }
 
-// codecFor reads the schema version a stored body was encoded under from
-// its envelope prefix and binds that version's body codec, so a store holding
-// bodies of several versions decodes each with the codec that wrote it.
-func codecFor(raw []byte) (Codec, error) {
+// checkEnvelope verifies a stored body carries the envelope prefix this
+// package writes; the version in it is part of the bytes, not a selector.
+func checkEnvelope(raw []byte) error {
 	var version uint16
 	if _, err := fmt.Sscanf(string(raw[:min(len(raw), 8)]), "v%d:", &version); err != nil {
-		return nil, errors.New("agent: frozen body: not a typed envelope")
+		return errors.New("agent: frozen body: not a typed envelope")
 	}
 	if version != envelopeVersion {
-		return nil, fmt.Errorf("agent: frozen body: unknown envelope version %d", version)
+		return fmt.Errorf("agent: frozen body: unknown envelope version %d", version)
 	}
-	return Bodies{}, nil
+	return nil
 }
 
 // DecodeRequest restores a request body and checks it still digests to
 // the name it was stored under. The version comes from the body itself.
 func DecodeRequest(raw []byte, want run.Digest) (model.ModelRequest, error) {
-	codec, err := codecFor(raw)
-	if err != nil {
+	if err := checkEnvelope(raw); err != nil {
 		return model.ModelRequest{}, err
 	}
+	codec := Bodies{}
 	return codec.DecodeRequest(raw, want)
 }
 
 // DecodeModelResult restores a model result named by ResultDigest.
 func DecodeModelResult(raw []byte, want run.Digest) (model.ModelResult, error) {
-	codec, err := codecFor(raw)
-	if err != nil {
+	if err := checkEnvelope(raw); err != nil {
 		return model.ModelResult{}, err
 	}
+	codec := Bodies{}
 	return codec.DecodeModelResult(raw, want)
 }
 
 // DecodeToolOutput restores a tool output named by OutputDigest.
 func DecodeToolOutput(raw []byte, want run.Digest) (run.CanonicalJSON, error) {
-	codec, err := codecFor(raw)
-	if err != nil {
+	if err := checkEnvelope(raw); err != nil {
 		return run.CanonicalJSON{}, err
 	}
+	codec := Bodies{}
 	return codec.DecodeToolOutput(raw, want)
 }
 
 // DecodeToolResponse restores an external tool response named by
 // ResponseDigest.
 func DecodeToolResponse(raw []byte, want run.Digest) (run.CanonicalJSON, error) {
-	codec, err := codecFor(raw)
-	if err != nil {
+	if err := checkEnvelope(raw); err != nil {
 		return run.CanonicalJSON{}, err
 	}
+	codec := Bodies{}
 	return codec.DecodeToolResponse(raw, want)
 }
 
@@ -173,20 +172,4 @@ func decodeFrozen[T any](raw []byte, version uint16, typ string, want run.Digest
 // canonical body (agent/es).
 func envelopePrefix(schemaVersion uint16, typ string) []byte {
 	return []byte(fmt.Sprintf("v%d:%d:%s:", schemaVersion, len(typ), typ))
-}
-
-// Codec is the frozen-body codec of one schema version: each body is stored
-// as the typed envelope its digest was computed from, so sha256(bytes) ==
-// digest and the body is addressable by its own name. Decoding a stored body
-// of any version goes through the package-level Decode* functions,
-// which read the version from the envelope.
-type Codec interface {
-	EncodeRequest(*model.ModelRequest, run.Digest) ([]byte, error)
-	EncodeModelResult(*model.ModelResult, run.Digest) ([]byte, error)
-	EncodeToolOutput(run.CanonicalJSON, run.Digest) ([]byte, error)
-	EncodeToolResponse(run.CanonicalJSON, run.Digest) ([]byte, error)
-	DecodeRequest([]byte, run.Digest) (model.ModelRequest, error)
-	DecodeModelResult([]byte, run.Digest) (model.ModelResult, error)
-	DecodeToolOutput([]byte, run.Digest) (run.CanonicalJSON, error)
-	DecodeToolResponse([]byte, run.Digest) (run.CanonicalJSON, error)
 }

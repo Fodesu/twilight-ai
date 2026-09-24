@@ -36,20 +36,20 @@ func (l *Loop) planAndPrepare(ctx context.Context, rt runtime.RunStore, events E
 	if run.ModelRef(frozenRequest.Model) != model {
 		return fmt.Errorf("agent: loop: request model %q does not match plan model %q", frozenRequest.Model, model)
 	}
-	requestDigest, err := schema.Canonical.DigestRequest(frozenRequest)
+	requestDigest, err := schema.Canonical().DigestRequest(frozenRequest)
 	if err != nil {
 		return err
 	}
-	toolsDigest, err := schema.Canonical.DigestToolSpecs(p.Tools)
+	toolsDigest, err := schema.Canonical().DigestToolSpecs(p.Tools)
 	if err != nil {
 		return err
 	}
-	binding, err := schema.Canonical.DigestModelStepBinding(model, requestDigest, toolsDigest)
+	binding, err := schema.Canonical().DigestModelStepBinding(model, requestDigest, toolsDigest)
 	if err != nil {
 		return err
 	}
-	cmdID := schema.Identity.DeriveModelRequestCommandID(snapshot.State.RunID, snapshot.Position)
-	stepID := schema.Identity.DeriveModelStepID(snapshot.State.RunID, cmdID, binding)
+	cmdID := schema.Identity().DeriveModelRequestCommandID(snapshot.State.RunID, snapshot.Position)
+	stepID := schema.Identity().DeriveModelStepID(snapshot.State.RunID, cmdID, binding)
 	res, err := l.commit(ctx, rt, snapshot.State.RunID, cmdID, snapshot.Position, run.PrepareModelRequest{
 		StepID:        stepID,
 		Model:         model,
@@ -251,7 +251,7 @@ func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *run.ModelStep) ([]ru
 		// id is carried for the round trip only, so a provider that repeats or
 		// omits ids cannot break identity here.
 		b := run.ToolCallBinding{
-			CallID:         schema.Identity.DeriveCallID(step.RefValue.ID, i),
+			CallID:         schema.Identity().DeriveCallID(step.RefValue.ID, i),
 			ProviderCallID: tc.ToolCallID,
 			ToolRef:        run.ToolRef(tc.ToolName),
 			Arguments:      args,
@@ -266,7 +266,7 @@ func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *run.ModelStep) ([]ru
 			b.Policy = spec.Policy
 			b.Replay = spec.Replay
 		}
-		bd, err := schema.Canonical.DigestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
+		bd, err := schema.Canonical().DigestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
 		if err != nil {
 			return nil, err
 		}

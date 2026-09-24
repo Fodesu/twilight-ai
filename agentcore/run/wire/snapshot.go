@@ -14,32 +14,24 @@ import (
 func StatesEquivalent(a, b *run.MachineState) bool { return statesEquivalent(a, b) }
 
 func statesEquivalent(a, b *run.MachineState) bool {
-	ab, errA := encodeMachineStateV1(a)
-	bb, errB := encodeMachineStateV1(b)
+	ab, errA := encodeMachineState(a)
+	bb, errB := encodeMachineState(b)
 	if errA != nil || errB != nil {
 		return false
 	}
 	return bytes.Equal(ab, bb)
 }
 
-// SnapshotCodec renders a MachineState to and from its canonical persisted
-// bytes. The bytes are canonical: StatesEquivalent, the InitialStateDigest
-// preimage and durable snapshot storage all use them.
-type SnapshotCodec interface {
-	Encode(*run.MachineState) ([]byte, error)
-	Decode([]byte) (run.MachineState, error)
-}
-
 // --- v1 snapshot --------------------------------------------------------------------
 
 type Snapshot struct{}
 
-// machineStateWireV1 is the persisted snapshot shape of MachineState. It
+// machineStateWire is the persisted snapshot shape of MachineState. It
 // flattens the interface-typed Current into a discriminator
 // plus at most one step body so the snapshot round-trips through JSON. Its
 // canonical bytes are the InitialStateDigest preimage (RUN-NEW-1), so field
 // names and omission rules are frozen with the schema.
-type machineStateWireV1 struct {
+type machineStateWire struct {
 	RunID         run.RunID        `json:"runId"`
 	Owner         run.OwnerID      `json:"owner,omitempty"`
 	Attempt       uint32           `json:"attempt,omitempty"`
@@ -62,8 +54,8 @@ const (
 	currentWireTool  = "tool"
 )
 
-func machineStateToWireV1(s *run.MachineState) (machineStateWireV1, error) {
-	w := machineStateWireV1{
+func machineStateToWire(s *run.MachineState) (machineStateWire, error) {
+	w := machineStateWire{
 		RunID: s.RunID, Owner: s.Owner, Attempt: s.Attempt, Status: s.Status, ModelSteps: s.ModelSteps,
 		Usage: s.Usage, PendingInputs: s.PendingInputs,
 		Result: s.Result, LastToolStep: s.LastToolStep,
@@ -79,12 +71,12 @@ func machineStateToWireV1(s *run.MachineState) (machineStateWireV1, error) {
 		w.Current = currentWireTool
 		w.ToolStep = &cur
 	default:
-		return machineStateWireV1{}, fmt.Errorf("agent: snapshot: unknown current variant %T", s.Current)
+		return machineStateWire{}, fmt.Errorf("agent: snapshot: unknown current variant %T", s.Current)
 	}
 	return w, nil
 }
 
-func machineStateFromWireV1(w *machineStateWireV1) (run.MachineState, error) {
+func machineStateFromWire(w *machineStateWire) (run.MachineState, error) {
 	s := run.MachineState{
 		RunID: w.RunID, Owner: w.Owner, Attempt: w.Attempt, Status: w.Status, ModelSteps: w.ModelSteps,
 		Usage: w.Usage, PendingInputs: w.PendingInputs,
@@ -116,27 +108,27 @@ func machineStateFromWireV1(w *machineStateWireV1) (run.MachineState, error) {
 	return s, nil
 }
 
-// encodeMachineStateV1 renders the canonical v1 snapshot bytes.
-func encodeMachineStateV1(s *run.MachineState) ([]byte, error) {
+// encodeMachineState renders the canonical v1 snapshot bytes.
+func encodeMachineState(s *run.MachineState) ([]byte, error) {
 	if s == nil {
 		return nil, errors.New("agent: snapshot: nil state")
 	}
-	w, err := machineStateToWireV1(s)
+	w, err := machineStateToWire(s)
 	if err != nil {
 		return nil, err
 	}
 	return es.MarshalCanonical(w)
 }
 
-// decodeMachineStateV1 parses v1 snapshot bytes, rejecting unknown fields,
+// decodeMachineState parses v1 snapshot bytes, rejecting unknown fields,
 // trailing data, and non-canonical-equivalent wire, then validates the
 // structural invariants of the restored state.
-func decodeMachineStateV1(raw []byte) (run.MachineState, error) {
-	var w machineStateWireV1
+func decodeMachineState(raw []byte) (run.MachineState, error) {
+	var w machineStateWire
 	if err := es.DecodeStrict(raw, &w); err != nil {
 		return run.MachineState{}, fmt.Errorf("agent: snapshot: %w", err)
 	}
-	s, err := machineStateFromWireV1(&w)
+	s, err := machineStateFromWire(&w)
 	if err != nil {
 		return run.MachineState{}, err
 	}

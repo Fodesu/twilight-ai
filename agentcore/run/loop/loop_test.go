@@ -117,7 +117,7 @@ func toolSpec(t *testing.T, name string, policy ResponsePolicy) ToolSpec {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := schema.Canonical.DigestToolDefinition(frozen)
+	d, err := schema.Canonical().DigestToolDefinition(frozen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,8 +290,8 @@ func (staleCommitRuntime) Commit(context.Context, runtime.CommitRequest) (runtim
 func TestToolStartStaleIsNotAnError(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
 	args := cj(`{}`)
-	callID := schema.Identity.DeriveCallID("model-1", 0)
-	bindingDigest, err := schema.Canonical.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
+	callID := schema.Identity().DeriveCallID("model-1", 0)
+	bindingDigest, err := schema.Canonical().DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
 	if err != nil {
 		t.Fatal(err)
 	}

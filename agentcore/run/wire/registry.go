@@ -48,8 +48,8 @@ func commandOf[T run.AgentCommand](name string) commandVariant {
 	}}
 }
 
-// factVariantsV1 is the closed list of v1 facts in wire-registration order.
-var factVariantsV1 = []factVariant{
+// factVariants is the closed list of facts in wire-registration order.
+var factVariants = []factVariant{
 	factOf[run.RunCreated]("run_created"),
 	factOf[run.ModelStepPrepared]("model_step_prepared"),
 	factOf[run.ModelStepWithdrawn]("model_step_withdrawn"),
@@ -67,8 +67,8 @@ var factVariantsV1 = []factVariant{
 	factOf[run.RunEnded]("run_ended"),
 }
 
-// commandVariantsV1 is the closed list of v1 commands.
-var commandVariantsV1 = []commandVariant{
+// commandVariants is the closed list of commands.
+var commandVariants = []commandVariant{
 	commandOf[run.PrepareModelRequest]("prepare_model_request"),
 	commandOf[run.WithdrawPreparedStep]("withdraw_prepared_step"),
 	commandOf[run.StartModelExecution]("start_model_execution"),
@@ -116,8 +116,8 @@ func newVariantRegistry(facts []factVariant, commands []commandVariant) *variant
 	return r
 }
 
-// variantsV1 is the variant registry; Facts speaks through it.
-var variantsV1 = newVariantRegistry(factVariantsV1, commandVariantsV1)
+// variants is the variant registry; Facts speaks through it.
+var variants = newVariantRegistry(factVariants, commandVariants)
 
 func (r *variantRegistry) factType(f run.Fact) string {
 	if f == nil {
@@ -169,7 +169,7 @@ func (r *variantRegistry) decodeCommand(typ string, raw []byte) (run.AgentComman
 
 // allVariants lists every schema version's registry, oldest first. FactTypes
 // is their union; a later version appends its own registry here.
-var allVariants = []*variantRegistry{variantsV1}
+var allVariants = []*variantRegistry{variants}
 
 // FactTypes lists every fact discriminator any schema version registers, in
 // registration order and without duplicates: the closed set of

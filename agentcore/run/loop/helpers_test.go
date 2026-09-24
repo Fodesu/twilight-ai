@@ -94,13 +94,13 @@ func (s *testStack) createRun(t testing.TB, runID RunID, inputs ...AgentInput) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	facts, err := schema.Machine.CreateGroup(newRun, inputs)
+	facts, err := schema.Machine().CreateGroup(newRun, inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(schema.Wire, f), Value: runmod.Event{RunID: runID, Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), Value: runmod.Event{RunID: runID, Fact: f}})
 	}
 	group := &writer.SemanticGroup{CommitID: session.CommitID("create/" + string(runID)),
 		Batches: []writer.TypedBatch{{Stream: runmod.Stream(runID), Events: runEvents}}}

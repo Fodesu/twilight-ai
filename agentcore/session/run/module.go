@@ -13,7 +13,6 @@ import (
 	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/wire"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/extension"
@@ -49,9 +48,9 @@ func Stream(runID run.RunID) session.StreamRef { return streamDefinition.Ref(str
 // registers, with no second list to keep in step.
 var factNames = wire.FactTypes()
 
-// EventType returns the EventType of a fact under the Run's schema.
-func EventType(w wire.Codec, f run.Fact) session.EventType {
-	return Prefix + session.EventType(w.FactType(f))
+// EventType returns the EventType of a fact.
+func EventType(f run.Fact) session.EventType {
+	return Prefix + session.EventType(wire.Facts{}.FactType(f))
 }
 
 // Event is the typed value of one twilight/run/ event: the fact plus the
@@ -61,11 +60,11 @@ type Event struct {
 	Fact  run.Fact
 }
 
-// factCodec encodes one fact type for one SchemaVersion. The payload is the
-// canonical fact object with "runId" added; `v` is the Registry's.
+// factCodec encodes one fact type at one payload version. The payload is
+// the canonical fact object with "runId" added; `v` is the Registry's.
 type factCodec struct {
 	local string
-	wire  wire.Codec
+	wire  wire.Facts
 }
 
 func (c factCodec) Validate(value any) error {
@@ -159,11 +158,20 @@ var one uint32 = 1
 // and Turn projections consume its facts; nothing of theirs is written here.
 var Module = buildModule()
 
-// Version is the Run protocol version new Runs are created under and the
-// payload version every run fact is written with (RUN-CMT-8): the run
-// module's six contracts (schema.For) are one bundle, so all of its events
-// share the version.
-const Version extension.PayloadVersion = 1
+// factVersions is the payload version each fact type is written with
+// (SES-VER-1, EXT-REG-2). A type whose shape changes gets a new entry here
+// and a codec for the new version; types not listed are at version 1. The
+// version belongs to the event type: nothing ties the run facts to one
+// number (RUN-CMT-8).
+var factVersions = map[string]extension.PayloadVersion{}
+
+// factVersion returns the payload version of one fact type.
+func factVersion(name string) extension.PayloadVersion {
+	if v, ok := factVersions[name]; ok {
+		return v
+	}
+	return 1
+}
 
 func buildModule() extension.ModuleDescriptor {
 	m := extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: ModuleID,
@@ -173,7 +181,7 @@ func buildModule() extension.ModuleDescriptor {
 			Type:   Prefix + session.EventType(name),
 			Stream: StreamDomain,
 			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{
-				Version: factCodec{local: name, wire: schema.Wire},
+				factVersion(name): factCodec{local: name, wire: wire.Facts{}},
 			},
 		}
 		if frozenBodyFacts[name] {

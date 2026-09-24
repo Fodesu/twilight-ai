@@ -255,7 +255,7 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req DeliverR
 	// the unit's View, so a withdrawal landing between this read and the
 	// commit refuses the unit.
 	cmd := run.AcceptInput{Inputs: req.Inputs}
-	env, err := schema.Wire.Envelope(runID, schema.Identity.DeriveInputCommandID(runID, cmd.InputIDs()...), cmd)
+	env, err := schema.Wire().Envelope(runID, schema.Identity().DeriveInputCommandID(runID, cmd.InputIDs()...), cmd)
 	if err != nil {
 		return TurnResponse{}, err
 	}
@@ -379,7 +379,7 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest
 		return TurnResponse{}, fmt.Errorf("%w: turn %s has no active attempt", ErrConflict, turnID)
 	}
 	runID := att.RunID
-	env, err := schema.Wire.Envelope(runID, CancelCommandID(sid, turnID, runID), run.CancelRun{})
+	env, err := schema.Wire().Envelope(runID, CancelCommandID(sid, turnID, runID), run.CancelRun{})
 	if err != nil {
 		return TurnResponse{}, err
 	}

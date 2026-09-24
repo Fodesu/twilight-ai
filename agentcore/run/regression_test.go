@@ -13,7 +13,7 @@ func TestRegressionZeroBindingsWithToolCallsRejected(t *testing.T) {
 	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(), nil)
 	result := modelResultWithCalls("c1")
-	if _, err := schema.Machine.Decide(s, settling(s, run.SubmitModelResult{StepID: stepID, Result: result, Calls: nil})); err == nil {
+	if _, err := schema.Machine().Decide(s, settling(s, run.SubmitModelResult{StepID: stepID, Result: result, Calls: nil})); err == nil {
 		t.Fatal("result with tool calls and no bindings completed the run")
 	}
 }
@@ -28,12 +28,12 @@ func TestRegressionBindingMustMatchModelResult(t *testing.T) {
 
 	evil := makeBinding(t, stepID, 0, "c1", specDanger, `{"rm":"-rf"}`)
 	result := modelResultWithNamedCalls("safe", `{"a":1}`, "c1")
-	if _, err := schema.Machine.Decide(s, settling(s, run.SubmitModelResult{StepID: stepID, Result: result, Calls: []run.ToolCallBinding{evil}})); err == nil {
+	if _, err := schema.Machine().Decide(s, settling(s, run.SubmitModelResult{StepID: stepID, Result: result, Calls: []run.ToolCallBinding{evil}})); err == nil {
 		t.Fatal("binding for a tool the model never called was accepted")
 	}
 
 	tampered := makeBinding(t, stepID, 0, "c1", specSafe, `{"a":999}`)
-	if _, err := schema.Machine.Decide(s, settling(s, run.SubmitModelResult{StepID: stepID, Result: result, Calls: []run.ToolCallBinding{tampered}})); err == nil {
+	if _, err := schema.Machine().Decide(s, settling(s, run.SubmitModelResult{StepID: stepID, Result: result, Calls: []run.ToolCallBinding{tampered}})); err == nil {
 		t.Fatal("binding with tampered arguments was accepted")
 	}
 }
@@ -46,12 +46,12 @@ func TestRegressionToolStepIDReproducible(t *testing.T) {
 	b := makeBinding(t, stepID, 0, "c1", spec, `{}`)
 	facts := mustDecide(t, s, run.SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []run.ToolCallBinding{b}})
 	opened := facts[1].(run.ToolStepOpened)
-	if schema.Identity.DeriveToolStepID(opened.Source, opened.BindingSetDigest) != opened.StepID {
+	if schema.Identity().DeriveToolStepID(opened.Source, opened.BindingSetDigest) != opened.StepID {
 		t.Fatal("ToolStepOpened digest does not reproduce its StepID")
 	}
 	s = fold(t, s, facts)
 	ts := s.Current.(run.ToolStep)
-	if schema.Identity.DeriveToolStepID(ts.Source, ts.RefValue.Digest) != ts.RefValue.ID {
+	if schema.Identity().DeriveToolStepID(ts.Source, ts.RefValue.Digest) != ts.RefValue.ID {
 		t.Fatal("persisted StepRef.Digest does not reproduce the step ID")
 	}
 }
@@ -67,7 +67,7 @@ func TestRegressionEvolveRejectsIllegalCallState(t *testing.T) {
 	s = fold(t, s, facts)
 	s = fold(t, s, mustDecide(t, s, startTool(s, opened.StepID, cid(stepID, 0))))
 
-	_, err := schema.Machine.Evolve(s, run.ToolCallFailed{
+	_, err := schema.Machine().Evolve(s, run.ToolCallFailed{
 		StepID:  opened.StepID,
 		CallID:  cid(stepID, 0),
 		Failure: run.ToolFailure{Class: run.FailureExecution},
@@ -80,7 +80,7 @@ func TestRegressionEvolveRejectsIllegalCallState(t *testing.T) {
 
 func TestRegressionCancelReasonFixed(t *testing.T) {
 	s := newRun(t)
-	if _, err := schema.Machine.Decide(s, run.CancelRun{Reason: run.RunReason("other")}); err == nil {
+	if _, err := schema.Machine().Decide(s, run.CancelRun{Reason: run.RunReason("other")}); err == nil {
 		t.Fatal("CancelRun accepted a non-cancellation reason")
 	}
 	facts := mustDecide(t, s, run.CancelRun{})

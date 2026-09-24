@@ -257,7 +257,7 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 		if model.Request == nil {
 			return errors.New("executor: model assignment requires an inline request payload")
 		}
-		requestDigest, err := schema.Canonical.DigestRequest(*model.Request)
+		requestDigest, err := schema.Canonical().DigestRequest(*model.Request)
 		if err != nil {
 			return err
 		}

@@ -11,8 +11,6 @@ import (
 // caller-supplied so retries retain a stable identity. Owner and Attempt name
 // the upper-level entity this Run serves and its ordinal under it; Run stores
 // them and never interprets them.
-// A Run carries no schema of its own: it is interpreted under the
-// SchemaVersion of the Session segment it is created on (RUN-NEW-1).
 type NewRun struct {
 	RunID       RunID          `json:"runId"`
 	Owner       OwnerID        `json:"owner,omitempty"`

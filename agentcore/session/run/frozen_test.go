@@ -22,11 +22,11 @@ func frozenBody(t *testing.T, text string) (run.Digest, []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	digest, err := schema.Canonical.DigestRequest(req)
+	digest, err := schema.Canonical().DigestRequest(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := schema.Bodies.EncodeRequest(&req, digest)
+	raw, err := schema.Bodies().EncodeRequest(&req, digest)
 	if err != nil {
 		t.Fatal(err)
 	}

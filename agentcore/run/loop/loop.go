@@ -271,7 +271,7 @@ func (l *Loop) advance(ctx context.Context, rt runtime.RunStore, runID run.RunID
 			// Inputs arrived after this step was frozen: discard the unsent
 			// request and replan with them (RUN-LOP-8). A retriable rejection
 			// means another actor moved the Run; the reload decides.
-			res, err := l.commit(ctx, rt, runID, schema.Identity.DeriveWithdrawCommandID(runID, act.StepID), snapshot.Position,
+			res, err := l.commit(ctx, rt, runID, schema.Identity().DeriveWithdrawCommandID(runID, act.StepID), snapshot.Position,
 				run.WithdrawPreparedStep(act))
 			if err != nil && !retriable(err) {
 				return LoopResult{}, err
@@ -541,7 +541,7 @@ func (l *Loop) awaitOutcome(ctx context.Context, key AssignmentKey, outcomes cha
 // was lost, the replay returns AlreadyApplied instead of re-executing an
 // expensive step. Ownership loss is never retried.
 func (l *Loop) commit(ctx context.Context, rt runtime.RunStore, runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand) (runtime.CommitResult, error) {
-	env, err := schema.Wire.Envelope(runID, id, cmd)
+	env, err := schema.Wire().Envelope(runID, id, cmd)
 	if err != nil {
 		return runtime.CommitResult{}, err
 	}

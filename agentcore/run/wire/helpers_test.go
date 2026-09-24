@@ -17,12 +17,12 @@ import (
 // (RUN-WIR-1): the step's rejected count is the effect's sequence.
 func startModel(s run.MachineState, stepID run.StepID) run.StartModelExecution {
 	ms, _ := s.Current.(run.ModelStep)
-	return run.StartModelExecution{StepID: stepID, Effect: schema.Identity.DeriveEffectID(s.RunID, stepID, "", ms.Rejects)}
+	return run.StartModelExecution{StepID: stepID, Effect: schema.Identity().DeriveEffectID(s.RunID, stepID, "", ms.Rejects)}
 }
 
 // startTool is the start of a call's one tool effect.
 func startTool(s run.MachineState, stepID run.StepID, callID run.CallID) run.StartToolCall {
-	return run.StartToolCall{StepID: stepID, CallID: callID, Effect: schema.Identity.DeriveEffectID(s.RunID, stepID, callID, 0)}
+	return run.StartToolCall{StepID: stepID, CallID: callID, Effect: schema.Identity().DeriveEffectID(s.RunID, stepID, callID, 0)}
 }
 
 // advance runs prepare+start and returns the state in Executing plus stepID.
@@ -36,7 +36,7 @@ func advanceToExecuting(t *testing.T, s run.MachineState, req sdk.Request, specs
 
 // cid is the derived CallID of the index-th call of a step.
 func cid(step run.StepID, index int) run.CallID {
-	return schema.Identity.DeriveCallID(step, index)
+	return schema.Identity().DeriveCallID(step, index)
 }
 
 func cj(raw string) run.CanonicalJSON { return run.MustParseCanonicalJSON(raw) }
@@ -45,9 +45,9 @@ func fold(t *testing.T, s run.MachineState, facts []run.Fact) run.MachineState {
 	t.Helper()
 	for _, f := range facts {
 		var err error
-		s, err = schema.Machine.Evolve(s, f)
+		s, err = schema.Machine().Evolve(s, f)
 		if err != nil {
-			t.Fatalf("schema.Machine.Evolve(%T): %v", f, err)
+			t.Fatalf("schema.Machine().Evolve(%T): %v", f, err)
 		}
 	}
 	return s
@@ -62,7 +62,7 @@ func inputDigest(raw string) run.Digest { return es.DigestBytes([]byte(raw)) }
 func makeBinding(t *testing.T, source run.StepID, index int, providerID string, spec run.ToolSpec, args string) run.ToolCallBinding {
 	t.Helper()
 	parsedArgs := cj(args)
-	callID := schema.Identity.DeriveCallID(source, index)
+	callID := schema.Identity().DeriveCallID(source, index)
 	bd, err := (canonical.Digests{}).DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, parsedArgs)
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +84,7 @@ func makeSpec(t *testing.T, def sdk.ToolDefinition, policy run.ResponsePolicy) r
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := schema.Canonical.DigestToolDefinition(frozen)
+	d, err := schema.Canonical().DigestToolDefinition(frozen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,9 +97,9 @@ func modelResultWithCalls(callIDs ...string) model.ModelResult {
 
 func mustDecide(t *testing.T, s run.MachineState, c run.AgentCommand) []run.Fact {
 	t.Helper()
-	facts, err := schema.Machine.Decide(s, settling(s, c))
+	facts, err := schema.Machine().Decide(s, settling(s, c))
 	if err != nil {
-		t.Fatalf("schema.Machine.Decide(%T): %v", c, err)
+		t.Fatalf("schema.Machine().Decide(%T): %v", c, err)
 	}
 	return facts
 }
@@ -184,21 +184,21 @@ func buildPrepare(t *testing.T, s run.MachineState, req sdk.Request, specs []run
 	if err != nil {
 		t.Fatal(err)
 	}
-	reqDigest, err := schema.Canonical.DigestRequest(frozenReq)
+	reqDigest, err := schema.Canonical().DigestRequest(frozenReq)
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolsDigest, err := schema.Canonical.DigestToolSpecs(specs)
+	toolsDigest, err := schema.Canonical().DigestToolSpecs(specs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	modelRef := run.ModelRef(frozenReq.Model)
-	binding, err := schema.Canonical.DigestModelStepBinding(modelRef, reqDigest, toolsDigest)
+	binding, err := schema.Canonical().DigestModelStepBinding(modelRef, reqDigest, toolsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmdID := schema.Identity.DeriveModelRequestCommandID(s.RunID, 0)
-	stepID := schema.Identity.DeriveModelStepID(s.RunID, cmdID, binding)
+	cmdID := schema.Identity().DeriveModelRequestCommandID(s.RunID, 0)
+	stepID := schema.Identity().DeriveModelStepID(s.RunID, cmdID, binding)
 	ids := make([]run.InputID, len(s.PendingInputs))
 	for i, in := range s.PendingInputs {
 		ids[i] = in.ID

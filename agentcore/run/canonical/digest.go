@@ -24,8 +24,7 @@ const (
 // never changes; a new digest rule would be a new domain, not a new number.
 const preimageVersion uint16 = 1
 
-// Digests is the digest rules. Replay of a v1 Run must keep using
-// them after later versions exist.
+// Digests is the digest rules of every body a fact names.
 type Digests struct{}
 
 func (Digests) DigestRequest(req model.ModelRequest) (run.Digest, error) { //nolint:gocritic // hugeParam: digest covers the complete immutable ModelRequest value.

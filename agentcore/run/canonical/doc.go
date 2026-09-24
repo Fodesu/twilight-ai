@@ -1,11 +1,9 @@
-// Package canonical is the canonical identity of a Run under one schema
-// version: the digest rules (Digests) for every body a fact names or a derived
-// identity covers, and the derivation (Identity) of every RunID-scoped
-// identity -- step, call, response and command ids (RUN-WIR-3, RUN-WIR-4).
-//
-// The Machine of agent/run is bound to these rules by agent/run/schema; a
-// later version that changes any preimage adds its own implementation and
-// leaves Digests in place for the replay of v1 Runs. The package also declares the
-// envelope types under which agent/run/frozen stores the bodies these digests
-// name.
+// Package canonical is the canonical identity of a Run: the digest rules
+// (Digests) for every body a fact names or a derived identity covers, and the
+// derivation (Identity) of every RunID-scoped identity -- step, call,
+// response, effect and command ids (RUN-WIR-1, RUN-WIR-4). Both are persisted
+// semantics: their preimages never change (RUN-CMT-8). The state machine of
+// agentcore/run is composed with them in agentcore/run/schema. The package
+// also declares the envelope types under which agentcore/run/frozen stores
+// the bodies these digests name.
 package canonical

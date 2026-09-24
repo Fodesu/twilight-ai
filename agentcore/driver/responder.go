@@ -199,19 +199,19 @@ func (d *Driver) settleResponse(ctx context.Context, w writer.Writer, a *answer,
 	req := a.call.Request
 	var cmd run.AgentCommand
 	if rerr != nil {
-		digest, err := schema.Canonical.DigestToolResponseDecision(req.Kind, run.ResponseDecisionRejected, rerr.Error())
+		digest, err := schema.Canonical().DigestToolResponseDecision(req.Kind, run.ResponseDecisionRejected, rerr.Error())
 		if err != nil {
 			return err
 		}
 		cmd = run.RejectToolCall{StepID: req.StepID, CallID: req.CallID, ResponseID: req.ID, ResponseDigest: digest, Reason: rerr.Error()}
 	} else {
-		digest, err := schema.Canonical.DigestToolResponsePayload(payload)
+		digest, err := schema.Canonical().DigestToolResponsePayload(payload)
 		if err != nil {
 			return err
 		}
 		cmd = run.SubmitToolResponse{StepID: req.StepID, CallID: req.CallID, ResponseID: req.ID, ResponseDigest: digest, Payload: payload}
 	}
-	env, err := schema.Wire.Envelope(req.RunID, schema.Identity.DeriveResponseCommandID(req.RunID, req.StepID, req.CallID, req.ID), cmd)
+	env, err := schema.Wire().Envelope(req.RunID, schema.Identity().DeriveResponseCommandID(req.RunID, req.StepID, req.CallID, req.ID), cmd)
 	if err != nil {
 		return err
 	}

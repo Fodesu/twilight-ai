@@ -75,14 +75,11 @@ type Result struct {
 }
 
 // Provenance is the child segment's creation record under Module: who
-// spawned it, with what, and how deep it sits. Effect is unused since the
-// call waits for an external response instead of starting an effect
-// (SPN-1); it stays in the wire shape for records written before.
+// spawned it, with what, and how deep it sits.
 type Provenance struct {
 	ParentSession session.SessionID `json:"parentSession"`
 	ParentRun     run.RunID         `json:"parentRun"`
 	CallID        run.CallID        `json:"callId"`
-	Effect        run.EffectID      `json:"effect"`
 	Depth         int               `json:"depth"`
 	Arguments     Arguments         `json:"arguments"`
 }

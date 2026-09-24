@@ -539,7 +539,7 @@ func runRequirement() extension.ModuleRequirement {
 	return extension.ModuleRequirement{Source: extension.SourceTwilight, Module: runmod.ModuleID, Events: events}
 }
 
-// Module is the chatlog ModuleDescriptor (CHT-SCP-1: Requires run v1 facts).
+// Module is the chatlog ModuleDescriptor (CHT-SCP-1: Requires run facts).
 var Module = extension.ModuleDescriptor{
 	Source:   extension.SourceTwilight,
 	ID:       ModuleID,

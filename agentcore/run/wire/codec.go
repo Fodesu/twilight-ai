@@ -101,54 +101,35 @@ func requireCanonicalEquivalent(raw []byte, canonicalShape any) error {
 	return nil
 }
 
-// Codec names and (de)codes the sealed fact and command variants of one
-// schema version. Encoding is canonical JSON of the variant under the typed
-// payload envelope (schema version, type discriminator, body).
-type Codec interface {
-	// FactType is the wire discriminator of a fact variant, "" if unknown.
-	FactType(run.Fact) string
-	// CommandType is the wire discriminator of a command variant, "" if unknown.
-	CommandType(run.AgentCommand) string
-	// DecodeFact restores the sealed fact variant named by typ.
-	DecodeFact(typ string, raw []byte) (run.Fact, error)
-	// DecodeCommand restores the sealed command variant named by typ.
-	DecodeCommand(typ string, raw []byte) (run.AgentCommand, error)
-	// EncodeFact renders the typed payload bytes of a fact; typ must be the
-	// fact's own discriminator.
-	EncodeFact(typ string, fact run.Fact) ([]byte, error)
-	// Envelope is the sanctioned envelope constructor (RUN-WIR-3).
-	Envelope(runID run.RunID, id run.CommandID, cmd run.AgentCommand) (CommandEnvelope, error)
-}
-
 // --- v1 wire ------------------------------------------------------------------------
 
-// Facts speaks through variantsV1, its own frozen variant table.
+// Facts speaks through variants, its own frozen variant table.
 type Facts struct{}
 
-func (Facts) FactType(f run.Fact) string            { return variantsV1.factType(f) }
-func (Facts) CommandType(c run.AgentCommand) string { return variantsV1.commandType(c) }
+func (Facts) FactType(f run.Fact) string            { return variants.factType(f) }
+func (Facts) CommandType(c run.AgentCommand) string { return variants.commandType(c) }
 func (Facts) DecodeFact(typ string, raw []byte) (run.Fact, error) {
-	return variantsV1.decodeFact(typ, raw)
+	return variants.decodeFact(typ, raw)
 }
 
 func (Facts) DecodeCommand(typ string, raw []byte) (run.AgentCommand, error) {
-	return variantsV1.decodeCommand(typ, raw)
+	return variants.decodeCommand(typ, raw)
 }
 
 func (Facts) EncodeFact(typ string, fact run.Fact) ([]byte, error) {
-	if typ == "" || typ != variantsV1.factType(fact) {
+	if typ == "" || typ != variants.factType(fact) {
 		return nil, fmt.Errorf("agent: encode: type %q does not match fact variant", typ)
 	}
 	return es.EncodeTypedPayload(payloadVersion, typ, fact)
 }
 
 func (Facts) Envelope(runID run.RunID, id run.CommandID, cmd run.AgentCommand) (CommandEnvelope, error) {
-	typ := variantsV1.commandType(cmd)
+	typ := variants.commandType(cmd)
 	if typ == "" {
 		return CommandEnvelope{}, fmt.Errorf("agent: envelope: unknown command variant %T", cmd)
 	}
 	return CommandEnvelope{Type: typ, RunID: runID, ID: id, Command: cmd}, nil
 }
 
-func (Snapshot) Encode(s *run.MachineState) ([]byte, error)  { return encodeMachineStateV1(s) }
-func (Snapshot) Decode(raw []byte) (run.MachineState, error) { return decodeMachineStateV1(raw) }
+func (Snapshot) Encode(s *run.MachineState) ([]byte, error)  { return encodeMachineState(s) }
+func (Snapshot) Decode(raw []byte) (run.MachineState, error) { return decodeMachineState(raw) }

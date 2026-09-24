@@ -246,7 +246,7 @@ func (c *Command) Prepare(_ context.Context, view writer.View, now int64) ([]wri
 	}
 	events := make([]writer.TypedEvent, 0, len(decision.Facts))
 	for _, f := range decision.Facts {
-		events = append(events, writer.TypedEvent{Type: EventType(schema.Wire, f), RecordedAtUnixMilli: now, Value: Event{RunID: runID, Fact: f}})
+		events = append(events, writer.TypedEvent{Type: EventType(f), RecordedAtUnixMilli: now, Value: Event{RunID: runID, Fact: f}})
 	}
 	c.prepared = true
 	c.before, c.after = state, decision.NewState
@@ -319,18 +319,18 @@ func (s *SessionRunStore) freezeBodies(ctx context.Context, cmd run.AgentCommand
 	switch c := cmd.(type) {
 	case run.PrepareModelRequest:
 		digest = c.RequestDigest
-		body, err = schema.Bodies.EncodeRequest(&c.Request, digest)
+		body, err = schema.Bodies().EncodeRequest(&c.Request, digest)
 	case run.SubmitModelResult:
-		if digest, err = schema.Canonical.DigestModelResult(c.Result); err == nil {
-			body, err = schema.Bodies.EncodeModelResult(&c.Result, digest)
+		if digest, err = schema.Canonical().DigestModelResult(c.Result); err == nil {
+			body, err = schema.Bodies().EncodeModelResult(&c.Result, digest)
 		}
 	case run.SubmitToolResult:
-		if digest, err = schema.Canonical.DigestToolOutput(c.Result.Output); err == nil {
-			body, err = schema.Bodies.EncodeToolOutput(c.Result.Output, digest)
+		if digest, err = schema.Canonical().DigestToolOutput(c.Result.Output); err == nil {
+			body, err = schema.Bodies().EncodeToolOutput(c.Result.Output, digest)
 		}
 	case run.SubmitToolResponse:
 		digest = c.ResponseDigest
-		body, err = schema.Bodies.EncodeToolResponse(c.Payload, digest)
+		body, err = schema.Bodies().EncodeToolResponse(c.Payload, digest)
 	default:
 		return nil
 	}
@@ -373,7 +373,7 @@ type createRun struct {
 }
 
 func (c createRun) Prepare(_ context.Context, view writer.View, now int64) ([]writer.TypedBatch, error) {
-	facts, err := schema.Machine.CreateGroup(c.newRun, c.inputs)
+	facts, err := schema.Machine().CreateGroup(c.newRun, c.inputs)
 	if err != nil {
 		return nil, err
 	}
@@ -382,7 +382,7 @@ func (c createRun) Prepare(_ context.Context, view writer.View, now int64) ([]wr
 	}
 	events := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		events = append(events, writer.TypedEvent{Type: EventType(schema.Wire, f), RecordedAtUnixMilli: now, Value: Event{RunID: c.newRun.RunID, Fact: f}})
+		events = append(events, writer.TypedEvent{Type: EventType(f), RecordedAtUnixMilli: now, Value: Event{RunID: c.newRun.RunID, Fact: f}})
 	}
 	return []writer.TypedBatch{{Stream: Stream(c.newRun.RunID), Events: events}}, nil
 }

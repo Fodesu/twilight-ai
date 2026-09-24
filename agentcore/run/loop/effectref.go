@@ -24,20 +24,20 @@ type effectRef struct {
 // is the count of results the step rejected so far, so a step started again
 // after a rejection requests a new effect.
 func modelEffect(runID run.RunID, step *run.ModelStep) effectRef {
-	return effectRef{runID: runID, id: schema.Identity.DeriveEffectID(runID, step.RefValue.ID, "", step.Rejects)}
+	return effectRef{runID: runID, id: schema.Identity().DeriveEffectID(runID, step.RefValue.ID, "", step.Rejects)}
 }
 
 // toolEffect is the one tool effect of a call: a call starts at most once.
 func toolEffect(runID run.RunID, stepID run.StepID, callID run.CallID) effectRef {
-	return effectRef{runID: runID, id: schema.Identity.DeriveEffectID(runID, stepID, callID, 0)}
+	return effectRef{runID: runID, id: schema.Identity().DeriveEffectID(runID, stepID, callID, 0)}
 }
 
-func (e *effectRef) startID() run.CommandID { return schema.Identity.DeriveStartCommandID(e.id) }
+func (e *effectRef) startID() run.CommandID { return schema.Identity().DeriveStartCommandID(e.id) }
 func (e *effectRef) settlementID() run.CommandID {
-	return schema.Identity.DeriveSettlementCommandID(e.id)
+	return schema.Identity().DeriveSettlementCommandID(e.id)
 }
 func (e *effectRef) recoveryID() run.CommandID {
-	return schema.Identity.DeriveRecoveryCommandID(e.id)
+	return schema.Identity().DeriveRecoveryCommandID(e.id)
 }
 
 // settle commits the owner settlement of an effect under its derived

@@ -161,7 +161,7 @@ func (b *testBackend) lastKey() effect.AssignmentKey {
 
 func testAssignment() effect.Assignment {
 	request := model.ModelRequest{Model: "m"}
-	digest, err := schema.Canonical.DigestRequest(request)
+	digest, err := schema.Canonical().DigestRequest(request)
 	if err != nil {
 		panic(err)
 	}

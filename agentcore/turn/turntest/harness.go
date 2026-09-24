@@ -310,7 +310,7 @@ func (h *harness) modelEffect(runID run.RunID, step run.StepID) run.EffectID {
 	if !ok || ms.RefValue.ID != step {
 		h.fatal(fmt.Sprintf("model effect of %s: current is not the step", step))
 	}
-	return schema.Identity.DeriveEffectID(runID, step, "", ms.Rejects)
+	return schema.Identity().DeriveEffectID(runID, step, "", ms.Rejects)
 }
 
 // commitResult is a Run command's result plus the events of the commit it
@@ -322,7 +322,7 @@ type commitResult struct {
 
 func (h *harness) runCommit(runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand) (commitResult, error) {
 	h.t.Helper()
-	env, err := schema.Wire.Envelope(runID, id, cmd)
+	env, err := schema.Wire().Envelope(runID, id, cmd)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -364,7 +364,7 @@ func (h *harness) spec(policy run.ResponsePolicy) run.ToolSpec {
 	if err != nil {
 		h.fatal(err)
 	}
-	d, err := schema.Canonical.DigestToolDefinition(store)
+	d, err := schema.Canonical().DigestToolDefinition(store)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -384,7 +384,7 @@ func (h *harness) prepare(runID run.RunID, specs []run.ToolSpec) run.StepID {
 	if err != nil {
 		h.fatal(err)
 	}
-	proto := schema.Canonical
+	proto := schema.Canonical()
 	reqDigest, err := proto.DigestRequest(store)
 	if err != nil {
 		h.fatal(err)
@@ -397,12 +397,12 @@ func (h *harness) prepare(runID run.RunID, specs []run.ToolSpec) run.StepID {
 	if err != nil {
 		h.fatal(err)
 	}
-	cmdID := schema.Identity.DeriveModelRequestCommandID(runID, snap.Position)
+	cmdID := schema.Identity().DeriveModelRequestCommandID(runID, snap.Position)
 	ids := make([]run.InputID, len(snap.State.PendingInputs))
 	for i, in := range snap.State.PendingInputs {
 		ids[i] = in.ID
 	}
-	cmd := run.PrepareModelRequest{StepID: schema.Identity.DeriveModelStepID(runID, cmdID, binding), Model: "m-1", Request: store,
+	cmd := run.PrepareModelRequest{StepID: schema.Identity().DeriveModelStepID(runID, cmdID, binding), Model: "m-1", Request: store,
 		RequestDigest: reqDigest, InputIDs: ids, Tools: specs, ToolsDigest: toolsDigest}
 	h.mustRunCommit(runID, cmdID, snap.Position, cmd)
 	return cmd.StepID
@@ -414,7 +414,7 @@ func (h *harness) executingModel(runID run.RunID) (run.StepID, run.EffectID) {
 	h.t.Helper()
 	step := h.prepare(runID, nil)
 	eff := h.modelEffect(runID, step)
-	res := h.mustRunCommit(runID, schema.Identity.DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff})
+	res := h.mustRunCommit(runID, schema.Identity().DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff})
 	if res.Status != runtime.CommitAccepted {
 		h.fatal("start model was not accepted")
 	}
@@ -434,7 +434,7 @@ func textResult(text string) model.ModelResult {
 func (h *harness) complete(runID run.RunID) commitResult {
 	h.t.Helper()
 	step, eff := h.executingModel(runID)
-	return h.mustRunCommit(runID, schema.Identity.DeriveSettlementCommandID(eff), 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("done")})
+	return h.mustRunCommit(runID, schema.Identity().DeriveSettlementCommandID(eff), 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("done")})
 }
 
 // waitingTool takes the Run to a ToolStep whose single call needs approval.
@@ -443,12 +443,12 @@ func (h *harness) waitingTool(runID run.RunID) {
 	spec := h.spec(run.ApprovalRequired)
 	step := h.prepare(runID, []run.ToolSpec{spec})
 	eff := h.modelEffect(runID, step)
-	if res := h.mustRunCommit(runID, schema.Identity.DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff}); res.Status != runtime.CommitAccepted {
+	if res := h.mustRunCommit(runID, schema.Identity().DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff}); res.Status != runtime.CommitAccepted {
 		h.fatal("start model was not accepted")
 	}
 	args := run.MustParseCanonicalJSON(`{"q":1}`)
-	callID := schema.Identity.DeriveCallID(step, 0)
-	bd, err := schema.Canonical.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
+	callID := schema.Identity().DeriveCallID(step, 0)
+	bd, err := schema.Canonical().DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -459,7 +459,7 @@ func (h *harness) waitingTool(runID run.RunID) {
 	}
 	binding := run.ToolCallBinding{CallID: callID, ProviderCallID: "c0", ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
 		BindingDigest: bd, Arguments: args, Policy: spec.Policy}
-	h.mustRunCommit(runID, schema.Identity.DeriveSettlementCommandID(eff), 0,
+	h.mustRunCommit(runID, schema.Identity().DeriveSettlementCommandID(eff), 0,
 		run.SubmitModelResult{StepID: step, Effect: eff, Result: result, Calls: []run.ToolCallBinding{binding}})
 }
 

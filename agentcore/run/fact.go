@@ -21,9 +21,7 @@ import (
 type Fact interface{ fact() }
 
 // RunCreated is the first fact of a Run (RUN-NEW-1). Folding it onto the zero
-// MachineState yields the Revision-0 state; a second RunCreated is an error.
-// The fact names no schema: the Run's SchemaVersion is the one its Session
-// segment declares, carried as the payload version of every fact (RUN-CMT-8).
+// MachineState yields the initial state; a second RunCreated is an error.
 type RunCreated struct {
 	RunID       RunID          `json:"runId"`
 	Owner       OwnerID        `json:"owner,omitempty"`

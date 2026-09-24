@@ -655,7 +655,7 @@ func TestLocalExecutorValidateChecksReplayDeclaration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			digest, err := schema.Canonical.DigestToolDefinition(def)
+			digest, err := schema.Canonical().DigestToolDefinition(def)
 			if err != nil {
 				t.Fatal(err)
 			}

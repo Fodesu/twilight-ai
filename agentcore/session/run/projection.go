@@ -73,7 +73,7 @@ func (m Machine) Apply(e extension.DecodedEvent) (Machine, error) { //nolint:goc
 		}
 		state = cur
 	}
-	next, err := schema.Machine.Evolve(state, ev.Fact)
+	next, err := schema.Machine().Evolve(state, ev.Fact)
 	if err != nil {
 		return m, err
 	}
@@ -117,7 +117,7 @@ func (c machineCodec) Encode(value any) (jsonstable.Value, error) {
 	w := machineWire{Runs: make(map[run.RunID]machineRunWire, len(m.Active))}
 	for id := range m.Active {
 		state := m.Active[id]
-		raw, err := schema.Snapshot.Encode(&state)
+		raw, err := schema.Snapshot().Encode(&state)
 		if err != nil {
 			return jsonstable.Value{}, err
 		}
@@ -140,7 +140,7 @@ func (machineCodec) Decode(wr jsonstable.Value) (any, error) {
 	}
 	m := newMachine()
 	for id, r := range w.Runs {
-		state, err := schema.Snapshot.Decode(r.State.Bytes())
+		state, err := schema.Snapshot().Decode(r.State.Bytes())
 		if err != nil {
 			return nil, err
 		}

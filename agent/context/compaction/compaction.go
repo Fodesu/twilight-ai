@@ -130,11 +130,11 @@ func (s Summarizer) Summarize(ctx context.Context, sid session.SessionID, preset
 	if err != nil {
 		return "", err
 	}
-	digest, err := schema.Canonical.DigestRequest(store)
+	digest, err := schema.Canonical().DigestRequest(store)
 	if err != nil {
 		return "", err
 	}
-	raw, err := schema.Bodies.EncodeRequest(&store, digest)
+	raw, err := schema.Bodies().EncodeRequest(&store, digest)
 	if err != nil {
 		return "", err
 	}

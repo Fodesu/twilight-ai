@@ -190,7 +190,7 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	if err != nil {
 		h.fatal(err)
 	}
-	facts, err := schema.Machine.CreateGroup(newRun, inputs)
+	facts, err := schema.Machine().CreateGroup(newRun, inputs)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -213,7 +213,7 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	}
 	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(schema.Wire, f), RecordedAtUnixMilli: 1, Value: runmod.Event{RunID: runID, Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: 1, Value: runmod.Event{RunID: runID, Fact: f}})
 	}
 	// One batch per stream: the Turn's on its first attempt, the attempt
 	// module's binding of the Turn to this Run (it is what routes the Run's
@@ -291,7 +291,7 @@ func (h *harness) commit(runID run.RunID, id run.CommandID, base run.RunPosition
 
 func (h *harness) commitWith(rt *runmod.SessionRunStore, w writer.Writer, runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, attach ...moduleEvent) (commitResult, error) {
 	h.t.Helper()
-	env, err := schema.Wire.Envelope(runID, id, cmd)
+	env, err := schema.Wire().Envelope(runID, id, cmd)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -356,12 +356,12 @@ func (h *harness) modelEffect(runID run.RunID, step run.StepID) run.EffectID {
 	if !ok || ms.RefValue.ID != step {
 		h.fatal(fmt.Sprintf("model effect of %s: current is not the step", step))
 	}
-	return schema.Identity.DeriveEffectID(runID, step, "", ms.Rejects)
+	return schema.Identity().DeriveEffectID(runID, step, "", ms.Rejects)
 }
 
 // toolEffect derives the one tool effect of a call: a call starts at most once.
 func toolEffect(runID run.RunID, step run.StepID, call run.CallID) run.EffectID {
-	return schema.Identity.DeriveEffectID(runID, step, call, 0)
+	return schema.Identity().DeriveEffectID(runID, step, call, 0)
 }
 
 // --- run building blocks ---------------------------------------------------------
@@ -374,7 +374,7 @@ func (h *harness) spec() run.ToolSpec {
 	if err != nil {
 		h.fatal(err)
 	}
-	d, err := schema.Canonical.DigestToolDefinition(store)
+	d, err := schema.Canonical().DigestToolDefinition(store)
 	if err != nil {
 		h.fatal(err)
 	}
@@ -394,24 +394,24 @@ func (h *harness) preparedCommand(snap runtime.Snapshot, withTool bool) (run.Pre
 	if err != nil {
 		h.fatal(err)
 	}
-	reqDigest, err := schema.Canonical.DigestRequest(store)
+	reqDigest, err := schema.Canonical().DigestRequest(store)
 	if err != nil {
 		h.fatal(err)
 	}
-	toolsDigest, err := schema.Canonical.DigestToolSpecs(specs)
+	toolsDigest, err := schema.Canonical().DigestToolSpecs(specs)
 	if err != nil {
 		h.fatal(err)
 	}
-	binding, err := schema.Canonical.DigestModelStepBinding("m-1", reqDigest, toolsDigest)
+	binding, err := schema.Canonical().DigestModelStepBinding("m-1", reqDigest, toolsDigest)
 	if err != nil {
 		h.fatal(err)
 	}
-	cmdID := schema.Identity.DeriveModelRequestCommandID(snap.State.RunID, snap.Position)
+	cmdID := schema.Identity().DeriveModelRequestCommandID(snap.State.RunID, snap.Position)
 	ids := make([]run.InputID, len(snap.State.PendingInputs))
 	for i, in := range snap.State.PendingInputs {
 		ids[i] = in.ID
 	}
-	return run.PrepareModelRequest{StepID: schema.Identity.DeriveModelStepID(snap.State.RunID, cmdID, binding), Model: "m-1", Request: store,
+	return run.PrepareModelRequest{StepID: schema.Identity().DeriveModelStepID(snap.State.RunID, cmdID, binding), Model: "m-1", Request: store,
 		RequestDigest: reqDigest, InputIDs: ids, Tools: specs, ToolsDigest: toolsDigest}, cmdID
 }
 
@@ -429,7 +429,7 @@ func (h *harness) prepare(runID run.RunID, withTool bool) run.StepID {
 func (h *harness) startModel(runID run.RunID, step run.StepID) run.EffectID {
 	h.t.Helper()
 	eff := h.modelEffect(runID, step)
-	res := h.mustCommit(runID, schema.Identity.DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff})
+	res := h.mustCommit(runID, schema.Identity().DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff})
 	if res.Status != runtime.CommitAccepted {
 		h.fatal("start was not accepted")
 	}
@@ -460,8 +460,8 @@ func (h *harness) toolCallResult(step run.StepID, n int) (model.ModelResult, []r
 	for i := range calls {
 		args := run.MustParseCanonicalJSON(fmt.Sprintf(`{"i":%d}`, i))
 		calls[i] = sdk.ToolCall{ToolCallID: fmt.Sprintf("c%d", i), ToolName: "echo", Input: sdk.ParseToolArguments(args.String())}
-		callID := schema.Identity.DeriveCallID(step, i)
-		bd, err := schema.Canonical.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
+		callID := schema.Identity().DeriveCallID(step, i)
+		bd, err := schema.Canonical().DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
 		if err != nil {
 			h.fatal(err)
 		}
@@ -480,7 +480,7 @@ func (h *harness) openToolStep(runID run.RunID, n int) (run.StepID, []run.CallID
 	h.t.Helper()
 	step, eff := h.executingModel(runID, true)
 	result, bindings := h.toolCallResult(step, n)
-	res := h.mustCommit(runID, schema.Identity.DeriveSettlementCommandID(eff), 0,
+	res := h.mustCommit(runID, schema.Identity().DeriveSettlementCommandID(eff), 0,
 		run.SubmitModelResult{StepID: step, Effect: eff, Result: result, Calls: bindings})
 	ts, ok := res.Snapshot.State.Current.(run.ToolStep)
 	if !ok {
@@ -497,7 +497,7 @@ func (h *harness) openToolStep(runID run.RunID, n int) (run.StepID, []run.CallID
 func (h *harness) startTool(runID run.RunID, step run.StepID, call run.CallID) run.EffectID {
 	h.t.Helper()
 	eff := toolEffect(runID, step, call)
-	res := h.mustCommit(runID, schema.Identity.DeriveStartCommandID(eff), 0, run.StartToolCall{StepID: step, CallID: call, Effect: eff})
+	res := h.mustCommit(runID, schema.Identity().DeriveStartCommandID(eff), 0, run.StartToolCall{StepID: step, CallID: call, Effect: eff})
 	if res.Status != runtime.CommitAccepted {
 		h.fatal("tool start was not accepted")
 	}

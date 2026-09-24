@@ -82,7 +82,7 @@ func (l *Loop) startToolCalls(ctx context.Context, rt runtime.RunStore, events E
 			// barrier, no effect, no attempt. A call is declined at most
 			// once, so the decline is identified by the call alone and a
 			// retry of the same rejection is idempotent (RUN-EXE-5).
-			res, err := l.commit(ctx, rt, runID, schema.Identity.DeriveDeclineCommandID(runID, act.StepID, callID), snapshot.Position,
+			res, err := l.commit(ctx, rt, runID, schema.Identity().DeriveDeclineCommandID(runID, act.StepID, callID), snapshot.Position,
 				run.DeclineToolCall{StepID: act.StepID, CallID: callID, Failure: *known})
 			if err != nil {
 				if retriable(err) {

@@ -223,7 +223,7 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtim
 			}
 		}
 		if d.Verdict == Dispose {
-			rec := plan.RecoveryCommand(schema.Identity, t)
+			rec := plan.RecoveryCommand(schema.Identity(), t)
 			d.Recovery = &rec
 		}
 		out = append(out, d)
@@ -399,7 +399,7 @@ func Apply(ctx context.Context, store runtime.RunStore, decisions []Decision) (i
 		if d.Recovery == nil {
 			continue
 		}
-		env, err := schema.Wire.Envelope(d.Target.RunID, d.Recovery.ID, d.Recovery.Command)
+		env, err := schema.Wire().Envelope(d.Target.RunID, d.Recovery.ID, d.Recovery.Command)
 		if err != nil {
 			return n, err
 		}

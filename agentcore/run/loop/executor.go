@@ -223,7 +223,7 @@ func (e *LocalExecutor) resolveTool(t *ToolAssignment) (ExecutableTool, *run.Too
 	if freezeErr != nil {
 		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: freezeErr.Error()}
 	}
-	defDigest, digestErr := schema.Canonical.DigestToolDefinition(toolDef)
+	defDigest, digestErr := schema.Canonical().DigestToolDefinition(toolDef)
 	if digestErr != nil {
 		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: digestErr.Error()}
 	}
@@ -282,7 +282,7 @@ func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) err
 			return fmt.Errorf("%w: model assignment without an inline request payload", ErrExecutorRejected)
 		}
 		frozenRequest := *body.Request
-		got, err := schema.Canonical.DigestRequest(frozenRequest)
+		got, err := schema.Canonical().DigestRequest(frozenRequest)
 		if err != nil {
 			return fmt.Errorf("%w: request digest: %w", ErrExecutorRejected, err)
 		}

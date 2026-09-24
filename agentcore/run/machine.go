@@ -7,26 +7,16 @@ import (
 	"github.com/felinics/twilight/agentcore/run/model"
 )
 
-// Machine is the pure Run state machine of one schema version.
-type Machine interface {
-	// Decide produces the facts a command yields against a state, or the
-	// rejection (RUN-MCH-1).
-	Decide(MachineState, AgentCommand) ([]Fact, error)
-	// Evolve folds one fact (RUN-MCH-3).
-	Evolve(MachineState, Fact) (MachineState, error)
-	// CreateGroup returns the RunCreated and InputAccepted facts that
-	// establish a Run (RUN-NEW-1). It is pure: the owning module places
-	// these facts in its creation commit.
-	CreateGroup(NewRun, []AgentInput) ([]Fact, error)
-}
-
 // Canonical and Identity are the two rule sets the Machine interprets under.
 // Decide and Evolve never compute a digest or derive an identity themselves:
 // every persisted digest and every RunID-scoped identity comes from the bound
 // rules, so a Run replays under the rules of the schema version it was written
 // under whatever the current version is.
 
-// Canonical is the digest rules of one schema version for every body a fact
+// Canonical is the digest rules the state machine is composed with; the
+// implementation lives in agentcore/run/canonical, which imports this
+// package, so the seam is an interface (composed in agentcore/run/schema).
+// It is the digest rules of one schema version for every body a fact
 // names or a derived identity covers.
 type Canonical interface {
 	DigestRequest(model.ModelRequest) (Digest, error)

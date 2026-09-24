@@ -16,7 +16,7 @@ func (m StateMachine) Evolve(s MachineState, f Fact) (MachineState, error) {
 	if err := m.bound(); err != nil {
 		return s, err
 	}
-	if err := m.guardFactV1(&s, f); err != nil {
+	if err := m.guardFact(&s, f); err != nil {
 		return s, err
 	}
 	switch fact := f.(type) {
@@ -61,7 +61,7 @@ func (m StateMachine) Evolve(s MachineState, f Fact) (MachineState, error) {
 	}
 }
 
-// --- apply: mechanical folds; guardFactV1 has established every precondition ---
+// --- apply: mechanical folds; guardFact has established every precondition ---
 
 func applyRunCreated(fact *RunCreated) MachineState {
 	return MachineState{RunID: fact.RunID, Owner: fact.Owner, Attempt: fact.Attempt, Status: RunActive, Current: Open{}}
@@ -183,7 +183,7 @@ func applyRunEnded(s MachineState, fact *RunEnded) MachineState { //nolint:gocri
 // --- guards: one per fact. Each names the legal source state and the
 // self-consistency the fact must carry. ---
 
-func (m StateMachine) guardFactV1(s *MachineState, f Fact) error {
+func (m StateMachine) guardFact(s *MachineState, f Fact) error {
 	if created, ok := f.(RunCreated); ok {
 		return guardRunCreated(s, &created)
 	}
