@@ -59,7 +59,7 @@ func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 // decode back to the same variant and re-encode to the same bytes.
 func TestFactCodecRoundTripRestoresVariants(t *testing.T) {
 	facts := []run.Fact{
-		run.RunCreated{RunID: "run-1", Owner: "turn-1", Attempt: 1, CausationID: "cause"},
+		run.RunCreated{RunID: "run-1", CausationID: "cause"},
 		run.ModelStepPrepared{StepID: "s", Model: "m", RequestDigest: "sha256:req", ToolsDigest: "sha256:tools", BindingDigest: "sha256:binding"},
 		run.ModelStepWithdrawn{StepID: "s"},
 		run.ModelStepStarted{StepID: "s", Effect: "effect-m"},

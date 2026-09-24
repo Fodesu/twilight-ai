@@ -92,8 +92,12 @@ func testStart(t *testing.T, factory Factory) {
 		t.Fatalf("started payload = %+v", started)
 	}
 	created := decode[runmod.Event](t, h.registry, &group[4])
-	if c, ok := created.Fact.(run.RunCreated); !ok || c.Owner != run.OwnerID("t1") || c.Attempt != 1 || created.RunID != runID {
+	if _, ok := created.Fact.(run.RunCreated); !ok || created.RunID != runID {
 		t.Fatalf("created fact = %+v", created)
+	}
+	// The Turn a Run serves is the attempt module's fact, in the same commit.
+	if att := decode[attempt.StartedPayload](t, h.registry, &group[1]); att.TurnID != "t1" || att.RunID != runID || att.Attempt != 1 {
+		t.Fatalf("attempt started = %+v", att)
 	}
 	chat := h.chat()
 	for _, id := range []chatlog.InputID{"in-1", "in-2"} {
@@ -291,9 +295,8 @@ func testRetry(t *testing.T, factory Factory) {
 	if !sameTypes(group, attempt.TypeStarted, typeCreated, typeAccepted, typeAccepted) {
 		t.Fatalf("retry group = %v", eventTypes(group))
 	}
-	created := decode[runmod.Event](t, h.registry, &group[1])
-	if c := created.Fact.(run.RunCreated); c.Attempt != 2 || c.Owner != run.OwnerID("t1") {
-		t.Fatalf("retry created = %+v", c)
+	if att := decode[attempt.StartedPayload](t, h.registry, &group[0]); att.Attempt != 2 || att.TurnID != "t1" || att.RunID != run2 {
+		t.Fatalf("retry attempt started = %+v", att)
 	}
 	pending := h.load(run2).State.PendingInputs
 	if len(pending) != 2 || pending[0].ID != "in-1" || pending[1].ID != "in-2" || pending[1].Digest != in2[0].Digest {
@@ -493,8 +496,8 @@ func testProjection(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
 	resp := h.start("t1", "in-1")
 
-	// A Run whose Owner is not a Turn of this Session is not folded.
-	foreign, err := run.BuildNewRunFor("r-foreign", run.OwnerID("someone-else"), 1, "")
+	// A Run no attempt of this Session's Turns binds is not folded.
+	foreign, err := run.BuildNewRun("r-foreign", "")
 	if err != nil {
 		t.Fatal(err)
 	}

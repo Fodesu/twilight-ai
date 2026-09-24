@@ -23,11 +23,11 @@ Surface / Context（结构 + digest）
 可展示 / 可发送的表示
 ```
 
-`assistant` 与 `tool_result` 条目携带 `TurnID`（来自该 Run 的 `run_created.Owner`）；Input 在 `input_delivered` 之后挂上 TurnID；summary 与 checkpoint 不携带 TurnID。回合的创建、attempt 与结束由 `twilight/turn/` 事件表达。summary 的外部内容经 `ReferencePart` 关联 Artifact BindingID。
+`assistant` 与 `tool_result` 条目携带 `TurnID`（来自绑定该 Run 的 `twilight/attempt/started`）；Input 在 `input_delivered` 之后挂上 TurnID；summary 与 checkpoint 不携带 TurnID。回合的创建、attempt 与结束由 `twilight/turn/` 事件表达。summary 的外部内容经 `ReferencePart` 关联 Artifact BindingID。
 
 流式 `text_delta` / `reasoning_delta` 由 Loop EventSink 发送，属于临时观察。Chatlog 权威是已提交的事实。
 
-**CHT-SCP-1** 本模块拥有对话自身的事实与两个投影，并声明单例流 domain `chatlog`（`LineageSession`，EXT-STR-1），对话事实全部写入这条流。Application 拥有模型调用、provider transport、发送策略与审计。`turn` 拥有回合与 Run linkage。本模块的 `Requires`（EXT-REG-4）为 `run` 的 v1 事实 `run_created`、`model_step_completed`、`tool_step_opened`、`tool_call_completed`、`tool_call_answered`、`tool_call_failed`；事件中的 `TurnID` 是 opaque 字符串，不需要 turn 的 codec。
+**CHT-SCP-1** 本模块拥有对话自身的事实与两个投影，并声明单例流 domain `chatlog`（`LineageSession`，EXT-STR-1），对话事实全部写入这条流。Application 拥有模型调用、provider transport、发送策略与审计。`turn` 拥有回合与 Run linkage。本模块的 `Requires`（EXT-REG-4）为 `run` 的事实 `model_step_completed`、`tool_step_opened`、`tool_call_completed`、`tool_call_answered`、`tool_call_failed`、`run_ended`，以及 `attempt` 的 `started`（Run 到 Turn 的绑定，ATT-1）；事件中的 `TurnID` 是 opaque 字符串，不需要 turn 的 codec。
 
 ## 2. stable entity 与生命周期
 
@@ -220,7 +220,7 @@ type Surface struct {
     EntryOrder []SurfaceEntry
     Superseded Table[ToolResultID, ToolResultID]
     Checkpoints Table[CheckpointID, CheckpointView]
-    Runs Table[run.RunID, TurnID] // run_created.Owner
+    Runs Table[run.RunID, TurnID] // attempt/started 的 TurnID
 }
 // Table 是持久化 map：Set 返回新值、不改写接收者，各状态共享未变的存储；编码为普通 JSON object。
 ```

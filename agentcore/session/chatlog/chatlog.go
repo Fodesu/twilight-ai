@@ -20,6 +20,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/attempt"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 )
@@ -529,7 +530,7 @@ func def[T any](typ session.EventType, check func(*T) error, bindings ...extensi
 // (CHT-SCP-1): run_created for the Run's Turn, the model and tool outcomes
 // for the entries, tool_step_opened for the CallIDs a result issued, and
 // run_ended to forget the Run's Turn.
-var consumedRunFacts = []string{"run_created", "model_step_completed", "tool_step_opened", "tool_call_completed", "tool_call_answered", "tool_call_failed", "run_ended"}
+var consumedRunFacts = []string{"model_step_completed", "tool_step_opened", "tool_call_completed", "tool_call_answered", "tool_call_failed", "run_ended"}
 
 func runRequirement() extension.ModuleRequirement {
 	events := make([]session.EventType, 0, len(consumedRunFacts))
@@ -541,10 +542,12 @@ func runRequirement() extension.ModuleRequirement {
 
 // Module is the chatlog ModuleDescriptor (CHT-SCP-1: Requires run facts).
 var Module = extension.ModuleDescriptor{
-	Source:   extension.SourceTwilight,
-	ID:       ModuleID,
-	Streams:  []extension.StreamDefinition{streamDefinition},
-	Requires: []extension.ModuleRequirement{runRequirement()},
+	Source:  extension.SourceTwilight,
+	ID:      ModuleID,
+	Streams: []extension.StreamDefinition{streamDefinition},
+	Requires: []extension.ModuleRequirement{runRequirement(),
+		// The Turn a Run serves is the attempt module's fact (ATT-1).
+		{Source: extension.SourceTwilight, Module: attempt.ModuleID, Events: []session.EventType{attempt.TypeStarted}}},
 	Events: []extension.EventDefinition{
 		def[InputSubmittedPayload](TypeInputSubmitted, func(p *InputSubmittedPayload) error {
 			if p.InputID == "" || p.Content.IsZero() {

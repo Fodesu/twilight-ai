@@ -206,7 +206,7 @@ func (m StateMachine) decideRecoverModelExecution(s *MachineState, cmd RecoverMo
 	if cmd.Effect != ms.Effect {
 		return nil, rejectionf("recover model: effect %q is not the step's executing effect", cmd.Effect)
 	}
-	return []Fact{ModelStepRecovered{StepID: cmd.StepID}}, nil
+	return []Fact{ModelStepRecovered(cmd)}, nil
 }
 
 // settlesModelEffect checks that a settlement names the effect the step is
@@ -239,7 +239,7 @@ func (m StateMachine) decideSubmitModelResult(s *MachineState, cmd *SubmitModelR
 	if err != nil {
 		return nil, err
 	}
-	completed := ModelStepCompleted{StepID: cmd.StepID, Usage: cmd.Result.Usage, FinishReason: cmd.Result.FinishReason, ResultDigest: resultDigest}
+	completed := ModelStepCompleted{StepID: cmd.StepID, Effect: cmd.Effect, Usage: cmd.Result.Usage, FinishReason: cmd.Result.FinishReason, ResultDigest: resultDigest}
 
 	// The result's own tool calls decide whether a ToolStep opens; gating on
 	// the caller-supplied bindings would let zero bindings silently complete
@@ -486,7 +486,7 @@ func (m StateMachine) decideSubmitToolResult(s *MachineState, cmd SubmitToolResu
 	if err != nil {
 		return nil, err
 	}
-	return []Fact{ToolCallCompleted{StepID: cmd.StepID, CallID: cmd.CallID, OutputDigest: outputDigest}}, nil
+	return []Fact{ToolCallCompleted{StepID: cmd.StepID, CallID: cmd.CallID, Effect: cmd.Effect, OutputDigest: outputDigest}}, nil
 }
 
 func decideSubmitToolFailure(s *MachineState, cmd SubmitToolFailure) ([]Fact, error) {
@@ -514,7 +514,7 @@ func decideSubmitToolFailure(s *MachineState, cmd SubmitToolFailure) ([]Fact, er
 	}
 	switch cmd.Outcome {
 	case ToolOutcomeKnown:
-		return []Fact{ToolCallFailed{StepID: cmd.StepID, CallID: cmd.CallID, Failure: cmd.Failure, Outcome: ToolOutcomeKnown}}, nil
+		return []Fact{ToolCallFailed{StepID: cmd.StepID, CallID: cmd.CallID, Effect: cmd.Effect, Failure: cmd.Failure, Outcome: ToolOutcomeKnown}}, nil
 	case ToolOutcomeUnknown:
 		failure := cmd.Failure
 		if failure.Class == "" {
@@ -523,7 +523,7 @@ func decideSubmitToolFailure(s *MachineState, cmd SubmitToolFailure) ([]Fact, er
 		if failure.Class != FailureEffectUnknown {
 			return nil, rejectionf("tool failure: unknown outcome must use %s", FailureEffectUnknown)
 		}
-		return []Fact{ToolCallFailed{StepID: cmd.StepID, CallID: cmd.CallID, Failure: failure, Outcome: ToolOutcomeUnknown}}, nil
+		return []Fact{ToolCallFailed{StepID: cmd.StepID, CallID: cmd.CallID, Effect: cmd.Effect, Failure: failure, Outcome: ToolOutcomeUnknown}}, nil
 	default:
 		return nil, rejectionf("tool failure: unknown outcome value %d", cmd.Outcome)
 	}
@@ -701,7 +701,7 @@ func cancelledToolCalls(s *MachineState) []Fact {
 		default:
 			continue
 		}
-		facts = append(facts, ToolCallFailed{StepID: ts.RefValue.ID, CallID: ts.Calls[i].CallID, Failure: failure, Outcome: outcome})
+		facts = append(facts, ToolCallFailed{StepID: ts.RefValue.ID, CallID: ts.Calls[i].CallID, Effect: ts.Calls[i].Effect, Failure: failure, Outcome: outcome})
 	}
 	return facts
 }

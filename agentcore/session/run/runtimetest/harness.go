@@ -186,7 +186,7 @@ func (h *harness) submitInputs(inputs ...run.AgentInput) {
 // is the TurnID.
 func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32, inputs ...run.AgentInput) writer.SemanticGroup {
 	h.t.Helper()
-	newRun, err := run.BuildNewRunFor(runID, run.OwnerID(turnID), attempt, "")
+	newRun, err := run.BuildNewRun(runID, "")
 	if err != nil {
 		h.fatal(err)
 	}

@@ -49,7 +49,7 @@ func TestSnapshotCodecRoundTrip(t *testing.T) {
 }
 
 func TestSnapshotCodecRejectsMalformedWire(t *testing.T) {
-	initial, err := run.InitializeRun("run-1", "", 0)
+	initial, err := run.InitializeRun("run-1")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -116,7 +116,6 @@ func NeedsRecovery(s run.MachineState) bool { //nolint:gocritic // hugeParam: re
 // results) is read from the Session by the prompt builder itself.
 type PromptInput struct {
 	Scope      run.Scope // filled by the Loop; Next does not know it
-	Owner      run.OwnerID
 	RunID      run.RunID
 	SourceStep run.StepID
 	Inputs     []run.AgentInput
@@ -137,7 +136,6 @@ func Next(s run.MachineState) (Action, error) {
 			source = s.LastToolStep.RefValue.ID
 		}
 		return NeedModelRequest{Hint: PromptInput{
-			Owner:      s.Owner,
 			RunID:      s.RunID,
 			SourceStep: source,
 			Inputs:     append([]run.AgentInput(nil), s.PendingInputs...),

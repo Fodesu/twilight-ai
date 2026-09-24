@@ -7,6 +7,7 @@ import (
 
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/attempt"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
@@ -19,7 +20,7 @@ import (
 func newWriter(t *testing.T) writer.Writer {
 	t.Helper()
 	ctx := context.Background()
-	registry, err := extension.BuildRegistry(chatlog.Module, runmod.Module)
+	registry, err := extension.BuildRegistry(chatlog.Module, runmod.Module, attempt.Module)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -33,13 +33,12 @@ Machine 处理已冻结的值和已提交的事实；Loop 解释 `plan.Next` 派
 
 **RUN-SCP-1** `agentcore/run` 只定义一个 Run 的 identity、事实、状态、命令与合法状态转移（`MachineState`、`Command`、`Fact`、`Decide`、`Evolve`）。子包分为两层。协议层的公开类型随 Run 的 schema 一起变更，或是 Run 核心定义的端口：`model`（冻结的模型请求、模型结果、消息、用量与工具定义的数据模型，它们是 canonical digest 的预映像；`model/sdkconv` 是与 `sdk` 类型互转的唯一位置）、`canonical`（digest 规则与 identity 派生）、`wire`（command/fact 编解码、变体注册表与 `MachineState` codec）、`frozen`（冻结正文的信封编解码与 `Store` 端口）、`schema`（Machine、Wire、Canonical、Snapshot、Identity、Bodies 六个契约的无版本单值）、`plan`（`Next` 执行规划、`WaitingCalls` / `NeedsRecovery` 查询与接管处置 `RecoveryTargets` / `RecoveryCommands`）、`runtime`（`RunStore` 端口、`Snapshot`、`CommitRequest` / `CommitResult`、`EvaluateCommit` 与 `FoldRun`）。除 `model/sdkconv` 外，协议层只依赖 `agentcore/es`、`agentcore/jsonstable` 与彼此，`sdk` 在协议层只出现在 `model/sdkconv`；协议层不依赖 `agentcore/session`、`writer`、loop、turn 或 extension：store 身份是不透明的 `Scope`，位置是 `RunPosition`，envelope 不命名 store。执行层使用协议层与 `sdk`，Run 核心与协议层不引用执行层：`effect`（Loop 与 Executor 之间与进程无关的端口合同；`ModelAssignment` 携带冻结的 `model.ModelRequest`，`ModelSucceeded` 以 `sdk.ModelResult` 交回模型结果，由 Loop 经 `model/sdkconv` 冻结后提交）、`loop`（只依赖 `runtime.RunStore`，拥有 prompt builder/model/tool ports、streaming、并发执行、EventSink 与 Loop policy）、`reconcile`（比较 Run 机器的 Executing 目标与 execution store 的记录，产生 Run command）。effect 端口的传输编码 `agentcore/executor/protocol` 属于 Executor，只被 Executor 及其 store / http 适配器导入。`agentcore/session/run` 是 Run 的 Session Module 实现：EventDefinition（每个事实类型一个 payload 版本的 codec，wire 类型来自 `wire.FactTypes()`）、`twilight/run/machine` projection、`SessionRunStore`（`Bind(w)` 实现 `runtime.RunStore`，`Command` / `CreateRun` 是 unit of work 的 Part）、Session 级接管入口、`frozen.Store` adapter。
 
-**RUN-SCP-2** Run 是 first-party Session Module（Source `twilight`，ModuleID `run`）。Run 不解释它的上层实体：`OwnerID` 是 opaque 字符串，由 turn 模块以 TurnID 填充。本模块的 `Requires`（EXT-REG-4）为空。Run 不写任何其他模块的事件：Turn 结算与对话内容是 Run 事实的投影，由 [agent-turn.md](agent-turn.md) 与 [agent-session-chatlog.md](agent-session-chatlog.md) 定义；ledger、所有权、组追加与投影机制由 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md) 定义。Artifact、queue、provider registry、权限与产品 policy 分别由其 package 或 Application 拥有。
+**RUN-SCP-2** Run 是 first-party Session Module（Source `twilight`，ModuleID `run`）。Run 不知道它的上层实体：哪个 Turn 的第几次 attempt 由这个 Run 执行，是 attempt 模块的事实（ATT-1），Run 事实不携带它。本模块的 `Requires`（EXT-REG-4）为空。Run 不写任何其他模块的事件：Turn 结算与对话内容是 Run 事实的投影，由 [agent-turn.md](agent-turn.md) 与 [agent-session-chatlog.md](agent-session-chatlog.md) 定义；ledger、所有权、组追加与投影机制由 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md) 定义。Artifact、queue、provider registry、权限与产品 policy 分别由其 package 或 Application 拥有。
 
 ## 2. identity、persisted values 与 wire
 
 ```go
 type RunID string
-type OwnerID string // 上层实体标识，Run 不解释
 type StepID string
 type CallID string
 type CommandID string
@@ -52,7 +51,7 @@ type EffectID string
 type Digest = es.Digest
 ```
 
-**RUN-WIR-1** identity 必须非空、稳定且为有效 UTF-8。`EffectID` 由 `DeriveEffectID(RunID, StepID, CallID, sequence)` 派生（namespace `twilight/effect`）；一个 effect 的 start、settlement 与 recovery CommandID 只以 EffectID 为 preimage（namespace `twilight/start-command`、`twilight/settlement-command`、`twilight/recovery-command`），因此同一 effect 的 start 重试与结算重放得到同一 CommandID，接管处置的 CommandID 与 owner、Epoch 无关。start 事实记录 Effect（`ModelStepStarted`、`ToolCallStarted`），Executing 的 step 与 call 在 MachineState 中携带它：这是接管者向 Executor 询问"该 effect 的 attempt 是否仍在执行"并接受其迟到 Outcome 所需的唯一身份。start、settlement 与 recovery command 都携带 Effect：缺少 Effect 时无法派生 CommandID，Commit 返回 `ErrCommandConflict`；Effect 与 Decide 按当前状态派生或记录的值不符时返回 `ErrStaleRuntime`。Pending call 在 start 之前的失败没有 effect，以 `DeclineToolCall` 提交，其 CommandID 以 RunID、StepID、CallID 为 preimage（namespace `twilight/decline-command`）。Run 跨 domain causation 记录在 `twilight/run/run_created` 的 `CausationID`。
+**RUN-WIR-1** identity 必须非空、稳定且为有效 UTF-8。`EffectID` 由 `DeriveEffectID(RunID, StepID, CallID, sequence)` 派生（namespace `twilight/effect`）；一个 effect 的 start、settlement 与 recovery CommandID 只以 EffectID 为 preimage（namespace `twilight/start-command`、`twilight/settlement-command`、`twilight/recovery-command`），因此同一 effect 的 start 重试与结算重放得到同一 CommandID，接管处置的 CommandID 与 owner、Epoch 无关。start 事实记录 Effect（`ModelStepStarted`、`ToolCallStarted`），Executing 的 step 与 call 在 MachineState 中携带它：这是接管者向 Executor 询问"该 effect 的 attempt 是否仍在执行"并接受其迟到 Outcome 所需的唯一身份。start、settlement 与 recovery command 都携带 Effect：缺少 Effect 时无法派生 CommandID，Commit 返回 `ErrCommandConflict`；Effect 与 Decide 按当前状态派生或记录的值不符时返回 `ErrStaleRuntime`。Pending call 在 start 之前的失败没有 effect，以 `DeclineToolCall` 提交，其 CommandID 以 RunID、StepID、CallID 为 preimage（namespace `twilight/decline-command`）。Run 跨 domain causation 记录在 `twilight/run/run_created` 的 `CausationID`。 start 事实与 settlement 事实都记录 Effect：`ModelStepStarted.Effect`、`ToolCallStarted.Effect` 记录请求的 effect，`ModelStepCompleted`、`ModelStepRecovered`、`ToolCallCompleted`、`ToolCallFailed` 的 `Effect` 记录该结算关闭的 effect，Evolve 校验它等于目标正在执行的 effect；从未启动的 call 的失败（decline、被拒的 response、取消时的 Pending call）`Effect` 为空。一条 settlement 事实因此自足地指认它回答的 execution，读者不必回到 start 事实按坐标匹配。
 
 Run 持久化协议保存 run-owned frozen values。模型请求、模型结果、消息、工具定义、usage 在进入 command 前，分别经 `FreezeModelRequest`、`FreezeModelResult`、`FreezeToolDefinition`、`FreezeToolArguments` 等入口转为 `agentcore/run/model` 的闭合值类型：JSON 文档（工具参数、工具输出、schema、provider options）冻结为 immutable `CanonicalJSON`；provider metadata 在 SDK 侧已是 namespace→name→string 的字符串 token，镜像保持同一形状，不经 JSON 转换；无法成为 JSON 的工具参数文本按原文保存在 `ToolArguments.Text`（非法 UTF-8 拒绝冻结）。RunStore 接收 agent-owned value；调用方负责在边界前完成冻结。
 
@@ -109,14 +108,10 @@ command 不持久化。`CommandEnvelope.ID` 就是该 command 产生的 event �
 ```go
 type NewRun struct {
     RunID RunID
-    Owner OwnerID
-    Attempt uint32
     CausationID es.CausationID
 }
 type RunCreated struct {
     RunID RunID
-    Owner OwnerID
-    Attempt uint32
     CausationID es.CausationID
 }
 type RunRecord struct {
@@ -126,7 +121,7 @@ type RunRecord struct {
 }
 ```
 
-**RUN-NEW-1** `twilight/run/run_created` 是 Run 的第一个事实。v1 初始状态恰为：相同 RunID、Owner、Attempt、`RunActive`、`Current=Open`、无 pending input、零 model step、零 usage、无 result。初始输入随后以 `twilight/run/input_accepted` 进入同一组（TRN-STR-2）。`agentcore/session/run` 的 `CreateRun` Part 由 `schema.Machine.CreateGroup(NewRun, []AgentInput)` 返回 `created` 与 `input_accepted` 的 facts，编码为 Session event 由 `agentcore/session/run` 完成，Coordinator 不自行编码。同一 RunID 第二条 `created` 为 Evolve 错误。
+**RUN-NEW-1** `twilight/run/run_created` 是 Run 的第一个事实。初始状态恰为：相同 RunID、`RunActive`、`Current=Open`、无 pending input、零 model step、零 usage、无 result。Run 不记录它为哪个 Turn 的第几次 attempt 服务：那是 Turn 与 Run 之间的绑定，由 attempt 模块的 `twilight/attempt/started` 在同一 commit 记录（ATT-1/2），Run 只是一次执行。初始输入随后以 `twilight/run/input_accepted` 进入同一组（TRN-STR-2）。`agentcore/session/run` 的 `CreateRun` Part 由 `schema.Machine.CreateGroup(NewRun, []AgentInput)` 返回 `created` 与 `input_accepted` 的 facts，编码为 Session event 由 `agentcore/session/run` 完成，Coordinator 不自行编码。同一 RunID 第二条 `created` 为 Evolve 错误。
 
 **RUN-NEW-2** `runtime.FoldRun(schemaVersion, facts)` 按 Seq 顺序折叠该 RunID 的完整事实序列，第一条必须是 `created`；`schemaVersion` 取自这些事实的 `v`，据此绑定 `Schema`。Fold 过程执行纯状态重建。import、诊断与 `SessionRunStore.Record` integrity verification 都经 FoldRun；投影缓存通过 FoldRun 结果校验。
 
@@ -141,8 +136,6 @@ func (ToolStep) current() {}
 
 type MachineState struct {
     RunID RunID
-    Owner OwnerID
-    Attempt uint32
     Status RunStatus
     Current Current
     PendingInputs []AgentInput
@@ -255,11 +248,11 @@ ToolCall:
 | `WithdrawPreparedStep` | Model Prepared 且 `PendingInputs` 非空；`ModelStepWithdrawn`，`Current` 回到 `Open`，该请求本体可释放 |
 | `StartModelExecution` | Model Prepared；`ModelStepStarted`。command 携带本次 start 请求的 `Effect`，须等于 `DeriveEffectID(RunID, StepID, "", Rejects)` |
 | `RecoverModelExecution` | Model Executing；`ModelStepRecovered`，`Current` 回到 `Open`、不计入 `ModelSteps`、PendingInputs 保留。携带该 step 正在执行的 `Effect`，须等于 `ModelStep.Effect` |
-| `SubmitModelResult` | Model Executing；携带该 step 正在执行的 `Effect`，须等于 `ModelStep.Effect`；`ModelStepCompleted{Usage, FinishReason, ResultDigest}`。有 calls 时随后 `ToolStepOpened`（携带冻结的 `Scheduling` 与 bindings）；无 calls 且 `PendingInputs` 为空时随后 `RunEnded(completed)`；无 calls 且 `PendingInputs` 非空时 `Current` 回到 `Open`，Run 继续。command 携带冻结 `ModelResult` 本体，Runtime 先以 ResultDigest 存入 `frozen.Store` |
+| `SubmitModelResult` | Model Executing；携带该 step 正在执行的 `Effect`，须等于 `ModelStep.Effect`；`ModelStepCompleted{Effect, Usage, FinishReason, ResultDigest}`。有 calls 时随后 `ToolStepOpened`（携带冻结的 `Scheduling` 与 bindings）；无 calls 且 `PendingInputs` 为空时随后 `RunEnded(completed)`；无 calls 且 `PendingInputs` 非空时 `Current` 回到 `Open`，Run 继续。command 携带冻结 `ModelResult` 本体，Runtime 先以 ResultDigest 存入 `frozen.Store` |
 | `SubmitModelFailure` | Model Executing；携带 `Effect`，须等于 `ModelStep.Effect`；`RunEnded(failed/provider_failure)` |
 | `RejectModelResult` | Model Executing；携带 `Effect`，须等于 `ModelStep.Effect`；`ModelStepRejected`，由调用方显式选择回到 Prepared 或在同一组追加 `RunEnded(failed/malformed_model_result)` |
 | `StartToolCall` | Tool Pending；`ToolCallStarted`。command 携带本次 start 请求的 `Effect`，须等于 `DeriveEffectID(RunID, StepID, CallID, 0)` |
-| `SubmitToolResult` | Tool Executing；携带 `Effect`，须等于该 call 的 `Effect`；`ToolCallCompleted{OutputDigest}`。command 携带输出本体，Run 的 Command Part 先以 OutputDigest 存入 `frozen.Store`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
+| `SubmitToolResult` | Tool Executing；携带 `Effect`，须等于该 call 的 `Effect`；`ToolCallCompleted{Effect, OutputDigest}`。command 携带输出本体，Run 的 Command Part 先以 OutputDigest 存入 `frozen.Store`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
 | `SubmitToolFailure(Known)` | Tool Executing；携带 `Effect`，须等于该 call 的 `Effect`；`ToolCallFailed(Known)`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
 | `SubmitToolFailure(Unknown)` | Tool Executing；携带 `Effect`，须等于该 call 的 `Effect`；`ToolCallFailed(Unknown)`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
 | `DeclineToolCall` | Tool Pending；`ToolCallFailed(Known)`。start 之前的校验失败（RUN-EXE-5）：不写 `ToolCallStarted`，该 call 没有 effect。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
@@ -417,7 +410,6 @@ Executor 的 in-flight 表可以只是进程内缓存；跨 Worker 恢复所需�
 // package agentcore/run/plan
 type PromptInput struct {
     Scope run.Scope // 由 Loop 填入；Next 不读取它
-    Owner run.OwnerID
     RunID run.RunID
     SourceStep run.StepID
     Inputs []run.AgentInput

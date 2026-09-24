@@ -26,7 +26,7 @@ func cj(raw string) run.CanonicalJSON { return run.MustParseCanonicalJSON(raw) }
 
 func newRun(t *testing.T) run.MachineState {
 	t.Helper()
-	s, err := run.InitializeRun("run-1", "", 0)
+	s, err := run.InitializeRun("run-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,17 +258,17 @@ func advanceToExecuting(t *testing.T, s run.MachineState, req sdk.Request, specs
 // --- tests ---
 
 func TestInitializeRunIsMinimal(t *testing.T) {
-	s, err := run.InitializeRun("r", "turn-1", 1)
+	s, err := run.InitializeRun("r")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.RunID != "r" || s.Owner != "turn-1" || s.Attempt != 1 || s.Status != run.RunActive || !isOpen(s.Current) || len(s.PendingInputs) != 0 {
+	if s.RunID != "r" || s.Status != run.RunActive || !isOpen(s.Current) || len(s.PendingInputs) != 0 {
 		t.Fatalf("initial state = %+v", s)
 	}
 }
 
 func TestRunCreatedFoldsOntoZeroState(t *testing.T) {
-	newRun, err := run.BuildNewRunFor("r", "turn-1", 2, "cause")
+	newRun, err := run.BuildNewRun("r", "cause")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestRunCreatedFoldsOntoZeroState(t *testing.T) {
 		t.Fatalf("facts = %d, want [created, input_accepted]", len(facts))
 	}
 	s := fold(t, run.MachineState{}, facts)
-	if s.RunID != "r" || s.Owner != "turn-1" || s.Attempt != 2 || !isOpen(s.Current) || len(s.PendingInputs) != 1 {
+	if s.RunID != "r" || !isOpen(s.Current) || len(s.PendingInputs) != 1 {
 		t.Fatalf("state after create group = %+v", s)
 	}
 	if _, err := schema.Machine().Evolve(s, facts[0]); err == nil {
@@ -703,7 +703,7 @@ func TestAcceptInputRejectsSeedDuplicateID(t *testing.T) {
 }
 
 func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
-	minimal, err := run.InitializeRun("run-1", "", 0)
+	minimal, err := run.InitializeRun("run-1")
 	if err != nil {
 		t.Fatal(err)
 	}

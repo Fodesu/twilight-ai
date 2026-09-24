@@ -5,10 +5,6 @@ import (
 )
 
 type RunID string
-
-// OwnerID identifies the upper-level entity a Run serves (the Turn, in the
-// reference agent). Run stores it and never interprets it.
-type OwnerID string
 type StepID string
 type CallID string
 type CommandID string

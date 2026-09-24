@@ -159,7 +159,7 @@ func toolEffectOf(s run.MachineState, callID run.CallID) run.EffectID {
 
 func newRun(t *testing.T) run.MachineState {
 	t.Helper()
-	s, err := run.InitializeRun("run-1", "", 0)
+	s, err := run.InitializeRun("run-1")
 	if err != nil {
 		t.Fatal(err)
 	}

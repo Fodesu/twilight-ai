@@ -24,8 +24,6 @@ type Fact interface{ fact() }
 // MachineState yields the initial state; a second RunCreated is an error.
 type RunCreated struct {
 	RunID       RunID          `json:"runId"`
-	Owner       OwnerID        `json:"owner,omitempty"`
-	Attempt     uint32         `json:"attempt,omitempty"`
 	CausationID es.CausationID `json:"causationId,omitempty"`
 }
 
@@ -75,6 +73,8 @@ func (ModelStepStarted) fact() {}
 // record shows it as one (TRN-DUR-1). ModelSteps is not counted for it.
 type ModelStepRecovered struct {
 	StepID StepID `json:"stepId"`
+	// Effect is the model effect the recovery closes (RUN-CMT-7).
+	Effect EffectID `json:"effect,omitempty"`
 }
 
 func (ModelStepRecovered) fact() {}
@@ -94,7 +94,10 @@ func (ModelStepRejected) fact() {}
 // its canonical identity in the frozen.Store. The same transition may then
 // open a ToolStep or end the Run.
 type ModelStepCompleted struct {
-	StepID       StepID             `json:"stepId"`
+	StepID StepID `json:"stepId"`
+	// Effect is the model effect this settlement closes: the fact names the
+	// execution it answers, as its start fact did (RUN-WIR-1).
+	Effect       EffectID           `json:"effect,omitempty"`
 	Usage        model.Usage        `json:"usage"`
 	FinishReason model.FinishReason `json:"finishReason"`
 	ResultDigest Digest             `json:"resultDigest"`
@@ -140,9 +143,11 @@ func (ToolCallApproved) fact() {}
 // ToolCallCompleted: Executing -> Completed. OutputDigest names the frozen
 // tool output.
 type ToolCallCompleted struct {
-	StepID       StepID `json:"stepId"`
-	CallID       CallID `json:"callId"`
-	OutputDigest Digest `json:"outputDigest"`
+	StepID StepID `json:"stepId"`
+	CallID CallID `json:"callId"`
+	// Effect is the tool effect this settlement closes (RUN-WIR-1).
+	Effect       EffectID `json:"effect,omitempty"`
+	OutputDigest Digest   `json:"outputDigest"`
 }
 
 func (ToolCallCompleted) fact() {}
@@ -159,9 +164,12 @@ type ToolCallAnswered struct {
 func (ToolCallAnswered) fact() {}
 
 // ToolCallFailed: Pending/Executing/Waiting -> Failed(Known/Unknown).
+// Effect is the tool effect the failure settles; empty for a call that
+// never started (a decline, a rejected response, a cancelled Pending call).
 type ToolCallFailed struct {
 	StepID  StepID             `json:"stepId"`
 	CallID  CallID             `json:"callId"`
+	Effect  EffectID           `json:"effect,omitempty"`
 	Failure ToolFailure        `json:"failure"`
 	Outcome ToolFailureOutcome `json:"outcome"`
 }

@@ -188,7 +188,7 @@ func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req StartReque
 	p := PlanDigest(turnID, req.Preset.Digest, inputIDs)
 	commitID := session.CommitID(StartOperationDigest(sid, turnID, p))
 	runID := DeriveRunID(sid, turnID, 1)
-	newRun, err := run.BuildNewRunFor(runID, run.OwnerID(turnID), 1, es.CausationID(commitID))
+	newRun, err := run.BuildNewRun(runID, es.CausationID(commitID))
 	if err != nil {
 		return TurnResponse{}, err
 	}
@@ -302,7 +302,7 @@ func (c *Coordinator) Retry(ctx context.Context, w writer.Writer, req RetryReque
 	attempt := previous.Attempt + 1
 	runID := DeriveRunID(sid, turnID, attempt)
 	commitID := RetryCommitID(sid, turnID, attempt)
-	newRun, err := run.BuildNewRunFor(runID, run.OwnerID(turnID), attempt, es.CausationID(commitID))
+	newRun, err := run.BuildNewRun(runID, es.CausationID(commitID))
 	if err != nil {
 		return TurnResponse{}, err
 	}

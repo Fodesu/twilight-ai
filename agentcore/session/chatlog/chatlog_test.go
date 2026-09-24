@@ -12,13 +12,14 @@ import (
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/attempt"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 )
 
 func registry(t *testing.T) *extension.Registry {
 	t.Helper()
-	r, err := extension.BuildRegistry(runmod.Module, Module)
+	r, err := extension.BuildRegistry(runmod.Module, attempt.Module, Module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,10 +33,6 @@ type step struct {
 
 func runStep(runID run.RunID, f run.Fact) step {
 	return step{runmod.EventType(f), runmod.Event{RunID: runID, Fact: f}}
-}
-
-func created(runID run.RunID, owner string) step {
-	return runStep(runID, run.RunCreated{RunID: runID, Owner: run.OwnerID(owner)})
 }
 
 func completed(runID run.RunID, stepID run.StepID, digest es.Digest) step {
@@ -123,7 +120,7 @@ func TestRunFactsProjectEntries(t *testing.T) {
 	ctxState, surf, err := foldSteps(t, []step{
 		{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-1", Content: jsonstable.MustParse(`{"text":"hi"}`), SubmittedAtUnixMilli: 1}},
 		{TypeInputDelivered, InputDeliveredPayload{InputID: "in-1", TurnID: "t1"}},
-		created("r1", "t1"),
+		step{attempt.TypeStarted, attempt.StartedPayload{TurnID: "t1", RunID: "r1", Attempt: 1}}, runStep("r1", run.RunCreated{RunID: "r1"}),
 		completed("r1", "s1", "sha256:res"),
 		opened("r1", "s1", "c1", "c2"),
 		runStep("r1", run.ToolCallCompleted{StepID: "s1/tools", CallID: "c1", OutputDigest: "sha256:out"}),
@@ -168,7 +165,7 @@ func TestRunFactsProjectEntries(t *testing.T) {
 		t.Fatalf("run owner = %+v", owner)
 	}
 	// Superseding twice, or a result outside the context, is a fold error.
-	if _, _, err := foldSteps(t, []step{created("r1", "t1"), completed("r1", "s1", "sha256:res"), opened("r1", "s1", "c1"),
+	if _, _, err := foldSteps(t, []step{step{attempt.TypeStarted, attempt.StartedPayload{TurnID: "t1", RunID: "r1", Attempt: 1}}, runStep("r1", run.RunCreated{RunID: "r1"}), completed("r1", "s1", "sha256:res"), opened("r1", "s1", "c1"),
 		runStep("r1", run.ToolCallFailed{StepID: "s1/tools", CallID: "c1", Failure: run.ToolFailure{Class: "x"}}),
 		{TypeToolResultSuperseded, ToolResultSupersededPayload{ToolResultID: "c1", Status: ToolError}},
 		{TypeToolResultSuperseded, ToolResultSupersededPayload{ToolResultID: "c1", Status: ToolError}}}); err == nil {
@@ -198,7 +195,7 @@ func TestSurfaceAndContextFold(t *testing.T) {
 		{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-3", Content: content, SubmittedAtUnixMilli: 3}},
 		{TypeInputDelivered, InputDeliveredPayload{InputID: "in-1", TurnID: "t1"}},
 		{TypeInputWithdrawn, InputWithdrawnPayload{InputID: "in-3", Reason: "user"}},
-		created("r1", "t1"),
+		step{attempt.TypeStarted, attempt.StartedPayload{TurnID: "t1", RunID: "r1", Attempt: 1}}, runStep("r1", run.RunCreated{RunID: "r1"}),
 		completed("r1", "s1", "sha256:res"),
 	}
 	ctxState, surface, err := foldSteps(t, steps)
@@ -323,7 +320,7 @@ func (c *fakeContent) ToolResponse(ctx context.Context, d es.Digest) (run.Canoni
 // each digest once, and reports a lost body without touching the projection.
 func TestMaterialize(t *testing.T) {
 	ctxState, _, err := foldSteps(t, []step{
-		created("r1", "t1"),
+		step{attempt.TypeStarted, attempt.StartedPayload{TurnID: "t1", RunID: "r1", Attempt: 1}}, runStep("r1", run.RunCreated{RunID: "r1"}),
 		completed("r1", "s1", "sha256:res"),
 		opened("r1", "s1", "c1", "c2"),
 		runStep("r1", run.ToolCallCompleted{StepID: "s1/tools", CallID: "c1", OutputDigest: "sha256:out"}),
@@ -418,16 +415,16 @@ func TestCheckpointFold(t *testing.T) {
 	base := []EntryDigestPair{{Kind: EntryInput, ID: "in-1", Digest: inDigest}, {Kind: EntryAssistant, ID: "s1", Digest: entryDigest(t, "s1", "sha256:one")}}
 	// The prefix folds to entries at steps 1 (delivered input), 3 (assistant),
 	// 5 (summary), with a queued input that must survive compaction; the
-	// checkpoint itself lands at step 6.
+	// checkpoint itself lands at step 7.
 	prefix := []step{
 		{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-1", Content: content, SubmittedAtUnixMilli: 1}},
 		{TypeInputDelivered, InputDeliveredPayload{InputID: "in-1", TurnID: "t1"}},
-		created("r1", "t1"),
+		step{attempt.TypeStarted, attempt.StartedPayload{TurnID: "t1", RunID: "r1", Attempt: 1}}, runStep("r1", run.RunCreated{RunID: "r1"}),
 		completed("r1", "s1", "sha256:one"),
 		{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-q", Content: content, SubmittedAtUnixMilli: 2}},
 		{TypeSummary, SummaryPayload{Summary: sum}},
 	}
-	valid := mustCheckpoint(t, "ck1", at(3), base, sum, base[1:])
+	valid := mustCheckpoint(t, "ck1", at(4), base, sum, base[1:])
 
 	t.Run("valid checkpoint replaces the base and keeps the queue", func(t *testing.T) {
 		ctxState, surf, err := foldSteps(t, append(prefix, step{TypeCheckpointCreated, valid}, completed("r1", "s2", "sha256:after")))
@@ -501,7 +498,7 @@ func TestCheckpointFold(t *testing.T) {
 	t.Run("superseding a compacted result is rejected", func(t *testing.T) {
 		// The assistant's digest changes when its tool step opens, so the base
 		// is read back from a fold of the same prefix.
-		steps := []step{created("r1", "t1"), completed("r1", "ac", "sha256:call"), opened("r1", "ac", "c1"),
+		steps := []step{step{attempt.TypeStarted, attempt.StartedPayload{TurnID: "t1", RunID: "r1", Attempt: 1}}, runStep("r1", run.RunCreated{RunID: "r1"}), completed("r1", "ac", "sha256:call"), opened("r1", "ac", "c1"),
 			runStep("r1", run.ToolCallCompleted{StepID: "ac/tools", CallID: "c1", OutputDigest: "sha256:out"})}
 		folded, _, err := foldSteps(t, steps)
 		if err != nil {
@@ -511,7 +508,7 @@ func TestCheckpointFold(t *testing.T) {
 		sum2 := mustSummary(t, "sum2", "tools done")
 		steps = append(steps,
 			step{TypeSummary, SummaryPayload{Summary: sum2}},
-			step{TypeCheckpointCreated, mustCheckpoint(t, "ck6", at(3), toolBase, sum2, nil)},
+			step{TypeCheckpointCreated, mustCheckpoint(t, "ck6", at(4), toolBase, sum2, nil)},
 			step{TypeToolResultSuperseded, ToolResultSupersededPayload{ToolResultID: "c1", Status: ToolError}})
 		if _, _, err := foldSteps(t, steps); err == nil {
 			t.Fatal("supersede of a compacted result accepted")

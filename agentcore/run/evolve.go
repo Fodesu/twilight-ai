@@ -64,7 +64,7 @@ func (m StateMachine) Evolve(s MachineState, f Fact) (MachineState, error) {
 // --- apply: mechanical folds; guardFact has established every precondition ---
 
 func applyRunCreated(fact *RunCreated) MachineState {
-	return MachineState{RunID: fact.RunID, Owner: fact.Owner, Attempt: fact.Attempt, Status: RunActive, Current: Open{}}
+	return MachineState{RunID: fact.RunID, Status: RunActive, Current: Open{}}
 }
 
 func applyModelStepPrepared(s MachineState, fact *ModelStepPrepared) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
@@ -210,14 +210,14 @@ func (m StateMachine) guardFact(s *MachineState, f Fact) error {
 		}
 		return requireModelStep(s, fact.StepID, ModelPrepared)
 	case ModelStepRecovered:
-		return requireModelStep(s, fact.StepID, ModelExecuting)
+		return requireModelEffect(s, fact.StepID, fact.Effect)
 	case ModelStepRejected:
 		return requireModelStep(s, fact.StepID, ModelExecuting)
 	case ModelStepCompleted:
 		if fact.ResultDigest == "" {
 			return errors.New("agent: evolve: model step completed without result digest")
 		}
-		return requireModelStep(s, fact.StepID, ModelExecuting)
+		return requireModelEffect(s, fact.StepID, fact.Effect)
 	case ToolStepOpened:
 		return m.guardToolStepOpened(s, &fact)
 	case ToolCallStarted:
@@ -232,8 +232,11 @@ func (m StateMachine) guardFact(s *MachineState, f Fact) error {
 		if fact.OutputDigest == "" {
 			return errors.New("agent: evolve: tool call completed without output digest")
 		}
-		_, err := requireCall(s, fact.StepID, fact.CallID, ToolExecuting)
-		return err
+		call, err := requireCall(s, fact.StepID, fact.CallID, ToolExecuting)
+		if err != nil {
+			return err
+		}
+		return requireCallEffect(&call, fact.Effect)
 	case ToolCallAnswered:
 		return m.guardToolCallAnswered(s, &fact)
 	case ToolCallFailed:
@@ -259,6 +262,29 @@ func requireModelStep(s *MachineState, stepID StepID, status ModelStepStatus) er
 	ms, ok := s.Current.(ModelStep)
 	if !ok || ms.RefValue.ID != stepID || ms.Status != status {
 		return fmt.Errorf("agent: evolve: model step %q is not %s", stepID, status)
+	}
+	return nil
+}
+
+// requireModelEffect is requireModelStep for an Executing step plus the
+// check that a settlement names the effect the step is executing: a
+// settlement fact carries the EffectID its start fact recorded (RUN-WIR-1).
+func requireModelEffect(s *MachineState, stepID StepID, effect EffectID) error {
+	if err := requireModelStep(s, stepID, ModelExecuting); err != nil {
+		return err
+	}
+	ms, _ := s.Current.(ModelStep)
+	if effect != "" && effect != ms.Effect {
+		return fmt.Errorf("agent: evolve: model step %q settles effect %q, executing %q", stepID, effect, ms.Effect)
+	}
+	return nil
+}
+
+// requireCallEffect checks that a settlement names the effect the call is
+// executing; a call that never started settles with no effect.
+func requireCallEffect(call *ToolCallState, effect EffectID) error {
+	if effect != "" && effect != call.Effect {
+		return fmt.Errorf("agent: evolve: call %q settles effect %q, executing %q", call.CallID, effect, call.Effect)
 	}
 	return nil
 }
@@ -438,6 +464,9 @@ func requireWaitingFor(call *ToolCallState, kind ResponseKind, responseID Respon
 func guardToolCallFailed(s *MachineState, fact *ToolCallFailed) error {
 	call, err := requireCall(s, fact.StepID, fact.CallID, ToolPending, ToolExecuting, ToolWaiting)
 	if err != nil {
+		return err
+	}
+	if err := requireCallEffect(&call, fact.Effect); err != nil {
 		return err
 	}
 	if fact.Outcome == ToolOutcomeUnknown && call.Status != ToolExecuting {

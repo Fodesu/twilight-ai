@@ -481,11 +481,7 @@ func (s *ToolStep) callIndex(id CallID) int {
 // the host's. Content bodies (model output, tool output) never appear
 // either: facts record digests and the frozen.Store holds the bodies.
 type MachineState struct {
-	RunID RunID `json:"runId"`
-	// Owner is the opaque upper-level identity this Run serves; Attempt is its
-	// ordinal under that owner. Both are fixed by RunCreated.
-	Owner         OwnerID      `json:"owner,omitempty"`
-	Attempt       uint32       `json:"attempt,omitempty"`
+	RunID         RunID        `json:"runId"`
 	Status        RunStatus    `json:"status"`
 	Current       Current      `json:"-"`
 	PendingInputs []AgentInput `json:"pendingInputs,omitempty"`
@@ -628,9 +624,9 @@ func validateCurrentToolStep(runID RunID, ts *ToolStep) error {
 // InitializeRun builds the minimal initial MachineState (Revision 0) for a
 // new Run. It does not encode fixed-model policy, limits, or seed input; those
 // belong to host policy and accepted transitions.
-func InitializeRun(run RunID, owner OwnerID, attempt uint32) (MachineState, error) {
+func InitializeRun(run RunID) (MachineState, error) {
 	if run == "" {
 		return MachineState{}, errors.New("agent: initialize: empty RunID")
 	}
-	return MachineState{RunID: run, Owner: owner, Attempt: attempt, Status: RunActive, Current: Open{}}, nil
+	return MachineState{RunID: run, Status: RunActive, Current: Open{}}, nil
 }

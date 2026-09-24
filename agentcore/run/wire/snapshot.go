@@ -33,8 +33,6 @@ type Snapshot struct{}
 // names and omission rules are frozen with the schema.
 type machineStateWire struct {
 	RunID         run.RunID        `json:"runId"`
-	Owner         run.OwnerID      `json:"owner,omitempty"`
-	Attempt       uint32           `json:"attempt,omitempty"`
 	Status        run.RunStatus    `json:"status"`
 	ModelSteps    int              `json:"modelSteps"`
 	Usage         model.Usage      `json:"usage"`
@@ -56,7 +54,7 @@ const (
 
 func machineStateToWire(s *run.MachineState) (machineStateWire, error) {
 	w := machineStateWire{
-		RunID: s.RunID, Owner: s.Owner, Attempt: s.Attempt, Status: s.Status, ModelSteps: s.ModelSteps,
+		RunID: s.RunID, Status: s.Status, ModelSteps: s.ModelSteps,
 		Usage: s.Usage, PendingInputs: s.PendingInputs,
 		Result: s.Result, LastToolStep: s.LastToolStep,
 	}
@@ -78,7 +76,7 @@ func machineStateToWire(s *run.MachineState) (machineStateWire, error) {
 
 func machineStateFromWire(w *machineStateWire) (run.MachineState, error) {
 	s := run.MachineState{
-		RunID: w.RunID, Owner: w.Owner, Attempt: w.Attempt, Status: w.Status, ModelSteps: w.ModelSteps,
+		RunID: w.RunID, Status: w.Status, ModelSteps: w.ModelSteps,
 		Usage: w.Usage, PendingInputs: w.PendingInputs,
 		Result: w.Result, LastToolStep: w.LastToolStep,
 	}

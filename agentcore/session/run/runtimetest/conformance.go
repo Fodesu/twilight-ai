@@ -56,7 +56,7 @@ func testCreation(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	snap := h.load("r1")
-	if snap.State.Owner != "t1" || snap.State.Attempt != 1 || len(snap.State.PendingInputs) != 1 {
+	if snap.State.RunID != "r1" || len(snap.State.PendingInputs) != 1 {
 		t.Fatalf("created state = %+v", snap.State)
 	}
 	// Position is the StreamSeq of the Run's last event: the start group's run
@@ -92,7 +92,7 @@ func testCreation(t *testing.T, factory Factory) {
 	// A second created for the same RunID -- active or ended -- is refused by
 	// the Run module's creation Part from the ledger's stream index, before
 	// anything reaches the ledger (RUN-NEW-1).
-	again, err := run.BuildNewRunFor("r1", "t2", 1, "")
+	again, err := run.BuildNewRun("r1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -585,7 +585,7 @@ func testProjection(t *testing.T, factory Factory) {
 	if h.load("r1").State.Status != run.RunStopped || h.record("r1").Snapshot.State.Status != run.RunStopped {
 		t.Fatal("terminal run not readable")
 	}
-	if again, err := run.BuildNewRunFor("r1", "t1", 1, ""); err != nil {
+	if again, err := run.BuildNewRun("r1", ""); err != nil {
 		t.Fatal(err)
 	} else if _, err := unit.Commit(h.ctx, h.writer(), 1, unit.Work{CommitID: "recreate/r1", Parts: []unit.Part{runmod.CreateRun(again, nil)}}); !errors.Is(err, runmod.ErrRunExists) {
 		t.Fatalf("recreating an ended run = %v, want ErrRunExists", err)

@@ -6,6 +6,7 @@ import (
 
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/attempt"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/extension"
 )
@@ -62,7 +63,7 @@ func TestChatlogWireGolden(t *testing.T) {
 	}
 	freezeChatlog(t, "checkpoint digest", string(cpd), "sha256:4da92a8e99605b0d4e08a47d79ef1963d6047de7639682015cfbe91e6e3cdd02")
 
-	reg, err := extension.BuildRegistry(runmod.Module, chatlog.Module)
+	reg, err := extension.BuildRegistry(runmod.Module, attempt.Module, chatlog.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
