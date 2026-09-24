@@ -62,8 +62,8 @@ func TestMessageRolesUseNativeResponsesInstructions(t *testing.T) {
 	defer srv.Close()
 
 	p := responses.New(responses.WithAPIKey("k"), responses.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:  p.ChatModel("gpt-5"),
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:  "gpt-5",
 		System: "root policy",
 		Messages: []sdk.Message{
 			sdk.UserMessage("question"),
@@ -78,19 +78,19 @@ func TestMessageRolesUseNativeResponsesInstructions(t *testing.T) {
 
 func TestInstructionCannotInterruptToolExchange(t *testing.T) {
 	p := responses.New(responses.WithAPIKey("k"))
-	params := sdk.GenerateParams{
-		Model: p.ChatModel("gpt-5"),
+	params := sdk.Request{
+		Model: "gpt-5",
 		Messages: []sdk.Message{
 			{
 				Role: sdk.MessageRoleAssistant,
 				Content: []sdk.MessagePart{sdk.ToolCallPart{
 					ToolCallID: "call-1",
 					ToolName:   "lookup",
-					Input:      map[string]any{"q": "value"},
+					Input:      sdk.ParseToolArguments(`{"q":"value"}`),
 				}},
 			},
 			sdk.DeveloperMessage("new policy"),
-			sdk.ToolMessage(sdk.ToolResultPart{ToolCallID: "call-1", ToolName: "lookup", Result: "ok"}),
+			sdk.ToolMessage(sdk.ToolResultPart{ToolCallID: "call-1", ToolName: "lookup", Result: sdk.TextOutput("ok")}),
 		},
 	}
 

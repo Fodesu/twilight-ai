@@ -1,6 +1,9 @@
 package sdk
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // The provider wire protocols treat each reasoning block as an opaque,
 // indivisible round-trip unit: Anthropic rejects a modified sequence of
@@ -9,18 +12,13 @@ import "testing"
 // accumulator must preserve blocks rather than flattening them into one
 // string with one metadata bag.
 
-func reasoningMeta(sig string) map[string]any {
-	return map[string]any{"anthropic": map[string]any{"signature": sig}}
+func reasoningMeta(sig string) ProviderMetadata {
+	return ProviderMetadata{"anthropic": {"signature": sig}}
 }
 
-func anthropicSignature(t *testing.T, meta map[string]any) string {
+func anthropicSignature(t *testing.T, meta ProviderMetadata) string {
 	t.Helper()
-	am, ok := meta["anthropic"].(map[string]any)
-	if !ok {
-		return ""
-	}
-	sig, _ := am["signature"].(string)
-	return sig
+	return meta.Get("anthropic", "signature")
 }
 
 // Two thinking blocks, each with its own signature, as interleaved thinking
@@ -41,9 +39,9 @@ func TestToResultPreservesEveryReasoningBlockSignature(t *testing.T) {
 	}
 	close(ch)
 
-	result, err := (&StreamResult{Stream: ch}).ToResult()
+	result, err := CollectStream(context.Background(), ch)
 	if err != nil {
-		t.Fatalf("ToResult: %v", err)
+		t.Fatalf("CollectStream: %v", err)
 	}
 
 	if len(result.ReasoningParts) != 2 {
@@ -72,25 +70,22 @@ func TestToResultKeepsEmptyTextReasoningBlock(t *testing.T) {
 	ch := make(chan StreamPart, 8)
 	for _, p := range []StreamPart{
 		&ReasoningStartPart{ID: "r1", Format: ReasoningFormatAnthropic},
-		&ReasoningEndPart{ID: "r1", ProviderMetadata: map[string]any{
-			"anthropic": map[string]any{"redactedData": "ENCRYPTED_BLOB"},
-		}},
+		&ReasoningEndPart{ID: "r1", ProviderMetadata: ProviderMetadata{"anthropic": {"redactedData": "ENCRYPTED_BLOB"}}},
 		&FinishPart{FinishReason: FinishReasonStop},
 	} {
 		ch <- p
 	}
 	close(ch)
 
-	result, err := (&StreamResult{Stream: ch}).ToResult()
+	result, err := CollectStream(context.Background(), ch)
 	if err != nil {
-		t.Fatalf("ToResult: %v", err)
+		t.Fatalf("CollectStream: %v", err)
 	}
 
 	if len(result.ReasoningParts) != 1 {
 		t.Fatalf("ReasoningParts: got %d, want 1 — empty-text block was dropped", len(result.ReasoningParts))
 	}
-	am, _ := result.ReasoningParts[0].ProviderMetadata["anthropic"].(map[string]any)
-	if data, _ := am["redactedData"].(string); data != "ENCRYPTED_BLOB" {
+	if data := result.ReasoningParts[0].ProviderMetadata.Get("anthropic", "redactedData"); data != "ENCRYPTED_BLOB" {
 		t.Errorf("redactedData: got %q, want %q", data, "ENCRYPTED_BLOB")
 	}
 }
@@ -110,9 +105,9 @@ func TestToResultReplacesRatherThanConcatenatesBlockMetadata(t *testing.T) {
 	}
 	close(ch)
 
-	result, err := (&StreamResult{Stream: ch}).ToResult()
+	result, err := CollectStream(context.Background(), ch)
 	if err != nil {
-		t.Fatalf("ToResult: %v", err)
+		t.Fatalf("CollectStream: %v", err)
 	}
 
 	if len(result.ReasoningParts) != 1 {
@@ -124,43 +119,5 @@ func TestToResultReplacesRatherThanConcatenatesBlockMetadata(t *testing.T) {
 	}
 	if got := anthropicSignature(t, block.ProviderMetadata); got != "FINAL" {
 		t.Errorf("signature: got %q, want %q (metadata replaces)", got, "FINAL")
-	}
-}
-
-// Every reasoning block must reach the assistant message that gets replayed,
-// each keeping its own opaque token.
-func TestBuildStepMessagesEmitsOnePartPerReasoningBlock(t *testing.T) {
-	blocks := []ReasoningPart{
-		{Text: "AAA", ProviderMetadata: reasoningMeta("SIG_A")},
-		{Text: "", ProviderMetadata: map[string]any{
-			"anthropic": map[string]any{"redactedData": "BLOB"},
-		}},
-		{Text: "BBB", ProviderMetadata: reasoningMeta("SIG_B")},
-	}
-
-	msgs := buildStepMessages("answer", nil, blocks, nil, nil, nil)
-	if len(msgs) == 0 {
-		t.Fatal("no messages produced")
-	}
-
-	var got []ReasoningPart
-	for _, part := range msgs[0].Content {
-		if rp, ok := part.(ReasoningPart); ok {
-			got = append(got, rp)
-		}
-	}
-	if len(got) != 3 {
-		t.Fatalf("reasoning parts: got %d, want 3 (empty-text block must survive)", len(got))
-	}
-	if s := anthropicSignature(t, got[0].ProviderMetadata); s != "SIG_A" {
-		t.Errorf("part 0 signature: got %q, want SIG_A", s)
-	}
-	if s := anthropicSignature(t, got[2].ProviderMetadata); s != "SIG_B" {
-		t.Errorf("part 2 signature: got %q, want SIG_B", s)
-	}
-	// Reasoning must precede the answer text: Anthropic enforces thinking-first,
-	// and OpenAI 400s on an orphaned trailing reasoning item.
-	if _, ok := msgs[0].Content[0].(ReasoningPart); !ok {
-		t.Errorf("content[0] = %T, want ReasoningPart to lead the message", msgs[0].Content[0])
 	}
 }

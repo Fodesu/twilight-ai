@@ -44,8 +44,8 @@ func TestDoGenerate_FilePartInlineData(t *testing.T) {
 		generativeai.WithBaseURL(srv.URL),
 	)
 
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: p.ChatModel("gemini-2.0-flash"),
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "gemini-2.0-flash",
 		Messages: []sdk.Message{{
 			Role: sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{

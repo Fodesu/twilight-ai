@@ -2,6 +2,7 @@ package sdk_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,13 +10,14 @@ import (
 
 	anthropicmessages "github.com/felinics/twilight/provider/anthropic/messages"
 	sdk "github.com/felinics/twilight/sdk"
+	"github.com/google/jsonschema-go/jsonschema"
 )
 
-// A tool call whose streamed arguments fail to parse must not run. Emitting it
-// with nil input hands the tool empty arguments and executes it anyway — with
-// whatever side effects that implies — and then commits the step as if nothing
-// were wrong, leaving an error event and a completed call for the same block.
-func TestMalformedToolArgsDoNotExecute(t *testing.T) {
+// A tool call whose streamed arguments are not a JSON document is still
+// reported -- the model has to hear that it got the call wrong -- but it
+// carries the text in ToolArguments.Text and no document, so whoever runs
+// the calls can refuse it (Valid is false) instead of guessing arguments.
+func TestMalformedToolArgsAreReportedInvalid(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		for _, chunk := range []string{
@@ -38,56 +40,38 @@ data: {"type":"message_stop"}`,
 	}))
 	defer srv.Close()
 
-	executed := false
-	committed := 0
 	provider := anthropicmessages.New(
 		anthropicmessages.WithAPIKey("k"),
 		anthropicmessages.WithBaseURL(srv.URL),
 	)
-	client := sdk.NewClient()
-
-	result, err := client.StreamText(context.Background(),
-		sdk.WithModel(provider.ChatModel("claude-opus-5")),
-		sdk.WithMessages([]sdk.Message{sdk.UserMessage("delete something")}),
-		sdk.WithTools([]sdk.Tool{{
-			Name:        "delete_file",
-			Description: "deletes a file",
-			Parameters:  map[string]any{"type": "object"},
-			Execute: func(ctx *sdk.ToolExecContext, input any) (any, error) {
-				executed = true
-				return "deleted", nil
-			},
-		}}),
-		sdk.WithOnStepCommitted(func(ctx context.Context, stepIndex int, step *sdk.StepResult) error {
-			committed++
-			return nil
-		}),
-	)
+	stream, err := provider.ChatModel("claude-opus-5").Stream(context.Background(), sdk.Request{
+		Messages: []sdk.Message{sdk.UserMessage("delete something")},
+		Tools:    []sdk.ToolDefinition{{Name: "delete_file", Description: "deletes a file", Parameters: &jsonschema.Schema{Type: "object"}}},
+	})
 	if err != nil {
-		t.Fatalf("StreamText: %v", err)
+		t.Fatalf("Stream: %v", err)
 	}
-
-	var sawError bool
-	var calls int
-	for part := range result.Stream {
-		switch part.(type) {
+	var calls []sdk.ToolCall
+	for part := range stream.Parts {
+		switch p := part.(type) {
 		case *sdk.ErrorPart:
-			sawError = true
+			t.Fatalf("malformed arguments surfaced as a stream error: %v", p.Error)
 		case *sdk.StreamToolCallPart:
-			calls++
+			calls = append(calls, sdk.ToolCall{ToolCallID: p.ToolCallID, ToolName: p.ToolName, Input: p.Input})
 		}
 	}
-
-	if !sawError {
-		t.Error("no ErrorPart for malformed tool arguments")
+	result, err := stream.Result()
+	if err != nil || result == nil {
+		t.Fatalf("Result: %+v %v", result, err)
 	}
-	if calls != 0 {
-		t.Errorf("StreamToolCallPart emitted %d time(s) for a call that could not be parsed", calls)
+	if len(calls) != 1 || len(result.ToolCalls) != 1 {
+		t.Fatalf("tool calls: streamed %d, assembled %d, want 1 and 1", len(calls), len(result.ToolCalls))
 	}
-	if executed {
-		t.Error("the tool ran on nil input")
+	in := result.ToolCalls[0].Input
+	if in.Valid() || in.Text != `{"path": "/etc` {
+		t.Fatalf("arguments = %+v, want the invalid text kept verbatim and no document", in)
 	}
-	if committed != 0 {
-		t.Errorf("OnStepCommitted fired %d time(s) for a failed step", committed)
+	if err := in.Unmarshal(&struct{}{}); !errors.Is(err, sdk.ErrInvalidToolArguments) {
+		t.Fatalf("Unmarshal of invalid arguments = %v, want ErrInvalidToolArguments", err)
 	}
 }

@@ -49,11 +49,21 @@ func ClassifyProbeStatus(statusCode int) (*ModelTestResult, error) {
 }
 
 // Provider is the interface that AI backends must implement.
+//
+// DoGenerate and DoStream are the seam between the SDK and a backend, and they
+// speak the single-call boundary: a Request goes in, and a ModelResult or a
+// channel of StreamParts comes out. Tool schemas arrive in Request.Tools as
+// JSON Schema.
+//
+// DoStream must close the returned channel, must respect ctx while producing and
+// while sending, and reports a mid-stream failure as an ErrorPart rather than by
+// dropping the failure. Assembling the parts into a ModelResult is the SDK's
+// job, not the provider's, so that streamed and generated results cannot drift.
 type Provider interface {
 	Name() string
 	ListModels(ctx context.Context) ([]Model, error)
 	Test(ctx context.Context) *ProviderTestResult
 	TestModel(ctx context.Context, modelID string) (*ModelTestResult, error)
-	DoGenerate(ctx context.Context, params GenerateParams) (*GenerateResult, error)
-	DoStream(ctx context.Context, params GenerateParams) (*StreamResult, error)
+	DoGenerate(ctx context.Context, req Request) (ModelResult, error)
+	DoStream(ctx context.Context, req Request) (<-chan StreamPart, error)
 }

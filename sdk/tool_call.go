@@ -1,15 +1,9 @@
 package sdk
 
+// ToolCall is a tool invocation the model requested.
 type ToolCall struct {
-	ToolCallID       string         `json:"toolCallId"`
-	ToolName         string         `json:"toolName"`
-	Input            any            `json:"input"`
-	ProviderMetadata map[string]any `json:"providerMetadata,omitempty"`
-}
-
-type ToolResult struct {
-	ToolCallID string `json:"toolCallId"`
-	ToolName   string `json:"toolName"`
-	Input      any    `json:"input"`
-	Output     any    `json:"output"`
+	ToolCallID       string           `json:"toolCallId"`
+	ToolName         string           `json:"toolName"`
+	Input            ToolArguments    `json:"input"`
+	ProviderMetadata ProviderMetadata `json:"providerMetadata,omitempty"`
 }

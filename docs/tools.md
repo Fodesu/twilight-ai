@@ -1,407 +1,142 @@
 # Tool Calling
 
-Twilight AI supports LLM tool calling (also known as function calling) with automatic multi-step execution. You define tools with execution handlers, and the SDK manages the call-execute-respond loop.
+Tool calling in Twilight AI: you describe tools on the `sdk.Request`, the model answers with typed `ToolCall`s, and you put the results back into the next request. A tool that lives behind another protocol, such as an MCP server, is described to the model the same way: turn its input schema into a `*jsonschema.Schema` and put the definition on the request.
 
 ## Defining a Tool
 
-There are three ways to define a tool's parameter schema.
+A tool the model can see is a `ToolDefinition`: a name, a description and a JSON Schema for its arguments.
 
-### Using `NewTool[T]` (recommended)
+```go
+type ToolDefinition struct {
+    Name         string
+    Description  string
+    Parameters   *jsonschema.Schema
+    CacheControl *CacheControl // optional prompt caching of the definition (Anthropic)
+}
+```
 
-The generic `NewTool` function infers the JSON Schema from a Go struct and provides type-safe input in the `Execute` handler:
+### Inferring the schema from a Go struct
 
 ```go
 type WeatherParams struct {
-    City string `json:"city" jsonschema:"City name, e.g. 'Tokyo'"`
+    City  string `json:"city" jsonschema:"City name"`
+    Units string `json:"units,omitempty" jsonschema:"celsius or fahrenheit"`
 }
 
-weatherTool := sdk.NewTool("get_weather", "Get the current weather for a given city",
-    func(ctx *sdk.ToolExecContext, input WeatherParams) (any, error) {
-        return map[string]any{
-            "city":    input.City,
-            "temp":    "22°C",
-            "weather": "sunny",
-        }, nil
-    },
-)
+weather, err := sdk.NewToolDefinition[WeatherParams]("get_weather", "Get current weather for a city")
 ```
 
-### Passing a Go struct
+`NewToolDefinition[T]` infers the schema of `T` with `github.com/google/jsonschema-go`; struct tags name the properties and describe them.
 
-You can pass a struct value directly to `Parameters`. The SDK infers the JSON Schema via reflection before sending to the provider:
-
-```go
-weatherTool := sdk.Tool{
-    Name:        "get_weather",
-    Description: "Get the current weather for a given city",
-    Parameters:  WeatherParams{},
-    Execute: func(ctx *sdk.ToolExecContext, input any) (any, error) {
-        args := input.(map[string]any)
-        city := args["city"].(string)
-        return map[string]any{"city": city, "temp": "22°C"}, nil
-    },
-}
-```
-
-### Using `*jsonschema.Schema` directly
-
-For full control over the schema, construct a `*jsonschema.Schema` value:
+### Writing the schema directly
 
 ```go
-import "github.com/google/jsonschema-go/jsonschema"
-
-weatherTool := sdk.Tool{
+weather := sdk.ToolDefinition{
     Name:        "get_weather",
-    Description: "Get the current weather for a given city",
+    Description: "Get current weather for a city",
     Parameters: &jsonschema.Schema{
         Type: "object",
         Properties: map[string]*jsonschema.Schema{
-            "city": {Type: "string", Description: "City name, e.g. 'Tokyo'"},
+            "city": {Type: "string", Description: "City name"},
         },
         Required: []string{"city"},
     },
-    Execute: func(ctx *sdk.ToolExecContext, input any) (any, error) {
-        args := input.(map[string]any)
-        city := args["city"].(string)
-        return map[string]any{"city": city, "temp": "22°C"}, nil
-    },
 }
 ```
 
-### Tool Fields
+## Arguments and outputs
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `Name` | `string` | Unique tool name passed to the LLM |
-| `Description` | `string` | Human-readable description for the LLM |
-| `Parameters` | `any` | Go struct (auto-inferred) or `*jsonschema.Schema` |
-| `Execute` | `ToolExecuteFunc` | Go function that runs when the LLM calls this tool |
-| `RequireApproval` | `bool` | If true, requires approval before execution |
-
-## Using MCP Tools
-
-Twilight AI can load remote tools from an MCP server and expose them as normal `sdk.Tool` values.
-
-This is useful when:
-
-- the tool already exists behind an MCP server
-- you want to share the same tool inventory across multiple apps
-- you want the model to call remote tools without writing a local `Execute` handler
-
-### Create an MCP client
-
-Use `CreateMCPClient` with HTTP, SSE, or a custom transport:
+The model's arguments arrive as `sdk.ToolArguments`, and a tool result goes back as `sdk.ToolOutput`:
 
 ```go
-import (
-    "context"
+type ToolArguments struct {
+    JSON json.RawMessage // the arguments as a JSON document; nil when the model's text was not one
+    Text string          // the model's argument text when it is not a JSON document
+}
 
-    "github.com/felinics/twilight/sdk"
-)
+type ToolOutput struct {
+    Text string          // plain text the model reads
+    JSON json.RawMessage // or a JSON document
+}
+```
 
-mcpClient, err := sdk.CreateMCPClient(context.Background(), &sdk.MCPClientConfig{
-    Type: sdk.MCPTransportHTTP, // default; may be omitted
-    URL:  "https://example.com/mcp",
-    Headers: map[string]string{
-        "Authorization": "Bearer <token>",
-    },
+`args.Unmarshal(&v)` decodes the document into your type; it returns `ErrInvalidToolArguments` when the model's text was not a JSON document. `sdk.TextOutput(s)`, `sdk.JSONOutput(v)` and `sdk.RawJSONOutput(raw)` build outputs.
+
+A model sometimes emits arguments that are not valid JSON (a truncated call, for example). Such a call is still reported, with the text in `Text` and `Valid()` false, so you can answer it with an error result and let the model correct itself instead of running the tool on guessed arguments.
+
+## One Model Call
+
+Describe the tools on the request. The reply carries the calls the model wants:
+
+```go
+result, err := model.Generate(ctx, sdk.Request{
+    Messages: []sdk.Message{sdk.UserMessage("What's the weather in Tokyo?")},
+    Tools:    []sdk.ToolDefinition{weather},
 })
 if err != nil {
     log.Fatal(err)
 }
-defer mcpClient.Close()
-```
-
-### Supported transport patterns
-
-| Pattern | How to configure |
-|--------|------------------|
-| Streamable HTTP | `Type: sdk.MCPTransportHTTP`, `URL: "https://.../mcp"` |
-| SSE | `Type: sdk.MCPTransportSSE`, `URL: "https://.../sse"` |
-| Stdio / custom | Create `mcp.Transport` yourself and pass `Transport: ...` |
-
-For stdio, Twilight AI intentionally does not create the transport for you. Build it using the official MCP Go SDK:
-
-```go
-import (
-    "context"
-    "os/exec"
-
-    "github.com/felinics/twilight/sdk"
-    "github.com/modelcontextprotocol/go-sdk/mcp"
-)
-
-transport := &mcp.CommandTransport{
-    Command: exec.Command("my-mcp-server"),
-}
-
-mcpClient, err := sdk.CreateMCPClient(context.Background(), &sdk.MCPClientConfig{
-    Transport: transport,
-})
-if err != nil {
-    log.Fatal(err)
-}
-defer mcpClient.Close()
-```
-
-### Convert MCP tools into Twilight tools
-
-```go
-tools, err := mcpClient.Tools(ctx)
-if err != nil {
-    log.Fatal(err)
-}
-
-result, err := sdk.GenerateTextResult(ctx,
-    sdk.WithModel(model),
-    sdk.WithMessages([]sdk.Message{
-        sdk.UserMessage("Use the available MCP tools to answer this request."),
-    }),
-    sdk.WithTools(tools),
-    sdk.WithMaxSteps(5),
-)
-```
-
-### What gets converted automatically
-
-When you call `mcpClient.Tools(ctx)`, Twilight AI:
-
-1. calls `tools/list` on the MCP server
-2. converts each `mcp.Tool.InputSchema` into `*jsonschema.Schema`
-3. creates an `sdk.Tool.Execute` wrapper that calls `tools/call`
-4. returns MCP text content as the tool output seen by the model
-
-MCP tools behave like normal Twilight AI tools once loaded, so they work with:
-
-- `WithTools(...)`
-- `WithMaxSteps(...)`
-- `GenerateTextResult(...)`
-- `StreamText(...)`
-
-### ToolExecContext
-
-The execution function receives a `*ToolExecContext` that embeds `context.Context` and provides additional metadata:
-
-```go
-type ToolExecContext struct {
-    context.Context
-    ToolCallID   string           // unique ID for this call
-    ToolName     string           // name of the tool being called
-    SendProgress func(content any) // send progress updates (nil when not streaming)
+for _, call := range result.ToolCalls {
+    fmt.Println(call.ToolCallID, call.ToolName, call.Input.String())
 }
 ```
 
-## Single-Step Tool Calling
+`result.FinishReason` is `FinishReasonToolCalls` when the model stopped to call tools.
 
-With `MaxSteps` at its default (`0`), the SDK returns the tool call without executing it:
+## Replaying a Step
+
+After running the calls, append two messages to the conversation: the assistant message that made the calls, and a tool message with the results. Providers need the assistant message to carry the model's reasoning parts (in order, including empty-text redacted blocks) and the `ProviderMetadata` of each part, or the next request is rejected.
 
 ```go
-result, err := sdk.GenerateTextResult(ctx,
-    sdk.WithModel(model),
-    sdk.WithMessages([]sdk.Message{
-        sdk.UserMessage("What's the weather in Tokyo?"),
-    }),
-    sdk.WithTools([]sdk.Tool{weatherTool}),
-)
-
-// result.ToolCalls contains the LLM's tool call request
-// result.Text may be empty — the LLM chose to call a tool instead
-for _, tc := range result.ToolCalls {
-    fmt.Printf("Tool: %s, Input: %v\n", tc.ToolName, tc.Input)
+func stepMessages(r sdk.ModelResult, results []sdk.ToolResultPart) []sdk.Message {
+    var parts []sdk.MessagePart
+    for _, rp := range r.ReasoningParts {
+        parts = append(parts, rp)
+    }
+    if r.Text != "" {
+        parts = append(parts, sdk.TextPart{Text: r.Text, ProviderMetadata: r.TextProviderMetadata})
+    }
+    for _, c := range r.ToolCalls {
+        parts = append(parts, sdk.ToolCallPart{ToolCallID: c.ToolCallID, ToolName: c.ToolName, Input: c.Input, ProviderMetadata: c.ProviderMetadata})
+    }
+    return []sdk.Message{{Role: sdk.MessageRoleAssistant, Content: parts}, sdk.ToolMessage(results...)}
 }
 ```
 
-## Multi-Step Execution
-
-Set `WithMaxSteps` to enable automatic tool execution. The SDK will:
-
-1. Send messages to the LLM
-2. If the LLM returns tool calls, execute them
-3. Append tool results to the conversation
-4. Send updated messages back to the LLM
-5. Repeat until the LLM stops calling tools or the step limit is reached
+A result is one `ToolResultPart` per call, matched by `ToolCallID`; set `IsError` when the tool failed or the arguments were invalid, and put the reason in `Result` so the model reads it.
 
 ```go
-result, err := sdk.GenerateTextResult(ctx,
-    sdk.WithModel(model),
-    sdk.WithMessages([]sdk.Message{
-        sdk.UserMessage("What's the weather in Tokyo and Paris?"),
-    }),
-    sdk.WithTools([]sdk.Tool{weatherTool}),
-    sdk.WithMaxSteps(10),
-)
-
-// result.Text contains the final response after all tool calls
-// result.Steps contains each step's details
-fmt.Println(result.Text)
-fmt.Printf("Completed in %d steps\n", len(result.Steps))
+messages := []sdk.Message{sdk.UserMessage("What's the weather in Tokyo?")}
+for step := 0; step < 8; step++ {
+    result, err := model.Generate(ctx, sdk.Request{Messages: messages, Tools: defs})
+    if err != nil {
+        return err
+    }
+    if len(result.ToolCalls) == 0 {
+        return handle(result.Text)
+    }
+    results := runTools(ctx, result.ToolCalls)
+    messages = append(messages, stepMessages(result, results)...)
+}
 ```
-
-### MaxSteps Values
-
-| Value | Behavior |
-|-------|----------|
-| `0` (default) | Single LLM call, no tool auto-execution |
-| `N` (N > 0) | Up to N LLM calls in the loop |
-| `-1` | Unlimited — loops until the LLM stops requesting tools |
 
 ## Tool Choice
 
-Control how the LLM decides whether to use tools:
+`Request.ToolChoice` steers whether the model may, must, or must not call a tool:
 
 ```go
-sdk.WithToolChoice("auto")     // LLM decides (default)
-sdk.WithToolChoice("none")     // never call tools
-sdk.WithToolChoice("required") // must call at least one tool
+sdk.ToolChoice{Mode: sdk.ToolChoiceAuto}                       // default: the model decides
+sdk.ToolChoice{Mode: sdk.ToolChoiceRequired}                   // at least one call
+sdk.ToolChoice{Mode: sdk.ToolChoiceNone}                       // text only
+sdk.ToolChoice{Mode: sdk.ToolChoiceTool, Tool: "get_weather"}  // this tool
 ```
-
-## Approval Flow
-
-For sensitive operations, mark tools with `RequireApproval` and provide an approval handler:
-
-```go
-dangerousTool := sdk.Tool{
-    Name:            "delete_file",
-    Description:     "Delete a file from the filesystem",
-    Parameters:      fileSchema,
-    RequireApproval: true,
-    Execute: func(ctx *sdk.ToolExecContext, input any) (any, error) {
-        // This only runs if approved
-        path := input.(map[string]any)["path"].(string)
-        return os.Remove(path), nil
-    },
-}
-
-result, err := sdk.GenerateTextResult(ctx,
-    sdk.WithModel(model),
-    sdk.WithMessages(msgs),
-    sdk.WithTools([]sdk.Tool{dangerousTool}),
-    sdk.WithMaxSteps(5),
-    sdk.WithApprovalHandler(func(ctx context.Context, call sdk.ToolCall) (bool, error) {
-        fmt.Printf("Allow %s with input %v? [y/n] ", call.ToolName, call.Input)
-        var answer string
-        fmt.Scanln(&answer)
-        return answer == "y", nil
-    }),
-)
-```
-
-When a tool call is denied, a `ToolOutputDeniedPart` is sent in streaming mode, and the tool result is marked as an error.
 
 ## Streaming with Tools
 
-Tool calling works seamlessly with `StreamText`. Progress updates from tool execution are delivered through the stream:
-
-```go
-sr, err := sdk.StreamText(ctx,
-    sdk.WithModel(model),
-    sdk.WithMessages([]sdk.Message{
-        sdk.UserMessage("What's the weather in Tokyo?"),
-    }),
-    sdk.WithTools([]sdk.Tool{weatherTool}),
-    sdk.WithMaxSteps(5),
-)
-
-for part := range sr.Stream {
-    switch p := part.(type) {
-    case *sdk.TextDeltaPart:
-        fmt.Print(p.Text)
-    case *sdk.StreamToolCallPart:
-        fmt.Printf("\n[Calling tool: %s]\n", p.ToolName)
-    case *sdk.StreamToolResultPart:
-        fmt.Printf("[Tool result: %v]\n", p.Output)
-    case *sdk.ToolProgressPart:
-        fmt.Printf("[Progress: %v]\n", p.Content)
-    case *sdk.ErrorPart:
-        log.Fatal(p.Error)
-    }
-}
-```
-
-### Sending Progress from Tools
-
-During streaming, tools can send progress updates via `SendProgress`:
-
-```go
-Execute: func(ctx *sdk.ToolExecContext, input any) (any, error) {
-    if ctx.SendProgress != nil {
-        ctx.SendProgress("Fetching data...")
-    }
-    // do work...
-    if ctx.SendProgress != nil {
-        ctx.SendProgress("Processing results...")
-    }
-    return result, nil
-},
-```
-
-## Inspecting Steps
-
-After a multi-step execution, inspect individual steps:
-
-```go
-for i, step := range result.Steps {
-    fmt.Printf("Step %d: finish=%s, tokens=%d\n",
-        i+1, step.FinishReason, step.Usage.TotalTokens)
-
-    for _, tc := range step.ToolCalls {
-        fmt.Printf("  Called: %s(%v)\n", tc.ToolName, tc.Input)
-    }
-    for _, tr := range step.ToolResults {
-        fmt.Printf("  Result: %v\n", tr.Output)
-    }
-}
-```
-
-## Callbacks
-
-### OnStep
-
-Called after each step completes. Can override params for the next step:
-
-```go
-sdk.WithOnStep(func(step *sdk.StepResult) *sdk.GenerateParams {
-    fmt.Printf("Step finished: %s\n", step.FinishReason)
-    return nil // return non-nil to override next step's params
-}),
-```
-
-### OnStepCommitted
-
-Use a synchronous durability barrier after a complete step is assembled and
-before the next model call begins. Returning an error stops generation and
-leaves that step out of the accumulated result:
-
-```go
-sdk.WithOnStepCommitted(func(ctx context.Context, stepIndex int, step *sdk.StepResult) error {
-    return persistStep(ctx, stepIndex, step)
-}),
-```
-
-### PrepareStep
-
-Called before each step (starting from step 2). Allows modifying params:
-
-```go
-sdk.WithPrepareStep(func(params *sdk.GenerateParams) *sdk.GenerateParams {
-    // Reduce temperature after first step
-    t := 0.3
-    params.Temperature = &t
-    return params
-}),
-```
-
-### OnFinish
-
-Called once when all steps are complete:
-
-```go
-sdk.WithOnFinish(func(result *sdk.GenerateResult) {
-    fmt.Printf("Done! Total tokens: %d\n", result.Usage.TotalTokens)
-}),
-```
+`Model.Stream` reports a call as a `*StreamToolCallPart` once its arguments are complete, after the `ToolInputStart` / `ToolInputDelta` / `ToolInputEnd` parts that carried the argument text. The assembled `ModelResult` from `stream.Result()` carries the same `ToolCalls` as `Generate` would. See [Streaming](streaming.md).
 
 ## Next Steps
 
-- [Streaming](streaming.md) — deep dive into StreamPart types
+- [Streaming](streaming.md) — `Model.Stream` and the `StreamPart` types
+- [Providers](providers.md) — provider-specific tool behaviour, prompt caching of tool definitions
 - [API Reference](api-reference.md) — complete type and function reference

@@ -3,9 +3,7 @@ package completions
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
-	"time"
 
 	"github.com/felinics/twilight/sdk"
 )
@@ -69,18 +67,10 @@ func (sp *streamProcessor) finishToolCall(stc *streamingToolCall) {
 		return
 	}
 	sp.send(&sdk.ToolInputEndPart{ID: stc.id})
-	var input any
-	// Providers stream arguments incrementally and no-arg tools may close with
-	// an empty buffer, which is not malformed JSON — only a non-empty buffer
-	// that fails to parse is. Such a call must not be emitted: nil input would
-	// hand the tool empty arguments and run it anyway.
-	if args := stc.args.String(); args != "" {
-		if err := json.Unmarshal([]byte(args), &input); err != nil {
-			sp.send(&sdk.ErrorPart{Error: fmt.Errorf("openai: unmarshal tool call arguments for %q: %w", stc.name, err)})
-			stc.finished = true
-			return
-		}
-	}
+	// An empty buffer is a no-argument call; text that is not a JSON document
+	// is kept as the call's Text, so the caller can answer the model instead
+	// of running the tool on it (sdk.ToolArguments).
+	input := sdk.ParseToolArguments(stc.args.String())
 	sp.send(&sdk.StreamToolCallPart{
 		ToolCallID: stc.id,
 		ToolName:   stc.name,
@@ -267,7 +257,7 @@ func (sp *streamProcessor) emitFinishStep() {
 		Response: sdk.ResponseMetadata{
 			ID:        sp.chunkID,
 			ModelID:   sp.chunkModel,
-			Timestamp: time.Unix(sp.chunkCreated, 0),
+			Timestamp: sdk.TimestampFromUnix(sp.chunkCreated),
 		},
 	})
 }

@@ -38,5 +38,5 @@ type TranscriptionResult struct {
 	Language         string
 	DurationSeconds  float64
 	Words            []TranscriptionWord
-	ProviderMetadata map[string]any
+	ProviderMetadata ProviderMetadata
 }

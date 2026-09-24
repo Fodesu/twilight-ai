@@ -1,5 +1,7 @@
 package messages
 
+import "encoding/json"
+
 // --- Request types ---
 
 type messagesRequest struct {
@@ -124,9 +126,9 @@ type responseBlock struct {
 	Data string `json:"data,omitempty"`
 
 	// tool_use
-	ID    string `json:"id,omitempty"`
-	Name  string `json:"name,omitempty"`
-	Input any    `json:"input,omitempty"`
+	ID    string          `json:"id,omitempty"`
+	Name  string          `json:"name,omitempty"`
+	Input json.RawMessage `json:"input,omitempty"`
 }
 
 // cacheCreationDetail holds the per-TTL breakdown of cache-write tokens.

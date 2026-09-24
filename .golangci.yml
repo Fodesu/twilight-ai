@@ -57,6 +57,15 @@ linters:
           - goconst
           - gocritic
           - unparam
+          - prealloc
+      # providertest is test infrastructure shared by the provider packages.
+      - path: ^provider/providertest/
+        linters:
+          - errcheck
+          - gosec
+          - goconst
+          - gocritic
+          - unparam
 
 run:
   timeout: 5m

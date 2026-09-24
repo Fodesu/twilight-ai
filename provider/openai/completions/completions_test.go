@@ -16,6 +16,26 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 )
 
+// mustJSON is the test-side half of the seam change: the SDK resolves a tool's
+// Parameters into JSON Schema before a provider sees it, so a test that used to
+// hand the provider a Go schema value now hands it the resolved JSON.
+// mustSchema builds a schema from its JSON shape, for fixtures written as maps.
+func mustSchema(v any) *jsonschema.Schema {
+	var s jsonschema.Schema
+	if err := json.Unmarshal(mustJSON(v), &s); err != nil {
+		panic(err)
+	}
+	return &s
+}
+
+func mustJSON(v any) json.RawMessage {
+	encoded, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return encoded
+}
+
 // ---------- unit tests (mock server) ----------
 
 func TestDoGenerate(t *testing.T) {
@@ -59,8 +79,8 @@ func TestDoGenerate(t *testing.T) {
 	)
 
 	model := &sdk.Model{ID: "gpt-4o-mini"}
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: model,
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: model.ID,
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "Hi"}},
@@ -114,8 +134,8 @@ func TestDoGenerate_PromptCacheKey(t *testing.T) {
 		completions.WithBaseURL(srv.URL),
 	)
 
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:          &sdk.Model{ID: "gpt-4o-mini"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:          "gpt-4o-mini",
 		Messages:       []sdk.Message{sdk.UserMessage("Hi")},
 		PromptCacheKey: stringPtr("some-key"),
 	})
@@ -158,8 +178,8 @@ func TestDoGenerate_PromptCacheKeyOmittedWhenUnset(t *testing.T) {
 		completions.WithBaseURL(srv.URL),
 	)
 
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "gpt-4o-mini"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "gpt-4o-mini",
 		Messages: []sdk.Message{sdk.UserMessage("Hi")},
 	})
 	if err != nil {
@@ -208,8 +228,8 @@ func TestDoGenerate_WithBedrockCredentials(t *testing.T) {
 		completions.WithBedrockCredentials("us-east-1", "AKIDEXAMPLE", "secret", "test-session"),
 	)
 
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    p.ChatModel("openai.gpt-oss-120b"),
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "openai.gpt-oss-120b",
 		Messages: []sdk.Message{sdk.UserMessage("Hi")},
 	})
 	if err != nil {
@@ -249,8 +269,8 @@ func TestDoStream(t *testing.T) {
 	)
 
 	model := &sdk.Model{ID: "gpt-4o-mini"}
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model: model,
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model: model.ID,
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "Hi"}},
@@ -262,7 +282,7 @@ func TestDoStream(t *testing.T) {
 
 	var collected string
 	var gotStart, gotFinish bool
-	for part := range sr.Stream {
+	for part := range sr {
 		switch p := part.(type) {
 		case *sdk.StartPart:
 			gotStart = true
@@ -331,8 +351,8 @@ func TestDoStream_UsageInTrailingChunk(t *testing.T) {
 		completions.WithBaseURL(srv.URL),
 	)
 
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "gpt-4o-mini"},
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model: "gpt-4o-mini",
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "Hi"}},
@@ -346,7 +366,7 @@ func TestDoStream_UsageInTrailingChunk(t *testing.T) {
 		finishStep *sdk.FinishStepPart
 		finishAll  *sdk.FinishPart
 	)
-	for part := range sr.Stream {
+	for part := range sr {
 		switch p := part.(type) {
 		case *sdk.FinishStepPart:
 			finishStep = p
@@ -446,8 +466,8 @@ func TestDoGenerate_WithImage(t *testing.T) {
 		completions.WithBaseURL(srv.URL),
 	)
 
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "gpt-4o-mini"},
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "gpt-4o-mini",
 		Messages: []sdk.Message{{
 			Role: sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{
@@ -519,13 +539,13 @@ func TestDoGenerate_ToolCall(t *testing.T) {
 
 	p := completions.New(completions.WithAPIKey("test-key"), completions.WithBaseURL(srv.URL))
 
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "gpt-4o-mini"},
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "gpt-4o-mini",
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "What's the weather in Beijing?"}},
 		}},
-		Tools: []sdk.Tool{{
+		Tools: []sdk.ToolDefinition{{
 			Name:        "get_weather",
 			Description: "Get the weather for a location",
 			Parameters: &jsonschema.Schema{
@@ -536,7 +556,7 @@ func TestDoGenerate_ToolCall(t *testing.T) {
 				Required: []string{"location"},
 			},
 		}},
-		ToolChoice: "auto",
+		ToolChoice: sdk.ToolChoice{Mode: sdk.ToolChoiceAuto},
 	})
 	if err != nil {
 		t.Fatalf("DoGenerate: %v", err)
@@ -555,9 +575,9 @@ func TestDoGenerate_ToolCall(t *testing.T) {
 	if tc.ToolName != "get_weather" {
 		t.Errorf("tool name: got %q", tc.ToolName)
 	}
-	input, ok := tc.Input.(map[string]any)
-	if !ok {
-		t.Fatalf("input type: got %T", tc.Input)
+	var input map[string]any
+	if err := tc.Input.Unmarshal(&input); err != nil {
+		t.Fatalf("decode input: %v", err)
 	}
 	if input["location"] != "Beijing" {
 		t.Errorf("location: got %v", input["location"])
@@ -622,8 +642,8 @@ func TestDoGenerate_ToolCallMultiTurn(t *testing.T) {
 
 	p := completions.New(completions.WithAPIKey("test-key"), completions.WithBaseURL(srv.URL))
 
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "gpt-4o-mini"},
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "gpt-4o-mini",
 		Messages: []sdk.Message{
 			{
 				Role:    sdk.MessageRoleUser,
@@ -634,7 +654,7 @@ func TestDoGenerate_ToolCallMultiTurn(t *testing.T) {
 				Content: []sdk.MessagePart{sdk.ToolCallPart{
 					ToolCallID: "call_abc",
 					ToolName:   "get_weather",
-					Input:      map[string]any{"location": "Beijing"},
+					Input:      sdk.ParseToolArguments(`{"location":"Beijing"}`),
 				}},
 			},
 			{
@@ -642,7 +662,7 @@ func TestDoGenerate_ToolCallMultiTurn(t *testing.T) {
 				Content: []sdk.MessagePart{sdk.ToolResultPart{
 					ToolCallID: "call_abc",
 					ToolName:   "get_weather",
-					Result:     map[string]any{"temp": 25, "condition": "sunny"},
+					Result:     sdk.RawJSONOutput(json.RawMessage(`{"condition":"sunny","temp":25}`)),
 				}},
 			},
 		},
@@ -682,13 +702,13 @@ func TestDoStream_ToolCall(t *testing.T) {
 
 	p := completions.New(completions.WithAPIKey("test-key"), completions.WithBaseURL(srv.URL))
 
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "gpt-4o-mini"},
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model: "gpt-4o-mini",
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "Weather in Tokyo?"}},
 		}},
-		Tools: []sdk.Tool{{Name: "get_weather", Parameters: &jsonschema.Schema{Type: "object"}}},
+		Tools: []sdk.ToolDefinition{{Name: "get_weather", Parameters: &jsonschema.Schema{Type: "object"}}},
 	})
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
@@ -703,7 +723,7 @@ func TestDoStream_ToolCall(t *testing.T) {
 		gotFinish     bool
 	)
 
-	for part := range sr.Stream {
+	for part := range sr {
 		switch p := part.(type) {
 		case *sdk.ToolInputStartPart:
 			gotInputStart = true
@@ -742,8 +762,8 @@ func TestDoStream_ToolCall(t *testing.T) {
 	} else if gotToolCall.ToolCallID != "call_xyz" || gotToolCall.ToolName != "get_weather" {
 		t.Errorf("tool call: %+v", gotToolCall)
 	}
-	input, ok := gotToolCall.Input.(map[string]any)
-	if !ok || input["location"] != "Tokyo" {
+	var input map[string]any
+	if err := gotToolCall.Input.Unmarshal(&input); err != nil || input["location"] != "Tokyo" {
 		t.Errorf("tool call input: %+v", gotToolCall.Input)
 	}
 	if !gotFinishStep {
@@ -756,7 +776,7 @@ func TestDoStream_ToolCall(t *testing.T) {
 
 func TestDoGenerate_NoModel(t *testing.T) {
 	p := completions.New(completions.WithAPIKey("k"))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{})
+	_, err := p.DoGenerate(context.Background(), sdk.Request{})
 	if err == nil {
 		t.Fatal("expected error for nil model")
 	}
@@ -764,7 +784,7 @@ func TestDoGenerate_NoModel(t *testing.T) {
 
 func TestDoStream_NoModel(t *testing.T) {
 	p := completions.New(completions.WithAPIKey("k"))
-	_, err := p.DoStream(context.Background(), sdk.GenerateParams{})
+	_, err := p.DoStream(context.Background(), sdk.Request{})
 	if err == nil {
 		t.Fatal("expected error for nil model")
 	}
@@ -792,8 +812,8 @@ func TestDoGenerate_ReasoningContent(t *testing.T) {
 	defer srv.Close()
 
 	p := completions.New(completions.WithAPIKey("k"), completions.WithBaseURL(srv.URL))
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "deepseek-r1"},
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "deepseek-r1",
 		Messages: []sdk.Message{sdk.UserMessage("2+2?")},
 	})
 	if err != nil {
@@ -827,8 +847,8 @@ func TestDoGenerate_ReasoningFallback(t *testing.T) {
 	defer srv.Close()
 
 	p := completions.New(completions.WithAPIKey("k"), completions.WithBaseURL(srv.URL))
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "gpt-oss"},
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "gpt-oss",
 		Messages: []sdk.Message{sdk.UserMessage("answer")},
 	})
 	if err != nil {
@@ -869,8 +889,8 @@ func TestDoGenerate_DeepSeekCompatDisablesThinking(t *testing.T) {
 		completions.WithBaseURL(srv.URL),
 		completions.WithDeepSeekChatCompletionsCompat(),
 	)
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:           &sdk.Model{ID: "deepseek-v4-flash"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:           "deepseek-v4-flash",
 		Messages:        []sdk.Message{sdk.UserMessage("hi")},
 		ReasoningEffort: stringPtr("none"),
 	})
@@ -915,8 +935,8 @@ func TestDoGenerate_DeepSeekCompatLeavesOtherReasoningEffortAlone(t *testing.T) 
 		completions.WithBaseURL(srv.URL),
 		completions.WithDeepSeekChatCompletionsCompat(),
 	)
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:           &sdk.Model{ID: "deepseek-v4-pro"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:           "deepseek-v4-pro",
 		Messages:        []sdk.Message{sdk.UserMessage("hi")},
 		ReasoningEffort: stringPtr("xhigh"),
 	})
@@ -957,8 +977,8 @@ func TestDoGenerate_ForwardsMaxReasoningEffortVerbatim(t *testing.T) {
 	defer srv.Close()
 
 	p := completions.New(completions.WithAPIKey("k"), completions.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:           &sdk.Model{ID: "gpt-5.2"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:           "gpt-5.2",
 		Messages:        []sdk.Message{sdk.UserMessage("hi")},
 		ReasoningEffort: stringPtr("max"),
 	})
@@ -991,8 +1011,8 @@ func TestDoStream_ReasoningFallback(t *testing.T) {
 	defer srv.Close()
 
 	p := completions.New(completions.WithAPIKey("k"), completions.WithBaseURL(srv.URL))
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "gpt-oss"},
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model:    "gpt-oss",
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
 	})
 	if err != nil {
@@ -1000,7 +1020,7 @@ func TestDoStream_ReasoningFallback(t *testing.T) {
 	}
 
 	var reasoning, text string
-	for part := range sr.Stream {
+	for part := range sr {
 		switch p := part.(type) {
 		case *sdk.ReasoningDeltaPart:
 			reasoning += p.Text
@@ -1039,8 +1059,8 @@ func TestDoStream_ReasoningClosedBeforeToolCall(t *testing.T) {
 	defer srv.Close()
 
 	p := completions.New(completions.WithAPIKey("k"), completions.WithBaseURL(srv.URL))
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "deepseek-r1"},
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model:    "deepseek-r1",
 		Messages: []sdk.Message{sdk.UserMessage("search")},
 	})
 	if err != nil {
@@ -1048,7 +1068,7 @@ func TestDoStream_ReasoningClosedBeforeToolCall(t *testing.T) {
 	}
 
 	events := make([]sdk.StreamPartType, 0, 8)
-	for part := range sr.Stream {
+	for part := range sr {
 		events = append(events, part.Type())
 	}
 
@@ -1091,8 +1111,8 @@ func TestDoStream_FlushOnAbruptEnd(t *testing.T) {
 	defer srv.Close()
 
 	p := completions.New(completions.WithAPIKey("k"), completions.WithBaseURL(srv.URL))
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "m"},
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model:    "m",
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
 	})
 	if err != nil {
@@ -1100,7 +1120,7 @@ func TestDoStream_FlushOnAbruptEnd(t *testing.T) {
 	}
 
 	var gotReasoningEnd, gotTextEnd, gotFinish bool
-	for part := range sr.Stream {
+	for part := range sr {
 		switch part.(type) {
 		case *sdk.ReasoningEndPart:
 			gotReasoningEnd = true
@@ -1162,8 +1182,8 @@ func TestDoGenerate_AssistantReasoningInRequest(t *testing.T) {
 	defer srv.Close()
 
 	p := completions.New(completions.WithAPIKey("k"), completions.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: &sdk.Model{ID: "m"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: "m",
 		Messages: []sdk.Message{
 			sdk.UserMessage("question"),
 			{
@@ -1199,8 +1219,8 @@ func TestDoStream_EarlyToolCallDetection(t *testing.T) {
 	defer srv.Close()
 
 	p := completions.New(completions.WithAPIKey("k"), completions.WithBaseURL(srv.URL))
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "m"},
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model:    "m",
 		Messages: []sdk.Message{sdk.UserMessage("time?")},
 	})
 	if err != nil {
@@ -1209,7 +1229,7 @@ func TestDoStream_EarlyToolCallDetection(t *testing.T) {
 
 	events := make([]sdk.StreamPartType, 0, 8)
 	var toolCallCount int
-	for part := range sr.Stream {
+	for part := range sr {
 		events = append(events, part.Type())
 		if part.Type() == sdk.StreamPartTypeToolCall {
 			toolCallCount++
@@ -1263,8 +1283,8 @@ func integrationModel(t *testing.T) *sdk.Model {
 
 func TestIntegration_DoGenerate(t *testing.T) {
 	p := newIntegrationProvider(t)
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model: integrationModel(t),
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model: integrationModel(t).ID,
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "Say hello in one word."}},
@@ -1283,8 +1303,8 @@ func TestIntegration_DoGenerate(t *testing.T) {
 
 func TestIntegration_DoStream(t *testing.T) {
 	p := newIntegrationProvider(t)
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model: integrationModel(t),
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model: integrationModel(t).ID,
 		Messages: []sdk.Message{{
 			Role:    sdk.MessageRoleUser,
 			Content: []sdk.MessagePart{sdk.TextPart{Text: "Count from 1 to 5."}},
@@ -1295,7 +1315,7 @@ func TestIntegration_DoStream(t *testing.T) {
 	}
 
 	var text string
-	for part := range sr.Stream {
+	for part := range sr {
 		switch p := part.(type) {
 		case *sdk.TextDeltaPart:
 			text += p.Text
@@ -1331,8 +1351,8 @@ func TestIntegration_MultiModel(t *testing.T) {
 	for _, m := range models {
 		t.Run(m.id, func(t *testing.T) {
 			model := &sdk.Model{ID: m.id}
-			result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-				Model:    model,
+			result, err := p.DoGenerate(context.Background(), sdk.Request{
+				Model:    model.ID,
 				Messages: []sdk.Message{sdk.UserMessage("What is 2+3? Answer with just the number.")},
 			})
 			if err != nil {
@@ -1366,8 +1386,8 @@ func TestIntegration_MultiModel_Stream(t *testing.T) {
 	for _, m := range models {
 		t.Run(m.id, func(t *testing.T) {
 			model := &sdk.Model{ID: m.id}
-			sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-				Model:    model,
+			sr, err := p.DoStream(context.Background(), sdk.Request{
+				Model:    model.ID,
 				Messages: []sdk.Message{sdk.UserMessage("What is 2+3? Answer with just the number.")},
 			})
 			if err != nil {
@@ -1376,7 +1396,7 @@ func TestIntegration_MultiModel_Stream(t *testing.T) {
 
 			var text, reasoning string
 			var gotReasoningStart, gotReasoningEnd bool
-			for part := range sr.Stream {
+			for part := range sr {
 				switch p := part.(type) {
 				case *sdk.ReasoningStartPart:
 					gotReasoningStart = true
@@ -1414,12 +1434,16 @@ func TestIntegration_MultiModel_Stream(t *testing.T) {
 
 func TestIntegration_Reasoning_ToolCall(t *testing.T) {
 	p := newIntegrationProvider(t)
-	model := &sdk.Model{ID: "deepseek/deepseek-r1"}
+	// The reasoning assertions need a model that emits reasoning, so this case
+	// reads OPENAI_MODEL like every other integration case: point it at a
+	// reasoning model (deepseek-reasoner, o4-mini, ...) to exercise them, and
+	// the tool-call assertions run against whatever the endpoint serves.
+	model := integrationModel(t)
 
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    model,
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    model.ID,
 		Messages: []sdk.Message{sdk.UserMessage("What's the weather in Tokyo right now?")},
-		Tools: []sdk.Tool{{
+		Tools: []sdk.ToolDefinition{{
 			Name:        "get_weather",
 			Description: "Get the current weather for a city",
 			Parameters: &jsonschema.Schema{
@@ -1430,7 +1454,7 @@ func TestIntegration_Reasoning_ToolCall(t *testing.T) {
 				Required: []string{"city"},
 			},
 		}},
-		ToolChoice: "auto",
+		ToolChoice: sdk.ToolChoice{Mode: sdk.ToolChoiceAuto},
 	})
 	if err != nil {
 		t.Fatalf("DoGenerate: %v", err)
@@ -1522,9 +1546,7 @@ func TestProviderTest_OK(t *testing.T) {
 func TestProviderTest_Unhealthy(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{"message": "invalid api key"},
-		})
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "invalid api key"}})
 	}))
 	defer srv.Close()
 
@@ -1580,9 +1602,7 @@ func TestTestModel_Supported(t *testing.T) {
 func TestTestModel_NotSupported(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{"message": "model not found"},
-		})
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"message": "model not found"}})
 	}))
 	defer srv.Close()
 
@@ -1631,8 +1651,8 @@ func TestDoGenerate_MiniMaxCompatDisablesThinkingAndSplitsReasoning(t *testing.T
 		completions.WithBaseURL(srv.URL),
 		completions.WithMiniMaxChatCompletionsCompat(),
 	)
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:           &sdk.Model{ID: "MiniMax-M3"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:           "MiniMax-M3",
 		Messages:        []sdk.Message{sdk.UserMessage("hi")},
 		ReasoningEffort: stringPtr("none"),
 	})
@@ -1681,8 +1701,8 @@ func TestDoGenerate_MiniMaxCompatMapsReasoningEffortToAdaptiveThinking(t *testin
 		completions.WithBaseURL(srv.URL),
 		completions.WithMiniMaxChatCompletionsCompat(),
 	)
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:           &sdk.Model{ID: "MiniMax-M3"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:           "MiniMax-M3",
 		Messages:        []sdk.Message{sdk.UserMessage("hi")},
 		ReasoningEffort: stringPtr("high"),
 	})
@@ -1700,7 +1720,7 @@ func TestDoGenerate_MiniMaxCompatMapsReasoningEffortToAdaptiveThinking(t *testin
 	}
 }
 
-func TestGenerateTextResult_MiniMaxReasoningDetailsPreserved(t *testing.T) {
+func TestGenerate_MiniMaxReasoningDetailsPreserved(t *testing.T) {
 	var call int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		call++
@@ -1760,29 +1780,21 @@ func TestGenerateTextResult_MiniMaxReasoningDetailsPreserved(t *testing.T) {
 		completions.WithMiniMaxChatCompletionsCompat(),
 	)
 	model := p.ChatModel("MiniMax-M3")
-
-	result, err := sdk.GenerateTextResult(
-		context.Background(),
-		sdk.WithModel(model),
-		sdk.WithMessages([]sdk.Message{sdk.UserMessage("hi")}),
-	)
+	result, err := model.Generate(context.Background(), sdk.Request{Messages: []sdk.Message{sdk.UserMessage("hi")}})
 	if err != nil {
-		t.Fatalf("GenerateTextResult: %v", err)
+		t.Fatalf("Generate: %v", err)
 	}
 	if result.Reasoning != "Let me think" {
 		t.Fatalf("reasoning: got %q", result.Reasoning)
 	}
-
-	history := make([]sdk.Message, 0, 1+len(result.Messages)+1)
+	// The caller assembles the step's messages and replays them: the reasoning
+	// details must come back on the assistant message of the second request.
+	history := make([]sdk.Message, 0, 4)
 	history = append(history, sdk.UserMessage("hi"))
-	history = append(history, result.Messages...)
+	history = append(history, assistantStep(&result))
 	history = append(history, sdk.UserMessage("continue"))
-	if _, err := sdk.GenerateTextResult(
-		context.Background(),
-		sdk.WithModel(model),
-		sdk.WithMessages(history),
-	); err != nil {
-		t.Fatalf("second GenerateTextResult: %v", err)
+	if _, err := model.Generate(context.Background(), sdk.Request{Messages: history}); err != nil {
+		t.Fatalf("second Generate: %v", err)
 	}
 }
 
@@ -1819,8 +1831,8 @@ func TestDoStream_MiniMaxReasoningDetails(t *testing.T) {
 		completions.WithBaseURL(srv.URL),
 		completions.WithMiniMaxChatCompletionsCompat(),
 	)
-	sr, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "MiniMax-M3"},
+	sr, err := p.DoStream(context.Background(), sdk.Request{
+		Model:    "MiniMax-M3",
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
 	})
 	if err != nil {
@@ -1828,8 +1840,8 @@ func TestDoStream_MiniMaxReasoningDetails(t *testing.T) {
 	}
 
 	var reasoning, text string
-	var reasoningMeta map[string]any
-	for part := range sr.Stream {
+	var reasoningMeta sdk.ProviderMetadata
+	for part := range sr {
 		switch p := part.(type) {
 		case *sdk.ReasoningDeltaPart:
 			reasoning += p.Text
@@ -1856,18 +1868,14 @@ func TestDoStream_MiniMaxReasoningDetails(t *testing.T) {
 	}
 }
 
-func minimaxReasoningDetailsFromTestMetadata(t *testing.T, meta map[string]any) []map[string]any {
+func minimaxReasoningDetailsFromTestMetadata(t *testing.T, meta sdk.ProviderMetadata) []map[string]any {
 	t.Helper()
-	minimax, ok := meta["minimax"].(map[string]any)
-	if !ok {
+	raw := meta.Get("minimax", "reasoning_details")
+	if raw == "" {
 		t.Fatalf("expected minimax metadata, got %#v", meta)
 	}
-	raw, err := json.Marshal(minimax["reasoning_details"])
-	if err != nil {
-		t.Fatalf("marshal reasoning_details metadata: %v", err)
-	}
 	var details []map[string]any
-	if err := json.Unmarshal(raw, &details); err != nil {
+	if err := json.Unmarshal([]byte(raw), &details); err != nil {
 		t.Fatalf("unmarshal reasoning_details metadata: %v", err)
 	}
 	return details
@@ -1881,8 +1889,8 @@ func stringPtr(s string) *string { return &s }
 // of an anyOf, the pattern standard JSON Schema allows but Moonshot/Kimi
 // rejects with "tools.function.parameters is not a valid moonshot flavored
 // json schema".
-func kimiAnyOfTool() sdk.Tool {
-	return sdk.Tool{
+func kimiAnyOfTool() sdk.ToolDefinition {
+	return sdk.ToolDefinition{
 		Name:        "attach_file",
 		Description: "Attach a file",
 		Parameters: &jsonschema.Schema{
@@ -1904,11 +1912,11 @@ func kimiAnyOfTool() sdk.Tool {
 	}
 }
 
-func kimiMemohAttachmentTool() sdk.Tool {
-	return sdk.Tool{
+func kimiMemohAttachmentTool() sdk.ToolDefinition {
+	return sdk.ToolDefinition{
 		Name:        "send_message",
 		Description: "Send attachments",
-		Parameters: map[string]any{
+		Parameters: mustSchema(map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"attachments": map[string]any{
@@ -1940,7 +1948,7 @@ func kimiMemohAttachmentTool() sdk.Tool {
 				},
 			},
 			"required": []string{"attachments"},
-		},
+		}),
 	}
 }
 
@@ -2080,10 +2088,10 @@ func TestDoGenerate_KimiCompatSanitizesAnyOfSchema(t *testing.T) {
 		completions.WithBaseURL(srv.URL),
 		completions.WithKimiChatCompletionsCompat(),
 	)
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "kimi-k2"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "kimi-k2",
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
-		Tools:    []sdk.Tool{kimiAnyOfTool()},
+		Tools:    []sdk.ToolDefinition{kimiAnyOfTool()},
 	})
 	if err != nil {
 		t.Fatalf("DoGenerate: %v", err)
@@ -2101,10 +2109,10 @@ func TestDoGenerate_KimiCompatNormalizesMemohAttachmentSchema(t *testing.T) {
 		completions.WithBaseURL(srv.URL),
 		completions.WithKimiChatCompletionsCompat(),
 	)
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "kimi-k2"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "kimi-k2",
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
-		Tools:    []sdk.Tool{kimiMemohAttachmentTool()},
+		Tools:    []sdk.ToolDefinition{kimiMemohAttachmentTool()},
 	})
 	if err != nil {
 		t.Fatalf("DoGenerate: %v", err)
@@ -2122,15 +2130,15 @@ func TestDoStream_KimiCompatNormalizesMemohAttachmentSchema(t *testing.T) {
 		completions.WithBaseURL(srv.URL),
 		completions.WithKimiChatCompletionsCompat(),
 	)
-	result, err := p.DoStream(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "kimi-k2"},
+	result, err := p.DoStream(context.Background(), sdk.Request{
+		Model:    "kimi-k2",
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
-		Tools:    []sdk.Tool{kimiMemohAttachmentTool()},
+		Tools:    []sdk.ToolDefinition{kimiMemohAttachmentTool()},
 	})
 	if err != nil {
 		t.Fatalf("DoStream: %v", err)
 	}
-	for part := range result.Stream {
+	for part := range result {
 		if errorPart, ok := part.(*sdk.ErrorPart); ok {
 			t.Fatalf("stream error: %v", errorPart.Error)
 		}
@@ -2173,10 +2181,10 @@ func TestKimiCompatRequiresExplicitOption(t *testing.T) {
 		completions.WithBaseURL("https://api.moonshot.cn/v1"),
 		completions.WithHTTPClient(&http.Client{Transport: &redirectingTransport{targetURL: target}}),
 	)
-	_, err = p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "kimi-k2"},
+	_, err = p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "kimi-k2",
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
-		Tools:    []sdk.Tool{kimiAnyOfTool()},
+		Tools:    []sdk.ToolDefinition{kimiAnyOfTool()},
 	})
 	if err != nil {
 		t.Fatalf("DoGenerate: %v", err)
@@ -2202,10 +2210,10 @@ func TestKimiCompatExplicitOptionOverridesNonMoonshotBaseURL(t *testing.T) {
 		completions.WithBaseURL(srv.URL), // not a Moonshot host
 		completions.WithKimiChatCompletionsCompat(),
 	)
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "kimi-k2"},
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "kimi-k2",
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
-		Tools:    []sdk.Tool{kimiAnyOfTool()},
+		Tools:    []sdk.ToolDefinition{kimiAnyOfTool()},
 	})
 	if err != nil {
 		t.Fatalf("DoGenerate: %v", err)

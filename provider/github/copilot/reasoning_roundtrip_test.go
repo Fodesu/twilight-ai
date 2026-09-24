@@ -35,8 +35,8 @@ func TestParseResponseCapturesReasoningOpaque(t *testing.T) {
 	defer srv.Close()
 
 	p := New(WithAPIKey("k"), WithBaseURL(srv.URL))
-	result, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:    &sdk.Model{ID: "claude-sonnet-4.5"},
+	result, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:    "claude-sonnet-4.5",
 		Messages: []sdk.Message{sdk.UserMessage("hi")},
 	})
 	if err != nil {
@@ -117,7 +117,7 @@ func TestConvertAssistantMessageDropsForeignReasoning(t *testing.T) {
 			sdk.ReasoningPart{
 				Text:             "anthropic thinking",
 				Format:           sdk.ReasoningFormatAnthropic,
-				ProviderMetadata: map[string]any{"anthropic": map[string]any{"signature": "SIG"}},
+				ProviderMetadata: sdk.ProviderMetadata{"anthropic": {"signature": "SIG"}},
 			},
 			sdk.TextPart{Text: "answer"},
 		},

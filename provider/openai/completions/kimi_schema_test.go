@@ -76,16 +76,12 @@ func TestNormalizeSchemaForKimiDistributesMemohAttachmentObject(t *testing.T) {
 
 func TestNormalizeSchemaForKimiRejectsUnsafeObjectBranchMerge(t *testing.T) {
 	schema := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"path": map[string]any{"type": "string"},
-		},
+		"type":       "object",
+		"properties": map[string]any{"path": map[string]any{"type": "string"}},
 		"anyOf": []any{
 			map[string]any{
-				"properties": map[string]any{
-					"url": map[string]any{"type": "string"},
-				},
-				"required": []string{"url"},
+				"properties": map[string]any{"url": map[string]any{"type": "string"}},
+				"required":   []string{"url"},
 			},
 		},
 	}
@@ -101,10 +97,8 @@ func TestNormalizeSchemaForKimiRejectsUnsafeObjectBranchMerge(t *testing.T) {
 
 func TestNormalizeSchemaForKimiRejectsRequiredPropertyMissingFromProperties(t *testing.T) {
 	schema := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"url": map[string]any{"type": "string"},
-		},
+		"type":       "object",
+		"properties": map[string]any{"url": map[string]any{"type": "string"}},
 		"anyOf": []any{
 			map[string]any{"required": []string{"path"}},
 		},
@@ -225,12 +219,10 @@ func TestNormalizeSchemaForKimiRejectsNonObjectRootSchema(t *testing.T) {
 func TestNormalizeSchemaForKimiRejectsInvalidAdditionalProperties(t *testing.T) {
 	schema := map[string]any{
 		"type": "object",
-		"properties": map[string]any{
-			"config": map[string]any{
-				"type":                 "object",
-				"additionalProperties": "yes",
-			},
-		},
+		"properties": map[string]any{"config": map[string]any{
+			"type":                 "object",
+			"additionalProperties": "yes",
+		}},
 	}
 
 	_, err := normalizeSchemaForKimi(schema)

@@ -71,9 +71,7 @@ func TestProvider_DoSynthesize(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{
 				{
-					"message": map[string]any{
-						"audio": map[string]any{"data": audioPayload},
-					},
+					"message": map[string]any{"audio": map[string]any{"data": audioPayload}},
 				},
 			},
 		})

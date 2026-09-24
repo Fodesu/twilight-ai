@@ -27,8 +27,8 @@ func TestMessageRolesUseOpenAINativeRolesByDefault(t *testing.T) {
 	defer srv.Close()
 
 	p := completions.New(completions.WithAPIKey("k"), completions.WithBaseURL(srv.URL))
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:  p.ChatModel("gpt-5"),
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:  "gpt-5",
 		System: "root policy",
 		Messages: []sdk.Message{
 			sdk.UserMessage("question"),
@@ -60,8 +60,8 @@ func TestMessageRolesCanFallbackForCompatibleEndpoints(t *testing.T) {
 		completions.WithBaseURL(srv.URL),
 		completions.WithMessageRoleCapabilities(sdk.MessageRoleCapabilities{}),
 	)
-	_, err := p.DoGenerate(context.Background(), sdk.GenerateParams{
-		Model:  p.ChatModel("compatible-model"),
+	_, err := p.DoGenerate(context.Background(), sdk.Request{
+		Model:  "compatible-model",
 		System: "root policy",
 		Messages: []sdk.Message{
 			sdk.UserMessage("question"),

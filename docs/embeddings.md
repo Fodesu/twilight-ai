@@ -257,18 +257,18 @@ queryVec, _ := sdk.Embed(ctx, userQuestion, sdk.WithEmbeddingModel(embModel))
 relevantDocs := searchVectorDB(queryVec) // your vector DB
 
 // 2. Generate answer with context
-text, _ := sdk.GenerateText(ctx,
-    sdk.WithModel(chatModel),
-    sdk.WithSystem("Answer based on the provided context."),
-    sdk.WithMessages([]sdk.Message{
+result, _ := chatModel.Generate(ctx, sdk.Request{
+    System: "Answer based on the provided context.",
+    Messages: []sdk.Message{
         sdk.UserMessage(fmt.Sprintf("Context:\n%s\n\nQuestion: %s",
             strings.Join(relevantDocs, "\n"), userQuestion)),
-    }),
-)
+    },
+})
+text := result.Text
 ```
 
 ## Next Steps
 
 - [Providers](providers.md) — learn about chat providers (OpenAI, Anthropic, Google)
-- [Tool Calling](tools.md) — define tools and enable multi-step execution
+- [Tool Calling](tools.md) — define tools and execute the calls a reply asks for
 - [API Reference](api-reference.md) — complete type and function reference
