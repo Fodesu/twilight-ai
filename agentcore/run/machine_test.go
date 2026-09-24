@@ -35,9 +35,9 @@ func newRun(t *testing.T) run.MachineState {
 
 func mustDecide(t *testing.T, s run.MachineState, c run.AgentCommand) []run.Fact {
 	t.Helper()
-	facts, err := schema.V1().Machine.Decide(s, settling(s, c))
+	facts, err := schema.Machine.Decide(s, settling(s, c))
 	if err != nil {
-		t.Fatalf("schema.V1().Machine.Decide(%T): %v", c, err)
+		t.Fatalf("schema.Machine.Decide(%T): %v", c, err)
 	}
 	return facts
 }
@@ -46,9 +46,9 @@ func fold(t *testing.T, s run.MachineState, facts []run.Fact) run.MachineState {
 	t.Helper()
 	for _, f := range facts {
 		var err error
-		s, err = schema.V1().Machine.Evolve(s, f)
+		s, err = schema.Machine.Evolve(s, f)
 		if err != nil {
-			t.Fatalf("schema.V1().Machine.Evolve(%T): %v", f, err)
+			t.Fatalf("schema.Machine.Evolve(%T): %v", f, err)
 		}
 	}
 	return s
@@ -72,21 +72,21 @@ func buildPrepare(t *testing.T, s run.MachineState, req sdk.Request, specs []run
 	if err != nil {
 		t.Fatal(err)
 	}
-	reqDigest, err := schema.V1().Canonical.DigestRequest(frozenReq)
+	reqDigest, err := schema.Canonical.DigestRequest(frozenReq)
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolsDigest, err := schema.V1().Canonical.DigestToolSpecs(specs)
+	toolsDigest, err := schema.Canonical.DigestToolSpecs(specs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	modelRef := run.ModelRef(frozenReq.Model)
-	binding, err := schema.V1().Canonical.DigestModelStepBinding(modelRef, reqDigest, toolsDigest)
+	binding, err := schema.Canonical.DigestModelStepBinding(modelRef, reqDigest, toolsDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmdID := schema.V1().Identity.DeriveModelRequestCommandID(s.RunID, 0)
-	stepID := schema.V1().Identity.DeriveModelStepID(s.RunID, cmdID, binding)
+	cmdID := schema.Identity.DeriveModelRequestCommandID(s.RunID, 0)
+	stepID := schema.Identity.DeriveModelStepID(s.RunID, cmdID, binding)
 	ids := make([]run.InputID, len(s.PendingInputs))
 	for i, in := range s.PendingInputs {
 		ids[i] = in.ID
@@ -108,7 +108,7 @@ func makeSpec(t *testing.T, def sdk.ToolDefinition, policy run.ResponsePolicy) r
 	if err != nil {
 		t.Fatal(err)
 	}
-	d, err := schema.V1().Canonical.DigestToolDefinition(frozen)
+	d, err := schema.Canonical.DigestToolDefinition(frozen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func makeSpec(t *testing.T, def sdk.ToolDefinition, policy run.ResponsePolicy) r
 
 func responseDecisionDigest(t *testing.T, kind run.ResponseKind, decision run.ResponseDecision, reason string) run.Digest {
 	t.Helper()
-	d, err := schema.V1().Canonical.DigestToolResponseDecision(kind, decision, reason)
+	d, err := schema.Canonical.DigestToolResponseDecision(kind, decision, reason)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func responseDecisionDigest(t *testing.T, kind run.ResponseKind, decision run.Re
 
 func responsePayloadDigest(t *testing.T, payload run.CanonicalJSON) run.Digest {
 	t.Helper()
-	d, err := schema.V1().Canonical.DigestToolResponsePayload(payload)
+	d, err := schema.Canonical.DigestToolResponsePayload(payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,8 +138,8 @@ func responsePayloadDigest(t *testing.T, payload run.CanonicalJSON) run.Digest {
 func makeBinding(t *testing.T, source run.StepID, index int, providerID string, spec run.ToolSpec, args string) run.ToolCallBinding {
 	t.Helper()
 	parsedArgs := cj(args)
-	callID := schema.V1().Identity.DeriveCallID(source, index)
-	bd, err := (canonical.V1{}).DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, parsedArgs)
+	callID := schema.Identity.DeriveCallID(source, index)
+	bd, err := (canonical.Digests{}).DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, parsedArgs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func makeBinding(t *testing.T, source run.StepID, index int, providerID string, 
 
 // cid is the derived CallID of the index-th call of a step.
 func cid(step run.StepID, index int) run.CallID {
-	return schema.V1().Identity.DeriveCallID(step, index)
+	return schema.Identity.DeriveCallID(step, index)
 }
 
 func modelResultWithCalls(callIDs ...string) model.ModelResult {
@@ -185,12 +185,12 @@ func modelResultWithNamedCalls(toolName, args string, callIDs ...string) model.M
 // (RUN-WIR-1): the step's rejected count is the effect's sequence.
 func startModel(s run.MachineState, stepID run.StepID) run.StartModelExecution {
 	ms, _ := s.Current.(run.ModelStep)
-	return run.StartModelExecution{StepID: stepID, Effect: schema.V1().Identity.DeriveEffectID(s.RunID, stepID, "", ms.Rejects)}
+	return run.StartModelExecution{StepID: stepID, Effect: schema.Identity.DeriveEffectID(s.RunID, stepID, "", ms.Rejects)}
 }
 
 // startTool is the start of a call's one tool effect.
 func startTool(s run.MachineState, stepID run.StepID, callID run.CallID) run.StartToolCall {
-	return run.StartToolCall{StepID: stepID, CallID: callID, Effect: schema.V1().Identity.DeriveEffectID(s.RunID, stepID, callID, 0)}
+	return run.StartToolCall{StepID: stepID, CallID: callID, Effect: schema.Identity.DeriveEffectID(s.RunID, stepID, callID, 0)}
 }
 
 // settling fills the Effect of a settlement command from the state it
@@ -272,7 +272,7 @@ func TestRunCreatedFoldsOntoZeroState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	facts, err := schema.V1().Machine.CreateGroup(newRun, []run.AgentInput{{ID: "in-1", Digest: inputDigest(`1`)}})
+	facts, err := schema.Machine.CreateGroup(newRun, []run.AgentInput{{ID: "in-1", Digest: inputDigest(`1`)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,10 +283,10 @@ func TestRunCreatedFoldsOntoZeroState(t *testing.T) {
 	if s.RunID != "r" || s.Owner != "turn-1" || s.Attempt != 2 || !isOpen(s.Current) || len(s.PendingInputs) != 1 {
 		t.Fatalf("state after create group = %+v", s)
 	}
-	if _, err := schema.V1().Machine.Evolve(s, facts[0]); err == nil {
+	if _, err := schema.Machine.Evolve(s, facts[0]); err == nil {
 		t.Fatal("second RunCreated folded")
 	}
-	if _, err := schema.V1().Machine.Evolve(run.MachineState{}, facts[1]); err == nil {
+	if _, err := schema.Machine.Evolve(run.MachineState{}, facts[1]); err == nil {
 		t.Fatal("InputAccepted folded before RunCreated")
 	}
 }
@@ -329,7 +329,7 @@ func TestPrepareRejectsIncompleteInputIDs(t *testing.T) {
 	s := newRun(t)
 	prep, _ := buildPrepare(t, s, testRequest(), nil)
 	prep.InputIDs = nil
-	if _, err := schema.V1().Machine.Decide(s, prep); err == nil {
+	if _, err := schema.Machine.Decide(s, prep); err == nil {
 		t.Fatal("prepare with missing InputIDs accepted")
 	}
 }
@@ -376,7 +376,7 @@ func TestExternalResponseRequiresPayloadDigest(t *testing.T) {
 	s = fold(t, s, facts)
 	respID := opened.Calls[0].Response.ID
 	payload := cj(`{"answer":"ok"}`)
-	if _, err := schema.V1().Machine.Decide(s, run.SubmitToolResponse{StepID: opened.StepID, CallID: cid(stepID, 0), ResponseID: respID, ResponseDigest: "sha256:bad", Payload: payload}); err == nil {
+	if _, err := schema.Machine.Decide(s, run.SubmitToolResponse{StepID: opened.StepID, CallID: cid(stepID, 0), ResponseID: respID, ResponseDigest: "sha256:bad", Payload: payload}); err == nil {
 		t.Fatal("external response with bad payload digest accepted")
 	}
 	facts = mustDecide(t, s, run.SubmitToolResponse{StepID: opened.StepID, CallID: cid(stepID, 0), ResponseID: respID,
@@ -392,7 +392,7 @@ func TestExternalResponseRequiresPayloadDigest(t *testing.T) {
 	opened = facts[1].(run.ToolStepOpened)
 	s = fold(t, s, facts)
 	respID = opened.Calls[0].Response.ID
-	facts, err := schema.V1().Machine.Decide(s, run.RejectToolCall{StepID: opened.StepID, CallID: cid(stepID, 0), ResponseID: respID,
+	facts, err := schema.Machine.Decide(s, run.RejectToolCall{StepID: opened.StepID, CallID: cid(stepID, 0), ResponseID: respID,
 		ResponseDigest: responseDecisionDigest(t, run.ResponseExternal, run.ResponseDecisionRejected, "user dismissed"), Reason: "user dismissed"})
 	if err != nil {
 		t.Fatal(err)
@@ -430,7 +430,7 @@ func TestToolSchedulingRejectsUnknownMode(t *testing.T) {
 	s := newRun(t)
 	s, stepID := advanceToExecuting(t, s, testRequest(def), []run.ToolSpec{spec})
 	b := makeBinding(t, stepID, 0, "c1", spec, `{}`)
-	_, err := schema.V1().Machine.Decide(s, settling(s, run.SubmitModelResult{
+	_, err := schema.Machine.Decide(s, settling(s, run.SubmitModelResult{
 		StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []run.ToolCallBinding{b},
 		Scheduling: run.ToolScheduling{Mode: "round-robin"},
 	}))
@@ -619,7 +619,7 @@ func TestAcceptInputDuplicateIsGuarded(t *testing.T) {
 	// Decide rejects a duplicate and an exact command replay never reaches
 	// Evolve, so a persisted duplicate InputAccepted is a corrupt log: the
 	// guard refuses it instead of silently deduplicating.
-	if _, err := schema.V1().Machine.Evolve(s, facts[0]); err == nil {
+	if _, err := schema.Machine.Evolve(s, facts[0]); err == nil {
 		t.Fatal("duplicate InputAccepted folded silently")
 	}
 }
@@ -656,7 +656,7 @@ func TestAcceptInputQueuesInAnyActiveState(t *testing.T) {
 	// Withdraw without pending inputs is rejected: the request is complete.
 	prep2, _ := buildPrepare(t, s, testRequest(), nil)
 	s = fold(t, s, mustDecide(t, s, prep2))
-	if _, err := schema.V1().Machine.Decide(s, run.WithdrawPreparedStep{StepID: prep2.StepID}); err == nil {
+	if _, err := schema.Machine.Decide(s, run.WithdrawPreparedStep{StepID: prep2.StepID}); err == nil {
 		t.Fatal("withdraw accepted with no pending inputs")
 	}
 
@@ -676,7 +676,7 @@ func TestAcceptInputQueuesInAnyActiveState(t *testing.T) {
 		t.Fatalf("facts = %d, want [completed] without RunEnded while inputs are pending", len(facts))
 	}
 	completed := facts[0].(run.ModelStepCompleted)
-	wantDigest, err := schema.V1().Canonical.DigestModelResult(result)
+	wantDigest, err := schema.Canonical.DigestModelResult(result)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -696,7 +696,7 @@ func TestAcceptInputQueuesInAnyActiveState(t *testing.T) {
 
 func TestAcceptInputRejectsSeedDuplicateID(t *testing.T) {
 	s := newRun(t)
-	_, err := schema.V1().Machine.Decide(s, run.NextStep(run.AgentInput{ID: "seed", Digest: inputDigest(`{"q":"other"}`)}))
+	_, err := schema.Machine.Decide(s, run.NextStep(run.AgentInput{ID: "seed", Digest: inputDigest(`{"q":"other"}`)}))
 	if !errors.Is(err, run.ErrCommandConflict) {
 		t.Fatalf("duplicate seed input err = %v, want ErrCommandConflict", err)
 	}
@@ -712,7 +712,7 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 		s := minimal
 		for _, id := range ids {
 			var foldErr error
-			s, foldErr = schema.V1().Machine.Evolve(s, run.InputAccepted{Input: run.AgentInput{ID: id, Digest: inputDigest(`null`)}})
+			s, foldErr = schema.Machine.Evolve(s, run.InputAccepted{Input: run.AgentInput{ID: id, Digest: inputDigest(`null`)}})
 			if foldErr != nil {
 				t.Fatal(foldErr)
 			}
@@ -721,15 +721,15 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 	}
 	prepared := func(ids ...run.InputID) run.ModelStepPrepared {
 		request := model.ModelRequest{Model: string(testModel)}
-		requestDigest, err := schema.V1().Canonical.DigestRequest(request)
+		requestDigest, err := schema.Canonical.DigestRequest(request)
 		if err != nil {
 			t.Fatal(err)
 		}
-		toolsDigest, err := schema.V1().Canonical.DigestToolSpecs(nil)
+		toolsDigest, err := schema.Canonical.DigestToolSpecs(nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		binding, err := schema.V1().Canonical.DigestModelStepBinding(testModel, requestDigest, toolsDigest)
+		binding, err := schema.Canonical.DigestModelStepBinding(testModel, requestDigest, toolsDigest)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -738,25 +738,25 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 
 	t.Run("nonexistent input", func(t *testing.T) {
 		s := withInputs("in-1")
-		if _, err := schema.V1().Machine.Evolve(s, prepared("missing")); err == nil {
+		if _, err := schema.Machine.Evolve(s, prepared("missing")); err == nil {
 			t.Fatal("ModelStepPrepared consuming a nonexistent input folded")
 		}
 	})
 	t.Run("length mismatch", func(t *testing.T) {
 		s := withInputs("in-1", "in-2")
-		if _, err := schema.V1().Machine.Evolve(s, prepared("in-1")); err == nil {
+		if _, err := schema.Machine.Evolve(s, prepared("in-1")); err == nil {
 			t.Fatal("ModelStepPrepared consuming only a pending-input prefix folded")
 		}
 	})
 	t.Run("order mismatch", func(t *testing.T) {
 		s := withInputs("in-1", "in-2")
-		if _, err := schema.V1().Machine.Evolve(s, prepared("in-2", "in-1")); err == nil {
+		if _, err := schema.Machine.Evolve(s, prepared("in-2", "in-1")); err == nil {
 			t.Fatal("ModelStepPrepared consuming pending inputs out of order folded")
 		}
 	})
 	t.Run("complete ordered IDs", func(t *testing.T) {
 		s := withInputs("in-1", "in-2")
-		next, err := schema.V1().Machine.Evolve(s, prepared("in-1", "in-2"))
+		next, err := schema.Machine.Evolve(s, prepared("in-1", "in-2"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -769,7 +769,7 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 func TestEvolveRejectsModelPrepareOverCurrentStep(t *testing.T) {
 	s := newRun(t)
 	s, _ = advanceToExecuting(t, s, testRequest(), nil)
-	_, err := schema.V1().Machine.Evolve(s, run.ModelStepPrepared{
+	_, err := schema.Machine.Evolve(s, run.ModelStepPrepared{
 		StepID:        "other",
 		Model:         testModel,
 		RequestDigest: "sha256:req",
@@ -810,7 +810,7 @@ func TestDerivedCallIDToleratesProviderIDReuse(t *testing.T) {
 	// A binding whose CallID is not the derived one is rejected.
 	forged := bindings
 	forged[1].CallID = "call_0"
-	if _, err := schema.V1().Machine.Decide(s, settling(s, run.SubmitModelResult{StepID: stepID, Result: result, Calls: forged})); err == nil {
+	if _, err := schema.Machine.Decide(s, settling(s, run.SubmitModelResult{StepID: stepID, Result: result, Calls: forged})); err == nil {
 		t.Fatal("non-derived CallID accepted")
 	}
 }
@@ -824,7 +824,7 @@ func TestSettlementNamesExecutingEffect(t *testing.T) {
 	model := newRun(t)
 	model, modelStep := advanceToExecuting(t, model, testRequest(defA, defB), []run.ToolSpec{specA, specB})
 	modelEff := modelEffectOf(model)
-	otherModel := schema.V1().Identity.DeriveEffectID(model.RunID, modelStep, "", 7)
+	otherModel := schema.Identity.DeriveEffectID(model.RunID, modelStep, "", 7)
 	text, err := sdkconv.FreezeModelResult(sdk.ModelResult{Text: "done", FinishReason: sdk.FinishReasonStop})
 	if err != nil {
 		t.Fatal(err)
@@ -842,7 +842,7 @@ func TestSettlementNamesExecutingEffect(t *testing.T) {
 	cA, cB := cid(modelStep, 0), cid(modelStep, 1)
 	tool = fold(t, tool, mustDecide(t, tool, startTool(tool, toolStep, cA)))
 	toolEff := toolEffectOf(tool, cA)
-	otherTool := schema.V1().Identity.DeriveEffectID(tool.RunID, toolStep, cA, 1)
+	otherTool := schema.Identity.DeriveEffectID(tool.RunID, toolStep, cA, 1)
 	failure := run.StepFailure{Class: run.FailureProvider, Message: "down"}
 	toolFailure := run.ToolFailure{Class: run.FailureExecution, Message: "boom"}
 	output := run.ToolExecutionResult{Output: cj(`"ok"`)}
@@ -865,12 +865,12 @@ func TestSettlementNamesExecutingEffect(t *testing.T) {
 		{"tool failure of another effect", tool, run.SubmitToolFailure{StepID: toolStep, CallID: cA, Effect: otherTool, Failure: toolFailure, Outcome: run.ToolOutcomeKnown}, "not the executing effect"},
 		{"unknown tool failure of another effect", tool, run.SubmitToolFailure{StepID: toolStep, CallID: cA, Effect: otherTool, Outcome: run.ToolOutcomeUnknown}, "not the executing effect"},
 		// A Pending call has no effect to settle: it is declined, not failed.
-		{"known failure of a Pending call", tool, run.SubmitToolFailure{StepID: toolStep, CallID: cB, Effect: schema.V1().Identity.DeriveEffectID(tool.RunID, toolStep, cB, 0),
+		{"known failure of a Pending call", tool, run.SubmitToolFailure{StepID: toolStep, CallID: cB, Effect: schema.Identity.DeriveEffectID(tool.RunID, toolStep, cB, 0),
 			Failure: toolFailure, Outcome: run.ToolOutcomeKnown}, "not Executing"},
 	}
 	for _, tc := range rejected {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := schema.V1().Machine.Decide(tc.s, tc.cmd)
+			_, err := schema.Machine.Decide(tc.s, tc.cmd)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("Decide(%T) = %v, want rejection containing %q", tc.cmd, err, tc.want)
 			}
@@ -878,10 +878,10 @@ func TestSettlementNamesExecutingEffect(t *testing.T) {
 	}
 
 	// The executing effect settles.
-	if _, err := schema.V1().Machine.Decide(model, run.SubmitModelResult{StepID: modelStep, Effect: modelEff, Result: text}); err != nil {
+	if _, err := schema.Machine.Decide(model, run.SubmitModelResult{StepID: modelStep, Effect: modelEff, Result: text}); err != nil {
 		t.Fatalf("model settlement under its effect: %v", err)
 	}
-	if _, err := schema.V1().Machine.Decide(tool, run.SubmitToolResult{StepID: toolStep, CallID: cA, Effect: toolEff, Result: output}); err != nil {
+	if _, err := schema.Machine.Decide(tool, run.SubmitToolResult{StepID: toolStep, CallID: cA, Effect: toolEff, Result: output}); err != nil {
 		t.Fatalf("tool settlement under its effect: %v", err)
 	}
 }
@@ -917,7 +917,7 @@ func TestDeclineToolCallFailsPendingCallWithoutStart(t *testing.T) {
 	}
 	for _, tc := range rejected {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := schema.V1().Machine.Decide(s, tc.cmd); err == nil {
+			if _, err := schema.Machine.Decide(s, tc.cmd); err == nil {
 				t.Fatalf("decline of %s accepted", tc.name)
 			}
 		})
@@ -937,7 +937,7 @@ func TestDeclineToolCallFailsPendingCallWithoutStart(t *testing.T) {
 		t.Fatalf("declined call = %+v, want Failed with no effect", ts.Calls[0])
 	}
 	// A declined call is terminal: it is neither declined nor settled again.
-	if _, err := schema.V1().Machine.Decide(s, run.DeclineToolCall{StepID: step, CallID: cA, Failure: failure}); err == nil {
+	if _, err := schema.Machine.Decide(s, run.DeclineToolCall{StepID: step, CallID: cA, Failure: failure}); err == nil {
 		t.Fatal("second decline accepted")
 	}
 	// The step closes once its Executing sibling settles.

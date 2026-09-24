@@ -26,7 +26,7 @@ func rejectionf(format string, args ...any) error {
 // (RUN-MCH-1).
 //
 //nolint:gocritic // hugeParam: v1 Decide is value-based.
-func (m MachineV1) Decide(s MachineState, c AgentCommand) ([]Fact, error) {
+func (m StateMachine) Decide(s MachineState, c AgentCommand) ([]Fact, error) {
 	if err := m.bound(); err != nil {
 		return nil, err
 	}
@@ -73,7 +73,7 @@ func (m MachineV1) Decide(s MachineState, c AgentCommand) ([]Fact, error) {
 
 // --- rule 1: PrepareModelRequest ---
 
-func (m MachineV1) decidePrepareModelRequest(s *MachineState, cmd *PrepareModelRequest) ([]Fact, error) {
+func (m StateMachine) decidePrepareModelRequest(s *MachineState, cmd *PrepareModelRequest) ([]Fact, error) {
 	if !atOpen(s.Current) {
 		return nil, rejectionf("prepare: run is not at Open")
 	}
@@ -175,7 +175,7 @@ func currentModelStep(s *MachineState, step StepID) (*ModelStep, error) {
 // effect. The effect identity is derived, so a start that names any other
 // effect -- one derived against a different rejection count, or minted by
 // the caller -- is stale rather than a new grant (RUN-WIR-1).
-func (m MachineV1) decideStartModelExecution(s *MachineState, cmd StartModelExecution) ([]Fact, error) {
+func (m StateMachine) decideStartModelExecution(s *MachineState, cmd StartModelExecution) ([]Fact, error) {
 	ms, err := currentModelStep(s, cmd.StepID)
 	if err != nil {
 		return nil, err
@@ -195,7 +195,7 @@ func (m MachineV1) decideStartModelExecution(s *MachineState, cmd StartModelExec
 // decideRecoverModelExecution withdraws the Executing step when the recovery
 // names the effect it is executing; a recovery of an earlier effect of the
 // same step is stale.
-func (m MachineV1) decideRecoverModelExecution(s *MachineState, cmd RecoverModelExecution) ([]Fact, error) {
+func (m StateMachine) decideRecoverModelExecution(s *MachineState, cmd RecoverModelExecution) ([]Fact, error) {
 	ms, err := currentModelStep(s, cmd.StepID)
 	if err != nil {
 		return nil, err
@@ -224,7 +224,7 @@ func settlesModelEffect(ms *ModelStep, effect EffectID, op string) error {
 
 // --- rule 3: SubmitModelResult ---
 
-func (m MachineV1) decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, error) {
+func (m StateMachine) decideSubmitModelResult(s *MachineState, cmd *SubmitModelResult) ([]Fact, error) {
 	ms, err := currentModelStep(s, cmd.StepID)
 	if err != nil {
 		return nil, err
@@ -269,7 +269,7 @@ func (m MachineV1) decideSubmitModelResult(s *MachineState, cmd *SubmitModelResu
 // checkToolCallBindings validates the caller's bindings one-to-one against
 // the model result and the frozen ToolSpecs (RUN-MCH-2) and returns them with
 // Response cleared, ready for openToolStep to derive.
-func (m MachineV1) checkToolCallBindings(ms *ModelStep, cmd *SubmitModelResult) ([]ToolCallBinding, error) {
+func (m StateMachine) checkToolCallBindings(ms *ModelStep, cmd *SubmitModelResult) ([]ToolCallBinding, error) {
 	if len(cmd.Calls) != len(cmd.Result.ToolCalls) {
 		return nil, rejectionf("model result: %d bindings for %d tool calls", len(cmd.Calls), len(cmd.Result.ToolCalls))
 	}
@@ -305,7 +305,7 @@ func (m MachineV1) checkToolCallBindings(ms *ModelStep, cmd *SubmitModelResult) 
 // actually named, with the arguments the model actually produced. A known
 // tool must match its frozen ToolSpec; an unknown one stays an unresolved
 // DirectExecution binding that StartToolCalls records as a lookup failure.
-func (m MachineV1) checkBindingAgainstResult(b *ToolCallBinding, rc *model.ModelToolCall, specByName map[string]ToolSpec) error {
+func (m StateMachine) checkBindingAgainstResult(b *ToolCallBinding, rc *model.ModelToolCall, specByName map[string]ToolSpec) error {
 	if spec, known := specByName[rc.ToolName]; known {
 		if b.ToolRef != spec.Ref {
 			return rejectionf("model result: binding %q ToolRef %q does not match frozen spec ref %q for tool %q", b.CallID, b.ToolRef, spec.Ref, rc.ToolName)
@@ -340,7 +340,7 @@ func (m MachineV1) checkBindingAgainstResult(b *ToolCallBinding, rc *model.Model
 // openToolStep derives the ToolStep identity from the ordered binding set,
 // attaches a ResponseRequest to every call whose policy waits, and freezes
 // the scheduling (RUN-LOP-1).
-func (m MachineV1) openToolStep(runID RunID, source StepID, bindings []ToolCallBinding, scheduling ToolScheduling) (ToolStepOpened, error) {
+func (m StateMachine) openToolStep(runID RunID, source StepID, bindings []ToolCallBinding, scheduling ToolScheduling) (ToolStepOpened, error) {
 	setDigest, err := m.Canonical.DigestToolCallBindingSet(bindings)
 	if err != nil {
 		return ToolStepOpened{}, err
@@ -446,7 +446,7 @@ func currentToolStep(s *MachineState, step StepID) (*ToolStep, error) {
 
 // decideStartToolCall admits the start of one Pending call's tool effect; a
 // call starts at most once, so its effect is the call's only one.
-func (m MachineV1) decideStartToolCall(s *MachineState, cmd StartToolCall) ([]Fact, error) {
+func (m StateMachine) decideStartToolCall(s *MachineState, cmd StartToolCall) ([]Fact, error) {
 	ts, err := currentToolStep(s, cmd.StepID)
 	if err != nil {
 		return nil, err
@@ -467,7 +467,7 @@ func (m MachineV1) decideStartToolCall(s *MachineState, cmd StartToolCall) ([]Fa
 	return []Fact{ToolCallStarted(cmd)}, nil
 }
 
-func (m MachineV1) decideSubmitToolResult(s *MachineState, cmd SubmitToolResult) ([]Fact, error) {
+func (m StateMachine) decideSubmitToolResult(s *MachineState, cmd SubmitToolResult) ([]Fact, error) {
 	ts, err := currentToolStep(s, cmd.StepID)
 	if err != nil {
 		return nil, err
@@ -588,7 +588,7 @@ func waitingCall(s *MachineState, step StepID, call CallID, kind ResponseKind, r
 	return nil
 }
 
-func (m MachineV1) decideApproveToolCall(s *MachineState, cmd ApproveToolCall) ([]Fact, error) {
+func (m StateMachine) decideApproveToolCall(s *MachineState, cmd ApproveToolCall) ([]Fact, error) {
 	if err := waitingCall(s, cmd.StepID, cmd.CallID, ResponseApproval, cmd.ResponseID); err != nil {
 		return nil, err
 	}
@@ -602,7 +602,7 @@ func (m MachineV1) decideApproveToolCall(s *MachineState, cmd ApproveToolCall) (
 	return []Fact{ToolCallApproved(cmd)}, nil
 }
 
-func (m MachineV1) decideRejectToolCall(s *MachineState, cmd *RejectToolCall) ([]Fact, error) {
+func (m StateMachine) decideRejectToolCall(s *MachineState, cmd *RejectToolCall) ([]Fact, error) {
 	// Reject closes a Waiting call of either kind as a Known failure:
 	// approval rejection and external-response abandonment ("the answer is
 	// never coming") share one exit. Waiting -> Failed(Known) is legal;
@@ -643,7 +643,7 @@ func (m MachineV1) decideRejectToolCall(s *MachineState, cmd *RejectToolCall) ([
 	return facts, nil
 }
 
-func (m MachineV1) decideSubmitToolResponse(s *MachineState, cmd *SubmitToolResponse) ([]Fact, error) {
+func (m StateMachine) decideSubmitToolResponse(s *MachineState, cmd *SubmitToolResponse) ([]Fact, error) {
 	if err := waitingCall(s, cmd.StepID, cmd.CallID, ResponseExternal, cmd.ResponseID); err != nil {
 		return nil, err
 	}

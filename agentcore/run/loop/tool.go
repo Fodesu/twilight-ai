@@ -9,6 +9,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/runtime"
+	"github.com/felinics/twilight/agentcore/run/schema"
 )
 
 func toolCallIndex(step run.ToolStep, callID run.CallID) int {
@@ -29,10 +30,6 @@ func toolCallIndex(step run.ToolStep, callID run.CallID) int {
 // reload decides.
 func (l *Loop) startToolCalls(ctx context.Context, rt runtime.RunStore, events EventSink, snapshot *runtime.Snapshot, act plan.StartToolCalls) ([]AssignmentKey, error) {
 	runID := snapshot.State.RunID
-	schema, err := snapshot.Schema()
-	if err != nil {
-		return nil, err
-	}
 	ts, ok := snapshot.State.Current.(run.ToolStep)
 	if !ok || ts.RefValue.ID != act.StepID {
 		return nil, fmt.Errorf("agent: loop: tool step %q is not current", act.StepID)
@@ -65,7 +62,7 @@ func (l *Loop) startToolCalls(ctx context.Context, rt runtime.RunStore, events E
 			// (TRN-DUR-4).
 			continue
 		}
-		ref := toolEffect(schema, runID, act.StepID, callID)
+		ref := toolEffect(runID, act.StepID, callID)
 		// The target is resolved per tool effect (RUN-LOP-9) before the
 		// pre-start check, so the Validate probe carries what the Assignment
 		// will carry.
@@ -75,7 +72,7 @@ func (l *Loop) startToolCalls(ctx context.Context, rt runtime.RunStore, events E
 			return dispatched, err
 		}
 		binding := ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy, Replay: call.Replay}
-		probe := Assignment{Session: rt.Scope(), RunID: runID, StepID: act.StepID, CallID: callID, Target: target, Schema: snapshot.SchemaVersion, Body: binding}
+		probe := Assignment{Session: rt.Scope(), RunID: runID, StepID: act.StepID, CallID: callID, Target: target, Body: binding}
 		known, err := l.Executor.Validate(ctx, probe)
 		if err != nil {
 			return dispatched, err
@@ -86,7 +83,7 @@ func (l *Loop) startToolCalls(ctx context.Context, rt runtime.RunStore, events E
 			// once, so the decline is identified by the call alone and a
 			// retry of the same rejection is idempotent (RUN-EXE-5).
 			res, err := l.commit(ctx, rt, runID, schema.Identity.DeriveDeclineCommandID(runID, act.StepID, callID), snapshot.Position,
-				run.DeclineToolCall{StepID: act.StepID, CallID: callID, Failure: *known}, schema)
+				run.DeclineToolCall{StepID: act.StepID, CallID: callID, Failure: *known})
 			if err != nil {
 				if retriable(err) {
 					return dispatched, nil // another actor moved the call; reload decides
@@ -98,7 +95,7 @@ func (l *Loop) startToolCalls(ctx context.Context, rt runtime.RunStore, events E
 		}
 
 		start, err := l.commit(ctx, rt, runID, ref.startID(), snapshot.Position,
-			run.StartToolCall{StepID: act.StepID, CallID: callID, Effect: ref.id}, schema)
+			run.StartToolCall{StepID: act.StepID, CallID: callID, Effect: ref.id})
 		if err != nil {
 			if retriable(err) {
 				return dispatched, nil // another actor moved the call; reload decides
@@ -129,7 +126,7 @@ func (l *Loop) startToolCalls(ctx context.Context, rt runtime.RunStore, events E
 			// failure so the call does not stay Executing.
 			failure := run.ToolFailure{Class: run.FailureExecution, Message: "dispatch: " + err.Error()}
 			if _, serr := l.settle(context.WithoutCancel(ctx), rt, events, &ref, start.Snapshot.Position,
-				run.SubmitToolFailure{StepID: act.StepID, CallID: callID, Effect: ref.id, Failure: failure, Outcome: run.ToolOutcomeKnown}, schema); serr != nil {
+				run.SubmitToolFailure{StepID: act.StepID, CallID: callID, Effect: ref.id, Failure: failure, Outcome: run.ToolOutcomeKnown}); serr != nil {
 				return dispatched, serr
 			}
 			continue

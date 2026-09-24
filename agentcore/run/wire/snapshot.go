@@ -32,10 +32,10 @@ type SnapshotCodec interface {
 
 // --- v1 snapshot --------------------------------------------------------------------
 
-type SnapshotV1 struct{}
+type Snapshot struct{}
 
-// machineStateWireV1 is the persisted snapshot shape of MachineState for
-// SchemaVersion1. It flattens the interface-typed Current into a discriminator
+// machineStateWireV1 is the persisted snapshot shape of MachineState. It
+// flattens the interface-typed Current into a discriminator
 // plus at most one step body so the snapshot round-trips through JSON. Its
 // canonical bytes are the InitialStateDigest preimage (RUN-NEW-1), so field
 // names and omission rules are frozen with the schema.

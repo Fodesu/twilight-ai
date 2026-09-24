@@ -74,7 +74,6 @@ type Assignment struct {
 	CallID  run.CallID
 	Effect  run.EffectID
 	Target  *run.TargetRef
-	Schema  uint16
 	// Body is the effect: exactly one of ModelAssignment or ToolAssignment.
 	Body AssignmentBody
 }
@@ -117,14 +116,13 @@ type assignmentWire struct {
 	CallID  run.CallID
 	Effect  run.EffectID
 	Target  *run.TargetRef
-	Schema  uint16
 	Kind    AssignmentKind
 	Model   *ModelAssignment
 	Tool    *ToolAssignment
 }
 
 func (a Assignment) MarshalJSON() ([]byte, error) {
-	w := assignmentWire{Session: a.Session, RunID: a.RunID, StepID: a.StepID, CallID: a.CallID, Effect: a.Effect, Target: a.Target, Schema: a.Schema, Kind: a.Kind()}
+	w := assignmentWire{Session: a.Session, RunID: a.RunID, StepID: a.StepID, CallID: a.CallID, Effect: a.Effect, Target: a.Target, Kind: a.Kind()}
 	switch b := a.Body.(type) {
 	case ModelAssignment:
 		w.Model = &b
@@ -142,7 +140,7 @@ func (a *Assignment) UnmarshalJSON(raw []byte) error {
 	if err := json.Unmarshal(raw, &w); err != nil {
 		return err
 	}
-	out := Assignment{Session: w.Session, RunID: w.RunID, StepID: w.StepID, CallID: w.CallID, Effect: w.Effect, Target: w.Target, Schema: w.Schema}
+	out := Assignment{Session: w.Session, RunID: w.RunID, StepID: w.StepID, CallID: w.CallID, Effect: w.Effect, Target: w.Target}
 	switch {
 	case w.Kind == AssignmentModel && w.Model != nil && w.Tool == nil:
 		out.Body = *w.Model

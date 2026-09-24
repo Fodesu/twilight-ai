@@ -31,7 +31,7 @@ type step struct {
 }
 
 func runStep(runID run.RunID, f run.Fact) step {
-	return step{runmod.EventType(schema.V1().Wire, f), runmod.Event{RunID: runID, Fact: f}}
+	return step{runmod.EventType(schema.Wire, f), runmod.Event{RunID: runID, Fact: f}}
 }
 
 func created(runID run.RunID, owner string) step {
@@ -164,7 +164,7 @@ func TestRunFactsProjectEntries(t *testing.T) {
 	if unknown, _ := surf.ToolResults.Get("c2"); unknown.Status != ToolUnknown || unknown.FailureText() != "effect_unknown: lost" {
 		t.Fatalf("unknown result = %+v", unknown)
 	}
-	if owner, _ := surf.Runs.Get("r1"); owner.TurnID != "t1" || owner.Schema != run.SchemaVersion1 {
+	if owner, _ := surf.Runs.Get("r1"); owner.TurnID != "t1" {
 		t.Fatalf("run owner = %+v", owner)
 	}
 	// Superseding twice, or a result outside the context, is a fold error.
@@ -355,7 +355,7 @@ func TestMaterialize(t *testing.T) {
 	}
 	// The second assistant names the same result: one read serves both, and
 	// its CallIDs are derived when no ToolStepOpened followed it.
-	if content.reads != 3 || len(entries[3].Calls) != 2 || entries[3].Calls[0].CallID != CallID(schema.V1().Identity.DeriveCallID("s2", 0)) {
+	if content.reads != 3 || len(entries[3].Calls) != 2 || entries[3].Calls[0].CallID != CallID(schema.Identity.DeriveCallID("s2", 0)) {
 		t.Fatalf("reads = %d, second assistant = %+v", content.reads, entries[3])
 	}
 	failed := Entry{Kind: EntryToolResult, ToolResult: &ToolResult{ID: "c9", CallID: "c9", Status: ToolError, Failure: &run.ToolFailure{Class: "boom", Message: "x"}}}
@@ -384,7 +384,7 @@ func mustSummary(t *testing.T, id SummaryID, text string) Summary {
 // model_step_completed under Turn t1 in Run r1, with no tool step.
 func entryDigest(t *testing.T, stepID run.StepID, result es.Digest) es.Digest {
 	t.Helper()
-	a, err := assistantOf(RunOwner{TurnID: "t1", Schema: run.SchemaVersion1}, "r1", &run.ModelStepCompleted{StepID: stepID, FinishReason: model.FinishReasonStop, ResultDigest: result})
+	a, err := assistantOf(RunOwner{TurnID: "t1"}, "r1", &run.ModelStepCompleted{StepID: stepID, FinishReason: model.FinishReasonStop, ResultDigest: result})
 	if err != nil {
 		t.Fatal(err)
 	}

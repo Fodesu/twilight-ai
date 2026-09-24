@@ -49,7 +49,7 @@ func (p *fakePort) GetOutcome(ctx context.Context, key effect.AssignmentKey) (ef
 func (p *fakePort) Cancel(context.Context, effect.AssignmentKey) error { return nil }
 
 func executingModel(eff run.EffectID) *runtime.Snapshot {
-	return &runtime.Snapshot{SchemaVersion: run.SchemaVersion1, State: run.MachineState{
+	return &runtime.Snapshot{State: run.MachineState{
 		RunID: "r1", Status: run.RunActive,
 		Current: run.ModelStep{RefValue: run.StepRef{RunID: "r1", ID: "s1"}, Model: "m", RequestDigest: "sha256:req", Status: run.ModelExecuting, Effect: eff},
 	}}
@@ -112,9 +112,8 @@ func TestAssignmentFromTarget(t *testing.T) {
 	if len(targets) != 1 {
 		t.Fatalf("targets = %d", len(targets))
 	}
-	targets[0].Schema = run.SchemaVersion1
 	a := AssignmentFromTarget("s", targets[0])
-	if model, ok := a.Model(); !ok || model.Request != nil || model.RequestDigest != "sha256:req" || a.Schema != run.SchemaVersion1 {
+	if model, ok := a.Model(); !ok || model.Request != nil || model.RequestDigest != "sha256:req" {
 		t.Fatalf("assignment = %+v", a)
 	}
 	if a.Key() != (effect.AssignmentKey{Session: "s", RunID: "r1", Effect: "c1"}) {

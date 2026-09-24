@@ -1,14 +1,8 @@
 package runmod
 
 import (
-	"context"
 	"fmt"
 
-	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/runtime"
-	"github.com/felinics/twilight/agentcore/run/schema"
-	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/session/writer"
 )
 
@@ -26,24 +20,4 @@ func RequireNoActiveRun(view writer.View) error {
 		return fmt.Errorf("runmod: run %s is active", id)
 	}
 	return nil
-}
-
-// SchemaOf returns the protocol Schema of an active Run as the machine
-// projection recorded it at creation (RUN-CMT-8): the version every command
-// addressed to the Run must carry. It reads through the given projection
-// reader, the Writer's own for command planning.
-func SchemaOf(ctx context.Context, reader extension.ProjectionReader, sid session.SessionID, runID run.RunID) (schema.Schema, error) {
-	state, _, err := reader.Load(ctx, sid, MachineProjectionID, MachineProjection.Version)
-	if err != nil {
-		return schema.Schema{}, err
-	}
-	m, ok := state.(Machine)
-	if !ok {
-		return schema.Schema{}, fmt.Errorf("runmod: machine projection is %T", state)
-	}
-	v, ok := m.Schemas[runID]
-	if !ok {
-		return schema.Schema{}, runtime.ErrRunNotFound
-	}
-	return schema.For(v)
 }

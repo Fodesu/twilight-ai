@@ -6,7 +6,6 @@ import (
 
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
-	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/run/wire"
 )
 
@@ -57,14 +56,6 @@ type Snapshot struct {
 	State run.MachineState
 	// Position is the Run's last fact position at read time.
 	Position run.RunPosition
-	// SchemaVersion is the Session segment's, read from the version of the
-	// Run's facts; Loop and Application select schema.For(SchemaVersion) once.
-	SchemaVersion uint16
-}
-
-// Schema returns the schema the Run's segment declares.
-func (s Snapshot) Schema() (schema.Schema, error) { //nolint:gocritic // hugeParam: Snapshot is handed around by value; a pointer receiver would refuse the common snapshot.Schema() on a temporary
-	return schema.For(s.SchemaVersion)
 }
 
 type CommitRequest struct {

@@ -78,18 +78,18 @@ type Identity interface {
 	DeriveDeclineCommandID(run RunID, step StepID, call CallID) CommandID
 }
 
-// MachineV1 is the SchemaVersion1 state machine: the Decide (decide.go) and
+// StateMachine is the state machine: the Decide (decide.go) and
 // Evolve (evolve.go) transitions bound to the digest and identity rules of the
-// schema that selects it. The zero MachineV1 is unbound and refuses every
+// schema that selects it. The zero StateMachine is unbound and refuses every
 // command and fact.
-type MachineV1 struct {
+type StateMachine struct {
 	Canonical Canonical
 	Identity  Identity
 }
 
 var errMachineUnbound = errors.New("agent: machine has no canonical or identity rules bound")
 
-func (m MachineV1) bound() error {
+func (m StateMachine) bound() error {
 	if m.Canonical == nil || m.Identity == nil {
 		return errMachineUnbound
 	}
@@ -99,7 +99,7 @@ func (m MachineV1) bound() error {
 // CreateGroup produces the facts that establish a Run and queue its initial
 // inputs (RUN-NEW-1). It is pure: the owning module places these facts in
 // its creation commit, the RunStore never sees a Create command.
-func (m MachineV1) CreateGroup(run NewRun, inputs []AgentInput) ([]Fact, error) {
+func (m StateMachine) CreateGroup(run NewRun, inputs []AgentInput) ([]Fact, error) {
 	if err := m.bound(); err != nil {
 		return nil, err
 	}

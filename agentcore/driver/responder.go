@@ -42,7 +42,6 @@ type WaitingCall struct {
 type answer struct {
 	responder Responder
 	call      WaitingCall
-	schema    uint16
 }
 
 // claimAnswers returns the ExternalResponse waits of the Run that have a
@@ -77,7 +76,7 @@ func (d *Driver) claimAnswers(ctx context.Context, w writer.Writer, runID run.Ru
 		}
 		d.answering[c.Waiting.ID] = struct{}{}
 		d.mu.Unlock()
-		out = append(out, answer{responder: responder, schema: snap.SchemaVersion,
+		out = append(out, answer{responder: responder,
 			call: WaitingCall{Request: *run.CloneResponseRequest(c.Waiting), ToolRef: c.ToolRef, Arguments: c.Arguments}})
 	}
 	return out
@@ -197,26 +196,22 @@ func lostOwnership(err error) bool {
 // or RejectToolCall with the responder's error as reason. Both are keyed
 // by the derived response CommandID, so a repeat is already applied.
 func (d *Driver) settleResponse(ctx context.Context, w writer.Writer, a *answer, payload run.CanonicalJSON, rerr error) error {
-	sch, err := schema.For(a.schema)
-	if err != nil {
-		return err
-	}
 	req := a.call.Request
 	var cmd run.AgentCommand
 	if rerr != nil {
-		digest, err := sch.Canonical.DigestToolResponseDecision(req.Kind, run.ResponseDecisionRejected, rerr.Error())
+		digest, err := schema.Canonical.DigestToolResponseDecision(req.Kind, run.ResponseDecisionRejected, rerr.Error())
 		if err != nil {
 			return err
 		}
 		cmd = run.RejectToolCall{StepID: req.StepID, CallID: req.CallID, ResponseID: req.ID, ResponseDigest: digest, Reason: rerr.Error()}
 	} else {
-		digest, err := sch.Canonical.DigestToolResponsePayload(payload)
+		digest, err := schema.Canonical.DigestToolResponsePayload(payload)
 		if err != nil {
 			return err
 		}
 		cmd = run.SubmitToolResponse{StepID: req.StepID, CallID: req.CallID, ResponseID: req.ID, ResponseDigest: digest, Payload: payload}
 	}
-	env, err := sch.Wire.Envelope(req.RunID, sch.Identity.DeriveResponseCommandID(req.RunID, req.StepID, req.CallID, req.ID), cmd)
+	env, err := schema.Wire.Envelope(req.RunID, schema.Identity.DeriveResponseCommandID(req.RunID, req.StepID, req.CallID, req.ID), cmd)
 	if err != nil {
 		return err
 	}

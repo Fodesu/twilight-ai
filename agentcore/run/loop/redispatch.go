@@ -46,7 +46,7 @@ func (l *Loop) Redispatch(ctx context.Context, rt runtime.RunStore, key Assignme
 		if err != nil {
 			return fmt.Errorf("agent: loop: redispatch: load frozen model request: %w", err)
 		}
-		return l.dispatch(ctx, Assignment{Session: scope, RunID: key.RunID, StepID: stepID, Effect: key.Effect, Target: target, Schema: snapshot.SchemaVersion,
+		return l.dispatch(ctx, Assignment{Session: scope, RunID: key.RunID, StepID: stepID, Effect: key.Effect, Target: target,
 			Body: ModelAssignment{Model: cur.Model, RequestDigest: cur.RequestDigest, Request: &request}})
 	case run.ToolStep:
 		call, ok := executingCall(&cur, key.Effect)
@@ -58,7 +58,7 @@ func (l *Loop) Redispatch(ctx context.Context, rt runtime.RunStore, key Assignme
 		if err != nil {
 			return err
 		}
-		return l.dispatch(ctx, Assignment{Session: scope, RunID: key.RunID, StepID: stepID, CallID: call.CallID, Effect: key.Effect, Target: target, Schema: snapshot.SchemaVersion,
+		return l.dispatch(ctx, Assignment{Session: scope, RunID: key.RunID, StepID: stepID, CallID: call.CallID, Effect: key.Effect, Target: target,
 			Body: ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy, Replay: call.Replay}})
 	default:
 		return ErrEffectNotExecuting

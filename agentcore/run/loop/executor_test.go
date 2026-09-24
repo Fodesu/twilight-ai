@@ -458,7 +458,7 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 	}
 	spec := toolSpec(t, "echo", DirectExecution)
 	target := TargetRef{Kind: "workspace", ID: "ws-1"}
-	a := Assignment{Session: testScope, RunID: "run-1", StepID: "step-1", CallID: "call-1", Effect: "effect-1", Target: &target, Schema: SchemaVersion1,
+	a := Assignment{Session: testScope, RunID: "run-1", StepID: "step-1", CallID: "call-1", Effect: "effect-1", Target: &target,
 		Body: ToolAssignment{ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest, Arguments: cj(`{}`), Policy: DirectExecution}}
 	ref, err := exec.Prepare(context.Background(), a)
 	if err != nil {
@@ -655,11 +655,11 @@ func TestLocalExecutorValidateChecksReplayDeclaration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			digest, err := schema.V1().Canonical.DigestToolDefinition(def)
+			digest, err := schema.Canonical.DigestToolDefinition(def)
 			if err != nil {
 				t.Fatal(err)
 			}
-			a := Assignment{Session: "s", RunID: "r", StepID: "step", CallID: "c1", Effect: "e", Schema: 1,
+			a := Assignment{Session: "s", RunID: "r", StepID: "step", CallID: "c1", Effect: "e",
 				Body: ToolAssignment{ToolRef: "echo", DefinitionDigest: digest, Arguments: cj(`{}`), Policy: DirectExecution, Replay: tc.assigned}}
 			failure, err := exec.Validate(context.Background(), a)
 			if err != nil {

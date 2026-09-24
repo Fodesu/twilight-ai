@@ -7,12 +7,12 @@ import (
 	"github.com/felinics/twilight/agentcore/run/model"
 )
 
-// Evolve is the fold semantics for the pre-release SchemaVersion1 (RUN-MCH-3). It first
+// Evolve is the fold semantics (RUN-MCH-3). It first
 // checks that the fact is a legal transition from s (fold and recovery must
 // defend themselves without access to commands), then applies it.
 //
 //nolint:gocritic // hugeParam: v1 fold body intentionally preserves value-state semantics.
-func (m MachineV1) Evolve(s MachineState, f Fact) (MachineState, error) {
+func (m StateMachine) Evolve(s MachineState, f Fact) (MachineState, error) {
 	if err := m.bound(); err != nil {
 		return s, err
 	}
@@ -183,7 +183,7 @@ func applyRunEnded(s MachineState, fact *RunEnded) MachineState { //nolint:gocri
 // --- guards: one per fact. Each names the legal source state and the
 // self-consistency the fact must carry. ---
 
-func (m MachineV1) guardFactV1(s *MachineState, f Fact) error {
+func (m StateMachine) guardFactV1(s *MachineState, f Fact) error {
 	if created, ok := f.(RunCreated); ok {
 		return guardRunCreated(s, &created)
 	}
@@ -309,7 +309,7 @@ func guardInputAccepted(s *MachineState, fact *InputAccepted) error {
 	return nil
 }
 
-func (m MachineV1) guardModelStepPrepared(s *MachineState, fact *ModelStepPrepared) error {
+func (m StateMachine) guardModelStepPrepared(s *MachineState, fact *ModelStepPrepared) error {
 	if err := requireOpen(s, "model step prepared"); err != nil {
 		return err
 	}
@@ -340,7 +340,7 @@ func (m MachineV1) guardModelStepPrepared(s *MachineState, fact *ModelStepPrepar
 	return nil
 }
 
-func (m MachineV1) guardToolStepOpened(s *MachineState, fact *ToolStepOpened) error {
+func (m StateMachine) guardToolStepOpened(s *MachineState, fact *ToolStepOpened) error {
 	if err := requireOpen(s, "tool step opened"); err != nil {
 		return err
 	}
@@ -372,7 +372,7 @@ func (m MachineV1) guardToolStepOpened(s *MachineState, fact *ToolStepOpened) er
 	return nil
 }
 
-func (m MachineV1) guardToolCallBinding(runID RunID, stepID StepID, call *ToolCallBinding, seen map[CallID]struct{}) error {
+func (m StateMachine) guardToolCallBinding(runID RunID, stepID StepID, call *ToolCallBinding, seen map[CallID]struct{}) error {
 	if call.CallID == "" {
 		return errors.New("agent: evolve: tool step contains empty CallID")
 	}
@@ -397,7 +397,7 @@ func (m MachineV1) guardToolCallBinding(runID RunID, stepID StepID, call *ToolCa
 	return m.validateResponseRequest(call.Response, runID, stepID, call.CallID, kind, call.Arguments, want)
 }
 
-func (m MachineV1) guardToolCallApproved(s *MachineState, fact *ToolCallApproved) error {
+func (m StateMachine) guardToolCallApproved(s *MachineState, fact *ToolCallApproved) error {
 	call, err := requireCall(s, fact.StepID, fact.CallID, ToolWaiting)
 	if err != nil {
 		return err
@@ -411,7 +411,7 @@ func (m MachineV1) guardToolCallApproved(s *MachineState, fact *ToolCallApproved
 	return nil
 }
 
-func (m MachineV1) guardToolCallAnswered(s *MachineState, fact *ToolCallAnswered) error {
+func (m StateMachine) guardToolCallAnswered(s *MachineState, fact *ToolCallAnswered) error {
 	call, err := requireCall(s, fact.StepID, fact.CallID, ToolWaiting)
 	if err != nil {
 		return err
@@ -460,7 +460,7 @@ func responseKindForPolicy(p ResponsePolicy) (ResponseKind, bool) {
 	}
 }
 
-func (m MachineV1) validateResponseRequest(req *ResponseRequest, runID RunID, stepID StepID, callID CallID, kind ResponseKind, payload CanonicalJSON, requestDigest Digest) error {
+func (m StateMachine) validateResponseRequest(req *ResponseRequest, runID RunID, stepID StepID, callID CallID, kind ResponseKind, payload CanonicalJSON, requestDigest Digest) error {
 	if req.RunID != runID || req.StepID != stepID || req.CallID != callID || req.Kind != kind {
 		return fmt.Errorf("agent: evolve: response request identity mismatch for call %q", callID)
 	}

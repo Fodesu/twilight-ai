@@ -17,7 +17,6 @@ type RecoveryDisposition struct {
 // issued (RUN-CMT-7).
 type RecoveryTarget struct {
 	RunID  run.RunID
-	Schema uint16 // the Run's protocol version, for the executor's digest checks
 	StepID run.StepID
 	CallID run.CallID // empty for a model step
 	Effect run.EffectID

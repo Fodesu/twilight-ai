@@ -25,11 +25,10 @@ const MachineProjectionID extension.ProjectionID = "twilight/run/machine"
 type Machine struct {
 	Active    map[run.RunID]run.MachineState
 	Positions map[run.RunID]run.RunPosition
-	Schemas   map[run.RunID]uint16
 }
 
 func newMachine() Machine {
-	return Machine{Active: map[run.RunID]run.MachineState{}, Positions: map[run.RunID]run.RunPosition{}, Schemas: map[run.RunID]uint16{}}
+	return Machine{Active: map[run.RunID]run.MachineState{}, Positions: map[run.RunID]run.RunPosition{}}
 }
 
 func (m Machine) clone() Machine {
@@ -40,9 +39,6 @@ func (m Machine) clone() Machine {
 	for k, v := range m.Positions {
 		out.Positions[k] = v
 	}
-	for k, v := range m.Schemas {
-		out.Schemas[k] = v
-	}
 	return out
 }
 
@@ -52,7 +48,7 @@ func (m Machine) snapshot(runID run.RunID) (runtime.Snapshot, bool) {
 	if !ok {
 		return runtime.Snapshot{}, false
 	}
-	return runtime.Snapshot{State: ms, Position: m.Positions[runID], SchemaVersion: m.Schemas[runID]}, true
+	return runtime.Snapshot{State: ms, Position: m.Positions[runID]}, true
 }
 
 // Apply folds one decoded run event (RUN-MCH-3 via Protocol.Evolve).
@@ -65,39 +61,25 @@ func (m Machine) Apply(e extension.DecodedEvent) (Machine, error) { //nolint:goc
 		return m, fmt.Errorf("run machine: fact for %s arrived via stream %s", ev.RunID, e.Stream)
 	}
 	out := m.clone()
-	var sch schema.Schema
 	var state run.MachineState
 	if _, isCreated := ev.Fact.(run.RunCreated); isCreated {
 		if _, dup := out.Active[ev.RunID]; dup {
 			return m, fmt.Errorf("run machine: %s created twice", ev.RunID)
 		}
-		// The Run's schema is its segment's, recorded as the fact's payload
-		// version (RUN-CMT-8); RunCreated itself names none.
-		p, err := schema.For(uint16(e.Version))
-		if err != nil {
-			return m, err
-		}
-		sch = p
-		out.Schemas[ev.RunID] = uint16(e.Version)
 	} else {
 		cur, active := out.Active[ev.RunID]
 		if !active {
 			return m, fmt.Errorf("run machine: fact %s for unknown or terminal run %s", wire.FactType(ev.Fact), ev.RunID)
 		}
-		p, err := schema.For(out.Schemas[ev.RunID])
-		if err != nil {
-			return m, err
-		}
-		sch, state = p, cur
+		state = cur
 	}
-	next, err := sch.Machine.Evolve(state, ev.Fact)
+	next, err := schema.Machine.Evolve(state, ev.Fact)
 	if err != nil {
 		return m, err
 	}
 	if next.Status.Terminal() {
 		delete(out.Active, ev.RunID)
 		delete(out.Positions, ev.RunID)
-		delete(out.Schemas, ev.RunID)
 		return out, nil
 	}
 	if _, tracked := out.Positions[ev.RunID]; tracked {
@@ -114,7 +96,6 @@ type machineWire struct {
 }
 
 type machineRunWire struct {
-	Schema   uint16           `json:"schema"`
 	Position run.RunPosition  `json:"position"`
 	State    jsonstable.Value `json:"state"`
 }
@@ -136,11 +117,7 @@ func (c machineCodec) Encode(value any) (jsonstable.Value, error) {
 	w := machineWire{Runs: make(map[run.RunID]machineRunWire, len(m.Active))}
 	for id := range m.Active {
 		state := m.Active[id]
-		sch, err := schema.For(m.Schemas[id])
-		if err != nil {
-			return jsonstable.Value{}, err
-		}
-		raw, err := sch.Snapshot.Encode(&state)
+		raw, err := schema.Snapshot.Encode(&state)
 		if err != nil {
 			return jsonstable.Value{}, err
 		}
@@ -148,7 +125,7 @@ func (c machineCodec) Encode(value any) (jsonstable.Value, error) {
 		if err != nil {
 			return jsonstable.Value{}, err
 		}
-		w.Runs[id] = machineRunWire{Schema: m.Schemas[id], Position: m.Positions[id], State: encoded}
+		w.Runs[id] = machineRunWire{Position: m.Positions[id], State: encoded}
 	}
 	return jsonstable.FromValue(w)
 }
@@ -163,17 +140,12 @@ func (machineCodec) Decode(wr jsonstable.Value) (any, error) {
 	}
 	m := newMachine()
 	for id, r := range w.Runs {
-		sch, err := schema.For(r.Schema)
-		if err != nil {
-			return nil, err
-		}
-		state, err := sch.Snapshot.Decode(r.State.Bytes())
+		state, err := schema.Snapshot.Decode(r.State.Bytes())
 		if err != nil {
 			return nil, err
 		}
 		m.Active[id] = state
 		m.Positions[id] = r.Position
-		m.Schemas[id] = r.Schema
 	}
 	return m, nil
 }

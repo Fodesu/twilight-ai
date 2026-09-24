@@ -271,12 +271,8 @@ func (l *Loop) advance(ctx context.Context, rt runtime.RunStore, runID run.RunID
 			// Inputs arrived after this step was frozen: discard the unsent
 			// request and replan with them (RUN-LOP-8). A retriable rejection
 			// means another actor moved the Run; the reload decides.
-			sch, err := snapshot.Schema()
-			if err != nil {
-				return LoopResult{}, err
-			}
-			res, err := l.commit(ctx, rt, runID, sch.Identity.DeriveWithdrawCommandID(runID, act.StepID), snapshot.Position,
-				run.WithdrawPreparedStep(act), sch)
+			res, err := l.commit(ctx, rt, runID, schema.Identity.DeriveWithdrawCommandID(runID, act.StepID), snapshot.Position,
+				run.WithdrawPreparedStep(act))
 			if err != nil && !retriable(err) {
 				return LoopResult{}, err
 			}
@@ -354,11 +350,7 @@ func (l *Loop) deliver(ctx context.Context, rt runtime.RunStore, out Outcome, ev
 	if snapshot.State.Status.Terminal() {
 		return LoopResult{Disposition: LoopDropped}, nil
 	}
-	sch, err := snapshot.Schema()
-	if err != nil {
-		return LoopResult{}, err
-	}
-	ref := effectRef{schema: sch, runID: runID, id: out.Key.Effect}
+	ref := effectRef{runID: runID, id: out.Key.Effect}
 
 	// The key names an effect; the machine state says which step or call is
 	// Executing under it. An effect nothing is Executing under is stale.
@@ -372,7 +364,7 @@ func (l *Loop) deliver(ctx context.Context, rt runtime.RunStore, out Outcome, ev
 			return LoopResult{Disposition: LoopDropped}, nil
 		}
 		stepID = cur.RefValue.ID
-		cmd, settleErr = l.modelCompletion(sch, &cur, out)
+		cmd, settleErr = l.modelCompletion(&cur, out)
 	case run.ToolStep:
 		call, ok := executingCall(&cur, out.Key.Effect)
 		if !ok {
@@ -386,7 +378,7 @@ func (l *Loop) deliver(ctx context.Context, rt runtime.RunStore, out Outcome, ev
 
 	// Settlement uses a detached control context: a cancelled host request must
 	// not discard an accepted effect's outcome (RUN-LOP-5).
-	finished, err := l.settle(context.WithoutCancel(ctx), rt, events, &ref, snapshot.Position, cmd, sch)
+	finished, err := l.settle(context.WithoutCancel(ctx), rt, events, &ref, snapshot.Position, cmd)
 	if err != nil {
 		return LoopResult{}, err
 	}
@@ -548,11 +540,8 @@ func (l *Loop) awaitOutcome(ctx context.Context, key AssignmentKey, outcomes cha
 // (RUN-LOP-5): if the first attempt actually committed and only the response
 // was lost, the replay returns AlreadyApplied instead of re-executing an
 // expensive step. Ownership loss is never retried.
-func (l *Loop) commit(ctx context.Context, rt runtime.RunStore, runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand, sch schema.Schema) (runtime.CommitResult, error) {
-	if !sch.Valid() {
-		return runtime.CommitResult{}, errors.New("agent: loop: unbound schema")
-	}
-	env, err := sch.Wire.Envelope(runID, id, cmd)
+func (l *Loop) commit(ctx context.Context, rt runtime.RunStore, runID run.RunID, id run.CommandID, base run.RunPosition, cmd run.AgentCommand) (runtime.CommitResult, error) {
+	env, err := schema.Wire.Envelope(runID, id, cmd)
 	if err != nil {
 		return runtime.CommitResult{}, err
 	}

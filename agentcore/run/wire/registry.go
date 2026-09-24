@@ -116,7 +116,7 @@ func newVariantRegistry(facts []factVariant, commands []commandVariant) *variant
 	return r
 }
 
-// variantsV1 is SchemaVersion1's registry; V1 speaks through it.
+// variantsV1 is the variant registry; Facts speaks through it.
 var variantsV1 = newVariantRegistry(factVariantsV1, commandVariantsV1)
 
 func (r *variantRegistry) factType(f run.Fact) string {

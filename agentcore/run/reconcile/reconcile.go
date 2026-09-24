@@ -125,7 +125,7 @@ func classifyRead(err error) readVerdict {
 // attempt for the effect. Only the key and the digest-level description are
 // known here; the inline request body never travels this way (RUN-EXE-7).
 func AssignmentFromTarget(scope run.Scope, t plan.RecoveryTarget) effect.Assignment {
-	a := effect.Assignment{Session: scope, RunID: t.RunID, StepID: t.StepID, CallID: t.CallID, Effect: t.Effect, Schema: t.Schema}
+	a := effect.Assignment{Session: scope, RunID: t.RunID, StepID: t.StepID, CallID: t.CallID, Effect: t.Effect}
 	switch {
 	case t.Call != nil:
 		a.Body = effect.ToolAssignment{ToolRef: t.Call.ToolRef, DefinitionDigest: t.Call.DefinitionDigest, Arguments: t.Call.Arguments, Policy: t.Call.Policy}
@@ -159,13 +159,8 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtim
 	if len(targets) == 0 {
 		return nil, nil
 	}
-	sch, err := snapshot.Schema()
-	if err != nil {
-		return nil, err
-	}
 	out := make([]Decision, 0, len(targets))
 	for _, t := range targets {
-		t.Schema = snapshot.SchemaVersion
 		if t.Effect == "" {
 			return nil, fmt.Errorf("%w: run %s step %s call %q", ErrTargetWithoutEffect, t.RunID, t.StepID, t.CallID)
 		}
@@ -194,7 +189,7 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtim
 			}
 		}
 		if d.Verdict == Dispose {
-			rec := plan.RecoveryCommand(sch.Identity, t)
+			rec := plan.RecoveryCommand(schema.Identity, t)
 			d.Recovery = &rec
 		}
 		out = append(out, d)
@@ -307,14 +302,14 @@ func (r *Reconciler) probeOrphan(key effect.AssignmentKey, asked *bool) {
 // Apply commits the Dispose decisions through the bound store and returns
 // how many were accepted. A decision another actor has already overtaken
 // (stale, terminal, conflict) is skipped.
-func Apply(ctx context.Context, store runtime.RunStore, sch schema.Schema, decisions []Decision) (int, error) {
+func Apply(ctx context.Context, store runtime.RunStore, decisions []Decision) (int, error) {
 	n := 0
 	for i := range decisions {
 		d := &decisions[i]
 		if d.Recovery == nil {
 			continue
 		}
-		env, err := sch.Wire.Envelope(d.Target.RunID, d.Recovery.ID, d.Recovery.Command)
+		env, err := schema.Wire.Envelope(d.Target.RunID, d.Recovery.ID, d.Recovery.Command)
 		if err != nil {
 			return n, err
 		}
@@ -345,9 +340,5 @@ func (r *Reconciler) Reconcile(ctx context.Context, store runtime.RunStore, snap
 	if err != nil {
 		return 0, err
 	}
-	sch, err := snapshot.Schema()
-	if err != nil {
-		return 0, err
-	}
-	return Apply(ctx, store, sch, decisions)
+	return Apply(ctx, store, decisions)
 }

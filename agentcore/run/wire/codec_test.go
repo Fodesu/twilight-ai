@@ -34,7 +34,7 @@ func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 		run.NextStep(run.AgentInput{ID: "in", Digest: inputDigest(`{"q":"hi"}`)}),
 	}
 	for _, cmd := range commands {
-		env, err := (wire.V1{}).Envelope("run-1", run.CommandID("cmd-"+(wire.V1{}).CommandType(cmd)), cmd)
+		env, err := (wire.Facts{}).Envelope("run-1", run.CommandID("cmd-"+(wire.Facts{}).CommandType(cmd)), cmd)
 		if err != nil {
 			t.Fatalf("ProtocolV1().BuildEnvelope(%T): %v", cmd, err)
 		}
@@ -81,7 +81,7 @@ func TestFactCodecRoundTripRestoresVariants(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal(%T): %v", fact, err)
 		}
-		decoded, err := (wire.V1{}).DecodeFact(typ, raw)
+		decoded, err := (wire.Facts{}).DecodeFact(typ, raw)
 		if err != nil {
 			t.Fatalf("DecodeFact(%T): %v\n%s", fact, err, raw)
 		}
@@ -92,7 +92,7 @@ func TestFactCodecRoundTripRestoresVariants(t *testing.T) {
 		if err != nil || string(again) != string(raw) {
 			t.Fatalf("re-encode of %T differs:\n%s\n%s", fact, raw, again)
 		}
-		if _, err := (wire.V1{}).DecodeFact("unknown", raw); err == nil {
+		if _, err := (wire.Facts{}).DecodeFact("unknown", raw); err == nil {
 			t.Fatalf("unknown fact type decoded for %T", fact)
 		}
 	}
@@ -100,7 +100,7 @@ func TestFactCodecRoundTripRestoresVariants(t *testing.T) {
 
 func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
 	cmd := run.NextStep(run.AgentInput{ID: "in", Digest: inputDigest(`1`)})
-	env, err := (wire.V1{}).Envelope("run-1", (canonical.IdentityV1{}).DeriveInputCommandID("run-1", "in"), cmd)
+	env, err := (wire.Facts{}).Envelope("run-1", (canonical.Identity{}).DeriveInputCommandID("run-1", "in"), cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestWireCodecRejectsAmbiguousJSONBeforeVariantDecode(t *testing.T) {
 }
 
 func TestWireCodecRejectsUnknownType(t *testing.T) {
-	env, err := (wire.V1{}).Envelope("run-1", "cmd-1", run.CancelRun{})
+	env, err := (wire.Facts{}).Envelope("run-1", "cmd-1", run.CancelRun{})
 	if err != nil {
 		t.Fatal(err)
 	}

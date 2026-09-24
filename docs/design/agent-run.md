@@ -15,7 +15,7 @@ loop.Loop                    当前进程的 execution interpreter
 frozen.Store                 Owner 侧的不可变正文存储（agentcore/run/frozen）：模型请求、模型结果、工具输出与外部响应，按 digest 寻址；请求在 Dispatch 时形成 executor-owned payload
 ```
 
-`MachineState` 决定 Run 当前可执行动作。每次接受的 command 产生一组同 CommitID 的 Session event，其中的 `twilight/run/` 事件经该 Run 版本的 `Schema.Machine.Evolve` 从 `twilight/run/run_created` 重放后必须得到同一 `MachineState`。
+`MachineState` 决定 Run 当前可执行动作。每次接受的 command 产生一组同 CommitID 的 Session event，其中的 `twilight/run/` 事件经该 Run 版本的 `schema.Machine.Evolve` 从 `twilight/run/run_created` 重放后必须得到同一 `MachineState`。
 
 Run 的职责分成五个相互独立的层面：
 
@@ -31,7 +31,7 @@ Machine 处理已冻结的值和已提交的事实；Loop 解释 `plan.Next` 派
 
 `Step` 是 Run 的持久化恢复边界，描述逻辑进度（ModelStep、ToolStep）。`effect` 是 Run 对外部世界的一次请求：一个 ModelStep 的模型调用，或一个 tool call 的工具调用；其身份 `EffectID = Digest("twilight/effect", RunID, StepID, CallID, sequence)`，model effect 的 CallID 为空、sequence 为该 step 已记录的 `Rejects`（Retry 使同一 StepID 回到 Prepared 并请求下一个 effect），tool effect 的 sequence 为 0（一个 call 最多 start 一次）。effect 的 kind 与 binding 由请求者决定（ModelStep 的 `RequestDigest`、call 的 `BindingDigest`），Run 不在 step 之外另存 effect 记录。`attempt` 是 Executor 对一个 effect 的一次物理执行：Execution Record、worker、lease、`ExecutionRef` 都属于 attempt，Run 不记录它们，只经 EffectID 与 Executor 相连。`Wait` 是 tool call 尚缺失的外部输入（`ResponseRequest`：approval 或 external response），Waiting 的 call 不请求 effect。Session Writer 负责 Run 语义事实的 ownership；Executor Worker 可以在另一个 control-plane ownership 下执行同一个 Assignment。start 事实记录 effect（`ModelStepStarted.Effect`、`ToolCallStarted.Effect`），接管者以 EffectID 向 Executor 询问该 effect 的 attempt 是否仍存在（RUN-CMT-7）。
 
-**RUN-SCP-1** `agentcore/run` 只定义一个 Run 的 identity、事实、状态、命令与合法状态转移（`MachineState`、`Command`、`Fact`、`Decide`、`Evolve`）。子包分为两层。协议层的公开类型随 Run 的 schema 一起变更，或是 Run 核心定义的端口：`model`（冻结的模型请求、模型结果、消息、用量与工具定义的数据模型，它们是 canonical digest 的预映像；`model/sdkconv` 是与 `sdk` 类型互转的唯一位置）、`canonical`（digest 规则与 identity 派生）、`wire`（command/fact 编解码、变体注册表与 `MachineState` codec）、`frozen`（冻结正文的信封编解码与 `Store` 端口）、`schema`（一个版本的 `Schema` = Machine + Wire + Canonical + Snapshot + Identity + Bodies 绑定）、`plan`（`Next` 执行规划、`WaitingCalls` / `NeedsRecovery` 查询与接管处置 `RecoveryTargets` / `RecoveryCommands`）、`runtime`（`RunStore` 端口、`Snapshot`、`CommitRequest` / `CommitResult`、`EvaluateCommit` 与 `FoldRun`）。除 `model/sdkconv` 外，协议层只依赖 `agentcore/es`、`agentcore/jsonstable` 与彼此，`sdk` 在协议层只出现在 `model/sdkconv`；协议层不依赖 `agentcore/session`、`writer`、loop、turn 或 extension：store 身份是不透明的 `Scope`，位置是 `RunPosition`，envelope 不命名 store。执行层使用协议层与 `sdk`，Run 核心与协议层不引用执行层：`effect`（Loop 与 Executor 之间与进程无关的端口合同；`ModelAssignment` 携带冻结的 `model.ModelRequest`，`ModelSucceeded` 以 `sdk.ModelResult` 交回模型结果，由 Loop 经 `model/sdkconv` 冻结后提交）、`loop`（只依赖 `runtime.RunStore`，拥有 prompt builder/model/tool ports、streaming、并发执行、EventSink 与 Loop policy）、`reconcile`（比较 Run 机器的 Executing 目标与 execution store 的记录，产生 Run command）。effect 端口的传输编码 `agentcore/executor/protocol` 属于 Executor，只被 Executor 及其 store / http 适配器导入。`agentcore/session/run` 是 Run 的 Session Module 实现：EventDefinition（按 SchemaVersion 的 codec，wire 类型来自 `wire.FactTypes()`）、`twilight/run/machine` projection、`SessionRunStore`（`Bind(w)` 实现 `runtime.RunStore`，`Command` / `CreateRun` 是 unit of work 的 Part）、Session 级接管入口、`frozen.Store` adapter。
+**RUN-SCP-1** `agentcore/run` 只定义一个 Run 的 identity、事实、状态、命令与合法状态转移（`MachineState`、`Command`、`Fact`、`Decide`、`Evolve`）。子包分为两层。协议层的公开类型随 Run 的 schema 一起变更，或是 Run 核心定义的端口：`model`（冻结的模型请求、模型结果、消息、用量与工具定义的数据模型，它们是 canonical digest 的预映像；`model/sdkconv` 是与 `sdk` 类型互转的唯一位置）、`canonical`（digest 规则与 identity 派生）、`wire`（command/fact 编解码、变体注册表与 `MachineState` codec）、`frozen`（冻结正文的信封编解码与 `Store` 端口）、`schema`（Machine、Wire、Canonical、Snapshot、Identity、Bodies 六个契约的无版本单值）、`plan`（`Next` 执行规划、`WaitingCalls` / `NeedsRecovery` 查询与接管处置 `RecoveryTargets` / `RecoveryCommands`）、`runtime`（`RunStore` 端口、`Snapshot`、`CommitRequest` / `CommitResult`、`EvaluateCommit` 与 `FoldRun`）。除 `model/sdkconv` 外，协议层只依赖 `agentcore/es`、`agentcore/jsonstable` 与彼此，`sdk` 在协议层只出现在 `model/sdkconv`；协议层不依赖 `agentcore/session`、`writer`、loop、turn 或 extension：store 身份是不透明的 `Scope`，位置是 `RunPosition`，envelope 不命名 store。执行层使用协议层与 `sdk`，Run 核心与协议层不引用执行层：`effect`（Loop 与 Executor 之间与进程无关的端口合同；`ModelAssignment` 携带冻结的 `model.ModelRequest`，`ModelSucceeded` 以 `sdk.ModelResult` 交回模型结果，由 Loop 经 `model/sdkconv` 冻结后提交）、`loop`（只依赖 `runtime.RunStore`，拥有 prompt builder/model/tool ports、streaming、并发执行、EventSink 与 Loop policy）、`reconcile`（比较 Run 机器的 Executing 目标与 execution store 的记录，产生 Run command）。effect 端口的传输编码 `agentcore/executor/protocol` 属于 Executor，只被 Executor 及其 store / http 适配器导入。`agentcore/session/run` 是 Run 的 Session Module 实现：EventDefinition（每个事实类型一个 payload 版本的 codec，wire 类型来自 `wire.FactTypes()`）、`twilight/run/machine` projection、`SessionRunStore`（`Bind(w)` 实现 `runtime.RunStore`，`Command` / `CreateRun` 是 unit of work 的 Part）、Session 级接管入口、`frozen.Store` adapter。
 
 **RUN-SCP-2** Run 是 first-party Session Module（Source `twilight`，ModuleID `run`）。Run 不解释它的上层实体：`OwnerID` 是 opaque 字符串，由 turn 模块以 TurnID 填充。本模块的 `Requires`（EXT-REG-4）为空。Run 不写任何其他模块的事件：Turn 结算与对话内容是 Run 事实的投影，由 [agent-turn.md](agent-turn.md) 与 [agent-session-chatlog.md](agent-session-chatlog.md) 定义；ledger、所有权、组追加与投影机制由 [agent-session.md](agent-session.md) 与 [agent-session-extension.md](agent-session-extension.md) 定义。Artifact、queue、provider registry、权限与产品 policy 分别由其 package 或 Application 拥有。
 
@@ -56,11 +56,10 @@ type Digest = es.Digest
 
 Run 持久化协议保存 run-owned frozen values。模型请求、模型结果、消息、工具定义、usage 在进入 command 前，分别经 `FreezeModelRequest`、`FreezeModelResult`、`FreezeToolDefinition`、`FreezeToolArguments` 等入口转为 `agentcore/run/model` 的闭合值类型：JSON 文档（工具参数、工具输出、schema、provider options）冻结为 immutable `CanonicalJSON`；provider metadata 在 SDK 侧已是 namespace→name→string 的字符串 token，镜像保持同一形状，不经 JSON 转换；无法成为 JSON 的工具参数文本按原文保存在 `ToolArguments.Text`（非法 UTF-8 拒绝冻结）。RunStore 接收 agent-owned value；调用方负责在边界前完成冻结。
 
-**RUN-WIR-2** Run 事实是 Session event：EventType 为 `twilight/run/<name>`，payload 为 canonical JSON object，第一层携带 `runId` 与 payload 版本字段 `v`（SES-VER-1、EXT-REG-2）。`v` 是该 Run 的协议版本：run 模块的六个契约（RUN-CMT-8）是一个整体，模块以一个版本（`runmod.Version`）写它的全部事实，一个 Run 的全部事实使用同一值；`agentcore/session/run` 以该值选择 `schema.For(schemaVersion)`，Run 事实本身不记录版本字段之外的版本信息。Registry 永久保留每个已发布版本的 codec、Decide 与 Evolve。行字段（Seq、CommitID、Index、Last、digest）由 Session kernel 提供，Run 不另设 envelope。fact codec 必须拒绝 unknown type、duplicate key、unknown field、trailing data、非法 UTF-8、非 canonical-equivalent wire。精确 identity 和 digest 使用 JSON string，整数字段使用 Session preset 的整数 wire shape。
+**RUN-WIR-2** Run 事实是 Session event：EventType 为 `twilight/run/<name>`，payload 为 canonical JSON object，第一层携带 `runId` 与 payload 版本字段 `v`（SES-VER-1、EXT-REG-2）。`v` 是该事实类型的 payload 版本（`runmod.Version`，当前为 1），属于事件类型而不属于 Run：某个事实类型形状变化时只递增该类型的 `v` 并增加 codec，codec 在解码时 upcast 到当前内存类型，Decide 与 Evolve 只面对当前类型（RUN-CMT-8）。Registry 永久保留每个已发布版本的 codec。行字段（Seq、CommitID、Index、Last、digest）由 Session kernel 提供，Run 不另设 envelope。fact codec 必须拒绝 unknown type、duplicate key、unknown field、trailing data、非法 UTF-8、非 canonical-equivalent wire。精确 identity 和 digest 使用 JSON string，整数字段使用 Session preset 的整数 wire shape。
 
 ```go
 type CommandEnvelope struct {
-    SchemaVersion uint16 // 必须等于该 Run 的协议版本（machine 投影记录的事实 v）
     Type string
     RunID RunID          // envelope 不命名 store：command 到达哪个 Session 由绑定的 RunStore 决定
     ID CommandID
@@ -70,7 +69,7 @@ type CommandEnvelope struct {
 
 command 不持久化。`CommandEnvelope.ID` 就是该 command 产生的 event 组的 `CommitID`；重放由 Writer 按 CommitID 判定（EXT-WRT-2）。envelope 只经 `Schema.Wire.Envelope` 构造（RUN-WIR-3），不携带自校验 digest。
 
-**RUN-WIR-3** 一个 command 恰产生一组事件（一次 `Append`，同一 CommitID）；其 `twilight/run/` 事件在 Run 自己的 stream 内 Index 从 0 连续递增。同一语义操作里其他模块的事实（input_delivered、turn/failed）不由 Run 附带：它们是同一个 unit of work（`agentcore/session/unit`）里那个模块自己的 Part，与 Run 的 Part 在同一 View 上准备、同一 commit 落盘。事件没有独立 EventID，`Seq` 即身份（SES-WIR-1）。RunStore 提交的组其 CommitID 等于 CommandID，Coordinator 写入的 Start 与 Retry 组使用该组自己的 CommitID。`RecordedAtUnixMilli` 由写入方的时钟填入，是 metadata，不参与 Run 的任何派生，也不进入 Writer 的幂等 fingerprint（EXT-WRT-2）。构造 command 必须使用该 Run 版本的 `Schema.Wire.Envelope`（Loop 通过 `runtime.Snapshot.Schema()` 取得）。`agentcore/run` 不提供隐式选择版本的包级 `Envelope`、`Decide`、`Evolve` 或 `Digest*` 函数；新 Run 与测试显式使用 `schema.V1()`。
+**RUN-WIR-3** 一个 command 恰产生一组事件（一次 `Append`，同一 CommitID）；其 `twilight/run/` 事件在 Run 自己的 stream 内 Index 从 0 连续递增。同一语义操作里其他模块的事实（input_delivered、turn/failed）不由 Run 附带：它们是同一个 unit of work（`agentcore/session/unit`）里那个模块自己的 Part，与 Run 的 Part 在同一 View 上准备、同一 commit 落盘。事件没有独立 EventID，`Seq` 即身份（SES-WIR-1）。RunStore 提交的组其 CommitID 等于 CommandID，Coordinator 写入的 Start 与 Retry 组使用该组自己的 CommitID。`RecordedAtUnixMilli` 由写入方的时钟填入，是 metadata，不参与 Run 的任何派生，也不参与重放判定（EXT-WRT-2）。构造 command 必须使用 `schema.Wire.Envelope`；`agentcore/run` 自身不提供 `Envelope`、`Decide`、`Evolve` 或 `Digest*` 的包级函数，六个契约只在 `agentcore/run/schema` 以单值暴露（RUN-CMT-8）。
 
 **RUN-WIR-4** 内容与执行状态分离。fact 只保存执行状态与内容 digest；用户输入也不例外：`AgentInput{ID, Digest}`，`input_accepted` 与 `PendingInputs` 只记录输入身份与其内容 digest，正文只在 chatlog 的 `input_submitted` 里存在一份，chatlog 的 `DeliverInputs` Part 在同一 unit 里核对 digest；digest 是不可变正文在 `frozen.Store` 中的 canonical 身份，命名它的 fact 是正文的 retention root。fact 不携带 `artifact.Ref`：Scheme、Authority、MediaType、Durability 属于存储层，由 `agentcore/session/run` 的适配器从 digest 确定性派生（`FrozenRef`、`FrozenBinding`），Run 协议只知道 digest。
 
@@ -127,7 +126,7 @@ type RunRecord struct {
 }
 ```
 
-**RUN-NEW-1** `twilight/run/run_created` 是 Run 的第一个事实。v1 初始状态恰为：相同 RunID、Owner、Attempt、`RunActive`、`Current=Open`、无 pending input、零 model step、零 usage、无 result。初始输入随后以 `twilight/run/input_accepted` 进入同一组（TRN-STR-2）。`NewRun` 不携带 SchemaVersion：`agentcore/session/run` 的 `CreateRun` Part 以 run 模块的当前协议版本 `runmod.Version`（RUN-CMT-8）经 `schema.For` 绑定后由 `Schema.Machine.CreateGroup(NewRun, []AgentInput)` 返回 `created` 与 `input_accepted` 的 facts，编码为 Session event 由 `agentcore/session/run` 完成，Coordinator 不自行编码；请求中没有字段可以选择另一个版本。同一 RunID 第二条 `created` 为 Evolve 错误。
+**RUN-NEW-1** `twilight/run/run_created` 是 Run 的第一个事实。v1 初始状态恰为：相同 RunID、Owner、Attempt、`RunActive`、`Current=Open`、无 pending input、零 model step、零 usage、无 result。初始输入随后以 `twilight/run/input_accepted` 进入同一组（TRN-STR-2）。`agentcore/session/run` 的 `CreateRun` Part 由 `schema.Machine.CreateGroup(NewRun, []AgentInput)` 返回 `created` 与 `input_accepted` 的 facts，编码为 Session event 由 `agentcore/session/run` 完成，Coordinator 不自行编码。同一 RunID 第二条 `created` 为 Evolve 错误。
 
 **RUN-NEW-2** `runtime.FoldRun(schemaVersion, facts)` 按 Seq 顺序折叠该 RunID 的完整事实序列，第一条必须是 `created`；`schemaVersion` 取自这些事实的 `v`，据此绑定 `Schema`。Fold 过程执行纯状态重建。import、诊断与 `SessionRunStore.Record` integrity verification 都经 FoldRun；投影缓存通过 FoldRun 结果校验。
 
@@ -271,7 +270,7 @@ ToolCall:
 
 最后一个 ToolCall 进入 Completed 或 Failed 时，`Evolve` 在折叠该 fact 后若全部 call 已 terminal，则把 Current 设为 `Open` 并写入 `LastToolStep`；下一次 `PromptInput.SourceStep` 取自 `LastToolStep.RefValue.ID`。Cancel 产生的 failure facts 同样走这条关闭规则；`RunEnded` 再把 Current 置空。
 
-**RUN-MCH-3** `Schema.Machine.Decide(state, command)` 执行全部验证与 derived consequence，一次返回该组的完整 ordered fact group；验证成功后返回完整 facts。`Machine.Evolve(state, fact)` 机械折叠 fact，依赖 fact 携带的完整执行状态数据。accepted facts 必须 self-contained；若该组 terminalize，`RunEnded` 必须是 Decide 输出的最后一个 fact。
+**RUN-MCH-3** `schema.Machine.Decide(state, command)` 执行全部验证与 derived consequence，一次返回该组的完整 ordered fact group；验证成功后返回完整 facts。`Machine.Evolve(state, fact)` 机械折叠 fact，依赖 fact 携带的完整执行状态数据。accepted facts 必须 self-contained；若该组 terminalize，`RunEnded` 必须是 Decide 输出的最后一个 fact。
 
 启动 command 的最小公共形状为：
 
@@ -332,9 +331,7 @@ type RunStore interface {
 type Snapshot struct {
     State run.MachineState // detached in-process view
     Position run.RunPosition
-    SchemaVersion uint16 // 该 Run 的协议版本，读自其事实的 v
 }
-func (Snapshot) Schema() (schema.Schema, error)
 type CommitRequest struct {
     Base run.RunPosition // Load 时的 Position；PrepareModelRequest 为 hard CAS，其他 command 可为零值
     Command wire.CommandEnvelope
@@ -345,19 +342,15 @@ type CommitResult struct {
     Facts []run.Fact // 本次 command 产生的 Run facts；重放时为原 commit 的 facts
 }
 
-// package agentcore/run/schema
-// Schema 把一个版本冻结的六个契约聚合在一起；它们各自独立演进，Schema 只负责一次选版本。
-type Schema struct {
-    Version uint16
+// package agentcore/run/schema：Run 协议的六个契约，无版本的包级单值（RUN-CMT-8）
+var (
     Machine run.Machine         // Decide / Evolve / CreateGroup（RUN-MCH）
     Wire wire.Codec             // FactType / CommandType / DecodeFact / DecodeCommand / EncodeFact / Envelope（RUN-WIR）
     Canonical run.Canonical     // Digest*（RUN-WIR-4）
     Snapshot wire.SnapshotCodec // Encode / Decode MachineState
     Identity run.Identity       // Derive*：RunID 作用域内的 step、call、response 与 command identity（RUN-WIR-3）
     Bodies frozen.Codec         // 冻结正文的信封编解码，digest 由这些信封计算（RUN-WIR-4）
-}
-func For(schemaVersion uint16) (Schema, error)
-func V1() Schema
+)
 // fact 与 command 的变体在 wire 的一张注册表里登记一次（wire/registry.go）：discriminator、decoder 与 Go 类型来自同一条目，
 // wire.FactTypes() 是 Session 模块注册 wire 类型的来源，没有第二份清单。
 ```
@@ -392,11 +385,10 @@ unit.Commit(view):
   Command.Prepare(view):
   2  state = view.Projection(twilight/run/machine).Active[RunID]
      不在 Active：view.StreamHead(run/<RunID>) 存在 -> ErrRunTerminal；否则 ErrRunNotFound
-     schema 不等于该 Run 的 SchemaVersion（machine 投影记录的事实版本）-> 不可重试错误
-  3  validate envelope RunID/schema/type，derived CommandID check
+  3  validate envelope RunID/type，derived CommandID check
   4  validate hard CAS（prepare 的 Base == Positions[RunID]）/ target state
-  5  facts = Schema.Machine.Decide(state, command) exactly once
-  6  Schema.Machine.Evolve in order；facts -> TypedEvent（Type twilight/run/<name>，v = SchemaVersion）
+  5  facts = schema.Machine.Decide(state, command) exactly once
+  6  schema.Machine.Evolve in order；facts -> TypedEvent（Type twilight/run/<name>，v = 该事实类型的 payload 版本）
   7  return [run/<RunID>: facts]；其他 Part 的 batch 由 unit 按 Part 顺序合并
 )
 // Writer 完成 codec、Binding admission（含命名正文的 fact 的 FrozenBinding）、claim（先于 Append）、Append 与投影折叠（EXT-WRT-1/3）。
@@ -413,7 +405,7 @@ unit.Commit(view):
 
 **RUN-CMT-7** 接管处置。处置只恢复同一 Run：不创建 attempt、不结束 Run；对工具 call 的 Unknown 结算是该 call 的终态事实，协议在任何路径上都不据此自动重新执行（TRN-DUR-1、TRN-DUR-4）。新 owner 取得 Writer 后，在驱动任何 Run 之前以该 Writer 调用一次 `SessionRunStore.RecoverInterrupted(ctx, w, reconciler)`。三方的分工固定：Run 机器说哪些目标是 Executing、请求了哪个 effect（`plan.RecoveryTargets`）；execution store 说该 effect 的 attempt 是否还存在（`ExecutionPort.Attach`）；`agentcore/run/reconcile` 的 `Reconciler` 是比较两侧的唯一位置，对每个目标给出 Verdict：`keep`（`active` / `terminal`，保持 Executing，后台读取 Outcome 并交付）、`defer`（`orphaned`：记录存在但没有活租约，不按 `missing` 处理，保持 Executing 并同样等待 Outcome；`Executions` 实现 `effect.Recoverer` 时 Reconciler 随即调用一次 `RecoverExecution(key)` 请求接管，此后 Outcome 读取循环在退避到上限后按 Attach 结果每个 orphaned 阶段再请求一次；放弃只经显式 `Dispose`）、`dispose`（`missing`，产生 Run 的恢复 command）。处置命令由 `plan.RecoveryCommand` 按目标派生，Run 只验证该处置是否合法并记录事实；Loop、Driver 与 store 适配器都不解释 executor 的观察。若同一 effect 的 attempt 仍存在，Run 保持 Executing，结果以原 Effect 结算，属于重连同一次执行。只有执行记录被证明不存在（`missing`）或调用方明确放弃（`Reconciler.Abandon`）时，才处置；`Executions` 为 nil 而未声明 `Abandon` 时 Plan 返回 `ErrNoExecutionPort`，"无 executor 可问"不等于"无执行"：Executing ModelStep 提交 `RecoverModelExecution{Effect}`，回到 `Open` 并按恢复时刻重新规划；Executing tool call 提交 `SubmitToolFailure{Outcome: Unknown}`。Pending call 不处置，Waiting call 不处置。每个处置是一次普通 Commit，Run 保持 Active，同一 RunID 继续。处置的 CommandID 由 `DeriveRecoveryCommandID(Effect)` 派生，与 owner 和 Epoch 无关，任何 owner 的重复处置得到 AlreadyApplied。 装配了 Effect Process（RUN-EXE-15）时，`Open` 在处置之后运行一次 Relay Sync：从未到达 Executor 的 effect 由 Sync 重新交付，处置只落在 Sync 之前已被证明 `missing` 的目标上。
 
-**RUN-CMT-8** 每个 Run 的协议版本是创建它时 run 模块的当前版本 `runmod.Version`，创建时冻结，记录为其全部事实的 `v`（SES-VER-1、EXT-REG-2）。`runtime.Snapshot.SchemaVersion` 等于该值，machine 投影为每个活动 Run 记录它（`Schemas`）；`schema.For(schemaVersion)` 返回绑定该版本 Machine / Wire / Canonical / Snapshot / Identity / Bodies 六个契约的 `Schema`。`runtime.EvaluateCommit` 接受 command 当且仅当 `CommandEnvelope.SchemaVersion` 等于该 Run 的版本；向已有 Run 发命令的一方以 `runmod.SchemaOf(reader, sid, runID)` 从 machine 投影取该版本构造 envelope，不假定它等于二进制的当前版本。新 Run 不能自选版本。二进制升级 `runmod.Version` 后，新 Run 以新版本创建，仍活动的旧 Run 继续以其自身版本接受命令直到终结；已终结 Run 的 Record 与 replay 继续使用其版本的 `Schema`；v1 Run 的 replay 必须继续使用 `schema.V1()`。pre-release 期间 v1 的 Evolve 语义可以修订，早期二进制写下的流不保证在修订后的 v1 下可折叠；发布冻结后，任何 Evolve 变化必须以新的 SchemaVersion 发布，已发布版本的 Decide、Evolve 与 codec 永久保留。Run 的版本与 Session kernel 的 `ProtocolVersion` 无关（SES-VER-2），也与同一 Session 内其他模块的 payload 版本无关（SES-VER-1）。
+**RUN-CMT-8（Run 协议不设版本）** Run 的六个契约（Machine、Wire、Canonical、Snapshot、Identity、Bodies）是 `agentcore/run/schema` 的包级单值，没有版本号，也没有按版本选择的入口。理由按契约分述：Identity 派生的 CommandID、StepID、EffectID 是持久化语义，派生规则变化会使同一 effect 的重放得到另一个 CommandID，因此它不能有版本，其预映像常量归自身（与 SES-VER-3 同理）；Canonical 与 Bodies 的 digest 是 cas 的键，事实记录写下时的 digest，其预映像与信封的版本常量（`v1:` 前缀）归各自的字节，不是选择器；Wire 与 Machine 面对的事实形状由每个事实类型的 payload 版本 `v` 与 codec 演进（SES-VER-1、EXT-REG-2），codec 把旧版本 upcast 到当前内存类型，Decide 与 Evolve 只有一份；Snapshot 是投影缓存的编码，格式不符只导致重折。`CommandEnvelope` 与 `runtime.Snapshot` 都不携带版本，machine 投影不记录每个 Run 的版本，命令不做版本比对。Run 之间因此没有"不同版本并存"的情形：新事实类型或新字段以事件类型的 `v` 发布，所有 Run 由同一份 Decide 与 Evolve 处理。
 
 ### 5.1 不进入 ledger 的数据
 
@@ -656,7 +648,7 @@ type Event struct {
 
 ## 9. compatibility 与 conformance
 
-**RUN-CMP-1** command/fact discriminator、wire fields、canonical digest、derived ID 与 `schema.V1().Machine.Evolve` 的任何修改必须进入新 `SchemaVersion`；Registry 继续 decode/fold 全部已发布版本；同一 Run 的事实只有一个版本（RUN-CMT-8），同一 Session 内可以并存不同版本的 Run，不需要迁移。Session kernel 没有版本号（SES-VER-2），Run 版本演进只改 payload 的 `v`。
+**RUN-CMP-1** canonical digest 与 derived ID 的预映像永久冻结，任何修改都是新的 domain 而不是新版本（RUN-CMT-8）；fact 的 wire fields 变化以该事实类型的 payload 版本 `v` 发布并增加 codec，Registry 继续 decode 全部已发布版本；Evolve 只有一份，面对 codec upcast 后的当前类型。Session kernel 与 Run 协议都没有版本号（SES-VER-2、RUN-CMT-8）。
 
 **RUN-CMP-2** SessionRunStore conformance 只断言 Run 模块自己的语义；组原子性、所有权与 Epoch fencing、幂等索引、投影缓存复用由 Session kernel 与 Module Framework 的 conformance 覆盖（SES 第 7 节、EXT 第 7 节），本清单以引用代替重复。conformance 以 `session.Store` 为参数（`agentcore/session/run/runtimetest`），Memory 与文件 adapter 跑同一套。必须覆盖：
 
@@ -669,7 +661,7 @@ type Event struct {
 - 结算返回值：`CommitResult.Snapshot` 是 Evolve 后状态；终结 Run 的结算其 `Snapshot.Status` 为终态且 `Result` 非空，与 Record 一致；
 - Prepare hard CAS 只对该 Run 自己的事件敏感：同一 Session 内 chatlog、turn 或其他 Run 的写入不改变该 Run 的 Position，也不使 Prepare 失效；
 - 投影：`SnapshotPolicy` 在 Run 回到 Open 或终结时写入投影缓存；终态 Run 不出现在 `Active`，投影不保留它；Record 对活动 Run 的 fold 与投影一致；非法 fact 序列使 FoldRun 报错；
-- 隔离：同一 Session 内多 Run 互不影响 Position 与 Record；chatlog 与 turn 事件不影响 Run fold；每个 Run 使用创建时的协议版本，同一 Session 内不同版本的 Run 并存的情形在第二个 SchemaVersion 发布后覆盖；
+- 隔离：同一 Session 内多 Run 互不影响 Position 与 Record；chatlog 与 turn 事件不影响 Run fold；全部 Run 由同一份 Decide 与 Evolve 处理（RUN-CMT-8）；
 - 接管处置：关闭 Writer 后以新 Writer 打开（Epoch 加一）并调用 `RecoverInterrupted`：Executing model 被撤回，Run 回到 `Open`、`ModelSteps` 不计入该步、Executing 期间投递的输入仍在 `PendingInputs`；随后的 Prepare 产生新的 StepID 并消费这些输入，不重发原 RequestDigest；Executing tool 记 Unknown 且 chatlog Context 中该 call 的条目 status=`unknown`、无正文 digest，同 step 的 Pending 与 Waiting call 不受影响；Run 保持 Active；同一 Epoch 重复调用返回 0 且无新写入；没有 Executing 目标时返回 0；
 - 接管重连：`RecoverInterrupted` 对每个 Executing 目标经 `Reconciler` 向 `ExecutionPort.Attach` 询问，AssignmentKey 携带 Scope、RunID 与 start 事实记录的 Effect；`active`、`terminal` 保持 Executing 与 Effect，随后以原 Effect 结算；`orphaned` 保持原状态并等待 Outcome，端口实现 `effect.Recoverer` 时调用一次 `RecoverExecution`；`missing` 按接管处置；`Executions` 为 nil 且未 `Abandon` 时返回 `ErrNoExecutionPort`，`Abandon` 不询问 executor 而全部处置；无 record 的 key 为 `missing`。
 - 效果层：`Advance` 提交 start barrier 后把 Assignment 交给 Executor 并返回 `LoopDispatched`，不等待效果；`Deliver` 以 Key 定位 Executing 目标并结算，Run 终结时返回 `LoopFinished`；effect 已结算或处置、Effect 不符的迟到 Outcome 返回 `LoopDropped` 且不写入；`Cancelled` 的模型 Outcome 使 step 撤回到 Open；`LocalExecutor.Attach(ref)` 对执行中的 Ref 返回 `active`，完成后返回 `terminal`，无该 Ref 时返回 `missing`；超出保留上限的最早终态条目对 `Status` 返回 `ErrExecutionNotFound`、对 `Attach` 返回 `missing`，仍在上限内的条目返回 `terminal`；`Advance`、`Deliver`、`Run` 返回后 Loop 的 slot 表为空；HTTP Server 对非 POST 返回 405、对超过 `MaxBodyBytes` 的请求体返回 413、对非 JSON 请求体返回 400；GetOutcome 读取失败保持执行状态，真实结果稍后仍可结算；Dispatch 重放保持已有记录，显式 `RecoverExecution` 处理恢复；record 的 Provider 在本 Worker 无对应 backend 时返回 `ErrUnknownProvider` 且 record 不变。

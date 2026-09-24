@@ -46,7 +46,7 @@ func TestArtifactConformance(t *testing.T) {
 }
 
 func assignment(id run.EffectID) effect.Assignment {
-	return effect.Assignment{Session: "s", RunID: "r", StepID: "step", Effect: id, Schema: 1,
+	return effect.Assignment{Session: "s", RunID: "r", StepID: "step", Effect: id,
 		Body: effect.ModelAssignment{Model: "m", RequestDigest: "sha256:req"}}
 }
 

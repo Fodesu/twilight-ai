@@ -30,7 +30,7 @@ func (h *history) add(t *testing.T, runID run.RunID, facts ...run.Fact) {
 	t.Helper()
 	batch := session.StreamBatch{Stream: runmod.Stream(runID)}
 	for _, f := range facts {
-		typ := runmod.EventType(schema.V1().Wire, f)
+		typ := runmod.EventType(schema.Wire, f)
 		payload, err := h.registry.Encode(typ, runmod.Event{RunID: runID, Fact: f})
 		if err != nil {
 			t.Fatal(err)

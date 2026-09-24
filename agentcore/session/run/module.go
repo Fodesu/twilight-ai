@@ -163,7 +163,7 @@ var Module = buildModule()
 // payload version every run fact is written with (RUN-CMT-8): the run
 // module's six contracts (schema.For) are one bundle, so all of its events
 // share the version.
-const Version uint16 = run.SchemaVersion1
+const Version extension.PayloadVersion = 1
 
 func buildModule() extension.ModuleDescriptor {
 	m := extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: ModuleID,
@@ -173,7 +173,7 @@ func buildModule() extension.ModuleDescriptor {
 			Type:   Prefix + session.EventType(name),
 			Stream: StreamDomain,
 			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{
-				extension.PayloadVersion(Version): factCodec{local: name, wire: schema.V1().Wire},
+				Version: factCodec{local: name, wire: schema.Wire},
 			},
 		}
 		if frozenBodyFacts[name] {

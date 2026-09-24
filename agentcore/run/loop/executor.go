@@ -204,18 +204,14 @@ func (e *LocalExecutor) Validate(_ context.Context, a Assignment) (*run.ToolFail
 		}
 		return nil, nil
 	case ToolAssignment:
-		sch, err := schema.For(a.Schema)
-		if err != nil {
-			return nil, err
-		}
-		_, failure := e.resolveTool(sch, &body)
+		_, failure := e.resolveTool(&body)
 		return failure, nil
 	default:
 		return &run.ToolFailure{Class: run.FailureProvider, Message: "assignment without body"}, nil
 	}
 }
 
-func (e *LocalExecutor) resolveTool(sch schema.Schema, t *ToolAssignment) (ExecutableTool, *run.ToolFailure) {
+func (e *LocalExecutor) resolveTool(t *ToolAssignment) (ExecutableTool, *run.ToolFailure) {
 	tool, resolveErr := e.tools.ResolveTool(t.ToolRef)
 	if resolveErr != nil {
 		return nil, &run.ToolFailure{Class: run.FailureToolLookup, Message: resolveErr.Error()}
@@ -227,7 +223,7 @@ func (e *LocalExecutor) resolveTool(sch schema.Schema, t *ToolAssignment) (Execu
 	if freezeErr != nil {
 		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: freezeErr.Error()}
 	}
-	defDigest, digestErr := sch.Canonical.DigestToolDefinition(toolDef)
+	defDigest, digestErr := schema.Canonical.DigestToolDefinition(toolDef)
 	if digestErr != nil {
 		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: digestErr.Error()}
 	}
@@ -286,11 +282,7 @@ func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) err
 			return fmt.Errorf("%w: model assignment without an inline request payload", ErrExecutorRejected)
 		}
 		frozenRequest := *body.Request
-		sch, err := schema.For(a.Schema)
-		if err != nil {
-			return err
-		}
-		got, err := sch.Canonical.DigestRequest(frozenRequest)
+		got, err := schema.Canonical.DigestRequest(frozenRequest)
 		if err != nil {
 			return fmt.Errorf("%w: request digest: %w", ErrExecutorRejected, err)
 		}
@@ -299,11 +291,7 @@ func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) err
 		}
 		execute = func(ctx context.Context) Outcome { return e.runModel(ctx, a, &frozenRequest, invoker) }
 	case ToolAssignment:
-		sch, err := schema.For(a.Schema)
-		if err != nil {
-			return err
-		}
-		tool, failure := e.resolveTool(sch, &body)
+		tool, failure := e.resolveTool(&body)
 		if failure != nil {
 			return fmt.Errorf("%w: %s: %s", ErrExecutorRejected, failure.Class, failure.Message)
 		}

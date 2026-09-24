@@ -196,7 +196,6 @@ type Command struct {
 	prepared bool
 	before   run.MachineState
 	after    run.MachineState
-	schema   uint16
 	position run.RunPosition
 	facts    []run.Fact
 }
@@ -208,13 +207,7 @@ func (s *SessionRunStore) Command(ctx context.Context, req runtime.CommitRequest
 	if req.Command.RunID == "" || req.Command.ID == "" {
 		return nil, errors.New("runmod: command requires RunID and CommandID")
 	}
-	// The envelope's SchemaVersion is the Run's (Prepare refuses a mismatch),
-	// so the bodies are frozen under the Run's own schema, never a fixed one.
-	sch, err := schema.For(req.Command.SchemaVersion)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.freezeBodies(ctx, sch, req.Command.Command); err != nil {
+	if err := s.freezeBodies(ctx, req.Command.Command); err != nil {
 		return nil, err
 	}
 	return &Command{s: s, req: req}, nil
@@ -236,15 +229,7 @@ func (c *Command) Prepare(_ context.Context, view writer.View, now int64) ([]wri
 		}
 		return nil, runtime.ErrRunNotFound
 	}
-	sch := proj.Schemas[runID]
-	if env.SchemaVersion != sch {
-		return nil, fmt.Errorf("runmod: commit: command schema %d does not match run schema %d", env.SchemaVersion, sch)
-	}
-	bound, err := schema.For(sch)
-	if err != nil {
-		return nil, err
-	}
-	decision, err := runtime.EvaluateCommit(state, proj.Positions[runID], c.req, bound)
+	decision, err := runtime.EvaluateCommit(state, proj.Positions[runID], c.req)
 	if err != nil {
 		return nil, err
 	}
@@ -261,10 +246,10 @@ func (c *Command) Prepare(_ context.Context, view writer.View, now int64) ([]wri
 	}
 	events := make([]writer.TypedEvent, 0, len(decision.Facts))
 	for _, f := range decision.Facts {
-		events = append(events, writer.TypedEvent{Type: EventType(bound.Wire, f), RecordedAtUnixMilli: now, Value: Event{RunID: runID, Fact: f}})
+		events = append(events, writer.TypedEvent{Type: EventType(schema.Wire, f), RecordedAtUnixMilli: now, Value: Event{RunID: runID, Fact: f}})
 	}
 	c.prepared = true
-	c.before, c.after, c.schema = state, decision.NewState, sch
+	c.before, c.after = state, decision.NewState
 	c.position = proj.Positions[runID] + run.RunPosition(len(decision.Facts))
 	c.facts = decision.Facts
 	return []writer.TypedBatch{{Stream: Stream(runID), Events: events}}, nil
@@ -280,7 +265,7 @@ func (c *Command) Result(ctx context.Context, w writer.Writer, res *writer.Commi
 		}
 		c.s.afterCommit(ctx, w, &c.before, &c.after)
 		return runtime.CommitResult{Status: runtime.CommitAccepted, Facts: c.facts,
-			Snapshot: runtime.Snapshot{State: c.after, Position: c.position, SchemaVersion: c.schema}}, nil
+			Snapshot: runtime.Snapshot{State: c.after, Position: c.position}}, nil
 	case writer.CommitAlreadyApplied:
 		// Idempotency is the Session's (SessionID, CommitID) index alone
 		// (RUN-CMT-5): every Run CommandID is content-derived, so a hit is the
@@ -327,25 +312,25 @@ func (s *SessionRunStore) factsOf(c session.Commit, runID run.RunID) ([]run.Fact
 // Each body is encoded under the Run's schema as the envelope its digest was
 // computed from (RUN-CMT-8: digest rules and body encoding are versioned
 // together with Decide and Evolve).
-func (s *SessionRunStore) freezeBodies(ctx context.Context, sch schema.Schema, cmd run.AgentCommand) error {
+func (s *SessionRunStore) freezeBodies(ctx context.Context, cmd run.AgentCommand) error {
 	var digest run.Digest
 	var body []byte
 	var err error
 	switch c := cmd.(type) {
 	case run.PrepareModelRequest:
 		digest = c.RequestDigest
-		body, err = sch.Bodies.EncodeRequest(&c.Request, digest)
+		body, err = schema.Bodies.EncodeRequest(&c.Request, digest)
 	case run.SubmitModelResult:
-		if digest, err = sch.Canonical.DigestModelResult(c.Result); err == nil {
-			body, err = sch.Bodies.EncodeModelResult(&c.Result, digest)
+		if digest, err = schema.Canonical.DigestModelResult(c.Result); err == nil {
+			body, err = schema.Bodies.EncodeModelResult(&c.Result, digest)
 		}
 	case run.SubmitToolResult:
-		if digest, err = sch.Canonical.DigestToolOutput(c.Result.Output); err == nil {
-			body, err = sch.Bodies.EncodeToolOutput(c.Result.Output, digest)
+		if digest, err = schema.Canonical.DigestToolOutput(c.Result.Output); err == nil {
+			body, err = schema.Bodies.EncodeToolOutput(c.Result.Output, digest)
 		}
 	case run.SubmitToolResponse:
 		digest = c.ResponseDigest
-		body, err = sch.Bodies.EncodeToolResponse(c.Payload, digest)
+		body, err = schema.Bodies.EncodeToolResponse(c.Payload, digest)
 	default:
 		return nil
 	}
@@ -388,13 +373,7 @@ type createRun struct {
 }
 
 func (c createRun) Prepare(_ context.Context, view writer.View, now int64) ([]writer.TypedBatch, error) {
-	// A Run is created under the run module's current protocol version
-	// (RUN-CMT-8, RUN-NEW-1); nothing in the request may select another.
-	sch, err := schema.For(Version)
-	if err != nil {
-		return nil, err
-	}
-	facts, err := sch.Machine.CreateGroup(c.newRun, c.inputs)
+	facts, err := schema.Machine.CreateGroup(c.newRun, c.inputs)
 	if err != nil {
 		return nil, err
 	}
@@ -403,7 +382,7 @@ func (c createRun) Prepare(_ context.Context, view writer.View, now int64) ([]wr
 	}
 	events := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		events = append(events, writer.TypedEvent{Type: EventType(sch.Wire, f), RecordedAtUnixMilli: now, Value: Event{RunID: c.newRun.RunID, Fact: f}})
+		events = append(events, writer.TypedEvent{Type: EventType(schema.Wire, f), RecordedAtUnixMilli: now, Value: Event{RunID: c.newRun.RunID, Fact: f}})
 	}
 	return []writer.TypedBatch{{Stream: Stream(c.newRun.RunID), Events: events}}, nil
 }
@@ -452,7 +431,6 @@ func (s *SessionRunStore) record(ctx context.Context, sid session.SessionID, run
 	}
 	var record Record
 	var position run.RunPosition
-	var schemaVersion uint16
 	for i := range page.Events {
 		e := &page.Events[i]
 		decoded, err := s.cfg.Registry.Decode(*e)
@@ -471,7 +449,6 @@ func (s *SessionRunStore) record(ctx context.Context, sid session.SessionID, run
 		}
 		if len(record.Events) == 0 {
 			record.Created = session.StreamSeq(i)
-			schemaVersion = uint16(decoded.Version)
 		}
 		record.Events = append(record.Events, *e)
 		record.Facts = append(record.Facts, ev.Fact)
@@ -480,13 +457,13 @@ func (s *SessionRunStore) record(ctx context.Context, sid session.SessionID, run
 	if len(record.Facts) == 0 {
 		return Record{}, runtime.ErrRunNotFound
 	}
-	state, err := runtime.FoldRun(schemaVersion, record.Facts)
+	state, err := runtime.FoldRun(record.Facts)
 	if err != nil {
 		return Record{}, fmt.Errorf("runmod: record: %w", err)
 	}
 	if expect != nil && page.Head == expectHead && !wire.StatesEquivalent(&state, expect) {
 		return Record{}, errors.New("runmod: record: projection diverges from the event fold")
 	}
-	record.Snapshot = runtime.Snapshot{State: state, Position: position, SchemaVersion: schemaVersion}
+	record.Snapshot = runtime.Snapshot{State: state, Position: position}
 	return record, nil
 }

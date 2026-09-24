@@ -25,7 +25,7 @@ func TestToolAssignmentCarriesReplayPolicy(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			a := effect.Assignment{Session: "s", RunID: "r", StepID: "step", CallID: "c1", Effect: "e", Schema: 1,
+			a := effect.Assignment{Session: "s", RunID: "r", StepID: "step", CallID: "c1", Effect: "e",
 				Body: effect.ToolAssignment{ToolRef: "lookup", Arguments: run.MustParseCanonicalJSON(`{}`), Policy: run.DirectExecution, Replay: tc.policy}}
 			raw, err := json.Marshal(a)
 			if err != nil {

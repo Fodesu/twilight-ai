@@ -130,11 +130,11 @@ func (s Summarizer) Summarize(ctx context.Context, sid session.SessionID, preset
 	if err != nil {
 		return "", err
 	}
-	digest, err := schema.V1().Canonical.DigestRequest(store)
+	digest, err := schema.Canonical.DigestRequest(store)
 	if err != nil {
 		return "", err
 	}
-	raw, err := schema.V1().Bodies.EncodeRequest(&store, digest)
+	raw, err := schema.Bodies.EncodeRequest(&store, digest)
 	if err != nil {
 		return "", err
 	}
@@ -142,8 +142,8 @@ func (s Summarizer) Summarize(ctx context.Context, sid session.SessionID, preset
 		return "", err
 	}
 	a := effect.Assignment{Session: run.Scope(sid), RunID: run.RunID("compact-" + randomHex(8)), StepID: "summary",
-		Effect: run.EffectID(randomHex(16)), Schema: run.SchemaVersion1,
-		Body: effect.ModelAssignment{Model: preset.Model, Request: &store, RequestDigest: digest}}
+		Effect: run.EffectID(randomHex(16)),
+		Body:   effect.ModelAssignment{Model: preset.Model, Request: &store, RequestDigest: digest}}
 	if err := s.Executor.Dispatch(ctx, a); err != nil {
 		return "", err
 	}

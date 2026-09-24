@@ -5,7 +5,6 @@ import (
 
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
-	"github.com/felinics/twilight/agentcore/run/schema"
 )
 
 // A model outcome without an answer withdraws the step to Open, the same
@@ -26,7 +25,7 @@ func TestModelCompletionWithdrawsOnUnknown(t *testing.T) {
 	l := &Loop{}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := l.modelCompletion(schema.V1(), step, Outcome{Result: tc.out})
+			got, err := l.modelCompletion(step, Outcome{Result: tc.out})
 			if err != nil || got != tc.want {
 				t.Fatalf("completion = %#v, %v, want %#v", got, err, tc.want)
 			}

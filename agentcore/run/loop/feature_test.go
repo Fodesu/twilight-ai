@@ -60,13 +60,13 @@ func newRuntime(t testing.TB, inputs ...run.AgentInput) (*runmod.SessionRunStore
 	if err != nil {
 		t.Fatal(err)
 	}
-	facts, err := schema.V1().Machine.CreateGroup(newRun, inputs)
+	facts, err := schema.Machine.CreateGroup(newRun, inputs)
 	if err != nil {
 		t.Fatal(err)
 	}
 	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(schema.V1().Wire, f), Value: runmod.Event{RunID: defaultRunID, Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(schema.Wire, f), Value: runmod.Event{RunID: defaultRunID, Fact: f}})
 	}
 	group := &writer.SemanticGroup{CommitID: "create/" + defaultRunID,
 		Batches: []writer.TypedBatch{{Stream: runmod.Stream(defaultRunID), Events: runEvents}}}
@@ -230,13 +230,9 @@ func (f *Feature) Waiting() run.ResponseRequest {
 func (f *Feature) TryCommit(cmd run.AgentCommand) error {
 	f.t.Helper()
 	snap := f.load()
-	proto, err := snap.Schema()
-	if err != nil {
-		f.t.Fatal(err)
-	}
 	cmd = f.withEffect(cmd, snap)
 	id := f.commandID(cmd, snap)
-	env, err := proto.Wire.Envelope(f.runID, id, cmd)
+	env, err := schema.Wire.Envelope(f.runID, id, cmd)
 	if err != nil {
 		return err
 	}
@@ -248,7 +244,7 @@ func (f *Feature) TryCommit(cmd run.AgentCommand) error {
 func (f *Feature) Approve() *Feature {
 	f.t.Helper()
 	w := f.waiting()
-	digest, err := schema.V1().Canonical.DigestToolResponseDecision(w.Kind, run.ResponseDecisionApproved, "")
+	digest, err := schema.Canonical.DigestToolResponseDecision(w.Kind, run.ResponseDecisionApproved, "")
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -262,7 +258,7 @@ func (f *Feature) Approve() *Feature {
 func (f *Feature) Reject(reason string) *Feature {
 	f.t.Helper()
 	w := f.waiting()
-	digest, err := schema.V1().Canonical.DigestToolResponseDecision(w.Kind, run.ResponseDecisionRejected, reason)
+	digest, err := schema.Canonical.DigestToolResponseDecision(w.Kind, run.ResponseDecisionRejected, reason)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -325,9 +321,9 @@ func (f *Feature) ExecutingTool(name string, callID run.CallID) *Feature {
 	}
 	f.ExecutingModel()
 	providerID := string(callID)
-	callID = schema.V1().Identity.DeriveCallID(f.modelStepID, 0)
+	callID = schema.Identity.DeriveCallID(f.modelStepID, 0)
 	args := run.MustParseCanonicalJSON(`{"x":1}`)
-	binding, err := schema.V1().Canonical.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
+	binding, err := schema.Canonical.DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -420,13 +416,9 @@ func (f *Feature) waiting() run.ResponseRequest {
 func (f *Feature) commit(cmd run.AgentCommand) runtime.CommitResult {
 	f.t.Helper()
 	snap := f.load()
-	proto, err := snap.Schema()
-	if err != nil {
-		f.t.Fatal(err)
-	}
 	cmd = f.withEffect(cmd, snap)
 	id := f.commandID(cmd, snap)
-	env, err := proto.Wire.Envelope(f.runID, id, cmd)
+	env, err := schema.Wire.Envelope(f.runID, id, cmd)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -442,33 +434,33 @@ func (f *Feature) commit(cmd run.AgentCommand) runtime.CommitResult {
 func (f *Feature) commandID(cmd run.AgentCommand, snap runtime.Snapshot) run.CommandID {
 	switch c := cmd.(type) {
 	case run.AcceptInput:
-		return schema.V1().Identity.DeriveInputCommandID(f.runID, c.InputIDs()...)
+		return schema.Identity.DeriveInputCommandID(f.runID, c.InputIDs()...)
 	case run.ApproveToolCall:
-		return schema.V1().Identity.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
+		return schema.Identity.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
 	case run.RejectToolCall:
-		return schema.V1().Identity.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
+		return schema.Identity.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
 	case run.SubmitToolResponse:
-		return schema.V1().Identity.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
+		return schema.Identity.DeriveResponseCommandID(f.runID, c.StepID, c.CallID, c.ResponseID)
 	case run.PrepareModelRequest:
-		return schema.V1().Identity.DeriveModelRequestCommandID(f.runID, snap.Position)
+		return schema.Identity.DeriveModelRequestCommandID(f.runID, snap.Position)
 	case run.RecoverModelExecution:
-		return schema.V1().Identity.DeriveRecoveryCommandID(c.Effect)
+		return schema.Identity.DeriveRecoveryCommandID(c.Effect)
 	case run.StartModelExecution:
-		return schema.V1().Identity.DeriveStartCommandID(c.Effect)
+		return schema.Identity.DeriveStartCommandID(c.Effect)
 	case run.StartToolCall:
-		return schema.V1().Identity.DeriveStartCommandID(c.Effect)
+		return schema.Identity.DeriveStartCommandID(c.Effect)
 	case run.SubmitModelResult:
-		return schema.V1().Identity.DeriveSettlementCommandID(c.Effect)
+		return schema.Identity.DeriveSettlementCommandID(c.Effect)
 	case run.SubmitModelFailure:
-		return schema.V1().Identity.DeriveSettlementCommandID(c.Effect)
+		return schema.Identity.DeriveSettlementCommandID(c.Effect)
 	case run.RejectModelResult:
-		return schema.V1().Identity.DeriveSettlementCommandID(c.Effect)
+		return schema.Identity.DeriveSettlementCommandID(c.Effect)
 	case run.SubmitToolResult:
-		return schema.V1().Identity.DeriveSettlementCommandID(c.Effect)
+		return schema.Identity.DeriveSettlementCommandID(c.Effect)
 	case run.SubmitToolFailure:
-		return schema.V1().Identity.DeriveSettlementCommandID(c.Effect)
+		return schema.Identity.DeriveSettlementCommandID(c.Effect)
 	case run.DeclineToolCall:
-		return schema.V1().Identity.DeriveDeclineCommandID(f.runID, c.StepID, c.CallID)
+		return schema.Identity.DeriveDeclineCommandID(f.runID, c.StepID, c.CallID)
 	default:
 		f.seq++
 		return run.CommandID(fmt.Sprintf("cmd-%d", f.seq))
@@ -486,24 +478,20 @@ func (f *Feature) commitPrepare() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	proto, err := snap.Schema()
+	reqDigest, err := schema.Canonical.DigestRequest(frozen)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	reqDigest, err := proto.Canonical.DigestRequest(frozen)
+	toolsDigest, err := schema.Canonical.DigestToolSpecs(f.specs)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	toolsDigest, err := proto.Canonical.DigestToolSpecs(f.specs)
+	binding, err := schema.Canonical.DigestModelStepBinding(f.model, reqDigest, toolsDigest)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	binding, err := proto.Canonical.DigestModelStepBinding(f.model, reqDigest, toolsDigest)
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	cmdID := schema.V1().Identity.DeriveModelRequestCommandID(f.runID, snap.Position)
-	stepID := schema.V1().Identity.DeriveModelStepID(f.runID, cmdID, binding)
+	cmdID := schema.Identity.DeriveModelRequestCommandID(f.runID, snap.Position)
+	stepID := schema.Identity.DeriveModelStepID(f.runID, cmdID, binding)
 	ids := make([]run.InputID, len(snap.State.PendingInputs))
 	for i, in := range snap.State.PendingInputs {
 		ids[i] = in.ID
@@ -523,7 +511,7 @@ func (f *Feature) mustSpec(name string, policy run.ResponsePolicy) (run.ToolSpec
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	d, err := schema.V1().Canonical.DigestToolDefinition(frozen)
+	d, err := schema.Canonical.DigestToolDefinition(frozen)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -547,12 +535,12 @@ func (f *Feature) withEffect(cmd run.AgentCommand, snap runtime.Snapshot) run.Ag
 	case run.StartModelExecution:
 		if c.Effect == "" {
 			ms, _ := snap.State.Current.(run.ModelStep)
-			c.Effect = schema.V1().Identity.DeriveEffectID(f.runID, c.StepID, "", ms.Rejects)
+			c.Effect = schema.Identity.DeriveEffectID(f.runID, c.StepID, "", ms.Rejects)
 		}
 		return c
 	case run.StartToolCall:
 		if c.Effect == "" {
-			c.Effect = schema.V1().Identity.DeriveEffectID(f.runID, c.StepID, c.CallID, 0)
+			c.Effect = schema.Identity.DeriveEffectID(f.runID, c.StepID, c.CallID, 0)
 		}
 		return c
 	case run.RecoverModelExecution:

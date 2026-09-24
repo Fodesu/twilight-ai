@@ -8,6 +8,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/plan"
 	"github.com/felinics/twilight/agentcore/run/runtime"
+	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/session"
 	attemptmod "github.com/felinics/twilight/agentcore/session/attempt"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
@@ -247,10 +248,6 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req DeliverR
 	if len(req.Inputs) == 0 {
 		return TurnResponse{}, fmt.Errorf("%w: deliver without inputs", ErrConflict)
 	}
-	sch, err := runmod.SchemaOf(ctx, w.Projections(), sid, runID)
-	if err != nil {
-		return TurnResponse{}, err
-	}
 	// TRN-DLV-2: one command carries the whole batch, so the Run accepts every
 	// input and the chatlog delivers every input in one unit, or nothing is
 	// written. The CommandID derives from the ordered InputIDs; a replay of
@@ -258,7 +255,7 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req DeliverR
 	// the unit's View, so a withdrawal landing between this read and the
 	// commit refuses the unit.
 	cmd := run.AcceptInput{Inputs: req.Inputs}
-	env, err := sch.Wire.Envelope(runID, sch.Identity.DeriveInputCommandID(runID, cmd.InputIDs()...), cmd)
+	env, err := schema.Wire.Envelope(runID, schema.Identity.DeriveInputCommandID(runID, cmd.InputIDs()...), cmd)
 	if err != nil {
 		return TurnResponse{}, err
 	}
@@ -382,11 +379,7 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest
 		return TurnResponse{}, fmt.Errorf("%w: turn %s has no active attempt", ErrConflict, turnID)
 	}
 	runID := att.RunID
-	sch, err := runmod.SchemaOf(ctx, w.Projections(), sid, runID)
-	if err != nil {
-		return TurnResponse{}, err
-	}
-	env, err := sch.Wire.Envelope(runID, CancelCommandID(sid, turnID, runID), run.CancelRun{})
+	env, err := schema.Wire.Envelope(runID, CancelCommandID(sid, turnID, runID), run.CancelRun{})
 	if err != nil {
 		return TurnResponse{}, err
 	}

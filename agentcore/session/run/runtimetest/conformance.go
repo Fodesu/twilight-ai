@@ -56,7 +56,7 @@ func testCreation(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	snap := h.load("r1")
-	if snap.State.Owner != "t1" || snap.State.Attempt != 1 || len(snap.State.PendingInputs) != 1 || snap.SchemaVersion != run.SchemaVersion1 {
+	if snap.State.Owner != "t1" || snap.State.Attempt != 1 || len(snap.State.PendingInputs) != 1 {
 		t.Fatalf("created state = %+v", snap.State)
 	}
 	// Position is the StreamSeq of the Run's last event: the start group's run
@@ -72,16 +72,9 @@ func testCreation(t *testing.T, factory Factory) {
 	if _, err := h.rt.Record(h.ctx, sid, "nope"); !errors.Is(err, runtime.ErrRunNotFound) {
 		t.Fatalf("record unknown = %v", err)
 	}
-	env, _ := schema.V1().Wire.Envelope("nope", schema.V1().Identity.DeriveInputCommandID("nope", "x"), run.NextStep(input("x")))
+	env, _ := schema.Wire.Envelope("nope", schema.Identity.DeriveInputCommandID("nope", "x"), run.NextStep(input("x")))
 	if _, err := h.rt.Bind(h.writer()).Commit(h.ctx, runtime.CommitRequest{Command: env}); !errors.Is(err, runtime.ErrRunNotFound) {
 		t.Fatalf("commit unknown = %v", err)
-	}
-	// Schema disagreement is a hard error, not a retriable rejection.
-	env, _ = schema.V1().Wire.Envelope("r1", schema.V1().Identity.DeriveInputCommandID("r1", "in-2"), run.NextStep(input("in-2")))
-	env.SchemaVersion = 2
-	_, err := h.rt.Bind(h.writer()).Commit(h.ctx, runtime.CommitRequest{Command: env})
-	if err == nil || errors.Is(err, run.ErrStaleRuntime) || errors.Is(err, run.ErrCommandConflict) {
-		t.Fatalf("schema mismatch = %v, want a non-retriable error", err)
 	}
 	// Terminated Run: Load returns the terminal state, Commit is terminal.
 	h.mustCommit("r1", "cancel-1", 0, run.CancelRun{})
@@ -93,7 +86,7 @@ func testCreation(t *testing.T, factory Factory) {
 	if !wire.StatesEquivalent(&rec.Snapshot.State, &term.State) || rec.Snapshot.Position != term.Position {
 		t.Fatal("terminal Load and Record disagree")
 	}
-	if _, err := h.commit("r1", schema.V1().Identity.DeriveInputCommandID("r1", "late"), 0, run.NextStep(input("late"))); !errors.Is(err, run.ErrRunTerminal) {
+	if _, err := h.commit("r1", schema.Identity.DeriveInputCommandID("r1", "late"), 0, run.NextStep(input("late"))); !errors.Is(err, run.ErrRunTerminal) {
 		t.Fatalf("commit on terminal = %v", err)
 	}
 	// A second created for the same RunID -- active or ended -- is refused by
@@ -117,11 +110,11 @@ func testCreation(t *testing.T, factory Factory) {
 func testReplayAndBase(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
-	first := h.mustCommit("r1", schema.V1().Identity.DeriveInputCommandID("r1", "in-2"), 0, run.NextStep(input("in-2")))
+	first := h.mustCommit("r1", schema.Identity.DeriveInputCommandID("r1", "in-2"), 0, run.NextStep(input("in-2")))
 	if first.Status != runtime.CommitAccepted {
 		t.Fatal("first accept not accepted")
 	}
-	again := h.mustCommit("r1", schema.V1().Identity.DeriveInputCommandID("r1", "in-2"), 0, run.NextStep(input("in-2")))
+	again := h.mustCommit("r1", schema.Identity.DeriveInputCommandID("r1", "in-2"), 0, run.NextStep(input("in-2")))
 	if again.Status != runtime.CommitAlreadyApplied || len(again.Events) != len(first.Events) || again.Head != first.Head {
 		t.Fatalf("replay = %+v", again)
 	}
@@ -131,21 +124,21 @@ func testReplayAndBase(t *testing.T, factory Factory) {
 	// Prepare is a hard CAS on the Run's own position.
 	snap := h.load("r1")
 	stale := snap.Position - 1
-	cmd, id := h.preparedCommand(runtime.Snapshot{State: snap.State, Position: stale, SchemaVersion: snap.SchemaVersion}, false)
+	cmd, id := h.preparedCommand(runtime.Snapshot{State: snap.State, Position: stale}, false)
 	if _, err := h.commit("r1", id, stale, cmd); !errors.Is(err, run.ErrStaleRuntime) {
 		t.Fatalf("stale prepare = %v", err)
 	}
 	cmd, id = h.preparedCommand(snap, false)
 	prepared := h.mustCommit("r1", id, snap.Position, cmd)
 	// Non-prepare commands accept a zero or stale Base (call-local rebase).
-	h.mustCommit("r1", schema.V1().Identity.DeriveInputCommandID("r1", "in-3"), 0, run.NextStep(input("in-3")))
+	h.mustCommit("r1", schema.Identity.DeriveInputCommandID("r1", "in-3"), 0, run.NextStep(input("in-3")))
 	// Terminal replay: an accepted command replays after termination.
 	h.mustCommit("r1", "cancel", prepared.Snapshot.Position, run.CancelRun{})
-	replay := h.mustCommit("r1", schema.V1().Identity.DeriveInputCommandID("r1", "in-3"), 0, run.NextStep(input("in-3")))
+	replay := h.mustCommit("r1", schema.Identity.DeriveInputCommandID("r1", "in-3"), 0, run.NextStep(input("in-3")))
 	if replay.Status != runtime.CommitAlreadyApplied || !replay.Snapshot.State.Status.Terminal() {
 		t.Fatalf("terminal replay = %+v", replay)
 	}
-	if _, err := h.commit("r1", schema.V1().Identity.DeriveInputCommandID("r1", "in-4"), 0, run.NextStep(input("in-4"))); !errors.Is(err, run.ErrRunTerminal) {
+	if _, err := h.commit("r1", schema.Identity.DeriveInputCommandID("r1", "in-4"), 0, run.NextStep(input("in-4"))); !errors.Is(err, run.ErrRunTerminal) {
 		t.Fatalf("new command after terminal = %v", err)
 	}
 	// Derived-identity families must use their derived CommandID.
@@ -161,7 +154,7 @@ func testInputQueue(t *testing.T, factory Factory) {
 	h.startRun("t1", "r1", input("in-1"))
 	// Prepared: the input queues and Next asks to withdraw.
 	step := h.prepare("r1", false)
-	h.mustCommit("r1", schema.V1().Identity.DeriveInputCommandID("r1", "in-2"), 0, run.NextStep(input("in-2")))
+	h.mustCommit("r1", schema.Identity.DeriveInputCommandID("r1", "in-2"), 0, run.NextStep(input("in-2")))
 	snap := h.load("r1")
 	eff, err := plan.Next(snap.State)
 	if err != nil {
@@ -170,7 +163,7 @@ func testInputQueue(t *testing.T, factory Factory) {
 	if w, ok := eff.(plan.WithdrawPrepared); !ok || w.StepID != step {
 		t.Fatalf("action while Prepared with input = %#v", eff)
 	}
-	h.mustCommit("r1", schema.V1().Identity.DeriveWithdrawCommandID("r1", step), snap.Position, run.WithdrawPreparedStep{StepID: step})
+	h.mustCommit("r1", schema.Identity.DeriveWithdrawCommandID("r1", step), snap.Position, run.WithdrawPreparedStep{StepID: step})
 	snap = h.load("r1")
 	if _, open := snap.State.Current.(run.Open); !open || len(snap.State.PendingInputs) != 1 || snap.State.ModelSteps != 0 {
 		t.Fatalf("after withdraw = %+v", snap.State)
@@ -182,8 +175,8 @@ func testInputQueue(t *testing.T, factory Factory) {
 	h.mustCommit("r1", id, snap.Position, cmd)
 	// Executing: the input queues; a result without calls reopens instead of ending.
 	modelEff := h.startModel("r1", cmd.StepID)
-	h.mustCommit("r1", schema.V1().Identity.DeriveInputCommandID("r1", "in-3"), 0, run.NextStep(input("in-3")))
-	res := h.mustCommit("r1", schema.V1().Identity.DeriveSettlementCommandID(modelEff), 0, run.SubmitModelResult{StepID: cmd.StepID, Effect: modelEff, Result: textResult("a")})
+	h.mustCommit("r1", schema.Identity.DeriveInputCommandID("r1", "in-3"), 0, run.NextStep(input("in-3")))
+	res := h.mustCommit("r1", schema.Identity.DeriveSettlementCommandID(modelEff), 0, run.SubmitModelResult{StepID: cmd.StepID, Effect: modelEff, Result: textResult("a")})
 	if res.Snapshot.State.Status != run.RunActive {
 		t.Fatal("run ended with a pending input")
 	}
@@ -194,7 +187,7 @@ func testInputQueue(t *testing.T, factory Factory) {
 	h2 := newHarness(t, factory(t))
 	h2.startRun("t1", "r2", input("in-1"))
 	h2.openToolStep("r2", 1)
-	res = h2.mustCommit("r2", schema.V1().Identity.DeriveInputCommandID("r2", "in-9"), 0, run.NextStep(input("in-9")))
+	res = h2.mustCommit("r2", schema.Identity.DeriveInputCommandID("r2", "in-9"), 0, run.NextStep(input("in-9")))
 	if _, ok := res.Snapshot.State.Current.(run.ToolStep); !ok || len(res.Snapshot.State.PendingInputs) != 1 {
 		t.Fatalf("accept on tool step = %+v", res.Snapshot.State)
 	}
@@ -208,33 +201,33 @@ func testStartAndEffect(t *testing.T, factory Factory) {
 	step, eff := h.executingModel("r1", false)
 	// Same-effect replay is AlreadyApplied; a start naming another effect of
 	// the step finds the step already Executing.
-	replay := h.mustCommit("r1", schema.V1().Identity.DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff})
+	replay := h.mustCommit("r1", schema.Identity.DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff})
 	if replay.Status != runtime.CommitAlreadyApplied {
 		t.Fatalf("start replay = %+v", replay)
 	}
-	other := schema.V1().Identity.DeriveEffectID("r1", step, "", 1)
-	if _, err := h.commit("r1", schema.V1().Identity.DeriveStartCommandID(other), 0, run.StartModelExecution{StepID: step, Effect: other}); !errors.Is(err, run.ErrStaleRuntime) {
+	other := schema.Identity.DeriveEffectID("r1", step, "", 1)
+	if _, err := h.commit("r1", schema.Identity.DeriveStartCommandID(other), 0, run.StartModelExecution{StepID: step, Effect: other}); !errors.Is(err, run.ErrStaleRuntime) {
 		t.Fatalf("second effect start = %v", err)
 	}
 	// Starts, settlements and recoveries without an effect identity are
 	// conflicts.
-	if _, err := h.commit("r1", schema.V1().Identity.DeriveStartCommandID(""), 0, run.StartModelExecution{StepID: step}); !errors.Is(err, run.ErrCommandConflict) {
+	if _, err := h.commit("r1", schema.Identity.DeriveStartCommandID(""), 0, run.StartModelExecution{StepID: step}); !errors.Is(err, run.ErrCommandConflict) {
 		t.Fatalf("effectless start = %v", err)
 	}
-	if _, err := h.commit("r1", schema.V1().Identity.DeriveSettlementCommandID(""), 0, run.SubmitModelResult{StepID: step, Result: textResult("done")}); !errors.Is(err, run.ErrCommandConflict) {
+	if _, err := h.commit("r1", schema.Identity.DeriveSettlementCommandID(""), 0, run.SubmitModelResult{StepID: step, Result: textResult("done")}); !errors.Is(err, run.ErrCommandConflict) {
 		t.Fatalf("effectless settlement = %v", err)
 	}
 	// A settlement of another effect of the step, under that effect's
 	// settlement identity, finds the step executing a different effect; a
 	// settlement under any CommandID but its effect's is a conflict.
-	if _, err := h.commit("r1", schema.V1().Identity.DeriveSettlementCommandID(other), 0, run.SubmitModelResult{StepID: step, Effect: other, Result: textResult("done")}); !errors.Is(err, run.ErrStaleRuntime) {
+	if _, err := h.commit("r1", schema.Identity.DeriveSettlementCommandID(other), 0, run.SubmitModelResult{StepID: step, Effect: other, Result: textResult("done")}); !errors.Is(err, run.ErrStaleRuntime) {
 		t.Fatalf("settlement of another effect = %v", err)
 	}
 	if _, err := h.commit("r1", "random", 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("done")}); !errors.Is(err, run.ErrCommandConflict) {
 		t.Fatalf("settlement under a foreign id = %v", err)
 	}
 	// Settlement under the effect; its replay is AlreadyApplied.
-	settleID := schema.V1().Identity.DeriveSettlementCommandID(eff)
+	settleID := schema.Identity.DeriveSettlementCommandID(eff)
 	res := h.mustCommit("r1", settleID, 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("done")})
 	if !res.Snapshot.State.Status.Terminal() {
 		t.Fatal("settlement did not end the run")
@@ -244,7 +237,7 @@ func testStartAndEffect(t *testing.T, factory Factory) {
 		t.Fatalf("settlement replay = %+v", again)
 	}
 	// After settlement the start still replays; a new command is terminal.
-	replay = h.mustCommit("r1", schema.V1().Identity.DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff})
+	replay = h.mustCommit("r1", schema.Identity.DeriveStartCommandID(eff), 0, run.StartModelExecution{StepID: step, Effect: eff})
 	if replay.Status != runtime.CommitAlreadyApplied {
 		t.Fatalf("start replay after settlement = %+v", replay)
 	}
@@ -258,7 +251,7 @@ func testDeclineToolCall(t *testing.T, factory Factory) {
 	step, calls := h.openToolStep("r1", 2)
 	failure := run.ToolFailure{Class: run.FailureToolLookup, Message: "no such tool"}
 	decline := run.DeclineToolCall{StepID: step, CallID: calls[0], Failure: failure}
-	id := schema.V1().Identity.DeriveDeclineCommandID("r1", step, calls[0])
+	id := schema.Identity.DeriveDeclineCommandID("r1", step, calls[0])
 	// The decline has no effect; its identity is the call's coordinates and
 	// any other CommandID is a conflict.
 	if _, err := h.commit("r1", "random", 0, decline); !errors.Is(err, run.ErrCommandConflict) {
@@ -290,16 +283,16 @@ func testDeclineToolCall(t *testing.T, factory Factory) {
 	// effect it would start under finds the call not Executing.
 	eff := toolEffect("r1", step, calls[1])
 	knownFailure := run.SubmitToolFailure{StepID: step, CallID: calls[1], Effect: eff, Failure: failure, Outcome: run.ToolOutcomeKnown}
-	if _, err := h.commit("r1", schema.V1().Identity.DeriveSettlementCommandID(eff), 0, knownFailure); !errors.Is(err, run.ErrStaleRuntime) {
+	if _, err := h.commit("r1", schema.Identity.DeriveSettlementCommandID(eff), 0, knownFailure); !errors.Is(err, run.ErrStaleRuntime) {
 		t.Fatalf("known failure of a Pending call = %v", err)
 	}
 	// Once started, the call settles under its effect and cannot be declined.
 	h.startTool("r1", step, calls[1])
-	if _, err := h.commit("r1", schema.V1().Identity.DeriveDeclineCommandID("r1", step, calls[1]), 0,
+	if _, err := h.commit("r1", schema.Identity.DeriveDeclineCommandID("r1", step, calls[1]), 0,
 		run.DeclineToolCall{StepID: step, CallID: calls[1], Failure: failure}); !errors.Is(err, run.ErrStaleRuntime) {
 		t.Fatalf("decline of an Executing call = %v", err)
 	}
-	res = h.mustCommit("r1", schema.V1().Identity.DeriveSettlementCommandID(eff), 0, knownFailure)
+	res = h.mustCommit("r1", schema.Identity.DeriveSettlementCommandID(eff), 0, knownFailure)
 	if _, open := res.Snapshot.State.Current.(run.Open); !open {
 		t.Fatalf("after both calls failed current = %T, want Open", res.Snapshot.State.Current)
 	}
@@ -313,7 +306,7 @@ func testGroupComposition(t *testing.T, factory Factory) {
 	step, eff := h.executingModel("r1", true)
 	result, bindings := h.toolCallResult(step, 1)
 	before := h.head()
-	res := h.mustCommit("r1", schema.V1().Identity.DeriveSettlementCommandID(eff), 0,
+	res := h.mustCommit("r1", schema.Identity.DeriveSettlementCommandID(eff), 0,
 		run.SubmitModelResult{StepID: step, Effect: eff, Result: result, Calls: bindings})
 	if h.head().Next != before.Next+1 {
 		t.Fatal("one command did not produce exactly one commit")
@@ -348,20 +341,20 @@ func testGroupComposition(t *testing.T, factory Factory) {
 	// Attach follows the facts; twilight/run/ events are refused.
 	toolEff := h.startTool("r1", ts.RefValue.ID, call)
 	output := run.MustParseCanonicalJSON(`{"ok":true}`)
-	if _, err := h.commit("r1", schema.V1().Identity.DeriveSettlementCommandID(toolEff), 0,
+	if _, err := h.commit("r1", schema.Identity.DeriveSettlementCommandID(toolEff), 0,
 		run.SubmitToolResult{StepID: ts.RefValue.ID, CallID: call, Effect: toolEff, Result: run.ToolExecutionResult{Output: output}},
 		moduleEvent{Type: runmod.Prefix + "input_accepted", Value: runmod.Event{RunID: "r1", Fact: run.InputAccepted{Input: input("x")}}}); err == nil {
 		t.Fatal("Attach with a twilight/run/ event accepted")
 	}
 	h.submitInputs(input("in-attach"))
-	res = h.mustCommit("r1", schema.V1().Identity.DeriveSettlementCommandID(toolEff), 0,
+	res = h.mustCommit("r1", schema.Identity.DeriveSettlementCommandID(toolEff), 0,
 		run.SubmitToolResult{StepID: ts.RefValue.ID, CallID: call, Effect: toolEff, Result: run.ToolExecutionResult{Output: output}},
 		moduleEvent{Type: chatlog.TypeInputDelivered, Value: chatlog.InputDeliveredPayload{InputID: "in-attach", TurnID: "t1"}})
 	types = eventTypes(res.Events)
 	if len(types) != 2 || types[0] != runmod.Prefix+"tool_call_completed" || types[1] != chatlog.TypeInputDelivered {
 		t.Fatalf("group events = %v", types)
 	}
-	outputDigest, _ := schema.V1().Canonical.DigestToolOutput(output)
+	outputDigest, _ := schema.Canonical.DigestToolOutput(output)
 	entries = h.contextEntries()
 	var tr *chatlog.ToolResult
 	for i := range entries {
@@ -426,7 +419,7 @@ func testAdmission(t *testing.T, factory Factory) {
 	}
 	before := h.head()
 	// Unregistered binding: the whole group is refused and nothing is written.
-	if _, err := h.commit("r1", schema.V1().Identity.DeriveInputCommandID("r1", "in-2"), 0, run.NextStep(input("in-2")), attach("missing")); err == nil {
+	if _, err := h.commit("r1", schema.Identity.DeriveInputCommandID("r1", "in-2"), 0, run.NextStep(input("in-2")), attach("missing")); err == nil {
 		t.Fatal("unregistered binding admitted")
 	}
 	if h.head() != before {
@@ -436,7 +429,7 @@ func testAdmission(t *testing.T, factory Factory) {
 		t.Fatal("refused commit changed the Run")
 	}
 	// Registered binding: the claim is Active once the commit is applied.
-	cmdID := schema.V1().Identity.DeriveInputCommandID("r1", "in-2")
+	cmdID := schema.Identity.DeriveInputCommandID("r1", "in-2")
 	h.mustCommit("r1", cmdID, 0, run.NextStep(input("in-2")), attach("b1"))
 	commitID := session.CommitID(cmdID)
 	header, err := h.store.Header(h.ctx, sid)
@@ -466,7 +459,7 @@ func testSettlementSnapshot(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	step, eff := h.executingModel("r1", false)
-	res := h.mustCommit("r1", schema.V1().Identity.DeriveSettlementCommandID(eff), 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("done")})
+	res := h.mustCommit("r1", schema.Identity.DeriveSettlementCommandID(eff), 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("done")})
 	if res.Snapshot.State.Status != run.RunCompleted || res.Snapshot.State.Result == nil || res.Snapshot.State.Result.Status != run.RunCompleted {
 		t.Fatalf("settlement snapshot = %+v", res.Snapshot.State)
 	}
@@ -516,7 +509,7 @@ func testSettlementReplay(t *testing.T, factory Factory) {
 	h := newHarness(t, factory(t))
 	h.startRun("t1", "r1", input("in-1"))
 	step, eff := h.executingModel("r1", false)
-	id := schema.V1().Identity.DeriveSettlementCommandID(eff)
+	id := schema.Identity.DeriveSettlementCommandID(eff)
 	first := h.mustCommit("r1", id, 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("one")})
 	if !first.Snapshot.State.Status.Terminal() {
 		t.Fatalf("settlement = %+v", first.Snapshot.State.Status)
@@ -552,12 +545,12 @@ func testProjection(t *testing.T, factory Factory) {
 		t.Fatal("projection cached while the Run is mid-step")
 	}
 	result, bindings := h.toolCallResult(step, 1)
-	opened := h.mustCommit("r1", schema.V1().Identity.DeriveSettlementCommandID(eff), 0,
+	opened := h.mustCommit("r1", schema.Identity.DeriveSettlementCommandID(eff), 0,
 		run.SubmitModelResult{StepID: step, Effect: eff, Result: result, Calls: bindings})
 	toolStep := opened.Snapshot.State.Current.(run.ToolStep).RefValue.ID
 	callID := bindings[0].CallID
 	toolEff := h.startTool("r1", toolStep, callID)
-	res := h.mustCommit("r1", schema.V1().Identity.DeriveSettlementCommandID(toolEff), 0,
+	res := h.mustCommit("r1", schema.Identity.DeriveSettlementCommandID(toolEff), 0,
 		run.SubmitToolResult{StepID: toolStep, CallID: callID, Effect: toolEff, Result: run.ToolExecutionResult{Output: run.MustParseCanonicalJSON(`1`)}})
 	if _, open := res.Snapshot.State.Current.(run.Open); !open {
 		t.Fatalf("after tool settlement current = %T", res.Snapshot.State.Current)
@@ -598,7 +591,7 @@ func testProjection(t *testing.T, factory Factory) {
 		t.Fatalf("recreating an ended run = %v, want ErrRunExists", err)
 	}
 	// An illegal fact sequence does not fold.
-	if _, err := runtime.FoldRun(run.SchemaVersion1, []run.Fact{run.InputAccepted{Input: input("x")}}); err == nil {
+	if _, err := runtime.FoldRun([]run.Fact{run.InputAccepted{Input: input("x")}}); err == nil {
 		t.Fatal("fold without created succeeded")
 	}
 }
@@ -642,7 +635,7 @@ func testTakeover(t *testing.T, factory Factory) {
 	// An input delivered while the model runs waits in PendingInputs; the
 	// recovery-time plan must include it (TRN-DUR-1).
 	h.submitInputs(input("in-late"))
-	h.mustCommit("r1", schema.V1().Identity.DeriveInputCommandID("r1", "in-late"), 0, run.NextStep(input("in-late")))
+	h.mustCommit("r1", schema.Identity.DeriveInputCommandID("r1", "in-late"), 0, run.NextStep(input("in-late")))
 	toolStep, ids := h.openToolStep("r2", 2)
 	h.startTool("r2", toolStep, ids[0])
 
@@ -792,7 +785,7 @@ func testReattach(t *testing.T, factory Factory) {
 		t.Fatalf("pending sibling = %+v, want untouched", ts.Calls[1])
 	}
 	// The Outcome of the effect the executor kept settles under that effect.
-	res := h.mustCommit("r1", schema.V1().Identity.DeriveSettlementCommandID(modelEff), 0, run.SubmitModelResult{StepID: modelStep, Effect: modelEff, Result: textResult("done")})
+	res := h.mustCommit("r1", schema.Identity.DeriveSettlementCommandID(modelEff), 0, run.SubmitModelResult{StepID: modelStep, Effect: modelEff, Result: textResult("done")})
 	if res.Status != runtime.CommitAccepted || !res.Snapshot.State.Status.Terminal() {
 		t.Fatalf("settlement after reattach = %v %v", res.Status, res.Snapshot.State.Status)
 	}
@@ -811,7 +804,7 @@ func testOwnershipLost(t *testing.T, factory Factory) {
 	step, eff := h.executingModel("r1", false)
 	old, oldWriter := h.takeover()
 	head := h.head()
-	_, err := h.commitWith(old, oldWriter, "r1", schema.V1().Identity.DeriveSettlementCommandID(eff), 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("late")})
+	_, err := h.commitWith(old, oldWriter, "r1", schema.Identity.DeriveSettlementCommandID(eff), 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("late")})
 	if !errors.Is(err, runtime.ErrOwnershipLost) {
 		t.Fatalf("old owner commit = %v, want ErrOwnershipLost", err)
 	}
@@ -847,7 +840,7 @@ func testFrozenValues(t *testing.T, factory Factory) {
 	if _, err := h.rt.FrozenRequest(h.ctx, "sha256:unknown"); !errors.Is(err, frozen.ErrMissing) {
 		t.Fatalf("unknown digest = %v", err)
 	}
-	h.mustCommit("r1", schema.V1().Identity.DeriveSettlementCommandID(eff), 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("done")})
+	h.mustCommit("r1", schema.Identity.DeriveSettlementCommandID(eff), 0, run.SubmitModelResult{StepID: step, Effect: eff, Result: textResult("done")})
 	// The body is EventBound content the artifact layer retains; Record never
 	// depends on it (RUN-WIR-4).
 	if _, err := h.rt.Record(h.ctx, sid, "r1"); err != nil {

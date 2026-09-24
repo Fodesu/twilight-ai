@@ -113,9 +113,9 @@ func TestCanonicalDeterminism(t *testing.T) {
 	}
 }
 
-func TestDigestPreimageCoversSchemaVersion(t *testing.T) {
+func TestDigestPreimageCoversVersionPrefix(t *testing.T) {
 	cmd := run.StartToolCall{StepID: "s1", CallID: "c1", Effect: "effect-1"}
-	body1, err := es.EncodeTypedPayload(run.SchemaVersion1, "start_tool_call", cmd)
+	body1, err := es.EncodeTypedPayload(1, "start_tool_call", cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,18 +130,18 @@ func TestDigestPreimageCoversSchemaVersion(t *testing.T) {
 
 func TestDeriveStability(t *testing.T) {
 	// Fixed inputs must produce fixed outputs across processes; freeze a few.
-	id1 := (IdentityV1{}).DeriveModelRequestCommandID("run-1", 7)
-	id2 := (IdentityV1{}).DeriveModelRequestCommandID("run-1", 7)
+	id1 := (Identity{}).DeriveModelRequestCommandID("run-1", 7)
+	id2 := (Identity{}).DeriveModelRequestCommandID("run-1", 7)
 	if id1 != id2 {
 		t.Fatal("derive is not deterministic")
 	}
-	if id1 == (IdentityV1{}).DeriveModelRequestCommandID("run-1", 8) {
+	if id1 == (Identity{}).DeriveModelRequestCommandID("run-1", 8) {
 		t.Fatal("revision does not separate command IDs")
 	}
-	if id1 == (IdentityV1{}).DeriveModelRequestCommandID("run-1", 70) {
+	if id1 == (Identity{}).DeriveModelRequestCommandID("run-1", 70) {
 		t.Fatal("index does not separate command IDs")
 	}
-	if id1 == (IdentityV1{}).DeriveModelRequestCommandID("run-2", 7) {
+	if id1 == (Identity{}).DeriveModelRequestCommandID("run-2", 7) {
 		t.Fatal("run does not separate command IDs")
 	}
 	// Namespaces must not collide even with aligned parts.
@@ -159,34 +159,34 @@ func TestDeriveStability(t *testing.T) {
 }
 
 func TestDeriveResponseIDPerKind(t *testing.T) {
-	a := (IdentityV1{}).DeriveResponseID("r", "s", "c", run.ResponseApproval)
-	b := (IdentityV1{}).DeriveResponseID("r", "s", "c", run.ResponseExternal)
+	a := (Identity{}).DeriveResponseID("r", "s", "c", run.ResponseApproval)
+	b := (Identity{}).DeriveResponseID("r", "s", "c", run.ResponseExternal)
 	if a == b {
 		t.Fatal("response kind does not separate response IDs")
 	}
 }
 
 func TestDigestBindingCanonicalizesArguments(t *testing.T) {
-	d1, err := (V1{}).DigestToolCallBinding("c1", "sha256:x", run.DirectExecution, cj(`{"b":1,"a":2}`))
+	d1, err := (Digests{}).DigestToolCallBinding("c1", "sha256:x", run.DirectExecution, cj(`{"b":1,"a":2}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	d2, err := (V1{}).DigestToolCallBinding("c1", "sha256:x", run.DirectExecution, cj(`{ "a" : 2, "b" : 1 }`))
+	d2, err := (Digests{}).DigestToolCallBinding("c1", "sha256:x", run.DirectExecution, cj(`{ "a" : 2, "b" : 1 }`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if d1 != d2 {
 		t.Fatal("argument formatting leaked into binding digest")
 	}
-	d3, _ := (V1{}).DigestToolCallBinding("c1", "sha256:x", run.ApprovalRequired, cj(`{"a":2,"b":1}`))
+	d3, _ := (Digests{}).DigestToolCallBinding("c1", "sha256:x", run.ApprovalRequired, cj(`{"a":2,"b":1}`))
 	if d1 == d3 {
 		t.Fatal("policy does not affect binding digest")
 	}
-	id1, err := (V1{}).DigestToolCallBinding("c", "", run.DirectExecution, cj(`{"channel_id":"9007199254740993"}`))
+	id1, err := (Digests{}).DigestToolCallBinding("c", "", run.DirectExecution, cj(`{"channel_id":"9007199254740993"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	id2, err := (V1{}).DigestToolCallBinding("c", "", run.DirectExecution, cj(`{"channel_id":"9007199254740992"}`))
+	id2, err := (Digests{}).DigestToolCallBinding("c", "", run.DirectExecution, cj(`{"channel_id":"9007199254740992"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,12 +195,11 @@ func TestDigestBindingCanonicalizesArguments(t *testing.T) {
 	}
 }
 
-// Golden vectors for the current pre-release SchemaVersion 1. They guard the
-// current canonical encoding; update them deliberately when the pre-release
-// protocol changes. Once v1 is published, these become permanent fixtures.
-func TestSchemaVersion1Golden(t *testing.T) {
+// Golden vectors for the canonical encoding. They guard the persisted
+// preimages; a change here is a change to every digest ever written.
+func TestCanonicalGolden(t *testing.T) {
 	cmd := run.CancelRun{Reason: run.ReasonCancelled}
-	body, err := es.EncodeTypedPayload(run.SchemaVersion1, "cancel_run", cmd)
+	body, err := es.EncodeTypedPayload(1, "cancel_run", cmd)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -210,7 +209,7 @@ func TestSchemaVersion1Golden(t *testing.T) {
 	}
 
 	fact := run.InputAccepted{Input: run.AgentInput{ID: "in-1", Digest: "sha256:e7b995efa755c5ff3b84d2188b58cb4ae916a59470eb3761df8a814f11763500"}}
-	fbody, err := (wire.V1{}).EncodeFact("input_accepted", fact)
+	fbody, err := (wire.Facts{}).EncodeFact("input_accepted", fact)
 	if err != nil {
 		t.Fatal(err)
 	}

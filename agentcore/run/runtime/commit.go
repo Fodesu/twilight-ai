@@ -29,18 +29,12 @@ type CommitDecision struct {
 	Reject error
 }
 
-// ValidateEnvelope is step 1 of RUN-CMT-3: identity and schema. Envelopes are
-// only built by wire.Codec.Envelope (RUN-WIR-3), so there is no per-commit
+// ValidateEnvelope is step 1 of RUN-CMT-3: identity. Envelopes are only
+// built by wire.Codec.Envelope (RUN-WIR-3), so there is no per-commit
 // self-verification of the command bytes.
-func ValidateEnvelope(env *wire.CommandEnvelope, sch schema.Schema) error {
+func ValidateEnvelope(env *wire.CommandEnvelope) error {
 	if env.RunID == "" || env.ID == "" {
 		return errors.New("agent: commit: empty RunID or CommandID")
-	}
-	if !sch.Valid() {
-		return errors.New("agent: commit: unbound schema")
-	}
-	if env.SchemaVersion != sch.Version {
-		return fmt.Errorf("agent: commit: command schema %d does not match run schema %d", env.SchemaVersion, sch.Version)
 	}
 	return nil
 }
@@ -51,12 +45,12 @@ func ValidateEnvelope(env *wire.CommandEnvelope, sch schema.Schema) error {
 // command against a target whose state does not admit it is Stale.
 //
 //nolint:gocritic // hugeParam: public pure commit evaluator keeps state/request as value protocol inputs.
-func EvaluateCommit(cur run.MachineState, position run.RunPosition, req CommitRequest, sch schema.Schema) (CommitDecision, error) {
+func EvaluateCommit(cur run.MachineState, position run.RunPosition, req CommitRequest) (CommitDecision, error) {
 	env := req.Command
 	if env.RunID != cur.RunID {
 		return CommitDecision{}, fmt.Errorf("agent: commit: command run %q does not match authority run %q", env.RunID, cur.RunID)
 	}
-	if err := ValidateEnvelope(&env, sch); err != nil {
+	if err := ValidateEnvelope(&env); err != nil {
 		return CommitDecision{}, err
 	}
 	// The effect a start, settlement or recovery names is part of the
@@ -67,7 +61,7 @@ func EvaluateCommit(cur run.MachineState, position run.RunPosition, req CommitRe
 	// Derived-identity families must use their derived CommandID (RUN-WIR-3):
 	// the derivation is the idempotency index, so a caller-minted random ID
 	// cannot bypass duplicate detection.
-	if err := checkDerivedCommandID(&env, req.Base, sch.Identity); err != nil {
+	if err := checkDerivedCommandID(&env, req.Base, schema.Identity); err != nil {
 		return CommitDecision{Kind: DecisionConflict, Reject: err}, nil
 	}
 
@@ -82,7 +76,7 @@ func EvaluateCommit(cur run.MachineState, position run.RunPosition, req CommitRe
 	}
 
 	// Step 7: Decide once, fold with Evolve.
-	facts, err := sch.Machine.Decide(cur, env.Command)
+	facts, err := schema.Machine.Decide(cur, env.Command)
 	if err != nil {
 		switch {
 		case errors.Is(err, run.ErrRunTerminal):
@@ -105,7 +99,7 @@ func EvaluateCommit(cur run.MachineState, position run.RunPosition, req CommitRe
 		if !ok {
 			return CommitDecision{}, errors.New("agent: commit: prepare did not produce ModelStepPrepared")
 		}
-		wantStep := sch.Identity.DeriveModelStepID(env.RunID, env.ID, prepared.BindingDigest)
+		wantStep := schema.Identity.DeriveModelStepID(env.RunID, env.ID, prepared.BindingDigest)
 		if cmd.StepID != wantStep {
 			return CommitDecision{Kind: DecisionStale, Reject: fmt.Errorf("prepare: StepID %q does not match derived StepID %q", cmd.StepID, wantStep)}, nil
 		}
@@ -121,7 +115,7 @@ func EvaluateCommit(cur run.MachineState, position run.RunPosition, req CommitRe
 		if err != nil {
 			return CommitDecision{}, err
 		}
-		state, err = sch.Machine.Evolve(state, f)
+		state, err = schema.Machine.Evolve(state, f)
 		if err != nil {
 			return CommitDecision{}, err
 		}

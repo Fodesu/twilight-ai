@@ -38,48 +38,52 @@ const Authority = "twilight/run/frozen"
 // fails.
 var ErrMissing = errors.New("agent: frozen value missing")
 
-// V1 is the SchemaVersion1 frozen-body codec. Each body is stored as the
-// versioned envelope its digest is computed from (canonical.V1), under the
+// envelopeVersion is the version the frozen-body envelope prefix carries;
+// it is part of the stored bytes and of the digests computed from them.
+const envelopeVersion uint16 = 1
+
+// Bodies is the frozen-body codec. Each body is stored as the
+// versioned envelope its digest is computed from (canonical.Bodies), under the
 // envelope type canonical declares for it, so sha256(bytes) == digest.
-type V1 struct{}
+type Bodies struct{}
 
-func (V1) EncodeRequest(req *model.ModelRequest, want run.Digest) ([]byte, error) {
-	return encodeFrozen(run.SchemaVersion1, canonical.RequestType, *req, want)
+func (Bodies) EncodeRequest(req *model.ModelRequest, want run.Digest) ([]byte, error) {
+	return encodeFrozen(envelopeVersion, canonical.RequestType, *req, want)
 }
 
-func (V1) EncodeModelResult(result *model.ModelResult, want run.Digest) ([]byte, error) {
-	return encodeFrozen(run.SchemaVersion1, canonical.ModelResultType, *result, want)
+func (Bodies) EncodeModelResult(result *model.ModelResult, want run.Digest) ([]byte, error) {
+	return encodeFrozen(envelopeVersion, canonical.ModelResultType, *result, want)
 }
 
-func (V1) EncodeToolOutput(output run.CanonicalJSON, want run.Digest) ([]byte, error) {
+func (Bodies) EncodeToolOutput(output run.CanonicalJSON, want run.Digest) ([]byte, error) {
 	if output.IsZero() {
 		return nil, errors.New("agent: frozen tool output: empty output")
 	}
-	return encodeFrozen(run.SchemaVersion1, canonical.ToolOutputType, canonical.ToolOutputBody{Output: output}, want)
+	return encodeFrozen(envelopeVersion, canonical.ToolOutputType, canonical.ToolOutputBody{Output: output}, want)
 }
 
-func (V1) EncodeToolResponse(payload run.CanonicalJSON, want run.Digest) ([]byte, error) {
-	return encodeFrozen(run.SchemaVersion1, canonical.ToolResponseType, canonical.ToolResponsePayloadBody{Payload: payload}, want)
+func (Bodies) EncodeToolResponse(payload run.CanonicalJSON, want run.Digest) ([]byte, error) {
+	return encodeFrozen(envelopeVersion, canonical.ToolResponseType, canonical.ToolResponsePayloadBody{Payload: payload}, want)
 }
 
-func (V1) DecodeRequest(raw []byte, want run.Digest) (model.ModelRequest, error) {
-	return decodeFrozen[model.ModelRequest](raw, run.SchemaVersion1, canonical.RequestType, want)
+func (Bodies) DecodeRequest(raw []byte, want run.Digest) (model.ModelRequest, error) {
+	return decodeFrozen[model.ModelRequest](raw, envelopeVersion, canonical.RequestType, want)
 }
 
-func (V1) DecodeModelResult(raw []byte, want run.Digest) (model.ModelResult, error) {
-	return decodeFrozen[model.ModelResult](raw, run.SchemaVersion1, canonical.ModelResultType, want)
+func (Bodies) DecodeModelResult(raw []byte, want run.Digest) (model.ModelResult, error) {
+	return decodeFrozen[model.ModelResult](raw, envelopeVersion, canonical.ModelResultType, want)
 }
 
-func (V1) DecodeToolOutput(raw []byte, want run.Digest) (run.CanonicalJSON, error) {
-	body, err := decodeFrozen[canonical.ToolOutputBody](raw, run.SchemaVersion1, canonical.ToolOutputType, want)
+func (Bodies) DecodeToolOutput(raw []byte, want run.Digest) (run.CanonicalJSON, error) {
+	body, err := decodeFrozen[canonical.ToolOutputBody](raw, envelopeVersion, canonical.ToolOutputType, want)
 	if err != nil {
 		return run.CanonicalJSON{}, err
 	}
 	return body.Output, nil
 }
 
-func (V1) DecodeToolResponse(raw []byte, want run.Digest) (run.CanonicalJSON, error) {
-	body, err := decodeFrozen[canonical.ToolResponsePayloadBody](raw, run.SchemaVersion1, canonical.ToolResponseType, want)
+func (Bodies) DecodeToolResponse(raw []byte, want run.Digest) (run.CanonicalJSON, error) {
+	body, err := decodeFrozen[canonical.ToolResponsePayloadBody](raw, envelopeVersion, canonical.ToolResponseType, want)
 	if err != nil {
 		return run.CanonicalJSON{}, err
 	}
@@ -94,12 +98,10 @@ func codecFor(raw []byte) (Codec, error) {
 	if _, err := fmt.Sscanf(string(raw[:min(len(raw), 8)]), "v%d:", &version); err != nil {
 		return nil, errors.New("agent: frozen body: not a typed envelope")
 	}
-	switch version {
-	case run.SchemaVersion1:
-		return V1{}, nil
-	default:
-		return nil, run.UnsupportedSchemaVersion(version)
+	if version != envelopeVersion {
+		return nil, fmt.Errorf("agent: frozen body: unknown envelope version %d", version)
 	}
+	return Bodies{}, nil
 }
 
 // DecodeRequest restores a request body and checks it still digests to

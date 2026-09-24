@@ -150,7 +150,7 @@ func testDeliver(t *testing.T, factory Factory) {
 	if err != nil || dresp.Status != turn.TurnActive || dresp.RunID != runID {
 		t.Fatalf("deliver = %+v %v", dresp, err)
 	}
-	group := h.group(session.CommitID(schema.V1().Identity.DeriveInputCommandID(runID, "in-2")))
+	group := h.group(session.CommitID(schema.Identity.DeriveInputCommandID(runID, "in-2")))
 	if !sameTypes(group, typeAccepted, chatlog.TypeInputDelivered) {
 		t.Fatalf("deliver group = %v, want input_accepted then input_delivered", eventTypes(group))
 	}
@@ -226,7 +226,7 @@ func testDeliver(t *testing.T, factory Factory) {
 	if _, err := h.c.Deliver(h.ctx, h.writer(), turn.DeliverRequest{Ref: h.ref("t2"), Inputs: batch}); err != nil {
 		t.Fatalf("batch deliver = %v", err)
 	}
-	group = h.group(session.CommitID(schema.V1().Identity.DeriveInputCommandID(run2, "in-5", "in-6")))
+	group = h.group(session.CommitID(schema.Identity.DeriveInputCommandID(run2, "in-5", "in-6")))
 	if !sameTypes(group, typeAccepted, typeAccepted, chatlog.TypeInputDelivered, chatlog.TypeInputDelivered) {
 		t.Fatalf("batch group = %v", eventTypes(group))
 	}
@@ -498,13 +498,13 @@ func testProjection(t *testing.T, factory Factory) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	facts, err := schema.V1().Machine.CreateGroup(foreign, nil)
+	facts, err := schema.Machine.CreateGroup(foreign, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
-		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(schema.V1().Wire, f), RecordedAtUnixMilli: h.now, Value: runmod.Event{RunID: "r-foreign", Fact: f}})
+		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(schema.Wire, f), RecordedAtUnixMilli: h.now, Value: runmod.Event{RunID: "r-foreign", Fact: f}})
 	}
 	h.mustApply(writer.SemanticGroup{CommitID: "foreign-run", Batches: []writer.TypedBatch{
 		{Stream: runmod.Stream("r-foreign"), Events: runEvents},

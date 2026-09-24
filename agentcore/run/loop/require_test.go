@@ -17,7 +17,7 @@ func (f *Feature) RequireWaiting(kind run.ResponseKind) {
 	if w.Kind != kind {
 		f.t.Fatalf("waiting kind = %s, want %s", w.Kind, kind)
 	}
-	want := schema.V1().Identity.DeriveResponseID(w.RunID, w.StepID, w.CallID, w.Kind)
+	want := schema.Identity.DeriveResponseID(w.RunID, w.StepID, w.CallID, w.Kind)
 	if w.ID != want {
 		f.t.Fatalf("ResponseID = %q, want derived %q", w.ID, want)
 	}
@@ -55,7 +55,7 @@ func (f *Feature) RequireCompleted(text string) {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	want, err := schema.V1().Canonical.DigestModelResult(frozen)
+	want, err := schema.Canonical.DigestModelResult(frozen)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -182,7 +182,7 @@ func (f *Feature) RequireBuilderSawTool(callID run.CallID, output string) {
 	if s.LastToolStep == nil || s.LastToolStep.RefValue.ID != f.builder.lastHint.SourceStep {
 		f.t.Fatalf("hint SourceStep = %s, LastToolStep = %+v", f.builder.lastHint.SourceStep, s.LastToolStep)
 	}
-	want, err := schema.V1().Canonical.DigestToolOutput(run.MustParseCanonicalJSON(output))
+	want, err := schema.Canonical.DigestToolOutput(run.MustParseCanonicalJSON(output))
 	if err != nil {
 		f.t.Fatal(err)
 	}

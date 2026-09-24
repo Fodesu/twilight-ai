@@ -161,11 +161,11 @@ func (b *testBackend) lastKey() effect.AssignmentKey {
 
 func testAssignment() effect.Assignment {
 	request := model.ModelRequest{Model: "m"}
-	digest, err := schema.V1().Canonical.DigestRequest(request)
+	digest, err := schema.Canonical.DigestRequest(request)
 	if err != nil {
 		panic(err)
 	}
-	return effect.Assignment{Session: "s", RunID: "r", StepID: "step", Effect: "effect", Schema: 1,
+	return effect.Assignment{Session: "s", RunID: "r", StepID: "step", Effect: "effect",
 		Body: effect.ModelAssignment{Model: "m", Request: &request, RequestDigest: digest}}
 }
 
@@ -785,7 +785,7 @@ func TestHTTPClientAndServer(t *testing.T) {
 }
 
 func testToolAssignment() effect.Assignment {
-	return effect.Assignment{Session: "s", RunID: "r", StepID: "step", CallID: "call-1", Effect: "effect", Schema: 1,
+	return effect.Assignment{Session: "s", RunID: "r", StepID: "step", CallID: "call-1", Effect: "effect",
 		Body: effect.ToolAssignment{ToolRef: "gate", DefinitionDigest: "d", Arguments: run.MustParseCanonicalJSON(`{}`), Policy: run.DirectExecution}}
 }
 
@@ -1343,7 +1343,7 @@ func TestDispatchRefusalClassification(t *testing.T) {
 		retryable  bool
 	}{
 		{"record store unavailable", failingCreateStore{sqlitetest.Open(t).Executions()}, testAssignment(), true},
-		{"assignment without body", sqlitetest.Open(t).Executions(), effect.Assignment{Session: "s", RunID: "r", Effect: "e", Schema: 1}, false},
+		{"assignment without body", sqlitetest.Open(t).Executions(), effect.Assignment{Session: "s", RunID: "r", Effect: "e"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

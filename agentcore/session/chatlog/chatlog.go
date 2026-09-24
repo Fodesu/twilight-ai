@@ -205,21 +205,17 @@ type Input struct {
 // entries belong to and the schema its identities derive under.
 type RunOwner struct {
 	TurnID TurnID `json:"turnId,omitempty"`
-	Schema uint16 `json:"schema"`
 }
 
 type Assistant struct {
-	ID     AssistantID `json:"id"`
-	TurnID TurnID      `json:"turnId,omitempty"`
-	RunID  run.RunID   `json:"runId"`
-	StepID run.StepID  `json:"stepId"`
-	// SchemaVersion is the Run's; the materializer derives CallIDs under it
-	// when the entry carries none. It is not part of the entry digest.
-	SchemaVersion uint16             `json:"schemaVersion,omitempty"`
-	FinishReason  model.FinishReason `json:"finishReason"`
-	ResultDigest  es.Digest          `json:"resultDigest"`
-	CallIDs       []CallID           `json:"callIds,omitempty"`
-	Digest        es.Digest          `json:"digest"`
+	ID           AssistantID        `json:"id"`
+	TurnID       TurnID             `json:"turnId,omitempty"`
+	RunID        run.RunID          `json:"runId"`
+	StepID       run.StepID         `json:"stepId"`
+	FinishReason model.FinishReason `json:"finishReason"`
+	ResultDigest es.Digest          `json:"resultDigest"`
+	CallIDs      []CallID           `json:"callIds,omitempty"`
+	Digest       es.Digest          `json:"digest"`
 }
 
 // ToolResult is the structural projection of one call's terminal outcome
