@@ -23,6 +23,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/attempt"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
@@ -63,10 +64,13 @@ type Ports struct {
 	// The core ships no builder; the agent built on it supplies its catalog
 	// (agent/prompt.DefaultPromptBuilders for the reference agent).
 	Decisions *decision.PromptBuilders
-	// Processes is the dispatch ledger (RUN-EXE-15): with it, the takeover
-	// reconciler hands an effect the Executor holds nothing for to the
-	// Executor again within a budget; without it, such an effect is
-	// disposed (RUN-CMT-7). Durable like every store (OWN-PRT-3).
+	// MissingEffects is the takeover policy for an Executing effect the
+	// Executor holds nothing for (RUN-CMT-7): the zero value disposes it,
+	// reconcile.RedispatchMissing hands it to the Executor again within a
+	// budget (RUN-EXE-15) and requires Processes.
+	MissingEffects reconcile.MissingPolicy
+	// Processes is the dispatch ledger RedispatchMissing writes; durable
+	// like every store (OWN-PRT-3). Unused under DisposeMissing.
 	Processes process.Store
 	// Executor is the effect layer port (RUN-EXE-3): required.
 	Executor effect.ExecutionPort
@@ -138,6 +142,9 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	if p.Artifacts.Bindings == nil || p.Artifacts.Ledger == nil {
 		return nil, errors.New("owner: a binding store and a retention ledger are required (OWN-PRT-3)")
 	}
+	if p.MissingEffects == reconcile.RedispatchMissing && p.Processes == nil {
+		return nil, errors.New("owner: MissingEffects=redispatch requires a dispatch ledger (Ports.Processes, RUN-EXE-15)")
+	}
 	store := p.Store
 	// The first-party four are trusted core; Ports.Modules are extensions
 	// and cannot declare authoritative projections (EXT-PRJ-9).
@@ -203,7 +210,7 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	a.Driver.Presets, a.Driver.Decisions, a.Driver.Targets = presets, decisions, p.TargetResolver
 	a.Driver.Sources = decision.Sources{Projections: projections, Content: content}
 	a.Driver.Fail = p.Fail
-	a.Driver.Processes = p.Processes
+	a.Driver.MissingEffects, a.Driver.Processes = p.MissingEffects, p.Processes
 	return a, nil
 }
 

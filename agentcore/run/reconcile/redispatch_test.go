@@ -113,7 +113,7 @@ func TestPlanRedispatchesMissingWithinBudget(t *testing.T) {
 				}
 			}
 			calls := 0
-			r := &Reconciler{Executions: &fakePort{state: effect.AttachmentMissing}, Attempts: store, Epoch: 1, MaxRedispatches: 2,
+			r := &Reconciler{Executions: &fakePort{state: effect.AttachmentMissing}, Missing: RedispatchMissing, Attempts: store, Epoch: 1, MaxRedispatches: 2,
 				Redispatch: func(_ context.Context, k effect.AssignmentKey) error {
 					calls++
 					if k != key {
@@ -135,9 +135,21 @@ func TestPlanRedispatchesMissingWithinBudget(t *testing.T) {
 			}
 		})
 	}
-	// Redispatch without a ledger is a configuration error, not a disposal.
-	r := &Reconciler{Executions: &fakePort{state: effect.AttachmentMissing}, Redispatch: func(context.Context, effect.AssignmentKey) error { return nil }}
-	if _, err := r.Plan(ctx, "s", executingModel("c1")); err == nil {
-		t.Fatal("redispatch without a dispatch ledger accepted")
+}
+
+// The missing policy is explicit: RedispatchMissing without its ports is a
+// configuration error, and ports alone never select redispatch.
+func TestMissingPolicyIsExplicit(t *testing.T) {
+	ctx := context.Background()
+	calls := 0
+	redispatch := func(context.Context, effect.AssignmentKey) error { calls++; return nil }
+	r := &Reconciler{Executions: &fakePort{state: effect.AttachmentMissing}, Missing: RedispatchMissing, Redispatch: redispatch}
+	if _, err := r.Plan(ctx, "s", executingModel("c1")); !errors.Is(err, ErrMissingPolicyPorts) {
+		t.Fatalf("redispatch without a dispatch ledger = %v, want ErrMissingPolicyPorts", err)
+	}
+	r = &Reconciler{Executions: &fakePort{state: effect.AttachmentMissing}, Redispatch: redispatch, Attempts: newAttempts()}
+	decisions, err := r.Plan(ctx, "s", executingModel("c1"))
+	if err != nil || len(decisions) != 1 || decisions[0].Verdict != Dispose || calls != 0 {
+		t.Fatalf("ports without the policy: %+v %v calls=%d, want dispose without a redispatch", decisions, err, calls)
 	}
 }

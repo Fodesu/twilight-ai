@@ -32,6 +32,7 @@ import (
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/plan"
+	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/session/writer"
@@ -91,8 +92,13 @@ type Config struct {
 	// did not survive a restart would let the Owner dispose an execution
 	// that is still running.
 	Executions executionstore.Store
-	// Processes is the dispatch ledger the takeover reconciler writes before
-	// redispatching an effect (RUN-EXE-15, owner.Ports.Processes).
+	// MissingEffects is the takeover policy for an Executing effect the
+	// Executor holds nothing for (owner.Ports.MissingEffects): the zero
+	// value disposes, reconcile.RedispatchMissing redispatches within the
+	// budget and requires Processes.
+	MissingEffects reconcile.MissingPolicy
+	// Processes is the dispatch ledger RedispatchMissing writes
+	// (RUN-EXE-15, owner.Ports.Processes).
 	Processes process.Store
 	Presets   []Preset
 	// Registry is the preset registry; nil selects an in-memory one.
@@ -221,8 +227,8 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	}
 	a, err := owner.New(owner.Ports{
 		Store: c.Store, Content: content, Artifacts: c.Artifacts, Presets: c.Registry, Decisions: decisions,
-		Processes: c.Processes,
-		Executor:  port, TargetResolver: c.TargetResolver, Observers: observers, Modules: c.Modules,
+		MissingEffects: c.MissingEffects, Processes: c.Processes,
+		Executor: port, TargetResolver: c.TargetResolver, Observers: observers, Modules: c.Modules,
 		Clock: c.Clock, Cache: c.Cache, CacheEvery: c.CacheEvery, Ownership: c.Ownership, Fail: app.fail,
 	})
 	if err != nil {

@@ -65,6 +65,39 @@ type Decision struct {
 // about the executions it may hold, so the targets cannot be disposed.
 var ErrNoExecutionPort = errors.New("reconcile: executing targets but no execution port to ask; set Abandon to dispose without proof")
 
+// MissingPolicy is what the reconciler does with an Executing effect the
+// executor holds nothing for (RUN-CMT-7, RUN-EXE-15). It is the
+// deployment's recovery decision, stated explicitly: the ports a policy
+// needs are checked against the policy, and no port's presence or absence
+// selects a policy by itself.
+type MissingPolicy uint8
+
+const (
+	// DisposeMissing, the zero value: the Run recovers the target itself
+	// (an Executing model step is withdrawn to Open, an Executing tool call
+	// settles as Unknown). No dispatch ledger is needed.
+	DisposeMissing MissingPolicy = iota
+	// RedispatchMissing: the Assignment is handed to the executor again
+	// within the redispatch budget, the attempts recorded in the dispatch
+	// ledger. Requires Redispatch and Attempts.
+	RedispatchMissing
+)
+
+func (p MissingPolicy) String() string {
+	switch p {
+	case DisposeMissing:
+		return "dispose"
+	case RedispatchMissing:
+		return "redispatch"
+	default:
+		return fmt.Sprintf("MissingPolicy(%d)", uint8(p))
+	}
+}
+
+// ErrMissingPolicyPorts reports RedispatchMissing without the ports it
+// needs: the Redispatch port and the dispatch ledger (Attempts).
+var ErrMissingPolicyPorts = errors.New("reconcile: RedispatchMissing requires the Redispatch port and the dispatch ledger (Attempts)")
+
 // ErrTargetWithoutEffect reports an Executing target whose start fact
 // recorded no EffectID: the executor cannot be asked about it and the
 // machine state is inconsistent (RUN-WIR-1).
@@ -103,10 +136,13 @@ type Reconciler struct {
 	// Lifetime bounds the background Outcome reads of kept targets.
 	Lifetime context.Context
 
+	// Missing is the policy for an effect the executor holds nothing for.
+	// The zero value disposes (RUN-CMT-7); RedispatchMissing requires
+	// Redispatch and Attempts (RUN-EXE-15).
+	Missing MissingPolicy
 	// Redispatch hands the Assignment of an Executing effect the executor
 	// holds nothing for to the executor again (loop.Redispatch on the
-	// owner's Writer). Nil keeps RUN-CMT-7's plain disposal of missing
-	// effects. With it, Attempts is required.
+	// owner's Writer). Used under RedispatchMissing only.
 	Redispatch func(ctx context.Context, key effect.AssignmentKey) error
 	// Attempts is the dispatch ledger: which redispatch of each effect was
 	// planned, whether it reached the executor, and whether the reconciler
@@ -189,6 +225,9 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtim
 	if len(targets) == 0 {
 		return nil, nil
 	}
+	if err := r.checkMissingPolicy(); err != nil {
+		return nil, err
+	}
 	out := make([]Decision, 0, len(targets))
 	for _, t := range targets {
 		if t.Effect == "" {
@@ -245,11 +284,8 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtim
 // attempt owed and the target Executing for the next reconciliation; any
 // other rejection ends the attempts.
 func (r *Reconciler) missing(ctx context.Context, key effect.AssignmentKey) (Verdict, error) {
-	if r.Redispatch == nil {
+	if r.Missing == DisposeMissing {
 		return Dispose, nil
-	}
-	if r.Attempts == nil {
-		return Dispose, errors.New("reconcile: Redispatch requires the dispatch ledger (Attempts)")
 	}
 	state, _, _, err := r.Attempts.Load(ctx, key)
 	if err != nil {
@@ -286,6 +322,21 @@ func (r *Reconciler) missing(ctx context.Context, key effect.AssignmentKey) (Ver
 			return Dispose, gerr
 		}
 		return Dispose, nil
+	}
+}
+
+// checkMissingPolicy verifies the ports the configured policy needs.
+func (r *Reconciler) checkMissingPolicy() error {
+	switch r.Missing {
+	case DisposeMissing:
+		return nil
+	case RedispatchMissing:
+		if r.Redispatch == nil || r.Attempts == nil {
+			return ErrMissingPolicyPorts
+		}
+		return nil
+	default:
+		return fmt.Errorf("reconcile: unknown missing policy %s", r.Missing)
 	}
 }
 

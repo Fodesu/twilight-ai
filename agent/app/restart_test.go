@@ -9,9 +9,11 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
+	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
+	"github.com/felinics/twilight/agentcore/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 )
@@ -87,7 +89,7 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 		t.Fatal(err)
 	}
 	replan := &scriptedRequests{}
-	p2 := newHostWithoutDispatchLedger(t, app.Config{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": replan})
+	p2 := newHost(t, app.Config{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": replan})
 	if _, err := p2.RegisterPreset("a1", preset); err != nil {
 		t.Fatal(err)
 	}
@@ -159,7 +161,8 @@ func TestRestartRedispatchesMissingEffect(t *testing.T) {
 		t.Fatal(err)
 	}
 	again := &scriptedRequests{}
-	p2 := newHost(t, app.Config{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": again})
+	p2 := newHost(t, app.Config{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}, MissingEffects: reconcile.RedispatchMissing},
+		map[run.ModelRef]loop.ModelInvoker{"m-1": again})
 	if _, err := p2.RegisterPreset("a1", preset); err != nil {
 		t.Fatal(err)
 	}
@@ -426,4 +429,17 @@ func mustRecord(t *testing.T, h *app.Application, sid session.SessionID, runID r
 		t.Fatal(err)
 	}
 	return rec
+}
+
+// RedispatchMissing is a stated policy, and the dispatch ledger it needs is
+// checked against it at Build (OWN-PRT-3): a nil ledger is an error, not a
+// silent fall-back to disposal.
+func TestBuildRejectsRedispatchWithoutDispatchLedger(t *testing.T) {
+	cfg := durablePorts(t, app.Config{})
+	cfg.Executions, cfg.Processes = sqlitetest.Open(t).Executions(), nil
+	cfg.MissingEffects = reconcile.RedispatchMissing
+	cfg.Executor = app.ExecutorConfig{Models: map[run.ModelRef]loop.ModelInvoker{}}
+	if _, err := app.Build(cfg); err == nil {
+		t.Fatal("Build accepted RedispatchMissing without a dispatch ledger")
+	}
 }

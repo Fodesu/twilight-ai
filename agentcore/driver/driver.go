@@ -72,9 +72,14 @@ type Driver struct {
 	// drive leaves such a call waiting, and when a Session opens, the
 	// Driver asks the tool's Responder and commits its answer.
 	Responders map[run.ToolRef]Responder
-	// Processes is the dispatch ledger the reconciler writes before it
-	// hands an effect to the Executor again (RUN-EXE-15). Nil keeps plain
-	// disposal of missing effects (RUN-CMT-7).
+	// MissingEffects is the takeover policy for an Executing effect the
+	// Executor holds nothing for (RUN-CMT-7): the zero value disposes,
+	// reconcile.RedispatchMissing redispatches within the budget and
+	// requires Processes (RUN-EXE-15).
+	MissingEffects reconcile.MissingPolicy
+	// Processes is the dispatch ledger the reconciler writes before and
+	// after it hands an effect to the Executor again; required under
+	// RedispatchMissing, unused otherwise.
 	Processes process.Store
 	// MaxRedispatches bounds redispatches per effect; zero selects the
 	// reconciler's default.
@@ -321,7 +326,8 @@ func (d *Driver) recoverInterrupted(ctx context.Context, w writer.Writer) (int, 
 		Fail: func(key effect.AssignmentKey, err error) {
 			d.fail(sid, fmt.Errorf("driver: outcome of run %s effect %s cannot be read; the target stays executing until the next takeover: %w", key.RunID, key.Effect, err))
 		}}
-	if d.Processes != nil {
+	rec.Missing = d.MissingEffects
+	if d.MissingEffects == reconcile.RedispatchMissing {
 		// Missing effects are handed to the Executor again within the
 		// budget; the dispatch ledger remembers the attempts (RUN-EXE-15).
 		rec.Attempts, rec.Epoch, rec.MaxRedispatches = d.Processes, ledger.Epoch(w.Epoch()), d.MaxRedispatches
