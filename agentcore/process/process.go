@@ -4,8 +4,8 @@
 // accepted and ran). Whether an effect is outstanding is the Run's state,
 // whether the Executor holds an attempt is Attach's answer; neither is
 // repeated here. What only the process manager knows, and what must survive
-// its crash, is how many times it handed the effect to the Executor again
-// and whether it gave up (RUN-EXE-15). The reconciler (agentcore/run/reconcile)
+// its crash, is which redispatch it decided to make, whether that Dispatch
+// reached the Executor, and whether it gave up (RUN-EXE-15). The reconciler (agentcore/run/reconcile)
 // is the process manager: it reads the three sources and writes here before
 // it acts, so a decision made and a Dispatch sent cannot drift apart.
 package process
@@ -32,16 +32,26 @@ type (
 )
 
 const (
-	// EventDispatchAttempted: the process manager is about to hand the
-	// effect to the Executor again; Attempt numbers the redispatches from 1.
-	EventDispatchAttempted EventType = "dispatch_attempted"
+	// EventDispatchPlanned: the process manager decided to hand the effect
+	// to the Executor again; Attempt numbers the redispatches from 1. It is
+	// written before the Dispatch and stays pending until dispatched.
+	EventDispatchPlanned EventType = "dispatch_planned"
+	// EventDispatched: the Dispatch of the planned attempt reached the
+	// Executor (accepted, or already held under the same key). Only now may
+	// the next attempt be planned.
+	EventDispatched EventType = "dispatched"
 	// EventGivenUp: the process manager stopped redispatching; the reason is
 	// recorded and the Run disposes the effect (RUN-CMT-7).
 	EventGivenUp EventType = "given_up"
 )
 
-// Attempted is the payload of dispatch_attempted.
-type Attempted struct {
+// Planned is the payload of dispatch_planned.
+type Planned struct {
+	Attempt int `json:"attempt"`
+}
+
+// Dispatched is the payload of dispatched.
+type Dispatched struct {
 	Attempt int `json:"attempt"`
 }
 
@@ -66,9 +76,14 @@ func deriveCommitID(key effect.AssignmentKey, command, discriminator string) Com
 	return CommitID(d)
 }
 
-// AttemptCommitID names the n-th redispatch of the effect.
-func AttemptCommitID(key effect.AssignmentKey, attempt int) CommitID {
-	return deriveCommitID(key, "process/dispatch_attempted", fmt.Sprint(attempt))
+// PlannedCommitID names the decision to make the n-th redispatch.
+func PlannedCommitID(key effect.AssignmentKey, attempt int) CommitID {
+	return deriveCommitID(key, "process/dispatch_planned", fmt.Sprint(attempt))
+}
+
+// DispatchedCommitID names the completion of the n-th redispatch.
+func DispatchedCommitID(key effect.AssignmentKey, attempt int) CommitID {
+	return deriveCommitID(key, "process/dispatched", fmt.Sprint(attempt))
 }
 
 // GivenUpCommitID names the one decision to stop.
@@ -78,12 +93,25 @@ func GivenUpCommitID(key effect.AssignmentKey) CommitID {
 
 // --- fold ---
 
-// State is the fold of one effect's dispatch ledger.
+// State is the fold of one effect's dispatch ledger. Planned is the number
+// of redispatches decided, Dispatched the number that reached the Executor;
+// Planned is Dispatched or Dispatched+1, and the difference is the one
+// attempt still owed to the Executor.
 type State struct {
-	Key      effect.AssignmentKey `json:"key"`
-	Attempts int                  `json:"attempts"`
-	GivenUp  bool                 `json:"givenUp,omitempty"`
-	Reason   string               `json:"reason,omitempty"`
+	Key        effect.AssignmentKey `json:"key"`
+	Planned    int                  `json:"planned"`
+	Dispatched int                  `json:"dispatched"`
+	GivenUp    bool                 `json:"givenUp,omitempty"`
+	Reason     string               `json:"reason,omitempty"`
+}
+
+// Pending reports the planned attempt whose Dispatch has not been recorded,
+// or 0 when none is owed.
+func (s State) Pending() int {
+	if s.Planned > s.Dispatched {
+		return s.Planned
+	}
+	return 0
 }
 
 // Fold applies one commit; an event not legal from the state is
@@ -105,15 +133,27 @@ func apply(s State, e *Event) (State, error) { //nolint:gocritic // hugeParam: v
 		return s, errors.New("decision after given_up")
 	}
 	switch e.Type {
-	case EventDispatchAttempted:
-		var p Attempted
+	case EventDispatchPlanned:
+		var p Planned
 		if err := e.Decode(&p); err != nil {
 			return s, err
 		}
-		if p.Attempt != s.Attempts+1 {
-			return s, fmt.Errorf("attempt %d after %d", p.Attempt, s.Attempts)
+		if s.Planned != s.Dispatched {
+			return s, fmt.Errorf("attempt %d planned while %d is pending", p.Attempt, s.Planned)
 		}
-		s.Attempts = p.Attempt
+		if p.Attempt != s.Planned+1 {
+			return s, fmt.Errorf("attempt %d planned after %d", p.Attempt, s.Planned)
+		}
+		s.Planned = p.Attempt
+	case EventDispatched:
+		var p Dispatched
+		if err := e.Decode(&p); err != nil {
+			return s, err
+		}
+		if p.Attempt != s.Planned || s.Dispatched != s.Planned-1 {
+			return s, fmt.Errorf("attempt %d dispatched with %d planned and %d dispatched", p.Attempt, s.Planned, s.Dispatched)
+		}
+		s.Dispatched = p.Attempt
 	case EventGivenUp:
 		var p GivenUp
 		if err := e.Decode(&p); err != nil {
@@ -143,20 +183,37 @@ type Store interface {
 	Append(ctx context.Context, epoch Epoch, key effect.AssignmentKey, c Commit) error
 }
 
-// Attempt records the next redispatch of key under epoch and returns its
-// number. It is written before the Dispatch it announces (RUN-EXE-15): a
-// crash between the two costs one attempt of the budget, never a Dispatch
-// the ledger does not know about.
-func Attempt(ctx context.Context, s Store, epoch Epoch, key effect.AssignmentKey, now int64) (int, error) {
+// Plan returns the attempt the process manager is to make now: the planned
+// attempt still owed to the Executor, or the next one, recorded before the
+// Dispatch it announces (RUN-EXE-15). A crash between the record and the
+// Dispatch leaves the attempt pending, and the next reconciliation makes
+// the same attempt instead of a new one.
+func Plan(ctx context.Context, s Store, epoch Epoch, key effect.AssignmentKey, now int64) (int, error) {
 	state, head, _, err := s.Load(ctx, key)
 	if err != nil {
 		return 0, err
 	}
-	n := state.Attempts + 1
-	if err := append1(ctx, s, epoch, key, head, AttemptCommitID(key, n), EventDispatchAttempted, Attempted{Attempt: n}, now); err != nil {
+	if n := state.Pending(); n != 0 {
+		return n, nil
+	}
+	n := state.Planned + 1
+	if err := append1(ctx, s, epoch, key, head, PlannedCommitID(key, n), EventDispatchPlanned, Planned{Attempt: n}, now); err != nil {
 		return 0, err
 	}
 	return n, nil
+}
+
+// MarkDispatched records that the Dispatch of the planned attempt reached
+// the Executor; the attempt is no longer owed.
+func MarkDispatched(ctx context.Context, s Store, epoch Epoch, key effect.AssignmentKey, attempt int, now int64) error {
+	state, head, _, err := s.Load(ctx, key)
+	if err != nil {
+		return err
+	}
+	if state.Dispatched >= attempt {
+		return nil
+	}
+	return append1(ctx, s, epoch, key, head, DispatchedCommitID(key, attempt), EventDispatched, Dispatched{Attempt: attempt}, now)
 }
 
 // GiveUp records that the process manager stops redispatching key.

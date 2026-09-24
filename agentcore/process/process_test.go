@@ -33,13 +33,16 @@ func TestFold(t *testing.T) {
 		want    process.State
 		wantErr error
 	}{
-		{"attempts count up", []step{{process.EventDispatchAttempted, process.Attempted{Attempt: 1}}, {process.EventDispatchAttempted, process.Attempted{Attempt: 2}}},
-			process.State{Attempts: 2}, nil},
-		{"given up after attempts", []step{{process.EventDispatchAttempted, process.Attempted{Attempt: 1}}, {process.EventGivenUp, process.GivenUp{Reason: "budget"}}},
-			process.State{Attempts: 1, GivenUp: true, Reason: "budget"}, nil},
+		{"planned then dispatched", []step{{process.EventDispatchPlanned, process.Planned{Attempt: 1}}, {process.EventDispatched, process.Dispatched{Attempt: 1}}, {process.EventDispatchPlanned, process.Planned{Attempt: 2}}},
+			process.State{Planned: 2, Dispatched: 1}, nil},
+		{"given up with an attempt owed", []step{{process.EventDispatchPlanned, process.Planned{Attempt: 1}}, {process.EventGivenUp, process.GivenUp{Reason: "budget"}}},
+			process.State{Planned: 1, GivenUp: true, Reason: "budget"}, nil},
 		{"given up without an attempt", []step{{process.EventGivenUp, process.GivenUp{Reason: "rejected"}}}, process.State{GivenUp: true, Reason: "rejected"}, nil},
-		{"attempt out of order", []step{{process.EventDispatchAttempted, process.Attempted{Attempt: 2}}}, process.State{}, ledger.ErrStateConflict},
-		{"nothing after given up", []step{{process.EventGivenUp, process.GivenUp{}}, {process.EventDispatchAttempted, process.Attempted{Attempt: 1}}}, process.State{}, ledger.ErrStateConflict},
+		{"plan out of order", []step{{process.EventDispatchPlanned, process.Planned{Attempt: 2}}}, process.State{}, ledger.ErrStateConflict},
+		{"plan while one is owed", []step{{process.EventDispatchPlanned, process.Planned{Attempt: 1}}, {process.EventDispatchPlanned, process.Planned{Attempt: 2}}}, process.State{}, ledger.ErrStateConflict},
+		{"dispatched without a plan", []step{{process.EventDispatched, process.Dispatched{Attempt: 1}}}, process.State{}, ledger.ErrStateConflict},
+		{"dispatched twice", []step{{process.EventDispatchPlanned, process.Planned{Attempt: 1}}, {process.EventDispatched, process.Dispatched{Attempt: 1}}, {process.EventDispatched, process.Dispatched{Attempt: 1}}}, process.State{}, ledger.ErrStateConflict},
+		{"nothing after given up", []step{{process.EventGivenUp, process.GivenUp{}}, {process.EventDispatchPlanned, process.Planned{Attempt: 1}}}, process.State{}, ledger.ErrStateConflict},
 		{"unknown event", []step{{"other", nil}}, process.State{}, ledger.ErrStateConflict},
 	}
 	for _, tc := range cases {
@@ -116,13 +119,24 @@ func (m *memStore) Append(ctx context.Context, epoch process.Epoch, k effect.Ass
 	return nil
 }
 
-func TestAttemptAndGiveUp(t *testing.T) {
+func TestPlanDispatchAndGiveUp(t *testing.T) {
 	ctx := context.Background()
 	s := newMemStore()
-	for want := 1; want <= 3; want++ {
-		if n, err := process.Attempt(ctx, s, 1, key, 1); err != nil || n != want {
-			t.Fatalf("attempt %d = %d %v", want, n, err)
+	// Plan returns the owed attempt until it is marked dispatched.
+	for range 2 {
+		if n, err := process.Plan(ctx, s, 1, key, 1); err != nil || n != 1 {
+			t.Fatalf("plan = %d %v, want the owed attempt 1", n, err)
 		}
+	}
+	if err := process.MarkDispatched(ctx, s, 1, key, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	// Marking twice is a no-op; the next Plan is a new attempt.
+	if err := process.MarkDispatched(ctx, s, 1, key, 1, 1); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := process.Plan(ctx, s, 1, key, 1); err != nil || n != 2 {
+		t.Fatalf("plan = %d %v, want 2", n, err)
 	}
 	if err := process.GiveUp(ctx, s, 1, key, "budget", 1); err != nil {
 		t.Fatal(err)
@@ -131,14 +145,14 @@ func TestAttemptAndGiveUp(t *testing.T) {
 	if err := process.GiveUp(ctx, s, 1, key, "again", 1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := process.Attempt(ctx, s, 0, effect.AssignmentKey{Session: "s1", RunID: "r1", Effect: "sha256:e2"}, 1); err != nil {
+	if _, err := process.Plan(ctx, s, 0, effect.AssignmentKey{Session: "s1", RunID: "r1", Effect: "sha256:e2"}, 1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := process.Attempt(ctx, s, 0, key, 1); !errors.Is(err, ledger.ErrFenced) && !errors.Is(err, ledger.ErrStateConflict) {
-		t.Fatalf("attempt under a stale epoch after given up = %v", err)
+	if err := process.MarkDispatched(ctx, s, 0, key, 2, 1); !errors.Is(err, ledger.ErrFenced) && !errors.Is(err, ledger.ErrStateConflict) {
+		t.Fatalf("dispatched under a stale epoch after given up = %v", err)
 	}
 	state, head, ok, err := s.Load(ctx, key)
-	if err != nil || !ok || head.Next != 4 || state.Attempts != 3 || !state.GivenUp || state.Reason != "budget" {
+	if err != nil || !ok || head.Next != 4 || state.Planned != 2 || state.Dispatched != 1 || state.Pending() != 2 || !state.GivenUp || state.Reason != "budget" {
 		t.Fatalf("state = %+v head %+v ok:%v %v", state, head, ok, err)
 	}
 }

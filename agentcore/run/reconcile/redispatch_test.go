@@ -61,34 +61,49 @@ func (a *attempts) Append(ctx context.Context, epoch process.Epoch, k effect.Ass
 }
 
 // RUN-EXE-15: an effect the executor holds nothing for is handed over again
-// within the redispatch budget, each attempt recorded before it is made;
-// a refusal the executor may lift leaves the target Executing for the next
-// reconciliation; the budget's end and a definite rejection dispose.
+// within the redispatch budget. Each attempt is planned before the Dispatch
+// and marked dispatched after it; an attempt left planned (a crash or a
+// refusal between the two) is made again and costs no budget. A refusal the
+// executor may lift leaves the target Executing for the next reconciliation;
+// the budget's end and a definite rejection dispose.
 func TestPlanRedispatchesMissingWithinBudget(t *testing.T) {
 	ctx := context.Background()
 	key := effect.AssignmentKey{Session: "s", RunID: "r1", Effect: "c1"}
 	cases := []struct {
 		name       string
 		redispatch error
-		prior      int // attempts already recorded
+		prior      int  // attempts already dispatched
+		pending    bool // one more attempt planned but not dispatched
 		givenUp    bool
 		want       Verdict
-		attempts   int
+		planned    int
+		dispatched int
 		gaveUp     bool
 		calls      int
 	}{
-		{"first redispatch", nil, 0, false, Redispatch, 1, false, 1},
-		{"refusal within budget", effect.ErrDispatchRetryable, 1, false, Defer, 2, false, 1},
-		{"lost response", effect.ErrDispatchUnknown, 0, false, Defer, 1, false, 1},
-		{"budget exhausted", nil, 2, false, Dispose, 2, true, 0},
-		{"already given up", nil, 0, true, Dispose, 0, true, 0},
-		{"definite rejection", errors.New("run no longer executes the effect"), 0, false, Dispose, 1, true, 1},
+		{"first redispatch", nil, 0, false, false, Redispatch, 1, 1, false, 1},
+		{"refusal within budget", effect.ErrDispatchRetryable, 1, false, false, Defer, 2, 1, false, 1},
+		{"lost response", effect.ErrDispatchUnknown, 0, false, false, Defer, 1, 0, false, 1},
+		{"owed attempt is made again, not a new one", nil, 0, true, false, Redispatch, 1, 1, false, 1},
+		{"owed attempt at the budget is still made", nil, 1, true, false, Redispatch, 2, 2, false, 1},
+		{"budget exhausted", nil, 2, false, false, Dispose, 2, 2, true, 0},
+		{"already given up", nil, 0, false, true, Dispose, 0, 0, true, 0},
+		{"definite rejection", errors.New("run no longer executes the effect"), 0, false, false, Dispose, 1, 0, true, 1},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newAttempts()
 			for i := 1; i <= tc.prior; i++ {
-				if _, err := process.Attempt(ctx, store, 1, key, 1); err != nil {
+				n, err := process.Plan(ctx, store, 1, key, 1)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := process.MarkDispatched(ctx, store, 1, key, n, 1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.pending {
+				if _, err := process.Plan(ctx, store, 1, key, 1); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -115,8 +130,8 @@ func TestPlanRedispatchesMissingWithinBudget(t *testing.T) {
 				t.Fatalf("decision = %+v calls=%d, want %s calls=%d", d, calls, tc.want, tc.calls)
 			}
 			state, _, _, err := store.Load(ctx, key)
-			if err != nil || state.Attempts != tc.attempts || state.GivenUp != tc.gaveUp {
-				t.Fatalf("ledger = %+v %v, want attempts=%d givenUp=%v", state, err, tc.attempts, tc.gaveUp)
+			if err != nil || state.Planned != tc.planned || state.Dispatched != tc.dispatched || state.GivenUp != tc.gaveUp {
+				t.Fatalf("ledger = %+v %v, want planned=%d dispatched=%d givenUp=%v", state, err, tc.planned, tc.dispatched, tc.gaveUp)
 			}
 		})
 	}

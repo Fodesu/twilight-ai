@@ -5,8 +5,8 @@
 // three sources: the machine says which effects are outstanding (an
 // Executing model step or tool call and the EffectID it requested), the
 // executor says whether it still holds an attempt for that effect, and the
-// dispatch ledger (agentcore/process) says how many times this effect was
-// handed to the executor again. Per effect the Reconciler decides whether
+// dispatch ledger (agentcore/process) says which redispatch of this effect
+// was decided and whether it reached the executor. Per effect the Reconciler decides whether
 // the Run keeps waiting for the attempt's Outcome, hands the effect to the
 // executor again, or disposes it. Neither the Loop nor the store adapter
 // interprets executor observations, and the Run never learns which attempt
@@ -108,8 +108,9 @@ type Reconciler struct {
 	// owner's Writer). Nil keeps RUN-CMT-7's plain disposal of missing
 	// effects. With it, Attempts is required.
 	Redispatch func(ctx context.Context, key effect.AssignmentKey) error
-	// Attempts is the dispatch ledger: how many times each effect was
-	// redispatched and whether the reconciler gave up (RUN-EXE-15).
+	// Attempts is the dispatch ledger: which redispatch of each effect was
+	// planned, whether it reached the executor, and whether the reconciler
+	// gave up (RUN-EXE-15).
 	Attempts process.Store
 	// Epoch fences the dispatch ledger: the Session owner's.
 	Epoch ledger.Epoch
@@ -233,12 +234,16 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtim
 
 // missing decides an effect the executor holds nothing for: within the
 // redispatch budget it is handed over again and stays Executing, otherwise
-// it is disposed (RUN-EXE-15). Each redispatch is written to the dispatch
-// ledger before it is made, so a crash in between costs one attempt and
-// never an unrecorded Dispatch. A refusal the executor may lift later
+// it is disposed (RUN-EXE-15). The dispatch ledger records each attempt in
+// two steps: planned before the Dispatch, dispatched once the Dispatch
+// reached the executor. A planned attempt the ledger does not show as
+// dispatched is owed, and is made again before any new one is planned, so
+// a crash between the two steps costs no budget and never leaves a Dispatch
+// the ledger does not know about; the executor recognises the replay by
+// its key (RUN-EXE-3). A refusal the executor may lift later
 // (ErrDispatchRetryable) or a lost response (ErrDispatchUnknown) leaves the
-// target Executing for the next reconciliation; any other rejection ends
-// the attempts.
+// attempt owed and the target Executing for the next reconciliation; any
+// other rejection ends the attempts.
 func (r *Reconciler) missing(ctx context.Context, key effect.AssignmentKey) (Verdict, error) {
 	if r.Redispatch == nil {
 		return Dispose, nil
@@ -257,18 +262,22 @@ func (r *Reconciler) missing(ctx context.Context, key effect.AssignmentKey) (Ver
 	if budget <= 0 {
 		budget = DefaultMaxRedispatches
 	}
-	if state.Attempts >= budget {
+	if state.Pending() == 0 && state.Planned >= budget {
 		if err := process.GiveUp(ctx, r.Attempts, r.Epoch, key, fmt.Sprintf("redispatch budget of %d exhausted", budget), r.now()); err != nil {
 			return Dispose, err
 		}
 		return Dispose, nil
 	}
-	if _, err := process.Attempt(ctx, r.Attempts, r.Epoch, key, r.now()); err != nil {
+	attempt, err := process.Plan(ctx, r.Attempts, r.Epoch, key, r.now())
+	if err != nil {
 		return Dispose, err
 	}
 	err = r.Redispatch(ctx, key)
 	switch {
 	case err == nil:
+		if err := process.MarkDispatched(ctx, r.Attempts, r.Epoch, key, attempt, r.now()); err != nil {
+			return Dispose, err
+		}
 		return Redispatch, nil
 	case errors.Is(err, effect.ErrDispatchRetryable), errors.Is(err, effect.ErrDispatchUnknown):
 		return Defer, nil

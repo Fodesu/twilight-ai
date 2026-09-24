@@ -33,11 +33,11 @@ func TestProcessStore(t *testing.T) {
 		commit  process.Commit
 		wantErr error
 	}{
-		{"first attempt opens the ledger", 1, processCommit(t, 0, process.AttemptCommitID(k1, 1), process.EventDispatchAttempted, process.Attempted{Attempt: 1}), nil},
-		{"replayed attempt is already applied", 1, processCommit(t, 0, process.AttemptCommitID(k1, 1), process.EventDispatchAttempted, process.Attempted{Attempt: 1}), ledger.ErrAlreadyApplied},
-		{"stale seq conflicts", 1, processCommit(t, 0, process.AttemptCommitID(k1, 2), process.EventDispatchAttempted, process.Attempted{Attempt: 2}), ledger.ErrConflict},
-		{"attempt out of order is a state conflict", 1, processCommit(t, 1, process.AttemptCommitID(k1, 3), process.EventDispatchAttempted, process.Attempted{Attempt: 3}), ledger.ErrStateConflict},
-		{"a later epoch commits", 2, processCommit(t, 1, process.AttemptCommitID(k1, 2), process.EventDispatchAttempted, process.Attempted{Attempt: 2}), nil},
+		{"first plan opens the ledger", 1, processCommit(t, 0, process.PlannedCommitID(k1, 1), process.EventDispatchPlanned, process.Planned{Attempt: 1}), nil},
+		{"replayed plan is already applied", 1, processCommit(t, 0, process.PlannedCommitID(k1, 1), process.EventDispatchPlanned, process.Planned{Attempt: 1}), ledger.ErrAlreadyApplied},
+		{"stale seq conflicts", 1, processCommit(t, 0, process.DispatchedCommitID(k1, 1), process.EventDispatched, process.Dispatched{Attempt: 1}), ledger.ErrConflict},
+		{"plan while owed is a state conflict", 1, processCommit(t, 1, process.PlannedCommitID(k1, 2), process.EventDispatchPlanned, process.Planned{Attempt: 2}), ledger.ErrStateConflict},
+		{"a later epoch commits", 2, processCommit(t, 1, process.DispatchedCommitID(k1, 1), process.EventDispatched, process.Dispatched{Attempt: 1}), nil},
 		{"an earlier epoch is fenced", 1, processCommit(t, 2, process.GivenUpCommitID(k1), process.EventGivenUp, process.GivenUp{Reason: "x"}), ledger.ErrFenced},
 		{"given up", 2, processCommit(t, 2, process.GivenUpCommitID(k1), process.EventGivenUp, process.GivenUp{Reason: "budget"}), nil},
 	}
@@ -49,7 +49,7 @@ func TestProcessStore(t *testing.T) {
 		})
 	}
 	state, head, ok, err := store.Load(ctx, k1)
-	if err != nil || !ok || head.Next != 3 || state.Attempts != 2 || !state.GivenUp || state.Key != k1 {
+	if err != nil || !ok || head.Next != 3 || state.Planned != 1 || state.Dispatched != 1 || !state.GivenUp || state.Key != k1 {
 		t.Fatalf("load = %+v head:%+v ok:%v %v", state, head, ok, err)
 	}
 	commits, head, err := store.Read(ctx, k1, 1)
