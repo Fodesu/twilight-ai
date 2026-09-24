@@ -66,6 +66,11 @@ type Decision struct {
 // about the executions it may hold, so the targets cannot be disposed.
 var ErrNoExecutionPort = errors.New("reconcile: executing targets but no execution port to ask; set Abandon to dispose without proof")
 
+// ErrAbandonWithExecutor reports Abandon set beside an Executions port: with
+// an executor to ask, disposal must go through Abort (RUN-EXE-16), and a
+// caller that wants to bypass it has to give up the port explicitly.
+var ErrAbandonWithExecutor = errors.New("reconcile: Abandon set with an execution port; disposal without Abort is only for a scope no executor serves")
+
 // MissingPolicy is what the reconciler does with an Executing effect the
 // executor holds nothing for (RUN-CMT-7, RUN-EXE-15). It is the
 // deployment's recovery decision, stated explicitly: the ports a policy
@@ -113,12 +118,15 @@ type Reconciler struct {
 	// back; one that does not leaves orphaned records to an external
 	// controller.
 	Executions effect.ExecutionPort
-	// Abandon disposes every Executing target without asking an executor. It
-	// is the caller's explicit statement that no executor holds anything for
-	// this Scope (the executions died with the process that ran them, or the
-	// deployment has decided to give them up); it is never inferred from an
-	// unreachable or absent Executions. Abandon takes precedence over
-	// Executions.
+	// Abandon disposes every Executing target without asking an executor and
+	// without closing the keys (RUN-EXE-16). It is the caller's statement
+	// that no executor serves this Scope at all: none holds an attempt, and
+	// none can receive a late Dispatch, because there is no executor. That
+	// holds for a scope that never had an execution port (conformance
+	// tests, an offline repair of a Session whose executor is gone); it is
+	// never inferred from an unreachable Executions, and it is not a way to
+	// skip Abort when an executor exists: Abandon beside a non-nil
+	// Executions is ErrAbandonWithExecutor.
 	Abandon bool
 	// Deliver receives the Outcome of every kept target once it can be read;
 	// the caller settles it through the Loop. Nil means kept targets stay
@@ -228,6 +236,9 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtim
 	}
 	if err := r.checkMissingPolicy(); err != nil {
 		return nil, err
+	}
+	if r.Abandon && r.Executions != nil {
+		return nil, ErrAbandonWithExecutor
 	}
 	out := make([]Decision, 0, len(targets))
 	for _, t := range targets {

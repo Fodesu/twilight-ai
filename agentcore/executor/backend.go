@@ -30,10 +30,14 @@ type ExecutionBackend interface {
 	// Validate checks that this Backend can serve the Assignment; it produces
 	// no external effect (RUN-EXE-5).
 	Validate(ctx context.Context, a effect.Assignment) (*run.ToolFailure, error)
-	// Prepare allocates or derives the Ref of the Assignment without starting
-	// the effect. It is idempotent by AssignmentKey: a repeated Prepare of the
-	// same key returns the same Ref, so a process that dies between Prepare
-	// and the record write recovers the same physical binding.
+	// Prepare derives the Ref of the Assignment without starting the effect
+	// and without allocating anything outside the Backend: it runs before
+	// the acceptance is written, and an Abort may win that write (RUN-EXE-16),
+	// in which case the Ref is simply never used. It is a pure function of
+	// the AssignmentKey (a repeated Prepare returns the same Ref), so a
+	// process that dies between Prepare and the record write recovers the
+	// same binding. Anything that reserves or creates an external resource
+	// belongs in Start, which runs only for an accepted execution.
 	Prepare(ctx context.Context, a effect.Assignment) (ref string, err error)
 	// Start begins the execution Ref names. A definite rejection is an
 	// ordinary error; a request that may have crossed the effect boundary is

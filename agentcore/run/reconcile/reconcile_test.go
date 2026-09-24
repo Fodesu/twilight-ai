@@ -105,15 +105,19 @@ func TestPlanVerdicts(t *testing.T) {
 		t.Fatal("unknown attachment state accepted")
 	}
 	// No executor to ask proves nothing: an error, not a disposal. Only an
-	// explicit Abandon disposes without asking, and it does so even with an
-	// executor present.
+	// explicit Abandon disposes without asking, and only for a scope with no
+	// executor at all: beside a port it is a configuration error, so the
+	// Abort of RUN-EXE-16 cannot be skipped while an executor exists.
 	if _, err := (&Reconciler{}).Plan(context.Background(), "s", executingModel("c1")); !errors.Is(err, ErrNoExecutionPort) {
 		t.Fatalf("plan without executor = %v, want ErrNoExecutionPort", err)
 	}
 	port := &fakePort{state: effect.AttachmentActive}
-	decisions, err := (&Reconciler{Abandon: true, Executions: port}).Plan(context.Background(), "s", executingModel("c1"))
-	if err != nil || len(decisions) != 1 || decisions[0].Verdict != Dispose || decisions[0].Recovery == nil || len(port.asked) != 0 {
-		t.Fatalf("plan with Abandon = %+v %v asked=%d", decisions, err, len(port.asked))
+	if _, err := (&Reconciler{Abandon: true, Executions: port}).Plan(context.Background(), "s", executingModel("c1")); !errors.Is(err, ErrAbandonWithExecutor) || len(port.asked) != 0 || len(port.aborted) != 0 {
+		t.Fatalf("plan with Abandon beside an executor = %v asked=%d aborted=%d, want ErrAbandonWithExecutor and no calls", err, len(port.asked), len(port.aborted))
+	}
+	decisions, err := (&Reconciler{Abandon: true}).Plan(context.Background(), "s", executingModel("c1"))
+	if err != nil || len(decisions) != 1 || decisions[0].Verdict != Dispose || decisions[0].Recovery == nil {
+		t.Fatalf("plan with Abandon = %+v %v", decisions, err)
 	}
 	if _, ok := decisions[0].Recovery.Command.(run.RecoverModelExecution); !ok {
 		t.Fatalf("model disposal = %T", decisions[0].Recovery.Command)
