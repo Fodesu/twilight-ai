@@ -68,11 +68,8 @@ CREATE INDEX IF NOT EXISTS execution_leases_by_owner ON execution_leases (owner,
 CREATE TABLE IF NOT EXISTS processes (
 	key            TEXT PRIMARY KEY,
 	assignment_key TEXT NOT NULL,
-	scope          TEXT NOT NULL,
-	terminal       INTEGER NOT NULL DEFAULT 0,
 	epoch          INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS processes_open_by_scope ON processes (scope, terminal);
 CREATE TABLE IF NOT EXISTS process_commits (
 	key       TEXT NOT NULL,
 	seq       INTEGER NOT NULL,

@@ -9,13 +9,12 @@ import (
 
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/process"
-	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
 // ProcessStore is process.Store over the processes and process_commits
 // tables: one ledger per effect, the same commit rules as the execution
-// ledger, and an epoch column that fences a superseded owner's relay.
+// ledger, and an epoch column that fences a superseded owner's reconciler.
 type ProcessStore struct{ db *sql.DB }
 
 var _ process.Store = (*ProcessStore)(nil)
@@ -130,8 +129,7 @@ func (s *ProcessStore) Append(ctx context.Context, epoch ledger.Epoch, key effec
 		if err != nil {
 			return err
 		}
-		next, err := process.Fold(state, &c)
-		if err != nil {
+		if _, err := process.Fold(state, &c); err != nil {
 			return err
 		}
 		body, err := json.Marshal(c)
@@ -143,42 +141,15 @@ func (s *ProcessStore) Append(ctx context.Context, epoch ledger.Epoch, key effec
 			if err != nil {
 				return err
 			}
-			if _, err := t.ExecContext(ctx, `INSERT INTO processes (key, assignment_key, scope, terminal, epoch) VALUES (?, ?, ?, 0, ?)`, k, string(keyJSON), string(key.Session), uint64(epoch)); err != nil {
+			if _, err := t.ExecContext(ctx, `INSERT INTO processes (key, assignment_key, epoch) VALUES (?, ?, ?)`, k, string(keyJSON), uint64(epoch)); err != nil {
 				return err
 			}
 		}
-		terminal := 0
-		if next.Phase.Terminal() {
-			terminal = 1
-		}
-		if _, err := t.ExecContext(ctx, `UPDATE processes SET terminal = ?, epoch = MAX(epoch, ?) WHERE key = ?`, terminal, uint64(epoch), k); err != nil {
+		if _, err := t.ExecContext(ctx, `UPDATE processes SET epoch = MAX(epoch, ?) WHERE key = ?`, uint64(epoch), k); err != nil {
 			return err
 		}
 		_, err = t.ExecContext(ctx, `INSERT INTO process_commits (key, seq, commit_id, body) VALUES (?, ?, ?, ?)`,
 			k, uint64(c.Seq), string(c.CommitID), string(body))
 		return err
 	})
-}
-
-// Open returns the keys of the Session's processes that are not terminal
-// (process.Store).
-func (s *ProcessStore) Open(ctx context.Context, scope run.Scope) ([]effect.AssignmentKey, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT assignment_key FROM processes WHERE scope = ? AND terminal = 0 ORDER BY key`, string(scope))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []effect.AssignmentKey
-	for rows.Next() {
-		var raw string
-		if err := rows.Scan(&raw); err != nil {
-			return nil, err
-		}
-		var key effect.AssignmentKey
-		if err := json.Unmarshal([]byte(raw), &key); err != nil {
-			return nil, err
-		}
-		out = append(out, key)
-	}
-	return out, rows.Err()
 }

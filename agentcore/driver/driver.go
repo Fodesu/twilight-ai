@@ -15,7 +15,7 @@ import (
 
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/ledger"
-	"github.com/felinics/twilight/agentcore/process/relay"
+	"github.com/felinics/twilight/agentcore/process"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -72,10 +72,13 @@ type Driver struct {
 	// drive leaves such a call waiting, and when a Session opens, the
 	// Driver asks the tool's Responder and commits its answer.
 	Responders map[run.ToolRef]Responder
-	// Relay is the effect process's relay (RUN-EXE-15). When set, Open and
-	// every Drive bring the Session's effect processes up to date from the
-	// ledger; nil leaves the Session without a process ledger.
-	Relay *relay.Relay
+	// Processes is the dispatch ledger the reconciler writes before it
+	// hands an effect to the Executor again (RUN-EXE-15). Nil keeps plain
+	// disposal of missing effects (RUN-CMT-7).
+	Processes process.Store
+	// MaxRedispatches bounds redispatches per effect; zero selects the
+	// reconciler's default.
+	MaxRedispatches int
 
 	mu       sync.Mutex
 	loops    map[turn.PresetRef]*loop.Loop
@@ -205,34 +208,15 @@ func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID)
 			break
 		}
 	}
-	d.syncProcesses(context.WithoutCancel(ctx), w)
 	resp, err := d.Turns.Status(ctx, ref)
 	return DriveResult{TurnResponse: resp}, err
 }
 
-// syncProcesses brings the Session's effect processes up to date with its
-// ledger (RUN-EXE-15). A failure is reported, never fatal to the drive: the
-// next Sync resumes from the same checkpoint.
-func (d *Driver) syncProcesses(ctx context.Context, w writer.Writer) {
-	if d.Relay == nil {
-		return
-	}
-	if _, err := d.Relay.Sync(ctx, w.SessionID(), ledger.Epoch(w.Epoch())); err != nil {
-		d.fail(w.SessionID(), fmt.Errorf("driver: syncing effect processes: %w", err))
-	}
-}
-
-// Redispatch is process.Ports.Redispatch: the Assignment of an Executing
-// effect is rebuilt on the Session's Writer and handed to the Executor
-// again. The Session must be open in this Driver.
-func (d *Driver) Redispatch(ctx context.Context, sid session.SessionID, key effect.AssignmentKey) error {
-	d.mu.Lock()
-	lt := d.recovery[sid]
-	d.mu.Unlock()
-	if lt == nil {
-		return fmt.Errorf("driver: redispatch for %s: session is not open here", sid)
-	}
-	w := lt.w
+// redispatch is the reconciler's Redispatch port: the Assignment of an
+// Executing effect is rebuilt on the Session's Writer and handed to the
+// Executor again (loop.Redispatch, RUN-EXE-15).
+func (d *Driver) redispatch(ctx context.Context, w writer.Writer, key effect.AssignmentKey) error {
+	sid := w.SessionID()
 	surface, err := turn.ReadSurface(ctx, w.Projections(), sid)
 	if err != nil {
 		return err
@@ -337,6 +321,12 @@ func (d *Driver) recoverInterrupted(ctx context.Context, w writer.Writer) (int, 
 		Fail: func(key effect.AssignmentKey, err error) {
 			d.fail(sid, fmt.Errorf("driver: outcome of run %s effect %s cannot be read; the target stays executing until the next takeover: %w", key.RunID, key.Effect, err))
 		}}
+	if d.Processes != nil {
+		// Missing effects are handed to the Executor again within the
+		// budget; the dispatch ledger remembers the attempts (RUN-EXE-15).
+		rec.Attempts, rec.Epoch, rec.MaxRedispatches = d.Processes, ledger.Epoch(w.Epoch()), d.MaxRedispatches
+		rec.Redispatch = func(ctx context.Context, key effect.AssignmentKey) error { return d.redispatch(ctx, lt.w, key) }
+	}
 	return d.Runs.RecoverInterrupted(ctx, w, rec)
 }
 
@@ -352,10 +342,6 @@ func (d *Driver) Open(ctx context.Context, w writer.Writer) (int, error) {
 		d.Stop(w.SessionID())
 		return n, err
 	}
-	// The processes of every effect the previous owner started are brought
-	// up to date before this owner drives: an effect the Executor never
-	// received is dispatched now (RUN-EXE-15).
-	d.syncProcesses(ctx, w)
 	// Waits a previous owner left with a Responder are answered by this one
 	// (DRV-4, SPN-4): the Responder continues from its durable state.
 	d.answerAllWaiting(ctx, w)

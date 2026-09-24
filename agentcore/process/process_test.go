@@ -1,63 +1,46 @@
 package process_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"github.com/felinics/twilight/agentcore/ledger"
 	"github.com/felinics/twilight/agentcore/process"
-	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
 var key = effect.AssignmentKey{Session: "s1", RunID: "r1", Effect: "sha256:e1"}
-
-func requested() process.Requested {
-	return process.Requested{RunID: "r1", StepID: "st1", Effect: "sha256:e1", Kind: process.KindModel}
-}
-
-func commit(t *testing.T, seq process.CommitSeq, steps ...struct {
-	typ     process.EventType
-	payload any
-}) process.Commit {
-	t.Helper()
-	c := process.Commit{Seq: seq, CommitID: process.CommitID("c" + string(rune('0'+seq)))}
-	for _, s := range steps {
-		ev, err := ledger.NewEvent(s.typ, 1, s.payload)
-		if err != nil {
-			t.Fatal(err)
-		}
-		c.Events = append(c.Events, ev)
-	}
-	return c
-}
 
 type step = struct {
 	typ     process.EventType
 	payload any
 }
 
+func commit(t *testing.T, seq process.CommitSeq, s step) process.Commit {
+	t.Helper()
+	ev, err := ledger.NewEvent(s.typ, 1, s.payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return process.Commit{Seq: seq, CommitID: process.CommitID("c" + string(rune('0'+seq))), Events: []process.Event{ev}}
+}
+
 func TestFold(t *testing.T) {
 	cases := []struct {
 		name    string
 		steps   []step
-		want    process.Phase
+		want    process.State
 		wantErr error
 	}{
-		{"request then dispatched then delivered then acknowledged",
-			[]step{{process.EventDispatchRequested, requested()}, {process.EventDispatched, nil}, {process.EventOutcomeDelivered, nil}, {process.EventAcknowledged, nil}},
-			process.PhaseAcknowledged, nil},
-		{"settlement before the executor confirmed the dispatch",
-			[]step{{process.EventDispatchRequested, requested()}, {process.EventOutcomeDelivered, nil}}, process.PhaseDelivered, nil},
-		{"failed attempts count up then give up",
-			[]step{{process.EventDispatchRequested, requested()}, {process.EventDispatchFailed, process.Failed{Attempt: 1, Reason: "busy"}},
-				{process.EventDispatchFailed, process.Failed{Attempt: 2, Reason: "busy"}}, {process.EventGivenUp, process.GivenUp{Reason: "twice"}}},
-			process.PhaseGivenUp, nil},
-		{"first event must be the request", []step{{process.EventDispatched, nil}}, "", ledger.ErrStateConflict},
-		{"requested twice", []step{{process.EventDispatchRequested, requested()}, {process.EventDispatchRequested, requested()}}, "", ledger.ErrStateConflict},
-		{"attempt out of order", []step{{process.EventDispatchRequested, requested()}, {process.EventDispatchFailed, process.Failed{Attempt: 2}}}, "", ledger.ErrStateConflict},
-		{"acknowledged before delivered", []step{{process.EventDispatchRequested, requested()}, {process.EventDispatched, nil}, {process.EventAcknowledged, nil}}, "", ledger.ErrStateConflict},
-		{"nothing after terminal", []step{{process.EventDispatchRequested, requested()}, {process.EventGivenUp, process.GivenUp{}}, {process.EventDispatched, nil}}, "", ledger.ErrStateConflict},
+		{"attempts count up", []step{{process.EventDispatchAttempted, process.Attempted{Attempt: 1}}, {process.EventDispatchAttempted, process.Attempted{Attempt: 2}}},
+			process.State{Attempts: 2}, nil},
+		{"given up after attempts", []step{{process.EventDispatchAttempted, process.Attempted{Attempt: 1}}, {process.EventGivenUp, process.GivenUp{Reason: "budget"}}},
+			process.State{Attempts: 1, GivenUp: true, Reason: "budget"}, nil},
+		{"given up without an attempt", []step{{process.EventGivenUp, process.GivenUp{Reason: "rejected"}}}, process.State{GivenUp: true, Reason: "rejected"}, nil},
+		{"attempt out of order", []step{{process.EventDispatchAttempted, process.Attempted{Attempt: 2}}}, process.State{}, ledger.ErrStateConflict},
+		{"nothing after given up", []step{{process.EventGivenUp, process.GivenUp{}}, {process.EventDispatchAttempted, process.Attempted{Attempt: 1}}}, process.State{}, ledger.ErrStateConflict},
+		{"unknown event", []step{{"other", nil}}, process.State{}, ledger.ErrStateConflict},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -72,35 +55,90 @@ func TestFold(t *testing.T) {
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("fold = %v, want %v", err, tc.wantErr)
 			}
-			if err == nil && state.Phase != tc.want {
-				t.Fatalf("phase = %s, want %s", state.Phase, tc.want)
-			}
-			if err == nil && state.Requested != requested() {
-				t.Fatalf("requested = %+v", state.Requested)
+			if err == nil && state != tc.want {
+				t.Fatalf("state = %+v, want %+v", state, tc.want)
 			}
 		})
 	}
 }
 
-func TestCommitIDs(t *testing.T) {
-	ids := map[string]process.CommitID{
-		"request": process.RequestCommitID(key), "dispatched": process.DispatchedCommitID(key), "delivered": process.DeliveredCommitID(key),
-		"acknowledged": process.AcknowledgedCommitID(key), "given up": process.GivenUpCommitID(key),
-		"failed 1": process.FailedCommitID(key, 1), "failed 2": process.FailedCommitID(key, 2),
-	}
-	seen := map[process.CommitID]string{}
-	for name, id := range ids {
-		if id == "" {
-			t.Fatalf("%s: empty id", name)
+// memStore is an in-memory process.Store for the helper tests.
+type memStore struct {
+	commits map[effect.AssignmentKey][]process.Commit
+	epoch   map[effect.AssignmentKey]process.Epoch
+}
+
+func newMemStore() *memStore {
+	return &memStore{commits: map[effect.AssignmentKey][]process.Commit{}, epoch: map[effect.AssignmentKey]process.Epoch{}}
+}
+
+func (m *memStore) Load(_ context.Context, k effect.AssignmentKey) (process.State, process.Head, bool, error) {
+	cs := m.commits[k]
+	state := process.State{Key: k}
+	for i := range cs {
+		var err error
+		if state, err = process.Fold(state, &cs[i]); err != nil {
+			return process.State{}, process.Head{}, false, err
 		}
-		if other, dup := seen[id]; dup {
-			t.Fatalf("%s and %s share %s", name, other, id)
-		}
-		seen[id] = name
 	}
-	other := key
-	other.Effect = run.EffectID("sha256:e2")
-	if process.RequestCommitID(other) == process.RequestCommitID(key) {
-		t.Fatal("request ids of two effects agree")
+	return state, process.Head{Next: process.CommitSeq(len(cs))}, len(cs) > 0, nil
+}
+
+func (m *memStore) Read(_ context.Context, k effect.AssignmentKey, from process.CommitSeq) ([]process.Commit, process.Head, error) {
+	cs := m.commits[k]
+	if int(from) > len(cs) {
+		from = process.CommitSeq(len(cs))
+	}
+	return cs[from:], process.Head{Next: process.CommitSeq(len(cs))}, nil
+}
+
+func (m *memStore) Append(ctx context.Context, epoch process.Epoch, k effect.AssignmentKey, c process.Commit) error {
+	for _, have := range m.commits[k] {
+		if have.CommitID == c.CommitID {
+			return ledger.ErrAlreadyApplied
+		}
+	}
+	if epoch < m.epoch[k] {
+		return ledger.ErrFenced
+	}
+	state, head, _, err := m.Load(ctx, k)
+	if err != nil {
+		return err
+	}
+	if c.Seq != head.Next {
+		return ledger.ErrConflict
+	}
+	if _, err := process.Fold(state, &c); err != nil {
+		return err
+	}
+	m.epoch[k] = epoch
+	m.commits[k] = append(m.commits[k], c)
+	return nil
+}
+
+func TestAttemptAndGiveUp(t *testing.T) {
+	ctx := context.Background()
+	s := newMemStore()
+	for want := 1; want <= 3; want++ {
+		if n, err := process.Attempt(ctx, s, 1, key, 1); err != nil || n != want {
+			t.Fatalf("attempt %d = %d %v", want, n, err)
+		}
+	}
+	if err := process.GiveUp(ctx, s, 1, key, "budget", 1); err != nil {
+		t.Fatal(err)
+	}
+	// Giving up twice is a no-op; a stale epoch is fenced.
+	if err := process.GiveUp(ctx, s, 1, key, "again", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := process.Attempt(ctx, s, 0, effect.AssignmentKey{Session: "s1", RunID: "r1", Effect: "sha256:e2"}, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := process.Attempt(ctx, s, 0, key, 1); !errors.Is(err, ledger.ErrFenced) && !errors.Is(err, ledger.ErrStateConflict) {
+		t.Fatalf("attempt under a stale epoch after given up = %v", err)
+	}
+	state, head, ok, err := s.Load(ctx, key)
+	if err != nil || !ok || head.Next != 4 || state.Attempts != 3 || !state.GivenUp || state.Reason != "budget" {
+		t.Fatalf("state = %+v head %+v ok:%v %v", state, head, ok, err)
 	}
 }

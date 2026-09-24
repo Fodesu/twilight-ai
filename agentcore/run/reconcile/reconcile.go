@@ -1,12 +1,16 @@
 // Package reconcile compares what the Run machine believes about an effect
 // with what the execution store actually holds, and turns the difference into
-// Run commands (RUN-CMT-7). It is the one place that reads both sides: the
-// machine says which effects are outstanding (an Executing model step or tool
-// call and the EffectID it requested), the executor says whether it still
-// holds an attempt for that effect, and the Reconciler decides per effect
-// whether the Run keeps waiting for the attempt's Outcome or disposes the
-// effect. Neither the Loop nor the store adapter interprets executor
-// observations, and the Run never learns which attempt the executor made.
+// Run commands or a second Dispatch (RUN-CMT-7, RUN-EXE-15). It is the
+// process manager between the two authorities and the one place that reads
+// three sources: the machine says which effects are outstanding (an
+// Executing model step or tool call and the EffectID it requested), the
+// executor says whether it still holds an attempt for that effect, and the
+// dispatch ledger (agentcore/process) says how many times this effect was
+// handed to the executor again. Per effect the Reconciler decides whether
+// the Run keeps waiting for the attempt's Outcome, hands the effect to the
+// executor again, or disposes it. Neither the Loop nor the store adapter
+// interprets executor observations, and the Run never learns which attempt
+// the executor made.
 package reconcile
 
 import (
@@ -15,6 +19,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/felinics/twilight/agentcore/ledger"
+	"github.com/felinics/twilight/agentcore/process"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/plan"
@@ -36,10 +42,14 @@ const (
 	// (effect.Recoverer) to take the record back once; only an explicit
 	// disposal ends the wait otherwise.
 	Defer Verdict = "defer"
-	// Dispose: the executor holds no attempt for the effect, so the Run
-	// recovers the target itself: an Executing model step is withdrawn to
-	// Open, an Executing tool call settles as Unknown.
+	// Dispose: the executor holds no attempt for the effect and none will be
+	// made, so the Run recovers the target itself: an Executing model step
+	// is withdrawn to Open, an Executing tool call settles as Unknown.
 	Dispose Verdict = "dispose"
+	// Redispatch: the executor held no attempt for the effect and was handed
+	// the Assignment again within the budget (RUN-EXE-15). The target stays
+	// Executing and its Outcome is awaited like a kept one.
+	Redispatch Verdict = "redispatch"
 )
 
 // Decision is one target's verdict and, for Dispose, the recovery command.
@@ -92,7 +102,26 @@ type Reconciler struct {
 	ReadRetries int
 	// Lifetime bounds the background Outcome reads of kept targets.
 	Lifetime context.Context
+
+	// Redispatch hands the Assignment of an Executing effect the executor
+	// holds nothing for to the executor again (loop.Redispatch on the
+	// owner's Writer). Nil keeps RUN-CMT-7's plain disposal of missing
+	// effects. With it, Attempts is required.
+	Redispatch func(ctx context.Context, key effect.AssignmentKey) error
+	// Attempts is the dispatch ledger: how many times each effect was
+	// redispatched and whether the reconciler gave up (RUN-EXE-15).
+	Attempts process.Store
+	// Epoch fences the dispatch ledger: the Session owner's.
+	Epoch ledger.Epoch
+	// MaxRedispatches bounds redispatches per effect; zero selects
+	// DefaultMaxRedispatches.
+	MaxRedispatches int
+	// Now stamps the dispatch ledger; nil selects time.Now.
+	Now func() time.Time
 }
+
+// DefaultMaxRedispatches is the redispatch budget of one effect.
+const DefaultMaxRedispatches = 3
 
 // DefaultReadRetries is about a minute of failed reads at the 1s backoff cap.
 const DefaultReadRetries = 60
@@ -184,6 +213,11 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtim
 			if d.Verdict == Defer {
 				r.recoverOrphan(ctx, assignment.Key())
 			}
+			if d.Verdict == Dispose {
+				if d.Verdict, err = r.missing(ctx, assignment.Key()); err != nil {
+					return nil, err
+				}
+			}
 			if d.Verdict != Dispose {
 				r.awaitOutcome(assignment.Key())
 			}
@@ -195,6 +229,62 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtim
 		out = append(out, d)
 	}
 	return out, nil
+}
+
+// missing decides an effect the executor holds nothing for: within the
+// redispatch budget it is handed over again and stays Executing, otherwise
+// it is disposed (RUN-EXE-15). Each redispatch is written to the dispatch
+// ledger before it is made, so a crash in between costs one attempt and
+// never an unrecorded Dispatch. A refusal the executor may lift later
+// (ErrDispatchRetryable) or a lost response (ErrDispatchUnknown) leaves the
+// target Executing for the next reconciliation; any other rejection ends
+// the attempts.
+func (r *Reconciler) missing(ctx context.Context, key effect.AssignmentKey) (Verdict, error) {
+	if r.Redispatch == nil {
+		return Dispose, nil
+	}
+	if r.Attempts == nil {
+		return Dispose, errors.New("reconcile: Redispatch requires the dispatch ledger (Attempts)")
+	}
+	state, _, _, err := r.Attempts.Load(ctx, key)
+	if err != nil {
+		return Dispose, err
+	}
+	if state.GivenUp {
+		return Dispose, nil
+	}
+	budget := r.MaxRedispatches
+	if budget <= 0 {
+		budget = DefaultMaxRedispatches
+	}
+	if state.Attempts >= budget {
+		if err := process.GiveUp(ctx, r.Attempts, r.Epoch, key, fmt.Sprintf("redispatch budget of %d exhausted", budget), r.now()); err != nil {
+			return Dispose, err
+		}
+		return Dispose, nil
+	}
+	if _, err := process.Attempt(ctx, r.Attempts, r.Epoch, key, r.now()); err != nil {
+		return Dispose, err
+	}
+	err = r.Redispatch(ctx, key)
+	switch {
+	case err == nil:
+		return Redispatch, nil
+	case errors.Is(err, effect.ErrDispatchRetryable), errors.Is(err, effect.ErrDispatchUnknown):
+		return Defer, nil
+	default:
+		if gerr := process.GiveUp(ctx, r.Attempts, r.Epoch, key, err.Error(), r.now()); gerr != nil {
+			return Dispose, gerr
+		}
+		return Dispose, nil
+	}
+}
+
+func (r *Reconciler) now() int64 {
+	if r.Now != nil {
+		return r.Now().UnixMilli()
+	}
+	return time.Now().UnixMilli()
 }
 
 // awaitOutcome reads the Outcome of a kept effect in the background and

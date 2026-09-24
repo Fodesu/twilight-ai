@@ -40,6 +40,20 @@ func newHost(t testing.TB, cfg app.Config, models map[run.ModelRef]loop.ModelInv
 	return a
 }
 
+// newHostWithoutDispatchLedger is newHost with no dispatch ledger: a missing
+// effect is disposed at takeover instead of redispatched (RUN-CMT-7).
+func newHostWithoutDispatchLedger(t testing.TB, cfg app.Config, models map[run.ModelRef]loop.ModelInvoker) *app.Application {
+	t.Helper()
+	cfg = durablePorts(t, cfg)
+	cfg.Processes = nil
+	cfg.Executor = app.ExecutorConfig{Models: models}
+	a, err := app.Build(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
 // durablePorts fills every store the Config leaves nil with a fresh durable
 // one under t.TempDir(): the JSONL Session ledger, the file cas store for
 // frozen bodies, and one SQLite file for the binding index, the retention
@@ -59,7 +73,7 @@ func durablePorts(t testing.TB, cfg app.Config) app.Config {
 		db := sqlitetest.Open(t)
 		cfg.Executions = db.Executions()
 		if cfg.Processes == nil {
-			cfg.Processes, cfg.Checkpoints = db.Processes(), db.Checkpoints()
+			cfg.Processes = db.Processes()
 		}
 	}
 	return cfg

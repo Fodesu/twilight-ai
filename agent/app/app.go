@@ -18,7 +18,6 @@ import (
 	"github.com/felinics/twilight/agent/prompt"
 	"github.com/felinics/twilight/agent/spawn"
 	"github.com/felinics/twilight/agentcore/artifact"
-	"github.com/felinics/twilight/agentcore/checkpoint"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/executor"
@@ -92,11 +91,10 @@ type Config struct {
 	// did not survive a restart would let the Owner dispose an execution
 	// that is still running.
 	Executions executionstore.Store
-	// Processes and Checkpoints give every effect a process ledger and the
-	// relay its cursor (RUN-EXE-15); both or neither (owner.Ports).
-	Processes   process.Store
-	Checkpoints checkpoint.Store
-	Presets     []Preset
+	// Processes is the dispatch ledger the takeover reconciler writes before
+	// redispatching an effect (RUN-EXE-15, owner.Ports.Processes).
+	Processes process.Store
+	Presets   []Preset
 	// Registry is the preset registry; nil selects an in-memory one.
 	Registry preset.Registry
 	// Decisions resolve each preset's PromptBuilderRef; nil selects this
@@ -223,8 +221,8 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	}
 	a, err := owner.New(owner.Ports{
 		Store: c.Store, Content: content, Artifacts: c.Artifacts, Presets: c.Registry, Decisions: decisions,
-		Processes: c.Processes, Checkpoints: c.Checkpoints,
-		Executor: port, TargetResolver: c.TargetResolver, Observers: observers, Modules: c.Modules,
+		Processes: c.Processes,
+		Executor:  port, TargetResolver: c.TargetResolver, Observers: observers, Modules: c.Modules,
 		Clock: c.Clock, Cache: c.Cache, CacheEvery: c.CacheEvery, Ownership: c.Ownership, Fail: app.fail,
 	})
 	if err != nil {

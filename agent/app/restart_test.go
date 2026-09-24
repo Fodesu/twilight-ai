@@ -68,10 +68,10 @@ func crashMidModel(t *testing.T, root string, sid session.SessionID) (turn.Prese
 	return presetRef, preset, sent, gate, sendErr
 }
 
-// Process 2 cannot reattach (a colocated executor died with process 1), so the
-// takeover withdraws the Executing step and Resume plans again from the state
-// at recovery time: a new request, not a replay of the frozen one (RUN-CMT-7,
-// TRN-DUR-1). The frozen body on disk is a transfer copy, not a recovery input.
+// Process 2 cannot reattach (a colocated executor died with process 1) and
+// runs without a dispatch ledger, so the takeover withdraws the Executing
+// step and Resume plans again from the state at recovery time: a new
+// request, not a replay of the frozen one (RUN-CMT-7, TRN-DUR-1).
 func TestRestartWithoutReattachReplans(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -87,7 +87,7 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 		t.Fatal(err)
 	}
 	replan := &scriptedRequests{}
-	p2 := newHost(t, app.Config{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": replan})
+	p2 := newHostWithoutDispatchLedger(t, app.Config{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": replan})
 	if _, err := p2.RegisterPreset("a1", preset); err != nil {
 		t.Fatal(err)
 	}
@@ -133,6 +133,75 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 	}
 
 	// The dead process's worker returns and is fenced.
+	close(gate.release)
+	if err := <-sendErr; err == nil {
+		t.Fatal("the superseded process's Send settled without an ownership error")
+	}
+}
+
+// With a dispatch ledger, an effect the executor holds nothing for is not
+// disposed: the takeover hands the frozen Assignment to the executor again
+// within the budget (RUN-EXE-15). The Run keeps its Executing step, the
+// redispatched request is the one that was frozen, and the Turn completes
+// from its Outcome without a second plan.
+func TestRestartRedispatchesMissingEffect(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	const sid session.SessionID = "s-frozen-redispatch"
+	presetRef, preset, sent, gate, sendErr := crashMidModel(t, root, sid)
+
+	store2, err := filestore.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content2, err := filestore.NewContentStore(root, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again := &scriptedRequests{}
+	p2 := newHost(t, app.Config{Store: store2, Content: content2, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": again})
+	if _, err := p2.RegisterPreset("a1", preset); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := p2.OpenSession(ctx, sid, app.SessionOptions{Preset: presetRef})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s2.Recovered != 0 {
+		t.Fatalf("recovered = %d, want 0 (the missing effect was redispatched, not disposed)", s2.Recovered)
+	}
+	// The redispatched attempt runs on this process's Worker; its Outcome
+	// settles the step in the background, like a reattached one.
+	tsurf, err := p2.TurnSurface(ctx, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, ok := tsurf.Active()
+	if !ok {
+		t.Fatal("takeover lost the active turn")
+	}
+	deadline := time.After(5 * time.Second)
+	for {
+		tsurf, err = p2.TurnSurface(ctx, sid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tsurf.Turns[active.TurnID].Status == turn.TurnCompleted {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("turn after redispatch = %s, want completed", tsurf.Turns[active.TurnID].Status)
+		case <-time.After(time.Millisecond):
+		}
+	}
+	seen := again.requests()
+	if len(seen) != 1 || len(seen[0].Messages) != len(sent.Messages) || seen[0].Model != sent.Model {
+		t.Fatalf("redispatched model saw %d requests, want the one frozen request", len(seen))
+	}
+	if final, err := runState(p2, sid, active.ActiveRun); err != nil || final.State.ModelSteps != 1 {
+		t.Fatalf("model steps after redispatch = %d %v, want the one step that was redispatched", final.State.ModelSteps, err)
+	}
 	close(gate.release)
 	if err := <-sendErr; err == nil {
 		t.Fatal("the superseded process's Send settled without an ownership error")
