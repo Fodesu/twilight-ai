@@ -240,6 +240,12 @@ func (e *reattachingExecutor) Attach(_ context.Context, key loop.AssignmentKey) 
 	return loop.Attachment{State: loop.AttachmentActive, Execution: loop.ExecutionRunning, BackendAttached: true}, nil
 }
 
+// Abort finds the attempt this executor still holds, so the takeover keeps
+// it instead of disposing.
+func (e *reattachingExecutor) Abort(ctx context.Context, key loop.AssignmentKey) (loop.Attachment, error) {
+	return e.Attach(ctx, key)
+}
+
 func (e *reattachingExecutor) complete(key loop.AssignmentKey, out loop.Outcome) {
 	e.mu.Lock()
 	ch := e.outcomes[key]

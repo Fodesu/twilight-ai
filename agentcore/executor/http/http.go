@@ -75,6 +75,16 @@ func (c *Client) Attach(ctx context.Context, key effect.AssignmentKey) (effect.A
 	return response, nil
 }
 
+// Abort closes the key before any acceptance (RUN-EXE-16); the answer is
+// the key's attachment afterwards.
+func (c *Client) Abort(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
+	var response effect.Attachment
+	if err := c.post(ctx, "/abort", keyRequest{Key: key}, &response); err != nil {
+		return effect.Attachment{}, err
+	}
+	return response, nil
+}
+
 func (c *Client) GetStatus(ctx context.Context, key effect.AssignmentKey) (effect.ExecutionStatus, error) {
 	var response struct {
 		Status effect.ExecutionStatus `json:"status"`
@@ -260,6 +270,7 @@ func (s *Server) Handler() stdhttp.Handler {
 	mux.HandleFunc("POST /validate", s.validate)
 	mux.HandleFunc("POST /dispatch", s.dispatch)
 	mux.HandleFunc("POST /attach", s.attach)
+	mux.HandleFunc("POST /abort", s.abort)
 	mux.HandleFunc("POST /status", s.status)
 	mux.HandleFunc("POST /outcome", s.outcome)
 	mux.HandleFunc("POST /cancel", s.cancel)
@@ -343,12 +354,13 @@ func (s *Server) dispatch(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	// when the backend's dispatch acknowledgement is uncertain. Every other
 	// Dispatch error is a Known answer the client must be able to tell apart
 	// from a lost response (RUN-EXE-3): a definite rejection of the
-	// Assignment is 400 (a conflicting replay 409), a refusal the Worker
-	// itself may lift later is 503. 5xx other than 503 never come from here.
+	// Assignment is 400 (a conflicting replay or an aborted key 409), a
+	// refusal the Worker itself may lift later is 503. 5xx other than 503
+	// never come from here.
 	if err := s.Worker.Dispatch(r.Context(), req.Assignment); err != nil && !errors.Is(err, effect.ErrDispatchUnknown) {
 		status := stdhttp.StatusBadRequest
 		switch {
-		case errors.Is(err, store.ErrAssignmentConflict):
+		case errors.Is(err, store.ErrAssignmentConflict), errors.Is(err, effect.ErrExecutionAborted):
 			status = stdhttp.StatusConflict
 		case errors.Is(err, effect.ErrDispatchRetryable):
 			status = stdhttp.StatusServiceUnavailable
@@ -365,6 +377,19 @@ func (s *Server) attach(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		return
 	}
 	attachment, err := s.Worker.Attach(r.Context(), req.Key)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, attachment)
+}
+
+func (s *Server) abort(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	var req keyRequest
+	if !s.readJSON(w, r, &req) {
+		return
+	}
+	attachment, err := s.Worker.Abort(r.Context(), req.Key)
 	if err != nil {
 		writeError(w, err)
 		return

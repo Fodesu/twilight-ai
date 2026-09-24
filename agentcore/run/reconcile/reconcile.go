@@ -43,8 +43,9 @@ const (
 	// disposal ends the wait otherwise.
 	Defer Verdict = "defer"
 	// Dispose: the executor holds no attempt for the effect and none will be
-	// made, so the Run recovers the target itself: an Executing model step
-	// is withdrawn to Open, an Executing tool call settles as Unknown.
+	// made -- the key is closed with Abort first (RUN-EXE-16) -- so the Run
+	// recovers the target itself: an Executing model step is withdrawn to
+	// Open, an Executing tool call settles as Unknown.
 	Dispose Verdict = "dispose"
 	// Redispatch: the executor held no attempt for the effect and was handed
 	// the Assignment again within the budget (RUN-EXE-15). The target stays
@@ -208,7 +209,7 @@ func verdictOf(state effect.AttachmentState) (Verdict, error) {
 		return Keep, nil
 	case effect.AttachmentOrphaned:
 		return Defer, nil
-	case effect.AttachmentMissing:
+	case effect.AttachmentMissing, effect.AttachmentAborted:
 		return Dispose, nil
 	default:
 		return Dispose, fmt.Errorf("reconcile: unknown attachment state %q", state)
@@ -253,9 +254,26 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtim
 			if d.Verdict == Defer {
 				r.recoverOrphan(ctx, assignment.Key())
 			}
-			if d.Verdict == Dispose {
+			if d.Verdict == Dispose && attachment.State == effect.AttachmentMissing {
 				if d.Verdict, err = r.missing(ctx, assignment.Key()); err != nil {
 					return nil, err
+				}
+			}
+			if d.Verdict == Dispose {
+				// Missing is what the executor holds now, not what it will
+				// accept: close the key before the Run disposes the effect,
+				// so a Dispatch that arrives later starts nothing
+				// (RUN-EXE-16). An acceptance that got there first is kept.
+				closed, err := r.Executions.Abort(ctx, assignment.Key())
+				if err != nil {
+					return nil, err
+				}
+				d.Observed = closed.State
+				if d.Verdict, err = verdictOf(closed.State); err != nil {
+					return nil, err
+				}
+				if d.Verdict == Defer {
+					r.recoverOrphan(ctx, assignment.Key())
 				}
 			}
 			if d.Verdict != Dispose {

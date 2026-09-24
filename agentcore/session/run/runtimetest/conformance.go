@@ -722,6 +722,12 @@ func (p *livePort) Attach(_ context.Context, key effect.AssignmentKey) (effect.A
 	return effect.Attachment{State: effect.AttachmentMissing, Execution: effect.ExecutionNotFound}, nil
 }
 
+func (p *livePort) Abort(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
+	if p.live[key.Effect] {
+		return p.Attach(ctx, key)
+	}
+	return effect.Attachment{State: effect.AttachmentAborted, Execution: effect.ExecutionAborted}, nil
+}
 func (p *livePort) Validate(context.Context, effect.Assignment) (*run.ToolFailure, error) {
 	return nil, nil
 }

@@ -60,6 +60,7 @@ const (
 	ExecutionFailed          = effect.ExecutionFailed
 	ExecutionCancelled       = effect.ExecutionCancelled
 	ExecutionUnknown         = effect.ExecutionUnknown
+	ExecutionAborted         = effect.ExecutionAborted
 
 	FailureExecutor           = effect.FailureExecutor
 	FailureFrozenValueMissing = effect.FailureFrozenValueMissing
@@ -70,6 +71,7 @@ const (
 	AttachmentActive   = effect.AttachmentActive
 	AttachmentOrphaned = effect.AttachmentOrphaned
 	AttachmentTerminal = effect.AttachmentTerminal
+	AttachmentAborted  = effect.AttachmentAborted
 )
 
 var (

@@ -50,6 +50,10 @@ func (e *recordingExecutor) Attach(context.Context, loop.AssignmentKey) (loop.At
 	return loop.Attachment{State: loop.AttachmentMissing, Execution: loop.ExecutionNotFound}, nil
 }
 
+func (e *recordingExecutor) Abort(context.Context, loop.AssignmentKey) (loop.Attachment, error) {
+	return loop.Attachment{State: loop.AttachmentAborted, Execution: loop.ExecutionAborted}, nil
+}
+
 func (e *recordingExecutor) GetStatus(context.Context, loop.AssignmentKey) (loop.ExecutionStatus, error) {
 	return loop.ExecutionRunning, nil
 }

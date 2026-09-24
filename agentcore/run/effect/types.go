@@ -321,12 +321,16 @@ const (
 	ExecutionFailed          ExecutionStatus = "failed"
 	ExecutionCancelled       ExecutionStatus = "cancelled"
 	ExecutionUnknown         ExecutionStatus = "unknown"
+	// ExecutionAborted: the key was closed before anything was accepted for
+	// it (Abort); no Assignment will ever be accepted under it.
+	ExecutionAborted ExecutionStatus = "aborted"
 )
 
-// Terminal reports whether the provider execution has a final outcome.
+// Terminal reports whether the provider execution has a final outcome, or
+// never will have one (aborted).
 func (s ExecutionStatus) Terminal() bool {
 	switch s {
-	case ExecutionCompleted, ExecutionFailed, ExecutionCancelled, ExecutionUnknown:
+	case ExecutionCompleted, ExecutionFailed, ExecutionCancelled, ExecutionUnknown, ExecutionAborted:
 		return true
 	default:
 		return false
@@ -346,6 +350,11 @@ var (
 	// Owner acknowledged the settlement (RUN-EXE-13). Definitive, like
 	// ErrOutcomeUnavailable, which it wraps.
 	ErrOutcomeCollected = fmt.Errorf("agent: effect: outcome collected after acknowledgement: %w", ErrOutcomeUnavailable)
+	// ErrExecutionAborted means the key was closed by Abort before any
+	// Assignment was accepted for it (RUN-EXE-16): a Dispatch under it is
+	// a definite rejection and nothing will ever be read for it, so it is
+	// an ErrOutcomeUnavailable as well.
+	ErrExecutionAborted = fmt.Errorf("agent: effect: execution aborted before acceptance: %w", ErrOutcomeUnavailable)
 	// ErrDispatchUnknown means the dispatch response was lost after the
 	// request may have crossed the effect boundary. It must not trigger a
 	// compensating re-dispatch or a RecoverModelExecution automatically.
@@ -366,12 +375,15 @@ const (
 	AttachmentActive   AttachmentState = "active"
 	AttachmentOrphaned AttachmentState = "orphaned"
 	AttachmentTerminal AttachmentState = "terminal"
+	// AttachmentAborted: the key holds a tombstone (Abort) and no execution
+	// was or will be accepted for it.
+	AttachmentAborted AttachmentState = "aborted"
 )
 
 // Valid reports whether the executor returned a defined attachment state.
 func (s AttachmentState) Valid() bool {
 	switch s {
-	case AttachmentMissing, AttachmentActive, AttachmentOrphaned, AttachmentTerminal:
+	case AttachmentMissing, AttachmentActive, AttachmentOrphaned, AttachmentTerminal, AttachmentAborted:
 		return true
 	default:
 		return false
@@ -384,8 +396,10 @@ func (s AttachmentState) Valid() bool {
 func (s AttachmentState) Terminal() bool { return s == AttachmentTerminal }
 
 // Attachment is the result of an attach/inspection request. Missing is a
-// proof: the executor knows that no execution exists for the key and none
-// will start, so the Run may dispose the effect. Orphaned is the absence of
+// proof that no execution exists for the key now; it does not by itself
+// stop one from being accepted later, so a controller that acts on it
+// first closes the key with Abort and disposes on aborted (RUN-EXE-16).
+// Orphaned is the absence of
 // that proof: a record exists without a live owner, or the executor cannot
 // tell whether an execution survived (a record store that may have lost the
 // record, a backend that cannot confirm). The control plane must decide
@@ -432,6 +446,14 @@ type ExecutionPort interface {
 	Validate(context.Context, Assignment) (*run.ToolFailure, error)
 	Dispatch(context.Context, Assignment) error
 	Attach(context.Context, AssignmentKey) (Attachment, error)
+	// Abort closes key when nothing has been accepted for it, so that no
+	// Dispatch of the key, however late, is accepted afterwards
+	// (RUN-EXE-16). Abort and the acceptance a Dispatch writes contend for
+	// the first commit of the key's ledger, and exactly one of them wins.
+	// The result is the key's attachment after the attempt: aborted when
+	// the tombstone stands (written now or before), otherwise the live
+	// state an acceptance holds, which the caller must not dispose.
+	Abort(context.Context, AssignmentKey) (Attachment, error)
 	GetStatus(context.Context, AssignmentKey) (ExecutionStatus, error)
 	// A returned error describes the read operation. The execution remains
 	// unsettled until a successful read returns its explicit Outcome.

@@ -60,6 +60,18 @@ func (e *recordingExecutor) Attach(_ context.Context, key AssignmentKey) (Attach
 	return Attachment{State: AttachmentMissing, Execution: ExecutionNotFound}, nil
 }
 
+// Abort closes a key nothing was dispatched for; a dispatched key keeps its
+// attachment, as the real store does.
+func (e *recordingExecutor) Abort(ctx context.Context, key AssignmentKey) (Attachment, error) {
+	e.mu.Lock()
+	_, dispatched := e.outcomes[key]
+	e.mu.Unlock()
+	if dispatched && e.attachReply {
+		return e.Attach(ctx, key)
+	}
+	return Attachment{State: AttachmentAborted, Execution: ExecutionAborted}, nil
+}
+
 func (e *recordingExecutor) GetStatus(context.Context, AssignmentKey) (ExecutionStatus, error) {
 	return ExecutionRunning, nil
 }

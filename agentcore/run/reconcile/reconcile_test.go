@@ -20,8 +20,12 @@ type fakePort struct {
 	mu       sync.Mutex
 	state    effect.AttachmentState
 	asked    []effect.AssignmentKey
+	aborted  []effect.AssignmentKey
 	outcome  func(context.Context, effect.AssignmentKey) (effect.Outcome, error)
 	attachEr error
+	// accepted, when set, is what Abort finds instead of a missing key: an
+	// acceptance that reached the ledger first.
+	accepted effect.AttachmentState
 }
 
 func (p *fakePort) Validate(context.Context, effect.Assignment) (*run.ToolFailure, error) {
@@ -34,6 +38,18 @@ func (p *fakePort) Attach(_ context.Context, key effect.AssignmentKey) (effect.A
 	p.mu.Unlock()
 	if p.attachEr != nil {
 		return effect.Attachment{}, p.attachEr
+	}
+	return effect.Attachment{State: p.state}, nil
+}
+func (p *fakePort) Abort(_ context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.aborted = append(p.aborted, key)
+	if p.accepted != "" {
+		return effect.Attachment{State: p.accepted}, nil
+	}
+	if p.state == effect.AttachmentMissing || p.state == effect.AttachmentAborted {
+		return effect.Attachment{State: effect.AttachmentAborted, Execution: effect.ExecutionAborted}, nil
 	}
 	return effect.Attachment{State: p.state}, nil
 }
@@ -55,18 +71,21 @@ func executingModel(eff run.EffectID) *runtime.Snapshot {
 	}}
 }
 
-// Each executor observation maps to exactly one verdict; only missing
-// produces a recovery command, and only an unknown state is an error.
+// Each executor observation maps to exactly one verdict; only missing and
+// aborted produce a recovery command (missing is closed to aborted first,
+// RUN-EXE-16), and only an unknown state is an error.
 func TestPlanVerdicts(t *testing.T) {
 	for _, tc := range []struct {
 		state    effect.AttachmentState
 		want     Verdict
+		observed effect.AttachmentState
 		disposes bool
 	}{
-		{effect.AttachmentActive, Keep, false},
-		{effect.AttachmentTerminal, Keep, false},
-		{effect.AttachmentOrphaned, Defer, false},
-		{effect.AttachmentMissing, Dispose, true},
+		{effect.AttachmentActive, Keep, effect.AttachmentActive, false},
+		{effect.AttachmentTerminal, Keep, effect.AttachmentTerminal, false},
+		{effect.AttachmentOrphaned, Defer, effect.AttachmentOrphaned, false},
+		{effect.AttachmentMissing, Dispose, effect.AttachmentAborted, true},
+		{effect.AttachmentAborted, Dispose, effect.AttachmentAborted, true},
 	} {
 		port := &fakePort{state: tc.state}
 		r := &Reconciler{Executions: port}
@@ -75,7 +94,7 @@ func TestPlanVerdicts(t *testing.T) {
 			t.Fatalf("%s: plan = %+v %v", tc.state, decisions, err)
 		}
 		d := decisions[0]
-		if d.Verdict != tc.want || (d.Recovery != nil) != tc.disposes || d.Observed != tc.state {
+		if d.Verdict != tc.want || (d.Recovery != nil) != tc.disposes || d.Observed != tc.observed {
 			t.Fatalf("%s: decision = %+v, want %s disposes=%v", tc.state, d, tc.want, tc.disposes)
 		}
 		if len(port.asked) != 1 || port.asked[0] != (effect.AssignmentKey{Session: "s", RunID: "r1", Effect: "c1"}) {
@@ -336,5 +355,42 @@ func TestKeptOutcomeProbeRecoversOrphan(t *testing.T) {
 	port.mu.Unlock()
 	if n != 1 {
 		t.Fatalf("recovery requests = %d, want exactly 1", n)
+	}
+}
+
+// RUN-EXE-16: a missing effect is closed on the executor before the Run
+// disposes it, so a Dispatch that arrives later starts nothing; when an
+// acceptance reached the executor first, Abort reports it and the target is
+// kept or deferred instead of disposed.
+func TestPlanClosesMissingBeforeDisposing(t *testing.T) {
+	cases := []struct {
+		name     string
+		accepted effect.AttachmentState // what Abort finds when the acceptance won
+		want     Verdict
+		disposes bool
+	}{
+		{"tombstone stands", "", Dispose, true},
+		{"acceptance won and runs", effect.AttachmentActive, Keep, false},
+		{"acceptance won without a lease", effect.AttachmentOrphaned, Defer, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			port := &fakePort{state: effect.AttachmentMissing, accepted: tc.accepted}
+			decisions, err := (&Reconciler{Executions: port}).Plan(context.Background(), "s", executingModel("c1"))
+			if err != nil || len(decisions) != 1 {
+				t.Fatalf("plan = %+v %v", decisions, err)
+			}
+			d := decisions[0]
+			if d.Verdict != tc.want || (d.Recovery != nil) != tc.disposes || len(port.aborted) != 1 {
+				t.Fatalf("decision = %+v aborted=%d, want %s disposes=%v after one Abort", d, len(port.aborted), tc.want, tc.disposes)
+			}
+		})
+	}
+	// Anything the executor still holds is never aborted.
+	for _, state := range []effect.AttachmentState{effect.AttachmentActive, effect.AttachmentOrphaned, effect.AttachmentTerminal} {
+		port := &fakePort{state: state}
+		if _, err := (&Reconciler{Executions: port}).Plan(context.Background(), "s", executingModel("c1")); err != nil || len(port.aborted) != 0 {
+			t.Fatalf("%s: aborted=%d %v, want no Abort", state, len(port.aborted), err)
+		}
 	}
 }

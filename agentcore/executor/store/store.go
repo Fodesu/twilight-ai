@@ -52,8 +52,14 @@ func NewEvent(typ EventType, recordedAtUnixMilli int64, payload any) (Event, err
 
 const (
 	// EventExecutionAccepted: the Assignment was accepted into this ledger,
-	// before anything started (RUN-EXE-3). Always the first event.
+	// before anything started (RUN-EXE-3). The first event of a ledger that
+	// was opened by a Dispatch.
 	EventExecutionAccepted EventType = "execution_accepted"
+	// EventExecutionAborted: the key was closed before any acceptance
+	// (RUN-EXE-16). The first and only event of a ledger opened by Abort:
+	// it and execution_accepted contend for Seq 0, so a ledger holds one or
+	// the other, never both.
+	EventExecutionAborted EventType = "execution_aborted"
 	// EventExecutionBound: the attempt's physical binding, Provider and Ref,
 	// was chosen (RUN-EXE-9, RUN-EXE-10).
 	EventExecutionBound EventType = "execution_bound"
@@ -107,6 +113,11 @@ type Accepted struct {
 	Assignment effect.Assignment `json:"assignment"`
 }
 
+// Aborted is the payload of execution_aborted.
+type Aborted struct {
+	Reason string `json:"reason,omitempty"`
+}
+
 // Bound is the payload of execution_bound.
 type Bound struct {
 	Ref ExecutionRef `json:"ref"`
@@ -155,6 +166,11 @@ func DeriveCommitID(key effect.AssignmentKey, command, discriminator string) Com
 // by a controller's Dispose share SettleCommitID, so the second reads the
 // first's Outcome instead of writing a second ending.
 func AcceptCommitID(key effect.AssignmentKey) CommitID { return DeriveCommitID(key, "accept", "") }
+
+// AbortCommitID names the one tombstone of a key (RUN-EXE-16). It differs
+// from AcceptCommitID, so the two commands are told apart by Seq, not by
+// replay: whichever reaches Seq 0 first stands and the other is ErrConflict.
+func AbortCommitID(key effect.AssignmentKey) CommitID  { return DeriveCommitID(key, "abort", "") }
 func SettleCommitID(key effect.AssignmentKey) CommitID { return DeriveCommitID(key, "settle", "") }
 func AcknowledgeCommitID(key effect.AssignmentKey) CommitID {
 	return DeriveCommitID(key, "acknowledge", "")
@@ -179,8 +195,13 @@ type ExecutionState struct {
 	Acknowledged bool `json:"acknowledged,omitempty"`
 }
 
-// Terminal reports whether the execution has settled.
+// Terminal reports whether the execution has settled, or was aborted before
+// anything was accepted.
 func (s *ExecutionState) Terminal() bool { return protocol.StatusTerminal(s.State) }
+
+// Aborted reports the tombstone: the ledger was opened by Abort and holds
+// no Assignment.
+func (s *ExecutionState) Aborted() bool { return s.State == effect.ExecutionAborted }
 
 // Execution is what Load returns: the fold of the ledger and the key's
 // current lease, read from their two sources in one transaction. Lease is
@@ -210,12 +231,13 @@ func LegalTransition(from, to effect.ExecutionStatus) bool {
 }
 
 // Fenced reports whether an event may only be committed under the key's
-// lease. Acceptance precedes any lease; settlement by Dispose and the
-// Owner's acknowledgement come from outside the Worker (RUN-EXE-6,
-// RUN-EXE-13). Everything else is the lease holder's.
+// lease. Acceptance and the abort tombstone precede any lease; settlement
+// by Dispose and the Owner's acknowledgement come from outside the Worker
+// (RUN-EXE-6, RUN-EXE-13, RUN-EXE-16). Everything else is the lease
+// holder's.
 func Fenced(typ EventType) bool {
 	switch typ {
-	case EventExecutionAccepted, EventExecutionBound, EventExecutionSettled, EventOutcomeAcknowledged:
+	case EventExecutionAccepted, EventExecutionAborted, EventExecutionBound, EventExecutionSettled, EventOutcomeAcknowledged:
 		return false
 	default:
 		return true
@@ -241,13 +263,22 @@ func apply(s ExecutionState, e *Event) (ExecutionState, error) { //nolint:gocrit
 	switch e.Type {
 	case EventExecutionAccepted:
 		if s.State != "" {
-			return s, errors.New("accepted twice")
+			return s, fmt.Errorf("accepted into a ledger already %s", s.State)
 		}
 		var p Accepted
 		if err := e.Decode(&p); err != nil {
 			return s, err
 		}
 		s.Assignment, s.State = p.Assignment, effect.ExecutionAccepted
+	case EventExecutionAborted:
+		if s.State != "" {
+			return s, fmt.Errorf("aborted a ledger already %s", s.State)
+		}
+		var p Aborted
+		if err := e.Decode(&p); err != nil {
+			return s, err
+		}
+		s.State = effect.ExecutionAborted
 	case EventExecutionBound:
 		if s.State == "" || s.Terminal() {
 			return s, errors.New("bound outside an accepted, unsettled execution")
@@ -309,7 +340,7 @@ func apply(s ExecutionState, e *Event) (ExecutionState, error) { //nolint:gocrit
 		out := p.Outcome
 		s.State, s.Outcome = p.State, &out
 	case EventOutcomeAcknowledged:
-		if !s.Terminal() {
+		if !s.Terminal() || s.Aborted() {
 			return s, fmt.Errorf("acknowledged in state %s", s.State)
 		}
 		if s.Acknowledged {

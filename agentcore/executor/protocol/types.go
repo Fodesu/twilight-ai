@@ -147,7 +147,7 @@ func DecodeOutcome(w *OutcomeEnvelope) effect.Outcome {
 
 func StatusTerminal(s effect.ExecutionStatus) bool {
 	switch s {
-	case effect.ExecutionCompleted, effect.ExecutionFailed, effect.ExecutionCancelled, effect.ExecutionUnknown:
+	case effect.ExecutionCompleted, effect.ExecutionFailed, effect.ExecutionCancelled, effect.ExecutionUnknown, effect.ExecutionAborted:
 		return true
 	default:
 		return false

@@ -60,6 +60,13 @@ func (b *testBackend) Attach(_ context.Context, key effect.AssignmentKey) (effec
 	}
 	return effect.Attachment{State: effect.AttachmentActive, Execution: effect.ExecutionRunning, BackendAttached: true}, nil
 }
+func (b *testBackend) Abort(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
+	att, err := b.Attach(ctx, key)
+	if err == nil && att.State == effect.AttachmentMissing {
+		att = effect.Attachment{State: effect.AttachmentAborted, Execution: effect.ExecutionAborted}
+	}
+	return att, err
+}
 func (b *testBackend) GetStatus(_ context.Context, key effect.AssignmentKey) (effect.ExecutionStatus, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -529,8 +536,9 @@ func TestWorkerPersistsExecutionRefBeforeStart(t *testing.T) {
 	backend.mu.Lock()
 	prepared, started = backend.prepared, backend.started
 	backend.mu.Unlock()
-	if prepared != 2 || started != 1 {
-		t.Fatalf("replay prepared %d times and started %d times, want a second prepare and no second start", prepared, started)
+	// A replay is answered from the ledger: no second Prepare, no second Start.
+	if prepared != 1 || started != 1 {
+		t.Fatalf("replay prepared %d times and started %d times, want neither a second prepare nor a second start", prepared, started)
 	}
 }
 
@@ -1009,6 +1017,18 @@ func TestHTTPControlEndpoints(t *testing.T) {
 	if _, err := client.GetOutcome(ctx, c.Key()); !errors.Is(err, effect.ErrExecutionNotFound) {
 		t.Fatalf("unknown key over http = %v, want ErrExecutionNotFound", err)
 	}
+	// The tombstone travels over the wire: an aborted key answers aborted,
+	// rejects a later Dispatch with a definite 409, and its Outcome reads
+	// as a definitive error (RUN-EXE-16).
+	if closed, err := client.Abort(ctx, c.Key()); err != nil || closed.State != effect.AttachmentAborted {
+		t.Fatalf("abort over http = %+v %v", closed, err)
+	}
+	if err := client.Dispatch(ctx, c); err == nil || !strings.Contains(err.Error(), "409") || errors.Is(err, effect.ErrDispatchUnknown) || errors.Is(err, effect.ErrDispatchRetryable) {
+		t.Fatalf("dispatch of an aborted key over http = %v, want a definite 409", err)
+	}
+	if _, err := client.GetOutcome(ctx, c.Key()); !errors.Is(err, effect.ErrOutcomeUnavailable) {
+		t.Fatalf("outcome of an aborted key over http = %v, want ErrOutcomeUnavailable", err)
+	}
 }
 
 // The Port adapter proves nothing about a Ref it cannot read as a key: that
@@ -1445,4 +1465,65 @@ func TestWorkerAcknowledgeCollects(t *testing.T) {
 			}
 		})
 	}
+}
+
+// RUN-EXE-16: Abort and the acceptance a Dispatch writes contend for the
+// first commit of a key's ledger; exactly one stands. A key aborted first
+// rejects every later Dispatch and answers aborted everywhere; a key
+// dispatched first is reported live by Abort and left alone.
+func TestAbortAndDispatchAreMutuallyExclusive(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	records := sqlitetest.Open(t).Executions()
+	backend := &refBackend{testBackend: newTestBackend()}
+	worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("test", backend)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Close()
+
+	t.Run("abort first", func(t *testing.T) {
+		a := testAssignment()
+		a.Effect = "aborted-first"
+		closed, err := worker.Abort(ctx, a.Key())
+		if err != nil || closed.State != effect.AttachmentAborted {
+			t.Fatalf("abort = %+v %v", closed, err)
+		}
+		if err := worker.Dispatch(ctx, a); !errors.Is(err, effect.ErrExecutionAborted) || errors.Is(err, effect.ErrDispatchRetryable) || errors.Is(err, effect.ErrDispatchUnknown) {
+			t.Fatalf("dispatch after abort = %v, want a definite ErrExecutionAborted", err)
+		}
+		if backend.prepared != 0 {
+			t.Fatalf("backend prepared %d executions for an aborted key", backend.prepared)
+		}
+		again, err := worker.Abort(ctx, a.Key())
+		if err != nil || again.State != effect.AttachmentAborted {
+			t.Fatalf("second abort = %+v %v", again, err)
+		}
+		if att, err := worker.Attach(ctx, a.Key()); err != nil || att.State != effect.AttachmentAborted || att.Execution != effect.ExecutionAborted {
+			t.Fatalf("attach = %+v %v", att, err)
+		}
+		if _, err := worker.GetOutcome(ctx, a.Key()); !errors.Is(err, effect.ErrOutcomeUnavailable) {
+			t.Fatalf("outcome of an aborted key = %v, want ErrOutcomeUnavailable", err)
+		}
+		if err := worker.Acknowledge(ctx, a.Key()); err != nil {
+			t.Fatalf("acknowledge of an aborted key = %v", err)
+		}
+		if err := worker.RecoverExecution(ctx, a.Key()); err != nil {
+			t.Fatalf("recover of an aborted key = %v", err)
+		}
+	})
+	t.Run("dispatch first", func(t *testing.T) {
+		a := testAssignment()
+		a.Effect = "dispatched-first"
+		if err := worker.Dispatch(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+		live, err := worker.Abort(ctx, a.Key())
+		if err != nil || live.State == effect.AttachmentAborted || live.State == effect.AttachmentMissing {
+			t.Fatalf("abort after dispatch = %+v %v, want the live attachment", live, err)
+		}
+		if out, err := worker.GetOutcome(ctx, a.Key()); err != nil || out.Key != a.Key() {
+			t.Fatalf("outcome after a lost abort = %+v %v", out, err)
+		}
+	})
 }

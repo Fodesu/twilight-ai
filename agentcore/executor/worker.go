@@ -269,6 +269,15 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 	if err != nil {
 		return err
 	}
+	key := a.Key()
+	// A key whose ledger is already open is answered from the ledger before
+	// any backend is touched: a replay, a conflicting Assignment or a
+	// tombstone prepares nothing (RUN-EXE-3, RUN-EXE-16).
+	if state, _, ok, loadErr := w.store.Load(ctx, key); loadErr != nil {
+		return fmt.Errorf("%w: %w", effect.ErrDispatchRetryable, loadErr)
+	} else if ok {
+		return w.opened(&state, digest)
+	}
 	route, err := w.route(a)
 	if err != nil {
 		return err
@@ -280,7 +289,6 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 	if ref == "" {
 		return errors.New("executor: backend prepared an empty execution ref")
 	}
-	key := a.Key()
 	c := executionstore.Commit{Seq: 0, CommitID: executionstore.AcceptCommitID(key), Events: []executionstore.Event{
 		w.event(executionstore.EventExecutionAccepted, executionstore.Accepted{Assignment: a}),
 		w.event(executionstore.EventExecutionBound, executionstore.Bound{Ref: ExecutionRef{Provider: route.Provider, Ref: ref}}),
@@ -289,24 +297,17 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 	switch {
 	case err == nil:
 	case errors.Is(err, executionstore.ErrAlreadyApplied), errors.Is(err, executionstore.ErrConflict):
-		// The ledger was opened before (a replayed Dispatch, another writer,
-		// a seed): the same Assignment acknowledges the acceptance, another
-		// is a conflict. The ledger holds one acceptance per key; telling the
-		// two apart is the Worker's reading, not the store's (RUN-EXE-14).
+		// The ledger was opened between the read above and this write (a
+		// concurrent Dispatch, an Abort): the ledger, not this Worker,
+		// decided (RUN-EXE-14, RUN-EXE-16).
 		state, _, ok, loadErr := w.store.Load(ctx, key)
 		if loadErr != nil {
 			return fmt.Errorf("%w: %w", effect.ErrDispatchRetryable, loadErr)
 		}
-		if ok {
-			accepted, err := state.Assignment.Digest()
-			if err != nil {
-				return err
-			}
-			if accepted != digest {
-				return executionstore.ErrAssignmentConflict
-			}
+		if !ok {
+			return fmt.Errorf("%w: ledger conflict without a ledger", effect.ErrDispatchRetryable)
 		}
-		return nil
+		return w.opened(&state, digest)
 	default:
 		// The ledger store, not the Assignment, refused: nothing started,
 		// and the same Dispatch may succeed later (RUN-EXE-3).
@@ -323,6 +324,42 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 		return fmt.Errorf("%w: %w", effect.ErrDispatchRetryable, err)
 	}
 	return nil
+}
+
+// opened answers a Dispatch whose key already has a ledger: a tombstone is a
+// definite rejection; the same Assignment acknowledges the acceptance and
+// starts nothing new; another Assignment is a conflict. The ledger holds one
+// acceptance per key and does not compare content, so telling the two apart
+// is the Worker's reading (RUN-EXE-14).
+func (w *Worker) opened(state *executionstore.Execution, digest run.Digest) error {
+	if state.Aborted() {
+		return effect.ErrExecutionAborted
+	}
+	accepted, err := state.Assignment.Digest()
+	if err != nil {
+		return err
+	}
+	if accepted != digest {
+		return executionstore.ErrAssignmentConflict
+	}
+	return nil
+}
+
+// Abort closes key before any acceptance (RUN-EXE-16): it writes the
+// tombstone as the first commit of the key's ledger, where it contends with
+// the acceptance a Dispatch writes; the store's Seq rule lets exactly one of
+// the two stand. The result is the key's attachment afterwards: aborted when
+// the tombstone stands, whether written now or earlier; otherwise the live
+// state of the acceptance that won.
+func (w *Worker) Abort(ctx context.Context, key effect.AssignmentKey) (effect.Attachment, error) {
+	c := executionstore.Commit{Seq: 0, CommitID: executionstore.AbortCommitID(key), Events: []executionstore.Event{
+		w.event(executionstore.EventExecutionAborted, executionstore.Aborted{Reason: "closed by its controller before acceptance"}),
+	}}
+	err := w.store.Append(ctx, executionstore.Lease{}, key, c)
+	if err != nil && !errors.Is(err, executionstore.ErrAlreadyApplied) && !errors.Is(err, executionstore.ErrConflict) {
+		return effect.Attachment{}, err
+	}
+	return w.Attach(ctx, key)
 }
 
 // RecoverExecution is effect.Recoverer: it takes the execution of key back
@@ -371,8 +408,8 @@ func (w *Worker) Acknowledge(ctx context.Context, key effect.AssignmentKey) erro
 		if !state.Terminal() {
 			return nil, fmt.Errorf("%w: acknowledging an execution in state %s", executionstore.ErrStateConflict, state.State)
 		}
-		if state.Acknowledged {
-			return nil, nil
+		if state.Acknowledged || state.Aborted() {
+			return nil, nil // nothing was served, nothing to collect
 		}
 		return &executionstore.Commit{CommitID: executionstore.AcknowledgeCommitID(key),
 			Events: []executionstore.Event{w.event(executionstore.EventOutcomeAcknowledged, nil)}}, nil
@@ -897,6 +934,9 @@ func (w *Worker) Attach(ctx context.Context, key effect.AssignmentKey) (effect.A
 		// proof (RUN-EXE-3).
 		return effect.Attachment{State: effect.AttachmentMissing, Execution: effect.ExecutionNotFound}, nil
 	}
+	if state.Aborted() {
+		return effect.Attachment{State: effect.AttachmentAborted, Execution: effect.ExecutionAborted}, nil
+	}
 	attachment := effect.Attachment{Execution: state.State, Owner: state.Lease.Owner, FencingEpoch: uint64(state.Lease.Epoch), LeaseUntilUnixMilli: state.Lease.UntilUnixMilli}
 	if state.Terminal() {
 		attachment.State = effect.AttachmentTerminal
@@ -957,6 +997,9 @@ func (w *Worker) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effe
 		}
 		if !ok {
 			return effect.Outcome{}, effect.ErrExecutionNotFound
+		}
+		if state.Aborted() {
+			return effect.Outcome{}, effect.ErrExecutionAborted
 		}
 		if state.Acknowledged {
 			return effect.Outcome{}, effect.ErrOutcomeCollected
