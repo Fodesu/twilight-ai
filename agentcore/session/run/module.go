@@ -60,8 +60,9 @@ type Event struct {
 	Fact  run.Fact
 }
 
-// factCodec encodes one fact type at one payload version. The payload is
-// the canonical fact object with "runId" added; `v` is the Registry's.
+// factCodec is the codec of one fact type at its current payload version:
+// the wire the Run core defines today. The payload is the canonical fact
+// object with "runId" added; `v` is the Registry's.
 type factCodec struct {
 	local string
 	wire  wire.Facts
@@ -158,36 +159,59 @@ var one uint32 = 1
 // and Turn projections consume its facts; nothing of theirs is written here.
 var Module = buildModule()
 
-// factVersions is the payload version each fact type is written with
-// (SES-VER-1, EXT-REG-2). A type whose shape changes gets a new entry here
-// and a codec for the new version; types not listed are at version 1. The
-// version belongs to the event type: nothing ties the run facts to one
-// number (RUN-CMT-8).
-var factVersions = map[string]extension.PayloadVersion{}
-
-// factVersion returns the payload version of one fact type.
-func factVersion(name string) extension.PayloadVersion {
-	if v, ok := factVersions[name]; ok {
-		return v
+// factCodecs is the codec history of one fact type (SES-VER-1, EXT-REG-2):
+// one PayloadCodec per payload version ever written, keyed by version, and
+// the current version. older holds the superseded versions 1..n-1, each a
+// codec of its own that decodes that version's wire shape and upcasts to
+// the current run.Fact; the current shape is version n, served by factCodec
+// for the wire the Run core defines today. Nothing is dropped: a fact type
+// whose shape changes keeps its previous codec under its old version and
+// moves up one version by itself. A history with a gap is a programming
+// error in this module's own table and stops the build.
+func factCodecs(name string, older map[extension.PayloadVersion]extension.PayloadCodec) (map[extension.PayloadVersion]extension.PayloadCodec, extension.PayloadVersion) {
+	codecs := make(map[extension.PayloadVersion]extension.PayloadCodec, len(older)+1)
+	for v := extension.PayloadVersion(1); int(v) <= len(older); v++ {
+		c, ok := older[v]
+		if !ok || c == nil {
+			panic(fmt.Sprintf("runmod: fact %s: codec history has no version %d", name, v))
+		}
+		codecs[v] = c
 	}
-	return 1
+	if len(codecs) != len(older) {
+		panic(fmt.Sprintf("runmod: fact %s: codec history is not contiguous from 1", name))
+	}
+	current := extension.PayloadVersion(len(older) + 1) //nolint:gosec // G115: a handful of versions
+	codecs[current] = factCodec{local: name, wire: wire.Facts{}}
+	return codecs, current
+}
+
+// olderFactCodecs is the superseded payload versions of one fact type. No
+// fact type has changed wire shape since it was first written, so every
+// type is at version 1 with no history; the first change adds the codec of
+// the shape it replaces here, under version 1, and keeps it for good.
+func olderFactCodecs(string) map[extension.PayloadVersion]extension.PayloadCodec { return nil }
+
+// eventDefinition is the EventDefinition of one fact type over its codec
+// history.
+func eventDefinition(name string, codecs map[extension.PayloadVersion]extension.PayloadCodec, current extension.PayloadVersion) extension.EventDefinition {
+	def := extension.EventDefinition{
+		Type:    Prefix + session.EventType(name),
+		Stream:  StreamDomain,
+		Codecs:  codecs,
+		Version: current,
+	}
+	if frozenBodyFacts[name] {
+		def.Bindings = []extension.BindingReferenceDefinition{frozenBinding}
+	}
+	return def
 }
 
 func buildModule() extension.ModuleDescriptor {
 	m := extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: ModuleID,
 		Streams: []extension.StreamDefinition{streamDefinition}, Projections: []extension.ProjectionDefinition{MachineProjection}}
 	for _, name := range factNames {
-		def := extension.EventDefinition{
-			Type:   Prefix + session.EventType(name),
-			Stream: StreamDomain,
-			Codecs: map[extension.PayloadVersion]extension.PayloadCodec{
-				factVersion(name): factCodec{local: name, wire: wire.Facts{}},
-			},
-		}
-		if frozenBodyFacts[name] {
-			def.Bindings = []extension.BindingReferenceDefinition{frozenBinding}
-		}
-		m.Events = append(m.Events, def)
+		codecs, current := factCodecs(name, olderFactCodecs(name))
+		m.Events = append(m.Events, eventDefinition(name, codecs, current))
 	}
 	return m
 }
