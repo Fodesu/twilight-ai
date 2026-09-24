@@ -73,7 +73,9 @@ func FreezeToolOutput(o sdk.ToolOutput) (model.ToolOutput, error) {
 // ToolOutput converts a persisted tool output back to the SDK value.
 func ToolOutput(o model.ToolOutput) sdk.ToolOutput {
 	if !o.JSON.IsZero() {
-		return sdk.RawJSONOutput(o.JSON.RawMessage())
+		// The persisted document is already canonical (jsonstable.Value), so
+		// the literal carries it as is rather than re-encoding it.
+		return sdk.ToolOutput{JSON: o.JSON.RawMessage()}
 	}
 	return sdk.TextOutput(o.Text)
 }
