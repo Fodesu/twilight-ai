@@ -56,6 +56,7 @@ var factVariants = []factVariant{
 	factOf[run.ModelStepStarted]("model_step_started"),
 	factOf[run.ModelStepRecovered]("model_step_recovered"),
 	factOf[run.ModelStepRejected]("model_step_rejected"),
+	factOf[run.ModelStepFailed]("model_step_failed"),
 	factOf[run.ModelStepCompleted]("model_step_completed"),
 	factOf[run.ToolStepOpened]("tool_step_opened"),
 	factOf[run.ToolCallStarted]("tool_call_started"),

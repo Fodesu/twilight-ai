@@ -51,7 +51,7 @@ type EffectID string
 type Digest = es.Digest
 ```
 
-**RUN-WIR-1** identity 必须非空、稳定且为有效 UTF-8。`EffectID` 由 `DeriveEffectID(RunID, StepID, CallID, sequence)` 派生（namespace `twilight/effect`）；一个 effect 的 start、settlement 与 recovery CommandID 只以 EffectID 为 preimage（namespace `twilight/start-command`、`twilight/settlement-command`、`twilight/recovery-command`），因此同一 effect 的 start 重试与结算重放得到同一 CommandID，接管处置的 CommandID 与 owner、Epoch 无关。start 事实记录 Effect（`ModelStepStarted`、`ToolCallStarted`），Executing 的 step 与 call 在 MachineState 中携带它：这是接管者向 Executor 询问"该 effect 的 attempt 是否仍在执行"并接受其迟到 Outcome 所需的唯一身份。start、settlement 与 recovery command 都携带 Effect：缺少 Effect 时无法派生 CommandID，Commit 返回 `ErrCommandConflict`；Effect 与 Decide 按当前状态派生或记录的值不符时返回 `ErrStaleRuntime`。Pending call 在 start 之前的失败没有 effect，以 `DeclineToolCall` 提交，其 CommandID 以 RunID、StepID、CallID 为 preimage（namespace `twilight/decline-command`）。Run 跨 domain causation 记录在 `twilight/run/run_created` 的 `CausationID`。 start 事实与 settlement 事实都记录 Effect：`ModelStepStarted.Effect`、`ToolCallStarted.Effect` 记录请求的 effect，`ModelStepCompleted`、`ModelStepRecovered`、`ToolCallCompleted`、`ToolCallFailed` 的 `Effect` 记录该结算关闭的 effect，Evolve 校验它等于目标正在执行的 effect；从未启动的 call 的失败（decline、被拒的 response、取消时的 Pending call）`Effect` 为空。一条 settlement 事实因此自足地指认它回答的 execution，读者不必回到 start 事实按坐标匹配。
+**RUN-WIR-1** identity 必须非空、稳定且为有效 UTF-8。`EffectID` 由 `DeriveEffectID(RunID, StepID, CallID, sequence)` 派生（namespace `twilight/effect`）；一个 effect 的 start、settlement 与 recovery CommandID 只以 EffectID 为 preimage（namespace `twilight/start-command`、`twilight/settlement-command`、`twilight/recovery-command`），因此同一 effect 的 start 重试与结算重放得到同一 CommandID，接管处置的 CommandID 与 owner、Epoch 无关。start 事实记录 Effect（`ModelStepStarted`、`ToolCallStarted`），Executing 的 step 与 call 在 MachineState 中携带它：这是接管者向 Executor 询问"该 effect 的 attempt 是否仍在执行"并接受其迟到 Outcome 所需的唯一身份。start、settlement 与 recovery command 都携带 Effect：缺少 Effect 时无法派生 CommandID，Commit 返回 `ErrCommandConflict`；Effect 与 Decide 按当前状态派生或记录的值不符时返回 `ErrStaleRuntime`。Pending call 在 start 之前的失败没有 effect，以 `DeclineToolCall` 提交，其 CommandID 以 RunID、StepID、CallID 为 preimage（namespace `twilight/decline-command`）。Run 跨 domain causation 记录在 `twilight/run/run_created` 的 `CausationID`。 start 事实与 settlement 事实都记录 Effect：`ModelStepStarted.Effect`、`ToolCallStarted.Effect` 记录请求的 effect，`ModelStepCompleted`、`ModelStepRecovered`、`ModelStepRejected`、`ModelStepFailed`、`ToolCallCompleted`、`ToolCallFailed` 的 `Effect` 记录该结算关闭的 effect，Evolve 校验它等于目标正在执行的 effect；`RunEnded` 不结算 effect，Evolve 拒绝在仍有 Executing 目标时折叠它，因此每个请求过的 effect 都恰由一条指认它的事实关闭；从未启动的 call 的失败（decline、被拒的 response、取消时的 Pending call）`Effect` 为空。一条 settlement 事实因此自足地指认它回答的 execution，读者不必回到 start 事实按坐标匹配。
 
 Run 持久化协议保存 run-owned frozen values。模型请求、模型结果、消息、工具定义、usage 在进入 command 前，分别经 `FreezeModelRequest`、`FreezeModelResult`、`FreezeToolDefinition`、`FreezeToolArguments` 等入口转为 `agentcore/run/model` 的闭合值类型：JSON 文档（工具参数、工具输出、schema、provider options）冻结为 immutable `CanonicalJSON`；provider metadata 在 SDK 侧已是 namespace→name→string 的字符串 token，镜像保持同一形状，不经 JSON 转换；无法成为 JSON 的工具参数文本按原文保存在 `ToolArguments.Text`（非法 UTF-8 拒绝冻结）。RunStore 接收 agent-owned value；调用方负责在边界前完成冻结。
 
@@ -214,13 +214,14 @@ func (RunFailedEnd) runEnd() {}
 type RunEnded struct { End RunEnd }
 ```
 
-`RunEnded.End` 必须恰好是上述三个 variant 之一；`RunStoppedEnd.Reason` 必须非空，`RunFailedEnd.Reason` 必须是失败原因，`RunFailedEnd.Failure.Class` 必须非空。`RunEnded` 是 terminal 组中最后一个 `twilight/run/` 事实。RunStatus、RunResult 等读取模型从该 union 派生。v1 wire 是 tagged union：`{"completed":{}}`、`{"stopped":{reason, uncertainCalls?, uncertainModel?}}` 或 `{"failed":{reason, failure}}`，恰有一个 variant key；codec 拒绝零个或多个 variant、缺失字段与多余字段。Cancel 时仍 Executing 的 tool call 与 model step 必须写入 `RunStoppedEnd` 并投影到 `RunResult`。
+`RunEnded.End` 必须恰好是上述三个 variant 之一；`RunStoppedEnd.Reason` 必须非空，`RunFailedEnd.Reason` 必须是失败原因，`RunFailedEnd.Failure.Class` 必须非空。`RunEnded` 是 terminal 组中最后一个 `twilight/run/` 事实。`RunEnded` 自身不结算任何 effect：Evolve 拒绝在 Current 仍有 Executing 的 ModelStep 或 tool call 时折叠 `RunEnded`，结束一个 effect 的只能是指认它的 settlement 事实（`ModelStepFailed`、`ModelStepRejected`、`ToolCallFailed` 等，RUN-WIR-1）。RunStatus、RunResult 等读取模型从该 union 派生。v1 wire 是 tagged union：`{"completed":{}}`、`{"stopped":{reason, uncertainCalls?, uncertainModel?}}` 或 `{"failed":{reason, failure}}`，恰有一个 variant key；codec 拒绝零个或多个 variant、缺失字段与多余字段。Cancel 时仍 Executing 的 tool call 与 model step 必须写入 `RunStoppedEnd` 并投影到 `RunResult`。
 
 ```text
 ModelStep: Prepared -> Executing -> Completed
              |           |             |
              |           +-> Recovered -> Open  (该 effect 的 attempt 已不存在：撤回该请求，下一次 Prepare 重新规划)
              |           +-> Rejected     (retry 回到 Prepared，或同组失败 Run)
+             |           +-> Failed -> Open     (该 effect 以最终失败结算；同组随后 RunEnded(failed)，Cancel 时 class 为 effect_unknown、随后 RunEnded(stopped))
              +-> Withdrawn -> Open        (Prepared 期间有 pending input，放弃该请求并重规划)
 
 ToolCall:
@@ -248,8 +249,8 @@ ToolCall:
 | `StartModelExecution` | Model Prepared；`ModelStepStarted`。command 携带本次 start 请求的 `Effect`，须等于 `DeriveEffectID(RunID, StepID, "", Rejects)` |
 | `RecoverModelExecution` | Model Executing；`ModelStepRecovered`，`Current` 回到 `Open`、不计入 `ModelSteps`、PendingInputs 保留。携带该 step 正在执行的 `Effect`，须等于 `ModelStep.Effect` |
 | `SubmitModelResult` | Model Executing；携带该 step 正在执行的 `Effect`，须等于 `ModelStep.Effect`；`ModelStepCompleted{Effect, Usage, FinishReason, ResultDigest}`。有 calls 时随后 `ToolStepOpened`（携带冻结的 `Scheduling` 与 bindings）；无 calls 且 `PendingInputs` 为空时随后 `RunEnded(completed)`；无 calls 且 `PendingInputs` 非空时 `Current` 回到 `Open`，Run 继续。command 携带冻结 `ModelResult` 本体，Runtime 先以 ResultDigest 存入 `frozen.Store` |
-| `SubmitModelFailure` | Model Executing；携带 `Effect`，须等于 `ModelStep.Effect`；`RunEnded(failed/provider_failure)` |
-| `RejectModelResult` | Model Executing；携带 `Effect`，须等于 `ModelStep.Effect`；`ModelStepRejected`，由调用方显式选择回到 Prepared 或在同一组追加 `RunEnded(failed/malformed_model_result)` |
+| `SubmitModelFailure` | Model Executing；携带 `Effect`，须等于 `ModelStep.Effect`；`ModelStepFailed{StepID, Effect, Failure}` 结算该 effect，同组随后 `RunEnded(failed/provider_failure)`（class 为 `effect_unknown` 时 reason 为 `effect_unknown`） |
+| `RejectModelResult` | Model Executing；携带 `Effect`，须等于 `ModelStep.Effect`；`ModelStepRejected{StepID, Effect, Usage, Failure}` 结算该 effect，由调用方显式选择回到 Prepared 或在同一组追加 `RunEnded(failed/malformed_model_result)` |
 | `StartToolCall` | Tool Pending；`ToolCallStarted`。command 携带本次 start 请求的 `Effect`，须等于 `DeriveEffectID(RunID, StepID, CallID, 0)` |
 | `SubmitToolResult` | Tool Executing；携带 `Effect`，须等于该 call 的 `Effect`；`ToolCallCompleted{Effect, OutputDigest}`。command 携带输出本体，Run 的 Command Part 先以 OutputDigest 存入 `frozen.Store`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
 | `SubmitToolFailure(Known)` | Tool Executing；携带 `Effect`，须等于该 call 的 `Effect`；`ToolCallFailed(Known)`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
@@ -258,7 +259,7 @@ ToolCall:
 | `ApproveToolCall` | Waiting(Approval)；`ToolCallApproved` |
 | `RejectToolCall` | Waiting(Approval) 记 `ToolCallFailed(Known/permission_denied)`；Waiting(ExternalResponse) 记 `ToolCallFailed(Known/response_rejected)`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
 | `SubmitToolResponse` | Waiting(ExternalResponse)；`ToolCallAnswered{ResponseDigest}`。Evolve 后若全部 call 已 terminal，则关闭 ToolStep |
-| `CancelRun` | active；Pending / Waiting tool call 记 `ToolCallFailed(Known/cancelled)`，Executing call 记 `ToolCallFailed(Unknown/effect_unknown)`，保留已有终态结果。全部 call 进入终态后关闭 ToolStep 并写入 `LastToolStep`，随后 `RunEnded(stopped/cancelled)` 把 `Current` 置空。`RunStoppedEnd` / `RunResult` 的 `UncertainCalls` 只列本次产生 Unknown 的 CallID，`UncertainModel` 标识仍 Executing 的模型步骤。 |
+| `CancelRun` | active；Pending / Waiting tool call 记 `ToolCallFailed(Known/cancelled)`，Executing call 记 `ToolCallFailed(Unknown/effect_unknown)`，保留已有终态结果；Executing 的 ModelStep 记 `ModelStepFailed{Effect, Failure{Class: effect_unknown}}`。全部 call 进入终态后关闭 ToolStep 并写入 `LastToolStep`，随后 `RunEnded(stopped/cancelled)` 把 `Current` 置空。`RunStoppedEnd` / `RunResult` 的 `UncertainCalls` 只列本次产生 Unknown 的 CallID，`UncertainModel` 标识仍 Executing 的模型步骤。 |
 
 最后一个 ToolCall 进入 Completed 或 Failed 时，`Evolve` 在折叠该 fact 后若全部 call 已 terminal，则把 Current 设为 `Open` 并写入 `LastToolStep`；下一次 `PromptInput.SourceStep` 取自 `LastToolStep.RefValue.ID`。Cancel 产生的 failure facts 同样走这条关闭规则；`RunEnded` 再把 Current 置空。
 

@@ -77,14 +77,33 @@ type ModelStepRecovered struct {
 func (ModelStepRecovered) fact() {}
 
 // ModelStepRejected records one structurally malformed result: usage is
-// accumulated, Rejects is incremented, the step returns to Prepared.
+// accumulated, Rejects is incremented, the step returns to Prepared. It
+// settles the model effect the step was executing.
 type ModelStepRejected struct {
-	StepID  StepID      `json:"stepId"`
+	StepID StepID `json:"stepId"`
+	// Effect is the model effect this rejection settles (RUN-WIR-1).
+	Effect  EffectID    `json:"effect,omitempty"`
 	Usage   model.Usage `json:"usage"`
 	Failure StepFailure `json:"failure"`
 }
 
 func (ModelStepRejected) fact() {}
+
+// ModelStepFailed: Executing -> Open. It settles the model effect the step
+// was executing with its final failure; the Run does not continue from it.
+// SubmitModelFailure writes it before RunEnded(failed) in the same group;
+// CancelRun writes it with class effect_unknown for a model call still
+// executing, before RunEnded(stopped). RunEnded itself settles no effect:
+// every effect a Run requested is closed by a fact that names it
+// (RUN-WIR-1), so a Run never ends with a step or call still Executing.
+type ModelStepFailed struct {
+	StepID StepID `json:"stepId"`
+	// Effect is the model effect this failure settles (RUN-WIR-1).
+	Effect  EffectID    `json:"effect"`
+	Failure StepFailure `json:"failure"`
+}
+
+func (ModelStepFailed) fact() {}
 
 // ModelStepCompleted accepts one model result: usage is accumulated and
 // Current becomes Open. The result body is not in the fact; ResultDigest is

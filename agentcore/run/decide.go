@@ -368,10 +368,13 @@ func decideSubmitModelFailure(s *MachineState, cmd SubmitModelFailure) ([]Fact, 
 	if cmd.Failure.Class == FailureEffectUnknown {
 		reason = ReasonEffectUnknown
 	}
-	return []Fact{RunEnded{End: RunFailedEnd{
-		Reason:  reason,
-		Failure: RunFailure{Class: cmd.Failure.Class, Message: cmd.Failure.Message},
-	}}}, nil
+	return []Fact{
+		ModelStepFailed(cmd),
+		RunEnded{End: RunFailedEnd{
+			Reason:  reason,
+			Failure: RunFailure{Class: cmd.Failure.Class, Message: cmd.Failure.Message},
+		}},
+	}, nil
 }
 
 // --- rule 5: RejectModelResult ---
@@ -387,7 +390,7 @@ func decideRejectModelResult(s *MachineState, cmd *RejectModelResult) ([]Fact, e
 	if err := settlesModelEffect(ms, cmd.Effect, "reject model result"); err != nil {
 		return nil, err
 	}
-	rejected := ModelStepRejected{StepID: cmd.StepID, Usage: cmd.Usage, Failure: cmd.Failure}
+	rejected := ModelStepRejected{StepID: cmd.StepID, Effect: cmd.Effect, Usage: cmd.Usage, Failure: cmd.Failure}
 	switch cmd.Disposition {
 	case ModelRejectRetry:
 		return []Fact{rejected}, nil
@@ -641,9 +644,13 @@ func decideCancelRun(s *MachineState, cmd CancelRun) ([]Fact, error) {
 			uncertain = append(uncertain, failed.CallID)
 		}
 	}
+	// A model call still executing is settled as unknown under its effect
+	// before the Run stops: RunEnded closes no effect by itself (RUN-WIR-1).
 	var uncertainModel StepID
 	if ms, ok := s.Current.(ModelStep); ok && ms.Status == ModelExecuting {
 		uncertainModel = ms.RefValue.ID
+		facts = append(facts, ModelStepFailed{StepID: ms.RefValue.ID, Effect: ms.Effect,
+			Failure: StepFailure{Class: FailureEffectUnknown, Message: "cancelled while the model call was executing"}})
 	}
 	facts = append(facts, RunEnded{End: RunStoppedEnd{
 		Reason:         ReasonCancelled,

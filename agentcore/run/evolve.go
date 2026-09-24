@@ -32,6 +32,8 @@ func (m StateMachine) Evolve(s MachineState, f Fact) (MachineState, error) {
 		return applyModelStepWithdrawn(s), nil
 	case ModelStepRejected:
 		return applyModelStatus(s, ModelPrepared, fact.Usage, true), nil
+	case ModelStepFailed:
+		return applyModelStepFailed(s), nil
 	case ModelStepCompleted:
 		return applyModelStepCompleted(s, &fact), nil
 	case ToolStepOpened:
@@ -108,6 +110,14 @@ func applyModelEffect(s MachineState, effect EffectID) MachineState { //nolint:g
 	ms := s.Current.(ModelStep) //nolint:errcheck // caller established Current is a ModelStep
 	ms.Effect = effect
 	s.Current = ms
+	return s
+}
+
+// applyModelStepFailed settles the step's effect and leaves the Run Open for
+// the RunEnded that follows in the same group. The step ran, so ModelSteps
+// keeps counting it.
+func applyModelStepFailed(s MachineState) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
+	s.Current = Open{}
 	return s
 }
 
@@ -210,7 +220,12 @@ func (m StateMachine) guardFact(s *MachineState, f Fact) error {
 	case ModelStepRecovered:
 		return requireModelEffect(s, fact.StepID, fact.Effect)
 	case ModelStepRejected:
-		return requireModelStep(s, fact.StepID, ModelExecuting)
+		return requireModelEffect(s, fact.StepID, fact.Effect)
+	case ModelStepFailed:
+		if fact.Effect == "" || fact.Failure.Class == "" {
+			return errors.New("agent: evolve: model step failed without effect or failure class")
+		}
+		return requireModelEffect(s, fact.StepID, fact.Effect)
 	case ModelStepCompleted:
 		if fact.ResultDigest == "" {
 			return errors.New("agent: evolve: model step completed without result digest")
@@ -242,10 +257,33 @@ func (m StateMachine) guardFact(s *MachineState, f Fact) error {
 	case InputAccepted:
 		return guardInputAccepted(s, &fact)
 	case RunEnded:
-		return validateRunEnd(fact.End)
+		if err := validateRunEnd(fact.End); err != nil {
+			return err
+		}
+		return requireNoExecutingEffect(s)
 	default:
 		return fmt.Errorf("agent: evolve: unknown fact variant %T", f)
 	}
+}
+
+// requireNoExecutingEffect: a Run ends only after every effect it requested
+// was settled by a fact naming it (RUN-WIR-1). RunEnded closes no effect, so
+// an Executing model step or tool call at that point would be an effect no
+// settlement ever names.
+func requireNoExecutingEffect(s *MachineState) error {
+	switch cur := s.Current.(type) {
+	case ModelStep:
+		if cur.Status == ModelExecuting {
+			return fmt.Errorf("agent: evolve: run ended while model step %q executes effect %q", cur.RefValue.ID, cur.Effect)
+		}
+	case ToolStep:
+		for i := range cur.Calls {
+			if cur.Calls[i].Status == ToolExecuting {
+				return fmt.Errorf("agent: evolve: run ended while tool call %q executes effect %q", cur.Calls[i].CallID, cur.Calls[i].Effect)
+			}
+		}
+	}
+	return nil
 }
 
 func requireOpen(s *MachineState, what string) error {
