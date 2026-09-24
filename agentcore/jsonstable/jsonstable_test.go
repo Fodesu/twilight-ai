@@ -88,8 +88,8 @@ func TestCanonicalizeRejects(t *testing.T) {
 			t.Errorf("%s (%q) was accepted", name, in)
 		}
 	}
-	// The surrogate check is this package's own, not the JCS parser's: it
-	// stops two distinct invalid wires from merging into one digest input.
+	// The surrogate check is the SDK's, not the JCS parser's: it stops two
+	// distinct invalid wires from merging into one digest input.
 	if _, err := Canonicalize([]byte(`"\ud800"`)); err == nil || !strings.Contains(err.Error(), "lone surrogate") {
 		t.Errorf("lone surrogate error = %v", err)
 	}
