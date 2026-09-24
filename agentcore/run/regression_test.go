@@ -46,13 +46,13 @@ func TestRegressionToolStepIDReproducible(t *testing.T) {
 	b := makeBinding(t, stepID, 0, "c1", spec, `{}`)
 	facts := mustDecide(t, s, run.SubmitModelResult{StepID: stepID, Result: modelResultWithCalls("c1"), Calls: []run.ToolCallBinding{b}})
 	opened := facts[1].(run.ToolStepOpened)
-	if schema.Identity().DeriveToolStepID(opened.Source, opened.BindingSetDigest) != opened.StepID {
-		t.Fatal("ToolStepOpened digest does not reproduce its StepID")
+	if schema.Identity().DeriveToolStepID(opened.Source) != opened.StepID {
+		t.Fatal("ToolStepOpened source does not reproduce its StepID")
 	}
 	s = fold(t, s, facts)
 	ts := s.Current.(run.ToolStep)
-	if schema.Identity().DeriveToolStepID(ts.Source, ts.RefValue.Digest) != ts.RefValue.ID {
-		t.Fatal("persisted StepRef.Digest does not reproduce the step ID")
+	if schema.Identity().DeriveToolStepID(ts.Source) != ts.RefValue.ID {
+		t.Fatal("persisted ToolStep source does not reproduce the step ID")
 	}
 }
 

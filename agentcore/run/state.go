@@ -170,17 +170,16 @@ const (
 // lacks, named so the application can route it. Kind says which input --
 // the approval a call needs before its tool effect may be requested, or the
 // external response that settles the call in place of a tool effect. ID is
-// the derived ResponseID the resolving command must name, RequestDigest the
-// digest of the payload shown to whoever answers. A Wait is not an effect:
-// nothing is dispatched for a Waiting call and no attempt exists for it.
+// the derived ResponseID the resolving command must name, Payload the
+// arguments shown to whoever answers. A Wait is not an effect: nothing is
+// dispatched for a Waiting call and no attempt exists for it.
 type ResponseRequest struct {
-	RunID         RunID         `json:"runId"`
-	StepID        StepID        `json:"stepId"`
-	CallID        CallID        `json:"callId"`
-	ID            ResponseID    `json:"id"`
-	Kind          ResponseKind  `json:"kind"`
-	Payload       CanonicalJSON `json:"payload,omitzero"`
-	RequestDigest Digest        `json:"requestDigest"` // digest of the request payload
+	RunID   RunID         `json:"runId"`
+	StepID  StepID        `json:"stepId"`
+	CallID  CallID        `json:"callId"`
+	ID      ResponseID    `json:"id"`
+	Kind    ResponseKind  `json:"kind"`
+	Payload CanonicalJSON `json:"payload,omitzero"`
 }
 
 // ToolSpec is the agent-side sidecar for a provider-neutral ToolDefinition.
@@ -204,7 +203,6 @@ type ToolCallBinding struct {
 	ProviderCallID   string         `json:"providerCallId,omitempty"`
 	ToolRef          ToolRef        `json:"toolRef"`
 	DefinitionDigest Digest         `json:"definitionDigest"`
-	BindingDigest    Digest         `json:"bindingDigest"` // definition, policy and canonical arguments
 	Arguments        CanonicalJSON  `json:"arguments"`
 	Policy           ResponsePolicy `json:"policy"` // unresolved ToolRef uses DirectExecution
 	Replay           ReplayPolicy   `json:"replay,omitempty"`
@@ -214,9 +212,8 @@ type ToolCallBinding struct {
 }
 
 type StepRef struct {
-	RunID  RunID  `json:"runId"`
-	ID     StepID `json:"id"`
-	Digest Digest `json:"digest"` // immutable step binding digest; progress is not included
+	RunID RunID  `json:"runId"`
+	ID    StepID `json:"id"`
 }
 
 // Step is sealed by the agent package: only ModelStep and ToolStep exist.
@@ -265,7 +262,6 @@ type ModelStep struct {
 	RequestDigest Digest          `json:"requestDigest"`
 	Model         ModelRef        `json:"model"`
 	Tools         []ToolSpec      `json:"tools,omitempty"`
-	ToolsDigest   Digest          `json:"toolsDigest"`
 	Status        ModelStepStatus `json:"status"`
 	// Effect is the model effect the step most recently requested (from
 	// ModelStepStarted); empty before the first start. The step fixes the
@@ -275,8 +271,7 @@ type ModelStep struct {
 	// effect. A new owner recovers an Executing step under a CommandID derived
 	// from it (RUN-CMT-7).
 	Effect EffectID `json:"effect,omitempty"`
-	// Rejects counts accepted ModelStepRejected facts; progress, not part of
-	// RefValue.Digest.
+	// Rejects counts accepted ModelStepRejected facts.
 	Rejects int `json:"rejects,omitempty"`
 }
 
@@ -350,7 +345,6 @@ type ToolCallState struct {
 	ProviderCallID   string         `json:"providerCallId,omitempty"`
 	ToolRef          ToolRef        `json:"toolRef"`
 	DefinitionDigest Digest         `json:"definitionDigest"`
-	BindingDigest    Digest         `json:"bindingDigest"`
 	Arguments        CanonicalJSON  `json:"arguments"`
 	Policy           ResponsePolicy `json:"policy"`
 	Replay           ReplayPolicy   `json:"replay,omitempty"`
@@ -358,7 +352,7 @@ type ToolCallState struct {
 	// Effect is the tool effect the call requested (from ToolCallStarted);
 	// empty before the start and for a call an external response settles
 	// without one. The call fixes the effect's kind (a tool call) and binding
-	// (BindingDigest). A call starts at most once.
+	// (definition, policy and arguments). A call starts at most once.
 	Effect  EffectID         `json:"effect,omitempty"`
 	Result  *ToolCallResult  `json:"result,omitempty"`
 	Failure *ToolCallFailure `json:"failure,omitempty"`
@@ -555,7 +549,7 @@ func validateLastToolStep(s *MachineState) error {
 	if last == nil {
 		return nil
 	}
-	if last.RefValue.RunID != s.RunID || last.RefValue.ID == "" || last.RefValue.Digest == "" || last.Source == "" {
+	if last.RefValue.RunID != s.RunID || last.RefValue.ID == "" || last.Source == "" {
 		return errors.New("agent: state: invalid LastToolStep projection")
 	}
 	if len(last.Calls) == 0 {
@@ -579,7 +573,7 @@ func validateCurrent(s *MachineState) error {
 	case nil:
 		return errors.New("agent: state: active state has no current")
 	case ModelStep:
-		if current.RefValue.RunID != s.RunID || current.RefValue.ID == "" || current.RefValue.Digest == "" || current.Model == "" {
+		if current.RefValue.RunID != s.RunID || current.RefValue.ID == "" || current.Model == "" {
 			return errors.New("agent: state: invalid current ModelStep identity")
 		}
 		if current.Status != ModelPrepared && current.Status != ModelExecuting {
@@ -594,7 +588,7 @@ func validateCurrent(s *MachineState) error {
 }
 
 func validateCurrentToolStep(runID RunID, ts *ToolStep) error {
-	if ts.RefValue.RunID != runID || ts.RefValue.ID == "" || ts.RefValue.Digest == "" || ts.Source == "" || len(ts.Calls) == 0 {
+	if ts.RefValue.RunID != runID || ts.RefValue.ID == "" || ts.Source == "" || len(ts.Calls) == 0 {
 		return errors.New("agent: state: invalid current ToolStep identity")
 	}
 	seen := make(map[CallID]struct{}, len(ts.Calls))

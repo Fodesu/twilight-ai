@@ -16,38 +16,26 @@ import (
 // Canonical is the digest rules the state machine is composed with; the
 // implementation lives in agentcore/run/canonical, which imports this
 // package, so the seam is an interface (composed in agentcore/run/schema).
-// It is the digest rules of one schema version for every body a fact
-// names or a derived identity covers.
+// It is the digest rules for every body a fact names.
 type Canonical interface {
 	DigestRequest(model.ModelRequest) (Digest, error)
 	DigestToolDefinition(model.ToolDefinition) (Digest, error)
-	DigestToolSpec(ToolSpec) (Digest, error)
-	DigestToolSpecs([]ToolSpec) (Digest, error)
-	DigestModelStepBinding(modelRef ModelRef, requestDigest, toolsDigest Digest) (Digest, error)
 	DigestToolResponseDecision(ResponseKind, ResponseDecision, string) (Digest, error)
 	DigestToolResponsePayload(CanonicalJSON) (Digest, error)
 	// DigestModelResult names a frozen model result (ModelStepCompleted.ResultDigest).
 	DigestModelResult(model.ModelResult) (Digest, error)
 	// DigestToolOutput names one tool output (ToolCallCompleted.OutputDigest).
 	DigestToolOutput(CanonicalJSON) (Digest, error)
-	// DigestToolCallBinding covers one binding: definition, policy and
-	// canonical arguments plus the CallID (RUN-MCH-2).
-	DigestToolCallBinding(callID CallID, definitionDigest Digest, policy ResponsePolicy, arguments CanonicalJSON) (Digest, error)
-	// DigestToolCallBindingSet covers the full ordered pre-Response call set
-	// of one ToolStep; it feeds DeriveToolStepID and is carried inside
-	// ToolStepOpened.
-	DigestToolCallBindingSet([]ToolCallBinding) (Digest, error)
 }
 
-// Identity is the identity derivation of one schema version. Everything a
-// Run persists that names a step, call, response, effect or command is
-// derived here, so two schema versions may derive differently without either
-// breaking the other's replay.
+// Identity is the identity derivation. Everything a Run persists that names
+// a step, call, response, effect or command is derived here; the
+// implementation lives in agentcore/run/canonical.
 type Identity interface {
 	DeriveModelRequestCommandID(run RunID, position RunPosition) CommandID
-	DeriveModelStepID(run RunID, cmd CommandID, binding Digest) StepID
+	DeriveModelStepID(run RunID, cmd CommandID) StepID
 	DeriveCallID(source StepID, index int) CallID
-	DeriveToolStepID(source StepID, bindingSet Digest) StepID
+	DeriveToolStepID(source StepID) StepID
 	DeriveResponseID(run RunID, step StepID, call CallID, kind ResponseKind) ResponseID
 	DeriveResponseCommandID(run RunID, step StepID, call CallID, resp ResponseID) CommandID
 	DeriveInputCommandID(run RunID, inputs ...InputID) CommandID

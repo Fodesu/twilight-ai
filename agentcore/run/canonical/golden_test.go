@@ -23,9 +23,9 @@ func TestDerivedIdentityGolden(t *testing.T) {
 		want string
 	}{
 		{"model request command", string((Identity{}).DeriveModelRequestCommandID(runID, 7)), "7e42f75006e3271ce7420647345f238ee59e9603d596e7907cb2ccadc281763d"},
-		{"model step", string((Identity{}).DeriveModelStepID(runID, "cmd-1", "sha256:aa")), "e93e6d7910d106102f93720d5053fb021e5a11889b4f900e648605c2e2e27b60"},
+		{"model step", string((Identity{}).DeriveModelStepID(runID, "cmd-1")), "883c5ef2aae151247361c311c41884dab6621d880aac6e3c285dcc2ad5ffa8e6"},
 		{"tool call", string((Identity{}).DeriveCallID(step, 0)), "cca7fd2e5a02a565155747fd8c126ac497a425d2f627eb2c77605dc0551aea11"},
-		{"tool step", string((Identity{}).DeriveToolStepID(step, "sha256:bb")), "e3d3b8b789d6342ada0a91108759dbc050c9a2b44094e8e7dba6db7e4bdc2e02"},
+		{"tool step", string((Identity{}).DeriveToolStepID(step)), "6f62a482a83239b9c324a73c21b0b671ef2cad0af94a30177ed62929467d419d"},
 		{"response id", string((Identity{}).DeriveResponseID(runID, step, call, run.ResponseApproval)), "819924b49cc24df66e97f5821ac80bf286b983e600f20e25f045142c4bc0e77e"},
 		{"response command", string((Identity{}).DeriveResponseCommandID(runID, step, call, "resp-1")), "aacf7d247a13e4a696bff6f881ec517a6ad95ae262ec862d7dcf84b80c6bb32b"},
 		{"input command", string((Identity{}).DeriveInputCommandID(runID, "in-1")), "ce57abe29d2da34e02cf8fbfb7e4a25086b352096977094e9bed7eb66dd16aad"},

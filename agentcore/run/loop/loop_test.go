@@ -291,10 +291,6 @@ func TestToolStartStaleIsNotAnError(t *testing.T) {
 	spec := toolSpec(t, "echo", DirectExecution)
 	args := cj(`{}`)
 	callID := schema.Identity().DeriveCallID("model-1", 0)
-	bindingDigest, err := schema.Canonical().DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
-	if err != nil {
-		t.Fatal(err)
-	}
 	echo := &fakeTool{ref: "echo", def: toolDef(spec.Name), policy: DirectExecution,
 		execute: func(context.Context, ToolExecutionRequest) ToolExecutionOutcome {
 			return ToolExecutionSucceeded{Result: ToolExecutionResult{Output: args}}
@@ -308,11 +304,11 @@ func TestToolStartStaleIsNotAnError(t *testing.T) {
 	snapshot := &runtime.Snapshot{State: MachineState{
 		RunID: "run-1", Status: RunActive,
 		Current: ToolStep{
-			RefValue: StepRef{RunID: "run-1", ID: stepID, Digest: Digest("sha256:step")},
+			RefValue: StepRef{RunID: "run-1", ID: stepID},
 			Source:   "model-1",
 			Calls: []ToolCallState{{
 				CallID: callID, ProviderCallID: "c1", ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
-				BindingDigest: bindingDigest, Arguments: args, Policy: DirectExecution, Status: ToolPending,
+				Arguments: args, Policy: DirectExecution, Status: ToolPending,
 			}},
 		},
 	}, Position: 1}

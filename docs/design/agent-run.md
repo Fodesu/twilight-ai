@@ -29,7 +29,7 @@ Prompt Builder  = 从 Session context 构造下一条 prompt（决策层，agent
 
 Machine 处理已冻结的值和已提交的事实；Loop 解释 `plan.Next` 派生的 transient action，只做决策与记录，从不在一次推进里等待效果；RunStore 保存并验证 Machine 的推进；Executor 执行外部 effect 并以数据形式交回结果，它与 Loop 是否同进程是部署选择（第 6 节 RUN-EXE）；Prompt Builder 构造下一条 prompt。
 
-`Step` 是 Run 的持久化恢复边界，描述逻辑进度（ModelStep、ToolStep）。`effect` 是 Run 对外部世界的一次请求：一个 ModelStep 的模型调用，或一个 tool call 的工具调用；其身份 `EffectID = Digest("twilight/effect", RunID, StepID, CallID, sequence)`，model effect 的 CallID 为空、sequence 为该 step 已记录的 `Rejects`（Retry 使同一 StepID 回到 Prepared 并请求下一个 effect），tool effect 的 sequence 为 0（一个 call 最多 start 一次）。effect 的 kind 与 binding 由请求者决定（ModelStep 的 `RequestDigest`、call 的 `BindingDigest`），Run 不在 step 之外另存 effect 记录。`attempt` 是 Executor 对一个 effect 的一次物理执行：Execution Record、worker、lease、`ExecutionRef` 都属于 attempt，Run 不记录它们，只经 EffectID 与 Executor 相连。`Wait` 是 tool call 尚缺失的外部输入（`ResponseRequest`：approval 或 external response），Waiting 的 call 不请求 effect。Session Writer 负责 Run 语义事实的 ownership；Executor Worker 可以在另一个 control-plane ownership 下执行同一个 Assignment。start 事实记录 effect（`ModelStepStarted.Effect`、`ToolCallStarted.Effect`），接管者以 EffectID 向 Executor 询问该 effect 的 attempt 是否仍存在（RUN-CMT-7）。
+`Step` 是 Run 的持久化恢复边界，描述逻辑进度（ModelStep、ToolStep）。`effect` 是 Run 对外部世界的一次请求：一个 ModelStep 的模型调用，或一个 tool call 的工具调用；其身份 `EffectID = Digest("twilight/effect", RunID, StepID, CallID, sequence)`，model effect 的 CallID 为空、sequence 为该 step 已记录的 `Rejects`（Retry 使同一 StepID 回到 Prepared 并请求下一个 effect），tool effect 的 sequence 为 0（一个 call 最多 start 一次）。effect 的 kind 与 binding 由请求者决定（ModelStep 的 `RequestDigest`、call 的冻结 `ToolCallBinding`），Run 不在 step 之外另存 effect 记录。`attempt` 是 Executor 对一个 effect 的一次物理执行：Execution Record、worker、lease、`ExecutionRef` 都属于 attempt，Run 不记录它们，只经 EffectID 与 Executor 相连。`Wait` 是 tool call 尚缺失的外部输入（`ResponseRequest`：approval 或 external response），Waiting 的 call 不请求 effect。Session Writer 负责 Run 语义事实的 ownership；Executor Worker 可以在另一个 control-plane ownership 下执行同一个 Assignment。start 事实记录 effect（`ModelStepStarted.Effect`、`ToolCallStarted.Effect`），接管者以 EffectID 向 Executor 询问该 effect 的 attempt 是否仍存在（RUN-CMT-7）。
 
 **RUN-SCP-1** `agentcore/run` 只定义一个 Run 的 identity、事实、状态、命令与合法状态转移（`MachineState`、`Command`、`Fact`、`Decide`、`Evolve`）。子包分为两层。协议层的公开类型随 Run 的 schema 一起变更，或是 Run 核心定义的端口：`model`（冻结的模型请求、模型结果、消息、用量与工具定义的数据模型，它们是 canonical digest 的预映像；`model/sdkconv` 是与 `sdk` 类型互转的唯一位置）、`canonical`（digest 规则与 identity 派生）、`wire`（command/fact 编解码、变体注册表与 `MachineState` codec）、`frozen`（冻结正文的信封编解码与 `Store` 端口）、`schema`（Machine、Wire、Canonical、Snapshot、Identity、Bodies 六个契约的无版本单值）、`plan`（`Next` 执行规划、`WaitingCalls` / `NeedsRecovery` 查询与接管处置 `RecoveryTargets` / `RecoveryCommands`）、`runtime`（`RunStore` 端口、`Snapshot`、`CommitRequest` / `CommitResult`、`EvaluateCommit` 与 `FoldRun`）。除 `model/sdkconv` 外，协议层只依赖 `agentcore/es`、`agentcore/jsonstable` 与彼此，`sdk` 在协议层只出现在 `model/sdkconv`；协议层不依赖 `agentcore/session`、`writer`、loop、turn 或 extension：store 身份是不透明的 `Scope`，位置是 `RunPosition`，envelope 不命名 store。执行层使用协议层与 `sdk`，Run 核心与协议层不引用执行层：`effect`（Loop 与 Executor 之间与进程无关的端口合同；`ModelAssignment` 携带冻结的 `model.ModelRequest`，`ModelSucceeded` 以 `sdk.ModelResult` 交回模型结果，由 Loop 经 `model/sdkconv` 冻结后提交）、`loop`（只依赖 `runtime.RunStore`，拥有 prompt builder/model/tool ports、streaming、并发执行、EventSink 与 Loop policy）、`reconcile`（比较 Run 机器的 Executing 目标与 execution store 的记录，产生 Run command）。effect 端口的传输编码 `agentcore/executor/protocol` 属于 Executor，只被 Executor 及其 store / http 适配器导入。`agentcore/session/run` 是 Run 的 Session Module 实现：EventDefinition（每个事实类型一个 payload 版本的 codec，wire 类型来自 `wire.FactTypes()`）、`twilight/run/machine` projection、`SessionRunStore`（`Bind(w)` 实现 `runtime.RunStore`，`Command` / `CreateRun` 是 unit of work 的 Part）、Session 级接管入口、`frozen.Store` adapter。
 
@@ -88,8 +88,8 @@ command 不持久化。`CommandEnvelope.ID` 就是该 command 产生的 event �
 | identity | preimage |
 |---|---|
 | PrepareModelRequest CommandID | RunID、loaded `RunPosition`（该 RunID 最后一条事件的 Seq） |
-| ModelStep StepID | RunID、prepare CommandID、model/request/tools binding digest |
-| ToolStep StepID | source ModelStepID、ordered binding-set digest |
+| ModelStep StepID | RunID、prepare CommandID |
+| ToolStep StepID | source ModelStepID（一个 ModelStep 只完成一次，至多打开一个 ToolStep） |
 | CallID | source ModelStepID、该 call 在模型结果 `ToolCalls` 中的位置 |
 | ResponseID | RunID、ToolStepID、CallID、ResponseKind |
 | response CommandID | RunID、StepID、CallID、ResponseID |
@@ -160,9 +160,8 @@ type ModelStep struct {
     RequestDigest Digest // Owner 侧 frozen payload；Dispatch 后由 Execution Ledger 持有
     Model ModelRef
     Tools []ToolSpec
-    ToolsDigest Digest
     Status ModelStepStatus
-    Rejects int // 已接受的 ModelStepRejected 次数；不进入 RefValue.Digest
+    Rejects int // 已接受的 ModelStepRejected 次数
 }
 type ToolSpec struct {
     Ref ToolRef
@@ -237,14 +236,14 @@ ToolCall:
 
 **RUN-MCH-1** MachineState 保存 Run 的 execution semantics，是其事实沿四个维度的折叠：Progress（`Current`、`ModelSteps`、`LastToolStep`：Run 处于哪个 Step、冻结了什么）、Inbox（`PendingInputs`：已接受、尚未被 prepare 消费的输入）、Effects（Executing 的 ModelStep 或 call 请求的 `Effect`，与 Waiting call 持有的 `Waiting`）、End（`Status`、`Result`）。控制面元数据（哪个 worker 在执行某个 effect、lease、epoch、backend 句柄）属于 Executor 的 attempt 记录，Session 的 owner fence 与队列 claim 属于宿主，都不进入 MachineState。`Usage` 与 `Result` 是为读取方折叠的投影：Usage 累计每条模型事实报告的用量，Result 复述 `RunEnded` 并附带该 Usage；Decide 不读取它们，Run 结束的 authority 是 `RunEnded` 事实。`LastToolStep` 保存最近一个经 Evolve 关闭路径写下的 ToolStep 只读投影，必须与事件序列折叠出的最后关闭 step 一致，供下一次 prompt builder 定位 `SourceStep`。Cancel 经 `RunEnded` 把 `Current` 置空、不走关闭路径时不改写 `LastToolStep`。terminal state 吸收所有未幂等命令；`RunEnded` 建立唯一 terminal result。
 
-**RUN-MCH-2** `ToolCallBinding` 冻结 CallID、ProviderCallID、ToolRef、definition digest、canonical arguments、response policy 与 binding digest。canonical arguments 是 `ToolArguments.Canonical()`：模型给出 JSON 文档时为该文档，零值为空对象，不是 JSON 的参数文本以 JSON 字符串绑定，使 binding digest 覆盖模型实际写出的内容，并在校验阶段以 invalid_arguments 失败。`CallID` 由 Run 派生（`DeriveCallID(source, index)`），是 Run 内的持久化 identity，进入 fact、派生 CommandID 与 chatlog；`ProviderCallID` 是模型发出的 `tool_call_id`，只用于 PromptBuilder 回传工具结果时与模型配对，Run 不以它为键，也不要求它唯一或非空。Decide 校验每个 binding 的 CallID 等于派生值、ProviderCallID 等于模型结果中对应位置的 id。已知工具使用匹配 frozen ToolSpec 的 ref/digest/policy；未知工具保留为同名 unresolved DirectExecution binding，并在执行前收束为已知 lookup failure。approval/external response 的 `ResponseRequest` 由 Decide 稳定派生。Unknown outcome 使用 class `effect_unknown`，只把该 Executing call 记为 `ToolCallFailed(Unknown)`。Run 保持 Active；同 step 其他 call 继续。全部 call 进入 Completed 或 Failed 后 Evolve 关闭 ToolStep。
+**RUN-MCH-2** `ToolCallBinding` 冻结 CallID、ProviderCallID、ToolRef、definition digest、canonical arguments 与 response policy。canonical arguments 是 `ToolArguments.Canonical()`：模型给出 JSON 文档时为该文档，零值为空对象，不是 JSON 的参数文本以 JSON 字符串绑定，使 fact 保留模型实际写出的内容，并在校验阶段以 invalid_arguments 失败。`CallID` 由 Run 派生（`DeriveCallID(source, index)`），是 Run 内的持久化 identity，进入 fact、派生 CommandID 与 chatlog；`ProviderCallID` 是模型发出的 `tool_call_id`，只用于 PromptBuilder 回传工具结果时与模型配对，Run 不以它为键，也不要求它唯一或非空。Decide 校验每个 binding 的 CallID 等于派生值、ProviderCallID 等于模型结果中对应位置的 id。已知工具使用匹配 frozen ToolSpec 的 ref/digest/policy；未知工具保留为同名 unresolved DirectExecution binding，并在执行前收束为已知 lookup failure。approval/external response 的 `ResponseRequest` 由 Decide 稳定派生。Unknown outcome 使用 class `effect_unknown`，只把该 Executing call 记为 `ToolCallFailed(Unknown)`。Run 保持 Active；同 step 其他 call 继续。全部 call 进入 Completed 或 Failed 后 Evolve 关闭 ToolStep。
 
 `AgentCommand` 与 `Fact` 都是 sealed interface。v1 的 command→fact 规则为：
 
 | command | precondition / facts |
 |---|---|
 | `AcceptInput` | 任意非终态；批内每个输入一条 `InputAccepted`，按顺序追加到 `PendingInputs`，全有或全无。空批次为拒绝；同一 InputID 已在 pending 或在批内重复为 conflict，整批无事实 |
-| `PrepareModelRequest` | `Open`，完整有序消费 PendingInputs，request/tools digests 有效；`ModelStepPrepared`。command 携带请求本体，fact 只留 digest，本体由 Run 的 Command Part 写入 `frozen.Store`；Dispatch 时复制到 executor-owned payload |
+| `PrepareModelRequest` | `Open`，完整有序消费 PendingInputs，RequestDigest 等于请求本体的 digest，ToolSpec 与请求内工具定义逐一对应；`ModelStepPrepared`。command 携带请求本体，fact 只留 digest，本体由 Run 的 Command Part 写入 `frozen.Store`；Dispatch 时复制到 executor-owned payload |
 | `WithdrawPreparedStep` | Model Prepared 且 `PendingInputs` 非空；`ModelStepWithdrawn`，`Current` 回到 `Open`，该请求本体可释放 |
 | `StartModelExecution` | Model Prepared；`ModelStepStarted`。command 携带本次 start 请求的 `Effect`，须等于 `DeriveEffectID(RunID, StepID, "", Rejects)` |
 | `RecoverModelExecution` | Model Executing；`ModelStepRecovered`，`Current` 回到 `Open`、不计入 `ModelSteps`、PendingInputs 保留。携带该 step 正在执行的 `Effect`，须等于 `ModelStep.Effect` |
@@ -597,7 +596,7 @@ Loop.Run(...):  // 阻塞封装：Advance → 等待本次 dispatch 的 Outcome 
 
 每个 `Loop` 实例为每个 `(SessionID, RunID)` 分配一个本地 slot：同一 Run 的 `Advance` 与 `Deliver` 串行；`Run` 进行期间对同一 Run 的 `Advance` 或第二个 `Run` 返回 `ErrRunAlreadyRunning`；不同 Run 可以并行驱动。slot 只在有 `Advance`、`Deliver` 或 `Run` 持有它时存在，最后一个持有者返回后释放，因此 slot 表的大小随正在驱动的 Run 数变化，与 Loop 见过的 Run 总数无关。宿主必须保证一个 Session 在一个进程内只有一个 Loop 实例驱动它的 Run（与 `Writer` 一一对应）。
 
-**RUN-LOP-2** `NeedModelRequest` 调用 PromptBuilder，冻结 sdk.Request，验证 model、ordered InputIDs 与 ToolSpecs，计算 request/tools/binding digests 和 derived CommandID/StepID，再提交 Prepare（command 携带本体）。prepare stale 后重新 Load；同 Position 的内容拒绝不得 livelock 重试。业务停止统一使用 `CancelRun`。
+**RUN-LOP-2** `NeedModelRequest` 调用 PromptBuilder，冻结 sdk.Request，验证 model、ordered InputIDs 与 ToolSpecs，计算 request digest 和 derived CommandID/StepID，再提交 Prepare（command 携带本体）。prepare stale 后重新 Load；同 Position 的内容拒绝不得 livelock 重试。业务停止统一使用 `CancelRun`。
 
 **RUN-LOP-8** `WithdrawPrepared` 时 Loop 提交 `WithdrawPreparedStep{StepID}`，随后重新 Load；被放弃请求的本体在 `frozen.Store` 中可立即释放。Loop 不为输入做任何其他事：Executing 与 ToolStep 期间到达的输入留在 `PendingInputs`，由随后 `Open` 的 `NeedModelRequest` 经 `PromptInput.Inputs` 交给 PromptBuilder。
 

@@ -31,17 +31,14 @@ func (RunCreated) fact() {}
 
 // ModelStepPrepared establishes the frozen ModelStep and consumes the listed
 // pending inputs. The request body is not in the fact: RequestDigest names it
-// in the frozen.Store. BindingDigest (model + request + tools) is computed
-// by Decide and carried in the fact: Evolve folds it verbatim, never
-// recomputes (fact self-containment, RUN-MCH-3).
+// in the frozen.Store. StepID derives from the Run and the preparing
+// command (RUN-WIR-3); the fact carries the step's content beside it.
 type ModelStepPrepared struct {
 	StepID        StepID     `json:"stepId"`
 	Model         ModelRef   `json:"model"`
 	RequestDigest Digest     `json:"requestDigest"`
 	InputIDs      []InputID  `json:"inputIds,omitempty"`
 	Tools         []ToolSpec `json:"tools,omitempty"`
-	ToolsDigest   Digest     `json:"toolsDigest"`
-	BindingDigest Digest     `json:"bindingDigest"`
 }
 
 func (ModelStepPrepared) fact() {}
@@ -106,16 +103,13 @@ type ModelStepCompleted struct {
 func (ModelStepCompleted) fact() {}
 
 // ToolStepOpened establishes the ToolStep with its full frozen call set.
-// BindingSetDigest is computed by Decide over the ordered pre-Response
-// binding set and carried in the fact: Evolve folds it verbatim, so replay
-// never recomputes a digest with a different schema version, and
-// DeriveToolStepID(Source, BindingSetDigest) == StepID always holds.
+// A ModelStep completes once, so the ToolStep it opens derives its identity
+// from the source alone: DeriveToolStepID(Source) == StepID always holds.
 type ToolStepOpened struct {
-	StepID           StepID            `json:"stepId"` // the new ToolStep
-	Source           StepID            `json:"source"` // the completed ModelStep
-	BindingSetDigest Digest            `json:"bindingSetDigest"`
-	Calls            []ToolCallBinding `json:"calls"`
-	Scheduling       ToolScheduling    `json:"scheduling,omitzero"`
+	StepID     StepID            `json:"stepId"` // the new ToolStep
+	Source     StepID            `json:"source"` // the completed ModelStep
+	Calls      []ToolCallBinding `json:"calls"`
+	Scheduling ToolScheduling    `json:"scheduling,omitzero"`
 }
 
 func (ToolStepOpened) fact() {}

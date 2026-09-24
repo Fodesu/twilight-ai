@@ -38,7 +38,6 @@ type PrepareModelRequest struct {
 	InputIDs      []InputID          `json:"inputIds,omitempty"`
 	PromptToken   PromptToken        `json:"promptToken,omitempty"`
 	Tools         []ToolSpec         `json:"tools,omitempty"`
-	ToolsDigest   Digest             `json:"toolsDigest"`
 }
 
 func (PrepareModelRequest) agentCommand() {}

@@ -120,25 +120,12 @@ func (m StateMachine) decidePrepareModelRequest(s *MachineState, cmd *PrepareMod
 	if cmd.RequestDigest != wantReq {
 		return nil, rejectionf("prepare: request digest mismatch")
 	}
-	wantTools, err := m.Canonical.DigestToolSpecs(cmd.Tools)
-	if err != nil {
-		return nil, err
-	}
-	if cmd.ToolsDigest != wantTools {
-		return nil, rejectionf("prepare: tools digest mismatch")
-	}
-	binding, err := m.Canonical.DigestModelStepBinding(cmd.Model, cmd.RequestDigest, cmd.ToolsDigest)
-	if err != nil {
-		return nil, err
-	}
 	return []Fact{ModelStepPrepared{
 		StepID:        cmd.StepID,
 		Model:         cmd.Model,
 		RequestDigest: cmd.RequestDigest,
 		InputIDs:      cmd.InputIDs,
 		Tools:         cmd.Tools,
-		ToolsDigest:   cmd.ToolsDigest,
-		BindingDigest: binding,
 	}}, nil
 }
 
@@ -327,42 +314,26 @@ func (m StateMachine) checkBindingAgainstResult(b *ToolCallBinding, rc *model.Mo
 	if !b.Arguments.Equal(rc.Input.Canonical()) {
 		return rejectionf("model result: binding %q arguments do not match the model result", b.CallID)
 	}
-	wantBinding, err := m.Canonical.DigestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
-	if err != nil {
-		return err
-	}
-	if b.BindingDigest != wantBinding {
-		return rejectionf("model result: binding %q binding digest mismatch", b.CallID)
-	}
 	return nil
 }
 
-// openToolStep derives the ToolStep identity from the ordered binding set,
-// attaches a ResponseRequest to every call whose policy waits, and freezes
-// the scheduling (RUN-LOP-1).
+// openToolStep derives the ToolStep identity from its source, attaches a
+// ResponseRequest to every call whose policy waits, and freezes the
+// scheduling (RUN-LOP-1).
 func (m StateMachine) openToolStep(runID RunID, source StepID, bindings []ToolCallBinding, scheduling ToolScheduling) (ToolStepOpened, error) {
-	setDigest, err := m.Canonical.DigestToolCallBindingSet(bindings)
-	if err != nil {
-		return ToolStepOpened{}, err
-	}
-	toolStepID := m.Identity.DeriveToolStepID(source, setDigest)
+	toolStepID := m.Identity.DeriveToolStepID(source)
 	for i := range bindings {
 		kind, waits := responseKindForPolicy(bindings[i].Policy)
 		if !waits {
 			continue
 		}
-		reqDigest, err := m.Canonical.DigestToolCallBinding(bindings[i].CallID, bindings[i].DefinitionDigest, bindings[i].Policy, bindings[i].Arguments)
-		if err != nil {
-			return ToolStepOpened{}, err
-		}
 		bindings[i].Response = &ResponseRequest{
-			RunID:         runID,
-			StepID:        toolStepID,
-			CallID:        bindings[i].CallID,
-			ID:            m.Identity.DeriveResponseID(runID, toolStepID, bindings[i].CallID, kind),
-			Kind:          kind,
-			Payload:       bindings[i].Arguments,
-			RequestDigest: reqDigest,
+			RunID:   runID,
+			StepID:  toolStepID,
+			CallID:  bindings[i].CallID,
+			ID:      m.Identity.DeriveResponseID(runID, toolStepID, bindings[i].CallID, kind),
+			Kind:    kind,
+			Payload: bindings[i].Arguments,
 		}
 	}
 	normalized, err := normalizeToolScheduling(scheduling)
@@ -370,11 +341,10 @@ func (m StateMachine) openToolStep(runID RunID, source StepID, bindings []ToolCa
 		return ToolStepOpened{}, rejectionf("model result: %v", err)
 	}
 	return ToolStepOpened{
-		StepID:           toolStepID,
-		Source:           source,
-		BindingSetDigest: setDigest,
-		Calls:            bindings,
-		Scheduling:       normalized,
+		StepID:     toolStepID,
+		Source:     source,
+		Calls:      bindings,
+		Scheduling: normalized,
 	}, nil
 }
 

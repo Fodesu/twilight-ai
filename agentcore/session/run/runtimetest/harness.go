@@ -398,21 +398,13 @@ func (h *harness) preparedCommand(snap runtime.Snapshot, withTool bool) (run.Pre
 	if err != nil {
 		h.fatal(err)
 	}
-	toolsDigest, err := schema.Canonical().DigestToolSpecs(specs)
-	if err != nil {
-		h.fatal(err)
-	}
-	binding, err := schema.Canonical().DigestModelStepBinding("m-1", reqDigest, toolsDigest)
-	if err != nil {
-		h.fatal(err)
-	}
 	cmdID := schema.Identity().DeriveModelRequestCommandID(snap.State.RunID, snap.Position)
 	ids := make([]run.InputID, len(snap.State.PendingInputs))
 	for i, in := range snap.State.PendingInputs {
 		ids[i] = in.ID
 	}
-	return run.PrepareModelRequest{StepID: schema.Identity().DeriveModelStepID(snap.State.RunID, cmdID, binding), Model: "m-1", Request: store,
-		RequestDigest: reqDigest, InputIDs: ids, Tools: specs, ToolsDigest: toolsDigest}, cmdID
+	return run.PrepareModelRequest{StepID: schema.Identity().DeriveModelStepID(snap.State.RunID, cmdID), Model: "m-1", Request: store,
+		RequestDigest: reqDigest, InputIDs: ids, Tools: specs}, cmdID
 }
 
 // prepare commits a Prepare at the Run's current position and returns the step.
@@ -461,12 +453,8 @@ func (h *harness) toolCallResult(step run.StepID, n int) (model.ModelResult, []r
 		args := run.MustParseCanonicalJSON(fmt.Sprintf(`{"i":%d}`, i))
 		calls[i] = sdk.ToolCall{ToolCallID: fmt.Sprintf("c%d", i), ToolName: "echo", Input: sdk.ParseToolArguments(args.String())}
 		callID := schema.Identity().DeriveCallID(step, i)
-		bd, err := schema.Canonical().DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
-		if err != nil {
-			h.fatal(err)
-		}
 		bindings[i] = run.ToolCallBinding{CallID: callID, ProviderCallID: calls[i].ToolCallID, ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
-			BindingDigest: bd, Arguments: args, Policy: spec.Policy}
+			Arguments: args, Policy: spec.Policy}
 	}
 	r, err := sdkconv.FreezeModelResult(sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 2}, ToolCalls: calls})
 	if err != nil {

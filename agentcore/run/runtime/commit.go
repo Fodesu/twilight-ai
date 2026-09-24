@@ -95,11 +95,10 @@ func EvaluateCommit(cur run.MachineState, position run.RunPosition, req CommitRe
 		if len(facts) == 0 {
 			return CommitDecision{}, errors.New("agent: commit: prepare produced no facts")
 		}
-		prepared, ok := facts[0].(run.ModelStepPrepared)
-		if !ok {
+		if _, ok := facts[0].(run.ModelStepPrepared); !ok {
 			return CommitDecision{}, errors.New("agent: commit: prepare did not produce ModelStepPrepared")
 		}
-		wantStep := schema.Identity().DeriveModelStepID(env.RunID, env.ID, prepared.BindingDigest)
+		wantStep := schema.Identity().DeriveModelStepID(env.RunID, env.ID)
 		if cmd.StepID != wantStep {
 			return CommitDecision{Kind: DecisionStale, Reject: fmt.Errorf("prepare: StepID %q does not match derived StepID %q", cmd.StepID, wantStep)}, nil
 		}

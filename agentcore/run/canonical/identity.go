@@ -33,11 +33,10 @@ func (Identity) DeriveModelRequestCommandID(runID run.RunID, position run.RunPos
 	return run.CommandID(namespacedHash("twilight/model-request", string(runID), fmt.Sprintf("%d", position)))
 }
 
-// DeriveModelStepID derives the frozen ModelStep identity from the Run, the
-// preparing command, and the model-step binding digest (model + request +
-// tools).
-func (Identity) DeriveModelStepID(runID run.RunID, cmd run.CommandID, binding run.Digest) run.StepID {
-	return run.StepID(namespacedHash("twilight/model-step", string(runID), string(cmd), string(binding)))
+// DeriveModelStepID derives the ModelStep identity from the Run and the
+// preparing command: one accepted Prepare opens one step.
+func (Identity) DeriveModelStepID(runID run.RunID, cmd run.CommandID) run.StepID {
+	return run.StepID(namespacedHash("twilight/model-step", string(runID), string(cmd)))
 }
 
 // DeriveCallID derives the Run-owned identity of one tool call from the
@@ -48,10 +47,10 @@ func (Identity) DeriveCallID(source run.StepID, index int) run.CallID {
 	return run.CallID(namespacedHash("twilight/tool-call", string(source), fmt.Sprintf("%d", index)))
 }
 
-// DeriveToolStepID derives the ToolStep identity from its source ModelStep
-// and the binding-set digest over the full ordered call set.
-func (Identity) DeriveToolStepID(source run.StepID, bindingSet run.Digest) run.StepID {
-	return run.StepID(namespacedHash("twilight/tool-step", string(source), string(bindingSet)))
+// DeriveToolStepID derives the ToolStep identity from its source ModelStep:
+// a ModelStep completes once and opens at most one ToolStep.
+func (Identity) DeriveToolStepID(source run.StepID) run.StepID {
+	return run.StepID(namespacedHash("twilight/tool-step", string(source)))
 }
 
 // DeriveResponseID derives the stable ResponseID the Machine assigns when it

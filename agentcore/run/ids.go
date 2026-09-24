@@ -33,7 +33,7 @@ type PromptToken string
 // the model call of one ModelStep or one tool call of a ToolStep
 // (Identity.DeriveEffectID). The requester fixes the effect's kind and
 // binding -- a ModelStep's effect is its model call under RequestDigest, a
-// tool call's effect is the call under BindingDigest -- so the Run carries
+// tool call's effect is the call with its frozen arguments -- so the Run carries
 // no effect record beside the requester. It is the only handle the Run and
 // the execution plane share: the Run records it in the start fact and
 // settles or recovers the effect under CommandIDs derived from it; the

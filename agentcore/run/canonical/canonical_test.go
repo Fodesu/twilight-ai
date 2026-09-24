@@ -166,35 +166,6 @@ func TestDeriveResponseIDPerKind(t *testing.T) {
 	}
 }
 
-func TestDigestBindingCanonicalizesArguments(t *testing.T) {
-	d1, err := (Digests{}).DigestToolCallBinding("c1", "sha256:x", run.DirectExecution, cj(`{"b":1,"a":2}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	d2, err := (Digests{}).DigestToolCallBinding("c1", "sha256:x", run.DirectExecution, cj(`{ "a" : 2, "b" : 1 }`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d1 != d2 {
-		t.Fatal("argument formatting leaked into binding digest")
-	}
-	d3, _ := (Digests{}).DigestToolCallBinding("c1", "sha256:x", run.ApprovalRequired, cj(`{"a":2,"b":1}`))
-	if d1 == d3 {
-		t.Fatal("policy does not affect binding digest")
-	}
-	id1, err := (Digests{}).DigestToolCallBinding("c", "", run.DirectExecution, cj(`{"channel_id":"9007199254740993"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	id2, err := (Digests{}).DigestToolCallBinding("c", "", run.DirectExecution, cj(`{"channel_id":"9007199254740992"}`))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if id1 == id2 {
-		t.Fatal("distinct string identifiers collided in a binding digest")
-	}
-}
-
 // Golden vectors for the canonical encoding. They guard the persisted
 // preimages; a change here is a change to every digest ever written.
 func TestCanonicalGolden(t *testing.T) {

@@ -323,10 +323,6 @@ func (f *Feature) ExecutingTool(name string, callID run.CallID) *Feature {
 	providerID := string(callID)
 	callID = schema.Identity().DeriveCallID(f.modelStepID, 0)
 	args := run.MustParseCanonicalJSON(`{"x":1}`)
-	binding, err := schema.Canonical().DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
-	if err != nil {
-		f.t.Fatal(err)
-	}
 	frozen, err := sdkconv.FreezeModelResult(sdk.ModelResult{
 		FinishReason: sdk.FinishReasonToolCalls,
 		Usage:        sdk.Usage{TotalTokens: 2},
@@ -342,7 +338,7 @@ func (f *Feature) ExecutingTool(name string, callID run.CallID) *Feature {
 		Result: frozen,
 		Calls: []run.ToolCallBinding{{
 			CallID: callID, ProviderCallID: providerID, ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
-			BindingDigest: binding, Arguments: args, Policy: spec.Policy,
+			Arguments: args, Policy: spec.Policy,
 		}},
 	})
 	ts, ok := res.Snapshot.State.Current.(run.ToolStep)
@@ -482,16 +478,8 @@ func (f *Feature) commitPrepare() {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	toolsDigest, err := schema.Canonical().DigestToolSpecs(f.specs)
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	binding, err := schema.Canonical().DigestModelStepBinding(f.model, reqDigest, toolsDigest)
-	if err != nil {
-		f.t.Fatal(err)
-	}
 	cmdID := schema.Identity().DeriveModelRequestCommandID(f.runID, snap.Position)
-	stepID := schema.Identity().DeriveModelStepID(f.runID, cmdID, binding)
+	stepID := schema.Identity().DeriveModelStepID(f.runID, cmdID)
 	ids := make([]run.InputID, len(snap.State.PendingInputs))
 	for i, in := range snap.State.PendingInputs {
 		ids[i] = in.ID
@@ -499,7 +487,7 @@ func (f *Feature) commitPrepare() {
 	f.modelStepID = stepID
 	f.commit(run.PrepareModelRequest{
 		StepID: stepID, Model: f.model, Request: frozen,
-		RequestDigest: reqDigest, InputIDs: ids, Tools: f.specs, ToolsDigest: toolsDigest,
+		RequestDigest: reqDigest, InputIDs: ids, Tools: f.specs,
 	})
 }
 

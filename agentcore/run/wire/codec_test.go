@@ -16,7 +16,7 @@ import (
 
 func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 	commands := []run.AgentCommand{
-		run.PrepareModelRequest{StepID: "s", Model: "m", Request: model.ModelRequest{Model: "m"}, RequestDigest: "sha256:req", ToolsDigest: "sha256:tools"},
+		run.PrepareModelRequest{StepID: "s", Model: "m", Request: model.ModelRequest{Model: "m"}, RequestDigest: "sha256:req"},
 		run.WithdrawPreparedStep{StepID: "s"},
 		run.StartModelExecution{StepID: "s", Effect: "effect-s"},
 		run.RecoverModelExecution{StepID: "s", Effect: "effect-s"},
@@ -60,13 +60,13 @@ func TestCommandEnvelopeJSONRoundTripRestoresVariants(t *testing.T) {
 func TestFactCodecRoundTripRestoresVariants(t *testing.T) {
 	facts := []run.Fact{
 		run.RunCreated{RunID: "run-1", CausationID: "cause"},
-		run.ModelStepPrepared{StepID: "s", Model: "m", RequestDigest: "sha256:req", ToolsDigest: "sha256:tools", BindingDigest: "sha256:binding"},
+		run.ModelStepPrepared{StepID: "s", Model: "m", RequestDigest: "sha256:req"},
 		run.ModelStepWithdrawn{StepID: "s"},
 		run.ModelStepStarted{StepID: "s", Effect: "effect-m"},
 		run.ModelStepRecovered{StepID: "s"},
 		run.ModelStepRejected{StepID: "s", Usage: model.Usage{TotalTokens: 1}, Failure: run.StepFailure{Class: run.FailureMalformedModel}},
 		run.ModelStepCompleted{StepID: "s", Usage: model.Usage{TotalTokens: 1}, FinishReason: model.FinishReasonStop, ResultDigest: "sha256:result"},
-		run.ToolStepOpened{StepID: "ts", Source: "s", BindingSetDigest: "sha256:set", Calls: []run.ToolCallBinding{{CallID: "c", ToolRef: "t", BindingDigest: "sha256:binding", Arguments: cj(`{}`), Policy: run.DirectExecution}}},
+		run.ToolStepOpened{StepID: "ts", Source: "s", Calls: []run.ToolCallBinding{{CallID: "c", ToolRef: "t", Arguments: cj(`{}`), Policy: run.DirectExecution}}},
 		run.ToolCallStarted{StepID: "ts", CallID: "c", Effect: "effect-t"},
 		run.ToolCallApproved{StepID: "ts", CallID: "c", ResponseID: "r", ResponseDigest: "sha256:resp"},
 		run.ToolCallCompleted{StepID: "ts", CallID: "c", OutputDigest: "sha256:output"},

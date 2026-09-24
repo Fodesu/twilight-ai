@@ -42,9 +42,9 @@ func completed(runID run.RunID, stepID run.StepID, digest es.Digest) step {
 func opened(runID run.RunID, source run.StepID, calls ...run.CallID) step {
 	bindings := make([]run.ToolCallBinding, len(calls))
 	for i, c := range calls {
-		bindings[i] = run.ToolCallBinding{CallID: c, ToolRef: "echo", DefinitionDigest: "sha256:def", BindingDigest: "sha256:bd", Arguments: jsonstable.MustParse(`{}`)}
+		bindings[i] = run.ToolCallBinding{CallID: c, ToolRef: "echo", DefinitionDigest: "sha256:def", Arguments: jsonstable.MustParse(`{}`)}
 	}
-	return runStep(runID, run.ToolStepOpened{StepID: run.StepID(string(source) + "/tools"), Source: source, BindingSetDigest: "sha256:set", Calls: bindings})
+	return runStep(runID, run.ToolStepOpened{StepID: run.StepID(string(source) + "/tools"), Source: source, Calls: bindings})
 }
 
 // foldSteps encodes, decodes and folds steps through both projections,

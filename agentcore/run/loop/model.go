@@ -40,16 +40,8 @@ func (l *Loop) planAndPrepare(ctx context.Context, rt runtime.RunStore, events E
 	if err != nil {
 		return err
 	}
-	toolsDigest, err := schema.Canonical().DigestToolSpecs(p.Tools)
-	if err != nil {
-		return err
-	}
-	binding, err := schema.Canonical().DigestModelStepBinding(model, requestDigest, toolsDigest)
-	if err != nil {
-		return err
-	}
 	cmdID := schema.Identity().DeriveModelRequestCommandID(snapshot.State.RunID, snapshot.Position)
-	stepID := schema.Identity().DeriveModelStepID(snapshot.State.RunID, cmdID, binding)
+	stepID := schema.Identity().DeriveModelStepID(snapshot.State.RunID, cmdID)
 	res, err := l.commit(ctx, rt, snapshot.State.RunID, cmdID, snapshot.Position, run.PrepareModelRequest{
 		StepID:        stepID,
 		Model:         model,
@@ -58,7 +50,6 @@ func (l *Loop) planAndPrepare(ctx context.Context, rt runtime.RunStore, events E
 		InputIDs:      p.InputIDs,
 		PromptToken:   p.Token,
 		Tools:         p.Tools,
-		ToolsDigest:   toolsDigest,
 	})
 	if err == nil {
 		// ModelStepPrepared carries the frozen request — the most informative
@@ -266,11 +257,6 @@ func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *run.ModelStep) ([]ru
 			b.Policy = spec.Policy
 			b.Replay = spec.Replay
 		}
-		bd, err := schema.Canonical().DigestToolCallBinding(b.CallID, b.DefinitionDigest, b.Policy, b.Arguments)
-		if err != nil {
-			return nil, err
-		}
-		b.BindingDigest = bd
 		bindings[i] = b
 	}
 	return bindings, nil

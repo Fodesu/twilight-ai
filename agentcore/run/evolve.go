@@ -69,11 +69,10 @@ func applyRunCreated(fact *RunCreated) MachineState {
 
 func applyModelStepPrepared(s MachineState, fact *ModelStepPrepared) MachineState { //nolint:gocritic // hugeParam: Evolve is a pure value transition; the caller keeps its state (RUN-MCH-3)
 	s.Current = ModelStep{
-		RefValue:      StepRef{RunID: s.RunID, ID: fact.StepID, Digest: fact.BindingDigest},
+		RefValue:      StepRef{RunID: s.RunID, ID: fact.StepID},
 		RequestDigest: fact.RequestDigest,
 		Model:         fact.Model,
 		Tools:         fact.Tools,
-		ToolsDigest:   fact.ToolsDigest,
 		Status:        ModelPrepared,
 	}
 	s.ModelSteps++
@@ -126,7 +125,6 @@ func applyToolStepOpened(s MachineState, fact *ToolStepOpened) MachineState { //
 			ProviderCallID:   b.ProviderCallID,
 			ToolRef:          b.ToolRef,
 			DefinitionDigest: b.DefinitionDigest,
-			BindingDigest:    b.BindingDigest,
 			Arguments:        b.Arguments,
 			Policy:           b.Policy,
 			Replay:           b.Replay,
@@ -138,7 +136,7 @@ func applyToolStepOpened(s MachineState, fact *ToolStepOpened) MachineState { //
 		}
 	}
 	s.Current = ToolStep{
-		RefValue:   StepRef{RunID: s.RunID, ID: fact.StepID, Digest: fact.BindingSetDigest},
+		RefValue:   StepRef{RunID: s.RunID, ID: fact.StepID},
 		Source:     fact.Source,
 		Calls:      calls,
 		Scheduling: fact.Scheduling,
@@ -339,7 +337,7 @@ func (m StateMachine) guardModelStepPrepared(s *MachineState, fact *ModelStepPre
 	if err := requireOpen(s, "model step prepared"); err != nil {
 		return err
 	}
-	if fact.StepID == "" || fact.Model == "" || fact.RequestDigest == "" || fact.ToolsDigest == "" || fact.BindingDigest == "" {
+	if fact.StepID == "" || fact.Model == "" || fact.RequestDigest == "" {
 		return errors.New("agent: evolve: model step prepared is missing identity or digest")
 	}
 	// v1 preparation is the atomic consumption boundary for pending inputs.
@@ -355,14 +353,7 @@ func (m StateMachine) guardModelStepPrepared(s *MachineState, fact *ModelStepPre
 		}
 	}
 	// The request body is not in the fact; its digest is checked against the
-	// body by Decide and by the frozen.Store on read. Tools and binding
-	// digests are recomputable from the fact and must agree.
-	if d, err := m.Canonical.DigestToolSpecs(fact.Tools); err != nil || d != fact.ToolsDigest {
-		return errors.New("agent: evolve: model step prepared tools digest mismatch")
-	}
-	if d, err := m.Canonical.DigestModelStepBinding(fact.Model, fact.RequestDigest, fact.ToolsDigest); err != nil || d != fact.BindingDigest {
-		return errors.New("agent: evolve: model step prepared binding digest mismatch")
-	}
+	// body by Decide and by the frozen.Store on read.
 	return nil
 }
 
@@ -373,21 +364,14 @@ func (m StateMachine) guardToolStepOpened(s *MachineState, fact *ToolStepOpened)
 	if len(fact.Calls) == 0 {
 		return errors.New("agent: evolve: tool step opened with no calls")
 	}
-	if fact.StepID == "" || fact.Source == "" || fact.BindingSetDigest == "" {
-		return errors.New("agent: evolve: tool step is missing identity or digest")
+	if fact.StepID == "" || fact.Source == "" {
+		return errors.New("agent: evolve: tool step is missing identity")
 	}
 	if _, err := normalizeToolScheduling(fact.Scheduling); err != nil {
 		return fmt.Errorf("agent: evolve: tool step scheduling: %w", err)
 	}
-	// BindingSetDigest is defined over the ordered call bindings before
-	// derived response requests are attached. Recompute that exact input.
-	base := make([]ToolCallBinding, len(fact.Calls))
-	for i := range fact.Calls {
-		base[i] = fact.Calls[i]
-		base[i].Response = nil
-	}
-	if d, err := m.Canonical.DigestToolCallBindingSet(base); err != nil || d != fact.BindingSetDigest || m.Identity.DeriveToolStepID(fact.Source, fact.BindingSetDigest) != fact.StepID {
-		return errors.New("agent: evolve: tool step binding digest mismatch")
+	if m.Identity.DeriveToolStepID(fact.Source) != fact.StepID {
+		return errors.New("agent: evolve: tool step id does not derive from its source")
 	}
 	seen := make(map[CallID]struct{}, len(fact.Calls))
 	for i := range fact.Calls {
@@ -406,12 +390,8 @@ func (m StateMachine) guardToolCallBinding(runID RunID, stepID StepID, call *Too
 		return fmt.Errorf("agent: evolve: duplicate CallID %q", call.CallID)
 	}
 	seen[call.CallID] = struct{}{}
-	if call.ToolRef == "" || call.BindingDigest == "" || call.Arguments.IsZero() {
+	if call.ToolRef == "" || call.Arguments.IsZero() {
 		return fmt.Errorf("agent: evolve: tool call %q is missing binding data", call.CallID)
-	}
-	want, err := m.Canonical.DigestToolCallBinding(call.CallID, call.DefinitionDigest, call.Policy, call.Arguments)
-	if err != nil || want != call.BindingDigest {
-		return fmt.Errorf("agent: evolve: tool call %q binding digest mismatch", call.CallID)
 	}
 	if call.Response == nil {
 		return nil
@@ -420,7 +400,7 @@ func (m StateMachine) guardToolCallBinding(runID RunID, stepID StepID, call *Too
 	if !ok {
 		return fmt.Errorf("agent: evolve: direct call %q cannot carry a response request", call.CallID)
 	}
-	return m.validateResponseRequest(call.Response, runID, stepID, call.CallID, kind, call.Arguments, want)
+	return m.validateResponseRequest(call.Response, runID, stepID, call.CallID, kind, call.Arguments)
 }
 
 func (m StateMachine) guardToolCallApproved(s *MachineState, fact *ToolCallApproved) error {
@@ -489,14 +469,14 @@ func responseKindForPolicy(p ResponsePolicy) (ResponseKind, bool) {
 	}
 }
 
-func (m StateMachine) validateResponseRequest(req *ResponseRequest, runID RunID, stepID StepID, callID CallID, kind ResponseKind, payload CanonicalJSON, requestDigest Digest) error {
+func (m StateMachine) validateResponseRequest(req *ResponseRequest, runID RunID, stepID StepID, callID CallID, kind ResponseKind, payload CanonicalJSON) error {
 	if req.RunID != runID || req.StepID != stepID || req.CallID != callID || req.Kind != kind {
 		return fmt.Errorf("agent: evolve: response request identity mismatch for call %q", callID)
 	}
 	if req.ID == "" || req.ID != m.Identity.DeriveResponseID(runID, stepID, callID, kind) {
 		return fmt.Errorf("agent: evolve: response request ID mismatch for call %q", callID)
 	}
-	if req.RequestDigest != requestDigest || !req.Payload.Equal(payload) {
+	if !req.Payload.Equal(payload) {
 		return fmt.Errorf("agent: evolve: response request payload mismatch for call %q", callID)
 	}
 	return nil

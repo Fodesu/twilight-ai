@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agentcore/run"
-	"github.com/felinics/twilight/agentcore/run/canonical"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/plan"
@@ -76,17 +75,9 @@ func buildPrepare(t *testing.T, s run.MachineState, req sdk.Request, specs []run
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolsDigest, err := schema.Canonical().DigestToolSpecs(specs)
-	if err != nil {
-		t.Fatal(err)
-	}
 	modelRef := run.ModelRef(frozenReq.Model)
-	binding, err := schema.Canonical().DigestModelStepBinding(modelRef, reqDigest, toolsDigest)
-	if err != nil {
-		t.Fatal(err)
-	}
 	cmdID := schema.Identity().DeriveModelRequestCommandID(s.RunID, 0)
-	stepID := schema.Identity().DeriveModelStepID(s.RunID, cmdID, binding)
+	stepID := schema.Identity().DeriveModelStepID(s.RunID, cmdID)
 	ids := make([]run.InputID, len(s.PendingInputs))
 	for i, in := range s.PendingInputs {
 		ids[i] = in.ID
@@ -98,7 +89,6 @@ func buildPrepare(t *testing.T, s run.MachineState, req sdk.Request, specs []run
 		RequestDigest: reqDigest,
 		InputIDs:      ids,
 		Tools:         specs,
-		ToolsDigest:   toolsDigest,
 	}, cmdID
 }
 
@@ -139,16 +129,11 @@ func makeBinding(t *testing.T, source run.StepID, index int, providerID string, 
 	t.Helper()
 	parsedArgs := cj(args)
 	callID := schema.Identity().DeriveCallID(source, index)
-	bd, err := (canonical.Digests{}).DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, parsedArgs)
-	if err != nil {
-		t.Fatal(err)
-	}
 	return run.ToolCallBinding{
 		CallID:           callID,
 		ProviderCallID:   providerID,
 		ToolRef:          spec.Ref,
 		DefinitionDigest: spec.DefinitionDigest,
-		BindingDigest:    bd,
 		Arguments:        parsedArgs,
 		Policy:           spec.Policy,
 	}
@@ -725,15 +710,7 @@ func TestEvolvePreparedRequiresCompleteOrderedPendingInputs(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		toolsDigest, err := schema.Canonical().DigestToolSpecs(nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		binding, err := schema.Canonical().DigestModelStepBinding(testModel, requestDigest, toolsDigest)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return run.ModelStepPrepared{StepID: "step-1", Model: testModel, RequestDigest: requestDigest, ToolsDigest: toolsDigest, BindingDigest: binding, InputIDs: ids}
+		return run.ModelStepPrepared{StepID: "step-1", Model: testModel, RequestDigest: requestDigest, InputIDs: ids}
 	}
 
 	t.Run("nonexistent input", func(t *testing.T) {
@@ -773,8 +750,6 @@ func TestEvolveRejectsModelPrepareOverCurrentStep(t *testing.T) {
 		StepID:        "other",
 		Model:         testModel,
 		RequestDigest: "sha256:req",
-		ToolsDigest:   "sha256:tools",
-		BindingDigest: "sha256:binding",
 	})
 	if err == nil {
 		t.Fatal("Evolve accepted ModelStepPrepared over an existing step")

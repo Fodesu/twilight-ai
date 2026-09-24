@@ -389,21 +389,13 @@ func (h *harness) prepare(runID run.RunID, specs []run.ToolSpec) run.StepID {
 	if err != nil {
 		h.fatal(err)
 	}
-	toolsDigest, err := proto.DigestToolSpecs(specs)
-	if err != nil {
-		h.fatal(err)
-	}
-	binding, err := proto.DigestModelStepBinding("m-1", reqDigest, toolsDigest)
-	if err != nil {
-		h.fatal(err)
-	}
 	cmdID := schema.Identity().DeriveModelRequestCommandID(runID, snap.Position)
 	ids := make([]run.InputID, len(snap.State.PendingInputs))
 	for i, in := range snap.State.PendingInputs {
 		ids[i] = in.ID
 	}
-	cmd := run.PrepareModelRequest{StepID: schema.Identity().DeriveModelStepID(runID, cmdID, binding), Model: "m-1", Request: store,
-		RequestDigest: reqDigest, InputIDs: ids, Tools: specs, ToolsDigest: toolsDigest}
+	cmd := run.PrepareModelRequest{StepID: schema.Identity().DeriveModelStepID(runID, cmdID), Model: "m-1", Request: store,
+		RequestDigest: reqDigest, InputIDs: ids, Tools: specs}
 	h.mustRunCommit(runID, cmdID, snap.Position, cmd)
 	return cmd.StepID
 }
@@ -448,17 +440,13 @@ func (h *harness) waitingTool(runID run.RunID) {
 	}
 	args := run.MustParseCanonicalJSON(`{"q":1}`)
 	callID := schema.Identity().DeriveCallID(step, 0)
-	bd, err := schema.Canonical().DigestToolCallBinding(callID, spec.DefinitionDigest, spec.Policy, args)
-	if err != nil {
-		h.fatal(err)
-	}
 	result, err := sdkconv.FreezeModelResult(sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 2},
 		ToolCalls: []sdk.ToolCall{{ToolCallID: "c0", ToolName: "ask", Input: sdk.ParseToolArguments(args.String())}}})
 	if err != nil {
 		h.fatal(err)
 	}
 	binding := run.ToolCallBinding{CallID: callID, ProviderCallID: "c0", ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
-		BindingDigest: bd, Arguments: args, Policy: spec.Policy}
+		Arguments: args, Policy: spec.Policy}
 	h.mustRunCommit(runID, schema.Identity().DeriveSettlementCommandID(eff), 0,
 		run.SubmitModelResult{StepID: step, Effect: eff, Result: result, Calls: []run.ToolCallBinding{binding}})
 }

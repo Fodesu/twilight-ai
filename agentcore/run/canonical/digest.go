@@ -43,37 +43,6 @@ func (Digests) DigestToolDefinition(def model.ToolDefinition) (run.Digest, error
 	return es.DigestBytes(body), nil
 }
 
-func (Digests) DigestToolSpec(spec run.ToolSpec) (run.Digest, error) { //nolint:gocritic // hugeParam: digest covers the complete immutable ToolSpec value.
-	body, err := es.EncodeTypedPayload(preimageVersion, "tool_spec", spec)
-	if err != nil {
-		return "", err
-	}
-	return es.DigestBytes(body), nil
-}
-
-func (Digests) DigestToolSpecs(specs []run.ToolSpec) (run.Digest, error) {
-	// The fact wire drops an empty tool list (omitempty), so a decoded fact
-	// carries nil where the command carried []. The preimage must not
-	// distinguish them: a zero-tool step would otherwise fail its own
-	// digest guard after one codec round trip.
-	if len(specs) == 0 {
-		specs = nil
-	}
-	body, err := es.EncodeTypedPayload(preimageVersion, "tool_specs", specs)
-	if err != nil {
-		return "", err
-	}
-	return es.DigestBytes(body), nil
-}
-
-func (Digests) DigestModelStepBinding(modelRef run.ModelRef, requestDigest, toolsDigest run.Digest) (run.Digest, error) {
-	if modelRef == "" || requestDigest == "" || toolsDigest == "" {
-		return "", errors.New("agent: model step binding requires model, request digest and tools digest")
-	}
-	return es.DigestBytes([]byte(namespacedHash("twilight/model-step-binding",
-		string(modelRef), string(requestDigest), string(toolsDigest)))), nil
-}
-
 type toolResponseDecisionDigestBody struct {
 	Kind     run.ResponseKind     `json:"kind"`
 	Decision run.ResponseDecision `json:"decision"`
@@ -132,21 +101,4 @@ func (Digests) DigestToolOutput(output run.CanonicalJSON) (run.Digest, error) {
 		return "", err
 	}
 	return es.DigestBytes(body), nil
-}
-
-// DigestToolCallBindingSet covers the full ordered pre-Response call set of
-// one ToolStep; it feeds DeriveToolStepID and is carried inside
-// ToolStepOpened. The value is persisted in facts, so its preimage never
-// changes: replayed state must fold the same.
-func (Digests) DigestToolCallBindingSet(bindings []run.ToolCallBinding) (run.Digest, error) {
-	body, err := es.EncodeTypedPayload(preimageVersion, "tool_call_bindings", bindings)
-	if err != nil {
-		return "", err
-	}
-	return es.DigestBytes(body), nil
-}
-
-func (Digests) DigestToolCallBinding(callID run.CallID, definitionDigest run.Digest, policy run.ResponsePolicy, arguments run.CanonicalJSON) (run.Digest, error) {
-	return es.DigestBytes([]byte(namespacedHash("twilight/tool-call-binding",
-		string(callID), string(definitionDigest), fmt.Sprintf("%d", policy), arguments.String()))), nil
 }
