@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model"
@@ -23,7 +24,6 @@ import (
 	"github.com/felinics/twilight/agentcore/session/run/runmodtest"
 	"github.com/felinics/twilight/agentcore/session/unit"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
@@ -77,7 +77,7 @@ func newHarness(t testing.TB, f Fixture) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bindings, ledger := sqlitetest.Artifacts(t)
+	bindings, ledger := artifacttest.Stores(t)
 	h := &harness{t: t, ctx: context.Background(), fixture: f, store: f.Store, registry: registry, bindings: bindings,
 		ledger: ledger, frozen: runmodtest.Frozen(t, bindings),
 		cache: extension.NewMemoryProjectionCache(), clock: &clock{now: time.Unix(1_000_000, 0)}}

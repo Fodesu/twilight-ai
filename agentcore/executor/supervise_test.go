@@ -11,11 +11,10 @@ import (
 
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store"
+	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/model"
-	"github.com/felinics/twilight/agentcore/store/sqlite"
-	"github.com/felinics/twilight/agentcore/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -49,7 +48,7 @@ func TestWorkerOutcomeReadFailurePreservesExecution(t *testing.T) {
 		t.Run(fmt.Sprint("explicit_unknown=", unknown), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			records := sqlitetest.Open(t).Executions()
+			records := storetest.NewMap(nil)
 			backend := &temporarilyUnreadableBackend{testBackend: newTestBackend(), failed: make(chan struct{}), ready: make(chan struct{}), unknown: unknown}
 			worker, err := executor.NewWorker(ctx, records, routes(backend))
 			if err != nil {
@@ -82,7 +81,7 @@ func TestWorkerOutcomeReadFailurePreservesExecution(t *testing.T) {
 // Start receives the new one (RUN-EXE-9).
 func TestWorkerRestartSupersedesRef(t *testing.T) {
 	ctx := context.Background()
-	records := sqlitetest.Open(t).Executions()
+	records := storetest.NewMap(nil)
 	a := testAssignment()
 	r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: effect.ExecutionRunning, ExecutionRef: store.ExecutionRef{Provider: "ref", Ref: "execution-1"}}, Lease: store.Lease{Owner: "dead-worker", Epoch: 2, UntilUnixMilli: 1}}
 	if err := records.Seed(ctx, r); err != nil {
@@ -116,7 +115,7 @@ func TestWorkerReclaimsExpiredAssignment(t *testing.T) {
 	ctx := context.Background()
 	base := time.Unix(100, 0)
 	now := base
-	records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
+	records := storetest.NewMap(func() time.Time { return now })
 	a := testAssignment()
 	openLedger(t, records, a)
 	claimed, acquired, err := records.Acquire(ctx, a.Key(), "worker-a", time.Second)
@@ -159,7 +158,7 @@ func TestWorkerRecoverExecutionAdoptsExpiredLease(t *testing.T) {
 	ctx := context.Background()
 	base := time.Unix(100, 0)
 	now := base.Add(2 * time.Second)
-	records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
+	records := storetest.NewMap(func() time.Time { return now })
 	a := testAssignment()
 	r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: effect.ExecutionRunning}, Lease: store.Lease{Owner: "dead-worker", Epoch: 4, UntilUnixMilli: base.Add(time.Second).UnixMilli()}}
 	if err := records.Seed(ctx, r); err != nil {
@@ -198,7 +197,7 @@ func TestWorkerRecoverExecutionLeavesLiveLease(t *testing.T) {
 	ctx := context.Background()
 	base := time.Unix(100, 0)
 	now := base
-	records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
+	records := storetest.NewMap(func() time.Time { return now })
 	a := testAssignment()
 	r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: effect.ExecutionRunning}, Lease: store.Lease{Owner: "worker-a", Epoch: 4, UntilUnixMilli: base.Add(time.Second).UnixMilli()}}
 	if err := records.Seed(ctx, r); err != nil {
@@ -244,7 +243,7 @@ func TestWorkerAdoptionOfUnattachableToolSettlesUnknown(t *testing.T) {
 	for _, row := range rows {
 		t.Run(string(row.state), func(t *testing.T) {
 			ctx := context.Background()
-			records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
+			records := storetest.NewMap(func() time.Time { return now })
 			a := testToolAssignment()
 			r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: row.state}, Lease: store.Lease{Owner: "dead-worker", Epoch: 2, UntilUnixMilli: base.Add(time.Second).UnixMilli()}}
 			if err := records.Seed(ctx, r); err != nil {
@@ -305,7 +304,7 @@ func (s *flakyRenewStore) Renew(ctx context.Context, lease store.Lease, ttl time
 // retries and the record stays owned. Without the retry the heartbeat exited
 // on the first error and the lease stayed lost once the failure outlasted it.
 func TestWorkerHeartbeatRetriesTransientRenewErrors(t *testing.T) {
-	records := &flakyRenewStore{Store: sqlitetest.Open(t).Executions(), deadline: time.Now().Add(1100 * time.Millisecond)}
+	records := &flakyRenewStore{Store: storetest.NewMap(nil), deadline: time.Now().Add(1100 * time.Millisecond)}
 	backend := &uncertainDispatchBackend{testBackend: newTestBackend(), ready: make(chan struct{})}
 	defer close(backend.ready)
 	worker, err := executor.NewWorker(context.Background(), records, routes(backend), executor.WorkerOptions{ID: "worker-a", LeaseDuration: 800 * time.Millisecond})
@@ -360,7 +359,7 @@ func TestWorkerRecoverExecutionWaitsForUnconfirmedBackend(t *testing.T) {
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := context.Background()
-			records := sqlitetest.Open(t).Executions()
+			records := storetest.NewMap(nil)
 			a := row.assignment
 			r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: effect.ExecutionRunning, ExecutionRef: store.ExecutionRef{Provider: "ref", Ref: "execution-1"}}, Lease: store.Lease{Owner: "dead-worker", Epoch: 2, UntilUnixMilli: 1}}
 			if err := records.Seed(ctx, r); err != nil {
@@ -443,7 +442,7 @@ func TestWorkerAdoptsToolByReplayDeclaration(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			records := sqlitetest.Open(t).Executions()
+			records := storetest.NewMap(nil)
 			a := testToolAssignment()
 			body, _ := a.Tool()
 			body.Replay = tc.policy
@@ -564,7 +563,7 @@ func TestWorkerRetriesRetryableFailures(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			records := sqlitetest.Open(t).Executions()
+			records := storetest.NewMap(nil)
 			backend := &transientBackend{testBackend: newTestBackend(), failures: tc.failures, code: tc.code, toolRetry: tc.toolRetry}
 			worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("t", backend)},
 				executor.WorkerOptions{ID: "w", Retry: executor.RetryBudget{MaxAttempts: tc.budget, Backoff: time.Millisecond}})
@@ -639,7 +638,7 @@ func (s *gateStore) Append(ctx context.Context, lease store.Lease, key effect.As
 func TestWorkerStartYieldsToSettlementBeforeStart(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	records := &gateStore{Store: sqlitetest.Open(t).Executions(), armed: true, reached: make(chan struct{}), release: make(chan struct{})}
+	records := &gateStore{Store: storetest.NewMap(nil), armed: true, reached: make(chan struct{}), release: make(chan struct{})}
 	backend := &refBackend{testBackend: newTestBackend()}
 	worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("test", backend)}, executor.WorkerOptions{ID: "worker-a"})
 	if err != nil {

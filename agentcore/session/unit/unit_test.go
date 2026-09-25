@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/attempt"
@@ -14,7 +15,6 @@ import (
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/unit"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/store/sqlite/sqlitetest"
 )
 
 func newWriter(t *testing.T) writer.Writer {
@@ -28,7 +28,7 @@ func newWriter(t *testing.T) writer.Writer {
 	if _, err := store.Create(ctx, session.CreateRequest{SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}
-	bindings, ledger := sqlitetest.Artifacts(t)
+	bindings, ledger := artifacttest.Stores(t)
 	w, err := writer.OpenWriter(ctx, store, registry, writer.Admission{Bindings: bindings, Ledger: ledger}, "s", session.OpenOptions{})
 	if err != nil {
 		t.Fatal(err)

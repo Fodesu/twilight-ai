@@ -14,12 +14,11 @@ import (
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/backendhttp"
 	"github.com/felinics/twilight/agentcore/executor/notice"
+	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/schema"
-	"github.com/felinics/twilight/agentcore/store/sqlite"
-	"github.com/felinics/twilight/agentcore/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -176,7 +175,7 @@ func TestWorkerOverBackendWire(t *testing.T) {
 	server := httptest.NewServer((&backendhttp.Server{Backend: backend, Progress: backend.hub}).Handler())
 	defer server.Close()
 	client := &backendhttp.Client{BaseURL: server.URL}
-	worker, err := executor.NewWorker(ctx, sqlitetest.Open(t).Executions(), []executor.Route{executor.Default("remote", client)}, executor.WorkerOptions{ID: "w"})
+	worker, err := executor.NewWorker(ctx, storetest.NewMap(nil), []executor.Route{executor.Default("remote", client)}, executor.WorkerOptions{ID: "w"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +219,7 @@ func TestRecoveryRestartsOnAFreshBackend(t *testing.T) {
 	defer cancel()
 	now := time.Unix(1_000_000, 0)
 	clock := func() time.Time { return now }
-	records := sqlitetest.Open(t, sqlite.Options{Now: clock}).Executions()
+	records := storetest.NewMap(clock)
 
 	first := newFakeBackend("first")
 	var handler atomic.Pointer[http.Handler]

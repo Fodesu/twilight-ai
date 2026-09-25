@@ -71,7 +71,7 @@ linters:
           - gocyclo
       # Conformance harnesses are test code compiled into non-_test files so
       # adapters can import them; they get the test exclusions.
-      - path: ^(agentcore/artifact/artifacttest|agentcore/session/run/runtimetest|agentcore/session/sessiontest|agentcore/turn/turntest|provider/providertest)/
+      - path: ^(agentcore/artifact/artifacttest|agentcore/checkpoint/checkpointtest|agentcore/executor/store/storetest|agentcore/process/processtest|agentcore/session/run/runtimetest|agentcore/session/sessiontest|agentcore/turn/turntest|provider/providertest)/
         linters:
           - errcheck
           - gosec

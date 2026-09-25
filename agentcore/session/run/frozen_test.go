@@ -6,12 +6,12 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/session/filestore"
-	"github.com/felinics/twilight/agentcore/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -39,7 +39,7 @@ func fileFrozen(t *testing.T, root string) frozen.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fz, err := FrozenValues(store, sqlitetest.Open(t).Bindings())
+	fz, err := FrozenValues(store, &artifacttest.MapBindings{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestFrozenValuesRejectsForeignAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fv, err := FrozenValues(store, sqlitetest.Open(t).Bindings())
+	fv, err := FrozenValues(store, &artifacttest.MapBindings{})
 	if err != nil {
 		t.Fatal(err)
 	}

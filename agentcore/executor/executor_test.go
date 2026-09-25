@@ -15,12 +15,11 @@ import (
 	executorhttp "github.com/felinics/twilight/agentcore/executor/http"
 	"github.com/felinics/twilight/agentcore/executor/protocol"
 	"github.com/felinics/twilight/agentcore/executor/store"
+	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/schema"
-	"github.com/felinics/twilight/agentcore/store/sqlite"
-	"github.com/felinics/twilight/agentcore/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/sdk"
 )
 
@@ -188,7 +187,7 @@ func testAssignment() effect.Assignment {
 func TestWorkerIdempotentAndOutcome(t *testing.T) {
 	ctx := context.Background()
 	backend := newTestBackend()
-	worker, err := executor.NewWorker(ctx, sqlitetest.Open(t).Executions(), routes(backend))
+	worker, err := executor.NewWorker(ctx, storetest.NewMap(nil), routes(backend))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +222,7 @@ func TestWorkerDispatchReplayPreservesExistingExecution(t *testing.T) {
 	for _, state := range []effect.ExecutionStatus{effect.ExecutionDispatching, effect.ExecutionRunning, effect.ExecutionCancelRequested} {
 		t.Run(string(state), func(t *testing.T) {
 			ctx := context.Background()
-			records := sqlitetest.Open(t).Executions()
+			records := storetest.NewMap(nil)
 			a := testAssignment()
 			r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: state}, Lease: store.Lease{Owner: "expired-worker", Epoch: 4, UntilUnixMilli: 1}}
 			if err := records.Seed(ctx, r); err != nil {
@@ -268,7 +267,7 @@ func TestWorkerDispatchReplayContinuesUnstartedAcceptance(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
-			records := sqlitetest.Open(t).Executions()
+			records := storetest.NewMap(nil)
 			a := testAssignment()
 			if err := records.Seed(ctx, store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: effect.ExecutionAccepted}, Lease: tc.lease}); err != nil {
 				t.Fatal(err)
@@ -340,7 +339,7 @@ func TestWorkerUncertainDispatchPreservesExecution(t *testing.T) {
 		t.Run(fmt.Sprint("http=", overHTTP), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
-			records := sqlitetest.Open(t).Executions()
+			records := storetest.NewMap(nil)
 			backend := &uncertainDispatchBackend{testBackend: newTestBackend(), ready: make(chan struct{})}
 			defer close(backend.ready)
 			worker, err := executor.NewWorker(ctx, records, routes(backend))
@@ -386,7 +385,7 @@ func TestWorkerUncertainDispatchPreservesExecution(t *testing.T) {
 func TestHTTPDispatchAssignmentConflictIsDefinite(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	worker, err := executor.NewWorker(ctx, sqlitetest.Open(t).Executions(), routes(newTestBackend()))
+	worker, err := executor.NewWorker(ctx, storetest.NewMap(nil), routes(newTestBackend()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +421,7 @@ func (b *holdBackend) Dispatch(_ context.Context, a effect.Assignment) error {
 // incarnation.
 func TestWorkerCloseStopsGoroutines(t *testing.T) {
 	ctx := context.Background()
-	records := sqlitetest.Open(t).Executions()
+	records := storetest.NewMap(nil)
 	backend := &holdBackend{newTestBackend()}
 	worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("test", executor.PortBackend(backend))},
 		executor.WorkerOptions{ID: "worker-c", LeaseDuration: time.Second})
@@ -451,7 +450,7 @@ func TestWorkerCloseStopsGoroutines(t *testing.T) {
 // no backend is called (RUN-EXE-10).
 func TestWorkerRecoverExecutionRefusesUnknownProvider(t *testing.T) {
 	ctx := context.Background()
-	records := sqlitetest.Open(t).Executions()
+	records := storetest.NewMap(nil)
 	a := testAssignment()
 	r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: effect.ExecutionRunning, ExecutionRef: store.ExecutionRef{Provider: "elsewhere", Ref: "existing-job"}}, Lease: store.Lease{Owner: "expired-worker", Epoch: 3, UntilUnixMilli: 1}}
 	if err := records.Seed(ctx, r); err != nil {
@@ -484,7 +483,7 @@ func TestWorkerRecoverExecutionRefusesUnknownProvider(t *testing.T) {
 // record before Start; Start receives the persisted Ref (RUN-EXE-9/10).
 func TestWorkerPersistsExecutionRefBeforeStart(t *testing.T) {
 	ctx := context.Background()
-	records := sqlitetest.Open(t).Executions()
+	records := storetest.NewMap(nil)
 	backend := &refBackend{testBackend: newTestBackend()}
 	worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("ref", backend)},
 		executor.WorkerOptions{ID: "worker-a", LeaseDuration: time.Second})
@@ -524,7 +523,7 @@ func TestExecutionStoreFencesRecoverExecution(t *testing.T) {
 	ctx := context.Background()
 	base := time.Unix(100, 0)
 	now := base
-	records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
+	records := storetest.NewMap(func() time.Time { return now })
 	a := testAssignment()
 	openLedger(t, records, a)
 	first, acquired, err := records.Acquire(ctx, a.Key(), "worker-a", time.Second)
@@ -580,7 +579,7 @@ func TestExecutionStoreRequiresDispatchingBarrier(t *testing.T) {
 	ctx := context.Background()
 	base := time.Unix(100, 0)
 	now := base
-	records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
+	records := storetest.NewMap(func() time.Time { return now })
 	a := testAssignment()
 	openLedger(t, records, a)
 	claimed, acquired, err := records.Acquire(ctx, a.Key(), "worker-a", time.Second)
@@ -611,7 +610,7 @@ func TestExecutionStoreRequiresDispatchingBarrier(t *testing.T) {
 
 func TestRecordStoreSurvivesWorkerRecreation(t *testing.T) {
 	ctx := context.Background()
-	fs := sqlitetest.Open(t).Executions()
+	fs := storetest.NewMap(nil)
 	a := testAssignment()
 	first, err := executor.NewWorker(ctx, fs, routes(newTestBackend()))
 	if err != nil {
@@ -636,7 +635,7 @@ func TestRecordStoreSurvivesWorkerRecreation(t *testing.T) {
 func TestHTTPClientAndServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	worker, err := executor.NewWorker(ctx, sqlitetest.Open(t).Executions(), routes(newTestBackend()))
+	worker, err := executor.NewWorker(ctx, storetest.NewMap(nil), routes(newTestBackend()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -681,7 +680,7 @@ func TestWorkerDisposeSettlesUnknown(t *testing.T) {
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
 			ctx := context.Background()
-			records := sqlitetest.Open(t).Executions()
+			records := storetest.NewMap(nil)
 			a := testAssignment()
 			key := a.Key()
 			if row.record != nil {
@@ -725,7 +724,7 @@ func TestHTTPControlEndpoints(t *testing.T) {
 	// The backend never answers, so Dispose races no watcher settlement.
 	backend := &uncertainDispatchBackend{testBackend: newTestBackend(), ready: make(chan struct{})}
 	defer close(backend.ready)
-	worker, err := executor.NewWorker(ctx, sqlitetest.Open(t).Executions(), routes(backend))
+	worker, err := executor.NewWorker(ctx, storetest.NewMap(nil), routes(backend))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -808,7 +807,7 @@ func TestWorkerAttachClassifiesByLease(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
+			records := storetest.NewMap(func() time.Time { return now })
 			a := testAssignment()
 			r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: effect.ExecutionRunning, ExecutionRef: store.ExecutionRef{Provider: "elsewhere", Ref: "job"}}, Lease: store.Lease{Owner: tc.owner, Epoch: tc.epoch, UntilUnixMilli: tc.lease}}
 			if err := records.Seed(ctx, r); err != nil {
@@ -845,8 +844,8 @@ func TestDispatchRefusalClassification(t *testing.T) {
 		assignment effect.Assignment
 		retryable  bool
 	}{
-		{"record store unavailable", failingCreateStore{sqlitetest.Open(t).Executions()}, testAssignment(), true},
-		{"assignment without body", sqlitetest.Open(t).Executions(), effect.Assignment{Session: "s", RunID: "r", Effect: "e"}, false},
+		{"record store unavailable", failingCreateStore{storetest.NewMap(nil)}, testAssignment(), true},
+		{"assignment without body", storetest.NewMap(nil), effect.Assignment{Session: "s", RunID: "r", Effect: "e"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -890,7 +889,7 @@ func TestWorkerAcknowledgeCollects(t *testing.T) {
 	}
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
-			records := sqlitetest.Open(t, sqlite.Options{Now: func() time.Time { return now }}).Executions()
+			records := storetest.NewMap(func() time.Time { return now })
 			a := testAssignment()
 			r := store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: row.state, ExecutionRef: store.ExecutionRef{Provider: "test", Ref: "job"}}, Lease: store.Lease{Owner: "worker-a", Epoch: 1, UntilUnixMilli: now.Add(time.Hour).UnixMilli()}}
 			if row.state.Terminal() {
@@ -957,7 +956,7 @@ func TestWorkerAcknowledgeCollects(t *testing.T) {
 func TestAbortAndDispatchAreMutuallyExclusive(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	records := sqlitetest.Open(t).Executions()
+	records := storetest.NewMap(nil)
 	backend := &refBackend{testBackend: newTestBackend()}
 	worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("test", backend)})
 	if err != nil {
@@ -1020,7 +1019,7 @@ func TestWorkerGetOutcomeIsAReadAndSettlementsNotify(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	backend := &holdBackend{newTestBackend()}
-	worker, err := executor.NewWorker(ctx, sqlitetest.Open(t).Executions(), []executor.Route{executor.Default("test", executor.PortBackend(backend))},
+	worker, err := executor.NewWorker(ctx, storetest.NewMap(nil), []executor.Route{executor.Default("test", executor.PortBackend(backend))},
 		executor.WorkerOptions{ID: "worker-a"})
 	if err != nil {
 		t.Fatal(err)

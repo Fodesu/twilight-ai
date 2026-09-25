@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/store/sqlite/sqlitetest"
 )
 
 func claimFixture(t *testing.T) (*fixture, artifact.BindingSet, CommitFn) {
@@ -81,7 +81,7 @@ func TestWriterRejectsMismatchedReleasedClaim(t *testing.T) {
 			ctx := context.Background()
 			f, set, group := claimFixture(t)
 			// An unverified ledger lets the test seed each possible mismatch.
-			f.ledger = sqlitetest.Open(t).Ledger(nil)
+			f.ledger = &artifacttest.MapLedger{}
 			w := f.open(t, false)
 			defer w.Close(ctx)
 			seg := tipSegment(t, f.store, "s")

@@ -5,15 +5,16 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/executor"
 	executorlocal "github.com/felinics/twilight/agentcore/executor/local"
+	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
-	"github.com/felinics/twilight/agentcore/store/sqlite/sqlitetest"
 )
 
 func newAuthority(t *testing.T) *owner.Owner {
@@ -34,11 +35,11 @@ func basePorts(t *testing.T) owner.Ports {
 	if err != nil {
 		t.Fatal(err)
 	}
-	exec, err := executor.NewWorker(context.Background(), sqlitetest.Open(t).Executions(), []executor.Route{executorlocal.Route(backend)})
+	exec, err := executor.NewWorker(context.Background(), storetest.NewMap(nil), []executor.Route{executorlocal.Route(backend)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	bindings, ledger := sqlitetest.Artifacts(t)
+	bindings, ledger := artifacttest.Stores(t)
 	decisions, err := decision.NewPromptBuilders(nil)
 	if err != nil {
 		t.Fatal(err)

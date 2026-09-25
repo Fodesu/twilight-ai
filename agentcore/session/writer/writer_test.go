@@ -9,11 +9,11 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
-	"github.com/felinics/twilight/agentcore/store/sqlite/sqlitetest"
 )
 
 type notePayload struct {
@@ -92,7 +92,7 @@ func newFixture(t *testing.T) *fixture {
 		t.Fatal(err)
 	}
 	f.registry = r
-	f.bindings, f.ledger = sqlitetest.Artifacts(t)
+	f.bindings, f.ledger = artifacttest.Stores(t)
 	if _, err := f.store.Create(context.Background(), session.CreateRequest{SessionID: "s"}); err != nil {
 		t.Fatal(err)
 	}

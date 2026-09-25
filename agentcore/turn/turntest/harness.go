@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"testing"
 	"time"
 
@@ -25,7 +26,6 @@ import (
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/run/runmodtest"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 	"github.com/google/jsonschema-go/jsonschema"
@@ -65,7 +65,7 @@ func newHarness(t testing.TB, f Fixture) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bindings, ledger := sqlitetest.Artifacts(t)
+	bindings, ledger := artifacttest.Stores(t)
 	h := &harness{t: t, ctx: context.Background(), store: f.Store, registry: registry, frozen: runmodtest.Frozen(t, bindings), now: 1_000,
 		bindings: bindings, ledger: ledger}
 	if _, err := f.Store.Create(h.ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {

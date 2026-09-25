@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agentcore/es"
-	"github.com/felinics/twilight/agentcore/executor/protocol"
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
@@ -383,128 +382,33 @@ func (s *ExecutionStore) List(ctx context.Context) ([]executionstore.Execution, 
 	return out, nil
 }
 
-// Seed writes a ledger that folds to state, with its lease row, for tests
-// and operators: the commits an execution would have gone through to reach
-// state, recorded at the store's clock. It is not part of
+// Seed writes the ledger executionstore.SeedCommits plans for state, with
+// its lease row, for tests and operators. It is not part of
 // executionstore.Store and refuses a key that already has a ledger.
-func (s *ExecutionStore) Seed(ctx context.Context, state executionstore.Execution) error { //nolint:gocritic,gocyclo // hugeParam: seeds the value; gocyclo: one branch per reachable state
+func (s *ExecutionStore) Seed(ctx context.Context, state executionstore.Execution) error { //nolint:gocritic // hugeParam: seeds the value
 	key := state.Assignment.Key()
 	k, err := ledgerKey(key)
 	if err != nil {
 		return err
 	}
-	at := s.now().UnixMilli()
-	var events [][]executionstore.Event
-	add := func(typ executionstore.EventType, payload any) error {
-		ev, err := executionstore.NewEvent(typ, at, payload)
-		if err != nil {
-			return err
-		}
-		events = append(events, []executionstore.Event{ev})
-		return nil
-	}
-	if state.State == effect.ExecutionAborted {
-		// A tombstone is the whole ledger of an aborted key: the abort stood
-		// at Seq 0, so no acceptance, binding or lease ever existed
-		// (RUN-EXE-16).
-		if err := add(executionstore.EventExecutionAborted, executionstore.Aborted{Reason: "seeded"}); err != nil {
-			return err
-		}
-		return s.seedCommits(ctx, k, key, events, executionstore.Lease{})
-	}
-	if err := add(executionstore.EventExecutionAccepted, executionstore.Accepted{Assignment: state.Assignment}); err != nil {
+	commits, err := executionstore.SeedCommits(state, s.now().UnixMilli())
+	if err != nil {
 		return err
 	}
-	refs := append(append([]executionstore.ExecutionRef(nil), state.Superseded...), state.ExecutionRef)
-	if refs[0].Provider != "" {
-		if err := add(executionstore.EventExecutionBound, executionstore.Bound{Ref: refs[0]}); err != nil {
-			return err
-		}
+	lease := state.Lease
+	if state.State == effect.ExecutionAborted {
+		lease = executionstore.Lease{}
 	}
-	if state.Lease.Owner != "" && state.Lease.Epoch > 0 {
-		if err := add(executionstore.EventExecutionClaimed, executionstore.Claimed{Owner: state.Lease.Owner, Epoch: state.Lease.Epoch}); err != nil {
-			return err
-		}
-	}
-	for i := 1; i < len(refs); i++ {
-		if err := add(executionstore.EventExecutionStarted, nil); err != nil {
-			return err
-		}
-		if err := add(executionstore.EventExecutionRunning, nil); err != nil {
-			return err
-		}
-		if err := add(executionstore.EventExecutionRestarted, executionstore.Restarted{Superseded: refs[i-1], Ref: refs[i].Ref}); err != nil {
-			return err
-		}
-	}
-	switch state.State {
-	case effect.ExecutionAccepted:
-	case effect.ExecutionDispatching:
-		if err := add(executionstore.EventExecutionStarted, nil); err != nil {
-			return err
-		}
-	case effect.ExecutionRunning:
-		if err := add(executionstore.EventExecutionStarted, nil); err != nil {
-			return err
-		}
-		if err := add(executionstore.EventExecutionRunning, nil); err != nil {
-			return err
-		}
-	case effect.ExecutionCancelRequested:
-		if err := add(executionstore.EventCancelRequested, nil); err != nil {
-			return err
-		}
-	default:
-		if !protocol.StatusTerminal(state.State) {
-			return fmt.Errorf("sqlite: seed: unknown state %q", state.State)
-		}
-		if err := add(executionstore.EventExecutionStarted, nil); err != nil {
-			return err
-		}
-		if err := add(executionstore.EventExecutionRunning, nil); err != nil {
-			return err
-		}
-		out := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: key}
-		if state.Outcome != nil {
-			out = *state.Outcome
-		}
-		if err := add(executionstore.EventExecutionSettled, executionstore.Settled{State: state.State, Outcome: out}); err != nil {
-			return err
-		}
-		if state.Acknowledged {
-			if err := add(executionstore.EventOutcomeAcknowledged, nil); err != nil {
-				return err
-			}
-		}
-	}
-	return s.seedCommits(ctx, k, key, events, state.Lease)
-}
-
-// seedCommits appends events to an empty ledger, one commit each, folding
-// as it goes so a shape the fold rejects never reaches the store, then
-// records lease when it names an owner.
-func (s *ExecutionStore) seedCommits(ctx context.Context, k string, key effect.AssignmentKey, events [][]executionstore.Event, lease executionstore.Lease) error {
 	return tx(ctx, s.db, func(t *sql.Tx) error {
 		if _, head, err := readCommits(ctx, t, k, 0); err != nil {
 			return err
 		} else if head.Next != 0 {
 			return fmt.Errorf("sqlite: seed: %v already has a ledger", key)
 		}
-		var folded executionstore.ExecutionState
 		head := executionstore.Head{}
-		for i, evs := range events {
-			c := executionstore.Commit{Seq: head.Next, CommitID: executionstore.DeriveCommitID(key, "seed", fmt.Sprint(i)), Events: evs}
-			switch evs[0].Type {
-			case executionstore.EventExecutionAccepted:
-				c.CommitID = executionstore.AcceptCommitID(key)
-			case executionstore.EventExecutionAborted:
-				c.CommitID = executionstore.AbortCommitID(key)
-			}
+		for i := range commits {
 			var err error
-			if folded, err = executionstore.Fold(folded, &c); err != nil {
-				return err
-			}
-			if head, err = appendCommit(ctx, t, k, key, head, &c); err != nil {
+			if head, err = appendCommit(ctx, t, k, key, head, &commits[i]); err != nil {
 				return err
 			}
 		}

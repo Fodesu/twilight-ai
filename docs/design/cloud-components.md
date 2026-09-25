@@ -76,7 +76,9 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 ### 2.7 共享存储
 
-**CLD-STO-1** 今天所有 durable store 只有 SQLite（`agentcore/store/sqlite`：execution ledger 与租约、dispatch ledger、artifact binding 与 claim）与 filestore（Session ledger、CAS 正文）实现。两者依赖本地文件与文件锁，无法跨 Pod 共享。cloud 形态需要以下接口的共享实现，这是工作量最大的一项：
+**CLD-STO-0（adapter 的位置与验证方式）** store adapter 是部署产物，放在部署侧目录（reference agent 为 `agent/store/sqlite`，cloud 形态为 `cloud/store/<backend>`），不放在 `agentcore`。`agentcore` 内每个窄合同带一个参考实现与一份 conformance suite，位于该合同包下的 `xxxtest` 包：`executor/store/storetest`（`Map` + `Run`，含 `SeedCommits` 的 tombstone 检查）、`process/processtest`、`checkpoint/checkpointtest`、`artifact/artifacttest`（`MapBindings`、`MapLedger`、`Stores`）。kernel 自身的测试只依赖这些参考实现；adapter 在自己的包内以 `Run(t, factory)` 跑同一套 suite 证明合同。Session store 的合同宽（`LedgerStore` 10 个方法 + `SessionStore` 8 个方法，另有 projection cache 与 content store），不设内存参考实现：`agentcore/session/filestore` 是纯 Go、无外部依赖的 JSONL 实现，留在 `agentcore` 作为 Session 合同的参考实现，`sessiontest`、`runtimetest`、`turntest` 三份 suite 在其上运行。
+
+**CLD-STO-1** 今天所有 durable store 只有 SQLite（`agent/store/sqlite`：execution ledger 与租约、dispatch ledger、artifact binding 与 claim、checkpoint）与 filestore（`agentcore/session/filestore`：Session ledger、CAS 正文）实现。两者依赖本地文件与文件锁，无法跨 Pod 共享。cloud 形态需要以下接口的共享实现，这是工作量最大的一项：
 
 | 接口 | 内容 | 目标后端 |
 |---|---|---|

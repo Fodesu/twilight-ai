@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/executor"
+	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	. "github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
@@ -15,7 +17,6 @@ import (
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/run/runmodtest"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/store/sqlite/sqlitetest"
 	"testing"
 	"time"
 )
@@ -66,7 +67,7 @@ func newTestStack(t testing.TB, now func() time.Time) *testStack {
 func (s *testStack) open(t testing.TB) {
 	t.Helper()
 	if s.bindings == nil {
-		s.bindings, s.ledger = sqlitetest.Artifacts(t)
+		s.bindings, s.ledger = artifacttest.Stores(t)
 	}
 	s.writers = writer.NewWriters(s.store, s.registry, writer.Admission{Bindings: s.bindings, Ledger: s.ledger}, session.OpenOptions{Takeover: true}, writer.WritersConfig{})
 	rt, err := runmod.NewSessionRunStore(runmod.Config{Registry: s.registry, Store: s.store, Frozen: runmodtest.Frozen(t, s.bindings), Now: s.now})
@@ -163,7 +164,7 @@ func newLoop(t testing.TB, sink EventSink, models ModelCatalog, tools ToolCatalo
 	if err != nil {
 		return nil, err
 	}
-	exec, err := executor.NewWorker(context.Background(), sqlitetest.Open(t).Executions(), []executor.Route{executor.Default("local", backend)}, executor.WorkerOptions{Progress: hub})
+	exec, err := executor.NewWorker(context.Background(), storetest.NewMap(nil), []executor.Route{executor.Default("local", backend)}, executor.WorkerOptions{Progress: hub})
 	if err != nil {
 		return nil, err
 	}

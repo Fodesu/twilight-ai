@@ -5,13 +5,13 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/felinics/twilight/agent/store/sqlite"
 	"github.com/felinics/twilight/agentcore/artifact"
-	"github.com/felinics/twilight/agentcore/store/sqlite"
 )
 
 // Open opens a fresh database under t.TempDir() and closes it when the test
-// ends. Every store in tests is durable: there is no memory store to fall
-// back to.
+// ends. The reference agent's tests run over this adapter; the kernel's run
+// over the reference stores of its xxxtest packages.
 func Open(t testing.TB, options ...sqlite.Options) *sqlite.DB {
 	t.Helper()
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "twilight.db"), options...)

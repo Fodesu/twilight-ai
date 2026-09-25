@@ -1,48 +1,42 @@
-package sqlite_test
+package storetest
 
 import (
 	"context"
 	"errors"
-	"github.com/felinics/twilight/agentcore/executor/protocol"
-	"path/filepath"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/felinics/twilight/agentcore/artifact"
-	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
+	"github.com/felinics/twilight/agentcore/executor/protocol"
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
-	"github.com/felinics/twilight/agentcore/session/filestore"
-	"github.com/felinics/twilight/agentcore/store/sqlite"
-	"github.com/felinics/twilight/agentcore/store/sqlite/sqlitetest"
 )
 
-// The SQLite bindings and ledger run the artifact conformance suite next to
-// the file-backed cas store.
-func TestArtifactConformance(t *testing.T) {
-	artifacttest.Run(t, func(t *testing.T) artifacttest.Fixture {
-		var mu sync.Mutex
-		now := time.Unix(1_000_000, 0)
-		clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
-		db := sqlitetest.Open(t)
-		bindings := db.Bindings()
-		root := t.TempDir()
-		return artifacttest.Fixture{
-			Bindings: bindings,
-			Ledger:   db.Ledger(artifact.SetBuilder{Resolver: bindings}),
-			NewContent: func(t *testing.T, authority artifact.Authority) artifact.ContentStore {
-				store, err := filestore.NewContentStore(root, authority, filestore.ContentStoreOptions{Now: clock, EphemeralTTL: time.Hour})
-				if err != nil {
-					t.Fatal(err)
-				}
-				return store
-			},
-			Advance: func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() },
-		}
-	})
+// Fixture is one adapter under test. Store is a handle over a fresh, empty
+// store; Reopen returns a second handle over the same store, standing for a
+// second process, nil meaning the adapter has no notion of a handle and
+// Store is shared. Advance moves the clock leases are judged by.
+type Fixture struct {
+	Store   executionstore.Store
+	Reopen  func(t *testing.T) executionstore.Store
+	Advance func(time.Duration)
+}
+
+// Factory builds a fresh Fixture for one subtest.
+type Factory func(t *testing.T) Fixture
+
+// Seeder is the test affordance every adapter offers next to the Store: a
+// ledger written directly in the shape executionstore.SeedCommits plans.
+type Seeder interface {
+	Seed(context.Context, executionstore.Execution) error
+}
+
+// Run executes the suite.
+func Run(t *testing.T, factory Factory) {
+	t.Helper()
+	t.Run("ledger", func(t *testing.T) { testLedger(t, factory(t)) })
+	t.Run("seed_aborted", func(t *testing.T) { testSeedAborted(t, factory(t)) })
 }
 
 func assignment(id run.EffectID) effect.Assignment {
@@ -50,12 +44,8 @@ func assignment(id run.EffectID) effect.Assignment {
 		Body: effect.ModelAssignment{Model: "m", RequestDigest: "sha256:req"}}
 }
 
-func accept(t *testing.T, s executionstore.Store, a effect.Assignment) run.Digest {
+func accept(t *testing.T, s executionstore.Store, a effect.Assignment) {
 	t.Helper()
-	digest, err := a.Digest()
-	if err != nil {
-		t.Fatal(err)
-	}
 	ev, err := executionstore.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: a})
 	if err != nil {
 		t.Fatal(err)
@@ -63,7 +53,6 @@ func accept(t *testing.T, s executionstore.Store, a effect.Assignment) run.Diges
 	if err := s.Append(context.Background(), executionstore.Lease{}, a.Key(), executionstore.Commit{CommitID: executionstore.AcceptCommitID(a.Key()), Events: []executionstore.Event{ev}}); err != nil {
 		t.Fatal(err)
 	}
-	return digest
 }
 
 func step(s executionstore.Store, lease executionstore.Lease, seq executionstore.CommitSeq, typ executionstore.EventType, payload any) error {
@@ -74,24 +63,17 @@ func step(s executionstore.Store, lease executionstore.Lease, seq executionstore
 	return s.Append(context.Background(), lease, lease.Key, executionstore.Commit{Seq: seq, CommitID: executionstore.DeriveCommitID(lease.Key, "test", string(typ)+"/"+strconv.FormatUint(uint64(seq), 10)), Events: []executionstore.Event{ev}})
 }
 
-// One execution ledger, two database handles: the second handle stands for a
-// second process. Commits appended through one are read through the other,
-// leases fence across them, and the state machine, identity and lease checks
+// One execution ledger, two handles: the second handle stands for a second
+// process. Commits appended through one are read through the other, leases
+// fence across them, and the state machine, identity and lease checks
 // answer with the store's sentinel errors (RUN-EXE-3, RUN-EXE-6).
-func TestExecutionStoreAcrossHandles(t *testing.T) {
+func testLedger(t *testing.T, f Fixture) { //nolint:gocyclo // one scenario, checked step by step
 	ctx := context.Background()
-	now := time.Unix(2_000_000, 0)
-	clock := func() time.Time { return now }
-	path := filepath.Join(t.TempDir(), "records.db")
-	open := func() *sqlite.DB {
-		db, err := sqlite.Open(path, sqlite.Options{Now: clock})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = db.Close() })
-		return db
+	a := f.Store
+	b := a
+	if f.Reopen != nil {
+		b = f.Reopen(t)
 	}
-	a, b := open().Executions(), open().Executions()
 	asg := assignment("e1")
 	key := asg.Key()
 	accept(t, a, asg)
@@ -104,14 +86,28 @@ func TestExecutionStoreAcrossHandles(t *testing.T) {
 	if state, _, ok, err := b.Load(ctx, key); err != nil || !ok || state.Assignment.Key() != key {
 		t.Fatalf("load after replay = %+v ok:%v %v", state, ok, err)
 	}
+	if _, _, ok, err := b.Load(ctx, assignment("absent").Key()); err != nil || ok {
+		t.Fatalf("load of an unknown key = ok:%v %v, want a proven absence", ok, err)
+	}
+	// A fenced event without a lease is refused before any lease exists.
+	if err := step(a, executionstore.Lease{Key: key}, 1, executionstore.EventExecutionStarted, nil); !errors.Is(err, executionstore.ErrLeaseLost) {
+		t.Fatalf("fenced event without a lease = %v, want lease lost", err)
+	}
 	// worker-a acquires through handle a; worker-b cannot while the lease
 	// lives, and a's fenced commits go through.
 	held, ok, err := a.Acquire(ctx, key, "worker-a", time.Minute)
-	if err != nil || !ok || held.Epoch != 1 {
+	if err != nil || !ok || held.Epoch != 1 || held.Owner != "worker-a" || held.Key != key {
 		t.Fatalf("acquire = %+v ok:%v %v", held, ok, err)
 	}
 	if _, ok, err := b.Acquire(ctx, key, "worker-b", time.Minute); err != nil || ok {
 		t.Fatalf("acquire under a live foreign lease = ok:%v %v", ok, err)
+	}
+	// The holder acquiring again keeps its Epoch and records nothing.
+	if again, ok, err := a.Acquire(ctx, key, "worker-a", time.Minute); err != nil || !ok || again.Epoch != 1 {
+		t.Fatalf("re-acquire by the holder = %+v ok:%v %v", again, ok, err)
+	}
+	if _, head, _, err := a.Load(ctx, key); err != nil || head.Next != 2 {
+		t.Fatalf("head after acquire = %+v %v, want the acceptance and one claim", head, err)
 	}
 	if err := step(a, held, 2, executionstore.EventExecutionStarted, nil); err != nil {
 		t.Fatal(err)
@@ -132,8 +128,20 @@ func TestExecutionStoreAcrossHandles(t *testing.T) {
 	if lease, ok, err := b.LeaseOf(ctx, key); err != nil || !ok || lease.Owner != "worker-a" || lease.Epoch != 1 {
 		t.Fatalf("lease read through the other handle = %+v %v %v", lease, ok, err)
 	}
+	if _, _, err := b.LeaseOf(ctx, assignment("absent").Key()); !errors.Is(err, effect.ErrExecutionNotFound) {
+		t.Fatalf("lease of an unknown key = %v, want not found", err)
+	}
+	// Renew moves the expiry; after it the lease outlives the original ttl.
+	f.Advance(45 * time.Second)
+	if err := a.Renew(ctx, held, time.Minute); err != nil {
+		t.Fatalf("renew = %v", err)
+	}
+	f.Advance(30 * time.Second)
+	if _, ok, err := b.Acquire(ctx, key, "worker-b", time.Minute); err != nil || ok {
+		t.Fatalf("acquire under a renewed lease = ok:%v %v", ok, err)
+	}
 	// The lease expires: worker-b takes over with a higher Epoch, fencing a.
-	now = now.Add(2 * time.Minute)
+	f.Advance(2 * time.Minute)
 	taken, ok, err := b.Acquire(ctx, key, "worker-b", time.Minute)
 	if err != nil || !ok || taken.Epoch != 2 || taken.Owner != "worker-b" {
 		t.Fatalf("takeover = %+v ok:%v %v", taken, ok, err)
@@ -160,8 +168,14 @@ func TestExecutionStoreAcrossHandles(t *testing.T) {
 	if _, ok, err := b.Acquire(ctx, key, "worker-b", time.Minute); err != nil || ok {
 		t.Fatalf("acquire of a settled execution = ok:%v %v", ok, err)
 	}
+	if err := b.Renew(ctx, taken, time.Minute); !errors.Is(err, executionstore.ErrLeaseLost) {
+		t.Fatalf("renew of a settled execution = %v, want lease lost", err)
+	}
 	if _, _, err := b.Acquire(ctx, assignment("nope").Key(), "worker-b", time.Minute); !errors.Is(err, effect.ErrExecutionNotFound) {
 		t.Fatalf("acquire of an unknown key = %v, want not found", err)
+	}
+	if err := b.Renew(ctx, executionstore.Lease{Key: assignment("nope").Key(), Owner: "worker-b", Epoch: 1}, time.Minute); !errors.Is(err, effect.ErrExecutionNotFound) {
+		t.Fatalf("renew of an unknown key = %v, want not found", err)
 	}
 	if err := step(a, executionstore.Lease{Key: key}, 6, executionstore.EventOutcomeAcknowledged, nil); err != nil {
 		t.Fatal(err)
@@ -175,11 +189,13 @@ func TestExecutionStoreAcrossHandles(t *testing.T) {
 	if err != nil || len(tail) != 3 || tail[0].Seq != 4 || head.Next != 7 {
 		t.Fatalf("read from 4 = %d commits head %+v %v", len(tail), head, err)
 	}
-	accept(t, b, assignment("e2"))
-	list, err := a.List(ctx)
-	if err != nil || len(list) != 2 {
-		t.Fatalf("list = %d %v, want 2", len(list), err)
+	if tail, head, err := a.Read(ctx, key, 7); err != nil || len(tail) != 0 || head.Next != 7 {
+		t.Fatalf("read from the head = %d commits head %+v %v, want none with the ledger's head", len(tail), head, err)
 	}
+	if tail, head, err := a.Read(ctx, assignment("absent").Key(), 0); err != nil || len(tail) != 0 || head.Next != 0 {
+		t.Fatalf("read of an unknown key = %d commits head %+v %v, want an empty ledger", len(tail), head, err)
+	}
+	accept(t, b, assignment("e2"))
 	if owned, err := a.ListOwned(ctx, "nobody"); err != nil || len(owned) != 0 {
 		t.Fatalf("ListOwned(nobody) = %d %v, want none", len(owned), err)
 	}
@@ -190,24 +206,46 @@ func TestExecutionStoreAcrossHandles(t *testing.T) {
 
 // A seeded aborted key has the ledger a real Abort leaves (RUN-EXE-16): the
 // tombstone alone at Seq 0 under the abort identity, so a Dispatch's
-// acceptance is already applied against it and no lease row exists.
-func TestSeedAbortedIsALoneTombstone(t *testing.T) {
+// acceptance is already applied against it and no lease exists. A seeded
+// live key carries the lease it was given.
+func testSeedAborted(t *testing.T, f Fixture) {
 	ctx := context.Background()
-	s := sqlitetest.Open(t).Executions()
+	s, ok := f.Store.(Seeder)
+	if !ok {
+		t.Fatalf("%T offers no Seed; every adapter seeds through executionstore.SeedCommits", f.Store)
+	}
 	asg := assignment("aborted")
 	key := asg.Key()
 	if err := s.Seed(ctx, executionstore.Execution{ExecutionState: executionstore.ExecutionState{Assignment: asg, State: effect.ExecutionAborted}, Lease: executionstore.Lease{Owner: "ignored", Epoch: 3}}); err != nil {
 		t.Fatal(err)
 	}
-	state, head, ok, err := s.Load(ctx, key)
+	state, head, ok, err := f.Store.Load(ctx, key)
 	if err != nil || !ok || !state.Aborted() || state.Outcome != nil || state.Assignment.Effect != "" || head.Next != 1 {
 		t.Fatalf("seeded aborted key = %+v head=%+v ok:%v %v, want a lone tombstone", state, head, ok, err)
 	}
 	ev, _ := executionstore.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: asg})
-	if err := s.Append(ctx, executionstore.Lease{}, key, executionstore.Commit{Seq: 0, CommitID: executionstore.AcceptCommitID(key), Events: []executionstore.Event{ev}}); !errors.Is(err, executionstore.ErrConflict) {
+	if err := f.Store.Append(ctx, executionstore.Lease{}, key, executionstore.Commit{Seq: 0, CommitID: executionstore.AcceptCommitID(key), Events: []executionstore.Event{ev}}); !errors.Is(err, executionstore.ErrConflict) {
 		t.Fatalf("acceptance against the tombstone = %v, want the Seq 0 conflict a live Abort produces", err)
 	}
-	if owned, err := s.ListOwned(ctx, "ignored"); err != nil || len(owned) != 0 {
+	if owned, err := f.Store.ListOwned(ctx, "ignored"); err != nil || len(owned) != 0 {
 		t.Fatalf("ListOwned for a tombstone = %+v %v, want none", owned, err)
+	}
+	live := assignment("live")
+	lease := executionstore.Lease{Key: live.Key(), Owner: "worker-a", Epoch: 2, UntilUnixMilli: 1 << 60}
+	if err := s.Seed(ctx, executionstore.Execution{ExecutionState: executionstore.ExecutionState{Assignment: live, State: effect.ExecutionRunning}, Lease: lease}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Seed(ctx, executionstore.Execution{ExecutionState: executionstore.ExecutionState{Assignment: live, State: effect.ExecutionRunning}}); err == nil {
+		t.Fatal("seeding a key twice succeeded")
+	}
+	got, _, ok, err := f.Store.Load(ctx, live.Key())
+	if err != nil || !ok || got.State != effect.ExecutionRunning || got.Lease != lease {
+		t.Fatalf("seeded live key = %+v ok:%v %v, want running under %+v", got, ok, err, lease)
+	}
+	if err := step(f.Store, lease, 4, executionstore.EventCancelRequested, nil); err != nil {
+		t.Fatalf("commit under the seeded lease = %v", err)
+	}
+	if owned, err := f.Store.ListOwned(ctx, "worker-a"); err != nil || len(owned) != 1 || owned[0] != live.Key() {
+		t.Fatalf("ListOwned for the seeded lease = %+v %v", owned, err)
 	}
 }

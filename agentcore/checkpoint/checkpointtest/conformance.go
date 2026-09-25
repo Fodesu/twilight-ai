@@ -1,4 +1,4 @@
-package sqlite_test
+package checkpointtest
 
 import (
 	"context"
@@ -6,12 +6,21 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agentcore/checkpoint"
-	"github.com/felinics/twilight/agentcore/store/sqlite/sqlitetest"
 )
 
-func TestCheckpointStore(t *testing.T) {
+// Factory builds a fresh, empty Store for one subtest.
+type Factory func(t *testing.T) checkpoint.Store
+
+// Run executes the suite.
+func Run(t *testing.T, factory Factory) {
+	t.Helper()
+	t.Run("positions", func(t *testing.T) { testPositions(t, factory(t)) })
+}
+
+// A checkpoint moves forward, stays where it is on a repeated save, refuses
+// to move backwards, and (consumer, ledger) pairs are independent.
+func testPositions(t *testing.T, cp checkpoint.Store) {
 	ctx := context.Background()
-	cp := sqlitetest.Open(t).Checkpoints()
 	if next, ok, err := cp.Load(ctx, "relay", "session/s1"); err != nil || ok || next != 0 {
 		t.Fatalf("unsaved checkpoint = %d %v %v, want 0 false", next, ok, err)
 	}
@@ -36,7 +45,6 @@ func TestCheckpointStore(t *testing.T) {
 			}
 		})
 	}
-	// Consumers and ledgers are independent keys.
 	if err := cp.Save(ctx, "projection", "session/s1", 1); err != nil {
 		t.Fatal(err)
 	}

@@ -2,6 +2,7 @@ package turn
 
 import (
 	"context"
+	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/attempt"
@@ -11,7 +12,6 @@ import (
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/session/run/runmodtest"
 	"github.com/felinics/twilight/agentcore/session/writer"
-	"github.com/felinics/twilight/agentcore/store/sqlite/sqlitetest"
 	"testing"
 )
 
@@ -29,7 +29,7 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	if _, err := store.Create(ctx, session.CreateRequest{SessionID: sid, CreatedAtUnixMilli: 1}); err != nil {
 		t.Fatal(err)
 	}
-	bindings, ledger := sqlitetest.Artifacts(t)
+	bindings, ledger := artifacttest.Stores(t)
 	writers := writer.NewWriters(store, registry, writer.Admission{Bindings: bindings, Ledger: ledger}, session.OpenOptions{}, writer.WritersConfig{})
 	runs, err := runmod.NewSessionRunStore(runmod.Config{Registry: registry, Store: store, Frozen: runmodtest.Frozen(t, bindings)})
 	if err != nil {
