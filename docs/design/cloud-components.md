@@ -92,13 +92,13 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 ## 3. Worker 与 Backend 的 wire
 
-**CLD-WIR-1（决策项，待定）** model backend 与 tool sandbox backend 都是远端后，Worker 进程内不再有任何 backend，`ExecutionBackend` 必须有一条 wire。两个方案：
+**CLD-WIR-1（Worker 与 Backend 的 wire，已定）** model backend 与 tool sandbox backend 都是远端后，Worker 进程内不再有任何 backend，`ExecutionBackend` 必须有一条 wire。两个方案曾被比较：
 
 方案 A，Worker 链。backend 自身是一个 Worker，前置 Worker 经 `executor.PortBackend` 把远端 `ExecutionPort` 适配为 backend。不需要新协议，进度与结算通知经 `PortBackend` 中继。代价：同一 effect 在两级 Worker 各有一条 ledger 与租约，模型与工具都远端后为三份；backend 侧需要 `executionstore.Store`；`Restart` 对 Port-shaped backend 返回同一 Ref，RUN-EXE-9 的新一代 Ref 语义在链上退化。
 
 方案 B，Backend 协议。把 `ExecutionBackend` 直接做成 HTTP 协议：`/prepare`、`/start`、`/restart`、`/attach`、`/status`、`/cancel` 按 Ref；`Outcome` 不再是阻塞读（现有接口注释"阻塞到终态"在网络上重现 RUN-EXE-17 解决过的问题），改为 `/outcome` 纯读加 backend 侧的结算通知流，Worker 的 watch 循环订阅它；进度帧由 Worker 从 backend 的 `/progress` 拉取并发布到自己的 `ProgressHub`。backend 无 ledger，只有 in-flight 表；ledger 只在 Worker 一处。
 
-本文档建议方案 B。理由：ledger 只有一处 authority，与 RUN-EXE-10 一致；backend 组件保持无状态，符合 CLD-MDL-2 与 CLD-TOL-3 的重启语义；`Attach` 的 missing 在 backend 侧有明确依据（in-flight 表或 sandbox 状态）。需要付出的是一条新协议与 `ExecutionBackend.Outcome` 契约的修改。定稿前需要用户确认。
+选定方案 B，并限定其范围：`ExecutionBackend` 的 Go 接口不变，`Outcome` 在接口上保持阻塞语义；Backend 协议只是一对适配器（`agentcore/executor/backendhttp`）。`Server` 把一个进程内 backend 暴露为 `/validate`、`/prepare`、`/start`、`/restart`、`/attach`、`/status`、`/outcome`、`/cancel`、`/progress`、`/notices`；`/outcome` 是纯读（未结算为 204，Server 未启动过的 Ref 为 404），`/notices` 是 Server 按 Ref 的结算通知流（SSE，有界环，epoch 加 Sequence，淘汰为 410），Server 在 `/start` 接受后对 backend 做一次阻塞 `Outcome` 读并缓存结果，缓存只在内存。`Client` 实现 `ExecutionBackend` 与 `effect.ProgressPort`：阻塞的 `Outcome` 由"读 `/outcome`，未结算则等 `/notices` 的通知或 `Poll` 到期再读"构成，一个 Client 对其 Server 保持一条通知订阅，每次订阅建立时唤醒全部等待者重读一次，因此订阅建立之前发生的结算不会被漏掉；`Client.Close` 结束订阅。`Start` 的 400 为 backend 的确定拒绝，传输失败与其他状态为 `ErrDispatchUnknown`；`Attach` 的传输失败为 error 而非观察。local agent 不经这条 wire：Worker 进程内直接挂 `LocalExecutor`，一行不改。ledger 只在 Worker 一处（RUN-EXE-10），backend 无状态，Server 重启后 backend 对它持有过的每个 Ref 回答 missing，Worker 按 RUN-EXE-9 重派或按 Replay 声明结算。
 
 **CLD-WIR-2** 无论哪个方案，`Prepare` 都不得在 backend 侧分配资源（RUN-EXE-3 与 RUN-EXE-16：Abort 可能抢先），资源分配在 `Start`。
 
@@ -116,7 +116,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 ## 5. 顺序
 
-1. 确认 CLD-WIR-1 的方案；按方案 B 实现 Backend 协议与 `ExecutionBackend.Outcome` 的读加通知拆分。
+1. CLD-WIR-1 的 Backend 协议适配器对（`agentcore/executor/backendhttp`）：已完成。
 2. `cmd/worker`、`cmd/model-backend`、`cmd/tool-backend`、`cmd/owner` 四个二进制，单机多进程跑通 Dispatch、GetOutcome、RecoverExecution 与 Session 接管。此步仍用 SQLite 与 filestore，各进程共享同一文件路径只用于单机验证。
 3. CLD-STO 的 Postgres 与对象存储实现，先做 CLD-STO-2 的接口审查。
 4. k3d 清单与 CLD-DEV-2 的故障检验。
@@ -124,7 +124,6 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 ## 6. 未决
 
-- CLD-WIR-1 的方案选择。
 - `OpenOptions.Owner` 到网络地址的映射方式（CLD-GWY-2）：写入租约行，或由 owner 副本向注册表登记。
 - preset 注册表是否共享化（CLD-CMP-3）。
 - tool sandbox 的隔离粒度（按 session 还是按 tenant）与 workspace 的持久化位置。
