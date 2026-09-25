@@ -102,10 +102,17 @@ func (c *Client) GetStatus(ctx context.Context, key effect.AssignmentKey) (effec
 	return response.Status, nil
 }
 
+// GetOutcome reads the key's Outcome; the Server answers a wait that ran out
+// with 204, which is effect.ErrOutcomeNotReady here, so the caller asks
+// again (Worker.GetOutcome).
 func (c *Client) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
 	var response protocol.OutcomeEnvelope
-	if err := c.post(ctx, "/outcome", keyRequest{Key: key}, &response); err != nil {
+	found, err := c.postOptional(ctx, "/outcome", keyRequest{Key: key}, &response)
+	if err != nil {
 		return effect.Outcome{}, err
+	}
+	if !found {
+		return effect.Outcome{}, effect.ErrOutcomeNotReady
 	}
 	return protocol.DecodeOutcome(&response), nil
 }
@@ -185,31 +192,41 @@ func (c *Client) Acknowledge(ctx context.Context, key effect.AssignmentKey) erro
 }
 
 func (c *Client) post(ctx context.Context, path string, in, out any) error {
+	_, err := c.postOptional(ctx, path, in, out)
+	return err
+}
+
+// postOptional is post for an endpoint that may answer 204: found is false
+// for that answer and out is left untouched.
+func (c *Client) postOptional(ctx context.Context, path string, in, out any) (found bool, err error) {
 	if strings.TrimSpace(c.BaseURL) == "" {
-		return errors.New("executor/http: empty executor URL")
+		return false, errors.New("executor/http: empty executor URL")
 	}
 	body, err := json.Marshal(in)
 	if err != nil {
-		return err
+		return false, err
 	}
 	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodPost, strings.TrimRight(c.BaseURL, "/")+path, bytes.NewReader(body))
 	if err != nil {
-		return err
+		return false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.client().Do(req)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == stdhttp.StatusNoContent {
+		return false, nil
+	}
 	if resp.StatusCode/100 != 2 {
 		message, _ := io.ReadAll(resp.Body)
-		return &responseError{status: resp.Status, statusCode: resp.StatusCode, body: strings.TrimSpace(string(message)), cause: causeOf(resp.StatusCode)}
+		return false, &responseError{status: resp.Status, statusCode: resp.StatusCode, body: strings.TrimSpace(string(message)), cause: causeOf(resp.StatusCode)}
 	}
 	if out == nil {
-		return nil
+		return true, nil
 	}
-	return json.NewDecoder(resp.Body).Decode(out)
+	return true, json.NewDecoder(resp.Body).Decode(out)
 }
 
 // DefaultMaxBodyBytes bounds a request body when Server.MaxBodyBytes is zero.

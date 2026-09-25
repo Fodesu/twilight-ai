@@ -206,8 +206,12 @@ func TestWorkerIdempotentAndOutcome(t *testing.T) {
 	}
 }
 
+// A replay of the same Assignment against an execution that has started
+// leaves it to its lease holder, live or expired: recovery of a started
+// execution is RecoverExecution's, asked for by the Owner that observed it
+// orphaned (RUN-EXE-3).
 func TestWorkerDispatchReplayPreservesExistingExecution(t *testing.T) {
-	for _, state := range []effect.ExecutionStatus{effect.ExecutionAccepted, effect.ExecutionDispatching, effect.ExecutionRunning, effect.ExecutionCancelRequested} {
+	for _, state := range []effect.ExecutionStatus{effect.ExecutionDispatching, effect.ExecutionRunning, effect.ExecutionCancelRequested} {
 		t.Run(string(state), func(t *testing.T) {
 			ctx := context.Background()
 			records := sqlitetest.Open(t).Executions()
@@ -233,6 +237,60 @@ func TestWorkerDispatchReplayPreservesExistingExecution(t *testing.T) {
 			backend.mu.Unlock()
 			if calls != 0 {
 				t.Fatalf("replay dispatched %d backend calls", calls)
+			}
+		})
+	}
+}
+
+// A replay of the same Assignment against an acceptance that never started
+// and that no live lease holds continues it: the Dispatch that wrote the
+// acceptance failed before Start, and the replay is that request again
+// (RUN-EXE-3). Under a live lease the replay starts nothing; the holder is
+// about to.
+func TestWorkerDispatchReplayContinuesUnstartedAcceptance(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		lease store.Lease
+		runs  bool
+	}{
+		{"no lease", store.Lease{}, true},
+		{"expired lease", store.Lease{Owner: "dead-worker", Epoch: 4, UntilUnixMilli: 1}, true},
+		{"live lease", store.Lease{Owner: "live-worker", Epoch: 4, UntilUnixMilli: time.Now().Add(time.Hour).UnixMilli()}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			records := sqlitetest.Open(t).Executions()
+			a := testAssignment()
+			if err := records.Seed(ctx, store.Execution{ExecutionState: store.ExecutionState{Assignment: a, State: effect.ExecutionAccepted}, Lease: tc.lease}); err != nil {
+				t.Fatal(err)
+			}
+			backend := newTestBackend()
+			worker, err := executor.NewWorker(ctx, records, routes(backend), executor.WorkerOptions{ID: "new-worker"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer worker.Close()
+			if err := worker.Dispatch(ctx, a); err != nil {
+				t.Fatal(err)
+			}
+			if !tc.runs {
+				got, _, _, err := records.Load(ctx, a.Key())
+				if err != nil || got.State != effect.ExecutionAccepted || got.Lease.Owner != tc.lease.Owner {
+					t.Fatalf("replay under a live lease changed execution: %+v, %v", got, err)
+				}
+				return
+			}
+			readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			out, err := worker.GetOutcome(readCtx, a.Key())
+			if err != nil || modelText(out) != "ok" {
+				t.Fatalf("continued outcome = %+v, %v", out, err)
+			}
+			backend.mu.Lock()
+			calls := backend.calls
+			backend.mu.Unlock()
+			if calls != 1 {
+				t.Fatalf("replay dispatched %d backend calls, want 1", calls)
 			}
 		})
 	}
@@ -1526,4 +1584,122 @@ func TestAbortAndDispatchAreMutuallyExclusive(t *testing.T) {
 			t.Fatalf("outcome after a lost abort = %+v %v", out, err)
 		}
 	})
+}
+
+// gateStore lets a test hold the Worker between the acceptance it writes
+// and the execution_started it commits next, so a controller's Dispose can
+// land in that window.
+type gateStore struct {
+	store.Store
+	mu      sync.Mutex
+	armed   bool
+	reached chan struct{}
+	release chan struct{}
+}
+
+func (s *gateStore) Append(ctx context.Context, lease store.Lease, key effect.AssignmentKey, c store.Commit) error {
+	if lease.Epoch > 0 && len(c.Events) == 1 && c.Events[0].Type == store.EventExecutionStarted {
+		s.mu.Lock()
+		armed := s.armed
+		s.armed = false
+		s.mu.Unlock()
+		if armed {
+			close(s.reached)
+			<-s.release
+		}
+	}
+	return s.Store.Append(ctx, lease, key, c)
+}
+
+// A Dispose that settles the execution between its acceptance and the
+// execution_started the Worker commits next wins: the Worker's step is a
+// state conflict, Backend.Start is never called, and the ledger keeps the
+// Dispose's Unknown settlement (RUN-EXE-16, TRN-DUR-4).
+func TestWorkerStartYieldsToSettlementBeforeStart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	records := &gateStore{Store: sqlitetest.Open(t).Executions(), armed: true, reached: make(chan struct{}), release: make(chan struct{})}
+	backend := &refBackend{testBackend: newTestBackend()}
+	worker, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("test", backend)}, executor.WorkerOptions{ID: "worker-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Close()
+	a := testAssignment()
+	dispatched := make(chan error, 1)
+	go func() { dispatched <- worker.Dispatch(ctx, a) }()
+	select {
+	case <-records.reached:
+	case <-ctx.Done():
+		t.Fatal("dispatch never reached execution_started")
+	}
+	if err := worker.Dispose(ctx, a.Key()); err != nil {
+		t.Fatalf("dispose = %v", err)
+	}
+	close(records.release)
+	select {
+	case err := <-dispatched:
+		if err != nil {
+			t.Fatalf("dispatch after a racing dispose = %v, want nil: the ledger decided", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("dispatch did not return")
+	}
+	backend.mu.Lock()
+	started := backend.started
+	backend.mu.Unlock()
+	if started != 0 {
+		t.Fatalf("backend started %d executions after the key was disposed", started)
+	}
+	got, _, _, err := records.Load(ctx, a.Key())
+	if err != nil || got.State != effect.ExecutionUnknown || got.Outcome == nil || !got.Outcome.Unknown {
+		t.Fatalf("ledger after the race = %+v, %v; want the Dispose's Unknown settlement", got, err)
+	}
+}
+
+// GetOutcome on an unsettled execution waits for OutcomeWait and then
+// answers ErrOutcomeNotReady, directly and over HTTP (204), so a caller
+// asks again instead of holding one request open for the whole execution;
+// a settlement in the meantime is read on the next call.
+func TestWorkerGetOutcomeWaitAnswersNotReady(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	backend := &holdBackend{newTestBackend()}
+	worker, err := executor.NewWorker(ctx, sqlitetest.Open(t).Executions(), []executor.Route{executor.Default("test", executor.PortBackend(backend))},
+		executor.WorkerOptions{ID: "worker-a", OutcomeWait: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer worker.Close()
+	client := &executorhttp.Client{BaseURL: "http://executor.invalid",
+		HTTP: &http.Client{Transport: handlerTransport{handler: (&executorhttp.Server{Worker: worker}).Handler()}}}
+	a := testAssignment()
+	if err := worker.Dispatch(ctx, a); err != nil {
+		t.Fatal(err)
+	}
+	for name, port := range map[string]effect.ExecutionPort{"direct": worker, "http": client} {
+		began := time.Now()
+		if _, err := port.GetOutcome(ctx, a.Key()); !errors.Is(err, effect.ErrOutcomeNotReady) {
+			t.Fatalf("%s read of an unsettled execution = %v, want ErrOutcomeNotReady", name, err)
+		}
+		if waited := time.Since(began); waited < 50*time.Millisecond || waited > 2*time.Second {
+			t.Fatalf("%s read waited %v, want about the OutcomeWait", name, waited)
+		}
+	}
+	backend.mu.Lock()
+	backend.outcomes[a.Key()] <- effect.Outcome{Key: a.Key(), Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: "late"}}}
+	backend.mu.Unlock()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		out, err := client.GetOutcome(ctx, a.Key())
+		if err == nil {
+			if modelText(out) != "late" {
+				t.Fatalf("outcome = %+v", out)
+			}
+			break
+		}
+		if !errors.Is(err, effect.ErrOutcomeNotReady) || time.Now().After(deadline) {
+			t.Fatalf("read after settlement = %v", err)
+		}
+	}
 }

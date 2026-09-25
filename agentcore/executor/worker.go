@@ -28,6 +28,12 @@ type WorkerOptions struct {
 	// restarted process while an older incarnation could still be alive.
 	ID            string
 	LeaseDuration time.Duration
+	// OutcomeWait bounds one GetOutcome call on an unsettled execution:
+	// when it passes, the call answers effect.ErrOutcomeNotReady and the
+	// caller asks again (Worker.GetOutcome). Zero selects
+	// DefaultOutcomeWait. It should be shorter than what the transport
+	// in front of the Worker allows a request to stay open.
+	OutcomeWait time.Duration
 	// Clock reads the lease clock. It must agree with the Store's clock; the
 	// Store remains the fencing authority. Defaults to time.Now.
 	Clock func() time.Time
@@ -51,6 +57,12 @@ type RetryBudget struct {
 
 const defaultLeaseDuration = 30 * time.Second
 
+// DefaultOutcomeWait is how long one GetOutcome call waits for an unsettled
+// execution before answering effect.ErrOutcomeNotReady: under the idle
+// timeouts common to HTTP intermediaries, and long enough that a caller
+// polling on it costs little.
+const DefaultOutcomeWait = 20 * time.Second
+
 // Worker owns execution leases, not Session ownership. It selects a Backend
 // for an Assignment once, persists the resulting ExecutionRef, and from then
 // on resolves record -> provider -> Backend for every lifecycle operation.
@@ -65,14 +77,16 @@ const defaultLeaseDuration = 30 * time.Second
 // (RUN-EXE-6). Neither operation is part of effect.ExecutionPort, which
 // stays the per-assignment data plane.
 type Worker struct {
-	store     executionstore.Store
-	routes    []Route
-	backends  map[string]ExecutionBackend
-	id        string
-	lease     time.Duration
-	now       func() time.Time
-	lifecycle context.Context
-	stop      context.CancelFunc
+	store    executionstore.Store
+	routes   []Route
+	backends map[string]ExecutionBackend
+	id       string
+	lease    time.Duration
+	// outcomeWait bounds one GetOutcome call (WorkerOptions.OutcomeWait).
+	outcomeWait time.Duration
+	now         func() time.Time
+	lifecycle   context.Context
+	stop        context.CancelFunc
 	// wg counts the goroutines the Worker started: each record's heartbeat
 	// and watcher. Close cancels lifecycle and waits.
 	wg sync.WaitGroup
@@ -80,8 +94,19 @@ type Worker struct {
 	retry    RetryBudget
 	progress *ProgressHub
 
-	mu     sync.Mutex
-	notify map[effect.AssignmentKey]chan struct{}
+	// mu guards waiters: the GetOutcome callers blocked on each key. It is
+	// never held across a store call.
+	mu      sync.Mutex
+	waiters map[effect.AssignmentKey]*outcomeWaiter
+}
+
+// outcomeWaiter is what the GetOutcome callers of one key block on: done is
+// closed when the key settles in this process, and refs counts the callers
+// so the entry leaves the map with the last of them, whether it read the
+// Outcome or gave up.
+type outcomeWaiter struct {
+	done chan struct{}
+	refs int
 }
 
 // NewWorker builds a Worker over records with the given routes; the last
@@ -117,6 +142,9 @@ func NewWorker(ctx context.Context, records executionstore.Store, routes []Route
 	if opts.LeaseDuration <= 0 {
 		opts.LeaseDuration = defaultLeaseDuration
 	}
+	if opts.OutcomeWait <= 0 {
+		opts.OutcomeWait = DefaultOutcomeWait
+	}
 	now := opts.Clock
 	if now == nil {
 		now = time.Now
@@ -126,9 +154,9 @@ func NewWorker(ctx context.Context, records executionstore.Store, routes []Route
 	if progress == nil {
 		progress = NewProgressHub(0)
 	}
-	w := &Worker{store: records, routes: routes, backends: backends, id: opts.ID, lease: opts.LeaseDuration, now: now,
+	w := &Worker{store: records, routes: routes, backends: backends, id: opts.ID, lease: opts.LeaseDuration, outcomeWait: opts.OutcomeWait, now: now,
 		retry: opts.Retry, progress: progress,
-		lifecycle: lifecycle, stop: stop, notify: make(map[effect.AssignmentKey]chan struct{})}
+		lifecycle: lifecycle, stop: stop, waiters: make(map[effect.AssignmentKey]*outcomeWaiter)}
 	if err := w.recover(ctx); err != nil {
 		stop()
 		return nil, err
@@ -228,12 +256,18 @@ func (w *Worker) event(typ executionstore.EventType, payload any) executionstore
 }
 
 // transition is the commitFn of one state-machine step under lease: it
-// appends typ when the fold allows it and does nothing when the fold has
-// moved on (another writer, or a replay).
+// appends typ when the fold allows it, does nothing when the fold already
+// stands at to (a replay of this step), and is ErrStateConflict when the
+// fold has moved somewhere the step cannot follow (a settlement or a cancel
+// another writer landed first), so the caller stops rather than acts on a
+// step it did not take.
 func (w *Worker) transition(lease executionstore.Lease, typ executionstore.EventType, to effect.ExecutionStatus, command string) commitFn {
 	return func(state *executionstore.Execution, _ executionstore.Head) (*executionstore.Commit, error) {
-		if state.State == to || !executionstore.LegalTransition(state.State, to) {
+		if state.State == to {
 			return nil, nil
+		}
+		if !executionstore.LegalTransition(state.State, to) {
+			return nil, fmt.Errorf("%w: %s from %s", executionstore.ErrStateConflict, typ, state.State)
 		}
 		return &executionstore.Commit{CommitID: executionstore.DeriveCommitID(lease.Key, command, fmt.Sprintf("%d/%s", uint64(lease.Epoch), state.State)), Events: []executionstore.Event{w.event(typ, nil)}}, nil
 	}
@@ -276,7 +310,7 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 	if state, _, ok, loadErr := w.store.Load(ctx, key); loadErr != nil {
 		return fmt.Errorf("%w: %w", effect.ErrDispatchRetryable, loadErr)
 	} else if ok {
-		return w.opened(&state, digest)
+		return w.opened(ctx, &state, digest)
 	}
 	route, err := w.route(a)
 	if err != nil {
@@ -307,7 +341,7 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 		if !ok {
 			return fmt.Errorf("%w: ledger conflict without a ledger", effect.ErrDispatchRetryable)
 		}
-		return w.opened(&state, digest)
+		return w.opened(ctx, &state, digest)
 	default:
 		// The ledger store, not the Assignment, refused: nothing started,
 		// and the same Dispatch may succeed later (RUN-EXE-3).
@@ -319,19 +353,26 @@ func (w *Worker) Dispatch(ctx context.Context, a effect.Assignment) error {
 		}
 		// Between acceptance and Backend.Start only this Worker's own store
 		// operations can fail; a Start failure settles the execution instead
-		// of returning. The ledger is open and Accepted, so the caller may
-		// dispatch again and the replay resumes it.
+		// of returning. The ledger is open and Accepted: a replay of the same
+		// Dispatch continues it once no lease is live on it (opened), and
+		// the Reconciler's RecoverExecution does the same for an acceptance
+		// it finds orphaned.
 		return fmt.Errorf("%w: %w", effect.ErrDispatchRetryable, err)
 	}
 	return nil
 }
 
 // opened answers a Dispatch whose key already has a ledger: a tombstone is a
-// definite rejection; the same Assignment acknowledges the acceptance and
-// starts nothing new; another Assignment is a conflict. The ledger holds one
-// acceptance per key and does not compare content, so telling the two apart
-// is the Worker's reading (RUN-EXE-14).
-func (w *Worker) opened(state *executionstore.Execution, digest run.Digest) error {
+// definite rejection; another Assignment is a conflict; the same Assignment
+// acknowledges the acceptance and starts nothing new, with one exception: an
+// acceptance that never started and that no live lease holds is continued,
+// because the Dispatch that wrote it failed before Start (or its Worker died
+// before Start) and this replay is the same request (RUN-EXE-3). An
+// execution that has started belongs to its lease holder, or to
+// RecoverExecution once the Owner observes it orphaned. The ledger holds one
+// acceptance per key and does not compare content, so telling the two
+// Assignments apart is the Worker's reading (RUN-EXE-14).
+func (w *Worker) opened(ctx context.Context, state *executionstore.Execution, digest run.Digest) error {
 	if state.Aborted() {
 		return effect.ErrExecutionAborted
 	}
@@ -342,7 +383,15 @@ func (w *Worker) opened(state *executionstore.Execution, digest run.Digest) erro
 	if accepted != digest {
 		return executionstore.ErrAssignmentConflict
 	}
-	return nil
+	liveLease := state.Lease.Epoch > 0 && state.Lease.UntilUnixMilli > w.now().UnixMilli()
+	if state.State != effect.ExecutionAccepted || liveLease {
+		return nil
+	}
+	err = w.acquireAndStart(ctx, state.Assignment.Key())
+	if err != nil && !errors.Is(err, effect.ErrDispatchUnknown) {
+		return fmt.Errorf("%w: %w", effect.ErrDispatchRetryable, err)
+	}
+	return err
 }
 
 // Abort closes key before any acceptance (RUN-EXE-16): it writes the
@@ -452,14 +501,39 @@ func (w *Worker) settlement(key effect.AssignmentKey, outcome *protocol.OutcomeE
 		Events: []executionstore.Event{w.event(executionstore.EventExecutionSettled, executionstore.Settled{State: state, Outcome: *outcome})}}
 }
 
-// wake notifies one blocked GetOutcome waiter, if any.
+// wake releases every GetOutcome caller blocked on key: the key has settled
+// in this process. Callers re-read the ledger, so a wake with nothing new is
+// harmless.
 func (w *Worker) wake(key effect.AssignmentKey) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if ch := w.notify[key]; ch != nil {
+	if waiter := w.waiters[key]; waiter != nil {
 		select {
-		case ch <- struct{}{}:
+		case <-waiter.done:
 		default:
+			close(waiter.done)
+		}
+	}
+}
+
+// await registers the caller as a waiter on key and returns the channel the
+// next wake closes, with the release that drops the registration. The entry
+// lives exactly as long as some caller waits on it.
+func (w *Worker) await(key effect.AssignmentKey) (woken <-chan struct{}, release func()) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	waiter := w.waiters[key]
+	if waiter == nil {
+		waiter = &outcomeWaiter{done: make(chan struct{})}
+		w.waiters[key] = waiter
+	}
+	waiter.refs++
+	return waiter.done, func() {
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		waiter.refs--
+		if waiter.refs == 0 && w.waiters[key] == waiter {
+			delete(w.waiters, key)
 		}
 	}
 }
@@ -860,8 +934,6 @@ func (w *Worker) heartbeat(lease executionstore.Lease, done <-chan struct{}) {
 // this one is dropped and dispatchErr, the error the caller was going to
 // report, is returned as it was.
 func (w *Worker) finishOwned(ctx context.Context, lease executionstore.Lease, outcome *protocol.OutcomeEnvelope, state effect.ExecutionStatus, dispatchErr error) error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
 	err := w.commit(ctx, lease, lease.Key, func(current *executionstore.Execution, _ executionstore.Head) (*executionstore.Commit, error) {
 		if current.Terminal() {
 			return nil, nil
@@ -876,12 +948,7 @@ func (w *Worker) finishOwned(ctx context.Context, lease executionstore.Lease, ou
 		return err
 	}
 	w.progress.End(lease.Key)
-	if ch := w.notify[lease.Key]; ch != nil {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
+	w.wake(lease.Key)
 	return dispatchErr
 }
 
@@ -989,7 +1056,21 @@ func (w *Worker) GetStatus(ctx context.Context, key effect.AssignmentKey) (effec
 	return state.State, nil
 }
 
+// GetOutcome is effect.ExecutionPort's read of the key's Outcome. It waits
+// for an unsettled execution, but not indefinitely: a wait that reaches
+// OutcomeWait without a settlement answers effect.ErrOutcomeNotReady, the
+// signal every caller treats as "still running, ask again" (the Loop, the
+// Reconciler, the HTTP binding as 204), so a caller behind a transport that
+// cannot hold a request open for the whole execution still gets a definite
+// answer per request, and a wait on an execution whose Worker died is
+// eventually re-examined instead of held for ever. In-process settlements
+// wake the wait at once; settlements another process wrote (a Dispose over
+// another handle) are seen at the next re-read, whose interval backs off to
+// the lease duration.
 func (w *Worker) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
+	deadline := time.NewTimer(w.outcomeWait)
+	defer deadline.Stop()
+	reread := 10 * time.Millisecond
 	for {
 		state, _, ok, err := w.store.Load(ctx, key)
 		if err != nil {
@@ -1005,23 +1086,24 @@ func (w *Worker) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effe
 			return effect.Outcome{}, effect.ErrOutcomeCollected
 		}
 		if state.Outcome != nil {
-			w.mu.Lock()
-			delete(w.notify, key)
-			w.mu.Unlock()
 			return protocol.DecodeOutcome(state.Outcome), nil
 		}
-		ch := w.signal(key)
-		timer := time.NewTimer(10 * time.Millisecond)
+		woken, release := w.await(key)
+		timer := time.NewTimer(reread)
 		select {
-		case <-ch:
-			if !timer.Stop() {
-				<-timer.C
-			}
+		case <-woken:
+			release()
+			timer.Stop()
 		case <-timer.C:
+			release()
+			reread = min(reread*2, w.lease)
+		case <-deadline.C:
+			release()
+			timer.Stop()
+			return effect.Outcome{}, effect.ErrOutcomeNotReady
 		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
+			release()
+			timer.Stop()
 			return effect.Outcome{}, ctx.Err()
 		}
 	}
@@ -1041,17 +1123,6 @@ func (w *Worker) GetOutcomeEnvelope(ctx context.Context, key effect.AssignmentKe
 		return protocol.OutcomeEnvelope{}, effect.ErrOutcomeNotReady
 	}
 	return *state.Outcome, nil
-}
-
-func (w *Worker) signal(key effect.AssignmentKey) chan struct{} {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if ch := w.notify[key]; ch != nil {
-		return ch
-	}
-	ch := make(chan struct{}, 1)
-	w.notify[key] = ch
-	return ch
 }
 
 func (w *Worker) Cancel(ctx context.Context, key effect.AssignmentKey) error {
@@ -1079,7 +1150,14 @@ func (w *Worker) Cancel(ctx context.Context, key effect.AssignmentKey) error {
 // requestCancelOwned commits cancel_requested under the current lease; an
 // execution already cancelling or settled is left as it is.
 func (w *Worker) requestCancelOwned(ctx context.Context, lease executionstore.Lease) error {
-	return w.commit(ctx, lease, lease.Key, w.transition(lease, executionstore.EventCancelRequested, effect.ExecutionCancelRequested, "cancel"))
+	err := w.commit(ctx, lease, lease.Key, w.transition(lease, executionstore.EventCancelRequested, effect.ExecutionCancelRequested, "cancel"))
+	if errors.Is(err, executionstore.ErrStateConflict) {
+		// Settled between the caller's read and this write: nothing left to
+		// cancel, and the caller's backend Cancel is harmless on a finished
+		// execution.
+		return nil
+	}
+	return err
 }
 
 // recover resumes observation of the executions this incarnation still
