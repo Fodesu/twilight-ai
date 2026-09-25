@@ -66,6 +66,11 @@ type Decision struct {
 // about the executions it may hold, so the targets cannot be disposed.
 var ErrNoExecutionPort = errors.New("reconcile: executing targets but no execution port to ask; set Abandon to dispose without proof")
 
+// ErrDeliverWithoutLifetime reports Deliver set without the Lifetime that
+// bounds the background Outcome reads it needs: kept targets would stay
+// Executing with nothing reading them, and nothing would say so.
+var ErrDeliverWithoutLifetime = errors.New("reconcile: Deliver set without a Lifetime to bound the outcome reads")
+
 // ErrAbandonWithExecutor reports Abandon set beside an Executions port: with
 // an executor to ask, disposal must go through Abort (RUN-EXE-16), and a
 // caller that wants to bypass it has to give up the port explicitly.
@@ -225,10 +230,14 @@ func verdictOf(state effect.AttachmentState) (Verdict, error) {
 }
 
 // Plan decides every Executing target of one Run. It asks the executor once
-// per effect and starts the Outcome read of every effect it does not dispose;
-// it writes nothing. The recovery command of a disposed effect is identified
-// by the effect (RUN-WIR-1), so any owner that plans the same state issues
-// the same command.
+// per effect and starts the Outcome read of every effect it does not dispose.
+// It writes no Run fact: the Dispose decisions it returns are committed by
+// Apply. It does write outside the Run when a policy asks for it: under
+// RedispatchMissing the dispatch ledger records each redispatch attempt, and
+// every effect it disposes has its key closed at the executor first (Abort,
+// RUN-EXE-16). The recovery command of a disposed effect is identified by
+// the effect (RUN-WIR-1), so any owner that plans the same state issues the
+// same command.
 func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtime.Snapshot) ([]Decision, error) {
 	targets := plan.RecoveryTargets(&snapshot.State)
 	if len(targets) == 0 {
@@ -236,6 +245,9 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtim
 	}
 	if err := r.checkMissingPolicy(); err != nil {
 		return nil, err
+	}
+	if r.Deliver != nil && r.Lifetime == nil {
+		return nil, ErrDeliverWithoutLifetime
 	}
 	if r.Abandon && r.Executions != nil {
 		return nil, ErrAbandonWithExecutor

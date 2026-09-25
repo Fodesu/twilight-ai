@@ -115,6 +115,13 @@ func TestPlanVerdicts(t *testing.T) {
 	if _, err := (&Reconciler{Abandon: true, Executions: port}).Plan(context.Background(), "s", executingModel("c1")); !errors.Is(err, ErrAbandonWithExecutor) || len(port.asked) != 0 || len(port.aborted) != 0 {
 		t.Fatalf("plan with Abandon beside an executor = %v asked=%d aborted=%d, want ErrAbandonWithExecutor and no calls", err, len(port.asked), len(port.aborted))
 	}
+	// Deliver without a Lifetime would keep targets with nothing reading
+	// their Outcome and nothing saying so: a configuration error, refused
+	// before the executor is asked.
+	port = &fakePort{state: effect.AttachmentActive}
+	if _, err := (&Reconciler{Executions: port, Deliver: func(effect.Outcome) {}}).Plan(context.Background(), "s", executingModel("c1")); !errors.Is(err, ErrDeliverWithoutLifetime) || len(port.asked) != 0 {
+		t.Fatalf("plan with Deliver and no Lifetime = %v asked=%d, want ErrDeliverWithoutLifetime and no calls", err, len(port.asked))
+	}
 	decisions, err := (&Reconciler{Abandon: true}).Plan(context.Background(), "s", executingModel("c1"))
 	if err != nil || len(decisions) != 1 || decisions[0].Verdict != Dispose || decisions[0].Recovery == nil {
 		t.Fatalf("plan with Abandon = %+v %v", decisions, err)
