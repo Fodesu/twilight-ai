@@ -52,10 +52,17 @@ func (c *Client) Dispatch(ctx context.Context, a effect.Assignment) error {
 	switch {
 	case err == nil:
 		return nil
-	case errors.As(err, &responseErr) && responseErr.statusCode < stdhttp.StatusInternalServerError:
-		// 4xx: the server answered and refused the Assignment; nothing
-		// started (RUN-EXE-3).
+	case errors.As(err, &responseErr) && (responseErr.statusCode == stdhttp.StatusBadRequest || responseErr.statusCode == stdhttp.StatusConflict):
+		// The Server's own definite answers: 400 rejects the Assignment,
+		// 409 is a conflicting replay or an aborted key. Nothing started
+		// (RUN-EXE-3).
 		return err
+	case errors.As(err, &responseErr) && responseErr.statusCode < stdhttp.StatusInternalServerError:
+		// Any other 4xx did not come from the Server's dispatch handler: an
+		// intermediary refused before forwarding (429, 408, 404 on a stale
+		// route). The Assignment was not judged, so the same Dispatch may
+		// succeed later.
+		return fmt.Errorf("%w: %w", effect.ErrDispatchRetryable, err)
 	case errors.As(err, &responseErr) && responseErr.statusCode == stdhttp.StatusServiceUnavailable:
 		// 503 is the server's own "not now": the Worker refused before the
 		// barrier for a reason that may pass. An intermediary that did not
