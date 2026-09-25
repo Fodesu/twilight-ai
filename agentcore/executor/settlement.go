@@ -83,12 +83,10 @@ func (h *SettlementHub) Close() {
 // holds is ErrSettlementsEvicted.
 func (h *SettlementHub) Settlements(ctx context.Context, epoch string, after uint64, fn func(effect.Settlement) bool) error {
 	h.mu.Lock()
-	if epoch != h.epoch {
+	switch {
+	case epoch != h.epoch:
 		after = h.next
-	} else if len(h.log) > 0 && after < h.log[0].Sequence-1 {
-		h.mu.Unlock()
-		return effect.ErrSettlementsEvicted
-	} else if len(h.log) == 0 && after < h.next {
+	case len(h.log) > 0 && after < h.log[0].Sequence-1, len(h.log) == 0 && after < h.next:
 		h.mu.Unlock()
 		return effect.ErrSettlementsEvicted
 	}

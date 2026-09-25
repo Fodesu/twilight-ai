@@ -64,6 +64,15 @@ func (p *fakePort) GetOutcome(ctx context.Context, key effect.AssignmentKey) (ef
 }
 func (p *fakePort) Cancel(context.Context, effect.AssignmentKey) error { return nil }
 
+// watching is the Watcher a test Reconciler waits with: a fast poll, since
+// fakePort offers no settlement stream, and closed with the test.
+func watching(t *testing.T, port effect.ExecutionPort) *effect.Watcher {
+	t.Helper()
+	w := &effect.Watcher{Port: port, Poll: 5 * time.Millisecond, Reconnect: 5 * time.Millisecond}
+	t.Cleanup(w.Close)
+	return w
+}
+
 func executingModel(eff run.EffectID) *runtime.Snapshot {
 	return &runtime.Snapshot{State: run.MachineState{
 		RunID: "r1", Status: run.RunActive,
@@ -151,8 +160,8 @@ func TestAssignmentFromTarget(t *testing.T) {
 	}
 }
 
-// A kept target's Outcome read retries transport errors and never
-// fabricates an Outcome; the real one is delivered when it arrives.
+// A kept target's Outcome read is retried by the Watcher on a transport
+// error and never fabricated; the real one is delivered when it arrives.
 func TestKeptOutcomeReadRetries(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -170,7 +179,7 @@ func TestKeptOutcomeReadRetries(t *testing.T) {
 		}
 	}}
 	delivered := make(chan effect.Outcome, 1)
-	r := &Reconciler{Executions: port, Lifetime: ctx, Deliver: func(out effect.Outcome) { delivered <- out }}
+	r := &Reconciler{Executions: port, Lifetime: ctx, Watcher: watching(t, port), Deliver: func(out effect.Outcome) { delivered <- out }}
 	if _, err := r.Plan(ctx, "s", executingModel("c1")); err != nil {
 		t.Fatal(err)
 	}
@@ -191,81 +200,108 @@ func TestKeptOutcomeReadRetries(t *testing.T) {
 	}
 }
 
-// The Outcome watcher of a kept target stops with the reconciler's Lifetime.
+// A kept target's registration ends with the reconciler's Lifetime: an
+// Outcome that becomes readable afterwards is not delivered.
 func TestLifetimeStopsOutcomeWatcher(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	lifetime, stop := context.WithCancel(ctx)
-	started, stopped := make(chan struct{}), make(chan struct{})
-	port := &fakePort{state: effect.AttachmentOrphaned, outcome: func(ctx context.Context, _ effect.AssignmentKey) (effect.Outcome, error) {
-		close(started)
-		<-ctx.Done()
-		close(stopped)
-		return effect.Outcome{}, ctx.Err()
+	var mu sync.Mutex
+	ready := false
+	reads := make(chan struct{}, 64)
+	port := &fakePort{state: effect.AttachmentOrphaned, outcome: func(context.Context, effect.AssignmentKey) (effect.Outcome, error) {
+		select {
+		case reads <- struct{}{}:
+		default:
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if !ready {
+			return effect.Outcome{}, effect.ErrOutcomeNotReady
+		}
+		return effect.Outcome{Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: "late"}}}, nil
 	}}
 	delivered := make(chan effect.Outcome, 1)
-	r := &Reconciler{Executions: port, Lifetime: lifetime, Deliver: func(out effect.Outcome) { delivered <- out }}
+	r := &Reconciler{Executions: port, Lifetime: lifetime, Watcher: watching(t, port), Deliver: func(out effect.Outcome) { delivered <- out }}
 	decisions, err := r.Plan(ctx, "s", executingModel("c1"))
 	if err != nil || decisions[0].Verdict != Defer {
 		t.Fatalf("plan = %+v %v", decisions, err)
 	}
-	<-started
+	<-reads
 	stop()
-	select {
-	case <-stopped:
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
+	time.Sleep(20 * time.Millisecond)
+	mu.Lock()
+	ready = true
+	mu.Unlock()
 	select {
 	case out := <-delivered:
-		t.Fatalf("cancelled watcher delivered %+v", out)
-	case <-time.After(20 * time.Millisecond):
+		t.Fatalf("delivered %+v after the Lifetime ended", out)
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 
-// A read the executor answers definitively (no record for the key) stops the
-// watcher and reports through Fail; a read that keeps failing stops after
-// ReadRetries; neither fabricates an Outcome.
+// A read the executor answers definitively (no record for the key, no
+// Outcome ever) drops the registration and reports through Fail after one
+// read; a read that fails otherwise is retried by the Watcher and neither
+// fabricates an Outcome nor reports.
 func TestOutcomeReadErrorTaxonomy(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	cases := []struct {
-		name    string
-		err     error
-		retries int
-		wantErr error
+		name       string
+		err        error
+		definitive bool
 	}{
-		{"execution not found is definitive", effect.ErrExecutionNotFound, 0, effect.ErrExecutionNotFound},
-		{"outcome unavailable is definitive", effect.ErrOutcomeUnavailable, 0, effect.ErrOutcomeUnavailable},
-		{"transport failures exhaust the budget", errors.New("boom"), 3, nil},
+		{"execution not found is definitive", effect.ErrExecutionNotFound, true},
+		{"outcome unavailable is definitive", effect.ErrOutcomeUnavailable, true},
+		{"transport failures are retried", errors.New("boom"), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var reads int
+			var mu sync.Mutex
+			reads := 0
 			port := &fakePort{state: effect.AttachmentActive, outcome: func(context.Context, effect.AssignmentKey) (effect.Outcome, error) {
+				mu.Lock()
 				reads++
+				mu.Unlock()
 				return effect.Outcome{}, tc.err
 			}}
 			failed := make(chan error, 1)
-			r := &Reconciler{Executions: port, Lifetime: ctx, ReadRetries: tc.retries,
+			r := &Reconciler{Executions: port, Lifetime: ctx, Watcher: watching(t, port),
 				Deliver: func(out effect.Outcome) { t.Errorf("delivered %+v", out) },
 				Fail:    func(_ effect.AssignmentKey, err error) { failed <- err }}
 			if _, err := r.Plan(ctx, "s", executingModel("c1")); err != nil {
 				t.Fatal(err)
 			}
+			if !tc.definitive {
+				time.Sleep(50 * time.Millisecond)
+				mu.Lock()
+				n := reads
+				mu.Unlock()
+				if n < 2 {
+					t.Fatalf("transient failure read %d times, want retries", n)
+				}
+				select {
+				case err := <-failed:
+					t.Fatalf("transient failure reported %v", err)
+				default:
+				}
+				return
+			}
 			select {
 			case err := <-failed:
-				if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
-					t.Fatalf("fail = %v, want %v", err, tc.wantErr)
-				}
-				if tc.wantErr == nil && (!errors.Is(err, tc.err) || reads != tc.retries) {
-					t.Fatalf("fail = %v after %d reads, want %d", err, reads, tc.retries)
-				}
-				if tc.wantErr != nil && reads != 1 {
-					t.Fatalf("definitive error read %d times", reads)
+				if !errors.Is(err, tc.err) {
+					t.Fatalf("fail = %v, want %v", err, tc.err)
 				}
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
+			}
+			time.Sleep(30 * time.Millisecond)
+			mu.Lock()
+			n := reads
+			mu.Unlock()
+			if n != 1 {
+				t.Fatalf("definitive error read %d times, want 1", n)
 			}
 		})
 	}
@@ -310,9 +346,9 @@ func TestPlanAsksRecovererForOrphans(t *testing.T) {
 	}
 }
 
-// A kept target whose Outcome stays not-ready is probed once the backoff has
-// settled: a record that has become orphaned is recovered once per episode,
-// and the Outcome the recovery produces is delivered.
+// A kept target still waiting is re-attached at OrphanProbe intervals: a
+// record that has become orphaned is recovered once per episode, and the
+// Outcome the recovery produces is delivered.
 func TestKeptOutcomeProbeRecoversOrphan(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -328,7 +364,7 @@ func TestKeptOutcomeProbeRecoversOrphan(t *testing.T) {
 		return effect.Outcome{Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: "recovered"}}}, nil
 	}
 	delivered := make(chan effect.Outcome, 1)
-	r := &Reconciler{Executions: port, Lifetime: ctx, Deliver: func(out effect.Outcome) { delivered <- out }}
+	r := &Reconciler{Executions: port, Lifetime: ctx, Watcher: watching(t, port), OrphanProbe: 10 * time.Millisecond, Deliver: func(out effect.Outcome) { delivered <- out }}
 	if _, err := r.Plan(ctx, "s", executingModel("c1")); err != nil {
 		t.Fatal(err)
 	}

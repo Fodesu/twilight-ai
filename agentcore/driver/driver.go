@@ -84,12 +84,30 @@ type Driver struct {
 	// MaxRedispatches bounds redispatches per effect; zero selects the
 	// reconciler's default.
 	MaxRedispatches int
+	// Watcher is where every Loop and every Reconciler of this Driver
+	// waits for Outcomes: one settlement subscription to the Executor for
+	// all of them. Nil builds one over Executor on first use; a host that
+	// shares the Executor with other components hands in theirs.
+	Watcher *effect.Watcher
 
 	mu       sync.Mutex
 	loops    map[turn.PresetRef]*loop.Loop
 	recovery map[session.SessionID]*recoveryLifetime
 	// answering are the ResponseIDs a Responder is working on.
 	answering map[run.ResponseID]struct{}
+	// ownWatcher is the Watcher built when none was given; Close ends it.
+	ownWatcher  *effect.Watcher
+	watcherOnce sync.Once
+}
+
+// watcher is the Watcher every Loop and Reconciler of this Driver waits
+// with: the one given, or one built over Executor on first use.
+func (d *Driver) watcher() *effect.Watcher {
+	if d.Watcher != nil {
+		return d.Watcher
+	}
+	d.watcherOnce.Do(func() { d.ownWatcher = &effect.Watcher{Port: d.Executor} })
+	return d.ownWatcher
 }
 
 // Planner is the application's between-steps hook: it runs while a Run is
@@ -132,6 +150,7 @@ func (d *Driver) loopFor(ref turn.PresetRef) (*loop.Loop, error) {
 		Scheduling:       preset.Scheduling,
 		MalformedRetries: preset.MalformedRetries,
 		TargetResolver:   d.Targets,
+		Watcher:          d.watcher(),
 	}
 	if d.Planner != nil {
 		settings.BeforePrepare = d.beforePrepare
@@ -322,7 +341,7 @@ func (d *Driver) ensureRecoveryLifetime(w writer.Writer) *recoveryLifetime {
 func (d *Driver) recoverInterrupted(ctx context.Context, w writer.Writer) (int, error) {
 	lt := d.ensureRecoveryLifetime(w)
 	sid := w.SessionID()
-	rec := &reconcile.Reconciler{Executions: d.Executor, Lifetime: lt.ctx, Deliver: d.reattachDeliver(lt.ctx, lt.w),
+	rec := &reconcile.Reconciler{Executions: d.Executor, Lifetime: lt.ctx, Watcher: d.watcher(), Deliver: d.reattachDeliver(lt.ctx, lt.w),
 		Fail: func(key effect.AssignmentKey, err error) {
 			d.fail(sid, fmt.Errorf("driver: outcome of run %s effect %s cannot be read; the target stays executing until the next takeover: %w", key.RunID, key.Effect, err))
 		}}
@@ -367,9 +386,13 @@ func (d *Driver) Stop(sid session.SessionID) {
 // Close cancels every recovery listener.
 func (d *Driver) Close() {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	for sid, lt := range d.recovery {
 		lt.cancel()
 		delete(d.recovery, sid)
+	}
+	own := d.ownWatcher
+	d.mu.Unlock()
+	if own != nil {
+		own.Close()
 	}
 }

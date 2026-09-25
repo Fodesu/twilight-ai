@@ -9,6 +9,7 @@ import (
 	"time"
 
 	. "github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
@@ -23,6 +24,7 @@ type recordingExecutor struct {
 	mu           sync.Mutex
 	dispatched   []Assignment
 	outcomes     map[AssignmentKey]chan Outcome
+	settled      map[AssignmentKey]Outcome
 	attached     []Assignment
 	attachReply  bool
 	cancelled    []AssignmentKey
@@ -76,18 +78,71 @@ func (e *recordingExecutor) GetStatus(context.Context, AssignmentKey) (Execution
 	return ExecutionRunning, nil
 }
 
-func (e *recordingExecutor) GetOutcome(ctx context.Context, key AssignmentKey) (Outcome, error) {
+// GetOutcome is a read (effect.ExecutionPort): a dispatched key whose test
+// has not handed an Outcome back yet is ErrOutcomeNotReady, and a settled
+// key answers the same Outcome on every read.
+func (e *recordingExecutor) GetOutcome(_ context.Context, key AssignmentKey) (Outcome, error) {
 	e.mu.Lock()
+	defer e.mu.Unlock()
+	if out, ok := e.settled[key]; ok {
+		return out, nil
+	}
 	ch, ok := e.outcomes[key]
-	e.mu.Unlock()
 	if !ok {
 		return Outcome{}, ErrExecutionNotFound
 	}
 	select {
 	case out := <-ch:
+		if e.settled == nil {
+			e.settled = map[AssignmentKey]Outcome{}
+		}
+		e.settled[key] = out
 		return out, nil
-	case <-ctx.Done():
-		return Outcome{}, ctx.Err()
+	default:
+		return Outcome{}, ErrOutcomeNotReady
+	}
+}
+
+// Settlements is effect.SettlementPort: the fake scans its channels and
+// notices every key that settled, so a Watcher on it does not wait for
+// its poll. A test that hands an Outcome back sees it delivered at once.
+func (e *recordingExecutor) Settlements(ctx context.Context, _ string, after uint64, fn func(effect.Settlement) bool) error {
+	seq := after
+	noticed := map[AssignmentKey]bool{}
+	for {
+		e.mu.Lock()
+		var ready []AssignmentKey
+		for key, ch := range e.outcomes {
+			if noticed[key] {
+				continue
+			}
+			if _, done := e.settled[key]; done {
+				ready = append(ready, key)
+				continue
+			}
+			select {
+			case out := <-ch:
+				if e.settled == nil {
+					e.settled = map[AssignmentKey]Outcome{}
+				}
+				e.settled[key] = out
+				ready = append(ready, key)
+			default:
+			}
+		}
+		e.mu.Unlock()
+		for _, key := range ready {
+			noticed[key] = true
+			seq++
+			if !fn(effect.Settlement{Key: key, Epoch: "fake", Sequence: seq}) {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Millisecond):
+		}
 	}
 }
 
@@ -276,24 +331,41 @@ func (e *failingOutcomeReader) GetOutcome(ctx context.Context, key AssignmentKey
 	}
 }
 
+// A transport failure reading an Outcome changes nothing: the step stays
+// Executing, the Loop keeps waiting (the Watcher reads again), and the real
+// Outcome settles the Run when it arrives.
 func TestRunOutcomeReadErrorPreservesExecutingStep(t *testing.T) {
 	rt, w := loopRuntime(t)
 	exec := &failingOutcomeReader{recordingExecutor: newRecordingExecutor(), readErr: errors.New("temporary transport error"), failed: make(chan struct{}), ready: make(chan struct{})}
-	l, err := New(exec, staticBuilder{}, Settings{})
+	l, err := New(exec, staticBuilder{}, Settings{Watcher: &effect.Watcher{Port: exec, Poll: 5 * time.Millisecond}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := l.Run(context.Background(), rt.Bind(w), "run-1", nil); !errors.Is(err, exec.readErr) {
-		t.Fatalf("Run error = %v, want read failure", err)
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan LoopResult, 1)
+	go func() {
+		res, err := l.Run(ctx, rt.Bind(w), "run-1", nil)
+		if err != nil {
+			t.Errorf("Run = %v", err)
+		}
+		done <- res
+	}()
+	<-exec.failed
 	snapshot := loadState(t, rt, w, "run-1")
 	step, ok := snapshot.State.Current.(ModelStep)
 	if !ok || step.Status != ModelExecuting || snapshot.State.Status != RunActive {
 		t.Fatalf("read error changed Run: %+v", snapshot.State)
 	}
-	result := textResult("eventual result")
-	if _, err := l.Deliver(context.Background(), rt.Bind(w), Outcome{Key: exec.last().Key(), Result: ModelSucceeded{Result: result}}, nil); err != nil {
-		t.Fatal(err)
+	close(exec.ready)
+	exec.deliver(t, exec.last().Key(), Outcome{Result: ModelSucceeded{Result: textResult("eventual result")}})
+	select {
+	case res := <-done:
+		if res.Disposition != LoopFinished {
+			t.Fatalf("Run = %+v, want finished", res)
+		}
+	case <-ctx.Done():
+		t.Fatal("Run did not finish after the read recovered")
 	}
 	if got := loadState(t, rt, w, "run-1").State.Status; got != RunCompleted {
 		t.Fatalf("Run status after actual outcome = %v", got)
@@ -374,7 +446,7 @@ func TestTakeoverReattachesRunningAttempt(t *testing.T) {
 		reattached = append(reattached, out)
 		mu.Unlock()
 	}
-	n, err := stack.runtime.RecoverInterrupted(ctx, stack.writer(t), &reconcile.Reconciler{Executions: exec, Lifetime: ctx, Deliver: deliverToNew})
+	n, err := stack.runtime.RecoverInterrupted(ctx, stack.writer(t), &reconcile.Reconciler{Executions: exec, Lifetime: ctx, Watcher: &effect.Watcher{Port: exec, Poll: 5 * time.Millisecond}, Deliver: deliverToNew})
 	if err != nil || n != 0 {
 		t.Fatalf("RecoverInterrupted with a reachable executor = %d %v, want 0 dispositions", n, err)
 	}
@@ -429,7 +501,7 @@ func TestTakeoverDisposesWhenAttachIsFalse(t *testing.T) {
 	}
 	a := exec.last()
 	stack.open(t)
-	n, err := stack.runtime.RecoverInterrupted(ctx, stack.writer(t), &reconcile.Reconciler{Executions: exec, Lifetime: ctx, Deliver: func(Outcome) {}})
+	n, err := stack.runtime.RecoverInterrupted(ctx, stack.writer(t), &reconcile.Reconciler{Executions: exec, Lifetime: ctx, Watcher: &effect.Watcher{Port: exec, Poll: 5 * time.Millisecond}, Deliver: func(Outcome) {}})
 	if err != nil || n != 1 || len(exec.attached) != 1 {
 		t.Fatalf("RecoverInterrupted = %d %v attached=%d, want one disposition after one refused attach", n, err, len(exec.attached))
 	}

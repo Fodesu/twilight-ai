@@ -222,7 +222,10 @@ type reattachingExecutor struct {
 
 func (e *reattachingExecutor) GetOutcome(ctx context.Context, key loop.AssignmentKey) (loop.Outcome, error) {
 	if e.reads != nil {
-		e.reads <- ctx
+		select {
+		case e.reads <- ctx:
+		default:
+		}
 	}
 	return e.recordingExecutor.GetOutcome(ctx, key)
 }
@@ -362,10 +365,20 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	if err := s2.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Reads are instantaneous; what Close ends is the registration that asks
+	// for them: after a drain, no read arrives.
+	_ = readCtx
+	for drained := false; !drained; {
+		select {
+		case <-exec.reads:
+		case <-time.After(100 * time.Millisecond):
+			drained = true
+		}
+	}
 	select {
-	case <-readCtx.Done():
-	case <-time.After(2 * time.Second):
+	case <-exec.reads:
 		t.Fatal("session close left recovery lifetime active")
+	case <-time.After(150 * time.Millisecond):
 	}
 
 	close(gate.release)
@@ -411,6 +424,7 @@ func TestCloseStopsPendingRecoveryRead(t *testing.T) {
 			case <-time.After(2 * time.Second):
 				t.Fatal("recovery did not start reading")
 			}
+			_ = readCtx
 			if scope == "host" {
 				err = h.Close(ctx)
 			} else {
@@ -419,10 +433,20 @@ func TestCloseStopsPendingRecoveryRead(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			// Reads are instantaneous now; what Close must end is the
+			// registration that asks for them. Drain what was in flight,
+			// then nothing more arrives.
+			for drained := false; !drained; {
+				select {
+				case <-exec.reads:
+				case <-time.After(100 * time.Millisecond):
+					drained = true
+				}
+			}
 			select {
-			case <-readCtx.Done():
-			case <-time.After(2 * time.Second):
+			case <-exec.reads:
 				t.Fatal("close left a recovery read active")
+			case <-time.After(150 * time.Millisecond):
 			}
 		})
 	}

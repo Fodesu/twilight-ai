@@ -67,9 +67,13 @@ type Decision struct {
 var ErrNoExecutionPort = errors.New("reconcile: executing targets but no execution port to ask; set Abandon to dispose without proof")
 
 // ErrDeliverWithoutLifetime reports Deliver set without the Lifetime that
-// bounds the background Outcome reads it needs: kept targets would stay
-// Executing with nothing reading them, and nothing would say so.
-var ErrDeliverWithoutLifetime = errors.New("reconcile: Deliver set without a Lifetime to bound the outcome reads")
+// bounds the registrations it needs: kept targets would wait with nothing
+// ending the wait, and nothing would say so.
+var ErrDeliverWithoutLifetime = errors.New("reconcile: Deliver set without a Lifetime to bound the outcome waits")
+
+// ErrDeliverWithoutWatcher reports Deliver set without the Watcher that
+// carries the executor's settlement notices to it.
+var ErrDeliverWithoutWatcher = errors.New("reconcile: Deliver set without a Watcher on the execution port")
 
 // ErrAbandonWithExecutor reports Abandon set beside an Executions port: with
 // an executor to ask, disposal must go through Abort (RUN-EXE-16), and a
@@ -137,18 +141,27 @@ type Reconciler struct {
 	// the caller settles it through the Loop. Nil means kept targets stay
 	// Executing until something else delivers their Outcome.
 	Deliver func(effect.Outcome)
-	// Fail receives a kept target whose Outcome can no longer be read: the
-	// executor holds no record for it (effect.ErrExecutionNotFound), or reads
-	// kept failing past ReadRetries. The target stays Executing; the next
+	// Fail receives a kept target whose Outcome will never be readable: the
+	// executor answers its read definitively (effect.ErrExecutionNotFound,
+	// effect.ErrOutcomeUnavailable). The target stays Executing; the next
 	// RecoverInterrupted plans it again, and a record that is gone by then is
 	// disposed. Nil discards the report.
 	Fail func(effect.AssignmentKey, error)
-	// ReadRetries bounds consecutive failed Outcome reads that are neither
-	// ErrOutcomeNotReady (the execution is still running: waited for without
-	// limit) nor definitive (stopped at once). Zero selects DefaultReadRetries.
-	ReadRetries int
-	// Lifetime bounds the background Outcome reads of kept targets.
+	// Watcher is where kept targets wait for their Outcome: one per
+	// (owner, executor), shared by every Plan and by the Loop, so waiting on
+	// N effects costs one settlement subscription rather than N readers.
+	// Required with Deliver (ErrDeliverWithoutWatcher); its Port must be
+	// Executions.
+	Watcher *effect.Watcher
+	// Lifetime bounds the registrations Plan makes with Watcher: when it
+	// ends, kept targets not yet delivered are dropped. Required with
+	// Deliver (ErrDeliverWithoutLifetime).
 	Lifetime context.Context
+	// OrphanProbe is how often a kept target still waiting is re-attached
+	// to see whether its record has lost its Worker, in which case recovery
+	// is asked for once per orphaned episode (RUN-EXE-6). Zero selects
+	// DefaultOrphanProbe; negative disables the probe.
+	OrphanProbe time.Duration
 
 	// Missing is the policy for an effect the executor holds nothing for.
 	// The zero value disposes (RUN-CMT-7); RedispatchMissing requires
@@ -174,31 +187,9 @@ type Reconciler struct {
 // DefaultMaxRedispatches is the redispatch budget of one effect.
 const DefaultMaxRedispatches = 3
 
-// DefaultReadRetries is about a minute of failed reads at the 1s backoff cap.
-const DefaultReadRetries = 60
-
-// readVerdict classifies one failed Outcome read.
-type readVerdict uint8
-
-const (
-	readWait       readVerdict = iota // the execution is still running
-	readRetry                         // a read failed; the execution may still finish
-	readDefinitive                    // nothing will ever be read for this key
-)
-
-// classifyRead is the error taxonomy of Outcome reads: what the executor
-// says will never answer is definitive; a not-ready answer is the normal
-// wait; anything else is a read failure to retry within the budget.
-func classifyRead(err error) readVerdict {
-	switch {
-	case errors.Is(err, effect.ErrOutcomeNotReady):
-		return readWait
-	case errors.Is(err, effect.ErrExecutionNotFound), errors.Is(err, effect.ErrOutcomeUnavailable):
-		return readDefinitive
-	default:
-		return readRetry
-	}
-}
+// DefaultOrphanProbe is how often a kept target still waiting is re-attached
+// to see whether its record has lost its Worker.
+const DefaultOrphanProbe = 15 * time.Second
 
 // AssignmentFromTarget rebuilds the Assignment of an Executing target from
 // the machine state, so the executor can be asked whether it still holds an
@@ -248,6 +239,9 @@ func (r *Reconciler) Plan(ctx context.Context, scope run.Scope, snapshot *runtim
 	}
 	if r.Deliver != nil && r.Lifetime == nil {
 		return nil, ErrDeliverWithoutLifetime
+	}
+	if r.Deliver != nil && r.Watcher == nil {
+		return nil, ErrDeliverWithoutWatcher
 	}
 	if r.Abandon && r.Executions != nil {
 		return nil, ErrAbandonWithExecutor
@@ -388,63 +382,57 @@ func (r *Reconciler) now() int64 {
 	return time.Now().UnixMilli()
 }
 
-// awaitOutcome reads the Outcome of a kept effect in the background and
-// hands it to Deliver. A not-ready answer is waited for as long as Lifetime
-// lasts; a read failure is retried with backoff up to ReadRetries times; a
-// definitive answer (the executor holds nothing for the key) or an exhausted
-// budget is reported through Fail and the watcher stops, so a target the
-// executor will never answer for does not poll forever behind a stuck Turn.
+// awaitOutcome registers a kept effect with the Watcher: its Outcome goes to
+// Deliver once the executor's settlement notice, or the Watcher's periodic
+// read, finds it; a definitive read (the executor holds nothing readable
+// for the key) goes to Fail. Nothing here holds a request open for the
+// length of the execution. While the target waits, the orphan probe
+// re-attaches it at OrphanProbe intervals and asks for recovery once per
+// orphaned episode (RUN-EXE-6); Lifetime ends both.
 func (r *Reconciler) awaitOutcome(key effect.AssignmentKey) {
-	if r.Deliver == nil || r.Lifetime == nil {
+	if r.Deliver == nil || r.Lifetime == nil || r.Watcher == nil {
 		return
 	}
-	budget := r.ReadRetries
-	if budget <= 0 {
-		budget = DefaultReadRetries
+	probeCtx, stopProbe := context.WithCancel(r.Lifetime)
+	cancel := r.Watcher.Watch(r.Lifetime, key,
+		func(out effect.Outcome) {
+			stopProbe()
+			if r.Lifetime.Err() == nil {
+				r.Deliver(out)
+			}
+		},
+		func(err error) {
+			stopProbe()
+			if r.Lifetime.Err() == nil {
+				r.fail(key, err)
+			}
+		})
+	go func() {
+		<-probeCtx.Done()
+		if r.Lifetime.Err() != nil {
+			cancel()
+		}
+	}()
+	if r.OrphanProbe < 0 {
+		return
+	}
+	if _, ok := r.Executions.(effect.Recoverer); !ok {
+		return
+	}
+	interval := r.OrphanProbe
+	if interval == 0 {
+		interval = DefaultOrphanProbe
 	}
 	go func() {
-		delay := 10 * time.Millisecond
-		failures := 0
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
 		asked := false
 		for {
-			out, err := r.Executions.GetOutcome(r.Lifetime, key)
-			if err == nil {
-				if r.Lifetime.Err() == nil {
-					r.Deliver(out)
-				}
-				return
-			}
-			if r.Lifetime.Err() != nil {
-				return
-			}
-			switch classifyRead(err) {
-			case readWait:
-				failures = 0
-				// An execution that stays not-ready may have lost its Worker
-				// meanwhile. Once the backoff has settled, look at the record
-				// and ask for recovery once per orphaned episode.
-				if delay >= time.Second {
-					r.probeOrphan(key, &asked)
-				}
-			case readDefinitive:
-				r.fail(key, err)
-				return
-			case readRetry:
-				failures++
-				if failures >= budget {
-					r.fail(key, fmt.Errorf("reconcile: outcome read gave up after %d failures: %w", failures, err))
-					return
-				}
-			}
-			timer := time.NewTimer(delay)
 			select {
-			case <-r.Lifetime.Done():
-				timer.Stop()
+			case <-probeCtx.Done():
 				return
-			case <-timer.C:
-			}
-			if delay < time.Second {
-				delay = min(delay*2, time.Second)
+			case <-ticker.C:
+				r.probeOrphan(probeCtx, key, &asked)
 			}
 		}
 	}()
@@ -467,15 +455,11 @@ func (r *Reconciler) recoverOrphan(ctx context.Context, key effect.AssignmentKey
 	}
 }
 
-// probeOrphan re-reads the record of a kept target that keeps answering
-// not-ready and asks for recovery when it has become orphaned. asked keeps
-// the request to once per orphaned episode; a record under a live lease
-// again resets it.
-func (r *Reconciler) probeOrphan(key effect.AssignmentKey, asked *bool) {
-	if _, ok := r.Executions.(effect.Recoverer); !ok {
-		return
-	}
-	attachment, err := r.Executions.Attach(r.Lifetime, key)
+// probeOrphan re-attaches a kept target still waiting and asks for recovery
+// when its record has become orphaned. asked keeps the request to once per
+// orphaned episode; a record under a live lease again resets it.
+func (r *Reconciler) probeOrphan(ctx context.Context, key effect.AssignmentKey, asked *bool) {
+	attachment, err := r.Executions.Attach(ctx, key)
 	if err != nil {
 		return
 	}
@@ -483,7 +467,7 @@ func (r *Reconciler) probeOrphan(key effect.AssignmentKey, asked *bool) {
 	case effect.AttachmentOrphaned:
 		if !*asked {
 			*asked = true
-			r.recoverOrphan(r.Lifetime, key)
+			r.recoverOrphan(ctx, key)
 		}
 	case effect.AttachmentActive:
 		*asked = false

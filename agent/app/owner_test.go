@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agentcore/preset"
@@ -24,6 +25,7 @@ type recordingExecutor struct {
 	assigned []loop.Assignment
 	reply    string
 	outcomes map[loop.AssignmentKey]chan loop.Outcome
+	settled  map[loop.AssignmentKey]loop.Outcome
 }
 
 func (e *recordingExecutor) Validate(context.Context, loop.Assignment) (*run.ToolFailure, error) {
@@ -58,18 +60,71 @@ func (e *recordingExecutor) GetStatus(context.Context, loop.AssignmentKey) (loop
 	return loop.ExecutionRunning, nil
 }
 
-func (e *recordingExecutor) GetOutcome(ctx context.Context, key loop.AssignmentKey) (loop.Outcome, error) {
+// GetOutcome is a read (effect.ExecutionPort): a key whose scripted reply
+// has not landed yet is ErrOutcomeNotReady, a settled key answers the same
+// Outcome on every read.
+func (e *recordingExecutor) GetOutcome(_ context.Context, key loop.AssignmentKey) (loop.Outcome, error) {
 	e.mu.Lock()
+	defer e.mu.Unlock()
+	if out, ok := e.settled[key]; ok {
+		return out, nil
+	}
 	ch := e.outcomes[key]
-	e.mu.Unlock()
 	if ch == nil {
 		return loop.Outcome{}, loop.ErrExecutionNotFound
 	}
 	select {
 	case out := <-ch:
+		if e.settled == nil {
+			e.settled = map[loop.AssignmentKey]loop.Outcome{}
+		}
+		e.settled[key] = out
 		return out, nil
-	case <-ctx.Done():
-		return loop.Outcome{}, ctx.Err()
+	default:
+		return loop.Outcome{}, loop.ErrOutcomeNotReady
+	}
+}
+
+// Settlements is effect.SettlementPort: the fake scans its channels and
+// notices every key that settled, so the Owner's Watcher does not wait for
+// its poll.
+func (e *recordingExecutor) Settlements(ctx context.Context, _ string, after uint64, fn func(effect.Settlement) bool) error {
+	seq := after
+	noticed := map[loop.AssignmentKey]bool{}
+	for {
+		e.mu.Lock()
+		var ready []loop.AssignmentKey
+		for key, ch := range e.outcomes {
+			if noticed[key] {
+				continue
+			}
+			if _, done := e.settled[key]; done {
+				ready = append(ready, key)
+				continue
+			}
+			select {
+			case out := <-ch:
+				if e.settled == nil {
+					e.settled = map[loop.AssignmentKey]loop.Outcome{}
+				}
+				e.settled[key] = out
+				ready = append(ready, key)
+			default:
+			}
+		}
+		e.mu.Unlock()
+		for _, key := range ready {
+			noticed[key] = true
+			seq++
+			if !fn(effect.Settlement{Key: key, Epoch: "fake", Sequence: seq}) {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Millisecond):
+		}
 	}
 }
 

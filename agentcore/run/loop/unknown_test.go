@@ -54,6 +54,16 @@ func (p *refusingPort) Dispatch(ctx context.Context, a loop.Assignment) error {
 	return p.ExecutionPort.Dispatch(ctx, a)
 }
 
+// Settlements keeps the wrapped port's notification capability visible
+// through the wrapper, so the Loop's Watcher does not fall back to polling.
+func (p *refusingPort) Settlements(ctx context.Context, epoch string, after uint64, fn func(effect.Settlement) bool) error {
+	if s, ok := p.ExecutionPort.(effect.SettlementPort); ok {
+		return s.Settlements(ctx, epoch, after, fn)
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 // RUN-EXE-3: a retryable refusal is dispatched again inside the Advance and
 // the call completes; a refusal that persists past the bound is a Known
 // dispatch failure of the call, and the Run continues.

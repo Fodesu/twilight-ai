@@ -76,6 +76,12 @@ type Settings struct {
 	// Writer the store is bound to. An error stops the drive with no fact
 	// written; nil is no hook.
 	BeforePrepare PrepareHook
+	// Watcher is where a blocking Run waits for the Outcomes it dispatched:
+	// one per (owner, executor), shared with the Reconciler, so waiting on
+	// N effects costs one settlement subscription. Its Port must be the
+	// Loop's Executor. Nil builds a private one over the Executor, which
+	// serves a single-process host; a host with a Reconciler shares its.
+	Watcher *effect.Watcher
 }
 
 // PrepareHook is Settings.BeforePrepare: the store is the Loop's own bound
