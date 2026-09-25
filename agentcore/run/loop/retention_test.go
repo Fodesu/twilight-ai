@@ -42,7 +42,7 @@ func TestLocalExecutorRetainsBoundedOutcomes(t *testing.T) {
 		if err := exec.Start(ctx, ref, a); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := exec.Outcome(ctx, ref); err != nil {
+		if _, err := awaitRef(ctx, exec, ref); err != nil {
 			t.Fatal(err)
 		}
 		keys = append(keys, ref)

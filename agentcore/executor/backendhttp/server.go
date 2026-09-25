@@ -1,29 +1,25 @@
 // Package backendhttp is the wire between a Worker and a remote
 // ExecutionBackend (CLD-WIR-1): Server exposes one backend over HTTP, Client
-// implements executor.ExecutionBackend against such a server. The Go
-// contract on both sides is executor.ExecutionBackend as it is; the wire
-// alone splits Outcome into a read (/outcome, 204 while unsettled) and a
-// notice stream (/notices), so no request is held open for the length of
-// an execution, and the Client's blocking Outcome is built from the two.
+// implements executor.ExecutionBackend against such a server. The wire is
+// the Go contract as it is: Outcome is a read (/outcome, 204 while
+// unsettled) and the backend's notice.Source is a stream (/notices), so no
+// request is held open for the length of an execution and the Client keeps
+// no state of its own (RUN-EXE-17).
 //
-// The Server keeps no ledger: an in-flight table of the refs it started and
-// the Outcome each reached, in memory. A server that restarts forgets them,
-// and the backend behind it answers Attach with missing for every ref it
-// held, which is what the Worker's recovery expects of a stateless backend
-// (RUN-EXE-3, RUN-EXE-9).
+// The Server keeps nothing: every endpoint is a call on the backend behind
+// it. A server that restarts loses no table, and the backend answers Attach
+// with missing for every ref it no longer holds, which is what the Worker's
+// recovery expects of a stateless backend (RUN-EXE-3, RUN-EXE-9).
 package backendhttp
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	stdhttp "net/http"
-	"strconv"
-	"sync"
-	"time"
 
 	"github.com/felinics/twilight/agentcore/executor"
+	"github.com/felinics/twilight/agentcore/executor/notice"
 	"github.com/felinics/twilight/agentcore/executor/protocol"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -37,24 +33,10 @@ const DefaultMaxBodyBytes int64 = 16 << 20
 // accepts POST only.
 type Server struct {
 	Backend executor.ExecutionBackend
-	// Progress is the backend process's own hub, the ProgressSink its
-	// backend publishes into; nil serves no progress.
+	// Progress, when set, serves /progress: the hub the backend publishes
+	// its frames into (RUN-EXE-12).
 	Progress     effect.ProgressPort
 	MaxBodyBytes int64
-
-	once    sync.Once
-	epoch   string
-	mu      sync.Mutex
-	settled map[string]*settledRef
-	notices *noticeHub
-}
-
-// settledRef is one ref the Server started: its Outcome once the backend's
-// blocking read returned, or the read's error.
-type settledRef struct {
-	done    chan struct{}
-	outcome effect.Outcome
-	err     error
 }
 
 type refRequest struct {
@@ -106,27 +88,12 @@ type noticesRequest struct {
 	After uint64 `json:"after"`
 }
 
-// Notice is the Server's word that a ref reached its Outcome: read it with
-// /outcome. Epoch names the Server incarnation, Sequence orders notices in
-// it; the Client resubscribes with its last position and re-reads every ref
-// it waits on when the epoch changes or the ring evicted its position.
-type Notice struct {
-	Ref      string `json:"ref"`
-	Epoch    string `json:"epoch"`
-	Sequence uint64 `json:"sequence"`
-}
-
-func (s *Server) init() {
-	s.once.Do(func() {
-		s.epoch = strconv.FormatInt(time.Now().UnixNano(), 36)
-		s.settled = make(map[string]*settledRef)
-		s.notices = newNoticeHub(s.epoch, 0)
-	})
-}
+// Notice is the wire form of the backend's settled-Ref notice (notice.Ref):
+// read the Outcome with /outcome once it arrives.
+type Notice = notice.Ref
 
 // Handler routes the backend protocol.
 func (s *Server) Handler() stdhttp.Handler {
-	s.init()
 	mux := stdhttp.NewServeMux()
 	mux.HandleFunc("POST /validate", s.validate)
 	mux.HandleFunc("POST /prepare", s.prepare)
@@ -154,11 +121,10 @@ func (s *Server) prepare(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	writeJSON(w, refResponse{Ref: ref})
 }
 
-// start hands the ref to the backend and, once the backend accepted it (or
-// could not say), begins the blocking Outcome read that /outcome and
-// /notices answer from. A definite refusal is 400; an uncertain start is 202
-// like an accepted one, because the Client cannot tell the two apart any
-// better than the Server can (ErrDispatchUnknown is the backend's own word).
+// start hands the ref to the backend. A definite refusal is 400; an
+// uncertain start is 202 like an accepted one, because the Client cannot
+// tell the two apart any better than the server can, with the header
+// X-Twilight-Start: unknown so the Client returns ErrDispatchUnknown.
 func (s *Server) start(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	var req startRequest
 	if !s.readJSON(w, r, &req) {
@@ -169,32 +135,11 @@ func (s *Server) start(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		stdhttp.Error(w, err.Error(), stdhttp.StatusBadRequest)
 		return
 	}
-	s.watch(req.Ref)
 	if err != nil {
 		// The Client maps 202 with this header to ErrDispatchUnknown.
 		w.Header().Set("X-Twilight-Start", "unknown")
 	}
 	w.WriteHeader(stdhttp.StatusAccepted)
-}
-
-// watch begins the backend's blocking Outcome read for ref, once.
-func (s *Server) watch(ref string) {
-	s.mu.Lock()
-	if _, ok := s.settled[ref]; ok {
-		s.mu.Unlock()
-		return
-	}
-	entry := &settledRef{done: make(chan struct{})}
-	s.settled[ref] = entry
-	s.mu.Unlock()
-	go func() {
-		out, err := s.Backend.Outcome(context.Background(), ref)
-		s.mu.Lock()
-		entry.outcome, entry.err = out, err
-		close(entry.done)
-		s.mu.Unlock()
-		s.notices.record(ref)
-	}()
 }
 
 func (s *Server) restart(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -236,35 +181,23 @@ func (s *Server) status(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	writeJSON(w, statusResponse{Status: status})
 }
 
-// outcome is the read: 200 with the Outcome once the backend's read
-// returned, 204 while it has not, 404 for a ref this Server never started
-// (a ref the backend may still know is asked about through /attach).
+// outcome is the read: the Outcome once the backend has it, 204 while it
+// has none, 404 for a ref it does not hold, 410 for one it will never answer
+// (effect.ErrOutcomeUnavailable).
 func (s *Server) outcome(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	var req refRequest
 	if !s.readJSON(w, r, &req) {
 		return
 	}
-	s.mu.Lock()
-	entry, ok := s.settled[req.Ref]
-	s.mu.Unlock()
-	if !ok {
-		stdhttp.Error(w, "backendhttp: unknown ref", stdhttp.StatusNotFound)
-		return
-	}
-	select {
-	case <-entry.done:
-	default:
+	out, err := s.Backend.Outcome(r.Context(), req.Ref)
+	switch {
+	case err == nil:
+		writeJSON(w, protocol.EncodeOutcome(out))
+	case errors.Is(err, effect.ErrOutcomeNotReady):
 		w.WriteHeader(stdhttp.StatusNoContent)
-		return
-	}
-	s.mu.Lock()
-	out, err := entry.outcome, entry.err
-	s.mu.Unlock()
-	if err != nil {
+	default:
 		writeError(w, err)
-		return
 	}
-	writeJSON(w, protocol.EncodeOutcome(out))
 }
 
 func (s *Server) cancel(w stdhttp.ResponseWriter, r *stdhttp.Request) {
@@ -292,19 +225,28 @@ func (s *Server) progress(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	_ = s.Progress.Progress(r.Context(), req.Key, req.After, func(f effect.ProgressFrame) bool { return send(f) })
 }
 
+// noticeStream relays the backend's settled Refs (notice.Source) as
+// server-sent events; a 410 before the first event is
+// effect.ErrSettlementsEvicted. A backend without notices answers an empty
+// stream that ends at once, and the Client reads at intervals instead.
 func (s *Server) noticeStream(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	var req noticesRequest
 	if !s.readJSON(w, r, &req) {
 		return
 	}
+	source, ok := s.Backend.(notice.Source)
+	if !ok {
+		sse(w)
+		return
+	}
 	var send func(v any) bool
-	err := s.notices.subscribe(r.Context(), req.Epoch, req.After, func(n Notice) bool {
+	err := source.Settled(r.Context(), req.Epoch, req.After, func(n notice.Ref) bool {
 		if send == nil {
 			send = sse(w)
 		}
 		return send(n)
 	})
-	if errors.Is(err, errNoticesEvicted) && send == nil {
+	if errors.Is(err, effect.ErrSettlementsEvicted) && send == nil {
 		stdhttp.Error(w, err.Error(), stdhttp.StatusGone)
 		return
 	}
@@ -339,11 +281,15 @@ func writeJSON(w stdhttp.ResponseWriter, value any) {
 
 // writeError maps the backend's definitive answers to statuses the Client
 // maps back: 404 is effect.ErrExecutionNotFound (a ref the backend does not
-// hold); anything else is 500 and reaches the Client as a read failure.
+// hold), 410 is effect.ErrOutcomeUnavailable (a ref it will never answer);
+// anything else is 500 and reaches the Client as a read failure to retry.
 func writeError(w stdhttp.ResponseWriter, err error) {
 	status := stdhttp.StatusInternalServerError
-	if errors.Is(err, effect.ErrExecutionNotFound) {
+	switch {
+	case errors.Is(err, effect.ErrExecutionNotFound):
 		status = stdhttp.StatusNotFound
+	case errors.Is(err, effect.ErrOutcomeUnavailable):
+		status = stdhttp.StatusGone
 	}
 	stdhttp.Error(w, err.Error(), status)
 }

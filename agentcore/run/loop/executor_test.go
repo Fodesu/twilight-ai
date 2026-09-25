@@ -569,7 +569,7 @@ func TestLocalExecutorAttachAndCancel(t *testing.T) {
 	if err := exec.Cancel(context.Background(), ref); err != nil {
 		t.Fatal(err)
 	}
-	out, err := exec.Outcome(context.Background(), ref)
+	out, err := awaitRef(context.Background(), exec, ref)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -756,5 +756,21 @@ func TestLocalExecutorValidateChecksReplayDeclaration(t *testing.T) {
 				t.Fatalf("restart = %q, %v", ref, err)
 			}
 		})
+	}
+}
+
+// awaitRef reads ref's Outcome until it is readable: Outcome is a plain read
+// and the LocalExecutor announces settlement through its notice.Source.
+func awaitRef(ctx context.Context, exec *LocalExecutor, ref string) (Outcome, error) {
+	for {
+		out, err := exec.Outcome(ctx, ref)
+		if !errors.Is(err, ErrOutcomeNotReady) {
+			return out, err
+		}
+		select {
+		case <-ctx.Done():
+			return Outcome{}, ctx.Err()
+		case <-time.After(time.Millisecond):
+		}
 	}
 }

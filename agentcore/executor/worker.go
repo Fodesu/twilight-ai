@@ -85,6 +85,9 @@ type Worker struct {
 	retry       RetryBudget
 	progress    *ProgressHub
 	settlements *SettlementHub
+	// notices is the Worker\'s one subscription per Backend to the Backend\'s
+	// settled Refs (notice.Source); observe waits on it.
+	notices backendNotices
 }
 
 // NewWorker builds a Worker over records with the given routes; the last
@@ -136,6 +139,7 @@ func NewWorker(ctx context.Context, records executionstore.Store, routes []Route
 	w := &Worker{store: records, routes: routes, backends: backends, id: opts.ID, lease: opts.LeaseDuration, now: now,
 		retry: opts.Retry, progress: progress, settlements: settlements,
 		lifecycle: lifecycle, stop: stop}
+	w.notices.worker = w
 	if err := w.recover(ctx); err != nil {
 		stop()
 		return nil, err
@@ -729,24 +733,52 @@ func (w *Worker) watch(lease executionstore.Lease, backend ExecutionBackend, ref
 
 // observe reads the Outcome of ref and settles it, or restarts the effect
 // after a retryable failure and reports true with ref moved to the new
-// execution; false ends the watch.
+// execution; false ends the watch. It reads once, then waits for the
+// Backend's notice that the Ref settled (RUN-EXE-17); a read at intervals
+// bounded by the lease covers a Backend without notices and a notice that
+// was lost, and every wait re-checks that this Worker still owns the record.
 func (w *Worker) observe(lease executionstore.Lease, backend ExecutionBackend, ref *string) bool {
+	wait := w.notices.await(backend, *ref)
+	defer wait.cancel()
 	delay := 10 * time.Millisecond
 	var out effect.Outcome
 	for {
-		// Bound each read by the execution lease so a blocked backend read
-		// eventually yields to the ownership check before the next poll.
 		readCtx, cancelRead := context.WithTimeout(w.lifecycle, w.lease)
 		var err error
 		out, err = backend.Outcome(readCtx, *ref)
 		cancelRead()
-		if err == nil {
-			break
-		}
-		if !w.waitOwned(lease, delay) {
+		switch {
+		case err == nil:
+		case errors.Is(err, effect.ErrOutcomeNotReady):
+			// A live notice stream lets the read wait a whole lease; until
+			// the stream is known live, and for a Backend without one, a
+			// read every second covers a notice recorded before the
+			// subscription began.
+			interval := w.lease
+			if !wait.established() {
+				interval = min(w.lease, time.Second)
+			}
+			if !w.waitSignal(lease, wait.signal, interval) {
+				return false
+			}
+			continue
+		case errors.Is(err, effect.ErrExecutionNotFound), errors.Is(err, effect.ErrOutcomeUnavailable):
+			// A definitive answer: the Backend will never produce this
+			// Outcome. The record settles Unknown instead of waiting on a
+			// read that cannot change (RUN-EXE-3).
+			env := protocol.OutcomeEnvelope{ProtocolVersion: protocol.ProtocolVersion, Key: lease.Key, Unknown: true,
+				Error: &protocol.WireError{Code: "outcome_unavailable", Message: err.Error()}}
+			w.settleWithRetry(lease, &env, effect.ExecutionUnknown, delay)
 			return false
+		default:
+			// A transport or read failure: try again shortly.
+			if !w.waitOwned(lease, delay) {
+				return false
+			}
+			delay = min(delay*2, time.Second)
+			continue
 		}
-		delay = min(delay*2, time.Second)
+		break
 	}
 	// A Known transient failure of an effect whose policy allows it is
 	// re-dispatched under the same ledger within the budget (RUN-EXE-11):
@@ -759,16 +791,40 @@ func (w *Worker) observe(lease executionstore.Lease, backend ExecutionBackend, r
 	// Outcome's key (RUN-EXE-9).
 	out.Key = lease.Key
 	env := protocol.EncodeOutcome(out)
-	state := protocol.StatusForOutcome(out)
+	w.settleWithRetry(lease, &env, protocol.StatusForOutcome(out), delay)
+	return false
+}
+
+// settleWithRetry commits the settlement, retrying transient store failures
+// while this Worker still owns the record.
+func (w *Worker) settleWithRetry(lease executionstore.Lease, env *protocol.OutcomeEnvelope, state effect.ExecutionStatus, delay time.Duration) {
 	for {
-		if err := w.finishOwned(w.lifecycle, lease, &env, state, nil); err == nil {
-			return false
+		if err := w.finishOwned(w.lifecycle, lease, env, state, nil); err == nil {
+			return
 		}
 		if !w.waitOwned(lease, delay) {
-			return false
+			return
 		}
 		delay = min(delay*2, time.Second)
 	}
+}
+
+// waitSignal waits for the Backend's notice on signal or for interval to
+// elapse, whichever is first, and reports whether this Worker still owns
+// the record. A nil signal (a Backend without notices) waits the interval.
+func (w *Worker) waitSignal(lease executionstore.Lease, signal <-chan struct{}, interval time.Duration) bool {
+	if !w.ownershipIntact(lease) {
+		return false
+	}
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
+	select {
+	case <-w.lifecycle.Done():
+		return false
+	case <-signal:
+	case <-timer.C:
+	}
+	return w.ownershipIntact(lease)
 }
 
 // retryAfter decides whether out, the Outcome of ref, is a Known failure

@@ -13,6 +13,7 @@ import (
 
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/backendhttp"
+	"github.com/felinics/twilight/agentcore/executor/notice"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/model"
@@ -28,6 +29,7 @@ import (
 type fakeBackend struct {
 	mu       sync.Mutex
 	hub      *executor.ProgressHub
+	notices  *notice.RefHub
 	inflight map[string]*fakeRun
 	starts   int
 	restarts int
@@ -41,7 +43,7 @@ type fakeRun struct {
 }
 
 func newFakeBackend(text string) *fakeBackend {
-	return &fakeBackend{hub: executor.NewProgressHub(0), inflight: map[string]*fakeRun{}, text: text}
+	return &fakeBackend{hub: executor.NewProgressHub(0), notices: notice.NewRefHub("fake/"+text, 0), inflight: map[string]*fakeRun{}, text: text}
 }
 
 func (b *fakeBackend) Validate(context.Context, effect.Assignment) (*run.ToolFailure, error) {
@@ -67,6 +69,7 @@ func (b *fakeBackend) Start(_ context.Context, ref string, a effect.Assignment) 
 		close(r.done)
 		b.mu.Unlock()
 		b.hub.End(a.Key())
+		b.notices.Record(ref)
 	}()
 	return nil
 }
@@ -97,22 +100,25 @@ func (b *fakeBackend) Status(ctx context.Context, ref string) (effect.ExecutionS
 	}
 	return att.Execution, nil
 }
-func (b *fakeBackend) Outcome(ctx context.Context, ref string) (effect.Outcome, error) {
+func (b *fakeBackend) Outcome(_ context.Context, ref string) (effect.Outcome, error) {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	r, ok := b.inflight[ref]
-	b.mu.Unlock()
 	if !ok {
 		return effect.Outcome{}, effect.ErrExecutionNotFound
 	}
 	select {
 	case <-r.done:
-		b.mu.Lock()
-		defer b.mu.Unlock()
 		return r.out, nil
-	case <-ctx.Done():
-		return effect.Outcome{}, ctx.Err()
+	default:
+		return effect.Outcome{}, effect.ErrOutcomeNotReady
 	}
 }
+
+func (b *fakeBackend) Settled(ctx context.Context, epoch string, after uint64, fn func(notice.Ref) bool) error {
+	return b.notices.Settled(ctx, epoch, after, fn)
+}
+
 func (b *fakeBackend) Cancel(context.Context, string) error { return nil }
 
 // releaseAll lets every in-flight run settle.
@@ -144,6 +150,14 @@ func modelAssignment(effectID run.EffectID) effect.Assignment {
 		Body: effect.ModelAssignment{Model: "m", Request: request, RequestDigest: digest}}
 }
 
+// await waits for key's Outcome with a Watcher over port: the port's
+// settlement stream when it has one, a read every poll otherwise.
+func await(ctx context.Context, port effect.ExecutionPort, key effect.AssignmentKey, poll time.Duration) (effect.Outcome, error) {
+	w := &effect.Watcher{Port: port, Poll: poll}
+	defer w.Close()
+	return w.Await(ctx, key)
+}
+
 func modelText(out effect.Outcome) string {
 	if r, ok := out.ModelResult(); ok {
 		return r.Text
@@ -161,8 +175,7 @@ func TestWorkerOverBackendWire(t *testing.T) {
 	backend := newFakeBackend("remote")
 	server := httptest.NewServer((&backendhttp.Server{Backend: backend, Progress: backend.hub}).Handler())
 	defer server.Close()
-	client := &backendhttp.Client{BaseURL: server.URL, Poll: time.Minute}
-	defer client.Close()
+	client := &backendhttp.Client{BaseURL: server.URL}
 	worker, err := executor.NewWorker(ctx, sqlitetest.Open(t).Executions(), []executor.Route{executor.Default("remote", client)}, executor.WorkerOptions{ID: "w"})
 	if err != nil {
 		t.Fatal(err)
@@ -187,7 +200,7 @@ func TestWorkerOverBackendWire(t *testing.T) {
 	}
 	began := time.Now()
 	backend.releaseAll()
-	out, err := effect.AwaitOutcome(ctx, worker, a.Key(), time.Minute)
+	out, err := await(ctx, worker, a.Key(), time.Minute)
 	if err != nil || modelText(out) != "remote" {
 		t.Fatalf("outcome = %+v, %v", out, err)
 	}
@@ -215,8 +228,7 @@ func TestRecoveryRestartsOnAFreshBackend(t *testing.T) {
 	handler.Store(&h)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { (*handler.Load()).ServeHTTP(w, r) }))
 	defer server.Close()
-	client := &backendhttp.Client{BaseURL: server.URL, Poll: 50 * time.Millisecond}
-	defer client.Close()
+	client := &backendhttp.Client{BaseURL: server.URL}
 
 	a := modelAssignment("e2")
 	dead, err := executor.NewWorker(ctx, records, []executor.Route{executor.Default("remote", client)}, executor.WorkerOptions{ID: "dead", LeaseDuration: time.Second, Clock: clock})
@@ -242,7 +254,7 @@ func TestRecoveryRestartsOnAFreshBackend(t *testing.T) {
 		t.Fatal(err)
 	}
 	second.releaseAll()
-	out, err := effect.AwaitOutcome(ctx, live, a.Key(), 20*time.Millisecond)
+	out, err := await(ctx, live, a.Key(), 20*time.Millisecond)
 	if err != nil || modelText(out) != "second" {
 		t.Fatalf("recovered outcome = %+v, %v", out, err)
 	}

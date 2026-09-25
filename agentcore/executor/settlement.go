@@ -2,120 +2,51 @@ package executor
 
 import (
 	"context"
-	"sync"
 
+	"github.com/felinics/twilight/agentcore/executor/notice"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
-// DefaultSettlementWindow is the Settlements a SettlementHub keeps when
-// built with a zero window: enough for a subscriber to reconnect after a
-// brief drop without re-reading everything it waits on.
-const DefaultSettlementWindow = 4096
+// DefaultSettlementWindow is the number of settlements a Worker keeps for
+// late subscribers.
+const DefaultSettlementWindow = notice.DefaultWindow
 
-// SettlementHub is the Worker's in-memory settlement log, the
-// effect.SettlementPort it serves. Every settlement the Worker writes to
-// the execution ledger is recorded here afterwards, stamped with the hub's
-// Epoch (one per incarnation) and a running Sequence, and every subscriber
-// is woken. The hub is not a fact store: the ledger is. It is the notice
-// that a fact landed, kept in a bounded ring so a subscriber can catch up
-// after a short gap and told (ErrSettlementsEvicted) when it cannot.
+// SettlementHub is the Worker's settlement notice log (RUN-EXE-17): the
+// notice.Ring of effect.Settlement, the SettlementPort the Worker and the
+// HTTP Server expose. One hub per Worker incarnation; every settlement the
+// Worker records, whoever dispatched it, goes through it.
 type SettlementHub struct {
-	epoch  string
-	window int
-
-	mu      sync.Mutex
-	next    uint64
-	log     []effect.Settlement
-	changed chan struct{} // closed and replaced on every record; waiters select on it
-	closed  bool
+	ring *notice.Ring[effect.Settlement]
 }
 
-// NewSettlementHub returns a hub for one incarnation named epoch, keeping
-// window Settlements (zero takes DefaultSettlementWindow).
+// NewSettlementHub starts a hub for one Worker incarnation.
 func NewSettlementHub(epoch string, window int) *SettlementHub {
-	if window <= 0 {
-		window = DefaultSettlementWindow
-	}
-	return &SettlementHub{epoch: epoch, window: window, changed: make(chan struct{})}
+	return &SettlementHub{ring: notice.NewRing[effect.Settlement](epoch, window)}
 }
 
-// Epoch names this incarnation of the hub.
-func (h *SettlementHub) Epoch() string { return h.epoch }
+// Epoch names the incarnation.
+func (h *SettlementHub) Epoch() string { return h.ring.Epoch() }
 
-// Record notes that key settled and wakes every subscriber.
+// Record announces that key settled.
 func (h *SettlementHub) Record(key effect.AssignmentKey) {
 	if h == nil {
 		return
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.closed {
-		return
-	}
-	h.next++
-	h.log = append(h.log, effect.Settlement{Key: key, Epoch: h.epoch, Sequence: h.next})
-	if len(h.log) > h.window {
-		h.log = h.log[len(h.log)-h.window:]
-	}
-	close(h.changed)
-	h.changed = make(chan struct{})
+	h.ring.Record(func(epoch string, sequence uint64) effect.Settlement {
+		return effect.Settlement{Key: key, Epoch: epoch, Sequence: sequence}
+	})
 }
 
-// Close ends every subscription: the hub's incarnation is over, and a
-// subscriber that returns from Settlements with nil re-reads and
-// subscribes again against whatever serves the port next.
+// Close ends the hub's subscriptions.
 func (h *SettlementHub) Close() {
-	if h == nil {
-		return
+	if h != nil {
+		h.ring.Close()
 	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.closed {
-		return
-	}
-	h.closed = true
-	close(h.changed)
-	h.changed = make(chan struct{})
 }
 
-// Settlements is effect.SettlementPort. An epoch other than this hub's, or
-// an empty one, subscribes from the head; a Sequence older than the ring
-// holds is ErrSettlementsEvicted.
+// Settlements implements effect.SettlementPort.
 func (h *SettlementHub) Settlements(ctx context.Context, epoch string, after uint64, fn func(effect.Settlement) bool) error {
-	h.mu.Lock()
-	switch {
-	case epoch != h.epoch:
-		after = h.next
-	case len(h.log) > 0 && after < h.log[0].Sequence-1, len(h.log) == 0 && after < h.next:
-		h.mu.Unlock()
-		return effect.ErrSettlementsEvicted
-	}
-	h.mu.Unlock()
-	for {
-		h.mu.Lock()
-		var pending []effect.Settlement
-		for i := range h.log {
-			if h.log[i].Sequence > after {
-				pending = append(pending, h.log[i])
-			}
-		}
-		wait, closed := h.changed, h.closed
-		h.mu.Unlock()
-		for _, s := range pending {
-			after = s.Sequence
-			if !fn(s) {
-				return nil
-			}
-		}
-		if closed {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-wait:
-		}
-	}
+	return h.ring.Subscribe(ctx, epoch, after, fn)
 }
 
 var _ effect.SettlementPort = (*SettlementHub)(nil)

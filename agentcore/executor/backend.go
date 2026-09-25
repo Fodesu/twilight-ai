@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/felinics/twilight/agentcore/executor/notice"
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
@@ -61,8 +62,11 @@ type ExecutionBackend interface {
 	// error, not an observation.
 	Attach(ctx context.Context, ref string) (effect.Attachment, error)
 	Status(ctx context.Context, ref string) (effect.ExecutionStatus, error)
-	// Outcome blocks until Ref has a terminal Outcome or ctx ends; its error
-	// describes the read only.
+	// Outcome is a read: the terminal Outcome of Ref once it has one,
+	// effect.ErrOutcomeNotReady while it has none, effect.ErrExecutionNotFound
+	// for a Ref the Backend does not know. It never blocks on the execution;
+	// a Backend that can say when to read implements notice.Source, and the
+	// Worker waits on that stream (RUN-EXE-17).
 	Outcome(ctx context.Context, ref string) (effect.Outcome, error)
 	Cancel(ctx context.Context, ref string) error
 }
@@ -152,6 +156,25 @@ func (b portBackend) Outcome(ctx context.Context, ref string) (effect.Outcome, e
 		return effect.Outcome{}, err
 	}
 	return b.port.GetOutcome(ctx, key)
+}
+
+// Settled relays the port's settlement stream as Ref notices, the Ref being
+// the encoded key Prepare derived, so a Worker in front of a remote executor
+// waits on the remote's notices instead of polling it (RUN-EXE-17). A port
+// without SettlementPort has no stream: Settled returns at once and the
+// Worker falls back to reading at intervals.
+func (b portBackend) Settled(ctx context.Context, epoch string, after uint64, fn func(notice.Ref) bool) error {
+	settlements, ok := b.port.(effect.SettlementPort)
+	if !ok {
+		return nil
+	}
+	return settlements.Settlements(ctx, epoch, after, func(s effect.Settlement) bool {
+		raw, err := json.Marshal(s.Key)
+		if err != nil {
+			return true
+		}
+		return fn(notice.Ref{Ref: string(raw), Epoch: s.Epoch, Sequence: s.Sequence})
+	})
 }
 
 func (b portBackend) Cancel(ctx context.Context, ref string) error {

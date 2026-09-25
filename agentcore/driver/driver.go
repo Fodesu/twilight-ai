@@ -110,6 +110,11 @@ func (d *Driver) watcher() *effect.Watcher {
 	return d.ownWatcher
 }
 
+// OutcomeWatcher is the Watcher every Loop and Reconciler of this Driver
+// waits with; a host component that waits for an effect of its own
+// (compaction's summary) shares it instead of subscribing again.
+func (d *Driver) OutcomeWatcher() *effect.Watcher { return d.watcher() }
+
 // Planner is the application's between-steps hook: it runs while a Run is
 // Open and about to plan a model request, with the Writer of the Session
 // being driven, so what it commits (an in-turn checkpoint, APP-CKP-1) is

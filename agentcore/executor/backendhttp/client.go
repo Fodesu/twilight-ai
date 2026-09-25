@@ -10,50 +10,21 @@ import (
 	"io"
 	stdhttp "net/http"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/felinics/twilight/agentcore/executor"
+	"github.com/felinics/twilight/agentcore/executor/notice"
 	"github.com/felinics/twilight/agentcore/executor/protocol"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
 
-// Client is executor.ExecutionBackend over a Server. Its blocking Outcome is
-// built from the wire's read and notice stream: one /notices subscription
-// per Client, shared by every ref it waits on, and a /outcome read on each
-// notice for that ref or at Poll intervals when the stream is silent.
+// Client is executor.ExecutionBackend and notice.Source over a Server. It
+// keeps no state: Outcome is one read of /outcome, Settled one stream of
+// /notices, and the Worker that drives it owns the waiting (RUN-EXE-17).
 type Client struct {
 	BaseURL string
 	HTTP    *stdhttp.Client
-	// Poll bounds how late a settlement is seen without a notice; zero
-	// selects DefaultPoll.
-	Poll time.Duration
-
-	mu      sync.Mutex
-	waiters map[string]chan struct{}
-	stream  bool
-	closed  bool
-	stop    context.CancelFunc
-	epoch   string
-	after   uint64
 }
-
-// Close ends the Client's notice subscription and its reconnects; blocked
-// Outcome calls keep waiting on their own ctx and poll. A closed Client
-// still serves the request/reply calls; it opens no stream again.
-func (c *Client) Close() {
-	c.mu.Lock()
-	c.closed = true
-	stop := c.stop
-	c.mu.Unlock()
-	if stop != nil {
-		stop()
-	}
-}
-
-// DefaultPoll is the Client's re-read interval when no notice arrives.
-const DefaultPoll = 15 * time.Second
 
 func (c *Client) client() *stdhttp.Client {
 	if c.HTTP != nil {
@@ -128,38 +99,18 @@ func (c *Client) Status(ctx context.Context, ref string) (effect.ExecutionStatus
 	return out.Status, nil
 }
 
-// Outcome blocks until ref has an Outcome or ctx ends, as the backend
-// contract asks, without holding a request open: it reads, and between
-// reads waits for the Server's notice for ref or for Poll to pass. A 404 is
-// effect.ErrExecutionNotFound, a definitive answer the Worker retries on
-// its own schedule.
+// Outcome is the read: the Outcome once the backend has it,
+// effect.ErrOutcomeNotReady on a 204.
 func (c *Client) Outcome(ctx context.Context, ref string) (effect.Outcome, error) {
-	poll := c.Poll
-	if poll <= 0 {
-		poll = DefaultPoll
+	var envelope protocol.OutcomeEnvelope
+	found, err := c.post(ctx, "/outcome", refRequest{Ref: ref}, &envelope)
+	if err != nil {
+		return effect.Outcome{}, err
 	}
-	notice := c.await(ref)
-	defer c.release(ref, notice)
-	c.ensureStream()
-	for {
-		var envelope protocol.OutcomeEnvelope
-		found, err := c.post(ctx, "/outcome", refRequest{Ref: ref}, &envelope)
-		if err != nil {
-			return effect.Outcome{}, err
-		}
-		if found {
-			return protocol.DecodeOutcome(&envelope), nil
-		}
-		timer := time.NewTimer(poll)
-		select {
-		case <-notice:
-			timer.Stop()
-		case <-timer.C:
-		case <-ctx.Done():
-			timer.Stop()
-			return effect.Outcome{}, ctx.Err()
-		}
+	if !found {
+		return effect.Outcome{}, effect.ErrOutcomeNotReady
 	}
+	return protocol.DecodeOutcome(&envelope), nil
 }
 
 func (c *Client) Cancel(ctx context.Context, ref string) error {
@@ -170,7 +121,7 @@ func (c *Client) Cancel(ctx context.Context, ref string) error {
 // Progress is effect.ProgressPort over the Server's /progress, so a Worker
 // routing to this Client relays the backend's frames (RUN-EXE-12).
 func (c *Client) Progress(ctx context.Context, key effect.AssignmentKey, after uint64, fn func(effect.ProgressFrame) bool) error {
-	return c.streamLines(ctx, "/progress", progressRequest{Key: key, After: after}, nil, func(data []byte) bool {
+	return c.streamLines(ctx, "/progress", progressRequest{Key: key, After: after}, func(data []byte) bool {
 		var f effect.ProgressFrame
 		if err := json.Unmarshal(data, &f); err != nil {
 			return true
@@ -179,103 +130,19 @@ func (c *Client) Progress(ctx context.Context, key effect.AssignmentKey, after u
 	})
 }
 
-// await registers a waiter for ref's notice; release drops it.
-func (c *Client) await(ref string) chan struct{} {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.waiters == nil {
-		c.waiters = make(map[string]chan struct{})
-	}
-	ch, ok := c.waiters[ref]
-	if !ok {
-		ch = make(chan struct{}, 1)
-		c.waiters[ref] = ch
-	}
-	return ch
-}
-
-func (c *Client) release(ref string, ch chan struct{}) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.waiters[ref] == ch {
-		delete(c.waiters, ref)
-	}
-}
-
-// ensureStream keeps one /notices subscription open for the Client's
-// lifetime, started by the first Outcome. Every time the stream opens,
-// every waiter is woken to read again: a settlement that landed before the
-// subscription reached the Server sent no notice this stream will see. It
-// reconnects after every end; a change of Server epoch or an evicted
-// position wakes every waiter the same way.
-func (c *Client) ensureStream() {
-	c.mu.Lock()
-	if c.stream || c.closed {
-		c.mu.Unlock()
-		return
-	}
-	c.stream = true
-	ctx, stop := context.WithCancel(context.Background())
-	c.stop = stop
-	c.mu.Unlock()
-	go func() {
-		for ctx.Err() == nil {
-			c.mu.Lock()
-			epoch, after := c.epoch, c.after
-			c.mu.Unlock()
-			opened := func() {
-				c.mu.Lock()
-				c.wakeAllLocked()
-				c.mu.Unlock()
-			}
-			err := c.streamLines(ctx, "/notices", noticesRequest{Epoch: epoch, After: after}, opened, func(data []byte) bool {
-				var n Notice
-				if err := json.Unmarshal(data, &n); err != nil {
-					return true
-				}
-				c.mu.Lock()
-				if n.Epoch != c.epoch && c.epoch != "" {
-					c.wakeAllLocked()
-				}
-				c.epoch, c.after = n.Epoch, n.Sequence
-				ch := c.waiters[n.Ref]
-				c.mu.Unlock()
-				if ch != nil {
-					select {
-					case ch <- struct{}{}:
-					default:
-					}
-				}
-				return true
-			})
-			c.mu.Lock()
-			if errors.Is(err, errNoticesEvicted) {
-				c.epoch, c.after = "", 0
-			}
-			c.wakeAllLocked()
-			c.mu.Unlock()
-			timer := time.NewTimer(time.Second)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-			case <-timer.C:
-			}
+// Settled streams the backend's settled Refs (notice.Source); a 410 before
+// the first event is effect.ErrSettlementsEvicted, and a stream that ends
+// tells the Worker to read at intervals until it reconnects.
+func (c *Client) Settled(ctx context.Context, epoch string, after uint64, fn func(notice.Ref) bool) error {
+	return c.streamLines(ctx, "/notices", noticesRequest{Epoch: epoch, After: after}, func(data []byte) bool {
+		var n notice.Ref
+		if err := json.Unmarshal(data, &n); err != nil {
+			return true
 		}
-	}()
+		return fn(n)
+	})
 }
 
-func (c *Client) wakeAllLocked() {
-	for _, ch := range c.waiters {
-		select {
-		case ch <- struct{}{}:
-		default:
-		}
-	}
-}
-
-// post sends in and decodes a 2xx body into out; found is false for a 204.
-// A 404 is effect.ErrExecutionNotFound; other non-2xx statuses are errors
-// carrying the Server's message.
 func (c *Client) post(ctx context.Context, path string, in, out any) (found bool, err error) {
 	resp, err := c.do(ctx, path, in)
 	if err != nil {
@@ -287,8 +154,11 @@ func (c *Client) post(ctx context.Context, path string, in, out any) (found bool
 	}
 	if resp.StatusCode/100 != 2 {
 		message, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode == stdhttp.StatusNotFound {
+		switch resp.StatusCode {
+		case stdhttp.StatusNotFound:
 			return false, effect.ErrExecutionNotFound
+		case stdhttp.StatusGone:
+			return false, effect.ErrOutcomeUnavailable
 		}
 		return false, fmt.Errorf("backendhttp: %s answered %s: %s", path, resp.Status, strings.TrimSpace(string(message)))
 	}
@@ -320,7 +190,7 @@ func (c *Client) do(ctx context.Context, path string, in any) (*stdhttp.Response
 // server-sent event response to fn until fn stops, the stream ends (nil) or
 // ctx ends; a 410 is errNoticesEvicted. onOpen, when set, runs once the
 // Server has accepted the subscription.
-func (c *Client) streamLines(ctx context.Context, path string, in any, onOpen func(), fn func(data []byte) bool) error {
+func (c *Client) streamLines(ctx context.Context, path string, in any, fn func(data []byte) bool) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	resp, err := c.do(ctx, path, in)
@@ -331,12 +201,9 @@ func (c *Client) streamLines(ctx context.Context, path string, in any, onOpen fu
 	if resp.StatusCode/100 != 2 {
 		message, _ := io.ReadAll(resp.Body)
 		if resp.StatusCode == stdhttp.StatusGone {
-			return errNoticesEvicted
+			return effect.ErrSettlementsEvicted
 		}
 		return fmt.Errorf("backendhttp: %s answered %s: %s", path, resp.Status, strings.TrimSpace(string(message)))
-	}
-	if onOpen != nil {
-		onOpen()
 	}
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64<<10), 16<<20)
@@ -358,4 +225,5 @@ func (c *Client) streamLines(ctx context.Context, path string, in any, onOpen fu
 var (
 	_ executor.ExecutionBackend = (*Client)(nil)
 	_ effect.ProgressPort       = (*Client)(nil)
+	_ notice.Source             = (*Client)(nil)
 )

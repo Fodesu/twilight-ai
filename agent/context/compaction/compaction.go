@@ -115,6 +115,10 @@ type Summarizer struct {
 	Content frozen.Store
 	// Executor performs the model effect.
 	Executor effect.ExecutionPort
+	// Watcher is where the summary's one effect is waited for: the Owner's
+	// shared Watcher over Executor, so compaction opens no subscription of
+	// its own (RUN-EXE-17).
+	Watcher *effect.Watcher
 }
 
 // Summarize renders entries and asks the preset's model for the summary.
@@ -149,7 +153,10 @@ func (s Summarizer) Summarize(ctx context.Context, sid session.SessionID, preset
 	}
 	// One effect, nothing else to do until it answers: the synchronous form
 	// of read-plus-notice (effect.AwaitOutcome), not a held request.
-	out, err := effect.AwaitOutcome(ctx, s.Executor, a.Key(), 0)
+	if s.Watcher == nil {
+		return "", errors.New("compaction: Summarizer requires the Owner's Watcher")
+	}
+	out, err := s.Watcher.Await(ctx, a.Key())
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			_ = s.Executor.Cancel(context.WithoutCancel(ctx), a.Key())

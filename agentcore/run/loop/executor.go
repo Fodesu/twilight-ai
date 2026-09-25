@@ -2,6 +2,8 @@ package loop
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +11,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/felinics/twilight/agentcore/executor/notice"
 	run "github.com/felinics/twilight/agentcore/run"
 	effect "github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
@@ -105,6 +108,10 @@ type LocalExecutor struct {
 	sink      effect.ProgressSink
 	streaming bool
 
+	// notices announces each ref that settled (notice.Source); the Worker
+	// waits on it instead of blocking in Outcome.
+	notices *notice.RefHub
+
 	mu       sync.Mutex
 	inflight map[string]*inflight
 	// terminal lists the closed entries oldest first; once more than retain
@@ -137,7 +144,12 @@ func NewLocalExecutor(models ModelCatalog, tools ToolCatalog, sink effect.Progre
 	if tools == nil {
 		return nil, errors.New("agent: loop: nil tool catalog")
 	}
+	var raw [8]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return nil, fmt.Errorf("agent: loop: executor epoch: %w", err)
+	}
 	return &LocalExecutor{models: models, tools: tools, sink: sink, streaming: streaming,
+		notices:  notice.NewRefHub("local/"+hex.EncodeToString(raw[:]), 0),
 		inflight: make(map[string]*inflight), retain: DefaultRetainedOutcomes}, nil
 }
 
@@ -330,6 +342,7 @@ func (e *LocalExecutor) Start(ctx context.Context, ref string, a Assignment) err
 		e.terminal = append(e.terminal, key)
 		e.evictLocked()
 		e.mu.Unlock()
+		e.notices.Record(key)
 		cancel()
 	}()
 	return nil
@@ -387,22 +400,22 @@ func cancelled(result OutcomeResult, cause error) OutcomeResult {
 // Outcome waits for and returns the stable outcome of ref. A terminal entry
 // stays readable until the retention bound drops it (SetRetainedOutcomes); a
 // dropped entry is ErrExecutionNotFound.
-func (e *LocalExecutor) Outcome(ctx context.Context, ref string) (Outcome, error) {
+func (e *LocalExecutor) Outcome(_ context.Context, ref string) (Outcome, error) {
 	e.mu.Lock()
+	defer e.mu.Unlock()
 	entry, ok := e.inflight[ref]
-	e.mu.Unlock()
 	if !ok {
 		return Outcome{}, ErrExecutionNotFound
 	}
-	select {
-	case <-entry.done:
-		e.mu.Lock()
-		out := entry.outcome
-		e.mu.Unlock()
-		return out, nil
-	case <-ctx.Done():
-		return Outcome{}, ctx.Err()
+	if !entry.closed {
+		return Outcome{}, ErrOutcomeNotReady
 	}
+	return entry.outcome, nil
+}
+
+// Settled streams the refs whose Outcome became readable (notice.Source).
+func (e *LocalExecutor) Settled(ctx context.Context, epoch string, after uint64, fn func(notice.Ref) bool) error {
+	return e.notices.Settled(ctx, epoch, after, fn)
 }
 
 // Cancel requests cancellation of ref; its Outcome remains observable.

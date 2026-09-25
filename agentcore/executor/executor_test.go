@@ -167,10 +167,12 @@ func (b *testBackend) lastKey() effect.AssignmentKey {
 }
 
 // awaitOutcome is the tests' blocking read: GetOutcome is a plain query, so
-// a test that wants the eventual Outcome waits on the port's settlement
-// stream (effect.AwaitOutcome) with a short poll for ports without one.
+// a test that wants the eventual Outcome waits with a Watcher over the port,
+// which uses its settlement stream and a short read interval otherwise.
 func awaitOutcome(ctx context.Context, port effect.ExecutionPort, key effect.AssignmentKey) (effect.Outcome, error) {
-	return effect.AwaitOutcome(ctx, port, key, 5*time.Millisecond)
+	w := &effect.Watcher{Port: port, Poll: 5 * time.Millisecond}
+	defer w.Close()
+	return w.Await(ctx, key)
 }
 
 func testAssignment() effect.Assignment {

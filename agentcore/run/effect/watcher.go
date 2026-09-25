@@ -97,6 +97,29 @@ func (w *Watcher) Watch(ctx context.Context, key AssignmentKey, deliver func(Out
 
 // Close stops the stream and the polling and drops every registration.
 // The Watcher can be used again afterwards.
+// Await is the synchronous form of Watch for a caller that dispatched one
+// effect and has nothing else to do until it answers: it registers key and
+// returns its Outcome, the definitive read error of a key the executor will
+// never answer for, or ctx's error. It shares the Watcher's one subscription
+// with every other waiter instead of opening its own.
+func (w *Watcher) Await(ctx context.Context, key AssignmentKey) (Outcome, error) {
+	type answer struct {
+		out Outcome
+		err error
+	}
+	done := make(chan answer, 1)
+	cancel := w.Watch(ctx, key,
+		func(out Outcome) { done <- answer{out: out} },
+		func(err error) { done <- answer{err: err} })
+	defer cancel()
+	select {
+	case a := <-done:
+		return a.out, a.err
+	case <-ctx.Done():
+		return Outcome{}, ctx.Err()
+	}
+}
+
 func (w *Watcher) Close() {
 	w.mu.Lock()
 	if !w.running {

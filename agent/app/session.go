@@ -469,7 +469,7 @@ func (s *Session) Compact(ctx context.Context) (chatlog.CheckpointID, bool, erro
 		return "", false, err
 	}
 	summary, err := compaction.Summarizer{
-		ResolvePreset: s.a.Presets.Resolve, Content: s.a.Frozen, Executor: s.a.Executor,
+		ResolvePreset: s.a.Presets.Resolve, Content: s.a.Frozen, Executor: s.a.Executor, Watcher: s.a.Driver.OutcomeWatcher(),
 	}.Summarize(ctx, s.sid, s.opts.Preset, materialized)
 	if err != nil {
 		return "", false, err
