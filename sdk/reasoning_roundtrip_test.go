@@ -121,3 +121,52 @@ func TestToResultReplacesRatherThanConcatenatesBlockMetadata(t *testing.T) {
 		t.Errorf("signature: got %q, want %q (metadata replaces)", got, "FINAL")
 	}
 }
+
+// A provider that omits block IDs delimits blocks with their starts alone.
+// Two such blocks are two ReasoningParts, each with its own metadata; an
+// unidentified delta joins the most recent unidentified block, or opens one
+// when the most recent block is identified or there is none. Merging them
+// would concatenate the texts and let the second block's signature overwrite
+// the first, which the replay then fails to verify.
+func TestToResultKeepsUnidentifiedReasoningBlocksApart(t *testing.T) {
+	type block struct{ text, sig string }
+	for _, tc := range []struct {
+		name  string
+		parts []StreamPart
+		want  []block
+	}{
+		{"two delimited blocks", []StreamPart{
+			&ReasoningStartPart{}, &ReasoningDeltaPart{Text: "AAA"}, &ReasoningEndPart{ProviderMetadata: reasoningMeta("SIG_A")},
+			&ReasoningStartPart{}, &ReasoningDeltaPart{Text: "BBB"}, &ReasoningEndPart{ProviderMetadata: reasoningMeta("SIG_B")},
+		}, []block{{"AAA", "SIG_A"}, {"BBB", "SIG_B"}}},
+		{"delta without start opens a block", []StreamPart{
+			&ReasoningDeltaPart{Text: "AAA"}, &ReasoningDeltaPart{Text: "BBB"}, &ReasoningEndPart{ProviderMetadata: reasoningMeta("SIG_A")},
+		}, []block{{"AAABBB", "SIG_A"}}},
+		{"unidentified block after an identified one", []StreamPart{
+			&ReasoningStartPart{ID: "b1"}, &ReasoningDeltaPart{ID: "b1", Text: "AAA"}, &ReasoningEndPart{ID: "b1", ProviderMetadata: reasoningMeta("SIG_A")},
+			&ReasoningDeltaPart{Text: "BBB"}, &ReasoningEndPart{ProviderMetadata: reasoningMeta("SIG_B")},
+		}, []block{{"AAA", "SIG_A"}, {"BBB", "SIG_B"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ch := make(chan StreamPart, len(tc.parts)+1)
+			for _, p := range tc.parts {
+				ch <- p
+			}
+			ch <- &FinishPart{FinishReason: FinishReasonStop}
+			close(ch)
+			result, err := CollectStream(context.Background(), ch)
+			if err != nil {
+				t.Fatalf("CollectStream: %v", err)
+			}
+			if len(result.ReasoningParts) != len(tc.want) {
+				t.Fatalf("ReasoningParts: got %d, want %d (%+v)", len(result.ReasoningParts), len(tc.want), result.ReasoningParts)
+			}
+			for i, want := range tc.want {
+				got := result.ReasoningParts[i]
+				if got.Text != want.text || anthropicSignature(t, got.ProviderMetadata) != want.sig {
+					t.Errorf("block %d: got %q/%q, want %q/%q", i, got.Text, anthropicSignature(t, got.ProviderMetadata), want.text, want.sig)
+				}
+			}
+		})
+	}
+}
