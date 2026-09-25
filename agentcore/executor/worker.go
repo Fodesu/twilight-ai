@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"sync"
 	"time"
 
@@ -28,12 +29,6 @@ type WorkerOptions struct {
 	// restarted process while an older incarnation could still be alive.
 	ID            string
 	LeaseDuration time.Duration
-	// OutcomeWait bounds one GetOutcome call on an unsettled execution:
-	// when it passes, the call answers effect.ErrOutcomeNotReady and the
-	// caller asks again (Worker.GetOutcome). Zero selects
-	// DefaultOutcomeWait. It should be shorter than what the transport
-	// in front of the Worker allows a request to stay open.
-	OutcomeWait time.Duration
 	// Clock reads the lease clock. It must agree with the Store's clock; the
 	// Store remains the fencing authority. Defaults to time.Now.
 	Clock func() time.Time
@@ -47,6 +42,10 @@ type WorkerOptions struct {
 	// the Worker serves through Progress (RUN-EXE-12); nil builds one with
 	// the default window. The composer hands the same hub to its backends.
 	Progress *ProgressHub
+	// Settlements is the hub the Worker records settlements into and serves
+	// through Settlements (effect.SettlementPort); nil builds one for this
+	// incarnation with the default window.
+	Settlements *SettlementHub
 }
 
 // RetryBudget bounds the Worker's retries of one effect.
@@ -56,12 +55,6 @@ type RetryBudget struct {
 }
 
 const defaultLeaseDuration = 30 * time.Second
-
-// DefaultOutcomeWait is how long one GetOutcome call waits for an unsettled
-// execution before answering effect.ErrOutcomeNotReady: under the idle
-// timeouts common to HTTP intermediaries, and long enough that a caller
-// polling on it costs little.
-const DefaultOutcomeWait = 20 * time.Second
 
 // Worker owns execution leases, not Session ownership. It selects a Backend
 // for an Assignment once, persists the resulting ExecutionRef, and from then
@@ -77,36 +70,21 @@ const DefaultOutcomeWait = 20 * time.Second
 // (RUN-EXE-6). Neither operation is part of effect.ExecutionPort, which
 // stays the per-assignment data plane.
 type Worker struct {
-	store    executionstore.Store
-	routes   []Route
-	backends map[string]ExecutionBackend
-	id       string
-	lease    time.Duration
-	// outcomeWait bounds one GetOutcome call (WorkerOptions.OutcomeWait).
-	outcomeWait time.Duration
-	now         func() time.Time
-	lifecycle   context.Context
-	stop        context.CancelFunc
+	store     executionstore.Store
+	routes    []Route
+	backends  map[string]ExecutionBackend
+	id        string
+	lease     time.Duration
+	now       func() time.Time
+	lifecycle context.Context
+	stop      context.CancelFunc
 	// wg counts the goroutines the Worker started: each record's heartbeat
 	// and watcher. Close cancels lifecycle and waits.
 	wg sync.WaitGroup
 
-	retry    RetryBudget
-	progress *ProgressHub
-
-	// mu guards waiters: the GetOutcome callers blocked on each key. It is
-	// never held across a store call.
-	mu      sync.Mutex
-	waiters map[effect.AssignmentKey]*outcomeWaiter
-}
-
-// outcomeWaiter is what the GetOutcome callers of one key block on: done is
-// closed when the key settles in this process, and refs counts the callers
-// so the entry leaves the map with the last of them, whether it read the
-// Outcome or gave up.
-type outcomeWaiter struct {
-	done chan struct{}
-	refs int
+	retry       RetryBudget
+	progress    *ProgressHub
+	settlements *SettlementHub
 }
 
 // NewWorker builds a Worker over records with the given routes; the last
@@ -142,9 +120,6 @@ func NewWorker(ctx context.Context, records executionstore.Store, routes []Route
 	if opts.LeaseDuration <= 0 {
 		opts.LeaseDuration = defaultLeaseDuration
 	}
-	if opts.OutcomeWait <= 0 {
-		opts.OutcomeWait = DefaultOutcomeWait
-	}
 	now := opts.Clock
 	if now == nil {
 		now = time.Now
@@ -154,9 +129,13 @@ func NewWorker(ctx context.Context, records executionstore.Store, routes []Route
 	if progress == nil {
 		progress = NewProgressHub(0)
 	}
-	w := &Worker{store: records, routes: routes, backends: backends, id: opts.ID, lease: opts.LeaseDuration, outcomeWait: opts.OutcomeWait, now: now,
-		retry: opts.Retry, progress: progress,
-		lifecycle: lifecycle, stop: stop, waiters: make(map[effect.AssignmentKey]*outcomeWaiter)}
+	settlements := opts.Settlements
+	if settlements == nil {
+		settlements = NewSettlementHub(opts.ID+"/"+strconv.FormatInt(now().UnixNano(), 36), 0)
+	}
+	w := &Worker{store: records, routes: routes, backends: backends, id: opts.ID, lease: opts.LeaseDuration, now: now,
+		retry: opts.Retry, progress: progress, settlements: settlements,
+		lifecycle: lifecycle, stop: stop}
 	if err := w.recover(ctx); err != nil {
 		stop()
 		return nil, err
@@ -180,6 +159,7 @@ func (w *Worker) spawn(fn func()) {
 func (w *Worker) Close() {
 	w.stop()
 	w.wg.Wait()
+	w.settlements.Close()
 }
 
 // route selects the Backend for an Assignment: the first Route whose Match
@@ -489,7 +469,7 @@ func (w *Worker) Dispose(ctx context.Context, key effect.AssignmentKey) error {
 	if b, err := w.backend(ref); err == nil {
 		_ = b.Cancel(context.WithoutCancel(ctx), ref.Ref)
 	}
-	w.wake(key)
+	w.settled(key)
 	return nil
 }
 
@@ -501,41 +481,17 @@ func (w *Worker) settlement(key effect.AssignmentKey, outcome *protocol.OutcomeE
 		Events: []executionstore.Event{w.event(executionstore.EventExecutionSettled, executionstore.Settled{State: state, Outcome: *outcome})}}
 }
 
-// wake releases every GetOutcome caller blocked on key: the key has settled
-// in this process. Callers re-read the ledger, so a wake with nothing new is
-// harmless.
-func (w *Worker) wake(key effect.AssignmentKey) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if waiter := w.waiters[key]; waiter != nil {
-		select {
-		case <-waiter.done:
-		default:
-			close(waiter.done)
-		}
-	}
+// settled records that key reached a terminal state in the ledger: the
+// notice every Settlements subscriber waits for. It follows the commit; a
+// subscriber that reads before the notice arrives finds the Outcome anyway.
+func (w *Worker) settled(key effect.AssignmentKey) {
+	w.settlements.Record(key)
 }
 
-// await registers the caller as a waiter on key and returns the channel the
-// next wake closes, with the release that drops the registration. The entry
-// lives exactly as long as some caller waits on it.
-func (w *Worker) await(key effect.AssignmentKey) (woken <-chan struct{}, release func()) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	waiter := w.waiters[key]
-	if waiter == nil {
-		waiter = &outcomeWaiter{done: make(chan struct{})}
-		w.waiters[key] = waiter
-	}
-	waiter.refs++
-	return waiter.done, func() {
-		w.mu.Lock()
-		defer w.mu.Unlock()
-		waiter.refs--
-		if waiter.refs == 0 && w.waiters[key] == waiter {
-			delete(w.waiters, key)
-		}
-	}
+// Settlements is effect.SettlementPort: the settlements this Worker wrote,
+// from its hub.
+func (w *Worker) Settlements(ctx context.Context, epoch string, after uint64, fn func(effect.Settlement) bool) error {
+	return w.settlements.Settlements(ctx, epoch, after, fn)
 }
 
 // acquireAndStart takes the key's lease and continues the execution from its
@@ -948,7 +904,7 @@ func (w *Worker) finishOwned(ctx context.Context, lease executionstore.Lease, ou
 		return err
 	}
 	w.progress.End(lease.Key)
-	w.wake(lease.Key)
+	w.settled(lease.Key)
 	return dispatchErr
 }
 
@@ -1056,57 +1012,28 @@ func (w *Worker) GetStatus(ctx context.Context, key effect.AssignmentKey) (effec
 	return state.State, nil
 }
 
-// GetOutcome is effect.ExecutionPort's read of the key's Outcome. It waits
-// for an unsettled execution, but not indefinitely: a wait that reaches
-// OutcomeWait without a settlement answers effect.ErrOutcomeNotReady, the
-// signal every caller treats as "still running, ask again" (the Loop, the
-// Reconciler, the HTTP binding as 204), so a caller behind a transport that
-// cannot hold a request open for the whole execution still gets a definite
-// answer per request, and a wait on an execution whose Worker died is
-// eventually re-examined instead of held for ever. In-process settlements
-// wake the wait at once; settlements another process wrote (a Dispose over
-// another handle) are seen at the next re-read, whose interval backs off to
-// the lease duration.
+// GetOutcome is effect.ExecutionPort's read of the key's Outcome: one fold
+// of the ledger, answered at once. An unsettled execution is
+// effect.ErrOutcomeNotReady; when to read again is what Settlements tells a
+// subscriber, so no request is held open for the length of an execution.
 func (w *Worker) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effect.Outcome, error) {
-	deadline := time.NewTimer(w.outcomeWait)
-	defer deadline.Stop()
-	reread := 10 * time.Millisecond
-	for {
-		state, _, ok, err := w.store.Load(ctx, key)
-		if err != nil {
-			return effect.Outcome{}, err
-		}
-		if !ok {
-			return effect.Outcome{}, effect.ErrExecutionNotFound
-		}
-		if state.Aborted() {
-			return effect.Outcome{}, effect.ErrExecutionAborted
-		}
-		if state.Acknowledged {
-			return effect.Outcome{}, effect.ErrOutcomeCollected
-		}
-		if state.Outcome != nil {
-			return protocol.DecodeOutcome(state.Outcome), nil
-		}
-		woken, release := w.await(key)
-		timer := time.NewTimer(reread)
-		select {
-		case <-woken:
-			release()
-			timer.Stop()
-		case <-timer.C:
-			release()
-			reread = min(reread*2, w.lease)
-		case <-deadline.C:
-			release()
-			timer.Stop()
-			return effect.Outcome{}, effect.ErrOutcomeNotReady
-		case <-ctx.Done():
-			release()
-			timer.Stop()
-			return effect.Outcome{}, ctx.Err()
-		}
+	state, _, ok, err := w.store.Load(ctx, key)
+	if err != nil {
+		return effect.Outcome{}, err
 	}
+	if !ok {
+		return effect.Outcome{}, effect.ErrExecutionNotFound
+	}
+	if state.Aborted() {
+		return effect.Outcome{}, effect.ErrExecutionAborted
+	}
+	if state.Acknowledged {
+		return effect.Outcome{}, effect.ErrOutcomeCollected
+	}
+	if state.Outcome == nil {
+		return effect.Outcome{}, effect.ErrOutcomeNotReady
+	}
+	return protocol.DecodeOutcome(state.Outcome), nil
 }
 
 // GetOutcomeEnvelope returns the persisted wire outcome without losing the
@@ -1197,7 +1124,8 @@ func (w *Worker) recover(ctx context.Context) error {
 }
 
 var (
-	_ effect.ExecutionPort = (*Worker)(nil)
-	_ effect.Acknowledger  = (*Worker)(nil)
-	_ effect.Recoverer     = (*Worker)(nil)
+	_ effect.ExecutionPort  = (*Worker)(nil)
+	_ effect.Acknowledger   = (*Worker)(nil)
+	_ effect.Recoverer      = (*Worker)(nil)
+	_ effect.SettlementPort = (*Worker)(nil)
 )

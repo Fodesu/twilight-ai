@@ -120,16 +120,42 @@ func (c *Client) GetOutcome(ctx context.Context, key effect.AssignmentKey) (effe
 // Progress is effect.ProgressPort over the server's event stream
 // (RUN-EXE-12). The request is cancelled when fn stops or ctx ends.
 func (c *Client) Progress(ctx context.Context, key effect.AssignmentKey, after uint64, fn func(effect.ProgressFrame) bool) error {
+	return c.stream(ctx, "/progress", progressRequest{Key: key, After: after}, func(data []byte) bool {
+		var f effect.ProgressFrame
+		if err := json.Unmarshal(data, &f); err != nil {
+			return true
+		}
+		return fn(f)
+	})
+}
+
+// Settlements is effect.SettlementPort over the server's event stream: one
+// subscription per Worker for every key it settles. The request is
+// cancelled when fn stops or ctx ends; a 410 is ErrSettlementsEvicted.
+func (c *Client) Settlements(ctx context.Context, epoch string, after uint64, fn func(effect.Settlement) bool) error {
+	return c.stream(ctx, "/settlements", settlementsRequest{Epoch: epoch, After: after}, func(data []byte) bool {
+		var s effect.Settlement
+		if err := json.Unmarshal(data, &s); err != nil {
+			return true
+		}
+		return fn(s)
+	})
+}
+
+// stream posts in to path and hands every `data:` line of the server-sent
+// event response to fn until fn returns false, the server ends the stream
+// (nil) or ctx ends (ctx.Err()).
+func (c *Client) stream(ctx context.Context, path string, in any, fn func(data []byte) bool) error {
 	if strings.TrimSpace(c.BaseURL) == "" {
 		return errors.New("executor/http: empty executor URL")
 	}
-	body, err := json.Marshal(progressRequest{Key: key, After: after})
+	body, err := json.Marshal(in)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodPost, strings.TrimRight(c.BaseURL, "/")+"/progress", bytes.NewReader(body))
+	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodPost, strings.TrimRight(c.BaseURL, "/")+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -141,8 +167,11 @@ func (c *Client) Progress(ctx context.Context, key effect.AssignmentKey, after u
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		message, _ := io.ReadAll(resp.Body)
-		if resp.StatusCode == stdhttp.StatusNotFound {
+		switch resp.StatusCode {
+		case stdhttp.StatusNotFound:
 			return effect.ErrExecutionNotFound
+		case stdhttp.StatusGone:
+			return effect.ErrSettlementsEvicted
 		}
 		return &responseError{status: resp.Status, statusCode: resp.StatusCode, body: strings.TrimSpace(string(message))}
 	}
@@ -153,11 +182,7 @@ func (c *Client) Progress(ctx context.Context, key effect.AssignmentKey, after u
 		if !bytes.HasPrefix(line, []byte("data: ")) {
 			continue
 		}
-		var f effect.ProgressFrame
-		if err := json.Unmarshal(bytes.TrimPrefix(line, []byte("data: ")), &f); err != nil {
-			continue
-		}
-		if !fn(f) {
+		if !fn(bytes.TrimPrefix(line, []byte("data: "))) {
 			return nil
 		}
 	}
@@ -289,6 +314,13 @@ type progressRequest struct {
 	After uint64               `json:"after"`
 }
 
+// settlementsRequest subscribes to the Worker's settlement notices after a
+// sequence of the named incarnation (effect.SettlementPort).
+type settlementsRequest struct {
+	Epoch string `json:"epoch,omitempty"`
+	After uint64 `json:"after"`
+}
+
 func (s *Server) Handler() stdhttp.Handler {
 	mux := stdhttp.NewServeMux()
 	mux.HandleFunc("POST /validate", s.validate)
@@ -302,17 +334,13 @@ func (s *Server) Handler() stdhttp.Handler {
 	mux.HandleFunc("POST /dispose", s.dispose)
 	mux.HandleFunc("POST /acknowledge", s.acknowledge)
 	mux.HandleFunc("POST /progress", s.progress)
+	mux.HandleFunc("POST /settlements", s.settlements)
 	return mux
 }
 
-// progress streams an execution's frames as server-sent events
-// (RUN-EXE-12): one `data:` line per frame, flushed as it arrives, until the
-// Worker ends the stream or the client goes away.
-func (s *Server) progress(w stdhttp.ResponseWriter, r *stdhttp.Request) {
-	var req progressRequest
-	if !s.readJSON(w, r, &req) {
-		return
-	}
+// sse opens a server-sent event response and returns the writer of one
+// `data:` line, which reports false once the client is gone.
+func sse(w stdhttp.ResponseWriter) func(v any) bool {
 	flusher, _ := w.(stdhttp.Flusher)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -320,8 +348,8 @@ func (s *Server) progress(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 	if flusher != nil {
 		flusher.Flush()
 	}
-	_ = s.Worker.Progress(r.Context(), req.Key, req.After, func(f effect.ProgressFrame) bool {
-		line, err := json.Marshal(f)
+	return func(v any) bool {
+		line, err := json.Marshal(v)
 		if err != nil {
 			return true
 		}
@@ -332,7 +360,46 @@ func (s *Server) progress(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 			flusher.Flush()
 		}
 		return true
+	}
+}
+
+// progress streams an execution's frames as server-sent events
+// (RUN-EXE-12): one `data:` line per frame, flushed as it arrives, until the
+// Worker ends the stream or the client goes away.
+func (s *Server) progress(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	var req progressRequest
+	if !s.readJSON(w, r, &req) {
+		return
+	}
+	send := sse(w)
+	_ = s.Worker.Progress(r.Context(), req.Key, req.After, func(f effect.ProgressFrame) bool { return send(f) })
+}
+
+// settlements streams the Worker's settlement notices as server-sent events
+// (effect.SettlementPort): one `data:` line per Settlement, until the
+// Worker closes or the client goes away. A sequence the Worker has evicted
+// is 410, and the client re-reads what it waits on.
+func (s *Server) settlements(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+	var req settlementsRequest
+	if !s.readJSON(w, r, &req) {
+		return
+	}
+	var send func(v any) bool
+	err := s.Worker.Settlements(r.Context(), req.Epoch, req.After, func(st effect.Settlement) bool {
+		if send == nil {
+			send = sse(w)
+		}
+		return send(st)
 	})
+	if errors.Is(err, effect.ErrSettlementsEvicted) && send == nil {
+		stdhttp.Error(w, err.Error(), stdhttp.StatusGone)
+		return
+	}
+	if send == nil {
+		// Nothing was sent before the stream ended: open it so the client
+		// sees a clean end rather than an empty non-SSE body.
+		sse(w)
+	}
 }
 
 func makeAssignmentRequest(a effect.Assignment) assignmentRequest {
@@ -544,6 +611,7 @@ func writeError(w stdhttp.ResponseWriter, err error) {
 }
 
 var (
-	_ effect.ExecutionPort = (*Client)(nil)
-	_ effect.Acknowledger  = (*Client)(nil)
+	_ effect.ExecutionPort  = (*Client)(nil)
+	_ effect.Acknowledger   = (*Client)(nil)
+	_ effect.SettlementPort = (*Client)(nil)
 )

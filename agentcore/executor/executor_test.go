@@ -166,6 +166,13 @@ func (b *testBackend) lastKey() effect.AssignmentKey {
 	return b.last.Key()
 }
 
+// awaitOutcome is the tests' blocking read: GetOutcome is a plain query, so
+// a test that wants the eventual Outcome waits on the port's settlement
+// stream (effect.AwaitOutcome) with a short poll for ports without one.
+func awaitOutcome(ctx context.Context, port effect.ExecutionPort, key effect.AssignmentKey) (effect.Outcome, error) {
+	return effect.AwaitOutcome(ctx, port, key, 5*time.Millisecond)
+}
+
 func testAssignment() effect.Assignment {
 	request := model.ModelRequest{Model: "m"}
 	digest, err := schema.Canonical().DigestRequest(request)
@@ -196,11 +203,11 @@ func TestWorkerIdempotentAndOutcome(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("backend calls = %d, want 1", calls)
 	}
-	out, err := worker.GetOutcome(ctx, a.Key())
+	out, err := awaitOutcome(ctx, worker, a.Key())
 	if err != nil || modelText(out) != "ok" {
 		t.Fatalf("outcome = %+v, %v", out, err)
 	}
-	out2, err := worker.GetOutcome(ctx, a.Key())
+	out2, err := awaitOutcome(ctx, worker, a.Key())
 	if err != nil || modelText(out2) != "ok" {
 		t.Fatalf("replayed outcome = %+v, %v", out2, err)
 	}
@@ -282,7 +289,7 @@ func TestWorkerDispatchReplayContinuesUnstartedAcceptance(t *testing.T) {
 			}
 			readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			defer cancel()
-			out, err := worker.GetOutcome(readCtx, a.Key())
+			out, err := awaitOutcome(readCtx, worker, a.Key())
 			if err != nil || modelText(out) != "ok" {
 				t.Fatalf("continued outcome = %+v, %v", out, err)
 			}
@@ -366,7 +373,7 @@ func TestWorkerUncertainDispatchPreservesExecution(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			out, err := port.GetOutcome(ctx, a.Key())
+			out, err := awaitOutcome(ctx, port, a.Key())
 			if err != nil || modelText(out) != "accepted before response was lost" {
 				t.Fatalf("eventual outcome = %+v, %v", out, err)
 			}
@@ -387,7 +394,7 @@ func TestHTTPDispatchAssignmentConflictIsDefinite(t *testing.T) {
 	if err := client.Dispatch(ctx, a); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.GetOutcome(ctx, a.Key()); err != nil {
+	if _, err := awaitOutcome(ctx, client, a.Key()); err != nil {
 		t.Fatal(err)
 	}
 	a.Target = &run.TargetRef{Kind: "workspace", ID: "conflicting-target"}
@@ -442,7 +449,7 @@ func TestWorkerOutcomeReadFailurePreservesExecution(t *testing.T) {
 				t.Fatalf("read error changed execution: %+v, %v", r, err)
 			}
 			close(backend.ready)
-			out, err := worker.GetOutcome(ctx, a.Key())
+			out, err := awaitOutcome(ctx, worker, a.Key())
 			if _, isUnknown := out.Result.(effect.Unknown); err != nil || isUnknown != unknown || (!unknown && modelText(out) != "ok") {
 				t.Fatalf("eventual outcome = %+v, %v", out, err)
 			}
@@ -716,7 +723,7 @@ func TestWorkerReclaimsExpiredAssignment(t *testing.T) {
 	}
 	readCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	out, err := worker.GetOutcome(readCtx, a.Key())
+	out, err := awaitOutcome(readCtx, worker, a.Key())
 	if err != nil || modelText(out) != "ok" {
 		t.Fatalf("recovered outcome = %+v, %v", out, err)
 	}
@@ -753,7 +760,7 @@ func TestWorkerRecoverExecutionAdoptsExpiredLease(t *testing.T) {
 	}
 	readCtx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
-	out, err := worker.GetOutcome(readCtx, a.Key())
+	out, err := awaitOutcome(readCtx, worker, a.Key())
 	if err != nil || modelText(out) != "ok" {
 		t.Fatalf("adopted outcome = %+v, %v", out, err)
 	}
@@ -813,14 +820,14 @@ func TestRecordStoreSurvivesWorkerRecreation(t *testing.T) {
 	if err := first.Dispatch(ctx, a); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := first.GetOutcome(ctx, a.Key()); err != nil {
+	if _, err := awaitOutcome(ctx, first, a.Key()); err != nil {
 		t.Fatal(err)
 	}
 	second, err := executor.NewWorker(ctx, fs, routes(newTestBackend()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := second.GetOutcome(ctx, a.Key())
+	out, err := awaitOutcome(ctx, second, a.Key())
 	if _, ok := out.ModelResult(); err != nil || !ok {
 		t.Fatalf("recreated worker outcome = %+v, %v", out, err)
 	}
@@ -844,7 +851,7 @@ func TestHTTPClientAndServer(t *testing.T) {
 	if err != nil || status == effect.ExecutionNotFound {
 		t.Fatalf("status = %s, %v", status, err)
 	}
-	out, err := client.GetOutcome(ctx, a.Key())
+	out, err := awaitOutcome(ctx, client, a.Key())
 	if err != nil || modelText(out) != "ok" {
 		t.Fatalf("HTTP outcome = %+v, %v", out, err)
 	}
@@ -1055,7 +1062,7 @@ func TestHTTPControlEndpoints(t *testing.T) {
 	if err := client.Dispose(ctx, b.Key()); err != nil {
 		t.Fatalf("dispose = %v", err)
 	}
-	out, err := client.GetOutcome(ctx, b.Key())
+	out, err := awaitOutcome(ctx, client, b.Key())
 	if _, isUnknown := out.Result.(effect.Unknown); err != nil || !isUnknown {
 		t.Fatalf("disposed outcome = %+v, %v", out, err)
 	}
@@ -1067,12 +1074,12 @@ func TestHTTPControlEndpoints(t *testing.T) {
 	if err := client.Acknowledge(ctx, b.Key()); err != nil {
 		t.Fatalf("acknowledge = %v", err)
 	}
-	if _, err := client.GetOutcome(ctx, b.Key()); !errors.Is(err, effect.ErrOutcomeUnavailable) {
+	if _, err := awaitOutcome(ctx, client, b.Key()); !errors.Is(err, effect.ErrOutcomeUnavailable) {
 		t.Fatalf("collected outcome over http = %v, want ErrOutcomeUnavailable", err)
 	}
 	c := testAssignment()
 	c.Effect = "effect-3"
-	if _, err := client.GetOutcome(ctx, c.Key()); !errors.Is(err, effect.ErrExecutionNotFound) {
+	if _, err := awaitOutcome(ctx, client, c.Key()); !errors.Is(err, effect.ErrExecutionNotFound) {
 		t.Fatalf("unknown key over http = %v, want ErrExecutionNotFound", err)
 	}
 	// The tombstone travels over the wire: an aborted key answers aborted,
@@ -1084,7 +1091,7 @@ func TestHTTPControlEndpoints(t *testing.T) {
 	if err := client.Dispatch(ctx, c); err == nil || !strings.Contains(err.Error(), "409") || errors.Is(err, effect.ErrDispatchUnknown) || errors.Is(err, effect.ErrDispatchRetryable) {
 		t.Fatalf("dispatch of an aborted key over http = %v, want a definite 409", err)
 	}
-	if _, err := client.GetOutcome(ctx, c.Key()); !errors.Is(err, effect.ErrOutcomeUnavailable) {
+	if _, err := awaitOutcome(ctx, client, c.Key()); !errors.Is(err, effect.ErrOutcomeUnavailable) {
 		t.Fatalf("outcome of an aborted key over http = %v, want ErrOutcomeUnavailable", err)
 	}
 }
@@ -1374,7 +1381,7 @@ func TestWorkerRetriesRetryableFailures(t *testing.T) {
 			defer cancel()
 			var out effect.Outcome
 			for {
-				out, err = worker.GetOutcome(waitCtx, tc.assignment.Key())
+				out, err = awaitOutcome(waitCtx, worker, tc.assignment.Key())
 				if err == nil {
 					break
 				}
@@ -1509,7 +1516,7 @@ func TestWorkerAcknowledgeCollects(t *testing.T) {
 			if att, err := worker.Attach(ctx, a.Key()); err != nil || att.State != effect.AttachmentTerminal {
 				t.Fatalf("attach of collected = %+v %v", att, err)
 			}
-			if _, err := worker.GetOutcome(ctx, a.Key()); !errors.Is(err, effect.ErrOutcomeCollected) || !errors.Is(err, effect.ErrOutcomeUnavailable) {
+			if _, err := awaitOutcome(ctx, worker, a.Key()); !errors.Is(err, effect.ErrOutcomeCollected) || !errors.Is(err, effect.ErrOutcomeUnavailable) {
 				t.Fatalf("outcome of collected = %v", err)
 			}
 			if err := worker.Dispatch(ctx, a); err != nil {
@@ -1560,7 +1567,7 @@ func TestAbortAndDispatchAreMutuallyExclusive(t *testing.T) {
 		if att, err := worker.Attach(ctx, a.Key()); err != nil || att.State != effect.AttachmentAborted || att.Execution != effect.ExecutionAborted {
 			t.Fatalf("attach = %+v %v", att, err)
 		}
-		if _, err := worker.GetOutcome(ctx, a.Key()); !errors.Is(err, effect.ErrOutcomeUnavailable) {
+		if _, err := awaitOutcome(ctx, worker, a.Key()); !errors.Is(err, effect.ErrOutcomeUnavailable) {
 			t.Fatalf("outcome of an aborted key = %v, want ErrOutcomeUnavailable", err)
 		}
 		if err := worker.Acknowledge(ctx, a.Key()); err != nil {
@@ -1580,7 +1587,7 @@ func TestAbortAndDispatchAreMutuallyExclusive(t *testing.T) {
 		if err != nil || live.State == effect.AttachmentAborted || live.State == effect.AttachmentMissing {
 			t.Fatalf("abort after dispatch = %+v %v, want the live attachment", live, err)
 		}
-		if out, err := worker.GetOutcome(ctx, a.Key()); err != nil || out.Key != a.Key() {
+		if out, err := awaitOutcome(ctx, worker, a.Key()); err != nil || out.Key != a.Key() {
 			t.Fatalf("outcome after a lost abort = %+v %v", out, err)
 		}
 	})
@@ -1657,49 +1664,97 @@ func TestWorkerStartYieldsToSettlementBeforeStart(t *testing.T) {
 	}
 }
 
-// GetOutcome on an unsettled execution waits for OutcomeWait and then
-// answers ErrOutcomeNotReady, directly and over HTTP (204), so a caller
-// asks again instead of holding one request open for the whole execution;
-// a settlement in the meantime is read on the next call.
-func TestWorkerGetOutcomeWaitAnswersNotReady(t *testing.T) {
+// GetOutcome is a read: an unsettled execution answers ErrOutcomeNotReady at
+// once, directly and over HTTP (204). When to read again is what the
+// settlement stream says: one subscription per Worker carries the notice
+// of every key it settles, a subscriber that reconnects with its last
+// sequence gets what it missed, and the Worker's Close ends the stream.
+func TestWorkerGetOutcomeIsAReadAndSettlementsNotify(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	backend := &holdBackend{newTestBackend()}
 	worker, err := executor.NewWorker(ctx, sqlitetest.Open(t).Executions(), []executor.Route{executor.Default("test", executor.PortBackend(backend))},
-		executor.WorkerOptions{ID: "worker-a", OutcomeWait: 50 * time.Millisecond})
+		executor.WorkerOptions{ID: "worker-a"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer worker.Close()
-	client := &executorhttp.Client{BaseURL: "http://executor.invalid",
-		HTTP: &http.Client{Transport: handlerTransport{handler: (&executorhttp.Server{Worker: worker}).Handler()}}}
-	a := testAssignment()
-	if err := worker.Dispatch(ctx, a); err != nil {
-		t.Fatal(err)
+	// A real server: the recorder transport returns a response only when the
+	// handler finishes, which a stream does not.
+	server := httptest.NewServer((&executorhttp.Server{Worker: worker}).Handler())
+	defer server.Close()
+	client := &executorhttp.Client{BaseURL: server.URL}
+	a, b := testAssignment(), testAssignment()
+	b.Effect = "second"
+	for _, asg := range []effect.Assignment{a, b} {
+		if err := worker.Dispatch(ctx, asg); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for name, port := range map[string]effect.ExecutionPort{"direct": worker, "http": client} {
 		began := time.Now()
 		if _, err := port.GetOutcome(ctx, a.Key()); !errors.Is(err, effect.ErrOutcomeNotReady) {
 			t.Fatalf("%s read of an unsettled execution = %v, want ErrOutcomeNotReady", name, err)
 		}
-		if waited := time.Since(began); waited < 50*time.Millisecond || waited > 2*time.Second {
-			t.Fatalf("%s read waited %v, want about the OutcomeWait", name, waited)
+		if waited := time.Since(began); waited > time.Second {
+			t.Fatalf("%s read waited %v; a read does not wait", name, waited)
 		}
 	}
-	backend.mu.Lock()
-	backend.outcomes[a.Key()] <- effect.Outcome{Key: a.Key(), Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: "late"}}}
-	backend.mu.Unlock()
-	deadline := time.Now().Add(3 * time.Second)
+	// A subscriber over HTTP sees a's settlement, then stops reading.
+	seen := make(chan effect.Settlement, 4)
+	streamDone := make(chan error, 1)
+	go func() {
+		streamDone <- client.Settlements(ctx, "", 0, func(s effect.Settlement) bool {
+			seen <- s
+			return s.Key != a.Key()
+		})
+	}()
+	settle := func(asg effect.Assignment, text string) {
+		backend.mu.Lock()
+		backend.outcomes[asg.Key()] <- effect.Outcome{Key: asg.Key(), Result: effect.ModelSucceeded{Result: sdk.ModelResult{Text: text}}}
+		backend.mu.Unlock()
+	}
+	settle(a, "first")
+	var first effect.Settlement
+	select {
+	case first = <-seen:
+	case <-ctx.Done():
+		t.Fatal("no settlement notice for a")
+	}
+	if first.Key != a.Key() || first.Sequence == 0 || first.Epoch == "" {
+		t.Fatalf("settlement = %+v", first)
+	}
+	if err := <-streamDone; err != nil {
+		t.Fatalf("stream ended with %v after fn stopped it", err)
+	}
+	if out, err := client.GetOutcome(ctx, a.Key()); err != nil || modelText(out) != "first" {
+		t.Fatalf("read after the notice = %+v, %v", out, err)
+	}
+	// b settles while nobody listens; resubscribing after a's sequence in
+	// the same epoch delivers it, and Close ends the stream with nil.
+	settle(b, "second")
+	deadline := time.Now().Add(2 * time.Second)
 	for {
-		out, err := client.GetOutcome(ctx, a.Key())
-		if err == nil {
-			if modelText(out) != "late" {
-				t.Fatalf("outcome = %+v", out)
-			}
+		if _, err := worker.GetOutcome(ctx, b.Key()); err == nil {
 			break
+		} else if !errors.Is(err, effect.ErrOutcomeNotReady) || time.Now().After(deadline) {
+			t.Fatalf("b did not settle: %v", err)
 		}
-		if !errors.Is(err, effect.ErrOutcomeNotReady) || time.Now().After(deadline) {
-			t.Fatalf("read after settlement = %v", err)
-		}
+		time.Sleep(time.Millisecond)
+	}
+	var missed []effect.Settlement
+	streamDone = make(chan error, 1)
+	go func() {
+		streamDone <- client.Settlements(ctx, first.Epoch, first.Sequence, func(s effect.Settlement) bool {
+			missed = append(missed, s)
+			return true
+		})
+	}()
+	time.Sleep(50 * time.Millisecond)
+	worker.Close()
+	if err := <-streamDone; err != nil {
+		t.Fatalf("stream after Close = %v, want a clean end", err)
+	}
+	if len(missed) != 1 || missed[0].Key != b.Key() || missed[0].Sequence != first.Sequence+1 {
+		t.Fatalf("resubscription after %d = %+v, want b's notice alone", first.Sequence, missed)
 	}
 }

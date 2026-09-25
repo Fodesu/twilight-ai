@@ -455,8 +455,14 @@ type ExecutionPort interface {
 	// state an acceptance holds, which the caller must not dispose.
 	Abort(context.Context, AssignmentKey) (Attachment, error)
 	GetStatus(context.Context, AssignmentKey) (ExecutionStatus, error)
-	// A returned error describes the read operation. The execution remains
-	// unsettled until a successful read returns its explicit Outcome.
+	// GetOutcome is a read, not a wait: it answers at once. An unsettled
+	// execution is ErrOutcomeNotReady; a settled one is its Outcome; a key
+	// the port never accepted is ErrExecutionNotFound; a definitive refusal
+	// to ever answer is ErrOutcomeUnavailable (RUN-EXE-13). Any other error
+	// describes the read operation and says nothing about the execution,
+	// which remains unsettled until a read returns its explicit Outcome.
+	// Learning when to read is SettlementPort's job; a caller without that
+	// capability polls.
 	GetOutcome(context.Context, AssignmentKey) (Outcome, error)
 	Cancel(context.Context, AssignmentKey) error
 }
