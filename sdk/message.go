@@ -221,11 +221,14 @@ type reasoningAccumulator struct {
 }
 
 // openBlock starts a block, or returns the existing one when a provider
-// re-announces the same ID.
+// re-announces the same ID. An unidentified start always opens a new block:
+// blocks are never merged (ReasoningPart).
 func (a *reasoningAccumulator) openBlock(id string, format ReasoningFormat, model string, meta ProviderMetadata) int {
-	if idx, ok := a.index(id); ok {
-		a.merge(idx, format, model, meta)
-		return idx
+	if id != "" {
+		if idx, ok := a.byID[id]; ok {
+			a.merge(idx, format, model, meta)
+			return idx
+		}
 	}
 	a.parts = append(a.parts, ReasoningPart{ID: id, Format: format, Model: model, ProviderMetadata: meta})
 	idx := len(a.parts) - 1
@@ -238,17 +241,19 @@ func (a *reasoningAccumulator) openBlock(id string, format ReasoningFormat, mode
 	return idx
 }
 
-// index finds the block a part belongs to. An unidentified part joins the most
-// recent block, which is what providers that omit block IDs imply.
+// index finds the block a delta or end belongs to: an identified part its
+// block; an unidentified part the most recent block, when that block is
+// itself unidentified. A provider that omits block IDs delimits its blocks
+// with their starts alone.
 func (a *reasoningAccumulator) index(id string) (int, bool) {
 	if id != "" {
 		idx, ok := a.byID[id]
 		return idx, ok
 	}
-	if len(a.parts) == 0 {
-		return 0, false
+	if n := len(a.parts); n > 0 && a.parts[n-1].ID == "" {
+		return n - 1, true
 	}
-	return len(a.parts) - 1, true
+	return 0, false
 }
 
 func (a *reasoningAccumulator) merge(idx int, format ReasoningFormat, model string, meta ProviderMetadata) {
