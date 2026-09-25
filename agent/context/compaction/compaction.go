@@ -147,7 +147,9 @@ func (s Summarizer) Summarize(ctx context.Context, sid session.SessionID, preset
 	if err := s.Executor.Dispatch(ctx, a); err != nil {
 		return "", err
 	}
-	out, err := s.Executor.GetOutcome(ctx, a.Key())
+	// One effect, nothing else to do until it answers: the synchronous form
+	// of read-plus-notice (effect.AwaitOutcome), not a held request.
+	out, err := effect.AwaitOutcome(ctx, s.Executor, a.Key(), 0)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			_ = s.Executor.Cancel(context.WithoutCancel(ctx), a.Key())
