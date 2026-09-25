@@ -35,6 +35,3 @@ go.work.sum
 tmp/
 .twilight/
 /twilight-agent
-
-# pi agent state
-.pi/

@@ -187,3 +187,27 @@ func TestExecutionStoreAcrossHandles(t *testing.T) {
 		t.Fatalf("ListOwned(worker-b) = %+v %v, want the leased key", owned, err)
 	}
 }
+
+// A seeded aborted key has the ledger a real Abort leaves (RUN-EXE-16): the
+// tombstone alone at Seq 0 under the abort identity, so a Dispatch's
+// acceptance is already applied against it and no lease row exists.
+func TestSeedAbortedIsALoneTombstone(t *testing.T) {
+	ctx := context.Background()
+	s := sqlitetest.Open(t).Executions()
+	asg := assignment("aborted")
+	key := asg.Key()
+	if err := s.Seed(ctx, executionstore.Execution{ExecutionState: executionstore.ExecutionState{Assignment: asg, State: effect.ExecutionAborted}, Lease: executionstore.Lease{Owner: "ignored", Epoch: 3}}); err != nil {
+		t.Fatal(err)
+	}
+	state, head, ok, err := s.Load(ctx, key)
+	if err != nil || !ok || !state.Aborted() || state.Outcome != nil || state.Assignment.Effect != "" || head.Next != 1 {
+		t.Fatalf("seeded aborted key = %+v head=%+v ok:%v %v, want a lone tombstone", state, head, ok, err)
+	}
+	ev, _ := executionstore.NewEvent(executionstore.EventExecutionAccepted, 0, executionstore.Accepted{Assignment: asg})
+	if err := s.Append(ctx, executionstore.Lease{}, key, executionstore.Commit{Seq: 0, CommitID: executionstore.AcceptCommitID(key), Events: []executionstore.Event{ev}}); !errors.Is(err, executionstore.ErrConflict) {
+		t.Fatalf("acceptance against the tombstone = %v, want the Seq 0 conflict a live Abort produces", err)
+	}
+	if owned, err := s.ListOwned(ctx, "ignored"); err != nil || len(owned) != 0 {
+		t.Fatalf("ListOwned for a tombstone = %+v %v, want none", owned, err)
+	}
+}

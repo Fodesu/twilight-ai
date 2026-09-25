@@ -403,6 +403,15 @@ func (s *ExecutionStore) Seed(ctx context.Context, state executionstore.Executio
 		events = append(events, []executionstore.Event{ev})
 		return nil
 	}
+	if state.State == effect.ExecutionAborted {
+		// A tombstone is the whole ledger of an aborted key: the abort stood
+		// at Seq 0, so no acceptance, binding or lease ever existed
+		// (RUN-EXE-16).
+		if err := add(executionstore.EventExecutionAborted, executionstore.Aborted{Reason: "seeded"}); err != nil {
+			return err
+		}
+		return s.seedCommits(ctx, k, key, events, executionstore.Lease{})
+	}
 	if err := add(executionstore.EventExecutionAccepted, executionstore.Accepted{Assignment: state.Assignment}); err != nil {
 		return err
 	}
@@ -468,6 +477,13 @@ func (s *ExecutionStore) Seed(ctx context.Context, state executionstore.Executio
 			}
 		}
 	}
+	return s.seedCommits(ctx, k, key, events, state.Lease)
+}
+
+// seedCommits appends events to an empty ledger, one commit each, folding
+// as it goes so a shape the fold rejects never reaches the store, then
+// records lease when it names an owner.
+func (s *ExecutionStore) seedCommits(ctx context.Context, k string, key effect.AssignmentKey, events [][]executionstore.Event, lease executionstore.Lease) error {
 	return tx(ctx, s.db, func(t *sql.Tx) error {
 		if _, head, err := readCommits(ctx, t, k, 0); err != nil {
 			return err
@@ -478,9 +494,13 @@ func (s *ExecutionStore) Seed(ctx context.Context, state executionstore.Executio
 		head := executionstore.Head{}
 		for i, evs := range events {
 			c := executionstore.Commit{Seq: head.Next, CommitID: executionstore.DeriveCommitID(key, "seed", fmt.Sprint(i)), Events: evs}
-			if evs[0].Type == executionstore.EventExecutionAccepted {
+			switch evs[0].Type {
+			case executionstore.EventExecutionAccepted:
 				c.CommitID = executionstore.AcceptCommitID(key)
+			case executionstore.EventExecutionAborted:
+				c.CommitID = executionstore.AbortCommitID(key)
 			}
+			var err error
 			if folded, err = executionstore.Fold(folded, &c); err != nil {
 				return err
 			}
@@ -488,10 +508,10 @@ func (s *ExecutionStore) Seed(ctx context.Context, state executionstore.Executio
 				return err
 			}
 		}
-		if state.Lease.Owner == "" {
+		if lease.Owner == "" {
 			return nil
 		}
-		_, err := t.ExecContext(ctx, `INSERT INTO execution_leases (key, owner, epoch, lease_until) VALUES (?, ?, ?, ?)`, k, state.Lease.Owner, uint64(state.Lease.Epoch), state.Lease.UntilUnixMilli)
+		_, err := t.ExecContext(ctx, `INSERT INTO execution_leases (key, owner, epoch, lease_until) VALUES (?, ?, ?, ?)`, k, lease.Owner, uint64(lease.Epoch), lease.UntilUnixMilli)
 		return err
 	})
 }
