@@ -6,9 +6,9 @@
 //
 // The catalog reads nothing from its process environment. An Entry names
 // the secret its credential lives under; Build resolves the name through
-// the Secrets the deployment provides (a mounted Kubernetes Secret, a local
-// configuration, a vault). The catalog document therefore never carries a
-// credential and serves every deployment unchanged. The package lives in
+// the secrets.Resolver the deployment provides (a mounted Kubernetes
+// Secret, a local configuration, a vault). The catalog document therefore
+// never carries a credential and serves every deployment unchanged. The package lives in
 // agent/, not agentcore/: Agent Core knows the loop.ModelCatalog seam and
 // the frozen ModelRef, and nothing about providers or credentials.
 package models
@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/felinics/twilight/agent/secrets"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	anthropic "github.com/felinics/twilight/provider/anthropic/messages"
@@ -64,14 +65,14 @@ type Catalog struct {
 	invokers map[run.ModelRef]loop.ModelInvoker
 }
 
-// Build resolves every Entry's credential through secrets and constructs
+// Build resolves every Entry's credential through resolver and constructs
 // one provider per distinct (Kind, BaseURL, credential) and a model per
 // Entry. An Entry the provider would refuse is refused here: no credential
-// named, both named, a name the Secrets do not hold, an unknown Kind, a
+// named, both named, a name the resolver does not hold, an unknown Kind, a
 // duplicate Ref.
-func Build(ctx context.Context, entries []Entry, secrets Secrets) (*Catalog, error) {
-	if secrets == nil {
-		return nil, fmt.Errorf("models: Build requires Secrets")
+func Build(ctx context.Context, entries []Entry, resolver secrets.Resolver) (*Catalog, error) {
+	if resolver == nil {
+		return nil, fmt.Errorf("models: Build requires a secrets.Resolver")
 	}
 	type endpoint struct {
 		kind    Kind
@@ -87,7 +88,7 @@ func Build(ctx context.Context, entries []Entry, secrets Secrets) (*Catalog, err
 		if _, dup := c.invokers[e.Ref]; dup {
 			return nil, fmt.Errorf("models: duplicate ref %q", e.Ref)
 		}
-		cred, err := resolve(ctx, e, secrets)
+		cred, err := resolve(ctx, e, resolver)
 		if err != nil {
 			return nil, fmt.Errorf("models: %s: %w", e.Ref, err)
 		}
@@ -145,7 +146,7 @@ func (c *Catalog) Refs() []run.ModelRef {
 	return refs
 }
 
-func resolve(ctx context.Context, e Entry, secrets Secrets) (credential, error) {
+func resolve(ctx context.Context, e Entry, resolver secrets.Resolver) (credential, error) {
 	switch {
 	case e.APIKeySecret == "" && e.AuthTokenSecret == "":
 		return credential{}, fmt.Errorf("no credential named for %s: set apiKeySecret or authTokenSecret", e.Kind)
@@ -158,7 +159,7 @@ func resolve(ctx context.Context, e Entry, secrets Secrets) (credential, error) 
 	if name == "" {
 		name = e.AuthTokenSecret
 	}
-	value, err := secrets.Lookup(ctx, name)
+	value, err := resolver.Lookup(ctx, name)
 	if err != nil {
 		return credential{}, err
 	}

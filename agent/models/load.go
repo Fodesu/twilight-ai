@@ -2,6 +2,7 @@ package models
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -21,6 +22,14 @@ func Load(r io.Reader) ([]Entry, error) {
 	dec := json.NewDecoder(r)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&f); err != nil {
+		return nil, fmt.Errorf("models: decode catalog: %w", err)
+	}
+	// One document: anything after it is a mistake in the file, not a
+	// second catalog to ignore.
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("trailing content after the catalog document")
+		}
 		return nil, fmt.Errorf("models: decode catalog: %w", err)
 	}
 	if len(f.Models) == 0 {

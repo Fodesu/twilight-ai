@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/models"
+	"github.com/felinics/twilight/agent/secrets"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/sdk"
@@ -80,20 +81,20 @@ func TestCatalogBindsLogicalRefToPhysicalModel(t *testing.T) {
 	}
 }
 
-// Build resolves the credential each Entry names through the Secrets it is
+// Build resolves the credential each Entry names through the Resolver it is
 // given, never through the process environment, and refuses an entry it
-// cannot serve: no secret named, both named, a name the Secrets lack, an
+// cannot serve: no secret named, both named, a name the resolver lacks, an
 // empty value, an unknown kind, a duplicate ref, a bearer token for a
 // provider that takes a key.
 func TestBuildResolvesSecrets(t *testing.T) {
 	ctx := context.Background()
 	t.Setenv("OPENAI_API_KEY", "must-not-be-read")
-	secrets := models.Static{"openai": "k1", "anthropic-bearer": "t1", "empty": ""}
+	resolver := secrets.Static{"openai": "k1", "anthropic-bearer": "t1", "empty": ""}
 	cat, err := models.Build(ctx, []models.Entry{
 		{Ref: "fast", Kind: models.KindOpenAI, Model: "vendor-small", APIKeySecret: "openai", BaseURL: "https://gateway.example/v1"},
 		{Ref: "smart", Kind: models.KindOpenAI, Model: "vendor-large", APIKeySecret: "openai", BaseURL: "https://gateway.example/v1"},
 		{Ref: "deep", Kind: models.KindAnthropic, Model: "vendor-x", AuthTokenSecret: "anthropic-bearer"},
-	}, secrets)
+	}, resolver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,52 +111,47 @@ func TestBuildResolvesSecrets(t *testing.T) {
 	}{
 		{"no secret named", []models.Entry{{Ref: "a", Kind: models.KindOpenAI, Model: "m"}}, nil},
 		{"both named", []models.Entry{{Ref: "a", Kind: models.KindAnthropic, Model: "m", APIKeySecret: "openai", AuthTokenSecret: "anthropic-bearer"}}, nil},
-		{"unknown secret", []models.Entry{{Ref: "a", Kind: models.KindOpenAI, Model: "m", APIKeySecret: "missing"}}, models.ErrSecretNotFound},
+		{"unknown secret", []models.Entry{{Ref: "a", Kind: models.KindOpenAI, Model: "m", APIKeySecret: "missing"}}, secrets.ErrNotFound},
 		{"empty secret", []models.Entry{{Ref: "a", Kind: models.KindOpenAI, Model: "m", APIKeySecret: "empty"}}, nil},
 		{"bearer for a key provider", []models.Entry{{Ref: "a", Kind: models.KindOpenAI, Model: "m", AuthTokenSecret: "anthropic-bearer"}}, nil},
 		{"unknown kind", []models.Entry{{Ref: "a", Kind: "mystery", Model: "m", APIKeySecret: "openai"}}, nil},
 		{"duplicate ref", []models.Entry{{Ref: "a", Kind: models.KindOpenAI, Model: "m", APIKeySecret: "openai"}, {Ref: "a", Kind: models.KindOpenAI, Model: "n", APIKeySecret: "openai"}}, nil},
 		{"missing model", []models.Entry{{Ref: "a", Kind: models.KindOpenAI, APIKeySecret: "openai"}}, nil},
 	} {
-		_, err := models.Build(ctx, tc.entries, secrets)
+		_, err := models.Build(ctx, tc.entries, resolver)
 		if err == nil || (tc.wantErr != nil && !errors.Is(err, tc.wantErr)) {
 			t.Fatalf("%s: build = %v, want failure %v", tc.name, err, tc.wantErr)
 		}
 	}
 	if _, err := models.Build(ctx, nil, nil); err == nil {
-		t.Fatal("build without Secrets succeeded")
+		t.Fatal("build without a resolver succeeded")
 	}
 }
 
-// Dir reads a mounted Kubernetes Secret: one file per name, trailing
-// newline trimmed, no path traversal; Load reads the catalog document,
-// which names secrets and carries none.
-func TestDirSecretsAndLoad(t *testing.T) {
+// Load reads exactly one catalog document that names secrets and carries
+// none; a document with a literal credential, an empty list or trailing
+// content is refused. A catalog built from a mounted volume resolves.
+func TestLoadAndBuildFromVolume(t *testing.T) {
 	ctx := context.Background()
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "openai"), []byte("k-from-volume\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	secrets := models.Dir(dir)
-	if v, err := secrets.Lookup(ctx, "openai"); err != nil || v != "k-from-volume" {
-		t.Fatalf("Lookup = %q, %v", v, err)
-	}
-	for _, name := range []string{"missing", "../openai", ".hidden", ""} {
-		if _, err := secrets.Lookup(ctx, name); !errors.Is(err, models.ErrSecretNotFound) {
-			t.Fatalf("Lookup(%q) = %v, want not found", name, err)
-		}
-	}
 	entries, err := models.Load(strings.NewReader(`{"models":[{"ref":"fast","kind":"openai","model":"vendor-small","apiKeySecret":"openai"}]}`))
 	if err != nil || len(entries) != 1 || entries[0].APIKeySecret != "openai" {
 		t.Fatalf("Load = %+v, %v", entries, err)
 	}
-	if _, err := models.Load(strings.NewReader(`{"models":[{"ref":"fast","kind":"openai","model":"m","apiKey":"literal"}]}`)); err == nil {
-		t.Fatal("a catalog carrying a credential loaded")
+	for name, doc := range map[string]string{
+		"literal credential": `{"models":[{"ref":"fast","kind":"openai","model":"m","apiKey":"literal"}]}`,
+		"empty list":         `{"models":[]}`,
+		"trailing document":  `{"models":[{"ref":"fast","kind":"openai","model":"m","apiKeySecret":"openai"}]} {"models":[]}`,
+		"trailing garbage":   `{"models":[{"ref":"fast","kind":"openai","model":"m","apiKeySecret":"openai"}]} x`,
+	} {
+		if _, err := models.Load(strings.NewReader(doc)); err == nil {
+			t.Fatalf("%s: loaded", name)
+		}
 	}
-	if _, err := models.Load(strings.NewReader(`{"models":[]}`)); err == nil {
-		t.Fatal("an empty catalog loaded")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "openai"), []byte("k-from-volume\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	cat, err := models.Build(ctx, entries, secrets)
+	cat, err := models.Build(ctx, entries, secrets.Dir(dir))
 	if err != nil || len(cat.Refs()) != 1 {
 		t.Fatalf("build from volume = %v %v", cat, err)
 	}
