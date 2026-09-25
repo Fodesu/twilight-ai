@@ -136,6 +136,14 @@ type SessionStore interface {
 	Renew(context.Context, Lease, int64) error
 	// Release ends a Lease; a superseded Lease is a no-op.
 	Release(context.Context, Lease) error
+	// LeaseOf returns the root's current Lease (SES-OWN-5): ok is false
+	// when the root has no holder (never opened, or released); a root that
+	// does not exist is ErrNotFound. A read: nothing changes, and an expired
+	// Lease is returned as it is for the caller to judge against its clock.
+	LeaseOf(context.Context, SessionID) (Lease, bool, error)
+	// ListLeases returns the Lease of every root that has a holder
+	// (SES-OWN-5), expired ones included.
+	ListLeases(context.Context) ([]Lease, error)
 	// DeleteRecord drops a root (SES-GC-1); ErrOwned while a Lease is live.
 	DeleteRecord(context.Context, SessionID) error
 }

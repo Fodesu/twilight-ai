@@ -27,6 +27,21 @@ func testLease(t *testing.T, f Fixture) {
 	if l := w1.Lease(); l.Epoch != 1 || l.Owner != "a" || l.UntilUnixMilli != now.Add(10*time.Second).UnixMilli() {
 		t.Fatalf("lease = %+v", l)
 	}
+	// SES-OWN-5: the lease is readable by anyone, as recorded, and changes
+	// nothing. Before the first Open there was none; now there is w1's.
+	if _, ok, err := f.Store.LeaseOf(ctx, "s"); err != nil || !ok {
+		t.Fatalf("LeaseOf after open = ok:%v %v, want the lease", ok, err)
+	}
+	if _, _, err := f.Store.LeaseOf(ctx, "absent"); !session.IsCode(err, session.ErrNotFound) {
+		t.Fatalf("LeaseOf of an unknown session = %v, want not found", err)
+	}
+	create(t, f.Store, "idle")
+	if _, ok, err := f.Store.LeaseOf(ctx, "idle"); err != nil || ok {
+		t.Fatalf("LeaseOf of a never-opened session = ok:%v %v, want none", ok, err)
+	}
+	if held, err := f.Store.ListLeases(ctx); err != nil || len(held) != 1 || held[0] != w1.Lease() {
+		t.Fatalf("ListLeases = %+v %v, want w1's lease alone", held, err)
+	}
 	steps := []struct {
 		name    string
 		advance time.Duration
@@ -45,6 +60,13 @@ func testLease(t *testing.T, f Fixture) {
 			}
 		}
 		now = now.Add(st.advance)
+		if st.want == "" {
+			// Expired and not yet superseded: the read still names a, and
+			// the caller judges expiry against its own clock.
+			if l, ok, err := f.Store.LeaseOf(ctx, "s"); err != nil || !ok || l.Owner != "a" || l.UntilUnixMilli > now.UnixMilli() {
+				t.Fatalf("%s: LeaseOf before takeover = %+v ok:%v %v, want a's expired lease", st.name, l, ok, err)
+			}
+		}
 		h, err := f.Store.Open(ctx, "s", opts("b"))
 		if st.want != "" {
 			if !session.IsCode(err, st.want) {
@@ -59,6 +81,9 @@ func testLease(t *testing.T, f Fixture) {
 	}
 	if w2.Epoch() != 2 || w2.Lease().Owner != "b" {
 		t.Fatalf("lease after expiry = %+v, want epoch 2 owner b", w2.Lease())
+	}
+	if l, ok, err := f.Store.LeaseOf(ctx, "s"); err != nil || !ok || l != w2.Lease() {
+		t.Fatalf("LeaseOf after takeover = %+v ok:%v %v, want b's lease", l, ok, err)
 	}
 	// The expired holder is fenced at Renew and at Append; its Close is a no-op.
 	if err := w1.Renew(ctx); !session.IsCode(err, session.ErrOwnershipLost) {
@@ -77,6 +102,12 @@ func testLease(t *testing.T, f Fixture) {
 	// A never-expiring lease over a released root, then Takeover of a live one.
 	if err := w2.Close(ctx); err != nil {
 		t.Fatal(err)
+	}
+	if _, ok, err := f.Store.LeaseOf(ctx, "s"); err != nil || ok {
+		t.Fatalf("LeaseOf after release = ok:%v %v, want none", ok, err)
+	}
+	if held, err := f.Store.ListLeases(ctx); err != nil || len(held) != 0 {
+		t.Fatalf("ListLeases after release = %+v %v, want none", held, err)
 	}
 	w3 := open(t, f.Store, "s", false)
 	now = now.Add(time.Hour)

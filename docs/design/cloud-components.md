@@ -16,7 +16,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 | model backend | provider 凭证、base URL、限流配额；in-flight 表 | CLD-WIR 的 Backend 协议 | `sdk`、`provider/*`、`loop.ModelCatalog` | provider 并发 |
 | tool sandbox backend | sandbox 生命周期、workspace materialization；in-flight 表 | CLD-WIR 的 Backend 协议 | `loop.ToolCatalog`、`agentcore/environment`、`agentcore/workspace` | sandbox 资源，按 session 或 tenant 隔离 |
 | owner service | Session 租约（`session.OpenOptions`）；Writer 内存投影 | 命令面（Send、Turn 状态、Fork 等 `app.Application` 的方法）；观察流（`observe.Bus`） | `session.Backend`、`artifact.ContentStore`、`owner.Artifacts`、`process.Store`、`effect.ExecutionPort`（`executor/http.Client`）、`effect.SettlementPort` | Session 数 |
-| controller | 无持久状态；策略参数（放弃时限、扫描间隔） | 内部 | Session 租约的读取（CLD-STO-3，今天不存在）、`effect.ExecutionPort.Attach`、`effect.Recoverer`、Worker 的 `Dispose`、owner 的 Open | 单实例或 leader 选举 |
+| controller | 无持久状态；策略参数（放弃时限、扫描间隔） | 内部 | `session.Store.ListLeases`（SES-OWN-5）、`effect.ExecutionPort.Attach`、`effect.Recoverer`、Worker 的 `Dispose`、owner 的 Open | 单实例或 leader 选举 |
 | gateway | 无持久状态；认证会话 | 面向用户的 HTTP/WebSocket | owner 的命令面与观察流 | 连接数 |
 | 共享存储 | 全部 durable 事实：Session ledger 与 lineage、execution ledger 与租约、dispatch ledger、artifact binding 与 claim、CAS 正文 | SQL 与对象存储 | `session.Backend`、`executionstore.Store`、`process.Store`、artifact stores 的实现 | 存储容量 |
 
@@ -62,7 +62,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 **CLD-CTL-1** controller 承担 RUN-EXE-6 明确归部署的决定：何时、对哪些、由谁触发恢复与放弃。它没有持久状态，全部依据来自共享存储与端口的读取。
 
-**CLD-CTL-2（Session 接管）** 发现来源是 Session 租约过期。今天 `session.SessionStore` 只有 `Acquire`、`Renew`、`Release`，没有读取某个 Session 当前租约的方法，`SessionRecord` 也不含租约；controller 需要 CLD-STO-3 的读取接口。对过期租约的 Session，controller 选择一个 owner 副本执行 `Open(sid, Takeover: true)`；Open 内部的 `RecoverInterrupted` 完成该 Session 全部 Run 的效果处置（RUN-CMT-7）。
+**CLD-CTL-2（Session 接管）** 发现来源是 Session 租约过期：`session.Store.ListLeases` 返回每个有持有者的租约（SES-OWN-5），controller 对照自己的时钟挑出 `UntilUnixMilli` 已过的。对过期租约的 Session，controller 选择一个 owner 副本执行 `Open(sid, Takeover: true)`；Open 内部的 `RecoverInterrupted` 完成该 Session 全部 Run 的效果处置（RUN-CMT-7）。
 
 **CLD-CTL-3（效果恢复与放弃）** owner 存活时，其 Reconciler 已按 `OrphanProbe` 对自己 Run 的 orphaned 效果调用 `RecoverExecution`。controller 只处理 owner 不存在时的情形（随 CLD-CTL-2 的 Open 一起完成）与放弃：一个效果 orphaned 超过放弃时限后调用 Worker 的 `Dispose`，owner 下一次读到 Unknown 后按 RUN-CMT-7 处置。放弃时限是 controller 的参数，协议层无界。
 
@@ -72,7 +72,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 **CLD-GWY-1** gateway 是用户面：认证、把用户输入转为 owner 命令面的调用（Send、Turn 状态、Fork、Withdraw）、把 `observe.Bus` 的事件推送给客户端（SSE 或 WebSocket）。它不持有 Session 状态，不读共享存储。
 
-**CLD-GWY-2** 路由：一个 Session 的命令必须到达持有其租约的 owner 副本。gateway 经 CLD-STO-3 读取当前租约的 `Owner`（`OpenOptions.Owner` 记录的进程标识需要能映射到网络地址）或维护一张 session→owner 的路由表；租约无持有者时选择一个 owner 副本 Open。命令到达错误副本时 owner 返回 conflict（OWN-HDL-2），gateway 重查路由后重试一次。
+**CLD-GWY-2** 路由：一个 Session 的命令必须到达持有其租约的 owner 副本。gateway 经 `session.Store.LeaseOf` 读取当前租约的 `Owner`（SES-OWN-5）（`OpenOptions.Owner` 记录的进程标识需要能映射到网络地址）或维护一张 session→owner 的路由表；租约无持有者时选择一个 owner 副本 Open。命令到达错误副本时 owner 返回 conflict（OWN-HDL-2），gateway 重查路由后重试一次。
 
 ### 2.7 共享存储
 
@@ -88,7 +88,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 **CLD-STO-2（接口审查项）** 移植前需确认接口在 Postgres 语义下可满足：`executionstore.Store.Acquire` 的租约事务（读 fold、读租约行、写租约行、追加 claimed 事件在一个事务内）；Seq 0 的 acceptance 与 abort 竞争依赖唯一约束而非乐观锁（RUN-EXE-16）；`ListOwned` 需要租约行按 owner 的索引；Session ledger 的 `Append` 以 `(segment, seq)` 唯一约束实现 ErrConflict；CAS 的 digest 去重。审查结果记入本节。
 
-**CLD-STO-3（需新增的接口）** `session.SessionStore` 需要一个按 SessionID 读取当前租约的方法（返回 `session.Lease`，无持有者时 ok 为 false）以及按过期时间列出租约的方法，供 controller 发现过期 Session、gateway 路由命令。`executionstore.Store.LeaseOf` 是同一形状的既有先例。这是对 Core 端口的扩展，需在 `agent-runtime.md` 的 SES-OWN 规则中定义后再实现。
+**CLD-STO-3（租约读取）** controller 与 gateway 读取 Session 租约的接口为 `session.Store.LeaseOf` 与 `ListLeases`，定义于 SES-OWN-5（`agent-session.md`），filestore 已实现，共享存储实现随 CLD-STO-1 一起提供。
 
 ## 3. Worker 与 Backend 的 wire
 
@@ -125,6 +125,6 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 ## 6. 未决
 
 - CLD-WIR-1 的方案选择。
-- Session 租约读取接口的形状（CLD-STO-3）与 `OpenOptions.Owner` 到网络地址的映射方式（CLD-GWY-2）：写入租约行，或由 owner 副本向注册表登记。
+- `OpenOptions.Owner` 到网络地址的映射方式（CLD-GWY-2）：写入租约行，或由 owner 副本向注册表登记。
 - preset 注册表是否共享化（CLD-CMP-3）。
 - tool sandbox 的隔离粒度（按 session 还是按 tenant）与 workspace 的持久化位置。

@@ -161,6 +161,23 @@ func (l *Ledger) Record(ctx context.Context, sid SessionID) (SessionRecord, erro
 	return l.be.Record(ctx, sid)
 }
 
+// LeaseOf is Store.LeaseOf (SES-OWN-5): the adapter's reading of the root's
+// current holder.
+func (l *Ledger) LeaseOf(ctx context.Context, sid SessionID) (Lease, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Lease{}, false, err
+	}
+	return l.be.LeaseOf(ctx, sid)
+}
+
+// ListLeases is Store.ListLeases (SES-OWN-5).
+func (l *Ledger) ListLeases(ctx context.Context) ([]Lease, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return l.be.ListLeases(ctx)
+}
+
 // --- open -------------------------------------------------------------------------
 
 func (l *Ledger) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Handle, error) {

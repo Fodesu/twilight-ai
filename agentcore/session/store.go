@@ -225,6 +225,13 @@ type Store interface {
 	Header(context.Context, SessionID) (SegmentHeader, error)
 	// Record returns the Session's root.
 	Record(context.Context, SessionID) (SessionRecord, error)
+	// LeaseOf returns the Session's current writer Lease, if any (SES-OWN-5):
+	// a read for controllers and routers, which changes nothing and may be
+	// stale by the time it is acted on.
+	LeaseOf(context.Context, SessionID) (Lease, bool, error)
+	// ListLeases returns the Lease of every held Session, expired ones
+	// included (SES-OWN-5).
+	ListLeases(context.Context) ([]Lease, error)
 	Open(context.Context, SessionID, OpenOptions) (Handle, error)
 	ReadCommits(context.Context, CommitReadRequest) (CommitPage, error)
 	ReadStream(context.Context, StreamReadRequest) (StreamPage, error)

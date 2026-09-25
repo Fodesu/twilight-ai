@@ -459,11 +459,25 @@ func (s *Store) ListRecords(ctx context.Context) ([]session.SessionRecord, error
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	roots, err := s.readRoots()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]session.SessionRecord, 0, len(roots))
+	for _, rec := range roots {
+		out = append(out, rec.SessionRecord)
+	}
+	return out, nil
+}
+
+// readRoots reads every root file; a file that does not parse as a root is
+// skipped. The caller holds mu.
+func (s *Store) readRoots() ([]ownerRecord, error) {
 	entries, err := os.ReadDir(filepath.Join(s.root, sessionsDir))
 	if err != nil {
 		return nil, err
 	}
-	var out []session.SessionRecord
+	var out []ownerRecord
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
 			continue
@@ -476,9 +490,53 @@ func (s *Store) ListRecords(ctx context.Context) ([]session.SessionRecord, error
 		if err := json.Unmarshal(raw, &rec); err != nil || rec.ID == "" {
 			continue
 		}
-		out = append(out, rec.SessionRecord)
+		out = append(out, rec)
 	}
 	return out, nil
+}
+
+// LeaseOf is session.SessionStore.LeaseOf (SES-OWN-5): the root's holder as
+// the root file records it, whether or not the lease is still live.
+func (s *Store) LeaseOf(ctx context.Context, sid session.SessionID) (session.Lease, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return session.Lease{}, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, owner, err := s.loadRoot(sid, "lease")
+	if err != nil {
+		return session.Lease{}, false, err
+	}
+	if !owner.Owned {
+		return session.Lease{}, false, nil
+	}
+	return owner.lease(), true, nil
+}
+
+// ListLeases is session.SessionStore.ListLeases (SES-OWN-5): every held
+// root's Lease, expired ones included.
+func (s *Store) ListLeases(ctx context.Context) ([]session.Lease, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	roots, err := s.readRoots()
+	if err != nil {
+		return nil, err
+	}
+	var out []session.Lease
+	for _, rec := range roots {
+		if rec.Owned {
+			out = append(out, rec.lease())
+		}
+	}
+	return out, nil
+}
+
+// lease is the Lease an owned root records.
+func (r ownerRecord) lease() session.Lease {
+	return session.Lease{Session: r.ID, Epoch: r.Epoch, Owner: r.Owner, UntilUnixMilli: r.LeaseUntilUnixMilli}
 }
 
 // Acquire takes writer ownership (SES-OWN-1) and repairs a torn tail of the
