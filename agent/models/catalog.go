@@ -4,15 +4,18 @@
 // providers, fallback, quotas and key rotation are a gateway's job; a
 // deployment that wants them points an Entry's BaseURL at one.
 //
-// The catalog lives in agent/, not agentcore/: Agent Core knows the
-// loop.ModelCatalog seam and the frozen ModelRef, and nothing about
-// providers or credentials.
+// The catalog reads nothing from its process environment. An Entry names
+// the secret its credential lives under; Build resolves the name through
+// the Secrets the deployment provides (a mounted Kubernetes Secret, a local
+// configuration, a vault). The catalog document therefore never carries a
+// credential and serves every deployment unchanged. The package lives in
+// agent/, not agentcore/: Agent Core knows the loop.ModelCatalog seam and
+// the frozen ModelRef, and nothing about providers or credentials.
 package models
 
 import (
 	"context"
 	"fmt"
-	"os"
 	"sort"
 
 	"github.com/felinics/twilight/agentcore/run"
@@ -36,25 +39,24 @@ const (
 	KindCopilot         Kind = "copilot"
 )
 
-// Entry maps one logical ModelRef to a physical model. BaseURL and APIKey
-// are optional: empty values take the provider's conventional environment
-// variables (Credentials).
+// Entry maps one logical ModelRef to a physical model. The credential is
+// named, not carried: exactly one of APIKeySecret and AuthTokenSecret names
+// the secret Build looks up. APIKey is the provider's key header, AuthToken
+// a bearer token for the providers that take one (anthropic behind a
+// gateway). BaseURL empty means the provider's default endpoint.
 type Entry struct {
-	Ref     run.ModelRef
-	Kind    Kind
-	Model   string
-	BaseURL string
-	APIKey  string
+	Ref             run.ModelRef `json:"ref"`
+	Kind            Kind         `json:"kind"`
+	Model           string       `json:"model"`
+	BaseURL         string       `json:"baseURL,omitempty"`
+	APIKeySecret    string       `json:"apiKeySecret,omitempty"`
+	AuthTokenSecret string       `json:"authTokenSecret,omitempty"`
 }
 
-// Credentials are the environment variables an Entry falls back to, by
-// Kind; they follow the repository's .env.example.
-var Credentials = map[Kind]struct{ Key, Base string }{
-	KindAnthropic:       {"ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"},
-	KindOpenAI:          {"OPENAI_API_KEY", "OPENAI_BASE_URL"},
-	KindOpenAIResponses: {"OPENAI_API_KEY", "OPENAI_BASE_URL"},
-	KindGoogle:          {"GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_GENERATIVE_AI_BASE_URL"},
-	KindCopilot:         {"GITHUB_COPILOT_TOKEN", "GITHUB_COPILOT_BASE_URL"},
+// credential is what an Entry resolved to.
+type credential struct {
+	apiKey    string
+	authToken string
 }
 
 // Catalog is loop.ModelCatalog over the built entries.
@@ -62,12 +64,21 @@ type Catalog struct {
 	invokers map[run.ModelRef]loop.ModelInvoker
 }
 
-// Build constructs one provider per distinct (Kind, BaseURL, APIKey) and a
-// model per Entry. An Entry without a key, after the environment fallback,
-// is an error: a catalog that resolves a model the provider will refuse
-// is worse than one that refuses at Build.
-func Build(entries []Entry) (*Catalog, error) {
-	providers := map[providerKey]sdk.Provider{}
+// Build resolves every Entry's credential through secrets and constructs
+// one provider per distinct (Kind, BaseURL, credential) and a model per
+// Entry. An Entry the provider would refuse is refused here: no credential
+// named, both named, a name the Secrets do not hold, an unknown Kind, a
+// duplicate Ref.
+func Build(ctx context.Context, entries []Entry, secrets Secrets) (*Catalog, error) {
+	if secrets == nil {
+		return nil, fmt.Errorf("models: Build requires Secrets")
+	}
+	type endpoint struct {
+		kind    Kind
+		baseURL string
+		cred    credential
+	}
+	providers := map[endpoint]sdk.Provider{}
 	c := &Catalog{invokers: make(map[run.ModelRef]loop.ModelInvoker, len(entries))}
 	for _, e := range entries {
 		if e.Ref == "" || e.Model == "" {
@@ -76,12 +87,14 @@ func Build(entries []Entry) (*Catalog, error) {
 		if _, dup := c.invokers[e.Ref]; dup {
 			return nil, fmt.Errorf("models: duplicate ref %q", e.Ref)
 		}
-		e = e.withEnv()
-		k := providerKey{e.Kind, e.BaseURL, e.APIKey}
+		cred, err := resolve(ctx, e, secrets)
+		if err != nil {
+			return nil, fmt.Errorf("models: %s: %w", e.Ref, err)
+		}
+		k := endpoint{e.Kind, e.BaseURL, cred}
 		p, ok := providers[k]
 		if !ok {
-			var err error
-			if p, err = newProvider(e); err != nil {
+			if p, err = newProvider(e.Kind, e.BaseURL, cred); err != nil {
 				return nil, fmt.Errorf("models: %s: %w", e.Ref, err)
 			}
 			providers[k] = p
@@ -132,69 +145,71 @@ func (c *Catalog) Refs() []run.ModelRef {
 	return refs
 }
 
-type providerKey struct {
-	kind    Kind
-	baseURL string
-	apiKey  string
+func resolve(ctx context.Context, e Entry, secrets Secrets) (credential, error) {
+	switch {
+	case e.APIKeySecret == "" && e.AuthTokenSecret == "":
+		return credential{}, fmt.Errorf("no credential named for %s: set apiKeySecret or authTokenSecret", e.Kind)
+	case e.APIKeySecret != "" && e.AuthTokenSecret != "":
+		return credential{}, fmt.Errorf("both apiKeySecret and authTokenSecret named for %s", e.Kind)
+	case e.AuthTokenSecret != "" && e.Kind != KindAnthropic:
+		return credential{}, fmt.Errorf("authTokenSecret is only for %s; %s takes apiKeySecret", KindAnthropic, e.Kind)
+	}
+	name := e.APIKeySecret
+	if name == "" {
+		name = e.AuthTokenSecret
+	}
+	value, err := secrets.Lookup(ctx, name)
+	if err != nil {
+		return credential{}, err
+	}
+	if value == "" {
+		return credential{}, fmt.Errorf("secret %q is empty", name)
+	}
+	if e.APIKeySecret != "" {
+		return credential{apiKey: value}, nil
+	}
+	return credential{authToken: value}, nil
 }
 
-func (e Entry) withEnv() Entry {
-	env, ok := Credentials[e.Kind]
-	if !ok {
-		return e
-	}
-	if e.APIKey == "" {
-		e.APIKey = os.Getenv(env.Key)
-	}
-	if e.BaseURL == "" {
-		e.BaseURL = os.Getenv(env.Base)
-	}
-	return e
-}
-
-func newProvider(e Entry) (sdk.Provider, error) {
-	bearer := e.Kind == KindAnthropic && os.Getenv("ANTHROPIC_AUTH_TOKEN") != ""
-	if e.APIKey == "" && !bearer {
-		return nil, fmt.Errorf("no credential for %s (set %s)", e.Kind, Credentials[e.Kind].Key)
-	}
-	switch e.Kind {
+func newProvider(kind Kind, baseURL string, cred credential) (sdk.Provider, error) {
+	switch kind {
 	case KindAnthropic:
 		opts := []anthropic.Option{}
-		if e.APIKey != "" {
-			opts = append(opts, anthropic.WithAPIKey(e.APIKey))
+		if cred.apiKey != "" {
+			opts = append(opts, anthropic.WithAPIKey(cred.apiKey))
 		} else {
-			opts = append(opts, anthropic.WithAuthToken(os.Getenv("ANTHROPIC_AUTH_TOKEN")))
+			opts = append(opts, anthropic.WithAuthToken(cred.authToken))
 		}
-		if e.BaseURL != "" {
-			opts = append(opts, anthropic.WithBaseURL(e.BaseURL))
+		if baseURL != "" {
+			opts = append(opts, anthropic.WithBaseURL(baseURL))
 		}
 		return anthropic.New(opts...), nil
 	case KindOpenAI:
-		opts := []completions.Option{completions.WithAPIKey(e.APIKey)}
-		if e.BaseURL != "" {
-			opts = append(opts, completions.WithBaseURL(e.BaseURL))
+		opts := []completions.Option{completions.WithAPIKey(cred.apiKey)}
+		if baseURL != "" {
+			opts = append(opts, completions.WithBaseURL(baseURL))
 		}
 		return completions.New(opts...), nil
 	case KindOpenAIResponses:
-		opts := []responses.Option{responses.WithAPIKey(e.APIKey)}
-		if e.BaseURL != "" {
-			opts = append(opts, responses.WithBaseURL(e.BaseURL))
+		opts := []responses.Option{responses.WithAPIKey(cred.apiKey)}
+		if baseURL != "" {
+			opts = append(opts, responses.WithBaseURL(baseURL))
 		}
 		return responses.New(opts...), nil
 	case KindGoogle:
-		opts := []google.Option{google.WithAPIKey(e.APIKey)}
-		if e.BaseURL != "" {
-			opts = append(opts, google.WithBaseURL(e.BaseURL))
+		opts := []google.Option{google.WithAPIKey(cred.apiKey)}
+		if baseURL != "" {
+			opts = append(opts, google.WithBaseURL(baseURL))
 		}
 		return google.New(opts...), nil
 	case KindCopilot:
-		opts := []copilot.Option{copilot.WithGitHubToken(e.APIKey)}
-		if e.BaseURL != "" {
-			opts = append(opts, copilot.WithBaseURL(e.BaseURL))
+		opts := []copilot.Option{copilot.WithGitHubToken(cred.apiKey)}
+		if baseURL != "" {
+			opts = append(opts, copilot.WithBaseURL(baseURL))
 		}
 		return copilot.New(opts...), nil
 	default:
-		return nil, fmt.Errorf("unsupported provider kind %q", e.Kind)
+		return nil, fmt.Errorf("unsupported provider kind %q", kind)
 	}
 }
 
