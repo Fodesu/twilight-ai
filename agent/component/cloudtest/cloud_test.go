@@ -262,6 +262,13 @@ func (c *cluster) stopWorker() { c.currentWorker.stop() }
 // startOwner composes an owner incarnation over the shared stores.
 func (c *cluster) startOwner(id string, takeover bool) (*ownerservice.Component, *ownerhttp.Client) {
 	c.t.Helper()
+	return c.startOwnerWith(id, takeover, nil)
+}
+
+// startOwnerWith starts an owner replica under an activation model
+// (APP-ACT); nil keeps Sessions open until Close.
+func (c *cluster) startOwnerWith(id string, takeover bool, activation *app.Activation) (*ownerservice.Component, *ownerhttp.Client) {
+	c.t.Helper()
 	store, err := filestore.New(c.sessions)
 	if err != nil {
 		c.t.Fatal(err)
@@ -286,6 +293,7 @@ func (c *cluster) startOwner(id string, takeover bool) (*ownerservice.Component,
 		Workspaces:  &app.WorkspaceConfig{Store: c.wsStore, Snapshots: &wshttp.Client{BaseURL: c.backends.Tool}, SnapshotAfterTurn: true},
 		Ownership:   session.OpenOptions{Owner: id, LeaseDuration: time.Minute, Takeover: takeover, Clock: c.clock.Now},
 		Presets:     []app.Preset{{ID: "ws", Value: preset}},
+		Activation:  activation,
 		OrphanProbe: 200 * time.Millisecond,
 		Warn:        func(err error) { c.t.Logf("%s: warn: %v", id, err) },
 	})
@@ -566,5 +574,101 @@ func TestWorkerAndOwnerReplacementMidExecution(t *testing.T) {
 		if _, err := opened.SubmitInput(c.ctx, "in-2", "again"); err == nil || !strings.Contains(strings.ToLower(err.Error()), "ownership") {
 			t.Fatalf("write by the superseded owner = %v, want ownership lost", err)
 		}
+	}
+}
+
+// stepModel answers one model call per token sent to step, reporting each
+// call on started: the test holds a Turn at its model call and inspects
+// the lease meanwhile.
+type stepModel struct {
+	started chan struct{}
+	step    chan struct{}
+}
+
+func (m *stepModel) Generate(ctx context.Context, _ sdk.Request) (sdk.ModelResult, error) {
+	m.started <- struct{}{}
+	select {
+	case <-m.step:
+	case <-ctx.Done():
+		return sdk.ModelResult{}, ctx.Err()
+	}
+	return sdk.ModelResult{Text: "done", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}, nil
+}
+
+func (c *cluster) submit(client *ownerhttp.Client, sid session.SessionID, id, input, text string) {
+	c.t.Helper()
+	cmd, err := app.NewCommand(inbox.CommandID(id), app.CommandSubmit, app.SubmitCommand{InputID: run.InputID(input), Text: text})
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	if _, err := client.Enqueue(c.ctx, sid, cmd); err != nil {
+		c.t.Fatal(err)
+	}
+}
+
+func (c *cluster) completedTurns(client *ownerhttp.Client, sid session.SessionID) int {
+	c.t.Helper()
+	surface, err := client.Turns(c.ctx, sid)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	n := 0
+	for _, id := range surface.Order {
+		if surface.Turns[id].Status == turn.TurnCompleted {
+			n++
+		}
+	}
+	return n
+}
+
+// Two owner replicas under the activation model, and a gateway that sends
+// each Turn's command to a different one without opening the Session
+// (APP-ACT, CLD-OWN-4): the replica a command reaches acquires the
+// Session, the lease names it while the Turn runs, quiescence releases it,
+// and the next command acquires it on the other replica. Both replicas
+// read the whole history from the shared store.
+func TestTurnsOfOneSessionLandOnDifferentOwners(t *testing.T) {
+	m := &stepModel{started: make(chan struct{}, 4), step: make(chan struct{})}
+	c := newCluster(t, m)
+	activation := &app.Activation{Preset: "ws", IdleRelease: 100 * time.Millisecond, Options: app.SessionOptions{InboxPoll: 100 * time.Millisecond}}
+	_, clientA := c.startOwnerWith("owner-a", false, activation)
+	_, clientB := c.startOwnerWith("owner-b", false, activation)
+	const sid session.SessionID = "s-1"
+	awaitModel := func() {
+		select {
+		case <-m.started:
+		case <-c.ctx.Done():
+			t.Fatal("the model call never started")
+		}
+	}
+	leaseOwner := func(client *ownerhttp.Client) (string, bool) {
+		lease, err := client.Lease(c.ctx, sid)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !lease.Held || lease.Lease == nil {
+			return "", false
+		}
+		return lease.Lease.Owner, true
+	}
+	c.submit(clientA, sid, "submit-1", "in-1", "first")
+	awaitModel()
+	if owner, held := leaseOwner(clientB); !held || owner != "owner-a" {
+		t.Fatalf("lease during turn 1 = %q held:%v, want owner-a", owner, held)
+	}
+	m.step <- struct{}{}
+	waitFor(t, c.ctx, func() bool { return c.completedTurns(clientA, sid) == 1 })
+	waitFor(t, c.ctx, func() bool { _, held := leaseOwner(clientA); return !held })
+
+	c.submit(clientB, sid, "submit-2", "in-2", "second")
+	awaitModel()
+	if owner, held := leaseOwner(clientA); !held || owner != "owner-b" {
+		t.Fatalf("lease during turn 2 = %q held:%v, want owner-b", owner, held)
+	}
+	m.step <- struct{}{}
+	waitFor(t, c.ctx, func() bool { return c.completedTurns(clientB, sid) == 2 })
+	waitFor(t, c.ctx, func() bool { _, held := leaseOwner(clientB); return !held })
+	if n := c.completedTurns(clientA, sid); n != 2 {
+		t.Fatalf("turns read from owner-a = %d, want the two turns of the shared history", n)
 	}
 }

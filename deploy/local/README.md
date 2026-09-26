@@ -18,6 +18,8 @@ go run ./cmd/worker        -config deploy/local/worker.json
 go run ./cmd/owner         -config deploy/local/owner.json
 ```
 
+owner 配置了 `activation`（APP-ACT）：命令到达即打开 Session，Session 静止 `idleRelease` 后释放所有权，`scan` 周期拾取无 owner 的 pending 命令与过期租约。下面的 `open` 一步因此可以省略；多副本 owner 共享 Postgres 时，同一 Session 的相邻 Turn 可以落在不同副本。
+
 驱动一轮对话（owner 的命令面，`agent/app/http`）：
 
 ```sh

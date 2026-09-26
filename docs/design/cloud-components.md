@@ -58,7 +58,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 **CLD-OWN-3** Driver 持有一个 `effect.Watcher`（RUN-EXE-17）；多个 Worker 副本共用一个 owner 可见的地址时（k8s Service），一条订阅落在一个副本上，只收到该副本的结算通知。因此 Watcher 的周期性重读是必要路径而非兜底；或者 owner 对每个 Worker 副本各持一个 Watcher，`http.Client` 需要能枚举副本（headless Service）。本文档选后者作为目标，前者作为过渡。
 
-**CLD-OWN-4** 多副本 owner：一个 Session 在任一时刻只有一个 owner 副本持有其租约。哪个副本 Open 哪个 Session 由 gateway 的路由与 controller 的接管决定（CLD-GWY-2、CLD-CTL-2）；owner 本身不做副本间协调，`OpenOptions.Takeover` 是唯一的接管开关。
+**CLD-OWN-4** 多副本 owner：一个 Session 在任一时刻只有一个 owner 副本持有其租约，且只在有活动工作时持有（APP-ACT-1、APP-ACT-2）。哪个副本持有由到达命令的副本与 Acquire 裁决：gateway 可把命令发给任一副本，到达的副本在无持有者时 Open，在有存活持有者时命令由持有者应用；同一 Session 的相邻 Turn 因此可以落在不同副本，Session 空闲时没有 owner。owner 副本间不做协调，`OpenOptions.Takeover` 是唯一的强制接管开关，只在需要强制迁移时由 controller 使用（CLD-CTL-2）。
 
 ### 2.5 controller
 
@@ -74,15 +74,15 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 **CLD-GWY-1** gateway 是用户面：认证、把用户输入转为 Session 命令（submit、stop、withdraw、retry，APP-INB-2）、把 `observe.Bus` 的事件推送给客户端（SSE 或 WebSocket）。它不持有 Session 状态；对共享存储只做两件事：写命令 inbox（`inbox.Store.Enqueue`）与读租约（SES-OWN-5）。认证与限流只在 gateway；owner 的命令面（`agent/app/http`）不做认证，只在集群内网暴露。
 
-**CLD-GWY-2（命令投递）** 命令的正确性来源是 inbox 与幂等应用（APP-INB-1/2），路由到当前 owner 是延迟优化。gateway 的路径：`Enqueue` → 读 `LeaseOf(sid)` → 有存活租约则向该副本发一次唤醒（该副本对本进程持有的 Session 调用 `ApplyPending`）；无持有者则按负载选择一个 owner 副本 Open，Open 内部先应用 pending 命令（APP-INB-3）。唤醒失败不重试、不向客户端报错：owner 的轮询兜底。需要确认结果的命令（stop）由 gateway 以 `AwaitCommand` 等待 Result，超时返回"已受理"。`OpenOptions.Owner` 记录副本的可寻址名（headless Service 下的 pod DNS 名，由 downward API 挂载的文件提供），供唤醒定位。
+**CLD-GWY-2（命令投递）** 命令的正确性来源是 inbox 与幂等应用（APP-INB-1/2），路由到当前 owner 是延迟优化。gateway 的路径：把命令 `Enqueue` 到任一 owner 副本，该副本无持有者时激活 Session（APP-ACT-1，Open 内部先应用 pending 命令，APP-INB-3），有存活持有者时命令由持有者的轮询应用；可选的延迟优化是读 `LeaseOf(sid)`，有存活租约则把命令直接发给该副本或向它发一次唤醒。唤醒失败不重试、不向客户端报错：owner 的轮询兜底。需要确认结果的命令（stop）由 gateway 以 `AwaitCommand` 等待 Result，超时返回"已受理"。`OpenOptions.Owner` 记录副本的可寻址名（headless Service 下的 pod DNS 名，由 downward API 挂载的文件提供），供唤醒定位。
 
-**CLD-CMD-1（崩溃情形）** gateway 在 Enqueue 前崩溃：客户端以同一 CommandID 重发。gateway 在 Enqueue 后、唤醒前崩溃：命令已 durable，owner 轮询拾取。owner 读到命令后、提交前崩溃：条目仍 pending，controller 按 CLD-CTL-2 接管，新 owner 在 Open 中应用。owner 提交后、Resolve 前崩溃：新 owner 重放，ledger 报已应用或冲突，写 Result。唤醒发到已被替代的副本：其 Append 被 Epoch 围栏拒绝，不 Resolve。gateway 读到过时租约：唤醒落空，轮询兜底。
+**CLD-CMD-1（崩溃情形）** gateway 在 Enqueue 前崩溃：客户端以同一 CommandID 重发。gateway 在 Enqueue 后、唤醒前崩溃：命令已 durable，owner 轮询拾取。owner 读到命令后、提交前崩溃：条目仍 pending，租约过期后任一副本的扫描（APP-ACT-3）接管并在 Open 中应用，不依赖 controller。owner 提交后、Resolve 前崩溃：新 owner 重放，ledger 报已应用或冲突，写 Result。唤醒发到已被替代的副本：其 Append 被 Epoch 围栏拒绝，不 Resolve。gateway 读到过时租约：唤醒落空，轮询兜底。
 
 **CLD-CMD-2（幂等键）** submit 与 withdraw 以 InputID 为键（`chatlog.Submit` 重放为 `CommitAlreadyApplied`）；stop、retry 以 TurnRef 加命令 ID 为键，状态已推进时返回 conflict，作为 rejected 关闭。Fork 尚未进入命令集合：需先确定子 SessionID 由命令 ID 派生。
 
 **CLD-CMD-3（替代方案）** 把命令作为无围栏事件直接追加进 Session ledger（仿 execution store 的 `Fenced(eventType)` 区分）可以省去独立存储，但要修改 SES-OWN-2 的"所有 Append 携带 Epoch"，并引入 gateway 追加与 owner 提交的 Seq 竞争重试。当前选择独立 inbox；两者对 owner 侧应用逻辑的要求相同。
 
-**CLD-CMD-4（激活索引）** `inbox.Store.Sessions()` 返回有 pending 命令的 Session，是无 owner 的 Session 需要被 Open 的依据之一（另一个是有 active Turn 而无存活租约）。controller 或空闲的 owner 副本据此选择 Session 并 Open；重复 Open 由 `ErrOwned` 与 Epoch 围栏裁决，索引允许最终一致。
+**CLD-CMD-4（激活索引）** `inbox.Store.Sessions()` 返回有 pending 命令的 Session，是无 owner 的 Session 需要被 Open 的依据之一（另一个是有 active Turn 而无存活租约）。`Application` 的扫描（`Activation.Scan`，APP-ACT-3）据此激活 Session；重复 Open 由 `ErrOwned` 与 Epoch 围栏裁决，索引允许最终一致。
 
 ### 2.7 共享存储
 

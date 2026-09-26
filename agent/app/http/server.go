@@ -147,7 +147,23 @@ func (s *Server) open(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		return
 	}
 	if req.Preset == "" {
-		writeError(w, &Error{Status: stdhttp.StatusBadRequest, Code: CodeInvalid, Message: "preset is required"})
+		// No preset names the activation's (APP-ACT-3): the owner opens the
+		// Session as a command reaching it would.
+		opened, err := s.App.Activate(context.WithoutCancel(r.Context()), id)
+		if errors.Is(err, app.ErrNoActivation) {
+			writeError(w, &Error{Status: stdhttp.StatusBadRequest, Code: CodeInvalid, Message: "preset is required"})
+			return
+		}
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		status, err := opened.Status(r.Context())
+		if err != nil {
+			fail(w, err)
+			return
+		}
+		writeJSON(w, stdhttp.StatusOK, OpenResponse{Recovered: opened.Recovered, Active: status.Active})
 		return
 	}
 	preset, err := s.App.PresetRef(req.Preset)

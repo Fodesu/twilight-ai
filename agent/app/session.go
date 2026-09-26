@@ -121,11 +121,12 @@ type Session struct {
 	// waits for them (APP-SES-4). bgN counts the drives in flight and bgIdle
 	// is closed when the count returns to zero, so Wait can observe quiescence
 	// while later Submits are still allowed.
-	bg     context.Context
-	cancel context.CancelFunc
-	bgMu   sync.Mutex
-	bgN    int
-	bgIdle chan struct{}
+	bg         context.Context
+	cancel     context.CancelFunc
+	bgMu       sync.Mutex
+	bgN        int
+	bgIdle     chan struct{}
+	lastActive time.Time
 
 	// loops are the Session's service goroutines (the inbox applier);
 	// Close waits for them after cancelling bg. They are not background
@@ -161,6 +162,7 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 		s.newTurnID = turn.NewTurnID
 	}
 	s.bg, s.cancel = context.WithCancel(context.Background())
+	s.touch()
 	app.track(s)
 	// A binding inherited from the fork parent is settled by this Session's
 	// policy before anything runs in it (APP-WSP-5).
@@ -177,6 +179,7 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 			return nil, err
 		}
 	}
+	s.startIdleRelease()
 	return s, nil
 }
 
@@ -196,6 +199,7 @@ func (s *Session) bgStart() {
 		s.bgIdle = make(chan struct{})
 	}
 	s.bgN++
+	s.lastActive = time.Now()
 	s.bgMu.Unlock()
 }
 
@@ -205,6 +209,7 @@ func (s *Session) bgDone() {
 	if s.bgN == 0 {
 		close(s.bgIdle)
 	}
+	s.lastActive = time.Now()
 	s.bgMu.Unlock()
 }
 

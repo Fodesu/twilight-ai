@@ -144,6 +144,10 @@ type Config struct {
 	// leaves Enqueue and ApplyPending unavailable (ErrNoInbox); like every
 	// store it is durable (OWN-PRT-3).
 	Inbox inbox.Store
+	// Activation holds Sessions for active work only and releases them when
+	// quiescent (APP-ACT); nil keeps every Session open until Close. It
+	// requires Inbox.
+	Activation *Activation
 	// Workspaces enables the workspace layer (APP-WSP): the Session binding
 	// module, its target resolver, the workspace backend of the composed
 	// Worker and the prompt's workspace preface. Nil leaves every
@@ -195,9 +199,17 @@ type Application struct {
 	spawn *spawn.Responder
 	// worker is the Worker Build composed, if any; Close stops it after the
 	// Authority (RUN-EXE-8).
-	worker *executor.Worker
-	warn   func(error)
-	inbox  inbox.Store
+	worker     *executor.Worker
+	warn       func(error)
+	inbox      inbox.Store
+	ownership  session.OpenOptions
+	activation *Activation
+	bg         context.Context
+	bgCancel   context.CancelFunc
+	loops      sync.WaitGroup
+	releases   group
+	actMu      sync.Mutex
+	activating map[session.SessionID]chan struct{}
 	// workspaces is the workspace layer's configuration, nil when absent.
 	workspaces *WorkspaceConfig
 	// sandbox is the workspace backend this process composed, if any;
@@ -278,7 +290,16 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 		warn = func(error) {}
 	}
 	app := &Application{warn: warn, inbox: c.Inbox, workspaces: c.Workspaces, bindings: workspace.Commands{Now: c.Clock},
-		refs: make(map[turn.PresetID]turn.PresetRef, len(c.Presets)), sessions: make(map[session.SessionID]*Session)}
+		ownership: c.Ownership, refs: make(map[turn.PresetID]turn.PresetRef, len(c.Presets)), sessions: make(map[session.SessionID]*Session),
+		activating: make(map[session.SessionID]chan struct{})}
+	app.bg, app.bgCancel = context.WithCancel(context.Background())
+	if c.Activation != nil {
+		if c.Inbox == nil {
+			return nil, errors.New("app: Activation requires an inbox Store")
+		}
+		act := *c.Activation
+		app.activation = &act
+	}
 	// The subagent tool is answered by a Responder on the Driver (SPN-1,
 	// DRV-4), not executed: it drives children through the Authority, so it
 	// is bound after New. No Worker route is involved.
@@ -376,6 +397,10 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 			return nil, fmt.Errorf("app: register preset %q: %w", p.ID, err)
 		}
 	}
+	if app.activation != nil && app.activation.Scan > 0 {
+		app.loops.Add(1)
+		go app.scanLoop()
+	}
 	return app, nil
 }
 
@@ -454,8 +479,11 @@ func (app *Application) Close(ctx context.Context) error {
 	if app.spawn != nil {
 		app.spawn.Close()
 	}
-	// The Sessions this process holds close first: their background drives,
-	// appliers and snapshots end before the Writers they commit through.
+	// The activation scan stops first, so it opens nothing more; then the
+	// Sessions this process holds close: their background drives, appliers
+	// and snapshots end before the Writers they commit through.
+	app.bgCancel()
+	app.loops.Wait()
 	app.mu.RLock()
 	open := make([]*Session, 0, len(app.sessions))
 	for _, s := range app.sessions {
@@ -467,6 +495,9 @@ func (app *Application) Close(ctx context.Context) error {
 		if cerr := s.Close(ctx); cerr != nil && err == nil {
 			err = cerr
 		}
+	}
+	if werr := app.releases.wait(ctx); werr != nil && err == nil {
+		err = werr
 	}
 	if oerr := app.Owner.Close(ctx); oerr != nil && err == nil {
 		err = oerr

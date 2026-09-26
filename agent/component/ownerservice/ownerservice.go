@@ -60,6 +60,23 @@ type Config struct {
 	SnapshotAfterTurn bool `json:"snapshotAfterTurn,omitempty"`
 	// InboxPoll is the applier's poll interval (APP-INB-3).
 	InboxPoll config.Duration `json:"inboxPoll,omitempty"`
+	// Activation makes this owner hold Sessions for active work only
+	// (APP-ACT): a command reaching it opens the Session, quiescence
+	// releases it, and a scan picks up Sessions left by a dead owner. It
+	// requires Lease, so a dead owner's Sessions expire.
+	Activation *Activation `json:"activation,omitempty"`
+}
+
+// Activation is the owner's activation model (APP-ACT).
+type Activation struct {
+	// Preset is the decision identity an activation opens with.
+	Preset turn.PresetID `json:"preset"`
+	// IdleRelease is the quiescence after which ownership is released;
+	// zero keeps activated Sessions open.
+	IdleRelease config.Duration `json:"idleRelease,omitempty"`
+	// Scan is the period of the scan over pending inboxes and expired
+	// leases; zero disables it.
+	Scan config.Duration `json:"scan,omitempty"`
 }
 
 // Filestore names a file-backed store root.
@@ -99,6 +116,15 @@ func Compose(ctx context.Context, cfg Config) (*Component, error) { //nolint:goc
 		return nil, errors.New("ownerservice: executor endpoint is required")
 	case len(cfg.Presets) == 0:
 		return nil, errors.New("ownerservice: at least one preset is required")
+	case cfg.Activation != nil && cfg.Activation.Preset == "":
+		return nil, errors.New("ownerservice: activation.preset is required")
+	case cfg.Activation != nil && cfg.Lease.Std() <= 0:
+		return nil, errors.New("ownerservice: activation requires a lease duration, so a dead owner's sessions expire")
+	}
+	var activation *app.Activation
+	if cfg.Activation != nil {
+		activation = &app.Activation{Preset: cfg.Activation.Preset, IdleRelease: cfg.Activation.IdleRelease.Std(),
+			Scan: cfg.Activation.Scan.Std(), Options: app.SessionOptions{InboxPoll: cfg.InboxPoll.Std()}}
 	}
 	db, err := stores.Open(ctx, cfg.Stores)
 	if err != nil {
@@ -129,6 +155,7 @@ func Compose(ctx context.Context, cfg Config) (*Component, error) { //nolint:goc
 		Workspaces: wsCfg,
 		Ownership:  session.OpenOptions{Owner: id, LeaseDuration: cfg.Lease.Std(), Takeover: cfg.Takeover},
 		Presets:    presets,
+		Activation: activation,
 	})
 	if err != nil {
 		_ = db.Close()

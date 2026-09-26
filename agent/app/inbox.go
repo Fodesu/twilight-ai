@@ -103,8 +103,11 @@ func (app *Application) Enqueue(ctx context.Context, sid session.SessionID, c in
 		app.mu.RLock()
 		s := app.sessions[sid]
 		app.mu.RUnlock()
-		if s != nil {
+		switch {
+		case s != nil:
 			s.wakeInbox()
+		case app.activation != nil:
+			app.activateInBackground(sid)
 		}
 	}
 	return e, nil
@@ -249,6 +252,9 @@ func (s *Session) ApplyPending(ctx context.Context) (int, error) {
 	pending, err := s.app.inbox.Pending(ctx, s.sid)
 	if err != nil {
 		return 0, err
+	}
+	if len(pending) > 0 {
+		s.touch()
 	}
 	n := 0
 	for i := range pending {
