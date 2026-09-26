@@ -50,6 +50,9 @@ type EffectContext struct {
 	Effect  run.EffectID
 	Kind    AssignmentKind
 	Tool    run.ToolRef
+	// Placement is the tool's declared placement for a tool effect; a
+	// resolver supplies a workspace target only for PlacementWorkspace.
+	Placement run.ToolPlacement
 }
 
 // TargetResolver supplies an opaque target for one effect (RUN-LOP-9). It
@@ -141,6 +144,11 @@ type ExecutableTool interface {
 	// author has not judged it. The declaration is frozen into the ToolSpec
 	// and carried on every call and Assignment.
 	Replay() run.ReplayPolicy
+	// Placement declares where the tool runs (RUN-LOP-9): in the executor
+	// process, or inside the Session's workspace, in which case its calls
+	// need a target and are routed to the workspace backend. Every tool
+	// answers; the declaration is frozen into the ToolSpec.
+	Placement() run.ToolPlacement
 }
 
 // Tool outcomes belong to the process-independent effect protocol. Aliases

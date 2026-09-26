@@ -713,24 +713,30 @@ func mustModel(t testing.TB, a Assignment) ModelAssignment {
 	return m
 }
 
-// Validate refuses a tool Assignment whose Replay policy differs from the
-// tool's own declaration, the same definition-mismatch answer as a response
-// policy that differs (RUN-EXE-9); Restart itself only derives the Ref.
-func TestLocalExecutorValidateChecksReplayDeclaration(t *testing.T) {
+// Validate refuses a tool Assignment whose Replay policy or Placement
+// differs from the tool's own declaration, the same definition-mismatch
+// answer as a response policy that differs (RUN-EXE-9, RUN-LOP-9); Restart
+// itself only derives the Ref.
+func TestLocalExecutorValidateChecksToolDeclarations(t *testing.T) {
 	cases := []struct {
-		name     string
-		declared ReplayPolicy
-		assigned ReplayPolicy
-		mismatch bool
+		name              string
+		declared          ReplayPolicy
+		assigned          ReplayPolicy
+		declaredPlacement ToolPlacement
+		assignedPlacement ToolPlacement
+		mismatch          string
 	}{
-		{"both unknown", ReplayUnknown, ReplayUnknown, false},
-		{"both allowed", ReplayAllowed, ReplayAllowed, false},
-		{"assignment claims allowed", ReplayForbidden, ReplayAllowed, true},
-		{"assignment omits the declaration", ReplayAllowed, ReplayUnknown, true},
+		{name: "both unknown"},
+		{name: "both allowed", declared: ReplayAllowed, assigned: ReplayAllowed},
+		{name: "assignment claims allowed", declared: ReplayForbidden, assigned: ReplayAllowed, mismatch: "replay policy mismatch"},
+		{name: "assignment omits the declaration", declared: ReplayAllowed, mismatch: "replay policy mismatch"},
+		{name: "both in the workspace", declaredPlacement: PlacementWorkspace, assignedPlacement: PlacementWorkspace},
+		{name: "assignment claims the process", declaredPlacement: PlacementWorkspace, mismatch: "placement mismatch"},
+		{name: "assignment claims the workspace", assignedPlacement: PlacementWorkspace, mismatch: "placement mismatch"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			tool := &fakeTool{ref: "echo", def: sdk.ToolDefinition{Name: "echo"}, policy: DirectExecution, replay: tc.declared}
+			tool := &fakeTool{ref: "echo", def: sdk.ToolDefinition{Name: "echo"}, policy: DirectExecution, replay: tc.declared, placement: tc.declaredPlacement}
 			exec, err := NewLocalExecutor(fakeCatalog{&fakeInvoker{}}, fakeToolCatalog{map[ToolRef]ExecutableTool{"echo": tool}}, nil, false)
 			if err != nil {
 				t.Fatal(err)
@@ -744,13 +750,13 @@ func TestLocalExecutorValidateChecksReplayDeclaration(t *testing.T) {
 				t.Fatal(err)
 			}
 			a := Assignment{Session: "s", RunID: "r", StepID: "step", CallID: "c1", Effect: "e",
-				Body: ToolAssignment{ToolRef: "echo", DefinitionDigest: digest, Arguments: cj(`{}`), Policy: DirectExecution, Replay: tc.assigned}}
+				Body: ToolAssignment{ToolRef: "echo", DefinitionDigest: digest, Arguments: cj(`{}`), Policy: DirectExecution, Replay: tc.assigned, Placement: tc.assignedPlacement}}
 			failure, err := exec.Validate(context.Background(), a)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if (failure != nil) != tc.mismatch || (failure != nil && !strings.Contains(failure.Message, "replay policy mismatch")) {
-				t.Fatalf("validate = %+v, want mismatch=%v", failure, tc.mismatch)
+			if (failure != nil) != (tc.mismatch != "") || (failure != nil && !strings.Contains(failure.Message, tc.mismatch)) {
+				t.Fatalf("validate = %+v, want mismatch %q", failure, tc.mismatch)
 			}
 			if ref, err := exec.Restart(context.Background(), RefOf(a.Key()), a); err != nil || ref != RefOf(a.Key())+"#1" {
 				t.Fatalf("restart = %q, %v", ref, err)

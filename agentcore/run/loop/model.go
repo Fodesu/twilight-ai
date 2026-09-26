@@ -256,6 +256,7 @@ func (l *Loop) bindToolCalls(result *sdk.ModelResult, step *run.ModelStep) ([]ru
 			b.DefinitionDigest = spec.DefinitionDigest
 			b.Policy = spec.Policy
 			b.Replay = spec.Replay
+			b.Placement = spec.Placement
 		}
 		bindings[i] = b
 	}

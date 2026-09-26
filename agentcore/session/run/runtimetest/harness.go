@@ -454,7 +454,7 @@ func (h *harness) toolCallResult(step run.StepID, n int) (model.ModelResult, []r
 		calls[i] = sdk.ToolCall{ToolCallID: fmt.Sprintf("c%d", i), ToolName: "echo", Input: sdk.ParseToolArguments(args.String())}
 		callID := schema.Identity().DeriveCallID(step, i)
 		bindings[i] = run.ToolCallBinding{CallID: callID, ProviderCallID: calls[i].ToolCallID, ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
-			Arguments: args, Policy: spec.Policy}
+			Arguments: args, Policy: spec.Policy, Replay: spec.Replay, Placement: spec.Placement}
 	}
 	r, err := sdkconv.FreezeModelResult(sdk.ModelResult{FinishReason: sdk.FinishReasonToolCalls, Usage: sdk.Usage{TotalTokens: 2}, ToolCalls: calls})
 	if err != nil {

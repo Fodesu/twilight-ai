@@ -67,11 +67,11 @@ func (l *Loop) startToolCalls(ctx context.Context, rt runtime.RunStore, events E
 		// pre-start check, so the Validate probe carries what the Assignment
 		// will carry.
 		target, err := l.targetFor(ctx, EffectContext{Session: rt.Scope(), RunID: runID, StepID: act.StepID, CallID: callID,
-			Effect: ref.id, Kind: AssignmentTool, Tool: call.ToolRef})
+			Effect: ref.id, Kind: AssignmentTool, Tool: call.ToolRef, Placement: call.Placement})
 		if err != nil {
 			return dispatched, err
 		}
-		binding := ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy, Replay: call.Replay}
+		binding := ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy, Replay: call.Replay, Placement: call.Placement}
 		probe := Assignment{Session: rt.Scope(), RunID: runID, StepID: act.StepID, CallID: callID, Target: target, Body: binding}
 		known, err := l.Executor.Validate(ctx, probe)
 		if err != nil {

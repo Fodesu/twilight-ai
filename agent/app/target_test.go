@@ -31,6 +31,7 @@ func (t *targetTool) Definition() sdk.ToolDefinition {
 }
 func (t *targetTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
 func (t *targetTool) Replay() run.ReplayPolicy                  { return run.ReplayUnknown }
+func (t *targetTool) Placement() run.ToolPlacement              { return run.PlacementWorkspace }
 func (t *targetTool) ValidateArguments(run.CanonicalJSON) error { return nil }
 func (t *targetTool) Execute(_ context.Context, req loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	t.seen <- req.Target
@@ -39,7 +40,8 @@ func (t *targetTool) Execute(_ context.Context, req loop.ToolExecutionRequest) l
 
 // appResolver stands for the application's resource layer: it owns the
 // Session → workspace binding and answers the core's TargetResolver seam
-// (APP-TGT-1). Tool effects get the Session's binding, model effects none.
+// (APP-TGT-1). Workspace-placed tool effects get the Session's binding;
+// model effects and process-placed tools get none (RUN-LOP-9).
 type appResolver struct {
 	mu       sync.Mutex
 	bindings map[session.SessionID]run.TargetRef
@@ -59,7 +61,7 @@ func (r *appResolver) ResolveTarget(_ context.Context, ec loop.EffectContext) (*
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.seen = append(r.seen, ec)
-	if ec.Kind != loop.AssignmentTool {
+	if ec.Kind != loop.AssignmentTool || ec.Placement != run.PlacementWorkspace {
 		return nil, nil
 	}
 	ref, ok := r.bindings[session.SessionID(ec.Session)]
@@ -130,11 +132,14 @@ func TestTargetResolverSeam(t *testing.T) {
 				switch ec.Kind {
 				case loop.AssignmentTool:
 					tools++
-					if ec.Tool != "lookup" || ec.CallID == "" {
-						t.Fatalf("tool effect context %+v", ec)
+					if ec.Tool != "lookup" || ec.CallID == "" || ec.Placement != run.PlacementWorkspace {
+						t.Fatalf("tool effect context %+v, want the frozen workspace placement", ec)
 					}
 				case loop.AssignmentModel:
 					models++
+					if ec.Placement != run.PlacementProcess {
+						t.Fatalf("model effect context %+v carries a placement", ec)
+					}
 				}
 			}
 			if tools != 1 || models != 2 {

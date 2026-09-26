@@ -61,6 +61,9 @@ type ToolAssignment struct {
 	// call: the Worker that adopts a lost execution decides from it alone
 	// (RUN-EXE-9). Omitted on the wire when unknown.
 	Replay run.ReplayPolicy `json:",omitempty"`
+	// Placement is the tool's declared placement, copied from the frozen
+	// call: the Worker's routes select the backend by it (RUN-LOP-9).
+	Placement run.ToolPlacement `json:",omitempty"`
 }
 
 func (ToolAssignment) Kind() AssignmentKind { return AssignmentTool }

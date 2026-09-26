@@ -446,7 +446,7 @@ func (h *harness) waitingTool(runID run.RunID) {
 		h.fatal(err)
 	}
 	binding := run.ToolCallBinding{CallID: callID, ProviderCallID: "c0", ToolRef: spec.Ref, DefinitionDigest: spec.DefinitionDigest,
-		Arguments: args, Policy: spec.Policy}
+		Arguments: args, Policy: spec.Policy, Replay: spec.Replay, Placement: spec.Placement}
 	h.mustRunCommit(runID, schema.Identity().DeriveSettlementCommandID(eff), 0,
 		run.SubmitModelResult{StepID: step, Effect: eff, Result: result, Calls: []run.ToolCallBinding{binding}})
 }

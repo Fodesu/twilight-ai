@@ -28,6 +28,9 @@ type PublicTool struct {
 	// Replay is the tool's declared replay policy (RUN-EXE-9); it enters
 	// the preset digest and the frozen ToolSpec. Omitted when unknown.
 	Replay run.ReplayPolicy `json:"replay,omitempty"`
+	// Placement is the tool's declared placement (RUN-LOP-9); it enters the
+	// preset digest and the frozen ToolSpec. Omitted for process placement.
+	Placement run.ToolPlacement `json:"placement,omitempty"`
 }
 
 // AgentPreset is the decision identity a Turn is started under (TRN-SCP-6):
@@ -107,7 +110,7 @@ func (p *AgentPreset) ToolSpecs() ([]run.ToolSpec, []sdk.ToolDefinition, error) 
 		if err != nil {
 			return nil, nil, err
 		}
-		specs = append(specs, run.ToolSpec{Ref: t.Ref, Name: t.Definition.Name, DefinitionDigest: d, Policy: t.Policy, Replay: t.Replay})
+		specs = append(specs, run.ToolSpec{Ref: t.Ref, Name: t.Definition.Name, DefinitionDigest: d, Policy: t.Policy, Replay: t.Replay, Placement: t.Placement})
 		def_, err := sdkconv.ToolDefinition(t.Definition)
 		if err != nil {
 			return nil, nil, err

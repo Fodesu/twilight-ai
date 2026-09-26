@@ -54,6 +54,7 @@ func (echoTool) Definition() sdk.ToolDefinition {
 }
 func (echoTool) ResponsePolicy() run.ResponsePolicy        { return run.DirectExecution }
 func (echoTool) Replay() run.ReplayPolicy                  { return run.ReplayAllowed }
+func (echoTool) Placement() run.ToolPlacement              { return run.PlacementProcess }
 func (echoTool) ValidateArguments(run.CanonicalJSON) error { return nil }
 func (echoTool) Execute(_ context.Context, req loop.ToolExecutionRequest) loop.ToolExecutionOutcome {
 	return loop.ToolExecutionSucceeded{Result: run.ToolExecutionResult{Output: req.Arguments}}

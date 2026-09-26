@@ -123,6 +123,31 @@ func (p ReplayPolicy) String() string {
 	}
 }
 
+// ToolPlacement is where a tool call must run (RUN-LOP-9): in the process
+// that executes it, or inside the workspace the Session is bound to. It is
+// declared by the tool implementation, frozen into the ToolSpec and copied
+// onto each call and its Assignment, so the target resolver asks for a
+// workspace only for calls that need one and the Worker routes by the
+// declaration, never by whether a target happens to be present. Every tool
+// declares it; PlacementProcess is the zero value and omitted on the wire.
+type ToolPlacement uint8
+
+const (
+	// PlacementProcess: the tool runs in the executor process that holds
+	// its implementation (a pure computation, spawn_agent).
+	PlacementProcess ToolPlacement = iota
+	// PlacementWorkspace: the tool runs inside the workspace bound to the
+	// Session (a shell, a file tool); its Assignment must carry a target.
+	PlacementWorkspace
+)
+
+func (p ToolPlacement) String() string {
+	if p == PlacementWorkspace {
+		return "workspace"
+	}
+	return "process"
+}
+
 // RetryDisposition is a Known failure's own answer to whether the next
 // attempt of the same Assignment may run (RUN-EXE-11). RetryAllowed means
 // this failure suffices to confirm the attempt produced no external effect
@@ -193,6 +218,7 @@ type ToolSpec struct {
 	DefinitionDigest Digest         `json:"definitionDigest"`
 	Policy           ResponsePolicy `json:"policy"`
 	Replay           ReplayPolicy   `json:"replay,omitempty"`
+	Placement        ToolPlacement  `json:"placement,omitempty"`
 }
 
 // ToolCallBinding is one frozen call inside ToolStepOpened.
@@ -206,6 +232,7 @@ type ToolCallBinding struct {
 	Arguments        CanonicalJSON  `json:"arguments"`
 	Policy           ResponsePolicy `json:"policy"` // unresolved ToolRef uses DirectExecution
 	Replay           ReplayPolicy   `json:"replay,omitempty"`
+	Placement        ToolPlacement  `json:"placement,omitempty"`
 	// Response is derived and filled by Decide inside ToolStepOpened; callers
 	// leave it empty when submitting.
 	Response *ResponseRequest `json:"response,omitempty"`
@@ -348,6 +375,7 @@ type ToolCallState struct {
 	Arguments        CanonicalJSON  `json:"arguments"`
 	Policy           ResponsePolicy `json:"policy"`
 	Replay           ReplayPolicy   `json:"replay,omitempty"`
+	Placement        ToolPlacement  `json:"placement,omitempty"`
 	Status           ToolCallStatus `json:"status"`
 	// Effect is the tool effect the call requested (from ToolCallStarted);
 	// empty before the start and for a call an external response settles

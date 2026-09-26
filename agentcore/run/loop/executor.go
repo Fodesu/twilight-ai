@@ -248,6 +248,8 @@ func (e *LocalExecutor) resolveTool(t *ToolAssignment) (ExecutableTool, *run.Too
 		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "response policy mismatch"}
 	case tool.Replay() != t.Replay:
 		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "replay policy mismatch"}
+	case tool.Placement() != t.Placement:
+		return nil, &run.ToolFailure{Class: run.FailureDefinitionMismatch, Message: "placement mismatch"}
 	}
 	if argErr := tool.ValidateArguments(t.Arguments); argErr != nil {
 		return nil, &run.ToolFailure{Class: run.FailureInvalidArguments, Message: argErr.Error()}

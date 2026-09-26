@@ -54,12 +54,12 @@ func (l *Loop) Redispatch(ctx context.Context, rt runtime.RunStore, key Assignme
 			return ErrEffectNotExecuting
 		}
 		stepID := cur.RefValue.ID
-		target, err := l.targetFor(ctx, EffectContext{Session: scope, RunID: key.RunID, StepID: stepID, CallID: call.CallID, Effect: key.Effect, Kind: AssignmentTool, Tool: call.ToolRef})
+		target, err := l.targetFor(ctx, EffectContext{Session: scope, RunID: key.RunID, StepID: stepID, CallID: call.CallID, Effect: key.Effect, Kind: AssignmentTool, Tool: call.ToolRef, Placement: call.Placement})
 		if err != nil {
 			return err
 		}
 		return l.dispatch(ctx, Assignment{Session: scope, RunID: key.RunID, StepID: stepID, CallID: call.CallID, Effect: key.Effect, Target: target,
-			Body: ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy, Replay: call.Replay}})
+			Body: ToolAssignment{ToolRef: call.ToolRef, DefinitionDigest: call.DefinitionDigest, Arguments: call.Arguments, Policy: call.Policy, Replay: call.Replay, Placement: call.Placement}})
 	default:
 		return ErrEffectNotExecuting
 	}

@@ -185,6 +185,10 @@ func (tool) ResponsePolicy() run.ResponsePolicy { return run.ExternalResponse }
 // answering an existing child again continues it.
 func (tool) Replay() run.ReplayPolicy { return run.ReplayAllowed }
 
+// Placement is in the executor process: spawning a child Session touches
+// no workspace.
+func (tool) Placement() run.ToolPlacement { return run.PlacementProcess }
+
 func (tool) ValidateArguments(args run.CanonicalJSON) error {
 	_, err := DecodeArguments(args)
 	return err

@@ -168,8 +168,10 @@ type ToolSpec struct {
     DefinitionDigest Digest // 本体在请求内
     Policy ResponsePolicy
     Replay ReplayPolicy     // 工具实现的 replay 声明，随 PublicTool 进入 preset 摘要；复制到 ToolCallBinding / ToolCallState / ToolAssignment（RUN-EXE-9）
+    Placement ToolPlacement // 工具实现的 placement 声明，随 PublicTool 进入 preset 摘要；复制到 ToolCallBinding / ToolCallState / ToolAssignment；解析器与 Worker 路由据此判断
 }
 type ReplayPolicy uint8 // ReplayUnknown（零值，未判断，wire 上省略）| ReplayAllowed（只读或按 CallID 幂等）| ReplayForbidden（有不可重复的副作用）；工具级能力
+type ToolPlacement uint8 // PlacementProcess（零值，在执行它的进程内运行，wire 上省略）| PlacementWorkspace（必须在 Session 绑定的 workspace 内运行，Assignment 须带 target）
 type RetryDisposition uint8 // RetryUnknown（零值，不重试）| RetryNever | RetryAllowed；一次具体 Known 失败自己的属性：Allowed 表示该失败足以确认本次 attempt 没有产生不能安全重复的外部效果（RUN-EXE-11）
 // ToolFailure.Class 的工具执行失败类别（RUN-EXE-11）：not_found | invalid_input | timeout | unavailable | rate_limited | conflict | internal；execution_failed 为未分类。类别描述错误，可重试性由该失败的 RetryDisposition 单独给出
 type ToolScheduleMode string // "parallel" | "sequential"；空值按 parallel 解释
@@ -436,6 +438,7 @@ type ExecutableTool interface {
     ValidateArguments(run.CanonicalJSON) error
     Execute(context.Context, ToolExecutionRequest) ToolExecutionOutcome
     Replay() run.ReplayPolicy // 必填声明：前次执行丢失后同一 call 的 Execute 能否重跑；经 PublicTool → ToolSpec → Assignment 到达 Worker
+    Placement() run.ToolPlacement // 必填声明：在进程内还是在 workspace 内运行；经 PublicTool → ToolSpec → Assignment 到达解析器与 Worker 的 Route 表
 }
 ```
 
@@ -446,7 +449,7 @@ type ExecutableTool interface {
 type AssignmentKind string // model | tool
 type AssignmentKey struct { Session run.Scope; RunID run.RunID; Effect run.EffectID }
 type ModelAssignment struct { Model run.ModelRef; Request *model.ModelRequest; RequestDigest run.Digest } // Dispatch payload；digest 仍绑定 frozen request
-type ToolAssignment struct { ToolRef run.ToolRef; DefinitionDigest run.Digest; Arguments run.CanonicalJSON; Policy run.ResponsePolicy; Replay run.ReplayPolicy }
+type ToolAssignment struct { ToolRef run.ToolRef; DefinitionDigest run.Digest; Arguments run.CanonicalJSON; Policy run.ResponsePolicy; Replay run.ReplayPolicy; Placement run.ToolPlacement }
 type Assignment struct {
     Session run.Scope; RunID run.RunID; StepID run.StepID; CallID run.CallID; Effect run.EffectID
     Target *run.TargetRef
@@ -573,7 +576,7 @@ func (*Loop) Run(context.Context, runtime.RunStore, run.RunID, EventSink) (LoopR
 
 **RUN-LOP-10（Prepare 之前的钩子）** `Settings.BeforePrepare` 在每次 `Next` 返回 `NeedModelRequest` 时、PromptBuilder 读取上下文之前调用一次，传入 Loop 绑定的 `RunStore` 与将交给 PromptBuilder 的 `PromptInput`。它是应用在两步之间改写上下文的位置（Turn 内 checkpoint，APP-CKP-1）：钩子经同一 Writer 提交的事实是随后 Build 读到的状态；它不写 Run 事实，因此 snapshot 的 Position 对随后的 Prepare 仍然有效。钩子返回错误时驱动停止，不写入任何事实；nil 为无钩子。Loop 不解释钩子做了什么。
 
-**RUN-LOP-9（target 解析）** `TargetResolver` 按 effect 调用：Loop 在每个 model effect 与每个 tool call 的 effect 进入 start barrier 之前调用一次 `ResolveTarget`，传入该 effect 的坐标 `EffectContext{Session, RunID, StepID, CallID, Effect, Kind, Tool}`，其中 `Effect` 是该 effect 启动时使用的 EffectID。返回值复制进该 effect 的 Assignment（tool effect 的 Validate probe 携带同一 target），Loop 不解释它。nil 返回值表示该 effect 没有资源 target；`Kind` 或 `ID` 为空的返回值是错误。解析器返回错误时该 effect 不启动，Run 不写入任何事实：ModelStep 保持 Prepared，tool call 保持 Pending。同一 Run 内的不同 effect 可以解析到不同 target。target 不进入 Run 事实，只存在于 Assignment 与 Execution Record 中；core 没有 target 事实也没有默认解析器，解析器及其 Session 到资源的映射属于 application 的资源层，映射的持久性由 application 保证（APP-TGT-1、agent-workspace.md）。
+**RUN-LOP-9（target 解析）** `TargetResolver` 按 effect 调用：Loop 在每个 model effect 与每个 tool call 的 effect 进入 start barrier 之前调用一次 `ResolveTarget`，传入该 effect 的坐标 `EffectContext{Session, RunID, StepID, CallID, Effect, Kind, Tool, Placement}`，其中 `Effect` 是该 effect 启动时使用的 EffectID，`Placement` 是工具的 placement 声明（model effect 为零值）。解析器只对 `Kind == tool` 且 `Placement == PlacementWorkspace` 的 effect 解析 workspace target；Worker 的 Route 表按 `ToolAssignment.Placement` 选 backend，不按 target 是否存在。返回值复制进该 effect 的 Assignment（tool effect 的 Validate probe 携带同一 target），Loop 不解释它。nil 返回值表示该 effect 没有资源 target；`Kind` 或 `ID` 为空的返回值是错误。解析器返回错误时该 effect 不启动，Run 不写入任何事实：ModelStep 保持 Prepared，tool call 保持 Pending。同一 Run 内的不同 effect 可以解析到不同 target。target 不进入 Run 事实，只存在于 Assignment 与 Execution Record 中；core 没有 target 事实也没有默认解析器，解析器及其 Session 到资源的映射属于 application 的资源层，映射的持久性由 application 保证（APP-TGT-1、agent-workspace.md）。
 
 `LoopResult` 的语义固定为：`LoopWaiting` 时 `Result` 为 nil，表示没有可执行 action、Run 仍为 active。`ExecutionRecovery` 等于 `plan.NeedsRecovery(state)`。该值为 true 表示存在本进程未派发其 effect 的 Executing 目标（只在崩溃后、接管处置之前出现），`Reason` 为 `execution_recovery`；否则 `Reason` 为空。Waiting call 不进入 `LoopResult`；Application 通过投影状态上的 `plan.WaitingCalls` 读取。`LoopFinished` 时 `Result` 非 nil，并等于 terminal Run 的 `RunResult`。
 
