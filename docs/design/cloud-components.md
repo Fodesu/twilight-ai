@@ -86,21 +86,24 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 ### 2.7 共享存储
 
-**CLD-STO-0（adapter 的位置与验证方式）** store adapter 是部署产物，放在部署侧目录（reference agent 为 `agent/store/sqlite`，cloud 形态为 `cloud/store/<backend>`），不放在 `agentcore`。`agentcore` 内每个窄合同带一个参考实现与一份 conformance suite，位于该合同包下的 `xxxtest` 包：`executor/store/storetest`（`Map` + `Run`，含 `SeedCommits` 的 tombstone 检查）、`process/processtest`、`checkpoint/checkpointtest`、`artifact/artifacttest`（`MapBindings`、`MapLedger`、`Stores`）。kernel 自身的测试只依赖这些参考实现；adapter 在自己的包内以 `Run(t, factory)` 跑同一套 suite 证明合同。Session store 的合同宽（`LedgerStore` 10 个方法 + `SessionStore` 8 个方法，另有 projection cache 与 content store），不设内存参考实现：`agentcore/session/filestore` 是纯 Go、无外部依赖的 JSONL 实现，留在 `agentcore` 作为 Session 合同的参考实现，`sessiontest`、`runtimetest`、`turntest` 三份 suite 在其上运行。
+**CLD-STO-0（adapter 的位置与验证方式）** store adapter 是部署产物，放在部署侧目录（`agent/store/sqlite`、`agent/store/postgres`），不放在 `agentcore`。`agentcore` 内每个窄合同带一个参考实现与一份 conformance suite，位于该合同包下的 `xxxtest` 包：`executor/store/storetest`（`Map` + `Run`，含 `SeedCommits` 的 tombstone 检查）、`process/processtest`、`checkpoint/checkpointtest`、`artifact/artifacttest`（`MapBindings`、`MapLedger`、`Stores`）。kernel 自身的测试只依赖这些参考实现；adapter 在自己的包内以 `Run(t, factory)` 跑同一套 suite 证明合同。Session store 的合同宽（`LedgerStore` 10 个方法 + `SessionStore` 8 个方法，另有 projection cache 与 content store），不设内存参考实现：`agentcore/session/filestore` 是纯 Go、无外部依赖的 JSONL 实现，留在 `agentcore` 作为 Session 合同的参考实现，`sessiontest`、`runtimetest`、`turntest` 三份 suite 在其上运行。
 
-**CLD-STO-1** 今天所有 durable store 只有 SQLite（`agent/store/sqlite`：execution ledger 与租约、dispatch ledger、artifact binding 与 claim、checkpoint）与 filestore（`agentcore/session/filestore`：Session ledger、CAS 正文）实现。两者依赖本地文件与文件锁，无法跨 Pod 共享。cloud 形态需要以下接口的共享实现，这是工作量最大的一项：
+**CLD-STO-1（共享存储实现）** durable store 有三组实现：SQLite（`agent/store/sqlite`：execution ledger 与租约、dispatch ledger、artifact binding 与 claim、checkpoint、inbox、workspace 记录）与 filestore（`agentcore/session/filestore`：Session ledger、CAS 正文）依赖本地文件与文件锁，只用于单机；Postgres（`agent/store/postgres`）是跨 Pod 共享的实现，承载全部合同：
 
-| 接口 | 内容 | 目标后端 |
+| 接口 | 表 | 实现要点 |
 |---|---|---|
-| `session.Backend`（`LedgerStore` + `SessionStore` + `CreateSession`） | Session ledger、lineage、租约 | Postgres |
-| `executionstore.Store` | execution ledger、租约 | Postgres |
-| `process.Store` | dispatch ledger | Postgres |
-| artifact binding、retention claim | 引用与回收 | Postgres |
-| `artifact.ContentStore`（CAS 正文） | frozen 请求、大对象 | 对象存储或 Postgres 大对象 |
+| `session.Backend`（`LedgerStore` + `SessionStore` + `CreateSession`） | `session_segments`、`session_commits`、`session_roots` | `DB.Sessions()` 返回 `session.NewLedger(backend)`，kernel 的 Epoch 围栏、lineage、fork、stream 规则不在 adapter 内复制；`Append` 在 Session 的事务锁内重读 root 行校验 `owned` 与 epoch（SES-OWN-2）；`CommitIndex` 由 commit 行派生，`PutIndex` 无需持久化 |
+| `executionstore.Store` | `executions`、`execution_commits`、`execution_leases` | `Acquire` 一个事务内 fold、读写租约行、追加 claimed；`ListOwned` 走 `execution_leases(owner)` 索引 |
+| `process.Store`、`checkpoint.Store`、`inbox.Store` | `processes`/`process_commits`、`checkpoints`、`inbox` | 与 SQLite 同语义 |
+| `artifact.BindingStore`、`artifact.RetentionLedger` | `bindings`、`claims` | 与 filestore 同语义；`ClaimsByOwner` 按 `claims(owner_kind, owner_authority, id)` 索引分页 |
+| `artifact.ContentStore`（CAS 正文） | `content`（`BYTEA`） | `DB.Content(authority)`；digest 去重、durability 只升不降。正文上限为 `DefaultMaxContentBytes`，对象存储后端留作后续 |
+| `workspace.Store` | `workspaces`、`workspace_snapshots` | `UpdateRuntime` 为 generation CAS，`UpdateSnapshot` 为部分写 |
 
-**CLD-STO-2（接口审查项）** 移植前需确认接口在 Postgres 语义下可满足：`executionstore.Store.Acquire` 的租约事务（读 fold、读租约行、写租约行、追加 claimed 事件在一个事务内）；Seq 0 的 acceptance 与 abort 竞争依赖唯一约束而非乐观锁（RUN-EXE-16）；`ListOwned` 需要租约行按 owner 的索引；Session ledger 的 `Append` 以 `(segment, seq)` 唯一约束实现 ErrConflict；CAS 的 digest 去重。审查结果记入本节。
+技术栈为 pgx/v5 + sqlc + 手写 migration：`agent/store/postgres/queries/*.sql` 经 sqlc 生成 `internal/db`（只负责 SQL 到类型化调用与行映射），`agent/store/postgres/*.go` 持有事务边界、围栏、CAS 与幂等；生成代码不作为任何 store 合同暴露。每个写事务以 `pg_advisory_xact_lock(hashtext(key))` 按逻辑键（一个 Session、一个 execution、一个 workspace）串行化，同一键上的副本不会交错；Seq 唯一约束（23505）是第二道防线，映射为各合同的 ErrConflict。migration 内嵌于二进制，`Open` 时按 `twilight_schema` 表补齐。conformance 由 `agent/store/postgres/postgres_test.go` 在 `-postgres.dsn` 指向的数据库上运行全部 suite（含 `sessiontest`、`runtimetest`、`turntest`），每个测试建独立 schema；无 DSN 时跳过。组件经 `config.Store{sqlite | postgres{dsn | dsnFile}}` 选择实现（`agent/component/stores`），owner 配置 `stores.postgres` 时 Session ledger 与 CAS 正文也来自该数据库，`sessions.root`/`content.root` 不再使用；DSN 含凭证，部署以 `dsnFile` 指向挂载的 Secret 文件。
 
-**CLD-STO-3（租约读取）** controller 与 gateway 读取 Session 租约的接口为 `session.Store.LeaseOf` 与 `ListLeases`，定义于 SES-OWN-5（`agent-session.md`），filestore 已实现，共享存储实现随 CLD-STO-1 一起提供。
+**CLD-STO-2（接口审查结果）** 审查项全部在 Postgres 语义下满足：`executionstore.Store.Acquire` 的租约事务在一个 `pgx.BeginFunc` 内完成；Seq 0 的 acceptance 与 abort 竞争由 `execution_commits(key, seq)` 主键与事务锁共同裁决（RUN-EXE-16）；`ListOwned` 走租约行的 owner 索引；Session ledger 的 `Append` 以 `(segment, seq)` 与 `(segment, commit_id)` 两个唯一约束实现 ErrConflict；CAS 以 `(authority, key)` 主键去重。未做的项：内容大对象走对象存储、按 Session 的通知（跨副本的 inbox 唤醒仍靠轮询，APP-INB-3）。
+
+**CLD-STO-3（租约读取）** controller 与 gateway 读取 Session 租约的接口为 `session.Store.LeaseOf` 与 `ListLeases`，定义于 SES-OWN-5（`agent-session.md`），filestore 与 Postgres 均已实现。
 
 ## 3. Worker 与 Backend 的 wire
 
@@ -134,7 +137,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 1. CLD-WIR-1 的 Backend 协议适配器对（`agent/executor/backendhttp`）：已完成。
 2. 四个二进制与单机多进程验证：已完成（CLD-CMP-4）。此步仍用 SQLite 与 filestore，各进程共享同一文件路径只用于单机验证。
-3. CLD-STO 的 Postgres 与对象存储实现，先做 CLD-STO-2 的接口审查。
+3. CLD-STO 的 Postgres 实现：已完成（CLD-STO-1、CLD-STO-2）；对象存储后端未做。
 4. k3d 清单与 CLD-DEV-2 的故障检验。
 5. controller 与 gateway。
 

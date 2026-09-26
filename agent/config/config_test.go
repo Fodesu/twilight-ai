@@ -55,3 +55,38 @@ func TestLoadIsStrict(t *testing.T) {
 		t.Fatalf("load file = %+v %v", doc, err)
 	}
 }
+
+func TestStoreNamesExactlyOneBackend(t *testing.T) {
+	dsnFile := filepath.Join(t.TempDir(), "dsn")
+	if err := os.WriteFile(dsnFile, []byte("postgres://u:p@h/db\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name  string
+		store config.Store
+		ok    bool
+		dsn   string
+	}{
+		{name: "sqlite", store: config.Store{SQLite: "a.db"}, ok: true},
+		{name: "postgres dsn", store: config.Store{Postgres: &config.Postgres{DSN: "postgres://x"}}, ok: true, dsn: "postgres://x"},
+		{name: "postgres file", store: config.Store{Postgres: &config.Postgres{DSNFile: dsnFile}}, ok: true, dsn: "postgres://u:p@h/db"},
+		{name: "neither", store: config.Store{}},
+		{name: "both backends", store: config.Store{SQLite: "a.db", Postgres: &config.Postgres{DSN: "x"}}},
+		{name: "postgres empty", store: config.Store{Postgres: &config.Postgres{}}},
+		{name: "postgres both", store: config.Store{Postgres: &config.Postgres{DSN: "x", DSNFile: dsnFile}}},
+		{name: "postgres missing file", store: config.Store{Postgres: &config.Postgres{DSNFile: filepath.Join(t.TempDir(), "none")}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.store.Validate()
+			if (err == nil) != tc.ok {
+				t.Fatalf("validate = %v, want ok=%v", err, tc.ok)
+			}
+			if tc.dsn != "" {
+				if got, err := tc.store.Postgres.Resolve(); err != nil || got != tc.dsn {
+					t.Fatalf("resolve = %q %v", got, err)
+				}
+			}
+		})
+	}
+}

@@ -99,3 +99,55 @@ func (i Identity) Resolve() (string, error) {
 		return "", errors.New("config: identity requires name or file")
 	}
 }
+
+// Store names one durable database (CLD-STO): a SQLite file for a single
+// machine, or a Postgres database every replica shares. Exactly one is
+// set.
+type Store struct {
+	SQLite   string    `json:"sqlite,omitempty"`
+	Postgres *Postgres `json:"postgres,omitempty"`
+}
+
+// Validate checks that exactly one backend is named.
+func (s Store) Validate() error {
+	switch {
+	case s.SQLite != "" && s.Postgres != nil:
+		return errors.New("config: store names both sqlite and postgres")
+	case s.SQLite == "" && s.Postgres == nil:
+		return errors.New("config: store requires sqlite or postgres")
+	case s.Postgres != nil:
+		_, err := s.Postgres.Resolve()
+		return err
+	}
+	return nil
+}
+
+// Postgres names a Postgres database by its connection string: inline, or
+// in a file the deployment mounts (a Kubernetes Secret key), since the
+// string carries the credential. Exactly one of the two is set.
+type Postgres struct {
+	DSN     string `json:"dsn,omitempty"`
+	DSNFile string `json:"dsnFile,omitempty"`
+}
+
+// Resolve returns the connection string.
+func (p Postgres) Resolve() (string, error) {
+	switch {
+	case p.DSN != "" && p.DSNFile != "":
+		return "", errors.New("config: postgres gives both dsn and dsnFile")
+	case p.DSN != "":
+		return p.DSN, nil
+	case p.DSNFile != "":
+		raw, err := os.ReadFile(p.DSNFile)
+		if err != nil {
+			return "", fmt.Errorf("config: postgres dsn file: %w", err)
+		}
+		dsn := strings.TrimSpace(string(raw))
+		if dsn == "" {
+			return "", fmt.Errorf("config: postgres dsn file %s is empty", p.DSNFile)
+		}
+		return dsn, nil
+	default:
+		return "", errors.New("config: postgres requires dsn or dsnFile")
+	}
+}

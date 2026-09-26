@@ -7,13 +7,15 @@ package toolbackend
 import (
 	"context"
 	"errors"
+	"fmt"
 	stdhttp "net/http"
 
+	"github.com/felinics/twilight/agent/component/stores"
+	"github.com/felinics/twilight/agent/config"
 	"github.com/felinics/twilight/agent/environment"
 	"github.com/felinics/twilight/agent/environment/local"
 	"github.com/felinics/twilight/agent/executor/backendhttp"
 	"github.com/felinics/twilight/agent/executor/sandbox"
-	"github.com/felinics/twilight/agent/store/sqlite"
 	"github.com/felinics/twilight/agent/tools"
 	"github.com/felinics/twilight/agent/workspace"
 	wshttp "github.com/felinics/twilight/agent/workspace/http"
@@ -24,14 +26,9 @@ import (
 type Config struct {
 	Listen string `json:"listen"`
 	// Workspaces is the workspace record store.
-	Workspaces Store `json:"workspaces"`
+	Workspaces config.Store `json:"workspaces"`
 	// Environments selects the provider; today the local one.
 	Environments Environments `json:"environments"`
-}
-
-// Store names a durable store: today one SQLite file.
-type Store struct {
-	SQLite string `json:"sqlite"`
 }
 
 // Environments is the provider selection.
@@ -76,10 +73,7 @@ func New(opts Options) (*Component, error) {
 }
 
 // Compose builds the tool backend its Config describes.
-func Compose(_ context.Context, cfg Config) (*Component, error) {
-	if cfg.Workspaces.SQLite == "" {
-		return nil, errors.New("toolbackend: workspaces.sqlite is required")
-	}
+func Compose(ctx context.Context, cfg Config) (*Component, error) {
 	if cfg.Environments.Local == nil {
 		return nil, errors.New("toolbackend: environments.local is the only provider today and is required")
 	}
@@ -87,9 +81,9 @@ func Compose(_ context.Context, cfg Config) (*Component, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := sqlite.Open(cfg.Workspaces.SQLite)
+	db, err := stores.Open(ctx, cfg.Workspaces)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("toolbackend: workspaces: %w", err)
 	}
 	c, err := New(Options{Workspaces: db.Workspaces(), Provider: provider, Backend: local.Backend})
 	if err != nil {

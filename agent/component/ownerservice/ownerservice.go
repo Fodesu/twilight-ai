@@ -14,8 +14,8 @@ import (
 
 	"github.com/felinics/twilight/agent/app"
 	ownerhttp "github.com/felinics/twilight/agent/app/http"
+	"github.com/felinics/twilight/agent/component/stores"
 	"github.com/felinics/twilight/agent/config"
-	"github.com/felinics/twilight/agent/store/sqlite"
 	wshttp "github.com/felinics/twilight/agent/workspace/http"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/owner"
@@ -32,13 +32,17 @@ type Config struct {
 	// pod name through the downward API in a cluster.
 	Identity config.Identity `json:"identity"`
 	Listen   string          `json:"listen"`
-	// Sessions is the Session ledger root (filestore).
-	Sessions Filestore `json:"sessions"`
-	// Content is the frozen bodies' cas root (filestore).
-	Content Filestore `json:"content"`
-	// Stores is the SQLite file of the small-row stores: artifact bindings
-	// and claims, dispatch ledger, inbox, workspace records.
-	Stores Store `json:"stores"`
+	// Sessions is the Session ledger root (filestore) when Stores is a
+	// SQLite file; a Postgres database holds the ledger itself and leaves
+	// it unset.
+	Sessions Filestore `json:"sessions,omitempty"`
+	// Content is the frozen bodies' cas root (filestore), under the same
+	// rule as Sessions.
+	Content Filestore `json:"content,omitempty"`
+	// Stores is the durable database: artifact bindings and claims,
+	// dispatch ledger, inbox, workspace records, and with Postgres the
+	// Session ledger and cas content too (CLD-STO-1).
+	Stores config.Store `json:"stores"`
 	// Executor is the worker's ExecutionPort endpoint.
 	Executor string `json:"executor"`
 	// ToolBackend is the tool backend's endpoint, for workspace snapshots;
@@ -63,11 +67,6 @@ type Filestore struct {
 	Root string `json:"root"`
 }
 
-// Store names a durable store: today one SQLite file.
-type Store struct {
-	SQLite string `json:"sqlite"`
-}
-
 // Preset is one decision identity of the document.
 type Preset struct {
 	ID           turn.PresetID `json:"id"`
@@ -90,29 +89,24 @@ func New(a *app.Application, sessionOptions app.SessionOptions) *Component {
 }
 
 // Compose builds the owner service its Config describes.
-func Compose(_ context.Context, cfg Config) (*Component, error) { //nolint:gocritic // hugeParam: Config is a by-value document read once
+func Compose(ctx context.Context, cfg Config) (*Component, error) { //nolint:gocritic // hugeParam: Config is a by-value document read once
 	id, err := cfg.Identity.Resolve()
 	if err != nil {
 		return nil, err
 	}
 	switch {
-	case cfg.Sessions.Root == "", cfg.Content.Root == "", cfg.Stores.SQLite == "":
-		return nil, errors.New("ownerservice: sessions.root, content.root and stores.sqlite are required")
 	case cfg.Executor == "":
 		return nil, errors.New("ownerservice: executor endpoint is required")
 	case len(cfg.Presets) == 0:
 		return nil, errors.New("ownerservice: at least one preset is required")
 	}
-	store, err := filestore.New(cfg.Sessions.Root)
+	db, err := stores.Open(ctx, cfg.Stores)
 	if err != nil {
 		return nil, err
 	}
-	content, err := filestore.NewContentStore(cfg.Content.Root, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
+	store, content, err := sessionStores(&cfg, db)
 	if err != nil {
-		return nil, err
-	}
-	db, err := sqlite.Open(cfg.Stores.SQLite)
-	if err != nil {
+		_ = db.Close()
 		return nil, err
 	}
 	bindings := db.Bindings()
@@ -143,6 +137,34 @@ func Compose(_ context.Context, cfg Config) (*Component, error) { //nolint:gocri
 	c := New(a, app.SessionOptions{InboxPoll: cfg.InboxPoll.Std()})
 	c.closes = append(c.closes, db.Close)
 	return c, nil
+}
+
+// sessionStores is the Session ledger and the cas content: the shared
+// database's own when it is one, filestore directories beside a SQLite
+// file otherwise.
+func sessionStores(cfg *Config, db stores.Handle) (session.Store, artifact.ContentStore, error) {
+	if shared, ok := db.(stores.Shared); ok {
+		if cfg.Sessions.Root != "" || cfg.Content.Root != "" {
+			return nil, nil, errors.New("ownerservice: sessions.root and content.root are not used with stores.postgres")
+		}
+		content, err := shared.Content(runmod.FrozenAuthority)
+		if err != nil {
+			return nil, nil, err
+		}
+		return shared.Sessions(), content, nil
+	}
+	if cfg.Sessions.Root == "" || cfg.Content.Root == "" {
+		return nil, nil, errors.New("ownerservice: sessions.root and content.root are required with stores.sqlite")
+	}
+	store, err := filestore.New(cfg.Sessions.Root)
+	if err != nil {
+		return nil, nil, err
+	}
+	content, err := filestore.NewContentStore(cfg.Content.Root, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
+	if err != nil {
+		return nil, nil, err
+	}
+	return store, content, nil
 }
 
 func presetsOf(defs []Preset) ([]app.Preset, error) {

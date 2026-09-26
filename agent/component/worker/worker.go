@@ -9,14 +9,15 @@ package worker
 import (
 	"context"
 	"errors"
+	"fmt"
 	stdhttp "net/http"
 	"time"
 
+	"github.com/felinics/twilight/agent/component/stores"
 	"github.com/felinics/twilight/agent/config"
 	"github.com/felinics/twilight/agent/executor/backendhttp"
 	executorhttp "github.com/felinics/twilight/agent/executor/http"
 	"github.com/felinics/twilight/agent/executor/sandbox"
-	"github.com/felinics/twilight/agent/store/sqlite"
 	"github.com/felinics/twilight/agentcore/executor"
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
 )
@@ -28,7 +29,7 @@ type Config struct {
 	Identity config.Identity `json:"identity"`
 	Listen   string          `json:"listen"`
 	// Executions is the execution record store.
-	Executions Store `json:"executions"`
+	Executions config.Store `json:"executions"`
 	// Lease is the record lease duration; zero selects the Worker's default.
 	Lease config.Duration `json:"lease,omitempty"`
 	// Backends are the Backend protocol endpoints: Model takes model calls,
@@ -38,11 +39,6 @@ type Config struct {
 	// Retry is the re-dispatch budget after a Known retryable failure
 	// (RUN-EXE-11); zero disables retries.
 	Retry Retry `json:"retry,omitempty"`
-}
-
-// Store names a durable store: today one SQLite file.
-type Store struct {
-	SQLite string `json:"sqlite"`
 }
 
 // Backends are the worker's backend endpoints.
@@ -99,12 +95,9 @@ func Compose(ctx context.Context, cfg Config) (*Component, error) {
 	if err != nil {
 		return nil, err
 	}
-	if cfg.Executions.SQLite == "" {
-		return nil, errors.New("worker: executions.sqlite is required")
-	}
-	db, err := sqlite.Open(cfg.Executions.SQLite)
+	db, err := stores.Open(ctx, cfg.Executions)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("worker: executions: %w", err)
 	}
 	c, err := New(ctx, Options{ID: id, Executions: db.Executions(), Routes: Routes(cfg.Backends), Lease: cfg.Lease.Std(),
 		Retry: executor.RetryBudget{MaxAttempts: cfg.Retry.MaxAttempts, Backoff: cfg.Retry.Backoff.Std()}})
