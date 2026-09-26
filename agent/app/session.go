@@ -134,6 +134,8 @@ type Session struct {
 	// inboxWake wakes the applier; inboxMu serializes applier passes.
 	inboxWake chan struct{}
 	inboxMu   sync.Mutex
+	// snapshotMu serializes the background snapshots of this Session.
+	snapshotMu sync.Mutex
 }
 
 // OpenSession ensures the stream exists, takes ownership per the
@@ -326,9 +328,16 @@ func (s *Session) Stop(ctx context.Context, reason string) (turn.TurnResponse, b
 	return resp, true, nil
 }
 
+// ErrRouteContended reports a route that lost to concurrent routes
+// RouteRetries times (APP-SES-3). The input is submitted and stays in the
+// backlog; the next Send, Drain or Resume routes it. It is a transient
+// answer, unlike the turn.ErrConflict of a Turn that awaits Retry or Settle.
+var ErrRouteContended = errors.New("app: route contended")
+
 // routeInput commits one input's route with the conflict retry of APP-SES-3,
-// bounded by SessionOptions.RouteRetries. It returns the Turn to drive, or
-// the AlreadyDriving Result when another driver took the input first.
+// bounded by SessionOptions.RouteRetries. It returns the Turn to drive, the
+// AlreadyDriving Result when another driver took the input first, or
+// ErrRouteContended when every attempt lost to a concurrent route.
 func (s *Session) routeInput(ctx context.Context, in run.AgentInput) (turn.TurnRef, *Result, error) {
 	var lastErr error
 	for attempt := 0; attempt < s.opts.routeRetries(); attempt++ {
@@ -339,13 +348,24 @@ func (s *Session) routeInput(ctx context.Context, in run.AgentInput) (turn.TurnR
 		if !errors.Is(err, turn.ErrConflict) {
 			return turn.TurnRef{}, nil, err
 		}
+		if awaitsDecision(err) {
+			// A Turn awaiting Retry or Settle is the committed state's
+			// answer, not a race.
+			return turn.TurnRef{}, nil, err
+		}
 		lastErr = err
 		if r, taken := s.absorbed(ctx, in); taken {
 			return turn.TurnRef{}, &r, nil
 		}
 	}
-	return turn.TurnRef{}, nil, lastErr
+	return turn.TurnRef{}, nil, fmt.Errorf("%w after %d attempts: %s", ErrRouteContended, s.opts.routeRetries(), lastErr.Error())
 }
+
+// errAwaitsDecision marks the route conflict of a Turn that awaits Retry or
+// Settle: a state, not a race.
+var errAwaitsDecision = errors.New("turn awaits retry or settle")
+
+func awaitsDecision(err error) bool { return errors.Is(err, errAwaitsDecision) }
 
 // Route is APP-RTE-1: commit the inputs' route -- Deliver into the active
 // Turn, or Start a new one -- then drive the Turn to its next quiescent point.
@@ -375,7 +395,7 @@ func (s *Session) commitRoute(ctx context.Context, inputs []run.AgentInput) (tur
 	}
 	for _, id := range surface.Order {
 		if surface.Turns[id].Status == turn.TurnAttemptFailed {
-			return turn.TurnRef{}, fmt.Errorf("%w: turn %s awaits Retry or Settle", turn.ErrConflict, id)
+			return turn.TurnRef{}, fmt.Errorf("%w: %w: turn %s", turn.ErrConflict, errAwaitsDecision, id)
 		}
 	}
 	ref := s.ref(s.newTurnID())
@@ -579,17 +599,25 @@ func (s *Session) SnapshotWorkspace(ctx context.Context) (workspace.Snapshot, er
 }
 
 // maybeSnapshot is the SnapshotAfterTurn policy: after a settlement that
-// drained the backlog, the bound Workspace is snapshotted; a Session bound
-// to none or a Workspace with no environment yet is nothing to do, other
-// failures reach Config.Warn.
-func (s *Session) maybeSnapshot(ctx context.Context) {
+// drained the backlog, the bound Workspace is snapshotted in the
+// background, one snapshot at a time per Session, so the settlement does
+// not wait on the copy; Wait covers it. A Session bound to none or a
+// Workspace with no environment yet is nothing to do, other failures reach
+// Config.Warn.
+func (s *Session) maybeSnapshot(context.Context) {
 	if s.app.workspaces == nil || !s.app.workspaces.SnapshotAfterTurn || s.app.snapshots == nil {
 		return
 	}
-	_, err := s.SnapshotWorkspace(ctx)
-	if err != nil && !errors.Is(err, ErrUnboundWorkspace) && !errors.Is(err, workspace.ErrNothingToSnapshot) {
-		s.app.warn(fmt.Errorf("app: snapshot of the workspace of %s: %w", s.sid, err))
-	}
+	s.bgStart()
+	go func() {
+		defer s.bgDone()
+		s.snapshotMu.Lock()
+		defer s.snapshotMu.Unlock()
+		_, err := s.SnapshotWorkspace(s.bg)
+		if err != nil && !errors.Is(err, ErrUnboundWorkspace) && !errors.Is(err, workspace.ErrNothingToSnapshot) && s.bg.Err() == nil {
+			s.app.warn(fmt.Errorf("app: snapshot of the workspace of %s: %w", s.sid, err))
+		}
+	}()
 }
 
 // applyInheritedWorkspace runs SessionOptions.InheritedWorkspace on a

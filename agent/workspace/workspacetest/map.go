@@ -87,6 +87,21 @@ func (m *Map) UpdateRuntime(_ context.Context, id workspace.ID, expected uint64,
 	return nil
 }
 
+func (m *Map) UpdateSnapshot(_ context.Context, id workspace.ID, ref workspace.SnapshotRef) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	w, ok := m.workspaces[id]
+	if !ok {
+		return workspace.ErrNotFound
+	}
+	if snap, ok := m.snapshots[ref]; !ok || snap.Workspace != id {
+		return workspace.ErrNotFound
+	}
+	w.Snapshot = &ref
+	m.workspaces[id] = w
+	return nil
+}
+
 func (m *Map) PutSnapshot(_ context.Context, s workspace.Snapshot) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

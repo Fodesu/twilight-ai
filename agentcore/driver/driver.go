@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/ledger"
@@ -87,6 +88,11 @@ type Driver struct {
 	// Dispatch is the re-offer policy of every Loop for a retryable dispatch
 	// refusal (RUN-EXE-3); the zero value selects loop's defaults.
 	Dispatch loop.DispatchPolicy
+	// OrphanProbe is how often an effect still waiting is attached and, when
+	// orphaned, handed to RecoverExecution: by the Watcher of a live drive
+	// and by the Reconciler of a takeover (RUN-EXE-3, CLD-DEV-2). Zero
+	// selects the defaults of each.
+	OrphanProbe time.Duration
 	// Watcher is where every Loop and every Reconciler of this Driver
 	// waits for Outcomes: one settlement subscription to the Executor for
 	// all of them. Nil builds one over Executor on first use; a host that
@@ -109,7 +115,7 @@ func (d *Driver) watcher() *effect.Watcher {
 	if d.Watcher != nil {
 		return d.Watcher
 	}
-	d.watcherOnce.Do(func() { d.ownWatcher = &effect.Watcher{Port: d.Executor} })
+	d.watcherOnce.Do(func() { d.ownWatcher = &effect.Watcher{Port: d.Executor, Probe: d.OrphanProbe} })
 	return d.ownWatcher
 }
 
@@ -355,6 +361,7 @@ func (d *Driver) recoverInterrupted(ctx context.Context, w writer.Writer) (int, 
 			d.fail(sid, fmt.Errorf("driver: outcome of run %s effect %s cannot be read; the target stays executing until the next takeover: %w", key.RunID, key.Effect, err))
 		}}
 	rec.Missing = d.MissingEffects
+	rec.OrphanProbe = d.OrphanProbe
 	if d.MissingEffects == reconcile.RedispatchMissing {
 		// Missing effects are handed to the Executor again within the
 		// budget; the dispatch ledger remembers the attempts (RUN-EXE-15).

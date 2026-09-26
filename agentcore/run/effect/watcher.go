@@ -31,6 +31,14 @@ type Watcher struct {
 	// Reconnect is the pause before the stream is opened again after it
 	// ends or fails. Zero selects DefaultWatchReconnect.
 	Reconnect time.Duration
+	// Probe is how long a registered key may wait without an Outcome before
+	// the Watcher attaches it (RUN-EXE-3): an orphaned execution, whose
+	// Worker died holding it, is handed to Port's RecoverExecution when
+	// Port implements Recoverer, so a live drive survives a worker
+	// replacement without an owner takeover (CLD-DEV-2). Each key is probed
+	// at most once per Probe. Zero selects DefaultWatchProbe; negative
+	// disables probing.
+	Probe time.Duration
 
 	mu      sync.Mutex
 	keys    map[AssignmentKey]*watch
@@ -53,11 +61,18 @@ const DefaultWatchPoll = 30 * time.Second
 // DefaultWatchReconnect is the Watcher's pause before reopening its stream.
 const DefaultWatchReconnect = time.Second
 
+// DefaultWatchProbe is how long a key waits before the Watcher attaches it.
+const DefaultWatchProbe = 15 * time.Second
+
 type watch struct {
 	deliver func(Outcome)
 	// fail receives a read the port answers definitively: nothing will ever
 	// be read for this key. The registration is dropped afterwards.
 	fail func(error)
+	// since is when the key was registered; probed when it was last
+	// attached by the probe.
+	since  time.Time
+	probed time.Time
 }
 
 // Watch registers key: deliver receives its Outcome once, then the
@@ -71,7 +86,7 @@ func (w *Watcher) Watch(ctx context.Context, key AssignmentKey, deliver func(Out
 	if w.keys == nil {
 		w.keys = make(map[AssignmentKey]*watch)
 	}
-	entry := &watch{deliver: deliver, fail: fail}
+	entry := &watch{deliver: deliver, fail: fail, since: time.Now()}
 	w.keys[key] = entry
 	if !w.running {
 		w.running = true
@@ -152,6 +167,16 @@ func (w *Watcher) run() {
 	}
 	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
+	probe := w.Probe
+	if probe == 0 {
+		probe = DefaultWatchProbe
+	}
+	var probes <-chan time.Time
+	if probe > 0 {
+		probeTicker := time.NewTicker(probe)
+		defer probeTicker.Stop()
+		probes = probeTicker.C
+	}
 	for {
 		select {
 		case <-w.ctx.Done():
@@ -160,9 +185,43 @@ func (w *Watcher) run() {
 			w.readAll()
 		case <-ticker.C:
 			w.readAll()
+		case <-probes:
+			w.probeStale(probe)
 		case key := <-notices:
 			w.read(key)
 		}
+	}
+}
+
+// probeStale attaches every key that has waited at least probe since it
+// was registered or last probed, and asks for the recovery of an orphaned
+// one (RUN-EXE-3, RUN-EXE-6). Attach failures and refusals are left to the
+// next probe: the Worker's record is the authority, the probe only asks.
+func (w *Watcher) probeStale(probe time.Duration) {
+	now := time.Now()
+	w.mu.Lock()
+	var due []AssignmentKey
+	for key, entry := range w.keys {
+		last := entry.probed
+		if last.IsZero() {
+			last = entry.since
+		}
+		if now.Sub(last) >= probe {
+			entry.probed = now
+			due = append(due, key)
+		}
+	}
+	w.mu.Unlock()
+	recoverer, canRecover := w.Port.(Recoverer)
+	for _, key := range due {
+		if w.ctx.Err() != nil {
+			return
+		}
+		att, err := w.Port.Attach(w.ctx, key)
+		if err != nil || att.State != AttachmentOrphaned || !canRecover {
+			continue
+		}
+		_ = recoverer.RecoverExecution(w.ctx, key)
 	}
 }
 
@@ -176,9 +235,22 @@ func (w *Watcher) stream(port SettlementPort, notices chan<- AssignmentKey, reco
 		w.mu.Unlock()
 		err := port.Settlements(w.ctx, epoch, after, func(s Settlement) bool {
 			w.mu.Lock()
+			changed := w.epoch != "" && s.Epoch != w.epoch
 			w.epoch, w.after = s.Epoch, s.Sequence
 			_, registered := w.keys[s.Key]
 			w.mu.Unlock()
+			if s.Key == (AssignmentKey{}) {
+				// The stream's announcement: connected to another
+				// incarnation than the one the position came from, so what
+				// settled in between is read now rather than at the poll.
+				if changed {
+					select {
+					case w.wake <- struct{}{}:
+					default:
+					}
+				}
+				return true
+			}
 			if registered {
 				select {
 				case notices <- s.Key:

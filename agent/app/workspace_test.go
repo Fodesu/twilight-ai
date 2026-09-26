@@ -277,6 +277,9 @@ func TestForkPoliciesRestoreCloneAllocateNone(t *testing.T) {
 	if err != nil || len(first) != 1 || first[0].Status != turn.TurnCompleted {
 		t.Fatalf("turn 1 = %+v %v", first, err)
 	}
+	if err := parent.Wait(ctx); err != nil { // the snapshot runs in the background
+		t.Fatal(err)
+	}
 	afterOne, err := parent.Workspace(ctx)
 	if err != nil || afterOne.Snapshot == "" {
 		t.Fatalf("binding after turn 1 = %+v %v, want a snapshot", afterOne, err)
@@ -284,6 +287,9 @@ func TestForkPoliciesRestoreCloneAllocateNone(t *testing.T) {
 	second, err := parent.Send(ctx, "two")
 	if err != nil || len(second) != 1 {
 		t.Fatalf("turn 2 = %+v %v", second, err)
+	}
+	if err := parent.Wait(ctx); err != nil {
+		t.Fatal(err)
 	}
 	afterTwo, err := parent.Workspace(ctx)
 	if err != nil || afterTwo.Snapshot == "" || afterTwo.Snapshot == afterOne.Snapshot {

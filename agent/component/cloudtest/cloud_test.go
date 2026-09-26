@@ -28,6 +28,7 @@ import (
 	"github.com/felinics/twilight/agent/environment/local"
 	executorlocal "github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/tools"
+	"github.com/felinics/twilight/agent/workspace"
 	wshttp "github.com/felinics/twilight/agent/workspace/http"
 	"github.com/felinics/twilight/agent/workspace/workspacetest"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
@@ -37,6 +38,7 @@ import (
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/process/processtest"
 	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/filestore"
@@ -280,11 +282,12 @@ func (c *cluster) startOwner(id string, takeover bool) (*ownerservice.Component,
 	a, err := app.Build(app.Config{
 		Store: store, Content: content, Artifacts: owner.Artifacts{Bindings: bindings, Ledger: ledger},
 		Processes: &processtest.Map{}, Inbox: c.inbox,
-		Executor:   app.ExecutorConfig{Mode: app.ExecutorRemote, Endpoint: c.proxyURL},
-		Workspaces: &app.WorkspaceConfig{Store: c.wsStore, Snapshots: &wshttp.Client{BaseURL: c.backends.Tool}, SnapshotAfterTurn: true},
-		Ownership:  session.OpenOptions{Owner: id, LeaseDuration: time.Minute, Takeover: takeover, Clock: c.clock.Now},
-		Presets:    []app.Preset{{ID: "ws", Value: preset}},
-		Warn:       func(err error) { c.t.Logf("%s: warn: %v", id, err) },
+		Executor:    app.ExecutorConfig{Mode: app.ExecutorRemote, Endpoint: c.proxyURL},
+		Workspaces:  &app.WorkspaceConfig{Store: c.wsStore, Snapshots: &wshttp.Client{BaseURL: c.backends.Tool}, SnapshotAfterTurn: true},
+		Ownership:   session.OpenOptions{Owner: id, LeaseDuration: time.Minute, Takeover: takeover, Clock: c.clock.Now},
+		Presets:     []app.Preset{{ID: "ws", Value: preset}},
+		OrphanProbe: 200 * time.Millisecond,
+		Warn:        func(err error) { c.t.Logf("%s: warn: %v", id, err) },
 	})
 	if err != nil {
 		c.t.Fatal(err)
@@ -313,6 +316,46 @@ func (c *cluster) enqueue(client *ownerhttp.Client, sid session.SessionID, id st
 		c.t.Fatal(err)
 	}
 	return r
+}
+
+// modelEffectKey is the AssignmentKey of the active Turn's executing model
+// call, read from the owner's Run record.
+func (c *cluster) modelEffectKey(comp *ownerservice.Component, sid session.SessionID) effect.AssignmentKey {
+	c.t.Helper()
+	var key effect.AssignmentKey
+	waitFor(c.t, c.ctx, func() bool {
+		surface, err := comp.App.TurnSurface(c.ctx, sid)
+		if err != nil || len(surface.Order) == 0 {
+			return false
+		}
+		view := surface.Turns[surface.Order[0]]
+		if view.ActiveRun == "" {
+			return false
+		}
+		rec, err := comp.App.Owner.Runs.Record(c.ctx, sid, view.ActiveRun)
+		if err != nil {
+			return false
+		}
+		ms, ok := rec.Snapshot.State.Current.(run.ModelStep)
+		if !ok || ms.Effect == "" {
+			return false
+		}
+		key = effect.AssignmentKey{Session: run.Scope(sid), RunID: view.ActiveRun, Effect: ms.Effect}
+		return true
+	})
+	return key
+}
+
+// waitFor polls cond until it holds or ctx ends.
+func waitFor(t *testing.T, ctx context.Context, cond func() bool) {
+	t.Helper()
+	for !cond() {
+		select {
+		case <-ctx.Done():
+			t.Fatal("condition never held")
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
 }
 
 // awaitTurn polls the face until the Session's first Turn is completed and
@@ -374,9 +417,21 @@ func TestFourComponentsServeAConversation(t *testing.T) {
 	if view.Reply != "done" {
 		t.Fatalf("reply = %q", view.Reply)
 	}
-	stored, err := c.wsStore.Get(c.ctx, ws.ID)
-	if err != nil || stored.Runtime == nil || stored.Snapshot == nil {
-		t.Fatalf("workspace after the turn = %+v %v, want an environment and a snapshot", stored, err)
+	// The snapshot after the Turn runs in the owner's background.
+	var stored workspace.Workspace
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		stored, err = c.wsStore.Get(c.ctx, ws.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.Runtime != nil && stored.Snapshot != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("workspace after the turn = %+v, want an environment and a snapshot", stored)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if data, err := os.ReadFile(filepath.Join(c.envRoot, string(stored.Runtime.EnvironmentRef), "f.txt")); err != nil || string(data) != "hi" {
 		t.Fatalf("file in the tool backend's environment = %q %v", data, err)
@@ -386,6 +441,70 @@ func TestFourComponentsServeAConversation(t *testing.T) {
 	}
 	if b, err := client.Workspace(c.ctx, sid); err != nil || b.Snapshot == "" || b.Snapshot != *stored.Snapshot {
 		t.Fatalf("binding snapshot = %+v %v, want %s", b, err, *stored.Snapshot)
+	}
+}
+
+// The worker is replaced while a model call is in flight and the owner
+// stays (CLD-DEV-2, first row): the owner's Watcher probes the waiting
+// effect, finds its record orphaned once the dead worker's lease has
+// passed, and hands it to the new worker, which attaches the execution
+// still running in the model backend; the release settles through the new
+// worker and the same owner completes the Turn.
+func TestWorkerReplacementDuringALiveDrive(t *testing.T) {
+	g := &gate{started: make(chan struct{}), release: make(chan struct{})}
+	c := newCluster(t, g)
+	comp, client := c.startOwner("owner-a", false)
+	const sid session.SessionID = "s-3"
+	if err := client.Ensure(c.ctx, sid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Open(c.ctx, sid, ownerhttp.OpenRequest{Preset: "ws"}); err != nil {
+		t.Fatal(err)
+	}
+	if r := c.enqueue(client, sid, "submit", app.CommandSubmit, app.SubmitCommand{InputID: "in-1", Text: "hello"}); r.Status != inbox.StatusApplied {
+		t.Fatalf("submit = %+v", r)
+	}
+	select {
+	case <-g.started:
+	case <-c.ctx.Done():
+		t.Fatal("the model call never reached the model backend")
+	}
+	// The model backend holds the call before the worker has even answered
+	// the owner's Dispatch; the scenario is a worker lost while the owner
+	// waits, so the record is let reach Running and the answer propagate
+	// first. A worker lost during the Dispatch itself is RUN-EXE-3's
+	// ErrDispatchUnknown, settled by the next takeover, not by the probe.
+	key := c.modelEffectKey(comp, sid)
+	waitFor(t, c.ctx, func() bool {
+		rec, _, ok, err := c.records.Load(c.ctx, key)
+		return err == nil && ok && rec.State == effect.ExecutionRunning
+	})
+	time.Sleep(100 * time.Millisecond)
+	c.stopWorker()
+	c.clock.Advance(2 * time.Minute)
+	c.proxy.point(c.startWorker())
+	// The probe hands the record over before the model answers.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		owned, err := c.records.ListOwned(c.ctx, "worker-2")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(owned) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the new worker never took the orphaned record over")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	close(g.release)
+	view := awaitTurn(t, c.ctx, client, sid)
+	if view.Reply != "late" {
+		t.Fatalf("reply after the worker replacement = %q, want the in-flight call's result", view.Reply)
+	}
+	if lease, err := client.Lease(c.ctx, sid); err != nil || !lease.Held || lease.Lease.Owner != "owner-a" {
+		t.Fatalf("lease = %+v %v, want the same owner", lease, err)
 	}
 }
 

@@ -91,6 +91,24 @@ func (s *WorkspaceStore) UpdateRuntime(ctx context.Context, id workspace.ID, exp
 	})
 }
 
+func (s *WorkspaceStore) UpdateSnapshot(ctx context.Context, id workspace.ID, ref workspace.SnapshotRef) error {
+	return tx(ctx, s.db, func(t *sql.Tx) error {
+		w, err := readWorkspace(ctx, t, id)
+		if err != nil {
+			return err
+		}
+		snap, err := readSnapshot(ctx, t, ref)
+		if err != nil {
+			return err
+		}
+		if snap.Workspace != id {
+			return workspace.ErrNotFound
+		}
+		w.Snapshot = &ref
+		return writeWorkspace(ctx, t, &w, false)
+	})
+}
+
 func readSnapshot(ctx context.Context, q querier, ref workspace.SnapshotRef) (workspace.Snapshot, error) {
 	var raw string
 	err := q.QueryRowContext(ctx, `SELECT record FROM workspace_snapshots WHERE ref = ?`, string(ref)).Scan(&raw)

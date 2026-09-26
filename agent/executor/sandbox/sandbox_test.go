@@ -3,6 +3,7 @@ package sandbox_test
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,6 +26,7 @@ import (
 type fixture struct {
 	t        *testing.T
 	ctx      context.Context
+	root     string
 	store    *workspacetest.Map
 	provider *local.Provider
 	backend  *sandbox.Backend
@@ -37,7 +39,8 @@ func newFixture(t *testing.T) *fixture {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	t.Cleanup(cancel)
 	store := &workspacetest.Map{}
-	provider, err := local.New(filepath.Join(t.TempDir(), "envs"))
+	root := filepath.Join(t.TempDir(), "envs")
+	provider, err := local.New(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +57,7 @@ func newFixture(t *testing.T) *fixture {
 	if err := store.Create(ctx, ws); err != nil {
 		t.Fatal(err)
 	}
-	return &fixture{t: t, ctx: ctx, store: store, provider: provider, backend: backend, worker: worker, ws: ws}
+	return &fixture{t: t, ctx: ctx, root: root, store: store, provider: provider, backend: backend, worker: worker, ws: ws}
 }
 
 func (f *fixture) assignment(tool tools.Tool, effectID run.EffectID, args string, target *run.TargetRef) effect.Assignment {
@@ -197,6 +200,30 @@ func TestSnapshotRecordsTheLatest(t *testing.T) {
 	}
 	if got := toolOutput(t, f.outcome(f.assignment(tools.ReadFile{}, "e3", `{"path":"f.txt"}`, &run.TargetRef{Kind: workspace.TargetKind, ID: string(forked.ID)}))); !strings.Contains(got, `"content":"v1"`) {
 		t.Fatalf("read in the forked workspace = %s", got)
+	}
+}
+
+// An environment that disappears under a cached attachment fails the call
+// that hits it, is dropped from the cache, and the next call rebuilds the
+// workspace under the next generation and says so.
+func TestLostCachedEnvironmentIsRebuiltOnTheNextCall(t *testing.T) {
+	f := newFixture(t)
+	target := &run.TargetRef{Kind: workspace.TargetKind, ID: string(f.ws.ID)}
+	toolOutput(t, f.outcome(f.assignment(tools.WriteFile{}, "e1", `{"path":"f.txt","content":"v1"}`, target)))
+	ws, _ := f.store.Get(f.ctx, f.ws.ID)
+	if err := os.RemoveAll(filepath.Join(f.root, string(ws.Runtime.EnvironmentRef))); err != nil {
+		t.Fatal(err)
+	}
+	out := f.outcome(f.assignment(tools.Shell{}, "e2", `{"command":"true"}`, target))
+	if _, failed := out.Result.(effect.ToolExecutionFailed); !failed {
+		t.Fatalf("call on a vanished environment = %#v, want a failure", out.Result)
+	}
+	got := toolOutput(t, f.outcome(f.assignment(tools.ListDir{}, "e3", `{}`, target)))
+	if !strings.Contains(got, `"workspaceRematerialized":true`) {
+		t.Fatalf("call after the loss = %s, want a rebuilt environment marked", got)
+	}
+	if after, _ := f.store.Get(f.ctx, f.ws.ID); after.Runtime.Generation != 2 || after.Runtime.EnvironmentRef == ws.Runtime.EnvironmentRef {
+		t.Fatalf("runtime after the rebuild = %+v", after.Runtime)
 	}
 }
 

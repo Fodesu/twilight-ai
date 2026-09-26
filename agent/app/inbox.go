@@ -110,12 +110,15 @@ func (app *Application) Enqueue(ctx context.Context, sid session.SessionID, c in
 	return e, nil
 }
 
-// AwaitCommand blocks until the command is resolved or ctx ends.
+// AwaitCommand blocks until the command is resolved or ctx ends. A
+// resolution by this process wakes it at once; one by another owner is
+// seen at the next read, bounded by awaitPoll.
 func (app *Application) AwaitCommand(ctx context.Context, sid session.SessionID, id inbox.CommandID) (inbox.Result, error) {
 	if app.inbox == nil {
 		return inbox.Result{}, ErrNoInbox
 	}
 	for {
+		resolved := app.resolvedSignal()
 		e, ok, err := app.inbox.Lookup(ctx, sid, id)
 		if err != nil {
 			return inbox.Result{}, err
@@ -126,11 +129,40 @@ func (app *Application) AwaitCommand(ctx context.Context, sid session.SessionID,
 		if !e.Pending() {
 			return *e.Result, nil
 		}
+		timer := time.NewTimer(awaitPoll)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return inbox.Result{}, ctx.Err()
-		case <-time.After(25 * time.Millisecond):
+		case <-resolved:
+			timer.Stop()
+		case <-timer.C:
 		}
+	}
+}
+
+// awaitPoll bounds how late a resolution by another process is seen.
+const awaitPoll = time.Second
+
+// resolvedSignal is a channel closed at the next resolution this process
+// records; the caller takes it before reading, so a resolution between the
+// read and the wait is not missed.
+func (app *Application) resolvedSignal() <-chan struct{} {
+	app.resolvedMu.Lock()
+	defer app.resolvedMu.Unlock()
+	if app.resolved == nil {
+		app.resolved = make(chan struct{})
+	}
+	return app.resolved
+}
+
+// notifyResolved wakes every AwaitCommand of this process.
+func (app *Application) notifyResolved() {
+	app.resolvedMu.Lock()
+	defer app.resolvedMu.Unlock()
+	if app.resolved != nil {
+		close(app.resolved)
+		app.resolved = nil
 	}
 }
 
@@ -231,6 +263,7 @@ func (s *Session) ApplyPending(ctx context.Context) (int, error) {
 		if err := s.app.inbox.Resolve(ctx, s.sid, e.Seq, result); err != nil && !errors.Is(err, inbox.ErrNotPending) {
 			return n, fmt.Errorf("resolving command %s: %w", e.Command.ID, err)
 		}
+		s.app.notifyResolved()
 		n++
 	}
 	return n, nil

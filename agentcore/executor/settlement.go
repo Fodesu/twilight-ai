@@ -44,9 +44,13 @@ func (h *SettlementHub) Close() {
 	}
 }
 
-// Settlements implements effect.SettlementPort.
+// Settlements implements effect.SettlementPort: an announcement of the
+// hub's epoch and head first (a Settlement with a zero Key), then every
+// settled key (RUN-EXE-17).
 func (h *SettlementHub) Settlements(ctx context.Context, epoch string, after uint64, fn func(effect.Settlement) bool) error {
-	return h.ring.Subscribe(ctx, epoch, after, fn)
+	return h.ring.SubscribeAnnounced(ctx, epoch, after, func(e string, head uint64) effect.Settlement {
+		return effect.Settlement{Epoch: e, Sequence: head}
+	}, fn)
 }
 
 var _ effect.SettlementPort = (*SettlementHub)(nil)

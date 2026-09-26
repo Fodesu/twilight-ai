@@ -130,6 +130,10 @@ type Config struct {
 	Warn func(error)
 	// Spawn enables the subagent tool (SPN); nil leaves it unavailable.
 	Spawn *spawn.Options
+	// OrphanProbe is how often an effect still waiting for its Outcome is
+	// attached and, when its worker died holding it, handed to recovery
+	// (driver.Driver.OrphanProbe); zero selects the defaults.
+	OrphanProbe time.Duration
 	// Worker configures the Worker that owns execution records (lease, id,
 	// reconcile loop, clock). It applies whenever Build composes a Worker:
 	// the local mode always does; a supplied Port or the remote mode do when
@@ -202,6 +206,10 @@ type Application struct {
 	snapshots workspace.Snapshotter
 	// bindings writes the Session's workspace binding facts.
 	bindings workspace.Commands
+	// resolved is closed and replaced at each inbox resolution of this
+	// process; AwaitCommand waits on it (APP-INB-1).
+	resolvedMu sync.Mutex
+	resolved   chan struct{}
 
 	mu   sync.RWMutex
 	refs map[turn.PresetID]turn.PresetRef
@@ -349,6 +357,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	// The Sessions' compaction policy runs between the steps of a Turn
 	// through the driver's planner seam (APP-CKP-1, RUN-LOP-10).
 	a.Driver.Planner = app
+	a.Driver.OrphanProbe = c.OrphanProbe
 	// Provisional observations of effects in flight reach the same stream
 	// as the committed facts (OBS-1, RUN-LOP-6).
 	a.Driver.Sink = busSink{bus}
@@ -445,7 +454,23 @@ func (app *Application) Close(ctx context.Context) error {
 	if app.spawn != nil {
 		app.spawn.Close()
 	}
-	err := app.Owner.Close(ctx)
+	// The Sessions this process holds close first: their background drives,
+	// appliers and snapshots end before the Writers they commit through.
+	app.mu.RLock()
+	open := make([]*Session, 0, len(app.sessions))
+	for _, s := range app.sessions {
+		open = append(open, s)
+	}
+	app.mu.RUnlock()
+	var err error
+	for _, s := range open {
+		if cerr := s.Close(ctx); cerr != nil && err == nil {
+			err = cerr
+		}
+	}
+	if oerr := app.Owner.Close(ctx); oerr != nil && err == nil {
+		err = oerr
+	}
 	// The Worker goes last: the Authority's drives may still be settling
 	// outcomes through it. Records keep their leases until they expire and
 	// the next incarnation adopts them (RUN-EXE-8, SPN-4).

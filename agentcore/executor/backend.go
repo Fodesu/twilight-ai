@@ -182,6 +182,10 @@ func (b portBackend) Settled(ctx context.Context, epoch string, after uint64, fn
 		return nil
 	}
 	return settlements.Settlements(ctx, epoch, after, func(s effect.Settlement) bool {
+		if s.Key == (effect.AssignmentKey{}) {
+			// The stream's announcement of its epoch and head has no subject.
+			return fn(notice.Ref{Epoch: s.Epoch, Sequence: s.Sequence})
+		}
 		raw, err := json.Marshal(s.Key)
 		if err != nil {
 			return true

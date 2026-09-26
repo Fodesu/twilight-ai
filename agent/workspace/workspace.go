@@ -116,6 +116,11 @@ type Store interface {
 	// PutSnapshot stores a Snapshot of a known Workspace; the same Ref
 	// stored again with the same content is a no-op.
 	PutSnapshot(context.Context, Snapshot) error
+	// UpdateSnapshot makes a stored Snapshot of the Workspace its latest,
+	// touching no other field: a partial write, so it never rolls back a
+	// concurrent UpdateRuntime. An unknown Workspace, or a Snapshot the
+	// store does not hold for it, is ErrNotFound.
+	UpdateSnapshot(ctx context.Context, id ID, ref SnapshotRef) error
 	// GetSnapshot returns the Snapshot; an unknown Ref is ErrNotFound.
 	GetSnapshot(context.Context, SnapshotRef) (Snapshot, error)
 	// Fork creates Destination from the Snapshot of Source: Project and

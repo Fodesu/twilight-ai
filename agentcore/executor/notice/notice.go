@@ -91,6 +91,18 @@ func (r *Ring[T]) Close() {
 // effect.ErrSettlementsEvicted, and the subscriber re-reads as for an
 // unknown epoch.
 func (r *Ring[T]) Subscribe(ctx context.Context, epoch string, after uint64, fn func(T) bool) error {
+	return r.SubscribeAnnounced(ctx, epoch, after, nil, fn)
+}
+
+// SubscribeAnnounced is Subscribe that first hands fn one announcement,
+// built by announce from the ring's epoch and head (the sequence of the
+// last notice recorded): a frame without a subject that tells the
+// subscriber which incarnation it is connected to and where its log
+// stands. A subscriber that presented another epoch learns at once that
+// notices recorded before this subscription are not replayed and re-reads
+// what it waits for; one that resumes in the same epoch learns nothing new.
+// nil announce announces nothing.
+func (r *Ring[T]) SubscribeAnnounced(ctx context.Context, epoch string, after uint64, announce func(epoch string, head uint64) T, fn func(T) bool) error {
 	r.mu.Lock()
 	switch {
 	case epoch != r.epoch:
@@ -99,7 +111,13 @@ func (r *Ring[T]) Subscribe(ctx context.Context, epoch string, after uint64, fn 
 		r.mu.Unlock()
 		return effect.ErrSettlementsEvicted
 	}
+	head := r.next
 	r.mu.Unlock()
+	if announce != nil {
+		if !fn(announce(r.epoch, head)) {
+			return nil
+		}
+	}
 	for {
 		r.mu.Lock()
 		var pending []T
@@ -154,6 +172,12 @@ func NewRefHub(epoch string, window int) *RefHub { return &RefHub{ring: NewRing[
 // Epoch names the incarnation.
 func (h *RefHub) Epoch() string { return h.ring.Epoch() }
 
+// Settled is notice.Source over the hub: an announcement of the epoch and
+// head first (an empty Ref), then every settled Ref.
+func (h *RefHub) Settled(ctx context.Context, epoch string, after uint64, fn func(Ref) bool) error {
+	return h.ring.SubscribeAnnounced(ctx, epoch, after, func(e string, head uint64) Ref { return Ref{Epoch: e, Sequence: head} }, fn)
+}
+
 // Record announces that ref settled.
 func (h *RefHub) Record(ref string) {
 	if h == nil {
@@ -167,11 +191,6 @@ func (h *RefHub) Close() {
 	if h != nil {
 		h.ring.Close()
 	}
-}
-
-// Settled implements Source.
-func (h *RefHub) Settled(ctx context.Context, epoch string, after uint64, fn func(Ref) bool) error {
-	return h.ring.Subscribe(ctx, epoch, after, fn)
 }
 
 var _ Source = (*RefHub)(nil)

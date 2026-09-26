@@ -20,7 +20,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 | gateway | 无持久状态；认证会话 | 面向用户的 HTTP/WebSocket | owner 的命令面与观察流 | 连接数 |
 | 共享存储 | 全部 durable 事实：Session ledger 与 lineage、execution ledger 与租约、dispatch ledger、artifact binding 与 claim、CAS 正文 | SQL 与对象存储 | `session.Backend`、`executionstore.Store`、`process.Store`、artifact stores 的实现 | 存储容量 |
 
-**CLD-CMP-4（组件的组装）** 每个组件是 `agent/component/<name>` 下的一个库包：类型化的 `Config`（`agent/config` 的 JSON 文档，未知字段与尾随内容为错误，凭证只以 `secrets.Dir` 目录名出现，进程身份为 `config.Identity{name | file}`，集群里由 downward API 挂成文件）、从就绪依赖组装的 `New`、从 `Config` 组装的 `Compose`，以及 `Handler()` / `Close(ctx)`。`cmd/worker`、`cmd/model-backend`、`cmd/tool-backend`、`cmd/owner` 只是 `agent/component/run.Main` 应用到各自的包；`agent/serve` 在组件 handler 旁提供 `/healthz`、`/readyz` 与 SIGTERM 下的 drain 加 `Close`（租约在 `Close` 里释放）。worker 的 Route 表按声明选 backend：`executor.MatchModel` → model backend，`executor.MatchTool(PlacementWorkspace)` → tool backend（CLD-WIR-0）。owner 在 remote 模式下不组装 sandbox，workspace snapshot 经 `agent/workspace/http.Client` 到 tool backend。进程级验证是 `agent/component/cloudtest`：四个组件各起一个 `httptest.Server`、worker 在一个可切换目标的反向代理（Service 地址）之后，覆盖 CLD-DEV-2 的一轮对话（model call 与 shell call 各经其 backend，文件落在 tool backend 的 environment，Turn 后 snapshot）与"worker 与 owner 在模型调用进行中被替换"（新 owner 的接管处置经新 worker 把 orphaned 的 record 接回、attach 到仍在 model backend 里运行的执行，结算经新副本到达，旧 owner 的写入被围栏）。`deploy/local/` 有四份示例文档与单机运行说明。
+**CLD-CMP-4（组件的组装）** 每个组件是 `agent/component/<name>` 下的一个库包：类型化的 `Config`（`agent/config` 的 JSON 文档，未知字段与尾随内容为错误，凭证只以 `secrets.Dir` 目录名出现，进程身份为 `config.Identity{name | file}`，集群里由 downward API 挂成文件）、从就绪依赖组装的 `New`、从 `Config` 组装的 `Compose`，以及 `Handler()` / `Close(ctx)`。`cmd/worker`、`cmd/model-backend`、`cmd/tool-backend`、`cmd/owner` 只是 `agent/component/run.Main` 应用到各自的包；`agent/serve` 在组件 handler 旁提供 `/healthz`、`/readyz` 与 SIGTERM 下的 drain 加 `Close`（租约在 `Close` 里释放）。worker 的 Route 表按声明选 backend：`executor.MatchModel` → model backend，`executor.MatchTool(PlacementWorkspace)` → tool backend（CLD-WIR-0）。owner 在 remote 模式下不组装 sandbox，workspace snapshot 经 `agent/workspace/http.Client` 到 tool backend。进程级验证是 `agent/component/cloudtest`：四个组件各起一个 `httptest.Server`、worker 在一个可切换目标的反向代理（Service 地址）之后，覆盖 CLD-DEV-2 的一轮对话（model call 与 shell call 各经其 backend，文件落在 tool backend 的 environment，Turn 后 snapshot）、"worker 在 live drive 中被替换而 owner 不变"（Watcher 的 probe 把 orphaned record 交给新 worker，结算经新副本的公告帧后立刻读到）与"worker 与 owner 在模型调用进行中被替换"（新 owner 的接管处置经新 worker 把 orphaned 的 record 接回、attach 到仍在 model backend 里运行的执行，结算经新副本到达，旧 owner 的写入被围栏）。`deploy/local/` 有四份示例文档与单机运行说明。
 
 **CLD-CMP-3（不在清单中的）** Reconciler、Loop、Driver、Watcher 都是 owner service 进程内的组成，不是组件：它们没有自己的状态归属，也没有 message-shaped 的对外接口。Responder（包括 spawn 子代理）同样在 owner 内。preset 注册表按 OWN-SCP-2 可以是进程内或共享服务，本文档把它归入 owner service，共享化留作后续。
 
@@ -28,7 +28,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 ### 2.1 executor worker
 
-**CLD-EXE-1** 组件即 `executor.Worker` 加 `agent/executor/http.Server`。它持有 `executionstore.Store` 的连接，路由表（`executor.Route`）的每个 provider 指向一个经 CLD-WIR 连接的 backend。进程内没有 provider 凭证，也没有工具实现；`loop.NewLocalExecutor` 不在此组件中。
+**CLD-EXE-1** 组件即 `executor.Worker` 加 `agent/executor/http.Server`。它持有 `executionstore.Store` 的连接，路由表（`executor.Route`）的每个 provider 指向一个经 CLD-WIR 连接的 backend。进程内没有 provider 凭证，也没有工具实现；`loop.NewLocalExecutor` 不在此组件中。Route 表没有默认路由：model call 按 `executor.MatchModel` 到 model backend，`PlacementWorkspace` 的工具到 tool backend，其他 Assignment（`PlacementProcess` 的工具，spawn 除外——它由 Responder 应答、不经 Dispatch）在 Dispatch 时以确定拒绝返回。
 
 **CLD-EXE-2** 对 owner 暴露的端点为现有的 `/validate`、`/dispatch`、`/attach`、`/abort`、`/status`、`/outcome`、`/cancel`、`/recover`、`/dispose`、`/acknowledge`、`/progress`、`/settlements`（RUN-EXE-3、RUN-EXE-12、RUN-EXE-17）。多副本时任一副本可应答任一 key：Attach、GetOutcome、Abort 只读 ledger；Dispatch 的重放与 RecoverExecution 由 ledger 的 Seq 0 竞争与租约裁决（RUN-EXE-14、RUN-EXE-16）。owner 对每个 Worker 副本保持一条 `/settlements` 订阅（CLD-OWN-3）。
 
@@ -44,7 +44,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 ### 2.3 tool sandbox backend
 
-**CLD-TOL-1** 组件承载 `loop.ToolCatalog` 的实现与工具运行环境的 materialization：在 Assignment 携带的 Target 上 materialize 工具运行环境并执行。逻辑 workspace 与物理 environment 的模型在 `agent/workspace` 与 `agent/environment`（application 的资源层，APP-WSP，agent-workspace.md）；本组件即 `agent/executor/sandbox.Backend` 经 CLD-WIR-1 的 Backend 协议暴露，配一个任一副本都能 Attach 的 `environment.Provider`（`agent/environment/local` 只服务单进程）。Target 的解析在 owner 侧完成（`loop.TargetResolver`，APP-TGT），backend 只接收已解析的 `run.TargetRef`。
+**CLD-TOL-1** 组件承载 `loop.ToolCatalog` 的实现与工具运行环境的 materialization：在 Assignment 携带的 Target 上 materialize 工具运行环境并执行。逻辑 workspace 与物理 environment 的模型在 `agent/workspace` 与 `agent/environment`（application 的资源层，APP-WSP，agent-workspace.md）；本组件即 `agent/executor/sandbox.Backend` 经 CLD-WIR-1 的 Backend 协议暴露，配一个任一副本都能 Attach 的 `environment.Provider`（`agent/environment/local` 只服务单进程）。Target 的解析在 owner 侧完成（`loop.TargetResolver`，APP-TGT），backend 只接收已解析的 `run.TargetRef`。工具定义、ResponsePolicy、Replay 与 Placement 在 `Validate` 时逐项与 preset 冻结的 ToolSpec 比对（`tool_definition_mismatch`），因此 owner 注册 preset 所用的工具集合与本组件服务的集合必须来自同一版本：RUN-EXE-8 的同构假设延伸到 tool backend。
 
 **CLD-TOL-2** Ref 是 sandbox 内一次执行的标识；`Attach` 按 sandbox 状态回答，sandbox 仍在但执行记录不在为 missing，sandbox 本身不可达为 orphaned（不得回答 missing，RUN-EXE-3）。工具是否可重派由 Assignment 的 Replay 声明决定，Worker 在调用 `Restart` 前判定（RUN-EXE-9、TRN-DUR-4）；backend 不做这个判断。
 
@@ -72,7 +72,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 ### 2.6 gateway
 
-**CLD-GWY-1** gateway 是用户面：认证、把用户输入转为 Session 命令（submit、stop、withdraw、retry，APP-INB-2）、把 `observe.Bus` 的事件推送给客户端（SSE 或 WebSocket）。它不持有 Session 状态；对共享存储只做两件事：写命令 inbox（`inbox.Store.Enqueue`）与读租约（SES-OWN-5）。
+**CLD-GWY-1** gateway 是用户面：认证、把用户输入转为 Session 命令（submit、stop、withdraw、retry，APP-INB-2）、把 `observe.Bus` 的事件推送给客户端（SSE 或 WebSocket）。它不持有 Session 状态；对共享存储只做两件事：写命令 inbox（`inbox.Store.Enqueue`）与读租约（SES-OWN-5）。认证与限流只在 gateway；owner 的命令面（`agent/app/http`）不做认证，只在集群内网暴露。
 
 **CLD-GWY-2（命令投递）** 命令的正确性来源是 inbox 与幂等应用（APP-INB-1/2），路由到当前 owner 是延迟优化。gateway 的路径：`Enqueue` → 读 `LeaseOf(sid)` → 有存活租约则向该副本发一次唤醒（该副本对本进程持有的 Session 调用 `ApplyPending`）；无持有者则按负载选择一个 owner 副本 Open，Open 内部先应用 pending 命令（APP-INB-3）。唤醒失败不重试、不向客户端报错：owner 的轮询兜底。需要确认结果的命令（stop）由 gateway 以 `AwaitCommand` 等待 Result，超时返回"已受理"。`OpenOptions.Owner` 记录副本的可寻址名（headless Service 下的 pod DNS 名，由 downward API 挂载的文件提供），供唤醒定位。
 
@@ -140,7 +140,6 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 ## 6. 未决
 
-- worker 在 owner 存活期间死亡的恢复触发：`RecoverExecution` 今天只由 Reconciler 调用（接管处置与其 `OrphanProbe`），一个正在驱动中的 Loop 只经 Watcher 等结算，不探测 orphaned。CLD-DEV-2 第一行期望"owner 的 Watcher 在 OrphanProbe 内观察到 orphaned"，现状要么等 owner 接管（cloudtest 覆盖的路径），要么由 controller 按 CLD-CTL-3 触发；补齐方式是让 Watcher 或 Loop 的等待路径也做周期性 Attach。
 
 - `OpenOptions.Owner` 到网络地址的映射方式（CLD-GWY-2）：写入租约行，或由 owner 副本向注册表登记。
 - preset 注册表是否共享化（CLD-CMP-3）。

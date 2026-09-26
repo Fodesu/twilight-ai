@@ -19,6 +19,8 @@ func Run(t *testing.T, factory Factory) {
 	t.Run("fork", func(t *testing.T) { testFork(t, factory(t)) })
 }
 
+const renamedProject = "repo-renamed"
+
 func testRecords(t *testing.T, s workspace.Store) {
 	ctx := context.Background()
 	if _, err := s.Get(ctx, "ws-1"); !errors.Is(err, workspace.ErrNotFound) {
@@ -35,11 +37,11 @@ func testRecords(t *testing.T, s workspace.Store) {
 	if err != nil || got.ID != "ws-1" || got.Project != "repo" || got.Base != "rev-1" || got.Runtime != nil || got.Snapshot != nil {
 		t.Fatalf("get = %+v %v", got, err)
 	}
-	w.Project = "repo-renamed"
+	w.Project = renamedProject
 	if err := s.Put(ctx, w); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.Get(ctx, "ws-1"); err != nil || got.Project != "repo-renamed" {
+	if got, err := s.Get(ctx, "ws-1"); err != nil || got.Project != renamedProject {
 		t.Fatalf("get after put = %+v %v", got, err)
 	}
 	if err := s.Put(ctx, workspace.Workspace{ID: "ws-absent"}); !errors.Is(err, workspace.ErrNotFound) {
@@ -57,6 +59,32 @@ func testRecords(t *testing.T, s workspace.Store) {
 	}
 	if _, err := s.GetSnapshot(ctx, "snap-absent"); !errors.Is(err, workspace.ErrNotFound) {
 		t.Fatalf("get of an unknown snapshot = %v, want not found", err)
+	}
+	// UpdateSnapshot is a partial write: it moves the latest snapshot and
+	// leaves a runtime written in between where it is.
+	if err := s.UpdateRuntime(ctx, "ws-1", 0, workspace.RuntimeBinding{Backend: "local", EnvironmentRef: "env-1", Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateSnapshot(ctx, "ws-1", "snap-1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.Get(ctx, "ws-1"); err != nil || got.Snapshot == nil || *got.Snapshot != "snap-1" || got.Runtime == nil || got.Runtime.Generation != 1 || got.Project != renamedProject {
+		t.Fatalf("after update snapshot = %+v %v, want snapshot set and runtime kept", got, err)
+	}
+	if err := s.UpdateSnapshot(ctx, "ws-1", "snap-absent"); !errors.Is(err, workspace.ErrNotFound) {
+		t.Fatalf("update to an unknown snapshot = %v, want not found", err)
+	}
+	if err := s.UpdateSnapshot(ctx, "ws-absent", "snap-1"); !errors.Is(err, workspace.ErrNotFound) {
+		t.Fatalf("update of an unknown workspace = %v, want not found", err)
+	}
+	if err := s.PutSnapshot(ctx, workspace.Snapshot{Ref: "snap-other", Workspace: "ws-1", Backend: "local", StateRef: "st"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Create(ctx, workspace.Workspace{ID: "ws-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.UpdateSnapshot(ctx, "ws-2", "snap-other"); !errors.Is(err, workspace.ErrNotFound) {
+		t.Fatalf("update to another workspace's snapshot = %v, want not found", err)
 	}
 }
 

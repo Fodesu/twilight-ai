@@ -8,6 +8,7 @@ package serve
 import (
 	"context"
 	"errors"
+	"net"
 	stdhttp "net/http"
 	"os"
 	"os/signal"
@@ -65,12 +66,17 @@ func Run(ctx context.Context, addr string, component Component, opts Options) er
 		return opts.Ready == nil || opts.Ready()
 	}
 	server := &stdhttp.Server{Addr: addr, Handler: Handler(component.Handler(), ready), ReadHeaderTimeout: 10 * time.Second}
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", addr)
+	if err != nil {
+		_ = component.Close(context.Background())
+		return err
+	}
+	listening.Store(true)
 	ctx, stop := signal.NotifyContext(ctx, syscall.SIGTERM, syscall.SIGINT, os.Interrupt)
 	defer stop()
 	errs := make(chan error, 1)
 	go func() {
-		listening.Store(true)
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, stdhttp.ErrServerClosed) {
+		if err := server.Serve(ln); err != nil && !errors.Is(err, stdhttp.ErrServerClosed) {
 			errs <- err
 			return
 		}

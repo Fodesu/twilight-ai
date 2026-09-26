@@ -221,7 +221,24 @@ func (a *adapter) Execute(ctx context.Context, req loop.ToolExecutionRequest) lo
 	if rematerialized {
 		out = markRematerialized(out)
 	}
+	if failed, is := out.(loop.ToolExecutionFailed); is && environmentMayBeGone(failed.Failure.Class) {
+		// The tool is not run again here (its Replay declaration decides
+		// that); the cache is checked so the next call finds a live
+		// environment or rebuilds one.
+		a.envs.invalidate(ctx, workspace.ID(req.Target.ID), env)
+	}
 	return out
+}
+
+// environmentMayBeGone are the failure classes a lost environment shows up
+// as.
+func environmentMayBeGone(class string) bool {
+	switch class {
+	case run.FailureUnavailable, run.FailureExecution, run.FailureInternal:
+		return true
+	default:
+		return false
+	}
 }
 
 // markRematerialized tells the model, on the first successful call after
@@ -256,31 +273,72 @@ type manager struct {
 	provider environment.Provider
 	backend  environment.Backend
 
+	// mu guards the maps; each workspace's resolution runs under its own
+	// lock, so one provider call blocks no other workspace.
 	mu       sync.Mutex
 	attached map[workspace.ID]environment.Environment
+	locks    map[workspace.ID]*sync.Mutex
 	// rebuilt marks workspaces whose recorded environment was lost and
 	// rebuilt by this process; the next successful call reports it.
 	rebuilt map[workspace.ID]bool
 }
 
+func (m *manager) lock(id workspace.ID) *sync.Mutex {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.locks == nil {
+		m.locks = make(map[workspace.ID]*sync.Mutex)
+	}
+	l, ok := m.locks[id]
+	if !ok {
+		l = &sync.Mutex{}
+		m.locks[id] = l
+	}
+	return l
+}
+
 // attach returns the workspace's environment and whether this call is the
 // first after the environment was rebuilt from a lost one.
 func (m *manager) attach(ctx context.Context, id workspace.ID) (env environment.Environment, rematerialized bool, err error) {
+	l := m.lock(id)
+	l.Lock()
+	defer l.Unlock()
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	env, ok := m.attached[id]
+	m.mu.Unlock()
 	if !ok {
 		env, err = m.resolve(ctx, id)
 		if err != nil {
 			return nil, false, err
 		}
+		m.mu.Lock()
 		m.attached[id] = env
+		m.mu.Unlock()
 	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.rebuilt[id] {
 		delete(m.rebuilt, id)
 		return env, true, nil
 	}
 	return env, false, nil
+}
+
+// invalidate drops the cached environment of id when the provider no
+// longer has it, so the next call materializes the workspace again and
+// reports it; an environment the provider still has stays cached.
+func (m *manager) invalidate(ctx context.Context, id workspace.ID, env environment.Environment) {
+	if _, err := m.provider.Attach(ctx, env.Ref()); err == nil || !errors.Is(err, environment.ErrNotFound) {
+		return
+	}
+	l := m.lock(id)
+	l.Lock()
+	defer l.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if cached, ok := m.attached[id]; ok && cached.Ref() == env.Ref() {
+		delete(m.attached, id)
+	}
 }
 
 func (m *manager) resolve(ctx context.Context, id workspace.ID) (environment.Environment, error) {
@@ -303,10 +361,12 @@ func (m *manager) resolve(ctx context.Context, id workspace.ID) (environment.Env
 		// The recorded environment is gone or belongs to another provider:
 		// the workspace is materialized again under the next generation, and
 		// the next call says so.
+		m.mu.Lock()
 		if m.rebuilt == nil {
 			m.rebuilt = make(map[workspace.ID]bool)
 		}
 		m.rebuilt[id] = true
+		m.mu.Unlock()
 	}
 	return m.materialize(ctx, &ws, expected)
 }
@@ -336,16 +396,10 @@ func (m *manager) snapshot(ctx context.Context, id workspace.ID) (workspace.Snap
 	if err := m.store.PutSnapshot(ctx, snap); err != nil {
 		return workspace.Snapshot{}, err
 	}
-	// The latest snapshot is recorded on the Workspace; a concurrent
-	// snapshot of the same workspace makes the later Put win, which is the
-	// later snapshot.
-	current, err := m.store.Get(ctx, id)
-	if err != nil {
-		return workspace.Snapshot{}, err
-	}
-	ref := snap.Ref
-	current.Snapshot = &ref
-	if err := m.store.Put(ctx, current); err != nil {
+	// The latest snapshot is a partial write: a concurrent UpdateRuntime by
+	// another replica is left where it is; two concurrent snapshots leave
+	// the later write as the latest.
+	if err := m.store.UpdateSnapshot(ctx, id, snap.Ref); err != nil {
 		return workspace.Snapshot{}, err
 	}
 	return snap, nil

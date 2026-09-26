@@ -911,6 +911,9 @@ func TestWorkerGetOutcomeIsAReadAndSettlementsNotify(t *testing.T) {
 	streamDone := make(chan error, 1)
 	go func() {
 		streamDone <- worker.Settlements(ctx, hub.Epoch(), 0, func(s effect.Settlement) bool {
+			if s.Key == (effect.AssignmentKey{}) {
+				return true // the stream's announcement of its epoch and head
+			}
 			seen <- s
 			return s.Key != a.Key()
 		})
@@ -946,7 +949,9 @@ func TestWorkerGetOutcomeIsAReadAndSettlementsNotify(t *testing.T) {
 	streamDone = make(chan error, 1)
 	go func() {
 		streamDone <- worker.Settlements(ctx, first.Epoch, first.Sequence, func(s effect.Settlement) bool {
-			missed = append(missed, s)
+			if s.Key != (effect.AssignmentKey{}) {
+				missed = append(missed, s)
+			}
 			return true
 		})
 	}()
