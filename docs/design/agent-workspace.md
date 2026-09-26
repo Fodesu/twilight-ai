@@ -1,75 +1,46 @@
-# Workspace / Runtime boundary
+# Workspace / Environment
 
-状态：v1 设计规范。Workspace 是 Agent Core 之外的可选 application domain；本文只定义
-它如何通过 opaque target 接入执行。
+状态：v1 设计规范。Workspace 与 Environment 是 Agent Core 之外的 application 资源层（`agent/workspace`、`agent/environment`、`agent/tools`、`agent/executor/sandbox`），经 RUN-LOP-9 的 opaque target 接入执行；`agentcore` 不承载资源模型（APP-TGT-1）。
 
-Workspace is an optional application domain for logical work environments.
+## 1. 概念
 
-- **Workspace** is a durable logical mutable-world identity. Its identity is
-  stable while the physical runtime may be replaced.
-- **Snapshot** is an immutable durable state anchor. A snapshot may be
-  restored or used as the source of a fork. Its `StateRef` identifies durable
-  provider state independently of the source environment's lifetime.
-- **Runtime** is a physical materialization of a Workspace. Local processes,
-  containers, VMs, and cloud sandboxes implement the same provider-neutral
-  lifecycle (`Create`, `Restore`, `Attach`).
-- **RuntimeBinding** belongs to the Workspace domain and records the provider,
-  environment reference, and generation of the current materialization.
-- **ExecutionRef** belongs to one execution record of the Executor and records
-  only the provider and its opaque execution handle (RUN-EXE-9).
+| 概念 | 含义 | 持久化 | 写入者 |
+|---|---|---|---|
+| Workspace | 逻辑工作世界的稳定身份：`ID`、`Project`、`Base`（起点 revision）、最近 `Snapshot`、当前 `Runtime *RuntimeBinding` | `workspace.Store` | application（创建、fork、snapshot 策略） |
+| Snapshot | provider 产出的 durable 状态锚点（`StateRef`），可 Restore 为新 environment，可作为 fork 的来源；形成 Parent 链 | `workspace.Store` | provider / application adapter |
+| Environment | Workspace 的一次物理 materialization（目录加进程、容器、VM、云 sandbox），生命周期 `Create` / `Restore` / `Attach` / `Close`；可选能力 `Executor`（运行命令）与 `FS`（读写文件） | 不持久化本体 | `environment.Provider` |
+| RuntimeBinding | Workspace → 当前 Environment：`Backend`、`EnvironmentRef`、`Generation`（第几次 materialize） | 嵌在 Workspace 记录内 | sandbox backend |
+| SessionBinding | Session → Workspace | Session ledger（APP-WSP-1） | application |
+| ExecutionRef | executor 为一次 attempt 建立的 provider 句柄（RUN-EXE-9） | execution ledger | Worker |
 
-`Provider.Attach(EnvironmentRef)` adopts an existing environment.
-`Provider.Restore(RestoreSpec{State, Destination})` materializes snapshot state
-in a destination described by `Spec`. The destination may retain the Workspace
-identity for recovery or use a new identity for a fork. Snapshot production
-and durable-state retention are owned by the provider/application adapter.
+三个名字不互换：Snapshot 是资源层的状态锚点；chatlog 的上下文压缩叫 Compaction（APP-CKP）；CQRS 消费位置叫 checkpoint（`checkpoint.Store`）。
 
-Session fork (SES section 8, OWN-FRK-2) does not call Restore. A fork copies
-the Session's committed facts only: the child Session inherits the
-conversation history and Turn settlements, not the workspace state the parent
-had at the fork point, and the parent's later tool calls keep their effects on
-the parent's workspace. The child's Runs execute against whatever its target
-binding resolves to. Regenerate and edit (TRN-DUR-3) are therefore
-history-only operations. Resolving the fork point to a Turn-boundary
-workspace snapshot and restoring it into a new workspace bound to the child
-Session is future design; it needs a snapshot reference recorded at Turn
-boundaries and is carried out by the application's fork policy (below).
+## 2. Session 绑定
 
-Agent Core carries an opaque `run.TargetRef{Kind, ID}` on an Assignment. An
-application-provided `loop.TargetResolver` supplies the target per effect
-(RUN-LOP-9): the Loop asks it once for every model or tool effect it is about
-to start, with the effect's coordinates (Session, RunID, StepID, CallID,
-EffectID, kind and tool ref), and copies the answer into that effect's
-Assignment only. Different effects of one Run may resolve to different
-targets. The mapping must be durable if a Run can outlive the process that
-started it; the target itself is not a Run fact.
+**APP-WSP-1（绑定是 Session 事实）** `agent/workspace` 是 `agent` 源的应用模块（EXT-REG-1）：singleton stream `workspace`（`LineageSession`），事实 `agent/workspace/bound{workspace, scope}` 与 `agent/workspace/unbound{scope, reason}`，投影 `agent/workspace/binding` 折叠为 `Binding{Bound, Workspace, Scope}`。`scope` 是写下该事实的 Session；子 Session 折叠 fork 前缀时读到 `scope ≠ 自身` 的绑定，`Binding.InheritedBy(sid)` 为真。绑定进 Session ledger 的收益：解析器与 Loop 读同一 epoch 视图；PromptBuilder 能告知模型所在 workspace（APP-WSP-4）；Turn 边界的 snapshot 引用（第二阶段）有落点。RuntimeBinding 与 Snapshot 不进 Session ledger：一个 Workspace 可被多个 Session 共享，environment 的替换不属于任一 Session 的历史。
 
-The seam and its implementation live in different layers (APP-TGT-1).
-Agent Core owns `loop.EffectContext`, `run.TargetRef` and the
-`loop.TargetResolver` interface only; it keeps no target fact and has no
-default resolver: a nil resolver gives every effect no target. The
-application (cloud agent / Memoh) owns the resource registry, the workspace
-manager and the `TargetResolver` implementation, and guarantees the
-durability of its Session → workspace mapping.
+**APP-WSP-2（命令）** `workspace.Commands.Bind(ctx, w, id)` 与 `Unbind(ctx, w, reason)` 经 Session Writer 提交：已由自身事实绑定到同一 id 的 Bind 与无绑定时的 Unbind 为 noop；继承的绑定经 Bind 转为自身事实，经 Unbind 结束。CommitID 带 head Seq（`workspace-bound/<id>/<seq>`），同一 head 的重试重放，之后的 Bind 是新事实。`app.Session.BindWorkspace` 先经 `workspace.Store.Get` 确认 Workspace 存在；`app.Application.AllocateWorkspace(project, base)` 创建记录；inbox 命令 `bind_workspace{workspaceId}` 与 `unbind_workspace{reason}` 走同一路径（APP-INB-2），未知 Workspace 为 rejected。
 
-Conversation lineage and resource lineage are separate lineages. A Session
-fork (OWN-FRK-2) copies committed facts and carries no resource binding to
-the child; the application's fork policy decides the child's binding and
-establishes a new resource binding for it:
+## 3. 解析、路由与执行
 
-- share the parent's existing workspace;
-- clone the workspace;
-- restore a snapshot into a new workspace;
-- allocate a fresh workspace.
+**APP-WSP-3（从 Placement 到 Environment）** 链路：
 
-Until the application binds one, the child's tool effects have no target.
+1. 工具声明 `Placement()`（RUN-LOP-9）。`agent/tools` 的 `Tool` 是环境感知的工具接口（`Run(ctx, env, req)`），`sandbox.PublicTools` 把它们冻结为带 `PlacementWorkspace` 的 `turn.PublicTool`，经 `app.WithPublicTools` 进入 preset；`loop.ExecutableTool` 仍是进程内工具（`PlacementProcess`）。首批工具：`shell`（ReplayForbidden）、`read_file`（ReplayAllowed）、`write_file`（ReplayForbidden）、`list_dir`（ReplayAllowed），路径相对 workspace 根且不得逃逸（`environment.ErrOutsideRoot` → `invalid_input`）。
+2. `workspace.Resolver`（`loop.TargetResolver`）只对 `Kind == tool && Placement == PlacementWorkspace` 的 effect 读绑定投影，`Bound` 时返回 `TargetRef{Kind: "workspace", ID}`，自身与继承的绑定同样有效；未绑定返回 nil。
+3. Worker 的 Route 表：`sandbox.Route` 的 `Match` 为 `ToolAssignment.Placement == PlacementWorkspace`，与 target 是否存在无关；`app.Build` 在 `Config.Workspaces.Provider` 非空时把它放在进程内路由之前。
+4. `agent/executor/sandbox.Backend`（`executor.ExecutionBackend` + `notice.Source`）包装 `loop.LocalExecutor`：`Validate` 拒绝 model call、`PlacementProcess` 的工具（路由配置错误）与无 workspace target 的工具（Session 未绑定，`invalid_input` 的 Known 失败，效果未开始）；`Prepare` 为按 AssignmentKey 的纯派生；`Start` 时 manager 按 `Target.ID` 解析 Environment 后调用 `Tool.Run`；in-flight 表、Attach / Status / Outcome / Cancel 与结算通知由 `LocalExecutor` 提供。
+5. manager 的解析：读 `workspace.Store.Get`；有 RuntimeBinding 且 Backend 相同则 `Provider.Attach`，`environment.ErrNotFound` 时重新 materialize；无绑定则 `Create(Spec{Subject: id, Base})`（有 Snapshot 则 `Restore`）；随后 `Store.UpdateRuntime(id, expected, Binding{Generation: expected + 1})` 以 Generation 为条件写入，`ErrGenerationConflict` 时关闭自己创建的 environment 并 Attach 赢者的。已 attach 的 environment 按 Workspace 缓存于进程内，`Backend.Close` 释放。
 
-The provider adapter is a Backend of the Worker: it resolves the target to a
-RuntimeBinding and, in Prepare, allocates or derives the ExecutionRef the
-Worker persists before Start crosses the external uncertainty barrier. Attach,
-status, outcome, and cancel address that Ref, preventing a Worker takeover from
-accidentally addressing a newly created provider job.
+**APP-WSP-4（模型知道所在 workspace）** `prompt.ContextPromptBuilder.Preface` 是 system prompt 的附加段；`prompt.WorkspacePreface` 读绑定投影，`Bound` 时写入 workspace 身份，未绑定为空。`app.Build` 在 `Config.Workspaces` 非空且 `Config.Decisions` 为 nil 时选用 `prompt.PromptBuildersWith(prompt.WorkspacePreface)`。
 
-`AgentPreset` is decision identity (model, tools, prompt policy, and scheduling);
-the same preset can be
-used against different logical workspaces.
+## 4. fork 与 spawn
+
+**APP-WSP-5（继承为默认，策略以事实覆盖）** Session fork（OWN-FRK-2）复制已提交事实，绑定事实随前缀被子 Session 读到并标为 inherited：这就是 Share 策略，不写任何事实。其他策略在子 Session 上写显式事实：Allocate = `AllocateWorkspace` + 子 `BindWorkspace`；不给 workspace = 子 `UnbindWorkspace`；Clone / Restore 需要 Snapshot（第二阶段）。父的绑定不受子的事实影响。spawn 的子 Session 默认 Share。对话 lineage 与资源 lineage 仍是两套：Workspace 的 fork（`Store.Fork`）由 Snapshot 产生新 ID，不复用 mutable 的 RuntimeBinding。
+
+## 5. provider
+
+**APP-WSP-6（local provider）** `agent/environment/local` 是参考 provider：root 下一个目录一个 environment，`Exec` 为 os/exec（工作目录限定在 environment 内，输出按 `MaxOutputBytes` 截断），`FS` 为宿主文件系统；`Create` 只接受空 `Base`，`Restore` 为 `ErrUnsupported`；只服务单进程，`Attach` 对其他宿主不可见。多副本 sandbox backend 需要任一副本都能 Attach 的 provider（云 sandbox）。
+
+## 6. 第二阶段
+
+Snapshot 的产出（`Snapshotter` 能力、Turn 结算后的策略、`agent/workspace/snapshotted` 事实）、`Restore` 与 Clone 策略、environment 重建时向模型标记 `workspace_rematerialized`、远程 worker 形态下 sandbox backend 作为独立组件（CLD-TOL-1）。

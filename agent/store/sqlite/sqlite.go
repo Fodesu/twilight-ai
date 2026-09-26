@@ -2,7 +2,8 @@
 // small-row ports that sit next to the Session ledger and the cas content
 // files: the Worker's execution records (executor/store.Store), the dispatch
 // ledger (process.Store), the artifact BindingStore and RetentionLedger, and
-// the checkpoint.Store and the Session command inbox (inbox.Store). One
+// the checkpoint.Store, the Session command inbox (inbox.Store) and the
+// workspace records (workspace.Store). One
 // SQLite file holds the tables, so one deployment
 // has one transaction boundary and one cross-process lock for all of them;
 // the Session ledger stays in its JSONL segments and cas bodies stay files.
@@ -119,6 +120,15 @@ CREATE TABLE IF NOT EXISTS inbox (
 	UNIQUE (session, command_id)
 );
 CREATE INDEX IF NOT EXISTS inbox_pending ON inbox (status, session, seq);
+CREATE TABLE IF NOT EXISTS workspaces (
+	id     TEXT PRIMARY KEY,
+	record TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workspace_snapshots (
+	ref       TEXT PRIMARY KEY,
+	workspace TEXT NOT NULL,
+	record    TEXT NOT NULL
+);
 `
 
 // Open opens or creates the database at path and ensures its schema.

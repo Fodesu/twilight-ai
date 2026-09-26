@@ -5,6 +5,9 @@ package workspace
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 
 	"github.com/felinics/twilight/agent/environment"
 	"github.com/felinics/twilight/agentcore/run"
@@ -72,13 +75,50 @@ func (w Workspace) Target() run.TargetRef {
 	return run.TargetRef{Kind: "workspace", ID: string(w.ID)}
 }
 
+// Errors of the Store contract.
+var (
+	// ErrNotFound: no Workspace or Snapshot has the identity.
+	ErrNotFound = errors.New("workspace: not found")
+	// ErrExists: Create or Fork named an ID that already has a Workspace.
+	ErrExists = errors.New("workspace: already exists")
+	// ErrGenerationConflict: UpdateRuntime found another RuntimeBinding
+	// generation than the caller expected; another materialization won.
+	ErrGenerationConflict = errors.New("workspace: runtime generation conflict")
+)
+
 // Store persists logical workspaces and their durable anchors. Implementations
 // may use a database, object store, or another application-owned repository.
+// Every write is one transaction.
 type Store interface {
+	// Create stores a new Workspace; an ID already stored is ErrExists.
 	Create(context.Context, Workspace) error
+	// Get returns the Workspace; an unknown ID is ErrNotFound.
 	Get(context.Context, ID) (Workspace, error)
+	// Put replaces a stored Workspace; an unknown ID is ErrNotFound.
 	Put(context.Context, Workspace) error
+	// UpdateRuntime replaces the Workspace's RuntimeBinding when the stored
+	// binding's Generation is expected (0 for no binding); otherwise nothing
+	// is written and ErrGenerationConflict is returned. It is the write two
+	// backend replicas race with when both materialize one workspace: the
+	// loser attaches the winner's environment.
+	UpdateRuntime(ctx context.Context, id ID, expected uint64, binding RuntimeBinding) error
+	// PutSnapshot stores a Snapshot of a known Workspace; the same Ref
+	// stored again with the same content is a no-op.
 	PutSnapshot(context.Context, Snapshot) error
+	// GetSnapshot returns the Snapshot; an unknown Ref is ErrNotFound.
 	GetSnapshot(context.Context, SnapshotRef) (Snapshot, error)
+	// Fork creates Destination from the Snapshot of Source: Project and
+	// Snapshot carried over, Base from the Fork when given, no runtime
+	// binding. An unknown Source or Snapshot is ErrNotFound, an existing
+	// Destination ErrExists.
 	Fork(context.Context, Fork) (Workspace, error)
+}
+
+// NewID mints a random Workspace ID.
+func NewID() ID {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	return ID("ws-" + hex.EncodeToString(b[:]))
 }

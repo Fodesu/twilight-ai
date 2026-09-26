@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/context/compaction"
+	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/run"
@@ -500,6 +501,33 @@ func (s *Session) result(ctx context.Context, resp *driver.DriveResult) Result {
 		r.Reply = text
 	}
 	return r
+}
+
+// BindWorkspace binds the Session to the Workspace (APP-WSP-2): from the
+// next tool call on, its workspace-placed tools run there. A Session that
+// inherited the binding from its fork parent makes it its own.
+func (s *Session) BindWorkspace(ctx context.Context, id workspace.ID) error {
+	if s.app.workspaces == nil {
+		return ErrNoWorkspaces
+	}
+	if _, err := s.app.workspaces.Store.Get(ctx, id); err != nil {
+		return err
+	}
+	return s.app.bindings.Bind(ctx, s.h.Writer(), id)
+}
+
+// UnbindWorkspace records that the Session works in no Workspace, ending
+// its own or an inherited binding.
+func (s *Session) UnbindWorkspace(ctx context.Context, reason string) error {
+	if s.app.workspaces == nil {
+		return ErrNoWorkspaces
+	}
+	return s.app.bindings.Unbind(ctx, s.h.Writer(), reason)
+}
+
+// Workspace is the Session's current binding.
+func (s *Session) Workspace(ctx context.Context) (workspace.Binding, error) {
+	return s.app.Workspace(ctx, s.sid)
 }
 
 // Compact summarizes the context with the preset's model and commits a

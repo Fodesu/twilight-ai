@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
@@ -27,7 +28,21 @@ const (
 	// CommandRetry retries the first Turn awaiting Retry; payload
 	// RetryCommand.
 	CommandRetry inbox.Kind = "retry"
+	// CommandBindWorkspace binds the Session to a Workspace (APP-WSP-2);
+	// payload BindWorkspaceCommand.
+	CommandBindWorkspace inbox.Kind = "bind_workspace"
+	// CommandUnbindWorkspace ends the Session's workspace binding; payload
+	// UnbindWorkspaceCommand.
+	CommandUnbindWorkspace inbox.Kind = "unbind_workspace"
 )
+
+type BindWorkspaceCommand struct {
+	WorkspaceID workspace.ID `json:"workspaceId"`
+}
+
+type UnbindWorkspaceCommand struct {
+	Reason string `json:"reason,omitempty"`
+}
 
 type SubmitCommand struct {
 	InputID run.InputID `json:"inputId"`
@@ -274,6 +289,29 @@ func (s *Session) apply(ctx context.Context, c *inbox.Command) error {
 		}
 		s.driveInBackground(ref)
 		return nil
+	case CommandBindWorkspace:
+		cmd, err := decode[BindWorkspaceCommand](c)
+		if err != nil {
+			return err
+		}
+		if cmd.WorkspaceID == "" {
+			return fmt.Errorf("%w: bind_workspace without a workspace id", errRejected)
+		}
+		err = s.BindWorkspace(ctx, cmd.WorkspaceID)
+		if errors.Is(err, workspace.ErrNotFound) || errors.Is(err, ErrNoWorkspaces) {
+			return fmt.Errorf("%w: %w", errRejected, err)
+		}
+		return err
+	case CommandUnbindWorkspace:
+		cmd, err := decode[UnbindWorkspaceCommand](c)
+		if err != nil {
+			return err
+		}
+		err = s.UnbindWorkspace(ctx, cmd.Reason)
+		if errors.Is(err, ErrNoWorkspaces) {
+			return fmt.Errorf("%w: %w", errRejected, err)
+		}
+		return err
 	default:
 		return fmt.Errorf("%w: unknown command kind %q", errRejected, c.Kind)
 	}

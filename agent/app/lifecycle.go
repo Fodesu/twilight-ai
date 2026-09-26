@@ -2,8 +2,12 @@ package app
 
 import (
 	"context"
+	"errors"
 
+	"github.com/felinics/twilight/agent/executor/sandbox"
 	"github.com/felinics/twilight/agent/prompt"
+	"github.com/felinics/twilight/agent/tools"
+	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/model/sdkconv"
@@ -64,10 +68,54 @@ func (app *Application) EnsureSession(ctx context.Context, sid session.SessionID
 	return app.Owner.EnsureSession(ctx, sid)
 }
 
+// --- workspaces ---------------------------------------------------------------------
+
+// ErrNoWorkspaces reports a workspace operation on an application built
+// without Config.Workspaces.
+var ErrNoWorkspaces = errors.New("app: no workspace layer is configured")
+
+// AllocateWorkspace creates a new Workspace record (APP-WSP-2); binding a
+// Session to it is a separate command (Session.BindWorkspace or the
+// bind_workspace inbox command).
+func (app *Application) AllocateWorkspace(ctx context.Context, project string, base workspace.RevisionRef) (workspace.Workspace, error) {
+	if app.workspaces == nil {
+		return workspace.Workspace{}, ErrNoWorkspaces
+	}
+	ws := workspace.Workspace{ID: workspace.NewID(), Project: project, Base: base}
+	if err := app.workspaces.Store.Create(ctx, ws); err != nil {
+		return workspace.Workspace{}, err
+	}
+	return ws, nil
+}
+
+// Workspace is a Session's current binding, read without ownership.
+func (app *Application) Workspace(ctx context.Context, sid session.SessionID) (workspace.Binding, error) {
+	if app.workspaces == nil {
+		return workspace.Binding{}, ErrNoWorkspaces
+	}
+	return workspace.Read(ctx, app.Owner.Projections, sid)
+}
+
 // --- presets ------------------------------------------------------------------------
 
 // PresetOption tunes NewPreset and NewPresetFromDefinitions.
 type PresetOption func(*turn.AgentPreset)
+
+// WithPublicTools adds frozen tool definitions to the preset: the way
+// tools that are not implemented in this process (the workspace tools the
+// sandbox backend serves) enter a preset. See WorkspaceTools.
+func WithPublicTools(defs ...turn.PublicTool) PresetOption {
+	return func(p *turn.AgentPreset) { p.Tools = append(p.Tools, defs...) }
+}
+
+// WorkspaceTools freezes the workspace tools' definitions for a preset with
+// their workspace placement (APP-WSP-3); nil selects tools.Default().
+func WorkspaceTools(ts []tools.Tool) ([]turn.PublicTool, error) {
+	if ts == nil {
+		ts = tools.Default()
+	}
+	return sandbox.PublicTools(ts)
+}
 
 // WithSystemPrompt sets the instruction included in the preset digest.
 func WithSystemPrompt(s string) PresetOption {
@@ -97,10 +145,10 @@ func WithMalformedRetries(n uint8) PresetOption {
 // NewPreset constructs the common preset shape. Tool implementations are
 // used only to freeze their public definitions; they are not stored in the
 // preset.
-func NewPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...PresetOption) (turn.AgentPreset, error) {
-	defs := make([]turn.PublicTool, 0, len(tools))
-	seen := make(map[run.ToolRef]struct{}, len(tools))
-	for _, tool := range tools {
+func NewPreset(model run.ModelRef, impls []loop.ExecutableTool, opts ...PresetOption) (turn.AgentPreset, error) {
+	defs := make([]turn.PublicTool, 0, len(impls))
+	seen := make(map[run.ToolRef]struct{}, len(impls))
+	for _, tool := range impls {
 		if tool == nil {
 			return turn.AgentPreset{}, errNilTool
 		}
@@ -119,11 +167,11 @@ func NewPreset(model run.ModelRef, tools []loop.ExecutableTool, opts ...PresetOp
 
 // NewPresetFromDefinitions constructs a preset from already frozen public
 // tool definitions, for an Owner without local tool implementations.
-func NewPresetFromDefinitions(model run.ModelRef, tools []turn.PublicTool, opts ...PresetOption) (turn.AgentPreset, error) {
+func NewPresetFromDefinitions(model run.ModelRef, defs []turn.PublicTool, opts ...PresetOption) (turn.AgentPreset, error) {
 	if model == "" {
 		return turn.AgentPreset{}, errNoModel
 	}
-	p := turn.AgentPreset{SchemaVersion: 1, Model: model, Prompt: prompt.PromptContextV1, Tools: append([]turn.PublicTool(nil), tools...)}
+	p := turn.AgentPreset{SchemaVersion: 1, Model: model, Prompt: prompt.PromptContextV1, Tools: append([]turn.PublicTool(nil), defs...)}
 	for _, opt := range opts {
 		opt(&p)
 	}

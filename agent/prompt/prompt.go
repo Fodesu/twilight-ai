@@ -18,6 +18,8 @@ import (
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
+
+	"github.com/felinics/twilight/agent/workspace"
 )
 
 // PromptContextV1 names the context prompt builder: the chatlog context projection
@@ -34,7 +36,15 @@ type ContextPromptBuilder struct {
 	// InputText extracts the user text of one input payload; nil selects the
 	// v1 shape {"text": ...} (DEC-INP-1).
 	InputText func(run.CanonicalJSON) (string, error)
+	// Preface, when set, contributes text the builder appends to the system
+	// prompt of every request, read from the Session's projections: the
+	// application's standing facts the model must know, such as the
+	// workspace it works in (APP-WSP-4). An empty string adds nothing.
+	Preface Preface
 }
+
+// Preface reads the application's standing context of a Session.
+type Preface func(ctx context.Context, sources decision.Sources, sid session.SessionID) (string, error)
 
 // NewContextPromptBuilder is the PromptBuilderFactory of PromptContextV1.
 func NewContextPromptBuilder(preset turn.AgentPreset, sources decision.Sources) loop.PromptBuilder {
@@ -60,7 +70,20 @@ func (p *ContextPromptBuilder) Build(ctx context.Context, hint plan.PromptInput)
 	if err != nil {
 		return loop.Prompt{}, err
 	}
-	msgs, err := p.messages(entries)
+	system := p.Preset.SystemPrompt
+	if p.Preface != nil {
+		preface, err := p.Preface(ctx, p.Sources, session.SessionID(hint.Scope))
+		if err != nil {
+			return loop.Prompt{}, err
+		}
+		if preface != "" {
+			if system != "" {
+				system += "\n\n"
+			}
+			system += preface
+		}
+	}
+	msgs, err := p.messages(system, entries)
 	if err != nil {
 		return loop.Prompt{}, err
 	}
@@ -82,10 +105,10 @@ func (p *ContextPromptBuilder) Build(ctx context.Context, hint plan.PromptInput)
 }
 
 // messages is DEC-PMT-2.
-func (p *ContextPromptBuilder) messages(entries []chatlog.Materialized) ([]sdk.Message, error) {
+func (p *ContextPromptBuilder) messages(system string, entries []chatlog.Materialized) ([]sdk.Message, error) {
 	var msgs []sdk.Message
-	if p.Preset.SystemPrompt != "" {
-		msgs = append(msgs, sdk.SystemMessage(p.Preset.SystemPrompt))
+	if system != "" {
+		msgs = append(msgs, sdk.SystemMessage(system))
 	}
 	inputText := p.InputText
 	if inputText == nil {
@@ -180,7 +203,27 @@ func (p *ContextPromptBuilder) messages(entries []chatlog.Materialized) ([]sdk.M
 
 // DefaultPromptBuilders is the reference agent's catalog: the context builder
 // under PromptContextV1.
-func DefaultPromptBuilders() *decision.PromptBuilders {
-	builders, _ := decision.NewPromptBuilders(map[turn.PromptBuilderRef]decision.PromptBuilderFactory{PromptContextV1: NewContextPromptBuilder})
+func DefaultPromptBuilders() *decision.PromptBuilders { return PromptBuildersWith(nil) }
+
+// PromptBuildersWith is the catalog whose context builder carries preface.
+func PromptBuildersWith(preface Preface) *decision.PromptBuilders {
+	factory := func(preset turn.AgentPreset, sources decision.Sources) loop.PromptBuilder {
+		return &ContextPromptBuilder{Sources: sources, Preset: preset, Preface: preface}
+	}
+	builders, _ := decision.NewPromptBuilders(map[turn.PromptBuilderRef]decision.PromptBuilderFactory{PromptContextV1: factory})
 	return builders
+}
+
+// WorkspacePreface tells the model which workspace the Session works in
+// (APP-WSP-4): the binding projection's current Workspace, own or inherited,
+// and nothing when the Session is bound to none.
+func WorkspacePreface(ctx context.Context, sources decision.Sources, sid session.SessionID) (string, error) {
+	b, err := workspace.Read(ctx, sources.Projections, sid)
+	if err != nil {
+		return "", err
+	}
+	if !b.Bound {
+		return "", nil
+	}
+	return fmt.Sprintf("You work in workspace %s. Shell commands and file tools run inside it; paths are relative to its root.", b.Workspace), nil
 }

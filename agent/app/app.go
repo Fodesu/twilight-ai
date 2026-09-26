@@ -15,10 +15,14 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/context/compaction"
+	"github.com/felinics/twilight/agent/environment"
 	"github.com/felinics/twilight/agent/executor/http"
 	executorlocal "github.com/felinics/twilight/agent/executor/local"
+	"github.com/felinics/twilight/agent/executor/sandbox"
 	"github.com/felinics/twilight/agent/prompt"
 	"github.com/felinics/twilight/agent/spawn"
+	"github.com/felinics/twilight/agent/tools"
+	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/artifact"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/driver"
@@ -136,6 +140,33 @@ type Config struct {
 	// leaves Enqueue and ApplyPending unavailable (ErrNoInbox); like every
 	// store it is durable (OWN-PRT-3).
 	Inbox inbox.Store
+	// Workspaces enables the workspace layer (APP-WSP): the Session binding
+	// module, its target resolver, the workspace backend of the composed
+	// Worker and the prompt's workspace preface. Nil leaves every
+	// workspace-placed tool call without a target.
+	Workspaces *WorkspaceConfig
+}
+
+// WorkspaceConfig composes the workspace layer (APP-WSP-3).
+type WorkspaceConfig struct {
+	// Store holds the Workspace records and RuntimeBindings (required).
+	Store workspace.Store
+	// Provider materializes and attaches environments; required whenever
+	// Build composes a Worker (the workspace backend runs beside it).
+	Provider environment.Provider
+	// Backend is the Provider's identity in RuntimeBindings (required with
+	// Provider).
+	Backend environment.Backend
+	// Tools are the workspace-placed tools the backend serves; nil selects
+	// tools.Default().
+	Tools []tools.Tool
+}
+
+func (c *WorkspaceConfig) tools() []tools.Tool {
+	if c.Tools == nil {
+		return tools.Default()
+	}
+	return c.Tools
 }
 
 // CompactorSystemPrompt is kept here for deterministic model test doubles and
@@ -153,6 +184,11 @@ type Application struct {
 	worker *executor.Worker
 	warn   func(error)
 	inbox  inbox.Store
+	// workspaces is the workspace layer's configuration, nil when absent.
+	workspaces *WorkspaceConfig
+	sandbox    *sandbox.Backend
+	// bindings writes the Session's workspace binding facts.
+	bindings workspace.Commands
 
 	mu   sync.RWMutex
 	refs map[turn.PresetID]turn.PresetRef
@@ -205,7 +241,8 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	if warn == nil {
 		warn = func(error) {}
 	}
-	app := &Application{warn: warn, inbox: c.Inbox, refs: make(map[turn.PresetID]turn.PresetRef, len(c.Presets)), sessions: make(map[session.SessionID]*Session)}
+	app := &Application{warn: warn, inbox: c.Inbox, workspaces: c.Workspaces, bindings: workspace.Commands{Now: c.Clock},
+		refs: make(map[turn.PresetID]turn.PresetRef, len(c.Presets)), sessions: make(map[session.SessionID]*Session)}
 	// The subagent tool is answered by a Responder on the Driver (SPN-1,
 	// DRV-4), not executed: it drives children through the Authority, so it
 	// is bound after New. No Worker route is involved.
@@ -217,6 +254,34 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	// to (RUN-EXE-12); the driver's sink relays its frames onto the Bus.
 	if c.Worker.Progress == nil {
 		c.Worker.Progress = executor.NewProgressHub(0)
+	}
+	// The workspace layer (APP-WSP-3): the binding module joins the
+	// registry, the resolver answers RUN-LOP-9 from the binding projection
+	// once the Authority exists, the prompt gets its workspace preface, and
+	// the workspace backend takes the workspace-placed tool calls of the
+	// Worker Build composes.
+	var resolver *workspace.Resolver
+	if c.Workspaces != nil {
+		if c.Workspaces.Store == nil {
+			return nil, errors.New("app: Workspaces requires a workspace Store")
+		}
+		c.Modules = append([]extension.ModuleDescriptor{workspace.Module}, c.Modules...)
+		if c.TargetResolver == nil {
+			resolver = &workspace.Resolver{}
+			c.TargetResolver = resolver
+		}
+		if c.Decisions == nil {
+			c.Decisions = prompt.PromptBuildersWith(prompt.WorkspacePreface)
+		}
+		if c.Workspaces.Provider != nil {
+			backend, err := sandbox.New(sandbox.Options{Workspaces: c.Workspaces.Store, Provider: c.Workspaces.Provider,
+				Backend: c.Workspaces.Backend, Tools: c.Workspaces.tools(), Progress: c.Worker.Progress})
+			if err != nil {
+				return nil, err
+			}
+			app.sandbox = backend
+			routes = append(routes, sandbox.Route(backend))
+		}
 	}
 	port, worker, err := buildExecutor(&c, routes)
 	if err != nil {
@@ -243,6 +308,9 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	}
 	bus = observe.NewBus(a.Registry, c.Store)
 	app.Owner, app.bus = a, bus
+	if resolver != nil {
+		resolver.Projections = a.Projections
+	}
 	// The Sessions' compaction policy runs between the steps of a Turn
 	// through the driver's planner seam (APP-CKP-1, RUN-LOP-10).
 	a.Driver.Planner = app
@@ -348,6 +416,11 @@ func (app *Application) Close(ctx context.Context) error {
 	// the next incarnation adopts them (RUN-EXE-8, SPN-4).
 	if app.worker != nil {
 		app.worker.Close()
+	}
+	if app.sandbox != nil {
+		if cerr := app.sandbox.Close(ctx); cerr != nil && err == nil {
+			err = cerr
+		}
 	}
 	return err
 }

@@ -42,7 +42,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 ### 2.3 tool sandbox backend
 
-**CLD-TOL-1** 组件承载 `loop.ToolCatalog` 的实现与工具运行环境的 materialization：在 Assignment 携带的 Target 上 materialize 工具运行环境并执行。逻辑 workspace 与物理 environment 的模型在 `agent/workspace` 与 `agent/environment`（application 的资源层，APP-TGT-1；`agentcore` 不承载资源模型），本组件是它们的实现方。Target 的解析在 owner 侧完成（`loop.TargetResolver`，APP-TGT），backend 只接收已解析的 `run.TargetRef`。
+**CLD-TOL-1** 组件承载 `loop.ToolCatalog` 的实现与工具运行环境的 materialization：在 Assignment 携带的 Target 上 materialize 工具运行环境并执行。逻辑 workspace 与物理 environment 的模型在 `agent/workspace` 与 `agent/environment`（application 的资源层，APP-WSP，agent-workspace.md）；本组件即 `agent/executor/sandbox.Backend` 经 CLD-WIR-1 的 Backend 协议暴露，配一个任一副本都能 Attach 的 `environment.Provider`（`agent/environment/local` 只服务单进程）。Target 的解析在 owner 侧完成（`loop.TargetResolver`，APP-TGT），backend 只接收已解析的 `run.TargetRef`。
 
 **CLD-TOL-2** Ref 是 sandbox 内一次执行的标识；`Attach` 按 sandbox 状态回答，sandbox 仍在但执行记录不在为 missing，sandbox 本身不可达为 orphaned（不得回答 missing，RUN-EXE-3）。工具是否可重派由 Assignment 的 Replay 声明决定，Worker 在调用 `Restart` 前判定（RUN-EXE-9、TRN-DUR-4）；backend 不做这个判断。
 
