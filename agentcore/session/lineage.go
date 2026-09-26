@@ -144,6 +144,12 @@ type SessionStore interface {
 	// ListLeases returns the Lease of every root that has a holder
 	// (SES-OWN-5), expired ones included.
 	ListLeases(context.Context) ([]Lease, error)
+	// ExpiredLeases returns held Leases whose expiry is at or before
+	// beforeUnixMilli, soonest expired first, at most limit of them (0 for
+	// all); never-expiring Leases are never returned (SES-OWN-5). It is the
+	// read a replica pool recovers dead owners' Sessions by (APP-ACT-3),
+	// and an adapter indexes it.
+	ExpiredLeases(ctx context.Context, beforeUnixMilli int64, limit int) ([]Lease, error)
 	// DeleteRecord drops a root (SES-GC-1); ErrOwned while a Lease is live.
 	DeleteRecord(context.Context, SessionID) error
 }

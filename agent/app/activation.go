@@ -33,7 +33,15 @@ type Activation struct {
 	// need an owner (APP-ACT-3): pending inboxes and expired leases. Zero
 	// disables the scan; activation then happens only through Enqueue.
 	Scan time.Duration
+	// ScanLimit bounds each scan's candidates from each source; zero
+	// selects DefaultScanLimit. A bounded page keeps the scan's cost
+	// independent of the number of Sessions; what it leaves out is read
+	// on a later scan or by another replica.
+	ScanLimit int
 }
+
+// DefaultScanLimit is the page each scan reads when ScanLimit is zero.
+const DefaultScanLimit = 64
 
 // ErrNoActivation reports an Activate without Config.Activation.
 var ErrNoActivation = errors.New("app: no activation is configured")
@@ -140,23 +148,24 @@ func (app *Application) scanLoop() {
 // lease has expired, which a dead owner left. Open arbitrates between
 // replicas: a live foreign lease is ErrOwned and skipped.
 func (app *Application) scan(ctx context.Context) {
+	limit := app.activation.ScanLimit
+	if limit <= 0 {
+		limit = DefaultScanLimit
+	}
 	candidates := map[session.SessionID]struct{}{}
-	pending, err := app.inbox.Sessions(ctx)
+	pending, err := app.inbox.Sessions(ctx, limit)
 	if err != nil {
 		app.warn(fmt.Errorf("app: scanning pending inboxes: %w", err))
 	}
 	for _, sid := range pending {
 		candidates[sid] = struct{}{}
 	}
-	leases, err := app.Owner.Store.ListLeases(ctx)
+	expired, err := app.Owner.Store.ExpiredLeases(ctx, app.ownership.Now().UnixMilli(), limit)
 	if err != nil {
-		app.warn(fmt.Errorf("app: scanning leases: %w", err))
+		app.warn(fmt.Errorf("app: scanning expired leases: %w", err))
 	}
-	now := app.ownership.Now().UnixMilli()
-	for _, l := range leases {
-		if l.UntilUnixMilli != 0 && l.UntilUnixMilli <= now {
-			candidates[l.Session] = struct{}{}
-		}
+	for _, l := range expired {
+		candidates[l.Session] = struct{}{}
 	}
 	for sid := range candidates {
 		if _, ok := app.Opened(sid); ok {

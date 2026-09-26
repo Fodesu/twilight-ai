@@ -86,7 +86,7 @@ func (m *Map) Resolve(_ context.Context, sid session.SessionID, seq uint64, r in
 	return nil
 }
 
-func (m *Map) Sessions(context.Context) ([]session.SessionID, error) {
+func (m *Map) Sessions(_ context.Context, limit int) ([]session.SessionID, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	var out []session.SessionID
@@ -99,6 +99,9 @@ func (m *Map) Sessions(context.Context) ([]session.SessionID, error) {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
 	return out, nil
 }
 

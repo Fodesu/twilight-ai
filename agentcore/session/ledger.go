@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 )
 
@@ -176,6 +177,35 @@ func (l *Ledger) ListLeases(ctx context.Context) ([]Lease, error) {
 		return nil, err
 	}
 	return l.be.ListLeases(ctx)
+}
+
+// ExpiredLeases is Store.ExpiredLeases (SES-OWN-5).
+func (l *Ledger) ExpiredLeases(ctx context.Context, beforeUnixMilli int64, limit int) ([]Lease, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return l.be.ExpiredLeases(ctx, beforeUnixMilli, limit)
+}
+
+// ExpiredLeasesOf selects from leases what ExpiredLeases returns: the
+// shared filter of adapters without an expiry index.
+func ExpiredLeasesOf(leases []Lease, beforeUnixMilli int64, limit int) []Lease {
+	var out []Lease
+	for _, l := range leases {
+		if l.UntilUnixMilli != 0 && l.UntilUnixMilli <= beforeUnixMilli {
+			out = append(out, l)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UntilUnixMilli != out[j].UntilUnixMilli {
+			return out[i].UntilUnixMilli < out[j].UntilUnixMilli
+		}
+		return out[i].Session < out[j].Session
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
 }
 
 // --- open -------------------------------------------------------------------------

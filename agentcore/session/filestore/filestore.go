@@ -535,6 +535,14 @@ func (s *Store) ListLeases(ctx context.Context) ([]session.Lease, error) {
 }
 
 // lease is the Lease an owned root records.
+func (s *Store) ExpiredLeases(ctx context.Context, beforeUnixMilli int64, limit int) ([]session.Lease, error) {
+	held, err := s.ListLeases(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return session.ExpiredLeasesOf(held, beforeUnixMilli, limit), nil
+}
+
 func (r ownerRecord) lease() session.Lease {
 	return session.Lease{Session: r.ID, Epoch: r.Epoch, Owner: r.Owner, UntilUnixMilli: r.LeaseUntilUnixMilli}
 }

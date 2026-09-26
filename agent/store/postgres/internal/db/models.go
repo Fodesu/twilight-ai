@@ -77,11 +77,20 @@ type ProcessCommit struct {
 	Body     string
 }
 
+type ProjectionCache struct {
+	Session    string
+	Projection string
+	Version    int64
+	State      string
+	Through    int64
+}
+
 type SessionCommit struct {
 	Segment  string
 	Seq      int64
 	CommitID string
 	Body     string
+	Streams  string
 }
 
 type SessionRoot struct {

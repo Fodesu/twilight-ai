@@ -135,8 +135,11 @@ func (s *InboxStore) Resolve(ctx context.Context, sid session.SessionID, seq uin
 	return nil
 }
 
-func (s *InboxStore) Sessions(ctx context.Context) ([]session.SessionID, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT session FROM inbox WHERE status = '' ORDER BY session`)
+func (s *InboxStore) Sessions(ctx context.Context, limit int) ([]session.SessionID, error) {
+	if limit <= 0 {
+		limit = -1 // SQLite: no limit
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT session FROM inbox WHERE status = '' ORDER BY session LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}

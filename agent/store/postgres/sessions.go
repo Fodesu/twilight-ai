@@ -7,7 +7,9 @@ import (
 	"math"
 
 	"github.com/felinics/twilight/agent/store/postgres/internal/db"
+	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/extension"
 )
 
 // SessionStore is the session.Store over this database: the kernel Ledger
@@ -15,9 +17,46 @@ import (
 // session.Backend that keeps segments, commits and roots in tables. Two
 // SessionStores over one database are two processes over one ledger, which
 // is what lets a Session's Turns run on different machines.
+//
+// It is also an extension.ProjectionCacheProvider: folded projection
+// states live in the database, so a Session reopened on another replica
+// starts from the last saved state and folds only the tail (EXT-PRJ-3),
+// instead of the whole history on every activation.
 type SessionStore struct {
 	*session.Ledger
 	backend *sessionBackend
+}
+
+var _ extension.ProjectionCacheProvider = (*SessionStore)(nil)
+
+// ProjectionCache is the durable projection cache over the projection_cache
+// table.
+func (s *SessionStore) ProjectionCache() extension.ProjectionCache {
+	return projectionCache{d: s.backend.d}
+}
+
+type projectionCache struct{ d *DB }
+
+// Load returns the saved state; a missing or undecodable entry is a miss,
+// never an error, since the cache is derived data the log rebuilds.
+func (c projectionCache) Load(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (jsonstable.Value, session.Head, bool, error) {
+	row, err := c.d.q.ProjectionEntry(ctx, db.ProjectionEntryParams{Session: string(sid), Projection: string(id), Version: int64(v)})
+	if noRows(err) {
+		return jsonstable.Value{}, session.Head{}, false, nil
+	}
+	if err != nil {
+		return jsonstable.Value{}, session.Head{}, false, err
+	}
+	state, err := jsonstable.Parse([]byte(row.State))
+	if err != nil || row.Through < 0 {
+		return jsonstable.Value{}, session.Head{}, false, nil
+	}
+	return state, session.Head{Next: session.CommitSeq(row.Through)}, true, nil //nolint:gosec // G115: checked non-negative
+}
+
+func (c projectionCache) Save(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion, state jsonstable.Value, through session.Head) error {
+	return c.d.q.UpsertProjectionEntry(ctx, db.UpsertProjectionEntryParams{Session: string(sid), Projection: string(id), Version: int64(v),
+		State: string(state.Bytes()), Through: int64(through.Next)}) //nolint:gosec // G115: seq values fit int64
 }
 
 // Sessions is the session.Store over this database; opts configure the
@@ -185,24 +224,22 @@ func (b *sessionBackend) Index(ctx context.Context, id session.SegmentID) (sessi
 	if err != nil {
 		return session.CommitIndex{}, session.Head{}, err
 	}
-	rows, err := q.SegmentCommits(ctx, string(id))
-	if err != nil {
-		return session.CommitIndex{}, session.Head{}, err
-	}
-	seqs := make([]int64, len(rows))
-	bodies := make([]string, len(rows))
-	for i, r := range rows {
-		seqs[i], bodies[i] = r.Seq, r.Body
-	}
-	commits, err := decodeCommits("index", id, seqs, bodies)
+	rows, err := q.SegmentIndex(ctx, string(id))
 	if err != nil {
 		return session.CommitIndex{}, session.Head{}, err
 	}
 	head := session.LedgerSeed(header)
-	idx := session.CommitIndex{Through: head, Entries: make([]session.IndexEntry, 0, len(commits))}
-	for i := range commits {
-		idx.Entries = append(idx.Entries, session.IndexEntryOf(&commits[i]))
-		head = session.Head{Next: commits[i].Seq + 1}
+	idx := session.CommitIndex{Through: head, Entries: make([]session.IndexEntry, 0, len(rows))}
+	for i := range rows {
+		r := &rows[i]
+		e := session.IndexEntry{CommitID: session.CommitID(r.CommitID), Seq: session.CommitSeq(r.Seq)} //nolint:gosec // G115: seq stored from a uint64
+		if r.Streams != "" {
+			if err := json.Unmarshal([]byte(r.Streams), &e.Streams); err != nil {
+				return session.CommitIndex{}, session.Head{}, &session.Error{Code: session.ErrCorrupt, Operation: "index", Detail: fmt.Sprintf("segment %s commit %d streams: %v", id, r.Seq, err)}
+			}
+		}
+		idx.Entries = append(idx.Entries, e)
+		head = session.Head{Next: e.Seq + 1}
 	}
 	idx.Through = head
 	return idx, head, nil
@@ -243,7 +280,13 @@ func (b *sessionBackend) Append(ctx context.Context, lease session.Lease, id ses
 		if err != nil {
 			return err
 		}
-		err = q.InsertSegmentCommit(ctx, db.InsertSegmentCommitParams{Segment: string(id), Seq: int64(c.Seq), CommitID: string(c.CommitID), Body: string(body)}) //nolint:gosec // G115: seq values fit int64
+		// The index columns are written beside the body (SES-REP-5), so Index
+		// never decodes a commit.
+		streams, err := json.Marshal(session.IndexEntryOf(&c).Streams)
+		if err != nil {
+			return err
+		}
+		err = q.InsertSegmentCommit(ctx, db.InsertSegmentCommitParams{Segment: string(id), Seq: int64(c.Seq), CommitID: string(c.CommitID), Body: string(body), Streams: string(streams)}) //nolint:gosec // G115: seq values fit int64
 		if isUniqueViolation(err) {
 			return kerr(session.ErrConflict, "append", lease.Session, "commit seq or id already in the segment")
 		}
@@ -359,15 +402,27 @@ func (b *sessionBackend) LeaseOf(ctx context.Context, sid session.SessionID) (se
 }
 
 func (b *sessionBackend) ListLeases(ctx context.Context) ([]session.Lease, error) {
-	rows, err := b.d.q.SessionRoots(ctx)
+	rows, err := b.d.q.HeldSessionRoots(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var out []session.Lease
+	out := make([]session.Lease, 0, len(rows))
 	for i := range rows {
-		if rows[i].Owned {
-			out = append(out, leaseOf(&rows[i]))
-		}
+		out = append(out, leaseOf(&rows[i]))
+	}
+	return out, nil
+}
+
+// ExpiredLeases reads the (owned, lease_until) index: the scan of a
+// replica pool costs the page it asks for, not the number of Sessions.
+func (b *sessionBackend) ExpiredLeases(ctx context.Context, beforeUnixMilli int64, limit int) ([]session.Lease, error) {
+	rows, err := b.d.q.ExpiredSessionRoots(ctx, db.ExpiredSessionRootsParams{LeaseUntil: beforeUnixMilli, Limit: pageLimit(limit)})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]session.Lease, 0, len(rows))
+	for i := range rows {
+		out = append(out, leaseOf(&rows[i]))
 	}
 	return out, nil
 }
@@ -437,6 +492,9 @@ func (b *sessionBackend) DeleteRecord(ctx context.Context, sid session.SessionID
 		}
 		if r.Owned {
 			return kerr(session.ErrOwned, "delete", sid, fmt.Sprintf("owned by epoch %d", r.Epoch))
+		}
+		if err := q.DeleteProjectionEntries(ctx, string(sid)); err != nil {
+			return err
 		}
 		return q.DeleteSessionRoot(ctx, string(sid))
 	})

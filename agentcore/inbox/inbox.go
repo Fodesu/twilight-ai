@@ -89,7 +89,10 @@ type Store interface {
 	// Resolve records r on the pending entry (sid, seq); an entry that is
 	// missing or already resolved is ErrNotPending and nothing is written.
 	Resolve(ctx context.Context, sid session.SessionID, seq uint64, r Result) error
-	// Sessions returns every Session with at least one pending entry, in
-	// SessionID order: the activation index of an owner pool (CLD-CMD-4).
-	Sessions(ctx context.Context) ([]session.SessionID, error)
+	// Sessions returns Sessions with at least one pending entry, in
+	// SessionID order, at most limit of them (0 means every one): the
+	// activation index of an owner pool (CLD-CMD-4). A page is a sample of
+	// what needs an owner, not a cursor over all of it: a Session left out
+	// appears once earlier ones are drained.
+	Sessions(ctx context.Context, limit int) ([]session.SessionID, error)
 }

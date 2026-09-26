@@ -13,8 +13,8 @@ DELETE FROM session_segments WHERE id = $1;
 -- name: SegmentCommitsFrom :many
 SELECT seq, body FROM session_commits WHERE segment = $1 AND seq >= $2 ORDER BY seq LIMIT $3;
 
--- name: SegmentCommits :many
-SELECT seq, body FROM session_commits WHERE segment = $1 ORDER BY seq;
+-- name: SegmentIndex :many
+SELECT seq, commit_id, streams FROM session_commits WHERE segment = $1 ORDER BY seq;
 
 -- name: SegmentHead :one
 SELECT COALESCE(MAX(seq), -1)::bigint AS last_seq FROM session_commits WHERE segment = $1;
@@ -26,7 +26,7 @@ SELECT seq FROM session_commits WHERE segment = $1 AND commit_id = $2;
 SELECT body FROM session_commits WHERE segment = $1 AND commit_id = $2;
 
 -- name: InsertSegmentCommit :exec
-INSERT INTO session_commits (segment, seq, commit_id, body) VALUES ($1, $2, $3, $4);
+INSERT INTO session_commits (segment, seq, commit_id, body, streams) VALUES ($1, $2, $3, $4, $5);
 
 -- name: DeleteSegmentCommitsAbove :exec
 DELETE FROM session_commits WHERE segment = $1 AND seq > $2;
@@ -39,6 +39,13 @@ SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed FROM sessio
 
 -- name: SessionRoots :many
 SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed FROM session_roots ORDER BY id;
+
+-- name: HeldSessionRoots :many
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed FROM session_roots WHERE owned ORDER BY id;
+
+-- name: ExpiredSessionRoots :many
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed FROM session_roots
+WHERE owned AND lease_until > 0 AND lease_until <= $1 ORDER BY lease_until, id LIMIT $2;
 
 -- name: InsertSessionRoot :exec
 INSERT INTO session_roots (id, tip, created_at) VALUES ($1, $2, $3);

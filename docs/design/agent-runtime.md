@@ -172,7 +172,7 @@ func (s *Session) Close(ctx) error
 
 ### 7.0 命令 inbox
 
-**APP-INB-1（命令先落盘）** `agentcore/inbox.Store` 是 Session 的 durable 命令 inbox：`Enqueue(sid, Command{ID, Kind, Payload})` 返回即成为事实，按 Session 分配递增 Seq；同一 CommandID 重复 Enqueue 返回已存条目，不写入；同 ID 不同 Kind 或 Payload 为 `ErrCommandConflict`。`Pending(sid)` 按 Seq 返回未处理条目，`Resolve(sid, seq, Result)` 只对 pending 条目生效一次（否则 `ErrNotPending`），`Sessions()` 返回有 pending 条目的 Session（CLD-CMD-4）。不持有 Session 的调用方（gateway、其他进程、尚未 Open 的本进程）经 `app.Application.Enqueue` 写入，`AwaitCommand` 等待 Result。没有配置 `Config.Inbox` 时这些入口返回 `ErrNoInbox`，不退化为无操作。CommandID 由调用方给出，app 不代生成。
+**APP-INB-1（命令先落盘）** `agentcore/inbox.Store` 是 Session 的 durable 命令 inbox：`Enqueue(sid, Command{ID, Kind, Payload})` 返回即成为事实，按 Session 分配递增 Seq；同一 CommandID 重复 Enqueue 返回已存条目，不写入；同 ID 不同 Kind 或 Payload 为 `ErrCommandConflict`。`Pending(sid)` 按 Seq 返回未处理条目，`Resolve(sid, seq, Result)` 只对 pending 条目生效一次（否则 `ErrNotPending`），`Sessions(limit)` 按 SessionID 顺序返回有 pending 条目的 Session，最多 limit 个（0 为全部，CLD-CMD-4）；一页是"需要 owner 的 Session"的样本而非游标，未返回的在前面的被排空后出现。不持有 Session 的调用方（gateway、其他进程、尚未 Open 的本进程）经 `app.Application.Enqueue` 写入，`AwaitCommand` 等待 Result。没有配置 `Config.Inbox` 时这些入口返回 `ErrNoInbox`，不退化为无操作。CommandID 由调用方给出，app 不代生成。
 
 **APP-INB-2（owner 应用与幂等）** 只有持有 Handle 的进程应用命令：`app.Session.ApplyPending` 按 Seq 顺序经该 Session 的 Writer 提交，提交成功后才 `Resolve`。命令集合与 payload 由 app 定义：`submit`（`SubmitCommand{InputID, Text}`，经 `SubmitInput` 提交并路由，后台驱动）、`stop`（`StopCommand{TurnID?, Reason}`，无 active Turn 或 TurnID 与 active Turn 不一致时 rejected）、`withdraw`（`WithdrawCommand{InputID, Reason}`）、`retry`（`RetryCommand{Reason}`，提交 Retry 后后台驱动）、`bind_workspace`（`BindWorkspaceCommand{WorkspaceID}`，APP-WSP-2）、`unbind_workspace`（`UnbindWorkspaceCommand{Reason}`）。应用结果两类：ledger 提交成功或已提交（`CommitAlreadyApplied`）为 applied；已提交状态不容许的命令（`turn.ErrConflict`、`chatlog.ErrNotSubmitted`、payload 不合法、未知 Kind）为 rejected，写入 Reason 后关闭。存储或 Writer 的瞬时失败、路由争用（`app.ErrRouteContended`，APP-SES-3）使命令保持 pending 并终止本轮，以保持顺序，下一轮重试。`stop` 建议携带 `TurnID`：不带时停止应用时刻的 active Turn。应用幂等：owner 在提交后、Resolve 前崩溃时，下一个 owner 重放命令，ledger 以 CommitID 判定已应用，再 Resolve。
 
@@ -182,9 +182,11 @@ func (s *Session) Close(ctx) error
 
 **APP-ACT-2（静止判定与释放）** `Activation.IdleRelease` 大于零时，每个已打开的 Session 有一个静止检查循环（周期为 IdleRelease/4，下限 10ms）。静止条件：无后台驱动与快照、自最近活动起已过 IdleRelease、turn 投影无 active Turn、inbox 无 pending 条目。活动时刻在 Open、后台驱动开始与结束、应用 pending 命令时更新。条件满足时调用 `Session.Close` 释放所有权（Release，不等待租约过期），随后重读 inbox：若期间有命令落入（其唤醒可能发给了已停止的 applier），立即重新激活。等待工具响应而无后台驱动的 Turn 是 active Turn，不释放。IdleRelease 为零时激活的 Session 保持打开直到 Close。
 
-**APP-ACT-3（激活来源）** 三个来源：(1) `Enqueue` 写入 pending 条目且本进程未持有该 Session；(2) `Activation.Scan` 大于零时的周期扫描，候选为 `inbox.Sessions()`（CLD-CMD-4）与 `ListLeases()` 中已过期的租约（死亡 owner 遗留的 Session；接管后若无活动工作即由 APP-ACT-2 释放）；(3) owner 命令面的 `open` 不带 preset 时。扫描与后台激活对 `ErrOwned`、`ErrSessionOpen` 与取消不告警。多副本部署要求 `Ownership.LeaseDuration` 大于零，否则崩溃的 owner 持有的租约不过期（`ownerservice` 在配置层检查）。
+**APP-ACT-3（激活来源）** 三个来源：(1) `Enqueue` 写入 pending 条目且本进程未持有该 Session；(2) `Activation.Scan` 大于零时的周期扫描，候选为 `inbox.Sessions(limit)`（CLD-CMD-4）与 `ExpiredLeases(now, limit)`（SES-OWN-5；死亡 owner 遗留的 Session，接管后若无活动工作即由 APP-ACT-2 释放），limit 为 `Activation.ScanLimit`（零值为 `DefaultScanLimit`），每次扫描的读取成本与 Session 总数无关，未读到的候选留给下一次扫描或其他副本；(3) owner 命令面的 `open` 不带 preset 时。扫描与后台激活对 `ErrOwned`、`ErrSessionOpen` 与取消不告警。多副本部署要求 `Ownership.LeaseDuration` 大于零，否则崩溃的 owner 持有的租约不过期（`ownerservice` 在配置层检查）。
 
 **APP-ACT-4（与现有接口的关系）** `OpenSession` 与 `Session.Close` 的语义不变；HTTP `open` 显式指定 preset 时仍走原路径，这样打开的 Session 同样受 APP-ACT-2 释放。`Takeover` 仍是唯一的强制接管开关，激活不使用它。`Application.Close` 先停止扫描，再关闭持有的 Session，再等待进行中的释放与后台激活。
+
+**APP-ACT-5（重开成本）** 激活模型使"释放 → 另一副本重开"成为正常的 Turn 路径，重开成本因此是每 Turn 成本。Open 的读取由两部分构成：段的 `CommitIndex`（SES-REP-5）与各投影的起点。前者 adapter 应以索引列回答而不解码 commit 正文（Postgres 的 `session_commits.commit_id/streams`）；后者经 durable 的 `extension.ProjectionCache`（EXT-PRJ-3）从保存状态起折叠，落后上限为 `CacheEvery`，因此 Open 的折叠量与历史长度无关。共享存储实现须提供 `ProjectionCacheProvider`（filestore、Postgres 均已提供）；`ledgerHandle` 在 Open 时装载整段 CommitID 用于重放判定，这部分仍与段长度成正比，改为按需查询是后续项。
 
 ### 7.1 compaction
 

@@ -16,4 +16,4 @@ INSERT INTO inbox (session, seq, command_id, kind, payload, enqueued_at) VALUES 
 UPDATE inbox SET status = $1, reason = $2, resolved_at = $3 WHERE session = $4 AND seq = $5 AND status = '';
 
 -- name: InboxSessions :many
-SELECT DISTINCT session FROM inbox WHERE status = '' ORDER BY session;
+SELECT DISTINCT session FROM inbox WHERE status = '' ORDER BY session LIMIT $1;

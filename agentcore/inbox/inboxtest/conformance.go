@@ -32,7 +32,7 @@ func testCommands(t *testing.T, s inbox.Store) { //nolint:gocyclo // one scenari
 	if pending, err := s.Pending(ctx, a); err != nil || len(pending) != 0 {
 		t.Fatalf("pending of an empty inbox = %v %v", pending, err)
 	}
-	if sids, err := s.Sessions(ctx); err != nil || len(sids) != 0 {
+	if sids, err := s.Sessions(ctx, 0); err != nil || len(sids) != 0 {
 		t.Fatalf("sessions of an empty store = %v %v", sids, err)
 	}
 	if _, ok, err := s.Lookup(ctx, a, "c1"); err != nil || ok {
@@ -65,8 +65,11 @@ func testCommands(t *testing.T, s inbox.Store) { //nolint:gocyclo // one scenari
 	if pending, err := s.Pending(ctx, a); err != nil || len(pending) != 2 || pending[0].Seq != 0 || pending[1].Seq != 1 {
 		t.Fatalf("pending = %+v %v", pending, err)
 	}
-	if sids, err := s.Sessions(ctx); err != nil || len(sids) != 2 || sids[0] != a || sids[1] != b {
+	if sids, err := s.Sessions(ctx, 0); err != nil || len(sids) != 2 || sids[0] != a || sids[1] != b {
 		t.Fatalf("sessions = %v %v", sids, err)
+	}
+	if sids, err := s.Sessions(ctx, 1); err != nil || len(sids) != 1 || sids[0] != a {
+		t.Fatalf("sessions limited to one = %v %v", sids, err)
 	}
 	if err := s.Resolve(ctx, a, 0, inbox.Result{Status: inbox.StatusRejected, Reason: "no active turn"}); err != nil {
 		t.Fatal(err)
@@ -91,7 +94,7 @@ func testCommands(t *testing.T, s inbox.Store) { //nolint:gocyclo // one scenari
 	if err := s.Resolve(ctx, a, 1, inbox.Result{Status: inbox.StatusApplied}); err != nil {
 		t.Fatal(err)
 	}
-	if sids, err := s.Sessions(ctx); err != nil || len(sids) != 1 || sids[0] != b {
+	if sids, err := s.Sessions(ctx, 0); err != nil || len(sids) != 1 || sids[0] != b {
 		t.Fatalf("sessions after draining a = %v %v", sids, err)
 	}
 	// Seq keeps counting after resolutions.

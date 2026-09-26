@@ -111,8 +111,8 @@ func (s *InboxStore) Resolve(ctx context.Context, sid session.SessionID, seq uin
 	return nil
 }
 
-func (s *InboxStore) Sessions(ctx context.Context) ([]session.SessionID, error) {
-	ids, err := s.d.q.InboxSessions(ctx)
+func (s *InboxStore) Sessions(ctx context.Context, limit int) ([]session.SessionID, error) {
+	ids, err := s.d.q.InboxSessions(ctx, pageLimit(limit))
 	if err != nil {
 		return nil, err
 	}

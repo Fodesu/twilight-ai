@@ -16,7 +16,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 | model backend | provider 凭证、base URL、限流配额；in-flight 表 | CLD-WIR 的 Backend 协议 | `sdk`、`provider/*`、`loop.ModelCatalog` | provider 并发 |
 | tool sandbox backend | sandbox 生命周期、workspace materialization；in-flight 表 | CLD-WIR 的 Backend 协议 | `loop.ToolCatalog`、`agent/environment`、`agent/workspace` | sandbox 资源，按 session 或 tenant 隔离 |
 | owner service | Session 租约（`session.OpenOptions`）；Writer 内存投影 | 命令面（Send、Turn 状态、Fork 等 `app.Application` 的方法）；观察流（`observe.Bus`） | `session.Backend`、`artifact.ContentStore`、`owner.Artifacts`、`process.Store`、`effect.ExecutionPort`（`executor/http.Client`）、`effect.SettlementPort` | Session 数 |
-| controller | 无持久状态；策略参数（放弃时限、扫描间隔） | 内部 | `session.Store.ListLeases`（SES-OWN-5）、`effect.ExecutionPort.Attach`、`effect.Recoverer`、Worker 的 `Dispose`、owner 的 Open | 单实例或 leader 选举 |
+| controller | 无持久状态；策略参数（放弃时限、扫描间隔） | 内部 | `session.Store.ListLeases`/`ExpiredLeases`（SES-OWN-5）、`effect.ExecutionPort.Attach`、`effect.Recoverer`、Worker 的 `Dispose`、owner 的 Open | 单实例或 leader 选举 |
 | gateway | 无持久状态；认证会话 | 面向用户的 HTTP/WebSocket | owner 的命令面与观察流 | 连接数 |
 | 共享存储 | 全部 durable 事实：Session ledger 与 lineage、execution ledger 与租约、dispatch ledger、artifact binding 与 claim、CAS 正文 | SQL 与对象存储 | `session.Backend`、`executionstore.Store`、`process.Store`、artifact stores 的实现 | 存储容量 |
 
@@ -64,9 +64,9 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 **CLD-CTL-1** controller 承担 RUN-EXE-6 明确归部署的决定：何时、对哪些、由谁触发恢复与放弃。它没有持久状态，全部依据来自共享存储与端口的读取。
 
-**CLD-CTL-2（Session 接管）** 发现来源是 Session 租约过期：`session.Store.ListLeases` 返回每个有持有者的租约（SES-OWN-5），controller 对照自己的时钟挑出 `UntilUnixMilli` 已过的。对过期租约的 Session，controller 选择一个 owner 副本执行 `Open(sid, Takeover: true)`；Open 内部的 `RecoverInterrupted` 完成该 Session 全部 Run 的效果处置（RUN-CMT-7）。
+**CLD-CTL-2（强制迁移）** 普通的 Session 恢复不经 controller：租约过期后任一 owner 副本的扫描在 Acquire 的裁决下接管（APP-ACT-3），Open 内部的 `RecoverInterrupted` 完成该 Session 全部 Run 的效果处置（RUN-CMT-7）。controller 只负责强制迁移：对一个持有中且租约存活的 Session（副本下线、负载迁移、运维隔离），选择目标 owner 副本执行 `Open(sid, Takeover: true)`，这是 `Takeover` 的唯一使用方；以及集群级策略（副本数、扫描参数、放弃时限）。
 
-**CLD-CTL-3（效果恢复与放弃）** owner 存活时，其 Reconciler 已按 `OrphanProbe` 对自己 Run 的 orphaned 效果调用 `RecoverExecution`。controller 只处理 owner 不存在时的情形（随 CLD-CTL-2 的 Open 一起完成）与放弃：一个效果 orphaned 超过放弃时限后调用 Worker 的 `Dispose`，owner 下一次读到 Unknown 后按 RUN-CMT-7 处置。放弃时限是 controller 的参数，协议层无界。
+**CLD-CTL-3（效果恢复与放弃）** owner 存活时，其 Reconciler 已按 `OrphanProbe` 对自己 Run 的 orphaned 效果调用 `RecoverExecution`；owner 死亡时随 APP-ACT-3 的接管 Open 一起完成。controller 只处理放弃：一个效果 orphaned 超过放弃时限后调用 Worker 的 `Dispose`，owner 下一次读到 Unknown 后按 RUN-CMT-7 处置。放弃时限是 controller 的参数，协议层无界。
 
 **CLD-CTL-4** controller 的所有动作都是幂等的端口调用；两个 controller 实例同时运行只造成重复调用，不造成状态分歧。单实例部署即可，leader 选举为可选。
 
@@ -82,7 +82,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 **CLD-CMD-3（替代方案）** 把命令作为无围栏事件直接追加进 Session ledger（仿 execution store 的 `Fenced(eventType)` 区分）可以省去独立存储，但要修改 SES-OWN-2 的"所有 Append 携带 Epoch"，并引入 gateway 追加与 owner 提交的 Seq 竞争重试。当前选择独立 inbox；两者对 owner 侧应用逻辑的要求相同。
 
-**CLD-CMD-4（激活索引）** `inbox.Store.Sessions()` 返回有 pending 命令的 Session，是无 owner 的 Session 需要被 Open 的依据之一（另一个是有 active Turn 而无存活租约）。`Application` 的扫描（`Activation.Scan`，APP-ACT-3）据此激活 Session；重复 Open 由 `ErrOwned` 与 Epoch 围栏裁决，索引允许最终一致。
+**CLD-CMD-4（激活索引）** `inbox.Store.Sessions(limit)` 返回有 pending 命令的 Session，是无 owner 的 Session 需要被 Open 的依据之一（另一个是 `ExpiredLeases`，SES-OWN-5）。`Application` 的扫描（`Activation.Scan`，APP-ACT-3）据此激活 Session；重复 Open 由 `ErrOwned` 与 Epoch 围栏裁决，索引允许最终一致。
 
 ### 2.7 共享存储
 
@@ -92,18 +92,19 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 | 接口 | 表 | 实现要点 |
 |---|---|---|
-| `session.Backend`（`LedgerStore` + `SessionStore` + `CreateSession`） | `session_segments`、`session_commits`、`session_roots` | `DB.Sessions()` 返回 `session.NewLedger(backend)`，kernel 的 Epoch 围栏、lineage、fork、stream 规则不在 adapter 内复制；`Append` 在 Session 的事务锁内重读 root 行校验 `owned` 与 epoch（SES-OWN-2）；`CommitIndex` 由 commit 行派生，`PutIndex` 无需持久化 |
+| `session.Backend`（`LedgerStore` + `SessionStore` + `CreateSession`） | `session_segments`、`session_commits`、`session_roots` | `DB.Sessions()` 返回 `session.NewLedger(backend)`，kernel 的 Epoch 围栏、lineage、fork、stream 规则不在 adapter 内复制；`Append` 在 Session 的事务锁内重读 root 行校验 `owned` 与 epoch（SES-OWN-2）；`CommitIndex` 由 `session_commits` 的 `commit_id`、`streams` 列派生（Append 时与正文同写），`Index` 不解码正文，`PutIndex` 无需持久化 |
+| `extension.ProjectionCache` | `projection_cache` | `SessionStore` 实现 `ProjectionCacheProvider`，`owner.New` 自动选用：Session 在另一副本重开时从保存的投影状态起折叠，只折叠尾部 commit（EXT-PRJ-3、EXT-PRJ-7 的 `CacheEvery` 定落后上限）；`Delete` 连带删除 |
 | `executionstore.Store` | `executions`、`execution_commits`、`execution_leases` | `Acquire` 一个事务内 fold、读写租约行、追加 claimed；`ListOwned` 走 `execution_leases(owner)` 索引 |
 | `process.Store`、`checkpoint.Store`、`inbox.Store` | `processes`/`process_commits`、`checkpoints`、`inbox` | 与 SQLite 同语义 |
 | `artifact.BindingStore`、`artifact.RetentionLedger` | `bindings`、`claims` | 与 filestore 同语义；`ClaimsByOwner` 按 `claims(owner_kind, owner_authority, id)` 索引分页 |
 | `artifact.ContentStore`（CAS 正文） | `content`（`BYTEA`） | `DB.Content(authority)`；digest 去重、durability 只升不降。正文上限为 `DefaultMaxContentBytes`，对象存储后端留作后续 |
 | `workspace.Store` | `workspaces`、`workspace_snapshots` | `UpdateRuntime` 为 generation CAS，`UpdateSnapshot` 为部分写 |
 
-技术栈为 pgx/v5 + sqlc + 手写 migration：`agent/store/postgres/queries/*.sql` 经 sqlc 生成 `internal/db`（只负责 SQL 到类型化调用与行映射），`agent/store/postgres/*.go` 持有事务边界、围栏、CAS 与幂等；生成代码不作为任何 store 合同暴露。每个写事务以 `pg_advisory_xact_lock(hashtext(key))` 按逻辑键（一个 Session、一个 execution、一个 workspace）串行化，同一键上的副本不会交错；Seq 唯一约束（23505）是第二道防线，映射为各合同的 ErrConflict。migration 内嵌于二进制，`Open` 时按 `twilight_schema` 表补齐。conformance 由 `agent/store/postgres/postgres_test.go` 在 `-postgres.dsn` 指向的数据库上运行全部 suite（含 `sessiontest`、`runtimetest`、`turntest`），每个测试建独立 schema；无 DSN 时跳过。组件经 `config.Store{sqlite | postgres{dsn | dsnFile}}` 选择实现（`agent/component/stores`），owner 配置 `stores.postgres` 时 Session ledger 与 CAS 正文也来自该数据库，`sessions.root`/`content.root` 不再使用；DSN 含凭证，部署以 `dsnFile` 指向挂载的 Secret 文件。
+技术栈为 pgx/v5 + sqlc + 手写 migration：`agent/store/postgres/queries/*.sql` 经 sqlc 生成 `internal/db`（只负责 SQL 到类型化调用与行映射），`agent/store/postgres/*.go` 持有事务边界、围栏、CAS 与幂等；生成代码不作为任何 store 合同暴露。每个写事务以 `pg_advisory_xact_lock(hashtext(key))` 按逻辑键（一个 Session、一个 execution、一个 workspace）串行化，同一键上的副本不会交错；Seq 唯一约束（23505）是第二道防线，映射为各合同的 ErrConflict。migration 内嵌于二进制，版本取自文件名前缀（`NNNN_name.sql`，从 1 连续，重复或跳号在 `Open` 时报错），`Open` 时按 `twilight_schema` 表补齐。conformance 由 `agent/store/postgres/postgres_test.go` 在 `-postgres.dsn` 指向的数据库上运行全部 suite（含 `sessiontest`、`runtimetest`、`turntest`），每个测试建独立 schema；无 DSN 时跳过。组件经 `config.Store{sqlite | postgres{dsn | dsnFile}}` 选择实现（`agent/component/stores`），owner 配置 `stores.postgres` 时 Session ledger 与 CAS 正文也来自该数据库，`sessions.root`/`content.root` 不再使用；DSN 含凭证，部署以 `dsnFile` 指向挂载的 Secret 文件。
 
 **CLD-STO-2（接口审查结果）** 审查项全部在 Postgres 语义下满足：`executionstore.Store.Acquire` 的租约事务在一个 `pgx.BeginFunc` 内完成；Seq 0 的 acceptance 与 abort 竞争由 `execution_commits(key, seq)` 主键与事务锁共同裁决（RUN-EXE-16）；`ListOwned` 走租约行的 owner 索引；Session ledger 的 `Append` 以 `(segment, seq)` 与 `(segment, commit_id)` 两个唯一约束实现 ErrConflict；CAS 以 `(authority, key)` 主键去重。未做的项：内容大对象走对象存储、按 Session 的通知（跨副本的 inbox 唤醒仍靠轮询，APP-INB-3）。
 
-**CLD-STO-3（租约读取）** controller 与 gateway 读取 Session 租约的接口为 `session.Store.LeaseOf` 与 `ListLeases`，定义于 SES-OWN-5（`agent-session.md`），filestore 与 Postgres 均已实现。
+**CLD-STO-3（租约读取）** controller、gateway 与 owner 扫描读取 Session 租约的接口为 `session.Store.LeaseOf`、`ListLeases` 与 `ExpiredLeases`，定义于 SES-OWN-5（`agent-session.md`），filestore 与 Postgres 均已实现；Postgres 的 `ExpiredLeases` 走 `session_roots(lease_until) WHERE owned` 部分索引。
 
 ## 3. Worker 与 Backend 的 wire
 
@@ -130,7 +131,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 | 故障 | 期望路径 |
 |---|---|
 | 删除持有效果租约的 worker Pod | owner 的 Watcher 在 `OrphanProbe` 内观察到 orphaned，`RecoverExecution` 由另一副本接管；backend 侧执行仍在则 Attach 后继续观察，结算经新副本的 `/settlements` 到达 |
-| 删除持有 Session 租约的 owner Pod | 租约过期后 controller 触发另一副本 `Open(Takeover)`，`RecoverInterrupted` 对 Executing 效果 Attach 并 keep/defer/dispose |
+| 删除持有 Session 租约的 owner Pod | 租约过期后另一副本的扫描接管（APP-ACT-3，无 Takeover），`RecoverInterrupted` 对 Executing 效果 Attach 并 keep/defer/dispose |
 | 删除 backend Pod | Worker 的 watch 读到 Attach missing：模型 Assignment 经 `Restart` 重派为新一代；工具 Assignment 按 Replay 声明重派或以 Unknown 结算 |
 
 ## 5. 顺序

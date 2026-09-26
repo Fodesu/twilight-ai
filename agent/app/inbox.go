@@ -178,13 +178,13 @@ func (app *Application) LookupCommand(ctx context.Context, sid session.SessionID
 	return app.inbox.Lookup(ctx, sid, id)
 }
 
-// PendingSessions returns the Sessions with unapplied commands (CLD-CMD-4):
-// what a controller or an idle owner replica opens next.
-func (app *Application) PendingSessions(ctx context.Context) ([]session.SessionID, error) {
+// PendingSessions returns Sessions with unapplied commands (CLD-CMD-4), at
+// most limit of them (0 for all): what the activation scan opens next.
+func (app *Application) PendingSessions(ctx context.Context, limit int) ([]session.SessionID, error) {
 	if app.inbox == nil {
 		return nil, ErrNoInbox
 	}
-	return app.inbox.Sessions(ctx)
+	return app.inbox.Sessions(ctx, limit)
 }
 
 // --- owner side ---------------------------------------------------------------

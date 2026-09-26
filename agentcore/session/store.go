@@ -232,6 +232,10 @@ type Store interface {
 	// ListLeases returns the Lease of every held Session, expired ones
 	// included (SES-OWN-5).
 	ListLeases(context.Context) ([]Lease, error)
+	// ExpiredLeases returns held Leases expired at or before
+	// beforeUnixMilli, soonest first, at most limit (0 for all)
+	// (SES-OWN-5).
+	ExpiredLeases(ctx context.Context, beforeUnixMilli int64, limit int) ([]Lease, error)
 	Open(context.Context, SessionID, OpenOptions) (Handle, error)
 	ReadCommits(context.Context, CommitReadRequest) (CommitPage, error)
 	ReadStream(context.Context, StreamReadRequest) (StreamPage, error)

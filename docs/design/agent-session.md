@@ -206,7 +206,7 @@ type Store interface {
 
 **SES-OWN-4** `ReadCommits` 与 `ReadStream` 不需要所有权，任何进程可以随时读；读到的是完整 Commit 构成的前缀（SES-APP-2）。
 
-**SES-OWN-5（租约读取）** 租约可以被任何进程读取，与所有权无关。`LeaseOf(sid)` 返回该 Session 当前持有的 `Lease`，ok 为 false 表示根存在但没有持有者（从未 Open，或已 Release）；根不存在为 `ErrNotFound`。`ListLeases()` 返回每个有持有者的根的 Lease，不按存活过滤：过期但未被接管的租约照样返回，`UntilUnixMilli` 由调用方对照自己的时钟判定。两者都是读取，不改变 Epoch，不触发接管；调用方据此做的决定（对过期租约的 Session 发起 `Open(Takeover)`、把命令路由到 `Owner` 所在进程）仍经 Open 与 Append 的规则裁决，读到的租约在下一刻可能已被替代。这是 controller 发现过期 Session 与 gateway 路由命令的依据（CLD-CTL-2、CLD-GWY-2）；形状与 Execution Store 的 `LeaseOf` 相同（RUN-EXE-6）。
+**SES-OWN-5（租约读取）** 租约可以被任何进程读取，与所有权无关。`LeaseOf(sid)` 返回该 Session 当前持有的 `Lease`，ok 为 false 表示根存在但没有持有者（从未 Open，或已 Release）；根不存在为 `ErrNotFound`。`ListLeases()` 返回每个有持有者的根的 Lease，不按存活过滤：过期但未被接管的租约照样返回，`UntilUnixMilli` 由调用方对照自己的时钟判定。`ExpiredLeases(before, limit)` 返回 `UntilUnixMilli` 不为零且不晚于 before 的持有中租约，按到期时间升序，最多 limit 条（0 为全部）：这是 owner 副本池恢复死亡 owner 的 Session 所用的读取（APP-ACT-3），adapter 为它建索引，读取成本与页大小成正比而与 Session 总数无关。三者都是读取，不改变 Epoch，不触发接管；调用方据此做的决定（对过期租约的 Session 发起 `Open(Takeover)`、把命令路由到 `Owner` 所在进程）仍经 Open 与 Append 的规则裁决，读到的租约在下一刻可能已被替代。这是 controller 发现过期 Session 与 gateway 路由命令的依据（CLD-CTL-2、CLD-GWY-2）；形状与 Execution Store 的 `LeaseOf` 相同（RUN-EXE-6）。
 
 ## 5. append
 
@@ -266,7 +266,7 @@ conformance 以 `Store` 为参数，每个 adapter 跑同一套，必须验证�
 
 - **SES-WIR-1**：CommitSeq 连续、批次非空、同 Commit 内流唯一且归因合法、CommitID 唯一、payload canonical；
 - **SES-OWN-1/2**：第二个 Open 返回 `ErrOwned`；Close 后可再 Open 且 Epoch 加一；声明 `Takeover` 的 Open 在所有权存续期间接管且 Epoch 加一；旧 Handle 的 Append 返回 `ErrOwnershipLost` 且不写入；带 `LeaseDuration` 的租约在存活期内拒绝无 Takeover 的 Open，Renew 延长存活期，过期后无 Takeover 的 Open 接管且 Epoch 加一，过期持有者的 Renew 与 Append 为 `ErrOwnershipLost`、其 Close 不释放新持有者；`LeaseDuration` 为 0 的租约不过期；
-- **SES-OWN-5**：Open 前 `LeaseOf` 为 ok=false；Open 后返回该 Handle 的 Lease；Renew 后 `UntilUnixMilli` 更新；过期未接管时仍返回旧持有者且出现在 `ListLeases`；接管后返回新持有者；Close 后 ok=false 且不在 `ListLeases` 中；不存在的 Session 为 `ErrNotFound`；
+- **SES-OWN-5**：Open 前 `LeaseOf` 为 ok=false；Open 后返回该 Handle 的 Lease；Renew 后 `UntilUnixMilli` 更新；过期未接管时仍返回旧持有者且出现在 `ListLeases` 与 `ExpiredLeases`；存活期内不在 `ExpiredLeases` 中；`ExpiredLeases` 的 limit 生效；接管后返回新持有者；Close 后 ok=false 且不在 `ListLeases` 中；不存在的 Session 为 `ErrNotFound`；
 - **SES-APP-1/2/3**：整 Commit 可见性；在 Commit 中途注入崩溃后打开，尾 Commit 不出现；拒绝项无写入；注入持久化失败后句柄返回 `ErrHandleFailed`，重开后已落盘的完整 Commit 在索引中、同 CommitID 的 Append 为 `ErrConflict`；
 - **SES-REP-5**：索引与 commit 一致、落后一个、落后全部、缺失四种情形下 Open 成功且 Head、Committed、StreamHead、LookupCommit、重复 CommitID 的拒绝与 ReadCommits 都与从 commit 得到的答案相同；fork 子对继承 CommitID 的 Committed 经父段索引回答；
 - **SES-REP-1/2**：顺序、From、Limit 截断、ReadStream 与折叠一致；`From` 取到 `CommitSeq` 最大值仍为空页；header 归属另一段或所有权记录无法解析时 Open 与 Header 报 `ErrCorrupt`；

@@ -81,11 +81,11 @@ func TestInboxSubmitAppliedOnOpen(t *testing.T) {
 	ctx := context.Background()
 	store := sqlitetest.Open(t).Inbox()
 	h, preset, sid := inboxHost(t, store, &scriptedRequests{})
-	if sids, err := h.PendingSessions(ctx); err != nil || len(sids) != 0 {
+	if sids, err := h.PendingSessions(ctx, 0); err != nil || len(sids) != 0 {
 		t.Fatalf("pending sessions before enqueue = %v %v", sids, err)
 	}
 	enqueue(t, h, sid, "c1", app.CommandSubmit, app.SubmitCommand{InputID: "in-1", Text: "hello"})
-	if sids, err := h.PendingSessions(ctx); err != nil || len(sids) != 1 || sids[0] != sid {
+	if sids, err := h.PendingSessions(ctx, 0); err != nil || len(sids) != 1 || sids[0] != sid {
 		t.Fatalf("pending sessions = %v %v, want the session with the command", sids, err)
 	}
 	s, err := h.OpenSession(ctx, sid, app.SessionOptions{Preset: preset, InboxPoll: time.Hour})
@@ -114,7 +114,7 @@ func TestInboxSubmitAppliedOnOpen(t *testing.T) {
 	if e := enqueue(t, h, sid, "c1", app.CommandSubmit, app.SubmitCommand{InputID: "in-1", Text: "hello"}); e.Pending() || e.Seq != 0 {
 		t.Fatalf("replayed enqueue = %+v, want the resolved entry", e)
 	}
-	if sids, err := h.PendingSessions(ctx); err != nil || len(sids) != 0 {
+	if sids, err := h.PendingSessions(ctx, 0); err != nil || len(sids) != 0 {
 		t.Fatalf("pending sessions after apply = %v %v", sids, err)
 	}
 }

@@ -50,6 +50,78 @@ func (q *Queries) DeleteSessionRoot(ctx context.Context, id string) error {
 	return err
 }
 
+const expiredSessionRoots = `-- name: ExpiredSessionRoots :many
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed FROM session_roots
+WHERE owned AND lease_until > 0 AND lease_until <= $1 ORDER BY lease_until, id LIMIT $2
+`
+
+type ExpiredSessionRootsParams struct {
+	LeaseUntil int64
+	Limit      int32
+}
+
+func (q *Queries) ExpiredSessionRoots(ctx context.Context, arg ExpiredSessionRootsParams) ([]SessionRoot, error) {
+	rows, err := q.db.Query(ctx, expiredSessionRoots, arg.LeaseUntil, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SessionRoot{}
+	for rows.Next() {
+		var i SessionRoot
+		if err := rows.Scan(
+			&i.ID,
+			&i.Tip,
+			&i.CreatedAt,
+			&i.Epoch,
+			&i.Owned,
+			&i.Owner,
+			&i.LeaseUntil,
+			&i.Failed,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const heldSessionRoots = `-- name: HeldSessionRoots :many
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed FROM session_roots WHERE owned ORDER BY id
+`
+
+func (q *Queries) HeldSessionRoots(ctx context.Context) ([]SessionRoot, error) {
+	rows, err := q.db.Query(ctx, heldSessionRoots)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SessionRoot{}
+	for rows.Next() {
+		var i SessionRoot
+		if err := rows.Scan(
+			&i.ID,
+			&i.Tip,
+			&i.CreatedAt,
+			&i.Epoch,
+			&i.Owned,
+			&i.Owner,
+			&i.LeaseUntil,
+			&i.Failed,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const insertSegment = `-- name: InsertSegment :exec
 INSERT INTO session_segments (id, header) VALUES ($1, $2)
 `
@@ -65,7 +137,7 @@ func (q *Queries) InsertSegment(ctx context.Context, arg InsertSegmentParams) er
 }
 
 const insertSegmentCommit = `-- name: InsertSegmentCommit :exec
-INSERT INTO session_commits (segment, seq, commit_id, body) VALUES ($1, $2, $3, $4)
+INSERT INTO session_commits (segment, seq, commit_id, body, streams) VALUES ($1, $2, $3, $4, $5)
 `
 
 type InsertSegmentCommitParams struct {
@@ -73,6 +145,7 @@ type InsertSegmentCommitParams struct {
 	Seq      int64
 	CommitID string
 	Body     string
+	Streams  string
 }
 
 func (q *Queries) InsertSegmentCommit(ctx context.Context, arg InsertSegmentCommitParams) error {
@@ -81,6 +154,7 @@ func (q *Queries) InsertSegmentCommit(ctx context.Context, arg InsertSegmentComm
 		arg.Seq,
 		arg.CommitID,
 		arg.Body,
+		arg.Streams,
 	)
 	return err
 }
@@ -141,35 +215,6 @@ func (q *Queries) SegmentCommitSeq(ctx context.Context, arg SegmentCommitSeqPara
 	var seq int64
 	err := row.Scan(&seq)
 	return seq, err
-}
-
-const segmentCommits = `-- name: SegmentCommits :many
-SELECT seq, body FROM session_commits WHERE segment = $1 ORDER BY seq
-`
-
-type SegmentCommitsRow struct {
-	Seq  int64
-	Body string
-}
-
-func (q *Queries) SegmentCommits(ctx context.Context, segment string) ([]SegmentCommitsRow, error) {
-	rows, err := q.db.Query(ctx, segmentCommits, segment)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []SegmentCommitsRow{}
-	for rows.Next() {
-		var i SegmentCommitsRow
-		if err := rows.Scan(&i.Seq, &i.Body); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const segmentCommitsFrom = `-- name: SegmentCommitsFrom :many
@@ -235,6 +280,36 @@ func (q *Queries) SegmentIDs(ctx context.Context) ([]string, error) {
 			return nil, err
 		}
 		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const segmentIndex = `-- name: SegmentIndex :many
+SELECT seq, commit_id, streams FROM session_commits WHERE segment = $1 ORDER BY seq
+`
+
+type SegmentIndexRow struct {
+	Seq      int64
+	CommitID string
+	Streams  string
+}
+
+func (q *Queries) SegmentIndex(ctx context.Context, segment string) ([]SegmentIndexRow, error) {
+	rows, err := q.db.Query(ctx, segmentIndex, segment)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SegmentIndexRow{}
+	for rows.Next() {
+		var i SegmentIndexRow
+		if err := rows.Scan(&i.Seq, &i.CommitID, &i.Streams); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

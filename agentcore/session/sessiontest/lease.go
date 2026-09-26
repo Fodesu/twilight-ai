@@ -60,11 +60,20 @@ func testLease(t *testing.T, f Fixture) {
 			}
 		}
 		now = now.Add(st.advance)
+		// ExpiredLeases judges against the caller's clock: a's lease is
+		// in it exactly when it has expired, and a never-expiring one never is.
+		expired, err := f.Store.ExpiredLeases(ctx, now.UnixMilli(), 0)
+		if err != nil || (len(expired) == 1) != (st.want == "") || (len(expired) == 1 && expired[0].Owner != "a") {
+			t.Fatalf("%s: ExpiredLeases = %+v %v, want a's lease exactly when expired (%v)", st.name, expired, err, st.want == "")
+		}
 		if st.want == "" {
 			// Expired and not yet superseded: the read still names a, and
 			// the caller judges expiry against its own clock.
 			if l, ok, err := f.Store.LeaseOf(ctx, "s"); err != nil || !ok || l.Owner != "a" || l.UntilUnixMilli > now.UnixMilli() {
 				t.Fatalf("%s: LeaseOf before takeover = %+v ok:%v %v, want a's expired lease", st.name, l, ok, err)
+			}
+			if limited, err := f.Store.ExpiredLeases(ctx, now.UnixMilli(), 1); err != nil || len(limited) != 1 {
+				t.Fatalf("%s: ExpiredLeases limited = %+v %v", st.name, limited, err)
 			}
 		}
 		h, err := f.Store.Open(ctx, "s", opts("b"))

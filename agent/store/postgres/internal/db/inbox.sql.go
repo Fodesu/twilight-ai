@@ -103,11 +103,11 @@ func (q *Queries) InboxPending(ctx context.Context, session string) ([]InboxPend
 }
 
 const inboxSessions = `-- name: InboxSessions :many
-SELECT DISTINCT session FROM inbox WHERE status = '' ORDER BY session
+SELECT DISTINCT session FROM inbox WHERE status = '' ORDER BY session LIMIT $1
 `
 
-func (q *Queries) InboxSessions(ctx context.Context) ([]string, error) {
-	rows, err := q.db.Query(ctx, inboxSessions)
+func (q *Queries) InboxSessions(ctx context.Context, limit int32) ([]string, error) {
+	rows, err := q.db.Query(ctx, inboxSessions, limit)
 	if err != nil {
 		return nil, err
 	}

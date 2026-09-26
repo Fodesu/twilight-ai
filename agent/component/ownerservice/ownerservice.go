@@ -77,6 +77,9 @@ type Activation struct {
 	// Scan is the period of the scan over pending inboxes and expired
 	// leases; zero disables it.
 	Scan config.Duration `json:"scan,omitempty"`
+	// ScanLimit bounds each scan's page from each source; zero selects
+	// app.DefaultScanLimit.
+	ScanLimit int `json:"scanLimit,omitempty"`
 }
 
 // Filestore names a file-backed store root.
@@ -124,7 +127,7 @@ func Compose(ctx context.Context, cfg Config) (*Component, error) { //nolint:goc
 	var activation *app.Activation
 	if cfg.Activation != nil {
 		activation = &app.Activation{Preset: cfg.Activation.Preset, IdleRelease: cfg.Activation.IdleRelease.Std(),
-			Scan: cfg.Activation.Scan.Std(), Options: app.SessionOptions{InboxPoll: cfg.InboxPoll.Std()}}
+			Scan: cfg.Activation.Scan.Std(), ScanLimit: cfg.Activation.ScanLimit, Options: app.SessionOptions{InboxPoll: cfg.InboxPoll.Std()}}
 	}
 	db, err := stores.Open(ctx, cfg.Stores)
 	if err != nil {

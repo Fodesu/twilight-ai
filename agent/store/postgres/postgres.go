@@ -21,14 +21,17 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
+	"path"
 	"sort"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/felinics/twilight/agent/store/postgres/internal/db"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/felinics/twilight/agent/store/postgres/internal/db"
 )
 
 //go:embed migrations/*.sql
@@ -102,11 +105,10 @@ func (d *DB) Migrate(ctx context.Context) error {
 	if _, err := d.pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS twilight_schema (version BIGINT PRIMARY KEY, applied_at BIGINT NOT NULL)`); err != nil {
 		return fmt.Errorf("postgres: schema table: %w", err)
 	}
-	names, err := fs.Glob(migrationFiles, "migrations/*.sql")
+	steps, err := migrationSteps(migrationFiles)
 	if err != nil {
 		return err
 	}
-	sort.Strings(names)
 	return pgx.BeginFunc(ctx, d.pool, func(t pgx.Tx) error {
 		q := d.q.WithTx(t)
 		if err := q.AdvisoryLock(ctx, "twilight_schema"); err != nil {
@@ -116,24 +118,63 @@ func (d *DB) Migrate(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		for i, name := range names {
-			version := int64(i) + 1
-			if version <= current {
+		for _, step := range steps {
+			if step.version <= current {
 				continue
 			}
-			sqlText, err := migrationFiles.ReadFile(name)
+			sqlText, err := migrationFiles.ReadFile(step.name)
 			if err != nil {
 				return err
 			}
 			if _, err := t.Exec(ctx, string(sqlText)); err != nil {
-				return fmt.Errorf("postgres: %s: %w", name, err)
+				return fmt.Errorf("postgres: %s: %w", step.name, err)
 			}
-			if err := q.RecordSchemaVersion(ctx, db.RecordSchemaVersionParams{Version: version, AppliedAt: d.now().UnixMilli()}); err != nil {
+			if err := q.RecordSchemaVersion(ctx, db.RecordSchemaVersionParams{Version: step.version, AppliedAt: d.now().UnixMilli()}); err != nil {
 				return err
 			}
 		}
 		return nil
 	})
+}
+
+type migrationStep struct {
+	version int64
+	name    string
+}
+
+// migrationSteps reads the version of each migration from its file name
+// (NNNN_name.sql), so a file renamed or added out of order cannot shift
+// the versions already applied. Versions are contiguous from 1.
+func migrationSteps(files fs.FS) ([]migrationStep, error) {
+	names, err := fs.Glob(files, "migrations/*.sql")
+	if err != nil {
+		return nil, err
+	}
+	steps := make([]migrationStep, 0, len(names))
+	for _, name := range names {
+		base := path.Base(name)
+		prefix, _, ok := strings.Cut(base, "_")
+		version, perr := strconv.ParseInt(prefix, 10, 64)
+		if !ok || perr != nil || version <= 0 {
+			return nil, fmt.Errorf("postgres: migration %s: name must be <version>_<name>.sql", base)
+		}
+		steps = append(steps, migrationStep{version: version, name: name})
+	}
+	sort.Slice(steps, func(i, j int) bool { return steps[i].version < steps[j].version })
+	for i, step := range steps {
+		if step.version != int64(i)+1 {
+			return nil, fmt.Errorf("postgres: migration %s: version %d out of sequence, want %d", path.Base(step.name), step.version, i+1)
+		}
+	}
+	return steps, nil
+}
+
+// pageLimit is a contract's limit (0 for all) as a query LIMIT.
+func pageLimit(limit int) int32 {
+	if limit <= 0 || limit > math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return int32(limit)
 }
 
 // isUniqueViolation reports a unique or primary key violation.
@@ -144,3 +185,18 @@ func isUniqueViolation(err error) bool {
 
 // noRows reports a :one query that found nothing.
 func noRows(err error) bool { return errors.Is(err, pgx.ErrNoRows) }
+
+// MigrationVersions returns the versions the migration files under files
+// declare, in order; it is the check Migrate applies to the embedded set,
+// exposed for tests.
+func MigrationVersions(files fs.FS) ([]int64, error) {
+	steps, err := migrationSteps(files)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]int64, len(steps))
+	for i, s := range steps {
+		out[i] = s.version
+	}
+	return out, nil
+}
