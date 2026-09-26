@@ -160,6 +160,11 @@ type WorkspaceConfig struct {
 	// Tools are the workspace-placed tools the backend serves; nil selects
 	// tools.Default().
 	Tools []tools.Tool
+	// SnapshotAfterTurn takes a Snapshot of a Session's bound Workspace
+	// after every settlement that drains the backlog and records it on the
+	// Session (APP-WSP-7), so a fork at a Turn boundary can restore the
+	// files as they were. It needs Provider: the backend takes the snapshot.
+	SnapshotAfterTurn bool
 }
 
 func (c *WorkspaceConfig) tools() []tools.Tool {

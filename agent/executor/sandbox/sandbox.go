@@ -157,6 +157,18 @@ func (b *Backend) Settled(ctx context.Context, epoch string, after uint64, fn fu
 // keep their RuntimeBindings.
 func (b *Backend) Close(ctx context.Context) error { return b.envs.close(ctx) }
 
+// Snapshot takes a Snapshot of the Workspace's current environment through
+// the provider's Snapshotter capability, records it in the store and makes
+// it the Workspace's latest (APP-WSP-7). A Workspace never materialized has
+// nothing to snapshot (ErrNothingToSnapshot); a provider without the
+// capability is environment.ErrUnsupported.
+func (b *Backend) Snapshot(ctx context.Context, id workspace.ID) (workspace.Snapshot, error) {
+	return b.envs.snapshot(ctx, id)
+}
+
+// ErrNothingToSnapshot reports a Snapshot of a Workspace with no environment.
+var ErrNothingToSnapshot = errors.New("sandbox: the workspace has no environment to snapshot")
+
 // --- tool adapter -------------------------------------------------------------
 
 type noModels struct{}
@@ -195,7 +207,7 @@ func (a *adapter) Execute(ctx context.Context, req loop.ToolExecutionRequest) lo
 	if req.Target == nil || req.Target.Kind != workspace.TargetKind || req.Target.ID == "" {
 		return loop.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureInvalidInput, Message: "workspace tool call without a workspace target"}, Retry: run.RetryNever}
 	}
-	env, err := a.envs.attach(ctx, workspace.ID(req.Target.ID))
+	env, rematerialized, err := a.envs.attach(ctx, workspace.ID(req.Target.ID))
 	if err != nil {
 		switch {
 		case errors.Is(err, workspace.ErrNotFound):
@@ -206,7 +218,32 @@ func (a *adapter) Execute(ctx context.Context, req loop.ToolExecutionRequest) lo
 			return loop.ToolExecutionFailed{Failure: run.ToolFailure{Class: run.FailureUnavailable, Message: err.Error()}, Retry: run.RetryAllowed}
 		}
 	}
-	return a.tool.Run(ctx, env, &req)
+	out := a.tool.Run(ctx, env, &req)
+	if rematerialized {
+		out = markRematerialized(out)
+	}
+	return out
+}
+
+// markRematerialized tells the model, on the first successful call after
+// the workspace's environment was rebuilt, that files written since the
+// last snapshot are gone (APP-WSP-7).
+func markRematerialized(out loop.ToolExecutionOutcome) loop.ToolExecutionOutcome {
+	ok, is := out.(loop.ToolExecutionSucceeded)
+	if !is {
+		return out
+	}
+	var fields map[string]any
+	if err := ok.Result.Output.Decode(&fields); err != nil || fields == nil {
+		return out
+	}
+	fields["workspaceRematerialized"] = true
+	marked, err := run.CanonicalJSONFromValue(fields)
+	if err != nil {
+		return out
+	}
+	ok.Result.Output = marked
+	return ok
 }
 
 // --- environment manager ------------------------------------------------------
@@ -222,20 +259,29 @@ type manager struct {
 
 	mu       sync.Mutex
 	attached map[workspace.ID]environment.Environment
+	// rebuilt marks workspaces whose recorded environment was lost and
+	// rebuilt by this process; the next successful call reports it.
+	rebuilt map[workspace.ID]bool
 }
 
-func (m *manager) attach(ctx context.Context, id workspace.ID) (environment.Environment, error) {
+// attach returns the workspace's environment and whether this call is the
+// first after the environment was rebuilt from a lost one.
+func (m *manager) attach(ctx context.Context, id workspace.ID) (env environment.Environment, rematerialized bool, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if env, ok := m.attached[id]; ok {
-		return env, nil
+	env, ok := m.attached[id]
+	if !ok {
+		env, err = m.resolve(ctx, id)
+		if err != nil {
+			return nil, false, err
+		}
+		m.attached[id] = env
 	}
-	env, err := m.resolve(ctx, id)
-	if err != nil {
-		return nil, err
+	if m.rebuilt[id] {
+		delete(m.rebuilt, id)
+		return env, true, nil
 	}
-	m.attached[id] = env
-	return env, nil
+	return env, false, nil
 }
 
 func (m *manager) resolve(ctx context.Context, id workspace.ID) (environment.Environment, error) {
@@ -256,9 +302,54 @@ func (m *manager) resolve(ctx context.Context, id workspace.ID) (environment.Env
 			}
 		}
 		// The recorded environment is gone or belongs to another provider:
-		// the workspace is materialized again under the next generation.
+		// the workspace is materialized again under the next generation, and
+		// the next call says so.
+		if m.rebuilt == nil {
+			m.rebuilt = make(map[workspace.ID]bool)
+		}
+		m.rebuilt[id] = true
 	}
 	return m.materialize(ctx, &ws, expected)
+}
+
+// snapshot is Backend.Snapshot.
+func (m *manager) snapshot(ctx context.Context, id workspace.ID) (workspace.Snapshot, error) {
+	ws, err := m.store.Get(ctx, id)
+	if err != nil {
+		return workspace.Snapshot{}, fmt.Errorf("workspace %s: %w", id, err)
+	}
+	if ws.Runtime == nil {
+		return workspace.Snapshot{}, ErrNothingToSnapshot
+	}
+	env, _, err := m.attach(ctx, id)
+	if err != nil {
+		return workspace.Snapshot{}, err
+	}
+	snapshotter, ok := env.(environment.Snapshotter)
+	if !ok {
+		return workspace.Snapshot{}, fmt.Errorf("%w: environment %s takes no snapshots", environment.ErrUnsupported, env.Ref())
+	}
+	state, err := snapshotter.Snapshot(ctx)
+	if err != nil {
+		return workspace.Snapshot{}, fmt.Errorf("workspace %s: snapshot: %w", id, err)
+	}
+	snap := workspace.Snapshot{Ref: workspace.NewSnapshotRef(), Workspace: id, Backend: m.backend, StateRef: state, Parent: ws.Snapshot}
+	if err := m.store.PutSnapshot(ctx, snap); err != nil {
+		return workspace.Snapshot{}, err
+	}
+	// The latest snapshot is recorded on the Workspace; a concurrent
+	// snapshot of the same workspace makes the later Put win, which is the
+	// later snapshot.
+	current, err := m.store.Get(ctx, id)
+	if err != nil {
+		return workspace.Snapshot{}, err
+	}
+	ref := snap.Ref
+	current.Snapshot = &ref
+	if err := m.store.Put(ctx, current); err != nil {
+		return workspace.Snapshot{}, err
+	}
+	return snap, nil
 }
 
 // materialize creates the workspace's next environment and records it;

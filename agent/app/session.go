@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/context/compaction"
+	"github.com/felinics/twilight/agent/executor/sandbox"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/owner"
@@ -48,6 +49,10 @@ type SessionOptions struct {
 	// InboxPoll is how often the open Session reads its command inbox
 	// besides being woken (APP-INB-3); zero selects DefaultInboxPoll.
 	InboxPoll time.Duration
+	// InheritedWorkspace is what this Session does, when opened, with a
+	// workspace binding it inherited from its fork parent (APP-WSP-5); the
+	// zero value keeps the parent's Workspace.
+	InheritedWorkspace workspace.InheritedPolicy
 }
 
 // DefaultRouteRetries and DefaultDrainBudget are the liveness bounds a
@@ -155,6 +160,12 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 	}
 	s.bg, s.cancel = context.WithCancel(context.Background())
 	app.track(s)
+	// A binding inherited from the fork parent is settled by this Session's
+	// policy before anything runs in it (APP-WSP-5).
+	if err := s.applyInheritedWorkspace(ctx); err != nil {
+		_ = s.Close(context.WithoutCancel(ctx))
+		return nil, err
+	}
 	// Commands left while no one owned the Session are applied before
 	// anything else this owner does (APP-INB-3).
 	s.startInbox(ctx)
@@ -478,6 +489,7 @@ func (s *Session) settled(ctx context.Context, resp *driver.DriveResult) ([]Resu
 			return out, err
 		}
 		if !ok {
+			s.maybeSnapshot(ctx)
 			s.maybeCompact(ctx)
 			return out, nil
 		}
@@ -528,6 +540,103 @@ func (s *Session) UnbindWorkspace(ctx context.Context, reason string) error {
 // Workspace is the Session's current binding.
 func (s *Session) Workspace(ctx context.Context) (workspace.Binding, error) {
 	return s.app.Workspace(ctx, s.sid)
+}
+
+// ErrNoSandbox reports a snapshot in a process that composes no workspace
+// backend (Config.Workspaces.Provider is nil): the backend takes snapshots.
+var ErrNoSandbox = errors.New("app: no workspace backend is composed in this process")
+
+// ErrUnboundWorkspace reports a workspace operation on a Session bound to
+// no Workspace.
+var ErrUnboundWorkspace = errors.New("app: the session is bound to no workspace")
+
+// SnapshotWorkspace takes a Snapshot of the Session's bound Workspace and
+// records it on the Session (APP-WSP-7). A Workspace never materialized
+// yields sandbox.ErrNothingToSnapshot.
+func (s *Session) SnapshotWorkspace(ctx context.Context) (workspace.Snapshot, error) {
+	if s.app.workspaces == nil {
+		return workspace.Snapshot{}, ErrNoWorkspaces
+	}
+	if s.app.sandbox == nil {
+		return workspace.Snapshot{}, ErrNoSandbox
+	}
+	b, err := s.Workspace(ctx)
+	if err != nil {
+		return workspace.Snapshot{}, err
+	}
+	if !b.Bound {
+		return workspace.Snapshot{}, ErrUnboundWorkspace
+	}
+	snap, err := s.app.sandbox.Snapshot(ctx, b.Workspace)
+	if err != nil {
+		return workspace.Snapshot{}, err
+	}
+	if err := s.app.bindings.RecordSnapshot(ctx, s.h.Writer(), &snap); err != nil {
+		return workspace.Snapshot{}, err
+	}
+	return snap, nil
+}
+
+// maybeSnapshot is the SnapshotAfterTurn policy: after a settlement that
+// drained the backlog, the bound Workspace is snapshotted; a Session bound
+// to none or a Workspace with no environment yet is nothing to do, other
+// failures reach Config.Warn.
+func (s *Session) maybeSnapshot(ctx context.Context) {
+	if s.app.workspaces == nil || !s.app.workspaces.SnapshotAfterTurn || s.app.sandbox == nil {
+		return
+	}
+	_, err := s.SnapshotWorkspace(ctx)
+	if err != nil && !errors.Is(err, ErrUnboundWorkspace) && !errors.Is(err, sandbox.ErrNothingToSnapshot) {
+		s.app.warn(fmt.Errorf("app: snapshot of the workspace of %s: %w", s.sid, err))
+	}
+}
+
+// applyInheritedWorkspace runs SessionOptions.InheritedWorkspace on a
+// binding this Session inherited (APP-WSP-5); an own binding, or none, is
+// left alone.
+func (s *Session) applyInheritedWorkspace(ctx context.Context) error {
+	if s.app.workspaces == nil || s.opts.InheritedWorkspace == workspace.InheritShare {
+		return nil
+	}
+	b, err := s.Workspace(ctx)
+	if err != nil {
+		return err
+	}
+	if !b.InheritedBy(s.sid) {
+		return nil
+	}
+	store := s.app.workspaces.Store
+	parent, err := store.Get(ctx, b.Workspace)
+	if err != nil {
+		return fmt.Errorf("app: inherited workspace %s: %w", b.Workspace, err)
+	}
+	var own workspace.Workspace
+	switch policy := s.opts.InheritedWorkspace; policy {
+	case workspace.InheritNone:
+		return s.UnbindWorkspace(ctx, "inherited workspace policy: none")
+	case workspace.InheritAllocate:
+		own = workspace.Workspace{ID: workspace.NewID(), Project: parent.Project, Base: parent.Base}
+		if err := store.Create(ctx, own); err != nil {
+			return err
+		}
+	case workspace.InheritClone:
+		if parent.Snapshot == nil {
+			return fmt.Errorf("app: inherited workspace policy clone: workspace %s has no snapshot", parent.ID)
+		}
+		if own, err = store.Fork(ctx, workspace.Fork{Source: parent.ID, Destination: workspace.NewID(), Snapshot: *parent.Snapshot}); err != nil {
+			return err
+		}
+	case workspace.InheritRestore:
+		if b.Snapshot == "" {
+			return fmt.Errorf("app: inherited workspace policy restore: no snapshot of %s is recorded at the fork point", parent.ID)
+		}
+		if own, err = store.Fork(ctx, workspace.Fork{Source: parent.ID, Destination: workspace.NewID(), Snapshot: b.Snapshot}); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("app: unknown inherited workspace policy %d", policy)
+	}
+	return s.BindWorkspace(ctx, own.ID)
 }
 
 // Compact summarizes the context with the preset's model and commits a

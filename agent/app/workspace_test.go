@@ -39,6 +39,10 @@ type workspaceHost struct {
 // newWorkspaceHost builds an application with the workspace layer over the
 // local provider, and a preset whose tools are the workspace tools.
 func newWorkspaceHost(t *testing.T, model loop.ModelInvoker, cfg app.Config) *workspaceHost {
+	return newWorkspaceHostWith(t, model, cfg, false)
+}
+
+func newWorkspaceHostWith(t *testing.T, model loop.ModelInvoker, cfg app.Config, snapshotAfterTurn bool) *workspaceHost {
 	t.Helper()
 	root := filepath.Join(t.TempDir(), "envs")
 	provider, err := local.New(root)
@@ -46,7 +50,7 @@ func newWorkspaceHost(t *testing.T, model loop.ModelInvoker, cfg app.Config) *wo
 		t.Fatal(err)
 	}
 	store := &workspacetest.Map{}
-	cfg.Workspaces = &app.WorkspaceConfig{Store: store, Provider: provider, Backend: local.Backend}
+	cfg.Workspaces = &app.WorkspaceConfig{Store: store, Provider: provider, Backend: local.Backend, SnapshotAfterTurn: snapshotAfterTurn}
 	h := newHost(t, cfg, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
 	defs, err := app.WorkspaceTools(nil)
 	if err != nil {
@@ -231,6 +235,123 @@ func TestBindWorkspaceThroughTheInbox(t *testing.T) {
 	}
 	if b, err := s.Workspace(ctx); err != nil || !b.Bound || b.Workspace != ws.ID {
 		t.Fatalf("binding after the inbox = %+v %v", b, err)
+	}
+}
+
+// toolResultText is the text of the last message of the n-th request the
+// model saw: the tool result of the call it made in the request before.
+func toolResultText(t *testing.T, model *scriptedRequests, n int) string {
+	t.Helper()
+	seen := model.requests()
+	if len(seen) <= n {
+		t.Fatalf("model saw %d requests, want more than %d", len(seen), n)
+	}
+	msgs := seen[n].Messages
+	return fmt.Sprint(msgs[len(msgs)-1])
+}
+
+// With SnapshotAfterTurn every settled Turn records a Snapshot on the
+// Session; a fork's child settles the inherited binding by its policy on
+// open: Restore forks the workspace from the snapshot at the fork point,
+// Clone from the latest, Allocate gives an empty one, None unbinds
+// (APP-WSP-5, APP-WSP-7).
+func TestForkPoliciesRestoreCloneAllocateNone(t *testing.T) {
+	ctx := context.Background()
+	done := sdk.ModelResult{Text: "done", FinishReason: sdk.FinishReasonStop, Usage: sdk.Usage{TotalTokens: 1}}
+	model := &scriptedRequests{answers: []sdk.ModelResult{
+		shellCall("printf v1 > f.txt"), done, // parent turn 1
+		shellCall("printf v2 > f.txt"), done, // parent turn 2
+		shellCall("cat f.txt"), done, // restore child
+		shellCall("cat f.txt"), done, // clone child
+	}}
+	w := newWorkspaceHostWith(t, model, app.Config{}, true)
+	ws, err := w.h.AllocateWorkspace(ctx, "repo", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := w.open(t, "parent")
+	if err := parent.BindWorkspace(ctx, ws.ID); err != nil {
+		t.Fatal(err)
+	}
+	first, err := parent.Send(ctx, "one")
+	if err != nil || len(first) != 1 || first[0].Status != turn.TurnCompleted {
+		t.Fatalf("turn 1 = %+v %v", first, err)
+	}
+	afterOne, err := parent.Workspace(ctx)
+	if err != nil || afterOne.Snapshot == "" {
+		t.Fatalf("binding after turn 1 = %+v %v, want a snapshot", afterOne, err)
+	}
+	second, err := parent.Send(ctx, "two")
+	if err != nil || len(second) != 1 {
+		t.Fatalf("turn 2 = %+v %v", second, err)
+	}
+	afterTwo, err := parent.Workspace(ctx)
+	if err != nil || afterTwo.Snapshot == "" || afterTwo.Snapshot == afterOne.Snapshot {
+		t.Fatalf("binding after turn 2 = %+v %v, want a newer snapshot", afterTwo, err)
+	}
+	if stored, _ := w.store.Get(ctx, ws.ID); stored.Snapshot == nil || *stored.Snapshot != afterTwo.Snapshot {
+		t.Fatalf("workspace latest snapshot = %v, want %s", stored.Snapshot, afterTwo.Snapshot)
+	}
+	openChild := func(name session.SessionID, policy workspace.InheritedPolicy) *app.Session {
+		t.Helper()
+		if _, err := w.h.ForkBeforeTurn(ctx, "parent", second[0].TurnID, name); err != nil {
+			t.Fatal(err)
+		}
+		s, err := w.h.OpenSession(ctx, name, app.SessionOptions{Preset: w.preset, InboxPoll: time.Hour, InheritedWorkspace: policy})
+		if err != nil {
+			t.Fatalf("open %s with policy %s: %v", name, policy, err)
+		}
+		t.Cleanup(func() { _ = s.Close(context.Background()) })
+		// The fork point precedes turn 2, so the child inherits its still
+		// submitted input; the edit flow withdraws it (OWN-FRK-2).
+		chat, err := w.h.ChatlogSurface(ctx, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, in := range chat.SubmittedInputs() {
+			if err := w.h.Owner.Chatlog.Withdraw(ctx, s.Handle().Writer(), run.InputID(in.ID), "fork"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return s
+	}
+	restore := openChild("restore", workspace.InheritRestore)
+	rb, err := restore.Workspace(ctx)
+	if err != nil || !rb.Bound || rb.Workspace == ws.ID || rb.InheritedBy("restore") {
+		t.Fatalf("restore child binding = %+v %v, want its own workspace", rb, err)
+	}
+	if forked, _ := w.store.Get(ctx, rb.Workspace); forked.Snapshot == nil || *forked.Snapshot != afterOne.Snapshot {
+		t.Fatalf("restore child workspace = %+v, want forked from the fork-point snapshot %s", forked, afterOne.Snapshot)
+	}
+	if _, err := restore.Send(ctx, "read"); err != nil {
+		t.Fatal(err)
+	}
+	if got := toolResultText(t, model, 5); !strings.Contains(got, `v1`) || strings.Contains(got, `v2`) {
+		t.Fatalf("restore child read = %s, want v1", got)
+	}
+	clone := openChild("clone", workspace.InheritClone)
+	cb, _ := clone.Workspace(ctx)
+	if forked, _ := w.store.Get(ctx, cb.Workspace); cb.Workspace == ws.ID || forked.Snapshot == nil || *forked.Snapshot != afterTwo.Snapshot {
+		t.Fatalf("clone child workspace = %+v %+v, want forked from the latest snapshot", cb, forked)
+	}
+	if _, err := clone.Send(ctx, "read"); err != nil {
+		t.Fatal(err)
+	}
+	if got := toolResultText(t, model, 7); !strings.Contains(got, `v2`) {
+		t.Fatalf("clone child read = %s, want v2", got)
+	}
+	allocate := openChild("allocate", workspace.InheritAllocate)
+	ab, _ := allocate.Workspace(ctx)
+	if fresh, _ := w.store.Get(ctx, ab.Workspace); !ab.Bound || ab.Workspace == ws.ID || fresh.Snapshot != nil || fresh.Runtime != nil || fresh.Project != "repo" {
+		t.Fatalf("allocate child workspace = %+v %+v, want a fresh one with the parent's project", ab, fresh)
+	}
+	none := openChild("none", workspace.InheritNone)
+	if nb, _ := none.Workspace(ctx); nb.Bound {
+		t.Fatalf("none child binding = %+v, want unbound", nb)
+	}
+	// The parent's binding and latest snapshot are untouched by its children.
+	if pb, _ := parent.Workspace(ctx); pb != afterTwo {
+		t.Fatalf("parent binding after the forks = %+v, want %+v", pb, afterTwo)
 	}
 }
 

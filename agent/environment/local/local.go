@@ -1,6 +1,7 @@
 // Package local is the reference environment.Provider: one directory per
 // environment under a root, commands run with os/exec in that directory,
-// files read and written through the host filesystem. It serves one process;
+// files read and written through the host filesystem, snapshots as copies
+// of the directory under root/.snapshots. It serves one process;
 // Attach from another host cannot see its directories, so a deployment with
 // several sandbox backend replicas needs a provider whose environments are
 // reachable from every replica.
@@ -62,9 +63,48 @@ func (p *Provider) Create(_ context.Context, spec environment.Spec) (environment
 	return &Environment{ref: ref, dir: dir}, nil
 }
 
-// Restore is ErrUnsupported: the local provider takes no snapshots.
-func (p *Provider) Restore(context.Context, environment.RestoreSpec) (environment.Environment, error) {
-	return nil, fmt.Errorf("%w: local provider takes no snapshots", environment.ErrUnsupported)
+// snapshotsDir holds the snapshots; its name is not a valid environment ref.
+const snapshotsDir = ".snapshots"
+
+// Restore materializes a new directory from the snapshot State names; an
+// unknown State is ErrNotFound. Destination.Base is ignored: the snapshot
+// already carries the workspace's files.
+func (p *Provider) Restore(ctx context.Context, spec environment.RestoreSpec) (environment.Environment, error) {
+	src, err := p.snapshotPath(spec.State)
+	if err != nil {
+		return nil, err
+	}
+	created, err := p.Create(ctx, environment.Spec{Subject: spec.Destination.Subject})
+	if err != nil {
+		return nil, err
+	}
+	env, ok := created.(*Environment)
+	if !ok {
+		return nil, fmt.Errorf("local: create returned %T", created)
+	}
+	if err := copyTree(src, env.dir); err != nil {
+		return nil, fmt.Errorf("local: restore %s: %w", spec.State, err)
+	}
+	return env, nil
+}
+
+func (p *Provider) snapshotPath(state environment.StateRef) (string, error) {
+	name := string(state)
+	if name == "" || name != filepath.Base(name) || strings.HasPrefix(name, ".") {
+		return "", fmt.Errorf("%w: malformed snapshot state %q", environment.ErrNotFound, state)
+	}
+	dir := filepath.Join(p.root, snapshotsDir, name)
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return "", fmt.Errorf("%w: snapshot %s", environment.ErrNotFound, state)
+	}
+	return dir, nil
+}
+
+// copyTree copies the files and directories under src into dst, which is
+// empty; execute bits are kept, symbolic links are copied as the files they
+// point to.
+func copyTree(src, dst string) error {
+	return os.CopyFS(dst, os.DirFS(src))
 }
 
 // Attach adopts the directory ref names; a missing one is ErrNotFound.
@@ -92,6 +132,7 @@ var (
 	_ environment.Environment = (*Environment)(nil)
 	_ environment.Executor    = (*Environment)(nil)
 	_ environment.FS          = (*Environment)(nil)
+	_ environment.Snapshotter = (*Environment)(nil)
 )
 
 func (e *Environment) Ref() environment.EnvironmentRef { return e.ref }
@@ -101,6 +142,24 @@ func (e *Environment) Dir() string { return e.dir }
 
 // Close keeps the directory: the workspace outlives any one attachment.
 func (e *Environment) Close(context.Context) error { return nil }
+
+// Snapshot copies the directory into the provider's snapshot area
+// (environment.Snapshotter); the StateRef is the copy's name.
+func (e *Environment) Snapshot(context.Context) (environment.StateRef, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	state := "snap-" + hex.EncodeToString(b[:])
+	dir := filepath.Join(filepath.Dir(e.dir), snapshotsDir, state)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return "", err
+	}
+	if err := copyTree(e.dir, dir); err != nil {
+		return "", fmt.Errorf("local: snapshot %s: %w", e.ref, err)
+	}
+	return environment.StateRef(state), nil
+}
 
 // resolve maps a relative path into the directory, refusing escapes.
 func (e *Environment) resolve(rel string) (string, error) {

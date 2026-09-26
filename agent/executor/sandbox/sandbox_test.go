@@ -143,8 +143,12 @@ func TestLostEnvironmentIsRematerialized(t *testing.T) {
 		t.Fatal(err)
 	}
 	target := &run.TargetRef{Kind: workspace.TargetKind, ID: string(f.ws.ID)}
-	if got := toolOutput(t, f.outcome(f.assignment(tools.ListDir{}, "e1", `{}`, target))); !strings.Contains(got, `"entries":[]`) {
+	// The first call after the rebuild tells the model; the next does not.
+	if got := toolOutput(t, f.outcome(f.assignment(tools.ListDir{}, "e1", `{}`, target))); !strings.Contains(got, `"entries":[]`) || !strings.Contains(got, `"workspaceRematerialized":true`) {
 		t.Fatalf("list in the rematerialized workspace = %s", got)
+	}
+	if got := toolOutput(t, f.outcome(f.assignment(tools.ListDir{}, "e1b", `{}`, target))); strings.Contains(got, "workspaceRematerialized") {
+		t.Fatalf("second call still marked = %s", got)
 	}
 	ws, _ := f.store.Get(f.ctx, f.ws.ID)
 	if ws.Runtime.Generation != 5 || ws.Runtime.EnvironmentRef == "env-gone" {
@@ -154,6 +158,45 @@ func TestLostEnvironmentIsRematerialized(t *testing.T) {
 	failed, is := out.Result.(effect.ToolExecutionFailed)
 	if !is || failed.Failure.Class != run.FailureNotFound || failed.Retry != run.RetryNever {
 		t.Fatalf("unknown workspace = %#v", out.Result)
+	}
+}
+
+// Snapshot copies the workspace's environment, records the Snapshot with
+// its parent and makes it the workspace's latest; a workspace with no
+// environment has nothing to snapshot (APP-WSP-7).
+func TestSnapshotRecordsTheLatest(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.backend.Snapshot(f.ctx, f.ws.ID); !errors.Is(err, sandbox.ErrNothingToSnapshot) {
+		t.Fatalf("snapshot before any environment = %v", err)
+	}
+	if _, err := f.backend.Snapshot(f.ctx, "ws-unknown"); !errors.Is(err, workspace.ErrNotFound) {
+		t.Fatalf("snapshot of an unknown workspace = %v", err)
+	}
+	target := &run.TargetRef{Kind: workspace.TargetKind, ID: string(f.ws.ID)}
+	toolOutput(t, f.outcome(f.assignment(tools.WriteFile{}, "e1", `{"path":"f.txt","content":"v1"}`, target)))
+	first, err := f.backend.Snapshot(f.ctx, f.ws.ID)
+	if err != nil || first.Workspace != f.ws.ID || first.Backend != local.Backend || first.StateRef == "" || first.Parent != nil {
+		t.Fatalf("first snapshot = %+v %v", first, err)
+	}
+	toolOutput(t, f.outcome(f.assignment(tools.WriteFile{}, "e2", `{"path":"f.txt","content":"v2"}`, target)))
+	second, err := f.backend.Snapshot(f.ctx, f.ws.ID)
+	if err != nil || second.Parent == nil || *second.Parent != first.Ref || second.StateRef == first.StateRef {
+		t.Fatalf("second snapshot = %+v %v", second, err)
+	}
+	ws, _ := f.store.Get(f.ctx, f.ws.ID)
+	if ws.Snapshot == nil || *ws.Snapshot != second.Ref {
+		t.Fatalf("workspace latest snapshot = %v, want %s", ws.Snapshot, second.Ref)
+	}
+	if stored, err := f.store.GetSnapshot(f.ctx, first.Ref); err != nil || stored != first {
+		t.Fatalf("stored first snapshot = %+v %v", stored, err)
+	}
+	// A workspace forked from the first snapshot reads v1.
+	forked, err := f.store.Fork(f.ctx, workspace.Fork{Source: f.ws.ID, Destination: "ws-fork", Snapshot: first.Ref})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := toolOutput(t, f.outcome(f.assignment(tools.ReadFile{}, "e3", `{"path":"f.txt"}`, &run.TargetRef{Kind: workspace.TargetKind, ID: string(forked.ID)}))); !strings.Contains(got, `"content":"v1"`) {
+		t.Fatalf("read in the forked workspace = %s", got)
 	}
 }
 

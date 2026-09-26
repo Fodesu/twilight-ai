@@ -21,8 +21,8 @@ func TestLocalProvider(t *testing.T) {
 	if _, err := p.Create(ctx, environment.Spec{Subject: "ws-1", Base: "rev-1"}); !errors.Is(err, environment.ErrUnsupported) {
 		t.Fatalf("create with a base = %v, want unsupported", err)
 	}
-	if _, err := p.Restore(ctx, environment.RestoreSpec{State: "s"}); !errors.Is(err, environment.ErrUnsupported) {
-		t.Fatalf("restore = %v, want unsupported", err)
+	if _, err := p.Restore(ctx, environment.RestoreSpec{State: "snap-missing"}); !errors.Is(err, environment.ErrNotFound) {
+		t.Fatalf("restore of an unknown snapshot = %v, want not found", err)
 	}
 	env, err := p.Create(ctx, environment.Spec{Subject: "ws-1"})
 	if err != nil {
@@ -78,5 +78,27 @@ func TestLocalProvider(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(again.(*local.Environment).Dir(), "src", "hello.txt")); err != nil {
 		t.Fatalf("file on the host = %v", err)
+	}
+	// A snapshot is a copy: later writes do not reach it, and Restore
+	// materializes a new environment from it.
+	state, err := again.(environment.Snapshotter).Snapshot(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fsys.WriteFile(ctx, "src/hello.txt", []byte("changed")); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := p.Restore(ctx, environment.RestoreSpec{State: state, Destination: environment.Spec{Subject: "ws-2"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.Ref() == again.Ref() {
+		t.Fatal("restore reused the source environment")
+	}
+	if data, err := restored.(environment.FS).ReadFile(ctx, "src/hello.txt"); err != nil || string(data) != "hello" {
+		t.Fatalf("restored file = %q %v, want the snapshot's content", data, err)
+	}
+	if _, err := p.Attach(ctx, environment.EnvironmentRef(".snapshots")); !errors.Is(err, environment.ErrNotFound) {
+		t.Fatalf("attach of the snapshot area = %v", err)
 	}
 }

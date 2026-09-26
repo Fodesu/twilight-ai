@@ -192,7 +192,7 @@ func (s *Session) Close(ctx) error
 
 ### 7.3 资源 target
 
-**APP-TGT-1（target 解析归 application）** core 对资源 target 只提供 RUN-LOP-9 的 seam：`loop.EffectContext`、`run.TargetRef` 与 `loop.TargetResolver` 接口。core 没有 target 事实，不持久化 Session 到资源的映射，也不提供默认解析器：`Ports.TargetResolver` 为 nil 时每个 effect 无 target。资源注册、Workspace 生命周期管理与 `TargetResolver` 实现属于 application；reference agent 的实现是 `agent/workspace`（APP-WSP-1..6，agent-workspace.md）：Session → Workspace 的绑定是 `agent` 源应用模块的 Session 事实，解析器只对 `PlacementWorkspace` 的 tool effect 解析。对话 lineage 与资源 lineage 是两套 lineage：Session fork（OWN-FRK-2）复制已提交事实，子 Session 把读到的父绑定视为继承（Share 策略的实现），其他策略（分配新 workspace、不给 workspace、从 snapshot 恢复、克隆）由 application 的 fork policy 在子 Session 上写显式事实覆盖（APP-WSP-5）。Workspace 自身的 fork 不复用父的 mutable RuntimeBinding。target 的含义由 Workspace domain 定义。
+**APP-TGT-1（target 解析归 application）** core 对资源 target 只提供 RUN-LOP-9 的 seam：`loop.EffectContext`、`run.TargetRef` 与 `loop.TargetResolver` 接口。core 没有 target 事实，不持久化 Session 到资源的映射，也不提供默认解析器：`Ports.TargetResolver` 为 nil 时每个 effect 无 target。资源注册、Workspace 生命周期管理与 `TargetResolver` 实现属于 application；reference agent 的实现是 `agent/workspace`（APP-WSP-1..6，agent-workspace.md）：Session → Workspace 的绑定是 `agent` 源应用模块的 Session 事实，解析器只对 `PlacementWorkspace` 的 tool effect 解析。对话 lineage 与资源 lineage 是两套 lineage：Session fork（OWN-FRK-2）复制已提交事实，子 Session 把读到的父绑定视为继承（Share 策略的实现），其他策略（分配新 workspace、不给 workspace、从 fork 点的 snapshot 恢复、从最新 snapshot 克隆）由 `SessionOptions.InheritedWorkspace` 在子 Session 首次 Open 时写显式事实覆盖（APP-WSP-5、APP-WSP-7）。Workspace 自身的 fork 不复用父的 mutable RuntimeBinding。target 的含义由 Workspace domain 定义。
 
 ## 8. 子代理（spawn）
 

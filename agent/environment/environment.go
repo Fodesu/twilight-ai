@@ -109,6 +109,13 @@ type FS interface {
 	ReadDir(ctx context.Context, path string) ([]DirEntry, error)
 }
 
+// Snapshotter is the capability of an Environment whose provider can take a
+// durable snapshot of it: Snapshot returns the StateRef a later Restore
+// materializes from, independent of this environment's lifetime.
+type Snapshotter interface {
+	Snapshot(context.Context) (StateRef, error)
+}
+
 // DirEntry is one entry of ReadDir.
 type DirEntry struct {
 	Name string `json:"name"`

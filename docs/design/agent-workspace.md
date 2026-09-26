@@ -35,12 +35,14 @@
 
 ## 4. fork 与 spawn
 
-**APP-WSP-5（继承为默认，策略以事实覆盖）** Session fork（OWN-FRK-2）复制已提交事实，绑定事实随前缀被子 Session 读到并标为 inherited：这就是 Share 策略，不写任何事实。其他策略在子 Session 上写显式事实：Allocate = `AllocateWorkspace` + 子 `BindWorkspace`；不给 workspace = 子 `UnbindWorkspace`；Clone / Restore 需要 Snapshot（第二阶段）。父的绑定不受子的事实影响。spawn 的子 Session 默认 Share。对话 lineage 与资源 lineage 仍是两套：Workspace 的 fork（`Store.Fork`）由 Snapshot 产生新 ID，不复用 mutable 的 RuntimeBinding。
+**APP-WSP-5（继承为默认，策略以事实覆盖）** Session fork（OWN-FRK-2）复制已提交事实，绑定事实随前缀被子 Session 读到并标为 inherited：这就是 Share 策略，不写任何事实。其他策略由 `SessionOptions.InheritedWorkspace`（`workspace.InheritedPolicy`）在子 Session 首次 Open 时对继承的绑定执行，写子自己的事实：`InheritNone` 写 `unbound`；`InheritAllocate` 创建带父 Project 与 Base 的空 Workspace 并 `bound`；`InheritClone` 以父 Workspace 的最新 Snapshot `Store.Fork` 出新 Workspace 并 `bound`；`InheritRestore` 以子历史上 fork 点处记录的 Snapshot（`Binding.Snapshot`，APP-WSP-7）`Store.Fork` 并 `bound`，缺少所需 Snapshot 时 Open 失败。策略只对 `InheritedBy(sid)` 为真的绑定运行，自身的绑定与无绑定不受影响；父的绑定不受子的事实影响。spawn 的子 Session 不经 `OpenSession`，默认 Share。对话 lineage 与资源 lineage 仍是两套：Workspace 的 fork（`Store.Fork`）由 Snapshot 产生新 ID，不复用 mutable 的 RuntimeBinding。
 
 ## 5. provider
 
-**APP-WSP-6（local provider）** `agent/environment/local` 是参考 provider：root 下一个目录一个 environment，`Exec` 为 os/exec（工作目录限定在 environment 内，输出按 `MaxOutputBytes` 截断），`FS` 为宿主文件系统；`Create` 只接受空 `Base`，`Restore` 为 `ErrUnsupported`；只服务单进程，`Attach` 对其他宿主不可见。多副本 sandbox backend 需要任一副本都能 Attach 的 provider（云 sandbox）。
+**APP-WSP-6（local provider）** `agent/environment/local` 是参考 provider：root 下一个目录一个 environment，`Exec` 为 os/exec（工作目录限定在 environment 内，输出按 `MaxOutputBytes` 截断），`FS` 为宿主文件系统，`Snapshotter` 把目录复制到 `root/.snapshots/<state>`，`Restore` 从该副本 materialize 新目录；`Create` 只接受空 `Base`；只服务单进程，`Attach` 对其他宿主不可见。多副本 sandbox backend 需要任一副本都能 Attach 的 provider（云 sandbox）。
 
-## 6. 第二阶段
+**APP-WSP-7（Snapshot 与 environment 重建）** `sandbox.Backend.Snapshot(id)` 经 environment 的 `Snapshotter` 取得 `StateRef`，写 `workspace.Snapshot{Ref, Workspace, Backend, StateRef, Parent: 上一个最新}` 并把它设为 Workspace 的最新；无 environment 的 Workspace 为 `ErrNothingToSnapshot`，无该能力的 provider 为 `environment.ErrUnsupported`。`app.Session.SnapshotWorkspace` 随后经 `Commands.RecordSnapshot` 写 Session 事实 `agent/workspace/snapshotted{workspace, snapshot, scope}`，投影的 `Binding.Snapshot` 即该 Session 历史上最新的 Snapshot，fork 的子读到的是 fork 点处的值。`WorkspaceConfig.SnapshotAfterTurn` 在每次排空积压的结算后自动执行，未绑定与无 environment 为空操作，其他失败进 `Config.Warn`。environment 丢失后被重建（RuntimeBinding 的 Generation 递增）时，重建后第一次成功的工具结果附带 `workspaceRematerialized: true`，告知模型自最近 Snapshot 以来的写入已丢失。
 
-Snapshot 的产出（`Snapshotter` 能力、Turn 结算后的策略、`agent/workspace/snapshotted` 事实）、`Restore` 与 Clone 策略、environment 重建时向模型标记 `workspace_rematerialized`、远程 worker 形态下 sandbox backend 作为独立组件（CLD-TOL-1）。
+## 6. 未做
+
+远程 worker 形态下 sandbox backend 作为独立组件（CLD-TOL-1，随 cloud 的四个二进制）；spawn 子 Session 的 Share 以外策略（spawn 不经 `OpenSession`）；Snapshot 的回收策略。

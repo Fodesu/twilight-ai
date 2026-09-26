@@ -33,6 +33,10 @@ const (
 	// TypeUnbound records that the Session works in no Workspace, ending a
 	// binding of its own or an inherited one.
 	TypeUnbound session.EventType = "agent/workspace/unbound"
+	// TypeSnapshotted records a Snapshot of the Session's bound Workspace
+	// at this point of the conversation (APP-WSP-7): what a fork at this
+	// point restores.
+	TypeSnapshotted session.EventType = "agent/workspace/snapshotted"
 	// BindingProjectionID is the module's projection.
 	BindingProjectionID extension.ProjectionID = "agent/workspace/binding"
 	// TargetKind is the run.TargetRef Kind of a Workspace target.
@@ -58,12 +62,21 @@ type UnboundPayload struct {
 	Reason string            `json:"reason,omitempty"`
 }
 
+// SnapshottedPayload is agent/workspace/snapshotted.
+type SnapshottedPayload struct {
+	Workspace ID                `json:"workspace"`
+	Snapshot  SnapshotRef       `json:"snapshot"`
+	Scope     session.SessionID `json:"scope"`
+}
+
 // Binding is the projection state: the Session's current Workspace, if any,
-// and the Session whose fact established it.
+// the Session whose fact established it, and the latest Snapshot of that
+// Workspace recorded on this Session's history.
 type Binding struct {
 	Bound     bool              `json:"bound"`
 	Workspace ID                `json:"workspace,omitempty"`
 	Scope     session.SessionID `json:"scope,omitempty"`
+	Snapshot  SnapshotRef       `json:"snapshot,omitempty"`
 }
 
 // InheritedBy reports whether the binding sid reads was written for another
@@ -73,7 +86,7 @@ func (b Binding) InheritedBy(sid session.SessionID) bool { return b.Bound && b.S
 // BindingProjection folds the module's two facts into the current Binding.
 var BindingProjection = extension.ProjectionDefinition{
 	ID: BindingProjectionID, Version: 1,
-	Consumes:   []session.EventType{TypeBound, TypeUnbound},
+	Consumes:   []session.EventType{TypeBound, TypeUnbound, TypeSnapshotted},
 	Initial:    func() (any, error) { return Binding{}, nil },
 	Apply:      applyBinding,
 	StateCodec: extension.JSONStateCodec[Binding]{},
@@ -81,14 +94,25 @@ var BindingProjection = extension.ProjectionDefinition{
 
 //nolint:gocritic // hugeParam: DecodedEvent is the extension Apply shape
 func applyBinding(state any, e extension.DecodedEvent) (any, error) {
-	if _, ok := state.(Binding); !ok {
+	b, ok := state.(Binding)
+	if !ok {
 		return nil, fmt.Errorf("workspace binding: state is %T", state)
 	}
 	switch p := e.Value.(type) {
 	case BoundPayload:
+		if b.Bound && b.Workspace == p.Workspace {
+			// A restatement of the binding keeps the snapshot history.
+			return Binding{Bound: true, Workspace: p.Workspace, Scope: p.Scope, Snapshot: b.Snapshot}, nil
+		}
 		return Binding{Bound: true, Workspace: p.Workspace, Scope: p.Scope}, nil
 	case UnboundPayload:
 		return Binding{Scope: p.Scope}, nil
+	case SnapshottedPayload:
+		if !b.Bound || b.Workspace != p.Workspace {
+			return nil, fmt.Errorf("workspace binding: snapshot of %s while bound to %q", p.Workspace, b.Workspace)
+		}
+		b.Snapshot = p.Snapshot
+		return b, nil
 	default:
 		return nil, fmt.Errorf("workspace binding: unexpected %T", e.Value)
 	}
@@ -110,6 +134,12 @@ var Module = extension.ModuleDescriptor{
 		{Type: TypeUnbound, Stream: StreamDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{Version: extension.JSONCodec[UnboundPayload]{Check: func(p *UnboundPayload) error {
 			if p.Scope == "" {
 				return errors.New("workspace unbound requires scope")
+			}
+			return nil
+		}}}},
+		{Type: TypeSnapshotted, Stream: StreamDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{Version: extension.JSONCodec[SnapshottedPayload]{Check: func(p *SnapshottedPayload) error {
+			if p.Workspace == "" || p.Snapshot == "" || p.Scope == "" {
+				return errors.New("workspace snapshotted requires workspace, snapshot and scope")
 			}
 			return nil
 		}}}},
@@ -183,6 +213,23 @@ func (c *Commands) Unbind(ctx context.Context, w writer.Writer, reason string) e
 		}
 		return session.CommitID("workspace-unbound/" + strconv.FormatUint(uint64(v.Head().Next), 10)),
 			writer.TypedEvent{Type: TypeUnbound, RecordedAtUnixMilli: c.now(), Value: UnboundPayload{Scope: sid, Reason: reason}}, true
+	})
+}
+
+// RecordSnapshot records that snap is the latest Snapshot of the Session's
+// bound Workspace (APP-WSP-7); a Session bound to another Workspace, or to
+// none, is an error, and a snapshot already recorded writes nothing.
+func (c *Commands) RecordSnapshot(ctx context.Context, w writer.Writer, snap *Snapshot) error {
+	if snap == nil || snap.Ref == "" || snap.Workspace == "" {
+		return errors.New("workspace: record snapshot requires a snapshot with a ref and a workspace")
+	}
+	sid := w.SessionID()
+	return c.commit(ctx, w, func(_ writer.View, b Binding) (session.CommitID, writer.TypedEvent, bool) {
+		if b.Snapshot == snap.Ref {
+			return "", writer.TypedEvent{}, false
+		}
+		return session.CommitID("workspace-snapshotted/" + string(snap.Ref)),
+			writer.TypedEvent{Type: TypeSnapshotted, RecordedAtUnixMilli: c.now(), Value: SnapshottedPayload{Workspace: snap.Workspace, Snapshot: snap.Ref, Scope: sid}}, true
 	})
 }
 

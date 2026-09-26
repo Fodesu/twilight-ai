@@ -114,6 +114,53 @@ type Store interface {
 	Fork(context.Context, Fork) (Workspace, error)
 }
 
+// InheritedPolicy is what a Session does with a binding it inherited from
+// its fork parent, decided when the Session is first opened (APP-WSP-5).
+type InheritedPolicy uint8
+
+const (
+	// InheritShare keeps the parent's Workspace: the inherited binding
+	// stands, nothing is written. The zero value.
+	InheritShare InheritedPolicy = iota
+	// InheritNone ends the inherited binding; the Session works in no
+	// Workspace until bound.
+	InheritNone
+	// InheritAllocate binds a new, empty Workspace with the parent's
+	// Project and Base.
+	InheritAllocate
+	// InheritClone binds a Workspace forked from the parent Workspace's
+	// latest Snapshot, whenever that was taken.
+	InheritClone
+	// InheritRestore binds a Workspace forked from the Snapshot recorded on
+	// the Session's history at the fork point (APP-WSP-7): the files as the
+	// parent had them when the forked Turn began.
+	InheritRestore
+)
+
+func (p InheritedPolicy) String() string {
+	switch p {
+	case InheritNone:
+		return "none"
+	case InheritAllocate:
+		return "allocate"
+	case InheritClone:
+		return "clone"
+	case InheritRestore:
+		return "restore"
+	default:
+		return "share"
+	}
+}
+
+// NewSnapshotRef mints a random SnapshotRef.
+func NewSnapshotRef() SnapshotRef {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic(err)
+	}
+	return SnapshotRef("snap-" + hex.EncodeToString(b[:]))
+}
+
 // NewID mints a random Workspace ID.
 func NewID() ID {
 	var b [8]byte
