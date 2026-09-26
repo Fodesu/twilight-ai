@@ -233,21 +233,32 @@ func (l *RetentionLedger) ClaimsByOwner(ctx context.Context, query artifact.Clai
 // greatest ClaimID of the owner that matches the identity rule, found by
 // reading identities downwards in batches.
 func (l *RetentionLedger) lastMatching(ctx context.Context, query artifact.ClaimOwnerQuery, batch int) (artifact.ClaimID, error) {
-	before := "" // no upper bound on the first batch
+	type identity struct{ id, owner string }
+	first, err := l.d.q.ClaimIdentitiesByOwnerDesc(ctx, db.ClaimIdentitiesByOwnerDescParams{OwnerKind: query.Kind, OwnerAuthority: query.Authority, Limit: pageLimit(batch)})
+	if err != nil {
+		return "", err
+	}
+	rows := make([]identity, 0, len(first))
+	for _, r := range first {
+		rows = append(rows, identity{r.ID, r.OwnerIdentity})
+	}
 	for {
-		rows, err := l.d.q.ClaimIdentitiesByOwnerBefore(ctx, db.ClaimIdentitiesByOwnerBeforeParams{OwnerKind: query.Kind, OwnerAuthority: query.Authority, Before: before, RowLimit: pageLimit(batch)})
-		if err != nil {
-			return "", err
-		}
 		for _, r := range rows {
-			if matchesIdentity(query, r.OwnerIdentity) {
-				return artifact.ClaimID(r.ID), nil
+			if matchesIdentity(query, r.owner) {
+				return artifact.ClaimID(r.id), nil
 			}
 		}
 		if len(rows) < batch {
 			return "", nil
 		}
-		before = rows[len(rows)-1].ID
+		next, err := l.d.q.ClaimIdentitiesByOwnerBefore(ctx, db.ClaimIdentitiesByOwnerBeforeParams{OwnerKind: query.Kind, OwnerAuthority: query.Authority, ID: rows[len(rows)-1].id, Limit: pageLimit(batch)})
+		if err != nil {
+			return "", err
+		}
+		rows = rows[:0]
+		for _, r := range next {
+			rows = append(rows, identity{r.ID, r.OwnerIdentity})
+		}
 	}
 }
 

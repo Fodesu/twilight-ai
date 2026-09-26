@@ -16,5 +16,8 @@ UPDATE claims SET state = $1, claim = $2 WHERE id = $3;
 -- name: ClaimsByOwnerAfter :many
 SELECT id, owner_identity, claim FROM claims WHERE owner_kind = $1 AND owner_authority = $2 AND id > $3 ORDER BY id LIMIT $4;
 
+-- name: ClaimIdentitiesByOwnerDesc :many
+SELECT id, owner_identity FROM claims WHERE owner_kind = $1 AND owner_authority = $2 ORDER BY id DESC LIMIT $3;
+
 -- name: ClaimIdentitiesByOwnerBefore :many
-SELECT id, owner_identity FROM claims WHERE owner_kind = $1 AND owner_authority = $2 AND (@before::text = '' OR id < @before::text) ORDER BY id DESC LIMIT @row_limit;
+SELECT id, owner_identity FROM claims WHERE owner_kind = $1 AND owner_authority = $2 AND id < $3 ORDER BY id DESC LIMIT $4;

@@ -31,7 +31,7 @@ type foldCounter struct {
 func (c *foldCounter) get() int { c.mu.Lock(); defer c.mu.Unlock(); return c.calls }
 func (c *foldCounter) reset()   { c.mu.Lock(); c.calls = 0; c.mu.Unlock() }
 
-func counterRegistry(t *testing.T, c *foldCounter) *extension.Registry {
+func counterRegistry(t testing.TB, c *foldCounter) *extension.Registry {
 	t.Helper()
 	const typ session.EventType = "twilight/z/row"
 	r, err := extension.BuildRegistry(extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "z",
@@ -45,8 +45,11 @@ func counterRegistry(t *testing.T, c *foldCounter) *extension.Registry {
 				c.mu.Lock()
 				c.calls++
 				c.mu.Unlock()
+				// Amortized append: the fold is linear and the earlier state
+				// keeps its own length, so the benchmark measures the kernel
+				// and the store, not a copy of the state per event.
 				s := state.(rowState)
-				return rowState{Rows: append(append([]string(nil), s.Rows...), e.Value.(rowPayload).Text)}, nil
+				return rowState{Rows: append(s.Rows, e.Value.(rowPayload).Text)}, nil
 			},
 			StateCodec: extension.JSONStateCodec[rowState]{},
 		}}})

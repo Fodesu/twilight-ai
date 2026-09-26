@@ -193,9 +193,12 @@ type ProjectionCacheProvider interface {
 }
 
 // DefaultCacheEvery is the commit gap a projection's cached state may fall
-// behind the head when the deployment chooses no other policy. It bounds the
-// work a reopening Writer repeats: after an abrupt end it refolds at most
-// this many commits, and after a clean Close none.
+// behind the head when the deployment chooses no other policy. It bounds
+// the work a reopening Writer repeats: at most this many commits are
+// refolded, after a clean Close as after an abrupt end, since Close obeys
+// the same interval (a deployment wanting none after Close wraps the policy
+// in AtClose). It also bounds the write side: a projection's whole state is
+// saved at most once per this many commits.
 const DefaultCacheEvery session.CommitSeq = 64
 
 // CachePolicy decides whether the Writer refreshes one projection's entry in

@@ -184,10 +184,8 @@ func (l *RetentionLedger) claimsAfter(ctx context.Context, q artifact.ClaimOwner
 // lastMatching is the highest ClaimID the query matches right now, found
 // by reading identities downwards in batches.
 func (l *RetentionLedger) lastMatching(ctx context.Context, q artifact.ClaimOwnerQuery, batch int) (artifact.ClaimID, error) {
-	before := ""
+	rows, err := l.db.QueryContext(ctx, `SELECT id, owner_identity FROM claims WHERE owner_kind = ? AND owner_authority = ? ORDER BY id DESC LIMIT ?`, q.Kind, q.Authority, batch)
 	for {
-		rows, err := l.db.QueryContext(ctx, `SELECT id, owner_identity FROM claims WHERE owner_kind = ? AND owner_authority = ? AND (? = '' OR id < ?) ORDER BY id DESC LIMIT ?`,
-			q.Kind, q.Authority, before, before, batch)
 		if err != nil {
 			return "", err
 		}
@@ -213,7 +211,8 @@ func (l *RetentionLedger) lastMatching(ctx context.Context, q artifact.ClaimOwne
 		if len(ids) < batch {
 			return "", nil
 		}
-		before = ids[len(ids)-1].id
+		rows, err = l.db.QueryContext(ctx, `SELECT id, owner_identity FROM claims WHERE owner_kind = ? AND owner_authority = ? AND id < ? ORDER BY id DESC LIMIT ?`,
+			q.Kind, q.Authority, ids[len(ids)-1].id, batch)
 	}
 }
 

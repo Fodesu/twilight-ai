@@ -32,14 +32,14 @@ func (q *Queries) Claim(ctx context.Context, id string) (string, error) {
 }
 
 const claimIdentitiesByOwnerBefore = `-- name: ClaimIdentitiesByOwnerBefore :many
-SELECT id, owner_identity FROM claims WHERE owner_kind = $1 AND owner_authority = $2 AND ($3::text = '' OR id < $3::text) ORDER BY id DESC LIMIT $4
+SELECT id, owner_identity FROM claims WHERE owner_kind = $1 AND owner_authority = $2 AND id < $3 ORDER BY id DESC LIMIT $4
 `
 
 type ClaimIdentitiesByOwnerBeforeParams struct {
 	OwnerKind      string
 	OwnerAuthority string
-	Before         string
-	RowLimit       int32
+	ID             string
+	Limit          int32
 }
 
 type ClaimIdentitiesByOwnerBeforeRow struct {
@@ -51,8 +51,8 @@ func (q *Queries) ClaimIdentitiesByOwnerBefore(ctx context.Context, arg ClaimIde
 	rows, err := q.db.Query(ctx, claimIdentitiesByOwnerBefore,
 		arg.OwnerKind,
 		arg.OwnerAuthority,
-		arg.Before,
-		arg.RowLimit,
+		arg.ID,
+		arg.Limit,
 	)
 	if err != nil {
 		return nil, err
@@ -61,6 +61,41 @@ func (q *Queries) ClaimIdentitiesByOwnerBefore(ctx context.Context, arg ClaimIde
 	items := []ClaimIdentitiesByOwnerBeforeRow{}
 	for rows.Next() {
 		var i ClaimIdentitiesByOwnerBeforeRow
+		if err := rows.Scan(&i.ID, &i.OwnerIdentity); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const claimIdentitiesByOwnerDesc = `-- name: ClaimIdentitiesByOwnerDesc :many
+SELECT id, owner_identity FROM claims WHERE owner_kind = $1 AND owner_authority = $2 ORDER BY id DESC LIMIT $3
+`
+
+type ClaimIdentitiesByOwnerDescParams struct {
+	OwnerKind      string
+	OwnerAuthority string
+	Limit          int32
+}
+
+type ClaimIdentitiesByOwnerDescRow struct {
+	ID            string
+	OwnerIdentity string
+}
+
+func (q *Queries) ClaimIdentitiesByOwnerDesc(ctx context.Context, arg ClaimIdentitiesByOwnerDescParams) ([]ClaimIdentitiesByOwnerDescRow, error) {
+	rows, err := q.db.Query(ctx, claimIdentitiesByOwnerDesc, arg.OwnerKind, arg.OwnerAuthority, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ClaimIdentitiesByOwnerDescRow{}
+	for rows.Next() {
+		var i ClaimIdentitiesByOwnerDescRow
 		if err := rows.Scan(&i.ID, &i.OwnerIdentity); err != nil {
 			return nil, err
 		}
