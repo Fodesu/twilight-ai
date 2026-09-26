@@ -1019,8 +1019,12 @@ func TestWorkerGetOutcomeIsAReadAndSettlementsNotify(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	backend := &holdBackend{newTestBackend()}
+	// The hub's epoch is known to the subscriber, so its subscription from
+	// sequence 0 replays whatever the Worker recorded before the stream was
+	// connected; a subscriber that presents an unknown epoch starts from now.
+	hub := executor.NewSettlementHub("worker-a/1", 0)
 	worker, err := executor.NewWorker(ctx, storetest.NewMap(nil), []executor.Route{executor.Default("test", executor.PortBackend(backend))},
-		executor.WorkerOptions{ID: "worker-a"})
+		executor.WorkerOptions{ID: "worker-a", Settlements: hub})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1049,7 +1053,7 @@ func TestWorkerGetOutcomeIsAReadAndSettlementsNotify(t *testing.T) {
 	seen := make(chan effect.Settlement, 4)
 	streamDone := make(chan error, 1)
 	go func() {
-		streamDone <- client.Settlements(ctx, "", 0, func(s effect.Settlement) bool {
+		streamDone <- client.Settlements(ctx, hub.Epoch(), 0, func(s effect.Settlement) bool {
 			seen <- s
 			return s.Key != a.Key()
 		})
