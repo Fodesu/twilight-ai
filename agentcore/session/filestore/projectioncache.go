@@ -50,7 +50,12 @@ func (c projectionCache) Load(_ context.Context, sid session.SessionID, id exten
 	return state, rec.Through, true, nil
 }
 
-func (c projectionCache) Save(_ context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion, state jsonstable.Value, through session.Head) error {
+// Save keeps the entry monotonic (EXT-PRJ-7): a write that lands after a
+// later one is dropped.
+func (c projectionCache) Save(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion, state jsonstable.Value, through session.Head) error {
+	if _, current, ok, _ := c.Load(ctx, sid, id, v); ok && current.Next >= through.Next {
+		return nil
+	}
 	rec, err := json.Marshal(projectionRecord{Through: through, State: state.Bytes()})
 	if err != nil {
 		return err

@@ -212,17 +212,29 @@ const DefaultCacheEvery session.CommitSeq = 64
 type CachePolicy func(id ProjectionID, v ProjectionVersion, head, cached session.Head, closing bool) bool
 
 // CacheEvery refreshes a projection once the head has moved n commits past
-// the entry the cache already covers, and always at Close. n <= 0 means
-// DefaultCacheEvery.
+// the entry the cache already covers, at Close as at any other time: the
+// entry may lag the head by up to n commits, and a Writer reopening folds
+// at most that many. Writing a large projection's whole state on every
+// Close would cost the state's size per Turn (EXT-PRJ-7); a deployment
+// that wants a clean Close to leave nothing to fold wraps the policy in
+// AtClose. n <= 0 means DefaultCacheEvery.
 func CacheEvery(n session.CommitSeq) CachePolicy {
-	return func(_ ProjectionID, _ ProjectionVersion, head, cached session.Head, closing bool) bool {
-		if closing {
-			return true
-		}
-		if n <= 0 {
-			n = DefaultCacheEvery
-		}
+	if n <= 0 {
+		n = DefaultCacheEvery
+	}
+	return func(_ ProjectionID, _ ProjectionVersion, head, cached session.Head, _ bool) bool {
 		return head.Next >= cached.Next+n
+	}
+}
+
+// AtClose refreshes every entry that lags the head when the Writer closes,
+// and defers to p otherwise.
+func (p CachePolicy) AtClose() CachePolicy {
+	return func(id ProjectionID, v ProjectionVersion, head, cached session.Head, closing bool) bool {
+		if closing {
+			return head.Next > cached.Next
+		}
+		return p(id, v, head, cached, closing)
 	}
 }
 
@@ -267,10 +279,17 @@ func (c *MemoryProjectionCache) Load(_ context.Context, sid session.SessionID, i
 	return e.state, e.through, ok, nil
 }
 
+// Save keeps the entry monotonic: a write that reaches the cache after a
+// later one (Save runs outside the Writer's critical section, EXT-PRJ-7)
+// never moves the entry back.
 func (c *MemoryProjectionCache) Save(_ context.Context, sid session.SessionID, id ProjectionID, v ProjectionVersion, state jsonstable.Value, through session.Head) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries[cacheKey{sid, id, v}] = cacheEntry{state, through}
+	k := cacheKey{sid, id, v}
+	if e, ok := c.entries[k]; ok && e.through.Next >= through.Next {
+		return nil
+	}
+	c.entries[k] = cacheEntry{state, through}
 	return nil
 }
 

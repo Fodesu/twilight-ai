@@ -118,65 +118,103 @@ func (l *RetentionLedger) ClaimsByOwner(ctx context.Context, q artifact.ClaimOwn
 	if limit <= 0 {
 		limit = artifact.DefaultClaimPageSize
 	}
-	rows, err := l.db.QueryContext(ctx, `SELECT id, owner_identity, claim FROM claims WHERE owner_kind = ? AND owner_authority = ? AND id > ? ORDER BY id`,
-		q.Kind, q.Authority, string(cursor.After))
-	if err != nil {
-		return artifact.ClaimPage{}, err
-	}
-	defer rows.Close()
+	// Rows are read in batches of the page size and the identity rule is
+	// applied in Go; a batch that does not fill the page is followed by the
+	// next one, so a call reads a bounded number of rows per matching claim.
 	watermark := cursor.Watermark
+	after := string(cursor.After)
 	var items []artifact.RetentionClaim
-	for rows.Next() {
-		var id, identity, raw string
-		if err := rows.Scan(&id, &identity, &raw); err != nil {
+	for {
+		batch, err := l.claimsAfter(ctx, q, after, limit+1)
+		if err != nil {
 			return artifact.ClaimPage{}, err
 		}
-		if watermark != "" && artifact.ClaimID(id) > watermark {
-			break
-		}
-		if !matchesIdentity(q, identity) {
-			continue
-		}
-		if len(items) == limit {
-			// A first page fixes its watermark at the last matching id, so
-			// claims activated while paging stay out of the enumeration.
-			if watermark == "" {
-				watermark, err = l.lastMatching(ctx, q)
-				if err != nil {
-					return artifact.ClaimPage{}, err
-				}
+		for i := range batch {
+			r := &batch[i]
+			if watermark != "" && artifact.ClaimID(r.id) > watermark {
+				return artifact.ClaimPage{Items: items}, nil
 			}
-			return artifact.ClaimPage{Items: items, Next: &artifact.ClaimCursor{Watermark: watermark, After: items[len(items)-1].ID}}, nil
+			if !matchesIdentity(q, r.identity) {
+				continue
+			}
+			if len(items) == limit {
+				// A first page fixes its watermark at the last matching id, so
+				// claims activated while paging stay out of the enumeration.
+				if watermark == "" {
+					watermark, err = l.lastMatching(ctx, q, limit)
+					if err != nil {
+						return artifact.ClaimPage{}, err
+					}
+				}
+				return artifact.ClaimPage{Items: items, Next: &artifact.ClaimCursor{Watermark: watermark, After: items[len(items)-1].ID}}, nil
+			}
+			var c artifact.RetentionClaim
+			if err := json.Unmarshal([]byte(r.raw), &c); err != nil {
+				return artifact.ClaimPage{}, &artifact.Error{Code: artifact.ErrCorrupt, Operation: "claims_by_owner", Identity: r.id, Detail: err.Error()}
+			}
+			items = append(items, c)
 		}
-		var c artifact.RetentionClaim
-		if err := json.Unmarshal([]byte(raw), &c); err != nil {
-			return artifact.ClaimPage{}, &artifact.Error{Code: artifact.ErrCorrupt, Operation: "claims_by_owner", Identity: id, Detail: err.Error()}
+		if len(batch) < limit+1 {
+			return artifact.ClaimPage{Items: items}, nil
 		}
-		items = append(items, c)
+		after = batch[len(batch)-1].id
 	}
-	if err := rows.Err(); err != nil {
-		return artifact.ClaimPage{}, err
-	}
-	return artifact.ClaimPage{Items: items}, nil
 }
 
-// lastMatching is the highest ClaimID the query matches right now.
-func (l *RetentionLedger) lastMatching(ctx context.Context, q artifact.ClaimOwnerQuery) (artifact.ClaimID, error) {
-	rows, err := l.db.QueryContext(ctx, `SELECT id, owner_identity FROM claims WHERE owner_kind = ? AND owner_authority = ? ORDER BY id DESC`, q.Kind, q.Authority)
+type claimRow struct{ id, identity, raw string }
+
+func (l *RetentionLedger) claimsAfter(ctx context.Context, q artifact.ClaimOwnerQuery, after string, limit int) ([]claimRow, error) {
+	rows, err := l.db.QueryContext(ctx, `SELECT id, owner_identity, claim FROM claims WHERE owner_kind = ? AND owner_authority = ? AND id > ? ORDER BY id LIMIT ?`,
+		q.Kind, q.Authority, after, limit)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer rows.Close()
+	var out []claimRow
 	for rows.Next() {
-		var id, identity string
-		if err := rows.Scan(&id, &identity); err != nil {
+		var r claimRow
+		if err := rows.Scan(&r.id, &r.identity, &r.raw); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// lastMatching is the highest ClaimID the query matches right now, found
+// by reading identities downwards in batches.
+func (l *RetentionLedger) lastMatching(ctx context.Context, q artifact.ClaimOwnerQuery, batch int) (artifact.ClaimID, error) {
+	before := ""
+	for {
+		rows, err := l.db.QueryContext(ctx, `SELECT id, owner_identity FROM claims WHERE owner_kind = ? AND owner_authority = ? AND (? = '' OR id < ?) ORDER BY id DESC LIMIT ?`,
+			q.Kind, q.Authority, before, before, batch)
+		if err != nil {
 			return "", err
 		}
-		if matchesIdentity(q, identity) {
-			return artifact.ClaimID(id), rows.Err()
+		var ids []claimRow
+		for rows.Next() {
+			var r claimRow
+			if err := rows.Scan(&r.id, &r.identity); err != nil {
+				rows.Close()
+				return "", err
+			}
+			ids = append(ids, r)
 		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return "", err
+		}
+		for _, r := range ids {
+			if matchesIdentity(q, r.identity) {
+				return artifact.ClaimID(r.id), nil
+			}
+		}
+		if len(ids) < batch {
+			return "", nil
+		}
+		before = ids[len(ids)-1].id
 	}
-	return "", rows.Err()
 }
 
 // matchesIdentity is ART-RET-3: nil selects every identity, an explicit

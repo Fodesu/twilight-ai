@@ -51,7 +51,7 @@ func TestHostCacheEveryIsConfigurable(t *testing.T) {
 		wantBefore bool
 	}{
 		"an interval of one commit writes after the first commit": {every: 1, wantBefore: true},
-		"a large interval defers to Close":                        {every: 1 << 40, wantBefore: false},
+		"a large interval writes nothing, at Close included":      {every: 1 << 40, wantBefore: false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cache := newCountingCache()
@@ -74,8 +74,10 @@ func TestHostCacheEveryIsConfigurable(t *testing.T) {
 			if err := h.Close(ctx); err != nil {
 				t.Fatal(err)
 			}
-			if cache.count() == 0 {
-				t.Error("Close wrote nothing: the final refresh is not policy-gated on the interval")
+			// Close obeys the same interval (EXT-PRJ-7): a large one never
+			// writes a whole state per Turn, and the next owner folds the tail.
+			if got := cache.count() > 0; got != tc.wantBefore {
+				t.Errorf("wrote entries by Close = %v, want %v (every=%d)", got, tc.wantBefore, tc.every)
 			}
 		})
 	}

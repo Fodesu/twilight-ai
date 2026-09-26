@@ -187,48 +187,68 @@ func (l *RetentionLedger) ClaimsByOwner(ctx context.Context, query artifact.Clai
 	if limit <= 0 {
 		limit = artifact.DefaultClaimPageSize
 	}
-	rows, err := l.d.q.ClaimsByOwnerAfter(ctx, db.ClaimsByOwnerAfterParams{OwnerKind: query.Kind, OwnerAuthority: query.Authority, ID: string(cursor.After)})
-	if err != nil {
-		return artifact.ClaimPage{}, err
-	}
+	// Rows are read in batches of the page size, in ClaimID order, and the
+	// identity rule is applied in Go; a batch that does not fill the page
+	// is followed by the next one, so one call reads a bounded number of
+	// rows per matching claim instead of the owner's whole tail.
 	watermark := cursor.Watermark
+	after := string(cursor.After)
 	var items []artifact.RetentionClaim
-	for _, r := range rows {
-		if watermark != "" && artifact.ClaimID(r.ID) > watermark {
-			break
+	for {
+		rows, err := l.d.q.ClaimsByOwnerAfter(ctx, db.ClaimsByOwnerAfterParams{OwnerKind: query.Kind, OwnerAuthority: query.Authority, ID: after, Limit: pageLimit(limit + 1)})
+		if err != nil {
+			return artifact.ClaimPage{}, err
 		}
-		if !matchesIdentity(query, r.OwnerIdentity) {
-			continue
-		}
-		if len(items) == limit {
-			if watermark == "" {
-				watermark, err = l.lastMatching(ctx, query)
-				if err != nil {
-					return artifact.ClaimPage{}, err
-				}
+		for i := range rows {
+			r := &rows[i]
+			if watermark != "" && artifact.ClaimID(r.ID) > watermark {
+				return artifact.ClaimPage{Items: items}, nil
 			}
-			return artifact.ClaimPage{Items: items, Next: &artifact.ClaimCursor{Watermark: watermark, After: items[len(items)-1].ID}}, nil
+			if !matchesIdentity(query, r.OwnerIdentity) {
+				continue
+			}
+			if len(items) == limit {
+				if watermark == "" {
+					watermark, err = l.lastMatching(ctx, query, limit)
+					if err != nil {
+						return artifact.ClaimPage{}, err
+					}
+				}
+				return artifact.ClaimPage{Items: items, Next: &artifact.ClaimCursor{Watermark: watermark, After: items[len(items)-1].ID}}, nil
+			}
+			var c artifact.RetentionClaim
+			if err := json.Unmarshal([]byte(r.Claim), &c); err != nil {
+				return artifact.ClaimPage{}, &artifact.Error{Code: artifact.ErrCorrupt, Operation: "claims_by_owner", Identity: r.ID, Detail: err.Error()}
+			}
+			items = append(items, c)
 		}
-		var c artifact.RetentionClaim
-		if err := json.Unmarshal([]byte(r.Claim), &c); err != nil {
-			return artifact.ClaimPage{}, &artifact.Error{Code: artifact.ErrCorrupt, Operation: "claims_by_owner", Identity: r.ID, Detail: err.Error()}
+		if len(rows) < limit+1 {
+			return artifact.ClaimPage{Items: items}, nil
 		}
-		items = append(items, c)
+		after = rows[len(rows)-1].ID
 	}
-	return artifact.ClaimPage{Items: items}, nil
 }
 
-func (l *RetentionLedger) lastMatching(ctx context.Context, query artifact.ClaimOwnerQuery) (artifact.ClaimID, error) {
-	rows, err := l.d.q.ClaimIdentitiesByOwnerDesc(ctx, db.ClaimIdentitiesByOwnerDescParams{OwnerKind: query.Kind, OwnerAuthority: query.Authority})
-	if err != nil {
-		return "", err
-	}
-	for _, r := range rows {
-		if matchesIdentity(query, r.OwnerIdentity) {
-			return artifact.ClaimID(r.ID), nil
+// lastMatching is the watermark of a fresh enumeration (ART-RET-3): the
+// greatest ClaimID of the owner that matches the identity rule, found by
+// reading identities downwards in batches.
+func (l *RetentionLedger) lastMatching(ctx context.Context, query artifact.ClaimOwnerQuery, batch int) (artifact.ClaimID, error) {
+	before := "" // no upper bound on the first batch
+	for {
+		rows, err := l.d.q.ClaimIdentitiesByOwnerBefore(ctx, db.ClaimIdentitiesByOwnerBeforeParams{OwnerKind: query.Kind, OwnerAuthority: query.Authority, Before: before, RowLimit: pageLimit(batch)})
+		if err != nil {
+			return "", err
 		}
+		for _, r := range rows {
+			if matchesIdentity(query, r.OwnerIdentity) {
+				return artifact.ClaimID(r.ID), nil
+			}
+		}
+		if len(rows) < batch {
+			return "", nil
+		}
+		before = rows[len(rows)-1].ID
 	}
-	return "", nil
 }
 
 func matchesIdentity(q artifact.ClaimOwnerQuery, identity string) bool {

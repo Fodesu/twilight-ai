@@ -166,7 +166,7 @@ func sameNotes(got, want []string) bool {
 func TestWriterCachesAtCloseAndResumesEverything(t *testing.T) {
 	ctx := context.Background()
 	f := newCacheFixture(t)
-	w := f.open(t, WritersConfig{Cache: f.cache})
+	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: extension.CacheEvery(0).AtClose()})
 	f.commit(t, w, "c1", "n1")
 	f.commit(t, w, "c2", "n2")
 	f.commit(t, w, "c3", "n3")
@@ -184,7 +184,7 @@ func TestWriterCachesAtCloseAndResumesEverything(t *testing.T) {
 	}
 
 	f.counter.reset()
-	reopened := f.open(t, WritersConfig{Cache: f.cache})
+	reopened := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: extension.CacheEvery(0).AtClose()})
 	for _, id := range []extension.ProjectionID{alphaID, betaID} {
 		if n := f.counter.get(id); n != 0 {
 			t.Errorf("%s folded %d events, want 0 when the entry covers the whole log", id, n)
@@ -200,7 +200,7 @@ func TestWriterCachesAtCloseAndResumesEverything(t *testing.T) {
 func TestWriterResumesOnlyTheUncoveredTail(t *testing.T) {
 	ctx := context.Background()
 	f := newCacheFixture(t)
-	w := f.open(t, WritersConfig{Cache: f.cache})
+	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: extension.CacheEvery(0).AtClose()})
 	f.commit(t, w, "c1", "n1")
 	f.commit(t, w, "c2", "n2")
 	f.commit(t, w, "c3", "n3")
@@ -212,6 +212,9 @@ func TestWriterResumesOnlyTheUncoveredTail(t *testing.T) {
 		t.Fatalf("log has %d commits, want 3", len(commits))
 	}
 	// Rewind alpha's entry to cover the first two commits only.
+	// A stale entry stands in for a process that ended before its last
+	// refresh; Save is monotonic, so the current entry is dropped first.
+	f.cache.Delete("s", alphaID, 1)
 	if err := f.cache.Save(ctx, "s", alphaID, 1, f.encodeState(t, "n1", "n2"), session.Head{Next: 2}); err != nil {
 		t.Fatal(err)
 	}
@@ -292,7 +295,7 @@ func TestWriterCachePolicyGovernsWritingButNotReading(t *testing.T) {
 	ctx := context.Background()
 	f := newCacheFixture(t)
 	// A policy that declines alpha and defers for beta.
-	policy := extension.CacheEvery(1).Exclude(alphaID)
+	policy := extension.CacheEvery(1).AtClose().Exclude(alphaID)
 
 	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: policy})
 	f.commit(t, w, "c1", "n1")
@@ -347,9 +350,37 @@ func TestCacheEveryBoundsHowFarBehindAnEntryFalls(t *testing.T) {
 	if err := w.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Close is no exception to the interval: the entry lags by one commit,
+	// which the next Writer folds, instead of the whole state being written
+	// once more (EXT-PRJ-7).
 	_, through, _, err = f.cache.Load(ctx, "s", alphaID, 1)
-	if err != nil || through.Next != 4 {
-		t.Fatalf("entry after Close: through=%d err=%v, want 4", through.Next, err)
+	if err != nil || through.Next != 3 {
+		t.Fatalf("entry after Close: through=%d err=%v, want 3 (the interval governs Close too)", through.Next, err)
+	}
+	f.counter.reset()
+	reopened := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: extension.CacheEvery(3)})
+	if n := f.counter.get(alphaID); n != 1 {
+		t.Errorf("alpha folded %d events on reopen, want 1 (the commit past the entry)", n)
+	}
+	if got := f.notes(t, reopened, alphaID); !sameNotes(got, []string{"n1", "n2", "n3", "n4"}) {
+		t.Errorf("alpha notes = %v", got)
+	}
+}
+
+// A Save that arrives after a later one never moves an entry back: the
+// cache IO runs outside the Writer's critical section (EXT-PRJ-7).
+func TestCacheSaveIsMonotonic(t *testing.T) {
+	ctx := context.Background()
+	f := newCacheFixture(t)
+	if err := f.cache.Save(ctx, "s", alphaID, 1, f.encodeState(t, "n1", "n2"), session.Head{Next: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.cache.Save(ctx, "s", alphaID, 1, f.encodeState(t, "n1"), session.Head{Next: 1}); err != nil {
+		t.Fatal(err)
+	}
+	_, through, ok, err := f.cache.Load(ctx, "s", alphaID, 1)
+	if err != nil || !ok || through.Next != 2 {
+		t.Fatalf("entry after a late save: through=%d ok=%v err=%v, want 2", through.Next, ok, err)
 	}
 }
 

@@ -81,7 +81,7 @@ func TestReopenFoldsOnlyTheTail(t *testing.T) {
 		}
 	}
 	writers := writer.NewWriters(first, counterRegistry(t, counter), writer.Admission{}, session.OpenOptions{},
-		writer.WritersConfig{Cache: first.ProjectionCache()})
+		writer.WritersConfig{Cache: first.ProjectionCache(), CachePolicy: extension.CacheEvery(0).AtClose()})
 	w, err := writers.Writer(ctx, sid)
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +99,7 @@ func TestReopenFoldsOnlyTheTail(t *testing.T) {
 	second := postgrestest.OpenDSN(t, dsn).Sessions()
 	counter.reset()
 	writers2 := writer.NewWriters(second, counterRegistry(t, counter), writer.Admission{}, session.OpenOptions{},
-		writer.WritersConfig{Cache: second.ProjectionCache()})
+		writer.WritersConfig{Cache: second.ProjectionCache(), CachePolicy: extension.CacheEvery(0).AtClose()})
 	w2, err := writers2.Writer(ctx, sid)
 	if err != nil {
 		t.Fatal(err)

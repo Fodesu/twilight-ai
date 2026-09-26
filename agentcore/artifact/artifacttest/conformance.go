@@ -7,6 +7,7 @@ package artifacttest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -315,6 +316,37 @@ func testPaging(t *testing.T, f Fixture) {
 	filtered, err := f.Ledger.ClaimsByOwner(ctx, artifact.ClaimOwnerQuery{Kind: "k", Authority: "s", Identities: []string{"c2", "c9", ""}}, artifact.ClaimCursor{})
 	if err != nil || len(filtered.Items) != 2 || filtered.Next != nil {
 		t.Fatalf("identity filter = %+v %v", filtered, err)
+	}
+	// An identity rule sparser than the page: matching claims are spread
+	// over many non-matching ones, and every page still fills, in order,
+	// with the watermark fixed on the first.
+	for i := range 20 {
+		id := fmt.Sprintf("d%02d", i)
+		if _, err := f.Ledger.Activate(ctx, artifact.ClaimID("sparse-"+id), artifact.ClaimOwner{Kind: "k", Authority: "sparse", Identity: id}, set); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sparse := artifact.ClaimOwnerQuery{Kind: "k", Authority: "sparse", Identities: []string{"d03", "d09", "d15", "d19"}, Limit: 2}
+	var sparseSeen []artifact.ClaimID
+	cursor = artifact.ClaimCursor{}
+	for pages = 0; ; pages++ {
+		page, err := f.Ledger.ClaimsByOwner(ctx, sparse, cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, c := range page.Items {
+			sparseSeen = append(sparseSeen, c.ID)
+		}
+		if page.Next == nil {
+			break
+		}
+		if page.Next.Watermark != "sparse-d19" {
+			t.Fatalf("sparse watermark = %s, want the last matching claim", page.Next.Watermark)
+		}
+		cursor = *page.Next
+	}
+	if want := []artifact.ClaimID{"sparse-d03", "sparse-d09", "sparse-d15", "sparse-d19"}; fmt.Sprint(sparseSeen) != fmt.Sprint(want) || pages > 3 {
+		t.Fatalf("sparse enumeration = %v in %d pages, want %v in at most 3", sparseSeen, pages+1, want)
 	}
 	empty, err := f.Ledger.ClaimsByOwner(ctx, artifact.ClaimOwnerQuery{Kind: "k", Authority: "s", Identities: []string{""}}, artifact.ClaimCursor{})
 	if err != nil || len(empty.Items) != 0 {

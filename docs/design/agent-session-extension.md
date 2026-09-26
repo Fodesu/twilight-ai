@@ -291,7 +291,7 @@ func NewProjectionReader(store session.Store, registry *Registry, cache Projecti
 
 **EXT-PRJ-6** 写入与读取的权限不对称：`WritersConfig.CachePolicy` 只决定 Writer 写哪个投影的条目；读取一律尝试缓存中的条目，不论谁写的。某个投影的条目由它的宿主在语义检查点上写入时（run 的 machine projection 经 `SnapshotPolicy`，见 RUN-CMT-2），组装层用 `CachePolicy.Exclude` 把它排除，Writer 便只读不写，绝不会把条目落在检查点之间。
 
-**EXT-PRJ-7** 缓存是派生数据，写入尽力而为：`Save` 失败只让下次多折，不影响 Commit 结果。刷新在 Writer 的互斥区之外执行：策略判定与状态快照在区内完成（状态按 EXT-PRJ-1 不可变，快照即引用），编码与 `Save` 在解锁后进行，因此缓存 IO 不延长事务边界，与后续提交也没有顺序约束。区间是部署参数而非常量：`CacheEvery(n)` 的 `n` 由部署给出，`n <= 0` 才取 `DefaultCacheEvery`，且必须能在不改代码的情况下调整：宿主层把它暴露为 `Ports.CacheEvery`（APP-MEM-2），换值即换代价，不必重编译。间距给出可依赖的代价上界——进程异常结束后续折不超过 `n` 行，干净 `Close` 后为零；`Close` 的刷新同样受策略约束，因此被 `Exclude` 的投影在关闭时也不会被写入。
+**EXT-PRJ-7** 缓存是派生数据，写入尽力而为：`Save` 失败只让下次多折，不影响 Commit 结果。刷新在 Writer 的互斥区之外执行：策略判定与状态快照在区内完成（状态按 EXT-PRJ-1 不可变，快照即引用），编码与 `Save` 在解锁后进行，因此缓存 IO 不延长事务边界，与后续提交也没有顺序约束。区间是部署参数而非常量：`CacheEvery(n)` 的 `n` 由部署给出，`n <= 0` 才取 `DefaultCacheEvery`，且必须能在不改代码的情况下调整：宿主层把它暴露为 `Ports.CacheEvery`（APP-MEM-2），换值即换代价，不必重编译。间距给出可依赖的代价上界：任何时刻条目落后 head 不超过 `n` 个 commit，续折不超过 `n` 行；`Close` 不例外，`CacheEvery(n)` 在关闭时仍按间距判定，因为大投影（chatlog surface 随历史增长）在每次关闭时整体写一次，累计写量随历史长度平方增长，而按活动工作获取所有权的部署（APP-ACT）每 Turn 都关闭。需要干净 Close 后零续折的部署以 `CachePolicy.AtClose()` 包装策略。`Save` 单调：条目的 `through` 只增不减，晚到的旧写入被丢弃（刷新在互斥区外，两次刷新可能乱序到达），三个实现（内存、filestore、Postgres 的条件 UPSERT）均如此。被 `Exclude` 的投影在关闭时也不会被写入。
 
 **EXT-PRJ-8（继承策略）** `ProjectionDefinition.Inherits` 是按逻辑流判定的谓词 `InheritPolicy func(session.StreamRef) bool`，声明投影从 fork 继承前缀中折叠哪些流。nil 为按声明的 lineage 继承：继承 commit（`Seq <= header.Parent.Seq`）只折叠 domain 声明为 `LineageSession` 的流批次，`LineageSegment` domain 的批次跳过（经 `Registry.LookupStream` 查声明）；`InheritAll`：继承 commit 的全部批次都折叠；`InheritStreams(domains...)` 折叠列出的 domain。fork 语义由此随 domain 的声明进入投影，Registry 不含任何 domain 的特判。tip 段的 commit 总是全部折叠。`Registry.FoldFrom(scope, state, commits, header)` 以 Session 的 tip header 判定继承边界，`Writer.rebuild` 与 `ProjectionReader` 都经它折叠；`Fold` 等价于无 Parent 的 `FoldFrom`，用于只含 tip commit 的折叠（provisional group）。默认值使执行状态投影（`twilight/run` 的 Machine）不把父的 Run 当作子的执行（SES-FRK-5）；chatlog 的 Surface/Context 与 turn 的 Surface 声明 `InheritAll`，因为它们的语义内容（assistant、tool_result、attempt 结算）来自 run 事实。app module 不声明时得到默认值。
 
@@ -322,7 +322,7 @@ v1 conformance 必须验证：
 - **EXT-PRJ-8**：默认继承策略下继承 commit 中 `LineageSegment` domain 的批次不进入折叠、tip commit 全部折叠；`InheritAll` 折叠继承 commit 的全部批次；Writer 与 ProjectionReader 对同一 fork 折出相同状态；
 - **EXT-PRJ-9**：非 authoritative 投影的 fold 失败不阻止 commit，该投影此后读到 `ErrProjectionUnhealthy`、不再写缓存，authoritative 投影不受影响；authoritative 投影的 fold 失败使 commit 为 `invalid`；
 - **EXT-WRT-8/9**：Fork 之后唯一覆盖前缀内容的 claim 是父段的 commit claim，打开子不释放它；删除父后该 claim 仍 Active、子仍读到前缀；Collect 截断父段时只释放被截 commit 的 claim；删除全部到达者并 Collect 后 claim 释放；重复 Delete 返回 nil；
-- **EXT-PRJ-5 至 7**：干净 Close 后重开不折任何 event；落在继承 commit 或继承边界上的条目不被复用，没有自身 commit 的 tip 在 Close 时不写条目；条目只覆盖前缀时只折尾部；日志越界、落在组内、状态不可解码的条目一律回退为全折且不使 Open 失败；被策略排除的投影不被写入，但它已有的条目仍被复用；`CacheEvery(n)` 下条目落后不超过 n 行；未配置缓存时不写任何条目且行为不变。
+- **EXT-PRJ-5 至 7**：`AtClose` 下干净 Close 后重开不折任何 event，`CacheEvery(n)` 下 Close 不写落后不足 n 的条目且重开只折该尾部；晚到的旧 `Save` 不回退条目；落在继承 commit 或继承边界上的条目不被复用，没有自身 commit 的 tip 在 Close 时不写条目；条目只覆盖前缀时只折尾部；日志越界、落在组内、状态不可解码的条目一律回退为全折且不使 Open 失败；被策略排除的投影不被写入，但它已有的条目仍被复用；`CacheEvery(n)` 下条目落后不超过 n 行；未配置缓存时不写任何条目且行为不变。
 
 ## 8. Application module
 

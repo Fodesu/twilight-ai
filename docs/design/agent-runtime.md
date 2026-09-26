@@ -186,7 +186,7 @@ func (s *Session) Close(ctx) error
 
 **APP-ACT-4（与现有接口的关系）** `OpenSession` 与 `Session.Close` 的语义不变；HTTP `open` 显式指定 preset 时仍走原路径，这样打开的 Session 同样受 APP-ACT-2 释放。`Takeover` 仍是唯一的强制接管开关，激活不使用它。`Application.Close` 先停止扫描，再关闭持有的 Session，再等待进行中的释放与后台激活。
 
-**APP-ACT-5（重开成本）** 激活模型使"释放 → 另一副本重开"成为正常的 Turn 路径，重开成本因此是每 Turn 成本。Open 的读取由两部分构成：段的 `CommitIndex`（SES-REP-5）与各投影的起点。前者 adapter 应以索引列回答而不解码 commit 正文（Postgres 的 `session_commits.commit_id/streams`）；后者经 durable 的 `extension.ProjectionCache`（EXT-PRJ-3）从保存状态起折叠，落后上限为 `CacheEvery`，因此 Open 的折叠量与历史长度无关。共享存储实现须提供 `ProjectionCacheProvider`（filestore、Postgres 均已提供）；`ledgerHandle` 在 Open 时装载整段 CommitID 用于重放判定，这部分仍与段长度成正比，改为按需查询是后续项。
+**APP-ACT-5（重开成本）** 激活模型使"释放 → 另一副本重开"成为正常的 Turn 路径，重开成本因此是每 Turn 成本。Open 的读取由两部分构成：段的 `CommitIndex`（SES-REP-5）与各投影的起点。前者 adapter 应以索引列回答而不解码 commit 正文（Postgres 的 `session_commits.commit_id/streams`）；后者经 durable 的 `extension.ProjectionCache`（EXT-PRJ-3）从保存状态起折叠，落后上限为 `CacheEvery`，因此 Open 的折叠量与历史长度无关。写侧对应的上界：Close 不再无条件刷新（EXT-PRJ-7），每 Turn 的缓存写量最多为每 `CacheEvery` 个 commit 一次整状态，而不是每次释放一次。共享存储实现须提供 `ProjectionCacheProvider`（filestore、Postgres 均已提供）；`ledgerHandle` 在 Open 时装载整段 CommitID 用于重放判定，这部分仍与段长度成正比，改为按需查询是后续项。
 
 ### 7.1 compaction
 

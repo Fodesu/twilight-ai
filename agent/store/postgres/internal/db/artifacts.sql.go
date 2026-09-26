@@ -31,29 +31,36 @@ func (q *Queries) Claim(ctx context.Context, id string) (string, error) {
 	return claim, err
 }
 
-const claimIdentitiesByOwnerDesc = `-- name: ClaimIdentitiesByOwnerDesc :many
-SELECT id, owner_identity FROM claims WHERE owner_kind = $1 AND owner_authority = $2 ORDER BY id DESC
+const claimIdentitiesByOwnerBefore = `-- name: ClaimIdentitiesByOwnerBefore :many
+SELECT id, owner_identity FROM claims WHERE owner_kind = $1 AND owner_authority = $2 AND ($3::text = '' OR id < $3::text) ORDER BY id DESC LIMIT $4
 `
 
-type ClaimIdentitiesByOwnerDescParams struct {
+type ClaimIdentitiesByOwnerBeforeParams struct {
 	OwnerKind      string
 	OwnerAuthority string
+	Before         string
+	RowLimit       int32
 }
 
-type ClaimIdentitiesByOwnerDescRow struct {
+type ClaimIdentitiesByOwnerBeforeRow struct {
 	ID            string
 	OwnerIdentity string
 }
 
-func (q *Queries) ClaimIdentitiesByOwnerDesc(ctx context.Context, arg ClaimIdentitiesByOwnerDescParams) ([]ClaimIdentitiesByOwnerDescRow, error) {
-	rows, err := q.db.Query(ctx, claimIdentitiesByOwnerDesc, arg.OwnerKind, arg.OwnerAuthority)
+func (q *Queries) ClaimIdentitiesByOwnerBefore(ctx context.Context, arg ClaimIdentitiesByOwnerBeforeParams) ([]ClaimIdentitiesByOwnerBeforeRow, error) {
+	rows, err := q.db.Query(ctx, claimIdentitiesByOwnerBefore,
+		arg.OwnerKind,
+		arg.OwnerAuthority,
+		arg.Before,
+		arg.RowLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ClaimIdentitiesByOwnerDescRow{}
+	items := []ClaimIdentitiesByOwnerBeforeRow{}
 	for rows.Next() {
-		var i ClaimIdentitiesByOwnerDescRow
+		var i ClaimIdentitiesByOwnerBeforeRow
 		if err := rows.Scan(&i.ID, &i.OwnerIdentity); err != nil {
 			return nil, err
 		}
@@ -66,13 +73,14 @@ func (q *Queries) ClaimIdentitiesByOwnerDesc(ctx context.Context, arg ClaimIdent
 }
 
 const claimsByOwnerAfter = `-- name: ClaimsByOwnerAfter :many
-SELECT id, owner_identity, claim FROM claims WHERE owner_kind = $1 AND owner_authority = $2 AND id > $3 ORDER BY id
+SELECT id, owner_identity, claim FROM claims WHERE owner_kind = $1 AND owner_authority = $2 AND id > $3 ORDER BY id LIMIT $4
 `
 
 type ClaimsByOwnerAfterParams struct {
 	OwnerKind      string
 	OwnerAuthority string
 	ID             string
+	Limit          int32
 }
 
 type ClaimsByOwnerAfterRow struct {
@@ -82,7 +90,12 @@ type ClaimsByOwnerAfterRow struct {
 }
 
 func (q *Queries) ClaimsByOwnerAfter(ctx context.Context, arg ClaimsByOwnerAfterParams) ([]ClaimsByOwnerAfterRow, error) {
-	rows, err := q.db.Query(ctx, claimsByOwnerAfter, arg.OwnerKind, arg.OwnerAuthority, arg.ID)
+	rows, err := q.db.Query(ctx, claimsByOwnerAfter,
+		arg.OwnerKind,
+		arg.OwnerAuthority,
+		arg.ID,
+		arg.Limit,
+	)
 	if err != nil {
 		return nil, err
 	}

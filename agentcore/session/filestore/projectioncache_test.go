@@ -163,7 +163,7 @@ func TestProjectionCacheSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	writers := writer.NewWriters(first, mustRegistry(t, counter), writer.Admission{}, session.OpenOptions{},
-		writer.WritersConfig{Cache: first.ProjectionCache()})
+		writer.WritersConfig{Cache: first.ProjectionCache(), CachePolicy: extension.CacheEvery(0).AtClose()})
 	w, err := writers.Writer(ctx, sid)
 	if err != nil {
 		t.Fatal(err)
