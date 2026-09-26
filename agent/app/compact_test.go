@@ -10,9 +10,9 @@ import (
 
 	"github.com/felinics/twilight/agent/app"
 	"github.com/felinics/twilight/agent/context/compaction"
+	executorlocal "github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agent/store/sqlite/sqlitetest"
 	"github.com/felinics/twilight/agentcore/executor"
-	executorlocal "github.com/felinics/twilight/agentcore/executor/local"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"

@@ -14,7 +14,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 |---|---|---|---|---|
 | executor worker | execution ledger 的租约与 fencing（authority 在共享 store）；进程内 `ProgressHub`、`SettlementHub` | `effect.ExecutionPort` 的 HTTP 绑定（`executor/http`） | `executionstore.Store`；`ExecutionBackend`（经 CLD-WIR） | ledger 吞吐 |
 | model backend | provider 凭证、base URL、限流配额；in-flight 表 | CLD-WIR 的 Backend 协议 | `sdk`、`provider/*`、`loop.ModelCatalog` | provider 并发 |
-| tool sandbox backend | sandbox 生命周期、workspace materialization；in-flight 表 | CLD-WIR 的 Backend 协议 | `loop.ToolCatalog`、`agentcore/environment`、`agentcore/workspace` | sandbox 资源，按 session 或 tenant 隔离 |
+| tool sandbox backend | sandbox 生命周期、workspace materialization；in-flight 表 | CLD-WIR 的 Backend 协议 | `loop.ToolCatalog`；workspace 与 environment 模型随本组件定义（CLD-TOL-1） | sandbox 资源，按 session 或 tenant 隔离 |
 | owner service | Session 租约（`session.OpenOptions`）；Writer 内存投影 | 命令面（Send、Turn 状态、Fork 等 `app.Application` 的方法）；观察流（`observe.Bus`） | `session.Backend`、`artifact.ContentStore`、`owner.Artifacts`、`process.Store`、`effect.ExecutionPort`（`executor/http.Client`）、`effect.SettlementPort` | Session 数 |
 | controller | 无持久状态；策略参数（放弃时限、扫描间隔） | 内部 | `session.Store.ListLeases`（SES-OWN-5）、`effect.ExecutionPort.Attach`、`effect.Recoverer`、Worker 的 `Dispose`、owner 的 Open | 单实例或 leader 选举 |
 | gateway | 无持久状态；认证会话 | 面向用户的 HTTP/WebSocket | owner 的命令面与观察流 | 连接数 |
@@ -42,7 +42,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 ### 2.3 tool sandbox backend
 
-**CLD-TOL-1** 组件承载 `loop.ToolCatalog` 的实现与 `agentcore/environment`、`agentcore/workspace`：在 Assignment 携带的 Target 上 materialize 工具运行环境并执行。Target 的解析在 owner 侧完成（`loop.TargetResolver`，APP-TGT），backend 只接收已解析的 `run.TargetRef`。
+**CLD-TOL-1** 组件承载 `loop.ToolCatalog` 的实现与工具运行环境的 materialization：在 Assignment 携带的 Target 上 materialize 工具运行环境并执行。逻辑 workspace 与物理 environment 的模型属于本组件，在建立本组件时定义（原 `agentcore/workspace`、`agentcore/environment` 无使用者，2026-09-26 删除；`agentcore` 不承载资源模型，APP-TGT-1）。Target 的解析在 owner 侧完成（`loop.TargetResolver`，APP-TGT），backend 只接收已解析的 `run.TargetRef`。
 
 **CLD-TOL-2** Ref 是 sandbox 内一次执行的标识；`Attach` 按 sandbox 状态回答，sandbox 仍在但执行记录不在为 missing，sandbox 本身不可达为 orphaned（不得回答 missing，RUN-EXE-3）。工具是否可重派由 Assignment 的 Replay 声明决定，Worker 在调用 `Restart` 前判定（RUN-EXE-9、TRN-DUR-4）；backend 不做这个判断。
 

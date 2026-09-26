@@ -5,10 +5,10 @@ import (
 	"errors"
 	"testing"
 
+	executorlocal "github.com/felinics/twilight/agent/executor/local"
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/executor"
-	executorlocal "github.com/felinics/twilight/agentcore/executor/local"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/session"
