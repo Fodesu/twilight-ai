@@ -95,6 +95,18 @@ CREATE TABLE session_commits (
 	PRIMARY KEY (segment, seq),
 	UNIQUE (segment, commit_id)
 );
+-- The CommitIndex's stream counts (SES-REP-3/5): one row per commit per
+-- stream, written with the commit, so StreamHead is a sum over one stream's
+-- rows and Index derives its entries without decoding a body.
+CREATE TABLE session_commit_streams (
+	segment   TEXT   NOT NULL,
+	seq       BIGINT NOT NULL,
+	domain    TEXT   NOT NULL,
+	stream_id TEXT   NOT NULL,
+	events    BIGINT NOT NULL,
+	PRIMARY KEY (segment, seq, domain, stream_id)
+);
+CREATE INDEX session_commit_streams_by_stream ON session_commit_streams (segment, domain, stream_id, seq);
 CREATE TABLE session_roots (
 	id          TEXT PRIMARY KEY,
 	tip         TEXT NOT NULL,
@@ -106,6 +118,19 @@ CREATE TABLE session_roots (
 	failed      TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX session_roots_owned ON session_roots (owned);
+-- The activation scan's read (APP-ACT-3): held leases by expiry.
+CREATE INDEX session_roots_expiry ON session_roots (lease_until) WHERE owned;
+
+-- Folded projection states (EXT-PRJ-3), so a Session reopened on another
+-- replica folds only the tail.
+CREATE TABLE projection_cache (
+	session    TEXT   NOT NULL,
+	projection TEXT   NOT NULL,
+	version    BIGINT NOT NULL,
+	state      TEXT   NOT NULL,
+	through    BIGINT NOT NULL,
+	PRIMARY KEY (session, projection, version)
+);
 
 CREATE TABLE content (
 	authority  TEXT NOT NULL,
