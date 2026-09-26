@@ -1,6 +1,6 @@
 // Package workspace models a durable logical work world. It is an optional
 // application capability: Agent Core does not import this package or interpret
-// its revisions, checkpoints, or runtime bindings.
+// its revisions, snapshots, or runtime bindings.
 package workspace
 
 import (
@@ -18,8 +18,8 @@ type ID string
 // materialized (for example, a git commit).
 type RevisionRef string
 
-// CheckpointRef identifies a durable workspace checkpoint.
-type CheckpointRef string
+// SnapshotRef identifies a durable workspace snapshot.
+type SnapshotRef string
 
 // BackendID identifies a runtime provider without exposing its API to the
 // workspace domain.
@@ -33,36 +33,36 @@ type EnvironmentRef = environment.EnvironmentRef
 // Generation changes when the workspace is rebound to a new environment.
 type RuntimeBinding = environment.Binding
 
-// Checkpoint is an immutable durable snapshot anchor produced by a provider.
+// Snapshot is an immutable durable snapshot anchor produced by a provider.
 // StateRef is provider-neutral at this boundary and is interpreted by the
 // provider selected by Backend.
-type Checkpoint struct {
-	Ref       CheckpointRef        `json:"ref"`
+type Snapshot struct {
+	Ref       SnapshotRef          `json:"ref"`
 	Workspace ID                   `json:"workspace"`
 	Backend   BackendID            `json:"backend"`
 	StateRef  environment.StateRef `json:"stateRef"`
-	Parent    *CheckpointRef       `json:"parent,omitempty"`
+	Parent    *SnapshotRef         `json:"parent,omitempty"`
 }
 
 // Fork describes creation of a new logical workspace from an existing durable
 // anchor. A fork receives a new identity and never aliases the source's mutable
 // runtime binding.
 type Fork struct {
-	Source      ID            `json:"source"`
-	Destination ID            `json:"destination"`
-	Checkpoint  CheckpointRef `json:"checkpoint"`
-	Base        RevisionRef   `json:"base,omitempty"`
+	Source      ID          `json:"source"`
+	Destination ID          `json:"destination"`
+	Snapshot    SnapshotRef `json:"snapshot"`
+	Base        RevisionRef `json:"base,omitempty"`
 }
 
 // Workspace is the durable logical work world operated on by an application.
 // Filesystem contents and provider objects are not embedded here; only the
 // anchors needed to materialize or restore them are retained.
 type Workspace struct {
-	ID         ID              `json:"id"`
-	Project    string          `json:"project,omitempty"`
-	Base       RevisionRef     `json:"base"`
-	Checkpoint *CheckpointRef  `json:"checkpoint,omitempty"`
-	Runtime    *RuntimeBinding `json:"runtime,omitempty"`
+	ID       ID              `json:"id"`
+	Project  string          `json:"project,omitempty"`
+	Base     RevisionRef     `json:"base"`
+	Snapshot *SnapshotRef    `json:"snapshot,omitempty"`
+	Runtime  *RuntimeBinding `json:"runtime,omitempty"`
 }
 
 // Target returns the opaque Agent Core target for this workspace. The reverse
@@ -78,7 +78,7 @@ type Store interface {
 	Create(context.Context, Workspace) error
 	Get(context.Context, ID) (Workspace, error)
 	Put(context.Context, Workspace) error
-	PutCheckpoint(context.Context, Checkpoint) error
-	GetCheckpoint(context.Context, CheckpointRef) (Checkpoint, error)
+	PutSnapshot(context.Context, Snapshot) error
+	GetSnapshot(context.Context, SnapshotRef) (Snapshot, error)
 	Fork(context.Context, Fork) (Workspace, error)
 }

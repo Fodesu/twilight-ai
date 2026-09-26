@@ -8,12 +8,12 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 )
 
-// APP-CKP-1: checkpoint identifiers are a function of the Session, the base
-// context digest and the summary text, so a Checkpoint retried over the same
+// APP-CKP-1: compaction identifiers are a function of the Session, the base
+// context digest and the summary text, so a Compaction retried over the same
 // base replays the same CommitID.
-func TestCheckpointIDsAreDerived(t *testing.T) {
+func TestCompactionIDsAreDerived(t *testing.T) {
 	base := es.DigestBytes([]byte("base"))
-	ckpt, sum, err := checkpointIDs("s", base, "summary")
+	ckpt, sum, err := compactionIDs("s", base, "summary")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,12 +35,12 @@ func TestCheckpointIDsAreDerived(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _, err := checkpointIDs(tc.sid, tc.base, tc.summary)
+			got, _, err := compactionIDs(tc.sid, tc.base, tc.summary)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if (got == ckpt) != tc.same {
-				t.Fatalf("checkpointIDs = %s; equal to %s is %v, want %v", got, ckpt, got == ckpt, tc.same)
+				t.Fatalf("compactionIDs = %s; equal to %s is %v, want %v", got, ckpt, got == ckpt, tc.same)
 			}
 		})
 	}

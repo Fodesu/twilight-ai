@@ -7,7 +7,7 @@ Workspace is an optional application domain for logical work environments.
 
 - **Workspace** is a durable logical mutable-world identity. Its identity is
   stable while the physical runtime may be replaced.
-- **Checkpoint** is an immutable durable state anchor. A checkpoint may be
+- **Snapshot** is an immutable durable state anchor. A snapshot may be
   restored or used as the source of a fork. Its `StateRef` identifies durable
   provider state independently of the source environment's lifetime.
 - **Runtime** is a physical materialization of a Workspace. Local processes,
@@ -19,9 +19,9 @@ Workspace is an optional application domain for logical work environments.
   only the provider and its opaque execution handle (RUN-EXE-9).
 
 `Provider.Attach(EnvironmentRef)` adopts an existing environment.
-`Provider.Restore(RestoreSpec{State, Destination})` materializes checkpoint state
+`Provider.Restore(RestoreSpec{State, Destination})` materializes snapshot state
 in a destination described by `Spec`. The destination may retain the Workspace
-identity for recovery or use a new identity for a fork. Checkpoint production
+identity for recovery or use a new identity for a fork. Snapshot production
 and durable-state retention are owned by the provider/application adapter.
 
 Session fork (SES section 8, OWN-FRK-2) does not call Restore. A fork copies
@@ -31,8 +31,8 @@ had at the fork point, and the parent's later tool calls keep their effects on
 the parent's workspace. The child's Runs execute against whatever its target
 binding resolves to. Regenerate and edit (TRN-DUR-3) are therefore
 history-only operations. Resolving the fork point to a Turn-boundary
-workspace checkpoint and restoring it into a new workspace bound to the child
-Session is future design; it needs a checkpoint reference recorded at Turn
+workspace snapshot and restoring it into a new workspace bound to the child
+Session is future design; it needs a snapshot reference recorded at Turn
 boundaries and is carried out by the application's fork policy (below).
 
 Agent Core carries an opaque `run.TargetRef{Kind, ID}` on an Assignment. An
@@ -59,7 +59,7 @@ establishes a new resource binding for it:
 
 - share the parent's existing workspace;
 - clone the workspace;
-- restore a checkpoint into a new workspace;
+- restore a snapshot into a new workspace;
 - allocate a fresh workspace.
 
 Until the application binds one, the child's tool effects have no target.

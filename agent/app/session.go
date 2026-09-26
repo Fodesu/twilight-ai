@@ -503,10 +503,10 @@ func (s *Session) result(ctx context.Context, resp *driver.DriveResult) Result {
 }
 
 // Compact summarizes the context with the preset's model and commits a
-// checkpoint retaining a pair-closed suffix; ok is false when the context is
+// compaction retaining a pair-closed suffix; ok is false when the context is
 // already within the retain window (APP-CKP-1). It runs between Turns and,
 // under the quiescent-Run guard, between the steps of a Turn.
-func (s *Session) Compact(ctx context.Context) (chatlog.CheckpointID, bool, error) {
+func (s *Session) Compact(ctx context.Context) (chatlog.CompactionID, bool, error) {
 	policy := compaction.Policy{AfterEntries: s.opts.CompactAfterEntries, RetainEntries: s.opts.CompactRetainEntries}
 	cctx, err := chatlog.ReadContext(ctx, s.h.Writer().Projections(), s.sid)
 	if err != nil {
@@ -526,7 +526,7 @@ func (s *Session) Compact(ctx context.Context) (chatlog.CheckpointID, bool, erro
 	if err != nil {
 		return "", false, err
 	}
-	id, err := s.a.Chatlog.Checkpoint(ctx, s.h.Writer(), summary, retain, turn.RequireQuiescentRun)
+	id, err := s.a.Chatlog.Compact(ctx, s.h.Writer(), summary, retain, turn.RequireQuiescentRun)
 	if err != nil {
 		return "", false, err
 	}

@@ -62,7 +62,7 @@ func (echoTool) Execute(_ context.Context, req loop.ToolExecutionRequest) loop.T
 
 // APP-CKP-1: with an automatic policy, a Turn of several tool steps is
 // compacted between its steps: each model request after the threshold
-// starts from a checkpoint's summary, the tool pairs stay closed, and the
+// starts from a compaction's summary, the tool pairs stay closed, and the
 // Turn settles normally.
 func TestCompactionRunsBetweenStepsOfATurn(t *testing.T) {
 	ctx := context.Background()
@@ -99,8 +99,8 @@ func TestCompactionRunsBetweenStepsOfATurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Two checkpoints between steps and one after the settlement drained.
-	if n := surface.Checkpoints.Len(); n != 3 {
-		t.Fatalf("checkpoints = %d, want 3 (before each later step, then after settlement)", n)
+	// Two compactions between steps and one after the settlement drained.
+	if n := surface.Compactions.Len(); n != 3 {
+		t.Fatalf("compactions = %d, want 3 (before each later step, then after settlement)", n)
 	}
 }

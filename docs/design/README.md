@@ -12,12 +12,12 @@ agentcore/     Agent Core：session、artifact、run、turn、decision（目录�
                executor、owner、driver、preset、observe、store、environment、workspace
 agent/         参考 agent：app（组装、Send/Submit/Drain、后台驱动）、prompt（context-v1
                PromptBuilder 与默认目录）、spawn（子代理 Responder 与工具）、
-               context/compaction（checkpoint 策略与 compactor prompt）
+               context/compaction（compaction 策略与 compactor prompt）
 ```
 
 Core 不携带任何默认的上下文策略、默认工具或默认组装：`owner.New` 要求调用方传入
 PromptBuilder 目录；子代理只以 `Waiting(ExternalResponse)` 加 `Driver.Responders` 的
-扩展点存在；checkpoint 只有机制与命令（chatlog），何时 compact、保留多少、用什么
+扩展点存在；compaction 只有机制与命令（chatlog），何时 compact、保留多少、用什么
 prompt 属于 `agent/`。Memoh 这类 cloud agent 与参考 agent 并列建立在 `agentcore/`
 上，不覆盖参考 agent 的任何决定。
 

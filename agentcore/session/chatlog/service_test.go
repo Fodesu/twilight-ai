@@ -47,7 +47,7 @@ func TestCheckRetainClosure(t *testing.T) {
 		})
 	}
 	// An assistant whose call has no result yet must be retained, whatever
-	// else is (APP-CKP-2): the result will land after the checkpoint.
+	// else is (APP-CKP-2): the result will land after the compaction.
 	open := openEntries()
 	openPair := func(i int) chatlog.EntryDigestPair { return open[i].Pair() }
 	openCases := []struct {

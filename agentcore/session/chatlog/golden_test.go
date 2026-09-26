@@ -23,7 +23,7 @@ func freezeChatlog(t *testing.T, name, got, want string) {
 	t.Errorf("golden %s drifted — an intentional wire change must update this fixture and agent-session-chatlog.md:\n got: %s\nwant: %s", name, got, want)
 }
 
-// TestChatlogWireGolden freezes the checkpoint digest preimages and one
+// TestChatlogWireGolden freezes the compaction digest preimages and one
 // registry-encoded payload of payload version 1.
 func TestChatlogWireGolden(t *testing.T) {
 	pairs := []chatlog.EntryDigestPair{
@@ -34,7 +34,7 @@ func TestChatlogWireGolden(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	freezeChatlog(t, "base context digest", string(base), "sha256:7f40cdee9d90c376de1c8767e44ee9f44d1e1f1615874f0aed859729d48091fc")
+	freezeChatlog(t, "base context digest", string(base), "sha256:5b01f17f53ad3e349e1b4d89e673a1647bb1721c3f3c0768a951e2d4a57cac5b")
 
 	emptyA, err := chatlog.DigestBaseContext(nil)
 	if err != nil {
@@ -47,21 +47,21 @@ func TestChatlogWireGolden(t *testing.T) {
 	if emptyA != emptyB {
 		t.Fatal("nil and empty base must digest identically")
 	}
-	freezeChatlog(t, "empty base context digest", string(emptyA), "sha256:8e33dda0292040be127597da4f3cba570557cf1fd28cb893472a45654da9ed67")
+	freezeChatlog(t, "empty base context digest", string(emptyA), "sha256:5b94ad57d55dbade56535b5c515bee09d39d60bc16440746d97d417c934ec004")
 
-	cp := chatlog.CheckpointCreatedPayload{
-		CheckpointID:      "ckpt-1",
+	cp := chatlog.CompactionCreatedPayload{
+		CompactionID:      "ckpt-1",
 		CoveredThrough:    session.Position{Commit: 7},
 		BaseContextDigest: base,
 		SummaryID:         "sum-1",
 		SummaryDigest:     "sha256:cc",
 		Retained:          pairs[1:],
 	}
-	cpd, err := chatlog.DigestCheckpoint(&cp)
+	cpd, err := chatlog.DigestCompaction(&cp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	freezeChatlog(t, "checkpoint digest", string(cpd), "sha256:4da92a8e99605b0d4e08a47d79ef1963d6047de7639682015cfbe91e6e3cdd02")
+	freezeChatlog(t, "compaction digest", string(cpd), "sha256:bbfcad9e58bc7a287bd5519b5ecde07dc2926ba9f88363bf15bc3b6ec10b630f")
 
 	reg, err := extension.BuildRegistry(runmod.Module, attempt.Module, chatlog.Module)
 	if err != nil {

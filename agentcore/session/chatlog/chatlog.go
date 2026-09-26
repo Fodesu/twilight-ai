@@ -1,6 +1,6 @@
 // Package chatlog is the first-party conversation module
 // (docs/design/agent-session-chatlog.md). It owns the conversation's own
-// facts -- the input lifecycle, summaries, checkpoints and out-of-band
+// facts -- the input lifecycle, summaries, compactions and out-of-band
 // result supersession -- and projects the conversation (Surface) and the
 // model-facing context (Context) from those facts together with the Run
 // facts of agent/run. Assistant and tool_result entries are projections of
@@ -34,11 +34,11 @@ type (
 	ToolResultID string
 	SummaryID    string
 	CallID       string
-	CheckpointID string
+	CompactionID string
 )
 
 // EventTypes (CHT-EVT-1): the conversation's own facts. Inputs are written by
-// the host and the Coordinator, checkpoints by the host's compaction
+// the host and the Coordinator, compactions by the host's compaction
 // (CHT-EVT-3), tool_result_superseded by the Application after an
 // out-of-band verification (CHT-ENT-2).
 const (
@@ -48,8 +48,8 @@ const (
 	TypeInputRejected         session.EventType = "twilight/chatlog/input_rejected"
 	TypeToolResultSuperseded  session.EventType = "twilight/chatlog/tool_result_superseded"
 	TypeSummary               session.EventType = "twilight/chatlog/summary"
-	TypeCheckpointCreated     session.EventType = "twilight/chatlog/checkpoint_created"
-	TypeCheckpointInvalidated session.EventType = "twilight/chatlog/checkpoint_invalidated"
+	TypeCompactionCreated     session.EventType = "twilight/chatlog/compaction_created"
+	TypeCompactionInvalidated session.EventType = "twilight/chatlog/compaction_invalidated"
 )
 
 // Digest domains of the projected entries (CHT-COD-3). They are not event
@@ -313,31 +313,31 @@ type EntryDigestPair struct {
 	Digest es.Digest `json:"digest"`
 }
 
-// DigestBaseContext covers the ordered active Context sequence a checkpoint
+// DigestBaseContext covers the ordered active Context sequence a compaction
 // replaces. An empty base digests as nil (empty and nil are one wire value).
 func DigestBaseContext(pairs []EntryDigestPair) (es.Digest, error) {
 	if len(pairs) == 0 {
 		pairs = nil
 	}
-	return digestDomain(string(TypeCheckpointCreated), struct {
+	return digestDomain(string(TypeCompactionCreated), struct {
 		Base []EntryDigestPair `json:"base"`
 	}{pairs})
 }
 
-// DigestCheckpoint covers every checkpoint field except Digest itself.
-func DigestCheckpoint(p *CheckpointCreatedPayload) (es.Digest, error) {
+// DigestCompaction covers every compaction field except Digest itself.
+func DigestCompaction(p *CompactionCreatedPayload) (es.Digest, error) {
 	retained := p.Retained
 	if len(retained) == 0 {
 		retained = nil
 	}
-	return digestDomain(string(TypeCheckpointCreated), struct {
-		CheckpointID      CheckpointID      `json:"checkpointId"`
+	return digestDomain(string(TypeCompactionCreated), struct {
+		CompactionID      CompactionID      `json:"compactionId"`
 		CoveredThrough    session.Position  `json:"coveredThrough"`
 		BaseContextDigest es.Digest         `json:"baseContextDigest"`
 		SummaryID         SummaryID         `json:"summaryId"`
 		SummaryDigest     es.Digest         `json:"summaryDigest"`
 		Retained          []EntryDigestPair `json:"retained,omitempty"`
-	}{p.CheckpointID, p.CoveredThrough, p.BaseContextDigest, p.SummaryID, p.SummaryDigest, retained})
+	}{p.CompactionID, p.CoveredThrough, p.BaseContextDigest, p.SummaryID, p.SummaryDigest, retained})
 }
 
 func digestDomain(domain string, body any) (es.Digest, error) {
@@ -383,11 +383,11 @@ type SummaryPayload struct {
 	Summary Summary `json:"summary"`
 }
 
-// CheckpointCreatedPayload compacts the context (CHT-EVT-3): entries up to
+// CompactionCreatedPayload compacts the context (CHT-EVT-3): entries up to
 // CoveredThrough — the ledger Position of the last covered entry's event —
 // are replaced by the summary plus the Retained subset.
-type CheckpointCreatedPayload struct {
-	CheckpointID      CheckpointID      `json:"checkpointId"`
+type CompactionCreatedPayload struct {
+	CompactionID      CompactionID      `json:"compactionId"`
 	CoveredThrough    session.Position  `json:"coveredThrough"`
 	BaseContextDigest es.Digest         `json:"baseContextDigest"`
 	SummaryID         SummaryID         `json:"summaryId"`
@@ -396,8 +396,8 @@ type CheckpointCreatedPayload struct {
 	Digest            es.Digest         `json:"digest"`
 }
 
-type CheckpointInvalidatedPayload struct {
-	CheckpointID CheckpointID `json:"checkpointId"`
+type CompactionInvalidatedPayload struct {
+	CompactionID CompactionID `json:"compactionId"`
 	Reason       string       `json:"reason,omitempty"`
 }
 
@@ -420,9 +420,9 @@ func checkSuperseded(p *ToolResultSupersededPayload) error {
 	return nil
 }
 
-func checkCheckpointCreated(p *CheckpointCreatedPayload) error {
-	if p.CheckpointID == "" || p.SummaryID == "" || p.BaseContextDigest == "" || p.SummaryDigest == "" {
-		return errors.New("checkpoint requires checkpointId, summaryId and both digests")
+func checkCompactionCreated(p *CompactionCreatedPayload) error {
+	if p.CompactionID == "" || p.SummaryID == "" || p.BaseContextDigest == "" || p.SummaryDigest == "" {
+		return errors.New("compaction requires compactionId, summaryId and both digests")
 	}
 	for _, pair := range p.Retained {
 		switch pair.Kind {
@@ -434,19 +434,19 @@ func checkCheckpointCreated(p *CheckpointCreatedPayload) error {
 			return errors.New("retained entry requires id and digest")
 		}
 	}
-	want, err := DigestCheckpoint(p)
+	want, err := DigestCompaction(p)
 	if err != nil {
 		return err
 	}
 	if p.Digest != want {
-		return errors.New("checkpoint digest mismatch")
+		return errors.New("compaction digest mismatch")
 	}
 	return nil
 }
 
-func checkCheckpointInvalidated(p *CheckpointInvalidatedPayload) error {
-	if p.CheckpointID == "" {
-		return errors.New("checkpoint_invalidated requires checkpointId")
+func checkCompactionInvalidated(p *CompactionInvalidatedPayload) error {
+	if p.CompactionID == "" {
+		return errors.New("compaction_invalidated requires compactionId")
 	}
 	return nil
 }
@@ -565,8 +565,8 @@ var Module = extension.ModuleDescriptor{
 		def[InputRejectedPayload](TypeInputRejected, nil),
 		def[ToolResultSupersededPayload](TypeToolResultSuperseded, checkSuperseded, supersededBinding),
 		def[SummaryPayload](TypeSummary, checkSummary, partsBinding),
-		def[CheckpointCreatedPayload](TypeCheckpointCreated, checkCheckpointCreated),
-		def[CheckpointInvalidatedPayload](TypeCheckpointInvalidated, checkCheckpointInvalidated),
+		def[CompactionCreatedPayload](TypeCompactionCreated, checkCompactionCreated),
+		def[CompactionInvalidatedPayload](TypeCompactionInvalidated, checkCompactionInvalidated),
 	},
 	Projections: []extension.ProjectionDefinition{SurfaceProjection, ContextProjection},
 }

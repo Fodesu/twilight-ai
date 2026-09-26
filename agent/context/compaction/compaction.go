@@ -1,8 +1,8 @@
 // Package compaction is the reference agent's context policy: it decides
 // when the context is too long (Policy), selects the pair-closed suffix a
-// checkpoint keeps (RetainLast), renders the transcript a summary replaces,
+// compaction keeps (RetainLast), renders the transcript a summary replaces,
 // and asks the preset's model for that summary through an effect port
-// (Summarizer). It writes nothing: the checkpoint itself is the chatlog
+// (Summarizer). It writes nothing: the compaction itself is the chatlog
 // package's command.
 package compaction
 
@@ -26,7 +26,7 @@ import (
 	"github.com/felinics/twilight/sdk"
 )
 
-// CompactorSystemPrompt asks the preset's model for the checkpoint summary.
+// CompactorSystemPrompt asks the preset's model for the compaction summary.
 const CompactorSystemPrompt = "You are the conversation compactor. Reply with a concise summary of the conversation transcript that preserves facts, decisions, names and open tasks. Reply with the summary text only."
 
 // DefaultRetain is the pair-closed suffix Compact keeps when the Session
@@ -103,7 +103,7 @@ func RetainLast(entries []chatlog.Entry, n int) []chatlog.EntryDigestPair {
 	return out
 }
 
-// Summarizer asks a preset's model for the checkpoint summary. The call is
+// Summarizer asks a preset's model for the compaction summary. The call is
 // an effect like any other and goes through the effect port (APP-CKP-1):
 // the request is frozen and dispatched as a model Assignment outside any
 // Run, so the Owner holds no model client and a remote executor serves

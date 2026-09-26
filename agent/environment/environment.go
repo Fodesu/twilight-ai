@@ -30,7 +30,7 @@ type Spec struct {
 	Base    string
 }
 
-// RestoreSpec supplies a durable checkpoint and the destination environment spec.
+// RestoreSpec supplies a durable snapshot and the destination environment spec.
 type RestoreSpec struct {
 	State       StateRef
 	Destination Spec

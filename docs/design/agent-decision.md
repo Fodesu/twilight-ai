@@ -36,7 +36,7 @@ const PromptContextV1 turn.PromptBuilderRef = "twilight/decision/prompt/context-
 
 `ContextPromptBuilder`（`agent/prompt`，参考 agent）是 `PromptContextV1` 的实现：读 `twilight/chatlog/context` 投影，经 `chatlog.Materializer` 取回正文，构造 `loop.Prompt`（模型、`sdk.Request`、消费的 InputID、context 新鲜度 token、冻结的 ToolSpec）。
 
-**DEC-PMT-1** PromptBuilder 在每次 Build 时经 `ProjectionSource` 读取 `twilight/chatlog/context` 投影（含已应用的 checkpoint，CHT-EVT-3），再经 `Content` 物化条目命名的冻结正文；同一次 Build 内每个 digest 至多读取一次。折叠是纯函数，读正文是 IO：正文缺失使 Build 以 `frozen.ErrMissing` 失败，投影不受影响。owner 进程从 Session Writer 读，观察者从 Store 读，两者对同一 head 给出同一状态（EXT-PRJ-4）；两者共用同一 cas ContentStore。
+**DEC-PMT-1** PromptBuilder 在每次 Build 时经 `ProjectionSource` 读取 `twilight/chatlog/context` 投影（含已应用的 compaction，CHT-EVT-3），再经 `Content` 物化条目命名的冻结正文；同一次 Build 内每个 digest 至多读取一次。折叠是纯函数，读正文是 IO：正文缺失使 Build 以 `frozen.ErrMissing` 失败，投影不受影响。owner 进程从 Session Writer 读，观察者从 Store 读，两者对同一 head 给出同一状态（EXT-PRJ-4）；两者共用同一 cas ContentStore。
 
 **DEC-PMT-2** `sdk.Messages` 顺序：
 

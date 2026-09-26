@@ -81,7 +81,7 @@ Owner 的 `TargetResolver` 对每个 tool effect 返回相同逻辑 target，恢
 它解析到 worker 上的固定只读目录，但这个路径只是 provider adapter 的实现细节；
 Core 不保存路径，也不把 Workspace 放入 AgentPreset。
 
-RuntimeBinding replacement、checkpoint restore 和 fork 不属于首个 fixture，另列为
+RuntimeBinding replacement、snapshot restore 和 fork 不属于首个 fixture，另列为
 Workspace/Provider conformance。
 
 ## 3. Reference application 的最小合同

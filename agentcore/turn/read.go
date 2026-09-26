@@ -39,7 +39,7 @@ func RequireNoActiveTurn(v writer.View) error {
 	return nil
 }
 
-// RequireQuiescentRun is the checkpoint guard that also admits a point
+// RequireQuiescentRun is the compaction guard that also admits a point
 // between the steps of a Turn (APP-CKP-1): no active Turn, or the active
 // Turn's Run is Open, or it is in a ToolStep with no Executing call. A
 // model step Prepared or Executing, or a tool call Executing, is

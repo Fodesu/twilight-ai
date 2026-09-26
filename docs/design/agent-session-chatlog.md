@@ -13,7 +13,7 @@ EventType    = twilight/chatlog/<name>
 Projections  = twilight/chatlog/surface, twilight/chatlog/context
 ```
 
-Chatlog 拥有对话自身的事实：Input 的生命周期、summary、checkpoint、带外核实后的结果替换。模型输出与工具结果不是本模块的事实：`assistant` 与 `tool_result` 是 Surface 与 Context 从 `twilight/run/` 事实折叠出的条目（`ModelStepCompleted`、`ToolStepOpened`、`ToolCallCompleted`、`ToolCallAnswered`、`ToolCallFailed`），一个模型或工具结果在 ledger 上只有一份 canonical 表达。条目只保存结构与 digest；正文经 materializer 从 `frozen.Store` 读取（第 8 节）。
+Chatlog 拥有对话自身的事实：Input 的生命周期、summary、compaction、带外核实后的结果替换。模型输出与工具结果不是本模块的事实：`assistant` 与 `tool_result` 是 Surface 与 Context 从 `twilight/run/` 事实折叠出的条目（`ModelStepCompleted`、`ToolStepOpened`、`ToolCallCompleted`、`ToolCallAnswered`、`ToolCallFailed`），一个模型或工具结果在 ledger 上只有一份 canonical 表达。条目只保存结构与 digest；正文经 materializer 从 `frozen.Store` 读取（第 8 节）。
 
 ```text
 twilight/run/ 事实 + twilight/chatlog/ 事实
@@ -23,7 +23,7 @@ Surface / Context（结构 + digest）
 可展示 / 可发送的表示
 ```
 
-`assistant` 与 `tool_result` 条目携带 `TurnID`（来自绑定该 Run 的 `twilight/attempt/started`）；Input 在 `input_delivered` 之后挂上 TurnID；summary 与 checkpoint 不携带 TurnID。回合的创建、attempt 与结束由 `twilight/turn/` 事件表达。summary 的外部内容经 `ReferencePart` 关联 Artifact BindingID。
+`assistant` 与 `tool_result` 条目携带 `TurnID`（来自绑定该 Run 的 `twilight/attempt/started`）；Input 在 `input_delivered` 之后挂上 TurnID；summary 与 compaction 不携带 TurnID。回合的创建、attempt 与结束由 `twilight/turn/` 事件表达。summary 的外部内容经 `ReferencePart` 关联 Artifact BindingID。
 
 流式 `text_delta` / `reasoning_delta` 由 Loop EventSink 发送，属于临时观察。Chatlog 权威是已提交的事实。
 
@@ -38,7 +38,7 @@ type AssistantID string   // = run.StepID
 type ToolResultID string  // = run.CallID；带外替换结果为 "<CallID>/superseded"
 type SummaryID string
 type CallID string
-type CheckpointID string
+type CompactionID string
 ```
 
 `TurnID` 与 turn 模块同一 identity。InputID、AssistantID、ToolResultID、SummaryID 在 chatlog 流内唯一；CallID 在同一 Turn 内唯一。replacement graph 无环，一个实体至多一个直接 replacement。
@@ -48,8 +48,8 @@ type CheckpointID string
 | Input | `input_submitted` | 无 | delivered / withdrawn / rejected | 只终结一次；delivered 后进入 Context |
 | Assistant | `run/model_step_completed`，其 `tool_step_opened` 补入 CallIDs | 无 | — | immutable；StepID 单次出现 |
 | Tool result | `run/tool_call_completed` / `tool_call_answered` / `tool_call_failed` | 无 | 可被 `tool_result_superseded` | 同一 CallID 至多一条 active |
-| Summary | `summary` | 无 | 随 checkpoint 失效 | checkpoint 的摘要正文 |
-| Checkpoint | `checkpoint_created` | 无 | invalidated | 指向已有条目的 ledger Position |
+| Summary | `summary` | 无 | 随 compaction 失效 | compaction 的摘要正文 |
+| Compaction | `compaction_created` | 无 | invalidated | 指向已有条目的 ledger Position |
 
 **CHT-LIF-1** reducer 拒绝 identity mutation、非法状态迁移、replacement conflict 与重复 ID。模型步骤进行中走 EventSink；定稿即 `ModelStepCompleted` / `ToolCallCompleted` 等 Run 事实本身。同一 Turn 的多个 Run attempt 各自产生 assistant 与 tool_result 条目，全部保留并出现在 ContextFold 的输出里；哪些条目进入模型请求由 PromptBuilder 决定（TRN-RTY-3、DEC-PMT-6），本模块不作取舍。
 
@@ -174,8 +174,8 @@ type ToolResultSupersededPayload struct {
 
 type SummaryPayload struct { Summary Summary }
 
-type CheckpointCreatedPayload struct {
-    CheckpointID CheckpointID
+type CompactionCreatedPayload struct {
+    CompactionID CompactionID
     CoveredThrough session.Position // 最后一条被覆盖条目的事件在 ledger 中的位置（commit seq + 组内下标）
     BaseContextDigest es.Digest
     SummaryID SummaryID
@@ -184,7 +184,7 @@ type CheckpointCreatedPayload struct {
     Digest es.Digest
 }
 type EntryDigestPair struct { Kind EntryKind; ID string; Digest es.Digest }
-type CheckpointInvalidatedPayload struct { CheckpointID CheckpointID; Reason string }
+type CompactionInvalidatedPayload struct { CompactionID CompactionID; Reason string }
 ```
 
 **CHT-EVT-1** EventType：
@@ -196,17 +196,17 @@ twilight/chatlog/input_withdrawn
 twilight/chatlog/input_rejected
 twilight/chatlog/tool_result_superseded
 twilight/chatlog/summary
-twilight/chatlog/checkpoint_created
-twilight/chatlog/checkpoint_invalidated
+twilight/chatlog/compaction_created
+twilight/chatlog/compaction_invalidated
 ```
 
 **CHT-EVT-2** `input_submitted` 创建 Input。Delivered、Withdrawn、Rejected 各终结一次。`input_delivered` 要求 Input 仍为 submitted，并写入非空 TurnID；它与把该输入交给 Run 的事实同组：Start group 中与 `twilight/turn/started` 一起，回合中途与 `twilight/run/input_accepted` 一起（TRN-STR-2、TRN-DLV-2）。SummaryID 在 chatlog 流内单次创建。
 
-**CHT-EVT-3**（checkpoint）checkpoint 压缩 active Context：合法 checkpoint 使其变为 `[Summary] + Retained`，其后的事件照常折叠。digest 规则：`Digest` 的 domain 为 `twilight/chatlog/checkpoint_created`，覆盖除 `Digest` 外的全部字段；`BaseContextDigest` 以同一 domain 对 `{base: [(Kind, ID, Digest)]}` 计算，覆盖截至 `CoveredThrough` 的有序 active Context 序列；`Retained` 为空与省略是同一 wire 值，两个 digest 预映像都把空列表折叠为 nil。summary 应与 checkpoint 同组提交，gap 不变量因此原子成立。
+**CHT-EVT-3**（compaction）compaction 压缩 active Context：合法 compaction 使其变为 `[Summary] + Retained`，其后的事件照常折叠。digest 规则：`Digest` 的 domain 为 `twilight/chatlog/compaction_created`，覆盖除 `Digest` 外的全部字段；`BaseContextDigest` 以同一 domain 对 `{base: [(Kind, ID, Digest)]}` 计算，覆盖截至 `CoveredThrough` 的有序 active Context 序列；`Retained` 为空与省略是同一 wire 值，两个 digest 预映像都把空列表折叠为 nil。summary 应与 compaction 同组提交，gap 不变量因此原子成立。
 
-fold 在提交前逐条校验（EXT-WRT-1 的投影预折叠），违反者整组拒绝：`CoveredThrough` 早于 checkpoint 事件自己的 Position；`CoveredThrough` 与 checkpoint 之间的 Context 条目恰为该 `SummaryID` 的 summary 且 digest 相符；`BaseContextDigest` 与 base 序列重算值相符；`Retained` 是 base 序列的有序子集（逐项 (Kind, ID, Digest) 全等）。retained 集的 provider 合法性（tool call 与 result 的配对封闭，按 `Assistant.CallIDs` 判定）是宿主的职责（APP-CKP-2），fold 不校验。
+fold 在提交前逐条校验（EXT-WRT-1 的投影预折叠），违反者整组拒绝：`CoveredThrough` 早于 compaction 事件自己的 Position；`CoveredThrough` 与 compaction 之间的 Context 条目恰为该 `SummaryID` 的 summary 且 digest 相符；`BaseContextDigest` 与 base 序列重算值相符；`Retained` 是 base 序列的有序子集（逐项 (Kind, ID, Digest) 全等）。retained 集的 provider 合法性（tool call 与 result 的配对封闭，按 `Assistant.CallIDs` 判定）是宿主的职责（APP-CKP-2），fold 不校验。
 
-`checkpoint_invalidated` 只能指向最近一个仍 active 的 checkpoint：active Context 回到 base 加 checkpoint 之后折叠的尾部，summary 条目随之离开 active Context（Surface 与历史保留）；连续 invalidate 逐层回退。指向被压缩条目的 `tool_result_superseded` 是协议违规而非 checkpoint 失效条件：被压缩条目的 Turn 已结束，CHT-ENT-2 已排除对它的 supersede。失效途径只有显式 invalidate 最近的 active checkpoint。
+`compaction_invalidated` 只能指向最近一个仍 active 的 compaction：active Context 回到 base 加 compaction 之后折叠的尾部，summary 条目随之离开 active Context（Surface 与历史保留）；连续 invalidate 逐层回退。指向被压缩条目的 `tool_result_superseded` 是协议违规而非 compaction 失效条件：被压缩条目的 Turn 已结束，CHT-ENT-2 已排除对它的 supersede。失效途径只有显式 invalidate 最近的 active compaction。
 
 ## 6. Surface projection
 
@@ -219,7 +219,7 @@ type Surface struct {
     Summaries Table[SummaryID, Summary]
     EntryOrder []SurfaceEntry
     Superseded Table[ToolResultID, ToolResultID]
-    Checkpoints Table[CheckpointID, CheckpointView]
+    Compactions Table[CompactionID, CompactionView]
     Runs Table[run.RunID, TurnID] // attempt/started 的 TurnID
 }
 // Table 是持久化 map：Set 返回新值、不改写接收者，各状态共享未变的存储；编码为普通 JSON object。
@@ -227,7 +227,7 @@ type Surface struct {
 
 Surface 的折叠遵守 EXT-PRJ-1：Apply 不改写传入状态。内容表用 `Table` 承载，一次写入的代价为 O(√n)，因此折叠一条 N 行日志的代价随 N 线性增长；`EntryOrder` 以 append 增长。
 
-**CHT-SUR-1** SurfaceFold 消费本模块事件与 CHT-SCP-1 列出的 run 事实，跨 chatlog 流与 run/&lt;RunID&gt; 流折叠（EXT-PRJ-1），其他事件按 EXT-PRJ-2 处理。`EntryOrder` 为 commit 顺序下的 delivered input、assistant、tool_result、summary，并带产生它的事件的 ledger Position（`extension.DecodedEvent.Position`，由 fold 盖上）：投影不维护自己的计数器，快照恢复也不需要重扫。`Surface.Runs` 与 `Context.Runs` 在 `run_ended` 时释放该 Run 的条目，大小与活动 Run 数成正比。回合列表由 turn 投影提供，按 `TurnID` 连接。checkpoint 记录于 `Surface.Checkpoints`（active / invalidated）；compaction 不改动 `EntryOrder`，也不触及输入队列。
+**CHT-SUR-1** SurfaceFold 消费本模块事件与 CHT-SCP-1 列出的 run 事实，跨 chatlog 流与 run/&lt;RunID&gt; 流折叠（EXT-PRJ-1），其他事件按 EXT-PRJ-2 处理。`EntryOrder` 为 commit 顺序下的 delivered input、assistant、tool_result、summary，并带产生它的事件的 ledger Position（`extension.DecodedEvent.Position`，由 fold 盖上）：投影不维护自己的计数器，快照恢复也不需要重扫。`Surface.Runs` 与 `Context.Runs` 在 `run_ended` 时释放该 Run 的条目，大小与活动 Run 数成正比。回合列表由 turn 投影提供，按 `TurnID` 连接。compaction 记录于 `Surface.Compactions`（active / invalidated）；compaction 不改动 `EntryOrder`，也不触及输入队列。
 
 ## 7. Context projection
 
@@ -235,9 +235,9 @@ Surface 的折叠遵守 EXT-PRJ-1：Apply 不改写传入状态。内容表用 `
 func ContextFold(events []extension.DecodedEvent) ([]Entry, error)
 ```
 
-**CHT-CTX-1** 输入为已验证、按 commit 顺序的 chatlog 与 run decoded events，其他事件按 EXT-PRJ-2 处理。输出为 delivered input、assistant、tool_result、summary 经 supersession 与 checkpoint 处理后的有序 `[]Entry`。ContextFold 为纯函数：不读取 ContentStore，正文缺失不影响折叠。
+**CHT-CTX-1** 输入为已验证、按 commit 顺序的 chatlog 与 run decoded events，其他事件按 EXT-PRJ-2 处理。输出为 delivered input、assistant、tool_result、summary 经 supersession 与 compaction 处理后的有序 `[]Entry`。ContextFold 为纯函数：不读取 ContentStore，正文缺失不影响折叠。
 
-**CHT-CTX-2** fold 执行 ID 单次创建、`ToolStepOpened` 对 assistant 的 CallIDs 补入、原位 replacement 规则。合法 checkpoint 按 CHT-EVT-3 应用。Context 只含已 delivered 的 Input。
+**CHT-CTX-2** fold 执行 ID 单次创建、`ToolStepOpened` 对 assistant 的 CallIDs 补入、原位 replacement 规则。合法 compaction 按 CHT-EVT-3 应用。Context 只含已 delivered 的 Input。
 
 ## 8. materializer
 
@@ -266,5 +266,5 @@ func (*Materializer) Entry(context.Context, *Entry) (Materialized, error)
 - **CHT-LIF-1、CHT-EVT-1、CHT-EVT-2**：所列 EventType、Input 终结一次、delivered 带 TurnID、ID 单次创建；
 - **CHT-ENT-1 至 CHT-ENT-4**：run 事实折叠为条目、CallIDs 补入、原位 replacement、重复 supersede 与范围外 supersede 被拒、用户侧为 Input；
 - **CHT-COD-1 至 CHT-COD-3**：codec；条目 Digest domain；supersede 的 Binding 提取；
-- **CHT-SUR-1、CHT-CTX-1、CHT-CTX-2**：EntryOrder；checkpoint 的折叠、显式失效回退与非法 checkpoint 的整组拒绝（含排队输入不受压缩影响）；
+- **CHT-SUR-1、CHT-CTX-1、CHT-CTX-2**：EntryOrder；compaction 的折叠、显式失效回退与非法 compaction 的整组拒绝（含排队输入不受压缩影响）；
 - **CHT-MAT-1**：配对、单次读取、失败正文的渲染、正文缺失的错误。

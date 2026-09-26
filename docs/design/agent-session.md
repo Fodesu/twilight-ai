@@ -33,7 +33,7 @@ Atomic Commit ─────────────────────┘
 
 1. **唯一权威历史。** `Session = append-only Commit Ledger`，`State = Fold(Events)`。Turn、Run、Chatlog 不各自持有 Session 的权威状态，它们的事实同在一条 ledger 上，按各模块声明的逻辑流分组（chatlog、turn/&lt;TurnID&gt;、run/&lt;RunID&gt;，EXT-STR-1），CommitSeq 是权威全序，StreamSeq 只是读优化（§3）。stream 之外还有三类有明确 owner 的持久数据：内容寻址的 artifact `cas` ContentStore 存内容本体；artifact 的 `RetentionLedger` 保存 claim；Executor 的 durable Execution Store 保存已接受 Assignment 的执行状态与结果。前两类中被 Session 引用的内容以 digest 锚定，模型请求本体作为 Assignment 内容从 authority 传递到 executor，Run 事实只记其 digest，恢复不依赖 authority 的短期本体（RUN-WIR-4、RUN-CMT-7）。Execution Store 是效果层的 authority，不是 Session 事实的第二份来源；Session 只通过 Assignment/Outcome 与它交互。claim 先于 Append 建立（EXT-WRT-3）。
 
-2. **语义串行化。** 同一 Session 的全部写入（Turn、Run、恢复、Checkpoint）经进程内唯一的 `Writer.Commit`，形成一个确定的全序（EXT-SCP-1、EXT-WRT-1）。kernel 不承担并发控制（SES-SCP-2）。
+2. **语义串行化。** 同一 Session 的全部写入（Turn、Run、恢复、Compaction）经进程内唯一的 `Writer.Commit`，形成一个确定的全序（EXT-SCP-1、EXT-WRT-1）。kernel 不承担并发控制（SES-SCP-2）。
 
 3. **事务边界。** `read state → decide → validate → append` 在 Writer 的互斥区内完成，不可被另一个语义提交插入：`CommitFn` 经 `View` 读取的 head、提交历史与投影状态即写入时的状态，fn 自身不做外部 IO（EXT-WRT-1）。validate 有两层：Binding admission（EXT-REF-2）与投影预折叠——任一投影拒绝则不落盘（EXT-PRJ-1）。这条边界是进程内的；跨进程的隔离由第 5 条提供，两者合起来才是完整的隔离。
 
@@ -45,7 +45,7 @@ Atomic Commit ─────────────────────┘
 
 7. **Projection 与 Snapshot 只是派生状态。** Projection 可重建，Snapshot（投影缓存）可丢弃；复用条件是 Commit 边界对齐（EXT-PRJ-3），篡改或过期的条目只让下次多折，绝不成为第二份 authority（EXT-PRJ-5/7）。owner 进程内的投影与观察者从 Store 折出的投影对同一 head 给出相同状态（EXT-PRJ-4）。
 
-8. **最小化、payload-opaque 的 kernel。** kernel 只懂 Open/ownership、Append、Read、Seq、CommitID 索引（SES-SCP-1/3、第 4 至 6 节）。它不解释 payload，不知道 Turn、Run、Tool、Checkpoint 是什么；领域语义全部在 Module、Writer 与 Projection 层。
+8. **最小化、payload-opaque 的 kernel。** kernel 只懂 Open/ownership、Append、Read、Seq、CommitID 索引（SES-SCP-1/3、第 4 至 6 节）。它不解释 payload，不知道 Turn、Run、Tool、Compaction 是什么；领域语义全部在 Module、Writer 与 Projection 层。
 
 9. **历史不可变由 Store 保证。** adapter 端口只有 append 与 read，没有改写或删除单个 Commit 的操作；唯一约束 `(segment, seq)`、`(segment, commit_id)` 与 Lease 检查在同一事务内完成（SES-APP-5）。`(SegmentID, Seq)` 因此永久指向同一个 Commit，fork 边与投影缓存都只以位置引用它（SES-FRK-1、EXT-PRJ-3）。kernel 不在协议内计算 hash 链（SES-WIR-2）：存储层的完整性手段（事务、校验和、备份校验）属于部署，不属于 Agent Core。
 
@@ -214,7 +214,7 @@ type Store interface {
 
 **SES-APP-2** 崩溃只可能留下一个不完整的尾 Commit：文件 adapter 打开时把末尾帧不完整且没有后续 Commit 的尾部截掉；数据库 adapter 由事务保证不会出现。截断必须发生在 `Head` 确立之前：否则 `Head.Next` 落在残 Commit 内部，下一次 `Append` 会把残 Commit 与后续 Commit 焊成一个。reader 在任何时刻都不会看到不完整的 Commit。
 
-**SES-APP-4（CommitID 命名操作）** `CommitID` 由写者派生，同一 ID 只对应一个操作（Run 的 CommandID、Turn 的各命令 ID、chatlog 的 checkpoint ID 都由操作内容或坐标派生）。kernel 对已存在的 CommitID 拒绝 `Append`（`ErrConflict`）并提供索引读侧（SES-REP-3/4）；Writer 据此对重放返回 `AlreadyApplied` 与原 commit（EXT-WRT-2）。kernel 与 Writer 都不比对两次提交的内容：同 ID 不同内容不是可判定的冲突，先落下的 commit 生效，避免这种情形是派生 ID 的写者的责任（RUN-CMT-5、TRN-EVT-2）。
+**SES-APP-4（CommitID 命名操作）** `CommitID` 由写者派生，同一 ID 只对应一个操作（Run 的 CommandID、Turn 的各命令 ID、chatlog 的 compaction ID 都由操作内容或坐标派生）。kernel 对已存在的 CommitID 拒绝 `Append`（`ErrConflict`）并提供索引读侧（SES-REP-3/4）；Writer 据此对重放返回 `AlreadyApplied` 与原 commit（EXT-WRT-2）。kernel 与 Writer 都不比对两次提交的内容：同 ID 不同内容不是可判定的冲突，先落下的 commit 生效，避免这种情形是派生 ID 的写者的责任（RUN-CMT-5、TRN-EVT-2）。
 
 **SES-APP-3** kernel 拒绝：空 Commit、空 batch、同一 Commit 内重复的流、非法流归因、重复 `CommitID`、非 canonical 或非 object 的 payload、无效 identity、落后的 Epoch。拒绝不写入任何内容，返回 `ErrInvalid`（重复 CommitID 为 `ErrConflict`）。kernel 不返回"已应用"：幂等重放由 `writer.Writer` 按 CommitID 命中回答（EXT-WRT-2），原 Commit 经 `LookupCommit` 从 kernel 取（SES-REP-4）。
 

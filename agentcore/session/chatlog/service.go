@@ -15,7 +15,7 @@ import (
 )
 
 // Commands are the chatlog's canonical commands -- submitting and
-// withdrawing inputs, committing checkpoints -- each through the Writer the
+// withdrawing inputs, committing compactions -- each through the Writer the
 // caller owns (CHT-EVT, OWN-HDL-2). They are the only writer of chatlog
 // facts: callers go through these methods instead of building chatlog
 // TypedEvents by hand.
@@ -24,7 +24,7 @@ type Commands struct {
 }
 
 // Guard is a caller-supplied precondition evaluated inside a command's
-// commit critical section, on the same View the command reads. Checkpoint
+// commit critical section, on the same View the command reads. Compaction
 // uses it for the "no Turn may be active" rule (APP-CKP-1), which is turn
 // domain policy this package cannot import.
 type Guard func(v writer.View) error
@@ -103,17 +103,17 @@ func (s *Commands) Withdraw(ctx context.Context, w writer.Writer, id run.InputID
 	}
 }
 
-// Checkpoint commits a summary and its checkpoint in one group (CHT-EVT-3).
+// Compaction commits a summary and its compaction in one group (CHT-EVT-3).
 // The base is read inside the commit's critical section, so the digest pins
 // exactly the context being replaced. guard (when non-nil) runs in the same
 // critical section first; callers pass the active-Turn rule there.
 // retain names entries of the current context (compaction.RetainLast builds
 // a pair-closed suffix, which CheckRetainClosure verifies).
-func (s *Commands) Checkpoint(ctx context.Context, w writer.Writer, summaryText string, retain []EntryDigestPair, guard Guard) (CheckpointID, error) {
+func (s *Commands) Compact(ctx context.Context, w writer.Writer, summaryText string, retain []EntryDigestPair, guard Guard) (CompactionID, error) {
 	if strings.TrimSpace(summaryText) == "" {
-		return "", errors.New("chatlog: checkpoint requires a summary text")
+		return "", errors.New("chatlog: compaction requires a summary text")
 	}
-	var checkpointID CheckpointID
+	var compactionID CompactionID
 	res, err := w.Commit(ctx, func(v writer.View) (*writer.SemanticGroup, error) {
 		if guard != nil {
 			if err := guard(v); err != nil {
@@ -130,7 +130,7 @@ func (s *Commands) Checkpoint(ctx context.Context, w writer.Writer, summaryText 
 		}
 		entries := cctx.Entries
 		if len(entries) == 0 {
-			return nil, errors.New("chatlog: checkpoint over an empty context")
+			return nil, errors.New("chatlog: compaction over an empty context")
 		}
 		if err := CheckRetainClosure(entries, retain); err != nil {
 			return nil, err
@@ -144,26 +144,26 @@ func (s *Commands) Checkpoint(ctx context.Context, w writer.Writer, summaryText 
 			return nil, err
 		}
 		var summaryID SummaryID
-		if checkpointID, summaryID, err = checkpointIDs(w.SessionID(), baseDigest, summaryText); err != nil {
+		if compactionID, summaryID, err = compactionIDs(w.SessionID(), baseDigest, summaryText); err != nil {
 			return nil, err
 		}
 		summary := Summary{ID: summaryID, Parts: Parts{TextPart{Text: summaryText}}}
 		if summary.Digest, err = DigestSummary(&summary); err != nil {
 			return nil, err
 		}
-		payload := CheckpointCreatedPayload{
-			CheckpointID: checkpointID, CoveredThrough: entries[len(entries)-1].Position,
+		payload := CompactionCreatedPayload{
+			CompactionID: compactionID, CoveredThrough: entries[len(entries)-1].Position,
 			BaseContextDigest: baseDigest, SummaryID: summaryID, SummaryDigest: summary.Digest,
 			Retained: retain,
 		}
-		if payload.Digest, err = DigestCheckpoint(&payload); err != nil {
+		if payload.Digest, err = DigestCompaction(&payload); err != nil {
 			return nil, err
 		}
 		now := s.Now().UnixMilli()
-		return &writer.SemanticGroup{CommitID: session.CommitID("checkpoint/" + string(checkpointID)),
+		return &writer.SemanticGroup{CommitID: session.CommitID("compaction/" + string(compactionID)),
 			Batches: []writer.TypedBatch{{Stream: Stream, Events: []writer.TypedEvent{
 				{Type: TypeSummary, RecordedAtUnixMilli: now, Value: SummaryPayload{Summary: summary}},
-				{Type: TypeCheckpointCreated, RecordedAtUnixMilli: now, Value: payload},
+				{Type: TypeCompactionCreated, RecordedAtUnixMilli: now, Value: payload},
 			}}}}, nil
 	})
 	if err != nil {
@@ -171,23 +171,23 @@ func (s *Commands) Checkpoint(ctx context.Context, w writer.Writer, summaryText 
 	}
 	switch res.Outcome {
 	case writer.CommitApplied, writer.CommitAlreadyApplied:
-		return checkpointID, nil
+		return compactionID, nil
 	default:
-		return "", fmt.Errorf("chatlog: checkpoint: %s: %s", res.Outcome, res.Detail)
+		return "", fmt.Errorf("chatlog: compaction: %s: %s", res.Outcome, res.Detail)
 	}
 }
 
-// checkpointIDs derives the checkpoint and summary identifiers from what the
-// checkpoint replaces: the Session, the base context digest and the summary
-// text. A Checkpoint retried over the same base therefore carries the same
+// compactionIDs derives the compaction and summary identifiers from what the
+// compaction replaces: the Session, the base context digest and the summary
+// text. A Compaction retried over the same base therefore carries the same
 // CommitID and is answered as already applied instead of writing a second
-// checkpoint (APP-CKP-1).
-// checkpointDerivationVersion versions this preimage; it is chatlog's own,
+// compaction (APP-CKP-1).
+// compactionDerivationVersion versions this preimage; it is chatlog's own,
 // not a kernel version: the kernel has none (SES-VER-2).
-const checkpointDerivationVersion uint16 = 1
+const compactionDerivationVersion uint16 = 1
 
-func checkpointIDs(sid session.SessionID, base es.Digest, summaryText string) (CheckpointID, SummaryID, error) {
-	raw, err := es.EncodeTypedPayload(checkpointDerivationVersion, "twilight/chatlog/checkpoint", struct {
+func compactionIDs(sid session.SessionID, base es.Digest, summaryText string) (CompactionID, SummaryID, error) {
+	raw, err := es.EncodeTypedPayload(compactionDerivationVersion, "twilight/chatlog/compaction", struct {
 		SessionID session.SessionID `json:"sessionId"`
 		Base      es.Digest         `json:"base"`
 		Summary   string            `json:"summary"`
@@ -204,7 +204,7 @@ func checkpointIDs(sid session.SessionID, base es.Digest, summaryText string) (C
 	if len(d) > 16 {
 		d = d[:16]
 	}
-	return CheckpointID("ckpt-" + d), SummaryID("sum-" + d), nil
+	return CompactionID("ckpt-" + d), SummaryID("sum-" + d), nil
 }
 
 // CheckRetainClosure requires retained tool results and their issuing

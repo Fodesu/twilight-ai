@@ -76,7 +76,7 @@ func openCompactSession(t *testing.T, store session.Store, content artifact.Cont
 
 // An explicit Compact shrinks the next model request to the summary plus the
 // retained suffix, and a restarted process assembles exactly the same context
-// from the checkpointed log (CHT-EVT-3, APP-CKP-1).
+// from the compacted log (CHT-EVT-3, APP-CKP-1).
 func TestCompactShrinksContextAndReplaysAcrossRestart(t *testing.T) {
 	ctx := context.Background()
 	store, content := filestoretest.Store(t), durableContent(t)
@@ -102,8 +102,8 @@ func TestCompactShrinksContextAndReplaysAcrossRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v, _ := chat.Checkpoints.Get(id); v.Status != chatlog.CheckpointActive {
-		t.Fatalf("checkpoint = %+v", v)
+	if v, _ := chat.Compactions.Get(id); v.Status != chatlog.CompactionActive {
+		t.Fatalf("compaction = %+v", v)
 	}
 
 	if _, err := s.Send(ctx, "three"); err != nil {
@@ -158,8 +158,8 @@ func TestAutoCompactAfterSettlement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if chat.Checkpoints.Len() != 1 {
-		t.Fatalf("checkpoints = %+v", chat.Checkpoints.Map())
+	if chat.Compactions.Len() != 1 {
+		t.Fatalf("compactions = %+v", chat.Compactions.Map())
 	}
 	state, _, err := h.Projection(ctx, "s-ckpt", chatlog.ContextProjectionID, chatlog.ContextProjection.Version)
 	if err != nil {
@@ -239,8 +239,8 @@ func TestCompactDispatchServesDurableWorker(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v, _ := chat.Checkpoints.Get(id); v.Status != chatlog.CheckpointActive {
-		t.Fatalf("checkpoint = %+v", v)
+	if v, _ := chat.Compactions.Get(id); v.Status != chatlog.CompactionActive {
+		t.Fatalf("compaction = %+v", v)
 	}
 	if _, err := s.Send(ctx, "three"); err != nil {
 		t.Fatal(err)

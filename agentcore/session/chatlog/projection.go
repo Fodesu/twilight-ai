@@ -49,18 +49,18 @@ type SurfaceEntry struct {
 	Position session.Position `json:"position"`
 }
 
-type CheckpointStatus string
+type CompactionStatus string
 
 const (
-	CheckpointActive      CheckpointStatus = "active"
-	CheckpointInvalidated CheckpointStatus = "invalidated"
+	CompactionActive      CompactionStatus = "active"
+	CompactionInvalidated CompactionStatus = "invalidated"
 )
 
-// CheckpointView records one checkpoint for readers; compaction never touches
+// CompactionView records one compaction for readers; compaction never touches
 // EntryOrder or the input queue (CHT-SUR-1).
-type CheckpointView struct {
-	Checkpoint CheckpointCreatedPayload `json:"checkpoint"`
-	Status     CheckpointStatus         `json:"status"`
+type CompactionView struct {
+	Compaction CompactionCreatedPayload `json:"compaction"`
+	Status     CompactionStatus         `json:"status"`
 	Reason     string                   `json:"reason,omitempty"`
 	Position   session.Position         `json:"position"`
 }
@@ -76,7 +76,7 @@ type Surface struct {
 	Summaries   Table[SummaryID, Summary]           `json:"summaries"`
 	EntryOrder  []SurfaceEntry                      `json:"entryOrder"`
 	Superseded  Table[ToolResultID, ToolResultID]   `json:"superseded,omitzero"`
-	Checkpoints Table[CheckpointID, CheckpointView] `json:"checkpoints,omitzero"`
+	Compactions Table[CompactionID, CompactionView] `json:"compactions,omitzero"`
 	// Runs maps each active Run of the Session to its Turn (attempt/started)
 	// and schema version so the
 	// entries folded from Run facts carry their TurnID.
@@ -114,7 +114,7 @@ func sortViews(views []InputView) {
 var chatlogConsumes = func() []session.EventType {
 	out := make([]session.EventType, 0, 9+len(consumedRunFacts))
 	out = append(out, TypeInputSubmitted, TypeInputDelivered, TypeInputWithdrawn, TypeInputRejected,
-		TypeToolResultSuperseded, TypeSummary, TypeCheckpointCreated, TypeCheckpointInvalidated, attempt.TypeStarted)
+		TypeToolResultSuperseded, TypeSummary, TypeCompactionCreated, TypeCompactionInvalidated, attempt.TypeStarted)
 	for _, name := range consumedRunFacts {
 		out = append(out, runmod.Type(name))
 	}
@@ -199,23 +199,23 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) { //nolint:g
 		}
 		s.Summaries = s.Summaries.Set(p.Summary.ID, p.Summary)
 		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntrySummary, ID: string(p.Summary.ID), Position: pos})
-	case CheckpointCreatedPayload:
-		if s.Checkpoints.Has(p.CheckpointID) {
-			return nil, fmt.Errorf("checkpoint %s created twice", p.CheckpointID)
+	case CompactionCreatedPayload:
+		if s.Compactions.Has(p.CompactionID) {
+			return nil, fmt.Errorf("compaction %s created twice", p.CompactionID)
 		}
 		sum, ok := s.Summaries.Get(p.SummaryID)
 		if !ok || sum.Digest != p.SummaryDigest {
-			return nil, fmt.Errorf("checkpoint %s names summary %s which does not match", p.CheckpointID, p.SummaryID)
+			return nil, fmt.Errorf("compaction %s names summary %s which does not match", p.CompactionID, p.SummaryID)
 		}
-		s.Checkpoints = s.Checkpoints.Set(p.CheckpointID, CheckpointView{Checkpoint: p, Status: CheckpointActive, Position: pos})
-	case CheckpointInvalidatedPayload:
-		v, ok := s.Checkpoints.Get(p.CheckpointID)
-		if !ok || v.Status != CheckpointActive {
-			return nil, fmt.Errorf("checkpoint %s invalidated while not active", p.CheckpointID)
+		s.Compactions = s.Compactions.Set(p.CompactionID, CompactionView{Compaction: p, Status: CompactionActive, Position: pos})
+	case CompactionInvalidatedPayload:
+		v, ok := s.Compactions.Get(p.CompactionID)
+		if !ok || v.Status != CompactionActive {
+			return nil, fmt.Errorf("compaction %s invalidated while not active", p.CompactionID)
 		}
-		v.Status = CheckpointInvalidated
+		v.Status = CompactionInvalidated
 		v.Reason = p.Reason
-		s.Checkpoints = s.Checkpoints.Set(p.CheckpointID, v)
+		s.Compactions = s.Compactions.Set(p.CompactionID, v)
 	default:
 		return nil, fmt.Errorf("chatlog surface: unexpected %T", e.Value)
 	}
@@ -373,7 +373,7 @@ func clip[T any](s []T) []T { return s[:len(s):len(s)] }
 // --- context ------------------------------------------------------------------
 
 // Entry is one element of the model-facing conversation (CHT-CTX-1). Position is
-// the projection-internal position of the entry; checkpoints split base from
+// the projection-internal position of the entry; compactions split base from
 // gap by it (CHT-EVT-3). An assistant or tool_result entry is structural: it
 // names its frozen body by digest and is rendered through Materialize.
 type Entry struct {
@@ -387,31 +387,31 @@ type Entry struct {
 	Summary    *Summary         `json:"summary,omitempty"`
 }
 
-// Pair names the entry for checkpoint base and retained sets.
+// Pair names the entry for compaction base and retained sets.
 func (e *Entry) Pair() EntryDigestPair {
 	return EntryDigestPair{Kind: e.Kind, ID: e.ID, Digest: e.Digest}
 }
 
-// AppliedCheckpoint archives what a checkpoint replaced so an explicit
-// invalidation restores it (CHT-EVT-3). Base excludes the checkpoint's own
+// AppliedCompaction archives what a compaction replaced so an explicit
+// invalidation restores it (CHT-EVT-3). Base excludes the compaction's own
 // summary entry: invalidation drops the summary from the active context.
-type AppliedCheckpoint struct {
-	ID CheckpointID `json:"id"`
-	// Base is the active context the checkpoint covered, in order.
+type AppliedCompaction struct {
+	ID CompactionID `json:"id"`
+	// Base is the active context the compaction covered, in order.
 	Base []Entry `json:"base"`
-	// PrefixLen is what the checkpoint contributed to Entries: the summary
+	// PrefixLen is what the compaction contributed to Entries: the summary
 	// plus the retained entries.
 	PrefixLen int `json:"prefixLen"`
 }
 
 // Context is the projection state: the ordered entries plus the bookkeeping
 // ContextFold needs (submitted inputs awaiting delivery, superseded results,
-// applied checkpoints, the Turn of each Run).
+// applied compactions, the Turn of each Run).
 type Context struct {
 	Entries     []Entry                       `json:"entries"`
 	Pending     map[InputID]Input             `json:"pending,omitempty"`
 	Superseded  map[ToolResultID]ToolResultID `json:"superseded,omitempty"`
-	Checkpoints []AppliedCheckpoint           `json:"checkpoints,omitempty"`
+	Compactions []AppliedCompaction           `json:"compactions,omitempty"`
 	Runs        map[run.RunID]RunOwner        `json:"runs,omitempty"`
 }
 
@@ -427,7 +427,7 @@ var ContextProjection = extension.ProjectionDefinition{
 	StateCodec: extension.JSONStateCodec[Context]{},
 }
 
-// applyContext is copy-on-write like applySurface: Entries and Checkpoints
+// applyContext is copy-on-write like applySurface: Entries and Compactions
 // grow by append, a shrunk slice is clipped so a later append cannot reach an
 // element the previous state still holds, and a map is copied only by the
 // event that writes it. Entry positions are the ledger Positions of the
@@ -471,7 +471,7 @@ func applyContext(state any, e extension.DecodedEvent) (any, error) { //nolint:g
 		if i < 0 {
 			// A result outside the active context was either never created or
 			// compacted; its Turn completed, so superseding it violates
-			// CHT-ENT-2 rather than invalidating the checkpoint.
+			// CHT-ENT-2 rather than invalidating the compaction.
 			return nil, fmt.Errorf("tool_result %s superseded outside the active context", p.ToolResultID)
 		}
 		if _, twice := c.Superseded[p.ToolResultID]; twice {
@@ -491,19 +491,19 @@ func applyContext(state any, e extension.DecodedEvent) (any, error) { //nolint:g
 	case SummaryPayload:
 		s := p.Summary
 		c.Entries = append(c.Entries, Entry{Kind: EntrySummary, ID: string(s.ID), Digest: s.Digest, Position: pos, Summary: &s})
-	case CheckpointCreatedPayload:
-		return applyCheckpoint(c, &p, e.Position)
-	case CheckpointInvalidatedPayload:
-		n := len(c.Checkpoints)
-		if n == 0 || c.Checkpoints[n-1].ID != p.CheckpointID {
-			return nil, fmt.Errorf("checkpoint %s is not the latest active checkpoint", p.CheckpointID)
+	case CompactionCreatedPayload:
+		return applyCompaction(c, &p, e.Position)
+	case CompactionInvalidatedPayload:
+		n := len(c.Compactions)
+		if n == 0 || c.Compactions[n-1].ID != p.CompactionID {
+			return nil, fmt.Errorf("compaction %s is not the latest active compaction", p.CompactionID)
 		}
-		top := c.Checkpoints[n-1]
+		top := c.Compactions[n-1]
 		if len(c.Entries) < top.PrefixLen {
-			return nil, fmt.Errorf("checkpoint %s prefix exceeds the context", p.CheckpointID)
+			return nil, fmt.Errorf("compaction %s prefix exceeds the context", p.CompactionID)
 		}
 		c.Entries = append(append([]Entry(nil), top.Base...), c.Entries[top.PrefixLen:]...)
-		c.Checkpoints = clip(c.Checkpoints[:n-1])
+		c.Compactions = clip(c.Compactions[:n-1])
 	default:
 		return nil, fmt.Errorf("chatlog context: unexpected %T", e.Value)
 	}
@@ -559,16 +559,16 @@ func (c *Context) indexOf(kind EntryKind, id string) int {
 	return -1
 }
 
-// applyCheckpoint validates and applies one checkpoint_created (CHT-EVT-3).
-// pos is the checkpoint's own position; CoveredThrough names an entry
-// position, so it must precede the checkpoint event.
-func applyCheckpoint(c Context, p *CheckpointCreatedPayload, pos session.Position) (any, error) {
+// applyCompaction validates and applies one compaction_created (CHT-EVT-3).
+// pos is the compaction's own position; CoveredThrough names an entry
+// position, so it must precede the compaction event.
+func applyCompaction(c Context, p *CompactionCreatedPayload, pos session.Position) (any, error) {
 	if !p.CoveredThrough.Less(pos) {
-		return nil, fmt.Errorf("checkpoint %s covers through %v at position %v", p.CheckpointID, p.CoveredThrough, pos)
+		return nil, fmt.Errorf("compaction %s covers through %v at position %v", p.CompactionID, p.CoveredThrough, pos)
 	}
-	for _, ap := range c.Checkpoints {
-		if ap.ID == p.CheckpointID {
-			return nil, fmt.Errorf("checkpoint %s created twice", p.CheckpointID)
+	for _, ap := range c.Compactions {
+		if ap.ID == p.CompactionID {
+			return nil, fmt.Errorf("compaction %s created twice", p.CompactionID)
 		}
 	}
 	cut := len(c.Entries)
@@ -577,7 +577,7 @@ func applyCheckpoint(c Context, p *CheckpointCreatedPayload, pos session.Positio
 	}
 	base, gap := c.Entries[:cut], c.Entries[cut:]
 	if len(gap) != 1 || gap[0].Kind != EntrySummary || gap[0].ID != string(p.SummaryID) || gap[0].Digest != p.SummaryDigest {
-		return nil, fmt.Errorf("checkpoint %s: the entries after coveredThrough must be exactly its summary", p.CheckpointID)
+		return nil, fmt.Errorf("compaction %s: the entries after coveredThrough must be exactly its summary", p.CompactionID)
 	}
 	pairs := make([]EntryDigestPair, len(base))
 	for i := range base {
@@ -588,15 +588,15 @@ func applyCheckpoint(c Context, p *CheckpointCreatedPayload, pos session.Positio
 		return nil, err
 	}
 	if wantBase != p.BaseContextDigest {
-		return nil, fmt.Errorf("checkpoint %s: base context digest mismatch", p.CheckpointID)
+		return nil, fmt.Errorf("compaction %s: base context digest mismatch", p.CompactionID)
 	}
 	retained, err := selectRetained(base, p.Retained)
 	if err != nil {
-		return nil, fmt.Errorf("checkpoint %s: %w", p.CheckpointID, err)
+		return nil, fmt.Errorf("compaction %s: %w", p.CompactionID, err)
 	}
 	// Base is clipped: it shares the covered prefix's storage, and no later
 	// state may append into it.
-	c.Checkpoints = append(c.Checkpoints, AppliedCheckpoint{ID: p.CheckpointID, Base: clip(base), PrefixLen: 1 + len(retained)})
+	c.Compactions = append(c.Compactions, AppliedCompaction{ID: p.CompactionID, Base: clip(base), PrefixLen: 1 + len(retained)})
 	c.Entries = append([]Entry{gap[0]}, retained...)
 	return c, nil
 }

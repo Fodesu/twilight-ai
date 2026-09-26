@@ -49,7 +49,7 @@ func opened(runID run.RunID, source run.StepID, calls ...run.CallID) step {
 
 // foldSteps encodes, decodes and folds steps through both projections,
 // returning the states and the first fold error. Each step is one commit, so
-// step i lands at ledger Position{Commit: i} and a checkpoint names entries
+// step i lands at ledger Position{Commit: i} and a compaction names entries
 // by the step that produced them.
 func foldSteps(t *testing.T, steps []step) (Context, Surface, error) {
 	t.Helper()
@@ -231,10 +231,10 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 	if summary.Digest, err = DigestSummary(&summary); err != nil {
 		t.Fatal(err)
 	}
-	checkpoint := CheckpointCreatedPayload{CheckpointID: "ck1", CoveredThrough: session.Position{Commit: 3}, BaseContextDigest: "sha256:base",
+	compaction := CompactionCreatedPayload{CompactionID: "ck1", CoveredThrough: session.Position{Commit: 3}, BaseContextDigest: "sha256:base",
 		SummaryID: summary.ID, SummaryDigest: summary.Digest,
 		Retained: []EntryDigestPair{{Kind: EntryAssistant, ID: "a1", Digest: "sha256:a1"}}}
-	if checkpoint.Digest, err = DigestCheckpoint(&checkpoint); err != nil {
+	if compaction.Digest, err = DigestCompaction(&compaction); err != nil {
 		t.Fatal(err)
 	}
 	samples := map[session.EventType]any{
@@ -244,8 +244,8 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 		TypeInputRejected:         InputRejectedPayload{InputID: "in-1"},
 		TypeToolResultSuperseded:  ToolResultSupersededPayload{ToolResultID: "tr1", Status: ToolSuccess, OutputDigest: "sha256:out"},
 		TypeSummary:               SummaryPayload{Summary: summary},
-		TypeCheckpointCreated:     checkpoint,
-		TypeCheckpointInvalidated: CheckpointInvalidatedPayload{CheckpointID: "ck1", Reason: "host"},
+		TypeCompactionCreated:     compaction,
+		TypeCompactionInvalidated: CompactionInvalidatedPayload{CompactionID: "ck1", Reason: "host"},
 	}
 	for _, def := range Module.Events {
 		val, ok := samples[def.Type]
@@ -365,7 +365,7 @@ func TestMaterialize(t *testing.T) {
 	}
 }
 
-// --- checkpoint fold (CHT-EVT-3, CHT-CTX-2, CHT-SUR-1) --------------------------
+// --- compaction fold (CHT-EVT-3, CHT-CTX-2, CHT-SUR-1) --------------------------
 
 func mustSummary(t *testing.T, id SummaryID, text string) Summary {
 	t.Helper()
@@ -391,21 +391,21 @@ func entryDigest(t *testing.T, stepID run.StepID, result es.Digest) es.Digest {
 // at is the ledger Position of foldSteps' step i.
 func at(i int) session.Position { return session.Position{Commit: session.CommitSeq(i)} }
 
-func mustCheckpoint(t *testing.T, id CheckpointID, covered session.Position, base []EntryDigestPair, sum Summary, retained []EntryDigestPair) CheckpointCreatedPayload {
+func mustCompaction(t *testing.T, id CompactionID, covered session.Position, base []EntryDigestPair, sum Summary, retained []EntryDigestPair) CompactionCreatedPayload {
 	t.Helper()
 	baseDigest, err := DigestBaseContext(base)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := CheckpointCreatedPayload{CheckpointID: id, CoveredThrough: covered, BaseContextDigest: baseDigest,
+	p := CompactionCreatedPayload{CompactionID: id, CoveredThrough: covered, BaseContextDigest: baseDigest,
 		SummaryID: sum.ID, SummaryDigest: sum.Digest, Retained: retained}
-	if p.Digest, err = DigestCheckpoint(&p); err != nil {
+	if p.Digest, err = DigestCompaction(&p); err != nil {
 		t.Fatal(err)
 	}
 	return p
 }
 
-func TestCheckpointFold(t *testing.T) {
+func TestCompactionFold(t *testing.T) {
 	content := jsonstable.MustParse(`{"text":"hi"}`)
 	inDigest, err := DigestInput("in-1", content)
 	if err != nil {
@@ -415,7 +415,7 @@ func TestCheckpointFold(t *testing.T) {
 	base := []EntryDigestPair{{Kind: EntryInput, ID: "in-1", Digest: inDigest}, {Kind: EntryAssistant, ID: "s1", Digest: entryDigest(t, "s1", "sha256:one")}}
 	// The prefix folds to entries at steps 1 (delivered input), 3 (assistant),
 	// 5 (summary), with a queued input that must survive compaction; the
-	// checkpoint itself lands at step 7.
+	// compaction itself lands at step 7.
 	prefix := []step{
 		{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-1", Content: content, SubmittedAtUnixMilli: 1}},
 		{TypeInputDelivered, InputDeliveredPayload{InputID: "in-1", TurnID: "t1"}},
@@ -424,10 +424,10 @@ func TestCheckpointFold(t *testing.T) {
 		{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-q", Content: content, SubmittedAtUnixMilli: 2}},
 		{TypeSummary, SummaryPayload{Summary: sum}},
 	}
-	valid := mustCheckpoint(t, "ck1", at(4), base, sum, base[1:])
+	valid := mustCompaction(t, "ck1", at(4), base, sum, base[1:])
 
-	t.Run("valid checkpoint replaces the base and keeps the queue", func(t *testing.T) {
-		ctxState, surf, err := foldSteps(t, append(prefix, step{TypeCheckpointCreated, valid}, completed("r1", "s2", "sha256:after")))
+	t.Run("valid compaction replaces the base and keeps the queue", func(t *testing.T) {
+		ctxState, surf, err := foldSteps(t, append(prefix, step{TypeCompactionCreated, valid}, completed("r1", "s2", "sha256:after")))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -441,19 +441,19 @@ func TestCheckpointFold(t *testing.T) {
 		if got := surf.SubmittedInputs(); len(got) != 1 || got[0].ID != "in-q" {
 			t.Fatalf("surface queue = %+v", got)
 		}
-		if v, _ := surf.Checkpoints.Get("ck1"); v.Status != CheckpointActive {
-			t.Fatalf("surface checkpoint = %+v", v)
+		if v, _ := surf.Compactions.Get("ck1"); v.Status != CompactionActive {
+			t.Fatalf("surface compaction = %+v", v)
 		}
 		if len(surf.EntryOrder) != 4 { // full history stays visible
 			t.Fatalf("entry order = %+v", surf.EntryOrder)
 		}
 	})
 
-	t.Run("invalidating the latest checkpoint restores base plus tail", func(t *testing.T) {
+	t.Run("invalidating the latest compaction restores base plus tail", func(t *testing.T) {
 		ctxState, surf, err := foldSteps(t, append(prefix,
-			step{TypeCheckpointCreated, valid},
+			step{TypeCompactionCreated, valid},
 			completed("r1", "s2", "sha256:after"),
-			step{TypeCheckpointInvalidated, CheckpointInvalidatedPayload{CheckpointID: "ck1", Reason: "host"}}))
+			step{TypeCompactionInvalidated, CompactionInvalidatedPayload{CompactionID: "ck1", Reason: "host"}}))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -461,11 +461,11 @@ func TestCheckpointFold(t *testing.T) {
 		if len(entries) != 3 || entries[0].ID != "in-1" || entries[1].ID != "s1" || entries[2].ID != "s2" {
 			t.Fatalf("restored entries = %+v", entries)
 		}
-		if len(ctxState.Checkpoints) != 0 {
-			t.Fatalf("checkpoint stack = %+v", ctxState.Checkpoints)
+		if len(ctxState.Compactions) != 0 {
+			t.Fatalf("compaction stack = %+v", ctxState.Compactions)
 		}
-		if v, _ := surf.Checkpoints.Get("ck1"); v.Status != CheckpointInvalidated || v.Reason != "host" {
-			t.Fatalf("surface checkpoint = %+v", v)
+		if v, _ := surf.Compactions.Get("ck1"); v.Status != CompactionInvalidated || v.Reason != "host" {
+			t.Fatalf("surface compaction = %+v", v)
 		}
 	})
 
@@ -473,19 +473,19 @@ func TestCheckpointFold(t *testing.T) {
 		name  string
 		steps []step
 	}{
-		{"covered through at or past the checkpoint position",
-			append(prefix, step{TypeCheckpointCreated, mustCheckpoint(t, "ck2", at(6), base, sum, nil)})},
+		{"covered through at or past the compaction position",
+			append(prefix, step{TypeCompactionCreated, mustCompaction(t, "ck2", at(6), base, sum, nil)})},
 		{"base context digest mismatch",
-			append(prefix, step{TypeCheckpointCreated, mustCheckpoint(t, "ck3", at(3), base[:1], sum, nil)})},
+			append(prefix, step{TypeCompactionCreated, mustCompaction(t, "ck3", at(3), base[:1], sum, nil)})},
 		{"retained outside the base",
-			append(prefix, step{TypeCheckpointCreated, mustCheckpoint(t, "ck4", at(3), base,
+			append(prefix, step{TypeCompactionCreated, mustCompaction(t, "ck4", at(3), base,
 				sum, []EntryDigestPair{{Kind: EntryAssistant, ID: "s1", Digest: "sha256:wrong"}})})},
 		{"gap holds more than the summary",
 			append(append([]step{}, prefix...), completed("r1", "s9", "sha256:x"),
-				step{TypeCheckpointCreated, mustCheckpoint(t, "ck5", at(5),
+				step{TypeCompactionCreated, mustCompaction(t, "ck5", at(5),
 					append(base, EntryDigestPair{Kind: EntryAssistant, ID: "s9"}), sum, nil)})},
-		{"invalidating an unknown checkpoint",
-			append(prefix, step{TypeCheckpointInvalidated, CheckpointInvalidatedPayload{CheckpointID: "nope"}})},
+		{"invalidating an unknown compaction",
+			append(prefix, step{TypeCompactionInvalidated, CompactionInvalidatedPayload{CompactionID: "nope"}})},
 	}
 	for _, tc := range rejects {
 		t.Run(tc.name, func(t *testing.T) {
@@ -508,7 +508,7 @@ func TestCheckpointFold(t *testing.T) {
 		sum2 := mustSummary(t, "sum2", "tools done")
 		steps = append(steps,
 			step{TypeSummary, SummaryPayload{Summary: sum2}},
-			step{TypeCheckpointCreated, mustCheckpoint(t, "ck6", at(4), toolBase, sum2, nil)},
+			step{TypeCompactionCreated, mustCompaction(t, "ck6", at(4), toolBase, sum2, nil)},
 			step{TypeToolResultSuperseded, ToolResultSupersededPayload{ToolResultID: "c1", Status: ToolError}})
 		if _, _, err := foldSteps(t, steps); err == nil {
 			t.Fatal("supersede of a compacted result accepted")
