@@ -228,21 +228,61 @@ func (b *sessionBackend) Index(ctx context.Context, id session.SegmentID) (sessi
 	if err != nil {
 		return session.CommitIndex{}, session.Head{}, err
 	}
+	counts, err := q.SegmentStreamCounts(ctx, string(id))
+	if err != nil {
+		return session.CommitIndex{}, session.Head{}, err
+	}
 	head := session.LedgerSeed(header)
 	idx := session.CommitIndex{Through: head, Entries: make([]session.IndexEntry, 0, len(rows))}
+	next := 0
 	for i := range rows {
 		r := &rows[i]
 		e := session.IndexEntry{CommitID: session.CommitID(r.CommitID), Seq: session.CommitSeq(r.Seq)} //nolint:gosec // G115: seq stored from a uint64
-		if r.Streams != "" {
-			if err := json.Unmarshal([]byte(r.Streams), &e.Streams); err != nil {
-				return session.CommitIndex{}, session.Head{}, &session.Error{Code: session.ErrCorrupt, Operation: "index", Detail: fmt.Sprintf("segment %s commit %d streams: %v", id, r.Seq, err)}
-			}
+		for next < len(counts) && counts[next].Seq == r.Seq {
+			c := &counts[next]
+			e.Streams = append(e.Streams, session.StreamCount{Stream: session.StreamRef{Domain: c.Domain, ID: c.StreamID}, Events: uint32(c.Events)}) //nolint:gosec // G115: a batch holds far fewer than MaxUint32 events
+			next++
 		}
 		idx.Entries = append(idx.Entries, e)
 		head = session.Head{Next: e.Seq + 1}
 	}
 	idx.Through = head
 	return idx, head, nil
+}
+
+// Summarize is one aggregate over the segment's primary key (SES-REP-5):
+// the commits are the index, so the summary is always current.
+func (b *sessionBackend) Summarize(ctx context.Context, id session.SegmentID) (session.IndexSummary, session.Head, error) {
+	header, err := b.header(ctx, b.d.q, "index", id)
+	if err != nil {
+		return session.IndexSummary{}, session.Head{}, err
+	}
+	row, err := b.d.q.SegmentIndexSummary(ctx, string(id))
+	if err != nil {
+		return session.IndexSummary{}, session.Head{}, err
+	}
+	head := session.LedgerSeed(header)
+	if row.LastSeq >= 0 {
+		head = session.Head{Next: session.CommitSeq(row.LastSeq) + 1} //nolint:gosec // G115: checked non-negative
+	}
+	s := session.IndexSummary{Entries: uint64(row.Entries), Through: head} //nolint:gosec // G115: a count
+	if row.Entries > 0 {
+		s.First, s.Last = session.CommitSeq(row.FirstSeq), session.CommitSeq(row.LastSeq) //nolint:gosec // G115: checked non-negative
+	}
+	return s, head, nil
+}
+
+// StreamHead sums the stream's rows of the segment (SES-REP-3): one index
+// range, whatever the segment's length.
+func (b *sessionBackend) StreamHead(ctx context.Context, id session.SegmentID, stream session.StreamRef, before session.CommitSeq) (session.StreamSeq, error) {
+	if _, err := b.header(ctx, b.d.q, "stream_head", id); err != nil {
+		return 0, err
+	}
+	n, err := b.d.q.SegmentStreamHead(ctx, db.SegmentStreamHeadParams{Segment: string(id), Domain: stream.Domain, StreamID: stream.ID, Seq: int64(before)}) //nolint:gosec // G115: seq values fit int64
+	if err != nil {
+		return 0, err
+	}
+	return session.StreamSeq(n), nil //nolint:gosec // G115: a sum of batch sizes
 }
 
 func (b *sessionBackend) PutIndex(ctx context.Context, id session.SegmentID, _ session.CommitIndex) error {
@@ -280,17 +320,21 @@ func (b *sessionBackend) Append(ctx context.Context, lease session.Lease, id ses
 		if err != nil {
 			return err
 		}
-		// The index columns are written beside the body (SES-REP-5), so Index
-		// never decodes a commit.
-		streams, err := json.Marshal(session.IndexEntryOf(&c).Streams)
-		if err != nil {
-			return err
-		}
-		err = q.InsertSegmentCommit(ctx, db.InsertSegmentCommitParams{Segment: string(id), Seq: int64(c.Seq), CommitID: string(c.CommitID), Body: string(body), Streams: string(streams)}) //nolint:gosec // G115: seq values fit int64
+		err = q.InsertSegmentCommit(ctx, db.InsertSegmentCommitParams{Segment: string(id), Seq: int64(c.Seq), CommitID: string(c.CommitID), Body: string(body)}) //nolint:gosec // G115: seq values fit int64
 		if isUniqueViolation(err) {
 			return kerr(session.ErrConflict, "append", lease.Session, "commit seq or id already in the segment")
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		// The index rows are written with the body (SES-REP-5): one per
+		// stream the commit wrote, so Index and StreamHead decode nothing.
+		for _, sc := range session.IndexEntryOf(&c).Streams {
+			if err := q.InsertSegmentCommitStream(ctx, db.InsertSegmentCommitStreamParams{Segment: string(id), Seq: int64(c.Seq), Domain: sc.Stream.Domain, StreamID: sc.Stream.ID, Events: int64(sc.Events)}); err != nil { //nolint:gosec // G115: seq values fit int64
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -299,6 +343,9 @@ func (b *sessionBackend) TruncateSegment(ctx context.Context, id session.Segment
 	err := b.d.tx(ctx, "segment:"+string(id), func(q *db.Queries) error {
 		header, err := b.header(ctx, q, "collect", id)
 		if err != nil {
+			return err
+		}
+		if err := q.DeleteSegmentCommitStreamsAbove(ctx, db.DeleteSegmentCommitStreamsAboveParams{Segment: string(id), Seq: int64(through)}); err != nil { //nolint:gosec // G115: seq values fit int64
 			return err
 		}
 		if err := q.DeleteSegmentCommitsAbove(ctx, db.DeleteSegmentCommitsAboveParams{Segment: string(id), Seq: int64(through)}); err != nil { //nolint:gosec // G115: seq values fit int64
@@ -312,6 +359,9 @@ func (b *sessionBackend) TruncateSegment(ctx context.Context, id session.Segment
 
 func (b *sessionBackend) RemoveSegment(ctx context.Context, id session.SegmentID) error {
 	return b.d.tx(ctx, "segment:"+string(id), func(q *db.Queries) error {
+		if err := q.DeleteSegmentCommitStreams(ctx, string(id)); err != nil {
+			return err
+		}
 		if err := q.DeleteSegmentCommits(ctx, string(id)); err != nil {
 			return err
 		}

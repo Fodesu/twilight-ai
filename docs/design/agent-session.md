@@ -82,7 +82,7 @@ kernel 的 `session.Ledger` 实现 `Store`，只依赖 `Backend` 端口；Memory
 
 **SES-SCP-3** kernel 的范围是 Session lineage 树：header、Open/Append/ReadCommits/ReadStream、所有权与 epoch、fork、删除与可达性回收（第 8、9 节）。lineage 的单父不变量见 SES-LIN-1：多父 merge 被排除在模型之外；canonical import 不属于当前合同，若日后加入，它与 fork 一样只能新建根段或子段，不得为已有 Session 增加第二个父节点。
 
-**SES-SCP-4** adapter 端口是 `Backend = LedgerStore + SessionStore + CreateSession`。`LedgerStore` 存节点：`Segment`、`ListSegments`、`ReadSegment`（只读该段自身的 commit）、`Locate`、`LookupCommit`、`Index`、`PutIndex`（段的 CommitIndex，SES-REP-5）、只插入的 `Append(lease, segment, commit)`、`TruncateSegment`、`RemoveSegment`（只由 `Collect` 调用，SES-APP-5）。`SessionStore` 存根：`Record`、`ListRecords`、`Acquire`（所有权、租约与 torn tail 修复）、`Renew`、`Release`、`DeleteRecord`。两者共享一个一致性域，使 `Append` 能与 Lease 检查原子进行。adapter 不知道 fork、前缀与可达性；`Ledger` 在该端口之上一次实现 SES-FRK 与 SES-GC。conformance 以 `Store` 为参数运行，因此每个 adapter 得到同一套 lineage 语义。
+**SES-SCP-4** adapter 端口是 `Backend = LedgerStore + SessionStore + CreateSession`。`LedgerStore` 存节点：`Segment`、`ListSegments`、`ReadSegment`（只读该段自身的 commit）、`Locate`、`LookupCommit`、`StreamHead`（段内一个流在给定 Seq 之前的事件计数，SES-REP-3）、`Summarize`、`Index`、`PutIndex`（段的 CommitIndex 摘要、全量与重建写回，SES-REP-5）、只插入的 `Append(lease, segment, commit)`、`TruncateSegment`、`RemoveSegment`（只由 `Collect` 调用，SES-APP-5）。`SessionStore` 存根：`Record`、`ListRecords`、`Acquire`（所有权、租约与 torn tail 修复）、`Renew`、`Release`、`DeleteRecord`。两者共享一个一致性域，使 `Append` 能与 Lease 检查原子进行。adapter 不知道 fork、前缀与可达性；`Ledger` 在该端口之上一次实现 SES-FRK 与 SES-GC。conformance 以 `Store` 为参数运行，因此每个 adapter 得到同一套 lineage 语义。
 
 ## 2. 版本
 
@@ -183,7 +183,7 @@ type Handle interface {
     Append(context.Context, Proposal) (Commit, error)
     Committed(CommitID) bool
     LookupCommit(CommitID) (Commit, bool, error)
-    StreamHead(StreamRef) (StreamSeq, bool)                                    // SES-REP-3；只计 tip 段，与流的 lineage 无关（SES-FRK-5）
+    StreamHead(StreamRef) (StreamSeq, bool)                                    // SES-REP-3；只计 tip 段，与流的 lineage 无关（SES-FRK-5）；首问时读 backend，之后随 Append 累加
     Close(context.Context) error
 }
 type Store interface {
@@ -243,9 +243,9 @@ type StreamPage struct { Header SegmentHeader; Stream StreamRef; Events []Event;
 
 **SES-REP-2** `StreamSeq` 是流内位置，由 Store 按 CommitSeq 顺序在 `ReadStream` 请求的 lineage 所见的序列上数出，是读侧的优化：`ReadStream` 只返回该流的事件，但其顺序与从 `ReadCommits` 折叠出的流内顺序完全一致。它不是第二种排序。
 
-**SES-REP-3** `Committed` 报告某个 `CommitID` 是否已在 ledger 中。`Append` 必须拒绝重复 `CommitID`（SES-APP-3），kernel 因此本来就持有这个索引；`Committed` 是该索引的读侧，只做索引查找，不触碰 commit 本体：tip 段查句柄内存中的索引，继承段经 `Backend.Locate` 查各段的 CommitIndex（SES-REP-5），沿 Ancestry 逐段核对 Seq 落在该段贡献的区间内。调用者（`writer.Writer`、Run 的重放判定）不必自己再维护一份同样的索引。`StreamHead(stream)` 是同一索引的另一读侧：报告该 ledger 是否写过某逻辑流及其下一个 `StreamSeq`，由 tip 段 CommitIndex 各条目的流计数求和得到，只计 tip 段自身的 commit（SES-FRK-5）。
+**SES-REP-3** `Committed` 报告某个 `CommitID` 是否已在 ledger 中。`Append` 必须拒绝重复 `CommitID`（SES-APP-3），kernel 因此本来就持有这个索引；`Committed` 是该索引的读侧，只做索引查找，不触碰 commit 本体：tip 段与继承段同经 `Backend.Locate` 查各段的 CommitIndex（SES-REP-5），沿 Ancestry 逐段核对 Seq 落在该段贡献的区间内；tip 段的核对以句柄自己的 head 为界（`Seq < head.Next`），head 只由句柄自身的 `Append` 推进，因此句柄知道的恰为它在 Open 时读到与自己写下的 commit：被替代的句柄不会得知继任者的 commit，仍在 `Append` 处触到 Epoch 围栏（SES-OWN-2）。句柄不在内存中持有 tip 段的 CommitID 集合，`Open` 的代价与 tip 段长度无关（APP-ACT-5）。调用者（`writer.Writer`、Run 的重放判定）不必自己再维护一份同样的索引。`StreamHead(stream)` 是同一索引的另一读侧：报告该 ledger 是否写过某逻辑流及其下一个 `StreamSeq`，只计 tip 段自身的 commit（SES-FRK-5）；句柄第一次被问到某个流时经 `Backend.StreamHead(segment, stream, head.Next)` 读取一次并缓存（同样以自己的 head 为界），之后随自身 `Append` 累加。
 
-**SES-REP-5（CommitIndex）** 每个段有一个 `CommitIndex`：按 Seq 顺序的条目 `{CommitID, Seq, Streams}` 加它覆盖到的 head `Through`。它是段的组成部分而不是 adapter 的私有缓存：adapter 在每次 `Append` 中把该 commit 的条目与 commit 一起落下，在 `TruncateSegment` 中一起截断。不变量是条目恰好覆盖该段 `[seed, head)` 的每个 commit。`Open` 只做两个 O(1) 核对（`CommitIndex.Valid`）：`Through` 等于段的 head，条目数等于 head 到 seed 的距离；通过则句柄的索引与流计数直接由条目构成，不读任何 commit；不通过（索引缺失、崩溃后落后于 commit、被截短）则 kernel 以 `ReadSegment` 读该段自身 commit 重建索引并经 `PutIndex` 写回。索引损坏或缺失因此只导致一次重建，不导致错误。文件 adapter 以段目录下的 `index.jsonl` 持久化，每行是条目加该 commit 在 `log.jsonl` 中的字节区间，先写 commit 再写索引行，所以崩溃至多让索引落后一个 commit，加载时由日志尾部补齐；数据库 adapter 以唯一索引实现。`LookupCommit` 与 `ReadSegment` 按索引给出的字节区间读取，代价与段长度无关。
+**SES-REP-5（CommitIndex）** 每个段有一个 `CommitIndex`：按 Seq 顺序的条目 `{CommitID, Seq, Streams}` 加它覆盖到的 head `Through`。它是段的组成部分而不是 adapter 的私有缓存：adapter 在每次 `Append` 中把该 commit 的条目与 commit 一起落下，在 `TruncateSegment` 中一起截断。不变量是条目恰好覆盖该段 `[seed, head)` 的每个 commit。`Open` 经 `Backend.Summarize` 取索引摘要（条目数、首末 Seq、`Through`，`IndexSummary.Valid`）核对：`Through` 等于段的 head，条目数等于 head 到 seed 的距离，首末 Seq 落在 seed 与 head-1；Seq 在段内唯一，三者成立即连续。通过则句柄不读任何 commit，也不复制索引，此后按需经 `Locate` 与 `StreamHead` 查询它；不通过（索引缺失、崩溃后落后于 commit、被截短）则 kernel 以 `ReadSegment` 读该段自身 commit 重建索引并经 `PutIndex` 写回。索引损坏或缺失因此只导致一次重建，不导致错误。文件 adapter 以段目录下的 `index.jsonl` 持久化，每行是条目加该 commit 在 `log.jsonl` 中的字节区间，先写 commit 再写索引行，所以崩溃至多让索引落后一个 commit，加载时由日志尾部补齐；数据库 adapter 以 `(segment, commit_id)` 唯一索引回答 `Locate`，以每 commit 每流一行的流计数表回答 `StreamHead`，两者与 commit 同事务写入。`Index` 的全量读取只剩 `Collect` 在截段前取被删 commit 的名字这一处用途。`LookupCommit` 与 `ReadSegment` 按索引给出的字节区间读取，代价与段长度无关。
 
 **SES-REP-4** `LookupCommit` 返回某个已提交的 Commit，未提交时 `ok=false`。句柄不持有它时从存储读取：文件 adapter 按 CommitIndex 记录的字节区间读该 Commit（SES-REP-5），代价与日志长度无关；内存 adapter 复制该 Commit。代价只落在命中，未命中是一次索引查找。这是幂等重放唯一需要的读取能力：重放不必读整条日志（EXT-WRT-2）。
 

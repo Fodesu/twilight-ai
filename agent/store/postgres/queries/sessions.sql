@@ -14,7 +14,25 @@ DELETE FROM session_segments WHERE id = $1;
 SELECT seq, body FROM session_commits WHERE segment = $1 AND seq >= $2 ORDER BY seq LIMIT $3;
 
 -- name: SegmentIndex :many
-SELECT seq, commit_id, streams FROM session_commits WHERE segment = $1 ORDER BY seq;
+SELECT seq, commit_id FROM session_commits WHERE segment = $1 ORDER BY seq;
+
+-- name: SegmentIndexSummary :one
+SELECT COUNT(*)::bigint AS entries, COALESCE(MIN(seq), -1)::bigint AS first_seq, COALESCE(MAX(seq), -1)::bigint AS last_seq FROM session_commits WHERE segment = $1;
+
+-- name: SegmentStreamCounts :many
+SELECT seq, domain, stream_id, events FROM session_commit_streams WHERE segment = $1 ORDER BY seq, domain, stream_id;
+
+-- name: SegmentStreamHead :one
+SELECT COALESCE(SUM(events), 0)::bigint AS events FROM session_commit_streams WHERE segment = $1 AND domain = $2 AND stream_id = $3 AND seq < $4;
+
+-- name: InsertSegmentCommitStream :exec
+INSERT INTO session_commit_streams (segment, seq, domain, stream_id, events) VALUES ($1, $2, $3, $4, $5);
+
+-- name: DeleteSegmentCommitStreamsAbove :exec
+DELETE FROM session_commit_streams WHERE segment = $1 AND seq > $2;
+
+-- name: DeleteSegmentCommitStreams :exec
+DELETE FROM session_commit_streams WHERE segment = $1;
 
 -- name: SegmentHead :one
 SELECT COALESCE(MAX(seq), -1)::bigint AS last_seq FROM session_commits WHERE segment = $1;
@@ -26,7 +44,7 @@ SELECT seq FROM session_commits WHERE segment = $1 AND commit_id = $2;
 SELECT body FROM session_commits WHERE segment = $1 AND commit_id = $2;
 
 -- name: InsertSegmentCommit :exec
-INSERT INTO session_commits (segment, seq, commit_id, body, streams) VALUES ($1, $2, $3, $4, $5);
+INSERT INTO session_commits (segment, seq, commit_id, body) VALUES ($1, $2, $3, $4);
 
 -- name: DeleteSegmentCommitsAbove :exec
 DELETE FROM session_commits WHERE segment = $1 AND seq > $2;

@@ -79,24 +79,45 @@ func (x *CommitIndex) Truncate(seed Head, through CommitSeq) {
 	x.Through = Head{Next: x.Entries[keep-1].Seq + 1}
 }
 
-// Valid reports whether the index covers exactly the segment's commits from
-// seed to head: Through equals head and the entry count equals the distance
-// from seed. These are the only checks Open makes; an index that passes them
-// is used, one that fails is rebuilt from the commits (SES-REP-5).
-func (x *CommitIndex) Valid(seed, head Head) bool {
-	if x.Through != head || head.Next < seed.Next {
-		return false
-	}
-	if uint64(len(x.Entries)) != uint64(head.Next-seed.Next) {
-		return false
-	}
+// IndexSummary is what Open checks a segment's CommitIndex by (SES-REP-5):
+// how many entries it has, the Seq of its first and last, and the head it
+// covers. An adapter answers it without returning the entries, so the
+// check costs the same for any segment length.
+type IndexSummary struct {
+	Entries     uint64
+	First, Last CommitSeq
+	Through     Head
+}
+
+// Summary is the index's IndexSummary.
+func (x *CommitIndex) Summary() IndexSummary {
+	s := IndexSummary{Entries: uint64(len(x.Entries)), Through: x.Through}
 	if n := len(x.Entries); n > 0 {
-		last := &x.Entries[n-1]
-		if last.Seq+1 != head.Next || x.Entries[0].Seq != seed.Next {
-			return false
-		}
+		s.First, s.Last = x.Entries[0].Seq, x.Entries[n-1].Seq
 	}
-	return x.checkContiguous(seed) == nil
+	return s
+}
+
+// Valid reports whether the summarized index covers exactly the segment's
+// commits from seed to head: Through equals head, the entry count equals
+// the distance from seed, and the entries run from seed to head-1. With
+// Seq unique per segment (the adapter's key) these imply contiguity.
+func (s IndexSummary) Valid(seed, head Head) bool {
+	if s.Through != head || head.Next < seed.Next {
+		return false
+	}
+	if s.Entries != uint64(head.Next-seed.Next) {
+		return false
+	}
+	if s.Entries > 0 && (s.First != seed.Next || s.Last+1 != head.Next) {
+		return false
+	}
+	return true
+}
+
+// Valid is Summary().Valid plus the contiguity walk over the entries.
+func (x *CommitIndex) Valid(seed, head Head) bool {
+	return x.Summary().Valid(seed, head) && x.checkContiguous(seed) == nil
 }
 
 // checkContiguous verifies entry Seqs run from seed without gaps or repeats.

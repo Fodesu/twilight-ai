@@ -92,7 +92,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 | 接口 | 表 | 实现要点 |
 |---|---|---|
-| `session.Backend`（`LedgerStore` + `SessionStore` + `CreateSession`） | `session_segments`、`session_commits`、`session_roots` | `DB.Sessions()` 返回 `session.NewLedger(backend)`，kernel 的 Epoch 围栏、lineage、fork、stream 规则不在 adapter 内复制；`Append` 在 Session 的事务锁内重读 root 行校验 `owned` 与 epoch（SES-OWN-2）；`CommitIndex` 由 `session_commits` 的 `commit_id`、`streams` 列派生（Append 时与正文同写），`Index` 不解码正文，`PutIndex` 无需持久化 |
+| `session.Backend`（`LedgerStore` + `SessionStore` + `CreateSession`） | `session_segments`、`session_commits`、`session_roots` | `DB.Sessions()` 返回 `session.NewLedger(backend)`，kernel 的 Epoch 围栏、lineage、fork、stream 规则不在 adapter 内复制；`Append` 在 Session 的事务锁内重读 root 行校验 `owned` 与 epoch（SES-OWN-2）；`Committed`/`LookupCommit` 经 `(segment, commit_id)` 唯一索引点查询，`StreamHead` 经 `session_commit_streams`（每 commit 每流一行，与正文同事务写入）按流求和，Open 只取索引摘要（`COUNT/MIN/MAX`），全量 `Index` 只剩 `Collect` 使用，`PutIndex` 无需持久化 |
 | `extension.ProjectionCache` | `projection_cache` | `SessionStore` 实现 `ProjectionCacheProvider`，`owner.New` 自动选用：Session 在另一副本重开时从保存的投影状态起折叠，只折叠尾部 commit（EXT-PRJ-3、EXT-PRJ-7 的 `CacheEvery` 定落后上限）；UPSERT 带 `WHERE projection_cache.through < EXCLUDED.through`，晚到的旧写入不回退条目；`Delete` 连带删除 |
 | `executionstore.Store` | `executions`、`execution_commits`、`execution_leases` | `Acquire` 一个事务内 fold、读写租约行、追加 claimed；`ListOwned` 走 `execution_leases(owner)` 索引 |
 | `process.Store`、`checkpoint.Store`、`inbox.Store` | `processes`/`process_commits`、`checkpoints`、`inbox` | 与 SQLite 同语义 |
@@ -104,18 +104,18 @@ SQL 保持简单：`SELECT`/`INSERT`/`UPDATE`/`DELETE`/`LIMIT` 与唯一约束�
 
 **CLD-STO-2（接口审查结果）** 审查项全部在 Postgres 语义下满足：`executionstore.Store.Acquire` 的租约事务在一个 `pgx.BeginFunc` 内完成；Seq 0 的 acceptance 与 abort 竞争由 `execution_commits(key, seq)` 主键与事务锁共同裁决（RUN-EXE-16）；`ListOwned` 走租约行的 owner 索引；Session ledger 的 `Append` 以 `(segment, seq)` 与 `(segment, commit_id)` 两个唯一约束实现 ErrConflict；CAS 以 `(authority, key)` 主键去重。未做的项：内容大对象走对象存储、按 Session 的通知（跨副本的 inbox 唤醒仍靠轮询，APP-INB-3）。
 
-**CLD-STO-4（重开路径基准）** `agent/store/postgres/bench_test.go` 在 `-postgres.dsn` 指向的数据库上测量激活模型的每 Turn 成本（APP-ACT-5），Session 的 tip 段含 1k / 10k / 100k 个单事件 commit。2026-09-26 本机（Apple Silicon，Postgres 18 容器，`-benchtime 3x`）：
+**CLD-STO-4（重开路径基准）** `agent/store/postgres/bench_test.go` 在 `-postgres.dsn` 指向的数据库上测量激活模型的每 Turn 成本（APP-ACT-5），Session 的 tip 段含 1k / 10k / 100k 个单事件 commit。2026-09-27 本机（Apple Silicon，Postgres 18 容器，`-benchtime 3x`），句柄不装载 tip 段索引之后：
 
 | 操作 | 1k | 10k | 100k | 说明 |
 |---|---|---|---|---|
-| `Store.Open` + `Close` | 5.7 ms | 13 ms | 67 ms | 含 CommitIndex 扫描与 root 行的两次写事务 |
-| CommitIndex 扫描 | 0.9 ms | 8.9 ms | 58 ms | 只读 `seq, commit_id, streams` 三列；CPU profile 中 JSON 解析占比小，时间在行传输 |
-| Writer 打开，无缓存 | 15 ms | 40 ms | 370 ms | 折叠全部 commit |
-| Writer 打开，缓存覆盖到 head | 6.8 ms | 14 ms | 112 ms | 折叠 0 个事件；超出 Open 的部分为缓存状态的解码（100k 行状态约 1.2 MB） |
+| `Store.Open` + `Close` | 5.6 ms | 5.1 ms | 17 ms | 索引摘要一次聚合、root 行两次写事务；改前 100k 为 67 ms |
+| CommitIndex 全量扫描 | 0.9 ms | 6.3 ms | 48 ms | 只剩 `Collect` 使用 |
+| Writer 打开，无缓存 | 14 ms | 44 ms | 318 ms | 折叠全部 commit |
+| Writer 打开，缓存覆盖到 head | 6.6 ms | 7.5 ms | 38 ms | 折叠 0 个事件；100k 的余量为缓存状态解码（约 1.2 MB）；改前 112 ms |
 | 投影缓存 Save（状态 n 行） | 2.2 ms | 3.5 ms | 10 ms | 每 `CacheEvery` 个 commit 一次 |
 | claims 分页一页（1/16 匹配，页 64） | 2.8 ms | 3.9 ms | 4.7 ms | 与 claim 总数无关 |
 
-结论：claims 分页已与规模无关；100k commit 的重开约 110 ms，其中 CommitIndex 扫描与缓存状态解码各占一半，均与 tip 段长度线性相关。两者的进一步优化（Open 时不装载整段 CommitID；随历史增长的投影分段存储）都要引入新的持久结构，暂不进行，待真实负载证明重开时间成为瓶颈后再评估。
+结论：Open 与 tip 段长度无关；claims 分页与规模无关。100k commit 的暖重开剩余成本来自随历史增长的投影状态（chatlog surface）的解码，归档方案（让 fold 经 ledger 事实合法遗忘旧条目）待真实负载证明后再做。100k 的 `Store.Open` 高于 10k 的部分来自聚合 `COUNT/MIN/MAX` 走主键索引的行数。
 
 **CLD-STO-3（租约读取）** controller、gateway 与 owner 扫描读取 Session 租约的接口为 `session.Store.LeaseOf`、`ListLeases` 与 `ExpiredLeases`，定义于 SES-OWN-5（`agent-session.md`），filestore 与 Postgres 均已实现；Postgres 的 `ExpiredLeases` 走 `session_roots(lease_until) WHERE owned` 部分索引。
 

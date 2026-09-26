@@ -281,6 +281,54 @@ func (s *Store) Index(ctx context.Context, id session.SegmentID) (session.Commit
 	return x.idx.Clone(), x.idx.Through, nil
 }
 
+// Summarize is the segment index's summary (SES-REP-5).
+func (s *Store) Summarize(ctx context.Context, id session.SegmentID) (session.IndexSummary, session.Head, error) {
+	if err := ctx.Err(); err != nil {
+		return session.IndexSummary{}, session.Head{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	header, dir, err := s.loadSegment(id, "index")
+	if err != nil {
+		return session.IndexSummary{}, session.Head{}, err
+	}
+	x, err := s.segIndex(id, header, dir)
+	if err != nil {
+		return session.IndexSummary{}, session.Head{}, err
+	}
+	return x.idx.Summary(), x.idx.Through, nil
+}
+
+// StreamHead sums the stream's event counts over the segment's index
+// entries (SES-REP-3).
+func (s *Store) StreamHead(ctx context.Context, id session.SegmentID, stream session.StreamRef, before session.CommitSeq) (session.StreamSeq, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	header, dir, err := s.loadSegment(id, "stream_head")
+	if err != nil {
+		return 0, err
+	}
+	x, err := s.segIndex(id, header, dir)
+	if err != nil {
+		return 0, err
+	}
+	var n session.StreamSeq
+	for i := range x.idx.Entries {
+		if x.idx.Entries[i].Seq >= before {
+			break
+		}
+		for _, sc := range x.idx.Entries[i].Streams {
+			if sc.Stream == stream {
+				n += session.StreamSeq(sc.Events)
+			}
+		}
+	}
+	return n, nil
+}
+
 // PutIndex accepts the kernel's rebuild by rebuilding from the log itself,
 // which is where the byte spans come from, and checks the two agree.
 func (s *Store) PutIndex(ctx context.Context, id session.SegmentID, idx session.CommitIndex) error {

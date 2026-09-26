@@ -97,11 +97,19 @@ type LedgerStore interface {
 	// LookupCommit reads the commit (SES-REP-4).
 	Locate(context.Context, SegmentID, CommitID) (CommitSeq, bool, error)
 	LookupCommit(context.Context, SegmentID, CommitID) (Commit, bool, error)
-	// Index returns the segment's CommitIndex as the adapter keeps it, and
-	// the segment's current head (SES-REP-5). The adapter extends the index
-	// with every Append and cuts it with every Truncate; after a crash it may
-	// lag the commits, which the kernel detects with CommitIndex.Valid and
-	// repairs through PutIndex.
+	// StreamHead returns the number of events the segment's own commits
+	// with Seq below before wrote to one logical stream, from the segment's
+	// CommitIndex alone (SES-REP-3): the StreamSeq the stream's next event
+	// takes as of that head, 0 when none of those commits wrote to it.
+	StreamHead(ctx context.Context, id SegmentID, stream StreamRef, before CommitSeq) (StreamSeq, error)
+	// Summarize returns the summary of the segment's CommitIndex as the
+	// adapter keeps it, and the segment's current head (SES-REP-5): what
+	// Open checks the index by, without the entries. After a crash the
+	// index may lag the commits, which the kernel detects with
+	// IndexSummary.Valid and repairs through PutIndex.
+	Summarize(context.Context, SegmentID) (IndexSummary, Head, error)
+	// Index returns the segment's whole CommitIndex and its head
+	// (SES-REP-5); Collect reads it to name the commits a truncation drops.
 	Index(context.Context, SegmentID) (CommitIndex, Head, error)
 	// PutIndex replaces the segment's CommitIndex with one the kernel rebuilt
 	// from the commits.

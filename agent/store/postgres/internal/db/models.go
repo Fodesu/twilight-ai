@@ -90,7 +90,14 @@ type SessionCommit struct {
 	Seq      int64
 	CommitID string
 	Body     string
-	Streams  string
+}
+
+type SessionCommitStream struct {
+	Segment  string
+	Seq      int64
+	Domain   string
+	StreamID string
+	Events   int64
 }
 
 type SessionRoot struct {

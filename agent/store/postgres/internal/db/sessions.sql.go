@@ -18,6 +18,29 @@ func (q *Queries) DeleteSegment(ctx context.Context, id string) error {
 	return err
 }
 
+const deleteSegmentCommitStreams = `-- name: DeleteSegmentCommitStreams :exec
+DELETE FROM session_commit_streams WHERE segment = $1
+`
+
+func (q *Queries) DeleteSegmentCommitStreams(ctx context.Context, segment string) error {
+	_, err := q.db.Exec(ctx, deleteSegmentCommitStreams, segment)
+	return err
+}
+
+const deleteSegmentCommitStreamsAbove = `-- name: DeleteSegmentCommitStreamsAbove :exec
+DELETE FROM session_commit_streams WHERE segment = $1 AND seq > $2
+`
+
+type DeleteSegmentCommitStreamsAboveParams struct {
+	Segment string
+	Seq     int64
+}
+
+func (q *Queries) DeleteSegmentCommitStreamsAbove(ctx context.Context, arg DeleteSegmentCommitStreamsAboveParams) error {
+	_, err := q.db.Exec(ctx, deleteSegmentCommitStreamsAbove, arg.Segment, arg.Seq)
+	return err
+}
+
 const deleteSegmentCommits = `-- name: DeleteSegmentCommits :exec
 DELETE FROM session_commits WHERE segment = $1
 `
@@ -137,7 +160,7 @@ func (q *Queries) InsertSegment(ctx context.Context, arg InsertSegmentParams) er
 }
 
 const insertSegmentCommit = `-- name: InsertSegmentCommit :exec
-INSERT INTO session_commits (segment, seq, commit_id, body, streams) VALUES ($1, $2, $3, $4, $5)
+INSERT INTO session_commits (segment, seq, commit_id, body) VALUES ($1, $2, $3, $4)
 `
 
 type InsertSegmentCommitParams struct {
@@ -145,7 +168,6 @@ type InsertSegmentCommitParams struct {
 	Seq      int64
 	CommitID string
 	Body     string
-	Streams  string
 }
 
 func (q *Queries) InsertSegmentCommit(ctx context.Context, arg InsertSegmentCommitParams) error {
@@ -154,7 +176,29 @@ func (q *Queries) InsertSegmentCommit(ctx context.Context, arg InsertSegmentComm
 		arg.Seq,
 		arg.CommitID,
 		arg.Body,
-		arg.Streams,
+	)
+	return err
+}
+
+const insertSegmentCommitStream = `-- name: InsertSegmentCommitStream :exec
+INSERT INTO session_commit_streams (segment, seq, domain, stream_id, events) VALUES ($1, $2, $3, $4, $5)
+`
+
+type InsertSegmentCommitStreamParams struct {
+	Segment  string
+	Seq      int64
+	Domain   string
+	StreamID string
+	Events   int64
+}
+
+func (q *Queries) InsertSegmentCommitStream(ctx context.Context, arg InsertSegmentCommitStreamParams) error {
+	_, err := q.db.Exec(ctx, insertSegmentCommitStream,
+		arg.Segment,
+		arg.Seq,
+		arg.Domain,
+		arg.StreamID,
+		arg.Events,
 	)
 	return err
 }
@@ -288,13 +332,12 @@ func (q *Queries) SegmentIDs(ctx context.Context) ([]string, error) {
 }
 
 const segmentIndex = `-- name: SegmentIndex :many
-SELECT seq, commit_id, streams FROM session_commits WHERE segment = $1 ORDER BY seq
+SELECT seq, commit_id FROM session_commits WHERE segment = $1 ORDER BY seq
 `
 
 type SegmentIndexRow struct {
 	Seq      int64
 	CommitID string
-	Streams  string
 }
 
 func (q *Queries) SegmentIndex(ctx context.Context, segment string) ([]SegmentIndexRow, error) {
@@ -306,7 +349,7 @@ func (q *Queries) SegmentIndex(ctx context.Context, segment string) ([]SegmentIn
 	items := []SegmentIndexRow{}
 	for rows.Next() {
 		var i SegmentIndexRow
-		if err := rows.Scan(&i.Seq, &i.CommitID, &i.Streams); err != nil {
+		if err := rows.Scan(&i.Seq, &i.CommitID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -315,6 +358,82 @@ func (q *Queries) SegmentIndex(ctx context.Context, segment string) ([]SegmentIn
 		return nil, err
 	}
 	return items, nil
+}
+
+const segmentIndexSummary = `-- name: SegmentIndexSummary :one
+SELECT COUNT(*)::bigint AS entries, COALESCE(MIN(seq), -1)::bigint AS first_seq, COALESCE(MAX(seq), -1)::bigint AS last_seq FROM session_commits WHERE segment = $1
+`
+
+type SegmentIndexSummaryRow struct {
+	Entries  int64
+	FirstSeq int64
+	LastSeq  int64
+}
+
+func (q *Queries) SegmentIndexSummary(ctx context.Context, segment string) (SegmentIndexSummaryRow, error) {
+	row := q.db.QueryRow(ctx, segmentIndexSummary, segment)
+	var i SegmentIndexSummaryRow
+	err := row.Scan(&i.Entries, &i.FirstSeq, &i.LastSeq)
+	return i, err
+}
+
+const segmentStreamCounts = `-- name: SegmentStreamCounts :many
+SELECT seq, domain, stream_id, events FROM session_commit_streams WHERE segment = $1 ORDER BY seq, domain, stream_id
+`
+
+type SegmentStreamCountsRow struct {
+	Seq      int64
+	Domain   string
+	StreamID string
+	Events   int64
+}
+
+func (q *Queries) SegmentStreamCounts(ctx context.Context, segment string) ([]SegmentStreamCountsRow, error) {
+	rows, err := q.db.Query(ctx, segmentStreamCounts, segment)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SegmentStreamCountsRow{}
+	for rows.Next() {
+		var i SegmentStreamCountsRow
+		if err := rows.Scan(
+			&i.Seq,
+			&i.Domain,
+			&i.StreamID,
+			&i.Events,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const segmentStreamHead = `-- name: SegmentStreamHead :one
+SELECT COALESCE(SUM(events), 0)::bigint AS events FROM session_commit_streams WHERE segment = $1 AND domain = $2 AND stream_id = $3 AND seq < $4
+`
+
+type SegmentStreamHeadParams struct {
+	Segment  string
+	Domain   string
+	StreamID string
+	Seq      int64
+}
+
+func (q *Queries) SegmentStreamHead(ctx context.Context, arg SegmentStreamHeadParams) (int64, error) {
+	row := q.db.QueryRow(ctx, segmentStreamHead,
+		arg.Segment,
+		arg.Domain,
+		arg.StreamID,
+		arg.Seq,
+	)
+	var events int64
+	err := row.Scan(&events)
+	return events, err
 }
 
 const sessionRoot = `-- name: SessionRoot :one

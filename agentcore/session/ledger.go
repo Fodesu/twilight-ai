@@ -223,54 +223,48 @@ func (l *Ledger) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Han
 	if err != nil {
 		return nil, err
 	}
-	// Acquire repaired a torn tail; the handle's index is the segment's
-	// CommitIndex (SES-REP-5), rebuilt from the commits only when its checks
-	// against the head fail. The inherited prefix is immutable.
-	idx, head, err := l.loadIndex(ctx, tip)
+	// Acquire repaired a torn tail; the segment's CommitIndex (SES-REP-5) is
+	// checked against the head and rebuilt when it lags, but the handle
+	// holds none of it: membership and stream heads are answered by the
+	// backend's index on demand (SES-REP-3), so Open costs the same for a
+	// tip of ten commits and one of a million.
+	head, err := l.checkIndex(ctx, tip)
 	if err != nil {
 		_ = l.be.Release(ctx, lease)
 		return nil, err
 	}
-	h := &ledgerHandle{l: l, root: root, ancestry: a, lease: lease, opts: opts, head: head,
-		own: make(map[CommitID]struct{}, len(idx.Entries)), streams: make(map[StreamRef]StreamSeq)}
-	for i := range idx.Entries {
-		e := &idx.Entries[i]
-		h.own[e.CommitID] = struct{}{}
-		for _, sc := range e.Streams {
-			h.streams[sc.Stream] += StreamSeq(sc.Events)
-		}
-	}
-	return h, nil
+	return &ledgerHandle{l: l, root: root, ancestry: a, lease: lease, opts: opts, head: head, streams: make(map[StreamRef]StreamSeq)}, nil
 }
 
-// loadIndex returns the segment's CommitIndex and head. An index that fails
-// Valid against the head (absent, lagging after a crash, or cut) is rebuilt
-// from the segment's own commits and written back (SES-REP-5).
-func (l *Ledger) loadIndex(ctx context.Context, seg Segment) (CommitIndex, Head, error) {
-	idx, head, err := l.be.Index(ctx, seg.ID)
+// checkIndex returns the segment's head after checking its CommitIndex by
+// summary. An index that fails Valid against the head (absent, lagging
+// after a crash, or cut) is rebuilt from the segment's own commits and
+// written back (SES-REP-5); nothing is read otherwise.
+func (l *Ledger) checkIndex(ctx context.Context, seg Segment) (Head, error) {
+	summary, head, err := l.be.Summarize(ctx, seg.ID)
 	if err != nil {
-		return CommitIndex{}, Head{}, err
+		return Head{}, err
 	}
-	if idx.Valid(seg.Seed(), head) {
-		return idx, head, nil
+	if summary.Valid(seg.Seed(), head) {
+		return head, nil
 	}
 	commits, head, _, err := l.be.ReadSegment(ctx, seg.ID, seg.Seed().Next, 0)
 	if err != nil {
-		return CommitIndex{}, Head{}, err
+		return Head{}, err
 	}
-	idx = BuildCommitIndex(seg.Header, commits)
-	if err := l.be.PutIndex(ctx, seg.ID, idx); err != nil {
-		return CommitIndex{}, Head{}, err
+	if err := l.be.PutIndex(ctx, seg.ID, BuildCommitIndex(seg.Header, commits)); err != nil {
+		return Head{}, err
 	}
-	return idx, head, nil
+	return head, nil
 }
 
-// ledgerHandle is the ownership handle over one root. It answers membership
-// of the tip's own commits from the index it built at Open and extends with
-// each Append (SES-REP-3): what it knows is exactly what it wrote or read
-// under its own lease, so a superseded handle never learns of a successor's
-// commits and reaches the fence at Append. The inherited prefix is immutable
-// and is read from storage.
+// ledgerHandle is the ownership handle over one root. It holds no copy of
+// the tip's index: membership and stream heads are read from the backend's
+// indexes on demand (SES-REP-3), so its memory and its Open cost do not
+// grow with the segment. Every such read is bounded by the handle's head,
+// which only its own Appends advance, so what it knows is exactly what it
+// read at Open or wrote under its lease: a superseded handle never learns
+// of a successor's commits and reaches the Epoch fence at Append.
 type ledgerHandle struct {
 	mu       sync.Mutex
 	l        *Ledger
@@ -279,9 +273,9 @@ type ledgerHandle struct {
 	lease    Lease
 	opts     OpenOptions
 	head     Head
-	own      map[CommitID]struct{}
-	// streams counts the events of each logical stream the tip segment
-	// holds, so StreamHead is answered without a read (SES-REP-3).
+	// streams caches the tip's head of each stream the handle was asked
+	// about, read from the backend once below the handle's head and
+	// advanced by this handle's own Appends (SES-REP-3).
 	streams map[StreamRef]StreamSeq
 	// failed is set once an Append's durable outcome is unknown (SES-APP-1):
 	// the handle then answers nothing about the ledger, because what reached
@@ -324,59 +318,78 @@ func (w *ledgerHandle) Head() Head {
 	return w.head
 }
 
-// Committed is SES-REP-3: the handle's own index plus the inherited prefix
-// (SES-FRK-3).
+// Committed answers from the segments' indexes (SES-REP-3), bounded by what
+// this handle knows: the tip's commits below its head (read at Open or
+// written by it) and the immutable inherited prefix. A successor's commits
+// lie at or past the head, so a superseded handle does not learn of them
+// here and reaches the Epoch fence at Append, exactly as when the index
+// lived in its memory.
 func (w *ledgerHandle) Committed(id CommitID) bool {
 	w.mu.Lock()
-	failed := w.failed
-	_, own := w.own[id]
+	failed, head := w.failed, w.head
 	w.mu.Unlock()
 	if failed != nil {
 		return false
 	}
-	if own {
+	ctx := context.Background()
+	if seq, ok, err := w.l.be.Locate(ctx, w.root.Tip, id); err != nil {
+		return false
+	} else if ok && seq < head.Next {
 		return true
 	}
-	inherited, err := w.ancestry.ContainsInherited(context.Background(), w.l.be, id)
+	inherited, err := w.ancestry.ContainsInherited(ctx, w.l.be, id)
 	return err == nil && inherited
 }
 
-// countStreams extends the stream index with one own commit; w.mu is held or
-// the handle is still being built.
+// countStreams advances the cached head of each stream the commit wrote and
+// the handle has been asked about; w.mu is held.
 func (w *ledgerHandle) countStreams(c *Commit) {
 	for i := range c.Batches {
-		w.streams[c.Batches[i].Stream] += StreamSeq(len(c.Batches[i].Events))
+		stream := c.Batches[i].Stream
+		if _, known := w.streams[stream]; known {
+			w.streams[stream] += StreamSeq(len(c.Batches[i].Events))
+		}
 	}
 }
 
+// StreamHead reads the stream's head below the handle's head from the tip's
+// index the first time it is asked about a stream, and advances the cached
+// value with each Append (SES-REP-3, SES-FRK-5); the bound keeps a
+// superseded handle from seeing its successor's streams.
 func (w *ledgerHandle) StreamHead(stream StreamRef) (StreamSeq, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.failed != nil {
 		return 0, false
 	}
-	n, ok := w.streams[stream]
-	return n, ok
+	n, known := w.streams[stream]
+	if !known {
+		var err error
+		n, err = w.l.be.StreamHead(context.Background(), w.root.Tip, stream, w.head.Next)
+		if err != nil {
+			return 0, false
+		}
+		w.streams[stream] = n
+	}
+	return n, n > 0
 }
 
-// LookupCommit is SES-REP-4: an own commit is read from the tip segment, an
-// inherited one from the segment that holds it.
+// LookupCommit is SES-REP-4, under the same bound as Committed: a tip commit
+// below the head, else an inherited one.
 func (w *ledgerHandle) LookupCommit(id CommitID) (Commit, bool, error) {
 	w.mu.Lock()
-	failed := w.failed
-	_, own := w.own[id]
+	failed, head := w.failed, w.head
 	w.mu.Unlock()
 	if failed != nil {
 		return Commit{}, false, failed
 	}
-	if own {
-		c, ok, err := w.l.be.LookupCommit(context.Background(), w.root.Tip, id)
-		if err != nil || !ok {
-			return Commit{}, false, err
-		}
+	ctx := context.Background()
+	if c, ok, err := w.l.be.LookupCommit(ctx, w.root.Tip, id); err != nil {
+		return Commit{}, false, err
+	} else if ok && c.Seq < head.Next {
 		return c, true, nil
 	}
-	return w.ancestry.LookupInherited(context.Background(), w.l.be, id)
+	return w.ancestry.LookupInherited(ctx, w.l.be, id)
 }
 
 func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
@@ -404,7 +417,6 @@ func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 		return Commit{}, err
 	}
 	w.head = Head{Next: c.Seq + 1}
-	w.own[c.CommitID] = struct{}{}
 	w.countStreams(&c)
 	return cloneCommit(c), nil
 }
