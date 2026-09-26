@@ -84,6 +84,19 @@ type Route struct {
 // Worker's table.
 func Default(provider string, b ExecutionBackend) Route { return Route{Provider: provider, Backend: b} }
 
+// MatchModel is the Route predicate of model calls.
+func MatchModel(a effect.Assignment) bool { _, ok := a.Model(); return ok } //nolint:gocritic // hugeParam: Route.Match takes the Assignment by value
+
+// MatchTool is the Route predicate of tool calls declared with placement
+// (RUN-LOP-9): a Worker routes by the declaration, never by whether a target
+// is present.
+func MatchTool(placement run.ToolPlacement) func(effect.Assignment) bool {
+	return func(a effect.Assignment) bool { //nolint:gocritic // hugeParam: Route.Match takes the Assignment by value
+		t, ok := a.Tool()
+		return ok && t.Placement == placement
+	}
+}
+
 // PortBackend adapts an effect.ExecutionPort -- an executor addressed by
 // AssignmentKey, such as the remote HTTP client -- to the ExecutionBackend
 // contract, so a Worker can route between it and colocated backends. The Ref

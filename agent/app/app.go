@@ -160,10 +160,15 @@ type WorkspaceConfig struct {
 	// Tools are the workspace-placed tools the backend serves; nil selects
 	// tools.Default().
 	Tools []tools.Tool
+	// Snapshots takes the Snapshots (APP-WSP-7): nil with Provider set
+	// selects the composed backend; a process without the backend (the
+	// remote executor mode) hands in the tool backend's client
+	// (agent/workspace/http.Client).
+	Snapshots workspace.Snapshotter
 	// SnapshotAfterTurn takes a Snapshot of a Session's bound Workspace
 	// after every settlement that drains the backlog and records it on the
 	// Session (APP-WSP-7), so a fork at a Turn boundary can restore the
-	// files as they were. It needs Provider: the backend takes the snapshot.
+	// files as they were. It needs Snapshots.
 	SnapshotAfterTurn bool
 }
 
@@ -191,7 +196,10 @@ type Application struct {
 	inbox  inbox.Store
 	// workspaces is the workspace layer's configuration, nil when absent.
 	workspaces *WorkspaceConfig
-	sandbox    *sandbox.Backend
+	// sandbox is the workspace backend this process composed, if any;
+	// snapshots is where snapshots are taken, here or remotely.
+	sandbox   *sandbox.Backend
+	snapshots workspace.Snapshotter
 	// bindings writes the Session's workspace binding facts.
 	bindings workspace.Commands
 
@@ -286,6 +294,13 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 			}
 			app.sandbox = backend
 			routes = append(routes, sandbox.Route(backend))
+		}
+		app.snapshots = c.Workspaces.Snapshots
+		if app.snapshots == nil && app.sandbox != nil {
+			app.snapshots = app.sandbox
+		}
+		if c.Workspaces.SnapshotAfterTurn && app.snapshots == nil {
+			return nil, errors.New("app: Workspaces.SnapshotAfterTurn requires Snapshots or Provider")
 		}
 	}
 	port, worker, err := buildExecutor(&c, routes)

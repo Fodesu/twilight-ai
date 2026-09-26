@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/context/compaction"
-	"github.com/felinics/twilight/agent/executor/sandbox"
 	"github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/driver"
@@ -543,9 +542,10 @@ func (s *Session) Workspace(ctx context.Context) (workspace.Binding, error) {
 	return s.app.Workspace(ctx, s.sid)
 }
 
-// ErrNoSandbox reports a snapshot in a process that composes no workspace
-// backend (Config.Workspaces.Provider is nil): the backend takes snapshots.
-var ErrNoSandbox = errors.New("app: no workspace backend is composed in this process")
+// ErrNoSnapshots reports a snapshot in a process with no Snapshotter: the
+// workspace backend takes snapshots, in this process or through its client
+// (Config.Workspaces.Snapshots).
+var ErrNoSnapshots = errors.New("app: no workspace snapshotter is configured")
 
 // ErrUnboundWorkspace reports a workspace operation on a Session bound to
 // no Workspace.
@@ -558,8 +558,8 @@ func (s *Session) SnapshotWorkspace(ctx context.Context) (workspace.Snapshot, er
 	if s.app.workspaces == nil {
 		return workspace.Snapshot{}, ErrNoWorkspaces
 	}
-	if s.app.sandbox == nil {
-		return workspace.Snapshot{}, ErrNoSandbox
+	if s.app.snapshots == nil {
+		return workspace.Snapshot{}, ErrNoSnapshots
 	}
 	b, err := s.Workspace(ctx)
 	if err != nil {
@@ -568,7 +568,7 @@ func (s *Session) SnapshotWorkspace(ctx context.Context) (workspace.Snapshot, er
 	if !b.Bound {
 		return workspace.Snapshot{}, ErrUnboundWorkspace
 	}
-	snap, err := s.app.sandbox.Snapshot(ctx, b.Workspace)
+	snap, err := s.app.snapshots.Snapshot(ctx, b.Workspace)
 	if err != nil {
 		return workspace.Snapshot{}, err
 	}
@@ -583,11 +583,11 @@ func (s *Session) SnapshotWorkspace(ctx context.Context) (workspace.Snapshot, er
 // to none or a Workspace with no environment yet is nothing to do, other
 // failures reach Config.Warn.
 func (s *Session) maybeSnapshot(ctx context.Context) {
-	if s.app.workspaces == nil || !s.app.workspaces.SnapshotAfterTurn || s.app.sandbox == nil {
+	if s.app.workspaces == nil || !s.app.workspaces.SnapshotAfterTurn || s.app.snapshots == nil {
 		return
 	}
 	_, err := s.SnapshotWorkspace(ctx)
-	if err != nil && !errors.Is(err, ErrUnboundWorkspace) && !errors.Is(err, sandbox.ErrNothingToSnapshot) {
+	if err != nil && !errors.Is(err, ErrUnboundWorkspace) && !errors.Is(err, workspace.ErrNothingToSnapshot) {
 		s.app.warn(fmt.Errorf("app: snapshot of the workspace of %s: %w", s.sid, err))
 	}
 }

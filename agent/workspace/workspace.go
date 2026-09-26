@@ -84,7 +84,18 @@ var (
 	// ErrGenerationConflict: UpdateRuntime found another RuntimeBinding
 	// generation than the caller expected; another materialization won.
 	ErrGenerationConflict = errors.New("workspace: runtime generation conflict")
+	// ErrNothingToSnapshot: the Workspace has no environment to snapshot.
+	ErrNothingToSnapshot = errors.New("workspace: no environment to snapshot")
 )
+
+// Snapshotter takes a Snapshot of a Workspace's current environment,
+// records it and makes it the Workspace's latest (APP-WSP-7). The workspace
+// backend implements it in its process; a remote one is reached through
+// agent/workspace/http. A Workspace never materialized is
+// ErrNothingToSnapshot; an unknown one ErrNotFound.
+type Snapshotter interface {
+	Snapshot(ctx context.Context, id ID) (Snapshot, error)
+}
 
 // Store persists logical workspaces and their durable anchors. Implementations
 // may use a database, object store, or another application-owned repository.

@@ -53,6 +53,7 @@ type Backend struct {
 var (
 	_ executor.ExecutionBackend = (*Backend)(nil)
 	_ notice.Source             = (*Backend)(nil)
+	_ workspace.Snapshotter     = (*Backend)(nil)
 )
 
 // New composes a Backend.
@@ -81,12 +82,10 @@ func New(opts Options) (*Backend, error) {
 	return &Backend{inner: inner, envs: envs}, nil
 }
 
-// Route is the Worker route that sends workspace-placed tool calls here.
-func Route(b *Backend) executor.Route {
-	return executor.Route{Provider: Provider, Backend: b, Match: func(a effect.Assignment) bool {
-		t, ok := a.Tool()
-		return ok && t.Placement == run.PlacementWorkspace
-	}}
+// Route is the Worker route that sends workspace-placed tool calls to b:
+// this Backend in its process, or a backendhttp.Client to a tool backend.
+func Route(b executor.ExecutionBackend) executor.Route {
+	return executor.Route{Provider: Provider, Backend: b, Match: executor.MatchTool(run.PlacementWorkspace)}
 }
 
 // PublicTools are the preset entries of workspace tools: frozen definition,
@@ -166,8 +165,8 @@ func (b *Backend) Snapshot(ctx context.Context, id workspace.ID) (workspace.Snap
 	return b.envs.snapshot(ctx, id)
 }
 
-// ErrNothingToSnapshot reports a Snapshot of a Workspace with no environment.
-var ErrNothingToSnapshot = errors.New("sandbox: the workspace has no environment to snapshot")
+// ErrNothingToSnapshot is workspace.ErrNothingToSnapshot.
+var ErrNothingToSnapshot = workspace.ErrNothingToSnapshot
 
 // --- tool adapter -------------------------------------------------------------
 
