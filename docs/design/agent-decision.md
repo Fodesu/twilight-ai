@@ -75,12 +75,12 @@ func DefaultPromptBuilders() *decision.PromptBuilders // 含 PromptContextV1
 
 同一份 canonical JSON 同时是 `twilight/chatlog/input_submitted.Content` 与 `run.AgentInput.Payload`。
 
-**DEC-INP-1** v1 形状为 `{"text":"<用户字符串>"}`：`InputContent(text)` 构造，`InputText(content)` 还原，PromptBuilder 把它投影为 sdk user text。
+**DEC-INP-1** 输入内容的形状是 agent 的决定，core 只把 `Content` 当 opaque 的 canonical JSON 存储与摘要（`chatlog.Commands.Submit(ctx, w, id, content)`）。reference agent 的 v1 形状为 `{"text":"<用户字符串>"}`：`agent/input.Text(text)` 构造，`input.TextOf(content)` 还原，PromptBuilder 把它投影为 sdk user text。
 
 ## 5. conformance
 
 - **DEC-SCP-1、DEC-CAT-2、DEC-PMT-1**：两个独立构建的目录对同一 AgentPreset、同一投影状态与同一冻结正文解析出的 PromptBuilder 给出逐字段相同的 `Prompt`；正文缺失使 Build 失败；未注册的 PromptBuilderRef 解析失败；nil 目录不可解析。
 - **DEC-CAT-1**：空 ref、nil factory、重复注册被拒绝。
 - **DEC-PMT-2**：中途输入排在未结算工具结果之后；`unknown` 工具结果标记 error；未配对调用或结果被拒绝；多 attempt 的条目全部进入 prompt（由 turn 与 host 的集成测试覆盖）。
-- **DEC-INP-1**：`InputText(InputContent(s)) == s`。
+- **DEC-INP-1**：`input.TextOf(input.Text(s)) == s`。
 - **TRN-PST-1**：Prompt、Scheduling、MalformedRetries、SystemPrompt 任一变化改变 AgentPreset 摘要（turn 的 golden）。

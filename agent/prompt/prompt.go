@@ -19,6 +19,7 @@ import (
 	"github.com/felinics/twilight/agentcore/turn"
 	"github.com/felinics/twilight/sdk"
 
+	"github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agent/workspace"
 )
 
@@ -112,7 +113,7 @@ func (p *ContextPromptBuilder) messages(system string, entries []chatlog.Materia
 	}
 	inputText := p.InputText
 	if inputText == nil {
-		inputText = decision.InputText
+		inputText = input.TextOf
 	}
 	// ProviderCallID and tool name per CallID, from the assistant that issued
 	// the call, for pairing tool results (DEC-PMT-2 step 2).

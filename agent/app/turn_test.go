@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
@@ -56,7 +57,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
 	h, preset, sid, s := setup(t, model, tool, app.SessionOptions{})
 
-	first, err := h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", "what is the weather?")
+	first, err := h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", agentinput.Text("what is the weather?"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +78,7 @@ func TestDeliverMidTurnReachesNextModelRequest(t *testing.T) {
 	}()
 	<-tool.started
 
-	second, err := h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-2", "and tomorrow?")
+	second, err := h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-2", agentinput.Text("and tomorrow?"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +140,7 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 	tool := &gateTool{started: make(chan struct{}, 1), release: make(chan struct{})}
 	model := &scriptedRequests{answers: []sdk.ModelResult{toolCallAnswer()}}
 	h, preset, sid, s := setup(t, model, tool, app.SessionOptions{})
-	first, _ := h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", "hello")
+	first, _ := h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", agentinput.Text("hello"))
 	ref1 := turn.TurnRef{SessionID: sid, TurnID: "t1"}
 	done := make(chan struct{})
 	go func() {
@@ -172,7 +173,7 @@ func TestStopSettlesTurnAndNextSendStartsNewTurn(t *testing.T) {
 		t.Fatalf("stopped run = %+v", record.Snapshot.State.Result)
 	}
 
-	second, _ := h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-2", "again")
+	second, _ := h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-2", agentinput.Text("again"))
 	resp2, err := s.Route(ctx, []run.AgentInput{second})
 	if err != nil {
 		t.Fatal(err)
@@ -220,7 +221,7 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	input, err := h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", "hello")
+	input, err := h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-1", agentinput.Text("hello"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,7 +256,7 @@ func TestStopCompletesToolHistoryForNextTurn(t *testing.T) {
 	if len(result.UncertainCalls) != 1 || result.UncertainCalls[0] != calls[0].CallID {
 		t.Fatalf("uncertain calls = %v", result.UncertainCalls)
 	}
-	input, err = h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-2", "continue")
+	input, err = h.Owner.Chatlog.Submit(ctx, s.Handle().Writer(), "in-2", agentinput.Text("continue"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agent/executor/sandbox"
+	"github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agent/workspace"
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/owner"
@@ -248,7 +249,7 @@ func (s *Session) Events(ctx context.Context) <-chan Event { return s.app.Events
 // Result is the Turn the input landed in, further Results are backlog Turns
 // this call drained after settlement (APP-SES-2).
 func (s *Session) Send(ctx context.Context, text string) ([]Result, error) {
-	in, err := s.a.Chatlog.Submit(ctx, s.h.Writer(), chatlog.NewInputID(), text)
+	in, err := s.a.Chatlog.Submit(ctx, s.h.Writer(), chatlog.NewInputID(), input.Text(text))
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +280,7 @@ func (s *Session) Submit(ctx context.Context, text string) (turn.TurnRef, error)
 // Config.Warn. Close cancels the background drive; a cancelled Turn stays
 // active and resumes on the next open.
 func (s *Session) SubmitInput(ctx context.Context, id run.InputID, text string) (turn.TurnRef, error) {
-	in, err := s.a.Chatlog.Submit(ctx, s.h.Writer(), id, text)
+	in, err := s.a.Chatlog.Submit(ctx, s.h.Writer(), id, input.Text(text))
 	if err != nil {
 		return turn.TurnRef{}, err
 	}
@@ -506,7 +507,7 @@ func (s *Session) settled(ctx context.Context, resp *driver.DriveResult) ([]Resu
 func (s *Session) result(ctx context.Context, resp *driver.DriveResult) Result {
 	r := Result{TurnID: resp.Ref.TurnID, Status: resp.Status, Disposition: resp.Disposition, AlreadyDriving: resp.AlreadyDriving}
 	if !resp.AlreadyDriving && resp.Disposition == turn.ResumeFinished {
-		text, err := s.a.Reply(ctx, resp.Ref)
+		text, err := s.app.Reply(ctx, resp.Ref)
 		if err != nil {
 			s.app.warn(fmt.Errorf("app: materialize reply of turn %s: %w", resp.Ref.TurnID, err))
 		}

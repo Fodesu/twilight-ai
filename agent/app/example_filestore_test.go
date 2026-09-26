@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
@@ -62,7 +63,7 @@ func Example_jsonlPrototype() {
 
 	// Turn 1: Route starts the Turn; the model asks for the tool, which blocks.
 	stage1 := tool.stage()
-	in1, err := p1.Owner.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-1", "what is the weather?")
+	in1, err := p1.Owner.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-1", agentinput.Text("what is the weather?"))
 	if err != nil {
 		panic(err)
 	}
@@ -77,7 +78,7 @@ func Example_jsonlPrototype() {
 	<-stage1.started
 
 	// Steer: a second Route while turn-1 runs goes to Deliver (APP-RTE-1).
-	in2, err := p1.Owner.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-2", "and tomorrow?")
+	in2, err := p1.Owner.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-2", agentinput.Text("and tomorrow?"))
 	if err != nil {
 		panic(err)
 	}
@@ -102,7 +103,7 @@ func Example_jsonlPrototype() {
 	fmt.Printf("steer: in-2 %s to turn-1 while its tool call executes\n", steered.Status)
 
 	// Queue: in-3 is only submitted; nothing delivers it into the running Turn.
-	if _, err := p1.Owner.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-3", "book a table"); err != nil {
+	if _, err := p1.Owner.Chatlog.Submit(ctx, s1.Handle().Writer(), "in-3", agentinput.Text("book a table")); err != nil {
 		panic(err)
 	}
 	chat, _ = p1.ChatlogSurface(ctx, sid)

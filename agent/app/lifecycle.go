@@ -68,6 +68,13 @@ func (app *Application) EnsureSession(ctx context.Context, sid session.SessionID
 	return app.Owner.EnsureSession(ctx, sid)
 }
 
+// Reply is the settled Turn's last assistant text (CHT-MAT-1): the
+// conversation's reply, empty when the Turn produced none. That a reply is
+// the last assistant text is this agent's convention, not a kernel fact.
+func (app *Application) Reply(ctx context.Context, ref turn.TurnRef) (string, error) {
+	return chatlog.LastAssistantText(ctx, app.Owner.Projections, app.Owner.Content, ref.SessionID, chatlog.TurnID(ref.TurnID))
+}
+
 // --- workspaces ---------------------------------------------------------------------
 
 // ErrNoWorkspaces reports a workspace operation on an application built

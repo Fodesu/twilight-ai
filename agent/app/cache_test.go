@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/app"
+	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/extension"
@@ -63,7 +64,7 @@ func TestHostCacheEveryIsConfigurable(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := h.Owner.Chatlog.Submit(ctx, owned.Writer(), "in-1", "hello"); err != nil {
+			if _, err := h.Owner.Chatlog.Submit(ctx, owned.Writer(), "in-1", agentinput.Text("hello")); err != nil {
 				t.Fatal(err)
 			}
 			if got := cache.count() > 0; got != tc.wantBefore {
@@ -95,7 +96,7 @@ func TestHostNeverCachesTheMachineProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.Owner.Chatlog.Submit(ctx, owned.Writer(), "in-1", "hello"); err != nil {
+	if _, err := h.Owner.Chatlog.Submit(ctx, owned.Writer(), "in-1", agentinput.Text("hello")); err != nil {
 		t.Fatal(err)
 	}
 	if err := h.Close(ctx); err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	run "github.com/felinics/twilight/agentcore/run"
 	effect "github.com/felinics/twilight/agentcore/run/effect"
@@ -79,6 +80,9 @@ type Settings struct {
 	// Writer the store is bound to. An error stops the drive with no fact
 	// written; nil is no hook.
 	BeforePrepare PrepareHook
+	// Dispatch bounds the re-offers of an Assignment the Executor refused
+	// as retryable (RUN-EXE-3); the zero value selects the defaults.
+	Dispatch DispatchPolicy
 	// Watcher is where a blocking Run waits for the Outcomes it dispatched:
 	// one per (owner, executor), shared with the Reconciler, so waiting on
 	// N effects costs one settlement subscription. Its Port must be the
@@ -258,3 +262,32 @@ type WaitReason string
 const (
 	ExecutionRecovery WaitReason = "execution_recovery"
 )
+
+// DispatchPolicy is how a Loop repeats a Dispatch the Executor refused with
+// effect.ErrDispatchRetryable (RUN-EXE-3): at most Retries offers inside one
+// Advance, Backoff multiplied by the attempts so far between them. It is a
+// deployment's setting, not part of the AgentPreset.
+type DispatchPolicy struct {
+	Retries int
+	Backoff time.Duration
+}
+
+// The defaults a zero DispatchPolicy selects.
+const (
+	DefaultDispatchRetries = 3
+	DefaultDispatchBackoff = 50 * time.Millisecond
+)
+
+func (p DispatchPolicy) retries() int {
+	if p.Retries <= 0 {
+		return DefaultDispatchRetries
+	}
+	return p.Retries
+}
+
+func (p DispatchPolicy) backoff() time.Duration {
+	if p.Backoff <= 0 {
+		return DefaultDispatchBackoff
+	}
+	return p.Backoff
+}

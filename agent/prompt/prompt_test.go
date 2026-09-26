@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agent/prompt"
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/es"
@@ -71,7 +72,7 @@ func preset() turn.AgentPreset {
 }
 
 func entries() (chatlog.Context, fixedContent) {
-	in := chatlog.Input{ID: "in-1", TurnID: "t1", Content: decision.InputContent("hello")}
+	in := chatlog.Input{ID: "in-1", TurnID: "t1", Content: input.Text("hello")}
 	as := chatlog.Assistant{ID: "a-1", TurnID: "t1", StepID: "a-1", ResultDigest: "sha256:r1"}
 	content := fixedContent{results: map[es.Digest]model.ModelResult{"sha256:r1": {Text: "hi", FinishReason: model.FinishReasonStop}}}
 	return chatlog.Context{Entries: []chatlog.Entry{
@@ -146,7 +147,7 @@ func TestPromptBuilderRegistration(t *testing.T) {
 // DEC-INP-1: the v1 input shape round-trips.
 func TestInputContentRoundTrip(t *testing.T) {
 	for _, text := range []string{"hello", "", `quote " and \ slash`, "多字节"} {
-		got, err := decision.InputText(decision.InputContent(text))
+		got, err := input.TextOf(input.Text(text))
 		if err != nil || got != text {
 			t.Fatalf("round trip %q: got %q err %v", text, got, err)
 		}
@@ -161,7 +162,7 @@ func TestPromptRejectsUnpairedToolHistory(t *testing.T) {
 	call := chatlog.Entry{Kind: chatlog.EntryAssistant, ID: "s1", Assistant: &chatlog.Assistant{ID: "s1", StepID: "s1", ResultDigest: "sha256:call", CallIDs: []chatlog.CallID{"call"}}}
 	plain := chatlog.Entry{Kind: chatlog.EntryAssistant, ID: "s2", Assistant: &chatlog.Assistant{ID: "s2", StepID: "s2", ResultDigest: "sha256:none"}}
 	result := chatlog.Entry{Kind: chatlog.EntryToolResult, ID: "call", ToolResult: &chatlog.ToolResult{ID: "call", CallID: "call", Status: chatlog.ToolError, Failure: &run.ToolFailure{Class: "tool_error"}}}
-	input := chatlog.Entry{Kind: chatlog.EntryInput, Input: &chatlog.Input{Content: decision.InputContent("next")}}
+	input := chatlog.Entry{Kind: chatlog.EntryInput, Input: &chatlog.Input{Content: input.Text("next")}}
 	summary := chatlog.Entry{Kind: chatlog.EntrySummary, Summary: &chatlog.Summary{Parts: chatlog.Parts{chatlog.TextPart{Text: "so far"}}}}
 	for _, tc := range []struct {
 		name    string

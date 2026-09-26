@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agent/input"
 	"sync"
 	"time"
 
@@ -148,7 +149,7 @@ func (r *Responder) Respond(ctx context.Context, w writer.Writer, call *driver.W
 	if status.Status != turn.TurnCompleted {
 		return run.CanonicalJSON{}, fmt.Errorf("subagent %s turn %s ended %s", child, turnID, status.Status)
 	}
-	reply, err := r.a.Reply(ctx, ref)
+	reply, err := chatlog.LastAssistantText(ctx, r.a.Projections, r.a.Content, ref.SessionID, chatlog.TurnID(ref.TurnID))
 	if err != nil {
 		return run.CanonicalJSON{}, err
 	}
@@ -293,7 +294,7 @@ func (r *Responder) settle(ctx context.Context, h *owner.Handle, preset turn.Pre
 			return turns.Order[len(turns.Order)-1], nil
 		}
 	}
-	in, err := r.a.Chatlog.Submit(ctx, h.Writer(), chatlog.NewInputID(), task)
+	in, err := r.a.Chatlog.Submit(ctx, h.Writer(), chatlog.NewInputID(), input.Text(task))
 	if err != nil {
 		return "", err
 	}

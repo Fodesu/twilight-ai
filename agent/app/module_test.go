@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/felinics/twilight/agent/app"
+	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
@@ -87,7 +88,7 @@ func TestAppModuleWritesItsOwnStream(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := owned.Writer()
-	in, err := h.Owner.Chatlog.Submit(ctx, w, "in-1", "hello")
+	in, err := h.Owner.Chatlog.Submit(ctx, w, "in-1", agentinput.Text("hello"))
 	if err != nil {
 		t.Fatal(err)
 	}

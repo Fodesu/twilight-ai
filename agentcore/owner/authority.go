@@ -354,9 +354,3 @@ func (a *Owner) Collect(ctx context.Context) (session.CollectReport, error) {
 func (a *Owner) Projection(ctx context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (any, session.Head, error) {
 	return a.Projections.Load(ctx, sid, id, v)
 }
-
-// Reply is the Turn's last assistant text (CHT-MAT-1); empty when the Turn
-// produced none.
-func (a *Owner) Reply(ctx context.Context, ref turn.TurnRef) (string, error) {
-	return chatlog.LastAssistantText(ctx, a.Projections, a.Content, ref.SessionID, chatlog.TurnID(ref.TurnID))
-}

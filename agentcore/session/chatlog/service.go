@@ -33,20 +33,14 @@ type Guard func(v writer.View) error
 // submitted state (CHT-EVT-2).
 var ErrNotSubmitted = errors.New("chatlog: input is not submitted")
 
-// TextContent builds the v1 user input body (DEC-INP-1): the canonical JSON
-// {"text":"..."} an Input.Content carries.
-func TextContent(text string) run.CanonicalJSON {
-	raw, err := es.MarshalCanonical(text)
-	if err != nil {
-		panic(err) // a string always marshals
+// Submit records one user input as submitted (CHT-EVT-1): content is the
+// input's body, opaque to this module and digested as given (the agent
+// decides its shape, DEC-INP-1). Idempotency rides on the CommitID, so a
+// retried submission replays.
+func (s *Commands) Submit(ctx context.Context, w writer.Writer, id run.InputID, content run.CanonicalJSON) (run.AgentInput, error) {
+	if content.IsZero() {
+		return run.AgentInput{}, errors.New("chatlog: submit requires input content")
 	}
-	return run.MustParseCanonicalJSON(`{"text":` + string(raw) + `}`)
-}
-
-// Submit records one user input as submitted (CHT-EVT-1); idempotency
-// rides on the CommitID, so a retried submission replays.
-func (s *Commands) Submit(ctx context.Context, w writer.Writer, id run.InputID, text string) (run.AgentInput, error) {
-	content := TextContent(text)
 	digest, err := DigestInput(InputID(id), content)
 	if err != nil {
 		return run.AgentInput{}, err

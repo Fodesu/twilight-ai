@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/felinics/twilight/agent/app"
+	agentinput "github.com/felinics/twilight/agent/input"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/plan"
@@ -63,7 +64,7 @@ func Example_recoverableTurn() {
 	if err != nil {
 		panic(err)
 	}
-	input, err := p1.Owner.Chatlog.Submit(ctx, owned1.Writer(), "in-1", "what is the weather?")
+	input, err := p1.Owner.Chatlog.Submit(ctx, owned1.Writer(), "in-1", agentinput.Text("what is the weather?"))
 	if err != nil {
 		panic(err)
 	}

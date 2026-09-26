@@ -84,6 +84,9 @@ type Driver struct {
 	// MaxRedispatches bounds redispatches per effect; zero selects the
 	// reconciler's default.
 	MaxRedispatches int
+	// Dispatch is the re-offer policy of every Loop for a retryable dispatch
+	// refusal (RUN-EXE-3); the zero value selects loop's defaults.
+	Dispatch loop.DispatchPolicy
 	// Watcher is where every Loop and every Reconciler of this Driver
 	// waits for Outcomes: one settlement subscription to the Executor for
 	// all of them. Nil builds one over Executor on first use; a host that
@@ -155,6 +158,7 @@ func (d *Driver) loopFor(ref turn.PresetRef) (*loop.Loop, error) {
 		Scheduling:       preset.Scheduling,
 		MalformedRetries: preset.MalformedRetries,
 		TargetResolver:   d.Targets,
+		Dispatch:         d.Dispatch,
 		Watcher:          d.watcher(),
 	}
 	if d.Planner != nil {

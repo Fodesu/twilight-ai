@@ -168,7 +168,7 @@ func (s *Session) Close(ctx) error
 
 **APP-RTE-2** 排空是 app 的策略：`app.Session.Drain(ctx)` 读 chatlog surface，若存在 `submitted` 且未 delivered 的输入，按 CommitSeq 顺序取全部，经 Route 开新 Turn；否则返回 false。已提交而未投递的输入就是 inbox 的 next-turn 列表，不需要另一份持久结构。
 
-**APP-INP-1** `chatlog.Commands.Submit(ctx, w, id, text)` 提交用户正文（构造器为 `chatlog.TextContent`，DEC-INP-1）；`app.Session.Submit` 以 `chatlog.NewInputID` 铸造随机、跨重启无碰撞的 InputID，`app.Session.SubmitInput(ctx, id, text)` 接受调用方的 InputID 作为幂等键（inbox 的 submit 命令经此路径重放）。`StartRequest.Inputs[i].ID` 等于已 submitted 的 InputID，`Payload` 等于其 Content。
+**APP-INP-1** `chatlog.Commands.Submit(ctx, w, id, content)` 提交用户输入，`content` 对 core 是 opaque 的 canonical JSON，构造器为 `agent/input.Text`（DEC-INP-1）；`app.Session.Submit` 以 `chatlog.NewInputID` 铸造随机、跨重启无碰撞的 InputID，`app.Session.SubmitInput(ctx, id, text)` 接受调用方的 InputID 作为幂等键（inbox 的 submit 命令经此路径重放）。`StartRequest.Inputs[i].ID` 等于已 submitted 的 InputID，`Payload` 等于其 Content。
 
 ### 7.0 命令 inbox
 

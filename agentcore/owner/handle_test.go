@@ -11,6 +11,7 @@ import (
 	"github.com/felinics/twilight/agentcore/executor"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/owner"
+	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
@@ -87,7 +88,7 @@ func TestHandleGenerations(t *testing.T) {
 	if err := first.Close(ctx); err != nil {
 		t.Fatalf("stale close = %v, want nil", err)
 	}
-	if _, err := a.Chatlog.Submit(ctx, second.Writer(), "in-1", "hello"); err != nil {
+	if _, err := a.Chatlog.Submit(ctx, second.Writer(), "in-1", run.MustParseCanonicalJSON(`{"text":"hello"}`)); err != nil {
 		t.Fatalf("commit through the live generation after a stale close: %v", err)
 	}
 	// Reading takes no ownership: it works by SessionID while the Handle is

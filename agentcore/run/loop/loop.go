@@ -77,23 +77,20 @@ func (l *Loop) toolScheduling() run.ToolScheduling {
 // dispatchRetries and dispatchBackoff bound the Loop's answer to
 // effect.ErrDispatchRetryable (RUN-EXE-3): the executor refused before
 // anything started, so the same Assignment is offered again a few times
-// inside this Advance before the refusal is treated like any other Known
-// dispatch failure.
-const (
-	dispatchRetries = 3
-	dispatchBackoff = 50 * time.Millisecond
-)
+// inside this Advance, per Settings.Dispatch, before the refusal is treated
+// like any other Known dispatch failure.
 
 // dispatch hands an Assignment to the Executor, repeating a retryable refusal
-// within dispatchRetries; every other answer is returned as is.
+// within the dispatch policy; every other answer is returned as is.
 func (l *Loop) dispatch(ctx context.Context, a Assignment) error {
 	var err error
+	policy := l.Settings.Dispatch
 	for attempt := 1; ; attempt++ {
 		err = l.Executor.Dispatch(ctx, a)
-		if err == nil || !errors.Is(err, effect.ErrDispatchRetryable) || attempt >= dispatchRetries {
+		if err == nil || !errors.Is(err, effect.ErrDispatchRetryable) || attempt >= policy.retries() {
 			return err
 		}
-		timer := time.NewTimer(dispatchBackoff * time.Duration(attempt))
+		timer := time.NewTimer(policy.backoff() * time.Duration(attempt))
 		select {
 		case <-ctx.Done():
 			timer.Stop()

@@ -12,9 +12,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agent/input"
 	"strings"
 
-	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/effect"
 	"github.com/felinics/twilight/agentcore/run/frozen"
@@ -186,7 +186,7 @@ func renderTranscript(entries []chatlog.Materialized) string {
 		e := m.Entry
 		switch e.Kind {
 		case chatlog.EntryInput:
-			text, err := decision.InputText(e.Input.Content)
+			text, err := input.TextOf(e.Input.Content)
 			if err != nil {
 				text = e.Input.Content.String()
 			}
