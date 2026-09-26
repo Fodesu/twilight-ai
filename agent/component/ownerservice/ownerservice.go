@@ -1,0 +1,191 @@
+// Package ownerservice composes the owner service component (CLD-OWN-1):
+// an app.Application over the shared stores, driving effects through the
+// worker's ExecutionPort client, exposed through the command face. The
+// process holds Session leases and the Writers' projections; every durable
+// fact is in the stores.
+package ownerservice
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	stdhttp "net/http"
+	"time"
+
+	"github.com/felinics/twilight/agent/app"
+	ownerhttp "github.com/felinics/twilight/agent/app/http"
+	"github.com/felinics/twilight/agent/config"
+	"github.com/felinics/twilight/agent/store/sqlite"
+	wshttp "github.com/felinics/twilight/agent/workspace/http"
+	"github.com/felinics/twilight/agentcore/artifact"
+	"github.com/felinics/twilight/agentcore/owner"
+	"github.com/felinics/twilight/agentcore/run"
+	"github.com/felinics/twilight/agentcore/session"
+	"github.com/felinics/twilight/agentcore/session/filestore"
+	runmod "github.com/felinics/twilight/agentcore/session/run"
+	"github.com/felinics/twilight/agentcore/turn"
+)
+
+// Config is the owner service's document.
+type Config struct {
+	// Identity is the lease owner name (SES-OWN-1) a gateway routes by; a
+	// pod name through the downward API in a cluster.
+	Identity config.Identity `json:"identity"`
+	Listen   string          `json:"listen"`
+	// Sessions is the Session ledger root (filestore).
+	Sessions Filestore `json:"sessions"`
+	// Content is the frozen bodies' cas root (filestore).
+	Content Filestore `json:"content"`
+	// Stores is the SQLite file of the small-row stores: artifact bindings
+	// and claims, dispatch ledger, inbox, workspace records.
+	Stores Store `json:"stores"`
+	// Executor is the worker's ExecutionPort endpoint.
+	Executor string `json:"executor"`
+	// ToolBackend is the tool backend's endpoint, for workspace snapshots;
+	// empty leaves snapshots unavailable.
+	ToolBackend string `json:"toolBackend,omitempty"`
+	// Lease is the Session lease duration; zero means until Release.
+	Lease config.Duration `json:"lease,omitempty"`
+	// Takeover makes every Open take over a live lease (CLD-CTL-2); a
+	// deployment sets it on the owner the controller hands a Session to.
+	Takeover bool `json:"takeover,omitempty"`
+	// Presets are the decision identities registered at start.
+	Presets []Preset `json:"presets"`
+	// SnapshotAfterTurn snapshots the bound workspace after each settled
+	// Turn (APP-WSP-7); needs ToolBackend.
+	SnapshotAfterTurn bool `json:"snapshotAfterTurn,omitempty"`
+	// InboxPoll is the applier's poll interval (APP-INB-3).
+	InboxPoll config.Duration `json:"inboxPoll,omitempty"`
+}
+
+// Filestore names a file-backed store root.
+type Filestore struct {
+	Root string `json:"root"`
+}
+
+// Store names a durable store: today one SQLite file.
+type Store struct {
+	SQLite string `json:"sqlite"`
+}
+
+// Preset is one decision identity of the document.
+type Preset struct {
+	ID           turn.PresetID `json:"id"`
+	Model        run.ModelRef  `json:"model"`
+	SystemPrompt string        `json:"systemPrompt,omitempty"`
+	// WorkspaceTools adds the workspace tool set (APP-WSP-3).
+	WorkspaceTools bool `json:"workspaceTools,omitempty"`
+}
+
+// Component is the composed owner service.
+type Component struct {
+	App    *app.Application
+	server *ownerhttp.Server
+	closes []func() error
+}
+
+// New composes the owner service over a built Application.
+func New(a *app.Application, sessionOptions app.SessionOptions) *Component {
+	return &Component{App: a, server: &ownerhttp.Server{App: a, Options: sessionOptions}}
+}
+
+// Compose builds the owner service its Config describes.
+func Compose(_ context.Context, cfg Config) (*Component, error) { //nolint:gocritic // hugeParam: Config is a by-value document read once
+	id, err := cfg.Identity.Resolve()
+	if err != nil {
+		return nil, err
+	}
+	switch {
+	case cfg.Sessions.Root == "", cfg.Content.Root == "", cfg.Stores.SQLite == "":
+		return nil, errors.New("ownerservice: sessions.root, content.root and stores.sqlite are required")
+	case cfg.Executor == "":
+		return nil, errors.New("ownerservice: executor endpoint is required")
+	case len(cfg.Presets) == 0:
+		return nil, errors.New("ownerservice: at least one preset is required")
+	}
+	store, err := filestore.New(cfg.Sessions.Root)
+	if err != nil {
+		return nil, err
+	}
+	content, err := filestore.NewContentStore(cfg.Content.Root, runmod.FrozenAuthority, filestore.ContentStoreOptions{})
+	if err != nil {
+		return nil, err
+	}
+	db, err := sqlite.Open(cfg.Stores.SQLite)
+	if err != nil {
+		return nil, err
+	}
+	bindings := db.Bindings()
+	wsCfg := &app.WorkspaceConfig{Store: db.Workspaces(), SnapshotAfterTurn: cfg.SnapshotAfterTurn}
+	if cfg.ToolBackend != "" {
+		wsCfg.Snapshots = &wshttp.Client{BaseURL: cfg.ToolBackend}
+	}
+	presets, err := presetsOf(cfg.Presets)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	a, err := app.Build(app.Config{
+		Store:      store,
+		Content:    content,
+		Artifacts:  owner.Artifacts{Bindings: bindings, Ledger: db.Ledger(artifact.SetBuilder{Resolver: bindings})},
+		Processes:  db.Processes(),
+		Inbox:      db.Inbox(),
+		Executor:   app.ExecutorConfig{Mode: app.ExecutorRemote, Endpoint: cfg.Executor},
+		Workspaces: wsCfg,
+		Ownership:  session.OpenOptions{Owner: id, LeaseDuration: cfg.Lease.Std(), Takeover: cfg.Takeover},
+		Presets:    presets,
+	})
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	c := New(a, app.SessionOptions{InboxPoll: cfg.InboxPoll.Std()})
+	c.closes = append(c.closes, db.Close)
+	return c, nil
+}
+
+func presetsOf(defs []Preset) ([]app.Preset, error) {
+	out := make([]app.Preset, 0, len(defs))
+	for _, d := range defs {
+		if d.ID == "" || d.Model == "" {
+			return nil, fmt.Errorf("ownerservice: preset %q needs an id and a model", d.ID)
+		}
+		opts := []app.PresetOption{}
+		if d.SystemPrompt != "" {
+			opts = append(opts, app.WithSystemPrompt(d.SystemPrompt))
+		}
+		if d.WorkspaceTools {
+			defs, err := app.WorkspaceTools(nil)
+			if err != nil {
+				return nil, err
+			}
+			opts = append(opts, app.WithPublicTools(defs...))
+		}
+		p, err := app.NewPreset(d.Model, nil, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("ownerservice: preset %s: %w", d.ID, err)
+		}
+		out = append(out, app.Preset{ID: d.ID, Value: p})
+	}
+	return out, nil
+}
+
+// Handler is the command face.
+func (c *Component) Handler() stdhttp.Handler { return c.server.Handler() }
+
+// Close releases every Session this owner holds and the stores.
+func (c *Component) Close(ctx context.Context) error {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 15*time.Second)
+		defer cancel()
+	}
+	err := c.App.Close(ctx)
+	for _, close := range c.closes {
+		if cerr := close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}
+	return err
+}

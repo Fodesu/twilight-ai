@@ -20,6 +20,8 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 | gateway | 无持久状态；认证会话 | 面向用户的 HTTP/WebSocket | owner 的命令面与观察流 | 连接数 |
 | 共享存储 | 全部 durable 事实：Session ledger 与 lineage、execution ledger 与租约、dispatch ledger、artifact binding 与 claim、CAS 正文 | SQL 与对象存储 | `session.Backend`、`executionstore.Store`、`process.Store`、artifact stores 的实现 | 存储容量 |
 
+**CLD-CMP-4（组件的组装）** 每个组件是 `agent/component/<name>` 下的一个库包：类型化的 `Config`（`agent/config` 的 JSON 文档，未知字段与尾随内容为错误，凭证只以 `secrets.Dir` 目录名出现，进程身份为 `config.Identity{name | file}`，集群里由 downward API 挂成文件）、从就绪依赖组装的 `New`、从 `Config` 组装的 `Compose`，以及 `Handler()` / `Close(ctx)`。`cmd/worker`、`cmd/model-backend`、`cmd/tool-backend`、`cmd/owner` 只是 `agent/component/run.Main` 应用到各自的包；`agent/serve` 在组件 handler 旁提供 `/healthz`、`/readyz` 与 SIGTERM 下的 drain 加 `Close`（租约在 `Close` 里释放）。worker 的 Route 表按声明选 backend：`executor.MatchModel` → model backend，`executor.MatchTool(PlacementWorkspace)` → tool backend（CLD-WIR-0）。owner 在 remote 模式下不组装 sandbox，workspace snapshot 经 `agent/workspace/http.Client` 到 tool backend。进程级验证是 `agent/component/cloudtest`：四个组件各起一个 `httptest.Server`、worker 在一个可切换目标的反向代理（Service 地址）之后，覆盖 CLD-DEV-2 的一轮对话（model call 与 shell call 各经其 backend，文件落在 tool backend 的 environment，Turn 后 snapshot）与"worker 与 owner 在模型调用进行中被替换"（新 owner 的接管处置经新 worker 把 orphaned 的 record 接回、attach 到仍在 model backend 里运行的执行，结算经新副本到达，旧 owner 的写入被围栏）。`deploy/local/` 有四份示例文档与单机运行说明。
+
 **CLD-CMP-3（不在清单中的）** Reconciler、Loop、Driver、Watcher 都是 owner service 进程内的组成，不是组件：它们没有自己的状态归属，也没有 message-shaped 的对外接口。Responder（包括 spawn 子代理）同样在 owner 内。preset 注册表按 OWN-SCP-2 可以是进程内或共享服务，本文档把它归入 owner service，共享化留作后续。
 
 ## 2. 各组件
@@ -131,12 +133,14 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 ## 5. 顺序
 
 1. CLD-WIR-1 的 Backend 协议适配器对（`agent/executor/backendhttp`）：已完成。
-2. `cmd/worker`、`cmd/model-backend`、`cmd/tool-backend`、`cmd/owner` 四个二进制，单机多进程跑通 Dispatch、GetOutcome、RecoverExecution 与 Session 接管。此步仍用 SQLite 与 filestore，各进程共享同一文件路径只用于单机验证。
+2. 四个二进制与单机多进程验证：已完成（CLD-CMP-4）。此步仍用 SQLite 与 filestore，各进程共享同一文件路径只用于单机验证。
 3. CLD-STO 的 Postgres 与对象存储实现，先做 CLD-STO-2 的接口审查。
 4. k3d 清单与 CLD-DEV-2 的故障检验。
 5. controller 与 gateway。
 
 ## 6. 未决
+
+- worker 在 owner 存活期间死亡的恢复触发：`RecoverExecution` 今天只由 Reconciler 调用（接管处置与其 `OrphanProbe`），一个正在驱动中的 Loop 只经 Watcher 等结算，不探测 orphaned。CLD-DEV-2 第一行期望"owner 的 Watcher 在 OrphanProbe 内观察到 orphaned"，现状要么等 owner 接管（cloudtest 覆盖的路径），要么由 controller 按 CLD-CTL-3 触发；补齐方式是让 Watcher 或 Loop 的等待路径也做周期性 Attach。
 
 - `OpenOptions.Owner` 到网络地址的映射方式（CLD-GWY-2）：写入租约行，或由 owner 副本向注册表登记。
 - preset 注册表是否共享化（CLD-CMP-3）。

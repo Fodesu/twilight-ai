@@ -11,9 +11,9 @@ Session、Run、Turn、Executor 或 Workspace 协议。协议权威分别是：
 - [Runtime](agent-runtime.md)：Owner 组装、Session 所有权与 app 策略；
 - [Workspace](agent-workspace.md)：逻辑工作空间、RuntimeBinding 与 TargetRef。
 
-如果本文与上述协议冲突，以上述协议为准。进程级验证 harness 与演示入口已于
-2026-09-17 移除（原 `agent/host/cloudtest`、`cmd/twilight-agent`），待 Owner / app
-分层稳定后在 app 层重建；两者都不是本规范的 API 合同。
+如果本文与上述协议冲突，以上述协议为准。进程级验证 harness 于 2026-09-26 在
+组件层重建为 `agent/component/cloudtest`（四个组件经 `httptest` 组成一套，CLD-CMP-4），
+演示入口为 `cmd/owner` 等四个二进制与 `deploy/local/`；两者都不是本规范的 API 合同。
 
 ## 1. 目标
 
