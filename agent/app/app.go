@@ -226,6 +226,21 @@ func (app *Application) BeforePrepare(ctx context.Context, w writer.Writer, _ pl
 	return nil
 }
 
+// Opened returns the Session this process holds open under sid, if any: the
+// command face wakes and closes Sessions through it (APP-INB-3).
+func (app *Application) Opened(sid session.SessionID) (*Session, bool) {
+	app.mu.RLock()
+	defer app.mu.RUnlock()
+	s, ok := app.sessions[sid]
+	return s, ok
+}
+
+// Lease is the Session's current writer lease, read without ownership
+// (SES-OWN-5): what a gateway routes by and a controller judges expiry by.
+func (app *Application) Lease(ctx context.Context, sid session.SessionID) (session.Lease, bool, error) {
+	return app.Owner.Store.LeaseOf(ctx, sid)
+}
+
 func (app *Application) track(s *Session) {
 	app.mu.Lock()
 	defer app.mu.Unlock()

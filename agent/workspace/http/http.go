@@ -5,13 +5,13 @@
 package http
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	stdhttp "net/http"
+	"net/url"
 	"strings"
 
 	"github.com/felinics/twilight/agent/environment"
@@ -94,12 +94,12 @@ func (c *Client) Snapshot(ctx context.Context, id workspace.ID) (workspace.Snaps
 	if id == "" {
 		return workspace.Snapshot{}, errors.New("workspace/http: snapshot requires a workspace id")
 	}
-	url := strings.TrimRight(c.BaseURL, "/") + "/workspaces/" + string(id) + "/snapshot"
-	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodPost, url, bytes.NewReader(nil))
+	target := strings.TrimRight(c.BaseURL, "/") + "/workspaces/" + url.PathEscape(string(id)) + "/snapshot"
+	req, err := stdhttp.NewRequestWithContext(ctx, stdhttp.MethodPost, target, stdhttp.NoBody) //nolint:gosec // G704: BaseURL is the deployment's configured tool backend; id is path-escaped
 	if err != nil {
 		return workspace.Snapshot{}, err
 	}
-	resp, err := c.client().Do(req)
+	resp, err := c.client().Do(req) //nolint:gosec // G704: see above
 	if err != nil {
 		return workspace.Snapshot{}, fmt.Errorf("workspace/http: snapshot %s: %w", id, err)
 	}

@@ -134,6 +134,15 @@ func (app *Application) AwaitCommand(ctx context.Context, sid session.SessionID,
 	}
 }
 
+// LookupCommand returns the command's entry as stored; ok is false for an
+// unknown command.
+func (app *Application) LookupCommand(ctx context.Context, sid session.SessionID, id inbox.CommandID) (inbox.Entry, bool, error) {
+	if app.inbox == nil {
+		return inbox.Entry{}, false, ErrNoInbox
+	}
+	return app.inbox.Lookup(ctx, sid, id)
+}
+
 // PendingSessions returns the Sessions with unapplied commands (CLD-CMD-4):
 // what a controller or an idle owner replica opens next.
 func (app *Application) PendingSessions(ctx context.Context) ([]session.SessionID, error) {
@@ -144,6 +153,10 @@ func (app *Application) PendingSessions(ctx context.Context) ([]session.SessionI
 }
 
 // --- owner side ---------------------------------------------------------------
+
+// Wake asks the Session's applier to read its inbox now (CLD-GWY-2): the
+// wake-up a gateway sends after enqueuing a command. It never blocks.
+func (s *Session) Wake() { s.wakeInbox() }
 
 func (s *Session) wakeInbox() {
 	if s.inboxWake == nil {
