@@ -168,7 +168,15 @@ func (s *Session) Close(ctx) error
 
 **APP-RTE-2** 排空是 app 的策略：`app.Session.Drain(ctx)` 读 chatlog surface，若存在 `submitted` 且未 delivered 的输入，按 CommitSeq 顺序取全部，经 Route 开新 Turn；否则返回 false。已提交而未投递的输入就是 inbox 的 next-turn 列表，不需要另一份持久结构。
 
-**APP-INP-1** `chatlog.Commands.Submit(ctx, w, id, text)` 提交用户正文（构造器为 `chatlog.TextContent`，DEC-INP-1）；`app.Session` 以 `chatlog.NewInputID` 铸造随机、跨重启无碰撞的 InputID，需要外部幂等键的调用方自带 ID。`StartRequest.Inputs[i].ID` 等于已 submitted 的 InputID，`Payload` 等于其 Content。
+**APP-INP-1** `chatlog.Commands.Submit(ctx, w, id, text)` 提交用户正文（构造器为 `chatlog.TextContent`，DEC-INP-1）；`app.Session.Submit` 以 `chatlog.NewInputID` 铸造随机、跨重启无碰撞的 InputID，`app.Session.SubmitInput(ctx, id, text)` 接受调用方的 InputID 作为幂等键（inbox 的 submit 命令经此路径重放）。`StartRequest.Inputs[i].ID` 等于已 submitted 的 InputID，`Payload` 等于其 Content。
+
+### 7.0 命令 inbox
+
+**APP-INB-1（命令先落盘）** `agentcore/inbox.Store` 是 Session 的 durable 命令 inbox：`Enqueue(sid, Command{ID, Kind, Payload})` 返回即成为事实，按 Session 分配递增 Seq；同一 CommandID 重复 Enqueue 返回已存条目，不写入；同 ID 不同 Kind 或 Payload 为 `ErrCommandConflict`。`Pending(sid)` 按 Seq 返回未处理条目，`Resolve(sid, seq, Result)` 只对 pending 条目生效一次（否则 `ErrNotPending`），`Sessions()` 返回有 pending 条目的 Session（CLD-CMD-4）。不持有 Session 的调用方（gateway、其他进程、尚未 Open 的本进程）经 `app.Application.Enqueue` 写入，`AwaitCommand` 等待 Result。没有配置 `Config.Inbox` 时这些入口返回 `ErrNoInbox`，不退化为无操作。CommandID 由调用方给出，app 不代生成。
+
+**APP-INB-2（owner 应用与幂等）** 只有持有 Handle 的进程应用命令：`app.Session.ApplyPending` 按 Seq 顺序经该 Session 的 Writer 提交，提交成功后才 `Resolve`。命令集合与 payload 由 app 定义：`submit`（`SubmitCommand{InputID, Text}`，经 `SubmitInput` 提交并路由，后台驱动）、`stop`（`StopCommand{TurnID?, Reason}`，无 active Turn 或 TurnID 与 active Turn 不一致时 rejected）、`withdraw`（`WithdrawCommand{InputID, Reason}`）、`retry`（`RetryCommand{Reason}`，提交 Retry 后后台驱动）。应用结果两类：ledger 提交成功或已提交（`CommitAlreadyApplied`）为 applied；已提交状态不容许的命令（`turn.ErrConflict`、`chatlog.ErrNotSubmitted`、payload 不合法、未知 Kind）为 rejected，写入 Reason 后关闭。存储或 Writer 的瞬时失败使命令保持 pending 并终止本轮，以保持顺序，下一轮重试。应用幂等：owner 在提交后、Resolve 前崩溃时，下一个 owner 重放命令，ledger 以 CommitID 判定已应用，再 Resolve。
+
+**APP-INB-3（触发与生命周期）** `OpenSession` 在接管处置（RUN-CMT-7）之后、`ResumeActive` 之前先应用一遍 pending 命令，随后由该 Session 的 applier goroutine 在两种触发下继续应用：同进程 `Enqueue` 的唤醒（非阻塞信号），以及 `SessionOptions.InboxPoll` 的轮询（零值为 `DefaultInboxPoll`，即命令唤醒未到达时的最坏延迟）。applier 与后台驱动分开计数：`Wait` 只等驱动，`Close` 取消后等待 applier 退出。被替代的 owner 应用命令时 Append 被 Epoch 围栏拒绝（SES-OWN-2），视为瞬时失败，不 Resolve。
 
 ### 7.1 compaction
 

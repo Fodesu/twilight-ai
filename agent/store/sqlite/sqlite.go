@@ -2,7 +2,8 @@
 // small-row ports that sit next to the Session ledger and the cas content
 // files: the Worker's execution records (executor/store.Store), the dispatch
 // ledger (process.Store), the artifact BindingStore and RetentionLedger, and
-// the checkpoint.Store. One SQLite file holds the tables, so one deployment
+// the checkpoint.Store and the Session command inbox (inbox.Store). One
+// SQLite file holds the tables, so one deployment
 // has one transaction boundary and one cross-process lock for all of them;
 // the Session ledger stays in its JSONL segments and cas bodies stay files.
 //
@@ -104,6 +105,20 @@ CREATE TABLE IF NOT EXISTS claims (
 	claim           TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS claims_by_owner ON claims (owner_kind, owner_authority, id);
+CREATE TABLE IF NOT EXISTS inbox (
+	session     TEXT NOT NULL,
+	seq         INTEGER NOT NULL,
+	command_id  TEXT NOT NULL,
+	kind        TEXT NOT NULL,
+	payload     TEXT,
+	enqueued_at INTEGER NOT NULL,
+	status      TEXT NOT NULL DEFAULT '',
+	reason      TEXT,
+	resolved_at INTEGER,
+	PRIMARY KEY (session, seq),
+	UNIQUE (session, command_id)
+);
+CREATE INDEX IF NOT EXISTS inbox_pending ON inbox (status, session, seq);
 `
 
 // Open opens or creates the database at path and ensures its schema.

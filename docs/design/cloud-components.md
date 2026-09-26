@@ -70,9 +70,17 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 ### 2.6 gateway
 
-**CLD-GWY-1** gateway 是用户面：认证、把用户输入转为 owner 命令面的调用（Send、Turn 状态、Fork、Withdraw）、把 `observe.Bus` 的事件推送给客户端（SSE 或 WebSocket）。它不持有 Session 状态，不读共享存储。
+**CLD-GWY-1** gateway 是用户面：认证、把用户输入转为 Session 命令（submit、stop、withdraw、retry，APP-INB-2）、把 `observe.Bus` 的事件推送给客户端（SSE 或 WebSocket）。它不持有 Session 状态；对共享存储只做两件事：写命令 inbox（`inbox.Store.Enqueue`）与读租约（SES-OWN-5）。
 
-**CLD-GWY-2** 路由：一个 Session 的命令必须到达持有其租约的 owner 副本。gateway 经 `session.Store.LeaseOf` 读取当前租约的 `Owner`（SES-OWN-5）（`OpenOptions.Owner` 记录的进程标识需要能映射到网络地址）或维护一张 session→owner 的路由表；租约无持有者时选择一个 owner 副本 Open。命令到达错误副本时 owner 返回 conflict（OWN-HDL-2），gateway 重查路由后重试一次。
+**CLD-GWY-2（命令投递）** 命令的正确性来源是 inbox 与幂等应用（APP-INB-1/2），路由到当前 owner 是延迟优化。gateway 的路径：`Enqueue` → 读 `LeaseOf(sid)` → 有存活租约则向该副本发一次唤醒（该副本对本进程持有的 Session 调用 `ApplyPending`）；无持有者则按负载选择一个 owner 副本 Open，Open 内部先应用 pending 命令（APP-INB-3）。唤醒失败不重试、不向客户端报错：owner 的轮询兜底。需要确认结果的命令（stop）由 gateway 以 `AwaitCommand` 等待 Result，超时返回"已受理"。`OpenOptions.Owner` 记录副本的可寻址名（headless Service 下的 pod DNS 名，由 downward API 挂载的文件提供），供唤醒定位。
+
+**CLD-CMD-1（崩溃情形）** gateway 在 Enqueue 前崩溃：客户端以同一 CommandID 重发。gateway 在 Enqueue 后、唤醒前崩溃：命令已 durable，owner 轮询拾取。owner 读到命令后、提交前崩溃：条目仍 pending，controller 按 CLD-CTL-2 接管，新 owner 在 Open 中应用。owner 提交后、Resolve 前崩溃：新 owner 重放，ledger 报已应用或冲突，写 Result。唤醒发到已被替代的副本：其 Append 被 Epoch 围栏拒绝，不 Resolve。gateway 读到过时租约：唤醒落空，轮询兜底。
+
+**CLD-CMD-2（幂等键）** submit 与 withdraw 以 InputID 为键（`chatlog.Submit` 重放为 `CommitAlreadyApplied`）；stop、retry 以 TurnRef 加命令 ID 为键，状态已推进时返回 conflict，作为 rejected 关闭。Fork 尚未进入命令集合：需先确定子 SessionID 由命令 ID 派生。
+
+**CLD-CMD-3（替代方案）** 把命令作为无围栏事件直接追加进 Session ledger（仿 execution store 的 `Fenced(eventType)` 区分）可以省去独立存储，但要修改 SES-OWN-2 的"所有 Append 携带 Epoch"，并引入 gateway 追加与 owner 提交的 Seq 竞争重试。当前选择独立 inbox；两者对 owner 侧应用逻辑的要求相同。
+
+**CLD-CMD-4（激活索引）** `inbox.Store.Sessions()` 返回有 pending 命令的 Session，是无 owner 的 Session 需要被 Open 的依据之一（另一个是有 active Turn 而无存活租约）。controller 或空闲的 owner 副本据此选择 Session 并 Open；重复 Open 由 `ErrOwned` 与 Epoch 围栏裁决，索引允许最终一致。
 
 ### 2.7 共享存储
 

@@ -24,6 +24,7 @@ import (
 	"github.com/felinics/twilight/agentcore/executor/http"
 	executorlocal "github.com/felinics/twilight/agentcore/executor/local"
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
+	"github.com/felinics/twilight/agentcore/inbox"
 	"github.com/felinics/twilight/agentcore/observe"
 	"github.com/felinics/twilight/agentcore/owner"
 	"github.com/felinics/twilight/agentcore/preset"
@@ -130,6 +131,11 @@ type Config struct {
 	// the local mode always does; a supplied Port or the remote mode do when
 	// Spawn is set, so the spawn Backend can be routed beside them.
 	Worker executor.WorkerOptions
+	// Inbox is the durable command inbox of the Sessions (APP-INB-1): the
+	// way a caller that does not hold a Session reaches its owner. Nil
+	// leaves Enqueue and ApplyPending unavailable (ErrNoInbox); like every
+	// store it is durable (OWN-PRT-3).
+	Inbox inbox.Store
 }
 
 // CompactorSystemPrompt is kept here for deterministic model test doubles and
@@ -146,6 +152,7 @@ type Application struct {
 	// Authority (RUN-EXE-8).
 	worker *executor.Worker
 	warn   func(error)
+	inbox  inbox.Store
 
 	mu   sync.RWMutex
 	refs map[turn.PresetID]turn.PresetRef
@@ -198,7 +205,7 @@ func Build(c Config) (*Application, error) { //nolint:gocritic // hugeParam: Con
 	if warn == nil {
 		warn = func(error) {}
 	}
-	app := &Application{warn: warn, refs: make(map[turn.PresetID]turn.PresetRef, len(c.Presets)), sessions: make(map[session.SessionID]*Session)}
+	app := &Application{warn: warn, inbox: c.Inbox, refs: make(map[turn.PresetID]turn.PresetRef, len(c.Presets)), sessions: make(map[session.SessionID]*Session)}
 	// The subagent tool is answered by a Responder on the Driver (SPN-1,
 	// DRV-4), not executed: it drives children through the Authority, so it
 	// is bound after New. No Worker route is involved.

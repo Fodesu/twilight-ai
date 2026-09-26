@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/felinics/twilight/agent/context/compaction"
 	"github.com/felinics/twilight/agentcore/driver"
@@ -43,6 +44,9 @@ type SessionOptions struct {
 	// remaining backlog stays submitted for the next call (APP-RTE-2). Zero
 	// selects DefaultDrainBudget.
 	DrainBudget int
+	// InboxPoll is how often the open Session reads its command inbox
+	// besides being woken (APP-INB-3); zero selects DefaultInboxPoll.
+	InboxPoll time.Duration
 }
 
 // DefaultRouteRetries and DefaultDrainBudget are the liveness bounds a
@@ -116,6 +120,14 @@ type Session struct {
 	bgMu   sync.Mutex
 	bgN    int
 	bgIdle chan struct{}
+
+	// loops are the Session's service goroutines (the inbox applier);
+	// Close waits for them after cancelling bg. They are not background
+	// drives, so Wait does not count them.
+	loops sync.WaitGroup
+	// inboxWake wakes the applier; inboxMu serializes applier passes.
+	inboxWake chan struct{}
+	inboxMu   sync.Mutex
 }
 
 // OpenSession ensures the stream exists, takes ownership per the
@@ -142,6 +154,9 @@ func (app *Application) OpenSession(ctx context.Context, sid session.SessionID, 
 	}
 	s.bg, s.cancel = context.WithCancel(context.Background())
 	app.track(s)
+	// Commands left while no one owned the Session are applied before
+	// anything else this owner does (APP-INB-3).
+	s.startInbox(ctx)
 	if opts.ResumeActive {
 		if _, _, err := s.Resume(ctx); err != nil {
 			_ = s.Close(context.WithoutCancel(ctx))
@@ -239,13 +254,20 @@ func (s *Session) Send(ctx context.Context, text string) ([]Result, error) {
 	return s.settled(ctx, &resp)
 }
 
-// Submit submits text, commits its route and returns the Turn it landed in
-// without waiting (APP-SES-4). The Turn is driven to settlement -- and the
-// backlog drained -- in the background; progress and the reply arrive on
-// Events, failures on Events and Config.Warn. Close cancels the background
-// drive; a cancelled Turn stays active and resumes on the next open.
+// Submit submits text under a fresh InputID; see SubmitInput.
 func (s *Session) Submit(ctx context.Context, text string) (turn.TurnRef, error) {
-	in, err := s.a.Chatlog.Submit(ctx, s.h.Writer(), chatlog.NewInputID(), text)
+	return s.SubmitInput(ctx, chatlog.NewInputID(), text)
+}
+
+// SubmitInput submits text under the caller's InputID, commits its route
+// and returns the Turn it landed in without waiting (APP-SES-4). The
+// InputID is the idempotency key: a retried submission replays. The Turn is
+// driven to settlement -- and the backlog drained -- in the background;
+// progress and the reply arrive on Events, failures on Events and
+// Config.Warn. Close cancels the background drive; a cancelled Turn stays
+// active and resumes on the next open.
+func (s *Session) SubmitInput(ctx context.Context, id run.InputID, text string) (turn.TurnRef, error) {
+	in, err := s.a.Chatlog.Submit(ctx, s.h.Writer(), id, text)
 	if err != nil {
 		return turn.TurnRef{}, err
 	}
@@ -257,6 +279,13 @@ func (s *Session) Submit(ctx context.Context, text string) (turn.TurnRef, error)
 		// A running driver carries the input; nothing to drive here.
 		return s.ref(absorbed.TurnID), nil
 	}
+	s.driveInBackground(ref)
+	return ref, nil
+}
+
+// driveInBackground drives the Turn to settlement and drains the backlog
+// under bg; failures reach Events and Config.Warn.
+func (s *Session) driveInBackground(ref turn.TurnRef) {
 	s.bgStart()
 	go func() {
 		defer s.bgDone()
@@ -269,7 +298,20 @@ func (s *Session) Submit(ctx context.Context, text string) (turn.TurnRef, error)
 			s.app.fail(s.sid, fmt.Errorf("app: settling turn %s: %w", ref.TurnID, err))
 		}
 	}()
-	return ref, nil
+}
+
+// Stop stops the active Turn (TRN-CMD Stop); ok is false when no Turn is
+// active. The stopped Turn's drive observes the cancellation and returns.
+func (s *Session) Stop(ctx context.Context, reason string) (turn.TurnResponse, bool, error) {
+	status, err := s.Status(ctx)
+	if err != nil || status.Active == "" {
+		return turn.TurnResponse{}, false, err
+	}
+	resp, err := s.a.Turns.Stop(ctx, s.h.Writer(), turn.StopRequest{Ref: s.ref(status.Active), Reason: reason})
+	if err != nil {
+		return turn.TurnResponse{}, false, err
+	}
+	return resp, true, nil
 }
 
 // routeInput commits one input's route with the conflict retry of APP-SES-3,
@@ -385,16 +427,8 @@ func (s *Session) Resume(ctx context.Context) ([]Result, bool, error) {
 
 // Retry retries the first Turn awaiting Retry; ok is false when none is.
 func (s *Session) Retry(ctx context.Context) ([]Result, bool, error) {
-	status, err := s.Status(ctx)
-	if err != nil || len(status.Failed) == 0 {
-		return nil, false, err
-	}
-	ref := s.ref(status.Failed[0])
-	previous, err := s.a.Turns.Status(ctx, ref)
-	if err != nil {
-		return nil, false, err
-	}
-	if _, err := s.a.Turns.Retry(ctx, s.h.Writer(), turn.RetryRequest{Ref: ref, PreviousRunID: previous.RunID, Reason: "app retry"}); err != nil {
+	ref, ok, err := s.retryCommit(ctx, "app retry")
+	if err != nil || !ok {
 		return nil, false, err
 	}
 	resp, err := s.a.Driver.Drive(ctx, s.h.Writer(), ref.TurnID)
@@ -403,6 +437,24 @@ func (s *Session) Retry(ctx context.Context) ([]Result, bool, error) {
 	}
 	out, err := s.settled(ctx, &resp)
 	return out, true, err
+}
+
+// retryCommit commits the Retry of the first Turn awaiting one; ok is false
+// when none is.
+func (s *Session) retryCommit(ctx context.Context, reason string) (turn.TurnRef, bool, error) {
+	status, err := s.Status(ctx)
+	if err != nil || len(status.Failed) == 0 {
+		return turn.TurnRef{}, false, err
+	}
+	ref := s.ref(status.Failed[0])
+	previous, err := s.a.Turns.Status(ctx, ref)
+	if err != nil {
+		return turn.TurnRef{}, false, err
+	}
+	if _, err := s.a.Turns.Retry(ctx, s.h.Writer(), turn.RetryRequest{Ref: ref, PreviousRunID: previous.RunID, Reason: reason}); err != nil {
+		return turn.TurnRef{}, false, err
+	}
+	return ref, true, nil
 }
 
 // settled turns a TurnResponse into Results and drains the backlog: while a
@@ -509,6 +561,7 @@ func (s *Session) Close(ctx context.Context) error {
 	if s.cancel != nil {
 		s.cancel()
 	}
+	s.loops.Wait()
 	_ = s.Wait(context.Background()) // drives observe the cancelled bg ctx and return
 	return s.h.Close(ctx)
 }
