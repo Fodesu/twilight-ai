@@ -4,15 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/felinics/twilight/agentcore/executor"
-	executorhttp "github.com/felinics/twilight/agentcore/executor/http"
 	"github.com/felinics/twilight/agentcore/executor/protocol"
 	"github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
@@ -326,81 +322,41 @@ func (b *uncertainDispatchBackend) GetOutcome(ctx context.Context, key effect.As
 	}
 }
 
-type handlerTransport struct{ handler http.Handler }
-
-func (t handlerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	response := httptest.NewRecorder()
-	t.handler.ServeHTTP(response, request)
-	return response.Result(), nil
-}
-
 func TestWorkerUncertainDispatchPreservesExecution(t *testing.T) {
-	for _, overHTTP := range []bool{false, true} {
-		t.Run(fmt.Sprint("http=", overHTTP), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			records := storetest.NewMap(nil)
-			backend := &uncertainDispatchBackend{testBackend: newTestBackend(), ready: make(chan struct{})}
-			defer close(backend.ready)
-			worker, err := executor.NewWorker(ctx, records, routes(backend))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var port effect.ExecutionPort = worker
-			if overHTTP {
-				port = &executorhttp.Client{BaseURL: "http://executor.invalid",
-					HTTP: &http.Client{Transport: handlerTransport{handler: (&executorhttp.Server{Worker: worker}).Handler()}}}
-			}
-			a := testAssignment()
-			err = port.Dispatch(ctx, a)
-			if overHTTP && err != nil || !overHTTP && !errors.Is(err, effect.ErrDispatchUnknown) {
-				t.Fatalf("dispatch error = %v", err)
-			}
-			r, _, _, err := records.Load(ctx, a.Key())
-			if err != nil || r.State != effect.ExecutionDispatching || r.Outcome != nil {
-				t.Fatalf("uncertain dispatch changed execution: %+v, %v", r, err)
-			}
-			if err := port.Dispatch(ctx, a); err != nil {
-				t.Fatalf("acceptance replay = %v", err)
-			}
-			backend.mu.Lock()
-			calls := backend.calls
-			backend.mu.Unlock()
-			if calls != 1 {
-				t.Fatalf("backend calls = %d, want 1", calls)
-			}
-			select {
-			case backend.ready <- struct{}{}:
-			case <-ctx.Done():
-				t.Fatal(ctx.Err())
-			}
-			out, err := awaitOutcome(ctx, port, a.Key())
-			if err != nil || modelText(out) != "accepted before response was lost" {
-				t.Fatalf("eventual outcome = %+v, %v", out, err)
-			}
-		})
-	}
-}
-
-func TestHTTPDispatchAssignmentConflictIsDefinite(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	worker, err := executor.NewWorker(ctx, storetest.NewMap(nil), routes(newTestBackend()))
+	records := storetest.NewMap(nil)
+	backend := &uncertainDispatchBackend{testBackend: newTestBackend(), ready: make(chan struct{})}
+	defer close(backend.ready)
+	worker, err := executor.NewWorker(ctx, records, routes(backend))
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &executorhttp.Client{BaseURL: "http://executor.invalid",
-		HTTP: &http.Client{Transport: handlerTransport{handler: (&executorhttp.Server{Worker: worker}).Handler()}}}
 	a := testAssignment()
-	if err := client.Dispatch(ctx, a); err != nil {
-		t.Fatal(err)
+	if err := worker.Dispatch(ctx, a); !errors.Is(err, effect.ErrDispatchUnknown) {
+		t.Fatalf("dispatch error = %v", err)
 	}
-	if _, err := awaitOutcome(ctx, client, a.Key()); err != nil {
-		t.Fatal(err)
+	r, _, _, err := records.Load(ctx, a.Key())
+	if err != nil || r.State != effect.ExecutionDispatching || r.Outcome != nil {
+		t.Fatalf("uncertain dispatch changed execution: %+v, %v", r, err)
 	}
-	a.Target = &run.TargetRef{Kind: "workspace", ID: "conflicting-target"}
-	if err := client.Dispatch(ctx, a); err == nil || errors.Is(err, effect.ErrDispatchUnknown) {
-		t.Fatalf("assignment conflict = %v, want definite rejection", err)
+	if err := worker.Dispatch(ctx, a); err != nil {
+		t.Fatalf("acceptance replay = %v", err)
+	}
+	backend.mu.Lock()
+	calls := backend.calls
+	backend.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("backend calls = %d, want 1", calls)
+	}
+	select {
+	case backend.ready <- struct{}{}:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	out, err := awaitOutcome(ctx, worker, a.Key())
+	if err != nil || modelText(out) != "accepted before response was lost" {
+		t.Fatalf("eventual outcome = %+v, %v", out, err)
 	}
 }
 
@@ -632,30 +588,6 @@ func TestRecordStoreSurvivesWorkerRecreation(t *testing.T) {
 	}
 }
 
-func TestHTTPClientAndServer(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	worker, err := executor.NewWorker(ctx, storetest.NewMap(nil), routes(newTestBackend()))
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer((&executorhttp.Server{Worker: worker}).Handler())
-	defer server.Close()
-	client := &executorhttp.Client{BaseURL: server.URL}
-	a := testAssignment()
-	if err := client.Dispatch(ctx, a); err != nil {
-		t.Fatal(err)
-	}
-	status, err := client.GetStatus(ctx, a.Key())
-	if err != nil || status == effect.ExecutionNotFound {
-		t.Fatalf("status = %s, %v", status, err)
-	}
-	out, err := awaitOutcome(ctx, client, a.Key())
-	if err != nil || modelText(out) != "ok" {
-		t.Fatalf("HTTP outcome = %+v, %v", out, err)
-	}
-}
-
 func testToolAssignment() effect.Assignment {
 	return effect.Assignment{Session: "s", RunID: "r", StepID: "step", CallID: "call-1", Effect: "effect",
 		Body: effect.ToolAssignment{ToolRef: "gate", DefinitionDigest: "d", Arguments: run.MustParseCanonicalJSON(`{}`), Policy: run.DirectExecution}}
@@ -718,67 +650,6 @@ func TestWorkerDisposeSettlesUnknown(t *testing.T) {
 	}
 }
 
-func TestHTTPControlEndpoints(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	// The backend never answers, so Dispose races no watcher settlement.
-	backend := &uncertainDispatchBackend{testBackend: newTestBackend(), ready: make(chan struct{})}
-	defer close(backend.ready)
-	worker, err := executor.NewWorker(ctx, storetest.NewMap(nil), routes(backend))
-	if err != nil {
-		t.Fatal(err)
-	}
-	client := &executorhttp.Client{BaseURL: "http://executor.invalid",
-		HTTP: &http.Client{Transport: handlerTransport{handler: (&executorhttp.Server{Worker: worker}).Handler()}}}
-	a := testAssignment()
-	if err := client.Dispatch(ctx, a); err != nil {
-		t.Fatal(err)
-	}
-	if err := client.RecoverExecution(ctx, a.Key()); err != nil {
-		t.Fatalf("recover = %v", err)
-	}
-	b := testAssignment()
-	b.Effect = "effect-2"
-	if err := client.Dispatch(ctx, b); err != nil {
-		t.Fatal(err)
-	}
-	if err := client.Dispose(ctx, b.Key()); err != nil {
-		t.Fatalf("dispose = %v", err)
-	}
-	out, err := awaitOutcome(ctx, client, b.Key())
-	if _, isUnknown := out.Result.(effect.Unknown); err != nil || !isUnknown {
-		t.Fatalf("disposed outcome = %+v, %v", out, err)
-	}
-	// The settled record is acknowledged and collected over the wire; the
-	// collected Outcome reads as a definitive, classifiable error.
-	if err := client.Acknowledge(ctx, a.Key()); err == nil || !strings.Contains(err.Error(), "409") {
-		t.Fatalf("acknowledge of an executing record = %v, want 409", err)
-	}
-	if err := client.Acknowledge(ctx, b.Key()); err != nil {
-		t.Fatalf("acknowledge = %v", err)
-	}
-	if _, err := awaitOutcome(ctx, client, b.Key()); !errors.Is(err, effect.ErrOutcomeUnavailable) {
-		t.Fatalf("collected outcome over http = %v, want ErrOutcomeUnavailable", err)
-	}
-	c := testAssignment()
-	c.Effect = "effect-3"
-	if _, err := awaitOutcome(ctx, client, c.Key()); !errors.Is(err, effect.ErrExecutionNotFound) {
-		t.Fatalf("unknown key over http = %v, want ErrExecutionNotFound", err)
-	}
-	// The tombstone travels over the wire: an aborted key answers aborted,
-	// rejects a later Dispatch with a definite 409, and its Outcome reads
-	// as a definitive error (RUN-EXE-16).
-	if closed, err := client.Abort(ctx, c.Key()); err != nil || closed.State != effect.AttachmentAborted {
-		t.Fatalf("abort over http = %+v %v", closed, err)
-	}
-	if err := client.Dispatch(ctx, c); err == nil || !strings.Contains(err.Error(), "409") || errors.Is(err, effect.ErrDispatchUnknown) || errors.Is(err, effect.ErrDispatchRetryable) {
-		t.Fatalf("dispatch of an aborted key over http = %v, want a definite 409", err)
-	}
-	if _, err := awaitOutcome(ctx, client, c.Key()); !errors.Is(err, effect.ErrOutcomeUnavailable) {
-		t.Fatalf("outcome of an aborted key over http = %v, want ErrOutcomeUnavailable", err)
-	}
-}
-
 // The Port adapter proves nothing about a Ref it cannot read as a key: that
 // is an error, not a missing execution.
 func TestPortBackendAttachRejectsForeignRef(t *testing.T) {
@@ -833,9 +704,9 @@ func (failingCreateStore) Append(context.Context, store.Lease, effect.Assignment
 	return errors.New("store unavailable")
 }
 
-// A Dispatch the Worker cannot record is a retryable refusal and, over HTTP,
-// a 503; a definite rejection of the Assignment is a plain error and a 400;
-// neither is an unknown outcome (RUN-EXE-3).
+// A Dispatch the Worker cannot record is a retryable refusal; a definite
+// rejection of the Assignment is a plain error; neither is an unknown
+// outcome (RUN-EXE-3). The HTTP binding's status mapping is tested with it.
 func TestDispatchRefusalClassification(t *testing.T) {
 	ctx := context.Background()
 	cases := []struct {
@@ -854,14 +725,9 @@ func TestDispatchRefusalClassification(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer worker.Close()
-			direct := worker.Dispatch(ctx, tc.assignment)
-			client := &executorhttp.Client{BaseURL: "http://executor.invalid",
-				HTTP: &http.Client{Transport: handlerTransport{handler: (&executorhttp.Server{Worker: worker}).Handler()}}}
-			overHTTP := client.Dispatch(ctx, tc.assignment)
-			for name, err := range map[string]error{"direct": direct, "http": overHTTP} {
-				if err == nil || errors.Is(err, effect.ErrDispatchUnknown) || errors.Is(err, effect.ErrDispatchRetryable) != tc.retryable {
-					t.Fatalf("%s dispatch = %v, want retryable=%v and not unknown", name, err, tc.retryable)
-				}
+			err = worker.Dispatch(ctx, tc.assignment)
+			if err == nil || errors.Is(err, effect.ErrDispatchUnknown) || errors.Is(err, effect.ErrDispatchRetryable) != tc.retryable {
+				t.Fatalf("dispatch = %v, want retryable=%v and not unknown", err, tc.retryable)
 			}
 		})
 	}
@@ -1010,29 +876,20 @@ func TestAbortAndDispatchAreMutuallyExclusive(t *testing.T) {
 	})
 }
 
-// GetOutcome is a read: an unsettled execution answers ErrOutcomeNotReady at
-// once, directly and over HTTP (204). When to read again is what the
-// settlement stream says: one subscription per Worker carries the notice
-// of every key it settles, a subscriber that reconnects with its last
-// sequence gets what it missed, and the Worker's Close ends the stream.
+// GetOutcome is a read: before settlement it answers ErrOutcomeNotReady at
+// once. The Worker's settlement stream carries the notice of every key it
+// settles under its hub's epoch, a subscriber that reconnects with its last
+// sequence gets what it missed, and Close ends the stream (RUN-EXE-17).
 func TestWorkerGetOutcomeIsAReadAndSettlementsNotify(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	backend := &holdBackend{newTestBackend()}
-	// The hub's epoch is known to the subscriber, so its subscription from
-	// sequence 0 replays whatever the Worker recorded before the stream was
-	// connected; a subscriber that presents an unknown epoch starts from now.
 	hub := executor.NewSettlementHub("worker-a/1", 0)
 	worker, err := executor.NewWorker(ctx, storetest.NewMap(nil), []executor.Route{executor.Default("test", executor.PortBackend(backend))},
 		executor.WorkerOptions{ID: "worker-a", Settlements: hub})
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A real server: the recorder transport returns a response only when the
-	// handler finishes, which a stream does not.
-	server := httptest.NewServer((&executorhttp.Server{Worker: worker}).Handler())
-	defer server.Close()
-	client := &executorhttp.Client{BaseURL: server.URL}
 	a, b := testAssignment(), testAssignment()
 	b.Effect = "second"
 	for _, asg := range []effect.Assignment{a, b} {
@@ -1040,20 +897,20 @@ func TestWorkerGetOutcomeIsAReadAndSettlementsNotify(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for name, port := range map[string]effect.ExecutionPort{"direct": worker, "http": client} {
-		began := time.Now()
-		if _, err := port.GetOutcome(ctx, a.Key()); !errors.Is(err, effect.ErrOutcomeNotReady) {
-			t.Fatalf("%s read of an unsettled execution = %v, want ErrOutcomeNotReady", name, err)
-		}
-		if waited := time.Since(began); waited > time.Second {
-			t.Fatalf("%s read waited %v; a read does not wait", name, waited)
-		}
+	began := time.Now()
+	if _, err := worker.GetOutcome(ctx, a.Key()); !errors.Is(err, effect.ErrOutcomeNotReady) {
+		t.Fatalf("read of an unsettled execution = %v, want ErrOutcomeNotReady", err)
 	}
-	// A subscriber over HTTP sees a's settlement, then stops reading.
+	if waited := time.Since(began); waited > time.Second {
+		t.Fatalf("read waited %v; a read does not wait", waited)
+	}
+	// A subscriber under the hub's epoch from sequence 0 sees a's
+	// settlement whether it connected before or after the notice was
+	// recorded, then stops reading.
 	seen := make(chan effect.Settlement, 4)
 	streamDone := make(chan error, 1)
 	go func() {
-		streamDone <- client.Settlements(ctx, hub.Epoch(), 0, func(s effect.Settlement) bool {
+		streamDone <- worker.Settlements(ctx, hub.Epoch(), 0, func(s effect.Settlement) bool {
 			seen <- s
 			return s.Key != a.Key()
 		})
@@ -1070,31 +927,25 @@ func TestWorkerGetOutcomeIsAReadAndSettlementsNotify(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("no settlement notice for a")
 	}
-	if first.Key != a.Key() || first.Sequence == 0 || first.Epoch == "" {
+	if first.Key != a.Key() || first.Sequence == 0 || first.Epoch != hub.Epoch() {
 		t.Fatalf("settlement = %+v", first)
 	}
 	if err := <-streamDone; err != nil {
 		t.Fatalf("stream ended with %v after fn stopped it", err)
 	}
-	if out, err := client.GetOutcome(ctx, a.Key()); err != nil || modelText(out) != "first" {
+	if out, err := worker.GetOutcome(ctx, a.Key()); err != nil || modelText(out) != "first" {
 		t.Fatalf("read after the notice = %+v, %v", out, err)
 	}
 	// b settles while nobody listens; resubscribing after a's sequence in
 	// the same epoch delivers it, and Close ends the stream with nil.
 	settle(b, "second")
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		if _, err := worker.GetOutcome(ctx, b.Key()); err == nil {
-			break
-		} else if !errors.Is(err, effect.ErrOutcomeNotReady) || time.Now().After(deadline) {
-			t.Fatalf("b did not settle: %v", err)
-		}
-		time.Sleep(time.Millisecond)
+	if _, err := awaitOutcome(ctx, worker, b.Key()); err != nil {
+		t.Fatalf("b did not settle: %v", err)
 	}
 	var missed []effect.Settlement
 	streamDone = make(chan error, 1)
 	go func() {
-		streamDone <- client.Settlements(ctx, first.Epoch, first.Sequence, func(s effect.Settlement) bool {
+		streamDone <- worker.Settlements(ctx, first.Epoch, first.Sequence, func(s effect.Settlement) bool {
 			missed = append(missed, s)
 			return true
 		})

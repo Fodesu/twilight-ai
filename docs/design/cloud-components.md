@@ -26,7 +26,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 ### 2.1 executor worker
 
-**CLD-EXE-1** 组件即 `executor.Worker` 加 `executor/http.Server`。它持有 `executionstore.Store` 的连接，路由表（`executor.Route`）的每个 provider 指向一个经 CLD-WIR 连接的 backend。进程内没有 provider 凭证，也没有工具实现；`loop.NewLocalExecutor` 不在此组件中。
+**CLD-EXE-1** 组件即 `executor.Worker` 加 `agent/executor/http.Server`。它持有 `executionstore.Store` 的连接，路由表（`executor.Route`）的每个 provider 指向一个经 CLD-WIR 连接的 backend。进程内没有 provider 凭证，也没有工具实现；`loop.NewLocalExecutor` 不在此组件中。
 
 **CLD-EXE-2** 对 owner 暴露的端点为现有的 `/validate`、`/dispatch`、`/attach`、`/abort`、`/status`、`/outcome`、`/cancel`、`/recover`、`/dispose`、`/acknowledge`、`/progress`、`/settlements`（RUN-EXE-3、RUN-EXE-12、RUN-EXE-17）。多副本时任一副本可应答任一 key：Attach、GetOutcome、Abort 只读 ledger；Dispatch 的重放与 RecoverExecution 由 ledger 的 Seq 0 竞争与租约裁决（RUN-EXE-14、RUN-EXE-16）。owner 对每个 Worker 副本保持一条 `/settlements` 订阅（CLD-OWN-3）。
 
@@ -102,13 +102,17 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 ## 3. Worker 与 Backend 的 wire
 
+**CLD-WIR-0（绑定的位置）** 传输绑定与存储 adapter 同为部署产物（CLD-STO-0）：`effect.ExecutionPort` 的 HTTP server/client 对在 `agent/executor/http`，Backend 协议的适配器对在 `agent/executor/backendhttp`，owner 命令面（`app.Application` 的 Enqueue、AwaitCommand、Turn 状态、Fork、事件流）的 HTTP 绑定放 `agent/app/http`（尚未建立）。`agentcore` 只保留协议值类型与版本（`executor/protocol`，它们被写入 execution ledger）、通知环（`executor/notice`）与进程内实现（`Worker`、`LocalExecutor`、`PortBackend`）。`agentcore` 的测试经直接 port 覆盖 Worker 语义，绑定的测试随绑定包放在 `agent/` 下，用自己的测试替身。
+
+**CLD-WIR-2（ExecutionPort 的 HTTP 绑定规则）** HTTP Server 只接受 POST：其他方法返回 405，请求体超过 `MaxBodyBytes`（默认 16 MiB）返回 413，非 JSON 请求体返回 400，三者都在 Worker 之前拒绝。`/dispatch` 的状态码承载上述三分类：202 接受（含 backend 侧 Unknown，Worker 已持久化 acceptance）；400 确定拒绝、409 内容冲突或 key 已 `aborted`（客户端返回普通 error）；503 为 `ErrDispatchRetryable`（客户端原样归类；未把请求转发到 server 的中间层同样回答 503）；server 的 dispatch handler 不写其他 4xx，客户端因此把其他 4xx（中间层的 429、408、404 等）归为 `ErrDispatchRetryable`：Assignment 未被 server 判定，同一 Dispatch 稍后可再发；其他 5xx 与传输失败客户端归为 `ErrDispatchUnknown`，server 自身从不返回 500。`GetOutcome` 未结算为 204，无 record 为 404，永不可读为 410；`Acknowledge` 对非终态 record 为 409（RUN-EXE-13）；结算通知流为 `/settlements`，Backend 侧通知流为 `/notices`（RUN-EXE-17）。
+
 **CLD-WIR-1（Worker 与 Backend 的 wire，已定）** model backend 与 tool sandbox backend 都是远端后，Worker 进程内不再有任何 backend，`ExecutionBackend` 必须有一条 wire。两个方案曾被比较：
 
 方案 A，Worker 链。backend 自身是一个 Worker，前置 Worker 经 `executor.PortBackend` 把远端 `ExecutionPort` 适配为 backend。不需要新协议，进度与结算通知经 `PortBackend` 中继。代价：同一 effect 在两级 Worker 各有一条 ledger 与租约，模型与工具都远端后为三份；backend 侧需要 `executionstore.Store`；`Restart` 对 Port-shaped backend 返回同一 Ref，RUN-EXE-9 的新一代 Ref 语义在链上退化。
 
 方案 B，Backend 协议。把 `ExecutionBackend` 直接做成 HTTP 协议：`/prepare`、`/start`、`/restart`、`/attach`、`/status`、`/cancel` 按 Ref；`Outcome` 不再是阻塞读（现有接口注释"阻塞到终态"在网络上重现 RUN-EXE-17 解决过的问题），改为 `/outcome` 纯读加 backend 侧的结算通知流，Worker 的 watch 循环订阅它；进度帧由 Worker 从 backend 的 `/progress` 拉取并发布到自己的 `ProgressHub`。backend 无 ledger，只有 in-flight 表；ledger 只在 Worker 一处。
 
-选定方案 B：`ExecutionBackend.Outcome` 在 Go 接口上即为一次读取（RUN-EXE-17），Backend 可选实现 `notice.Source` 提供按 Ref 的结算通知流，等待归 Worker；Backend 协议只是一对无状态适配器（`agentcore/executor/backendhttp`）。`Server` 把一个进程内 backend 暴露为 `/validate`、`/prepare`、`/start`、`/restart`、`/attach`、`/status`、`/outcome`、`/cancel`、`/progress`、`/notices`，每个端点都是对 backend 的一次调用，Server 自己不持有任何表：`/outcome` 转发 backend 的读取（未结算为 204，未知 Ref 为 404，永不可读为 410），`/notices` 把 backend 的 `Settled` 流以 SSE 转发（首个事件前的淘汰为 410；backend 无通知源时回答立即结束的空流）。`Client` 实现 `ExecutionBackend`、`effect.ProgressPort` 与 `notice.Source`，同样无状态：`Outcome` 是一次 `/outcome` 读，`Settled` 是一次 `/notices` 流，谁在等由驱动它的 Worker 决定，Worker 对每个 Backend 只保持一条 `Settled` 订阅。`Start` 的 400 为 backend 的确定拒绝，传输失败与其他状态为 `ErrDispatchUnknown`；`Attach` 的传输失败为 error 而非观察。local agent 不经这条 wire：Worker 进程内直接挂 `LocalExecutor`，一行不改。ledger 只在 Worker 一处（RUN-EXE-10），backend 无状态，Server 重启后 backend 对它持有过的每个 Ref 回答 missing，Worker 按 RUN-EXE-9 重派或按 Replay 声明结算。
+选定方案 B：`ExecutionBackend.Outcome` 在 Go 接口上即为一次读取（RUN-EXE-17），Backend 可选实现 `notice.Source` 提供按 Ref 的结算通知流，等待归 Worker；Backend 协议只是一对无状态适配器（`agent/executor/backendhttp`）。`Server` 把一个进程内 backend 暴露为 `/validate`、`/prepare`、`/start`、`/restart`、`/attach`、`/status`、`/outcome`、`/cancel`、`/progress`、`/notices`，每个端点都是对 backend 的一次调用，Server 自己不持有任何表：`/outcome` 转发 backend 的读取（未结算为 204，未知 Ref 为 404，永不可读为 410），`/notices` 把 backend 的 `Settled` 流以 SSE 转发（首个事件前的淘汰为 410；backend 无通知源时回答立即结束的空流）。`Client` 实现 `ExecutionBackend`、`effect.ProgressPort` 与 `notice.Source`，同样无状态：`Outcome` 是一次 `/outcome` 读，`Settled` 是一次 `/notices` 流，谁在等由驱动它的 Worker 决定，Worker 对每个 Backend 只保持一条 `Settled` 订阅。`Start` 的 400 为 backend 的确定拒绝，传输失败与其他状态为 `ErrDispatchUnknown`；`Attach` 的传输失败为 error 而非观察。local agent 不经这条 wire：Worker 进程内直接挂 `LocalExecutor`，一行不改。ledger 只在 Worker 一处（RUN-EXE-10），backend 无状态，Server 重启后 backend 对它持有过的每个 Ref 回答 missing，Worker 按 RUN-EXE-9 重派或按 Replay 声明结算。
 
 **CLD-WIR-2** 无论哪个方案，`Prepare` 都不得在 backend 侧分配资源（RUN-EXE-3 与 RUN-EXE-16：Abort 可能抢先），资源分配在 `Start`。
 
@@ -126,7 +130,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 ## 5. 顺序
 
-1. CLD-WIR-1 的 Backend 协议适配器对（`agentcore/executor/backendhttp`）：已完成。
+1. CLD-WIR-1 的 Backend 协议适配器对（`agent/executor/backendhttp`）：已完成。
 2. `cmd/worker`、`cmd/model-backend`、`cmd/tool-backend`、`cmd/owner` 四个二进制，单机多进程跑通 Dispatch、GetOutcome、RecoverExecution 与 Session 接管。此步仍用 SQLite 与 filestore，各进程共享同一文件路径只用于单机验证。
 3. CLD-STO 的 Postgres 与对象存储实现，先做 CLD-STO-2 的接口审查。
 4. k3d 清单与 CLD-DEV-2 的故障检验。

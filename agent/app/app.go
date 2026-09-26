@@ -21,7 +21,7 @@ import (
 	"github.com/felinics/twilight/agentcore/decision"
 	"github.com/felinics/twilight/agentcore/driver"
 	"github.com/felinics/twilight/agentcore/executor"
-	"github.com/felinics/twilight/agentcore/executor/http"
+	"github.com/felinics/twilight/agent/executor/http"
 	executorlocal "github.com/felinics/twilight/agentcore/executor/local"
 	executionstore "github.com/felinics/twilight/agentcore/executor/store"
 	"github.com/felinics/twilight/agentcore/inbox"

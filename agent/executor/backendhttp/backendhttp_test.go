@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/felinics/twilight/agent/executor/backendhttp"
 	"github.com/felinics/twilight/agentcore/executor"
-	"github.com/felinics/twilight/agentcore/executor/backendhttp"
 	"github.com/felinics/twilight/agentcore/executor/notice"
 	"github.com/felinics/twilight/agentcore/executor/store/storetest"
 	"github.com/felinics/twilight/agentcore/run"

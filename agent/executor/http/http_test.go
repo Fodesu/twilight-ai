@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	executorhttp "github.com/felinics/twilight/agentcore/executor/http"
+	executorhttp "github.com/felinics/twilight/agent/executor/http"
 	"github.com/felinics/twilight/agentcore/run/effect"
 )
 

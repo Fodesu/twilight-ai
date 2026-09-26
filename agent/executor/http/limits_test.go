@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	executorhttp "github.com/felinics/twilight/agentcore/executor/http"
+	executorhttp "github.com/felinics/twilight/agent/executor/http"
 )
 
 // The handler rejects what the Worker must never see: a method other than
