@@ -269,7 +269,7 @@ func (c *cluster) startOwner(id string, takeover bool) (*ownerservice.Component,
 // (APP-ACT); nil keeps Sessions open until Close.
 func (c *cluster) startOwnerWith(id string, takeover bool, activation *app.Activation) (*ownerservice.Component, *ownerhttp.Client) {
 	c.t.Helper()
-	store, err := filestore.New(c.sessions)
+	store, err := filestore.NewWithClock(c.sessions, c.clock.Now)
 	if err != nil {
 		c.t.Fatal(err)
 	}
@@ -291,7 +291,7 @@ func (c *cluster) startOwnerWith(id string, takeover bool, activation *app.Activ
 		Processes: &processtest.Map{}, Inbox: c.inbox,
 		Executor:    app.ExecutorConfig{Mode: app.ExecutorRemote, Endpoint: c.proxyURL},
 		Workspaces:  &app.WorkspaceConfig{Store: c.wsStore, Snapshots: &wshttp.Client{BaseURL: c.backends.Tool}, SnapshotAfterTurn: true},
-		Ownership:   session.OpenOptions{Owner: id, LeaseDuration: time.Minute, Takeover: takeover, Clock: c.clock.Now},
+		Ownership:   session.OpenOptions{Owner: id, LeaseDuration: time.Minute, Takeover: takeover},
 		Presets:     []app.Preset{{ID: "ws", Value: preset}},
 		Activation:  activation,
 		OrphanProbe: 200 * time.Millisecond,

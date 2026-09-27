@@ -39,8 +39,11 @@ var migrationFiles embed.FS
 
 // Options tune a DB.
 type Options struct {
-	// Now is the clock leases and expiries are judged by; nil selects
-	// time.Now. It must agree with the Worker's clock (WorkerOptions.Clock).
+	// Now is the clock leases and expiries are judged by (SES-OWN-6). nil
+	// selects the database's own clock, read once at Open and advanced by
+	// the process's monotonic clock from there, so every replica over one
+	// database judges expiry by one time whatever its wall clock says.
+	// Fixtures inject a clock to age a lease.
 	Now func() time.Time
 }
 
@@ -60,10 +63,6 @@ func Open(ctx context.Context, dsn string, options ...Options) (*DB, error) {
 	if len(options) > 0 {
 		opts = options[0]
 	}
-	now := opts.Now
-	if now == nil {
-		now = time.Now
-	}
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("postgres: open: %w", err)
@@ -71,6 +70,14 @@ func Open(ctx context.Context, dsn string, options ...Options) (*DB, error) {
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("postgres: connect: %w", err)
+	}
+	now := opts.Now
+	if now == nil {
+		now, err = databaseClock(ctx, pool)
+		if err != nil {
+			pool.Close()
+			return nil, err
+		}
 	}
 	d := &DB{pool: pool, q: db.New(pool), now: now}
 	if err := d.Migrate(ctx); err != nil {
@@ -169,12 +176,32 @@ func migrationSteps(files fs.FS) ([]migrationStep, error) {
 	return steps, nil
 }
 
+// databaseClock is the database's clock as this process sees it: the
+// server's now() read once, then advanced by the local monotonic clock
+// (SES-OWN-6). Replicas differ from the server by their network latency at
+// Open, not by their wall clocks' skew.
+func databaseClock(ctx context.Context, pool *pgxpool.Pool) (func() time.Time, error) {
+	var serverNow time.Time
+	if err := pool.QueryRow(ctx, "SELECT now()").Scan(&serverNow); err != nil {
+		return nil, fmt.Errorf("postgres: read clock: %w", err)
+	}
+	base := time.Now()
+	offset := serverNow.Sub(base)
+	return func() time.Time { return time.Now().Add(offset) }, nil
+}
+
 // pageLimit is a contract's limit (0 for all) as a query LIMIT.
 func pageLimit(limit int) int32 {
 	if limit <= 0 || limit > math.MaxInt32 {
 		return math.MaxInt32
 	}
 	return int32(limit)
+}
+
+// isForeignKeyViolation reports a foreign key violation.
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
 }
 
 // isUniqueViolation reports a unique or primary key violation.

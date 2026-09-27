@@ -83,10 +83,16 @@ CREATE TABLE workspace_snapshots (
 	record    TEXT NOT NULL
 );
 
+-- parent_segment repeats the header's Parent edge as a foreign key, so a
+-- segment a fork still reaches cannot be removed and a fork cannot be
+-- created on a parent that is gone (SES-GC-4): the database, not a
+-- process-wide lock, arbitrates Create against Collect across replicas.
 CREATE TABLE session_segments (
-	id     TEXT PRIMARY KEY,
-	header TEXT NOT NULL
+	id             TEXT PRIMARY KEY,
+	header         TEXT NOT NULL,
+	parent_segment TEXT REFERENCES session_segments (id)
 );
+CREATE INDEX session_segments_by_parent ON session_segments (parent_segment) WHERE parent_segment IS NOT NULL;
 CREATE TABLE session_commits (
 	segment   TEXT NOT NULL,
 	seq       BIGINT NOT NULL,
@@ -107,6 +113,9 @@ CREATE TABLE session_commit_streams (
 	PRIMARY KEY (segment, seq, domain, stream_id)
 );
 CREATE INDEX session_commit_streams_by_stream ON session_commit_streams (segment, domain, stream_id, seq);
+-- A deleted Session keeps its row with deleted set (SES-GC-1): the id is
+-- never reused. tip is not a foreign key: a tombstone keeps naming a
+-- segment Collect may remove; RemoveSegment checks live roots itself.
 CREATE TABLE session_roots (
 	id          TEXT PRIMARY KEY,
 	tip         TEXT NOT NULL,
@@ -115,7 +124,8 @@ CREATE TABLE session_roots (
 	owned       BOOLEAN NOT NULL DEFAULT FALSE,
 	owner       TEXT NOT NULL DEFAULT '',
 	lease_until BIGINT NOT NULL DEFAULT 0,
-	failed      TEXT NOT NULL DEFAULT ''
+	failed      TEXT NOT NULL DEFAULT '',
+	deleted     BOOLEAN NOT NULL DEFAULT FALSE
 );
 CREATE INDEX session_roots_owned ON session_roots (owned);
 -- The activation scan's read (APP-ACT-3): held leases by expiry.

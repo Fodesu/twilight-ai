@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"time"
 )
 
 // The Session lineage is a tree (agent-session.md section 8, SES-LIN-1):
@@ -92,6 +93,14 @@ type LedgerStore interface {
 	// (absolute), at most limit (0 = unlimited), its head, and whether more
 	// own commits follow. A torn tail is never returned.
 	ReadSegment(ctx context.Context, id SegmentID, from CommitSeq, limit uint32) ([]Commit, Head, bool, error)
+	// ReadSegmentStream returns, from the segment's own commits with Seq at
+	// or past from, those that carry a batch of stream, in Seq order, at
+	// most limit of them (0 = unlimited), and whether more follow
+	// (SES-REP-2). It is ReadSegment narrowed to one stream, so an adapter
+	// that indexes streams per commit (the CommitIndex's stream counts,
+	// SES-REP-5) reads only the commits that matter. Commits are returned
+	// whole; the caller extracts the stream's batch.
+	ReadSegmentStream(ctx context.Context, id SegmentID, stream StreamRef, from CommitSeq, limit uint32) ([]Commit, bool, error)
 	// Locate reports whether the segment holds CommitID as its own commit,
 	// and at which Seq, from the segment's CommitIndex alone (SES-REP-3/5);
 	// LookupCommit reads the commit (SES-REP-4).
@@ -122,7 +131,13 @@ type LedgerStore interface {
 	// rewrites or removes a commit a root still reaches (SES-APP-5).
 	Append(context.Context, Lease, SegmentID, Commit) error
 	// TruncateSegment drops the segment's own commits after through and
-	// returns the new head; RemoveSegment deletes the node.
+	// returns the new head. RemoveSegment deletes the node when nothing
+	// reaches it, atomically with that check (SES-GC-4): a root whose Tip is
+	// the segment or a segment whose Parent edge names it makes the removal
+	// ErrReferenced and nothing is removed. The adapter enforces this with
+	// its own consistency (a foreign key, a check under the store lock), so
+	// a Create racing a Collect on another replica cannot leave a child on
+	// a removed parent.
 	TruncateSegment(ctx context.Context, id SegmentID, through CommitSeq) (Head, error)
 	RemoveSegment(context.Context, SegmentID) error
 }
@@ -136,12 +151,17 @@ type SessionStore interface {
 	ListRecords(context.Context) ([]SessionRecord, error)
 	// Acquire takes writer ownership of a root (SES-OWN-1): ErrOwned while a
 	// Lease is live unless Takeover, which supersedes it with the next Epoch.
-	// Repair of a torn tail in the root's segment happens here.
+	// Whether the current Lease has expired, and the expiry of the new one
+	// (now plus OpenOptions.LeaseDuration), are judged by the adapter's
+	// clock (SES-OWN-6): a shared database is its own clock, so every
+	// replica agrees. Repair of a torn tail in the root's segment happens
+	// here.
 	Acquire(context.Context, SessionID, OpenOptions) (Lease, error)
-	// Renew moves the Lease's expiry to untilUnixMilli when the Lease is
-	// still the root's current one (SES-OWN-1); a superseded Lease is
-	// ErrOwnershipLost and nothing changes.
-	Renew(context.Context, Lease, int64) error
+	// Renew moves the Lease's expiry to the adapter's now plus duration when
+	// the Lease is still the root's current one (SES-OWN-1) and returns the
+	// new expiry; a superseded Lease is ErrOwnershipLost and nothing
+	// changes. A non-positive duration is a lease that never expires.
+	Renew(context.Context, Lease, time.Duration) (int64, error)
 	// Release ends a Lease; a superseded Lease is a no-op.
 	Release(context.Context, Lease) error
 	// LeaseOf returns the root's current Lease (SES-OWN-5): ok is false
@@ -152,13 +172,18 @@ type SessionStore interface {
 	// ListLeases returns the Lease of every root that has a holder
 	// (SES-OWN-5), expired ones included.
 	ListLeases(context.Context) ([]Lease, error)
-	// ExpiredLeases returns held Leases whose expiry is at or before
-	// beforeUnixMilli, soonest expired first, at most limit of them (0 for
+	// ExpiredLeases returns held Leases expired by the adapter's clock
+	// (SES-OWN-6), soonest expired first, at most limit of them (0 for
 	// all); never-expiring Leases are never returned (SES-OWN-5). It is the
 	// read a replica pool recovers dead owners' Sessions by (APP-ACT-3),
 	// and an adapter indexes it.
-	ExpiredLeases(ctx context.Context, beforeUnixMilli int64, limit int) ([]Lease, error)
-	// DeleteRecord drops a root (SES-GC-1); ErrOwned while a Lease is live.
+	ExpiredLeases(ctx context.Context, limit int) ([]Lease, error)
+	// DeleteRecord marks a root deleted (SES-GC-1): the Session is no longer
+	// found, and its SessionID stays taken (CreateSession on it is
+	// ErrDeleted), so a command in flight for the old Session can never
+	// reach a new one under the same name. ErrOwned while a Lease is live;
+	// a deleted root is ErrNotFound. Record and ListRecords do not return
+	// deleted roots.
 	DeleteRecord(context.Context, SessionID) error
 }
 
@@ -171,8 +196,12 @@ type Backend interface {
 	// CreateSession persists a new node and the root that names it as one
 	// durable step (SES-FRK-1): never a root without its segment, never a
 	// segment a Collect could see without its root. Both must be new:
-	// ErrConflict when the SessionID or the SegmentID exists, so no two
-	// roots ever name one writable tip (SES-FRK-4).
+	// ErrConflict when the SessionID or the SegmentID exists, ErrDeleted
+	// when the SessionID was deleted, so no two roots ever name one
+	// writable tip (SES-FRK-4). When the segment's header names a Parent,
+	// the parent segment must exist at the moment of the write and the
+	// adapter must keep it from being removed while the edge stands
+	// (SES-GC-4): a vanished parent is ErrNotFound.
 	CreateSession(context.Context, Segment, SessionRecord) error
 }
 
@@ -301,6 +330,33 @@ func (a *Ancestry) Read(ctx context.Context, store LedgerStore, from CommitSeq, 
 		}
 	}
 	return out, head, false, nil
+}
+
+// ReadStream returns, in stitched order, the commits of the Ancestry that
+// carry a batch of stream: every segment's under LineageSession, the tip's
+// own under LineageSegment (SES-FRK-5). Each segment is read through
+// LedgerStore.ReadSegmentStream within the range it contributes.
+func (a *Ancestry) ReadStream(ctx context.Context, store LedgerStore, stream StreamRef, lineage StreamLineage) ([]Commit, error) {
+	var out []Commit
+	tip := len(a.Segments) - 1
+	first := 0
+	if lineage == LineageSegment {
+		first = tip
+	}
+	for i := first; i <= tip; i++ {
+		s := &a.Segments[i]
+		commits, _, err := store.ReadSegmentStream(ctx, s.Segment.ID, stream, s.From, 0)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range commits {
+			if i < tip && c.Seq > s.Through {
+				break
+			}
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
 // tipHead reads the tip's head without reading commits.

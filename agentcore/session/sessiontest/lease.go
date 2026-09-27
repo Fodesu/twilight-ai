@@ -13,12 +13,14 @@ import (
 // Open supersedes it and the old handle is fenced exactly as by Takeover.
 // A zero duration never expires (the ownership case).
 func testLease(t *testing.T, f Fixture) {
+	if f.Advance == nil || f.Now == nil {
+		t.Skip("fixture has no adjustable store clock")
+	}
 	ctx := context.Background()
 	create(t, f.Store, "s")
-	now := time.Unix(1_700_000_000, 0)
-	clock := func() time.Time { return now }
+	now := f.Now()
 	opts := func(owner string) session.OpenOptions {
-		return session.OpenOptions{Owner: owner, LeaseDuration: 10 * time.Second, Clock: clock}
+		return session.OpenOptions{Owner: owner, LeaseDuration: 10 * time.Second}
 	}
 	w1, err := f.Store.Open(ctx, "s", opts("a"))
 	if err != nil {
@@ -59,10 +61,12 @@ func testLease(t *testing.T, f Fixture) {
 				t.Fatalf("%s: renew = %v", st.name, err)
 			}
 		}
-		now = now.Add(st.advance)
-		// ExpiredLeases judges against the caller's clock: a's lease is
-		// in it exactly when it has expired, and a never-expiring one never is.
-		expired, err := f.Store.ExpiredLeases(ctx, now.UnixMilli(), 0)
+		f.Advance(st.advance)
+		now = f.Now()
+		// ExpiredLeases judges by the store's clock (SES-OWN-6): a's lease
+		// is in it exactly when it has expired, and a never-expiring one
+		// never is.
+		expired, err := f.Store.ExpiredLeases(ctx, 0)
 		if err != nil || (len(expired) == 1) != (st.want == "") || (len(expired) == 1 && expired[0].Owner != "a") {
 			t.Fatalf("%s: ExpiredLeases = %+v %v, want a's lease exactly when expired (%v)", st.name, expired, err, st.want == "")
 		}
@@ -72,7 +76,7 @@ func testLease(t *testing.T, f Fixture) {
 			if l, ok, err := f.Store.LeaseOf(ctx, "s"); err != nil || !ok || l.Owner != "a" || l.UntilUnixMilli > now.UnixMilli() {
 				t.Fatalf("%s: LeaseOf before takeover = %+v ok:%v %v, want a's expired lease", st.name, l, ok, err)
 			}
-			if limited, err := f.Store.ExpiredLeases(ctx, now.UnixMilli(), 1); err != nil || len(limited) != 1 {
+			if limited, err := f.Store.ExpiredLeases(ctx, 1); err != nil || len(limited) != 1 {
 				t.Fatalf("%s: ExpiredLeases limited = %+v %v", st.name, limited, err)
 			}
 		}
@@ -119,11 +123,11 @@ func testLease(t *testing.T, f Fixture) {
 		t.Fatalf("ListLeases after release = %+v %v, want none", held, err)
 	}
 	w3 := open(t, f.Store, "s", false)
-	now = now.Add(time.Hour)
+	f.Advance(time.Hour)
 	if _, err := f.Store.Open(ctx, "s", opts("d")); !session.IsCode(err, session.ErrOwned) {
 		t.Fatalf("zero-duration lease expired: %v", err)
 	}
-	w4, err := f.Store.Open(ctx, "s", session.OpenOptions{Takeover: true, Owner: "d", LeaseDuration: time.Second, Clock: clock})
+	w4, err := f.Store.Open(ctx, "s", session.OpenOptions{Takeover: true, Owner: "d", LeaseDuration: time.Second})
 	if err != nil || w4.Epoch() != w3.Epoch()+1 {
 		t.Fatalf("takeover = %v epoch %d", err, w4.Epoch())
 	}

@@ -82,7 +82,7 @@ kernel 的 `session.Ledger` 实现 `Store`，只依赖 `Backend` 端口；Memory
 
 **SES-SCP-3** kernel 的范围是 Session lineage 树：header、Open/Append/ReadCommits/ReadStream、所有权与 epoch、fork、删除与可达性回收（第 8、9 节）。lineage 的单父不变量见 SES-LIN-1：多父 merge 被排除在模型之外；canonical import 不属于当前合同，若日后加入，它与 fork 一样只能新建根段或子段，不得为已有 Session 增加第二个父节点。
 
-**SES-SCP-4** adapter 端口是 `Backend = LedgerStore + SessionStore + CreateSession`。`LedgerStore` 存节点：`Segment`、`ListSegments`、`ReadSegment`（只读该段自身的 commit）、`Locate`、`LookupCommit`、`StreamHead`（段内一个流在给定 Seq 之前的事件计数，SES-REP-3）、`Summarize`、`Index`、`PutIndex`（段的 CommitIndex 摘要、全量与重建写回，SES-REP-5）、只插入的 `Append(lease, segment, commit)`、`TruncateSegment`、`RemoveSegment`（只由 `Collect` 调用，SES-APP-5）。`SessionStore` 存根：`Record`、`ListRecords`、`Acquire`（所有权、租约与 torn tail 修复）、`Renew`、`Release`、`DeleteRecord`。两者共享一个一致性域，使 `Append` 能与 Lease 检查原子进行。adapter 不知道 fork、前缀与可达性；`Ledger` 在该端口之上一次实现 SES-FRK 与 SES-GC。conformance 以 `Store` 为参数运行，因此每个 adapter 得到同一套 lineage 语义。
+**SES-SCP-4** adapter 端口是 `Backend = LedgerStore + SessionStore + CreateSession`。`LedgerStore` 存节点：`Segment`、`ListSegments`、`ReadSegment`（只读该段自身的 commit）、`Locate`、`LookupCommit`、`ReadSegmentStream`（只返回携带某流的 commit，SES-REP-2）、`StreamHead`（段内一个流在给定 Seq 之前的事件计数，SES-REP-3）、`Summarize`、`Index`、`PutIndex`（段的 CommitIndex 摘要、全量与重建写回，SES-REP-5）、只插入的 `Append(lease, segment, commit)`、`TruncateSegment`、`RemoveSegment`（只由 `Collect` 调用，SES-APP-5）。`SessionStore` 存根：`Record`、`ListRecords`、`Acquire`（所有权、租约与 torn tail 修复）、`Renew`、`Release`、`DeleteRecord`。两者共享一个一致性域，使 `Append` 能与 Lease 检查原子进行。adapter 不知道 fork、前缀与可达性；`Ledger` 在该端口之上一次实现 SES-FRK 与 SES-GC。conformance 以 `Store` 为参数运行，因此每个 adapter 得到同一套 lineage 语义。
 
 ## 2. 版本
 
@@ -167,7 +167,6 @@ type OpenOptions struct {
     Takeover bool
     Owner string                // 持有者标识，进入 Lease，只供诊断
     LeaseDuration time.Duration // Acquire 与每次 Renew 之后租约存活的时长；0 为直到 Release 才失效
-    Clock func() time.Time      // 租约计时的时钟；nil 为 time.Now，夹具注入以推进时间
 }
 // Handle 是 kernel 的所有权句柄，由 Store.Open 返回；进程内的写入者是 writer.Writer，它持有一个 Handle。
 type Proposal struct {
@@ -206,7 +205,9 @@ type Store interface {
 
 **SES-OWN-4** `ReadCommits` 与 `ReadStream` 不需要所有权，任何进程可以随时读；读到的是完整 Commit 构成的前缀（SES-APP-2）。
 
-**SES-OWN-5（租约读取）** 租约可以被任何进程读取，与所有权无关。`LeaseOf(sid)` 返回该 Session 当前持有的 `Lease`，ok 为 false 表示根存在但没有持有者（从未 Open，或已 Release）；根不存在为 `ErrNotFound`。`ListLeases()` 返回每个有持有者的根的 Lease，不按存活过滤：过期但未被接管的租约照样返回，`UntilUnixMilli` 由调用方对照自己的时钟判定。`ExpiredLeases(before, limit)` 返回 `UntilUnixMilli` 不为零且不晚于 before 的持有中租约，按到期时间升序，最多 limit 条（0 为全部）：这是 owner 副本池恢复死亡 owner 的 Session 所用的读取（APP-ACT-3），adapter 为它建索引，读取成本与页大小成正比而与 Session 总数无关。三者都是读取，不改变 Epoch，不触发接管；调用方据此做的决定（对过期租约的 Session 发起 `Open(Takeover)`、把命令路由到 `Owner` 所在进程）仍经 Open 与 Append 的规则裁决，读到的租约在下一刻可能已被替代。这是 controller 发现过期 Session 与 gateway 路由命令的依据（CLD-CTL-2、CLD-GWY-2）；形状与 Execution Store 的 `LeaseOf` 相同（RUN-EXE-6）。
+**SES-OWN-5（租约读取）** 租约可以被任何进程读取，与所有权无关。`LeaseOf(sid)` 返回该 Session 当前持有的 `Lease`，ok 为 false 表示根存在但没有持有者（从未 Open，或已 Release）；根不存在为 `ErrNotFound`。`ListLeases()` 返回每个有持有者的根的 Lease，不按存活过滤：过期但未被接管的租约照样返回，`UntilUnixMilli` 由调用方对照自己的时钟判定。`ExpiredLeases(limit)` 返回 `UntilUnixMilli` 不为零且按 adapter 时钟（SES-OWN-6）已到期的持有中租约，按到期时间升序，最多 limit 条（0 为全部）：这是 owner 副本池恢复死亡 owner 的 Session 所用的读取（APP-ACT-3），adapter 为它建索引，读取成本与页大小成正比而与 Session 总数无关。三者都是读取，不改变 Epoch，不触发接管；调用方据此做的决定（对过期租约的 Session 发起 `Open(Takeover)`、把命令路由到 `Owner` 所在进程）仍经 Open 与 Append 的规则裁决，读到的租约在下一刻可能已被替代。这是 controller 发现过期 Session 与 gateway 路由命令的依据（CLD-CTL-2、CLD-GWY-2）；形状与 Execution Store 的 `LeaseOf` 相同（RUN-EXE-6）。
+
+**SES-OWN-6（租约时间归 adapter）** 租约的到期判定与新到期时间的计算都由 adapter 的时钟完成：`Acquire` 判定当前租约是否过期并写入 `now + LeaseDuration`，`Renew(lease, duration)` 写入 adapter 的 `now + duration` 并返回它，`ExpiredLeases` 按 adapter 的 now 筛选。`OpenOptions` 不携带时钟。共享数据库是自己的时钟：Postgres adapter 在 `Open` 时读一次服务器 `now()`，此后以本地单调时钟推进，副本之间的差只是各自 Open 时刻的网络延迟，与进程墙钟偏差无关；filestore 与 SQLite 保留可注入时钟（`NewWithClock`、`Options.Now`），conformance 经夹具的 `Advance` 推进它。Epoch 围栏（SES-OWN-2）在任何时钟下保证安全；时钟只影响接管的时机。
 
 ## 5. append
 
@@ -241,7 +242,7 @@ type StreamPage struct { Header SegmentHeader; Stream StreamRef; Events []Event;
 
 **SES-REP-1** `ReadCommits` 按 `CommitSeq` 递增返回 `From` 起的完整 Commit；fork 的序列是继承前缀加自身 commit（SES-FRK-2）。`From` 大于等于 `Head.Next` 时返回空页且 `HasMore` 为假，这对 `CommitSeq` 的全部值域成立：实现必须以 `CommitSeq` 比较起点，不得先把它转换为 `int` 再索引日志。Open 读取的 Session 元数据属于校验范围：header 的 `ID` 与所在节点不一致，或所有权记录无法解析时报 `ErrCorrupt`，不得报告为不存在；残尾 Commit 的截断见 SES-APP-2。读路径信任存储。
 
-**SES-REP-2** `StreamSeq` 是流内位置，由 Store 按 CommitSeq 顺序在 `ReadStream` 请求的 lineage 所见的序列上数出，是读侧的优化：`ReadStream` 只返回该流的事件，但其顺序与从 `ReadCommits` 折叠出的流内顺序完全一致。它不是第二种排序。
+**SES-REP-2** `StreamSeq` 是流内位置，由 Store 按 CommitSeq 顺序在 `ReadStream` 请求的 lineage 所见的序列上数出，是读侧的优化：`ReadStream` 只返回该流的事件，但其顺序与从 `ReadCommits` 折叠出的流内顺序完全一致。它不是第二种排序。读取经 `Backend.ReadSegmentStream(segment, stream, from, limit)` 逐段进行：adapter 以 CommitIndex 的流计数（SES-REP-5）只返回携带该流的 commit，kernel 在 Ancestry 上拼接各段贡献的区间（SES-FRK-5），因此一次流读取的成本与该流的 commit 数成正比，而不与 Session 历史长度成正比。
 
 **SES-REP-3** `Committed` 报告某个 `CommitID` 是否已在 ledger 中。`Append` 必须拒绝重复 `CommitID`（SES-APP-3），kernel 因此本来就持有这个索引；`Committed` 是该索引的读侧，只做索引查找，不触碰 commit 本体：tip 段与继承段同经 `Backend.Locate` 查各段的 CommitIndex（SES-REP-5），沿 Ancestry 逐段核对 Seq 落在该段贡献的区间内；tip 段的核对以句柄自己的 head 为界（`Seq < head.Next`），head 只由句柄自身的 `Append` 推进，因此句柄知道的恰为它在 Open 时读到与自己写下的 commit：被替代的句柄不会得知继任者的 commit，仍在 `Append` 处触到 Epoch 围栏（SES-OWN-2）。句柄不在内存中持有 tip 段的 CommitID 集合，`Open` 的代价与 tip 段长度无关（APP-ACT-5）。调用者（`writer.Writer`、Run 的重放判定）不必自己再维护一份同样的索引。`StreamHead(stream)` 是同一索引的另一读侧：报告该 ledger 是否写过某逻辑流及其下一个 `StreamSeq`，只计 tip 段自身的 commit（SES-FRK-5）；句柄第一次被问到某个流时经 `Backend.StreamHead(segment, stream, head.Next)` 读取一次并缓存（同样以自己的 head 为界），之后随自身 `Append` 累加。
 
@@ -318,11 +319,11 @@ func (Store) Collect(ctx) (CollectReport, error)
 type CollectReport struct { Removed []SegmentID; Truncated map[SegmentID]CommitSeq; Dropped map[SegmentID][]CommitID }
 ```
 
-**SES-GC-1（删除撤根）** `Delete(sid)` 删除 `SessionRecord`：此后 `Header`、`Open`、`ReadCommits`、`ReadStream`、以它为 origin 的 `Create` 都返回 `ErrNotFound`，第二次 `Delete` 为 `ErrNotFound`，被写者持有的 Session 为 `ErrOwned`。SessionID 立即可以重建，重建得到的是新根与新段，与旧段无关。段本身不动，也没有"已删除"状态：仍以它为前缀的 fork 继续经 `Ancestry` 读到它。
+**SES-GC-1（删除撤根）** `Delete(sid)` 删除 `SessionRecord`：此后 `Header`、`Open`、`ReadCommits`、`ReadStream`、以它为 origin 的 `Create` 都返回 `ErrNotFound`，第二次 `Delete` 为 `ErrNotFound`，被写者持有的 Session 为 `ErrOwned`。SessionID 永不复用：根记录保留为 tombstone（`deleted`），`Record`、`ListRecords`、`ListLeases` 不返回它，以该 ID 再次 `Create` 为 `ErrDeleted`。原因是 inbox 命令、路由与外部引用都以裸 SessionID 为键，若允许立即重建，一条为旧 Session 发出的在途命令会作用于新 Session。段本身不动，也没有"已删除"状态：仍以它为前缀的 fork 继续经 `Ancestry` 读到它。
 
 **SES-GC-2（可达性回收）** `Collect` 由 kernel 以 `Reachable(nodes, roots)` 计算每个段必须保留到的 CommitSeq：某个根的 tip 段保留全部自身 commit；只经边到达的段保留到到达它的最大 `Parent.Seq`，边沿 `Parent.Segment` 传递。未被任何根到达的段整段删除；被到达但无根的段截掉边之后的自身 commit。任何根 tip 的 commit 不被触碰，因此 `Collect` 可以在有写者打开时运行，且幂等。
 
-**SES-GC-4（图变更的串行）** 改变根与节点集合的操作（`Create`、`Delete`、`Collect`）在 kernel 内互斥：`Create` 对父存活的核对与它的写入不会与回收该父或新节点的 `Collect` 交错；adapter 以 `CreateSession(Segment, SessionRecord)` 一步落下节点与根，不存在有根无段或有段无根的持久状态。`Append` 与读不取该锁：根 tip 的段从不被 `Collect` 触及。该互斥是进程内的：多个进程共享一个 Backend 时，根集合变更与可达性回收的互斥必须由该 Backend 的存储事务或 GC 权威提供，当前两个 adapter 都是单进程的。
+**SES-GC-4（图变更的串行）** 改变根与节点集合的操作（`Create`、`Delete`、`Collect`）在 kernel 内互斥：`Create` 对父存活的核对与它的写入不会与回收该父或新节点的 `Collect` 交错；adapter 以 `CreateSession(Segment, SessionRecord)` 一步落下节点与根，不存在有根无段或有段无根的持久状态。`Append` 与读不取该锁：根 tip 的段从不被 `Collect` 触及。该互斥是进程内的；跨进程的权威是 adapter 的两条原子检查：`CreateSession` 在写入子段的同一事务内确认父段存在（Postgres 以 `parent_segment` 外键实现，父段消失时插入失败并映射为 `ErrNotFound`），`RemoveSegment` 在删除的同一事务内确认没有存活根以该段为 tip、没有段以它为父（Postgres 查 `session_roots` 与 `parent_segment` 索引，外键在删除时兜底），仍被引用返回 `ErrReferenced` 且不删除。`Collect` 据 `Reachable` 的快照计算候选、按"子先于父"的顺序删除，把 `ErrReferenced` 视为"另一副本刚刚创建了引用"而跳过，留给下一次 `Collect`。于是一个副本的 fork 与另一副本的 Delete 加 Collect 无论怎样交错，都不会产生挂在已删除父段上的子段。
 
 **SES-GC-3（claim 与回收的分工）** 内容保留与 ledger 可达性同源：一个 commit 的 retention claim 以持有它的段为 owner（EXT-WRT-5），与该 commit 同生死。`Delete` 只撤根；`Collect` 计算可达性后删段或截段，并在 `CollectReport` 中报告整段删除的段（`Removed`）与截断时丢弃的 CommitID（`Dropped`），`writer.Collect` 据此释放对应 claim（EXT-WRT-9）。fork 不需要自己的 claim：子作为一个到达前缀段的根即保留了前缀（EXT-WRT-8）。
 

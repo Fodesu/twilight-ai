@@ -5,13 +5,23 @@ SELECT header FROM session_segments WHERE id = $1;
 SELECT id FROM session_segments ORDER BY id;
 
 -- name: InsertSegment :exec
-INSERT INTO session_segments (id, header) VALUES ($1, $2);
+INSERT INTO session_segments (id, header, parent_segment) VALUES ($1, $2, $3);
+
+-- name: SegmentReferenced :one
+SELECT (EXISTS (SELECT 1 FROM session_roots WHERE tip = $1 AND NOT deleted)
+    OR EXISTS (SELECT 1 FROM session_segments WHERE parent_segment = $1))::boolean AS referenced;
 
 -- name: DeleteSegment :exec
 DELETE FROM session_segments WHERE id = $1;
 
 -- name: SegmentCommitsFrom :many
 SELECT seq, body FROM session_commits WHERE segment = $1 AND seq >= $2 ORDER BY seq LIMIT $3;
+
+-- name: SegmentStreamCommits :many
+SELECT c.seq, c.body FROM session_commits c
+JOIN session_commit_streams s ON s.segment = c.segment AND s.seq = c.seq
+WHERE c.segment = $1 AND s.domain = $2 AND s.stream_id = $3 AND c.seq >= $4 AND s.events > 0
+ORDER BY c.seq LIMIT $5;
 
 -- name: SegmentIndex :many
 SELECT seq, commit_id FROM session_commits WHERE segment = $1 ORDER BY seq;
@@ -53,17 +63,17 @@ DELETE FROM session_commits WHERE segment = $1 AND seq > $2;
 DELETE FROM session_commits WHERE segment = $1;
 
 -- name: SessionRoot :one
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed FROM session_roots WHERE id = $1;
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots WHERE id = $1;
 
 -- name: SessionRoots :many
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed FROM session_roots ORDER BY id;
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots WHERE NOT deleted ORDER BY id;
 
 -- name: HeldSessionRoots :many
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed FROM session_roots WHERE owned ORDER BY id;
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots WHERE owned AND NOT deleted ORDER BY id;
 
 -- name: ExpiredSessionRoots :many
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed FROM session_roots
-WHERE owned AND lease_until > 0 AND lease_until <= $1 ORDER BY lease_until, id LIMIT $2;
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots
+WHERE owned AND NOT deleted AND lease_until > 0 AND lease_until <= @before ORDER BY lease_until, id LIMIT @row_limit;
 
 -- name: InsertSessionRoot :exec
 INSERT INTO session_roots (id, tip, created_at) VALUES ($1, $2, $3);
@@ -71,5 +81,5 @@ INSERT INTO session_roots (id, tip, created_at) VALUES ($1, $2, $3);
 -- name: UpdateSessionOwnership :exec
 UPDATE session_roots SET epoch = $1, owned = $2, owner = $3, lease_until = $4, failed = $5 WHERE id = $6;
 
--- name: DeleteSessionRoot :exec
-DELETE FROM session_roots WHERE id = $1;
+-- name: TombstoneSessionRoot :exec
+UPDATE session_roots SET deleted = TRUE, owned = FALSE, owner = '', lease_until = 0, failed = '' WHERE id = $1;

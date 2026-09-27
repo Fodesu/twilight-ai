@@ -45,6 +45,11 @@ type ForkOrigin struct {
 // (SES-OWN-2) in every case; the lease only decides when a supersession is
 // allowed without an operator's say. A zero LeaseDuration never expires,
 // which is the setting of a process that cannot crash without releasing.
+//
+// Time is the store's (SES-OWN-6): the adapter judges expiry and stamps
+// the new expiry by its own clock, so replicas over one database agree
+// whatever their process clocks say. Fixtures age a lease through the
+// adapter's clock, not through these options.
 type OpenOptions struct {
 	Takeover bool
 	// Owner identifies the opening process in the lease, for diagnostics; it
@@ -53,26 +58,6 @@ type OpenOptions struct {
 	// LeaseDuration is how long the lease is live after Acquire and after
 	// each Renew; zero means the lease lives until Release.
 	LeaseDuration time.Duration
-	// Clock supplies the time the lease is measured against; nil is
-	// time.Now. Fixtures inject one to age a lease.
-	Clock func() time.Time
-}
-
-// Now returns the time by the configured clock.
-func (o OpenOptions) Now() time.Time {
-	if o.Clock != nil {
-		return o.Clock()
-	}
-	return time.Now()
-}
-
-// LeaseUntil is the expiry of a lease taken or renewed at now: zero when
-// the lease never expires.
-func (o OpenOptions) LeaseUntil(now time.Time) int64 {
-	if o.LeaseDuration <= 0 {
-		return 0
-	}
-	return now.Add(o.LeaseDuration).UnixMilli()
 }
 
 // Head is the ledger head after the last commit: the next CommitSeq to
@@ -232,10 +217,9 @@ type Store interface {
 	// ListLeases returns the Lease of every held Session, expired ones
 	// included (SES-OWN-5).
 	ListLeases(context.Context) ([]Lease, error)
-	// ExpiredLeases returns held Leases expired at or before
-	// beforeUnixMilli, soonest first, at most limit (0 for all)
-	// (SES-OWN-5).
-	ExpiredLeases(ctx context.Context, beforeUnixMilli int64, limit int) ([]Lease, error)
+	// ExpiredLeases returns held Leases expired by the store's clock,
+	// soonest first, at most limit (0 for all) (SES-OWN-5/6).
+	ExpiredLeases(ctx context.Context, limit int) ([]Lease, error)
 	Open(context.Context, SessionID, OpenOptions) (Handle, error)
 	ReadCommits(context.Context, CommitReadRequest) (CommitPage, error)
 	ReadStream(context.Context, StreamReadRequest) (StreamPage, error)

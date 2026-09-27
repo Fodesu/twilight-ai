@@ -103,7 +103,8 @@ func TestContentPutLimit(t *testing.T) {
 // the Session ledger over Postgres tables.
 func TestSessionKernelConformance(t *testing.T) {
 	sessiontest.Run(t, func(t *testing.T) sessiontest.Fixture {
-		return sessiontest.Fixture{Store: postgrestest.Open(t).Sessions()}
+		c := &clock{now: time.Unix(1_700_000_000, 0)}
+		return sessiontest.Fixture{Store: postgrestest.Open(t, postgres.Options{Now: c.Now}).Sessions(), Now: c.Now, Advance: c.Advance}
 	})
 }
 

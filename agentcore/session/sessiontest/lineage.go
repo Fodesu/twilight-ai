@@ -50,8 +50,9 @@ func testLineage(t *testing.T, f Fixture) {
 		t.Fatal(err)
 	}
 	// A is no Session any more: not found, not openable, not forkable; a
-	// second Delete is not found. Its identity is free again at once, and a
-	// recreated A is a new root on a new segment.
+	// second Delete is not found. Its identity is never reused (SES-GC-1):
+	// a Create under the old name is ErrDeleted, so nothing addressed to
+	// the old A can land on a new one.
 	if _, err := store.Header(ctx, "A"); !session.IsCode(err, session.ErrNotFound) {
 		t.Fatalf("header after delete = %v", err)
 	}
@@ -66,6 +67,12 @@ func testLineage(t *testing.T, f Fixture) {
 	}
 	if err := store.Delete(ctx, "A"); !session.IsCode(err, session.ErrNotFound) {
 		t.Fatalf("second delete = %v", err)
+	}
+	if _, err := store.Create(ctx, session.CreateRequest{SessionID: "A", CreatedAtUnixMilli: 9}); !session.IsCode(err, session.ErrDeleted) {
+		t.Fatalf("create under a deleted id = %v, want deleted", err)
+	}
+	if _, err := store.Record(ctx, "A"); !session.IsCode(err, session.ErrNotFound) {
+		t.Fatalf("record of a deleted session = %v, want not found", err)
 	}
 	// B, C and D still read their prefixes, and D through A's segment.
 	for sid, want := range map[session.SessionID]string{"B": "a0,a1", "C": "a0,a1,a2,c3", "D": "a0,a1,a2,c3"} {
@@ -107,24 +114,36 @@ func testLineage(t *testing.T, f Fixture) {
 	if report, err := store.Collect(ctx); err != nil || len(report.Removed) != 0 || len(report.Truncated) != 0 {
 		t.Fatalf("second collect = %+v %v", report, err)
 	}
-	// The freed identity can be recreated meanwhile; the new A is unrelated
-	// to the old segment.
-	newA, err := store.Create(ctx, session.CreateRequest{SessionID: "A", CreatedAtUnixMilli: 9})
+	// A fresh Session is unrelated to the old segment; deleted before any
+	// commit, its empty segment is what the next Collect removes.
+	newA, err := store.Create(ctx, session.CreateRequest{SessionID: "A2", CreatedAtUnixMilli: 9})
 	if err != nil {
-		t.Fatalf("recreate after delete: %v", err)
+		t.Fatalf("create A2: %v", err)
 	}
 	if newA.ID == segA {
-		t.Fatal("recreated A reused the old segment")
+		t.Fatal("A2 reused the old segment")
 	}
-	if page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "A"}); err != nil || len(page.Commits) != 0 {
-		t.Fatalf("recreated A = %+v %v", page, err)
+	if page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "A2"}); err != nil || len(page.Commits) != 0 {
+		t.Fatalf("A2 = %+v %v", page, err)
 	}
-	if err := store.Delete(ctx, "A"); err != nil {
+	if err := store.Delete(ctx, "A2"); err != nil {
 		t.Fatal(err)
 	}
+	// SES-GC-4: the adapter refuses to remove a node something still
+	// reaches, whatever the caller computed. C's segment is D's parent and
+	// B's is B's tip.
+	if be, ok := store.(interface {
+		RemoveSegment(context.Context, session.SegmentID) error
+	}); ok {
+		for _, seg := range []session.SegmentID{segC, segB} {
+			if err := be.RemoveSegment(ctx, seg); !session.IsCode(err, session.ErrReferenced) {
+				t.Fatalf("remove reached segment %s = %v, want referenced", seg, err)
+			}
+		}
+	}
 	// Deleting C (still reached by D) keeps its segment; deleting B, whose
-	// edge ends at A@1, removes B's own segment; the new A's empty segment
-	// goes too. A's old segment stays because D reaches it through C.
+	// edge ends at A@1, removes B's own segment; A2's empty segment goes
+	// too. A's old segment stays because D reaches it through C.
 	if err := store.Delete(ctx, "C"); err != nil {
 		t.Fatal(err)
 	}

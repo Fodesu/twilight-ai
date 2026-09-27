@@ -7,6 +7,8 @@ package db
 
 import (
 	"context"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const deleteSegment = `-- name: DeleteSegment :exec
@@ -64,27 +66,18 @@ func (q *Queries) DeleteSegmentCommitsAbove(ctx context.Context, arg DeleteSegme
 	return err
 }
 
-const deleteSessionRoot = `-- name: DeleteSessionRoot :exec
-DELETE FROM session_roots WHERE id = $1
-`
-
-func (q *Queries) DeleteSessionRoot(ctx context.Context, id string) error {
-	_, err := q.db.Exec(ctx, deleteSessionRoot, id)
-	return err
-}
-
 const expiredSessionRoots = `-- name: ExpiredSessionRoots :many
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed FROM session_roots
-WHERE owned AND lease_until > 0 AND lease_until <= $1 ORDER BY lease_until, id LIMIT $2
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots
+WHERE owned AND NOT deleted AND lease_until > 0 AND lease_until <= $1 ORDER BY lease_until, id LIMIT $2
 `
 
 type ExpiredSessionRootsParams struct {
-	LeaseUntil int64
-	Limit      int32
+	Before   int64
+	RowLimit int32
 }
 
 func (q *Queries) ExpiredSessionRoots(ctx context.Context, arg ExpiredSessionRootsParams) ([]SessionRoot, error) {
-	rows, err := q.db.Query(ctx, expiredSessionRoots, arg.LeaseUntil, arg.Limit)
+	rows, err := q.db.Query(ctx, expiredSessionRoots, arg.Before, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -101,6 +94,7 @@ func (q *Queries) ExpiredSessionRoots(ctx context.Context, arg ExpiredSessionRoo
 			&i.Owner,
 			&i.LeaseUntil,
 			&i.Failed,
+			&i.Deleted,
 		); err != nil {
 			return nil, err
 		}
@@ -113,7 +107,7 @@ func (q *Queries) ExpiredSessionRoots(ctx context.Context, arg ExpiredSessionRoo
 }
 
 const heldSessionRoots = `-- name: HeldSessionRoots :many
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed FROM session_roots WHERE owned ORDER BY id
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots WHERE owned AND NOT deleted ORDER BY id
 `
 
 func (q *Queries) HeldSessionRoots(ctx context.Context) ([]SessionRoot, error) {
@@ -134,6 +128,7 @@ func (q *Queries) HeldSessionRoots(ctx context.Context) ([]SessionRoot, error) {
 			&i.Owner,
 			&i.LeaseUntil,
 			&i.Failed,
+			&i.Deleted,
 		); err != nil {
 			return nil, err
 		}
@@ -146,16 +141,17 @@ func (q *Queries) HeldSessionRoots(ctx context.Context) ([]SessionRoot, error) {
 }
 
 const insertSegment = `-- name: InsertSegment :exec
-INSERT INTO session_segments (id, header) VALUES ($1, $2)
+INSERT INTO session_segments (id, header, parent_segment) VALUES ($1, $2, $3)
 `
 
 type InsertSegmentParams struct {
-	ID     string
-	Header string
+	ID            string
+	Header        string
+	ParentSegment pgtype.Text
 }
 
 func (q *Queries) InsertSegment(ctx context.Context, arg InsertSegmentParams) error {
-	_, err := q.db.Exec(ctx, insertSegment, arg.ID, arg.Header)
+	_, err := q.db.Exec(ctx, insertSegment, arg.ID, arg.Header, arg.ParentSegment)
 	return err
 }
 
@@ -377,6 +373,64 @@ func (q *Queries) SegmentIndexSummary(ctx context.Context, segment string) (Segm
 	return i, err
 }
 
+const segmentReferenced = `-- name: SegmentReferenced :one
+SELECT (EXISTS (SELECT 1 FROM session_roots WHERE tip = $1 AND NOT deleted)
+    OR EXISTS (SELECT 1 FROM session_segments WHERE parent_segment = $1))::boolean AS referenced
+`
+
+func (q *Queries) SegmentReferenced(ctx context.Context, tip string) (bool, error) {
+	row := q.db.QueryRow(ctx, segmentReferenced, tip)
+	var referenced bool
+	err := row.Scan(&referenced)
+	return referenced, err
+}
+
+const segmentStreamCommits = `-- name: SegmentStreamCommits :many
+SELECT c.seq, c.body FROM session_commits c
+JOIN session_commit_streams s ON s.segment = c.segment AND s.seq = c.seq
+WHERE c.segment = $1 AND s.domain = $2 AND s.stream_id = $3 AND c.seq >= $4 AND s.events > 0
+ORDER BY c.seq LIMIT $5
+`
+
+type SegmentStreamCommitsParams struct {
+	Segment  string
+	Domain   string
+	StreamID string
+	Seq      int64
+	Limit    int32
+}
+
+type SegmentStreamCommitsRow struct {
+	Seq  int64
+	Body string
+}
+
+func (q *Queries) SegmentStreamCommits(ctx context.Context, arg SegmentStreamCommitsParams) ([]SegmentStreamCommitsRow, error) {
+	rows, err := q.db.Query(ctx, segmentStreamCommits,
+		arg.Segment,
+		arg.Domain,
+		arg.StreamID,
+		arg.Seq,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SegmentStreamCommitsRow{}
+	for rows.Next() {
+		var i SegmentStreamCommitsRow
+		if err := rows.Scan(&i.Seq, &i.Body); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const segmentStreamCounts = `-- name: SegmentStreamCounts :many
 SELECT seq, domain, stream_id, events FROM session_commit_streams WHERE segment = $1 ORDER BY seq, domain, stream_id
 `
@@ -437,7 +491,7 @@ func (q *Queries) SegmentStreamHead(ctx context.Context, arg SegmentStreamHeadPa
 }
 
 const sessionRoot = `-- name: SessionRoot :one
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed FROM session_roots WHERE id = $1
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots WHERE id = $1
 `
 
 func (q *Queries) SessionRoot(ctx context.Context, id string) (SessionRoot, error) {
@@ -452,12 +506,13 @@ func (q *Queries) SessionRoot(ctx context.Context, id string) (SessionRoot, erro
 		&i.Owner,
 		&i.LeaseUntil,
 		&i.Failed,
+		&i.Deleted,
 	)
 	return i, err
 }
 
 const sessionRoots = `-- name: SessionRoots :many
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed FROM session_roots ORDER BY id
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots WHERE NOT deleted ORDER BY id
 `
 
 func (q *Queries) SessionRoots(ctx context.Context) ([]SessionRoot, error) {
@@ -478,6 +533,7 @@ func (q *Queries) SessionRoots(ctx context.Context) ([]SessionRoot, error) {
 			&i.Owner,
 			&i.LeaseUntil,
 			&i.Failed,
+			&i.Deleted,
 		); err != nil {
 			return nil, err
 		}
@@ -487,6 +543,15 @@ func (q *Queries) SessionRoots(ctx context.Context) ([]SessionRoot, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const tombstoneSessionRoot = `-- name: TombstoneSessionRoot :exec
+UPDATE session_roots SET deleted = TRUE, owned = FALSE, owner = '', lease_until = 0, failed = '' WHERE id = $1
+`
+
+func (q *Queries) TombstoneSessionRoot(ctx context.Context, id string) error {
+	_, err := q.db.Exec(ctx, tombstoneSessionRoot, id)
+	return err
 }
 
 const updateSessionOwnership = `-- name: UpdateSessionOwnership :exec

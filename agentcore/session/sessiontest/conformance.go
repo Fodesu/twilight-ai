@@ -7,6 +7,7 @@ import (
 	"context"
 	"math"
 	"testing"
+	"time"
 
 	"github.com/felinics/twilight/agentcore/jsonstable"
 	"github.com/felinics/twilight/agentcore/session"
@@ -15,6 +16,11 @@ import (
 // Fixture is one adapter under test.
 type Fixture struct {
 	Store session.Store
+	// Advance moves the store's clock, the one leases are judged by
+	// (SES-OWN-6); nil skips the lease-expiry checks.
+	Advance func(time.Duration)
+	// Now is the store's clock; required with Advance.
+	Now func() time.Time
 }
 
 // Factory builds a fresh, empty Store for one subtest.

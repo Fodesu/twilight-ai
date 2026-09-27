@@ -2,8 +2,10 @@ package extension
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/felinics/twilight/agentcore/es"
 	"sync"
 
 	"github.com/felinics/twilight/agentcore/jsonstable"
@@ -179,9 +181,56 @@ type ProjectionReader interface {
 
 // ProjectionCache is the optional derived cache of EXT-PRJ-3. Entries may be
 // lost or stale at any time; readers verify Through against the stream.
+//
+// An Authoritative projection's entry is a checkpoint the Writer plans the
+// next commit against (EXT-PRJ-10): its state bytes travel with the digest
+// the Writer computed when it saved them, in the same Value (see
+// SealCheckpoint), and a reader that finds the digest missing or wrong
+// treats the entry as absent. A derived projection's entry carries the
+// bare state; a wrong one costs a wrong read model until the next refold.
 type ProjectionCache interface {
 	Load(ctx context.Context, sid session.SessionID, id ProjectionID, v ProjectionVersion) (state jsonstable.Value, through session.Head, ok bool, err error)
 	Save(ctx context.Context, sid session.SessionID, id ProjectionID, v ProjectionVersion, state jsonstable.Value, through session.Head) error
+}
+
+// checkpointDomain namespaces the digest of an authoritative checkpoint.
+const checkpointDomain = "twilight/projection-checkpoint"
+
+// sealedCheckpoint is the cache Value of an authoritative projection: the
+// encoded state and a digest over (projection, version, through, state).
+type sealedCheckpoint struct {
+	State  json.RawMessage `json:"state"`
+	Digest es.Digest       `json:"digest"`
+}
+
+// checkpointDigest is the digest an authoritative entry must carry.
+func checkpointDigest(id ProjectionID, v ProjectionVersion, through session.Head, state jsonstable.Value) es.Digest {
+	preimage, _ := es.EncodeTypedPayload(1, checkpointDomain, []string{string(id), fmt.Sprint(uint64(v)), fmt.Sprint(uint64(through.Next)), string(state.Bytes())})
+	return es.DigestBytes(preimage)
+}
+
+// SealCheckpoint wraps an authoritative projection's encoded state with its
+// digest for the cache (EXT-PRJ-10).
+func SealCheckpoint(id ProjectionID, v ProjectionVersion, through session.Head, state jsonstable.Value) (jsonstable.Value, error) {
+	return jsonstable.FromValue(sealedCheckpoint{State: state.Bytes(), Digest: checkpointDigest(id, v, through, state)})
+}
+
+// OpenCheckpoint unwraps a sealed authoritative entry, verifying its digest;
+// ok is false when the entry is not a checkpoint of this projection at
+// through, and the caller treats it as absent.
+func OpenCheckpoint(id ProjectionID, v ProjectionVersion, through session.Head, sealed jsonstable.Value) (jsonstable.Value, bool) {
+	var c sealedCheckpoint
+	if err := json.Unmarshal(sealed.Bytes(), &c); err != nil || len(c.State) == 0 || c.Digest == "" {
+		return jsonstable.Value{}, false
+	}
+	state, err := jsonstable.Parse(c.State)
+	if err != nil {
+		return jsonstable.Value{}, false
+	}
+	if checkpointDigest(id, v, through, state) != c.Digest {
+		return jsonstable.Value{}, false
+	}
+	return state, true
 }
 
 // ProjectionCacheProvider is implemented by a Store adapter that can back its
@@ -317,7 +366,30 @@ func SaveProjection(ctx context.Context, cache ProjectionCache, registry *Regist
 	if err != nil {
 		return err
 	}
+	if def.Authoritative {
+		if encoded, err = SealCheckpoint(id, v, through, encoded); err != nil {
+			return err
+		}
+	}
 	return cache.Save(ctx, sid, id, v, encoded, through)
+}
+
+// LoadProjectionEntry reads a cache entry for def, unsealing and verifying
+// an authoritative one (EXT-PRJ-10); an entry that does not verify is a
+// miss.
+func LoadProjectionEntry(ctx context.Context, cache ProjectionCache, def *ProjectionDefinition, sid session.SessionID) (jsonstable.Value, session.Head, bool, error) {
+	encoded, through, ok, err := cache.Load(ctx, sid, def.ID, def.Version)
+	if err != nil || !ok {
+		return jsonstable.Value{}, session.Head{}, false, err
+	}
+	if def.Authoritative {
+		state, verified := OpenCheckpoint(def.ID, def.Version, through, encoded)
+		if !verified {
+			return jsonstable.Value{}, session.Head{}, false, nil
+		}
+		return state, through, true, nil
+	}
+	return encoded, through, true, nil
 }
 
 type storeReader struct {
@@ -371,7 +443,7 @@ func (r *storeReader) Load(ctx context.Context, sid session.SessionID, id Projec
 // stream; otherwise the projection's initial state and the empty head.
 func (r *storeReader) startState(ctx context.Context, sid session.SessionID, scope *ProjectionScope) (any, session.Head, error) {
 	if r.cache != nil {
-		encoded, through, ok, err := r.cache.Load(ctx, sid, scope.Def.ID, scope.Def.Version)
+		encoded, through, ok, err := LoadProjectionEntry(ctx, r.cache, &scope.Def, sid)
 		if err != nil {
 			return nil, session.Head{}, err
 		}

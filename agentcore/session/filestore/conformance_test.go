@@ -1,7 +1,9 @@
 package filestore_test
 
 import (
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/felinics/twilight/agentcore/session/filestore"
 	"github.com/felinics/twilight/agentcore/session/run/runtimetest"
@@ -19,7 +21,14 @@ func newStore(t testing.TB) *filestore.Store {
 
 func TestKernelConformance(t *testing.T) {
 	sessiontest.Run(t, func(t *testing.T) sessiontest.Fixture {
-		return sessiontest.Fixture{Store: newStore(t)}
+		now := time.Unix(1_700_000_000, 0)
+		var mu sync.Mutex
+		clock := func() time.Time { mu.Lock(); defer mu.Unlock(); return now }
+		store, err := filestore.NewWithClock(t.TempDir(), clock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sessiontest.Fixture{Store: store, Now: clock, Advance: func(d time.Duration) { mu.Lock(); now = now.Add(d); mu.Unlock() }}
 	})
 }
 

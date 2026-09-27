@@ -447,3 +447,76 @@ func TestCoversCommit(t *testing.T) {
 		}
 	}
 }
+
+// EXT-PRJ-10: an authoritative projection's entry is a checkpoint sealed
+// with a digest over its identity, position and state. A well-formed entry
+// whose state was not what the Writer saved (here: a derived projection's
+// entry copied under the authoritative one) is a miss, and the Writer
+// refolds from the log; a derived projection's entry stays a plain state.
+func TestAuthoritativeEntryMustVerify(t *testing.T) {
+	ctx := context.Background()
+	counter := newApplyCounter()
+	typ := tpfx("k") + "row"
+	mk := func(id extension.ProjectionID, authoritative bool) extension.ProjectionDefinition {
+		return extension.ProjectionDefinition{
+			ID: id, Version: 1, Consumes: []session.EventType{typ}, Authoritative: authoritative,
+			Initial: func() (any, error) { return noteState{}, nil },
+			Apply: func(state any, e extension.DecodedEvent) (any, error) {
+				counter.inc(id)
+				s := state.(noteState)
+				s.Notes = append(append([]string(nil), s.Notes...), e.Value.(notePayload).Text)
+				return s, nil
+			},
+			StateCodec: extension.JSONStateCodec[noteState]{},
+		}
+	}
+	registry, err := extension.BuildRegistry(extension.ModuleDescriptor{Source: extension.SourceTwilight, ID: "k", Streams: noteStreams(),
+		Events:      []extension.EventDefinition{{Type: typ, Stream: noteDomain, Codecs: map[extension.PayloadVersion]extension.PayloadCodec{1: extension.JSONCodec[notePayload]{}}}},
+		Projections: []extension.ProjectionDefinition{mk(alphaID, true), mk(betaID, false)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &cacheFixture{store: filestoretest.Store(t), cache: extension.NewMemoryProjectionCache(), counter: counter, registry: registry}
+	if _, err := f.store.Create(ctx, session.CreateRequest{SessionID: "s"}); err != nil {
+		t.Fatal(err)
+	}
+	w := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: extension.CacheEvery(1)})
+	f.commit(t, w, "c1", "n1")
+	f.commit(t, w, "c2", "n2")
+	if err := w.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Both entries are at head; the authoritative one is sealed.
+	sealed, through, ok, err := f.cache.Load(ctx, "s", alphaID, 1)
+	if err != nil || !ok || through.Next != 2 {
+		t.Fatalf("alpha entry = ok:%v through:%d %v", ok, through.Next, err)
+	}
+	if _, verified := extension.OpenCheckpoint(alphaID, 1, through, sealed); !verified {
+		t.Fatal("alpha entry does not verify as a checkpoint of alpha at 2")
+	}
+	if _, verified := extension.OpenCheckpoint(betaID, 1, through, sealed); verified {
+		t.Fatal("alpha's checkpoint verified under beta's identity")
+	}
+	plain, _, _, _ := f.cache.Load(ctx, "s", betaID, 1)
+	if _, verified := extension.OpenCheckpoint(betaID, 1, through, plain); verified {
+		t.Fatal("beta's plain entry passed as a checkpoint")
+	}
+	// A forged entry: valid state JSON, right position, no seal. The Writer
+	// refolds alpha from the log and keeps beta's plain entry.
+	forged := f.encodeState(t, "wrong")
+	f.cache.Delete("s", alphaID, 1)
+	if err := f.cache.Save(ctx, "s", alphaID, 1, forged, through); err != nil {
+		t.Fatal(err)
+	}
+	counter.reset()
+	reopened := f.open(t, WritersConfig{Cache: f.cache, CachePolicy: extension.CacheEvery(1)})
+	if n := counter.get(alphaID); n != 2 {
+		t.Fatalf("alpha folded %d events on reopen, want 2 (forged checkpoint refused)", n)
+	}
+	if n := counter.get(betaID); n != 0 {
+		t.Fatalf("beta folded %d events on reopen, want 0", n)
+	}
+	if got := f.notes(t, reopened, alphaID); !sameNotes(got, []string{"n1", "n2"}) {
+		t.Fatalf("alpha notes = %v", got)
+	}
+}

@@ -140,7 +140,7 @@ func (p *projector) startState(ctx context.Context, scope *extension.ProjectionS
 	if p.cache == nil {
 		return nil, session.Head{}, false
 	}
-	encoded, through, ok, err := p.cache.Load(ctx, p.sid, scope.Def.ID, scope.Def.Version)
+	encoded, through, ok, err := extension.LoadProjectionEntry(ctx, p.cache, &scope.Def, p.sid)
 	if err != nil || !ok || !coversCommit(header, through, at) {
 		return nil, session.Head{}, false
 	}

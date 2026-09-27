@@ -52,6 +52,12 @@ const (
 	ErrCorrupt       ErrorCode = "corrupt"
 	ErrOwned         ErrorCode = "owned"
 	ErrOwnershipLost ErrorCode = "ownership_lost"
+	// ErrReferenced: a segment removal found the node still reached by a
+	// root or a child edge; nothing was removed (SES-GC-4).
+	ErrReferenced ErrorCode = "referenced"
+	// ErrDeleted: the SessionID names a deleted Session; it is never reused
+	// (SES-GC-1).
+	ErrDeleted ErrorCode = "deleted"
 	// ErrHandleFailed: a previous Append of this Handle failed while writing
 	// or persisting, so what reached storage is unknown. The Handle refuses
 	// further Appends; the caller reopens and Open reads the log as it is

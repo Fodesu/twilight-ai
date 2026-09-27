@@ -92,7 +92,7 @@ Agent Core 的协议规则（`agent-run.md`、`agent-runtime.md`）在所有组�
 
 | 接口 | 表 | 实现要点 |
 |---|---|---|
-| `session.Backend`（`LedgerStore` + `SessionStore` + `CreateSession`） | `session_segments`、`session_commits`、`session_roots` | `DB.Sessions()` 返回 `session.NewLedger(backend)`，kernel 的 Epoch 围栏、lineage、fork、stream 规则不在 adapter 内复制；`Append` 在 Session 的事务锁内重读 root 行校验 `owned` 与 epoch（SES-OWN-2）；`Committed`/`LookupCommit` 经 `(segment, commit_id)` 唯一索引点查询，`StreamHead` 经 `session_commit_streams`（每 commit 每流一行，与正文同事务写入）按流求和，Open 只取索引摘要（`COUNT/MIN/MAX`），全量 `Index` 只剩 `Collect` 使用，`PutIndex` 无需持久化 |
+| `session.Backend`（`LedgerStore` + `SessionStore` + `CreateSession`） | `session_segments`（含 `parent_segment` 外键）、`session_commits`、`session_commit_streams`、`session_roots`（含 `deleted` tombstone） | `DB.Sessions()` 返回 `session.NewLedger(backend)`，kernel 的 Epoch 围栏、lineage、fork、stream 规则不在 adapter 内复制；`Append` 在 Session 的事务锁内重读 root 行校验 `owned` 与 epoch（SES-OWN-2）；`Committed`/`LookupCommit` 经 `(segment, commit_id)` 唯一索引点查询，`StreamHead` 经 `session_commit_streams`（每 commit 每流一行，与正文同事务写入）按流求和，Open 只取索引摘要（`COUNT/MIN/MAX`），全量 `Index` 只剩 `Collect` 使用，`PutIndex` 无需持久化 |
 | `extension.ProjectionCache` | `projection_cache` | `SessionStore` 实现 `ProjectionCacheProvider`，`owner.New` 自动选用：Session 在另一副本重开时从保存的投影状态起折叠，只折叠尾部 commit（EXT-PRJ-3、EXT-PRJ-7 的 `CacheEvery` 定落后上限）；UPSERT 带 `WHERE projection_cache.through < EXCLUDED.through`，晚到的旧写入不回退条目；`Delete` 连带删除 |
 | `executionstore.Store` | `executions`、`execution_commits`、`execution_leases` | `Acquire` 一个事务内 fold、读写租约行、追加 claimed；`ListOwned` 走 `execution_leases(owner)` 索引 |
 | `process.Store`、`checkpoint.Store`、`inbox.Store` | `processes`/`process_commits`、`checkpoints`、`inbox` | 与 SQLite 同语义 |

@@ -17,6 +17,10 @@ import (
 type Ledger struct {
 	be        Backend
 	segmentID func() (SegmentID, error)
+	// graph serializes this process's operations that change the set of
+	// roots and nodes; across processes the adapter's own consistency
+	// (CreateSession's parent check, RemoveSegment's reference check) is
+	// the authority (SES-GC-4).
 	// graph serializes the operations that change the set of roots and
 	// nodes (Create, Delete, Collect) against each other (SES-GC-4): a
 	// Create's check that its parent is live, and its write, cannot
@@ -110,7 +114,7 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 			return seg.Header, nil
 		}
 		return SegmentHeader{}, newError(ErrConflict, "create", req.SessionID, "session exists with a different creation record")
-	} else if !IsCode(err, ErrNotFound) {
+	} else if !IsCode(err, ErrNotFound) && !IsCode(err, ErrDeleted) {
 		return SegmentHeader{}, err
 	}
 	id, err := l.segmentID()
@@ -124,6 +128,13 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 	segment := Segment{ID: header.ID, Header: header}
 	root := SessionRecord{ID: req.SessionID, Tip: segment.ID, CreatedAtUnixMilli: req.CreatedAtUnixMilli}
 	if err := l.be.CreateSession(ctx, segment, root); err != nil {
+		// The parent was checked above, but another replica's Collect may
+		// have removed it since (SES-GC-4): the adapter's own check inside
+		// the write is the authority, and the fork is refused as of a
+		// parent that is gone.
+		if header.Parent != nil && IsCode(err, ErrNotFound) {
+			return SegmentHeader{}, newError(ErrNotFound, "create", req.SessionID, fmt.Sprintf("parent session %s not found", req.Fork.Session))
+		}
 		return SegmentHeader{}, err
 	}
 	return header, nil
@@ -179,12 +190,12 @@ func (l *Ledger) ListLeases(ctx context.Context) ([]Lease, error) {
 	return l.be.ListLeases(ctx)
 }
 
-// ExpiredLeases is Store.ExpiredLeases (SES-OWN-5).
-func (l *Ledger) ExpiredLeases(ctx context.Context, beforeUnixMilli int64, limit int) ([]Lease, error) {
+// ExpiredLeases is Store.ExpiredLeases (SES-OWN-5/6).
+func (l *Ledger) ExpiredLeases(ctx context.Context, limit int) ([]Lease, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return l.be.ExpiredLeases(ctx, beforeUnixMilli, limit)
+	return l.be.ExpiredLeases(ctx, limit)
 }
 
 // ExpiredLeasesOf selects from leases what ExpiredLeases returns: the
@@ -304,8 +315,8 @@ func (w *ledgerHandle) Renew(ctx context.Context) error {
 	if w.failed != nil {
 		return w.failed
 	}
-	until := w.opts.LeaseUntil(w.opts.Now())
-	if err := w.l.be.Renew(ctx, w.lease, until); err != nil {
+	until, err := w.l.be.Renew(ctx, w.lease, w.opts.LeaseDuration)
+	if err != nil {
 		return err
 	}
 	w.lease.UntilUnixMilli = until
@@ -453,26 +464,26 @@ func (l *Ledger) ReadStream(ctx context.Context, req StreamReadRequest) (StreamP
 	if err := ValidateStreamLineage(req.Lineage); err != nil {
 		return StreamPage{}, newError(ErrInvalid, "read_stream", req.SessionID, err.Error())
 	}
+	_, a, err := l.resolve(ctx, req.SessionID)
+	if err != nil {
+		return StreamPage{}, err
+	}
 	// Stream positions count the stream's events from the first commit the
 	// read sees (SES-REP-2): the stitched history under LineageSession, the
 	// tip segment's own commits under LineageSegment (SES-FRK-5). The kernel
 	// applies the mode the read names; the stream's owning module declared
-	// which one its domain is.
-	all, err := l.ReadCommits(ctx, CommitReadRequest{SessionID: req.SessionID})
+	// which one its domain is. Each segment is read through the adapter's
+	// stream index (ReadSegmentStream), so only commits carrying the stream
+	// travel; the stitching across the ancestry stays here.
+	commits, err := a.ReadStream(ctx, l.be, req.Stream, req.Lineage)
 	if err != nil {
 		return StreamPage{}, err
 	}
-	commits := all.Commits
-	if req.Lineage == LineageSegment && all.Header.Parent != nil {
-		own := commits[:0:0]
-		for _, c := range commits {
-			if c.Seq > all.Header.Parent.Seq {
-				own = append(own, c)
-			}
-		}
-		commits = own
+	head, err := a.tipHead(ctx, l.be)
+	if err != nil {
+		return StreamPage{}, err
 	}
-	page := StreamPage{Header: all.Header, Stream: req.Stream, Head: all.Head}
+	page := StreamPage{Header: a.Header(), Stream: req.Stream, Head: head}
 	page.Events, page.HasMore = StreamEvents(commits, req.Stream, req.From, req.Limit)
 	return page, nil
 }
@@ -543,13 +554,24 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 	}
 	need := Reachable(nodes, roots)
 	report := CollectReport{Truncated: map[SegmentID]CommitSeq{}, Dropped: map[SegmentID][]CommitID{}}
+	// Unreachable nodes go children first: the adapter refuses to remove a
+	// node a child's edge still names (SES-GC-4), so a parent is removed
+	// only once every unreachable child of it is gone.
+	for _, id := range removalOrder(nodes, need) {
+		// Reachable was computed from a snapshot; a root or a child created
+		// since keeps the node, and the adapter says so (SES-GC-4). Such a
+		// node is left for a later Collect.
+		if err := l.be.RemoveSegment(ctx, id); err != nil {
+			if IsCode(err, ErrReferenced) {
+				continue
+			}
+			return report, err
+		}
+		report.Removed = append(report.Removed, id)
+	}
 	for id := range nodes {
 		through, reached := need[id]
 		if !reached {
-			if err := l.be.RemoveSegment(ctx, id); err != nil {
-				return report, err
-			}
-			report.Removed = append(report.Removed, id)
 			continue
 		}
 		if through == ^CommitSeq(0) {
@@ -583,6 +605,35 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 		report.Truncated[id] = newHead.Next
 	}
 	return report, nil
+}
+
+// removalOrder lists the unreachable nodes so that every node comes before
+// its parent: a child's edge keeps its parent from being removed.
+func removalOrder(nodes map[SegmentID]Segment, need map[SegmentID]CommitSeq) []SegmentID {
+	depth := func(id SegmentID) int {
+		d := 0
+		for seg, ok := nodes[id]; ok && seg.Header.Parent != nil; seg, ok = nodes[seg.Header.Parent.Segment] {
+			d++
+			if d > len(nodes) {
+				break // a cycle cannot exist (SES-LIN-1); guard the walk anyway
+			}
+		}
+		return d
+	}
+	var out []SegmentID
+	for id := range nodes {
+		if _, reached := need[id]; !reached {
+			out = append(out, id)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		di, dj := depth(out[i]), depth(out[j])
+		if di != dj {
+			return di > dj
+		}
+		return out[i] < out[j]
+	})
+	return out
 }
 
 func cloneCommit(c Commit) Commit {

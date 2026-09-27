@@ -4,6 +4,10 @@
 
 package db
 
+import (
+	"github.com/jackc/pgx/v5/pgtype"
+)
+
 type Binding struct {
 	ID      string
 	Digest  string
@@ -109,11 +113,13 @@ type SessionRoot struct {
 	Owner      string
 	LeaseUntil int64
 	Failed     string
+	Deleted    bool
 }
 
 type SessionSegment struct {
-	ID     string
-	Header string
+	ID            string
+	Header        string
+	ParentSegment pgtype.Text
 }
 
 type TwilightSchema struct {

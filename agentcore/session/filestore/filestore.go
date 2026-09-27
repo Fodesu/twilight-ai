@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/felinics/twilight/agentcore/session"
 )
@@ -43,7 +44,9 @@ const (
 type Store struct {
 	*session.Ledger
 	root string
-	mu   sync.Mutex // serializes every backend operation of this instance
+	// now is the lease clock (SES-OWN-6).
+	now func() time.Time
+	mu  sync.Mutex // serializes every backend operation of this instance
 	// index holds each segment's CommitIndex as loaded from index.jsonl and
 	// verified against log.jsonl (index.go). It is keyed to the log's size and
 	// mtime: any change by another instance (append, takeover, truncation)
@@ -57,12 +60,21 @@ type Store struct {
 // New opens the store root, creating it if needed. opts configure the
 // kernel Ledger (for example a deterministic segment ID source).
 func New(root string, opts ...session.LedgerOption) (*Store, error) {
+	return NewWithClock(root, nil, opts...)
+}
+
+// NewWithClock is New with the clock leases are judged by (SES-OWN-6); nil
+// selects time.Now. Fixtures inject one to age a lease.
+func NewWithClock(root string, now func() time.Time, opts ...session.LedgerOption) (*Store, error) {
 	for _, d := range []string{root, filepath.Join(root, segmentsDir), filepath.Join(root, sessionsDir)} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
 			return nil, err
 		}
 	}
-	s := &Store{root: root, index: make(map[session.SegmentID]*segIndex)}
+	if now == nil {
+		now = time.Now
+	}
+	s := &Store{root: root, now: now, index: make(map[session.SegmentID]*segIndex)}
 	s.Ledger = session.NewLedger(s, opts...)
 	return s, nil
 }
@@ -192,6 +204,52 @@ func (s *Store) ListSegments(ctx context.Context) ([]session.SegmentID, error) {
 		out = append(out, h.ID)
 	}
 	return out, nil
+}
+
+// ReadSegmentStream is ReadSegment narrowed to the commits whose index
+// entry counts events of stream (SES-REP-2/5).
+func (s *Store) ReadSegmentStream(ctx context.Context, id session.SegmentID, stream session.StreamRef, from session.CommitSeq, limit uint32) ([]session.Commit, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	header, dir, err := s.loadSegment(id, "read")
+	if err != nil {
+		return nil, false, err
+	}
+	x, err := s.segIndex(id, header, dir)
+	if err != nil {
+		return nil, false, err
+	}
+	var out []session.Commit
+	for i := range x.idx.Entries {
+		e := &x.idx.Entries[i]
+		if e.Seq < from || !countsStream(e, stream) {
+			continue
+		}
+		if limit > 0 && uint32(len(out)) >= limit { //nolint:gosec // G115: bounded by limit
+			return out, true, nil
+		}
+		commits, _, err := s.commitsFrom(id, header, dir, e.Seq)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(commits) == 0 || commits[0].Seq != e.Seq {
+			return nil, false, segerr("read", id, "log does not match its index")
+		}
+		out = append(out, commits[0])
+	}
+	return out, false, nil
+}
+
+func countsStream(e *session.IndexEntry, stream session.StreamRef) bool {
+	for _, sc := range e.Streams {
+		if sc.Stream == stream && sc.Events > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // ReadSegment returns the segment's own commits from from (absolute Seq).
@@ -356,14 +414,55 @@ func (s *Store) TruncateSegment(ctx context.Context, id session.SegmentID, throu
 	return headOf(header, commits[:keep]), nil
 }
 
+// RemoveSegment deletes the node unless a root's tip or a child's edge
+// still names it (SES-GC-4); the check and the removal are under the store
+// lock, which CreateSession also takes.
 func (s *Store) RemoveSegment(ctx context.Context, id session.SegmentID) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	referenced, err := s.referenced(id)
+	if err != nil {
+		return err
+	}
+	if referenced {
+		return &session.Error{Code: session.ErrReferenced, Operation: "collect", Detail: fmt.Sprintf("segment %s is still reached", id)}
+	}
 	s.dropIndex(id)
 	return os.RemoveAll(s.segmentDir(id))
+}
+
+// referenced reports whether a live root's tip or any segment's parent
+// edge names id.
+func (s *Store) referenced(id session.SegmentID) (bool, error) {
+	roots, err := s.readRoots()
+	if err != nil {
+		return false, err
+	}
+	for _, r := range roots {
+		if !r.Deleted && r.Tip == id {
+			return true, nil
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(s.root, segmentsDir))
+	if err != nil {
+		return false, err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		h, err := readHeader(filepath.Join(s.root, segmentsDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		if h.Parent != nil && h.Parent.Segment == id {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // --- roots (SessionStore) -----------------------------------------------------------
@@ -381,6 +480,9 @@ type ownerRecord struct {
 	// Failed records a lease whose last Append had an unknown outcome; it is
 	// cleared by the next Acquire, which reads the log as it is.
 	Failed string `json:"failed,omitempty"`
+	// Deleted marks a tombstone (SES-GC-1): the root file stays so the
+	// SessionID is never reused, and every read treats it as not found.
+	Deleted bool `json:"deleted,omitempty"`
 }
 
 func (s *Store) loadRoot(sid session.SessionID, op string) (session.SessionRecord, ownerRecord, error) {
@@ -397,6 +499,9 @@ func (s *Store) loadRoot(sid session.SessionID, op string) (session.SessionRecor
 	}
 	if rec.ID != sid || rec.Tip == "" {
 		return session.SessionRecord{}, ownerRecord{}, kerr(session.ErrCorrupt, op, sid, fmt.Sprintf("root names session %q", rec.ID))
+	}
+	if rec.Deleted {
+		return session.SessionRecord{}, ownerRecord{}, kerr(session.ErrNotFound, op, sid, "session deleted")
 	}
 	return rec.SessionRecord, rec, nil
 }
@@ -419,7 +524,11 @@ func (s *Store) CreateSession(ctx context.Context, seg session.Segment, rec sess
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := os.Stat(s.rootPath(rec.ID)); err == nil {
+	if raw, err := os.ReadFile(s.rootPath(rec.ID)); err == nil {
+		var existing ownerRecord
+		if json.Unmarshal(raw, &existing) == nil && existing.Deleted {
+			return kerr(session.ErrDeleted, "create", rec.ID, "session id was deleted and is not reused")
+		}
 		return kerr(session.ErrConflict, "create", rec.ID, "session exists")
 	} else if !os.IsNotExist(err) {
 		return kerr(session.ErrCorrupt, "create", rec.ID, err.Error())
@@ -429,6 +538,16 @@ func (s *Store) CreateSession(ctx context.Context, seg session.Segment, rec sess
 		return kerr(session.ErrConflict, "create", rec.ID, fmt.Sprintf("segment %s exists", seg.ID))
 	} else if !os.IsNotExist(err) {
 		return segerr("create", seg.ID, err.Error())
+	}
+	// The parent must still be a node at the moment the edge is written
+	// (SES-GC-4); the store lock keeps RemoveSegment out meanwhile.
+	if seg.Header.Parent != nil {
+		if _, err := readHeader(s.segmentDir(seg.Header.Parent.Segment)); err != nil {
+			if os.IsNotExist(err) {
+				return &session.Error{Code: session.ErrNotFound, Operation: "create", SessionID: rec.ID, Detail: fmt.Sprintf("parent segment %s not found", seg.Header.Parent.Segment)}
+			}
+			return segerr("create", seg.Header.Parent.Segment, err.Error())
+		}
 	}
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
@@ -465,6 +584,9 @@ func (s *Store) ListRecords(ctx context.Context) ([]session.SessionRecord, error
 	}
 	out := make([]session.SessionRecord, 0, len(roots))
 	for _, rec := range roots {
+		if rec.Deleted {
+			continue
+		}
 		out = append(out, rec.SessionRecord)
 	}
 	return out, nil
@@ -535,12 +657,12 @@ func (s *Store) ListLeases(ctx context.Context) ([]session.Lease, error) {
 }
 
 // lease is the Lease an owned root records.
-func (s *Store) ExpiredLeases(ctx context.Context, beforeUnixMilli int64, limit int) ([]session.Lease, error) {
+func (s *Store) ExpiredLeases(ctx context.Context, limit int) ([]session.Lease, error) {
 	held, err := s.ListLeases(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return session.ExpiredLeasesOf(held, beforeUnixMilli, limit), nil
+	return session.ExpiredLeasesOf(held, s.now().UnixMilli(), limit), nil
 }
 
 func (r ownerRecord) lease() session.Lease {
@@ -559,7 +681,7 @@ func (s *Store) Acquire(ctx context.Context, sid session.SessionID, opts session
 	if err != nil {
 		return session.Lease{}, err
 	}
-	now := opts.Now()
+	now := s.now()
 	if owner.Owned && (owner.LeaseUntilUnixMilli == 0 || owner.LeaseUntilUnixMilli > now.UnixMilli()) && !opts.Takeover {
 		return session.Lease{}, kerr(session.ErrOwned, "open", sid, fmt.Sprintf("owned by epoch %d (%s) until %d", owner.Epoch, owner.Owner, owner.LeaseUntilUnixMilli))
 	}
@@ -584,7 +706,7 @@ func (s *Store) Acquire(ctx context.Context, sid session.SessionID, opts session
 	owner.Owned = true
 	owner.Failed = ""
 	owner.Owner = opts.Owner
-	owner.LeaseUntilUnixMilli = opts.LeaseUntil(now)
+	owner.LeaseUntilUnixMilli = leaseUntil(now, opts.LeaseDuration)
 	if err := s.saveRoot(sid, owner); err != nil {
 		return session.Lease{}, err
 	}
@@ -594,21 +716,33 @@ func (s *Store) Acquire(ctx context.Context, sid session.SessionID, opts session
 	return session.Lease{Session: sid, Epoch: owner.Epoch, Owner: owner.Owner, UntilUnixMilli: owner.LeaseUntilUnixMilli}, nil
 }
 
-func (s *Store) Renew(ctx context.Context, lease session.Lease, until int64) error {
+func (s *Store) Renew(ctx context.Context, lease session.Lease, duration time.Duration) (int64, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return 0, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, owner, err := s.loadRoot(lease.Session, "renew")
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if !owner.Owned || owner.Epoch != lease.Epoch {
-		return kerr(session.ErrOwnershipLost, "renew", lease.Session, fmt.Sprintf("epoch %d superseded by %d", lease.Epoch, owner.Epoch))
+		return 0, kerr(session.ErrOwnershipLost, "renew", lease.Session, fmt.Sprintf("epoch %d superseded by %d", lease.Epoch, owner.Epoch))
 	}
-	owner.LeaseUntilUnixMilli = until
-	return s.saveRoot(lease.Session, owner)
+	owner.LeaseUntilUnixMilli = leaseUntil(s.now(), duration)
+	if err := s.saveRoot(lease.Session, owner); err != nil {
+		return 0, err
+	}
+	return owner.LeaseUntilUnixMilli, nil
+}
+
+// leaseUntil is the expiry of a lease taken or renewed at now: zero when it
+// never expires.
+func leaseUntil(now time.Time, d time.Duration) int64 {
+	if d <= 0 {
+		return 0
+	}
+	return now.Add(d).UnixMilli()
 }
 
 func (s *Store) Release(ctx context.Context, lease session.Lease) error {
@@ -642,7 +776,11 @@ func (s *Store) DeleteRecord(ctx context.Context, sid session.SessionID) error {
 	if owner.Owned {
 		return kerr(session.ErrOwned, "delete", sid, fmt.Sprintf("owned by epoch %d", owner.Epoch))
 	}
-	if err := os.Remove(s.rootPath(sid)); err != nil && !os.IsNotExist(err) {
+	// A tombstone, not a removal: the SessionID stays taken (SES-GC-1). The
+	// Tip is kept so a reader of the file can tell what it was; Reachable
+	// never sees the root, since ListRecords skips it.
+	owner.Deleted, owner.Owned, owner.Owner, owner.LeaseUntilUnixMilli, owner.Failed = true, false, "", 0, ""
+	if err := s.saveRoot(sid, owner); err != nil {
 		return err
 	}
 	// The Session's derived data goes with its root.

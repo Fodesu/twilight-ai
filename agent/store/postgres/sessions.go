@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/felinics/twilight/agent/store/postgres/internal/db"
 	"github.com/felinics/twilight/agentcore/jsonstable"
@@ -183,6 +186,37 @@ func (b *sessionBackend) ReadSegment(ctx context.Context, id session.SegmentID, 
 	return commits, head, more, nil
 }
 
+// ReadSegmentStream joins the stream index to the commits (SES-REP-2/5):
+// only the commits that carry the stream are read.
+func (b *sessionBackend) ReadSegmentStream(ctx context.Context, id session.SegmentID, stream session.StreamRef, from session.CommitSeq, limit uint32) ([]session.Commit, bool, error) {
+	if _, err := b.header(ctx, b.d.q, "read", id); err != nil {
+		return nil, false, err
+	}
+	want := int32(math.MaxInt32)
+	if limit > 0 && limit < math.MaxInt32-1 {
+		want = int32(limit) + 1 //nolint:gosec // G115: bounded above
+	}
+	rows, err := b.d.q.SegmentStreamCommits(ctx, db.SegmentStreamCommitsParams{Segment: string(id), Domain: stream.Domain, StreamID: stream.ID, Seq: int64(from), Limit: want}) //nolint:gosec // G115: seq values fit int64
+	if err != nil {
+		return nil, false, err
+	}
+	seqs := make([]int64, len(rows))
+	bodies := make([]string, len(rows))
+	for i, r := range rows {
+		seqs[i], bodies[i] = r.Seq, r.Body
+	}
+	commits, err := decodeCommits("read", id, seqs, bodies)
+	if err != nil {
+		return nil, false, err
+	}
+	more := false
+	if limit > 0 && len(commits) > int(limit) {
+		commits = commits[:limit]
+		more = true
+	}
+	return commits, more, nil
+}
+
 func (b *sessionBackend) Locate(ctx context.Context, id session.SegmentID, cid session.CommitID) (session.CommitSeq, bool, error) {
 	if _, err := b.header(ctx, b.d.q, "locate", id); err != nil {
 		return 0, false, err
@@ -357,20 +391,37 @@ func (b *sessionBackend) TruncateSegment(ctx context.Context, id session.Segment
 	return head, err
 }
 
+// RemoveSegment deletes the node unless a live root's tip or a child's
+// parent edge names it (SES-GC-4). The check runs in the removal's
+// transaction; the parent edge is also a foreign key, so a child inserted
+// by another replica between the check and the delete makes the delete
+// fail rather than orphan the child.
 func (b *sessionBackend) RemoveSegment(ctx context.Context, id session.SegmentID) error {
 	return b.d.tx(ctx, "segment:"+string(id), func(q *db.Queries) error {
+		referenced, err := q.SegmentReferenced(ctx, string(id))
+		if err != nil {
+			return err
+		}
+		if referenced {
+			return &session.Error{Code: session.ErrReferenced, Operation: "collect", Detail: fmt.Sprintf("segment %s is still reached", id)}
+		}
 		if err := q.DeleteSegmentCommitStreams(ctx, string(id)); err != nil {
 			return err
 		}
 		if err := q.DeleteSegmentCommits(ctx, string(id)); err != nil {
 			return err
 		}
-		return q.DeleteSegment(ctx, string(id))
+		err = q.DeleteSegment(ctx, string(id))
+		if isForeignKeyViolation(err) {
+			return &session.Error{Code: session.ErrReferenced, Operation: "collect", Detail: fmt.Sprintf("segment %s gained a child", id)}
+		}
+		return err
 	})
 }
 
 // --- roots and leases (SessionStore) --------------------------------------------
 
+// root reads a live root; a tombstone is not found (SES-GC-1).
 func (b *sessionBackend) root(ctx context.Context, q *db.Queries, op string, sid session.SessionID) (db.SessionRoot, error) {
 	r, err := q.SessionRoot(ctx, string(sid))
 	if noRows(err) {
@@ -378,6 +429,9 @@ func (b *sessionBackend) root(ctx context.Context, q *db.Queries, op string, sid
 	}
 	if err != nil {
 		return db.SessionRoot{}, err
+	}
+	if r.Deleted {
+		return db.SessionRoot{}, kerr(session.ErrNotFound, op, sid, "session deleted")
 	}
 	return r, nil
 }
@@ -392,7 +446,10 @@ func leaseOf(r *db.SessionRoot) session.Lease {
 
 func (b *sessionBackend) CreateSession(ctx context.Context, seg session.Segment, rec session.SessionRecord) error {
 	return b.d.tx(ctx, "session:"+string(rec.ID), func(q *db.Queries) error {
-		if _, err := q.SessionRoot(ctx, string(rec.ID)); err == nil {
+		if existing, err := q.SessionRoot(ctx, string(rec.ID)); err == nil {
+			if existing.Deleted {
+				return kerr(session.ErrDeleted, "create", rec.ID, "session id was deleted and is not reused")
+			}
 			return kerr(session.ErrConflict, "create", rec.ID, "session exists")
 		} else if !noRows(err) {
 			return err
@@ -406,9 +463,19 @@ func (b *sessionBackend) CreateSession(ctx context.Context, seg session.Segment,
 		if err != nil {
 			return err
 		}
-		if err := q.InsertSegment(ctx, db.InsertSegmentParams{ID: string(seg.ID), Header: string(header)}); err != nil {
+		// The parent edge is a foreign key (SES-GC-4): a parent another
+		// replica's Collect removed makes this insert fail, and while the
+		// edge stands the parent cannot be removed.
+		var parent pgtype.Text
+		if seg.Header.Parent != nil {
+			parent = pgtype.Text{String: string(seg.Header.Parent.Segment), Valid: true}
+		}
+		if err := q.InsertSegment(ctx, db.InsertSegmentParams{ID: string(seg.ID), Header: string(header), ParentSegment: parent}); err != nil {
 			if isUniqueViolation(err) {
 				return kerr(session.ErrConflict, "create", rec.ID, fmt.Sprintf("segment %s exists", seg.ID))
+			}
+			if isForeignKeyViolation(err) {
+				return kerr(session.ErrNotFound, "create", rec.ID, fmt.Sprintf("parent segment %s not found", seg.Header.Parent.Segment))
 			}
 			return err
 		}
@@ -465,8 +532,8 @@ func (b *sessionBackend) ListLeases(ctx context.Context) ([]session.Lease, error
 
 // ExpiredLeases reads the (owned, lease_until) index: the scan of a
 // replica pool costs the page it asks for, not the number of Sessions.
-func (b *sessionBackend) ExpiredLeases(ctx context.Context, beforeUnixMilli int64, limit int) ([]session.Lease, error) {
-	rows, err := b.d.q.ExpiredSessionRoots(ctx, db.ExpiredSessionRootsParams{LeaseUntil: beforeUnixMilli, Limit: pageLimit(limit)})
+func (b *sessionBackend) ExpiredLeases(ctx context.Context, limit int) ([]session.Lease, error) {
+	rows, err := b.d.q.ExpiredSessionRoots(ctx, db.ExpiredSessionRootsParams{Before: b.d.now().UnixMilli(), RowLimit: pageLimit(limit)})
 	if err != nil {
 		return nil, err
 	}
@@ -484,7 +551,7 @@ func (b *sessionBackend) Acquire(ctx context.Context, sid session.SessionID, opt
 		if err != nil {
 			return err
 		}
-		now := opts.Now()
+		now := b.d.now()
 		if r.Owned && (r.LeaseUntil == 0 || r.LeaseUntil > now.UnixMilli()) && !opts.Takeover {
 			return kerr(session.ErrOwned, "open", sid, fmt.Sprintf("owned by epoch %d (%s) until %d", r.Epoch, r.Owner, r.LeaseUntil))
 		}
@@ -492,7 +559,7 @@ func (b *sessionBackend) Acquire(ctx context.Context, sid session.SessionID, opt
 			return err
 		}
 		epoch := r.Epoch + 1
-		until := opts.LeaseUntil(now)
+		until := leaseUntil(now, opts.LeaseDuration)
 		if err := q.UpdateSessionOwnership(ctx, db.UpdateSessionOwnershipParams{Epoch: epoch, Owned: true, Owner: opts.Owner, LeaseUntil: until, Failed: "", ID: string(sid)}); err != nil {
 			return err
 		}
@@ -505,8 +572,9 @@ func (b *sessionBackend) Acquire(ctx context.Context, sid session.SessionID, opt
 	return out, nil
 }
 
-func (b *sessionBackend) Renew(ctx context.Context, lease session.Lease, until int64) error {
-	return b.d.tx(ctx, "session:"+string(lease.Session), func(q *db.Queries) error {
+func (b *sessionBackend) Renew(ctx context.Context, lease session.Lease, duration time.Duration) (int64, error) {
+	var until int64
+	err := b.d.tx(ctx, "session:"+string(lease.Session), func(q *db.Queries) error {
 		r, err := b.root(ctx, q, "renew", lease.Session)
 		if err != nil {
 			return err
@@ -514,8 +582,19 @@ func (b *sessionBackend) Renew(ctx context.Context, lease session.Lease, until i
 		if !r.Owned || session.Epoch(r.Epoch) != lease.Epoch { //nolint:gosec // G115: epochs stored from a uint64
 			return kerr(session.ErrOwnershipLost, "renew", lease.Session, fmt.Sprintf("epoch %d superseded by %d", lease.Epoch, r.Epoch))
 		}
+		until = leaseUntil(b.d.now(), duration)
 		return q.UpdateSessionOwnership(ctx, db.UpdateSessionOwnershipParams{Epoch: r.Epoch, Owned: true, Owner: r.Owner, LeaseUntil: until, Failed: r.Failed, ID: r.ID})
 	})
+	return until, err
+}
+
+// leaseUntil is the expiry of a lease taken or renewed at now: zero when it
+// never expires.
+func leaseUntil(now time.Time, d time.Duration) int64 {
+	if d <= 0 {
+		return 0
+	}
+	return now.Add(d).UnixMilli()
 }
 
 func (b *sessionBackend) Release(ctx context.Context, lease session.Lease) error {
@@ -546,6 +625,14 @@ func (b *sessionBackend) DeleteRecord(ctx context.Context, sid session.SessionID
 		if err := q.DeleteProjectionEntries(ctx, string(sid)); err != nil {
 			return err
 		}
-		return q.DeleteSessionRoot(ctx, string(sid))
+		// A tombstone, not a removal (SES-GC-1): the row stays so the id is
+		// never reused; every read of it is not found.
+		return q.TombstoneSessionRoot(ctx, string(sid))
 	})
+}
+
+// RemoveSegment exposes the backend's conditional node removal (SES-GC-4)
+// to the conformance suite; Collect is the only production caller.
+func (s *SessionStore) RemoveSegment(ctx context.Context, id session.SegmentID) error {
+	return s.backend.RemoveSegment(ctx, id)
 }
