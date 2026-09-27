@@ -9,7 +9,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/attempt"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 	"github.com/felinics/twilight/agentcore/turn"
@@ -51,7 +50,7 @@ func TestSubmitReturnsAtOnceAndEventsReportTheTurn(t *testing.T) {
 	}
 	close(gate.release)
 
-	// The Turn completes through its Run's run_ended: attempt/started names the
+	// The Turn completes through its Run's run_ended: turn/started names the
 	// Run of the Turn, run_ended(completed) of that Run is the settlement.
 	var sawStarted, sawCompleted bool
 	var runID run.RunID
@@ -64,10 +63,8 @@ func TestSubmitReturnsAtOnceAndEventsReportTheTurn(t *testing.T) {
 			}
 			switch v := e.Value.(type) {
 			case turn.StartedPayload:
-				sawStarted = v.TurnID == ref.TurnID
-			case attempt.StartedPayload:
-				if turn.TurnID(v.TurnID) == ref.TurnID {
-					runID = v.RunID
+				if v.TurnID == ref.TurnID {
+					sawStarted, runID = true, v.RunID
 				}
 			case runmod.Event:
 				if ended, ok := v.Fact.(run.RunEnded); ok && v.RunID == runID {

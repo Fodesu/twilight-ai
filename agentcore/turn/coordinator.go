@@ -10,7 +10,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/session"
-	attemptmod "github.com/felinics/twilight/agentcore/session/attempt"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
@@ -31,19 +30,9 @@ type DeliverRequest struct {
 	Ref    TurnRef
 	Inputs []run.AgentInput
 }
-type RetryRequest struct {
-	Ref TurnRef
-	// PreviousRunID binds retries and their replays to one failed attempt.
-	PreviousRunID run.RunID
-	Reason        string
-}
 type StopRequest struct {
 	Ref    TurnRef
 	Reason string
-}
-type SettleRequest struct {
-	Ref          TurnRef
-	FailureClass string
 }
 
 type ResumeDisposition string
@@ -57,7 +46,6 @@ const (
 type TurnResponse struct {
 	Ref         TurnRef
 	RunID       run.RunID
-	Attempt     uint32
 	Status      TurnStatus
 	Disposition ResumeDisposition
 	End         run.RunEnd
@@ -74,9 +62,7 @@ type TurnResponse struct {
 type Commands interface {
 	Start(context.Context, writer.Writer, StartRequest) (TurnResponse, error)
 	Deliver(context.Context, writer.Writer, DeliverRequest) (TurnResponse, error)
-	Retry(context.Context, writer.Writer, RetryRequest) (TurnResponse, error)
 	Stop(context.Context, writer.Writer, StopRequest) (TurnResponse, error)
-	Settle(context.Context, writer.Writer, SettleRequest) (TurnResponse, error)
 }
 
 // Reader is the Turn status read (TRN-STA-1); it needs no ownership.
@@ -187,7 +173,7 @@ func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req StartReque
 	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
 	p := PlanDigest(turnID, req.Preset.Digest, inputIDs)
 	commitID := session.CommitID(StartOperationDigest(sid, turnID, p))
-	runID := DeriveRunID(sid, turnID, 1)
+	runID := DeriveRunID(sid, turnID)
 	newRun, err := run.BuildNewRun(runID, es.CausationID(commitID))
 	if err != nil {
 		return TurnResponse{}, err
@@ -207,19 +193,17 @@ func (c *Coordinator) Start(ctx context.Context, w writer.Writer, req StartReque
 			if _, active := surface.Active(); active {
 				return nil, fmt.Errorf("%w: session already has an active turn", ErrConflict)
 			}
-			// The Turn's own fact and the attempt module's binding of this
-			// Turn to its first Run land in one commit (ATT-2).
-			return append(turnBatch(turnID, now,
-				writer.TypedEvent{Type: TypeStarted, Value: StartedPayload{TurnID: turnID, InputIDs: inputIDs, Preset: req.Preset}}),
-				attemptmod.Started(attemptmod.TurnID(turnID), runID, 1, now)), nil
+			// The Turn's fact names the one Run that executes it (TRN-SCP-2).
+			return turnBatch(turnID, now,
+				writer.TypedEvent{Type: TypeStarted, Value: StartedPayload{TurnID: turnID, RunID: runID, InputIDs: inputIDs, Preset: req.Preset}}), nil
 		}),
-		chatlog.DeliverInputs(chatlog.TurnID(turnID), req.Inputs),
+		chatlog.DeliverInputs(chatlog.TurnID(turnID), runID, req.Inputs),
 		runmod.CreateRun(newRun, req.Inputs),
 	}}
 	if err := c.commit(ctx, w, "start", work); err != nil {
 		return TurnResponse{}, err
 	}
-	return c.respond(ctx, req.Ref, runID)
+	return c.respond(ctx, req.Ref)
 }
 
 // --- Deliver ----------------------------------------------------------------------
@@ -240,11 +224,7 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req DeliverR
 	// AcceptInput is not a hard-CAS command (RUN-CMT-4): no Base is needed;
 	// the machine projection is read only for the Run's protocol version
 	// (RUN-CMT-8).
-	att := view.ActiveAttempt()
-	if att == nil {
-		return TurnResponse{}, fmt.Errorf("%w: turn %s has no active attempt", ErrConflict, req.Ref.TurnID)
-	}
-	runID := att.RunID
+	runID := view.RunID
 	if len(req.Inputs) == 0 {
 		return TurnResponse{}, fmt.Errorf("%w: deliver without inputs", ErrConflict)
 	}
@@ -263,103 +243,18 @@ func (c *Coordinator) Deliver(ctx context.Context, w writer.Writer, req DeliverR
 	if err != nil {
 		return TurnResponse{}, err
 	}
-	work := unit.Work{CommitID: session.CommitID(env.ID), Parts: []unit.Part{accept, chatlog.DeliverInputs(chatlog.TurnID(req.Ref.TurnID), req.Inputs)}}
+	work := unit.Work{CommitID: session.CommitID(env.ID), Parts: []unit.Part{accept, chatlog.DeliverInputs(chatlog.TurnID(req.Ref.TurnID), runID, req.Inputs)}}
 	if err := c.commit(ctx, w, "deliver", work); err != nil {
 		if errors.Is(err, run.ErrRunTerminal) {
 			// The last step settled first (TRN-DLV-3): the inputs stay submitted.
-			return c.respond(ctx, req.Ref, runID)
+			return c.respond(ctx, req.Ref)
 		}
 		return TurnResponse{}, err
 	}
-	return c.respond(ctx, req.Ref, runID)
+	return c.respond(ctx, req.Ref)
 }
 
-// --- Retry / Stop / Settle ------------------------------------------------------
-
-func (c *Coordinator) Retry(ctx context.Context, w writer.Writer, req RetryRequest) (TurnResponse, error) {
-	if err := owned(w, req.Ref); err != nil {
-		return TurnResponse{}, err
-	}
-	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
-	surface, err := ReadSurface(ctx, w.Projections(), sid)
-	if err != nil {
-		return TurnResponse{}, err
-	}
-	view, ok := surface.Turns[turnID]
-	if !ok || req.PreviousRunID == "" {
-		return TurnResponse{}, fmt.Errorf("%w: retry requires a previous run of turn %s", ErrConflict, turnID)
-	}
-	var previous *AttemptView
-	for i := range view.Attempts {
-		if view.Attempts[i].RunID == req.PreviousRunID {
-			previous = &view.Attempts[i]
-			break
-		}
-	}
-	if previous == nil {
-		return TurnResponse{}, fmt.Errorf("%w: run %s does not belong to turn %s", ErrConflict, req.PreviousRunID, turnID)
-	}
-	attempt := previous.Attempt + 1
-	runID := DeriveRunID(sid, turnID, attempt)
-	commitID := RetryCommitID(sid, turnID, attempt)
-	newRun, err := run.BuildNewRun(runID, es.CausationID(commitID))
-	if err != nil {
-		return TurnResponse{}, err
-	}
-	// TRN-RTY-1: the new attempt replays the Turn's delivered inputs. They
-	// are read here and checked again inside the unit: a Turn that is not
-	// active receives no delivery, so its InputIDs cannot move meanwhile.
-	inputs, err := deliveredInputs(ctx, w.Projections(), sid, view.InputIDs)
-	if err != nil {
-		return TurnResponse{}, err
-	}
-	work := unit.Work{CommitID: commitID, Parts: []unit.Part{
-		unit.PartFunc(func(_ context.Context, v writer.View, now int64) ([]writer.TypedBatch, error) {
-			surface, err := loadSurface(v)
-			if err != nil {
-				return nil, err
-			}
-			cur, ok := surface.Turns[turnID]
-			if !ok || cur.Status != TurnAttemptFailed || cur.LastAttempt().RunID != req.PreviousRunID {
-				return nil, fmt.Errorf("%w: run %s is not the latest failed attempt of turn %s", ErrConflict, req.PreviousRunID, turnID)
-			}
-			if _, active := surface.Active(); active {
-				return nil, fmt.Errorf("%w: session already has an active turn", ErrConflict)
-			}
-			if len(cur.InputIDs) != len(inputs) {
-				return nil, fmt.Errorf("%w: inputs of turn %s changed during retry", ErrConflict, turnID)
-			}
-			return []writer.TypedBatch{attemptmod.Started(attemptmod.TurnID(turnID), runID, attempt, now)}, nil
-		}),
-		runmod.CreateRun(newRun, inputs),
-	}}
-	if err := c.commit(ctx, w, "retry", work); err != nil {
-		return TurnResponse{}, err
-	}
-	return c.respond(ctx, req.Ref, runID)
-}
-
-// deliveredInputs rebuilds the AgentInputs of a Turn from the chatlog surface,
-// in TurnView.InputIDs order (TRN-RTY-1).
-func deliveredInputs(ctx context.Context, reader extension.ProjectionReader, sid session.SessionID, ids []chatlog.InputID) ([]run.AgentInput, error) {
-	state, _, err := reader.Load(ctx, sid, chatlog.SurfaceProjectionID, chatlog.SurfaceProjection.Version)
-	if err != nil {
-		return nil, err
-	}
-	surface, ok := state.(chatlog.Surface)
-	if !ok {
-		return nil, fmt.Errorf("turn: chatlog surface projection is %T", state)
-	}
-	out := make([]run.AgentInput, 0, len(ids))
-	for _, id := range ids {
-		view, ok := surface.Inputs.Get(id)
-		if !ok {
-			return nil, fmt.Errorf("turn: retry: delivered input %s missing from chatlog", id)
-		}
-		out = append(out, run.AgentInput{ID: run.InputID(id), Digest: view.Input.Digest})
-	}
-	return out, nil
-}
+// --- Stop ---------------------------------------------------------------------------
 
 func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest) (TurnResponse, error) {
 	if err := owned(w, req.Ref); err != nil {
@@ -374,11 +269,7 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest
 	if !ok || view.Status != TurnActive {
 		return TurnResponse{}, fmt.Errorf("%w: turn %s is not active", ErrConflict, turnID)
 	}
-	att := view.ActiveAttempt()
-	if att == nil {
-		return TurnResponse{}, fmt.Errorf("%w: turn %s has no active attempt", ErrConflict, turnID)
-	}
-	runID := att.RunID
+	runID := view.RunID
 	env, err := schema.Wire().Envelope(runID, CancelCommandID(sid, turnID, runID), run.CancelRun{})
 	if err != nil {
 		return TurnResponse{}, err
@@ -398,54 +289,15 @@ func (c *Coordinator) Stop(ctx context.Context, w writer.Writer, req StopRequest
 	if err := c.commit(ctx, w, "stop", work); err != nil && !errors.Is(err, run.ErrRunTerminal) {
 		return TurnResponse{}, err
 	}
-	return c.respond(ctx, req.Ref, runID)
+	return c.respond(ctx, req.Ref)
 }
 
-func (c *Coordinator) Settle(ctx context.Context, w writer.Writer, req SettleRequest) (TurnResponse, error) {
-	if err := owned(w, req.Ref); err != nil {
-		return TurnResponse{}, err
-	}
-	sid, turnID := req.Ref.SessionID, req.Ref.TurnID
-	surface, err := ReadSurface(ctx, w.Projections(), sid)
-	if err != nil {
-		return TurnResponse{}, err
-	}
-	view, ok := surface.Turns[turnID]
-	if !ok || view.Status != TurnAttemptFailed {
-		return TurnResponse{}, fmt.Errorf("%w: turn %s is not attempt_failed", ErrConflict, turnID)
-	}
-	runID := view.LastAttempt().RunID
-	work := unit.Work{CommitID: SettleCommitID(sid, turnID, runID), Parts: []unit.Part{
-		unit.PartFunc(func(_ context.Context, v writer.View, now int64) ([]writer.TypedBatch, error) {
-			surface, err := loadSurface(v)
-			if err != nil {
-				return nil, err
-			}
-			cur, ok := surface.Turns[turnID]
-			if !ok || cur.Status != TurnAttemptFailed || cur.LastAttempt().RunID != runID {
-				return nil, fmt.Errorf("%w: turn %s is not attempt_failed", ErrConflict, turnID)
-			}
-			return turnBatch(turnID, now, writer.TypedEvent{Type: TypeFailed,
-				Value: FailedPayload{TurnID: turnID, RunID: runID, Settlement: SettlementFailed, FailureClass: req.FailureClass}}), nil
-		}),
-	}}
-	if err := c.commit(ctx, w, "settle", work); err != nil {
-		return TurnResponse{}, err
-	}
-	return c.respond(ctx, req.Ref, runID)
-}
-
-// --- Status ----------------------------------------------------------------------------
-
-// Status is the pure read: the Turn's committed state and the disposition of
-// its last attempt (TRN-STA-1). Hosts call it after driving to assemble the
-// conversational result; the disposition logic has this single source.
 func (c *Coordinator) Status(ctx context.Context, ref TurnRef) (TurnResponse, error) {
-	return c.respond(ctx, ref, "")
+	return c.respond(ctx, ref)
 }
 
 // respond reads the projections and fills the disposition (TRN-STA-1).
-func (c *Coordinator) respond(ctx context.Context, ref TurnRef, runID run.RunID) (TurnResponse, error) {
+func (c *Coordinator) respond(ctx context.Context, ref TurnRef) (TurnResponse, error) {
 	surface, err := c.surface(ctx, ref.SessionID)
 	if err != nil {
 		return TurnResponse{}, err
@@ -454,44 +306,17 @@ func (c *Coordinator) respond(ctx context.Context, ref TurnRef, runID run.RunID)
 	if !ok {
 		return TurnResponse{}, fmt.Errorf("%w: unknown turn %s", ErrConflict, ref.TurnID)
 	}
-	if runID == "" {
-		if last := view.LastAttempt(); last != nil {
-			runID = last.RunID
-		}
-	}
-	return c.responseFor(ctx, ref, &view, runID)
+	return c.responseFor(ctx, ref, &view)
 }
 
-func (c *Coordinator) responseFor(ctx context.Context, ref TurnRef, view *TurnView, runIDs ...run.RunID) (TurnResponse, error) {
-	resp := TurnResponse{Ref: ref, Status: view.Status}
-	var att *AttemptView
-	if len(runIDs) > 0 && runIDs[0] != "" {
-		for i := range view.Attempts {
-			if view.Attempts[i].RunID == runIDs[0] {
-				att = &view.Attempts[i]
-			}
-		}
-	}
-	if att == nil {
-		att = view.LastAttempt()
-	}
-	if att == nil {
-		return resp, nil
-	}
-	resp.RunID, resp.Attempt, resp.End = att.RunID, att.Attempt, att.Ended()
-	if att.End != nil {
+func (c *Coordinator) responseFor(ctx context.Context, ref TurnRef, view *TurnView) (TurnResponse, error) {
+	resp := TurnResponse{Ref: ref, Status: view.Status, RunID: view.RunID, End: view.Ended()}
+	if view.End != nil {
 		resp.Disposition = ResumeFinished
 		return resp, nil
 	}
-	record, err := c.Runs.Record(ctx, ref.SessionID, att.RunID)
+	record, err := c.Runs.Record(ctx, ref.SessionID, view.RunID)
 	if err != nil {
-		if errors.Is(err, runtime.ErrRunNotFound) && att.End != nil {
-			// The attempt ran in a parent Session: its Run is not this
-			// Session's execution history (SES-FRK-5), but the surface holds
-			// its settlement.
-			resp.Disposition = ResumeFinished
-			return resp, nil
-		}
 		return TurnResponse{}, err
 	}
 	snapshot := record.Snapshot

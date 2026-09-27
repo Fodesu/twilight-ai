@@ -12,7 +12,6 @@ import (
 	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/attempt"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
@@ -80,6 +79,7 @@ const (
 
 type StartedPayload struct {
 	TurnID   TurnID            `json:"turnId"`
+	RunID    run.RunID         `json:"runId"`
 	InputIDs []chatlog.InputID `json:"inputIds,omitempty"`
 	Preset   PresetRef         `json:"preset"`
 }
@@ -119,20 +119,12 @@ func StartOperationDigest(sid session.SessionID, turnID TurnID, plan es.Digest) 
 }
 
 // DeriveRunID is TRN-ID-4.
-func DeriveRunID(sid session.SessionID, turnID TurnID, ordinal uint32) run.RunID {
-	return run.RunID(digestOf("twilight/turn/run", string(sid), string(turnID), fmt.Sprintf("%d", ordinal)))
-}
-
-func RetryCommitID(sid session.SessionID, turnID TurnID, ordinal uint32) session.CommitID {
-	return session.CommitID(digestOf("twilight/turn/retry", string(sid), string(turnID), fmt.Sprintf("%d", ordinal)))
+func DeriveRunID(sid session.SessionID, turnID TurnID) run.RunID {
+	return run.RunID(digestOf("twilight/turn/run", string(sid), string(turnID)))
 }
 
 func CancelCommandID(sid session.SessionID, turnID TurnID, runID run.RunID) run.CommandID {
 	return run.CommandID(digestOf("twilight/turn/cancel-run", string(sid), string(turnID), string(runID), string(run.ReasonCancelled)))
-}
-
-func SettleCommitID(sid session.SessionID, turnID TurnID, runID run.RunID) session.CommitID {
-	return session.CommitID(digestOf("twilight/turn/settle", string(sid), string(turnID), string(runID)))
 }
 
 // --- module -----------------------------------------------------------------------
@@ -154,14 +146,13 @@ var Module = extension.ModuleDescriptor{
 	ID:      ModuleID,
 	Streams: []extension.StreamDefinition{streamDefinition},
 	Requires: []extension.ModuleRequirement{
-		{Source: extension.SourceTwilight, Module: attempt.ModuleID, Events: []session.EventType{attempt.TypeStarted}},
 		{Source: extension.SourceTwilight, Module: runmod.ModuleID, Events: []session.EventType{runmod.Prefix + "run_ended"}},
 		{Source: extension.SourceTwilight, Module: chatlog.ModuleID, Events: []session.EventType{chatlog.TypeInputDelivered}},
 	},
 	Events: []extension.EventDefinition{
 		def[StartedPayload](TypeStarted, func(p *StartedPayload) error {
-			if p.TurnID == "" || p.Preset.ID == "" || p.Preset.Digest == "" {
-				return errors.New("started requires turnId and preset")
+			if p.TurnID == "" || p.RunID == "" || p.Preset.ID == "" || p.Preset.Digest == "" {
+				return errors.New("started requires turnId, runId and preset")
 			}
 			return nil
 		}),

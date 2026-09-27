@@ -25,9 +25,6 @@ const (
 	// CommandWithdraw withdraws a submitted, undelivered input; payload
 	// WithdrawCommand.
 	CommandWithdraw inbox.Kind = "withdraw"
-	// CommandRetry retries the first Turn awaiting Retry; payload
-	// RetryCommand.
-	CommandRetry inbox.Kind = "retry"
 	// CommandBindWorkspace binds the Session to a Workspace (APP-WSP-2);
 	// payload BindWorkspaceCommand.
 	CommandBindWorkspace inbox.Kind = "bind_workspace"
@@ -59,10 +56,6 @@ type StopCommand struct {
 type WithdrawCommand struct {
 	InputID run.InputID `json:"inputId"`
 	Reason  string      `json:"reason,omitempty"`
-}
-
-type RetryCommand struct {
-	Reason string `json:"reason,omitempty"`
 }
 
 // ErrNoInbox reports an inbox operation on an application built without
@@ -327,20 +320,6 @@ func (s *Session) apply(ctx context.Context, c *inbox.Command) error {
 			return err
 		}
 		return s.a.Chatlog.Withdraw(ctx, s.h.Writer(), cmd.InputID, cmd.Reason)
-	case CommandRetry:
-		cmd, err := decode[RetryCommand](c)
-		if err != nil {
-			return err
-		}
-		ref, ok, err := s.retryCommit(ctx, cmd.Reason)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf("%w: no turn awaits retry", errRejected)
-		}
-		s.driveInBackground(ref)
-		return nil
 	case CommandBindWorkspace:
 		cmd, err := decode[BindWorkspaceCommand](c)
 		if err != nil {

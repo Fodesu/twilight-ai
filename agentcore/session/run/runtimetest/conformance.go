@@ -349,7 +349,7 @@ func testGroupComposition(t *testing.T, factory Factory) {
 	h.submitInputs(input("in-attach"))
 	res = h.mustCommit("r1", schema.Identity().DeriveSettlementCommandID(toolEff), 0,
 		run.SubmitToolResult{StepID: ts.RefValue.ID, CallID: call, Effect: toolEff, Result: run.ToolExecutionResult{Output: output}},
-		moduleEvent{Type: chatlog.TypeInputDelivered, Value: chatlog.InputDeliveredPayload{InputID: "in-attach", TurnID: "t1"}})
+		moduleEvent{Type: chatlog.TypeInputDelivered, Value: chatlog.InputDeliveredPayload{InputID: "in-attach", TurnID: "t1", RunID: "r1"}})
 	types = eventTypes(res.Events)
 	if len(types) != 2 || types[0] != runmod.Prefix+"tool_call_completed" || types[1] != chatlog.TypeInputDelivered {
 		t.Fatalf("group events = %v", types)
@@ -472,7 +472,7 @@ func testSettlementSnapshot(t *testing.T, factory Factory) {
 	if types[len(types)-1] != runmod.Prefix+"run_ended" {
 		t.Fatalf("terminal group events = %v, want run_ended last", types)
 	}
-	if v := h.turnSurface().Turns["t1"]; v.Status != turn.TurnCompleted || v.Attempts[0].End == nil {
+	if v := h.turnSurface().Turns["t1"]; v.Status != turn.TurnCompleted || v.End == nil {
 		t.Fatalf("turn after run_ended = %+v, want completed", v)
 	}
 }
@@ -608,7 +608,7 @@ func testIsolation(t *testing.T, factory Factory) {
 	h.mustApply(writer.SemanticGroup{CommitID: "turn-noise", Batches: []writer.TypedBatch{{
 		Stream: turn.Stream("t9"),
 		Events: []writer.TypedEvent{{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
-			Value: turn.StartedPayload{TurnID: "t9", Preset: turn.PresetRef{ID: "b", Digest: "sha256:b"}}}},
+			Value: turn.StartedPayload{TurnID: "t9", RunID: "r9", Preset: turn.PresetRef{ID: "b", Digest: "sha256:b"}}}},
 	}}})
 	if h.load("r1").Position != p1 {
 		t.Fatal("r2, chatlog or turn writes moved r1")

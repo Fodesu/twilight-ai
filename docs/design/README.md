@@ -29,7 +29,7 @@ agent-session-extension.md    Writer、module registry、按事件类型的 payl
 agent-artifact.md             Artifact binding、content reference、retention claim
 agent-session-chatlog.md      对话内容与 context projection
 agent-run.md                  Run machine、Runtime、Loop、Executor contract
-agent-turn.md                 Turn、attempt、input routing、结算投影
+agent-turn.md                 Turn、input routing、结算投影
 agent-decision.md             PromptBuilder seam、决策组件目录与参考实现
 agent-runtime.md              Owner 组装与 Session 所有权、driver；参考 agent 的 spawn 与 app 策略
 agent-workspace.md            可选 Workspace/Runtime/TargetRef domain
@@ -42,7 +42,7 @@ agentcore/session (kernel)       agentcore/artifact (independent core)
           \                  /
            agentcore/session/extension（含 writer）
                ↓
-   chatlog / session-run / attempt / turn
+   chatlog / session-run / turn
                ↓
              decision / owner（Owner 组合 turn / run）
                     ↓

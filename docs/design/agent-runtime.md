@@ -79,9 +79,9 @@ func (h *Handle) Close(ctx) error
 
 **OWN-HDL-1** `Owner.Open(sid)` 发放对一个 Session 的执行能力，不是读取能力。Open 取得该 Session 的 Writer（本进程 epoch 下）、运行接管处置（DRV-3）并安装恢复监听；返回的 `Handle` 只承载这份能力与其生命周期：`ID`、`Writer`、`Close`。所有权按代（generation）记录，一代的状态为 opening / open / closing：同一 Owner 内一个 Session 同时只有一代，处于任一状态时 Open 都返回 `ErrSessionOpen`，因此一代的释放（停止恢复监听、关闭 Writer）完成之前新的一代不会取得 Writer；`Handle.Close` 只释放自己那一代——先在锁内把该代置为 closing，释放资源后再从表中删除——已释放或正在释放的 Handle 再 Close 为无操作，不会关闭替代它的一代；Close、DeleteSession、Owner.Close 与失败的 Open 都经同一条释放路径，接管处置失败时 Open 释放已取得的 Writer，失败的 Open 不留下所有权。SessionID 是持久身份；Handle 表示"本进程当前拥有它"。Handle 不带任何业务操作：Send、排空、fork、compaction、spawn 分别属于 app、domain 命令或效果层。
 
-**OWN-HDL-2** 写侧要求 Handle，读侧只要 SessionID。core 的每个命令——`turn.Commands`（Start/Deliver/Retry/Stop/Settle）、`chatlog.Commands`（Submit/Withdraw/Compact）、`driver.Drive`、`SessionRunStore.Bind(w)` 与 `RecoverInterrupted`——以 `Handle.Writer()` 为参数；Loop 拿到的是绑定了该 Writer 的 `runtime.RunStore`（`loop.Run/Advance/Deliver(ctx, store, …)`），任何一层都不按 SessionID 重新取 Writer；命令校验请求所指 Session 与 Writer 的 Session 一致。命令路径上的读取——决定"要不要写"的读也属于命令路径：`driver.Drive` 判断 Turn 是否 active、恢复交付查找 Run 所属 Turn、Loop 经绑定的 `RunStore.Load(ctx, runID)` 读机器状态，都经 `w.Projections()` 读 Writer 的事务投影——是 owner 自己 epoch 下的视图，因此失去所有权的 owner 仍按自己的旧视图规划，在下一次提交被围栏（RUN-LOP-5），而不会读到新 owner 的状态后静默结束。三条路径因此是：公共查询经 `ProjectionReader(Store)`；命令规划经 `Writer.Projections()`；命令提交经同一 Writer。公共读取——`turn.ReadSurface`、`chatlog.ReadSurface`、`chatlog.ReadContext`、`SessionRunStore.Record`、`Coordinator.Status`、`Owner.Reply`、`Owner.Projection`——按 SessionID 经 `extension.NewProjectionReader(store, registry, cache)` 从 Store 折叠（EXT-PRJ-3/4），不经 `Writers`，不取得也不延续任何所有权；所有权只在 Open 时随 Writer 的打开转移。
+**OWN-HDL-2** 写侧要求 Handle，读侧只要 SessionID。core 的每个命令——`turn.Commands`（Start/Deliver/Stop）、`chatlog.Commands`（Submit/Withdraw/Compact）、`driver.Drive`、`SessionRunStore.Bind(w)` 与 `RecoverInterrupted`——以 `Handle.Writer()` 为参数；Loop 拿到的是绑定了该 Writer 的 `runtime.RunStore`（`loop.Run/Advance/Deliver(ctx, store, …)`），任何一层都不按 SessionID 重新取 Writer；命令校验请求所指 Session 与 Writer 的 Session 一致。命令路径上的读取——决定"要不要写"的读也属于命令路径：`driver.Drive` 判断 Turn 是否 active、恢复交付查找 Run 所属 Turn、Loop 经绑定的 `RunStore.Load(ctx, runID)` 读机器状态，都经 `w.Projections()` 读 Writer 的事务投影——是 owner 自己 epoch 下的视图，因此失去所有权的 owner 仍按自己的旧视图规划，在下一次提交被围栏（RUN-LOP-5），而不会读到新 owner 的状态后静默结束。三条路径因此是：公共查询经 `ProjectionReader(Store)`；命令规划经 `Writer.Projections()`；命令提交经同一 Writer。公共读取——`turn.ReadSurface`、`chatlog.ReadSurface`、`chatlog.ReadContext`、`SessionRunStore.Record`、`Coordinator.Status`、`Owner.Reply`、`Owner.Projection`——按 SessionID 经 `extension.NewProjectionReader(store, registry, cache)` 从 Store 折叠（EXT-PRJ-3/4），不经 `Writers`，不取得也不延续任何所有权；所有权只在 Open 时随 Writer 的打开转移。
 
-**OWN-HDL-3** Writer 是同步点。跨域不变量由同一个 Session Writer 的原子 Commit 保证，不由 service 之间协调，协调者只有一个：`unit.Commit`。`Start` 是 Turn、attempt、chatlog、Run 四个 Part 的一个 unit（`turn/started`、`attempt/started`、`chatlog/input_delivered` 与 Run 创建事实）；`Deliver` 是 Run 的 `Command` Part（`AcceptInput`）与 chatlog 的 `DeliverInputs` Part 的一个 unit（TRN-DLV-2）。不存在"chatlog 成功、turn 失败、run 未创建"的中间状态。所有命令经同一 Writer 落盘，因此共享同一 epoch 与同一投影视图，过期 owner 由 Writer 围栏（SES-OWN）。
+**OWN-HDL-3** Writer 是同步点。跨域不变量由同一个 Session Writer 的原子 Commit 保证，不由 service 之间协调，协调者只有一个：`unit.Commit`。`Start` 是 Turn、chatlog、Run 三个 Part 的一个 unit（`turn/started`、`chatlog/input_delivered` 与 Run 创建事实）；`Deliver` 是 Run 的 `Command` Part（`AcceptInput`）与 chatlog 的 `DeliverInputs` Part 的一个 unit（TRN-DLV-2）。不存在"chatlog 成功、turn 失败、run 未创建"的中间状态。所有命令经同一 Writer 落盘，因此共享同一 epoch 与同一投影视图，过期 owner 由 Writer 围栏（SES-OWN）。
 
 **OWN-HDL-4** driver 不拥有事实。它读已提交状态、决定执行、经 Loop/Runtime 提交、再读已提交状态；"提交持久状态"与"继续执行"之间不构成事务，崩溃边界允许落在两者之间：Start 已提交而未驱动时，持久事实已是 `TurnActive + ActiveRun`，新 owner Open 后 Drive 即继续同一 Run。需要原子的是 chatlog/turn/run 之间的事实转换；不需要原子的是提交之后的外部效果与驱动推进。
 
@@ -149,7 +149,6 @@ func (s *Session) Submit(ctx, text string) (turn.TurnRef, error)            // �
 func (s *Session) Route(ctx, inputs []run.AgentInput) (turn.TurnResponse, error)
 func (s *Session) Drain(ctx) (turn.TurnResponse, bool, error)
 func (s *Session) Resume(ctx) ([]Result, bool, error)
-func (s *Session) Retry(ctx) ([]Result, bool, error)
 func (s *Session) Status(ctx) (SessionStatus, error)
 func (s *Session) Compact(ctx) (chatlog.CompactionID, bool, error)
 func (s *Session) Handle() *owner.Handle
@@ -226,7 +225,7 @@ func (s *Session) Close(ctx) error
 
 ```text
 // owner.New
-registry    = extension.BuildRegistry(v1, chatlog.Module, runmod.Module, attempt.Module, turn.Module, Ports.Modules...)
+registry    = extension.BuildRegistry(v1, chatlog.Module, runmod.Module, turn.Module, Ports.Modules...)
 frozen      = runmod.FrozenValues(Content)
 content     = runmod.NewContent(frozen)                          // materializer：prompt、Reply、transcript
 writers     = writer.NewWriters(Store, registry, Admission{Artifacts}, Ownership, {Cache, CachePolicy: runmod.WriterCachePolicy(CacheEvery), Observers})
@@ -266,10 +265,10 @@ spawn.Bind(owner); driver.Responders[agent_spawn] = spawn      // 子代理为 R
 - **OWN-HDL-1**：同一 Session 第二次 Open 为 `ErrSessionOpen`，一代处于 opening 或 closing 时同样如此；关闭后重新 Open，旧 Handle 的 Close 不影响新一代（其 Writer 仍可提交）；按 SessionID 的读取在 Handle 关闭前后都可用且不重新打开 Session。
 - **OWN-HDL-2/3**：命令以另一 Session 的 Writer 调用返回 conflict；接管后被替代进程的 Writer 上的 Commit/Deliver 得到 ownership lost 且不改变 ledger（runtimetest、turntest）；被替代进程按 SessionID 的 `Record` 仍读到新 owner 留下的状态；失去所有权的 Loop 在下一次提交返回 ownership lost 并停止结算（loop ownership/takeover 测试）；接管只在新进程打开 Writer 时发生，读取不触发；app module 经同一 Writer 提交的事件与 chatlog 输入出现在同一 ledger。
 - **DRV-1/2**：同一 Run 的第二个本地驱动者得到 `AlreadyDriving` 的成功响应；ctx 取消后 Turn 保持 active、重开后驱动完成。
-- **APP-RTE-1/2**：active Turn 时 Route 走 Deliver，输入在下一次模型请求里紧随工具结果之后；无 active Turn 时 Route 开新 Turn；Drain 取全部积压开一个 Turn；`attempt_failed` 时 Route 为 conflict。
-- **DRV-3**：`missing` execution record 的工具记 Unknown 且同一 RunID 继续；缺失记录的模型步被撤回，Resume 时重新规划（`ModelSteps` 只计重规划的那一步）；`active`/`terminal` attempt 以实际 Outcome 完成原步骤，`orphaned` 映射为 `deferred` 并保持 Executing；Open 请求取消后恢复监听继续，Session/Owner 关闭后监听退出；旧进程的迟到结算被围栏。
+- **APP-RTE-1/2**：active Turn 时 Route 走 Deliver，输入在下一次模型请求里紧随工具结果之后；无 active Turn 时 Route 开新 Turn；Drain 取全部积压开一个 Turn；Run 以非 completed 终结后 Turn 为 `failed`，下一次 Route 开新 Turn。
+- **DRV-3**：`missing` execution record 的工具记 Unknown 且同一 RunID 继续；缺失记录的模型步被撤回，Resume 时重新规划（`ModelSteps` 只计重规划的那一步）；`active`/`terminal` 的执行以实际 Outcome 完成原步骤，`orphaned` 映射为 `deferred` 并保持 Executing；Open 请求取消后恢复监听继续，Session/Owner 关闭后监听退出；旧进程的迟到结算被围栏。
 - **APP-SES-1/2/3**：OpenSession 顺序；Send 的首个 Result 与排空 Result；并发 Send 的 `AlreadyDriving` 收敛。
-- **APP-SES-4、OBS-1**：Submit 在模型仍阻塞时已返回且 Turn 为 active；事件流按 Seq 顺序交付该 Turn 的 `started`、attempt 模块的 `started` 与其 Run 的 `run_ended`；后台驱动失败以 `Event{Err}` 与 `Config.Warn` 报告；同一 Session 上 Send 仍阻塞到 Result。
+- **APP-SES-4、OBS-1**：Submit 在模型仍阻塞时已返回且 Turn 为 active；事件流按 Seq 顺序交付该 Turn 的 `started`（命名其 Run）与该 Run 的 `run_ended`；后台驱动失败以 `Event{Err}` 与 `Config.Warn` 报告；同一 Session 上 Send 仍阻塞到 Result。
 - **APP-CKP-1/2**：Compact 的模型请求经 Executor 到达模型；压缩后下一请求以 summary 开头且只含 retained 后缀；重启进程组装同一上下文；active Turn 时 Compact 为 conflict；封闭校验的四类边界。
 - **SPN-1..5、DRV-4**：spawn 调用以派生身份建子 Session 并以子回复应答父的工具调用（chatlog 条目 Source 为 tool_response）；fork 模式拿到当前 Turn 之前的对话且收到 task；参数错误、未知命名 Preset 与深度超限在建子之前被拒为 response_rejected 且不建子；所有者进程在子模型调用中途退出后，新进程打开父 Session 时 Responder 续接同一子并完成父 Turn，续接后子的 Turn 数与输入数不变。
 - **APP-MEM-2**：`CacheEvery` 到达 Writer；machine projection 从不被 Writer 写入。

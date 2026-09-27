@@ -108,7 +108,7 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 	if !ok {
 		t.Fatal("takeover lost the active turn")
 	}
-	snap, err := runState(p2, sid, active.ActiveRun)
+	snap, err := runState(p2, sid, active.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestRestartWithoutReattachReplans(t *testing.T) {
 	if got, want := len(seen[0].Messages), len(sent.Messages); got != want {
 		t.Fatalf("replanned request has %d messages, the aborted one had %d", got, want)
 	}
-	final, err := runState(p2, sid, active.ActiveRun)
+	final, err := runState(p2, sid, active.RunID)
 	if err != nil || final.State.ModelSteps != 1 {
 		t.Fatalf("model steps after replan = %d %v, want exactly the replanned step", final.State.ModelSteps, err)
 	}
@@ -202,7 +202,7 @@ func TestRestartRedispatchesMissingEffect(t *testing.T) {
 	if len(seen) != 1 || len(seen[0].Messages) != len(sent.Messages) || seen[0].Model != sent.Model {
 		t.Fatalf("redispatched model saw %d requests, want the one frozen request", len(seen))
 	}
-	if final, err := runState(p2, sid, active.ActiveRun); err != nil || final.State.ModelSteps != 1 {
+	if final, err := runState(p2, sid, active.RunID); err != nil || final.State.ModelSteps != 1 {
 		t.Fatalf("model steps after redispatch = %d %v, want the one step that was redispatched", final.State.ModelSteps, err)
 	}
 	close(gate.release)
@@ -327,7 +327,7 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 	if !ok {
 		t.Fatal("takeover lost the active turn")
 	}
-	snap, err := runState(p2, sid, active.ActiveRun)
+	snap, err := runState(p2, sid, active.RunID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,11 +353,11 @@ func TestRestartReattachesRunningModelAttempt(t *testing.T) {
 		case <-time.After(time.Millisecond):
 		}
 	}
-	final, err := runState(p2, sid, active.ActiveRun)
+	final, err := runState(p2, sid, active.RunID)
 	if err != nil || final.State.ModelSteps != 1 {
 		t.Fatalf("model steps = %d %v, want the one original step", final.State.ModelSteps, err)
 	}
-	for _, f := range mustRecord(t, p2, sid, active.ActiveRun).Facts {
+	for _, f := range mustRecord(t, p2, sid, active.RunID).Facts {
 		if _, recovered := f.(run.ModelStepRecovered); recovered {
 			t.Fatal("a reattached attempt must not be recovered")
 		}

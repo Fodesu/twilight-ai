@@ -263,12 +263,13 @@ func CheckRetainClosure(entries []Entry, retain []EntryDigestPair) error {
 // the Run carries only the digest. A failed check is
 // ErrNotSubmitted and refuses the whole unit, so an input withdrawn between
 // the caller's read and the commit is caught inside the critical section.
-func DeliverInputs(turnID TurnID, inputs []run.AgentInput) unit.Part {
-	return deliverInputs{turnID: turnID, inputs: inputs}
+func DeliverInputs(turnID TurnID, runID run.RunID, inputs []run.AgentInput) unit.Part {
+	return deliverInputs{turnID: turnID, runID: runID, inputs: inputs}
 }
 
 type deliverInputs struct {
 	turnID TurnID
+	runID  run.RunID
 	inputs []run.AgentInput
 }
 
@@ -294,7 +295,7 @@ func (d deliverInputs) Prepare(_ context.Context, view writer.View, now int64) (
 			return nil, fmt.Errorf("%w: input %s digest differs from its submitted content", ErrNotSubmitted, in.ID)
 		}
 		events = append(events, writer.TypedEvent{Type: TypeInputDelivered, RecordedAtUnixMilli: now,
-			Value: InputDeliveredPayload{InputID: InputID(in.ID), TurnID: d.turnID}})
+			Value: InputDeliveredPayload{InputID: InputID(in.ID), TurnID: d.turnID, RunID: d.runID}})
 	}
 	return []writer.TypedBatch{{Stream: Stream, Events: events}}, nil
 }

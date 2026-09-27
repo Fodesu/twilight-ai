@@ -20,7 +20,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/attempt"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 )
@@ -355,9 +354,15 @@ type InputSubmittedPayload struct {
 	Content              jsonstable.Value `json:"content"`
 	SubmittedAtUnixMilli int64            `json:"submittedAtUnixMilli"`
 }
+
+// InputDeliveredPayload records an input entering a Turn's Run: the Turn
+// and the one Run that executes it (TRN-SCP-2). The chatlog learns which
+// Turn a Run serves from this delivery, so the entries it folds from that
+// Run's facts carry the Turn.
 type InputDeliveredPayload struct {
-	InputID InputID `json:"inputId"`
-	TurnID  TurnID  `json:"turnId"`
+	InputID InputID   `json:"inputId"`
+	TurnID  TurnID    `json:"turnId"`
+	RunID   run.RunID `json:"runId"`
 }
 type InputWithdrawnPayload struct {
 	InputID InputID `json:"inputId"`
@@ -542,12 +547,10 @@ func runRequirement() extension.ModuleRequirement {
 
 // Module is the chatlog ModuleDescriptor (CHT-SCP-1: Requires run facts).
 var Module = extension.ModuleDescriptor{
-	Source:  extension.SourceTwilight,
-	ID:      ModuleID,
-	Streams: []extension.StreamDefinition{streamDefinition},
-	Requires: []extension.ModuleRequirement{runRequirement(),
-		// The Turn a Run serves is the attempt module's fact (ATT-1).
-		{Source: extension.SourceTwilight, Module: attempt.ModuleID, Events: []session.EventType{attempt.TypeStarted}}},
+	Source:   extension.SourceTwilight,
+	ID:       ModuleID,
+	Streams:  []extension.StreamDefinition{streamDefinition},
+	Requires: []extension.ModuleRequirement{runRequirement()},
 	Events: []extension.EventDefinition{
 		def[InputSubmittedPayload](TypeInputSubmitted, func(p *InputSubmittedPayload) error {
 			if p.InputID == "" || p.Content.IsZero() {
@@ -556,8 +559,8 @@ var Module = extension.ModuleDescriptor{
 			return nil
 		}),
 		def[InputDeliveredPayload](TypeInputDelivered, func(p *InputDeliveredPayload) error {
-			if p.InputID == "" || p.TurnID == "" {
-				return errors.New("input_delivered requires inputId and turnId")
+			if p.InputID == "" || p.TurnID == "" || p.RunID == "" {
+				return errors.New("input_delivered requires inputId, turnId and runId")
 			}
 			return nil
 		}),

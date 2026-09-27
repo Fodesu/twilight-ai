@@ -7,7 +7,7 @@ Session、Run、Turn、Executor 或 Workspace 协议。协议权威分别是：
 
 - [Session](agent-session.md) 与 [Session Module Framework](agent-session-extension.md)：事实流、Writer、所有权、幂等与投影；
 - [Run](agent-run.md)：执行状态机、Assignment、Outcome 与 recovery；
-- [Turn](agent-turn.md)：回合、attempt、输入投递与结算；
+- [Turn](agent-turn.md)：回合、输入投递与结算；
 - [Runtime](agent-runtime.md)：Owner 组装、Session 所有权与 app 策略；
 - [Workspace](agent-workspace.md)：逻辑工作空间、RuntimeBinding 与 TargetRef。
 
@@ -128,7 +128,7 @@ execution: observed | unavailable | recovery_required
 
 | 故障窗口 | 必须保持 | 允许的新事实 | 禁止行为 | 主要 oracle |
 |---|---|---|---|---|
-| Owner 写入 Start 后、Dispatch 前退出 | Turn、Run、Attempt | 重新规划或继续驱动 | 重复旧 Assignment | Run facts、Assignment 数量 |
+| Owner 写入 Start 后、Dispatch 前退出 | Turn、Run | 重新规划或继续驱动 | 重复旧 Assignment | Run facts、Assignment 数量 |
 | worker 接受 Assignment 前退出 | AssignmentKey；若已有 binding 则保持 binding | 明确 missing/orphaned 观察 | 无依据地重发 provider job | Execution Record |
 | worker 已持久化 accepted 后退出 | Assignment、Claim、Execution Record | takeover/attach | 创建第二个 execution | binding、provider 调用次数 |
 | provider invocation 中 worker 退出 | AssignmentKey、已知 binding | active、terminal 或 orphaned | 自动把不确定执行当作未执行 | backend 状态、最终 facts |

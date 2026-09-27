@@ -240,11 +240,6 @@ func (s *Session) Status(ctx context.Context) (SessionStatus, error) {
 	if v, ok := surface.Active(); ok {
 		out.Active = v.TurnID
 	}
-	for _, id := range surface.Order {
-		if surface.Turns[id].Status == turn.TurnAttemptFailed {
-			out.Failed = append(out.Failed, id)
-		}
-	}
 	return out, nil
 }
 
@@ -398,11 +393,6 @@ func (s *Session) commitRoute(ctx context.Context, inputs []run.AgentInput) (tur
 		}
 		return ref, nil
 	}
-	for _, id := range surface.Order {
-		if surface.Turns[id].Status == turn.TurnAttemptFailed {
-			return turn.TurnRef{}, fmt.Errorf("%w: %w: turn %s", turn.ErrConflict, errAwaitsDecision, id)
-		}
-	}
 	ref := s.ref(s.newTurnID())
 	if _, err := s.a.Turns.Start(ctx, s.h.Writer(), turn.StartRequest{Ref: ref, Inputs: inputs, Preset: s.opts.Preset}); err != nil {
 		return turn.TurnRef{}, err
@@ -460,38 +450,6 @@ func (s *Session) Resume(ctx context.Context) ([]Result, bool, error) {
 	}
 	out, err := s.settled(ctx, &resp)
 	return out, true, err
-}
-
-// Retry retries the first Turn awaiting Retry; ok is false when none is.
-func (s *Session) Retry(ctx context.Context) ([]Result, bool, error) {
-	ref, ok, err := s.retryCommit(ctx, "app retry")
-	if err != nil || !ok {
-		return nil, false, err
-	}
-	resp, err := s.a.Driver.Drive(ctx, s.h.Writer(), ref.TurnID)
-	if err != nil {
-		return nil, false, err
-	}
-	out, err := s.settled(ctx, &resp)
-	return out, true, err
-}
-
-// retryCommit commits the Retry of the first Turn awaiting one; ok is false
-// when none is.
-func (s *Session) retryCommit(ctx context.Context, reason string) (turn.TurnRef, bool, error) {
-	status, err := s.Status(ctx)
-	if err != nil || len(status.Failed) == 0 {
-		return turn.TurnRef{}, false, err
-	}
-	ref := s.ref(status.Failed[0])
-	previous, err := s.a.Turns.Status(ctx, ref)
-	if err != nil {
-		return turn.TurnRef{}, false, err
-	}
-	if _, err := s.a.Turns.Retry(ctx, s.h.Writer(), turn.RetryRequest{Ref: ref, PreviousRunID: previous.RunID, Reason: reason}); err != nil {
-		return turn.TurnRef{}, false, err
-	}
-	return ref, true, nil
 }
 
 // settled turns a TurnResponse into Results and drains the backlog: while a

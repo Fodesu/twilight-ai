@@ -5,7 +5,6 @@ import (
 
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/attempt"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
@@ -16,81 +15,51 @@ const SurfaceProjectionID extension.ProjectionID = "twilight/turn/surface"
 type TurnStatus string
 
 const (
-	TurnActive        TurnStatus = "active"
-	TurnAttemptFailed TurnStatus = "attempt_failed"
-	TurnCompleted     TurnStatus = "completed"
-	TurnFailed        TurnStatus = "failed"
-	TurnStopped       TurnStatus = "stopped"
-	TurnSuperseded    TurnStatus = "superseded"
+	TurnActive     TurnStatus = "active"
+	TurnCompleted  TurnStatus = "completed"
+	TurnFailed     TurnStatus = "failed"
+	TurnStopped    TurnStatus = "stopped"
+	TurnSuperseded TurnStatus = "superseded"
 )
 
-type AttemptView struct {
-	RunID   run.RunID `json:"runId"`
-	Attempt uint32    `json:"attempt"`
-	// End is the terminal result from twilight/run/run_ended; nil while active.
-	End *run.RunEnded `json:"end,omitempty"`
-}
-
-// Ended returns the RunEnd variant, or nil for a non-terminal attempt.
-func (a *AttemptView) Ended() run.RunEnd {
-	if a == nil || a.End == nil {
-		return nil
-	}
-	return a.End.End
-}
-
 type TurnView struct {
-	TurnID            TurnID            `json:"turnId"`
-	Status            TurnStatus        `json:"status"`
-	InputIDs          []chatlog.InputID `json:"inputIds,omitempty"`
-	Preset            PresetRef         `json:"preset"`
-	Attempts          []AttemptView     `json:"attempts,omitempty"`
-	ActiveRun         run.RunID         `json:"activeRun,omitempty"`
-	ReplacementTurnID TurnID            `json:"replacementTurnId,omitempty"`
+	TurnID   TurnID            `json:"turnId"`
+	Status   TurnStatus        `json:"status"`
+	InputIDs []chatlog.InputID `json:"inputIds,omitempty"`
+	Preset   PresetRef         `json:"preset"`
+	// RunID is the one Run that executes this Turn (TRN-SCP-2); End is its
+	// terminal result from twilight/run/run_ended, nil while the Run is
+	// open.
+	RunID run.RunID     `json:"runId"`
+	End   *run.RunEnded `json:"end,omitempty"`
+	// Settlement is the Turn's own settlement fact, when one was written
+	// (Stop writes failed{stopped} beside the Run's cancellation); a Turn
+	// settled by its Run's end alone has none.
+	Settlement        Settlement `json:"settlement,omitempty"`
+	FailureClass      string     `json:"failureClass,omitempty"`
+	ReplacementTurnID TurnID     `json:"replacementTurnId,omitempty"`
 }
 
-// LastAttempt returns the most recent attempt, if any.
-func (v *TurnView) LastAttempt() *AttemptView {
-	if len(v.Attempts) == 0 {
+// Ended is the Run's terminal end, nil while it is open.
+func (v *TurnView) Ended() run.RunEnd {
+	if v == nil || v.End == nil {
 		return nil
 	}
-	return &v.Attempts[len(v.Attempts)-1]
-}
-
-// ActiveAttempt returns the attempt behind ActiveRun.
-func (v *TurnView) ActiveAttempt() *AttemptView {
-	for i := range v.Attempts {
-		if v.Attempts[i].RunID == v.ActiveRun && v.ActiveRun != "" {
-			return &v.Attempts[i]
-		}
-	}
-	return nil
+	return v.End.End
 }
 
 type TurnSurface struct {
 	Order []TurnID            `json:"order"`
 	Turns map[TurnID]TurnView `json:"turns"`
-	// RunOwner maps each active Run to its Turn, from attempt/started until
-	// run_ended, so a settlement is routed to the attempt it ends
-	// (TRN-PRJ-1). An ended Run leaves it: its attempt keeps the result, and
-	// OwnerOf still answers for it from the attempts.
+	// RunOwner routes a Run to the Turn it executes, from twilight/turn/started
+	// (TRN-PRJ-1).
 	RunOwner map[run.RunID]TurnID `json:"runOwner"`
 }
 
-// OwnerOf returns the Turn a Run belongs to: the active table first, then
-// the attempts of every Turn for a Run that already ended.
+// OwnerOf is the Turn a Run executes.
 func (s *TurnSurface) OwnerOf(runID run.RunID) (TurnID, bool) {
-	if turnID, ok := s.RunOwner[runID]; ok {
-		return turnID, true
-	}
-	for _, id := range s.Order {
-		for _, att := range s.Turns[id].Attempts {
-			if att.RunID == runID {
-				return id, true
-			}
-		}
-	}
-	return "", false
+	turnID, ok := s.RunOwner[runID]
+	return turnID, ok
 }
 
 func (s TurnSurface) clone() TurnSurface {
@@ -98,7 +67,6 @@ func (s TurnSurface) clone() TurnSurface {
 	for k := range s.Turns {
 		v := s.Turns[k]
 		v.InputIDs = append([]chatlog.InputID(nil), v.InputIDs...)
-		v.Attempts = append([]AttemptView(nil), v.Attempts...)
 		out.Turns[k] = v
 	}
 	for k, v := range s.RunOwner {
@@ -120,7 +88,7 @@ func (s *TurnSurface) Active() (TurnView, bool) {
 var SurfaceProjection = extension.ProjectionDefinition{
 	ID: SurfaceProjectionID, Version: 1,
 	Consumes: []session.EventType{TypeStarted, TypeFailed, TypeSuperseded,
-		attempt.TypeStarted, chatlog.TypeInputDelivered, runmod.Prefix + "run_ended"},
+		chatlog.TypeInputDelivered, runmod.Prefix + "run_ended"},
 	// Attempt settlement is folded from run_ended, so inherited Turns settle
 	// from the parent's run streams, whose domain is of segment lineage and
 	// would otherwise be skipped (EXT-PRJ-8); a fork point inside a Turn is
@@ -146,9 +114,13 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		if _, dup := s.Turns[p.TurnID]; dup {
 			return nil, fmt.Errorf("turn %s started twice", p.TurnID)
 		}
+		if owner, dup := s.RunOwner[p.RunID]; dup {
+			return nil, fmt.Errorf("run %s already executes turn %s", p.RunID, owner)
+		}
 		s.Order = append(s.Order, p.TurnID)
 		s.Turns[p.TurnID] = TurnView{TurnID: p.TurnID, Status: TurnActive, InputIDs: append([]chatlog.InputID(nil), p.InputIDs...),
-			Preset: p.Preset}
+			Preset: p.Preset, RunID: p.RunID}
+		s.RunOwner[p.RunID] = p.TurnID
 	case runmod.Event:
 		return s.applyRun(p)
 	case FailedPayload:
@@ -156,7 +128,7 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		v.ActiveRun = ""
+		v.Settlement, v.FailureClass = p.Settlement, p.FailureClass
 		if p.Settlement == SettlementStopped {
 			v.Status = TurnStopped
 		} else {
@@ -168,21 +140,11 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		v.Status, v.ActiveRun, v.ReplacementTurnID = TurnSuperseded, "", p.ReplacementTurnID
+		if v.Status != TurnActive {
+			return nil, fmt.Errorf("turn %s superseded while %s", p.TurnID, v.Status)
+		}
+		v.Settlement, v.Status, v.ReplacementTurnID = "", TurnSuperseded, p.ReplacementTurnID
 		s.Turns[p.TurnID] = v
-	case attempt.StartedPayload:
-		turnID := TurnID(p.TurnID)
-		v, ok := s.Turns[turnID]
-		if !ok {
-			return nil, fmt.Errorf("turn %s attempt before started", turnID)
-		}
-		if v.ActiveRun != "" {
-			return nil, fmt.Errorf("turn %s already has active run %s", turnID, v.ActiveRun)
-		}
-		v.Attempts = append(v.Attempts, AttemptView{RunID: p.RunID, Attempt: p.Attempt})
-		v.ActiveRun, v.Status = p.RunID, TurnActive
-		s.Turns[turnID] = v
-		s.RunOwner[p.RunID] = turnID
 	case chatlog.InputDeliveredPayload:
 		v, ok := s.Turns[TurnID(p.TurnID)]
 		if !ok {
@@ -205,6 +167,9 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) {
 // completed Run completes the Turn; any other end leaves the Turn
 // attempt_failed until Retry, Stop or Settle decide. A Run owned by no Turn
 // of this Session is not ours.
+// applyRun settles the Turn a Run executes (TRN-PRJ-1): completed when the
+// Run completed, failed otherwise; a Stop already settled it as stopped in
+// the same commit and the end is only recorded.
 func (s TurnSurface) applyRun(ev runmod.Event) (any, error) {
 	ended, ok := ev.Fact.(run.RunEnded)
 	if !ok {
@@ -215,39 +180,20 @@ func (s TurnSurface) applyRun(ev runmod.Event) (any, error) {
 		return s, nil
 	}
 	v := s.Turns[turnID]
-	if err := v.end(ev.RunID, &ended); err != nil {
-		return nil, err
+	if v.End != nil {
+		return nil, fmt.Errorf("turn %s run %s ended twice", turnID, ev.RunID)
 	}
-	delete(s.RunOwner, ev.RunID)
-	v.ActiveRun = ""
+	v.End = &ended
 	if _, completed := ended.End.(run.RunCompletedEnd); completed {
 		if v.Status != TurnActive {
 			return nil, fmt.Errorf("turn %s completed while %s", turnID, v.Status)
 		}
 		v.Status = TurnCompleted
 	} else if v.Status == TurnActive {
-		v.Status = TurnAttemptFailed
+		v.Status = TurnFailed
 	}
 	s.Turns[turnID] = v
 	return s, nil
-}
-
-// end records the terminal result of the attempt behind runID. A settlement
-// naming a Run the Turn never started, or an attempt that already ended, is a
-// fold error rather than a silent no-op: the surface would otherwise report
-// the Turn settled with no attempt carrying the result.
-func (v *TurnView) end(runID run.RunID, result *run.RunEnded) error {
-	for i := range v.Attempts {
-		if v.Attempts[i].RunID != runID {
-			continue
-		}
-		if v.Attempts[i].End != nil {
-			return fmt.Errorf("turn %s attempt %s ended twice", v.TurnID, runID)
-		}
-		v.Attempts[i].End = result
-		return nil
-	}
-	return fmt.Errorf("turn %s has no attempt %s", v.TurnID, runID)
 }
 
 func (s *TurnSurface) settling(id TurnID) (TurnView, error) {
@@ -255,8 +201,11 @@ func (s *TurnSurface) settling(id TurnID) (TurnView, error) {
 	if !ok {
 		return TurnView{}, fmt.Errorf("turn %s settled before started", id)
 	}
-	if v.Status != TurnActive && v.Status != TurnAttemptFailed {
-		return TurnView{}, fmt.Errorf("turn %s settled twice", id)
+	// A Turn is settled once: while active, or right after its Run ended
+	// without completing, when the unit that ended the Run (Stop) writes
+	// the Turn's own settlement beside it (TRN-STP-1).
+	if v.Status == TurnActive || (v.Status == TurnFailed && v.Settlement == "") {
+		return v, nil
 	}
-	return v, nil
+	return TurnView{}, fmt.Errorf("turn %s settled twice", id)
 }

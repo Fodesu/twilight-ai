@@ -51,8 +51,6 @@ const PromptContextV1 turn.PromptBuilderRef = "twilight/decision/prompt/context-
 
 **DEC-PMT-5** summary 的 TextPart 直接写入 sdk.Message；ReferencePart 在 context-v1 中以名字呈现，不物化。assistant 与 tool_result 的正文来自冻结值，不是 parts。
 
-**DEC-PMT-6** 同一 Turn 有多个 Run attempt 时，context-v1 把全部 attempt 的 assistant 与 tool_result 按 commit 顺序纳入 prompt，包括失败 attempt 的部分输出与 status=`unknown` 的工具结果。其他策略以另一个 `PromptBuilderRef` 注册，不修改本实现。
-
 ## 3. 目录
 
 ```go
@@ -81,6 +79,6 @@ func DefaultPromptBuilders() *decision.PromptBuilders // 含 PromptContextV1
 
 - **DEC-SCP-1、DEC-CAT-2、DEC-PMT-1**：两个独立构建的目录对同一 AgentPreset、同一投影状态与同一冻结正文解析出的 PromptBuilder 给出逐字段相同的 `Prompt`；正文缺失使 Build 失败；未注册的 PromptBuilderRef 解析失败；nil 目录不可解析。
 - **DEC-CAT-1**：空 ref、nil factory、重复注册被拒绝。
-- **DEC-PMT-2**：中途输入排在未结算工具结果之后；`unknown` 工具结果标记 error；未配对调用或结果被拒绝；多 attempt 的条目全部进入 prompt（由 turn 与 host 的集成测试覆盖）。
+- **DEC-PMT-2**：中途输入排在未结算工具结果之后；`unknown` 工具结果标记 error；未配对调用或结果被拒绝。
 - **DEC-INP-1**：`input.TextOf(input.Text(s)) == s`。
 - **TRN-PST-1**：Prompt、Scheduling、MalformedRetries、SystemPrompt 任一变化改变 AgentPreset 摘要（turn 的 golden）。

@@ -145,7 +145,7 @@ func Example_jsonlPrototype() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("turn-2: %s, disposition %s, attempt %d\n", resp2.Status, resp2.Disposition, resp2.Attempt)
+	fmt.Printf("turn-2: %s, disposition %s\n", resp2.Status, resp2.Disposition)
 
 	// The dead process's worker returns; owner.json fences its settlement.
 	close(stage2.release)
@@ -175,9 +175,9 @@ func Example_jsonlPrototype() {
 	// turn-1: completed
 	// turn-2: started from the queued input; tool call is Executing; process 1 crashes
 	// process 2: took over; 1 executing target disposed
-	// turn-2: completed, disposition finished, attempt 1
+	// turn-2: completed, disposition finished
 	// process 1: ownership lost
-	// log.jsonl: 22 lines, chain verified over 35 events
+	// log.jsonl: 22 lines, chain verified over 33 events
 	// first event: twilight/chatlog/input_submitted; last event: twilight/run/run_ended
 }
 

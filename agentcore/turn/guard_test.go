@@ -36,7 +36,7 @@ func (v guardView) Projection(id extension.ProjectionID, _ extension.ProjectionV
 }
 
 func activeSurface(runID run.RunID) TurnSurface {
-	return TurnSurface{Order: []TurnID{"t1"}, Turns: map[TurnID]TurnView{"t1": {TurnID: "t1", Status: TurnActive, ActiveRun: runID}}}
+	return TurnSurface{Order: []TurnID{"t1"}, Turns: map[TurnID]TurnView{"t1": {TurnID: "t1", Status: TurnActive, RunID: runID}}}
 }
 
 func machineWith(current run.Current) runmod.Machine {

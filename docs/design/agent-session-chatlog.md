@@ -23,11 +23,11 @@ Surface / Context（结构 + digest）
 可展示 / 可发送的表示
 ```
 
-`assistant` 与 `tool_result` 条目携带 `TurnID`（来自绑定该 Run 的 `twilight/attempt/started`）；Input 在 `input_delivered` 之后挂上 TurnID；summary 与 compaction 不携带 TurnID。回合的创建、attempt 与结束由 `twilight/turn/` 事件表达。summary 的外部内容经 `ReferencePart` 关联 Artifact BindingID。
+`assistant` 与 `tool_result` 条目携带 `TurnID`（来自把输入投递给该 Run 的 `input_delivered{turnId, runId}`）；Input 在 `input_delivered` 之后挂上 TurnID；summary 与 compaction 不携带 TurnID。回合的创建与结束由 `twilight/turn/` 事件表达。summary 的外部内容经 `ReferencePart` 关联 Artifact BindingID。
 
 流式 `text_delta` / `reasoning_delta` 由 Loop EventSink 发送，属于临时观察。Chatlog 权威是已提交的事实。
 
-**CHT-SCP-1** 本模块拥有对话自身的事实与两个投影，并声明单例流 domain `chatlog`（`LineageSession`，EXT-STR-1），对话事实全部写入这条流。Application 拥有模型调用、provider transport、发送策略与审计。`turn` 拥有回合与 Run linkage。本模块的 `Requires`（EXT-REG-4）为 `run` 的事实 `model_step_completed`、`tool_step_opened`、`tool_call_completed`、`tool_call_answered`、`tool_call_failed`、`run_ended`，以及 `attempt` 的 `started`（Run 到 Turn 的绑定，ATT-1）；事件中的 `TurnID` 是 opaque 字符串，不需要 turn 的 codec。
+**CHT-SCP-1** 本模块拥有对话自身的事实与两个投影，并声明单例流 domain `chatlog`（`LineageSession`，EXT-STR-1），对话事实全部写入这条流。Application 拥有模型调用、provider transport、发送策略与审计。`turn` 拥有回合与 Run linkage。本模块的 `Requires`（EXT-REG-4）为 `run` 的事实 `model_step_completed`、`tool_step_opened`、`tool_call_completed`、`tool_call_answered`、`tool_call_failed`、`run_ended`；Run 到 Turn 的绑定由本模块自己的 `input_delivered{turnId, runId}` 建立（TRN-SCP-1）。
 
 ## 2. stable entity 与生命周期
 
@@ -51,7 +51,7 @@ type CompactionID string
 | Summary | `summary` | 无 | 随 compaction 失效 | compaction 的摘要正文 |
 | Compaction | `compaction_created` | 无 | invalidated | 指向已有条目的 ledger Position |
 
-**CHT-LIF-1** reducer 拒绝 identity mutation、非法状态迁移、replacement conflict 与重复 ID。模型步骤进行中走 EventSink；定稿即 `ModelStepCompleted` / `ToolCallCompleted` 等 Run 事实本身。同一 Turn 的多个 Run attempt 各自产生 assistant 与 tool_result 条目，全部保留并出现在 ContextFold 的输出里；哪些条目进入模型请求由 PromptBuilder 决定（TRN-RTY-3、DEC-PMT-6），本模块不作取舍。
+**CHT-LIF-1** reducer 拒绝 identity mutation、非法状态迁移、replacement conflict 与重复 ID。模型步骤进行中走 EventSink；定稿即 `ModelStepCompleted` / `ToolCallCompleted` 等 Run 事实本身。失败 Turn 的 assistant 与 tool_result 条目全部保留并出现在 ContextFold 的输出里，下一个 Turn 的模型由此知道哪些工具已执行（TRN-DUR-2）；哪些条目进入模型请求由 PromptBuilder 决定（TRN-RTY-3、DEC-PMT-6），本模块不作取舍。
 
 ## 3. parts 与条目
 
@@ -220,7 +220,7 @@ type Surface struct {
     EntryOrder []SurfaceEntry
     Superseded Table[ToolResultID, ToolResultID]
     Compactions Table[CompactionID, CompactionView]
-    Runs Table[run.RunID, TurnID] // attempt/started 的 TurnID
+    Runs Table[run.RunID, TurnID] // input_delivered 的 TurnID，按 RunID
 }
 // Table 是持久化 map：Set 返回新值、不改写接收者，各状态共享未变的存储；编码为普通 JSON object。
 ```

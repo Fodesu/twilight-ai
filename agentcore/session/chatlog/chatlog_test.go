@@ -12,14 +12,13 @@ import (
 	"github.com/felinics/twilight/agentcore/run/model"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/attempt"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 )
 
 func registry(t *testing.T) *extension.Registry {
 	t.Helper()
-	r, err := extension.BuildRegistry(runmod.Module, attempt.Module, Module)
+	r, err := extension.BuildRegistry(runmod.Module, Module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,8 +118,8 @@ func TestPartsCodecRoundTripAndRejects(t *testing.T) {
 func TestRunFactsProjectEntries(t *testing.T) {
 	ctxState, surf, err := foldSteps(t, []step{
 		{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-1", Content: jsonstable.MustParse(`{"text":"hi"}`), SubmittedAtUnixMilli: 1}},
-		{TypeInputDelivered, InputDeliveredPayload{InputID: "in-1", TurnID: "t1"}},
-		step{attempt.TypeStarted, attempt.StartedPayload{TurnID: "t1", RunID: "r1", Attempt: 1}}, runStep("r1", run.RunCreated{RunID: "r1"}),
+		{TypeInputDelivered, InputDeliveredPayload{InputID: "in-1", TurnID: "t1", RunID: "r1"}},
+		runStep("r1", run.RunCreated{RunID: "r1"}),
 		completed("r1", "s1", "sha256:res"),
 		opened("r1", "s1", "c1", "c2"),
 		runStep("r1", run.ToolCallCompleted{StepID: "s1/tools", CallID: "c1", OutputDigest: "sha256:out"}),
@@ -165,7 +164,7 @@ func TestRunFactsProjectEntries(t *testing.T) {
 		t.Fatalf("run owner = %+v", owner)
 	}
 	// Superseding twice, or a result outside the context, is a fold error.
-	if _, _, err := foldSteps(t, []step{step{attempt.TypeStarted, attempt.StartedPayload{TurnID: "t1", RunID: "r1", Attempt: 1}}, runStep("r1", run.RunCreated{RunID: "r1"}), completed("r1", "s1", "sha256:res"), opened("r1", "s1", "c1"),
+	if _, _, err := foldSteps(t, []step{step{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-1", Content: jsonstable.MustParse(`{"text":"hi"}`), SubmittedAtUnixMilli: 1}}, step{TypeInputDelivered, InputDeliveredPayload{InputID: "in-1", TurnID: "t1", RunID: "r1"}}, runStep("r1", run.RunCreated{RunID: "r1"}), completed("r1", "s1", "sha256:res"), opened("r1", "s1", "c1"),
 		runStep("r1", run.ToolCallFailed{StepID: "s1/tools", CallID: "c1", Failure: run.ToolFailure{Class: "x"}}),
 		{TypeToolResultSuperseded, ToolResultSupersededPayload{ToolResultID: "c1", Status: ToolError}},
 		{TypeToolResultSuperseded, ToolResultSupersededPayload{ToolResultID: "c1", Status: ToolError}}}); err == nil {
@@ -193,9 +192,9 @@ func TestSurfaceAndContextFold(t *testing.T) {
 		{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-1", Content: content, SubmittedAtUnixMilli: 1}},
 		{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-2", Content: content, SubmittedAtUnixMilli: 2}},
 		{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-3", Content: content, SubmittedAtUnixMilli: 3}},
-		{TypeInputDelivered, InputDeliveredPayload{InputID: "in-1", TurnID: "t1"}},
+		{TypeInputDelivered, InputDeliveredPayload{InputID: "in-1", TurnID: "t1", RunID: "r1"}},
 		{TypeInputWithdrawn, InputWithdrawnPayload{InputID: "in-3", Reason: "user"}},
-		step{attempt.TypeStarted, attempt.StartedPayload{TurnID: "t1", RunID: "r1", Attempt: 1}}, runStep("r1", run.RunCreated{RunID: "r1"}),
+		runStep("r1", run.RunCreated{RunID: "r1"}),
 		completed("r1", "s1", "sha256:res"),
 	}
 	ctxState, surface, err := foldSteps(t, steps)
@@ -218,7 +217,7 @@ func TestSurfaceAndContextFold(t *testing.T) {
 	if _, pending := ctxState.Pending["in-2"]; !pending || len(ctxState.Pending) != 1 {
 		t.Fatalf("pending = %+v", ctxState.Pending)
 	}
-	if _, _, err := foldSteps(t, append(steps, step{TypeInputDelivered, InputDeliveredPayload{InputID: "in-1", TurnID: "t1"}})); err == nil {
+	if _, _, err := foldSteps(t, append(steps, step{TypeInputDelivered, InputDeliveredPayload{InputID: "in-1", TurnID: "t1", RunID: "r1"}})); err == nil {
 		t.Fatal("second delivery accepted")
 	}
 }
@@ -239,7 +238,7 @@ func TestEventCodecCanonicalRoundTrip(t *testing.T) {
 	}
 	samples := map[session.EventType]any{
 		TypeInputSubmitted:        InputSubmittedPayload{InputID: "in-1", Content: jsonstable.MustParse(`{"text":"hi"}`), SubmittedAtUnixMilli: 1},
-		TypeInputDelivered:        InputDeliveredPayload{InputID: "in-1", TurnID: "t1"},
+		TypeInputDelivered:        InputDeliveredPayload{InputID: "in-1", TurnID: "t1", RunID: "r1"},
 		TypeInputWithdrawn:        InputWithdrawnPayload{InputID: "in-1", Reason: "user"},
 		TypeInputRejected:         InputRejectedPayload{InputID: "in-1"},
 		TypeToolResultSuperseded:  ToolResultSupersededPayload{ToolResultID: "tr1", Status: ToolSuccess, OutputDigest: "sha256:out"},
@@ -320,7 +319,7 @@ func (c *fakeContent) ToolResponse(ctx context.Context, d es.Digest) (run.Canoni
 // each digest once, and reports a lost body without touching the projection.
 func TestMaterialize(t *testing.T) {
 	ctxState, _, err := foldSteps(t, []step{
-		step{attempt.TypeStarted, attempt.StartedPayload{TurnID: "t1", RunID: "r1", Attempt: 1}}, runStep("r1", run.RunCreated{RunID: "r1"}),
+		step{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-1", Content: jsonstable.MustParse(`{"text":"hi"}`), SubmittedAtUnixMilli: 1}}, step{TypeInputDelivered, InputDeliveredPayload{InputID: "in-1", TurnID: "t1", RunID: "r1"}}, runStep("r1", run.RunCreated{RunID: "r1"}),
 		completed("r1", "s1", "sha256:res"),
 		opened("r1", "s1", "c1", "c2"),
 		runStep("r1", run.ToolCallCompleted{StepID: "s1/tools", CallID: "c1", OutputDigest: "sha256:out"}),
@@ -341,6 +340,8 @@ func TestMaterialize(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// entries[0] is the delivered input that named the Run; the assistant follows.
+	entries = entries[1:]
 	first := entries[0].Calls
 	if len(entries) != 4 || entries[0].Text() != "calling" || len(first) != 2 ||
 		first[0].CallID != "c1" || first[0].ProviderCallID != "p1" || first[0].Name != "echo" || first[0].Input.String() != `{"a":1}` ||
@@ -418,8 +419,8 @@ func TestCompactionFold(t *testing.T) {
 	// compaction itself lands at step 7.
 	prefix := []step{
 		{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-1", Content: content, SubmittedAtUnixMilli: 1}},
-		{TypeInputDelivered, InputDeliveredPayload{InputID: "in-1", TurnID: "t1"}},
-		step{attempt.TypeStarted, attempt.StartedPayload{TurnID: "t1", RunID: "r1", Attempt: 1}}, runStep("r1", run.RunCreated{RunID: "r1"}),
+		{TypeInputDelivered, InputDeliveredPayload{InputID: "in-1", TurnID: "t1", RunID: "r1"}},
+		runStep("r1", run.RunCreated{RunID: "r1"}),
 		completed("r1", "s1", "sha256:one"),
 		{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-q", Content: content, SubmittedAtUnixMilli: 2}},
 		{TypeSummary, SummaryPayload{Summary: sum}},
@@ -498,7 +499,7 @@ func TestCompactionFold(t *testing.T) {
 	t.Run("superseding a compacted result is rejected", func(t *testing.T) {
 		// The assistant's digest changes when its tool step opens, so the base
 		// is read back from a fold of the same prefix.
-		steps := []step{step{attempt.TypeStarted, attempt.StartedPayload{TurnID: "t1", RunID: "r1", Attempt: 1}}, runStep("r1", run.RunCreated{RunID: "r1"}), completed("r1", "ac", "sha256:call"), opened("r1", "ac", "c1"),
+		steps := []step{step{TypeInputSubmitted, InputSubmittedPayload{InputID: "in-1", Content: jsonstable.MustParse(`{"text":"hi"}`), SubmittedAtUnixMilli: 1}}, step{TypeInputDelivered, InputDeliveredPayload{InputID: "in-1", TurnID: "t1", RunID: "r1"}}, runStep("r1", run.RunCreated{RunID: "r1"}), completed("r1", "ac", "sha256:call"), opened("r1", "ac", "c1"),
 			runStep("r1", run.ToolCallCompleted{StepID: "ac/tools", CallID: "c1", OutputDigest: "sha256:out"})}
 		folded, _, err := foldSteps(t, steps)
 		if err != nil {

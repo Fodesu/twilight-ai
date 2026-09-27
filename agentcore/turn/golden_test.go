@@ -28,6 +28,5 @@ func TestTurnDerivationGolden(t *testing.T) {
 	op := turn.StartOperationDigest("sess-1", "turn-1", plan)
 	freezeTurn(t, "start operation digest", string(op), "sha256:26e6b4f4a9c416dac8a6dcb4d24eb40b3c707d1f0b5a6e0fd9de3a1bbbf4ea8f")
 
-	freezeTurn(t, "run id attempt 1", string(turn.DeriveRunID("sess-1", "turn-1", 1)), "sha256:fdf7b80ce8c610086353146e4ca239374f6cbb249724cca6bc772895404ad682")
-	freezeTurn(t, "run id attempt 2", string(turn.DeriveRunID("sess-1", "turn-1", 2)), "sha256:9ad90f0fefdd75e7622a3966defc5f637a477bdf43214de5de461fbf57301e6f")
+	freezeTurn(t, "run id", string(turn.DeriveRunID("sess-1", "turn-1")), "sha256:46a41c9b32ce837aa0d4910bbc47a86150a0c27fd120a7432ed5558a3f854601")
 }

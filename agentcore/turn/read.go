@@ -63,7 +63,7 @@ func RequireQuiescentRun(v writer.View) error {
 	if !ok {
 		return fmt.Errorf("turn: machine projection is %T", mstate)
 	}
-	state, ok := machine.Active[active.ActiveRun]
+	state, ok := machine.Active[active.RunID]
 	if !ok {
 		return nil // no live Run: nothing is mid-step
 	}

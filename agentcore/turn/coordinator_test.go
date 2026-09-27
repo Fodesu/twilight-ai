@@ -5,7 +5,6 @@ import (
 	"github.com/felinics/twilight/agentcore/artifact/artifacttest"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/attempt"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	"github.com/felinics/twilight/agentcore/session/filestore/filestoretest"
@@ -21,7 +20,7 @@ import (
 func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	ctx := context.Background()
 	const sid session.SessionID = "s-protocol"
-	registry, err := extension.BuildRegistry(chatlog.Module, runmod.Module, attempt.Module, Module)
+	registry, err := extension.BuildRegistry(chatlog.Module, runmod.Module, Module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,8 +70,8 @@ func TestCoordinatorCommitsWithoutDriver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if resp.Status != TurnActive || resp.Attempt != 1 || resp.RunID == "" || resp.Disposition != "" {
-		t.Fatalf("start response = %+v, want active attempt 1 with no disposition", resp)
+	if resp.Status != TurnActive || resp.RunID == "" || resp.Disposition != "" {
+		t.Fatalf("start response = %+v, want active with no disposition", resp)
 	}
 	if again, err := c.Start(ctx, w, start); err != nil || again.RunID != resp.RunID {
 		t.Fatalf("start replay = %+v %v", again, err)

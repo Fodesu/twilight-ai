@@ -11,7 +11,7 @@
 | Environment | Workspace 的一次物理 materialization（目录加进程、容器、VM、云 sandbox），生命周期 `Create` / `Restore` / `Attach` / `Close`；可选能力 `Executor`（运行命令）与 `FS`（读写文件） | 不持久化本体 | `environment.Provider` |
 | RuntimeBinding | Workspace → 当前 Environment：`Backend`、`EnvironmentRef`、`Generation`（第几次 materialize） | 嵌在 Workspace 记录内 | sandbox backend |
 | SessionBinding | Session → Workspace | Session ledger（APP-WSP-1） | application |
-| ExecutionRef | executor 为一次 attempt 建立的 provider 句柄（RUN-EXE-9） | execution ledger | Worker |
+| ExecutionRef | executor 为一次执行建立的 provider 句柄（RUN-EXE-9） | execution ledger | Worker |
 
 三个名字不互换：Snapshot 是资源层的状态锚点；chatlog 的上下文压缩叫 Compaction（APP-CKP）；CQRS 消费位置叫 checkpoint（`checkpoint.Store`）。
 

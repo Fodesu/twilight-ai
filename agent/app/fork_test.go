@@ -137,10 +137,10 @@ func TestForkBeforeTurnRegeneratesAndEdits(t *testing.T) {
 	// the parent's Runs are unknown to a child (SES-FRK-5), while the
 	// parent's own turn surface still settles them.
 	parentTurns, err := turn.ReadSurface(ctx, h.Owner.Projections, "parent")
-	if err != nil || len(parentTurns.Turns["p1"].Attempts) != 1 {
+	if err != nil || parentTurns.Turns["p1"].End == nil {
 		t.Fatalf("parent turns = %+v %v", parentTurns.Turns, err)
 	}
-	p1Run := parentTurns.Turns["p1"].Attempts[0].RunID
+	p1Run := parentTurns.Turns["p1"].RunID
 	if _, err := h.Owner.Runs.Record(ctx, "parent", p1Run); err != nil {
 		t.Fatalf("parent record of its own run: %v", err)
 	}

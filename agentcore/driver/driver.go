@@ -213,7 +213,7 @@ func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID)
 			return DriveResult{}, err
 		}
 		for {
-			res, err := l.Run(ctx, d.Runs.Bind(w), view.ActiveRun, d.Sink)
+			res, err := l.Run(ctx, d.Runs.Bind(w), view.RunID, d.Sink)
 			if err != nil {
 				if errors.Is(err, loop.ErrRunAlreadyRunning) {
 					resp, rerr := d.Turns.Status(ctx, ref)
@@ -236,7 +236,7 @@ func (d *Driver) Drive(ctx context.Context, w writer.Writer, turnID turn.TurnID)
 			// A wait a Responder can answer is not a quiescent point (DRV-4): the
 			// answer is committed here and the drive continues from it.
 			if res.Disposition == loop.LoopWaiting {
-				settled, err := d.answerWaiting(ctx, w, view.ActiveRun)
+				settled, err := d.answerWaiting(ctx, w, view.RunID)
 				if err != nil {
 					return DriveResult{}, err
 				}

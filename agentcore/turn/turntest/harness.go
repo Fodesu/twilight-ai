@@ -20,7 +20,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/attempt"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
@@ -61,7 +60,7 @@ type harness struct {
 
 func newHarness(t testing.TB, f Fixture) *harness {
 	t.Helper()
-	registry, err := extension.BuildRegistry(chatlog.Module, runmod.Module, attempt.Module, turn.Module)
+	registry, err := extension.BuildRegistry(chatlog.Module, runmod.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,15 +208,6 @@ func (h *harness) chat() chatlog.Surface {
 		h.fatal(err)
 	}
 	return state.(chatlog.Surface)
-}
-
-func (h *harness) rows() []session.Event {
-	h.t.Helper()
-	var out []session.Event
-	for _, c := range h.commits() {
-		out = append(out, flattenCommit(c)...)
-	}
-	return out
 }
 
 // commits reads the whole commit log in order.
@@ -451,8 +441,8 @@ func (h *harness) waitingTool(runID run.RunID) {
 		run.SubmitModelResult{StepID: step, Effect: eff, Result: result, Calls: []run.ToolCallBinding{binding}})
 }
 
-// appCancel is the Application's own CancelRun: no settlement is attached, so
-// the Turn becomes attempt_failed (TRN-STP-1).
+// appCancel is the Application's own CancelRun: the Run ends stopped and
+// its Turn settles as failed from the run_ended alone (TRN-PRJ-1).
 func (h *harness) appCancel(runID run.RunID) {
 	h.t.Helper()
 	h.seq++

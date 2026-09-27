@@ -25,7 +25,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/loop"
 	"github.com/felinics/twilight/agentcore/run/reconcile"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/attempt"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
@@ -149,7 +148,7 @@ func New(p Ports) (*Owner, error) { //nolint:gocritic // hugeParam: Ports is a b
 	// The first-party four are trusted core; Ports.Modules are extensions
 	// and cannot declare authoritative projections (EXT-PRJ-9).
 	registry, err := extension.BuildRegistryWithExtensions(
-		[]extension.ModuleDescriptor{chatlog.Module, runmod.Module, attempt.Module, turn.Module}, p.Modules)
+		[]extension.ModuleDescriptor{chatlog.Module, runmod.Module, turn.Module}, p.Modules)
 	if err != nil {
 		return nil, err
 	}

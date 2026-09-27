@@ -7,7 +7,6 @@ import (
 	"github.com/felinics/twilight/agentcore/es"
 	"github.com/felinics/twilight/agentcore/run"
 	"github.com/felinics/twilight/agentcore/session"
-	"github.com/felinics/twilight/agentcore/session/attempt"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
 )
@@ -114,7 +113,7 @@ func sortViews(views []InputView) {
 var chatlogConsumes = func() []session.EventType {
 	out := make([]session.EventType, 0, 9+len(consumedRunFacts))
 	out = append(out, TypeInputSubmitted, TypeInputDelivered, TypeInputWithdrawn, TypeInputRejected,
-		TypeToolResultSuperseded, TypeSummary, TypeCompactionCreated, TypeCompactionInvalidated, attempt.TypeStarted)
+		TypeToolResultSuperseded, TypeSummary, TypeCompactionCreated, TypeCompactionInvalidated)
 	for _, name := range consumedRunFacts {
 		out = append(out, runmod.Type(name))
 	}
@@ -166,6 +165,7 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) { //nolint:g
 		v.Input.TurnID = p.TurnID
 		s.Inputs = s.Inputs.Set(p.InputID, v)
 		s.EntryOrder = append(s.EntryOrder, SurfaceEntry{Kind: EntryInput, ID: string(p.InputID), Position: pos})
+		s.Runs = s.Runs.Set(p.RunID, RunOwner{TurnID: p.TurnID})
 	case InputWithdrawnPayload:
 		if err := terminateInput(&s, p.InputID, InputWithdrawn); err != nil {
 			return nil, err
@@ -174,8 +174,6 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) { //nolint:g
 		if err := terminateInput(&s, p.InputID, InputRejected); err != nil {
 			return nil, err
 		}
-	case attempt.StartedPayload:
-		s.Runs = s.Runs.Set(p.RunID, RunOwner{TurnID: TurnID(p.TurnID)})
 	case runmod.Event:
 		return s.applyRun(p, e.Position)
 	case ToolResultSupersededPayload:
@@ -228,7 +226,7 @@ func applySurface(state any, e extension.DecodedEvent) (any, error) { //nolint:g
 func (s Surface) applyRun(ev runmod.Event, pos session.Position) (any, error) { //nolint:gocritic // hugeParam: projection Apply is copy-on-write over value states; DecodedEvent is the extension API shape
 	switch f := ev.Fact.(type) {
 	case run.RunCreated:
-		// The Run's Turn comes from attempt/started, not from the Run.
+		// The Run's Turn comes from the input_delivered that fed it.
 	case run.RunEnded:
 		s.Runs = s.Runs.Delete(ev.RunID)
 	case run.ModelStepCompleted:
@@ -455,15 +453,14 @@ func applyContext(state any, e extension.DecodedEvent) (any, error) { //nolint:g
 		delete(c.Pending, p.InputID)
 		in.TurnID = p.TurnID
 		c.Entries = append(c.Entries, Entry{Kind: EntryInput, ID: string(in.ID), Digest: in.Digest, Position: pos, Input: &in})
+		c.Runs = cow(c.Runs)
+		c.Runs[p.RunID] = RunOwner{TurnID: p.TurnID}
 	case InputWithdrawnPayload:
 		c.Pending = cow(c.Pending)
 		delete(c.Pending, p.InputID)
 	case InputRejectedPayload:
 		c.Pending = cow(c.Pending)
 		delete(c.Pending, p.InputID)
-	case attempt.StartedPayload:
-		c.Runs = cow(c.Runs)
-		c.Runs[p.RunID] = RunOwner{TurnID: TurnID(p.TurnID)}
 	case runmod.Event:
 		return c.applyRun(p, e.Position)
 	case ToolResultSupersededPayload:
@@ -515,7 +512,7 @@ func applyContext(state any, e extension.DecodedEvent) (any, error) { //nolint:g
 func (c Context) applyRun(ev runmod.Event, pos session.Position) (any, error) {
 	switch f := ev.Fact.(type) {
 	case run.RunCreated:
-		// The Run's Turn comes from attempt/started, not from the Run.
+		// The Run's Turn comes from the input_delivered that fed it.
 	case run.RunEnded:
 		c.Runs = cow(c.Runs)
 		delete(c.Runs, ev.RunID)

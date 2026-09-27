@@ -105,7 +105,7 @@ func Example_recoverableTurn() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("process 2: turn %s, disposition %s, attempt %d\n", resp.Status, resp.Disposition, resp.Attempt)
+	fmt.Printf("process 2: turn %s, disposition %s\n", resp.Status, resp.Disposition)
 
 	record, err := p2.Owner.Runs.Record(ctx, sid, runID)
 	if err != nil {
@@ -125,7 +125,7 @@ func Example_recoverableTurn() {
 	// Output:
 	// process 1: tool call is Executing; process crashes
 	// process 2: took over; 1 executing target disposed; chatlog has 1 tool_result(s) with status unknown
-	// process 2: turn completed, disposition finished, attempt 1
+	// process 2: turn completed, disposition finished
 	// record: 12 run facts fold to the projection; chatlog entries: 4
 	// process 1: ownership lost
 	// stream unchanged by the fenced worker: true
@@ -145,10 +145,10 @@ func waitForExecutingCall(ctx context.Context, h *app.Application, sid session.S
 	for {
 		surface, err := h.TurnSurface(ctx, sid)
 		if err == nil {
-			if v, ok := surface.Turns[turnID]; ok && v.ActiveRun != "" {
-				snap, err := runState(h, sid, v.ActiveRun)
+			if v, ok := surface.Turns[turnID]; ok && v.RunID != "" {
+				snap, err := runState(h, sid, v.RunID)
 				if err == nil && len(plan.ExecutingCalls(snap.State)) == 1 {
-					return v.ActiveRun
+					return v.RunID
 				}
 			}
 		}

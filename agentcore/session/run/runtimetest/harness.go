@@ -17,7 +17,6 @@ import (
 	"github.com/felinics/twilight/agentcore/run/runtime"
 	"github.com/felinics/twilight/agentcore/run/schema"
 	"github.com/felinics/twilight/agentcore/session"
-	attemptmod "github.com/felinics/twilight/agentcore/session/attempt"
 	"github.com/felinics/twilight/agentcore/session/chatlog"
 	"github.com/felinics/twilight/agentcore/session/extension"
 	runmod "github.com/felinics/twilight/agentcore/session/run"
@@ -73,7 +72,7 @@ type harness struct {
 
 func newHarness(t testing.TB, f Fixture) *harness {
 	t.Helper()
-	registry, err := extension.BuildRegistry(chatlog.Module, runmod.Module, attemptmod.Module, turn.Module)
+	registry, err := extension.BuildRegistry(chatlog.Module, runmod.Module, turn.Module)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,27 +201,24 @@ func (h *harness) startGroup(turnID turn.TurnID, runID run.RunID, attempt uint32
 	var turnEvents []writer.TypedEvent
 	if attempt == 1 {
 		turnEvents = append(turnEvents, writer.TypedEvent{Type: turn.TypeStarted, RecordedAtUnixMilli: 1,
-			Value: turn.StartedPayload{TurnID: turnID, InputIDs: ids, Preset: turn.PresetRef{ID: "b", Digest: "sha256:b"}}})
+			Value: turn.StartedPayload{TurnID: turnID, RunID: runID, InputIDs: ids, Preset: turn.PresetRef{ID: "b", Digest: "sha256:b"}}})
 	}
 	var chatEvents []writer.TypedEvent
 	if attempt == 1 {
 		for _, id := range ids {
 			chatEvents = append(chatEvents, writer.TypedEvent{Type: chatlog.TypeInputDelivered, RecordedAtUnixMilli: 1,
-				Value: chatlog.InputDeliveredPayload{InputID: id, TurnID: chatlog.TurnID(turnID)}})
+				Value: chatlog.InputDeliveredPayload{InputID: id, TurnID: chatlog.TurnID(turnID), RunID: runID}})
 		}
 	}
 	runEvents := make([]writer.TypedEvent, 0, len(facts))
 	for _, f := range facts {
 		runEvents = append(runEvents, writer.TypedEvent{Type: runmod.EventType(f), RecordedAtUnixMilli: 1, Value: runmod.Event{RunID: runID, Fact: f}})
 	}
-	// One batch per stream: the Turn's on its first attempt, the attempt
-	// module's binding of the Turn to this Run (it is what routes the Run's
-	// run_ended to the attempt it settles, TRN-PRJ-1), the chatlog's when
-	// inputs are delivered, and the Run's.
+	// One batch per stream: the Turn's (naming its Run, TRN-SCP-2), the
+	// chatlog's when inputs are delivered, and the Run's.
 	if len(turnEvents) > 0 {
 		group.Batches = append(group.Batches, writer.TypedBatch{Stream: turn.Stream(turnID), Events: turnEvents})
 	}
-	group.Batches = append(group.Batches, attemptmod.Started(attemptmod.TurnID(turnID), runID, attempt, 1))
 	if len(chatEvents) > 0 {
 		group.Batches = append(group.Batches, writer.TypedBatch{Stream: chatlog.Stream, Events: chatEvents})
 	}

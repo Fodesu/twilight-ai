@@ -12,11 +12,11 @@ agentcore/artifact  ←  Session Module Framework  →  agentcore/session
                           first-party modules: chatlog、turn、run
 ```
 
-Framework 负责：typed event codec 与按事件类型的 payload 版本；Binding admission；进程内的写入串行、幂等重放与 claim 顺序（`Writer`）；pure projection 与投影缓存。first-party Source 为 `twilight`，Module 为 `chatlog`、`run`、`attempt`、`turn`。
+Framework 负责：typed event codec 与按事件类型的 payload 版本；Binding admission；进程内的写入串行、幂等重放与 claim 顺序（`Writer`）；pure projection 与投影缓存。first-party Source 为 `twilight`，Module 为 `chatlog`、`run`、`turn`。
 
 **EXT-SCP-1** 一个 Session 在一个进程内恰有一个 `Writer`，它持有 kernel 的 `session.Handle`（所有权句柄）。全部写入经 `Writer.Commit`：Run 的 Runtime、Turn 的 Coordinator、接管恢复都是它的调用方。模块读取投影经 `ProjectionReader`。
 
-**EXT-SCP-2** 模块集合由组装代码在启动时传入 `BuildRegistry`，运行期不变；本层不 import 任何模块包。first-party 恰为四个 module（`chatlog`、`run`、`attempt`、`turn`）；application module 与它们同构、经装配开口注册，见第 8 节。
+**EXT-SCP-2** 模块集合由组装代码在启动时传入 `BuildRegistry`，运行期不变；本层不 import 任何模块包。first-party 恰为三个 module（`chatlog`、`run`、`turn`）；application module 与它们同构、经装配开口注册，见第 8 节。
 
 **EXT-SCP-4** 本层的两个包平级：`agentcore/session/writer` 依赖 `agentcore/session/extension`，反向不得。依赖由 import 表达，不由目录嵌套表达——一个 import `extension` 的包是它的兄弟而不是子包，first-party module（`agentcore/session/chatlog`、`agentcore/session/run`）与 adapter（`agentcore/session/filestore`）同理。声明（event、module、projection）与 `Registry` 同居前者所依赖的那一层，是因为 `ModuleDescriptor` 声明 `ProjectionDefinition`、而 `ProjectionDefinition.Apply` 消费带模块身份的 `DecodedEvent`——两者互相引用，只有同包才不成环。
 
@@ -26,8 +26,7 @@ Framework 负责：typed event codec 与按事件类型的 payload 版本；Bind
 |---|---|
 | `chatlog` | `run`（`run_created`、`model_step_completed`、`tool_step_opened`、`tool_call_completed`、`tool_call_answered`、`tool_call_failed` v1）：assistant 与 tool_result 条目由这些事实折叠 |
 | `run` | 无 |
-| `attempt` | 无 |
-| `turn` | `attempt`（`twilight/attempt/started`）、`run`（`twilight/run/run_ended`）、`chatlog`（`input_delivered`） |
+| `turn` | `run`（`twilight/run/run_ended`）、`chatlog`（`input_delivered`） |
 
 ## 2. Registry 与版本
 
@@ -114,7 +113,7 @@ func (*Registry) LookupStream(domain string) (ModuleKey, StreamDefinition, bool)
 
 **EXT-COD-2** 已提交事件的 payload 保持原始 canonical bytes。`v` 由 Registry 在 Encode 后加入、Decode 前取出；payload 的其他第一层字段不得命名为 `v`。
 
-**EXT-STR-1（流 domain 由模块声明）** 逻辑流的 domain 由模块在 `ModuleDescriptor.Streams` 中声明，每个 domain 恰由一个模块拥有，kernel 不命名任何 domain（SES-WIR-1 只校验 `StreamRef` 的形状）。`StreamDefinition` 给出 `Domain`、`Key` 与 `Lineage`：`Key` 为 nil 是单例流，batch 的 stream ID 必须为空；非 nil 是键控流，`Key(value)` 以模块的 typed 事件值算出该事件所属流的 ID，必须等于 batch 的 stream ID。流的归属因此是模块 Go 值的属性，不与 payload 的字段名耦合，payload 的编码形状可以独立于流拓扑变化。每个事件类型通过 `EventDefinition.Stream` 命名本模块声明的一个 domain。`BuildRegistry` 验证声明：domain 为空或含 `/`、同一模块内或跨模块重复声明、`Lineage` 缺失或未知、事件未命名 domain、事件命名的 domain 未由本模块声明，均为装配错误；`Registry.LookupStream(domain)` 返回 domain 的拥有者与声明。Writer 在 encode 时按声明校验每个 batch：事件的 domain 与 batch 的 domain 不同、单例流的 batch 带 ID、键控流的 batch 无 ID、`Key(value)` 出错、为空或不等于 batch 的 stream ID，均拒绝整个 group。kernel 保持 payload 不透明，校验只在 writer 层执行。写侧强制后，投影按 EventType 折叠即不可能跨 stream 读到外来事件，fold 侧无需再查。第一方模块的声明：chatlog 为单例 domain `chatlog`（`LineageSession`）；turn 为 domain `turn`（Key 为 payload 的 TurnID，`LineageSession`）；attempt 为 domain `attempt`（Key 为 TurnID，`LineageSession`）；run 为 domain `run`（Key 为 `runmod.Event.RunID`，`LineageSegment`）。
+**EXT-STR-1（流 domain 由模块声明）** 逻辑流的 domain 由模块在 `ModuleDescriptor.Streams` 中声明，每个 domain 恰由一个模块拥有，kernel 不命名任何 domain（SES-WIR-1 只校验 `StreamRef` 的形状）。`StreamDefinition` 给出 `Domain`、`Key` 与 `Lineage`：`Key` 为 nil 是单例流，batch 的 stream ID 必须为空；非 nil 是键控流，`Key(value)` 以模块的 typed 事件值算出该事件所属流的 ID，必须等于 batch 的 stream ID。流的归属因此是模块 Go 值的属性，不与 payload 的字段名耦合，payload 的编码形状可以独立于流拓扑变化。每个事件类型通过 `EventDefinition.Stream` 命名本模块声明的一个 domain。`BuildRegistry` 验证声明：domain 为空或含 `/`、同一模块内或跨模块重复声明、`Lineage` 缺失或未知、事件未命名 domain、事件命名的 domain 未由本模块声明，均为装配错误；`Registry.LookupStream(domain)` 返回 domain 的拥有者与声明。Writer 在 encode 时按声明校验每个 batch：事件的 domain 与 batch 的 domain 不同、单例流的 batch 带 ID、键控流的 batch 无 ID、`Key(value)` 出错、为空或不等于 batch 的 stream ID，均拒绝整个 group。kernel 保持 payload 不透明，校验只在 writer 层执行。写侧强制后，投影按 EventType 折叠即不可能跨 stream 读到外来事件，fold 侧无需再查。第一方模块的声明：chatlog 为单例 domain `chatlog`（`LineageSession`）；turn 为 domain `turn`（Key 为 payload 的 TurnID，`LineageSession`）；run 为 domain `run`（Key 为 `runmod.Event.RunID`，`LineageSegment`）。
 
 ## 4. Binding reference declaration 与 admission
 
@@ -293,7 +292,7 @@ func NewProjectionReader(store session.Store, registry *Registry, cache Projecti
 
 **EXT-PRJ-7** 缓存是派生数据，写入尽力而为：`Save` 失败只让下次多折，不影响 Commit 结果。刷新在 Writer 的互斥区之外执行：策略判定与状态快照在区内完成（状态按 EXT-PRJ-1 不可变，快照即引用），编码与 `Save` 在解锁后进行，因此缓存 IO 不延长事务边界，与后续提交也没有顺序约束。区间是部署参数而非常量：`CacheEvery(n)` 的 `n` 由部署给出，`n <= 0` 才取 `DefaultCacheEvery`，且必须能在不改代码的情况下调整：宿主层把它暴露为 `Ports.CacheEvery`（APP-MEM-2），换值即换代价，不必重编译。间距给出可依赖的代价上界：任何时刻条目落后 head 不超过 `n` 个 commit，续折不超过 `n` 行；`Close` 不例外，`CacheEvery(n)` 在关闭时仍按间距判定，因为大投影（chatlog surface 随历史增长）在每次关闭时整体写一次，累计写量随历史长度平方增长，而按活动工作获取所有权的部署（APP-ACT）每 Turn 都关闭。需要干净 Close 后零续折的部署以 `CachePolicy.AtClose()` 包装策略。`Save` 单调：条目的 `through` 只增不减，晚到的旧写入被丢弃（刷新在互斥区外，两次刷新可能乱序到达），三个实现（内存、filestore、Postgres 的条件 UPSERT）均如此。被 `Exclude` 的投影在关闭时也不会被写入。
 
-**EXT-PRJ-8（继承策略）** `ProjectionDefinition.Inherits` 是按逻辑流判定的谓词 `InheritPolicy func(session.StreamRef) bool`，声明投影从 fork 继承前缀中折叠哪些流。nil 为按声明的 lineage 继承：继承 commit（`Seq <= header.Parent.Seq`）只折叠 domain 声明为 `LineageSession` 的流批次，`LineageSegment` domain 的批次跳过（经 `Registry.LookupStream` 查声明）；`InheritAll`：继承 commit 的全部批次都折叠；`InheritStreams(domains...)` 折叠列出的 domain。fork 语义由此随 domain 的声明进入投影，Registry 不含任何 domain 的特判。tip 段的 commit 总是全部折叠。`Registry.FoldFrom(scope, state, commits, header)` 以 Session 的 tip header 判定继承边界，`Writer.rebuild` 与 `ProjectionReader` 都经它折叠；`Fold` 等价于无 Parent 的 `FoldFrom`，用于只含 tip commit 的折叠（provisional group）。默认值使执行状态投影（`twilight/run` 的 Machine）不把父的 Run 当作子的执行（SES-FRK-5）；chatlog 的 Surface/Context 与 turn 的 Surface 声明 `InheritAll`，因为它们的语义内容（assistant、tool_result、attempt 结算）来自 run 事实。app module 不声明时得到默认值。
+**EXT-PRJ-8（继承策略）** `ProjectionDefinition.Inherits` 是按逻辑流判定的谓词 `InheritPolicy func(session.StreamRef) bool`，声明投影从 fork 继承前缀中折叠哪些流。nil 为按声明的 lineage 继承：继承 commit（`Seq <= header.Parent.Seq`）只折叠 domain 声明为 `LineageSession` 的流批次，`LineageSegment` domain 的批次跳过（经 `Registry.LookupStream` 查声明）；`InheritAll`：继承 commit 的全部批次都折叠；`InheritStreams(domains...)` 折叠列出的 domain。fork 语义由此随 domain 的声明进入投影，Registry 不含任何 domain 的特判。tip 段的 commit 总是全部折叠。`Registry.FoldFrom(scope, state, commits, header)` 以 Session 的 tip header 判定继承边界，`Writer.rebuild` 与 `ProjectionReader` 都经它折叠；`Fold` 等价于无 Parent 的 `FoldFrom`，用于只含 tip commit 的折叠（provisional group）。默认值使执行状态投影（`twilight/run` 的 Machine）不把父的 Run 当作子的执行（SES-FRK-5）；chatlog 的 Surface/Context 与 turn 的 Surface 声明 `InheritAll`，因为它们的语义内容（assistant、tool_result、Turn 结算）来自 run 事实。app module 不声明时得到默认值。
 
 **EXT-PRJ-9（authoritative 与 derived）** 投影是 `Facts -> View` 的读模型，不是写入校验器：写入时的不变量由 unit of work 的各 Part 在同一 View 上判定（SES-ATM）。`ProjectionDefinition.Authoritative` 标出命令在 Writer 的 View 上据以规划、且其 fold 守护自身流不变量的投影——`twilight/run/machine`、`twilight/turn/surface`、`twilight/chatlog/surface` 与 `context`——它们对 provisional commit 的 fold 失败使 commit 为 `invalid`，这表示 Part 与投影不一致的缺陷，而不是业务拒绝。其余投影是 derived read model：fold 失败不阻止事实落盘，该投影在本 Writer 生命周期内标记为不健康（状态停在最后一次成功的 commit，`View.Projection` / `Writers.Projections()` 读取返回 `ErrProjectionUnhealthy`，缓存不再为它刷新）。`OpenWriter` 的重建同样：derived 投影折不过 log 时折到最后一个成功的 commit 并标记不健康，Session 照常打开；只有 authoritative 投影折不过 log 才使 `OpenWriter` 失败。一个 extension 的缺陷因此既不能让 Session 不可写，也不能让它下次打不开。`Authoritative` 是能力而不是自我声明：它取决于模块如何进入 registry。`BuildRegistry(protocol, modules...)` 的模块全部由调用方担保为可信 core；`BuildRegistryWithExtensions(protocol, core, extensions)` 中的 extension 不得声明 `Authoritative`，也不得使用 `SourceTwilight`，因此 descriptor 无法为自己伪造第一方身份。Authority 以 first-party 三模块为 core、`Ports.Modules` 为 extensions 构建。chatlog 的 Context 投影保持 authoritative，因为 `chatlog.Commands.Compact` 在提交临界区内读它计算 base digest。
 

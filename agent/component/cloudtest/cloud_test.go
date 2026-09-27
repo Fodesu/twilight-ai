@@ -337,10 +337,10 @@ func (c *cluster) modelEffectKey(comp *ownerservice.Component, sid session.Sessi
 			return false
 		}
 		view := surface.Turns[surface.Order[0]]
-		if view.ActiveRun == "" {
+		if view.RunID == "" {
 			return false
 		}
-		rec, err := comp.App.Owner.Runs.Record(c.ctx, sid, view.ActiveRun)
+		rec, err := comp.App.Owner.Runs.Record(c.ctx, sid, view.RunID)
 		if err != nil {
 			return false
 		}
@@ -348,7 +348,7 @@ func (c *cluster) modelEffectKey(comp *ownerservice.Component, sid session.Sessi
 		if !ok || ms.Effect == "" {
 			return false
 		}
-		key = effect.AssignmentKey{Session: run.Scope(sid), RunID: view.ActiveRun, Effect: ms.Effect}
+		key = effect.AssignmentKey{Session: run.Scope(sid), RunID: view.RunID, Effect: ms.Effect}
 		return true
 	})
 	return key

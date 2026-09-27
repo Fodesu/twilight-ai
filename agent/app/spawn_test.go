@@ -100,7 +100,7 @@ func TestSpawnRunsChildSessionAndReturnsReply(t *testing.T) {
 	out, tr := spawnOutput(t, h, "parent")
 	surface, _ := h.TurnSurface(ctx, "parent")
 	calling := surface.Turns["p2"]
-	runID := calling.Attempts[len(calling.Attempts)-1].RunID
+	runID := calling.RunID
 	if want := spawn.ChildID("parent", runID, run.CallID(tr.CallID)); out.ChildSession != want || out.Status != turn.TurnCompleted || out.Reply != "child reply" {
 		t.Fatalf("spawn result = %+v, want child %s completed with the child's reply", out, want)
 	}
