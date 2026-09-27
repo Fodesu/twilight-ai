@@ -69,7 +69,7 @@ func testFork(t *testing.T, f Fixture) {
 	}
 
 	// The empty child seeds at the edge and reads the inherited prefix.
-	seed := session.LedgerSeed(child)
+	seed := session.SegmentSeed(child)
 	if seed != (session.Head{Next: c1.Seq + 1}) {
 		t.Fatalf("seed = %+v", seed)
 	}

@@ -83,7 +83,7 @@ type Preset struct {
 // package later.
 type Config struct {
 	// Store is the Session kernel (required).
-	Store session.Store
+	Store session.Stores
 	// Content is the cas ContentStore of the frozen bodies (required).
 	Content artifact.ContentStore
 	// Artifacts are the binding store and retention ledger (required).

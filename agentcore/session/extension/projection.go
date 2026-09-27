@@ -487,7 +487,7 @@ func CommitAt(c session.Commit, through session.Head) bool {
 // of its own. It is the second head-alignment predicate of EXT-PRJ-3, shared
 // by the Writer and the Store reader like CommitAt.
 func OwnBoundary(header session.SegmentHeader, through session.Head) bool {
-	return through.Next > session.LedgerSeed(header).Next
+	return through.Next > session.SegmentSeed(header).Next
 }
 
 // JSONStateCodec is a StateCodec for projection states that marshal to JSON.

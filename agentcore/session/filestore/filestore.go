@@ -133,7 +133,7 @@ func segerr(op string, id session.SegmentID, detail string) error {
 	return &session.Error{Code: session.ErrCorrupt, Operation: op, Detail: fmt.Sprintf("segment %s: %s", id, detail)}
 }
 
-// --- segments (LedgerStore) --------------------------------------------------------
+// --- segments (SegmentStore) --------------------------------------------------------
 
 func readHeader(dir string) (session.SegmentHeader, error) {
 	raw, err := os.ReadFile(filepath.Join(dir, headerFile))
@@ -263,7 +263,7 @@ func (s *Store) ReadSegment(ctx context.Context, id session.SegmentID, from sess
 	if err != nil {
 		return nil, session.Head{}, false, err
 	}
-	seed := session.LedgerSeed(header)
+	seed := session.SegmentSeed(header)
 	if from < seed.Next {
 		from = seed.Next
 	}
@@ -789,7 +789,7 @@ func (s *Store) DeleteRecord(ctx context.Context, sid session.SessionID) error {
 
 func headOf(h session.SegmentHeader, commits []session.Commit) session.Head {
 	if len(commits) == 0 {
-		return session.LedgerSeed(h)
+		return session.SegmentSeed(h)
 	}
 	return session.Head{Next: commits[len(commits)-1].Seq + 1}
 }

@@ -33,7 +33,7 @@ func claimFixture(t *testing.T) (*fixture, artifact.BindingSet, CommitFn) {
 func TestWriterRetriesReleasedClaims(t *testing.T) {
 	ctx := context.Background()
 	f, set, group := claimFixture(t)
-	fs := &faultStore{Store: f.store}
+	fs := &faultStore{Stores: f.store}
 	open := func() Writer {
 		t.Helper()
 		w, err := OpenWriter(ctx, fs, f.registry, f.admission(), "s", session.OpenOptions{})

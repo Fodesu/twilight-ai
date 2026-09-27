@@ -172,7 +172,7 @@ func Compose(ctx context.Context, cfg Config) (*Component, error) { //nolint:goc
 // sessionStores is the Session ledger and the cas content: the shared
 // database's own when it is one, filestore directories beside a SQLite
 // file otherwise.
-func sessionStores(cfg *Config, db stores.Handle) (session.Store, artifact.ContentStore, error) {
+func sessionStores(cfg *Config, db stores.Handle) (session.Stores, artifact.ContentStore, error) {
 	if shared, ok := db.(stores.Shared); ok {
 		if cfg.Sessions.Root != "" || cfg.Content.Root != "" {
 			return nil, nil, errors.New("ownerservice: sessions.root and content.root are not used with stores.postgres")

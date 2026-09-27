@@ -16,7 +16,7 @@ import (
 // commit is durable but the caller gets an error instead of it). Both are
 // "outcome unknown" from the Writer's side; the log tells them apart.
 type faultStore struct {
-	session.Store
+	session.Stores
 	mu   sync.Mutex
 	mode string // "", "before", "after", "invalid"; consumed by the next Append
 }
@@ -36,7 +36,7 @@ func (f *faultStore) take() string {
 }
 
 func (f *faultStore) Open(ctx context.Context, sid session.SessionID, opts session.OpenOptions) (session.Handle, error) {
-	h, err := f.Store.Open(ctx, sid, opts)
+	h, err := f.Stores.Open(ctx, sid, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -92,7 +92,7 @@ func TestWriterReconcilesClaimsAfterAppendFailure(t *testing.T) {
 			}
 			seg := tipSegment(t, f.store, "s")
 			claimID := DeriveClaimID(seg, "c1", set.RefSetDigest)
-			fs := &faultStore{Store: f.store}
+			fs := &faultStore{Stores: f.store}
 			w, err := OpenWriter(ctx, fs, f.registry, f.admission(), "s", session.OpenOptions{})
 			if err != nil {
 				t.Fatal(err)
@@ -153,7 +153,7 @@ func TestWriterReconcilesClaimsAfterAppendFailure(t *testing.T) {
 func TestWriterFailsClosedWhenAppendOutcomeUnknown(t *testing.T) {
 	ctx := context.Background()
 	base := newFixture(t)
-	fs := &faultStore{Store: base.store}
+	fs := &faultStore{Stores: base.store}
 	open := func(takeover bool) Writer {
 		t.Helper()
 		w, err := OpenWriter(ctx, fs, base.registry, base.admission(), "s", session.OpenOptions{Takeover: takeover})

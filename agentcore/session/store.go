@@ -2,8 +2,6 @@ package session
 
 import (
 	"context"
-	"math"
-	"time"
 
 	"github.com/felinics/twilight/agentcore/es"
 )
@@ -36,111 +34,6 @@ type ForkOrigin struct {
 	Session SessionID
 	Seq     CommitSeq
 }
-
-// OpenOptions configures writer ownership (SES-OWN-1). A Handle holds a
-// lease: while the lease is live, an Open without Takeover fails with
-// ErrOwned; once it has expired (LeaseDuration elapsed since the last Renew)
-// an Open supersedes it without Takeover, and an Open with Takeover
-// supersedes a live lease as well. Safety rests on Epoch fencing
-// (SES-OWN-2) in every case; the lease only decides when a supersession is
-// allowed without an operator's say. A zero LeaseDuration never expires,
-// which is the setting of a process that cannot crash without releasing.
-//
-// Time is the store's (SES-OWN-6): the adapter judges expiry and stamps
-// the new expiry by its own clock, so replicas over one database agree
-// whatever their process clocks say. Fixtures age a lease through the
-// adapter's clock, not through these options.
-type OpenOptions struct {
-	Takeover bool
-	// Owner identifies the opening process in the lease, for diagnostics; it
-	// is not an authorization.
-	Owner string
-	// LeaseDuration is how long the lease is live after Acquire and after
-	// each Renew; zero means the lease lives until Release.
-	LeaseDuration time.Duration
-}
-
-// Head is the ledger head after the last commit: the next CommitSeq to
-// assign. A segment with no commits of its own has head LedgerSeed(header):
-// 0 for a root segment, Parent.Seq+1 for a child.
-type Head struct {
-	Next CommitSeq
-}
-
-// Proposal is one atomic append: the batches of a single commit under one
-// CommitID. The commit may span several streams; the store lands every batch
-// or none (SES-APP-1).
-type Proposal struct {
-	CommitID CommitID
-	Batches  []StreamBatch
-}
-
-// Handle is the kernel's ownership handle returned by Store.Open. Append
-// carries its Epoch; a Handle whose Epoch has been superseded gets
-// ErrOwnershipLost and writes nothing (SES-OWN-2).
-type Handle interface {
-	SessionID() SessionID
-	Epoch() Epoch
-	// Lease is the ownership this handle holds: its Epoch, Owner and expiry.
-	Lease() Lease
-	// Renew extends the lease by LeaseDuration from now (SES-OWN-1); a
-	// superseded handle gets ErrOwnershipLost. A handle whose lease never
-	// expires renews to no effect.
-	Renew(context.Context) error
-	Head() Head
-	// Append persists one commit atomically and returns it as stored (SES-APP-1).
-	// It rejects malformed CommitIDs, duplicate CommitIDs, malformed stream
-	// refs and events, and a stale Epoch (SES-APP-3).
-	Append(context.Context, Proposal) (Commit, error)
-	// Committed reports whether CommitID is already in the ledger. Append must
-	// reject a duplicate CommitID (SES-APP-3), so the kernel answers this from
-	// the index it already keeps, without touching storage (SES-REP-3).
-	Committed(CommitID) bool
-	// LookupCommit returns a committed group. It reads it from storage when
-	// the handle does not already hold it, so a caller that needs the commit
-	// pays for it only on a hit (SES-REP-4).
-	LookupCommit(CommitID) (Commit, bool, error)
-	// StreamHead reports whether the tip segment holds any event of a
-	// logical stream and, if so, the StreamSeq the next one takes. It is
-	// answered from the same index Committed uses: which streams this
-	// ledger has written is a ledger fact, so a module that must refuse a
-	// second creation of a stream asks here instead of remembering every
-	// stream it ever closed in a projection. Inherited segments are not
-	// counted whatever lineage the stream's domain declared: the index is
-	// the tip segment's own (SES-FRK-5).
-	StreamHead(StreamRef) (StreamSeq, bool)
-	Close(context.Context) error
-}
-
-// Limit32 converts a count or sequence to the uint32 a page limit takes,
-// saturating instead of wrapping.
-func Limit32(n uint64) uint32 {
-	if n > math.MaxUint32 {
-		return math.MaxUint32
-	}
-	return uint32(n)
-}
-
-// IndexWithin converts a commit offset to an index into a slice of n items,
-// clamping to n so a caller can slice from it without checking bounds.
-func IndexWithin(off CommitSeq, n int) int {
-	if n <= 0 || uint64(off) >= uint64(n) {
-		return max(n, 0)
-	}
-	return int(off) //nolint:gosec // off < n <= MaxInt
-}
-
-// AtLimit reports whether a page of n items has reached limit; a zero limit
-// is no limit.
-func AtLimit(n int, limit uint32) bool {
-	return limit > 0 && n >= 0 && uint64(n) >= uint64(limit)
-}
-
-// StreamSeq is the position of an event inside its logical stream: the first
-// event a stream ever receives is 0. It is derived from the ledger by
-// counting a stream's events in CommitSeq order and is a read optimization
-// only; CommitSeq is the canonical order.
-type StreamSeq uint64
 
 // CommitReadRequest reads whole commits from From (inclusive). Limit counts
 // commits and never truncates inside one (SES-REP-1). On a fork the sequence
@@ -200,8 +93,9 @@ type CollectReport struct {
 
 // Store is the kernel port (SES 4 to 6, 8, 9). A Session is a root into the
 // lineage tree: it names the segment it appends to, and reads the stitched
-// history of that segment's ancestry. Delete drops the root; Collect
-// reclaims the nodes no root reaches.
+// history of that segment's ancestry. Store is one Session's face;
+// LeaseDirectory reads leases across Sessions; Maintenance changes the set
+// of roots and reclaims nodes. session.Ledger implements all three.
 type Store interface {
 	// Create establishes a root and its tip segment and returns the tip's
 	// header.
@@ -210,6 +104,15 @@ type Store interface {
 	Header(context.Context, SessionID) (SegmentHeader, error)
 	// Record returns the Session's root.
 	Record(context.Context, SessionID) (SessionRecord, error)
+	Open(context.Context, SessionID, OpenOptions) (Handle, error)
+	ReadCommits(context.Context, CommitReadRequest) (CommitPage, error)
+	ReadStream(context.Context, StreamReadRequest) (StreamPage, error)
+}
+
+// LeaseDirectory is the fleet's read of writer leases (SES-OWN-5): what a
+// controller, a gateway or an owner pool's activation scan consults. Every
+// method is a read and changes nothing.
+type LeaseDirectory interface {
 	// LeaseOf returns the Session's current writer Lease, if any (SES-OWN-5):
 	// a read for controllers and routers, which changes nothing and may be
 	// stale by the time it is acted on.
@@ -220,13 +123,15 @@ type Store interface {
 	// ExpiredLeases returns held Leases expired by the store's clock,
 	// soonest first, at most limit (0 for all) (SES-OWN-5/6).
 	ExpiredLeases(ctx context.Context, limit int) ([]Lease, error)
-	Open(context.Context, SessionID, OpenOptions) (Handle, error)
-	ReadCommits(context.Context, CommitReadRequest) (CommitPage, error)
-	ReadStream(context.Context, StreamReadRequest) (StreamPage, error)
-	// Delete drops the Session's root (SES-GC-1): the Session is no longer
-	// found, opened, read or forked; its SessionID is free again at once.
-	// The segments it reached stay lineage nodes for as long as another
-	// root reaches them. An owned Session is ErrOwned.
+}
+
+// Maintenance changes the set of roots and reclaims nodes (SES-GC).
+type Maintenance interface {
+	// Delete marks the Session's root deleted (SES-GC-1): the Session is no
+	// longer found, opened, read or forked, and its SessionID is never
+	// reused (a Create under it is ErrDeleted). The segments it reached stay
+	// lineage nodes for as long as another root reaches them. An owned
+	// Session is ErrOwned.
 	Delete(context.Context, SessionID) error
 	// Collect reclaims every node and suffix no root reaches (SES-GC-2). It
 	// is idempotent and safe while Sessions are open: nothing a root reaches
@@ -234,16 +139,48 @@ type Store interface {
 	Collect(context.Context) (CollectReport, error)
 }
 
-// HasTypePrefix reports whether typ matches one of the prefixes (empty list
-// matches everything).
-func HasTypePrefix(typ EventType, prefixes []EventType) bool {
-	if len(prefixes) == 0 {
-		return true
-	}
-	for _, p := range prefixes {
-		if len(typ) >= len(p) && typ[:len(p)] == p {
-			return true
-		}
-	}
-	return false
+// Stores is every face of a Session store at once: what an adapter's
+// session.Ledger provides and what an owner process, which opens Sessions,
+// scans leases and collects, requires.
+type Stores interface {
+	Store
+	LeaseDirectory
+	Maintenance
+}
+
+// Handle is the kernel's ownership handle returned by Store.Open. Append
+// carries its Epoch; a Handle whose Epoch has been superseded gets
+// ErrOwnershipLost and writes nothing (SES-OWN-2).
+type Handle interface {
+	SessionID() SessionID
+	Epoch() Epoch
+	// Lease is the ownership this handle holds: its Epoch, Owner and expiry.
+	Lease() Lease
+	// Renew extends the lease by LeaseDuration from now (SES-OWN-1); a
+	// superseded handle gets ErrOwnershipLost. A handle whose lease never
+	// expires renews to no effect.
+	Renew(context.Context) error
+	Head() Head
+	// Append persists one commit atomically and returns it as stored (SES-APP-1).
+	// It rejects malformed CommitIDs, duplicate CommitIDs, malformed stream
+	// refs and events, and a stale Epoch (SES-APP-3).
+	Append(context.Context, Proposal) (Commit, error)
+	// Committed reports whether CommitID is already in the ledger. Append must
+	// reject a duplicate CommitID (SES-APP-3), so the kernel answers this from
+	// the index it already keeps, without touching storage (SES-REP-3).
+	Committed(CommitID) bool
+	// LookupCommit returns a committed group. It reads it from storage when
+	// the handle does not already hold it, so a caller that needs the commit
+	// pays for it only on a hit (SES-REP-4).
+	LookupCommit(CommitID) (Commit, bool, error)
+	// StreamHead reports whether the tip segment holds any event of a
+	// logical stream and, if so, the StreamSeq the next one takes. It is
+	// answered from the same index Committed uses: which streams this
+	// ledger has written is a ledger fact, so a module that must refuse a
+	// second creation of a stream asks here instead of remembering every
+	// stream it ever closed in a projection. Inherited segments are not
+	// counted whatever lineage the stream's domain declared: the index is
+	// the tip segment's own (SES-FRK-5).
+	StreamHead(StreamRef) (StreamSeq, bool)
+	Close(context.Context) error
 }

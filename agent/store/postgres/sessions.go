@@ -108,7 +108,7 @@ func (b *sessionBackend) head(ctx context.Context, q *db.Queries, header *sessio
 		return session.Head{}, err
 	}
 	if last < 0 {
-		return session.LedgerSeed(*header), nil
+		return session.SegmentSeed(*header), nil
 	}
 	return session.Head{Next: session.CommitSeq(last) + 1}, nil //nolint:gosec // G115: checked non-negative
 }
@@ -151,7 +151,7 @@ func (b *sessionBackend) ReadSegment(ctx context.Context, id session.SegmentID, 
 	if err != nil {
 		return nil, session.Head{}, false, err
 	}
-	if seed := session.LedgerSeed(header); from < seed.Next {
+	if seed := session.SegmentSeed(header); from < seed.Next {
 		from = seed.Next
 	}
 	head, err := b.head(ctx, q, &header)
@@ -266,7 +266,7 @@ func (b *sessionBackend) Index(ctx context.Context, id session.SegmentID) (sessi
 	if err != nil {
 		return session.CommitIndex{}, session.Head{}, err
 	}
-	head := session.LedgerSeed(header)
+	head := session.SegmentSeed(header)
 	idx := session.CommitIndex{Through: head, Entries: make([]session.IndexEntry, 0, len(rows))}
 	next := 0
 	for i := range rows {
@@ -295,7 +295,7 @@ func (b *sessionBackend) Summarize(ctx context.Context, id session.SegmentID) (s
 	if err != nil {
 		return session.IndexSummary{}, session.Head{}, err
 	}
-	head := session.LedgerSeed(header)
+	head := session.SegmentSeed(header)
 	if row.LastSeq >= 0 {
 		head = session.Head{Next: session.CommitSeq(row.LastSeq) + 1} //nolint:gosec // G115: checked non-negative
 	}

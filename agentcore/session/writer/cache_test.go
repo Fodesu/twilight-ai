@@ -70,7 +70,7 @@ func cacheModule(c *applyCounter) extension.ModuleDescriptor {
 }
 
 type cacheFixture struct {
-	store    session.Store
+	store    session.Stores
 	registry *extension.Registry
 	cache    *extension.MemoryProjectionCache
 	counter  *applyCounter

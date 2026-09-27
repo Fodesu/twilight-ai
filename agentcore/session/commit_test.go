@@ -147,10 +147,10 @@ func TestValidateHeader(t *testing.T) {
 			}
 		})
 	}
-	if seed := LedgerSeed(rootHeader("seg")); seed != (Head{}) {
+	if seed := SegmentSeed(rootHeader("seg")); seed != (Head{}) {
 		t.Fatalf("root seed = %+v", seed)
 	}
-	if seed := LedgerSeed(SegmentHeader{ID: "c", Parent: &CommitRef{Segment: "seg", Seq: 3}}); seed != (Head{Next: 4}) {
+	if seed := SegmentSeed(SegmentHeader{ID: "c", Parent: &CommitRef{Segment: "seg", Seq: 3}}); seed != (Head{Next: 4}) {
 		t.Fatalf("child seed = %+v", seed)
 	}
 }

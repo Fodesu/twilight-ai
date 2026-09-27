@@ -59,7 +59,7 @@ func messageTexts(req sdk.Request) []string {
 
 // openCompactSession opens one process over the store and the content store:
 // a restart shares both, since the ledger names the frozen bodies by digest.
-func openCompactSession(t *testing.T, store session.Store, content artifact.ContentStore, model *compactAwareModel, opts app.SessionOptions) (*app.Application, *app.Session) {
+func openCompactSession(t *testing.T, store session.Stores, content artifact.ContentStore, model *compactAwareModel, opts app.SessionOptions) (*app.Application, *app.Session) {
 	t.Helper()
 	h := newHost(t, app.Config{Store: store, Content: content, Ownership: session.OpenOptions{Takeover: true}}, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
 	preset, err := h.RegisterPreset("b1", mustPreset("m-1", nil))

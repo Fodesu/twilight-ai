@@ -35,7 +35,7 @@ func inputDigest(raw string) Digest { return es.DigestBytes([]byte(raw)) }
 // testStack is the minimal Session stack a Loop test drives: kernel Memory
 // Store, the run module, one owner process (Writers) and a Runtime.
 type testStack struct {
-	store    session.Store
+	store    session.Stores
 	registry *extension.Registry
 	bindings artifact.BindingStore
 	ledger   artifact.RetentionLedger

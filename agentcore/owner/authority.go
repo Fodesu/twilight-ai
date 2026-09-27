@@ -48,7 +48,7 @@ type Artifacts struct {
 // nil fields take the in-process defaults documented on each.
 type Ports struct {
 	// Store is the Session kernel (required).
-	Store session.Store
+	Store session.Stores
 	// Content is the cas ContentStore the frozen bodies live in under
 	// runmod.FrozenAuthority (RUN-WIR-4). The run store writes them; the
 	// materializer reads them for prompts, replies and transcripts.
@@ -100,7 +100,7 @@ type Ports struct {
 // Owner is the composed core (OWN-PRT-2). Exported fields are the ports
 // and core services; none is a product facade.
 type Owner struct {
-	Store     session.Store
+	Store     session.Stores
 	Writers   writer.Writers
 	Registry  *extension.Registry
 	Admission writer.Admission

@@ -70,9 +70,28 @@ Session lineage 树（第 8 节；每个根段下的节点为一棵树，全部�
   路径  = Ancestry：从根段到该 Session tip 段的唯一 Segment 序列，及每段在拼接序列中贡献的区间
 
 kernel 负责：Segment/CommitRef/SessionRecord/Ancestry 的语义、Commit（Seq、CommitID、批次）、原子的 Commit 追加、根级写者独占、按 Ancestry 拼接的 CommitSeq 顺序读与流读、fork、tip 段推进、删除、可达性回收
-adapter 负责：Backend——LedgerStore（存节点：段的创建记录与自身 commit）与 SessionStore（存根：记录与 Lease）
+adapter 负责：Backend——SegmentStore（存节点：段的创建记录、自身 commit 与索引）、RootStore（存根：记录与 Lease）与 MaintenanceStore（枚举、创建、截断、删除）
 modules 负责：event ontology、typed codec、payload 版本、投影、投影缓存、幂等重放、并发串行
 ```
+
+`agentcore/session` 按上述概念分文件，一个文件一个概念，文件名即概念名：
+
+| 文件 | 内容 |
+|---|---|
+| `commit.go` | Commit 坐标层：`CommitSeq`、`Head`、`Event`、`Position`、`StreamBatch`、`Commit`、`Proposal`、`CommitRef` 与其校验 |
+| `stream.go` | 逻辑流：`StreamRef`、`StreamSeq`、`StreamLineage` 与其校验 |
+| `segment.go` | 节点：`SegmentID`、`SegmentHeader`、`Segment`、`SegmentSeed`、`NewSegmentID`、`ValidateHeader` |
+| `index.go` | 段的 `CommitIndex`、`IndexEntry`、`IndexSummary`（SES-REP-5） |
+| `root.go` | 根与所有权：`SessionRecord`、`Lease`、`OpenOptions` |
+| `ancestry.go` | 路径：`Ancestry`、`LoadAncestry`、拼接读、成员判定、`Reachable` |
+| `backend.go` | adapter 端口：`SegmentStore`、`RootStore`、`MaintenanceStore`，`Backend` 为三者之和 |
+| `store.go` | kernel 对外端口：`Store`（单 Session 的创建、打开、读）、`LeaseDirectory`（跨 Session 的租约读，SES-OWN-5）、`Maintenance`（删除与回收，SES-GC）、`Stores` 为三者之和、`Handle` |
+| `ledger.go` | `Ledger`：在 `Backend` 之上实现 `Stores` 的编排（Create、Open、读、Delete、Collect） |
+| `handle.go` | `ledgerHandle`：`Handle` 的实现 |
+| `extensions.go` | 模块扩展槽：`ModuleKey`、`RawValue`、`Extensions`（SES-WIR-5） |
+| `errors.go`、`paging.go`、`validate.go`、`session.go` | 错误码、分页工具、校验工具、包文档与基本标识符 |
+
+`Store` 一分为三的理由：单 Session 的读写（`Store`）是每个持有者都需要的；跨 Session 的租约读（`LeaseDirectory`）是 controller、gateway 与激活扫描需要的集群级读取；删除与回收（`Maintenance`）是运维操作。一个只读一个 Session 的组件依赖 `Store` 即可；owner 进程依赖 `Stores`。`Backend` 的三分同理：`SegmentStore` 只读写段自身，`RootStore` 只管根与租约，`MaintenanceStore` 是改变集合的操作；adapter 一次实现三者。
 
 kernel 的 `session.Ledger` 实现 `Store`，只依赖 `Backend` 端口；Memory 与文件 adapter 只实现该端口。lineage 树由 Go 领域类型定义并由存储持久化；存储布局不定义它。
 
@@ -82,7 +101,7 @@ kernel 的 `session.Ledger` 实现 `Store`，只依赖 `Backend` 端口；Memory
 
 **SES-SCP-3** kernel 的范围是 Session lineage 树：header、Open/Append/ReadCommits/ReadStream、所有权与 epoch、fork、删除与可达性回收（第 8、9 节）。lineage 的单父不变量见 SES-LIN-1：多父 merge 被排除在模型之外；canonical import 不属于当前合同，若日后加入，它与 fork 一样只能新建根段或子段，不得为已有 Session 增加第二个父节点。
 
-**SES-SCP-4** adapter 端口是 `Backend = LedgerStore + SessionStore + CreateSession`。`LedgerStore` 存节点：`Segment`、`ListSegments`、`ReadSegment`（只读该段自身的 commit）、`Locate`、`LookupCommit`、`ReadSegmentStream`（只返回携带某流的 commit，SES-REP-2）、`StreamHead`（段内一个流在给定 Seq 之前的事件计数，SES-REP-3）、`Summarize`、`Index`、`PutIndex`（段的 CommitIndex 摘要、全量与重建写回，SES-REP-5）、只插入的 `Append(lease, segment, commit)`、`TruncateSegment`、`RemoveSegment`（只由 `Collect` 调用，SES-APP-5）。`SessionStore` 存根：`Record`、`ListRecords`、`Acquire`（所有权、租约与 torn tail 修复）、`Renew`、`Release`、`DeleteRecord`。两者共享一个一致性域，使 `Append` 能与 Lease 检查原子进行。adapter 不知道 fork、前缀与可达性；`Ledger` 在该端口之上一次实现 SES-FRK 与 SES-GC。conformance 以 `Store` 为参数运行，因此每个 adapter 得到同一套 lineage 语义。
+**SES-SCP-4** adapter 端口是 `Backend = SegmentStore + RootStore + MaintenanceStore`，三者共享一个一致性域。`SegmentStore` 存节点并只读写段自身：`Segment`、`ReadSegment`、`ReadSegmentStream`（只返回携带某流的 commit，SES-REP-2）、`Locate`、`LookupCommit`、`StreamHead`（段内一个流在给定 Seq 之前的事件计数，SES-REP-3）、`Summarize`、`Index`、`PutIndex`（段的 CommitIndex 摘要、全量与重建写回，SES-REP-5）、只插入的 `Append(lease, segment, commit)`。`RootStore` 存根与所有权：`Record`、`Acquire`（所有权、租约与 torn tail 修复）、`Renew`、`Release`、`LeaseOf`、`ListLeases`、`ExpiredLeases`。`MaintenanceStore` 改变节点与根的集合（SES-GC-4）：`ListSegments`、`ListRecords`、`CreateSession`、`TruncateSegment`、`RemoveSegment`、`DeleteRecord`，前两者只由 `Collect` 的可达性计算读取。两者共享一个一致性域，使 `Append` 能与 Lease 检查原子进行。adapter 不知道 fork、前缀与可达性；`Ledger` 在该端口之上一次实现 SES-FRK 与 SES-GC。conformance 以 `Store` 为参数运行，因此每个 adapter 得到同一套 lineage 语义。
 
 ## 2. 版本
 
@@ -147,10 +166,10 @@ type Commit struct {
     CommitID CommitID     // 产生该 commit 的操作的身份；重放按它判定（SES-APP-4）
     Batches []StreamBatch // 非空；同一 Commit 内每个流至多一个 batch
 }
-type Head struct { Next CommitSeq } // 空日志为 LedgerSeed(header)：根段 0，fork 产生的子段 Parent.Seq+1
+type Head struct { Next CommitSeq } // 空日志为 SegmentSeed(header)：根段 0，fork 产生的子段 Parent.Seq+1
 ```
 
-**SES-WIR-1** identity 非空、稳定、有效 UTF-8。`CommitSeq` 从 `LedgerSeed(header).Next` 连续（根段从 0，fork 产生的子段从 `Parent.Seq+1`，见第 8 节）；一次 `Append` 持久化恰好一个 `Commit`，`CommitID` 在同一 ledger 内唯一。每个 batch 的流归因必须合法：`Domain` 非空且不含 `/`，`Domain` 与非空的 `ID` 都须是合法的身份字符串，kernel 只校验这一形状，domain 的归属与 ID 的绑定由模块层校验（EXT-STR-1）；同一 Commit 内同一流至多一个 batch，每个 batch 与每个 Commit 都非空。`Payload` 必须是 canonical JSON object（RFC 8785）：模块以 canonical 字节派生 command 与 fact 的身份，kernel 只校验形状。event 不携带事务元数据（无 Seq、Index、SourceSeqs、Ignorable）：事件的权威顺序由 CommitSeq 加上其在 batch 内的位置决定。
+**SES-WIR-1** identity 非空、稳定、有效 UTF-8。`CommitSeq` 从 `SegmentSeed(header).Next` 连续（根段从 0，fork 产生的子段从 `Parent.Seq+1`，见第 8 节）；一次 `Append` 持久化恰好一个 `Commit`，`CommitID` 在同一 ledger 内唯一。每个 batch 的流归因必须合法：`Domain` 非空且不含 `/`，`Domain` 与非空的 `ID` 都须是合法的身份字符串，kernel 只校验这一形状，domain 的归属与 ID 的绑定由模块层校验（EXT-STR-1）；同一 Commit 内同一流至多一个 batch，每个 batch 与每个 Commit 都非空。`Payload` 必须是 canonical JSON object（RFC 8785）：模块以 canonical 字节派生 command 与 fact 的身份，kernel 只校验形状。event 不携带事务元数据（无 Seq、Index、SourceSeqs、Ignorable）：事件的权威顺序由 CommitSeq 加上其在 batch 内的位置决定。
 
 **SES-WIR-4（四种身份）** `SessionID` 是根（分支）身份；`SegmentID` 是历史节点身份，由 kernel 在创建段时随机抽取，不由任何字段派生；`CommitID` 是语义操作身份，在一个 Session 的拼接历史内唯一；`(SegmentID, Seq)` 是 Commit 的位置身份，历史不可变（SES-APP-5），因此永久指向同一个 Commit。段的创建记录与 commit 都不含 `SessionID`：段是 lineage 树的 canonical 对象，被根命名但不属于任何一个根。删除、重建、重命名 Session，或把段集合与根集合一起迁移到另一个 Store，都不改变任何段或 commit 的身份。
 
@@ -211,7 +230,7 @@ type Store interface {
 
 ## 5. append
 
-**SES-APP-1** `Append(proposal)` 原子：整个 Commit 同时可见或同时不存在。Store 为 Commit 赋 `Seq`（从当前 `Head.Next` 起连续，空 ledger 的 head 为 `LedgerSeed(header)`），持久化，然后返回存储的 Commit。返回即持久（文件 adapter 每次 Append 一次 `fsync`；数据库 adapter 一个事务）。写入开始之后的任何失败（write、fsync、事务提交返回错误）使该 Commit 是否落盘对句柄成为未知：句柄进入失效状态，本次与之后的 `Append` 返回 `ErrHandleFailed`，不再写入；调用方 Close 并重开，`Open` 按磁盘实况决定该 Commit 是否存在（完整则接纳进索引，残缺则按 SES-APP-2 截断），随后的重放由 `Committed`/`LookupCommit` 回答。adapter 只能在写入开始之前返回 ctx 错误；写入开始后的中断按未知结果报告。
+**SES-APP-1** `Append(proposal)` 原子：整个 Commit 同时可见或同时不存在。Store 为 Commit 赋 `Seq`（从当前 `Head.Next` 起连续，空 ledger 的 head 为 `SegmentSeed(header)`），持久化，然后返回存储的 Commit。返回即持久（文件 adapter 每次 Append 一次 `fsync`；数据库 adapter 一个事务）。写入开始之后的任何失败（write、fsync、事务提交返回错误）使该 Commit 是否落盘对句柄成为未知：句柄进入失效状态，本次与之后的 `Append` 返回 `ErrHandleFailed`，不再写入；调用方 Close 并重开，`Open` 按磁盘实况决定该 Commit 是否存在（完整则接纳进索引，残缺则按 SES-APP-2 截断），随后的重放由 `Committed`/`LookupCommit` 回答。adapter 只能在写入开始之前返回 ctx 错误；写入开始后的中断按未知结果报告。
 
 **SES-APP-2** 崩溃只可能留下一个不完整的尾 Commit：文件 adapter 打开时把末尾帧不完整且没有后续 Commit 的尾部截掉；数据库 adapter 由事务保证不会出现。截断必须发生在 `Head` 确立之前：否则 `Head.Next` 落在残 Commit 内部，下一次 `Append` 会把残 Commit 与后续 Commit 焊成一个。reader 在任何时刻都不会看到不完整的 Commit。
 
@@ -291,9 +310,9 @@ type Lease struct { Session SessionID; Epoch Epoch; Owner string; UntilUnixMilli
 type ForkOrigin struct { Session SessionID; Seq CommitSeq }  // CreateRequest.Fork
 type CreateRequest struct { SessionID; CreatedAtUnixMilli; Fork *ForkOrigin; CausationID; Ext }  // SegmentID 由 kernel 抽取，调用方不能命名节点
 type Ancestry struct { Segments []AncestrySegment }          // 根段在前，tip 在后；每段带 From/Through
-func LoadAncestry(ctx, LedgerStore, tip SegmentID) (*Ancestry, error)
+func LoadAncestry(ctx, SegmentStore, tip SegmentID) (*Ancestry, error)
 func (*Ancestry) Read / Lookup / Contains / Owner(seq)
-func LedgerSeed(SegmentHeader) Head        // 根段 0；子段 Parent.Seq+1
+func SegmentSeed(SegmentHeader) Head       // 根段 0；子段 Parent.Seq+1
 func Reachable(nodes map[SegmentID]Segment, roots []SessionRecord) map[SegmentID]CommitSeq
 ```
 
@@ -301,7 +320,7 @@ func Reachable(nodes map[SegmentID]Segment, roots []SessionRecord) map[SegmentID
 
 **SES-FRK-1（创建）** `Create` 携带 `Fork{Session, Seq}` 时建立 fork。`Ledger` 解析父 Session 的 `Ancestry`，找到贡献 commit `Seq` 的段（`Owner`），把边记为 `Parent = CommitRef{Segment: 该段, Seq}`，然后以 `Backend.CreateSession` 一步落下新段与新根（SES-GC-4）。必须核对：父 Session 存活（否则 `ErrNotFound`）、`Seq` 在父的 history 内（否则 `ErrInvalid`）、父不是子自身；边只携带位置。任一不满足则不写根也不写段。相同 origin 的重复 Create 幂等并返回现有 tip 的 header、不同 origin 为 `ErrConflict`（SES-CRT-1）。父段只追加、已接受的 commit 不被改写（SES-APP-5），边一经建立永久有效；在继承 commit 处 fork，边直指持有该 commit 的祖先段，路径不会随 fork 层数增长。
 
-**SES-FRK-2（读）** 段只存自身 commit，从 `LedgerSeed(header)` 起连续编号：首个自身 Commit 的 `Seq = Parent.Seq+1`。`Open`、`ReadCommits`、`ReadStream` 先加载根段的 `Ancestry`，再在这条显式路径上迭代：每段读取一次自己贡献的区间，不递归读 Store。`From`、`Limit`、`HasMore` 与 `StreamSeq` 都按拼接后的序列计数（`ReadStream` 按请求的 lineage 所见的序列，SES-FRK-5），`Head` 为 tip 段的 head。父在 fork 之后追加的 Commit 不属于子；子的 Commit 不属于父。
+**SES-FRK-2（读）** 段只存自身 commit，从 `SegmentSeed(header)` 起连续编号：首个自身 Commit 的 `Seq = Parent.Seq+1`。`Open`、`ReadCommits`、`ReadStream` 先加载根段的 `Ancestry`，再在这条显式路径上迭代：每段读取一次自己贡献的区间，不递归读 Store。`From`、`Limit`、`HasMore` 与 `StreamSeq` 都按拼接后的序列计数（`ReadStream` 按请求的 lineage 所见的序列，SES-FRK-5），`Head` 为 tip 段的 head。父在 fork 之后追加的 Commit 不属于子；子的 Commit 不属于父。
 
 **SES-FRK-3（身份）** `Ancestry` 内的每个 CommitID 都是该 Session 的 CommitID：`Committed` 与 `LookupCommit` 对继承 commit 返回命中，`Append` 对它们返回 `ErrConflict`。重放判定只看 CommitID（EXT-WRT-2）：前缀 commit 经子重放为 `AlreadyApplied`。Session 级派生身份（RunID、Start/Retry/Settle 的 CommitID）在子中以子的 SessionID 派生，与父此后可能派生的同名身份不冲突。
 

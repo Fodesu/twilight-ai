@@ -72,9 +72,11 @@ func TestTurnsOfOneSessionRunOnDifferentProcesses(t *testing.T) {
 		cfg.Warn = func(err error) { t.Logf("%s: warn: %v", name, err) }
 		return newHost(t, cfg, map[run.ModelRef]loop.ModelInvoker{"m-1": model})
 	}
+	// Only a scans, and slowly: a command enqueued through b must be b's
+	// activation, not a's scan racing it (both are legal; the test pins one).
 	gateA := &gateModel{started: make(chan sdk.Request, 4), release: make(chan struct{})}
 	gateB := &gateModel{started: make(chan sdk.Request, 4), release: make(chan struct{})}
-	a := build("a", gateA, 50*time.Millisecond)
+	a := build("a", gateA, 2*time.Second)
 	b := build("b", gateB, 0)
 	defer func() { _ = a.Close(ctx); _ = b.Close(ctx) }()
 	const sid session.SessionID = "s-1"
@@ -122,7 +124,7 @@ func TestTurnsOfOneSessionRunOnDifferentProcesses(t *testing.T) {
 	awaitCondition(t, "release after turn 2", released(b))
 
 	// Turn 3: the command is written straight into the shared inbox with no
-	// wake; a's scan activates the Session.
+	// wake; a's scan (the only one running) activates the Session.
 	cmd, err := app.NewCommand("c4", app.CommandSubmit, app.SubmitCommand{InputID: "in-3", Text: "third"})
 	if err != nil {
 		t.Fatal(err)

@@ -1,46 +1,9 @@
-// Package session is the commit-ledger kernel of a Twilight Session
-// (docs/design/agent-session.md). It owns the header, the Commit as the
-// atomic unit of append, logical streams within commits, Session-level
-// writer ownership with epoch fencing, and ordered reads over an append-only
-// store. Payloads are opaque canonical JSON that Session modules encode and
-// interpret.
 package session
 
 import (
 	"errors"
 	"fmt"
-
-	"github.com/felinics/twilight/agentcore/es"
 )
-
-type (
-	SessionID string
-	CommitID  string
-	EventType string
-	// Epoch is the writer ownership generation of a stream, from 1.
-	Epoch uint64
-)
-
-// SegmentHeader is the immutable creation record of a commit segment
-// (agent-session.md section 8): a node of the lineage tree. It names no
-// Session: which roots append to or inherit from the segment is the roots'
-// business (SessionRecord), and a segment outlives every Session that named
-// it for as long as some root reaches it. ID is the segment's identity,
-// drawn at random, so two otherwise identical records are two segments.
-// Readers of a Session see the header of the segment its root names as its
-// tip.
-type SegmentHeader struct {
-	// ID is the segment's identity: 128 random bits the kernel draws at
-	// Create, hex encoded. Nothing derives it, so two segments
-	// with otherwise equal records are two nodes (SES-WIR-4).
-	ID          SegmentID      `json:"id"`
-	Parent      *CommitRef     `json:"parent,omitempty"` // nil for a root segment; the edge to the parent otherwise
-	CausationID es.CausationID `json:"causationId,omitempty"`
-	// Ext holds the module extension slots of the creation record, one raw
-	// value per module (SES-WIR-5); a reader that knows none of the modules
-	// keeps them.
-	Ext Extensions `json:"ext,omitempty"`
-}
 
 // ErrorCode classifies kernel failures (SES 7).
 type ErrorCode string

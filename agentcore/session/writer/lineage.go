@@ -15,7 +15,7 @@ import (
 // retained it. Collect releases claims together with the segments and
 // commits it reclaims (SES-GC-3). The Session must not be open in this
 // process; close its Writer first. A root already deleted is not an error.
-func Delete(ctx context.Context, store session.Store, sid session.SessionID) error {
+func Delete(ctx context.Context, store session.Maintenance, sid session.SessionID) error {
 	if store == nil {
 		return errors.New("writer: nil store")
 	}
@@ -32,7 +32,7 @@ func Delete(ctx context.Context, store session.Store, sid session.SessionID) err
 // failure between the two leaks a claim rather than freeing content a
 // commit still names; a repeated Collect cannot see the removed segment
 // again, so the leak is repaired by releasing that segment's scope by hand.
-func Collect(ctx context.Context, store session.Store, admission Admission) (session.CollectReport, error) {
+func Collect(ctx context.Context, store session.Maintenance, admission Admission) (session.CollectReport, error) {
 	if store == nil {
 		return session.CollectReport{}, errors.New("writer: nil store")
 	}

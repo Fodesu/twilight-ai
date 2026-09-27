@@ -39,7 +39,7 @@ type Handle interface {
 // not one; its process keeps those two in filestore directories.
 type Shared interface {
 	Handle
-	Sessions() session.Store
+	Sessions() session.Stores
 	Content(artifact.Authority) (artifact.ContentStore, error)
 }
 
@@ -105,7 +105,7 @@ func (h pgHandle) Ledger(b artifact.BindingSetBuilder) artifact.RetentionLedger 
 	return h.db.Ledger(b)
 }
 func (h pgHandle) Workspaces() workspace.Store { return h.db.Workspaces() }
-func (h pgHandle) Sessions() session.Store     { return h.db.Sessions() }
+func (h pgHandle) Sessions() session.Stores    { return h.db.Sessions() }
 func (h pgHandle) Content(authority artifact.Authority) (artifact.ContentStore, error) {
 	return h.db.Content(authority, postgres.ContentStoreOptions{})
 }

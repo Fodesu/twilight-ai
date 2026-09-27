@@ -46,7 +46,7 @@ func TestWritersReopenAfterFailure(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			f := newFixture(t)
-			fs := &faultStore{Store: f.store}
+			fs := &faultStore{Stores: f.store}
 			ws := NewWriters(fs, f.registry, f.admission(), session.OpenOptions{Takeover: true}, WritersConfig{})
 			defer CloseWriters(ctx, ws)
 			w, err := ws.Writer(ctx, "s")

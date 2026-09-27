@@ -15,7 +15,7 @@ import (
 
 // Fixture is one adapter under test.
 type Fixture struct {
-	Store session.Store
+	Store session.Stores
 	// Advance moves the store's clock, the one leases are judged by
 	// (SES-OWN-6); nil skips the lease-expiry checks.
 	Advance func(time.Duration)

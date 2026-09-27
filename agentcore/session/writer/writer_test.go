@@ -77,7 +77,7 @@ func noteBatch(events ...TypedEvent) []TypedBatch {
 }
 
 type fixture struct {
-	store    session.Store
+	store    session.Stores
 	registry *extension.Registry
 	bindings artifact.BindingStore
 	ledger   artifact.RetentionLedger
@@ -594,7 +594,7 @@ func TestProjectionCache(t *testing.T) {
 
 // tipSegment is the segment sid's root currently appends to: the owner
 // authority of the claims its Writer activates.
-func tipSegment(t *testing.T, store session.Store, sid session.SessionID) session.SegmentID {
+func tipSegment(t *testing.T, store session.Stores, sid session.SessionID) session.SegmentID {
 	t.Helper()
 	h, err := store.Header(context.Background(), sid)
 	if err != nil {
