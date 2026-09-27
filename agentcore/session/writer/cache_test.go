@@ -417,7 +417,7 @@ func TestCoversCommit(t *testing.T) {
 	commits := []session.Commit{{Seq: 0}, {Seq: 1}, {Seq: 2}}
 	root := session.SegmentHeader{ID: "h"}
 	// A tip that inherits the first two commits and wrote the third.
-	child := session.SegmentHeader{ID: "c", Parent: &session.LedgerRef{Segment: "h", Seq: 1}}
+	child := session.SegmentHeader{ID: "c", Parent: &session.CommitRef{Segment: "h", Seq: 1}}
 	cases := map[string]struct {
 		header  session.SegmentHeader
 		through session.Head

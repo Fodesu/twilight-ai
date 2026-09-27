@@ -10,7 +10,7 @@ import (
 // Ledger is the kernel's Store over a Backend (SES 4 to 6, 8, 9): the
 // Session lineage tree in code. Roots (SessionRecord) name the segment they
 // append to as their tip; segments (Segment) point to their parents through
-// LedgerRef edges; a Session's history is the stitched Ancestry of its segment. Fork
+// CommitRef edges; a Session's history is the stitched Ancestry of its segment. Fork
 // adds a node and an edge; Delete drops a root; Collect reclaims what no
 // root reaches. Every adapter gets these semantics from here and implements
 // none of them.
@@ -100,7 +100,7 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 		if len(commits) != 1 || commits[0].Seq != req.Fork.Seq {
 			return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, fmt.Sprintf("parent %s has no commit %d", req.Fork.Session, req.Fork.Seq))
 		}
-		header.Parent = &LedgerRef{Segment: owner.Segment.ID, Seq: req.Fork.Seq}
+		header.Parent = &CommitRef{Segment: owner.Segment.ID, Seq: req.Fork.Seq}
 	}
 	// Idempotency is judged on what the request determines about the
 	// segment, not on its identity or clock: the ID is drawn fresh each time

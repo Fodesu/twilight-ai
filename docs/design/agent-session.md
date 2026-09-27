@@ -65,11 +65,11 @@ State  = Fold(Events)
 
 Session lineage 树（第 8 节；每个根段下的节点为一棵树，全部根段为森林）：
   节点  = Segment：不可变的创建记录（SegmentHeader，不含任何 Session 身份）加它自己的只追加 commit，身份为 kernel 随机抽取的 SegmentID
-  边    = LedgerRef：子 Segment 到父 Segment 某个 commit 的引用（SegmentHeader.Parent，每段至多一条）
+  边    = CommitRef：子 Segment 到父 Segment 某个 commit 的引用（SegmentHeader.Parent，每段至多一条）
   根    = SessionRecord：SessionID → 它追加到的 Segment（Tip）与 Session 自己的元数据
   路径  = Ancestry：从根段到该 Session tip 段的唯一 Segment 序列，及每段在拼接序列中贡献的区间
 
-kernel 负责：Segment/LedgerRef/SessionRecord/Ancestry 的语义、Commit（Seq、CommitID、批次）、原子的 Commit 追加、根级写者独占、按 Ancestry 拼接的 CommitSeq 顺序读与流读、fork、tip 段推进、删除、可达性回收
+kernel 负责：Segment/CommitRef/SessionRecord/Ancestry 的语义、Commit（Seq、CommitID、批次）、原子的 Commit 追加、根级写者独占、按 Ancestry 拼接的 CommitSeq 顺序读与流读、fork、tip 段推进、删除、可达性回收
 adapter 负责：Backend——LedgerStore（存节点：段的创建记录与自身 commit）与 SessionStore（存根：记录与 Lease）
 modules 负责：event ontology、typed codec、payload 版本、投影、投影缓存、幂等重放、并发串行
 ```
@@ -112,7 +112,7 @@ const (
 )
 
 type SegmentID string                 // 段身份：kernel 创建段时抽取的 128 位随机数的 hex
-type LedgerRef struct { Segment SegmentID; Seq CommitSeq } // lineage 树中的一个位置：某段的某个 Commit
+type CommitRef struct { Segment SegmentID; Seq CommitSeq } // lineage 树中的一个位置：某段的某个 Commit
 
 type SourceID string; type ModuleID string
 type ModuleKey struct { Source SourceID; ID ModuleID } // 模块身份，wire 上为 "source/id"（EXT-REG-1）
@@ -121,7 +121,7 @@ type Extensions map[ModuleKey]RawValue                  // header 与 commit 的
 
 type SegmentHeader struct {          // 段的创建记录：lineage 树的节点，不含 Session 身份
     ID SegmentID
-    Parent *LedgerRef                 // nil 为 root segment；非 nil 为该段唯一的父边，见第 8 节
+    Parent *CommitRef                 // nil 为 root segment；非 nil 为该段唯一的父边，见第 8 节
     CausationID es.CausationID
     Ext Extensions                    // 按模块分槽的扩展值，缺省为空（SES-WIR-5）
 }
@@ -280,12 +280,12 @@ kernel 的 wire 只有上述 header 字段、commit 字段与批次完整性规�
 
 ## 8. lineage 树与 fork
 
-Session 的历史是 lineage 树上从根段到 tip 段的一条路径。节点是不可变的 commit 段（`Segment`），边是段到其父段某个 commit 的引用（`SegmentHeader.Parent`，类型 `LedgerRef`）；每个段至多一条父边（SES-LIN-1），因此每个根段下的节点构成一棵树，全部根段构成森林。Session 是指向自身 tip 段的根（`SessionRecord`）。fork 的单位是整条 ledger 的前缀 `Session @ CommitSeq N`：全部逻辑流到该 Commit 为止的事实。对话与 Turn 状态是 run 事实的投影（第 11 条），只复制其中部分流得不到完整的 canonical history，因此 fork 不复制任何 commit，而是新增一个节点和一条边。
+Session 的历史是 lineage 树上从根段到 tip 段的一条路径。节点是不可变的 commit 段（`Segment`），边是段到其父段某个 commit 的引用（`SegmentHeader.Parent`，类型 `CommitRef`）；每个段至多一条父边（SES-LIN-1），因此每个根段下的节点构成一棵树，全部根段构成森林。Session 是指向自身 tip 段的根（`SessionRecord`）。fork 的单位是整条 ledger 的前缀 `Session @ CommitSeq N`：全部逻辑流到该 Commit 为止的事实。对话与 Turn 状态是 run 事实的投影（第 11 条），只复制其中部分流得不到完整的 canonical history，因此 fork 不复制任何 commit，而是新增一个节点和一条边。
 
 ```go
 type SegmentID string                                       // = SegmentHeader.ID，kernel 随机抽取
-type LedgerRef struct { Segment SegmentID; Seq CommitSeq }
-type Segment struct { ID SegmentID; Header SegmentHeader }  // Header.Parent *LedgerRef 是边
+type CommitRef struct { Segment SegmentID; Seq CommitSeq }
+type Segment struct { ID SegmentID; Header SegmentHeader }  // Header.Parent *CommitRef 是边
 type SessionRecord struct { ID SessionID; Tip SegmentID; CreatedAtUnixMilli int64 }
 type Lease struct { Session SessionID; Epoch Epoch; Owner string; UntilUnixMilli int64 }
 type ForkOrigin struct { Session SessionID; Seq CommitSeq }  // CreateRequest.Fork
@@ -299,7 +299,7 @@ func Reachable(nodes map[SegmentID]Segment, roots []SessionRecord) map[SegmentID
 
 **SES-LIN-1（单父不变量）** 一个段至多一条父边：`SegmentHeader.Parent` 是单个可空引用，记录在段的创建记录中，创建后不可修改。一个 Session 的 `Ancestry` 是从根段到其 tip 段的唯一路径。建立边的操作只有 fork（SES-FRK-1），它只为新建的段设置父边：fork 新建子段并使其成为新根的 tip。已有段的父边不可修改，任何操作都不得为已有 Session 增加第二个父节点；多父 merge 被排除在模型之外，canonical import 若进入合同也只能新建根段或子段。因此 lineage 是森林，读路径只拼接一个父前缀（SES-FRK-2）、`Reachable` 沿唯一的 `Parent.Segment` 传递保留点（SES-GC-2）都依赖该不变量。Session 之间的其他关系不进入 lineage：spawn 子代理的派生来源记录在子段创建 `Metadata` 的 `twilight/spawn` 键下（SPN-2/3），以 fork 模式 spawn 的子 Session 只有 fork 点这一条父边，其 spawn 来源与 lineage 分开建模。
 
-**SES-FRK-1（创建）** `Create` 携带 `Fork{Session, Seq}` 时建立 fork。`Ledger` 解析父 Session 的 `Ancestry`，找到贡献 commit `Seq` 的段（`Owner`），把边记为 `Parent = LedgerRef{Segment: 该段, Seq}`，然后以 `Backend.CreateSession` 一步落下新段与新根（SES-GC-4）。必须核对：父 Session 存活（否则 `ErrNotFound`）、`Seq` 在父的 history 内（否则 `ErrInvalid`）、父不是子自身；边只携带位置。任一不满足则不写根也不写段。相同 origin 的重复 Create 幂等并返回现有 tip 的 header、不同 origin 为 `ErrConflict`（SES-CRT-1）。父段只追加、已接受的 commit 不被改写（SES-APP-5），边一经建立永久有效；在继承 commit 处 fork，边直指持有该 commit 的祖先段，路径不会随 fork 层数增长。
+**SES-FRK-1（创建）** `Create` 携带 `Fork{Session, Seq}` 时建立 fork。`Ledger` 解析父 Session 的 `Ancestry`，找到贡献 commit `Seq` 的段（`Owner`），把边记为 `Parent = CommitRef{Segment: 该段, Seq}`，然后以 `Backend.CreateSession` 一步落下新段与新根（SES-GC-4）。必须核对：父 Session 存活（否则 `ErrNotFound`）、`Seq` 在父的 history 内（否则 `ErrInvalid`）、父不是子自身；边只携带位置。任一不满足则不写根也不写段。相同 origin 的重复 Create 幂等并返回现有 tip 的 header、不同 origin 为 `ErrConflict`（SES-CRT-1）。父段只追加、已接受的 commit 不被改写（SES-APP-5），边一经建立永久有效；在继承 commit 处 fork，边直指持有该 commit 的祖先段，路径不会随 fork 层数增长。
 
 **SES-FRK-2（读）** 段只存自身 commit，从 `LedgerSeed(header)` 起连续编号：首个自身 Commit 的 `Seq = Parent.Seq+1`。`Open`、`ReadCommits`、`ReadStream` 先加载根段的 `Ancestry`，再在这条显式路径上迭代：每段读取一次自己贡献的区间，不递归读 Store。`From`、`Limit`、`HasMore` 与 `StreamSeq` 都按拼接后的序列计数（`ReadStream` 按请求的 lineage 所见的序列，SES-FRK-5），`Head` 为 tip 段的 head。父在 fork 之后追加的 Commit 不属于子；子的 Commit 不属于父。
 

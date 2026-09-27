@@ -20,13 +20,13 @@ import (
 // random bits the kernel draws when the segment is created (SES-WIR-4).
 type SegmentID string
 
-// LedgerRef names one position in the lineage tree: a commit of a segment, by
-// its place in the stitched sequence. As SegmentHeader.Parent it is the edge
-// from a child segment to the last commit it inherits: the child's own
-// commits are numbered from Seq+1 and readers see the prefix [0, Seq]
-// followed by them. History is append-only, so (Segment, Seq) names one
-// commit for good and the edge is a stable reference (SES-FRK-1).
-type LedgerRef struct {
+// CommitRef names one commit in the lineage tree: the commit at Seq of a
+// segment, by its place in the stitched sequence. As SegmentHeader.Parent
+// it is the edge from a child segment to the last commit it inherits: the
+// child's own commits are numbered from Seq+1 and readers see the prefix
+// [0, Seq] followed by them. History is append-only, so (Segment, Seq)
+// names one commit for good and the edge is a stable reference (SES-FRK-1).
+type CommitRef struct {
 	Segment SegmentID `json:"segment"`
 	Seq     CommitSeq `json:"seq"`
 }
@@ -49,7 +49,7 @@ func NewSegmentID() (SegmentID, error) {
 }
 
 // Parent returns the edge to the parent segment, or nil for a root.
-func (s Segment) Parent() *LedgerRef {
+func (s Segment) Parent() *CommitRef {
 	if s.Header.Parent == nil {
 		return nil
 	}

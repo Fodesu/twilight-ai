@@ -130,9 +130,9 @@ func TestValidateHeader(t *testing.T) {
 		ok   bool
 	}{
 		{"root", rootHeader("seg"), true},
-		{"child", SegmentHeader{ID: "child", Parent: &LedgerRef{Segment: "seg", Seq: 3}}, true},
+		{"child", SegmentHeader{ID: "child", Parent: &CommitRef{Segment: "seg", Seq: 3}}, true},
 		{"missing id", SegmentHeader{}, false},
-		{"edge without segment", SegmentHeader{ID: "child", Parent: &LedgerRef{Seq: 3}}, false},
+		{"edge without segment", SegmentHeader{ID: "child", Parent: &CommitRef{Seq: 3}}, false},
 		{"extension key without ID", SegmentHeader{ID: "seg", Ext: Extensions{{Source: "twilight"}: RawValue(`1`)}}, false},
 		{"extension is not JSON", SegmentHeader{ID: "seg", Ext: Extensions{{Source: "twilight", ID: "run"}: RawValue(`{`)}}, false},
 	}
@@ -150,7 +150,7 @@ func TestValidateHeader(t *testing.T) {
 	if seed := LedgerSeed(rootHeader("seg")); seed != (Head{}) {
 		t.Fatalf("root seed = %+v", seed)
 	}
-	if seed := LedgerSeed(SegmentHeader{ID: "c", Parent: &LedgerRef{Segment: "seg", Seq: 3}}); seed != (Head{Next: 4}) {
+	if seed := LedgerSeed(SegmentHeader{ID: "c", Parent: &CommitRef{Segment: "seg", Seq: 3}}); seed != (Head{Next: 4}) {
 		t.Fatalf("child seed = %+v", seed)
 	}
 }

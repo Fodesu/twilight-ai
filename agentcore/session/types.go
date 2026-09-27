@@ -34,7 +34,7 @@ type SegmentHeader struct {
 	// Create, hex encoded. Nothing derives it, so two segments
 	// with otherwise equal records are two nodes (SES-WIR-4).
 	ID          SegmentID      `json:"id"`
-	Parent      *LedgerRef     `json:"parent,omitempty"` // nil for a root segment; the edge to the parent otherwise
+	Parent      *CommitRef     `json:"parent,omitempty"` // nil for a root segment; the edge to the parent otherwise
 	CausationID es.CausationID `json:"causationId,omitempty"`
 	// Ext holds the module extension slots of the creation record, one raw
 	// value per module (SES-WIR-5); a reader that knows none of the modules

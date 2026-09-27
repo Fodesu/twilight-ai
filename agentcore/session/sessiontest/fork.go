@@ -56,7 +56,7 @@ func testFork(t *testing.T, f Fixture) {
 	}
 	// The edge names the parent's segment, not the parent Session, and the
 	// anchor commit's position.
-	wantEdge := session.LedgerRef{Segment: parent.ID, Seq: c1.Seq}
+	wantEdge := session.CommitRef{Segment: parent.ID, Seq: c1.Seq}
 	if child.Parent == nil || *child.Parent != wantEdge || child.ID == parent.ID {
 		t.Fatalf("child header = %+v, want edge %+v", child, wantEdge)
 	}

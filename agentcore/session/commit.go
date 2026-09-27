@@ -188,7 +188,7 @@ func ValidateCommit(c *Commit) error {
 // ValidateEdge checks the shape of a parent edge: nil is a root segment;
 // otherwise it names a parent segment. Whether the parent holds the commit
 // is the Ledger's check at Create (SES-FRK-1).
-func ValidateEdge(edge *LedgerRef) error {
+func ValidateEdge(edge *CommitRef) error {
 	if edge == nil {
 		return nil
 	}
