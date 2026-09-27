@@ -69,7 +69,7 @@ func testFork(t *testing.T, f Fixture) {
 	}
 
 	// The empty child seeds at the edge and reads the inherited prefix.
-	seed := session.SegmentSeed(child)
+	seed := child.Seed()
 	if seed != (session.Head{Next: c1.Seq + 1}) {
 		t.Fatalf("seed = %+v", seed)
 	}
@@ -89,7 +89,7 @@ func testFork(t *testing.T, f Fixture) {
 	if cw.Head() != seed {
 		t.Fatalf("child head = %+v, want %+v", cw.Head(), seed)
 	}
-	if !cw.Committed("c0") || !cw.Committed("c1") || cw.Committed("c2") {
+	if !committed(t, cw, "c0") || !committed(t, cw, "c1") || committed(t, cw, "c2") {
 		t.Fatal("inherited CommitIDs are not visible as committed, or the excluded tail is")
 	}
 	got, ok, err := cw.LookupCommit("c1")
@@ -164,7 +164,7 @@ func testFork(t *testing.T, f Fixture) {
 		t.Fatal(err)
 	}
 	cw = open(t, store, "child", false)
-	if !cw.Committed("c0") || !cw.Committed("c3") || cw.Head().Next != c3.Seq+1 {
+	if !committed(t, cw, "c0") || !committed(t, cw, "c3") || cw.Head().Next != c3.Seq+1 {
 		t.Fatalf("reopened child head = %+v", cw.Head())
 	}
 	_ = cw.Close(ctx)
@@ -185,7 +185,7 @@ func testFork(t *testing.T, f Fixture) {
 	if ids(gp.Commits) != "c0,c1,c3,c5" || c5.Seq != c3.Seq+1 || gp.Header.ID != grand.ID {
 		t.Fatalf("grandchild commits = %s", ids(gp.Commits))
 	}
-	if !gw.Committed("c0") || gw.Committed("c2") {
+	if !committed(t, gw, "c0") || committed(t, gw, "c2") {
 		t.Fatal("grandchild prefix membership wrong")
 	}
 	if c, ok, _ := gw.LookupCommit("c0"); !ok || c.Seq != c0.Seq {

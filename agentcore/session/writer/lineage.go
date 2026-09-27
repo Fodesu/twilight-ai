@@ -8,21 +8,24 @@ import (
 	"github.com/felinics/twilight/agentcore/session"
 )
 
-// Delete drops a Session's root (SES-GC-1). It touches no claim: a commit's
-// retention claim belongs to the segment that holds the commit (EXT-WRT-5),
-// and the segment lives for as long as any root reaches it, so the content
-// a fork inherits stays retained through the same claims that always
-// retained it. Collect releases claims together with the segments and
-// commits it reclaims (SES-GC-3). The Session must not be open in this
-// process; close its Writer first. A root already deleted is not an error.
-func Delete(ctx context.Context, store session.Maintenance, sid session.SessionID) error {
+// Delete tombstones a Session and reclaims along its path (SES-GC-1/2), then
+// releases the retention claims of the segments and commits that reclaim
+// names (SES-GC-3). A prefix another session still covers keeps the claims
+// of the commits it still holds. A nil admission ledger releases nothing.
+// The Session must not be open in this process; close its Writer first. A
+// root already deleted is not an error.
+func Delete(ctx context.Context, store session.Maintenance, admission Admission, sid session.SessionID) error {
 	if store == nil {
 		return errors.New("writer: nil store")
 	}
-	if err := store.Delete(ctx, sid); err != nil && !session.IsCode(err, session.ErrNotFound) {
+	report, err := store.Delete(ctx, sid)
+	if err != nil {
+		if session.IsCode(err, session.ErrNotFound) {
+			return nil
+		}
 		return err
 	}
-	return nil
+	return releaseReport(ctx, admission, report)
 }
 
 // Collect reclaims the commit segments and suffixes no live Session reaches
@@ -37,12 +40,25 @@ func Collect(ctx context.Context, store session.Maintenance, admission Admission
 		return session.CollectReport{}, errors.New("writer: nil store")
 	}
 	report, err := store.Collect(ctx)
-	if err != nil || admission.Ledger == nil {
+	if err != nil {
 		return report, err
+	}
+	if err := releaseReport(ctx, admission, report); err != nil {
+		return report, err
+	}
+	return report, nil
+}
+
+// releaseReport releases the claims of the segments and commits report
+// names. A nil ledger releases nothing. Storage has already been reclaimed;
+// a failure here leaks a claim rather than freeing content a commit still names.
+func releaseReport(ctx context.Context, admission Admission, report session.CollectReport) error {
+	if admission.Ledger == nil {
+		return nil
 	}
 	for _, seg := range report.Removed {
 		if err := releaseOwned(ctx, admission.Ledger, string(seg), nil); err != nil {
-			return report, err
+			return err
 		}
 	}
 	for seg, ids := range report.Dropped {
@@ -51,10 +67,10 @@ func Collect(ctx context.Context, store session.Maintenance, admission Admission
 			identities[i] = string(id)
 		}
 		if err := releaseOwned(ctx, admission.Ledger, string(seg), identities); err != nil {
-			return report, err
+			return err
 		}
 	}
-	return report, nil
+	return nil
 }
 
 // releaseOwned releases every Active commit claim of one segment, or of the

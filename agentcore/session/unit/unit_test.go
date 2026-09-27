@@ -81,8 +81,8 @@ func TestCommitMergesRefusesAndReplays(t *testing.T) {
 		t.Fatalf("refused unit = %v", err)
 	}
 	_, err = w.Commit(ctx, func(v writer.View) (*writer.SemanticGroup, error) {
-		if v.Committed("u2") {
-			t.Fatal("refused unit reached the ledger")
+		if ok, err := v.Committed("u2"); err != nil || ok {
+			t.Fatalf("refused unit committed = %v %v", ok, err)
 		}
 		if _, ok := v.StreamHead(runmod.Stream("r1")); !ok {
 			t.Fatal("run stream not indexed")

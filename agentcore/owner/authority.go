@@ -315,9 +315,10 @@ func (a *Owner) ForkBeforeTurn(ctx context.Context, parent session.SessionID, tu
 	return a.Fork(ctx, ForkRequest{Parent: parent, At: seq - 1, Child: child})
 }
 
-// DeleteSession drops a Session's root (OWN-FRK-3, SES-GC-1); the claims of
-// its commits go with their segments at Collect. A Session this Owner
-// holds open is closed first; one owned by another process is ErrOwned.
+// DeleteSession tombstones a Session and reclaims along its path (OWN-FRK-3,
+// SES-GC-1/2). Claims of removed segments and dropped commits are released
+// with that reclaim (SES-GC-3). A Session this Owner holds open is closed
+// first; one owned by another process is ErrOwned.
 func (a *Owner) DeleteSession(ctx context.Context, sid session.SessionID) error {
 	if gen := a.beginClose(sid, nil); gen != nil {
 		if err := a.release(ctx, sid, gen, true); err != nil {
@@ -334,7 +335,7 @@ func (a *Owner) DeleteSession(ctx context.Context, sid session.SessionID) error 
 			return err
 		}
 	}
-	return writer.Delete(ctx, a.Store, sid)
+	return writer.Delete(ctx, a.Store, a.Admission, sid)
 }
 
 // Collect reclaims the storage of deleted Sessions no live Session reaches

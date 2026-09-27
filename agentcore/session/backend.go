@@ -99,19 +99,28 @@ type MaintenanceStore interface {
 	ListSegments(context.Context) ([]SegmentID, error)
 	// ListRecords returns every root.
 	ListRecords(context.Context) ([]SessionRecord, error)
-	// CreateSession persists a new node and the root that names it as one
-	// durable step (SES-FRK-1): never a root without its segment, never a
-	// segment a Collect could see without its root. Both must be new:
-	// ErrConflict when the SessionID or the SegmentID exists, ErrDeleted
-	// when the SessionID was deleted, so no two roots ever name one
-	// writable tip (SES-FRK-4). When the segment's header names a Parent,
-	// the parent segment must exist at the moment of the write and the
-	// adapter must keep it from being removed while the edge stands
-	// (SES-GC-4): a vanished parent is ErrNotFound.
+	// CreateSession persists a new node, the endpoints its path records on
+	// each span's segment, and the root that names the node (SES-FRK-1).
+	// The root is the last write: a crash before it leaves a segment and
+	// endpoints no live root names, which Collect repairs. Never a root
+	// without its segment. Both the SessionID and the SegmentID must be
+	// new: ErrConflict when either exists, ErrDeleted when the SessionID
+	// was deleted, so no two roots ever name one writable tip (SES-FRK-4).
+	// When the segment's header names a Parent, the parent segment must
+	// exist at the moment of the write and the adapter must keep it from
+	// being removed while the edge stands (SES-GC-4): a vanished parent is
+	// ErrNotFound.
 	CreateSession(context.Context, Segment, SessionRecord) error
+	// RemoveEndpoint drops sid's endpoint on the segment and returns the
+	// endpoints that remain. A missing cover record returns an empty slice
+	// and a nil error. ReplaceEndpoints sets the segment's endpoints to covers;
+	// Collect uses it to make stored endpoints match live paths. A missing
+	// segment is ErrNotFound and nothing is written.
+	RemoveEndpoint(ctx context.Context, id SegmentID, sid SessionID) ([]Endpoint, error)
+	ReplaceEndpoints(ctx context.Context, id SegmentID, covers []Endpoint) error
 	// TruncateSegment drops the segment's own commits after through and
 	// returns the new head. RemoveSegment deletes the node when nothing
-	// reaches it, atomically with that check (SES-GC-4): a root whose Tip is
+	// references it, atomically with that check (SES-GC-4): a root whose Tip is
 	// the segment or a segment whose Parent edge names it makes the removal
 	// ErrReferenced and nothing is removed. The adapter enforces this with
 	// its own consistency (a foreign key, a check under the store lock), so

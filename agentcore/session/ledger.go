@@ -8,12 +8,14 @@ import (
 )
 
 // Ledger is the kernel's Store over a Backend (SES 4 to 6, 8, 9): the
-// Session lineage tree in code. Roots (SessionRecord) name the segment they
-// append to as their tip; segments (Segment) point to their parents through
-// CommitRef edges; a Session's history is the stitched Ancestry of its segment. Fork
-// adds a node and an edge; Delete drops a root; Collect reclaims what no
-// root reaches. Every adapter gets these semantics from here and implements
-// none of them.
+// Session lineage tree in code. A root stores the path of spans it reads
+// and names the last span's segment as its tip. Segments stay append-only
+// logs and keep one parent edge, recorded when the segment is created.
+// Each segment also stores the right endpoints of the live paths that cover
+// it. Fork copies the parent's path, closes the span that contains the fork
+// seq, and appends a new open segment. Delete tombstones the root and drops
+// its endpoints; Collect rebuilds endpoints from the live paths. Every
+// adapter gets these semantics from here and implements none of them.
 type Ledger struct {
 	be        Backend
 	segmentID func() (SegmentID, error)
@@ -50,19 +52,6 @@ func NewLedger(be Backend, opts ...LedgerOption) *Ledger {
 	return l
 }
 
-// resolve loads a live Session's root and the Ancestry of its segment.
-func (l *Ledger) resolve(ctx context.Context, sid SessionID) (SessionRecord, *Ancestry, error) {
-	root, err := l.be.Record(ctx, sid)
-	if err != nil {
-		return SessionRecord{}, nil, err
-	}
-	a, err := LoadAncestry(ctx, l.be, root.Tip)
-	if err != nil {
-		return SessionRecord{}, nil, err
-	}
-	return root, a, nil
-}
-
 // --- create -----------------------------------------------------------------------
 
 func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, error) {
@@ -75,13 +64,15 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 		return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, err.Error())
 	}
 	header := SegmentHeader{CausationID: req.CausationID, Ext: req.Ext.Clone()}
+	var parent *Session
 	if req.Fork != nil {
 		// The edge names the segment that contributes the inherited commit,
-		// wherever in the parent's ancestry it lives (SES-FRK-1).
+		// wherever on the parent's path it lives (SES-FRK-1).
 		if req.Fork.Session == req.SessionID {
 			return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, "a session cannot fork itself")
 		}
-		_, parent, err := l.resolve(ctx, req.Fork.Session)
+		var err error
+		parent, err = l.Load(ctx, req.Fork.Session)
 		if err != nil {
 			if IsCode(err, ErrNotFound) {
 				return SegmentHeader{}, newError(ErrNotFound, "create", req.SessionID, fmt.Sprintf("parent session %s not found", req.Fork.Session))
@@ -89,27 +80,21 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 			return SegmentHeader{}, err
 		}
 		// The edge names a position in the parent's history (SES-FRK-1).
-		owner, ok := parent.Owner(req.Fork.Seq)
-		if !ok {
-			return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, fmt.Sprintf("parent %s has no commit %d", req.Fork.Session, req.Fork.Seq))
-		}
-		commits, _, _, err := l.be.ReadSegment(ctx, owner.Segment.ID, req.Fork.Seq, 1)
+		// EdgeAt reads the commit, so an open span cannot accept a seq the
+		// segment does not hold.
+		edge, ok, err := parent.EdgeAt(ctx, req.Fork.Seq)
 		if err != nil {
 			return SegmentHeader{}, err
 		}
-		if len(commits) != 1 || commits[0].Seq != req.Fork.Seq {
+		if !ok {
 			return SegmentHeader{}, newError(ErrInvalid, "create", req.SessionID, fmt.Sprintf("parent %s has no commit %d", req.Fork.Session, req.Fork.Seq))
 		}
-		header.Parent = &CommitRef{Segment: owner.Segment.ID, Seq: req.Fork.Seq}
+		header.Parent = &edge
 	}
 	// Idempotency is judged on what the request determines about the
 	// segment, not on its identity or clock: the ID is drawn fresh each time
 	// and the creation time is the first writer's (SES-CRT-1).
-	if existing, err := l.be.Record(ctx, req.SessionID); err == nil {
-		seg, err := l.be.Segment(ctx, existing.Tip)
-		if err != nil {
-			return SegmentHeader{}, err
-		}
+	if seg, err := l.tipSegment(ctx, req.SessionID); err == nil {
 		if sameCreation(header, seg.Header) {
 			return seg.Header, nil
 		}
@@ -122,11 +107,15 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 		return SegmentHeader{}, err
 	}
 	header.ID = id
-	if err := ValidateHeader(header); err != nil {
+	if err := header.Validate(); err != nil {
 		return SegmentHeader{}, err
 	}
-	segment := Segment{ID: header.ID, Header: header}
-	root := SessionRecord{ID: req.SessionID, Tip: segment.ID, CreatedAtUnixMilli: req.CreatedAtUnixMilli}
+	path, err := creationPath(parent, header, req.SessionID)
+	if err != nil {
+		return SegmentHeader{}, err
+	}
+	segment := Segment{Header: header}
+	root := SessionRecord{ID: req.SessionID, Tip: segment.ID(), CreatedAtUnixMilli: req.CreatedAtUnixMilli, Path: path}
 	if err := l.be.CreateSession(ctx, segment, root); err != nil {
 		// The parent was checked above, but another replica's Collect may
 		// have removed it since (SES-GC-4): the adapter's own check inside
@@ -138,6 +127,38 @@ func (l *Ledger) Create(ctx context.Context, req CreateRequest) (SegmentHeader, 
 		return SegmentHeader{}, err
 	}
 	return header, nil
+}
+
+// creationPath is the path stored on a new root. A fork keeps the parent's
+// spans through the one that contains the fork seq, closes that span, and
+// appends an open span for the new segment. The closed span's segment is
+// the parent edge EdgeAt already resolved.
+func creationPath(parent *Session, header SegmentHeader, sid SessionID) (Path, error) {
+	if header.Parent == nil {
+		path := Path{{Segment: header.ID, From: 0, End: OpenBound()}}
+		if err := path.Validate(header.ID); err != nil {
+			return nil, newError(ErrCorrupt, "create", sid, err.Error())
+		}
+		return path, nil
+	}
+	if parent == nil {
+		return nil, newError(ErrCorrupt, "create", sid, "fork has no parent session")
+	}
+	base := parent.Record().Path
+	if len(base) == 0 {
+		base = pathFromLoaded(parent.Loaded())
+	}
+	path, edge, err := base.Branch(header.Parent.Seq, header.ID)
+	if err != nil {
+		return nil, newError(ErrCorrupt, "create", sid, err.Error())
+	}
+	if edge != *header.Parent {
+		return nil, newError(ErrCorrupt, "create", sid, "fork edge does not match the stored path")
+	}
+	if err := path.Validate(header.ID); err != nil {
+		return nil, newError(ErrCorrupt, "create", sid, err.Error())
+	}
+	return path, nil
 }
 
 // sameCreation reports whether req would create the Session that exists:
@@ -155,11 +176,7 @@ func (l *Ledger) Header(ctx context.Context, sid SessionID) (SegmentHeader, erro
 	if err := ctx.Err(); err != nil {
 		return SegmentHeader{}, err
 	}
-	root, err := l.be.Record(ctx, sid)
-	if err != nil {
-		return SegmentHeader{}, err
-	}
-	seg, err := l.be.Segment(ctx, root.Tip)
+	seg, err := l.tipSegment(ctx, sid)
 	if err != nil {
 		return SegmentHeader{}, err
 	}
@@ -225,11 +242,10 @@ func (l *Ledger) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Han
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	root, a, err := l.resolve(ctx, sid)
+	s, err := l.Load(ctx, sid)
 	if err != nil {
 		return nil, err
 	}
-	tip := a.Tip()
 	lease, err := l.be.Acquire(ctx, sid, opts)
 	if err != nil {
 		return nil, err
@@ -239,34 +255,12 @@ func (l *Ledger) Open(ctx context.Context, sid SessionID, opts OpenOptions) (Han
 	// holds none of it: membership and stream heads are answered by the
 	// backend's index on demand (SES-REP-3), so Open costs the same for a
 	// tip of ten commits and one of a million.
-	head, err := l.checkIndex(ctx, tip)
+	head, err := s.repairTip(ctx)
 	if err != nil {
 		_ = l.be.Release(ctx, lease)
 		return nil, err
 	}
-	return &ledgerHandle{l: l, root: root, ancestry: a, lease: lease, opts: opts, head: head, streams: make(map[StreamRef]StreamSeq)}, nil
-}
-
-// checkIndex returns the segment's head after checking its CommitIndex by
-// summary. An index that fails Valid against the head (absent, lagging
-// after a crash, or cut) is rebuilt from the segment's own commits and
-// written back (SES-REP-5); nothing is read otherwise.
-func (l *Ledger) checkIndex(ctx context.Context, seg Segment) (Head, error) {
-	summary, head, err := l.be.Summarize(ctx, seg.ID)
-	if err != nil {
-		return Head{}, err
-	}
-	if summary.Valid(seg.Seed(), head) {
-		return head, nil
-	}
-	commits, head, _, err := l.be.ReadSegment(ctx, seg.ID, seg.Seed().Next, 0)
-	if err != nil {
-		return Head{}, err
-	}
-	if err := l.be.PutIndex(ctx, seg.ID, BuildCommitIndex(seg.Header, commits)); err != nil {
-		return Head{}, err
-	}
-	return head, nil
+	return &ledgerHandle{session: s, lease: lease, opts: opts, head: head, streams: make(map[StreamRef]StreamSeq)}, nil
 }
 
 // --- read -------------------------------------------------------------------------
@@ -275,49 +269,28 @@ func (l *Ledger) ReadCommits(ctx context.Context, req CommitReadRequest) (Commit
 	if err := ctx.Err(); err != nil {
 		return CommitPage{}, err
 	}
-	_, a, err := l.resolve(ctx, req.SessionID)
+	s, err := l.Load(ctx, req.SessionID)
 	if err != nil {
 		return CommitPage{}, err
 	}
-	commits, head, more, err := a.Read(ctx, l.be, req.From, req.Limit)
-	if err != nil {
-		return CommitPage{}, err
-	}
-	return CommitPage{Header: a.Header(), Commits: commits, Head: head, HasMore: more}, nil
+	return s.ReadCommits(ctx, req.From, req.Limit)
 }
 
 func (l *Ledger) ReadStream(ctx context.Context, req StreamReadRequest) (StreamPage, error) {
 	if err := ctx.Err(); err != nil {
 		return StreamPage{}, err
 	}
-	if err := ValidateStreamRef(req.Stream); err != nil {
-		return StreamPage{}, newError(ErrInvalid, "read_stream", req.SessionID, err.Error())
+	// Validate before loading so a malformed read is ErrInvalid even when the
+	// Session is absent. Stream positions count the stream's events from the
+	// first commit the read sees (SES-REP-2).
+	if err := validateStreamRead(req.SessionID, req.Stream, req.Lineage); err != nil {
+		return StreamPage{}, err
 	}
-	if err := ValidateStreamLineage(req.Lineage); err != nil {
-		return StreamPage{}, newError(ErrInvalid, "read_stream", req.SessionID, err.Error())
-	}
-	_, a, err := l.resolve(ctx, req.SessionID)
+	s, err := l.Load(ctx, req.SessionID)
 	if err != nil {
 		return StreamPage{}, err
 	}
-	// Stream positions count the stream's events from the first commit the
-	// read sees (SES-REP-2): the stitched history under LineageSession, the
-	// tip segment's own commits under LineageSegment (SES-FRK-5). The kernel
-	// applies the mode the read names; the stream's owning module declared
-	// which one its domain is. Each segment is read through the adapter's
-	// stream index (ReadSegmentStream), so only commits carrying the stream
-	// travel; the stitching across the ancestry stays here.
-	commits, err := a.ReadStream(ctx, l.be, req.Stream, req.Lineage)
-	if err != nil {
-		return StreamPage{}, err
-	}
-	head, err := a.tipHead(ctx, l.be)
-	if err != nil {
-		return StreamPage{}, err
-	}
-	page := StreamPage{Header: a.Header(), Stream: req.Stream, Head: head}
-	page.Events, page.HasMore = StreamEvents(commits, req.Stream, req.From, req.Limit)
-	return page, nil
+	return s.collectStream(ctx, req.Stream, req.Lineage, req.From, req.Limit)
 }
 
 // StreamEvents walks commits in order and returns the events of stream from
@@ -350,13 +323,34 @@ func StreamEvents(commits []Commit, stream StreamRef, from StreamSeq, limit uint
 
 // --- delete and collect (SES-GC) ----------------------------------------------------
 
-func (l *Ledger) Delete(ctx context.Context, sid SessionID) error {
+func (l *Ledger) Delete(ctx context.Context, sid SessionID) (CollectReport, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return CollectReport{}, err
 	}
 	l.graph.Lock()
 	defer l.graph.Unlock()
-	return l.be.DeleteRecord(ctx, sid)
+	root, err := l.be.Record(ctx, sid)
+	if err != nil {
+		return CollectReport{}, err
+	}
+	// Resolve the path before the tombstone. ErrOwned and ErrNotFound from
+	// DeleteRecord then leave every endpoint where it was.
+	path, err := l.sessionPath(ctx, root)
+	if err != nil {
+		return CollectReport{}, err
+	}
+	if err := l.be.DeleteRecord(ctx, sid); err != nil {
+		return CollectReport{}, err
+	}
+	report := CollectReport{Truncated: map[SegmentID]CommitSeq{}, Dropped: map[SegmentID][]CommitID{}}
+	// Tip first: a segment is removed only after the child edge that names
+	// its parent has been removed with the child.
+	for i := len(path) - 1; i >= 0; i-- {
+		if err := l.reclaim(ctx, path[i].Segment, sid, &report); err != nil {
+			return report, err
+		}
+	}
+	return report, nil
 }
 
 func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
@@ -384,15 +378,40 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 	if err != nil {
 		return CollectReport{}, err
 	}
-	need := Reachable(nodes, roots)
+	need := make(map[SegmentID][]Endpoint)
+	for i := range roots {
+		path, err := l.sessionPath(ctx, roots[i])
+		if err != nil {
+			return CollectReport{}, err
+		}
+		for _, span := range path {
+			need[span.Segment] = append(need[span.Segment], Endpoint{Session: roots[i].ID, End: span.End})
+		}
+	}
 	report := CollectReport{Truncated: map[SegmentID]CommitSeq{}, Dropped: map[SegmentID][]CommitID{}}
-	// Unreachable nodes go children first: the adapter refuses to remove a
-	// node a child's edge still names (SES-GC-4), so a parent is removed
-	// only once every unreachable child of it is gone.
-	for _, id := range removalOrder(nodes, need) {
-		// Reachable was computed from a snapshot; a root or a child created
-		// since keeps the node, and the adapter says so (SES-GC-4). Such a
-		// node is left for a later Collect.
+	reached := make(map[SegmentID]Bound, len(need))
+	for id, covers := range need {
+		if _, ok := nodes[id]; !ok {
+			continue
+		}
+		if err := l.be.ReplaceEndpoints(ctx, id, covers); err != nil {
+			if IsCode(err, ErrNotFound) {
+				continue
+			}
+			return report, err
+		}
+		cov, ok := MaxBound(covers)
+		if !ok {
+			continue
+		}
+		reached[id] = cov
+		if err := l.clip(ctx, id, cov, &report); err != nil {
+			return report, err
+		}
+	}
+	// Segments no live path covers go children first: the adapter refuses to
+	// remove a node a child's edge still names (SES-GC-4).
+	for _, id := range removalOrder(nodes, reached) {
 		if err := l.be.RemoveSegment(ctx, id); err != nil {
 			if IsCode(err, ErrReferenced) {
 				continue
@@ -401,47 +420,70 @@ func (l *Ledger) Collect(ctx context.Context) (CollectReport, error) {
 		}
 		report.Removed = append(report.Removed, id)
 	}
-	for id := range nodes {
-		through, reached := need[id]
-		if !reached {
-			continue
-		}
-		if through == ^CommitSeq(0) {
-			continue // a root's tip keeps everything
-		}
-		_, head, _, err := l.be.ReadSegment(ctx, id, through+1, 1)
-		if err != nil {
-			return report, err
-		}
-		if head.Next <= through+1 {
-			continue
-		}
-		// The dropped commits are named before they go, from the index.
-		idx, _, err := l.be.Index(ctx, id)
-		if err != nil {
-			return report, err
-		}
-		var dropped []CommitID
-		for i := range idx.Entries {
-			if idx.Entries[i].Seq > through {
-				dropped = append(dropped, idx.Entries[i].CommitID)
-			}
-		}
-		newHead, err := l.be.TruncateSegment(ctx, id, through)
-		if err != nil {
-			return report, err
-		}
-		if len(dropped) > 0 {
-			report.Dropped[id] = dropped
-		}
-		report.Truncated[id] = newHead.Next
-	}
 	return report, nil
 }
 
-// removalOrder lists the unreachable nodes so that every node comes before
-// its parent: a child's edge keeps its parent from being removed.
-func removalOrder(nodes map[SegmentID]Segment, need map[SegmentID]CommitSeq) []SegmentID {
+// reclaim drops sid's endpoint on id. An empty set removes the segment. A
+// closed maximum truncates the segment to that commit. ErrReferenced leaves
+// the segment for a later Collect.
+func (l *Ledger) reclaim(ctx context.Context, id SegmentID, sid SessionID, report *CollectReport) error {
+	covers, err := l.be.RemoveEndpoint(ctx, id, sid)
+	if err != nil {
+		return err
+	}
+	if len(covers) == 0 {
+		if err := l.be.RemoveSegment(ctx, id); err != nil {
+			if IsCode(err, ErrReferenced) {
+				return nil
+			}
+			return err
+		}
+		report.Removed = append(report.Removed, id)
+		return nil
+	}
+	cov, ok := MaxBound(covers)
+	if !ok {
+		return nil
+	}
+	return l.clip(ctx, id, cov, report)
+}
+
+// clip drops id's commits after cov. An open coverage retains the live head.
+func (l *Ledger) clip(ctx context.Context, id SegmentID, cov Bound, report *CollectReport) error {
+	if cov.Open {
+		return nil
+	}
+	_, head, _, err := l.be.ReadSegment(ctx, id, cov.Through+1, 1)
+	if err != nil {
+		return err
+	}
+	if head.Next <= cov.Through+1 {
+		return nil
+	}
+	idx, _, err := l.be.Index(ctx, id)
+	if err != nil {
+		return err
+	}
+	var dropped []CommitID
+	for i := range idx.Entries {
+		if idx.Entries[i].Seq > cov.Through {
+			dropped = append(dropped, idx.Entries[i].CommitID)
+		}
+	}
+	newHead, err := l.be.TruncateSegment(ctx, id, cov.Through)
+	if err != nil {
+		return err
+	}
+	if len(dropped) > 0 {
+		report.Dropped[id] = dropped
+	}
+	report.Truncated[id] = newHead.Next
+	return nil
+}
+
+// removalOrder lists the segments no live path covers so that every segment
+// comes before its parent: a child's edge keeps its parent from being removed.
+func removalOrder(nodes map[SegmentID]Segment, need map[SegmentID]Bound) []SegmentID {
 	depth := func(id SegmentID) int {
 		d := 0
 		for seg, ok := nodes[id]; ok && seg.Header.Parent != nil; seg, ok = nodes[seg.Header.Parent.Segment] {

@@ -61,6 +61,15 @@ func open(t *testing.T, store session.Store, sid session.SessionID, takeover boo
 	return w
 }
 
+func committed(t *testing.T, h session.Handle, id session.CommitID) bool {
+	t.Helper()
+	ok, err := h.Committed(id)
+	if err != nil {
+		t.Fatalf("Committed(%s): %v", id, err)
+	}
+	return ok
+}
+
 func chatStream() session.StreamRef { return session.StreamRef{Domain: "chat"} }
 
 func runStream(id string) session.StreamRef {
@@ -433,10 +442,10 @@ func testQuery(t *testing.T, f Fixture) {
 		}})
 	appendCommit(t, w, "c2", batch(chatStream(), "twilight/run/c", `{"n":3}`))
 
-	if w.Committed("absent") {
+	if committed(t, w, "absent") {
 		t.Fatal("an unknown CommitID was reported committed")
 	}
-	if !w.Committed("c1") || !w.Committed("c2") {
+	if !committed(t, w, "c1") || !committed(t, w, "c2") {
 		t.Fatal("an appended CommitID was not reported committed")
 	}
 	got, ok, err := w.LookupCommit("c1")
@@ -461,7 +470,7 @@ func testQuery(t *testing.T, f Fixture) {
 		t.Fatal(err)
 	}
 	w = open(t, f.Store, "s", false)
-	if !w.Committed("c2") {
+	if !committed(t, w, "c2") {
 		t.Fatal("a reopened handle lost a committed CommitID")
 	}
 	if got, ok, err := w.LookupCommit("c2"); err != nil || !ok || len(got.Batches) != 1 {

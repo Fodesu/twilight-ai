@@ -22,9 +22,9 @@ type SegmentID string
 
 // SegmentHeader is the immutable creation record of a commit segment
 // (agent-session.md section 8): a node of the lineage tree. It names no
-// Session: which roots append to or inherit from the segment is the roots'
-// business (SessionRecord), and a segment outlives every Session that named
-// it for as long as some root reaches it. ID is the segment's identity,
+// Session: which roots append to or include the segment is the roots'
+// business (SessionRecord). The segment remains while an endpoint or a child
+// edge still names it. ID is the segment's identity,
 // drawn at random, so two otherwise identical records are two segments.
 // Readers of a Session see the header of the segment its root names as its
 // tip.
@@ -41,13 +41,18 @@ type SegmentHeader struct {
 	Ext Extensions `json:"ext,omitempty"`
 }
 
-// Segment is a node: an immutable creation record whose own commits start
-// at SegmentSeed(Header). Header.Parent is the edge to the parent segment; a
-// root segment has none. ID equals Header.ID.
+// Segment is one node of the lineage forest. It stores a creation record
+// and the append-only log of commits written to this node, numbered from
+// Header.Seed(). The log may be empty. A session path names the segment in
+// one span and includes only that span's range, so commits past a closed
+// bound are not part of that session. Header.Parent is the edge to the
+// parent segment; a root segment has none. The segment's identity is Header.ID.
 type Segment struct {
-	ID     SegmentID
 	Header SegmentHeader
 }
+
+// ID is the segment's identity.
+func (s Segment) ID() SegmentID { return s.Header.ID }
 
 // NewSegmentID returns a fresh segment identity: 128 random bits, hex encoded.
 func NewSegmentID() (SegmentID, error) {
@@ -68,26 +73,25 @@ func (s Segment) Parent() *CommitRef {
 }
 
 // Seed is the head of the segment while it holds no commits of its own.
-func (s Segment) Seed() Head { return SegmentSeed(s.Header) }
+func (s Segment) Seed() Head { return s.Header.Seed() }
 
-// SegmentSeed is the head of a segment that holds no commits of its own: a
-// root segment starts at 0, a child continues its parent's numbering at
+// Seed is the head of a segment that holds no commits of its own: a root
+// segment starts at 0, a child continues its parent's numbering at
 // Parent.Seq+1 (SES-FRK-2).
-func SegmentSeed(h SegmentHeader) Head {
+func (h SegmentHeader) Seed() Head {
 	if h.Parent != nil {
 		return Head{Next: h.Parent.Seq + 1}
 	}
 	return Head{}
 }
 
-// ValidateHeader checks the shape of a segment's creation record: a
-// non-empty ID, a well-formed edge and a well-formed Ext. Whether the
-// version is one the Ledger serves is the Ledger's check.
-func ValidateHeader(h SegmentHeader) error {
+// Validate checks the shape of a segment's creation record: a non-empty ID,
+// a well-formed edge and a well-formed Ext.
+func (h SegmentHeader) Validate() error {
 	if err := validIdentity("segment ID", string(h.ID)); err != nil {
 		return newError(ErrInvalid, "header", "", err.Error())
 	}
-	if err := ValidateEdge(h.Parent); err != nil {
+	if err := h.Parent.Validate(); err != nil {
 		return newError(ErrInvalid, "header", "", err.Error())
 	}
 	if err := ValidateExtensions(h.Ext); err != nil {

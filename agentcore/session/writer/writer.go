@@ -54,8 +54,9 @@ type View interface {
 	// was created.
 	Header() session.SegmentHeader
 	// Committed reports whether a commit is already in the ledger. It is
-	// answered from an index the kernel already keeps, without touching storage.
-	Committed(session.CommitID) bool
+	// answered from an index the kernel already keeps. An index read that
+	// fails returns the error; it is not reported as "not committed".
+	Committed(session.CommitID) (bool, error)
 	// LookupCommit returns the stored commit. It comes from storage when the
 	// kernel handle does not hold it, so a caller that only needs the answer
 	// uses Committed.
@@ -128,17 +129,14 @@ type WritersConfig struct {
 }
 
 // sessionWriter is the Writer: the kernel handle (head, fence, CommitID and
-// stream index) plus the stages composed onto its commit pipeline.
+// stream index) plus the stages composed onto its commit pipeline. The tip
+// header and the head live on the handle; this value does not keep a copy.
 type sessionWriter struct {
 	mu       sync.Mutex
 	kernel   session.Handle
 	store    session.Store
 	registry *extension.Registry
-	sid      session.SessionID
-	// header describes the tip segment.
-	header session.SegmentHeader
-	head   session.Head
-	lost   error
+	lost     error
 
 	projections *projector
 	admission   *admitter
@@ -160,15 +158,12 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 	if store == nil || registry == nil {
 		return nil, errors.New("writer: nil store or registry")
 	}
-	header, err := store.Header(ctx, sid)
-	if err != nil {
-		return nil, err
-	}
 	kernel, err := store.Open(ctx, sid, opts)
 	if err != nil {
 		return nil, err
 	}
-	w := &sessionWriter{kernel: kernel, store: store, registry: registry, sid: sid, header: header,
+	header := kernel.Header()
+	w := &sessionWriter{kernel: kernel, store: store, registry: registry,
 		projections: newProjector(registry, sid, cfg.Cache, cfg.CachePolicy),
 		admission:   &admitter{Admission: admission, segment: header.ID},
 		observers:   &observers{list: cfg.Observers}}
@@ -205,7 +200,6 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 		abandon()
 		return nil, err
 	}
-	w.head = page.Head
 	if err := w.admission.reconcile(ctx, w); err != nil {
 		abandon()
 		return nil, err
@@ -213,19 +207,15 @@ func openWriter(ctx context.Context, store session.Store, registry *extension.Re
 	return w, nil
 }
 
-func (w *sessionWriter) SessionID() session.SessionID { return w.sid }
+func (w *sessionWriter) SessionID() session.SessionID { return w.kernel.SessionID() }
 func (w *sessionWriter) Epoch() session.Epoch         { return w.kernel.Epoch() }
 
-// Header reads the tip under the lock; inside a CommitFn the View answers
-// the same without the lock.
-func (w *sessionWriter) Header() session.SegmentHeader {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.header
-}
+// Header is the tip segment's creation record, read from the kernel handle.
+// Inside a CommitFn the View answers the same value.
+func (w *sessionWriter) Header() session.SegmentHeader { return w.kernel.Header() }
 
 func (w *sessionWriter) OwnerExists(_ context.Context, owner artifact.ClaimOwner) (bool, error) {
-	if owner.Kind != ClaimOwnerKind || owner.Authority != string(w.header.ID) {
+	if owner.Kind != ClaimOwnerKind || owner.Authority != string(w.kernel.Header().ID) {
 		return false, &artifact.Error{Code: artifact.ErrInvalid, Operation: "owner_exists", Detail: "owner is not a commit of this writer's tip segment"}
 	}
 	w.mu.Lock()
@@ -233,7 +223,7 @@ func (w *sessionWriter) OwnerExists(_ context.Context, owner artifact.ClaimOwner
 	if w.lost != nil {
 		return false, w.lost
 	}
-	return w.kernel.Committed(session.CommitID(owner.Identity)), nil
+	return w.kernel.Committed(session.CommitID(owner.Identity))
 }
 
 // errWriterClosed is the failure a closed Writer keeps returning; Writers
@@ -258,8 +248,9 @@ func (w *sessionWriter) Close(ctx context.Context) error {
 	var writes []cacheWrite
 	// An entry at an inherited boundary would never be started from
 	// (EXT-PRJ-3), so a tip without a commit of its own refreshes nothing.
-	if extension.OwnBoundary(w.header, w.head) {
-		writes = w.projections.planRefresh(w.head, true)
+	head := w.kernel.Head()
+	if extension.OwnBoundary(w.kernel.Header(), head) {
+		writes = w.projections.planRefresh(head, true)
 	}
 	w.lost = errWriterClosed
 	err := w.kernel.Close(ctx)
@@ -272,14 +263,16 @@ func (w *sessionWriter) Close(ctx context.Context) error {
 
 type view struct{ w *sessionWriter }
 
-func (v view) Head() session.Head            { return v.w.head }
+// Head and Header come from the kernel handle. The view does not lock the
+// Writer: Commit already holds that lock, and locking it again would deadlock.
+func (v view) Head() session.Head            { return v.w.kernel.Head() }
 func (v view) Epoch() session.Epoch          { return v.w.kernel.Epoch() }
-func (v view) Header() session.SegmentHeader { return v.w.header }
+func (v view) Header() session.SegmentHeader { return v.w.kernel.Header() }
 
 // Committed and LookupCommit are answered by the kernel, which already holds
 // the CommitID index Append needs (SES-REP-3/4): the Writer keeps no copy of
 // the log.
-func (v view) Committed(id session.CommitID) bool { return v.w.kernel.Committed(id) }
+func (v view) Committed(id session.CommitID) (bool, error) { return v.w.kernel.Committed(id) }
 
 func (v view) LookupCommit(id session.CommitID) (session.Commit, bool, error) {
 	return v.w.kernel.LookupCommit(id)
@@ -317,7 +310,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 			w.observers.hold()
 			w.mu.Unlock()
 			w.projections.saveRefresh(ctx, writes)
-			w.observers.notify(ctx, w.sid, *applied)
+			w.observers.notify(ctx, w.kernel.SessionID(), *applied)
 			w.observers.release()
 			return
 		}
@@ -341,7 +334,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	if invalid != "" {
 		return CommitResult{Outcome: CommitInvalid, Detail: invalid}, nil
 	}
-	if err := session.ValidateBatches(batches); err != nil {
+	if err := (session.Proposal{CommitID: group.CommitID, Batches: batches}).Validate(); err != nil {
 		return CommitResult{Outcome: CommitInvalid, Detail: err.Error()}, nil
 	}
 	for _, ref := range refs {
@@ -362,7 +355,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 	// provisional commit is what a reader folds too: the kernel assigns
 	// only Seq inside Append, and nothing a projection may read differs
 	// between the two paths.
-	provisional := session.Commit{Seq: w.head.Next, CommitID: group.CommitID, Batches: batches}
+	provisional := session.Proposal{CommitID: group.CommitID, Batches: batches}.At(w.kernel.Head().Next)
 	// Only an authoritative projection's fold refuses the commit; a derived
 	// one that cannot fold is marked unhealthy once the commit lands.
 	next, err := w.projections.fold(provisional)
@@ -401,8 +394,7 @@ func (w *sessionWriter) Commit(ctx context.Context, fn CommitFn) (CommitResult, 
 		return CommitResult{}, w.lost
 	}
 	w.projections.advance(next)
-	w.head = w.kernel.Head()
-	writes = w.projections.planRefresh(w.head, false)
+	writes = w.projections.planRefresh(w.kernel.Head(), false)
 	applied = &stored
 	return CommitResult{Outcome: CommitApplied, Commit: stored, Claim: claim}, nil
 }

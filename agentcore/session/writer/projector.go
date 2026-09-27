@@ -270,11 +270,11 @@ func (p *projector) saveRefresh(ctx context.Context, writes []cacheWrite) {
 type memoryReader struct{ w *sessionWriter }
 
 func (r memoryReader) Load(_ context.Context, sid session.SessionID, id extension.ProjectionID, v extension.ProjectionVersion) (any, session.Head, error) {
-	if sid != r.w.sid {
+	if sid != r.w.kernel.SessionID() {
 		return nil, session.Head{}, &extension.Error{Code: extension.ErrInvalid, Detail: "writer projections are session-local"}
 	}
 	r.w.mu.Lock()
 	defer r.w.mu.Unlock()
 	state, err := r.w.projections.detached(id, v)
-	return state, r.w.head, err
+	return state, r.w.kernel.Head(), err
 }

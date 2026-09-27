@@ -106,7 +106,7 @@ func (s *Store) readIndexFile(header session.SegmentHeader, dir string) *segInde
 	if err != nil {
 		return nil
 	}
-	x := &segIndex{idx: session.CommitIndex{Through: session.SegmentSeed(header)}, byID: map[session.CommitID]int{}}
+	x := &segIndex{idx: session.CommitIndex{Through: header.Seed()}, byID: map[session.CommitID]int{}}
 	off := 0
 	for off < len(data) {
 		nl := bytes.IndexByte(data[off:], '\n')
@@ -198,7 +198,7 @@ func (s *Store) rebuildIndex(id session.SegmentID, header session.SegmentHeader,
 	if err != nil {
 		return nil, err
 	}
-	x := &segIndex{idx: session.CommitIndex{Through: session.SegmentSeed(header)}, byID: make(map[session.CommitID]int, len(commits))}
+	x := &segIndex{idx: session.CommitIndex{Through: header.Seed()}, byID: make(map[session.CommitID]int, len(commits))}
 	var buf []byte
 	for i := range commits {
 		x.extend(&commits[i], offsets[i], offsets[i+1])
@@ -395,7 +395,7 @@ func (s *Store) commitsFrom(id session.SegmentID, header session.SegmentHeader, 
 		return nil, session.Head{}, err
 	}
 	n := len(x.spans)
-	base := session.SegmentSeed(header).Next
+	base := header.Seed().Next
 	if n == 0 || from >= x.idx.Through.Next {
 		return nil, x.idx.Through, nil
 	}

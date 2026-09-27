@@ -102,10 +102,10 @@ func TestForkWriterInheritsPrefix(t *testing.T) {
 	}
 }
 
-// SES-GC-1/2/3, EXT-WRT-9: Delete drops the root and leaves claims alone; a
-// fork keeps reading the inherited commits, whose claims stay Active with
-// their segment; Collect releases a claim exactly when it reclaims the
-// commit, and a repeated Delete is a no-op.
+// SES-GC-1/2/3, EXT-WRT-9: Delete reclaims along the path and releases the
+// claims of what it dropped or removed. A fork keeps the inherited prefix,
+// so those claims stay Active with their segment. A repeated Delete is a
+// no-op. Collect after a completed Delete finds nothing left to reclaim.
 func TestClaimsFollowSegmentsThroughCollect(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -143,11 +143,11 @@ func TestClaimsFollowSegmentsThroughCollect(t *testing.T) {
 		}
 		return ids
 	}
-	if err := Delete(ctx, f.store, "s"); err != nil {
+	if err := Delete(ctx, f.store, f.admission(), "s"); err != nil {
 		t.Fatal(err)
 	}
-	if got := active(); len(got) != 2 {
-		t.Fatalf("claims after deleting the parent = %v, want both kept (the segment is still reached by the fork)", got)
+	if got := active(); len(got) != 1 || got[0] != "c1" {
+		t.Fatalf("claims after deleting the parent = %v, want c1 only", got)
 	}
 	if _, err := OpenWriter(ctx, f.store, f.registry, f.admission(), "s", session.OpenOptions{}); !session.IsCode(err, session.ErrNotFound) {
 		t.Fatalf("open deleted = %v", err)
@@ -160,26 +160,26 @@ func TestClaimsFollowSegmentsThroughCollect(t *testing.T) {
 	if err != nil || len(state.(noteState).Notes) != 1 || state.(noteState).Notes[0] != "c1" {
 		t.Fatalf("child after deleting the parent = %+v %v", state, err)
 	}
-	// Collect truncates the parent's segment after commit 0: c2 is dropped
-	// and its claim released; c1 stays with the retained prefix.
+	// Delete already truncated the parent's segment after commit 0 and
+	// released c2. Collect finds nothing left to reclaim.
 	report, err := Collect(ctx, f.store, f.admission())
-	if err != nil || len(report.Removed) != 0 || report.Truncated[parentSeg] != 1 || len(report.Dropped[parentSeg]) != 1 || report.Dropped[parentSeg][0] != "c2" {
-		t.Fatalf("collect = %+v %v, want the parent's segment kept through commit 0 with c2 dropped", report, err)
+	if err != nil || len(report.Removed) != 0 || len(report.Truncated) != 0 {
+		t.Fatalf("collect = %+v %v, want nothing left to reclaim", report, err)
 	}
 	if got := active(); len(got) != 1 || got[0] != "c1" {
-		t.Fatalf("claims after truncation = %v, want c1 only", got)
+		t.Fatalf("claims after collect = %v, want c1 only", got)
 	}
 	if err := child.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if err := Delete(ctx, f.store, "child"); err != nil {
+	if err := Delete(ctx, f.store, f.admission(), "child"); err != nil {
 		t.Fatal(err)
 	}
-	if err := Delete(ctx, f.store, "child"); err != nil {
+	if err := Delete(ctx, f.store, f.admission(), "child"); err != nil {
 		t.Fatalf("repeated delete = %v, want nil", err)
 	}
-	if report, err := Collect(ctx, f.store, f.admission()); err != nil || len(report.Removed) != 2 {
-		t.Fatalf("final collect = %+v %v", report, err)
+	if report, err := Collect(ctx, f.store, f.admission()); err != nil || len(report.Removed) != 0 || len(report.Truncated) != 0 {
+		t.Fatalf("final collect = %+v %v, want nothing", report, err)
 	}
 	if got := active(); len(got) != 0 {
 		t.Fatalf("claims after the segment is removed = %v, want none", got)

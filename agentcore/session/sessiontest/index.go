@@ -56,11 +56,11 @@ func testIndex(t *testing.T, f Fixture) {
 				t.Fatalf("head = %+v, want %+v", got, want)
 			}
 			for _, id := range []session.CommitID{"c1", "c2", "c3"} {
-				if !w.Committed(id) {
+				if !committed(t, w, id) {
 					t.Fatalf("%s not committed after index cut", id)
 				}
 			}
-			if w.Committed("absent") {
+			if committed(t, w, "absent") {
 				t.Fatal("absent commit reported committed")
 			}
 			if n, ok := w.StreamHead(chatStream()); !ok || n != 2 {
@@ -88,7 +88,7 @@ func testIndex(t *testing.T, f Fixture) {
 	}
 	cw := open(t, f.Store, "child", false)
 	defer func() { _ = cw.Close(ctx) }()
-	if !cw.Committed("c1") || !cw.Committed("c2") || cw.Committed("c3") {
+	if !committed(t, cw, "c1") || !committed(t, cw, "c2") || committed(t, cw, "c3") {
 		t.Fatal("inherited membership: want c1, c2 inherited and c3 not")
 	}
 }

@@ -30,12 +30,12 @@ func (app *Application) ForkBeforeTurn(ctx context.Context, parent session.Sessi
 	return app.Owner.ForkBeforeTurn(ctx, parent, turnID, child)
 }
 
-// DeleteSession drops a session's root (OWN-FRK-3).
+// DeleteSession tombstones a session and reclaims along its path (OWN-FRK-3).
 func (app *Application) DeleteSession(ctx context.Context, sid session.SessionID) error {
 	return app.Owner.DeleteSession(ctx, sid)
 }
 
-// Collect reclaims unreachable session segments (SES-GC-2).
+// Collect repairs endpoints from live paths and reclaims what they no longer cover (SES-GC-2).
 func (app *Application) Collect(ctx context.Context) (session.CollectReport, error) {
 	return app.Owner.Collect(ctx)
 }

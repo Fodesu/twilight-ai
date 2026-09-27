@@ -29,7 +29,7 @@ func TestKernelExtSlots(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			herr := session.ValidateHeader(session.SegmentHeader{ID: "seg", Ext: tc.ext})
+			herr := (session.SegmentHeader{ID: "seg", Ext: tc.ext}).Validate()
 			if tc.invalid {
 				if !session.IsCode(herr, session.ErrInvalid) {
 					t.Fatalf("invalid ext accepted: %v", herr)

@@ -12,7 +12,7 @@ import (
 // header; any difference is a Conflict. CreatedAtUnixMilli is recorded from
 // the first successful Create and does not take part in that judgement. Fork makes the new segment a child of another
 // Session's history (SES-FRK-1): that Session must be live in the same
-// Store and its ancestry must hold commit Seq; otherwise Create fails and
+// Store and its path must hold commit Seq; otherwise Create fails and
 // writes nothing. The segment's ID is always the kernel's to draw: a caller never
 // names a writable node, so no two roots can be made to share one
 // (SES-FRK-4).
@@ -78,9 +78,9 @@ type StreamPage struct {
 	HasMore bool
 }
 
-// CollectReport is what one Collect reclaimed (SES-GC-2): the segments it
-// removed entirely and, for segments some root still reaches, the new
-// Head.Next after their unreachable suffix was dropped.
+// CollectReport is what one Delete or Collect reclaimed (SES-GC-2): the
+// segments it removed entirely and, for segments some session still covers,
+// the new Head.Next after their unneeded suffix was dropped.
 type CollectReport struct {
 	Removed   []SegmentID
 	Truncated map[SegmentID]CommitSeq
@@ -93,7 +93,7 @@ type CollectReport struct {
 
 // Store is the kernel port (SES 4 to 6, 8, 9). A Session is a root into the
 // lineage tree: it names the segment it appends to, and reads the stitched
-// history of that segment's ancestry. Store is one Session's face;
+// history of its path. Store is one Session's face;
 // LeaseDirectory reads leases across Sessions; Maintenance changes the set
 // of roots and reclaims nodes. session.Ledger implements all three.
 type Store interface {
@@ -127,15 +127,20 @@ type LeaseDirectory interface {
 
 // Maintenance changes the set of roots and reclaims nodes (SES-GC).
 type Maintenance interface {
-	// Delete marks the Session's root deleted (SES-GC-1): the Session is no
-	// longer found, opened, read or forked, and its SessionID is never
-	// reused (a Create under it is ErrDeleted). The segments it reached stay
-	// lineage nodes for as long as another root reaches them. An owned
-	// Session is ErrOwned.
-	Delete(context.Context, SessionID) error
-	// Collect reclaims every node and suffix no root reaches (SES-GC-2). It
-	// is idempotent and safe while Sessions are open: nothing a root reaches
-	// is touched.
+	// Delete tombstones the root and reclaims along its stored path
+	// (SES-GC-1/2). Each segment on the path loses this session's endpoint.
+	// An empty endpoint set removes the segment; a closed maximum truncates
+	// the segment to that commit. A prefix another live session still covers
+	// stays. The Session is no longer found, opened, read or forked, and its
+	// SessionID is never reused (a Create under it is ErrDeleted). An owned
+	// Session is ErrOwned and nothing is reclaimed. The report lists the
+	// segments and commits this call removed.
+	Delete(context.Context, SessionID) (CollectReport, error)
+	// Collect repairs retention from the live roots' paths (SES-GC-2): it
+	// rewrites each segment's endpoints, truncates to the maximum that
+	// remains, and removes segments no path covers. It is idempotent and
+	// safe while Sessions are open. An open tip is an open endpoint, so the
+	// commits under it stay.
 	Collect(context.Context) (CollectReport, error)
 }
 
@@ -161,14 +166,18 @@ type Handle interface {
 	// expires renews to no effect.
 	Renew(context.Context) error
 	Head() Head
+	// Header is the tip segment's creation record. It does not change for
+	// the life of the handle: a Session's tip segment is fixed at Create.
+	Header() SegmentHeader
 	// Append persists one commit atomically and returns it as stored (SES-APP-1).
 	// It rejects malformed CommitIDs, duplicate CommitIDs, malformed stream
 	// refs and events, and a stale Epoch (SES-APP-3).
 	Append(context.Context, Proposal) (Commit, error)
 	// Committed reports whether CommitID is already in the ledger. Append must
 	// reject a duplicate CommitID (SES-APP-3), so the kernel answers this from
-	// the index it already keeps, without touching storage (SES-REP-3).
-	Committed(CommitID) bool
+	// the index it already keeps (SES-REP-3). A failed handle, and a failed
+	// index read, return the error instead of a false negative.
+	Committed(CommitID) (bool, error)
 	// LookupCommit returns a committed group. It reads it from storage when
 	// the handle does not already hold it, so a caller that needs the commit
 	// pays for it only on a hit (SES-REP-4).

@@ -63,20 +63,33 @@ DELETE FROM session_commits WHERE segment = $1 AND seq > $2;
 DELETE FROM session_commits WHERE segment = $1;
 
 -- name: SessionRoot :one
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots WHERE id = $1;
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted, path FROM session_roots WHERE id = $1;
 
 -- name: SessionRoots :many
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots WHERE NOT deleted ORDER BY id;
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted, path FROM session_roots WHERE NOT deleted ORDER BY id;
 
 -- name: HeldSessionRoots :many
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots WHERE owned AND NOT deleted ORDER BY id;
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted, path FROM session_roots WHERE owned AND NOT deleted ORDER BY id;
 
 -- name: ExpiredSessionRoots :many
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted, path FROM session_roots
 WHERE owned AND NOT deleted AND lease_until > 0 AND lease_until <= @before ORDER BY lease_until, id LIMIT @row_limit;
 
 -- name: InsertSessionRoot :exec
-INSERT INTO session_roots (id, tip, created_at) VALUES ($1, $2, $3);
+INSERT INTO session_roots (id, tip, created_at, path) VALUES ($1, $2, $3, $4);
+
+-- name: InsertCover :exec
+INSERT INTO session_covers (segment, session, open, through) VALUES ($1, $2, $3, $4)
+ON CONFLICT (segment, session) DO UPDATE SET open = EXCLUDED.open, through = EXCLUDED.through;
+
+-- name: DeleteCover :exec
+DELETE FROM session_covers WHERE segment = $1 AND session = $2;
+
+-- name: SegmentCovers :many
+SELECT session, open, through FROM session_covers WHERE segment = $1 ORDER BY session;
+
+-- name: DeleteSegmentCovers :exec
+DELETE FROM session_covers WHERE segment = $1;
 
 -- name: UpdateSessionOwnership :exec
 UPDATE session_roots SET epoch = $1, owned = $2, owner = $3, lease_until = $4, failed = $5 WHERE id = $6;

@@ -13,7 +13,7 @@ import (
 type CommitSeq uint64
 
 // Head is the ledger head after the last commit: the next CommitSeq to
-// assign. A segment with no commits of its own has head SegmentSeed(header):
+// assign. A segment with no commits of its own has head header.Seed():
 // 0 for a root segment, Parent.Seq+1 for a child.
 type Head struct {
 	Next CommitSeq
@@ -64,11 +64,24 @@ type Commit struct {
 }
 
 // Proposal is one atomic append: the batches of a single commit under one
-// CommitID. The commit may span several streams; the store lands every batch
-// or none (SES-APP-1).
+// CommitID, before the store assigns Seq. The commit may span several
+// streams; the store lands every batch or none (SES-APP-1).
 type Proposal struct {
 	CommitID CommitID
 	Batches  []StreamBatch
+}
+
+// At returns the proposal as a commit positioned at seq. It does not
+// validate; callers validate the proposal before assigning a position.
+func (p Proposal) At(seq CommitSeq) Commit {
+	return Commit{Seq: seq, CommitID: p.CommitID, Batches: p.Batches}
+}
+
+// Validate checks the shape of a proposal: a valid CommitID and well-formed
+// batches. Seq is not part of a proposal.
+func (p Proposal) Validate() error {
+	c := p.At(0)
+	return c.Validate()
 }
 
 // CommitRef names one commit in the lineage tree: the commit at Seq of a
@@ -82,8 +95,8 @@ type CommitRef struct {
 	Seq     CommitSeq `json:"seq"`
 }
 
-// ValidateEvent checks one event before it is stored.
-func ValidateEvent(e *Event) error {
+// Validate checks one event before it is stored.
+func (e *Event) Validate() error {
 	return validateEventShape(e.Type, e.Payload)
 }
 
@@ -108,7 +121,7 @@ func ValidateBatches(batches []StreamBatch) error {
 			return fmt.Errorf("batch %d: no events", i)
 		}
 		for j := range b.Events {
-			if err := ValidateEvent(&b.Events[j]); err != nil {
+			if err := b.Events[j].Validate(); err != nil {
 				return fmt.Errorf("batch %d event %d: %w", i, j, err)
 			}
 		}
@@ -116,20 +129,20 @@ func ValidateBatches(batches []StreamBatch) error {
 	return nil
 }
 
-// ValidateCommit checks the shape of a commit before it is stored: a valid
+// Validate checks the shape of a commit before it is stored: a valid
 // CommitID and well-formed batches. Seq and duplicate CommitIDs are the
 // store's checks (SES-APP-3).
-func ValidateCommit(c *Commit) error {
+func (c *Commit) Validate() error {
 	if err := validIdentity("CommitID", string(c.CommitID)); err != nil {
 		return err
 	}
 	return ValidateBatches(c.Batches)
 }
 
-// ValidateEdge checks the shape of a parent edge: nil is a root segment;
+// Validate checks the shape of a parent edge. A nil edge is a root segment;
 // otherwise it names a parent segment. Whether the parent holds the commit
-// is the Ledger's check at Create (SES-FRK-1).
-func ValidateEdge(edge *CommitRef) error {
+// is the loaded Session's check at Create (SES-FRK-1).
+func (edge *CommitRef) Validate() error {
 	if edge == nil {
 		return nil
 	}

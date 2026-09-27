@@ -5,14 +5,17 @@ import (
 )
 
 // SessionRecord is a root: a Session's identity, the segment it appends to
-// (its tip) and the Session's own metadata. Dropping the record is deleting
-// the Session; the tip stays a lineage node for as long as any root
-// reaches it. Two roots never share a tip (SES-FRK-4): a fork gets a new
-// child segment, so writers of different Sessions never append to one node.
+// (its tip), the path of spans it reads, and the Session's own metadata.
+// Tip is the last span's segment. An empty Path is a root written before
+// paths were stored; readers assemble one by walking parent edges. Deleting
+// the record tombstones the Session. Two roots never share a tip
+// (SES-FRK-4): a fork gets a new child segment, so writers of different
+// Sessions never append to one node.
 type SessionRecord struct {
 	ID                 SessionID `json:"sessionId"`
 	Tip                SegmentID `json:"tip"`
 	CreatedAtUnixMilli int64     `json:"createdAtUnixMilli"`
+	Path               Path      `json:"path,omitempty"`
 }
 
 // Lease is writer ownership of one Session root (SES-OWN-1/2): the adapter

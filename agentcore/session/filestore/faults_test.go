@@ -50,8 +50,8 @@ func TestAppendSyncFailurePoisonsHandle(t *testing.T) {
 	if _, err := h.Append(ctx, proposal("c2", 1)); !session.IsCode(err, session.ErrHandleFailed) {
 		t.Fatalf("poisoned handle accepted an append: %v", err)
 	}
-	if h.Committed("c1") {
-		t.Fatal("poisoned handle claims to know a commit whose outcome is unknown")
+	if ok, err := h.Committed("c1"); err == nil || ok {
+		t.Fatalf("poisoned handle Committed = %v, %v; want the failed outcome", ok, err)
 	}
 
 	// The bytes did land: the reopen sees the complete commit.
@@ -59,7 +59,7 @@ func TestAppendSyncFailurePoisonsHandle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen after sync failure: %v", err)
 	}
-	if !h2.Committed("c1") {
+	if ok, err := h2.Committed("c1"); err != nil || !ok {
 		t.Fatal("reopened handle does not index the commit that reached disk")
 	}
 	c, ok, err := h2.LookupCommit("c1")

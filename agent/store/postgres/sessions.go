@@ -108,7 +108,7 @@ func (b *sessionBackend) head(ctx context.Context, q *db.Queries, header *sessio
 		return session.Head{}, err
 	}
 	if last < 0 {
-		return session.SegmentSeed(*header), nil
+		return header.Seed(), nil
 	}
 	return session.Head{Next: session.CommitSeq(last) + 1}, nil //nolint:gosec // G115: checked non-negative
 }
@@ -130,7 +130,7 @@ func (b *sessionBackend) Segment(ctx context.Context, id session.SegmentID) (ses
 	if err != nil {
 		return session.Segment{}, err
 	}
-	return session.Segment{ID: id, Header: h}, nil
+	return session.Segment{Header: h}, nil
 }
 
 func (b *sessionBackend) ListSegments(ctx context.Context) ([]session.SegmentID, error) {
@@ -151,7 +151,7 @@ func (b *sessionBackend) ReadSegment(ctx context.Context, id session.SegmentID, 
 	if err != nil {
 		return nil, session.Head{}, false, err
 	}
-	if seed := session.SegmentSeed(header); from < seed.Next {
+	if seed := header.Seed(); from < seed.Next {
 		from = seed.Next
 	}
 	head, err := b.head(ctx, q, &header)
@@ -266,7 +266,7 @@ func (b *sessionBackend) Index(ctx context.Context, id session.SegmentID) (sessi
 	if err != nil {
 		return session.CommitIndex{}, session.Head{}, err
 	}
-	head := session.SegmentSeed(header)
+	head := header.Seed()
 	idx := session.CommitIndex{Through: head, Entries: make([]session.IndexEntry, 0, len(rows))}
 	next := 0
 	for i := range rows {
@@ -295,7 +295,7 @@ func (b *sessionBackend) Summarize(ctx context.Context, id session.SegmentID) (s
 	if err != nil {
 		return session.IndexSummary{}, session.Head{}, err
 	}
-	head := session.SegmentSeed(header)
+	head := header.Seed()
 	if row.LastSeq >= 0 {
 		head = session.Head{Next: session.CommitSeq(row.LastSeq) + 1} //nolint:gosec // G115: checked non-negative
 	}
@@ -403,7 +403,10 @@ func (b *sessionBackend) RemoveSegment(ctx context.Context, id session.SegmentID
 			return err
 		}
 		if referenced {
-			return &session.Error{Code: session.ErrReferenced, Operation: "collect", Detail: fmt.Sprintf("segment %s is still reached", id)}
+			return &session.Error{Code: session.ErrReferenced, Operation: "collect", Detail: fmt.Sprintf("segment %s is still referenced", id)}
+		}
+		if err := q.DeleteSegmentCovers(ctx, string(id)); err != nil {
+			return err
 		}
 		if err := q.DeleteSegmentCommitStreams(ctx, string(id)); err != nil {
 			return err
@@ -436,8 +439,44 @@ func (b *sessionBackend) root(ctx context.Context, q *db.Queries, op string, sid
 	return r, nil
 }
 
-func recordOf(r *db.SessionRoot) session.SessionRecord {
-	return session.SessionRecord{ID: session.SessionID(r.ID), Tip: session.SegmentID(r.Tip), CreatedAtUnixMilli: r.CreatedAt}
+func recordOf(r *db.SessionRoot) (session.SessionRecord, error) {
+	rec := session.SessionRecord{ID: session.SessionID(r.ID), Tip: session.SegmentID(r.Tip), CreatedAtUnixMilli: r.CreatedAt}
+	if r.Path != "" {
+		if err := json.Unmarshal([]byte(r.Path), &rec.Path); err != nil {
+			return session.SessionRecord{}, kerr(session.ErrCorrupt, "record", rec.ID, fmt.Sprintf("path: %v", err))
+		}
+	}
+	return rec, nil
+}
+
+func coverColumns(end session.Bound) (bool, int64) {
+	if end.Open {
+		return true, 0
+	}
+	return false, int64(end.Through) //nolint:gosec // G115: seq values fit int64
+}
+
+func coversOf(rows []db.SegmentCoversRow) []session.Endpoint {
+	out := make([]session.Endpoint, len(rows))
+	for i := range rows {
+		end := session.ThroughBound(session.CommitSeq(rows[i].Through)) //nolint:gosec // G115: seq values fit int64
+		if rows[i].Open {
+			end = session.OpenBound()
+		}
+		out[i] = session.Endpoint{Session: session.SessionID(rows[i].Session), End: end}
+	}
+	return out
+}
+
+func marshalPath(path session.Path) (string, error) {
+	if path == nil {
+		path = session.Path{}
+	}
+	raw, err := json.Marshal(path)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
 }
 
 func leaseOf(r *db.SessionRoot) session.Lease {
@@ -454,8 +493,8 @@ func (b *sessionBackend) CreateSession(ctx context.Context, seg session.Segment,
 		} else if !noRows(err) {
 			return err
 		}
-		if _, err := q.Segment(ctx, string(seg.ID)); err == nil {
-			return kerr(session.ErrConflict, "create", rec.ID, fmt.Sprintf("segment %s exists", seg.ID))
+		if _, err := q.Segment(ctx, string(seg.ID())); err == nil {
+			return kerr(session.ErrConflict, "create", rec.ID, fmt.Sprintf("segment %s exists", seg.ID()))
 		} else if !noRows(err) {
 			return err
 		}
@@ -470,20 +509,67 @@ func (b *sessionBackend) CreateSession(ctx context.Context, seg session.Segment,
 		if seg.Header.Parent != nil {
 			parent = pgtype.Text{String: string(seg.Header.Parent.Segment), Valid: true}
 		}
-		if err := q.InsertSegment(ctx, db.InsertSegmentParams{ID: string(seg.ID), Header: string(header), ParentSegment: parent}); err != nil {
+		if err := q.InsertSegment(ctx, db.InsertSegmentParams{ID: string(seg.ID()), Header: string(header), ParentSegment: parent}); err != nil {
 			if isUniqueViolation(err) {
-				return kerr(session.ErrConflict, "create", rec.ID, fmt.Sprintf("segment %s exists", seg.ID))
+				return kerr(session.ErrConflict, "create", rec.ID, fmt.Sprintf("segment %s exists", seg.ID()))
 			}
 			if isForeignKeyViolation(err) {
 				return kerr(session.ErrNotFound, "create", rec.ID, fmt.Sprintf("parent segment %s not found", seg.Header.Parent.Segment))
 			}
 			return err
 		}
-		err = q.InsertSessionRoot(ctx, db.InsertSessionRootParams{ID: string(rec.ID), Tip: string(rec.Tip), CreatedAt: rec.CreatedAtUnixMilli})
+		path, err := marshalPath(rec.Path)
+		if err != nil {
+			return err
+		}
+		for _, span := range rec.Path {
+			open, through := coverColumns(span.End)
+			if err := q.InsertCover(ctx, db.InsertCoverParams{Segment: string(span.Segment), Session: string(rec.ID), Open: open, Through: through}); err != nil {
+				return err
+			}
+		}
+		err = q.InsertSessionRoot(ctx, db.InsertSessionRootParams{ID: string(rec.ID), Tip: string(rec.Tip), CreatedAt: rec.CreatedAtUnixMilli, Path: path})
 		if isUniqueViolation(err) {
 			return kerr(session.ErrConflict, "create", rec.ID, "session exists")
 		}
 		return err
+	})
+}
+
+func (b *sessionBackend) RemoveEndpoint(ctx context.Context, id session.SegmentID, sid session.SessionID) ([]session.Endpoint, error) {
+	var out []session.Endpoint
+	err := b.d.tx(ctx, "segment:"+string(id), func(q *db.Queries) error {
+		if err := q.DeleteCover(ctx, db.DeleteCoverParams{Segment: string(id), Session: string(sid)}); err != nil {
+			return err
+		}
+		rows, err := q.SegmentCovers(ctx, string(id))
+		if err != nil {
+			return err
+		}
+		out = coversOf(rows)
+		return nil
+	})
+	return out, err
+}
+
+func (b *sessionBackend) ReplaceEndpoints(ctx context.Context, id session.SegmentID, covers []session.Endpoint) error {
+	return b.d.tx(ctx, "segment:"+string(id), func(q *db.Queries) error {
+		if _, err := q.Segment(ctx, string(id)); err != nil {
+			if noRows(err) {
+				return &session.Error{Code: session.ErrNotFound, Operation: "collect", Detail: fmt.Sprintf("segment %s not found", id)}
+			}
+			return err
+		}
+		if err := q.DeleteSegmentCovers(ctx, string(id)); err != nil {
+			return err
+		}
+		for _, c := range covers {
+			open, through := coverColumns(c.End)
+			if err := q.InsertCover(ctx, db.InsertCoverParams{Segment: string(id), Session: string(c.Session), Open: open, Through: through}); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -492,7 +578,7 @@ func (b *sessionBackend) Record(ctx context.Context, sid session.SessionID) (ses
 	if err != nil {
 		return session.SessionRecord{}, err
 	}
-	return recordOf(&r), nil
+	return recordOf(&r)
 }
 
 func (b *sessionBackend) ListRecords(ctx context.Context) ([]session.SessionRecord, error) {
@@ -502,7 +588,11 @@ func (b *sessionBackend) ListRecords(ctx context.Context) ([]session.SessionReco
 	}
 	out := make([]session.SessionRecord, 0, len(rows))
 	for i := range rows {
-		out = append(out, recordOf(&rows[i]))
+		rec, err := recordOf(&rows[i])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rec)
 	}
 	return out, nil
 }

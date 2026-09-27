@@ -175,8 +175,8 @@ func TestWriterCommitReplayAndRebuild(t *testing.T) {
 		if v.Head().Next != 1 || v.Epoch() != 1 {
 			t.Fatalf("view head/epoch = %+v %d", v.Head(), v.Epoch())
 		}
-		if !v.Committed("c1") {
-			t.Fatal("view does not see the committed commit")
+		if ok, err := v.Committed("c1"); err != nil || !ok {
+			t.Fatalf("view committed = %v %v", ok, err)
 		}
 		if c, ok, err := v.LookupCommit("c1"); err != nil || !ok || len(c.Batches) != 1 || len(c.Batches[0].Events) != 2 {
 			t.Fatalf("view lookup = %+v %v %v", c, ok, err)

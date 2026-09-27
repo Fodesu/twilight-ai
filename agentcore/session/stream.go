@@ -32,17 +32,17 @@ func (r StreamRef) String() string {
 // only; CommitSeq is the canonical order.
 type StreamSeq uint64
 
-// StreamLineage is how a stream read crosses segment edges (SES-FRK-5). A
-// fork inherits the commits of its
-// ancestry; a stream's owning module declares which of the two histories its
-// streams are, and a read names that mode. The kernel applies the mode it is
-// given and does not know which one a domain declared.
+// StreamLineage is how a stream read crosses a fork (SES-FRK-5). A fork's
+// path includes a prefix of the parent's commits. A stream's owning module
+// declares which of the two histories its streams are, and a read names that
+// mode. The kernel applies the mode it is given and does not know which one
+// a domain declared.
 type StreamLineage string
 
 const (
 	// LineageSession reads the stream as the Session's semantic history: the
 	// inherited prefix stitched before the tip segment's own commits, so a
-	// fork or a new tip continues the stream where its ancestry left it.
+	// fork continues the stream at the next event after that prefix.
 	LineageSession StreamLineage = "session"
 	// LineageSegment reads the stream as execution history of the segment
 	// that wrote it: the tip segment's own commits only, so a fork or a new

@@ -104,6 +104,13 @@ type SessionCommitStream struct {
 	Events   int64
 }
 
+type SessionCover struct {
+	Segment string
+	Session string
+	Open    bool
+	Through int64
+}
+
 type SessionRoot struct {
 	ID         string
 	Tip        string
@@ -114,6 +121,7 @@ type SessionRoot struct {
 	LeaseUntil int64
 	Failed     string
 	Deleted    bool
+	Path       string
 }
 
 type SessionSegment struct {

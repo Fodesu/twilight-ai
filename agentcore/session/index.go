@@ -6,7 +6,7 @@ import "fmt"
 // (SES-REP-5): a component of the segment, persisted next to its commits and
 // kept current by the adapter on every Append and Truncate. Its invariant is
 // that Entries are exactly the segment's own commits in Seq order from
-// SegmentSeed(header).Next and Through is the head after the last of them, so
+// header.Seed().Next and Through is the head after the last of them, so
 // the kernel validates it against the segment head with two O(1) checks
 // (Valid) and rebuilds it from the commits only when they fail. It answers
 // Committed, StreamHead and the byte-range lookup of LookupCommit without a
@@ -46,9 +46,9 @@ func IndexEntryOf(c *Commit) IndexEntry {
 }
 
 // BuildCommitIndex derives the index of a segment from its own commits, which
-// are contiguous from SegmentSeed(header).Next.
+// are contiguous from header.Seed().Next.
 func BuildCommitIndex(header SegmentHeader, commits []Commit) CommitIndex {
-	idx := CommitIndex{Through: SegmentSeed(header)}
+	idx := CommitIndex{Through: header.Seed()}
 	if len(commits) > 0 {
 		idx.Entries = make([]IndexEntry, 0, len(commits))
 	}

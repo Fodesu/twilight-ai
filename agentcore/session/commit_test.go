@@ -109,7 +109,7 @@ func TestValidateCommit(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateCommit(&tc.c)
+			err := tc.c.Validate()
 			if tc.want == "" {
 				if err != nil {
 					t.Fatal(err)
@@ -138,7 +138,7 @@ func TestValidateHeader(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateHeader(tc.h)
+			err := tc.h.Validate()
 			if (err == nil) != tc.ok {
 				t.Fatalf("ValidateHeader = %v, want ok=%v", err, tc.ok)
 			}
@@ -147,10 +147,21 @@ func TestValidateHeader(t *testing.T) {
 			}
 		})
 	}
-	if seed := SegmentSeed(rootHeader("seg")); seed != (Head{}) {
+	if seed := rootHeader("seg").Seed(); seed != (Head{}) {
 		t.Fatalf("root seed = %+v", seed)
 	}
-	if seed := SegmentSeed(SegmentHeader{ID: "c", Parent: &CommitRef{Segment: "seg", Seq: 3}}); seed != (Head{Next: 4}) {
+	if seed := (SegmentHeader{ID: "c", Parent: &CommitRef{Segment: "seg", Seq: 3}}).Seed(); seed != (Head{Next: 4}) {
 		t.Fatalf("child seed = %+v", seed)
+	}
+}
+
+func TestProposalAt(t *testing.T) {
+	batch := oneEventBatch(StreamRef{Domain: "chat"}, "twilight/x/a", `{"a":1}`)
+	got := Proposal{CommitID: "c1", Batches: []StreamBatch{batch}}.At(4)
+	if got.Seq != 4 || got.CommitID != "c1" || len(got.Batches) != 1 {
+		t.Fatalf("Proposal.At = %+v", got)
+	}
+	if err := got.Validate(); err != nil {
+		t.Fatal(err)
 	}
 }

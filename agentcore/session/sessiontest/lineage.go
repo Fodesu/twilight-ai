@@ -8,8 +8,10 @@ import (
 )
 
 // SES-GC-1/2: Sessions are roots into a forest of immutable segments. Delete
-// drops a root and nothing else; Collect keeps every commit a root still
-// reaches through fork edges and reclaims the rest, transitively.
+// tombstones a root and reclaims along its path: a segment stays through the
+// greatest right endpoint any remaining path still covers, and an empty
+// endpoint set removes it. Collect rebuilds those endpoints from the live
+// paths and is a no-op once Delete has reclaimed.
 //
 //	A: a0 a1 a2 a3        B -> A@1        C -> A@2        D -> C@(c3)
 func testLineage(t *testing.T, f Fixture) {
@@ -38,16 +40,23 @@ func testLineage(t *testing.T, f Fixture) {
 	headerD := fork("D", "C", c3)
 	segB, segC, segD := headerB.ID, headerC.ID, headerD.ID
 
-	// Delete refuses an owned Session and an unknown one.
-	if err := store.Delete(ctx, "A"); !session.IsCode(err, session.ErrOwned) {
+	// Delete refuses an owned Session and an unknown one, and reclaims nothing
+	// in either case.
+	if _, err := store.Delete(ctx, "A"); !session.IsCode(err, session.ErrOwned) {
 		t.Fatalf("delete owned = %v", err)
 	}
-	if err := store.Delete(ctx, "ghost"); !session.IsCode(err, session.ErrNotFound) {
+	if _, err := store.Delete(ctx, "ghost"); !session.IsCode(err, session.ErrNotFound) {
 		t.Fatalf("delete unknown = %v", err)
 	}
 	_ = aw.Close(ctx)
-	if err := store.Delete(ctx, "A"); err != nil {
+	// A's segment stays through the furthest remaining endpoint (C and D at
+	// a2) and drops a3. B, C and D are untouched.
+	report, err := store.Delete(ctx, "A")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if len(report.Removed) != 0 || report.Truncated[segA] != a[2].Seq+1 || len(report.Dropped[segA]) != 1 || report.Dropped[segA][0] != a[3].CommitID {
+		t.Fatalf("delete A = %+v, want A's segment truncated after %d", report, a[2].Seq)
 	}
 	// A is no Session any more: not found, not openable, not forkable; a
 	// second Delete is not found. Its identity is never reused (SES-GC-1):
@@ -65,7 +74,7 @@ func testLineage(t *testing.T, f Fixture) {
 	if _, err := forkAt(t, store, "E", "A", a[0].Seq); !session.IsCode(err, session.ErrNotFound) {
 		t.Fatalf("fork of a deleted session = %v", err)
 	}
-	if err := store.Delete(ctx, "A"); !session.IsCode(err, session.ErrNotFound) {
+	if _, err := store.Delete(ctx, "A"); !session.IsCode(err, session.ErrNotFound) {
 		t.Fatalf("second delete = %v", err)
 	}
 	if _, err := store.Create(ctx, session.CreateRequest{SessionID: "A", CreatedAtUnixMilli: 9}); !session.IsCode(err, session.ErrDeleted) {
@@ -81,14 +90,9 @@ func testLineage(t *testing.T, f Fixture) {
 			t.Fatalf("%s after deleting A = %s %v, want %s", sid, ids(page.Commits), err, want)
 		}
 	}
-	// Collect keeps A's segment up to the furthest live edge (C@2) and drops
-	// a3; B, C, D are untouched.
-	report, err := store.Collect(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(report.Removed) != 0 || report.Truncated[segA] != a[2].Seq+1 {
-		t.Fatalf("collect = %+v, want A's segment truncated after %d", report, a[2].Seq)
+	// Delete already reclaimed. Collect rebuilds the same endpoints and changes nothing.
+	if report, err := store.Collect(ctx); err != nil || len(report.Removed) != 0 || len(report.Truncated) != 0 {
+		t.Fatalf("collect after deleting A = %+v %v, want nothing", report, err)
 	}
 	for sid, want := range map[session.SessionID]string{"B": "a0,a1", "C": "a0,a1,a2,c3", "D": "a0,a1,a2,c3"} {
 		page, _ := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
@@ -99,7 +103,7 @@ func testLineage(t *testing.T, f Fixture) {
 	// A live fork of an ownerless segment opens, looks up inherited commits
 	// and appends as before.
 	dw := open(t, store, "D", false)
-	if !dw.Committed("a0") || dw.Committed("a3") {
+	if !committed(t, dw, "a0") || committed(t, dw, "a3") {
 		t.Fatal("D prefix membership wrong after collect")
 	}
 	if c, ok, _ := dw.LookupCommit("a2"); !ok || c.Seq != a[2].Seq {
@@ -114,8 +118,8 @@ func testLineage(t *testing.T, f Fixture) {
 	if report, err := store.Collect(ctx); err != nil || len(report.Removed) != 0 || len(report.Truncated) != 0 {
 		t.Fatalf("second collect = %+v %v", report, err)
 	}
-	// A fresh Session is unrelated to the old segment; deleted before any
-	// commit, its empty segment is what the next Collect removes.
+	// A fresh Session is unrelated to the old segment. Deleted before any
+	// commit, its empty segment is removed with the root.
 	newA, err := store.Create(ctx, session.CreateRequest{SessionID: "A2", CreatedAtUnixMilli: 9})
 	if err != nil {
 		t.Fatalf("create A2: %v", err)
@@ -126,8 +130,9 @@ func testLineage(t *testing.T, f Fixture) {
 	if page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "A2"}); err != nil || len(page.Commits) != 0 {
 		t.Fatalf("A2 = %+v %v", page, err)
 	}
-	if err := store.Delete(ctx, "A2"); err != nil {
-		t.Fatal(err)
+	report, err = store.Delete(ctx, "A2")
+	if err != nil || len(report.Removed) != 1 || report.Removed[0] != newA.ID || len(report.Truncated) != 0 {
+		t.Fatalf("delete A2 = %+v %v, want its empty segment removed", report, err)
 	}
 	// SES-GC-4: the adapter refuses to remove a node something still
 	// reaches, whatever the caller computed. C's segment is D's parent and
@@ -141,35 +146,89 @@ func testLineage(t *testing.T, f Fixture) {
 			}
 		}
 	}
-	// Deleting C (still reached by D) keeps its segment; deleting B, whose
-	// edge ends at A@1, removes B's own segment; A2's empty segment goes
-	// too. A's old segment stays because D reaches it through C.
-	if err := store.Delete(ctx, "C"); err != nil {
-		t.Fatal(err)
+	// Deleting C (still covered by D) keeps its segment. Deleting B removes
+	// B's own segment; A's segment stays because D still covers it through a2.
+	// A2's segment was removed with A2.
+	report, err = store.Delete(ctx, "C")
+	if err != nil || len(report.Removed) != 0 || len(report.Truncated) != 0 {
+		t.Fatalf("delete C = %+v %v, want C's segment kept", report, err)
 	}
-	if err := store.Delete(ctx, "B"); err != nil {
-		t.Fatal(err)
+	report, err = store.Delete(ctx, "B")
+	if err != nil || len(report.Removed) != 1 || report.Removed[0] != segB || len(report.Truncated) != 0 {
+		t.Fatalf("delete B = %+v %v, want B's segment removed", report, err)
 	}
-	report, _ = store.Collect(ctx)
-	removed := map[session.SegmentID]bool{}
-	for _, id := range report.Removed {
-		removed[id] = true
-	}
-	if len(removed) != 2 || !removed[segB] || !removed[newA.ID] || len(report.Truncated) != 0 {
-		t.Fatalf("collect after deleting B and C = %+v, want B's and the new A's segments removed", report)
+	if report, err := store.Collect(ctx); err != nil || len(report.Removed) != 0 || len(report.Truncated) != 0 {
+		t.Fatalf("collect after deleting B and C = %+v %v, want nothing", report, err)
 	}
 	if page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "D"}); err != nil || ids(page.Commits) != "a0,a1,a2,c3,d4" {
 		t.Fatalf("D after collect = %s %v", ids(page.Commits), err)
 	}
-	if err := store.Delete(ctx, "D"); err != nil {
+	report, err = store.Delete(ctx, "D")
+	if err != nil {
 		t.Fatal(err)
 	}
-	report, _ = store.Collect(ctx)
-	removed = map[session.SegmentID]bool{}
+	removed := map[session.SegmentID]bool{}
 	for _, id := range report.Removed {
 		removed[id] = true
 	}
 	if len(removed) != 3 || !removed[segA] || !removed[segC] || !removed[segD] || len(report.Truncated) != 0 {
-		t.Fatalf("final collect = %+v, want A, C, D removed", report)
+		t.Fatalf("delete D = %+v, want A, C, D removed", report)
+	}
+	if report, err := store.Collect(ctx); err != nil || len(report.Removed) != 0 || len(report.Truncated) != 0 {
+		t.Fatalf("final collect = %+v %v, want nothing", report, err)
+	}
+	testEndpointBound(t, store)
+}
+
+// testEndpointBound: two children fork the same segment at different commits.
+// Deleting the child with the greater endpoint lowers the bound to the other
+// child's endpoint; deleting the last cover removes the segment.
+func testEndpointBound(t *testing.T, store session.Stores) {
+	t.Helper()
+	ctx := context.Background()
+	header := create(t, store, "P")
+	seg := header.ID
+	w := open(t, store, "P", false)
+	p0 := appendCommit(t, w, "p0", batch(chatStream(), "twilight/x/p", `{"n":0}`))
+	p1 := appendCommit(t, w, "p1", batch(chatStream(), "twilight/x/p", `{"n":1}`))
+	p2 := appendCommit(t, w, "p2", batch(chatStream(), "twilight/x/p", `{"n":2}`))
+	low, err := forkAt(t, store, "low", "P", p0.Seq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	high, err := forkAt(t, store, "high", "P", p1.Seq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	report, err := store.Delete(ctx, "P")
+	if err != nil || len(report.Removed) != 0 || report.Truncated[seg] != p1.Seq+1 || len(report.Dropped[seg]) != 1 || report.Dropped[seg][0] != p2.CommitID {
+		t.Fatalf("delete P = %+v %v, want p2 dropped and the segment kept through p1", report, err)
+	}
+	for sid, want := range map[session.SessionID]string{"low": "p0", "high": "p0,p1"} {
+		page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: sid})
+		if err != nil || ids(page.Commits) != want {
+			t.Fatalf("%s after deleting P = %s %v, want %s", sid, ids(page.Commits), err, want)
+		}
+	}
+	report, err = store.Delete(ctx, "high")
+	if err != nil || len(report.Removed) != 1 || report.Removed[0] != high.ID || report.Truncated[seg] != p0.Seq+1 || len(report.Dropped[seg]) != 1 || report.Dropped[seg][0] != p1.CommitID {
+		t.Fatalf("delete high = %+v %v, want high's segment removed and p1 dropped", report, err)
+	}
+	if page, err := store.ReadCommits(ctx, session.CommitReadRequest{SessionID: "low"}); err != nil || ids(page.Commits) != "p0" {
+		t.Fatalf("low after deleting high = %s %v", ids(page.Commits), err)
+	}
+	report, err = store.Delete(ctx, "low")
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed := map[session.SegmentID]bool{}
+	for _, id := range report.Removed {
+		removed[id] = true
+	}
+	if len(removed) != 2 || !removed[low.ID] || !removed[seg] || len(report.Truncated) != 0 {
+		t.Fatalf("delete low = %+v, want low's segment and P's segment removed", report)
 	}
 }

@@ -125,7 +125,7 @@ func TestReopenFoldsOnlyTheTail(t *testing.T) {
 	if _, through, ok, err := cache.Load(ctx, sid, rowsProjection, 1); err != nil || !ok || through.Next != 4 {
 		t.Fatalf("saved state = through:%+v ok:%v %v, want through 4", through, ok, err)
 	}
-	if err := second.Delete(ctx, sid); err != nil {
+	if _, err := second.Delete(ctx, sid); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, ok, err := cache.Load(ctx, sid, rowsProjection, 1); err != nil || ok {

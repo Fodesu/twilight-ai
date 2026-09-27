@@ -5,21 +5,23 @@ import (
 	"sync"
 )
 
-// ledgerHandle is the ownership handle over one root. It holds no copy of
-// the tip's index: membership and stream heads are read from the backend's
-// indexes on demand (SES-REP-3), so its memory and its Open cost do not
-// grow with the segment. Every such read is bounded by the handle's head,
-// which only its own Appends advance, so what it knows is exactly what it
-// read at Open or wrote under its lease: a superseded handle never learns
+// ledgerHandle is the ownership handle over one loaded Session. It holds no
+// copy of the tip's index: membership and stream heads are read from the
+// backend's indexes on demand (SES-REP-3), so its memory and its Open cost
+// do not grow with the segment. Every such read is bounded by the handle's
+// head, which only its own Appends advance, so what it knows is exactly what
+// it read at Open or wrote under its lease: a superseded handle never learns
 // of a successor's commits and reaches the Epoch fence at Append.
+//
+// The handle keeps the lease and the tip head. The root and the loaded path
+// stay on the Session it was opened from; writes go to that Session's
+// backend, not back through Ledger.
 type ledgerHandle struct {
-	mu       sync.Mutex
-	l        *Ledger
-	root     SessionRecord
-	ancestry *Ancestry
-	lease    Lease
-	opts     OpenOptions
-	head     Head
+	mu      sync.Mutex
+	session *Session
+	lease   Lease
+	opts    OpenOptions
+	head    Head
 	// streams caches the tip's head of each stream the handle was asked
 	// about, read from the backend once below the handle's head and
 	// advanced by this handle's own Appends (SES-REP-3).
@@ -30,8 +32,9 @@ type ledgerHandle struct {
 	failed error
 }
 
-func (w *ledgerHandle) SessionID() SessionID { return w.root.ID }
-func (w *ledgerHandle) Epoch() Epoch         { return w.lease.Epoch }
+func (w *ledgerHandle) SessionID() SessionID  { return w.session.ID() }
+func (w *ledgerHandle) Epoch() Epoch          { return w.lease.Epoch }
+func (w *ledgerHandle) Header() SegmentHeader { return w.session.Header() }
 
 func (w *ledgerHandle) Lease() Lease {
 	w.mu.Lock()
@@ -51,7 +54,7 @@ func (w *ledgerHandle) Renew(ctx context.Context) error {
 	if w.failed != nil {
 		return w.failed
 	}
-	until, err := w.l.be.Renew(ctx, w.lease, w.opts.LeaseDuration)
+	until, err := w.session.be.Renew(ctx, w.lease, w.opts.LeaseDuration)
 	if err != nil {
 		return err
 	}
@@ -71,21 +74,22 @@ func (w *ledgerHandle) Head() Head {
 // lie at or past the head, so a superseded handle does not learn of them
 // here and reaches the Epoch fence at Append, exactly as when the index
 // lived in its memory.
-func (w *ledgerHandle) Committed(id CommitID) bool {
+func (w *ledgerHandle) Committed(id CommitID) (bool, error) {
 	w.mu.Lock()
 	failed, head := w.failed, w.head
 	w.mu.Unlock()
 	if failed != nil {
-		return false
+		return false, failed
 	}
 	ctx := context.Background()
-	if seq, ok, err := w.l.be.Locate(ctx, w.root.Tip, id); err != nil {
-		return false
-	} else if ok && seq < head.Next {
-		return true
+	seq, ok, err := w.session.be.Locate(ctx, w.session.root.Tip, id)
+	if err != nil {
+		return false, err
 	}
-	inherited, err := w.ancestry.ContainsInherited(ctx, w.l.be, id)
-	return err == nil && inherited
+	if ok && seq < head.Next {
+		return true, nil
+	}
+	return w.session.path.ContainsInherited(ctx, w.session.be, id)
 }
 
 // countStreams advances the cached head of each stream the commit wrote and
@@ -112,7 +116,7 @@ func (w *ledgerHandle) StreamHead(stream StreamRef) (StreamSeq, bool) {
 	n, known := w.streams[stream]
 	if !known {
 		var err error
-		n, err = w.l.be.StreamHead(context.Background(), w.root.Tip, stream, w.head.Next)
+		n, err = w.session.be.StreamHead(context.Background(), w.session.root.Tip, stream, w.head.Next)
 		if err != nil {
 			return 0, false
 		}
@@ -131,24 +135,26 @@ func (w *ledgerHandle) LookupCommit(id CommitID) (Commit, bool, error) {
 		return Commit{}, false, failed
 	}
 	ctx := context.Background()
-	if c, ok, err := w.l.be.LookupCommit(ctx, w.root.Tip, id); err != nil {
+	if c, ok, err := w.session.be.LookupCommit(ctx, w.session.root.Tip, id); err != nil {
 		return Commit{}, false, err
 	} else if ok && c.Seq < head.Next {
 		return c, true, nil
 	}
-	return w.ancestry.LookupInherited(ctx, w.l.be, id)
+	return w.session.path.LookupInherited(ctx, w.session.be, id)
 }
 
 func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 	if err := ctx.Err(); err != nil {
 		return Commit{}, err
 	}
-	sid := w.root.ID
-	c := Commit{CommitID: p.CommitID, Batches: cloneBatches(p.Batches)}
-	if err := ValidateCommit(&c); err != nil {
+	sid := w.session.ID()
+	staged := Proposal{CommitID: p.CommitID, Batches: cloneBatches(p.Batches)}
+	if err := staged.Validate(); err != nil {
 		return Commit{}, newError(ErrInvalid, "append", sid, err.Error())
 	}
-	if w.Committed(p.CommitID) {
+	if ok, err := w.Committed(p.CommitID); err != nil {
+		return Commit{}, err
+	} else if ok {
 		return Commit{}, &Error{Code: ErrConflict, Operation: "append", SessionID: sid, CommitID: p.CommitID, Detail: "CommitID already in the ledger"}
 	}
 	w.mu.Lock()
@@ -156,8 +162,8 @@ func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 	if w.failed != nil {
 		return Commit{}, w.failed
 	}
-	c.Seq = w.head.Next
-	if err := w.l.be.Append(ctx, w.lease, w.root.Tip, c); err != nil {
+	c := staged.At(w.head.Next)
+	if err := w.session.be.Append(ctx, w.lease, w.session.root.Tip, c); err != nil {
 		if IsCode(err, ErrHandleFailed) {
 			w.failed = err
 		}
@@ -170,5 +176,5 @@ func (w *ledgerHandle) Append(ctx context.Context, p Proposal) (Commit, error) {
 
 // Close releases the lease.
 func (w *ledgerHandle) Close(ctx context.Context) error {
-	return w.l.be.Release(ctx, w.lease)
+	return w.session.be.Release(ctx, w.lease)
 }

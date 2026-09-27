@@ -11,6 +11,20 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteCover = `-- name: DeleteCover :exec
+DELETE FROM session_covers WHERE segment = $1 AND session = $2
+`
+
+type DeleteCoverParams struct {
+	Segment string
+	Session string
+}
+
+func (q *Queries) DeleteCover(ctx context.Context, arg DeleteCoverParams) error {
+	_, err := q.db.Exec(ctx, deleteCover, arg.Segment, arg.Session)
+	return err
+}
+
 const deleteSegment = `-- name: DeleteSegment :exec
 DELETE FROM session_segments WHERE id = $1
 `
@@ -66,8 +80,17 @@ func (q *Queries) DeleteSegmentCommitsAbove(ctx context.Context, arg DeleteSegme
 	return err
 }
 
+const deleteSegmentCovers = `-- name: DeleteSegmentCovers :exec
+DELETE FROM session_covers WHERE segment = $1
+`
+
+func (q *Queries) DeleteSegmentCovers(ctx context.Context, segment string) error {
+	_, err := q.db.Exec(ctx, deleteSegmentCovers, segment)
+	return err
+}
+
 const expiredSessionRoots = `-- name: ExpiredSessionRoots :many
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted, path FROM session_roots
 WHERE owned AND NOT deleted AND lease_until > 0 AND lease_until <= $1 ORDER BY lease_until, id LIMIT $2
 `
 
@@ -95,6 +118,7 @@ func (q *Queries) ExpiredSessionRoots(ctx context.Context, arg ExpiredSessionRoo
 			&i.LeaseUntil,
 			&i.Failed,
 			&i.Deleted,
+			&i.Path,
 		); err != nil {
 			return nil, err
 		}
@@ -107,7 +131,7 @@ func (q *Queries) ExpiredSessionRoots(ctx context.Context, arg ExpiredSessionRoo
 }
 
 const heldSessionRoots = `-- name: HeldSessionRoots :many
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots WHERE owned AND NOT deleted ORDER BY id
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted, path FROM session_roots WHERE owned AND NOT deleted ORDER BY id
 `
 
 func (q *Queries) HeldSessionRoots(ctx context.Context) ([]SessionRoot, error) {
@@ -129,6 +153,7 @@ func (q *Queries) HeldSessionRoots(ctx context.Context) ([]SessionRoot, error) {
 			&i.LeaseUntil,
 			&i.Failed,
 			&i.Deleted,
+			&i.Path,
 		); err != nil {
 			return nil, err
 		}
@@ -138,6 +163,28 @@ func (q *Queries) HeldSessionRoots(ctx context.Context) ([]SessionRoot, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const insertCover = `-- name: InsertCover :exec
+INSERT INTO session_covers (segment, session, open, through) VALUES ($1, $2, $3, $4)
+ON CONFLICT (segment, session) DO UPDATE SET open = EXCLUDED.open, through = EXCLUDED.through
+`
+
+type InsertCoverParams struct {
+	Segment string
+	Session string
+	Open    bool
+	Through int64
+}
+
+func (q *Queries) InsertCover(ctx context.Context, arg InsertCoverParams) error {
+	_, err := q.db.Exec(ctx, insertCover,
+		arg.Segment,
+		arg.Session,
+		arg.Open,
+		arg.Through,
+	)
+	return err
 }
 
 const insertSegment = `-- name: InsertSegment :exec
@@ -200,17 +247,23 @@ func (q *Queries) InsertSegmentCommitStream(ctx context.Context, arg InsertSegme
 }
 
 const insertSessionRoot = `-- name: InsertSessionRoot :exec
-INSERT INTO session_roots (id, tip, created_at) VALUES ($1, $2, $3)
+INSERT INTO session_roots (id, tip, created_at, path) VALUES ($1, $2, $3, $4)
 `
 
 type InsertSessionRootParams struct {
 	ID        string
 	Tip       string
 	CreatedAt int64
+	Path      string
 }
 
 func (q *Queries) InsertSessionRoot(ctx context.Context, arg InsertSessionRootParams) error {
-	_, err := q.db.Exec(ctx, insertSessionRoot, arg.ID, arg.Tip, arg.CreatedAt)
+	_, err := q.db.Exec(ctx, insertSessionRoot,
+		arg.ID,
+		arg.Tip,
+		arg.CreatedAt,
+		arg.Path,
+	)
 	return err
 }
 
@@ -282,6 +335,36 @@ func (q *Queries) SegmentCommitsFrom(ctx context.Context, arg SegmentCommitsFrom
 	for rows.Next() {
 		var i SegmentCommitsFromRow
 		if err := rows.Scan(&i.Seq, &i.Body); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const segmentCovers = `-- name: SegmentCovers :many
+SELECT session, open, through FROM session_covers WHERE segment = $1 ORDER BY session
+`
+
+type SegmentCoversRow struct {
+	Session string
+	Open    bool
+	Through int64
+}
+
+func (q *Queries) SegmentCovers(ctx context.Context, segment string) ([]SegmentCoversRow, error) {
+	rows, err := q.db.Query(ctx, segmentCovers, segment)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SegmentCoversRow{}
+	for rows.Next() {
+		var i SegmentCoversRow
+		if err := rows.Scan(&i.Session, &i.Open, &i.Through); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -491,7 +574,7 @@ func (q *Queries) SegmentStreamHead(ctx context.Context, arg SegmentStreamHeadPa
 }
 
 const sessionRoot = `-- name: SessionRoot :one
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots WHERE id = $1
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted, path FROM session_roots WHERE id = $1
 `
 
 func (q *Queries) SessionRoot(ctx context.Context, id string) (SessionRoot, error) {
@@ -507,12 +590,13 @@ func (q *Queries) SessionRoot(ctx context.Context, id string) (SessionRoot, erro
 		&i.LeaseUntil,
 		&i.Failed,
 		&i.Deleted,
+		&i.Path,
 	)
 	return i, err
 }
 
 const sessionRoots = `-- name: SessionRoots :many
-SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted FROM session_roots WHERE NOT deleted ORDER BY id
+SELECT id, tip, created_at, epoch, owned, owner, lease_until, failed, deleted, path FROM session_roots WHERE NOT deleted ORDER BY id
 `
 
 func (q *Queries) SessionRoots(ctx context.Context) ([]SessionRoot, error) {
@@ -534,6 +618,7 @@ func (q *Queries) SessionRoots(ctx context.Context) ([]SessionRoot, error) {
 			&i.LeaseUntil,
 			&i.Failed,
 			&i.Deleted,
+			&i.Path,
 		); err != nil {
 			return nil, err
 		}
